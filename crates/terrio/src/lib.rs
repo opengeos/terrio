@@ -12,12 +12,17 @@
 //! # Ok::<(), terrio::Error>(())
 //! ```
 
+mod cog;
 pub mod crs;
 mod dataset;
 mod error;
 pub mod formats;
 mod geotiff;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod http;
 pub mod info;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod s3;
 pub mod vector;
 
 /// Raster types and resampling methods.
@@ -26,6 +31,7 @@ pub mod raster {
 }
 pub mod vfs;
 
+pub use cog::{LazyRaster, Window, WindowOptions, open_raster_lazy};
 pub use dataset::{
     Dataset, RasterDataset, RasterWriteOptions, VectorDataset, VectorOpenOptions, VectorWriteOptions, geo_transform, list_layers, open,
     open_raster, open_vector, write_raster, write_vector,

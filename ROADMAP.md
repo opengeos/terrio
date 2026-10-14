@@ -26,8 +26,8 @@ of GDAL: the long tail of formats stays reachable through an optional GDAL backe
 
 - Data model: `Dataset`, raster `Band` with block access, vector `Layer` with `Feature`, field
   schemas and geometry (on `geo-types`), and a driver registry with format detection.
-- Virtual file system: local files, HTTP(S) with range requests, S3, Google Cloud Storage and
-  Azure through `object_store`; zip archives.
+- Virtual file system: local files, HTTP(S) with range requests, S3 (with SigV4 signing), Google
+  Cloud Storage and Azure; zip archives.
 - Coordinate reference systems: EPSG codes, WKT and PROJ strings in and out; transformations for
   the common projections through `proj4rs`.
 - GeoJSON and GeoTIFF read and write, so the model is proven on one vector and one raster format.
@@ -86,6 +86,9 @@ of GDAL: the long tail of formats stays reachable through an optional GDAL backe
 ## Decisions
 
 - The core API is synchronous and reads datasets into memory; remote files are downloaded first.
-  Range requests for Cloud Optimized GeoTIFFs come with windowed reading.
+  GeoTIFFs, local or remote, can instead be opened lazily (`LazyRaster`) and read by window and
+  overview level, decoding only the tiles needed and fetching them with HTTP range requests.
+- HTTP goes through `ureq` (with rustls) and S3 requests are signed by terrio itself, rather than
+  through `object_store`, to keep the API synchronous and the dependencies small.
 - GeoPackage uses `wbvector`'s pure-Rust SQLite engine, so no C dependency is needed.
 - The EPSG registry comes from `wbprojection`.

@@ -1,5 +1,6 @@
 //! Dataset summaries, like `gdalinfo` and `ogrinfo`.
 
+use crate::LazyRaster;
 use crate::crs::{SpatialRef, Transformer};
 use crate::dataset::{Dataset, RasterDataset, VectorDataset};
 use serde::Serialize;
@@ -34,6 +35,9 @@ pub struct RasterInfo {
     pub wgs84_extent: Option<[f64; 4]>,
     /// The bands.
     pub bands: Vec<BandInfo>,
+    /// The overview sizes `[width, height]`, largest first.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub overviews: Vec<[usize; 2]>,
     /// Metadata key/value pairs.
     pub metadata: Vec<(String, String)>,
 }
@@ -165,8 +169,49 @@ pub fn raster_info(ds: &RasterDataset, options: &InfoOptions) -> RasterInfo {
         crs: CrsSummary::new(&crs),
         extent,
         bands,
+        overviews: Vec::new(),
         metadata: r.metadata.clone(),
     }
+}
+
+/// Summarizes a raster opened lazily. Only statistics read the pixels.
+pub fn lazy_raster_info(r: &mut LazyRaster, options: &InfoOptions) -> crate::Result<RasterInfo> {
+    let overviews = r.overviews().into_iter().map(|(w, h)| [w, h]).collect();
+    if options.statistics {
+        let mut info = raster_info(&r.read()?, options);
+        info.overviews = overviews;
+        return Ok(info);
+    }
+    let crs = r.crs();
+    let gt = r.geo_transform();
+    let (w, h) = (r.width() as f64, r.height() as f64);
+    let extent = [gt[0], gt[3] + h * gt[5], gt[0] + w * gt[1], gt[3]];
+    let bands = (0..r.band_count())
+        .map(|b| BandInfo { band: b + 1, data_type: gdal_type_name(r.data_type()).to_string(), nodata: r.nodata(), statistics: None })
+        .collect();
+    Ok(RasterInfo {
+        driver: r.driver().name().to_string(),
+        size: [r.width(), r.height()],
+        band_count: r.band_count(),
+        geo_transform: gt,
+        wgs84_extent: wgs84_extent(&crs, extent),
+        crs: CrsSummary::new(&crs),
+        extent,
+        bands,
+        overviews,
+        metadata: Vec::new(),
+    })
+}
+
+/// Summarizes the dataset at a path. GeoTIFFs (local or remote) are read in place, fetching only
+/// their headers unless statistics are asked for; other datasets are read whole.
+pub fn info_path(path: &str, options: &InfoOptions) -> crate::Result<Info> {
+    if !matches!(crate::vfs::Location::parse(path), crate::vfs::Location::Zip { .. })
+        && let Some(mut r) = LazyRaster::open_tiff(path)?
+    {
+        return Ok(Info::Raster(Box::new(lazy_raster_info(&mut r, options)?)));
+    }
+    Ok(info(&crate::open(path)?, options))
 }
 
 /// Computes a band's statistics over its valid pixels. `None` when every pixel is nodata.
@@ -254,6 +299,10 @@ impl Info {
                 let _ = writeln!(s, "Extent: {}", fmt_box(&r.extent));
                 if let Some(w) = &r.wgs84_extent {
                     let _ = writeln!(s, "WGS 84 extent: {}", fmt_box(w));
+                }
+                if !r.overviews.is_empty() {
+                    let sizes: Vec<String> = r.overviews.iter().map(|[w, h]| format!("{w}x{h}")).collect();
+                    let _ = writeln!(s, "Overviews: {}", sizes.join(", "));
                 }
                 for (k, v) in &r.metadata {
                     let _ = writeln!(s, "Metadata: {k}={v}");

@@ -24,8 +24,11 @@ pub(crate) struct GeoTags {
     pub pixel_is_point: bool,
     /// The `GDAL_NODATA` value.
     pub nodata: Option<f64>,
-    /// For palette images, the file offset of the `PhotometricInterpretation` value.
-    pub palette_photometric_offset: Option<u64>,
+    /// For palette images, the file offsets of the `PhotometricInterpretation` values, in every
+    /// image (overviews included).
+    pub palette_photometric_offsets: Vec<u64>,
+    /// Whether the file is little-endian.
+    pub little_endian: bool,
 }
 
 /// One TIFF tag's raw values.
@@ -35,10 +38,18 @@ enum Values {
     Ascii(String),
 }
 
+/// The most images (IFDs) looked at for palette images.
+const MAX_IFDS: usize = 1024;
+
 /// Reads the georeferencing tags of a TIFF file's first image. Returns `None` when the file is not
 /// a TIFF.
 pub(crate) fn read_geo_tags(path: &std::path::Path) -> Option<GeoTags> {
-    let mut f = std::io::BufReader::new(std::fs::File::open(path).ok()?);
+    read_geo_tags_from(std::io::BufReader::new(std::fs::File::open(path).ok()?))
+}
+
+/// Reads the georeferencing tags of a TIFF stream's first image, and finds the palette images
+/// among all its images. Returns `None` when the stream is not a TIFF.
+pub(crate) fn read_geo_tags_from<R: Read + Seek>(mut f: R) -> Option<GeoTags> {
     let mut header = [0u8; 16];
     f.read_exact(&mut header[..8]).ok()?;
     let le = match &header[..2] {
@@ -137,6 +148,14 @@ pub(crate) fn read_geo_tags(path: &std::path::Path) -> Option<GeoTags> {
         };
         tags.push((tag, values));
     }
+    // The other images: overviews and masks.
+    let mut palette_offsets: Vec<u64> = palette_offset.into_iter().collect();
+    let mut seen = vec![ifd_offset];
+    let mut next = read_offset(&mut f, big, le);
+    while let Some(offset) = next.filter(|o| *o != 0 && seen.len() < MAX_IFDS && !seen.contains(o)) {
+        seen.push(offset);
+        next = palette_offset_in_ifd(&mut f, offset, big, le, &mut palette_offsets);
+    }
 
     let doubles = |t: u16| {
         tags.iter().find_map(|(k, v)| match v {
@@ -155,7 +174,7 @@ pub(crate) fn read_geo_tags(path: &std::path::Path) -> Option<GeoTags> {
         _ => None,
     });
 
-    let mut out = GeoTags { palette_photometric_offset: palette_offset, ..Default::default() };
+    let mut out = GeoTags { palette_photometric_offsets: palette_offsets, little_endian: le, ..Default::default() };
     if let Some(m) = doubles(MODEL_TRANSFORMATION).filter(|m| m.len() >= 8) {
         out.geo_transform = Some([m[3], m[0], m[1], m[7], m[4], m[5]]);
     } else if let (Some(scale), Some(tie)) = (doubles(MODEL_PIXEL_SCALE), doubles(MODEL_TIEPOINT))
@@ -192,6 +211,44 @@ pub(crate) fn read_geo_tags(path: &std::path::Path) -> Option<GeoTags> {
         };
     }
     Some(out)
+}
+
+/// Reads a file offset (4 bytes, or 8 in a BigTIFF) at the stream's position.
+fn read_offset<R: Read>(f: &mut R, big: bool, le: bool) -> Option<u64> {
+    let mut b = [0u8; 8];
+    if big {
+        f.read_exact(&mut b).ok()?;
+        Some(if le { u64::from_le_bytes(b) } else { u64::from_be_bytes(b) })
+    } else {
+        f.read_exact(&mut b[..4]).ok()?;
+        let a = [b[0], b[1], b[2], b[3]];
+        Some(if le { u32::from_le_bytes(a) } else { u32::from_be_bytes(a) } as u64)
+    }
+}
+
+/// Looks for a palette `PhotometricInterpretation` in the IFD at `offset`, recording its value's
+/// offset. Returns the offset of the next IFD.
+fn palette_offset_in_ifd<R: Read + Seek>(f: &mut R, offset: u64, big: bool, le: bool, out: &mut Vec<u64>) -> Option<u64> {
+    let u16_at = |b: &[u8]| if le { u16::from_le_bytes([b[0], b[1]]) } else { u16::from_be_bytes([b[0], b[1]]) };
+    f.seek(SeekFrom::Start(offset)).ok()?;
+    let count = if big {
+        read_offset(f, true, le)?
+    } else {
+        let mut b = [0u8; 2];
+        f.read_exact(&mut b).ok()?;
+        u16_at(&b) as u64
+    };
+    let start = offset + if big { 8 } else { 2 };
+    let entry_len = if big { 20 } else { 12 };
+    let mut entries = vec![0u8; (count as usize).min(4096) * entry_len];
+    f.read_exact(&mut entries).ok()?;
+    for (i, e) in entries.chunks(entry_len).enumerate() {
+        let value = if big { 12 } else { 8 };
+        if u16_at(&e[0..2]) == PHOTOMETRIC && u16_at(&e[2..4]) == 3 && u16_at(&e[value..]) == 3 {
+            out.push(start + (i * entry_len + value) as u64);
+        }
+    }
+    read_offset(f, big, le)
 }
 
 fn parse_nodata(s: &str) -> Option<f64> {
@@ -257,11 +314,7 @@ pub(crate) fn read_geotiff(path: &std::path::Path) -> crate::Result<crate::Raste
     let tiff_err = |e: tiff::TiffError| Error::InvalidData(format!("{}: {e}", path.display()));
     let tags = read_geo_tags(path).unwrap_or_default();
     // The decoder rejects palette images; read their indices as grayscale instead.
-    let file = PatchedReader {
-        inner: std::io::BufReader::new(std::fs::File::open(path)?),
-        pos: 0,
-        patch: tags.palette_photometric_offset.map(|off| (off, if is_little_endian(path) { [1u8, 0] } else { [0u8, 1] })),
-    };
+    let file = PatchedReader::new(std::io::BufReader::new(std::fs::File::open(path)?), &tags);
     let mut dec = Decoder::new(file).map_err(tiff_err)?.with_limits(Limits::unlimited());
     let (w, h) = dec.dimensions().map_err(tiff_err)?;
     let (w, h) = (w as usize, h as usize);
@@ -359,22 +412,31 @@ pub(crate) fn read_geotiff(path: &std::path::Path) -> crate::Result<crate::Raste
     Ok(crate::RasterDataset { raster, driver: crate::formats::RasterDriver::GTiff, has_nodata: tags.nodata.is_some() })
 }
 
-fn is_little_endian(path: &std::path::Path) -> bool {
-    let mut b = [0u8; 2];
-    std::fs::File::open(path).and_then(|mut f| f.read_exact(&mut b)).is_ok() && &b == b"II"
-}
-
-/// A reader that replaces two bytes at one file offset.
-struct PatchedReader<R> {
+/// A reader that replaces two bytes at some file offsets.
+pub(crate) struct PatchedReader<R> {
     inner: R,
     pos: u64,
-    patch: Option<(u64, [u8; 2])>,
+    patches: Vec<(u64, [u8; 2])>,
+}
+
+impl<R> PatchedReader<R> {
+    /// Wraps a reader positioned at the start of a TIFF, so that its palette images read as
+    /// grayscale (the decoder rejects palette images).
+    pub(crate) fn new(inner: R, tags: &GeoTags) -> Self {
+        let gray = if tags.little_endian { [1u8, 0] } else { [0u8, 1] };
+        Self { inner, pos: 0, patches: tags.palette_photometric_offsets.iter().map(|off| (*off, gray)).collect() }
+    }
+
+    /// The wrapped reader.
+    pub(crate) fn get_ref(&self) -> &R {
+        &self.inner
+    }
 }
 
 impl<R: Read> Read for PatchedReader<R> {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         let n = self.inner.read(buf)?;
-        if let Some((off, bytes)) = self.patch {
+        for (off, bytes) in &self.patches {
             for (i, b) in bytes.iter().enumerate() {
                 let at = off + i as u64;
                 if at >= self.pos && at < self.pos + n as u64 {

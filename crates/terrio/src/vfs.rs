@@ -4,21 +4,27 @@
 //!
 //! - local paths;
 //! - `http://` and `https://` URLs;
-//! - `s3://bucket/key` (public buckets, or the endpoint in `AWS_S3_ENDPOINT`) and
-//!   `gs://bucket/key` (public buckets);
+//! - `s3://bucket/key`: signed with AWS credentials when they are configured, unsigned otherwise
+//!   or with `AWS_NO_SIGN_REQUEST=YES` (see [`crate::s3`]);
+//! - `gs://bucket/key` (public buckets);
+//! - `az://container/blob` (public containers, or with a SAS token in `AZURE_STORAGE_SAS_TOKEN`),
+//!   in the storage account named by `AZURE_STORAGE_ACCOUNT`; without it, `az://account/container/blob`;
 //! - zip archives, either the archive alone (its main dataset is opened) or `archive.zip!inner/path`;
-//! - GDAL's virtual file system prefixes `/vsicurl/`, `/vsis3/`, `/vsigs/` and `/vsizip/`.
+//! - GDAL's virtual file system prefixes `/vsicurl/`, `/vsis3/`, `/vsigs/`, `/vsiaz/` and `/vsizip/`.
 //!
-//! Remote files and archive members are copied to a temporary directory that lives as long as the
-//! returned [`LocalPath`].
+//! [`resolve`] copies remote files and archive members to a temporary directory that lives as long
+//! as the returned [`LocalPath`]. GeoTIFFs can instead be read in place, fetching only the parts
+//! read: see [`crate::LazyRaster`].
 
 use crate::{Error, Result};
 use std::path::{Path, PathBuf};
 
 /// Extensions of the files that make up a shapefile besides the `.shp` itself.
+#[cfg(not(target_arch = "wasm32"))]
 const SHAPEFILE_SIDECARS: &[&str] = &["shx", "dbf", "prj", "cpg"];
 
 /// Extensions tried, in order, to find the main dataset inside an archive.
+#[cfg(not(target_arch = "wasm32"))]
 const MAIN_DATASET_EXTENSIONS: &[&str] = &[
     "shp",
     "gpkg",
@@ -77,6 +83,13 @@ pub enum Location {
     Local(PathBuf),
     /// An HTTP(S) URL.
     Url(String),
+    /// An object in Amazon S3, or the S3-compatible service in `AWS_S3_ENDPOINT`.
+    S3 {
+        /// The bucket.
+        bucket: String,
+        /// The object key.
+        key: String,
+    },
     /// A member of a zip archive (or the archive's main dataset when `inner` is `None`).
     Zip {
         /// The archive.
@@ -112,6 +125,9 @@ impl Location {
         if let Some(rest) = input.strip_prefix("/vsigs/") {
             return Location::parse(&format!("gs://{rest}"));
         }
+        if let Some(rest) = input.strip_prefix("/vsiaz/") {
+            return Location::parse(&format!("az://{rest}"));
+        }
         if let Some((archive, inner)) = input.split_once(".zip!") {
             return Location::Zip {
                 archive: Box::new(Location::parse_unarchived(&format!("{archive}.zip"))),
@@ -136,18 +152,26 @@ impl Location {
         if let Some(rest) = input.strip_prefix("/vsigs/") {
             return Location::parse_unarchived(&format!("gs://{rest}"));
         }
+        if let Some(rest) = input.strip_prefix("/vsiaz/") {
+            return Location::parse_unarchived(&format!("az://{rest}"));
+        }
         if let Some(rest) = input.strip_prefix("s3://") {
             let (bucket, key) = rest.split_once('/').unwrap_or((rest, ""));
-            match std::env::var("AWS_S3_ENDPOINT") {
-                Ok(endpoint) => {
-                    let endpoint = endpoint.trim_end_matches('/');
-                    let endpoint = if endpoint.contains("://") { endpoint.to_string() } else { format!("https://{endpoint}") };
-                    Location::Url(format!("{endpoint}/{bucket}/{key}"))
-                }
-                Err(_) => Location::Url(format!("https://{bucket}.s3.amazonaws.com/{key}")),
-            }
+            Location::S3 { bucket: bucket.to_string(), key: key.to_string() }
         } else if let Some(rest) = input.strip_prefix("gs://") {
             Location::Url(format!("https://storage.googleapis.com/{rest}"))
+        } else if let Some(rest) = input.strip_prefix("az://") {
+            let (account, path) = match std::env::var("AZURE_STORAGE_ACCOUNT").ok().filter(|a| !a.is_empty()) {
+                Some(account) => (account, rest),
+                None => {
+                    let (account, path) = rest.split_once('/').unwrap_or((rest, ""));
+                    (account.to_string(), path)
+                }
+            };
+            let sas = std::env::var("AZURE_STORAGE_SAS_TOKEN").unwrap_or_default();
+            let sas = sas.trim_start_matches('?');
+            let query = if sas.is_empty() { String::new() } else { format!("?{sas}") };
+            Location::Url(format!("https://{account}.blob.core.windows.net/{path}{query}"))
         } else if input.starts_with("http://") || input.starts_with("https://") {
             Location::Url(input.to_string())
         } else {
@@ -165,6 +189,7 @@ impl Location {
         match self {
             Location::Local(p) => p.file_name().and_then(|s| s.to_str()).unwrap_or_default().to_string(),
             Location::Url(u) => url_file_name(u),
+            Location::S3 { key, .. } => key.rsplit('/').next().unwrap_or_default().to_string(),
             Location::Zip { archive, inner: Some(inner) } => {
                 let _ = archive;
                 inner.rsplit('/').next().unwrap_or(inner).to_string()
@@ -206,7 +231,7 @@ fn resolve_location(loc: &Location) -> Result<LocalPath> {
     match loc {
         Location::Local(p) => Ok(LocalPath::local(p.clone())),
         #[cfg(not(target_arch = "wasm32"))]
-        Location::Url(url) => download(url),
+        Location::Url(_) | Location::S3 { .. } => download(loc),
         #[cfg(not(target_arch = "wasm32"))]
         Location::Zip { archive, inner } => extract(archive, inner.as_deref()),
         #[cfg(target_arch = "wasm32")]
@@ -214,37 +239,51 @@ fn resolve_location(loc: &Location) -> Result<LocalPath> {
     }
 }
 
+impl Location {
+    /// The remote file at this location, when it is one.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn remote(&self) -> Option<crate::http::Remote> {
+        match self {
+            Location::Url(u) => Some(crate::http::Remote::Url(u.clone())),
+            Location::S3 { bucket, key } => Some(crate::http::Remote::S3(crate::s3::S3Object { bucket: bucket.clone(), key: key.clone() })),
+            _ => None,
+        }
+    }
+
+    /// The same location with another extension (for sidecar files).
+    #[cfg(not(target_arch = "wasm32"))]
+    fn with_extension(&self, ext: &str) -> Option<Location> {
+        let swap = |s: &str| {
+            let (path, query) = s.split_once('?').map_or((s, None), |(p, q)| (p, Some(q)));
+            let dot = path.rfind('.').filter(|&i| !path[i..].contains('/'))?;
+            Some(format!("{}.{ext}{}", &path[..dot], query.map(|q| format!("?{q}")).unwrap_or_default()))
+        };
+        match self {
+            Location::Url(u) => swap(u).map(Location::Url),
+            Location::S3 { bucket, key } => swap(key).map(|key| Location::S3 { bucket: bucket.clone(), key }),
+            _ => None,
+        }
+    }
+}
+
 #[cfg(not(target_arch = "wasm32"))]
-fn download(url: &str) -> Result<LocalPath> {
+fn download(loc: &Location) -> Result<LocalPath> {
+    let remote = loc.remote().ok_or_else(|| Error::InvalidArgument("not a remote location".into()))?;
     let temp = tempfile::Builder::new().prefix("terrio-").tempdir()?;
-    let name = url_file_name(url);
+    let name = loc.file_name();
     let name = if name.is_empty() { "download".to_string() } else { name };
     let path = temp.path().join(&name);
-    http_get_to_file(url, &path)?;
+    crate::http::download(&remote, &path)?;
     if extension_of(&name).as_deref() == Some("shp") {
-        let clean = url.split(['?', '#']).next().unwrap_or(url);
-        let base = &clean[..clean.len() - ".shp".len()];
         let stem = Path::new(&name).file_stem().and_then(|s| s.to_str()).unwrap_or_default().to_string();
         for ext in SHAPEFILE_SIDECARS {
             // Sidecars are optional; the reader reports any that are required and missing.
-            let _ = http_get_to_file(&format!("{base}.{ext}"), &temp.path().join(format!("{stem}.{ext}")));
+            if let Some(sidecar) = loc.with_extension(ext).and_then(|l| l.remote()) {
+                let _ = crate::http::download(&sidecar, &temp.path().join(format!("{stem}.{ext}")));
+            }
         }
     }
     Ok(LocalPath { path, _temp: Some(temp) })
-}
-
-/// Fetches `url` into `path`.
-#[cfg(not(target_arch = "wasm32"))]
-fn http_get_to_file(url: &str, path: &Path) -> Result<()> {
-    let response = match ureq::get(url).call() {
-        Ok(r) => r,
-        Err(ureq::Error::StatusCode(code)) => return Err(Error::Http(format!("{url}: status {code}"))),
-        Err(e) => return Err(Error::Http(format!("{url}: {e}"))),
-    };
-    let mut reader = response.into_body().into_reader();
-    let mut file = std::fs::File::create(path)?;
-    std::io::copy(&mut reader, &mut file)?;
-    Ok(())
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -307,6 +346,8 @@ mod tests {
         assert_eq!(Location::parse("a/b.tif"), Location::Local("a/b.tif".into()));
         assert_eq!(Location::parse("/vsicurl/https://x.org/a.tif"), Location::Url("https://x.org/a.tif".into()));
         assert_eq!(Location::parse("gs://bucket/a.tif"), Location::Url("https://storage.googleapis.com/bucket/a.tif".into()));
+        assert_eq!(Location::parse("/vsis3/bucket/dir/a.tif"), Location::S3 { bucket: "bucket".into(), key: "dir/a.tif".into() });
+        assert_eq!(Location::parse("s3://bucket/dir/a.tif").file_name(), "a.tif");
         assert_eq!(
             Location::parse("/vsizip/data/a.zip/dir/b.shp"),
             Location::Zip { archive: Box::new(Location::Local("data/a.zip".into())), inner: Some("dir/b.shp".into()) }

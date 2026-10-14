@@ -18,12 +18,14 @@ pub struct Args {
 }
 
 pub fn run(a: Args) -> terrio::Result<()> {
-    let ds = if a.layers.is_empty() {
-        super::quiet(|| terrio::open(&a.input))?
+    let options = InfoOptions { statistics: a.stats };
+    let info = if a.layers.is_empty() {
+        // GeoTIFFs are read in place: only their headers are fetched.
+        super::quiet(|| terrio::info::info_path(&a.input, &options))?
     } else {
-        terrio::Dataset::Vector(terrio::open_vector(&a.input, &terrio::VectorOpenOptions { layers: a.layers })?)
+        let ds = terrio::Dataset::Vector(terrio::open_vector(&a.input, &terrio::VectorOpenOptions { layers: a.layers })?);
+        terrio::info::info(&ds, &options)
     };
-    let info = terrio::info::info(&ds, &InfoOptions { statistics: a.stats });
     if a.json {
         println!("{}", serde_json::to_string_pretty(&info).map_err(|e| terrio::Error::InvalidData(e.to_string()))?);
     } else {
