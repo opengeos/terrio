@@ -21,7 +21,8 @@ jobs:
       matrix:
         platform:
           - { os: ubuntu-latest, target: x86_64, manylinux: auto }
-          - { os: ubuntu-latest, target: aarch64, manylinux: auto }
+          # manylinux2014's cross compiler is too old for ring's ARM assembly.
+          - { os: ubuntu-latest, target: aarch64, manylinux: "2_28" }
           - { os: ubuntu-latest, target: x86_64, manylinux: musllinux_1_2 }
           - { os: macos-latest, target: x86_64, manylinux: auto }
           - { os: macos-latest, target: aarch64, manylinux: auto }
