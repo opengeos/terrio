@@ -8,3 +8,4 @@ js/pkg*/
 node_modules/
 *.so
 *.pyd
+site/

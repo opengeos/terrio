@@ -2,6 +2,8 @@
 
 Pure-Rust geospatial raster and vector data I/O.
 
+Documentation: <https://terrio.opengeos.org>
+
 terrio aims to read, write, convert and reproject the geospatial formats most workflows use, without
 C dependencies, so that it builds anywhere Rust does, including WebAssembly.
 
