@@ -22,7 +22,9 @@ def write_item(tmp_path, name, data, transform, datetime):
     Returns:
         dict: The item.
     """
-    terrio.Raster.from_array(data, transform, crs="EPSG:32613", nodata=0).write(str(tmp_path / f"{name}.tif"))
+    terrio.Raster.from_array(data, transform, crs="EPSG:32613", nodata=0).write(
+        str(tmp_path / f"{name}.tif")
+    )
     rows, cols = data.shape
     x0, y1 = transform[0], transform[3]
     return {
@@ -48,7 +50,9 @@ def test_stac_item_asset_and_mosaic(tmp_path):
     a = np.full((4, 6), 1, dtype="uint16")
     b = np.full((4, 6), 2, dtype="uint16")
     item_a = write_item(tmp_path, "a", a, TRANSFORM, "2023-07-01T00:00:00Z")
-    item_b = write_item(tmp_path, "b", b, (500030.0, 10.0, 0.0, 4400000.0, 0.0, -10.0), "2023-07-02T00:00:00Z")
+    item_b = write_item(
+        tmp_path, "b", b, (500030.0, 10.0, 0.0, 4400000.0, 0.0, -10.0), "2023-07-02T00:00:00Z"
+    )
     item_path = tmp_path / "a.json"
     item_path.write_text(json.dumps(item_a))
     summary = terrio.info(str(item_path))
@@ -72,7 +76,14 @@ def test_geozarr_write_and_overviews(tmp_path):
     data = np.arange(600 * 300, dtype="float32").reshape(300, 600)
     r = terrio.Raster.from_array(data, (-110.0, 0.01, 0.0, 40.0, 0.0, -0.01), crs="EPSG:4326")
     path = str(tmp_path / "geo.zarr")
-    r.write(path, options={"FORMAT": "ZARR_V3", "GEOREFERENCING_CONVENTION": "SPATIAL_PROJ", "OVERVIEW_LEVELS": "AUTO"})
+    r.write(
+        path,
+        options={
+            "FORMAT": "ZARR_V3",
+            "GEOREFERENCING_CONVENTION": "SPATIAL_PROJ",
+            "OVERVIEW_LEVELS": "AUTO",
+        },
+    )
     back = terrio.open_raster(path, lazy=True)
     assert back.overviews == [(300, 150), (150, 75)]
     np.testing.assert_array_equal(back.read(1), data)
