@@ -1,12 +1,16 @@
 [package]
 name = "terrio-cli"
-description = "Command-line interface for terrio"
-publish = false
+description = "Command-line interface for terrio: GDAL-style info, convert, translate and warp in pure Rust"
+readme = "../../README.md"
+keywords = ["gis", "geospatial", "gdal", "raster", "vector"]
+categories = ["science::geo", "command-line-utilities"]
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
 
 [[bin]]
 name = "terrio"
