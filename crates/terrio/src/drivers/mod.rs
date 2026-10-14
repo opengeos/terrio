@@ -25,7 +25,7 @@ mod rst;
 mod saga;
 pub(crate) mod sqlite;
 pub(crate) mod vector;
-mod wkt;
+pub(crate) mod wkt;
 mod xyz;
 mod zarr;
 

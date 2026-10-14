@@ -30,9 +30,9 @@ use std::sync::Arc;
 use wbvector::{Coord, Feature, FieldDef, FieldType, FieldValue, Geometry, GeometryType, Layer, Ring};
 
 /// An attribute column: the path from a top-level column through struct members.
-struct Column {
-    path: Vec<usize>,
-    field_type: FieldType,
+pub(crate) struct Column {
+    pub(crate) path: Vec<usize>,
+    pub(crate) field_type: FieldType,
 }
 
 /// Reads a GeoParquet file, skipping the features whose bounding box is outside `bbox`
@@ -125,30 +125,38 @@ fn parse_source<R: parquet::file::reader::ChunkReader + 'static>(
     match col.get("crs") {
         _ if geo.is_null() => {}
         None => layer.set_crs_epsg(Some(4326)),
-        Some(Value::Null) => {}
-        Some(Value::String(s)) => {
-            if let Ok(s) = SpatialRef::parse(s) {
-                s.apply_to_layer(&mut layer);
-            }
-        }
-        Some(crs) => match projjson_epsg(crs) {
-            Some(code) => match SpatialRef::from_epsg(code) {
-                Ok(s) => s.apply_to_layer(&mut layer),
-                Err(_) => layer.set_crs_epsg(Some(code)),
-            },
-            // A CRS without an EPSG code: through WKT.
-            None => {
-                if let Some(wkt) = super::projjson::to_wkt1(crs) {
-                    SpatialRef::from_wkt(&wkt).apply_to_layer(&mut layer);
-                }
-            }
-        },
+        Some(crs) => apply_crs(&mut layer, crs),
     }
     if let Some(types) = col["geometry_types"].as_array() {
         let types: Vec<&str> = types.iter().filter_map(Value::as_str).map(|t| t.trim_end_matches(" Z").trim_end_matches(" M")).collect();
         layer.geom_type = declared_type(&types);
     }
     Ok(layer)
+}
+
+/// Sets a layer's CRS from a GeoParquet or GeoArrow `crs` value: PROJJSON, or a string PROJ
+/// understands (an authority code, WKT or a PROJ string). `null` leaves the CRS unknown.
+pub(crate) fn apply_crs(layer: &mut Layer, crs: &Value) {
+    match crs {
+        Value::Null => {}
+        Value::String(s) => {
+            if let Ok(s) = SpatialRef::parse(s) {
+                s.apply_to_layer(layer);
+            }
+        }
+        crs => match projjson_epsg(crs) {
+            Some(code) => match SpatialRef::from_epsg(code) {
+                Ok(s) => s.apply_to_layer(layer),
+                Err(_) => layer.set_crs_epsg(Some(code)),
+            },
+            // A CRS without an EPSG code: through WKT.
+            None => {
+                if let Some(wkt) = super::projjson::to_wkt1(crs) {
+                    SpatialRef::from_wkt(&wkt).apply_to_layer(layer);
+                }
+            }
+        },
+    }
 }
 
 /// The row groups and rows a bounding-box filter keeps, with the file row numbers of the kept
@@ -259,7 +267,7 @@ fn select_rows<T: parquet::file::reader::ChunkReader + 'static>(
 }
 
 /// Adds the fields of a column, flattening structs as GDAL does.
-fn add_columns(layer: &mut Layer, columns: &mut Vec<Column>, path: Vec<usize>, name: String, t: &DataType) {
+pub(crate) fn add_columns(layer: &mut Layer, columns: &mut Vec<Column>, path: Vec<usize>, name: String, t: &DataType) {
     if let DataType::Struct(fields) = t {
         for (i, f) in fields.iter().enumerate() {
             let mut p = path.clone();
@@ -273,7 +281,7 @@ fn add_columns(layer: &mut Layer, columns: &mut Vec<Column>, path: Vec<usize>, n
     columns.push(Column { path, field_type });
 }
 
-fn field_type(t: &DataType) -> FieldType {
+pub(crate) fn field_type(t: &DataType) -> FieldType {
     use DataType as D;
     match t {
         D::Int8 | D::Int16 | D::Int32 | D::Int64 | D::UInt8 | D::UInt16 | D::UInt32 | D::UInt64 => FieldType::Integer,
@@ -289,7 +297,7 @@ fn field_type(t: &DataType) -> FieldType {
 }
 
 /// The array at a path of struct members.
-fn nested(batch: &RecordBatch, path: &[usize]) -> ArrayRef {
+pub(crate) fn nested(batch: &RecordBatch, path: &[usize]) -> ArrayRef {
     let mut a = batch.column(path[0]).clone();
     for &i in &path[1..] {
         a = a.as_struct().column(i).clone();
@@ -297,7 +305,7 @@ fn nested(batch: &RecordBatch, path: &[usize]) -> ArrayRef {
     a
 }
 
-fn value(a: &dyn Array, row: usize, t: FieldType) -> FieldValue {
+pub(crate) fn value(a: &dyn Array, row: usize, t: FieldType) -> FieldValue {
     if a.is_null(row) {
         return FieldValue::Null;
     }
@@ -524,7 +532,7 @@ fn projjson_epsg(v: &Value) -> Option<u32> {
 }
 
 /// The layer type for the `geometry_types` metadata: one type, or a type and its multi-part form.
-fn declared_type(types: &[&str]) -> Option<GeometryType> {
+pub(crate) fn declared_type(types: &[&str]) -> Option<GeometryType> {
     let parse = |t: &str| match t {
         "Point" => Some(GeometryType::Point),
         "LineString" => Some(GeometryType::LineString),
@@ -735,7 +743,7 @@ impl Kind {
 }
 
 /// Days since 1970-01-01 of a `YYYY-MM-DD` date.
-fn parse_date(s: &str) -> Option<i32> {
+pub(crate) fn parse_date(s: &str) -> Option<i32> {
     let b = s.as_bytes();
     if b.len() < 10 || b[4] != b'-' || b[7] != b'-' {
         return None;
@@ -756,7 +764,7 @@ fn parse_date(s: &str) -> Option<i32> {
 }
 
 /// Milliseconds since the Unix epoch of an ISO 8601 date-time, in UTC when it has an offset.
-fn parse_datetime(s: &str) -> Option<i64> {
+pub(crate) fn parse_datetime(s: &str) -> Option<i64> {
     let days = parse_date(s)? as i64;
     let rest = &s[10..];
     if rest.is_empty() {

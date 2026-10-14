@@ -1,6 +1,7 @@
 //! Python bindings for terrio: the `terrio._terrio` extension module, wrapped by the `terrio`
 //! Python package.
 
+mod arrow;
 mod ops;
 mod pointcloud;
 mod raster;
@@ -58,6 +59,8 @@ fn _terrio(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<raster::PyRaster>()?;
     m.add_class::<vector::PyLayer>()?;
     m.add_class::<vector::PyVectorDataset>()?;
+    m.add_class::<arrow::PyArrowTable>()?;
+    m.add_function(wrap_pyfunction!(arrow::from_arrow, m)?)?;
     ops::register(m)?;
     terrain::register(m)?;
     pointcloud::register(m)?;

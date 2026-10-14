@@ -23,3 +23,5 @@ wbraster.workspace = true
 wbvector.workspace = true
 serde_json.workspace = true
 serde.workspace = true
+# The Arrow C data and stream interfaces, for the Arrow PyCapsule interface.
+arrow-array = { workspace = true, features = ["ffi"] }

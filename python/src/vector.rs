@@ -93,6 +93,11 @@ pub(crate) fn layers_from_object(obj: &Bound<'_, PyAny>, name: Option<&str>, crs
             return items.iter().map(|i| Ok(i.cast::<PyLayer>()?.borrow().inner.clone())).collect();
         }
     }
+    // Arrow data (a pyarrow Table, a Polars data frame...); GeoDataFrames keep going through
+    // their geo interface.
+    if !obj.hasattr("__geo_interface__")? && crate::arrow::is_arrow(obj)? {
+        return Ok(vec![crate::arrow::layer_from_object(obj, name, crs)?]);
+    }
     Ok(vec![layer_from_object(obj, name, crs)?])
 }
 
@@ -230,6 +235,76 @@ impl PyLayer {
         let kwargs = PyDict::new(py);
         kwargs.set_item("geometry", geometry)?;
         gpd.getattr("GeoDataFrame")?.call((self.columns(py)?,), Some(&kwargs))
+    }
+
+    /// The layer as Arrow data, with the geometries in a GeoArrow column.
+    ///
+    /// The result takes the Arrow PyCapsule interface: `pyarrow.table(t)`,
+    /// `geopandas.GeoDataFrame.from_arrow(t)`, `polars.DataFrame(t)`, DuckDB and GDAL read it
+    /// without copying through Python, and pyarrow is not needed to create it.
+    ///
+    /// Args:
+    ///     geometry_encoding: `"wkb"` (the default: `geoarrow.wkb`, any geometry) or
+    ///         `"geoarrow"`: the native encodings (`geoarrow.point`, `geoarrow.multipolygon`...),
+    ///         for layers whose geometries share one type (a type and its multi-part form are
+    ///         written as the multi-part form).
+    ///     coordinates: The layout of native coordinates: `"separated"` (a struct of `x`, `y`
+    ///         arrays, the default) or `"interleaved"` (fixed-size lists).
+    ///     geometry_column: The name of the geometry column.
+    ///     fid_column: When given, a first column of this name holds the feature ids.
+    ///
+    /// Returns:
+    ///     ArrowTable: The attributes as typed columns and the geometry column last, its CRS as
+    ///     PROJJSON in the GeoArrow extension metadata.
+    ///
+    /// Raises:
+    ///     UnsupportedError: If native encodings are asked for geometries of mixed types or
+    ///         geometry collections.
+    #[pyo3(signature = (geometry_encoding="wkb", coordinates="separated", geometry_column="geometry", fid_column=None))]
+    fn to_arrow(
+        &self,
+        py: Python<'_>,
+        geometry_encoding: &str,
+        coordinates: &str,
+        geometry_column: &str,
+        fid_column: Option<&str>,
+    ) -> PyResult<crate::arrow::PyArrowTable> {
+        let options = crate::arrow::write_options(geometry_encoding, coordinates, geometry_column, fid_column)?;
+        crate::arrow::layer_to_table(py, &self.inner, &options)
+    }
+
+    /// Exports the layer as an Arrow C stream, with WKB geometries (the Arrow PyCapsule
+    /// interface), so that `pyarrow.table(layer)` and the like take a layer directly.
+    ///
+    /// Args:
+    ///     requested_schema: A schema capsule the consumer would like. Ignored.
+    ///
+    /// Returns:
+    ///     PyCapsule: An `arrow_array_stream` capsule.
+    #[pyo3(signature = (requested_schema=None))]
+    fn __arrow_c_stream__<'py>(
+        &self,
+        py: Python<'py>,
+        requested_schema: Option<Bound<'py, PyAny>>,
+    ) -> PyResult<Bound<'py, pyo3::types::PyCapsule>> {
+        let _ = requested_schema;
+        crate::arrow::layer_stream(py, &self.inner)
+    }
+
+    /// Creates a layer from Arrow data.
+    ///
+    /// Args:
+    ///     data: Any object exporting Arrow data through the PyCapsule interface (a
+    ///         `pyarrow.Table`, `GeoDataFrame.to_arrow()`, a Polars data frame, a GDAL layer...).
+    ///     name: The layer name.
+    ///     crs: The CRS, overriding the one in the geometry column's metadata.
+    ///
+    /// Returns:
+    ///     Layer: The layer.
+    #[staticmethod]
+    #[pyo3(signature = (data, name=None, crs=None))]
+    fn from_arrow(data: &Bound<'_, PyAny>, name: Option<&str>, crs: Option<&str>) -> PyResult<Self> {
+        Ok(Self { inner: crate::arrow::layer_from_object(data, name, crs)? })
     }
 
     /// Reprojects the layer.

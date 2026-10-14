@@ -11,6 +11,7 @@ formats, local or remote, without GDAL::
     countries = terrio.open_vector("countries.gpkg")
     layer = countries.layers[0]
     collection = layer.to_geojson()
+    table = layer.to_arrow()  # Arrow PyCapsule interface: pyarrow.table(table)
 
     terrio.convert("countries.shp", "europe.gpkg", where="CONTINENT = 'Europe'")
     terrio.warp("dem.tif", "dem_4326.tif", t_srs="EPSG:4326", resampling="bilinear")
@@ -21,6 +22,7 @@ formats, local or remote, without GDAL::
 """
 
 from terrio._terrio import (
+    ArrowTable,
     Layer,
     PointCloud,
     PointCloudFile,
@@ -32,6 +34,7 @@ from terrio._terrio import (
     convert_points,
     dem,
     drivers,
+    from_arrow,
     info,
     list_layers,
     mosaic,
@@ -63,6 +66,7 @@ from terrio.errors import (
 )
 
 __all__ = [
+    "ArrowTable",
     "CRSError",
     "InvalidArgumentError",
     "InvalidDataError",
@@ -81,6 +85,7 @@ __all__ = [
     "convert_points",
     "dem",
     "drivers",
+    "from_arrow",
     "info",
     "list_layers",
     "mosaic",
