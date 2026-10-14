@@ -1,10 +1,9 @@
 //! `terrio rasterize`.
 
+use terrio::VectorOpenOptions;
 use terrio::crs::SpatialRef;
-use terrio::formats::RasterDriver;
 use terrio::ops::rasterize::{Grid, MergeAlg, RasterizeOptions};
 use terrio::ops::vector_filter::VectorTranslateOptions;
-use terrio::{DataType, RasterWriteOptions, VectorOpenOptions};
 
 #[derive(clap::Args)]
 pub struct Args {
@@ -61,12 +60,8 @@ pub struct Args {
     /// The output CRS. Geometries are taken to be in it, without reprojecting.
     #[arg(long = "a-srs", value_name = "CRS")]
     a_srs: Option<String>,
-    /// The output format's short name. By default, chosen from the output's extension.
-    #[arg(short = 'f', long = "format")]
-    format: Option<String>,
-    /// GeoTIFF/COG compression: NONE, LZW, DEFLATE, PACKBITS, JPEG, WEBP.
-    #[arg(long)]
-    compress: Option<String>,
+    #[command(flatten)]
+    out: super::rasterout::OutputArgs,
 }
 
 pub fn run(a: Args) -> terrio::Result<()> {
@@ -88,10 +83,7 @@ pub fn run(a: Args) -> terrio::Result<()> {
         Some(path) => Some(Grid::like(&super::quiet(|| terrio::open_raster(path))?)),
         None => None,
     };
-    let data_type =
-        a.ot.as_deref()
-            .map(|t| DataType::from_str(t).ok_or_else(|| terrio::Error::InvalidArgument(format!("unknown data type '{t}'"))))
-            .transpose()?;
+    let data_type = a.ot.as_deref().map(terrio::ops::parse_data_type).transpose()?;
     let options = RasterizeOptions {
         burn_values: a.burn,
         attribute: a.attribute,
@@ -109,10 +101,5 @@ pub fn run(a: Args) -> terrio::Result<()> {
         assign_srs: a.a_srs.as_deref().map(SpatialRef::parse).transpose()?,
     };
     let out = terrio::ops::rasterize::rasterize(&layers, &options)?;
-    let driver = a
-        .format
-        .as_deref()
-        .map(|f| RasterDriver::from_name(f).ok_or_else(|| terrio::Error::InvalidArgument(format!("unknown raster format '{f}'"))))
-        .transpose()?;
-    terrio::write_raster_dataset(&out, &a.output, &RasterWriteOptions { driver, compression: a.compress, ..Default::default() })
+    a.out.write(&out, &a.output)
 }

@@ -143,6 +143,9 @@ fn open_local(path: &str, options: &VectorOpenOptions) -> Result<Dataset> {
 }
 
 fn read_raster_local(path: &str) -> Result<RasterDataset> {
+    if RasterDriver::for_extension(path) == Some(RasterDriver::VRT) {
+        return crate::ops::vrt::read_vrt(path);
+    }
     if let Some(result) = crate::drivers::read(path) {
         return result;
     }
@@ -268,6 +271,9 @@ fn write_raster_with_nodata(raster: &Raster, nodata: Option<f64>, path: &str, op
             let layout = options.tile_size.map(|t| wbraster::GeoTiffLayout::Tiled { tile_width: t, tile_height: t });
             let opts = wbraster::GeoTiffWriteOptions { compression, bigtiff: Some(options.bigtiff), layout };
             raster.write_geotiff_with_options(path, &opts)?;
+        }
+        RasterDriver::VRT => {
+            return Err(Error::Unsupported("a VRT references other files: build one with `terrio mosaic` (ops::mosaic::build_vrt)".into()));
         }
         d => raster.write(path, d.to_wb())?,
     }

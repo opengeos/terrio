@@ -74,8 +74,8 @@ pub fn run(a: Args) -> terrio::Result<()> {
                 .map(|f| RasterDriver::from_name(f).ok_or_else(|| terrio::Error::InvalidArgument(format!("unknown raster format '{f}'"))))
                 .transpose()?;
             if let Some(dst) = t_srs {
-                let code = dst.epsg.ok_or_else(|| terrio::Error::Crs("raster reprojection needs an EPSG code".into()))?;
-                r.raster = r.raster.reproject_to_epsg(code, terrio::raster::ResampleMethod::Nearest)?;
+                let o = terrio::ops::warp::WarpOptions { dst_srs: Some(dst), ..Default::default() };
+                r = terrio::ops::warp::warp(&[&r], &o)?;
             }
             let opts = RasterWriteOptions { driver, compression: a.compress, tile_size: a.tile_size, bigtiff: a.bigtiff };
             terrio::write_raster_dataset(&r, &a.output, &opts)

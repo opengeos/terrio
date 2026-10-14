@@ -248,26 +248,7 @@ fn compute_grid(layers: &[Layer], o: &RasterizeOptions) -> Result<Grid> {
 /// Converts a value to what a pixel of the data type holds, as GDAL's `GDALCopyWord` does:
 /// integers are rounded half away from zero and clamped, NaN becomes 0.
 fn cast(v: f64, dtype: DataType) -> f64 {
-    let int = |lo: f64, hi: f64| {
-        if v.is_nan() {
-            0.0
-        } else {
-            let r = if v >= 0.0 { (v + 0.5).trunc() } else { (v - 0.5).trunc() };
-            r.clamp(lo, hi)
-        }
-    };
-    match dtype {
-        DataType::U8 => int(0.0, 255.0),
-        DataType::I8 => int(-128.0, 127.0),
-        DataType::U16 => int(0.0, 65535.0),
-        DataType::I16 => int(-32768.0, 32767.0),
-        DataType::U32 => int(0.0, u32::MAX as f64),
-        DataType::I32 => int(i32::MIN as f64, i32::MAX as f64),
-        DataType::U64 => int(0.0, u64::MAX as f64),
-        DataType::I64 => int(i64::MIN as f64, i64::MAX as f64),
-        DataType::F32 => v as f32 as f64,
-        DataType::F64 => v,
-    }
+    super::convert_value(v, dtype)
 }
 
 /// Writes burn values into the band buffers (GDAL's `gvBurnPoint` and `gvBurnScanline`).

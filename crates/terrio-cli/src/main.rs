@@ -27,6 +27,12 @@ enum Command {
     Rasterize(cmd::rasterize::Args),
     /// Turn a raster band into polygons of connected pixels with the same value.
     Polygonize(cmd::polygonize::Args),
+    /// Subset, resize, rescale or change the type of a raster (like gdal_translate).
+    Translate(cmd::translate::Args),
+    /// Reproject and resample rasters (like gdalwarp).
+    Warp(cmd::warp::Args),
+    /// Mosaic rasters into one, or into a virtual raster (like gdalbuildvrt and gdal_merge).
+    Mosaic(cmd::mosaic::Args),
 }
 
 fn main() -> ExitCode {
@@ -43,6 +49,9 @@ fn main() -> ExitCode {
         Command::Crs(a) => cmd::crs::run(a),
         Command::Rasterize(a) => cmd::rasterize::run(a),
         Command::Polygonize(a) => cmd::polygonize::run(a),
+        Command::Translate(a) => cmd::translate::run(a),
+        Command::Warp(a) => cmd::warp::run(a),
+        Command::Mosaic(a) => cmd::mosaic::run(a),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,

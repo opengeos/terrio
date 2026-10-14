@@ -28,6 +28,13 @@ terrio convert countries.geojson europe.gpkg --where "CONTINENT = 'Europe'" --se
 terrio rasterize counties.gpkg pop.tif -a POPULATION --tr 0.01 0.01 --ot Int32
 terrio polygonize landcover.tif landcover.gpkg --8
 terrio crs EPSG:32610 --to EPSG:4326 699960 3900000
+terrio translate dem.tif sub.tif --projwin -105.7 39.8 -105.3 39.5 --ot Int16   # like gdal_translate
+terrio translate img.tif small.tif --outsize 25% 25% -r average --scale 0 4000 0 255 --ot Byte
+terrio warp dem.tif dem_utm.tif --t-srs EPSG:32613 -r bilinear              # like gdalwarp
+terrio warp a.tif b.tif out.tif --t-srs "+proj=lcc +lat_1=33 +lat_2=45 +lon_0=-96" --tr 100 100 --tap
+terrio warp dem.tif clip.tif --cutline area.geojson --crop-to-cutline
+terrio mosaic tiles/*.tif mosaic.vrt                                        # like gdalbuildvrt
+terrio mosaic tiles/*.tif mosaic.tif --resolution highest --nodata -9999   # like gdal_merge.py
 terrio formats                                   # list the drivers
 ```
 
@@ -64,6 +71,7 @@ python scripts/compare_windows_with_gdal.py local ../terrio-data  # windowed and
 python scripts/compare_windows_with_gdal.py remote     # the same on public COGs, with bytes fetched
 cargo test -- --ignored                                # tests that read public cloud files
 python scripts/compare_vector_ops_with_gdal.py ../terrio-data  # convert options, rasterize, polygonize
+python scripts/compare_ops_with_gdal.py ../terrio-data # compare translate, warp and mosaic with GDAL's tools
 ```
 
 ## Layout
