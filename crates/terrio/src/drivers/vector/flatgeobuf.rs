@@ -221,7 +221,6 @@ pub fn write(layer: &Layer, path: &str) -> Result<()> {
 /// Encodes a layer as a FlatGeobuf file.
 pub fn to_bytes(layer: &Layer) -> Result<Vec<u8>> {
     let geom_type = layer_type(layer);
-    let promote = matches!(geom_type, FgbType::MultiPoint | FgbType::MultiLineString | FgbType::MultiPolygon);
     let has_z = layer.features.iter().filter_map(|f| f.geometry.as_ref()).any(crate::vector::geometry_has_z);
     let fields = layer.schema.fields();
     let col_types: Vec<ColumnType> = fields.iter().enumerate().map(|(i, f)| column_type(layer, i, f)).collect();
@@ -233,7 +232,7 @@ pub fn to_bytes(layer: &Layer) -> Result<Vec<u8>> {
     let mut props = Vec::new();
     for (i, f) in layer.features.iter().enumerate() {
         let mut fbb = FlatBufferBuilder::new();
-        let geometry = f.geometry.as_ref().map(|g| if promote { to_multi(g) } else { g.clone() });
+        let geometry = f.geometry.clone();
         let mut node = NodeItem::create(i as u64);
         match geometry.as_ref().and_then(|g| g.bbox()) {
             Some(b) => {
@@ -323,10 +322,10 @@ pub fn to_bytes(layer: &Layer) -> Result<Vec<u8>> {
     Ok(out)
 }
 
-/// The geometry type to declare: the features' common type, their multi-part type when they mix
-/// single and multi-part forms, and `Unknown` otherwise. Without features, the declared type.
+/// The geometry type to declare: the type every feature has, as GDAL declares it, and `Unknown`
+/// (each geometry carrying its own type) otherwise. Without geometries, the declared type.
 fn layer_type(layer: &Layer) -> FgbType {
-    let t = match super::features_type(layer) {
+    let t = match super::uniform_type(layer) {
         Some(t) => Some(t),
         None if layer.features.iter().all(|f| f.geometry.is_none()) => layer.geom_type,
         None => None,
@@ -340,16 +339,6 @@ fn layer_type(layer: &Layer) -> FgbType {
         Some(GeometryType::MultiPolygon) => FgbType::MultiPolygon,
         Some(GeometryType::GeometryCollection) => FgbType::GeometryCollection,
         None => FgbType::Unknown,
-    }
-}
-
-/// A single-part geometry as its multi-part form.
-pub(crate) fn to_multi(g: &Geometry) -> Geometry {
-    match g {
-        Geometry::Point(c) => Geometry::MultiPoint(vec![c.clone()]),
-        Geometry::LineString(cs) => Geometry::MultiLineString(vec![cs.clone()]),
-        Geometry::Polygon { exterior, interiors } => Geometry::MultiPolygon(vec![(exterior.clone(), interiors.clone())]),
-        g => g.clone(),
     }
 }
 
@@ -499,7 +488,8 @@ mod tests {
         let back = parse(&to_bytes(&l).unwrap()).unwrap();
         assert_eq!(back.name, "sample");
         assert_eq!(back.crs_epsg(), Some(4326));
-        assert_eq!(back.geom_type, Some(GeometryType::MultiPolygon));
+        // A polygon and a multipolygon: declared Unknown, each keeping its type, as GDAL writes them.
+        assert_eq!(back.geom_type, None);
         assert_eq!(back.len(), 2);
         let mut feats: Vec<&Feature> = back.features.iter().collect();
         feats.sort_by_key(|f| f.attributes[1].as_i64());
@@ -511,8 +501,7 @@ mod tests {
         assert_eq!(ps.len(), 2);
         assert_eq!(ps[1].1.len(), 1);
         assert_eq!(ps[1].0.len(), 4);
-        let Some(Geometry::MultiPolygon(ps)) = &feats[0].geometry else { panic!("not promoted") };
-        assert_eq!(ps.len(), 1);
+        assert!(matches!(&feats[0].geometry, Some(Geometry::Polygon { .. })));
     }
 
     #[test]

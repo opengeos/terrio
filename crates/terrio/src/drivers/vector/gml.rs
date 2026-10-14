@@ -418,7 +418,7 @@ fn xsd(layer: &Layer) -> String {
 
 fn to_string(layer: &Layer, schema: &str) -> String {
     let name = element_name(&layer.name);
-    let code = super::trusted_epsg(layer);
+    let code = super::naming_epsg(layer);
     let geographic = SpatialRef::from_layer(layer).is_geographic();
     // EPSG geographic CRSs named by URN take latitude first.
     let swap = code.is_some() && geographic;

@@ -113,6 +113,8 @@ NASA ECOSTRESS and OPERA products, and more) and derives copies in other formats
 ```sh
 TERRIO_TEST_DATA=../terrio-data cargo test             # tests with values checked against GDAL
 python scripts/compare_with_gdal.py ../terrio-data     # compare every file's summary with GDAL's
+python scripts/compare_with_gdal.py --roundtrip ../terrio-data countries.geojson fgb gpkg shp
+                                                       # convert with terrio, compare GDAL's reading
 python scripts/raster_roundtrip.py                     # raster drivers: GDAL writes, terrio reads, and back
 python scripts/compare_windows_with_gdal.py local ../terrio-data  # windowed and overview reads
 python scripts/compare_windows_with_gdal.py remote     # the same on public COGs, with bytes fetched

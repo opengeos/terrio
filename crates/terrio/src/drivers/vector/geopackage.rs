@@ -1,8 +1,8 @@
 //! GeoPackage writing, on terrio's SQLite file writer.
 //!
 //! Tables are laid out as GDAL lays them out: an `fid INTEGER PRIMARY KEY AUTOINCREMENT` column, a
-//! `geom` column declared with the features' geometry type (single-part geometries promoted when
-//! the layer mixes them with their multi-part form), typed columns (`MEDIUMINT`/`INTEGER`,
+//! `geom` column declared with the type the features share (`GEOMETRY` when they differ), typed
+//! columns (`MEDIUMINT`/`INTEGER`,
 //! `REAL`, `TEXT`, `BOOLEAN`, `DATE`, `DATETIME`, `BLOB`) and the layer's CRS in
 //! `gpkg_spatial_ref_sys`: its EPSG code when it is known for sure, otherwise its WKT under an
 //! organization of `NONE`, and the undefined SRS (-1) without a CRS. No spatial index is written.
@@ -10,7 +10,7 @@
 use super::sqlite::{self, Table, Value};
 use crate::crs::SpatialRef;
 use crate::{Error, Result};
-use wbvector::{FieldType, FieldValue, Geometry, GeometryType, Layer};
+use wbvector::{FieldType, FieldValue, Geometry, Layer};
 
 const SRS_SQL: &str = "CREATE TABLE gpkg_spatial_ref_sys (srs_name TEXT NOT NULL, srs_id INTEGER PRIMARY KEY, organization TEXT NOT NULL, organization_coordsys_id INTEGER NOT NULL, definition  TEXT NOT NULL, description TEXT)";
 const CONTENTS_SQL: &str = "CREATE TABLE gpkg_contents (table_name TEXT NOT NULL PRIMARY KEY, data_type TEXT NOT NULL, identifier TEXT UNIQUE, description TEXT DEFAULT '', last_change DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')), min_x DOUBLE, min_y DOUBLE, max_x DOUBLE, max_y DOUBLE, srs_id INTEGER, CONSTRAINT fk_gc_r_srs_id FOREIGN KEY (srs_id) REFERENCES gpkg_spatial_ref_sys(srs_id))";
@@ -102,11 +102,9 @@ fn encode(
             }
         };
 
-        // The geometry type; single-part geometries are promoted in a layer of multi-part ones.
-        let features_type = super::features_type(layer);
+        // The geometry type the features share, as GDAL declares it (GEOMETRY when they differ).
         let all_none = layer.features.iter().all(|f| f.geometry.is_none());
-        let declared = if all_none { layer.geom_type } else { features_type };
-        let promote = matches!(declared, Some(GeometryType::MultiPoint | GeometryType::MultiLineString | GeometryType::MultiPolygon));
+        let declared = if all_none { layer.geom_type } else { super::uniform_type(layer) };
         let type_name = declared.map_or("GEOMETRY".to_string(), |t| t.as_str().to_ascii_uppercase());
         let has_z = layer.features.iter().filter_map(|f| f.geometry.as_ref()).any(crate::vector::geometry_has_z);
 
@@ -158,14 +156,13 @@ fn encode(
             let rowid = fid_field.and_then(|i| f.attributes.get(i)?.as_i64()).unwrap_or(n as i64 + 1);
             let geom = match &f.geometry {
                 Some(g) => {
-                    let g = if promote { super::flatgeobuf::to_multi(g) } else { g.clone() };
                     if let Some(b) = g.bbox() {
                         bounds = Some(match bounds {
                             None => [b.min_x, b.min_y, b.max_x, b.max_y],
                             Some(a) => [a[0].min(b.min_x), a[1].min(b.min_y), a[2].max(b.max_x), a[3].max(b.max_y)],
                         });
                     }
-                    Value::Blob(gpkg_geometry(&g, srs_id as i32))
+                    Value::Blob(gpkg_geometry(g, srs_id as i32))
                 }
                 None => Value::Null,
             };

@@ -248,10 +248,11 @@ fn build_table(pager: &mut Pager, rows: &[(i64, Vec<u8>)], root: Option<u32>) ->
         }
         // A node needs a cell besides its right-most pointer.
         let n = groups.len();
-        if n > 1 && groups[n - 1].len() == 1 {
-            if let Some(moved) = groups[n - 2].pop() {
-                groups[n - 1].insert(0, moved);
-            }
+        if n > 1
+            && groups[n - 1].len() == 1
+            && let Some(moved) = groups[n - 2].pop()
+        {
+            groups[n - 1].insert(0, moved);
         }
         let node = |pager: &mut Pager, g: &[(u32, i64)], page: Option<u32>| -> (u32, i64) {
             let cells: Vec<Vec<u8>> = g[..g.len() - 1]

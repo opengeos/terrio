@@ -179,6 +179,9 @@ const REALIZATIONS: &[&str] = &["2011", "HARN", "NSRS", "CSRS", "CORS", "MA11", 
 /// datum over its later realizations (NAD83 over NAD83(HARN) and NAD83(2011)) unless the WKT names
 /// one, then the lowest code: what GDAL picks for ESRI `.prj` files.
 pub(crate) fn identify_epsg(wkt: &str) -> Option<u32> {
+    if let Some(code) = declared_epsg(wkt) {
+        return Some(code);
+    }
     let report = wbp::identify_epsg_from_wkt_report(wkt, wbp::EpsgIdentifyPolicy::Lenient)?;
     if report.used_embedded_epsg || !report.ambiguous {
         return report.resolved_code;
@@ -197,6 +200,27 @@ pub(crate) fn identify_epsg(wkt: &str) -> Option<u32> {
         .min_by_key(|c| (!wkt_names_realization && names_realization(c.code), c.code))
         .map(|c| c.code)
         .or(report.resolved_code)
+}
+
+/// The EPSG code a WKT definition declares for itself: the `AUTHORITY["EPSG","4269"]` (WKT 1) or
+/// `ID["EPSG",4269]` (WKT 2) closing its outermost node, not those of its datum or units.
+fn declared_epsg(wkt: &str) -> Option<u32> {
+    let body = wkt.trim_end().strip_suffix(']')?.trim_end();
+    // The last child node must be the identifier itself, not a node holding one.
+    let body = body.strip_suffix(']')?;
+    if body.ends_with(']') {
+        return None;
+    }
+    let start = body.rfind('[')?;
+    let keyword = body[..start].trim_end().rsplit([',', '[']).next()?.trim().to_ascii_uppercase();
+    if keyword != "AUTHORITY" && keyword != "ID" {
+        return None;
+    }
+    let mut parts = body[start + 1..].split(',').map(|p| p.trim().trim_matches('"'));
+    if !parts.next()?.eq_ignore_ascii_case("EPSG") {
+        return None;
+    }
+    parts.next()?.parse().ok()
 }
 
 fn looks_like_wkt(s: &str) -> bool {
@@ -325,6 +349,15 @@ impl Transformer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn declared_codes_win() {
+        let nad83 = r#"GEOGCS["NAD83",DATUM["North_American_Datum_1983",SPHEROID["GRS 1980",6378137,298.257222101,AUTHORITY["EPSG","7019"]],AUTHORITY["EPSG","6269"]],PRIMEM["Greenwich",0,AUTHORITY["EPSG","8901"]],UNIT["degree",0.0174532925199433,AUTHORITY["EPSG","9122"]],AXIS["Latitude",NORTH],AXIS["Longitude",EAST],AUTHORITY["EPSG","4269"]]"#;
+        assert_eq!(declared_epsg(nad83), Some(4269));
+        assert_eq!(SpatialRef::from_wkt(nad83).epsg, Some(4269));
+        assert_eq!(declared_epsg(r#"GEOGCRS["WGS 84",CS[ellipsoidal,2],ID["EPSG",4326]]"#), Some(4326));
+        assert_eq!(declared_epsg(r#"GEOGCS["x",DATUM["d",SPHEROID["s",1,2]],UNIT["degree",0.01745,AUTHORITY["EPSG","9122"]]]"#), None);
+    }
 
     #[test]
     fn parses_common_forms() {

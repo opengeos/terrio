@@ -242,7 +242,7 @@ pub fn to_string(layer: &Layer, options: &GeoJsonOptions) -> Result<String> {
     if !options.rfc7946
         && !srs.is_unknown()
         && srs.epsg != Some(4326)
-        && let Some(code) = super::trusted_epsg(layer)
+        && let Some(code) = super::naming_epsg(layer)
     {
         doc.insert("crs".into(), json!({"type": "name", "properties": {"name": format!("urn:ogc:def:crs:EPSG::{code}")}}));
     }

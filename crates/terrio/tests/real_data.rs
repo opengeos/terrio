@@ -79,7 +79,8 @@ fn geojson_defaults_to_wgs84() {
     let Some(p) = data("countries.geojson") else { return };
     let v = terrio::open_vector(&p, &Default::default()).unwrap();
     assert_eq!(v.layers[0].crs_epsg(), Some(4326));
-    assert_eq!(v.layers[0].name, "countries");
+    // GDAL names the layer after the collection's "name" member.
+    assert_eq!(v.layers[0].name, "ne_110m_admin_0_countries");
 }
 
 #[test]
@@ -196,4 +197,221 @@ fn geotiff_and_cog_written_by_terrio_read_back() {
         assert_eq!(back.nodata(), Some(-32768.0));
         assert_eq!(back.geo_transform(), ds.geo_transform());
     }
+}
+
+// ── Vector drivers ────────────────────────────────────────────────────────────────────────────
+
+fn vector(name: &str) -> Option<terrio::VectorDataset> {
+    Some(terrio::open_vector(&data(name)?, &Default::default()).unwrap())
+}
+
+fn field_names(l: &terrio::Layer) -> Vec<&str> {
+    l.schema.fields().iter().map(|f| f.name.as_str()).collect()
+}
+
+fn extent(l: &terrio::Layer) -> [f64; 4] {
+    let e = terrio::vector::layer_extent(l).unwrap();
+    [e.0, e.1, e.2, e.3]
+}
+
+fn assert_extent(l: &terrio::Layer, expected: [f64; 4]) {
+    for (a, b) in extent(l).iter().zip(expected) {
+        assert!((a - b).abs() < 1e-6, "{} extent {:?} != {expected:?}", l.name, extent(l));
+    }
+}
+
+fn value<'a>(l: &'a terrio::Layer, feature: usize, field: &str) -> &'a terrio::FieldValue {
+    &l.features[feature].attributes[l.schema.field_index(field).unwrap()]
+}
+
+/// Writes layers with terrio into a temporary file and reads them back.
+fn round_trip(layers: &[terrio::Layer], name: &str) -> terrio::VectorDataset {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join(name);
+    let path = path.to_str().unwrap();
+    terrio::write_vector(layers, path, &Default::default()).unwrap();
+    terrio::open_vector(path, &Default::default()).unwrap()
+}
+
+#[test]
+fn flatgeobuf_reads_and_writes() {
+    let Some(v) = vector("UScounties.fgb") else { return };
+    let l = &v.layers[0];
+    assert_eq!((l.name.as_str(), l.len(), l.crs_epsg()), ("US__counties", 3221, Some(4269)));
+    assert_eq!(field_names(l), ["STATE_FIPS", "COUNTY_FIP", "FIPS", "STATE", "NAME", "LSAD"]);
+    assert_extent(l, [-179.14734, 17.884813, 179.77847, 71.3525606439998]);
+    let back = round_trip(&v.layers, "us.fgb");
+    assert_eq!((back.layers[0].len(), back.layers[0].crs_epsg()), (3221, Some(4269)));
+    assert_extent(&back.layers[0], extent(l));
+    assert_eq!(vector("countries.fgb").unwrap().layers[0].len(), 176);
+}
+
+#[test]
+fn csv_points_from_coordinate_columns() {
+    let Some(v) = vector("hike_gps_trace.csv") else { return };
+    let l = &v.layers[0];
+    assert_eq!((l.len(), l.crs_epsg(), l.geom_type), (3989, Some(4326), Some(terrio::GeometryType::Point)));
+    assert_extent(l, [-122.020158, 45.632416, -122.005147, 45.660109]);
+    assert_eq!(l.schema.fields()[0].field_type, terrio::FieldType::Float);
+    let back = round_trip(&v.layers, "hike.csv");
+    assert_eq!(back.layers[0].len(), 3989);
+    assert_extent(&back.layers[0], extent(l));
+}
+
+#[test]
+fn geoparquet_covering_crs_and_types() {
+    let Some(v) = vector("countries.parquet") else { return };
+    let l = &v.layers[0];
+    assert!(!field_names(l).iter().any(|f| ["xmin", "geometry_bbox"].contains(f)), "{:?}", field_names(l));
+    assert_eq!((l.len(), l.crs_epsg(), l.geom_type), (176, Some(4326), Some(terrio::GeometryType::MultiPolygon)));
+    let places = vector("ne_places.parquet").unwrap();
+    let p = &places.layers[0];
+    assert_eq!(p.schema.field("latitude").unwrap().field_type, terrio::FieldType::Float);
+    assert!(matches!(value(p, 0, "latitude"), terrio::FieldValue::Float(x) if (x + 34.479999).abs() < 1e-9));
+    let back = round_trip(&v.layers, "countries.parquet");
+    assert_eq!((back.layers[0].len(), back.layers[0].crs_epsg()), (176, Some(4326)));
+}
+
+#[test]
+fn geojson_text_and_crs() {
+    let Some(v) = vector("countries.geojson") else { return };
+    let l = &v.layers[0];
+    let ivory = l.features.iter().position(|f| f.attributes.contains(&terrio::FieldValue::Text("Ivory Coast".into()))).unwrap();
+    assert_eq!(value(l, ivory, "NAME"), &terrio::FieldValue::Text("Côte d'Ivoire".into()));
+    assert_eq!(l.schema.field("LABELRANK").unwrap().field_type, terrio::FieldType::Float);
+    // A projected layer keeps its coordinates and names its CRS, as GDAL writes it.
+    let ny = terrio::open_vector(&data("nybb.zip").unwrap(), &Default::default()).unwrap();
+    let back = round_trip(&ny.layers, "nybb.geojson");
+    assert_eq!(back.layers[0].crs_epsg(), ny.layers[0].crs_epsg());
+    assert_extent(&back.layers[0], extent(&ny.layers[0]));
+}
+
+#[test]
+fn shapefile_encodings_and_writing() {
+    let Some(v) = vector("ne_countries/ne_110m_admin_0_countries.shp") else { return };
+    let l = &v.layers[0];
+    assert_eq!(value(l, 0, "NAME"), &terrio::FieldValue::Text("Fiji".into()));
+    assert_eq!(value(l, 0, "NAME_ZH"), &terrio::FieldValue::Text("斐济".into()));
+    let back = round_trip(&v.layers, "countries.shp");
+    let b = &back.layers[0];
+    assert_eq!((b.len(), b.crs_epsg()), (177, Some(4326)));
+    assert_eq!(value(b, 0, "NAME_ZH"), &terrio::FieldValue::Text("斐济".into()));
+    assert_extent(b, extent(l));
+}
+
+#[test]
+fn geopackage_writing() {
+    let Some(v) = vector("UScounties.fgb") else { return };
+    let back = round_trip(&v.layers, "us.gpkg");
+    let b = &back.layers[0];
+    assert_eq!((b.name.as_str(), b.len(), b.crs_epsg()), ("US__counties", 3221, Some(4269)));
+    assert_extent(b, extent(&v.layers[0]));
+    // Layer names with spaces, several layers.
+    let kml = vector("kml_samples.kml").unwrap();
+    let back = round_trip(&kml.layers, "samples.gpkg");
+    assert_eq!(back.layers.iter().map(|l| l.len()).sum::<usize>(), 21);
+}
+
+#[test]
+fn gml_features_ids_and_crs() {
+    let Some(v) = vector("countries.gml") else { return };
+    let l = &v.layers[0];
+    assert_eq!((l.name.as_str(), l.len(), l.crs_epsg()), ("ne_110m_admin_0_countries", 176, Some(4326)));
+    assert_eq!(field_names(l)[..3], ["gml_id", "scalerank", "featurecla"]);
+    assert_extent(l, [-180.0, -55.61183, 180.0, 83.64513]);
+    let back = round_trip(&v.layers, "countries.gml");
+    assert_extent(&back.layers[0], extent(l));
+}
+
+#[test]
+fn gpx_layers_like_gdal() {
+    let Some(v) = vector("hike.gpx") else { return };
+    let names: Vec<&str> = v.layers.iter().map(|l| l.name.as_str()).collect();
+    assert_eq!(names, ["waypoints", "routes", "tracks", "route_points", "track_points"]);
+    assert_eq!(v.layers[0].len(), 3989);
+    assert_eq!(field_names(&v.layers[0])[..5], ["ele", "time", "magvar", "geoidheight", "name"]);
+    let old = vector("gpx10_tracks.gpx").unwrap();
+    assert_eq!((old.layers[2].len(), old.layers[4].len()), (4, 871));
+    assert!(field_names(&old.layers[4]).contains(&"course"));
+    let back = round_trip(&old.layers, "tracks.gpx");
+    assert_eq!((back.layers[2].len(), back.layers[4].len()), (4, 871));
+}
+
+#[test]
+fn kml_and_kmz_like_libkml() {
+    let Some(v) = vector("countries.kml") else { return };
+    let l = &v.layers[0];
+    assert_eq!(
+        field_names(l)[..12],
+        [
+            "id",
+            "Name",
+            "description",
+            "timestamp",
+            "begin",
+            "end",
+            "altitudeMode",
+            "tessellate",
+            "extrude",
+            "visibility",
+            "drawOrder",
+            "icon"
+        ]
+    );
+    assert_eq!(l.schema.field("LABELRANK").unwrap().field_type, terrio::FieldType::Float);
+    let samples = vector("kml_samples.kml").unwrap();
+    let counts: Vec<(&str, usize)> = samples.layers.iter().map(|l| (l.name.as_str(), l.len())).collect();
+    assert_eq!(
+        counts,
+        [
+            ("Placemarks", 3),
+            ("Styles and Markup", 1),
+            ("Highlighted Icon", 1),
+            ("Ground Overlays", 1),
+            ("Screen Overlays", 0),
+            ("Paths", 6),
+            ("Polygons", 0),
+            ("Google Campus", 4),
+            ("Extruded Polygon", 1),
+            ("Absolute and Relative", 4)
+        ]
+    );
+    // LIBKML renames a NAME field that clashes with Name.
+    assert!(field_names(&vector("census_states.kml").unwrap().layers[0]).contains(&"NAME2"));
+    assert_eq!(vector("ne_places.kmz").unwrap().layers[0].len(), 7342);
+    let back = round_trip(&v.layers, "countries.kmz");
+    assert_eq!(back.layers[0].len(), 176);
+}
+
+#[test]
+fn topojson_objects_as_layers() {
+    let Some(v) = vector("world-110m.topojson") else { return };
+    let counts: Vec<(&str, usize)> = v.layers.iter().map(|l| (l.name.as_str(), l.len())).collect();
+    assert_eq!(counts, [("countries", 177), ("land", 1)]);
+    assert_extent(&v.layers[0], [-180.0, -85.60903777459771, 180.0, 83.64513]);
+    let back = round_trip(&v.layers, "world.topojson");
+    assert_eq!(back.layers.iter().map(|l| l.len()).collect::<Vec<_>>(), [177, 1]);
+}
+
+#[test]
+fn mapinfo_mif() {
+    let Some(v) = vector("countries.mif") else { return };
+    let l = &v.layers[0];
+    assert_eq!((l.len(), l.crs_epsg()), (176, Some(4326)));
+    assert_extent(l, [-180.0, -55.61183, 180.0, 83.64513]);
+    let back = round_trip(&v.layers, "countries.mif");
+    assert_eq!((back.layers[0].len(), back.layers[0].crs_epsg()), (176, Some(4326)));
+}
+
+#[test]
+fn osm_pbf_layers_like_gdal() {
+    let Some(v) = vector("liechtenstein.osm.pbf") else { return };
+    let names: Vec<&str> = v.layers.iter().map(|l| l.name.as_str()).collect();
+    assert_eq!(names, ["points", "lines", "multilinestrings", "multipolygons", "other_relations"]);
+    assert!(v.layers.iter().all(|l| !l.is_empty()));
+    assert_eq!(
+        field_names(&v.layers[1]),
+        ["osm_id", "name", "highway", "waterway", "aerialway", "barrier", "man_made", "railway", "z_order", "other_tags"]
+    );
+    assert!(v.layers[3].features.iter().all(|f| matches!(f.geometry, Some(terrio::Geometry::MultiPolygon(_)))));
 }

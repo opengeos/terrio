@@ -62,13 +62,15 @@ pub(crate) fn write(layer: &Layer, path: &str, driver: VectorDriver, options: &V
 
 /// Fixes what the format library got wrong in a layer it read: wbvector takes a GeoPackage's
 /// `srs_id` for an EPSG code even when the organization is not EPSG (GDAL's 99999 undefined SRS,
-/// custom definitions from 100000 up).
+/// custom definitions from 100000 up), and returns a regenerated WKT without the definition's
+/// authority (which identifies NAD83 as NAD83(2011)) instead of the stored one.
 pub(crate) fn fix(layer: &mut Layer, driver: VectorDriver) {
     if driver != VectorDriver::GPKG {
         return;
     }
     let Some(code) = layer.crs_epsg() else { return };
     if wbprojection::to_ogc_wkt(code).is_ok() {
+        layer.set_crs_wkt(None);
         return;
     }
     match layer.crs_wkt().filter(|w| !w.trim().eq_ignore_ascii_case("undefined")).map(crate::crs::SpatialRef::from_wkt) {
@@ -90,6 +92,20 @@ pub(crate) fn trusted_epsg(layer: &Layer) -> Option<u32> {
         (Some(code), Some(wkt)) if wbprojection::to_ogc_wkt(code).is_ok_and(|w| w == wkt) => Some(code),
         (_, Some(wkt)) => wbprojection::epsg::epsg_from_wkt(wkt),
     }
+}
+
+/// The EPSG code naming a layer's CRS in formats that can only name it by code (GeoJSON, GML):
+/// the trusted code, or else the identified one.
+pub(crate) fn naming_epsg(layer: &Layer) -> Option<u32> {
+    trusted_epsg(layer).or_else(|| crate::crs::SpatialRef::from_layer(layer).epsg)
+}
+
+/// The geometry type every feature has, as GDAL declares a layer it writes; `None` when they
+/// differ (GDAL then declares `GEOMETRY`, keeping each feature's type) or there are none.
+pub(crate) fn uniform_type(layer: &Layer) -> Option<GeometryType> {
+    let mut types = layer.features.iter().filter_map(|f| f.geometry.as_ref()).map(|g| g.geom_type());
+    let first = types.next()?;
+    types.all(|t| t == first).then_some(first)
 }
 
 /// The type the features' geometries share, counting a mix of single and multi-part forms as the
