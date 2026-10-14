@@ -115,6 +115,15 @@ Layer and field models follow GDAL's: GPX has GDAL's five layers, KML has the LI
 fields, OSM has the `points`, `lines`, `multilinestrings`, `multipolygons` and `other_relations`
 layers, and shapefile field names are truncated as GDAL truncates them.
 
+- **GeoPackage** layers are read with spatial filters through their R-tree index (`terrio convert
+  --spat`, `VectorOpenOptions::spatial_filter`, Python's `open_vector(bbox=...)`): the
+  candidates the index finds are read by feature id, then tested against the rectangle, giving the
+  features `ogr2ogr -spat` gives. Existing files are updated as `ogr2ogr` updates them:
+  `--append` adds features to a layer (fields matched by name, new feature ids continuing the
+  layer's sequence, its R-tree, `gpkg_contents` extent and `gpkg_ogr_contents` count updated),
+  `--overwrite` replaces a layer, and layers are added to files holding other layers or rasters.
+  Everything else in the file (tables, rasters, metadata, extensions, triggers, views) is kept;
+  the file is written anew and replaces the original.
 - **GeoParquet** is written as GeoParquet 1.1: the CRS as PROJJSON (none for EPSG:4326, which
   the specification makes the default), a `geometry_bbox` covering column, and row groups of
   65536 rows with statistics. Reading with a bounding box (`terrio convert --spat` on a Parquet
@@ -174,6 +183,15 @@ rounds a little differently); vector tiles written by GDAL (and by Tippecanoe) r
 them, feature for feature; vector tiles written by terrio read in GDAL with GDAL's feature
 counts and areas. GDAL 3.12 reads PMTiles vector tiles only: raster PMTiles follow GDAL's
 development version.
+
+## Arrow and GeoArrow
+
+Vector layers convert to and from Apache Arrow record batches (`terrio::arrow`), with a
+[GeoArrow](https://geoarrow.org) geometry column: WKB (`geoarrow.wkb`), or the native encodings
+(`geoarrow.point`, `geoarrow.linestring`, `geoarrow.polygon` and their multi-part forms, with
+separated or interleaved coordinates), the CRS as PROJJSON in the column's metadata. Python layers
+take the Arrow PyCapsule interface (`Layer.to_arrow()`, `terrio.from_arrow()`); JavaScript and
+Rust read and write Arrow IPC streams.
 
 ## Point clouds
 

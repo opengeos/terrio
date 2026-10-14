@@ -61,7 +61,9 @@ of GDAL: the long tail of formats stays reachable through an optional GDAL backe
 - GeoPackage, vector and raster tiles. Done: terrio reads and writes the SQLite files itself
   (feature and attribute tables, R-tree spatial indexes, tile pyramids with PNG or JPEG tiles,
   gridded coverages for Int16, UInt16 and Float32 rasters, files holding both), from files or
-  bytes. Still to do: spatial filters through the R-tree, updating existing files.
+  bytes; spatial filters through the R-tree; existing files updated (features appended, layers
+  replaced or added, other tables kept), checked against `ogr2ogr` and `validate_gpkg.py`.
+  Still to do: updates in place (files are rewritten whole).
 - Zarr 2 and 3, and GeoZarr conventions. Done: GeoZarr's `spatial:`, `proj:` and `multiscales`
   conventions read (multiscales levels as overviews, read by window) and written
   (`GEOREFERENCING_CONVENTION=SPATIAL_PROJ`, overviews laid out as GDAL lays them out), and CF grid
@@ -83,15 +85,19 @@ of GDAL: the long tail of formats stays reachable through an optional GDAL backe
 
 - Python bindings (PyO3), with NumPy arrays for rasters and Arrow for vector layers. Done:
   `open`, lazy window and overview reads (remote COGs included), `Raster.from_array`, vector
-  layers as GeoJSON, WKB and GeoDataFrames, and every operation, with arrays checked against
-  GDAL's Python bindings. Still to do: Arrow export of vector layers, type stubs.
+  layers as GeoJSON, WKB and GeoDataFrames, Arrow through the PyCapsule interface (pyarrow,
+  GeoPandas, Polars, GDAL), and every operation, with arrays checked against GDAL's Python
+  bindings; type stubs checked with `mypy --strict` and `stubtest`.
 - An npm package built from the WebAssembly target. Done: datasets opened from bytes (GeoTIFF,
   ASCII grid and the text and FlatGeobuf vector formats), bands as typed arrays, GeoJSON out,
-  conversion to bytes, CRS transforms, zipped Shapefile and MapInfo and GeoPackage from memory.
+  conversion to bytes, CRS transforms, zipped Shapefile and MapInfo and GeoPackage from memory,
+  Arrow IPC streams.
 - Datasets opened from and written to bytes (`terrio::memory`).
 - An optional `gdal` feature that opens anything GDAL can when it is installed, through the same
   data model.
-- Arrow and GeoArrow import and export for vector layers.
+- Arrow and GeoArrow import and export for vector layers. Done: `terrio::arrow` (WKB and native
+  GeoArrow encodings, CRS as PROJJSON, Arrow IPC streams), compared with GDAL's Arrow streams,
+  pyarrow and GeoPandas on real files (`scripts/compare_arrow_with_gdal.py`).
 
 ## 1.0: Stable
 

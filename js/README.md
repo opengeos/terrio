@@ -20,6 +20,8 @@ const cog = dem.toBytes("dem_cog.tif", { format: "COG", compress: "DEFLATE" });
 const roads = open(geojsonBytes, "roads.geojson");
 roads.toGeoJSON();                // a FeatureCollection object
 const fgb = roads.toBytes("roads.fgb", { tSrs: "EPSG:3857", where: "lanes > 2" });
+const ipc = roads.toArrowIPC(0, { geometryEncoding: "geoarrow" }); // Arrow IPC stream, GeoArrow geometries
+const back = fromArrowIPC(ipc, "roads");
 
 const [xs, ys] = transformPoints([-122.4], [37.8], "EPSG:4326", "EPSG:32610");
 
