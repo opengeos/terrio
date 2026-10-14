@@ -212,7 +212,7 @@ fn value(v: &Value, t: FieldType) -> FieldValue {
 }
 
 /// Writes a layer as TopoJSON: one GeometryCollection object named after the layer, each line and
-/// ring an arc of its own (no shared topology, no quantization).
+/// ring an arc of its own (no shared topology, no quantization), in two dimensions.
 pub fn write(layer: &Layer, path: &str) -> Result<()> {
     write_layers(std::slice::from_ref(layer), path)
 }
@@ -260,11 +260,9 @@ pub fn to_string(layers: &[Layer]) -> Result<String> {
     Ok(json!({"type": "Topology", "objects": objects, "arcs": arcs}).to_string())
 }
 
+/// A position: x and y only, as TopoJSON readers (GDAL's among them) expect.
 fn position(c: &Coord) -> Value {
-    match c.z {
-        Some(z) => json!([c.x, c.y, z]),
-        None => json!([c.x, c.y]),
-    }
+    json!([c.x, c.y])
 }
 
 fn field_json(v: &FieldValue, t: FieldType) -> Value {

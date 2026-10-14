@@ -5,7 +5,7 @@
 //! `Name`, `description`, `timestamp`, `begin`, `end`, `altitudeMode`, `tessellate`, `extrude`,
 //! `visibility`, `drawOrder`, `icon`, then the `ExtendedData` fields (typed by their `Schema`).
 //! A `MultiGeometry` of one geometry type is a multi-part geometry, and ground overlays are
-//! polygons. Writing produces a Document with a typed Schema and one Folder per layer.
+//! polygons. Writing produces a Document per layer, each with its typed Schema.
 
 use super::xml::{self, Element};
 use crate::{Error, Result};
@@ -336,7 +336,7 @@ fn ground_overlay(e: &Element) -> Option<Geometry> {
     Some(Geometry::Polygon { exterior: Ring::new(ring), interiors: vec![] })
 }
 
-/// Writes layers as a KML document: a typed Schema and a Folder per layer.
+/// Writes layers as a KML document: a Document per layer, with its typed Schema.
 pub fn write(layers: &[Layer], path: &str) -> Result<()> {
     std::fs::write(path, to_string(layers)?)?;
     Ok(())
@@ -357,11 +357,11 @@ pub fn kmz_bytes(layers: &[Layer]) -> Result<Vec<u8>> {
         let options = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
         let mut doc = String::from(HEADER);
         doc.push_str("<Document id=\"root_doc\">\n");
-        let mut files = Vec::new();
+        let mut files: Vec<(String, String)> = Vec::new();
         for l in layers {
             let mut file = format!("layers/{}.kml", schema_id(l));
             let mut n = 2;
-            while files.contains(&file) {
+            while files.iter().any(|(f, _)| *f == file) {
                 file = format!("layers/{}_{n}.kml", schema_id(l));
                 n += 1;
             }
@@ -372,13 +372,16 @@ pub fn kmz_bytes(layers: &[Layer]) -> Result<Vec<u8>> {
             layer_doc.push_str(&schema(&l));
             layer_doc.push_str(&placemarks(&l));
             layer_doc.push_str("</Document>\n</kml>\n");
-            zip.start_file(file.as_str(), options)?;
-            std::io::Write::write_all(&mut zip, layer_doc.as_bytes())?;
-            files.push(file);
+            files.push((file, layer_doc));
         }
         doc.push_str("</Document>\n</kml>\n");
+        // KML readers (libkml among them) take the archive's first document as the main one.
         zip.start_file("doc.kml", options)?;
         std::io::Write::write_all(&mut zip, doc.as_bytes())?;
+        for (file, text) in &files {
+            zip.start_file(file.as_str(), options)?;
+            std::io::Write::write_all(&mut zip, text.as_bytes())?;
+        }
         zip.finish()?;
     }
     Ok(buf.into_inner())
@@ -429,18 +432,17 @@ fn schema(l: &Layer) -> String {
     s
 }
 
-/// Encodes layers as a KML document.
+/// Encodes layers as a KML document: a Document per layer, each with its Schema (so that readers
+/// tie even an empty layer to its fields).
 pub fn to_string(layers: &[Layer]) -> Result<String> {
     let mut s = String::from(HEADER);
     s.push_str("<Document id=\"root_doc\">\n");
-    let layers: Vec<std::borrow::Cow<Layer>> = layers.iter().map(in_wgs84).collect::<Result<_>>()?;
-    for l in &layers {
-        s.push_str(&schema(l));
-    }
-    for l in &layers {
-        let _ = writeln!(s, "<Folder><name>{}</name>", xml::escape(&l.name));
-        s.push_str(&placemarks(l));
-        s.push_str("</Folder>\n");
+    for l in layers {
+        let l = in_wgs84(l)?;
+        let _ = writeln!(s, "<Document id=\"{}\"><name>{}</name>", xml::escape(&schema_id(&l)), xml::escape(&l.name));
+        s.push_str(&schema(&l));
+        s.push_str(&placemarks(&l));
+        s.push_str("</Document>\n");
     }
     s.push_str("</Document>\n</kml>\n");
     Ok(s)
@@ -496,7 +498,8 @@ fn placemarks(l: &Layer) -> String {
                 Some((name.clone(), text(f, name)?))
             })
             .collect();
-        if !values.is_empty() {
+        // Even without values, so that readers tie the layer to its schema.
+        if !fields.is_empty() {
             let _ = writeln!(s, "\t<ExtendedData><SchemaData schemaUrl=\"#{}\">", xml::escape(&schema_id(l)));
             for (k, v) in values {
                 let _ = writeln!(s, "\t\t<SimpleData name=\"{}\">{}</SimpleData>", xml::escape(&k), xml::escape(&v));
