@@ -107,7 +107,10 @@ of GDAL: the long tail of formats stays reachable through an optional GDAL backe
   examples on the entry points, the API decisions written down (the `wbraster`/`wbvector` data
   model, `#[non_exhaustive]` enums, options built with `Default`), docs.rs metadata, and the crate
   packaging verified (`cargo publish --dry-run`). Still to do: the first crates.io release.
-- A conformance suite of real-world files per format, with results compared against GDAL.
+- A conformance suite of real-world files per format, with results compared against GDAL. Done:
+  `scripts/conformance.py` runs every comparison (summaries and pixels, vector and raster round
+  trips, windows, operations, terrain and algebra, vector operations, point clouds, CRS accuracy)
+  and writes the report published as `docs/conformance.md`; CI runs it.
 - Benchmarks against GDAL for reading, writing, warping and converting.
 - A minimum supported Rust version policy. Done: Rust 1.90, raised only when needed and never to
   a release less than six months old, checked in CI.

@@ -17,6 +17,20 @@ GDAL:
 - netCDF wind fields, and the same rasters rewritten by GDAL as Zarr, JPEG 2000, ERDAS Imagine,
   ENVI, Esri grids, GeoPackage tiles and more
 
+## The conformance suite
+
+`scripts/conformance.py` runs every comparison below in one go (and the EPSG accuracy test) and
+writes a Markdown report: for each suite and each format or operation, how many cases were
+compared and how many came out identical, within tolerance or different, with the details of the
+cases that are not identical. The [Conformance](conformance.md) page is that report.
+
+```sh
+cargo build --release
+python scripts/conformance.py ../terrio-data --output docs/conformance.md
+python scripts/conformance.py ../terrio-data --only ops,dem-calc   # some suites
+python scripts/conformance.py ../terrio-data --remote --strict     # remote COGs too; fail on a difference
+```
+
 ## What is compared
 
 | Area | Script | Checks |
@@ -32,8 +46,12 @@ GDAL:
 | Point clouds | `scripts/compare_pointclouds.py` | every value vs laspy; headers, COPC queries, `writers.gdal` grids and reprojection vs PDAL |
 | Arrow | `scripts/compare_arrow_with_gdal.py` | `Layer.to_arrow()` (WKB and native GeoArrow) vs GDAL's Arrow streams, through pyarrow and GeoPandas; `terrio.from_arrow()` of GDAL's, GeoPandas' and terrio's tables; GDAL's `WriteArrow` of terrio's tables |
 | GeoPackage updates and spatial filters | `scripts/compare_gpkg_with_gdal.py` | `--append`, `--overwrite` and added layers vs `ogr2ogr` (features, extents, counts, sequences, R-trees, `integrity_check`, `validate_gpkg.py`, rasters kept); `--spat` vs `ogr2ogr -spat`; timings on a large file |
+| Vector conversions | `scripts/compare_with_gdal.py --roundtrip` | files converted by terrio, read back by GDAL |
+| Coordinate transformations | `crates/terrio/tests/epsg_accuracy.rs` | a point per EPSG CRS, forward, inverse and between CRSs, vs GDAL |
 
 ## Results
+
+The [Conformance](conformance.md) page has the full, generated results; in short:
 
 | Area | Agreement with GDAL |
 |---|---|
