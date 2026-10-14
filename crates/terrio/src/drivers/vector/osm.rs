@@ -453,6 +453,12 @@ pub(crate) fn is_xml(bytes: &[u8]) -> bool {
     head.iter().find(|b| !b.is_ascii_whitespace()) == Some(&b'<')
 }
 
+/// A coordinate on the 1e-7 degree grid GDAL stores nodes on (`DBL_TO_INT`, then `INT_TO_DBL`),
+/// where the vertices of ways are.
+fn grid(v: f64) -> f64 {
+    (v * 1e7 + 0.5).floor() as i64 as f64 / 1e7
+}
+
 /// Parses an OSM PBF file held in memory into GDAL's five layers.
 pub fn parse(bytes: Vec<u8>) -> Result<Vec<Layer>> {
     if is_xml(&bytes) {
@@ -464,8 +470,10 @@ pub fn parse(bytes: Vec<u8>) -> Result<Vec<Layer>> {
         let obj = obj.map_err(|e| Error::InvalidData(format!("OSM PBF: {e}")))?;
         match obj {
             OsmObj::Node(n) => {
-                let c = Coord::xy(n.decimicro_lon as f64 * 1e-7, n.decimicro_lat as f64 * 1e-7);
-                b.node(n.id.0, c.clone(), c, &tag_list(&n.tags));
+                // GDAL's arithmetic: nanodegrees times 1e-9 for points, and its grid for vertices.
+                let nano = |d: i32| 1e-9 * (i64::from(d) * 100) as f64;
+                let c = Coord::xy(nano(n.decimicro_lon), nano(n.decimicro_lat));
+                b.node(n.id.0, c.clone(), Coord::xy(grid(c.x), grid(c.y)), &tag_list(&n.tags));
             }
             OsmObj::Way(w) => b.way(w.id.0, w.nodes.iter().map(|n| n.0).collect(), &tag_list(&w.tags)),
             OsmObj::Relation(r) => {
@@ -581,7 +589,6 @@ fn finish_element(
     match kind.take() {
         Some("node") => {
             if let (Ok(y), Ok(x)) = (lat.trim().parse::<f64>(), lon.trim().parse::<f64>()) {
-                let grid = |v: f64| (v * 1e7 + 0.5).floor() as i64 as f64 * 1e-7;
                 b.node(id, Coord::xy(x, y), Coord::xy(grid(x), grid(y)), &t);
             }
         }
