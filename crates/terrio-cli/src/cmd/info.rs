@@ -23,7 +23,8 @@ pub fn run(a: Args) -> terrio::Result<()> {
         // GeoTIFFs are read in place: only their headers are fetched.
         super::quiet(|| terrio::info::info_path(&a.input, &options))?
     } else {
-        let ds = terrio::Dataset::Vector(terrio::open_vector(&a.input, &terrio::VectorOpenOptions { layers: a.layers })?);
+        let ds =
+            terrio::Dataset::Vector(terrio::open_vector(&a.input, &terrio::VectorOpenOptions { layers: a.layers, ..Default::default() })?);
         terrio::info::info(&ds, &options)
     };
     if a.json {

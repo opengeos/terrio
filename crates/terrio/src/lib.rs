@@ -39,6 +39,8 @@ pub use dataset::{
     Dataset, RasterDataset, RasterWriteOptions, VectorDataset, VectorOpenOptions, VectorWriteOptions, geo_transform, list_layers, open,
     open_raster, open_vector, write_raster, write_raster_dataset, write_vector,
 };
+pub use drivers::vector::csv::{CsvGeometry, CsvOptions};
+pub use drivers::vector::geojson::GeoJsonOptions;
 pub use error::{Error, Result};
 
 /// The raster type: pixels, georeferencing and CRS, in memory.

@@ -23,6 +23,7 @@ mod png;
 mod rst;
 mod saga;
 mod sqlite;
+pub(crate) mod vector;
 mod wkt;
 mod xyz;
 mod zarr;

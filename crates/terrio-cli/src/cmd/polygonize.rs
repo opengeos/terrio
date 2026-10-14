@@ -70,5 +70,10 @@ pub fn run(a: Args) -> terrio::Result<()> {
     } else {
         WriteMode::Create
     };
-    terrio::ops::vector_filter::write_vector_with_mode(&[layer], &a.output, &terrio::VectorWriteOptions { driver }, mode)
+    terrio::ops::vector_filter::write_vector_with_mode(
+        &[layer],
+        &a.output,
+        &terrio::VectorWriteOptions { driver, ..Default::default() },
+        mode,
+    )
 }

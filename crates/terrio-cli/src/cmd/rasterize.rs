@@ -65,7 +65,7 @@ pub struct Args {
 }
 
 pub fn run(a: Args) -> terrio::Result<()> {
-    let ds = super::quiet(|| terrio::open_vector(&a.input, &VectorOpenOptions { layers: a.layers.clone() }))?;
+    let ds = super::quiet(|| terrio::open_vector(&a.input, &VectorOpenOptions { layers: a.layers.clone(), ..Default::default() }))?;
     let layers = match &a.sql {
         Some(sql) => {
             terrio::ops::vector_filter::translate(&ds.layers, &VectorTranslateOptions { sql: Some(sql.clone()), ..Default::default() })?

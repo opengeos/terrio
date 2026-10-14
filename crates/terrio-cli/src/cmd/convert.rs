@@ -36,8 +36,24 @@ pub struct Args {
     /// Convert a raster's overview N (0 is the largest) instead of its full resolution.
     #[arg(long, value_name = "N")]
     overview: Option<usize>,
+    /// A vector open option, as GDAL names it: `KEY=VALUE` (CSV: X_POSSIBLE_NAMES,
+    /// Y_POSSIBLE_NAMES, GEOM_POSSIBLE_NAMES, AUTODETECT_TYPE, KEEP_GEOM_COLUMNS, SEPARATOR).
+    #[arg(long = "oo", value_name = "KEY=VALUE")]
+    open_options: Vec<String>,
+    /// A vector layer creation option, as GDAL names it: `KEY=VALUE` (CSV: GEOMETRY=AS_WKT|AS_XY;
+    /// GeoJSON: RFC7946=YES).
+    #[arg(long = "lco", value_name = "KEY=VALUE")]
+    creation_options: Vec<String>,
     #[command(flatten)]
     vector: super::vector_opts::VectorArgs,
+}
+
+/// Splits `KEY=VALUE` options.
+fn key_values(options: &[String]) -> terrio::Result<Vec<(&str, &str)>> {
+    options
+        .iter()
+        .map(|o| o.split_once('=').ok_or_else(|| terrio::Error::InvalidArgument(format!("option '{o}' is not KEY=VALUE"))))
+        .collect()
 }
 
 pub fn run(a: Args) -> terrio::Result<()> {
@@ -57,10 +73,16 @@ pub fn run(a: Args) -> terrio::Result<()> {
             }
         };
         Dataset::Raster(r.read_window(window, &opts)?)
-    } else if a.layers.is_empty() {
+    } else if a.layers.is_empty() && a.open_options.is_empty() {
         super::quiet(|| terrio::open(&a.input))?
     } else {
-        Dataset::Vector(terrio::open_vector(&a.input, &VectorOpenOptions { layers: a.layers.clone() })?)
+        let mut options = VectorOpenOptions { layers: a.layers.clone(), ..Default::default() };
+        for (k, v) in key_values(&a.open_options)? {
+            if !options.csv.set(k, v)? {
+                return Err(terrio::Error::InvalidArgument(format!("unknown open option '{k}'")));
+            }
+        }
+        Dataset::Vector(terrio::open_vector(&a.input, &options)?)
     };
     let t_srs = a.t_srs.as_deref().map(SpatialRef::parse).transpose()?;
     match ds {
@@ -87,7 +109,13 @@ pub fn run(a: Args) -> terrio::Result<()> {
                 .map(|f| VectorDriver::from_name(f).ok_or_else(|| terrio::Error::InvalidArgument(format!("unknown vector format '{f}'"))))
                 .transpose()?;
             let layers = terrio::ops::vector_filter::translate(&v.layers, &a.vector.to_options(t_srs)?)?;
-            terrio::ops::vector_filter::write_vector_with_mode(&layers, &a.output, &VectorWriteOptions { driver }, a.vector.write_mode())
+            let mut options = VectorWriteOptions { driver, ..Default::default() };
+            for (k, v) in key_values(&a.creation_options)? {
+                if !options.csv.set(k, v)? && !options.geojson.set(k, v)? {
+                    return Err(terrio::Error::InvalidArgument(format!("unknown layer creation option '{k}'")));
+                }
+            }
+            terrio::ops::vector_filter::write_vector_with_mode(&layers, &a.output, &options, a.vector.write_mode())
         }
     }
 }

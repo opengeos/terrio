@@ -89,6 +89,8 @@ pub enum VectorDriver {
     MapInfo,
     /// OpenStreetMap PBF.
     OSM,
+    /// Comma-separated values with X/Y or WKT geometry columns.
+    CSV,
 }
 
 /// A description of a driver, for listings.
@@ -266,6 +268,7 @@ impl VectorDriver {
         Self::GPX,
         Self::MapInfo,
         Self::OSM,
+        Self::CSV,
     ];
 
     /// The driver's description.
@@ -283,6 +286,7 @@ impl VectorDriver {
             Self::GPX => ("GPX", "GPS Exchange Format", &["gpx"], true, true),
             Self::MapInfo => ("MapInfo File", "MapInfo Interchange Format", &["mif"], true, true),
             Self::OSM => ("OSM", "OpenStreetMap PBF", &["pbf"], true, false),
+            Self::CSV => ("CSV", "Comma Separated Value", &["csv", "tsv"], true, true),
         };
         DriverInfo { name, long_name, kind: Kind::Vector, extensions, read, write }
     }
@@ -318,9 +322,10 @@ impl VectorDriver {
         Self::ALL.iter().copied().find(|d| d.info().extensions.contains(&ext.as_str()))
     }
 
-    pub(crate) fn to_wb(self) -> wbvector::VectorFormat {
+    /// The format library's format, when terrio does not supply the driver itself.
+    pub(crate) fn to_wb(self) -> Option<wbvector::VectorFormat> {
         use wbvector::VectorFormat as F;
-        match self {
+        Some(match self {
             Self::GeoJSON => F::GeoJson,
             Self::TopoJSON => F::TopoJson,
             Self::GPKG => F::GeoPackage,
@@ -333,7 +338,8 @@ impl VectorDriver {
             Self::GPX => F::Gpx,
             Self::MapInfo => F::MapInfoMif,
             Self::OSM => F::OsmPbf,
-        }
+            Self::CSV => return None,
+        })
     }
 }
 

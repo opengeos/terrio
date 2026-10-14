@@ -69,6 +69,8 @@ pub enum Dataset {
 pub struct VectorOpenOptions {
     /// Only these layers (by name). Empty means all.
     pub layers: Vec<String>,
+    /// How to read CSV files.
+    pub csv: crate::drivers::vector::csv::CsvOptions,
 }
 
 /// Opens a dataset, raster or vector, detecting its format.
@@ -173,8 +175,11 @@ fn read_vector_local(path: &str, driver: VectorDriver, options: &VectorOpenOptio
             return Err(Error::InvalidArgument(format!("no layer named {} (layers: {})", options.layers.join(", "), names.join(", "))));
         }
         wanted.into_iter().map(|n| wbvector::geopackage::read_layer(path, n)).collect::<std::result::Result<Vec<_>, _>>()?
+    } else if let Some(layers) = crate::drivers::vector::read(path, driver, options)? {
+        select_layers(layers, path, options)?
     } else {
-        let layer = wbvector::VectorFormat::read(&driver.to_wb(), path)?;
+        let format = driver.to_wb().ok_or_else(|| Error::Unsupported(format!("the {} driver cannot read", driver.name())))?;
+        let layer = format.read(path)?;
         if !options.layers.is_empty() && !options.layers.contains(&layer.name) {
             let stem = Path::new(path).file_stem().and_then(|s| s.to_str()).unwrap_or_default();
             if !options.layers.iter().any(|l| l == stem) {
@@ -183,8 +188,30 @@ fn read_vector_local(path: &str, driver: VectorDriver, options: &VectorOpenOptio
         }
         vec![layer]
     };
-    let layers = layers.into_iter().map(|l| fix_layer(l, path, driver)).collect();
+    let layers = layers
+        .into_iter()
+        .map(|mut l| {
+            crate::drivers::vector::fix(&mut l, driver);
+            fix_layer(l, path, driver)
+        })
+        .collect();
     Ok(VectorDataset { layers, driver })
+}
+
+/// Keeps the layers `options` asks for (all when it names none).
+fn select_layers(layers: Vec<Layer>, path: &str, options: &VectorOpenOptions) -> Result<Vec<Layer>> {
+    if options.layers.is_empty() {
+        return Ok(layers);
+    }
+    let stem = Path::new(path).file_stem().and_then(|s| s.to_str()).unwrap_or_default();
+    let single = layers.len() == 1;
+    let names: Vec<String> = layers.iter().map(|l| l.name.clone()).collect();
+    let kept: Vec<Layer> =
+        layers.into_iter().filter(|l| options.layers.contains(&l.name) || single && options.layers.iter().any(|n| n == stem)).collect();
+    if kept.is_empty() {
+        return Err(Error::InvalidArgument(format!("no layer named {} (layers: {})", options.layers.join(", "), names.join(", "))));
+    }
+    Ok(kept)
 }
 
 /// Normalizes what drivers leave inconsistent: the layer name and the CRS of formats that are
@@ -296,10 +323,14 @@ fn parse_compression(s: &str) -> Result<wbraster::GeoTiffCompression> {
 pub struct VectorWriteOptions {
     /// The output format. By default, chosen from the output path's extension.
     pub driver: Option<VectorDriver>,
+    /// How to write CSV files.
+    pub csv: crate::drivers::vector::csv::CsvOptions,
+    /// How to write GeoJSON files.
+    pub geojson: crate::drivers::vector::geojson::GeoJsonOptions,
 }
 
-/// Writes vector layers. Only GeoPackage holds several layers in one file; for the other formats,
-/// write one layer at a time.
+/// Writes vector layers. GeoPackage, GPX, KML, KMZ and TopoJSON hold several layers in one file;
+/// for the other formats, write one layer at a time.
 pub fn write_vector(layers: &[Layer], path: &str, options: &VectorWriteOptions) -> Result<()> {
     ensure_writable_location(path)?;
     let driver = match options.driver {
@@ -312,11 +343,18 @@ pub fn write_vector(layers: &[Layer], path: &str, options: &VectorWriteOptions) 
     }
     match (driver, layers) {
         (_, []) => Err(Error::InvalidArgument("no layers to write".into())),
-        (VectorDriver::GPKG, _) => {
-            let refs: Vec<&Layer> = layers.iter().collect();
-            Ok(wbvector::geopackage::write_layers(&refs, path)?)
+        (VectorDriver::GPKG, _) => crate::drivers::vector::geopackage::write(layers, path),
+        (VectorDriver::GPX, _) => crate::drivers::vector::gpx::write_layers(layers, path),
+        (VectorDriver::KML, _) => crate::drivers::vector::kml::write(layers, path),
+        (VectorDriver::KMZ, _) => crate::drivers::vector::kml::write_kmz(layers, path),
+        (VectorDriver::TopoJSON, _) => crate::drivers::vector::topojson::write_layers(layers, path),
+        (d, [layer]) => {
+            if !crate::drivers::vector::write(layer, path, d, options)? {
+                let format = d.to_wb().ok_or_else(|| Error::Unsupported(format!("the {} driver cannot write", d.name())))?;
+                wbvector::write(layer, path, format)?;
+            }
+            Ok(())
         }
-        (d, [layer]) => Ok(wbvector::write(layer, path, d.to_wb())?),
         (d, _) => Err(Error::InvalidArgument(format!("the {} format holds one layer: choose a layer, or write a GeoPackage", d.name()))),
     }
 }

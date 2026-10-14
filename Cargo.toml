@@ -19,6 +19,16 @@ wbraster = "0.2.1"
 wbvector = { version = "0.1.6", features = ["geoparquet", "kmz", "osmpbf"] }
 wbprojection = "0.3.3"
 
+flatgeobuf = { version = "6", default-features = false }
+# The version flatgeobuf's generated code is built with.
+flatbuffers = "=24.12.23"
+# GeoParquet writing; the same versions wbvector reads GeoParquet with.
+parquet = { version = "58", default-features = false, features = ["arrow", "snap"] }
+arrow-array = "58"
+arrow-schema = "58"
+quick-xml = "0.42"
+# OpenStreetMap PBF decoding, the version wbvector uses.
+osmpbfreader = "0.16"
 tiff = { version = "0.11", features = ["zstd", "webp"] }
 half = "2"
 flate2 = "1"
