@@ -318,6 +318,8 @@ def main():
     a = ap.parse_args()
     tmp = a.keep or tempfile.mkdtemp(prefix="terrio_dem_calc_")
     os.makedirs(tmp, exist_ok=True)
+    if not a.json:
+        print(f"GDAL {gdal.__version__} (terrio reproduces GDAL 3.12's arithmetic)\n")
     results = []
     for i, c in enumerate(cases(os.path.abspath(a.data), tmp)):
         if a.only and a.only not in c["name"]:
