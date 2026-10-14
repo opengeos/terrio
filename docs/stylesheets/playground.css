@@ -1,0 +1,92 @@
+/* The playground page. */
+#terrio-playground .tp-status {
+  font-weight: 600;
+}
+#terrio-playground .tp-error {
+  color: var(--md-code-hl-special-color, #e53935);
+}
+#terrio-playground .tp-drop {
+  border: 2px dashed var(--md-default-fg-color--lighter);
+  border-radius: 0.4rem;
+  padding: 1rem 1.2rem;
+  margin: 1rem 0;
+}
+#terrio-playground .tp-drop.tp-over {
+  border-color: var(--md-accent-fg-color);
+  background: var(--md-accent-fg-color--transparent);
+}
+#terrio-playground .tp-link {
+  color: var(--md-typeset-a-color);
+  cursor: pointer;
+  text-decoration: underline;
+}
+#terrio-playground .tp-hint {
+  color: var(--md-default-fg-color--light);
+  font-size: 0.7rem;
+}
+#terrio-playground .tp-samples button {
+  margin: 0.2rem 0.3rem 0.2rem 0;
+  padding: 0.2rem 0.6rem;
+  border: 1px solid var(--md-default-fg-color--lighter);
+  border-radius: 0.2rem;
+  cursor: pointer;
+  font-size: 0.7rem;
+}
+#terrio-playground .tp-samples button:hover {
+  border-color: var(--md-accent-fg-color);
+}
+#terrio-playground .tp-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
+  gap: 1.2rem;
+}
+@media (max-width: 60em) {
+  #terrio-playground .tp-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+#terrio-playground canvas {
+  width: 100%;
+  height: auto;
+  border: 1px solid var(--md-default-fg-color--lightest);
+  border-radius: 0.2rem;
+  background: var(--md-code-bg-color);
+}
+#terrio-playground label {
+  display: block;
+  margin: 0 0 0.6rem;
+  font-size: 0.75rem;
+}
+#terrio-playground input:not([type="file"]),
+#terrio-playground select {
+  display: block;
+  width: 100%;
+  margin-top: 0.2rem;
+  padding: 0.3rem 0.4rem;
+  border: 1px solid var(--md-default-fg-color--lighter);
+  border-radius: 0.2rem;
+  background: var(--md-default-bg-color);
+  color: var(--md-default-fg-color);
+  font: inherit;
+}
+#terrio-playground .tp-transform {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(8rem, 1fr));
+  gap: 0.6rem;
+  align-items: end;
+}
+#terrio-playground .tp-transform .md-button {
+  margin-bottom: 0.6rem;
+}
+#terrio-playground pre {
+  max-height: 24rem;
+  overflow: auto;
+  padding: 0.6rem;
+  background: var(--md-code-bg-color);
+  font-size: 0.7rem;
+}
+#terrio-playground label.tp-link {
+  display: inline;
+  margin: 0;
+  font-size: inherit;
+}

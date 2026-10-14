@@ -2,7 +2,7 @@
 
 [terrio](https://github.com/opengeos/terrio), pure-Rust geospatial data I/O, compiled to
 WebAssembly for browsers and Node.js. Datasets are opened from bytes, with a file name telling the
-format, and written back to bytes.
+format, and written back to bytes. Try it without installing anything on the [Playground](playground.md).
 
 ```js
 import init, { open, fromGeoJSON, rasterFromArray, transformPoints, describeCrs } from "terrio-js";

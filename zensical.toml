@@ -5,6 +5,8 @@ site_author = "opengeos"
 site_url = "https://terrio.opengeos.org"
 repo_url = "https://github.com/opengeos/terrio"
 repo_name = "opengeos/terrio"
+extra_css = ["stylesheets/playground.css"]
+extra_javascript = ["javascripts/playground.js"]
 copyright = "Copyright &copy; 2026 Qiusheng Wu"
 
 nav = [
@@ -12,6 +14,7 @@ nav = [
   { "Why terrio?" = "why-terrio.md" },
   { "Installation" = "installation.md" },
   { "Getting Started" = "getting-started.md" },
+  { "Playground" = "playground.md" },
   { "Command Line" = "cli.md" },
   { "Formats" = "formats.md" },
   { "Point Clouds" = "point-clouds.md" },
