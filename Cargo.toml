@@ -24,7 +24,7 @@ flatgeobuf = { version = "6", default-features = false }
 flatbuffers = "=24.12.23"
 # GeoParquet writing; the same versions wbvector reads GeoParquet with.
 parquet = { version = "58", default-features = false, features = ["arrow", "snap"] }
-arrow-array = "58"
+arrow-array = "60"
 arrow-schema = "58"
 # Arrow IPC streams of vector layers; already built for parquet.
 arrow-ipc = { version = "58", default-features = false }
