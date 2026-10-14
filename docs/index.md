@@ -1,6 +1,6 @@
 # terrio
 
-**Pure-Rust geospatial raster and vector data I/O.**
+**Pure-Rust geospatial raster, vector and point cloud data I/O.**
 
 terrio reads, writes, converts and reprojects the geospatial formats most workflows use, without
 C dependencies. It builds anywhere Rust does, WebAssembly included, and it is tested file by file
@@ -19,6 +19,8 @@ terrio rasterize counties.gpkg counties.tif -a FIPS --tr 0.01 0.01
   ENVI, Esri grids, GeoPackage tiles, VRT and more. See [Formats](formats.md).
 - **Vectors**: GeoPackage, GeoParquet, FlatGeobuf, Shapefile, GeoJSON, CSV, KML/KMZ, GML, GPX,
   TopoJSON, MapInfo and OpenStreetMap PBF.
+- **Point clouds**: LAS 1.0 to 1.4, LAZ and COPC, read and written; remote COPC files read by
+  bounds and octree level; gridding to DEMs as PDAL does. See [Point Clouds](point-clouds.md).
 - **Cloud data in place**: HTTP(S) range requests, `s3://`, `gs://` and `az://` objects, zip
   archives, and GDAL's `/vsicurl/`, `/vsis3/`, `/vsizip/` prefixes. Remote COGs are read window by
   window. See [Remote Data](remote-data.md).

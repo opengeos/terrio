@@ -1,6 +1,6 @@
 [project]
 site_name = "terrio"
-site_description = "Pure-Rust geospatial raster and vector data I/O: read, write, convert and reproject geospatial formats without C dependencies"
+site_description = "Pure-Rust geospatial raster, vector and point cloud data I/O: read, write, convert and reproject geospatial formats without C dependencies"
 site_author = "opengeos"
 site_url = "https://terrio.opengeos.org"
 repo_url = "https://github.com/opengeos/terrio"
@@ -13,6 +13,7 @@ nav = [
   { "Getting Started" = "getting-started.md" },
   { "Command Line" = "cli.md" },
   { "Formats" = "formats.md" },
+  { "Point Clouds" = "point-clouds.md" },
   { "Remote Data" = "remote-data.md" },
   { "Coordinate Systems" = "crs.md" },
   { "Coming from GDAL" = "gdal.md" },

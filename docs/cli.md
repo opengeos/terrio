@@ -3,7 +3,7 @@
 ```text
 terrio <COMMAND>
 
-  info        Summarize a raster or vector dataset
+  info        Summarize a raster, vector dataset or point cloud
   convert     Convert a dataset to another format, optionally reprojecting it
   translate   Subset, resize, rescale or change the type of a raster (like gdal_translate)
   warp        Reproject and resample rasters (like gdalwarp)
@@ -16,6 +16,7 @@ terrio <COMMAND>
   sieve       Merge raster areas smaller than a threshold into their largest neighbour (like gdal_sieve.py)
   crs         Describe a coordinate reference system, or transform coordinates between two
   formats     List the formats terrio reads and writes
+  grid        Grid a point cloud into a raster (like PDAL's writers.gdal)
 ```
 
 Every input can be a local path, a URL, a cloud object or a zip archive member; see
@@ -55,6 +56,11 @@ terrio convert INPUT OUTPUT [-f FORMAT] [options]
 | `--s-srs`, `--a-srs` | vectors | Override or assign the CRS |
 | `--append`, `--overwrite` | vectors | Add to or replace layers of an existing GeoPackage |
 | `--oo`, `--lco KEY=VALUE` | vectors | Open and layer creation options (`RFC7946=YES`...) |
+
+Point clouds (LAS, LAZ, COPC) convert to LAS, LAZ, COPC or a vector layer of points, with
+`--bounds`, `--z-range`, `--class`, `--returns`, `--max-level`, `--resolution`, `--max-points`,
+`--t-srs`, `--a-srs`, `--point-format`, `--las-version`, `--scale`, `--offset` and `--dims`; see
+[Point Clouds](point-clouds.md).
 
 The `--where` language supports comparisons, `AND`/`OR`/`NOT`, parentheses, `IN`, `LIKE`/`ILIKE`,
 `IS [NOT] NULL`, `BETWEEN`, arithmetic, `||` and `FID`, with OGR SQL's null semantics.
@@ -179,3 +185,15 @@ echo "X Y" | terrio crs SRC --to DST
 ```sh
 terrio formats [--json]
 ```
+
+## grid
+
+```sh
+terrio grid INPUT OUTPUT --tr RES [--stat min,max,mean,idw,count,stdev|all] [--dim z]
+            [--radius R] [--power P] [--window-size N] [--bin] [--te XMIN YMIN XMAX YMAX]
+            [--class ...] [--returns ...] [--bounds ...]
+```
+
+Grids a point cloud into a raster as PDAL's `writers.gdal` does: a DSM with `--stat max`, a DTM
+with `--class 2 --stat idw`, a density map with `--stat count --bin`. See
+[Point Clouds](point-clouds.md).

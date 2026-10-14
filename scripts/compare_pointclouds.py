@@ -27,7 +27,6 @@ from pathlib import Path
 
 import laspy
 import numpy as np
-
 import terrio
 
 PDAL = shutil.which("pdal")
@@ -115,7 +114,7 @@ def aliased(ref: dict[str, np.ndarray], ours: "terrio.PointCloud", name: str = "
     if not laspy_extra or len(laspy_extra) != len(ours_extra):
         return ref
     ref = dict(ref)
-    for a, b in zip(laspy_extra, ours_extra):
+    for a, b in zip(laspy_extra, ours_extra, strict=True):
         ref[b] = ref.pop(a)
     if name:
         print(f"     ({name}: laspy's {laspy_extra} compared with terrio's {ours_extra})")
@@ -238,8 +237,9 @@ def compare_read(path: Path) -> None:
 
 
 def compare_write(path: Path, tmp: Path) -> None:
-    """Writes a file's points as LAS, LAZ and COPC with terrio, and reads them back with laspy
-    and PDAL.
+    """Writes a file's points as LAS, LAZ and COPC with terrio, and reads them back.
+
+    The outputs are read by laspy (every value compared with the original) and by PDAL.
 
     Args:
         path: The file.

@@ -57,7 +57,8 @@ def test_bytes_and_structured_arrays():
     d = back.to_dict()
     assert set(arrays) <= set(d)
     assert back.classification_counts() == {
-        int(c): int(n) for c, n in zip(*np.unique(arrays["classification"], return_counts=True))
+        int(c): int(n)
+        for c, n in zip(*np.unique(arrays["classification"], return_counts=True), strict=True)
     }
 
 

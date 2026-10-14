@@ -68,6 +68,16 @@ layers, and shapefile field names are truncated as GDAL truncates them.
 - **KML styles** (`<Style>`, `<StyleMap>`) are read into an `OGR_STYLE` field holding GDAL's style
   strings (`PEN(c:#FF0000FF,w:2.000000px);BRUSH(fc:#00FF0040)`), and written back as KML styles.
 
+## Point clouds
+
+| Name | Format | Read | Write | Extensions |
+|---|---|---|---|---|
+| LAS | ASPRS LAS 1.0 to 1.4, point formats 0 to 10 | ✓ | ✓ | las |
+| LAZ | LASzip-compressed LAS | ✓ | ✓ | laz |
+| COPC | Cloud Optimized Point Cloud | ✓ | ✓ | copc.laz |
+
+See [Point Clouds](point-clouds.md).
+
 ## In WebAssembly
 
 The browser and Node.js package reads from bytes. JPEG 2000 is not available there. Formats made
