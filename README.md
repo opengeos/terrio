@@ -23,6 +23,8 @@ C dependencies, so that it builds anywhere Rust does, including WebAssembly.
 | `crates/terrio-cli` | The `terrio` command-line tool |
 | `python` | Python bindings |
 
+See [ROADMAP.md](ROADMAP.md) for what is planned and in what order.
+
 ## License
 
 MIT
