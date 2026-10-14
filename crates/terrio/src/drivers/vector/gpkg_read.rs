@@ -583,7 +583,7 @@ mod tests {
         let path = dir.path().join("t.gpkg");
         std::fs::write(&path, super::super::geopackage::to_bytes(&[l]).unwrap()).unwrap();
         let path = path.to_str().unwrap();
-        let read = crate::dataset::finish_vector(read(path, &[]).unwrap(), path, crate::formats::VectorDriver::GPKG);
+        let read = crate::dataset::finish_vector(read(path, &[], None).unwrap(), path, crate::formats::VectorDriver::GPKG);
         let (summaries, rasters) = summarize(path).unwrap().unwrap();
         assert!(rasters.is_empty());
         assert_eq!(summaries.len(), read.layers.len());

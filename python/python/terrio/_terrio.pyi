@@ -1,6 +1,6 @@
 """Type stubs for the `terrio._terrio` extension module."""
 
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from typing import Any, Literal, Protocol, TypeAlias, final
 
 import numpy as np
@@ -120,6 +120,7 @@ class Raster:
         compress: str | None = None,
         tile_size: int | None = None,
         bigtiff: bool = False,
+        options: Mapping[str, str] | None = None,
     ) -> None: ...
     def to_bytes(
         self,
