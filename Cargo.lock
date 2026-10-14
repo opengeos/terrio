@@ -2012,7 +2012,7 @@ dependencies = [
  "jpeg-decoder",
  "jpeg-encoder 0.7.1",
  "laz",
- "lz4_flex 0.11.6",
+ "lz4_flex 0.13.1",
  "netcdf-reader",
  "openjp2",
  "osmpbfreader",
