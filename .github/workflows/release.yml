@@ -78,6 +78,7 @@ jobs:
     environment: crates-io
     permissions:
       id-token: write
+      contents: read
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
@@ -96,6 +97,7 @@ jobs:
     environment: npm
     permissions:
       id-token: write
+      contents: read
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
