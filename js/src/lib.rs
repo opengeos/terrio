@@ -3,7 +3,7 @@
 //! Datasets are opened from bytes, with a file name telling the format, and written back to bytes:
 //!
 //! ```js
-//! import { open, transformPoints } from "terrio";
+//! import { open, transformPoints } from "terrio-js";
 //!
 //! const ds = open(new Uint8Array(await (await fetch("dem.tif")).arrayBuffer()), "dem.tif");
 //! ds.info();                 // the same summary as `terrio info --json`

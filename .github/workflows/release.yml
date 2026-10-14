@@ -123,13 +123,13 @@ jobs:
       - name: Build the package (browsers, bundlers, and Node.js through init)
         run: |
           wasm-pack build js --release --target web --out-dir pkg --out-name terrio
-          cd js/pkg && npm pkg set name=terrio
+          cp LICENSE js/pkg/
       - name: Publish unless this version is already on npm
         working-directory: js/pkg
         run: |
           version=$(node -p "require('./package.json').version")
-          if npm view "terrio@$version" version > /dev/null 2>&1; then
-            echo "terrio $version is already on npm"
+          if npm view "terrio-js@$version" version > /dev/null 2>&1; then
+            echo "terrio-js $version is already on npm"
           else
             npm publish --access public
           fi

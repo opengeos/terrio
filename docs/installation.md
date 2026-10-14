@@ -1,7 +1,7 @@
 # Installation
 
 terrio is published on [crates.io](https://crates.io/crates/terrio),
-[PyPI](https://pypi.org/project/terrio/) and [npm](https://www.npmjs.com/package/terrio).
+[PyPI](https://pypi.org/project/terrio/) and [npm](https://www.npmjs.com/package/terrio-js) (as `terrio-js`).
 
 ## Command-line tool
 
@@ -33,7 +33,7 @@ and Windows, for Python 3.10 and later. They need only NumPy.
 ## JavaScript
 
 ```sh
-npm install terrio
+npm install terrio-js
 ```
 
 The package is built for browsers and bundlers; in Node.js, pass the WebAssembly bytes to `init`

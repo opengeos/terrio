@@ -161,10 +161,10 @@ The operations (`convert`, `translate`, `warp`, `mosaic`, `rasterize`, `polygoni
 
 ## JavaScript
 
-The `terrio` npm package is the library compiled to WebAssembly, for browsers and Node.js:
+The `terrio-js` npm package is the library compiled to WebAssembly, for browsers and Node.js:
 
 ```js
-import init, { open, transformPoints } from "terrio";
+import init, { open, transformPoints } from "terrio-js";
 
 await init();
 const dem = open(new Uint8Array(await (await fetch("dem.tif")).arrayBuffer()), "dem.tif");

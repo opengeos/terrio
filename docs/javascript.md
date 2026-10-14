@@ -5,7 +5,7 @@ WebAssembly for browsers and Node.js. Datasets are opened from bytes, with a fil
 format, and written back to bytes.
 
 ```js
-import init, { open, fromGeoJSON, rasterFromArray, transformPoints, describeCrs } from "terrio";
+import init, { open, fromGeoJSON, rasterFromArray, transformPoints, describeCrs } from "terrio-js";
 
 await init(); // in Node.js: await init({ module_or_path: fs.readFileSync(wasmPath) })
 
