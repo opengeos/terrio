@@ -90,7 +90,10 @@ of GDAL: the long tail of formats stays reachable through an optional GDAL backe
   conversion to bytes, CRS transforms, zipped Shapefile and MapInfo and GeoPackage from memory.
 - Datasets opened from and written to bytes (`terrio::memory`).
 - An optional `gdal` feature that opens anything GDAL can when it is installed, through the same
-  data model.
+  data model. Done: fallback in `open`, `open_raster`, `open_vector` and `list_layers`, a `GDAL:`
+  prefix and `--driver gdal`, GDAL dataset names and subdatasets, rasters written with any GDAL
+  driver (ERDAS Imagine included). Still to do: vector layers written through GDAL, GDAL opening
+  bytes in memory.
 - Arrow and GeoArrow import and export for vector layers.
 
 ## 1.0: Stable

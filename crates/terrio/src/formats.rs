@@ -69,6 +69,9 @@ pub enum RasterDriver {
     MBTiles,
     /// PMTiles raster tiles (PNG, JPEG, WebP), see [`crate::tiles`].
     PMTiles,
+    /// Any raster GDAL reads, through the optional GDAL backend (the `gdal` feature, see
+    /// `gdal_backend`). Listed in [`RasterDriver::ALL`] only when the feature is enabled.
+    Gdal,
 }
 
 /// A vector format driver.
@@ -106,6 +109,9 @@ pub enum VectorDriver {
     PMTiles,
     /// Mapbox Vector Tiles: a single tile, or a directory of tiles with a `metadata.json`.
     MVT,
+    /// Any vector format GDAL reads, through the optional GDAL backend (the `gdal` feature, see
+    /// `gdal_backend`). Listed in [`VectorDriver::ALL`] only when the feature is enabled.
+    Gdal,
 }
 
 /// A description of a driver, for listings.
@@ -153,6 +159,8 @@ impl RasterDriver {
         Self::STACIT,
         Self::MBTiles,
         Self::PMTiles,
+        #[cfg(feature = "gdal")]
+        Self::Gdal,
     ];
 
     /// The driver's description.
@@ -170,7 +178,8 @@ impl RasterDriver {
             Self::RST => ("RST", "Idrisi / TerrSet Raster", &["rst", "rdc"], true, true),
             Self::ERS => ("ERS", "ER Mapper", &["ers"], true, true),
             Self::ENVI => ("ENVI", "ENVI Labelled Raster", &["envi", "hdr", "dat", "bsq", "bip"], true, true),
-            Self::HFA => ("HFA", "ERDAS Imagine", &["img"], true, false),
+            // Written through GDAL when the `gdal` feature is enabled.
+            Self::HFA => ("HFA", "ERDAS Imagine", &["img"], true, cfg!(feature = "gdal")),
             Self::GPKG => ("GPKG", "GeoPackage Tiles", &["gpkg"], true, true),
             Self::JP2 => ("JP2", "JPEG 2000", &["jp2", "j2k"], true, true),
             Self::PNG => ("PNG", "PNG with World File", &["png"], true, true),
@@ -183,6 +192,7 @@ impl RasterDriver {
             Self::STACIT => ("STACIT", "Spatio-Temporal Asset Catalog Items", &[], true, false),
             Self::MBTiles => ("MBTiles", "MBTiles", &["mbtiles"], true, true),
             Self::PMTiles => ("PMTiles", "ProtoMap Tiles", &["pmtiles"], true, true),
+            Self::Gdal => ("GDAL", "Any raster GDAL reads (optional backend)", &[], cfg!(feature = "gdal"), false),
         };
         DriverInfo { name, long_name, kind: Kind::Raster, extensions, read, write }
     }
@@ -243,8 +253,9 @@ impl RasterDriver {
             Self::DTED => F::Dted,
             // Never used: terrio reads and writes NetCDF itself.
             Self::NetCDF => F::Zarr,
-            // Never used: terrio reads and writes VRTs and tile archives, and reads STAC mosaics itself.
-            Self::VRT | Self::STACIT | Self::MBTiles | Self::PMTiles => F::GeoTiff,
+            // Never used: terrio reads and writes VRTs and tile archives, and reads STAC mosaics
+            // itself; GDAL reads its formats.
+            Self::VRT | Self::STACIT | Self::MBTiles | Self::PMTiles | Self::Gdal => F::GeoTiff,
         }
     }
 
@@ -293,6 +304,8 @@ impl VectorDriver {
         Self::MBTiles,
         Self::PMTiles,
         Self::MVT,
+        #[cfg(feature = "gdal")]
+        Self::Gdal,
     ];
 
     /// The driver's description.
@@ -314,6 +327,7 @@ impl VectorDriver {
             Self::MBTiles => ("MBTiles", "MBTiles", &["mbtiles"], true, true),
             Self::PMTiles => ("PMTiles", "ProtoMap Tiles", &["pmtiles"], true, true),
             Self::MVT => ("MVT", "Mapbox Vector Tiles", &["mvt"], true, true),
+            Self::Gdal => ("GDAL", "Any vector format GDAL reads (optional backend)", &[], cfg!(feature = "gdal"), false),
         };
         DriverInfo { name, long_name, kind: Kind::Vector, extensions, read, write }
     }
@@ -365,7 +379,7 @@ impl VectorDriver {
             Self::GPX => F::Gpx,
             Self::MapInfo => F::MapInfoMif,
             Self::OSM => F::OsmPbf,
-            Self::CSV | Self::MBTiles | Self::PMTiles | Self::MVT => return None,
+            Self::CSV | Self::MBTiles | Self::PMTiles | Self::MVT | Self::Gdal => return None,
         })
     }
 }

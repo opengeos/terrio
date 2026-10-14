@@ -42,6 +42,16 @@ laz.workspace = true
 jpeg-encoder.workspace = true
 image-webp.workspace = true
 
+# The optional GDAL backend: opens what GDAL can when terrio has no driver for it. Needs GDAL
+# (3.4 or later) installed, found with pkg-config or GDAL_HOME.
+gdal = { workspace = true, optional = true }
+gdal-sys = { workspace = true, optional = true }
+
+[features]
+default = []
+## Open any format GDAL reads, through the same data model, when terrio has no driver for it.
+gdal = ["dep:gdal", "dep:gdal-sys"]
+
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # OpenJPEG's port is built as a C-ABI library too, which does not link for wasm32.
 openjp2.workspace = true

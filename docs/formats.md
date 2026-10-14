@@ -3,6 +3,10 @@
 Drivers are named as GDAL names them, so `-f GTiff` or `-f "ESRI Shapefile"` mean the same in
 terrio. `terrio formats` prints this list.
 
+Builds with the optional `gdal` feature also open every format GDAL reads, and write rasters with
+GDAL's drivers (the formats marked * are written that way): see
+[the GDAL backend](gdal.md#the-optional-gdal-backend).
+
 ## Rasters
 
 | Name | Format | Read | Write | Extensions |
@@ -12,7 +16,7 @@ terrio. `terrio formats` prints this list.
 | JP2 | JPEG 2000 | ✓ | ✓ | jp2, j2k |
 | Zarr | Zarr v2 and v3, GeoZarr (`spatial:`, `proj:`, `multiscales`) | ✓ | ✓ | zarr |
 | netCDF | netCDF classic and netCDF-4 (writes classic CDF-1/2/5) | ✓ | ✓ | nc, nc4, cdf |
-| HFA | ERDAS Imagine | ✓ | | img |
+| HFA | ERDAS Imagine (written with the `gdal` feature) | ✓ | ✓* | img |
 | GPKG | GeoPackage tiles and gridded coverages | ✓ | ✓ | gpkg |
 | PMTiles | PMTiles v3 raster tiles (PNG, JPEG, WebP) | ✓ | ✓ | pmtiles |
 | MBTiles | MBTiles raster tiles (PNG, JPEG, WebP) | ✓ | ✓ | mbtiles |

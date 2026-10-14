@@ -8,6 +8,12 @@ license.workspace = true
 rust-version.workspace = true
 repository.workspace = true
 
+[features]
+default = []
+## The optional GDAL backend: open anything GDAL can (`GDAL:` paths, `--driver gdal`), write
+## rasters with GDAL's drivers (`-f NITF`). Needs GDAL installed.
+gdal = ["terrio/gdal"]
+
 [[bin]]
 name = "terrio"
 path = "src/main.rs"

@@ -80,7 +80,29 @@ pub struct VectorOpenOptions {
 }
 
 /// Opens a dataset, raster or vector, detecting its format.
+///
+/// With the `gdal` feature, paths starting with `GDAL:` are opened by GDAL, and so are those
+/// terrio's own drivers cannot open (see `gdal_backend`).
+///
+/// ```no_run
+/// match terrio::open("countries.gpkg")? {
+///     terrio::Dataset::Raster(r) => println!("{} x {} pixels", r.raster.cols, r.raster.rows),
+///     terrio::Dataset::Vector(v) => println!("{} layers", v.layers.len()),
+/// }
+/// # Ok::<(), terrio::Error>(())
+/// ```
 pub fn open(path: &str) -> Result<Dataset> {
+    #[cfg(feature = "gdal")]
+    if let Some(rest) = crate::gdal_backend::strip_prefix(path) {
+        return crate::gdal_backend::open(rest);
+    }
+    let result = open_native(path);
+    #[cfg(feature = "gdal")]
+    let result = gdal_fallback(path, result, crate::gdal_backend::open);
+    result
+}
+
+fn open_native(path: &str) -> Result<Dataset> {
     if let Some(result) = crate::stac::open(path) {
         return result;
     }
@@ -95,8 +117,29 @@ pub fn open(path: &str) -> Result<Dataset> {
     open_local(local.as_str(), &VectorOpenOptions::default())
 }
 
-/// Opens a raster dataset.
+/// Opens a raster dataset, reading it into memory.
+///
+/// With the `gdal` feature, paths starting with `GDAL:` are opened by GDAL, and so are those
+/// terrio's own drivers cannot open.
+///
+/// ```no_run
+/// let dem = terrio::open_raster("dem.tif")?;
+/// println!("{:?} nodata {:?}", dem.geo_transform(), dem.nodata());
+/// let elevation = dem.raster.band_view(0); // band-major pixels, as f64
+/// # Ok::<(), terrio::Error>(())
+/// ```
 pub fn open_raster(path: &str) -> Result<RasterDataset> {
+    #[cfg(feature = "gdal")]
+    if let Some(rest) = crate::gdal_backend::strip_prefix(path) {
+        return crate::gdal_backend::open_raster(rest);
+    }
+    let result = open_raster_native(path);
+    #[cfg(feature = "gdal")]
+    let result = gdal_fallback(path, result, crate::gdal_backend::open_raster);
+    result
+}
+
+fn open_raster_native(path: &str) -> Result<RasterDataset> {
     if let Some(result) = crate::stac::open(path) {
         return match result? {
             Dataset::Raster(r) => Ok(r),
@@ -116,8 +159,31 @@ pub fn open_raster(path: &str) -> Result<RasterDataset> {
     read_raster_local(local.as_str())
 }
 
-/// Opens a vector dataset.
+/// Opens a vector dataset, reading its layers into memory.
+///
+/// With the `gdal` feature, paths starting with `GDAL:` are opened by GDAL, and so are those
+/// terrio's own drivers cannot open.
+///
+/// ```no_run
+/// let options = terrio::VectorOpenOptions { layers: vec!["countries".into()], ..Default::default() };
+/// let ds = terrio::open_vector("countries.gpkg", &options)?;
+/// for feature in &ds.layers[0].features {
+///     println!("{:?}", feature.attributes);
+/// }
+/// # Ok::<(), terrio::Error>(())
+/// ```
 pub fn open_vector(path: &str, options: &VectorOpenOptions) -> Result<VectorDataset> {
+    #[cfg(feature = "gdal")]
+    if let Some(rest) = crate::gdal_backend::strip_prefix(path) {
+        return crate::gdal_backend::open_vector(rest, options);
+    }
+    let result = open_vector_native(path, options);
+    #[cfg(feature = "gdal")]
+    let result = gdal_fallback(path, result, |p| crate::gdal_backend::open_vector(p, options));
+    result
+}
+
+fn open_vector_native(path: &str, options: &VectorOpenOptions) -> Result<VectorDataset> {
     if let Some(result) = crate::stac::open(path) {
         return match result? {
             Dataset::Vector(v) => Ok(v),
@@ -139,6 +205,17 @@ pub fn open_vector(path: &str, options: &VectorOpenOptions) -> Result<VectorData
 
 /// The layer names of a vector dataset, without reading the features when the format allows it.
 pub fn list_layers(path: &str) -> Result<Vec<String>> {
+    #[cfg(feature = "gdal")]
+    if let Some(rest) = crate::gdal_backend::strip_prefix(path) {
+        return crate::gdal_backend::list_layers(rest);
+    }
+    let result = list_layers_native(path);
+    #[cfg(feature = "gdal")]
+    let result = gdal_fallback(path, result, crate::gdal_backend::list_layers);
+    result
+}
+
+fn list_layers_native(path: &str) -> Result<Vec<String>> {
     if is_tile_archive(path) {
         return crate::tiles::layer_names(path);
     }
@@ -146,7 +223,25 @@ pub fn list_layers(path: &str) -> Result<Vec<String>> {
     if VectorDriver::for_extension(local.as_str()) == Some(VectorDriver::GPKG) {
         return crate::drivers::vector::gpkg_read::list_layers(local.as_str());
     }
-    Ok(open_vector(local.as_str(), &VectorOpenOptions::default())?.layers.into_iter().map(|l| l.name).collect())
+    Ok(open_vector_native(local.as_str(), &VectorOpenOptions::default())?.layers.into_iter().map(|l| l.name).collect())
+}
+
+/// When terrio's own drivers could not open `path`, tries GDAL; if GDAL cannot either, terrio's
+/// error is kept. Missing local files and invalid arguments are not retried, nor are network
+/// errors.
+#[cfg(feature = "gdal")]
+fn gdal_fallback<T>(path: &str, result: Result<T>, gdal: impl FnOnce(&str) -> Result<T>) -> Result<T> {
+    let Err(e) = result else { return result };
+    let retry = match &e {
+        Error::InvalidArgument(_) | Error::Http(_) => false,
+        // A missing file, unless the path is one of GDAL's dataset names (`HDF5:"f.h5"://x`).
+        Error::Io(io) if io.kind() == std::io::ErrorKind::NotFound => path.contains(':') || path.starts_with("/vsi"),
+        _ => true,
+    };
+    if !retry {
+        return Err(e);
+    }
+    gdal(path).map_err(|_| e)
 }
 
 /// Whether a path names a PMTiles or MBTiles archive (not inside a zip archive).
@@ -177,7 +272,16 @@ fn open_local(path: &str, options: &VectorOpenOptions) -> Result<Dataset> {
         return read_raster_local(path).map(Dataset::Raster);
     }
     // Unknown extension: let the drivers sniff the content.
-    match read_raster_local(path) {
+    let raster = read_raster_local(path);
+    // GDAL recognizes formats more reliably than the vector library's guess (which reads any
+    // SQLite database as a GeoPackage).
+    #[cfg(feature = "gdal")]
+    if raster.is_err()
+        && let Ok(ds) = crate::gdal_backend::open_with(path, options)
+    {
+        return Ok(ds);
+    }
+    match raster {
         Ok(r) => Ok(Dataset::Raster(r)),
         Err(raster_err) => match wbvector::VectorFormat::detect(path) {
             Ok(_) => {
@@ -335,6 +439,15 @@ fn write_raster_with_nodata(raster: &Raster, nodata: Option<f64>, path: &str, op
     }
     if let Some(result) = crate::drivers::write(raster, nodata, path, driver, options) {
         return result;
+    }
+    // Formats terrio reads but cannot write itself.
+    #[cfg(feature = "gdal")]
+    if driver == RasterDriver::HFA {
+        let mut co = options.creation_options.clone();
+        if let Some(c) = &options.compression {
+            co.push(("COMPRESSED".into(), if c.eq_ignore_ascii_case("NONE") { "NO" } else { "YES" }.into()));
+        }
+        return crate::gdal_backend::write_raster_with(raster, nodata, path, "HFA", &co);
     }
     let compression = options.compression.as_deref().map(parse_compression).transpose()?;
     match driver {

@@ -11,12 +11,17 @@ pub struct Args {
     /// The output path.
     output: String,
     /// The output format's short name (`GTiff`, `COG`, `GPKG`, `ESRI Shapefile`...). By default,
-    /// chosen from the output's extension.
+    /// chosen from the output's extension. Builds with the GDAL backend also write rasters with
+    /// any GDAL driver (`NITF`, `KEA`, `GRIB`...).
     #[arg(short = 'f', long = "format")]
     format: Option<String>,
     /// Only these layers of a vector dataset.
     #[arg(short, long = "layer")]
     layers: Vec<String>,
+    /// Open the input with this driver: `gdal` uses the GDAL backend (builds with the `gdal`
+    /// feature), as a `GDAL:` prefix on the path does.
+    #[arg(long, value_name = "DRIVER")]
+    driver: Option<String>,
     /// Reproject into this CRS.
     #[arg(long = "t-srs", value_name = "CRS")]
     t_srs: Option<String>,
@@ -74,7 +79,8 @@ pub(super) fn key_values(options: &[String]) -> terrio::Result<Vec<(&str, &str)>
         .collect()
 }
 
-pub fn run(a: Args) -> terrio::Result<()> {
+pub fn run(mut a: Args) -> terrio::Result<()> {
+    a.input = super::with_driver(&a.input, a.driver.as_deref())?;
     if terrio::pointcloud::is_point_cloud_path(&a.input) {
         let t_srs = a.t_srs.as_deref().map(SpatialRef::parse).transpose()?;
         let format = a.format.as_deref().filter(|f| terrio::pointcloud::PointFormat::from_name(f).is_some());
@@ -118,11 +124,6 @@ pub fn run(a: Args) -> terrio::Result<()> {
             if a.vector.is_set() {
                 return Err(terrio::Error::InvalidArgument("the vector options apply to vector inputs only".into()));
             }
-            let driver = a
-                .format
-                .as_deref()
-                .map(|f| RasterDriver::from_name(f).ok_or_else(|| terrio::Error::InvalidArgument(format!("unknown raster format '{f}'"))))
-                .transpose()?;
             if let Some(dst) = t_srs {
                 let o = terrio::ops::warp::WarpOptions { dst_srs: Some(dst), ..Default::default() };
                 r = terrio::ops::warp::warp(&[&r], &o)?;
@@ -131,6 +132,19 @@ pub fn run(a: Args) -> terrio::Result<()> {
                 key_values(&a.raster_options)?.into_iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
             creation_options.extend(a.minzoom.map(|z| ("MINZOOM".to_string(), z.to_string())));
             creation_options.extend(a.maxzoom.map(|z| ("MAXZOOM".to_string(), z.to_string())));
+            // A format terrio does not write itself: GDAL's driver of that name, when built in.
+            #[cfg(feature = "gdal")]
+            if let Some(f) = a.format.as_deref()
+                && RasterDriver::from_name(f).is_none()
+                && terrio::gdal_backend::has_driver(f)
+            {
+                return terrio::gdal_backend::write_raster(&r, &a.output, f, &creation_options);
+            }
+            let driver = a
+                .format
+                .as_deref()
+                .map(|f| RasterDriver::from_name(f).ok_or_else(|| terrio::Error::InvalidArgument(format!("unknown raster format '{f}'"))))
+                .transpose()?;
             let opts = RasterWriteOptions { driver, compression: a.compress, tile_size: a.tile_size, bigtiff: a.bigtiff, creation_options };
             terrio::write_raster_dataset(&r, &a.output, &opts)
         }

@@ -47,3 +47,8 @@ Once released: `npm install terrio`.
 
 terrio has no system dependencies: no GDAL, PROJ, GEOS or SQLite to install. A Rust toolchain
 (1.90 or later) is the only requirement for building from source.
+
+The optional GDAL backend (the `gdal` cargo feature, for formats terrio has no driver for) is the
+exception: it needs GDAL 3.4 or later and its headers (`libgdal-dev` on Debian and Ubuntu,
+`gdal` on Homebrew and conda-forge), found with `pkg-config` or the `GDAL_HOME` environment
+variable. See [the GDAL backend](gdal.md#the-optional-gdal-backend).

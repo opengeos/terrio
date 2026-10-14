@@ -16,16 +16,21 @@ pub struct Args {
     /// Only these layers of a vector dataset.
     #[arg(short, long = "layer")]
     layers: Vec<String>,
+    /// Open the input with this driver: `gdal` uses the GDAL backend (builds with the `gdal`
+    /// feature), as a `GDAL:` prefix on the path does.
+    #[arg(long, value_name = "DRIVER")]
+    driver: Option<String>,
 }
 
 pub fn run(a: Args) -> terrio::Result<()> {
     let options = InfoOptions { statistics: a.stats };
+    let input = super::with_driver(&a.input, a.driver.as_deref())?;
     let info = if a.layers.is_empty() {
         // GeoTIFFs are read in place: only their headers are fetched.
-        super::quiet(|| terrio::info::info_path(&a.input, &options))?
+        super::quiet(|| terrio::info::info_path(&input, &options))?
     } else {
         let ds =
-            terrio::Dataset::Vector(terrio::open_vector(&a.input, &terrio::VectorOpenOptions { layers: a.layers, ..Default::default() })?);
+            terrio::Dataset::Vector(terrio::open_vector(&input, &terrio::VectorOpenOptions { layers: a.layers, ..Default::default() })?);
         terrio::info::info(&ds, &options)
     };
     if a.json {

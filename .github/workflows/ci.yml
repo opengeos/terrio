@@ -29,6 +29,21 @@ jobs:
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
 
+  gdal:
+    name: GDAL backend (feature build)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Install GDAL
+        run: sudo apt-get update && sudo apt-get install -y libgdal-dev gdal-bin
+      - run: cargo clippy -p terrio -p terrio-cli --all-targets --features gdal -- -D warnings
+      - run: cargo test -p terrio --features gdal --test gdal_backend
+      - run: cargo test -p terrio -p terrio-cli --features gdal
+
   wasm:
     runs-on: ubuntu-latest
     steps:

@@ -24,3 +24,18 @@ pub fn quiet<T>(f: impl FnOnce() -> T) -> T {
     let _gag = gag::Gag::stdout().ok();
     f()
 }
+
+/// The input path to open with `driver`: `gdal` (any case) forces the GDAL backend, which needs
+/// a build with the `gdal` feature; other names leave the path to terrio's format detection.
+pub fn with_driver(input: &str, driver: Option<&str>) -> terrio::Result<String> {
+    match driver {
+        Some(d) if d.eq_ignore_ascii_case("gdal") => {
+            if cfg!(feature = "gdal") {
+                Ok(format!("GDAL:{input}"))
+            } else {
+                Err(terrio::Error::Unsupported("this terrio was built without the GDAL backend (the `gdal` feature)".into()))
+            }
+        }
+        _ => Ok(input.to_string()),
+    }
+}

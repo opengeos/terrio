@@ -55,4 +55,46 @@ are not supported.
 - Downsampling with `warp` or `translate` reads full resolution; GDAL may use overviews.
 - Rotated geotransforms are not supported.
 - GeoTIFFs are written with terrio's own writer; COGs pass GDAL's COG validator.
-- Only the drivers listed in [Formats](formats.md) exist; there is no plugin mechanism.
+- Only the drivers listed in [Formats](formats.md) exist, unless terrio is built with the
+  optional GDAL backend (below).
+
+## The optional GDAL backend
+
+For the long tail of formats (HDF4, HDF5, GRIB, NITF, KEA, PCIDSK, SQLite, DXF, spreadsheets...),
+terrio can hand files to GDAL. The backend is a cargo feature, `gdal`, off by default: it is
+terrio's only C dependency, and builds need GDAL 3.4 or later installed where `pkg-config` (or
+`GDAL_HOME`) finds it.
+
+```sh
+cargo install --git https://github.com/opengeos/terrio terrio-cli --features gdal
+```
+
+```toml
+[dependencies]
+terrio = { git = "https://github.com/opengeos/terrio", features = ["gdal"] }
+```
+
+With the feature enabled:
+
+- `terrio::open`, `open_raster`, `open_vector` and `list_layers` (and every command) fall back to
+  GDAL when terrio's own drivers cannot open a path. terrio's drivers keep priority for the
+  formats they know; when GDAL cannot open a file either, terrio's error is reported.
+- A `GDAL:` prefix forces GDAL, even for formats terrio reads itself: `terrio info GDAL:dem.tif`,
+  or `--driver gdal` on `terrio info` and `terrio convert`.
+- GDAL's dataset names work as they are: `HDF5:"file.h5"://group/dataset`,
+  `HDF4_SDS:UNKNOWN:"file.hdf":0`, `NETCDF:"file.nc":variable`. A container of subdatasets opens
+  its first one and lists the others as `SUBDATASET_N_NAME` metadata, as `gdalinfo` does.
+- Remote and zipped paths go to GDAL's virtual file systems (`/vsicurl/`, `/vsis3/`, `/vsizip/`).
+- Rasters can be written with any GDAL driver: `terrio convert dem.tif dem.ntf -f NITF`
+  (`--co KEY=VALUE` passes GDAL creation options). ERDAS Imagine (`.img`), which terrio reads
+  itself, is written through GDAL.
+
+What GDAL opens is converted into terrio's data model, so every operation works on it: rasters
+are read into memory with all their bands, the geotransform, the CRS (identified as an EPSG code
+the way `gdalsrsinfo -e` does), the first band's nodata value, scale and offset, and the dataset
+metadata; vector layers keep their schema (list fields become JSON text), geometries (curves are
+linearized) and CRS. Datasets opened this way report the `GDAL` driver.
+
+Not covered: complex-valued bands, rotated geotransforms and GCP-only georeferencing (as for
+terrio's own drivers), writing vector layers through GDAL, and opening bytes in memory
+(`terrio::memory`) through GDAL.

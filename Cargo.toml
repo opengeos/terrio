@@ -58,6 +58,9 @@ clap = { version = "4", features = ["derive"] }
 laz = "0.13"
 # Data parallelism (native builds only).
 rayon = "1.10"
+# The optional GDAL backend (the `gdal` feature): the only C dependency, opt-in.
+gdal = "0.19"
+gdal-sys = "0.12"
 
 # openjp2 frees never-allocated code-block buffers (a null `dealloc`, harmless with the system
 # allocator) and trips the standard library's debug-mode precondition checks: build it as in

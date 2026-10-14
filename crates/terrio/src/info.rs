@@ -236,6 +236,10 @@ pub fn info_path(path: &str, options: &InfoOptions) -> crate::Result<Info> {
         let mut r = crate::pointcloud::open_points(path)?;
         return Ok(Info::PointCloud(Box::new(crate::pointcloud::info::point_cloud_info(&mut r, options.statistics)?)));
     }
+    #[cfg(feature = "gdal")]
+    if crate::gdal_backend::strip_prefix(path).is_some() {
+        return Ok(info(&crate::open(path)?, options));
+    }
     // Tile archives (local or remote) are read in place: rasters by their headers only.
     let loc = crate::vfs::Location::parse(path);
     if !matches!(loc, crate::vfs::Location::Zip { .. }) && crate::tiles::archive_kind(&loc.file_name()).is_some() {
