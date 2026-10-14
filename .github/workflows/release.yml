@@ -84,12 +84,20 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: rust-lang/crates-io-auth-action@v1
         id: auth
+      # A version already on crates.io (such as a first release published by hand, before the
+      # crates trusted this workflow) is skipped rather than failing the job.
       - name: Publish terrio, then terrio-cli
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
         run: |
-          cargo publish -p terrio --locked
-          cargo publish -p terrio-cli --locked
+          version=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "terrio") | .version')
+          for crate in terrio terrio-cli; do
+            if curl -sf -A "terrio release (https://github.com/opengeos/terrio)" "https://crates.io/api/v1/crates/$crate/$version" > /dev/null; then
+              echo "$crate $version is already on crates.io"
+            else
+              cargo publish -p "$crate" --locked
+            fi
+          done
 
   npm:
     runs-on: ubuntu-latest
@@ -116,5 +124,12 @@ jobs:
         run: |
           wasm-pack build js --release --target web --out-dir pkg --out-name terrio
           cd js/pkg && npm pkg set name=terrio
-      - run: npm publish --access public
+      - name: Publish unless this version is already on npm
         working-directory: js/pkg
+        run: |
+          version=$(node -p "require('./package.json').version")
+          if npm view "terrio@$version" version > /dev/null 2>&1; then
+            echo "terrio $version is already on npm"
+          else
+            npm publish --access public
+          fi

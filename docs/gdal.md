@@ -66,7 +66,7 @@ terrio's only C dependency, and builds need GDAL 3.4 or later installed where `p
 `GDAL_HOME`) finds it.
 
 ```sh
-cargo install --git https://github.com/opengeos/terrio terrio-cli --features gdal
+cargo install terrio-cli --features gdal
 ```
 
 ```toml
