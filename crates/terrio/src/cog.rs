@@ -258,6 +258,31 @@ impl LazyRaster {
         }
     }
 
+    /// The raster's metadata (size, bands, data type, georeferencing, CRS, nodata) as a dataset
+    /// without pixels: its data buffer is empty. For operations that only need the metadata, such
+    /// as building a VRT.
+    pub fn header(&self) -> RasterDataset {
+        if let Inner::Memory(ds) = &self.inner {
+            return ds.clone();
+        }
+        let gt = self.geo_transform();
+        let raster = wbraster::Raster {
+            cols: self.width(),
+            rows: self.height(),
+            bands: self.band_count(),
+            x_min: gt[0],
+            y_min: gt[3] + gt[5] * self.height() as f64,
+            cell_size_x: gt[1],
+            cell_size_y: -gt[5],
+            nodata: self.nodata().unwrap_or(-9999.0),
+            data_type: self.data_type(),
+            crs: self.crs().to_crs_info(),
+            metadata: Vec::new(),
+            data: wbraster::raster::RasterData::new_filled(self.data_type(), 0, 0.0),
+        };
+        RasterDataset { raster, driver: self.driver(), has_nodata: self.nodata().is_some() }
+    }
+
     /// Reads the whole full-resolution image.
     pub fn read(&mut self) -> Result<RasterDataset> {
         let window = Window::full(self.width(), self.height());

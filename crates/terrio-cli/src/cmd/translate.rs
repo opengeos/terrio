@@ -55,7 +55,21 @@ pub struct Args {
 }
 
 pub fn run(a: Args) -> terrio::Result<()> {
-    let ds = open(&a.input)?;
+    // A window inside a GeoTIFF is read alone: only the tiles it touches are decoded.
+    let mut src_win = a.srcwin.as_ref().map(|v| (v[0], v[1], v[2], v[3]));
+    let ds = match src_win {
+        Some((x, y, w, h)) if x >= 0.0 && y >= 0.0 && w > 0.0 && h > 0.0 && [x, y, w, h].iter().all(|v| v.fract() == 0.0) => {
+            let mut lazy = super::quiet(|| terrio::open_raster_lazy(&a.input))?;
+            let window = terrio::Window::new(x as usize, y as usize, w as usize, h as usize);
+            if lazy.is_lazy() && window.fits(lazy.width(), lazy.height()) {
+                src_win = None;
+                lazy.read_window(window, &Default::default())?
+            } else {
+                open(&a.input)?
+            }
+        }
+        _ => open(&a.input)?,
+    };
     let four = |v: &Option<Vec<f64>>| v.as_ref().map(|v| (v[0], v[1], v[2], v[3]));
     let scale = match a.scale.as_deref() {
         None => None,
@@ -76,7 +90,7 @@ pub fn run(a: Args) -> terrio::Result<()> {
     let o = TranslateOptions {
         bands: a.bands,
         output_type: a.ot.as_deref().map(parse_data_type).transpose()?,
-        src_win: four(&a.srcwin),
+        src_win,
         proj_win: four(&a.projwin),
         proj_win_srs: srs(&a.projwin_srs)?,
         out_size,
