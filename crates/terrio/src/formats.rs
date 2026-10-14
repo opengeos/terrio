@@ -284,7 +284,7 @@ impl VectorDriver {
             Self::KMZ => ("KMZ", "Zipped KML", &["kmz"], true, true),
             Self::GML => ("GML", "Geography Markup Language", &["gml"], true, true),
             Self::GPX => ("GPX", "GPS Exchange Format", &["gpx"], true, true),
-            Self::MapInfo => ("MapInfo File", "MapInfo Interchange Format", &["mif"], true, true),
+            Self::MapInfo => ("MapInfo File", "MapInfo TAB and Interchange Format", &["mif", "tab"], true, true),
             Self::OSM => ("OSM", "OpenStreetMap PBF", &["pbf"], true, false),
             Self::CSV => ("CSV", "Comma Separated Value", &["csv", "tsv"], true, true),
         };

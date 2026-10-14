@@ -30,7 +30,7 @@ gdal.PushErrorHandler("CPLQuietErrorHandler")
 
 TERRIO = os.environ.get("TERRIO_BIN", os.path.join(os.path.dirname(__file__), "..", "target", "release", "terrio"))
 RASTER_EXT = {".tif", ".tiff", ".asc", ".jp2", ".img", ".hdr", ".zarr", ".flt", ".bil", ".envi", ".sdat", ".rst", ".ers", ".dt1", ".dt2", ".xyz", ".grd", ".png", ".jpg", ".nc"}
-VECTOR_EXT = {".geojson", ".json", ".gpkg", ".parquet", ".fgb", ".shp", ".kml", ".kmz", ".gml", ".gpx", ".topojson", ".mif", ".csv", ".zip", ".pbf"}
+VECTOR_EXT = {".geojson", ".json", ".gpkg", ".parquet", ".fgb", ".shp", ".kml", ".kmz", ".gml", ".gpx", ".topojson", ".mif", ".tab", ".osm", ".csv", ".zip", ".pbf"}
 
 GDAL_TYPES = {
     ogr.wkbPoint: "Point",

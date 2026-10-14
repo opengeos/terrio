@@ -37,6 +37,8 @@ pub(crate) const MAIN_DATASET_EXTENSIONS: &[&str] = &[
     "gpx",
     "topojson",
     "mif",
+    "tab",
+    "osm",
     "csv",
     "tif",
     "tiff",

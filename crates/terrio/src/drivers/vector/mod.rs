@@ -14,6 +14,7 @@ pub mod osm;
 pub(crate) mod projjson;
 pub mod shapefile;
 pub mod sqlite;
+pub mod tab;
 pub mod topojson;
 pub mod wkt;
 pub mod xml;
@@ -36,6 +37,7 @@ pub(crate) fn read(path: &str, driver: VectorDriver, options: &VectorOpenOptions
         VectorDriver::KML => kml::read(path)?,
         VectorDriver::KMZ => kml::read_kmz(path)?,
         VectorDriver::TopoJSON => topojson::read(path)?,
+        VectorDriver::MapInfo if crate::formats::extension(path).as_deref() == Some("tab") => vec![tab::read(path)?],
         VectorDriver::MapInfo => vec![mapinfo::read(path)?],
         VectorDriver::OSM => osm::read(path)?,
         _ => return Ok(None),
@@ -55,6 +57,7 @@ pub(crate) fn write(layer: &Layer, path: &str, driver: VectorDriver, options: &V
         VectorDriver::KML => kml::write(std::slice::from_ref(layer), path)?,
         VectorDriver::KMZ => kml::write_kmz(std::slice::from_ref(layer), path)?,
         VectorDriver::TopoJSON => topojson::write(layer, path)?,
+        VectorDriver::MapInfo if crate::formats::extension(path).as_deref() == Some("tab") => tab::write(layer, path)?,
         VectorDriver::MapInfo => mapinfo::write(layer, path)?,
         _ => return Ok(false),
     }
@@ -98,6 +101,10 @@ pub(crate) fn read_parts(main: &[u8], name: &str, driver: VectorDriver, sidecar:
         VectorDriver::Shapefile => {
             let dbf = sidecar("dbf");
             Ok(vec![shapefile::parse(main, dbf.as_deref(), text("prj").as_deref(), text("cpg").as_deref(), stem)?])
+        }
+        VectorDriver::MapInfo if crate::formats::extension(name).as_deref() == Some("tab") => {
+            let dat = sidecar("dat").ok_or_else(|| crate::Error::InvalidData(format!("'{name}': no .dat file")))?;
+            Ok(vec![tab::parse(main, &dat, sidecar("map").as_deref(), sidecar("id").as_deref(), stem)?])
         }
         VectorDriver::MapInfo => Ok(vec![mapinfo::parse(main, sidecar("mid").as_deref(), stem)?]),
         d => Err(crate::Error::Unsupported(format!("the {} format is not made of several files", d.name()))),

@@ -344,6 +344,7 @@ const DATUMS: &[Datum] = &[
     (115, "European_Terrestrial_Reference_System_1989", "GRS 1980", 6378137.0, 298.257222101, Some(4258)),
     (28, "European_Datum_1950", "International 1924", 6378388.0, 297.0, Some(4230)),
     (79, "OSGB_1936", "Airy 1830", 6377563.396, 299.3249646, Some(4277)),
+    (33, "Reseau_Geodesique_Francais_1993", "GRS 1980", 6378137.0, 298.257222101, Some(4171)),
 ];
 
 /// MapInfo unit names: their WKT name and size in metres.
@@ -373,6 +374,8 @@ const PROJECTIONS: &[(u32, &str, &[&str])] = &[
     ),
     (10, "Mercator_1SP", &["central_meridian"]),
     (20, "Oblique_Stereographic", &["central_meridian", "latitude_of_origin", "scale_factor", "false_easting", "false_northing"]),
+    // All origin latitudes (29) first, for writing; 4 is the polar aspect only.
+    (29, "Lambert_Azimuthal_Equal_Area", &["longitude_of_center", "latitude_of_center"]),
     (4, "Lambert_Azimuthal_Equal_Area", &["longitude_of_center", "latitude_of_center"]),
 ];
 
@@ -384,7 +387,7 @@ fn geogcs(d: &Datum) -> String {
 }
 
 /// The CRS of a `CoordSys Earth Projection ...` clause, for the common projections and datums.
-fn coordsys_to_srs(line: &str) -> Option<SpatialRef> {
+pub(super) fn coordsys_to_srs(line: &str) -> Option<SpatialRef> {
     let lower = line.to_ascii_lowercase();
     let rest = lower.split("projection").nth(1)?;
     let rest = rest.split("bounds").next()?.split("affine").next()?;
@@ -425,11 +428,22 @@ fn coordsys_to_srs(line: &str) -> Option<SpatialRef> {
             }
         }
     }
+    // Lambert-93, the one Lambert Conformal Conic CRS GDAL identifies from MapInfo parameters.
+    let near = |a: f64, b: f64| (a - b).abs() < 1e-10;
+    if proj == 3
+        && datum_code == 33
+        && near(values[0], 3.0)
+        && near(values[1], 46.5)
+        && near(values[2], 44.0)
+        && [49.0, 49.00000000001, 49.00000000002].iter().any(|v| near(values[3], *v))
+    {
+        return SpatialRef::from_epsg(2154).ok();
+    }
     let mut wkt = format!("PROJCS[\"unnamed\",{},PROJECTION[\"{name}\"]", geogcs(datum));
     for (p, v) in params.iter().zip(&values) {
         let _ = write!(wkt, ",PARAMETER[\"{p}\",{v}]");
     }
-    if matches!(proj, 10 | 4) {
+    if matches!(proj, 10 | 4 | 29) {
         wkt.push_str(",PARAMETER[\"false_easting\",0],PARAMETER[\"false_northing\",0]");
     }
     let _ = write!(wkt, ",UNIT[\"{}\",{}]]", unit.1, unit.2);
@@ -447,12 +461,16 @@ fn wkt_param(wkt: &str, name: &str) -> Option<f64> {
 /// The `CoordSys` clause for a CRS: longitude/latitude, UTM zones, Web Mercator, and the
 /// projections of [`PROJECTIONS`] on the datums of [`DATUMS`]; other CRSs are written as
 /// non-earth coordinates.
-fn srs_to_coordsys(srs: &SpatialRef, extent: Option<(f64, f64, f64, f64)>) -> String {
+pub(super) fn srs_to_coordsys(srs: &SpatialRef, extent: Option<(f64, f64, f64, f64)>) -> String {
     let nonearth = || {
         let (x0, y0, x1, y1) = extent.unwrap_or((0.0, 0.0, 1.0, 1.0));
         format!("NonEarth Units \"m\" Bounds ({x0}, {y0}) ({x1}, {y1})")
     };
     let code = srs.epsg.unwrap_or(0);
+    if code == 2154 {
+        // Lambert-93 on RGF93, as GDAL writes it (the registry puts it on ETRS89).
+        return "Earth Projection 3, 33, \"m\", 3, 46.5, 44, 49, 700000, 6600000".into();
+    }
     if code == 3857 {
         return "Earth Projection 10, 157, \"m\", 0".into();
     }
@@ -467,6 +485,8 @@ fn srs_to_coordsys(srs: &SpatialRef, extent: Option<(f64, f64, f64, f64)>) -> St
             || (d.0 == 104 && lower.contains("wgs84"))
             || (d.0 == 74 && (lower.contains("nad83") || lower.contains("northamerican1983")))
             || (d.0 == 62 && (lower.contains("nad27") || lower.contains("northamerican1927")))
+            || (d.0 == 115 && lower.contains("etrs89"))
+            || (d.0 == 33 && lower.contains("rgf93"))
     });
     let Some(datum) = datum else { return nonearth() };
     let projection = PROJECTIONS.iter().find(|(_, name, _)| {
@@ -514,7 +534,7 @@ pub fn write(layer: &Layer, path: &str) -> Result<()> {
     Ok(())
 }
 
-fn column_name(name: &str) -> String {
+pub(super) fn column_name(name: &str) -> String {
     let mut s: String = name.chars().map(|c| if c.is_alphanumeric() || c == '_' { c } else { '_' }).collect();
     if !s.starts_with(|c: char| c.is_alphabetic() || c == '_') {
         s.insert(0, '_');
