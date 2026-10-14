@@ -13,3 +13,18 @@ authors = ["Qiusheng Wu <giswqs@gmail.com>"]
 
 [workspace.dependencies]
 terrio = { path = "crates/terrio", version = "0.0.1" }
+
+# Format drivers, coordinate reference systems
+wbraster = "0.2.1"
+wbvector = { version = "0.1.6", features = ["geoparquet", "kmz", "osmpbf"] }
+wbprojection = "0.3.3"
+
+tiff = { version = "0.11", features = ["zstd", "webp"] }
+half = "2"
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tempfile = "3"
+zip = { version = "9", default-features = false, features = ["deflate"] }
+ureq = "3"
+clap = { version = "4", features = ["derive"] }

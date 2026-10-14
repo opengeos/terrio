@@ -14,3 +14,9 @@ path = "src/main.rs"
 
 [dependencies]
 terrio.workspace = true
+clap.workspace = true
+serde_json.workspace = true
+gag = "1"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

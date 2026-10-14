@@ -8,8 +8,9 @@ of GDAL: the long tail of formats stays reachable through an optional GDAL backe
 
 - Pure Rust by default. Every default feature builds for `wasm32-unknown-unknown`; anything that
   needs C sits behind an opt-in feature.
-- Reuse the ecosystem. Build on existing crates (`tiff`, `geo`, `parquet`, `flatgeobuf`, `zarrs`,
-  `object_store`, `proj4rs`) and contribute fixes upstream rather than forking.
+- Reuse the ecosystem. The format codecs and projections come from whitebox_next_gen's pure-Rust
+  crates (`wbraster`, `wbvector`, `wbprojection`), plus `tiff` for GeoTIFF decoding. Where a
+  codec is wrong or missing, terrio supplies its own driver and reports the problem upstream.
 - One data model across formats, so a driver is a small amount of code and conversions are free.
 - Read cloud data in place: range requests, lazy tiles and chunks, no full download.
 - Correctness is measured against GDAL. Every driver is tested on real-world files and its output
@@ -82,9 +83,9 @@ of GDAL: the long tail of formats stays reachable through an optional GDAL backe
 - Point clouds (LAS, LAZ, COPC).
 - Raster algebra and terrain tools (hillshade, slope, aspect).
 
-## Open questions
+## Decisions
 
-- Sync or async at the core API: async suits cloud I/O and the browser, sync suits most callers.
-  The likely answer is an async core with blocking wrappers.
-- Whether GeoPackage reads SQLite in pure Rust or through an opt-in C dependency.
-- How much of the EPSG database to bundle, given its size in WebAssembly builds.
+- The core API is synchronous and reads datasets into memory; remote files are downloaded first.
+  Range requests for Cloud Optimized GeoTIFFs come with windowed reading.
+- GeoPackage uses `wbvector`'s pure-Rust SQLite engine, so no C dependency is needed.
+- The EPSG registry comes from `wbprojection`.
