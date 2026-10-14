@@ -170,7 +170,16 @@ See [js/README.md](js/README.md) for the formats available in WebAssembly.
 ## Testing against GDAL
 
 `scripts/fetch_test_data.sh` downloads real-world files (Natural Earth, USGS 3DEP, Sentinel-2,
-NASA ECOSTRESS and OPERA products, and more) and derives copies in other formats with GDAL. Then:
+NASA ECOSTRESS and OPERA products, and more) and derives copies in other formats with GDAL.
+`scripts/conformance.py` runs every comparison below and writes the conformance report
+(`docs/conformance.md`, per format and operation: cases identical to GDAL, within tolerance or
+different):
+
+```sh
+python scripts/conformance.py ../terrio-data --output docs/conformance.md
+```
+
+The comparisons, one by one:
 
 ```sh
 TERRIO_TEST_DATA=../terrio-data cargo test             # tests with values checked against GDAL

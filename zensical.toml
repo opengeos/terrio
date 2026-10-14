@@ -21,6 +21,7 @@ nav = [
   { "Python" = "python.md" },
   { "JavaScript" = "javascript.md" },
   { "Testing Against GDAL" = "testing.md" },
+  { "Conformance" = "conformance.md" },
   { "Benchmarks" = "benchmarks.md" },
   { "Architecture" = "architecture.md" },
   { "Contributing" = "contributing.md" },
