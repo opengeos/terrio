@@ -1,7 +1,7 @@
 # terrio
 
 Python bindings for [terrio](https://github.com/opengeos/terrio): read, write, convert and
-reproject geospatial rasters and vector datasets in pure Rust, without GDAL. Wheels need only
+reproject geospatial rasters, vector datasets and point clouds in pure Rust, without GDAL. Wheels need only
 NumPy.
 
 ```sh
@@ -44,6 +44,30 @@ gdf = layer.to_geopandas()  # with geopandas installed
 
 terrio.write_vector(layer.to_crs("EPSG:3857"), "countries_3857.fgb")
 terrio.write_vector(collection, "countries.geojson")  # GeoJSON dicts, GeoDataFrames...
+```
+
+## Point clouds
+
+LAS 1.0 to 1.4 (point formats 0 to 10, extra bytes), LAZ and COPC. Remote COPC files are read in
+place: only the octree nodes a read needs are fetched, with HTTP range requests.
+
+```python
+f = terrio.open_points("https://s3.amazonaws.com/hobu-lidar/autzen-classified.copc.laz")
+f.format, f.point_count, f.crs, f.bounds, f.header, f.dimensions
+f.info(stats=True)  # the summary `terrio info --json --stats` prints: classes, returns...
+points = f.read(bounds=(637000, 851000, 637500, 851500), max_level=4)  # or resolution=, max_points=
+
+points = terrio.read_points("tile.laz", classes=[2], returns=["last", "only"])
+z = points["z"]  # NumPy arrays: x, y, z (scaled float64), intensity (uint16), classification...
+points.to_dict()  # {name: array}
+points.to_numpy()  # a structured array
+points.write("ground.copc.laz")  # LAS, LAZ or COPC
+dem = points.grid(1.0, stat="idw")  # a Raster (min, max, mean, idw, count, stdev; like PDAL)
+points.to_layer(dimensions=["z", "intensity"]).to_geopandas()
+terrio.convert_points("tile.laz", "tile_wgs84.laz", t_srs="EPSG:4326")
+terrio.convert_points("tile.laz", "ground.gpkg", classes=[2])  # a layer of points
+
+terrio.PointCloud.from_dict({"x": xs, "y": ys, "z": zs, "intensity": i}, crs="EPSG:32610")
 ```
 
 ## Operations

@@ -97,7 +97,7 @@ jobs:
       - uses: mamba-org/setup-micromamba@v2
         with:
           environment-name: gdal
-          create-args: gdal libgdal-arrow-parquet libgdal-jp2openjpeg libgdal-netcdf libgdal-hdf5 numpy pip pytest maturin pyproj
+          create-args: gdal libgdal-arrow-parquet libgdal-jp2openjpeg libgdal-netcdf libgdal-hdf5 numpy pip pytest maturin pyproj pdal laspy lazrs-python
           cache-environment: true
       - uses: actions/cache@v4
         with:
@@ -137,3 +137,6 @@ jobs:
         continue-on-error: true
         shell: micromamba-shell {0}
         run: python scripts/compare_dem_calc_with_gdal.py terrio-data
+      - name: Compare point clouds with laspy and PDAL
+        shell: micromamba-shell {0}
+        run: python scripts/compare_pointclouds.py terrio-data

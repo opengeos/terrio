@@ -197,47 +197,59 @@ pub(crate) fn read_geo_tags_from<R: Read + Seek>(mut f: R) -> Option<GeoTags> {
     out.metadata = ascii(GDAL_METADATA).map(crate::drivers::gtiff_write::parse_gdal_metadata).unwrap_or_default();
 
     if let Some(keys) = keys {
-        let key = |id: u16| -> Option<(u16, u16, u16)> {
-            keys.get(4..)?.chunks(4).find(|k| k.len() == 4 && k[0] == id).map(|k| (k[1], k[2], k[3]))
-        };
-        let short_key = |id: u16| key(id).filter(|(loc, _, _)| *loc == 0).map(|(_, _, v)| v);
-        let ascii_key = |id: u16| {
-            key(id).and_then(|(loc, n, off)| {
-                (loc == GEO_ASCII_PARAMS).then(|| ascii(GEO_ASCII_PARAMS)).flatten().map(|s| {
-                    let start = (off as usize).min(s.len());
-                    let end = (start + n as usize).min(s.len());
-                    s[start..end].trim_end_matches('|').to_string()
-                })
-            })
-        };
-        out.pixel_is_point = short_key(1025) == Some(2);
-        let projected = short_key(3072);
-        let geographic = short_key(2048);
-        out.epsg = match (short_key(1024), projected, geographic) {
-            (_, Some(code), _) if code != 0 && code != 32767 => Some(code as u32),
-            (Some(2), _, Some(code)) if code != 0 && code != 32767 => Some(code as u32),
-            (Some(1), _, _) => user_defined_projected(short_key(3074), geographic, ascii_key(1026).or_else(|| ascii_key(3073))),
-            _ => None,
-        };
-        if out.epsg.is_none() && short_key(1024) == Some(1) {
-            let double_key = |id: u16| {
-                key(id).and_then(|(loc, _, off)| match loc {
-                    GEO_DOUBLE_PARAMS => doubles(GEO_DOUBLE_PARAMS).and_then(|d| d.get(off as usize).copied()),
-                    0 => Some(off as f64),
-                    _ => None,
-                })
-            };
-            out.proj4 = user_defined_proj4(short_key(3075), geographic, short_key(3076), &double_key);
-        }
-        if out.epsg.is_none() && out.proj4.is_none() {
-            // Geographic user-defined CRSs, ESRI PE citations, and methods not handled above.
-            let doubles = doubles(GEO_DOUBLE_PARAMS).unwrap_or_default();
-            let ascii = ascii(GEO_ASCII_PARAMS).unwrap_or_default();
-            out.crs = crate::drivers::geokeys::user_defined_crs(&crate::drivers::geokeys::GeoKeys { keys, doubles, ascii });
-            out.epsg = out.crs.as_ref().and_then(|c| c.epsg);
-        }
+        apply_geokeys(&mut out, keys, doubles(GEO_DOUBLE_PARAMS), ascii(GEO_ASCII_PARAMS));
     }
     Some(out)
+}
+
+/// The CRS of a GeoKey directory and its double and ASCII parameters (as stored in GeoTIFF tags
+/// or LAS `LASF_Projection` records).
+pub(crate) fn crs_from_geokeys(keys: &[u16], doubles: Option<&[f64]>, ascii: Option<&str>) -> wbraster::CrsInfo {
+    let mut out = GeoTags::default();
+    apply_geokeys(&mut out, keys, doubles, ascii);
+    out.crs_info()
+}
+
+/// Sets the CRS (and the raster type) of `out` from a GeoKey directory.
+fn apply_geokeys(out: &mut GeoTags, keys: &[u16], doubles: Option<&[f64]>, ascii: Option<&str>) {
+    let key =
+        |id: u16| -> Option<(u16, u16, u16)> { keys.get(4..)?.chunks(4).find(|k| k.len() == 4 && k[0] == id).map(|k| (k[1], k[2], k[3])) };
+    let short_key = |id: u16| key(id).filter(|(loc, _, _)| *loc == 0).map(|(_, _, v)| v);
+    let ascii_key = |id: u16| {
+        key(id).and_then(|(loc, n, off)| {
+            (loc == GEO_ASCII_PARAMS).then_some(ascii).flatten().map(|s| {
+                let start = (off as usize).min(s.len());
+                let end = (start + n as usize).min(s.len());
+                s[start..end].trim_end_matches('|').to_string()
+            })
+        })
+    };
+    out.pixel_is_point = short_key(1025) == Some(2);
+    let projected = short_key(3072);
+    let geographic = short_key(2048);
+    out.epsg = match (short_key(1024), projected, geographic) {
+        (_, Some(code), _) if code != 0 && code != 32767 => Some(code as u32),
+        (Some(2), _, Some(code)) if code != 0 && code != 32767 => Some(code as u32),
+        (Some(1), _, _) => user_defined_projected(short_key(3074), geographic, ascii_key(1026).or_else(|| ascii_key(3073))),
+        _ => None,
+    };
+    if out.epsg.is_none() && short_key(1024) == Some(1) {
+        let double_key = |id: u16| {
+            key(id).and_then(|(loc, _, off)| match loc {
+                GEO_DOUBLE_PARAMS => doubles.and_then(|d| d.get(off as usize).copied()),
+                0 => Some(off as f64),
+                _ => None,
+            })
+        };
+        out.proj4 = user_defined_proj4(short_key(3075), geographic, short_key(3076), &double_key);
+    }
+    if out.epsg.is_none() && out.proj4.is_none() {
+        // Geographic user-defined CRSs, ESRI PE citations, and methods not handled above.
+        let doubles = doubles.unwrap_or_default();
+        let ascii = ascii.unwrap_or_default();
+        out.crs = crate::drivers::geokeys::user_defined_crs(&crate::drivers::geokeys::GeoKeys { keys, doubles, ascii });
+        out.epsg = out.crs.as_ref().and_then(|c| c.epsg);
+    }
 }
 
 impl GeoTags {

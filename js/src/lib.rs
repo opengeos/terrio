@@ -9,7 +9,10 @@
 //! ds.info();                 // the same summary as `terrio info --json`
 //! const band = ds.readBand(1); // a Float32Array, Uint8Array... of the band's own type
 //! const fgb = open(geojsonBytes, "roads.geojson").toBytes("roads.fgb");
+//! const points = readPoints(lazBytes, "lidar.laz", { classes: [2] }); // LAS, LAZ, COPC
 //! ```
+
+mod pointcloud;
 
 use serde::Deserialize;
 use terrio::crs::{SpatialRef, Transformer};

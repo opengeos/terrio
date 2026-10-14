@@ -22,6 +22,16 @@ roads.toGeoJSON();                // a FeatureCollection object
 const fgb = roads.toBytes("roads.fgb", { tSrs: "EPSG:3857", where: "lanes > 2" });
 
 const [xs, ys] = transformPoints([-122.4], [37.8], "EPSG:4326", "EPSG:32610");
+
+// Point clouds: LAS, LAZ and COPC.
+const lidar = openPoints(lazBytes, "tile.laz");
+lidar.format, lidar.pointCount, lidar.crs, lidar.info();
+const ground = lidar.read({ classes: [2], bounds: [x0, y0, x1, y1] }); // COPC: also maxLevel, resolution
+ground.get("z");                  // Float64Array; intensity is a Uint16Array...
+ground.toBytes("ground.copc.laz"); // LAS, LAZ or COPC
+ground.grid(1, { stat: ["idw"] }); // a raster Dataset
+ground.toVectorBytes("ground.fgb", ["z", "intensity"]);
+pointsFromArrays({ x, y, z, classification }, "EPSG:32610");
 ```
 
 In WebAssembly, these formats are read from and written to memory:
@@ -30,6 +40,7 @@ In WebAssembly, these formats are read from and written to memory:
 |---|---|---|
 | Raster | GeoTIFF/COG, Esri ASCII grid | GeoTIFF, COG (lossless compressions), Esri ASCII grid |
 | Vector | GeoJSON, TopoJSON, FlatGeobuf\*, GeoParquet, CSV, KML, KMZ, GML, GPX, OSM PBF, zip archives of these, Shapefile and MapInfo (MIF/MID) in zip archives | GeoJSON, TopoJSON, FlatGeobuf, KML, KMZ, GML, GPX |
+| Point cloud | LAS, LAZ, COPC | LAS, LAZ, COPC |
 
 \* The format library's FlatGeobuf reader overflows on large files in 32-bit WebAssembly; terrio's
 own FlatGeobuf driver will replace it.

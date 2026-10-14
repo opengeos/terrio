@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Downloads the real-world test files into a directory (default: ../terrio-data), and derives
-# copies in other formats with GDAL when ogr2ogr and gdal_translate are available.
+# copies in other formats with GDAL when ogr2ogr and gdal_translate are available, and point
+# clouds of every LAS point format with laspy when it is installed.
 #
 # Usage: scripts/fetch_test_data.sh [DIR]
 set -euo pipefail
@@ -45,6 +46,31 @@ for z in ne_countries ne_places nybb; do [ -d "$z" ] || unzip -q -o "$z.zip" -d 
 # OSM XML, when osmium is installed.
 if [ ! -e liechtenstein.osm ] && command -v osmium >/dev/null; then
   osmium cat liechtenstein.osm.pbf -o liechtenstein.osm
+fi
+# Point clouds (LAS 1.0-1.4, LAZ, COPC) from the PDAL and laspy test suites, and a COPC file of
+# USGS 3DEP lidar over Madison, Wisconsin (23 MB).
+mkdir -p pointcloud
+pdal=https://raw.githubusercontent.com/PDAL/PDAL/2.10.2/test/data
+laspy=https://raw.githubusercontent.com/laspy/laspy/2.7.0/tests/data
+pc_files=(
+  "$pdal/las/permutations/1.0_0.las" "$pdal/las/permutations/1.0_1.las" "$pdal/las/permutations/1.1_0.las"
+  "$pdal/las/permutations/1.1_1.las" "$pdal/las/permutations/1.2_0.las" "$pdal/las/permutations/1.2_1.las"
+  "$pdal/las/permutations/1.2_2.las" "$pdal/las/permutations/1.2_3.las" "$pdal/las/1.2-with-color.las"
+  "$pdal/las/extrabytes.las" "$pdal/las/test_utm16.las" "$pdal/las/mvk-thin.las" "$pdal/las/test1_4.las"
+  "$pdal/las/autzen_trim.las" "$pdal/las/no-points.las" "$pdal/las/epsg_4326.las" "$pdal/las/4_6_crop.las"
+  "$pdal/laz/simple-laszip-compressor-version-1.2r0.laz" "$pdal/laz/las_with_several_extra_byte_bloc.laz"
+  "$laspy/1_4_w_evlr.las" "$laspy/1_4_w_evlr.laz" "$laspy/simple.copc.laz" "$laspy/simple_with_page.copc.laz"
+  "$laspy/simple.laz" "$laspy/simple1_3.las" "$laspy/simple1_4.las" "$laspy/extra.laz"
+  "$laspy/plane.laz" "$laspy/vegetation_1_3.las" "$laspy/autzen_trim.laz" "$laspy/unregistered_extra_bytes.las"
+  "$laspy/file_with_both_wkt_and_geotiff_vlrs.las"
+  "$base/lidar/madison.copc.laz"
+)
+for u in "${pc_files[@]}"; do
+  [ -e "pointcloud/$(basename "$u")" ] || curl -sSfL -o "pointcloud/$(basename "$u")" "$u"
+done
+# Every point format (0 to 10) as LAS and LAZ, written by laspy, when laspy and lazrs are installed.
+if [ ! -e pointcloud/synthetic/format10.laz ] && python3 -c "import laspy, lazrs" 2>/dev/null; then
+  python3 "$here/make_pointcloud_samples.py" pointcloud/synthetic
 fi
 
 if command -v ogr2ogr >/dev/null && command -v gdal_translate >/dev/null; then

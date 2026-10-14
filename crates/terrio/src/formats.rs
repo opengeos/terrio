@@ -3,7 +3,7 @@
 use serde::Serialize;
 use std::path::Path;
 
-/// Whether a driver handles rasters or vectors.
+/// Whether a driver handles rasters, vectors or point clouds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Kind {
@@ -11,6 +11,9 @@ pub enum Kind {
     Raster,
     /// Features with geometries and attributes.
     Vector,
+    /// Point clouds (see [`crate::pointcloud`]).
+    #[serde(rename = "pointcloud")]
+    PointCloud,
 }
 
 /// A raster format driver.
@@ -343,9 +346,35 @@ impl VectorDriver {
     }
 }
 
-/// Every driver, rasters first.
+/// Every driver: rasters, vectors, then point clouds.
 pub fn all_drivers() -> Vec<DriverInfo> {
-    RasterDriver::ALL.iter().map(|d| d.info()).chain(VectorDriver::ALL.iter().map(|d| d.info())).collect()
+    let point_clouds = [
+        DriverInfo {
+            name: "LAS",
+            long_name: "ASPRS LAS 1.0 to 1.4",
+            kind: Kind::PointCloud,
+            extensions: &["las"],
+            read: true,
+            write: true,
+        },
+        DriverInfo {
+            name: "LAZ",
+            long_name: "LASzip-compressed LAS",
+            kind: Kind::PointCloud,
+            extensions: &["laz"],
+            read: true,
+            write: true,
+        },
+        DriverInfo {
+            name: "COPC",
+            long_name: "Cloud Optimized Point Cloud",
+            kind: Kind::PointCloud,
+            extensions: &["copc.laz"],
+            read: true,
+            write: true,
+        },
+    ];
+    RasterDriver::ALL.iter().map(|d| d.info()).chain(VectorDriver::ALL.iter().map(|d| d.info())).chain(point_clouds).collect()
 }
 
 /// The lowercase extension of a path.

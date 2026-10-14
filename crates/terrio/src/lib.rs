@@ -1,9 +1,9 @@
-//! Pure-Rust geospatial raster and vector data I/O.
+//! Pure-Rust geospatial raster, vector and point cloud data I/O.
 //!
-//! terrio opens rasters and vector datasets in many formats through one API, converts between
-//! them, and reprojects. Format codecs come from the `wbraster`, `wbvector` and `wbprojection`
-//! crates; terrio adds format detection, remote and archived inputs, fixes for what those drivers
-//! miss, and GDAL-style operations.
+//! terrio opens rasters, vector datasets and point clouds ([`pointcloud`]) in many formats
+//! through one API, converts between them, and reprojects. Format codecs come from the `wbraster`,
+//! `wbvector`, `wbprojection` and `laz` crates; terrio adds format detection, remote and archived
+//! inputs, fixes for what those drivers miss, and GDAL-style operations.
 //!
 //! ```no_run
 //! let ds = terrio::open("countries.gpkg")?;
@@ -24,6 +24,7 @@ pub mod http;
 pub mod info;
 pub mod memory;
 pub mod ops;
+pub mod pointcloud;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod s3;
 pub mod vector;

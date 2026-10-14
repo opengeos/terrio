@@ -1,7 +1,7 @@
 # Roadmap
 
-terrio reads, writes, converts and reprojects the geospatial formats most workflows use, in pure
-Rust, so that it builds anywhere Rust does, WebAssembly included. It does not try to replace all
+terrio reads, writes, converts and reprojects the geospatial formats most workflows use (rasters,
+vector data and point clouds), in pure Rust, so that it builds anywhere Rust does, WebAssembly included. It does not try to replace all
 of GDAL: the long tail of formats stays reachable through an optional GDAL backend.
 
 ## Principles
@@ -87,6 +87,21 @@ of GDAL: the long tail of formats stays reachable through an optional GDAL backe
 - Benchmarks against GDAL for reading, writing, warping and converting.
 - A minimum supported Rust version policy.
 
+## Point clouds
+
+Done: LAS 1.0 to 1.4 (point formats 0 to 10, extra bytes, VLRs and EVLRs, WKT and GeoKey CRSs),
+LAZ (LASzip, including its first unchunked compressor) and COPC, read and written; COPC files,
+local or remote, read in place by bounds, octree level, point spacing or point budget, with HTTP
+range requests; filters by bounds, classes and returns; reprojection; gridding to rasters as PDAL's
+`writers.gdal` does (min, max, mean, IDW, count, standard deviation, window filling); conversion to
+and from vector point layers; `terrio info`, `terrio convert` and `terrio grid`; Python (NumPy) and
+JavaScript (typed arrays) bindings. Every value is compared with laspy, and headers, COPC queries,
+grids and reprojections with PDAL (`scripts/compare_pointclouds.py`).
+
+Still to do: EPT and other point cloud formats (PLY, E57), streaming reads and writes of files
+larger than memory, waveform data packets, more PDAL filters (ground classification, outliers,
+thinning by voxel), and gridding with TIN or nearest-neighbour interpolation.
+
 ## Later
 
 - CRS: datum shift grids (NTv2, GeoTIFF grids), vertical datums, time-dependent transformations
@@ -94,7 +109,6 @@ of GDAL: the long tail of formats stays reachable through an optional GDAL backe
 - NetCDF and HDF5 in pure Rust: classic and netCDF-4 reading and classic (CDF-1/2/5) writing are
   done; netCDF-4 writing and groups below the root remain.
 - JPEG 2000 and other compressed raster formats as pure-Rust decoders mature.
-- Point clouds (LAS, LAZ, COPC).
 - Band histograms as `gdalinfo -hist` computes them; color relief written as a VRT.
 
 ## Decisions
@@ -110,3 +124,7 @@ of GDAL: the long tail of formats stays reachable through an optional GDAL backe
   the datum transformations GDAL lists for them, so that terrio picks the same transformation as
   GDAL for each point. The projection formulas are PROJ's, ported to Rust; `wbprojection` remains
   the fallback for projections EPSG CRSs do not use and for WKT 2 parsing.
+- Point clouds use the `laz` crate for LASzip, and terrio's own LAS and COPC code rather than the
+  `las` crate (whose header reader keeps only the first EVLR) or `wblidar` (which reads COPC points
+  in hierarchy order and cannot read LASzip's unchunked compressor). Point clouds are not
+  `Dataset`s: they have their own reader (`pointcloud::open_points`) and columnar `PointCloud`.

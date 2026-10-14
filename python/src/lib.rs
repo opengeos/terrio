@@ -2,6 +2,7 @@
 //! Python package.
 
 mod ops;
+mod pointcloud;
 mod raster;
 mod terrain;
 mod vector;
@@ -59,5 +60,6 @@ fn _terrio(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<vector::PyVectorDataset>()?;
     ops::register(m)?;
     terrain::register(m)?;
+    pointcloud::register(m)?;
     Ok(())
 }

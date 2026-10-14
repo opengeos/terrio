@@ -179,7 +179,9 @@ fn list_layers(py: Python<'_>, path: &str) -> PyResult<Vec<String>> {
 ///
 /// Returns:
 ///     dict: The summary: driver, size, bands, CRS, extent... for rasters; driver and layers
-///     (fields, geometry type, feature count, CRS, extent) for vector datasets.
+///     (fields, geometry type, feature count, CRS, extent) for vector datasets; header, CRS,
+///     dimensions, VLRs and the COPC octree for point clouds (LAS, LAZ, COPC), with
+///     classification and return counts when `stats` is true.
 #[pyfunction]
 #[pyo3(signature = (path, stats=false, layers=None))]
 fn info<'py>(py: Python<'py>, path: &str, stats: bool, layers: Option<Vec<String>>) -> PyResult<Bound<'py, PyAny>> {
@@ -200,8 +202,8 @@ fn info<'py>(py: Python<'py>, path: &str, stats: bool, layers: Option<Vec<String
 /// The formats terrio reads and writes.
 ///
 /// Returns:
-///     list[dict]: One entry per driver: `name`, `long_name`, `kind` (`"raster"` or
-///     `"vector"`), `extensions`, `read` and `write`.
+///     list[dict]: One entry per driver: `name`, `long_name`, `kind` (`"raster"`, `"vector"`
+///     or `"pointcloud"`), `extensions`, `read` and `write`.
 #[pyfunction]
 fn drivers<'py>(py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
     let text = serde_json::to_string(&terrio::formats::all_drivers()).map_err(|e| invalid(e.to_string()))?;

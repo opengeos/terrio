@@ -174,3 +174,54 @@ test("zipped shapefiles are read from memory", { skip: !DATA && "TERRIO_TEST_DAT
   assert.equal(fc.features.length, 177);
   assert.ok(fc.features.some((f) => f.properties.NAME === "Côte d'Ivoire"));
 });
+
+test("points from arrays, to LAS, LAZ and COPC bytes and back", () => {
+  const n = 5000;
+  const x = Float64Array.from({ length: n }, (_, i) => 500000 + (i % 100) * 1.25);
+  const y = Float64Array.from({ length: n }, (_, i) => 4100000 + Math.floor(i / 100) * 1.5);
+  const z = Float64Array.from({ length: n }, (_, i) => 100 + (i % 37) * 0.25);
+  const classification = Uint8Array.from({ length: n }, (_, i) => (i % 3 === 0 ? 2 : 1));
+  const intensity = Uint16Array.from({ length: n }, (_, i) => i);
+  const height = Float32Array.from({ length: n }, (_, i) => i / 8);
+  const pc = terrio.pointsFromArrays({ x, y, z, classification, intensity, height }, "EPSG:32610");
+  assert.equal(pc.length, n);
+  for (const name of ["a.las", "a.laz", "a.copc.laz"]) {
+    const file = terrio.openPoints(pc.toBytes(name), name);
+    assert.equal(file.format, { "a.las": "LAS", "a.laz": "LAZ", "a.copc.laz": "COPC" }[name]);
+    assert.equal(file.crs, "EPSG:32610");
+    assert.equal(file.pointCount, n);
+    const back = file.read();
+    assert.ok(back.dimensions.includes("height"));
+    const sum = (a) => a.reduce((s, v) => s + Number(v), 0);
+    assert.equal(sum(back.get("intensity")), sum(intensity));
+    assert.ok(Math.abs(sum(back.get("z")) - sum(z)) < 1e-6);
+    assert.ok(back.get("height") instanceof Float32Array);
+  }
+  // Filters while reading.
+  const ground = terrio.readPoints(pc.toBytes("a.laz"), "a.laz", { classes: [2], bounds: [500000, 4100000, 500050, 4100030] });
+  assert.ok(ground.length > 0 && ground.length < n / 3);
+  assert.ok(ground.get("classification").every((c) => c === 2));
+  // A DEM.
+  const dem = pc.grid(2, { stat: ["min", "count"] });
+  assert.equal(dem.kind, "raster");
+  assert.equal(dem.count, 2);
+  const counts = dem.readBand(2);
+  assert.ok(counts.reduce((s, v) => s + v, 0) >= n);
+  // A FlatGeobuf of points.
+  const fgb = terrio.open(pc.toVectorBytes("points.fgb", ["z", "classification"]), "points.fgb");
+  assert.equal(fgb.toGeoJSON().features.length, n);
+});
+
+test("COPC files read by octree level", { skip: !DATA && "TERRIO_TEST_DATA is not set" }, (t) => {
+  const path = join(DATA, "pointcloud", "simple.copc.laz");
+  if (!existsSync(path)) return t.skip("simple.copc.laz is missing");
+  const file = terrio.openPoints(readFileSync(path), "simple.copc.laz");
+  assert.equal(file.format, "COPC");
+  // PDAL's readers.copc reads the same counts.
+  assert.deepEqual([0, 1, 2, 3].map((l) => file.read({ maxLevel: l }).length), [24, 90, 287, 1065]);
+  const info = file.info();
+  assert.equal(info.copc.depth, 4);
+  const laz = terrio.readPoints(readFileSync(join(DATA, "pointcloud", "autzen_trim.laz")), "autzen_trim.laz");
+  assert.equal(laz.length, 110000);
+  assert.equal(laz.get("x")[0], 637177.98);
+});

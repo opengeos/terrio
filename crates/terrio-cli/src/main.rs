@@ -5,7 +5,7 @@ mod cmd;
 use clap::{Parser, Subcommand};
 use std::process::ExitCode;
 
-/// Pure-Rust geospatial raster and vector data I/O.
+/// Pure-Rust geospatial raster, vector and point cloud data I/O.
 #[derive(Parser)]
 #[command(name = "terrio", version, about)]
 struct Cli {
@@ -14,10 +14,12 @@ struct Cli {
 }
 
 #[derive(Subcommand)]
+#[allow(clippy::large_enum_variant)]
 enum Command {
-    /// Summarize a raster or vector dataset.
+    /// Summarize a raster, vector dataset or point cloud.
     Info(cmd::info::Args),
-    /// Convert a dataset to another format, optionally reprojecting it.
+    /// Convert a dataset to another format, optionally reprojecting it. Point clouds convert to
+    /// LAS, LAZ, COPC or vector point layers.
     Convert(cmd::convert::Args),
     /// List the formats terrio reads and writes.
     Formats(cmd::formats::Args),
@@ -41,6 +43,9 @@ enum Command {
     Proximity(cmd::proximity::Args),
     /// Merge raster areas smaller than a threshold into their largest neighbour (like gdal_sieve.py).
     Sieve(cmd::sieve::Args),
+    /// Grid a point cloud into a raster: min, max, mean, IDW, count or standard deviation per cell
+    /// (like PDAL's writers.gdal).
+    Grid(cmd::grid::Args),
 }
 
 fn main() -> ExitCode {
@@ -64,6 +69,7 @@ fn main() -> ExitCode {
         Command::Calc(a) => cmd::calc::run(a),
         Command::Proximity(a) => cmd::proximity::run(a),
         Command::Sieve(a) => cmd::sieve::run(a),
+        Command::Grid(a) => cmd::grid::run(a),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,

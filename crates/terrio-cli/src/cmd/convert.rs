@@ -51,6 +51,10 @@ pub struct Args {
     raster_options: Vec<String>,
     #[command(flatten)]
     vector: super::vector_opts::VectorArgs,
+    #[command(flatten)]
+    points: super::points::PointArgs,
+    #[command(flatten)]
+    point_write: super::points::PointWriteArgs,
 }
 
 /// Splits `KEY=VALUE` options.
@@ -62,6 +66,11 @@ pub(super) fn key_values(options: &[String]) -> terrio::Result<Vec<(&str, &str)>
 }
 
 pub fn run(a: Args) -> terrio::Result<()> {
+    if terrio::pointcloud::is_point_cloud_path(&a.input) {
+        let t_srs = a.t_srs.as_deref().map(SpatialRef::parse).transpose()?;
+        let format = a.format.as_deref().filter(|f| terrio::pointcloud::PointFormat::from_name(f).is_some());
+        return super::points::convert(&a.input, &a.output, format, t_srs, &a.vector, &a.points, &a.point_write);
+    }
     let ds = if a.srcwin.is_some() || a.overview.is_some() {
         let mut r = super::quiet(|| terrio::open_raster_lazy(&a.input))?;
         let opts = WindowOptions { bands: Vec::new(), overview: a.overview };

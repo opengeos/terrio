@@ -9,7 +9,8 @@ pub struct Args {
     /// Print JSON.
     #[arg(long)]
     json: bool,
-    /// Compute band statistics.
+    /// Compute band statistics; for point clouds, read every point to count classifications and
+    /// returns and give each dimension's range.
     #[arg(long)]
     stats: bool,
     /// Only these layers of a vector dataset.

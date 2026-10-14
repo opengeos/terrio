@@ -14,6 +14,9 @@ pub enum Info {
     Raster(Box<RasterInfo>),
     /// A vector summary.
     Vector(VectorInfo),
+    /// A point cloud summary.
+    #[serde(rename = "pointcloud")]
+    PointCloud(Box<crate::pointcloud::info::PointCloudInfo>),
 }
 
 /// A raster summary.
@@ -92,7 +95,7 @@ pub struct CrsSummary {
 }
 
 impl CrsSummary {
-    fn new(s: &SpatialRef) -> Self {
+    pub(crate) fn new(s: &SpatialRef) -> Self {
         Self { epsg: s.epsg, name: s.name(), wkt: s.to_wkt() }
     }
 }
@@ -206,6 +209,10 @@ pub fn lazy_raster_info(r: &mut LazyRaster, options: &InfoOptions) -> crate::Res
 /// Summarizes the dataset at a path. GeoTIFFs (local or remote) are read in place, fetching only
 /// their headers unless statistics are asked for; other datasets are read whole.
 pub fn info_path(path: &str, options: &InfoOptions) -> crate::Result<Info> {
+    if crate::pointcloud::is_point_cloud_path(path) {
+        let mut r = crate::pointcloud::open_points(path)?;
+        return Ok(Info::PointCloud(Box::new(crate::pointcloud::info::point_cloud_info(&mut r, options.statistics)?)));
+    }
     if !matches!(crate::vfs::Location::parse(path), crate::vfs::Location::Zip { .. })
         && let Some(mut r) = LazyRaster::open_tiff(path)?
     {
@@ -322,6 +329,7 @@ impl Info {
                     }
                 }
             }
+            Info::PointCloud(p) => s.push_str(&p.to_text()),
             Info::Vector(v) => {
                 let _ = writeln!(s, "Driver: {}", v.driver);
                 for l in &v.layers {

@@ -1,6 +1,6 @@
 # terrio
 
-Pure-Rust geospatial raster and vector data I/O.
+Pure-Rust geospatial raster, vector and point cloud data I/O.
 
 Documentation: <https://terrio.opengeos.org>
 
@@ -51,6 +51,16 @@ terrio calc -A red.tif -B nir.tif --calc "(B - A * 1.0) / (B + A * 1.0)" --type 
 terrio proximity roads.tif dist.tif --values 1 --distunits GEO --maxdist 5000  # like gdal_proximity.py
 terrio sieve landcover.tif clean.tif --st 10 -8                            # like gdal_sieve.py
 terrio formats                                   # list the drivers
+
+# Point clouds: LAS 1.0-1.4 (formats 0-10, extra bytes), LAZ, COPC (read in place, local or remote)
+terrio info tile.laz --stats                     # header, CRS, classes and returns (like pdal info)
+terrio info https://host/lidar.copc.laz          # COPC octree depth and points per level
+terrio convert tile.laz tile.copc.laz            # LAS <-> LAZ <-> COPC
+terrio convert https://host/lidar.copc.laz sub.laz --bounds 637000 851000 637500 851500 --max-level 4
+terrio convert tile.laz ground.laz --class 2 --returns last,only --t-srs EPSG:4326
+terrio convert tile.laz points.gpkg --dims z,intensity,classification   # to a vector layer of points
+terrio grid tile.laz dsm.tif --tr 1 --stat max                          # like PDAL's writers.gdal
+terrio grid tile.laz dtm.tif --tr 1 --stat idw --class 2 --window-size 3
 ```
 
 ## Library
@@ -76,6 +86,26 @@ module) for HTTP.
 Datasets can also be opened from bytes and written to bytes (`terrio::memory`), for data
 already in memory and for WebAssembly, which has no file system.
 
+Point clouds are read into columns, one typed vector per dimension (`terrio::pointcloud`):
+
+```rust,no_run
+use terrio::pointcloud::{self, PointFilter, PointReadOptions};
+
+// A COPC file is read in place: only the octree nodes in the bounds, down to level 4, are fetched.
+let mut lidar = pointcloud::open_points("https://host/lidar.copc.laz")?;
+let filter = PointFilter { bounds: Some([637000.0, 851000.0, 637500.0, 851500.0]), classes: vec![2], ..Default::default() };
+let ground = lidar.read(&PointReadOptions { filter, max_level: Some(4), ..Default::default() })?;
+let z = ground.coords("z").unwrap();
+pointcloud::write_points(&ground, "ground.laz", &Default::default())?;
+let options = pointcloud::grid::GridOptions { resolution: 1.0, ..Default::default() };
+let dtm = pointcloud::grid::grid(&ground, &options)?; // a RasterDataset
+# Ok::<(), terrio::Error>(())
+```
+
+LAZ compression comes from the pure-Rust [`laz`](https://crates.io/crates/laz) crate (the codec of
+laspy's `lazrs` backend); terrio reads and writes the LAS container, extra bytes, CRS records and
+COPC octrees itself.
+
 ## Python
 
 ```sh
@@ -94,6 +124,9 @@ tile = cog.read(1, window=(1024, 1024, 512, 512), overview=0)
 
 layer = terrio.open_vector("countries.gpkg").layers[0]
 layer.to_geojson(), layer.to_wkb(), layer.to_geopandas()
+
+points = terrio.read_points("lidar.copc.laz", bounds=(x0, y0, x1, y1), classes=[2])
+points["z"], points.to_numpy(), points.grid(1.0, stat="idw"), points.write("ground.laz")
 
 terrio.Raster.from_array(elevation * 2, dem.transform, crs=dem.crs).write("x2.tif")
 terrio.convert("countries.shp", "europe.gpkg", where="CONTINENT = 'Europe'")
@@ -117,6 +150,8 @@ dem.info();                                   // the summary `terrio info --json
 const band = dem.readBand(1);                 // a Float32Array, Uint8Array...
 const roads = open(geojsonBytes, "roads.geojson");
 const fgb = roads.toBytes("roads.fgb", { tSrs: "EPSG:3857" });
+const ground = readPoints(lazBytes, "tile.laz", { classes: [2] });   // LAS, LAZ, COPC
+ground.get("z");                              // a Float64Array
 ```
 
 See [js/README.md](js/README.md) for the formats available in WebAssembly.
@@ -138,6 +173,8 @@ cargo test -- --ignored                                # tests that read public 
 python scripts/compare_vector_ops_with_gdal.py ../terrio-data  # convert options, rasterize, polygonize
 python scripts/compare_ops_with_gdal.py ../terrio-data # compare translate, warp and mosaic with GDAL's tools
 python scripts/compare_dem_calc_with_gdal.py ../terrio-data  # dem, calc, proximity and sieve vs GDAL
+python scripts/compare_pointclouds.py ../terrio-data   # point clouds: every value vs laspy, headers, COPC
+                                                       # queries, grids and reprojection vs PDAL
 cd python && TERRIO_TEST_DATA=../../terrio-data pytest # Python bindings, arrays compared with osgeo.gdal's
 TERRIO_TEST_DATA=../terrio-data node --test js/tests/node.test.mjs  # WebAssembly build (after wasm-pack build, see js/)
 TERRIO_TEST_DATA=../terrio-data cargo test --release --test epsg_accuracy -- --nocapture

@@ -1,7 +1,7 @@
-"""terrio: pure-Rust geospatial raster and vector data I/O, for Python.
+"""terrio: pure-Rust geospatial raster, vector and point cloud data I/O, for Python.
 
-Read, write and convert rasters and vector datasets in many formats, local or remote, without
-GDAL::
+Read, write and convert rasters, vector datasets and point clouds (LAS, LAZ, COPC) in many
+formats, local or remote, without GDAL::
 
     import terrio
 
@@ -14,15 +14,22 @@ GDAL::
 
     terrio.convert("countries.shp", "europe.gpkg", where="CONTINENT = 'Europe'")
     terrio.warp("dem.tif", "dem_4326.tif", t_srs="EPSG:4326", resampling="bilinear")
+
+    points = terrio.read_points("lidar.copc.laz", bounds=(x0, y0, x1, y1), classes=[2])
+    z = points["z"]  # numpy array
+    dem = points.grid(1.0, stat="idw")  # a Raster
 """
 
 from terrio._terrio import (
     Layer,
+    PointCloud,
+    PointCloudFile,
     Raster,
     VectorDataset,
     __version__,
     calc,
     convert,
+    convert_points,
     dem,
     drivers,
     info,
@@ -30,11 +37,14 @@ from terrio._terrio import (
     mosaic,
     open,
     open_bytes,
+    open_points,
     open_raster,
     open_vector,
     polygonize,
     proximity,
     rasterize,
+    read_points,
+    read_points_bytes,
     sieve,
     transform_points,
     translate,
@@ -58,6 +68,8 @@ __all__ = [
     "InvalidDataError",
     "Layer",
     "NotFoundError",
+    "PointCloud",
+    "PointCloudFile",
     "Raster",
     "TerrioError",
     "TerrioIOError",
@@ -66,6 +78,7 @@ __all__ = [
     "__version__",
     "calc",
     "convert",
+    "convert_points",
     "dem",
     "drivers",
     "info",
@@ -73,11 +86,14 @@ __all__ = [
     "mosaic",
     "open",
     "open_bytes",
+    "open_points",
     "open_raster",
     "open_vector",
     "polygonize",
     "proximity",
     "rasterize",
+    "read_points",
+    "read_points_bytes",
     "sieve",
     "transform_points",
     "translate",
