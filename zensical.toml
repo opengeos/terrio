@@ -9,6 +9,7 @@ copyright = "Copyright &copy; 2026 Qiusheng Wu"
 
 nav = [
   { "Home" = "index.md" },
+  { "Why terrio?" = "why-terrio.md" },
   { "Installation" = "installation.md" },
   { "Getting Started" = "getting-started.md" },
   { "Command Line" = "cli.md" },

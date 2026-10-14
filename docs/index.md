@@ -36,7 +36,8 @@ terrio rasterize counties.gpkg counties.tif -a FIPS --tr 0.01 0.01
 terrio is not a port of GDAL. It covers the formats and operations that most geospatial workflows
 need, with GDAL's behaviour as the reference: every driver and operation is compared with GDAL on
 real files, and differences are treated as bugs. See [Testing Against GDAL](testing.md) and
-[Coming from GDAL](gdal.md).
+[Coming from GDAL](gdal.md). For how terrio compares with the `gdal` crate, the GeoRust crates
+and other Rust options, see [Why terrio?](why-terrio.md).
 
 The format codecs and projections build on the pure-Rust crates of
 [whitebox_next_gen](https://github.com/jblindsay/whitebox_next_gen) (`wbraster`, `wbvector`,
