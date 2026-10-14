@@ -75,7 +75,10 @@ test("vector from GeoJSON, to other formats and back", () => {
     const fc = back.toGeoJSON();
     assert.equal(fc.type, "FeatureCollection", name);
     assert.equal(fc.features.length, 2, name);
-    assert.deepEqual(fc.features[1].geometry.coordinates[0][2], [30, 10], name);
+    // FlatGeobuf orders features along its spatial index, as GDAL writes it.
+    // KML keeps the name as the placemark's Name, as GDAL's LIBKML driver does.
+    const east = fc.features.find((f) => (f.properties.name ?? f.properties.Name) === "east");
+    assert.deepEqual(east.geometry.coordinates[0][2], [30, 10], name);
   }
   const filtered = terrio.open(ds.toBytes("f.fgb", { where: "value > 5", select: ["name"] }), "f.fgb");
   const fc = filtered.toGeoJSON(0);
@@ -101,7 +104,7 @@ test("errors", () => {
   assert.throws(() => terrio.describeCrs("nonsense"), /cannot parse/);
   const ds = terrio.fromGeoJSON(SQUARES);
   assert.throws(() => ds.readBand(1), /not a raster/);
-  assert.throws(() => ds.toBytes("x.gpkg"), /cannot be written to memory/);
+  assert.throws(() => ds.toBytes("x.mif"), /cannot be written to memory/);
 });
 
 /** GDAL's statistics of a band, from the .aux.xml file it wrote next to the raster. */

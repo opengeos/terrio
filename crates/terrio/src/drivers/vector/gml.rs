@@ -416,7 +416,7 @@ fn xsd(layer: &Layer) -> String {
     s
 }
 
-/// Encodes a layer as GML 3.2 referring to the application schema `schema`.
+/// Encodes a layer as GML 3.2 referring to the application schema file `schema` (none when empty).
 pub fn to_string(layer: &Layer, schema: &str) -> String {
     let name = element_name(&layer.name);
     let code = super::naming_epsg(layer);
@@ -429,9 +429,16 @@ pub fn to_string(layer: &Layer, schema: &str) -> String {
     let _ = write!(
         s,
         r#"<?xml version="1.0" encoding="utf-8" ?>
-<ogr:FeatureCollection gml:id="aFeatureCollection" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://ogr.maptools.org/ {}" xmlns:ogr="http://ogr.maptools.org/" xmlns:gml="http://www.opengis.net/gml/3.2">
+<ogr:FeatureCollection gml:id="aFeatureCollection"{} xmlns:ogr="http://ogr.maptools.org/" xmlns:gml="http://www.opengis.net/gml/3.2">
 "#,
-        xml::escape(schema)
+        if schema.is_empty() {
+            String::new()
+        } else {
+            format!(
+                r#" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://ogr.maptools.org/ {}""#,
+                xml::escape(schema)
+            )
+        }
     );
     if let Some(e) = crate::vector::layer_extent(layer) {
         let (a, b) = if swap { ((e.1, e.0), (e.3, e.2)) } else { ((e.0, e.1), (e.2, e.3)) };

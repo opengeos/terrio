@@ -85,7 +85,8 @@ pub(crate) fn read_bytes(bytes: Vec<u8>, name: &str, driver: VectorDriver, optio
 }
 
 /// Encodes layers with terrio's own driver for the format. `None` for formats made of several
-/// files (Shapefile, MapInfo, GML with its schema). Formats holding one layer take the first.
+/// files (Shapefile, MapInfo). GML goes without its `.xsd`. Formats holding one layer take the
+/// first.
 pub(crate) fn write_bytes(layers: &[Layer], driver: VectorDriver, options: &VectorWriteOptions) -> Result<Option<Vec<u8>>> {
     let Some(first) = layers.first() else { return Err(crate::Error::InvalidArgument("no layers to write".into())) };
     Ok(Some(match driver {
@@ -98,6 +99,8 @@ pub(crate) fn write_bytes(layers: &[Layer], driver: VectorDriver, options: &Vect
         VectorDriver::GeoJSON => geojson::to_string(first, &options.geojson)?.into_bytes(),
         VectorDriver::CSV => csv::to_string(first, &options.csv)?.into_bytes(),
         VectorDriver::Parquet => geoparquet::to_bytes(first)?,
+        // Without its schema file: readers infer the field types.
+        VectorDriver::GML => gml::to_string(first, "").into_bytes(),
         _ => return Ok(None),
     }))
 }

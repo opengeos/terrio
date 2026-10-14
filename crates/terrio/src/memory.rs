@@ -11,7 +11,7 @@
 //! - reading: GeoTIFF, Esri ASCII grid, GeoJSON, TopoJSON, FlatGeobuf, CSV, GeoParquet, KML, KMZ,
 //!   GML, GPX, OSM PBF, and zip archives of these;
 //! - writing: GeoTIFF and COG (with lossless compressions), Esri ASCII grid, GeoJSON, TopoJSON,
-//!   FlatGeobuf, CSV, GeoParquet, GeoPackage, KML, KMZ and GPX.
+//!   FlatGeobuf, CSV, GeoParquet, GeoPackage, KML, KMZ, GML (without its schema) and GPX.
 //!
 //! Formats made of several files (a shapefile's `.shp`, `.dbf`, `.prj`...) are written as a zip
 //! archive of them.
@@ -300,7 +300,7 @@ pub(crate) mod codec {
         crate::drivers::vector::write_bytes(layers, driver, options)?.ok_or_else(|| {
             Error::Unsupported(format!(
                 "the {} format cannot be written to memory in this build (GeoJSON, TopoJSON, FlatGeobuf, CSV, GeoParquet, \
-                 GeoPackage, KML, KMZ, GPX)",
+                 GeoPackage, KML, KMZ, GML, GPX)",
                 driver.name()
             ))
         })
