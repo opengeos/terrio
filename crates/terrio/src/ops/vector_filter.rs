@@ -77,6 +77,19 @@ pub struct VectorTranslateOptions {
     pub assign_srs: Option<SpatialRef>,
 }
 
+impl VectorTranslateOptions {
+    /// The `-spat` rectangle for readers of `input` that use it to skip features (GeoPackage's
+    /// R-tree, GeoParquet's bounding boxes): when it is in the layer's CRS (no `-spat_srs` or
+    /// `-s_srs`) and applies to the layers as read (no `-sql`). [`translate`] still filters the
+    /// features by their geometries.
+    pub fn read_filter(&self, input: &str) -> Option<(f64, f64, f64, f64)> {
+        use crate::formats::VectorDriver;
+        let indexed = matches!(VectorDriver::for_extension(input), Some(VectorDriver::Parquet | VectorDriver::GPKG));
+        let plain = self.spatial_filter_srs.is_none() && self.src_srs.is_none() && self.sql.is_none();
+        self.spatial_filter.filter(|_| indexed && plain)
+    }
+}
+
 /// Applies the options to the layers, in `ogr2ogr`'s order: filters, limit, field selection,
 /// collection explosion, geometry type conversion, reprojection, CRS assignment and renaming.
 pub fn translate(layers: &[Layer], options: &VectorTranslateOptions) -> Result<Vec<Layer>> {
@@ -533,10 +546,13 @@ pub enum WriteMode {
     /// Replace the output file.
     #[default]
     Create,
-    /// `-overwrite`: replace the layers of the same name, keeping a GeoPackage's other layers.
+    /// `-overwrite`: replace the layers of the same name, keeping a GeoPackage's other layers
+    /// and tables.
     Overwrite,
     /// `-append`: add the features to the layers of the same name (fields are matched by name;
-    /// fields the existing layer lacks are dropped), creating the layers that do not exist.
+    /// fields the existing layer lacks are dropped), creating the layers that do not exist. In a
+    /// GeoPackage, the features get new ids and the layer's R-tree, extent and feature count
+    /// are updated, as GDAL does.
     Append,
 }
 
@@ -544,6 +560,13 @@ pub enum WriteMode {
 pub fn write_vector_with_mode(layers: &[Layer], path: &str, options: &VectorWriteOptions, mode: WriteMode) -> Result<()> {
     if mode == WriteMode::Create || !std::path::Path::new(path).exists() {
         return crate::write_vector(layers, path, options);
+    }
+    // GeoPackages are updated in place, keeping their other tables.
+    let driver = options.driver.or_else(|| crate::formats::VectorDriver::for_extension(path));
+    if driver == Some(crate::formats::VectorDriver::GPKG) {
+        use crate::drivers::vector::gpkg_update::{UpdateMode, update};
+        let mode = if mode == WriteMode::Append { UpdateMode::Append } else { UpdateMode::Overwrite };
+        return update(path, layers, mode);
     }
     let mut existing = crate::open_vector(path, &Default::default())?.layers;
     for layer in layers {

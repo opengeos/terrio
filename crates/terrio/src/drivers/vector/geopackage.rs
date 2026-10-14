@@ -18,9 +18,9 @@ use crate::crs::SpatialRef;
 use crate::{Error, Result};
 use wbvector::{FieldType, FieldValue, Geometry, Layer};
 
-const SRS_SQL: &str = "CREATE TABLE gpkg_spatial_ref_sys (srs_name TEXT NOT NULL, srs_id INTEGER PRIMARY KEY, organization TEXT NOT NULL, organization_coordsys_id INTEGER NOT NULL, definition  TEXT NOT NULL, description TEXT)";
-const CONTENTS_SQL: &str = "CREATE TABLE gpkg_contents (table_name TEXT NOT NULL PRIMARY KEY, data_type TEXT NOT NULL, identifier TEXT UNIQUE, description TEXT DEFAULT '', last_change DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')), min_x DOUBLE, min_y DOUBLE, max_x DOUBLE, max_y DOUBLE, srs_id INTEGER, CONSTRAINT fk_gc_r_srs_id FOREIGN KEY (srs_id) REFERENCES gpkg_spatial_ref_sys(srs_id))";
-const GEOMETRY_COLUMNS_SQL: &str = "CREATE TABLE gpkg_geometry_columns (table_name TEXT NOT NULL, column_name TEXT NOT NULL, geometry_type_name TEXT NOT NULL, srs_id INTEGER NOT NULL, z TINYINT NOT NULL, m TINYINT NOT NULL, CONSTRAINT pk_geom_cols PRIMARY KEY (table_name, column_name), CONSTRAINT uk_gc_table_name UNIQUE (table_name), CONSTRAINT fk_gc_tn FOREIGN KEY (table_name) REFERENCES gpkg_contents(table_name), CONSTRAINT fk_gc_srs FOREIGN KEY (srs_id) REFERENCES gpkg_spatial_ref_sys (srs_id))";
+pub(super) const SRS_SQL: &str = "CREATE TABLE gpkg_spatial_ref_sys (srs_name TEXT NOT NULL, srs_id INTEGER PRIMARY KEY, organization TEXT NOT NULL, organization_coordsys_id INTEGER NOT NULL, definition  TEXT NOT NULL, description TEXT)";
+pub(super) const CONTENTS_SQL: &str = "CREATE TABLE gpkg_contents (table_name TEXT NOT NULL PRIMARY KEY, data_type TEXT NOT NULL, identifier TEXT UNIQUE, description TEXT DEFAULT '', last_change DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')), min_x DOUBLE, min_y DOUBLE, max_x DOUBLE, max_y DOUBLE, srs_id INTEGER, CONSTRAINT fk_gc_r_srs_id FOREIGN KEY (srs_id) REFERENCES gpkg_spatial_ref_sys(srs_id))";
+pub(super) const GEOMETRY_COLUMNS_SQL: &str = "CREATE TABLE gpkg_geometry_columns (table_name TEXT NOT NULL, column_name TEXT NOT NULL, geometry_type_name TEXT NOT NULL, srs_id INTEGER NOT NULL, z TINYINT NOT NULL, m TINYINT NOT NULL, CONSTRAINT pk_geom_cols PRIMARY KEY (table_name, column_name), CONSTRAINT uk_gc_table_name UNIQUE (table_name), CONSTRAINT fk_gc_tn FOREIGN KEY (table_name) REFERENCES gpkg_contents(table_name), CONSTRAINT fk_gc_srs FOREIGN KEY (srs_id) REFERENCES gpkg_spatial_ref_sys (srs_id))";
 const WGS84_WKT: &str = r#"GEOGCS["WGS 84",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563,AUTHORITY["EPSG","7030"]],AUTHORITY["EPSG","6326"]],PRIMEM["Greenwich",0,AUTHORITY["EPSG","8901"]],UNIT["degree",0.0174532925199433,AUTHORITY["EPSG","9122"]],AXIS["Latitude",NORTH],AXIS["Longitude",EAST],AUTHORITY["EPSG","4326"]]"#;
 
 /// Writes layers as a GeoPackage.
@@ -34,7 +34,7 @@ fn quote(name: &str) -> String {
 }
 
 /// The current time in ISO 8601, or the Unix epoch where there is no clock.
-fn now() -> String {
+pub(super) fn now() -> String {
     #[cfg(not(target_arch = "wasm32"))]
     let ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64);
     #[cfg(target_arch = "wasm32")]
@@ -44,7 +44,7 @@ fn now() -> String {
 }
 
 /// The GeoPackage geometry encoding: the `GP` header with the envelope, then ISO WKB.
-fn gpkg_geometry(g: &Geometry, srs_id: i32) -> Vec<u8> {
+pub(super) fn gpkg_geometry(g: &Geometry, srs_id: i32) -> Vec<u8> {
     let bbox = g.bbox();
     let point = matches!(g, Geometry::Point(_));
     let envelope = if point { 0 } else { bbox.as_ref().map_or(0, |_| 1) };
@@ -62,8 +62,9 @@ fn gpkg_geometry(g: &Geometry, srs_id: i32) -> Vec<u8> {
 
 const UNDEFINED_WKT: &str =
     r#"LOCAL_CS["Undefined SRS",LOCAL_DATUM["unknown",32767],UNIT["unknown",0],AXIS["Easting",EAST],AXIS["Northing",NORTH]]"#;
-const OGR_CONTENTS_SQL: &str = "CREATE TABLE gpkg_ogr_contents(table_name TEXT NOT NULL PRIMARY KEY,feature_count INTEGER DEFAULT NULL)";
-const EXTENSIONS_SQL: &str = "CREATE TABLE gpkg_extensions (table_name TEXT,column_name TEXT,extension_name TEXT NOT NULL,definition TEXT NOT NULL,scope TEXT NOT NULL,CONSTRAINT ge_tce UNIQUE (table_name, column_name, extension_name))";
+pub(super) const OGR_CONTENTS_SQL: &str =
+    "CREATE TABLE gpkg_ogr_contents(table_name TEXT NOT NULL PRIMARY KEY,feature_count INTEGER DEFAULT NULL)";
+pub(super) const EXTENSIONS_SQL: &str = "CREATE TABLE gpkg_extensions (table_name TEXT,column_name TEXT,extension_name TEXT NOT NULL,definition TEXT NOT NULL,scope TEXT NOT NULL,CONSTRAINT ge_tce UNIQUE (table_name, column_name, extension_name))";
 const TILE_MATRIX_SET_SQL: &str = "CREATE TABLE gpkg_tile_matrix_set (table_name TEXT NOT NULL PRIMARY KEY,srs_id INTEGER NOT NULL,min_x DOUBLE NOT NULL,min_y DOUBLE NOT NULL,max_x DOUBLE NOT NULL,max_y DOUBLE NOT NULL,CONSTRAINT fk_gtms_table_name FOREIGN KEY (table_name) REFERENCES gpkg_contents(table_name),CONSTRAINT fk_gtms_srs FOREIGN KEY (srs_id) REFERENCES gpkg_spatial_ref_sys (srs_id))";
 const TILE_MATRIX_SQL: &str = "CREATE TABLE gpkg_tile_matrix (table_name TEXT NOT NULL,zoom_level INTEGER NOT NULL,matrix_width INTEGER NOT NULL,matrix_height INTEGER NOT NULL,tile_width INTEGER NOT NULL,tile_height INTEGER NOT NULL,pixel_x_size DOUBLE NOT NULL,pixel_y_size DOUBLE NOT NULL,CONSTRAINT pk_ttm PRIMARY KEY (table_name, zoom_level),CONSTRAINT fk_tmm_table_name FOREIGN KEY (table_name) REFERENCES gpkg_contents(table_name))";
 const METADATA_SQL: &str = "CREATE TABLE gpkg_metadata (id INTEGER CONSTRAINT m_pk PRIMARY KEY ASC NOT NULL,md_scope TEXT NOT NULL DEFAULT 'dataset',md_standard_uri TEXT NOT NULL,mime_type TEXT NOT NULL DEFAULT 'text/xml',metadata TEXT NOT NULL DEFAULT '')";
@@ -135,13 +136,13 @@ pub(crate) fn tile_table_triggers(table: &str) -> Vec<SchemaObject> {
 }
 
 /// Rounds down to a float, as SQLite's R-tree stores lower bounds.
-fn f32_down(d: f64) -> f32 {
+pub(super) fn f32_down(d: f64) -> f32 {
     let f = d as f32;
     if f64::from(f) > d { (d * if d < 0.0 { 1.0 + 1.0 / 8_388_608.0 } else { 1.0 - 1.0 / 8_388_608.0 }) as f32 } else { f }
 }
 
 /// Rounds up to a float, as SQLite's R-tree stores upper bounds.
-fn f32_up(d: f64) -> f32 {
+pub(super) fn f32_up(d: f64) -> f32 {
     let f = d as f32;
     if f64::from(f) < d { (d * if d < 0.0 { 1.0 - 1.0 / 8_388_608.0 } else { 1.0 + 1.0 / 8_388_608.0 }) as f32 } else { f }
 }
@@ -152,7 +153,7 @@ const RTREE_MAX_CELLS: usize = 51;
 const RTREE_NODE_SIZE: usize = 4 + 24 * RTREE_MAX_CELLS;
 
 /// An R-tree entry: an id (a feature id, or a child node) and its box `[minx, maxx, miny, maxy]`.
-type RtreeEntry = (i64, [f32; 4]);
+pub(super) type RtreeEntry = (i64, [f32; 4]);
 
 fn union(entries: &[RtreeEntry]) -> [f32; 4] {
     entries.iter().fold([f32::INFINITY, f32::NEG_INFINITY, f32::INFINITY, f32::NEG_INFINITY], |a, (_, b)| {
@@ -179,9 +180,9 @@ fn str_pack(mut entries: Vec<RtreeEntry>) -> Vec<Vec<RtreeEntry>> {
 
 /// The shadow tables of a two-dimensional SQLite R-tree holding the boxes, built in one go:
 /// `(node rows, rowid rows, parent rows)`.
-type RtreeRows = (Vec<(i64, Vec<Value>)>, Vec<(i64, Vec<Value>)>, Vec<(i64, Vec<Value>)>);
+pub(super) type RtreeRows = (Vec<(i64, Vec<Value>)>, Vec<(i64, Vec<Value>)>, Vec<(i64, Vec<Value>)>);
 
-fn build_rtree(entries: Vec<RtreeEntry>) -> RtreeRows {
+pub(super) fn build_rtree(entries: Vec<RtreeEntry>) -> RtreeRows {
     let encode = |depth: u16, cells: &[RtreeEntry]| {
         let mut b = Vec::with_capacity(RTREE_NODE_SIZE);
         b.extend_from_slice(&depth.to_be_bytes());
@@ -772,6 +773,24 @@ impl Builder {
         self.extension(Some("gpkg_metadata_reference"), None, "gpkg_metadata", METADATA_EXTENSION, "read-write");
     }
 
+    /// What the layers added so far contribute, for adding them to an existing file: the rows
+    /// of `gpkg_spatial_ref_sys` (the SRS id being `organization_coordsys_id`), `gpkg_contents`,
+    /// `gpkg_geometry_columns`, `gpkg_ogr_contents` and `gpkg_extensions` (in the columns of the
+    /// tables this module creates), the tables (features and R-tree shadow tables), the schema
+    /// objects (triggers and R-tree virtual tables) and the `sqlite_sequence` entries.
+    pub(crate) fn into_layer_parts(self) -> LayerParts {
+        LayerParts {
+            srs: self.srs,
+            contents: self.contents,
+            geometry_columns: self.geometry_columns,
+            ogr_contents: self.ogr_contents,
+            extensions: self.extensions,
+            tables: self.tables,
+            objects: self.objects.into_iter().filter(|o| o.table != "gpkg_tile_matrix").collect(),
+            sequence: self.sequence,
+        }
+    }
+
     /// Writes the file.
     pub(crate) fn finish(self) -> Result<Vec<u8>> {
         let numbered =
@@ -821,6 +840,18 @@ impl Builder {
         // GeoPackage 1.4: application id "GPKG", user version 10400.
         sqlite::write_database(&tables, &self.objects, 10400, 0x4750_4B47)
     }
+}
+
+/// The parts of a GeoPackage that vector layers make: see [`Builder::into_layer_parts`].
+pub(crate) struct LayerParts {
+    pub srs: Vec<Vec<Value>>,
+    pub contents: Vec<Vec<Value>>,
+    pub geometry_columns: Vec<Vec<Value>>,
+    pub ogr_contents: Vec<Vec<Value>>,
+    pub extensions: Vec<Vec<Value>>,
+    pub tables: Vec<Table>,
+    pub objects: Vec<SchemaObject>,
+    pub sequence: Vec<(String, i64)>,
 }
 
 /// Encodes layers as a GeoPackage file.

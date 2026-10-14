@@ -407,9 +407,33 @@ pub struct SchemaObject {
     pub sql: String,
 }
 
+/// An index a `CREATE INDEX` statement made (not one of a table's constraints).
+pub struct Index {
+    /// The index name.
+    pub name: String,
+    /// The table it indexes.
+    pub table: String,
+    /// The `CREATE INDEX` statement.
+    pub sql: String,
+    /// The indexed columns.
+    pub columns: Vec<usize>,
+}
+
 /// Writes a database file holding the tables and schema objects, with `user_version` and
 /// `application_id` set.
 pub fn write_database(tables: &[Table], objects: &[SchemaObject], user_version: u32, application_id: u32) -> Result<Vec<u8>> {
+    write_database_with_indexes(tables, &[], objects, user_version, application_id)
+}
+
+/// Writes a database file holding the tables, their indexes (automatic ones and `indexes`) and
+/// schema objects, with `user_version` and `application_id` set.
+pub fn write_database_with_indexes(
+    tables: &[Table],
+    indexes: &[Index],
+    objects: &[SchemaObject],
+    user_version: u32,
+    application_id: u32,
+) -> Result<Vec<u8>> {
     let mut pager = Pager { pages: Vec::new() };
     pager.alloc(); // page 1: the schema table's root
     let mut schema_rows = Vec::new();
@@ -431,6 +455,16 @@ pub fn write_database(tables: &[Table], objects: &[SchemaObject], user_version: 
                 Value::Text(t.name.clone()),
                 Value::Int(root as i64),
                 Value::Null,
+            ]);
+        }
+        for ix in indexes.iter().filter(|ix| ix.table.eq_ignore_ascii_case(&t.name)) {
+            let root = build_index(&mut pager, t, &ix.columns);
+            schema_rows.push(vec![
+                Value::Text("index".into()),
+                Value::Text(ix.name.clone()),
+                Value::Text(t.name.clone()),
+                Value::Int(root as i64),
+                Value::Text(ix.sql.clone()),
             ]);
         }
     }

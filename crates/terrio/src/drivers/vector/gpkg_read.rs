@@ -70,18 +70,24 @@ pub(crate) fn list_layers(path: &str) -> Result<Vec<String>> {
     Ok(contents(&db)?.0.into_iter().map(|c| c.name).collect())
 }
 
-/// Reads the layers of a GeoPackage file (`wanted` names them; all when empty).
-pub(crate) fn read(path: &str, wanted: &[String]) -> Result<Vec<Layer>> {
-    parse(std::fs::read(path)?, wanted)
+/// A rectangle `(min_x, min_y, max_x, max_y)`.
+pub(crate) type Rect = (f64, f64, f64, f64);
+
+/// Reads the layers of a GeoPackage file (`wanted` names them; all when empty), keeping only the
+/// features whose bounding box intersects `bbox` when it is given.
+pub(crate) fn read(path: &str, wanted: &[String], bbox: Option<Rect>) -> Result<Vec<Layer>> {
+    read_db(&Db::new(std::fs::read(path)?)?, wanted, bbox)
 }
 
 /// Reads the layers of a GeoPackage held in memory (`wanted` names them; all when empty).
 pub(crate) fn parse(bytes: Vec<u8>, wanted: &[String]) -> Result<Vec<Layer>> {
-    read_db(&Db::new(bytes)?, wanted)
+    read_db(&Db::new(bytes)?, wanted, None)
 }
 
-/// Reads the layers of an open GeoPackage (`wanted` names them; all when empty).
-pub(crate) fn read_db(db: &Db, wanted: &[String]) -> Result<Vec<Layer>> {
+/// Reads the layers of an open GeoPackage (`wanted` names them; all when empty). With `bbox`,
+/// only the features whose bounding box intersects it, found through the layer's R-tree index
+/// when it has one, as GDAL's spatial filters do.
+pub(crate) fn read_db(db: &Db, wanted: &[String], bbox: Option<Rect>) -> Result<Vec<Layer>> {
     let (layers, _) = contents(db)?;
     let names: Vec<&String> = layers.iter().map(|c| &c.name).collect();
     for w in wanted {
@@ -93,7 +99,7 @@ pub(crate) fn read_db(db: &Db, wanted: &[String]) -> Result<Vec<Layer>> {
     layers
         .iter()
         .filter(|c| wanted.is_empty() || wanted.iter().any(|w| w.eq_ignore_ascii_case(&c.name)))
-        .map(|c| read_layer(db, c))
+        .map(|c| read_layer(db, c, bbox))
         .collect()
 }
 
@@ -299,27 +305,89 @@ fn geometry_type(name: &str) -> Option<GeometryType> {
     })
 }
 
-fn read_layer(db: &Db, c: &Content) -> Result<Layer> {
+/// The feature ids the R-tree index `rtree` finds in `bbox`: the ids of the leaf entries whose
+/// box intersects it, ascending. `None` when the index (its `_node` shadow table) is missing.
+fn rtree_candidates(db: &Db, rtree: &str, bbox: Rect) -> Result<Option<Vec<i64>>> {
+    let node_table = format!("{rtree}_node");
+    let Some(root) = db.schema()?.into_iter().find(|e| e.0 == "table" && e.1.eq_ignore_ascii_case(&node_table) && e.3 > 0).map(|e| e.3)
+    else {
+        return Ok(None);
+    };
+    let node = |n: i64| -> Result<Option<Vec<u8>>> {
+        let Some(payload) = db.lookup(root, n)? else { return Ok(None) };
+        let mut values = Db::record_values(&payload);
+        Ok(match values.get_mut(1) {
+            Some(Value::Blob(b)) => Some(std::mem::take(b)),
+            _ => None,
+        })
+    };
+    let (x0, y0, x1, y1) = bbox;
+    let mut out = Vec::new();
+    // Node 1 is the root; its first two bytes give the depth of the tree.
+    let Some(root_node) = node(1)?.filter(|n| n.len() >= 4) else { return Ok(None) };
+    let depth = u16::from_be_bytes([root_node[0], root_node[1]]) as usize;
+    let mut stack: Vec<(Vec<u8>, usize)> = vec![(root_node, 0)];
+    while let Some((data, level)) = stack.pop() {
+        let Some(count) = data.get(2..4).map(|b| u16::from_be_bytes([b[0], b[1]]) as usize) else { continue };
+        for i in 0..count {
+            let c = 4 + i * 24;
+            let Some(cell) = data.get(c..c + 24) else { break };
+            let id = i64::from_be_bytes(cell[..8].try_into().unwrap_or_default());
+            let f = |k: usize| f64::from(f32::from_be_bytes(cell[8 + 4 * k..12 + 4 * k].try_into().unwrap_or_default()));
+            let (minx, maxx, miny, maxy) = (f(0), f(1), f(2), f(3));
+            if minx > x1 || maxx < x0 || miny > y1 || maxy < y0 {
+                continue;
+            }
+            if level == depth {
+                out.push(id);
+            } else if let Some(child) = node(id)? {
+                stack.push((child, level + 1));
+            }
+        }
+        if stack.len() > 1_000_000 {
+            return Err(bad(format!("R-tree '{rtree}' is malformed")));
+        }
+    }
+    out.sort_unstable();
+    out.dedup();
+    Ok(Some(out))
+}
+
+/// Whether a geometry's bounding box intersects a rectangle.
+fn bbox_intersects(g: &Geometry, (x0, y0, x1, y1): Rect) -> bool {
+    g.bbox().is_some_and(|b| b.min_x <= x1 && b.max_x >= x0 && b.min_y <= y1 && b.max_y >= y0)
+}
+
+fn read_layer(db: &Db, c: &Content, bbox: Option<Rect>) -> Result<Layer> {
     let sql = db.table_sql(&c.name).ok_or_else(|| bad(format!("no table '{}'", c.name)))?;
     let columns = sqlite::column_types(&sql);
-    let table = db.table(&c.name)?;
 
     // The geometry column, its type and SRS.
-    let mut geom_col = None;
+    let mut geom_name: Option<String> = None;
     let mut layer = Layer::new(c.name.clone());
     if let Ok(g) = db.table("gpkg_geometry_columns")
         && let Some(r) =
             g.rows.iter().find(|r| g.get(r, "table_name").and_then(Value::as_str).is_some_and(|n| n.eq_ignore_ascii_case(&c.name)))
     {
         let col = g.get(r, "column_name").and_then(Value::as_str).unwrap_or_default();
-        geom_col = table.column(col);
+        geom_name = Some(col.to_string());
         layer.geom_type = g.get(r, "geometry_type_name").and_then(Value::as_str).and_then(geometry_type);
         if let Some(srs_id) = g.get(r, "srs_id").and_then(Value::as_i64) {
             set_crs(db, &mut layer, srs_id);
         }
     }
-    // The feature id column: the rowid alias.
+    // The rows: with a filter on a spatial table, those its R-tree finds (by lookups of their
+    // feature ids, the rowid alias), otherwise all of them.
     let fid_col = sqlite::rowid_column(&sql);
+    let candidates = match (&geom_name, bbox, fid_col) {
+        (Some(g), Some(rect), Some(_)) => rtree_candidates(db, &format!("rtree_{}_{g}", c.name), rect)?,
+        _ => None,
+    };
+    let table = match &candidates {
+        Some(ids) => db.table_rows(&c.name, ids)?,
+        None => db.table(&c.name)?,
+    };
+    let geom_col = geom_name.as_deref().and_then(|g| table.column(g));
 
     let mut kept = Vec::new();
     for (i, (name, decl)) in columns.iter().enumerate() {
@@ -333,12 +401,20 @@ fn read_layer(db: &Db, c: &Content) -> Result<Layer> {
         kept.push((i, t));
     }
 
-    for (n, row) in table.rows.iter().enumerate() {
+    // Rows are decoded in parallel, and kept in order.
+    let features = crate::par::map_range(table.rows.len(), |n| -> Option<Feature> {
+        let row = &table.rows[n];
         let fid = fid_col.and_then(|i| row.get(i)?.as_i64()).unwrap_or(n as i64 + 1);
         let geometry = geom_col.and_then(|i| match row.get(i) {
             Some(Value::Blob(b)) => decode_geometry(b),
             _ => None,
         });
+        // The exact test of the boxes the R-tree (in single precision) or the scan found.
+        if let (Some(rect), Some(_)) = (bbox, geom_col)
+            && !geometry.as_ref().is_some_and(|g| bbox_intersects(g, rect))
+        {
+            return None;
+        }
         let attributes = kept
             .iter()
             .map(|&(i, t)| {
@@ -361,7 +437,10 @@ fn read_layer(db: &Db, c: &Content) -> Result<Layer> {
                 }
             })
             .collect();
-        layer.push(Feature { fid: fid as u64, geometry, attributes });
+        Some(Feature { fid: fid as u64, geometry, attributes })
+    });
+    for f in features.into_iter().flatten() {
+        layer.push(f);
     }
     Ok(layer)
 }

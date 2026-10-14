@@ -137,7 +137,7 @@ pub(crate) fn open_bytes(bytes: Vec<u8>, name: &str, options: &crate::VectorOpen
         return Ok(crate::Dataset::Raster(ds));
     }
     let wanted: Vec<String> = options.layers.clone();
-    let read = gpkg_read::read_db(&db, &wanted)?;
+    let read = gpkg_read::read_db(&db, &wanted, options.spatial_filter)?;
     Ok(crate::Dataset::Vector(crate::dataset::finish_vector(read, name, crate::formats::VectorDriver::GPKG)))
 }
 

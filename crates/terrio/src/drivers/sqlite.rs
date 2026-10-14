@@ -184,6 +184,11 @@ impl Db {
         Ok(out)
     }
 
+    /// Decodes a record (a row's payload).
+    pub(crate) fn record_values(payload: &[u8]) -> Vec<Value> {
+        Self::record(payload)
+    }
+
     /// The serial types of a record's columns, and where its values start.
     fn record_types(payload: &[u8]) -> (Vec<i64>, usize) {
         let Some((header_len, n)) = varint(payload, 0) else { return (Vec::new(), 0) };
@@ -278,6 +283,119 @@ impl Db {
     /// The `CREATE TABLE` statement of a table.
     pub(crate) fn table_sql(&self, name: &str) -> Option<String> {
         self.schema().ok()?.into_iter().find(|(t, n, ..)| t == "table" && n.eq_ignore_ascii_case(name)).map(|r| r.4)
+    }
+
+    /// The payload of the row `rowid` of the table b-tree rooted at `root`, found by descending
+    /// the b-tree (binary searches of its interior pages), or `None` when there is no such row.
+    pub(crate) fn lookup(&self, root: u32, rowid: i64) -> Result<Option<Vec<u8>>> {
+        let mut n = root;
+        for _ in 0..64 {
+            let page = self.page(n)?;
+            let h = if n == 1 { 100 } else { 0 };
+            let kind = page[h];
+            let cells = u16::from_be_bytes([page[h + 3], page[h + 4]]) as usize;
+            let header_len = if kind == 0x05 { 12 } else { 8 };
+            let cell = |c: usize| -> Result<usize> {
+                let p = h + header_len + 2 * c;
+                Ok(u16::from_be_bytes([*page.get(p).ok_or_else(|| bad("cell"))?, *page.get(p + 1).ok_or_else(|| bad("cell"))?]) as usize)
+            };
+            match kind {
+                // Interior: (left child, key) cells by increasing key; a child holds the rowids up to
+                // its key, the right-most pointer the larger ones.
+                0x05 => {
+                    let (mut lo, mut hi) = (0, cells);
+                    while lo < hi {
+                        let mid = (lo + hi) / 2;
+                        let off = cell(mid)?;
+                        let (key, _) = varint(page, off + 4).ok_or_else(|| bad("cell"))?;
+                        if key < rowid { lo = mid + 1 } else { hi = mid }
+                    }
+                    n = if lo < cells {
+                        let off = cell(lo)?;
+                        u32::from_be_bytes(page.get(off..off + 4).and_then(|b| b.try_into().ok()).ok_or_else(|| bad("cell"))?)
+                    } else {
+                        u32::from_be_bytes(page[h + 8..h + 12].try_into().map_err(|_| bad("page"))?)
+                    };
+                }
+                0x0d => {
+                    let (mut lo, mut hi) = (0, cells);
+                    while lo < hi {
+                        let mid = (lo + hi) / 2;
+                        let off = cell(mid)?;
+                        let (_, n1) = varint(page, off).ok_or_else(|| bad("cell"))?;
+                        let (key, _) = varint(page, off + n1).ok_or_else(|| bad("cell"))?;
+                        match key.cmp(&rowid) {
+                            std::cmp::Ordering::Less => lo = mid + 1,
+                            std::cmp::Ordering::Greater => hi = mid,
+                            std::cmp::Ordering::Equal => {
+                                let (size, n1) = varint(page, off).ok_or_else(|| bad("cell"))?;
+                                let (_, n2) = varint(page, off + n1).ok_or_else(|| bad("cell"))?;
+                                return self.payload(page, off + n1 + n2, size as usize).map(Some);
+                            }
+                        }
+                    }
+                    return Ok(None);
+                }
+                _ => return Err(bad("unsupported page type")),
+            }
+        }
+        Err(bad("b-tree too deep"))
+    }
+
+    /// The root page and `CREATE TABLE` statement of a rowid table.
+    fn table_root(&self, name: &str) -> Result<(u32, String)> {
+        for (kind, table, _, root, sql) in self.schema()? {
+            if kind != "table" || !table.eq_ignore_ascii_case(name) {
+                continue;
+            }
+            if root == 0 {
+                return Err(bad(&format!("'{name}' is a virtual table")));
+            }
+            if sql.to_ascii_uppercase().split_whitespace().collect::<Vec<_>>().join(" ").contains("WITHOUT ROWID") {
+                return Err(bad(&format!("'{name}' is a WITHOUT ROWID table, which is not supported")));
+            }
+            return Ok((root, sql));
+        }
+        Err(bad(&format!("no table '{name}'")))
+    }
+
+    /// The rows of a table with the given rowids (in that order; missing rowids are skipped),
+    /// read by b-tree lookups rather than a scan.
+    pub(crate) fn table_rows(&self, name: &str, rowids: &[i64]) -> Result<Table> {
+        let (root, sql) = self.table_root(name)?;
+        let columns = columns(&sql);
+        let rowid_col = integer_primary_key(&sql, &columns);
+        let mut rows = Vec::with_capacity(rowids.len());
+        for &rowid in rowids {
+            let Some(payload) = self.lookup(root, rowid)? else { continue };
+            let mut v = Self::record(&payload);
+            v.resize(columns.len().max(v.len()), Value::Null);
+            if let Some(c) = rowid_col
+                && v[c] == Value::Null
+            {
+                v[c] = Value::Int(rowid);
+            }
+            rows.push(v);
+        }
+        Ok(Table { columns, rows })
+    }
+
+    /// The raw rows of a table: `(rowid, values)` with a rowid alias column left NULL, as
+    /// stored. For rewriting a database.
+    pub(crate) fn stored_rows(&self, root: u32) -> Result<Vec<(i64, Vec<Value>)>> {
+        let mut rows = Vec::new();
+        self.scan(root, &mut rows, 0)?;
+        Ok(rows.into_iter().map(|(rowid, payload)| (rowid, Self::record(&payload))).collect())
+    }
+
+    /// The text encoding of the database: 1 for UTF-8, 2 and 3 for UTF-16.
+    pub(crate) fn text_encoding(&self) -> u32 {
+        u32::from_be_bytes([self.data[56], self.data[57], self.data[58], self.data[59]])
+    }
+
+    /// A 32-bit header field at `offset` (`user_version` at 60, `application_id` at 68).
+    pub(crate) fn header_u32(&self, offset: usize) -> u32 {
+        u32::from_be_bytes([self.data[offset], self.data[offset + 1], self.data[offset + 2], self.data[offset + 3]])
     }
 
     /// Reads a whole table by name.
@@ -462,6 +580,185 @@ fn integer_primary_key(sql: &str, columns: &[String]) -> Option<usize> {
     })
 }
 
+/// The items of a `CREATE TABLE` body: column definitions and table constraints, in order.
+fn table_items(sql: &str) -> Vec<String> {
+    let Some(open) = sql.find('(') else { return Vec::new() };
+    let body = &sql[open + 1..sql.rfind(')').unwrap_or(sql.len())];
+    let mut out = Vec::new();
+    let mut depth = 0;
+    let mut quote: Option<char> = None;
+    let mut current = String::new();
+    for ch in body.chars() {
+        match (quote, ch) {
+            (Some(q), c) if c == q => quote = None,
+            (Some(_), _) => {}
+            (None, '\'' | '"' | '`') => quote = Some(ch),
+            (None, '[') => quote = Some(']'),
+            (None, '(') => depth += 1,
+            (None, ')') => depth -= 1,
+            (None, ',') if depth == 0 => {
+                out.push(std::mem::take(&mut current).trim().to_string());
+                continue;
+            }
+            _ => {}
+        }
+        current.push(ch);
+    }
+    out.push(current.trim().to_string());
+    out.retain(|s| !s.is_empty());
+    out
+}
+
+/// Text with its quoted strings and parenthesized parts blanked out, uppercase: for finding
+/// keywords.
+fn keywords(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut depth = 0;
+    let mut quote: Option<char> = None;
+    for ch in s.chars() {
+        match (quote, ch) {
+            (Some(q), c) if c == q => quote = None,
+            (Some(_), _) => {}
+            (None, '\'' | '"' | '`') => quote = Some(ch),
+            (None, '(') => depth += 1,
+            (None, ')') => depth -= 1,
+            (None, c) if depth == 0 => out.push(c.to_ascii_uppercase()),
+            _ => {}
+        }
+    }
+    out.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// The column names in a parenthesized list such as `(a, "b c" ASC)`, with whether each has
+/// only a name (no `DESC` or `COLLATE`).
+fn column_list(s: &str) -> Option<Vec<(String, bool)>> {
+    let open = s.find('(')?;
+    let close = s.rfind(')')?;
+    let inner = s.get(open + 1..close)?;
+    Some(
+        inner
+            .split(',')
+            .map(|item| {
+                let (name, rest) = split_column(item);
+                let rest = rest.trim().to_ascii_uppercase();
+                (name, rest.is_empty() || rest == "ASC")
+            })
+            .collect(),
+    )
+}
+
+/// The columns of a table's automatic indexes (`sqlite_autoindex_<table>_N`), in the order
+/// SQLite numbers them: one per `PRIMARY KEY` (unless it is the rowid alias) and `UNIQUE`
+/// constraint, column constraints and table constraints in the order they are written, an index
+/// over the same columns as an earlier one being reused.
+pub(crate) fn autoindex_columns(sql: &str) -> Vec<Vec<usize>> {
+    let types = column_types(sql);
+    let names: Vec<String> = types.iter().map(|(n, _)| n.clone()).collect();
+    let find = |n: &str| names.iter().position(|c| c.eq_ignore_ascii_case(n));
+    let mut out: Vec<Vec<usize>> = Vec::new();
+    let add = |cols: Vec<usize>, out: &mut Vec<Vec<usize>>| {
+        if !cols.is_empty() && !out.contains(&cols) {
+            out.push(cols);
+        }
+    };
+    let mut column = 0;
+    for item in table_items(sql) {
+        let k = keywords(&item);
+        let constraint = {
+            let first = k.split(' ').next().unwrap_or_default();
+            matches!(first, "CONSTRAINT" | "PRIMARY" | "UNIQUE" | "CHECK" | "FOREIGN")
+        };
+        if constraint {
+            let body = match k.find("PRIMARY KEY").or_else(|| k.find("UNIQUE")) {
+                Some(_) => item.as_str(),
+                None => continue,
+            };
+            let Some(list) = column_list(body) else { continue };
+            let cols: Vec<usize> = list.iter().filter_map(|(n, _)| find(n)).collect();
+            let rowid = k.contains("PRIMARY KEY") && cols.len() == 1 && list[0].1 && types[cols[0]].1.eq_ignore_ascii_case("INTEGER");
+            if !rowid {
+                add(cols, &mut out);
+            }
+            continue;
+        }
+        let i = column;
+        column += 1;
+        let (_, rest) = split_column(&item);
+        let rest = keywords(rest);
+        // Constraints in the order they are written.
+        let pk = rest.find("PRIMARY KEY");
+        let unique = rest.find("UNIQUE");
+        let mut found: Vec<(usize, bool)> = Vec::new();
+        if let Some(p) = pk {
+            found.push((p, true));
+        }
+        if let Some(u) = unique {
+            found.push((u, false));
+        }
+        found.sort();
+        for (at, is_pk) in found {
+            if is_pk {
+                let desc = rest[at..].starts_with("PRIMARY KEY DESC");
+                if types.get(i).is_some_and(|(_, t)| t.eq_ignore_ascii_case("INTEGER")) && !desc {
+                    continue;
+                }
+            }
+            add(vec![i], &mut out);
+        }
+    }
+    out
+}
+
+/// The columns a `CREATE [UNIQUE] INDEX name ON table (columns)` statement indexes, for an index
+/// on plain columns (no expressions, `DESC`, `COLLATE` or `WHERE`). `None` otherwise.
+pub(crate) fn index_columns(sql: &str, table_sql: &str) -> Option<Vec<usize>> {
+    let names: Vec<String> = column_types(table_sql).into_iter().map(|(n, _)| n).collect();
+    let k = keywords(sql);
+    if k.contains(" WHERE ") {
+        return None;
+    }
+    let list = column_list(sql)?;
+    list.iter().map(|(n, plain)| if *plain { names.iter().position(|c| c.eq_ignore_ascii_case(n)) } else { None }).collect()
+}
+
+/// The constant `DEFAULT` of each column of a `CREATE TABLE` statement: a number, a string or
+/// NULL (`None` for columns without one, or whose default is an expression).
+pub(crate) fn column_defaults(sql: &str) -> Vec<Option<Value>> {
+    column_defs(sql)
+        .iter()
+        .map(|d| {
+            let (_, rest) = split_column(d);
+            let upper = rest.to_ascii_uppercase();
+            let at = keywords(rest).find("DEFAULT").and(upper.find("DEFAULT"))?;
+            let value = rest[at + 7..].trim_start();
+            if let Some(s) = value.strip_prefix('\'') {
+                let mut out = String::new();
+                let mut chars = s.chars().peekable();
+                while let Some(c) = chars.next() {
+                    if c == '\'' {
+                        if chars.peek() == Some(&'\'') {
+                            chars.next();
+                            out.push(c);
+                            continue;
+                        }
+                        return Some(Value::Text(out));
+                    }
+                    out.push(c);
+                }
+                return None;
+            }
+            let token: String = value.chars().take_while(|c| !c.is_whitespace() && *c != ',').collect();
+            if token.eq_ignore_ascii_case("NULL") {
+                return Some(Value::Null);
+            }
+            if let Ok(i) = token.parse::<i64>() {
+                return Some(Value::Int(i));
+            }
+            token.parse::<f64>().ok().map(Value::Real)
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -483,6 +780,27 @@ mod tests {
         assert_eq!(integer_primary_key(sql, &columns(sql)), Some(0));
         let sql = "CREATE TABLE t (id INTEGER NOT NULL, v TEXT, CONSTRAINT pk PRIMARY KEY (id))";
         assert_eq!(integer_primary_key(sql, &columns(sql)), Some(0));
+    }
+
+    #[test]
+    fn finds_automatic_indexes_as_sqlite() {
+        // GDAL's GeoPackage tables.
+        let contents = "CREATE TABLE gpkg_contents (table_name TEXT NOT NULL PRIMARY KEY,data_type TEXT NOT NULL,identifier TEXT UNIQUE,description TEXT DEFAULT '',last_change DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),min_x DOUBLE, min_y DOUBLE,max_x DOUBLE, max_y DOUBLE,srs_id INTEGER,CONSTRAINT fk_gc_r_srs_id FOREIGN KEY (srs_id) REFERENCES gpkg_spatial_ref_sys(srs_id))";
+        assert_eq!(autoindex_columns(contents), vec![vec![0], vec![2]]);
+        let geometry_columns = "CREATE TABLE gpkg_geometry_columns (table_name TEXT NOT NULL,column_name TEXT NOT NULL,geometry_type_name TEXT NOT NULL,srs_id INTEGER NOT NULL,z TINYINT NOT NULL,m TINYINT NOT NULL,CONSTRAINT pk_geom_cols PRIMARY KEY (table_name, column_name),CONSTRAINT uk_gc_table_name UNIQUE (table_name),CONSTRAINT fk_gc_tn FOREIGN KEY (table_name) REFERENCES gpkg_contents(table_name),CONSTRAINT fk_gc_srs FOREIGN KEY (srs_id) REFERENCES gpkg_spatial_ref_sys (srs_id))";
+        assert_eq!(autoindex_columns(geometry_columns), vec![vec![0, 1], vec![0]]);
+        let metadata =
+            "CREATE TABLE gpkg_metadata (id INTEGER CONSTRAINT m_pk PRIMARY KEY ASC NOT NULL,md_scope TEXT NOT NULL DEFAULT 'dataset')";
+        assert!(autoindex_columns(metadata).is_empty());
+        let tiles = "CREATE TABLE \"t\" (id INTEGER PRIMARY KEY AUTOINCREMENT,zoom_level INTEGER NOT NULL,tile_column INTEGER NOT NULL,tile_row INTEGER NOT NULL,tile_data BLOB NOT NULL,UNIQUE (zoom_level, tile_column, tile_row))";
+        assert_eq!(autoindex_columns(tiles), vec![vec![1, 2, 3]]);
+        assert_eq!(autoindex_columns("CREATE TABLE t (a TEXT PRIMARY KEY, b TEXT UNIQUE, UNIQUE (a))"), vec![vec![0], vec![1]]);
+        assert_eq!(index_columns("CREATE INDEX i ON t (b, \"a\")", "CREATE TABLE t (a, b)"), Some(vec![1, 0]));
+        assert_eq!(index_columns("CREATE INDEX i ON t (b DESC)", "CREATE TABLE t (a, b)"), None);
+        assert_eq!(
+            column_defaults("CREATE TABLE t (a TEXT DEFAULT 'it''s', b INTEGER DEFAULT 3, c REAL DEFAULT (1+1), d TEXT)"),
+            vec![Some(Value::Text("it's".into())), Some(Value::Int(3)), None, None]
+        );
     }
 
     #[test]
