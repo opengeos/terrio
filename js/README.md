@@ -7,6 +7,8 @@
   </picture>
 </p>
 
+[![npm](https://img.shields.io/npm/v/terrio-js.svg)](https://www.npmjs.com/package/terrio-js) [![CI](https://github.com/opengeos/terrio/actions/workflows/ci.yml/badge.svg)](https://github.com/opengeos/terrio/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/opengeos/terrio/blob/main/LICENSE)
+
 [terrio](https://github.com/opengeos/terrio), pure-Rust geospatial data I/O, compiled to
 WebAssembly for browsers and Node.js. Datasets are opened from bytes, with a file name telling the
 format, and written back to bytes.

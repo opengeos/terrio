@@ -7,6 +7,8 @@
 
 # terrio
 
+[![crates.io](https://img.shields.io/crates/v/terrio.svg)](https://crates.io/crates/terrio) [![docs.rs](https://img.shields.io/docsrs/terrio)](https://docs.rs/terrio) [![PyPI](https://img.shields.io/pypi/v/terrio.svg)](https://pypi.org/project/terrio/) [![npm](https://img.shields.io/npm/v/terrio-js.svg)](https://www.npmjs.com/package/terrio-js) [![CI](https://github.com/opengeos/terrio/actions/workflows/ci.yml/badge.svg)](https://github.com/opengeos/terrio/actions/workflows/ci.yml) [![Docs](https://github.com/opengeos/terrio/actions/workflows/docs.yml/badge.svg)](https://terrio.opengeos.org) [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/opengeos/terrio/blob/main/LICENSE)
+
 Pure-Rust geospatial raster, vector and point cloud data I/O.
 
 Documentation: <https://terrio.opengeos.org>
