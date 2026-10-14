@@ -3,7 +3,7 @@ name = "terrio"
 version = "0.0.1"
 description = "Python bindings for terrio, pure-Rust geospatial data I/O (placeholder)"
 readme = "README.md"
-license = "Apache-2.0"
+license = "MIT"
 requires-python = ">=3.10"
 authors = [{ name = "Qiusheng Wu", email = "giswqs@gmail.com" }]
 classifiers = [

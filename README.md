@@ -25,4 +25,4 @@ C dependencies, so that it builds anywhere Rust does, including WebAssembly.
 
 ## License
 
-Apache-2.0
+MIT
