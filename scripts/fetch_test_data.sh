@@ -39,6 +39,10 @@ if command -v ogr2ogr >/dev/null && command -v gdal_translate >/dev/null; then
     ogr2ogr -f GPKG multi.gpkg las_vegas_buildings.geojson -nln buildings
     ogr2ogr -update -f GPKG multi.gpkg las_vegas_roads.geojson -nln roads
   fi
+  [ -e UScounties.gpkg ] || ogr2ogr -f GPKG UScounties.gpkg UScounties.fgb -nln UScounties
+  # A land cover subset (NLCD 2021, 90 m) around Knoxville, read in place from a COG.
+  [ -e nlcd_knoxville.tif ] || gdal_translate -q -projwin_srs EPSG:4326 -projwin -84.4 36.25 -83.5 35.75 \
+    -co COMPRESS=DEFLATE "/vsicurl/$base/raster/nlcd_2021_land_cover_90m.tif" nlcd_knoxville.tif
   [ -e dem.gpkg ] || gdal_translate -q -ot Float32 -of GPKG dem.tif dem.gpkg
   [ -e lv_dem.asc ] || gdal_translate -q -of AAIGrid las_vegas_dem.tif lv_dem.asc
   [ -e lv_dem.jp2 ] || gdal_translate -q -ot Int16 -of JP2OpenJPEG las_vegas_dem.tif lv_dem.jp2

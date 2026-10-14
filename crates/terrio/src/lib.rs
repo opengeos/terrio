@@ -21,6 +21,7 @@ mod geotiff;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod http;
 pub mod info;
+pub mod ops;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod s3;
 pub mod vector;

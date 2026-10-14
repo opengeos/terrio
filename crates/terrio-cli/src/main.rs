@@ -23,6 +23,10 @@ enum Command {
     Formats(cmd::formats::Args),
     /// Describe a coordinate reference system, or transform coordinates between two.
     Crs(cmd::crs::Args),
+    /// Burn vector geometries into a raster.
+    Rasterize(cmd::rasterize::Args),
+    /// Turn a raster band into polygons of connected pixels with the same value.
+    Polygonize(cmd::polygonize::Args),
 }
 
 fn main() -> ExitCode {
@@ -37,6 +41,8 @@ fn main() -> ExitCode {
         Command::Convert(a) => cmd::convert::run(a),
         Command::Formats(a) => cmd::formats::run(a),
         Command::Crs(a) => cmd::crs::run(a),
+        Command::Rasterize(a) => cmd::rasterize::run(a),
+        Command::Polygonize(a) => cmd::polygonize::run(a),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,

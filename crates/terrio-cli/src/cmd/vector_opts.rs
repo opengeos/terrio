@@ -1,0 +1,96 @@
+//! The `ogr2ogr`-style options of `terrio convert` for vector inputs.
+
+use terrio::crs::SpatialRef;
+use terrio::ops::vector_filter::{GeometryConversion, VectorTranslateOptions, WriteMode};
+
+#[derive(clap::Args, Default)]
+pub struct VectorArgs {
+    /// Keep the features matching this OGR SQL expression, such as "pop > 1e6 AND name LIKE 'A%'".
+    #[arg(long = "where", value_name = "EXPR", help_heading = "Vector options")]
+    where_clause: Option<String>,
+    /// Keep the features intersecting this rectangle.
+    #[arg(long, num_args = 4, value_names = ["XMIN", "YMIN", "XMAX", "YMAX"], allow_negative_numbers = true, help_heading = "Vector options")]
+    spat: Option<Vec<f64>>,
+    /// The CRS of the --spat rectangle. By default, that of the layer.
+    #[arg(long = "spat-srs", value_name = "CRS", help_heading = "Vector options")]
+    spat_srs: Option<String>,
+    /// Keep only these fields, in this order (comma-separated).
+    #[arg(long, value_name = "FIELDS", help_heading = "Vector options")]
+    select: Option<String>,
+    /// Keep at most this many features per layer.
+    #[arg(long, value_name = "N", help_heading = "Vector options")]
+    limit: Option<usize>,
+    /// Read the result of "SELECT fields FROM layer [WHERE ...] [ORDER BY field [DESC]] [LIMIT n]".
+    #[arg(long, value_name = "STATEMENT", help_heading = "Vector options")]
+    sql: Option<String>,
+    /// The output layer name.
+    #[arg(long, value_name = "NAME", help_heading = "Vector options")]
+    nln: Option<String>,
+    /// Convert geometries: PROMOTE_TO_MULTI, POINT, LINESTRING, POLYGON, MULTIPOINT, MULTILINESTRING,
+    /// MULTIPOLYGON, GEOMETRYCOLLECTION, GEOMETRY or CONVERT_TO_LINEAR.
+    #[arg(long, value_name = "TYPE", help_heading = "Vector options")]
+    nlt: Option<String>,
+    /// Write each part of multi-part geometries as its own feature.
+    #[arg(long, help_heading = "Vector options")]
+    explodecollections: bool,
+    /// The CRS of the input, overriding what it declares.
+    #[arg(long = "s-srs", value_name = "CRS", help_heading = "Vector options")]
+    s_srs: Option<String>,
+    /// Assign this CRS to the output, without reprojecting.
+    #[arg(long = "a-srs", value_name = "CRS", help_heading = "Vector options")]
+    a_srs: Option<String>,
+    /// Add the features to the layers of an existing output.
+    #[arg(long, conflicts_with = "overwrite", help_heading = "Vector options")]
+    append: bool,
+    /// Replace the layers of the same name in an existing output (other GeoPackage layers stay).
+    #[arg(long, help_heading = "Vector options")]
+    overwrite: bool,
+}
+
+impl VectorArgs {
+    /// Whether any option is given.
+    pub fn is_set(&self) -> bool {
+        self.where_clause.is_some()
+            || self.spat.is_some()
+            || self.select.is_some()
+            || self.limit.is_some()
+            || self.sql.is_some()
+            || self.nln.is_some()
+            || self.nlt.is_some()
+            || self.explodecollections
+            || self.s_srs.is_some()
+            || self.a_srs.is_some()
+            || self.append
+            || self.overwrite
+    }
+
+    /// The library options, with `t_srs` as the reprojection target.
+    pub fn to_options(&self, t_srs: Option<SpatialRef>) -> terrio::Result<VectorTranslateOptions> {
+        let srs = |s: &Option<String>| s.as_deref().map(SpatialRef::parse).transpose();
+        Ok(VectorTranslateOptions {
+            where_clause: self.where_clause.clone(),
+            sql: self.sql.clone(),
+            spatial_filter: self.spat.as_deref().map(|v| (v[0], v[1], v[2], v[3])),
+            spatial_filter_srs: srs(&self.spat_srs)?,
+            select: self.select.as_deref().map(|s| s.split(',').map(|f| f.trim().to_string()).collect()),
+            limit: self.limit,
+            layer_name: self.nln.clone(),
+            geometry_type: self.nlt.as_deref().map(GeometryConversion::parse).transpose()?,
+            explode_collections: self.explodecollections,
+            src_srs: srs(&self.s_srs)?,
+            dst_srs: t_srs,
+            assign_srs: srs(&self.a_srs)?,
+        })
+    }
+
+    /// How to treat an existing output.
+    pub fn write_mode(&self) -> WriteMode {
+        if self.append {
+            WriteMode::Append
+        } else if self.overwrite {
+            WriteMode::Overwrite
+        } else {
+            WriteMode::Create
+        }
+    }
+}

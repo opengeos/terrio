@@ -24,6 +24,9 @@ terrio convert countries.shp countries.gpkg      # convert between formats
 terrio convert dem.tif dem_cog.tif -f COG --compress DEFLATE
 terrio convert https://host/cog.tif w.tif --srcwin 1024 1024 512 512 --overview 0  # window of an overview
 terrio convert roads.geojson roads.fgb --t-srs EPSG:3857
+terrio convert countries.geojson europe.gpkg --where "CONTINENT = 'Europe'" --select NAME,POP_EST
+terrio rasterize counties.gpkg pop.tif -a POPULATION --tr 0.01 0.01 --ot Int32
+terrio polygonize landcover.tif landcover.gpkg --8
 terrio crs EPSG:32610 --to EPSG:4326 699960 3900000
 terrio formats                                   # list the drivers
 ```
@@ -59,6 +62,7 @@ python scripts/compare_with_gdal.py ../terrio-data     # compare every file's su
 python scripts/compare_windows_with_gdal.py local ../terrio-data  # windowed and overview reads
 python scripts/compare_windows_with_gdal.py remote     # the same on public COGs, with bytes fetched
 cargo test -- --ignored                                # tests that read public cloud files
+python scripts/compare_vector_ops_with_gdal.py ../terrio-data  # convert options, rasterize, polygonize
 ```
 
 ## Layout

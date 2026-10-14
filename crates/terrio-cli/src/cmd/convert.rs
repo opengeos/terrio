@@ -36,6 +36,8 @@ pub struct Args {
     /// Convert a raster's overview N (0 is the largest) instead of its full resolution.
     #[arg(long, value_name = "N")]
     overview: Option<usize>,
+    #[command(flatten)]
+    vector: super::vector_opts::VectorArgs,
 }
 
 pub fn run(a: Args) -> terrio::Result<()> {
@@ -63,6 +65,9 @@ pub fn run(a: Args) -> terrio::Result<()> {
     let t_srs = a.t_srs.as_deref().map(SpatialRef::parse).transpose()?;
     match ds {
         Dataset::Raster(r) => {
+            if a.vector.is_set() {
+                return Err(terrio::Error::InvalidArgument("the vector options apply to vector inputs only".into()));
+            }
             let driver = a
                 .format
                 .as_deref()
@@ -82,11 +87,8 @@ pub fn run(a: Args) -> terrio::Result<()> {
                 .as_deref()
                 .map(|f| VectorDriver::from_name(f).ok_or_else(|| terrio::Error::InvalidArgument(format!("unknown vector format '{f}'"))))
                 .transpose()?;
-            let layers = match t_srs {
-                Some(dst) => v.layers.iter().map(|l| terrio::vector::reproject_layer(l, &dst)).collect::<terrio::Result<Vec<_>>>()?,
-                None => v.layers,
-            };
-            terrio::write_vector(&layers, &a.output, &VectorWriteOptions { driver })
+            let layers = terrio::ops::vector_filter::translate(&v.layers, &a.vector.to_options(t_srs)?)?;
+            terrio::ops::vector_filter::write_vector_with_mode(&layers, &a.output, &VectorWriteOptions { driver }, a.vector.write_mode())
         }
     }
 }
