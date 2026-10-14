@@ -6,10 +6,11 @@ the file cache and then five times; the tables show the median wall time of the 
 including start-up, reading and writing.
 
 !!! note "Read these numbers as a snapshot"
-    terrio is young, and correctness against GDAL came first. The slower cases below are known and
-    tracked: GeoTIFF writing (which dominates COG conversion, mosaicking and rasterizing to large
-    grids) and warping have not been optimized yet. GDAL runs with its default settings, which
-    include multi-threaded GeoTIFF compression where the driver supports it.
+    terrio is young, and correctness against GDAL came first. Both tools use the machine's cores:
+    terrio decodes and encodes GeoTIFF tiles, warps, rasterizes and reads and writes vector
+    features in parallel, with outputs identical to those of a single-threaded run, and GDAL runs
+    with its default settings, which include multi-threaded GeoTIFF compression where the driver
+    supports it. On machines with fewer cores, the parallel cases gain less.
 
 Machine: Intel Xeon w7-3445 (x86_64), 40 threads, Linux. GDAL 3.12.2 "Chicoutimi", released 2026/02/03; terrio 0.0.1. Median of 5 runs after a warm-up run; wall time of the whole command.
 
@@ -18,50 +19,50 @@ Machine: Intel Xeon w7-3445 (x86_64), 40 threads, Linux. GDAL 3.12.2 "Chicoutimi
 
 | Task | terrio | GDAL | terrio vs GDAL |
 |---|---|---|---|
-| Raster info: USGS 3DEP tile (3612×3612) | 2 ms | 38 ms | 21.2× faster |
-| Raster statistics: SRTM 90 m (4269×2465) | 159 ms | 154 ms | 1.0× slower |
-| Vector info: US counties GeoPackage | 65 ms | 38 ms | 1.7× slower |
+| Raster info: USGS 3DEP tile (3612×3612) | 14 ms | 43 ms | 3.1× faster |
+| Raster statistics: SRTM 90 m (4269×2465) | 111 ms | 139 ms | 1.2× faster |
+| Vector info: US counties GeoPackage | 18 ms | 31 ms | 1.8× faster |
 
 ### Raster conversion
 
 | Task | terrio | GDAL | terrio vs GDAL |
 |---|---|---|---|
-| GeoTIFF → COG (Deflate): USGS 3DEP tile | 2.18 s | 1.41 s | 1.5× slower |
-| GeoTIFF → GeoTIFF (LZW, tiled): Landsat (4 bands) | 401 ms | 304 ms | 1.3× slower |
-| GeoTIFF → Zarr: SRTM 90 m | 174 ms | 98 ms | 1.8× slower |
+| GeoTIFF → COG (Deflate): USGS 3DEP tile | 224 ms | 1.20 s | 5.3× faster |
+| GeoTIFF → GeoTIFF (LZW, tiled): Landsat (4 bands) | 44 ms | 285 ms | 6.4× faster |
+| GeoTIFF → Zarr: SRTM 90 m | 57 ms | 94 ms | 1.6× faster |
 
 ### Raster operations
 
 | Task | terrio | GDAL | terrio vs GDAL |
 |---|---|---|---|
-| Translate: window + Int16: USGS 3DEP tile | 305 ms | 122 ms | 2.5× slower |
-| Warp to UTM 13N, nearest: USGS 3DEP tile | 1.10 s | 454 ms | 2.4× slower |
-| Warp to UTM 13N, bilinear: USGS 3DEP tile | 1.83 s | 1.69 s | 1.1× slower |
-| Mosaic 4 USGS 3DEP tiles → GeoTIFF | 2.63 s | 1.61 s | 1.6× slower |
-| Mosaic 4 USGS 3DEP tiles → VRT | 3 ms | 37 ms | 11.0× faster |
+| Translate: window + Int16: USGS 3DEP tile | 41 ms | 114 ms | 2.8× faster |
+| Warp to UTM 13N, nearest: USGS 3DEP tile | 102 ms | 425 ms | 4.2× faster |
+| Warp to UTM 13N, bilinear: USGS 3DEP tile | 142 ms | 1.10 s | 7.7× faster |
+| Mosaic 4 USGS 3DEP tiles → GeoTIFF | 277 ms | 1.51 s | 5.5× faster |
+| Mosaic 4 USGS 3DEP tiles → VRT | 2 ms | 35 ms | 16.5× faster |
 
 ### Vector conversion
 
 | Task | terrio | GDAL | terrio vs GDAL |
 |---|---|---|---|
-| Shapefile → GeoPackage: 7,342 populated places | 68 ms | 85 ms | 1.2× faster |
-| GeoPackage → FlatGeobuf: US counties | 91 ms | 59 ms | 1.5× slower |
-| GeoPackage → GeoParquet: US counties | 107 ms | 108 ms | 1.0× faster |
-| GeoJSON → Shapefile: world cables | 13 ms | 44 ms | 3.4× faster |
-| Filter + reproject: US counties → EPSG:5070 | 121 ms | 52 ms | 2.3× slower |
+| Shapefile → GeoPackage: 7,342 populated places | 39 ms | 82 ms | 2.1× faster |
+| GeoPackage → FlatGeobuf: US counties | 49 ms | 61 ms | 1.2× faster |
+| GeoPackage → GeoParquet: US counties | 73 ms | 105 ms | 1.4× faster |
+| GeoJSON → Shapefile: world cables | 18 ms | 41 ms | 2.3× faster |
+| Filter + reproject: US counties → EPSG:5070 | 39 ms | 54 ms | 1.4× faster |
 
 ### Raster ↔ vector
 
 | Task | terrio | GDAL | terrio vs GDAL |
 |---|---|---|---|
-| Rasterize US counties at 0.01° | 1.74 s | 333 ms | 5.2× slower |
-| Polygonize NLCD land cover (966×731) | 476 ms | 636 ms | 1.3× faster |
+| Rasterize US counties at 0.01° | 158 ms | 314 ms | 2.0× faster |
+| Polygonize NLCD land cover (966×731) | 431 ms | 570 ms | 1.3× faster |
 
 ### Remote data
 
 | Task | terrio | GDAL | terrio vs GDAL |
 |---|---|---|---|
-| Info of a remote COG (USGS 3DEP on S3) | 491 ms | 585 ms | 1.2× faster |
+| Info of a remote COG (USGS 3DEP on S3) | 451 ms | 587 ms | 1.3× faster |
 
 ## Notes
 
@@ -70,8 +71,10 @@ Machine: Intel Xeon w7-3445 (x86_64), 40 threads, Linux. GDAL 3.12.2 "Chicoutimi
 - **Remote COG info** fetches one 64 KiB range; GDAL runs with
   `GDAL_DISABLE_READDIR_ON_OPEN=EMPTY_DIR`, as recommended for cloud data. Remote timings depend on
   the network.
+- **Vector info** decodes every geometry of the GeoPackage (in parallel, without reading the
+  attributes) to compute the extent; `ogrinfo` reports the extent stored in `gpkg_contents`.
 - **Rasterize** burns US counties, whose extent crosses the antimeridian, into a 35894×5348 grid
-  (192 MB): the time goes into writing the uncompressed GeoTIFF.
+  and writes it as an uncompressed 192 MB GeoTIFF.
 - `.aux.xml` statistics caches are disabled (`GDAL_PAM_ENABLED=NO`), and the statistics case uses a
   file without statistics stored in its metadata, so both tools compute them from the pixels.
 
