@@ -28,7 +28,7 @@ impl SpatialRef {
 
     /// A CRS from a WKT definition (WKT1 or WKT2). The EPSG code is identified when possible.
     pub fn from_wkt(wkt: &str) -> Self {
-        Self { epsg: wbp::identify_epsg_from_wkt(wkt), wkt: Some(wkt.to_string()), proj4: None }
+        Self { epsg: identify_epsg(wkt), wkt: Some(wkt.to_string()), proj4: None }
     }
 
     /// A CRS from a PROJ string such as `+proj=utm +zone=33 +datum=WGS84`.
@@ -138,7 +138,7 @@ impl SpatialRef {
         if s.epsg.is_none()
             && let Some(w) = &s.wkt
         {
-            s.epsg = wbp::identify_epsg_from_wkt(w);
+            s.epsg = identify_epsg(w);
         }
         s
     }
@@ -148,7 +148,7 @@ impl SpatialRef {
         if s.epsg.is_none()
             && let Some(w) = &s.wkt
         {
-            s.epsg = wbp::identify_epsg_from_wkt(w);
+            s.epsg = identify_epsg(w);
         }
         s
     }
@@ -163,6 +163,33 @@ impl std::fmt::Display for SpatialRef {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.label())
     }
+}
+
+/// Datum realizations, which a WKT definition names when it means them.
+const REALIZATIONS: &[&str] = &["2011", "HARN", "NSRS", "CSRS", "CORS", "MA11", "PA11", "NAD83(", "ITRF", "GDA2020", "ETRF"];
+
+/// Identifies the EPSG code of a WKT definition. Among equally good matches, prefers the base
+/// datum over its later realizations (NAD83 over NAD83(HARN) and NAD83(2011)) unless the WKT names
+/// one, then the lowest code: what GDAL picks for ESRI `.prj` files.
+pub(crate) fn identify_epsg(wkt: &str) -> Option<u32> {
+    let report = wbp::identify_epsg_from_wkt_report(wkt, wbp::EpsgIdentifyPolicy::Lenient)?;
+    if report.used_embedded_epsg || !report.ambiguous {
+        return report.resolved_code;
+    }
+    let best = report.top_candidates.first()?.total_score;
+    let upper = wkt.to_ascii_uppercase();
+    let wkt_names_realization = REALIZATIONS.iter().any(|r| upper.contains(r));
+    let names_realization = |code: u32| {
+        let name = wbp::epsg::epsg_info(code).map(|i| i.name.to_ascii_uppercase()).unwrap_or_default();
+        REALIZATIONS.iter().any(|r| name.contains(r))
+    };
+    report
+        .top_candidates
+        .iter()
+        .filter(|c| c.total_score >= best)
+        .min_by_key(|c| (!wkt_names_realization && names_realization(c.code), c.code))
+        .map(|c| c.code)
+        .or(report.resolved_code)
 }
 
 fn looks_like_wkt(s: &str) -> bool {
@@ -267,6 +294,9 @@ mod tests {
         }
         let wkt = wbp::to_ogc_wkt(32633).unwrap();
         assert_eq!(SpatialRef::parse(&wkt).unwrap().epsg, Some(32633));
+        // An ESRI .prj (New York City boroughs): GDAL identifies EPSG:2263.
+        let esri = r#"PROJCS["NAD_1983_StatePlane_New_York_Long_Island_FIPS_3104_Feet",GEOGCS["GCS_North_American_1983",DATUM["D_North_American_1983",SPHEROID["GRS_1980",6378137.0,298.257222101]],PRIMEM["Greenwich",0.0],UNIT["Degree",0.0174532925199433]],PROJECTION["Lambert_Conformal_Conic"],PARAMETER["False_Easting",984250.0],PARAMETER["False_Northing",0.0],PARAMETER["Central_Meridian",-74.0],PARAMETER["Standard_Parallel_1",40.66666666666666],PARAMETER["Standard_Parallel_2",41.03333333333333],PARAMETER["Latitude_Of_Origin",40.16666666666666],UNIT["Foot_US",0.3048006096012192]]"#;
+        assert_eq!(SpatialRef::parse(esri).unwrap().epsg, Some(2263));
         assert_eq!(SpatialRef::parse("EPSG:32633").unwrap().name().unwrap(), "WGS 84 / UTM zone 33N");
     }
 

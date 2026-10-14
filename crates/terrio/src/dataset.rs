@@ -180,6 +180,12 @@ fn fix_layer(mut layer: Layer, path: &str, driver: VectorDriver) -> Layer {
     if layer.name.is_empty() || (layer.name == "layer" && driver != VectorDriver::GPKG) {
         layer.name = stem.to_string();
     }
+    // Re-identify the EPSG code of stored WKT (such as a shapefile's ESRI .prj) the way GDAL does.
+    if let Some(wkt) = layer.crs_wkt().map(str::to_string)
+        && let Some(code) = crate::crs::identify_epsg(&wkt)
+    {
+        layer.set_crs_epsg(Some(code));
+    }
     let wgs84_by_definition =
         matches!(driver, VectorDriver::GeoJSON | VectorDriver::TopoJSON | VectorDriver::KML | VectorDriver::KMZ | VectorDriver::GPX);
     if wgs84_by_definition && layer.crs_epsg().is_none() && layer.crs_wkt().is_none() {
