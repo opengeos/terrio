@@ -38,3 +38,32 @@ jobs:
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
       - run: cargo build -p terrio --target wasm32-unknown-unknown
+
+  real-data:
+    name: real data vs GDAL
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: gdal
+          create-args: gdal libgdal-arrow-parquet numpy
+          cache-environment: true
+      - uses: actions/cache@v4
+        with:
+          path: terrio-data
+          key: terrio-data-${{ hashFiles('scripts/fetch_test_data.sh') }}
+      - name: Fetch test data
+        shell: micromamba-shell {0}
+        run: scripts/fetch_test_data.sh terrio-data
+      - name: Build
+        run: cargo build --release
+      - name: Real-data tests
+        env:
+          TERRIO_TEST_DATA: ${{ github.workspace }}/terrio-data
+        run: cargo test --workspace
+      - name: Compare with GDAL
+        shell: micromamba-shell {0}
+        run: python scripts/compare_with_gdal.py terrio-data
