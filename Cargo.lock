@@ -1812,6 +1812,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "ruzstd"
+version = "0.9.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "69e4ce4a039f42bf25920b95667e4d789e98749ab11bbb8d2c2936f788421bb5"
+dependencies = [
+ "twox-hash",
+]
+
+[[package]]
 name = "safe_arch"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2052,7 +2061,7 @@ dependencies = [
  "png 0.18.1",
  "quick-xml",
  "rayon",
- "ruzstd",
+ "ruzstd 0.9.1",
  "serde",
  "serde_json",
  "sha2",
@@ -2394,7 +2403,7 @@ dependencies = [
  "lz4_flex 0.13.1",
  "png 0.18.1",
  "rayon",
- "ruzstd",
+ "ruzstd 0.8.3",
  "serde",
  "serde_json",
  "tar",

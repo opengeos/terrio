@@ -39,7 +39,7 @@ flate2 = "1"
 weezl = "0.1"
 png = "0.18"
 lz4_flex = { version = "0.13", default-features = false, features = ["safe-decode", "checked-decode"] }
-ruzstd = "0.8"
+ruzstd = "0.9"
 netcdf-reader = { version = "0.9", default-features = false, features = ["netcdf4"] }
 jpeg-decoder = { version = "0.3", default-features = false }
 # GeoPackage JPEG tiles; the version wbraster already uses.
