@@ -21,7 +21,7 @@ wbprojection = "0.3.3"
 
 flatgeobuf = { version = "6", default-features = false }
 # The version flatgeobuf's generated code is built with.
-flatbuffers = "=24.12.23"
+flatbuffers = "=25.12.19"
 # GeoParquet writing; the same versions wbvector reads GeoParquet with.
 parquet = { version = "58", default-features = false, features = ["arrow", "snap"] }
 arrow-array = "58"

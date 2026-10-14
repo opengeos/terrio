@@ -2033,7 +2033,7 @@ dependencies = [
  "arrow-ipc",
  "arrow-schema",
  "bytes",
- "flatbuffers 24.12.23",
+ "flatbuffers 25.12.19",
  "flate2",
  "flatgeobuf",
  "gdal",
