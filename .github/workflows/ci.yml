@@ -20,7 +20,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -32,7 +32,7 @@ jobs:
   wasm:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
@@ -41,7 +41,7 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: wasm-pack
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
       - name: Build and test the npm package (Node.js)
@@ -52,7 +52,7 @@ jobs:
         run: |
           wasm-pack build js --release --target web --out-dir pkg --out-name terrio
           cd js/pkg && npm pkg set name=terrio && npm pack --dry-run
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: npm-package
           path: js/pkg
@@ -65,8 +65,8 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - name: Build the wheel
@@ -82,7 +82,7 @@ jobs:
       - name: Test
         working-directory: python
         run: python -m pytest -v
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: wheel-${{ matrix.os }}
           path: python/dist/*.whl
@@ -91,17 +91,17 @@ jobs:
     name: real data vs GDAL
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - uses: mamba-org/setup-micromamba@v2
+      - uses: mamba-org/setup-micromamba@v3
         with:
           environment-name: gdal
           # The reference: the EPSG table and test points come from GDAL 3.12.2 and PROJ 9.7.1, and
           # newer EPSG databases change some transformations.
           create-args: gdal=3.12.2 libgdal-core=3.12.2 proj=9.7.1 libgdal-arrow-parquet libgdal-jp2openjpeg libgdal-netcdf libgdal-hdf5 numpy pip pytest maturin pyproj pdal laspy lazrs-python
           cache-environment: true
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: terrio-data
           key: terrio-data-gdal3.12.2-${{ hashFiles('scripts/fetch_test_data.sh', 'scripts/gen_epsg_points.py') }}
