@@ -24,7 +24,7 @@ pub enum RasterDriver {
     AAIGrid,
     /// Esri binary grid workspace.
     AIG,
-    /// Esri `.flt` + `.hdr` float grid.
+    /// Esri `.hdr` labelled raster: `.bil` or `.flt` with a `.hdr`.
     EHdr,
     /// GRASS ASCII raster.
     GRASSASCIIGrid,
@@ -56,6 +56,8 @@ pub enum RasterDriver {
     Zarr,
     /// DTED elevation.
     DTED,
+    /// NetCDF (classic and netCDF-4), read only.
+    NetCDF,
 }
 
 /// A vector format driver.
@@ -127,6 +129,7 @@ impl RasterDriver {
         Self::XYZ,
         Self::Zarr,
         Self::DTED,
+        Self::NetCDF,
     ];
 
     /// The driver's description.
@@ -136,22 +139,23 @@ impl RasterDriver {
             Self::Cog => ("COG", "Cloud Optimized GeoTIFF", &["tif", "tiff"], true, true),
             Self::AAIGrid => ("AAIGrid", "Esri ASCII Grid", &["asc"], true, true),
             Self::AIG => ("AIG", "Esri Binary Grid", &["adf"], true, true),
-            Self::EHdr => ("EHdr", "Esri Float Grid (.flt + .hdr)", &["flt"], true, true),
+            Self::EHdr => ("EHdr", "Esri .hdr Labelled (BIL, FLT)", &["bil", "flt"], true, true),
             Self::GRASSASCIIGrid => ("GRASSASCIIGrid", "GRASS ASCII Raster", &[], true, true),
             Self::GSBG => ("GSBG", "Surfer Grid", &["grd"], true, true),
             Self::PCRaster => ("PCRaster", "PCRaster", &["map"], true, true),
             Self::SAGA => ("SAGA", "SAGA GIS Binary Grid", &["sdat", "sgrd"], true, true),
             Self::RST => ("RST", "Idrisi / TerrSet Raster", &["rst", "rdc"], true, true),
             Self::ERS => ("ERS", "ER Mapper", &["ers"], true, true),
-            Self::ENVI => ("ENVI", "ENVI Labelled Raster", &["hdr", "dat", "bil", "bsq", "bip", "envi"], true, true),
+            Self::ENVI => ("ENVI", "ENVI Labelled Raster", &["envi", "hdr", "dat", "bsq", "bip"], true, true),
             Self::HFA => ("HFA", "ERDAS Imagine", &["img"], true, false),
-            Self::GPKG => ("GPKG", "GeoPackage Tiles", &["gpkg"], true, true),
+            Self::GPKG => ("GPKG", "GeoPackage Tiles", &["gpkg"], true, false),
             Self::JP2 => ("JP2", "JPEG 2000", &["jp2", "j2k"], true, true),
             Self::PNG => ("PNG", "PNG with World File", &["png"], true, true),
             Self::JPEG => ("JPEG", "JPEG with World File", &["jpg", "jpeg"], true, true),
             Self::XYZ => ("XYZ", "XYZ ASCII Grid", &["xyz"], true, true),
             Self::Zarr => ("Zarr", "Zarr v2/v3", &["zarr"], true, true),
             Self::DTED => ("DTED", "DTED Elevation", &["dt0", "dt1", "dt2"], true, true),
+            Self::NetCDF => ("netCDF", "Network Common Data Format", &["nc", "nc4", "cdf"], true, false),
         };
         DriverInfo { name, long_name, kind: Kind::Raster, extensions, read, write }
     }
@@ -171,6 +175,7 @@ impl RasterDriver {
             "imagine" | "erdas" => Some(Self::HFA),
             "jpg" => Some(Self::JPEG),
             "geopackage" => Some(Self::GPKG),
+            "nc" | "netcdf4" => Some(Self::NetCDF),
             _ => None,
         };
         alias.or_else(|| Self::ALL.iter().copied().find(|d| d.name().eq_ignore_ascii_case(name)))
@@ -209,6 +214,8 @@ impl RasterDriver {
             Self::XYZ => F::Xyz,
             Self::Zarr => F::Zarr,
             Self::DTED => F::Dted,
+            // Never used: terrio's own driver reads NetCDF, and nothing writes it.
+            Self::NetCDF => F::Zarr,
         }
     }
 

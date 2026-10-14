@@ -21,6 +21,15 @@ wbprojection = "0.3.3"
 
 tiff = { version = "0.11", features = ["zstd", "webp"] }
 half = "2"
+flate2 = "1"
+weezl = "0.1"
+png = "0.18"
+lz4_flex = { version = "0.11", default-features = false, features = ["safe-decode", "checked-decode"] }
+ruzstd = "0.8"
+netcdf-reader = { version = "0.9", default-features = false, features = ["netcdf4"] }
+jpeg-decoder = { version = "0.3", default-features = false }
+openjp2 = { version = "0.6", default-features = false, features = ["std"] }
+zstd = "0.13"
 thiserror = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -30,3 +39,10 @@ ureq = "3"
 hmac = "0.12"
 sha2 = "0.10"
 clap = { version = "4", features = ["derive"] }
+
+# openjp2 frees never-allocated code-block buffers (a null `dealloc`, harmless with the system
+# allocator) and trips the standard library's debug-mode precondition checks: build it as in
+# release.
+[profile.dev.package.openjp2]
+debug-assertions = false
+opt-level = 3

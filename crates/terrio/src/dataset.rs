@@ -73,12 +73,18 @@ pub struct VectorOpenOptions {
 
 /// Opens a dataset, raster or vector, detecting its format.
 pub fn open(path: &str) -> Result<Dataset> {
+    if let Some(result) = crate::drivers::open_subdataset(path) {
+        return result.map(Dataset::Raster);
+    }
     let local = vfs::resolve(path)?;
     open_local(local.as_str(), &VectorOpenOptions::default())
 }
 
 /// Opens a raster dataset.
 pub fn open_raster(path: &str) -> Result<RasterDataset> {
+    if let Some(result) = crate::drivers::open_subdataset(path) {
+        return result;
+    }
     let local = vfs::resolve(path)?;
     read_raster_local(local.as_str())
 }
@@ -137,6 +143,9 @@ fn open_local(path: &str, options: &VectorOpenOptions) -> Result<Dataset> {
 }
 
 fn read_raster_local(path: &str) -> Result<RasterDataset> {
+    if let Some(result) = crate::drivers::read(path) {
+        return result;
+    }
     if RasterDriver::for_extension(path) == Some(RasterDriver::GTiff) {
         return crate::geotiff::read_geotiff(Path::new(path));
     }
@@ -147,7 +156,9 @@ fn read_raster_local(path: &str) -> Result<RasterDataset> {
             (fmt.read(path)?, RasterDriver::from_wb(fmt))
         }
     };
-    Ok(RasterDataset { raster, driver, has_nodata: true })
+    let mut ds = crate::drivers::nodata::finish(path, driver, raster);
+    crate::drivers::nodata::apply_pam(path, &mut ds);
+    Ok(ds)
 }
 
 fn read_vector_local(path: &str, driver: VectorDriver, options: &VectorOpenOptions) -> Result<VectorDataset> {
@@ -199,7 +210,8 @@ fn fix_layer(mut layer: Layer, path: &str, driver: VectorDriver) -> Layer {
 pub struct RasterWriteOptions {
     /// The output format. By default, chosen from the output path's extension.
     pub driver: Option<RasterDriver>,
-    /// GeoTIFF/COG compression: `NONE`, `LZW`, `DEFLATE`, `PACKBITS`, `JPEG`, `WEBP`.
+    /// GeoTIFF/COG compression: `NONE`, `LZW`, `DEFLATE`, `ZSTD`, `PACKBITS`, `JPEG`, `WEBP`. GeoTIFFs
+    /// default to `NONE`, COGs to `LZW`, as in GDAL. Zarr: `NONE`, `ZLIB`, `GZIP`.
     pub compression: Option<String>,
     /// Write GeoTIFF tiles of this size (COG tiles default to 512).
     pub tile_size: Option<u32>,
@@ -207,8 +219,17 @@ pub struct RasterWriteOptions {
     pub bigtiff: bool,
 }
 
-/// Writes a raster.
+/// Writes a raster, declaring its nodata value.
 pub fn write_raster(raster: &Raster, path: &str, options: &RasterWriteOptions) -> Result<()> {
+    write_raster_with_nodata(raster, Some(raster.nodata), path, options)
+}
+
+/// Writes a raster dataset, declaring a nodata value only when the dataset has one.
+pub fn write_raster_dataset(ds: &RasterDataset, path: &str, options: &RasterWriteOptions) -> Result<()> {
+    write_raster_with_nodata(&ds.raster, ds.nodata(), path, options)
+}
+
+fn write_raster_with_nodata(raster: &Raster, nodata: Option<f64>, path: &str, options: &RasterWriteOptions) -> Result<()> {
     ensure_writable_location(path)?;
     let driver = match options.driver {
         Some(d) => d,
@@ -217,6 +238,25 @@ pub fn write_raster(raster: &Raster, path: &str, options: &RasterWriteOptions) -
     };
     if !driver.info().write {
         return Err(Error::Unsupported(format!("the {} driver cannot write", driver.name())));
+    }
+    if matches!(driver, RasterDriver::GTiff | RasterDriver::Cog) {
+        use crate::drivers::gtiff_write::{Compression, TiffOptions};
+        let name = options.compression.as_deref().unwrap_or(if driver == RasterDriver::Cog { "LZW" } else { "NONE" });
+        // terrio's writer handles the lossless compressions; wbraster the lossy ones.
+        if let Some(compression) = Compression::parse(name) {
+            let opts = TiffOptions {
+                compression,
+                tile_size: options.tile_size,
+                bigtiff: options.bigtiff,
+                cog: driver == RasterDriver::Cog,
+                nodata,
+                ..Default::default()
+            };
+            return crate::drivers::gtiff_write::write(raster, path, &opts);
+        }
+    }
+    if let Some(result) = crate::drivers::write(raster, nodata, path, driver, options.compression.as_deref()) {
+        return result;
     }
     let compression = options.compression.as_deref().map(parse_compression).transpose()?;
     match driver {
@@ -237,13 +277,11 @@ pub fn write_raster(raster: &Raster, path: &str, options: &RasterWriteOptions) -
 fn parse_compression(s: &str) -> Result<wbraster::GeoTiffCompression> {
     use wbraster::GeoTiffCompression as C;
     Ok(match s.to_ascii_uppercase().as_str() {
-        "NONE" => C::None,
-        "LZW" => C::Lzw,
-        "DEFLATE" | "ZIP" => C::Deflate,
-        "PACKBITS" => C::PackBits,
         "JPEG" => C::Jpeg,
         "WEBP" => C::WebP,
-        other => return Err(Error::InvalidArgument(format!("unknown compression '{other}' (NONE, LZW, DEFLATE, PACKBITS, JPEG, WEBP)"))),
+        other => {
+            return Err(Error::InvalidArgument(format!("unknown compression '{other}' (NONE, LZW, DEFLATE, ZSTD, PACKBITS, JPEG, WEBP)")));
+        }
     })
 }
 

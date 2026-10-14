@@ -114,5 +114,5 @@ pub fn run(a: Args) -> terrio::Result<()> {
         .as_deref()
         .map(|f| RasterDriver::from_name(f).ok_or_else(|| terrio::Error::InvalidArgument(format!("unknown raster format '{f}'"))))
         .transpose()?;
-    terrio::write_raster(&out.raster, &a.output, &RasterWriteOptions { driver, compression: a.compress, ..Default::default() })
+    terrio::write_raster_dataset(&out, &a.output, &RasterWriteOptions { driver, compression: a.compress, ..Default::default() })
 }

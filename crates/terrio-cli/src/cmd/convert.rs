@@ -20,7 +20,7 @@ pub struct Args {
     /// Reproject into this CRS.
     #[arg(long = "t-srs", value_name = "CRS")]
     t_srs: Option<String>,
-    /// GeoTIFF/COG compression: NONE, LZW, DEFLATE, PACKBITS, JPEG, WEBP.
+    /// GeoTIFF/COG compression: NONE, LZW, DEFLATE, ZSTD, PACKBITS, JPEG, WEBP.
     #[arg(long)]
     compress: Option<String>,
     /// GeoTIFF/COG tile size.
@@ -64,7 +64,7 @@ pub fn run(a: Args) -> terrio::Result<()> {
     };
     let t_srs = a.t_srs.as_deref().map(SpatialRef::parse).transpose()?;
     match ds {
-        Dataset::Raster(r) => {
+        Dataset::Raster(mut r) => {
             if a.vector.is_set() {
                 return Err(terrio::Error::InvalidArgument("the vector options apply to vector inputs only".into()));
             }
@@ -73,13 +73,12 @@ pub fn run(a: Args) -> terrio::Result<()> {
                 .as_deref()
                 .map(|f| RasterDriver::from_name(f).ok_or_else(|| terrio::Error::InvalidArgument(format!("unknown raster format '{f}'"))))
                 .transpose()?;
-            let mut raster = r.raster;
             if let Some(dst) = t_srs {
                 let code = dst.epsg.ok_or_else(|| terrio::Error::Crs("raster reprojection needs an EPSG code".into()))?;
-                raster = raster.reproject_to_epsg(code, terrio::raster::ResampleMethod::Nearest)?;
+                r.raster = r.raster.reproject_to_epsg(code, terrio::raster::ResampleMethod::Nearest)?;
             }
             let opts = RasterWriteOptions { driver, compression: a.compress, tile_size: a.tile_size, bigtiff: a.bigtiff };
-            terrio::write_raster(&raster, &a.output, &opts)
+            terrio::write_raster_dataset(&r, &a.output, &opts)
         }
         Dataset::Vector(v) => {
             let driver = a

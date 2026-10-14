@@ -69,6 +69,10 @@ jobs:
         continue-on-error: true
         shell: micromamba-shell {0}
         run: python scripts/compare_with_gdal.py terrio-data
+      - name: Round-trip rasters through GDAL
+        continue-on-error: true
+        shell: micromamba-shell {0}
+        run: python scripts/raster_roundtrip.py
       - name: Compare vector operations with GDAL
         continue-on-error: true
         shell: micromamba-shell {0}

@@ -1,0 +1,277 @@
+//! User-defined coordinate reference systems in GeoTIFF GeoKeys: the projection method and its
+//! parameters, as GDAL writes them for CRSs without an EPSG code, and ESRI PE citations.
+
+/// GeoKey directory access: `(location, count, value_or_offset)` by key id.
+pub(crate) struct GeoKeys<'a> {
+    /// The GeoKeyDirectoryTag values.
+    pub keys: &'a [u16],
+    /// The GeoDoubleParamsTag values.
+    pub doubles: &'a [f64],
+    /// The GeoAsciiParamsTag value.
+    pub ascii: &'a str,
+}
+
+const GEO_DOUBLE_PARAMS: u16 = 34736;
+const GEO_ASCII_PARAMS: u16 = 34737;
+const USER_DEFINED: u16 = 32767;
+
+impl GeoKeys<'_> {
+    fn key(&self, id: u16) -> Option<(u16, u16, u16)> {
+        self.keys.get(4..)?.chunks(4).find(|k| k.len() == 4 && k[0] == id).map(|k| (k[1], k[2], k[3]))
+    }
+
+    fn short(&self, id: u16) -> Option<u16> {
+        self.key(id).filter(|(loc, _, _)| *loc == 0).map(|(_, _, v)| v)
+    }
+
+    fn double(&self, id: u16) -> Option<f64> {
+        self.key(id).filter(|(loc, _, _)| *loc == GEO_DOUBLE_PARAMS).and_then(|(_, _, off)| self.doubles.get(off as usize).copied())
+    }
+
+    fn text(&self, id: u16) -> Option<&str> {
+        let (loc, n, off) = self.key(id)?;
+        if loc != GEO_ASCII_PARAMS {
+            return None;
+        }
+        let start = (off as usize).min(self.ascii.len());
+        let end = (start + n as usize).min(self.ascii.len());
+        self.ascii.get(start..end).map(|s| s.trim_end_matches(['|', '\0']))
+    }
+
+    fn first(&self, ids: &[u16]) -> Option<f64> {
+        ids.iter().find_map(|id| self.double(*id))
+    }
+}
+
+/// The CRS of GeoKeys that use no EPSG code for the whole CRS: an ESRI PE citation's WKT, or a
+/// PROJ definition built from the projection method, its parameters and the datum.
+pub(crate) fn user_defined_crs(k: &GeoKeys) -> Option<wbraster::CrsInfo> {
+    for id in [3073, 1026, 2049] {
+        if let Some(wkt) = k.text(id).and_then(|c| c.strip_prefix("ESRI PE String = ")) {
+            return Some(wbraster::CrsInfo::from_wkt(wkt.trim()));
+        }
+    }
+    let model = k.short(1024)?;
+    let geog = geographic_proj(k)?;
+    let proj = match model {
+        2 => format!("+proj=longlat {geog}"),
+        1 => format!("+proj={} {geog} {}", projection(k)?, units(k.short(3076))),
+        _ => return None,
+    };
+    let crs = wbraster::CrsInfo::from_proj4(proj.trim());
+    match crs.wkt {
+        Some(_) => Some(crs),
+        None => {
+            let wkt = wbprojection::from_proj_string(&proj).ok().map(|c| wbprojection::crs_to_wkt(&c));
+            Some(wbraster::CrsInfo { wkt, ..crs })
+        }
+    }
+}
+
+/// The datum or ellipsoid part of a PROJ definition.
+fn geographic_proj(k: &GeoKeys) -> Option<String> {
+    let datum = match k.short(2048) {
+        Some(code) if code != USER_DEFINED => Some(code + 2000), // GCS 4326 -> datum 6326
+        _ => k.short(2050),
+    };
+    let named = match datum {
+        Some(6326) => Some("+datum=WGS84"),
+        Some(6269) => Some("+datum=NAD83"),
+        Some(6267) => Some("+datum=NAD27"),
+        Some(6258) | Some(6283) | Some(6167) | Some(6619) => Some("+ellps=GRS80 +towgs84=0,0,0"),
+        Some(6322) => Some("+ellps=WGS72"),
+        _ => None,
+    };
+    if let Some(n) = named {
+        return Some(n.to_string());
+    }
+    let ellipsoid = match k.short(2056) {
+        Some(7030) => Some("+ellps=WGS84"),
+        Some(7019) => Some("+ellps=GRS80"),
+        Some(7008) => Some("+ellps=clrk66"),
+        Some(7004) => Some("+ellps=bessel"),
+        Some(7022) => Some("+ellps=intl"),
+        Some(7035) | Some(7047) => Some("+R=6371007.181"),
+        _ => None,
+    };
+    if let Some(e) = ellipsoid {
+        return Some(e.to_string());
+    }
+    let a = k.double(2057)?;
+    Some(match (k.double(2059), k.double(2058)) {
+        (Some(rf), _) if rf > 0.0 => format!("+a={a} +rf={rf}"),
+        (_, Some(b)) => format!("+a={a} +b={b}"),
+        _ => format!("+R={a}"),
+    })
+}
+
+/// The projection method and parameters of a PROJ definition.
+fn projection(k: &GeoKeys) -> Option<String> {
+    // Parameter keys.
+    const STD_PARALLEL_1: u16 = 3078;
+    const STD_PARALLEL_2: u16 = 3079;
+    const NAT_ORIGIN_LONG: u16 = 3080;
+    const NAT_ORIGIN_LAT: u16 = 3081;
+    const FALSE_EASTING: u16 = 3082;
+    const FALSE_NORTHING: u16 = 3083;
+    const FALSE_ORIGIN_LONG: u16 = 3084;
+    const FALSE_ORIGIN_LAT: u16 = 3085;
+    const FALSE_ORIGIN_EASTING: u16 = 3086;
+    const FALSE_ORIGIN_NORTHING: u16 = 3087;
+    const CENTER_LONG: u16 = 3088;
+    const CENTER_LAT: u16 = 3089;
+    const SCALE_AT_NAT_ORIGIN: u16 = 3092;
+    const SCALE_AT_CENTER: u16 = 3093;
+    const AZIMUTH: u16 = 3094;
+    const STRAIGHT_VERT_POLE_LONG: u16 = 3095;
+
+    let lon0 = k.first(&[NAT_ORIGIN_LONG, FALSE_ORIGIN_LONG, CENTER_LONG, STRAIGHT_VERT_POLE_LONG]).unwrap_or(0.0);
+    let lat0 = k.first(&[NAT_ORIGIN_LAT, FALSE_ORIGIN_LAT, CENTER_LAT]).unwrap_or(0.0);
+    let x0 = k.first(&[FALSE_EASTING, FALSE_ORIGIN_EASTING]).unwrap_or(0.0);
+    let y0 = k.first(&[FALSE_NORTHING, FALSE_ORIGIN_NORTHING]).unwrap_or(0.0);
+    let scale = k.first(&[SCALE_AT_NAT_ORIGIN, SCALE_AT_CENTER]).unwrap_or(1.0);
+    let lat1 = k.double(STD_PARALLEL_1);
+    let lat2 = k.double(STD_PARALLEL_2);
+    let false_xy = format!("+x_0={x0} +y_0={y0}");
+    Some(match k.short(3075)? {
+        1 => format!("tmerc +lat_0={lat0} +lon_0={lon0} +k={scale} {false_xy}"),
+        7 => match lat1 {
+            Some(ts) => format!("merc +lon_0={lon0} +lat_ts={ts} {false_xy}"),
+            None => format!("merc +lon_0={lon0} +k={scale} {false_xy}"),
+        },
+        8 => format!("lcc +lat_1={} +lat_2={} +lat_0={lat0} +lon_0={lon0} {false_xy}", lat1?, lat2.or(lat1)?),
+        9 => format!("lcc +lat_1={lat0} +lat_0={lat0} +lon_0={lon0} +k_0={scale} {false_xy}"),
+        10 => format!("laea +lat_0={lat0} +lon_0={lon0} {false_xy}"),
+        11 => format!("aea +lat_1={} +lat_2={} +lat_0={lat0} +lon_0={lon0} {false_xy}", lat1?, lat2.or(lat1)?),
+        12 => format!("aeqd +lat_0={lat0} +lon_0={lon0} {false_xy}"),
+        14 => format!("stere +lat_0={lat0} +lon_0={lon0} +k={scale} {false_xy}"),
+        15 => {
+            let ts = k.double(NAT_ORIGIN_LAT).unwrap_or(90.0);
+            let pole = if ts < 0.0 { -90.0 } else { 90.0 };
+            match k.double(SCALE_AT_NAT_ORIGIN) {
+                Some(s) if k.double(STD_PARALLEL_1).is_none() && (ts.abs() - 90.0).abs() < 1e-9 => {
+                    format!("stere +lat_0={pole} +lon_0={lon0} +k={s} {false_xy}")
+                }
+                _ => format!("stere +lat_0={pole} +lat_ts={} +lon_0={lon0} {false_xy}", lat1.unwrap_or(ts)),
+            }
+        }
+        16 => format!("sterea +lat_0={lat0} +lon_0={lon0} +k={scale} {false_xy}"),
+        17 => format!("eqc +lat_ts={} +lat_0={lat0} +lon_0={lon0} {false_xy}", lat1.unwrap_or(0.0)),
+        24 => format!("sinu +lon_0={lon0} {false_xy}"),
+        3 => format!("omerc +lat_0={lat0} +lonc={lon0} +alpha={} +k={scale} {false_xy}", k.double(AZIMUTH)?),
+        _ => return None,
+    })
+}
+
+fn units(code: Option<u16>) -> &'static str {
+    match code {
+        Some(9002) => "+units=ft",
+        Some(9003) => "+units=us-ft",
+        _ => "+units=m",
+    }
+}
+
+/// GeoKeys for a CRS without an EPSG code, as GDAL writes them: `(short keys, double keys,
+/// ascii keys)` by key id. `None` when the projection method has no GeoTIFF equivalent.
+pub(crate) fn keys_for_crs(crs: &wbprojection::Crs, name: &str) -> Option<GeoKeyValues> {
+    use wbprojection::ProjectionKind as K;
+    let p = crs.projection.params();
+    let mut v = GeoKeyValues::default();
+    // The geographic CRS: a registered one for the common datums, otherwise its ellipsoid.
+    let gcs = match crs.datum.name {
+        "WGS 84" | "WGS84" => Some(4326),
+        "NAD 83" | "NAD83" => Some(4269),
+        "NAD 27" | "NAD27" => Some(4267),
+        "ETRS89" => Some(4258),
+        _ => None,
+    };
+    match gcs {
+        Some(code) => v.shorts.push((2048, code)),
+        None => {
+            let e = &crs.datum.ellipsoid;
+            v.shorts.push((2048, USER_DEFINED));
+            v.shorts.push((2050, USER_DEFINED));
+            v.shorts.push((2054, 9102));
+            v.doubles.push((2057, e.a));
+            if e.f > 0.0 {
+                v.doubles.push((2059, 1.0 / e.f));
+            } else {
+                v.doubles.push((2058, e.b));
+            }
+        }
+    }
+    if matches!(p.kind, K::Geographic) {
+        v.shorts.push((1024, 2));
+        v.ascii.push((1026, name.to_string()));
+        return Some(v);
+    }
+    let (fe, fn_, lat0, lon0, k) = (p.false_easting, p.false_northing, p.lat0, p.lon0, p.scale);
+    let (method, params): (u16, Vec<(u16, f64)>) = match &p.kind {
+        K::TransverseMercator => (1, vec![(3081, lat0), (3080, lon0), (3092, k), (3082, fe), (3083, fn_)]),
+        K::Utm { zone, south } => {
+            let lon = -183.0 + 6.0 * *zone as f64;
+            (1, vec![(3081, 0.0), (3080, lon), (3092, 0.9996), (3082, 500000.0), (3083, if *south { 10_000_000.0 } else { 0.0 })])
+        }
+        K::Mercator => (7, vec![(3081, lat0), (3080, lon0), (3092, k), (3082, fe), (3083, fn_)]),
+        K::LambertConformalConic { lat1, lat2: Some(lat2) } => {
+            (8, vec![(3078, *lat1), (3079, *lat2), (3085, lat0), (3084, lon0), (3086, fe), (3087, fn_)])
+        }
+        K::LambertConformalConic { lat2: None, .. } => (9, vec![(3081, lat0), (3080, lon0), (3092, k), (3082, fe), (3083, fn_)]),
+        K::AlbersEqualAreaConic { lat1, lat2 } => {
+            (11, vec![(3078, *lat1), (3079, *lat2), (3081, lat0), (3080, lon0), (3082, fe), (3083, fn_)])
+        }
+        K::LambertAzimuthalEqualArea => (10, vec![(3089, lat0), (3088, lon0), (3082, fe), (3083, fn_)]),
+        K::AzimuthalEquidistant => (12, vec![(3089, lat0), (3088, lon0), (3082, fe), (3083, fn_)]),
+        K::Stereographic => (14, vec![(3089, lat0), (3088, lon0), (3093, k), (3082, fe), (3083, fn_)]),
+        K::ObliqueStereographic => (16, vec![(3081, lat0), (3080, lon0), (3092, k), (3082, fe), (3083, fn_)]),
+        K::PolarStereographic { north, lat_ts } => {
+            let pole = if *north { 90.0 } else { -90.0 };
+            match lat_ts {
+                Some(ts) => (15, vec![(3081, *ts), (3095, lon0), (3082, fe), (3083, fn_)]),
+                None => (15, vec![(3081, pole), (3095, lon0), (3092, k), (3082, fe), (3083, fn_)]),
+            }
+        }
+        K::Equirectangular { lat_ts } => (17, vec![(3078, *lat_ts), (3081, lat0), (3088, lon0), (3082, fe), (3083, fn_)]),
+        K::Sinusoidal => (24, vec![(3088, lon0), (3082, fe), (3083, fn_)]),
+        _ => return None,
+    };
+    v.shorts.push((1024, 1));
+    v.ascii.push((1026, name.to_string()));
+    v.shorts.push((3072, USER_DEFINED));
+    v.shorts.push((3074, USER_DEFINED));
+    v.shorts.push((3075, method));
+    v.shorts.push((3076, 9001));
+    v.doubles.extend(params);
+    Some(v)
+}
+
+/// GeoKey values by key id.
+#[derive(Debug, Default)]
+pub(crate) struct GeoKeyValues {
+    /// SHORT keys.
+    pub shorts: Vec<(u16, u16)>,
+    /// DOUBLE keys.
+    pub doubles: Vec<(u16, f64)>,
+    /// ASCII keys.
+    pub ascii: Vec<(u16, String)>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reads_gdal_user_defined_lcc() {
+        // As GDAL writes a WGS 84 Lambert Conformal Conic with no EPSG code.
+        let keys = [
+            1, 1, 0, 14, 1024, 0, 1, 1, 1025, 0, 1, 1, 2048, 0, 1, 32767, 2050, 0, 1, 6326, 2054, 0, 1, 9102, 3072, 0, 1, 32767, 3074, 0,
+            1, 32767, 3075, 0, 1, 8, 3076, 0, 1, 9001, 3078, 34736, 1, 0, 3079, 34736, 1, 1, 3084, 34736, 1, 2, 3085, 34736, 1, 3, 3086,
+            34736, 1, 4,
+        ];
+        let doubles = [33.0, 45.0, -96.0, 39.0, 0.0];
+        let crs = user_defined_crs(&GeoKeys { keys: &keys, doubles: &doubles, ascii: "" }).unwrap();
+        let p = crs.proj4.unwrap();
+        assert!(p.starts_with("+proj=lcc +lat_1=33 +lat_2=45 +lat_0=39 +lon_0=-96 +x_0=0 +y_0=0 +datum=WGS84"), "{p}");
+        assert!(crs.wkt.is_some());
+    }
+}

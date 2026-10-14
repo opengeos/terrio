@@ -15,6 +15,7 @@
 mod cog;
 pub mod crs;
 mod dataset;
+mod drivers;
 mod error;
 pub mod formats;
 mod geotiff;
@@ -35,7 +36,7 @@ pub mod vfs;
 pub use cog::{LazyRaster, Window, WindowOptions, open_raster_lazy};
 pub use dataset::{
     Dataset, RasterDataset, RasterWriteOptions, VectorDataset, VectorOpenOptions, VectorWriteOptions, geo_transform, list_layers, open,
-    open_raster, open_vector, write_raster, write_vector,
+    open_raster, open_vector, write_raster, write_raster_dataset, write_vector,
 };
 pub use error::{Error, Result};
 

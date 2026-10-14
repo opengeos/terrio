@@ -93,3 +93,107 @@ fn geotiff_user_defined_albers() {
     let (lon, lat) = t.transform(1030275.0, 1539885.0).unwrap();
     assert!((lon - -84.38694942782567).abs() < 1e-9 && (lat - 36.340361661300086).abs() < 1e-9, "{lon} {lat}");
 }
+
+/// The GDAL statistics of `srtm_sub.tif`, which every `srtm_sub` copy must reproduce.
+const SRTM_SUB_STATS: (f64, f64, f64) = (370.0, 2843.0, 1603.6905150000036);
+
+/// Checks a copy of `srtm_sub.tif` written by GDAL in another format.
+fn check_srtm_sub(name: &str, data_type: terrio::DataType, nodata: f64) {
+    // A netCDF variable: `NETCDF:"file":variable`.
+    let p = match name.split_once(':') {
+        Some((file, var)) => match data(file) {
+            Some(f) => format!("NETCDF:\"{f}\":{var}"),
+            None => return,
+        },
+        None => match data(name) {
+            Some(p) => p,
+            None => return,
+        },
+    };
+    let ds = terrio::open_raster(&p).unwrap_or_else(|e| panic!("{name}: {e}"));
+    assert_eq!((ds.raster.cols, ds.raster.rows, ds.raster.bands), (500, 400, 1), "{name}");
+    assert_eq!(ds.raster.data_type, data_type, "{name}");
+    assert_eq!(ds.nodata(), Some(nodata), "{name}");
+    assert_eq!(ds.crs().epsg, Some(4326), "{name}");
+    let gt = ds.geo_transform();
+    assert!((gt[0] - -119.947_443_593_553).abs() < 1e-7 && (gt[3] - 37.818_439_678_407).abs() < 1e-7, "{name}: {gt:?}");
+    assert!((gt[1] - 0.000_808_483_755_7).abs() < 1e-9, "{name}: {gt:?}");
+    let s = terrio::info::band_statistics(&ds, 0).unwrap();
+    assert_eq!((s.min, s.max), (SRTM_SUB_STATS.0, SRTM_SUB_STATS.1), "{name}");
+    assert!((s.mean - SRTM_SUB_STATS.2).abs() < 1e-6, "{name}: {}", s.mean);
+}
+
+#[test]
+fn srtm_sub_in_gdal_written_formats() {
+    use terrio::DataType::{F32, I16};
+    check_srtm_sub("srtm_sub.bil", I16, -32768.0);
+    check_srtm_sub("srtm_sub.sdat", I16, -32768.0);
+    check_srtm_sub("srtm_sub.ers", I16, -32768.0);
+    check_srtm_sub("srtm_sub.rst", I16, -32768.0);
+    check_srtm_sub("srtm_sub.jp2", I16, -32768.0);
+    check_srtm_sub("srtm_sub_v3.zarr", I16, -32768.0);
+    check_srtm_sub("srtm_sub_blosc.zarr", I16, -32768.0);
+    check_srtm_sub("srtm_sub.grd", F32, 1.701_41e38_f32 as f64);
+    check_srtm_sub("srtm_sub.nc:Band1", I16, -32768.0);
+}
+
+#[test]
+fn netcdf4_variables_as_subdatasets() {
+    let Some(p) = data("wind_global.nc") else { return };
+    let ds = terrio::open_raster(&p).unwrap();
+    // The first variable, as GDAL's first subdataset; south-up latitudes are turned north-up.
+    assert_eq!((ds.raster.cols, ds.raster.rows), (360, 181));
+    assert_eq!(ds.geo_transform(), [-0.5, 1.0, 0.0, 90.5, 0.0, -1.0]);
+    assert!(ds.nodata().unwrap().is_nan());
+    let s = terrio::info::band_statistics(&ds, 0).unwrap();
+    assert_eq!((s.min, s.max), (-21.61, 25.61));
+    let v = terrio::open_raster(&format!("NETCDF:\"{p}\":v_wind")).unwrap();
+    let s = terrio::info::band_statistics(&v, 0).unwrap();
+    assert_eq!((s.min, s.max), (-22.77, 21.12));
+}
+
+#[test]
+fn gdal_derived_las_vegas_dem() {
+    for name in ["lv_dem.asc", "lv_dem.envi", "lv_dem.img", "lv_dem.jp2", "lv_dem.zarr"] {
+        let Some(p) = data(name) else { return };
+        let ds = terrio::open_raster(&p).unwrap_or_else(|e| panic!("{name}: {e}"));
+        assert_eq!((ds.raster.cols, ds.raster.rows), (970, 498), "{name}");
+        assert_eq!(ds.crs().epsg, Some(3857), "{name}");
+        assert_eq!(ds.geo_transform(), [-12824908.0, 1.0, 0.0, 4317505.0, 0.0, -1.0], "{name}");
+    }
+    // GDAL types an ASCII grid with decimals as Float32, and the JPEG 2000 copy is signed.
+    let Some(p) = data("lv_dem.asc") else { return };
+    assert_eq!(terrio::open_raster(&p).unwrap().raster.data_type, terrio::DataType::F32);
+    let Some(p) = data("lv_dem.jp2") else { return };
+    let jp2 = terrio::open_raster(&p).unwrap();
+    assert_eq!(jp2.raster.data_type, terrio::DataType::I16);
+    let s = terrio::info::band_statistics(&jp2, 0).unwrap();
+    assert_eq!((s.min, s.max), (-32767.0, 679.0));
+}
+
+#[test]
+fn geopackage_gridded_coverage_at_full_resolution() {
+    let Some(p) = data("dem.gpkg") else { return };
+    let ds = terrio::open_raster(&p).unwrap();
+    assert_eq!((ds.raster.cols, ds.raster.rows), (2880, 1773));
+    assert_eq!(ds.raster.data_type, terrio::DataType::F32);
+    assert_close(ds.geo_transform()[1], 33.239_125_326_623_25, "pixel width");
+    assert_eq!(ds.crs().epsg, Some(3857));
+}
+
+#[test]
+fn geotiff_and_cog_written_by_terrio_read_back() {
+    let Some(p) = data("srtm_sub.tif") else { return };
+    let ds = terrio::open_raster(&p).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    for (driver, compression) in [(terrio::formats::RasterDriver::GTiff, "LZW"), (terrio::formats::RasterDriver::Cog, "DEFLATE")] {
+        let out = dir.path().join(format!("{}.tif", driver.name()));
+        let out = out.to_str().unwrap();
+        let opts = terrio::RasterWriteOptions { driver: Some(driver), compression: Some(compression.into()), ..Default::default() };
+        terrio::write_raster_dataset(&ds, out, &opts).unwrap();
+        let back = terrio::open_raster(out).unwrap();
+        assert_eq!(back.raster.data_i16(), ds.raster.data_i16());
+        assert_eq!(back.nodata(), Some(-32768.0));
+        assert_eq!(back.geo_transform(), ds.geo_transform());
+    }
+}

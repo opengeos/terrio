@@ -1,9 +1,11 @@
 """Compare terrio's dataset summaries with GDAL's, on real-world files.
 
-Usage: python scripts/compare_with_gdal.py DATA_DIR [FILE ...]
+Usage: python scripts/compare_with_gdal.py [--pixels] DATA_DIR [FILE ...]
 
 Needs GDAL's Python bindings (``osgeo``) and a built ``terrio`` binary (``target/release/terrio``,
 or the path in ``TERRIO_BIN``). Prints one line per file and exits non-zero when any differ.
+With ``--pixels``, rasters are also compared pixel by pixel (terrio converts them to GeoTIFF;
+needs NumPy).
 """
 
 import json
@@ -11,6 +13,7 @@ import math
 import os
 import subprocess
 import sys
+import tempfile
 import zipfile
 
 from osgeo import gdal, ogr, osr
@@ -18,7 +21,7 @@ from osgeo import gdal, ogr, osr
 gdal.UseExceptions()
 
 TERRIO = os.environ.get("TERRIO_BIN", os.path.join(os.path.dirname(__file__), "..", "target", "release", "terrio"))
-RASTER_EXT = {".tif", ".tiff", ".asc", ".jp2", ".img", ".hdr", ".zarr", ".flt", ".sdat", ".rst", ".ers", ".dt1", ".dt2", ".xyz"}
+RASTER_EXT = {".tif", ".tiff", ".asc", ".jp2", ".img", ".hdr", ".zarr", ".flt", ".bil", ".envi", ".sdat", ".rst", ".ers", ".dt1", ".dt2", ".xyz", ".grd", ".png", ".jpg", ".nc"}
 VECTOR_EXT = {".geojson", ".json", ".gpkg", ".parquet", ".fgb", ".shp", ".kml", ".kmz", ".gml", ".gpx", ".topojson", ".mif", ".csv", ".zip"}
 
 GDAL_TYPES = {
@@ -73,6 +76,9 @@ def epsg_of(wkt):
         matches = srs.FindMatches()
         if matches and matches[0][1] >= 90:
             code = matches[0][0].GetAuthorityCode(None)
+        elif matches and matches[0][1] >= 70 and matches[0][0].GetAuthorityCode(None) == "CRS84":
+            # Longitude/latitude WGS 84 (an ESRI .prj): EPSG:4326 in traditional GIS order.
+            code = "4326"
     return int(code) if code else None
 
 
@@ -105,6 +111,10 @@ def compare_raster(path, t):
         A list of differences.
     """
     ds = gdal.Open(path)
+    # A file of several variables (netCDF): terrio opens the first, as its first subdataset.
+    subdatasets = ds.GetSubDatasets()
+    if ds.RasterCount == 0 and subdatasets:
+        ds = gdal.Open(subdatasets[0][0])
     diffs = []
     if t["size"] != [ds.RasterXSize, ds.RasterYSize]:
         diffs.append(f"size {t['size']} vs {[ds.RasterXSize, ds.RasterYSize]}")
@@ -132,6 +142,40 @@ def compare_raster(path, t):
                 if not close(a, g, 1e-4):
                     diffs.append(f"band {tb['band']} {name} {a} vs {g}")
     return diffs
+
+
+def compare_pixels(path, gdal_path):
+    """Compare a raster's pixels as terrio and GDAL read them.
+
+    Args:
+        path: The dataset path, as given to terrio.
+        gdal_path: The dataset path, as given to GDAL.
+
+    Returns:
+        A list of differences.
+    """
+    import numpy as np
+
+    with tempfile.TemporaryDirectory() as tmp:
+        out = os.path.join(tmp, "pixels.tif")
+        p = subprocess.run([TERRIO, "convert", path, out], capture_output=True, text=True)
+        if p.returncode != 0:
+            return [f"terrio convert failed: {p.stderr.strip()}"]
+        g = gdal.Open(gdal_path)
+        subdatasets = g.GetSubDatasets()
+        if g.RasterCount == 0 and subdatasets:
+            g = gdal.Open(subdatasets[0][0])
+        t = gdal.Open(out)
+        diffs = []
+        for i in range(1, g.RasterCount + 1):
+            a, b = g.GetRasterBand(i).ReadAsArray(), t.GetRasterBand(i).ReadAsArray()
+            if a.shape != b.shape:
+                return [f"band {i} shape {b.shape} vs {a.shape}"]
+            same = (a == b) | (np.isnan(a) & np.isnan(b)) if a.dtype.kind == "f" else a == b
+            if not same.all():
+                err = np.abs(a.astype(np.float64) - b.astype(np.float64))
+                diffs.append(f"band {i} pixels differ ({int((~same).sum())} of {a.size}, up to {np.nanmax(err)})")
+        return diffs
 
 
 def compare_vector(path, t):
@@ -195,8 +239,10 @@ def zip_member(path):
 
 def main():
     """Compare every dataset in the data directory (or the given files)."""
-    data = sys.argv[1]
-    files = sys.argv[2:] or sorted(os.listdir(data))
+    args = [a for a in sys.argv[1:] if a != "--pixels"]
+    pixels = "--pixels" in sys.argv[1:]
+    data = args[0]
+    files = args[1:] or sorted(os.listdir(data))
     failed = 0
     for name in files:
         path = os.path.join(data, name)
@@ -213,6 +259,8 @@ def main():
             continue
         try:
             diffs = compare_raster(gdal_path, t) if t["type"] == "raster" else compare_vector(gdal_path, t)
+            if pixels and t["type"] == "raster":
+                diffs += compare_pixels(path, gdal_path)
         except Exception as e:  # noqa: BLE001 - report and continue with the next file
             diffs = [f"GDAL error: {e}"]
         if diffs:

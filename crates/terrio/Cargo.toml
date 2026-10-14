@@ -22,9 +22,22 @@ serde_json.workspace = true
 zip.workspace = true
 tiff.workspace = true
 half.workspace = true
+flate2.workspace = true
+weezl.workspace = true
+png.workspace = true
+lz4_flex.workspace = true
+ruzstd.workspace = true
+netcdf-reader.workspace = true
+jpeg-decoder.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# OpenJPEG's port is built as a C-ABI library too, which does not link for wasm32.
+openjp2.workspace = true
+zstd.workspace = true
 tempfile.workspace = true
 ureq.workspace = true
 hmac.workspace = true
 sha2.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

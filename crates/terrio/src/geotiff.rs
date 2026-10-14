@@ -10,6 +10,7 @@ const MODEL_TRANSFORMATION: u16 = 34264;
 const GEO_KEY_DIRECTORY: u16 = 34735;
 const GEO_DOUBLE_PARAMS: u16 = 34736;
 const GEO_ASCII_PARAMS: u16 = 34737;
+const GDAL_METADATA: u16 = 42112;
 const GDAL_NODATA: u16 = 42113;
 const PHOTOMETRIC: u16 = 262;
 
@@ -23,6 +24,10 @@ pub(crate) struct GeoTags {
     /// A PROJ string for user-defined projected CRSs without an EPSG code, built from the GeoKeys'
     /// projection parameters.
     pub proj4: Option<String>,
+    /// A CRS without an EPSG code, from user-defined GeoKeys.
+    pub crs: Option<wbraster::CrsInfo>,
+    /// Dataset metadata items from the `GDAL_METADATA` tag.
+    pub metadata: Vec<(String, String)>,
     /// Whether the raster type is `RasterPixelIsPoint`.
     pub pixel_is_point: bool,
     /// The `GDAL_NODATA` value.
@@ -116,6 +121,7 @@ pub(crate) fn read_geo_tags_from<R: Read + Seek>(mut f: R) -> Option<GeoTags> {
                 | GEO_KEY_DIRECTORY
                 | GEO_DOUBLE_PARAMS
                 | GEO_ASCII_PARAMS
+                | GDAL_METADATA
                 | GDAL_NODATA
         ) {
             continue;
@@ -188,6 +194,7 @@ pub(crate) fn read_geo_tags_from<R: Read + Seek>(mut f: R) -> Option<GeoTags> {
         out.geo_transform = Some([x - i * scale[0], scale[0], 0.0, y + j * scale[1], 0.0, -scale[1]]);
     }
     out.nodata = ascii(GDAL_NODATA).and_then(|s| parse_nodata(s.trim()));
+    out.metadata = ascii(GDAL_METADATA).map(crate::drivers::gtiff_write::parse_gdal_metadata).unwrap_or_default();
 
     if let Some(keys) = keys {
         let key = |id: u16| -> Option<(u16, u16, u16)> {
@@ -222,6 +229,13 @@ pub(crate) fn read_geo_tags_from<R: Read + Seek>(mut f: R) -> Option<GeoTags> {
             };
             out.proj4 = user_defined_proj4(short_key(3075), geographic, short_key(3076), &double_key);
         }
+        if out.epsg.is_none() && out.proj4.is_none() {
+            // Geographic user-defined CRSs, ESRI PE citations, and methods not handled above.
+            let doubles = doubles(GEO_DOUBLE_PARAMS).unwrap_or_default();
+            let ascii = ascii(GEO_ASCII_PARAMS).unwrap_or_default();
+            out.crs = crate::drivers::geokeys::user_defined_crs(&crate::drivers::geokeys::GeoKeys { keys, doubles, ascii });
+            out.epsg = out.crs.as_ref().and_then(|c| c.epsg);
+        }
     }
     Some(out)
 }
@@ -232,7 +246,7 @@ impl GeoTags {
         match (self.epsg, &self.proj4) {
             (Some(code), _) => wbraster::CrsInfo::from_epsg(code),
             (None, Some(p)) => crate::crs::SpatialRef::from_proj4(p).map(|s| s.to_crs_info()).unwrap_or_default(),
-            (None, None) => wbraster::CrsInfo::default(),
+            (None, None) => self.crs.clone().unwrap_or_default(),
         }
     }
 }
@@ -463,6 +477,7 @@ pub(crate) fn read_geotiff(path: &std::path::Path) -> crate::Result<crate::Raste
         nodata: tags.nodata.unwrap_or(-9999.0),
         data_type: data.data_type(),
         crs: tags.crs_info(),
+        metadata: tags.metadata.clone(),
         ..Default::default()
     };
     let mut raster = wbraster::Raster::from_data_native(cfg, data)?;

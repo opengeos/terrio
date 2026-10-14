@@ -49,5 +49,18 @@ if command -v ogr2ogr >/dev/null && command -v gdal_translate >/dev/null; then
   [ -e lv_dem.zarr ] || gdal_translate -q -of Zarr las_vegas_dem.tif lv_dem.zarr
   [ -e lv_dem.img ] || gdal_translate -q -of HFA las_vegas_dem.tif lv_dem.img
   [ -e lv_dem.envi ] || gdal_translate -q -of ENVI las_vegas_dem.tif lv_dem.envi
+  # An Int16 SRTM subset with a nodata value, in the formats terrio reads with its own drivers.
+  if [ ! -e srtm_sub.tif ]; then
+    gdal_translate -q -srcwin 1000 1000 500 400 -a_nodata -32768 -co COMPRESS=DEFLATE srtm90.tif srtm_sub.tif
+    gdal_translate -q -of EHdr srtm_sub.tif srtm_sub.bil
+    gdal_translate -q -of SAGA srtm_sub.tif srtm_sub.sdat
+    gdal_translate -q -of ERS srtm_sub.tif srtm_sub.ers
+    gdal_translate -q -of RST srtm_sub.tif srtm_sub.rst
+    gdal_translate -q -of netCDF srtm_sub.tif srtm_sub.nc
+    gdal_translate -q -ot Float32 -of GSBG srtm_sub.tif srtm_sub.grd
+    gdal_translate -q -of JP2OpenJPEG -co REVERSIBLE=YES -co QUALITY=100 srtm_sub.tif srtm_sub.jp2
+    gdal_translate -q -of Zarr -co FORMAT=ZARR_V3 -co COMPRESS=ZSTD srtm_sub.tif srtm_sub_v3.zarr
+    gdal_translate -q -of Zarr -co COMPRESS=BLOSC -co BLOSC_CNAME=lz4 srtm_sub.tif srtm_sub_blosc.zarr
+  fi
 fi
 echo "Test data in $(pwd)"
