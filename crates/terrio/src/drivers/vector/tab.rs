@@ -1403,6 +1403,23 @@ mod tests {
     }
 
     #[test]
+    fn reads_zipped_tables_from_memory() {
+        let mut l = Layer::new("pts").with_epsg(4326);
+        l.add_field(FieldDef::new("name", FieldType::Text));
+        l.push(Feature { fid: 0, geometry: Some(Geometry::point(1.5, 2.5)), attributes: vec![FieldValue::Text("a".into())] });
+        let f = to_files(&l).unwrap();
+        let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        for (name, bytes) in [("d/pts.tab", &f.tab), ("d/pts.DAT", &f.dat), ("d/pts.map", &f.map), ("d/pts.id", &f.id)] {
+            zip.start_file(name, zip::write::SimpleFileOptions::default()).unwrap();
+            std::io::Write::write_all(&mut zip, bytes).unwrap();
+        }
+        let bytes = zip.finish().unwrap().into_inner();
+        let crate::Dataset::Vector(v) = crate::memory::codec::open(bytes, "pts.zip", &Default::default()).unwrap() else { panic!() };
+        assert_eq!(v.layers[0].features[0].geometry, Some(Geometry::point(1.5, 2.5)));
+        assert_eq!(v.layers[0].crs_epsg(), Some(4326));
+    }
+
+    #[test]
     fn decodes_charsets() {
         assert_eq!(Charset::Cp1251.decode(&[0xcf, 0xf0, 0xe8]), "При");
         assert_eq!(Charset::Cp1252.decode(&[0x80, 0xe9]), "€é");

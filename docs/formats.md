@@ -49,14 +49,27 @@ netCDF variables are opened as `NETCDF:"file.nc":variable`, as in GDAL.
 | GML | GML | ✓ | ✓ | gml |
 | GPX | GPS Exchange Format | ✓ | ✓ | gpx |
 | TopoJSON | TopoJSON | ✓ | ✓ | topojson |
-| MapInfo File | MapInfo interchange format | ✓ | ✓ | mif |
-| OSM | OpenStreetMap PBF | ✓ | | osm.pbf |
+| MapInfo File | MapInfo TAB and interchange format | ✓ | ✓ | tab, mif |
+| OSM | OpenStreetMap PBF and XML | ✓ | | osm.pbf, osm |
 
 Layer and field models follow GDAL's: GPX has GDAL's five layers, KML has the LIBKML driver's
 fields, OSM has the `points`, `lines`, `multilinestrings`, `multipolygons` and `other_relations`
 layers, and shapefile field names are truncated as GDAL truncates them.
 
+- **GeoParquet** is written as GeoParquet 1.1: the CRS as PROJJSON (none for EPSG:4326, which
+  the specification makes the default), a `geometry_bbox` covering column, and row groups of
+  65536 rows with statistics. Reading with a bounding box (`terrio convert --spat` on a Parquet
+  input, or `VectorOpenOptions::spatial_filter`) skips the row groups and rows whose covering
+  bounding box is outside it.
+- **MapInfo TAB** native tables (`.tab` with its `.dat`, `.map` and `.id`) are read with every
+  object type and field type, in their charset, and seamless tables; they are written with their
+  spatial index, which GDAL uses for spatial filters. Views and DBF-backed tables are not read.
+- **OSM XML** (`.osm`) gives the same five layers as PBF, with tags in the file's order.
+- **KML styles** (`<Style>`, `<StyleMap>`) are read into an `OGR_STYLE` field holding GDAL's style
+  strings (`PEN(c:#FF0000FF,w:2.000000px);BRUSH(fc:#00FF0040)`), and written back as KML styles.
+
 ## In WebAssembly
 
-The browser and Node.js package reads from bytes. JPEG 2000 is not available there, and
-Shapefile, MapInfo and GeoPackage can be read from files but not yet from bytes.
+The browser and Node.js package reads from bytes. JPEG 2000 is not available there. Formats made
+of several files (Shapefile, MapInfo MIF and TAB) are read from zip archives of their files;
+OSM is read from PBF or XML bytes. GeoPackage is not yet read from bytes.
