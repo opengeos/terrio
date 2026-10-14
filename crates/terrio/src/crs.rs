@@ -221,6 +221,12 @@ pub(crate) fn identify_epsg(wkt: &str) -> Option<u32> {
         let registered = SpatialRef { epsg: Some(code), wkt: None, proj4: None };
         Def::new(&registered).is_ok_and(|d| own.same_conversion(&d))
     };
+    // The registry can take a datum's or prime meridian's code for the CRS's: then match the WKT
+    // by its parameters alone.
+    if report.used_embedded_epsg && !report.resolved_code.is_some_and(|c| wbp::to_ogc_wkt(c).is_ok()) {
+        let stripped = strip_authorities(wkt);
+        return if stripped != wkt { identify_epsg(&stripped) } else { None };
+    }
     if report.used_embedded_epsg || !report.ambiguous {
         return report.resolved_code.filter(|c| fits(*c));
     }
@@ -238,6 +244,16 @@ pub(crate) fn identify_epsg(wkt: &str) -> Option<u32> {
         .min_by_key(|c| (!wkt_names_realization && names_realization(c.code), c.code))
         .map(|c| c.code)
         .or(report.resolved_code.filter(|c| fits(*c)))
+}
+
+/// A WKT definition without its `AUTHORITY[...]` nodes.
+fn strip_authorities(wkt: &str) -> String {
+    let mut out = wkt.to_string();
+    while let Some(start) = out.find(",AUTHORITY[") {
+        let Some(len) = out[start..].find(']') else { break };
+        out.replace_range(start..start + len + 1, "");
+    }
+    out
 }
 
 /// The EPSG code a WKT definition declares for itself: the `AUTHORITY["EPSG","4269"]` (WKT 1) or
@@ -370,6 +386,10 @@ mod tests {
         assert_eq!(SpatialRef::from_wkt(nad83).epsg, Some(4269));
         assert_eq!(declared_epsg(r#"GEOGCRS["WGS 84",CS[ellipsoidal,2],ID["EPSG",4326]]"#), Some(4326));
         assert_eq!(declared_epsg(r#"GEOGCS["x",DATUM["d",SPHEROID["s",1,2]],UNIT["degree",0.01745,AUTHORITY["EPSG","9122"]]]"#), None);
+        // Codes of a datum or prime meridian are not the CRS's (GDAL wrote this one in a
+        // GeoPackage, from a GeoParquet file's CRS).
+        let wgs84 = r#"GEOGCS["WGS 84",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563],AUTHORITY["EPSG","6326"]],PRIMEM["Greenwich",0,AUTHORITY["EPSG","8901"]],UNIT["Degree",0.0174532925199433],AXIS["Longitude",EAST],AXIS["Latitude",NORTH]]"#;
+        assert_eq!(identify_epsg(wgs84), Some(4326));
     }
 
     #[test]
