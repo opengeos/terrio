@@ -433,7 +433,7 @@ fn input_layers(py: Python<'_>, src: &Bound<'_, PyAny>, layers: Option<Vec<Strin
 }
 
 /// Opens the raster given to an operation: a path, or a `Raster`.
-fn input_raster(py: Python<'_>, src: &Bound<'_, PyAny>) -> PyResult<RasterDataset> {
+pub(crate) fn input_raster(py: Python<'_>, src: &Bound<'_, PyAny>) -> PyResult<RasterDataset> {
     match src.extract::<String>() {
         Ok(path) => py.detach(|| terrio::open_raster(&path)).py(),
         Err(_) => {
@@ -714,7 +714,7 @@ const MEMORY_PREFIX: &str = "<terrio.Raster ";
 
 /// Writes an operation's output when a path is given, and wraps it.
 #[allow(clippy::too_many_arguments)]
-fn finish_raster(
+pub(crate) fn finish_raster(
     py: Python<'_>,
     out: RasterDataset,
     dst: Option<&str>,

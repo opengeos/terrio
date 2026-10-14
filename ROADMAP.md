@@ -51,6 +51,10 @@ of GDAL: the long tail of formats stays reachable through an optional GDAL backe
 - Rasterize vectors and polygonize rasters.
 - Mosaics: a virtual dataset (an equivalent of GDAL's VRT) over many rasters.
 - `terrio warp`, `terrio translate`, `terrio rasterize`, `terrio polygonize`.
+- Terrain analysis and raster algebra, matching GDAL pixel for pixel: `terrio dem` (`gdaldem`:
+  hillshade, slope, aspect, color relief, TRI, TPI, roughness), `terrio calc` (`gdal_calc.py`,
+  with NumPy's typing rules), `terrio proximity` (`gdal_proximity.py`) and `terrio sieve`
+  (`gdal_sieve.py`).
 
 ## 0.4: More formats
 
@@ -91,7 +95,7 @@ of GDAL: the long tail of formats stays reachable through an optional GDAL backe
   done; netCDF-4 writing and groups below the root remain.
 - JPEG 2000 and other compressed raster formats as pure-Rust decoders mature.
 - Point clouds (LAS, LAZ, COPC).
-- Raster algebra and terrain tools (hillshade, slope, aspect).
+- Band histograms as `gdalinfo -hist` computes them; color relief written as a VRT.
 
 ## Decisions
 

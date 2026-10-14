@@ -60,6 +60,12 @@ terrio.warp("dem.tif", "dem_4326.tif", t_srs="EPSG:4326", resampling="bilinear")
 terrio.mosaic(["n40w106.tif", "n40w107.tif"], "mosaic.tif")
 terrio.rasterize("counties.gpkg", "pop.tif", attribute="POPULATION", tr=(0.01, 0.01), ot="Int32")
 polygons = terrio.polygonize("landcover.tif", connectedness=8)
+shade = terrio.dem("dem.tif", "hillshade", z=2, multidirectional=True)  # like gdaldem
+terrio.dem("dem.tif", "color-relief", "relief.tif", color_file="colors.txt", alpha=True)
+ndvi = terrio.calc("(B - A * 1.0) / (B + A * 1.0)", A="landsat.tif", A_band=3, B="landsat.tif", B_band=4,
+                   type="Float32")  # like gdal_calc.py, with NumPy's typing rules
+dist = terrio.proximity("roads.tif", values=[1], distunits="GEO")
+clean = terrio.sieve("landcover.tif", threshold=10, connectedness=8)
 xs, ys = terrio.transform_points([699960], [3900000], "EPSG:32610", "EPSG:4326")
 
 data = open("dem.tif", "rb").read()

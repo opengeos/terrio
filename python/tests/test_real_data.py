@@ -308,3 +308,85 @@ def test_mosaic_round_trip(data_dir, tmp_path):
         terrio.translate(r, srcwin=(half, 0, r.width - half, r.height)),
     ]
     assert_same_pixels(terrio.mosaic(parts).read(), r.read())
+
+
+def test_dem_matches_gdaldem(data_dir, gdal, tmp_path):
+    """Compares hillshade, slope, aspect and color relief with gdal.DEMProcessing."""
+    path = raster_path(data_dir, "las_vegas_dem.tif")
+    for mode, mine, opts in [
+        ("hillshade", {}, {}),
+        (
+            "hillshade",
+            {"multidirectional": True, "compute_edges": True},
+            {"multiDirectional": True, "computeEdges": True},
+        ),
+        ("slope", {"percent": True}, {"slopeFormat": "percent"}),
+        ("aspect", {"alg": "ZevenbergenThorne"}, {"alg": "ZevenbergenThorne"}),
+        ("TRI", {"alg": "Wilson"}, {"alg": "Wilson"}),
+        ("roughness", {}, {}),
+    ]:
+        out = tmp_path / f"{mode}.tif"
+        gdal.DEMProcessing(str(out), path, mode, **opts)
+        expected = gdal.Open(str(out)).ReadAsArray()
+        assert_same_pixels(terrio.dem(path, mode, **mine).read(1), expected)
+    colors = tmp_path / "colors.txt"
+    colors.write_text("nv 0 0 0 0\n0% blue\n50% white\n100% red\n")
+    gdal.DEMProcessing(
+        str(tmp_path / "c.tif"), path, "color-relief", colorFilename=str(colors), addAlpha=True
+    )
+    expected = gdal.Open(str(tmp_path / "c.tif")).ReadAsArray()
+    assert_same_pixels(
+        terrio.dem(path, "color-relief", color_file=str(colors), alpha=True).read(), expected
+    )
+
+
+def test_calc_matches_gdal_calc(data_dir, gdal, tmp_path):
+    """Compares band math with gdal_calc.py's Calc on Landsat bands."""
+    gdal_calc = pytest.importorskip("osgeo_utils.gdal_calc")
+    path = raster_path(data_dir, "landsat.tif")
+    for expr, opts in [
+        ("(B.astype(float32) - A) / (B.astype(float32) + A)", {"type": "Float32"}),
+        ("A + B", {}),
+        ("where(B > A, B - A, 0)", {"nodata": 0}),
+        ("sqrt(A) * 10", {}),
+    ]:
+        out = tmp_path / "calc.tif"
+        kwargs = {"NoDataValue": opts["nodata"]} if "nodata" in opts else {}
+        if "type" in opts:
+            kwargs["type"] = opts["type"]
+        gdal_calc.Calc(
+            expr,
+            A=path,
+            A_band=3,
+            B=path,
+            B_band=4,
+            outfile=str(out),
+            overwrite=True,
+            quiet=True,
+            **kwargs,
+        )
+        ds = gdal.Open(str(out))
+        mine = terrio.calc(expr, A=path, A_band=3, B=path, B_band=4, **opts)
+        assert_same_pixels(mine.read(1), ds.ReadAsArray())
+        assert mine.nodata == ds.GetRasterBand(1).GetNoDataValue()
+
+
+def test_proximity_and_sieve_match_gdal(data_dir, gdal, tmp_path):
+    """Compares proximity and sieve with gdal.ComputeProximity and gdal.SieveFilter."""
+    path = raster_path(data_dir, "nlcd_knoxville.tif")
+    src = gdal.Open(path)
+    drv = gdal.GetDriverByName("MEM")
+    prox = drv.Create("", src.RasterXSize, src.RasterYSize, 1, gdal.GDT_Float32)
+    gdal.ComputeProximity(
+        src.GetRasterBand(1), prox.GetRasterBand(1), ["VALUES=11", "DISTUNITS=GEO"]
+    )
+    assert_same_pixels(
+        terrio.proximity(path, values=[11], distunits="GEO").read(1), prox.ReadAsArray()
+    )
+    sieved = drv.Create("", src.RasterXSize, src.RasterYSize, 1, gdal.GDT_Byte)
+    gdal.SieveFilter(
+        src.GetRasterBand(1), src.GetRasterBand(1).GetMaskBand(), sieved.GetRasterBand(1), 20, 8
+    )
+    assert_same_pixels(
+        terrio.sieve(path, threshold=20, connectedness=8).read(1), sieved.ReadAsArray()
+    )

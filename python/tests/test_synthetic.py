@@ -326,3 +326,60 @@ def test_warp_and_mosaic(tmp_path):
     np.testing.assert_array_equal(terrio.open_raster(str(tmp_path / "m.vrt")).read(1), data[0])
     with pytest.raises(terrio.InvalidArgumentError):
         terrio.mosaic([left, right], str(tmp_path / "x.vrt"))
+
+
+def test_dem_products(tmp_path):
+    """Checks hillshade, slope, aspect and color relief on a tilted plane."""
+    cols = np.arange(8, dtype="float32")
+    plane = np.tile(cols * 30.0, (6, 1))  # rises 1 m per metre eastward
+    r = terrio.Raster.from_array(plane, TRANSFORM, crs="EPSG:32610", nodata=-9999)
+    slope = terrio.dem(r, "slope").read(1)
+    assert slope.dtype == np.float32
+    assert slope[2, 3] == pytest.approx(45.0, abs=1e-4)
+    assert slope[0, 0] == -9999
+    aspect = terrio.dem(r, "aspect", trigonometric=True).read(1)
+    assert aspect[2, 3] == pytest.approx(180.0)
+    shade = terrio.dem(r, "hillshade", compute_edges=True, dst=str(tmp_path / "h.tif")).read(1)
+    assert shade.dtype == np.uint8 and shade.min() > 0
+    colors = tmp_path / "colors.txt"
+    colors.write_text("0 0 0 255\n210 255 0 0\n")
+    rgb = terrio.dem(r, "color-relief", color_file=str(colors), alpha=True)
+    assert rgb.count == 4
+    assert tuple(rgb.read()[:, 0, 7]) == (255, 0, 0, 255)
+    with pytest.raises(terrio.InvalidArgumentError):
+        terrio.dem(r, "slope", multidirectional=True)
+
+
+def test_calc_numpy_typing():
+    """Checks that calc follows NumPy's typing rules, as gdal_calc.py does."""
+    a = np.array([[200, 3], [0, 100]], dtype="uint8")
+    b = np.array([[100, 7], [5, 0]], dtype="uint8")
+    ra = terrio.Raster.from_array(a, TRANSFORM, crs="EPSG:32610", nodata=0)
+    rb = terrio.Raster.from_array(b, TRANSFORM, crs="EPSG:32610", nodata=0)
+    out = terrio.calc("A + B", A=ra, B=rb)
+    assert out.read(1).dtype == np.uint8
+    assert out.nodata == 255
+    np.testing.assert_array_equal(out.read(1), [[44, 10], [255, 255]])
+    ndvi = terrio.calc(
+        "(B.astype(float32) - A) / (B.astype(float32) + A)", A=ra, B=rb, type="Float32", nodata=-1
+    )
+    np.testing.assert_allclose(ndvi.read(1), [[-1 / 3, 0.4], [-1, -1]], rtol=1e-6)
+    two = terrio.calc(["A", "where(B > 4, 1, 0)"], A=ra, B=rb, hide_nodata=True)
+    assert two.count == 2 and two.nodata is None
+    np.testing.assert_array_equal(two.read(2), [[1, 1], [1, 0]])
+    with pytest.raises(terrio.InvalidArgumentError):
+        terrio.calc("A + C", A=ra)
+
+
+def test_proximity_and_sieve():
+    """Checks distances to target pixels and the merging of small areas."""
+    data = np.zeros((5, 5), dtype="uint8")
+    data[2, 2] = 1
+    r = terrio.Raster.from_array(data, TRANSFORM, crs="EPSG:32610")
+    dist = terrio.proximity(r).read(1)
+    assert dist[2, 4] == 2.0 and dist[2, 2] == 0.0
+    geo = terrio.proximity(r, distunits="GEO", maxdist=45, nodata=-1).read(1)
+    assert geo[2, 3] == 30.0 and geo[0, 0] == -1
+    sieved = terrio.sieve(r, threshold=2).read(1)
+    assert sieved[2, 2] == 0
+    assert terrio.sieve(r, threshold=1).read(1)[2, 2] == 1

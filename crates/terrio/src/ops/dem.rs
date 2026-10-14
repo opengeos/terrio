@@ -1,0 +1,1416 @@
+//! Terrain analysis: an equivalent of `gdaldem`.
+//!
+//! Hillshade (with combined, multidirectional and Igor shading), slope, aspect, color relief,
+//! the Terrain Ruggedness Index (Riley and Wilson), the Topographic Position Index and
+//! roughness, computed as GDAL 3.12 computes them so that results can be compared pixel for
+//! pixel:
+//!
+//! - every algorithm moves a 3×3 window over the band, reading Byte, Int16 and UInt16 bands as
+//!   32-bit integers and the other types as `Float32`, with the arithmetic done in the same types
+//!   and in the same order as GDAL;
+//! - nodata is handled as GDAL handles it: a window whose centre is nodata gives nodata, and a
+//!   window with a nodata neighbour gives nodata, or with `compute_edges` uses the centre value in
+//!   place of the neighbour;
+//! - the outermost rows and columns are nodata, or with `compute_edges` are computed from windows
+//!   extended by linear extrapolation;
+//! - the horizontal scale of geographic rasters is derived from the ellipsoid and the centre
+//!   latitude unless given, as `gdaldem` does since GDAL 3.11;
+//! - on x86-64, the default hillshade uses the same approximate reciprocal square root as GDAL's
+//!   SSE code path on the rows where it uses it.
+
+use super::{Grid, build_raster};
+use crate::{Error, RasterDataset, Result};
+use std::f64::consts::PI;
+use wbraster::DataType;
+use wbraster::raster::RasterData;
+
+const D2R: f64 = PI / 180.0;
+const R2D: f64 = 180.0 / PI;
+
+/// How the gradient of a 3×3 window is computed (`-alg`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum GradientAlg {
+    /// Horn's formula (the default), better on rough terrain.
+    #[default]
+    Horn,
+    /// Zevenbergen and Thorne's formula, better on smooth terrain.
+    ZevenbergenThorne,
+}
+
+impl GradientAlg {
+    /// Parses `Horn` or `ZevenbergenThorne` (case-insensitive).
+    pub fn parse(s: &str) -> Result<Self> {
+        match s.to_ascii_lowercase().as_str() {
+            "horn" => Ok(Self::Horn),
+            "zevenbergenthorne" => Ok(Self::ZevenbergenThorne),
+            _ => Err(Error::InvalidArgument(format!("invalid gradient algorithm '{s}' (Horn, ZevenbergenThorne)"))),
+        }
+    }
+}
+
+/// The Terrain Ruggedness Index formula (`-alg` of `gdaldem TRI`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TriAlg {
+    /// Riley et al. (1999): the square root of the sum of squared differences (the default).
+    #[default]
+    Riley,
+    /// Wilson et al. (2007): the mean absolute difference, for bathymetry.
+    Wilson,
+}
+
+impl TriAlg {
+    /// Parses `Riley` or `Wilson` (case-insensitive).
+    pub fn parse(s: &str) -> Result<Self> {
+        match s.to_ascii_lowercase().as_str() {
+            "riley" => Ok(Self::Riley),
+            "wilson" => Ok(Self::Wilson),
+            _ => Err(Error::InvalidArgument(format!("invalid TRI algorithm '{s}' (Riley, Wilson)"))),
+        }
+    }
+}
+
+/// The hillshade variant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Shading {
+    /// Lighting from one direction (`-az`, `-alt`).
+    #[default]
+    Standard,
+    /// Hillshade combined with slope (`-combined`).
+    Combined,
+    /// Lighting from 225°, 270°, 315° and 360° combined (`-multidirectional`).
+    MultiDirectional,
+    /// Igor's shading, which darkens only the slopes facing away from the light (`-igor`).
+    Igor,
+}
+
+/// How colors are chosen for values between the entries of a color file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ColorSelection {
+    /// Linear interpolation between the surrounding entries (the default).
+    #[default]
+    Interpolate,
+    /// The color of the nearest entry (`-nearest_color_entry`).
+    Nearest,
+    /// Only exact entries; other values get transparent black (`-exact_color_entry`).
+    Exact,
+}
+
+/// Options for the DEM operations, named after `gdaldem`'s. Each operation uses the ones that
+/// apply to it.
+#[derive(Debug, Clone)]
+pub struct DemOptions {
+    /// The band to process, from 1 (`-b`).
+    pub band: usize,
+    /// Vertical exaggeration, for hillshade (`-z`).
+    pub z: f64,
+    /// Ratio of vertical to horizontal units, for both axes (`-s`; `111120` for a geographic
+    /// raster in metres). By default derived from the CRS.
+    pub scale: Option<f64>,
+    /// The ratio for the horizontal axis (`-xscale`); needs `yscale`.
+    pub xscale: Option<f64>,
+    /// The ratio for the vertical axis (`-yscale`); needs `xscale`.
+    pub yscale: Option<f64>,
+    /// Azimuth of the light, in degrees clockwise from north (`-az`).
+    pub azimuth: f64,
+    /// Altitude of the light, in degrees above the horizon (`-alt`).
+    pub altitude: f64,
+    /// The hillshade variant.
+    pub shading: Shading,
+    /// The gradient formula for hillshade, slope and aspect (`-alg`).
+    pub gradient: GradientAlg,
+    /// Slope as a percentage rather than in degrees (`-p`).
+    pub slope_percent: bool,
+    /// Aspect as a trigonometric angle (counterclockwise from east) rather than an azimuth
+    /// (`-trigonometric`).
+    pub trigonometric: bool,
+    /// Aspect of 0 rather than nodata for flat areas (`-zero_for_flat`).
+    pub zero_for_flat: bool,
+    /// The TRI formula (`-alg` of TRI).
+    pub tri: TriAlg,
+    /// Compute values at the raster edges and next to nodata too (`-compute_edges`).
+    pub compute_edges: bool,
+    /// Color selection for color relief.
+    pub color_selection: ColorSelection,
+    /// Add an alpha band to the color relief (`-alpha`).
+    pub alpha: bool,
+}
+
+impl Default for DemOptions {
+    fn default() -> Self {
+        Self {
+            band: 1,
+            z: 1.0,
+            scale: None,
+            xscale: None,
+            yscale: None,
+            azimuth: 315.0,
+            altitude: 45.0,
+            shading: Shading::Standard,
+            gradient: GradientAlg::Horn,
+            slope_percent: false,
+            trigonometric: false,
+            zero_for_flat: false,
+            tri: TriAlg::Riley,
+            compute_edges: false,
+            color_selection: ColorSelection::Interpolate,
+            alpha: false,
+        }
+    }
+}
+
+impl DemOptions {
+    fn validate(&self) -> Result<()> {
+        let bad = |what: &str| Err(Error::InvalidArgument(format!("invalid value for {what}")));
+        if self.z.is_nan() || self.z <= 0.0 {
+            return bad("z");
+        }
+        if self.scale.is_some_and(|s| s.is_nan() || s <= 0.0) {
+            return bad("scale");
+        }
+        if self.xscale.is_some_and(|s| s.is_nan() || s <= 0.0) {
+            return bad("xscale");
+        }
+        if self.yscale.is_some_and(|s| s.is_nan() || s <= 0.0) {
+            return bad("yscale");
+        }
+        if self.altitude.is_nan() || self.altitude <= 0.0 {
+            return bad("altitude");
+        }
+        if self.scale.is_some() && (self.xscale.is_some() || self.yscale.is_some()) {
+            return Err(Error::InvalidArgument("scale and xscale/yscale exclude each other".into()));
+        }
+        if self.xscale.is_some() != self.yscale.is_some() {
+            return Err(Error::InvalidArgument("xscale and yscale go together".into()));
+        }
+        Ok(())
+    }
+}
+
+/// A source pixel type of the 3×3 algorithms: `i32` for Byte, Int16 and UInt16 bands, `f32` for
+/// the others, as GDAL reads them.
+trait Px: Copy + PartialOrd + Send + Sync {
+    fn add(self, o: Self) -> Self;
+    fn sub(self, o: Self) -> Self;
+    fn abs(self) -> Self;
+    fn f64(self) -> f64;
+    fn f32(self) -> f32;
+    /// `ComputeVal()`'s nodata test.
+    fn is_nodata(self, nd: Self, nd_is_nan: bool) -> bool;
+    /// The test that flags a line as holding nodata.
+    fn line_nodata(self, nd: Self) -> bool;
+    /// `INTERPOL()`: `2a - b`, kept off the nodata value.
+    fn interpol(a: Self, b: Self, has_nd: bool, nd: Self) -> Self;
+}
+
+/// GDAL's `ARE_REAL_EQUAL()` for floats.
+#[inline]
+fn are_real_equal(a: f32, b: f32) -> bool {
+    a == b || (a - b).abs() < f32::EPSILON * (a + b).abs() * 2.0
+}
+
+impl Px for i32 {
+    #[inline]
+    fn add(self, o: Self) -> Self {
+        self.wrapping_add(o)
+    }
+    #[inline]
+    fn sub(self, o: Self) -> Self {
+        self.wrapping_sub(o)
+    }
+    #[inline]
+    fn abs(self) -> Self {
+        self.wrapping_abs()
+    }
+    #[inline]
+    fn f64(self) -> f64 {
+        self as f64
+    }
+    #[inline]
+    fn f32(self) -> f32 {
+        self as f32
+    }
+    #[inline]
+    fn is_nodata(self, nd: Self, _: bool) -> bool {
+        self == nd
+    }
+    #[inline]
+    fn line_nodata(self, nd: Self) -> bool {
+        self == nd
+    }
+    #[inline]
+    fn interpol(a: Self, b: Self, has_nd: bool, nd: Self) -> Self {
+        if has_nd && (a == nd || b == nd) {
+            return nd;
+        }
+        let v = (2 * a as i64 - b as i64).clamp(i32::MIN as i64, i32::MAX as i64) as i32;
+        if has_nd && v == nd {
+            return if v == i32::MAX { i32::MAX - 1 } else { v + 1 };
+        }
+        v
+    }
+}
+
+impl Px for f32 {
+    #[inline]
+    fn add(self, o: Self) -> Self {
+        self + o
+    }
+    #[inline]
+    fn sub(self, o: Self) -> Self {
+        self - o
+    }
+    #[inline]
+    fn abs(self) -> Self {
+        f32::abs(self)
+    }
+    #[inline]
+    fn f64(self) -> f64 {
+        self as f64
+    }
+    #[inline]
+    fn f32(self) -> f32 {
+        self
+    }
+    #[inline]
+    fn is_nodata(self, nd: Self, nd_is_nan: bool) -> bool {
+        if nd_is_nan { self.is_nan() } else { are_real_equal(self, nd) }
+    }
+    #[inline]
+    fn line_nodata(self, nd: Self) -> bool {
+        self == nd || self.is_nan()
+    }
+    #[inline]
+    fn interpol(a: Self, b: Self, has_nd: bool, nd: Self) -> Self {
+        if has_nd && (are_real_equal(a, nd) || are_real_equal(b, nd)) {
+            return nd;
+        }
+        let v = 2.0 * a - b;
+        if has_nd && are_real_equal(v, nd) {
+            return nd * (1.0 + 3.0 * f32::EPSILON);
+        }
+        v
+    }
+}
+
+/// `((w[a] + w[b]) + w[b]) + w[c]`, GDAL's weighted sum of three window cells.
+#[inline]
+fn sum121<T: Px>(w: &[T; 9], a: usize, b: usize, c: usize) -> T {
+    w[a].add(w[b]).add(w[b]).add(w[c])
+}
+
+/// Horn's gradient numerators, as `((w0 + w3 + w3 + w6) - (w2 + w5 + w5 + w8))` and
+/// `((w6 + w7 + w7 + w8) - (w0 + w1 + w1 + w2))`.
+#[inline]
+fn horn<T: Px>(w: &[T; 9]) -> (T, T) {
+    (sum121(w, 0, 3, 6).sub(sum121(w, 2, 5, 8)), sum121(w, 6, 7, 8).sub(sum121(w, 0, 1, 2)))
+}
+
+/// The gradient `(x, y)` of a window scaled by the inverse resolutions.
+#[inline]
+fn gradient<T: Px>(w: &[T; 9], alg: GradientAlg, inv_ew: f64, inv_ns: f64) -> (f64, f64) {
+    match alg {
+        GradientAlg::Horn => {
+            let (x, y) = horn(w);
+            (x.f64() * inv_ew, y.f64() * inv_ns)
+        }
+        GradientAlg::ZevenbergenThorne => (w[3].sub(w[5]).f64() * inv_ew, w[7].sub(w[1]).f64() * inv_ns),
+    }
+}
+
+/// The parameters of the standard, combined and Igor hillshades (`GDALHillshadeAlgData`).
+#[derive(Debug, Clone, Copy)]
+struct HillshadeParams {
+    alg: GradientAlg,
+    inv_ns: f64,
+    inv_ew: f64,
+    sin_alt: f64,
+    az: f64,
+    z_factor: f64,
+    cos_az_mul_cos_alt_mul_z: f64,
+    sin_az_mul_cos_alt_mul_z: f64,
+    square_z: f64,
+    sin_alt_mul_254: f64,
+    cos_az_mul_cos_alt_mul_z_mul_254: f64,
+    sin_az_mul_cos_alt_mul_z_mul_254: f64,
+    square_z_mul_square_inv_res: f64,
+    cos_az_mul_cos_alt_mul_z_mul_254_mul_inv_res: f64,
+    sin_az_mul_cos_alt_mul_z_mul_254_mul_inv_res: f64,
+}
+
+impl HillshadeParams {
+    fn new(gt: &[f64; 6], o: &DemOptions, xscale: f64, yscale: f64) -> Self {
+        let inv_ns = 1.0 / (gt[5] * yscale);
+        let inv_ew = 1.0 / (gt[1] * xscale);
+        let sin_alt = (o.altitude * D2R).sin();
+        let az = o.azimuth * D2R;
+        let z_factor = o.z / if o.gradient == GradientAlg::ZevenbergenThorne { 2.0 } else { 8.0 };
+        let cos_alt_mul_z = (o.altitude * D2R).cos() * z_factor;
+        let cos_az_mul_cos_alt_mul_z = az.cos() * cos_alt_mul_z;
+        let sin_az_mul_cos_alt_mul_z = az.sin() * cos_alt_mul_z;
+        let square_z = z_factor * z_factor;
+        let sin_alt_mul_254 = 254.0 * sin_alt;
+        let cos_az_mul_cos_alt_mul_z_mul_254 = 254.0 * cos_az_mul_cos_alt_mul_z;
+        let sin_az_mul_cos_alt_mul_z_mul_254 = 254.0 * sin_az_mul_cos_alt_mul_z;
+        let same_res = gt[1] == -gt[5] && xscale == yscale;
+        Self {
+            alg: o.gradient,
+            inv_ns,
+            inv_ew,
+            sin_alt,
+            az,
+            z_factor,
+            cos_az_mul_cos_alt_mul_z,
+            sin_az_mul_cos_alt_mul_z,
+            square_z,
+            sin_alt_mul_254,
+            cos_az_mul_cos_alt_mul_z_mul_254,
+            sin_az_mul_cos_alt_mul_z_mul_254,
+            square_z_mul_square_inv_res: if same_res { square_z * inv_ew * inv_ew } else { 0.0 },
+            cos_az_mul_cos_alt_mul_z_mul_254_mul_inv_res: if same_res { cos_az_mul_cos_alt_mul_z_mul_254 * -inv_ew } else { 0.0 },
+            sin_az_mul_cos_alt_mul_z_mul_254_mul_inv_res: if same_res { sin_az_mul_cos_alt_mul_z_mul_254 * inv_ew } else { 0.0 },
+        }
+    }
+
+    fn standard<T: Px>(&self, w: &[T; 9]) -> f32 {
+        let (x, y) = gradient(w, self.alg, self.inv_ew, self.inv_ns);
+        let xx_plus_yy = x * x + y * y;
+        let cang = (self.sin_alt_mul_254 - (y * self.cos_az_mul_cos_alt_mul_z_mul_254 - x * self.sin_az_mul_cos_alt_mul_z_mul_254))
+            / (1.0 + self.square_z * xx_plus_yy).sqrt();
+        (if cang <= 0.0 { 1.0 } else { 1.0 + cang }) as f32
+    }
+
+    /// The x and y numerators of the same-resolution hillshade, accumulated as GDAL does.
+    #[inline]
+    fn same_res_acc<T: Px>(w: &[T; 9]) -> (f64, f64) {
+        let mut acc_x = w[0].sub(w[8]);
+        let six_minus_two = w[6].sub(w[2]);
+        let mut acc_y = acc_x;
+        let three_minus_five = w[3].sub(w[5]);
+        let one_minus_seven = w[1].sub(w[7]);
+        acc_x = acc_x.add(three_minus_five);
+        acc_y = acc_y.add(one_minus_seven);
+        acc_x = acc_x.add(three_minus_five);
+        acc_y = acc_y.add(one_minus_seven);
+        acc_x = acc_x.add(six_minus_two);
+        acc_y = acc_y.sub(six_minus_two);
+        (acc_x.f64(), acc_y.f64())
+    }
+
+    fn same_res<T: Px>(&self, w: &[T; 9]) -> f32 {
+        let (x, y) = Self::same_res_acc(w);
+        let xx_plus_yy = x * x + y * y;
+        let cang = (self.sin_alt_mul_254
+            + (x * self.sin_az_mul_cos_alt_mul_z_mul_254_mul_inv_res + y * self.cos_az_mul_cos_alt_mul_z_mul_254_mul_inv_res))
+            / (1.0 + self.square_z_mul_square_inv_res * xx_plus_yy).sqrt();
+        (if cang <= 0.0 { 1.0 } else { 1.0 + cang }) as f32
+    }
+
+    /// The same-resolution hillshade of GDAL's SSE code path, which uses an approximate
+    /// reciprocal square root refined by one Newton-Raphson step.
+    #[cfg(target_arch = "x86_64")]
+    fn same_res_simd<T: Px>(&self, w: &[T; 9]) -> f32 {
+        let (x, y) = Self::same_res_acc(w);
+        let xx_plus_yy = x * x + y * y;
+        let num = self.sin_alt_mul_254
+            + self.sin_az_mul_cos_alt_mul_z_mul_254_mul_inv_res * x
+            + self.cos_az_mul_cos_alt_mul_z_mul_254_mul_inv_res * y;
+        let denom = 1.0 + self.square_z_mul_square_inv_res * xx_plus_yy;
+        let r = approx_inv_sqrt(denom);
+        let res = (num * r) as f32 + 1.0;
+        if 1.0 > res { 1.0 } else { res }
+    }
+
+    fn combined<T: Px>(&self, w: &[T; 9]) -> f32 {
+        const INV_SQUARE_OF_HALF_PI: f64 = 1.0 / ((PI * PI) / 4.0);
+        let (x, y) = gradient(w, self.alg, self.inv_ew, self.inv_ns);
+        let xx_plus_yy = x * x + y * y;
+        let slope = xx_plus_yy * self.square_z;
+        let mut cang =
+            ((self.sin_alt - (y * self.cos_az_mul_cos_alt_mul_z - x * self.sin_az_mul_cos_alt_mul_z)) / (1.0 + slope).sqrt()).acos();
+        cang = 1.0 - cang * slope.sqrt().atan() * INV_SQUARE_OF_HALF_PI;
+        if cang <= 0.0 { 1.0 } else { (1.0 + 254.0 * cang) as f32 }
+    }
+
+    fn igor<T: Px>(&self, w: &[T; 9]) -> f32 {
+        let (gx, gy) = gradient(w, self.alg, self.inv_ew, self.inv_ns);
+        let slope_degrees = ((gx * gx + gy * gy).sqrt() * self.z_factor).atan() * R2D;
+        let aspect = match self.alg {
+            GradientAlg::Horn => {
+                let dx = sum121(w, 2, 5, 8).sub(sum121(w, 0, 3, 6)).f64();
+                let dy = sum121(w, 6, 7, 8).sub(sum121(w, 0, 1, 2)).f64();
+                dy.atan2(-dx)
+            }
+            GradientAlg::ZevenbergenThorne => {
+                let dx = w[5].sub(w[3]).f64();
+                let dy = w[7].sub(w[1]).f64();
+                dy.atan2(-dx)
+            }
+        };
+        let slope_strength = slope_degrees / 90.0;
+        let aspect_diff = difference_between_angles(aspect, PI * 3.0 / 2.0 - self.az, PI * 2.0);
+        let aspect_strength = 1.0 - aspect_diff / PI;
+        let shadowness = 1.0 - slope_strength * aspect_strength;
+        (255.0 * shadowness) as f32
+    }
+}
+
+/// GDAL's `ApproxADivByInvSqrtB()` reciprocal square root: `_mm_rsqrt_ps` on the value rounded
+/// to single precision, then one Newton-Raphson step in double precision.
+#[cfg(target_arch = "x86_64")]
+#[inline]
+fn approx_inv_sqrt(b: f64) -> f64 {
+    use std::arch::x86_64::{_mm_cvtss_f32, _mm_rsqrt_ss, _mm_set_ss};
+    // SAFETY: SSE is part of the x86-64 baseline, so these instructions are always available.
+    let r = unsafe { _mm_cvtss_f32(_mm_rsqrt_ss(_mm_set_ss(b as f32))) } as f64;
+    r * (1.5 - (b * 0.5) * (r * r))
+}
+
+fn normalize_angle(angle: f64, normalizer: f64) -> f64 {
+    let a = angle % normalizer;
+    if a < 0.0 { normalizer + a } else { a }
+}
+
+fn difference_between_angles(a1: f64, a2: f64, normalizer: f64) -> f64 {
+    let mut diff = (normalize_angle(a1, normalizer) - normalize_angle(a2, normalizer)).abs();
+    if diff > normalizer / 2.0 {
+        diff = normalizer - diff;
+    }
+    diff
+}
+
+/// The parameters of the multidirectional hillshade.
+#[derive(Debug, Clone, Copy)]
+struct MultiDirectionalParams {
+    alg: GradientAlg,
+    inv_ns: f64,
+    inv_ew: f64,
+    square_z: f64,
+    sin_alt_mul_127: f64,
+    sin_alt_mul_254: f64,
+    cos_alt_mul_z_mul_127: f64,
+    cos225_az_mul_cos_alt_mul_z_mul_127: f64,
+}
+
+impl MultiDirectionalParams {
+    fn new(gt: &[f64; 6], o: &DemOptions, xscale: f64, yscale: f64) -> Self {
+        let z_factor = o.z / if o.gradient == GradientAlg::ZevenbergenThorne { 2.0 } else { 8.0 };
+        let cos_alt_mul_z = (o.altitude * D2R).cos() * z_factor;
+        Self {
+            alg: o.gradient,
+            inv_ns: 1.0 / (gt[5] * yscale),
+            inv_ew: 1.0 / (gt[1] * xscale),
+            square_z: z_factor * z_factor,
+            sin_alt_mul_127: 127.0 * (o.altitude * D2R).sin(),
+            sin_alt_mul_254: 254.0 * (o.altitude * D2R).sin(),
+            cos_alt_mul_z_mul_127: 127.0 * cos_alt_mul_z,
+            cos225_az_mul_cos_alt_mul_z_mul_127: 127.0 * (225.0 * D2R).cos() * cos_alt_mul_z,
+        }
+    }
+
+    fn shade<T: Px>(&self, w: &[T; 9]) -> f32 {
+        let (x, y) = gradient(w, self.alg, self.inv_ew, self.inv_ns);
+        let xx = x * x;
+        let yy = y * y;
+        let xx_plus_yy = xx + yy;
+        if xx_plus_yy == 0.0 {
+            return (1.0 + self.sin_alt_mul_254) as f32;
+        }
+        let clamp0 = |v: f64| if v <= 0.0 { 0.0 } else { v };
+        let val225 = clamp0(self.sin_alt_mul_127 + (x - y) * self.cos225_az_mul_cos_alt_mul_z_mul_127);
+        let val270 = clamp0(self.sin_alt_mul_127 - x * self.cos_alt_mul_z_mul_127);
+        let val315 = clamp0(self.sin_alt_mul_127 + (x + y) * self.cos225_az_mul_cos_alt_mul_z_mul_127);
+        let val360 = clamp0(self.sin_alt_mul_127 - y * self.cos_alt_mul_z_mul_127);
+        let weight_225 = 0.5 * xx_plus_yy - x * y;
+        let weight_270 = xx;
+        let weight_315 = xx_plus_yy - weight_225;
+        let weight_360 = yy;
+        let cang = ((weight_225 * val225 + weight_270 * val270 + weight_315 * val315 + weight_360 * val360) / xx_plus_yy)
+            / (1.0 + self.square_z * xx_plus_yy).sqrt();
+        (1.0 + cang) as f32
+    }
+}
+
+/// Slope, in degrees or percent.
+fn slope<T: Px>(w: &[T; 9], alg: GradientAlg, ewres_xscale: f64, nsres_yscale: f64, percent: bool) -> f32 {
+    let (dx, dy, div) = match alg {
+        GradientAlg::Horn => {
+            let (x, y) = horn(w);
+            (x.f64() / ewres_xscale, y.f64() / nsres_yscale, 8.0)
+        }
+        GradientAlg::ZevenbergenThorne => (w[3].sub(w[5]).f64() / ewres_xscale, w[7].sub(w[1]).f64() / nsres_yscale, 2.0),
+    };
+    let key = dx * dx + dy * dy;
+    if percent { (100.0 * (key.sqrt() / div)) as f32 } else { ((key.sqrt() / div).atan() * R2D) as f32 }
+}
+
+/// Aspect, as an azimuth or a trigonometric angle; `flat` for flat areas.
+fn aspect<T: Px>(w: &[T; 9], alg: GradientAlg, azimuth: bool, flat: f32) -> f32 {
+    let (dx, dy) = match alg {
+        GradientAlg::Horn => (sum121(w, 2, 5, 8).sub(sum121(w, 0, 3, 6)).f64(), sum121(w, 6, 7, 8).sub(sum121(w, 0, 1, 2)).f64()),
+        GradientAlg::ZevenbergenThorne => (w[5].sub(w[3]).f64(), w[7].sub(w[1]).f64()),
+    };
+    let mut a = (dy.atan2(-dx) / D2R) as f32;
+    if dx == 0.0 && dy == 0.0 {
+        a = flat;
+    } else if azimuth {
+        a = if a > 90.0 { 450.0 - a } else { 90.0 - a };
+    } else if a < 0.0 {
+        a += 360.0;
+    }
+    if a == 360.0 { 0.0 } else { a }
+}
+
+fn tri_wilson<T: Px>(w: &[T; 9]) -> f32 {
+    let c = w[4];
+    let s = w[0].sub(c).abs().add(w[1].sub(c).abs()).add(w[2].sub(c).abs()).add(w[3].sub(c).abs());
+    let s = s.add(w[5].sub(c).abs()).add(w[6].sub(c).abs()).add(w[7].sub(c).abs()).add(w[8].sub(c).abs());
+    s.f32() * 0.125
+}
+
+fn tri_riley<T: Px>(w: &[T; 9]) -> f32 {
+    let sq = |k: usize| {
+        let d = w[k].sub(w[4]).f64();
+        d * d
+    };
+    (sq(0) + sq(1) + sq(2) + sq(3) + sq(5) + sq(6) + sq(7) + sq(8)).sqrt() as f32
+}
+
+fn tpi<T: Px>(w: &[T; 9]) -> f32 {
+    let s = w[0].add(w[1]).add(w[2]).add(w[3]).add(w[5]).add(w[6]).add(w[7]).add(w[8]);
+    w[4].f32() - s.f32() * 0.125
+}
+
+fn roughness<T: Px>(w: &[T; 9]) -> f32 {
+    let (mut lo, mut hi) = (w[0], w[0]);
+    for &v in &w[1..] {
+        if v > hi {
+            hi = v;
+        }
+        if v < lo {
+            lo = v;
+        }
+    }
+    hi.sub(lo).f32()
+}
+
+/// A 3×3 algorithm.
+type Alg<'a, T> = &'a (dyn Fn(&[T; 9]) -> f32 + Sync);
+
+/// A 3×3 algorithm, with the optional vectorized version GDAL uses on rows free of nodata.
+struct Kernel<'a, T> {
+    f: Alg<'a, T>,
+    /// Computes columns `1, 1 + 4, ...` in groups of four while `j < width - 4`, returning the
+    /// first column it did not compute.
+    multi: Option<Alg<'a, T>>,
+}
+
+/// `GDALGeneric3x3Processing()`: runs a 3×3 algorithm over a band.
+fn process<T: Px>(src: &[T], width: usize, height: usize, nodata: Option<T>, dst_nodata: f32, edges: bool, k: &Kernel<T>) -> Vec<f32> {
+    let (w, h) = (width, height);
+    let mut out = vec![dst_nodata; w * h];
+    if w == 0 || h == 0 {
+        return out;
+    }
+    let has_nd = nodata.is_some();
+    let nd = nodata.unwrap_or_else(|| src[0]);
+    let nd_nan = has_nd && nd.f64().is_nan();
+    let line_nd: Vec<bool> = (0..h).map(|r| has_nd && src[r * w..(r + 1) * w].iter().any(|v| v.line_nodata(nd))).collect();
+    let row = |r: usize| &src[r * w..(r + 1) * w];
+    let interpol = |a: T, b: T| T::interpol(a, b, has_nd, nd);
+    let compute = |mut win: [T; 9], check: bool| -> f32 {
+        if check {
+            if win[4].is_nodata(nd, nd_nan) {
+                return dst_nodata;
+            }
+            for i in 0..9 {
+                if win[i].is_nodata(nd, nd_nan) {
+                    if edges {
+                        win[i] = win[4];
+                    } else {
+                        return dst_nodata;
+                    }
+                }
+            }
+        }
+        (k.f)(&win)
+    };
+
+    // The first row.
+    if edges && w >= 2 && h >= 2 {
+        let (r0, r1) = (row(0), row(1));
+        for j in 0..w {
+            let (jmin, jmax) = (j.saturating_sub(1), (j + 1).min(w - 1));
+            let win = [
+                interpol(r0[jmin], r1[jmin]),
+                interpol(r0[j], r1[j]),
+                interpol(r0[jmax], r1[jmax]),
+                r0[jmin],
+                r0[j],
+                r0[jmax],
+                r1[jmin],
+                r1[j],
+                r1[jmax],
+            ];
+            out[j] = compute(win, has_nd);
+        }
+    }
+
+    // The inner rows.
+    let inner = |i: usize, o: &mut [f32]| {
+        let (l1, l2, l3) = (row(i - 1), row(i), row(i + 1));
+        let check = has_nd && (line_nd[i - 1] || line_nd[i] || line_nd[i + 1]);
+        if edges && w >= 2 {
+            let win = [interpol(l1[0], l1[1]), l1[0], l1[1], interpol(l2[0], l2[1]), l2[0], l2[1], interpol(l3[0], l3[1]), l3[0], l3[1]];
+            o[0] = compute(win, check);
+        }
+        let win_at = |j: usize| [l1[j - 1], l1[j], l1[j + 1], l2[j - 1], l2[j], l2[j + 1], l3[j - 1], l3[j], l3[j + 1]];
+        let mut j = 1;
+        if let Some(multi) = k.multi
+            && !check
+        {
+            while j + 4 < w {
+                for (jj, v) in o.iter_mut().enumerate().skip(j).take(4) {
+                    *v = multi(&win_at(jj));
+                }
+                j += 4;
+            }
+        }
+        while j + 1 < w {
+            o[j] = compute(win_at(j), check);
+            j += 1;
+        }
+        if edges && w >= 2 {
+            let j = w - 1;
+            let win = [
+                l1[j - 1],
+                l1[j],
+                interpol(l1[j], l1[j - 1]),
+                l2[j - 1],
+                l2[j],
+                interpol(l2[j], l2[j - 1]),
+                l3[j - 1],
+                l3[j],
+                interpol(l3[j], l3[j - 1]),
+            ];
+            o[j] = compute(win, check);
+        }
+    };
+    if h >= 3 {
+        let body = &mut out[w..(h - 1) * w];
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let threads = std::thread::available_parallelism().map_or(1, |n| n.get()).min(16);
+            let rows_per = (h - 2).div_ceil(threads).max(1);
+            std::thread::scope(|s| {
+                for (c, chunk) in body.chunks_mut(rows_per * w).enumerate() {
+                    let inner = &inner;
+                    s.spawn(move || {
+                        for (k, o) in chunk.chunks_mut(w).enumerate() {
+                            inner(1 + c * rows_per + k, o);
+                        }
+                    });
+                }
+            });
+        }
+        #[cfg(target_arch = "wasm32")]
+        for (k, o) in body.chunks_mut(w).enumerate() {
+            inner(1 + k, o);
+        }
+    }
+
+    // The last row.
+    if edges && w >= 2 && h >= 2 {
+        let (l1, l2) = (row(h - 2), row(h - 1));
+        let o = &mut out[(h - 1) * w..];
+        for j in 0..w {
+            let (jmin, jmax) = (j.saturating_sub(1), (j + 1).min(w - 1));
+            let win = [
+                l1[jmin],
+                l1[j],
+                l1[jmax],
+                l2[jmin],
+                l2[j],
+                l2[jmax],
+                interpol(l2[jmin], l1[jmin]),
+                interpol(l2[j], l1[j]),
+                interpol(l2[jmax], l1[jmax]),
+            ];
+            o[j] = compute(win, has_nd);
+        }
+    }
+    out
+}
+
+/// A band read as GDAL's DEM tools read it.
+enum Band {
+    Int(Vec<i32>, Option<i32>),
+    Float(Vec<f32>, Option<f32>),
+}
+
+fn read_band(ds: &RasterDataset, band: usize) -> Result<Band> {
+    let r = &ds.raster;
+    if band == 0 || band > r.bands {
+        return Err(Error::InvalidArgument(format!("unable to fetch band #{band}")));
+    }
+    let n = r.rows * r.cols;
+    let s = (band - 1) * n;
+    let nodata = ds.nodata();
+    macro_rules! int {
+        ($v:expr, $lo:expr, $hi:expr) => {{
+            let nd = nodata.and_then(|d| {
+                let rounded = (d + 0.5).floor();
+                ((d - rounded).abs() < 1e-2 && ($lo..=$hi).contains(&d)).then_some(rounded as i32)
+            });
+            Band::Int($v[s..s + n].iter().map(|x| *x as i32).collect(), nd)
+        }};
+    }
+    macro_rules! float {
+        ($v:expr) => {
+            Band::Float($v[s..s + n].iter().map(|x| *x as f32).collect(), nodata.map(|d| d as f32))
+        };
+    }
+    Ok(match &r.data {
+        RasterData::U8(v) => int!(v, 0.0, 255.0),
+        RasterData::I16(v) => int!(v, -32768.0, 32767.0),
+        RasterData::U16(v) => int!(v, 0.0, 65535.0),
+        RasterData::I8(v) => float!(v),
+        RasterData::U32(v) => float!(v),
+        RasterData::I32(v) => float!(v),
+        RasterData::U64(v) => float!(v),
+        RasterData::I64(v) => float!(v),
+        RasterData::F32(v) => Band::Float(v[s..s + n].to_vec(), nodata.map(|d| d as f32)),
+        RasterData::F64(v) => float!(v),
+    })
+}
+
+/// The horizontal scales: given, or derived from the CRS as `gdaldem` does (degrees converted
+/// to metres on the ellipsoid at the centre latitude; projected units converted to metres).
+fn scales(ds: &RasterDataset, o: &DemOptions) -> (f64, f64) {
+    if let Some(s) = o.scale {
+        return (s, s);
+    }
+    if let (Some(x), Some(y)) = (o.xscale, o.yscale) {
+        return (x, y);
+    }
+    let srs = ds.crs();
+    let Some(wkt) = srs.to_wkt() else { return (1.0, 1.0) };
+    let gt = ds.geo_transform();
+    if srs.is_geographic() {
+        let ang = wkt_unit(&wkt, &["ANGLEUNIT[", "UNIT["]).unwrap_or(0.0174532925199433);
+        let Some(a) = wkt_semi_major(&wkt) else { return (1.0, 1.0) };
+        let yscale = ang * a;
+        let mean_lat = (gt[3] + ds.raster.rows as f64 * gt[5] / 2.0) * ang;
+        (yscale * mean_lat.cos(), yscale)
+    } else if wkt.trim_start().starts_with("PROJCS") || wkt.trim_start().starts_with("PROJCRS") {
+        let u = wkt_unit(&wkt, &["LENGTHUNIT[", "UNIT["]).unwrap_or(1.0);
+        (u, u)
+    } else {
+        (1.0, 1.0)
+    }
+}
+
+/// The conversion factor of the last unit node of a WKT with one of these keywords.
+fn wkt_unit(wkt: &str, keys: &[&str]) -> Option<f64> {
+    let upper = wkt.to_ascii_uppercase();
+    let pos = keys.iter().filter_map(|k| upper.rfind(k).map(|p| p + k.len())).max()?;
+    let rest = &wkt[pos..];
+    let comma = rest.find(',')?;
+    let tail = &rest[comma + 1..];
+    let end = tail.find([',', ']'])?;
+    tail[..end].trim().parse().ok()
+}
+
+/// The semi-major axis of a WKT's ellipsoid.
+fn wkt_semi_major(wkt: &str) -> Option<f64> {
+    let upper = wkt.to_ascii_uppercase();
+    let pos = ["ELLIPSOID[", "SPHEROID["].iter().filter_map(|k| upper.find(k).map(|p| p + k.len())).min()?;
+    let rest = &wkt[pos..];
+    let quote_end = rest.strip_prefix('"').and_then(|r| r.find('"').map(|p| p + 2)).unwrap_or(0);
+    let rest = &rest[quote_end..];
+    let rest = rest.trim_start_matches([',', ' ']);
+    let end = rest.find([',', ']'])?;
+    rest[..end].trim().parse().ok()
+}
+
+/// A terrain product of a DEM.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DemProduct {
+    /// Shaded relief (Byte, nodata 0).
+    Hillshade,
+    /// Slope (Float32, nodata -9999).
+    Slope,
+    /// Aspect (Float32, nodata -9999 unless `zero_for_flat`).
+    Aspect,
+    /// Terrain Ruggedness Index (Float32, nodata -9999).
+    Tri,
+    /// Topographic Position Index (Float32, nodata -9999).
+    Tpi,
+    /// Roughness: the largest difference within the window (Float32, nodata -9999).
+    Roughness,
+}
+
+impl DemProduct {
+    /// Parses a `gdaldem` mode name: `hillshade` (or `shade`), `slope`, `aspect`, `TRI`, `TPI`,
+    /// `roughness`.
+    pub fn parse(s: &str) -> Result<Self> {
+        Ok(match s.to_ascii_lowercase().as_str() {
+            "hillshade" | "shade" => Self::Hillshade,
+            "slope" => Self::Slope,
+            "aspect" => Self::Aspect,
+            "tri" => Self::Tri,
+            "tpi" => Self::Tpi,
+            "roughness" => Self::Roughness,
+            other => return Err(Error::InvalidArgument(format!("unknown DEM processing '{other}'"))),
+        })
+    }
+}
+
+/// Computes a terrain product of a DEM band, as `gdaldem` does.
+pub fn dem(ds: &RasterDataset, product: DemProduct, o: &DemOptions) -> Result<RasterDataset> {
+    o.validate()?;
+    if o.shading != Shading::Standard && product != DemProduct::Hillshade {
+        return Err(Error::InvalidArgument("combined, multidirectional and Igor shading apply to hillshade only".into()));
+    }
+    let gt = ds.geo_transform();
+    let (xscale, yscale) = scales(ds, o);
+    let (w, h) = (ds.raster.cols, ds.raster.rows);
+    let (out_type, dst_nodata) = match product {
+        DemProduct::Hillshade => (DataType::U8, Some(0.0)),
+        DemProduct::Aspect if o.zero_for_flat => (DataType::F32, None),
+        _ => (DataType::F32, Some(-9999.0)),
+    };
+    let dst_nd = dst_nodata.unwrap_or(0.0) as f32;
+    let band = read_band(ds, o.band)?;
+
+    macro_rules! run {
+        ($t:ty, $src:expr, $nd:expr) => {{
+            let hs = HillshadeParams::new(&gt, o, xscale, yscale);
+            let md = MultiDirectionalParams::new(&gt, o, xscale, yscale);
+            let same_res = gt[1] == -gt[5] && xscale == yscale;
+            let (ew, ns) = (gt[1] * xscale, gt[5] * yscale);
+            let azimuth = !o.trigonometric;
+            let f: Box<dyn Fn(&[$t; 9]) -> f32 + Sync> = match product {
+                DemProduct::Hillshade => match o.shading {
+                    Shading::MultiDirectional => Box::new(move |w| md.shade(w)),
+                    Shading::Combined => Box::new(move |w| hs.combined(w)),
+                    Shading::Igor => Box::new(move |w| hs.igor(w)),
+                    Shading::Standard if o.gradient == GradientAlg::Horn && same_res => Box::new(move |w| hs.same_res(w)),
+                    Shading::Standard => Box::new(move |w| hs.standard(w)),
+                },
+                DemProduct::Slope => {
+                    let (alg, percent) = (o.gradient, o.slope_percent);
+                    Box::new(move |w| slope(w, alg, ew, ns, percent))
+                }
+                DemProduct::Aspect => {
+                    let alg = o.gradient;
+                    Box::new(move |w| aspect(w, alg, azimuth, dst_nd))
+                }
+                DemProduct::Tri if o.tri == TriAlg::Wilson => Box::new(tri_wilson::<$t>),
+                DemProduct::Tri => Box::new(tri_riley::<$t>),
+                DemProduct::Tpi => Box::new(tpi::<$t>),
+                DemProduct::Roughness => Box::new(roughness::<$t>),
+            };
+            #[cfg(target_arch = "x86_64")]
+            let simd = move |w: &[$t; 9]| hs.same_res_simd(w);
+            #[cfg(target_arch = "x86_64")]
+            let multi: Option<&(dyn Fn(&[$t; 9]) -> f32 + Sync)> =
+                (product == DemProduct::Hillshade && o.shading == Shading::Standard && o.gradient == GradientAlg::Horn && same_res)
+                    .then_some(&simd);
+            #[cfg(not(target_arch = "x86_64"))]
+            let multi: Option<&(dyn Fn(&[$t; 9]) -> f32 + Sync)> = None;
+            process::<$t>($src, w, h, $nd, dst_nd, o.compute_edges, &Kernel { f: &*f, multi })
+        }};
+    }
+    let values = match &band {
+        Band::Int(v, nd) => run!(i32, v, *nd),
+        Band::Float(v, nd) => run!(f32, v, *nd),
+    };
+    let values: Vec<f64> = if out_type == DataType::U8 {
+        values.iter().map(|v| float_to_byte(*v)).collect()
+    } else {
+        values.iter().map(|v| *v as f64).collect()
+    };
+    build_raster(Grid::of(&ds.raster), vec![values], out_type, dst_nodata, &ds.crs(), |v, _| v)
+}
+
+/// GDAL's conversion of a `Float32` value to a byte: NaN becomes 0, others are rounded half up
+/// and clamped.
+fn float_to_byte(v: f32) -> f64 {
+    if v.is_nan() { 0.0 } else { ((v + 0.5).clamp(0.0, 255.0) as u8) as f64 }
+}
+
+/// Shaded relief of a DEM band (`gdaldem hillshade`).
+pub fn hillshade(ds: &RasterDataset, o: &DemOptions) -> Result<RasterDataset> {
+    dem(ds, DemProduct::Hillshade, o)
+}
+
+/// Slope of a DEM band (`gdaldem slope`).
+pub fn slope_map(ds: &RasterDataset, o: &DemOptions) -> Result<RasterDataset> {
+    dem(ds, DemProduct::Slope, o)
+}
+
+/// Aspect of a DEM band (`gdaldem aspect`).
+pub fn aspect_map(ds: &RasterDataset, o: &DemOptions) -> Result<RasterDataset> {
+    dem(ds, DemProduct::Aspect, o)
+}
+
+/// One entry of a color file: a value and its color.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ColorEntry {
+    /// The value (NaN for a NaN nodata value).
+    pub value: f64,
+    /// Red.
+    pub r: i32,
+    /// Green.
+    pub g: i32,
+    /// Blue.
+    pub b: i32,
+    /// Alpha.
+    pub a: i32,
+}
+
+/// A color file, parsed as `gdaldem color-relief` parses it: lines of `value R G B [A]` or
+/// `value colorname [A]`, where the value may be `nv` (the nodata value) or a percentage of the
+/// band's range, and separators are spaces, tabs, commas or colons. GMT `.cpt` files (with a
+/// `COLOR_MODEL = RGB` comment) are read too.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ColorMap {
+    /// The entries, in file order.
+    pub entries: Vec<ColorEntry>,
+}
+
+impl ColorMap {
+    /// Parses a color file's text for a band, whose nodata value resolves `nv` and whose range
+    /// resolves percentages: `range` when given (GDAL uses the statistics cached in the
+    /// dataset's `.aux.xml`, see [`pam_statistics`]), otherwise the band's minimum and maximum.
+    pub fn parse(text: &str, ds: &RasterDataset, band: usize, range: Option<(f64, f64)>) -> Result<Self> {
+        let nodata = ds.nodata();
+        let mut range = range;
+        let mut entries = Vec::new();
+        let mut gmt = false;
+        for line in text.split(['\n', '\r']) {
+            if line.starts_with('#') && line.contains("COLOR_MODEL") {
+                if !line.contains("COLOR_MODEL = RGB") {
+                    return Err(Error::InvalidArgument("only COLOR_MODEL = RGB is supported".into()));
+                }
+                gmt = true;
+            }
+            if line.is_empty() || line.starts_with('#') || line.starts_with('/') {
+                continue;
+            }
+            let t: Vec<&str> = line.split([' ', ',', '\t', ':']).filter(|s| !s.is_empty()).collect();
+            if gmt && t.len() == 8 {
+                for k in [0, 4] {
+                    entries.push(ColorEntry { value: atof(t[k]), r: atoi(t[k + 1]), g: atoi(t[k + 2]), b: atoi(t[k + 3]), a: 255 });
+                }
+            } else if gmt && t.len() == 4 {
+                if t[0].eq_ignore_ascii_case("N")
+                    && let Some(nd) = nodata
+                {
+                    entries.push(ColorEntry { value: nd, r: atoi(t[1]), g: atoi(t[2]), b: atoi(t[3]), a: 255 });
+                }
+            } else if !gmt && t.len() >= 2 {
+                let value = if t[0].eq_ignore_ascii_case("nv") {
+                    match nodata {
+                        Some(nd) => nd,
+                        None => continue,
+                    }
+                } else if t[0].len() > 1 && t[0].ends_with('%') {
+                    let pct = atof(t[0]) / 100.0;
+                    if !(0.0..=1.0).contains(&pct) {
+                        return Err(Error::InvalidArgument(format!("wrong value for a percentage: {}", t[0])));
+                    }
+                    let (lo, hi) = match range {
+                        Some(r) => r,
+                        None => *range.insert(band_range(ds, band)?),
+                    };
+                    lo + pct * (hi - lo)
+                } else {
+                    atof(t[0])
+                };
+                let entry = if t.len() >= 4 {
+                    ColorEntry { value, r: atoi(t[1]), g: atoi(t[2]), b: atoi(t[3]), a: if t.len() >= 5 { atoi(t[4]) } else { 255 } }
+                } else {
+                    let (r, g, b) = named_color(t[1]).ok_or_else(|| Error::InvalidArgument(format!("unknown color: {}", t[1])))?;
+                    ColorEntry { value, r, g, b, a: if t.len() >= 3 { atoi(t[2]) } else { 255 } }
+                };
+                entries.push(entry);
+            }
+        }
+        if entries.is_empty() {
+            return Err(Error::InvalidArgument("no color association found in the color file".into()));
+        }
+        Ok(Self { entries })
+    }
+}
+
+/// The minimum and maximum of a band cached in a GDAL `.aux.xml` file next to a dataset
+/// (`STATISTICS_MINIMUM` and `STATISTICS_MAXIMUM`), as `gdaldem` uses them for percentages.
+pub fn pam_statistics(path: &str, band: usize) -> Option<(f64, f64)> {
+    let xml = std::fs::read_to_string(format!("{path}.aux.xml")).ok()?;
+    let start = xml.find(&format!("<PAMRasterBand band=\"{band}\""))?;
+    let block = &xml[start..];
+    let block = &block[..block.find("</PAMRasterBand>").unwrap_or(block.len())];
+    let value = |key: &str| -> Option<f64> {
+        let tag = format!("<MDI key=\"{key}\">");
+        let i = block.find(&tag)? + tag.len();
+        let rest = &block[i..];
+        rest[..rest.find('<')?].trim().parse().ok()
+    };
+    Some((value("STATISTICS_MINIMUM")?, value("STATISTICS_MAXIMUM")?))
+}
+
+/// The minimum and maximum of a band's valid values.
+fn band_range(ds: &RasterDataset, band: usize) -> Result<(f64, f64)> {
+    if band == 0 || band > ds.raster.bands {
+        return Err(Error::InvalidArgument(format!("unable to fetch band #{band}")));
+    }
+    let nodata = ds.nodata();
+    let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
+    for v in super::band_f64(&ds.raster, band - 1) {
+        if v.is_nan() || nodata.is_some_and(|nd| super::is_nodata(v, nd)) {
+            continue;
+        }
+        lo = lo.min(v);
+        hi = hi.max(v);
+    }
+    if lo > hi {
+        return Err(Error::InvalidArgument("the band has no valid value to compute percentages from".into()));
+    }
+    Ok((lo, hi))
+}
+
+/// GDAL's named colors.
+fn named_color(name: &str) -> Option<(i32, i32, i32)> {
+    const COLORS: [(&str, f32, f32, f32); 16] = [
+        ("white", 1.00, 1.00, 1.00),
+        ("black", 0.00, 0.00, 0.00),
+        ("red", 1.00, 0.00, 0.00),
+        ("green", 0.00, 1.00, 0.00),
+        ("blue", 0.00, 0.00, 1.00),
+        ("yellow", 1.00, 1.00, 0.00),
+        ("magenta", 1.00, 0.00, 1.00),
+        ("cyan", 0.00, 1.00, 1.00),
+        ("aqua", 0.00, 0.75, 0.75),
+        ("grey", 0.75, 0.75, 0.75),
+        ("gray", 0.75, 0.75, 0.75),
+        ("orange", 1.00, 0.50, 0.00),
+        ("brown", 0.75, 0.50, 0.25),
+        ("purple", 0.50, 0.00, 1.00),
+        ("violet", 0.50, 0.00, 1.00),
+        ("indigo", 0.00, 0.50, 1.00),
+    ];
+    COLORS
+        .iter()
+        .find(|c| c.0.eq_ignore_ascii_case(name))
+        .map(|c| ((255.0f32 * c.1) as i32, (255.0f32 * c.2) as i32, (255.0f32 * c.3) as i32))
+}
+
+/// C's `atof()`: the longest numeric prefix, 0 when there is none.
+pub(crate) fn atof(s: &str) -> f64 {
+    let s = s.trim_start();
+    let lower = s.to_ascii_lowercase();
+    let unsigned = lower.trim_start_matches(['+', '-']);
+    let neg = lower.starts_with('-');
+    for (word, v) in [("infinity", f64::INFINITY), ("inf", f64::INFINITY), ("nan", f64::NAN)] {
+        if unsigned.starts_with(word) && lower.len() - unsigned.len() <= 1 {
+            return if neg { -v } else { v };
+        }
+    }
+    let b = s.as_bytes();
+    let mut i = 0;
+    if i < b.len() && (b[i] == b'+' || b[i] == b'-') {
+        i += 1;
+    }
+    let digits_start = i;
+    while i < b.len() && b[i].is_ascii_digit() {
+        i += 1;
+    }
+    if i < b.len() && b[i] == b'.' {
+        i += 1;
+        while i < b.len() && b[i].is_ascii_digit() {
+            i += 1;
+        }
+    }
+    if i == digits_start || &s[digits_start..i] == "." {
+        return 0.0;
+    }
+    let mantissa_end = i;
+    if i < b.len() && (b[i] == b'e' || b[i] == b'E') {
+        let mut k = i + 1;
+        if k < b.len() && (b[k] == b'+' || b[k] == b'-') {
+            k += 1;
+        }
+        let exp_digits = k;
+        while k < b.len() && b[k].is_ascii_digit() {
+            k += 1;
+        }
+        if k > exp_digits {
+            i = k;
+        }
+    }
+    s[..i].parse().or_else(|_| s[..mantissa_end].parse()).unwrap_or(0.0)
+}
+
+/// C's `atoi()`: the leading integer, 0 when there is none.
+pub(crate) fn atoi(s: &str) -> i32 {
+    let s = s.trim_start();
+    let b = s.as_bytes();
+    let mut i = 0;
+    if i < b.len() && (b[i] == b'+' || b[i] == b'-') {
+        i += 1;
+    }
+    while i < b.len() && b[i].is_ascii_digit() {
+        i += 1;
+    }
+    s[..i].parse::<i64>().map(|v| v as i32).unwrap_or(0)
+}
+
+/// Sorts the entries and adjusts duplicates and the neighbours of the nodata value, as
+/// `GDALColorReliefProcessColors()` does.
+fn process_colors(c: &mut Vec<ColorEntry>, nodata: Option<f64>, mode: ColorSelection) {
+    let cmp = |a: &ColorEntry, b: &ColorEntry| {
+        let less = |a: &ColorEntry, b: &ColorEntry| (a.value.is_nan() && !b.value.is_nan()) || a.value < b.value;
+        if less(a, b) {
+            std::cmp::Ordering::Less
+        } else if less(b, a) {
+            std::cmp::Ordering::Greater
+        } else {
+            std::cmp::Ordering::Equal
+        }
+    };
+    c.sort_by(cmp);
+    let initial = c.len();
+    let mut repeated = 0usize;
+    for i in 1..initial {
+        let (prev, cur) = (c[i - 1], c[i]);
+        if mode != ColorSelection::Exact && nodata.is_some_and(|nd| cur.value == nd) {
+            let v = cur.value.next_down();
+            if v > prev.value {
+                c.push(ColorEntry { value: v, ..prev });
+            }
+        } else if mode != ColorSelection::Exact && nodata.is_some_and(|nd| prev.value == nd) {
+            let v = prev.value.next_up();
+            if v < cur.value {
+                c.push(ColorEntry { value: v, ..cur });
+            }
+        } else if repeated == 0 && cur.value == prev.value {
+            repeated = i;
+        } else if repeated != 0 && cur.value != prev.value {
+            let (total, left) = if repeated >= 2 {
+                let lower = c[repeated - 2];
+                (cur.value - lower.value, prev.value - lower.value)
+            } else {
+                (cur.value - prev.value, 0.0)
+            };
+            let count = i - repeated + 1;
+            if total > prev.value.abs() * count as f64 * f64::EPSILON {
+                let mut m = 0.5 - count as f64 * left / total;
+                for e in &mut c[repeated - 1..i] {
+                    e.value += (prev.value.abs() * m) * f64::EPSILON;
+                    m += 1.0;
+                }
+            }
+            repeated = 0;
+        }
+    }
+    if c.len() != initial {
+        c.sort_by(cmp);
+    }
+}
+
+/// `GDALColorReliefGetRGBA()`: the color of a value.
+fn rgba(c: &[ColorEntry], v: f64, mode: ColorSelection) -> [i32; 4] {
+    let col = |e: &ColorEntry| [e.r, e.g, e.b, e.a];
+    let mut lower = 0;
+    if c[0].value.is_nan() {
+        if v.is_nan() {
+            return col(&c[0]);
+        }
+        lower = 1;
+    }
+    let mut upper = c.len() - 1;
+    let i = loop {
+        let mid = (lower + upper) / 2;
+        if upper - lower <= 1 {
+            break if v <= c[lower].value {
+                lower
+            } else if v <= c[upper].value {
+                upper
+            } else {
+                upper + 1
+            };
+        } else if c[mid].value >= v {
+            upper = mid;
+        } else {
+            lower = mid;
+        }
+    };
+    if i == 0 {
+        return if mode == ColorSelection::Exact && c[0].value != v { [0; 4] } else { col(&c[0]) };
+    }
+    if i == c.len() {
+        return if mode == ColorSelection::Exact && c[i - 1].value != v { [0; 4] } else { col(&c[i - 1]) };
+    }
+    if c[i - 1].value == v {
+        return col(&c[i - 1]);
+    }
+    if c[i].value == v {
+        return col(&c[i]);
+    }
+    if mode == ColorSelection::Exact {
+        return [0; 4];
+    }
+    if mode == ColorSelection::Nearest && c[i - 1].value != v {
+        let k = if v - c[i - 1].value < c[i].value - v { i - 1 } else { i };
+        return col(&c[k]);
+    }
+    if c[i - 1].value.is_nan() {
+        return col(&c[i]);
+    }
+    let ratio = (v - c[i - 1].value) / (c[i].value - c[i - 1].value);
+    let lerp = |a: i32, b: i32| ((0.5 + a as f64 + ratio * (b - a) as f64) as i32).clamp(0, 255);
+    let (a, b) = (col(&c[i - 1]), col(&c[i]));
+    [lerp(a[0], b[0]), lerp(a[1], b[1]), lerp(a[2], b[2]), lerp(a[3], b[3])]
+}
+
+/// Colors a DEM band with a color map (`gdaldem color-relief`): three Byte bands (four with
+/// `alpha`), without nodata.
+pub fn color_relief(ds: &RasterDataset, colors: &ColorMap, o: &DemOptions) -> Result<RasterDataset> {
+    let r = &ds.raster;
+    if o.band == 0 || o.band > r.bands {
+        return Err(Error::InvalidArgument(format!("unable to fetch band #{}", o.band)));
+    }
+    let mut c = colors.entries.clone();
+    if c.is_empty() {
+        return Err(Error::InvalidArgument("the color map is empty".into()));
+    }
+    process_colors(&mut c, ds.nodata(), o.color_selection);
+    // Byte, Int16 and UInt16 are read as integers, the other types as Float32.
+    let exact = matches!(r.data_type, DataType::U8 | DataType::I16 | DataType::U16);
+    let values = super::band_f64(r, o.band - 1);
+    let nbands = if o.alpha { 4 } else { 3 };
+    let mut bands = vec![Vec::with_capacity(values.len()); nbands];
+    let cache: Option<Vec<[i32; 4]>> = exact.then(|| {
+        let offset = if r.data_type == DataType::I16 { 32768 } else { 0 };
+        let len = if r.data_type == DataType::U8 { 256 } else { 65536 };
+        (0..len).map(|i| rgba(&c, (i - offset) as f64, o.color_selection)).collect()
+    });
+    for v in values {
+        let px = match &cache {
+            Some(table) => table[(v as i64 + if r.data_type == DataType::I16 { 32768 } else { 0 }) as usize],
+            None => rgba(&c, v as f32 as f64, o.color_selection),
+        };
+        for (b, out) in bands.iter_mut().enumerate() {
+            out.push((px[b] as u8) as f64);
+        }
+    }
+    build_raster(Grid::of(r), bands, DataType::U8, None, &ds.crs(), |v, _| v)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ops::Grid;
+
+    fn dem_ds(values: Vec<f64>, w: usize, h: usize, dt: DataType, nodata: Option<f64>, res: f64) -> RasterDataset {
+        let grid = Grid { width: w, height: h, geo_transform: [0.0, res, 0.0, h as f64 * res, 0.0, -res] };
+        build_raster(grid, vec![values], dt, nodata, &crate::crs::SpatialRef::default(), super::super::convert_value).unwrap()
+    }
+
+    fn plane(w: usize, h: usize) -> Vec<f64> {
+        (0..h).flat_map(|r| (0..w).map(move |c| (c as f64) * 10.0 + (r as f64) * 5.0)).collect()
+    }
+
+    #[test]
+    fn slope_of_a_plane() {
+        let ds = dem_ds(plane(6, 5), 6, 5, DataType::F32, None, 10.0);
+        let out = slope_map(&ds, &DemOptions::default()).unwrap();
+        let v = out.raster.get(0, 2, 2);
+        let expected = ((1.0f64 + 0.25).sqrt()).atan().to_degrees();
+        assert!((v - expected).abs() < 1e-4, "{v} != {expected}");
+        assert_eq!(out.raster.get(0, 0, 0), -9999.0);
+        assert_eq!(out.nodata(), Some(-9999.0));
+        let edges = slope_map(&ds, &DemOptions { compute_edges: true, ..Default::default() }).unwrap();
+        // Corners repeat their column rather than extrapolating it, as in GDAL.
+        assert!((edges.raster.get(0, 0, 1) - expected).abs() < 1e-4);
+        assert!((edges.raster.get(0, 2, 0) - expected).abs() < 1e-4);
+    }
+
+    #[test]
+    fn aspect_of_a_plane() {
+        // Rising to the east: the slope faces west (270°).
+        let ds = dem_ds(plane(5, 5).iter().enumerate().map(|(i, _)| (i % 5) as f64).collect(), 5, 5, DataType::I16, None, 1.0);
+        let out = aspect_map(&ds, &DemOptions::default()).unwrap();
+        assert_eq!(out.raster.get(0, 2, 2), 270.0);
+        let trig = aspect_map(&ds, &DemOptions { trigonometric: true, ..Default::default() }).unwrap();
+        assert_eq!(trig.raster.get(0, 2, 2), 180.0);
+        let flat = dem_ds(vec![1.0; 25], 5, 5, DataType::I16, None, 1.0);
+        assert_eq!(aspect_map(&flat, &DemOptions::default()).unwrap().raster.get(0, 2, 2), -9999.0);
+        let zero = aspect_map(&flat, &DemOptions { zero_for_flat: true, ..Default::default() }).unwrap();
+        assert_eq!(zero.raster.get(0, 2, 2), 0.0);
+        assert_eq!(zero.nodata(), None);
+    }
+
+    #[test]
+    fn nodata_neighbours() {
+        let mut v = plane(5, 5);
+        v[6] = -1.0;
+        let ds = dem_ds(v, 5, 5, DataType::F32, Some(-1.0), 1.0);
+        let out = dem(&ds, DemProduct::Roughness, &DemOptions::default()).unwrap();
+        assert_eq!(out.raster.get(0, 2, 2), -9999.0);
+        assert_ne!(out.raster.get(0, 2, 3), -9999.0);
+        let edges = dem(&ds, DemProduct::Roughness, &DemOptions { compute_edges: true, ..Default::default() }).unwrap();
+        assert_ne!(edges.raster.get(0, 2, 2), -9999.0);
+        assert_eq!(edges.raster.get(0, 1, 1), -9999.0);
+    }
+
+    #[test]
+    fn tri_tpi() {
+        let mut v = vec![0.0; 9];
+        v[4] = 8.0;
+        let ds = dem_ds(v, 3, 3, DataType::F32, None, 1.0);
+        let o = DemOptions::default();
+        assert_eq!(dem(&ds, DemProduct::Tpi, &o).unwrap().raster.get(0, 1, 1), 8.0);
+        assert_eq!(dem(&ds, DemProduct::Tri, &DemOptions { tri: TriAlg::Wilson, ..o.clone() }).unwrap().raster.get(0, 1, 1), 8.0);
+        let riley = dem(&ds, DemProduct::Tri, &o).unwrap().raster.get(0, 1, 1);
+        assert!((riley - (8.0f64 * 64.0).sqrt()).abs() < 1e-4);
+    }
+
+    #[test]
+    fn hillshade_flat_is_sin_alt() {
+        let ds = dem_ds(vec![100.0; 36], 6, 6, DataType::F32, None, 30.0);
+        let out = hillshade(&ds, &DemOptions::default()).unwrap();
+        // 1 + 254 * sin(45°) = 180.6
+        assert_eq!(out.raster.get(0, 2, 2), 181.0);
+        assert_eq!(out.raster.get(0, 0, 0), 0.0);
+        let md = hillshade(&ds, &DemOptions { shading: Shading::MultiDirectional, ..Default::default() }).unwrap();
+        assert_eq!(md.raster.get(0, 2, 2), 181.0);
+    }
+
+    #[test]
+    fn color_map_parsing() {
+        let ds = dem_ds(vec![0.0, 50.0, 100.0, -1.0], 2, 2, DataType::F32, Some(-1.0), 1.0);
+        let text = "# comment\n0% blue\n100 255,0,0\n50%:white:128\nnv 0 0 0 0\n";
+        let m = ColorMap::parse(text, &ds, 1, None).unwrap();
+        assert_eq!(m.entries.len(), 4);
+        assert_eq!(m.entries[2], ColorEntry { value: 50.0, r: 255, g: 255, b: 255, a: 128 });
+        let out = color_relief(&ds, &m, &DemOptions { alpha: true, ..Default::default() }).unwrap();
+        assert_eq!(out.raster.bands, 4);
+        assert_eq!(out.raster.get(0, 1, 1), 0.0);
+        assert_eq!(out.raster.get(3, 1, 1), 0.0);
+        assert_eq!(out.raster.get(2, 0, 0), 255.0);
+        assert_eq!(out.raster.get(0, 1, 0), 255.0);
+        assert_eq!(atof("12.5%"), 12.5);
+        assert_eq!(atoi("12abc"), 12);
+    }
+
+    #[test]
+    fn wkt_parameters() {
+        let wkt = r#"GEOGCRS["NAD83",DATUM["North American Datum 1983",ELLIPSOID["GRS 1980",6378137,298.257222101,LENGTHUNIT["metre",1]]],PRIMEM["Greenwich",0,ANGLEUNIT["degree",0.0174532925199433]],CS[ellipsoidal,2],ANGLEUNIT["degree",0.0174532925199433]]"#;
+        assert_eq!(wkt_semi_major(wkt), Some(6378137.0));
+        assert_eq!(wkt_unit(wkt, &["ANGLEUNIT[", "UNIT["]), Some(0.0174532925199433));
+        let wkt1 = r#"GEOGCS["WGS 84",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563]],UNIT["degree",0.0174532925199433]]"#;
+        assert_eq!(wkt_semi_major(wkt1), Some(6378137.0));
+    }
+}

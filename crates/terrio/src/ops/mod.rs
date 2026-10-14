@@ -1,15 +1,20 @@
 //! GDAL-style processing operations: [`translate`] (`gdal_translate`), [`warp`] (`gdalwarp`),
 //! [`mosaic`] (`gdalbuildvrt` and `gdal_merge.py`), [`vrt`] (GDAL's virtual raster format),
-//! [`rasterize`] (`gdal_rasterize`), [`polygonize`] (`gdal_polygonize`), and the vector
-//! filtering of `ogr2ogr` ([`vector_filter`], [`sql`]).
+//! [`rasterize`] (`gdal_rasterize`), [`polygonize`] (`gdal_polygonize`), [`dem`] (`gdaldem`),
+//! [`calc`] (`gdal_calc.py`), [`proximity`] (`gdal_proximity.py`), [`sieve`] (`gdal_sieve.py`),
+//! and the vector filtering of `ogr2ogr` ([`vector_filter`], [`sql`]).
 //!
 //! Pixel coordinates follow GDAL's convention: pixel `(col, row)` covers `[col, col + 1)` ×
 //! `[row, row + 1)` and its centre is at `(col + 0.5, row + 0.5)`. Geotransforms are GDAL's
 //! `[x_origin, pixel_width, 0, y_origin, 0, -pixel_height]`.
 
+pub mod calc;
+pub mod dem;
 pub mod mosaic;
 pub mod polygonize;
+pub mod proximity;
 pub mod rasterize;
+pub mod sieve;
 pub mod sql;
 pub mod translate;
 pub mod vector_filter;

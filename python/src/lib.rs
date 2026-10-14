@@ -3,6 +3,7 @@
 
 mod ops;
 mod raster;
+mod terrain;
 mod vector;
 
 use pyo3::prelude::*;
@@ -57,5 +58,6 @@ fn _terrio(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<vector::PyLayer>()?;
     m.add_class::<vector::PyVectorDataset>()?;
     ops::register(m)?;
+    terrain::register(m)?;
     Ok(())
 }

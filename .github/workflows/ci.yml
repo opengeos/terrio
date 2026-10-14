@@ -133,3 +133,7 @@ jobs:
         continue-on-error: true
         shell: micromamba-shell {0}
         run: python scripts/compare_vector_ops_with_gdal.py terrio-data
+      - name: Compare terrain tools and raster algebra with GDAL
+        continue-on-error: true
+        shell: micromamba-shell {0}
+        run: python scripts/compare_dem_calc_with_gdal.py terrio-data

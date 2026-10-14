@@ -44,6 +44,12 @@ terrio warp a.tif b.tif out.tif --t-srs "+proj=lcc +lat_1=33 +lat_2=45 +lon_0=-9
 terrio warp dem.tif clip.tif --cutline area.geojson --crop-to-cutline
 terrio mosaic tiles/*.tif mosaic.vrt                                        # like gdalbuildvrt
 terrio mosaic tiles/*.tif mosaic.tif --resolution highest --nodata -9999   # like gdal_merge.py
+terrio dem hillshade dem.tif shade.tif -z 2 --multidirectional              # like gdaldem
+terrio dem slope dem.tif slope.tif -s 111120 -p
+terrio dem color-relief dem.tif colors.txt relief.tif --alpha
+terrio calc -A red.tif -B nir.tif --calc "(B - A * 1.0) / (B + A * 1.0)" --type Float32 ndvi.tif  # gdal_calc.py
+terrio proximity roads.tif dist.tif --values 1 --distunits GEO --maxdist 5000  # like gdal_proximity.py
+terrio sieve landcover.tif clean.tif --st 10 -8                            # like gdal_sieve.py
 terrio formats                                   # list the drivers
 ```
 
@@ -94,8 +100,9 @@ terrio.convert("countries.shp", "europe.gpkg", where="CONTINENT = 'Europe'")
 terrio.warp("dem.tif", "dem_4326.tif", t_srs="EPSG:4326", resampling="bilinear")
 ```
 
-The operations (`convert`, `translate`, `warp`, `mosaic`, `rasterize`, `polygonize`) take the
-command-line options as keyword arguments. See [python/README.md](python/README.md).
+The operations (`convert`, `translate`, `warp`, `mosaic`, `rasterize`, `polygonize`, `dem`,
+`calc`, `proximity`, `sieve`) take the command-line options as keyword arguments. See
+[python/README.md](python/README.md).
 
 ## JavaScript
 
@@ -130,6 +137,7 @@ python scripts/compare_windows_with_gdal.py remote     # the same on public COGs
 cargo test -- --ignored                                # tests that read public cloud files
 python scripts/compare_vector_ops_with_gdal.py ../terrio-data  # convert options, rasterize, polygonize
 python scripts/compare_ops_with_gdal.py ../terrio-data # compare translate, warp and mosaic with GDAL's tools
+python scripts/compare_dem_calc_with_gdal.py ../terrio-data  # dem, calc, proximity and sieve vs GDAL
 cd python && TERRIO_TEST_DATA=../../terrio-data pytest # Python bindings, arrays compared with osgeo.gdal's
 TERRIO_TEST_DATA=../terrio-data node --test js/tests/node.test.mjs  # WebAssembly build (after wasm-pack build, see js/)
 TERRIO_TEST_DATA=../terrio-data cargo test --release --test epsg_accuracy -- --nocapture
