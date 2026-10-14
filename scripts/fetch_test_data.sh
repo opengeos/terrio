@@ -39,7 +39,7 @@ if command -v ogr2ogr >/dev/null && command -v gdal_translate >/dev/null; then
     ogr2ogr -f GPKG multi.gpkg las_vegas_buildings.geojson -nln buildings
     ogr2ogr -update -f GPKG multi.gpkg las_vegas_roads.geojson -nln roads
   fi
-  [ -e dem.gpkg ] || gdal_translate -q -of GPKG dem.tif dem.gpkg
+  [ -e dem.gpkg ] || gdal_translate -q -ot Float32 -of GPKG dem.tif dem.gpkg
   [ -e lv_dem.asc ] || gdal_translate -q -of AAIGrid las_vegas_dem.tif lv_dem.asc
   [ -e lv_dem.jp2 ] || gdal_translate -q -ot Int16 -of JP2OpenJPEG las_vegas_dem.tif lv_dem.jp2
   [ -e lv_dem.zarr ] || gdal_translate -q -of Zarr las_vegas_dem.tif lv_dem.zarr
