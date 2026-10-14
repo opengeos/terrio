@@ -191,7 +191,7 @@ impl LazyRaster {
     /// The CRS.
     pub fn crs(&self) -> SpatialRef {
         match &self.inner {
-            Inner::Tiff(t) => t.tags.epsg.and_then(|e| SpatialRef::from_epsg(e).ok()).unwrap_or_default(),
+            Inner::Tiff(t) => SpatialRef::from_raster_crs(&t.tags.crs_info()),
             Inner::Memory(ds) => ds.crs(),
         }
     }
@@ -265,7 +265,7 @@ impl LazyRaster {
             Inner::Tiff(t) => {
                 let level = options.overview.map_or(0, |i| i + 1);
                 let data = t.read(level, window, &bands)?;
-                (data, t.tags.nodata.unwrap_or(-9999.0), t.tags.nodata.is_some(), t.tags.epsg.map(wbraster::CrsInfo::from_epsg))
+                (data, t.tags.nodata.unwrap_or(-9999.0), t.tags.nodata.is_some(), Some(t.tags.crs_info()))
             }
             Inner::Memory(ds) => (cut(&ds.raster, window, &bands), ds.raster.nodata, ds.has_nodata, Some(ds.raster.crs.clone())),
         };

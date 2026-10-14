@@ -20,6 +20,9 @@ pub(crate) struct GeoTags {
     pub geo_transform: Option<[f64; 6]>,
     /// The EPSG code of the CRS, from the GeoKeys.
     pub epsg: Option<u32>,
+    /// A PROJ string for user-defined projected CRSs without an EPSG code, built from the GeoKeys'
+    /// projection parameters.
+    pub proj4: Option<String>,
     /// Whether the raster type is `RasterPixelIsPoint`.
     pub pixel_is_point: bool,
     /// The `GDAL_NODATA` value.
@@ -209,8 +212,81 @@ pub(crate) fn read_geo_tags_from<R: Read + Seek>(mut f: R) -> Option<GeoTags> {
             (Some(1), _, _) => user_defined_projected(short_key(3074), geographic, ascii_key(1026).or_else(|| ascii_key(3073))),
             _ => None,
         };
+        if out.epsg.is_none() && short_key(1024) == Some(1) {
+            let double_key = |id: u16| {
+                key(id).and_then(|(loc, _, off)| match loc {
+                    GEO_DOUBLE_PARAMS => doubles(GEO_DOUBLE_PARAMS).and_then(|d| d.get(off as usize).copied()),
+                    0 => Some(off as f64),
+                    _ => None,
+                })
+            };
+            out.proj4 = user_defined_proj4(short_key(3075), geographic, short_key(3076), &double_key);
+        }
     }
     Some(out)
+}
+
+impl GeoTags {
+    /// The CRS, from the EPSG code or the user-defined parameters.
+    pub(crate) fn crs_info(&self) -> wbraster::CrsInfo {
+        match (self.epsg, &self.proj4) {
+            (Some(code), _) => wbraster::CrsInfo::from_epsg(code),
+            (None, Some(p)) => crate::crs::SpatialRef::from_proj4(p).map(|s| s.to_crs_info()).unwrap_or_default(),
+            (None, None) => wbraster::CrsInfo::default(),
+        }
+    }
+}
+
+/// Builds a PROJ string for a user-defined projected CRS from its GeoKeys: the coordinate
+/// transformation (`ProjCoordTransGeoKey`), its parameters, the geographic CRS (datum) and the
+/// linear unit. Returns `None` for transformations not handled here.
+fn user_defined_proj4(
+    transform: Option<u16>,
+    geographic: Option<u16>,
+    unit: Option<u16>,
+    p: &dyn Fn(u16) -> Option<f64>,
+) -> Option<String> {
+    let v = |id: u16| p(id).unwrap_or(0.0);
+    // Origin parameters have several possible keys depending on the projection.
+    let lon0 = p(3080).or_else(|| p(3084)).or_else(|| p(3088)).unwrap_or(0.0);
+    let lat0 = p(3081).or_else(|| p(3085)).or_else(|| p(3089)).unwrap_or(0.0);
+    let x0 = p(3082).or_else(|| p(3086)).or_else(|| p(3090)).unwrap_or(0.0);
+    let y0 = p(3083).or_else(|| p(3087)).or_else(|| p(3091)).unwrap_or(0.0);
+    let k0 = p(3092).or_else(|| p(3093)).unwrap_or(1.0);
+    let body = match transform? {
+        1 => format!("+proj=tmerc +lat_0={lat0} +lon_0={lon0} +k={k0} +x_0={x0} +y_0={y0}"),
+        7 => format!("+proj=merc +lon_0={lon0} +k={k0} +x_0={x0} +y_0={y0}"),
+        8 => format!("+proj=lcc +lat_0={lat0} +lon_0={lon0} +lat_1={} +lat_2={} +x_0={x0} +y_0={y0}", v(3078), v(3079)),
+        9 => format!("+proj=lcc +lat_0={lat0} +lat_1={lat0} +lon_0={lon0} +k_0={k0} +x_0={x0} +y_0={y0}"),
+        10 => format!("+proj=laea +lat_0={lat0} +lon_0={lon0} +x_0={x0} +y_0={y0}"),
+        11 => format!("+proj=aea +lat_0={lat0} +lon_0={lon0} +lat_1={} +lat_2={} +x_0={x0} +y_0={y0}", v(3078), v(3079)),
+        12 => format!("+proj=aeqd +lat_0={lat0} +lon_0={lon0} +x_0={x0} +y_0={y0}"),
+        14 => format!("+proj=stere +lat_0={lat0} +lon_0={lon0} +k={k0} +x_0={x0} +y_0={y0}"),
+        15 => {
+            let lat_ts = p(3078);
+            let pole_lon = p(3095).unwrap_or(lon0);
+            let lat_0 = if lat_ts.unwrap_or(lat0) < 0.0 { -90 } else { 90 };
+            match lat_ts {
+                Some(ts) => format!("+proj=stere +lat_0={lat_0} +lat_ts={ts} +lon_0={pole_lon} +x_0={x0} +y_0={y0}"),
+                None => format!("+proj=stere +lat_0={lat_0} +lon_0={pole_lon} +k={k0} +x_0={x0} +y_0={y0}"),
+            }
+        }
+        16 => format!("+proj=sterea +lat_0={lat0} +lon_0={lon0} +k={k0} +x_0={x0} +y_0={y0}"),
+        17 => format!("+proj=eqc +lat_ts={} +lon_0={lon0} +x_0={x0} +y_0={y0}", p(3078).unwrap_or(lat0)),
+        24 => format!("+proj=sinu +lon_0={lon0} +x_0={x0} +y_0={y0}"),
+        _ => return None,
+    };
+    let datum = match geographic {
+        Some(4269) => "+datum=NAD83",
+        Some(4267) => "+datum=NAD27",
+        _ => "+datum=WGS84",
+    };
+    let units = match unit {
+        Some(9002) => "+units=ft",
+        Some(9003) => "+units=us-ft",
+        _ => "+units=m",
+    };
+    Some(format!("{body} {datum} {units} +no_defs"))
 }
 
 /// Reads a file offset (4 bytes, or 8 in a BigTIFF) at the stream's position.
@@ -386,7 +462,7 @@ pub(crate) fn read_geotiff(path: &std::path::Path) -> crate::Result<crate::Raste
         bands: samples,
         nodata: tags.nodata.unwrap_or(-9999.0),
         data_type: data.data_type(),
-        crs: tags.epsg.map(wbraster::CrsInfo::from_epsg).unwrap_or_default(),
+        crs: tags.crs_info(),
         ..Default::default()
     };
     let mut raster = wbraster::Raster::from_data_native(cfg, data)?;

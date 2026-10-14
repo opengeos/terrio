@@ -143,6 +143,10 @@ impl SpatialRef {
         s
     }
 
+    pub(crate) fn to_crs_info(&self) -> wbraster::CrsInfo {
+        wbraster::CrsInfo { epsg: self.epsg, wkt: self.to_wkt(), proj4: self.proj4.clone() }
+    }
+
     pub(crate) fn from_layer(layer: &wbvector::Layer) -> Self {
         let mut s = Self { epsg: layer.crs_epsg(), wkt: layer.crs_wkt().map(str::to_string), proj4: None };
         if s.epsg.is_none()

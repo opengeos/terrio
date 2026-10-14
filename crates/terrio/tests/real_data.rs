@@ -81,3 +81,15 @@ fn geojson_defaults_to_wgs84() {
     assert_eq!(v.layers[0].crs_epsg(), Some(4326));
     assert_eq!(v.layers[0].name, "countries");
 }
+
+#[test]
+fn geotiff_user_defined_albers() {
+    let Some(p) = data("nlcd_knoxville.tif") else { return };
+    let ds = terrio::open_raster(&p).unwrap();
+    let crs = ds.crs();
+    assert!(!crs.is_unknown(), "the custom Albers CRS must be read from the GeoKeys");
+    // GDAL: (-84.38694942782567, 36.340361661300086).
+    let t = terrio::crs::Transformer::new(&crs, &terrio::crs::SpatialRef::from_epsg(4326).unwrap()).unwrap();
+    let (lon, lat) = t.transform(1030275.0, 1539885.0).unwrap();
+    assert!((lon - -84.38694942782567).abs() < 1e-9 && (lat - 36.340361661300086).abs() < 1e-9, "{lon} {lat}");
+}
