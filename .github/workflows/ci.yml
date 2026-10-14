@@ -38,10 +38,23 @@ jobs:
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
-      - name: Install GDAL
-        run: sudo apt-get update && sudo apt-get install -y libgdal-dev gdal-bin
+      - uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: gdal-backend
+          # The GDAL the real-data job compares with, and the drivers the tests use.
+          create-args: libgdal-core=3.12.2 proj=9.7.1 libgdal-hdf4 libgdal-hdf5 libgdal-netcdf libgdal-kea
+          cache-environment: true
+      - name: Point the build at GDAL
+        run: |
+          prefix="$MAMBA_ROOT_PREFIX/envs/gdal-backend"
+          echo "PKG_CONFIG_PATH=$prefix/lib/pkgconfig" >> "$GITHUB_ENV"
+          echo "GDAL_DATA=$prefix/share/gdal" >> "$GITHUB_ENV"
+          echo "PROJ_DATA=$prefix/share/proj" >> "$GITHUB_ENV"
+          # Find libgdal at run time without putting the environment's libraries first for
+          # every program.
+          echo "RUSTFLAGS=-C link-arg=-Wl,-rpath,$prefix/lib" >> "$GITHUB_ENV"
+      - run: pkg-config --modversion gdal
       - run: cargo clippy -p terrio -p terrio-cli --all-targets --features gdal -- -D warnings
-      - run: cargo test -p terrio --features gdal --test gdal_backend
       - run: cargo test -p terrio -p terrio-cli --features gdal
 
   wasm:
