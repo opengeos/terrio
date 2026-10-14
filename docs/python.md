@@ -129,7 +129,7 @@ The package ships type stubs (`py.typed`), checked with `mypy --strict` and `stu
 
 ```sh
 cd python && mypy --strict tests/typing/usage.py
-cd / && python -m mypy.stubtest terrio
+cd "$(mktemp -d)" && python -m mypy.stubtest terrio  # outside the source tree
 ```
 
 Errors raise `terrio.TerrioError` subclasses, which also derive from the matching built-in
