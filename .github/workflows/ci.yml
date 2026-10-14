@@ -63,7 +63,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       # The `rust-version` of Cargo.toml: keep the two in step.
-      - uses: dtolnay/rust-toolchain@1.90
+      - uses: dtolnay/rust-toolchain@1.120
       - uses: Swatinem/rust-cache@v2
       - run: cargo check --workspace --all-targets --locked
 
@@ -193,7 +193,7 @@ jobs:
         run: |
           python scripts/conformance.py terrio-data --output conformance.md --json conformance.json --jobs 2
           cat conformance.md >> "$GITHUB_STEP_SUMMARY"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: conformance-report
