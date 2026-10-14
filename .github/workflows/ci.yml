@@ -82,6 +82,13 @@ jobs:
       - name: Test
         working-directory: python
         run: python -m pytest -v
+      - name: Type stubs (mypy --strict, stubtest)
+        if: matrix.os == 'ubuntu-latest'
+        working-directory: python
+        run: |
+          python -m pip install mypy
+          python -m mypy --strict tests/typing/usage.py
+          cd / && python -m mypy.stubtest terrio
       - uses: actions/upload-artifact@v4
         with:
           name: wheel-${{ matrix.os }}
@@ -99,7 +106,7 @@ jobs:
           environment-name: gdal
           # The reference: the EPSG table and test points come from GDAL 3.12.2 and PROJ 9.7.1, and
           # newer EPSG databases change some transformations.
-          create-args: gdal=3.12.2 libgdal-core=3.12.2 proj=9.7.1 libgdal-arrow-parquet libgdal-jp2openjpeg libgdal-netcdf libgdal-hdf5 numpy pip pytest maturin pyproj pdal laspy lazrs-python
+          create-args: gdal=3.12.2 libgdal-core=3.12.2 proj=9.7.1 libgdal-arrow-parquet libgdal-jp2openjpeg libgdal-netcdf libgdal-hdf5 numpy pip pytest maturin pyproj pdal laspy lazrs-python pyarrow geopandas shapely
           cache-environment: true
       - uses: actions/cache@v4
         with:
@@ -135,6 +142,14 @@ jobs:
         continue-on-error: true
         shell: micromamba-shell {0}
         run: python scripts/compare_vector_ops_with_gdal.py terrio-data
+      - name: Compare Arrow export and import with GDAL, pyarrow and GeoPandas
+        continue-on-error: true
+        shell: micromamba-shell {0}
+        run: python scripts/compare_arrow_with_gdal.py terrio-data
+      - name: Compare GeoPackage updates and spatial filters with GDAL
+        continue-on-error: true
+        shell: micromamba-shell {0}
+        run: python scripts/compare_gpkg_with_gdal.py terrio-data --points 200000
       - name: Compare terrain tools and raster algebra with GDAL
         continue-on-error: true
         shell: micromamba-shell {0}
