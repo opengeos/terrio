@@ -5,6 +5,7 @@
 use crate::crs::{SpatialRef, Transformer};
 use crate::ops::sql::{Expression, Select, field_index};
 use crate::{Error, Result, VectorWriteOptions};
+use std::borrow::Cow;
 use std::cmp::Ordering;
 use wbvector::{Coord, Feature, FieldValue, Geometry, GeometryType, Layer, Ring};
 
@@ -91,10 +92,34 @@ pub fn translate(layers: &[Layer], options: &VectorTranslateOptions) -> Result<V
     if options.layer_name.is_some() && inputs.len() > 1 {
         return Err(Error::InvalidArgument("a new layer name needs a single input layer: choose one".into()));
     }
-    inputs.iter().map(|l| translate_layer(l, options, sql_limit)).collect()
+    inputs.iter().map(|l| translate_layer(l, l.features.iter().map(Cow::Borrowed), options, sql_limit)).collect()
 }
 
-fn translate_layer(layer: &Layer, o: &VectorTranslateOptions, sql_limit: Option<usize>) -> Result<Layer> {
+/// [`translate`], consuming the layers: features are moved to the output rather than copied.
+pub fn translate_owned(layers: Vec<Layer>, options: &VectorTranslateOptions) -> Result<Vec<Layer>> {
+    if options.sql.is_some() {
+        return translate(&layers, options);
+    }
+    if options.layer_name.is_some() && layers.len() > 1 {
+        return Err(Error::InvalidArgument("a new layer name needs a single input layer: choose one".into()));
+    }
+    layers
+        .into_iter()
+        .map(|mut l| {
+            let features = std::mem::take(&mut l.features);
+            translate_layer(&l, features.into_iter().map(Cow::Owned), options, None)
+        })
+        .collect()
+}
+
+/// Translates a layer whose features are `features` (the layer's own, borrowed or taken out of
+/// it).
+fn translate_layer<'a>(
+    layer: &Layer,
+    features: impl Iterator<Item = Cow<'a, Feature>>,
+    o: &VectorTranslateOptions,
+    sql_limit: Option<usize>,
+) -> Result<Layer> {
     let mut src_srs = SpatialRef::from_layer(layer);
     if let Some(s) = &o.src_srs {
         src_srs = s.clone();
@@ -130,7 +155,7 @@ fn translate_layer(layer: &Layer, o: &VectorTranslateOptions, sql_limit: Option<
     }
     // The limit counts source features, as ogr2ogr does, even when exploding collections.
     let mut taken = 0;
-    for f in &layer.features {
+    for f in features {
         if limit.is_some_and(|n| taken >= n) {
             break;
         }
@@ -140,21 +165,23 @@ fn translate_layer(layer: &Layer, o: &VectorTranslateOptions, sql_limit: Option<
             continue;
         }
         if let Some(e) = &filter
-            && !e.matches(f)
+            && !e.matches(&f)
         {
             continue;
         }
         taken += 1;
+        let f = f.into_owned();
         let attributes: Vec<FieldValue> = match &mapping {
             Some(idx) => idx.iter().map(|&i| f.attributes.get(i).cloned().unwrap_or(FieldValue::Null)).collect(),
-            None => f.attributes.clone(),
+            None => f.attributes,
         };
-        let parts = match (&f.geometry, o.explode_collections) {
-            (Some(g), true) => explode(g).into_iter().map(Some).collect(),
-            (g, _) => vec![g.clone()],
-        };
-        for g in parts {
-            out.features.push(Feature { fid: f.fid, geometry: g, attributes: attributes.clone() });
+        match (f.geometry, o.explode_collections) {
+            (Some(g), true) => {
+                for g in explode(&g) {
+                    out.features.push(Feature { fid: f.fid, geometry: Some(g), attributes: attributes.clone() });
+                }
+            }
+            (g, _) => out.features.push(Feature { fid: f.fid, geometry: g, attributes }),
         }
     }
     if let Some(conv) = o.geometry_type {
@@ -176,7 +203,7 @@ fn translate_layer(layer: &Layer, o: &VectorTranslateOptions, sql_limit: Option<
         s.apply_to_layer(&mut out);
     }
     if let Some(dst) = &o.dst_srs {
-        out = crate::vector::reproject_layer(&out, dst)?;
+        out = crate::vector::reproject_layer_owned(out, dst)?;
     }
     if let Some(a) = &o.assign_srs {
         a.apply_to_layer(&mut out);

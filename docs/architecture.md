@@ -36,6 +36,14 @@ GeoPackage (on its own SQLite file reader and writer), the Esri formats, FlatGeo
 GeoJSON, GeoParquet, GML, GPX, KML, TopoJSON, MapInfo, OSM and shapefile writing. Upstream bugs
 are listed in the pull requests that replaced them.
 
+## Parallelism
+
+Native builds spread the heavy work over all cores with rayon: decoding and encoding GeoTIFF
+tiles and strips, building COG overviews, warping and resampling (by output row), rasterizing (by
+bands of rows), writing Zarr chunks, and decoding and encoding vector features. Each piece of
+work is computed on its own and the results are combined in input order, so outputs are the same
+bytes as a single-threaded run gives. WebAssembly builds run the same code sequentially.
+
 ## Pure Rust
 
 There are no C dependencies apart from the Zstandard codec, which compiles for WebAssembly too.

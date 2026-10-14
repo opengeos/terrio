@@ -2019,6 +2019,7 @@ dependencies = [
  "parquet",
  "png 0.18.1",
  "quick-xml",
+ "rayon",
  "ruzstd",
  "serde",
  "serde_json",

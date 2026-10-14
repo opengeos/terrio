@@ -540,7 +540,7 @@ impl WindowSource for Mosaic {
             let sub = r.read_window(Window::new(sx0, sy0, sw, sh), &WindowOptions { bands: bands.to_vec(), overview: None })?;
             for (bi, buf) in out.iter_mut().enumerate() {
                 let values = crate::ops::band_f64(&sub.raster, bi);
-                let valid: Option<Vec<bool>> = self.nodata.map(|nd| values.iter().map(|v| !crate::ops::is_nodata(*v, nd)).collect());
+                let valid: Option<Vec<bool>> = self.nodata.map(|nd| crate::ops::par_map(&values, |v| !crate::ops::is_nodata(*v, nd)));
                 let req = SourceRead {
                     values: &values,
                     valid: valid.as_deref(),
@@ -553,7 +553,7 @@ impl WindowSource for Mosaic {
                     working_float: self.nodata.is_some(),
                     invalid_value: None,
                 };
-                req.read(dw, dh, |i, v| buf[i] = v);
+                req.read(dw, dh, buf, |v| v);
             }
         }
         Ok(RasterData::from_f64_vec(self.data_type, out.concat()))

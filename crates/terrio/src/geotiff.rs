@@ -418,18 +418,125 @@ fn identify_by_name(name: &str) -> Option<u32> {
         .find(|code| wbprojection::epsg::epsg_info(*code).is_some_and(|i| i.name.eq_ignore_ascii_case(name)))
 }
 
+/// A TIFF decoder over a local file.
+pub(crate) type FileDecoder = tiff::decoder::Decoder<PatchedReader<std::io::BufReader<std::fs::File>>>;
+
+/// Opens a decoder over a local TIFF file whose tags were read with [`read_geo_tags`].
+pub(crate) fn open_decoder(path: &std::path::Path, tags: &GeoTags) -> crate::Result<FileDecoder> {
+    let file = PatchedReader::new(std::io::BufReader::new(std::fs::File::open(path)?), tags);
+    let dec = tiff::decoder::Decoder::new(file).map_err(|e| crate::Error::InvalidData(format!("{}: {e}", path.display())))?;
+    Ok(dec.with_limits(tiff::decoder::Limits::unlimited()))
+}
+
+/// Opens another decoder over the same file, for decoding chunks in parallel.
+pub(crate) type Reopen<'a> = &'a (dyn Fn() -> crate::Result<FileDecoder> + Sync);
+
+/// A decoded chunk: its index, its samples and the size `(width, height)` of the image data it
+/// holds.
+pub(crate) type DecodedChunk = (u32, tiff::decoder::DecodingResult, (usize, usize));
+
+/// Decodes chunks (tiles or strips) of the image `ifd`, handing each to `place`, in no particular
+/// order. With `reopen`, several threads decode, each with its own decoder over the file, while
+/// the calling thread places the chunks; `dec`, positioned on the image, decodes the chunks no
+/// thread did (all of them without `reopen`).
+pub(crate) fn decode_chunks<R: Read + Seek>(
+    dec: &mut tiff::decoder::Decoder<R>,
+    reopen: Option<Reopen>,
+    ifd: usize,
+    chunks: &[u32],
+    err: &(dyn Fn(tiff::TiffError) -> crate::Error + Sync),
+    mut place: impl FnMut(DecodedChunk) -> crate::Result<()>,
+) -> crate::Result<()> {
+    // Chunks `..first` were decoded by other threads.
+    #[cfg(not(target_arch = "wasm32"))]
+    let first = match reopen {
+        Some(reopen) => decode_in_threads(reopen, ifd, chunks, err, &mut place)?,
+        None => 0,
+    };
+    #[cfg(target_arch = "wasm32")]
+    let first = {
+        let _ = (reopen, ifd);
+        0
+    };
+    for &idx in &chunks[first..] {
+        let c = dec.read_chunk(idx).map_err(err)?;
+        let (w, h) = dec.chunk_data_dimensions(idx);
+        place((idx, c, (w as usize, h as usize)))?;
+    }
+    Ok(())
+}
+
+/// Decodes chunks on several threads, each with its own decoder over the file, handing them to
+/// `place` on the calling thread. Returns how many of the first chunks were decoded: a thread that
+/// cannot open the file leaves its share to the caller.
+#[cfg(not(target_arch = "wasm32"))]
+fn decode_in_threads(
+    reopen: Reopen,
+    ifd: usize,
+    chunks: &[u32],
+    err: &(dyn Fn(tiff::TiffError) -> crate::Error + Sync),
+    place: &mut impl FnMut(DecodedChunk) -> crate::Result<()>,
+) -> crate::Result<usize> {
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    let workers = crate::par::threads().min(chunks.len());
+    if workers > 1 {
+        // The next chunk to decode, and whether to stop.
+        let (next, stop) = (AtomicUsize::new(0), AtomicBool::new(false));
+        std::thread::scope(|scope| -> crate::Result<()> {
+            // A bounded queue: decoding never runs far ahead of placing.
+            let (tx, rx) = std::sync::mpsc::sync_channel::<crate::Result<DecodedChunk>>(workers * 2);
+            for _ in 0..workers {
+                let (tx, next, stop) = (tx.clone(), &next, &stop);
+                scope.spawn(move || {
+                    // A thread that cannot open the file leaves the chunks to the others.
+                    let Ok(mut d) = reopen() else { return };
+                    if ifd != 0 && d.seek_to_image(ifd).is_err() {
+                        return;
+                    }
+                    while !stop.load(Ordering::Relaxed) {
+                        let i = next.fetch_add(1, Ordering::Relaxed);
+                        let Some(&idx) = chunks.get(i) else { break };
+                        let r = d.read_chunk(idx).map_err(err).map(|c| {
+                            let (w, h) = d.chunk_data_dimensions(idx);
+                            (idx, c, (w as usize, h as usize))
+                        });
+                        let failed = r.is_err();
+                        if tx.send(r).is_err() || failed {
+                            break;
+                        }
+                    }
+                });
+            }
+            drop(tx);
+            let mut result = Ok(());
+            for r in &rx {
+                if let Err(e) = r.and_then(&mut *place) {
+                    result = Err(e);
+                    break;
+                }
+            }
+            // Stop the workers early on an error.
+            stop.store(true, Ordering::Relaxed);
+            drop(rx);
+            result
+        })?;
+        return Ok(next.into_inner().min(chunks.len()));
+    }
+    Ok(0)
+}
+
 /// Reads a GeoTIFF (or BigTIFF, or COG) into memory: the full-resolution image of the first IFD.
 pub(crate) fn read_geotiff(path: &std::path::Path) -> crate::Result<crate::RasterDataset> {
     use crate::Error;
-    use tiff::decoder::{Decoder, DecodingResult, Limits};
+    use crate::cog::{ChunkGeom, Window, place};
+    use tiff::decoder::DecodingResult;
     use tiff::tags::Tag;
     use wbraster::raster::RasterData;
 
     let tiff_err = |e: tiff::TiffError| Error::InvalidData(format!("{}: {e}", path.display()));
     let tags = read_geo_tags(path).unwrap_or_default();
     // The decoder rejects palette images; read their indices as grayscale instead.
-    let file = PatchedReader::new(std::io::BufReader::new(std::fs::File::open(path)?), &tags);
-    let mut dec = Decoder::new(file).map_err(tiff_err)?.with_limits(Limits::unlimited());
+    let mut dec = open_decoder(path, &tags)?;
     let (w, h) = dec.dimensions().map_err(tiff_err)?;
     let (w, h) = (w as usize, h as usize);
     let samples = dec.find_tag_unsigned::<u16>(Tag::SamplesPerPixel).map_err(tiff_err)?.unwrap_or(1).max(1) as usize;
@@ -441,58 +548,45 @@ pub(crate) fn read_geotiff(path: &std::path::Path) -> crate::Result<crate::Raste
     let per_plane = across * down;
     let plane_count = if planar { samples } else { 1 };
     let band_len = w * h;
+    let spp = if planar { 1 } else { samples };
+    let window = Window::full(w, h);
+    // Each sample of a chunk goes to its band.
+    let maps: Vec<Vec<(usize, usize)>> =
+        if planar { (0..samples).map(|p| vec![(0, p)]).collect() } else { vec![(0..samples).map(|s| (s, s)).collect()] };
+    let chunks: Vec<u32> = (0..plane_count * per_plane).map(|i| i as u32).collect();
 
     // Band-major output, typed after the first chunk decoded.
     let mut data: Option<RasterData> = None;
-    for plane in 0..plane_count {
-        for cy in 0..down {
-            for cx in 0..across {
-                let idx = (plane * per_plane + cy * across + cx) as u32;
-                let chunk = dec.read_chunk(idx).map_err(tiff_err)?;
-                let (dw, dh) = dec.chunk_data_dimensions(idx);
-                let (dw, dh) = (dw as usize, dh as usize);
-                let spp = if planar { 1 } else { samples };
-                let x0 = cx * cw;
-                let y0 = cy * ch;
-                macro_rules! place {
-                    ($vals:expr, $variant:ident, $conv:expr) => {{
-                        let vals = $vals;
-                        let out = data.get_or_insert_with(|| RasterData::$variant(vec![Default::default(); band_len * samples]));
-                        let RasterData::$variant(out) = out else {
+    let reopen = || open_decoder(path, &tags);
+    decode_chunks(&mut dec, Some(&reopen), 0, &chunks, &tiff_err, |(idx, chunk, (dw, dh))| {
+        let idx = idx as usize;
+        let (plane, rest) = (idx / per_plane, idx % per_plane);
+        let geom = ChunkGeom { x0: (rest % across) * cw, y0: (rest / across) * ch, dw, dh, spp };
+        let map = &maps[if planar { plane } else { 0 }];
+        macro_rules! place {
+            ($($out:ident <- $res:ident),*) => {
+                match chunk {
+                    $(DecodingResult::$res(v) => {
+                        let out = data.get_or_insert_with(|| RasterData::$out(vec![Default::default(); band_len * samples]));
+                        let RasterData::$out(out) = out else {
                             return Err(Error::InvalidData("TIFF chunks differ in sample type".into()));
                         };
-                        // Rows in a chunk may be padded to the full chunk width.
-                        let stride = if dh == 0 { 0 } else { vals.len() / (dh * spp) };
-                        for row in 0..dh.min(h - y0) {
-                            for col in 0..dw.min(w - x0) {
-                                let src = (row * stride + col) * spp;
-                                let dst = (y0 + row) * w + x0 + col;
-                                for s in 0..spp {
-                                    let band = if planar { plane } else { s };
-                                    if let Some(v) = vals.get(src + s) {
-                                        out[band * band_len + dst] = $conv(*v);
-                                    }
-                                }
-                            }
-                        }
-                    }};
+                        place(out, &v, &geom, window, map);
+                    })*
+                    DecodingResult::F16(v) => {
+                        let out = data.get_or_insert_with(|| RasterData::F32(vec![0.0; band_len * samples]));
+                        let RasterData::F32(out) = out else {
+                            return Err(Error::InvalidData("TIFF chunks differ in sample type".into()));
+                        };
+                        let v: Vec<f32> = v.iter().map(|x| x.to_f32()).collect();
+                        place(out, &v, &geom, window, map);
+                    }
                 }
-                match chunk {
-                    DecodingResult::U8(v) => place!(v, U8, |x| x),
-                    DecodingResult::U16(v) => place!(v, U16, |x| x),
-                    DecodingResult::U32(v) => place!(v, U32, |x| x),
-                    DecodingResult::U64(v) => place!(v, U64, |x| x),
-                    DecodingResult::I8(v) => place!(v, I8, |x| x),
-                    DecodingResult::I16(v) => place!(v, I16, |x| x),
-                    DecodingResult::I32(v) => place!(v, I32, |x| x),
-                    DecodingResult::I64(v) => place!(v, I64, |x| x),
-                    DecodingResult::F16(v) => place!(v, F32, |x: half::f16| x.to_f32()),
-                    DecodingResult::F32(v) => place!(v, F32, |x| x),
-                    DecodingResult::F64(v) => place!(v, F64, |x| x),
-                }
-            }
+            };
         }
-    }
+        place!(U8 <- U8, U16 <- U16, U32 <- U32, U64 <- U64, I8 <- I8, I16 <- I16, I32 <- I32, I64 <- I64, F32 <- F32, F64 <- F64);
+        Ok(())
+    })?;
     let data = data.ok_or_else(|| Error::InvalidData(format!("{}: no image data", path.display())))?;
     let cfg = wbraster::RasterConfig {
         cols: w,
@@ -504,7 +598,7 @@ pub(crate) fn read_geotiff(path: &std::path::Path) -> crate::Result<crate::Raste
         metadata: tags.metadata.clone(),
         ..Default::default()
     };
-    let mut raster = wbraster::Raster::from_data_native(cfg, data)?;
+    let mut raster = crate::pixel::raster_from_data(cfg, data)?;
     match tags.geo_transform {
         Some(gt) if gt[2] == 0.0 && gt[4] == 0.0 && gt[1] > 0.0 && gt[5] < 0.0 => {
             // PixelIsPoint tie points refer to pixel centres; shift to the corner, as GDAL does.

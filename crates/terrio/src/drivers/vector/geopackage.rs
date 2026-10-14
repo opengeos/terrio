@@ -535,20 +535,14 @@ impl Builder {
         }
         sql.push(')');
 
-        let mut rows = Vec::with_capacity(layer.len());
-        let mut entries: Vec<RtreeEntry> = Vec::with_capacity(layer.len());
-        let mut bounds: Option<[f64; 4]> = None;
-        for (n, f) in layer.features.iter().enumerate() {
+        // Rows (with each geometry's bounds) are encoded in parallel, then combined in order.
+        let encoded = crate::par::map_range(layer.len(), |n| {
+            let f = &layer.features[n];
             let rowid = fid_field.and_then(|i| f.attributes.get(i)?.as_i64()).unwrap_or(n as i64 + 1);
+            let mut bbox = None;
             let geom = match &f.geometry {
                 Some(g) => {
-                    if let Some(b) = g.bbox().filter(|b| b.min_x.is_finite() && b.min_y.is_finite()) {
-                        bounds = Some(match bounds {
-                            None => [b.min_x, b.min_y, b.max_x, b.max_y],
-                            Some(a) => [a[0].min(b.min_x), a[1].min(b.min_y), a[2].max(b.max_x), a[3].max(b.max_y)],
-                        });
-                        entries.push((rowid, [f32_down(b.min_x), f32_up(b.max_x), f32_down(b.min_y), f32_up(b.max_y)]));
-                    }
+                    bbox = g.bbox().filter(|b| b.min_x.is_finite() && b.min_y.is_finite());
                     Value::Blob(gpkg_geometry(g, srs_id as i32))
                 }
                 None => Value::Null,
@@ -565,6 +559,19 @@ impl Builder {
                     FieldValue::DateTime(s) if t == FieldType::DateTime => Value::Text(s.replacen(' ', "T", 1)),
                     FieldValue::Text(s) | FieldValue::Date(s) | FieldValue::DateTime(s) => Value::Text(s.clone()),
                 });
+            }
+            (rowid, values, bbox)
+        });
+        let mut rows = Vec::with_capacity(layer.len());
+        let mut entries: Vec<RtreeEntry> = Vec::with_capacity(layer.len());
+        let mut bounds: Option<[f64; 4]> = None;
+        for (rowid, values, bbox) in encoded {
+            if let Some(b) = bbox {
+                bounds = Some(match bounds {
+                    None => [b.min_x, b.min_y, b.max_x, b.max_y],
+                    Some(a) => [a[0].min(b.min_x), a[1].min(b.min_y), a[2].max(b.max_x), a[3].max(b.max_y)],
+                });
+                entries.push((rowid, [f32_down(b.min_x), f32_up(b.max_x), f32_down(b.min_y), f32_up(b.max_y)]));
             }
             rows.push((rowid, values));
         }

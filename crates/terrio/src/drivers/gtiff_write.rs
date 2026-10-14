@@ -6,6 +6,7 @@
 //! layout: the IFDs first, then the image data from the smallest overview to the full resolution,
 //! with GDAL's structural metadata, block leaders and trailers.
 
+use crate::pixel::{Pixel, map_data, with_data};
 use crate::{Error, Result};
 use std::io::Write;
 use wbraster::raster::RasterData;
@@ -168,13 +169,35 @@ struct Image {
 
 /// Writes a raster as a GeoTIFF or COG.
 pub(crate) fn write(raster: &Raster, path: &str, opts: &TiffOptions) -> Result<()> {
-    let bytes = encode(raster, opts)?;
-    std::fs::write(path, bytes)?;
+    let images = prepare(raster, opts)?;
+    let mut file = std::io::BufWriter::with_capacity(1 << 20, std::fs::File::create(path)?);
+    images.write_to(&mut file)?;
+    file.flush()?;
     Ok(())
 }
 
 /// Encodes a raster as a GeoTIFF or COG in memory.
 pub(crate) fn encode(raster: &Raster, opts: &TiffOptions) -> Result<Vec<u8>> {
+    let mut out = Vec::new();
+    prepare(raster, opts)?.write_to(&mut out)?;
+    Ok(out)
+}
+
+/// The images of a TIFF file, compressed, ready to be laid out.
+struct Prepared {
+    images: Vec<Image>,
+    big: bool,
+    cog: bool,
+}
+
+impl Prepared {
+    fn write_to(self, out: &mut impl Write) -> std::io::Result<()> {
+        assemble(self.images, self.big, self.cog, out)
+    }
+}
+
+/// Splits a raster (and its overviews, for a COG) into compressed chunks with their tags.
+fn prepare(raster: &Raster, opts: &TiffOptions) -> Result<Prepared> {
     if raster.cols == 0 || raster.rows == 0 || raster.bands == 0 {
         return Err(Error::InvalidArgument("cannot write an empty raster".into()));
     }
@@ -191,7 +214,7 @@ pub(crate) fn encode(raster: &Raster, opts: &TiffOptions) -> Result<Vec<u8>> {
     if let (true, Some(t)) = (opts.cog, tile) {
         let t = t as usize;
         while levels.last().is_some_and(|l| l.cols > t || l.rows > t) {
-            let next = levels[levels.len() - 1].downsample(raster.data_type, opts.nodata, opts.nearest_overviews);
+            let next = levels[levels.len() - 1].downsample(opts.nodata, opts.nearest_overviews);
             levels.push(next);
         }
     }
@@ -213,79 +236,28 @@ pub(crate) fn encode(raster: &Raster, opts: &TiffOptions) -> Result<Vec<u8>> {
 
     let data_len: u64 = images.iter().flat_map(|i| i.chunks.iter()).map(|c| c.len() as u64 + 8).sum();
     let big = opts.bigtiff || data_len > (u32::MAX as u64) - (1 << 24);
-    Ok(assemble(images, big, opts.cog))
+    Ok(Prepared { images, big, cog: opts.cog })
 }
 
-/// One resolution level's pixels, band-major, as little-endian sample bytes.
-struct Level {
+/// One resolution level's pixels, band-major: the raster's own, or an overview's.
+struct Level<'a> {
     cols: usize,
     rows: usize,
     bands: usize,
-    /// One byte vector per band.
-    data: Vec<Vec<u8>>,
+    data: std::borrow::Cow<'a, RasterData>,
 }
 
-impl Level {
-    fn from_raster(r: &Raster) -> Self {
-        let n = r.cols * r.rows;
-        macro_rules! bands {
-            ($v:expr) => {
-                (0..r.bands).map(|b| $v[b * n..(b + 1) * n].iter().flat_map(|x| x.to_le_bytes()).collect()).collect()
-            };
-        }
-        let data = match &r.data {
-            RasterData::U8(v) => (0..r.bands).map(|b| v[b * n..(b + 1) * n].to_vec()).collect(),
-            RasterData::I8(v) => bands!(v),
-            RasterData::U16(v) => bands!(v),
-            RasterData::I16(v) => bands!(v),
-            RasterData::U32(v) => bands!(v),
-            RasterData::I32(v) => bands!(v),
-            RasterData::U64(v) => bands!(v),
-            RasterData::I64(v) => bands!(v),
-            RasterData::F32(v) => bands!(v),
-            RasterData::F64(v) => bands!(v),
-        };
-        Self { cols: r.cols, rows: r.rows, bands: r.bands, data }
+impl<'a> Level<'a> {
+    fn from_raster(r: &'a Raster) -> Self {
+        Self { cols: r.cols, rows: r.rows, bands: r.bands, data: std::borrow::Cow::Borrowed(&r.data) }
     }
 
     /// Halves the resolution: the average (or the top-left value) of each 2x2 block of valid
     /// pixels.
-    fn downsample(&self, t: DataType, nodata: Option<f64>, nearest: bool) -> Self {
+    fn downsample(&self, nodata: Option<f64>, nearest: bool) -> Level<'static> {
         let (cols, rows) = (self.cols.div_ceil(2), self.rows.div_ceil(2));
-        let size = t.size_bytes();
-        let fill = nodata.unwrap_or(0.0);
-        let data = self
-            .data
-            .iter()
-            .map(|band| {
-                let get = |r: usize, c: usize| decode_sample(t, &band[(r * self.cols + c) * size..][..size]);
-                let mut out = Vec::with_capacity(cols * rows * size);
-                for r in 0..rows {
-                    for c in 0..cols {
-                        let v = if nearest {
-                            get(2 * r, 2 * c)
-                        } else {
-                            let (mut sum, mut n) = (0.0, 0u32);
-                            for (rr, cc) in [(2 * r, 2 * c), (2 * r, 2 * c + 1), (2 * r + 1, 2 * c), (2 * r + 1, 2 * c + 1)] {
-                                if rr >= self.rows || cc >= self.cols {
-                                    continue;
-                                }
-                                let v = get(rr, cc);
-                                if v.is_nan() || nodata.is_some_and(|nd| v == nd) {
-                                    continue;
-                                }
-                                sum += v;
-                                n += 1;
-                            }
-                            if n == 0 { fill } else { sum / n as f64 }
-                        };
-                        encode_sample_le(t, v, &mut out);
-                    }
-                }
-                out
-            })
-            .collect();
-        Self { cols, rows, bands: self.bands, data }
+        let data = map_data!(self.data.as_ref(), v => downsample(v, self.cols, self.rows, cols, rows, self.bands, nodata, nearest));
+        Level { cols, rows, bands: self.bands, data: std::borrow::Cow::Owned(data) }
     }
 
     /// Splits the level into compressed strips or tiles, with its structural tags.
@@ -303,25 +275,14 @@ impl Level {
                 (self.cols, rows_per_strip, 1, self.rows.div_ceil(rows_per_strip), false)
             }
         };
-        let mut chunks = Vec::with_capacity(across * down);
-        for cy in 0..down {
-            for cx in 0..across {
-                let (x0, y0) = (cx * chunk_w, cy * chunk_h);
-                // Strips stop at the last row; tiles are padded to full size.
-                let h = if tiled { chunk_h } else { chunk_h.min(self.rows - y0) };
-                let mut buf = vec![0u8; chunk_w * h * spp * size];
-                for row in 0..h.min(self.rows.saturating_sub(y0)) {
-                    for col in 0..chunk_w.min(self.cols - x0) {
-                        let src = ((y0 + row) * self.cols + x0 + col) * size;
-                        let dst = ((row * chunk_w + col) * spp) * size;
-                        for (b, band) in self.data.iter().enumerate() {
-                            buf[dst + b * size..dst + (b + 1) * size].copy_from_slice(&band[src..src + size]);
-                        }
-                    }
-                }
-                chunks.push(compression.compress(buf)?);
-            }
-        }
+        let chunks = crate::par::map_range(across * down, |i| {
+            let (x0, y0) = ((i % across) * chunk_w, (i / across) * chunk_h);
+            // Strips stop at the last row; tiles are padded to full size.
+            let h = if tiled { chunk_h } else { chunk_h.min(self.rows - y0) };
+            let buf = with_data!(self.data.as_ref(), v => chunk_bytes(v, self.cols, self.rows, spp, x0, y0, chunk_w, h));
+            compression.compress(buf)
+        });
+        let chunks = chunks.into_iter().collect::<Result<Vec<_>>>()?;
         let (bits, format) = sample_format(t);
         let rgb = spp == 3 && t == DataType::U8;
         let mut tags = vec![
@@ -348,6 +309,77 @@ impl Level {
     }
 }
 
+/// The pixel-interleaved little-endian bytes of a chunk of `chunk_w` x `h` pixels at `(x0, y0)`,
+/// padded with zeros past the image's edges.
+#[allow(clippy::too_many_arguments)]
+fn chunk_bytes<T: Pixel>(data: &[T], cols: usize, rows: usize, spp: usize, x0: usize, y0: usize, chunk_w: usize, h: usize) -> Vec<u8> {
+    let size = T::SIZE;
+    let row_len = chunk_w * spp * size;
+    let mut buf = vec![0u8; row_len * h];
+    let band_len = cols * rows;
+    let n = chunk_w.min(cols - x0);
+    for row in 0..h.min(rows.saturating_sub(y0)) {
+        let dst = &mut buf[row * row_len..][..n * spp * size];
+        let src = (y0 + row) * cols + x0;
+        if spp == 1 {
+            for (d, v) in dst.chunks_exact_mut(size).zip(&data[src..src + n]) {
+                v.put_le(d);
+            }
+        } else {
+            for b in 0..spp {
+                let band = &data[b * band_len + src..][..n];
+                for (c, v) in band.iter().enumerate() {
+                    v.put_le(&mut dst[(c * spp + b) * size..][..size]);
+                }
+            }
+        }
+    }
+    buf
+}
+
+/// Halves a band-major image: each output pixel is the average of the valid pixels of its 2x2
+/// block (or the block's top-left pixel), computed in `f64` and converted as the writer converts.
+#[allow(clippy::too_many_arguments)]
+fn downsample<T: Pixel>(
+    src: &[T],
+    cols: usize,
+    rows: usize,
+    out_cols: usize,
+    out_rows: usize,
+    bands: usize,
+    nodata: Option<f64>,
+    nearest: bool,
+) -> Vec<T> {
+    let fill = nodata.unwrap_or(0.0);
+    let mut out = vec![T::default(); out_cols * out_rows * bands];
+    crate::par::chunks_mut(&mut out, out_cols, |i, line| {
+        let (b, r) = (i / out_rows, i % out_rows);
+        let band = &src[b * cols * rows..(b + 1) * cols * rows];
+        let get = |r: usize, c: usize| band[r * cols + c].to_f64();
+        for (c, o) in line.iter_mut().enumerate() {
+            let v = if nearest {
+                get(2 * r, 2 * c)
+            } else {
+                let (mut sum, mut n) = (0.0, 0u32);
+                for (rr, cc) in [(2 * r, 2 * c), (2 * r, 2 * c + 1), (2 * r + 1, 2 * c), (2 * r + 1, 2 * c + 1)] {
+                    if rr >= rows || cc >= cols {
+                        continue;
+                    }
+                    let v = get(rr, cc);
+                    if v.is_nan() || nodata.is_some_and(|nd| v == nd) {
+                        continue;
+                    }
+                    sum += v;
+                    n += 1;
+                }
+                if n == 0 { fill } else { sum / n as f64 }
+            };
+            *o = T::from_f64(v);
+        }
+    });
+    out
+}
+
 fn sample_format(t: DataType) -> (u16, u16) {
     let bits = (t.size_bytes() * 8) as u16;
     let format = match t {
@@ -356,26 +388,6 @@ fn sample_format(t: DataType) -> (u16, u16) {
         DataType::F32 | DataType::F64 => 3,
     };
     (bits, format)
-}
-
-fn decode_sample(t: DataType, b: &[u8]) -> f64 {
-    macro_rules! get {
-        ($ty:ty) => {
-            <$ty>::from_le_bytes(b.try_into().unwrap_or_default()) as f64
-        };
-    }
-    match t {
-        DataType::U8 => b[0] as f64,
-        DataType::I8 => b[0] as i8 as f64,
-        DataType::U16 => get!(u16),
-        DataType::I16 => get!(i16),
-        DataType::U32 => get!(u32),
-        DataType::I32 => get!(i32),
-        DataType::U64 => get!(u64),
-        DataType::I64 => get!(i64),
-        DataType::F32 => get!(f32),
-        DataType::F64 => get!(f64),
-    }
 }
 
 /// Appends a value as a little-endian sample of type `t`, rounding and clamping integers.
@@ -534,7 +546,7 @@ fn xml_escape(s: &str) -> String {
 const COG_GHOST: &str = "LAYOUT=IFDS_BEFORE_DATA\nBLOCK_ORDER=ROW_MAJOR\nBLOCK_LEADER=SIZE_AS_UINT4\nBLOCK_TRAILER=LAST_4_BYTES_REPEATED\nKNOWN_INCOMPATIBLE_EDITION=NO\n ";
 
 /// Lays the file out: header, (COG) structural metadata, every IFD, then the image data.
-fn assemble(mut images: Vec<Image>, big: bool, cog: bool) -> Vec<u8> {
+fn assemble(mut images: Vec<Image>, big: bool, cog: bool, w: &mut impl Write) -> std::io::Result<()> {
     let mut out = Vec::new();
     if big {
         out.extend(b"II");
@@ -655,21 +667,22 @@ fn assemble(mut images: Vec<Image>, big: bool, cog: bool) -> Vec<u8> {
         out.extend(extra);
     }
 
+    w.write_all(&out)?;
     for &i in &order {
         for c in &images[i].chunks {
             if cog {
-                out.extend((c.len() as u32).to_le_bytes());
+                w.write_all(&(c.len() as u32).to_le_bytes())?;
             }
-            out.extend(c);
+            w.write_all(c)?;
             if cog {
                 let mut tail = [0u8; 4];
                 let n = c.len().min(4);
                 tail[4 - n..].copy_from_slice(&c[c.len() - n..]);
-                out.extend(tail);
+                w.write_all(&tail)?;
             }
         }
     }
-    out
+    Ok(())
 }
 
 #[cfg(test)]
