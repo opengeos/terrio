@@ -203,7 +203,9 @@ pub(crate) mod codec {
             return Some(if head.contains("\"topology\"") { VectorDriver::TopoJSON } else { VectorDriver::GeoJSON });
         }
         if head.starts_with('<') {
-            for (tag, d) in [("<kml", VectorDriver::KML), ("<gpx", VectorDriver::GPX), ("featurecollection", VectorDriver::GML)] {
+            for (tag, d) in
+                [("<kml", VectorDriver::KML), ("<gpx", VectorDriver::GPX), ("<osm", VectorDriver::OSM), ("featurecollection", VectorDriver::GML)]
+            {
                 if head.contains(tag) {
                     return Some(d);
                 }

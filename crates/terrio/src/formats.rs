@@ -87,7 +87,7 @@ pub enum VectorDriver {
     GPX,
     /// MapInfo interchange format.
     MapInfo,
-    /// OpenStreetMap PBF.
+    /// OpenStreetMap PBF and XML.
     OSM,
     /// Comma-separated values with X/Y or WKT geometry columns.
     CSV,
@@ -285,7 +285,7 @@ impl VectorDriver {
             Self::GML => ("GML", "Geography Markup Language", &["gml"], true, true),
             Self::GPX => ("GPX", "GPS Exchange Format", &["gpx"], true, true),
             Self::MapInfo => ("MapInfo File", "MapInfo TAB and Interchange Format", &["mif", "tab"], true, true),
-            Self::OSM => ("OSM", "OpenStreetMap PBF", &["pbf"], true, false),
+            Self::OSM => ("OSM", "OpenStreetMap PBF and XML", &["pbf", "osm"], true, false),
             Self::CSV => ("CSV", "Comma Separated Value", &["csv", "tsv"], true, true),
         };
         DriverInfo { name, long_name, kind: Kind::Vector, extensions, read, write }
