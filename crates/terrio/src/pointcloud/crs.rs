@@ -33,7 +33,12 @@ pub(crate) fn header_crs(h: &LasHeader) -> LasCrs {
                 h.find_vlr(LASF_PROJECTION, 34736).map(|v| v.data.as_chunks::<8>().0.iter().map(|c| f64::from_le_bytes(*c)).collect());
             let ascii = h.find_vlr(LASF_PROJECTION, 34737).map(|v| String::from_utf8_lossy(&v.data).replace('\0', ""));
             let info = crate::geotiff::crs_from_geokeys(&keys, doubles.as_deref(), ascii.as_deref());
-            let horizontal = SpatialRef::from_raster_crs(&info);
+            // A user-defined CRS is kept as its PROJ string: the WKT made from it loses a foot
+            // unit, and the EPSG code identified from that WKT would be the metre one.
+            let horizontal = match (&info.epsg, &info.proj4) {
+                (None, Some(p)) => SpatialRef { epsg: None, wkt: None, proj4: Some(p.clone()) },
+                _ => SpatialRef::from_raster_crs(&info),
+            };
             let vertical_epsg = keys
                 .get(4..)
                 .and_then(|k| k.as_chunks::<4>().0.iter().find(|e| e[0] == 4096 && e[1] == 0))

@@ -241,7 +241,13 @@ fn apply_geokeys(out: &mut GeoTags, keys: &[u16], doubles: Option<&[f64]>, ascii
                 _ => None,
             })
         };
-        out.proj4 = user_defined_proj4(short_key(3075), geographic, short_key(3076), &double_key);
+        // A user-defined geographic CRS still names its datum (GeogGeodeticDatumGeoKey).
+        let datum = geographic.filter(|g| *g != 32767).or(match short_key(2050) {
+            Some(6269 | 6152) => Some(4269),
+            Some(6267) => Some(4267),
+            _ => None,
+        });
+        out.proj4 = user_defined_proj4(short_key(3075), datum, short_key(3076), &double_key);
     }
     if out.epsg.is_none() && out.proj4.is_none() {
         // Geographic user-defined CRSs, ESRI PE citations, and methods not handled above.
@@ -276,8 +282,14 @@ fn user_defined_proj4(
     // Origin parameters have several possible keys depending on the projection.
     let lon0 = p(3080).or_else(|| p(3084)).or_else(|| p(3088)).unwrap_or(0.0);
     let lat0 = p(3081).or_else(|| p(3085)).or_else(|| p(3089)).unwrap_or(0.0);
-    let x0 = p(3082).or_else(|| p(3086)).or_else(|| p(3090)).unwrap_or(0.0);
-    let y0 = p(3083).or_else(|| p(3087)).or_else(|| p(3091)).unwrap_or(0.0);
+    // GeoKeys give false eastings and northings in the CRS's linear unit; PROJ takes metres.
+    let to_metre = match unit {
+        Some(9002) => 0.3048,
+        Some(9003) => 1200.0 / 3937.0,
+        _ => 1.0,
+    };
+    let x0 = p(3082).or_else(|| p(3086)).or_else(|| p(3090)).unwrap_or(0.0) * to_metre;
+    let y0 = p(3083).or_else(|| p(3087)).or_else(|| p(3091)).unwrap_or(0.0) * to_metre;
     let k0 = p(3092).or_else(|| p(3093)).unwrap_or(1.0);
     let body = match transform? {
         1 => format!("+proj=tmerc +lat_0={lat0} +lon_0={lon0} +k={k0} +x_0={x0} +y_0={y0}"),

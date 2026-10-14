@@ -324,6 +324,11 @@ fn reads_extra_bytes_and_crs_records() {
     assert_eq!(r.crs().epsg, Some(6516));
     let r = pointcloud::open_points(&data("test_utm16.las").unwrap()).unwrap();
     assert_eq!(r.crs().epsg, Some(26916));
+    // User-defined GeoKeys in feet (Lambert conformal conic, NAD83 HARN): GDAL puts the first
+    // corner at -123.0733952, 44.0499062.
+    let mut r = pointcloud::open_points(&data("autzen_trim.las").unwrap()).unwrap();
+    let w = pointcloud::info::point_cloud_info(&mut r, false).unwrap().wgs84_bounds.unwrap();
+    assert!((w[0] - -123.0733952).abs() < 1e-4 && (w[1] - 44.0499062).abs() < 1e-4, "{w:?}");
     // EVLRs.
     let r = pointcloud::open_points(&data("1_4_w_evlr.laz").unwrap()).unwrap();
     assert_eq!(r.header().evlrs.len(), 1);
