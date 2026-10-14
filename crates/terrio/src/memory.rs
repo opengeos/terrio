@@ -9,8 +9,8 @@
 //! in-memory codecs instead, for the formats that have one:
 //!
 //! - reading: GeoTIFF, Esri ASCII grid, GeoJSON, TopoJSON, FlatGeobuf, CSV, GeoParquet, KML, KMZ,
-//!   GML, GPX, OSM PBF, and zip archives of these, and Shapefile and MapInfo (MIF/MID) in zip
-//!   archives (or their `.shp` or `.mif` alone);
+//!   GML, GPX, OSM PBF and XML, and zip archives of these, and Shapefile and MapInfo (MIF/MID
+//!   and TAB) in zip archives (or their `.shp` or `.mif` alone);
 //! - writing: GeoTIFF and COG (with lossless compressions), Esri ASCII grid, GeoJSON, TopoJSON,
 //!   FlatGeobuf, CSV, GeoParquet, GeoPackage, KML, KMZ, GML (without its schema) and GPX.
 //!
@@ -203,9 +203,12 @@ pub(crate) mod codec {
             return Some(if head.contains("\"topology\"") { VectorDriver::TopoJSON } else { VectorDriver::GeoJSON });
         }
         if head.starts_with('<') {
-            for (tag, d) in
-                [("<kml", VectorDriver::KML), ("<gpx", VectorDriver::GPX), ("<osm", VectorDriver::OSM), ("featurecollection", VectorDriver::GML)]
-            {
+            for (tag, d) in [
+                ("<kml", VectorDriver::KML),
+                ("<gpx", VectorDriver::GPX),
+                ("<osm", VectorDriver::OSM),
+                ("featurecollection", VectorDriver::GML),
+            ] {
                 if head.contains(tag) {
                     return Some(d);
                 }

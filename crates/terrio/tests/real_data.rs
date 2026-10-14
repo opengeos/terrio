@@ -457,3 +457,66 @@ fn osm_pbf_layers_like_gdal() {
     );
     assert!(v.layers[3].features.iter().all(|f| matches!(f.geometry, Some(terrio::Geometry::MultiPolygon(_)))));
 }
+
+#[test]
+fn mapinfo_tab_reads_and_writes() {
+    let Some(v) = vector("countries.tab") else { return };
+    let l = &v.layers[0];
+    let mif = vector("countries.mif").unwrap();
+    assert_eq!((l.len(), l.crs_epsg()), (176, Some(4326)));
+    assert_eq!(field_names(l), field_names(&mif.layers[0]));
+    assert_eq!(l.features[0].fid, 1);
+    assert_eq!(value(l, 0, "NAME"), value(&mif.layers[0], 0, "NAME"));
+    assert_extent(l, [-180.0, -55.61183, 180.0, 83.64513]);
+    let back = round_trip(&v.layers, "countries.tab");
+    assert_eq!((back.layers[0].len(), back.layers[0].crs_epsg()), (176, Some(4326)));
+    assert_extent(&back.layers[0], extent(l));
+    // A projected table: the CRS comes from the .map header.
+    let utm = vector("roads_utm.tab").unwrap();
+    assert_eq!((utm.layers[0].len(), utm.layers[0].crs_epsg()), (78, Some(32611)));
+}
+
+#[test]
+fn geoparquet_bbox_filter() {
+    let Some(p) = data("ne_places.parquet") else { return };
+    let rect = (-10.0, 35.0, 30.0, 60.0);
+    let options = terrio::VectorOpenOptions { spatial_filter: Some(rect), ..Default::default() };
+    let v = terrio::open_vector(&p, &options).unwrap();
+    let l = &v.layers[0];
+    // ogr2ogr -spat -10 35 30 60 keeps 752 places.
+    assert_eq!(l.len(), 752);
+    assert!(l.features.iter().all(|f| matches!(&f.geometry, Some(terrio::Geometry::Point(c)) if c.x >= -10.0 && c.x <= 30.0)));
+    // Written back: the CRS is PROJJSON, the bounding boxes in a covering column.
+    let reprojected = terrio::vector::reproject_layer(l, &terrio::crs::SpatialRef::from_epsg(3035).unwrap()).unwrap();
+    let back = round_trip(&[reprojected], "places.parquet");
+    assert_eq!((back.layers[0].len(), back.layers[0].crs_epsg()), (752, Some(3035)));
+}
+
+#[test]
+fn osm_xml_like_pbf() {
+    // Made from the PBF file when osmium is available (see fetch_test_data.sh).
+    let Some(dir) = std::env::var_os("TERRIO_TEST_DATA") else { return };
+    let xml = PathBuf::from(dir).join("liechtenstein.osm");
+    if !xml.exists() {
+        return;
+    }
+    let x = terrio::open_vector(xml.to_str().unwrap(), &Default::default()).unwrap();
+    let p = vector("liechtenstein.osm.pbf").unwrap();
+    for (a, b) in x.layers.iter().zip(&p.layers) {
+        assert_eq!((a.name.as_str(), a.len()), (b.name.as_str(), b.len()));
+        assert_eq!(field_names(a), field_names(b));
+    }
+}
+
+#[test]
+fn kml_styles() {
+    let Some(v) = vector("countries.kml") else { return };
+    let l = &v.layers[0];
+    // GDAL's style string for <LineStyle><color>ff0000ff</color>...<fill>0</fill>.
+    assert_eq!(value(l, 0, "OGR_STYLE"), &terrio::FieldValue::Text("PEN(c:#FF0000FF)".into()));
+    let back = round_trip(&v.layers, "countries.kml");
+    assert_eq!(value(&back.layers[0], 0, "OGR_STYLE"), value(l, 0, "OGR_STYLE"));
+    let samples = vector("kml_samples.kml").unwrap();
+    let paths = samples.layers.iter().find(|l| l.name == "Paths").unwrap();
+    assert_eq!(value(paths, 5, "OGR_STYLE"), &terrio::FieldValue::Text("PEN(c:#FF0000FF);BRUSH(fc:#0000FFFF)".into()));
+}

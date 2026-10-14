@@ -42,6 +42,10 @@ for t in n40w107 n41w106 n41w107; do
   [ -e "USGS_1_$t.tif" ] || curl -sSfL -o "USGS_1_$t.tif" "https://prd-tnm.s3.amazonaws.com/StagedProducts/Elevation/1/TIFF/current/$t/USGS_1_$t.tif"
 done
 for z in ne_countries ne_places nybb; do [ -d "$z" ] || unzip -q -o "$z.zip" -d "$z"; done
+# OSM XML, when osmium is installed.
+if [ ! -e liechtenstein.osm ] && command -v osmium >/dev/null; then
+  osmium cat liechtenstein.osm.pbf -o liechtenstein.osm
+fi
 
 if command -v ogr2ogr >/dev/null && command -v gdal_translate >/dev/null; then
   [ -e countries.gpkg ] || ogr2ogr -f GPKG countries.gpkg countries.geojson -nln countries
@@ -50,6 +54,8 @@ if command -v ogr2ogr >/dev/null && command -v gdal_translate >/dev/null; then
   [ -e countries.gml ] || ogr2ogr -f GML countries.gml countries.geojson
   [ -e countries.fgb ] || ogr2ogr -f FlatGeobuf countries.fgb countries.geojson
   [ -e countries.mif ] || ogr2ogr -f "MapInfo File" countries.mif countries.geojson
+  [ -e countries.tab ] || ogr2ogr -f "MapInfo File" countries.tab countries.geojson
+  [ -e roads_utm.tab ] || ogr2ogr -f "MapInfo File" -t_srs EPSG:32611 roads_utm.tab las_vegas_roads.geojson
   [ -e ne_places.kmz ] || ogr2ogr -f LIBKML ne_places.kmz ne_places/ne_10m_populated_places_simple.shp
   [ -e ne_places.parquet ] || ogr2ogr -f Parquet ne_places.parquet ne_places/ne_10m_populated_places_simple.shp
   [ -e hike.gpx ] || ogr2ogr -f GPX hike.gpx hike_gps_trace.csv -oo X_POSSIBLE_NAMES=longitude \

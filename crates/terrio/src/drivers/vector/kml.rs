@@ -7,6 +7,7 @@
 //! A `MultiGeometry` of one geometry type is a multi-part geometry, and ground overlays are
 //! polygons. Writing produces a Document per layer, each with its typed Schema.
 
+use super::kml_style;
 use super::xml::{self, Element};
 use crate::{Error, Result};
 use std::fmt::Write as _;
@@ -110,7 +111,8 @@ fn parse_with(text: &str, default_name: &str, root_layer: bool) -> Result<Vec<La
             containers.push((default_name.to_string(), direct));
         }
     }
-    let mut layers: Vec<Layer> = containers.into_iter().map(|(name, features)| layer(&name, &features, &schemas)).collect();
+    let styles = kml_style::table(&root);
+    let mut layers: Vec<Layer> = containers.into_iter().map(|(name, features)| layer(&name, &features, &schemas, &styles)).collect();
     // Layer names must be unique.
     for i in 1..layers.len() {
         let mut n = 2;
@@ -166,7 +168,7 @@ fn add_data_field(layer: &mut Layer, renames: &mut Vec<(String, String)>, name: 
     renames.push((name.to_string(), field));
 }
 
-fn layer(name: &str, features: &[&Element], schemas: &[&Element]) -> Layer {
+fn layer(name: &str, features: &[&Element], schemas: &[&Element], styles: &[(String, String)]) -> Layer {
     let mut layer = Layer::new(name).with_epsg(4326);
     for (n, t) in FIXED {
         layer.add_field(FieldDef::new(*n, *t));
@@ -196,6 +198,11 @@ fn layer(name: &str, features: &[&Element], schemas: &[&Element]) -> Layer {
                 add_data_field(&mut layer, &mut renames, n, FieldType::Text);
             }
         }
+    }
+    // Feature styles, in an OGR_STYLE field when any feature has one.
+    let feature_styles: Vec<Option<String>> = features.iter().map(|f| kml_style::of_feature(f, styles)).collect();
+    if feature_styles.iter().any(Option::is_some) && layer.schema.field_index(kml_style::FIELD).is_none() {
+        layer.add_field(FieldDef::new(kml_style::FIELD, FieldType::Text));
     }
     let types: Vec<FieldType> = layer.schema.fields().iter().map(|f| f.field_type).collect();
     for (fid, f) in features.iter().enumerate() {
@@ -242,6 +249,7 @@ fn layer(name: &str, features: &[&Element], schemas: &[&Element]) -> Layer {
                 set(field(d.attr("name")), d.child("value").map(|v| v.text.as_str()));
             }
         }
+        set(kml_style::FIELD, feature_styles[fid].as_deref());
         layer.push(Feature { fid: fid as u64, geometry, attributes: attrs });
     }
     layer
@@ -396,7 +404,10 @@ fn schema_id(layer: &Layer) -> String {
 /// Whether a field is written as the placemark's own element rather than as ExtendedData. Like
 /// GDAL, a field called `name` or `description` in any letter case is the placemark's.
 fn is_own_field(name: &str) -> bool {
-    FIXED.iter().any(|(n, _)| *n == name) || name.eq_ignore_ascii_case("name") || name.eq_ignore_ascii_case("description")
+    FIXED.iter().any(|(n, _)| *n == name)
+        || name.eq_ignore_ascii_case("name")
+        || name.eq_ignore_ascii_case("description")
+        || name.eq_ignore_ascii_case(kml_style::FIELD)
 }
 
 /// The fields written as ExtendedData.
@@ -490,6 +501,19 @@ fn placemarks(l: &Layer) -> String {
                 }
             }
             s.push_str("</TimeSpan>\n");
+        }
+        // The feature's style: a reference, or the style itself, as GDAL writes it.
+        if let Some(v) = text(f, kml_style::FIELD) {
+            if let Some(name) = v.strip_prefix('@') {
+                let _ = writeln!(s, "\t<styleUrl>#{}</styleUrl>", xml::escape(name));
+            } else if kml_style::is_reference(&v) {
+                let _ = writeln!(s, "\t<styleUrl>{}</styleUrl>", xml::escape(&v));
+            } else {
+                let style = kml_style::to_kml(&v);
+                if !style.is_empty() {
+                    let _ = writeln!(s, "\t<Style>{style}</Style>");
+                }
+            }
         }
         let values: Vec<(String, String)> = fields
             .iter()

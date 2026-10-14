@@ -9,6 +9,7 @@ pub mod geoparquet;
 pub mod gml;
 pub mod gpx;
 pub mod kml;
+pub mod kml_style;
 pub mod mapinfo;
 pub mod osm;
 pub(crate) mod projjson;

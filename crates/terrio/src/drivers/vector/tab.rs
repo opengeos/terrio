@@ -139,7 +139,10 @@ enum Kind {
 
 /// The `Definition Table` of a `.tab` file: the charset and the fields (name, type, width,
 /// precision).
-fn definition(text: &str) -> Result<(Charset, Vec<(String, Kind, usize, usize)>)> {
+/// A field of a `.tab` file: name, type, width and precision.
+type FieldSpec = (String, Kind, usize, usize);
+
+fn definition(text: &str) -> Result<(Charset, Vec<FieldSpec>)> {
     let lower = text.to_ascii_lowercase();
     if !lower.contains("definition table") {
         return Err(Error::Unsupported("MapInfo TAB: only native tables are supported (not views or seamless tables)".into()));
@@ -197,12 +200,7 @@ fn field_line(line: &str) -> Result<(String, Kind, usize, usize)> {
         "logical" => Kind::Logical,
         _ => return Err(bad(format!("unknown field type in '{line}'"))),
     };
-    let mut nums = rest
-        .split(['(', ')'])
-        .nth(1)
-        .unwrap_or_default()
-        .split(',')
-        .filter_map(|v| v.trim().parse::<usize>().ok());
+    let mut nums = rest.split(['(', ')']).nth(1).unwrap_or_default().split(',').filter_map(|v| v.trim().parse::<usize>().ok());
     let (w, p) = (nums.next().unwrap_or(0), nums.next().unwrap_or(0));
     Ok((name, kind, w, p))
 }
@@ -308,7 +306,9 @@ fn field_value(b: &[u8], kind: Kind, charset: Charset) -> FieldValue {
         }
         Kind::Integer => le_i32(b, 0).map_or(FieldValue::Null, |v| FieldValue::Integer(v as i64)),
         Kind::SmallInt => le_i16(b, 0).map_or(FieldValue::Null, |v| FieldValue::Integer(v as i64)),
-        Kind::LargeInt => b.get(..8).and_then(|x| x.try_into().ok()).map_or(FieldValue::Null, |x| FieldValue::Integer(i64::from_le_bytes(x))),
+        Kind::LargeInt => {
+            b.get(..8).and_then(|x| x.try_into().ok()).map_or(FieldValue::Null, |x| FieldValue::Integer(i64::from_le_bytes(x)))
+        }
         Kind::Float => le_f64(b, 0).map_or(FieldValue::Null, FieldValue::Float),
         Kind::Decimal => {
             let s = String::from_utf8_lossy(b);
@@ -368,7 +368,8 @@ impl<'a> MapFile<'a> {
         }
         let version = le_i16(b, 0x104).unwrap_or(0);
         let block = le_i16(b, 0x106).unwrap_or(512).max(512) as usize;
-        let counts = [le_i32(b, 0x13c).unwrap_or(0), le_i32(b, 0x140).unwrap_or(0), le_i32(b, 0x144).unwrap_or(0), le_i32(b, 0x148).unwrap_or(0)];
+        let counts =
+            [le_i32(b, 0x13c).unwrap_or(0), le_i32(b, 0x140).unwrap_or(0), le_i32(b, 0x144).unwrap_or(0), le_i32(b, 0x148).unwrap_or(0)];
         let coord_precision = b[0x160];
         let quadrant = b[0x161];
         let datum = if version >= 500 { le_i16(b, 0x16a).unwrap_or(0) } else { 0 };
@@ -407,8 +408,10 @@ impl<'a> MapFile<'a> {
     /// Integer coordinates to coordinates, as GDAL's `Int2Coordsys`.
     fn coord(&self, x: i32, y: i32) -> Coord {
         let q = self.quadrant;
-        let mut dx = if matches!(q, 0 | 2 | 3) { -(x as f64 + self.displ.0) / self.scale.0 } else { (x as f64 - self.displ.0) / self.scale.0 };
-        let mut dy = if matches!(q, 0 | 3 | 4) { -(y as f64 + self.displ.1) / self.scale.1 } else { (y as f64 - self.displ.1) / self.scale.1 };
+        let mut dx =
+            if matches!(q, 0 | 2 | 3) { -(x as f64 + self.displ.0) / self.scale.0 } else { (x as f64 - self.displ.0) / self.scale.0 };
+        let mut dy =
+            if matches!(q, 0 | 3 | 4) { -(y as f64 + self.displ.1) / self.scale.1 } else { (y as f64 - self.displ.1) / self.scale.1 };
         if self.precision.0 > 0.0 && self.precision.1 > 0.0 {
             dx = (dx * self.precision.0).round() / self.precision.0;
             dy = (dy * self.precision.1).round() / self.precision.1;
@@ -476,11 +479,8 @@ impl<'a> MapFile<'a> {
             0x0a | 0x0b => self.arc(&mut c, compressed, center)?,
             0x10 | 0x11 => self.text(&mut c, compressed, center, charset)?,
             0x13 | 0x14 | 0x16 | 0x17 => {
-                let corner = if t >= 0x16 {
-                    if compressed { (c.i16()? as i32, c.i16()? as i32) } else { (c.i32()?, c.i32()?) }
-                } else {
-                    (0, 0)
-                };
+                let corner =
+                    if t >= 0x16 { if compressed { (c.i16()? as i32, c.i16()? as i32) } else { (c.i32()?, c.i32()?) } } else { (0, 0) };
                 let (a, b) = (self.at(pt(&mut c)?), self.at(pt(&mut c)?));
                 let (x0, y0, x1, y1) = (a.x.min(b.x), a.y.min(b.y), a.x.max(b.x), a.y.max(b.y));
                 let (rx, ry) = (corner.0 as f64 / self.scale.0 / 2.0, corner.1 as f64 / self.scale.1 / 2.0);
@@ -529,7 +529,7 @@ impl<'a> MapFile<'a> {
     }
 
     /// The section headers of a region or multiple polyline: `(vertices, holes, vertex offset)`.
-    fn sections(&self, s: &mut CoordStream, compressed: bool, version: u32, n: i32) -> Result<(Vec<(usize, usize, usize)>, Vec<Coord>)> {
+    fn sections(&self, s: &mut CoordStream, compressed: bool, version: u32, n: i32) -> Result<(Vec<Section>, Vec<Coord>)> {
         let n = usize::try_from(n).map_err(|_| bad("section count"))?;
         let section_size = if version >= 450 { 28 } else { 24 };
         let total_hdr = section_size * n;
@@ -541,7 +541,8 @@ impl<'a> MapFile<'a> {
             s.point(compressed)?;
             s.point(compressed)?;
             let data = s.i32()? as usize;
-            let (vertices, holes) = (usize::try_from(vertices).map_err(|_| bad("vertices"))?, usize::try_from(holes).map_err(|_| bad("holes"))?);
+            let (vertices, holes) =
+                (usize::try_from(vertices).map_err(|_| bad("vertices"))?, usize::try_from(holes).map_err(|_| bad("holes"))?);
             let offset = data.checked_sub(total_hdr).ok_or_else(|| bad("section offset"))? / 8;
             hdrs.push((vertices, holes, offset));
             total += vertices;
@@ -682,6 +683,9 @@ impl<'a> MapFile<'a> {
     }
 }
 
+/// A section header: vertex count, hole count, first vertex.
+type Section = (usize, usize, usize);
+
 /// The format version of an object type: 300, 450, 650 or 800.
 fn version(t: u8) -> u32 {
     match t {
@@ -759,7 +763,7 @@ impl<'a> CoordStream<'a> {
     fn new(m: &MapFile<'a>, ptr: usize, origin: (i32, i32)) -> Self {
         let mut s = Self { b: m.b, block: m.block, pos: ptr, end: 0, next: 0, origin };
         s.enter(ptr - ptr % m.block);
-        s.pos = if ptr % m.block == 0 { ptr + 8 } else { ptr };
+        s.pos = if ptr.is_multiple_of(m.block) { ptr + 8 } else { ptr };
         s
     }
 
@@ -902,7 +906,9 @@ pub fn to_files(layer: &Layer) -> Result<TabFiles> {
         names.push(name.clone());
         let values = || layer.features.iter().filter_map(move |ft| ft.attributes.get(i));
         let (kind, width, decl) = match f.field_type {
-            FieldType::Integer if values().filter_map(FieldValue::as_i64).all(|v| i32::try_from(v).is_ok()) => (Kind::Integer, 4, "Integer".to_string()),
+            FieldType::Integer if values().filter_map(FieldValue::as_i64).all(|v| i32::try_from(v).is_ok()) => {
+                (Kind::Integer, 4, "Integer".to_string())
+            }
             FieldType::Integer => (Kind::LargeInt, 8, "LargeInt".into()),
             FieldType::Float => (Kind::Float, 8, "Float".into()),
             FieldType::Boolean => (Kind::Logical, 1, "Logical".into()),
@@ -964,7 +970,10 @@ pub fn to_files(layer: &Layer) -> Result<TabFiles> {
     let map = map.finish(&proj, scale, displ);
 
     // The .tab header.
-    let mut tab = format!("!table\n!version {version}\n!charset Neutral\n\nDefinition Table\n  Type NATIVE Charset \"Neutral\"\n  Fields {}\n", defs.len());
+    let mut tab = format!(
+        "!table\n!version {version}\n!charset Neutral\n\nDefinition Table\n  Type NATIVE Charset \"Neutral\"\n  Fields {}\n",
+        defs.len()
+    );
     for (name, _, _, decl) in &defs {
         tab.push_str(&format!("    {name} {decl} ;\n"));
     }
@@ -983,13 +992,15 @@ fn encode_value(cell: &mut [u8], kind: Kind, v: &FieldValue) {
         (Kind::Float, v) => cell.copy_from_slice(&v.as_f64().unwrap_or(0.0).to_le_bytes()),
         (Kind::Logical, FieldValue::Boolean(b)) => cell[0] = if *b { b'T' } else { b'F' },
         (Kind::Date | Kind::DateTime, FieldValue::Date(s) | FieldValue::DateTime(s) | FieldValue::Text(s)) => {
-            let digits: Vec<u32> = s.split(|c: char| !c.is_ascii_digit()).filter(|p| !p.is_empty()).filter_map(|p| p.parse().ok()).collect();
+            let digits: Vec<u32> =
+                s.split(|c: char| !c.is_ascii_digit()).filter(|p| !p.is_empty()).filter_map(|p| p.parse().ok()).collect();
             if digits.len() >= 3 {
                 cell[..2].copy_from_slice(&(digits[0] as i16).to_le_bytes());
                 cell[2] = digits[1] as u8;
                 cell[3] = digits[2] as u8;
                 if kind == Kind::DateTime {
-                    let ms = digits.get(3).unwrap_or(&0) * 3_600_000 + digits.get(4).unwrap_or(&0) * 60_000 + digits.get(5).unwrap_or(&0) * 1000;
+                    let ms =
+                        digits.get(3).unwrap_or(&0) * 3_600_000 + digits.get(4).unwrap_or(&0) * 60_000 + digits.get(5).unwrap_or(&0) * 1000;
                     cell[4..8].copy_from_slice(&(ms as i32).to_le_bytes());
                 }
             }

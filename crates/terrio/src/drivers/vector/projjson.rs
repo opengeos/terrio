@@ -162,11 +162,7 @@ const DATUMS: &[(&[&str], &str, u32)] = &[
     (&["WGS_1984", "D_WGS_1984", "WGS84", "WGS 84", "World Geodetic System 1984"], "World Geodetic System 1984", 6326),
     (&["North_American_Datum_1983", "D_North_American_1983", "NAD83"], "North American Datum 1983", 6269),
     (&["North_American_Datum_1927", "D_North_American_1927", "NAD27"], "North American Datum 1927", 6267),
-    (
-        &["European_Terrestrial_Reference_System_1989", "D_ETRS_1989", "ETRS89"],
-        "European Terrestrial Reference System 1989",
-        6258,
-    ),
+    (&["European_Terrestrial_Reference_System_1989", "D_ETRS_1989", "ETRS89"], "European Terrestrial Reference System 1989", 6258),
     (&["European_Datum_1950", "D_European_1950", "ED50"], "European Datum 1950", 6230),
     (&["Geocentric_Datum_of_Australia_1994", "D_GDA_1994", "GDA94"], "Geocentric Datum of Australia 1994", 6283),
     (&["OSGB_1936", "Ordnance_Survey_of_Great_Britain_1936", "D_OSGB_1936", "OSGB36"], "Ordnance Survey of Great Britain 1936", 6277),
@@ -249,8 +245,7 @@ fn method(wkt_name: &str, node: &Node) -> Option<Method> {
     let n = wkt_name.to_ascii_lowercase();
     let has = |p: &str| node.children("PARAMETER").any(|x| x.name().eq_ignore_ascii_case(p));
     let natural: &'static [(&[&str], Param)] = &[(LAT0, LAT_NAT), (LON0, LON_NAT), (K, K_NAT), (X0, FE), (Y0, FN)];
-    let false_origin: &'static [(&[&str], Param)] =
-        &[(LAT0, LAT_FO), (LON0, LON_FO), (P1, SP1), (P2, SP2), (X0, E_FO), (Y0, N_FO)];
+    let false_origin: &'static [(&[&str], Param)] = &[(LAT0, LAT_FO), (LON0, LON_FO), (P1, SP1), (P2, SP2), (X0, E_FO), (Y0, N_FO)];
     let azimuthal: &'static [(&[&str], Param)] = &[(LAT0, LAT_NAT), (LON0, LON_NAT), (X0, FE), (Y0, FN)];
     Some(match n.as_str() {
         "transverse_mercator" | "gauss_kruger" => ("Transverse Mercator", 9807, natural),
@@ -295,7 +290,15 @@ fn method(wkt_name: &str, node: &Node) -> Option<Method> {
         "hotine_oblique_mercator_azimuth_center" => (
             "Hotine Oblique Mercator (variant B)",
             9815,
-            &[(LAT0, LAT_PC), (LON0, LON_PC), (&["azimuth"], AZIMUTH), (&["rectified_grid_angle"], GAMMA), (K, K_PC), (X0, E_PC), (Y0, N_PC)],
+            &[
+                (LAT0, LAT_PC),
+                (LON0, LON_PC),
+                (&["azimuth"], AZIMUTH),
+                (&["rectified_grid_angle"], GAMMA),
+                (K, K_PC),
+                (X0, E_PC),
+                (Y0, N_PC),
+            ],
         ),
         _ => return None,
     })
@@ -428,7 +431,8 @@ fn projected(p: &Node) -> Option<Value> {
     let proj = p.child("PROJECTION")?;
     let ext = p.child("EXTENSION").and_then(|e| e.str(1)).unwrap_or_default();
     let web_mercator = ext.contains("+proj=merc") && ext.contains("+a=6378137") && ext.contains("+b=6378137");
-    let param = |names: &[&str]| p.children("PARAMETER").find(|x| names.iter().any(|n| x.name().eq_ignore_ascii_case(n))).and_then(|x| x.num(1));
+    let param =
+        |names: &[&str]| p.children("PARAMETER").find(|x| names.iter().any(|n| x.name().eq_ignore_ascii_case(n))).and_then(|x| x.num(1));
     let (mname, mcode, params): Method = if web_mercator {
         ("Popular Visualisation Pseudo Mercator", 1024, &[(LAT0, LAT_NAT), (LON0, LON_NAT), (X0, FE), (Y0, FN)])
     } else {
@@ -509,7 +513,10 @@ pub(crate) fn to_wkt1(v: &Value) -> Option<String> {
             let conv = &v["conversion"];
             let mcode = conv["method"]["id"]["code"].as_u64().map(|c| c as u32);
             let mname = conv["method"]["name"].as_str().unwrap_or_default();
-            let (wname, table) = WKT_METHODS.iter().find(|(_, code, name, _)| Some(*code) == mcode || name.eq_ignore_ascii_case(mname)).map(|(w, _, _, t)| (*w, *t))?;
+            let (wname, table) = WKT_METHODS
+                .iter()
+                .find(|(_, code, name, _)| Some(*code) == mcode || name.eq_ignore_ascii_case(mname))
+                .map(|(w, _, _, t)| (*w, *t))?;
             let mut w = format!("PROJCS[\"{}\",{base},PROJECTION[\"{wname}\"]", wkt_str(v["name"].as_str().unwrap_or("unnamed")));
             let params = conv["parameters"].as_array()?;
             let lin_unit = v["coordinate_system"]["axis"][0]["unit"].clone();
@@ -543,7 +550,10 @@ pub(crate) fn to_wkt1(v: &Value) -> Option<String> {
 }
 
 /// WKT1 method names and parameters by EPSG code.
-const WKT_METHODS: &[(&str, u32, &str, &[(&str, u32)])] = &[
+/// A WKT1 method: `(WKT1 name, EPSG code, EPSG name, [(WKT1 parameter, EPSG parameter code)])`.
+type WktMethod = (&'static str, u32, &'static str, &'static [(&'static str, u32)]);
+
+const WKT_METHODS: &[WktMethod] = &[
     ("Transverse_Mercator", 9807, "Transverse Mercator", NAT),
     ("Mercator_1SP", 9804, "Mercator (variant A)", NAT),
     ("Mercator_2SP", 9805, "Mercator (variant B)", &[("standard_parallel_1", 8823), ("central_meridian", 8802), FE_W, FN_W]),
@@ -553,12 +563,22 @@ const WKT_METHODS: &[(&str, u32, &str, &[(&str, u32)])] = &[
     ("Lambert_Azimuthal_Equal_Area", 9820, "Lambert Azimuthal Equal Area", AZ),
     ("Azimuthal_Equidistant", 1125, "Azimuthal Equidistant", AZ),
     ("Polar_Stereographic", 9810, "Polar Stereographic (variant A)", NAT),
-    ("Polar_Stereographic", 9829, "Polar Stereographic (variant B)", &[("latitude_of_origin", 8832), ("central_meridian", 8833), FE_W, FN_W]),
+    (
+        "Polar_Stereographic",
+        9829,
+        "Polar Stereographic (variant B)",
+        &[("latitude_of_origin", 8832), ("central_meridian", 8833), FE_W, FN_W],
+    ),
     ("Oblique_Stereographic", 9809, "Oblique Stereographic", NAT),
     ("Stereographic", 0, "Stereographic", NAT),
     ("Equirectangular", 1028, "Equidistant Cylindrical", &[("standard_parallel_1", 8823), ("central_meridian", 8802), FE_W, FN_W]),
     ("Sinusoidal", 0, "Sinusoidal", &[("longitude_of_center", 8802), FE_W, FN_W]),
-    ("Cylindrical_Equal_Area", 9835, "Lambert Cylindrical Equal Area", &[("standard_parallel_1", 8823), ("central_meridian", 8802), FE_W, FN_W]),
+    (
+        "Cylindrical_Equal_Area",
+        9835,
+        "Lambert Cylindrical Equal Area",
+        &[("standard_parallel_1", 8823), ("central_meridian", 8802), FE_W, FN_W],
+    ),
     ("Cassini_Soldner", 9806, "Cassini-Soldner", &[("latitude_of_origin", 8801), ("central_meridian", 8802), FE_W, FN_W]),
 ];
 const FE_W: (&str, u32) = ("false_easting", 8806);

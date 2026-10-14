@@ -229,7 +229,7 @@ def compare_vector(path, t):
     if len(t["layers"]) != len(g_layers):
         diffs.append(f"layer count {len(t['layers'])} vs {len(g_layers)}")
     # GDAL's OSM layers do not know their counts, and report the file's bounds as their extent.
-    is_osm = path.lower().endswith(".pbf")
+    is_osm = path.lower().endswith((".pbf", ".osm"))
     for tl, gl in zip(t["layers"], g_layers):
         n = gl.GetFeatureCount()
         if n < 0:
@@ -237,7 +237,8 @@ def compare_vector(path, t):
         if tl["feature_count"] != n:
             diffs.append(f"{tl['name']}: features {tl['feature_count']} vs {n}")
         g_fields = [gl.GetLayerDefn().GetFieldDefn(i).GetName() for i in range(gl.GetLayerDefn().GetFieldCount())]
-        t_fields = [f["name"] for f in tl["fields"]]
+        # terrio keeps feature styles (GDAL's OGR_STYLE) in a field.
+        t_fields = [f["name"] for f in tl["fields"] if f["name"] != "OGR_STYLE"]
         if t_fields != g_fields:
             missing = [f for f in g_fields if f not in t_fields]
             extra = [f for f in t_fields if f not in g_fields]
