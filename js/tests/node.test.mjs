@@ -109,6 +109,35 @@ test("STAC items read as GDAL reads STAC GeoJSON", () => {
   assert.equal(props["assets.red.href"], "B04.tif");
 });
 
+test("PMTiles and MBTiles: rasters by window, vector tiles as layers", () => {
+  // A 512 x 256 RGB raster on the tiles of zoom level 11 (EPSG:3857).
+  const MAX_GM = 20037508.342789244;
+  const res = (2 * MAX_GM) / 256 / 2048;
+  const transform = [-MAX_GM + 1000 * 256 * res, res, 0, MAX_GM - 700 * 256 * res, 0, -res];
+  const data = new Uint8Array(3 * 256 * 512).map((_, i) => i % 251);
+  const ds = terrio.rasterFromArray(data, 512, 256, transform, "EPSG:3857");
+  for (const name of ["rgb.pmtiles", "rgb.mbtiles"]) {
+    const back = terrio.open(ds.toBytes(name), name);
+    assert.equal(back.kind, "raster", name);
+    assert.equal(back.width, 512);
+    assert.equal(back.height, 256);
+    assert.equal(back.crs, "EPSG:3857");
+    assert.deepEqual(back.overviews, [[256, 128]]);
+    const win = back.readBand(2, [10, 20, 4, 1]);
+    assert.ok(win instanceof Uint8Array);
+    assert.deepEqual([...win], [...data.slice(256 * 512 + 20 * 512 + 10, 256 * 512 + 20 * 512 + 14)], name);
+  }
+  const places = terrio.fromGeoJSON(SQUARES, "squares");
+  for (const name of ["sq.pmtiles", "sq.mbtiles"]) {
+    const back = terrio.open(places.toBytes(name, { maxzoom: 3 }), name);
+    assert.equal(back.kind, "vector", name);
+    assert.deepEqual(back.layerNames(), ["squares"]);
+    const fc = back.toGeoJSON();
+    assert.equal(fc.features.length, 2, name);
+    assert.deepEqual(fc.features.map((f) => f.properties.name).sort(), ["east", "west"]);
+  }
+});
+
 test("CRS transforms", () => {
   const [xs, ys] = terrio.transformPoints([0, 180], [0, 0], "EPSG:4326", "EPSG:3857");
   assert.ok(xs instanceof Float64Array);
@@ -169,6 +198,9 @@ const VECTORS = [
   ["countries.kml", 176],
   ["countries.gml", 176],
   ["countries.gpkg", 176],
+  // Vector tiles written by GDAL: features clipped to the tiles of zoom level 3, as GDAL reads them.
+  ["countries_mvt.pmtiles", 279],
+  ["countries_mvt.mbtiles", 279],
   ["las_vegas_roads.geojson", null],
   ["hike.gpx", null],
 ];

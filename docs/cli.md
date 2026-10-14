@@ -56,6 +56,11 @@ terrio convert INPUT OUTPUT [-f FORMAT] [options]
 | `--s-srs`, `--a-srs` | vectors | Override or assign the CRS |
 | `--append`, `--overwrite` | vectors | Add to or replace layers of an existing GeoPackage |
 | `--oo`, `--lco KEY=VALUE` | vectors | Open and layer creation options (`RFC7946=YES`...) |
+| `--co KEY=VALUE` | rasters | Creation options (Zarr, netCDF, PMTiles and MBTiles: `TILE_FORMAT=WEBP`...) |
+| `--minzoom N`, `--maxzoom N` | both | Zoom levels of PMTiles, MBTiles and MVT outputs |
+
+Tile archives (PMTiles, MBTiles, MVT) take `--oo ZOOM_LEVEL=N` and `--oo CLIP=NO` as inputs; see
+[Formats](formats.md#tile-archives).
 
 Point clouds (LAS, LAZ, COPC) convert to LAS, LAZ, COPC or a vector layer of points, with
 `--bounds`, `--z-range`, `--class`, `--returns`, `--max-level`, `--resolution`, `--max-points`,

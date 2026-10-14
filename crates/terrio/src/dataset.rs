@@ -75,6 +75,8 @@ pub struct VectorOpenOptions {
     /// features (GeoParquet's bounding-box covering column and row group statistics) may skip
     /// those whose bounding box is outside it. Callers still filter the features they get.
     pub spatial_filter: Option<(f64, f64, f64, f64)>,
+    /// How to read tile archives (PMTiles, MBTiles, MVT): the zoom level, clipping.
+    pub tiles: crate::tiles::TileOpenOptions,
 }
 
 /// Opens a dataset, raster or vector, detecting its format.
@@ -84,6 +86,10 @@ pub fn open(path: &str) -> Result<Dataset> {
     }
     if let Some(result) = crate::drivers::open_subdataset(path) {
         return result.map(Dataset::Raster);
+    }
+    // Tile archives, local or remote, are read in place.
+    if is_tile_archive(path) {
+        return crate::tiles::open_dataset(path, &VectorOpenOptions::default());
     }
     let local = vfs::resolve(path)?;
     open_local(local.as_str(), &VectorOpenOptions::default())
@@ -100,6 +106,12 @@ pub fn open_raster(path: &str) -> Result<RasterDataset> {
     if let Some(result) = crate::drivers::open_subdataset(path) {
         return result;
     }
+    if is_tile_archive(path) {
+        return match crate::tiles::open_dataset(path, &VectorOpenOptions::default())? {
+            Dataset::Raster(r) => Ok(r),
+            Dataset::Vector(_) => Err(Error::Unsupported(format!("'{path}' holds vector tiles, not a raster"))),
+        };
+    }
     let local = vfs::resolve(path)?;
     read_raster_local(local.as_str())
 }
@@ -112,6 +124,12 @@ pub fn open_vector(path: &str, options: &VectorOpenOptions) -> Result<VectorData
             Dataset::Raster(_) => Err(Error::Unsupported(format!("'{path}' is a raster, not a vector dataset"))),
         };
     }
+    if is_tile_archive(path) {
+        return match crate::tiles::open_dataset(path, options)? {
+            Dataset::Vector(v) => Ok(v),
+            Dataset::Raster(_) => Err(Error::Unsupported(format!("'{path}' holds raster tiles, not vector tiles"))),
+        };
+    }
     let local = vfs::resolve(path)?;
     match open_local(local.as_str(), options)? {
         Dataset::Vector(v) => Ok(v),
@@ -121,6 +139,9 @@ pub fn open_vector(path: &str, options: &VectorOpenOptions) -> Result<VectorData
 
 /// The layer names of a vector dataset, without reading the features when the format allows it.
 pub fn list_layers(path: &str) -> Result<Vec<String>> {
+    if is_tile_archive(path) {
+        return crate::tiles::layer_names(path);
+    }
     let local = vfs::resolve(path)?;
     if VectorDriver::for_extension(local.as_str()) == Some(VectorDriver::GPKG) {
         return crate::drivers::vector::gpkg_read::list_layers(local.as_str());
@@ -128,7 +149,19 @@ pub fn list_layers(path: &str) -> Result<Vec<String>> {
     Ok(open_vector(local.as_str(), &VectorOpenOptions::default())?.layers.into_iter().map(|l| l.name).collect())
 }
 
+/// Whether a path names a PMTiles or MBTiles archive (not inside a zip archive).
+fn is_tile_archive(path: &str) -> bool {
+    let loc = vfs::Location::parse(path);
+    !matches!(loc, vfs::Location::Zip { .. }) && crate::tiles::archive_kind(&loc.file_name()).is_some()
+}
+
 fn open_local(path: &str, options: &VectorOpenOptions) -> Result<Dataset> {
+    if crate::tiles::archive_kind(path).is_some() {
+        return crate::tiles::open_dataset(path, options);
+    }
+    if let Some(layers) = crate::tiles::open_mvt_local(path, options) {
+        return layers.map(|l| Dataset::Vector(finish_vector(l, path, VectorDriver::MVT)));
+    }
     if !Path::new(path).exists() {
         return Err(Error::Io(std::io::Error::new(std::io::ErrorKind::NotFound, format!("'{path}' does not exist"))));
     }
@@ -342,6 +375,8 @@ pub struct VectorWriteOptions {
     pub csv: crate::drivers::vector::csv::CsvOptions,
     /// How to write GeoJSON files.
     pub geojson: crate::drivers::vector::geojson::GeoJsonOptions,
+    /// How to write vector tiles (PMTiles, MBTiles, MVT): zoom levels, buffer, simplification.
+    pub tiles: crate::tiles::TileWriteOptions,
 }
 
 /// Writes vector layers. GeoPackage, GPX, KML, KMZ and TopoJSON hold several layers in one file;
@@ -363,6 +398,9 @@ pub fn write_vector(layers: &[Layer], path: &str, options: &VectorWriteOptions) 
         (VectorDriver::KML, _) => crate::drivers::vector::kml::write(layers, path),
         (VectorDriver::KMZ, _) => crate::drivers::vector::kml::write_kmz(layers, path),
         (VectorDriver::TopoJSON, _) => crate::drivers::vector::topojson::write_layers(layers, path),
+        (VectorDriver::MBTiles | VectorDriver::PMTiles | VectorDriver::MVT, _) => {
+            crate::tiles::write_vector(layers, path, driver, &options.tiles)
+        }
         (d, [layer]) => {
             if !crate::drivers::vector::write(layer, path, d, options)? {
                 let format = d.to_wb().ok_or_else(|| Error::Unsupported(format!("the {} driver cannot write", d.name())))?;

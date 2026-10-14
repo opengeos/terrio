@@ -218,7 +218,7 @@ pub fn lazy_raster_info(r: &mut LazyRaster, options: &InfoOptions) -> crate::Res
         extent,
         bands,
         overviews,
-        metadata: Vec::new(),
+        metadata: r.metadata(),
         subdatasets: Vec::new(),
     })
 }
@@ -236,7 +236,17 @@ pub fn info_path(path: &str, options: &InfoOptions) -> crate::Result<Info> {
         let mut r = crate::pointcloud::open_points(path)?;
         return Ok(Info::PointCloud(Box::new(crate::pointcloud::info::point_cloud_info(&mut r, options.statistics)?)));
     }
-    if !matches!(crate::vfs::Location::parse(path), crate::vfs::Location::Zip { .. })
+    // Tile archives (local or remote) are read in place: rasters by their headers only.
+    let loc = crate::vfs::Location::parse(path);
+    if !matches!(loc, crate::vfs::Location::Zip { .. }) && crate::tiles::archive_kind(&loc.file_name()).is_some() {
+        let archive = crate::tiles::TileArchive::open(path)?;
+        if archive.is_vector() {
+            return Ok(info(&crate::tiles::archive_dataset(archive, &loc.file_name(), &Default::default())?, options));
+        }
+        let mut r = LazyRaster::from_tiles(crate::tiles::raster::TileRaster::new(archive, None)?);
+        return Ok(Info::Raster(Box::new(lazy_raster_info(&mut r, options)?)));
+    }
+    if !matches!(loc, crate::vfs::Location::Zip { .. })
         && let Some(mut r) = LazyRaster::open_tiff(path)?
     {
         return Ok(Info::Raster(Box::new(lazy_raster_info(&mut r, options)?)));

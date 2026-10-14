@@ -65,6 +65,10 @@ pub enum RasterDriver {
     VRT,
     /// A mosaic of the assets of STAC items (see [`crate::stac`]); read only.
     STACIT,
+    /// MBTiles raster tiles (PNG, JPEG, WebP), see [`crate::tiles`].
+    MBTiles,
+    /// PMTiles raster tiles (PNG, JPEG, WebP), see [`crate::tiles`].
+    PMTiles,
 }
 
 /// A vector format driver.
@@ -96,6 +100,12 @@ pub enum VectorDriver {
     OSM,
     /// Comma-separated values with X/Y or WKT geometry columns.
     CSV,
+    /// MBTiles vector tiles, see [`crate::tiles`].
+    MBTiles,
+    /// PMTiles vector tiles, see [`crate::tiles`].
+    PMTiles,
+    /// Mapbox Vector Tiles: a single tile, or a directory of tiles with a `metadata.json`.
+    MVT,
 }
 
 /// A description of a driver, for listings.
@@ -141,6 +151,8 @@ impl RasterDriver {
         Self::NetCDF,
         Self::VRT,
         Self::STACIT,
+        Self::MBTiles,
+        Self::PMTiles,
     ];
 
     /// The driver's description.
@@ -169,6 +181,8 @@ impl RasterDriver {
             Self::NetCDF => ("netCDF", "Network Common Data Format", &["nc", "nc4", "cdf"], true, true),
             Self::VRT => ("VRT", "Virtual Raster", &["vrt"], true, true),
             Self::STACIT => ("STACIT", "Spatio-Temporal Asset Catalog Items", &[], true, false),
+            Self::MBTiles => ("MBTiles", "MBTiles", &["mbtiles"], true, true),
+            Self::PMTiles => ("PMTiles", "ProtoMap Tiles", &["pmtiles"], true, true),
         };
         DriverInfo { name, long_name, kind: Kind::Raster, extensions, read, write }
     }
@@ -229,8 +243,8 @@ impl RasterDriver {
             Self::DTED => F::Dted,
             // Never used: terrio reads and writes NetCDF itself.
             Self::NetCDF => F::Zarr,
-            // Never used: terrio reads and writes VRTs and reads STAC mosaics itself.
-            Self::VRT | Self::STACIT => F::GeoTiff,
+            // Never used: terrio reads and writes VRTs and tile archives, and reads STAC mosaics itself.
+            Self::VRT | Self::STACIT | Self::MBTiles | Self::PMTiles => F::GeoTiff,
         }
     }
 
@@ -276,6 +290,9 @@ impl VectorDriver {
         Self::MapInfo,
         Self::OSM,
         Self::CSV,
+        Self::MBTiles,
+        Self::PMTiles,
+        Self::MVT,
     ];
 
     /// The driver's description.
@@ -294,6 +311,9 @@ impl VectorDriver {
             Self::MapInfo => ("MapInfo File", "MapInfo TAB and Interchange Format", &["mif", "tab"], true, true),
             Self::OSM => ("OSM", "OpenStreetMap PBF and XML", &["pbf", "osm"], true, false),
             Self::CSV => ("CSV", "Comma Separated Value", &["csv", "tsv"], true, true),
+            Self::MBTiles => ("MBTiles", "MBTiles", &["mbtiles"], true, true),
+            Self::PMTiles => ("PMTiles", "ProtoMap Tiles", &["pmtiles"], true, true),
+            Self::MVT => ("MVT", "Mapbox Vector Tiles", &["mvt"], true, true),
         };
         DriverInfo { name, long_name, kind: Kind::Vector, extensions, read, write }
     }
@@ -345,7 +365,7 @@ impl VectorDriver {
             Self::GPX => F::Gpx,
             Self::MapInfo => F::MapInfoMif,
             Self::OSM => F::OsmPbf,
-            Self::CSV => return None,
+            Self::CSV | Self::MBTiles | Self::PMTiles | Self::MVT => return None,
         })
     }
 }

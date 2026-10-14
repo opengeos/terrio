@@ -124,6 +124,9 @@ impl LazyRaster {
         if let Some(result) = crate::drivers::open_lazy(path) {
             return result;
         }
+        if let Some(t) = crate::tiles::raster::open_lazy(path)? {
+            return Ok(Self::from_tiles(t));
+        }
         match Self::open_tiff(path)? {
             Some(r) => Ok(r),
             None => crate::open_raster(path).map(|ds| Self { inner: Inner::Memory(ds) }),
@@ -237,6 +240,15 @@ impl LazyRaster {
         match &self.inner {
             Inner::Tiff(t) => t.tags.nodata,
             Inner::Memory(ds) | Inner::Source(ds, _) => ds.nodata(),
+        }
+    }
+
+    /// The dataset's metadata items (for tile archives: the zoom level read and the archive's
+    /// metadata).
+    pub fn metadata(&self) -> Vec<(String, String)> {
+        match &self.inner {
+            Inner::Tiff(_) => Vec::new(),
+            Inner::Memory(ds) | Inner::Source(ds, _) => ds.raster.metadata.clone(),
         }
     }
 
@@ -360,6 +372,11 @@ impl LazyRaster {
     /// A raster read by window by `source`, described by `header` (a dataset without pixels).
     pub(crate) fn from_source(header: RasterDataset, source: Box<dyn WindowSource>) -> Self {
         Self { inner: Inner::Source(header, source) }
+    }
+
+    /// Wraps an archive of image tiles (PMTiles, MBTiles), its zoom levels as overviews.
+    pub(crate) fn from_tiles(t: crate::tiles::raster::TileRaster) -> Self {
+        Self::from_source(t.header(), Box::new(t))
     }
 }
 

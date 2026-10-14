@@ -6,6 +6,7 @@ crates/terrio        the library
   formats.rs         the driver registry, with GDAL's short names
   drivers/           terrio's own raster drivers; drivers/vector/ its vector drivers
   geotiff.rs, cog.rs GeoTIFF tags and decoding, lazy window and overview reads
+  tiles/             PMTiles, MBTiles and MVT: archives, tile pyramids, vector tile clipping
   vfs.rs             locations: paths, URLs, s3://, gs://, az://, zip archives, /vsi prefixes
   http.rs, s3.rs     range requests with a block cache; AWS Signature Version 4
   crs.rs             parsing, identification and transformation of coordinate systems
@@ -22,7 +23,8 @@ scripts/             test data, comparisons with GDAL, benchmarks
 
 Rasters are held as `wbraster::Raster`: typed pixel buffers, band after band and row after row,
 with the georeferencing and CRS. `RasterDataset` adds the driver and whether nodata is declared.
-GeoTIFFs can also be opened lazily, to read windows and overviews without loading the image.
+GeoTIFFs and tile archives (PMTiles, MBTiles) can also be opened lazily, to read windows and
+overviews without loading the image.
 
 Vector datasets are `wbvector::Layer`s: features with OGC simple-feature geometries (with Z and
 M), typed attributes and a schema.

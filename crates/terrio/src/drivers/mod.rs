@@ -7,7 +7,7 @@ use std::path::Path;
 use wbraster::Raster;
 
 mod aaigrid;
-mod common;
+pub(crate) mod common;
 mod ehdr;
 mod envi;
 mod ers;
@@ -118,6 +118,10 @@ pub(crate) fn write(
         RasterDriver::Zarr => zarr::write_with(r, nodata, p, compression, &options.creation_options),
         RasterDriver::NetCDF => netcdf_write::write(r, nodata, p, co("FORMAT")),
         RasterDriver::GPKG => gpkg::write(r, nodata, p, compression.or(co("TILE_FORMAT")), co("RASTER_TABLE")),
+        RasterDriver::MBTiles | RasterDriver::PMTiles => {
+            let ds = RasterDataset { raster: r.clone(), driver, has_nodata: nodata.is_some() };
+            crate::tiles::write_raster(&ds, path, driver, options)
+        }
         // Formats without a CRS of their own: GDAL's sidecar holds it.
         RasterDriver::PCRaster | RasterDriver::GRASSASCIIGrid => {
             r.write(path, driver.to_wb()).map_err(Into::into).and_then(|()| common::write_pam(p, &r.crs))

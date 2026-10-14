@@ -28,8 +28,8 @@ In WebAssembly, these formats are read from and written to memory:
 
 | | Read | Write |
 |---|---|---|
-| Raster | GeoTIFF/COG, Esri ASCII grid, GeoPackage | GeoTIFF, COG (lossless compressions), Esri ASCII grid, GeoPackage |
-| Vector | GeoJSON, TopoJSON, FlatGeobuf\*, GeoPackage, CSV, GeoParquet, KML, KMZ, GML, GPX, OSM (PBF and XML), zip archives of these, and Shapefile and MapInfo (MIF and TAB) in zip archives | GeoJSON, TopoJSON, FlatGeobuf, GeoPackage, KML, KMZ, GML, GPX |
+| Raster | GeoTIFF/COG, Esri ASCII grid, GeoPackage, PMTiles and MBTiles (read by window, zoom levels as overviews) | GeoTIFF, COG (lossless compressions), Esri ASCII grid, GeoPackage, PMTiles, MBTiles |
+| Vector | GeoJSON, TopoJSON, FlatGeobuf\*, GeoPackage, CSV, GeoParquet, KML, KMZ, GML, GPX, OSM (PBF and XML), PMTiles, MBTiles, MVT tiles, zip archives of these, and Shapefile and MapInfo (MIF and TAB) in zip archives | GeoJSON, TopoJSON, FlatGeobuf, GeoPackage, KML, KMZ, GML, GPX, PMTiles, MBTiles (`minzoom`, `maxzoom` options) |
 
 \* The format library's FlatGeobuf reader overflows on large files in 32-bit WebAssembly; terrio's
 own FlatGeobuf driver will replace it.

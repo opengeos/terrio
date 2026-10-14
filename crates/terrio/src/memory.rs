@@ -8,11 +8,12 @@
 //! format reads and writes exactly as from files. WebAssembly builds have no file system and use
 //! in-memory codecs instead, for the formats that have one:
 //!
-//! - reading: GeoTIFF, Esri ASCII grid, GeoPackage (vector layers and rasters), GeoJSON, TopoJSON,
+//! - reading: GeoTIFF, Esri ASCII grid, GeoPackage (vector layers and rasters), PMTiles and
+//!   MBTiles (raster and vector tiles), MVT tiles, GeoJSON, TopoJSON,
 //!   FlatGeobuf, CSV, GeoParquet, KML, KMZ, GML, GPX, OSM PBF and XML, and zip archives of these,
 //!   and Shapefile and MapInfo (MIF/MID and TAB) in zip archives (or their `.shp` or `.mif` alone);
 //! - writing: GeoTIFF and COG (with lossless compressions), Esri ASCII grid, GeoPackage (vector
-//!   layers and rasters), GeoJSON, TopoJSON, FlatGeobuf, CSV, GeoParquet, KML, KMZ, GML (without
+//!   layers and rasters), PMTiles and MBTiles, GeoJSON, TopoJSON, FlatGeobuf, CSV, GeoParquet, KML, KMZ, GML (without
 //!   its schema) and GPX.
 //!
 //! Formats made of several files (a shapefile's `.shp`, `.dbf`, `.prj`...) are written as a zip
@@ -53,6 +54,9 @@ pub fn open_raster_bytes(bytes: Vec<u8>, name: &str) -> Result<RasterDataset> {
 /// Opens a raster from its bytes for reading by window. GeoTIFFs are decoded one window at a time;
 /// other formats are decoded whole.
 pub fn open_raster_lazy_bytes(bytes: Vec<u8>, name: &str) -> Result<LazyRaster> {
+    if crate::tiles::archive_kind(name).is_some() {
+        return Ok(LazyRaster::from_tiles(crate::tiles::raster::open_lazy_bytes(bytes)?));
+    }
     if codec::is_tiff(&bytes) {
         if let Some(r) = LazyRaster::from_tiff_bytes(bytes)? {
             return Ok(r);
@@ -225,6 +229,13 @@ pub(crate) mod codec {
             return r.read().map(Dataset::Raster);
         }
         let ext = extension(name).unwrap_or_default();
+        if bytes.starts_with(b"PMTiles") || ext == "mbtiles" {
+            return crate::tiles::open_dataset_bytes(bytes, name, options);
+        }
+        if (ext == "mvt" || ext == "gz" || ext == "pbf") && crate::tiles::is_mvt(&bytes) {
+            let layers = crate::tiles::vector::read_tile_file(&bytes, name, &options.tiles)?;
+            return Ok(Dataset::Vector(crate::dataset::finish_vector(layers, name, VectorDriver::MVT)));
+        }
         if bytes.starts_with(b"SQLite format 3\0") {
             return crate::drivers::gpkg::open_bytes(bytes, name, options);
         }
@@ -324,8 +335,13 @@ pub(crate) mod codec {
                 Ok(out)
             }
             RasterDriver::GPKG => crate::drivers::gpkg::to_bytes(&ds.raster, ds.nodata(), table, options.compression.as_deref()),
+            RasterDriver::MBTiles | RasterDriver::PMTiles => {
+                let kind =
+                    if driver == RasterDriver::MBTiles { crate::tiles::ArchiveKind::MBTiles } else { crate::tiles::ArchiveKind::PMTiles };
+                crate::tiles::raster_to_bytes(ds, &crate::tiles::raster_write_options(options)?, table, kind)
+            }
             d => Err(Error::Unsupported(format!(
-                "the {} format cannot be written to memory in this build (GTiff, COG, AAIGrid, GPKG)",
+                "the {} format cannot be written to memory in this build (GTiff, COG, AAIGrid, GPKG, MBTiles, PMTiles)",
                 d.name()
             ))),
         }
@@ -333,6 +349,12 @@ pub(crate) mod codec {
 
     /// Writes layers to bytes with the in-memory codecs.
     pub(crate) fn write_vector(layers: &[Layer], driver: VectorDriver, options: &VectorWriteOptions) -> Result<Vec<u8>> {
+        if matches!(driver, VectorDriver::MBTiles | VectorDriver::PMTiles) {
+            let kind =
+                if driver == VectorDriver::MBTiles { crate::tiles::ArchiveKind::MBTiles } else { crate::tiles::ArchiveKind::PMTiles };
+            let name = layers.first().map(|l| l.name.as_str()).unwrap_or("tiles");
+            return crate::tiles::vector_to_bytes(layers, &options.tiles, name, kind);
+        }
         crate::drivers::vector::write_bytes(layers, driver, options)?.ok_or_else(|| {
             Error::Unsupported(format!(
                 "the {} format cannot be written to memory in this build (GeoJSON, TopoJSON, FlatGeobuf, CSV, GeoParquet, \

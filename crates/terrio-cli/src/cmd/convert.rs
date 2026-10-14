@@ -37,18 +37,27 @@ pub struct Args {
     /// Convert a raster's overview N (0 is the largest) instead of its full resolution.
     #[arg(long, value_name = "N")]
     overview: Option<usize>,
-    /// A vector open option, as GDAL names it: `KEY=VALUE` (CSV: X_POSSIBLE_NAMES,
-    /// Y_POSSIBLE_NAMES, GEOM_POSSIBLE_NAMES, AUTODETECT_TYPE, KEEP_GEOM_COLUMNS, SEPARATOR).
+    /// An open option, as GDAL names it: `KEY=VALUE` (CSV: X_POSSIBLE_NAMES, Y_POSSIBLE_NAMES,
+    /// GEOM_POSSIBLE_NAMES, AUTODETECT_TYPE, KEEP_GEOM_COLUMNS, SEPARATOR; PMTiles, MBTiles and MVT:
+    /// ZOOM_LEVEL, CLIP).
     #[arg(long = "oo", value_name = "KEY=VALUE")]
     open_options: Vec<String>,
     /// A vector layer creation option, as GDAL names it: `KEY=VALUE` (CSV: GEOMETRY=AS_WKT|AS_XY;
-    /// GeoJSON: RFC7946=YES).
+    /// GeoJSON: RFC7946=YES; vector tiles: MINZOOM, MAXZOOM, EXTENT, BUFFER, SIMPLIFICATION,
+    /// SIMPLIFICATION_MAX_ZOOM, NAME, DESCRIPTION, TYPE).
     #[arg(long = "lco", value_name = "KEY=VALUE")]
     creation_options: Vec<String>,
     /// A raster creation option, as GDAL names it: `KEY=VALUE` (Zarr: FORMAT=ZARR_V2|ZARR_V3;
-    /// netCDF: FORMAT=NC|NC2|NC5).
+    /// netCDF: FORMAT=NC|NC2|NC5; PMTiles and MBTiles: TILE_FORMAT, RESAMPLING,
+    /// ZOOM_LEVEL_STRATEGY, MINZOOM, MAXZOOM, QUALITY, NAME, DESCRIPTION, TYPE).
     #[arg(long = "co", value_name = "KEY=VALUE")]
     raster_options: Vec<String>,
+    /// Tile archives (PMTiles, MBTiles, MVT): the lowest zoom level written.
+    #[arg(long)]
+    minzoom: Option<u8>,
+    /// Tile archives (PMTiles, MBTiles, MVT): the highest zoom level written.
+    #[arg(long)]
+    maxzoom: Option<u8>,
     #[command(flatten)]
     vector: super::vector_opts::VectorArgs,
     #[command(flatten)]
@@ -93,11 +102,15 @@ pub fn run(a: Args) -> terrio::Result<()> {
         let spatial_filter = a.vector.spatial_hint(&a.input);
         let mut options = VectorOpenOptions { layers: a.layers.clone(), spatial_filter, ..Default::default() };
         for (k, v) in key_values(&a.open_options)? {
-            if !options.csv.set(k, v)? {
+            if !options.csv.set(k, v)? && !options.tiles.set(k, v)? {
                 return Err(terrio::Error::InvalidArgument(format!("unknown open option '{k}'")));
             }
         }
-        Dataset::Vector(terrio::open_vector(&a.input, &options)?)
+        if terrio::tiles::is_archive(&a.input) {
+            terrio::tiles::open_dataset(&a.input, &options)?
+        } else {
+            Dataset::Vector(terrio::open_vector(&a.input, &options)?)
+        }
     };
     let t_srs = a.t_srs.as_deref().map(SpatialRef::parse).transpose()?;
     match ds {
@@ -114,7 +127,10 @@ pub fn run(a: Args) -> terrio::Result<()> {
                 let o = terrio::ops::warp::WarpOptions { dst_srs: Some(dst), ..Default::default() };
                 r = terrio::ops::warp::warp(&[&r], &o)?;
             }
-            let creation_options = key_values(&a.raster_options)?.into_iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+            let mut creation_options: Vec<(String, String)> =
+                key_values(&a.raster_options)?.into_iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+            creation_options.extend(a.minzoom.map(|z| ("MINZOOM".to_string(), z.to_string())));
+            creation_options.extend(a.maxzoom.map(|z| ("MAXZOOM".to_string(), z.to_string())));
             let opts = RasterWriteOptions { driver, compression: a.compress, tile_size: a.tile_size, bigtiff: a.bigtiff, creation_options };
             terrio::write_raster_dataset(&r, &a.output, &opts)
         }
@@ -126,8 +142,15 @@ pub fn run(a: Args) -> terrio::Result<()> {
                 .transpose()?;
             let layers = terrio::ops::vector_filter::translate(&v.layers, &a.vector.to_options(t_srs)?)?;
             let mut options = VectorWriteOptions { driver, ..Default::default() };
+            options.tiles.min_zoom = a.minzoom;
+            options.tiles.max_zoom = a.maxzoom;
+            let tiles_out = matches!(
+                driver.or_else(|| VectorDriver::for_extension(&a.output)),
+                Some(VectorDriver::MBTiles | VectorDriver::PMTiles | VectorDriver::MVT)
+            );
             for (k, v) in key_values(&a.creation_options)? {
-                if !options.csv.set(k, v)? && !options.geojson.set(k, v)? {
+                let known = if tiles_out { options.tiles.set(k, v)? } else { options.csv.set(k, v)? || options.geojson.set(k, v)? };
+                if !known {
                     return Err(terrio::Error::InvalidArgument(format!("unknown layer creation option '{k}'")));
                 }
             }

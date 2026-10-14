@@ -34,6 +34,9 @@ terrio convert dem.tif dem_cog.tif -f COG --compress DEFLATE
 terrio convert https://host/cog.tif w.tif --srcwin 1024 1024 512 512 --overview 0  # window of an overview
 terrio convert roads.geojson roads.fgb --t-srs EPSG:3857
 terrio convert countries.geojson europe.gpkg --where "CONTINENT = 'Europe'" --select NAME,POP_EST
+terrio info https://host/tiles.pmtiles           # PMTiles read in place (header, then the tiles needed)
+terrio convert landsat.tif landsat.pmtiles       # raster tiles in EPSG:3857, every zoom level (or .mbtiles)
+terrio convert countries.gpkg countries.pmtiles --maxzoom 6   # vector tiles (MVT), or -f MVT for a directory
 terrio rasterize counties.gpkg pop.tif -a POPULATION --tr 0.01 0.01 --ot Int32
 terrio polygonize landcover.tif landcover.gpkg --8
 terrio crs EPSG:32610 --to EPSG:4326 699960 3900000
@@ -178,6 +181,7 @@ python scripts/compare_ops_with_gdal.py ../terrio-data # compare translate, warp
 python scripts/compare_dem_calc_with_gdal.py ../terrio-data  # dem, calc, proximity and sieve vs GDAL
 python scripts/compare_stac_geozarr.py stac            # STAC footprints and STACIT mosaics vs GDAL (Earth Search)
 python scripts/compare_stac_geozarr.py geozarr ../terrio-data  # GeoZarr stores read by GDAL and rioxarray
+python scripts/compare_tiles_with_gdal.py ../terrio-data  # PMTiles, MBTiles and MVT vs GDAL's drivers
 python scripts/compare_pointclouds.py ../terrio-data   # point clouds: every value vs laspy, headers, COPC
                                                        # queries, grids and reprojection vs PDAL
 cd python && TERRIO_TEST_DATA=../../terrio-data pytest # Python bindings, arrays compared with osgeo.gdal's

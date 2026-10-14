@@ -14,6 +14,8 @@ terrio. `terrio formats` prints this list.
 | netCDF | netCDF classic and netCDF-4 (writes classic CDF-1/2/5) | ✓ | ✓ | nc, nc4, cdf |
 | HFA | ERDAS Imagine | ✓ | | img |
 | GPKG | GeoPackage tiles and gridded coverages | ✓ | ✓ | gpkg |
+| PMTiles | PMTiles v3 raster tiles (PNG, JPEG, WebP) | ✓ | ✓ | pmtiles |
+| MBTiles | MBTiles raster tiles (PNG, JPEG, WebP) | ✓ | ✓ | mbtiles |
 | VRT | GDAL Virtual Raster | ✓ | ✓ | vrt |
 | STACIT | Mosaics of STAC items' assets (`STACIT:"search or items":asset=name`) | ✓ | | |
 | ENVI | ENVI labelled raster | ✓ | ✓ | envi, hdr, dat, bsq, bip |
@@ -105,6 +107,9 @@ terrio info 'STAC:"https://earth-search.aws.element84.com/v1/collections/sentine
 | TopoJSON | TopoJSON | ✓ | ✓ | topojson |
 | MapInfo File | MapInfo TAB and interchange format | ✓ | ✓ | tab, mif |
 | OSM | OpenStreetMap PBF and XML | ✓ | | osm.pbf, osm |
+| PMTiles | PMTiles v3 vector tiles (MVT) | ✓ | ✓ | pmtiles |
+| MBTiles | MBTiles vector tiles (MVT) | ✓ | ✓ | mbtiles |
+| MVT | Mapbox Vector Tiles: a tile, or a directory of tiles | ✓ | ✓ | mvt, pbf |
 
 Layer and field models follow GDAL's: GPX has GDAL's five layers, KML has the LIBKML driver's
 fields, OSM has the `points`, `lines`, `multilinestrings`, `multipolygons` and `other_relations`
@@ -122,6 +127,54 @@ layers, and shapefile field names are truncated as GDAL truncates them.
 - **KML styles** (`<Style>`, `<StyleMap>`) are read into an `OGR_STYLE` field holding GDAL's style
   strings (`PEN(c:#FF0000FF,w:2.000000px);BRUSH(fc:#00FF0040)`), and written back as KML styles.
 
+## Tile archives
+
+PMTiles (v3) and MBTiles archives hold raster tiles or Mapbox Vector Tiles (MVT) in the Web
+Mercator tiling scheme (EPSG:3857). They open as GDAL's PMTiles, MBTiles and MVT drivers open
+them:
+
+- **Raster tiles** (PNG, JPEG, WebP) open as a raster in EPSG:3857 at the resolution of the
+  highest zoom level, with the lower zoom levels as overviews, read by window (only the tiles a
+  window needs are fetched and decoded). MBTiles extents come from the `bounds` metadata, and
+  MBTiles open as 4 bands (RGBA), as in GDAL's MBTiles driver; PMTiles extents are the header's
+  bounds aligned on the pixel grid, with the bands of their tiles, as in GDAL's PMTiles driver.
+- **Vector tiles** open as one layer per MVT layer the metadata declares (`vector_layers`), with
+  every feature of the tiles of the highest zoom level, its geometry in EPSG:3857 clipped to its
+  tile, an `mvt_id` field and the declared fields, typed with the tile statistics (`tilestats`)
+  as GDAL types them. A single tile (`.mvt`, `.pbf`) is georeferenced when its path ends in
+  `z/x/y.pbf`; a directory of `z/x/y.pbf` tiles with a `metadata.json` (as `ogr2ogr -f MVT`
+  writes) opens like an archive.
+
+Open options (`terrio convert --oo`, `VectorOpenOptions::tiles`): `ZOOM_LEVEL` (the zoom level
+read; lower ones are overviews of rasters) and `CLIP=NO` (keep features whole, buffer included).
+
+Rasters are written as GDAL's MBTiles driver writes them: reprojected to EPSG:3857 (bilinear) at
+the zoom level whose resolution is closest to the source's (`ZOOM_LEVEL_STRATEGY=AUTO`, `LOWER`
+or `UPPER`), with an alpha band when the source has one or is not in EPSG:3857, and placed on the
+tile grid by whole pixels. Unlike `gdal_translate -of MBTiles`, the lower zoom levels are written
+too, as `gdaladdo` would add them (and as GDAL's PMTiles driver writes them): down to the level
+whose single tile covers the raster, or `--minzoom`. Creation options (`--co`): `TILE_FORMAT`
+(`PNG`, `JPEG`, `WEBP` lossless), `QUALITY`, `RESAMPLING`, `ZOOM_LEVEL_STRATEGY`, `MINZOOM`,
+`MAXZOOM`, `NAME`, `DESCRIPTION`, `TYPE`. Tile archives hold 1 to 4 Byte bands: convert other
+data types first (`terrio translate --ot Byte --scale`).
+
+Vector layers are written as GDAL's MVT writer writes them: reprojected to EPSG:3857, cut into
+the tiles of zoom levels 0 to 5 (`--minzoom`, `--maxzoom`), each feature clipped to every tile it
+touches with a buffer of 80 units (of 4096), quantized to the tile grid, polygons wound as the
+specification asks, tiles over 500 kB encoded at lower resolutions then reduced to their largest
+features. Layer creation options (`--lco`): `MINZOOM`, `MAXZOOM`, `EXTENT`, `BUFFER`,
+`SIMPLIFICATION`, `SIMPLIFICATION_MAX_ZOOM`, `MAX_SIZE`, `MAX_FEATURES`, `NAME`, `DESCRIPTION`,
+`TYPE`. The metadata holds `vector_layers` and `tilestats`, so that GDAL and MapLibre read the
+fields and their types. `-f MVT` writes a directory of tiles with a `metadata.json`.
+
+Checked against GDAL 3.12 (`scripts/compare_tiles_with_gdal.py`): rasters written as MBTiles
+have GDAL's size, geotransform, zoom levels and tiles, with identical pixels at full resolution
+and overviews within one grey level for 99.8% to 100% of the pixels (GDAL's overview filter
+rounds a little differently); vector tiles written by GDAL (and by Tippecanoe) read as GDAL reads
+them, feature for feature; vector tiles written by terrio read in GDAL with GDAL's feature
+counts and areas. GDAL 3.12 reads PMTiles vector tiles only: raster PMTiles follow GDAL's
+development version.
+
 ## Point clouds
 
 | Name | Format | Read | Write | Extensions |
@@ -136,5 +189,5 @@ See [Point Clouds](point-clouds.md).
 
 The browser and Node.js package reads from bytes. JPEG 2000 is not available there. Formats made
 of several files (Shapefile, MapInfo MIF and TAB) are read from zip archives of their files;
-OSM is read from PBF or XML bytes. GeoPackage (layers and rasters) is read from and written to
-bytes.
+OSM is read from PBF or XML bytes. GeoPackage (layers and rasters), PMTiles and MBTiles (raster
+and vector tiles) are read from and written to bytes; MVT tiles are read from bytes.
