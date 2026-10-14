@@ -235,12 +235,36 @@ pub struct Transformer {
     src: wbp::Crs,
     dst: wbp::Crs,
     identity: bool,
+    /// Whether the datum change is a null ("ballpark") transformation, as PROJ uses for GDAL.
+    ballpark: bool,
+}
+
+/// Datums that PROJ (and so GDAL and `ogr2ogr`) transforms between with a null transformation
+/// by default: NAD83 and WGS 84 (EPSG transformation 1188 and PROJ's ballpark). wbprojection
+/// applies a Helmert shift of about a metre between them instead.
+const NULL_SHIFT_DATUMS: &[&str] = &["WGS 84", "NAD 83", "NAD83(NSRS2007)"];
+
+/// The projection engine's CRSs for a transformation from `src` to `dst`, with the source's datum
+/// replaced by the target's when GDAL would use a null datum transformation between them.
+pub(crate) fn wbp_pair(src: &SpatialRef, dst: &SpatialRef) -> Result<(wbp::Crs, wbp::Crs)> {
+    let (mut s, d) = (src.to_wbp()?, dst.to_wbp()?);
+    if is_ballpark_pair(&s, &d) {
+        s.datum = d.datum.clone();
+    }
+    Ok((s, d))
+}
+
+fn is_ballpark_pair(a: &wbp::Crs, b: &wbp::Crs) -> bool {
+    let (a, b) = (a.datum.name, b.datum.name);
+    a != b && NULL_SHIFT_DATUMS.contains(&a) && NULL_SHIFT_DATUMS.contains(&b)
 }
 
 impl Transformer {
     /// A transformer from `src` to `dst`.
     pub fn new(src: &SpatialRef, dst: &SpatialRef) -> Result<Self> {
-        Ok(Self { src: src.to_wbp()?, dst: dst.to_wbp()?, identity: src.same_as(dst) })
+        let (s, d) = (src.to_wbp()?, dst.to_wbp()?);
+        let ballpark = is_ballpark_pair(&s, &d);
+        Ok(Self { src: s, dst: d, identity: src.same_as(dst), ballpark })
     }
 
     /// Transforms one point.
@@ -248,12 +272,20 @@ impl Transformer {
         if self.identity {
             return Ok((x, y));
         }
+        if self.ballpark {
+            let (lon, lat) = self.src.inverse(x, y)?;
+            return Ok(self.dst.forward(lon, lat)?);
+        }
         Ok(self.src.transform_to(x, y, &self.dst)?)
     }
 
     /// Transforms a point with a height.
     pub fn transform_3d(&self, x: f64, y: f64, z: f64) -> Result<(f64, f64, f64)> {
         if self.identity {
+            return Ok((x, y, z));
+        }
+        if self.ballpark {
+            let (x, y) = self.transform(x, y)?;
             return Ok((x, y, z));
         }
         Ok(self.src.transform_to_3d(x, y, z, &self.dst)?)
@@ -302,6 +334,22 @@ mod tests {
         let esri = r#"PROJCS["NAD_1983_StatePlane_New_York_Long_Island_FIPS_3104_Feet",GEOGCS["GCS_North_American_1983",DATUM["D_North_American_1983",SPHEROID["GRS_1980",6378137.0,298.257222101]],PRIMEM["Greenwich",0.0],UNIT["Degree",0.0174532925199433]],PROJECTION["Lambert_Conformal_Conic"],PARAMETER["False_Easting",984250.0],PARAMETER["False_Northing",0.0],PARAMETER["Central_Meridian",-74.0],PARAMETER["Standard_Parallel_1",40.66666666666666],PARAMETER["Standard_Parallel_2",41.03333333333333],PARAMETER["Latitude_Of_Origin",40.16666666666666],UNIT["Foot_US",0.3048006096012192]]"#;
         assert_eq!(SpatialRef::parse(esri).unwrap().epsg, Some(2263));
         assert_eq!(SpatialRef::parse("EPSG:32633").unwrap().name().unwrap(), "WGS 84 / UTM zone 33N");
+    }
+
+    #[test]
+    fn nad83_to_wgs84_is_a_null_transformation_as_in_gdal() {
+        // echo "-106.001666667 40.001666667" | gdaltransform -s_srs EPSG:4269 -t_srs EPSG:32613
+        let t = Transformer::new(&SpatialRef::from_epsg(4269).unwrap(), &SpatialRef::from_epsg(32613).unwrap()).unwrap();
+        let (x, y) = t.transform(-106.001666667, 40.001666667).unwrap();
+        assert!((x - 414499.347197613).abs() < 1e-3, "{x}");
+        assert!((y - 4428422.65095327).abs() < 1e-3, "{y}");
+        // echo "-100 40" | gdaltransform -s_srs EPSG:4269 -t_srs EPSG:4326 -> -100 40
+        let t = Transformer::new(&SpatialRef::from_epsg(4269).unwrap(), &SpatialRef::from_epsg(4326).unwrap()).unwrap();
+        assert_eq!(t.transform(-100.0, 40.0).unwrap(), (-100.0, 40.0));
+        // ED50 keeps its datum shift: gdaltransform gives 9.99897347903267 44.9990669286146.
+        let t = Transformer::new(&SpatialRef::from_epsg(4230).unwrap(), &SpatialRef::from_epsg(4326).unwrap()).unwrap();
+        let (x, y) = t.transform(10.0, 45.0).unwrap();
+        assert!((x - 9.99897347903267).abs() < 1e-4 && (y - 44.9990669286146).abs() < 1e-4, "{x} {y}");
     }
 
     #[test]

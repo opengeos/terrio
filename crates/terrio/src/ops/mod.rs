@@ -416,24 +416,8 @@ fn default_nodata(dt: DataType) -> f64 {
     }
 }
 
-/// A coordinate transformation between two CRSs, choosing datum operations as PROJ does for
-/// GDAL by default: NAD83 and WGS 84 are treated as equivalent ("ballpark" transformation).
-pub(crate) struct Ct {
-    src: wbprojection::Crs,
-    dst: wbprojection::Crs,
-}
-
-impl Ct {
-    /// A transformation from `src` to `dst`.
-    pub(crate) fn new(src: &SpatialRef, dst: &SpatialRef) -> Result<Self> {
-        Ok(Self { src: src.to_wbp()?, dst: dst.to_wbp()? })
-    }
-
-    /// Transforms one point.
-    pub(crate) fn transform(&self, x: f64, y: f64) -> Result<(f64, f64)> {
-        Ok(self.src.transform_to_with_policy(x, y, &self.dst, wbprojection::CrsTransformPolicy::Auto)?)
-    }
-}
+/// The coordinate transformation the operations use (datum choices as GDAL makes them).
+pub(crate) use crate::crs::Transformer as Ct;
 
 /// Transforms a bounding box between two CRSs, as GDAL's `OGRCoordinateTransformation::TransformBounds`
 /// does with `densify` extra points per edge.

@@ -81,7 +81,25 @@ pub fn reproject_layer(layer: &Layer, dst: &crate::crs::SpatialRef) -> crate::Re
     if src.same_as(dst) {
         return Ok(layer.clone());
     }
-    let mut out = wbvector::reproject::layer_with_crs(layer, &src.to_wbp()?, &dst.to_wbp()?, dst.epsg)?;
+    let (s, d) = crate::crs::wbp_pair(&src, dst)?;
+    let mut out = wbvector::reproject::layer_with_crs(layer, &s, &d, dst.epsg)?;
     dst.apply_to_layer(&mut out);
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reprojects_nad83_like_ogr2ogr() {
+        // ogr2ogr -s_srs EPSG:4269 -t_srs EPSG:32613 of POINT (-106.001666667 40.001666667) gives
+        // POINT (414499.347197613 4428422.65095327): NAD83 to WGS 84 is a null transformation.
+        let mut layer = Layer::new("p");
+        layer.set_crs_epsg(Some(4269));
+        layer.add_feature(Some(Geometry::point(-106.001666667, 40.001666667)), &[]).unwrap();
+        let out = reproject_layer(&layer, &crate::crs::SpatialRef::from_epsg(32613).unwrap()).unwrap();
+        let Some(Geometry::Point(c)) = &out.features[0].geometry else { panic!("not a point") };
+        assert!((c.x - 414499.347197613).abs() < 1e-3 && (c.y - 4428422.65095327).abs() < 1e-3, "{} {}", c.x, c.y);
+    }
 }
