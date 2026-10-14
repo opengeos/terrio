@@ -16,6 +16,13 @@ terrio builds on the pure-Rust format libraries of
 the [`tiff`](https://crates.io/crates/tiff) crate, fixes for what the format libraries miss, and
 GDAL-style operations.
 
+Coordinate transformations match GDAL's: terrio carries the EPSG CRSs with the coordinate
+operations GDAL uses for them (generated from GDAL and PROJ by `scripts/gen_epsg_table.py`) and
+pure-Rust ports of the projections they need. For each of the 6,354 EPSG geographic and projected
+CRSs GDAL 3.12 transforms, transformations from and to WGS 84 agree with GDAL's within a
+centimetre, and 99 % of a sample of transformations between two CRSs within a metre (see
+`crates/terrio/tests/epsg_accuracy.rs`).
+
 ## Command line
 
 ```sh
@@ -125,6 +132,8 @@ python scripts/compare_vector_ops_with_gdal.py ../terrio-data  # convert options
 python scripts/compare_ops_with_gdal.py ../terrio-data # compare translate, warp and mosaic with GDAL's tools
 cd python && TERRIO_TEST_DATA=../../terrio-data pytest # Python bindings, arrays compared with osgeo.gdal's
 TERRIO_TEST_DATA=../terrio-data node --test js/tests/node.test.mjs  # WebAssembly build (after wasm-pack build, see js/)
+TERRIO_TEST_DATA=../terrio-data cargo test --release --test epsg_accuracy -- --nocapture
+                                                       # every EPSG CRS's transformations against GDAL's
 ```
 
 ## Layout
@@ -141,3 +150,10 @@ See [ROADMAP.md](ROADMAP.md) for what is planned and in what order.
 ## License
 
 MIT
+
+terrio's EPSG table (`crates/terrio/data/epsg.tsv.zst`) is derived from the
+[EPSG Geodetic Parameter Dataset](https://epsg.org), copyright the International Association of
+Oil & Gas Producers (IOGP), whose [terms of use](https://epsg.org/terms-of-use.html) permit its
+redistribution with this attribution; the table was produced with [PROJ](https://proj.org) and
+[GDAL](https://gdal.org). The projection formulas in `crates/terrio/src/crs/` are ported from
+PROJ (MIT licence).

@@ -28,8 +28,9 @@ of GDAL: the long tail of formats stays reachable through an optional GDAL backe
   schemas and geometry (on `geo-types`), and a driver registry with format detection.
 - Virtual file system: local files, HTTP(S) with range requests, S3 (with SigV4 signing), Google
   Cloud Storage and Azure; zip archives.
-- Coordinate reference systems: EPSG codes, WKT and PROJ strings in and out; transformations for
-  the common projections through `proj4rs`.
+- Coordinate reference systems: EPSG codes, WKT and PROJ strings in and out; transformations that
+  match GDAL's (units, axis orders, prime meridians and datum transformations) for every EPSG
+  geographic and projected CRS. Done.
 - GeoJSON and GeoTIFF read and write, so the model is proven on one vector and one raster format.
 - `terrio info` for any supported dataset.
 
@@ -84,7 +85,8 @@ of GDAL: the long tail of formats stays reachable through an optional GDAL backe
 
 ## Later
 
-- CRS: datum shift grids (NTv2, GeoTIFF grids), vertical datums, a bundled EPSG database.
+- CRS: datum shift grids (NTv2, GeoTIFF grids), vertical datums, time-dependent transformations
+  between dynamic datums (coordinate epochs).
 - NetCDF and HDF5 in pure Rust: classic and netCDF-4 reading and classic (CDF-1/2/5) writing are
   done; netCDF-4 writing and groups below the root remain.
 - JPEG 2000 and other compressed raster formats as pure-Rust decoders mature.
@@ -99,4 +101,8 @@ of GDAL: the long tail of formats stays reachable through an optional GDAL backe
 - HTTP goes through `ureq` (with rustls) and S3 requests are signed by terrio itself, rather than
   through `object_store`, to keep the API synchronous and the dependencies small.
 - GeoPackage uses `wbvector`'s pure-Rust SQLite engine, so no C dependency is needed.
-- The EPSG registry comes from `wbprojection`.
+- terrio carries its own EPSG table (`crates/terrio/data/epsg.tsv.zst`, about 220 KB, generated
+  from GDAL and PROJ by `scripts/gen_epsg_table.py`): the PROJ strings of the CRSs, their WKT and
+  the datum transformations GDAL lists for them, so that terrio picks the same transformation as
+  GDAL for each point. The projection formulas are PROJ's, ported to Rust; `wbprojection` remains
+  the fallback for projections EPSG CRSs do not use and for WKT 2 parsing.
