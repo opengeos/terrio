@@ -2,12 +2,18 @@
 //!
 //! Tables are laid out as GDAL lays them out: an `fid INTEGER PRIMARY KEY AUTOINCREMENT` column, a
 //! `geom` column declared with the type the features share (`GEOMETRY` when they differ), typed
-//! columns (`MEDIUMINT`/`INTEGER`,
-//! `REAL`, `TEXT`, `BOOLEAN`, `DATE`, `DATETIME`, `BLOB`) and the layer's CRS in
-//! `gpkg_spatial_ref_sys`: its EPSG code when it is known for sure, otherwise its WKT under an
-//! organization of `NONE`, and the undefined SRS (-1) without a CRS. No spatial index is written.
+//! columns (`MEDIUMINT`/`INTEGER`, `REAL`, `TEXT`, `BOOLEAN`, `DATE`, `DATETIME`, `BLOB`) and the
+//! layer's CRS in `gpkg_spatial_ref_sys`: its EPSG code when it is known for sure, otherwise its
+//! WKT under an organization of `NONE`, and GDAL's undefined SRS (99999) without a CRS. Layers
+//! without geometries, geometry type or CRS are attribute tables. Each geometry column gets an
+//! R-tree spatial index (the `rtree_<table>_<column>` virtual table, its shadow tables filled in
+//! and the triggers that keep it up to date), and `gpkg_ogr_contents` holds the feature counts,
+//! as GDAL writes them.
+//!
+//! [`Builder`] gathers vector layers and raster tile tables (written by the raster driver) into
+//! one file.
 
-use super::sqlite::{self, Table, Value};
+use super::sqlite::{self, SchemaObject, Table, Value};
 use crate::crs::SpatialRef;
 use crate::{Error, Result};
 use wbvector::{FieldType, FieldValue, Geometry, Layer};
@@ -54,56 +60,432 @@ fn gpkg_geometry(g: &Geometry, srs_id: i32) -> Vec<u8> {
     out
 }
 
-fn encode(
-    layers: &[Layer],
-    srs: &mut Vec<Vec<Value>>,
-    contents: &mut Vec<Vec<Value>>,
-    columns: &mut Vec<Vec<Value>>,
-) -> Result<Vec<Table>> {
-    let mut tables = Vec::new();
-    let mut names: Vec<String> = Vec::new();
-    let mut custom = 100000;
-    for layer in layers {
-        if names.iter().any(|n| n.eq_ignore_ascii_case(&layer.name)) {
-            return Err(Error::InvalidArgument(format!("two layers are named '{}'", layer.name)));
-        }
-        names.push(layer.name.clone());
+const UNDEFINED_WKT: &str =
+    r#"LOCAL_CS["Undefined SRS",LOCAL_DATUM["unknown",32767],UNIT["unknown",0],AXIS["Easting",EAST],AXIS["Northing",NORTH]]"#;
+const OGR_CONTENTS_SQL: &str = "CREATE TABLE gpkg_ogr_contents(table_name TEXT NOT NULL PRIMARY KEY,feature_count INTEGER DEFAULT NULL)";
+const EXTENSIONS_SQL: &str = "CREATE TABLE gpkg_extensions (table_name TEXT,column_name TEXT,extension_name TEXT NOT NULL,definition TEXT NOT NULL,scope TEXT NOT NULL,CONSTRAINT ge_tce UNIQUE (table_name, column_name, extension_name))";
+const TILE_MATRIX_SET_SQL: &str = "CREATE TABLE gpkg_tile_matrix_set (table_name TEXT NOT NULL PRIMARY KEY,srs_id INTEGER NOT NULL,min_x DOUBLE NOT NULL,min_y DOUBLE NOT NULL,max_x DOUBLE NOT NULL,max_y DOUBLE NOT NULL,CONSTRAINT fk_gtms_table_name FOREIGN KEY (table_name) REFERENCES gpkg_contents(table_name),CONSTRAINT fk_gtms_srs FOREIGN KEY (srs_id) REFERENCES gpkg_spatial_ref_sys (srs_id))";
+const TILE_MATRIX_SQL: &str = "CREATE TABLE gpkg_tile_matrix (table_name TEXT NOT NULL,zoom_level INTEGER NOT NULL,matrix_width INTEGER NOT NULL,matrix_height INTEGER NOT NULL,tile_width INTEGER NOT NULL,tile_height INTEGER NOT NULL,pixel_x_size DOUBLE NOT NULL,pixel_y_size DOUBLE NOT NULL,CONSTRAINT pk_ttm PRIMARY KEY (table_name, zoom_level),CONSTRAINT fk_tmm_table_name FOREIGN KEY (table_name) REFERENCES gpkg_contents(table_name))";
+const METADATA_SQL: &str = "CREATE TABLE gpkg_metadata (id INTEGER CONSTRAINT m_pk PRIMARY KEY ASC NOT NULL,md_scope TEXT NOT NULL DEFAULT 'dataset',md_standard_uri TEXT NOT NULL,mime_type TEXT NOT NULL DEFAULT 'text/xml',metadata TEXT NOT NULL DEFAULT '')";
+const METADATA_REFERENCE_SQL: &str = "CREATE TABLE gpkg_metadata_reference (reference_scope TEXT NOT NULL,table_name TEXT,column_name TEXT,row_id_value INTEGER,timestamp DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),md_file_id INTEGER NOT NULL,md_parent_id INTEGER,CONSTRAINT crmr_mfi_fk FOREIGN KEY (md_file_id) REFERENCES gpkg_metadata(id),CONSTRAINT crmr_mpi_fk FOREIGN KEY (md_parent_id) REFERENCES gpkg_metadata(id))";
+const COVERAGE_SQL: &str = "CREATE TABLE gpkg_2d_gridded_coverage_ancillary (id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,tile_matrix_set_name TEXT NOT NULL UNIQUE,datatype TEXT NOT NULL DEFAULT 'integer',scale REAL NOT NULL DEFAULT 1.0,offset REAL NOT NULL DEFAULT 0.0,precision REAL DEFAULT 1.0,data_null REAL,grid_cell_encoding TEXT DEFAULT 'grid-value-is-center',uom TEXT,field_name TEXT DEFAULT 'Height',quantity_definition TEXT DEFAULT 'Height',CONSTRAINT fk_g2dgtct_name FOREIGN KEY(tile_matrix_set_name) REFERENCES gpkg_tile_matrix_set ( table_name ) CHECK (datatype in ('integer','float')))";
+const TILE_ANCILLARY_SQL: &str = "CREATE TABLE gpkg_2d_gridded_tile_ancillary (id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,tpudt_name TEXT NOT NULL,tpudt_id INTEGER NOT NULL,scale REAL NOT NULL DEFAULT 1.0,offset REAL NOT NULL DEFAULT 0.0,min REAL DEFAULT NULL,max REAL DEFAULT NULL,mean REAL DEFAULT NULL,std_dev REAL DEFAULT NULL,CONSTRAINT fk_g2dgtat_name FOREIGN KEY (tpudt_name) REFERENCES gpkg_contents(table_name),UNIQUE (tpudt_name, tpudt_id))";
+const COVERAGE_EXTENSION: &str = "http://docs.opengeospatial.org/is/17-066r1/17-066r1.html";
+const METADATA_EXTENSION: &str = "http://www.geopackage.org/spec120/#extension_metadata";
 
-        // The CRS.
-        let s = SpatialRef::from_layer(layer);
-        let srs_id: i64 = match super::trusted_epsg(layer) {
-            _ if s.is_unknown() => -1,
+/// The triggers that keep `gpkg_tile_matrix` valid, as GDAL creates them.
+fn tile_matrix_triggers() -> Vec<SchemaObject> {
+    let mut out = Vec::new();
+    for (column, rule, cond) in [
+        ("zoom_level", "zoom_level cannot be less than 0", "(NEW.zoom_level < 0)"),
+        ("matrix_width", "matrix_width cannot be less than 1", "(NEW.matrix_width < 1)"),
+        ("matrix_height", "matrix_height cannot be less than 1", "(NEW.matrix_height < 1)"),
+        ("pixel_x_size", "pixel_x_size must be greater than 0", "NOT (NEW.pixel_x_size > 0)"),
+        ("pixel_y_size", "pixel_y_size must be greater than 0", "NOT (NEW.pixel_y_size > 0)"),
+    ] {
+        for (op, of) in [("insert", "INSERT"), ("update", &*format!("UPDATE OF {column}"))] {
+            let name = format!("gpkg_tile_matrix_{column}_{op}");
+            out.push(SchemaObject {
+                kind: "trigger",
+                sql: format!(
+                    "CREATE TRIGGER '{name}' BEFORE {of} ON 'gpkg_tile_matrix' FOR EACH ROW BEGIN SELECT RAISE(ABORT, '{op} on table ''gpkg_tile_matrix'' violates constraint: {rule}') WHERE {cond}; END"
+                ),
+                name,
+                table: "gpkg_tile_matrix".into(),
+            });
+        }
+    }
+    out
+}
+
+/// The triggers that keep a tile table consistent with `gpkg_tile_matrix`, as GDAL creates them.
+pub(crate) fn tile_table_triggers(table: &str) -> Vec<SchemaObject> {
+    let t = table.replace('\'', "''");
+    let q = quote(table);
+    let mut out = Vec::new();
+    for op in ["insert", "update"] {
+        let of = if op == "insert" { "INSERT" } else { "UPDATE OF" };
+        let col = |c: &str| if op == "insert" { String::new() } else { format!(" {c}") };
+        let zoom = format!("{}_zoom_{op}", table);
+        out.push(SchemaObject {
+            kind: "trigger",
+            sql: format!(
+                "CREATE TRIGGER {} BEFORE {of}{} ON {q} FOR EACH ROW BEGIN SELECT RAISE(ABORT, '{op} on table ''{t}'' violates constraint: zoom_level not specified for table in gpkg_tile_matrix') WHERE NOT (NEW.zoom_level IN (SELECT zoom_level FROM gpkg_tile_matrix WHERE lower(table_name) = lower('{t}'))) ; END",
+                quote(&zoom),
+                col("zoom_level")
+            ),
+            name: zoom,
+            table: table.into(),
+        });
+        for (c, m) in [("tile_column", "matrix_width"), ("tile_row", "matrix_height")] {
+            let name = format!("{table}_{c}_{op}");
+            out.push(SchemaObject {
+                kind: "trigger",
+                sql: format!(
+                    "CREATE TRIGGER {} BEFORE {of}{} ON {q} FOR EACH ROW BEGIN SELECT RAISE(ABORT, '{op} on table ''{t}'' violates constraint: {c} cannot be < 0') WHERE (NEW.{c} < 0) ; SELECT RAISE(ABORT, '{op} on table ''{t}'' violates constraint: {c} must by < {m} specified for table and zoom level in gpkg_tile_matrix') WHERE NOT (NEW.{c} < (SELECT {m} FROM gpkg_tile_matrix WHERE lower(table_name) = lower('{t}') AND zoom_level = NEW.zoom_level)); END",
+                    quote(&name),
+                    col(c)
+                ),
+                name,
+                table: table.into(),
+            });
+        }
+    }
+    out
+}
+
+/// Rounds down to a float, as SQLite's R-tree stores lower bounds.
+fn f32_down(d: f64) -> f32 {
+    let f = d as f32;
+    if f64::from(f) > d { (d * if d < 0.0 { 1.0 + 1.0 / 8_388_608.0 } else { 1.0 - 1.0 / 8_388_608.0 }) as f32 } else { f }
+}
+
+/// Rounds up to a float, as SQLite's R-tree stores upper bounds.
+fn f32_up(d: f64) -> f32 {
+    let f = d as f32;
+    if f64::from(f) < d { (d * if d < 0.0 { 1.0 - 1.0 / 8_388_608.0 } else { 1.0 + 1.0 / 8_388_608.0 }) as f32 } else { f }
+}
+
+/// The most entries in a node of SQLite's R-tree (`RTREE_MAXCELLS`).
+const RTREE_MAX_CELLS: usize = 51;
+/// The bytes of an R-tree node of two dimensions: the header and 51 cells of 24 bytes.
+const RTREE_NODE_SIZE: usize = 4 + 24 * RTREE_MAX_CELLS;
+
+/// An R-tree entry: an id (a feature id, or a child node) and its box `[minx, maxx, miny, maxy]`.
+type RtreeEntry = (i64, [f32; 4]);
+
+fn union(entries: &[RtreeEntry]) -> [f32; 4] {
+    entries.iter().fold([f32::INFINITY, f32::NEG_INFINITY, f32::INFINITY, f32::NEG_INFINITY], |a, (_, b)| {
+        [a[0].min(b[0]), a[1].max(b[1]), a[2].min(b[2]), a[3].max(b[3])]
+    })
+}
+
+/// Groups entries into nodes of at most 51 by sort-tile-recursive packing.
+fn str_pack(mut entries: Vec<RtreeEntry>) -> Vec<Vec<RtreeEntry>> {
+    let n = entries.len();
+    let nodes = n.div_ceil(RTREE_MAX_CELLS).max(1);
+    let slices = (nodes as f64).sqrt().ceil() as usize;
+    let per_slice = slices * RTREE_MAX_CELLS;
+    let cx = |e: &RtreeEntry| f64::from(e.1[0]) + f64::from(e.1[1]);
+    let cy = |e: &RtreeEntry| f64::from(e.1[2]) + f64::from(e.1[3]);
+    entries.sort_by(|a, b| cx(a).total_cmp(&cx(b)));
+    let mut out = Vec::with_capacity(nodes);
+    for slice in entries.chunks_mut(per_slice) {
+        slice.sort_by(|a, b| cy(a).total_cmp(&cy(b)));
+        out.extend(slice.chunks(RTREE_MAX_CELLS).map(<[RtreeEntry]>::to_vec));
+    }
+    out
+}
+
+/// The shadow tables of a two-dimensional SQLite R-tree holding the boxes, built in one go:
+/// `(node rows, rowid rows, parent rows)`.
+type RtreeRows = (Vec<(i64, Vec<Value>)>, Vec<(i64, Vec<Value>)>, Vec<(i64, Vec<Value>)>);
+
+fn build_rtree(entries: Vec<RtreeEntry>) -> RtreeRows {
+    let encode = |depth: u16, cells: &[RtreeEntry]| {
+        let mut b = Vec::with_capacity(RTREE_NODE_SIZE);
+        b.extend_from_slice(&depth.to_be_bytes());
+        b.extend_from_slice(&(cells.len() as u16).to_be_bytes());
+        for (id, bx) in cells {
+            b.extend_from_slice(&id.to_be_bytes());
+            for v in bx {
+                b.extend_from_slice(&v.to_be_bytes());
+            }
+        }
+        b.resize(RTREE_NODE_SIZE, 0);
+        b
+    };
+    let (mut nodes, mut rowids, mut parents) = (Vec::new(), Vec::new(), Vec::new());
+    if entries.is_empty() {
+        nodes.push((1, vec![Value::Null, Value::Blob(vec![0; RTREE_NODE_SIZE])]));
+        return (nodes, rowids, parents);
+    }
+    // Levels from the leaves up; node numbers are given once the root (node 1) is known.
+    let mut levels: Vec<Vec<Vec<RtreeEntry>>> = vec![str_pack(entries)];
+    while levels.last().is_some_and(|l| l.len() > 1) {
+        let last = levels.last().map(Vec::as_slice).unwrap_or_default();
+        // Placeholder ids: the index of the child in its level.
+        let up: Vec<RtreeEntry> = last.iter().enumerate().map(|(i, cells)| (i as i64, union(cells))).collect();
+        levels.push(str_pack(up));
+    }
+    // Number the nodes from the root down.
+    let depth = levels.len() - 1;
+    let mut numbers: Vec<Vec<i64>> = levels.iter().map(|l| vec![0; l.len()]).collect();
+    let mut next = 1;
+    for level in (0..levels.len()).rev() {
+        for n in numbers[level].iter_mut() {
+            *n = next;
+            next += 1;
+        }
+    }
+    for (level, nodes_at) in levels.iter().enumerate() {
+        for (i, cells) in nodes_at.iter().enumerate() {
+            let me = numbers[level][i];
+            let cells: Vec<RtreeEntry> = if level == 0 {
+                for (id, _) in cells {
+                    rowids.push((*id, vec![Value::Null, Value::Int(me)]));
+                }
+                cells.clone()
+            } else {
+                cells
+                    .iter()
+                    .map(|(child, bx)| {
+                        let child = numbers[level - 1][*child as usize];
+                        parents.push((child, vec![Value::Null, Value::Int(me)]));
+                        (child, *bx)
+                    })
+                    .collect()
+            };
+            let d = if level == depth { depth as u16 } else { 0 };
+            nodes.push((me, vec![Value::Null, Value::Blob(encode(d, &cells))]));
+        }
+    }
+    nodes.sort_by_key(|(n, _)| *n);
+    rowids.sort_by_key(|(n, _)| *n);
+    parents.sort_by_key(|(n, _)| *n);
+    (nodes, rowids, parents)
+}
+
+/// The R-tree index of a feature table's geometry column, as GDAL creates it: the virtual table,
+/// its shadow tables, and the triggers that keep it up to date.
+fn rtree_index(table: &str, column: &str, entries: Vec<RtreeEntry>) -> (Vec<Table>, Vec<SchemaObject>) {
+    let rt = format!("rtree_{table}_{column}");
+    let (t, c, r) = (quote(table), quote(column), quote(&rt));
+    let (nodes, rowids, parents) = build_rtree(entries);
+    let tables = vec![
+        Table {
+            name: format!("{rt}_rowid"),
+            sql: format!("CREATE TABLE {}(rowid INTEGER PRIMARY KEY,nodeno)", quote(&format!("{rt}_rowid"))),
+            rows: rowids,
+            autoindexes: vec![],
+        },
+        Table {
+            name: format!("{rt}_node"),
+            sql: format!("CREATE TABLE {}(nodeno INTEGER PRIMARY KEY,data)", quote(&format!("{rt}_node"))),
+            rows: nodes,
+            autoindexes: vec![],
+        },
+        Table {
+            name: format!("{rt}_parent"),
+            sql: format!("CREATE TABLE {}(nodeno INTEGER PRIMARY KEY,parentnode)", quote(&format!("{rt}_parent"))),
+            rows: parents,
+            autoindexes: vec![],
+        },
+    ];
+    let bounds = |g: &str| format!("ST_MinX({g}), ST_MaxX({g}),ST_MinY({g}), ST_MaxY({g})");
+    let new = format!("NEW.{c}");
+    let triggers = [
+        (
+            "insert",
+            format!(
+                "AFTER INSERT ON {t} WHEN (new.{c} NOT NULL AND NOT ST_IsEmpty(NEW.{c})) BEGIN INSERT OR REPLACE INTO {r} VALUES (NEW.\"fid\",{}); END",
+                bounds(&new)
+            ),
+        ),
+        (
+            "update6",
+            format!(
+                "AFTER UPDATE OF {c} ON {t} WHEN OLD.\"fid\" = NEW.\"fid\" AND (NEW.{c} NOTNULL AND NOT ST_IsEmpty(NEW.{c})) AND (OLD.{c} NOTNULL AND NOT ST_IsEmpty(OLD.{c})) BEGIN UPDATE {r} SET minx = ST_MinX({new}), maxx = ST_MaxX({new}),miny = ST_MinY({new}), maxy = ST_MaxY({new}) WHERE id = NEW.\"fid\";END"
+            ),
+        ),
+        (
+            "update7",
+            format!(
+                "AFTER UPDATE OF {c} ON {t} WHEN OLD.\"fid\" = NEW.\"fid\" AND (NEW.{c} NOTNULL AND NOT ST_IsEmpty(NEW.{c})) AND (OLD.{c} ISNULL OR ST_IsEmpty(OLD.{c})) BEGIN INSERT INTO {r} VALUES (NEW.\"fid\",{}); END",
+                bounds(&new)
+            ),
+        ),
+        (
+            "update2",
+            format!(
+                "AFTER UPDATE OF {c} ON {t} WHEN OLD.\"fid\" = NEW.\"fid\" AND (NEW.{c} ISNULL OR ST_IsEmpty(NEW.{c})) BEGIN DELETE FROM {r} WHERE id = OLD.\"fid\"; END"
+            ),
+        ),
+        (
+            "update5",
+            format!(
+                "AFTER UPDATE ON {t} WHEN OLD.\"fid\" != NEW.\"fid\" AND (NEW.{c} NOTNULL AND NOT ST_IsEmpty(NEW.{c})) BEGIN DELETE FROM {r} WHERE id = OLD.\"fid\"; INSERT OR REPLACE INTO {r} VALUES (NEW.\"fid\",{}); END",
+                bounds(&new)
+            ),
+        ),
+        (
+            "update4",
+            format!(
+                "AFTER UPDATE ON {t} WHEN OLD.\"fid\" != NEW.\"fid\" AND (NEW.{c} ISNULL OR ST_IsEmpty(NEW.{c})) BEGIN DELETE FROM {r} WHERE id IN (OLD.\"fid\", NEW.\"fid\"); END"
+            ),
+        ),
+        ("delete", format!("AFTER DELETE ON {t} WHEN old.{c} NOT NULL BEGIN DELETE FROM {r} WHERE id = OLD.\"fid\"; END")),
+    ];
+    let mut objects = vec![SchemaObject {
+        kind: "table",
+        name: rt.clone(),
+        table: rt.clone(),
+        sql: format!("CREATE VIRTUAL TABLE {r} USING rtree(id, minx, maxx, miny, maxy)"),
+    }];
+    for (suffix, body) in triggers {
+        let name = format!("{rt}_{suffix}");
+        objects.push(SchemaObject { kind: "trigger", sql: format!("CREATE TRIGGER {} {body}", quote(&name)), name, table: table.into() });
+    }
+    (tables, objects)
+}
+
+/// A GeoPackage being built: vector layers and raster tile tables, written in one go.
+pub(crate) struct Builder {
+    srs: Vec<Vec<Value>>,
+    contents: Vec<Vec<Value>>,
+    geometry_columns: Vec<Vec<Value>>,
+    ogr_contents: Vec<Vec<Value>>,
+    extensions: Vec<Vec<Value>>,
+    tile_matrix_set: Vec<Vec<Value>>,
+    tile_matrix: Vec<Vec<Value>>,
+    metadata: Vec<Vec<Value>>,
+    metadata_reference: Vec<Vec<Value>>,
+    coverage: Vec<Vec<Value>>,
+    tile_ancillary: Vec<Vec<Value>>,
+    tables: Vec<Table>,
+    objects: Vec<SchemaObject>,
+    /// `sqlite_sequence`: the largest id of each AUTOINCREMENT table.
+    sequence: Vec<(String, i64)>,
+    names: Vec<String>,
+    custom_srs: i64,
+}
+
+impl Default for Builder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Builder {
+    /// A GeoPackage with the undefined and WGS 84 SRSs.
+    pub(crate) fn new() -> Self {
+        let srs = vec![
+            vec![
+                Value::Text("Undefined Cartesian SRS".into()),
+                Value::Null,
+                Value::Text("NONE".into()),
+                Value::Int(-1),
+                Value::Text("undefined".into()),
+                Value::Text("undefined Cartesian coordinate reference system".into()),
+            ],
+            vec![
+                Value::Text("Undefined geographic SRS".into()),
+                Value::Null,
+                Value::Text("NONE".into()),
+                Value::Int(0),
+                Value::Text("undefined".into()),
+                Value::Text("undefined geographic coordinate reference system".into()),
+            ],
+            vec![
+                Value::Text("WGS 84 geodetic".into()),
+                Value::Null,
+                Value::Text("EPSG".into()),
+                Value::Int(4326),
+                Value::Text(WGS84_WKT.into()),
+                Value::Text("longitude/latitude coordinates in decimal degrees on the WGS 84 spheroid".into()),
+            ],
+        ];
+        Self {
+            srs,
+            contents: Vec::new(),
+            geometry_columns: Vec::new(),
+            ogr_contents: Vec::new(),
+            extensions: Vec::new(),
+            tile_matrix_set: Vec::new(),
+            tile_matrix: Vec::new(),
+            metadata: Vec::new(),
+            metadata_reference: Vec::new(),
+            coverage: Vec::new(),
+            tile_ancillary: Vec::new(),
+            tables: Vec::new(),
+            objects: tile_matrix_triggers(),
+            sequence: Vec::new(),
+            names: Vec::new(),
+            custom_srs: 100000,
+        }
+    }
+
+    /// Reserves a table name (case-insensitively unique).
+    fn claim(&mut self, name: &str) -> Result<()> {
+        if self.names.iter().any(|n| n.eq_ignore_ascii_case(name)) {
+            return Err(Error::InvalidArgument(format!("two tables are named '{name}'")));
+        }
+        self.names.push(name.to_string());
+        Ok(())
+    }
+
+    /// The `srs_id` of a CRS, adding it to `gpkg_spatial_ref_sys` when needed. `epsg` is the
+    /// code it is known by for sure, and `wkt` the definition to store (by default, the CRS's).
+    pub(crate) fn srs_id(&mut self, s: &SpatialRef, epsg: Option<u32>, wkt: Option<String>) -> i64 {
+        if s.is_unknown() {
+            // GDAL's undefined SRS.
+            if !self.srs.iter().any(|r| r[3] == Value::Int(99999)) {
+                self.srs.push(vec![
+                    Value::Text("Undefined SRS".into()),
+                    Value::Null,
+                    Value::Text("GDAL".into()),
+                    Value::Int(99999),
+                    Value::Text(UNDEFINED_WKT.into()),
+                    Value::Text("Custom undefined coordinate reference system".into()),
+                ]);
+            }
+            return 99999;
+        }
+        match epsg {
             Some(4326) => 4326,
             Some(code) => {
-                if !srs.iter().any(|r| r[1] == Value::Null && r[3] == Value::Int(code as i64)) {
-                    let def = super::output_wkt(layer).unwrap_or_default();
-                    srs.push(vec![
+                if !self.srs.iter().any(|r| r[2] == Value::Text("EPSG".into()) && r[3] == Value::Int(code as i64)) {
+                    self.srs.push(vec![
                         Value::Text(s.name().unwrap_or_else(|| format!("EPSG:{code}"))),
                         Value::Null,
                         Value::Text("EPSG".into()),
                         Value::Int(code as i64),
-                        Value::Text(def),
+                        Value::Text(wkt.unwrap_or_default()),
                         Value::Null,
                     ]);
                 }
                 code as i64
             }
             None => {
-                custom += 1;
-                srs.push(vec![
+                let def = wkt.or_else(|| s.to_wkt()).unwrap_or_default();
+                if let Some(r) = self.srs.iter().find(|r| r[2] == Value::Text("NONE".into()) && r[4] == Value::Text(def.clone()))
+                    && let Value::Int(id) = r[3]
+                {
+                    return id;
+                }
+                self.custom_srs += 1;
+                self.srs.push(vec![
                     Value::Text(s.name().unwrap_or_else(|| "Unknown".into())),
                     Value::Null,
                     Value::Text("NONE".into()),
-                    Value::Int(custom),
-                    Value::Text(s.to_wkt().unwrap_or_default()),
+                    Value::Int(self.custom_srs),
+                    Value::Text(def),
                     Value::Null,
                 ]);
-                custom
+                self.custom_srs
             }
-        };
+        }
+    }
+
+    fn extension(&mut self, table: Option<&str>, column: Option<&str>, name: &str, definition: &str, scope: &str) {
+        let text = |s: Option<&str>| s.map_or(Value::Null, |s| Value::Text(s.into()));
+        let row = vec![text(table), text(column), Value::Text(name.into()), Value::Text(definition.into()), Value::Text(scope.into())];
+        if !self.extensions.contains(&row) {
+            self.extensions.push(row);
+        }
+    }
+
+    /// Adds a vector layer, with its R-tree index.
+    pub(crate) fn add_layer(&mut self, layer: &Layer) -> Result<()> {
+        self.claim(&layer.name)?;
+        // A layer without geometries, a geometry type or a CRS is an attribute table, as GDAL
+        // writes one.
+        let all_none = layer.features.iter().all(|f| f.geometry.is_none());
+        let s = SpatialRef::from_layer(layer);
+        let spatial = !(all_none && layer.geom_type.is_none() && s.is_unknown());
+        let srs_id = if spatial { self.srs_id(&s, super::trusted_epsg(layer), super::output_wkt(layer)) } else { 0 };
 
         // The geometry type the features share, as GDAL declares it (GEOMETRY when they differ).
-        let all_none = layer.features.iter().all(|f| f.geometry.is_none());
         let declared = if all_none { layer.geom_type } else { super::uniform_type(layer) };
         let type_name = declared.map_or("GEOMETRY".to_string(), |t| t.as_str().to_ascii_uppercase());
         let has_z = layer.features.iter().filter_map(|f| f.geometry.as_ref()).any(crate::vector::geometry_has_z);
@@ -117,10 +499,13 @@ fn encode(
             ids.dedup();
             n == layer.len() && ids.len() == n
         });
-        let mut col_names: Vec<String> = vec!["fid".into(), "geom".into()];
+        let mut col_names: Vec<String> = vec!["fid".into()];
         let mut kept = Vec::new();
-        let mut sql =
-            format!("CREATE TABLE {} ( \"fid\" INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, \"geom\" {type_name}", quote(&layer.name));
+        let mut sql = format!("CREATE TABLE {} ( \"fid\" INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL", quote(&layer.name));
+        if spatial {
+            col_names.push("geom".into());
+            sql.push_str(&format!(", \"geom\" {type_name}"));
+        }
         for (i, f) in fields.iter().enumerate() {
             if Some(i) == fid_field {
                 continue;
@@ -151,22 +536,24 @@ fn encode(
         sql.push(')');
 
         let mut rows = Vec::with_capacity(layer.len());
+        let mut entries: Vec<RtreeEntry> = Vec::with_capacity(layer.len());
         let mut bounds: Option<[f64; 4]> = None;
         for (n, f) in layer.features.iter().enumerate() {
             let rowid = fid_field.and_then(|i| f.attributes.get(i)?.as_i64()).unwrap_or(n as i64 + 1);
             let geom = match &f.geometry {
                 Some(g) => {
-                    if let Some(b) = g.bbox() {
+                    if let Some(b) = g.bbox().filter(|b| b.min_x.is_finite() && b.min_y.is_finite()) {
                         bounds = Some(match bounds {
                             None => [b.min_x, b.min_y, b.max_x, b.max_y],
                             Some(a) => [a[0].min(b.min_x), a[1].min(b.min_y), a[2].max(b.max_x), a[3].max(b.max_y)],
                         });
+                        entries.push((rowid, [f32_down(b.min_x), f32_up(b.max_x), f32_down(b.min_y), f32_up(b.max_y)]));
                     }
                     Value::Blob(gpkg_geometry(g, srs_id as i32))
                 }
                 None => Value::Null,
             };
-            let mut values = vec![Value::Null, geom];
+            let mut values = if spatial { vec![Value::Null, geom] } else { vec![Value::Null] };
             for &i in &kept {
                 let t = fields[i].field_type;
                 values.push(match f.attributes.get(i).unwrap_or(&FieldValue::Null) {
@@ -186,9 +573,9 @@ fn encode(
 
         let b = bounds.map(|b| b.map(Value::Real)).unwrap_or([Value::Null, Value::Null, Value::Null, Value::Null]);
         let [min_x, min_y, max_x, max_y] = b;
-        contents.push(vec![
+        self.contents.push(vec![
             Value::Text(layer.name.clone()),
-            Value::Text("features".into()),
+            Value::Text(if spatial { "features" } else { "attributes" }.into()),
             Value::Text(layer.name.clone()),
             Value::Text(String::new()),
             Value::Text(now()),
@@ -198,89 +585,244 @@ fn encode(
             max_y,
             Value::Int(srs_id),
         ]);
-        columns.push(vec![
-            Value::Text(layer.name.clone()),
-            Value::Text("geom".into()),
-            Value::Text(type_name),
-            Value::Int(srs_id),
-            Value::Int(i64::from(has_z)),
-            Value::Int(0),
-        ]);
-        tables.push((Table { name: layer.name.clone(), sql, rows, autoindexes: vec![] }, max_fid));
+        if spatial {
+            self.geometry_columns.push(vec![
+                Value::Text(layer.name.clone()),
+                Value::Text("geom".into()),
+                Value::Text(type_name),
+                Value::Int(srs_id),
+                Value::Int(i64::from(has_z)),
+                Value::Int(0),
+            ]);
+        }
+        self.ogr_contents.push(vec![Value::Text(layer.name.clone()), Value::Int(layer.len() as i64)]);
+        let lower = layer.name.replace('\'', "''");
+        for (op, sign) in [("insert", "+"), ("delete", "-")] {
+            let name = format!("trigger_{op}_feature_count_{}", layer.name);
+            let when = if op == "insert" { "INSERT" } else { "DELETE" };
+            self.objects.push(SchemaObject {
+                kind: "trigger",
+                sql: format!(
+                    "CREATE TRIGGER {} AFTER {when} ON {} BEGIN UPDATE gpkg_ogr_contents SET feature_count = feature_count {sign} 1 WHERE lower(table_name) = lower('{lower}'); END",
+                    quote(&name),
+                    quote(&layer.name)
+                ),
+                name,
+                table: layer.name.clone(),
+            });
+        }
+        self.sequence.push((layer.name.clone(), max_fid));
+        self.tables.push(Table { name: layer.name.clone(), sql, rows, autoindexes: vec![] });
+        if spatial {
+            let (rtree_tables, rtree_objects) = rtree_index(&layer.name, "geom", entries);
+            self.extension(
+                Some(&layer.name),
+                Some("geom"),
+                "gpkg_rtree_index",
+                "http://www.geopackage.org/spec120/#extension_rtree",
+                "write-only",
+            );
+            self.tables.extend(rtree_tables);
+            self.objects.extend(rtree_objects);
+        }
+        Ok(())
     }
-    let mut out: Vec<Table> = Vec::new();
-    let seq: Vec<(i64, Vec<Value>)> =
-        tables.iter().enumerate().map(|(i, (t, max))| (i as i64 + 1, vec![Value::Text(t.name.clone()), Value::Int(*max)])).collect();
-    out.extend(tables.into_iter().map(|(t, _)| t));
-    out.push(Table {
-        name: "sqlite_sequence".into(),
-        sql: "CREATE TABLE sqlite_sequence(name,seq)".into(),
-        rows: seq,
-        autoindexes: vec![],
-    });
-    Ok(out)
+
+    /// Adds a tile table: its `gpkg_contents` row (`data_type` is `tiles` or
+    /// `2d-gridded-coverage`), tile matrix set and matrices, and tiles
+    /// `(zoom_level, tile_column, tile_row, tile_data)`. Returns the tiles' ids, in order.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn add_tiles(
+        &mut self,
+        name: &str,
+        data_type: &str,
+        srs_id: i64,
+        extent: [f64; 4],
+        matrix_set: [f64; 4],
+        matrices: &[(i64, i64, i64, i64, i64, f64, f64)],
+        tiles: Vec<(i64, i64, i64, Vec<u8>)>,
+    ) -> Result<Vec<i64>> {
+        self.claim(name)?;
+        self.contents.push(vec![
+            Value::Text(name.into()),
+            Value::Text(data_type.into()),
+            Value::Text(name.into()),
+            Value::Text(String::new()),
+            Value::Text(now()),
+            Value::Real(extent[0]),
+            Value::Real(extent[1]),
+            Value::Real(extent[2]),
+            Value::Real(extent[3]),
+            Value::Int(srs_id),
+        ]);
+        self.tile_matrix_set.push(vec![
+            Value::Text(name.into()),
+            Value::Int(srs_id),
+            Value::Real(matrix_set[0]),
+            Value::Real(matrix_set[1]),
+            Value::Real(matrix_set[2]),
+            Value::Real(matrix_set[3]),
+        ]);
+        for &(zoom, mw, mh, tw, th, px, py) in matrices {
+            self.tile_matrix.push(vec![
+                Value::Text(name.into()),
+                Value::Int(zoom),
+                Value::Int(mw),
+                Value::Int(mh),
+                Value::Int(tw),
+                Value::Int(th),
+                Value::Real(px),
+                Value::Real(py),
+            ]);
+        }
+        let mut ids = Vec::with_capacity(tiles.len());
+        let rows: Vec<(i64, Vec<Value>)> = tiles
+            .into_iter()
+            .enumerate()
+            .map(|(i, (z, c, r, data))| {
+                ids.push(i as i64 + 1);
+                (i as i64 + 1, vec![Value::Null, Value::Int(z), Value::Int(c), Value::Int(r), Value::Blob(data)])
+            })
+            .collect();
+        self.sequence.push((name.into(), rows.len() as i64));
+        self.tables.push(Table {
+            name: name.into(),
+            sql: format!(
+                "CREATE TABLE {} (id INTEGER PRIMARY KEY AUTOINCREMENT,zoom_level INTEGER NOT NULL,tile_column INTEGER NOT NULL,tile_row INTEGER NOT NULL,tile_data BLOB NOT NULL,UNIQUE (zoom_level, tile_column, tile_row))",
+                quote(name)
+            ),
+            rows,
+            autoindexes: vec![vec![1, 2, 3]],
+        });
+        self.objects.extend(tile_table_triggers(name));
+        Ok(ids)
+    }
+
+    /// Declares a tile table a 2D gridded coverage, with its ancillary rows: the coverage's
+    /// `(datatype, scale, offset, data_null)` and each tile's `(id, scale, offset, min, max,
+    /// mean, std_dev)`.
+    pub(crate) fn add_coverage(
+        &mut self,
+        name: &str,
+        coverage: (&str, f64, f64, Option<f64>),
+        tiles: Vec<(i64, f64, f64, [Option<f64>; 4])>,
+    ) {
+        let (datatype, scale, offset, null) = coverage;
+        // The extension asks for the WGS 84 3D SRS, which GDAL defines without a WKT 1 form.
+        if !self.srs.iter().any(|r| r[3] == Value::Int(4979)) {
+            self.srs.push(vec![
+                Value::Text("WGS 84 3D".into()),
+                Value::Null,
+                Value::Text("EPSG".into()),
+                Value::Int(4979),
+                Value::Text("undefined".into()),
+                Value::Null,
+            ]);
+        }
+        self.coverage.push(vec![
+            Value::Null,
+            Value::Text(name.into()),
+            Value::Text(datatype.into()),
+            Value::Real(scale),
+            Value::Real(offset),
+            Value::Real(1.0),
+            null.map_or(Value::Null, Value::Real),
+            Value::Text("grid-value-is-area".into()),
+            Value::Null,
+            Value::Text("Height".into()),
+            Value::Text("Height".into()),
+        ]);
+        for (id, scale, offset, stats) in tiles {
+            let mut row = vec![Value::Null, Value::Text(name.into()), Value::Int(id), Value::Real(scale), Value::Real(offset)];
+            row.extend(stats.map(|v| v.map_or(Value::Null, Value::Real)));
+            self.tile_ancillary.push(row);
+        }
+        self.extension(Some("gpkg_2d_gridded_coverage_ancillary"), None, "gpkg_2d_gridded_coverage", COVERAGE_EXTENSION, "read-write");
+        self.extension(Some("gpkg_2d_gridded_tile_ancillary"), None, "gpkg_2d_gridded_coverage", COVERAGE_EXTENSION, "read-write");
+        self.extension(Some(name), Some("tile_data"), "gpkg_2d_gridded_coverage", COVERAGE_EXTENSION, "read-write");
+    }
+
+    /// Attaches GDAL's metadata XML (`<GDALMultiDomainMetadata>`) to a table.
+    pub(crate) fn add_metadata(&mut self, table: &str, xml: String) {
+        let id = self.metadata.len() as i64 + 1;
+        self.metadata.push(vec![
+            Value::Null,
+            Value::Text("dataset".into()),
+            Value::Text("http://gdal.org".into()),
+            Value::Text("text/xml".into()),
+            Value::Text(xml),
+        ]);
+        self.metadata_reference.push(vec![
+            Value::Text("table".into()),
+            Value::Text(table.into()),
+            Value::Null,
+            Value::Null,
+            Value::Text(now()),
+            Value::Int(id),
+            Value::Null,
+        ]);
+        self.extension(Some("gpkg_metadata"), None, "gpkg_metadata", METADATA_EXTENSION, "read-write");
+        self.extension(Some("gpkg_metadata_reference"), None, "gpkg_metadata", METADATA_EXTENSION, "read-write");
+    }
+
+    /// Writes the file.
+    pub(crate) fn finish(self) -> Result<Vec<u8>> {
+        let numbered =
+            |rows: Vec<Vec<Value>>| -> Vec<(i64, Vec<Value>)> { rows.into_iter().enumerate().map(|(i, r)| (i as i64 + 1, r)).collect() };
+        // srs_id is the rowid of gpkg_spatial_ref_sys.
+        let mut srs_rows: Vec<(i64, Vec<Value>)> = self
+            .srs
+            .into_iter()
+            .map(|r| {
+                let id = match &r[3] {
+                    Value::Int(code) => *code,
+                    _ => 0,
+                };
+                (id, r)
+            })
+            .collect();
+        srs_rows.sort_by_key(|(id, _)| *id);
+        let table = |name: &str, sql: &str, rows: Vec<(i64, Vec<Value>)>, autoindexes: Vec<Vec<usize>>| Table {
+            name: name.into(),
+            sql: sql.into(),
+            rows,
+            autoindexes,
+        };
+        let mut sequence = self.sequence;
+        let mut tables = vec![
+            table("gpkg_spatial_ref_sys", SRS_SQL, srs_rows, vec![]),
+            table("gpkg_contents", CONTENTS_SQL, numbered(self.contents), vec![vec![0], vec![2]]),
+            table("gpkg_ogr_contents", OGR_CONTENTS_SQL, numbered(self.ogr_contents), vec![vec![0]]),
+            table("gpkg_geometry_columns", GEOMETRY_COLUMNS_SQL, numbered(self.geometry_columns), vec![vec![0, 1], vec![0]]),
+            table("gpkg_tile_matrix_set", TILE_MATRIX_SET_SQL, numbered(self.tile_matrix_set), vec![vec![0]]),
+            table("gpkg_tile_matrix", TILE_MATRIX_SQL, numbered(self.tile_matrix), vec![vec![0, 1]]),
+            table("gpkg_extensions", EXTENSIONS_SQL, numbered(self.extensions), vec![vec![0, 1, 2]]),
+        ];
+        if !self.metadata.is_empty() {
+            tables.push(table("gpkg_metadata", METADATA_SQL, numbered(self.metadata), vec![]));
+            tables.push(table("gpkg_metadata_reference", METADATA_REFERENCE_SQL, numbered(self.metadata_reference), vec![]));
+        }
+        if !self.coverage.is_empty() {
+            sequence.push(("gpkg_2d_gridded_coverage_ancillary".into(), self.coverage.len() as i64));
+            sequence.push(("gpkg_2d_gridded_tile_ancillary".into(), self.tile_ancillary.len() as i64));
+            tables.push(table("gpkg_2d_gridded_coverage_ancillary", COVERAGE_SQL, numbered(self.coverage), vec![vec![1]]));
+            tables.push(table("gpkg_2d_gridded_tile_ancillary", TILE_ANCILLARY_SQL, numbered(self.tile_ancillary), vec![vec![1, 2]]));
+        }
+        tables.extend(self.tables);
+        let seq = numbered(sequence.into_iter().map(|(n, max)| vec![Value::Text(n), Value::Int(max)]).collect());
+        tables.push(table("sqlite_sequence", "CREATE TABLE sqlite_sequence(name,seq)", seq, vec![]));
+        // GeoPackage 1.4: application id "GPKG", user version 10400.
+        sqlite::write_database(&tables, &self.objects, 10400, 0x4750_4B47)
+    }
 }
 
 /// Encodes layers as a GeoPackage file.
 pub fn to_bytes(layers: &[Layer]) -> Result<Vec<u8>> {
-    let mut srs = vec![
-        vec![
-            Value::Text("Undefined Cartesian SRS".into()),
-            Value::Null,
-            Value::Text("NONE".into()),
-            Value::Int(-1),
-            Value::Text("undefined".into()),
-            Value::Text("undefined Cartesian coordinate reference system".into()),
-        ],
-        vec![
-            Value::Text("Undefined geographic SRS".into()),
-            Value::Null,
-            Value::Text("NONE".into()),
-            Value::Int(0),
-            Value::Text("undefined".into()),
-            Value::Text("undefined geographic coordinate reference system".into()),
-        ],
-        vec![
-            Value::Text("WGS 84 geodetic".into()),
-            Value::Null,
-            Value::Text("EPSG".into()),
-            Value::Int(4326),
-            Value::Text(WGS84_WKT.into()),
-            Value::Text("longitude/latitude coordinates in decimal degrees on the WGS 84 spheroid".into()),
-        ],
-    ];
-    let (mut contents, mut columns) = (Vec::new(), Vec::new());
-    let layer_tables = encode(layers, &mut srs, &mut contents, &mut columns)?;
-    // srs_id is the rowid of gpkg_spatial_ref_sys.
-    let mut srs_rows: Vec<(i64, Vec<Value>)> = srs
-        .into_iter()
-        .map(|r| {
-            let id = match &r[3] {
-                Value::Int(code) => *code,
-                _ => 0,
-            };
-            (id, r)
-        })
-        .collect();
-    srs_rows.sort_by_key(|(id, _)| *id);
-    let mut tables = vec![
-        Table { name: "gpkg_spatial_ref_sys".into(), sql: SRS_SQL.into(), rows: srs_rows, autoindexes: vec![] },
-        Table {
-            name: "gpkg_contents".into(),
-            sql: CONTENTS_SQL.into(),
-            rows: contents.into_iter().enumerate().map(|(i, r)| (i as i64 + 1, r)).collect(),
-            autoindexes: vec![vec![0], vec![2]],
-        },
-        Table {
-            name: "gpkg_geometry_columns".into(),
-            sql: GEOMETRY_COLUMNS_SQL.into(),
-            rows: columns.into_iter().enumerate().map(|(i, r)| (i as i64 + 1, r)).collect(),
-            autoindexes: vec![vec![0, 1], vec![0]],
-        },
-    ];
-    tables.extend(layer_tables);
-    // GeoPackage 1.4: application id "GPKG", user version 10400.
-    sqlite::write_database(&tables, 10400, 0x4750_4B47)
+    let mut b = Builder::new();
+    for layer in layers {
+        b.add_layer(layer)?;
+    }
+    b.finish()
 }
 
 #[cfg(test)]

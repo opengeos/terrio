@@ -58,8 +58,10 @@ of GDAL: the long tail of formats stays reachable through an optional GDAL backe
 
 ## 0.4: More formats
 
-- GeoPackage, vector and raster tiles. This needs a SQLite reader; deciding between a pure-Rust
-  reader and an opt-in `rusqlite` feature is the main open question for this release.
+- GeoPackage, vector and raster tiles. Done: terrio reads and writes the SQLite files itself
+  (feature and attribute tables, R-tree spatial indexes, tile pyramids with PNG or JPEG tiles,
+  gridded coverages for Int16, UInt16 and Float32 rasters, files holding both), from files or
+  bytes. Still to do: spatial filters through the R-tree, updating existing files.
 - Zarr 2 and 3, and GeoZarr conventions.
 - KML/KMZ, GPX, GML, TopoJSON.
 - PMTiles and MBTiles archives.
@@ -73,8 +75,7 @@ of GDAL: the long tail of formats stays reachable through an optional GDAL backe
   GDAL's Python bindings. Still to do: Arrow export of vector layers, type stubs.
 - An npm package built from the WebAssembly target. Done: datasets opened from bytes (GeoTIFF,
   ASCII grid and the text and FlatGeobuf vector formats), bands as typed arrays, GeoJSON out,
-  conversion to bytes, CRS transforms, zipped Shapefile and MapInfo from memory. Still to do:
-  GeoPackage from memory.
+  conversion to bytes, CRS transforms, zipped Shapefile and MapInfo and GeoPackage from memory.
 - Datasets opened from and written to bytes (`terrio::memory`).
 - An optional `gdal` feature that opens anything GDAL can when it is installed, through the same
   data model.
@@ -104,7 +105,8 @@ of GDAL: the long tail of formats stays reachable through an optional GDAL backe
   overview level, decoding only the tiles needed and fetching them with HTTP range requests.
 - HTTP goes through `ureq` (with rustls) and S3 requests are signed by terrio itself, rather than
   through `object_store`, to keep the API synchronous and the dependencies small.
-- GeoPackage uses `wbvector`'s pure-Rust SQLite engine, so no C dependency is needed.
+- GeoPackage is read and written by terrio's own SQLite file reader and writer (pure Rust): no
+  C dependency, and files written in one go.
 - terrio carries its own EPSG table (`crates/terrio/data/epsg.tsv.zst`, about 220 KB, generated
   from GDAL and PROJ by `scripts/gen_epsg_table.py`): the PROJ strings of the CRSs, their WKT and
   the datum transformations GDAL lists for them, so that terrio picks the same transformation as

@@ -108,7 +108,7 @@ pub fn open_vector(path: &str, options: &VectorOpenOptions) -> Result<VectorData
 pub fn list_layers(path: &str) -> Result<Vec<String>> {
     let local = vfs::resolve(path)?;
     if VectorDriver::for_extension(local.as_str()) == Some(VectorDriver::GPKG) {
-        return Ok(wbvector::geopackage::list_layers(local.as_str())?);
+        return crate::drivers::vector::gpkg_read::list_layers(local.as_str());
     }
     Ok(open_vector(local.as_str(), &VectorOpenOptions::default())?.layers.into_iter().map(|l| l.name).collect())
 }
@@ -120,11 +120,7 @@ fn open_local(path: &str, options: &VectorOpenOptions) -> Result<Dataset> {
     let ext = extension(path).unwrap_or_default();
     // GeoPackages hold vector layers, raster tiles or both: prefer the vector layers.
     if ext == "gpkg" {
-        let names = wbvector::geopackage::list_layers(path).unwrap_or_default();
-        if names.is_empty() {
-            return read_raster_local(path).map(Dataset::Raster);
-        }
-        return read_vector_local(path, VectorDriver::GPKG, options).map(Dataset::Vector);
+        return crate::drivers::gpkg::open(path, options);
     }
     if let Some(driver) = VectorDriver::for_extension(path) {
         return read_vector_local(path, driver, options).map(Dataset::Vector);
@@ -172,13 +168,7 @@ fn read_raster_local(path: &str) -> Result<RasterDataset> {
 
 fn read_vector_local(path: &str, driver: VectorDriver, options: &VectorOpenOptions) -> Result<VectorDataset> {
     let layers = if driver == VectorDriver::GPKG {
-        let names = wbvector::geopackage::list_layers(path)?;
-        let wanted: Vec<&String> =
-            if options.layers.is_empty() { names.iter().collect() } else { names.iter().filter(|n| options.layers.contains(n)).collect() };
-        if wanted.is_empty() && !options.layers.is_empty() {
-            return Err(Error::InvalidArgument(format!("no layer named {} (layers: {})", options.layers.join(", "), names.join(", "))));
-        }
-        wanted.into_iter().map(|n| wbvector::geopackage::read_layer(path, n)).collect::<std::result::Result<Vec<_>, _>>()?
+        crate::drivers::vector::gpkg_read::read(path, &options.layers)?
     } else if let Some(layers) = crate::drivers::vector::read(path, driver, options)? {
         select_layers(layers, path, options)?
     } else {
@@ -192,14 +182,13 @@ fn read_vector_local(path: &str, driver: VectorDriver, options: &VectorOpenOptio
         }
         vec![layer]
     };
-    let layers = layers
-        .into_iter()
-        .map(|mut l| {
-            crate::drivers::vector::fix(&mut l, driver);
-            fix_layer(l, path, driver)
-        })
-        .collect();
-    Ok(VectorDataset { layers, driver })
+    Ok(finish_vector(layers, path, driver))
+}
+
+/// A vector dataset of layers a driver read, normalized.
+pub(crate) fn finish_vector(layers: Vec<Layer>, path: &str, driver: VectorDriver) -> VectorDataset {
+    let layers = layers.into_iter().map(|l| fix_layer(l, path, driver)).collect();
+    VectorDataset { layers, driver }
 }
 
 /// Keeps the layers `options` asks for (all when it names none).
@@ -249,6 +238,7 @@ pub struct RasterWriteOptions {
     pub driver: Option<RasterDriver>,
     /// GeoTIFF/COG compression: `NONE`, `LZW`, `DEFLATE`, `ZSTD`, `PACKBITS`, `JPEG`, `WEBP`. GeoTIFFs
     /// default to `NONE`, COGs to `LZW`, as in GDAL. Zarr: `NONE`, `ZLIB` (v2), `GZIP`, `ZSTD`.
+    /// GeoPackage tiles of Byte rasters: `PNG` (the default) or `JPEG`.
     pub compression: Option<String>,
     /// Write GeoTIFF tiles of this size (COG tiles default to 512).
     pub tile_size: Option<u32>,

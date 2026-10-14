@@ -8,11 +8,12 @@
 //! format reads and writes exactly as from files. WebAssembly builds have no file system and use
 //! in-memory codecs instead, for the formats that have one:
 //!
-//! - reading: GeoTIFF, Esri ASCII grid, GeoJSON, TopoJSON, FlatGeobuf, CSV, GeoParquet, KML, KMZ,
-//!   GML, GPX, OSM PBF and XML, and zip archives of these, and Shapefile and MapInfo (MIF/MID
-//!   and TAB) in zip archives (or their `.shp` or `.mif` alone);
-//! - writing: GeoTIFF and COG (with lossless compressions), Esri ASCII grid, GeoJSON, TopoJSON,
-//!   FlatGeobuf, CSV, GeoParquet, GeoPackage, KML, KMZ, GML (without its schema) and GPX.
+//! - reading: GeoTIFF, Esri ASCII grid, GeoPackage (vector layers and rasters), GeoJSON, TopoJSON,
+//!   FlatGeobuf, CSV, GeoParquet, KML, KMZ, GML, GPX, OSM PBF and XML, and zip archives of these,
+//!   and Shapefile and MapInfo (MIF/MID and TAB) in zip archives (or their `.shp` or `.mif` alone);
+//! - writing: GeoTIFF and COG (with lossless compressions), Esri ASCII grid, GeoPackage (vector
+//!   layers and rasters), GeoJSON, TopoJSON, FlatGeobuf, CSV, GeoParquet, KML, KMZ, GML (without
+//!   its schema) and GPX.
 //!
 //! Formats made of several files (a shapefile's `.shp`, `.dbf`, `.prj`...) are written as a zip
 //! archive of them.
@@ -92,7 +93,7 @@ pub fn write_raster_bytes(ds: &RasterDataset, name: &str, options: &RasterWriteO
         native::collect(dir.path(), path)
     }
     #[cfg(target_arch = "wasm32")]
-    codec::write_raster(ds, driver, options)
+    codec::write_raster(ds, driver, options, std::path::Path::new(name).file_stem().and_then(|s| s.to_str()).unwrap_or("raster"))
 }
 
 /// Writes vector layers to bytes. `name` is a file name whose extension tells the format, unless
@@ -224,6 +225,9 @@ pub(crate) mod codec {
             return r.read().map(Dataset::Raster);
         }
         let ext = extension(name).unwrap_or_default();
+        if bytes.starts_with(b"SQLite format 3\0") {
+            return crate::drivers::gpkg::open_bytes(bytes, name, options);
+        }
         if is_zip(&bytes) && ext != "kmz" {
             return open_zip(&bytes, name, options);
         }
@@ -234,8 +238,9 @@ pub(crate) mod codec {
         let driver = vector_driver(&bytes, name).ok_or_else(|| Error::Unsupported(format!("'{name}': format not recognized")))?;
         let Some(layers) = crate::drivers::vector::read_bytes(bytes, name, driver, options)? else {
             return Err(Error::Unsupported(format!(
-                "the {} format cannot be read from memory in this build (in memory: GeoTIFF, AAIGrid, GeoJSON, TopoJSON, \
-                 FlatGeobuf, CSV, GeoParquet, KML, KMZ, GML, GPX, OSM PBF, and Shapefile and MapInfo in zip archives)",
+                "the {} format cannot be read from memory in this build (in memory: GeoTIFF, AAIGrid, GeoPackage, GeoJSON, \
+                 TopoJSON, FlatGeobuf, CSV, GeoParquet, KML, KMZ, GML, GPX, OSM PBF, and Shapefile and MapInfo in zip \
+                 archives)",
                 driver.name()
             )));
         };
@@ -293,7 +298,8 @@ pub(crate) mod codec {
     }
 
     /// Writes a raster to bytes with the in-memory codecs.
-    pub(crate) fn write_raster(ds: &RasterDataset, driver: RasterDriver, options: &RasterWriteOptions) -> Result<Vec<u8>> {
+    /// `table` names the raster in formats that hold several (GeoPackage).
+    pub(crate) fn write_raster(ds: &RasterDataset, driver: RasterDriver, options: &RasterWriteOptions, table: &str) -> Result<Vec<u8>> {
         use crate::drivers::gtiff_write::{Compression, TiffOptions, encode};
         match driver {
             RasterDriver::GTiff | RasterDriver::Cog => {
@@ -317,9 +323,11 @@ pub(crate) mod codec {
                 wbraster::formats::esri_ascii::write_to(&mut out, &ds.raster)?;
                 Ok(out)
             }
-            d => {
-                Err(Error::Unsupported(format!("the {} format cannot be written to memory in this build (GTiff, COG, AAIGrid)", d.name())))
-            }
+            RasterDriver::GPKG => crate::drivers::gpkg::to_bytes(&ds.raster, ds.nodata(), table, options.compression.as_deref()),
+            d => Err(Error::Unsupported(format!(
+                "the {} format cannot be written to memory in this build (GTiff, COG, AAIGrid, GPKG)",
+                d.name()
+            ))),
         }
     }
 
@@ -368,7 +376,7 @@ mod tests {
             let ds = raster(bands, dt);
             let r = &ds.raster;
             let options = RasterWriteOptions { compression: Some(compression.into()), tile_size, ..Default::default() };
-            let bytes = codec::write_raster(&ds, RasterDriver::GTiff, &options).unwrap();
+            let bytes = codec::write_raster(&ds, RasterDriver::GTiff, &options, "x").unwrap();
             let ds = codec::open(bytes.clone(), "x.tif", &Default::default()).unwrap();
             let Dataset::Raster(back) = ds else { panic!() };
             assert_eq!((back.raster.cols, back.raster.rows, back.raster.bands), (5, 3, bands));
@@ -414,6 +422,28 @@ mod tests {
         let bytes = zip.finish().unwrap().into_inner();
         let Dataset::Vector(z) = codec::open(bytes, "pts.zip", &Default::default()).unwrap() else { panic!() };
         assert_eq!(z.layers[0].features.len(), 2);
+    }
+
+    #[test]
+    fn geopackage_codec_round_trips() {
+        // A raster: Int16 as a gridded coverage, Byte as PNG tiles.
+        for (bands, dt) in [(1, DataType::I16), (3, DataType::U8), (1, DataType::F32)] {
+            let ds = raster(bands, dt);
+            let bytes = codec::write_raster(&ds, RasterDriver::GPKG, &Default::default(), "dem").unwrap();
+            let Dataset::Raster(back) = codec::open(bytes, "x.gpkg", &Default::default()).unwrap() else { panic!() };
+            assert_eq!((back.raster.cols, back.raster.rows, back.raster.bands, back.raster.data_type), (5, 3, bands, dt));
+            assert_eq!(back.raster.data.to_f64_vec(), ds.raster.data.to_f64_vec());
+            assert_eq!(back.geo_transform(), [500000.0, 30.0, 0.0, 4000090.0, 0.0, -30.0]);
+            assert_eq!(back.crs().epsg, Some(32610));
+        }
+        // Vector layers.
+        let gj = r#"{"type":"FeatureCollection","features":[{"type":"Feature","properties":{"id":7},"geometry":{"type":"Point","coordinates":[1,2]}}]}"#;
+        let Dataset::Vector(v) = codec::open(gj.as_bytes().to_vec(), "p.geojson", &Default::default()).unwrap() else { panic!() };
+        let bytes = codec::write_vector(&v.layers, VectorDriver::GPKG, &Default::default()).unwrap();
+        let Dataset::Vector(back) = codec::open(bytes, "p.gpkg", &Default::default()).unwrap() else { panic!() };
+        assert_eq!(back.layers[0].name, "p");
+        assert_eq!(back.layers[0].features[0].geometry, v.layers[0].features[0].geometry);
+        assert_eq!(back.layers[0].crs_epsg(), Some(4326));
     }
 
     #[test]

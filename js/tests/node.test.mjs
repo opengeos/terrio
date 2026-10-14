@@ -147,6 +147,7 @@ const VECTORS = [
   ["countries.geojson", 176],
   ["countries.kml", 176],
   ["countries.gml", 176],
+  ["countries.gpkg", 176],
   ["las_vegas_roads.geojson", null],
   ["hike.gpx", null],
 ];

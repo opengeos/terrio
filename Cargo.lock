@@ -2000,6 +2000,7 @@ dependencies = [
  "half",
  "hmac",
  "jpeg-decoder",
+ "jpeg-encoder 0.7.1",
  "lz4_flex 0.11.6",
  "netcdf-reader",
  "openjp2",

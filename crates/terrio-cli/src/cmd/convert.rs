@@ -21,7 +21,7 @@ pub struct Args {
     #[arg(long = "t-srs", value_name = "CRS")]
     t_srs: Option<String>,
     /// Compression: GeoTIFF/COG NONE, LZW, DEFLATE, ZSTD, PACKBITS, JPEG, WEBP; Zarr NONE, ZLIB (v2),
-    /// GZIP, ZSTD.
+    /// GZIP, ZSTD; GeoPackage tiles PNG, JPEG.
     #[arg(long)]
     compress: Option<String>,
     /// GeoTIFF/COG tile size.

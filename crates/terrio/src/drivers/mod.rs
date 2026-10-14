@@ -12,7 +12,7 @@ mod ehdr;
 mod envi;
 mod ers;
 pub(crate) mod geokeys;
-mod gpkg;
+pub(crate) mod gpkg;
 mod gsbg;
 pub(crate) mod gtiff_write;
 mod hfa;
@@ -23,7 +23,7 @@ pub(crate) mod nodata;
 mod png;
 mod rst;
 mod saga;
-mod sqlite;
+pub(crate) mod sqlite;
 pub(crate) mod vector;
 mod wkt;
 mod xyz;
@@ -67,9 +67,16 @@ pub(crate) fn read(path: &str) -> Option<Result<RasterDataset>> {
     }))
 }
 
-/// Opens a subdataset named as GDAL names them (`NETCDF:"file.nc":variable`). `None` when the
-/// path is not a subdataset name.
+/// Opens a subdataset named as GDAL names them (`NETCDF:"file.nc":variable`,
+/// `GPKG:file.gpkg:table`). `None` when the path is not a subdataset name.
 pub(crate) fn open_subdataset(path: &str) -> Option<Result<RasterDataset>> {
+    if let Some((file, table)) = gpkg::parse_subdataset(path) {
+        return Some(crate::vfs::resolve(&file).and_then(|local| {
+            let mut ds = gpkg::read_bytes(std::fs::read(local.as_str())?, Some(&table))?;
+            nodata::apply_pam(local.as_str(), &mut ds);
+            Ok(ds)
+        }));
+    }
     let (file, variable) = netcdf::parse_subdataset(path)?;
     Some(crate::vfs::resolve(&file).and_then(|local| {
         let mut ds = netcdf::read(Path::new(local.as_str()), Some(&variable))?;
@@ -103,6 +110,7 @@ pub(crate) fn write(
         RasterDriver::JP2 => jp2::write(r, nodata, p),
         RasterDriver::Zarr => zarr::write(r, nodata, p, compression, co("FORMAT")),
         RasterDriver::NetCDF => netcdf_write::write(r, nodata, p, co("FORMAT")),
+        RasterDriver::GPKG => gpkg::write(r, nodata, p, compression.or(co("TILE_FORMAT")), co("RASTER_TABLE")),
         // Formats without a CRS of their own: GDAL's sidecar holds it.
         RasterDriver::PCRaster | RasterDriver::GRASSASCIIGrid => {
             r.write(path, driver.to_wb()).map_err(Into::into).and_then(|()| common::write_pam(p, &r.crs))
