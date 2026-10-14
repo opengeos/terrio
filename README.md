@@ -120,7 +120,7 @@ cargo test -- --ignored                                # tests that read public 
 python scripts/compare_vector_ops_with_gdal.py ../terrio-data  # convert options, rasterize, polygonize
 python scripts/compare_ops_with_gdal.py ../terrio-data # compare translate, warp and mosaic with GDAL's tools
 cd python && TERRIO_TEST_DATA=../../terrio-data pytest # Python bindings, arrays compared with osgeo.gdal's
-TERRIO_TEST_DATA=../terrio-data node --test js/tests/  # WebAssembly build (after wasm-pack build, see js/)
+TERRIO_TEST_DATA=../terrio-data node --test js/tests/node.test.mjs  # WebAssembly build (after wasm-pack build, see js/)
 ```
 
 ## Layout

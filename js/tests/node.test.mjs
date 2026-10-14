@@ -1,7 +1,8 @@
-// Tests of the WebAssembly build in Node.js: `wasm-pack build js --target nodejs --out-dir
-// pkg-node --out-name terrio`, then `node --test js/tests/`. Tests on real files run when
-// TERRIO_TEST_DATA names the directory filled by scripts/fetch_test_data.sh, and compare band
-// statistics with those GDAL computed (the .aux.xml files).
+// Tests of the WebAssembly build in Node.js. Build it with
+// `wasm-pack build js --target nodejs --out-dir pkg-node --out-name terrio`, then run
+// `node --test js/tests/node.test.mjs`. Tests on real files run when TERRIO_TEST_DATA names the
+// directory filled by scripts/fetch_test_data.sh, and compare band statistics with those GDAL
+// computed (the .aux.xml files).
 
 import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";

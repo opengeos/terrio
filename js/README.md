@@ -41,5 +41,5 @@ Shapefiles, GeoParquet and GeoPackage are not yet read from memory in WebAssembl
 ```sh
 wasm-pack build js --release --target web --out-dir pkg --out-name terrio
 wasm-pack build js --release --target nodejs --out-dir pkg-node --out-name terrio
-node --test js/tests/        # TERRIO_TEST_DATA=... adds real files checked against GDAL
+node --test js/tests/node.test.mjs        # TERRIO_TEST_DATA=... adds real files checked against GDAL
 ```

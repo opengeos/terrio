@@ -47,7 +47,7 @@ jobs:
       - name: Build and test the npm package (Node.js)
         run: |
           wasm-pack build js --release --target nodejs --out-dir pkg-node --out-name terrio
-          node --test js/tests/
+          node --test js/tests/node.test.mjs
       - name: Build the npm package (browsers and bundlers)
         run: |
           wasm-pack build js --release --target web --out-dir pkg --out-name terrio
@@ -97,7 +97,7 @@ jobs:
       - uses: mamba-org/setup-micromamba@v2
         with:
           environment-name: gdal
-          create-args: gdal libgdal-arrow-parquet libgdal-jp2openjpeg libgdal-netcdf libgdal-hdf5 numpy
+          create-args: gdal libgdal-arrow-parquet libgdal-jp2openjpeg libgdal-netcdf libgdal-hdf5 numpy pip pytest maturin
           cache-environment: true
       - uses: actions/cache@v4
         with:
@@ -117,7 +117,6 @@ jobs:
         env:
           TERRIO_TEST_DATA: ${{ github.workspace }}/terrio-data
         run: |
-          python -m pip install maturin pytest
           maturin build --release -m python/Cargo.toml -o python/dist
           python -m pip install --no-deps python/dist/*.whl
           cd python && python -m pytest -v
