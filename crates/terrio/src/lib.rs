@@ -29,6 +29,7 @@ mod pixel;
 pub mod pointcloud;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod s3;
+pub mod tiles;
 pub mod vector;
 
 /// Raster types and resampling methods.

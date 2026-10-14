@@ -67,7 +67,12 @@ of GDAL: the long tail of formats stays reachable through an optional GDAL backe
   (`GEOREFERENCING_CONVENTION=SPATIAL_PROJ`, overviews laid out as GDAL lays them out), and CF grid
   mappings written as rioxarray writes them. Still to do: remote Zarr stores, read in place.
 - KML/KMZ, GPX, GML, TopoJSON.
-- PMTiles and MBTiles archives.
+- PMTiles and MBTiles archives. Done: raster tiles (PNG, JPEG, WebP) read as rasters with their
+  zoom levels as overviews, and vector tiles (MVT) as layers, as GDAL's MBTiles, PMTiles and MVT
+  drivers read them; PMTiles read in place over HTTP; rasters written as tile pyramids and vector
+  layers as MVT tiles (archives or directories), as GDAL writes them. Checked against GDAL
+  (`scripts/compare_tiles_with_gdal.py`). Still to do: updating existing archives, AVIF tiles,
+  repairing invalid polygons as GEOS does.
 - STAC items and collections as datasets. Done: items, item collections, collections and STAC
   API searches (local or remote, following `next` links) as footprint layers read as GDAL reads
   STAC GeoJSON; assets opened as `STAC:"item":asset` (COGs in place); mosaics of an asset over

@@ -122,6 +122,10 @@ struct WriteOptions {
     compress: Option<String>,
     /// GeoTIFF/COG tile size.
     tile_size: Option<u32>,
+    /// PMTiles, MBTiles: the lowest zoom level written.
+    minzoom: Option<u8>,
+    /// PMTiles, MBTiles: the highest zoom level written.
+    maxzoom: Option<u8>,
 }
 
 enum Inner {
@@ -138,11 +142,15 @@ pub struct Dataset {
 /// Opens a dataset from its bytes. `filename`'s extension tells the format (`dem.tif`,
 /// `roads.fgb`, `parcels.zip`); its stem names vector layers.
 ///
-/// GeoTIFFs are decoded one window at a time, as they are read.
+/// GeoTIFFs and the image tiles of PMTiles and MBTiles archives are decoded one window at a
+/// time, as they are read; vector tiles are read as layers.
 #[wasm_bindgen]
 pub fn open(bytes: Vec<u8>, filename: &str) -> Result<Dataset, JsError> {
     let is_tiff = matches!(bytes.get(..4), Some(b"II*\0" | b"MM\0*" | b"II+\0" | b"MM\0+"));
     if is_tiff {
+        return Ok(Dataset { inner: Inner::Raster(terrio::memory::open_raster_lazy_bytes(bytes, filename).map_err(js_err)?) });
+    }
+    if terrio::tiles::is_archive(filename) && !terrio::tiles::TileArchive::from_bytes(bytes.clone()).map_err(js_err)?.is_vector() {
         return Ok(Dataset { inner: Inner::Raster(terrio::memory::open_raster_lazy_bytes(bytes, filename).map_err(js_err)?) });
     }
     Ok(match terrio::memory::open_bytes(bytes, filename).map_err(js_err)? {
@@ -384,7 +392,11 @@ impl Dataset {
                     let o = terrio::ops::warp::WarpOptions { dst_srs: Some(dst), ..Default::default() };
                     ds = terrio::ops::warp::warp(&[&ds], &o).map_err(js_err)?;
                 }
-                let options = RasterWriteOptions { driver, compression: o.compress, tile_size: o.tile_size, ..Default::default() };
+                let mut creation_options = Vec::new();
+                creation_options.extend(o.minzoom.map(|z| ("MINZOOM".to_string(), z.to_string())));
+                creation_options.extend(o.maxzoom.map(|z| ("MAXZOOM".to_string(), z.to_string())));
+                let options =
+                    RasterWriteOptions { driver, compression: o.compress, tile_size: o.tile_size, creation_options, ..Default::default() };
                 terrio::memory::write_raster_bytes(&ds, filename, &options).map_err(js_err)
             }
             Inner::Vector(layers, _) => {
@@ -408,7 +420,10 @@ impl Dataset {
                     ..Default::default()
                 };
                 let out = terrio::ops::vector_filter::translate(&chosen, &translate).map_err(js_err)?;
-                terrio::memory::write_vector_bytes(&out, filename, &VectorWriteOptions { driver, ..Default::default() }).map_err(js_err)
+                let mut options = VectorWriteOptions { driver, ..Default::default() };
+                options.tiles.min_zoom = o.minzoom;
+                options.tiles.max_zoom = o.maxzoom;
+                terrio::memory::write_vector_bytes(&out, filename, &options).map_err(js_err)
             }
         }
     }

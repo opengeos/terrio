@@ -27,6 +27,21 @@ terrio convert https://.../B04.tif window.tif --srcwin 4096 4096 512 512
 terrio convert https://.../B04.tif preview.tif --overview 2
 ```
 
+PMTiles archives are read in place too: opening fetches the header, root directory and metadata;
+reads fetch the leaf directories and tiles they need, by range requests. A raster archive's zoom
+levels are its overviews; a vector archive's layers are read from the tiles of one zoom level
+(`--oo ZOOM_LEVEL=N`), only those in a spatial filter (`--spat`) when there is one. MBTiles are
+SQLite files and are downloaded first.
+
+```sh
+# A 30 GB archive of terrain tiles: the header and one tile for info, a few tiles for a window.
+terrio info https://r2-public.protomaps.com/protomaps-sample-datasets/terrarium_z9.pmtiles
+terrio convert https://r2-public.protomaps.com/protomaps-sample-datasets/terrarium_z9.pmtiles \
+  window.tif --srcwin 30000 45000 512 512
+terrio convert https://.../tiles.pmtiles world.tif --overview 6
+terrio convert --oo ZOOM_LEVEL=5 https://.../zcta.pmtiles zcta_z5.gpkg
+```
+
 From Python, `terrio.open_raster(url, lazy=True).read(1, window=(x, y, w, h), overview=0)`.
 
 ## STAC

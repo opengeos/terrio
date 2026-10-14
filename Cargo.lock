@@ -2009,6 +2009,7 @@ dependencies = [
  "flatgeobuf",
  "half",
  "hmac",
+ "image-webp",
  "jpeg-decoder",
  "jpeg-encoder 0.7.1",
  "laz",

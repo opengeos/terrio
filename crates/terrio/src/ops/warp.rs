@@ -341,6 +341,14 @@ impl Approx<'_> {
 
 // ─── Output grid ────────────────────────────────────────────────────────────────────────────────
 
+/// The output grid GDAL suggests for a raster reprojected to `dst`: the geotransform, the size
+/// and the extent `[min_x, min_y, max_x, max_y]` (for drivers that warp, such as MBTiles).
+pub(crate) fn suggested_output(ds: &RasterDataset, dst: &SpatialRef) -> Result<([f64; 6], usize, usize, [f64; 4])> {
+    let src = ds.crs();
+    let t = GenImgProj::new(ds.geo_transform(), &src, dst)?;
+    suggested_warp_output(&t, ds.raster.cols, ds.raster.rows, &src, dst)
+}
+
 /// GDAL's `GDALSuggestedWarpOutput2()`: the extent of the transformed source and a square pixel
 /// size that keeps the number of pixels along the diagonal. Returns the geotransform, the size and
 /// the extent `[min_x, min_y, max_x, max_y]`.

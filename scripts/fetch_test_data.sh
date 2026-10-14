@@ -37,6 +37,9 @@ fi
 [ -e world-110m.topojson ] || curl -sSfL -o world-110m.topojson https://cdn.jsdelivr.net/npm/world-atlas@2.0.2/countries-110m.json
 [ -e us-states-10m.topojson ] || curl -sSfL -o us-states-10m.topojson https://cdn.jsdelivr.net/npm/us-atlas@3.0.1/states-10m.json
 [ -e liechtenstein.osm.pbf ] || curl -sSfL -o liechtenstein.osm.pbf https://download.geofabrik.de/europe/liechtenstein-latest.osm.pbf
+# Vector tiles in a PMTiles archive (ZIP code tabulation areas, by Protomaps, made with Tippecanoe).
+[ -e cb_2018_us_zcta510_500k.pmtiles ] || curl -sSfL -o cb_2018_us_zcta510_500k.pmtiles \
+  https://r2-public.protomaps.com/protomaps-sample-datasets/cb_2018_us_zcta510_500k.pmtiles
 [ -e usgs_dem.tif ] || curl -sSfL -o usgs_dem.tif https://prd-tnm.s3.amazonaws.com/StagedProducts/Elevation/1/TIFF/current/n40w106/USGS_1_n40w106.tif
 # Adjacent USGS 3DEP 1 arc-second tiles, for mosaics.
 for t in n40w107 n41w106 n41w107; do
@@ -92,6 +95,12 @@ if command -v ogr2ogr >/dev/null && command -v gdal_translate >/dev/null; then
     ogr2ogr -update -f GPKG multi.gpkg las_vegas_roads.geojson -nln roads
   fi
   [ -e UScounties.gpkg ] || ogr2ogr -f GPKG UScounties.gpkg UScounties.fgb -nln UScounties
+  # Tile archives written by GDAL: raster tiles (with overviews) and vector tiles.
+  if [ ! -e landsat.mbtiles ]; then
+    gdal_translate -q -of MBTiles landsat.tif landsat.mbtiles && gdaladdo -q -r bilinear landsat.mbtiles
+  fi
+  [ -e countries_mvt.mbtiles ] || ogr2ogr -f MBTiles countries_mvt.mbtiles countries.geojson -dsco MAXZOOM=3
+  [ -e countries_mvt.pmtiles ] || ogr2ogr -f PMTiles countries_mvt.pmtiles countries.geojson -dsco MAXZOOM=3
   # A land cover subset (NLCD 2021, 90 m) around Knoxville, read in place from a COG.
   [ -e nlcd_knoxville.tif ] || gdal_translate -q -projwin_srs EPSG:4326 -projwin -84.4 36.25 -83.5 35.75 \
     -co COMPRESS=DEFLATE "/vsicurl/$base/raster/nlcd_2021_land_cover_90m.tif" nlcd_knoxville.tif
