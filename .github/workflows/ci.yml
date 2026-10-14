@@ -97,12 +97,12 @@ jobs:
       - uses: mamba-org/setup-micromamba@v2
         with:
           environment-name: gdal
-          create-args: gdal libgdal-arrow-parquet libgdal-jp2openjpeg libgdal-netcdf libgdal-hdf5 numpy pip pytest maturin
+          create-args: gdal libgdal-arrow-parquet libgdal-jp2openjpeg libgdal-netcdf libgdal-hdf5 numpy pip pytest maturin pyproj
           cache-environment: true
       - uses: actions/cache@v4
         with:
           path: terrio-data
-          key: terrio-data-${{ hashFiles('scripts/fetch_test_data.sh') }}
+          key: terrio-data-${{ hashFiles('scripts/fetch_test_data.sh', 'scripts/gen_epsg_points.py') }}
       - name: Fetch test data
         shell: micromamba-shell {0}
         run: scripts/fetch_test_data.sh terrio-data

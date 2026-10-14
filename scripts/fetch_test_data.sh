@@ -4,7 +4,8 @@
 #
 # Usage: scripts/fetch_test_data.sh [DIR]
 set -euo pipefail
-dir="${1:-$(dirname "$0")/../../terrio-data}"
+here="$(cd "$(dirname "$0")" && pwd)"
+dir="${1:-$here/../../terrio-data}"
 mkdir -p "$dir"
 cd "$dir"
 base=https://github.com/opengeos/datasets/releases/download
@@ -81,5 +82,10 @@ if command -v ogr2ogr >/dev/null && command -v gdal_translate >/dev/null; then
     gdal_translate -q -of Zarr -co FORMAT=ZARR_V3 -co COMPRESS=ZSTD srtm_sub.tif srtm_sub_v3.zarr
     gdal_translate -q -of Zarr -co COMPRESS=BLOSC -co BLOSC_CNAME=lz4 srtm_sub.tif srtm_sub_blosc.zarr
   fi
+fi
+# GDAL's transformations for every EPSG CRS, which terrio's are checked against (needs pyproj and
+# GDAL's Python bindings).
+if [ ! -e epsg_points.tsv ] && python -c "import pyproj, osgeo" 2>/dev/null; then
+  python "$here/gen_epsg_points.py" epsg_points.tsv
 fi
 echo "Test data in $(pwd)"
