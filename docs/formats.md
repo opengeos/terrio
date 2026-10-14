@@ -13,7 +13,7 @@ terrio. `terrio formats` prints this list.
 | Zarr | Zarr v2 and v3 | ✓ | ✓ | zarr |
 | netCDF | netCDF classic and netCDF-4 | ✓ | | nc, nc4, cdf |
 | HFA | ERDAS Imagine | ✓ | | img |
-| GPKG | GeoPackage tiles | ✓ | | gpkg |
+| GPKG | GeoPackage tiles and gridded coverages | ✓ | ✓ | gpkg |
 | VRT | GDAL Virtual Raster | ✓ | ✓ | vrt |
 | ENVI | ENVI labelled raster | ✓ | ✓ | envi, hdr, dat, bsq, bip |
 | EHdr | Esri .hdr labelled (BIL, FLT) | ✓ | ✓ | bil, flt |
@@ -33,6 +33,12 @@ terrio. `terrio formats` prints this list.
 GeoTIFF compression: none, LZW, Deflate (including the legacy code), PackBits, JPEG, WebP and
 Zstandard, with horizontal and floating-point predictors, tiled or striped, chunky or planar.
 netCDF variables are opened as `NETCDF:"file.nc":variable`, as in GDAL.
+
+GeoPackage rasters are written as GDAL writes them: Byte rasters (1 to 4 bands) as PNG tiles, or
+JPEG with `--compress JPEG`; one-band Int16, UInt16 and Float32 rasters as gridded coverages
+(16-bit PNG or float TIFF tiles), with every zoom level of the pyramid. A GeoPackage holding
+vector layers and rasters opens as its layers, and `terrio info` lists its rasters as
+subdatasets, opened as `GPKG:file.gpkg:table`. Written layers get an R-tree spatial index.
 
 ## Vectors
 
@@ -72,4 +78,5 @@ layers, and shapefile field names are truncated as GDAL truncates them.
 
 The browser and Node.js package reads from bytes. JPEG 2000 is not available there. Formats made
 of several files (Shapefile, MapInfo MIF and TAB) are read from zip archives of their files;
-OSM is read from PBF or XML bytes. GeoPackage is not yet read from bytes.
+OSM is read from PBF or XML bytes. GeoPackage (layers and rasters) is read from and written to
+bytes.
