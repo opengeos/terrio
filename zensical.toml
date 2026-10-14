@@ -29,6 +29,8 @@ nav = [
 ]
 
 [project.theme]
+logo = "assets/logo.svg"
+favicon = "assets/favicon.png"
 features = [
   "content.code.copy",
   "navigation.indexes",
@@ -42,7 +44,6 @@ features = [
 
 [project.theme.icon]
 repo = "fontawesome/brands/github"
-logo = "material/earth"
 
 [[project.theme.palette]]
 scheme = "default"

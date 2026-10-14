@@ -1,5 +1,12 @@
 # terrio
 
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/opengeos/terrio/main/docs/assets/terrio-wordmark-dark.svg">
+    <img src="https://raw.githubusercontent.com/opengeos/terrio/main/docs/assets/terrio-wordmark.svg" alt="terrio" height="72">
+  </picture>
+</p>
+
 Python bindings for [terrio](https://github.com/opengeos/terrio): read, write, convert and
 reproject geospatial rasters, vector datasets and point clouds in pure Rust, without GDAL. Wheels need only
 NumPy.

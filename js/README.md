@@ -1,5 +1,12 @@
 # terrio (WebAssembly)
 
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/opengeos/terrio/main/docs/assets/terrio-wordmark-dark.svg">
+    <img src="https://raw.githubusercontent.com/opengeos/terrio/main/docs/assets/terrio-wordmark.svg" alt="terrio" height="72">
+  </picture>
+</p>
+
 [terrio](https://github.com/opengeos/terrio), pure-Rust geospatial data I/O, compiled to
 WebAssembly for browsers and Node.js. Datasets are opened from bytes, with a file name telling the
 format, and written back to bytes.
