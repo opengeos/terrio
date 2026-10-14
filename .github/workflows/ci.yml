@@ -97,12 +97,14 @@ jobs:
       - uses: mamba-org/setup-micromamba@v2
         with:
           environment-name: gdal
-          create-args: gdal libgdal-arrow-parquet libgdal-jp2openjpeg libgdal-netcdf libgdal-hdf5 numpy pip pytest maturin pyproj pdal laspy lazrs-python
+          # The reference: the EPSG table and test points come from GDAL 3.12.2 and PROJ 9.7.1, and
+          # newer EPSG databases change some transformations.
+          create-args: gdal=3.12.2 libgdal-core=3.12.2 proj=9.7.1 libgdal-arrow-parquet libgdal-jp2openjpeg libgdal-netcdf libgdal-hdf5 numpy pip pytest maturin pyproj pdal laspy lazrs-python
           cache-environment: true
       - uses: actions/cache@v4
         with:
           path: terrio-data
-          key: terrio-data-${{ hashFiles('scripts/fetch_test_data.sh', 'scripts/gen_epsg_points.py') }}
+          key: terrio-data-gdal3.12.2-${{ hashFiles('scripts/fetch_test_data.sh', 'scripts/gen_epsg_points.py') }}
       - name: Fetch test data
         shell: micromamba-shell {0}
         run: scripts/fetch_test_data.sh terrio-data

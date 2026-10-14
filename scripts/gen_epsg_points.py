@@ -17,6 +17,7 @@ Usage: python scripts/gen_epsg_points.py OUT.tsv
 """
 
 import multiprocessing
+import os
 import random
 import sys
 import warnings
@@ -26,6 +27,12 @@ from osgeo import gdal, osr
 from pyproj.enums import PJType
 
 osr.UseExceptions()
+# terrio applies no datum shift grids yet, so the reference must not use them either. conda's PROJ
+# activation turns PROJ's network access on, which downloads grids (NAD27 and others) and makes
+# the transformations depend on the environment.
+os.environ["PROJ_NETWORK"] = "OFF"
+osr.SetPROJEnableNetwork(False)
+pyproj.network.set_network_enabled(False)
 gdal.PushErrorHandler("CPLQuietErrorHandler")
 warnings.simplefilter("ignore")
 
