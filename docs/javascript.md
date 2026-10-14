@@ -34,7 +34,6 @@ In WebAssembly, these formats are read from and written to memory:
 \* The format library's FlatGeobuf reader overflows on large files in 32-bit WebAssembly; terrio's
 own FlatGeobuf driver will replace it.
 
-
 ## Building
 
 ```sh
