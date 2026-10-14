@@ -387,7 +387,7 @@ def compare_reprojection(path: Path, tmp: Path, srs: str) -> None:
     out = tmp / "reprojected.laz"
     terrio.convert_points(str(path), str(out), t_srs=srs)
     ours = laspy.read(out)
-    geographic = srs.endswith("4326")
+    geographic = srs.endswith(("4326", "4269"))
     scale = 1e-7 if geographic else 0.001
     ref = pdal_points([str(path), {"type": "filters.reprojection", "out_srs": srs}], scale_x=scale, scale_y=scale, offset_x="auto", offset_y="auto")
     dx = np.abs(np.asarray(ours.x) - ref["x"]).max()
@@ -413,9 +413,11 @@ def main() -> None:
                 compare_copc(path)
         compare_grid(root / "autzen_trim.laz", tmp, 2.0)
         compare_grid(root / "simple.laz", tmp, 7.5)
-        compare_reprojection(root / "test_utm16.las", tmp, "EPSG:4326")
+        # NAD83 sources go to NAD83 targets: whether PROJ shifts NAD83 to WGS 84 depends on the
+        # grids and network access PDAL's PROJ has.
+        compare_reprojection(root / "test_utm16.las", tmp, "EPSG:4269")
         compare_reprojection(root / "las_with_several_extra_byte_bloc.laz", tmp, "EPSG:4326")
-        compare_reprojection(root / "synthetic" / "format6.laz", tmp, "EPSG:32615")
+        compare_reprojection(root / "synthetic" / "format6.laz", tmp, "EPSG:5070")
     print(f"\n{len(FAILURES)} failure(s)")
     for f in FAILURES:
         print("  " + f)

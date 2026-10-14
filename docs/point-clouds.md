@@ -128,7 +128,7 @@ type) with terrio and compares:
 | LAS, LAZ and COPC written by terrio, read back | laspy, PDAL `readers.las`, `readers.copc` | identical values, 294 checks |
 | COPC reads by bounds, resolution and both | PDAL `readers.copc` | the same points |
 | Gridding: min, max, mean, IDW, count, stdev; radius, power, bin mode, window filling | PDAL `writers.gdal` | identical to 1e-9 |
-| Reprojection | PDAL `filters.reprojection` | within 2e-7 degrees, 0.2 mm |
+| Reprojection (same datum: NAD83 to NAD83 geographic and Albers, RGF93 to WGS 84) | PDAL `filters.reprojection` | within 2e-7 degrees, 1 mm |
 
 terrio also reads LASzip 1.2's first, unchunked compressor, which laspy's `lazrs` and PDAL's
 `lazperf` cannot read. PDAL does not read point formats 4, 5, 9 and 10 (waveforms); those files are
