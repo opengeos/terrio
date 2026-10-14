@@ -11,7 +11,7 @@ terrio. `terrio formats` prints this list.
 | COG | Cloud Optimized GeoTIFF | ✓ | ✓ | tif, tiff |
 | JP2 | JPEG 2000 | ✓ | ✓ | jp2, j2k |
 | Zarr | Zarr v2 and v3 | ✓ | ✓ | zarr |
-| netCDF | netCDF classic and netCDF-4 | ✓ | | nc, nc4, cdf |
+| netCDF | netCDF classic and netCDF-4 (writes classic CDF-1/2/5) | ✓ | ✓ | nc, nc4, cdf |
 | HFA | ERDAS Imagine | ✓ | | img |
 | GPKG | GeoPackage tiles and gridded coverages | ✓ | ✓ | gpkg |
 | VRT | GDAL Virtual Raster | ✓ | ✓ | vrt |
