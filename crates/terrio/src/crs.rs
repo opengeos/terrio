@@ -2,6 +2,19 @@
 //!
 //! Coordinates are always in traditional GIS order: x/easting/longitude first, then
 //! y/northing/latitude, whatever axis order the CRS's authority defines.
+//!
+//! ```no_run
+//! use terrio::crs::{SpatialRef, Transformer};
+//!
+//! let nad27 = SpatialRef::parse("EPSG:4267")?;
+//! let utm = SpatialRef::parse("+proj=utm +zone=13 +datum=WGS84")?;
+//! println!("{} -> {}", nad27.label(), utm.label());
+//! let t = Transformer::new(&nad27, &utm)?;
+//! let (x, y) = t.transform(-105.5, 39.5)?;
+//! let bounds = t.transform_bounds((-106.0, 39.0, -105.0, 40.0))?;
+//! println!("{}", utm.to_wkt().unwrap_or_default());
+//! # Ok::<(), terrio::Error>(())
+//! ```
 
 use crate::{Error, Result};
 use serde::Serialize;

@@ -1,6 +1,6 @@
 //! Mosaics: an equivalent of `gdalbuildvrt` (a [`VrtDataset`] over many rasters) and of
 //! `gdal_merge.py` (the same, read into one raster). Sources in different CRSs are reprojected
-//! with [`warp`](super::warp::warp).
+//! with [`warp`].
 
 use super::vrt::{VrtBand, VrtDataset, VrtSource};
 use super::warp::{Nodata, WarpOptions, warp};

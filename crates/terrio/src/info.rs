@@ -1,4 +1,6 @@
-//! Dataset summaries, like `gdalinfo` and `ogrinfo`.
+//! Dataset summaries, like `gdalinfo` and `ogrinfo`: [`info`] for an open dataset, [`info_path`]
+//! for a path (reading GeoTIFFs and point clouds by their headers). Summaries print as text
+//! ([`Info::to_text`]) and serialize to JSON.
 
 use crate::LazyRaster;
 use crate::crs::{SpatialRef, Transformer};
@@ -225,6 +227,18 @@ pub fn lazy_raster_info(r: &mut LazyRaster, options: &InfoOptions) -> crate::Res
 
 /// Summarizes the dataset at a path. GeoTIFFs (local or remote) are read in place, fetching only
 /// their headers unless statistics are asked for; other datasets are read whole.
+///
+/// ```no_run
+/// use terrio::info::{Info, InfoOptions, info_path};
+///
+/// let summary = info_path("https://example.com/cog.tif", &InfoOptions { statistics: false })?;
+/// print!("{}", summary.to_text()); // as `terrio info` prints it
+/// println!("{}", serde_json::to_string_pretty(&summary).unwrap()); // as `terrio info --json`
+/// if let Info::Raster(r) = &summary {
+///     println!("{} bands", r.bands.len());
+/// }
+/// # Ok::<(), terrio::Error>(())
+/// ```
 pub fn info_path(path: &str, options: &InfoOptions) -> crate::Result<Info> {
     if let Some(result) = crate::stac::info(path, options) {
         return result;

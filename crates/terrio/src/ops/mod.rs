@@ -4,6 +4,18 @@
 //! [`calc`] (`gdal_calc.py`), [`proximity`] (`gdal_proximity.py`), [`sieve`] (`gdal_sieve.py`),
 //! and the vector filtering of `ogr2ogr` ([`vector_filter`], [`sql`]).
 //!
+//! ```no_run
+//! use terrio::ops::{calc, dem};
+//!
+//! let dem = terrio::open_raster("dem.tif")?;
+//! let slope = dem::slope_map(&dem, &dem::DemOptions { scale: Some(111_120.0), ..Default::default() })?;
+//! // gdal_calc.py's `--calc="A * (A > 1500)"`.
+//! let inputs = [calc::CalcInput { name: "A".into(), ds: &dem, band: 1 }];
+//! let high = calc::calc(&inputs, &calc::CalcOptions { calc: vec!["A * (A > 1500)".into()], ..Default::default() })?;
+//! terrio::write_raster_dataset(&high, "high.tif", &Default::default())?;
+//! # Ok::<(), terrio::Error>(())
+//! ```
+//!
 //! Pixel coordinates follow GDAL's convention: pixel `(col, row)` covers `[col, col + 1)` ×
 //! `[row, row + 1)` and its centre is at `(col + 0.5, row + 0.5)`. Geotransforms are GDAL's
 //! `[x_origin, pixel_width, 0, y_origin, 0, -pixel_height]`.

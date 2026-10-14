@@ -19,6 +19,7 @@ pub(crate) fn to_py(e: terrio::Error) -> PyErr {
         terrio::Error::InvalidArgument(_) => "InvalidArgumentError",
         terrio::Error::Unsupported(_) => "UnsupportedError",
         terrio::Error::Raster(_) | terrio::Error::Vector(_) | terrio::Error::InvalidData(_) => "InvalidDataError",
+        _ => "TerrioError",
     };
     let message = e.to_string();
     Python::attach(|py| match py.import("terrio.errors").and_then(|m| m.getattr(class)).and_then(|t| Ok(t.cast_into::<PyType>()?)) {

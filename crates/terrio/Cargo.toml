@@ -1,9 +1,10 @@
 [package]
 name = "terrio"
-description = "Pure-Rust geospatial raster and vector data I/O"
+description = "Pure-Rust geospatial raster, vector and point cloud data I/O: read, write, convert and reproject GIS formats without C dependencies"
 readme = "../../README.md"
-keywords = ["gis", "geospatial", "raster", "vector", "geotiff"]
-categories = ["science::geo", "parser-implementations"]
+documentation = "https://docs.rs/terrio"
+keywords = ["gis", "geospatial", "raster", "vector", "point-cloud"]
+categories = ["science::geo", "parser-implementations", "encoding"]
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -11,6 +12,11 @@ rust-version.workspace = true
 repository.workspace = true
 homepage.workspace = true
 authors.workspace = true
+
+[package.metadata.docs.rs]
+# The GDAL backend's API is documented too: gdal-sys builds docs without GDAL installed.
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
 
 [dependencies]
 wbraster.workspace = true

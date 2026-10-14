@@ -5,6 +5,7 @@ use std::path::Path;
 
 /// Whether a driver handles rasters, vectors or point clouds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[non_exhaustive]
 #[serde(rename_all = "lowercase")]
 pub enum Kind {
     /// Gridded data.
@@ -16,8 +17,9 @@ pub enum Kind {
     PointCloud,
 }
 
-/// A raster format driver.
+/// A raster format driver. New drivers are added in minor releases: match with a wildcard arm.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[non_exhaustive]
 pub enum RasterDriver {
     /// GeoTIFF and BigTIFF.
     GTiff,
@@ -74,8 +76,9 @@ pub enum RasterDriver {
     Gdal,
 }
 
-/// A vector format driver.
+/// A vector format driver. New drivers are added in minor releases: match with a wildcard arm.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[non_exhaustive]
 pub enum VectorDriver {
     /// GeoJSON.
     GeoJSON,
