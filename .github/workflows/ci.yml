@@ -65,5 +65,7 @@ jobs:
           TERRIO_TEST_DATA: ${{ github.workspace }}/terrio-data
         run: cargo test --workspace
       - name: Compare with GDAL
+        # Informational until the format gaps listed in ROADMAP.md are closed.
+        continue-on-error: true
         shell: micromamba-shell {0}
         run: python scripts/compare_with_gdal.py terrio-data

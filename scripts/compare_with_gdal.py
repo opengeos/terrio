@@ -11,6 +11,7 @@ import math
 import os
 import subprocess
 import sys
+import zipfile
 
 from osgeo import gdal, ogr, osr
 
@@ -175,6 +176,23 @@ def compare_vector(path, t):
     return diffs
 
 
+def zip_member(path):
+    """Return the GDAL path of a zip archive's main dataset, as terrio picks it.
+
+    Args:
+        path: The archive path.
+
+    Returns:
+        A ``/vsizip/`` path to the first shapefile (or other dataset) in the archive.
+    """
+    names = sorted(zipfile.ZipFile(path).namelist())
+    for ext in (".shp", ".gpkg", ".geojson", ".json", ".fgb", ".tif"):
+        for n in names:
+            if n.lower().endswith(ext):
+                return f"/vsizip/{path}/{n}"
+    return "/vsizip/" + path
+
+
 def main():
     """Compare every dataset in the data directory (or the given files)."""
     data = sys.argv[1]
@@ -187,7 +205,7 @@ def main():
             continue
         if ext == ".hdr":
             continue  # GDAL opens ENVI data files, not headers
-        gdal_path = "/vsizip/" + path if ext == ".zip" else path
+        gdal_path = zip_member(path) if ext == ".zip" else path
         t = terrio_info(path, stats=ext in RASTER_EXT)
         if isinstance(t, str):
             print(f"FAIL  {name}: terrio error: {t}")
