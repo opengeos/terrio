@@ -241,6 +241,9 @@ pub fn info_path(path: &str, options: &InfoOptions) -> crate::Result<Info> {
     {
         return Ok(Info::Raster(Box::new(lazy_raster_info(&mut r, options)?)));
     }
+    if let Some(v) = gpkg_vector_info(path)? {
+        return Ok(Info::Vector(v));
+    }
     let mut summary = info(&crate::open(path)?, options);
     // A GeoPackage's raster tables: all of them besides vector layers, or besides the first.
     if crate::formats::extension(path).as_deref() == Some("gpkg")
@@ -296,27 +299,49 @@ pub fn gdal_type_name(t: wbraster::DataType) -> &'static str {
 
 /// Summarizes a vector dataset.
 pub fn vector_info(ds: &VectorDataset) -> VectorInfo {
-    let layers = ds
-        .layers
-        .iter()
-        .map(|l| {
-            let crs = SpatialRef::from_layer(l);
-            LayerInfo {
-                name: l.name.clone(),
-                geometry_type: crate::vector::geometry_type_name(l),
-                feature_count: l.len(),
-                crs: CrsSummary::new(&crs),
-                extent: crate::vector::layer_extent(l).map(|b| [b.0, b.1, b.2, b.3]),
-                fields: l
-                    .schema
-                    .fields()
-                    .iter()
-                    .map(|f| FieldInfo { name: f.name.clone(), field_type: f.field_type.as_str().to_string() })
-                    .collect(),
-            }
+    let layers =
+        ds.layers.iter().map(|l| layer_info(l, l.len(), crate::vector::geometry_type_name(l), crate::vector::layer_extent(l))).collect();
+    VectorInfo { driver: ds.driver.name().to_string(), layers, subdatasets: Vec::new() }
+}
+
+/// Summarizes a layer, given its feature count, geometry type name and extent.
+fn layer_info(l: &wbvector::Layer, feature_count: usize, geometry_type: String, extent: Option<(f64, f64, f64, f64)>) -> LayerInfo {
+    let crs = SpatialRef::from_layer(l);
+    LayerInfo {
+        name: l.name.clone(),
+        geometry_type,
+        feature_count,
+        crs: CrsSummary::new(&crs),
+        extent: extent.map(|b| [b.0, b.1, b.2, b.3]),
+        fields: l
+            .schema
+            .fields()
+            .iter()
+            .map(|f| FieldInfo { name: f.name.clone(), field_type: f.field_type.as_str().to_string() })
+            .collect(),
+    }
+}
+
+/// Summarizes the vector layers of a local GeoPackage without reading their attributes. `None`
+/// when it is not a local GeoPackage file with vector layers.
+fn gpkg_vector_info(path: &str) -> crate::Result<Option<VectorInfo>> {
+    if crate::formats::extension(path).as_deref() != Some("gpkg")
+        || !matches!(crate::vfs::Location::parse(path), crate::vfs::Location::Local(_))
+        || !std::path::Path::new(path).is_file()
+    {
+        return Ok(None);
+    }
+    let Some((layers, rasters)) = crate::drivers::vector::gpkg_read::summarize(path)? else { return Ok(None) };
+    let layers = layers.into_iter().map(|s| layer_info(&s.layer, s.feature_count, s.geometry_type, s.extent)).collect();
+    // The raster tables, as `drivers::gpkg::subdatasets` names them.
+    let subdatasets = rasters
+        .into_iter()
+        .map(|c| {
+            let desc = if c.description.is_empty() { c.name.clone() } else { c.description.clone() };
+            Subdataset { name: format!("GPKG:{path}:{}", c.name), description: format!("{} - {desc}", c.name) }
         })
         .collect();
-    VectorInfo { driver: ds.driver.name().to_string(), layers, subdatasets: Vec::new() }
+    Ok(Some(VectorInfo { driver: crate::formats::VectorDriver::GPKG.name().to_string(), layers, subdatasets }))
 }
 
 fn wgs84_extent(crs: &SpatialRef, e: [f64; 4]) -> Option<[f64; 4]> {

@@ -6,13 +6,21 @@ use wbvector::{Geometry, GeometryType, Layer};
 /// its multi-part form count as the multi-part form; other mixes are `Unknown`. A ` Z` suffix
 /// marks layers with heights.
 pub fn geometry_type_name(layer: &Layer) -> String {
-    let base = match layer.geom_type {
+    let geometries = || layer.features.iter().filter_map(|f| f.geometry.as_ref());
+    geometry_type_name_of(layer.geom_type, geometries().map(|g| g.geom_type()), geometries().take(100).any(geometry_has_z))
+}
+
+/// The geometry type name of a layer declaring the type `declared`, whose (non-null) geometries
+/// have the types `types`, and whose first 100 geometries have Z coordinates (`has_z`).
+pub(crate) fn geometry_type_name_of(declared: Option<GeometryType>, types: impl Iterator<Item = GeometryType>, has_z: bool) -> String {
+    let mut types = types.peekable();
+    let any = types.peek().is_some();
+    let base = match declared {
         Some(t) => Some(t),
         None => {
             let mut found: Option<GeometryType> = None;
             let mut mixed = false;
-            for g in layer.features.iter().filter_map(|f| f.geometry.as_ref()) {
-                let t = g.geom_type();
+            for t in types {
                 found = match found {
                     None => Some(t),
                     Some(prev) if prev == t => Some(prev),
@@ -29,9 +37,8 @@ pub fn geometry_type_name(layer: &Layer) -> String {
         }
     };
     let Some(t) = base else {
-        return if layer.features.iter().all(|f| f.geometry.is_none()) { "None".into() } else { "Unknown".into() };
+        return if any { "Unknown".into() } else { "None".into() };
     };
-    let has_z = layer.features.iter().filter_map(|f| f.geometry.as_ref()).take(100).any(geometry_has_z);
     format!("{}{}", t.as_str(), if has_z { " Z" } else { "" })
 }
 
@@ -60,14 +67,17 @@ pub fn geometry_has_z(g: &Geometry) -> bool {
 
 /// The bounds `(min_x, min_y, max_x, max_y)` of a layer's geometries.
 pub fn layer_extent(layer: &Layer) -> Option<(f64, f64, f64, f64)> {
+    extent_of(layer.features.iter().filter_map(|f| f.geometry.as_ref()?.bbox()).map(|b| (b.min_x, b.min_y, b.max_x, b.max_y)))
+}
+
+/// The bounds covering bounding boxes `(min_x, min_y, max_x, max_y)`, combined in order.
+pub(crate) fn extent_of(boxes: impl Iterator<Item = (f64, f64, f64, f64)>) -> Option<(f64, f64, f64, f64)> {
     let mut b: Option<(f64, f64, f64, f64)> = None;
-    for g in layer.features.iter().filter_map(|f| f.geometry.as_ref()) {
-        if let Some(gb) = g.bbox() {
-            b = Some(match b {
-                None => (gb.min_x, gb.min_y, gb.max_x, gb.max_y),
-                Some(a) => (a.0.min(gb.min_x), a.1.min(gb.min_y), a.2.max(gb.max_x), a.3.max(gb.max_y)),
-            });
-        }
+    for gb in boxes {
+        b = Some(match b {
+            None => gb,
+            Some(a) => (a.0.min(gb.0), a.1.min(gb.1), a.2.max(gb.2), a.3.max(gb.3)),
+        });
     }
     b
 }
@@ -76,29 +86,46 @@ pub fn layer_extent(layer: &Layer) -> Option<(f64, f64, f64, f64)> {
 /// transformations as GDAL applies them). Heights and measures are kept. The layer's CRS must
 /// be known.
 pub fn reproject_layer(layer: &Layer, dst: &crate::crs::SpatialRef) -> crate::Result<Layer> {
-    let src = crate::crs::SpatialRef::from_layer(layer);
+    reproject_layer_owned(layer.clone(), dst)
+}
+
+/// [`reproject_layer`], consuming the layer. Features are reprojected in parallel.
+pub(crate) fn reproject_layer_owned(mut layer: Layer, dst: &crate::crs::SpatialRef) -> crate::Result<Layer> {
+    let src = crate::crs::SpatialRef::from_layer(&layer);
     if src.is_unknown() {
         return Err(crate::Error::Crs(format!("layer '{}' has no CRS to reproject from", layer.name)));
     }
     if src.same_as(dst) {
-        return Ok(layer.clone());
+        return Ok(layer);
     }
     let t = crate::crs::Transformer::new(&src, dst)?;
-    let mut out = layer.clone();
-    for (i, f) in out.features.iter_mut().enumerate() {
-        if let Some(g) = f.geometry.as_mut() {
-            map_coords(g, &mut |c| {
-                let (x, y) = t.transform(c.x, c.y)?;
-                c.x = x;
-                c.y = y;
-                Ok(())
-            })
-            .map_err(|e| crate::Error::Crs(format!("failed to reproject feature {i} of layer '{}': {e}", layer.name)))?;
+    let len = crate::par::chunk_len(layer.features.len(), 16);
+    let errors = std::sync::Mutex::new(Vec::new());
+    crate::par::chunks_mut(&mut layer.features, len, |k, features| {
+        for (j, f) in features.iter_mut().enumerate() {
+            if let Some(g) = f.geometry.as_mut()
+                && let Err(e) = map_coords(g, &mut |c| {
+                    let (x, y) = t.transform(c.x, c.y)?;
+                    c.x = x;
+                    c.y = y;
+                    Ok(())
+                })
+            {
+                if let Ok(mut errors) = errors.lock() {
+                    errors.push((k * len + j, e));
+                }
+                // Features after a failure are not reprojected, as in a sequential pass.
+                break;
+            }
         }
+    });
+    // The first feature that fails, as a sequential pass would report it.
+    if let Some((i, e)) = errors.into_inner().unwrap_or_default().into_iter().min_by_key(|(i, _)| *i) {
+        return Err(crate::Error::Crs(format!("failed to reproject feature {i} of layer '{}': {e}", layer.name)));
     }
-    out.extent = None;
-    dst.apply_to_layer(&mut out);
-    Ok(out)
+    layer.extent = None;
+    dst.apply_to_layer(&mut layer);
+    Ok(layer)
 }
 
 /// Applies `f` to every coordinate of a geometry.

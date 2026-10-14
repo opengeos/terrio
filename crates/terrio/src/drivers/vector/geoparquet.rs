@@ -582,11 +582,16 @@ pub fn to_bytes(layer: &Layer) -> Result<Vec<u8>> {
         let mut wkb = BinaryBuilder::new();
         let mut bounds = [Float64Builder::new(), Float64Builder::new(), Float64Builder::new(), Float64Builder::new()];
         let mut valid = Vec::with_capacity(chunk.len());
-        for f in chunk {
-            let bb = f.geometry.as_ref().and_then(|g| g.bbox());
-            match &f.geometry {
-                Some(g) if bb.is_some() => wkb.append_value(g.to_wkb()),
-                _ => wkb.append_null(),
+        // Each geometry's bounds and WKB, computed in parallel.
+        let encoded = crate::par::map_range(chunk.len(), |j| {
+            let g = chunk[j].geometry.as_ref();
+            let bb = g.and_then(|g| g.bbox());
+            (bb.is_some().then(|| g.map(Geometry::to_wkb)).flatten(), bb)
+        });
+        for (geometry, bb) in encoded {
+            match geometry {
+                Some(w) => wkb.append_value(w),
+                None => wkb.append_null(),
             }
             valid.push(bb.is_some());
             let b = bb.map_or([0.0; 4], |b| [b.min_x, b.min_y, b.max_x, b.max_y]);
@@ -608,12 +613,17 @@ pub fn to_bytes(layer: &Layer) -> Result<Vec<u8>> {
 fn geo_metadata(layer: &Layer) -> Value {
     let mut types: Vec<String> = Vec::new();
     let mut bounds: Option<[f64; 4]> = None;
-    for g in layer.features.iter().filter_map(|f| f.geometry.as_ref()) {
+    // Each geometry's type and bounds, computed in parallel, then combined in order.
+    let summaries = crate::par::map_range(layer.features.len(), |i| {
+        let g = layer.features[i].geometry.as_ref()?;
         let name = format!("{}{}", g.geom_type().as_str(), if crate::vector::geometry_has_z(g) { " Z" } else { "" });
+        Some((name, g.bbox()))
+    });
+    for (name, bbox) in summaries.into_iter().flatten() {
         if !types.contains(&name) {
             types.push(name);
         }
-        if let Some(b) = g.bbox() {
+        if let Some(b) = bbox {
             bounds = Some(match bounds {
                 None => [b.min_x, b.min_y, b.max_x, b.max_y],
                 Some(a) => [a[0].min(b.min_x), a[1].min(b.min_y), a[2].max(b.max_x), a[3].max(b.max_y)],

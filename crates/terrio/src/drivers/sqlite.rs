@@ -107,37 +107,59 @@ impl Db {
         self.data.get(start..start + self.page_size).ok_or_else(|| bad("page out of range"))
     }
 
-    /// Every row of the b-tree rooted at `root`, as `(rowid, payload)`.
+    /// Every row of the b-tree rooted at `root`, as `(rowid, payload)`. The interior pages are
+    /// walked first, then the leaf pages are decoded in parallel.
     fn scan(&self, root: u32, out: &mut Vec<(i64, Vec<u8>)>, depth: usize) -> Result<()> {
+        let mut leaves = Vec::new();
+        let failure = self.leaves(root, &mut leaves, depth).err();
+        let rows = crate::par::map_range(leaves.len(), |i| self.leaf_rows(leaves[i]));
+        // The first error in page order, as a sequential scan would meet it.
+        for r in rows {
+            out.extend(r?);
+        }
+        failure.map_or(Ok(()), Err)
+    }
+
+    /// The pages holding rows of the b-tree rooted at `root`, in order, until an error.
+    fn leaves(&self, root: u32, out: &mut Vec<u32>, depth: usize) -> Result<()> {
         if depth > 64 {
             return Err(bad("b-tree too deep"));
         }
         let page = self.page(root)?;
         let h = if root == 1 { 100 } else { 0 };
-        let kind = page[h];
+        if page[h] != 0x05 {
+            // A leaf, or a page of another type that decoding it reports.
+            out.push(root);
+            return Ok(());
+        }
         let cells = u16::from_be_bytes([page[h + 3], page[h + 4]]) as usize;
-        let header_len = if kind == 0x05 || kind == 0x02 { 12 } else { 8 };
         for c in 0..cells {
-            let p = h + header_len + 2 * c;
+            let p = h + 12 + 2 * c;
             let off = u16::from_be_bytes([page[p], page[p + 1]]) as usize;
-            match kind {
-                0x05 => {
-                    let child = u32::from_be_bytes(page[off..off + 4].try_into().map_err(|_| bad("cell"))?);
-                    self.scan(child, out, depth + 1)?;
-                }
-                0x0d => {
-                    let (size, n1) = varint(page, off).ok_or_else(|| bad("cell"))?;
-                    let (rowid, n2) = varint(page, off + n1).ok_or_else(|| bad("cell"))?;
-                    out.push((rowid, self.payload(page, off + n1 + n2, size as usize)?));
-                }
-                _ => return Err(bad("unsupported page type")),
-            }
+            let child = u32::from_be_bytes(page[off..off + 4].try_into().map_err(|_| bad("cell"))?);
+            self.leaves(child, out, depth + 1)?;
         }
-        if kind == 0x05 {
-            let right = u32::from_be_bytes(page[h + 8..h + 12].try_into().map_err(|_| bad("page"))?);
-            self.scan(right, out, depth + 1)?;
+        let right = u32::from_be_bytes(page[h + 8..h + 12].try_into().map_err(|_| bad("page"))?);
+        self.leaves(right, out, depth + 1)
+    }
+
+    /// The rows of a leaf page, as `(rowid, payload)`.
+    fn leaf_rows(&self, n: u32) -> Result<Vec<(i64, Vec<u8>)>> {
+        let page = self.page(n)?;
+        let h = if n == 1 { 100 } else { 0 };
+        if page[h] != 0x0d {
+            return Err(bad("unsupported page type"));
         }
-        Ok(())
+        let cells = u16::from_be_bytes([page[h + 3], page[h + 4]]) as usize;
+        let mut out = Vec::with_capacity(cells);
+        for c in 0..cells {
+            let p = h + 8 + 2 * c;
+            let off = u16::from_be_bytes([page[p], page[p + 1]]) as usize;
+            let (size, n1) = varint(page, off).ok_or_else(|| bad("cell"))?;
+            let (rowid, n2) = varint(page, off + n1).ok_or_else(|| bad("cell"))?;
+            out.push((rowid, self.payload(page, off + n1 + n2, size as usize)?));
+        }
+        Ok(out)
     }
 
     /// A cell's payload, following overflow pages.
@@ -162,9 +184,9 @@ impl Db {
         Ok(out)
     }
 
-    /// Decodes a record.
-    fn record(payload: &[u8]) -> Vec<Value> {
-        let Some((header_len, n)) = varint(payload, 0) else { return Vec::new() };
+    /// The serial types of a record's columns, and where its values start.
+    fn record_types(payload: &[u8]) -> (Vec<i64>, usize) {
+        let Some((header_len, n)) = varint(payload, 0) else { return (Vec::new(), 0) };
         let mut types = Vec::new();
         let mut i = n;
         while i < header_len as usize {
@@ -172,39 +194,71 @@ impl Db {
             types.push(t);
             i += k;
         }
-        let mut pos = header_len as usize;
+        (types, header_len as usize)
+    }
+
+    /// Decodes a value of serial type `t` at `pos`: the value and its length.
+    fn value(payload: &[u8], t: i64, pos: usize) -> (Value, usize) {
+        let int = |len: usize, pos: usize| -> i64 {
+            let b = &payload[pos..(pos + len).min(payload.len())];
+            let mut v: i64 = if b.first().is_some_and(|x| x & 0x80 != 0) { -1 } else { 0 };
+            for x in b {
+                v = (v << 8) | *x as i64;
+            }
+            v
+        };
+        match t {
+            0 => (Value::Null, 0),
+            1..=4 => (Value::Int(int(t as usize, pos)), t as usize),
+            5 => (Value::Int(int(6, pos)), 6),
+            6 => (Value::Int(int(8, pos)), 8),
+            7 => (Value::Real(f64::from_bits(int(8, pos) as u64)), 8),
+            8 => (Value::Int(0), 0),
+            9 => (Value::Int(1), 0),
+            t if t >= 12 && t % 2 == 0 => {
+                let l = (t as usize - 12) / 2;
+                (Value::Blob(payload.get(pos..pos + l).unwrap_or_default().to_vec()), l)
+            }
+            t if t >= 13 => {
+                let l = (t as usize - 13) / 2;
+                (Value::Text(String::from_utf8_lossy(payload.get(pos..pos + l).unwrap_or_default()).into_owned()), l)
+            }
+            _ => (Value::Null, 0),
+        }
+    }
+
+    /// The length of a value of serial type `t`.
+    fn value_len(t: i64) -> usize {
+        match t {
+            1..=4 => t as usize,
+            5 => 6,
+            6 | 7 => 8,
+            t if t >= 12 => (t as usize - 12) / 2,
+            _ => 0,
+        }
+    }
+
+    /// Decodes a record.
+    fn record(payload: &[u8]) -> Vec<Value> {
+        let (types, mut pos) = Self::record_types(payload);
         let mut out = Vec::with_capacity(types.len());
         for t in types {
-            let int = |len: usize, pos: usize| -> i64 {
-                let b = &payload[pos..(pos + len).min(payload.len())];
-                let mut v: i64 = if b.first().is_some_and(|x| x & 0x80 != 0) { -1 } else { 0 };
-                for x in b {
-                    v = (v << 8) | *x as i64;
-                }
-                v
-            };
-            let (value, len) = match t {
-                0 => (Value::Null, 0),
-                1..=4 => (Value::Int(int(t as usize, pos)), t as usize),
-                5 => (Value::Int(int(6, pos)), 6),
-                6 => (Value::Int(int(8, pos)), 8),
-                7 => (Value::Real(f64::from_bits(int(8, pos) as u64)), 8),
-                8 => (Value::Int(0), 0),
-                9 => (Value::Int(1), 0),
-                t if t >= 12 && t % 2 == 0 => {
-                    let l = (t as usize - 12) / 2;
-                    (Value::Blob(payload.get(pos..pos + l).unwrap_or_default().to_vec()), l)
-                }
-                t if t >= 13 => {
-                    let l = (t as usize - 13) / 2;
-                    (Value::Text(String::from_utf8_lossy(payload.get(pos..pos + l).unwrap_or_default()).into_owned()), l)
-                }
-                _ => (Value::Null, 0),
-            };
+            let (value, len) = Self::value(payload, t, pos);
             pos += len;
             out.push(value);
         }
         out
+    }
+
+    /// Decodes one column of a record, as [`Db::table`] reads it (`Null` past the record's last
+    /// column; the rowid alias column is not filled in).
+    pub(crate) fn record_column(payload: &[u8], column: usize) -> Value {
+        let (types, mut pos) = Self::record_types(payload);
+        let Some(&t) = types.get(column) else { return Value::Null };
+        for &t in &types[..column] {
+            pos += Self::value_len(t);
+        }
+        Self::value(payload, t, pos).0
     }
 
     /// The schema: `(type, name, table, root page, sql)` of every table, index, view and trigger.
@@ -245,10 +299,10 @@ impl Db {
             }
             let mut rows = Vec::new();
             self.scan(root, &mut rows, 0)?;
+            let rows = crate::par::map_range(rows.len(), |i| (rows[i].0, Self::record(&rows[i].1)));
             let rows = rows
                 .into_iter()
-                .map(|(rowid, payload)| {
-                    let mut v = Self::record(&payload);
+                .map(|(rowid, mut v)| {
                     v.resize(columns.len().max(v.len()), Value::Null);
                     if let Some(c) = rowid_col
                         && v[c] == Value::Null
@@ -259,6 +313,26 @@ impl Db {
                 })
                 .collect();
             return Ok(Table { columns, rows });
+        }
+        Err(bad(&format!("no table '{name}'")))
+    }
+
+    /// The rows of a table by name, as `(rowid, record)`, without decoding them.
+    pub(crate) fn raw_rows(&self, name: &str) -> Result<Vec<(i64, Vec<u8>)>> {
+        for (kind, table, _, root, sql) in self.schema()? {
+            if kind != "table" || !table.eq_ignore_ascii_case(name) {
+                continue;
+            }
+            if root == 0 {
+                return Err(bad(&format!("'{name}' is a virtual table")));
+            }
+            let without_rowid = sql.to_ascii_uppercase().split_whitespace().collect::<Vec<_>>().join(" ").contains("WITHOUT ROWID");
+            if without_rowid {
+                return Err(bad(&format!("'{name}' is a WITHOUT ROWID table, which is not supported")));
+            }
+            let mut rows = Vec::new();
+            self.scan(root, &mut rows, 0)?;
+            return Ok(rows);
         }
         Err(bad(&format!("no table '{name}'")))
     }

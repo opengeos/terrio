@@ -10,7 +10,7 @@
 
 use crate::drivers::sqlite::{self, Db, Value};
 use crate::{Error, Result};
-use wbvector::{Feature, FieldDef, FieldType, FieldValue, Geometry, GeometryType, Layer};
+use wbvector::{Coord, Feature, FieldDef, FieldType, FieldValue, Geometry, GeometryType, Layer, Ring};
 
 fn bad(msg: impl std::fmt::Display) -> Error {
     Error::InvalidData(format!("GeoPackage: {msg}"))
@@ -145,7 +145,7 @@ fn set_crs(db: &Db, layer: &mut Layer, srs_id: i64) {
 pub(crate) fn decode_geometry(b: &[u8]) -> Option<Geometry> {
     if b.len() < 8 || &b[..2] != b"GP" {
         // Some writers store plain WKB.
-        return Geometry::from_wkb(b).ok();
+        return from_wkb(b);
     }
     let flags = b[3];
     if flags & 0x10 != 0 {
@@ -159,11 +159,130 @@ pub(crate) fn decode_geometry(b: &[u8]) -> Option<Geometry> {
         _ => return None,
     };
     let wkb = b.get(8 + envelope..)?;
-    let g = Geometry::from_wkb(wkb).ok()?;
+    let g = from_wkb(wkb)?;
     // An empty point is written as NaN coordinates.
     match &g {
         Geometry::Point(c) if c.x.is_nan() && c.y.is_nan() => None,
         _ => Some(g),
+    }
+}
+
+/// Decodes WKB as `Geometry::from_wkb` does (the same geometries, and `None` where it fails),
+/// reading from the slice directly and allocating coordinate vectors at their final size.
+pub(crate) fn from_wkb(b: &[u8]) -> Option<Geometry> {
+    Wkb { b, pos: 0 }.geometry()
+}
+
+/// A WKB reader.
+struct Wkb<'a> {
+    b: &'a [u8],
+    pos: usize,
+}
+
+impl Wkb<'_> {
+    fn bytes<const N: usize>(&mut self) -> Option<[u8; N]> {
+        let v = self.b.get(self.pos..self.pos + N)?.try_into().ok()?;
+        self.pos += N;
+        Some(v)
+    }
+
+    fn u32(&mut self, le: bool) -> Option<u32> {
+        let b = self.bytes::<4>()?;
+        Some(if le { u32::from_le_bytes(b) } else { u32::from_be_bytes(b) })
+    }
+
+    fn f64(&mut self, le: bool) -> Option<f64> {
+        let b = self.bytes::<8>()?;
+        Some(if le { f64::from_le_bytes(b) } else { f64::from_be_bytes(b) })
+    }
+
+    fn coord(&mut self, le: bool, z: bool, m: bool) -> Option<Coord> {
+        let x = self.f64(le)?;
+        let y = self.f64(le)?;
+        let z = if z { Some(self.f64(le)?) } else { None };
+        let m = if m { Some(self.f64(le)?) } else { None };
+        Some(Coord { x, y, z, m })
+    }
+
+    fn coords(&mut self, le: bool, z: bool, m: bool) -> Option<Vec<Coord>> {
+        let n = self.u32(le)? as u64;
+        let size = 16 + 8 * (z as u64 + m as u64);
+        // Fewer bytes than the coordinates need: reading them would fail.
+        if n.checked_mul(size)? > (self.b.len() - self.pos) as u64 {
+            return None;
+        }
+        let mut cs = Vec::with_capacity(n as usize);
+        for _ in 0..n {
+            cs.push(self.coord(le, z, m)?);
+        }
+        Some(cs)
+    }
+
+    fn ring(&mut self, le: bool, z: bool, m: bool) -> Option<Ring> {
+        let mut cs = self.coords(le, z, m)?;
+        // The closing point is dropped.
+        if cs.len() > 1 && cs.first() == cs.last() {
+            cs.pop();
+        }
+        Some(Ring::new(cs))
+    }
+
+    /// The members of a collection, each a WKB geometry, mapped by `f`.
+    fn members<T>(&mut self, le: bool, f: impl Fn(Geometry) -> Option<T>) -> Option<Vec<T>> {
+        let n = self.u32(le)? as usize;
+        // Each member takes at least 5 bytes.
+        let mut out = Vec::with_capacity(n.min((self.b.len() - self.pos) / 5));
+        for _ in 0..n {
+            out.push(f(self.geometry()?)?);
+        }
+        Some(out)
+    }
+
+    fn geometry(&mut self) -> Option<Geometry> {
+        let le = self.bytes::<1>()?[0] == 1;
+        let raw = self.u32(le)?;
+        // ISO and EWKB type variants.
+        let (base, z, m) = if raw & 0xFFFF_0000 != 0 {
+            (raw & 0x0000_FFFF, raw & 0x8000_0000 != 0, raw & 0x4000_0000 != 0)
+        } else if raw > 3000 {
+            (raw - 3000, true, true)
+        } else if raw > 2000 {
+            (raw - 2000, false, true)
+        } else if raw > 1000 {
+            (raw - 1000, true, false)
+        } else {
+            (raw, false, false)
+        };
+        Some(match base {
+            1 => Geometry::Point(self.coord(le, z, m)?),
+            2 => Geometry::LineString(self.coords(le, z, m)?),
+            3 => {
+                let n = self.u32(le)? as usize;
+                if n == 0 {
+                    return Some(Geometry::Polygon { exterior: Ring::default(), interiors: vec![] });
+                }
+                let exterior = self.ring(le, z, m)?;
+                let mut interiors = Vec::with_capacity((n - 1).min((self.b.len() - self.pos) / 4));
+                for _ in 1..n {
+                    interiors.push(self.ring(le, z, m)?);
+                }
+                Geometry::Polygon { exterior, interiors }
+            }
+            4 => Geometry::MultiPoint(self.members(le, |g| match g {
+                Geometry::Point(c) => Some(c),
+                _ => None,
+            })?),
+            5 => Geometry::MultiLineString(self.members(le, |g| match g {
+                Geometry::LineString(cs) => Some(cs),
+                _ => None,
+            })?),
+            6 => Geometry::MultiPolygon(self.members(le, |g| match g {
+                Geometry::Polygon { exterior, interiors } => Some((exterior, interiors)),
+                _ => None,
+            })?),
+            7 => Geometry::GeometryCollection(self.members(le, Some)?),
+            _ => return None,
+        })
     }
 }
 
@@ -247,9 +366,159 @@ fn read_layer(db: &Db, c: &Content) -> Result<Layer> {
     Ok(layer)
 }
 
+/// A vector layer summarized without reading its attributes: the layer without its features
+/// (name, declared geometry type, CRS and fields, as [`read`] gives them), its feature count, its
+/// geometry type name and its extent.
+pub(crate) struct LayerSummary {
+    pub layer: Layer,
+    pub feature_count: usize,
+    pub geometry_type: String,
+    pub extent: Option<(f64, f64, f64, f64)>,
+}
+
+/// Summarizes the vector layers of a GeoPackage file, as `terrio info` reports them, decoding only
+/// the geometries (in parallel) of each table's rows. `None` when it has no vector layers.
+/// Also gives the raster tables.
+pub(crate) fn summarize(path: &str) -> Result<Option<(Vec<LayerSummary>, Vec<Content>)>> {
+    crate::crs::prefetch();
+    let db = Db::new(crate::par::read_file(std::path::Path::new(path))?)?;
+    let (layers, rasters) = contents(&db)?;
+    if layers.is_empty() {
+        return Ok(None);
+    }
+    let layers = layers.iter().map(|c| summarize_layer(&db, c, path)).collect::<Result<Vec<_>>>()?;
+    Ok(Some((layers, rasters)))
+}
+
+/// What a layer summary needs of a geometry: its type, whether it has Z coordinates, its bounds.
+type GeometrySummary = (GeometryType, bool, Option<(f64, f64, f64, f64)>);
+
+fn summarize_layer(db: &Db, c: &Content, path: &str) -> Result<LayerSummary> {
+    let sql = db.table_sql(&c.name).ok_or_else(|| bad(format!("no table '{}'", c.name)))?;
+    let columns = sqlite::column_types(&sql);
+    let rows = db.raw_rows(&c.name)?;
+
+    // The geometry column, its type and SRS, and the fields, as `read_layer` reads them.
+    let mut geom_col = None;
+    let mut layer = Layer::new(c.name.clone());
+    if let Ok(g) = db.table("gpkg_geometry_columns")
+        && let Some(r) =
+            g.rows.iter().find(|r| g.get(r, "table_name").and_then(Value::as_str).is_some_and(|n| n.eq_ignore_ascii_case(&c.name)))
+    {
+        let col = g.get(r, "column_name").and_then(Value::as_str).unwrap_or_default();
+        geom_col = columns.iter().position(|(n, _)| n.eq_ignore_ascii_case(col));
+        layer.geom_type = g.get(r, "geometry_type_name").and_then(Value::as_str).and_then(geometry_type);
+        if let Some(srs_id) = g.get(r, "srs_id").and_then(Value::as_i64) {
+            set_crs(db, &mut layer, srs_id);
+        }
+    }
+    let fid_col = sqlite::rowid_column(&sql);
+    for (i, (name, decl)) in columns.iter().enumerate() {
+        if Some(i) == geom_col || Some(i) == fid_col {
+            continue;
+        }
+        let (t, width) = field_type(decl);
+        let mut f = FieldDef::new(name.clone(), t);
+        f.width = width;
+        layer.add_field(f);
+    }
+    let layer = crate::dataset::fix_layer(layer, path, crate::formats::VectorDriver::GPKG);
+
+    // Each geometry's type, Z flag and bounds.
+    let geometries: Vec<Option<GeometrySummary>> = crate::par::map_range(rows.len(), |i| {
+        let Value::Blob(b) = Db::record_column(&rows[i].1, geom_col?) else { return None };
+        let g = decode_geometry(&b)?;
+        let bbox = g.bbox().map(|b| (b.min_x, b.min_y, b.max_x, b.max_y));
+        Some((g.geom_type(), crate::vector::geometry_has_z(&g), bbox))
+    });
+    let present = || geometries.iter().flatten();
+    let geometry_type = crate::vector::geometry_type_name_of(layer.geom_type, present().map(|g| g.0), present().take(100).any(|g| g.1));
+    let extent = crate::vector::extent_of(present().filter_map(|g| g.2));
+    Ok(LayerSummary { layer, feature_count: rows.len(), geometry_type, extent })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn decodes_wkb_as_wbvector() {
+        use wbvector::Coord;
+        let ring = |o: f64| vec![Coord::xy(o, 0.0), Coord::xy(o + 1.0, 0.0), Coord::xy(o, 1.0), Coord::xy(o, 0.0)];
+        let poly = Geometry::polygon(ring(0.0), vec![ring(0.2)]);
+        let geoms = vec![
+            Geometry::point(1.5, -2.0),
+            Geometry::Point(Coord { x: 1.0, y: 2.0, z: Some(3.0), m: Some(4.0) }),
+            Geometry::line_string(ring(5.0)),
+            poly.clone(),
+            Geometry::MultiPolygon(vec![(Ring::new(ring(0.0)), vec![]), (Ring::new(ring(3.0)), vec![Ring::new(ring(3.1))])]),
+            Geometry::MultiPoint(vec![Coord::xy(1.0, 1.0), Coord { x: 2.0, y: 2.0, z: Some(1.0), m: None }]),
+            Geometry::MultiLineString(vec![ring(1.0), vec![]]),
+            Geometry::GeometryCollection(vec![poly, Geometry::point(0.0, 0.0)]),
+            Geometry::Polygon { exterior: Ring::default(), interiors: vec![] },
+        ];
+        for g in &geoms {
+            let wkb = g.to_wkb();
+            assert_eq!(from_wkb(&wkb), Geometry::from_wkb(&wkb).ok(), "{g:?}");
+            // Truncated and corrupted encodings fail (or not) alike.
+            for cut in 0..wkb.len() {
+                assert_eq!(from_wkb(&wkb[..cut]), Geometry::from_wkb(&wkb[..cut]).ok(), "{g:?} cut at {cut}");
+            }
+            for at in 0..wkb.len().min(16) {
+                let mut bad = wkb.clone();
+                bad[at] ^= 0xff;
+                assert_eq!(from_wkb(&bad), Geometry::from_wkb(&bad).ok(), "{g:?} corrupted at {at}");
+            }
+        }
+        // Big-endian and EWKB/ISO type codes.
+        let mut be = vec![0u8];
+        be.extend(1001u32.to_be_bytes());
+        for v in [1.0f64, 2.0, 3.0] {
+            be.extend(v.to_be_bytes());
+        }
+        assert_eq!(from_wkb(&be), Geometry::from_wkb(&be).ok());
+        let mut ewkb = vec![1u8];
+        ewkb.extend((0x8000_0001u32).to_le_bytes());
+        for v in [1.0f64, 2.0, 3.0] {
+            ewkb.extend(v.to_le_bytes());
+        }
+        assert_eq!(from_wkb(&ewkb), Geometry::from_wkb(&ewkb).ok());
+    }
+
+    #[test]
+    fn summarizes_as_reading_does() {
+        use wbvector::Coord;
+        let mut l = Layer::new("mixed").with_epsg(4326);
+        l.add_field(FieldDef::new("name", FieldType::Text));
+        for i in 0..500u64 {
+            let x = i as f64 * 0.1 - 20.0;
+            let g = match i % 4 {
+                0 => None,
+                1 => Some(Geometry::point(x, -x)),
+                2 => Some(Geometry::Point(Coord { x, y: 1.0, z: Some(3.0), m: None })),
+                _ => Some(Geometry::line_string(vec![Coord::xy(x, 0.0), Coord::xy(x + 1.0, 2.0)])),
+            };
+            l.push(Feature { fid: i, geometry: g, attributes: vec![FieldValue::Text(format!("f{i}"))] });
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.gpkg");
+        std::fs::write(&path, super::super::geopackage::to_bytes(&[l]).unwrap()).unwrap();
+        let path = path.to_str().unwrap();
+        let read = crate::dataset::finish_vector(read(path, &[]).unwrap(), path, crate::formats::VectorDriver::GPKG);
+        let (summaries, rasters) = summarize(path).unwrap().unwrap();
+        assert!(rasters.is_empty());
+        assert_eq!(summaries.len(), read.layers.len());
+        for (s, l) in summaries.iter().zip(&read.layers) {
+            assert_eq!(s.feature_count, l.len());
+            assert_eq!(s.geometry_type, crate::vector::geometry_type_name(l));
+            assert_eq!(s.extent, crate::vector::layer_extent(l));
+            assert_eq!(s.layer.name, l.name);
+            assert_eq!(s.layer.geom_type, l.geom_type);
+            assert_eq!(s.layer.crs_epsg(), l.crs_epsg());
+            assert_eq!(s.layer.crs_wkt(), l.crs_wkt());
+            assert_eq!(format!("{:?}", s.layer.schema.fields()), format!("{:?}", l.schema.fields()));
+        }
+    }
 
     #[test]
     fn maps_column_types_as_gdal() {
