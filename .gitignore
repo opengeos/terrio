@@ -4,3 +4,7 @@ python/dist/
 __pycache__/
 *.pyc
 .venv/
+js/pkg*/
+node_modules/
+*.so
+*.pyd

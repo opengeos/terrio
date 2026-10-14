@@ -189,7 +189,7 @@ fn read_vector_local(path: &str, driver: VectorDriver, options: &VectorOpenOptio
 
 /// Normalizes what drivers leave inconsistent: the layer name and the CRS of formats that are
 /// WGS 84 by definition.
-fn fix_layer(mut layer: Layer, path: &str, driver: VectorDriver) -> Layer {
+pub(crate) fn fix_layer(mut layer: Layer, path: &str, driver: VectorDriver) -> Layer {
     let stem = Path::new(path).file_stem().and_then(|s| s.to_str()).unwrap_or("layer");
     if layer.name.is_empty() || (layer.name == "layer" && driver != VectorDriver::GPKG) {
         layer.name = stem.to_string();

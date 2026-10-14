@@ -1,0 +1,428 @@
+//! Datasets in memory: opening from bytes and writing to bytes, for callers that hold the data
+//! already (uploads, HTTP bodies, language bindings) or have no file system (WebAssembly).
+//!
+//! A file name goes with the bytes: its extension tells the format, as a path's does, and its stem
+//! names vector layers.
+//!
+//! In native builds, the bytes go through a temporary directory and the file drivers, so every
+//! format reads and writes exactly as from files. WebAssembly builds have no file system and use
+//! in-memory codecs instead, for the formats that have one:
+//!
+//! - reading: GeoTIFF, Esri ASCII grid, GeoJSON, TopoJSON, FlatGeobuf, KML, KMZ, GML, GPX, and
+//!   zip archives of these;
+//! - writing: GeoTIFF and COG (with lossless compressions), Esri ASCII grid, GeoJSON, TopoJSON,
+//!   FlatGeobuf, KML, KMZ, GML and GPX.
+//!
+//! Formats made of several files (a shapefile's `.shp`, `.dbf`, `.prj`...) are written as a zip
+//! archive of them.
+//!
+//! ```no_run
+//! let bytes = std::fs::read("countries.geojson")?;
+//! let ds = terrio::memory::open_bytes(bytes, "countries.geojson")?;
+//! # let layers = match ds { terrio::Dataset::Vector(v) => v.layers, _ => unreachable!() };
+//! let fgb = terrio::memory::write_vector_bytes(&layers, "countries.fgb", &Default::default())?;
+//! # Ok::<(), Box<dyn std::error::Error>>(())
+//! ```
+
+use crate::formats::{RasterDriver, VectorDriver, extension};
+use crate::{Dataset, Error, LazyRaster, RasterDataset, RasterWriteOptions, Result, VectorDataset, VectorOpenOptions, VectorWriteOptions};
+use wbvector::Layer;
+
+/// Opens a dataset, raster or vector, from its bytes. `name` is a file name whose extension tells
+/// the format (`dem.tif`, `roads.fgb`, `parcels.zip`).
+pub fn open_bytes(bytes: Vec<u8>, name: &str) -> Result<Dataset> {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let (_dir, path) = native::spill(&bytes, name)?;
+        crate::open(&path)
+    }
+    #[cfg(target_arch = "wasm32")]
+    codec::open(bytes, name, &VectorOpenOptions::default())
+}
+
+/// Opens a raster from its bytes.
+pub fn open_raster_bytes(bytes: Vec<u8>, name: &str) -> Result<RasterDataset> {
+    match open_bytes(bytes, name)? {
+        Dataset::Raster(r) => Ok(r),
+        Dataset::Vector(_) => Err(Error::Unsupported(format!("'{name}' is a vector dataset, not a raster"))),
+    }
+}
+
+/// Opens a raster from its bytes for reading by window. GeoTIFFs are decoded one window at a time;
+/// other formats are decoded whole.
+pub fn open_raster_lazy_bytes(bytes: Vec<u8>, name: &str) -> Result<LazyRaster> {
+    if codec::is_tiff(&bytes) {
+        if let Some(r) = LazyRaster::from_tiff_bytes(bytes)? {
+            return Ok(r);
+        }
+        return Err(Error::InvalidData(format!("'{name}' is not a valid TIFF")));
+    }
+    open_raster_bytes(bytes, name).map(LazyRaster::from)
+}
+
+/// Opens a vector dataset from its bytes.
+pub fn open_vector_bytes(bytes: Vec<u8>, name: &str, options: &VectorOpenOptions) -> Result<VectorDataset> {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let (_dir, path) = native::spill(&bytes, name)?;
+        crate::open_vector(&path, options)
+    }
+    #[cfg(target_arch = "wasm32")]
+    match codec::open(bytes, name, options)? {
+        Dataset::Vector(v) => Ok(v),
+        Dataset::Raster(_) => Err(Error::Unsupported(format!("'{name}' is a raster, not a vector dataset"))),
+    }
+}
+
+/// Writes a raster to bytes, declaring its nodata value when it has one. `name` is a file name
+/// whose extension tells the format, unless the options name the driver.
+pub fn write_raster_bytes(ds: &RasterDataset, name: &str, options: &RasterWriteOptions) -> Result<Vec<u8>> {
+    let driver = match options.driver {
+        Some(d) => d,
+        None => RasterDriver::for_extension(name)
+            .ok_or_else(|| Error::InvalidArgument(format!("cannot tell the output format of '{name}': give it explicitly")))?,
+    };
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let dir = native::temp_dir()?;
+        let path = dir.path().join(native::file_name(name, driver.info().extensions.first().copied().unwrap_or("tif")));
+        let path = path.to_str().ok_or_else(|| Error::InvalidArgument(format!("invalid file name '{name}'")))?;
+        crate::write_raster_dataset(ds, path, &RasterWriteOptions { driver: Some(driver), ..options.clone() })?;
+        native::collect(dir.path(), path)
+    }
+    #[cfg(target_arch = "wasm32")]
+    codec::write_raster(ds, driver, options)
+}
+
+/// Writes vector layers to bytes. `name` is a file name whose extension tells the format, unless
+/// the options name the driver. Only GeoPackage holds several layers.
+pub fn write_vector_bytes(layers: &[Layer], name: &str, options: &VectorWriteOptions) -> Result<Vec<u8>> {
+    let driver = match options.driver {
+        Some(d) => d,
+        None => VectorDriver::for_extension(name)
+            .ok_or_else(|| Error::InvalidArgument(format!("cannot tell the output format of '{name}': give it explicitly")))?,
+    };
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let dir = native::temp_dir()?;
+        let path = dir.path().join(native::file_name(name, driver.info().extensions.first().copied().unwrap_or("dat")));
+        let path = path.to_str().ok_or_else(|| Error::InvalidArgument(format!("invalid file name '{name}'")))?;
+        crate::write_vector(layers, path, &VectorWriteOptions { driver: Some(driver) })?;
+        native::collect(dir.path(), path)
+    }
+    #[cfg(target_arch = "wasm32")]
+    match layers {
+        [] => Err(Error::InvalidArgument("no layers to write".into())),
+        [layer] => codec::write_vector(layer, driver),
+        _ => Err(Error::InvalidArgument(format!("the {} format holds one layer: write one layer at a time", driver.name()))),
+    }
+}
+
+/// Native builds: bytes go through a temporary directory and the file drivers.
+#[cfg(not(target_arch = "wasm32"))]
+mod native {
+    use crate::{Error, Result};
+    use std::io::Write;
+    use std::path::Path;
+
+    pub(super) fn temp_dir() -> Result<tempfile::TempDir> {
+        Ok(tempfile::Builder::new().prefix("terrio-mem-").tempdir()?)
+    }
+
+    /// The last component of `name`, or `data.<ext>` when it has none.
+    pub(super) fn file_name(name: &str, ext: &str) -> String {
+        match Path::new(name).file_name().and_then(|s| s.to_str()) {
+            Some(n) if !n.is_empty() && n != "." && n != ".." => n.to_string(),
+            _ => format!("data.{ext}"),
+        }
+    }
+
+    /// Writes the bytes to a file named `name` in a new temporary directory, returned with the
+    /// file's path (the directory is removed when dropped).
+    pub(super) fn spill(bytes: &[u8], name: &str) -> Result<(tempfile::TempDir, String)> {
+        let dir = temp_dir()?;
+        let path = dir.path().join(file_name(name, "dat"));
+        std::fs::write(&path, bytes)?;
+        let path = path.to_str().ok_or_else(|| Error::InvalidArgument(format!("invalid file name '{name}'")))?.to_string();
+        Ok((dir, path))
+    }
+
+    /// The bytes of what a driver wrote: the file itself, or a zip archive of every file written
+    /// when there are several (a shapefile and its sidecars).
+    pub(super) fn collect(dir: &Path, main: &str) -> Result<Vec<u8>> {
+        let mut files = Vec::new();
+        for entry in std::fs::read_dir(dir)? {
+            let path = entry?.path();
+            if path.is_file() {
+                files.push(path);
+            } else {
+                return Err(Error::Unsupported("the format writes a directory, which cannot be returned as bytes".into()));
+            }
+        }
+        if files.len() == 1 && files[0] == Path::new(main) {
+            return Ok(std::fs::read(main)?);
+        }
+        files.sort();
+        let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        let opts = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+        for f in files {
+            let name = f.file_name().and_then(|s| s.to_str()).unwrap_or_default().to_string();
+            zip.start_file(name, opts)?;
+            zip.write_all(&std::fs::read(&f)?)?;
+        }
+        Ok(zip.finish()?.into_inner())
+    }
+}
+
+/// In-memory codecs, used by WebAssembly builds (and tested in all builds).
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+pub(crate) mod codec {
+    use super::*;
+    use std::io::{Cursor, Read};
+
+    /// Whether the bytes start with a TIFF or BigTIFF signature.
+    pub(crate) fn is_tiff(b: &[u8]) -> bool {
+        matches!(b.get(..4), Some(b"II*\0" | b"MM\0*" | b"II+\0" | b"MM\0+"))
+    }
+
+    fn is_zip(b: &[u8]) -> bool {
+        b.starts_with(b"PK\x03\x04") || b.starts_with(b"PK\x05\x06")
+    }
+
+    /// The vector driver of a file, by its extension or, without one, its first bytes.
+    fn vector_driver(bytes: &[u8], name: &str) -> Option<VectorDriver> {
+        if let Some(d) = VectorDriver::for_extension(name) {
+            return Some(d);
+        }
+        if bytes.starts_with(b"fgb") {
+            return Some(VectorDriver::FlatGeobuf);
+        }
+        let head = String::from_utf8_lossy(&bytes[..bytes.len().min(1024)]).to_ascii_lowercase();
+        let head = head.trim_start_matches('\u{feff}').trim_start();
+        if head.starts_with('{') {
+            return Some(if head.contains("\"topology\"") { VectorDriver::TopoJSON } else { VectorDriver::GeoJSON });
+        }
+        if head.starts_with('<') {
+            for (tag, d) in [("<kml", VectorDriver::KML), ("<gpx", VectorDriver::GPX), ("featurecollection", VectorDriver::GML)] {
+                if head.contains(tag) {
+                    return Some(d);
+                }
+            }
+        }
+        None
+    }
+
+    fn text(bytes: &[u8]) -> Result<&str> {
+        std::str::from_utf8(bytes).map_err(|e| Error::InvalidData(format!("not UTF-8 text: {e}")))
+    }
+
+    /// Opens a dataset from bytes with the in-memory codecs.
+    pub(crate) fn open(bytes: Vec<u8>, name: &str, options: &VectorOpenOptions) -> Result<Dataset> {
+        if is_tiff(&bytes) {
+            let mut r = LazyRaster::from_tiff_bytes(bytes)?.ok_or_else(|| Error::InvalidData(format!("'{name}' is not a valid TIFF")))?;
+            return r.read().map(Dataset::Raster);
+        }
+        let ext = extension(name).unwrap_or_default();
+        if is_zip(&bytes) && ext != "kmz" {
+            return open_zip(&bytes, name, options);
+        }
+        if RasterDriver::for_extension(name) == Some(RasterDriver::AAIGrid) {
+            let raster = wbraster::formats::esri_ascii::parse(Cursor::new(&bytes), name)?;
+            return Ok(Dataset::Raster(RasterDataset { raster, driver: RasterDriver::AAIGrid, has_nodata: true }));
+        }
+        let driver = vector_driver(&bytes, name).ok_or_else(|| Error::Unsupported(format!("'{name}': format not recognized")))?;
+        let layer = match driver {
+            VectorDriver::GeoJSON => wbvector::geojson::parse_str(text(&bytes)?)?,
+            VectorDriver::TopoJSON => wbvector::topojson::parse_str(text(&bytes)?)?,
+            VectorDriver::FlatGeobuf => wbvector::flatgeobuf::from_bytes(&bytes)?,
+            VectorDriver::KML => wbvector::kml::parse_str(text(&bytes)?)?,
+            VectorDriver::KMZ => wbvector::kmz::from_bytes(&bytes)?,
+            VectorDriver::GML => wbvector::gml::parse_str(text(&bytes)?)?,
+            VectorDriver::GPX => wbvector::gpx::parse_str(text(&bytes)?)?,
+            d => {
+                return Err(Error::Unsupported(format!(
+                    "the {} format cannot be read from memory in this build (in memory: GeoTIFF, AAIGrid, GeoJSON, TopoJSON, \
+                     FlatGeobuf, KML, KMZ, GML, GPX)",
+                    d.name()
+                )));
+            }
+        };
+        let layer = crate::dataset::fix_layer(layer, name, driver);
+        if !options.layers.is_empty() && !options.layers.contains(&layer.name) {
+            return Err(Error::InvalidArgument(format!("no layer named {} (layers: {})", options.layers.join(", "), layer.name)));
+        }
+        Ok(Dataset::Vector(VectorDataset { layers: vec![layer], driver }))
+    }
+
+    /// Opens the main dataset of a zip archive held in memory.
+    fn open_zip(bytes: &[u8], name: &str, options: &VectorOpenOptions) -> Result<Dataset> {
+        let mut zip = zip::ZipArchive::new(Cursor::new(bytes))?;
+        let mut names = Vec::new();
+        for i in 0..zip.len() {
+            let f = zip.by_index(i)?;
+            if f.is_file() {
+                names.push(f.name()?.to_string());
+            }
+        }
+        names.sort();
+        let main: String = crate::vfs::MAIN_DATASET_EXTENSIONS
+            .iter()
+            .find_map(|ext| names.iter().find(|n| extension(n.as_str()).as_deref() == Some(*ext)))
+            .cloned()
+            .ok_or_else(|| Error::Unsupported(format!("no dataset found in '{name}'")))?;
+        let mut member = Vec::new();
+        zip.by_name(&main)?.read_to_end(&mut member)?;
+        open(member, &main, options)
+    }
+
+    /// Writes a raster to bytes with the in-memory codecs.
+    pub(crate) fn write_raster(ds: &RasterDataset, driver: RasterDriver, options: &RasterWriteOptions) -> Result<Vec<u8>> {
+        use crate::drivers::gtiff_write::{Compression, TiffOptions, encode};
+        match driver {
+            RasterDriver::GTiff | RasterDriver::Cog => {
+                let cog = driver == RasterDriver::Cog;
+                let name = options.compression.as_deref().unwrap_or(if cog { "LZW" } else { "NONE" });
+                let compression = Compression::parse(name).ok_or_else(|| {
+                    Error::Unsupported(format!("{name} compression cannot be written in this build (NONE, LZW, DEFLATE, PACKBITS, ZSTD)"))
+                })?;
+                let opts = TiffOptions {
+                    compression,
+                    tile_size: options.tile_size,
+                    bigtiff: options.bigtiff,
+                    cog,
+                    nodata: ds.nodata(),
+                    ..Default::default()
+                };
+                encode(&ds.raster, &opts)
+            }
+            RasterDriver::AAIGrid => {
+                let mut out = Vec::new();
+                wbraster::formats::esri_ascii::write_to(&mut out, &ds.raster)?;
+                Ok(out)
+            }
+            d => {
+                Err(Error::Unsupported(format!("the {} format cannot be written to memory in this build (GTiff, COG, AAIGrid)", d.name())))
+            }
+        }
+    }
+
+    /// Writes a layer to bytes with the in-memory codecs.
+    pub(crate) fn write_vector(layer: &Layer, driver: VectorDriver) -> Result<Vec<u8>> {
+        // GeoJSON and KML are WGS 84 by definition.
+        let wgs84 = || -> Result<Layer> {
+            let crs = crate::crs::SpatialRef::from_layer(layer);
+            if crs.is_unknown() || crs.epsg == Some(4326) {
+                return Ok(layer.clone());
+            }
+            crate::vector::reproject_layer(layer, &crate::crs::SpatialRef::from_epsg(4326)?)
+        };
+        Ok(match driver {
+            VectorDriver::GeoJSON => wbvector::geojson::to_string(&wgs84()?).into_bytes(),
+            VectorDriver::TopoJSON => wbvector::topojson::to_string(layer)?.into_bytes(),
+            VectorDriver::FlatGeobuf => wbvector::flatgeobuf::to_bytes(layer),
+            VectorDriver::KML => wbvector::kml::to_string(&wgs84()?).into_bytes(),
+            VectorDriver::KMZ => wbvector::kmz::to_bytes(layer)?,
+            VectorDriver::GML => wbvector::gml::to_string(layer).into_bytes(),
+            VectorDriver::GPX => wbvector::gpx::to_string(layer)?.into_bytes(),
+            d => {
+                return Err(Error::Unsupported(format!(
+                    "the {} format cannot be written to memory in this build (GeoJSON, TopoJSON, FlatGeobuf, KML, KMZ, GML, GPX)",
+                    d.name()
+                )));
+            }
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use wbraster::raster::RasterData;
+    use wbraster::{DataType, Raster};
+
+    fn raster(bands: usize, dt: DataType) -> RasterDataset {
+        let (cols, rows) = (5, 3);
+        let data = RasterData::from_f64_vec(dt, (0..cols * rows * bands).map(|v| v as f64).collect());
+        let cfg = wbraster::RasterConfig {
+            cols,
+            rows,
+            bands,
+            nodata: -1.0,
+            data_type: dt,
+            crs: crate::crs::SpatialRef::from_epsg(32610).unwrap().to_crs_info(),
+            ..Default::default()
+        };
+        let mut r = Raster::from_data_native(cfg, data).unwrap();
+        r.x_min = 500000.0;
+        r.y_min = 4000000.0;
+        r.cell_size_x = 30.0;
+        r.cell_size_y = 30.0;
+        RasterDataset::new(r, true)
+    }
+
+    #[test]
+    fn geotiff_codec_round_trips() {
+        let cases = [(1, DataType::U8, "NONE", None), (3, DataType::I16, "DEFLATE", Some(16)), (2, DataType::F32, "LZW", None)];
+        for (bands, dt, compression, tile_size) in cases {
+            let ds = raster(bands, dt);
+            let r = &ds.raster;
+            let options = RasterWriteOptions { compression: Some(compression.into()), tile_size, ..Default::default() };
+            let bytes = codec::write_raster(&ds, RasterDriver::GTiff, &options).unwrap();
+            let ds = codec::open(bytes.clone(), "x.tif", &Default::default()).unwrap();
+            let Dataset::Raster(back) = ds else { panic!() };
+            assert_eq!((back.raster.cols, back.raster.rows, back.raster.bands), (5, 3, bands));
+            assert_eq!(back.raster.data_type, dt);
+            assert_eq!(back.raster.data.to_f64_vec(), r.data.to_f64_vec());
+            assert_eq!(back.geo_transform(), [500000.0, 30.0, 0.0, 4000090.0, 0.0, -30.0]);
+            assert_eq!(back.crs().epsg, Some(32610));
+            assert_eq!(back.nodata(), Some(-1.0));
+            // Read by window too.
+            let mut lazy = open_raster_lazy_bytes(bytes, "x.tif").unwrap();
+            assert!(lazy.is_lazy());
+            let w = lazy.read_window(crate::Window::new(1, 1, 2, 2), &crate::WindowOptions { bands: vec![bands], overview: None }).unwrap();
+            let off = (bands - 1) * 15;
+            assert_eq!(w.raster.data.to_f64_vec(), [6, 7, 11, 12].map(|v| (off + v) as f64).to_vec());
+        }
+    }
+
+    #[test]
+    fn vector_codecs_round_trip() {
+        let gj = r#"{"type":"FeatureCollection","features":[
+            {"type":"Feature","properties":{"name":"a","n":1},"geometry":{"type":"Point","coordinates":[1.5,2.5]}},
+            {"type":"Feature","properties":{"name":"b","n":2},"geometry":{"type":"LineString","coordinates":[[0,0],[1,1]]}}]}"#;
+        let Dataset::Vector(v) = codec::open(gj.as_bytes().to_vec(), "pts.geojson", &Default::default()).unwrap() else { panic!() };
+        assert_eq!(v.layers[0].name, "pts");
+        assert_eq!(v.layers[0].features.len(), 2);
+        assert_eq!(v.layers[0].crs_epsg(), Some(4326));
+        for (name, driver) in [("o.fgb", VectorDriver::FlatGeobuf), ("o.geojson", VectorDriver::GeoJSON), ("o.kml", VectorDriver::KML)] {
+            let bytes = codec::write_vector(&v.layers[0], driver).unwrap();
+            let Dataset::Vector(back) = codec::open(bytes, name, &Default::default()).unwrap() else { panic!() };
+            assert_eq!(back.layers[0].features.len(), 2, "{name}");
+            assert_eq!(back.layers[0].features[0].geometry, v.layers[0].features[0].geometry, "{name}");
+        }
+        // A zip archive holding the file.
+        let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        zip.start_file("dir/pts.geojson", zip::write::SimpleFileOptions::default()).unwrap();
+        std::io::Write::write_all(&mut zip, gj.as_bytes()).unwrap();
+        let bytes = zip.finish().unwrap().into_inner();
+        let Dataset::Vector(z) = codec::open(bytes, "pts.zip", &Default::default()).unwrap() else { panic!() };
+        assert_eq!(z.layers[0].features.len(), 2);
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn native_bytes_round_trip() {
+        let ds = raster(2, DataType::I32);
+        let bytes = write_raster_bytes(&ds, "a.tif", &Default::default()).unwrap();
+        let back = open_raster_bytes(bytes, "a.tif").unwrap();
+        assert_eq!(back.raster.data.to_f64_vec(), ds.raster.data.to_f64_vec());
+        // Shapefiles come back as a zip archive of their files.
+        let gj = r#"{"type":"FeatureCollection","features":[{"type":"Feature","properties":{"id":7},"geometry":{"type":"Point","coordinates":[1,2]}}]}"#;
+        let v = open_vector_bytes(gj.as_bytes().to_vec(), "p.geojson", &Default::default()).unwrap();
+        let shp = write_vector_bytes(&v.layers, "p.shp", &Default::default()).unwrap();
+        let zip = zip::ZipArchive::new(std::io::Cursor::new(shp)).unwrap();
+        let mut names: Vec<String> = zip.file_names().map(|n| n.unwrap().to_string()).collect();
+        names.sort();
+        assert_eq!(&names[..], &["p.dbf", "p.prj", "p.shp", "p.shx"][..names.len().min(4)]);
+    }
+}

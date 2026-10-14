@@ -24,8 +24,7 @@ use std::path::{Path, PathBuf};
 const SHAPEFILE_SIDECARS: &[&str] = &["shx", "dbf", "prj", "cpg"];
 
 /// Extensions tried, in order, to find the main dataset inside an archive.
-#[cfg(not(target_arch = "wasm32"))]
-const MAIN_DATASET_EXTENSIONS: &[&str] = &[
+pub(crate) const MAIN_DATASET_EXTENSIONS: &[&str] = &[
     "shp",
     "gpkg",
     "geojson",

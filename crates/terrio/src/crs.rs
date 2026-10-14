@@ -143,11 +143,13 @@ impl SpatialRef {
         s
     }
 
-    pub(crate) fn to_crs_info(&self) -> wbraster::CrsInfo {
+    /// The CRS as the raster model stores it.
+    pub fn to_crs_info(&self) -> wbraster::CrsInfo {
         wbraster::CrsInfo { epsg: self.epsg, wkt: self.to_wkt(), proj4: self.proj4.clone() }
     }
 
-    pub(crate) fn from_layer(layer: &wbvector::Layer) -> Self {
+    /// The CRS a vector layer declares.
+    pub fn from_layer(layer: &wbvector::Layer) -> Self {
         let mut s = Self { epsg: layer.crs_epsg(), wkt: layer.crs_wkt().map(str::to_string), proj4: None };
         if s.epsg.is_none()
             && let Some(w) = &s.wkt
@@ -157,7 +159,8 @@ impl SpatialRef {
         s
     }
 
-    pub(crate) fn apply_to_layer(&self, layer: &mut wbvector::Layer) {
+    /// Sets a vector layer's CRS to this one.
+    pub fn apply_to_layer(&self, layer: &mut wbvector::Layer) {
         layer.set_crs_epsg(self.epsg);
         layer.set_crs_wkt(self.to_wkt());
     }

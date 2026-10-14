@@ -62,8 +62,15 @@ of GDAL: the long tail of formats stays reachable through an optional GDAL backe
 
 ## 0.5: Bindings and the GDAL backend
 
-- Python bindings (PyO3), with NumPy arrays for rasters and Arrow for vector layers.
-- An npm package built from the WebAssembly target.
+- Python bindings (PyO3), with NumPy arrays for rasters and Arrow for vector layers. Done:
+  `open`, lazy window and overview reads (remote COGs included), `Raster.from_array`, vector
+  layers as GeoJSON, WKB and GeoDataFrames, and every operation, with arrays checked against
+  GDAL's Python bindings. Still to do: Arrow export of vector layers, type stubs.
+- An npm package built from the WebAssembly target. Done: datasets opened from bytes (GeoTIFF,
+  ASCII grid and the text and FlatGeobuf vector formats), bands as typed arrays, GeoJSON out,
+  conversion to bytes, CRS transforms. Still to do: Shapefile, GeoParquet and GeoPackage from
+  memory, which need byte-based readers in those drivers.
+- Datasets opened from and written to bytes (`terrio::memory`).
 - An optional `gdal` feature that opens anything GDAL can when it is installed, through the same
   data model.
 - Arrow and GeoArrow import and export for vector layers.

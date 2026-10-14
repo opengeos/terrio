@@ -10,6 +10,13 @@ repos:
       - id: trailing-whitespace
       - id: check-added-large-files
         args: ["--maxkb=1024"]
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.14.0
+    hooks:
+      - id: ruff-check
+        files: ^python/
+      - id: ruff-format
+        files: ^python/
   - repo: local
     hooks:
       - id: cargo-fmt

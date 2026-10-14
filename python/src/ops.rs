@@ -1,0 +1,1028 @@
+//! Module-level functions: opening, writing, information, conversion and the processing
+//! operations, with keyword arguments named after the command-line options.
+
+use crate::raster::{PyRaster, write_options};
+use crate::vector::{PyLayer, PyVectorDataset, layers_from_object};
+use crate::{PyResultExt, invalid};
+use numpy::{PyArray1, PyArrayMethods};
+use pyo3::prelude::*;
+use terrio::crs::{SpatialRef, Transformer};
+use terrio::formats::VectorDriver;
+use terrio::ops::Resampling;
+use terrio::ops::mosaic::{MosaicOptions, MosaicSource, ResolutionStrategy};
+use terrio::ops::polygonize::PolygonizeOptions;
+use terrio::ops::rasterize::{Grid, MergeAlg, RasterizeOptions};
+use terrio::ops::translate::{Scale, Size, TranslateOptions};
+use terrio::ops::vector_filter::{GeometryConversion, VectorTranslateOptions, WriteMode};
+use terrio::ops::warp::{Cutline, Nodata, WarpOptions};
+use terrio::{DataType, Dataset, RasterDataset, VectorOpenOptions, VectorWriteOptions, Window, WindowOptions};
+
+/// Registers the functions in the module.
+pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_function(wrap_pyfunction!(open, m)?)?;
+    m.add_function(wrap_pyfunction!(open_raster, m)?)?;
+    m.add_function(wrap_pyfunction!(open_vector, m)?)?;
+    m.add_function(wrap_pyfunction!(open_bytes, m)?)?;
+    m.add_function(wrap_pyfunction!(list_layers, m)?)?;
+    m.add_function(wrap_pyfunction!(info, m)?)?;
+    m.add_function(wrap_pyfunction!(drivers, m)?)?;
+    m.add_function(wrap_pyfunction!(write_raster, m)?)?;
+    m.add_function(wrap_pyfunction!(write_vector, m)?)?;
+    m.add_function(wrap_pyfunction!(convert, m)?)?;
+    m.add_function(wrap_pyfunction!(rasterize, m)?)?;
+    m.add_function(wrap_pyfunction!(polygonize, m)?)?;
+    m.add_function(wrap_pyfunction!(transform_points, m)?)?;
+    m.add_function(wrap_pyfunction!(translate, m)?)?;
+    m.add_function(wrap_pyfunction!(warp, m)?)?;
+    m.add_function(wrap_pyfunction!(mosaic, m)?)?;
+    Ok(())
+}
+
+/// Vector write options from a driver name.
+pub(crate) fn vector_write_options(driver: Option<&str>) -> PyResult<VectorWriteOptions> {
+    let driver = driver.map(|d| VectorDriver::from_name(d).ok_or_else(|| invalid(format!("unknown vector format '{d}'")))).transpose()?;
+    Ok(VectorWriteOptions { driver })
+}
+
+/// Wraps a dataset in its Python class.
+fn dataset_to_py(py: Python<'_>, ds: Dataset) -> PyResult<Py<PyAny>> {
+    Ok(match ds {
+        Dataset::Raster(r) => Py::new(py, PyRaster::from_dataset(r))?.into_any(),
+        Dataset::Vector(v) => Py::new(py, PyVectorDataset::new(py, v)?)?.into_any(),
+    })
+}
+
+fn srs(s: Option<&str>) -> PyResult<Option<SpatialRef>> {
+    s.map(SpatialRef::parse).transpose().py()
+}
+
+fn write_mode(append: bool, overwrite: bool) -> PyResult<WriteMode> {
+    match (append, overwrite) {
+        (true, true) => Err(invalid("append and overwrite exclude each other")),
+        (true, false) => Ok(WriteMode::Append),
+        (false, true) => Ok(WriteMode::Overwrite),
+        (false, false) => Ok(WriteMode::Create),
+    }
+}
+
+fn data_type(name: &str) -> PyResult<DataType> {
+    DataType::from_str(name).ok_or_else(|| invalid(format!("unknown data type '{name}'")))
+}
+
+/// Opens a dataset, raster or vector, detecting its format.
+///
+/// The whole dataset is read into memory; use `open_raster(path, lazy=True)` to read GeoTIFFs by
+/// window.
+///
+/// Args:
+///     path: A local path, an `http(s)://`, `s3://`, `gs://` or `az://` URL, a zip archive
+///         (`archive.zip` or `archive.zip!inner/path`), or a GDAL `/vsi...` path.
+///
+/// Returns:
+///     Raster | VectorDataset: The dataset.
+///
+/// Raises:
+///     NotFoundError: If the file does not exist.
+///     UnsupportedError: If the format is not recognized.
+#[pyfunction]
+fn open(py: Python<'_>, path: &str) -> PyResult<Py<PyAny>> {
+    let ds = py.detach(|| terrio::open(path)).py()?;
+    dataset_to_py(py, ds)
+}
+
+/// Opens a raster.
+///
+/// Args:
+///     path: The raster's path or URL, as for `open`.
+///     lazy: Read only the headers now and pixels on demand, by window. GeoTIFFs (and COGs,
+///         local or remote, fetched with HTTP range requests) are read in place; other formats
+///         are read whole either way.
+///
+/// Returns:
+///     Raster: The raster.
+///
+/// Raises:
+///     UnsupportedError: If the dataset is not a raster.
+#[pyfunction]
+#[pyo3(signature = (path, lazy=false))]
+fn open_raster(py: Python<'_>, path: &str, lazy: bool) -> PyResult<PyRaster> {
+    if lazy {
+        let r = py.detach(|| terrio::open_raster_lazy(path)).py()?;
+        return Ok(PyRaster { inner: r });
+    }
+    let ds = py.detach(|| terrio::open_raster(path)).py()?;
+    Ok(PyRaster::from_dataset(ds))
+}
+
+/// Opens a vector dataset.
+///
+/// Args:
+///     path: The dataset's path or URL, as for `open`.
+///     layers: Only these layers (names). `None` reads them all.
+///
+/// Returns:
+///     VectorDataset: The dataset.
+///
+/// Raises:
+///     UnsupportedError: If the dataset is not a vector dataset.
+///     InvalidArgumentError: If a layer does not exist.
+#[pyfunction]
+#[pyo3(signature = (path, layers=None))]
+fn open_vector(py: Python<'_>, path: &str, layers: Option<Vec<String>>) -> PyResult<PyVectorDataset> {
+    let options = VectorOpenOptions { layers: layers.unwrap_or_default() };
+    let ds = py.detach(|| terrio::open_vector(path, &options)).py()?;
+    PyVectorDataset::new(py, ds)
+}
+
+/// Opens a dataset from its bytes, such as a download or an upload.
+///
+/// Args:
+///     data: The file's contents.
+///     filename: A file name whose extension tells the format, such as `"dem.tif"` or
+///         `"parcels.zip"`. Its stem names vector layers.
+///     lazy: For GeoTIFFs, decode pixels by window on demand rather than now.
+///
+/// Returns:
+///     Raster | VectorDataset: The dataset.
+#[pyfunction]
+#[pyo3(signature = (data, filename, lazy=false))]
+fn open_bytes(py: Python<'_>, data: Vec<u8>, filename: &str, lazy: bool) -> PyResult<Py<PyAny>> {
+    if lazy {
+        let r = py.detach(|| terrio::memory::open_raster_lazy_bytes(data, filename)).py()?;
+        return Ok(Py::new(py, PyRaster { inner: r })?.into_any());
+    }
+    let ds = py.detach(|| terrio::memory::open_bytes(data, filename)).py()?;
+    dataset_to_py(py, ds)
+}
+
+/// Lists the layers of a vector dataset, without reading the features when the format allows.
+///
+/// Args:
+///     path: The dataset's path or URL.
+///
+/// Returns:
+///     list[str]: The layer names.
+#[pyfunction]
+fn list_layers(py: Python<'_>, path: &str) -> PyResult<Vec<String>> {
+    py.detach(|| terrio::list_layers(path)).py()
+}
+
+/// Summarizes a dataset, as `terrio info --json` does.
+///
+/// GeoTIFFs (local or remote) are read in place: only their headers are read unless statistics
+/// are asked for.
+///
+/// Args:
+///     path: The dataset's path or URL.
+///     stats: Compute band statistics (reads every pixel).
+///     layers: Only these layers of a vector dataset.
+///
+/// Returns:
+///     dict: The summary: driver, size, bands, CRS, extent... for rasters; driver and layers
+///     (fields, geometry type, feature count, CRS, extent) for vector datasets.
+#[pyfunction]
+#[pyo3(signature = (path, stats=false, layers=None))]
+fn info<'py>(py: Python<'py>, path: &str, stats: bool, layers: Option<Vec<String>>) -> PyResult<Bound<'py, PyAny>> {
+    let options = terrio::info::InfoOptions { statistics: stats };
+    let summary = py
+        .detach(|| match layers {
+            Some(layers) => {
+                let ds = terrio::open_vector(path, &VectorOpenOptions { layers })?;
+                Ok(terrio::info::info(&Dataset::Vector(ds), &options))
+            }
+            None => terrio::info::info_path(path, &options),
+        })
+        .py()?;
+    let text = serde_json::to_string(&summary).map_err(|e| invalid(e.to_string()))?;
+    py.import("json")?.call_method1("loads", (text,))
+}
+
+/// The formats terrio reads and writes.
+///
+/// Returns:
+///     list[dict]: One entry per driver: `name`, `long_name`, `kind` (`"raster"` or
+///     `"vector"`), `extensions`, `read` and `write`.
+#[pyfunction]
+fn drivers<'py>(py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+    let text = serde_json::to_string(&terrio::formats::all_drivers()).map_err(|e| invalid(e.to_string()))?;
+    py.import("json")?.call_method1("loads", (text,))
+}
+
+/// Writes a raster to a file.
+///
+/// Args:
+///     raster: The raster.
+///     path: The output path. Its extension tells the format unless `driver` is given.
+///     driver: The format's short name, such as `"GTiff"`, `"COG"` or `"AAIGrid"`.
+///     compress: GeoTIFF/COG compression: `"NONE"`, `"LZW"`, `"DEFLATE"`, `"PACKBITS"`, `"JPEG"`
+///         or `"WEBP"`.
+///     tile_size: Write GeoTIFF tiles of this size.
+///     bigtiff: Write a BigTIFF.
+#[pyfunction]
+#[pyo3(signature = (raster, path, driver=None, compress=None, tile_size=None, bigtiff=false))]
+fn write_raster(
+    py: Python<'_>,
+    raster: &mut PyRaster,
+    path: &str,
+    driver: Option<&str>,
+    compress: Option<String>,
+    tile_size: Option<u32>,
+    bigtiff: bool,
+) -> PyResult<()> {
+    let options = write_options(driver, compress, tile_size, bigtiff)?;
+    py.detach(|| raster.with_dataset(|ds| terrio::write_raster_dataset(ds, path, &options))).py()
+}
+
+/// Writes vector data to a file.
+///
+/// Args:
+///     data: A `Layer`, a `VectorDataset`, a list of layers, or GeoJSON: a dict, a JSON string,
+///         or any object with `__geo_interface__` (such as a GeoDataFrame).
+///     path: The output path. Its extension tells the format unless `driver` is given.
+///     driver: The format's short name, such as `"GPKG"`, `"FlatGeobuf"` or `"ESRI Shapefile"`.
+///     layer_name: The layer name for GeoJSON input. By default, the output file's stem.
+///     crs: The CRS of GeoJSON input. By default, that of a GeoDataFrame, otherwise EPSG:4326.
+///     append: Add the features to the layers of an existing output.
+///     overwrite: Replace the layers of the same name in an existing output.
+///
+/// Raises:
+///     InvalidArgumentError: If several layers go to a single-layer format.
+#[pyfunction]
+#[pyo3(signature = (data, path, driver=None, layer_name=None, crs=None, append=false, overwrite=false))]
+#[allow(clippy::too_many_arguments)]
+fn write_vector(
+    py: Python<'_>,
+    data: &Bound<'_, PyAny>,
+    path: &str,
+    driver: Option<&str>,
+    layer_name: Option<&str>,
+    crs: Option<&str>,
+    append: bool,
+    overwrite: bool,
+) -> PyResult<()> {
+    let stem = std::path::Path::new(path).file_stem().and_then(|s| s.to_str()).unwrap_or("layer").to_string();
+    let layers = layers_from_object(data, Some(layer_name.unwrap_or(&stem)), crs)?;
+    let options = vector_write_options(driver)?;
+    let mode = write_mode(append, overwrite)?;
+    py.detach(|| terrio::ops::vector_filter::write_vector_with_mode(&layers, path, &options, mode)).py()
+}
+
+/// Converts a dataset to another format, optionally reprojecting, subsetting and filtering it,
+/// like `terrio convert`.
+///
+/// Args:
+///     src: The input dataset's path or URL.
+///     dst: The output path.
+///     format: The output format's short name (`"GTiff"`, `"COG"`, `"GPKG"`,
+///         `"ESRI Shapefile"`...). By default, chosen from the output's extension.
+///     layers: Only these layers of a vector dataset.
+///     t_srs: Reproject into this CRS (rasters are warped with nearest neighbour; see `warp`).
+///     compress: GeoTIFF/COG compression.
+///     tile_size: GeoTIFF/COG tile size.
+///     bigtiff: Write a BigTIFF.
+///     srcwin: Convert only this raster window, `(col_off, row_off, width, height)`.
+///     overview: Convert this raster overview (0 is the largest) instead of the full
+///         resolution.
+///     where: Keep the features matching this OGR SQL expression.
+///     spat: Keep the features intersecting this rectangle `(min_x, min_y, max_x, max_y)`.
+///     spat_srs: The CRS of `spat`. By default, that of the layer.
+///     select: Keep only these fields, in this order.
+///     limit: Keep at most this many features per layer.
+///     sql: Read the result of `SELECT fields FROM layer [WHERE ...] [ORDER BY ...] [LIMIT n]`.
+///     nln: The output layer name.
+///     nlt: Convert geometries: `"PROMOTE_TO_MULTI"`, `"POINT"`, `"MULTIPOLYGON"`...
+///     explodecollections: Write each part of multi-part geometries as its own feature.
+///     s_srs: The CRS of the input, overriding what it declares.
+///     a_srs: Assign this CRS to the output, without reprojecting.
+///     append: Add the features to the layers of an existing output.
+///     overwrite: Replace the layers of the same name in an existing output.
+///
+/// Raises:
+///     InvalidArgumentError: If an option does not apply to the input.
+#[pyfunction]
+#[pyo3(signature = (
+    src, dst, *, format=None, layers=None, t_srs=None, compress=None, tile_size=None, bigtiff=false, srcwin=None,
+    overview=None, r#where=None, spat=None, spat_srs=None, select=None, limit=None, sql=None, nln=None, nlt=None,
+    explodecollections=false, s_srs=None, a_srs=None, append=false, overwrite=false
+))]
+#[allow(clippy::too_many_arguments)]
+fn convert(
+    py: Python<'_>,
+    src: &str,
+    dst: &str,
+    format: Option<&str>,
+    layers: Option<Vec<String>>,
+    t_srs: Option<&str>,
+    compress: Option<String>,
+    tile_size: Option<u32>,
+    bigtiff: bool,
+    srcwin: Option<(usize, usize, usize, usize)>,
+    overview: Option<usize>,
+    r#where: Option<String>,
+    spat: Option<(f64, f64, f64, f64)>,
+    spat_srs: Option<&str>,
+    select: Option<Vec<String>>,
+    limit: Option<usize>,
+    sql: Option<String>,
+    nln: Option<String>,
+    nlt: Option<&str>,
+    explodecollections: bool,
+    s_srs: Option<&str>,
+    a_srs: Option<&str>,
+    append: bool,
+    overwrite: bool,
+) -> PyResult<()> {
+    let t_srs = srs(t_srs)?;
+    let vector_options = VectorTranslateOptions {
+        where_clause: r#where,
+        sql,
+        spatial_filter: spat,
+        spatial_filter_srs: srs(spat_srs)?,
+        select,
+        limit,
+        layer_name: nln,
+        geometry_type: nlt.map(GeometryConversion::parse).transpose().py()?,
+        explode_collections: explodecollections,
+        src_srs: srs(s_srs)?,
+        dst_srs: t_srs.clone(),
+        assign_srs: srs(a_srs)?,
+    };
+    let vector_set = vector_options.where_clause.is_some()
+        || vector_options.sql.is_some()
+        || vector_options.spatial_filter.is_some()
+        || vector_options.select.is_some()
+        || vector_options.limit.is_some()
+        || vector_options.layer_name.is_some()
+        || vector_options.geometry_type.is_some()
+        || vector_options.explode_collections
+        || vector_options.src_srs.is_some()
+        || vector_options.assign_srs.is_some()
+        || append
+        || overwrite;
+    let mode = write_mode(append, overwrite)?;
+    let raster_options = match format.map(terrio::formats::RasterDriver::from_name) {
+        Some(None) => None,
+        _ => Some(write_options(format, compress, tile_size, bigtiff)?),
+    };
+    let vector_write = match format.map(VectorDriver::from_name) {
+        Some(None) => None,
+        _ => Some(vector_write_options(format)?),
+    };
+    py.detach(|| -> terrio::Result<()> {
+        let ds = if srcwin.is_some() || overview.is_some() {
+            let mut r = terrio::open_raster_lazy(src)?;
+            let window = match srcwin {
+                Some((x, y, w, h)) => Window::new(x, y, w, h),
+                None => {
+                    let (w, h) = match overview {
+                        Some(i) => r.overviews().get(i).copied().ok_or_else(|| {
+                            terrio::Error::InvalidArgument(format!("no overview {i}: the raster has {} overview(s)", r.overviews().len()))
+                        })?,
+                        None => (r.width(), r.height()),
+                    };
+                    Window::full(w, h)
+                }
+            };
+            Dataset::Raster(r.read_window(window, &WindowOptions { bands: Vec::new(), overview })?)
+        } else {
+            match layers {
+                Some(layers) => Dataset::Vector(terrio::open_vector(src, &VectorOpenOptions { layers })?),
+                None => terrio::open(src)?,
+            }
+        };
+        match ds {
+            Dataset::Raster(r) => {
+                if vector_set {
+                    return Err(terrio::Error::InvalidArgument("the vector options apply to vector inputs only".into()));
+                }
+                let options = raster_options
+                    .ok_or_else(|| terrio::Error::InvalidArgument(format!("unknown raster format '{}'", format.unwrap_or_default())))?;
+                let mut r = r;
+                if let Some(dst_srs) = t_srs {
+                    let o = terrio::ops::warp::WarpOptions { dst_srs: Some(dst_srs), ..Default::default() };
+                    r = terrio::ops::warp::warp(&[&r], &o)?;
+                }
+                terrio::write_raster_dataset(&r, dst, &options)
+            }
+            Dataset::Vector(v) => {
+                let options = vector_write
+                    .ok_or_else(|| terrio::Error::InvalidArgument(format!("unknown vector format '{}'", format.unwrap_or_default())))?;
+                let layers = terrio::ops::vector_filter::translate(&v.layers, &vector_options)?;
+                terrio::ops::vector_filter::write_vector_with_mode(&layers, dst, &options, mode)
+            }
+        }
+    })
+    .py()
+}
+
+/// Opens the layers given to an operation: a path, or layers in memory.
+fn input_layers(py: Python<'_>, src: &Bound<'_, PyAny>, layers: Option<Vec<String>>) -> PyResult<Vec<terrio::Layer>> {
+    match src.extract::<String>() {
+        Ok(path) => {
+            let options = VectorOpenOptions { layers: layers.unwrap_or_default() };
+            Ok(py.detach(|| terrio::open_vector(&path, &options)).py()?.layers)
+        }
+        Err(_) => {
+            let all = layers_from_object(src, None, None)?;
+            Ok(match layers {
+                Some(names) => all.into_iter().filter(|l| names.contains(&l.name)).collect(),
+                None => all,
+            })
+        }
+    }
+}
+
+/// Opens the raster given to an operation: a path, or a `Raster`.
+fn input_raster(py: Python<'_>, src: &Bound<'_, PyAny>) -> PyResult<RasterDataset> {
+    match src.extract::<String>() {
+        Ok(path) => py.detach(|| terrio::open_raster(&path)).py(),
+        Err(_) => {
+            let mut r = src.cast::<PyRaster>().map_err(|_| invalid("expected a path or a terrio.Raster"))?.borrow_mut();
+            r.with_dataset(|ds| Ok(ds.clone())).py()
+        }
+    }
+}
+
+/// Burns vector geometries into a raster, like `terrio rasterize` (GDAL's `gdal_rasterize`).
+///
+/// Args:
+///     src: The vector data: a path, a `Layer`, a `VectorDataset`, a list of layers, or GeoJSON.
+///     dst: Also write the raster to this path.
+///     layers: The layers to burn, by name. Needed when the dataset has several.
+///     sql: Burn the result of `SELECT fields FROM layer [WHERE ...]` instead of whole layers.
+///     burn: The value to burn (a number, or one per output band).
+///     attribute: Burn the values of this attribute field instead.
+///     where: Only burn the features matching this OGR SQL expression.
+///     tr: The pixel size `(xres, yres)`.
+///     ts: The size in pixels `(width, height)`; one may be 0 to keep the aspect ratio.
+///     te: The extent `(min_x, min_y, max_x, max_y)`. By default, that of the layers.
+///     tap: Align the extent on multiples of the pixel size.
+///     like: Use the grid of this raster (a path or a `Raster`).
+///     ot: The output data type: `"Byte"`, `"Int16"`, `"UInt16"`, `"Int32"`, `"Float32"`,
+///         `"Float64"` (the default)...
+///     init: The initial pixel values (a number, or one per band). 0 by default.
+///     nodata: The output nodata value.
+///     all_touched: Burn every pixel touched by lines or polygons, not only those whose centre is
+///         inside.
+///     add: Add the burn values to the pixels instead of replacing them.
+///     a_srs: The output CRS. Geometries are taken to be in it, without reprojecting.
+///     format: The output format's short name, for `dst`.
+///     compress: GeoTIFF/COG compression, for `dst`.
+///
+/// Returns:
+///     Raster: The raster, in memory.
+#[pyfunction]
+#[pyo3(signature = (
+    src, dst=None, *, layers=None, sql=None, burn=None, attribute=None, r#where=None, tr=None, ts=None, te=None,
+    tap=false, like=None, ot=None, init=None, nodata=None, all_touched=false, add=false, a_srs=None, format=None,
+    compress=None
+))]
+#[allow(clippy::too_many_arguments)]
+fn rasterize(
+    py: Python<'_>,
+    src: &Bound<'_, PyAny>,
+    dst: Option<&str>,
+    layers: Option<Vec<String>>,
+    sql: Option<String>,
+    burn: Option<&Bound<'_, PyAny>>,
+    attribute: Option<String>,
+    r#where: Option<String>,
+    tr: Option<(f64, f64)>,
+    ts: Option<(usize, usize)>,
+    te: Option<(f64, f64, f64, f64)>,
+    tap: bool,
+    like: Option<&Bound<'_, PyAny>>,
+    ot: Option<&str>,
+    init: Option<&Bound<'_, PyAny>>,
+    nodata: Option<f64>,
+    all_touched: bool,
+    add: bool,
+    a_srs: Option<&str>,
+    format: Option<&str>,
+    compress: Option<String>,
+) -> PyResult<PyRaster> {
+    let numbers = |v: Option<&Bound<'_, PyAny>>| -> PyResult<Vec<f64>> {
+        match v {
+            None => Ok(Vec::new()),
+            Some(v) => match v.extract::<f64>() {
+                Ok(x) => Ok(vec![x]),
+                Err(_) => v.extract::<Vec<f64>>(),
+            },
+        }
+    };
+    let burn_values = numbers(burn)?;
+    if burn_values.is_empty() && attribute.is_none() {
+        return Err(invalid("give burn or attribute"));
+    }
+    let named_layers = layers.is_some();
+    let all = input_layers(py, src, layers)?;
+    let to_burn = match &sql {
+        Some(sql) => {
+            let o = VectorTranslateOptions { sql: Some(sql.clone()), ..Default::default() };
+            py.detach(|| terrio::ops::vector_filter::translate(&all, &o)).py()?
+        }
+        None if !named_layers && all.len() != 1 => {
+            let names: Vec<&str> = all.iter().map(|l| l.name.as_str()).collect();
+            return Err(invalid(format!("the dataset has {} layers: choose with layers or sql ({})", all.len(), names.join(", "))));
+        }
+        None => all,
+    };
+    let grid = like.map(|l| input_raster(py, l)).transpose()?.map(|r| Grid::like(&r));
+    let options = RasterizeOptions {
+        burn_values,
+        attribute,
+        where_clause: r#where,
+        resolution: tr,
+        size: ts,
+        extent: te,
+        target_aligned: tap,
+        grid,
+        data_type: ot.map(data_type).transpose()?,
+        init: numbers(init)?,
+        nodata,
+        all_touched,
+        merge: if add { MergeAlg::Add } else { MergeAlg::Replace },
+        assign_srs: srs(a_srs)?,
+    };
+    let write = dst.map(|_| write_options(format, compress, None, false)).transpose()?;
+    let out = py
+        .detach(|| -> terrio::Result<RasterDataset> {
+            let out = terrio::ops::rasterize::rasterize(&to_burn, &options)?;
+            if let (Some(path), Some(o)) = (dst, &write) {
+                terrio::write_raster_dataset(&out, path, o)?;
+            }
+            Ok(out)
+        })
+        .py()?;
+    Ok(PyRaster::from_dataset(out))
+}
+
+/// Turns a raster band into polygons of connected pixels with the same value, like
+/// `terrio polygonize` (GDAL's `gdal_polygonize`).
+///
+/// Args:
+///     src: The raster: a path or a `Raster`.
+///     dst: Also write the polygons to this path.
+///     band: The band to polygonize, numbered from 1.
+///     field: The name of the field receiving the pixel values.
+///     layer_name: The layer name. By default, the output file's stem, or `"polygonized"`.
+///     connectedness: 4 to connect pixels through their sides only, 8 to connect them through
+///         their corners too.
+///     nomask: Do not leave out nodata pixels.
+///     mask: Leave out the pixels where the first band of this raster (a path or a `Raster`) is 0.
+///     format: The output format's short name, for `dst`.
+///     append: Add the polygons to the layer of the same name in an existing output.
+///     overwrite: Replace the layer of the same name in an existing output.
+///
+/// Returns:
+///     Layer: The polygons, with the pixel value in `field`.
+#[pyfunction]
+#[pyo3(signature = (
+    src, dst=None, *, band=1, field="DN", layer_name=None, connectedness=4, nomask=false, mask=None, format=None,
+    append=false, overwrite=false
+))]
+#[allow(clippy::too_many_arguments)]
+fn polygonize(
+    py: Python<'_>,
+    src: &Bound<'_, PyAny>,
+    dst: Option<&str>,
+    band: usize,
+    field: &str,
+    layer_name: Option<String>,
+    connectedness: u8,
+    nomask: bool,
+    mask: Option<&Bound<'_, PyAny>>,
+    format: Option<&str>,
+    append: bool,
+    overwrite: bool,
+) -> PyResult<PyLayer> {
+    if band == 0 {
+        return Err(invalid("bands are numbered from 1"));
+    }
+    if connectedness != 4 && connectedness != 8 {
+        return Err(invalid("connectedness is 4 or 8"));
+    }
+    let ds = input_raster(py, src)?;
+    let mask = mask.map(|m| input_raster(py, m)).transpose()?;
+    let stem = dst.and_then(|d| std::path::Path::new(d).file_stem()).and_then(|s| s.to_str()).unwrap_or("polygonized").to_string();
+    let options = PolygonizeOptions {
+        band: band - 1,
+        field_name: field.to_string(),
+        layer_name: layer_name.unwrap_or(stem),
+        connectedness8: connectedness == 8,
+        ignore_nodata: nomask,
+        mask,
+    };
+    let write = dst.map(|_| vector_write_options(format)).transpose()?;
+    let mode = write_mode(append, overwrite)?;
+    let layer = py
+        .detach(|| -> terrio::Result<terrio::Layer> {
+            let layer = terrio::ops::polygonize::polygonize(&ds, &options)?;
+            if let (Some(path), Some(o)) = (dst, &write) {
+                terrio::ops::vector_filter::write_vector_with_mode(std::slice::from_ref(&layer), path, o, mode)?;
+            }
+            Ok(layer)
+        })
+        .py()?;
+    Ok(PyLayer { inner: layer })
+}
+
+/// Coordinate arrays: x, then y.
+type Coordinates<'py> = (Bound<'py, PyArray1<f64>>, Bound<'py, PyArray1<f64>>);
+
+/// Transforms coordinates from one CRS to another.
+///
+/// Coordinates are in GIS order whatever the CRS's axis order: x (easting, longitude) first.
+///
+/// Args:
+///     xs: The x coordinates (a sequence or a NumPy array).
+///     ys: The y coordinates.
+///     src_crs: The source CRS: `"EPSG:4326"`, WKT or a PROJ string.
+///     dst_crs: The target CRS.
+///
+/// Returns:
+///     tuple[numpy.ndarray, numpy.ndarray]: The transformed x and y coordinates, as float64.
+///
+/// Raises:
+///     CRSError: If a CRS cannot be parsed or a point cannot be transformed.
+#[pyfunction]
+fn transform_points<'py>(
+    py: Python<'py>,
+    xs: &Bound<'py, PyAny>,
+    ys: &Bound<'py, PyAny>,
+    src_crs: &str,
+    dst_crs: &str,
+) -> PyResult<Coordinates<'py>> {
+    let np = py.import("numpy")?;
+    let coords = |v: &Bound<'py, PyAny>| -> PyResult<Vec<f64>> {
+        let a = np.call_method1("ascontiguousarray", (v, "float64"))?.call_method0("ravel")?;
+        Ok(a.cast_into::<PyArray1<f64>>()?.readonly().as_slice()?.to_vec())
+    };
+    let (xs, ys) = (coords(xs)?, coords(ys)?);
+    if xs.len() != ys.len() {
+        return Err(invalid(format!("xs and ys differ in length ({} and {})", xs.len(), ys.len())));
+    }
+    let src = SpatialRef::parse(src_crs).py()?;
+    let dst = SpatialRef::parse(dst_crs).py()?;
+    let (ox, oy) = py
+        .detach(|| -> terrio::Result<(Vec<f64>, Vec<f64>)> {
+            let t = Transformer::new(&src, &dst)?;
+            let mut ox = Vec::with_capacity(xs.len());
+            let mut oy = Vec::with_capacity(ys.len());
+            for (x, y) in xs.iter().zip(&ys) {
+                let (a, b) = t.transform(*x, *y)?;
+                ox.push(a);
+                oy.push(b);
+            }
+            Ok((ox, oy))
+        })
+        .py()?;
+    Ok((PyArray1::from_vec(py, ox), PyArray1::from_vec(py, oy)))
+}
+
+/// Parses a nodata argument: `None` for the datasets' own, `"none"` to ignore them, a number, or
+/// one number per band.
+fn nodata_arg(v: Option<&Bound<'_, PyAny>>) -> PyResult<Nodata> {
+    let Some(v) = v else { return Ok(Nodata::Auto) };
+    if let Ok(s) = v.extract::<String>() {
+        return Nodata::parse(&s).py();
+    }
+    if let Ok(x) = v.extract::<f64>() {
+        return Ok(Nodata::Values(vec![x]));
+    }
+    Ok(Nodata::Values(v.extract::<Vec<f64>>().map_err(|_| invalid("nodata is a number, a list of numbers or 'none'"))?))
+}
+
+/// The rasters given to an operation: one path or `Raster`, or a sequence of them, with the
+/// paths (or made-up names for rasters in memory).
+fn input_rasters(py: Python<'_>, src: &Bound<'_, PyAny>) -> PyResult<Vec<(String, RasterDataset)>> {
+    let items: Vec<Bound<'_, PyAny>> = if src.extract::<String>().is_ok() || src.cast::<PyRaster>().is_ok() {
+        vec![src.clone()]
+    } else {
+        src.extract().map_err(|_| invalid("expected a path, a terrio.Raster, or a sequence of them"))?
+    };
+    if items.is_empty() {
+        return Err(invalid("no input rasters"));
+    }
+    // Sources are told apart by name: rasters in memory get one of their own.
+    let name = |k: usize, i: &Bound<'_, PyAny>| i.extract::<String>().unwrap_or_else(|_| format!("{MEMORY_PREFIX}{k}>"));
+    items.iter().enumerate().map(|(k, i)| Ok((name(k, i), input_raster(py, i)?))).collect()
+}
+
+/// The start of the names given to rasters in memory.
+const MEMORY_PREFIX: &str = "<terrio.Raster ";
+
+/// Writes an operation's output when a path is given, and wraps it.
+#[allow(clippy::too_many_arguments)]
+fn finish_raster(
+    py: Python<'_>,
+    out: RasterDataset,
+    dst: Option<&str>,
+    format: Option<&str>,
+    compress: Option<String>,
+    tile_size: Option<u32>,
+    bigtiff: bool,
+) -> PyResult<PyRaster> {
+    if let Some(path) = dst {
+        let o = write_options(format, compress, tile_size, bigtiff)?;
+        py.detach(|| terrio::write_raster_dataset(&out, path, &o)).py()?;
+    }
+    Ok(PyRaster::from_dataset(out))
+}
+
+/// Subsets, resizes, rescales or converts a raster, like `terrio translate` (GDAL's
+/// `gdal_translate`).
+///
+/// Args:
+///     src: The raster: a path or a `Raster`.
+///     dst: Also write the result to this path.
+///     bands: The bands to keep, numbered from 1. All by default.
+///     ot: The output data type: `"Byte"`, `"Int16"`, `"UInt16"`, `"Int32"`, `"Float32"`...
+///     srcwin: A window in pixels, `(col_off, row_off, width, height)`.
+///     projwin: A window in georeferenced coordinates, `(ulx, uly, lrx, lry)`.
+///     projwin_srs: The CRS of `projwin`.
+///     outsize: The output size `(width, height)`, each in pixels or a percentage such as
+///         `"50%"`; 0 keeps the aspect ratio.
+///     tr: The output resolution `(xres, yres)`.
+///     resampling: The resampling when resizing: `"near"`, `"bilinear"`, `"cubic"`,
+///         `"cubicspline"`, `"lanczos"`, `"average"`, `"rms"` or `"mode"`.
+///     scale: Rescale values: `True` (each band's range to the output type's),
+///         `(src_min, src_max)` or `(src_min, src_max, dst_min, dst_max)`.
+///     exponent: Apply a power function when rescaling.
+///     a_nodata: Assign a nodata value, or `"none"` to remove it.
+///     a_srs: Assign a CRS.
+///     a_ullr: Assign the bounds `(ulx, uly, lrx, lry)`.
+///     format: The output format's short name, for `dst`.
+///     compress: GeoTIFF/COG compression, for `dst`.
+///     tile_size: GeoTIFF/COG tile size, for `dst`.
+///     bigtiff: Write a BigTIFF, for `dst`.
+///
+/// Returns:
+///     Raster: The result, in memory.
+#[pyfunction]
+#[pyo3(signature = (
+    src, dst=None, *, bands=None, ot=None, srcwin=None, projwin=None, projwin_srs=None, outsize=None, tr=None,
+    resampling=None, scale=None, exponent=None, a_nodata=None, a_srs=None, a_ullr=None, format=None, compress=None,
+    tile_size=None, bigtiff=false
+))]
+#[allow(clippy::too_many_arguments)]
+fn translate(
+    py: Python<'_>,
+    src: &Bound<'_, PyAny>,
+    dst: Option<&str>,
+    bands: Option<Vec<usize>>,
+    ot: Option<&str>,
+    srcwin: Option<(f64, f64, f64, f64)>,
+    projwin: Option<(f64, f64, f64, f64)>,
+    projwin_srs: Option<&str>,
+    outsize: Option<(Bound<'_, PyAny>, Bound<'_, PyAny>)>,
+    tr: Option<(f64, f64)>,
+    resampling: Option<&str>,
+    scale: Option<&Bound<'_, PyAny>>,
+    exponent: Option<f64>,
+    a_nodata: Option<&Bound<'_, PyAny>>,
+    a_srs: Option<&str>,
+    a_ullr: Option<(f64, f64, f64, f64)>,
+    format: Option<&str>,
+    compress: Option<String>,
+    tile_size: Option<u32>,
+    bigtiff: bool,
+) -> PyResult<PyRaster> {
+    let size = |v: &Bound<'_, PyAny>| -> PyResult<Size> {
+        match v.extract::<usize>() {
+            Ok(n) => Ok(Size::Pixels(n)),
+            Err(_) => Size::parse(&v.extract::<String>().map_err(|_| invalid("outsize values are ints or percentages"))?).py(),
+        }
+    };
+    let out_size = outsize.map(|(w, h)| Ok::<_, PyErr>((size(&w)?, size(&h)?))).transpose()?;
+    let scale = match scale {
+        None => None,
+        Some(v) if v.extract::<bool>().is_ok() => v.extract::<bool>()?.then(Scale::default),
+        Some(v) => match v.extract::<Vec<f64>>().map_err(|_| invalid("scale is True or a tuple of 2 or 4 numbers"))?[..] {
+            [a, b] => Some(Scale { src: Some((a, b)), dst: None }),
+            [a, b, c, d] => Some(Scale { src: Some((a, b)), dst: Some((c, d)) }),
+            _ => return Err(invalid("scale is True or a tuple of 2 or 4 numbers")),
+        },
+    };
+    let assign_nodata = match a_nodata {
+        None => None,
+        Some(v) => match v.extract::<f64>() {
+            Ok(x) => Some(Some(x)),
+            Err(_) if v.extract::<String>().is_ok_and(|s| s.eq_ignore_ascii_case("none")) => Some(None),
+            Err(_) => return Err(invalid("a_nodata is a number or 'none'")),
+        },
+    };
+    let o = TranslateOptions {
+        bands: bands.unwrap_or_default(),
+        output_type: ot.map(terrio::ops::parse_data_type).transpose().py()?,
+        src_win: srcwin,
+        proj_win: projwin,
+        proj_win_srs: srs(projwin_srs)?,
+        out_size,
+        resolution: tr,
+        resampling: resampling.map(Resampling::parse).transpose().py()?,
+        scale,
+        exponent,
+        assign_nodata,
+        assign_srs: srs(a_srs)?,
+        assign_ullr: a_ullr,
+    };
+    let ds = input_raster(py, src)?;
+    let out = py.detach(|| terrio::ops::translate::translate(&ds, &o)).py()?;
+    finish_raster(py, out, dst, format, compress, tile_size, bigtiff)
+}
+
+/// Reprojects, resamples, crops or mosaics rasters, like `terrio warp` (GDAL's `gdalwarp`).
+///
+/// Args:
+///     src: The rasters: a path or a `Raster`, or a sequence of them.
+///     dst: Also write the result to this path.
+///     s_srs: The sources' CRS, overriding what they declare.
+///     t_srs: The output CRS: `"EPSG:4326"`, WKT or a PROJ string. By default, the first
+///         source's.
+///     tr: The output resolution `(xres, yres)`, in output CRS units.
+///     te: The output extent `(min_x, min_y, max_x, max_y)`, in output CRS units (or `te_srs`).
+///     te_srs: The CRS of `te`.
+///     ts: The output size `(width, height)`; 0 computes one from the other.
+///     tap: Align the extent on multiples of `tr`.
+///     resampling: `"near"`, `"bilinear"`, `"cubic"`, `"cubicspline"`, `"lanczos"`,
+///         `"average"`, `"rms"`, `"mode"`, `"min"`, `"max"`, `"med"`, `"q1"`, `"q3"` or `"sum"`.
+///     srcnodata: The sources' nodata: a number, one per band, or `"none"` to ignore theirs.
+///     dstnodata: The output nodata, or `"none"`. By default, the sources'.
+///     ot: The output data type.
+///     cutline: Polygons masking the sources: a vector path, a `Layer`, a `VectorDataset` or
+///         GeoJSON.
+///     crop_to_cutline: Set the output extent to the cutline's.
+///     et: The maximum error of the approximate transformer, in pixels (0 for exact).
+///     format: The output format's short name, for `dst`.
+///     compress: GeoTIFF/COG compression, for `dst`.
+///     tile_size: GeoTIFF/COG tile size, for `dst`.
+///     bigtiff: Write a BigTIFF, for `dst`.
+///
+/// Returns:
+///     Raster: The result, in memory.
+#[pyfunction]
+#[pyo3(signature = (
+    src, dst=None, *, s_srs=None, t_srs=None, tr=None, te=None, te_srs=None, ts=None, tap=false, resampling="near",
+    srcnodata=None, dstnodata=None, ot=None, cutline=None, crop_to_cutline=false, et=0.125, format=None,
+    compress=None, tile_size=None, bigtiff=false
+))]
+#[allow(clippy::too_many_arguments)]
+fn warp(
+    py: Python<'_>,
+    src: &Bound<'_, PyAny>,
+    dst: Option<&str>,
+    s_srs: Option<&str>,
+    t_srs: Option<&str>,
+    tr: Option<(f64, f64)>,
+    te: Option<(f64, f64, f64, f64)>,
+    te_srs: Option<&str>,
+    ts: Option<(usize, usize)>,
+    tap: bool,
+    resampling: &str,
+    srcnodata: Option<&Bound<'_, PyAny>>,
+    dstnodata: Option<&Bound<'_, PyAny>>,
+    ot: Option<&str>,
+    cutline: Option<&Bound<'_, PyAny>>,
+    crop_to_cutline: bool,
+    et: f64,
+    format: Option<&str>,
+    compress: Option<String>,
+    tile_size: Option<u32>,
+    bigtiff: bool,
+) -> PyResult<PyRaster> {
+    if tap && tr.is_none() {
+        return Err(invalid("tap needs tr"));
+    }
+    let cutline = match cutline {
+        None => None,
+        Some(c) => {
+            let layers = input_layers(py, c, None)?;
+            let ds = terrio::VectorDataset { layers, driver: VectorDriver::GeoJSON };
+            Some(Cutline::from_vector(&ds).py()?)
+        }
+    };
+    let o = WarpOptions {
+        src_srs: srs(s_srs)?,
+        dst_srs: srs(t_srs)?,
+        resolution: tr,
+        extent: te,
+        extent_srs: srs(te_srs)?,
+        size: ts,
+        target_aligned_pixels: tap,
+        resampling: Resampling::parse(resampling).py()?,
+        src_nodata: nodata_arg(srcnodata)?,
+        dst_nodata: nodata_arg(dstnodata)?,
+        output_type: ot.map(terrio::ops::parse_data_type).transpose().py()?,
+        cutline,
+        crop_to_cutline,
+        error_threshold: et,
+        ..Default::default()
+    };
+    let sources = input_rasters(py, src)?;
+    let out = py
+        .detach(|| {
+            let refs: Vec<&RasterDataset> = sources.iter().map(|(_, ds)| ds).collect();
+            terrio::ops::warp::warp(&refs, &o)
+        })
+        .py()?;
+    finish_raster(py, out, dst, format, compress, tile_size, bigtiff)
+}
+
+/// Mosaics rasters into one, like `terrio mosaic` (GDAL's `gdalbuildvrt` then
+/// `gdal_translate`). A `.vrt` destination is written as a virtual mosaic referencing the
+/// sources, which must then be paths.
+///
+/// Args:
+///     srcs: The rasters: paths or `Raster`s.
+///     dst: Also write the mosaic to this path (a `.vrt` writes a virtual mosaic).
+///     resolution: `"highest"`, `"lowest"` or `"average"` of the sources' resolutions.
+///     tr: The output resolution `(xres, yres)`, overriding `resolution`.
+///     te: The output extent `(min_x, min_y, max_x, max_y)`.
+///     tap: Align the extent on multiples of the resolution.
+///     separate: Put each source in its own band instead of mosaicking them.
+///     bands: The bands to use, numbered from 1.
+///     nodata: Ignore source pixels with this value and use it as the output nodata.
+///     srcnodata: The sources' nodata: a number, one per band, or `"none"`.
+///     dstnodata: The output nodata, or `"none"`. By default, the sources'.
+///     resampling: The resampling when sources are resampled or reprojected.
+///     t_srs: The output CRS; sources in other CRSs are reprojected. By default, the first
+///         source's.
+///     format: The output format's short name, for `dst`.
+///     compress: GeoTIFF/COG compression, for `dst`.
+///     tile_size: GeoTIFF/COG tile size, for `dst`.
+///     bigtiff: Write a BigTIFF, for `dst`.
+///
+/// Returns:
+///     Raster | None: The mosaic, in memory; `None` when a `.vrt` was written.
+#[pyfunction]
+#[pyo3(signature = (
+    srcs, dst=None, *, resolution="average", tr=None, te=None, tap=false, separate=false, bands=None, nodata=None,
+    srcnodata=None, dstnodata=None, resampling="near", t_srs=None, format=None, compress=None, tile_size=None,
+    bigtiff=false
+))]
+#[allow(clippy::too_many_arguments)]
+fn mosaic(
+    py: Python<'_>,
+    srcs: &Bound<'_, PyAny>,
+    dst: Option<&str>,
+    resolution: &str,
+    tr: Option<(f64, f64)>,
+    te: Option<(f64, f64, f64, f64)>,
+    tap: bool,
+    separate: bool,
+    bands: Option<Vec<usize>>,
+    nodata: Option<&Bound<'_, PyAny>>,
+    srcnodata: Option<&Bound<'_, PyAny>>,
+    dstnodata: Option<&Bound<'_, PyAny>>,
+    resampling: &str,
+    t_srs: Option<&str>,
+    format: Option<&str>,
+    compress: Option<String>,
+    tile_size: Option<u32>,
+    bigtiff: bool,
+) -> PyResult<Option<PyRaster>> {
+    let resolution = match tr {
+        Some((x, y)) => ResolutionStrategy::User(x, y),
+        None => ResolutionStrategy::parse(resolution).py()?,
+    };
+    let nodata = nodata.map(|n| nodata_arg(Some(n))).transpose()?;
+    let pick = |v: Option<&Bound<'_, PyAny>>| -> PyResult<Nodata> {
+        match (v, &nodata) {
+            (Some(v), _) => nodata_arg(Some(v)),
+            (None, Some(n)) => Ok(n.clone()),
+            (None, None) => Ok(Nodata::Auto),
+        }
+    };
+    let o = MosaicOptions {
+        resolution,
+        extent: te,
+        target_aligned_pixels: tap,
+        separate,
+        bands: bands.unwrap_or_default(),
+        src_nodata: pick(srcnodata)?,
+        dst_nodata: pick(dstnodata)?,
+        resampling: Resampling::parse(resampling).py()?,
+        dst_srs: srs(t_srs)?,
+    };
+    let inputs = input_rasters(py, srcs)?;
+    if let Some(path) = dst.filter(|d| d.to_ascii_lowercase().ends_with(".vrt")) {
+        if inputs.iter().any(|(p, _)| p.starts_with(MEMORY_PREFIX)) {
+            return Err(invalid("a .vrt mosaic references its sources: give them as paths"));
+        }
+        py.detach(|| {
+            let sources: Vec<MosaicSource> = inputs.iter().map(|(p, ds)| MosaicSource { path: p.clone(), ds }).collect();
+            let dir = std::path::Path::new(path).parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(std::path::Path::new("."));
+            terrio::ops::mosaic::build_vrt(&sources, &o, Some(dir))?.write(path)
+        })
+        .py()?;
+        return Ok(None);
+    }
+    let out = py
+        .detach(|| {
+            let sources: Vec<MosaicSource> = inputs.iter().map(|(p, ds)| MosaicSource { path: p.clone(), ds }).collect();
+            terrio::ops::mosaic::mosaic(&sources, &o)
+        })
+        .py()?;
+    finish_raster(py, out, dst, format, compress, tile_size, bigtiff).map(Some)
+}

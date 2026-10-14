@@ -135,6 +135,24 @@ impl LazyRaster {
         TiffRaster::new(source, local).map(|t| Some(Self { inner: Inner::Tiff(Box::new(t)) }))
     }
 
+    /// Opens a GeoTIFF held in memory, reading only its headers now. Returns `None` when the bytes
+    /// are not a TIFF.
+    pub fn from_tiff_bytes(bytes: Vec<u8>) -> Result<Option<Self>> {
+        let mut source = Source::Memory(std::io::Cursor::new(bytes));
+        if !is_tiff(&mut source) {
+            return Ok(None);
+        }
+        TiffRaster::new(source, None).map(|t| Some(Self { inner: Inner::Tiff(Box::new(t)) }))
+    }
+
+    /// The raster in memory, when it is not read on demand.
+    pub fn dataset(&self) -> Option<&RasterDataset> {
+        match &self.inner {
+            Inner::Tiff(_) => None,
+            Inner::Memory(ds) => Some(ds),
+        }
+    }
+
     /// Whether the pixels are read on demand (a GeoTIFF), rather than already in memory.
     pub fn is_lazy(&self) -> bool {
         matches!(self.inner, Inner::Tiff(_))
@@ -287,6 +305,13 @@ impl LazyRaster {
     }
 }
 
+impl From<RasterDataset> for LazyRaster {
+    /// Wraps a raster in memory, so that it is read by window like a lazy one.
+    fn from(ds: RasterDataset) -> Self {
+        Self { inner: Inner::Memory(ds) }
+    }
+}
+
 /// Whether a stream starts with a TIFF or BigTIFF signature. Rewinds it.
 fn is_tiff<R: Read + Seek>(r: &mut R) -> bool {
     let mut b = [0u8; 4];
@@ -319,6 +344,7 @@ fn cut(r: &wbraster::Raster, w: Window, bands: &[usize]) -> RasterData {
 /// Where a TIFF's bytes come from.
 enum Source {
     File(BufReader<std::fs::File>),
+    Memory(std::io::Cursor<Vec<u8>>),
     #[cfg(not(target_arch = "wasm32"))]
     Http(crate::http::RangeReader),
 }
@@ -328,7 +354,7 @@ impl Source {
     #[cfg_attr(target_arch = "wasm32", allow(unused_variables))]
     fn prefetch(&self, ranges: &[(u64, u64)]) -> Result<()> {
         match self {
-            Source::File(_) => Ok(()),
+            Source::File(_) | Source::Memory(_) => Ok(()),
             #[cfg(not(target_arch = "wasm32"))]
             Source::Http(r) => Ok(r.prefetch(ranges)?),
         }
@@ -339,6 +365,7 @@ impl Read for Source {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         match self {
             Source::File(f) => f.read(buf),
+            Source::Memory(m) => m.read(buf),
             #[cfg(not(target_arch = "wasm32"))]
             Source::Http(r) => r.read(buf),
         }
@@ -349,6 +376,7 @@ impl Seek for Source {
     fn seek(&mut self, pos: SeekFrom) -> std::io::Result<u64> {
         match self {
             Source::File(f) => f.seek(pos),
+            Source::Memory(m) => m.seek(pos),
             #[cfg(not(target_arch = "wasm32"))]
             Source::Http(r) => r.seek(pos),
         }

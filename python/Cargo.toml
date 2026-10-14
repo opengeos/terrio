@@ -1,0 +1,24 @@
+[package]
+name = "terrio-py"
+description = "Python bindings for terrio"
+publish = false
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+
+[lib]
+name = "_terrio"
+crate-type = ["cdylib"]
+# The extension module links to Python only when it is loaded: built by maturin, tested by pytest.
+test = false
+doctest = false
+
+[dependencies]
+terrio.workspace = true
+pyo3 = { version = "0.29", features = ["abi3-py310"] }
+numpy = "0.29"
+wbraster.workspace = true
+wbvector.workspace = true
+serde_json.workspace = true

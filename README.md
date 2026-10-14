@@ -58,6 +58,53 @@ and `AWS_S3_ENDPOINT` for S3; `AZURE_STORAGE_ACCOUNT` and `AZURE_STORAGE_SAS_TOK
 `TERRIO_HTTP_TIMEOUT`, `TERRIO_HTTP_MAX_RETRY` and `TERRIO_HTTP_LOG` (and more, see the `http`
 module) for HTTP.
 
+Datasets can also be opened from bytes and written to bytes (`terrio::memory`), for data
+already in memory and for WebAssembly, which has no file system.
+
+## Python
+
+```sh
+pip install terrio
+```
+
+```python
+import terrio
+
+dem = terrio.open_raster("dem.tif")
+elevation = dem.read(1)  # a NumPy array of the raster's own dtype
+dem.crs, dem.transform, dem.bounds, dem.nodata
+
+cog = terrio.open_raster("https://example.com/cog.tif", lazy=True)  # read in place
+tile = cog.read(1, window=(1024, 1024, 512, 512), overview=0)
+
+layer = terrio.open_vector("countries.gpkg").layers[0]
+layer.to_geojson(), layer.to_wkb(), layer.to_geopandas()
+
+terrio.Raster.from_array(elevation * 2, dem.transform, crs=dem.crs).write("x2.tif")
+terrio.convert("countries.shp", "europe.gpkg", where="CONTINENT = 'Europe'")
+terrio.warp("dem.tif", "dem_4326.tif", t_srs="EPSG:4326", resampling="bilinear")
+```
+
+The operations (`convert`, `translate`, `warp`, `mosaic`, `rasterize`, `polygonize`) take the
+command-line options as keyword arguments. See [python/README.md](python/README.md).
+
+## JavaScript
+
+The `terrio` npm package is the library compiled to WebAssembly, for browsers and Node.js:
+
+```js
+import init, { open, transformPoints } from "terrio";
+
+await init();
+const dem = open(new Uint8Array(await (await fetch("dem.tif")).arrayBuffer()), "dem.tif");
+dem.info();                                   // the summary `terrio info --json` prints
+const band = dem.readBand(1);                 // a Float32Array, Uint8Array...
+const roads = open(geojsonBytes, "roads.geojson");
+const fgb = roads.toBytes("roads.fgb", { tSrs: "EPSG:3857" });
+```
+
+See [js/README.md](js/README.md) for the formats available in WebAssembly.
+
 ## Testing against GDAL
 
 `scripts/fetch_test_data.sh` downloads real-world files (Natural Earth, USGS 3DEP, Sentinel-2,
@@ -72,6 +119,8 @@ python scripts/compare_windows_with_gdal.py remote     # the same on public COGs
 cargo test -- --ignored                                # tests that read public cloud files
 python scripts/compare_vector_ops_with_gdal.py ../terrio-data  # convert options, rasterize, polygonize
 python scripts/compare_ops_with_gdal.py ../terrio-data # compare translate, warp and mosaic with GDAL's tools
+cd python && TERRIO_TEST_DATA=../../terrio-data pytest # Python bindings, arrays compared with osgeo.gdal's
+TERRIO_TEST_DATA=../terrio-data node --test js/tests/  # WebAssembly build (after wasm-pack build, see js/)
 ```
 
 ## Layout
@@ -80,7 +129,8 @@ python scripts/compare_ops_with_gdal.py ../terrio-data # compare translate, warp
 |---|---|
 | `crates/terrio` | The library |
 | `crates/terrio-cli` | The `terrio` command-line tool |
-| `python` | Python bindings |
+| `python` | Python bindings (PyO3, NumPy), the `terrio` package on PyPI |
+| `js` | WebAssembly bindings (wasm-bindgen), the `terrio` package on npm |
 
 See [ROADMAP.md](ROADMAP.md) for what is planned and in what order.
 
