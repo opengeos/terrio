@@ -1078,6 +1078,44 @@ struct NewArray<'a> {
     attrs: Value,
 }
 
+/// Copies into a chunk (of the chunk grid index `idx`) the rows, runs along the last dimension,
+/// of an array of at least one dimension that lie inside the array.
+fn copy_rows(a: &NewArray, idx: &[usize], chunk: &mut [u8]) {
+    let (size, nd) = (a.data_type.size_bytes(), a.shape.len());
+    let chunk_len: usize = a.chunks.iter().product();
+    let last = nd - 1;
+    let row_len = a.chunks[last];
+    let x0 = idx[last] * a.chunks[last];
+    let n = row_len.min(a.shape[last].saturating_sub(x0));
+    if n == 0 {
+        return;
+    }
+    let mut cidx = vec![0usize; nd];
+    for row in 0..chunk_len / row_len.max(1) {
+        let mut flat = 0usize;
+        let mut inside = true;
+        for d in 0..last {
+            let g = idx[d] * a.chunks[d] + cidx[d];
+            if g >= a.shape[d] {
+                inside = false;
+                break;
+            }
+            flat = flat * a.shape[d] + g;
+        }
+        if inside {
+            let src = (flat * a.shape[last] + x0) * size;
+            chunk[row * row_len * size..][..n * size].copy_from_slice(&a.bytes[src..src + n * size]);
+        }
+        for d in (0..last).rev() {
+            cidx[d] += 1;
+            if cidx[d] < a.chunks[d] {
+                break;
+            }
+            cidx[d] = 0;
+        }
+    }
+}
+
 /// Writes one array (metadata and chunks), returning its metadata documents by file name.
 fn write_array(dir: &Path, a: &NewArray, compression: Option<&str>, version: Version) -> Result<Vec<(String, Value)>> {
     std::fs::create_dir_all(dir)?;
@@ -1085,38 +1123,32 @@ fn write_array(dir: &Path, a: &NewArray, compression: Option<&str>, version: Ver
     let (size, nd) = (a.data_type.size_bytes(), a.shape.len());
     let grid: Vec<usize> = a.shape.iter().zip(a.chunks).map(|(s, c)| s.div_ceil(*c)).collect();
     let chunk_len: usize = a.chunks.iter().product();
-    let mut idx = vec![0usize; nd];
-    for _ in 0..grid.iter().product::<usize>() {
+    let mut fill = vec![0u8; size];
+    if let Some(f) = a.fill {
+        let mut one = Vec::new();
+        super::gtiff_write::encode_sample_le(a.data_type, f, &mut one);
+        fill = one;
+    }
+    // Chunks are built, compressed and written in parallel.
+    let results = crate::par::map_range(grid.iter().product::<usize>(), |k| -> Result<()> {
+        // The chunk's index along each dimension (C order).
+        let mut idx = vec![0usize; nd];
+        let mut rest = k;
+        for d in (0..nd).rev() {
+            idx[d] = rest % grid[d];
+            rest /= grid[d];
+        }
         let mut chunk = vec![0u8; chunk_len * size];
-        if let Some(f) = a.fill {
-            let mut one = Vec::new();
-            super::gtiff_write::encode_sample_le(a.data_type, f, &mut one);
+        if a.fill.is_some() {
             for c in chunk.chunks_mut(size) {
-                c.copy_from_slice(&one);
+                c.copy_from_slice(&fill);
             }
         }
-        let mut cidx = vec![0usize; nd];
-        for e in 0..chunk_len {
-            let mut flat = 0usize;
-            let mut inside = true;
-            for d in 0..nd {
-                let g = idx[d] * a.chunks[d] + cidx[d];
-                if g >= a.shape[d] {
-                    inside = false;
-                    break;
-                }
-                flat = flat * a.shape[d] + g;
-            }
-            if inside {
-                chunk[e * size..(e + 1) * size].copy_from_slice(&a.bytes[flat * size..(flat + 1) * size]);
-            }
-            for d in (0..nd).rev() {
-                cidx[d] += 1;
-                if cidx[d] < a.chunks[d] {
-                    break;
-                }
-                cidx[d] = 0;
-            }
+        if nd == 0 {
+            // A scalar (0-dimensional) array: its one value.
+            chunk.copy_from_slice(&a.bytes[..size]);
+        } else {
+            copy_rows(a, &idx, &mut chunk);
         }
         let names: Vec<String> = idx.iter().map(|i| i.to_string()).collect();
         let file = match version {
@@ -1135,14 +1167,9 @@ fn write_array(dir: &Path, a: &NewArray, compression: Option<&str>, version: Ver
             }
         };
         std::fs::write(file, compress(&codec, chunk)?)?;
-        for d in (0..nd).rev() {
-            idx[d] += 1;
-            if idx[d] < grid[d] {
-                break;
-            }
-            idx[d] = 0;
-        }
-    }
+        Ok(())
+    });
+    results.into_iter().collect::<Result<Vec<()>>>()?;
     let docs = match version {
         Version::V2 => {
             let zarray = json!({

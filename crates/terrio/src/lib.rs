@@ -24,6 +24,8 @@ pub mod http;
 pub mod info;
 pub mod memory;
 pub mod ops;
+mod par;
+mod pixel;
 pub mod pointcloud;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod s3;
