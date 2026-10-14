@@ -249,6 +249,7 @@ fn method(wkt_name: &str, node: &Node) -> Option<Method> {
     let azimuthal: &'static [(&[&str], Param)] = &[(LAT0, LAT_NAT), (LON0, LON_NAT), (X0, FE), (Y0, FN)];
     Some(match n.as_str() {
         "transverse_mercator" | "gauss_kruger" => ("Transverse Mercator", 9807, natural),
+        "transverse_mercator_south_orientated" => ("Transverse Mercator (South Orientated)", 9808, natural),
         "mercator_1sp" => ("Mercator (variant A)", 9804, natural),
         "mercator" if !has("standard_parallel_1") => ("Mercator (variant A)", 9804, natural),
         "mercator_2sp" | "mercator" => ("Mercator (variant B)", 9805, &[(P1, SP1), (LON0, LON_NAT), (X0, FE), (Y0, FN)]),
@@ -455,13 +456,41 @@ fn projected(p: &Node) -> Option<Value> {
     if mcode != 0 {
         m["id"] = id(mcode);
     }
+    // Axes as the WKT gives them (GDAL writes EPSG's), east/north otherwise. Polar axes run
+    // along meridians: easting 90 degrees east of the origin's, northing along it (south pole)
+    // or opposite it (north pole).
     let axes: Vec<&Node> = p.children("AXIS").collect();
-    let (e, n) = (
-        json!({"name": "Easting", "abbreviation": "E", "direction": "east", "unit": linear}),
-        json!({"name": "Northing", "abbreviation": "N", "direction": "north", "unit": linear}),
-    );
-    let north_first = axes.first().and_then(|a| a.str(1)).is_some_and(|d| d.eq_ignore_ascii_case("NORTH"));
-    let axis = if north_first { vec![n, e] } else { vec![e, n] };
+    let polar = mname.starts_with("Polar Stereographic");
+    let lon0 = param(&["central_meridian", "longitude_of_origin", "longitude_of_center"]).unwrap_or(0.0);
+    let norm = |v: f64| {
+        let v = (v + 180.0).rem_euclid(360.0) - 180.0;
+        if v == -180.0 { 180.0 } else { v }
+    };
+    let axis_json = |name: &str, dir: &str| -> Value {
+        let dir = dir.to_ascii_lowercase();
+        let abbrev = match name {
+            "Easting" => "E",
+            "Northing" => "N",
+            "Westing" => "W",
+            "Southing" => "S",
+            n => &n[..n.len().min(1)],
+        };
+        let mut a = json!({"name": name, "abbreviation": abbrev, "direction": dir, "unit": linear});
+        if polar && (dir == "north" || dir == "south") {
+            let m = match (name, dir.as_str()) {
+                ("Easting", _) => lon0 + 90.0,
+                (_, "south") => lon0 + 180.0,
+                _ => lon0,
+            };
+            a["meridian"] = json!({"longitude": norm(m)});
+        }
+        a
+    };
+    let axis: Vec<Value> = if axes.len() == 2 && axes.iter().all(|a| a.str(1).is_some()) {
+        axes.iter().map(|a| axis_json(a.name(), a.str(1).unwrap_or("east"))).collect()
+    } else {
+        vec![axis_json("Easting", "east"), axis_json("Northing", "north")]
+    };
     let mut out = json!({
         "type": "ProjectedCRS",
         "name": p.name(),
@@ -538,7 +567,17 @@ pub(crate) fn to_wkt1(v: &Value) -> Option<String> {
                 }
                 let _ = write!(w, ",PARAMETER[\"{wkt_param}\",{value}]");
             }
-            let _ = write!(w, ",UNIT[\"{}\",{ufactor}],AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH]", wkt_str(&uname));
+            let _ = write!(w, ",UNIT[\"{}\",{ufactor}]", wkt_str(&uname));
+            let axes = v["coordinate_system"]["axis"].as_array().cloned().unwrap_or_default();
+            if axes.len() == 2 {
+                for a in &axes {
+                    let name = a["name"].as_str().unwrap_or("Easting");
+                    let dir = a["direction"].as_str().unwrap_or("east").to_ascii_uppercase();
+                    let _ = write!(w, ",AXIS[\"{}\",{dir}]", wkt_str(name));
+                }
+            } else {
+                w.push_str(",AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH]");
+            }
             if let Some(c) = epsg(v) {
                 let _ = write!(w, ",AUTHORITY[\"EPSG\",\"{c}\"]");
             }
@@ -555,6 +594,7 @@ type WktMethod = (&'static str, u32, &'static str, &'static [(&'static str, u32)
 
 const WKT_METHODS: &[WktMethod] = &[
     ("Transverse_Mercator", 9807, "Transverse Mercator", NAT),
+    ("Transverse_Mercator_South_Orientated", 9808, "Transverse Mercator (South Orientated)", NAT),
     ("Mercator_1SP", 9804, "Mercator (variant A)", NAT),
     ("Mercator_2SP", 9805, "Mercator (variant B)", &[("standard_parallel_1", 8823), ("central_meridian", 8802), FE_W, FN_W]),
     ("Lambert_Conformal_Conic_1SP", 9801, "Lambert Conic Conformal (1SP)", NAT),
