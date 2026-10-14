@@ -71,6 +71,10 @@ pub struct VectorOpenOptions {
     pub layers: Vec<String>,
     /// How to read CSV files.
     pub csv: crate::drivers::vector::csv::CsvOptions,
+    /// A rectangle `(min_x, min_y, max_x, max_y)` in the layer's CRS: drivers that index their
+    /// features (GeoParquet's bounding-box covering column and row group statistics) may skip
+    /// those whose bounding box is outside it. Callers still filter the features they get.
+    pub spatial_filter: Option<(f64, f64, f64, f64)>,
 }
 
 /// Opens a dataset, raster or vector, detecting its format.

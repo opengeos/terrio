@@ -35,16 +35,29 @@ struct Column {
     field_type: FieldType,
 }
 
-/// Reads a GeoParquet (or plain Parquet) file.
-pub fn read(path: &str) -> Result<Layer> {
+/// Reads a GeoParquet file, skipping the features whose bounding box is outside `bbox`
+/// `(min_x, min_y, max_x, max_y)`: whole row groups by the statistics of the bounding-box
+/// covering column, then rows by its values (or by their geometries without one). Feature ids
+/// stay the row numbers in the file, as in GDAL.
+pub fn read_filtered(path: &str, bbox: Option<(f64, f64, f64, f64)>) -> Result<Layer> {
     let name = std::path::Path::new(path).file_stem().and_then(|s| s.to_str()).unwrap_or("layer");
-    parse(std::fs::read(path)?, name)
+    parse_source(|| Ok(std::fs::File::open(path)?), name, bbox)
 }
 
 /// Parses a GeoParquet (or plain Parquet) file held in memory. `name` names the layer.
 pub fn parse(bytes: Vec<u8>, name: &str) -> Result<Layer> {
+    let bytes = bytes::Bytes::from(bytes);
+    parse_source(|| Ok(bytes.clone()), name, None)
+}
+
+/// Parses a file whose bytes `open` gives (once, or twice with a filter).
+fn parse_source<R: parquet::file::reader::ChunkReader + 'static>(
+    open: impl Fn() -> Result<R>,
+    name: &str,
+    bbox: Option<(f64, f64, f64, f64)>,
+) -> Result<Layer> {
     let err = |e: &dyn std::fmt::Display| Error::InvalidData(format!("Parquet: {e}"));
-    let builder = ParquetRecordBatchReaderBuilder::try_new(bytes::Bytes::from(bytes)).map_err(|e| err(&e))?;
+    let builder = ParquetRecordBatchReaderBuilder::try_new(open()?).map_err(|e| err(&e))?;
     let geo: Value = builder
         .metadata()
         .file_metadata()
@@ -73,6 +86,27 @@ pub fn parse(bytes: Vec<u8>, name: &str) -> Result<Layer> {
         }
     }
 
+    // The covering column's members, by top-level column and member index.
+    let covering: Option<[(usize, usize); 4]> = (|| {
+        let cov = col["covering"]["bbox"].as_object()?;
+        let member = |k: &str| -> Option<(usize, usize)> {
+            let p = cov.get(k)?.as_array()?;
+            let (c, m) = (p.first()?.as_str()?, p.get(1)?.as_str()?);
+            let ci = schema.fields().iter().position(|f| f.name() == c)?;
+            let DataType::Struct(members) = schema.field(ci).data_type() else { return None };
+            Some((ci, members.iter().position(|f| f.name() == m)?))
+        };
+        Some([member("xmin")?, member("ymin")?, member("xmax")?, member("ymax")?])
+    })();
+
+    // With a filter: the row groups whose statistics overlap it, then the rows that do.
+    let mut builder = builder;
+    let mut fids: Option<Vec<u64>> = None;
+    if let Some(rect) = bbox {
+        let (groups, selection, kept) = select_rows(&builder, open()?, covering, geom_index, &encoding, rect)?;
+        builder = builder.with_row_groups(groups).with_row_selection(selection);
+        fids = Some(kept);
+    }
     let reader = builder.with_batch_size(65536).build().map_err(|e| err(&e))?;
     let mut fid = 0u64;
     for batch in reader {
@@ -82,7 +116,8 @@ pub fn parse(bytes: Vec<u8>, name: &str) -> Result<Layer> {
         for row in 0..batch.num_rows() {
             let geometry = geoms.as_ref().and_then(|g| geometry(g.as_ref(), row, &encoding));
             let attributes = columns.iter().zip(&arrays).map(|(c, a)| value(a.as_ref(), row, c.field_type)).collect();
-            layer.push(Feature { fid, geometry, attributes });
+            let id = fids.as_ref().and_then(|f| f.get(fid as usize).copied()).unwrap_or(fid);
+            layer.push(Feature { fid: id, geometry, attributes });
             fid += 1;
         }
     }
@@ -96,20 +131,131 @@ pub fn parse(bytes: Vec<u8>, name: &str) -> Result<Layer> {
                 s.apply_to_layer(&mut layer);
             }
         }
-        Some(crs) => {
-            if let Some(code) = projjson_epsg(crs) {
-                match SpatialRef::from_epsg(code) {
-                    Ok(s) => s.apply_to_layer(&mut layer),
-                    Err(_) => layer.set_crs_epsg(Some(code)),
+        Some(crs) => match projjson_epsg(crs) {
+            Some(code) => match SpatialRef::from_epsg(code) {
+                Ok(s) => s.apply_to_layer(&mut layer),
+                Err(_) => layer.set_crs_epsg(Some(code)),
+            },
+            // A CRS without an EPSG code: through WKT.
+            None => {
+                if let Some(wkt) = super::projjson::to_wkt1(crs) {
+                    SpatialRef::from_wkt(&wkt).apply_to_layer(&mut layer);
                 }
             }
-        }
+        },
     }
     if let Some(types) = col["geometry_types"].as_array() {
         let types: Vec<&str> = types.iter().filter_map(Value::as_str).map(|t| t.trim_end_matches(" Z").trim_end_matches(" M")).collect();
         layer.geom_type = declared_type(&types);
     }
     Ok(layer)
+}
+
+/// The row groups and rows a bounding-box filter keeps, with the file row numbers of the kept
+/// rows. Row groups are kept when the statistics of the covering column overlap the rectangle
+/// (or are missing); rows when their covering bounding box (or else their geometry's) does.
+#[allow(clippy::type_complexity)]
+fn select_rows<T: parquet::file::reader::ChunkReader + 'static>(
+    builder: &ParquetRecordBatchReaderBuilder<T>,
+    input: T,
+    covering: Option<[(usize, usize); 4]>,
+    geom_index: Option<usize>,
+    encoding: &str,
+    rect: (f64, f64, f64, f64),
+) -> Result<(Vec<usize>, parquet::arrow::arrow_reader::RowSelection, Vec<u64>)> {
+    use parquet::arrow::ProjectionMask;
+    use parquet::arrow::arrow_reader::{RowSelection, RowSelector};
+    use parquet::file::statistics::Statistics as S;
+    let err = |e: &dyn std::fmt::Display| Error::InvalidData(format!("Parquet: {e}"));
+    let meta = builder.metadata().clone();
+    let descr = meta.file_metadata().schema_descr();
+    let schema = builder.schema().clone();
+    // The leaf (Parquet column) index of a covering member.
+    let leaf = |(c, m): (usize, usize)| -> Option<usize> {
+        let DataType::Struct(members) = schema.field(c).data_type() else { return None };
+        let path = [schema.field(c).name().as_str(), members[m].name().as_str()];
+        (0..descr.num_columns()).find(|&i| descr.column(i).path().parts() == path)
+    };
+    let leaves: Option<[usize; 4]> = covering.and_then(|cov| Some([leaf(cov[0])?, leaf(cov[1])?, leaf(cov[2])?, leaf(cov[3])?]));
+    let stat = |rg: usize, leaf: usize, max: bool| -> Option<f64> {
+        match meta.row_group(rg).column(leaf).statistics()? {
+            S::Double(s) => if max { s.max_opt() } else { s.min_opt() }.copied(),
+            S::Float(s) => if max { s.max_opt() } else { s.min_opt() }.map(|v| *v as f64),
+            _ => None,
+        }
+    };
+    let (fxmin, fymin, fxmax, fymax) = rect;
+    let mut groups = Vec::new();
+    let mut first_rows = Vec::new();
+    let mut start = 0u64;
+    for rg in 0..meta.num_row_groups() {
+        let n = meta.row_group(rg).num_rows() as u64;
+        let outside = leaves.is_some_and(|l| {
+            stat(rg, l[0], false).is_some_and(|v| v > fxmax)
+                || stat(rg, l[1], false).is_some_and(|v| v > fymax)
+                || stat(rg, l[2], true).is_some_and(|v| v < fxmin)
+                || stat(rg, l[3], true).is_some_and(|v| v < fymin)
+        });
+        if !outside {
+            groups.push(rg);
+            first_rows.push(start);
+        }
+        start += n;
+    }
+    // Read only the covering column (or the geometry) of those row groups to choose the rows.
+    let mask = match (leaves, geom_index) {
+        (Some(l), _) => ProjectionMask::leaves(descr, l),
+        (None, Some(g)) => ProjectionMask::roots(descr, [g]),
+        (None, None) => ProjectionMask::all(),
+    };
+    let src = ParquetRecordBatchReaderBuilder::new_with_metadata(
+        input,
+        parquet::arrow::arrow_reader::ArrowReaderMetadata::try_new(meta.clone(), Default::default()).map_err(|e| err(&e))?,
+    );
+    let reader = src.with_row_groups(groups.clone()).with_projection(mask).with_batch_size(65536).build().map_err(|e| err(&e))?;
+    let mut keep: Vec<bool> = Vec::new();
+    for batch in reader {
+        let batch = batch.map_err(|e| err(&e))?;
+        let f64s = |a: &ArrayRef| -> Vec<f64> { (0..a.len()).map(|i| json_value(a.as_ref(), i).as_f64().unwrap_or(f64::NAN)).collect() };
+        if leaves.is_some() {
+            let s = batch.column(0).as_struct();
+            let cov = covering.unwrap_or_default();
+            let DataType::Struct(members) = schema.field(cov[0].0).data_type() else { continue };
+            let col = |m: usize| s.column_by_name(members[m].name()).map(f64s).unwrap_or_default();
+            let (x0, y0, x1, y1) = (col(cov[0].1), col(cov[1].1), col(cov[2].1), col(cov[3].1));
+            for i in 0..batch.num_rows() {
+                let null = s.is_null(i);
+                keep.push(!null && x0[i] <= fxmax && x1[i] >= fxmin && y0[i] <= fymax && y1[i] >= fymin);
+            }
+        } else if geom_index.is_some() {
+            let g = batch.column(0);
+            for i in 0..batch.num_rows() {
+                let b = geometry(g.as_ref(), i, encoding).and_then(|g| g.bbox());
+                keep.push(b.is_some_and(|b| b.min_x <= fxmax && b.max_x >= fxmin && b.min_y <= fymax && b.max_y >= fymin));
+            }
+        } else {
+            keep.extend(std::iter::repeat_n(true, batch.num_rows()));
+        }
+    }
+    // Run-length selectors, and the file row numbers of the kept rows.
+    let mut selectors: Vec<RowSelector> = Vec::new();
+    let mut kept = Vec::new();
+    let mut i = 0usize;
+    for (g, &rg) in groups.iter().enumerate() {
+        let n = meta.row_group(rg).num_rows() as usize;
+        for r in 0..n {
+            let k = keep.get(i).copied().unwrap_or(false);
+            if k {
+                kept.push(first_rows[g] + r as u64);
+            }
+            match selectors.last_mut() {
+                Some(s) if s.skip != k => s.row_count += 1,
+                _ => selectors.push(if k { RowSelector::select(1) } else { RowSelector::skip(1) }),
+            }
+            i += 1;
+        }
+    }
+    Ok((groups, RowSelection::from(selectors), kept))
 }
 
 /// Adds the fields of a column, flattening structs as GDAL does.
@@ -424,6 +570,9 @@ pub fn to_bytes(layer: &Layer) -> Result<Vec<u8>> {
     let schema = Arc::new(Schema::new(schema_fields));
     let props = WriterProperties::builder()
         .set_compression(parquet::basic::Compression::SNAPPY)
+        // GDAL's default row group size: with the covering column's statistics, readers skip
+        // the row groups outside a bounding-box filter.
+        .set_max_row_group_row_count(Some(BATCH))
         .set_key_value_metadata(Some(vec![parquet::file::metadata::KeyValue::new("geo".into(), geo.to_string())]))
         .build();
     let mut buf = Vec::new();
@@ -482,14 +631,18 @@ fn geo_metadata(layer: &Layer) -> Value {
     if let Some(b) = bounds {
         col["bbox"] = json!(b);
     }
-    // A missing `crs` means OGC:CRS84 (longitude/latitude on WGS 84) and `null` an unknown CRS.
-    // The specification asks for PROJJSON, which terrio cannot produce; GDAL and PROJ-based readers
-    // also accept WKT.
+    // A missing `crs` means OGC:CRS84 (longitude/latitude on WGS 84) and `null` an unknown CRS;
+    // others are PROJJSON, as the specification asks (WKT, which GDAL and PROJ-based readers
+    // also accept, for what cannot be converted).
     let srs = SpatialRef::from_layer(layer);
     if srs.is_unknown() {
         col["crs"] = Value::Null;
     } else if super::trusted_epsg(layer) != Some(4326) {
-        col["crs"] = super::output_wkt(layer).map_or(Value::Null, Value::String);
+        let wkt = super::output_wkt(layer);
+        col["crs"] = match wkt.as_deref().and_then(|w| super::projjson::from_wkt1(w, super::trusted_epsg(layer))) {
+            Some(j) => j,
+            None => wkt.map_or(Value::Null, Value::String),
+        };
     }
     json!({"version": "1.1.0", "primary_column": "geometry", "columns": {"geometry": col}})
 }
@@ -673,7 +826,7 @@ mod tests {
         let file = tempfile::NamedTempFile::new().unwrap();
         let path = file.path().to_str().unwrap();
         write(&l, path).unwrap();
-        let back = read(path).unwrap();
+        let back = read_filtered(path, None).unwrap();
         assert_eq!(back.len(), 2);
         assert_eq!(back.crs_epsg(), Some(32633));
         assert_eq!(back.geom_type, Some(GeometryType::Point));

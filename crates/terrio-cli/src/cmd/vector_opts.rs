@@ -64,6 +64,14 @@ impl VectorArgs {
             || self.overwrite
     }
 
+    /// The `--spat` rectangle, for the drivers of `input` that can skip features outside it
+    /// while reading (GeoParquet), when it is in the layer's CRS.
+    pub fn spatial_hint(&self, input: &str) -> Option<(f64, f64, f64, f64)> {
+        let v = self.spat.as_deref()?;
+        let parquet = terrio::formats::VectorDriver::for_extension(input) == Some(terrio::formats::VectorDriver::Parquet);
+        (parquet && self.spat_srs.is_none() && self.s_srs.is_none() && v.len() == 4).then(|| (v[0], v[1], v[2], v[3]))
+    }
+
     /// The library options, with `t_srs` as the reprojection target.
     pub fn to_options(&self, t_srs: Option<SpatialRef>) -> terrio::Result<VectorTranslateOptions> {
         let srs = |s: &Option<String>| s.as_deref().map(SpatialRef::parse).transpose();

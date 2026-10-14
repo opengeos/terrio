@@ -11,6 +11,7 @@ pub mod gpx;
 pub mod kml;
 pub mod mapinfo;
 pub mod osm;
+pub(crate) mod projjson;
 pub mod shapefile;
 pub mod sqlite;
 pub mod topojson;
@@ -28,7 +29,7 @@ pub(crate) fn read(path: &str, driver: VectorDriver, options: &VectorOpenOptions
         VectorDriver::FlatGeobuf => vec![flatgeobuf::read(path)?],
         VectorDriver::GeoJSON => vec![geojson::read(path)?],
         VectorDriver::CSV => vec![csv::read(path, &options.csv)?],
-        VectorDriver::Parquet => vec![geoparquet::read(path)?],
+        VectorDriver::Parquet => vec![geoparquet::read_filtered(path, options.spatial_filter)?],
         VectorDriver::Shapefile => vec![shapefile::read(path)?],
         VectorDriver::GML => gml::read(path)?,
         VectorDriver::GPX => gpx::read(path)?,

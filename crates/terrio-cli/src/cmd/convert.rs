@@ -78,10 +78,11 @@ pub fn run(a: Args) -> terrio::Result<()> {
             }
         };
         Dataset::Raster(r.read_window(window, &opts)?)
-    } else if a.layers.is_empty() && a.open_options.is_empty() {
+    } else if a.layers.is_empty() && a.open_options.is_empty() && a.vector.spatial_hint(&a.input).is_none() {
         super::quiet(|| terrio::open(&a.input))?
     } else {
-        let mut options = VectorOpenOptions { layers: a.layers.clone(), ..Default::default() };
+        let spatial_filter = a.vector.spatial_hint(&a.input);
+        let mut options = VectorOpenOptions { layers: a.layers.clone(), spatial_filter, ..Default::default() };
         for (k, v) in key_values(&a.open_options)? {
             if !options.csv.set(k, v)? {
                 return Err(terrio::Error::InvalidArgument(format!("unknown open option '{k}'")));
