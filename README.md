@@ -50,6 +50,9 @@ terrio dem color-relief dem.tif colors.txt relief.tif --alpha
 terrio calc -A red.tif -B nir.tif --calc "(B - A * 1.0) / (B + A * 1.0)" --type Float32 ndvi.tif  # gdal_calc.py
 terrio proximity roads.tif dist.tif --values 1 --distunits GEO --maxdist 5000  # like gdal_proximity.py
 terrio sieve landcover.tif clean.tif --st 10 -8                            # like gdal_sieve.py
+terrio info "https://earth-search.aws.element84.com/v1/search?collections=sentinel-2-l2a&bbox=..."  # STAC: footprints, mosaics
+terrio convert 'STACIT:"https://.../search?...":asset=red' red.tif --srcwin 0 0 1024 1024  # like GDAL's STACIT
+terrio convert dem.tif dem.zarr --co GEOREFERENCING_CONVENTION=SPATIAL_PROJ --co OVERVIEW_LEVELS=AUTO  # GeoZarr
 terrio formats                                   # list the drivers
 
 # Point clouds: LAS 1.0-1.4 (formats 0-10, extra bytes), LAZ, COPC (read in place, local or remote)
@@ -173,6 +176,8 @@ cargo test -- --ignored                                # tests that read public 
 python scripts/compare_vector_ops_with_gdal.py ../terrio-data  # convert options, rasterize, polygonize
 python scripts/compare_ops_with_gdal.py ../terrio-data # compare translate, warp and mosaic with GDAL's tools
 python scripts/compare_dem_calc_with_gdal.py ../terrio-data  # dem, calc, proximity and sieve vs GDAL
+python scripts/compare_stac_geozarr.py stac            # STAC footprints and STACIT mosaics vs GDAL (Earth Search)
+python scripts/compare_stac_geozarr.py geozarr ../terrio-data  # GeoZarr stores read by GDAL and rioxarray
 python scripts/compare_pointclouds.py ../terrio-data   # point clouds: every value vs laspy, headers, COPC
                                                        # queries, grids and reprojection vs PDAL
 cd python && TERRIO_TEST_DATA=../../terrio-data pytest # Python bindings, arrays compared with osgeo.gdal's

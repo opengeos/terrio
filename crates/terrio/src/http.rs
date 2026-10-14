@@ -339,6 +339,12 @@ pub(crate) fn download(remote: &Remote, path: &std::path::Path) -> Result<()> {
     Ok(())
 }
 
+/// Fetches a whole remote file into memory (a STAC document, for instance).
+pub(crate) fn get(remote: &Remote) -> Result<Vec<u8>> {
+    let mut client = Client::new(remote, HttpOptions::from_env());
+    Ok(client.fetch(None)?.data)
+}
+
 /// A remote file read in place: `Read` and `Seek` over HTTP range requests, with a block cache.
 ///
 /// Clones share the cache and connection, each with its own position.

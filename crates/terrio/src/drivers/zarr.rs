@@ -6,7 +6,21 @@
 //! and zstd compressors, and byte or bit shuffling), Fortran order (v2) and transposition (v3),
 //! and Zarr v3 sharding. Not supported: v2 filters.
 //!
-//! Rasters are written as GDAL writes them, in Zarr v2 (the default) or v3.
+//! GeoZarr: the [`spatial`](https://github.com/zarr-conventions/spatial),
+//! [`proj`](https://github.com/zarr-conventions/proj) and
+//! [`multiscales`](https://github.com/zarr-conventions/multiscales) Zarr conventions are read
+//! (on the array, its group, or the group holding the multiscales, as GDAL reads them), with the
+//! lower-resolution levels of a multiscales layout as overviews, read by window
+//! ([`crate::LazyRaster`]).
+//!
+//! Rasters are written as GDAL writes them, in Zarr v2 (the default) or v3, with GDAL's
+//! `GEOREFERENCING_CONVENTION` creation option: `GDAL` (the default: `_CRS` and X/Y coordinate
+//! arrays), `SPATIAL_PROJ` (GeoZarr's `spatial:` and `proj:` attributes besides those, which GDAL
+//! 3.12 and earlier read) or `CF` (a `spatial_ref` grid mapping variable, as rioxarray writes it). With
+//! `OVERVIEW_LEVELS=2,4,...` (or `AUTO`, halving until 256 pixels), lower resolutions are written
+//! in `ovr_<N>x` groups described by a `multiscales` layout, as GDAL's overview builder lays
+//! them out, resampled with `OVERVIEW_RESAMPLING` (`NEAREST` by default; any `terrio translate`
+//! method).
 
 use super::common;
 use crate::formats::RasterDriver;
@@ -604,29 +618,163 @@ fn group_arrays(dir: &Path) -> Vec<(String, Array)> {
 const X_NAMES: &[&str] = &["x", "lon", "longitude", "easting"];
 const Y_NAMES: &[&str] = &["y", "lat", "latitude", "northing"];
 
+const SPATIAL_UUID: &str = "689b58e2-cf7b-45e0-9fff-9cfc0883d6b4";
+const PROJ_UUID: &str = "f17cb550-5864-4468-aeb7-f3180cfb622f";
+const MULTISCALES_UUID: &str = "d35379db-88df-4056-af3a-620245f8e347";
+
+/// A group's attributes (v2 `.zattrs`, v3 `zarr.json`).
+fn group_attrs(dir: &Path) -> Value {
+    if let Some(v) = read_json(&dir.join(".zattrs")) {
+        return v;
+    }
+    read_json(&dir.join("zarr.json")).map(|m| m["attributes"].clone()).filter(Value::is_object).unwrap_or(json!({}))
+}
+
+fn is_group(dir: &Path) -> bool {
+    dir.join(".zgroup").is_file() || read_json(&dir.join("zarr.json")).is_some_and(|m| m["node_type"] == "group")
+}
+
+/// A `multiscales` layout: the group holding it and its levels.
+struct Multiscales {
+    group: PathBuf,
+    layout: Vec<Value>,
+}
+
+fn multiscales(dir: &Path) -> Option<Multiscales> {
+    let attrs = group_attrs(dir);
+    let layout = attrs["multiscales"]["layout"].as_array().filter(|l| !l.is_empty())?.clone();
+    Some(Multiscales { group: dir.to_path_buf(), layout })
+}
+
+/// The array a layout level's `asset` names: an array, or the array named `name` (by default the
+/// first of two or more dimensions) in a group.
+fn layout_array(ms: &Multiscales, level: &Value, name: Option<&str>) -> Option<PathBuf> {
+    let p = ms.group.join(level["asset"].as_str()?);
+    if is_group(&p) {
+        return match name {
+            Some(n) => Some(p.join(n)).filter(|a| read_array(a).is_ok()),
+            None => group_arrays(&p).into_iter().find(|(_, a)| a.shape.len() >= 2).map(|(n, _)| p.join(n)),
+        };
+    }
+    read_array(&p).is_ok().then_some(p)
+}
+
+/// The raster array of a store or array path, its group, and the multiscales layout it is the
+/// base of.
+fn locate(path: &Path) -> Result<(Array, Option<PathBuf>, Option<Multiscales>)> {
+    if let Ok(a) = read_array(path) {
+        let group = path.parent().map(Path::to_path_buf);
+        // The multiscales layout of the array's group, or of the group above (GDAL's lookup).
+        let ms = group.as_deref().and_then(|g| multiscales(g).or_else(|| g.parent().and_then(multiscales)));
+        return Ok((a, group, ms));
+    }
+    if let Some(ms) = multiscales(path)
+        && let Some(base) = ms.layout.first().and_then(|l| layout_array(&ms, l, None))
+        && let Ok(a) = read_array(&base)
+    {
+        return Ok((a, base.parent().map(Path::to_path_buf), Some(ms)));
+    }
+    let arrays = group_arrays(path);
+    // The raster: the first array of two or more dimensions.
+    let (_, a) = arrays
+        .into_iter()
+        .find(|(_, a)| a.shape.len() >= 2)
+        .ok_or_else(|| bad(format!("{}: no array of two or more dimensions", path.display())))?;
+    let ms = multiscales(path);
+    Ok((a, Some(path.to_path_buf()), ms))
+}
+
+/// GeoZarr georeferencing: the spatial dimensions `(y, x)`, geotransform and CRS, from the first
+/// attribute set (most specific first) that has each.
+#[derive(Debug, Default, PartialEq)]
+struct GeoZarr {
+    dims: Option<(String, String)>,
+    gt: Option<[f64; 6]>,
+    crs: Option<CrsInfo>,
+}
+
+fn geozarr(attrs: &[&Value], shape: impl Fn(&str, &str) -> Option<(usize, usize)>) -> GeoZarr {
+    let mut g = GeoZarr::default();
+    let first = |key: &str| attrs.iter().map(|a| &a[key]).find(|v| !v.is_null());
+    if let Some(d) = first("spatial:dimensions").and_then(Value::as_array).filter(|d| d.len() >= 2) {
+        let n = d.len();
+        if let (Some(y), Some(x)) = (d[n - 2].as_str(), d[n - 1].as_str()) {
+            g.dims = Some((y.to_string(), x.to_string()));
+        }
+    }
+    let node = first("spatial:registration").and_then(Value::as_str) == Some("node");
+    let affine = first("spatial:transform_type").and_then(Value::as_str).is_none_or(|t| t == "affine");
+    let t: Option<Vec<f64>> = first("spatial:transform").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_f64).collect());
+    if let Some(t) = t.filter(|t| t.len() == 6 && affine && t[1] == 0.0 && t[3] == 0.0) {
+        let mut gt = [t[2], t[0], 0.0, t[5], 0.0, t[4]];
+        if node {
+            // From pixel centres to GDAL's corner convention.
+            gt[0] -= 0.5 * t[0];
+            gt[3] -= 0.5 * t[4];
+        }
+        g.gt = Some(gt);
+    } else if let Some(b) = first("spatial:bbox").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_f64).collect::<Vec<_>>())
+        && b.len() == 4
+        && let Some((y, x)) = &g.dims
+        && let Some((h, w)) = shape(y, x)
+    {
+        let (w, h) = if node { (w.saturating_sub(1).max(1), h.saturating_sub(1).max(1)) } else { (w, h) };
+        let (rx, ry) = ((b[2] - b[0]) / w as f64, (b[3] - b[1]) / h as f64);
+        let (x0, y0) = if node { (b[0] - rx / 2.0, b[3] + ry / 2.0) } else { (b[0], b[3]) };
+        g.gt = Some([x0, rx, 0.0, y0, 0.0, -ry]);
+    }
+    g.crs = attrs.iter().find_map(|a| proj_crs(a));
+    g
+}
+
+/// The CRS of `proj:` attributes (`proj:code`, `proj:wkt2`, `proj:projjson`, or the EOPF
+/// samples' `proj:epsg`).
+fn proj_crs(a: &Value) -> Option<CrsInfo> {
+    use crate::crs::SpatialRef;
+    let s = if let Some(code) = a["proj:code"].as_str() {
+        SpatialRef::parse(code).ok()?
+    } else if let Some(code) = a["proj:epsg"].as_u64() {
+        SpatialRef::from_epsg(code as u32).ok()?
+    } else if let Some(w) = a["proj:wkt2"].as_str() {
+        SpatialRef::from_wkt(w)
+    } else if a["proj:projjson"].is_object() {
+        let v = &a["proj:projjson"];
+        match crate::drivers::vector::projjson::epsg(v) {
+            Some(code) => SpatialRef::from_epsg(code).ok()?,
+            None => SpatialRef::from_wkt(&crate::drivers::vector::projjson::to_wkt1(v)?),
+        }
+    } else {
+        return None;
+    };
+    Some(s.to_crs_info())
+}
+
 /// Reads a Zarr store or array as a raster.
 pub(crate) fn read(path: &Path) -> Result<RasterDataset> {
     let path = path.to_path_buf();
-    let (array, group) = match read_array(&path) {
-        Ok(a) => (a, path.parent().map(Path::to_path_buf)),
-        Err(_) => {
-            let arrays = group_arrays(&path);
-            // The raster: the first array of two or more dimensions.
-            let (_, a) = arrays
-                .into_iter()
-                .find(|(_, a)| a.shape.len() >= 2)
-                .ok_or_else(|| bad(format!("{}: no array of two or more dimensions", path.display())))?;
-            (a, Some(path.clone()))
-        }
-    };
+    let (array, group, ms) = locate(&path)?;
     let nd = array.shape.len();
     if !(2..=3).contains(&nd) {
         return Err(Error::Unsupported(format!("Zarr arrays of {nd} dimensions are not supported as rasters")));
     }
+    // GeoZarr attributes: the array's, its group's, its multiscales level's and the multiscales
+    // group's.
+    let group_attrs_v = group.as_deref().map(group_attrs).unwrap_or(json!({}));
+    let level_item = ms.as_ref().and_then(|m| {
+        m.layout.iter().find(|l| layout_array(m, l, array.dir.file_name().and_then(|n| n.to_str())).as_deref() == Some(array.dir.as_path()))
+    });
+    let ms_attrs = ms.as_ref().map(|m| group_attrs(&m.group)).unwrap_or(json!({}));
+    let null = Value::Null;
+    let attr_sets: Vec<&Value> = vec![&array.attrs, &group_attrs_v, level_item.unwrap_or(&null), &ms_attrs];
+    let dim_size = |name: &str| array.dims.iter().position(|d| d == name).map(|i| array.shape[i]);
+    let geo = geozarr(&attr_sets, |y, x| Some((dim_size(y)?, dim_size(x)?)));
     let lower: Vec<String> = array.dims.iter().map(|d| d.to_ascii_lowercase()).collect();
     let find = |names: &[&str], default: usize| lower.iter().position(|d| names.contains(&d.as_str())).unwrap_or(default);
-    let xd = find(X_NAMES, nd - 1);
-    let yd = find(Y_NAMES, nd - 2);
+    let by_name = |n: &str| array.dims.iter().position(|d| d == n);
+    let (xd, yd) = match geo.dims.as_ref().and_then(|(y, x)| Some((by_name(x)?, by_name(y)?))) {
+        Some(d) => d,
+        None => (find(X_NAMES, nd - 1), find(Y_NAMES, nd - 2)),
+    };
     let bd = (0..nd).find(|d| *d != xd && *d != yd);
     let (cols, rows) = (array.shape[xd], array.shape[yd]);
     let bands = bd.map(|d| array.shape[d]).unwrap_or(1);
@@ -663,15 +811,19 @@ pub(crate) fn read(path: &Path) -> Result<RasterDataset> {
     };
 
     // Georeferencing: a grid mapping variable (xarray), or X/Y coordinate arrays (GDAL).
-    let mut gt = None;
-    let mut crs = None;
+    let mut gt = geo.gt;
+    let mut crs = geo.crs;
     let sibling = |name: &str| group.as_ref().and_then(|g| read_array(&g.join(name)).ok());
     if let Some(gm) = array.attrs["grid_mapping"].as_str().and_then(sibling) {
-        crs = gm.attrs["crs_wkt"].as_str().or(gm.attrs["spatial_ref"].as_str()).and_then(common::crs_from_text);
-        gt = gm.attrs["GeoTransform"].as_str().and_then(|s| {
-            let v: Vec<f64> = s.split_whitespace().filter_map(|x| x.parse().ok()).collect();
-            <[f64; 6]>::try_from(v).ok()
-        });
+        if crs.is_none() {
+            crs = gm.attrs["crs_wkt"].as_str().or(gm.attrs["spatial_ref"].as_str()).and_then(common::crs_from_text);
+        }
+        if gt.is_none() {
+            gt = gm.attrs["GeoTransform"].as_str().and_then(|s| {
+                let v: Vec<f64> = s.split_whitespace().filter_map(|x| x.parse().ok()).collect();
+                <[f64; 6]>::try_from(v).ok()
+            });
+        }
     }
     if gt.is_none() {
         let coord = |d: usize| -> Option<Vec<f64>> {
@@ -701,6 +853,94 @@ pub(crate) fn read(path: &Path) -> Result<RasterDataset> {
         flip_rows(&mut raster);
     }
     Ok(RasterDataset { raster, driver: RasterDriver::Zarr, has_nodata: array.fill.is_some() })
+}
+
+/// The spatial axes `(x, y)` of an array: from `spatial:dimensions` in `attrs`, or from the
+/// dimension names.
+fn axes(a: &Array, attrs: &[&Value]) -> (usize, usize) {
+    let nd = a.shape.len();
+    let geo = geozarr(attrs, |_, _| None);
+    let by_name = |n: &str| a.dims.iter().position(|d| d == n);
+    if let Some(d) = geo.dims.as_ref().and_then(|(y, x)| Some((by_name(x)?, by_name(y)?))) {
+        return d;
+    }
+    let lower: Vec<String> = a.dims.iter().map(|d| d.to_ascii_lowercase()).collect();
+    let find = |names: &[&str], default: usize| lower.iter().position(|d| names.contains(&d.as_str())).unwrap_or(default);
+    (find(X_NAMES, nd - 1), find(Y_NAMES, nd - 2))
+}
+
+/// The lower-resolution levels of a multiscales layout the raster at `path` is the base of:
+/// `(array, width, height)`, largest first.
+pub(crate) fn overview_levels(path: &Path) -> Vec<(PathBuf, usize, usize)> {
+    let Ok((base, group, Some(ms))) = locate(path) else { return Vec::new() };
+    let name = base.dir.file_name().and_then(|n| n.to_str()).map(str::to_string);
+    let gattrs = group.as_deref().map(group_attrs).unwrap_or(json!({}));
+    let mattrs = group_attrs(&ms.group);
+    let (xd, yd) = axes(&base, &[&base.attrs, &gattrs, &mattrs]);
+    let (bw, bh) = (base.shape[xd], base.shape[yd]);
+    let mut out: Vec<(PathBuf, usize, usize)> = Vec::new();
+    for level in &ms.layout {
+        let Some(dir) = layout_array(&ms, level, name.as_deref()).or_else(|| layout_array(&ms, level, None)) else { continue };
+        if dir == base.dir || out.iter().any(|(d, _, _)| *d == dir) {
+            continue;
+        }
+        let Ok(a) = read_array(&dir) else { continue };
+        if a.shape.len() != base.shape.len() || a.data_type != base.data_type {
+            continue;
+        }
+        let (w, h) = (a.shape[xd], a.shape[yd]);
+        if w <= bw && h <= bh && (w, h) != (bw, bh) && w > 0 && h > 0 {
+            out.push((dir, w, h));
+        }
+    }
+    out.sort_by_key(|a| std::cmp::Reverse(a.1 * a.2));
+    out
+}
+
+/// A multiscales pyramid read by window: the base raster and its lower-resolution levels, each
+/// read when first needed.
+struct Pyramid {
+    base: RasterDataset,
+    levels: Vec<(PathBuf, usize, usize, Option<RasterDataset>)>,
+}
+
+impl crate::cog::WindowSource for Pyramid {
+    fn overviews(&self) -> Vec<(usize, usize)> {
+        self.levels.iter().map(|l| (l.1, l.2)).collect()
+    }
+
+    fn read(&mut self, level: usize, window: crate::Window, bands: &[usize]) -> Result<RasterData> {
+        let ds = if level == 0 {
+            &self.base
+        } else {
+            let l = self.levels.get_mut(level - 1).ok_or_else(|| bad(format!("no overview {}", level - 1)))?;
+            if l.3.is_none() {
+                l.3 = Some(read(&l.0)?);
+            }
+            l.3.as_ref().ok_or_else(|| bad("unreachable"))?
+        };
+        if !window.fits(ds.raster.cols, ds.raster.rows) {
+            return Err(bad(format!("{} is {}x{}, not as its multiscales layout says", ds.raster.cols, ds.raster.rows, level)));
+        }
+        Ok(crate::cog::cut(&ds.raster, window, bands))
+    }
+}
+
+/// Opens a Zarr store with a multiscales layout lazily, its levels as overviews. `None` when the
+/// store has no lower-resolution levels.
+pub(crate) fn open_lazy(path: &Path) -> Option<Result<crate::LazyRaster>> {
+    let levels = overview_levels(path);
+    if levels.is_empty() {
+        return None;
+    }
+    let base = match super::read(path.to_str()?)? {
+        Ok(b) => b,
+        Err(e) => return Some(Err(e)),
+    };
+    let mut header = base.clone();
+    header.raster.data = RasterData::new_filled(base.raster.data_type, 0, 0.0);
+    let levels = levels.into_iter().map(|(d, w, h)| (d, w, h, None)).collect();
+    Some(Ok(crate::LazyRaster::from_source(header, Box::new(Pyramid { base, levels }))))
 }
 
 /// Turns a south-up raster (latitudes increasing with the row) north-up.
@@ -880,6 +1120,8 @@ fn write_array(dir: &Path, a: &NewArray, compression: Option<&str>, version: Ver
         }
         let names: Vec<String> = idx.iter().map(|i| i.to_string()).collect();
         let file = match version {
+            // A scalar's one chunk is `0` (v2) or `c` (v3).
+            Version::V2 if nd == 0 => dir.join("0"),
             Version::V2 => dir.join(names.join(".")),
             Version::V3 => {
                 let mut p = dir.join("c");
@@ -949,53 +1191,120 @@ fn write_array(dir: &Path, a: &NewArray, compression: Option<&str>, version: Ver
     Ok(docs)
 }
 
-/// Writes a raster as a Zarr group, as GDAL does: the array (named after the store, with
-/// dimensions `[Band,] Y, X`), X and Y coordinate arrays, the CRS in `_CRS`, and (v2) consolidated
-/// metadata. `format` is GDAL's `FORMAT` creation option: `ZARR_V2` (the default) or `ZARR_V3`.
-pub(crate) fn write(r: &Raster, nodata: Option<f64>, path: &Path, compression: Option<&str>, format: Option<&str>) -> Result<()> {
-    let version = match format.map(str::to_ascii_uppercase).as_deref() {
-        None | Some("ZARR_V2") | Some("V2") | Some("2") => Version::V2,
-        Some("ZARR_V3") | Some("V3") | Some("3") => Version::V3,
-        Some(other) => return Err(Error::InvalidArgument(format!("Zarr format '{other}' is not supported (ZARR_V2, ZARR_V3)"))),
-    };
-    // Fail on an unknown compression before creating anything.
-    compressor(compression, version)?;
-    if path.exists() {
-        return Err(Error::InvalidArgument(format!("{} already exists", path.display())));
+/// How a written store records its georeferencing (GDAL's `GEOREFERENCING_CONVENTION`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Convention {
+    /// GDAL's: `_CRS`, X and Y coordinate arrays.
+    Gdal,
+    /// GeoZarr's `spatial:` and `proj:` conventions, besides the coordinate arrays.
+    SpatialProj,
+    /// CF: a `spatial_ref` grid mapping variable with `crs_wkt` and `GeoTransform` (rioxarray's).
+    Cf,
+}
+
+fn convention(name: &str, uuid: &str, what: &str) -> Value {
+    json!({
+        "schema_url": format!("https://raw.githubusercontent.com/zarr-conventions/{what}/refs/tags/v0.1/schema.json"),
+        "spec_url": format!("https://github.com/zarr-conventions/{what}/blob/v0.1/README.md"),
+        "uuid": uuid,
+        "name": name,
+        "description": match name {
+            "proj" => "Coordinate reference system information for geospatial data",
+            "spatial" => "Spatial coordinate information",
+            _ => "Multiscale layout of zarr datasets",
+        },
+    })
+}
+
+/// The `proj:` attributes of a CRS: its code, or its PROJJSON.
+fn proj_attrs(s: &crate::crs::SpatialRef, attrs: &mut Value) {
+    if let Some(code) = s.epsg {
+        attrs["proj:code"] = json!(format!("EPSG:{code}"));
+    } else if let Some(pj) = super::wkt::gdal_wkt(s).and_then(|w| crate::drivers::vector::projjson::from_wkt1(&w, None)) {
+        attrs["proj:projjson"] = pj;
     }
-    std::fs::create_dir_all(path)?;
-    let name = path.file_stem().and_then(|s| s.to_str()).unwrap_or("data").to_string();
-    let mut meta = serde_json::Map::new();
+}
+
+/// GeoZarr `spatial:` attributes of a raster whose spatial dimensions are `dims` (`[y, x]`).
+fn spatial_attrs(r: &Raster, dims: [&str; 2], attrs: &mut Value) {
+    let (x0, y1) = (r.x_min, r.y_max());
+    attrs["spatial:dimensions"] = json!(dims);
+    attrs["spatial:registration"] = json!("pixel");
+    attrs["spatial:transform_type"] = json!("affine");
+    attrs["spatial:transform"] = json!([r.cell_size_x, 0.0, x0, 0.0, -r.cell_size_y, y1]);
+    attrs["spatial:shape"] = json!([r.rows, r.cols]);
+    attrs["spatial:bbox"] = json!([x0, y1 - r.rows as f64 * r.cell_size_y, x0 + r.cols as f64 * r.cell_size_x, y1]);
+}
+
+/// Writes a group's metadata documents.
+fn write_group(dir: &Path, attrs: &Value, version: Version, meta: &mut serde_json::Map<String, Value>, prefix: &str) -> Result<()> {
+    std::fs::create_dir_all(dir)?;
     match version {
         Version::V2 => {
             let zgroup = json!({"zarr_format": 2});
-            std::fs::write(path.join(".zgroup"), serde_json::to_string_pretty(&zgroup).unwrap_or_default())?;
-            std::fs::write(path.join(".zattrs"), "{}")?;
-            meta.insert(".zgroup".into(), zgroup);
-            meta.insert(".zattrs".into(), json!({}));
+            std::fs::write(dir.join(".zgroup"), serde_json::to_string_pretty(&zgroup).unwrap_or_default())?;
+            std::fs::write(dir.join(".zattrs"), serde_json::to_string_pretty(attrs).unwrap_or_default())?;
+            meta.insert(format!("{prefix}.zgroup"), zgroup);
+            meta.insert(format!("{prefix}.zattrs"), attrs.clone());
         }
         Version::V3 => {
-            let group = json!({"zarr_format": 3, "node_type": "group", "attributes": {}});
-            std::fs::write(path.join("zarr.json"), serde_json::to_string_pretty(&group).unwrap_or_default())?;
+            let group = json!({"zarr_format": 3, "node_type": "group", "attributes": attrs});
+            std::fs::write(dir.join("zarr.json"), serde_json::to_string_pretty(&group).unwrap_or_default())?;
         }
     }
+    Ok(())
+}
 
+/// Writes a raster as the array `name` of the group `dir`, with its coordinate arrays (and grid
+/// mapping variable), adding their metadata to `meta` under `prefix`.
+#[allow(clippy::too_many_arguments)]
+fn write_level(
+    dir: &Path,
+    name: &str,
+    r: &Raster,
+    nodata: Option<f64>,
+    compression: Option<&str>,
+    version: Version,
+    conv: Convention,
+    meta: &mut serde_json::Map<String, Value>,
+    prefix: &str,
+) -> Result<()> {
+    let (xname, yname) = if conv == Convention::Cf { ("x", "y") } else { ("X", "Y") };
     let (shape, chunks, dims) = if r.bands == 1 {
-        (vec![r.rows, r.cols], vec![r.rows.min(256), r.cols.min(256)], json!(["Y", "X"]))
+        (vec![r.rows, r.cols], vec![r.rows.min(256), r.cols.min(256)], json!([yname, xname]))
     } else {
-        (vec![r.bands, r.rows, r.cols], vec![1, r.rows.min(256), r.cols.min(256)], json!(["Band", "Y", "X"]))
+        (vec![r.bands, r.rows, r.cols], vec![1, r.rows.min(256), r.cols.min(256)], json!(["Band", yname, xname]))
     };
     let mut attrs = json!({});
     let s = super::common::spatial_ref(&r.crs);
-    if !s.is_unknown() {
-        let mut c = serde_json::Map::new();
-        if let Some(w) = super::wkt::gdal_wkt(&s) {
-            c.insert("wkt".into(), json!(w));
+    match conv {
+        // GDAL's `_CRS` with GeoZarr too: GDAL 3.12 and earlier do not read `proj:`.
+        Convention::Gdal | Convention::SpatialProj => {
+            if !s.is_unknown() {
+                let mut c = serde_json::Map::new();
+                if let Some(w) = super::wkt::gdal_wkt(&s) {
+                    c.insert("wkt".into(), json!(w));
+                }
+                if let Some(code) = s.epsg {
+                    c.insert("url".into(), json!(format!("http://www.opengis.net/def/crs/EPSG/0/{code}")));
+                }
+                attrs["_CRS"] = Value::Object(c);
+            }
         }
-        if let Some(code) = s.epsg {
-            c.insert("url".into(), json!(format!("http://www.opengis.net/def/crs/EPSG/0/{code}")));
+        Convention::Cf => {
+            attrs["grid_mapping"] = json!("spatial_ref");
+            attrs["coordinates"] = json!("spatial_ref");
         }
-        attrs["_CRS"] = Value::Object(c);
+    }
+    if conv == Convention::SpatialProj {
+        let mut conventions = Vec::new();
+        if !s.is_unknown() {
+            conventions.push(convention("proj", PROJ_UUID, "proj"));
+            proj_attrs(&s, &mut attrs);
+        }
+        conventions.push(convention("spatial", SPATIAL_UUID, "spatial"));
+        spatial_attrs(r, [yname, xname], &mut attrs);
+        attrs["zarr_conventions"] = json!(conventions);
     }
     let layout = common::Layout {
         cols: r.cols,
@@ -1009,20 +1318,229 @@ pub(crate) fn write(r: &Raster, nodata: Option<f64>, path: &Path, compression: O
     };
     let bytes = common::encode(r, &layout);
     let array = NewArray { shape: &shape, chunks: &chunks, data_type: r.data_type, bytes: &bytes, fill: nodata, dims, attrs };
-    for (file, doc) in write_array(&path.join(&name), &array, compression, version)? {
-        meta.insert(format!("{name}/{file}"), doc);
+    for (file, doc) in write_array(&dir.join(name), &array, compression, version)? {
+        meta.insert(format!("{prefix}{name}/{file}"), doc);
     }
 
     // Coordinates of the pixel centres.
+    let geographic =
+        s.epsg.and_then(|c| crate::crs::SpatialRef::from_epsg(c).ok()).and_then(|c| c.to_wkt()).is_some_and(|w| w.starts_with("GEOGCS"))
+            || super::wkt::gdal_wkt(&s).is_some_and(|w| w.starts_with("GEOGCS"));
     let xs: Vec<u8> = (0..r.cols).flat_map(|c| (r.x_min + (c as f64 + 0.5) * r.cell_size_x).to_le_bytes()).collect();
     let ys: Vec<u8> = (0..r.rows).flat_map(|row| (r.y_max() - (row as f64 + 0.5) * r.cell_size_y).to_le_bytes()).collect();
-    for (dim, n, data) in [("X", r.cols, xs), ("Y", r.rows, ys)] {
+    for (dim, n, data, axis) in [(xname, r.cols, xs, "X"), (yname, r.rows, ys, "Y")] {
         let fill = (version == Version::V3).then_some(f64::NAN);
-        let coord =
-            NewArray { shape: &[n], chunks: &[n], data_type: DataType::F64, bytes: &data, fill, dims: json!([dim]), attrs: json!({}) };
-        for (file, doc) in write_array(&path.join(dim), &coord, None, version)? {
-            meta.insert(format!("{dim}/{file}"), doc);
+        let attrs = if conv == Convention::Cf {
+            match (geographic, axis) {
+                (true, "X") => json!({"standard_name": "longitude", "long_name": "longitude", "units": "degrees_east", "axis": "X"}),
+                (true, _) => json!({"standard_name": "latitude", "long_name": "latitude", "units": "degrees_north", "axis": "Y"}),
+                (false, "X") => {
+                    json!({"standard_name": "projection_x_coordinate", "long_name": "x coordinate of projection", "units": "metre", "axis": "X"})
+                }
+                (false, _) => {
+                    json!({"standard_name": "projection_y_coordinate", "long_name": "y coordinate of projection", "units": "metre", "axis": "Y"})
+                }
+            }
+        } else {
+            json!({})
+        };
+        let coord = NewArray { shape: &[n], chunks: &[n], data_type: DataType::F64, bytes: &data, fill, dims: json!([dim]), attrs };
+        for (file, doc) in write_array(&dir.join(dim), &coord, None, version)? {
+            meta.insert(format!("{prefix}{dim}/{file}"), doc);
         }
+    }
+    if conv == Convention::Cf {
+        // rioxarray's grid mapping variable: a scalar with the CRS and geotransform.
+        let mut gm = json!({});
+        if let Some(w) = super::wkt::gdal_wkt(&s) {
+            gm["crs_wkt"] = json!(w);
+            gm["spatial_ref"] = json!(w);
+        }
+        let gt = crate::geo_transform(r);
+        gm["GeoTransform"] = json!(gt.iter().map(|v| super::super::ops::vrt::fmt_number(*v)).collect::<Vec<_>>().join(" "));
+        let zero = 0i64.to_le_bytes();
+        let var = NewArray { shape: &[], chunks: &[], data_type: DataType::I64, bytes: &zero, fill: Some(0.0), dims: json!([]), attrs: gm };
+        for (file, doc) in write_array(&dir.join("spatial_ref"), &var, None, version)? {
+            meta.insert(format!("{prefix}spatial_ref/{file}"), doc);
+        }
+    }
+    Ok(())
+}
+
+/// A nearest-neighbour overview of `w` x `h` pixels, sampled as GDAL's overview builder samples
+/// them (`GDALRegenerateOverviews()`: source pixel `floor(0.5 + i * ratio)`).
+fn nearest_overview(r: &Raster, w: usize, h: usize) -> Raster {
+    let (rx, ry) = (r.cols as f64 / w as f64, r.rows as f64 / h as f64);
+    let xs: Vec<usize> = (0..w).map(|i| ((0.5 + i as f64 * rx) as usize).min(r.cols - 1)).collect();
+    let ys: Vec<usize> = (0..h).map(|i| ((0.5 + i as f64 * ry) as usize).min(r.rows - 1)).collect();
+    macro_rules! pick {
+        ($($v:ident),*) => {
+            match &r.data {
+                $(RasterData::$v(src) => {
+                    let mut out = Vec::with_capacity(w * h * r.bands);
+                    for b in 0..r.bands {
+                        for &y in &ys {
+                            let row = b * r.cols * r.rows + y * r.cols;
+                            out.extend(xs.iter().map(|&x| src[row + x]));
+                        }
+                    }
+                    RasterData::$v(out)
+                })*
+            }
+        };
+    }
+    let data = pick!(U8, I8, U16, I16, U32, I32, U64, I64, F32, F64);
+    let mut out = r.clone();
+    out.data = data;
+    out.cols = w;
+    out.rows = h;
+    out.cell_size_x = r.cell_size_x * rx;
+    out.cell_size_y = r.cell_size_y * ry;
+    out.y_min = r.y_max() - h as f64 * out.cell_size_y;
+    out
+}
+
+/// The overview factors of an `OVERVIEW_LEVELS` creation option: `2,4,8`, or `AUTO` (halving
+/// until the raster fits in 256 pixels, as GDAL's default levels).
+fn overview_factors(v: &str, cols: usize, rows: usize) -> Result<Vec<usize>> {
+    if v.eq_ignore_ascii_case("AUTO") {
+        let mut out = Vec::new();
+        let mut f = 2;
+        while cols.max(rows).div_ceil(f / 2) > 256 {
+            out.push(f);
+            f *= 2;
+        }
+        return Ok(out);
+    }
+    if v.eq_ignore_ascii_case("NONE") || v.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut out: Vec<usize> = v
+        .split([',', ' '])
+        .filter(|s| !s.is_empty())
+        .map(|s| {
+            s.trim()
+                .parse::<usize>()
+                .ok()
+                .filter(|f| *f >= 2)
+                .ok_or_else(|| Error::InvalidArgument(format!("invalid overview level '{s}'")))
+        })
+        .collect::<Result<_>>()?;
+    out.sort_unstable();
+    out.dedup();
+    Ok(out)
+}
+
+/// Writes a raster as a Zarr group, as GDAL does: the array (named after the store, with
+/// dimensions `[Band,] Y, X`), X and Y coordinate arrays, the CRS in `_CRS`, and (v2) consolidated
+/// metadata. `format` is GDAL's `FORMAT` creation option: `ZARR_V2` (the default) or `ZARR_V3`.
+#[cfg(test)]
+pub(crate) fn write(r: &Raster, nodata: Option<f64>, path: &Path, compression: Option<&str>, format: Option<&str>) -> Result<()> {
+    let co: Vec<(String, String)> = format.map(|f| ("FORMAT".to_string(), f.to_string())).into_iter().collect();
+    write_with(r, nodata, path, compression, &co)
+}
+
+/// Writes a raster as a Zarr group (see the module's documentation), with GDAL's creation options
+/// `FORMAT` (`ZARR_V2`, the default, or `ZARR_V3`) and `GEOREFERENCING_CONVENTION` (`GDAL`,
+/// `SPATIAL_PROJ` or `CF`), and terrio's `OVERVIEW_LEVELS` and `OVERVIEW_RESAMPLING`.
+pub(crate) fn write_with(r: &Raster, nodata: Option<f64>, path: &Path, compression: Option<&str>, co: &[(String, String)]) -> Result<()> {
+    let opt = |key: &str| co.iter().find(|(k, _)| k.eq_ignore_ascii_case(key)).map(|(_, v)| v.as_str());
+    let version = match opt("FORMAT").map(str::to_ascii_uppercase).as_deref() {
+        None | Some("ZARR_V2") | Some("V2") | Some("2") => Version::V2,
+        Some("ZARR_V3") | Some("V3") | Some("3") => Version::V3,
+        Some(other) => return Err(Error::InvalidArgument(format!("Zarr format '{other}' is not supported (ZARR_V2, ZARR_V3)"))),
+    };
+    let conv = match opt("GEOREFERENCING_CONVENTION").map(str::to_ascii_uppercase).as_deref() {
+        None | Some("GDAL") => Convention::Gdal,
+        Some("SPATIAL_PROJ") | Some("GEOZARR") => Convention::SpatialProj,
+        Some("CF") => Convention::Cf,
+        Some(other) => {
+            return Err(Error::InvalidArgument(format!(
+                "Zarr georeferencing convention '{other}' is not supported (GDAL, SPATIAL_PROJ, CF)"
+            )));
+        }
+    };
+    let factors = overview_factors(opt("OVERVIEW_LEVELS").unwrap_or("NONE"), r.cols, r.rows)?;
+    let resampling = match opt("OVERVIEW_RESAMPLING") {
+        Some(m) => crate::ops::Resampling::parse(m)?,
+        None => crate::ops::Resampling::Nearest,
+    };
+    // Fail on an unknown compression before creating anything.
+    compressor(compression, version)?;
+    if path.exists() {
+        return Err(Error::InvalidArgument(format!("{} already exists", path.display())));
+    }
+    let name = path.file_stem().and_then(|s| s.to_str()).unwrap_or("data").to_string();
+    let mut meta = serde_json::Map::new();
+
+    // The overviews, resampled from the full resolution.
+    let mut levels: Vec<(usize, RasterDataset)> = Vec::new();
+    if !factors.is_empty() {
+        let full = RasterDataset { raster: r.clone(), driver: RasterDriver::Zarr, has_nodata: nodata.is_some() };
+        for f in &factors {
+            let (w, h) = (r.cols.div_ceil(*f), r.rows.div_ceil(*f));
+            if resampling == crate::ops::Resampling::Nearest {
+                levels.push((*f, RasterDataset { raster: nearest_overview(r, w, h), ..full.clone() }));
+                continue;
+            }
+            let o = crate::ops::translate::TranslateOptions {
+                out_size: Some((crate::ops::translate::Size::Pixels(w), crate::ops::translate::Size::Pixels(h))),
+                resampling: Some(resampling),
+                ..Default::default()
+            };
+            levels.push((*f, crate::ops::translate::translate(&full, &o)?));
+        }
+    }
+
+    // The root group: a multiscales layout when there are overviews.
+    let mut root = json!({});
+    if !levels.is_empty() {
+        let nd = if r.bands == 1 { 2 } else { 3 };
+        let ones: Vec<f64> = vec![1.0; nd];
+        let mut layout = vec![json!({"asset": name, "transform": {"scale": ones}})];
+        let mut prev = (name.clone(), r.cols, r.rows);
+        for (f, l) in &levels {
+            let asset = format!("ovr_{f}x");
+            let (w, h) = (l.raster.cols, l.raster.rows);
+            let mut scale = vec![prev.2 as f64 / h as f64, prev.1 as f64 / w as f64];
+            if nd == 3 {
+                scale.insert(0, 1.0);
+            }
+            let mut item = json!({
+                "asset": asset,
+                "derived_from": prev.0,
+                "transform": {"scale": scale, "translation": vec![0.0; nd]},
+                "resampling_method": resampling.name(),
+            });
+            if conv == Convention::SpatialProj {
+                let mut sa = json!({});
+                spatial_attrs(&l.raster, ["Y", "X"], &mut sa);
+                item["spatial:shape"] = sa["spatial:shape"].clone();
+                item["spatial:transform"] = sa["spatial:transform"].clone();
+            }
+            layout.push(item);
+            prev = (asset, w, h);
+        }
+        let mut conventions = vec![convention("multiscales", MULTISCALES_UUID, "multiscales")];
+        let s = super::common::spatial_ref(&r.crs);
+        if conv == Convention::SpatialProj {
+            if !s.is_unknown() {
+                conventions.push(convention("proj", PROJ_UUID, "proj"));
+                proj_attrs(&s, &mut root);
+            }
+            conventions.push(convention("spatial", SPATIAL_UUID, "spatial"));
+            root["spatial:dimensions"] = json!(["Y", "X"]);
+        }
+        root["zarr_conventions"] = json!(conventions);
+        root["multiscales"] = json!({"layout": layout, "resampling_method": resampling.name()});
+    }
+    write_group(path, &root, version, &mut meta, "")?;
+    write_level(path, &name, r, nodata, compression, version, conv, &mut meta, "")?;
+    for (f, l) in &levels {
+        let group = format!("ovr_{f}x");
+        let dir = path.join(&group);
+        write_group(&dir, &json!({}), version, &mut meta, &format!("{group}/"))?;
+        write_level(&dir, &name, &l.raster, nodata, compression, version, conv, &mut meta, &format!("{group}/"))?;
     }
     if version == Version::V2 {
         let consolidated = json!({"metadata": meta, "zarr_consolidated_format": 1});

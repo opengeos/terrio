@@ -33,6 +33,7 @@ pub mod vector;
 pub mod raster {
     pub use wbraster::{ReprojectOptions, ResampleMethod};
 }
+pub mod stac;
 pub mod vfs;
 
 pub use cog::{LazyRaster, Window, WindowOptions, open_raster_lazy};

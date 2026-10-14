@@ -29,6 +29,24 @@ terrio convert https://.../B04.tif preview.tif --overview 2
 
 From Python, `terrio.open_raster(url, lazy=True).read(1, window=(x, y, w, h), overview=0)`.
 
+## STAC
+
+STAC items, item collections, collections and STAC API searches are read from their URLs (see
+[Formats](formats.md#stac)). Opening an asset (`STAC:"item-url":asset`) or a mosaic
+(`STACIT:"search-url":asset=red`) fetches the STAC JSON (every page of a search, up to 1000 items)
+and then only the headers of the COGs, then a window read fetches only the tiles of the items it
+touches:
+
+```sh
+Q="https://earth-search.aws.element84.com/v1/search?collections=sentinel-2-l2a&bbox=-105.05,40.5,-104.95,40.6&datetime=2023-07-05"
+terrio info "STACIT:\"$Q\""                                  # subdatasets: one per asset (and CRS)
+terrio info "STACIT:\"$Q\":asset=red"                        # a 20982 x 20982 mosaic of four tiles
+terrio convert "STACIT:\"$Q\":asset=red" red.tif --srcwin 9980 9980 512 512
+```
+
+The mosaics and windows are those of GDAL's STACIT driver (`gdal_translate -srcwin` on the same
+subdataset returns the same pixels).
+
 ## Amazon S3
 
 Requests are signed (AWS Signature Version 4) when credentials are found, and unsigned otherwise:

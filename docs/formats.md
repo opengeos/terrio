@@ -10,11 +10,12 @@ terrio. `terrio formats` prints this list.
 | GTiff | GeoTIFF, BigTIFF | ✓ | ✓ | tif, tiff |
 | COG | Cloud Optimized GeoTIFF | ✓ | ✓ | tif, tiff |
 | JP2 | JPEG 2000 | ✓ | ✓ | jp2, j2k |
-| Zarr | Zarr v2 and v3 | ✓ | ✓ | zarr |
+| Zarr | Zarr v2 and v3, GeoZarr (`spatial:`, `proj:`, `multiscales`) | ✓ | ✓ | zarr |
 | netCDF | netCDF classic and netCDF-4 (writes classic CDF-1/2/5) | ✓ | ✓ | nc, nc4, cdf |
 | HFA | ERDAS Imagine | ✓ | | img |
 | GPKG | GeoPackage tiles and gridded coverages | ✓ | ✓ | gpkg |
 | VRT | GDAL Virtual Raster | ✓ | ✓ | vrt |
+| STACIT | Mosaics of STAC items' assets (`STACIT:"search or items":asset=name`) | ✓ | | |
 | ENVI | ENVI labelled raster | ✓ | ✓ | envi, hdr, dat, bsq, bip |
 | EHdr | Esri .hdr labelled (BIL, FLT) | ✓ | ✓ | bil, flt |
 | AAIGrid | Esri ASCII grid | ✓ | ✓ | asc |
@@ -39,6 +40,53 @@ JPEG with `--compress JPEG`; one-band Int16, UInt16 and Float32 rasters as gridd
 (16-bit PNG or float TIFF tiles), with every zoom level of the pyramid. A GeoPackage holding
 vector layers and rasters opens as its layers, and `terrio info` lists its rasters as
 subdatasets, opened as `GPKG:file.gpkg:table`. Written layers get an R-tree spatial index.
+
+Zarr stores are read and written as GDAL writes them (`_CRS` and X/Y coordinate arrays) and as
+xarray writes them (a CF `grid_mapping` variable with `crs_wkt` and `GeoTransform`). GeoZarr's
+conventions are read too: [`spatial:`](https://github.com/zarr-conventions/spatial)
+(`spatial:dimensions`, `spatial:transform` with pixel or node registration, `spatial:bbox`),
+[`proj:`](https://github.com/zarr-conventions/proj) (`proj:code`, `proj:wkt2`, `proj:projjson`, and
+the EOPF samples' `proj:epsg`) on the array, its group or the multiscales group, and
+[`multiscales`](https://github.com/zarr-conventions/multiscales) layouts, whose lower-resolution
+levels are the raster's overviews (`terrio info` lists them, `--overview N` reads one). The
+creation options say how a written store is georeferenced and whether it holds overviews:
+
+| Creation option | Values |
+|---|---|
+| `FORMAT` | `ZARR_V2` (default), `ZARR_V3` |
+| `GEOREFERENCING_CONVENTION` | `GDAL` (default), `SPATIAL_PROJ` (GeoZarr, plus `_CRS` for GDAL 3.12), `CF` (rioxarray's `spatial_ref`) |
+| `OVERVIEW_LEVELS` | `2,4,8`..., or `AUTO` (halving until 256 pixels): `ovr_<N>x` groups and a `multiscales` layout, as GDAL lays out Zarr overviews |
+| `OVERVIEW_RESAMPLING` | `nearest` (default, sampled as `gdaladdo` samples), or any `terrio translate` method |
+
+```sh
+terrio convert dem.tif dem.zarr --co FORMAT=ZARR_V3 --co GEOREFERENCING_CONVENTION=SPATIAL_PROJ --co OVERVIEW_LEVELS=AUTO
+terrio convert dem.zarr preview.tif --overview 0
+```
+
+## STAC
+
+[STAC](https://stacspec.org) documents, local or remote, open as datasets, as GDAL's STACIT driver
+and GeoJSON driver read them:
+
+- An Item, ItemCollection (a STAC API search result), Collection or Catalog is a vector layer of
+  item footprints. Fields are the items' properties, their other members (`stac_version`, `links`,
+  `stac_extensions`, `collection`) and each asset's members as `assets.<asset>.<member>`, as
+  `ogrinfo` reads them. Search results are followed through their `next` links, collections
+  through their `item` and `items` links, up to 1000 items.
+- `terrio info item.json` lists the item's assets as subdatasets: `STAC:"item.json":asset` (or
+  `item.json!asset`) opens one, its href resolved against the item's location. COGs are read in
+  place.
+- `terrio info` on an item collection or search lists GDAL STACIT's subdatasets: one mosaic per
+  collection, asset and CRS. `STACIT:"source":asset=red` (with `collection=` and `crs=` filters,
+  and terrio's `resolution=highest|lowest|average` and `max_items=N`) is a mosaic of the asset over
+  the items: items drawn in ascending datetime order, at their average resolution, read by window
+  from their files.
+
+```sh
+terrio info "https://earth-search.aws.element84.com/v1/search?collections=sentinel-2-l2a&bbox=-105.05,40.5,-104.95,40.6&datetime=2023-07-05"
+terrio convert 'STACIT:"https://earth-search.aws.element84.com/v1/search?collections=sentinel-2-l2a&bbox=-105.05,40.5,-104.95,40.6&datetime=2023-07-05":asset=red' red.tif --srcwin 9980 9980 512 512
+terrio info 'STAC:"https://earth-search.aws.element84.com/v1/collections/sentinel-2-l2a/items/S2B_13TDE_20230705_0_L2A":red'
+```
 
 ## Vectors
 

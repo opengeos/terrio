@@ -67,6 +67,13 @@ pub(crate) fn read(path: &str) -> Option<Result<RasterDataset>> {
     }))
 }
 
+/// Opens a raster read by window with one of terrio's own drivers (Zarr multiscales pyramids).
+/// `None` when none of them reads the file so.
+pub(crate) fn open_lazy(path: &str) -> Option<Result<crate::LazyRaster>> {
+    let p = Path::new(path);
+    if zarr::is_zarr(p) { zarr::open_lazy(p) } else { None }
+}
+
 /// Opens a subdataset named as GDAL names them (`NETCDF:"file.nc":variable`,
 /// `GPKG:file.gpkg:table`). `None` when the path is not a subdataset name.
 pub(crate) fn open_subdataset(path: &str) -> Option<Result<RasterDataset>> {
@@ -108,7 +115,7 @@ pub(crate) fn write(
         RasterDriver::RST => rst::write(r, nodata, p),
         RasterDriver::PNG => png::write(r, nodata, p),
         RasterDriver::JP2 => jp2::write(r, nodata, p),
-        RasterDriver::Zarr => zarr::write(r, nodata, p, compression, co("FORMAT")),
+        RasterDriver::Zarr => zarr::write_with(r, nodata, p, compression, &options.creation_options),
         RasterDriver::NetCDF => netcdf_write::write(r, nodata, p, co("FORMAT")),
         RasterDriver::GPKG => gpkg::write(r, nodata, p, compression.or(co("TILE_FORMAT")), co("RASTER_TABLE")),
         // Formats without a CRS of their own: GDAL's sidecar holds it.

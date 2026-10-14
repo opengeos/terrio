@@ -79,6 +79,9 @@ pub struct VectorOpenOptions {
 
 /// Opens a dataset, raster or vector, detecting its format.
 pub fn open(path: &str) -> Result<Dataset> {
+    if let Some(result) = crate::stac::open(path) {
+        return result;
+    }
     if let Some(result) = crate::drivers::open_subdataset(path) {
         return result.map(Dataset::Raster);
     }
@@ -88,6 +91,12 @@ pub fn open(path: &str) -> Result<Dataset> {
 
 /// Opens a raster dataset.
 pub fn open_raster(path: &str) -> Result<RasterDataset> {
+    if let Some(result) = crate::stac::open(path) {
+        return match result? {
+            Dataset::Raster(r) => Ok(r),
+            Dataset::Vector(_) => Err(Error::Unsupported(format!("'{path}' is a vector, not a raster dataset"))),
+        };
+    }
     if let Some(result) = crate::drivers::open_subdataset(path) {
         return result;
     }
@@ -97,6 +106,12 @@ pub fn open_raster(path: &str) -> Result<RasterDataset> {
 
 /// Opens a vector dataset.
 pub fn open_vector(path: &str, options: &VectorOpenOptions) -> Result<VectorDataset> {
+    if let Some(result) = crate::stac::open(path) {
+        return match result? {
+            Dataset::Vector(v) => Ok(v),
+            Dataset::Raster(_) => Err(Error::Unsupported(format!("'{path}' is a raster, not a vector dataset"))),
+        };
+    }
     let local = vfs::resolve(path)?;
     match open_local(local.as_str(), options)? {
         Dataset::Vector(v) => Ok(v),

@@ -56,9 +56,12 @@ pub fn parse(bytes: &[u8], default_name: &str) -> Result<Layer> {
     if string_ids {
         layer.add_field(FieldDef::new("id", FieldType::Text));
     }
+    // STAC items: their foreign members become fields too, as GDAL reads them.
+    let stac = features.first().is_some_and(|f| f.get("stac_version").is_some());
+    let members: Vec<Vec<(String, &Value)>> = features.iter().map(|f| attributes_of(f, stac)).collect();
     let mut kinds: Vec<(String, Option<Kind>)> = Vec::new();
-    for f in &features {
-        for (k, v) in f["properties"].as_object().into_iter().flatten() {
+    for f in &members {
+        for (k, v) in f {
             let t = kind(v);
             match kinds.iter_mut().find(|(n, _)| n == k) {
                 Some((_, prev)) => *prev = merge(*prev, t),
@@ -81,7 +84,7 @@ pub fn parse(bytes: &[u8], default_name: &str) -> Result<Layer> {
                 v => FieldValue::Text(v.to_string()),
             };
         }
-        for (k, v) in f["properties"].as_object().into_iter().flatten() {
+        for (k, v) in &members[n] {
             if let Some(i) = layer.schema.field_index(k).filter(|&i| !(string_ids && i == 0)) {
                 attributes[i] = value(v, types[i]);
             }
@@ -95,6 +98,30 @@ pub fn parse(bytes: &[u8], default_name: &str) -> Result<Layer> {
         None => layer.set_crs_epsg(Some(4326)),
     }
     Ok(layer)
+}
+
+/// A feature's attributes: its properties and, for STAC items, its foreign members (all but
+/// `type`, `id`, `geometry`, `bbox` and `properties`), each asset's members flattened to
+/// `assets.<asset>.<member>`, as GDAL's `FOREIGN_MEMBERS=AUTO` reads them.
+fn attributes_of(f: &Value, stac: bool) -> Vec<(String, &Value)> {
+    let mut out: Vec<(String, &Value)> = f["properties"].as_object().into_iter().flatten().map(|(k, v)| (k.clone(), v)).collect();
+    if !stac {
+        return out;
+    }
+    for (k, v) in f.as_object().into_iter().flatten() {
+        match k.as_str() {
+            "type" | "id" | "geometry" | "bbox" | "properties" => {}
+            "assets" if v.is_object() => {
+                for (name, asset) in v.as_object().into_iter().flatten() {
+                    for (m, mv) in asset.as_object().into_iter().flatten() {
+                        out.push((format!("assets.{name}.{m}"), mv));
+                    }
+                }
+            }
+            _ => out.push((k.clone(), v)),
+        }
+    }
+    out
 }
 
 /// The type of a property value, as GDAL infers it.

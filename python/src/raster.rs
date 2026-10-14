@@ -295,10 +295,13 @@ impl PyRaster {
     ///         `"JPEG"` or `"WEBP"`.
     ///     tile_size: Write GeoTIFF tiles of this size (COG tiles default to 512).
     ///     bigtiff: Write a BigTIFF.
+    ///     options: Format-specific creation options, as GDAL names them, such as
+    ///         `{"FORMAT": "ZARR_V3", "GEOREFERENCING_CONVENTION": "SPATIAL_PROJ"}` for Zarr.
     ///
     /// Raises:
     ///     TerrioError: If the raster cannot be written.
-    #[pyo3(signature = (path, driver=None, compress=None, tile_size=None, bigtiff=false))]
+    #[pyo3(signature = (path, driver=None, compress=None, tile_size=None, bigtiff=false, options=None))]
+    #[allow(clippy::too_many_arguments)]
     fn write(
         &mut self,
         py: Python<'_>,
@@ -307,8 +310,11 @@ impl PyRaster {
         compress: Option<String>,
         tile_size: Option<u32>,
         bigtiff: bool,
+        options: Option<std::collections::BTreeMap<String, String>>,
     ) -> PyResult<()> {
-        let options = write_options(driver, compress, tile_size, bigtiff)?;
+        let mut options_ = write_options(driver, compress, tile_size, bigtiff)?;
+        options_.creation_options = options.unwrap_or_default().into_iter().collect();
+        let options = options_;
         py.detach(|| self.with_dataset(|ds| terrio::write_raster_dataset(ds, path, &options))).py()
     }
 

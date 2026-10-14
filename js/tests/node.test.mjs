@@ -88,6 +88,27 @@ test("vector from GeoJSON, to other formats and back", () => {
   assert.equal(info.layers[0].feature_count, 1);
 });
 
+test("STAC items read as GDAL reads STAC GeoJSON", () => {
+  const item = {
+    type: "Feature",
+    stac_version: "1.0.0",
+    stac_extensions: ["https://stac-extensions.github.io/projection/v1.1.0/schema.json"],
+    id: "S2B_13TDE_20230705_0_L2A",
+    collection: "sentinel-2-l2a",
+    properties: { datetime: "2023-07-05T18:03:00Z", "eo:cloud_cover": 0.5, "proj:epsg": 32613 },
+    geometry: { type: "Polygon", coordinates: [[[-106, 39.6], [-104.9, 39.6], [-104.9, 40.6], [-106, 39.6]]] },
+    links: [],
+    assets: { red: { href: "B04.tif", type: "image/tiff; application=geotiff", roles: ["data"] } },
+  };
+  const ds = terrio.open(new TextEncoder().encode(JSON.stringify(item)), "item.json");
+  const props = ds.toGeoJSON().features[0].properties;
+  assert.equal(props.id, "S2B_13TDE_20230705_0_L2A");
+  assert.equal(props["eo:cloud_cover"], 0.5);
+  assert.equal(props.stac_version, "1.0.0");
+  assert.equal(props.collection, "sentinel-2-l2a");
+  assert.equal(props["assets.red.href"], "B04.tif");
+});
+
 test("CRS transforms", () => {
   const [xs, ys] = terrio.transformPoints([0, 180], [0, 0], "EPSG:4326", "EPSG:3857");
   assert.ok(xs instanceof Float64Array);

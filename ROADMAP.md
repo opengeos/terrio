@@ -62,10 +62,17 @@ of GDAL: the long tail of formats stays reachable through an optional GDAL backe
   (feature and attribute tables, R-tree spatial indexes, tile pyramids with PNG or JPEG tiles,
   gridded coverages for Int16, UInt16 and Float32 rasters, files holding both), from files or
   bytes. Still to do: spatial filters through the R-tree, updating existing files.
-- Zarr 2 and 3, and GeoZarr conventions.
+- Zarr 2 and 3, and GeoZarr conventions. Done: GeoZarr's `spatial:`, `proj:` and `multiscales`
+  conventions read (multiscales levels as overviews, read by window) and written
+  (`GEOREFERENCING_CONVENTION=SPATIAL_PROJ`, overviews laid out as GDAL lays them out), and CF grid
+  mappings written as rioxarray writes them. Still to do: remote Zarr stores, read in place.
 - KML/KMZ, GPX, GML, TopoJSON.
 - PMTiles and MBTiles archives.
-- STAC items and collections as datasets.
+- STAC items and collections as datasets. Done: items, item collections, collections and STAC
+  API searches (local or remote, following `next` links) as footprint layers read as GDAL reads
+  STAC GeoJSON; assets opened as `STAC:"item":asset` (COGs in place); mosaics of an asset over
+  items as GDAL's STACIT driver builds them (`STACIT:"search":asset=red`), read by window. Still
+  to do: POST pagination, STACTA (tiled assets), signed URLs (Planetary Computer).
 
 ## 0.5: Bindings and the GDAL backend
 

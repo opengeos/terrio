@@ -94,6 +94,18 @@ impl std::fmt::Debug for LazyRaster {
 enum Inner {
     Tiff(Box<TiffRaster>),
     Memory(RasterDataset),
+    /// A raster another driver reads by window: its header (without pixels) and reader.
+    Source(RasterDataset, Box<dyn WindowSource>),
+}
+
+/// A raster read by window, at full resolution or from an overview, by a driver other than the
+/// GeoTIFF one (STAC mosaics, Zarr pyramids).
+pub(crate) trait WindowSource: Send + Sync {
+    /// The sizes `(width, height)` of the overviews, largest first.
+    fn overviews(&self) -> Vec<(usize, usize)>;
+    /// Reads a window of some bands (numbered from 1) of a level (0 for full resolution, `i + 1`
+    /// for overview `i`), band after band.
+    fn read(&mut self, level: usize, window: Window, bands: &[usize]) -> Result<RasterData>;
 }
 
 /// Opens a raster lazily: see [`LazyRaster::open`].
@@ -106,6 +118,12 @@ impl LazyRaster {
     ///
     /// GeoTIFFs are read in place: only their headers are read now. Other formats are read whole.
     pub fn open(path: &str) -> Result<Self> {
+        if let Some(result) = crate::stac::open_lazy(path) {
+            return result;
+        }
+        if let Some(result) = crate::drivers::open_lazy(path) {
+            return result;
+        }
         match Self::open_tiff(path)? {
             Some(r) => Ok(r),
             None => crate::open_raster(path).map(|ds| Self { inner: Inner::Memory(ds) }),
@@ -148,21 +166,21 @@ impl LazyRaster {
     /// The raster in memory, when it is not read on demand.
     pub fn dataset(&self) -> Option<&RasterDataset> {
         match &self.inner {
-            Inner::Tiff(_) => None,
+            Inner::Tiff(_) | Inner::Source(..) => None,
             Inner::Memory(ds) => Some(ds),
         }
     }
 
     /// Whether the pixels are read on demand (a GeoTIFF), rather than already in memory.
     pub fn is_lazy(&self) -> bool {
-        matches!(self.inner, Inner::Tiff(_))
+        matches!(self.inner, Inner::Tiff(_) | Inner::Source(..))
     }
 
     /// The width in pixels.
     pub fn width(&self) -> usize {
         match &self.inner {
             Inner::Tiff(t) => t.levels[0].width,
-            Inner::Memory(ds) => ds.raster.cols,
+            Inner::Memory(ds) | Inner::Source(ds, _) => ds.raster.cols,
         }
     }
 
@@ -170,7 +188,7 @@ impl LazyRaster {
     pub fn height(&self) -> usize {
         match &self.inner {
             Inner::Tiff(t) => t.levels[0].height,
-            Inner::Memory(ds) => ds.raster.rows,
+            Inner::Memory(ds) | Inner::Source(ds, _) => ds.raster.rows,
         }
     }
 
@@ -178,7 +196,7 @@ impl LazyRaster {
     pub fn band_count(&self) -> usize {
         match &self.inner {
             Inner::Tiff(t) => t.bands,
-            Inner::Memory(ds) => ds.raster.bands,
+            Inner::Memory(ds) | Inner::Source(ds, _) => ds.raster.bands,
         }
     }
 
@@ -186,7 +204,7 @@ impl LazyRaster {
     pub fn data_type(&self) -> DataType {
         match &self.inner {
             Inner::Tiff(t) => t.data_type,
-            Inner::Memory(ds) => ds.raster.data_type,
+            Inner::Memory(ds) | Inner::Source(ds, _) => ds.raster.data_type,
         }
     }
 
@@ -194,7 +212,7 @@ impl LazyRaster {
     pub fn driver(&self) -> RasterDriver {
         match &self.inner {
             Inner::Tiff(_) => RasterDriver::GTiff,
-            Inner::Memory(ds) => ds.driver,
+            Inner::Memory(ds) | Inner::Source(ds, _) => ds.driver,
         }
     }
 
@@ -202,7 +220,7 @@ impl LazyRaster {
     pub fn geo_transform(&self) -> [f64; 6] {
         match &self.inner {
             Inner::Tiff(t) => t.geo_transform,
-            Inner::Memory(ds) => ds.geo_transform(),
+            Inner::Memory(ds) | Inner::Source(ds, _) => ds.geo_transform(),
         }
     }
 
@@ -210,7 +228,7 @@ impl LazyRaster {
     pub fn crs(&self) -> SpatialRef {
         match &self.inner {
             Inner::Tiff(t) => SpatialRef::from_raster_crs(&t.tags.crs_info()),
-            Inner::Memory(ds) => ds.crs(),
+            Inner::Memory(ds) | Inner::Source(ds, _) => ds.crs(),
         }
     }
 
@@ -218,7 +236,7 @@ impl LazyRaster {
     pub fn nodata(&self) -> Option<f64> {
         match &self.inner {
             Inner::Tiff(t) => t.tags.nodata,
-            Inner::Memory(ds) => ds.nodata(),
+            Inner::Memory(ds) | Inner::Source(ds, _) => ds.nodata(),
         }
     }
 
@@ -227,6 +245,7 @@ impl LazyRaster {
         match &self.inner {
             Inner::Tiff(t) => t.levels[1..].iter().map(|l| (l.width, l.height)).collect(),
             Inner::Memory(_) => Vec::new(),
+            Inner::Source(_, s) => s.overviews(),
         }
     }
 
@@ -235,7 +254,7 @@ impl LazyRaster {
     pub fn block_size(&self) -> Option<(usize, usize)> {
         match &self.inner {
             Inner::Tiff(t) => Some(t.levels[0].block),
-            Inner::Memory(_) => None,
+            Inner::Memory(_) | Inner::Source(..) => None,
         }
     }
 
@@ -263,6 +282,9 @@ impl LazyRaster {
     /// as building a VRT.
     pub fn header(&self) -> RasterDataset {
         if let Inner::Memory(ds) = &self.inner {
+            return ds.clone();
+        }
+        if let Inner::Source(ds, _) = &self.inner {
             return ds.clone();
         }
         let gt = self.geo_transform();
@@ -311,6 +333,10 @@ impl LazyRaster {
                 (data, t.tags.nodata.unwrap_or(-9999.0), t.tags.nodata.is_some(), Some(t.tags.crs_info()))
             }
             Inner::Memory(ds) => (cut(&ds.raster, window, &bands), ds.raster.nodata, ds.has_nodata, Some(ds.raster.crs.clone())),
+            Inner::Source(ds, s) => {
+                let data = s.read(options.overview.map_or(0, |i| i + 1), window, &bands)?;
+                (data, ds.raster.nodata, ds.has_nodata, Some(ds.raster.crs.clone()))
+            }
         };
         let cfg = wbraster::RasterConfig {
             cols: window.width,
@@ -330,6 +356,13 @@ impl LazyRaster {
     }
 }
 
+impl LazyRaster {
+    /// A raster read by window by `source`, described by `header` (a dataset without pixels).
+    pub(crate) fn from_source(header: RasterDataset, source: Box<dyn WindowSource>) -> Self {
+        Self { inner: Inner::Source(header, source) }
+    }
+}
+
 impl From<RasterDataset> for LazyRaster {
     /// Wraps a raster in memory, so that it is read by window like a lazy one.
     fn from(ds: RasterDataset) -> Self {
@@ -346,7 +379,7 @@ fn is_tiff<R: Read + Seek>(r: &mut R) -> bool {
 }
 
 /// Cuts a window of some bands (numbered from 1) out of a raster in memory.
-fn cut(r: &wbraster::Raster, w: Window, bands: &[usize]) -> RasterData {
+pub(crate) fn cut(r: &wbraster::Raster, w: Window, bands: &[usize]) -> RasterData {
     macro_rules! cut {
         ($($v:ident),*) => {
             match &r.data {

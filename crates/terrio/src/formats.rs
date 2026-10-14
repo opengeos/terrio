@@ -63,6 +63,8 @@ pub enum RasterDriver {
     NetCDF,
     /// GDAL virtual raster (read by [`crate::ops::vrt`]; written by mosaics).
     VRT,
+    /// A mosaic of the assets of STAC items (see [`crate::stac`]); read only.
+    STACIT,
 }
 
 /// A vector format driver.
@@ -138,6 +140,7 @@ impl RasterDriver {
         Self::DTED,
         Self::NetCDF,
         Self::VRT,
+        Self::STACIT,
     ];
 
     /// The driver's description.
@@ -165,6 +168,7 @@ impl RasterDriver {
             Self::DTED => ("DTED", "DTED Elevation", &["dt0", "dt1", "dt2"], true, true),
             Self::NetCDF => ("netCDF", "Network Common Data Format", &["nc", "nc4", "cdf"], true, true),
             Self::VRT => ("VRT", "Virtual Raster", &["vrt"], true, true),
+            Self::STACIT => ("STACIT", "Spatio-Temporal Asset Catalog Items", &[], true, false),
         };
         DriverInfo { name, long_name, kind: Kind::Raster, extensions, read, write }
     }
@@ -225,8 +229,8 @@ impl RasterDriver {
             Self::DTED => F::Dted,
             // Never used: terrio reads and writes NetCDF itself.
             Self::NetCDF => F::Zarr,
-            // Never used: terrio reads and writes VRTs itself.
-            Self::VRT => F::GeoTiff,
+            // Never used: terrio reads and writes VRTs and reads STAC mosaics itself.
+            Self::VRT | Self::STACIT => F::GeoTiff,
         }
     }
 
