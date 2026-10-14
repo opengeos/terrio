@@ -41,7 +41,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
 /// Vector write options from a driver name.
 pub(crate) fn vector_write_options(driver: Option<&str>) -> PyResult<VectorWriteOptions> {
     let driver = driver.map(|d| VectorDriver::from_name(d).ok_or_else(|| invalid(format!("unknown vector format '{d}'")))).transpose()?;
-    Ok(VectorWriteOptions { driver })
+    Ok(VectorWriteOptions { driver, ..Default::default() })
 }
 
 /// Wraps a dataset in its Python class.
@@ -129,7 +129,7 @@ fn open_raster(py: Python<'_>, path: &str, lazy: bool) -> PyResult<PyRaster> {
 #[pyfunction]
 #[pyo3(signature = (path, layers=None))]
 fn open_vector(py: Python<'_>, path: &str, layers: Option<Vec<String>>) -> PyResult<PyVectorDataset> {
-    let options = VectorOpenOptions { layers: layers.unwrap_or_default() };
+    let options = VectorOpenOptions { layers: layers.unwrap_or_default(), ..Default::default() };
     let ds = py.detach(|| terrio::open_vector(path, &options)).py()?;
     PyVectorDataset::new(py, ds)
 }
@@ -187,7 +187,7 @@ fn info<'py>(py: Python<'py>, path: &str, stats: bool, layers: Option<Vec<String
     let summary = py
         .detach(|| match layers {
             Some(layers) => {
-                let ds = terrio::open_vector(path, &VectorOpenOptions { layers })?;
+                let ds = terrio::open_vector(path, &VectorOpenOptions { layers, ..Default::default() })?;
                 Ok(terrio::info::info(&Dataset::Vector(ds), &options))
             }
             None => terrio::info::info_path(path, &options),
@@ -386,7 +386,7 @@ fn convert(
             Dataset::Raster(r.read_window(window, &WindowOptions { bands: Vec::new(), overview })?)
         } else {
             match layers {
-                Some(layers) => Dataset::Vector(terrio::open_vector(src, &VectorOpenOptions { layers })?),
+                Some(layers) => Dataset::Vector(terrio::open_vector(src, &VectorOpenOptions { layers, ..Default::default() })?),
                 None => terrio::open(src)?,
             }
         };
@@ -419,7 +419,7 @@ fn convert(
 fn input_layers(py: Python<'_>, src: &Bound<'_, PyAny>, layers: Option<Vec<String>>) -> PyResult<Vec<terrio::Layer>> {
     match src.extract::<String>() {
         Ok(path) => {
-            let options = VectorOpenOptions { layers: layers.unwrap_or_default() };
+            let options = VectorOpenOptions { layers: layers.unwrap_or_default(), ..Default::default() };
             Ok(py.detach(|| terrio::open_vector(&path, &options)).py()?.layers)
         }
         Err(_) => {

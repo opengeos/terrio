@@ -27,6 +27,7 @@ flatbuffers.workspace = true
 parquet.workspace = true
 arrow-array.workspace = true
 arrow-schema.workspace = true
+bytes.workspace = true
 quick-xml.workspace = true
 osmpbfreader.workspace = true
 half.workspace = true

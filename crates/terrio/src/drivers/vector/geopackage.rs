@@ -76,7 +76,7 @@ fn encode(
             Some(4326) => 4326,
             Some(code) => {
                 if !srs.iter().any(|r| r[1] == Value::Null && r[3] == Value::Int(code as i64)) {
-                    let def = s.to_wkt().unwrap_or_default();
+                    let def = super::output_wkt(layer).unwrap_or_default();
                     srs.push(vec![
                         Value::Text(s.name().unwrap_or_else(|| format!("EPSG:{code}"))),
                         Value::Null,

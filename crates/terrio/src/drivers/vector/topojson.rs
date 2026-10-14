@@ -223,7 +223,8 @@ pub fn write_layers(layers: &[Layer], path: &str) -> Result<()> {
     Ok(())
 }
 
-fn to_string(layers: &[Layer]) -> Result<String> {
+/// Encodes layers as a TopoJSON topology.
+pub fn to_string(layers: &[Layer]) -> Result<String> {
     let mut arcs: Vec<Value> = Vec::new();
     let mut add = |cs: &[Coord], close: bool| -> Value {
         let mut pts: Vec<Value> = cs.iter().map(position).collect();

@@ -1993,6 +1993,7 @@ version = "0.0.1"
 dependencies = [
  "arrow-array",
  "arrow-schema",
+ "bytes",
  "flatbuffers 24.12.23",
  "flate2",
  "flatgeobuf",

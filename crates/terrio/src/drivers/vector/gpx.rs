@@ -235,6 +235,12 @@ pub fn write(layer: &Layer, path: &str) -> Result<()> {
 /// `tracks` and `track_points`) are both written, the points, with their attributes, make the
 /// routes (tracks).
 pub fn write_layers(layers: &[Layer], path: &str) -> Result<()> {
+    std::fs::write(path, layers_to_string(layers)?)?;
+    Ok(())
+}
+
+/// Encodes layers as a GPX document.
+pub fn layers_to_string(layers: &[Layer]) -> Result<String> {
     let find = |n: &str| layers.iter().find(|l| l.name == n);
     let mut s = String::from(HEADER);
     for l in layers {
@@ -248,8 +254,7 @@ pub fn write_layers(layers: &[Layer], path: &str) -> Result<()> {
         s.push_str(&body(l, points)?);
     }
     s.push_str("</gpx>\n");
-    std::fs::write(path, s)?;
-    Ok(())
+    Ok(s)
 }
 
 const HEADER: &str = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<gpx version=\"1.1\" creator=\"terrio\" xmlns=\"http://www.topografix.com/GPX/1/1\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xmlns:ogr=\"http://osgeo.org/gdal\" xsi:schemaLocation=\"http://www.topografix.com/GPX/1/1 http://www.topografix.com/GPX/1/1/gpx.xsd\">\n";

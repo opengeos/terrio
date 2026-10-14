@@ -405,7 +405,7 @@ impl Dataset {
                     ..Default::default()
                 };
                 let out = terrio::ops::vector_filter::translate(&chosen, &translate).map_err(js_err)?;
-                terrio::memory::write_vector_bytes(&out, filename, &VectorWriteOptions { driver }).map_err(js_err)
+                terrio::memory::write_vector_bytes(&out, filename, &VectorWriteOptions { driver, ..Default::default() }).map_err(js_err)
             }
         }
     }

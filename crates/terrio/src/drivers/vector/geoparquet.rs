@@ -37,9 +37,14 @@ struct Column {
 
 /// Reads a GeoParquet (or plain Parquet) file.
 pub fn read(path: &str) -> Result<Layer> {
+    let name = std::path::Path::new(path).file_stem().and_then(|s| s.to_str()).unwrap_or("layer");
+    parse(std::fs::read(path)?, name)
+}
+
+/// Parses a GeoParquet (or plain Parquet) file held in memory. `name` names the layer.
+pub fn parse(bytes: Vec<u8>, name: &str) -> Result<Layer> {
     let err = |e: &dyn std::fmt::Display| Error::InvalidData(format!("Parquet: {e}"));
-    let file = std::fs::File::open(path)?;
-    let builder = ParquetRecordBatchReaderBuilder::try_new(file).map_err(|e| err(&e))?;
+    let builder = ParquetRecordBatchReaderBuilder::try_new(bytes::Bytes::from(bytes)).map_err(|e| err(&e))?;
     let geo: Value = builder
         .metadata()
         .file_metadata()
@@ -60,7 +65,7 @@ pub fn read(path: &str) -> Result<Layer> {
     }
     let geom_index = schema.fields().iter().position(|f| f.name() == &primary && !geo.is_null());
 
-    let mut layer = Layer::new(std::path::Path::new(path).file_stem().and_then(|s| s.to_str()).unwrap_or("layer"));
+    let mut layer = Layer::new(name);
     let mut columns = Vec::new();
     for (i, f) in schema.fields().iter().enumerate() {
         if !hidden.contains(f.name()) {
@@ -484,7 +489,7 @@ fn geo_metadata(layer: &Layer) -> Value {
     if srs.is_unknown() {
         col["crs"] = Value::Null;
     } else if super::trusted_epsg(layer) != Some(4326) {
-        col["crs"] = srs.to_wkt().map_or(Value::Null, Value::String);
+        col["crs"] = super::output_wkt(layer).map_or(Value::Null, Value::String);
     }
     json!({"version": "1.1.0", "primary_column": "geometry", "columns": {"geometry": col}})
 }

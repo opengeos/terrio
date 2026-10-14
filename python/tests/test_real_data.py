@@ -37,17 +37,14 @@ RASTERS = [
     "srtm_sub_v3.zarr",
 ]
 
-FGB_XFAIL = pytest.mark.xfail(reason="FlatGeobuf reader", strict=False)
-
 VECTORS = [
     "countries.gpkg",
     "countries.geojson",
-    # The format library's FlatGeobuf reader fails on these, until terrio's own driver lands.
-    pytest.param("countries.fgb", marks=FGB_XFAIL),
+    "countries.fgb",
     "countries.parquet",
     "ne_countries.zip",
     "TN_Counties.geojson",
-    pytest.param("UScounties.fgb", marks=FGB_XFAIL),
+    "UScounties.fgb",
     "las_vegas_roads.geojson",
 ]
 
@@ -219,9 +216,6 @@ def test_vector_matches_ogr(data_dir, ogr, name):
             assert g.Length() == pytest.approx(theirs.Length(), rel=1e-9, abs=1e-12)
 
 
-# The format library's GeoJSON reader decodes non-ASCII text wrongly, until terrio's own driver
-# lands.
-@pytest.mark.xfail(reason="GeoJSON reader text decoding", strict=False)
 def test_geojson_matches_ogr_properties(data_dir, ogr):
     path = data_dir / "countries.geojson"
     if not path.exists():

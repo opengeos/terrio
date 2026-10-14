@@ -416,7 +416,8 @@ fn xsd(layer: &Layer) -> String {
     s
 }
 
-fn to_string(layer: &Layer, schema: &str) -> String {
+/// Encodes a layer as GML 3.2 referring to the application schema `schema`.
+pub fn to_string(layer: &Layer, schema: &str) -> String {
     let name = element_name(&layer.name);
     let code = super::naming_epsg(layer);
     let geographic = SpatialRef::from_layer(layer).is_geographic();

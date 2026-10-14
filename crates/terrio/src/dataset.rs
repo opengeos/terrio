@@ -221,8 +221,11 @@ pub(crate) fn fix_layer(mut layer: Layer, path: &str, driver: VectorDriver) -> L
     if layer.name.is_empty() || (layer.name == "layer" && driver != VectorDriver::GPKG) {
         layer.name = stem.to_string();
     }
-    // Re-identify the EPSG code of stored WKT (such as a shapefile's ESRI .prj) the way GDAL does.
+    // Re-identify the EPSG code of stored WKT (such as a shapefile's ESRI .prj) the way GDAL does,
+    // unless the WKT is the registry's own definition of the code the layer has.
+    let registry = layer.crs_epsg().and_then(|c| wbprojection::to_ogc_wkt(c).ok());
     if let Some(wkt) = layer.crs_wkt().map(str::to_string)
+        && registry.as_deref() != Some(wkt.as_str())
         && let Some(code) = crate::crs::identify_epsg(&wkt)
     {
         layer.set_crs_epsg(Some(code));

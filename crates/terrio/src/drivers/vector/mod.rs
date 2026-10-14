@@ -60,6 +60,48 @@ pub(crate) fn write(layer: &Layer, path: &str, driver: VectorDriver, options: &V
     Ok(true)
 }
 
+/// Reads a dataset held in memory with terrio's own driver for the format. `name` is the file
+/// name the bytes came from (its stem names single layers). `None` for formats terrio cannot read
+/// from memory itself: those made of several files (Shapefile, MapInfo) and GeoPackage.
+pub(crate) fn read_bytes(bytes: Vec<u8>, name: &str, driver: VectorDriver, options: &VectorOpenOptions) -> Result<Option<Vec<Layer>>> {
+    let stem = std::path::Path::new(name).file_stem().and_then(|s| s.to_str()).unwrap_or("layer");
+    Ok(Some(match driver {
+        VectorDriver::FlatGeobuf => vec![flatgeobuf::parse(&bytes)?],
+        VectorDriver::GeoJSON => vec![geojson::parse(&bytes, stem)?],
+        VectorDriver::CSV => {
+            let tsv = crate::formats::extension(name).as_deref() == Some("tsv");
+            let options = csv::CsvOptions { separator: options.csv.separator.or(tsv.then_some(b'\t')), ..options.csv.clone() };
+            vec![csv::parse(&xml::decode(&bytes), stem, &options)?]
+        }
+        VectorDriver::Parquet => vec![geoparquet::parse(bytes, stem)?],
+        VectorDriver::GML => gml::parse(&xml::parse(&xml::decode(&bytes))?, None)?,
+        VectorDriver::GPX => gpx::parse(&xml::decode(&bytes))?,
+        VectorDriver::KML => kml::parse(&xml::decode(&bytes), stem)?,
+        VectorDriver::KMZ => kml::parse_kmz(bytes, stem)?,
+        VectorDriver::TopoJSON => topojson::parse(&bytes)?,
+        VectorDriver::OSM => osm::parse(bytes)?,
+        _ => return Ok(None),
+    }))
+}
+
+/// Encodes layers with terrio's own driver for the format. `None` for formats made of several
+/// files (Shapefile, MapInfo, GML with its schema). Formats holding one layer take the first.
+pub(crate) fn write_bytes(layers: &[Layer], driver: VectorDriver, options: &VectorWriteOptions) -> Result<Option<Vec<u8>>> {
+    let Some(first) = layers.first() else { return Err(crate::Error::InvalidArgument("no layers to write".into())) };
+    Ok(Some(match driver {
+        VectorDriver::GPKG => geopackage::to_bytes(layers)?,
+        VectorDriver::GPX => gpx::layers_to_string(layers)?.into_bytes(),
+        VectorDriver::KML => kml::to_string(layers)?.into_bytes(),
+        VectorDriver::KMZ => kml::kmz_bytes(layers)?,
+        VectorDriver::TopoJSON => topojson::to_string(layers)?.into_bytes(),
+        VectorDriver::FlatGeobuf => flatgeobuf::to_bytes(first)?,
+        VectorDriver::GeoJSON => geojson::to_string(first, &options.geojson)?.into_bytes(),
+        VectorDriver::CSV => csv::to_string(first, &options.csv)?.into_bytes(),
+        VectorDriver::Parquet => geoparquet::to_bytes(first)?,
+        _ => return Ok(None),
+    }))
+}
+
 /// Fixes what the format library got wrong in a layer it read: wbvector takes a GeoPackage's
 /// `srs_id` for an EPSG code even when the organization is not EPSG (GDAL's 99999 undefined SRS,
 /// custom definitions from 100000 up), and returns a regenerated WKT without the definition's
@@ -91,6 +133,15 @@ pub(crate) fn trusted_epsg(layer: &Layer) -> Option<u32> {
         (code, None) => code,
         (Some(code), Some(wkt)) if wbprojection::to_ogc_wkt(code).is_ok_and(|w| w == wkt) => Some(code),
         (_, Some(wkt)) => wbprojection::epsg::epsg_from_wkt(wkt),
+    }
+}
+
+/// The WKT to write for a layer's CRS: GDAL-style WKT with the EPSG authority when the code is
+/// trusted (so that GDAL and PROJ recognize it), and the stored definition otherwise.
+pub(crate) fn output_wkt(layer: &Layer) -> Option<String> {
+    match trusted_epsg(layer).and_then(|c| crate::crs::SpatialRef::from_epsg(c).ok()) {
+        Some(s) => super::wkt::gdal_wkt(&s),
+        None => crate::crs::SpatialRef::from_layer(layer).to_wkt(),
     }
 }
 

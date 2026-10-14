@@ -36,13 +36,18 @@ pub fn read(path: &str) -> Result<Vec<Layer>> {
 /// Reads a KMZ file: its main document (`doc.kml`, or the first `.kml` file), and the documents
 /// in the archive it links to (GDAL writes one per layer under `layers/`).
 pub fn read_kmz(path: &str) -> Result<Vec<Layer>> {
-    let mut zip = zip::ZipArchive::new(std::fs::File::open(path)?)?;
+    parse_kmz(std::fs::read(path)?, &stem(path))
+}
+
+/// Parses a KMZ archive held in memory. `default_name` names a root layer without a name.
+pub fn parse_kmz(bytes: Vec<u8>, default_name: &str) -> Result<Vec<Layer>> {
+    let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes))?;
     let names: Vec<String> = zip.file_names().filter_map(|n| n.ok().map(|n| n.into_owned())).collect();
     let main = names
         .iter()
         .find(|n| n.eq_ignore_ascii_case("doc.kml"))
         .or_else(|| names.iter().find(|n| n.to_ascii_lowercase().ends_with(".kml")))
-        .ok_or_else(|| Error::InvalidData(format!("'{path}' holds no KML document")))?
+        .ok_or_else(|| Error::InvalidData("the KMZ archive holds no KML document".into()))?
         .clone();
     let mut read_member = |name: &str| -> Result<String> {
         let mut bytes = Vec::new();
@@ -50,7 +55,7 @@ pub fn read_kmz(path: &str) -> Result<Vec<Layer>> {
         Ok(xml::decode(&bytes))
     };
     let text = read_member(&main)?;
-    let mut layers = parse(&text, &stem(path))?;
+    let mut layers = parse(&text, default_name)?;
     let root = xml::parse(&text)?;
     let mut links = Vec::new();
     root.find_all("NetworkLink", &mut links);
@@ -340,6 +345,12 @@ pub fn write(layers: &[Layer], path: &str) -> Result<()> {
 /// Writes layers as a KMZ archive laid out as GDAL writes it: a `doc.kml` linking to one
 /// document per layer under `layers/`.
 pub fn write_kmz(layers: &[Layer], path: &str) -> Result<()> {
+    std::fs::write(path, kmz_bytes(layers)?)?;
+    Ok(())
+}
+
+/// Encodes layers as a KMZ archive.
+pub fn kmz_bytes(layers: &[Layer]) -> Result<Vec<u8>> {
     let mut buf = std::io::Cursor::new(Vec::new());
     {
         let mut zip = zip::ZipWriter::new(&mut buf);
@@ -370,8 +381,7 @@ pub fn write_kmz(layers: &[Layer], path: &str) -> Result<()> {
         std::io::Write::write_all(&mut zip, doc.as_bytes())?;
         zip.finish()?;
     }
-    std::fs::write(path, buf.into_inner())?;
-    Ok(())
+    Ok(buf.into_inner())
 }
 
 const HEADER: &str = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<kml xmlns=\"http://www.opengis.net/kml/2.2\">\n";
@@ -419,7 +429,8 @@ fn schema(l: &Layer) -> String {
     s
 }
 
-fn to_string(layers: &[Layer]) -> Result<String> {
+/// Encodes layers as a KML document.
+pub fn to_string(layers: &[Layer]) -> Result<String> {
     let mut s = String::from(HEADER);
     s.push_str("<Document id=\"root_doc\">\n");
     let layers: Vec<std::borrow::Cow<Layer>> = layers.iter().map(in_wgs84).collect::<Result<_>>()?;

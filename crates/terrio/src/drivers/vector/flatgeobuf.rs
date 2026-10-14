@@ -273,7 +273,7 @@ pub fn to_bytes(layer: &Layer) -> Result<Vec<u8>> {
     let srs = SpatialRef::from_layer(layer);
     let code = super::trusted_epsg(layer);
     let crs = (!srs.is_unknown()).then(|| {
-        let wkt = srs.to_wkt().map(|w| fbb.create_string(&w));
+        let wkt = super::output_wkt(layer).map(|w| fbb.create_string(&w));
         let org = code.map(|_| fbb.create_string("EPSG"));
         Crs::create(&mut fbb, &CrsArgs { org, code: code.unwrap_or(0) as i32, wkt, ..Default::default() })
     });

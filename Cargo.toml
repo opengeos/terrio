@@ -26,6 +26,7 @@ flatbuffers = "=24.12.23"
 parquet = { version = "58", default-features = false, features = ["arrow", "snap"] }
 arrow-array = "58"
 arrow-schema = "58"
+bytes = "1"
 quick-xml = "0.42"
 # OpenStreetMap PBF decoding, the version wbvector uses.
 osmpbfreader = "0.16"

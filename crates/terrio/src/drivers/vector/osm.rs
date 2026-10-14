@@ -249,7 +249,12 @@ struct Way {
 
 /// Reads an OSM PBF file into GDAL's five layers.
 pub fn read(path: &str) -> Result<Vec<Layer>> {
-    let mut reader = OsmPbfReader::new(std::fs::File::open(path)?);
+    parse(std::fs::read(path)?)
+}
+
+/// Parses an OSM PBF file held in memory into GDAL's five layers.
+pub fn parse(bytes: Vec<u8>) -> Result<Vec<Layer>> {
+    let mut reader = OsmPbfReader::new(std::io::Cursor::new(bytes));
     let mut nodes: HashMap<i64, Coord> = HashMap::new();
     let mut ways: HashMap<i64, Way> = HashMap::new();
     let mut way_order: Vec<i64> = Vec::new();

@@ -279,7 +279,7 @@ pub fn write(layer: &Layer, path: &str) -> Result<()> {
     std::fs::write(base.with_extension("dbf"), encode_dbf(layer)?)?;
     std::fs::write(base.with_extension("cpg"), "UTF-8")?;
     // The source definition when there is one; GDAL reads OGC WKT in `.prj` files too.
-    let prj = SpatialRef::from_layer(layer).to_wkt();
+    let prj = super::output_wkt(layer);
     let prj_path = base.with_extension("prj");
     match prj {
         Some(wkt) => std::fs::write(prj_path, wkt)?,

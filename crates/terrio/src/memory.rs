@@ -8,10 +8,10 @@
 //! format reads and writes exactly as from files. WebAssembly builds have no file system and use
 //! in-memory codecs instead, for the formats that have one:
 //!
-//! - reading: GeoTIFF, Esri ASCII grid, GeoJSON, TopoJSON, FlatGeobuf, KML, KMZ, GML, GPX, and
-//!   zip archives of these;
+//! - reading: GeoTIFF, Esri ASCII grid, GeoJSON, TopoJSON, FlatGeobuf, CSV, GeoParquet, KML, KMZ,
+//!   GML, GPX, OSM PBF, and zip archives of these;
 //! - writing: GeoTIFF and COG (with lossless compressions), Esri ASCII grid, GeoJSON, TopoJSON,
-//!   FlatGeobuf, KML, KMZ, GML and GPX.
+//!   FlatGeobuf, CSV, GeoParquet, GeoPackage, KML, KMZ and GPX.
 //!
 //! Formats made of several files (a shapefile's `.shp`, `.dbf`, `.prj`...) are written as a zip
 //! archive of them.
@@ -95,7 +95,7 @@ pub fn write_raster_bytes(ds: &RasterDataset, name: &str, options: &RasterWriteO
 }
 
 /// Writes vector layers to bytes. `name` is a file name whose extension tells the format, unless
-/// the options name the driver. Only GeoPackage holds several layers.
+/// the options name the driver. GeoPackage, GPX, KML, KMZ and TopoJSON hold several layers.
 pub fn write_vector_bytes(layers: &[Layer], name: &str, options: &VectorWriteOptions) -> Result<Vec<u8>> {
     let driver = match options.driver {
         Some(d) => d,
@@ -107,15 +107,11 @@ pub fn write_vector_bytes(layers: &[Layer], name: &str, options: &VectorWriteOpt
         let dir = native::temp_dir()?;
         let path = dir.path().join(native::file_name(name, driver.info().extensions.first().copied().unwrap_or("dat")));
         let path = path.to_str().ok_or_else(|| Error::InvalidArgument(format!("invalid file name '{name}'")))?;
-        crate::write_vector(layers, path, &VectorWriteOptions { driver: Some(driver) })?;
+        crate::write_vector(layers, path, &VectorWriteOptions { driver: Some(driver), ..options.clone() })?;
         native::collect(dir.path(), path)
     }
     #[cfg(target_arch = "wasm32")]
-    match layers {
-        [] => Err(Error::InvalidArgument("no layers to write".into())),
-        [layer] => codec::write_vector(layer, driver),
-        _ => Err(Error::InvalidArgument(format!("the {} format holds one layer: write one layer at a time", driver.name()))),
-    }
+    codec::write_vector(layers, driver, options)
 }
 
 /// Native builds: bytes go through a temporary directory and the file drivers.
@@ -197,6 +193,9 @@ pub(crate) mod codec {
         if bytes.starts_with(b"fgb") {
             return Some(VectorDriver::FlatGeobuf);
         }
+        if bytes.starts_with(b"PAR1") {
+            return Some(VectorDriver::Parquet);
+        }
         let head = String::from_utf8_lossy(&bytes[..bytes.len().min(1024)]).to_ascii_lowercase();
         let head = head.trim_start_matches('\u{feff}').trim_start();
         if head.starts_with('{') {
@@ -210,10 +209,6 @@ pub(crate) mod codec {
             }
         }
         None
-    }
-
-    fn text(bytes: &[u8]) -> Result<&str> {
-        std::str::from_utf8(bytes).map_err(|e| Error::InvalidData(format!("not UTF-8 text: {e}")))
     }
 
     /// Opens a dataset from bytes with the in-memory codecs.
@@ -231,27 +226,21 @@ pub(crate) mod codec {
             return Ok(Dataset::Raster(RasterDataset { raster, driver: RasterDriver::AAIGrid, has_nodata: true }));
         }
         let driver = vector_driver(&bytes, name).ok_or_else(|| Error::Unsupported(format!("'{name}': format not recognized")))?;
-        let layer = match driver {
-            VectorDriver::GeoJSON => wbvector::geojson::parse_str(text(&bytes)?)?,
-            VectorDriver::TopoJSON => wbvector::topojson::parse_str(text(&bytes)?)?,
-            VectorDriver::FlatGeobuf => wbvector::flatgeobuf::from_bytes(&bytes)?,
-            VectorDriver::KML => wbvector::kml::parse_str(text(&bytes)?)?,
-            VectorDriver::KMZ => wbvector::kmz::from_bytes(&bytes)?,
-            VectorDriver::GML => wbvector::gml::parse_str(text(&bytes)?)?,
-            VectorDriver::GPX => wbvector::gpx::parse_str(text(&bytes)?)?,
-            d => {
-                return Err(Error::Unsupported(format!(
-                    "the {} format cannot be read from memory in this build (in memory: GeoTIFF, AAIGrid, GeoJSON, TopoJSON, \
-                     FlatGeobuf, KML, KMZ, GML, GPX)",
-                    d.name()
-                )));
-            }
+        let Some(layers) = crate::drivers::vector::read_bytes(bytes, name, driver, options)? else {
+            return Err(Error::Unsupported(format!(
+                "the {} format cannot be read from memory in this build (in memory: GeoTIFF, AAIGrid, GeoJSON, TopoJSON, \
+                 FlatGeobuf, CSV, GeoParquet, KML, KMZ, GML, GPX, OSM PBF)",
+                driver.name()
+            )));
         };
-        let layer = crate::dataset::fix_layer(layer, name, driver);
-        if !options.layers.is_empty() && !options.layers.contains(&layer.name) {
-            return Err(Error::InvalidArgument(format!("no layer named {} (layers: {})", options.layers.join(", "), layer.name)));
+        let layers: Vec<Layer> = layers.into_iter().map(|l| crate::dataset::fix_layer(l, name, driver)).collect();
+        let names: Vec<String> = layers.iter().map(|l| l.name.clone()).collect();
+        let layers: Vec<Layer> =
+            if options.layers.is_empty() { layers } else { layers.into_iter().filter(|l| options.layers.contains(&l.name)).collect() };
+        if layers.is_empty() {
+            return Err(Error::InvalidArgument(format!("no layer named {} (layers: {})", options.layers.join(", "), names.join(", "))));
         }
-        Ok(Dataset::Vector(VectorDataset { layers: vec![layer], driver }))
+        Ok(Dataset::Vector(VectorDataset { layers, driver }))
     }
 
     /// Opens the main dataset of a zip archive held in memory.
@@ -306,30 +295,14 @@ pub(crate) mod codec {
         }
     }
 
-    /// Writes a layer to bytes with the in-memory codecs.
-    pub(crate) fn write_vector(layer: &Layer, driver: VectorDriver) -> Result<Vec<u8>> {
-        // GeoJSON and KML are WGS 84 by definition.
-        let wgs84 = || -> Result<Layer> {
-            let crs = crate::crs::SpatialRef::from_layer(layer);
-            if crs.is_unknown() || crs.epsg == Some(4326) {
-                return Ok(layer.clone());
-            }
-            crate::vector::reproject_layer(layer, &crate::crs::SpatialRef::from_epsg(4326)?)
-        };
-        Ok(match driver {
-            VectorDriver::GeoJSON => wbvector::geojson::to_string(&wgs84()?).into_bytes(),
-            VectorDriver::TopoJSON => wbvector::topojson::to_string(layer)?.into_bytes(),
-            VectorDriver::FlatGeobuf => wbvector::flatgeobuf::to_bytes(layer),
-            VectorDriver::KML => wbvector::kml::to_string(&wgs84()?).into_bytes(),
-            VectorDriver::KMZ => wbvector::kmz::to_bytes(layer)?,
-            VectorDriver::GML => wbvector::gml::to_string(layer).into_bytes(),
-            VectorDriver::GPX => wbvector::gpx::to_string(layer)?.into_bytes(),
-            d => {
-                return Err(Error::Unsupported(format!(
-                    "the {} format cannot be written to memory in this build (GeoJSON, TopoJSON, FlatGeobuf, KML, KMZ, GML, GPX)",
-                    d.name()
-                )));
-            }
+    /// Writes layers to bytes with the in-memory codecs.
+    pub(crate) fn write_vector(layers: &[Layer], driver: VectorDriver, options: &VectorWriteOptions) -> Result<Vec<u8>> {
+        crate::drivers::vector::write_bytes(layers, driver, options)?.ok_or_else(|| {
+            Error::Unsupported(format!(
+                "the {} format cannot be written to memory in this build (GeoJSON, TopoJSON, FlatGeobuf, CSV, GeoParquet, \
+                 GeoPackage, KML, KMZ, GPX)",
+                driver.name()
+            ))
         })
     }
 }
@@ -394,8 +367,14 @@ mod tests {
         assert_eq!(v.layers[0].name, "pts");
         assert_eq!(v.layers[0].features.len(), 2);
         assert_eq!(v.layers[0].crs_epsg(), Some(4326));
-        for (name, driver) in [("o.fgb", VectorDriver::FlatGeobuf), ("o.geojson", VectorDriver::GeoJSON), ("o.kml", VectorDriver::KML)] {
-            let bytes = codec::write_vector(&v.layers[0], driver).unwrap();
+        for (name, driver) in [
+            ("o.fgb", VectorDriver::FlatGeobuf),
+            ("o.geojson", VectorDriver::GeoJSON),
+            ("o.kml", VectorDriver::KML),
+            ("o.csv", VectorDriver::CSV),
+            ("o.parquet", VectorDriver::Parquet),
+        ] {
+            let bytes = codec::write_vector(&v.layers[..1], driver, &Default::default()).unwrap();
             let Dataset::Vector(back) = codec::open(bytes, name, &Default::default()).unwrap() else { panic!() };
             assert_eq!(back.layers[0].features.len(), 2, "{name}");
             assert_eq!(back.layers[0].features[0].geometry, v.layers[0].features[0].geometry, "{name}");
@@ -423,6 +402,6 @@ mod tests {
         let zip = zip::ZipArchive::new(std::io::Cursor::new(shp)).unwrap();
         let mut names: Vec<String> = zip.file_names().map(|n| n.unwrap().to_string()).collect();
         names.sort();
-        assert_eq!(&names[..], &["p.dbf", "p.prj", "p.shp", "p.shx"][..names.len().min(4)]);
+        assert_eq!(names, ["p.cpg", "p.dbf", "p.prj", "p.shp", "p.shx"]);
     }
 }
