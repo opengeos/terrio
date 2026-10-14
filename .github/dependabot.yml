@@ -1,0 +1,21 @@
+version: 2
+updates:
+  # The Rust workspace (library, CLI, Python and JS bindings share one Cargo.lock). Minor and
+  # patch updates come as one weekly PR; major updates come one per PR, since some crates
+  # (parquet, arrow, flatgeobuf) must stay on the versions wbraster and wbvector use.
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      cargo:
+        update-types: [minor, patch]
+    open-pull-requests-limit: 10
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
