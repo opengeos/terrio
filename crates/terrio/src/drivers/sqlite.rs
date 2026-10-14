@@ -57,6 +57,9 @@ impl Table {
     }
 }
 
+/// A schema entry: `(type, name, table, root page, sql)`.
+pub(crate) type SchemaEntry = (String, String, String, u32, String);
+
 /// An SQLite database file in memory.
 pub(crate) struct Db {
     data: Vec<u8>,
@@ -204,21 +207,42 @@ impl Db {
         out
     }
 
-    /// Reads a whole table by name.
-    pub(crate) fn table(&self, name: &str) -> Result<Table> {
+    /// The schema: `(type, name, table, root page, sql)` of every table, index, view and trigger.
+    pub(crate) fn schema(&self) -> Result<Vec<SchemaEntry>> {
         let mut master = Vec::new();
         self.scan(1, &mut master, 0)?;
-        for (_, payload) in master {
-            let r = Self::record(&payload);
-            let is_table = r.first().and_then(Value::as_str) == Some("table");
-            if !is_table || !r.get(1).and_then(Value::as_str).is_some_and(|n| n.eq_ignore_ascii_case(name)) {
+        Ok(master
+            .into_iter()
+            .map(|(_, payload)| {
+                let r = Self::record(&payload);
+                let text = |i: usize| r.get(i).and_then(Value::as_str).unwrap_or_default().to_string();
+                (text(0), text(1), text(2), r.get(3).and_then(Value::as_i64).unwrap_or(0) as u32, text(4))
+            })
+            .collect())
+    }
+
+    /// The `CREATE TABLE` statement of a table.
+    pub(crate) fn table_sql(&self, name: &str) -> Option<String> {
+        self.schema().ok()?.into_iter().find(|(t, n, ..)| t == "table" && n.eq_ignore_ascii_case(name)).map(|r| r.4)
+    }
+
+    /// Reads a whole table by name.
+    pub(crate) fn table(&self, name: &str) -> Result<Table> {
+        for (kind, table, _, root, sql) in self.schema()? {
+            if kind != "table" || !table.eq_ignore_ascii_case(name) {
                 continue;
             }
-            let root = r.get(3).and_then(Value::as_i64).ok_or_else(|| bad("root page"))? as u32;
-            let sql = r.get(4).and_then(Value::as_str).unwrap_or_default();
+            if root == 0 {
+                return Err(bad(&format!("'{name}' is a virtual table")));
+            }
+            let sql = sql.as_str();
             let columns = columns(sql);
             // An INTEGER PRIMARY KEY column is the rowid, stored as NULL.
             let rowid_col = integer_primary_key(sql, &columns);
+            let without_rowid = sql.to_ascii_uppercase().split_whitespace().collect::<Vec<_>>().join(" ").contains("WITHOUT ROWID");
+            if without_rowid {
+                return Err(bad(&format!("'{name}' is a WITHOUT ROWID table, which is not supported")));
+            }
             let mut rows = Vec::new();
             self.scan(root, &mut rows, 0)?;
             let rows = rows
@@ -269,22 +293,123 @@ fn column_defs(sql: &str) -> Vec<String> {
         .collect()
 }
 
-/// The column names of a `CREATE TABLE` statement.
-fn columns(sql: &str) -> Vec<String> {
-    column_defs(sql).iter().filter_map(|d| d.split_whitespace().next()).map(|n| n.trim_matches(['"', '`', '[', ']']).to_string()).collect()
+/// Splits a column definition into its (unquoted) name and the rest: the declared type and
+/// constraints.
+fn split_column(def: &str) -> (String, &str) {
+    let def = def.trim();
+    let close = match def.chars().next() {
+        Some('"') => Some('"'),
+        Some('`') => Some('`'),
+        Some('[') => Some(']'),
+        Some('\'') => Some('\''),
+        _ => None,
+    };
+    match close {
+        Some(c) => {
+            // Quoted: up to the closing quote, a doubled quote standing for one.
+            let mut name = String::new();
+            let mut chars = def.char_indices().skip(1).peekable();
+            while let Some((i, ch)) = chars.next() {
+                if ch == c {
+                    if c != ']' && chars.peek().is_some_and(|&(_, n)| n == c) {
+                        chars.next();
+                        name.push(c);
+                        continue;
+                    }
+                    return (name, &def[i + ch.len_utf8()..]);
+                }
+                name.push(ch);
+            }
+            (name, "")
+        }
+        None => {
+            let end = def.find(|c: char| c.is_whitespace()).unwrap_or(def.len());
+            (def[..end].to_string(), &def[end..])
+        }
+    }
 }
 
-/// The column that aliases the rowid (`INTEGER PRIMARY KEY`).
-fn integer_primary_key(sql: &str, _columns: &[String]) -> Option<usize> {
-    column_defs(sql).iter().position(|d| {
-        let d = d.to_ascii_uppercase();
-        d.split_whitespace().nth(1) == Some("INTEGER") && d.contains("PRIMARY KEY")
+/// The columns of a `CREATE TABLE` statement: names and declared types (`TEXT(10)`, `MEDIUMINT`,
+/// empty when none).
+pub(crate) fn column_types(sql: &str) -> Vec<(String, String)> {
+    const CONSTRAINTS: [&str; 9] = ["PRIMARY", "NOT", "NULL", "UNIQUE", "CHECK", "DEFAULT", "COLLATE", "REFERENCES", "CONSTRAINT"];
+    column_defs(sql)
+        .iter()
+        .map(|d| {
+            let (name, rest) = split_column(d);
+            let mut ty = String::new();
+            let mut depth = 0;
+            for word in rest.split_whitespace() {
+                if depth == 0 && CONSTRAINTS.contains(&word.to_ascii_uppercase().as_str()) {
+                    break;
+                }
+                depth += word.matches('(').count() as i32 - word.matches(')').count() as i32;
+                if !ty.is_empty() {
+                    ty.push(' ');
+                }
+                ty.push_str(word);
+            }
+            (name, ty)
+        })
+        .collect()
+}
+
+/// The column names of a `CREATE TABLE` statement.
+fn columns(sql: &str) -> Vec<String> {
+    column_types(sql).into_iter().map(|(n, _)| n).collect()
+}
+
+/// The column of a `CREATE TABLE` statement that aliases the rowid.
+pub(crate) fn rowid_column(sql: &str) -> Option<usize> {
+    integer_primary_key(sql, &columns(sql))
+}
+
+/// The column that aliases the rowid (`INTEGER PRIMARY KEY`), as SQLite decides it: a column
+/// declared `INTEGER` with a `PRIMARY KEY` constraint, or named by a table `PRIMARY KEY (column)`
+/// constraint.
+fn integer_primary_key(sql: &str, columns: &[String]) -> Option<usize> {
+    let types = column_types(sql);
+    let pk_in_def = column_defs(sql)
+        .iter()
+        .zip(&types)
+        .position(|(d, (_, t))| t.eq_ignore_ascii_case("INTEGER") && split_column(d).1.to_ascii_uppercase().contains("PRIMARY KEY"));
+    pk_in_def.or_else(|| {
+        // A table constraint `PRIMARY KEY (column)` on a single INTEGER column.
+        let upper = sql.to_ascii_uppercase();
+        let at = upper.rfind("PRIMARY KEY")?;
+        let rest = &sql[at + 11..];
+        let inner = rest.trim_start().strip_prefix('(')?.split(')').next()?;
+        if inner.contains(',') {
+            return None;
+        }
+        let (name, _) = split_column(inner);
+        let i = columns.iter().position(|c| c.eq_ignore_ascii_case(&name))?;
+        types[i].1.eq_ignore_ascii_case("INTEGER").then_some(i)
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_quoted_columns_and_types() {
+        let sql = r#"CREATE TABLE "a b" ( "fid" INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, "geom" MULTIPOLYGON, "my ""x"" col" TEXT(10) NOT NULL DEFAULT 'a', n MEDIUMINT, d DATETIME DEFAULT (strftime('%Y','now')))"#;
+        let t = column_types(sql);
+        assert_eq!(
+            t,
+            vec![
+                ("fid".to_string(), "INTEGER".to_string()),
+                ("geom".into(), "MULTIPOLYGON".into()),
+                ("my \"x\" col".into(), "TEXT(10)".into()),
+                ("n".into(), "MEDIUMINT".into()),
+                ("d".into(), "DATETIME".into())
+            ]
+        );
+        assert_eq!(integer_primary_key(sql, &columns(sql)), Some(0));
+        let sql = "CREATE TABLE t (id INTEGER NOT NULL, v TEXT, CONSTRAINT pk PRIMARY KEY (id))";
+        assert_eq!(integer_primary_key(sql, &columns(sql)), Some(0));
+    }
 
     #[test]
     fn parses_column_lists() {

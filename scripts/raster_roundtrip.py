@@ -57,13 +57,13 @@ FORMATS = {
     "XYZ": (".xyz", [], {"Byte", "Int16", "UInt16", "Int32", "Float32"}, 1, False, True),
     "Zarr": (".zarr", [], None, 8, False, True),
     "netCDF": (".nc", ["FORMAT=NC4"], {"Byte", "Int8", "Int16", "UInt16", "Int32", "UInt32", "Int64", "UInt64", "Float32", "Float64"}, 8, False, True),
-    "GPKG": (".gpkg", [], {"Byte"}, 4, False, False),
+    "GPKG": (".gpkg", [], {"Byte", "Int16", "UInt16", "Float32"}, 4, False, True),
 }
 
 # What a format cannot hold, so GDAL's read-back of a file differs from the source whoever
 # writes it: the data type (types inferred from the values), or the nodata value.
 NO_TYPE = {"AAIGrid", "XYZ"}
-NO_NODATA = {"XYZ", "GSBG", "SAGA", "PNG", "JPEG", "GPKG"}
+NO_NODATA = {"XYZ", "GSBG", "SAGA", "PNG", "JPEG"}
 
 # Types a format stores as another one (GDAL does the same): source type -> type read back.
 TYPE_CHANGES = {"netCDF": {"UInt32": "Float64", "Int64": "Float64", "UInt64": "Float64"}}
@@ -275,6 +275,9 @@ def fits(fmt, dtype, bands):
         True when it can.
     """
     _, _, types, max_bands, _, _ = FORMATS[fmt]
+    # GeoPackage gridded coverages (all but Byte) hold one band.
+    if fmt == "GPKG" and dtype != "Byte":
+        max_bands = 1
     return (types is None or dtype in types) and bands <= max_bands
 
 

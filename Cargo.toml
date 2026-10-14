@@ -39,6 +39,8 @@ lz4_flex = { version = "0.11", default-features = false, features = ["safe-decod
 ruzstd = "0.8"
 netcdf-reader = { version = "0.9", default-features = false, features = ["netcdf4"] }
 jpeg-decoder = { version = "0.3", default-features = false }
+# GeoPackage JPEG tiles; the version wbraster already uses.
+jpeg-encoder = "0.7"
 openjp2 = { version = "0.6", default-features = false, features = ["std"] }
 zstd = "0.13"
 thiserror = "2"

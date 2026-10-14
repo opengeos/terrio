@@ -32,9 +32,9 @@ M), typed attributes and a schema.
 The `wbraster`, `wbvector` and `wbprojection` crates supply the data model, many codecs and the
 projection engine. Testing them against GDAL found codecs that decoded wrong pixels or lost
 georeferencing, so terrio has its own drivers for GeoTIFF, JPEG 2000, Zarr, netCDF, HFA,
-GeoPackage tiles, the Esri formats, FlatGeobuf, CSV, GeoJSON, GeoParquet, GML, GPX, KML, TopoJSON,
-MapInfo, OSM and shapefile writing. Upstream bugs are listed in the pull requests that replaced
-them.
+GeoPackage (on its own SQLite file reader and writer), the Esri formats, FlatGeobuf, CSV,
+GeoJSON, GeoParquet, GML, GPX, KML, TopoJSON, MapInfo, OSM and shapefile writing. Upstream bugs
+are listed in the pull requests that replaced them.
 
 ## Pure Rust
 

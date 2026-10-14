@@ -72,6 +72,14 @@ fn geopackage_layers() {
     assert_eq!(terrio::list_layers(&p).unwrap(), vec!["buildings", "roads"]);
     let v = terrio::open_vector(&p, &Default::default()).unwrap();
     assert_eq!(v.layers.iter().map(|l| l.len()).collect::<Vec<_>>(), vec![540, 78]);
+    // From memory, as from the file.
+    let m = terrio::memory::open_vector_bytes(std::fs::read(&p).unwrap(), "multi.gpkg", &Default::default()).unwrap();
+    assert_eq!(m.layers.iter().map(|l| l.len()).collect::<Vec<_>>(), vec![540, 78]);
+    // Declared field types, as GDAL reads them.
+    let Some(us) = vector("UScounties.gpkg") else { return };
+    let l = &us.layers[0];
+    assert_eq!(l.len(), 3221);
+    assert!(l.features.iter().all(|f| f.geometry.is_some()));
 }
 
 #[test]
@@ -180,6 +188,62 @@ fn geopackage_gridded_coverage_at_full_resolution() {
     assert_eq!(ds.raster.data_type, terrio::DataType::F32);
     assert_close(ds.geo_transform()[1], 33.239_125_326_623_25, "pixel width");
     assert_eq!(ds.crs().epsg, Some(3857));
+}
+
+#[test]
+fn geopackage_rasters_written_by_terrio_read_back() {
+    let Some(p) = data("srtm_sub.tif") else { return };
+    let ds = terrio::open_raster(&p).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    // Int16 as a gridded coverage (16-bit PNG tiles), Float32 as TIFF tiles.
+    for (name, t) in [("i16.gpkg", terrio::DataType::I16), ("f32.gpkg", terrio::DataType::F32)] {
+        let mut src = ds.clone();
+        if t == terrio::DataType::F32 {
+            src.raster.data = wbraster::raster::RasterData::from_f64_vec(t, ds.raster.data.to_f64_vec());
+            src.raster.data_type = t;
+        }
+        let out = dir.path().join(name);
+        let out = out.to_str().unwrap();
+        terrio::write_raster_dataset(&src, out, &Default::default()).unwrap();
+        let back = terrio::open_raster(out).unwrap();
+        assert_eq!(back.raster.data_type, t);
+        assert_eq!(back.raster.data.to_f64_vec(), src.raster.data.to_f64_vec(), "{name}");
+        assert_eq!(back.nodata(), Some(-32768.0));
+        assert_eq!(back.geo_transform(), ds.geo_transform());
+        assert_eq!(back.crs().epsg, Some(4326));
+    }
+    // Byte tiles, four bands.
+    let Some(p) = data("landsat.tif") else { return };
+    let ds = terrio::open_raster(&p).unwrap();
+    let out = dir.path().join("landsat.gpkg");
+    let out = out.to_str().unwrap();
+    terrio::write_raster_dataset(&ds, out, &Default::default()).unwrap();
+    let back = terrio::open_raster(out).unwrap();
+    assert_eq!((back.raster.bands, back.nodata()), (4, Some(0.0)));
+    assert_eq!(back.raster.data.to_f64_vec(), ds.raster.data.to_f64_vec());
+}
+
+#[test]
+fn geopackage_subdatasets() {
+    let Some(p) = data("srtm_sub.tif") else { return };
+    let Some(countries) = vector("countries.geojson") else { return };
+    let raster = terrio::open_raster(&p).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("mixed.gpkg");
+    let out = out.to_str().unwrap();
+    let bytes = terrio::memory::write_vector_bytes(&countries.layers, "mixed.gpkg", &Default::default()).unwrap();
+    std::fs::write(out, bytes).unwrap();
+    let info = terrio::info::info_path(out, &Default::default()).unwrap();
+    let terrio::info::Info::Vector(v) = info else { panic!("not a vector dataset") };
+    assert_eq!(v.layers.len(), 1);
+    assert!(v.subdatasets.is_empty());
+    // A GeoPackage with a raster opens as the raster, and by its subdataset name.
+    let out = dir.path().join("srtm.gpkg");
+    let out = out.to_str().unwrap();
+    terrio::write_raster_dataset(&raster, out, &Default::default()).unwrap();
+    let back = terrio::open_raster(&format!("GPKG:{out}:srtm")).unwrap();
+    assert_eq!(back.raster.data_i16(), raster.raster.data_i16());
+    assert!(terrio::open_raster(&format!("GPKG:{out}:nothing")).is_err());
 }
 
 #[test]

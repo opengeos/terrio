@@ -156,7 +156,7 @@ impl RasterDriver {
             Self::ERS => ("ERS", "ER Mapper", &["ers"], true, true),
             Self::ENVI => ("ENVI", "ENVI Labelled Raster", &["envi", "hdr", "dat", "bsq", "bip"], true, true),
             Self::HFA => ("HFA", "ERDAS Imagine", &["img"], true, false),
-            Self::GPKG => ("GPKG", "GeoPackage Tiles", &["gpkg"], true, false),
+            Self::GPKG => ("GPKG", "GeoPackage Tiles", &["gpkg"], true, true),
             Self::JP2 => ("JP2", "JPEG 2000", &["jp2", "j2k"], true, true),
             Self::PNG => ("PNG", "PNG with World File", &["png"], true, true),
             Self::JPEG => ("JPEG", "JPEG with World File", &["jpg", "jpeg"], true, true),

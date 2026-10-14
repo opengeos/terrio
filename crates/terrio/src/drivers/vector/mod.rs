@@ -7,6 +7,7 @@ pub mod geojson;
 pub mod geopackage;
 pub mod geoparquet;
 pub mod gml;
+pub(crate) mod gpkg_read;
 pub mod gpx;
 pub mod kml;
 pub mod kml_style;
@@ -67,8 +68,8 @@ pub(crate) fn write(layer: &Layer, path: &str, driver: VectorDriver, options: &V
 
 /// Reads a dataset held in memory with terrio's own driver for the format. `name` is the file
 /// name the bytes came from (its stem names single layers). `None` for formats terrio cannot read
-/// from memory itself (GeoPackage). Formats made of several files are read from their main file
-/// alone (a shapefile without attributes or CRS): see [`read_parts`].
+/// from memory itself. Formats made of several files are read from their main file alone (a
+/// shapefile without attributes or CRS): see [`read_parts`].
 pub(crate) fn read_bytes(bytes: Vec<u8>, name: &str, driver: VectorDriver, options: &VectorOpenOptions) -> Result<Option<Vec<Layer>>> {
     if matches!(driver, VectorDriver::Shapefile | VectorDriver::MapInfo) {
         return read_parts(&bytes, name, driver, &|_: &str| None).map(Some);
@@ -89,6 +90,7 @@ pub(crate) fn read_bytes(bytes: Vec<u8>, name: &str, driver: VectorDriver, optio
         VectorDriver::KMZ => kml::parse_kmz(bytes, stem)?,
         VectorDriver::TopoJSON => topojson::parse(&bytes)?,
         VectorDriver::OSM => osm::parse(bytes)?,
+        VectorDriver::GPKG => gpkg_read::parse(bytes, &[])?,
         _ => return Ok(None),
     }))
 }
@@ -133,28 +135,6 @@ pub(crate) fn write_bytes(layers: &[Layer], driver: VectorDriver, options: &Vect
     }))
 }
 
-/// Fixes what the format library got wrong in a layer it read: wbvector takes a GeoPackage's
-/// `srs_id` for an EPSG code even when the organization is not EPSG (GDAL's 99999 undefined SRS,
-/// custom definitions from 100000 up), and returns a regenerated WKT without the definition's
-/// authority (which identifies NAD83 as NAD83(2011)) instead of the stored one.
-pub(crate) fn fix(layer: &mut Layer, driver: VectorDriver) {
-    if driver != VectorDriver::GPKG {
-        return;
-    }
-    let Some(code) = layer.crs_epsg() else { return };
-    if wbprojection::to_ogc_wkt(code).is_ok() {
-        layer.set_crs_wkt(None);
-        return;
-    }
-    match layer.crs_wkt().filter(|w| !w.trim().eq_ignore_ascii_case("undefined")).map(crate::crs::SpatialRef::from_wkt) {
-        Some(s) => layer.set_crs_epsg(s.epsg),
-        None => {
-            layer.set_crs_epsg(None);
-            layer.set_crs_wkt(None);
-        }
-    }
-}
-
 /// The EPSG code to write for a layer's CRS: the layer's code when its WKT is absent or is the
 /// registry's definition of that code, otherwise only a code the WKT itself declares. Codes
 /// identified by matching parameters can be wrong (a US survey foot State Plane CRS matched to
@@ -163,7 +143,8 @@ pub(crate) fn trusted_epsg(layer: &Layer) -> Option<u32> {
     match (layer.crs_epsg(), layer.crs_wkt()) {
         (code, None) => code,
         (Some(code), Some(wkt)) if wbprojection::to_ogc_wkt(code).is_ok_and(|w| w == wkt) => Some(code),
-        (_, Some(wkt)) => wbprojection::epsg::epsg_from_wkt(wkt),
+        // Only CRS codes: the registry can return a datum's or prime meridian's.
+        (_, Some(wkt)) => wbprojection::epsg::epsg_from_wkt(wkt).filter(|c| wbprojection::to_ogc_wkt(*c).is_ok()),
     }
 }
 

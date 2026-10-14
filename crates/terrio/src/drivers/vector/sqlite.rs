@@ -4,7 +4,7 @@
 //!
 //! The format is described at <https://www.sqlite.org/fileformat2.html>.
 
-use crate::{Error, Result};
+use crate::Result;
 
 const PAGE_SIZE: usize = 4096;
 
@@ -173,8 +173,7 @@ impl Pager {
             let ptr = offset + header + 2 * i;
             p[ptr..ptr + 2].copy_from_slice(&(end as u16).to_be_bytes());
         }
-        let start = if end == PAGE_SIZE { 0 } else { end };
-        p[offset + 5..offset + 7].copy_from_slice(&(start as u16).to_be_bytes());
+        p[offset + 5..offset + 7].copy_from_slice(&(end as u16).to_be_bytes());
     }
 }
 
@@ -299,8 +298,9 @@ fn compare(a: &[Value], b: &[Value]) -> std::cmp::Ordering {
     a.len().cmp(&b.len())
 }
 
-/// Builds a one-page index b-tree.
-fn build_index(pager: &mut Pager, table: &Table, columns: &[usize]) -> Result<u32> {
+/// Builds an index b-tree of any size and returns its root page. Index b-trees hold each key
+/// once: in a leaf, or as the divider between two children in an interior node.
+fn build_index(pager: &mut Pager, table: &Table, columns: &[usize]) -> u32 {
     let mut keys: Vec<Vec<Value>> = table
         .rows
         .iter()
@@ -311,26 +311,105 @@ fn build_index(pager: &mut Pager, table: &Table, columns: &[usize]) -> Result<u3
         })
         .collect();
     keys.sort_by(|a, b| compare(a, b));
-    let cells: Vec<Vec<u8>> = keys
-        .iter()
-        .map(|k| {
-            let rec = record(k);
-            let mut c = Vec::new();
-            varint(&mut c, rec.len() as u64);
-            c.extend_from_slice(&rec);
-            c
-        })
-        .collect();
-    if cells.iter().map(|c| c.len() + 2).sum::<usize>() + 8 > PAGE_SIZE {
-        return Err(Error::Unsupported(format!("too many rows in '{}' for its index", table.name)));
+    let max_local = (PAGE_SIZE - 12) * 64 / 255 - 23;
+    let min_local = (PAGE_SIZE - 12) * 32 / 255 - 23;
+    // Each key's payload as stored in a cell (without the child pointer of interior cells).
+    let mut payloads: Vec<Vec<u8>> = Vec::with_capacity(keys.len());
+    for k in &keys {
+        let rec = record(k);
+        let (local, overflow) = pager.payload(&rec, max_local, min_local);
+        let mut c = Vec::with_capacity(local.len() + 13);
+        varint(&mut c, rec.len() as u64);
+        c.extend_from_slice(&local);
+        if let Some(o) = overflow {
+            c.extend_from_slice(&o.to_be_bytes());
+        }
+        payloads.push(c);
     }
-    let n = pager.alloc();
-    pager.write_node(n, 0x0A, &cells, None);
-    Ok(n)
+    // The leaves, with the keys between them as dividers.
+    let (mut children, mut dividers) = split_index_level(payloads, 8, 0, pager, |pager, cells, _| {
+        let n = pager.alloc();
+        pager.write_node(n, 0x0A, &cells, None);
+        n
+    });
+    // Interior levels until one node is left.
+    while children.len() > 1 {
+        let kids = children.clone();
+        let items: Vec<Vec<u8>> = dividers;
+        let (c, d) = split_index_level(items, 12, 4, pager, |pager, cells, range: (usize, usize)| {
+            // Dividers `range.0..range.1`, each with the child on its left; the child after the
+            // last is the right-most pointer.
+            let with_children: Vec<Vec<u8>> = cells
+                .iter()
+                .enumerate()
+                .map(|(j, c)| {
+                    let mut v = kids[range.0 + j].to_be_bytes().to_vec();
+                    v.extend_from_slice(c);
+                    v
+                })
+                .collect();
+            let n = pager.alloc();
+            pager.write_node(n, 0x02, &with_children, Some(kids[range.1]));
+            n
+        });
+        children = c;
+        dividers = d;
+    }
+    children[0]
 }
 
-/// Writes a database file holding the tables, with `user_version` and `application_id` set.
-pub fn write_database(tables: &[Table], user_version: u32, application_id: u32) -> Result<Vec<u8>> {
+/// Groups a level's items into nodes that fit a page, keeping the item after each full node as
+/// the divider passed up to the parent level. `extra` is the size of each cell besides its item
+/// (the child pointer of interior cells); `make` writes a node of items `range.0..range.1` and
+/// returns its page. Returns the nodes and the dividers between them.
+fn split_index_level<F>(items: Vec<Vec<u8>>, header: usize, extra: usize, pager: &mut Pager, mut make: F) -> (Vec<u32>, Vec<Vec<u8>>)
+where
+    F: FnMut(&mut Pager, Vec<Vec<u8>>, (usize, usize)) -> u32,
+{
+    let n = items.len();
+    let mut nodes = Vec::new();
+    let mut dividers = Vec::new();
+    let mut i = 0;
+    loop {
+        let start = i;
+        let mut used = header;
+        let mut cells = Vec::new();
+        while i < n && (cells.is_empty() || used + items[i].len() + extra + 2 <= PAGE_SIZE) {
+            used += items[i].len() + extra + 2;
+            cells.push(items[i].clone());
+            i += 1;
+        }
+        // The last item cannot be a divider (nothing would follow it): this node gives up its own
+        // last item instead.
+        if i + 1 == n && cells.len() > 1 {
+            cells.pop();
+            i -= 1;
+        }
+        nodes.push(make(pager, cells, (start, i)));
+        if i >= n {
+            break;
+        }
+        dividers.push(items[i].clone());
+        i += 1;
+    }
+    (nodes, dividers)
+}
+
+/// A schema entry without storage of its own: a trigger, or a virtual table.
+pub struct SchemaObject {
+    /// `trigger`, or `table` for a virtual table.
+    pub kind: &'static str,
+    /// The object's name.
+    pub name: String,
+    /// The table it belongs to (its own name for a virtual table).
+    pub table: String,
+    /// The `CREATE` statement.
+    pub sql: String,
+}
+
+/// Writes a database file holding the tables and schema objects, with `user_version` and
+/// `application_id` set.
+pub fn write_database(tables: &[Table], objects: &[SchemaObject], user_version: u32, application_id: u32) -> Result<Vec<u8>> {
     let mut pager = Pager { pages: Vec::new() };
     pager.alloc(); // page 1: the schema table's root
     let mut schema_rows = Vec::new();
@@ -345,7 +424,7 @@ pub fn write_database(tables: &[Table], user_version: u32, application_id: u32) 
             Value::Text(t.sql.clone()),
         ]);
         for (i, cols) in t.autoindexes.iter().enumerate() {
-            let root = build_index(&mut pager, t, cols)?;
+            let root = build_index(&mut pager, t, cols);
             schema_rows.push(vec![
                 Value::Text("index".into()),
                 Value::Text(format!("sqlite_autoindex_{}_{}", t.name, i + 1)),
@@ -354,6 +433,15 @@ pub fn write_database(tables: &[Table], user_version: u32, application_id: u32) 
                 Value::Null,
             ]);
         }
+    }
+    for o in objects {
+        schema_rows.push(vec![
+            Value::Text(o.kind.into()),
+            Value::Text(o.name.clone()),
+            Value::Text(o.table.clone()),
+            Value::Int(0),
+            Value::Text(o.sql.clone()),
+        ]);
     }
     let schema: Vec<(i64, Vec<u8>)> = schema_rows.iter().enumerate().map(|(i, r)| (i as i64 + 1, record(r))).collect();
     build_table(&mut pager, &schema, Some(1));
@@ -400,7 +488,7 @@ mod tests {
             (1..=5000).map(|i| (i, vec![Value::Null, Value::Text("x".repeat((i % 7000) as usize)), Value::Real(i as f64)])).collect();
         let t =
             Table { name: "t".into(), sql: "CREATE TABLE t (id INTEGER PRIMARY KEY, s TEXT, v REAL)".into(), rows, autoindexes: vec![] };
-        let db = write_database(&[t], 0, 0).unwrap();
+        let db = write_database(&[t], &[], 0, 0).unwrap();
         assert_eq!(db.len() % PAGE_SIZE, 0);
         assert_eq!(&db[..16], b"SQLite format 3\0");
     }

@@ -247,11 +247,14 @@ def compare_vector(path, t):
         g_epsg = epsg_of(srs.ExportToWkt()) if srs else None
         if tl["crs"]["epsg"] != g_epsg and not (no_gdal_crs and g_epsg is None):
             diffs.append(f"{tl['name']}: epsg {tl['crs']['epsg']} vs {g_epsg}")
-        if n and not is_osm:
+        # Layers without geometries have no extent (GDAL reports zeros).
+        if n and not is_osm and gl.GetGeomType() != ogr.wkbNone:
             e = gl.GetExtent()
             ge = [e[0], e[2], e[1], e[3]]
             te = tl["extent"]
-            if te is None or not all(close(a, b, 1e-6) for a, b in zip(te, ge)):
+            # GDAL reports zeros for a layer whose features have no geometry.
+            no_geometry = te is None and ge == [0.0, 0.0, 0.0, 0.0]
+            if not no_geometry and (te is None or not all(close(a, b, 1e-6) for a, b in zip(te, ge))):
                 diffs.append(f"{tl['name']}: extent {te} vs {ge}")
         gtype = GDAL_TYPES.get(ogr.GT_Flatten(gl.GetGeomType()))
         ttype = tl["geometry_type"].replace(" Z", "")

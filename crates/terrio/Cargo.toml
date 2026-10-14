@@ -39,6 +39,7 @@ ruzstd.workspace = true
 netcdf-reader.workspace = true
 jpeg-decoder.workspace = true
 laz.workspace = true
+jpeg-encoder.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # OpenJPEG's port is built as a C-ABI library too, which does not link for wasm32.

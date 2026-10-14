@@ -20,7 +20,7 @@ Machine: Intel Xeon w7-3445 (x86_64), 40 threads, Linux. GDAL 3.12.2 "Chicoutimi
 |---|---|---|---|
 | Raster info: USGS 3DEP tile (3612×3612) | 2 ms | 38 ms | 21.2× faster |
 | Raster statistics: SRTM 90 m (4269×2465) | 159 ms | 154 ms | 1.0× slower |
-| Vector info: US counties GeoPackage | 99 ms | 32 ms | 3.1× slower |
+| Vector info: US counties GeoPackage | 65 ms | 38 ms | 1.7× slower |
 
 ### Raster conversion
 
@@ -44,9 +44,9 @@ Machine: Intel Xeon w7-3445 (x86_64), 40 threads, Linux. GDAL 3.12.2 "Chicoutimi
 
 | Task | terrio | GDAL | terrio vs GDAL |
 |---|---|---|---|
-| Shapefile → GeoPackage: 7,342 populated places | 69 ms | 88 ms | 1.3× faster |
-| GeoPackage → FlatGeobuf: US counties | 130 ms | 62 ms | 2.1× slower |
-| GeoPackage → GeoParquet: US counties | 144 ms | 111 ms | 1.3× slower |
+| Shapefile → GeoPackage: 7,342 populated places | 68 ms | 85 ms | 1.2× faster |
+| GeoPackage → FlatGeobuf: US counties | 91 ms | 59 ms | 1.5× slower |
+| GeoPackage → GeoParquet: US counties | 107 ms | 108 ms | 1.0× faster |
 | GeoJSON → Shapefile: world cables | 13 ms | 44 ms | 3.4× faster |
 | Filter + reproject: US counties → EPSG:5070 | 121 ms | 52 ms | 2.3× slower |
 

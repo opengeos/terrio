@@ -43,6 +43,18 @@ pub struct RasterInfo {
     pub overviews: Vec<[usize; 2]>,
     /// Metadata key/value pairs.
     pub metadata: Vec<(String, String)>,
+    /// The rasters the file holds besides this one, as GDAL's subdatasets.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub subdatasets: Vec<Subdataset>,
+}
+
+/// A dataset inside a file (GDAL's subdatasets): a raster table of a GeoPackage.
+#[derive(Debug, Clone, Serialize)]
+pub struct Subdataset {
+    /// The name that opens it, such as `GPKG:file.gpkg:table`.
+    pub name: String,
+    /// A description.
+    pub description: String,
 }
 
 /// One band's summary.
@@ -107,6 +119,9 @@ pub struct VectorInfo {
     pub driver: String,
     /// The layers.
     pub layers: Vec<LayerInfo>,
+    /// The rasters the file also holds, as GDAL's subdatasets.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub subdatasets: Vec<Subdataset>,
 }
 
 /// One layer's summary.
@@ -174,6 +189,7 @@ pub fn raster_info(ds: &RasterDataset, options: &InfoOptions) -> RasterInfo {
         bands,
         overviews: Vec::new(),
         metadata: r.metadata.clone(),
+        subdatasets: Vec::new(),
     }
 }
 
@@ -203,6 +219,7 @@ pub fn lazy_raster_info(r: &mut LazyRaster, options: &InfoOptions) -> crate::Res
         bands,
         overviews,
         metadata: Vec::new(),
+        subdatasets: Vec::new(),
     })
 }
 
@@ -218,7 +235,22 @@ pub fn info_path(path: &str, options: &InfoOptions) -> crate::Result<Info> {
     {
         return Ok(Info::Raster(Box::new(lazy_raster_info(&mut r, options)?)));
     }
-    Ok(info(&crate::open(path)?, options))
+    let mut summary = info(&crate::open(path)?, options);
+    // A GeoPackage's raster tables: all of them besides vector layers, or besides the first.
+    if crate::formats::extension(path).as_deref() == Some("gpkg")
+        && let Ok(local) = crate::vfs::resolve(path)
+    {
+        let subdatasets: Vec<Subdataset> = crate::drivers::gpkg::subdatasets(local.as_str())
+            .into_iter()
+            .map(|(name, description)| Subdataset { name, description })
+            .collect();
+        match &mut summary {
+            Info::Vector(v) => v.subdatasets = subdatasets,
+            Info::Raster(r) if subdatasets.len() > 1 => r.subdatasets = subdatasets,
+            Info::Raster(_) | Info::PointCloud(_) => {}
+        }
+    }
+    Ok(summary)
 }
 
 /// Computes a band's statistics over its valid pixels. `None` when every pixel is nodata.
@@ -278,7 +310,7 @@ pub fn vector_info(ds: &VectorDataset) -> VectorInfo {
             }
         })
         .collect();
-    VectorInfo { driver: ds.driver.name().to_string(), layers }
+    VectorInfo { driver: ds.driver.name().to_string(), layers, subdatasets: Vec::new() }
 }
 
 fn wgs84_extent(crs: &SpatialRef, e: [f64; 4]) -> Option<[f64; 4]> {
@@ -314,6 +346,7 @@ impl Info {
                 for (k, v) in &r.metadata {
                     let _ = writeln!(s, "Metadata: {k}={v}");
                 }
+                write_subdatasets(&mut s, &r.subdatasets);
                 for b in &r.bands {
                     let _ = write!(s, "Band {}: {}", b.band, b.data_type);
                     if let Some(nd) = b.nodata {
@@ -344,9 +377,24 @@ impl Info {
                         let _ = writeln!(s, "  {}: {}", f.name, f.field_type);
                     }
                 }
+                if !v.subdatasets.is_empty() {
+                    let _ = writeln!(s);
+                }
+                write_subdatasets(&mut s, &v.subdatasets);
             }
         }
         s
+    }
+}
+
+fn write_subdatasets(s: &mut String, subdatasets: &[Subdataset]) {
+    if subdatasets.is_empty() {
+        return;
+    }
+    let _ = writeln!(s, "Subdatasets:");
+    for (i, d) in subdatasets.iter().enumerate() {
+        let _ = writeln!(s, "  SUBDATASET_{}_NAME={}", i + 1, d.name);
+        let _ = writeln!(s, "  SUBDATASET_{}_DESC={}", i + 1, d.description);
     }
 }
 
