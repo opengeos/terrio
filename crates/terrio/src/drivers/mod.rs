@@ -18,6 +18,7 @@ pub(crate) mod gtiff_write;
 mod hfa;
 mod jp2;
 mod netcdf;
+mod netcdf_write;
 pub(crate) mod nodata;
 mod png;
 mod rst;
@@ -78,9 +79,17 @@ pub(crate) fn open_subdataset(path: &str) -> Option<Result<RasterDataset>> {
 }
 
 /// Writes a raster with one of terrio's own drivers, declaring `nodata`, with the format's
-/// `compression` when it has a choice. `None` when none of them handles the format.
-pub(crate) fn write(r: &Raster, nodata: Option<f64>, path: &str, driver: RasterDriver, compression: Option<&str>) -> Option<Result<()>> {
+/// compression and creation options when it has a choice. `None` when none of them handles the format.
+pub(crate) fn write(
+    r: &Raster,
+    nodata: Option<f64>,
+    path: &str,
+    driver: RasterDriver,
+    options: &crate::RasterWriteOptions,
+) -> Option<Result<()>> {
     let p = Path::new(path);
+    let compression = options.compression.as_deref();
+    let co = |key: &str| options.creation_options.iter().find(|(k, _)| k.eq_ignore_ascii_case(key)).map(|(_, v)| v.as_str());
     Some(match driver {
         RasterDriver::ENVI => envi::write(r, nodata, p),
         RasterDriver::EHdr => ehdr::write(r, nodata, p),
@@ -92,7 +101,8 @@ pub(crate) fn write(r: &Raster, nodata: Option<f64>, path: &str, driver: RasterD
         RasterDriver::RST => rst::write(r, nodata, p),
         RasterDriver::PNG => png::write(r, nodata, p),
         RasterDriver::JP2 => jp2::write(r, nodata, p),
-        RasterDriver::Zarr => zarr::write(r, nodata, p, compression),
+        RasterDriver::Zarr => zarr::write(r, nodata, p, compression, co("FORMAT")),
+        RasterDriver::NetCDF => netcdf_write::write(r, nodata, p, co("FORMAT")),
         // Formats without a CRS of their own: GDAL's sidecar holds it.
         RasterDriver::PCRaster | RasterDriver::GRASSASCIIGrid => {
             r.write(path, driver.to_wb()).map_err(Into::into).and_then(|()| common::write_pam(p, &r.crs))

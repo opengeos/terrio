@@ -199,6 +199,48 @@ fn geotiff_and_cog_written_by_terrio_read_back() {
     }
 }
 
+#[test]
+fn netcdf_and_zarr_v3_written_by_terrio_read_back() {
+    let Some(p) = data("srtm_sub.tif") else { return };
+    let ds = terrio::open_raster(&p).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let co = |k: &str, v: &str| vec![(k.to_string(), v.to_string())];
+    for (name, driver, compression, options) in [
+        ("a.nc", terrio::formats::RasterDriver::NetCDF, None, vec![]),
+        ("b.nc", terrio::formats::RasterDriver::NetCDF, None, co("FORMAT", "NC2")),
+        ("c.zarr", terrio::formats::RasterDriver::Zarr, Some("ZSTD"), co("FORMAT", "ZARR_V3")),
+    ] {
+        let out = dir.path().join(name);
+        let out = out.to_str().unwrap();
+        let opts = terrio::RasterWriteOptions {
+            driver: Some(driver),
+            compression: compression.map(Into::into),
+            creation_options: options,
+            ..Default::default()
+        };
+        terrio::write_raster_dataset(&ds, out, &opts).unwrap();
+        let back = terrio::open_raster(out).unwrap();
+        assert_eq!(back.raster.data_i16(), ds.raster.data_i16(), "{name}");
+        assert_eq!(back.nodata(), Some(-32768.0), "{name}");
+        assert_eq!(back.crs().epsg, Some(4326), "{name}");
+        for (a, b) in back.geo_transform().iter().zip(ds.geo_transform()) {
+            assert_close(*a, b, name);
+        }
+    }
+}
+
+#[test]
+fn zipped_shapefile_from_bytes() {
+    let Some(p) = data("ne_countries.zip") else { return };
+    // GDAL: 177 features in EPSG:4326, 168 fields.
+    let ds = terrio::memory::open_vector_bytes(std::fs::read(&p).unwrap(), "ne_countries.zip", &Default::default()).unwrap();
+    let l = &ds.layers[0];
+    assert_eq!(l.name, "ne_110m_admin_0_countries");
+    assert_eq!(l.features.len(), 177);
+    assert_eq!(l.crs_epsg(), Some(4326));
+    assert_eq!(l.schema.len(), 168);
+}
+
 // ── Vector drivers ────────────────────────────────────────────────────────────────────────────
 
 fn vector(name: &str) -> Option<terrio::VectorDataset> {

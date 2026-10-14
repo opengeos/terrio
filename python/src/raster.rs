@@ -377,5 +377,5 @@ pub(crate) fn write_options(
     bigtiff: bool,
 ) -> PyResult<RasterWriteOptions> {
     let driver = driver.map(|d| RasterDriver::from_name(d).ok_or_else(|| invalid(format!("unknown raster format '{d}'")))).transpose()?;
-    Ok(RasterWriteOptions { driver, compression: compress, tile_size, bigtiff })
+    Ok(RasterWriteOptions { driver, compression: compress, tile_size, bigtiff, ..Default::default() })
 }

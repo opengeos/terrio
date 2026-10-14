@@ -3,8 +3,10 @@
 //! variable with `crs_wkt` and `GeoTransform`).
 //!
 //! Codecs, all in pure Rust: none, zlib, gzip, zstd, lz4 and Blosc (with the blosclz, lz4, zlib
-//! and zstd compressors, and byte shuffling). Not supported: Blosc's bit shuffling, Fortran
-//! order, and Zarr v3 sharding and transposition.
+//! and zstd compressors, and byte or bit shuffling), Fortran order (v2) and transposition (v3),
+//! and Zarr v3 sharding. Not supported: v2 filters.
+//!
+//! Rasters are written as GDAL writes them, in Zarr v2 (the default) or v3.
 
 use super::common;
 use crate::formats::RasterDriver;
@@ -40,6 +42,36 @@ enum Codec {
     Crc32c,
 }
 
+/// How a chunk's bytes encode its elements.
+#[derive(Debug, Clone)]
+struct Pipeline {
+    /// The order of the stored dimensions: stored dimension `i` is the array's `order[i]`. `None`
+    /// for C order.
+    order: Option<Vec<usize>>,
+    little_endian: bool,
+    /// The bytes-to-bytes codecs, in decoding order.
+    codecs: Vec<Codec>,
+    /// A sharded chunk: inner chunks and their index.
+    shard: Option<Box<Shard>>,
+}
+
+impl Default for Pipeline {
+    fn default() -> Self {
+        Self { order: None, little_endian: true, codecs: Vec::new(), shard: None }
+    }
+}
+
+/// Zarr v3 sharding: a chunk (shard) holds inner chunks, located by an index of `(offset,
+/// length)` pairs.
+#[derive(Debug, Clone)]
+struct Shard {
+    chunks: Vec<usize>,
+    inner: Pipeline,
+    /// The index's codecs (a CRC32C checksum adds four bytes).
+    index_checksum: bool,
+    index_at_start: bool,
+}
+
 /// An array's metadata.
 #[derive(Debug)]
 struct Array {
@@ -47,9 +79,8 @@ struct Array {
     shape: Vec<usize>,
     chunks: Vec<usize>,
     data_type: DataType,
-    little_endian: bool,
+    pipeline: Pipeline,
     fill: Option<f64>,
-    codecs: Vec<Codec>,
     /// Chunk key prefix and separator: `("", ".")` for v2, `("c/", "/")` for v3.
     key_prefix: String,
     separator: String,
@@ -124,9 +155,6 @@ fn read_array(dir: &Path) -> Result<Array> {
     if let Some(m) = read_json(&dir.join(".zarray")) {
         let attrs = read_json(&dir.join(".zattrs")).unwrap_or(json!({}));
         let (data_type, little_endian) = v2_dtype(m["dtype"].as_str().ok_or_else(|| bad("no dtype"))?)?;
-        if m["order"].as_str() == Some("F") {
-            return Err(Error::Unsupported("Zarr arrays in Fortran order are not supported".into()));
-        }
         let mut codecs: Vec<Codec> = Vec::new();
         if let Some(filters) = m["filters"].as_array()
             && !filters.is_empty()
@@ -141,14 +169,16 @@ fn read_array(dir: &Path) -> Result<Array> {
             .as_array()
             .map(|a| a.iter().filter_map(|d| d.as_str().map(String::from)).collect())
             .unwrap_or_default();
+        let shape = usizes(&m["shape"]);
+        // Fortran order: the chunk's dimensions are stored last first.
+        let order = (m["order"].as_str() == Some("F")).then(|| (0..shape.len()).rev().collect());
         return Ok(Array {
             dir: dir.to_path_buf(),
-            shape: usizes(&m["shape"]),
+            shape,
             chunks: usizes(&m["chunks"]),
             data_type,
-            little_endian,
+            pipeline: Pipeline { order, little_endian, codecs, shard: None },
             fill: parse_fill(&m["fill_value"]),
-            codecs,
             key_prefix: String::new(),
             separator: m["dimension_separator"].as_str().unwrap_or(".").to_string(),
             dims,
@@ -160,22 +190,10 @@ fn read_array(dir: &Path) -> Result<Array> {
         return Err(bad(format!("{} is not a Zarr array", dir.display())));
     }
     let data_type = v3_dtype(m["data_type"].as_str().unwrap_or_default())?;
-    let mut little_endian = true;
-    let mut codecs = Vec::new();
-    for c in m["codecs"].as_array().into_iter().flatten() {
-        match c["name"].as_str().unwrap_or_default() {
-            "bytes" => little_endian = c["configuration"]["endian"].as_str() != Some("big"),
-            "gzip" => codecs.push(Codec::Gzip),
-            "zstd" => codecs.push(Codec::Zstd),
-            "blosc" => codecs.push(Codec::Blosc),
-            "crc32c" => codecs.push(Codec::Crc32c),
-            other => return Err(Error::Unsupported(format!("Zarr codec '{other}' is not supported"))),
-        }
-    }
-    // Decoding applies the bytes-to-bytes codecs in reverse.
-    codecs.reverse();
     let usizes =
         |v: &Value| v.as_array().map(|a| a.iter().filter_map(|x| x.as_u64().map(|x| x as usize)).collect::<Vec<_>>()).unwrap_or_default();
+    let shape = usizes(&m["shape"]);
+    let pipeline = v3_pipeline(&m["codecs"], shape.len())?;
     let encoding = &m["chunk_key_encoding"];
     let separator = encoding["configuration"]["separator"]
         .as_str()
@@ -186,17 +204,75 @@ fn read_array(dir: &Path) -> Result<Array> {
         m["dimension_names"].as_array().map(|a| a.iter().map(|d| d.as_str().unwrap_or_default().to_string()).collect()).unwrap_or_default();
     Ok(Array {
         dir: dir.to_path_buf(),
-        shape: usizes(&m["shape"]),
+        shape,
         chunks: usizes(&m["chunk_grid"]["configuration"]["chunk_shape"]),
         data_type,
-        little_endian,
+        pipeline,
         fill: parse_fill(&m["fill_value"]),
-        codecs,
         key_prefix,
         separator,
         dims,
         attrs: m["attributes"].clone(),
     })
+}
+
+/// Parses a Zarr v3 codec chain for an array of `nd` dimensions.
+fn v3_pipeline(codecs: &Value, nd: usize) -> Result<Pipeline> {
+    let mut p = Pipeline::default();
+    for c in codecs.as_array().into_iter().flatten() {
+        let config = &c["configuration"];
+        match c["name"].as_str().unwrap_or_default() {
+            "bytes" | "endian" => p.little_endian = config["endian"].as_str() != Some("big"),
+            "transpose" => {
+                let order: Vec<usize> = match &config["order"] {
+                    Value::String(s) if s == "C" => (0..nd).collect(),
+                    Value::String(s) if s == "F" => (0..nd).rev().collect(),
+                    Value::Array(a) => a.iter().filter_map(|x| x.as_u64().map(|x| x as usize)).collect(),
+                    _ => return Err(bad("transpose without an order")),
+                };
+                let mut sorted = order.clone();
+                sorted.sort_unstable();
+                if sorted != (0..nd).collect::<Vec<_>>() {
+                    return Err(bad(format!("invalid transpose order {order:?}")));
+                }
+                // Successive transpositions compose.
+                p.order = Some(match &p.order {
+                    Some(prev) => order.iter().map(|&i| prev[i]).collect(),
+                    None => order,
+                });
+            }
+            "sharding_indexed" => {
+                let chunks: Vec<usize> =
+                    config["chunk_shape"].as_array().into_iter().flatten().filter_map(|x| x.as_u64().map(|x| x as usize)).collect();
+                if chunks.len() != nd || chunks.contains(&0) {
+                    return Err(bad("sharding: invalid inner chunk shape"));
+                }
+                let inner = v3_pipeline(&config["codecs"], nd)?;
+                let index = config["index_codecs"].as_array().cloned().unwrap_or_default();
+                let mut index_checksum = false;
+                for c in &index {
+                    match c["name"].as_str().unwrap_or_default() {
+                        "bytes" if c["configuration"]["endian"].as_str() == Some("big") => {
+                            return Err(Error::Unsupported("big-endian shard indexes are not supported".into()));
+                        }
+                        "bytes" => {}
+                        "crc32c" => index_checksum = true,
+                        other => return Err(Error::Unsupported(format!("shard index codec '{other}' is not supported"))),
+                    }
+                }
+                let index_at_start = config["index_location"].as_str() == Some("start");
+                p.shard = Some(Box::new(Shard { chunks, inner, index_checksum, index_at_start }));
+            }
+            "gzip" => p.codecs.push(Codec::Gzip),
+            "zstd" => p.codecs.push(Codec::Zstd),
+            "blosc" => p.codecs.push(Codec::Blosc),
+            "crc32c" => p.codecs.push(Codec::Crc32c),
+            other => return Err(Error::Unsupported(format!("Zarr codec '{other}' is not supported"))),
+        }
+    }
+    // Decoding applies the bytes-to-bytes codecs in reverse.
+    p.codecs.reverse();
+    Ok(p)
 }
 
 /// Decodes one chunk's bytes.
@@ -246,9 +322,6 @@ fn blosc_decompress(src: &[u8]) -> Result<Vec<u8>> {
     if flags & 0x02 != 0 {
         return src.get(16..16 + nbytes).map(<[u8]>::to_vec).ok_or_else(|| bad("Blosc: truncated data"));
     }
-    if flags & 0x04 != 0 {
-        return Err(Error::Unsupported("Blosc bit shuffling is not supported".into()));
-    }
     let compressor = flags >> 5;
     let nblocks = nbytes.div_ceil(blocksize);
     let mut out = Vec::with_capacity(nbytes);
@@ -282,7 +355,9 @@ fn blosc_decompress(src: &[u8]) -> Result<Vec<u8>> {
             };
             block.extend_from_slice(&decoded[..neblock.min(decoded.len())]);
         }
-        if flags & 0x01 != 0 && typesize > 1 {
+        if flags & 0x01 == 0 && flags & 0x04 != 0 && bsize >= typesize {
+            block = bit_unshuffle(&block, bsize, typesize, src[0]);
+        } else if flags & 0x01 != 0 && typesize > 1 {
             // Undo the byte shuffle: the block holds byte 0 of every element, then byte 1...
             let n = bsize / typesize;
             let mut unshuffled = vec![0u8; bsize];
@@ -297,6 +372,31 @@ fn blosc_decompress(src: &[u8]) -> Result<Vec<u8>> {
         out.extend_from_slice(&block);
     }
     Ok(out)
+}
+
+/// Undoes Blosc's bit shuffle of a block: bit `kk` of byte `j` of element `i` is stored at bit
+/// `(j * 8 + kk) * n + i` (least significant bit first), over a multiple of 8 elements (Blosc
+/// format version 2 leaves blocks of other sizes as they are; later versions copy the rest).
+fn bit_unshuffle(block: &[u8], bsize: usize, typesize: usize, version: u8) -> Vec<u8> {
+    let nelems = bsize / typesize;
+    if version <= 2 && !nelems.is_multiple_of(8) {
+        return block[..bsize].to_vec();
+    }
+    let n = nelems - nelems % 8;
+    let mut out = vec![0u8; bsize];
+    for j in 0..typesize {
+        for kk in 0..8 {
+            let row = (j * 8 + kk) * n;
+            for i in 0..n {
+                let p = row + i;
+                if (block[p / 8] >> (p % 8)) & 1 != 0 {
+                    out[i * typesize + j] |= 1 << kk;
+                }
+            }
+        }
+    }
+    out[n * typesize..bsize].copy_from_slice(&block[n * typesize..bsize]);
+    out
 }
 
 /// BloscLZ decompression (a FastLZ variant).
@@ -349,7 +449,7 @@ fn blosclz_decompress(src: &[u8], maxout: usize) -> Result<Vec<u8>> {
     Ok(out)
 }
 
-/// Reads an array's values (row-major over its shape) as `f64`s converted to its type later.
+/// Reads an array's values (row-major over its shape).
 fn read_values(a: &Array) -> Result<RasterData> {
     let n: usize = a.shape.iter().product();
     let size = a.data_type.size_bytes();
@@ -370,51 +470,14 @@ fn read_values(a: &Array) -> Result<RasterData> {
     }
     let grid: Vec<usize> = a.shape.iter().zip(&a.chunks).map(|(s, c)| s.div_ceil((*c).max(1))).collect();
     let total: usize = grid.iter().product();
-    let chunk_len: usize = a.chunks.iter().product();
     let mut idx = vec![0usize; nd];
+    let mut out = Output { bytes: &mut bytes, shape: &a.shape, size };
     for _ in 0..total {
         let key = format!("{}{}", a.key_prefix, idx.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(&a.separator));
         let key = if nd == 0 { format!("{}0", a.key_prefix) } else { key };
         if let Ok(raw) = std::fs::read(a.dir.join(&key)) {
-            let mut data = raw;
-            for c in &a.codecs {
-                data = decompress(c, data)?;
-            }
-            if data.len() < chunk_len * size {
-                return Err(bad(format!("chunk {key} holds {} bytes, expected {}", data.len(), chunk_len * size)));
-            }
-            // Copy the chunk's elements that fall inside the array.
-            let mut cidx = vec![0usize; nd];
-            for e in 0..chunk_len {
-                let mut flat = 0usize;
-                let mut inside = true;
-                for d in 0..nd {
-                    let g = idx[d] * a.chunks[d] + cidx[d];
-                    if g >= a.shape[d] {
-                        inside = false;
-                        break;
-                    }
-                    flat = flat * a.shape[d] + g;
-                }
-                if inside {
-                    let src = &data[e * size..(e + 1) * size];
-                    let dst = &mut bytes[flat * size..(flat + 1) * size];
-                    if a.little_endian {
-                        dst.copy_from_slice(src);
-                    } else {
-                        for k in 0..size {
-                            dst[k] = src[size - 1 - k];
-                        }
-                    }
-                }
-                for d in (0..nd).rev() {
-                    cidx[d] += 1;
-                    if cidx[d] < a.chunks[d] {
-                        break;
-                    }
-                    cidx[d] = 0;
-                }
-            }
+            let origin: Vec<usize> = idx.iter().zip(&a.chunks).map(|(i, c)| i * c).collect();
+            decode_chunk(&a.pipeline, raw, &origin, &a.chunks, &mut out).map_err(|e| bad(format!("chunk {key}: {e}")))?;
         }
         for d in (0..nd).rev() {
             idx[d] += 1;
@@ -435,6 +498,94 @@ fn read_values(a: &Array) -> Result<RasterData> {
         bottom_up: false,
     };
     common::decode(&bytes, &layout)
+}
+
+/// The array's samples being read: little-endian, row-major.
+struct Output<'a> {
+    bytes: &'a mut [u8],
+    shape: &'a [usize],
+    size: usize,
+}
+
+/// Decodes a chunk of shape `cshape` at `origin` (in array elements) into the output.
+fn decode_chunk(p: &Pipeline, raw: Vec<u8>, origin: &[usize], cshape: &[usize], out: &mut Output) -> Result<()> {
+    let mut data = raw;
+    for c in &p.codecs {
+        data = decompress(c, data)?;
+    }
+    let nd = cshape.len();
+    if let Some(shard) = &p.shard {
+        let inner_grid: Vec<usize> = cshape.iter().zip(&shard.chunks).map(|(c, i)| c.div_ceil(*i)).collect();
+        let count: usize = inner_grid.iter().product();
+        let index_len = count * 16 + if shard.index_checksum { 4 } else { 0 };
+        if data.len() < index_len {
+            return Err(bad("shard smaller than its index"));
+        }
+        let index_start = if shard.index_at_start { 0 } else { data.len() - index_len };
+        let u64_at = |i: usize| u64::from_le_bytes(data[i..i + 8].try_into().unwrap_or_default());
+        let mut iidx = vec![0usize; nd];
+        for j in 0..count {
+            let (offset, length) = (u64_at(index_start + 16 * j), u64_at(index_start + 16 * j + 8));
+            if offset != u64::MAX || length != u64::MAX {
+                let (o, l) = (offset as usize, length as usize);
+                let chunk = data.get(o..o.saturating_add(l)).ok_or_else(|| bad("shard index out of range"))?.to_vec();
+                let inner_origin: Vec<usize> = (0..nd).map(|d| origin[d] + iidx[d] * shard.chunks[d]).collect();
+                decode_chunk(&shard.inner, chunk, &inner_origin, &shard.chunks, out)?;
+            }
+            for d in (0..nd).rev() {
+                iidx[d] += 1;
+                if iidx[d] < inner_grid[d] {
+                    break;
+                }
+                iidx[d] = 0;
+            }
+        }
+        return Ok(());
+    }
+    let size = out.size;
+    let chunk_len: usize = cshape.iter().product();
+    if data.len() < chunk_len * size {
+        return Err(bad(format!("holds {} bytes, expected {}", data.len(), chunk_len * size)));
+    }
+    // Elements are stored in C order over the stored (possibly transposed) dimensions.
+    let order: Vec<usize> = p.order.clone().unwrap_or_else(|| (0..nd).collect());
+    let sshape: Vec<usize> = order.iter().map(|&d| cshape[d]).collect();
+    let mut sidx = vec![0usize; nd];
+    let mut cidx = vec![0usize; nd];
+    for e in 0..chunk_len {
+        for (i, &d) in order.iter().enumerate() {
+            cidx[d] = sidx[i];
+        }
+        let mut flat = 0usize;
+        let mut inside = true;
+        for d in 0..nd {
+            let g = origin[d] + cidx[d];
+            if g >= out.shape[d] {
+                inside = false;
+                break;
+            }
+            flat = flat * out.shape[d] + g;
+        }
+        if inside {
+            let src = &data[e * size..(e + 1) * size];
+            let dst = &mut out.bytes[flat * size..(flat + 1) * size];
+            if p.little_endian {
+                dst.copy_from_slice(src);
+            } else {
+                for k in 0..size {
+                    dst[k] = src[size - 1 - k];
+                }
+            }
+        }
+        for d in (0..nd).rev() {
+            sidx[d] += 1;
+            if sidx[d] < sshape[d] {
+                break;
+            }
+            sidx[d] = 0;
+        }
+    }
+    Ok(())
 }
 
 /// The arrays of a group: `(name, metadata)`, sorted by name.
@@ -543,9 +694,10 @@ pub(crate) fn read(path: &Path) -> Result<RasterDataset> {
         // GDAL's Zarr v3 writer keeps the CRS in a sidecar inside the store.
         crs = group.as_ref().and_then(|g| common::read_pam(&g.join("pam"))).and_then(|p| p.crs);
     }
+    let south_up = gt.is_some_and(|g| g[5] > 0.0);
     let gt = gt.unwrap_or(common::NO_GEOTRANSFORM);
     let mut raster = common::make_raster(cols, rows, bands, data, gt, crs.unwrap_or_default(), array.fill)?;
-    if gt[5] > 0.0 {
+    if south_up {
         flip_rows(&mut raster);
     }
     Ok(RasterDataset { raster, driver: RasterDriver::Zarr, has_nodata: array.fill.is_some() })
@@ -591,13 +743,27 @@ fn crs_attribute(v: &Value) -> Option<CrsInfo> {
     v["wkt"].as_str().and_then(common::crs_from_text)
 }
 
-/// Compressors terrio writes.
-fn compressor_json(name: Option<&str>) -> Result<(Value, Option<Codec>)> {
+/// The Zarr versions terrio writes.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Version {
+    V2,
+    V3,
+}
+
+/// Compressors terrio writes: the codec and its metadata.
+fn compressor(name: Option<&str>, version: Version) -> Result<(Option<Codec>, Value)> {
+    let v3 = version == Version::V3;
     Ok(match name.map(str::to_ascii_uppercase).as_deref() {
-        None | Some("NONE") => (Value::Null, None),
-        Some("ZLIB") | Some("DEFLATE") => (json!({"id": "zlib", "level": 6}), Some(Codec::Zlib)),
-        Some("GZIP") => (json!({"id": "gzip", "level": 6}), Some(Codec::Gzip)),
-        Some(other) => return Err(Error::InvalidArgument(format!("Zarr compression '{other}' is not supported (NONE, ZLIB, GZIP)"))),
+        None | Some("NONE") => (None, Value::Null),
+        Some("ZLIB") | Some("DEFLATE") if !v3 => (Some(Codec::Zlib), json!({"id": "zlib", "level": 6})),
+        Some("GZIP") if v3 => (Some(Codec::Gzip), json!({"name": "gzip", "configuration": {"level": 6}})),
+        Some("GZIP") => (Some(Codec::Gzip), json!({"id": "gzip", "level": 6})),
+        Some("ZSTD") if v3 => (Some(Codec::Zstd), json!({"name": "zstd", "configuration": {"level": 1, "checksum": false}})),
+        Some("ZSTD") => (Some(Codec::Zstd), json!({"id": "zstd", "level": 1})),
+        Some(other) => {
+            let names = if v3 { "NONE, GZIP, ZSTD" } else { "NONE, ZLIB, GZIP, ZSTD" };
+            return Err(Error::InvalidArgument(format!("Zarr compression '{other}' is not supported ({names})")));
+        }
     })
 }
 
@@ -614,6 +780,7 @@ fn compress(codec: &Option<Codec>, data: Vec<u8>) -> Result<Vec<u8>> {
             e.write_all(&data)?;
             e.finish()?
         }
+        Some(Codec::Zstd) => ruzstd::encoding::compress_to_vec(&data[..], ruzstd::encoding::CompressionLevel::Fastest),
         _ => data,
     })
 }
@@ -633,6 +800,21 @@ fn dtype_v2(t: DataType) -> &'static str {
     }
 }
 
+fn dtype_v3(t: DataType) -> &'static str {
+    match t {
+        DataType::U8 => "uint8",
+        DataType::I8 => "int8",
+        DataType::U16 => "uint16",
+        DataType::I16 => "int16",
+        DataType::U32 => "uint32",
+        DataType::I32 => "int32",
+        DataType::U64 => "uint64",
+        DataType::I64 => "int64",
+        DataType::F32 => "float32",
+        DataType::F64 => "float64",
+    }
+}
+
 fn fill_json(v: Option<f64>) -> Value {
     match v {
         None => Value::Null,
@@ -644,38 +826,31 @@ fn fill_json(v: Option<f64>) -> Value {
     }
 }
 
-/// Writes one array (`.zarray`, `.zattrs` and chunks) from little-endian sample bytes.
-fn write_array(
-    dir: &Path,
-    (shape, chunks): (&[usize], &[usize]),
-    t: DataType,
-    bytes: &[u8],
+/// An array to write.
+struct NewArray<'a> {
+    shape: &'a [usize],
+    chunks: &'a [usize],
+    data_type: DataType,
+    /// The samples, little-endian, row-major.
+    bytes: &'a [u8],
     fill: Option<f64>,
+    dims: Value,
     attrs: Value,
-    compression: Option<&str>,
-) -> Result<(Value, Value)> {
+}
+
+/// Writes one array (metadata and chunks), returning its metadata documents by file name.
+fn write_array(dir: &Path, a: &NewArray, compression: Option<&str>, version: Version) -> Result<Vec<(String, Value)>> {
     std::fs::create_dir_all(dir)?;
-    let (compressor, codec) = compressor_json(compression)?;
-    let zarray = json!({
-        "chunks": chunks,
-        "compressor": compressor,
-        "dtype": dtype_v2(t),
-        "fill_value": fill_json(fill),
-        "filters": null,
-        "order": "C",
-        "shape": shape,
-        "zarr_format": 2,
-    });
-    let size = t.size_bytes();
-    let nd = shape.len();
-    let grid: Vec<usize> = shape.iter().zip(chunks).map(|(s, c)| s.div_ceil(*c)).collect();
-    let chunk_len: usize = chunks.iter().product();
+    let (codec, compressor_meta) = compressor(compression, version)?;
+    let (size, nd) = (a.data_type.size_bytes(), a.shape.len());
+    let grid: Vec<usize> = a.shape.iter().zip(a.chunks).map(|(s, c)| s.div_ceil(*c)).collect();
+    let chunk_len: usize = a.chunks.iter().product();
     let mut idx = vec![0usize; nd];
     for _ in 0..grid.iter().product::<usize>() {
         let mut chunk = vec![0u8; chunk_len * size];
-        if let Some(f) = fill {
+        if let Some(f) = a.fill {
             let mut one = Vec::new();
-            super::gtiff_write::encode_sample_le(t, f, &mut one);
+            super::gtiff_write::encode_sample_le(a.data_type, f, &mut one);
             for c in chunk.chunks_mut(size) {
                 c.copy_from_slice(&one);
             }
@@ -685,26 +860,39 @@ fn write_array(
             let mut flat = 0usize;
             let mut inside = true;
             for d in 0..nd {
-                let g = idx[d] * chunks[d] + cidx[d];
-                if g >= shape[d] {
+                let g = idx[d] * a.chunks[d] + cidx[d];
+                if g >= a.shape[d] {
                     inside = false;
                     break;
                 }
-                flat = flat * shape[d] + g;
+                flat = flat * a.shape[d] + g;
             }
             if inside {
-                chunk[e * size..(e + 1) * size].copy_from_slice(&bytes[flat * size..(flat + 1) * size]);
+                chunk[e * size..(e + 1) * size].copy_from_slice(&a.bytes[flat * size..(flat + 1) * size]);
             }
             for d in (0..nd).rev() {
                 cidx[d] += 1;
-                if cidx[d] < chunks[d] {
+                if cidx[d] < a.chunks[d] {
                     break;
                 }
                 cidx[d] = 0;
             }
         }
-        let key = idx.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(".");
-        std::fs::write(dir.join(key), compress(&codec, chunk)?)?;
+        let names: Vec<String> = idx.iter().map(|i| i.to_string()).collect();
+        let file = match version {
+            Version::V2 => dir.join(names.join(".")),
+            Version::V3 => {
+                let mut p = dir.join("c");
+                for n in &names {
+                    p.push(n);
+                }
+                if let Some(parent) = p.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                p
+            }
+        };
+        std::fs::write(file, compress(&codec, chunk)?)?;
         for d in (0..nd).rev() {
             idx[d] += 1;
             if idx[d] < grid[d] {
@@ -713,33 +901,91 @@ fn write_array(
             idx[d] = 0;
         }
     }
-    std::fs::write(dir.join(".zarray"), serde_json::to_string_pretty(&zarray).unwrap_or_default())?;
-    std::fs::write(dir.join(".zattrs"), serde_json::to_string_pretty(&attrs).unwrap_or_default())?;
-    Ok((zarray, attrs))
+    let docs = match version {
+        Version::V2 => {
+            let zarray = json!({
+                "chunks": a.chunks,
+                "compressor": compressor_meta,
+                "dtype": dtype_v2(a.data_type),
+                "fill_value": fill_json(a.fill),
+                "filters": null,
+                "order": "C",
+                "shape": a.shape,
+                "zarr_format": 2,
+            });
+            let mut attrs = a.attrs.clone();
+            attrs["_ARRAY_DIMENSIONS"] = a.dims.clone();
+            vec![(".zarray".to_string(), zarray), (".zattrs".to_string(), attrs)]
+        }
+        Version::V3 => {
+            let mut codecs = vec![json!({"name": "bytes", "configuration": {"endian": "little"}})];
+            if !compressor_meta.is_null() {
+                codecs.push(compressor_meta);
+            }
+            // Zarr v3 needs a fill value: GDAL uses NaN for floats and 0 for integers.
+            let fill = match a.fill {
+                Some(f) => fill_json(Some(f)),
+                None if matches!(a.data_type, DataType::F32 | DataType::F64) => json!("NaN"),
+                None => json!(0),
+            };
+            let meta = json!({
+                "zarr_format": 3,
+                "node_type": "array",
+                "shape": a.shape,
+                "data_type": dtype_v3(a.data_type),
+                "chunk_grid": {"name": "regular", "configuration": {"chunk_shape": a.chunks}},
+                "chunk_key_encoding": {"name": "default", "configuration": {"separator": "/"}},
+                "fill_value": fill,
+                "codecs": codecs,
+                "attributes": a.attrs,
+                "dimension_names": a.dims,
+            });
+            vec![("zarr.json".to_string(), meta)]
+        }
+    };
+    for (name, doc) in &docs {
+        std::fs::write(dir.join(name), serde_json::to_string_pretty(doc).unwrap_or_default())?;
+    }
+    Ok(docs)
 }
 
-/// Writes a raster as a Zarr v2 group, as GDAL does: the array (named after the store, with
-/// dimensions `[Band,] Y, X`), X and Y coordinate arrays, the CRS in `_CRS`, and consolidated
-/// metadata.
-pub(crate) fn write(r: &Raster, nodata: Option<f64>, path: &Path, compression: Option<&str>) -> Result<()> {
+/// Writes a raster as a Zarr group, as GDAL does: the array (named after the store, with
+/// dimensions `[Band,] Y, X`), X and Y coordinate arrays, the CRS in `_CRS`, and (v2) consolidated
+/// metadata. `format` is GDAL's `FORMAT` creation option: `ZARR_V2` (the default) or `ZARR_V3`.
+pub(crate) fn write(r: &Raster, nodata: Option<f64>, path: &Path, compression: Option<&str>, format: Option<&str>) -> Result<()> {
+    let version = match format.map(str::to_ascii_uppercase).as_deref() {
+        None | Some("ZARR_V2") | Some("V2") | Some("2") => Version::V2,
+        Some("ZARR_V3") | Some("V3") | Some("3") => Version::V3,
+        Some(other) => return Err(Error::InvalidArgument(format!("Zarr format '{other}' is not supported (ZARR_V2, ZARR_V3)"))),
+    };
+    // Fail on an unknown compression before creating anything.
+    compressor(compression, version)?;
     if path.exists() {
         return Err(Error::InvalidArgument(format!("{} already exists", path.display())));
     }
     std::fs::create_dir_all(path)?;
     let name = path.file_stem().and_then(|s| s.to_str()).unwrap_or("data").to_string();
     let mut meta = serde_json::Map::new();
-    let zgroup = json!({"zarr_format": 2});
-    std::fs::write(path.join(".zgroup"), serde_json::to_string_pretty(&zgroup).unwrap_or_default())?;
-    std::fs::write(path.join(".zattrs"), "{}")?;
-    meta.insert(".zgroup".into(), zgroup);
-    meta.insert(".zattrs".into(), json!({}));
+    match version {
+        Version::V2 => {
+            let zgroup = json!({"zarr_format": 2});
+            std::fs::write(path.join(".zgroup"), serde_json::to_string_pretty(&zgroup).unwrap_or_default())?;
+            std::fs::write(path.join(".zattrs"), "{}")?;
+            meta.insert(".zgroup".into(), zgroup);
+            meta.insert(".zattrs".into(), json!({}));
+        }
+        Version::V3 => {
+            let group = json!({"zarr_format": 3, "node_type": "group", "attributes": {}});
+            std::fs::write(path.join("zarr.json"), serde_json::to_string_pretty(&group).unwrap_or_default())?;
+        }
+    }
 
     let (shape, chunks, dims) = if r.bands == 1 {
         (vec![r.rows, r.cols], vec![r.rows.min(256), r.cols.min(256)], json!(["Y", "X"]))
     } else {
         (vec![r.bands, r.rows, r.cols], vec![1, r.rows.min(256), r.cols.min(256)], json!(["Band", "Y", "X"]))
     };
-    let mut attrs = json!({"_ARRAY_DIMENSIONS": dims});
+    let mut attrs = json!({});
     let s = super::common::spatial_ref(&r.crs);
     if !s.is_unknown() {
         let mut c = serde_json::Map::new();
@@ -762,20 +1008,26 @@ pub(crate) fn write(r: &Raster, nodata: Option<f64>, path: &Path, compression: O
         bottom_up: false,
     };
     let bytes = common::encode(r, &layout);
-    let (za, zat) = write_array(&path.join(&name), (&shape, &chunks), r.data_type, &bytes, nodata, attrs, compression)?;
-    meta.insert(format!("{name}/.zarray"), za);
-    meta.insert(format!("{name}/.zattrs"), zat);
+    let array = NewArray { shape: &shape, chunks: &chunks, data_type: r.data_type, bytes: &bytes, fill: nodata, dims, attrs };
+    for (file, doc) in write_array(&path.join(&name), &array, compression, version)? {
+        meta.insert(format!("{name}/{file}"), doc);
+    }
 
     // Coordinates of the pixel centres.
     let xs: Vec<u8> = (0..r.cols).flat_map(|c| (r.x_min + (c as f64 + 0.5) * r.cell_size_x).to_le_bytes()).collect();
     let ys: Vec<u8> = (0..r.rows).flat_map(|row| (r.y_max() - (row as f64 + 0.5) * r.cell_size_y).to_le_bytes()).collect();
     for (dim, n, data) in [("X", r.cols, xs), ("Y", r.rows, ys)] {
-        let (za, zat) = write_array(&path.join(dim), (&[n], &[n]), DataType::F64, &data, None, json!({"_ARRAY_DIMENSIONS": [dim]}), None)?;
-        meta.insert(format!("{dim}/.zarray"), za);
-        meta.insert(format!("{dim}/.zattrs"), zat);
+        let fill = (version == Version::V3).then_some(f64::NAN);
+        let coord =
+            NewArray { shape: &[n], chunks: &[n], data_type: DataType::F64, bytes: &data, fill, dims: json!([dim]), attrs: json!({}) };
+        for (file, doc) in write_array(&path.join(dim), &coord, None, version)? {
+            meta.insert(format!("{dim}/{file}"), doc);
+        }
     }
-    let consolidated = json!({"metadata": meta, "zarr_consolidated_format": 1});
-    std::fs::write(path.join(".zmetadata"), serde_json::to_string_pretty(&consolidated).unwrap_or_default())?;
+    if version == Version::V2 {
+        let consolidated = json!({"metadata": meta, "zarr_consolidated_format": 1});
+        std::fs::write(path.join(".zmetadata"), serde_json::to_string_pretty(&consolidated).unwrap_or_default())?;
+    }
     Ok(())
 }
 
@@ -788,6 +1040,24 @@ mod tests {
         // A literal run of 3 bytes, then a match of 4 bytes at distance 3.
         let stream = [2u8, b'a', b'b', b'c', (2 << 5), 2];
         assert_eq!(blosclz_decompress(&stream, 7).unwrap(), b"abcabca");
+    }
+
+    #[test]
+    fn bit_unshuffles() {
+        // Eight 16-bit elements 0..8 bit-shuffled: one row of 8 bits per bit of each byte.
+        let elems: Vec<u16> = (0..8).map(|i| i * 3 + 1).collect();
+        let mut shuffled = [0u8; 16];
+        for (i, e) in elems.iter().enumerate() {
+            for bit in 0..16 {
+                if e >> bit & 1 == 1 {
+                    let p = bit * 8 + i;
+                    shuffled[p / 8] |= 1 << (p % 8);
+                }
+            }
+        }
+        let out = bit_unshuffle(&shuffled, 16, 2, 2);
+        let back: Vec<u16> = out.chunks(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
+        assert_eq!(back, elems);
     }
 
     #[test]
@@ -804,13 +1074,24 @@ mod tests {
         )
         .unwrap();
         let dir = tempfile::tempdir().unwrap();
-        let p = dir.path().join("t.zarr");
-        write(&r, Some(-1.0), &p, Some("ZLIB")).unwrap();
-        let ds = read(&p).unwrap();
-        assert_eq!(ds.raster.data_f32().unwrap(), &data[..]);
-        assert_eq!(ds.nodata(), Some(-1.0));
-        assert_eq!(ds.crs().epsg, Some(4326));
-        let gt = ds.geo_transform();
-        assert!((gt[0] + 110.0).abs() < 1e-9 && (gt[3] - 40.0).abs() < 1e-9, "{gt:?}");
+        for (i, (compression, format)) in [
+            (Some("ZLIB"), None),
+            (Some("ZSTD"), None),
+            (None, Some("ZARR_V3")),
+            (Some("ZSTD"), Some("ZARR_V3")),
+            (Some("GZIP"), Some("ZARR_V3")),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let p = dir.path().join(format!("t{i}.zarr"));
+            write(&r, Some(-1.0), &p, compression, format).unwrap();
+            let ds = read(&p).unwrap();
+            assert_eq!(ds.raster.data_f32().unwrap(), &data[..]);
+            assert_eq!(ds.nodata(), Some(-1.0));
+            assert_eq!(ds.crs().epsg, Some(4326));
+            let gt = ds.geo_transform();
+            assert!((gt[0] + 110.0).abs() < 1e-9 && (gt[3] - 40.0).abs() < 1e-9, "{gt:?}");
+        }
     }
 }

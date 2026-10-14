@@ -244,12 +244,15 @@ pub struct RasterWriteOptions {
     /// The output format. By default, chosen from the output path's extension.
     pub driver: Option<RasterDriver>,
     /// GeoTIFF/COG compression: `NONE`, `LZW`, `DEFLATE`, `ZSTD`, `PACKBITS`, `JPEG`, `WEBP`. GeoTIFFs
-    /// default to `NONE`, COGs to `LZW`, as in GDAL. Zarr: `NONE`, `ZLIB`, `GZIP`.
+    /// default to `NONE`, COGs to `LZW`, as in GDAL. Zarr: `NONE`, `ZLIB` (v2), `GZIP`, `ZSTD`.
     pub compression: Option<String>,
     /// Write GeoTIFF tiles of this size (COG tiles default to 512).
     pub tile_size: Option<u32>,
     /// Force BigTIFF.
     pub bigtiff: bool,
+    /// Format-specific creation options, as GDAL names them (`KEY`, `VALUE`): Zarr
+    /// `FORMAT=ZARR_V2|ZARR_V3`; netCDF `FORMAT=NC|NC2|NC5`.
+    pub creation_options: Vec<(String, String)>,
 }
 
 /// Writes a raster, declaring its nodata value.
@@ -288,7 +291,7 @@ fn write_raster_with_nodata(raster: &Raster, nodata: Option<f64>, path: &str, op
             return crate::drivers::gtiff_write::write(raster, path, &opts);
         }
     }
-    if let Some(result) = crate::drivers::write(raster, nodata, path, driver, options.compression.as_deref()) {
+    if let Some(result) = crate::drivers::write(raster, nodata, path, driver, options) {
         return result;
     }
     let compression = options.compression.as_deref().map(parse_compression).transpose()?;

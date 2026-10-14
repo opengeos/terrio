@@ -62,8 +62,12 @@ pub(crate) fn write(layer: &Layer, path: &str, driver: VectorDriver, options: &V
 
 /// Reads a dataset held in memory with terrio's own driver for the format. `name` is the file
 /// name the bytes came from (its stem names single layers). `None` for formats terrio cannot read
-/// from memory itself: those made of several files (Shapefile, MapInfo) and GeoPackage.
+/// from memory itself (GeoPackage). Formats made of several files are read from their main file
+/// alone (a shapefile without attributes or CRS): see [`read_parts`].
 pub(crate) fn read_bytes(bytes: Vec<u8>, name: &str, driver: VectorDriver, options: &VectorOpenOptions) -> Result<Option<Vec<Layer>>> {
+    if matches!(driver, VectorDriver::Shapefile | VectorDriver::MapInfo) {
+        return read_parts(&bytes, name, driver, &|_: &str| None).map(Some);
+    }
     let stem = std::path::Path::new(name).file_stem().and_then(|s| s.to_str()).unwrap_or("layer");
     Ok(Some(match driver {
         VectorDriver::FlatGeobuf => vec![flatgeobuf::parse(&bytes)?],
@@ -82,6 +86,21 @@ pub(crate) fn read_bytes(bytes: Vec<u8>, name: &str, driver: VectorDriver, optio
         VectorDriver::OSM => osm::parse(bytes)?,
         _ => return Ok(None),
     }))
+}
+
+/// Reads a format made of several files from memory: the main file (`.shp`, `.mif`) and its
+/// sidecars, which `sidecar` returns by extension (`dbf`, `prj`, `cpg`, `mid`; lowercase).
+pub(crate) fn read_parts(main: &[u8], name: &str, driver: VectorDriver, sidecar: &dyn Fn(&str) -> Option<Vec<u8>>) -> Result<Vec<Layer>> {
+    let stem = std::path::Path::new(name).file_stem().and_then(|s| s.to_str()).unwrap_or("layer");
+    let text = |ext: &str| sidecar(ext).map(|b| String::from_utf8_lossy(&b).into_owned());
+    match driver {
+        VectorDriver::Shapefile => {
+            let dbf = sidecar("dbf");
+            Ok(vec![shapefile::parse(main, dbf.as_deref(), text("prj").as_deref(), text("cpg").as_deref(), stem)?])
+        }
+        VectorDriver::MapInfo => Ok(vec![mapinfo::parse(main, sidecar("mid").as_deref(), stem)?]),
+        d => Err(crate::Error::Unsupported(format!("the {} format is not made of several files", d.name()))),
+    }
 }
 
 /// Encodes layers with terrio's own driver for the format. `None` for formats made of several

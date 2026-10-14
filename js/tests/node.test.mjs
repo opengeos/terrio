@@ -166,8 +166,11 @@ for (const [name, count] of VECTORS) {
   });
 }
 
-test("shapefiles are not read from memory yet", { skip: !DATA && "TERRIO_TEST_DATA is not set" }, (t) => {
+test("zipped shapefiles are read from memory", { skip: !DATA && "TERRIO_TEST_DATA is not set" }, (t) => {
   const path = join(DATA, "ne_countries.zip");
   if (!existsSync(path)) return t.skip("ne_countries.zip is missing");
-  assert.throws(() => terrio.open(readFileSync(path), "ne_countries.zip"), /Shapefile format cannot be read from memory/);
+  // GDAL: 177 features, EPSG:4326.
+  const fc = terrio.open(readFileSync(path), "ne_countries.zip").toGeoJSON();
+  assert.equal(fc.features.length, 177);
+  assert.ok(fc.features.some((f) => f.properties.NAME === "Côte d'Ivoire"));
 });

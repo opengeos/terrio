@@ -98,15 +98,25 @@ pub(crate) fn read(path: &Path, variable: Option<&str>) -> Result<RasterDataset>
             RasterData::$variant(f.read_variable::<$t>(&name).map_err(|e| err(path, e))?.iter().copied().collect())
         };
     }
+    // Signed types flagged `_Unsigned` keep their bits.
+    macro_rules! reinterpret {
+        ($t:ty, $u:ty, $variant:ident) => {
+            RasterData::$variant(f.read_variable::<$t>(&name).map_err(|e| err(path, e))?.iter().map(|v| *v as $u).collect())
+        };
+    }
     let data = match (var.dtype(), unsigned) {
         (NcType::Byte, false) => typed!(i8, I8),
-        (NcType::Byte, true) | (NcType::UByte, _) | (NcType::Char, _) => typed!(u8, U8),
+        (NcType::Byte, true) => reinterpret!(i8, u8, U8),
+        (NcType::UByte, _) | (NcType::Char, _) => typed!(u8, U8),
         (NcType::Short, false) => typed!(i16, I16),
-        (NcType::Short, true) | (NcType::UShort, _) => typed!(u16, U16),
+        (NcType::Short, true) => reinterpret!(i16, u16, U16),
+        (NcType::UShort, _) => typed!(u16, U16),
         (NcType::Int, false) => typed!(i32, I32),
-        (NcType::Int, true) | (NcType::UInt, _) => typed!(u32, U32),
+        (NcType::Int, true) => reinterpret!(i32, u32, U32),
+        (NcType::UInt, _) => typed!(u32, U32),
         (NcType::Int64, false) => typed!(i64, I64),
-        (NcType::Int64, true) | (NcType::UInt64, _) => typed!(u64, U64),
+        (NcType::Int64, true) => reinterpret!(i64, u64, U64),
+        (NcType::UInt64, _) => typed!(u64, U64),
         (NcType::Float, _) => typed!(f32, F32),
         (NcType::Double, _) => typed!(f64, F64),
         (t, _) => return Err(Error::Unsupported(format!("{}: NetCDF type {t:?} is not supported", path.display()))),
@@ -148,7 +158,19 @@ pub(crate) fn read(path: &Path, variable: Option<&str>) -> Result<RasterDataset>
         None if degrees(&dims[nd - 1].name, "degrees_e") && degrees(&dims[nd - 2].name, "degrees_n") => Some(CrsInfo::from_epsg(4326)),
         None => None,
     };
-    let nodata = attr_f64(var, "_FillValue").or_else(|| attr_f64(var, "missing_value"));
+    let mut nodata = attr_f64(var, "_FillValue").or_else(|| attr_f64(var, "missing_value"));
+    // A signed type read as unsigned keeps its fill value's bits.
+    if unsigned && let Some(nd) = nodata.filter(|v| *v < 0.0) {
+        let bits = match var.dtype() {
+            NcType::Byte => 8,
+            NcType::Short => 16,
+            NcType::Int => 32,
+            _ => 0,
+        };
+        if bits > 0 {
+            nodata = Some(nd + (1u64 << bits) as f64);
+        }
+    }
     let mut raster = common::make_raster(cols, rows, bands, data, gt.unwrap_or(common::NO_GEOTRANSFORM), crs.unwrap_or_default(), nodata)?;
     if south_up {
         flip(&mut raster);

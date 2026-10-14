@@ -47,10 +47,21 @@ pub(crate) fn read(path: &Path) -> Result<RasterDataset> {
     let gt = [x0, (x1 - x0) / cols as f64, 0.0, y1, 0.0, -(y1 - y0) / rows as f64];
     let flag_def = get("flag def'n").unwrap_or_default().to_ascii_lowercase();
     let nodata = (flag_def == "missing data" || flag_def == "background").then(|| num("flag value")).flatten();
-    let crs = crs_from_ref(get("ref. system").unwrap_or_default(), path).unwrap_or_default();
+    let refsys = get("ref. system").unwrap_or_default();
+    let crs = crs_from_ref(refsys, path)
+        .or_else(|| {
+            // GDAL writes the projected CRSs it cannot name with an empty reference system, and
+            // reads them back as a local CRS in the reference units.
+            let metres = get("ref. units").is_some_and(|u| matches!(u.to_ascii_lowercase().as_str(), "m" | "meter" | "meters" | "metre"));
+            (refsys.is_empty() && metres).then(|| CrsInfo { epsg: None, wkt: Some(LOCAL_METRES.to_string()), proj4: None })
+        })
+        .unwrap_or_default();
     let raster = common::make_raster(cols, rows, bands, pixels, gt, crs, nodata)?;
     Ok(RasterDataset { raster, driver: RasterDriver::RST, has_nodata: nodata.is_some() })
 }
+
+/// The local CRS GDAL reads for an unnamed Idrisi reference system in metres.
+pub(crate) const LOCAL_METRES: &str = r#"LOCAL_CS["Unknown",UNIT["metre",1],AXIS["Easting",EAST],AXIS["Northing",NORTH]]"#;
 
 /// The CRS of an Idrisi reference system: `latlong`, `utm-11n`, or a `.ref` file's datum.
 fn crs_from_ref(name: &str, path: &Path) -> Option<CrsInfo> {

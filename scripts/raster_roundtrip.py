@@ -56,7 +56,7 @@ FORMATS = {
     "JP2OpenJPEG": (".jp2", ["REVERSIBLE=YES", "QUALITY=100"], {"Byte", "Int16", "UInt16"}, 4, False, True),
     "XYZ": (".xyz", [], {"Byte", "Int16", "UInt16", "Int32", "Float32"}, 1, False, True),
     "Zarr": (".zarr", [], None, 8, False, True),
-    "netCDF": (".nc", ["FORMAT=NC4"], {"Byte", "Int8", "Int16", "UInt16", "Int32", "UInt32", "Int64", "UInt64", "Float32", "Float64"}, 8, False, False),
+    "netCDF": (".nc", ["FORMAT=NC4"], {"Byte", "Int8", "Int16", "UInt16", "Int32", "UInt32", "Int64", "UInt64", "Float32", "Float64"}, 8, False, True),
     "GPKG": (".gpkg", [], {"Byte"}, 4, False, False),
 }
 
@@ -65,10 +65,29 @@ FORMATS = {
 NO_TYPE = {"AAIGrid", "XYZ"}
 NO_NODATA = {"XYZ", "GSBG", "SAGA", "PNG", "JPEG", "GPKG"}
 
+# Types a format stores as another one (GDAL does the same): source type -> type read back.
+TYPE_CHANGES = {"netCDF": {"UInt32": "Float64", "Int64": "Float64", "UInt64": "Float64"}}
+
+# Without a nodata value, GDAL's netCDF driver reports the type's default fill value, whoever wrote
+# the file.
+NETCDF_DEFAULT_FILL = {"Byte": None, "Int8": -127.0, "Int16": -32767.0, "UInt16": 65535.0, "Int32": -2147483647.0, "Float32": 9.969209968386869e36, "Float64": 9.969209968386869e36}
+
+# Zarr v3 needs a fill value, which GDAL reads as nodata: terrio writes 0 for integers and NaN
+# for floats when the source has no nodata (GDAL writes an invalid null fill value).
+ZARR_V3_DEFAULT_FILL = {t: 0.0 for t in ("Byte", "Int8", "Int16", "UInt16", "Int32", "UInt32", "Int64", "UInt64")} | {"Float32": math.nan, "Float64": math.nan}
+
 # Extra ``terrio convert`` options to try when writing, per format.
 WRITE_VARIANTS = {
     "GTiff": [[], ["--compress", "LZW"], ["--compress", "DEFLATE", "--tile-size", "256"], ["--compress", "ZSTD", "--bigtiff"], ["--compress", "PACKBITS"]],
     "COG": [[], ["--compress", "DEFLATE"], ["--compress", "ZSTD", "--tile-size", "256", "--bigtiff"], ["--compress", "NONE"]],
+    "Zarr": [[], ["--compress", "ZLIB"], ["--co", "FORMAT=ZARR_V3"], ["--co", "FORMAT=ZARR_V3", "--compress", "ZSTD"], ["--co", "FORMAT=ZARR_V3", "--compress", "GZIP"]],
+    "netCDF": [[], ["--co", "FORMAT=NC2"]],
+}
+
+# More GDAL creation options to read files written with, per format (besides those in FORMATS).
+READ_VARIANTS = {
+    "netCDF": [["FORMAT=NC"]],
+    "Zarr": [["FORMAT=ZARR_V3"], ["FORMAT=ZARR_V3", "CHUNK_MEMORY_LAYOUT=F", "BLOCKSIZE=1,16,16"], ["CHUNK_MEMORY_LAYOUT=F"], ["COMPRESS=BLOSC", "BLOSC_SHUFFLE=BIT"]],
 }
 
 # GDAL driver name -> terrio format name for writing.
@@ -176,7 +195,7 @@ def same_crs(a, b):
     return bool(sa.IsSame(sb, ["CRITERION=EQUIVALENT_EXCEPT_AXIS_ORDER_GEOGCRS"]))
 
 
-def compare(expected, actual, lossy=0, check_crs=True, check_nodata=True, check_type=True):
+def compare(expected, actual, lossy=0, check_crs=True, check_nodata=True, check_type=True, type_changes=None, default_fill=None):
     """Compare two GDAL datasets: size, bands, types, geotransform, CRS, nodata and pixels.
 
     Args:
@@ -186,6 +205,8 @@ def compare(expected, actual, lossy=0, check_crs=True, check_nodata=True, check_
         check_crs: Compare the CRSs.
         check_nodata: Compare the nodata values.
         check_type: Compare the data types.
+        type_changes: Expected data type name by source type name, for types the format changes.
+        default_fill: Nodata value by data type name reported by the reader when the source has none.
 
     Returns:
         A list of differences (empty when they match).
@@ -204,9 +225,13 @@ def compare(expected, actual, lossy=0, check_crs=True, check_nodata=True, check_
     for i in range(1, expected.RasterCount + 1):
         be, ba = expected.GetRasterBand(i), actual.GetRasterBand(i)
         te, ta = gdal.GetDataTypeName(be.DataType), gdal.GetDataTypeName(ba.DataType)
-        if check_type and te != ta:
+        if check_type and (type_changes or {}).get(te, te) != ta:
             diffs.append(f"band {i} type {ta} vs {te}")
         ne, na = be.GetNoDataValue(), ba.GetNoDataValue()
+        if ne is None and na is not None and default_fill is not None and ta in default_fill:
+            d = default_fill[ta]
+            if d is not None and (na == d or (math.isnan(na) and math.isnan(d))):
+                na = None
         if check_nodata and not (ne == na or (ne is not None and na is not None and math.isnan(ne) and math.isnan(na))):
             diffs.append(f"band {i} nodata {na} vs {ne}")
         ae, aa = be.ReadAsArray(), ba.ReadAsArray()
@@ -271,17 +296,21 @@ def check_format(fmt, sources, tmp):
             continue
         src_ds = gdal.Open(src)
         # GDAL writes, terrio reads.
-        g_path = os.path.join(tmp, f"gdal_{fmt}_{name}{ext}")
-        try:
-            gdal.Translate(g_path, src_ds, format=fmt, creationOptions=co)
-            t_tif = os.path.join(tmp, f"terrio_read_{fmt}_{name}.tif")
-            err = terrio("convert", g_path, t_tif)
-            if err:
-                results["read"].append((name, [f"terrio: {err}"]))
-            else:
-                results["read"].append((name, compare(gdal_open(g_path), gdal.Open(t_tif), lossy=3 if lossy else 0)))
-        except RuntimeError as e:
-            results["read"].append((name, [f"GDAL cannot write it: {e}"]))
+        for r, read_co in enumerate([co] + READ_VARIANTS.get(fmt, [])):
+            label = name if r == 0 else f"{name} {' '.join(read_co)}"
+            g_path = os.path.join(tmp, f"gdal_{fmt}_{name}_{r}{ext}")
+            if "BLOCKSIZE=1,16,16" in read_co and bands == 1:
+                read_co = [c for c in read_co if not c.startswith("BLOCKSIZE")] + ["BLOCKSIZE=16,16"]
+            try:
+                gdal.Translate(g_path, src_ds, format=fmt, creationOptions=read_co)
+                t_tif = os.path.join(tmp, f"terrio_read_{fmt}_{name}_{r}.tif")
+                err = terrio("convert", g_path, t_tif)
+                if err:
+                    results["read"].append((label, [f"terrio: {err}"]))
+                else:
+                    results["read"].append((label, compare(gdal_open(g_path), gdal.Open(t_tif), lossy=3 if lossy else 0)))
+            except RuntimeError as e:
+                results["read"].append((label, [f"GDAL cannot write it: {e}"]))
         # terrio writes, GDAL reads.
         if not writable:
             continue
@@ -293,7 +322,15 @@ def check_format(fmt, sources, tmp):
                 results["write"].append((label, [f"terrio: {err}"]))
                 continue
             try:
-                diffs = compare(src_ds, gdal.Open(t_path), lossy=64 if lossy else 0, check_nodata=fmt not in NO_NODATA, check_type=fmt not in NO_TYPE)
+                diffs = compare(
+                    src_ds,
+                    gdal.Open(t_path),
+                    lossy=64 if lossy else 0,
+                    check_nodata=fmt not in NO_NODATA,
+                    check_type=fmt not in NO_TYPE,
+                    type_changes=TYPE_CHANGES.get(fmt),
+                    default_fill=NETCDF_DEFAULT_FILL if fmt == "netCDF" else ZARR_V3_DEFAULT_FILL if "FORMAT=ZARR_V3" in variant else None,
+                )
             except RuntimeError as e:
                 diffs = [f"GDAL cannot read it: {e}"]
             if fmt == "COG":

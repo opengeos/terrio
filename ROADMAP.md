@@ -68,8 +68,8 @@ of GDAL: the long tail of formats stays reachable through an optional GDAL backe
   GDAL's Python bindings. Still to do: Arrow export of vector layers, type stubs.
 - An npm package built from the WebAssembly target. Done: datasets opened from bytes (GeoTIFF,
   ASCII grid and the text and FlatGeobuf vector formats), bands as typed arrays, GeoJSON out,
-  conversion to bytes, CRS transforms. Still to do: Shapefile, GeoParquet and GeoPackage from
-  memory, which need byte-based readers in those drivers.
+  conversion to bytes, CRS transforms, zipped Shapefile and MapInfo from memory. Still to do:
+  GeoPackage from memory.
 - Datasets opened from and written to bytes (`terrio::memory`).
 - An optional `gdal` feature that opens anything GDAL can when it is installed, through the same
   data model.
@@ -85,7 +85,8 @@ of GDAL: the long tail of formats stays reachable through an optional GDAL backe
 ## Later
 
 - CRS: datum shift grids (NTv2, GeoTIFF grids), vertical datums, a bundled EPSG database.
-- NetCDF and HDF5 classic formats in pure Rust, starting with reading.
+- NetCDF and HDF5 in pure Rust: classic and netCDF-4 reading and classic (CDF-1/2/5) writing are
+  done; netCDF-4 writing and groups below the root remain.
 - JPEG 2000 and other compressed raster formats as pure-Rust decoders mature.
 - Point clouds (LAS, LAZ, COPC).
 - Raster algebra and terrain tools (hillshade, slope, aspect).

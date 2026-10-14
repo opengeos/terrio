@@ -404,7 +404,12 @@ fn geo_tags(r: &Raster, nodata: Option<f64>) -> Result<Vec<(u16, Value)>> {
     let crs = super::common::spatial_ref(&r.crs);
     let mut v = crate::drivers::geokeys::GeoKeyValues::default();
     v.shorts.push((1025, 1)); // RasterPixelIsArea
-    if !crs.is_unknown() {
+    let local = crs.wkt.as_deref().and_then(local_cs);
+    if let Some((name, unit)) = &local {
+        // A local CRS, as GDAL writes one: a citation and the linear unit, no model type.
+        v.ascii.push((1026, name.clone()));
+        v.shorts.push((3076, *unit));
+    } else if !crs.is_unknown() {
         let geographic = crs.is_geographic();
         match crs.epsg.and_then(|c| u16::try_from(c).ok()) {
             Some(code) => {
@@ -464,6 +469,23 @@ fn geo_tags(r: &Raster, nodata: Option<f64>) -> Result<Vec<(u16, Value)>> {
         tags.push((42113, Value::Ascii(format_nodata(nd))));
     }
     Ok(tags)
+}
+
+/// The name and EPSG linear unit code of a `LOCAL_CS` WKT (metres and feet).
+fn local_cs(wkt: &str) -> Option<(String, u16)> {
+    let rest = wkt.trim_start().strip_prefix("LOCAL_CS[\"")?;
+    let name = rest.split('"').next()?.to_string();
+    let lower = rest.to_ascii_lowercase();
+    let unit = if lower.contains("unit[\"metre\"") || lower.contains("unit[\"meter\"") {
+        9001
+    } else if lower.contains("unit[\"foot\"") {
+        9002
+    } else if lower.contains("us survey foot") {
+        9003
+    } else {
+        return None;
+    };
+    Some((name, unit))
 }
 
 fn merge(mut a: crate::drivers::geokeys::GeoKeyValues, b: crate::drivers::geokeys::GeoKeyValues) -> crate::drivers::geokeys::GeoKeyValues {

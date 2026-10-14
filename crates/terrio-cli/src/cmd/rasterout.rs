@@ -19,6 +19,10 @@ pub struct OutputArgs {
     /// Write BigTIFF.
     #[arg(long)]
     pub bigtiff: bool,
+    /// A creation option, as GDAL names it: `KEY=VALUE` (Zarr: FORMAT=ZARR_V2|ZARR_V3; netCDF:
+    /// FORMAT=NC|NC2|NC5).
+    #[arg(long = "co", value_name = "KEY=VALUE")]
+    pub creation_options: Vec<String>,
 }
 
 impl OutputArgs {
@@ -29,7 +33,15 @@ impl OutputArgs {
             .as_deref()
             .map(|f| RasterDriver::from_name(f).ok_or_else(|| terrio::Error::InvalidArgument(format!("unknown raster format '{f}'"))))
             .transpose()?;
-        let opts = RasterWriteOptions { driver, compression: self.compress.clone(), tile_size: self.tile_size, bigtiff: self.bigtiff };
+        let creation_options =
+            super::convert::key_values(&self.creation_options)?.into_iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+        let opts = RasterWriteOptions {
+            driver,
+            compression: self.compress.clone(),
+            tile_size: self.tile_size,
+            bigtiff: self.bigtiff,
+            creation_options,
+        };
         terrio::write_raster_dataset(ds, path, &opts)
     }
 }

@@ -25,11 +25,24 @@ fn sidecar(base: &Path, ext: &str) -> Option<PathBuf> {
 pub fn read(path: &str) -> Result<Layer> {
     let base = Path::new(path).with_extension("");
     let shp = std::fs::read(path)?;
+    let dbf = sidecar(&base, "dbf").map(std::fs::read).transpose()?;
+    let prj = sidecar(&base, "prj").and_then(|p| std::fs::read_to_string(p).ok());
+    let cpg = sidecar(&base, "cpg").and_then(|p| std::fs::read_to_string(p).ok());
+    let name = base.file_name().and_then(|s| s.to_str()).unwrap_or("layer");
+    parse(&shp, dbf.as_deref(), prj.as_deref(), cpg.as_deref(), name).map_err(|e| match e {
+        Error::InvalidData(m) if m == "not a shapefile" => Error::InvalidData(format!("'{path}' is not a shapefile")),
+        e => e,
+    })
+}
+
+/// Reads a shapefile from the contents of its `.shp`, `.dbf`, `.prj` and `.cpg` files. `name`
+/// names the layer.
+pub fn parse(shp: &[u8], dbf: Option<&[u8]>, prj: Option<&str>, cpg: Option<&str>, name: &str) -> Result<Layer> {
     if shp.len() < 100 || u32::from_be_bytes([shp[0], shp[1], shp[2], shp[3]]) != 9994 {
-        return Err(Error::InvalidData(format!("'{path}' is not a shapefile")));
+        return Err(Error::InvalidData("not a shapefile".into()));
     }
     let shape_type = i32::from_le_bytes([shp[32], shp[33], shp[34], shp[35]]);
-    let mut layer = Layer::new(base.file_name().and_then(|s| s.to_str()).unwrap_or("layer"));
+    let mut layer = Layer::new(name);
     layer.geom_type = match if shape_type == 31 { 0 } else { shape_type % 10 } {
         1 => Some(GeometryType::Point),
         3 => Some(GeometryType::LineString),
@@ -47,9 +60,8 @@ pub fn read(path: &str) -> Result<Layer> {
         pos = end;
     }
 
-    let encoding = sidecar(&base, "cpg").and_then(|p| std::fs::read_to_string(p).ok());
-    let (fields, records) = match sidecar(&base, "dbf") {
-        Some(p) => parse_dbf(&std::fs::read(p)?, encoding.as_deref())?,
+    let (fields, records) = match dbf {
+        Some(d) => parse_dbf(d, cpg)?,
         None => (Vec::new(), Vec::new()),
     };
     for f in fields {
@@ -63,7 +75,7 @@ pub fn read(path: &str) -> Result<Layer> {
         let attributes = records.next().unwrap_or_else(|| vec![FieldValue::Null; layer.schema.len()]);
         layer.push(Feature { fid: fid as u64, geometry, attributes });
     }
-    if let Some(prj) = sidecar(&base, "prj").and_then(|p| std::fs::read_to_string(p).ok()).filter(|s| !s.trim().is_empty()) {
+    if let Some(prj) = prj.filter(|s| !s.trim().is_empty()) {
         SpatialRef::from_wkt(prj.trim()).apply_to_layer(&mut layer);
         layer.set_crs_wkt(Some(prj.trim().to_string()));
     }

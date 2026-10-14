@@ -56,7 +56,7 @@ pub enum RasterDriver {
     Zarr,
     /// DTED elevation.
     DTED,
-    /// NetCDF (classic and netCDF-4), read only.
+    /// NetCDF: classic and netCDF-4 read, classic (CDF-1, CDF-2, CDF-5) written.
     NetCDF,
     /// GDAL virtual raster (read by [`crate::ops::vrt`]; written by mosaics).
     VRT,
@@ -160,7 +160,7 @@ impl RasterDriver {
             Self::XYZ => ("XYZ", "XYZ ASCII Grid", &["xyz"], true, true),
             Self::Zarr => ("Zarr", "Zarr v2/v3", &["zarr"], true, true),
             Self::DTED => ("DTED", "DTED Elevation", &["dt0", "dt1", "dt2"], true, true),
-            Self::NetCDF => ("netCDF", "Network Common Data Format", &["nc", "nc4", "cdf"], true, false),
+            Self::NetCDF => ("netCDF", "Network Common Data Format", &["nc", "nc4", "cdf"], true, true),
             Self::VRT => ("VRT", "Virtual Raster", &["vrt"], true, true),
         };
         DriverInfo { name, long_name, kind: Kind::Raster, extensions, read, write }
@@ -220,7 +220,7 @@ impl RasterDriver {
             Self::XYZ => F::Xyz,
             Self::Zarr => F::Zarr,
             Self::DTED => F::Dted,
-            // Never used: terrio's own driver reads NetCDF, and nothing writes it.
+            // Never used: terrio reads and writes NetCDF itself.
             Self::NetCDF => F::Zarr,
             // Never used: terrio reads and writes VRTs itself.
             Self::VRT => F::GeoTiff,

@@ -20,7 +20,8 @@ pub struct Args {
     /// Reproject into this CRS.
     #[arg(long = "t-srs", value_name = "CRS")]
     t_srs: Option<String>,
-    /// GeoTIFF/COG compression: NONE, LZW, DEFLATE, ZSTD, PACKBITS, JPEG, WEBP.
+    /// Compression: GeoTIFF/COG NONE, LZW, DEFLATE, ZSTD, PACKBITS, JPEG, WEBP; Zarr NONE, ZLIB (v2),
+    /// GZIP, ZSTD.
     #[arg(long)]
     compress: Option<String>,
     /// GeoTIFF/COG tile size.
@@ -44,12 +45,16 @@ pub struct Args {
     /// GeoJSON: RFC7946=YES).
     #[arg(long = "lco", value_name = "KEY=VALUE")]
     creation_options: Vec<String>,
+    /// A raster creation option, as GDAL names it: `KEY=VALUE` (Zarr: FORMAT=ZARR_V2|ZARR_V3;
+    /// netCDF: FORMAT=NC|NC2|NC5).
+    #[arg(long = "co", value_name = "KEY=VALUE")]
+    raster_options: Vec<String>,
     #[command(flatten)]
     vector: super::vector_opts::VectorArgs,
 }
 
 /// Splits `KEY=VALUE` options.
-fn key_values(options: &[String]) -> terrio::Result<Vec<(&str, &str)>> {
+pub(super) fn key_values(options: &[String]) -> terrio::Result<Vec<(&str, &str)>> {
     options
         .iter()
         .map(|o| o.split_once('=').ok_or_else(|| terrio::Error::InvalidArgument(format!("option '{o}' is not KEY=VALUE"))))
@@ -99,7 +104,8 @@ pub fn run(a: Args) -> terrio::Result<()> {
                 let o = terrio::ops::warp::WarpOptions { dst_srs: Some(dst), ..Default::default() };
                 r = terrio::ops::warp::warp(&[&r], &o)?;
             }
-            let opts = RasterWriteOptions { driver, compression: a.compress, tile_size: a.tile_size, bigtiff: a.bigtiff };
+            let creation_options = key_values(&a.raster_options)?.into_iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+            let opts = RasterWriteOptions { driver, compression: a.compress, tile_size: a.tile_size, bigtiff: a.bigtiff, creation_options };
             terrio::write_raster_dataset(&r, &a.output, &opts)
         }
         Dataset::Vector(v) => {

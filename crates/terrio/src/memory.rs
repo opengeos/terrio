@@ -9,7 +9,8 @@
 //! in-memory codecs instead, for the formats that have one:
 //!
 //! - reading: GeoTIFF, Esri ASCII grid, GeoJSON, TopoJSON, FlatGeobuf, CSV, GeoParquet, KML, KMZ,
-//!   GML, GPX, OSM PBF, and zip archives of these;
+//!   GML, GPX, OSM PBF, and zip archives of these, and Shapefile and MapInfo (MIF/MID) in zip
+//!   archives (or their `.shp` or `.mif` alone);
 //! - writing: GeoTIFF and COG (with lossless compressions), Esri ASCII grid, GeoJSON, TopoJSON,
 //!   FlatGeobuf, CSV, GeoParquet, GeoPackage, KML, KMZ, GML (without its schema) and GPX.
 //!
@@ -229,18 +230,12 @@ pub(crate) mod codec {
         let Some(layers) = crate::drivers::vector::read_bytes(bytes, name, driver, options)? else {
             return Err(Error::Unsupported(format!(
                 "the {} format cannot be read from memory in this build (in memory: GeoTIFF, AAIGrid, GeoJSON, TopoJSON, \
-                 FlatGeobuf, CSV, GeoParquet, KML, KMZ, GML, GPX, OSM PBF)",
+                 FlatGeobuf, CSV, GeoParquet, KML, KMZ, GML, GPX, OSM PBF, and Shapefile and MapInfo in zip archives)",
                 driver.name()
             )));
         };
         let layers: Vec<Layer> = layers.into_iter().map(|l| crate::dataset::fix_layer(l, name, driver)).collect();
-        let names: Vec<String> = layers.iter().map(|l| l.name.clone()).collect();
-        let layers: Vec<Layer> =
-            if options.layers.is_empty() { layers } else { layers.into_iter().filter(|l| options.layers.contains(&l.name)).collect() };
-        if layers.is_empty() {
-            return Err(Error::InvalidArgument(format!("no layer named {} (layers: {})", options.layers.join(", "), names.join(", "))));
-        }
-        Ok(Dataset::Vector(VectorDataset { layers, driver }))
+        finish_vector(layers, driver, options)
     }
 
     /// Opens the main dataset of a zip archive held in memory.
@@ -261,7 +256,35 @@ pub(crate) mod codec {
             .ok_or_else(|| Error::Unsupported(format!("no dataset found in '{name}'")))?;
         let mut member = Vec::new();
         zip.by_name(&main)?.read_to_end(&mut member)?;
+        let driver = VectorDriver::for_extension(&main);
+        if let Some(driver @ (VectorDriver::Shapefile | VectorDriver::MapInfo)) = driver {
+            // The sidecars: the members named as the main file, with another extension.
+            let base = &main[..main.len() - extension(&main).map_or(0, |e| e.len() + 1)];
+            let zip = std::cell::RefCell::new(zip);
+            let sidecar = |ext: &str| -> Option<Vec<u8>> {
+                let member = names.iter().find(|n| {
+                    n.len() == base.len() + ext.len() + 1 && n.starts_with(base) && extension(n.as_str()).as_deref() == Some(ext)
+                })?;
+                let mut out = Vec::new();
+                zip.borrow_mut().by_name(member).ok()?.read_to_end(&mut out).ok()?;
+                Some(out)
+            };
+            let layers = crate::drivers::vector::read_parts(&member, &main, driver, &sidecar)?;
+            let layers: Vec<Layer> = layers.into_iter().map(|l| crate::dataset::fix_layer(l, &main, driver)).collect();
+            return finish_vector(layers, driver, options);
+        }
         open(member, &main, options)
+    }
+
+    /// Keeps the layers the options ask for.
+    fn finish_vector(layers: Vec<Layer>, driver: VectorDriver, options: &VectorOpenOptions) -> Result<Dataset> {
+        let names: Vec<String> = layers.iter().map(|l| l.name.clone()).collect();
+        let layers: Vec<Layer> =
+            if options.layers.is_empty() { layers } else { layers.into_iter().filter(|l| options.layers.contains(&l.name)).collect() };
+        if layers.is_empty() {
+            return Err(Error::InvalidArgument(format!("no layer named {} (layers: {})", options.layers.join(", "), names.join(", "))));
+        }
+        Ok(Dataset::Vector(VectorDataset { layers, driver }))
     }
 
     /// Writes a raster to bytes with the in-memory codecs.
@@ -403,5 +426,28 @@ mod tests {
         let mut names: Vec<String> = zip.file_names().map(|n| n.unwrap().to_string()).collect();
         names.sort();
         assert_eq!(names, ["p.cpg", "p.dbf", "p.prj", "p.shp", "p.shx"]);
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn multi_file_formats_from_zip_bytes() {
+        let gj = r#"{"type":"FeatureCollection","features":[
+            {"type":"Feature","properties":{"id":7,"name":"Zürich"},"geometry":{"type":"Point","coordinates":[8.5,47.4]}},
+            {"type":"Feature","properties":{"id":8,"name":"b"},"geometry":{"type":"Point","coordinates":[1,2]}}]}"#;
+        let v = open_vector_bytes(gj.as_bytes().to_vec(), "p.geojson", &Default::default()).unwrap();
+        for name in ["p.shp", "p.mif"] {
+            let zip = write_vector_bytes(&v.layers, name, &Default::default()).unwrap();
+            // The in-memory codecs (what WebAssembly builds use), and the native path.
+            let Dataset::Vector(back) = codec::open(zip.clone(), "p.zip", &Default::default()).unwrap() else { panic!() };
+            let native = open_vector_bytes(zip, "p.zip", &Default::default()).unwrap();
+            for l in [&back.layers[0], &native.layers[0]] {
+                assert_eq!(l.name, "p", "{name}");
+                assert_eq!(l.features.len(), 2, "{name}");
+                assert_eq!(l.crs_epsg(), Some(4326), "{name}");
+                assert_eq!(l.features[0].geometry, v.layers[0].features[0].geometry, "{name}");
+                let i = l.schema.fields().iter().position(|f| f.name == "name").unwrap();
+                assert_eq!(l.features[0].attributes[i], wbvector::FieldValue::Text("Zürich".into()), "{name}");
+            }
+        }
     }
 }

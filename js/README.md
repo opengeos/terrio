@@ -29,12 +29,12 @@ In WebAssembly, these formats are read from and written to memory:
 | | Read | Write |
 |---|---|---|
 | Raster | GeoTIFF/COG, Esri ASCII grid | GeoTIFF, COG (lossless compressions), Esri ASCII grid |
-| Vector | GeoJSON, TopoJSON, FlatGeobuf\*, KML, KMZ, GML, GPX, zip archives of these | GeoJSON, TopoJSON, FlatGeobuf, KML, KMZ, GML, GPX |
+| Vector | GeoJSON, TopoJSON, FlatGeobuf\*, GeoParquet, CSV, KML, KMZ, GML, GPX, OSM PBF, zip archives of these, Shapefile and MapInfo (MIF/MID) in zip archives | GeoJSON, TopoJSON, FlatGeobuf, KML, KMZ, GML, GPX |
 
 \* The format library's FlatGeobuf reader overflows on large files in 32-bit WebAssembly; terrio's
 own FlatGeobuf driver will replace it.
 
-Shapefiles, GeoParquet and GeoPackage are not yet read from memory in WebAssembly.
+GeoPackage is not yet read from memory in WebAssembly.
 
 ## Building
 
