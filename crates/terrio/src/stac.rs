@@ -15,7 +15,7 @@
 //!   a grid at the items' average resolution (`resolution=highest|lowest|average`), read by
 //!   window from the items' files.
 //!
-//! [`info`] lists an item's assets, or a collection's mosaics, as subdatasets.
+//! [`crate::info::info_path`] lists an item's assets, or a collection's mosaics, as subdatasets.
 
 use crate::cog::{LazyRaster, Window, WindowOptions, WindowSource};
 use crate::crs::SpatialRef;

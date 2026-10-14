@@ -408,6 +408,22 @@ pub fn write_raster(raster: &Raster, path: &str, options: &RasterWriteOptions) -
 }
 
 /// Writes a raster dataset, declaring a nodata value only when the dataset has one.
+///
+/// ```no_run
+/// use terrio::formats::RasterDriver;
+///
+/// let dem = terrio::open_raster("dem.tif")?;
+/// // The format from the extension, or given explicitly with creation options.
+/// terrio::write_raster_dataset(&dem, "dem.asc", &Default::default())?;
+/// let options = terrio::RasterWriteOptions {
+///     driver: Some(RasterDriver::Zarr),
+///     compression: Some("ZSTD".into()),
+///     creation_options: vec![("FORMAT".into(), "ZARR_V3".into())],
+///     ..Default::default()
+/// };
+/// terrio::write_raster_dataset(&dem, "dem.zarr", &options)?;
+/// # Ok::<(), terrio::Error>(())
+/// ```
 pub fn write_raster_dataset(ds: &RasterDataset, path: &str, options: &RasterWriteOptions) -> Result<()> {
     write_raster_with_nodata(&ds.raster, ds.nodata(), path, options)
 }
@@ -495,6 +511,15 @@ pub struct VectorWriteOptions {
 
 /// Writes vector layers. GeoPackage, GPX, KML, KMZ and TopoJSON hold several layers in one file;
 /// for the other formats, write one layer at a time.
+///
+/// ```no_run
+/// let ds = terrio::open_vector("countries.shp", &Default::default())?;
+/// terrio::write_vector(&ds.layers, "countries.gpkg", &Default::default())?;
+/// let mut options = terrio::VectorWriteOptions::default();
+/// options.geojson.set("RFC7946", "YES")?;
+/// terrio::write_vector(&ds.layers, "countries.geojson", &options)?;
+/// # Ok::<(), terrio::Error>(())
+/// ```
 pub fn write_vector(layers: &[Layer], path: &str, options: &VectorWriteOptions) -> Result<()> {
     ensure_writable_location(path)?;
     let driver = match options.driver {

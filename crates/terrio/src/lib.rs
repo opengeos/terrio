@@ -1,16 +1,139 @@
 //! Pure-Rust geospatial raster, vector and point cloud data I/O.
 //!
-//! terrio opens rasters, vector datasets and point clouds ([`pointcloud`]) in many formats
-//! through one API, converts between them, and reprojects. Format codecs come from the `wbraster`,
+//! terrio opens rasters, vector datasets and point clouds in many formats through one API,
+//! converts between them, reprojects, and runs GDAL-style operations, without C dependencies: it
+//! builds anywhere Rust does, WebAssembly included. Format codecs come from the `wbraster`,
 //! `wbvector`, `wbprojection` and `laz` crates; terrio adds format detection, remote and archived
-//! inputs, fixes for what those drivers miss, and GDAL-style operations.
+//! inputs, its own drivers where those libraries are wrong or missing, and the operations. Results
+//! are compared with GDAL's on real-world files.
+//!
+//! # A tour
+//!
+//! ## Opening, summarizing and writing
+//!
+//! [`open`] detects the format and returns a [`Dataset`], a raster or a vector dataset read into
+//! memory; [`open_raster`] and [`open_vector`] return one kind. Paths can be local files, URLs,
+//! `s3://`, `gs://` and `az://` objects or zip archive members ([`vfs`]). [`info`] summarizes a
+//! dataset as `gdalinfo` and `ogrinfo` do.
 //!
 //! ```no_run
 //! let ds = terrio::open("countries.gpkg")?;
-//! let summary = terrio::info::info(&ds, &Default::default());
-//! println!("{}", summary.to_text());
+//! println!("{}", terrio::info::info(&ds, &Default::default()).to_text());
+//!
+//! let dem = terrio::open_raster("dem.tif")?;
+//! let options = terrio::RasterWriteOptions {
+//!     driver: Some(terrio::formats::RasterDriver::Cog),
+//!     compression: Some("DEFLATE".into()),
+//!     ..Default::default()
+//! };
+//! terrio::write_raster_dataset(&dem, "dem_cog.tif", &options)?;
+//!
+//! let countries = terrio::open_vector("countries.gpkg", &Default::default())?;
+//! terrio::write_vector(&countries.layers, "countries.fgb", &Default::default())?;
 //! # Ok::<(), terrio::Error>(())
 //! ```
+//!
+//! ## Reading windows lazily
+//!
+//! [`open_raster_lazy`] opens a GeoTIFF or COG, local or remote, by its headers; a
+//! [`LazyRaster::read_window`] decodes only the tiles it needs, fetched with HTTP range requests.
+//!
+//! ```no_run
+//! let mut cog = terrio::open_raster_lazy("https://example.com/cog.tif")?;
+//! let options = terrio::WindowOptions { bands: vec![1], overview: Some(0) };
+//! let tile = cog.read_window(terrio::Window::new(0, 0, 512, 512), &options)?;
+//! # Ok::<(), terrio::Error>(())
+//! ```
+//!
+//! ## Operations
+//!
+//! [`ops`] holds the operations behind the command-line tool, each with an options struct named
+//! after the GDAL utility's options: [`ops::warp`], [`ops::translate`], [`ops::mosaic`],
+//! [`ops::rasterize`], [`ops::polygonize`], [`ops::dem`], [`ops::calc`], [`ops::proximity`],
+//! [`ops::sieve`] and the vector filters of `ogr2ogr` ([`ops::vector_filter`]).
+//!
+//! ```no_run
+//! use terrio::crs::SpatialRef;
+//! use terrio::ops::{Resampling, dem, warp};
+//!
+//! let dem = terrio::open_raster("dem.tif")?;
+//! let options = warp::WarpOptions {
+//!     dst_srs: Some(SpatialRef::parse("EPSG:32613")?),
+//!     resolution: Some((30.0, 30.0)),
+//!     resampling: Resampling::Bilinear,
+//!     ..Default::default()
+//! };
+//! let utm = warp::warp(&[&dem], &options)?;
+//! let shade = dem::hillshade(&utm, &Default::default())?;
+//! terrio::write_raster_dataset(&shade, "hillshade.tif", &Default::default())?;
+//! # Ok::<(), terrio::Error>(())
+//! ```
+//!
+//! ## Coordinate reference systems
+//!
+//! [`crs::SpatialRef`] parses EPSG codes, WKT and PROJ strings; [`crs::Transformer`] transforms
+//! coordinates as GDAL does, picking the datum transformation GDAL picks.
+//!
+//! ```no_run
+//! use terrio::crs::{SpatialRef, Transformer};
+//!
+//! let wgs84 = SpatialRef::parse("EPSG:4326")?;
+//! let utm = SpatialRef::parse("EPSG:32613")?;
+//! let (x, y) = Transformer::new(&wgs84, &utm)?.transform(-105.5, 39.5)?;
+//! # Ok::<(), terrio::Error>(())
+//! ```
+//!
+//! ## Bytes in memory
+//!
+//! [`memory`] opens datasets from bytes and writes them to bytes, for data already in memory and
+//! for WebAssembly, which has no file system.
+//!
+//! ```no_run
+//! let bytes = std::fs::read("dem.tif")?;
+//! let dem = terrio::memory::open_raster_bytes(bytes, "dem.tif")?;
+//! let asc = terrio::memory::write_raster_bytes(&dem, "dem.asc", &Default::default())?;
+//! # Ok::<(), terrio::Error>(())
+//! ```
+//!
+//! ## Point clouds
+//!
+//! [`pointcloud`] reads LAS, LAZ and COPC into columns (COPC in place, by bounds and octree
+//! level), writes them, and grids them into rasters.
+//!
+//! ```no_run
+//! use terrio::pointcloud::{self, PointFilter, PointReadOptions, grid};
+//!
+//! let filter = PointFilter { classes: vec![2], ..Default::default() };
+//! let ground = pointcloud::read_points("tile.laz", &PointReadOptions { filter, ..Default::default() })?;
+//! let dtm = grid::grid(&ground, &grid::GridOptions { resolution: 1.0, ..Default::default() })?;
+//! terrio::write_raster_dataset(&dtm, "dtm.tif", &Default::default())?;
+//! # Ok::<(), terrio::Error>(())
+//! ```
+//!
+//! # The data model
+//!
+//! Rasters are [`wbraster::Raster`]s (re-exported as [`Raster`]): band-major typed pixels with
+//! georeferencing and a CRS, wrapped in a [`RasterDataset`] that records the driver and whether
+//! the nodata value is declared. Vector layers are [`wbvector::Layer`]s (re-exported as
+//! [`Layer`]), with [`Feature`]s, a field schema and [`Geometry`]s. These types belong to
+//! terrio's public API: use them through terrio's re-exports (here, [`raster`] and [`vector`])
+//! rather than depending on `wbraster` or `wbvector` directly, so that the versions always match.
+//! A breaking release of either crate that terrio adopts is a breaking release of terrio.
+//!
+//! # Features
+//!
+//! - `gdal` (off by default): the optional GDAL backend (`gdal_backend`), which opens the formats
+//!   terrio has no driver for through GDAL, and writes rasters with GDAL's drivers. It is the only
+//!   C dependency, opt-in: GDAL must be installed.
+//!
+//! # Minimum supported Rust version
+//!
+//! Rust 1.90 (the `rust-version` in `Cargo.toml`, checked in CI). The minimum is raised only when
+//! a dependency or a language feature needs it, never to a release less than six months old, and
+//! only in a minor release (before 1.0, in any release, noted in the changelog).
+
+#![warn(missing_docs)]
+#![cfg_attr(docsrs, feature(doc_cfg))]
 
 pub mod arrow;
 mod cog;
@@ -20,6 +143,7 @@ mod drivers;
 mod error;
 pub mod formats;
 #[cfg(feature = "gdal")]
+#[cfg_attr(docsrs, doc(cfg(feature = "gdal")))]
 pub mod gdal_backend;
 mod geotiff;
 #[cfg(not(target_arch = "wasm32"))]
@@ -35,10 +159,11 @@ pub mod s3;
 pub mod tiles;
 pub mod vector;
 
-/// Raster types and resampling methods.
+/// Raster types from `wbraster`, terrio's raster data model: pixel storage, CRS records and
+/// reprojection options.
 pub mod raster {
-    pub use wbraster::raster::RasterData;
-    pub use wbraster::{CrsInfo, ReprojectOptions, ResampleMethod};
+    pub use wbraster::raster::{BandView, RasterData};
+    pub use wbraster::{CrsInfo, RasterError, ReprojectOptions, ResampleMethod};
 }
 pub mod stac;
 pub mod vfs;

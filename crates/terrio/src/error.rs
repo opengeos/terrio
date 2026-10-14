@@ -1,7 +1,10 @@
 //! Errors returned by terrio.
 
 /// A terrio error.
+///
+/// New variants may be added in minor releases: match with a wildcard arm.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum Error {
     /// A file system or network I/O error.
     #[error("{0}")]

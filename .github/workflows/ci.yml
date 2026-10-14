@@ -33,12 +33,12 @@ jobs:
     name: GDAL backend (feature build)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
-      - uses: mamba-org/setup-micromamba@v2
+      - uses: mamba-org/setup-micromamba@v3
         with:
           environment-name: gdal-backend
           # The GDAL the real-data job compares with, and the drivers the tests use.
@@ -56,6 +56,32 @@ jobs:
       - run: pkg-config --modversion gdal
       - run: cargo clippy -p terrio -p terrio-cli --all-targets --features gdal -- -D warnings
       - run: cargo test -p terrio -p terrio-cli --features gdal
+
+  msrv:
+    name: MSRV (Rust 1.90)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      # The `rust-version` of Cargo.toml: keep the two in step.
+      - uses: dtolnay/rust-toolchain@1.90
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo check --workspace --all-targets --locked
+
+  api-docs:
+    name: API docs and packaging
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Documentation builds without warnings (missing docs included)
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc -p terrio --no-deps
+      - name: Doctests
+        run: cargo test -p terrio --doc
+      - name: The crate packages and verifies
+        run: cargo publish -p terrio --dry-run
 
   wasm:
     runs-on: ubuntu-latest

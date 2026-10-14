@@ -1,4 +1,7 @@
-//! Vector layer helpers.
+//! Vector layer helpers, and the parts of terrio's vector data model (from `wbvector`) that the
+//! crate root does not re-export: coordinates, rings, schemas, bounding boxes and layer CRSs.
+
+pub use wbvector::{BBox, Coord, Crs, GeoError, Ring, Schema};
 
 use wbvector::{Geometry, GeometryType, Layer};
 
