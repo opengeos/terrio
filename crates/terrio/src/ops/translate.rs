@@ -182,7 +182,7 @@ pub fn translate(ds: &RasterDataset, o: &TranslateOptions) -> Result<RasterDatas
     let mut out = Vec::with_capacity(bands.len());
     for &b in &bands {
         let values = band_f64(r, b - 1);
-        let valid: Option<Vec<bool>> = src_nodata.map(|nd| values.iter().map(|v| !is_nodata(*v, nd)).collect());
+        let valid: Option<Vec<bool>> = src_nodata.map(|nd| super::par_map(&values, |v| !is_nodata(*v, nd)));
         let mut buf = vec![out_nodata.unwrap_or(0.0); n];
         let read = SourceRead {
             values: &values,
@@ -217,23 +217,21 @@ pub fn translate(ds: &RasterDataset, o: &TranslateOptions) -> Result<RasterDatas
             None
         };
         let float_working = matches!(r.data_type, DataType::F64 | DataType::I32 | DataType::U32 | DataType::I64 | DataType::U64);
-        read.read(ow, oh, |i, v| {
-            buf[i] = match scaling {
-                None => v,
-                Some((smin, smax, dmin, dmax)) => {
-                    let s = match o.exponent {
-                        Some(e) if e != 1.0 => {
-                            let t = ((v - smin) / (smax - smin)).clamp(0.0, 1.0);
-                            (dmax - dmin) * t.powf(e) + dmin
-                        }
-                        _ => {
-                            let ratio = (dmax - dmin) / (smax - smin);
-                            v * ratio + (dmin - smin * ratio)
-                        }
-                    };
-                    if float_working { s } else { s as f32 as f64 }
-                }
-            };
+        read.read(ow, oh, &mut buf, |v| match scaling {
+            None => v,
+            Some((smin, smax, dmin, dmax)) => {
+                let s = match o.exponent {
+                    Some(e) if e != 1.0 => {
+                        let t = ((v - smin) / (smax - smin)).clamp(0.0, 1.0);
+                        (dmax - dmin) * t.powf(e) + dmin
+                    }
+                    _ => {
+                        let ratio = (dmax - dmin) / (smax - smin);
+                        v * ratio + (dmin - smin * ratio)
+                    }
+                };
+                if float_working { s } else { s as f32 as f64 }
+            }
         });
         out.push(buf);
     }

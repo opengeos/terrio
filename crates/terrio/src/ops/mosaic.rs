@@ -291,7 +291,7 @@ fn vrt_from_memory(vrt: &VrtDataset, sources: &[MosaicSource]) -> Result<RasterD
                 .map(|s| s.ds)
                 .ok_or_else(|| Error::InvalidData(format!("unknown source '{}'", src.filename)))?;
             let values = super::band_f64(&ds.raster, src.band - 1);
-            let valid: Option<Vec<bool>> = src.nodata.map(|nd| values.iter().map(|v| !super::is_nodata(*v, nd)).collect());
+            let valid: Option<Vec<bool>> = src.nodata.map(|nd| super::par_map(&values, |v| !super::is_nodata(*v, nd)));
             let read = SourceRead {
                 values: &values,
                 valid: valid.as_deref(),
@@ -304,7 +304,7 @@ fn vrt_from_memory(vrt: &VrtDataset, sources: &[MosaicSource]) -> Result<RasterD
                 working_float: src.complex,
                 invalid_value: None,
             };
-            read.read(vrt.width, vrt.height, |i, v| buf[i] = v);
+            read.read(vrt.width, vrt.height, &mut buf, |v| v);
         }
         out.push(buf);
     }

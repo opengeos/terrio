@@ -30,74 +30,151 @@ pub(crate) struct Entry {
     pub wkt: String,
 }
 
+/// The table: its text, decompressed once, and an index of its lines. Entries are parsed on
+/// first use.
 struct Table {
-    crs: HashMap<u32, Entry>,
+    text: String,
+    crs: HashMap<u32, Lazy<Option<Entry>>>,
+    ops: HashMap<u32, Lazy<Option<Arc<Op>>>>,
     /// Direct transformations between geographic CRSs, by (source, target) code.
-    pairs: HashMap<(u32, u32), Vec<Arc<Op>>>,
+    pairs: HashMap<(u32, u32), Lazy<Vec<Arc<Op>>>>,
+}
+
+/// A line of the table (its fields after the code) and what it parses to.
+struct Lazy<T> {
+    line: (u32, u32),
+    value: OnceLock<T>,
+}
+
+impl<T> Lazy<T> {
+    fn new(start: usize, end: usize) -> Self {
+        Self { line: (start as u32, end as u32), value: OnceLock::new() }
+    }
+
+    fn get(&self, text: &str, parse: impl FnOnce(&str) -> T) -> &T {
+        self.value.get_or_init(|| parse(&text[self.line.0 as usize..self.line.1 as usize]))
+    }
+}
+
+/// The table's decompressed text.
+fn decompress() -> String {
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Ok(bytes) = zstd::stream::decode_all(DATA)
+        && let Ok(text) = String::from_utf8(bytes)
+    {
+        return text;
+    }
+    let mut text = String::new();
+    if let Ok(mut d) = ruzstd::decoding::StreamingDecoder::new(&mut &DATA[..]) {
+        let _ = d.read_to_string(&mut text);
+    }
+    text
 }
 
 fn table() -> &'static Table {
     static TABLE: OnceLock<Table> = OnceLock::new();
     TABLE.get_or_init(|| {
-        let mut text = String::new();
-        if let Ok(mut d) = ruzstd::decoding::StreamingDecoder::new(&mut &DATA[..]) {
-            let _ = d.read_to_string(&mut text);
-        }
-        let mut ops: HashMap<u32, Arc<Op>> = HashMap::new();
-        let mut crs = HashMap::new();
-        let mut pairs = HashMap::new();
-        let resolve = |ids: &str, ops: &HashMap<u32, Arc<Op>>| -> Vec<Arc<Op>> {
-            ids.split(',').filter_map(|i| i.parse().ok()).filter_map(|i| ops.get(&i).cloned()).collect()
-        };
-        for line in text.lines() {
-            let mut f = line.split('\t');
-            match f.next() {
-                Some("O") => {
-                    let (Some(id), Some(bounds), Some(accuracy), Some(flags)) = (f.next(), f.next(), f.next(), f.next()) else {
-                        continue;
-                    };
-                    let b: Vec<f64> = bounds.split(',').filter_map(|v| v.parse().ok()).collect();
-                    let (Ok(id), true, Some(steps)) = (id.parse(), b.len() == 4, parse_steps(f.next().unwrap_or(""))) else { continue };
-                    let op = Op {
-                        bounds: [b[0], b[1], b[2], b[3]],
-                        accuracy: accuracy.parse().unwrap_or(-1.0),
-                        offshore: flags.contains('o'),
-                        unknown_area: flags.contains('u'),
-                        ballpark: flags.contains('b'),
-                        concatenated: flags.contains('c'),
-                        steps,
-                    };
-                    ops.insert(id, Arc::new(op));
+        let text = decompress();
+        let (mut crs, mut ops, mut pairs) = (HashMap::new(), HashMap::new(), HashMap::new());
+        let mut pos = 0;
+        for line in text.split_inclusive('\n') {
+            let start = pos;
+            pos += line.len();
+            let line = line.trim_end_matches(['\n', '\r']);
+            let end = start + line.len();
+            let mut f = line.splitn(3, '\t');
+            let (Some(kind), Some(key)) = (f.next(), f.next()) else { continue };
+            // The rest of the line, after the kind and key fields.
+            let rest = (start + kind.len() + key.len() + 2).min(end);
+            match kind {
+                "O" => {
+                    if let Ok(id) = key.parse::<u32>() {
+                        ops.insert(id, Lazy::new(rest, end));
+                    }
                 }
-                Some("C") => {
-                    let fields: Vec<&str> = f.collect();
-                    let [code, name, datum, geog, op_ids, proj, wkt] = fields[..] else { continue };
-                    let Ok(code) = code.parse() else { continue };
-                    let entry = Entry {
-                        name: name.to_string(),
-                        datum: datum.parse().unwrap_or(0),
-                        geog: geog.parse().unwrap_or(0),
-                        ops: resolve(op_ids, &ops),
-                        proj: proj.to_string(),
-                        wkt: wkt.to_string(),
-                    };
-                    crs.insert(code, entry);
+                "C" => {
+                    if let Ok(code) = key.parse::<u32>() {
+                        crs.insert(code, Lazy::new(rest, end));
+                    }
                 }
-                Some("P") => {
-                    let (Some(a), Some(b), Some(ids)) = (f.next(), f.next(), f.next()) else { continue };
-                    let (Ok(a), Ok(b)) = (a.parse(), b.parse()) else { continue };
-                    pairs.insert((a, b), resolve(ids, &ops));
+                "P" => {
+                    let mut g = line[rest - start..].splitn(2, '\t');
+                    if let (Ok(a), Some(Ok(b))) = (key.parse::<u32>(), g.next().map(str::parse::<u32>)) {
+                        let ids = (rest + line[rest - start..].find('\t').map_or(end - rest, |i| i + 1)).min(end);
+                        pairs.insert((a, b), Lazy::new(ids, end));
+                    }
                 }
                 _ => {}
             }
         }
-        Table { crs, pairs }
+        Table { text, crs, ops, pairs }
     })
+}
+
+impl Table {
+    /// The transformation with an id, parsed from its line (`bounds`, `accuracy`, `flags`,
+    /// `steps`).
+    fn op(&self, id: u32) -> Option<Arc<Op>> {
+        self.ops
+            .get(&id)?
+            .get(&self.text, |line| {
+                let mut f = line.split('\t');
+                let (Some(bounds), Some(accuracy), Some(flags)) = (f.next(), f.next(), f.next()) else { return None };
+                let b: Vec<f64> = bounds.split(',').filter_map(|v| v.parse().ok()).collect();
+                let (true, Some(steps)) = (b.len() == 4, parse_steps(f.next().unwrap_or(""))) else { return None };
+                Some(Arc::new(Op {
+                    bounds: [b[0], b[1], b[2], b[3]],
+                    accuracy: accuracy.parse().unwrap_or(-1.0),
+                    offshore: flags.contains('o'),
+                    unknown_area: flags.contains('u'),
+                    ballpark: flags.contains('b'),
+                    concatenated: flags.contains('c'),
+                    steps,
+                }))
+            })
+            .clone()
+    }
+
+    /// Transformations by a comma-separated list of ids.
+    fn resolve(&self, ids: &str) -> Vec<Arc<Op>> {
+        ids.split(',').filter_map(|i| i.parse().ok()).filter_map(|i| self.op(i)).collect()
+    }
+
+    fn entry(&self, code: u32) -> Option<&Entry> {
+        self.crs
+            .get(&code)?
+            .get(&self.text, |line| {
+                let fields: Vec<&str> = line.split('\t').collect();
+                let [name, datum, geog, op_ids, proj, wkt] = fields[..] else { return None };
+                Some(Entry {
+                    name: name.to_string(),
+                    datum: datum.parse().unwrap_or(0),
+                    geog: geog.parse().unwrap_or(0),
+                    ops: self.resolve(op_ids),
+                    proj: proj.to_string(),
+                    wkt: wkt.to_string(),
+                })
+            })
+            .as_ref()
+    }
+
+    fn pair(&self, a: u32, b: u32) -> Option<&[Arc<Op>]> {
+        Some(self.pairs.get(&(a, b))?.get(&self.text, |ids| self.resolve(ids)).as_slice())
+    }
+}
+
+/// Starts loading the table in the background, for work that will need it after reading its
+/// input (native builds; a no-op in WebAssembly).
+pub(crate) fn prefetch() {
+    #[cfg(not(target_arch = "wasm32"))]
+    rayon::spawn(|| {
+        table();
+    });
 }
 
 /// The table's entry for an EPSG code.
 pub(crate) fn get(code: u32) -> Option<&'static Entry> {
-    table().crs.get(&code)
+    table().entry(code)
 }
 
 /// The single transformations from each geographic CRS, by the CRS they lead to.
@@ -118,11 +195,18 @@ pub(crate) fn neighbours(geog: u32) -> Option<&'static Vec<(u32, Vec<Leg>)>> {
                 adj.entry(a).or_default().push((b, legs));
             }
         };
-        for (&(a, b), ops) in &t.pairs {
+        // In code order, so that the result does not depend on the hash maps' order.
+        let mut pair_keys: Vec<(u32, u32)> = t.pairs.keys().copied().collect();
+        pair_keys.sort_unstable();
+        for (a, b) in pair_keys {
+            let ops = t.pair(a, b).unwrap_or_default();
             add(a, b, single(ops, false));
             add(b, a, single(ops, true));
         }
-        for (&code, e) in &t.crs {
+        let mut codes: Vec<u32> = t.crs.keys().copied().collect();
+        codes.sort_unstable();
+        for code in codes {
+            let Some(e) = t.entry(code) else { continue };
             if e.geog == code && code != 4326 && e.datum != 6326 {
                 add(code, 4326, single(&e.ops, false));
                 add(4326, code, single(&e.ops, true));
@@ -137,7 +221,7 @@ pub(crate) fn neighbours(geog: u32) -> Option<&'static Vec<(u32, Vec<Leg>)>> {
 /// reverse (the table holds each pair once).
 pub(crate) fn pair(from: u32, to: u32) -> Option<(&'static [Arc<Op>], bool)> {
     let t = table();
-    t.pairs.get(&(from, to)).map(|o| (o.as_slice(), false)).or_else(|| t.pairs.get(&(to, from)).map(|o| (o.as_slice(), true)))
+    t.pair(from, to).map(|o| (o, false)).or_else(|| t.pair(to, from).map(|o| (o, true)))
 }
 
 #[cfg(test)]

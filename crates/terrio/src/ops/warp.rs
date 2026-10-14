@@ -925,10 +925,9 @@ pub fn warp(sources: &[&RasterDataset], o: &WarpOptions) -> Result<RasterDataset
         ctx.collect_chunks(0, 0, grid.width, grid.height, &mut chunks);
         chunks.sort_by_key(|c| (c.dy, c.dx));
         let data = SrcData { bands: &src_bands, valid: &valid, width: s.grid.width };
-        let sink = Sink { out: &mut out, width: grid.width, out_type, dst_nodata, avoid_nodata: masked };
-        let mut sink = sink;
+        let sink = Sink { out_type, dst_nodata, avoid_nodata: masked };
         for c in chunks {
-            ctx.warp_chunk(&c, &data, &mut sink);
+            ctx.warp_chunk(&c, &data, &sink, chunk_rows(&mut out, grid.width, &c));
         }
     }
     build_raster(grid, out, out_type, dst_nodata, &dst_srs, warp_round)
@@ -964,7 +963,7 @@ fn validity(bands: &[Vec<f64>], nodata: &[Option<f64>], unified: bool, cut: Opti
         let m = combine(Some(m));
         return vec![m; bands.len()];
     }
-    bands.iter().zip(nodata).map(|(b, nd)| combine(nd.map(|nd| b.iter().map(|v| !is_nodata(*v, nd)).collect()))).collect()
+    bands.iter().zip(nodata).map(|(b, nd)| combine(nd.map(|nd| super::par_map(b, |v| !is_nodata(*v, nd))))).collect()
 }
 
 /// The transformed extent of a cutline, as `gdalwarp -crop_to_cutline` computes it.
@@ -1114,16 +1113,30 @@ struct SrcData<'a> {
     width: usize,
 }
 
-struct Sink<'a> {
-    out: &'a mut [Vec<f64>],
-    width: usize,
+/// How warped values are stored in the output.
+struct Sink {
     out_type: DataType,
     dst_nodata: Option<f64>,
     avoid_nodata: bool,
 }
 
-impl Sink<'_> {
-    fn set(&mut self, band: usize, idx: usize, v: f64) {
+/// One output row of a chunk: the chunk's part of the row in each band.
+type RowOut<'a> = Vec<&'a mut [f64]>;
+
+/// Splits the part of the output a chunk covers into rows, each with its slice of every band.
+fn chunk_rows<'a>(out: &'a mut [Vec<f64>], width: usize, c: &Chunk) -> Vec<RowOut<'a>> {
+    let mut rows: Vec<RowOut> = (0..c.dh).map(|_| Vec::with_capacity(out.len())).collect();
+    for band in out.iter_mut() {
+        for (row, line) in rows.iter_mut().zip(band.chunks_mut(width).skip(c.dy)) {
+            row.push(&mut line[c.dx..c.dx + c.dw]);
+        }
+    }
+    rows
+}
+
+impl Sink {
+    /// The value to store for a warped value `v`.
+    fn value(&self, v: f64) -> f64 {
         let mut v = warp_round(v, self.out_type);
         if self.avoid_nodata
             && let Some(nd) = self.dst_nodata
@@ -1141,7 +1154,7 @@ impl Sink<'_> {
                 next_up_f64(v)
             };
         }
-        self.out[band][idx] = v;
+        v
     }
 }
 
@@ -1372,19 +1385,26 @@ impl WarpContext<'_> {
         (sx, sy)
     }
 
-    fn warp_chunk(&self, c: &Chunk, src: &SrcData, sink: &mut Sink) {
+    /// Warps a chunk, its output rows in parallel.
+    fn warp_chunk(&self, c: &Chunk, src: &SrcData, sink: &Sink, rows: Vec<RowOut>) {
         let (xscale, yscale) = self.scales(c);
         let k = Kernel { src, win: *c, xscale, yscale, method: self.resampling };
         if self.resampling.is_area_based() {
-            self.warp_area(c, &k, sink);
+            crate::par::for_each_owned(rows, |row, mut out| self.warp_area_row(c, &k, sink, row, &mut out));
             return;
         }
+        crate::par::for_each_owned(rows, |row, mut out| self.warp_row(c, &k, sink, row, &mut out));
+    }
+
+    /// Warps one output row of a chunk.
+    fn warp_row(&self, c: &Chunk, k: &Kernel, sink: &Sink, row: usize, out: &mut [&mut [f64]]) {
+        let (xscale, yscale) = (k.xscale, k.yscale);
         let four = matches!(self.resampling, Resampling::Bilinear | Resampling::Cubic) && xscale >= 0.95 && yscale >= 0.95;
         let mut xs = vec![0.0; c.dw];
         let mut ys = vec![0.0; c.dw];
         let mut ok = vec![false; c.dw];
         let (sxo, syo, sw, sh) = (c.sx as f64, c.sy as f64, c.sw as f64, c.sh as f64);
-        for row in 0..c.dh {
+        {
             let y = row as f64 + 0.5 + c.dy as f64;
             for (i, x) in xs.iter_mut().enumerate() {
                 *x = i as f64 + 0.5 + c.dx as f64;
@@ -1450,8 +1470,7 @@ impl WarpContext<'_> {
                     iy -= 1;
                 }
                 let (fx, fy) = (xs[i] - sxo, ys[i] - syo);
-                let dst_idx = (c.dy + row) * sink.width + c.dx + i;
-                for b in 0..self.bands {
+                for (b, o) in out.iter_mut().enumerate() {
                     let v = if self.resampling == Resampling::Nearest || c.sw == 1 || c.sh == 1 {
                         k.valid(b, ix, iy).then(|| k.value(b, ix, iy))
                     } else if four && self.resampling == Resampling::Bilinear {
@@ -1462,7 +1481,7 @@ impl WarpContext<'_> {
                         k.general(b, fx, fy)
                     };
                     if let Some(v) = v {
-                        sink.set(b, dst_idx, v);
+                        o[i] = sink.value(v);
                     }
                 }
             }
@@ -1470,7 +1489,7 @@ impl WarpContext<'_> {
     }
 
     /// The area-based methods (average, mode, min, max, quantiles, RMS, sum).
-    fn warp_area(&self, c: &Chunk, k: &Kernel, sink: &mut Sink) {
+    fn warp_area_row(&self, c: &Chunk, k: &Kernel, sink: &Sink, row: usize, out: &mut [&mut [f64]]) {
         let xmargin = 2.0 * (1.0f64).max((1.0 / k.xscale).ceil());
         let ymargin = 2.0 * (1.0f64).max((1.0 / k.yscale).ceil());
         let n = c.dw;
@@ -1478,7 +1497,7 @@ impl WarpContext<'_> {
         let (mut x2, mut y2, mut o2) = (vec![0.0; n], vec![0.0; n], vec![false; n]);
         let (sxo, syo, sw, sh) = (c.sx as f64, c.sy as f64, c.sw as f64, c.sh as f64);
         let mut values: Vec<(f64, f64)> = Vec::new();
-        for row in 0..c.dh {
+        {
             for i in 0..n {
                 x1[i] = (i + c.dx) as f64;
                 y1[i] = (row + c.dy) as f64;
@@ -1539,8 +1558,7 @@ impl WarpContext<'_> {
                         w
                     }
                 };
-                let dst_idx = (c.dy + row) * sink.width + c.dx + i;
-                for b in 0..self.bands {
+                for (b, o) in out.iter_mut().enumerate() {
                     values.clear();
                     for y in iy0..iy1 {
                         let w = wy(y);
@@ -1555,7 +1573,7 @@ impl WarpContext<'_> {
                         &mut values,
                         matches!(sink.out_type, DataType::U8 | DataType::I8 | DataType::U16 | DataType::I16),
                     ) {
-                        sink.set(b, dst_idx, v);
+                        o[i] = sink.value(v);
                     }
                 }
             }

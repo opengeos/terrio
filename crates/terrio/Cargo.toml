@@ -50,6 +50,7 @@ tempfile.workspace = true
 ureq.workspace = true
 hmac.workspace = true
 sha2.workspace = true
+rayon.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

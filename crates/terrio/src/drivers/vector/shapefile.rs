@@ -27,6 +27,9 @@ pub fn read(path: &str) -> Result<Layer> {
     let shp = std::fs::read(path)?;
     let dbf = sidecar(&base, "dbf").map(std::fs::read).transpose()?;
     let prj = sidecar(&base, "prj").and_then(|p| std::fs::read_to_string(p).ok());
+    if prj.is_some() {
+        crate::crs::prefetch();
+    }
     let cpg = sidecar(&base, "cpg").and_then(|p| std::fs::read_to_string(p).ok());
     let name = base.file_name().and_then(|s| s.to_str()).unwrap_or("layer");
     parse(&shp, dbf.as_deref(), prj.as_deref(), cpg.as_deref(), name).map_err(|e| match e {
@@ -242,10 +245,10 @@ fn parse_dbf(d: &[u8], cpg: Option<&str>) -> Result<(Vec<FieldDef>, Vec<Vec<Fiel
         offset += width;
         pos += 32;
     }
-    let mut records = Vec::with_capacity(count);
-    for i in 0..count {
+    // Records are decoded in parallel, up to the first one the file does not hold whole.
+    let records = crate::par::map_range(count, |i| {
         let start = header_len + i * record_len;
-        let Some(rec) = d.get(start..start + record_len) else { break };
+        let rec = d.get(start..start + record_len)?;
         let values = layout
             .iter()
             .zip(&fields)
@@ -275,9 +278,10 @@ fn parse_dbf(d: &[u8], cpg: Option<&str>) -> Result<(Vec<FieldDef>, Vec<Vec<Fiel
                     _ => FieldValue::Text(text.trim_end_matches([' ', '\0']).to_string()),
                 }
             })
-            .collect();
-        records.push(values);
-    }
+            .collect::<Vec<FieldValue>>();
+        Some(values)
+    });
+    let records = records.into_iter().map_while(|r| r).collect();
     Ok((fields, records))
 }
 

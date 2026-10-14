@@ -414,7 +414,7 @@ pub fn write_database(tables: &[Table], objects: &[SchemaObject], user_version: 
     pager.alloc(); // page 1: the schema table's root
     let mut schema_rows = Vec::new();
     for t in tables {
-        let rows: Vec<(i64, Vec<u8>)> = t.rows.iter().map(|(id, v)| (*id, record(v))).collect();
+        let rows: Vec<(i64, Vec<u8>)> = crate::par::map_range(t.rows.len(), |i| (t.rows[i].0, record(&t.rows[i].1)));
         let root = build_table(&mut pager, &rows, None);
         schema_rows.push(vec![
             Value::Text("table".into()),

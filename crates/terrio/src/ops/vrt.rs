@@ -279,7 +279,7 @@ impl VrtDataset {
                 }
                 let values = band_f64(r, src.band - 1);
                 let skip = if src.complex { src.nodata } else { None };
-                let valid: Option<Vec<bool>> = skip.map(|nd| values.iter().map(|v| !is_nodata(*v, nd)).collect());
+                let valid: Option<Vec<bool>> = skip.map(|nd| super::par_map(&values, |v| !is_nodata(*v, nd)));
                 let src_rect = if src.src_rect[0].is_nan() { [0.0, 0.0, r.cols as f64, r.rows as f64] } else { src.src_rect };
                 let req = SourceRead {
                     values: &values,
@@ -293,14 +293,12 @@ impl VrtDataset {
                     working_float: src.complex,
                     invalid_value: None,
                 };
-                req.read(self.width, self.height, |idx, v| {
-                    buf[idx] = match src.scale {
-                        Some((off, ratio)) => {
-                            let v = v * ratio + off;
-                            if is_float_working(r.data_type) { v } else { v as f32 as f64 }
-                        }
-                        None => v,
-                    };
+                req.read(self.width, self.height, &mut buf, |v| match src.scale {
+                    Some((off, ratio)) => {
+                        let v = v * ratio + off;
+                        if is_float_working(r.data_type) { v } else { v as f32 as f64 }
+                    }
+                    None => v,
                 });
             }
             out.push(buf);
@@ -383,20 +381,25 @@ pub(crate) struct SourceRead<'a> {
 }
 
 impl SourceRead<'_> {
-    /// Reads into a destination of `dw × dh` pixels, calling `put(index, value)` for each valid
-    /// destination pixel the source covers.
-    pub fn read(&self, dw: usize, dh: usize, mut put: impl FnMut(usize, f64)) {
+    /// Reads into a destination `out` of `dw × dh` pixels, setting each valid destination pixel
+    /// the source covers to `f(value)`. Rows are read in parallel.
+    pub fn read(&self, dw: usize, dh: usize, out: &mut [f64], f: impl Fn(f64) -> f64 + Sync + Send) {
         let Some(w) = self.window(dw as f64, dh as f64, dw, dh) else { return };
         let (ow, oh) = (w.out_size.0, w.out_size.1);
         if ow == 0 || oh == 0 {
             return;
         }
         let is_valid = |i: usize| self.valid.is_none_or(|m| m[i]);
+        // The destination rows the source covers.
+        let start = (w.out_off.1 * dw).min(out.len());
+        let end = ((w.out_off.1 + oh) * dw).min(out.len());
+        let rows = &mut out[start..end];
+        let x0 = w.out_off.0;
         if w.req_size.0 == ow && w.req_size.1 == oh {
-            for r in 0..oh {
+            crate::par::chunks_mut(rows, dw, |r, line| {
                 let sy = w.req_off.1 + r;
                 if sy >= self.height {
-                    continue;
+                    return;
                 }
                 for c in 0..ow {
                     let sx = w.req_off.0 + c;
@@ -405,10 +408,10 @@ impl SourceRead<'_> {
                     }
                     let i = sy * self.width + sx;
                     if is_valid(i) {
-                        put((w.out_off.1 + r) * dw + w.out_off.0 + c, self.values[i]);
+                        line[x0 + c] = f(self.values[i]);
                     }
                 }
-            }
+            });
             return;
         }
         let (fx, fy, fw, fh) = (w.dreq_off.0, w.dreq_off.1, w.dreq_size.0, w.dreq_size.1);
@@ -416,7 +419,7 @@ impl SourceRead<'_> {
             const EPS: f64 = 1e-10;
             let incx = fw / ow as f64;
             let incy = fh / oh as f64;
-            for r in 0..oh {
+            crate::par::chunks_mut(rows, dw, |r, line| {
                 let sy = ((r as f64 + 0.5) * incy + fy + EPS).max(0.0).min((self.height - 1) as f64) as usize;
                 let mut sxf = 0.5 * incx + fx + EPS;
                 for c in 0..ow {
@@ -424,26 +427,25 @@ impl SourceRead<'_> {
                     sxf += incx;
                     let i = sy * self.width + sx;
                     if is_valid(i) {
-                        put((w.out_off.1 + r) * dw + w.out_off.0 + c, self.values[i]);
+                        line[x0 + c] = f(self.values[i]);
                     }
                 }
-            }
+            });
             return;
         }
         let res = resample_window(self, (fx, fy, fw, fh), (ow, oh));
-        for r in 0..oh {
+        crate::par::chunks_mut(rows, dw, |r, line| {
             for c in 0..ow {
-                let idx = (w.out_off.1 + r) * dw + w.out_off.0 + c;
                 match res[r * ow + c] {
-                    Some(v) => put(idx, if self.working_float { v } else { convert_value(v, self.src_type) }),
+                    Some(v) => line[x0 + c] = f(if self.working_float { v } else { convert_value(v, self.src_type) }),
                     None => {
                         if let Some(v) = self.invalid_value {
-                            put(idx, v);
+                            line[x0 + c] = f(v);
                         }
                     }
                 }
             }
-        }
+        });
     }
 
     /// `VRTSimpleSource::GetSrcDstWindow()` for a request covering the whole destination.
@@ -599,6 +601,9 @@ fn resample_window(s: &SourceRead, win: (f64, f64, f64, f64), out: (usize, usize
     let (rx, ry) = (fw / ow as f64, fh / oh as f64);
     let is_valid = |i: usize| s.valid.is_none_or(|m| m[i]);
     let mut res = vec![None; ow * oh];
+    if ow == 0 {
+        return res;
+    }
     match s.resampling {
         Resampling::Average
         | Resampling::Rms
@@ -609,11 +614,11 @@ fn resample_window(s: &SourceRead, win: (f64, f64, f64, f64), out: (usize, usize
         | Resampling::Q1
         | Resampling::Q3
         | Resampling::Sum => {
-            let mut vals: Vec<(f64, f64)> = Vec::new();
-            for r in 0..oh {
+            crate::par::chunks_mut(&mut res, ow, |r, line| {
+                let mut vals: Vec<(f64, f64)> = Vec::new();
                 let y0 = fy + r as f64 * ry;
                 let y1 = y0 + ry;
-                for c in 0..ow {
+                for (c, cell) in line.iter_mut().enumerate() {
                     let x0 = fx + c as f64 * rx;
                     let x1 = x0 + rx;
                     vals.clear();
@@ -635,9 +640,9 @@ fn resample_window(s: &SourceRead, win: (f64, f64, f64, f64), out: (usize, usize
                             }
                         }
                     }
-                    res[r * ow + c] = super::warp::area_value(s.resampling, &mut vals, true);
+                    *cell = super::warp::area_value(s.resampling, &mut vals, true);
                 }
-            }
+            });
         }
         method => {
             let radius = method.radius().max(1) as f64;
@@ -651,7 +656,7 @@ fn resample_window(s: &SourceRead, win: (f64, f64, f64, f64), out: (usize, usize
                 (start, w)
             };
             let xt: Vec<(usize, Vec<f64>)> = (0..ow).map(|c| taps(c, rx, fx, s.width)).collect();
-            for r in 0..oh {
+            crate::par::chunks_mut(&mut res, ow, |r, line| {
                 let (y0, wys) = taps(r, ry, fy, s.height);
                 for c in 0..ow {
                     let (x0, wxs) = &xt[c];
@@ -667,10 +672,10 @@ fn resample_window(s: &SourceRead, win: (f64, f64, f64, f64), out: (usize, usize
                         }
                     }
                     if wsum != 0.0 && (s.valid.is_none() || wsum > 1e-10) {
-                        res[r * ow + c] = Some(acc / wsum);
+                        line[c] = Some(acc / wsum);
                     }
                 }
-            }
+            });
         }
     }
     res
@@ -871,14 +876,14 @@ mod tests {
             invalid_value: None,
         };
         let mut out = vec![-1.0; 48];
-        r.read(8, 6, |i, v| out[i] = v);
+        r.read(8, 6, &mut out, |v| v);
         assert_eq!(out[8 + 2], 0.0);
         assert_eq!(out[4 * 8 + 5], 15.0);
         assert_eq!(out[0], -1.0);
         // Downsampling by 2 with average.
         let r = SourceRead { dst_rect: [0.0, 0.0, 2.0, 2.0], resampling: Resampling::Average, ..r };
         let mut out = vec![-1.0; 4];
-        r.read(2, 2, |i, v| out[i] = v);
+        r.read(2, 2, &mut out, |v| v);
         assert_eq!(out, vec![2.5, 4.5, 10.5, 12.5]);
     }
 }

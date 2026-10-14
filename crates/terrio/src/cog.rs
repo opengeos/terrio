@@ -137,23 +137,26 @@ impl LazyRaster {
     /// TIFF (having read only its first bytes).
     pub fn open_tiff(path: &str) -> Result<Option<Self>> {
         let loc = Location::parse(path);
-        let (mut source, local) = match &loc {
+        let (mut source, local, file) = match &loc {
             #[cfg(not(target_arch = "wasm32"))]
             Location::Url(_) | Location::S3 { .. } => {
                 let remote = loc.remote().ok_or_else(|| Error::InvalidArgument(format!("'{path}' is not remote")))?;
-                (Source::Http(crate::http::RangeReader::open(&remote)?), None)
+                (Source::Http(crate::http::RangeReader::open(&remote)?), None, None)
             }
             Location::Local(p) if !p.is_file() => return Ok(None),
-            Location::Local(p) => (Source::File(BufReader::new(std::fs::File::open(p)?)), None),
+            Location::Local(p) => (Source::File(BufReader::new(std::fs::File::open(p)?)), None, Some(p.clone())),
             _ => {
                 let local = vfs::resolve(path)?;
-                (Source::File(BufReader::new(std::fs::File::open(local.path())?)), Some(local))
+                let file = local.path().to_path_buf();
+                (Source::File(BufReader::new(std::fs::File::open(&file)?)), Some(local), Some(file))
             }
         };
         if !is_tiff(&mut source) {
             return Ok(None);
         }
-        TiffRaster::new(source, local).map(|t| Some(Self { inner: Inner::Tiff(Box::new(t)) }))
+        let mut t = TiffRaster::new(source, local)?;
+        t.file = file;
+        Ok(Some(Self { inner: Inner::Tiff(Box::new(t)) }))
     }
 
     /// Opens a GeoTIFF held in memory, reading only its headers now. Returns `None` when the bytes
@@ -359,7 +362,7 @@ impl LazyRaster {
             crs: crs.unwrap_or_default(),
             ..Default::default()
         };
-        let mut raster = wbraster::Raster::from_data_native(cfg, data)?;
+        let mut raster = crate::pixel::raster_from_data(cfg, data)?;
         raster.cell_size_x = gt[1];
         raster.cell_size_y = -gt[5];
         raster.x_min = gt[0] + window.x as f64 * gt[1];
@@ -480,6 +483,9 @@ struct TiffRaster {
     current_ifd: usize,
     /// Keeps a file extracted from an archive.
     _local: Option<vfs::LocalPath>,
+    /// The local file the TIFF is read from, which more decoders can open to decode chunks in
+    /// parallel.
+    file: Option<std::path::PathBuf>,
 }
 
 fn tiff_err(e: tiff::TiffError) -> Error {
@@ -526,7 +532,7 @@ impl TiffRaster {
             // As the in-memory reader does: unit pixels, with the image's bottom at y = 0.
             None => [0.0, 1.0, 0.0, h as f64, 0.0, -1.0],
         };
-        Ok(Self { decoder: dec, tags, bands, data_type, geo_transform, levels, current_ifd: 0, _local: local })
+        Ok(Self { decoder: dec, tags, bands, data_type, geo_transform, levels, current_ifd: 0, _local: local, file: None })
     }
 
     /// Reads a window of some bands (numbered from 1) of a level, band-major.
@@ -572,46 +578,70 @@ impl TiffRaster {
         let len = bands.len() * w.width * w.height;
         let mut out = RasterData::new_filled(self.data_type, len, self.tags.nodata.unwrap_or(0.0));
         let spp = if planar { 1 } else { self.bands };
+        // Chunks with data, and where they go.
+        let mut wanted: Vec<u32> = Vec::with_capacity(chunks.len());
+        // A chunk can fill several output bands (a band asked for twice in a planar image).
+        let mut targets: std::collections::HashMap<u32, Vec<ChunkTarget>> = std::collections::HashMap::with_capacity(chunks.len());
         for (idx, x0, y0, map) in chunks {
             if counts.get(idx).copied().unwrap_or(0) == 0 {
                 continue;
             }
-            let chunk = dec.read_chunk(idx as u32).map_err(tiff_err)?;
-            let (dw, dh) = dec.chunk_data_dimensions(idx as u32);
-            let geom = ChunkGeom { x0, y0, dw: dw as usize, dh: dh as usize, spp };
+            let t = targets.entry(idx as u32).or_default();
+            if t.is_empty() {
+                wanted.push(idx as u32);
+            }
+            t.push((x0, y0, map));
+        }
+        let (file, tags) = (self.file.as_deref(), &self.tags);
+        let reopen = |path: &std::path::Path| crate::geotiff::open_decoder(path, tags);
+        let reopen = file.map(|p| move || reopen(p));
+        let reopen = reopen.as_ref().map(|f| f as crate::geotiff::Reopen);
+        crate::geotiff::decode_chunks(dec, reopen, ifd, &wanted, &tiff_err, |(idx, chunk, (dw, dh))| {
+            let targets = &targets[&idx];
             macro_rules! place {
                 ($($out:ident <- $res:ident),*) => {
                     match (&mut out, chunk) {
-                        $((RasterData::$out(o), DecodingResult::$res(v)) => place(o, &v, &geom, w, map),)*
+                        $((RasterData::$out(o), DecodingResult::$res(v)) => {
+                            for &(x0, y0, map) in targets {
+                                place(o, &v, &ChunkGeom { x0, y0, dw, dh, spp }, w, map);
+                            }
+                        })*
                         (RasterData::F32(o), DecodingResult::F16(v)) => {
                             let v: Vec<f32> = v.iter().map(|x| x.to_f32()).collect();
-                            place(o, &v, &geom, w, map)
+                            for &(x0, y0, map) in targets {
+                                place(o, &v, &ChunkGeom { x0, y0, dw, dh, spp }, w, map);
+                            }
                         }
                         _ => return Err(Error::InvalidData("TIFF chunks differ in sample type".into())),
                     }
                 };
             }
             place!(U8 <- U8, I8 <- I8, U16 <- U16, I16 <- I16, U32 <- U32, I32 <- I32, U64 <- U64, I64 <- I64, F32 <- F32, F64 <- F64);
-        }
+            Ok(())
+        })?;
         Ok(out)
     }
 }
 
+/// Where a chunk goes in a window: its first column and row, and the output band of each of its
+/// samples to copy.
+type ChunkTarget<'a> = (usize, usize, &'a Vec<(usize, usize)>);
+
 /// Where a decoded chunk lies in its image.
-struct ChunkGeom {
+pub(crate) struct ChunkGeom {
     /// The image column and row of the chunk's first pixel.
-    x0: usize,
-    y0: usize,
+    pub x0: usize,
+    pub y0: usize,
     /// The chunk's columns and rows that hold image data (edge chunks are cropped).
-    dw: usize,
-    dh: usize,
+    pub dw: usize,
+    pub dh: usize,
     /// Samples per pixel in the chunk.
-    spp: usize,
+    pub spp: usize,
 }
 
 /// Copies the part of a chunk that intersects a window into the window's band-major buffer.
 /// `map` pairs each sample to copy with its output band.
-fn place<T: Copy>(out: &mut [T], vals: &[T], g: &ChunkGeom, w: Window, map: &[(usize, usize)]) {
+pub(crate) fn place<T: Copy>(out: &mut [T], vals: &[T], g: &ChunkGeom, w: Window, map: &[(usize, usize)]) {
     if g.dh == 0 {
         return;
     }
@@ -623,6 +653,16 @@ fn place<T: Copy>(out: &mut [T], vals: &[T], g: &ChunkGeom, w: Window, map: &[(u
     for row in r0..r1 {
         let src_row = (row - g.y0) * stride;
         let dst_row = (row - w.y) * w.width;
+        if let [(0, band)] = map
+            && g.spp == 1
+        {
+            // One sample per pixel: copy the row's samples the chunk holds.
+            let src = (src_row + c0.saturating_sub(g.x0)).min(vals.len());
+            let n = c1.saturating_sub(c0).min(vals.len() - src);
+            let dst = band * band_len + dst_row + c0 - w.x;
+            out[dst..dst + n].copy_from_slice(&vals[src..src + n]);
+            continue;
+        }
         for col in c0..c1 {
             let src = (src_row + col - g.x0) * g.spp;
             let dst = dst_row + col - w.x;

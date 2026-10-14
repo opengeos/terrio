@@ -140,7 +140,7 @@ pub(crate) fn make_raster(
         crs,
         metadata: Vec::new(),
     };
-    let mut r = Raster::from_data_native(cfg, data)?;
+    let mut r = crate::pixel::raster_from_data(cfg, data)?;
     // A south-up grid (positive pixel height) keeps its origin at the top.
     if gt[5] > 0.0 {
         r.y_min = gt[3];

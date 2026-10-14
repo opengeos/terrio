@@ -7,9 +7,11 @@
 
 use crate::crs::SpatialRef;
 use crate::ops::sql::{Expression, field_index};
+use crate::pixel::Pixel;
 use crate::{Error, RasterDataset, Result};
 use std::collections::HashSet;
-use wbraster::{DataType, Raster, RasterConfig};
+use wbraster::raster::RasterData;
+use wbraster::{DataType, RasterConfig};
 use wbvector::{Feature, FieldValue, Geometry, GeometryType, Layer};
 
 /// How burned values combine with what is already in the raster.
@@ -98,11 +100,45 @@ pub fn rasterize(layers: &[Layer], options: &RasterizeOptions) -> Result<RasterD
     };
     let bands = options.burn_values.len().max(1);
     let dtype = options.data_type.unwrap_or(DataType::F64);
+    let data = match dtype {
+        DataType::U8 => RasterData::U8(burn(layers, options, &grid, bands, dtype)?),
+        DataType::I8 => RasterData::I8(burn(layers, options, &grid, bands, dtype)?),
+        DataType::U16 => RasterData::U16(burn(layers, options, &grid, bands, dtype)?),
+        DataType::I16 => RasterData::I16(burn(layers, options, &grid, bands, dtype)?),
+        DataType::U32 => RasterData::U32(burn(layers, options, &grid, bands, dtype)?),
+        DataType::I32 => RasterData::I32(burn(layers, options, &grid, bands, dtype)?),
+        DataType::U64 => RasterData::U64(burn(layers, options, &grid, bands, dtype)?),
+        DataType::I64 => RasterData::I64(burn(layers, options, &grid, bands, dtype)?),
+        DataType::F32 => RasterData::F32(burn(layers, options, &grid, bands, dtype)?),
+        DataType::F64 => RasterData::F64(burn(layers, options, &grid, bands, dtype)?),
+    };
+    let [g0, g1, _, g3, _, g5] = grid.geo_transform;
+    let crs = &grid.crs;
+    let cfg = RasterConfig {
+        cols: grid.cols,
+        rows: grid.rows,
+        bands,
+        x_min: g0,
+        y_min: g3 + g5 * grid.rows as f64,
+        cell_size: g1,
+        cell_size_y: Some(-g5),
+        nodata: options.nodata.unwrap_or(0.0),
+        data_type: dtype,
+        crs: wbraster::CrsInfo { epsg: crs.epsg, wkt: crs.to_wkt(), proj4: crs.proj4.clone() },
+        metadata: Vec::new(),
+    };
+    let raster = crate::pixel::raster_from_data(cfg, data)?;
+    Ok(RasterDataset::new(raster, true))
+}
+
+/// Burns the layers' geometries into band buffers of type `T` (the output data type `dtype`),
+/// band-major.
+fn burn<T: Pixel>(layers: &[Layer], options: &RasterizeOptions, grid: &Grid, bands: usize, dtype: DataType) -> Result<Vec<T>> {
     let n = grid.cols * grid.rows;
-    let mut bufs: Vec<Vec<f64>> = (0..bands)
+    let mut bufs: Vec<Vec<T>> = (0..bands)
         .map(|b| {
             let init = options.init.get(b).or(options.init.last()).copied().unwrap_or(0.0);
-            vec![cast(init, dtype); n]
+            vec![T::from_f64(cast(init, dtype)); n]
         })
         .collect();
     let [g0, g1, g2, g3, g4, g5] = grid.geo_transform;
@@ -111,6 +147,9 @@ pub fn rasterize(layers: &[Layer], options: &RasterizeOptions) -> Result<RasterD
     }
     // As GDAL's `GDALInvGeoTransform`, for north-up grids.
     let inv = [-g0 / g1, 1.0 / g1, -g3 / g5, 1.0 / g5];
+    // The shapes to burn, in order, with the index of their burn values.
+    let mut values: Vec<Vec<f64>> = Vec::new();
+    let mut shapes: Vec<(usize, Shape)> = Vec::new();
     for layer in layers {
         let reprojected;
         let layer = if options.assign_srs.is_none() && needs_reprojection(layer, &grid.crs) {
@@ -132,38 +171,37 @@ pub fn rasterize(layers: &[Layer], options: &RasterizeOptions) -> Result<RasterD
             if filter.as_ref().is_some_and(|e| !e.matches(f)) {
                 continue;
             }
-            let values: Vec<f64> = match field {
+            values.push(match field {
                 Some(i) => vec![attribute_value(f, i); bands],
                 None => options.burn_values.clone(),
-            };
-            let mut burner = Burner {
-                bufs: &mut bufs,
-                values: &values,
-                cols: grid.cols,
-                dtype,
-                merge: options.merge,
-                visited: None,
-                fill_visited: false,
-            };
-            burn_shape(&mut burner, g, grid.cols as i32, grid.rows as i32, &inv, options.all_touched);
+            });
+            prepare_shape(g, options.merge, &inv, values.len() - 1, &mut shapes);
         }
     }
-    let crs = &grid.crs;
-    let cfg = RasterConfig {
-        cols: grid.cols,
-        rows: grid.rows,
-        bands,
-        x_min: g0,
-        y_min: g3 + g5 * grid.rows as f64,
-        cell_size: g1,
-        cell_size_y: Some(-g5),
-        nodata: options.nodata.unwrap_or(0.0),
-        data_type: dtype,
-        crs: wbraster::CrsInfo { epsg: crs.epsg, wkt: crs.to_wkt(), proj4: crs.proj4.clone() },
-        metadata: Vec::new(),
-    };
-    let raster = Raster::from_data(cfg, bufs.concat())?;
-    Ok(RasterDataset::new(raster, true))
+    // Bands of rows are burned in parallel, each by every shape in turn: each pixel sees the same
+    // burns in the same order as in a single pass.
+    let (cols, rows) = (grid.cols, grid.rows);
+    let stripe_rows = rows.div_ceil(crate::par::threads()).max(1);
+    let mut stripes: Vec<Vec<&mut [T]>> = (0..rows.div_ceil(stripe_rows)).map(|_| Vec::with_capacity(bands)).collect();
+    for buf in bufs.iter_mut() {
+        for (stripe, part) in stripes.iter_mut().zip(buf.chunks_mut(stripe_rows * cols)) {
+            stripe.push(part);
+        }
+    }
+    let (values, shapes) = (&values, &shapes);
+    crate::par::for_each_owned(stripes, |i, parts| {
+        let row0 = i * stripe_rows;
+        let nrows = parts.first().map_or(0, |p| p.len() / cols.max(1));
+        let mut b =
+            Burner { bufs: parts, row0, rows: nrows, values: &[], cols, dtype, merge: options.merge, visited: None, fill_visited: false };
+        for (v, shape) in shapes {
+            if shape.touches(row0, nrows) {
+                b.values = &values[*v];
+                draw_shape(&mut b, shape, cols as i32, rows as i32, options.all_touched);
+            }
+        }
+    });
+    Ok(if bands == 1 { bufs.pop().unwrap_or_default() } else { bufs.concat() })
 }
 
 fn needs_reprojection(layer: &Layer, crs: &SpatialRef) -> bool {
@@ -252,8 +290,11 @@ fn cast(v: f64, dtype: DataType) -> f64 {
 }
 
 /// Writes burn values into the band buffers (GDAL's `gvBurnPoint` and `gvBurnScanline`).
-struct Burner<'a> {
-    bufs: &'a mut [Vec<f64>],
+struct Burner<'a, T> {
+    /// Rows `row0..row0 + rows` of each band: pixels outside them are left alone.
+    bufs: Vec<&'a mut [T]>,
+    row0: usize,
+    rows: usize,
     values: &'a [f64],
     cols: usize,
     dtype: DataType,
@@ -263,15 +304,17 @@ struct Burner<'a> {
     fill_visited: bool,
 }
 
-impl Burner<'_> {
+impl<T: Pixel> Burner<'_, T> {
     fn burn(&mut self, y: i32, x: i32) {
-        let idx = y as usize * self.cols + x as usize;
+        let Some(row) = (y as usize).checked_sub(self.row0).filter(|r| *r < self.rows) else { return };
+        let idx = row * self.cols + x as usize;
         for (buf, v) in self.bufs.iter_mut().zip(self.values) {
             let px = &mut buf[idx];
-            *px = match self.merge {
+            // Values are cast to the data type first, so the buffer's type holds them exactly.
+            *px = T::from_f64(match self.merge {
                 MergeAlg::Replace => cast(*v, self.dtype),
-                MergeAlg::Add => cast(*px + v, self.dtype),
-            };
+                MergeAlg::Add => cast(px.to_f64() + v, self.dtype),
+            });
         }
     }
 
@@ -294,6 +337,16 @@ impl Burner<'_> {
         }
         let x_start = x_start.max(0);
         let x_end = x_end.min(self.cols as i32 - 1);
+        if self.merge == MergeAlg::Replace {
+            let Some(row) = (y as usize).checked_sub(self.row0).filter(|r| *r < self.rows) else { return };
+            if x_start <= x_end {
+                let row = row * self.cols;
+                for (buf, v) in self.bufs.iter_mut().zip(self.values) {
+                    buf[row + x_start as usize..=row + x_end as usize].fill(T::from_f64(cast(*v, self.dtype)));
+                }
+            }
+            return;
+        }
         for x in x_start..=x_end {
             if self.merge == MergeAlg::Add
                 && let Some(set) = &self.visited
@@ -376,17 +429,35 @@ fn is_clockwise(r: &[wbvector::Coord]) -> bool {
 }
 
 /// Burns one geometry (GDAL's `gv_rasterize_one_shape`).
-fn burn_shape(b: &mut Burner, g: &Geometry, nx: i32, ny: i32, inv: &[f64; 4], all_touched: bool) {
+/// A geometry (or, in replace mode, a part of a multi-geometry) in pixel coordinates.
+struct Shape {
+    geom_type: GeometryType,
+    parts: Parts,
+    /// The range of its y coordinates.
+    y_range: (f64, f64),
+}
+
+impl Shape {
+    /// Whether burning the shape may touch rows `row0..row0 + rows`.
+    fn touches(&self, row0: usize, rows: usize) -> bool {
+        let (y0, y1) = self.y_range;
+        // Shapes without finite coordinates are burned everywhere, as they would be in one pass.
+        !y0.is_finite() || !y1.is_finite() || (y1.floor() + 2.0 >= row0 as f64 && y0.floor() - 2.0 < (row0 + rows) as f64)
+    }
+}
+
+/// Collects the shapes to burn for a geometry, with the index of its burn values.
+fn prepare_shape(g: &Geometry, merge: MergeAlg, inv: &[f64; 4], values: usize, out: &mut Vec<(usize, Shape)>) {
     if g.is_empty() {
         return;
     }
     let t = g.geom_type();
-    if b.merge == MergeAlg::Replace
+    if merge == MergeAlg::Replace
         && matches!(t, GeometryType::MultiLineString | GeometryType::MultiPolygon | GeometryType::GeometryCollection)
     {
         // In replace mode, each part is burned on its own.
         for part in crate::ops::vector_filter::explode(g) {
-            burn_shape(b, &part, nx, ny, inv, all_touched);
+            prepare_shape(&part, merge, inv, values, out);
         }
         return;
     }
@@ -397,18 +468,35 @@ fn burn_shape(b: &mut Burner, g: &Geometry, nx: i32, ny: i32, inv: &[f64; 4], al
         *x = inv[0] + *x * inv[1];
         *y = inv[2] + *y * inv[3];
     }
+    let mut y_range = (f64::INFINITY, f64::NEG_INFINITY);
+    for &y in &p.y {
+        if y.is_nan() {
+            y_range = (f64::NAN, f64::NAN);
+            break;
+        }
+        y_range = (y_range.0.min(y), y_range.1.max(y));
+    }
+    if p.y.is_empty() {
+        y_range = (f64::NAN, f64::NAN);
+    }
+    out.push((values, Shape { geom_type: t, parts: p, y_range }));
+}
+
+/// Burns a shape.
+fn draw_shape<T: Pixel>(b: &mut Burner<T>, s: &Shape, nx: i32, ny: i32, all_touched: bool) {
+    let p = &s.parts;
     let add = b.merge == MergeAlg::Add;
-    match t {
-        GeometryType::Point | GeometryType::MultiPoint => image_point(b, nx, ny, &p),
+    match s.geom_type {
+        GeometryType::Point | GeometryType::MultiPoint => image_point(b, nx, ny, p),
         GeometryType::LineString | GeometryType::MultiLineString => {
             if add {
                 b.visited = Some(HashSet::new());
                 b.fill_visited = true;
             }
             if all_touched {
-                image_line_all_touched(b, nx, ny, &p, add, false);
+                image_line_all_touched(b, nx, ny, p, add, false);
             } else {
-                image_line(b, nx, ny, &p);
+                image_line(b, nx, ny, p);
             }
         }
         _ => {
@@ -417,10 +505,10 @@ fn burn_shape(b: &mut Burner, g: &Geometry, nx: i32, ny: i32, inv: &[f64; 4], al
                 b.fill_visited = true;
             }
             if all_touched {
-                image_line_all_touched(b, nx, ny, &p, add, true);
+                image_line_all_touched(b, nx, ny, p, add, true);
             }
             b.fill_visited = false;
-            filled_polygon(b, nx, ny, &p, add);
+            filled_polygon(b, nx, ny, p, add);
         }
     }
     b.visited = None;
@@ -428,7 +516,7 @@ fn burn_shape(b: &mut Burner, g: &Geometry, nx: i32, ny: i32, inv: &[f64; 4], al
 }
 
 /// GDAL's `GDALdllImagePoint`.
-fn image_point(b: &mut Burner, nx: i32, ny: i32, p: &Parts) {
+fn image_point<T: Pixel>(b: &mut Burner<T>, nx: i32, ny: i32, p: &Parts) {
     for (&x, &y) in p.x.iter().zip(&p.y) {
         if 0.0 <= x && x < nx as f64 && 0.0 <= y && y < ny as f64 {
             b.point(y as i32, x as i32);
@@ -445,7 +533,7 @@ fn in_int_range(v: f64) -> bool {
 }
 
 /// GDAL's `GDALdllImageLine`: Bresenham, not burning the end of a segment unless it is the last.
-fn image_line(b: &mut Burner, nx: i32, ny: i32, p: &Parts) {
+fn image_line<T: Pixel>(b: &mut Burner<T>, nx: i32, ny: i32, p: &Parts) {
     let mut n = 0;
     for &size in &p.sizes {
         for j in 1..size {
@@ -508,14 +596,14 @@ fn image_line(b: &mut Burner, nx: i32, ny: i32, p: &Parts) {
 }
 
 /// GDAL's `GDALdllImageLineAllTouched`: every pixel a segment passes through.
-fn image_line_all_touched(b: &mut Burner, nx: i32, ny: i32, p: &Parts, avoid_same: bool, intersect_only: bool) {
+fn image_line_all_touched<T: Pixel>(b: &mut Burner<T>, nx: i32, ny: i32, p: &Parts, avoid_same: bool, intersect_only: bool) {
     const EPSILON_INTERSECT_ONLY: f64 = 1e-4;
     let (nxf, nyf) = (nx as f64, ny as f64);
     let mut n = 0;
     for &size in &p.sizes {
         let mut last_burnt: HashSet<(i32, i32)>;
         let mut new_burnt: HashSet<(i32, i32)> = HashSet::new();
-        let burn = |b: &mut Burner, last: &HashSet<(i32, i32)>, new: &mut HashSet<(i32, i32)>, iy: i32, ix: i32, check_new: bool| {
+        let burn = |b: &mut Burner<T>, last: &HashSet<(i32, i32)>, new: &mut HashSet<(i32, i32)>, iy: i32, ix: i32, check_new: bool| {
             if avoid_same {
                 let yx = (iy, ix);
                 if last.contains(&yx) || (check_new && new.contains(&yx)) {
@@ -654,7 +742,7 @@ fn image_line_all_touched(b: &mut Burner, nx: i32, ny: i32, p: &Parts, avoid_sam
 }
 
 /// GDAL's `GDALdllImageFilledPolygon`: even-odd scanline filling, pixel centres inside.
-fn filled_polygon(b: &mut Burner, nx: i32, ny: i32, p: &Parts, avoid_same: bool) {
+fn filled_polygon<T: Pixel>(b: &mut Burner<T>, nx: i32, ny: i32, p: &Parts, avoid_same: bool) {
     let n = p.x.len();
     if n == 0 {
         return;
@@ -669,6 +757,8 @@ fn filled_polygon(b: &mut Burner, nx: i32, ny: i32, p: &Parts, avoid_same: bool)
     }
     let miny = dminy.max(0.0) as i32;
     let maxy = dmaxy.min((ny - 1) as f64) as i32;
+    // Rows outside the burner's are not burned.
+    let (miny, maxy) = (miny.max(b.row0 as i32), maxy.min((b.row0 + b.rows) as i32 - 1));
     let (minx, maxx) = (0, nx - 1);
     let mut ints: Vec<i32> = Vec::with_capacity(n);
     let mut ints2: Vec<i32> = Vec::new();

@@ -140,7 +140,7 @@ pub fn run(a: Args) -> terrio::Result<()> {
                 .as_deref()
                 .map(|f| VectorDriver::from_name(f).ok_or_else(|| terrio::Error::InvalidArgument(format!("unknown vector format '{f}'"))))
                 .transpose()?;
-            let layers = terrio::ops::vector_filter::translate(&v.layers, &a.vector.to_options(t_srs)?)?;
+            let layers = terrio::ops::vector_filter::translate_owned(v.layers, &a.vector.to_options(t_srs)?)?;
             let mut options = VectorWriteOptions { driver, ..Default::default() };
             options.tiles.min_zoom = a.minzoom;
             options.tiles.max_zoom = a.maxzoom;

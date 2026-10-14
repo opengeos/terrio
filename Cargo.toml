@@ -56,6 +56,8 @@ sha2 = "0.10"
 clap = { version = "4", features = ["derive"] }
 # LASzip compression of point clouds (LAZ, COPC), pure Rust.
 laz = "0.13"
+# Data parallelism (native builds only).
+rayon = "1.10"
 
 # openjp2 frees never-allocated code-block buffers (a null `dealloc`, harmless with the system
 # allocator) and trips the standard library's debug-mode precondition checks: build it as in

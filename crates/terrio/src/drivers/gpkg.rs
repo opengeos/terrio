@@ -122,7 +122,8 @@ pub(crate) fn read_bytes(bytes: Vec<u8>, table: Option<&str>) -> Result<RasterDa
 
 /// Opens a GeoPackage: its vector layers when it has some, otherwise its first raster.
 pub(crate) fn open(path: &str, options: &crate::VectorOpenOptions) -> Result<crate::Dataset> {
-    open_bytes(std::fs::read(path)?, path, options)
+    crate::crs::prefetch();
+    open_bytes(crate::par::read_file(Path::new(path))?, path, options)
 }
 
 /// Opens a GeoPackage held in memory, `name` being its file name.

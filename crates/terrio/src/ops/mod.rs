@@ -314,23 +314,29 @@ pub(crate) fn crs_info(srs: &SpatialRef) -> CrsInfo {
 pub(crate) fn band_f64(r: &Raster, band: usize) -> Vec<f64> {
     let n = r.rows * r.cols;
     let start = band * n;
-    macro_rules! slice {
-        ($v:expr) => {
-            $v[start..start + n].iter().map(|x| *x as f64).collect()
-        };
-    }
-    match &r.data {
-        RasterData::U8(v) => slice!(v),
-        RasterData::I8(v) => slice!(v),
-        RasterData::U16(v) => slice!(v),
-        RasterData::I16(v) => slice!(v),
-        RasterData::U32(v) => slice!(v),
-        RasterData::I32(v) => slice!(v),
-        RasterData::U64(v) => slice!(v),
-        RasterData::I64(v) => slice!(v),
-        RasterData::F32(v) => slice!(v),
-        RasterData::F64(v) => v[start..start + n].to_vec(),
-    }
+    let mut out = vec![0.0; n];
+    let len = crate::par::chunk_len(n, 1 << 16);
+    crate::pixel::with_data!(&r.data, v => {
+        let src = &v[start..start + n];
+        crate::par::chunks_mut(&mut out, len, |i, o| {
+            for (o, x) in o.iter_mut().zip(&src[i * len..]) {
+                *o = crate::pixel::Pixel::to_f64(*x);
+            }
+        });
+    });
+    out
+}
+
+/// Maps `f` over values in parallel, keeping the order.
+pub(crate) fn par_map<T: Sync, R: Send + Default + Clone>(values: &[T], f: impl Fn(&T) -> R + Sync + Send) -> Vec<R> {
+    let mut out = vec![R::default(); values.len()];
+    let len = crate::par::chunk_len(values.len(), 1 << 16);
+    crate::par::chunks_mut(&mut out, len, |i, o| {
+        for (o, x) in o.iter_mut().zip(&values[i * len..]) {
+            *o = f(x);
+        }
+    });
+    out
 }
 
 /// A raster grid: size and geotransform.
@@ -375,12 +381,15 @@ pub(crate) fn build_raster(
     let nbands = bands.len().max(1);
     let n = grid.width * grid.height;
     let mut data = RasterData::new_filled(data_type, n * nbands, 0.0);
+    let len = crate::par::chunk_len(n, 1 << 16);
     for (b, band) in bands.iter().enumerate() {
         macro_rules! fill {
             ($v:expr, $t:ty) => {
-                for (o, x) in $v[b * n..(b + 1) * n].iter_mut().zip(band) {
-                    *o = convert(*x, data_type) as $t;
-                }
+                crate::par::chunks_mut(&mut $v[b * n..(b + 1) * n], len, |i, o| {
+                    for (o, x) in o.iter_mut().zip(&band[i * len..]) {
+                        *o = convert(*x, data_type) as $t;
+                    }
+                })
             };
         }
         match &mut data {
@@ -409,7 +418,7 @@ pub(crate) fn build_raster(
         crs: crs_info(srs),
         metadata: Vec::new(),
     };
-    let raster = Raster::from_data_native(cfg, data)?;
+    let raster = crate::pixel::raster_from_data(cfg, data)?;
     Ok(RasterDataset::new(raster, nodata.is_some()))
 }
 

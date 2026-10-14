@@ -225,35 +225,33 @@ pub fn to_bytes(layer: &Layer) -> Result<Vec<u8>> {
     let fields = layer.schema.fields();
     let col_types: Vec<ColumnType> = fields.iter().enumerate().map(|(i, f)| column_type(layer, i, f)).collect();
 
-    // Features, each a size-prefixed flatbuffer, with their bounds.
-    let mut features: Vec<Vec<u8>> = Vec::with_capacity(layer.len());
-    let mut nodes: Vec<NodeItem> = Vec::with_capacity(layer.len());
-    let mut all_have_geometry = true;
-    let mut props = Vec::new();
-    for (i, f) in layer.features.iter().enumerate() {
-        let mut fbb = FlatBufferBuilder::new();
-        let geometry = f.geometry.clone();
+    // Features, each a size-prefixed flatbuffer, with their bounds, encoded in parallel.
+    let encoded = crate::par::map_range(layer.len(), |i| {
+        let f = &layer.features[i];
+        // Sized for the coordinates, so that the buffer is not regrown as it fills.
+        let coords = f.geometry.as_ref().map_or(0, coord_count);
+        let mut fbb = FlatBufferBuilder::with_capacity(1024 + coords * if has_z { 24 } else { 16 } + f.attributes.len() * 16);
         let mut node = NodeItem::create(i as u64);
-        match geometry.as_ref().and_then(|g| g.bbox()) {
-            Some(b) => {
-                node.min_x = b.min_x;
-                node.min_y = b.min_y;
-                node.max_x = b.max_x;
-                node.max_y = b.max_y;
-            }
-            None => all_have_geometry = false,
+        let bbox = f.geometry.as_ref().and_then(|g| g.bbox());
+        if let Some(b) = &bbox {
+            node.min_x = b.min_x;
+            node.min_y = b.min_y;
+            node.max_x = b.max_x;
+            node.max_y = b.max_y;
         }
-        nodes.push(node);
-        let geometry = geometry.map(|g| build_geometry(&mut fbb, &g, geom_type == FgbType::Unknown, has_z));
-        props.clear();
+        let geometry = f.geometry.as_ref().map(|g| build_geometry(&mut fbb, g, geom_type == FgbType::Unknown, has_z));
+        let mut props = Vec::new();
         for (ci, (v, t)) in f.attributes.iter().zip(&col_types).enumerate() {
             write_property(&mut props, ci as u16, v, *t);
         }
         let properties = (!props.is_empty()).then(|| fbb.create_vector(&props));
         let feature = FgbFeature::create(&mut fbb, &FeatureArgs { geometry, properties, columns: None });
         fbb.finish_size_prefixed(feature, None);
-        features.push(fbb.finished_data().to_vec());
-    }
+        (fbb.finished_data().to_vec(), node, bbox.is_some())
+    });
+    let all_have_geometry = encoded.iter().all(|e| e.2);
+    let (features, nodes): (Vec<Vec<u8>>, Vec<NodeItem>) = encoded.into_iter().map(|(f, n, _)| (f, n)).unzip();
+    let mut nodes = nodes;
     let index = all_have_geometry && !features.is_empty();
     let extent = calc_extent(&nodes);
 
@@ -428,8 +426,7 @@ fn build_geometry<'a>(fbb: &mut FlatBufferBuilder<'a>, g: &Geometry, typed: bool
         }
         Geometry::MultiPolygon(ps) => {
             for (exterior, interiors) in ps {
-                let p = Geometry::Polygon { exterior: exterior.clone(), interiors: interiors.clone() };
-                parts.push(build_geometry(fbb, &p, false, has_z));
+                parts.push(build_polygon(fbb, exterior, interiors, has_z));
             }
         }
         Geometry::GeometryCollection(gs) => {
@@ -448,6 +445,48 @@ fn build_geometry<'a>(fbb: &mut FlatBufferBuilder<'a>, g: &Geometry, typed: bool
         z: (has_z && !z.is_empty()).then(|| fbb.create_vector(&z)),
         parts: (!parts.is_empty()).then(|| fbb.create_vector(&parts)),
         type_: if typed { fgb_type(g) } else { FgbType::Unknown },
+        ..Default::default()
+    };
+    FgbGeometry::create(fbb, &args)
+}
+
+/// The number of coordinates of a geometry.
+fn coord_count(g: &Geometry) -> usize {
+    match g {
+        Geometry::Point(_) => 1,
+        Geometry::LineString(cs) | Geometry::MultiPoint(cs) => cs.len(),
+        Geometry::Polygon { exterior, interiors } => exterior.0.len() + interiors.iter().map(|r| r.0.len()).sum::<usize>(),
+        Geometry::MultiLineString(ls) => ls.iter().map(Vec::len).sum(),
+        Geometry::MultiPolygon(ps) => ps.iter().map(|(e, h)| e.0.len() + h.iter().map(|r| r.0.len()).sum::<usize>()).sum(),
+        Geometry::GeometryCollection(gs) => gs.iter().map(coord_count).sum(),
+    }
+}
+
+/// Builds the geometry table of a polygon part of a multipolygon, as [`build_geometry`] builds an
+/// untyped polygon.
+fn build_polygon<'a>(fbb: &mut FlatBufferBuilder<'a>, exterior: &Ring, interiors: &[Ring], has_z: bool) -> WIPOffset<FgbGeometry<'a>> {
+    let (mut xy, mut z, mut ends) = (Vec::new(), Vec::new(), Vec::new());
+    for r in std::iter::once(exterior).chain(interiors) {
+        let cs = &r.0;
+        for c in cs {
+            xy.extend_from_slice(&[c.x, c.y]);
+            z.push(c.z.unwrap_or(0.0));
+        }
+        if cs.len() > 1 && (cs[0].x, cs[0].y) != (cs[cs.len() - 1].x, cs[cs.len() - 1].y) {
+            xy.extend_from_slice(&[cs[0].x, cs[0].y]);
+            z.push(cs[0].z.unwrap_or(0.0));
+        }
+        ends.push((xy.len() / 2) as u32);
+    }
+    // A single part needs no ends.
+    if ends.len() <= 1 {
+        ends.clear();
+    }
+    let args = GeometryArgs {
+        ends: (!ends.is_empty()).then(|| fbb.create_vector(&ends)),
+        xy: (!xy.is_empty()).then(|| fbb.create_vector(&xy)),
+        z: (has_z && !z.is_empty()).then(|| fbb.create_vector(&z)),
+        type_: FgbType::Unknown,
         ..Default::default()
     };
     FgbGeometry::create(fbb, &args)

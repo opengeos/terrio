@@ -18,6 +18,12 @@ mod wkt1;
 
 pub(crate) use def::Def;
 
+/// Starts loading terrio's EPSG table in the background, for work that will need it once it has
+/// read its input.
+pub(crate) fn prefetch() {
+    epsg::prefetch();
+}
+
 /// The WKT GDAL writes for an EPSG code, from terrio's EPSG table.
 pub(crate) fn epsg_wkt(code: u32) -> Option<&'static str> {
     epsg::get(code).map(|e| e.wkt.as_str())
