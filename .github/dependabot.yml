@@ -11,6 +11,16 @@ updates:
       cargo:
         update-types: [minor, patch]
     open-pull-requests-limit: 10
+    # These follow other crates rather than the newest release: parquet and arrow are the versions
+    # wbvector reads GeoParquet with (their types cross between the two), and flatbuffers is the
+    # version flatgeobuf's generated code is built with. They move when those crates do.
+    ignore:
+      - dependency-name: "parquet"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "arrow*"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "flatbuffers"
+        update-types: ["version-update:semver-major"]
 
   - package-ecosystem: github-actions
     directory: /

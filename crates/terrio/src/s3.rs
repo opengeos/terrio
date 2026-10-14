@@ -11,7 +11,7 @@
 //! another region, requests are retried there. `AWS_S3_ENDPOINT` points at another S3-compatible
 //! service (path-style URLs unless `AWS_VIRTUAL_HOSTING=TRUE`), and `AWS_HTTPS=NO` uses plain HTTP.
 
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use sha2::{Digest, Sha256};
 use std::path::PathBuf;
 
