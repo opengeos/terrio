@@ -55,7 +55,7 @@ tempfile = "3"
 zip = { version = "9", default-features = false, features = ["deflate"] }
 ureq = "3"
 hmac = "0.12"
-sha2 = "0.10"
+sha2 = "0.11"
 clap = { version = "4", features = ["derive"] }
 # LASzip compression of point clouds (LAZ, COPC), pure Rust.
 laz = "0.13"
