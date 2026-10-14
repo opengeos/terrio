@@ -27,6 +27,10 @@ fn num(v: f64) -> String {
 /// The CRS as GDAL-style OGC WKT1. For a CRS without an EPSG code, the stored WKT is returned
 /// unchanged (it usually came from GDAL); `None` when nothing is known.
 pub(crate) fn gdal_wkt(crs: &SpatialRef) -> Option<String> {
+    // EPSG codes: the WKT GDAL writes, from terrio's EPSG table.
+    if let Some(w) = crs.epsg.and_then(crate::crs::epsg_wkt) {
+        return Some(w.to_string());
+    }
     let built = match crs.epsg {
         Some(code) => wbprojection::Crs::from_epsg(code).ok().and_then(|c| build(&c, Some(code))),
         None => crs.to_wbp().ok().and_then(|c| build(&c, None)),

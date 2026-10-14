@@ -1,0 +1,2233 @@
+//! The map projections EPSG CRSs use, ported from PROJ (<https://proj.org>, MIT licence) so that
+//! terrio's results match GDAL's.
+//!
+//! As in PROJ, a projection works on an ellipsoid with a semi-major axis of 1: the forward
+//! projection takes the longitude relative to the central meridian and the latitude in radians,
+//! and the caller scales by the semi-major axis and adds the false easting and northing.
+
+// The constants are PROJ's, digit for digit.
+#![allow(clippy::excessive_precision)]
+
+use super::math::*;
+use super::params::Params;
+use crate::{Error, Result};
+
+/// A map projection's forward and inverse formulas.
+pub(crate) trait Proj: Send + Sync + std::fmt::Debug {
+    /// Projects a longitude (relative to the central meridian) and latitude in radians.
+    fn fwd(&self, lam: f64, phi: f64) -> Option<(f64, f64)>;
+    /// Unprojects normalized coordinates into a longitude (relative to the central meridian) and
+    /// a latitude in radians.
+    fn inv(&self, x: f64, y: f64) -> Option<(f64, f64)>;
+}
+
+/// What a projection's setup reads and may change: the ellipsoid, origin, scale and false
+/// easting and northing.
+pub(crate) struct Setup<'a> {
+    pub p: &'a Params,
+    pub ell: Ell,
+    pub phi0: f64,
+    pub lam0: f64,
+    pub k0: f64,
+    pub x0: f64,
+    pub y0: f64,
+}
+
+fn err(msg: &str) -> Error {
+    Error::Crs(msg.to_string())
+}
+
+/// Builds the projection `name`. `Ok(None)` when terrio does not implement it.
+pub(crate) fn build(name: &str, s: &mut Setup<'_>) -> Result<Option<Box<dyn Proj>>> {
+    Ok(Some(match name {
+        "tmerc" | "etmerc" => Box::new(Tmerc::new(s.ell, s.k0, s.phi0)),
+        "utm" => {
+            let zone = s.p.f64("zone").ok_or_else(|| err("utm needs +zone"))?;
+            if !(1.0..=60.0).contains(&zone) {
+                return Err(err("invalid UTM zone"));
+            }
+            s.lam0 = ((zone.trunc() - 1.0) * 6.0 - 180.0 + 3.0).to_radians();
+            s.k0 = 0.9996;
+            s.phi0 = 0.0;
+            s.x0 = 500000.0;
+            s.y0 = if s.p.has("south") { 10000000.0 } else { 0.0 };
+            Box::new(Tmerc::new(s.ell, s.k0, 0.0))
+        }
+        "lcc" => Box::new(Lcc::new(s)?),
+        "merc" => Box::new(Merc::new(s)?),
+        "aea" => Box::new(Aea::new(s)?),
+        "laea" => Box::new(Laea::new(s)),
+        "stere" => Box::new(Stere::new(s)),
+        "ups" => {
+            s.phi0 = if s.p.has("south") { -HALFPI } else { HALFPI };
+            s.k0 = 0.994;
+            s.x0 = 2000000.0;
+            s.y0 = 2000000.0;
+            s.lam0 = 0.0;
+            Box::new(Stere::new(s))
+        }
+        "sterea" => Box::new(Sterea::new(s)?),
+        "somerc" => Box::new(Somerc::new(s)),
+        "cass" => Box::new(Cass::new(s)),
+        "poly" => Box::new(Poly::new(s)),
+        "eqc" => Box::new(Eqc::new(s)),
+        "cea" => Box::new(Cea::new(s)?),
+        "eqearth" => Box::new(EqEarth::new(s)),
+        "omerc" => Box::new(Omerc::new(s)?),
+        "krovak" => Box::new(Krovak::new(s, false)?),
+        "mod_krovak" => Box::new(Krovak::new(s, true)?),
+        "labrd" => Box::new(Labrd::new(s)),
+        "nzmg" => Box::new(Nzmg::new(s)),
+        "col_urban" => Box::new(ColUrban::new(s)),
+        "aeqd" => Box::new(Aeqd::new(s)),
+        "ortho" => Box::new(Ortho::new(s)),
+        _ => return Ok(None),
+    }))
+}
+
+// ---------------------------------------------------------------------------------------------
+// Transverse Mercator: the "exact" Poder/Engsager algorithm PROJ uses by default.
+
+const ETMERC_ORDER: usize = 6;
+
+/// Clenshaw summation of a real series of sin(2kB) (PROJ's `gatg`).
+fn gatg(p: &[f64; ETMERC_ORDER], b: f64) -> f64 {
+    let cos_2b = (2.0 * b).cos();
+    let two_cos_2b = 2.0 * cos_2b;
+    let (mut h, mut h1, mut h2) = (0.0, p[ETMERC_ORDER - 1], 0.0);
+    for i in (0..ETMERC_ORDER - 1).rev() {
+        h = -h2 + two_cos_2b * h1 + p[i];
+        h2 = h1;
+        h1 = h;
+    }
+    b + h * (2.0 * b).sin()
+}
+
+/// Clenshaw summation of a complex series (PROJ's `clenS`); returns the real and imaginary parts.
+fn clen_s(a: &[f64; ETMERC_ORDER], arg_r: f64, arg_i: f64) -> (f64, f64) {
+    let (sin_r, cos_r) = arg_r.sin_cos();
+    let (sinh_i, cosh_i) = (arg_i.sinh(), arg_i.cosh());
+    let r = 2.0 * cos_r * cosh_i;
+    let i = -2.0 * sin_r * sinh_i;
+    let (mut hr, mut hr1, mut hi, mut hi1) = (a[ETMERC_ORDER - 1], 0.0, 0.0, 0.0);
+    for k in (0..ETMERC_ORDER - 1).rev() {
+        let (hr2, hi2) = (hr1, hi1);
+        hr1 = hr;
+        hi1 = hi;
+        hr = -hr2 + r * hr1 - i * hi1 + a[k];
+        hi = -hi2 + i * hr1 + r * hi1;
+    }
+    let r = sin_r * cosh_i;
+    let i = cos_r * sinh_i;
+    (r * hr - i * hi, r * hi + i * hr)
+}
+
+#[derive(Debug)]
+struct Tmerc {
+    qn: f64,
+    zb: f64,
+    cgb: [f64; ETMERC_ORDER],
+    cbg: [f64; ETMERC_ORDER],
+    utg: [f64; ETMERC_ORDER],
+    gtu: [f64; ETMERC_ORDER],
+}
+
+impl Tmerc {
+    fn new(ell: Ell, k0: f64, phi0: f64) -> Self {
+        let f = ell.es / (1.0 + (1.0 - ell.es).sqrt());
+        let n = f / (2.0 - f);
+        let mut np = n;
+        let mut cgb = [0.0; 6];
+        let mut cbg = [0.0; 6];
+        let mut utg = [0.0; 6];
+        let mut gtu = [0.0; 6];
+        cgb[0] = n * (2.0 + n * (-2.0 / 3.0 + n * (-2.0 + n * (116.0 / 45.0 + n * (26.0 / 45.0 + n * (-2854.0 / 675.0))))));
+        cbg[0] = n * (-2.0 + n * (2.0 / 3.0 + n * (4.0 / 3.0 + n * (-82.0 / 45.0 + n * (32.0 / 45.0 + n * (4642.0 / 4725.0))))));
+        np *= n;
+        cgb[1] = np * (7.0 / 3.0 + n * (-8.0 / 5.0 + n * (-227.0 / 45.0 + n * (2704.0 / 315.0 + n * (2323.0 / 945.0)))));
+        cbg[1] = np * (5.0 / 3.0 + n * (-16.0 / 15.0 + n * (-13.0 / 9.0 + n * (904.0 / 315.0 + n * (-1522.0 / 945.0)))));
+        np *= n;
+        cgb[2] = np * (56.0 / 15.0 + n * (-136.0 / 35.0 + n * (-1262.0 / 105.0 + n * (73814.0 / 2835.0))));
+        cbg[2] = np * (-26.0 / 15.0 + n * (34.0 / 21.0 + n * (8.0 / 5.0 + n * (-12686.0 / 2835.0))));
+        np *= n;
+        cgb[3] = np * (4279.0 / 630.0 + n * (-332.0 / 35.0 + n * (-399572.0 / 14175.0)));
+        cbg[3] = np * (1237.0 / 630.0 + n * (-12.0 / 5.0 + n * (-24832.0 / 14175.0)));
+        np *= n;
+        cgb[4] = np * (4174.0 / 315.0 + n * (-144838.0 / 6237.0));
+        cbg[4] = np * (-734.0 / 315.0 + n * (109598.0 / 31185.0));
+        np *= n;
+        cgb[5] = np * (601676.0 / 22275.0);
+        cbg[5] = np * (444337.0 / 155925.0);
+
+        np = n * n;
+        let qn = k0 / (1.0 + n) * (1.0 + np * (1.0 / 4.0 + np * (1.0 / 64.0 + np / 256.0)));
+        utg[0] = n * (-0.5 + n * (2.0 / 3.0 + n * (-37.0 / 96.0 + n * (1.0 / 360.0 + n * (81.0 / 512.0 + n * (-96199.0 / 604800.0))))));
+        gtu[0] = n * (0.5 + n * (-2.0 / 3.0 + n * (5.0 / 16.0 + n * (41.0 / 180.0 + n * (-127.0 / 288.0 + n * (7891.0 / 37800.0))))));
+        utg[1] = np * (-1.0 / 48.0 + n * (-1.0 / 15.0 + n * (437.0 / 1440.0 + n * (-46.0 / 105.0 + n * (1118711.0 / 3870720.0)))));
+        gtu[1] = np * (13.0 / 48.0 + n * (-3.0 / 5.0 + n * (557.0 / 1440.0 + n * (281.0 / 630.0 + n * (-1983433.0 / 1935360.0)))));
+        np *= n;
+        utg[2] = np * (-17.0 / 480.0 + n * (37.0 / 840.0 + n * (209.0 / 4480.0 + n * (-5569.0 / 90720.0))));
+        gtu[2] = np * (61.0 / 240.0 + n * (-103.0 / 140.0 + n * (15061.0 / 26880.0 + n * (167603.0 / 181440.0))));
+        np *= n;
+        utg[3] = np * (-4397.0 / 161280.0 + n * (11.0 / 504.0 + n * (830251.0 / 7257600.0)));
+        gtu[3] = np * (49561.0 / 161280.0 + n * (-179.0 / 168.0 + n * (6601661.0 / 7257600.0)));
+        np *= n;
+        utg[4] = np * (-4583.0 / 161280.0 + n * (108847.0 / 3991680.0));
+        gtu[4] = np * (34729.0 / 80640.0 + n * (-3418889.0 / 1995840.0));
+        np *= n;
+        utg[5] = np * (-20648693.0 / 638668800.0);
+        gtu[5] = np * (212378941.0 / 319334400.0);
+
+        let z = gatg(&cbg, phi0);
+        let zb = -qn * (z + clen_s(&gtu, 2.0 * z, 0.0).0);
+        Self { qn, zb, cgb, cbg, utg, gtu }
+    }
+}
+
+impl Proj for Tmerc {
+    fn fwd(&self, lam: f64, phi: f64) -> Option<(f64, f64)> {
+        let cn = gatg(&self.cbg, phi);
+        let (sin_cn, cos_cn) = cn.sin_cos();
+        let (sin_ce, cos_ce) = lam.sin_cos();
+        let cn = sin_cn.atan2(cos_ce * cos_cn);
+        let ce = (sin_ce * cos_cn).atan2(sin_cn.hypot(cos_cn * cos_ce));
+        let ce = ce.tan().asinh();
+        let (dcn, dce) = clen_s(&self.gtu, 2.0 * cn, 2.0 * ce);
+        let (cn, ce) = (cn + dcn, ce + dce);
+        if ce.abs() > 2.623395162778 {
+            return None;
+        }
+        Some((self.qn * ce, self.qn * cn + self.zb))
+    }
+
+    fn inv(&self, x: f64, y: f64) -> Option<(f64, f64)> {
+        let cn = (y - self.zb) / self.qn;
+        let ce = x / self.qn;
+        if ce.abs() > 2.623395162778 {
+            return None;
+        }
+        let (dcn, dce) = clen_s(&self.utg, 2.0 * cn, 2.0 * ce);
+        let (cn, ce) = (cn + dcn, ce + dce);
+        let ce = ce.sinh().atan();
+        let (sin_cn, cos_cn) = cn.sin_cos();
+        let (sin_ce, cos_ce) = ce.sin_cos();
+        let lam = sin_ce.atan2(cos_ce * cos_cn);
+        let cn = (sin_cn * cos_ce).atan2(sin_ce.hypot(cos_ce * cos_cn));
+        Some((lam, gatg(&self.cgb, cn)))
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Lambert Conformal Conic.
+
+#[derive(Debug)]
+struct Lcc {
+    e: f64,
+    n: f64,
+    c: f64,
+    rho0: f64,
+    k0: f64,
+    ellips: bool,
+}
+
+impl Lcc {
+    fn new(s: &mut Setup<'_>) -> Result<Self> {
+        let phi1 = s.p.angle("lat_1").unwrap_or(0.0);
+        let phi2 = match s.p.angle("lat_2") {
+            Some(v) => v,
+            None => {
+                if s.p.angle("lat_0").is_none() {
+                    s.phi0 = phi1;
+                }
+                phi1
+            }
+        };
+        if (phi1 + phi2).abs() < 1e-10 {
+            return Err(err("lcc: lat_1 = -lat_2"));
+        }
+        let e = s.ell.e;
+        let es = s.ell.es;
+        let mut sinphi = phi1.sin();
+        let mut n = sinphi;
+        let cosphi = phi1.cos();
+        let secant = (phi1 - phi2).abs() >= 1e-10;
+        let (c, rho0);
+        let phi0 = s.phi0;
+        if es != 0.0 {
+            let m1 = msfn(sinphi, cosphi, es);
+            let ml1 = tsfn(phi1, sinphi, e);
+            if secant {
+                sinphi = phi2.sin();
+                n = (m1 / msfn(sinphi, phi2.cos(), es)).ln();
+                n /= (ml1 / tsfn(phi2, sinphi, e)).ln();
+            }
+            c = m1 * ml1.powf(-n) / n;
+            rho0 = if (phi0.abs() - HALFPI).abs() < 1e-10 { 0.0 } else { c * tsfn(phi0, phi0.sin(), e).powf(n) };
+        } else {
+            if secant {
+                n = (cosphi / phi2.cos()).ln() / ((FORTPI + 0.5 * phi2).tan() / (FORTPI + 0.5 * phi1).tan()).ln();
+            }
+            c = cosphi * (FORTPI + 0.5 * phi1).tan().powf(n) / n;
+            rho0 = if (phi0.abs() - HALFPI).abs() < 1e-10 { 0.0 } else { c * (FORTPI + 0.5 * phi0).tan().powf(-n) };
+        }
+        Ok(Self { e, n, c, rho0, k0: s.k0, ellips: es != 0.0 })
+    }
+}
+
+impl Proj for Lcc {
+    fn fwd(&self, lam: f64, phi: f64) -> Option<(f64, f64)> {
+        let rho = if (phi.abs() - HALFPI).abs() < 1e-10 {
+            if phi * self.n <= 0.0 {
+                return None;
+            }
+            0.0
+        } else if self.ellips {
+            self.c * tsfn(phi, phi.sin(), self.e).powf(self.n)
+        } else {
+            self.c * (FORTPI + 0.5 * phi).tan().powf(-self.n)
+        };
+        let lam = lam * self.n;
+        Some((self.k0 * (rho * lam.sin()), self.k0 * (self.rho0 - rho * lam.cos())))
+    }
+
+    fn inv(&self, x: f64, y: f64) -> Option<(f64, f64)> {
+        let (mut x, mut y) = (x / self.k0, y / self.k0);
+        y = self.rho0 - y;
+        let mut rho = x.hypot(y);
+        if rho == 0.0 {
+            return Some((0.0, if self.n > 0.0 { HALFPI } else { -HALFPI }));
+        }
+        if self.n < 0.0 {
+            rho = -rho;
+            x = -x;
+            y = -y;
+        }
+        let phi = if self.ellips {
+            phi2((rho / self.c).powf(1.0 / self.n), self.e)
+        } else {
+            2.0 * (self.c / rho).powf(1.0 / self.n).atan() - HALFPI
+        };
+        Some((x.atan2(y) / self.n, phi))
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Mercator.
+
+#[derive(Debug)]
+struct Merc {
+    e: f64,
+    k0: f64,
+}
+
+impl Merc {
+    fn new(s: &mut Setup<'_>) -> Result<Self> {
+        if let Some(ts) = s.p.angle("lat_ts") {
+            let phits = ts.abs();
+            if phits >= HALFPI {
+                return Err(err("merc: lat_ts must be less than 90°"));
+            }
+            s.k0 = if s.ell.es != 0.0 { msfn(phits.sin(), phits.cos(), s.ell.es) } else { phits.cos() };
+        }
+        Ok(Self { e: s.ell.e, k0: s.k0 })
+    }
+}
+
+impl Proj for Merc {
+    fn fwd(&self, lam: f64, phi: f64) -> Option<(f64, f64)> {
+        if (phi.abs() - HALFPI).abs() <= 1e-10 {
+            return None;
+        }
+        let y = if self.e == 0.0 { phi.tan().asinh() } else { phi.tan().asinh() - self.e * (self.e * phi.sin()).atanh() };
+        Some((self.k0 * lam, self.k0 * y))
+    }
+
+    fn inv(&self, x: f64, y: f64) -> Option<(f64, f64)> {
+        let phi = if self.e == 0.0 { (y / self.k0).sinh().atan() } else { sinhpsi2tanphi((y / self.k0).sinh(), self.e).atan() };
+        Some((x / self.k0, phi))
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Albers Equal Area.
+
+#[derive(Debug)]
+struct Aea {
+    e: f64,
+    one_es: f64,
+    n: f64,
+    n2: f64,
+    c: f64,
+    dd: f64,
+    rho0: f64,
+    ec: f64,
+    ellips: bool,
+}
+
+impl Aea {
+    fn new(s: &mut Setup<'_>) -> Result<Self> {
+        let phi1 = s.p.angle("lat_1").unwrap_or(0.0);
+        let phi2 = s.p.angle("lat_2").unwrap_or(0.0);
+        if (phi1 + phi2).abs() < 1e-10 {
+            return Err(err("aea: lat_1 = -lat_2"));
+        }
+        let (e, es, one_es) = (s.ell.e, s.ell.es, s.ell.one_es);
+        let mut sinphi = phi1.sin();
+        let mut n = sinphi;
+        let mut cosphi = phi1.cos();
+        let secant = (phi1 - phi2).abs() >= 1e-10;
+        let ellips = es > 0.0;
+        let (c, dd, rho0, mut ec, n2);
+        ec = 0.0;
+        if ellips {
+            let m1 = msfn(sinphi, cosphi, es);
+            let ml1 = qsfn(sinphi, e, one_es);
+            if secant {
+                sinphi = phi2.sin();
+                cosphi = phi2.cos();
+                let m2 = msfn(sinphi, cosphi, es);
+                let ml2 = qsfn(sinphi, e, one_es);
+                if ml2 == ml1 {
+                    return Err(err("aea: invalid standard parallels"));
+                }
+                n = (m1 * m1 - m2 * m2) / (ml2 - ml1);
+            }
+            ec = 1.0 - 0.5 * one_es * ((1.0 - e) / (1.0 + e)).ln() / e;
+            c = m1 * m1 + n * ml1;
+            dd = 1.0 / n;
+            rho0 = dd * (c - n * qsfn(s.phi0.sin(), e, one_es)).sqrt();
+            n2 = n + n;
+        } else {
+            if secant {
+                n = 0.5 * (n + phi2.sin());
+            }
+            n2 = n + n;
+            c = cosphi * cosphi + n2 * sinphi;
+            dd = 1.0 / n;
+            rho0 = dd * (c - n2 * s.phi0.sin()).sqrt();
+        }
+        Ok(Self { e, one_es, n, n2, c, dd, rho0, ec, ellips })
+    }
+
+    fn phi1(qs: f64, e: f64, one_es: f64) -> Option<f64> {
+        let mut phi = (0.5 * qs).asin();
+        if e < 1e-7 {
+            return Some(phi);
+        }
+        for _ in 0..15 {
+            let (sinpi, cospi) = phi.sin_cos();
+            let con = e * sinpi;
+            let com = 1.0 - con * con;
+            let dphi = 0.5 * com * com / cospi * (qs / one_es - sinpi / com + 0.5 / e * ((1.0 - con) / (1.0 + con)).ln());
+            phi += dphi;
+            if dphi.abs() <= 1e-10 {
+                return Some(phi);
+            }
+        }
+        None
+    }
+}
+
+impl Proj for Aea {
+    fn fwd(&self, lam: f64, phi: f64) -> Option<(f64, f64)> {
+        let rho = self.c - if self.ellips { self.n * qsfn(phi.sin(), self.e, self.one_es) } else { self.n2 * phi.sin() };
+        if rho < 0.0 {
+            return None;
+        }
+        let rho = self.dd * rho.sqrt();
+        let lam = lam * self.n;
+        Some((rho * lam.sin(), self.rho0 - rho * lam.cos()))
+    }
+
+    fn inv(&self, x: f64, y: f64) -> Option<(f64, f64)> {
+        let (mut x, mut y) = (x, self.rho0 - y);
+        let mut rho = x.hypot(y);
+        if rho == 0.0 {
+            return Some((0.0, if self.n > 0.0 { HALFPI } else { -HALFPI }));
+        }
+        if self.n < 0.0 {
+            rho = -rho;
+            x = -x;
+            y = -y;
+        }
+        let mut phi = rho / self.dd;
+        if self.ellips {
+            phi = (self.c - phi * phi) / self.n;
+            if (self.ec - phi.abs()).abs() > 1e-7 {
+                phi = Self::phi1(phi, self.e, self.one_es)?;
+            } else {
+                phi = if phi < 0.0 { -HALFPI } else { HALFPI };
+            }
+        } else {
+            phi = (self.c - phi * phi) / self.n2;
+            phi = if phi.abs() <= 1.0 {
+                phi.asin()
+            } else if phi < 0.0 {
+                -HALFPI
+            } else {
+                HALFPI
+            };
+        }
+        Some((x.atan2(y) / self.n, phi))
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Lambert Azimuthal Equal Area.
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Mode {
+    NPole,
+    SPole,
+    Equit,
+    Obliq,
+}
+
+fn azimuthal_mode(phi0: f64) -> Mode {
+    let t = phi0.abs();
+    if (t - HALFPI).abs() < 1e-10 {
+        if phi0 < 0.0 { Mode::SPole } else { Mode::NPole }
+    } else if t < 1e-10 {
+        Mode::Equit
+    } else {
+        Mode::Obliq
+    }
+}
+
+#[derive(Debug)]
+struct Laea {
+    mode: Mode,
+    e: f64,
+    es: f64,
+    one_es: f64,
+    phi0: f64,
+    qp: f64,
+    rq: f64,
+    dd: f64,
+    xmf: f64,
+    ymf: f64,
+    sinb1: f64,
+    cosb1: f64,
+    apa: [f64; 3],
+}
+
+impl Laea {
+    fn new(s: &mut Setup<'_>) -> Self {
+        let mode = azimuthal_mode(s.phi0);
+        let (e, es, one_es) = (s.ell.e, s.ell.es, s.ell.one_es);
+        let mut l = Self {
+            mode,
+            e,
+            es,
+            one_es,
+            phi0: s.phi0,
+            qp: 0.0,
+            rq: 0.0,
+            dd: 0.0,
+            xmf: 0.0,
+            ymf: 0.0,
+            sinb1: 0.0,
+            cosb1: 0.0,
+            apa: [0.0; 3],
+        };
+        if es != 0.0 {
+            l.qp = qsfn(1.0, e, one_es);
+            l.apa = authset(es);
+            match mode {
+                Mode::NPole | Mode::SPole => l.dd = 1.0,
+                Mode::Equit => {
+                    l.rq = (0.5 * l.qp).sqrt();
+                    l.dd = 1.0 / l.rq;
+                    l.xmf = 1.0;
+                    l.ymf = 0.5 * l.qp;
+                }
+                Mode::Obliq => {
+                    l.rq = (0.5 * l.qp).sqrt();
+                    let sinphi = s.phi0.sin();
+                    l.sinb1 = qsfn(sinphi, e, one_es) / l.qp;
+                    l.cosb1 = (1.0 - l.sinb1 * l.sinb1).sqrt();
+                    l.dd = s.phi0.cos() / ((1.0 - es * sinphi * sinphi).sqrt() * l.rq * l.cosb1);
+                    l.xmf = l.rq;
+                    l.ymf = l.rq / l.dd;
+                    l.xmf *= l.dd;
+                }
+            }
+        } else if mode == Mode::Obliq {
+            l.sinb1 = s.phi0.sin();
+            l.cosb1 = s.phi0.cos();
+        }
+        l
+    }
+}
+
+impl Proj for Laea {
+    fn fwd(&self, lam: f64, phi: f64) -> Option<(f64, f64)> {
+        let (sinlam, coslam) = lam.sin_cos();
+        if self.es == 0.0 {
+            let (sinphi, cosphi) = phi.sin_cos();
+            return match self.mode {
+                Mode::Equit | Mode::Obliq => {
+                    let y = if self.mode == Mode::Equit {
+                        1.0 + cosphi * coslam
+                    } else {
+                        1.0 + self.sinb1 * sinphi + self.cosb1 * cosphi * coslam
+                    };
+                    if y <= 1e-10 {
+                        return None;
+                    }
+                    let y = (2.0 / y).sqrt();
+                    let x = y * cosphi * sinlam;
+                    let y = y * if self.mode == Mode::Equit { sinphi } else { self.cosb1 * sinphi - self.sinb1 * cosphi * coslam };
+                    Some((x, y))
+                }
+                Mode::NPole | Mode::SPole => {
+                    let coslam = if self.mode == Mode::NPole { -coslam } else { coslam };
+                    if (phi + self.phi0).abs() < 1e-10 {
+                        return None;
+                    }
+                    let y = FORTPI - phi * 0.5;
+                    let y = 2.0 * if self.mode == Mode::SPole { y.cos() } else { y.sin() };
+                    Some((y * sinlam, y * coslam))
+                }
+            };
+        }
+        let sinphi = phi.sin();
+        let mut q = qsfn(sinphi, self.e, self.one_es);
+        let (mut sinb, mut cosb) = (0.0, 0.0);
+        if matches!(self.mode, Mode::Obliq | Mode::Equit) {
+            sinb = q / self.qp;
+            let cosb2 = 1.0 - sinb * sinb;
+            cosb = if cosb2 > 0.0 { cosb2.sqrt() } else { 0.0 };
+        }
+        let b = match self.mode {
+            Mode::Obliq => 1.0 + self.sinb1 * sinb + self.cosb1 * cosb * coslam,
+            Mode::Equit => 1.0 + cosb * coslam,
+            Mode::NPole => {
+                q = self.qp - q;
+                HALFPI + phi
+            }
+            Mode::SPole => {
+                q += self.qp;
+                phi - HALFPI
+            }
+        };
+        if b.abs() < 1e-10 {
+            return None;
+        }
+        match self.mode {
+            Mode::Obliq => {
+                let b = (2.0 / b).sqrt();
+                let y = self.ymf * b * (self.cosb1 * sinb - self.sinb1 * cosb * coslam);
+                Some((self.xmf * b * cosb * sinlam, y))
+            }
+            Mode::Equit => {
+                let b = (2.0 / (1.0 + cosb * coslam)).sqrt();
+                Some((self.xmf * b * cosb * sinlam, b * sinb * self.ymf))
+            }
+            Mode::NPole | Mode::SPole => {
+                if q >= 1e-15 {
+                    let b = q.sqrt();
+                    Some((b * sinlam, coslam * if self.mode == Mode::SPole { b } else { -b }))
+                } else {
+                    Some((0.0, 0.0))
+                }
+            }
+        }
+    }
+
+    fn inv(&self, x: f64, y: f64) -> Option<(f64, f64)> {
+        if self.es == 0.0 {
+            let (mut x, mut y) = (x, y);
+            let rh = x.hypot(y);
+            let mut phi = rh * 0.5;
+            if phi > 1.0 {
+                return None;
+            }
+            phi = 2.0 * phi.asin();
+            let (sinz, cosz) = phi.sin_cos();
+            match self.mode {
+                Mode::Equit => {
+                    phi = if rh.abs() <= 1e-10 { 0.0 } else { (y * sinz / rh).asin() };
+                    x *= sinz;
+                    y = cosz * rh;
+                }
+                Mode::Obliq => {
+                    phi = if rh.abs() <= 1e-10 { self.phi0 } else { (cosz * self.sinb1 + y * sinz * self.cosb1 / rh).asin() };
+                    x *= sinz * self.cosb1;
+                    y = (cosz - phi.sin() * self.sinb1) * rh;
+                }
+                Mode::NPole => {
+                    y = -y;
+                    phi = HALFPI - phi;
+                }
+                Mode::SPole => phi -= HALFPI,
+            }
+            let lam = if y == 0.0 && matches!(self.mode, Mode::Equit | Mode::Obliq) { 0.0 } else { x.atan2(y) };
+            return Some((lam, phi));
+        }
+        let (mut x, mut y) = (x, y);
+        let ab;
+        match self.mode {
+            Mode::Equit | Mode::Obliq => {
+                x /= self.dd;
+                y *= self.dd;
+                let rho = x.hypot(y);
+                if rho < 1e-10 {
+                    return Some((0.0, self.phi0));
+                }
+                let sce = 2.0 * (0.5 * rho / self.rq).asin();
+                let (sce, cce) = sce.sin_cos();
+                x *= sce;
+                if self.mode == Mode::Obliq {
+                    ab = cce * self.sinb1 + y * sce * self.cosb1 / rho;
+                    y = rho * self.cosb1 * cce - y * self.sinb1 * sce;
+                } else {
+                    ab = y * sce / rho;
+                    y = rho * cce;
+                }
+            }
+            Mode::NPole | Mode::SPole => {
+                if self.mode == Mode::NPole {
+                    y = -y;
+                }
+                let q = x * x + y * y;
+                if q == 0.0 {
+                    return Some((0.0, self.phi0));
+                }
+                let a = 1.0 - q / self.qp;
+                ab = if self.mode == Mode::SPole { -a } else { a };
+            }
+        }
+        Some((x.atan2(y), authlat(aasin(ab), &self.apa)))
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Stereographic (polar and oblique, PROJ's `stere`).
+
+#[derive(Debug)]
+struct Stere {
+    mode: Mode,
+    e: f64,
+    phi0: f64,
+    akm1: f64,
+    sin_x1: f64,
+    cos_x1: f64,
+}
+
+fn ssfn(phit: f64, sinphi: f64, e: f64) -> f64 {
+    let sinphi = sinphi * e;
+    (0.5 * (HALFPI + phit)).tan() * ((1.0 - sinphi) / (1.0 + sinphi)).powf(0.5 * e)
+}
+
+impl Stere {
+    fn new(s: &mut Setup<'_>) -> Self {
+        let phits = s.p.angle("lat_ts").unwrap_or(HALFPI).abs();
+        let mode = azimuthal_mode(s.phi0);
+        let (e, es, k0, phi0) = (s.ell.e, s.ell.es, s.k0, s.phi0);
+        let akm1;
+        let (mut sin_x1, mut cos_x1) = (0.0, 0.0);
+        if es != 0.0 {
+            match mode {
+                Mode::NPole | Mode::SPole => {
+                    if (phits - HALFPI).abs() < 1e-10 {
+                        akm1 = 2.0 * k0 / ((1.0 + e).powf(1.0 + e) * (1.0 - e).powf(1.0 - e)).sqrt();
+                    } else {
+                        let t = phits.sin();
+                        let te = t * e;
+                        akm1 = phits.cos() / tsfn(phits, t, e) / (1.0 - te * te).sqrt();
+                    }
+                }
+                Mode::Equit | Mode::Obliq => {
+                    let t = phi0.sin();
+                    let x = 2.0 * ssfn(phi0, t, e).atan() - HALFPI;
+                    let t = t * e;
+                    akm1 = 2.0 * k0 * phi0.cos() / (1.0 - t * t).sqrt();
+                    sin_x1 = x.sin();
+                    cos_x1 = x.cos();
+                }
+            }
+        } else {
+            match mode {
+                Mode::Obliq => {
+                    sin_x1 = phi0.sin();
+                    cos_x1 = phi0.cos();
+                    akm1 = 2.0 * k0;
+                }
+                Mode::Equit => akm1 = 2.0 * k0,
+                Mode::NPole | Mode::SPole => {
+                    akm1 = if (phits - HALFPI).abs() >= 1e-10 { phits.cos() / (FORTPI - 0.5 * phits).tan() } else { 2.0 * k0 };
+                }
+            }
+        }
+        Self { mode, e, phi0, akm1, sin_x1, cos_x1 }
+    }
+}
+
+impl Proj for Stere {
+    fn fwd(&self, lam: f64, phi: f64) -> Option<(f64, f64)> {
+        let (sinlam, mut coslam) = lam.sin_cos();
+        let mut sinphi = phi.sin();
+        if self.e == 0.0 {
+            let cosphi = phi.cos();
+            return match self.mode {
+                Mode::Equit | Mode::Obliq => {
+                    let y = if self.mode == Mode::Equit {
+                        1.0 + cosphi * coslam
+                    } else {
+                        1.0 + self.sin_x1 * sinphi + self.cos_x1 * cosphi * coslam
+                    };
+                    if y <= 1e-10 {
+                        return None;
+                    }
+                    let a = self.akm1 / y;
+                    let x = a * cosphi * sinlam;
+                    let y = a * if self.mode == Mode::Equit { sinphi } else { self.cos_x1 * sinphi - self.sin_x1 * cosphi * coslam };
+                    Some((x, y))
+                }
+                Mode::NPole | Mode::SPole => {
+                    let mut phi = phi;
+                    if self.mode == Mode::NPole {
+                        coslam = -coslam;
+                        phi = -phi;
+                    }
+                    if (phi - HALFPI).abs() < 1e-8 {
+                        return None;
+                    }
+                    let y = self.akm1 * (FORTPI + 0.5 * phi).tan();
+                    Some((sinlam * y, y * coslam))
+                }
+            };
+        }
+        let (mut sin_x, mut cos_x) = (0.0, 0.0);
+        if matches!(self.mode, Mode::Obliq | Mode::Equit) {
+            let x = 2.0 * ssfn(phi, sinphi, self.e).atan() - HALFPI;
+            sin_x = x.sin();
+            cos_x = x.cos();
+        }
+        let (x, y) = match self.mode {
+            Mode::Obliq => {
+                let denom = self.cos_x1 * (1.0 + self.sin_x1 * sin_x + self.cos_x1 * cos_x * coslam);
+                if denom == 0.0 {
+                    return None;
+                }
+                let a = self.akm1 / denom;
+                (a * cos_x, a * (self.cos_x1 * sin_x - self.sin_x1 * cos_x * coslam))
+            }
+            Mode::Equit => {
+                let denom = 1.0 + cos_x * coslam;
+                if denom == 0.0 {
+                    return None;
+                }
+                let a = self.akm1 / denom;
+                (a * cos_x, a * sin_x)
+            }
+            Mode::NPole | Mode::SPole => {
+                let mut phi = phi;
+                if self.mode == Mode::SPole {
+                    phi = -phi;
+                    coslam = -coslam;
+                    sinphi = -sinphi;
+                }
+                if (phi - HALFPI).abs() < 1e-15 {
+                    return None;
+                }
+                let x = self.akm1 * tsfn(phi, sinphi, self.e);
+                (x, -x * coslam)
+            }
+        };
+        Some((x * sinlam, y))
+    }
+
+    fn inv(&self, x: f64, y: f64) -> Option<(f64, f64)> {
+        let (mut x, mut y) = (x, y);
+        let rho = x.hypot(y);
+        if self.e == 0.0 {
+            let c = 2.0 * (rho / self.akm1).atan();
+            let (sinc, cosc) = c.sin_cos();
+            let mut lam = 0.0;
+            let phi;
+            match self.mode {
+                Mode::Equit => {
+                    phi = if rho.abs() <= 1e-10 { 0.0 } else { (y * sinc / rho).asin() };
+                    if cosc != 0.0 || x != 0.0 {
+                        lam = (x * sinc).atan2(cosc * rho);
+                    }
+                }
+                Mode::Obliq => {
+                    phi = if rho.abs() <= 1e-10 { self.phi0 } else { (cosc * self.sin_x1 + y * sinc * self.cos_x1 / rho).asin() };
+                    let c = cosc - self.sin_x1 * phi.sin();
+                    if c != 0.0 || x != 0.0 {
+                        lam = (x * sinc * self.cos_x1).atan2(c * rho);
+                    }
+                }
+                Mode::NPole | Mode::SPole => {
+                    if self.mode == Mode::NPole {
+                        y = -y;
+                    }
+                    phi = if rho.abs() <= 1e-10 { self.phi0 } else { (if self.mode == Mode::SPole { -cosc } else { cosc }).asin() };
+                    lam = if x == 0.0 && y == 0.0 { 0.0 } else { x.atan2(y) };
+                }
+            }
+            return Some((lam, phi));
+        }
+        let (tp, mut phi_l, halfpi, halfe);
+        match self.mode {
+            Mode::Obliq | Mode::Equit => {
+                let t = 2.0 * (rho * self.cos_x1).atan2(self.akm1);
+                let (sinphi, cosphi) = t.sin_cos();
+                phi_l = if rho == 0.0 {
+                    (cosphi * self.sin_x1).asin()
+                } else {
+                    (cosphi * self.sin_x1 + (y * sinphi * self.cos_x1 / rho)).asin()
+                };
+                tp = (0.5 * (HALFPI + phi_l)).tan();
+                x *= sinphi;
+                y = rho * self.cos_x1 * cosphi - y * self.sin_x1 * sinphi;
+                halfpi = HALFPI;
+                halfe = 0.5 * self.e;
+            }
+            Mode::NPole | Mode::SPole => {
+                if self.mode == Mode::NPole {
+                    y = -y;
+                }
+                tp = -rho / self.akm1;
+                phi_l = HALFPI - 2.0 * tp.atan();
+                halfpi = -HALFPI;
+                halfe = -0.5 * self.e;
+            }
+        }
+        for _ in 0..8 {
+            let sinphi = self.e * phi_l.sin();
+            let mut phi = 2.0 * (tp * ((1.0 + sinphi) / (1.0 - sinphi)).powf(halfe)).atan() - halfpi;
+            if (phi_l - phi).abs() < 1e-10 {
+                if self.mode == Mode::SPole {
+                    phi = -phi;
+                }
+                let lam = if x == 0.0 && y == 0.0 { 0.0 } else { x.atan2(y) };
+                return Some((lam, phi));
+            }
+            phi_l = phi;
+        }
+        None
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Oblique Stereographic (double stereographic, EPSG 9809, PROJ's `sterea`).
+
+#[derive(Debug)]
+struct Gauss {
+    c: f64,
+    k: f64,
+    e: f64,
+    ratexp: f64,
+}
+
+fn srat(esinp: f64, ratexp: f64) -> f64 {
+    ((1.0 - esinp) / (1.0 + esinp)).powf(ratexp)
+}
+
+impl Gauss {
+    /// Returns the conformal sphere, the conformal latitude of the origin and the sphere's radius.
+    fn new(e: f64, phi0: f64) -> Result<(Self, f64, f64)> {
+        let es = e * e;
+        let sphi = phi0.sin();
+        let cphi = phi0.cos();
+        let cphi2 = cphi * cphi;
+        let rc = (1.0 - es).sqrt() / (1.0 - es * sphi * sphi);
+        let c = (1.0 + es * cphi2 * cphi2 / (1.0 - es)).sqrt();
+        if c == 0.0 {
+            return Err(err("gauss: invalid ellipsoid"));
+        }
+        let chi = (sphi / c).asin();
+        let ratexp = 0.5 * c * e;
+        let srat_val = srat(e * sphi, ratexp);
+        let k = if 0.5 * phi0 + FORTPI < 1e-10 {
+            1.0 / srat_val
+        } else {
+            (0.5 * chi + FORTPI).tan() / ((0.5 * phi0 + FORTPI).tan().powf(c) * srat_val)
+        };
+        Ok((Self { c, k, e, ratexp }, chi, rc))
+    }
+
+    fn fwd(&self, lam: f64, phi: f64) -> (f64, f64) {
+        let phi = 2.0 * (self.k * (0.5 * phi + FORTPI).tan().powf(self.c) * srat(self.e * phi.sin(), self.ratexp)).atan() - HALFPI;
+        (self.c * lam, phi)
+    }
+
+    fn inv(&self, lam: f64, phi: f64) -> Option<(f64, f64)> {
+        let num = ((0.5 * phi + FORTPI).tan() / self.k).powf(1.0 / self.c);
+        let lam = lam / self.c;
+        let mut sphi = phi;
+        for _ in 0..20 {
+            let p = 2.0 * (num * srat(self.e * sphi.sin(), -0.5 * self.e)).atan() - HALFPI;
+            if (p - sphi).abs() < 1e-14 {
+                return Some((lam, p));
+            }
+            sphi = p;
+        }
+        None
+    }
+}
+
+#[derive(Debug)]
+struct Sterea {
+    gauss: Gauss,
+    phic0: f64,
+    sinc0: f64,
+    cosc0: f64,
+    r2: f64,
+    k0: f64,
+}
+
+impl Sterea {
+    fn new(s: &mut Setup<'_>) -> Result<Self> {
+        let (gauss, phic0, r) = Gauss::new(s.ell.e, s.phi0)?;
+        Ok(Self { gauss, phic0, sinc0: phic0.sin(), cosc0: phic0.cos(), r2: 2.0 * r, k0: s.k0 })
+    }
+}
+
+impl Proj for Sterea {
+    fn fwd(&self, lam: f64, phi: f64) -> Option<(f64, f64)> {
+        let (lam, phi) = self.gauss.fwd(lam, phi);
+        let (sinc, cosc) = phi.sin_cos();
+        let cosl = lam.cos();
+        let denom = 1.0 + self.sinc0 * sinc + self.cosc0 * cosc * cosl;
+        if denom == 0.0 {
+            return None;
+        }
+        let k = self.k0 * self.r2 / denom;
+        Some((k * cosc * lam.sin(), k * (self.cosc0 * sinc - self.sinc0 * cosc * cosl)))
+    }
+
+    fn inv(&self, x: f64, y: f64) -> Option<(f64, f64)> {
+        let (x, y) = (x / self.k0, y / self.k0);
+        let rho = x.hypot(y);
+        let (lam, phi) = if rho != 0.0 {
+            let c = 2.0 * rho.atan2(self.r2);
+            let (sinc, cosc) = c.sin_cos();
+            let phi = (cosc * self.sinc0 + y * sinc * self.cosc0 / rho).asin();
+            let lam = (x * sinc).atan2(rho * self.cosc0 * cosc - y * self.sinc0 * sinc);
+            (lam, phi)
+        } else {
+            (0.0, self.phic0)
+        };
+        self.gauss.inv(lam, phi)
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Swiss Oblique Mercator.
+
+#[derive(Debug)]
+struct Somerc {
+    e: f64,
+    rone_es: f64,
+    hlf_e: f64,
+    c: f64,
+    k: f64,
+    kr: f64,
+    sinp0: f64,
+    cosp0: f64,
+}
+
+impl Somerc {
+    fn new(s: &mut Setup<'_>) -> Self {
+        let (e, es, one_es) = (s.ell.e, s.ell.es, s.ell.one_es);
+        let rone_es = 1.0 / one_es;
+        let hlf_e = 0.5 * e;
+        let mut cp = s.phi0.cos();
+        cp *= cp;
+        let c = (1.0 + es * cp * cp * rone_es).sqrt();
+        let sp = s.phi0.sin();
+        let sinp0 = sp / c;
+        let phip0 = aasin(sinp0);
+        let cosp0 = phip0.cos();
+        let sp = sp * e;
+        let k = (FORTPI + 0.5 * phip0).tan().ln() - c * ((FORTPI + 0.5 * s.phi0).tan().ln() - hlf_e * ((1.0 + sp) / (1.0 - sp)).ln());
+        let kr = s.k0 * one_es.sqrt() / (1.0 - sp * sp);
+        Self { e, rone_es, hlf_e, c, k, kr, sinp0, cosp0 }
+    }
+}
+
+impl Proj for Somerc {
+    fn fwd(&self, lam: f64, phi: f64) -> Option<(f64, f64)> {
+        let sp = self.e * phi.sin();
+        let phip =
+            2.0 * (self.c * ((FORTPI + 0.5 * phi).tan().ln() - self.hlf_e * ((1.0 + sp) / (1.0 - sp)).ln()) + self.k).exp().atan() - HALFPI;
+        let lamp = self.c * lam;
+        let cp = phip.cos();
+        let phipp = aasin(self.cosp0 * phip.sin() - self.sinp0 * cp * lamp.cos());
+        let lampp = aasin(cp * lamp.sin() / phipp.cos());
+        Some((self.kr * lampp, self.kr * (FORTPI + 0.5 * phipp).tan().ln()))
+    }
+
+    fn inv(&self, x: f64, y: f64) -> Option<(f64, f64)> {
+        let phipp = 2.0 * ((y / self.kr).exp().atan() - FORTPI);
+        let lampp = x / self.kr;
+        let cp = phipp.cos();
+        let mut phip = aasin(self.cosp0 * phipp.sin() + self.sinp0 * cp * lampp.cos());
+        let lamp = aasin(cp * lampp.sin() / phip.cos());
+        let con = (self.k - (FORTPI + 0.5 * phip).tan().ln()) / self.c;
+        for _ in 0..6 {
+            let esp = self.e * phip.sin();
+            let delp = (con + (FORTPI + 0.5 * phip).tan().ln() - self.hlf_e * ((1.0 + esp) / (1.0 - esp)).ln())
+                * (1.0 - esp * esp)
+                * phip.cos()
+                * self.rone_es;
+            phip -= delp;
+            if delp.abs() < 1e-10 {
+                return Some((lamp / self.c, phip));
+            }
+        }
+        None
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Cassini-Soldner.
+
+#[derive(Debug)]
+struct Cass {
+    es: f64,
+    en: Mlfn,
+    m0: f64,
+    phi0: f64,
+    hyperbolic: bool,
+}
+
+impl Cass {
+    fn new(s: &mut Setup<'_>) -> Self {
+        let en = Mlfn::new(s.ell.es);
+        let m0 = en.mlfn(s.phi0, s.phi0.sin(), s.phi0.cos());
+        Self { es: s.ell.es, en, m0, phi0: s.phi0, hyperbolic: s.p.has("hyperbolic") }
+    }
+}
+
+const C1: f64 = 0.16666666666666666666;
+const C2: f64 = 0.00833333333333333333;
+const C3: f64 = 0.04166666666666666666;
+const C4: f64 = 0.33333333333333333333;
+const C5: f64 = 0.06666666666666666666;
+
+impl Proj for Cass {
+    fn fwd(&self, lam: f64, phi: f64) -> Option<(f64, f64)> {
+        if self.es == 0.0 {
+            let x = (phi.cos() * lam.sin()).asin();
+            let y = phi.tan().atan2(lam.cos()) - self.phi0;
+            return Some((x, y));
+        }
+        let (sinphi, cosphi) = phi.sin_cos();
+        let mut y = self.en.mlfn(phi, sinphi, cosphi);
+        let n = 1.0 / (1.0 - self.es * sinphi * sinphi).sqrt();
+        let tn = phi.tan();
+        let t = tn * tn;
+        let a1 = lam * cosphi;
+        let c = self.es * cosphi * cosphi / (1.0 - self.es);
+        let a2 = a1 * a1;
+        let x = n * a1 * (1.0 - a2 * t * (C1 - (8.0 - t + 8.0 * c) * a2 * C2));
+        y -= self.m0 - n * tn * a2 * (0.5 + (5.0 - t + 6.0 * c) * a2 * C3);
+        if self.hyperbolic {
+            let rho = (1.0 - self.es) * n * n * n;
+            y -= y * y * y / (6.0 * rho * n);
+        }
+        Some((x, y))
+    }
+
+    fn inv(&self, x: f64, y: f64) -> Option<(f64, f64)> {
+        if self.es == 0.0 {
+            let dd = y + self.phi0;
+            let phi = (dd.sin() * x.cos()).asin();
+            let lam = x.tan().atan2(dd.cos());
+            return Some((lam, phi));
+        }
+        let mut y = y;
+        if self.hyperbolic {
+            let ph1 = self.en.inv(self.m0 + y);
+            let sn = ph1.sin();
+            let n = 1.0 / (1.0 - self.es * sn * sn).sqrt();
+            let rho = (1.0 - self.es) * n * n * n;
+            y += y * y * y / (6.0 * rho * n);
+        }
+        let ph1 = self.en.inv(self.m0 + y);
+        let tn = ph1.tan();
+        let t = tn * tn;
+        let n = ph1.sin();
+        let mut r = 1.0 / (1.0 - self.es * n * n);
+        let n = r.sqrt();
+        r *= (1.0 - self.es) * n;
+        let dd = x / n;
+        let d2 = dd * dd;
+        let phi = ph1 - (n * tn / r) * d2 * (0.5 - (1.0 + 3.0 * t) * d2 * C3);
+        let lam = dd * (1.0 + t * d2 * (-C4 + (1.0 + 3.0 * t) * d2 * C5)) / ph1.cos();
+        Some((lam, phi))
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// American Polyconic.
+
+#[derive(Debug)]
+struct Poly {
+    es: f64,
+    one_es: f64,
+    en: Mlfn,
+    ml0: f64,
+    phi0: f64,
+}
+
+impl Poly {
+    fn new(s: &mut Setup<'_>) -> Self {
+        let en = Mlfn::new(s.ell.es);
+        let ml0 = if s.ell.es != 0.0 { en.mlfn(s.phi0, s.phi0.sin(), s.phi0.cos()) } else { -s.phi0 };
+        Self { es: s.ell.es, one_es: s.ell.one_es, en, ml0, phi0: s.phi0 }
+    }
+}
+
+impl Proj for Poly {
+    fn fwd(&self, lam: f64, phi: f64) -> Option<(f64, f64)> {
+        if self.es == 0.0 {
+            if phi.abs() <= 1e-10 {
+                return Some((lam, self.ml0));
+            }
+            let cot = 1.0 / phi.tan();
+            let e = lam * phi.sin();
+            return Some((e.sin() * cot, phi - self.phi0 + cot * (1.0 - e.cos())));
+        }
+        if phi.abs() <= 1e-10 {
+            return Some((lam, -self.ml0));
+        }
+        let (sp, cp) = phi.sin_cos();
+        let ms = if cp.abs() > 1e-10 { msfn(sp, cp, self.es) / sp } else { 0.0 };
+        let lam = lam * sp;
+        Some((ms * lam.sin(), (self.en.mlfn(phi, sp, cp) - self.ml0) + ms * (1.0 - lam.cos())))
+    }
+
+    fn inv(&self, x: f64, y: f64) -> Option<(f64, f64)> {
+        if self.es == 0.0 {
+            let y = self.phi0 + y;
+            if y.abs() <= 1e-10 {
+                return Some((x, 0.0));
+            }
+            let mut phi = y;
+            let b = x * x + y * y;
+            for i in 0..10 {
+                let tp = phi.tan();
+                let dphi = (y * (phi * tp + 1.0) - phi - 0.5 * (phi * phi + b) * tp) / ((phi - y) / tp - 1.0);
+                phi -= dphi;
+                if dphi.abs() <= 1e-12 {
+                    break;
+                }
+                if i == 9 {
+                    return None;
+                }
+            }
+            return Some(((x * phi.tan()).asin() / phi.sin(), phi));
+        }
+        let y = y + self.ml0;
+        if y.abs() <= 1e-10 {
+            return Some((x, 0.0));
+        }
+        let r = y * y + x * x;
+        let mut phi = y;
+        let mut converged = false;
+        for _ in 0..20 {
+            let (sp, cp) = phi.sin_cos();
+            let s2ph = sp * cp;
+            if cp.abs() < 1e-12 {
+                return None;
+            }
+            let mut mlp = (1.0 - self.es * sp * sp).sqrt();
+            let c = sp * mlp / cp;
+            let ml = self.en.mlfn(phi, sp, cp);
+            let mlb = ml * ml + r;
+            mlp = self.one_es / (mlp * mlp * mlp);
+            let dphi = (ml + ml + c * mlb - 2.0 * y * (c * ml + 1.0))
+                / (self.es * s2ph * (mlb - 2.0 * y * ml) / c + 2.0 * (y - ml) * (c * mlp - 1.0 / s2ph) - mlp - mlp);
+            phi += dphi;
+            if dphi.abs() <= 1e-12 {
+                converged = true;
+                break;
+            }
+        }
+        if !converged {
+            return None;
+        }
+        let c = phi.sin();
+        let lam = (x * phi.tan() * (1.0 - self.es * c * c).sqrt()).asin() / phi.sin();
+        Some((lam, phi))
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Equidistant Cylindrical (spherical formulas on the semi-major axis, as PROJ does).
+
+#[derive(Debug)]
+struct Eqc {
+    rc: f64,
+    phi0: f64,
+}
+
+impl Eqc {
+    fn new(s: &mut Setup<'_>) -> Self {
+        Self { rc: s.p.angle("lat_ts").unwrap_or(0.0).cos(), phi0: s.phi0 }
+    }
+}
+
+impl Proj for Eqc {
+    fn fwd(&self, lam: f64, phi: f64) -> Option<(f64, f64)> {
+        Some((self.rc * lam, phi - self.phi0))
+    }
+
+    fn inv(&self, x: f64, y: f64) -> Option<(f64, f64)> {
+        Some((x / self.rc, y + self.phi0))
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Cylindrical Equal Area.
+
+#[derive(Debug)]
+struct Cea {
+    k0: f64,
+    e: f64,
+    one_es: f64,
+    qp: f64,
+    apa: [f64; 3],
+}
+
+impl Cea {
+    fn new(s: &mut Setup<'_>) -> Result<Self> {
+        let mut t = 0.0;
+        if let Some(ts) = s.p.angle("lat_ts") {
+            t = ts;
+            s.k0 = t.cos();
+            if s.k0 < 0.0 {
+                return Err(err("cea: invalid lat_ts"));
+            }
+        }
+        let mut c = Self { k0: s.k0, e: s.ell.e, one_es: s.ell.one_es, qp: 0.0, apa: [0.0; 3] };
+        if s.ell.es != 0.0 {
+            let t = t.sin();
+            c.k0 /= (1.0 - s.ell.es * t * t).sqrt();
+            c.apa = authset(s.ell.es);
+            c.qp = qsfn(1.0, c.e, c.one_es);
+        }
+        Ok(c)
+    }
+}
+
+impl Proj for Cea {
+    fn fwd(&self, lam: f64, phi: f64) -> Option<(f64, f64)> {
+        if self.e == 0.0 {
+            return Some((self.k0 * lam, phi.sin() / self.k0));
+        }
+        Some((self.k0 * lam, 0.5 * qsfn(phi.sin(), self.e, self.one_es) / self.k0))
+    }
+
+    fn inv(&self, x: f64, y: f64) -> Option<(f64, f64)> {
+        if self.e == 0.0 {
+            let y = y * self.k0;
+            let t = y.abs();
+            if t - 1e-10 > 1.0 {
+                return None;
+            }
+            let phi = if t >= 1.0 { if y < 0.0 { -HALFPI } else { HALFPI } } else { y.asin() };
+            return Some((x / self.k0, phi));
+        }
+        Some((x / self.k0, authlat(aasin(2.0 * y * self.k0 / self.qp), &self.apa)))
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Equal Earth.
+
+#[derive(Debug)]
+struct EqEarth {
+    es: f64,
+    e: f64,
+    qp: f64,
+    rqda: f64,
+    apa: [f64; 3],
+}
+
+const EE_A1: f64 = 1.340264;
+const EE_A2: f64 = -0.081106;
+const EE_A3: f64 = 0.000893;
+const EE_A4: f64 = 0.003796;
+
+impl EqEarth {
+    fn new(s: &mut Setup<'_>) -> Self {
+        let mut q = Self { es: s.ell.es, e: s.ell.e, qp: 0.0, rqda: 1.0, apa: [0.0; 3] };
+        if q.es != 0.0 {
+            q.apa = authset(q.es);
+            q.qp = qsfn(1.0, q.e, 1.0 - q.es);
+            q.rqda = (0.5 * q.qp).sqrt();
+        }
+        q
+    }
+}
+
+impl Proj for EqEarth {
+    fn fwd(&self, lam: f64, phi: f64) -> Option<(f64, f64)> {
+        let m = 3f64.sqrt() / 2.0;
+        let mut sbeta = phi.sin();
+        if self.es != 0.0 {
+            sbeta = (qsfn(sbeta, self.e, 1.0 - self.es) / self.qp).clamp(-1.0, 1.0);
+        }
+        let psi = (m * sbeta).asin();
+        let psi2 = psi * psi;
+        let psi6 = psi2 * psi2 * psi2;
+        let x = lam * psi.cos() / (m * (EE_A1 + 3.0 * EE_A2 * psi2 + psi6 * (7.0 * EE_A3 + 9.0 * EE_A4 * psi2)));
+        let y = psi * (EE_A1 + EE_A2 * psi2 + psi6 * (EE_A3 + EE_A4 * psi2));
+        Some((x * self.rqda, y * self.rqda))
+    }
+
+    fn inv(&self, x: f64, y: f64) -> Option<(f64, f64)> {
+        let m = 3f64.sqrt() / 2.0;
+        let (x, y) = (x / self.rqda, y / self.rqda);
+        let mut psi = y;
+        let mut ok = false;
+        for _ in 0..12 {
+            let psi2 = psi * psi;
+            let psi6 = psi2 * psi2 * psi2;
+            let fy = psi * (EE_A1 + EE_A2 * psi2 + psi6 * (EE_A3 + EE_A4 * psi2)) - y;
+            let fpsi = EE_A1 + 3.0 * EE_A2 * psi2 + psi6 * (7.0 * EE_A3 + 9.0 * EE_A4 * psi2);
+            let dlat = fy / fpsi;
+            psi -= dlat;
+            if dlat.abs() < 1e-12 {
+                ok = true;
+                break;
+            }
+        }
+        if !ok {
+            return None;
+        }
+        let psi2 = psi * psi;
+        let psi6 = psi2 * psi2 * psi2;
+        let lam = m * x * (EE_A1 + 3.0 * EE_A2 * psi2 + psi6 * (7.0 * EE_A3 + 9.0 * EE_A4 * psi2)) / psi.cos();
+        let beta = aasin(psi.sin() / m);
+        let phi = if self.es != 0.0 { authlat(beta, &self.apa) } else { beta };
+        Some((lam, phi))
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Hotine Oblique Mercator (variants A and B).
+
+#[derive(Debug)]
+struct Omerc {
+    e: f64,
+    a: f64,
+    b: f64,
+    e_: f64,
+    arb: f64,
+    bra: f64,
+    rb: f64,
+    singam: f64,
+    cosgam: f64,
+    sinrot: f64,
+    cosrot: f64,
+    v_pole_n: f64,
+    v_pole_s: f64,
+    u_0: f64,
+    no_rot: bool,
+}
+
+impl Omerc {
+    fn new(s: &mut Setup<'_>) -> Result<Self> {
+        let p = s.p;
+        let no_rot = p.has("no_rot");
+        let alpha = p.angle("alpha");
+        let gamma = p.angle("gamma");
+        let lamc = p.angle("lonc").unwrap_or(0.0);
+        let no_off = p.has("no_uoff") || p.has("no_off");
+        let (e, es, one_es) = (s.ell.e, s.ell.es, s.ell.one_es);
+        let phi0 = s.phi0;
+        if alpha.is_none() && gamma.is_none() {
+            return Err(err("omerc: two-point form is not supported"));
+        }
+        let com = one_es.sqrt();
+        let (b, a, d, mut f, e_);
+        if phi0.abs() > 1e-10 {
+            let (sinph0, cosph0) = phi0.sin_cos();
+            let con = 1.0 - es * sinph0 * sinph0;
+            let bb = cosph0 * cosph0;
+            b = (1.0 + es * bb * bb / one_es).sqrt();
+            a = b * s.k0 * com / con;
+            d = b * com / (cosph0 * con.sqrt());
+            f = d * d - 1.0;
+            if f <= 0.0 {
+                f = 0.0;
+            } else {
+                f = f.sqrt();
+                if phi0 < 0.0 {
+                    f = -f;
+                }
+            }
+            f += d;
+            e_ = f * tsfn(phi0, sinph0, e).powf(b);
+        } else {
+            b = 1.0 / com;
+            a = s.k0;
+            d = 1.0;
+            f = 1.0;
+            e_ = 1.0;
+        }
+        let (gamma0, alpha_c, gamma) = match (alpha, gamma) {
+            (Some(alpha_c), g) => {
+                let gamma0 = aasin(alpha_c.sin() / d);
+                (gamma0, alpha_c, g.unwrap_or(alpha_c))
+            }
+            (None, Some(g)) => (g, aasin(d * g.sin()), g),
+            (None, None) => unreachable!(),
+        };
+        s.lam0 = lamc - aasin(0.5 * (f - 1.0 / f) * gamma0.tan()) / b;
+        let singam = gamma0.sin();
+        let cosgam = gamma0.cos();
+        let sinrot = gamma.sin();
+        let cosrot = gamma.cos();
+        let rb = 1.0 / b;
+        let arb = a * rb;
+        let bra = 1.0 / arb;
+        let u_0 = if no_off {
+            0.0
+        } else {
+            let u = (arb * ((d * d - 1.0).sqrt() / alpha_c.cos()).atan()).abs();
+            if phi0 < 0.0 { -u } else { u }
+        };
+        let f2 = 0.5 * gamma0;
+        let v_pole_n = arb * (FORTPI - f2).tan().ln();
+        let v_pole_s = arb * (FORTPI + f2).tan().ln();
+        Ok(Self { e, a, b, e_, arb, bra, rb, singam, cosgam, sinrot, cosrot, v_pole_n, v_pole_s, u_0, no_rot })
+    }
+}
+
+impl Proj for Omerc {
+    fn fwd(&self, lam: f64, phi: f64) -> Option<(f64, f64)> {
+        let (u, v);
+        if (phi.abs() - HALFPI).abs() > 1e-10 {
+            let w = self.e_ / tsfn(phi, phi.sin(), self.e).powf(self.b);
+            let temp = 1.0 / w;
+            let s = 0.5 * (w - temp);
+            let t = 0.5 * (w + temp);
+            let vv = (self.b * lam).sin();
+            let uu = (s * self.singam - vv * self.cosgam) / t;
+            if (uu.abs() - 1.0).abs() < 1e-10 {
+                return None;
+            }
+            v = 0.5 * self.arb * ((1.0 - uu) / (1.0 + uu)).ln();
+            let temp = (self.b * lam).cos();
+            u = if temp.abs() < 1e-7 { self.a * lam } else { self.arb * (s * self.cosgam + vv * self.singam).atan2(temp) };
+        } else {
+            v = if phi > 0.0 { self.v_pole_n } else { self.v_pole_s };
+            u = self.arb * phi;
+        }
+        if self.no_rot {
+            Some((u, v))
+        } else {
+            let u = u - self.u_0;
+            Some((v * self.cosrot + u * self.sinrot, u * self.cosrot - v * self.sinrot))
+        }
+    }
+
+    fn inv(&self, x: f64, y: f64) -> Option<(f64, f64)> {
+        let (u, v) = if self.no_rot { (x, y) } else { (y * self.cosrot + x * self.sinrot + self.u_0, x * self.cosrot - y * self.sinrot) };
+        let qp = (-self.bra * v).exp();
+        if qp == 0.0 {
+            return None;
+        }
+        let sp = 0.5 * (qp - 1.0 / qp);
+        let tp = 0.5 * (qp + 1.0 / qp);
+        let vp = (self.bra * u).sin();
+        let up = (vp * self.cosgam + sp * self.singam) / tp;
+        if (up.abs() - 1.0).abs() < 1e-10 {
+            return Some((0.0, if up < 0.0 { -HALFPI } else { HALFPI }));
+        }
+        let phi = self.e_ / ((1.0 + up) / (1.0 - up)).sqrt();
+        let phi = phi2(phi.powf(1.0 / self.b), self.e);
+        let lam = -self.rb * (sp * self.cosgam - vp * self.singam).atan2((self.bra * u).cos());
+        Some((lam, phi))
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Krovak, and Krovak Modified (EPSG 1042).
+
+#[derive(Debug)]
+struct Krovak {
+    e: f64,
+    alpha: f64,
+    k: f64,
+    n: f64,
+    rho0: f64,
+    ad: f64,
+    czech: f64,
+    modified: bool,
+    a: f64,
+}
+
+const KROVAK_S0: f64 = 1.37008346281555;
+const KROVAK_UQ: f64 = 1.04216856380474;
+
+impl Krovak {
+    fn new(s: &mut Setup<'_>, modified: bool) -> Result<Self> {
+        let p = s.p;
+        if p.angle("lat_0").is_none() {
+            s.phi0 = 0.863937979737193;
+        }
+        if p.angle("lon_0").is_none() {
+            s.lam0 = 0.7417649320975901 - 0.308341501185665;
+        }
+        if p.f64("k").is_none() && p.f64("k_0").is_none() {
+            s.k0 = 0.9999;
+        }
+        let czech = if p.has("czech") { 1.0 } else { -1.0 };
+        let (e, es, phi0) = (s.ell.e, s.ell.es, s.phi0);
+        let alpha = (1.0 + (es * phi0.cos().powi(4)) / (1.0 - es)).sqrt();
+        let u0 = (phi0.sin() / alpha).asin();
+        let g = ((1.0 + e * phi0.sin()) / (1.0 - e * phi0.sin())).powf(alpha * e / 2.0);
+        let t = (phi0 / 2.0 + FORTPI).tan();
+        if t == 0.0 {
+            return Err(err("krovak: invalid lat_0"));
+        }
+        let k = (u0 / 2.0 + FORTPI).tan() / t.powf(alpha) * g;
+        let n0 = (1.0 - es).sqrt() / (1.0 - es * phi0.sin().powi(2));
+        let n = KROVAK_S0.sin();
+        let rho0 = s.k0 * n0 / KROVAK_S0.tan();
+        let ad = HALFPI - KROVAK_UQ;
+        // PROJ applies the false origin to the southing and westing, before their sign change.
+        s.x0 *= czech;
+        s.y0 *= czech;
+        Ok(Self { e, alpha, k, n, rho0, ad, czech, modified, a: s.ell.a })
+    }
+
+    /// The correction of Krovak Modified, in normalized units, from the normalized unmodified
+    /// southing and westing (without false origin).
+    fn correction(&self, xr: f64, yr: f64) -> (f64, f64) {
+        const X0: f64 = 1089000.0;
+        const Y0: f64 = 654000.0;
+        const C1: f64 = 2.946529277e-02;
+        const C2: f64 = 2.515965696e-02;
+        const C3: f64 = 1.193845912e-07;
+        const C4: f64 = -4.668270147e-07;
+        const C5: f64 = 9.233980362e-12;
+        const C6: f64 = 1.523735715e-12;
+        const C7: f64 = 1.696780024e-18;
+        const C8: f64 = 4.408314235e-18;
+        const C9: f64 = -8.331083518e-24;
+        const C10: f64 = -3.689471323e-24;
+        let xr = xr * self.a - X0;
+        let yr = yr * self.a - Y0;
+        let xr2 = xr * xr;
+        let yr2 = yr * yr;
+        let xr2_yr2 = xr2 - yr2;
+        let quart = xr2 * xr2 + yr2 * yr2 - 6.0 * xr2 * yr2;
+        let dx = C1 + C3 * xr - C4 * yr - 2.0 * C6 * xr * yr + C5 * xr2_yr2 + C7 * xr * (xr2 - 3.0 * yr2) - C8 * yr * (3.0 * xr2 - yr2)
+            + 4.0 * C9 * xr * yr * xr2_yr2
+            + C10 * quart;
+        let dy = C2 + C3 * yr + C4 * xr + 2.0 * C5 * xr * yr + C6 * xr2_yr2 + C8 * xr * (xr2 - 3.0 * yr2) + C7 * yr * (3.0 * xr2 - yr2)
+            - 4.0 * C10 * xr * yr * xr2_yr2
+            + C9 * quart;
+        (dx / self.a, dy / self.a)
+    }
+}
+
+impl Proj for Krovak {
+    fn fwd(&self, lam: f64, phi: f64) -> Option<(f64, f64)> {
+        let gfi = ((1.0 + self.e * phi.sin()) / (1.0 - self.e * phi.sin())).powf(self.alpha * self.e / 2.0);
+        let u = 2.0 * ((self.k * (phi / 2.0 + FORTPI).tan().powf(self.alpha) / gfi).atan() - FORTPI);
+        let deltav = -lam * self.alpha;
+        let s = (self.ad.cos() * u.sin() + self.ad.sin() * u.cos() * deltav.cos()).asin();
+        let cos_s = s.cos();
+        if cos_s < 1e-12 {
+            return Some((0.0, 0.0));
+        }
+        let d = (u.cos() * deltav.sin() / cos_s).asin();
+        let eps = self.n * d;
+        let rho = self.rho0 * (KROVAK_S0 / 2.0 + FORTPI).tan().powf(self.n) / (s / 2.0 + FORTPI).tan().powf(self.n);
+        // Southing and westing.
+        let mut xs = rho * eps.cos();
+        let mut yw = rho * eps.sin();
+        if self.modified {
+            let (dx, dy) = self.correction(xs, yw);
+            xs -= dx;
+            yw -= dy;
+        }
+        Some((yw * self.czech, xs * self.czech))
+    }
+
+    fn inv(&self, x: f64, y: f64) -> Option<(f64, f64)> {
+        let mut yw = x * self.czech;
+        let mut xs = y * self.czech;
+        if self.modified {
+            // The correction is small and smooth: a fixed-point iteration converges at once.
+            let (x0, y0) = (xs, yw);
+            for _ in 0..5 {
+                let (dx, dy) = self.correction(xs, yw);
+                xs = x0 + dx;
+                yw = y0 + dy;
+            }
+        }
+        let rho = xs.hypot(yw);
+        let eps = yw.atan2(xs);
+        let d = eps / KROVAK_S0.sin();
+        let s = if rho == 0.0 {
+            HALFPI
+        } else {
+            2.0 * (((self.rho0 / rho).powf(1.0 / self.n) * (KROVAK_S0 / 2.0 + FORTPI).tan()).atan() - FORTPI)
+        };
+        let u = (self.ad.cos() * s.sin() - self.ad.sin() * s.cos() * d.cos()).asin();
+        let deltav = (s.cos() * d.sin() / u.cos()).asin();
+        let lam = -deltav / self.alpha;
+        let mut phi = u;
+        for _ in 0..15 {
+            let fi1 = 2.0
+                * ((self.k.powf(-1.0 / self.alpha)
+                    * (u / 2.0 + FORTPI).tan().powf(1.0 / self.alpha)
+                    * ((1.0 + self.e * phi.sin()) / (1.0 - self.e * phi.sin())).powf(self.e / 2.0))
+                .atan()
+                    - FORTPI);
+            if (fi1 - phi).abs() < 1e-15 {
+                return Some((lam, fi1));
+            }
+            phi = fi1;
+        }
+        Some((lam, phi))
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Laborde (Madagascar).
+
+#[derive(Debug)]
+struct Labrd {
+    e: f64,
+    one_es: f64,
+    k0: f64,
+    phi0: f64,
+    krg: f64,
+    p0s: f64,
+    a: f64,
+    c: f64,
+    ca: f64,
+    cb: f64,
+    cc: f64,
+    cd: f64,
+}
+
+impl Labrd {
+    fn new(s: &mut Setup<'_>) -> Self {
+        let az = s.p.angle("azi").unwrap_or(0.0);
+        let (e, es, one_es, phi0, k0) = (s.ell.e, s.ell.es, s.ell.one_es, s.phi0, s.k0);
+        let sinp = phi0.sin();
+        let t = 1.0 - es * sinp * sinp;
+        let n = 1.0 / t.sqrt();
+        let r = one_es * n / t;
+        let krg = k0 * (n * r).sqrt();
+        let p0s = ((r / n).sqrt() * phi0.tan()).atan();
+        let a = sinp / p0s.sin();
+        let t = e * sinp;
+        let c = 0.5 * e * a * ((1.0 + t) / (1.0 - t)).ln() + (-a * (FORTPI + 0.5 * phi0).tan().ln()) + (FORTPI + 0.5 * p0s).tan().ln();
+        let t = az + az;
+        let mut cb = 1.0 / (12.0 * krg * krg);
+        let ca = (1.0 - t.cos()) * cb;
+        cb *= t.sin();
+        let cc = 3.0 * (ca * ca - cb * cb);
+        let cd = 6.0 * ca * cb;
+        Self { e, one_es, k0, phi0, krg, p0s, a, c, ca, cb, cc, cd }
+    }
+}
+
+impl Proj for Labrd {
+    fn fwd(&self, lam: f64, phi: f64) -> Option<(f64, f64)> {
+        let v1 = self.a * (FORTPI + 0.5 * phi).tan().ln();
+        let t = self.e * phi.sin();
+        let v2 = 0.5 * self.e * self.a * ((1.0 + t) / (1.0 - t)).ln();
+        let ps = 2.0 * ((v1 - v2 + self.c).exp().atan() - FORTPI);
+        let i1 = ps - self.p0s;
+        let cosps = ps.cos();
+        let cosps2 = cosps * cosps;
+        let sinps = ps.sin();
+        let sinps2 = sinps * sinps;
+        let i4 = self.a * cosps;
+        let i2 = 0.5 * self.a * i4 * sinps;
+        let i3 = i2 * self.a * self.a * (5.0 * cosps2 - sinps2) / 12.0;
+        let mut i6 = i4 * self.a * self.a;
+        let i5 = i6 * (cosps2 - sinps2) / 6.0;
+        i6 *= self.a * self.a * (5.0 * cosps2 * cosps2 + sinps2 * (sinps2 - 18.0 * cosps2)) / 120.0;
+        let t = lam * lam;
+        let mut x = self.krg * lam * (i4 + t * (i5 + t * i6));
+        let mut y = self.krg * (i1 + t * (i2 + t * i3));
+        let x2 = x * x;
+        let y2 = y * y;
+        let v1 = 3.0 * x * y2 - x * x2;
+        let v2 = y * y2 - 3.0 * x2 * y;
+        x += self.ca * v1 + self.cb * v2;
+        y += self.ca * v2 - self.cb * v1;
+        Some((x, y))
+    }
+
+    fn inv(&self, x: f64, y: f64) -> Option<(f64, f64)> {
+        let (mut x, mut y) = (x, y);
+        let x2 = x * x;
+        let y2 = y * y;
+        let v1 = 3.0 * x * y2 - x * x2;
+        let v2 = y * y2 - 3.0 * x2 * y;
+        let v3 = x * (5.0 * y2 * y2 + x2 * (-10.0 * y2 + x2));
+        let v4 = y * (5.0 * x2 * x2 + y2 * (-10.0 * x2 + y2));
+        x += -self.ca * v1 - self.cb * v2 + self.cc * v3 + self.cd * v4;
+        y += self.cb * v1 - self.ca * v2 - self.cd * v3 + self.cc * v4;
+        let ps = self.p0s + y / self.krg;
+        let mut pe = ps + self.phi0 - self.p0s;
+        for _ in 0..20 {
+            let v1 = self.a * (FORTPI + 0.5 * pe).tan().ln();
+            let tpe = self.e * pe.sin();
+            let v2 = 0.5 * self.e * self.a * ((1.0 + tpe) / (1.0 - tpe)).ln();
+            let t = ps - 2.0 * ((v1 - v2 + self.c).exp().atan() - FORTPI);
+            pe += t;
+            if t.abs() < 1e-10 {
+                break;
+            }
+        }
+        let t = self.e * pe.sin();
+        let t = 1.0 - t * t;
+        let re = self.one_es / (t * t.sqrt());
+        let t = ps.tan();
+        let t2 = t * t;
+        let s = self.krg * self.krg;
+        let mut d = re * self.k0 * self.krg;
+        let i7 = t / (2.0 * d);
+        let i8 = t * (5.0 + 3.0 * t2) / (24.0 * d * s);
+        d = ps.cos() * self.krg * self.a;
+        let i9 = 1.0 / d;
+        d *= s;
+        let i10 = (1.0 + 2.0 * t2) / (6.0 * d);
+        let i11 = (5.0 + t2 * (28.0 + 24.0 * t2)) / (120.0 * d * s);
+        let x2 = x * x;
+        Some((x * (i9 + x2 * (-i10 + x2 * i11)), pe + x2 * (-i7 + i8 * x2)))
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// New Zealand Map Grid.
+
+#[derive(Debug)]
+struct Nzmg {
+    phi0: f64,
+}
+
+const NZMG_BF: [(f64, f64); 6] = [
+    (0.7557853228, 0.0),
+    (0.249204646, 0.003371507),
+    (-0.001541739, 0.041058560),
+    (-0.10162907, 0.01727609),
+    (-0.26623489, -0.36249218),
+    (-0.6870983, -1.1651967),
+];
+const NZMG_TPHI: [f64; 9] = [1.5627014243, 0.5185406398, -0.03333098, -0.1052906, -0.0368594, 0.007317, 0.01220, 0.00394, -0.0013];
+const NZMG_TPSI: [f64; 10] =
+    [0.6399175073, -0.1358797613, 0.063294409, -0.02526853, 0.0117879, -0.0055161, 0.0026906, -0.001333, 0.00067, -0.00034];
+const SEC5_TO_RAD: f64 = 0.4848136811095359935899141023;
+const RAD_TO_SEC5: f64 = 2.062648062470963551564733573;
+
+/// z · (C₀ + z·(C₁ + … + z·Cₙ)) over complex numbers (PROJ's `pj_zpoly1`).
+fn zpoly1(z: (f64, f64), c: &[(f64, f64)]) -> (f64, f64) {
+    let n = c.len() - 1;
+    let mut a = c[n];
+    for k in (0..n).rev() {
+        let t = a.0;
+        a.0 = c[k].0 + z.0 * t - z.1 * a.1;
+        a.1 = c[k].1 + z.0 * a.1 + z.1 * t;
+    }
+    let t = a.0;
+    (z.0 * t - z.1 * a.1, z.0 * a.1 + z.1 * t)
+}
+
+/// [`zpoly1`] with its derivative (PROJ's `pj_zpolyd1`).
+fn zpolyd1(z: (f64, f64), c: &[(f64, f64)]) -> ((f64, f64), (f64, f64)) {
+    let n = c.len() - 1;
+    let mut a = c[n];
+    let mut b = a;
+    let mut first = true;
+    for k in (0..n).rev() {
+        if first {
+            first = false;
+        } else {
+            let t = b.0;
+            b.0 = a.0 + z.0 * t - z.1 * b.1;
+            b.1 = a.1 + z.0 * b.1 + z.1 * t;
+        }
+        let t = a.0;
+        a.0 = c[k].0 + z.0 * t - z.1 * a.1;
+        a.1 = c[k].1 + z.0 * a.1 + z.1 * t;
+    }
+    let t = b.0;
+    b.0 = a.0 + z.0 * t - z.1 * b.1;
+    b.1 = a.1 + z.0 * b.1 + z.1 * t;
+    let t = a.0;
+    a.0 = z.0 * t - z.1 * a.1;
+    a.1 = z.0 * a.1 + z.1 * t;
+    (a, b)
+}
+
+impl Nzmg {
+    fn new(s: &mut Setup<'_>) -> Self {
+        s.ell = Ell::from_a_es(6378388.0, s.ell.es);
+        s.lam0 = 173f64.to_radians();
+        s.phi0 = (-41f64).to_radians();
+        s.x0 = 2510000.0;
+        s.y0 = 6023150.0;
+        Self { phi0: s.phi0 }
+    }
+}
+
+impl Proj for Nzmg {
+    fn fwd(&self, lam: f64, phi: f64) -> Option<(f64, f64)> {
+        let phi = (phi - self.phi0) * RAD_TO_SEC5;
+        let mut r = NZMG_TPSI[9];
+        for k in (0..9).rev() {
+            r = NZMG_TPSI[k] + phi * r;
+        }
+        r *= phi;
+        let p = zpoly1((r, lam), &NZMG_BF);
+        Some((p.1, p.0))
+    }
+
+    fn inv(&self, x: f64, y: f64) -> Option<(f64, f64)> {
+        let mut p = (y, x);
+        let mut ok = false;
+        for _ in 0..20 {
+            let (mut f, fp) = zpolyd1(p, &NZMG_BF);
+            f.0 -= y;
+            f.1 -= x;
+            let den = fp.0 * fp.0 + fp.1 * fp.1;
+            let dr = -(f.0 * fp.0 + f.1 * fp.1) / den;
+            let di = -(f.1 * fp.0 - f.0 * fp.1) / den;
+            p.0 += dr;
+            p.1 += di;
+            if dr.abs() + di.abs() <= 1e-10 {
+                ok = true;
+                break;
+            }
+        }
+        if !ok {
+            return None;
+        }
+        let mut phi = NZMG_TPHI[8];
+        for k in (0..8).rev() {
+            phi = NZMG_TPHI[k] + p.0 * phi;
+        }
+        Some((p.1, self.phi0 + p.0 * phi * SEC5_TO_RAD))
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Colombia Urban (EPSG 1052).
+
+#[derive(Debug)]
+struct ColUrban {
+    es: f64,
+    phi0: f64,
+    rho0: f64,
+    a: f64,
+    b: f64,
+    c: f64,
+    d: f64,
+    h0: f64,
+}
+
+impl ColUrban {
+    fn new(s: &mut Setup<'_>) -> Self {
+        let h0 = s.p.f64("h_0").unwrap_or(0.0) / s.ell.a;
+        let es = s.ell.es;
+        let sinphi0 = s.phi0.sin();
+        let nu0 = 1.0 / (1.0 - es * sinphi0 * sinphi0).sqrt();
+        let a = 1.0 + h0 / nu0;
+        let rho0 = (1.0 - es) / (1.0 - es * sinphi0 * sinphi0).powf(1.5);
+        let b = s.phi0.tan() / (2.0 * rho0 * nu0);
+        let c = 1.0 + h0;
+        let d = rho0 * (1.0 + h0 / (1.0 - es));
+        Self { es, phi0: s.phi0, rho0, a, b, c, d, h0 }
+    }
+}
+
+impl Proj for ColUrban {
+    fn fwd(&self, lam: f64, phi: f64) -> Option<(f64, f64)> {
+        let (sinphi, cosphi) = phi.sin_cos();
+        let nu = 1.0 / (1.0 - self.es * sinphi * sinphi).sqrt();
+        let lam_nu_cosphi = lam * nu * cosphi;
+        let x = self.a * lam_nu_cosphi;
+        let sinphi_m = (0.5 * (phi + self.phi0)).sin();
+        let rho_m = (1.0 - self.es) / (1.0 - self.es * sinphi_m * sinphi_m).powf(1.5);
+        let g = 1.0 + self.h0 / rho_m;
+        let y = g * self.rho0 * ((phi - self.phi0) + self.b * lam_nu_cosphi * lam_nu_cosphi);
+        Some((x, y))
+    }
+
+    fn inv(&self, x: f64, y: f64) -> Option<(f64, f64)> {
+        let phi = self.phi0 + y / self.d - self.b * (x / self.c) * (x / self.c);
+        let sinphi = phi.sin();
+        let nu = 1.0 / (1.0 - self.es * sinphi * sinphi).sqrt();
+        Some((x / (self.c * nu * phi.cos()), phi))
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Azimuthal Equidistant (with the Guam variant).
+
+#[derive(Debug)]
+struct Aeqd {
+    mode: Mode,
+    ell: Ell,
+    phi0: f64,
+    en: Mlfn,
+    mp: f64,
+    m1: f64,
+    guam: bool,
+}
+
+impl Aeqd {
+    fn new(s: &mut Setup<'_>) -> Self {
+        let mode = azimuthal_mode(s.phi0);
+        let en = Mlfn::new(s.ell.es);
+        let mp = match mode {
+            Mode::NPole => en.mlfn(HALFPI, 1.0, 0.0),
+            Mode::SPole => en.mlfn(-HALFPI, -1.0, 0.0),
+            _ => 0.0,
+        };
+        let m1 = en.mlfn(s.phi0, s.phi0.sin(), s.phi0.cos());
+        Self { mode, ell: s.ell, phi0: s.phi0, en, mp, m1, guam: s.p.has("guam") }
+    }
+}
+
+impl Proj for Aeqd {
+    fn fwd(&self, lam: f64, phi: f64) -> Option<(f64, f64)> {
+        let es = self.ell.es;
+        if self.guam {
+            let (sinphi, cosphi) = phi.sin_cos();
+            let t = 1.0 / (1.0 - es * sinphi * sinphi).sqrt();
+            let x = lam * cosphi * t;
+            let y = self.en.mlfn(phi, sinphi, cosphi) - self.m1 + 0.5 * lam * lam * cosphi * sinphi * t;
+            return Some((x, y));
+        }
+        match self.mode {
+            Mode::NPole | Mode::SPole => {
+                let (sinphi, cosphi) = phi.sin_cos();
+                let coslam = if self.mode == Mode::NPole { -lam.cos() } else { lam.cos() };
+                let rho = (self.mp - self.en.mlfn(phi, sinphi, cosphi)).abs();
+                Some((rho * lam.sin(), rho * coslam))
+            }
+            _ => {
+                if lam.abs() < 1e-10 && (phi - self.phi0).abs() < 1e-10 {
+                    return Some((0.0, 0.0));
+                }
+                let (s12, azi1) = geodesic::inverse(self.ell.es, self.phi0, 0.0, phi, lam)?;
+                Some((s12 * azi1.sin(), s12 * azi1.cos()))
+            }
+        }
+    }
+
+    fn inv(&self, x: f64, y: f64) -> Option<(f64, f64)> {
+        if self.guam {
+            let x2 = 0.5 * x * x;
+            let mut phi = self.phi0;
+            let mut t = 1.0;
+            for _ in 0..3 {
+                t = self.ell.e * phi.sin();
+                t = (1.0 - t * t).sqrt();
+                phi = self.en.inv(self.m1 + y - x2 * phi.tan() * t);
+            }
+            return Some((x * t / phi.cos(), phi));
+        }
+        let rho = x.hypot(y);
+        if rho < 1e-10 {
+            return Some((0.0, self.phi0));
+        }
+        match self.mode {
+            Mode::NPole | Mode::SPole => {
+                let phi = self.en.inv(if self.mode == Mode::NPole { self.mp - rho } else { self.mp + rho });
+                let lam = x.atan2(if self.mode == Mode::NPole { -y } else { y });
+                Some((lam, phi))
+            }
+            _ => {
+                let azi1 = x.atan2(y);
+                geodesic::direct(self.ell.es, self.phi0, azi1, rho)
+            }
+        }
+    }
+}
+
+/// Geodesics on an ellipsoid of semi-major axis 1, by Vincenty's formulas (which agree with
+/// Karney's, which PROJ uses, to well below a millimetre away from antipodes).
+mod geodesic {
+    /// The distance and forward azimuth from (0, φ1) to (λ2, φ2).
+    pub fn inverse(es: f64, phi1: f64, lam1: f64, phi2: f64, lam2: f64) -> Option<(f64, f64)> {
+        let f = 1.0 - (1.0 - es).sqrt();
+        let b = 1.0 - f;
+        let l = lam2 - lam1;
+        let u1 = ((1.0 - f) * phi1.tan()).atan();
+        let u2 = ((1.0 - f) * phi2.tan()).atan();
+        let (su1, cu1) = u1.sin_cos();
+        let (su2, cu2) = u2.sin_cos();
+        let mut lambda = l;
+        for _ in 0..200 {
+            let (sl, cl) = lambda.sin_cos();
+            let sin_sigma = ((cu2 * sl).powi(2) + (cu1 * su2 - su1 * cu2 * cl).powi(2)).sqrt();
+            if sin_sigma == 0.0 {
+                return Some((0.0, 0.0));
+            }
+            let cos_sigma = su1 * su2 + cu1 * cu2 * cl;
+            let sigma = sin_sigma.atan2(cos_sigma);
+            let sin_alpha = cu1 * cu2 * sl / sin_sigma;
+            let cos2_alpha = 1.0 - sin_alpha * sin_alpha;
+            let cos2sm = if cos2_alpha != 0.0 { cos_sigma - 2.0 * su1 * su2 / cos2_alpha } else { 0.0 };
+            let c = f / 16.0 * cos2_alpha * (4.0 + f * (4.0 - 3.0 * cos2_alpha));
+            let prev = lambda;
+            lambda = l + (1.0 - c) * f * sin_alpha * (sigma + c * sin_sigma * (cos2sm + c * cos_sigma * (-1.0 + 2.0 * cos2sm * cos2sm)));
+            if (lambda - prev).abs() < 1e-14 {
+                let u2sq = cos2_alpha * (1.0 - b * b) / (b * b);
+                let a_ = 1.0 + u2sq / 16384.0 * (4096.0 + u2sq * (-768.0 + u2sq * (320.0 - 175.0 * u2sq)));
+                let b_ = u2sq / 1024.0 * (256.0 + u2sq * (-128.0 + u2sq * (74.0 - 47.0 * u2sq)));
+                let ds = b_
+                    * sin_sigma
+                    * (cos2sm
+                        + b_ / 4.0
+                            * (cos_sigma * (-1.0 + 2.0 * cos2sm * cos2sm)
+                                - b_ / 6.0 * cos2sm * (-3.0 + 4.0 * sin_sigma * sin_sigma) * (-3.0 + 4.0 * cos2sm * cos2sm)));
+                let s = b * a_ * (sigma - ds);
+                let (sl, cl) = lambda.sin_cos();
+                let azi = (cu2 * sl).atan2(cu1 * su2 - su1 * cu2 * cl);
+                return Some((s, azi));
+            }
+        }
+        None
+    }
+
+    /// The point at distance `s` along azimuth `azi1` from (0, φ1): (λ, φ).
+    pub fn direct(es: f64, phi1: f64, azi1: f64, s: f64) -> Option<(f64, f64)> {
+        let f = 1.0 - (1.0 - es).sqrt();
+        let b = 1.0 - f;
+        let (sa1, ca1) = azi1.sin_cos();
+        let tu1 = (1.0 - f) * phi1.tan();
+        let cu1 = 1.0 / (1.0 + tu1 * tu1).sqrt();
+        let su1 = tu1 * cu1;
+        let sigma1 = tu1.atan2(ca1);
+        let sin_alpha = cu1 * sa1;
+        let cos2_alpha = 1.0 - sin_alpha * sin_alpha;
+        let u2sq = cos2_alpha * (1.0 - b * b) / (b * b);
+        let a_ = 1.0 + u2sq / 16384.0 * (4096.0 + u2sq * (-768.0 + u2sq * (320.0 - 175.0 * u2sq)));
+        let b_ = u2sq / 1024.0 * (256.0 + u2sq * (-128.0 + u2sq * (74.0 - 47.0 * u2sq)));
+        let mut sigma = s / (b * a_);
+        let (mut cos2sm, mut ss, mut cs);
+        let mut it = 0;
+        loop {
+            cos2sm = (2.0 * sigma1 + sigma).cos();
+            ss = sigma.sin();
+            cs = sigma.cos();
+            let ds = b_
+                * ss
+                * (cos2sm
+                    + b_ / 4.0
+                        * (cs * (-1.0 + 2.0 * cos2sm * cos2sm)
+                            - b_ / 6.0 * cos2sm * (-3.0 + 4.0 * ss * ss) * (-3.0 + 4.0 * cos2sm * cos2sm)));
+            let prev = sigma;
+            sigma = s / (b * a_) + ds;
+            it += 1;
+            if (sigma - prev).abs() < 1e-14 || it > 200 {
+                break;
+            }
+        }
+        let (ss, cs) = sigma.sin_cos();
+        let cos2sm = (2.0 * sigma1 + sigma).cos();
+        let tmp = su1 * ss - cu1 * cs * ca1;
+        let phi2 = (su1 * cs + cu1 * ss * ca1).atan2((1.0 - f) * (sin_alpha * sin_alpha + tmp * tmp).sqrt());
+        let lambda = (ss * sa1).atan2(cu1 * cs - su1 * ss * ca1);
+        let c = f / 16.0 * cos2_alpha * (4.0 + f * (4.0 - 3.0 * cos2_alpha));
+        let l = lambda - (1.0 - c) * f * sin_alpha * (sigma + c * ss * (cos2sm + c * cs * (-1.0 + 2.0 * cos2sm * cos2sm)));
+        Some((l, phi2))
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Orthographic, with the local orthographic variant (EPSG 1130: azimuth and scale).
+
+#[derive(Debug)]
+struct Ortho {
+    ell: Ell,
+    phi0: f64,
+    sinph0: f64,
+    cosph0: f64,
+    nu0: f64,
+    cos_alpha: f64,
+    sin_alpha: f64,
+    k0: f64,
+}
+
+impl Ortho {
+    fn new(s: &mut Setup<'_>) -> Self {
+        let (sinph0, cosph0) = s.phi0.sin_cos();
+        let es = s.ell.es;
+        let nu0 = 1.0 / (1.0 - es * sinph0 * sinph0).sqrt();
+        let alpha = s.p.angle("alpha").unwrap_or(0.0);
+        let k0 = s.k0;
+        Self { ell: s.ell, phi0: s.phi0, sinph0, cosph0, nu0, cos_alpha: alpha.cos(), sin_alpha: alpha.sin(), k0 }
+    }
+}
+
+impl Proj for Ortho {
+    fn fwd(&self, lam: f64, phi: f64) -> Option<(f64, f64)> {
+        let es = self.ell.es;
+        let (sinphi, cosphi) = phi.sin_cos();
+        let coslam = lam.cos();
+        // Visible hemisphere check, as PROJ does.
+        if self.sinph0 * sinphi + self.cosph0 * cosphi * coslam < -1e-10 {
+            return None;
+        }
+        let nu = 1.0 / (1.0 - es * sinphi * sinphi).sqrt();
+        let x = nu * cosphi * lam.sin();
+        let y = nu * (sinphi * self.cosph0 - cosphi * self.sinph0 * coslam) + es * (self.nu0 * self.sinph0 - nu * sinphi) * self.cosph0;
+        // Local orthographic: rotate by the azimuth and scale.
+        let xr = x * self.cos_alpha - y * self.sin_alpha;
+        let yr = x * self.sin_alpha + y * self.cos_alpha;
+        Some((self.k0 * xr, self.k0 * yr))
+    }
+
+    fn inv(&self, x: f64, y: f64) -> Option<(f64, f64)> {
+        // Undo scale and rotation, then Newton's method on the forward formulas.
+        let (x, y) = (x / self.k0, y / self.k0);
+        let xu = x * self.cos_alpha + y * self.sin_alpha;
+        let yu = -x * self.sin_alpha + y * self.cos_alpha;
+        let fwd = |lam: f64, phi: f64| -> (f64, f64) {
+            let es = self.ell.es;
+            let (sinphi, cosphi) = phi.sin_cos();
+            let nu = 1.0 / (1.0 - es * sinphi * sinphi).sqrt();
+            (
+                nu * cosphi * lam.sin(),
+                nu * (sinphi * self.cosph0 - cosphi * self.sinph0 * lam.cos()) + es * (self.nu0 * self.sinph0 - nu * sinphi) * self.cosph0,
+            )
+        };
+        let (mut lam, mut phi) = (xu, self.phi0 + yu);
+        for _ in 0..20 {
+            let (fx, fy) = fwd(lam, phi);
+            let h = 1e-9;
+            let (fxl, fyl) = fwd(lam + h, phi);
+            let (fxp, fyp) = fwd(lam, phi + h);
+            let (j11, j12, j21, j22) = ((fxl - fx) / h, (fxp - fx) / h, (fyl - fy) / h, (fyp - fy) / h);
+            let det = j11 * j22 - j12 * j21;
+            if det == 0.0 {
+                return None;
+            }
+            let (rx, ry) = (xu - fx, yu - fy);
+            let dl = (j22 * rx - j12 * ry) / det;
+            let dp = (-j21 * rx + j11 * ry) / det;
+            lam += dl;
+            phi += dp;
+            if dl.abs() < 1e-14 && dp.abs() < 1e-14 {
+                break;
+            }
+        }
+        Some((lam, phi))
+    }
+}

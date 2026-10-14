@@ -7,6 +7,22 @@ use crate::{Error, Result};
 use serde::Serialize;
 use wbprojection as wbp;
 
+mod datum;
+mod def;
+mod epsg;
+mod math;
+mod params;
+mod projections;
+mod route;
+mod wkt1;
+
+pub(crate) use def::Def;
+
+/// The WKT GDAL writes for an EPSG code, from terrio's EPSG table.
+pub(crate) fn epsg_wkt(code: u32) -> Option<&'static str> {
+    epsg::get(code).map(|e| e.wkt.as_str())
+}
+
 /// A coordinate reference system, known by an EPSG code, a WKT definition, a PROJ string or a
 /// combination of them.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
@@ -22,7 +38,10 @@ pub struct SpatialRef {
 impl SpatialRef {
     /// A CRS from an EPSG code. Fails when the code is not in the EPSG registry terrio carries.
     pub fn from_epsg(code: u32) -> Result<Self> {
-        let wkt = wbp::to_ogc_wkt(code).map_err(|_| Error::Crs(format!("unknown EPSG code {code}")))?;
+        let wkt = match epsg::get(code) {
+            Some(e) => e.wkt.clone(),
+            None => wbp::to_ogc_wkt(code).map_err(|_| Error::Crs(format!("unknown EPSG code {code}")))?,
+        };
         Ok(Self { epsg: Some(code), wkt: Some(wkt), proj4: None })
     }
 
@@ -33,9 +52,14 @@ impl SpatialRef {
 
     /// A CRS from a PROJ string such as `+proj=utm +zone=33 +datum=WGS84`.
     pub fn from_proj4(proj4: &str) -> Result<Self> {
-        let crs = wbp::from_proj_string(proj4)?;
-        let epsg = wbp::identify_epsg_from_crs(&crs);
-        Ok(Self { epsg, wkt: Some(wbp::crs_to_wkt(&crs)), proj4: Some(proj4.to_string()) })
+        let p = params::Params::parse(proj4);
+        if let Some(code) = p.str("init").and_then(|i| i.to_ascii_lowercase().strip_prefix("epsg:").and_then(|c| c.parse().ok())) {
+            return Self::from_epsg(code);
+        }
+        // Checks that terrio can transform with it.
+        Def::from_proj(proj4)?;
+        let wkt = wbp::from_proj_string(proj4).ok().map(|c| wbp::crs_to_wkt(&c));
+        Ok(Self { epsg: None, wkt, proj4: Some(proj4.to_string()) })
     }
 
     /// Parses a user-supplied CRS: `EPSG:4326`, `4326`, `urn:ogc:def:crs:EPSG::4326`, an OGC URL,
@@ -79,7 +103,7 @@ impl SpatialRef {
             return Some(w.clone());
         }
         if let Some(code) = self.epsg {
-            return wbp::to_ogc_wkt(code).ok();
+            return epsg::get(code).map(|e| e.wkt.clone()).or_else(|| wbp::to_ogc_wkt(code).ok());
         }
         self.proj4.as_deref().and_then(|p| wbp::from_proj_string(p).ok()).map(|c| wbp::crs_to_wkt(&c))
     }
@@ -87,6 +111,9 @@ impl SpatialRef {
     /// The CRS's name, such as `WGS 84 / UTM zone 33N`.
     pub fn name(&self) -> Option<String> {
         // The registry's name first: a stored WKT may carry another vendor's name (ESRI `.prj`).
+        if let Some(e) = self.epsg.and_then(epsg::get) {
+            return Some(e.name.clone());
+        }
         let registry = self.epsg.and_then(|code| wbp::to_ogc_wkt(code).ok());
         registry
             .as_deref()
@@ -106,7 +133,10 @@ impl SpatialRef {
 
     /// Whether this is a geographic (longitude/latitude) CRS.
     pub fn is_geographic(&self) -> bool {
-        self.to_wbp().map(|c| c.is_geographic()).unwrap_or(false)
+        match Def::new(self) {
+            Ok(d) => d.is_geographic(),
+            Err(_) => self.to_wbp().map(|c| c.is_geographic()).unwrap_or(false),
+        }
     }
 
     /// Whether both describe the same CRS, as far as can be told.
@@ -183,8 +213,16 @@ pub(crate) fn identify_epsg(wkt: &str) -> Option<u32> {
         return Some(code);
     }
     let report = wbp::identify_epsg_from_wkt_report(wkt, wbp::EpsgIdentifyPolicy::Lenient)?;
+    // The registry matches loosely: keep a code only when its definition converts coordinates
+    // as the WKT does (GDAL leaves a custom CRS without code).
+    let own = Def::wkt_conversion(wkt);
+    let fits = |code: u32| {
+        let Some(own) = &own else { return true };
+        let registered = SpatialRef { epsg: Some(code), wkt: None, proj4: None };
+        Def::new(&registered).is_ok_and(|d| own.same_conversion(&d))
+    };
     if report.used_embedded_epsg || !report.ambiguous {
-        return report.resolved_code;
+        return report.resolved_code.filter(|c| fits(*c));
     }
     let best = report.top_candidates.first()?.total_score;
     let upper = wkt.to_ascii_uppercase();
@@ -196,10 +234,10 @@ pub(crate) fn identify_epsg(wkt: &str) -> Option<u32> {
     report
         .top_candidates
         .iter()
-        .filter(|c| c.total_score >= best)
+        .filter(|c| c.total_score >= best && fits(c.code))
         .min_by_key(|c| (!wkt_names_realization && names_realization(c.code), c.code))
         .map(|c| c.code)
-        .or(report.resolved_code)
+        .or(report.resolved_code.filter(|c| fits(*c)))
 }
 
 /// The EPSG code a WKT definition declares for itself: the `AUTHORITY["EPSG","4269"]` (WKT 1) or
@@ -257,41 +295,23 @@ fn wkt_name(wkt: &str) -> Option<String> {
     Some(name.to_string())
 }
 
-/// Transforms coordinates from one CRS to another.
+/// Transforms coordinates from one CRS to another, as GDAL does: linear and angular units, axis
+/// order and prime meridians as the CRSs define them, and, when the datums differ, the datum
+/// transformation GDAL (PROJ) picks for each point among those it lists for the pair, or chains
+/// through an intermediate datum such as WGS 84.
 pub struct Transformer {
-    src: wbp::Crs,
-    dst: wbp::Crs,
+    src: Def,
+    dst: Def,
     identity: bool,
-    /// Whether the datum change is a null ("ballpark") transformation, as PROJ uses for GDAL.
-    ballpark: bool,
-}
-
-/// Datums that PROJ (and so GDAL and `ogr2ogr`) transforms between with a null transformation
-/// by default: NAD83 and WGS 84 (EPSG transformation 1188 and PROJ's ballpark). wbprojection
-/// applies a Helmert shift of about a metre between them instead.
-const NULL_SHIFT_DATUMS: &[&str] = &["WGS 84", "NAD 83", "NAD83(NSRS2007)"];
-
-/// The projection engine's CRSs for a transformation from `src` to `dst`, with the source's datum
-/// replaced by the target's when GDAL would use a null datum transformation between them.
-pub(crate) fn wbp_pair(src: &SpatialRef, dst: &SpatialRef) -> Result<(wbp::Crs, wbp::Crs)> {
-    let (mut s, d) = (src.to_wbp()?, dst.to_wbp()?);
-    if is_ballpark_pair(&s, &d) {
-        s.datum = d.datum.clone();
-    }
-    Ok((s, d))
-}
-
-fn is_ballpark_pair(a: &wbp::Crs, b: &wbp::Crs) -> bool {
-    let (a, b) = (a.datum.name, b.datum.name);
-    a != b && NULL_SHIFT_DATUMS.contains(&a) && NULL_SHIFT_DATUMS.contains(&b)
+    route: route::Route,
 }
 
 impl Transformer {
     /// A transformer from `src` to `dst`.
     pub fn new(src: &SpatialRef, dst: &SpatialRef) -> Result<Self> {
-        let (s, d) = (src.to_wbp()?, dst.to_wbp()?);
-        let ballpark = is_ballpark_pair(&s, &d);
-        Ok(Self { src: s, dst: d, identity: src.same_as(dst), ballpark })
+        let (s, d) = (Def::new(src)?, Def::new(dst)?);
+        let route = route::Route::new(&s, &d);
+        Ok(Self { src: s, dst: d, identity: src.same_as(dst), route })
     }
 
     /// Transforms one point.
@@ -299,23 +319,16 @@ impl Transformer {
         if self.identity {
             return Ok((x, y));
         }
-        if self.ballpark {
-            let (lon, lat) = self.src.inverse(x, y)?;
-            return Ok(self.dst.forward(lon, lat)?);
-        }
-        Ok(self.src.transform_to(x, y, &self.dst)?)
+        let fail = || Error::Crs(format!("cannot transform ({x}, {y})"));
+        let (lon, lat) = self.src.unproject(x, y).ok_or_else(fail)?;
+        let (lon, lat) = self.route.apply(&self.src, &self.dst, x, y, lon, lat);
+        self.dst.project(lon, lat).ok_or_else(fail)
     }
 
-    /// Transforms a point with a height.
+    /// Transforms a point with a height, which is kept (as GDAL does between 2D CRSs).
     pub fn transform_3d(&self, x: f64, y: f64, z: f64) -> Result<(f64, f64, f64)> {
-        if self.identity {
-            return Ok((x, y, z));
-        }
-        if self.ballpark {
-            let (x, y) = self.transform(x, y)?;
-            return Ok((x, y, z));
-        }
-        Ok(self.src.transform_to_3d(x, y, z, &self.dst)?)
+        let (x, y) = self.transform(x, y)?;
+        Ok((x, y, z))
     }
 
     /// Transforms a bounding box `(min_x, min_y, max_x, max_y)`, densifying its edges so that
@@ -394,5 +407,68 @@ mod tests {
         let (x, y) = t.transform(-115.0, 36.0).unwrap();
         assert!((x - -12801741.0).abs() < 1.0, "{x}");
         assert!((y - 4300621.4).abs() < 1.0, "{y}");
+    }
+
+    #[test]
+    fn matches_gdal_for_national_grids() {
+        // gdaltransform -s_srs EPSG:2263 -t_srs EPSG:4326 (traditional GIS order): US survey feet.
+        let t = Transformer::new(&SpatialRef::from_epsg(2263).unwrap(), &SpatialRef::from_epsg(4326).unwrap()).unwrap();
+        let (lon, lat) = t.transform(988000.0, 200000.0).unwrap();
+        assert!((lon - -73.98647263351127).abs() < 1e-9 && (lat - 40.71562970330491).abs() < 1e-9, "{lon} {lat}");
+        // From WGS 84, with GDAL's datum transformations, axis orders and units.
+        let cases = [
+            (27700, -1.5, 52.0, 434423.00723593397, 233624.3747866078),
+            (2056, 8.0, 47.0, 2642695.4201549254, 1205590.522287224),
+            (21781, 8.0, 47.0, 642695.4201549252, 205590.52228722392),
+            (28992, 5.0, 52.0, 128410.08537081013, 445806.50883315015),
+            (2154, 2.0, 47.0, 624015.5354680117, 6656012.00965832),
+            (5514, 15.0, 50.0, -703011.8819030909, -1058147.274048979),
+            (2065, 15.0, 50.0, 1058147.274048981, 703011.881903093),
+            (2193, 174.0, -41.0, 1684102.1344457027, 5460761.410740666),
+            (27200, 174.0, -41.0, 2594115.185056257, 6022476.222384517),
+            (3035, 10.0, 50.0, 4321000.0, 2987510.566964945),
+            (3031, 0.0, -75.0, 0.0, 1638783.2384072365),
+            (3413, -45.0, 75.0, 0.0, -1633879.4974707854),
+            (5070, -96.0, 40.0, 0.0, 1886977.5648988034),
+            (3577, 135.0, -25.0, 299362.2208462456, -2706085.979530222),
+        ];
+        let wgs84 = SpatialRef::from_epsg(4326).unwrap();
+        for (code, lon, lat, x, y) in cases {
+            let crs = SpatialRef::from_epsg(code).unwrap();
+            let (tx, ty) = Transformer::new(&wgs84, &crs).unwrap().transform(lon, lat).unwrap();
+            assert!((tx - x).abs() < 1e-3 && (ty - y).abs() < 1e-3, "EPSG:{code}: {tx} {ty}");
+            let (tlon, tlat) = Transformer::new(&crs, &wgs84).unwrap().transform(x, y).unwrap();
+            // Within a millimetre: PROJ inverts Helmert rotations approximately.
+            assert!((tlon - lon).abs() < 2e-8 && (tlat - lat).abs() < 2e-8, "EPSG:{code} inverse: {tlon} {tlat}");
+        }
+    }
+
+    #[test]
+    fn custom_wkt_units_and_towgs84_as_in_gdal() {
+        let wgs84 = SpatialRef::from_epsg(4326).unwrap();
+        // An ESRI .prj in US survey feet that matches no EPSG code.
+        let esri = r#"PROJCS["Custom_Feet_LCC",GEOGCS["GCS_North_American_1983",DATUM["D_North_American_1983",SPHEROID["GRS_1980",6378137.0,298.257222101]],PRIMEM["Greenwich",0.0],UNIT["Degree",0.0174532925199433]],PROJECTION["Lambert_Conformal_Conic"],PARAMETER["False_Easting",1000000.0],PARAMETER["False_Northing",50000.0],PARAMETER["Central_Meridian",-74.1],PARAMETER["Standard_Parallel_1",40.5],PARAMETER["Standard_Parallel_2",41.1],PARAMETER["Latitude_Of_Origin",40.0],UNIT["Foot_US",0.3048006096012192]]"#;
+        let crs = SpatialRef::parse(esri).unwrap();
+        assert_eq!(crs.epsg, None, "GDAL identifies no EPSG code");
+        let (x, y) = Transformer::new(&wgs84, &crs).unwrap().transform(-73.95, 40.75).unwrap();
+        assert!((x - 1041560.5074030993).abs() < 1e-3 && (y - 323273.5802968154).abs() < 1e-3, "{x} {y}");
+        // A WKT 1 with TOWGS84 and no authority code.
+        let osgb = r#"PROJCS["Custom BNG",GEOGCS["OSGB36",DATUM["OSGB_1936",SPHEROID["Airy 1830",6377563.396,299.3249646],TOWGS84[446.448,-125.157,542.06,0.15,0.247,0.842,-20.489]],PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433]],PROJECTION["Transverse_Mercator"],PARAMETER["latitude_of_origin",49],PARAMETER["central_meridian",-2],PARAMETER["scale_factor",0.9996012717],PARAMETER["false_easting",400000],PARAMETER["false_northing",-100000],UNIT["metre",1]]"#;
+        let crs = SpatialRef::from_wkt(osgb);
+        let (x, y) = Transformer::new(&wgs84, &crs).unwrap().transform(-1.5, 52.0).unwrap();
+        assert!((x - 434423.00723593397).abs() < 1e-3 && (y - 233624.3747866078).abs() < 1e-3, "{x} {y}");
+        // A PROJ string in feet.
+        let p = SpatialRef::parse("+proj=lcc +lat_0=40.1666666666667 +lon_0=-74 +lat_1=41.0333333333333 +lat_2=40.6666666666667 +x_0=300000 +y_0=0 +datum=NAD83 +units=us-ft").unwrap();
+        let (lon, lat) = Transformer::new(&p, &wgs84).unwrap().transform(988000.0, 200000.0).unwrap();
+        assert!((lon - -73.98647263351127).abs() < 1e-9 && (lat - 40.71562970330491).abs() < 1e-9, "{lon} {lat}");
+    }
+
+    #[test]
+    fn names_and_wkt_come_from_the_epsg_table() {
+        let s = SpatialRef::from_epsg(2263).unwrap();
+        assert_eq!(s.name().unwrap(), "NAD83 / New York Long Island (ftUS)");
+        let w = s.to_wkt().unwrap();
+        assert!(w.contains("UNIT[\"US survey foot\",0.304800609601219") && w.ends_with("AUTHORITY[\"EPSG\",\"2263\"]]"), "{w}");
+        assert_eq!(SpatialRef::from_wkt(&w).epsg, Some(2263));
     }
 }

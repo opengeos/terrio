@@ -55,7 +55,10 @@ pub(crate) fn user_defined_crs(k: &GeoKeys) -> Option<wbraster::CrsInfo> {
     let geog = geographic_proj(k)?;
     let proj = match model {
         2 => format!("+proj=longlat {geog}"),
-        1 => format!("+proj={} {geog} {}", projection(k)?, units(k.short(3076))),
+        1 => {
+            let (units, to_meter) = units(k);
+            format!("+proj={} {geog} {units}", projection(k, to_meter)?)
+        }
         _ => return None,
     };
     let crs = wbraster::CrsInfo::from_proj4(proj.trim());
@@ -105,8 +108,9 @@ fn geographic_proj(k: &GeoKeys) -> Option<String> {
     })
 }
 
-/// The projection method and parameters of a PROJ definition.
-fn projection(k: &GeoKeys) -> Option<String> {
+/// The projection method and parameters of a PROJ definition. GeoTIFF gives false eastings and
+/// northings in the CRS's linear unit (`to_meter` metres), PROJ in metres.
+fn projection(k: &GeoKeys, to_meter: f64) -> Option<String> {
     // Parameter keys.
     const STD_PARALLEL_1: u16 = 3078;
     const STD_PARALLEL_2: u16 = 3079;
@@ -127,8 +131,8 @@ fn projection(k: &GeoKeys) -> Option<String> {
 
     let lon0 = k.first(&[NAT_ORIGIN_LONG, FALSE_ORIGIN_LONG, CENTER_LONG, STRAIGHT_VERT_POLE_LONG]).unwrap_or(0.0);
     let lat0 = k.first(&[NAT_ORIGIN_LAT, FALSE_ORIGIN_LAT, CENTER_LAT]).unwrap_or(0.0);
-    let x0 = k.first(&[FALSE_EASTING, FALSE_ORIGIN_EASTING]).unwrap_or(0.0);
-    let y0 = k.first(&[FALSE_NORTHING, FALSE_ORIGIN_NORTHING]).unwrap_or(0.0);
+    let x0 = k.first(&[FALSE_EASTING, FALSE_ORIGIN_EASTING]).unwrap_or(0.0) * to_meter;
+    let y0 = k.first(&[FALSE_NORTHING, FALSE_ORIGIN_NORTHING]).unwrap_or(0.0) * to_meter;
     let scale = k.first(&[SCALE_AT_NAT_ORIGIN, SCALE_AT_CENTER]).unwrap_or(1.0);
     let lat1 = k.double(STD_PARALLEL_1);
     let lat2 = k.double(STD_PARALLEL_2);
@@ -163,11 +167,17 @@ fn projection(k: &GeoKeys) -> Option<String> {
     })
 }
 
-fn units(code: Option<u16>) -> &'static str {
-    match code {
-        Some(9002) => "+units=ft",
-        Some(9003) => "+units=us-ft",
-        _ => "+units=m",
+/// The linear unit of the GeoKeys (ProjLinearUnitsGeoKey, or ProjLinearUnitSizeGeoKey for a
+/// user-defined one) as a PROJ parameter, and its size in metres.
+fn units(k: &GeoKeys) -> (String, f64) {
+    match k.short(3076) {
+        Some(9002) => ("+units=ft".into(), 0.3048),
+        Some(9003) => ("+units=us-ft".into(), 1200.0 / 3937.0),
+        Some(USER_DEFINED) => match k.double(3077) {
+            Some(m) if m > 0.0 => (format!("+to_meter={m}"), m),
+            _ => ("+units=m".into(), 1.0),
+        },
+        _ => ("+units=m".into(), 1.0),
     }
 }
 
