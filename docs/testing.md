@@ -26,6 +26,7 @@ GDAL:
 | Window and overview reads | `scripts/compare_windows_with_gdal.py` | every overview level of every GeoTIFF, local and remote over `/vsicurl/` |
 | Raster operations | `scripts/compare_ops_with_gdal.py` | translate, warp (all resampling methods), mosaic and VRT against `gdal_translate`, `gdalwarp`, `gdalbuildvrt`, `gdal_merge.py` |
 | Vector operations | `scripts/compare_vector_ops_with_gdal.py` | `ogr2ogr` filters, `gdal_rasterize` and `gdal_polygonize.py` |
+| Terrain and raster algebra | `scripts/compare_dem_calc_with_gdal.py` | every `gdaldem` mode and option, `gdal_calc.py` expressions, types, nodata and extents, `gdal_proximity.py`, `gdal_sieve.py` |
 
 ## Results
 
@@ -40,6 +41,9 @@ GDAL:
 | `convert` filters | 28 of 28 option cases identical to `ogr2ogr`, feature by feature |
 | `rasterize` | 0 differing pixels in 18 cases |
 | `polygonize` | Same polygon counts and areas per value; re-rasterizing reproduces the input |
+| `dem` | 81 of 81 cases identical (every mode and option, on four DEMs) |
+| `calc` | 35 of 37 cases identical; the other two within one float32 rounding step (NumPy's vectorized float32 `sin`, `exp`, `log10`, `arctan2`) |
+| `proximity`, `sieve` | 13 of 13 cases identical |
 
 ## Running the tests
 

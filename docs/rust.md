@@ -46,7 +46,8 @@ terrio::write_raster_dataset(&ds, "dem_cog.tif", &options)?;
 ## Operations
 
 `terrio::ops` holds the operations behind the commands: `translate`, `warp`, `mosaic` and `vrt` for
-rasters; `vector_filter` (with the `sql` parser), `rasterize` and `polygonize`. Each takes an
+rasters; `vector_filter` (with the `sql` parser), `rasterize` and `polygonize`; `dem`, `calc`
+(with its expression parser and NumPy-typed evaluator), `proximity` and `sieve`. Each takes an
 options struct mirroring the command-line options.
 
 ## Coordinate systems

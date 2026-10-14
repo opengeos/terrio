@@ -10,6 +10,10 @@ terrio <COMMAND>
   mosaic      Mosaic rasters into one, or into a virtual raster (like gdalbuildvrt and gdal_merge)
   rasterize   Burn vector geometries into a raster
   polygonize  Turn a raster band into polygons of connected pixels with the same value
+  dem         Terrain analysis: hillshade, slope, aspect, color relief, TRI, TPI, roughness (like gdaldem)
+  calc        Raster algebra: band math in NumPy syntax over one or more rasters (like gdal_calc.py)
+  proximity   Distance from every pixel to the nearest target pixel (like gdal_proximity.py)
+  sieve       Merge raster areas smaller than a threshold into their largest neighbour (like gdal_sieve.py)
   crs         Describe a coordinate reference system, or transform coordinates between two
   formats     List the formats terrio reads and writes
 ```
@@ -106,6 +110,61 @@ terrio polygonize INPUT OUTPUT [options]
 `-b`, `--field NAME` (default `DN`), `--nln`, `--8` (8-connectedness), `--nomask`, `--mask RASTER`,
 `-f`, `--append`, `--overwrite`. Polygons have holes; exteriors are counter-clockwise and holes
 clockwise.
+
+## dem
+
+```sh
+terrio dem MODE INPUT [COLOR_FILE] OUTPUT [options]
+```
+
+`MODE` is `hillshade`, `slope`, `aspect`, `color-relief` (which takes a color file), `TRI`, `TPI`
+or `roughness`. Options: `-b`, `--compute-edges`, `--alg Horn|ZevenbergenThorne` (hillshade,
+slope, aspect) or `--alg Riley|Wilson` (TRI); for hillshade `-z`, `-s` (`111120` for a geographic
+DEM in metres), `--xscale`/`--yscale`, `--az`, `--alt`, `--combined`, `--multidirectional`,
+`--igor`; `-p` (slope in percent); `--trigonometric`, `--zero-for-flat` (aspect); `--alpha`,
+`--exact-color-entry`, `--nearest-color-entry` (color relief). Without `-s`, geographic DEMs are
+scaled from the ellipsoid at their centre latitude, as `gdaldem` does since GDAL 3.11. Color files
+are GDAL's: `value R G B [A]` or `value colorname [A]`, where the value may be `nv` (the nodata
+value) or a percentage of the band's range; GMT `.cpt` files work too. Outputs are identical to
+`gdaldem`'s, pixel for pixel.
+
+## calc
+
+```sh
+terrio calc -A INPUT [--A_band N] [-B INPUT ...] --calc EXPR [--calc EXPR...] OUTPUT [options]
+```
+
+The arguments of `gdal_calc.py` work as they are (`-A file --A_band 2`, `--outfile`), and inputs
+can also be named freely with `--input NAME=PATH` and `--input-band NAME=N`. Expressions use NumPy
+syntax: `+ - * / // % **`, comparisons, `& | ^ ~`, `and`/`or`/`not`, and functions (`where`,
+`clip`, `minimum`, `maximum`, `min`/`max` of several values, `abs`, `sqrt`, `exp`, `log`, `log10`,
+trigonometric functions, `floor`, `ceil`, `round`, `isnan`, `logical_and`..., also written
+`numpy.where` or `np.where`), `A.astype(float32)` and the constants `pi`, `e`, `nan`, `inf`.
+Nothing else is evaluated. Values follow NumPy's typing rules, as in `gdal_calc.py`: integer
+arithmetic wraps around (`A + B` of two Byte bands is Byte), `/` gives float64, and Python
+numbers adapt to the array's type. A repeated `--calc` gives one band each. Options: `--type`,
+`--NoDataValue` (or `none`), `--hideNoData`, `--extent union|intersect|ignore|fail`, `--projwin`,
+`--allBands NAME`, `--projectionCheck`, and the output format options. Any input pixel equal to
+its nodata value gives an output nodata pixel.
+
+## proximity
+
+```sh
+terrio proximity INPUT OUTPUT [--values 1,2] [--distunits PIXEL|GEO] [--maxdist N] [options]
+```
+
+`--srcband`, `--nodata` (the value of pixels beyond `--maxdist`, 65535 by default),
+`--use-input-nodata`, `--fixed-buf-val`, `--ot` (Float32 by default). Targets are the non-zero
+pixels unless `--values` lists them.
+
+## sieve
+
+```sh
+terrio sieve INPUT OUTPUT [--st N] [-4|-8] [--nomask | --mask RASTER]
+```
+
+Areas of connected pixels with the same value smaller than `--st` pixels (2 by default) take the
+value of their largest neighbour. The band's nodata pixels are left out unless `--nomask`.
 
 ## crs
 

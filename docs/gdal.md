@@ -13,6 +13,10 @@ terrio's commands map onto GDAL's utilities, with GDAL's option names in kebab c
 | `ogr2ogr` | `terrio convert` |
 | `gdal_rasterize` | `terrio rasterize` |
 | `gdal_polygonize.py` | `terrio polygonize` |
+| `gdaldem` | `terrio dem` |
+| `gdal_calc.py` | `terrio calc` (same arguments) |
+| `gdal_proximity.py` | `terrio proximity` |
+| `gdal_sieve.py` | `terrio sieve` |
 | `gdalsrsinfo`, `gdaltransform` | `terrio crs` |
 | `gdalinfo --formats`, `ogrinfo --formats` | `terrio formats` |
 
@@ -33,6 +37,10 @@ terrio's commands map onto GDAL's utilities, with GDAL's option names in kebab c
 | `-oo`, `-lco` | `--oo`, `--lco` |
 | `-burn`, `-a`, `-at`, `-add`, `-init` | `--burn`, `-a`, `--at`, `--add`, `--init` |
 | `gdal_polygonize.py -8 -f GPKG in.tif out.gpkg layer field` | `terrio polygonize in.tif out.gpkg --8 --nln layer --field field` |
+| `gdaldem hillshade -compute_edges -multidirectional -az -alt -s` | `terrio dem hillshade --compute-edges --multidirectional --az --alt -s` |
+| `gdaldem color-relief -alpha -exact_color_entry -nearest_color_entry` | `terrio dem color-relief --alpha --exact-color-entry --nearest-color-entry` |
+| `gdal_proximity.py -values -distunits -maxdist -use_input_nodata YES` | `terrio proximity --values --distunits --maxdist --use-input-nodata` |
+| `gdal_sieve.py -st 10 -8 -nomask` | `terrio sieve --st 10 -8 --nomask` |
 
 ## Paths
 
