@@ -1,7 +1,9 @@
 name: Release
 
-# Builds the Python wheels and source distribution on version tags, and publishes them to PyPI
-# with trusted publishing (no API token: the PyPI project trusts this workflow).
+# On version tags, publishes the Python wheels and source distribution to PyPI, the terrio and
+# terrio-cli crates to crates.io, and the WebAssembly package to npm. All three use trusted
+# publishing: no API tokens are stored, each registry trusts this workflow and its environment
+# (pypi, crates-io, npm).
 on:
   push:
     tags: ["v*"]
@@ -25,8 +27,8 @@ jobs:
           - { os: macos-latest, target: aarch64, manylinux: auto }
           - { os: windows-latest, target: x64, manylinux: auto }
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - uses: PyO3/maturin-action@v1
@@ -35,7 +37,7 @@ jobs:
           target: ${{ matrix.platform.target }}
           manylinux: ${{ matrix.platform.manylinux }}
           args: --release --out dist
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: wheels-${{ matrix.platform.os }}-${{ matrix.platform.target }}-${{ matrix.platform.manylinux }}
           path: python/dist
@@ -43,13 +45,13 @@ jobs:
   sdist:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: PyO3/maturin-action@v1
         with:
           working-directory: python
           command: sdist
           args: --out dist
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: sdist
           path: python/dist
@@ -62,10 +64,57 @@ jobs:
     permissions:
       id-token: write
     steps:
-      - uses: actions/download-artifact@v5
+      - uses: actions/download-artifact@v8
         with:
           path: dist
           merge-multiple: true
       - uses: pypa/gh-action-pypi-publish@release/v1
         with:
           packages-dir: dist
+
+  crates:
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    environment: crates-io
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: rust-lang/crates-io-auth-action@v1
+        id: auth
+      - name: Publish terrio, then terrio-cli
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+        run: |
+          cargo publish -p terrio --locked
+          cargo publish -p terrio-cli --locked
+
+  npm:
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    environment: npm
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-pack
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+      # Trusted publishing needs npm 11.5.1 or later.
+      - run: npm install -g npm@latest
+      - name: Build the package (browsers, bundlers, and Node.js through init)
+        run: |
+          wasm-pack build js --release --target web --out-dir pkg --out-name terrio
+          cd js/pkg && npm pkg set name=terrio
+      - run: npm publish --access public
+        working-directory: js/pkg

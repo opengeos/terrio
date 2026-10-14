@@ -26,6 +26,9 @@ flatbuffers = "=24.12.23"
 parquet = { version = "58", default-features = false, features = ["arrow", "snap"] }
 arrow-array = "58"
 arrow-schema = "58"
+# Arrow IPC streams of vector layers; already built for parquet.
+arrow-ipc = { version = "58", default-features = false }
+arrow-buffer = "58"
 bytes = "1"
 quick-xml = "0.42"
 # OpenStreetMap PBF decoding, the version wbvector uses.
@@ -44,7 +47,7 @@ jpeg-encoder = "0.7"
 # WebP tiles of PMTiles and MBTiles archives; the version tiff already uses.
 image-webp = "0.2"
 openjp2 = { version = "0.6", default-features = false, features = ["std"] }
-zstd = "0.13"
+zstd = "0.14"
 thiserror = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

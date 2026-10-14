@@ -8,6 +8,7 @@ pub mod geopackage;
 pub mod geoparquet;
 pub mod gml;
 pub(crate) mod gpkg_read;
+pub(crate) mod gpkg_update;
 pub mod gpx;
 pub mod kml;
 pub mod kml_style;

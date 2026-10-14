@@ -1,3 +1,10 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/opengeos/terrio/main/docs/assets/terrio-wordmark-dark.svg">
+    <img src="https://raw.githubusercontent.com/opengeos/terrio/main/docs/assets/terrio-wordmark.svg" alt="terrio" height="96">
+  </picture>
+</p>
+
 # terrio
 
 Pure-Rust geospatial raster, vector and point cloud data I/O.
@@ -37,6 +44,8 @@ terrio convert countries.geojson europe.gpkg --where "CONTINENT = 'Europe'" --se
 terrio info https://host/tiles.pmtiles           # PMTiles read in place (header, then the tiles needed)
 terrio convert landsat.tif landsat.pmtiles       # raster tiles in EPSG:3857, every zoom level (or .mbtiles)
 terrio convert countries.gpkg countries.pmtiles --maxzoom 6   # vector tiles (MVT), or -f MVT for a directory
+terrio convert counties.gpkg tn.gpkg --spat -90.3 34.9 -81.6 36.7  # through the GeoPackage's R-tree
+terrio convert more.shp world.gpkg --append --nln countries          # update an existing GeoPackage
 terrio rasterize counties.gpkg pop.tif -a POPULATION --tr 0.01 0.01 --ot Int32
 terrio polygonize landcover.tif landcover.gpkg --8
 terrio crs EPSG:32610 --to EPSG:4326 699960 3900000
@@ -135,6 +144,8 @@ tile = cog.read(1, window=(1024, 1024, 512, 512), overview=0)
 
 layer = terrio.open_vector("countries.gpkg").layers[0]
 layer.to_geojson(), layer.to_wkb(), layer.to_geopandas()
+table = pyarrow.table(layer.to_arrow())  # Arrow PyCapsule interface, GeoArrow geometries
+layer = terrio.from_arrow(table)  # pyarrow, GeoPandas, Polars, GDAL layers...
 
 points = terrio.read_points("lidar.copc.laz", bounds=(x0, y0, x1, y1), classes=[2])
 points["z"], points.to_numpy(), points.grid(1.0, stat="idw"), points.write("ground.laz")

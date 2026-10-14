@@ -42,6 +42,25 @@ terrio::write_raster_dataset(&ds, "dem_cog.tif", &options)?;
 ```
 
 `write_vector(&layers, path, &VectorWriteOptions)` writes layers; GeoPackage holds several.
+`ops::vector_filter::write_vector_with_mode` appends to or overwrites the layers of an existing
+output; GeoPackages are updated keeping their other tables.
+
+## Arrow
+
+`terrio::arrow` converts layers to and from Arrow record batches with a GeoArrow geometry column
+(WKB or native encodings, the CRS as PROJJSON), and reads and writes Arrow IPC streams. The
+`arrow-array` and `arrow-schema` versions are re-exported as `terrio::arrow::arrow_array` and
+`terrio::arrow::arrow_schema`.
+
+```rust,no_run
+use terrio::arrow::{ArrowWriteOptions, GeometryEncoding, layer_from_arrow, layer_to_arrow};
+
+let layer = terrio::open_vector("countries.gpkg", &Default::default())?.layers.remove(0);
+let options = ArrowWriteOptions { geometry_encoding: GeometryEncoding::GeoArrow, ..Default::default() };
+let table = layer_to_arrow(&layer, &options)?; // schema and record batches
+let back = layer_from_arrow(&table.schema, &table.batches, "countries")?;
+# Ok::<(), terrio::Error>(())
+```
 
 ## Operations
 

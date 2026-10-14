@@ -12,6 +12,7 @@
 //! # Ok::<(), terrio::Error>(())
 //! ```
 
+pub mod arrow;
 mod cog;
 pub mod crs;
 mod dataset;

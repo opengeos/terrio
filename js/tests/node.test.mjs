@@ -65,6 +65,22 @@ test("raster from array, to GeoTIFF bytes and back", () => {
   assert.match(asc, /ncols\s+2/);
 });
 
+test("vector layers as Arrow IPC streams, and back", () => {
+  const ds = terrio.fromGeoJSON(SQUARES, "squares");
+  for (const options of [undefined, { geometryEncoding: "geoarrow" }, { geometryEncoding: "geoarrow", coordinates: "interleaved" }]) {
+    const bytes = ds.toArrowIPC(0, options);
+    // An IPC stream starts with a continuation marker.
+    assert.deepEqual([...bytes.slice(0, 4)], [255, 255, 255, 255]);
+    const back = terrio.fromArrowIPC(bytes, "squares");
+    assert.equal(back.crs, "EPSG:4326");
+    const fc = back.toGeoJSON();
+    assert.equal(fc.features.length, 2);
+    assert.deepEqual(fc.features[1].properties, { name: "east", value: 7 });
+    assert.deepEqual(fc.features[1].geometry.coordinates[0][2], [30, 10]);
+  }
+  assert.throws(() => ds.toArrowIPC(0, { geometryEncoding: "nope" }), /unknown geometry encoding/);
+});
+
 test("vector from GeoJSON, to other formats and back", () => {
   const ds = terrio.fromGeoJSON(SQUARES, "squares");
   assert.equal(ds.kind, "vector");

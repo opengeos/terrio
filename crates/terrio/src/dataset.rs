@@ -72,8 +72,9 @@ pub struct VectorOpenOptions {
     /// How to read CSV files.
     pub csv: crate::drivers::vector::csv::CsvOptions,
     /// A rectangle `(min_x, min_y, max_x, max_y)` in the layer's CRS: drivers that index their
-    /// features (GeoParquet's bounding-box covering column and row group statistics) may skip
-    /// those whose bounding box is outside it. Callers still filter the features they get.
+    /// features (GeoParquet's bounding-box covering column and row group statistics, GeoPackage's
+    /// R-tree) skip those whose bounding box is outside it. Callers still filter the features
+    /// they get by their geometries.
     pub spatial_filter: Option<(f64, f64, f64, f64)>,
     /// How to read tile archives (PMTiles, MBTiles, MVT): the zoom level, clipping.
     pub tiles: crate::tiles::TileOpenOptions,
@@ -320,7 +321,7 @@ fn read_raster_local(path: &str) -> Result<RasterDataset> {
 
 fn read_vector_local(path: &str, driver: VectorDriver, options: &VectorOpenOptions) -> Result<VectorDataset> {
     let layers = if driver == VectorDriver::GPKG {
-        crate::drivers::vector::gpkg_read::read(path, &options.layers)?
+        crate::drivers::vector::gpkg_read::read(path, &options.layers, options.spatial_filter)?
     } else if let Some(layers) = crate::drivers::vector::read(path, driver, options)? {
         select_layers(layers, path, options)?
     } else {

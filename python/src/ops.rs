@@ -119,6 +119,10 @@ fn open_raster(py: Python<'_>, path: &str, lazy: bool) -> PyResult<PyRaster> {
 /// Args:
 ///     path: The dataset's path or URL, as for `open`.
 ///     layers: Only these layers (names). `None` reads them all.
+///     bbox: Only the features whose bounding box intersects this rectangle `(min_x, min_y,
+///         max_x, max_y)`, in the layer's CRS. GeoPackages find them through their R-tree
+///         index and GeoParquet files through their bounding-box columns, without reading the
+///         other features; other formats are read whole, then filtered.
 ///
 /// Returns:
 ///     VectorDataset: The dataset.
@@ -127,10 +131,19 @@ fn open_raster(py: Python<'_>, path: &str, lazy: bool) -> PyResult<PyRaster> {
 ///     UnsupportedError: If the dataset is not a vector dataset.
 ///     InvalidArgumentError: If a layer does not exist.
 #[pyfunction]
-#[pyo3(signature = (path, layers=None))]
-fn open_vector(py: Python<'_>, path: &str, layers: Option<Vec<String>>) -> PyResult<PyVectorDataset> {
-    let options = VectorOpenOptions { layers: layers.unwrap_or_default(), ..Default::default() };
-    let ds = py.detach(|| terrio::open_vector(path, &options)).py()?;
+#[pyo3(signature = (path, layers=None, bbox=None))]
+fn open_vector(py: Python<'_>, path: &str, layers: Option<Vec<String>>, bbox: Option<(f64, f64, f64, f64)>) -> PyResult<PyVectorDataset> {
+    let options = VectorOpenOptions { layers: layers.unwrap_or_default(), spatial_filter: bbox, ..Default::default() };
+    let mut ds = py.detach(|| terrio::open_vector(path, &options)).py()?;
+    // Formats without a spatial index are read whole: filter them the same way.
+    if let Some((x0, y0, x1, y1)) = bbox {
+        for layer in &mut ds.layers {
+            layer.features.retain(|f| {
+                f.geometry.as_ref().and_then(|g| g.bbox()).is_some_and(|b| b.min_x <= x1 && b.max_x >= x0 && b.min_y <= y1 && b.max_y >= y0)
+            });
+            layer.extent = None;
+        }
+    }
     PyVectorDataset::new(py, ds)
 }
 
@@ -242,8 +255,9 @@ fn write_raster(
 ///         or any object with `__geo_interface__` (such as a GeoDataFrame).
 ///     path: The output path. Its extension tells the format unless `driver` is given.
 ///     driver: The format's short name, such as `"GPKG"`, `"FlatGeobuf"` or `"ESRI Shapefile"`.
-///     layer_name: The layer name for GeoJSON input. By default, the output file's stem.
-///     crs: The CRS of GeoJSON input. By default, that of a GeoDataFrame, otherwise EPSG:4326.
+///     layer_name: The layer name for GeoJSON and Arrow input. By default, the output file's stem.
+///     crs: The CRS of GeoJSON and Arrow input. By default, that of a GeoDataFrame or of the
+///         GeoArrow metadata, otherwise EPSG:4326 for GeoJSON.
 ///     append: Add the features to the layers of an existing output.
 ///     overwrite: Replace the layers of the same name in an existing output.
 ///
@@ -387,8 +401,15 @@ fn convert(
             };
             Dataset::Raster(r.read_window(window, &WindowOptions { bands: Vec::new(), overview })?)
         } else {
+            // Readers with a spatial index skip the features outside the `spat` rectangle.
+            let spatial_filter = vector_options.read_filter(src);
             match layers {
-                Some(layers) => Dataset::Vector(terrio::open_vector(src, &VectorOpenOptions { layers, ..Default::default() })?),
+                Some(layers) => {
+                    Dataset::Vector(terrio::open_vector(src, &VectorOpenOptions { layers, spatial_filter, ..Default::default() })?)
+                }
+                None if spatial_filter.is_some() => {
+                    Dataset::Vector(terrio::open_vector(src, &VectorOpenOptions { spatial_filter, ..Default::default() })?)
+                }
                 None => terrio::open(src)?,
             }
         };

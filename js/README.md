@@ -1,5 +1,12 @@
 # terrio (WebAssembly)
 
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/opengeos/terrio/main/docs/assets/terrio-wordmark-dark.svg">
+    <img src="https://raw.githubusercontent.com/opengeos/terrio/main/docs/assets/terrio-wordmark.svg" alt="terrio" height="72">
+  </picture>
+</p>
+
 [terrio](https://github.com/opengeos/terrio), pure-Rust geospatial data I/O, compiled to
 WebAssembly for browsers and Node.js. Datasets are opened from bytes, with a file name telling the
 format, and written back to bytes.
@@ -20,6 +27,8 @@ const cog = dem.toBytes("dem_cog.tif", { format: "COG", compress: "DEFLATE" });
 const roads = open(geojsonBytes, "roads.geojson");
 roads.toGeoJSON();                // a FeatureCollection object
 const fgb = roads.toBytes("roads.fgb", { tSrs: "EPSG:3857", where: "lanes > 2" });
+const ipc = roads.toArrowIPC(0, { geometryEncoding: "geoarrow" }); // Arrow IPC stream, GeoArrow geometries
+const back = fromArrowIPC(ipc, "roads");
 
 const [xs, ys] = transformPoints([-122.4], [37.8], "EPSG:4326", "EPSG:32610");
 

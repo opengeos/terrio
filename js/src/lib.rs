@@ -214,6 +214,15 @@ pub fn from_geojson(geojson: JsValue, name: Option<String>, crs: Option<String>)
     Ok(Dataset { inner: Inner::Vector(vec![layer], VectorDriver::GeoJSON) })
 }
 
+/// Creates a vector dataset from an Arrow IPC stream or file (as Apache Arrow JS's
+/// `tableToIPC` writes it): the geometry column is found by its GeoArrow metadata (WKB, WKT or
+/// native encodings), GeoParquet metadata, or a binary column named `geometry`.
+#[wasm_bindgen(js_name = fromArrowIPC)]
+pub fn from_arrow_ipc(bytes: Vec<u8>, name: Option<String>) -> Result<Dataset, JsError> {
+    let layer = terrio::arrow::from_ipc(&bytes, name.as_deref().unwrap_or("layer")).map_err(js_err)?;
+    Ok(Dataset { inner: Inner::Vector(vec![layer], VectorDriver::GeoJSON) })
+}
+
 #[wasm_bindgen]
 impl Dataset {
     /// `"raster"` or `"vector"`.
@@ -340,19 +349,49 @@ impl Dataset {
         Ok(self.layers()?.iter().map(|l| l.name.clone()).collect())
     }
 
+    /// A vector layer: by name or position, the first by default.
+    fn layer(&self, layer: &JsValue) -> Result<&terrio::Layer, JsError> {
+        let layers = self.layers()?;
+        if let Some(name) = layer.as_string() {
+            layers.iter().find(|l| l.name == name).ok_or_else(|| JsError::new(&format!("no layer named {name}")))
+        } else if let Some(i) = layer.as_f64() {
+            layers.get(i as usize).ok_or_else(|| JsError::new(&format!("no layer {i}")))
+        } else {
+            layers.first().ok_or_else(|| JsError::new("no layers"))
+        }
+    }
+
     /// A vector layer (by name or position, the first by default) as a GeoJSON FeatureCollection
     /// object, in the layer's CRS.
     #[wasm_bindgen(js_name = toGeoJSON)]
     pub fn to_geojson(&self, layer: JsValue) -> Result<JsValue, JsError> {
-        let layers = self.layers()?;
-        let l = if let Some(name) = layer.as_string() {
-            layers.iter().find(|l| l.name == name).ok_or_else(|| JsError::new(&format!("no layer named {name}")))?
-        } else if let Some(i) = layer.as_f64() {
-            layers.get(i as usize).ok_or_else(|| JsError::new(&format!("no layer {i}")))?
-        } else {
-            layers.first().ok_or_else(|| JsError::new("no layers"))?
-        };
+        let l = self.layer(&layer)?;
         js_sys::JSON::parse(&wbvector::geojson::to_string(l)).map_err(|_| JsError::new("invalid GeoJSON"))
+    }
+
+    /// A vector layer (by name or position, the first by default) as an Arrow IPC stream, with
+    /// its geometries in a GeoArrow column (and the CRS as PROJJSON in its metadata): read it
+    /// with Apache Arrow JS (`tableFromIPC`), DuckDB-Wasm or GeoArrow-aware libraries.
+    ///
+    /// Options: `geometryEncoding` (`"wkb"`, the default, or `"geoarrow"` for the native
+    /// encodings) and `coordinates` (`"separated"` or `"interleaved"`).
+    #[wasm_bindgen(js_name = toArrowIPC)]
+    pub fn to_arrow_ipc(&self, layer: JsValue, options: JsValue) -> Result<Vec<u8>, JsError> {
+        let l = self.layer(&layer)?;
+        let get = |key: &str| -> Option<String> {
+            if options.is_undefined() || options.is_null() {
+                return None;
+            }
+            js_sys::Reflect::get(&options, &JsValue::from_str(key)).ok()?.as_string()
+        };
+        let mut o = terrio::arrow::ArrowWriteOptions::default();
+        if let Some(e) = get("geometryEncoding") {
+            o.geometry_encoding = terrio::arrow::GeometryEncoding::parse(&e).map_err(js_err)?;
+        }
+        if let Some(c) = get("coordinates") {
+            o.coordinates = terrio::arrow::CoordinateLayout::parse(&c).map_err(js_err)?;
+        }
+        terrio::arrow::to_ipc_stream(l, &o).map_err(js_err)
     }
 
     /// Writes the dataset in a format, to bytes: the format of `filename`'s extension, or
