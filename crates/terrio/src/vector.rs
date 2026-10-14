@@ -72,7 +72,9 @@ pub fn layer_extent(layer: &Layer) -> Option<(f64, f64, f64, f64)> {
     b
 }
 
-/// Reprojects a layer into `dst`. The layer's CRS must be known.
+/// Reprojects a layer into `dst`, with terrio's transformations (units, axis order and datum
+/// transformations as GDAL applies them). Heights and measures are kept. The layer's CRS must
+/// be known.
 pub fn reproject_layer(layer: &Layer, dst: &crate::crs::SpatialRef) -> crate::Result<Layer> {
     let src = crate::crs::SpatialRef::from_layer(layer);
     if src.is_unknown() {
@@ -81,10 +83,41 @@ pub fn reproject_layer(layer: &Layer, dst: &crate::crs::SpatialRef) -> crate::Re
     if src.same_as(dst) {
         return Ok(layer.clone());
     }
-    let (s, d) = crate::crs::wbp_pair(&src, dst)?;
-    let mut out = wbvector::reproject::layer_with_crs(layer, &s, &d, dst.epsg)?;
+    let t = crate::crs::Transformer::new(&src, dst)?;
+    let mut out = layer.clone();
+    for (i, f) in out.features.iter_mut().enumerate() {
+        if let Some(g) = f.geometry.as_mut() {
+            map_coords(g, &mut |c| {
+                let (x, y) = t.transform(c.x, c.y)?;
+                c.x = x;
+                c.y = y;
+                Ok(())
+            })
+            .map_err(|e| crate::Error::Crs(format!("failed to reproject feature {i} of layer '{}': {e}", layer.name)))?;
+        }
+    }
+    out.extent = None;
     dst.apply_to_layer(&mut out);
     Ok(out)
+}
+
+/// Applies `f` to every coordinate of a geometry.
+pub fn map_coords(g: &mut Geometry, f: &mut dyn FnMut(&mut wbvector::Coord) -> crate::Result<()>) -> crate::Result<()> {
+    let mut all = |cs: &mut Vec<wbvector::Coord>| cs.iter_mut().try_for_each(&mut *f);
+    match g {
+        Geometry::Point(c) => f(c),
+        Geometry::LineString(cs) | Geometry::MultiPoint(cs) => all(cs),
+        Geometry::Polygon { exterior, interiors } => {
+            all(&mut exterior.0)?;
+            interiors.iter_mut().try_for_each(|r| all(&mut r.0))
+        }
+        Geometry::MultiLineString(ls) => ls.iter_mut().try_for_each(all),
+        Geometry::MultiPolygon(ps) => ps.iter_mut().try_for_each(|(e, holes)| {
+            all(&mut e.0)?;
+            holes.iter_mut().try_for_each(|r| all(&mut r.0))
+        }),
+        Geometry::GeometryCollection(gs) => gs.iter_mut().try_for_each(|g| map_coords(g, f)),
+    }
 }
 
 #[cfg(test)]
@@ -101,5 +134,19 @@ mod tests {
         let out = reproject_layer(&layer, &crate::crs::SpatialRef::from_epsg(32613).unwrap()).unwrap();
         let Some(Geometry::Point(c)) = &out.features[0].geometry else { panic!("not a point") };
         assert!((c.x - 414499.347197613).abs() < 1e-3 && (c.y - 4428422.65095327).abs() < 1e-3, "{} {}", c.x, c.y);
+    }
+
+    #[test]
+    fn reprojects_with_units_and_keeps_heights() {
+        // ogr2ogr -s_srs EPSG:2263 -t_srs EPSG:4326: US survey feet in, degrees out.
+        let mut layer = Layer::new("p");
+        layer.set_crs_epsg(Some(2263));
+        let c = wbvector::Coord { x: 988000.0, y: 200000.0, z: Some(12.5), m: None };
+        layer.add_feature(Some(Geometry::LineString(vec![c.clone(), c])), &[]).unwrap();
+        let out = reproject_layer(&layer, &crate::crs::SpatialRef::from_epsg(4326).unwrap()).unwrap();
+        let Some(Geometry::LineString(cs)) = &out.features[0].geometry else { panic!("not a line") };
+        assert!((cs[0].x - -73.98647263351127).abs() < 1e-9 && (cs[0].y - 40.71562970330491).abs() < 1e-9, "{:?}", cs[0]);
+        assert_eq!(cs[1].z, Some(12.5));
+        assert_eq!(out.crs_epsg(), Some(4326));
     }
 }
