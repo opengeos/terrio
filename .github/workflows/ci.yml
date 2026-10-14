@@ -49,7 +49,7 @@ jobs:
       - uses: mamba-org/setup-micromamba@v2
         with:
           environment-name: gdal
-          create-args: gdal libgdal-arrow-parquet numpy
+          create-args: gdal libgdal-arrow-parquet libgdal-jp2openjpeg libgdal-netcdf libgdal-hdf5 numpy
           cache-environment: true
       - uses: actions/cache@v4
         with:
