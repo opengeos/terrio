@@ -9,22 +9,24 @@ cargo build --release
 python scripts/conformance.py ../terrio-data --output docs/conformance.md
 ```
 
-Generated on 2026-10-14 with terrio 0.0.1 (b019897), GDAL 3.12.2, PROJ 9.7.1, PDAL 2.9.3, laspy 2.7.0.
+Generated on 2026-10-14 with terrio 0.1.1 (9857e91), GDAL 3.12.2, PROJ 9.7.1, PDAL 2.9.3, laspy 2.7.0.
 
 ## Summary
 
 | Suite | Reference | Cases | Identical | Within tolerance | Differs |
 |---|---|---:|---:|---:|---:|
-| [Dataset summaries and pixels](#dataset-summaries-and-pixels) | GDAL (`gdalinfo`, `ogrinfo`, Python bindings) | 64 | 62 | 0 | 2 |
-| [Vector conversions](#vector-conversions) | GDAL reading terrio's output | 23 | 16 | 0 | 7 |
+| [Dataset summaries and pixels](#dataset-summaries-and-pixels) | GDAL (`gdalinfo`, `ogrinfo`, Python bindings) | 64 | 64 | 0 | 0 |
+| [Vector conversions](#vector-conversions) | GDAL reading terrio's output | 23 | 23 | 0 | 0 |
 | [Raster drivers](#raster-drivers) | GDAL writing what terrio reads, and reading what terrio writes | 487 | 487 | 0 | 0 |
 | [Windowed and overview reads](#windowed-and-overview-reads) | GDAL reading the same windows | 186 | 186 | 0 | 0 |
-| [Raster operations](#raster-operations) | `gdal_translate`, `gdalwarp`, `gdalbuildvrt`, `gdal_merge.py` | 49 | 36 | 8 | 5 |
+| [Raster operations](#raster-operations) | `gdal_translate`, `gdalwarp`, `gdalbuildvrt`, `gdal_merge.py` | 49 | 42 | 7 | 0 |
 | [Terrain analysis and raster algebra](#terrain-analysis-and-raster-algebra) | `gdaldem`, `gdal_calc.py`, `gdal_proximity.py`, `gdal_sieve.py` | 131 | 129 | 2 | 0 |
 | [Vector operations](#vector-operations) | `ogr2ogr`, `gdal_rasterize`, `gdal_polygonize.py` | 51 | 51 | 0 | 0 |
-| [Point clouds](#point-clouds) | laspy (every value) and PDAL (headers, COPC queries, grids, reprojection) | 485 | 482 | 3 | 0 |
+| [Arrow and GeoArrow](#arrow-and-geoarrow) | GDAL's Arrow streams, pyarrow, GeoPandas | 180 | 171 | 9 | 0 |
+| [GeoPackage updates and spatial filters](#geopackage-updates-and-spatial-filters) | `ogr2ogr`, GDAL's `validate_gpkg.py` | 12 | 11 | 0 | 1 |
+| [Point clouds](#point-clouds) | laspy (every value) and PDAL (headers, COPC queries, grids, reprojection) | 614 | 611 | 3 | 0 |
 | [Coordinate transformations](#coordinate-transformations) | GDAL 3.12 and PROJ (`gdaltransform`) | 19,003 | 18,870 | 76 | 57 |
-| **All** | | **20,479** | **20,319** | **89** | **71** |
+| **All** | | **20,800** | **20,645** | **97** | **58** |
 
 ## Dataset summaries and pixels
 
@@ -36,9 +38,9 @@ Every raster and vector file of the test data: size, type, CRS, geotransform, no
 | GeoJSON | 7 | 7 | 0 | 0 |
 | FlatGeobuf | 2 | 2 | 0 | 0 |
 | GPKG | 4 | 4 | 0 | 0 |
-| KML | 3 | 2 | 0 | 1 |
+| KML | 3 | 3 | 0 | 0 |
 | GML | 1 | 1 | 0 | 0 |
-| MapInfo File | 3 | 2 | 0 | 1 |
+| MapInfo File | 3 | 3 | 0 | 0 |
 | Parquet | 2 | 2 | 0 | 0 |
 | GPX | 3 | 3 | 0 | 0 |
 | CSV | 1 | 1 | 0 | 0 |
@@ -58,42 +60,23 @@ Every raster and vector file of the test data: size, type, CRS, geotransform, no
 | SAGA | 1 | 1 | 0 | 0 |
 | TopoJSON | 2 | 2 | 0 | 0 |
 
-Cases that are not identical:
-
-| Format or operation | Case | Result | Details |
-|---|---|---|---|
-| KML | kml_samples.kml | differs | Styles and Markup: extent None vs [-122.0856545755255, 37.42243077405461, -122.0856545755255, 37.42243077405461] |
-| MapInfo File | roads_utm.tab | differs | roads_utm: epsg 32611 vs None |
-
 ## Vector conversions
 
-A file converted by `terrio convert` into each format, then read by GDAL: feature counts, fields, CRS, extent and a sample of geometries and attribute values must match what GDAL reads from the original.
+A file converted by `terrio convert` into each format, then read by GDAL: feature counts, fields, CRS, extent and a sample of geometries and attribute values must match what GDAL reads from the original, but for the differences GDAL's reading of `ogr2ogr`'s own conversion into that format has too (KML naming the `name` field `Name`, shapefiles truncating field names, MapInfo rounding coordinates to its grid, CSV files without a CRS).
 
 | Format or operation | Cases | Identical | Within tolerance | Differs |
 |---|---:|---:|---:|---:|
 | GeoJSON | 2 | 2 | 0 | 0 |
 | FlatGeobuf | 3 | 3 | 0 | 0 |
 | GPKG | 4 | 4 | 0 | 0 |
-| ESRI Shapefile | 2 | 1 | 0 | 1 |
+| ESRI Shapefile | 2 | 2 | 0 | 0 |
 | Parquet | 2 | 2 | 0 | 0 |
-| CSV | 2 | 1 | 0 | 1 |
+| CSV | 2 | 2 | 0 | 0 |
 | GML | 1 | 1 | 0 | 0 |
-| KML | 3 | 0 | 0 | 3 |
-| MapInfo File | 2 | 1 | 0 | 1 |
-| TopoJSON | 1 | 0 | 0 | 1 |
+| KML | 3 | 3 | 0 | 0 |
+| MapInfo File | 2 | 2 | 0 | 0 |
+| TopoJSON | 1 | 1 | 0 | 0 |
 | GPX | 1 | 1 | 0 | 0 |
-
-Cases that are not identical:
-
-| Format or operation | Case | Result | Details |
-|---|---|---|---|
-| KML | countries.geojson to kml | differs | ne_110m_admin_0_countries: fields missing ['NAME'] |
-| MapInfo File | countries.geojson to tab | differs | ne_110m_admin_0_countries: feature 12 differs ({'scalerank': 1, 'featurecla': 'Admin-0 country', 'LABELRANK': 5.0}); ne_110m_admin_0_countries: 21 of 176 sampled features differ |
-| TopoJSON | countries.geojson to topojson | differs | ne_110m_admin_0_countries: crs EPSG:None vs EPSG:4326 |
-| ESRI Shapefile | cables.geojson to shp | differs | submarine_cables: fields missing ['coordinates'] |
-| CSV | ne_places.parquet to csv | differs | ne_places: crs EPSG:None vs EPSG:4326 |
-| KML | ne_places.parquet to kml | differs | ne_places: fields missing ['name'] |
-| KML | hike.gpx to kml | differs | waypoints: fields missing ['name']; routes: fields missing ['name']; tracks: fields missing ['name']; route_points: fields missing ['name']; track_points: fields missing ['name'] |
 
 ## Raster drivers
 
@@ -153,8 +136,8 @@ The outputs of the same command lines on real files: size, type, CRS and geotran
 
 | Format or operation | Cases | Identical | Within tolerance | Differs |
 |---|---:|---:|---:|---:|
-| translate | 14 | 9 | 1 | 4 |
-| warp | 28 | 20 | 7 | 1 |
+| translate | 14 | 14 | 0 | 0 |
+| warp | 28 | 21 | 7 | 0 |
 | mosaic | 5 | 5 | 0 | 0 |
 | read | 2 | 2 | 0 | 0 |
 
@@ -162,12 +145,6 @@ Cases that are not identical:
 
 | Format or operation | Case | Result | Details |
 |---|---|---|---|
-| translate | translate outsize 333 bilinear | differs | 2 pixels differ (0.003512 %), nodata (or NaN) in one output only |
-| translate | translate outsize 50% cubic | differs | 8 pixels differ (0.006624 %), nodata (or NaN) in one output only |
-| translate | translate outsize 200% bilinear | differs | 12 pixels differ (0.000621 %), nodata (or NaN) in one output only |
-| translate | translate a_nodata a_ullr a_srs | differs | 2 pixels differ (0.000414 %), nodata (or NaN) in one output only |
-| warp | warp las vegas ->4326 srcnodata dstnodata | differs | 2 pixels differ (0.0004751 %), nodata (or NaN) in one output only |
-| translate | translate outsize 30% average | within tolerance | 5 pixels differ (0.01153 %), max difference 6.1e-05 |
 | warp | warp DEM NAD83->UTM bilinear | within tolerance | 5 pixels differ (3.957e-05 %), max difference 0.000244 |
 | warp | warp DEM NAD83->UTM cubic | within tolerance | 4 pixels differ (3.166e-05 %), max difference 0.000244 |
 | warp | warp DEM NAD83->UTM cubicspline | within tolerance | 4 pixels differ (3.166e-05 %), max difference 0.000244 |
@@ -223,17 +200,78 @@ Conversions with `ogr2ogr`'s options (where, spat, select, sql, nlt...) compared
 | rasterize | 18 | 18 | 0 | 0 |
 | polygonize | 4 | 4 | 0 | 0 |
 
+## Arrow and GeoArrow
+
+Every layer of the test data exported with `Layer.to_arrow()` (WKB and native GeoArrow) against GDAL's Arrow stream of the same layer, through pyarrow and GeoPandas, and imported back with `terrio.from_arrow()` (and by GDAL's `WriteArrow`): rows, geometries, attribute values and CRS. Within tolerance: geometries equal up to vertex order.
+
+| Format or operation | Cases | Identical | Within tolerance | Differs |
+|---|---:|---:|---:|---:|
+| export WKB vs GDAL | 16 | 15 | 1 | 0 |
+| export CRS vs GDAL | 16 | 16 | 0 | 0 |
+| export geoarrow.multipolygon (separated) vs GDAL | 6 | 5 | 1 | 0 |
+| import geoarrow.multipolygon (separated) | 6 | 6 | 0 | 0 |
+| export geoarrow.multipolygon (interleaved) vs GDAL | 6 | 5 | 1 | 0 |
+| import geoarrow.multipolygon (interleaved) | 6 | 6 | 0 | 0 |
+| GeoDataFrame.from_arrow vs GDAL | 12 | 11 | 1 | 0 |
+| import GDAL stream (WKB) | 16 | 15 | 1 | 0 |
+| import ogr.Layer | 16 | 15 | 1 | 0 |
+| import GeoDataFrame.to_arrow(WKB) | 12 | 11 | 1 | 0 |
+| import GeoDataFrame.to_arrow(geoarrow) | 12 | 11 | 1 | 0 |
+| GDAL WriteArrow of terrio's table | 16 | 15 | 1 | 0 |
+| export geoarrow.point (separated) vs GDAL | 5 | 5 | 0 | 0 |
+| import geoarrow.point (separated) | 5 | 5 | 0 | 0 |
+| export geoarrow.point (interleaved) vs GDAL | 5 | 5 | 0 | 0 |
+| import geoarrow.point (interleaved) | 5 | 5 | 0 | 0 |
+| export geoarrow.linestring (separated) vs GDAL | 3 | 3 | 0 | 0 |
+| import geoarrow.linestring (separated) | 3 | 3 | 0 | 0 |
+| export geoarrow.linestring (interleaved) vs GDAL | 3 | 3 | 0 | 0 |
+| import geoarrow.linestring (interleaved) | 3 | 3 | 0 | 0 |
+| export geoarrow.multilinestring (separated) vs GDAL | 2 | 2 | 0 | 0 |
+| import geoarrow.multilinestring (separated) | 2 | 2 | 0 | 0 |
+| export geoarrow.multilinestring (interleaved) vs GDAL | 2 | 2 | 0 | 0 |
+| import geoarrow.multilinestring (interleaved) | 2 | 2 | 0 | 0 |
+
+Cases that are not identical:
+
+| Format or operation | Case | Result | Details |
+|---|---|---|---|
+| export WKB vs GDAL | liechtenstein.osm.pbf:multipolygons | within tolerance | rows 24314, geometries 24274/24314 (24314 equal up to vertex order), values 607850/607850 |
+| export geoarrow.multipolygon (separated) vs GDAL | liechtenstein.osm.pbf:multipolygons | within tolerance | rows 24314, geometries 24274/24314 (24314 equal up to vertex order), values 607850/607850 |
+| export geoarrow.multipolygon (interleaved) vs GDAL | liechtenstein.osm.pbf:multipolygons | within tolerance | rows 24314, geometries 24274/24314 (24314 equal up to vertex order), values 607850/607850 |
+| GeoDataFrame.from_arrow vs GDAL | liechtenstein.osm.pbf:multipolygons | within tolerance | rows 24314, geometries 24274/24314 (24314 equal up to vertex order), values 607850/607850, crs same |
+| import GDAL stream (WKB) | liechtenstein.osm.pbf:multipolygons | within tolerance | rows 24314, geometries 24274/24314 (24314 equal up to vertex order), values 607850/607850, crs same |
+| import ogr.Layer | liechtenstein.osm.pbf:multipolygons | within tolerance | rows 24314, geometries 24274/24314 (24314 equal up to vertex order), values 607850/607850 |
+| import GeoDataFrame.to_arrow(WKB) | liechtenstein.osm.pbf:multipolygons | within tolerance | rows 24314, geometries 24274/24314 (24314 equal up to vertex order), values 607850/607850, crs same |
+| import GeoDataFrame.to_arrow(geoarrow) | liechtenstein.osm.pbf:multipolygons | within tolerance | rows 24314, geometries 24274/24314 (24314 equal up to vertex order), values 607850/607850, crs same |
+| GDAL WriteArrow of terrio's table | liechtenstein.osm.pbf:multipolygons | within tolerance | rows 24314, geometries 24274/24314 (24314 equal up to vertex order), values 607850/607850 |
+
+## GeoPackage updates and spatial filters
+
+`--append`, `--overwrite` and added layers compared with `ogr2ogr` (features, extents, counts, sequences, R-trees, `integrity_check`, the GeoPackage validator, rasters kept), and `--spat` through the R-tree compared with `ogr2ogr -spat`.
+
+| Format or operation | Cases | Identical | Within tolerance | Differs |
+|---|---:|---:|---:|---:|
+| append | 4 | 4 | 0 | 0 |
+| add | 2 | 1 | 0 | 1 |
+| --spat | 6 | 6 | 0 | 0 |
+
+Cases that are not identical:
+
+| Format or operation | Case | Result | Details |
+|---|---|---|---|
+| add | add a layer, overwrite another | differs | contents[places]: ('features', -179.5899789, -89.9999998, 179.3833036, 82.4833232, 100001) vs ('features', -179.5899789, -89.9999998, 179.3833036, 82.4833232, 4326); contents[countries]: ('features', None, None, None, None, 100001) vs ('features', None, None, None, None, 4326); geometry_columns[plac |
+
 ## Point clouds
 
 Every dimension of every point equal to laspy's; headers equal to laspy's and PDAL's; written files read back identically by laspy and PDAL; COPC queries returning the same points as PDAL's `readers.copc`; grids equal to PDAL's `writers.gdal`. Reprojections are within 2e-7 degrees or 2 mm of PDAL's.
 
 | Format or operation | Cases | Identical | Within tolerance | Differs |
 |---|---:|---:|---:|---:|
-| read vs laspy | 55 | 55 | 0 | 0 |
-| header vs laspy | 55 | 55 | 0 | 0 |
-| header vs PDAL | 55 | 55 | 0 | 0 |
-| write and read back (laspy) | 159 | 159 | 0 | 0 |
-| write and read back (PDAL) | 141 | 141 | 0 | 0 |
+| read vs laspy | 70 | 70 | 0 | 0 |
+| header vs laspy | 70 | 70 | 0 | 0 |
+| header vs PDAL | 70 | 70 | 0 | 0 |
+| write and read back (laspy) | 201 | 201 | 0 | 0 |
+| write and read back (PDAL) | 183 | 183 | 0 | 0 |
 | COPC queries vs PDAL | 9 | 9 | 0 | 0 |
 | grid vs PDAL writers.gdal | 8 | 8 | 0 | 0 |
 | reproject vs PDAL | 3 | 0 | 3 | 0 |

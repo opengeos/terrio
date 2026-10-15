@@ -79,8 +79,15 @@ pub fn parse(shp: &[u8], dbf: Option<&[u8]>, prj: Option<&str>, cpg: Option<&str
         layer.push(Feature { fid: fid as u64, geometry, attributes });
     }
     if let Some(prj) = prj.filter(|s| !s.trim().is_empty()) {
-        SpatialRef::from_wkt(prj.trim()).apply_to_layer(&mut layer);
-        layer.set_crs_wkt(Some(prj.trim().to_string()));
+        // As GDAL's Shapefile driver (FindBestMatch()), the EPSG CRS the `.prj` is identified as,
+        // and otherwise its definition.
+        match SpatialRef::from_wkt(prj.trim()).epsg.and_then(|code| SpatialRef::from_epsg(code).ok()) {
+            Some(s) => s.apply_to_layer(&mut layer),
+            None => {
+                SpatialRef::from_wkt(prj.trim()).apply_to_layer(&mut layer);
+                layer.set_crs_wkt(Some(prj.trim().to_string()));
+            }
+        }
     }
     Ok(layer)
 }
@@ -760,5 +767,29 @@ mod tests {
         let (shp, shx) = encode_shapes(&l).unwrap();
         assert_eq!(shx.len(), 100 + 16);
         assert_eq!(i32::from_le_bytes(shp[32..36].try_into().unwrap()), 1);
+    }
+
+    #[test]
+    fn takes_the_epsg_crs_of_an_esri_prj() {
+        // GDAL's Shapefile driver replaces an ESRI .prj it identifies by the EPSG CRS, which a
+        // GeoPackage then names EPSG:4326 (srs_id 4326), not a custom CRS.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("p.shp");
+        let path = path.to_str().unwrap();
+        let mut l = Layer::new("p");
+        l.add_field(FieldDef::new("id", FieldType::Integer));
+        l.push(Feature { fid: 0, geometry: Some(Geometry::point(1.0, 2.0)), attributes: vec![FieldValue::Integer(1)] });
+        write(&l, path).unwrap();
+        let esri = r#"GEOGCS["GCS_WGS_1984",DATUM["D_WGS_1984",SPHEROID["WGS_1984",6378137.0,298.257223563]],PRIMEM["Greenwich",0.0],UNIT["Degree",0.0174532925199433]]"#;
+        std::fs::write(dir.path().join("p.prj"), esri).unwrap();
+        let back = read(path).unwrap();
+        assert_eq!(back.crs_epsg(), Some(4326));
+        assert_eq!(super::super::trusted_epsg(&back), Some(4326));
+        // A .prj matching no EPSG CRS is kept as it is.
+        let custom = r#"PROJCS["custom",GEOGCS["GCS_WGS_1984",DATUM["D_WGS_1984",SPHEROID["WGS_1984",6378137.0,298.257223563]],PRIMEM["Greenwich",0.0],UNIT["Degree",0.0174532925199433]],PROJECTION["Transverse_Mercator"],PARAMETER["False_Easting",123456.0],PARAMETER["False_Northing",0.0],PARAMETER["Central_Meridian",7.3],PARAMETER["Scale_Factor",0.9991],PARAMETER["Latitude_Of_Origin",0.0],UNIT["Meter",1.0]]"#;
+        std::fs::write(dir.path().join("p.prj"), custom).unwrap();
+        let back = read(path).unwrap();
+        assert_eq!(back.crs_epsg(), None);
+        assert_eq!(back.crs_wkt(), Some(custom));
     }
 }

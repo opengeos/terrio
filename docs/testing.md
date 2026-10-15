@@ -56,10 +56,10 @@ The [Conformance](conformance.md) page has the full, generated results; in short
 | Area | Agreement with GDAL |
 |---|---|
 | Raster drivers | Pixel-identical reads for every test file; terrio-written GTiff, COG, JP2, Zarr and Esri formats read back identically |
-| Vector drivers | Identical layers, counts, fields, CRS, extents and geometry types for 31 of 32 files |
+| Vector drivers | Identical layers, counts, fields, CRS, extents and geometry types for every file; files terrio writes read back by GDAL as `ogr2ogr`'s own conversions read back |
 | Window reads | 160 of 160 local and 22 of 22 remote windows identical |
-| `translate` | 100% identical pixels (nearest); 99.99% for bilinear, cubic and average |
-| `warp` | 99.999–100% identical (nearest); others within one float32 rounding step |
+| `translate` | 100% identical pixels, nearest, bilinear, cubic and average alike (GDAL's resampling arithmetic) |
+| `warp` | 21 of 28 cases identical; in the other 7, at most 7 pixels one float32 rounding step apart (source coordinates come from terrio's projection arithmetic, not PROJ's) |
 | `mosaic` | 100% identical to `gdal_merge.py` and `gdalbuildvrt` |
 | `convert` filters | 28 of 28 option cases identical to `ogr2ogr`, feature by feature |
 | `rasterize` | 0 differing pixels in 18 cases |
@@ -70,7 +70,7 @@ The [Conformance](conformance.md) page has the full, generated results; in short
 | STAC and GeoZarr | 16 of 16 STAC checks (subdatasets, mosaics and windows identical to GDAL STACIT's, 328 footprint fields as `ogrinfo`'s) and 60 of 60 GeoZarr checks |
 | Point clouds | 485 of 485 checks: every value identical to laspy; COPC queries and grids identical to PDAL |
 | Arrow | 171 of 180 comparisons identical (geometries WKB-equal, values, CRS) on 9 files; the other 9 are 40 OSM multipolygons whose rings start at another vertex than GDAL's |
-| GeoPackage updates, `--spat` | 11 of 12 cases identical; adding a shapefile layer stores its ESRI CRS as its WKT where GDAL names EPSG:4326, as new files do |
+| GeoPackage updates, `--spat` | 12 of 12 cases identical |
 
 ## Running the tests
 
