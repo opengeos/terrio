@@ -1201,7 +1201,7 @@ pub(crate) fn read_sorted_pbf(
     };
     let node = |id: i64| nodes.get(id);
     let mut used_as_outer = std::collections::HashSet::new();
-    for rels in relations.chunks(1024) {
+    for rels in relations.chunks(8192) {
         let mut out: Vec<Vec<Feature>> = vec![Vec::new(); 5];
         used_as_outer.extend(relation_features(rels, &member, &node, &schemas, &mut |l, f| out[l].push(f)));
         for (l, features) in out.into_iter().enumerate() {

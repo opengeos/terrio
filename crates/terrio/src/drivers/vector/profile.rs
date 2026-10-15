@@ -62,6 +62,18 @@ fn int_len(x: i64) -> usize {
 }
 
 impl FieldProfile {
+    /// Adds the profile of the values that follow.
+    fn merge(&mut self, o: &FieldProfile) {
+        self.non_null += o.non_null;
+        self.all_int32 &= o.all_int32;
+        self.no_int_beyond_int32 &= o.no_int_beyond_int32;
+        self.longest_int = self.longest_int.max(o.longest_int);
+        self.longest_text = self.longest_text.max(o.longest_text);
+        self.all_dates &= o.all_dates;
+        self.all_datetimes &= o.all_datetimes;
+        self.with_offset += o.with_offset;
+    }
+
     /// Adds a value of a field of type `t`. The text length is measured for the field types
     /// written as text (the others have fixed widths), and dates are parsed for date fields.
     fn add(&mut self, v: &FieldValue, t: FieldType) {
@@ -85,6 +97,19 @@ impl FieldProfile {
                 self.with_offset += 1;
             }
         }
+    }
+}
+
+/// The type two geometry types share, single and multi-part forms counting as the multi-part
+/// type: `None` when they differ.
+fn shared_type(a: GeometryType, b: GeometryType) -> Option<GeometryType> {
+    use GeometryType as T;
+    match (a, b) {
+        (a, b) if a == b => Some(a),
+        (T::Point | T::MultiPoint, T::Point | T::MultiPoint) => Some(T::MultiPoint),
+        (T::LineString | T::MultiLineString, T::LineString | T::MultiLineString) => Some(T::MultiLineString),
+        (T::Polygon | T::MultiPolygon, T::Polygon | T::MultiPolygon) => Some(T::MultiPolygon),
+        _ => None,
     }
 }
 
@@ -140,9 +165,63 @@ impl LayerProfile {
         p
     }
 
-    /// Adds features to the profile.
+    /// Adds features to the profile (large chunks in parallel, merged in order).
     pub fn add(&mut self, features: &[Feature]) {
-        use GeometryType as T;
+        const PART: usize = 4096;
+        if features.len() <= PART {
+            return self.add_seq(features);
+        }
+        let parts = crate::par::map_range(features.len().div_ceil(PART), |i| {
+            let mut p = Self {
+                count: 0,
+                fields: vec![FieldProfile::default(); self.types.len()],
+                geometry: GeometryProfile::default(),
+                types: self.types.clone(),
+            };
+            p.add_seq(&features[i * PART..((i + 1) * PART).min(features.len())]);
+            p
+        });
+        for p in &parts {
+            self.merge(p);
+        }
+    }
+
+    /// Adds the profile of the features that follow.
+    fn merge(&mut self, o: &LayerProfile) {
+        self.count += o.count;
+        for (a, b) in self.fields.iter_mut().zip(&o.fields) {
+            a.merge(b);
+        }
+        let (g, h) = (&mut self.geometry, &o.geometry);
+        g.count += h.count;
+        g.first = match (g.first, h.first) {
+            (None, f) => f,
+            (Some(f), None) => Some(f),
+            (Some((t, same)), Some((u, same2))) => Some((t, same && same2 && t == u)),
+        };
+        g.shared = match (g.shared, h.shared) {
+            (None, s) => s,
+            (s, None) => s,
+            (Some(Some(a)), Some(Some(b))) => Some(shared_type(a, b)),
+            _ => Some(None),
+        };
+        g.has_z |= h.has_z;
+        g.any_z |= h.any_z;
+        g.has_m |= h.has_m;
+        g.non_point |= h.non_point;
+        g.missing_bbox |= h.missing_bbox;
+        for n in &h.type_names {
+            if !g.type_names.contains(n) {
+                g.type_names.push(n.clone());
+            }
+        }
+        g.bbox = match (g.bbox, h.bbox) {
+            (Some(a), Some(b)) => Some([a[0].min(b[0]), a[1].min(b[1]), a[2].max(b[2]), a[3].max(b[3])]),
+            (a, b) => a.or(b),
+        };
+    }
+
+    fn add_seq(&mut self, features: &[Feature]) {
         for f in features {
             self.count += 1;
             for ((fp, v), t) in self.fields.iter_mut().zip(&f.attributes).zip(&self.types) {
@@ -162,13 +241,7 @@ impl LayerProfile {
             g.shared = Some(match g.shared {
                 None => Some(t),
                 Some(None) => None,
-                Some(Some(a)) => match (a, t) {
-                    (a, b) if a == b => Some(a),
-                    (T::Point | T::MultiPoint, T::Point | T::MultiPoint) => Some(T::MultiPoint),
-                    (T::LineString | T::MultiLineString, T::LineString | T::MultiLineString) => Some(T::MultiLineString),
-                    (T::Polygon | T::MultiPolygon, T::Polygon | T::MultiPolygon) => Some(T::MultiPolygon),
-                    _ => None,
-                },
+                Some(Some(a)) => shared_type(a, t),
             });
             let z = crate::vector::geometry_has_z(geom);
             g.has_z |= z;
@@ -178,9 +251,9 @@ impl LayerProfile {
                 g.has_m |= am;
             }
             g.non_point |= !matches!(geom, wbvector::Geometry::Point(_));
-            let name = format!("{}{}", t.as_str(), if z { " Z" } else { "" });
-            if !g.type_names.contains(&name) {
-                g.type_names.push(name);
+            let (base, suffix) = (t.as_str(), if z { " Z" } else { "" });
+            if !g.type_names.iter().any(|n| n.strip_prefix(base) == Some(suffix)) {
+                g.type_names.push(format!("{base}{suffix}"));
             }
             match geom.bbox() {
                 Some(b) => {
@@ -246,5 +319,36 @@ mod tests {
         q.add(&l.features[..1]);
         q.add(&l.features[1..]);
         assert_eq!(p, q);
+    }
+
+    /// Large chunks, profiled in parallel parts, give the profile of one sequential pass.
+    #[test]
+    fn parallel_profiles_match_sequential_ones() {
+        let mut l = Layer::new("t");
+        l.add_field(FieldDef::new("i", FieldType::Integer));
+        l.add_field(FieldDef::new("d", FieldType::Date));
+        l.add_field(FieldDef::new("s", FieldType::Text));
+        for k in 0..20_000i64 {
+            let geometry = match k % 7 {
+                0 => None,
+                1 | 2 => Some(Geometry::point(k as f64, -(k as f64))),
+                3 => Some(Geometry::multi_point(vec![wbvector::Coord::xyz(1.0, 2.0, k as f64)])),
+                _ if k > 15_000 => Some(Geometry::line_string(vec![wbvector::Coord::xy(0.0, 0.0), wbvector::Coord::xy(k as f64, 1.0)])),
+                _ => Some(Geometry::point(0.5, 0.5)),
+            };
+            let i = if k == 12_345 { FieldValue::Integer(1 << 40) } else { FieldValue::Integer(k) };
+            let d = if k == 19_000 { FieldValue::Date("not a date".into()) } else { FieldValue::Date("2024-01-02".into()) };
+            let s = if k % 11 == 0 { FieldValue::Null } else { FieldValue::Text("x".repeat((k % 300) as usize)) };
+            l.push(Feature { fid: k as u64, geometry, attributes: vec![i, d, s] });
+        }
+        let parallel = LayerProfile::of(&l);
+        let mut sequential = LayerProfile::new(&l);
+        sequential.add_seq(&l.features);
+        assert_eq!(parallel, sequential);
+        // From a part with no geometry on.
+        let mut p = LayerProfile::new(&l);
+        p.add(&l.features[..1]);
+        p.add(&l.features[1..]);
+        assert_eq!(p, sequential);
     }
 }
