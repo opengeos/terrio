@@ -1143,8 +1143,9 @@ pub(crate) fn read_sorted_pbf(
     let mut areas = std::io::BufWriter::with_capacity(1 << 20, super::spill()?);
     let mut in_ways = false;
     let batch = crate::par::threads().max(1) * 2;
-    // The block holding the first relation is the last read here (its relations were read above).
-    let end = if need_relations { (last + 1).min(spans.len()) } else { spans.len() };
+    // Blocks from `last` on hold only relations; the one before, the last read here, may hold the
+    // first relations too (read above).
+    let end = if need_relations { last } else { spans.len() };
     let mut i = 0;
     while i < end {
         let n = batch.min(end - i);
@@ -1156,7 +1157,7 @@ pub(crate) fn read_sorted_pbf(
         });
         for (k, block) in blocks.into_iter().enumerate() {
             let block = block?;
-            let at_relations = need_relations && i + k + 1 == end && last < spans.len();
+            let at_relations = need_relations && i + k + 1 == end;
             if block.out_of_order || (block.has_nodes && in_ways) || (block.has_relations && need_relations && !at_relations) {
                 return Err(unsorted());
             }
@@ -1308,6 +1309,114 @@ mod tests {
                         x.fid
                     );
                 }
+            }
+        }
+    }
+
+    /// A protobuf message being encoded, for hand-built PBF files.
+    #[derive(Default)]
+    struct Msg(Vec<u8>);
+
+    impl Msg {
+        fn varint(&mut self, mut v: u64) {
+            while v >= 0x80 {
+                self.0.push(v as u8 | 0x80);
+                v >>= 7;
+            }
+            self.0.push(v as u8);
+        }
+        fn int(mut self, field: u64, v: u64) -> Self {
+            self.varint(field << 3);
+            self.varint(v);
+            self
+        }
+        fn bytes(mut self, field: u64, b: &[u8]) -> Self {
+            self.varint((field << 3) | 2);
+            self.varint(b.len() as u64);
+            self.0.extend_from_slice(b);
+            self
+        }
+        fn packed(self, field: u64, vs: &[u64]) -> Self {
+            let mut p = Msg::default();
+            vs.iter().for_each(|&v| p.varint(v));
+            self.bytes(field, &p.0)
+        }
+    }
+
+    fn zz(v: i64) -> u64 {
+        ((v << 1) ^ (v >> 63)) as u64
+    }
+
+    /// A PBF file of blocks, each a list of groups (nodes, ways or relations), sorted by type then
+    /// id as its header says.
+    fn pbf(blocks: &[Vec<Msg>]) -> Vec<u8> {
+        let strings = ["", "building", "yes", "highway", "residential", "type", "multipolygon", "name", "lake", "outer"];
+        let table = strings.iter().fold(Msg::default(), |m, s| m.bytes(1, s.as_bytes()));
+        let mut out = Vec::new();
+        let mut blob = |kind: &str, data: Vec<u8>| {
+            let blob = Msg::default().bytes(1, &data).int(2, data.len() as u64).0;
+            let header = Msg::default().bytes(1, kind.as_bytes()).int(3, blob.len() as u64).0;
+            out.extend_from_slice(&(header.len() as u32).to_be_bytes());
+            out.extend_from_slice(&header);
+            out.extend_from_slice(&blob);
+        };
+        let header = Msg::default().bytes(4, b"OsmSchema-V0.6").bytes(4, b"DenseNodes").bytes(5, b"Sort.Type_then_ID");
+        blob("OSMHeader", header.0);
+        for groups in blocks {
+            let block = groups.iter().fold(Msg::default().bytes(1, &table.0), |m, g| m.bytes(2, &g.0));
+            blob("OSMData", block.0);
+        }
+        out
+    }
+
+    /// Nodes 1 to 5 (a square and its centre), a closed way tagged as a building, a residential
+    /// street, and a multipolygon relation using the building as its outer ring.
+    fn objects() -> (Msg, Msg, Msg) {
+        let node = |id: i64, lat: i64, lon: i64| Msg::default().int(1, zz(id)).int(8, zz(lat)).int(9, zz(lon)).0;
+        let pts = [(1, 0, 0), (2, 0, 10_000), (3, 10_000, 10_000), (4, 10_000, 0), (5, 5_000, 5_000)];
+        let nodes = pts.iter().fold(Msg::default(), |m, &(id, lat, lon)| m.bytes(1, &node(id, lat, lon)));
+        let way = |id: u64, refs: &[i64], k: u64, v: u64| {
+            let mut prev = 0;
+            let deltas: Vec<u64> = refs.iter().map(|&r| (zz(r - std::mem::replace(&mut prev, r)))).collect();
+            Msg::default().int(1, id).packed(2, &[k]).packed(3, &[v]).packed(8, &deltas).0
+        };
+        let ways = Msg::default().bytes(3, &way(10, &[1, 2, 3, 4, 1], 1, 2)).bytes(3, &way(11, &[1, 5, 3], 3, 4));
+        let rel = Msg::default().int(1, 20).packed(2, &[5, 7]).packed(3, &[6, 8]).packed(8, &[9]).packed(9, &[zz(10)]).packed(10, &[1]);
+        let relations = Msg::default().bytes(4, &rel.0);
+        (nodes, ways, relations)
+    }
+
+    /// Sorted files whose relations share a block with nodes or ways read as files of one type a
+    /// block, and as the reader holding everything reads them.
+    #[test]
+    fn reads_blocks_of_mixed_types() {
+        let separate = {
+            let (n, w, r) = objects();
+            pbf(&[vec![n], vec![w], vec![r]])
+        };
+        let expected = read_sorted_layers(&mut std::io::Cursor::new(&separate)).unwrap().unwrap();
+        assert_eq!(expected.iter().map(Layer::len).collect::<Vec<_>>(), [0, 1, 0, 1, 0]);
+        let mixed: Vec<Vec<u8>> = vec![
+            {
+                let (n, w, r) = objects();
+                pbf(&[vec![n, w, r]])
+            },
+            {
+                let (n, w, r) = objects();
+                pbf(&[vec![n], vec![w, r]])
+            },
+            {
+                let (n, w, r) = objects();
+                pbf(&[vec![n, w], vec![r]])
+            },
+        ];
+        for (k, bytes) in mixed.iter().enumerate() {
+            let sorted = read_sorted_layers(&mut std::io::Cursor::new(bytes)).unwrap().unwrap();
+            let any = parse_any_order(bytes.clone()).unwrap();
+            let content = |l: &Layer| l.features.iter().map(|f| (f.fid, f.attributes.clone(), f.geometry.clone())).collect::<Vec<_>>();
+            for ((a, b), c) in sorted.iter().zip(&any).zip(&expected) {
+                assert_eq!(content(a), content(b), "file {k}, {}", a.name);
+                assert_eq!(content(a), content(c), "file {k}, {}", a.name);
             }
         }
     }

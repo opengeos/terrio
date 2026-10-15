@@ -309,6 +309,7 @@ fn converts_several_layers_to_a_geopackage_like_whole_conversions() {
     let a = crate::open_vector(&whole, &Default::default()).unwrap().layers;
     let b = crate::open_vector(&streamed, &Default::default()).unwrap().layers;
     assert_eq!(a.len(), 2);
+    assert_eq!(b.len(), a.len());
     for (x, y) in a.iter().zip(&b) {
         same_features(x, y);
     }
@@ -334,6 +335,7 @@ fn converts_osm_like_whole_conversions() {
     let a = crate::open_vector(&w, &Default::default()).unwrap().layers;
     let b = crate::open_vector(&gpkg, &Default::default()).unwrap().layers;
     assert_eq!(a.len(), 5);
+    assert_eq!(b.len(), a.len());
     for (x, y) in a.iter().zip(&b) {
         same_features(x, y);
     }
