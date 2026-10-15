@@ -200,13 +200,16 @@ jobs:
           cat xarray.md >> "$GITHUB_STEP_SUMMARY"
       - name: Compare point clouds with laspy and PDAL
         shell: micromamba-shell {0}
-        run: python scripts/compare_pointclouds.py terrio-data
+        # Kept for the conformance report below, which reads it instead of comparing again.
+        run: |
+          set -o pipefail
+          python scripts/compare_pointclouds.py terrio-data | tee pointclouds.log
       - name: Conformance suite (every comparison with GDAL, laspy and PDAL)
         # Informational: differences are listed in the report, not failures. The step fails when
         # a suite cannot run.
         shell: micromamba-shell {0}
         run: |
-          python scripts/conformance.py terrio-data --output conformance.md --json conformance.json --jobs 2
+          TERRIO_POINTCLOUDS_LOG=pointclouds.log python scripts/conformance.py terrio-data --output conformance.md --json conformance.json --jobs 4
           cat conformance.md >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v7
         if: always()

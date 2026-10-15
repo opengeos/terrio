@@ -504,7 +504,13 @@ def suite_pointclouds(ctx):
     if missing:
         s.skipped = "needs the Python modules " + ", ".join(missing)
         return s
-    _code, out, err = run([sys.executable, str(SCRIPTS / "compare_pointclouds.py"), ctx.data])
+    # CI runs compare_pointclouds.py as its own (failing) step first; its output is reused here
+    # rather than running the comparison again.
+    log = os.environ.get("TERRIO_POINTCLOUDS_LOG")
+    if log and os.path.exists(log):
+        out, err = Path(log).read_text(), ""
+    else:
+        _code, out, err = run([sys.executable, str(SCRIPTS / "compare_pointclouds.py"), ctx.data])
     for line in out.splitlines():
         m = re.match(r"^(ok  |FAIL) (.+)$", line)
         if not m:
