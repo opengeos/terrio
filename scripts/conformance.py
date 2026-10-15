@@ -534,7 +534,7 @@ def suite_pointclouds(ctx):
             "COPC": "COPC queries vs PDAL",
             "EPT": "EPT queries vs PDAL",
             "readfmt": "PLY, E57 and EPT vs PDAL",
-            "writefmt": "PLY and E57 written, read by PDAL",
+            "writefmt": "PLY, E57 and EPT written, read back",
             "waveform": "waveforms",
             "filter": "filters vs PDAL",
             "grid": "grid vs PDAL writers.gdal",

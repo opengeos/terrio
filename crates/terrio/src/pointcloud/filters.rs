@@ -1,6 +1,23 @@
 //! Point cloud filters, as PDAL's: `filters.range`, `filters.sample`,
-//! `filters.voxelcenternearestneighbor`, `filters.voxeldownsize`, `filters.outlier` and
-//! `filters.smrf` (ground classification), with PDAL's options, defaults and results.
+//! `filters.voxelcenternearestneighbor`, `filters.voxeldownsize`, `filters.outlier`,
+//! `filters.smrf`, `filters.pmf` and `filters.csf` (ground classification), `filters.elm` (low noise),
+//! `filters.hag_nn` and `filters.hag_delaunay` (height above ground), `filters.crop`,
+//! `filters.decimation`, `filters.expression`, `filters.assign`, `filters.merge`,
+//! `filters.splitter`, `filters.chipper`, `filters.normal` and `filters.cluster`, with PDAL's
+//! options, defaults and results.
+
+mod csf;
+pub mod expr;
+mod features;
+mod ground;
+mod select;
+mod tiles;
+
+pub use csf::{CsfOptions, csf, csf_classes};
+pub use features::{ClusterOptions, NormalOptions, cluster, normal};
+pub use ground::{HagOptions, PmfOptions, elm, hag_delaunay, hag_nn, pmf, pmf_classes};
+pub use select::{AssignOptions, CropBox, CropOptions, assign, crop, crop_indices, decimation, expression, merge};
+pub use tiles::{SplitterOptions, chipper, splitter};
 
 use super::kdtree::KdTree;
 use super::{PointCloud, ReturnKind, Values};

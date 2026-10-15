@@ -78,6 +78,70 @@ def test_filters_and_grid_methods():
     assert np.all(nearest.read(1) >= 100) and np.all(nearest.read(1) <= 110)
 
 
+def test_more_pdal_filters():
+    pc = make_points()
+    for ground in [pc.pmf(), pc.csf(resolution=2.0)]:
+        assert set(np.unique(ground["classification"])) <= {1, 2}
+    assert np.sum(pc.elm(cell=5.0, threshold=0.5)["classification"] == 7) > 0
+    classified = pc.smrf()
+    for hag in [classified.hag_nn(count=3), classified.hag_delaunay()]:
+        h = hag["height_above_ground"]
+        assert h.dtype == np.float64 and np.all(h[classified["classification"] == 2] == 0)
+    box = pc.crop(bounds=["([500010, 500020], [4000010, 4000020])"])
+    x, y = pc["x"], pc["y"]
+    inside = (x >= 500010) & (x <= 500020) & (y >= 4000010) & (y <= 4000020)
+    np.testing.assert_array_equal(box["x"], x[inside])
+    assert len(pc.crop(bounds=["([500010, 500020], [4000010, 4000020])"], outside=True)) == len(
+        pc
+    ) - int(inside.sum())
+    assert len(pc.crop(points=[[500050.0, 4000050.0]], distance=10.0)) > 0
+    assert (
+        len(
+            pc.crop(
+                polygons=[
+                    "POLYGON((500000 4000000, 500100 4000000, 500000 4000100, 500000 4000000))"
+                ]
+            )
+        )
+        > 0
+    )
+    np.testing.assert_array_equal(pc.decimation(3)["x"], x[::3])
+    high = pc.expression("Classification == 2 && Z > 105")
+    assert np.all(high["classification"] == 2) and np.all(high["z"] > 105)
+    assigned = pc.assign(
+        assignment="Classification[6:6]=5", value="Score = Z * 2 WHERE Classification == 5"
+    )
+    assert not np.any(assigned["classification"] == 6)
+    np.testing.assert_array_equal(
+        assigned["score"], np.where(assigned["classification"] == 5, pc["z"] * 2, 0)
+    )
+    merged = terrio.merge_points([pc, pc.decimation(2)])
+    assert len(merged) == len(pc) + (len(pc) + 1) // 2
+    tiles = pc.splitter(50.0, origin=(500000.0, 4000000.0))
+    assert len(tiles) == 4 and sum(len(t) for t in tiles) == len(pc)
+    chips = pc.chipper(5000)
+    assert [len(c) for c in chips] == [5000] * 4
+    normals = pc.normal(knn=8)
+    assert np.all(normals["normal_z"] >= 0) and np.all(normals["curvature"] >= 0)
+    ids = pc.cluster(2.0, is3d=False)["cluster_id"]
+    assert ids.dtype == np.uint64 and ids.min() >= 1
+
+
+def test_ept_written_and_read(tmp_path):
+    pc = make_points()
+    for data_type in ["laszip", "binary", "zstandard"]:
+        path = tmp_path / data_type / "ept.json"
+        pc.write(str(path), ept_data_type=data_type)
+        f = terrio.open_points(str(path))
+        assert f.format == "EPT" and f.ept_info["data_type"] == data_type
+        back = f.read()
+        np.testing.assert_allclose(np.sort(back["x"]), np.sort(pc["x"]), rtol=0, atol=1e-6)
+    terrio.convert_points(
+        str(tmp_path / "laszip" / "ept.json"), str(tmp_path / "points.e57"), chunk_points=3000
+    )
+    assert len(terrio.read_points(str(tmp_path / "points.e57"))) == len(pc)
+
+
 def test_ept_and_filters_as_pdal(data_dir):
     pc = os.path.join(data_dir, "pointcloud")
     f = terrio.open_points(os.path.join(pc, "ept", "lone-star-laszip", "ept.json"))
@@ -88,6 +152,11 @@ def test_ept_and_filters_as_pdal(data_dir):
     assert int(np.sum(autzen.smrf()["classification"] == 2)) == 86660
     assert int(np.sum(autzen.outlier()["classification"] == 7)) == 4133
     assert len(autzen.sample(1.0)) == 103846
+    assert int(np.sum(autzen.pmf()["classification"] == 2)) == 81954
+    assert int(np.sum(autzen.csf(resolution=5.0, rigidness=2)["classification"] == 2)) == 35440
+    assert int(np.sum(autzen.elm()["classification"] == 7)) == 202
+    assert autzen.smrf().hag_nn()["height_above_ground"].sum() == pytest.approx(625301.02)
+    assert len(autzen.chipper()) == 22
     dem = terrio.grid_points(os.path.join(pc, "autzen_trim.las"), 10.0, method="nearest")
     assert dem.read(1).sum() == pytest.approx(2833138.81)
 

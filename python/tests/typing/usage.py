@@ -257,10 +257,34 @@ def points(tmp: Path) -> None:
     ground = pc.smrf(cell=2.0).range("Classification[2:2]")
     thin = pc.outlier(method="radius", radius=5.0).voxel_downsize(2.0, "first").sample(1.0)
     nn = pc.voxel_center_nearest_neighbor(2.0)
+    more = (
+        pc.pmf(cell_size=2.0)
+        .csf(resolution=2.0)
+        .elm()
+        .hag_nn(count=3)
+        .hag_delaunay()
+        .crop(bounds=["([0, 10], [0, 10])"], outside=True)
+        .decimation(2.0)
+        .expression("Z > 0")
+        .assign(value="Classification = 2 WHERE Z < 1")
+        .normal(knn=8)
+        .cluster(1.0)
+    )
+    tiles: list[terrio.PointCloud] = pc.splitter(100.0) + pc.chipper(5000)
+    merged = terrio.merge_points([pc, more, *tiles])
+    pc.write(str(tmp / "ept" / "ept.json"), ept_data_type="binary")
+    terrio.convert_points(path, str(tmp / "ept2" / "ept.json"), ept_data_type="zstandard")
     tin = pc.grid(1.0, method="linear", radius=0.0)
     big = terrio.grid_points(path, 2.0, stat="max")
     print(
-        len(ground), len(thin), len(nn), tin.count, big.count, f.ept_info, f.wave_packet_descriptors
+        len(ground),
+        len(thin),
+        len(nn),
+        len(merged),
+        tin.count,
+        big.count,
+        f.ept_info,
+        f.wave_packet_descriptors,
     )
 
 

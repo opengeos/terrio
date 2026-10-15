@@ -46,8 +46,8 @@ enum Command {
     /// Grid a point cloud into a raster: min, max, mean, IDW, count or standard deviation per cell
     /// (like PDAL's writers.gdal), or a TIN or nearest-neighbour interpolation (like gdal_grid).
     Grid(cmd::grid::Args),
-    /// Filter a point cloud as PDAL's filters do: ground classification (SMRF), outliers, ranges,
-    /// sampling, voxel thinning.
+    /// Filter a point cloud as PDAL's filters do: ground classification (SMRF, PMF, CSF), noise,
+    /// heights above ground, crops, expressions, assignments, tiles, normals, clusters, sampling.
     Filter(cmd::filter::Args),
 }
 
@@ -81,5 +81,14 @@ fn main() -> ExitCode {
             eprintln!("terrio: {e}");
             ExitCode::FAILURE
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn the_command_line_is_well_formed() {
+        // Clap's checks: unique argument names across flattened option groups, among others.
+        <super::Cli as clap::CommandFactory>::command().debug_assert();
     }
 }

@@ -21,14 +21,21 @@ pub enum PointFormat {
     Ply,
     /// E57 (ASTM E2807): laser scans.
     E57,
+    /// EPT (Entwine Point Tile): a directory of octree nodes, named by its `ept.json`.
+    Ept,
 }
 
 impl PointFormat {
     /// The format of a path, by its extension: `.copc.laz` is COPC, `.laz` LAZ, `.las` LAS,
-    /// `.ply` PLY and `.e57` E57.
+    /// `.ply` PLY, `.e57` E57, and an `ept.json` file (or an `ept://` path) EPT.
     pub fn for_path(path: &str) -> Option<Self> {
+        if path.starts_with("ept://") {
+            return Some(PointFormat::Ept);
+        }
         let name = crate::vfs::Location::parse(path).file_name().to_ascii_lowercase();
-        if name.ends_with(".copc.laz") {
+        if name == "ept.json" {
+            Some(PointFormat::Ept)
+        } else if name.ends_with(".copc.laz") {
             Some(PointFormat::Copc)
         } else if name.ends_with(".laz") {
             Some(PointFormat::Laz)
@@ -43,7 +50,7 @@ impl PointFormat {
         }
     }
 
-    /// Parses a format name: `LAS`, `LAZ`, `COPC`, `PLY` or `E57`.
+    /// Parses a format name: `LAS`, `LAZ`, `COPC`, `PLY`, `E57` or `EPT`.
     pub fn from_name(name: &str) -> Option<Self> {
         match name.to_ascii_uppercase().as_str() {
             "LAS" => Some(PointFormat::Las),
@@ -51,6 +58,7 @@ impl PointFormat {
             "COPC" => Some(PointFormat::Copc),
             "PLY" => Some(PointFormat::Ply),
             "E57" => Some(PointFormat::E57),
+            "EPT" => Some(PointFormat::Ept),
             _ => None,
         }
     }
@@ -116,12 +124,19 @@ pub struct PointWriteOptions {
     pub ply_precision: Option<usize>,
     /// The dimensions written (PLY and E57). All by default.
     pub dimensions: Vec<String>,
+    /// EPT: how the nodes' points are stored. LASzip by default, as Entwine writes them.
+    pub ept_data_type: super::EptDataType,
 }
 
 /// Writes a point cloud to a file.
 pub fn write_points(cloud: &PointCloud, path: &str, options: &PointWriteOptions) -> Result<()> {
     check_local(path)?;
     let format = resolve_format(path, options)?;
+    if format == PointFormat::Ept {
+        let mut w = PointWriter::create(path, cloud, options)?;
+        w.write(cloud)?;
+        return w.finish();
+    }
     if format == PointFormat::E57 {
         let file = std::fs::OpenOptions::new()
             .read(true)
@@ -142,6 +157,9 @@ pub fn write_points(cloud: &PointCloud, path: &str, options: &PointWriteOptions)
 /// Writes a point cloud to bytes; `name`'s extension chooses the format unless the options do.
 pub fn write_points_bytes(cloud: &PointCloud, name: &str, options: &PointWriteOptions) -> Result<Vec<u8>> {
     let format = resolve_format(name, options)?;
+    if format == PointFormat::Ept {
+        return Err(Error::Unsupported("EPT datasets are directories: write them with write_points".into()));
+    }
     let mut c = Cursor::new(Vec::new());
     if format == PointFormat::E57 {
         super::e57::write_e57(cloud, &mut c, options)?;
@@ -160,7 +178,7 @@ fn check_local(path: &str) -> Result<()> {
 
 fn resolve_format(path: &str, options: &PointWriteOptions) -> Result<PointFormat> {
     options.format.or_else(|| PointFormat::for_path(path)).ok_or_else(|| {
-        Error::InvalidArgument(format!("cannot tell the point cloud format of '{path}': use .las, .laz, .copc.laz, .ply or .e57"))
+        Error::InvalidArgument(format!("cannot tell the point cloud format of '{path}': use .las, .laz, .copc.laz, .ply, .e57 or ept.json"))
     })
 }
 
@@ -318,6 +336,7 @@ fn write_to<W: Write + Seek + Send + Sync>(cloud: &PointCloud, w: &mut W, format
     match format {
         PointFormat::Ply => return super::ply::write_ply(cloud, w, options),
         PointFormat::E57 => return Err(Error::Unsupported("E57 is written with write_points or write_points_bytes".into())),
+        PointFormat::Ept => return Err(Error::Unsupported("EPT datasets are written with write_points".into())),
         _ => {}
     }
     let (header, layout) = prepare(cloud, format, options)?;
@@ -509,8 +528,8 @@ impl<'a, W: Write + Seek + Send + Sync + 'a> LasStreamWriter<'a, W> {
     }
 }
 
-/// Writes points as they come, in chunks, to a LAS, LAZ, COPC or PLY file: for point clouds
-/// larger than memory.
+/// Writes points as they come, in chunks, to a LAS, LAZ, COPC, PLY or E57 file or an EPT dataset:
+/// for point clouds larger than memory.
 ///
 /// ```no_run
 /// use terrio::pointcloud::{self, PointWriter};
@@ -533,6 +552,8 @@ enum WriterKind {
     #[cfg(not(target_arch = "wasm32"))]
     Copc(Box<super::copc::CopcStreamWriter>),
     Ply(Box<super::ply::PlyStreamWriter<std::io::BufWriter<std::fs::File>>>),
+    #[cfg(not(target_arch = "wasm32"))]
+    E57(Box<super::e57::E57StreamWriter>),
 }
 
 impl std::fmt::Debug for PointWriter {
@@ -544,8 +565,10 @@ impl std::fmt::Debug for PointWriter {
 impl PointWriter {
     /// Creates a file for points like `template`'s: its header (version, point format, scale,
     /// offset, VLRs), CRS and dimensions; its points are not written. The chunks written then
-    /// need the same dimensions (missing ones are written as zeros). E57 files cannot be written
-    /// in chunks.
+    /// need the same dimensions (missing ones are written as zeros).
+    ///
+    /// EPT datasets are written in the directory of the path's `ept.json` (or of an `ept://`
+    /// path), their octree built as COPC files' are, in bounded memory.
     pub fn create(path: &str, template: &PointCloud, options: &PointWriteOptions) -> Result<Self> {
         check_local(path)?;
         let format = resolve_format(path, options)?;
@@ -562,12 +585,62 @@ impl PointWriter {
             PointFormat::Copc => {
                 let (header, layout) = prepare(template, format, options)?;
                 let build = super::copc::CopcBuild { max_depth: options.copc_max_depth, leaf_points: options.copc_leaf_points };
-                WriterKind::Copc(Box::new(super::copc::CopcStreamWriter::new(open()?, header, layout, build, options.copc_memory_points)?))
+                WriterKind::Copc(Box::new(super::copc::CopcStreamWriter::new(
+                    super::copc::OctreeTarget::Copc(open()?),
+                    header,
+                    layout,
+                    build,
+                    options.copc_memory_points,
+                )?))
             }
             #[cfg(target_arch = "wasm32")]
             PointFormat::Copc => return Err(Error::Unsupported("COPC files cannot be written in chunks in WebAssembly".into())),
             PointFormat::Ply => WriterKind::Ply(Box::new(super::ply::PlyStreamWriter::new(open()?, template, options)?)),
-            PointFormat::E57 => return Err(Error::Unsupported("E57 files cannot be written in chunks; use write_points".into())),
+            #[cfg(not(target_arch = "wasm32"))]
+            PointFormat::E57 => {
+                let file = std::fs::OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .create(true)
+                    .truncate(true)
+                    .open(path)
+                    .map_err(|e| Error::Io(std::io::Error::new(e.kind(), format!("'{path}': {e}"))))?;
+                WriterKind::E57(Box::new(super::e57::E57StreamWriter::new(file, template, options)?))
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            PointFormat::Ept => {
+                // The octree's records: LAS ones of the source's point format (without waveforms,
+                // which refer to the source file).
+                let mut opts = options.clone();
+                if opts.point_format.is_none() {
+                    let f = format_for(template, template.header.point_format, false);
+                    opts.point_format = Some(match f {
+                        4 => 1,
+                        5 => 3,
+                        9 => 6,
+                        10 => 8,
+                        f => f,
+                    });
+                }
+                let (mut header, layout) = prepare(template, PointFormat::Laz, &opts)?;
+                header.evlrs.retain(|v| !v.is_waveform_data());
+                header.start_of_waveform_data = 0;
+                header.waveform_data_size = 0;
+                let dir = super::ept_write::dataset_dir(path);
+                let target = super::ept_write::EptTarget::new(dir, options.ept_data_type, template.crs.clone())?;
+                let build = super::copc::CopcBuild { max_depth: options.copc_max_depth, leaf_points: options.copc_leaf_points };
+                WriterKind::Copc(Box::new(super::copc::CopcStreamWriter::new(
+                    super::copc::OctreeTarget::Ept(target),
+                    header,
+                    layout,
+                    build,
+                    options.copc_memory_points,
+                )?))
+            }
+            #[cfg(target_arch = "wasm32")]
+            PointFormat::E57 | PointFormat::Ept => {
+                return Err(Error::Unsupported("E57 files and EPT datasets cannot be written in chunks in WebAssembly".into()));
+            }
         };
         Ok(Self { inner })
     }
@@ -579,6 +652,8 @@ impl PointWriter {
             #[cfg(not(target_arch = "wasm32"))]
             WriterKind::Copc(w) => w.write_cloud(cloud),
             WriterKind::Ply(w) => w.write_cloud(cloud),
+            #[cfg(not(target_arch = "wasm32"))]
+            WriterKind::E57(w) => w.write_cloud(cloud),
         }
     }
 
@@ -589,6 +664,8 @@ impl PointWriter {
             #[cfg(not(target_arch = "wasm32"))]
             WriterKind::Copc(w) => w.finish(),
             WriterKind::Ply(w) => w.finish(),
+            #[cfg(not(target_arch = "wasm32"))]
+            WriterKind::E57(w) => w.finish(),
         }
     }
 }

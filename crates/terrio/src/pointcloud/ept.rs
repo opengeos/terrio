@@ -82,6 +82,50 @@ pub struct EptInfo {
     pub version: String,
 }
 
+/// How the points of an EPT dataset's nodes are stored.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum EptDataType {
+    /// LASzip-compressed LAS files (`.laz`), Entwine's default.
+    #[default]
+    Laszip,
+    /// Binary records, little endian, in the schema's order (`.bin`).
+    Binary,
+    /// Binary records compressed with Zstandard (`.zst`).
+    Zstandard,
+}
+
+impl EptDataType {
+    /// Parses `laszip`, `binary` or `zstandard` (EPT's `dataType`).
+    pub fn parse(s: &str) -> Result<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "laszip" | "laz" => Ok(EptDataType::Laszip),
+            "binary" | "bin" => Ok(EptDataType::Binary),
+            "zstandard" | "zstd" | "zst" => Ok(EptDataType::Zstandard),
+            o => Err(Error::InvalidArgument(format!("unknown EPT data type '{o}' (laszip, binary, zstandard)"))),
+        }
+    }
+
+    /// EPT's name of the data type.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            EptDataType::Laszip => "laszip",
+            EptDataType::Binary => "binary",
+            EptDataType::Zstandard => "zstandard",
+        }
+    }
+
+    /// The extension of the node files.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn extension(self) -> &'static str {
+        match self {
+            EptDataType::Laszip => "laz",
+            EptDataType::Binary => "bin",
+            EptDataType::Zstandard => "zst",
+        }
+    }
+}
+
 /// The classification flags, with their bits in LAS 1.4's flags byte.
 const FLAGS: [(&str, u8); 4] = [("withheld", 2), ("overlap", 3), ("synthetic", 0), ("key_point", 1)];
 

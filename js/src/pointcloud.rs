@@ -420,4 +420,83 @@ impl JsPointCloud {
         };
         Ok(JsPointCloud { inner: filters::smrf(&self.inner, &o).map_err(js_err)? })
     }
+
+    /// Classifies ground points with the Progressive Morphological Filter, as PDAL's
+    /// `filters.pmf`, with its defaults (cell size `cellSize`, 1 by default).
+    pub fn pmf(&self, cell_size: Option<f64>) -> Result<JsPointCloud, JsError> {
+        let o = filters::PmfOptions { cell: cell_size.unwrap_or(1.0), ..Default::default() };
+        Ok(JsPointCloud { inner: filters::pmf(&self.inner, &o).map_err(js_err)? })
+    }
+
+    /// Classifies ground points with the Cloth Simulation Filter, as PDAL's `filters.csf`, with
+    /// its defaults (cloth resolution `resolution`, 1 by default).
+    pub fn csf(&self, resolution: Option<f64>) -> Result<JsPointCloud, JsError> {
+        let o = filters::CsfOptions { resolution: resolution.unwrap_or(1.0), ..Default::default() };
+        Ok(JsPointCloud { inner: filters::csf(&self.inner, &o).map_err(js_err)? })
+    }
+
+    /// Classifies low noise (class 7) with the Extended Local Minimum, as PDAL's `filters.elm`
+    /// (`cell` 10 and `threshold` 1 by default).
+    pub fn elm(&self, cell: Option<f64>, threshold: Option<f64>) -> Result<JsPointCloud, JsError> {
+        Ok(JsPointCloud { inner: filters::elm(&self.inner, cell.unwrap_or(10.0), threshold.unwrap_or(1.0), 7).map_err(js_err)? })
+    }
+
+    /// Heights above the nearest ground points (`height_above_ground`), as PDAL's
+    /// `filters.hag_nn` (`count` 1 by default).
+    #[wasm_bindgen(js_name = hagNn)]
+    pub fn hag_nn(&self, count: Option<usize>) -> Result<JsPointCloud, JsError> {
+        let o = filters::HagOptions { count: count.unwrap_or(1), ..filters::HagOptions::nn() };
+        Ok(JsPointCloud { inner: filters::hag_nn(&self.inner, &o).map_err(js_err)? })
+    }
+
+    /// Heights above a triangulation of the nearest ground points (`height_above_ground`), as
+    /// PDAL's `filters.hag_delaunay` (`count` 10 by default).
+    #[wasm_bindgen(js_name = hagDelaunay)]
+    pub fn hag_delaunay(&self, count: Option<usize>) -> Result<JsPointCloud, JsError> {
+        let o = filters::HagOptions { count: count.unwrap_or(10), ..filters::HagOptions::delaunay() };
+        Ok(JsPointCloud { inner: filters::hag_delaunay(&self.inner, &o).map_err(js_err)? })
+    }
+
+    /// The points in a box (`([xmin, xmax], [ymin, ymax])`) or a polygon (WKT or GeoJSON), as
+    /// PDAL's `filters.crop`.
+    pub fn crop(&self, geometry: &str) -> Result<JsPointCloud, JsError> {
+        let o = if geometry.trim_start().starts_with('(') {
+            filters::CropOptions { bounds: vec![filters::CropBox::parse(geometry).map_err(js_err)?], ..Default::default() }
+        } else {
+            filters::CropOptions { polygons: vec![geometry.to_string()], ..Default::default() }
+        };
+        Ok(JsPointCloud { inner: filters::crop(&self.inner, &o).map_err(js_err)? })
+    }
+
+    /// Every `step`-th point, as PDAL's `filters.decimation`.
+    pub fn decimation(&self, step: f64) -> Result<JsPointCloud, JsError> {
+        Ok(JsPointCloud { inner: filters::decimation(&self.inner, step, 0, None).map_err(js_err)? })
+    }
+
+    /// The points for which an expression holds, as PDAL's `filters.expression`, such as
+    /// `"Classification == 2 && Z > 100"`.
+    pub fn expression(&self, expression: &str) -> Result<JsPointCloud, JsError> {
+        Ok(JsPointCloud { inner: filters::expression(&self.inner, &[expression.to_string()]).map_err(js_err)? })
+    }
+
+    /// Assigns values with an expression, as PDAL's `filters.assign` `value`, such as
+    /// `"Classification = 2 WHERE HeightAboveGround < 0.5"`.
+    pub fn assign(&self, value: &str) -> Result<JsPointCloud, JsError> {
+        let o = filters::AssignOptions { values: vec![value.to_string()], ..Default::default() };
+        Ok(JsPointCloud { inner: filters::assign(&self.inner, &o).map_err(js_err)? })
+    }
+
+    /// Normals and curvature (`normal_x`, `normal_y`, `normal_z`, `curvature`), as PDAL's
+    /// `filters.normal` (`knn` 8 by default).
+    pub fn normal(&self, knn: Option<usize>) -> Result<JsPointCloud, JsError> {
+        let o = filters::NormalOptions { knn: knn.unwrap_or(8), ..Default::default() };
+        Ok(JsPointCloud { inner: filters::normal(&self.inner, &o).map_err(js_err)? })
+    }
+
+    /// Euclidean clusters (`cluster_id`), as PDAL's `filters.cluster` (`tolerance` 1 by
+    /// default).
+    pub fn cluster(&self, tolerance: Option<f64>) -> Result<JsPointCloud, JsError> {
+        let o = filters::ClusterOptions { tolerance: tolerance.unwrap_or(1.0), ..Default::default() };
+        Ok(JsPointCloud { inner: filters::cluster(&self.inner, &o).map_err(js_err)? })
+    }
 }

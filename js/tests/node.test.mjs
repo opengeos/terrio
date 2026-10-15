@@ -435,6 +435,23 @@ test("PLY and E57 bytes, PDAL's filters and TIN gridding", () => {
   assert.equal(pc.range("Z[100:101)").length, 10 * 50);
   assert.equal(pc.voxelDownsize(1, "first").length, 1066);
   assert.equal(pc.outlier({ method: "radius", radius: 0.6, minK: 1 }).get("classification").filter((c) => c === 7).length, 0);
+  // The other filters: ground and others; heights above an all-ground plane are 0; its normals
+  // point up.
+  const cloth = pc.csf(2).get("classification");
+  assert.ok(cloth.every((c) => c === 1 || c === 2) && cloth.filter((c) => c === 2).length > 0);
+  const morph = pc.pmf().get("classification");
+  assert.ok(morph.every((c) => c === 1 || c === 2) && morph.filter((c) => c === 2).length > 0);
+  assert.ok(ground.hagNn().get("height_above_ground").every((h) => h === 0));
+  assert.ok(ground.hagDelaunay().get("height_above_ground").every((h) => h === 0));
+  assert.equal(pc.elm().get("classification").filter((c) => c === 7).length, 0);
+  assert.equal(pc.crop("([500000, 500009.9], [4100000, 4100009.9])").length, 400);
+  assert.equal(pc.crop("POLYGON((500000 4100000, 500010 4100000, 500000 4100010, 500000 4100000))").length, 231);
+  assert.equal(pc.decimation(4).length, n / 4);
+  assert.equal(pc.expression("Z >= 100 && Z < 101").length, 10 * 50);
+  assert.ok(pc.assign("Intensity = 7 WHERE Z < 101").get("intensity").filter((v) => v === 7).length === 10 * 50);
+  const normals = pc.normal().get("normal_z");
+  assert.ok(normals.every((v) => Math.abs(v - 1 / Math.sqrt(1.04)) < 1e-6));
+  assert.ok(pc.cluster(0.6).get("cluster_id").every((c) => c === 1n));
   // Linear interpolation of a plane is exact.
   const tin = pc.grid(1, { method: "linear", radius: 0 });
   const band = tin.readBand(1);

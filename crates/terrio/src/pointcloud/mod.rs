@@ -29,6 +29,8 @@ pub mod copc;
 pub(crate) mod crs;
 mod e57;
 pub mod ept;
+#[cfg(not(target_arch = "wasm32"))]
+mod ept_write;
 pub mod filters;
 pub mod grid;
 pub mod info;
@@ -43,7 +45,7 @@ pub mod waveform;
 mod write;
 
 pub use copc::{CopcInfo, CopcNode, VoxelKey};
-pub use ept::{EptDimension, EptInfo};
+pub use ept::{EptDataType, EptDimension, EptInfo};
 pub use las::{ExtraBytes, LasHeader, Vlr, standard_value_type};
 pub use read::{DEFAULT_CHUNK_POINTS, PointChunks, PointCloudReader, open_points, open_points_bytes};
 pub use values::{Dimension, ValueType, Values};
@@ -395,21 +397,23 @@ pub struct ConvertOptions {
     pub chunk_points: usize,
 }
 
-/// Converts a point cloud to another point cloud format (LAS, LAZ, COPC, PLY, E57) or to a vector
-/// point layer (any vector format terrio writes, chosen by the output's extension), filtering and
-/// reprojecting on the way.
+/// Converts a point cloud to another point cloud format (LAS, LAZ, COPC, PLY, E57, EPT) or to a
+/// vector point layer (any vector format terrio writes, chosen by the output's extension),
+/// filtering and reprojecting on the way.
 ///
-/// Outputs other than E57 and vector layers are written as the points are read, in chunks of
-/// [`ConvertOptions::chunk_points`], so that files larger than memory convert in bounded memory.
+/// Point cloud outputs are written as the points are read, in chunks of
+/// [`ConvertOptions::chunk_points`], so that files larger than memory convert in bounded memory
+/// (vector layers are written whole).
 pub fn convert(src: &str, dst: &str, options: &ConvertOptions) -> Result<()> {
     let format = options.write.format.or_else(|| PointFormat::for_path(dst));
     match format {
-        Some(PointFormat::E57) => {}
+        // WebAssembly builds write E57 files whole.
+        Some(PointFormat::E57) if cfg!(target_arch = "wasm32") => {}
         Some(_) => return convert_streaming(src, dst, options),
         None => {
             if crate::formats::VectorDriver::for_extension(dst).is_none() {
                 return Err(crate::Error::InvalidArgument(format!(
-                    "cannot tell the output format of '{dst}': use .las, .laz, .copc.laz, .ply, .e57 or a vector format"
+                    "cannot tell the output format of '{dst}': use .las, .laz, .copc.laz, .ply, .e57, ept.json or a vector format"
                 )));
             }
         }

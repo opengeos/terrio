@@ -6,11 +6,14 @@ use numpy::{PyArray1, PyArrayDescrMethods, PyArrayDyn, PyArrayMethods, PyUntyped
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 use terrio::crs::SpatialRef;
-use terrio::pointcloud::filters::{self, DimRange, OutlierMethod, OutlierOptions, SampleOptions, SmrfOptions, VoxelMode};
+use terrio::pointcloud::filters::{
+    self, AssignOptions, ClusterOptions, CropBox, CropOptions, CsfOptions, DimRange, HagOptions, NormalOptions, OutlierMethod,
+    OutlierOptions, PmfOptions, SampleOptions, SmrfOptions, SplitterOptions, VoxelMode,
+};
 use terrio::pointcloud::grid::{GridMethod, GridOptions, GridStat};
 use terrio::pointcloud::{
-    self, Dimension, PlyEncoding, PointCloud, PointCloudReader, PointFilter, PointFormat, PointReadOptions, PointWriteOptions, PointWriter,
-    ReturnKind, Values,
+    self, Dimension, EptDataType, PlyEncoding, PointCloud, PointCloudReader, PointFilter, PointFormat, PointReadOptions, PointWriteOptions,
+    PointWriter, ReturnKind, Values,
 };
 
 /// A point cloud in memory: columns of values, one per dimension.
@@ -176,7 +179,8 @@ pub(crate) fn read_points_bytes(py: Python<'_>, data: Vec<u8>) -> PyResult<PyPoi
 ///
 /// Args:
 ///     src: The input file's path or URL.
-///     dst: The output path: `.las`, `.laz`, `.copc.laz`, `.ply`, `.e57`, or a vector format
+///     dst: The output path: `.las`, `.laz`, `.copc.laz`, `.ply`, `.e57`, an EPT dataset's
+///         `ept.json` (its directory is written), or a vector format
 ///         (`.gpkg`, `.fgb`, `.parquet`, `.geojson`, `.shp`...) for a layer of points.
 ///     bounds: Keep the points in `(min_x, min_y, max_x, max_y)`, in the input's CRS.
 ///     z_range: Keep the points with `z` in `(min, max)`.
@@ -196,11 +200,13 @@ pub(crate) fn read_points_bytes(py: Python<'_>, data: Vec<u8>) -> PyResult<PyPoi
 ///     ply_encoding: PLY outputs: `"ascii"` (the default), `"binary_little_endian"` or
 ///         `"binary_big_endian"`.
 ///     ply_precision: PLY ASCII outputs: the digits after the decimal point of floats.
+///     ept_data_type: EPT outputs: how the nodes' points are stored, `"laszip"` (the default),
+///         `"binary"` or `"zstandard"`.
 #[pyfunction]
 #[pyo3(signature = (
     src, dst, *, bounds=None, z_range=None, classes=None, returns=None, max_level=None, resolution=None, max_points=None,
     a_srs=None, t_srs=None, point_format=None, minor_version=None, scale=None, offset=None, dimensions=None,
-    chunk_points=0, ply_encoding=None, ply_precision=None
+    chunk_points=0, ply_encoding=None, ply_precision=None, ept_data_type=None
 ))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn convert_points(
@@ -224,6 +230,7 @@ pub(crate) fn convert_points(
     chunk_points: usize,
     ply_encoding: Option<&str>,
     ply_precision: Option<usize>,
+    ept_data_type: Option<&str>,
 ) -> PyResult<()> {
     let options = pointcloud::ConvertOptions {
         read: read_options(bounds, z_range, classes, returns, max_level, resolution, max_points)?,
@@ -237,6 +244,7 @@ pub(crate) fn convert_points(
             ply_encoding: ply_encoding.map(PlyEncoding::parse).transpose().py()?.unwrap_or_default(),
             ply_precision,
             dimensions: dimensions.clone().unwrap_or_default(),
+            ept_data_type: ept_data_type.map(EptDataType::parse).transpose().py()?.unwrap_or_default(),
             ..Default::default()
         },
         layer: pointcloud::vector::ToLayerOptions { dimensions: dimensions.unwrap_or_default(), ..Default::default() },
@@ -776,7 +784,9 @@ impl PyPointCloud {
     ///     ply_precision: PLY, ASCII: the digits after the decimal point of floats (by default,
     ///         as many as needed to read the same values back).
     ///     dimensions: PLY and E57: the dimensions written (all by default).
-    #[pyo3(signature = (path, *, format=None, point_format=None, minor_version=None, scale=None, offset=None, ply_encoding=None, ply_precision=None, dimensions=None))]
+    ///     ept_data_type: EPT (a path ending with `ept.json`): how the nodes' points are stored,
+    ///         `"laszip"` (the default), `"binary"` or `"zstandard"`.
+    #[pyo3(signature = (path, *, format=None, point_format=None, minor_version=None, scale=None, offset=None, ply_encoding=None, ply_precision=None, dimensions=None, ept_data_type=None))]
     #[allow(clippy::too_many_arguments)]
     fn write(
         &self,
@@ -790,8 +800,10 @@ impl PyPointCloud {
         ply_encoding: Option<&str>,
         ply_precision: Option<usize>,
         dimensions: Option<Vec<String>>,
+        ept_data_type: Option<&str>,
     ) -> PyResult<()> {
         let mut options = write_options(format, point_format, minor_version, scale, offset)?;
+        options.ept_data_type = ept_data_type.map(EptDataType::parse).transpose().py()?.unwrap_or_default();
         options.ply_encoding = ply_encoding.map(PlyEncoding::parse).transpose().py()?.unwrap_or_default();
         options.ply_precision = ply_precision;
         options.dimensions = dimensions.unwrap_or_default();
@@ -1001,6 +1013,324 @@ impl PyPointCloud {
         Ok(Self { inner: py.detach(|| filters::smrf(&self.inner, &o)).py()? })
     }
 
+    /// Classifies ground points with the Progressive Morphological Filter, as PDAL's
+    /// `filters.pmf`: of the returns selected, ground points become class 2 and others class 1.
+    ///
+    /// Args:
+    ///     cell_size: The cell size. 1 by default.
+    ///     exponential: Grow the windows exponentially (the default) rather than linearly.
+    ///     initial_distance: The initial height threshold. 0.15 by default.
+    ///     max_distance: The largest height threshold. 2.5 by default.
+    ///     max_window_size: The largest window. 33 by default.
+    ///     slope: The slope. 1 by default.
+    ///     ignore: Leave alone the points in these ranges (as for `range`).
+    ///     returns: The returns classified. `["last", "only"]` by default.
+    ///     ground_class: The class of ground points. 2 by default.
+    ///     other_class: The class of other points. 1 by default.
+    ///     only_ground: Change the class of ground points only.
+    ///
+    /// Returns:
+    ///     PointCloud: The points, classified.
+    #[pyo3(signature = (*, cell_size=1.0, exponential=true, initial_distance=0.15, max_distance=2.5, max_window_size=33.0, slope=1.0, ignore=None, returns=None, ground_class=2, other_class=1, only_ground=false))]
+    #[allow(clippy::too_many_arguments)]
+    fn pmf(
+        &self,
+        py: Python<'_>,
+        cell_size: f64,
+        exponential: bool,
+        initial_distance: f64,
+        max_distance: f64,
+        max_window_size: f64,
+        slope: f64,
+        ignore: Option<&str>,
+        returns: Option<Vec<String>>,
+        ground_class: u8,
+        other_class: u8,
+        only_ground: bool,
+    ) -> PyResult<Self> {
+        let returns = match returns {
+            None => vec![ReturnKind::Last, ReturnKind::Only],
+            Some(r) => r.iter().map(|k| ReturnKind::parse(k)).collect::<terrio::Result<_>>().py()?,
+        };
+        let o = PmfOptions {
+            cell: cell_size,
+            exponential,
+            initial_distance,
+            max_distance,
+            max_window: max_window_size,
+            slope,
+            ignore: ignore.map(DimRange::parse_list).transpose().py()?.unwrap_or_default(),
+            returns,
+            ground_class,
+            other_class,
+            only_ground,
+        };
+        Ok(Self { inner: py.detach(|| filters::pmf(&self.inner, &o)).py()? })
+    }
+
+    /// Classifies ground points with the Cloth Simulation Filter, as PDAL's `filters.csf`: of
+    /// the returns selected, ground points become class 2 and others class 1.
+    ///
+    /// Args:
+    ///     resolution: The cloth's resolution. 1 by default.
+    ///     rigidness: The cloth's rigidness (1 to 3). 3 by default.
+    ///     step: The time step. 0.65 by default.
+    ///     threshold: The largest distance of ground points from the cloth. 0.5 by default.
+    ///     hdiff: The height difference threshold of slope handling. 0.3 by default.
+    ///     iterations: The most simulation steps. 500 by default.
+    ///     smooth: Handle steep slopes after the simulation. True by default.
+    ///     ignore: Leave alone the points in these ranges (as for `range`).
+    ///     returns: The returns classified. `["last", "only"]` by default.
+    ///     ground_class: The class of ground points. 2 by default.
+    ///     other_class: The class of other points. 1 by default.
+    ///     only_ground: Change the class of ground points only.
+    ///
+    /// Returns:
+    ///     PointCloud: The points, classified.
+    #[pyo3(signature = (*, resolution=1.0, rigidness=3, step=0.65, threshold=0.5, hdiff=0.3, iterations=500, smooth=true, ignore=None, returns=None, ground_class=2, other_class=1, only_ground=false))]
+    #[allow(clippy::too_many_arguments)]
+    fn csf(
+        &self,
+        py: Python<'_>,
+        resolution: f64,
+        rigidness: usize,
+        step: f64,
+        threshold: f64,
+        hdiff: f64,
+        iterations: usize,
+        smooth: bool,
+        ignore: Option<&str>,
+        returns: Option<Vec<String>>,
+        ground_class: u8,
+        other_class: u8,
+        only_ground: bool,
+    ) -> PyResult<Self> {
+        let returns = match returns {
+            None => vec![ReturnKind::Last, ReturnKind::Only],
+            Some(r) => r.iter().map(|k| ReturnKind::parse(k)).collect::<terrio::Result<_>>().py()?,
+        };
+        let o = CsfOptions {
+            smooth,
+            step,
+            threshold,
+            hdiff,
+            resolution,
+            rigidness,
+            iterations,
+            ignore: ignore.map(DimRange::parse_list).transpose().py()?.unwrap_or_default(),
+            returns,
+            ground_class,
+            other_class,
+            only_ground,
+        };
+        Ok(Self { inner: py.detach(|| filters::csf(&self.inner, &o)).py()? })
+    }
+
+    /// Classifies low noise with the Extended Local Minimum, as PDAL's `filters.elm`.
+    ///
+    /// Args:
+    ///     cell: The cell size. 10 by default.
+    ///     threshold: The elevation difference above which the lower point is noise. 1 by
+    ///         default.
+    ///     classification: The class of noise points. 7 (low point) by default.
+    ///
+    /// Returns:
+    ///     PointCloud: The points, low noise classified.
+    #[pyo3(signature = (*, cell=10.0, threshold=1.0, classification=7))]
+    fn elm(&self, py: Python<'_>, cell: f64, threshold: f64, classification: u8) -> PyResult<Self> {
+        Ok(Self { inner: py.detach(|| filters::elm(&self.inner, cell, threshold, classification)).py()? })
+    }
+
+    /// Heights above the nearest ground points, as PDAL's `filters.hag_nn`: the
+    /// `height_above_ground` dimension.
+    ///
+    /// Args:
+    ///     count: The ground points used for each point (inverse-distance weighted). 1 by
+    ///         default.
+    ///     max_distance: Ground points farther than this are not used (0, the default: no
+    ///         limit).
+    ///     allow_extrapolation: Interpolate outside the ground points' bounds (else heights
+    ///         there are 0). True by default.
+    ///     ground_class: The class of ground points. 2 by default.
+    ///
+    /// Returns:
+    ///     PointCloud: The points, with their heights above ground.
+    #[pyo3(signature = (*, count=1, max_distance=0.0, allow_extrapolation=true, ground_class=2))]
+    fn hag_nn(&self, py: Python<'_>, count: usize, max_distance: f64, allow_extrapolation: bool, ground_class: u8) -> PyResult<Self> {
+        let o = HagOptions { count, max_distance, allow_extrapolation, class: ground_class };
+        Ok(Self { inner: py.detach(|| filters::hag_nn(&self.inner, &o)).py()? })
+    }
+
+    /// Heights above a Delaunay triangulation of the nearest ground points, as PDAL's
+    /// `filters.hag_delaunay`: the `height_above_ground` dimension.
+    ///
+    /// Args:
+    ///     count: The ground points triangulated for each point. 10 by default.
+    ///     allow_extrapolation: Interpolate outside the ground points' bounds (else heights
+    ///         there are 0). True by default.
+    ///     ground_class: The class of ground points. 2 by default.
+    ///
+    /// Returns:
+    ///     PointCloud: The points, with their heights above ground.
+    #[pyo3(signature = (*, count=10, allow_extrapolation=true, ground_class=2))]
+    fn hag_delaunay(&self, py: Python<'_>, count: usize, allow_extrapolation: bool, ground_class: u8) -> PyResult<Self> {
+        let o = HagOptions { count, allow_extrapolation, class: ground_class, ..HagOptions::delaunay() };
+        Ok(Self { inner: py.detach(|| filters::hag_delaunay(&self.inner, &o)).py()? })
+    }
+
+    /// The points in boxes, polygons, circles or spheres, as PDAL's `filters.crop`: for each
+    /// geometry in turn (polygons, then boxes, then circles and spheres), the points inside it.
+    ///
+    /// Args:
+    ///     bounds: Boxes as PDAL writes them: `"([xmin, xmax], [ymin, ymax])"`, with
+    ///         `[zmin, zmax]` for 3D.
+    ///     polygons: Polygons or multipolygons, as WKT or GeoJSON.
+    ///     points: Centres of circles `(x, y)` or spheres `(x, y, z)` of radius `distance`.
+    ///     distance: The radius of the circles and spheres.
+    ///     outside: Keep the points outside the geometries instead.
+    ///     a_srs: The CRS of the geometries, when it is not the points'.
+    ///
+    /// Returns:
+    ///     PointCloud: The points kept.
+    #[pyo3(signature = (*, bounds=None, polygons=None, points=None, distance=0.0, outside=false, a_srs=None))]
+    #[allow(clippy::too_many_arguments)]
+    fn crop(
+        &self,
+        py: Python<'_>,
+        bounds: Option<Vec<String>>,
+        polygons: Option<Vec<String>>,
+        points: Option<Vec<Vec<f64>>>,
+        distance: f64,
+        outside: bool,
+        a_srs: Option<&str>,
+    ) -> PyResult<Self> {
+        let o = CropOptions {
+            bounds: bounds.unwrap_or_default().iter().map(|b| CropBox::parse(b)).collect::<terrio::Result<_>>().py()?,
+            polygons: polygons.unwrap_or_default(),
+            points: points.unwrap_or_default(),
+            distance,
+            outside,
+            a_srs: a_srs.map(SpatialRef::parse).transpose().py()?,
+        };
+        Ok(Self { inner: py.detach(|| filters::crop(&self.inner, &o)).py()? })
+    }
+
+    /// Every `step`-th point, as PDAL's `filters.decimation`.
+    ///
+    /// Args:
+    ///     step: The step (a fraction is allowed). 1 by default.
+    ///     offset: The index of the first point considered.
+    ///     limit: The index past the last point considered.
+    ///
+    /// Returns:
+    ///     PointCloud: The points kept.
+    #[pyo3(signature = (step=1.0, *, offset=0, limit=None))]
+    fn decimation(&self, step: f64, offset: usize, limit: Option<usize>) -> PyResult<Self> {
+        Ok(Self { inner: filters::decimation(&self.inner, step, offset, limit).py()? })
+    }
+
+    /// The points for which an expression is true, as PDAL's `filters.expression`.
+    ///
+    /// Args:
+    ///     expression: A condition in PDAL's expression language, such as
+    ///         `"Classification == 2 && Z > 100"`.
+    ///
+    /// Returns:
+    ///     PointCloud: The points kept.
+    fn expression(&self, py: Python<'_>, expression: String) -> PyResult<Self> {
+        Ok(Self { inner: py.detach(|| filters::expression(&self.inner, &[expression])).py()? })
+    }
+
+    /// Assigns values to dimensions, as PDAL's `filters.assign`.
+    ///
+    /// Args:
+    ///     assignment: Ranges with values: `"Classification[1:1]=2"` (or a list of them).
+    ///     condition: Only change the points in this range, such as `"ReturnNumber[1:1]"`.
+    ///     value: Expressions: `"Classification = 2 WHERE HeightAboveGround < 0.5"` (or a list
+    ///         of them); a dimension the points lack is added.
+    ///
+    /// Returns:
+    ///     PointCloud: The points, changed.
+    #[pyo3(signature = (*, assignment=None, condition=None, value=None))]
+    fn assign(
+        &self,
+        py: Python<'_>,
+        assignment: Option<&Bound<'_, PyAny>>,
+        condition: Option<&str>,
+        value: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<Self> {
+        let o = AssignOptions {
+            assignments: strings(assignment)?,
+            condition: condition.map(DimRange::parse).transpose().py()?,
+            values: strings(value)?,
+        };
+        Ok(Self { inner: py.detach(|| filters::assign(&self.inner, &o)).py()? })
+    }
+
+    /// Splits the points into squares, as PDAL's `filters.splitter`.
+    ///
+    /// Args:
+    ///     length: The side of the squares. 1000 by default.
+    ///     origin: The squares' origin `(x, y)`. By default, the first point's.
+    ///     buffer: A buffer around each square whose points it takes too.
+    ///
+    /// Returns:
+    ///     list[PointCloud]: The points of each square with points, in the order of their first
+    ///     points.
+    #[pyo3(signature = (length=1000.0, *, origin=None, buffer=0.0))]
+    fn splitter(&self, py: Python<'_>, length: f64, origin: Option<(f64, f64)>, buffer: f64) -> PyResult<Vec<Self>> {
+        let o = SplitterOptions { length, origin: origin.map(|o| [o.0, o.1]), buffer };
+        let tiles = py.detach(|| filters::splitter(&self.inner, &o)).py()?;
+        Ok(tiles.into_iter().map(|(_, c)| Self { inner: c }).collect())
+    }
+
+    /// Splits the points into squarish chips of at most `capacity` points, as PDAL's
+    /// `filters.chipper`.
+    ///
+    /// Args:
+    ///     capacity: The most points of a chip. 5000 by default.
+    ///
+    /// Returns:
+    ///     list[PointCloud]: The chips, in PDAL's order.
+    #[pyo3(signature = (capacity=5000))]
+    fn chipper(&self, py: Python<'_>, capacity: usize) -> PyResult<Vec<Self>> {
+        let chips = py.detach(|| filters::chipper(&self.inner, capacity)).py()?;
+        Ok(chips.into_iter().map(|c| Self { inner: c }).collect())
+    }
+
+    /// Normals and curvature, as PDAL's `filters.normal`: `normal_x`, `normal_y`, `normal_z`
+    /// and `curvature`.
+    ///
+    /// Args:
+    ///     knn: The neighbours of each point. 8 by default.
+    ///     viewpoint: Orient the normals towards this point `(x, y, z)`.
+    ///     always_up: Orient the normals up (when there is no viewpoint). True by default.
+    ///
+    /// Returns:
+    ///     PointCloud: The points, with their normals.
+    #[pyo3(signature = (*, knn=8, viewpoint=None, always_up=true))]
+    fn normal(&self, py: Python<'_>, knn: usize, viewpoint: Option<(f64, f64, f64)>, always_up: bool) -> PyResult<Self> {
+        let o = NormalOptions { knn, viewpoint: viewpoint.map(|v| [v.0, v.1, v.2]), always_up };
+        Ok(Self { inner: py.detach(|| filters::normal(&self.inner, &o)).py()? })
+    }
+
+    /// Labels Euclidean clusters, as PDAL's `filters.cluster`, in `cluster_id` (from 1; 0 for
+    /// points of clusters too small or too large).
+    ///
+    /// Args:
+    ///     tolerance: The distance within which points are neighbours. 1 by default.
+    ///     min_points: The fewest points of a cluster. 1 by default.
+    ///     max_points: The most points of a cluster. Unlimited by default.
+    ///     is3d: Measure distances in 3D (the default) rather than in x and y.
+    ///
+    /// Returns:
+    ///     PointCloud: The points, with their clusters.
+    #[pyo3(signature = (tolerance=1.0, *, min_points=1, max_points=None, is3d=true))]
+    fn cluster(&self, py: Python<'_>, tolerance: f64, min_points: u64, max_points: Option<u64>, is3d: bool) -> PyResult<Self> {
+        let o = ClusterOptions { min_points, max_points: max_points.unwrap_or(u64::MAX), tolerance, is_3d: is3d };
+        Ok(Self { inner: py.detach(|| filters::cluster(&self.inner, &o)).py()? })
+    }
+
     /// The points as a vector layer, one point feature each, with the dimensions as attributes.
     ///
     /// Args:
@@ -1028,7 +1358,9 @@ fn write_options(
     offset: Option<(f64, f64, f64)>,
 ) -> PyResult<PointWriteOptions> {
     let format = format
-        .map(|f| PointFormat::from_name(f).ok_or_else(|| invalid(format!("unknown point cloud format '{f}' (LAS, LAZ, COPC, PLY, E57)"))))
+        .map(|f| {
+            PointFormat::from_name(f).ok_or_else(|| invalid(format!("unknown point cloud format '{f}' (LAS, LAZ, COPC, PLY, E57, EPT)")))
+        })
         .transpose()?;
     Ok(PointWriteOptions {
         format,
@@ -1038,6 +1370,31 @@ fn write_options(
         offset: offset.map(|o| [o.0, o.1, o.2]),
         ..Default::default()
     })
+}
+
+/// A string or a list of strings, as a list.
+fn strings(v: Option<&Bound<'_, PyAny>>) -> PyResult<Vec<String>> {
+    match v {
+        None => Ok(Vec::new()),
+        Some(v) => match v.extract::<String>() {
+            Ok(s) => Ok(vec![s]),
+            Err(_) => v.extract::<Vec<String>>(),
+        },
+    }
+}
+
+/// Merges point clouds into one, as PDAL's `filters.merge`: the points of each in turn, with the
+/// dimensions of all (zeros where a cloud has none).
+///
+/// Args:
+///     clouds: The point clouds.
+///
+/// Returns:
+///     PointCloud: The points of all.
+#[pyfunction]
+pub(crate) fn merge_points(clouds: Vec<PyRef<'_, PyPointCloud>>) -> PyResult<PyPointCloud> {
+    let clouds: Vec<pointcloud::PointCloud> = clouds.iter().map(|c| c.inner.clone()).collect();
+    Ok(PyPointCloud { inner: filters::merge(&clouds).py()? })
 }
 
 /// Registers the point cloud functions and classes.
@@ -1051,5 +1408,6 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(read_points, m)?)?;
     m.add_function(wrap_pyfunction!(read_points_bytes, m)?)?;
     m.add_function(wrap_pyfunction!(convert_points, m)?)?;
+    m.add_function(wrap_pyfunction!(merge_points, m)?)?;
     Ok(())
 }
