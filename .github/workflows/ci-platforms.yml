@@ -1,0 +1,113 @@
+name: CI (macOS and Windows)
+
+# The Rust and Python jobs of ci.yml on macOS and Windows, which are slow and run on demand only:
+# by hand (Actions > CI (macOS and Windows) > Run workflow), or for a pull request with the label
+# ci:macos, ci:windows or ci:all (when the label is added, and on each push while it stays).
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled]
+  workflow_dispatch:
+    inputs:
+      platforms:
+        description: "Platforms to run"
+        type: choice
+        options: [all, macos, windows]
+        default: all
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # The runners the labels or the manual run ask for: a JSON list, empty for none.
+  platforms:
+    runs-on: ubuntu-latest
+    outputs:
+      os: ${{ steps.pick.outputs.os }}
+    steps:
+      - id: pick
+        env:
+          EVENT: ${{ github.event_name }}
+          CHOICE: ${{ inputs.platforms }}
+          ACTION: ${{ github.event.action }}
+          ADDED: ${{ github.event.label.name }}
+          LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+        run: |
+          # Adding a label other than ci:* changes nothing: no run.
+          if [ "$ACTION" = labeled ] && [[ "$ADDED" != ci:* ]]; then
+            echo "os=[]" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          want() {
+            if [ "$EVENT" = workflow_dispatch ]; then
+              [ "$CHOICE" = all ] || [ "$CHOICE" = "$1" ]
+            else
+              echo "$LABELS" | jq -e --arg l "ci:$1" 'index($l) != null or index("ci:all") != null' > /dev/null
+            fi
+          }
+          os='[]'
+          want macos && os=$(echo "$os" | jq -c '. + ["macos-latest"]')
+          want windows && os=$(echo "$os" | jq -c '. + ["windows-latest"]')
+          echo "os=$os" >> "$GITHUB_OUTPUT"
+          echo "Platforms: $os"
+
+  check:
+    needs: platforms
+    if: needs.platforms.outputs.os != '[]'
+    concurrency:
+      group: ci-platforms-check-${{ github.event.pull_request.number || github.ref }}
+      cancel-in-progress: true
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ${{ fromJSON(needs.platforms.outputs.os) }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace
+
+  python:
+    needs: platforms
+    if: needs.platforms.outputs.os != '[]'
+    concurrency:
+      group: ci-platforms-python-${{ github.event.pull_request.number || github.ref }}
+      cancel-in-progress: true
+    name: python (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ${{ fromJSON(needs.platforms.outputs.os) }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Build the wheel
+        uses: PyO3/maturin-action@v1
+        with:
+          working-directory: python
+          args: --release --out dist
+          manylinux: auto
+          sccache: true
+      - name: Install the wheel
+        shell: bash
+        # rasterio (with its bundled GDAL) and shapely: terrio.rio is compared with rasterio.
+        # xarray, dask, rioxarray, zarr and scipy: terrio.xarray is compared with rioxarray.
+        run: python -m pip install pytest rasterio shapely xarray "dask[array]" rioxarray zarr scipy python/dist/*.whl
+      - name: Test
+        working-directory: python
+        run: python -m pytest -v
+      - uses: actions/upload-artifact@v7
+        with:
+          name: wheel-${{ matrix.os }}
+          path: python/dist/*.whl
