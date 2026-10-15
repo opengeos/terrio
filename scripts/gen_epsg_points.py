@@ -46,7 +46,6 @@ from pyproj.enums import PJType  # noqa: E402
 osr.UseExceptions()
 PROJ_DB_DIR = pyproj.datadir.get_data_dir().split(os.pathsep)[0]
 GRID_DIR = os.path.abspath(OPTIONS.grids) if OPTIONS.grids else tempfile.mkdtemp()
-os.environ["PROJ_DATA"] = GRID_DIR + os.pathsep + PROJ_DB_DIR
 # PROJ's user directory (where projsync and the network cache put grids) is searched too.
 os.environ["XDG_DATA_HOME"] = tempfile.mkdtemp()
 osr.SetPROJSearchPaths([GRID_DIR, PROJ_DB_DIR])
