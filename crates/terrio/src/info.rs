@@ -550,7 +550,7 @@ fn osm_vector_info(path: &str) -> crate::Result<Option<VectorInfo>> {
         return Ok(None);
     }
     let mut file = std::fs::File::open(path)?;
-    if !osm::is_sorted_pbf(&mut file).unwrap_or(false) {
+    if !osm::is_sorted_pbf(&mut file) {
         return Ok(None);
     }
     let schemas = osm::layer_schemas();
@@ -564,7 +564,7 @@ fn osm_vector_info(path: &str) -> crate::Result<Option<VectorInfo>> {
         has_z: bool,
     }
     let mut acc = vec![Acc::default(); schemas.len()];
-    osm::read_sorted_pbf(&mut file, [true; 5], &mut |l, features| {
+    let read = osm::read_sorted_pbf(&mut file, [true; 5], &mut |l, features| {
         let a = &mut acc[l];
         a.count += features.len();
         let boxes = features.iter().filter_map(|f| f.geometry.as_ref()?.bbox()).map(|b| (b.min_x, b.min_y, b.max_x, b.max_y));
@@ -576,7 +576,12 @@ fn osm_vector_info(path: &str) -> crate::Result<Option<VectorInfo>> {
             a.geometries += 1;
         }
         Ok(())
-    })?;
+    });
+    match read {
+        // A file not sorted as its header says is summarized read whole.
+        Err(e) if osm::is_unsorted(&e) => return Ok(None),
+        r => r?,
+    };
     let layers = schemas
         .iter()
         .zip(acc)

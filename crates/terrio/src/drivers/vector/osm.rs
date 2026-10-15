@@ -483,7 +483,7 @@ fn relation_feature<'a>(
 /// Reads an OSM file, PBF (`.osm.pbf`) or XML (`.osm`), into GDAL's five layers.
 pub fn read(path: &str) -> Result<Vec<Layer>> {
     let mut file = std::fs::File::open(path)?;
-    if is_sorted_pbf(&mut file)?
+    if is_sorted_pbf(&mut file)
         && let Some(layers) = read_sorted_layers(&mut file)?
     {
         return Ok(layers);
@@ -492,14 +492,27 @@ pub fn read(path: &str) -> Result<Vec<Layer>> {
     if is_xml(&bytes) { parse_xml(&bytes) } else { parse(bytes) }
 }
 
-/// GDAL's five layers of a PBF file sorted by type then id; `None` for other files.
+/// GDAL's five layers of a PBF file sorted by type then id; `None` for other files, those that
+/// say they are sorted but are not among them (the reader holding everything reads those).
 fn read_sorted_layers(input: &mut dyn PbfInput) -> Result<Option<Vec<Layer>>> {
     let mut layers: Vec<Layer> = SPECS.iter().map(Spec::layer).collect();
     let sorted = read_sorted_pbf(input, [true; 5], &mut |l, features| {
         layers[l].features.extend(features);
         Ok(())
-    })?;
-    Ok(sorted.then_some(layers))
+    });
+    match sorted {
+        Ok(sorted) => Ok(sorted.then_some(layers)),
+        Err(e) if is_unsorted(&e) => Ok(None),
+        Err(e) => Err(e),
+    }
+}
+
+const UNSORTED: &str = "OSM PBF: the header says the file is sorted by type then id, but it is not";
+
+/// Whether [`read_sorted_pbf`] failed because the file is not sorted as its header says: the
+/// file can still be read whole.
+pub(crate) fn is_unsorted(e: &Error) -> bool {
+    matches!(e, Error::InvalidData(m) if m == UNSORTED)
 }
 
 /// Whether the bytes are OSM XML rather than PBF.
@@ -844,7 +857,7 @@ fn node_coords(lon: i32, lat: i32) -> (Coord, Coord) {
     (c, stored)
 }
 
-/// The nodes of a sorted file, by increasing id, in groups of 64: each group's first id and
+/// The nodes of a sorted file, by increasing id, in groups of 16: each group's first id and
 /// where it starts, then each node as varints (the id's difference from the previous one, the
 /// zigzag differences of its longitude and latitude in decimicro degrees). About 6 bytes a node,
 /// in pages of 16 MB.
@@ -856,7 +869,7 @@ struct NodeStore {
     last: (i64, i32, i32),
 }
 
-const NODE_GROUP: usize = 64;
+const NODE_GROUP: usize = 16;
 const NODE_PAGE: usize = 1 << 24;
 
 fn put_varint(b: &mut Vec<u8>, mut v: u64) {
@@ -1080,12 +1093,35 @@ fn read_area(r: &mut impl std::io::Read) -> Result<Option<Area>> {
     Ok(Some((id, cs, tags)))
 }
 
-/// Whether a PBF file says it is sorted by type then id, so that [`read_sorted_pbf`] reads it.
-pub(crate) fn is_sorted_pbf(input: &mut dyn PbfInput) -> Result<bool> {
-    let mut head = [0u8; 512];
-    input.seek(std::io::SeekFrom::Start(0))?;
-    let n = input.read(&mut head)?;
-    Ok(!is_xml(&head[..n]) && blob_spans(input)?.1)
+/// Whether a PBF file says it is sorted by type then id, so that [`read_sorted_pbf`] reads it:
+/// only its first blob, the file header, is read. `false` for other files (OSM XML, vector tiles).
+pub(crate) fn is_sorted_pbf(input: &mut dyn PbfInput) -> bool {
+    let mut header = || -> Option<bool> {
+        input.seek(std::io::SeekFrom::Start(0)).ok()?;
+        let mut prefix = [0u8; 4];
+        input.read_exact(&mut prefix).ok()?;
+        let len = u32::from_be_bytes(prefix) as usize;
+        if len > 64 * 1024 {
+            return None;
+        }
+        let mut h = vec![0u8; len];
+        input.read_exact(&mut h).ok()?;
+        let (mut kind, mut size) = (&[][..], 0u64);
+        for (field, value) in pb_fields(&h)? {
+            match (field, value) {
+                (1, Pb::Bytes(t)) => kind = t,
+                (3, Pb::Int(n)) => size = n,
+                _ => {}
+            }
+        }
+        if kind != b"OSMHeader" || size > 64 << 20 {
+            return None;
+        }
+        let mut blob = vec![0u8; size as usize];
+        input.read_exact(&mut blob).ok()?;
+        header_says_sorted(&blob)
+    };
+    header().unwrap_or(false)
 }
 
 /// The schemas of GDAL's five layers (no features).
@@ -1107,7 +1143,7 @@ pub(crate) fn read_sorted_pbf(
     if !sorted {
         return Ok(false);
     }
-    let unsorted = || Error::InvalidData("OSM PBF: the header says the file is sorted by type then id, but it is not".into());
+    let unsorted = || Error::InvalidData(UNSORTED.into());
     let schemas: Vec<wbvector::Schema> = SPECS.iter().map(|s| s.layer().schema).collect();
     let need_relations = wanted[2] || wanted[3] || wanted[4];
 
@@ -1141,7 +1177,7 @@ pub(crate) fn read_sorted_pbf(
     let mut member_ways: HashMap<i64, MemberCoords> = HashMap::new();
     // Candidate areas wait for the relations in a temporary file.
     let mut areas = std::io::BufWriter::with_capacity(1 << 20, super::spill()?);
-    let mut in_ways = false;
+    let (mut in_ways, mut in_relations) = (false, false);
     let batch = crate::par::threads().max(1) * 2;
     // Blocks from `last` on hold only relations; the one before, the last read here, may hold the
     // first relations too (read above).
@@ -1158,9 +1194,15 @@ pub(crate) fn read_sorted_pbf(
         for (k, block) in blocks.into_iter().enumerate() {
             let block = block?;
             let at_relations = need_relations && i + k + 1 == end;
-            if block.out_of_order || (block.has_nodes && in_ways) || (block.has_relations && need_relations && !at_relations) {
+            let has_ways = !block.ways.is_empty();
+            if block.out_of_order
+                || (block.has_nodes && in_ways)
+                || ((block.has_nodes || has_ways) && in_relations)
+                || (block.has_relations && need_relations && !at_relations)
+            {
                 return Err(unsorted());
             }
+            in_relations |= block.has_relations;
             for &(id, lon, lat) in &block.nodes {
                 if !nodes.push(id, lon, lat) {
                     return Err(unsorted());
@@ -1419,6 +1461,32 @@ mod tests {
                 assert_eq!(content(a), content(c), "file {k}, {}", a.name);
             }
         }
+    }
+
+    /// A file whose header says it is sorted but whose objects are not is read whole, as before;
+    /// the streaming reader reports it, whatever the layers wanted.
+    #[test]
+    fn reads_files_not_sorted_as_they_say_whole() {
+        let (n, w, r) = objects();
+        let ways_first = pbf(&[vec![w], vec![n], vec![r]]);
+        let expected = {
+            let (n, w, r) = objects();
+            parse_any_order(pbf(&[vec![n], vec![w], vec![r]])).unwrap()
+        };
+        assert!(read_sorted_layers(&mut std::io::Cursor::new(&ways_first)).unwrap().is_none());
+        let read = parse(ways_first).unwrap();
+        let content = |l: &Layer| l.features.iter().map(|f| (f.fid, f.attributes.clone(), f.geometry.clone())).collect::<Vec<_>>();
+        for (a, b) in read.iter().zip(&expected) {
+            assert_eq!(content(a), content(b), "{}", a.name);
+        }
+        // Relations between the nodes and the ways, with only the lines wanted.
+        let (n, w, r) = objects();
+        let relations_first = pbf(&[vec![n], vec![r], vec![w]]);
+        let only_lines = [false, true, false, false, false];
+        let e = read_sorted_pbf(&mut std::io::Cursor::new(&relations_first), only_lines, &mut |_, _| Ok(())).unwrap_err();
+        assert!(is_unsorted(&e));
+        assert!(is_sorted_pbf(&mut std::io::Cursor::new(&relations_first)));
+        assert!(!is_sorted_pbf(&mut std::io::Cursor::new(b"<?xml version='1.0'?><osm/>".as_slice())));
     }
 
     #[test]

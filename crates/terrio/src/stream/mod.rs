@@ -1319,16 +1319,21 @@ impl Default for ConvertOptions {
 
 /// Whether [`convert`] streams a conversion from `src` to `dst`, rather than reading the layers
 /// whole: both formats are read and written as streams, and no option needs the whole layer.
-/// OpenStreetMap PBF files (`.pbf`) stream when sorted by type then id, as most are (the others
-/// are read whole).
+/// OpenStreetMap PBF files (`.pbf`) stream when their header says they are sorted by type then id,
+/// as most are; files that turn out not to be are then converted whole.
 pub fn can_convert_stream(src: &str, dst: &str, options: &ConvertOptions) -> bool {
     let out = options.write.driver.or_else(|| VectorDriver::for_extension(dst));
     let ext = crate::formats::extension(src);
     let input = VectorDriver::for_extension(src).filter(|_| ext.as_deref() != Some("json"));
-    let pbf = input == Some(VectorDriver::OSM) && ext.as_deref() == Some("pbf") && cfg!(not(target_arch = "wasm32"));
+    let pbf = || {
+        input == Some(VectorDriver::OSM)
+            && ext.as_deref() == Some("pbf")
+            && cfg!(not(target_arch = "wasm32"))
+            && File::open(src).is_ok_and(|mut f| crate::drivers::vector::osm::is_sorted_pbf(&mut f))
+    };
     options.translate.sql.is_none()
         && out.is_some_and(can_write_stream)
-        && (input.is_some_and(can_read_stream) || pbf)
+        && (input.is_some_and(can_read_stream) || pbf())
         && crate::vfs::Location::parse(src).is_local()
         && !same_dataset(src, dst)
 }
@@ -1475,10 +1480,14 @@ fn convert_osm(src: &str, dst: &str, options: &ConvertOptions) -> Option<Result<
             Err(e) => return Some(Err(e.into())),
         };
         // Other files (unsorted, or not OpenStreetMap: vector tiles are `.pbf` files too) are
-        // converted whole.
-        match crate::drivers::vector::osm::is_sorted_pbf(&mut file) {
-            Ok(true) => Some(convert_sorted_osm(&mut file, src, dst, options)),
-            _ => None,
+        // converted whole, as are files not sorted as their header says (the partial output
+        // removed).
+        if !crate::drivers::vector::osm::is_sorted_pbf(&mut file) {
+            return None;
+        }
+        match convert_sorted_osm(&mut file, src, dst, options) {
+            Err(e) if crate::drivers::vector::osm::is_unsorted(&e) => None,
+            r => Some(r),
         }
     }
 }
