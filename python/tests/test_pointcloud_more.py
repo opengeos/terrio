@@ -93,7 +93,9 @@ def test_ept_and_filters_as_pdal(data_dir):
 
 
 def test_waveforms(data_dir):
-    f = terrio.open_points(os.path.join(data_dir, "pointcloud", "waveform", "full_waveform_tutorial_data.las"))
+    f = terrio.open_points(
+        os.path.join(data_dir, "pointcloud", "waveform", "full_waveform_tutorial_data.las")
+    )
     d = f.wave_packet_descriptors[0]
     assert (d["bits_per_sample"], d["number_of_samples"]) == (8, 256)
     samples = f.waveform(1, 60, 256)

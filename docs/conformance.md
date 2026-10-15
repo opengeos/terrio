@@ -24,10 +24,10 @@ Generated on 2026-10-14 with terrio 0.1.1 (9e7f7f5), GDAL 3.12.2, PROJ 9.7.1, PD
 | [Vector operations](#vector-operations) | `ogr2ogr`, `gdal_rasterize`, `gdal_polygonize.py` | 51 | 51 | 0 | 0 |
 | [Arrow and GeoArrow](#arrow-and-geoarrow) | GDAL's Arrow streams, pyarrow, GeoPandas | 180 | 171 | 9 | 0 |
 | [GeoPackage updates and spatial filters](#geopackage-updates-and-spatial-filters) | `ogr2ogr`, GDAL's `validate_gpkg.py` | 12 | 12 | 0 | 0 |
-| [Point clouds](#point-clouds) | laspy (every value) and PDAL (headers, COPC queries, grids, reprojection) | 614 | 611 | 3 | 0 |
+| [Point clouds](#point-clouds) | laspy (every value), PDAL (headers, PLY, E57 and EPT, COPC and EPT queries, filters, grids, reprojection) and gdal_grid (TIN and nearest-neighbour grids) | 550 | 544 | 6 | 0 |
 | [Coordinate transformations](#coordinate-transformations) | GDAL 3.12 and PROJ (`gdaltransform`) | 19,003 | 18,919 | 72 | 12 |
 | [Datum shift grids, geoid models and coordinate epochs](#datum-shift-grids-geoid-models-and-coordinate-epochs) | GDAL 3.12 and PROJ, with the same grids | 19,253 | 19,123 | 110 | 20 |
-| **All** | | **40,053** | **39,818** | **203** | **32** |
+| **All** | | **39,989** | **39,751** | **206** | **32** |
 
 ## Dataset summaries and pixels
 
@@ -258,18 +258,24 @@ Cases that are not identical:
 
 ## Point clouds
 
-Every dimension of every point equal to laspy's; headers equal to laspy's and PDAL's; written files read back identically by laspy and PDAL; COPC queries returning the same points as PDAL's `readers.copc`; grids equal to PDAL's `writers.gdal`. Reprojections are within 2e-7 degrees or 2 mm of PDAL's.
+Every dimension of every point equal to laspy's; headers equal to laspy's and PDAL's; written files read back identically by laspy and PDAL; PLY, E57 and EPT points equal to PDAL's; COPC and EPT queries returning the same points as PDAL's; waveform samples equal to the file's packets; filters giving the same classes or points as PDAL's; grids equal to PDAL's `writers.gdal`. Reprojections are within 2e-7 degrees or 2 mm of PDAL's; TIN grids differ from `gdal_grid`'s where points share an x and y.
 
 | Format or operation | Cases | Identical | Within tolerance | Differs |
 |---|---:|---:|---:|---:|
-| read vs laspy | 70 | 70 | 0 | 0 |
-| header vs laspy | 70 | 70 | 0 | 0 |
-| header vs PDAL | 70 | 70 | 0 | 0 |
-| write and read back (laspy) | 201 | 201 | 0 | 0 |
-| write and read back (PDAL) | 183 | 183 | 0 | 0 |
+| read vs laspy | 56 | 56 | 0 | 0 |
+| header vs laspy | 56 | 56 | 0 | 0 |
+| header vs PDAL | 56 | 56 | 0 | 0 |
+| write and read back (laspy) | 159 | 159 | 0 | 0 |
+| write and read back (PDAL) | 141 | 141 | 0 | 0 |
 | COPC queries vs PDAL | 9 | 9 | 0 | 0 |
 | grid vs PDAL writers.gdal | 8 | 8 | 0 | 0 |
 | reproject vs PDAL | 3 | 0 | 3 | 0 |
+| PLY, E57 and EPT vs PDAL | 24 | 24 | 0 | 0 |
+| EPT queries vs PDAL | 4 | 4 | 0 | 0 |
+| PLY and E57 written, read by PDAL | 3 | 3 | 0 | 0 |
+| waveforms | 3 | 3 | 0 | 0 |
+| filters vs PDAL | 24 | 24 | 0 | 0 |
+| TIN and nearest grids vs gdal_grid | 4 | 1 | 3 | 0 |
 
 Cases that are not identical:
 
@@ -278,6 +284,9 @@ Cases that are not identical:
 | reproject vs PDAL | reproject test_utm16.las to EPSG:4269 | within tolerance | max \|dx\| 9.41e-08, \|dy\| 6.91e-08 |
 | reproject vs PDAL | reproject las_with_several_extra_byte_bloc.laz to EPSG:4326 | within tolerance | max \|dx\| 9.67e-08, \|dy\| 8.86e-08 |
 | reproject vs PDAL | reproject format6.laz to EPSG:5070 | within tolerance | max \|dx\| 0.000784, \|dy\| 0.000838 |
+| TIN and nearest grids vs gdal_grid | interp linear autzen_trim.las res 6.0 vs gdal_grid -a linear:radius=0 (197x94) | within tolerance | 16 of 18518 cells differ (99.914% identical) |
+| TIN and nearest grids vs gdal_grid | interp linear autzen_trim.las res 6.0 vs gdal_grid -a linear (197x94) | within tolerance | 16 of 18518 cells differ (99.914% identical) |
+| TIN and nearest grids vs gdal_grid | interp nearest autzen_trim.las res 6.0 vs gdal_grid -a nearest:radius1=8:radius2=8 (197x94) | within tolerance | 1 of 18518 cells differ (99.995% identical) |
 
 ## Coordinate transformations
 

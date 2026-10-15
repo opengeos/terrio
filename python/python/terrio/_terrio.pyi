@@ -356,7 +356,7 @@ class PointCloudWriter:
 
 @final
 class PointCloudFile:
-    """An open point cloud (LAS, LAZ, COPC, EPT, PLY or E57): its header is read, its points on demand."""
+    """An open point cloud (LAS, LAZ, COPC, EPT, PLY or E57), its points read on demand."""
 
     @property
     def format(self) -> str: ...
