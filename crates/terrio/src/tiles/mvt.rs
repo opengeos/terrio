@@ -15,6 +15,10 @@ pub(crate) const POLYGON: u32 = 3;
 const CMD_MOVETO: u32 = 1;
 const CMD_LINETO: u32 = 2;
 const CMD_CLOSEPATH: u32 = 7;
+/// The commands, for encoders outside this module.
+pub(crate) const MOVE_TO: u32 = CMD_MOVETO;
+pub(crate) const LINE_TO: u32 = CMD_LINETO;
+pub(crate) const CLOSE_PATH: u32 = CMD_CLOSEPATH;
 
 /// An attribute value.
 #[derive(Debug, Clone, PartialEq)]

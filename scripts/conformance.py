@@ -22,6 +22,7 @@ Suites:
     gpkg              GeoPackage updates and R-tree filters (compare_gpkg_with_gdal.py)
     streams           streamed vector conversions vs whole ones and ogr2ogr
                       (compare_streams_with_gdal.py)
+    tiles             PMTiles, MBTiles and MVT read and written vs GDAL (compare_tiles_with_gdal.py)
     pointclouds       LAS, LAZ and COPC vs laspy and PDAL (compare_pointclouds.py)
     crs               every EPSG CRS's transformations vs GDAL's (tests/epsg_accuracy.rs)
     crs-grids         the same with datum shift grids, then grids, geoid models and coordinate
@@ -744,6 +745,55 @@ def suite_streams(ctx):
     return s
 
 
+def suite_tiles(ctx):
+    """PMTiles, MBTiles and MVT: raster and vector tiles read and written, vs GDAL."""
+    s = Suite(
+        "tiles",
+        "Tile archives",
+        "GDAL's MBTiles, PMTiles and MVT drivers",
+        "Raster tile pyramids written by both tools and read by GDAL (pixels at full resolution and "
+        "in each overview), vector tiles read by both tools and written by both (feature counts, "
+        "areas and lengths by feature), invalid polygons GDAL repairs with GEOS's `MakeValid` or "
+        "fails to clip (tiles read unclipped), and archives updated in place.",
+    )
+    _code, out, err = run([sys.executable, str(SCRIPTS / "compare_tiles_with_gdal.py"), ctx.data, "--terrio", ctx.terrio])
+    group, raster = "", ""
+    for line in out.splitlines():
+        if not line.startswith(" "):
+            header = line.rstrip(":")
+            if header.startswith("Vector tiles read"):
+                group = "vector tiles read"
+            elif header.startswith("Vector tiles written"):
+                group = "vector tiles written"
+            elif header.startswith("A directory"):
+                group = "MVT directories"
+            elif header.startswith("Invalid polygons"):
+                group = "invalid polygons (MakeValid)"
+            elif header.startswith("Updates"):
+                group = "archive updates"
+            elif header.startswith("AVIF"):
+                group = "AVIF tiles"
+            else:
+                group, raster = "raster tiles", header
+            continue
+        text = line.strip()
+        m = re.match(r"^(.+?): (\d+) vs (\d+) features, area rel\. diff (\S+), length rel\. diff (\S+), (\d+) of (\d+) keys differ", text)
+        if m:
+            same_count = m[2] == m[3]
+            close = float(m[4]) < 1e-9 and float(m[5]) < 1e-9
+            status = IDENTICAL if same_count and close and m[6] == "0" else TOLERANCE if same_count and m[6] == "0" else DIFFERS
+            s.cases.append(Case(group, m[1], status, "" if status == IDENTICAL else text.split(": ", 1)[1]))
+            continue
+        m = re.match(r"^(.+?): ([\d.]+)% identical, max diff (\d+), mean ([\d.]+)", text)
+        if m:
+            status = IDENTICAL if m[3] == "0" else TOLERANCE if float(m[4]) < 1.0 else DIFFERS
+            name = f"{raster}: {m[1]}" if group == "raster tiles" else m[1]
+            s.cases.append(Case(group, name, status, "" if status == IDENTICAL else text.split(": ", 1)[1]))
+    if not s.cases:
+        s.error = tail(err or out)
+    return s
+
+
 SUITES = OrderedDict(
     [
         ("summaries", suite_summaries),
@@ -758,6 +808,7 @@ SUITES = OrderedDict(
         ("arrow", suite_arrow),
         ("gpkg", suite_gpkg),
         ("streams", suite_streams),
+        ("tiles", suite_tiles),
         ("pointclouds", suite_pointclouds),
         ("crs", suite_crs),
         ("crs-grids", suite_crs_grids),

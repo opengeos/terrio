@@ -463,123 +463,333 @@ fn quantize(pts: &[Pt], f: &TileFrame, extent: u32) -> Vec<(i32, i32)> {
     out
 }
 
-/// The orientation of `c` relative to `a -> b`: positive left, negative right, zero collinear.
-fn orient(a: (i32, i32), b: (i32, i32), c: (i32, i32)) -> i64 {
-    (b.0 as i64 - a.0 as i64) * (c.1 as i64 - a.1 as i64) - (b.1 as i64 - a.1 as i64) * (c.0 as i64 - a.0 as i64)
-}
-
-/// Whether segments `p1-p2` and `q1-q2` intersect or touch.
-fn segments_meet(p1: (i32, i32), p2: (i32, i32), q1: (i32, i32), q2: (i32, i32)) -> bool {
-    let (d1, d2, d3, d4) = (orient(q1, q2, p1), orient(q1, q2, p2), orient(p1, p2, q1), orient(p1, p2, q2));
-    if ((d1 > 0 && d2 < 0) || (d1 < 0 && d2 > 0)) && ((d3 > 0 && d4 < 0) || (d3 < 0 && d4 > 0)) {
+/// Whether a closed ring is clockwise (y up), as OGR decides it: by the turn at its lowest
+/// (then rightmost) vertex, or by its area when that vertex is repeated or its neighbours are
+/// too close.
+fn ogr_is_clockwise(p: &[Pt]) -> bool {
+    let n = p.len();
+    if n < 2 {
         return true;
     }
-    let on = |a: (i32, i32), b: (i32, i32), c: (i32, i32)| {
-        c.0 >= a.0.min(b.0) && c.0 <= a.0.max(b.0) && c.1 >= a.1.min(b.1) && c.1 <= a.1.max(b.1)
-    };
-    (d1 == 0 && on(q1, q2, p1)) || (d2 == 0 && on(q1, q2, p2)) || (d3 == 0 && on(p1, p2, q1)) || (d4 == 0 && on(p1, p2, q2))
+    let mut fallback = false;
+    let mut v = 0;
+    for i in 1..n - 1 {
+        if p[i].1 < p[v].1 || (p[i].1 == p[v].1 && p[i].0 > p[v].0) {
+            v = i;
+            fallback = false;
+        } else if p[i].1 == p[v].1 && p[i].0 == p[v].0 {
+            fallback = true;
+        }
+    }
+    let close = |a: Pt, b: Pt| (a.0 - b.0).abs() < 1e-5 && (a.1 - b.1).abs() < 1e-5;
+    let prev = if v == 0 { n - 2 } else { v - 1 };
+    fallback |= close(p[prev], p[v]);
+    let (dx0, dy0) = (p[prev].0 - p[v].0, p[prev].1 - p[v].1);
+    let next = if v + 1 >= n - 1 { 0 } else { v + 1 };
+    fallback |= close(p[next], p[v]);
+    let (dx1, dy1) = (p[next].0 - p[v].0, p[next].1 - p[v].1);
+    let cross = dx1 * dy0 - dx0 * dy1;
+    if !fallback {
+        if cross > 0.0 {
+            return false;
+        }
+        if cross < 0.0 {
+            return true;
+        }
+    }
+    let mut sum = p[0].0 * (p[1].1 - p[n - 1].1);
+    for i in 1..n - 1 {
+        sum += p[i].0 * (p[i + 1].1 - p[i - 1].1);
+    }
+    sum += p[n - 1].0 * (p[0].1 - p[n - 2].1);
+    sum < 0.0
 }
 
-/// The first pair of non-adjacent edges `(i, j)` (`i < j`) of a closed ring (without its closing
-/// point) that meet, found through a grid of the edges' boxes.
-fn first_self_intersection(q: &[(i32, i32)]) -> Option<(usize, usize)> {
-    let n = q.len();
-    if n < 4 {
+/// How points go to tile coordinates: rounded on the tile grid, or (for polygons GEOS made
+/// valid, already in tile coordinates) truncated.
+#[derive(Clone, Copy)]
+enum ToTile<'a> {
+    Grid(&'a TileFrame, u32),
+    Truncate,
+}
+
+impl ToTile<'_> {
+    fn apply(self, p: Pt) -> (i32, i32) {
+        match self {
+            ToTile::Grid(f, extent) => {
+                (((p.0 - f.top_x) * extent as f64 / f.dim).round() as i32, ((f.top_y - p.1) * extent as f64 / f.dim).round() as i32)
+            }
+            ToTile::Truncate => (p.0 as i32, p.1 as i32),
+        }
+    }
+}
+
+/// Encodes a polygon ring (closed) as GDAL's `EncodeLineString` does: exteriors clockwise on
+/// screen and holes counter-clockwise (judged on the ring in tile coordinates), a hole dropped
+/// when rounding flips its orientation, repeated points dropped, and the ring dropped when fewer
+/// than three points are left. Returns the ring as encoded (closed), and moves the cursor.
+fn encode_ring(out: &mut Vec<u32>, ring: &[Pt], to: ToTile, exterior: bool, cursor: &mut (i32, i32)) -> Option<Vec<(i32, i32)>> {
+    let n = ring.len();
+    let np = n - 1;
+    // The winding order, in integer coordinates (y up).
+    let mut ri: Vec<Pt> = Vec::with_capacity(n);
+    let mut last = *cursor;
+    for (i, p) in ring[..np].iter().enumerate() {
+        let q = to.apply(*p);
+        if i == 0 || q != last {
+            ri.push((q.0 as f64, -(q.1 as f64)));
+            last = q;
+        }
+    }
+    if ri.len() > 1 && ri.first() != ri.last() {
+        ri.push(ri[0]);
+    }
+    if ri.len() < 4 {
         return None;
     }
-    let (mut x0, mut y0, mut x1, mut y1) = (i32::MAX, i32::MAX, i32::MIN, i32::MIN);
-    for p in q {
-        x0 = x0.min(p.0);
-        y0 = y0.min(p.1);
-        x1 = x1.max(p.0);
-        y1 = y1.max(p.1);
-    }
-    let cells = ((n as f64).sqrt().ceil() as i64).clamp(1, 256);
-    let cw = ((x1 as i64 - x0 as i64) / cells + 1).max(1);
-    let ch = ((y1 as i64 - y0 as i64) / cells + 1).max(1);
-    let mut grid: HashMap<(i64, i64), Vec<usize>> = HashMap::new();
-    for i in 0..n {
-        let (a, b) = (q[i], q[(i + 1) % n]);
-        let (gx0, gx1) = ((a.0.min(b.0) as i64 - x0 as i64) / cw, (a.0.max(b.0) as i64 - x0 as i64) / cw);
-        let (gy0, gy1) = ((a.1.min(b.1) as i64 - y0 as i64) / ch, (a.1.max(b.1) as i64 - y0 as i64) / ch);
-        for gx in gx0..=gx1 {
-            for gy in gy0..=gy1 {
-                grid.entry((gx, gy)).or_default().push(i);
+    let cw = ogr_is_clockwise(&ri);
+    let reverse = if exterior {
+        !cw
+    } else {
+        let original = ogr_is_clockwise(ring);
+        let truncate = matches!(to, ToTile::Truncate);
+        if (!truncate && cw != original) || (truncate && cw == original) {
+            return None;
+        }
+        cw
+    };
+    let start = out.len();
+    let origin = *cursor;
+    let (mut lineto, mut first, mut last, mut last_valid) = (0u32, (0, 0), *cursor, *cursor);
+    let mut pts = Vec::with_capacity(n);
+    for i in 0..np {
+        let q = to.apply(ring[if reverse { n - 1 - i } else { i }]);
+        if i == 0 || q != last {
+            if i > 0 {
+                lineto += 1;
+                if lineto == 1 {
+                    out.push(mvt::MOVE_TO | (1 << 3));
+                    out.push(mvt::zigzag(last.0 - origin.0));
+                    out.push(mvt::zigzag(last.1 - origin.1));
+                    out.push(mvt::LINE_TO);
+                    pts.push(last);
+                }
+                out.push(mvt::zigzag(q.0 - last.0));
+                out.push(mvt::zigzag(q.1 - last.1));
+                pts.push(q);
+            } else {
+                first = q;
             }
+            last_valid = last;
+            last = q;
         }
     }
-    let mut best: Option<(usize, usize)> = None;
-    for edges in grid.values() {
-        for (k, &i) in edges.iter().enumerate() {
-            for &j in &edges[k + 1..] {
-                let (i, j) = (i.min(j), i.max(j));
-                if j == i + 1 || (i == 0 && j == n - 1) {
-                    continue;
-                }
-                if segments_meet(q[i], q[(i + 1) % n], q[j], q[(j + 1) % n]) && best.is_none_or(|b| (i, j) < b) {
-                    best = Some((i, j));
-                }
-            }
-        }
+    if lineto > 0 && first == last {
+        out.truncate(out.len() - 2);
+        pts.pop();
+        lineto -= 1;
+        last = last_valid;
     }
-    best
+    if lineto < 2 {
+        out.truncate(start);
+        return None;
+    }
+    out[start + 3] = mvt::LINE_TO | (lineto << 3);
+    out.push(mvt::CLOSE_PATH | (1 << 3));
+    *cursor = last;
+    pts.push(pts[0]);
+    Some(pts)
 }
 
-/// Removes the small loops that rounding to the tile grid creates in a ring (an edge crossing or
-/// touching a non-adjacent one): the smaller side of each crossing is dropped, a few times at
-/// most, as GDAL makes such polygons valid.
-fn fix_ring(q: &mut Vec<(i32, i32)>) {
-    for _ in 0..32 {
-        let Some((i, j)) = first_self_intersection(q) else { return };
-        let inner: Vec<(i32, i32)> = q[i + 1..=j].to_vec();
-        let outer: Vec<(i32, i32)> = q[..=i].iter().chain(&q[j + 1..]).copied().collect();
-        let area = |r: &[(i32, i32)]| {
-            let mut c = r.to_vec();
-            if let Some(&f) = r.first() {
-                c.push(f);
-            }
-            mvt::ring_area2(&c).abs()
-        };
-        *q = if area(&inner) > area(&outer) { inner } else { outer };
-        if q.len() < 3 {
-            return;
-        }
-    }
-}
-
-/// Encodes a polygon's rings in a tile (exterior rings clockwise on screen, holes
-/// counter-clockwise), dropping rings that collapse. Returns `false` when the exterior collapses.
-fn encode_polygon(out: &mut Vec<u32>, rings: &[Vec<Pt>], f: &TileFrame, extent: u32, cursor: &mut (i32, i32)) -> bool {
+/// Encodes a polygon's rings as GDAL's `EncodePolygon` does: `false` (and nothing encoded) when
+/// its exterior is dropped. Returns the polygon as encoded.
+fn encode_polygon(out: &mut Vec<u32>, rings: &[Vec<Pt>], to: ToTile, cursor: &mut (i32, i32)) -> (bool, Vec<Vec<(i32, i32)>>) {
+    let mut encoded = Vec::new();
     for (i, r) in rings.iter().enumerate() {
-        let mut q = quantize(r, f, extent);
-        while q.len() > 1 && q.first() == q.last() {
-            q.pop();
+        let ok = r.len() >= 4 && r.first() == r.last();
+        match ok.then(|| encode_ring(out, r, to, i == 0, cursor)).flatten() {
+            Some(pts) => encoded.push(pts),
+            None if i == 0 => return (false, encoded),
+            None => {}
         }
-        fix_ring(&mut q);
-        q.dedup();
-        let mut closed = q.clone();
-        if let Some(&first) = q.first() {
-            closed.push(first);
+    }
+    (true, encoded)
+}
+
+/// Encodes polygons in a tile as GDAL's MVT writer does: each polygon encoded, and when the
+/// polygons encoded are not valid (rounding to the grid made rings cross or touch, parts
+/// overlap), GEOS's `MakeValid` of them encoded instead.
+fn encode_polygons(polys: &[Vec<Vec<Pt>>], f: &TileFrame, extent: u32) -> Option<Vec<u32>> {
+    let mut out = Vec::new();
+    let mut cursor = (0, 0);
+    let mut ok = false;
+    let mut encoded = Vec::with_capacity(polys.len());
+    for rings in polys {
+        let (o, e) = encode_polygon(&mut out, rings, ToTile::Grid(f, extent), &mut cursor);
+        ok |= o;
+        encoded.push(e);
+    }
+    if !super::valid::is_valid(&encoded) {
+        let fixed = super::valid::make_valid(&encoded);
+        out.clear();
+        cursor = (0, 0);
+        ok = false;
+        for rings in &fixed {
+            ok |= encode_polygon(&mut out, rings, ToTile::Truncate, &mut cursor).0;
         }
-        if q.len() < 3 || mvt::ring_area2(&closed) == 0.0 {
-            if i == 0 {
-                return false;
+    }
+    (ok && !out.is_empty()).then_some(out)
+}
+
+/// A place where a polygonal geometry is invalid in a way GEOS's overlay cannot handle: a point,
+/// the bounding boxes of the two parts that conflict there, and whether they belong to different
+/// polygons (overlapping parts of a multipolygon).
+type Crossing = (Pt, Rect, Rect, bool);
+
+/// Where a polygonal geometry is invalid in ways that make GEOS fail to clip it to a tile when
+/// they are near the tile: segments of its rings crossing, segments overlapping with the
+/// interior on the same side (overlapping parts), and parts inside other parts.
+fn ring_crossings(polys: &[Vec<Vec<Pt>>]) -> Vec<Crossing> {
+    // Segments: (ring id, index, segment count, from, to, interior on the left).
+    let mut segs: Vec<(usize, usize, usize, Pt, Pt, bool)> = Vec::new();
+    for (pi, p) in polys.iter().enumerate() {
+        for (ri, r) in p.iter().enumerate() {
+            let left = (clip::ring_area(r) > 0.0) != (ri > 0);
+            for (i, w) in r.windows(2).enumerate() {
+                if w[0] != w[1] {
+                    segs.push((pi * 1_000_000 + ri, i, r.len() - 1, w[0], w[1], left));
+                }
             }
+        }
+    }
+    let boxes: Vec<(f64, f64, f64, f64)> =
+        segs.iter().map(|s| (s.3.0.min(s.4.0), s.3.1.min(s.4.1), s.3.0.max(s.4.0), s.3.1.max(s.4.1))).collect();
+    let cross = |a: Pt, b: Pt, c: Pt| (b.0 - a.0) * (c.1 - a.1) - (b.1 - a.1) * (c.0 - a.0);
+    let orient = |a: Pt, b: Pt, c: Pt| {
+        let v = cross(a, b, c);
+        if v > 0.0 {
+            1.0
+        } else if v < 0.0 {
+            -1.0
+        } else {
+            0.0
+        }
+    };
+    let mut out = Vec::new();
+    for (s, t_) in super::valid::box_pairs(&boxes) {
+        let (a, b) = (&segs[s], &segs[t_]);
+        if a.0 == b.0 && (a.1.abs_diff(b.1) == 1 || a.1.abs_diff(b.1) == a.2 - 1) {
             continue;
         }
-        // In tile coordinates (y down) a positive area is clockwise on screen: exterior rings.
-        let a = mvt::ring_area2(&closed);
-        if (i == 0) != (a > 0.0) {
-            q.reverse();
+        let (o1, o2, o3, o4) = (orient(a.3, a.4, b.3), orient(a.3, a.4, b.4), orient(b.3, b.4, a.3), orient(b.3, b.4, a.4));
+        // Crossings of a few ulps (rings touching before reprojection) are snapped away by
+        // GEOS's overlay: only those deeper than 1e-10 of the coordinates count.
+        let depth = |p: Pt, s: (Pt, Pt)| cross(s.0, s.1, p).abs() / (s.1.0 - s.0.0).hypot(s.1.1 - s.0.1);
+        let deep = || {
+            let magnitude = [a.3, a.4, b.3, b.4].iter().fold(0.0f64, |m, p| m.max(p.0.abs()).max(p.1.abs()));
+            let d = depth(a.3, (b.3, b.4)).min(depth(a.4, (b.3, b.4))).min(depth(b.3, (a.3, a.4))).min(depth(b.4, (a.3, a.4)));
+            d > magnitude * 1e-10
+        };
+        if o1 * o2 < 0.0 && o3 * o4 < 0.0 && deep() {
+            // The crossing point, along `a`.
+            let (d1, d2) = (cross(b.3, b.4, a.3), cross(b.3, b.4, a.4));
+            let t = d1 / (d1 - d2);
+            out.push(((a.3.0 + t * (a.4.0 - a.3.0), a.3.1 + t * (a.4.1 - a.3.1)), boxes[s], boxes[t_], a.0 != b.0));
+        } else if o1 == 0.0 && o2 == 0.0 && o3 == 0.0 && o4 == 0.0 && a.0 != b.0 {
+            // Collinear segments of two rings, overlapping with the interior on the same side.
+            let (dx, dy) = (a.4.0 - a.3.0, a.4.1 - a.3.1);
+            let along = |p: Pt| (p.0 - a.3.0) * dx + (p.1 - a.3.1) * dy;
+            let len = dx * dx + dy * dy;
+            let (lo, hi) = (along(b.3).min(along(b.4)).max(0.0), along(b.3).max(along(b.4)).min(len));
+            let same_direction = (b.4.0 - b.3.0) * dx + (b.4.1 - b.3.1) * dy > 0.0;
+            if hi > lo && (a.5 == b.5) == same_direction {
+                let t = (lo + hi) / 2.0 / len;
+                out.push(((a.3.0 + t * dx, a.3.1 + t * dy), boxes[s], boxes[t_], a.0 != b.0));
+            }
         }
-        mvt::encode_path(out, &q, true, cursor);
     }
-    true
+    // Parts inside other parts (outside their holes).
+    let part_boxes: Vec<Option<Rect>> = polys.iter().map(|p| p.first().and_then(|r| clip::bbox(r.iter()))).collect();
+    for (i, p) in polys.iter().enumerate() {
+        let (Some(bi), Some(first)) = (part_boxes[i], p.first().and_then(|r| r.first())) else { continue };
+        for (j, q) in polys.iter().enumerate() {
+            let Some(bj) = part_boxes[j] else { continue };
+            if i == j || !clip::contains(bj, bi) {
+                continue;
+            }
+            if clip::point_in_ring(*first, &q[0]) && !q[1..].iter().any(|h| clip::point_in_ring(*first, h)) {
+                out.push((*first, bi, bi, false));
+            }
+        }
+    }
+    out
+}
+
+/// Whether GEOS fails to intersect a polygonal geometry (with crossings `crossings`, bounding box
+/// `env`) with the rectangle `r` (a "side location conflict"): when a crossing falls in the
+/// rectangle, or in the envelope OverlayNG clips its inputs to (the inputs' envelopes, each grown
+/// by a tenth, intersected; grown to the segments crossing it, then by a tenth again) with one
+/// of its segments near the rectangle (or anywhere in that envelope for overlapping parts). This
+/// rule agrees with GEOS 3.14 on 97% of random self-crossing polygons and rectangles, and 97% of
+/// random overlapping parts.
+fn clip_fails(polys: &[Vec<Vec<Pt>>], crossings: &[Crossing], env: Rect, r: Rect) -> bool {
+    if crossings.is_empty() {
+        return false;
+    }
+    let grow = |e: Rect| {
+        let (w, h) = (e.2 - e.0, e.3 - e.1);
+        let d = 0.1 * if w.min(h) > 0.0 { w.min(h) } else { w.max(h) };
+        (e.0 - d, e.1 - d, e.2 + d, e.3 + d)
+    };
+    let (a, b) = (grow(env), grow(r));
+    let result = (a.0.max(b.0), a.1.max(b.1), a.2.min(b.2), a.3.min(b.3));
+    if result.0 > result.2 || result.1 > result.3 {
+        return false;
+    }
+    let mut clip = result;
+    let corners = [(r.0, r.1), (r.2, r.1), (r.2, r.3), (r.0, r.3), (r.0, r.1)];
+    let rings = polys.iter().flatten().map(Vec::as_slice).chain(std::iter::once(&corners[..]));
+    for ring in rings {
+        for w in ring.windows(2) {
+            let (p, q) = (w[0], w[1]);
+            if p.0.max(q.0) >= result.0 && p.0.min(q.0) <= result.2 && p.1.max(q.1) >= result.1 && p.1.min(q.1) <= result.3 {
+                clip = (clip.0.min(p.0.min(q.0)), clip.1.min(p.1.min(q.1)), clip.2.max(p.0.max(q.0)), clip.3.max(p.1.max(q.1)));
+            }
+        }
+    }
+    let clip = grow(clip);
+    let within = |p: Pt, e: Rect| p.0 >= e.0 && p.0 <= e.2 && p.1 >= e.1 && p.1 <= e.3;
+    let meets = |a: Rect, b: Rect| a.0 <= b.2 && b.0 <= a.2 && a.1 <= b.3 && b.1 <= a.3;
+    crossings.iter().any(|&(p, s1, s2, parts)| within(p, r) || (within(p, clip) && (parts || meets(s1, r) || meets(s2, r))))
+}
+
+/// The rings of a polygon or multipolygon, by polygon, closed.
+fn polygon_rings(g: &Geometry) -> Option<Vec<Vec<Vec<Pt>>>> {
+    let ring = |r: &Ring| {
+        let mut v: Vec<Pt> = r.0.iter().map(|c| (c.x, c.y)).collect();
+        if v.len() > 1 && v.first() != v.last() {
+            v.push(v[0]);
+        }
+        v
+    };
+    match g {
+        Geometry::Polygon { exterior, interiors } => Some(vec![std::iter::once(exterior).chain(interiors).map(ring).collect()]),
+        Geometry::MultiPolygon(ps) => Some(ps.iter().map(|(e, h)| std::iter::once(e).chain(h).map(ring).collect()).collect()),
+        _ => None,
+    }
 }
 
 /// A feature's geometry, prepared for one tile: clipped to the buffered tile, simplified and
-/// encoded. `None` when nothing is left.
-fn encode_for_tile(g: &Geometry, f: &TileFrame, extent: u32, buffer: f64, tolerance: f64) -> Option<(u32, Vec<u32>)> {
+/// encoded. `None` when nothing is left, or when GEOS would fail to clip it (`crossings`, where
+/// its rings cross, are near the tile).
+fn encode_for_tile(
+    g: &Geometry,
+    f: &TileFrame,
+    extent: u32,
+    buffer: f64,
+    tolerance: f64,
+    crossings: &[Crossing],
+) -> Option<(u32, Vec<u32>)> {
     let r: Rect = (f.top_x - buffer, f.top_y - f.dim - buffer, f.top_x + f.dim + buffer, f.top_y + buffer);
     let xy = |c: &Coord| (c.x, c.y);
     let simplify = |pts: Vec<Pt>| if tolerance > 0.0 { clip::simplify(&pts, tolerance) } else { pts };
@@ -622,34 +832,24 @@ fn encode_for_tile(g: &Geometry, f: &TileFrame, extent: u32, buffer: f64, tolera
             (!out.is_empty()).then_some((mvt::LINESTRING, out))
         }
         Geometry::Polygon { .. } | Geometry::MultiPolygon(_) => {
-            let polys: Vec<Vec<Vec<Pt>>> = match g {
-                Geometry::Polygon { exterior, interiors } => {
-                    vec![std::iter::once(exterior).chain(interiors).map(|r| r.0.iter().map(xy).collect()).collect()]
-                }
-                Geometry::MultiPolygon(ps) => {
-                    ps.iter().map(|(e, h)| std::iter::once(e).chain(h).map(|r| r.0.iter().map(xy).collect()).collect()).collect()
-                }
-                _ => unreachable!(),
-            };
+            let polys = polygon_rings(g)?;
             let all = clip::bbox(polys.iter().flatten().flatten())?;
             let inside = clip::contains(r, all);
-            let close = |mut v: Vec<Pt>| {
-                if v.len() > 1 && v.first() != v.last() {
-                    let f = v[0];
-                    v.push(f);
-                }
-                v
-            };
-            let mut out = Vec::new();
-            let mut cursor = (0, 0);
-            for p in polys {
-                let parts: Vec<Vec<Vec<Pt>>> = if inside { vec![p.into_iter().map(close).collect()] } else { clip::clip_polygon(&p, r) };
-                for rings in parts {
-                    let rings: Vec<Vec<Pt>> = rings.into_iter().map(simplify).collect();
-                    encode_polygon(&mut out, &rings, f, extent, &mut cursor);
-                }
+            if !inside && clip_fails(&polys, crossings, all, r) {
+                return None;
             }
-            (!out.is_empty()).then_some((mvt::POLYGON, out))
+            let mut parts: Vec<Vec<Vec<Pt>>> = Vec::new();
+            for mut p in polys {
+                if !inside && p.len() > 1 {
+                    // GEOS's overlay leaves out holes outside their exterior.
+                    let exterior = p.remove(0);
+                    p.retain(|h| h.iter().any(|v| clip::point_in_ring(*v, &exterior)));
+                    p.insert(0, exterior);
+                }
+                let clipped: Vec<Vec<Vec<Pt>>> = if inside { vec![p] } else { clip::clip_polygon(&p, r) };
+                parts.extend(clipped.into_iter().map(|rings| rings.into_iter().map(simplify).collect()));
+            }
+            encode_polygons(&parts, f, extent).map(|out| (mvt::POLYGON, out))
         }
         Geometry::GeometryCollection(_) => None,
     }
@@ -714,6 +914,7 @@ pub(crate) fn make_tiles(layers: &[Layer], o: &TileWriteOptions) -> Result<Vecto
             for g in parts {
                 let mut pts: Vec<Pt> = Vec::new();
                 collect_points(g, &mut pts);
+                let crossings = polygon_rings(g).map(|p| ring_crossings(&p)).unwrap_or_default();
                 let Some(bb) = clip::bbox(pts.iter()) else { continue };
                 env = Some(match env {
                     Some(e) => (e.0.min(bb.0), e.1.min(bb.1), e.2.max(bb.2), e.3.max(bb.3)),
@@ -739,7 +940,9 @@ pub(crate) fn make_tiles(layers: &[Layer], o: &TileWriteOptions) -> Result<Vecto
                     for tx in tx0..=tx1 {
                         for ty in ty0..=ty1 {
                             let frame = TileFrame::new(z, tx as u32, ty as u32);
-                            let Some((geom_type, geometry)) = encode_for_tile(g, &frame, o.extent, buffer, tol) else { continue };
+                            let Some((geom_type, geometry)) = encode_for_tile(g, &frame, o.extent, buffer, tol, &crossings) else {
+                                continue;
+                            };
                             stats.geom_counts[geom_type as usize] += 1;
                             let layers = tiles.entry((z, tx as u32, ty as u32)).or_default();
                             let tl = match layers.iter_mut().position(|t| t.name == l.name) {

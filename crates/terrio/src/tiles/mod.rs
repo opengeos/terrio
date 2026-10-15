@@ -26,6 +26,7 @@ pub(crate) mod mvt;
 pub(crate) mod pmtiles;
 pub(crate) mod raster;
 pub(crate) mod source;
+pub(crate) mod valid;
 pub(crate) mod vector;
 
 use crate::{Error, Result};

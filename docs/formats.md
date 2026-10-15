@@ -248,7 +248,11 @@ Vector layers are written as GDAL's MVT writer writes them: reprojected to EPSG:
 the tiles of zoom levels 0 to 5 (`--minzoom`, `--maxzoom`), each feature clipped to every tile it
 touches with a buffer of 80 units (of 4096), quantized to the tile grid, polygons wound as the
 specification asks, tiles over 500 kB encoded at lower resolutions then reduced to their largest
-features. Layer creation options (`--lco`): `MINZOOM`, `MAXZOOM`, `EXTENT`, `BUFFER`,
+features. Invalid polygons are handled as GDAL handles them with GEOS: a polygon that is invalid
+once quantized (rounding made its rings cross or touch, its parts overlap, or the source was
+invalid) is replaced by GEOS's `MakeValid` of it (the "linework" method: the rings noded, faces
+nested an even number of times kept), and an invalid polygon (crossing rings, overlapping parts)
+is left out of the tiles where GEOS fails to clip it, as GDAL leaves it out. Layer creation options (`--lco`): `MINZOOM`, `MAXZOOM`, `EXTENT`, `BUFFER`,
 `SIMPLIFICATION`, `SIMPLIFICATION_MAX_ZOOM`, `MAX_SIZE`, `MAX_FEATURES`, `NAME`, `DESCRIPTION`,
 `TYPE`. The metadata holds `vector_layers` and `tilestats`, so that GDAL and MapLibre read the
 fields and their types. `-f MVT` writes a directory of tiles with a `metadata.json`.
@@ -258,7 +262,9 @@ have GDAL's size, geotransform, zoom levels and tiles, with identical pixels at 
 and overviews within one grey level for 99.8% to 100% of the pixels (GDAL's overview filter
 rounds a little differently); vector tiles written by GDAL (and by Tippecanoe) read as GDAL reads
 them, feature for feature; vector tiles written by terrio read in GDAL with GDAL's feature
-counts and areas. GDAL 3.12 reads PMTiles vector tiles only: raster PMTiles follow GDAL's
+counts and areas, invalid polygons included: Natural Earth's countries (Sudan is invalid) at zoom
+levels 0 to 6 and US counties at zoom levels 0 to 8 give GDAL's features and areas tile by tile
+(all but one county at one zoom level, whose `MakeValid` output starts its rings elsewhere). GDAL 3.12 reads PMTiles vector tiles only: raster PMTiles follow GDAL's
 development version.
 
 ## Arrow and GeoArrow

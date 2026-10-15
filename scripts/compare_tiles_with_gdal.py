@@ -8,7 +8,10 @@ reads only vector PMTiles, so they are compared with GDAL's MBTiles).
 
 Vectors: reads archives written by GDAL (and a Tippecanoe archive) with both tools, and writes
 vector tiles with ``ogr2ogr`` and ``terrio convert``, reading both with GDAL. Reports feature
-counts, total areas and lengths, and the keys whose features differ.
+counts, total areas and lengths, and the keys whose features differ. Polygons that GDAL repairs
+with GEOS's ``MakeValid`` (or fails to clip) are compared tile by tile, reading the tiles
+unclipped (``CLIP=NO``): Natural Earth's countries (Sudan is invalid), US counties, and synthetic
+invalid polygons (crossing rings, overlapping parts, holes outside their exterior).
 
 Usage:
     python scripts/compare_tiles_with_gdal.py ../terrio-data [--terrio target/release/terrio]
@@ -17,6 +20,7 @@ Needs GDAL's command-line tools and Python bindings (``osgeo``) with NumPy.
 """
 
 import argparse
+import json
 import os
 import subprocess
 import sys
@@ -136,18 +140,21 @@ def compare_rasters(data, terrio, tmp):
         print(f"  PMTiles (terrio) vs GDAL's MBTiles: {aligned(gl[0][0], gl[0][1], pl[0][0], pl[0][1])}")
 
 
-def vector_stats(path, key, zoom=None):
+def vector_stats(path, key, zoom=None, clip=True):
     """Reads a vector dataset with GDAL and sums its features' areas and lengths by key.
 
     Args:
         path: The dataset.
         key: The field the features are grouped by.
         zoom: The zoom level to read (``ZOOM_LEVEL`` open option), or the highest.
+        clip: Whether tile geometries are clipped to their tiles (``CLIP`` open option).
 
     Returns:
         ``(count, {key: [count, area, length]})`` of the first layer.
     """
     oo = [f"ZOOM_LEVEL={zoom}"] if zoom is not None else []
+    if not clip:
+        oo.append("CLIP=NO")
     ds = gdal.OpenEx(path, gdal.OF_VECTOR, open_options=oo)
     layer = ds.GetLayer(0)
     by_key = defaultdict(lambda: [0, 0.0, 0.0])
@@ -235,6 +242,60 @@ def compare_vectors(data, terrio, tmp):
     report("both directories read by GDAL, zoom 2", vector_stats(os.path.join(gdir, "2"), "ADM0_A3"), vector_stats(os.path.join(tdir, "2"), "ADM0_A3"))
 
 
+def synthetic_invalid_polygons(path):
+    """Writes a GeoJSON file of invalid polygons, of the kinds GDAL repairs with GEOS.
+
+    Args:
+        path: The GeoJSON path.
+
+    Returns:
+        The path.
+    """
+
+    def square(x0, y0, x1, y1):
+        return [[x0, y0], [x1, y0], [x1, y1], [x0, y1], [x0, y0]]
+
+    shapes = {
+        "bowtie": {"type": "Polygon", "coordinates": [[[0, 0], [10, 10], [10, 0], [0, 10], [0, 0]]]},
+        "lobe": {"type": "Polygon", "coordinates": [[[20, 1], [40, 1], [40, 20], [20, 20], [20.5, 0.6], [20, 1]]]},
+        "overlap": {"type": "MultiPolygon", "coordinates": [[square(-30, 1, -20, 11)], [square(-25, 1, -15, 11)]]},
+        "hole_out": {"type": "Polygon", "coordinates": [square(-60, 21, -50, 31), square(-45, 21, -40, 26)]},
+        "valid": {"type": "Polygon", "coordinates": [square(-100, -40, -80, -20), square(-95, -35, -90, -30)]},
+        "touch": {"type": "Polygon", "coordinates": [[[60, 1], [80, 1], [70, 11], [80, 21], [60, 21], [70, 11], [60, 1]]]},
+    }
+    features = [{"type": "Feature", "properties": {"name": k}, "geometry": g} for k, g in shapes.items()]
+    with open(path, "w") as f:
+        json.dump({"type": "FeatureCollection", "features": features}, f)
+    return path
+
+
+def compare_repaired_polygons(data, terrio, tmp):
+    """Writes polygons GDAL repairs (or fails to clip) with both tools, and compares the tiles.
+
+    Args:
+        data: The test data directory.
+        terrio: The terrio executable.
+        tmp: A temporary directory.
+    """
+    print("Invalid polygons in vector tiles (GEOS's MakeValid), tiles read unclipped by GDAL:")
+    cases = [
+        (os.path.join(data, "countries.geojson"), "ADM0_A3", 6),
+        (os.path.join(data, "UScounties.gpkg"), "FIPS", 8),
+        (synthetic_invalid_polygons(os.path.join(tmp, "invalid.geojson")), "name", 3),
+    ]
+    for src, key, maxzoom in cases:
+        if not os.path.exists(src):
+            print(f"  {os.path.basename(src)}: missing")
+            continue
+        name = os.path.basename(src)
+        g = os.path.join(tmp, f"g_{name}.pmtiles")
+        t = os.path.join(tmp, f"t_{name}.pmtiles")
+        run(["ogr2ogr", "-dsco", f"MAXZOOM={maxzoom}", g, src])
+        run([terrio, "convert", "--maxzoom", str(maxzoom), src, t])
+        for z in range(maxzoom + 1):
+            report(f"{name} zoom {z}", vector_stats(g, key, z, clip=False), vector_stats(t, key, z, clip=False))
+
+
 def main():
     """Runs the comparisons."""
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
@@ -244,6 +305,7 @@ def main():
     with tempfile.TemporaryDirectory() as tmp:
         compare_rasters(args.data, args.terrio, tmp)
         compare_vectors(args.data, args.terrio, tmp)
+        compare_repaired_polygons(args.data, args.terrio, tmp)
     return 0
 
 
