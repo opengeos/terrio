@@ -25,6 +25,8 @@ use crate::{Error, Result};
 
 /// The magic number starting a rollback journal.
 const JOURNAL_MAGIC: [u8; 8] = [0xd9, 0xd5, 0x05, 0xf9, 0x20, 0xa1, 0x63, 0xd7];
+/// The pages read together when one is needed.
+const READ_PAGES: u32 = 16;
 /// The sector size the journal header is padded to, as SQLite assumes by default.
 const SECTOR: usize = 512;
 /// The byte offsets of SQLite's file locks (`PENDING_BYTE` at 1 GiB).
@@ -190,8 +192,12 @@ impl Editor {
             return Err(bad(format!("page {n} out of range")));
         }
         if !self.cache.contains_key(&n) {
-            let mut buf = vec![0u8; self.page_size];
-            self.file.seek(SeekFrom::Start((n as u64 - 1) * self.page_size as u64))?;
+            // The aligned run of pages around it, in one read: pages of a b-tree written together
+            // are often next to each other, and reads from disk cost per request.
+            let first = (n - 1) / READ_PAGES * READ_PAGES + 1;
+            let last = (first + READ_PAGES - 1).min(self.orig_pages.max(n));
+            let mut buf = vec![0u8; (last - first + 1) as usize * self.page_size];
+            self.file.seek(SeekFrom::Start((first as u64 - 1) * self.page_size as u64))?;
             let mut got = 0;
             while got < buf.len() {
                 match self.file.read(&mut buf[got..])? {
@@ -199,7 +205,9 @@ impl Editor {
                     k => got += k,
                 }
             }
-            self.cache.insert(n, buf);
+            for (k, page) in buf.chunks(self.page_size).enumerate() {
+                self.cache.entry(first + k as u32).or_insert_with(|| page.to_vec());
+            }
         }
         Ok(())
     }
