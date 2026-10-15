@@ -501,6 +501,9 @@ pub(crate) fn write_e57<T: Read + Write + Seek>(cloud: &PointCloud, out: T, opti
 pub(crate) struct E57StreamWriter {
     tx: Option<std::sync::mpsc::SyncSender<PointCloud>>,
     handle: Option<std::thread::JoinHandle<Result<()>>>,
+    /// Set when the writer is dropped unfinished: the thread then stops without finishing the
+    /// file, which is not left looking complete.
+    aborted: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -509,15 +512,20 @@ impl E57StreamWriter {
     pub fn new(file: std::fs::File, template: &PointCloud, options: &PointWriteOptions) -> Result<Self> {
         let plan = plan_e57(template, &options.dimensions)?;
         let (tx, rx) = std::sync::mpsc::sync_channel::<PointCloud>(1);
+        let aborted = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let stop = aborted.clone();
         let handle = std::thread::Builder::new().name("terrio-e57-writer".into()).spawn(move || {
             write_e57_with(file, &plan, |add| {
                 for chunk in rx {
                     add(&chunk)?;
                 }
+                if stop.load(std::sync::atomic::Ordering::SeqCst) {
+                    return Err(Error::InvalidData("E57: the writer was dropped before the file was finished".into()));
+                }
                 Ok(())
             })
         })?;
-        Ok(Self { tx: Some(tx), handle: Some(handle) })
+        Ok(Self { tx: Some(tx), handle: Some(handle), aborted })
     }
 
     /// The writing thread's result, once it has stopped.
@@ -549,6 +557,7 @@ impl E57StreamWriter {
 #[cfg(not(target_arch = "wasm32"))]
 impl Drop for E57StreamWriter {
     fn drop(&mut self) {
+        self.aborted.store(true, std::sync::atomic::Ordering::SeqCst);
         let _ = self.join();
     }
 }

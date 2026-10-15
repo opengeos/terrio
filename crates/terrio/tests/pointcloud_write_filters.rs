@@ -134,6 +134,34 @@ fn e57_written_in_chunks_is_written_whole() {
 }
 
 #[test]
+fn e57_writer_dropped_unfinished_leaves_no_complete_file() {
+    let c = cloud(20_000, 15);
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("dropped.e57");
+    let mut w = PointWriter::create(path.to_str().unwrap(), &c, &Default::default()).unwrap();
+    w.write(&c.slice(0, 10_000)).unwrap();
+    drop(w);
+    // Not finished: no E57 file that reads as the first chunk alone.
+    assert!(pointcloud::read_points(path.to_str().unwrap(), &Default::default()).is_err());
+}
+
+#[test]
+fn assigns_scaled_extra_bytes_dimensions_in_their_units() {
+    let mut c = cloud(10, 16);
+    let mut hag = Dimension::new("height_above_ground", Values::U16(vec![0; 10]));
+    hag.scale = Some(0.01);
+    hag.offset = Some(-1.0);
+    c.dimensions.push(hag);
+    let a = filters::assign(&c, &AssignOptions { values: vec!["HeightAboveGround = 0.5".into()], ..Default::default() }).unwrap();
+    let d = a.dim("height_above_ground").unwrap();
+    // Stored as (0.5 - -1) / 0.01 = 150, read back as 0.5.
+    assert_eq!(d.values.get_f64(0), 150.0);
+    assert!((d.get(0) - 0.5).abs() < 1e-9);
+    // Out of the stored type's range: (700 + 1) / 0.01 > 65535.
+    assert!(filters::assign(&c, &AssignOptions { values: vec!["HeightAboveGround = 700".into()], ..Default::default() }).is_err());
+}
+
+#[test]
 fn selects_points_as_pdal_filters() {
     let c = cloud(2_000, 14);
     // Decimation: the points at offset + round(k × step), as PDAL streams them.

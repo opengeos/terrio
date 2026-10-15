@@ -554,10 +554,12 @@ def compare_formats(root: Path, tmp: Path) -> None:
         terrio.convert_points(str(src), str(out), ept_data_type=data_type)
         try:
             got = pdal_text([{"type": "readers.ept", "filename": str(out)}])
-        except subprocess.CalledProcessError:
+        except subprocess.CalledProcessError as e:
             got = None
-        if got is None:
-            print(f"skip writefmt autzen_trim.laz -> EPT ({data_type}), read by PDAL: this PDAL cannot read {data_type} tiles")
+            if data_type == "zstandard":
+                print(f"skip writefmt autzen_trim.laz -> EPT ({data_type}), read by PDAL: this PDAL cannot read {data_type} tiles")
+            else:
+                report(f"writefmt autzen_trim.laz -> EPT ({data_type}), read by PDAL readers.ept", False, (e.stderr or "")[:200])
         if data_type != "laszip":
             ref_cmp = {k: (np.where(v > 0, np.floor(v + 0.5), np.ceil(v - 0.5)) if k in ("x", "y", "z") else v) for k, v in ref.items()}
         else:

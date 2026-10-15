@@ -69,17 +69,37 @@ fn legacy_overlap(c: f64) -> f64 {
     if c == 12.0 { 1.0 } else { 0.0 }
 }
 
+impl Drop for EptTarget {
+    /// A dataset not written (the writer dropped unfinished) leaves no work directory.
+    fn drop(&mut self) {
+        if self.work.exists() {
+            let _ = std::fs::remove_dir_all(&self.work);
+        }
+    }
+}
+
+/// Creates a directory in `dir` named `prefix` and a number, one no other write uses: each write
+/// builds its dataset and sets the previous one aside in directories of its own.
+fn unique_dir(dir: &Path, prefix: &str) -> Result<PathBuf> {
+    for k in 0u32.. {
+        let d = dir.join(format!("{prefix}-{k}"));
+        match std::fs::create_dir(&d) {
+            Ok(()) => return Ok(d),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(Error::Io(std::io::Error::new(e.kind(), format!("'{}': {e}", d.display())))),
+        }
+    }
+    Err(Error::Io(std::io::Error::other(format!("'{}': no free directory name", dir.display()))))
+}
+
 impl EptTarget {
     /// A dataset to write in `dir` (created when missing). It is built in a directory of its
     /// own in `dir`, and replaces the `ept.json`, `ept-data` and `ept-hierarchy` already there
     /// only once complete: a write that fails leaves the previous dataset as it was.
     pub fn new(dir: PathBuf, data_type: EptDataType, crs: SpatialRef) -> Result<Self> {
         let io = |d: &Path, e: std::io::Error| Error::Io(std::io::Error::new(e.kind(), format!("'{}': {e}", d.display())));
-        let work = dir.join(".terrio-ept-new");
-        // Left by a write that was interrupted.
-        if work.exists() {
-            std::fs::remove_dir_all(&work).map_err(|e| io(&work, e))?;
-        }
+        std::fs::create_dir_all(&dir).map_err(|e| io(&dir, e))?;
+        let work = unique_dir(&dir, ".terrio-ept-new")?;
         for sub in ["ept-data", "ept-hierarchy"] {
             let d = work.join(sub);
             std::fs::create_dir_all(&d).map_err(|e| io(&d, e))?;
@@ -92,11 +112,7 @@ impl EptTarget {
     /// first aside and last in, so that readers find either dataset whole or no `ept.json`.
     fn commit(&self) -> Result<()> {
         let io = |d: &Path, e: std::io::Error| Error::Io(std::io::Error::new(e.kind(), format!("'{}': {e}", d.display())));
-        let old = self.dir.join(".terrio-ept-old");
-        if old.exists() {
-            std::fs::remove_dir_all(&old).map_err(|e| io(&old, e))?;
-        }
-        std::fs::create_dir(&old).map_err(|e| io(&old, e))?;
+        let old = unique_dir(&self.dir, ".terrio-ept-old")?;
         let names = ["ept.json", "ept-data", "ept-hierarchy"];
         let mut aside = Vec::new();
         let mut moved_in = Vec::new();
@@ -117,11 +133,19 @@ impl EptTarget {
         })();
         if let Err(e) = swapped {
             // Back as it was: the new entries out, the previous ones in.
+            let mut restored = true;
             for name in &moved_in {
-                let _ = std::fs::rename(self.dir.join(name), self.work.join(name));
+                restored &= std::fs::rename(self.dir.join(name), self.work.join(name)).is_ok();
             }
             for name in &aside {
-                let _ = std::fs::rename(old.join(name), self.dir.join(name));
+                restored &= std::fs::rename(old.join(name), self.dir.join(name)).is_ok();
+            }
+            if !restored {
+                // The previous entries not moved back are kept, to be recovered by hand.
+                return Err(Error::Io(std::io::Error::other(format!(
+                    "{e}; the previous dataset could not be restored entirely: what remains of it is in '{}'",
+                    old.display()
+                ))));
             }
             let _ = std::fs::remove_dir_all(&old);
             return Err(e);
@@ -141,11 +165,8 @@ impl EptTarget {
         span: u64,
         build: impl FnOnce(&mut dyn NodeSink) -> Result<()>,
     ) -> Result<()> {
-        let written = self.build_all(header, layout, bounds, conforming, span, build).and_then(|()| self.commit());
-        if written.is_err() {
-            let _ = std::fs::remove_dir_all(&self.work);
-        }
-        written
+        // The work directory is removed on failure when `self` is dropped.
+        self.build_all(header, layout, bounds, conforming, span, build).and_then(|()| self.commit())
     }
 
     fn build_all(

@@ -302,8 +302,10 @@ pub struct AssignOptions {
 }
 
 /// Sets a value, rounded (half away from zero) for integers, as PDAL converts doubles; fails when
-/// it does not fit the dimension's type.
+/// it does not fit the dimension's type. Extra-bytes dimensions with a scale and offset store
+/// `(v - offset) / scale`; coordinates hold the scaled value.
 fn set_value(d: &mut Dimension, i: usize, v: f64) -> Result<()> {
+    let stored = (v - d.offset.unwrap_or(0.0)) / d.scale.unwrap_or(1.0);
     let (lo, hi) = match &d.values {
         Values::U8(_) => (0.0, u8::MAX as f64),
         Values::I8(_) => (i8::MIN as f64, i8::MAX as f64),
@@ -314,12 +316,11 @@ fn set_value(d: &mut Dimension, i: usize, v: f64) -> Result<()> {
         Values::U64(_) => (0.0, u64::MAX as f64),
         Values::I64(_) => (i64::MIN as f64, i64::MAX as f64),
         Values::F32(_) | Values::F64(_) => {
-            // Scaled dimensions (coordinates) hold the scaled value.
-            d.values.set_f64(i, v);
+            d.values.set_f64(i, stored);
             return Ok(());
         }
     };
-    let r = if v > 0.0 { (v + 0.5).floor() } else { (v - 0.5).ceil() };
+    let r = if stored > 0.0 { (stored + 0.5).floor() } else { (stored - 0.5).ceil() };
     if !(r >= lo && r <= hi) {
         return Err(Error::InvalidArgument(format!("cannot set {} to {v}: out of range", super::super::names::to_pdal(&d.name))));
     }
