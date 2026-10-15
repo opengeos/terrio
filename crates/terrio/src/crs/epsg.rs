@@ -1,6 +1,6 @@
-//! The EPSG table terrio carries: official names, WKT, coordinate conversions as PROJ strings
-//! and the datum transformations to WGS 84 GDAL uses, generated from GDAL and PROJ by
-//! `scripts/gen_epsg_table.py`.
+//! The EPSG table terrio carries: official names, WKT, coordinate conversions as PROJ strings,
+//! the datum transformations GDAL uses (without and with grids), vertical and compound CRSs and
+//! geoid models, generated from GDAL and PROJ by `scripts/gen_epsg_table.py`.
 //!
 //! Derived from the EPSG Geodetic Parameter Dataset (<https://epsg.org>), whose terms of use
 //! permit redistribution with attribution.
@@ -9,7 +9,7 @@ use super::datum::{Op, parse_steps};
 use super::route::Leg;
 use std::collections::HashMap;
 use std::io::Read;
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 static DATA: &[u8] = include_bytes!("../../data/epsg.tsv.zst");
 
@@ -22,13 +22,45 @@ pub(crate) struct Entry {
     pub datum: u32,
     /// The EPSG code of its geographic CRS, 0 when unknown.
     pub geog: u32,
-    /// Its datum transformations to WGS 84, in the order GDAL tries them.
+    /// Its datum transformations to WGS 84, in the order GDAL tries them when no grid is
+    /// installed.
     pub ops: Vec<Arc<Op>>,
+    /// Those GDAL tries when grids are available (empty when the same).
+    pub grid_ops: Vec<Arc<Op>>,
+    /// Whether it is a dynamic CRS (its datum is a dynamic reference frame).
+    pub dynamic: bool,
+    /// Whether it is a geographic 3D CRS.
+    pub three_d: bool,
+    /// Its area of use: west, south, east and north in degrees.
+    pub area: Option<[f64; 4]>,
     /// The PROJ string of its coordinate conversion (without datum shift).
     pub proj: String,
     /// The WKT GDAL writes for it.
     pub wkt: String,
 }
+
+/// An EPSG vertical CRS.
+#[derive(Debug)]
+pub(crate) struct Vertical {
+    pub name: String,
+    /// Metres per unit.
+    pub to_meter: f64,
+    /// Whether heights are depths (positive down).
+    pub down: bool,
+    pub wkt: String,
+}
+
+/// An EPSG compound CRS: a horizontal CRS and a vertical CRS.
+#[derive(Debug)]
+pub(crate) struct Compound {
+    pub name: String,
+    pub horizontal: u32,
+    pub vertical: u32,
+    pub wkt: String,
+}
+
+/// Transformations without and with grids.
+type OpLists = (Vec<Arc<Op>>, Vec<Arc<Op>>);
 
 /// The table: its text, decompressed once, and an index of its lines. Entries are parsed on
 /// first use.
@@ -37,7 +69,13 @@ struct Table {
     crs: HashMap<u32, Lazy<Option<Entry>>>,
     ops: HashMap<u32, Lazy<Option<Arc<Op>>>>,
     /// Direct transformations between geographic CRSs, by (source, target) code.
-    pairs: HashMap<(u32, u32), Lazy<Vec<Arc<Op>>>>,
+    pairs: HashMap<(u32, u32), Lazy<OpLists>>,
+    verticals: HashMap<u32, Lazy<Option<Vertical>>>,
+    compounds: HashMap<u32, Lazy<Option<Compound>>>,
+    /// Geoid models from geographic 3D CRSs to vertical CRSs, by vertical CRS.
+    geoids: HashMap<u32, Vec<(u32, Lazy<OpLists>)>>,
+    /// Old names of grids.
+    alternatives: HashMap<String, Vec<String>>,
 }
 
 /// A line of the table (its fields after the code) and what it parses to.
@@ -76,6 +114,8 @@ fn table() -> &'static Table {
     TABLE.get_or_init(|| {
         let text = decompress();
         let (mut crs, mut ops, mut pairs) = (HashMap::new(), HashMap::new(), HashMap::new());
+        let (mut verticals, mut compounds, mut geoids) = (HashMap::new(), HashMap::new(), HashMap::<u32, Vec<_>>::new());
+        let mut alternatives = HashMap::<String, Vec<String>>::new();
         let mut pos = 0;
         for line in text.split_inclusive('\n') {
             let start = pos;
@@ -86,6 +126,9 @@ fn table() -> &'static Table {
             let (Some(kind), Some(key)) = (f.next(), f.next()) else { continue };
             // The rest of the line, after the kind and key fields.
             let rest = (start + kind.len() + key.len() + 2).min(end);
+            // The rest after one more field.
+            let after_second = || (rest + line[rest - start..].find('\t').map_or(end - rest, |i| i + 1)).min(end);
+            let second = || line[rest - start..].split('\t').next().and_then(|v| v.parse::<u32>().ok());
             match kind {
                 "O" => {
                     if let Ok(id) = key.parse::<u32>() {
@@ -98,16 +141,32 @@ fn table() -> &'static Table {
                     }
                 }
                 "P" => {
-                    let mut g = line[rest - start..].splitn(2, '\t');
-                    if let (Ok(a), Some(Ok(b))) = (key.parse::<u32>(), g.next().map(str::parse::<u32>)) {
-                        let ids = (rest + line[rest - start..].find('\t').map_or(end - rest, |i| i + 1)).min(end);
-                        pairs.insert((a, b), Lazy::new(ids, end));
+                    if let (Ok(a), Some(b)) = (key.parse::<u32>(), second()) {
+                        pairs.insert((a, b), Lazy::new(after_second(), end));
                     }
+                }
+                "V" => {
+                    if let Ok(code) = key.parse::<u32>() {
+                        verticals.insert(code, Lazy::new(rest, end));
+                    }
+                }
+                "K" => {
+                    if let Ok(code) = key.parse::<u32>() {
+                        compounds.insert(code, Lazy::new(rest, end));
+                    }
+                }
+                "G" => {
+                    if let (Ok(g), Some(v)) = (key.parse::<u32>(), second()) {
+                        geoids.entry(v).or_default().push((g, Lazy::new(after_second(), end)));
+                    }
+                }
+                "A" => {
+                    alternatives.entry(key.to_string()).or_default().push(line[rest - start..].to_string());
                 }
                 _ => {}
             }
         }
-        Table { text, crs, ops, pairs }
+        Table { text, crs, ops, pairs, verticals, compounds, geoids, alternatives }
     })
 }
 
@@ -129,6 +188,8 @@ impl Table {
                     unknown_area: flags.contains('u'),
                     ballpark: flags.contains('b'),
                     concatenated: flags.contains('c'),
+                    priority: flags.contains('p'),
+                    keeps_height: flags.contains('z'),
                     steps,
                 }))
             })
@@ -145,12 +206,17 @@ impl Table {
             .get(&code)?
             .get(&self.text, |line| {
                 let fields: Vec<&str> = line.split('\t').collect();
-                let [name, datum, geog, op_ids, proj, wkt] = fields[..] else { return None };
+                let [name, datum, geog, op_ids, grid_ids, flags, area, proj, wkt] = fields[..] else { return None };
+                let area: Vec<f64> = area.split(',').filter_map(|v| v.parse().ok()).collect();
                 Some(Entry {
                     name: name.to_string(),
                     datum: datum.parse().unwrap_or(0),
                     geog: geog.parse().unwrap_or(0),
                     ops: self.resolve(op_ids),
+                    grid_ops: self.resolve(grid_ids),
+                    dynamic: flags.contains('d'),
+                    three_d: flags.contains('3'),
+                    area: (area.len() == 4).then(|| [area[0], area[1], area[2], area[3]]),
                     proj: proj.to_string(),
                     wkt: wkt.to_string(),
                 })
@@ -158,9 +224,25 @@ impl Table {
             .as_ref()
     }
 
-    fn pair(&self, a: u32, b: u32) -> Option<&[Arc<Op>]> {
-        Some(self.pairs.get(&(a, b))?.get(&self.text, |ids| self.resolve(ids)).as_slice())
+    fn lists(&self, ids: &str) -> OpLists {
+        let (a, b) = ids.split_once('\t').unwrap_or((ids, ""));
+        (self.resolve(a), self.resolve(b))
     }
+
+    fn pair(&self, a: u32, b: u32) -> Option<&OpLists> {
+        Some(self.pairs.get(&(a, b))?.get(&self.text, |ids| self.lists(ids)))
+    }
+}
+
+/// The operations GDAL uses given the grids that can be found: those listed with grids, without
+/// the ones whose grids are missing, when at least one operation needing grids remains; else
+/// those listed without grids.
+pub(crate) fn usable(ops: &[Arc<Op>], grid_ops: &[Arc<Op>]) -> Vec<Arc<Op>> {
+    if grid_ops.is_empty() {
+        return ops.to_vec();
+    }
+    let kept: Vec<Arc<Op>> = grid_ops.iter().filter(|o| o.available()).cloned().collect();
+    if kept.iter().any(|o| o.needs_grids() && !o.ballpark) { kept } else { ops.to_vec() }
 }
 
 /// Starts loading the table in the background, for work that will need it after reading its
@@ -178,13 +260,21 @@ pub(crate) fn get(code: u32) -> Option<&'static Entry> {
 }
 
 /// The single transformations from each geographic CRS, by the CRS they lead to.
-type Adjacency = HashMap<u32, Vec<(u32, Vec<Leg>)>>;
+pub(crate) type Adjacency = HashMap<u32, Vec<(u32, Vec<Leg>)>>;
 
-/// The geographic CRSs a geographic CRS has single transformations to (WGS 84 among them), with
-/// those transformations: what PROJ chains through intermediate datums.
-pub(crate) fn neighbours(geog: u32) -> Option<&'static Vec<(u32, Vec<Leg>)>> {
-    static ADJ: OnceLock<Adjacency> = OnceLock::new();
-    ADJ.get_or_init(|| {
+/// For each geographic CRS, the geographic CRSs it has single transformations to (WGS 84 among
+/// them), with those transformations: what PROJ chains through intermediate datums. Rebuilt
+/// when the grids that can be found change.
+pub(crate) fn adjacency() -> Arc<Adjacency> {
+    static ADJ: Mutex<Option<(u64, Arc<Adjacency>)>> = Mutex::new(None);
+    let generation = super::grid::generation();
+    let mut cached = ADJ.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((g, adj)) = cached.as_ref()
+        && *g == generation
+    {
+        return adj.clone();
+    }
+    let adj = Arc::new({
         let t = table();
         let single = |ops: &[Arc<Op>], reverse: bool| -> Vec<Leg> {
             ops.iter().filter(|o| !o.ballpark && !o.concatenated).map(|op| Leg { op: op.clone(), reverse }).collect()
@@ -199,29 +289,83 @@ pub(crate) fn neighbours(geog: u32) -> Option<&'static Vec<(u32, Vec<Leg>)>> {
         let mut pair_keys: Vec<(u32, u32)> = t.pairs.keys().copied().collect();
         pair_keys.sort_unstable();
         for (a, b) in pair_keys {
-            let ops = t.pair(a, b).unwrap_or_default();
-            add(a, b, single(ops, false));
-            add(b, a, single(ops, true));
+            let Some((ops, grid_ops)) = t.pair(a, b) else { continue };
+            let ops = usable(ops, grid_ops);
+            add(a, b, single(&ops, false));
+            add(b, a, single(&ops, true));
         }
         let mut codes: Vec<u32> = t.crs.keys().copied().collect();
         codes.sort_unstable();
         for code in codes {
             let Some(e) = t.entry(code) else { continue };
-            if e.geog == code && code != 4326 && e.datum != 6326 {
-                add(code, 4326, single(&e.ops, false));
-                add(4326, code, single(&e.ops, true));
+            if e.geog == code && code != 4326 && e.datum != 6326 && !e.three_d {
+                let ops = usable(&e.ops, &e.grid_ops);
+                add(code, 4326, single(&ops, false));
+                add(4326, code, single(&ops, true));
             }
         }
         adj
-    })
-    .get(&geog)
+    });
+    *cached = Some((generation, adj.clone()));
+    adj
 }
 
-/// The direct transformations from one geographic CRS to another, and whether they run in
-/// reverse (the table holds each pair once).
-pub(crate) fn pair(from: u32, to: u32) -> Option<(&'static [Arc<Op>], bool)> {
+/// The direct transformations from one geographic CRS to another (those GDAL uses given the
+/// grids available), and whether they run in reverse (the table holds each pair once).
+pub(crate) fn pair(from: u32, to: u32) -> Option<(Vec<Arc<Op>>, bool)> {
     let t = table();
-    t.pair(from, to).map(|o| (o, false)).or_else(|| t.pair(to, from).map(|o| (o, true)))
+    let found = t.pair(from, to).map(|o| (o, false)).or_else(|| t.pair(to, from).map(|o| (o, true)))?;
+    Some((usable(&found.0.0, &found.0.1), found.1))
+}
+
+/// An EPSG vertical CRS.
+pub(crate) fn vertical(code: u32) -> Option<&'static Vertical> {
+    let t = table();
+    t.verticals
+        .get(&code)?
+        .get(&t.text, |line| {
+            let f: Vec<&str> = line.split('\t').collect();
+            let [name, _datum, unit, direction, wkt] = f[..] else { return None };
+            Some(Vertical {
+                name: name.to_string(),
+                to_meter: unit.parse().unwrap_or(1.0),
+                down: direction == "down",
+                wkt: wkt.to_string(),
+            })
+        })
+        .as_ref()
+}
+
+/// An EPSG compound CRS.
+pub(crate) fn compound(code: u32) -> Option<&'static Compound> {
+    let t = table();
+    t.compounds
+        .get(&code)?
+        .get(&t.text, |line| {
+            let f: Vec<&str> = line.split('\t').collect();
+            let [name, h, v, wkt] = f[..] else { return None };
+            Some(Compound { name: name.to_string(), horizontal: h.parse().ok()?, vertical: v.parse().ok()?, wkt: wkt.to_string() })
+        })
+        .as_ref()
+}
+
+/// The geoid models (transformations from geographic 3D CRSs) of a vertical CRS, with the
+/// code of their geographic 3D CRS, as GDAL uses them given the grids available.
+pub(crate) fn geoid_models(vertical: u32) -> Vec<(u32, Vec<Arc<Op>>)> {
+    let t = table();
+    let Some(list) = t.geoids.get(&vertical) else { return Vec::new() };
+    list.iter()
+        .map(|(g, lazy)| {
+            let (ops, grid_ops) = lazy.get(&t.text, |ids| t.lists(ids));
+            (*g, usable(ops, grid_ops))
+        })
+        .filter(|(_, ops)| !ops.is_empty())
+        .collect()
+}
+
+/// The names a PROJ-data grid had before PROJ 7.
+pub(crate) fn grid_alternatives(name: &str) -> Vec<String> {
+    table().alternatives.get(name).cloned().unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -238,5 +382,11 @@ mod tests {
         assert!(get(23030).unwrap().ops.len() > 3);
         assert_eq!(get(31467).unwrap().geog, 4314);
         assert!(pair(4314, 4258).is_some());
+        assert_eq!(vertical(5773).unwrap().name, "EGM96 height");
+        let c = compound(5498).unwrap();
+        assert_eq!((c.horizontal, c.vertical), (4269, 5703));
+        assert!(get(4979).unwrap().three_d && get(4979).unwrap().geog == 4326);
+        assert!(get(9000).unwrap().dynamic);
+        assert_eq!(grid_alternatives("us_noaa_conus.tif"), vec!["conus".to_string()]);
     }
 }

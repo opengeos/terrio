@@ -165,7 +165,8 @@ jobs:
       - uses: actions/cache@v6
         with:
           path: terrio-data
-          key: terrio-data-gdal3.12.2-${{ hashFiles('scripts/fetch_test_data.sh', 'scripts/gen_epsg_points.py') }}
+          # Holds the datum shift and geoid grids of scripts/proj_grids.txt too (230 MB).
+          key: terrio-data-gdal3.12.2-${{ hashFiles('scripts/fetch_test_data.sh', 'scripts/gen_epsg_points.py', 'scripts/proj_grids.txt') }}
       - name: Fetch test data
         shell: micromamba-shell {0}
         run: scripts/fetch_test_data.sh terrio-data

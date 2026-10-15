@@ -36,6 +36,57 @@ pub(crate) struct Def {
     datum: Option<u32>,
     /// The EPSG code of the geographic CRS, when known.
     geog: Option<u32>,
+    /// Whether it is a geographic 3D CRS (with ellipsoidal heights).
+    three_d: bool,
+    /// Whether it is a dynamic CRS (on a dynamic reference frame such as ITRF2014).
+    dynamic: bool,
+    /// The vertical CRS of a compound CRS.
+    vertical: Option<Arc<Vertical>>,
+    /// The area of use (west, south, east, north in degrees), when known.
+    area: Option<[f64; 4]>,
+}
+
+/// The vertical part of a compound CRS: its unit and direction, and its geoid models.
+#[derive(Debug)]
+pub(crate) struct Vertical {
+    /// The EPSG code, when known.
+    pub code: Option<u32>,
+    /// Metres per unit.
+    pub to_meter: f64,
+    /// Whether heights are depths (positive down).
+    pub down: bool,
+    /// Transformations from ellipsoidal heights (of a geographic 3D CRS, by EPSG code, or of the
+    /// horizontal CRS's datum when `None`) to heights in this CRS.
+    pub models: Vec<(Option<u32>, Vec<Arc<Op>>)>,
+    /// Whether heights are kept as they are when no model applies (PROJ's ballpark vertical
+    /// transformation, which it adds for EPSG vertical CRSs but not for `+geoidgrids=`).
+    pub ballpark: bool,
+}
+
+impl Vertical {
+    /// The vertical CRS of an EPSG code.
+    pub fn from_epsg(code: u32) -> Option<Self> {
+        let v = epsg::vertical(code)?;
+        let models = epsg::geoid_models(code).into_iter().map(|(g, ops)| (Some(g), ops)).collect();
+        Some(Self { code: Some(code), to_meter: v.to_meter, down: v.down, models, ballpark: true })
+    }
+
+    /// A vertical CRS whose heights are ellipsoidal heights minus a geoid grid's (PROJ's
+    /// `+geoidgrids=`, GDAL's `PROJ4_GRIDS` extension).
+    pub fn from_geoid_grids(spec: &str, to_meter: f64) -> Self {
+        let op = Op::world(vec![datum::vgridshift_step(spec, -1.0)]);
+        Self { code: None, to_meter, down: false, models: vec![(None, vec![Arc::new(op)])], ballpark: false }
+    }
+
+    /// Metres from a height in this CRS's unit and direction.
+    pub fn to_metres(&self, z: f64) -> f64 {
+        if self.down { -z * self.to_meter } else { z * self.to_meter }
+    }
+
+    /// A height in this CRS's unit and direction from metres.
+    pub fn height_of(&self, h: f64) -> f64 {
+        if self.down { -h / self.to_meter } else { h / self.to_meter }
+    }
 }
 
 /// The EPSG geographic CRSs PROJ's `+datum=` names stand for.
@@ -100,12 +151,22 @@ impl Def {
     /// PROJ string or WKT.
     pub fn new(s: &SpatialRef) -> Result<Self> {
         if let Some(code) = s.epsg
+            && let Some(c) = epsg::compound(code)
+        {
+            let mut d = Self::new(&SpatialRef { epsg: Some(c.horizontal), wkt: None, proj4: None })?;
+            d.vertical = Vertical::from_epsg(c.vertical).map(Arc::new);
+            return Ok(d);
+        }
+        if let Some(code) = s.epsg
             && let Some(e) = epsg::get(code)
         {
             let mut d = Self::from_proj(&e.proj)?;
-            d.ops = e.ops.clone();
+            d.ops = epsg::usable(&e.ops, &e.grid_ops);
             d.datum = (e.datum != 0).then_some(e.datum);
             d.geog = (e.geog != 0).then_some(e.geog);
+            d.three_d = e.three_d;
+            d.dynamic = e.dynamic;
+            d.area = e.area;
             // A WKT identified as this code but with its own TOWGS84: GDAL uses that shift.
             if let Some(w) = s.wkt.as_deref().filter(|w| *w != e.wkt)
                 && let Some(t) = wkt_towgs84(w)
@@ -200,19 +261,32 @@ impl Def {
             ops: Vec::new(),
             datum: None,
             geog: None,
+            three_d: false,
+            dynamic: false,
+            vertical: None,
+            area: None,
         };
         // The datum transformation.
         let towgs84 = p.list("towgs84").filter(|v| v.len() == 3 || v.len() == 7);
-        if let Some(t) = towgs84 {
+        let nadgrids = p.str("nadgrids").filter(|g| !g.split(',').all(|n| n.trim_start_matches('@') == "null"));
+        if let Some(g) = nadgrids {
+            d.ops = vec![Arc::new(Op::world(datum::nadgrids_steps(g)))];
+        } else if let Some(t) = towgs84 {
             if t.iter().any(|v| *v != 0.0) {
                 d.ops = vec![Arc::new(Op::world(datum::towgs84_steps(ell, &t)))];
             }
         } else if let Some(code) = datum_name.and_then(datum_geog)
             && let Some(e) = epsg::get(code)
         {
-            d.ops = e.ops.clone();
+            d.ops = epsg::usable(&e.ops, &e.grid_ops);
             d.datum = (e.datum != 0).then_some(e.datum);
             d.geog = Some(code);
+            d.dynamic = e.dynamic;
+        }
+        if let Some(g) = p.str("geoidgrids") {
+            let to_meter =
+                p.str("vto_meter").and_then(|v| v.parse().ok()).or_else(|| p.str("vunits").and_then(unit_to_meter)).unwrap_or(1.0);
+            d.vertical = Some(Arc::new(Vertical::from_geoid_grids(g, to_meter)));
         }
         Ok(d)
     }
@@ -257,6 +331,12 @@ impl Def {
     /// A definition from WKT. Datum transformations come from `TOWGS84`, else from the EPSG
     /// geographic CRS the WKT's `GEOGCS` is identified as.
     pub fn from_wkt(w: &str) -> Result<Self> {
+        if let Some((horizontal, vertical)) = split_compound(w) {
+            let h = SpatialRef::from_wkt(&horizontal);
+            let mut d = Self::new(&h)?;
+            d.vertical = vertical_from_wkt(&vertical).map(Arc::new);
+            return Ok(d);
+        }
         if let Some(root) = wkt1::parse(w)
             && let Some(c) = wkt1::to_proj(&root)
         {
@@ -269,9 +349,10 @@ impl Def {
                 if let Some(e) = geog.and_then(epsg::get)
                     && e.proj.starts_with("+proj=longlat")
                 {
-                    d.ops = e.ops.clone();
+                    d.ops = epsg::usable(&e.ops, &e.grid_ops);
                     d.datum = (e.datum != 0).then_some(e.datum);
-                    d.geog = geog;
+                    d.geog = if e.three_d { Some(e.geog) } else { geog };
+                    d.dynamic = e.dynamic;
                 }
             }
             return Ok(d);
@@ -295,6 +376,10 @@ impl Def {
             ops: Vec::new(),
             datum: None,
             geog: None,
+            three_d: false,
+            dynamic: false,
+            vertical: None,
+            area: None,
         };
         if !geographic {
             d.proj = Some(Arc::new(WbProj { crs, a: ell.a }));
@@ -356,6 +441,20 @@ impl Def {
         Some((adjlon(lam + self.pm), phi))
     }
 
+    /// The longitude and latitude in degrees (east of Greenwich) of coordinates in a geographic
+    /// CRS, as given (without the round trip through radians); `None` for a projected CRS.
+    pub fn source_degrees(&self, u: f64, v: f64) -> Option<(f64, f64)> {
+        if self.proj.is_some() {
+            return None;
+        }
+        let (e, n) = self.unaxis(u, v);
+        let pm = self.pm.to_degrees();
+        if self.to_deg == 1.0 && pm == 0.0 {
+            return Some((e, n));
+        }
+        Some((e * self.to_deg + pm, n * self.to_deg))
+    }
+
     /// The coordinates in this CRS of a geodetic point (radians, east of Greenwich).
     pub fn project(&self, lon: f64, lat: f64) -> Option<(f64, f64)> {
         let lon = lon - self.pm;
@@ -388,6 +487,16 @@ impl Def {
         &self.ops
     }
 
+    /// The area of use, when known.
+    pub fn area(&self) -> Option<[f64; 4]> {
+        self.area
+    }
+
+    /// The EPSG code of the datum.
+    pub fn datum_code(&self) -> Option<u32> {
+        self.datum
+    }
+
     /// The EPSG code of the geographic CRS.
     pub fn geog(&self) -> Option<u32> {
         self.geog
@@ -396,6 +505,29 @@ impl Def {
     /// Whether the CRS is on WGS 84 itself.
     pub fn is_wgs84(&self) -> bool {
         self.datum == Some(6326)
+    }
+
+    /// Whether coordinates have a height: a geographic 3D or a compound CRS.
+    pub fn has_height(&self) -> bool {
+        self.three_d || self.vertical.is_some()
+    }
+
+    /// Whether it is a dynamic CRS.
+    pub fn is_dynamic(&self) -> bool {
+        self.dynamic
+    }
+
+    /// The vertical CRS of a compound CRS.
+    pub fn vertical(&self) -> Option<&Arc<Vertical>> {
+        self.vertical.as_ref()
+    }
+
+    /// The same CRS without its vertical part.
+    pub fn horizontal(&self) -> Def {
+        let mut d = self.clone();
+        d.vertical = None;
+        d.three_d = false;
+        d
     }
 
     /// The bounding boxes in this CRS of a transformation's area (two across the antimeridian),
@@ -425,6 +557,70 @@ impl Def {
             })
             .collect()
     }
+}
+
+/// The horizontal and vertical parts of a compound CRS's WKT (`COMPD_CS` or `COMPOUNDCRS`).
+pub(crate) fn split_compound(w: &str) -> Option<(String, String)> {
+    let w = w.trim();
+    let open = w.find(['[', '('])?;
+    let key = w[..open].trim().to_ascii_uppercase();
+    if key != "COMPD_CS" && key != "COMPOUNDCRS" {
+        return None;
+    }
+    // The top-level arguments of the node.
+    let body = &w[open + 1..w.len().checked_sub(1)?];
+    let mut args = Vec::new();
+    let (mut depth, mut start, mut quoted) = (0i32, 0usize, false);
+    for (i, c) in body.char_indices() {
+        match c {
+            '"' => quoted = !quoted,
+            '[' | '(' if !quoted => depth += 1,
+            ']' | ')' if !quoted => depth -= 1,
+            ',' if !quoted && depth == 0 => {
+                args.push(body[start..i].trim());
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    args.push(body[start..].trim());
+    let head = |a: &str| a.split(['[', '(']).next().unwrap_or("").trim().to_ascii_uppercase();
+    let horizontal = args.iter().find(|a| {
+        matches!(
+            head(a).as_str(),
+            "GEOGCS"
+                | "PROJCS"
+                | "GEOCCS"
+                | "GEOGCRS"
+                | "GEOGRAPHICCRS"
+                | "PROJCRS"
+                | "PROJECTEDCRS"
+                | "GEODCRS"
+                | "GEODETICCRS"
+                | "BOUNDCRS"
+        )
+    })?;
+    let vertical = args.iter().find(|a| matches!(head(a).as_str(), "VERT_CS" | "VERTCRS" | "VERTICALCRS"))?;
+    Some((horizontal.to_string(), vertical.to_string()))
+}
+
+/// The vertical CRS of a `VERT_CS` (or WKT 2 `VERTCRS`) definition: its EPSG code when it has
+/// one, else its unit and the geoid grids of GDAL's `PROJ4_GRIDS` extension.
+pub(crate) fn vertical_from_wkt(w: &str) -> Option<Vertical> {
+    let declared = super::declared_epsg(w);
+    if let Some(v) = declared.and_then(Vertical::from_epsg) {
+        return Some(v);
+    }
+    let root = wkt1::parse(w)?;
+    let to_meter = root.child("UNIT").or_else(|| root.child("LENGTHUNIT")).and_then(|u| u.num(1)).unwrap_or(1.0);
+    let grids = root.children("EXTENSION").find(|e| e.name() == Some("PROJ4_GRIDS")).and_then(|e| match e.args.get(1) {
+        Some(wkt1::Arg::Str(s)) => Some(s.clone()),
+        _ => None,
+    });
+    Some(match grids {
+        Some(g) => Vertical::from_geoid_grids(&g, to_meter),
+        None => Vertical { code: declared, to_meter, down: false, models: Vec::new(), ballpark: true },
+    })
 }
 
 /// The `TOWGS84` parameters of a WKT 1 definition, when they shift.

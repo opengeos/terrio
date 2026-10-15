@@ -22,6 +22,8 @@ Suites:
     gpkg              GeoPackage updates and R-tree filters (compare_gpkg_with_gdal.py)
     pointclouds       LAS, LAZ and COPC vs laspy and PDAL (compare_pointclouds.py)
     crs               every EPSG CRS's transformations vs GDAL's (tests/epsg_accuracy.rs)
+    crs-grids         the same with datum shift grids, then grids, geoid models and coordinate
+                      epochs (tests/epsg_accuracy_grids.rs, compare_crs_grids_with_gdal.py)
 
 Usage:
     python scripts/conformance.py ../terrio-data [--output docs/conformance.md] [--json FILE]
@@ -526,6 +528,47 @@ def suite_pointclouds(ctx):
     return s
 
 
+def epsg_cases(s, ctx, test, points, suffix=""):
+    """Runs an EPSG accuracy test and adds a case per reference point.
+
+    Args:
+        s: The suite the cases go to.
+        ctx: The run's context.
+        test: The test (``epsg_accuracy`` or ``epsg_accuracy_grids``).
+        points: The reference file, in the test data.
+        suffix: Appended to the group names.
+
+    Returns:
+        Whether the test ran.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        report = os.path.join(tmp, "epsg.tsv")
+        env = {"TERRIO_TEST_DATA": os.path.abspath(ctx.data), "TERRIO_EPSG_REPORT": report}
+        _code, out, err = run(["cargo", "test", "--release", "-p", "terrio", "--test", test, "--", "--nocapture"], env)
+        if not os.path.exists(report):
+            s.error = tail(err or out)
+            return False
+        groups = {"F": "forward (WGS 84 to CRS)", "I": "inverse (CRS to WGS 84)", "X": "CRS to CRS"}
+        with open(report) as f:
+            for line in f:
+                parts = line.rstrip("\n").split("\t")
+                kind, value = parts[0], parts[-1]
+                name = " to ".join(f"EPSG:{c}" for c in parts[1:-1])
+                group = groups[kind] + suffix
+                tolerance = 1.0 if kind == "X" else 0.01
+                if value == "fail":
+                    s.cases.append(Case(group, name, DIFFERS, "terrio cannot transform it"))
+                    continue
+                e = float(value)
+                if e <= 0.001:
+                    s.cases.append(Case(group, name, IDENTICAL))
+                elif e <= tolerance:
+                    s.cases.append(Case(group, name, TOLERANCE, f"{e:.4f} m"))
+                else:
+                    s.cases.append(Case(group, name, DIFFERS, f"{e:.4f} m"))
+    return True
+
+
 def suite_crs(ctx):
     """Every EPSG CRS's transformations against GDAL's (crates/terrio/tests/epsg_accuracy.rs)."""
     s = Suite(
@@ -533,9 +576,10 @@ def suite_crs(ctx):
         "Coordinate transformations",
         "GDAL 3.12 and PROJ (`gdaltransform`)",
         "A reference point per EPSG geographic and projected CRS, transformed from WGS 84 "
-        "(forward) and back (inverse), and between pairs of CRSs, compared with GDAL's results. "
-        "Identical: within 1 mm. Within tolerance: within 1 cm (forward, inverse) or 1 m (CRS to "
-        "CRS, where the datum transformations GDAL picks can differ by area of use).",
+        "(forward) and back (inverse), and between pairs of CRSs, compared with GDAL's results, "
+        "neither using datum shift grids. Identical: within 1 mm. Within tolerance: within 1 cm "
+        "(forward, inverse) or 1 m (CRS to CRS, where the datum transformations GDAL picks can "
+        "differ by area of use).",
     )
     if not shutil.which("cargo"):
         s.skipped = "needs cargo"
@@ -543,30 +587,54 @@ def suite_crs(ctx):
     if not os.path.exists(os.path.join(ctx.data, "epsg_points.tsv")):
         s.skipped = "epsg_points.tsv is missing from the test data (scripts/gen_epsg_points.py)"
         return s
-    with tempfile.TemporaryDirectory() as tmp:
-        report = os.path.join(tmp, "epsg.tsv")
-        env = {"TERRIO_TEST_DATA": os.path.abspath(ctx.data), "TERRIO_EPSG_REPORT": report}
-        _code, out, err = run(["cargo", "test", "--release", "-p", "terrio", "--test", "epsg_accuracy", "--", "--nocapture"], env)
-        if not os.path.exists(report):
-            s.error = tail(err or out)
+    epsg_cases(s, ctx, "epsg_accuracy", "epsg_points.tsv")
+    return s
+
+
+def suite_crs_grids(ctx):
+    """Transformations with datum shift grids, geoid models and coordinate epochs vs GDAL's."""
+    s = Suite(
+        "crs-grids",
+        "Datum shift grids, geoid models and coordinate epochs",
+        "GDAL 3.12 and PROJ, with the same grids",
+        "The EPSG reference points again, GDAL and terrio both using the grids of "
+        "`scripts/proj_grids.txt` (crates/terrio/tests/epsg_accuracy_grids.rs); then random "
+        "points through every horizontal shift grid (NTv2 and GeoTIFF, forward and inverse), "
+        "geoid models (GeoTIFF and GTX), NADCON5 and geocentric translation grids, compound CRSs "
+        "and time-dependent transformations with coordinate epochs "
+        "(scripts/compare_crs_grids_with_gdal.py), with the largest difference of each case. "
+        "Identical: within 1 mm. Within tolerance: within 1 cm, or 1 m from CRS to CRS.",
+    )
+    if not shutil.which("cargo"):
+        s.skipped = "needs cargo"
+        return s
+    if not os.path.exists(os.path.join(ctx.data, "grids", "us_noaa_conus.tif")):
+        s.skipped = "the grids are missing from the test data (scripts/fetch_test_data.sh)"
+        return s
+    if os.path.exists(os.path.join(ctx.data, "epsg_points_grids.tsv")):
+        if not epsg_cases(s, ctx, "epsg_accuracy_grids", "epsg_points_grids.tsv", " with grids"):
             return s
-        groups = {"F": "forward (WGS 84 to CRS)", "I": "inverse (CRS to WGS 84)", "X": "CRS to CRS"}
-        with open(report) as f:
-            for line in f:
-                parts = line.rstrip("\n").split("\t")
-                kind, value = parts[0], parts[-1]
-                name = " to ".join(f"EPSG:{c}" for c in parts[1:-1])
-                tolerance = 1.0 if kind == "X" else 0.01
-                if value == "fail":
-                    s.cases.append(Case(groups[kind], name, DIFFERS, "terrio cannot transform it"))
-                    continue
-                e = float(value)
-                if e <= 0.001:
-                    s.cases.append(Case(groups[kind], name, IDENTICAL))
-                elif e <= tolerance:
-                    s.cases.append(Case(groups[kind], name, TOLERANCE, f"{e:.4f} m"))
-                else:
-                    s.cases.append(Case(groups[kind], name, DIFFERS, f"{e:.4f} m"))
+    missing = missing_modules("osgeo", "numpy")
+    if missing:
+        return s
+    _code, out, err = run([sys.executable, str(SCRIPTS / "compare_crs_grids_with_gdal.py"), ctx.data, "--terrio", ctx.terrio])
+    row = re.compile(r"^(.+?)\s+(\d+)\s+(\d+)\s+(\S+)\s+(\S+)\s+(\S+)$")
+    for line in out.splitlines():
+        m = row.match(line)
+        if not m or line.startswith("case"):
+            continue
+        name, n, only, largest, _mean, dz = m.group(1).strip(), int(m.group(2)), int(m.group(3)), float(m.group(4)), m.group(5), float(m.group(6))
+        group = "grids, geoids and epochs"
+        worst = max(largest, dz)
+        detail = f"{n} points, largest difference {worst:.2e} m" + (f", {only} transformed by only one" if only else "")
+        if only or worst > 0.01:
+            s.cases.append(Case(group, name, DIFFERS, detail))
+        elif worst > 0.001:
+            s.cases.append(Case(group, name, TOLERANCE, detail))
+        else:
+            s.cases.append(Case(group, name, IDENTICAL, detail))
+    if not any(c.group.startswith("grids") for c in s.cases):
+        s.error = tail(err or out)
     return s
 
 
@@ -636,6 +704,7 @@ SUITES = OrderedDict(
         ("gpkg", suite_gpkg),
         ("pointclouds", suite_pointclouds),
         ("crs", suite_crs),
+        ("crs-grids", suite_crs_grids),
     ]
 )
 

@@ -201,9 +201,14 @@ value of their largest neighbour. The band's nodata pixels are left out unless `
 
 ```sh
 terrio crs CRS [--wkt]
-terrio crs SRC --to DST X Y [X Y ...]
-echo "X Y" | terrio crs SRC --to DST
+terrio crs SRC --to DST [--s_coord_epoch YEAR] [--t_coord_epoch YEAR] X Y [X Y ...]
+echo "X Y [Z [T]]" | terrio crs SRC --to DST [--s_coord_epoch YEAR] [--t_coord_epoch YEAR]
 ```
+
+As `gdaltransform`: lines of standard input with a height transform it too, with a time (a decimal
+year) use it for time-dependent transformations, and a point that cannot be transformed prints
+`transformation failed.`. Datum shift grids and geoid models are used when they can be found (see
+[Coordinate Systems](crs.md#datum-shift-grids)).
 
 ## formats
 

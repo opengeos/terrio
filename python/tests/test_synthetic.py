@@ -264,6 +264,25 @@ def test_transform_points():
         terrio.transform_points([1, 2], [1], "EPSG:4326", "EPSG:3857")
 
 
+def test_transform_points_with_heights_and_epochs():
+    """Heights come back with `zs`; coordinate epochs drive time-dependent transformations."""
+    # Heights are kept between 2D CRSs, as GDAL keeps them.
+    xs, ys, zs = terrio.transform_points([0], [0], "EPSG:4326", "EPSG:3857", [100.0])
+    assert zs[0] == 100.0
+    # ITRF2014 coordinates at epoch 2010.0 to GDA2020, a time-dependent transformation: GDAL's
+    # result with the source CRS's coordinate epoch set.
+    xs, ys, zs = terrio.transform_points(
+        [135.0], [-25.0], "EPSG:9000", "EPSG:7844", [0.0], s_coord_epoch=2010.0
+    )
+    assert xs[0] == pytest.approx(135.0000030617912, abs=1e-11)
+    assert ys[0] == pytest.approx(-24.999994698869124, abs=1e-11)
+    assert zs[0] == pytest.approx(-0.0015074610710144043, abs=1e-6)
+    xs, ys = terrio.transform_points([135.0], [-25.0], "EPSG:9000", "EPSG:7844")
+    assert xs[0] == pytest.approx(135.0, abs=1e-11)
+    with pytest.raises(terrio.InvalidArgumentError):
+        terrio.transform_points([1, 2], [1, 2], "EPSG:4326", "EPSG:3857", [1])
+
+
 def test_errors():
     with pytest.raises(terrio.NotFoundError) as e:
         terrio.open("does/not/exist.tif")

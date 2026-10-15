@@ -52,6 +52,7 @@ python scripts/conformance.py ../terrio-data --remote --strict     # remote COGs
 | GeoPackage updates and spatial filters | `scripts/compare_gpkg_with_gdal.py` | `--append`, `--overwrite` and added layers vs `ogr2ogr` (features, extents, counts, sequences, R-trees, `integrity_check`, `validate_gpkg.py`, rasters kept); `--spat` vs `ogr2ogr -spat`; timings on a large file |
 | Vector conversions | `scripts/compare_with_gdal.py --roundtrip` | files converted by terrio, read back by GDAL |
 | Coordinate transformations | `crates/terrio/tests/epsg_accuracy.rs` | a point per EPSG CRS, forward, inverse and between CRSs, vs GDAL |
+| Datum shift grids, geoid models, epochs | `crates/terrio/tests/epsg_accuracy_grids.rs`, `crates/terrio/tests/crs_grids.rs`, `scripts/compare_crs_grids_with_gdal.py` | the same EPSG points with the grids of `scripts/proj_grids.txt`; random points through every grid (forward and inverse), legacy NTv2 and GTX files, NADCON5 and geocentric grids, compound CRSs and coordinate epochs, vs GDAL with the same grids |
 
 ## Results
 
@@ -77,6 +78,8 @@ The [Conformance](conformance.md) page has the full, generated results; in short
 | Point clouds | 485 of 485 checks: every value identical to laspy; COPC queries and grids identical to PDAL |
 | Arrow | 171 of 180 comparisons identical (geometries WKB-equal, values, CRS) on 9 files; the other 9 are 40 OSM multipolygons whose rings start at another vertex than GDAL's |
 | GeoPackage updates, `--spat` | 12 of 12 cases identical |
+| Coordinate transformations | Every EPSG CRS's forward and inverse points within 1 cm, without and with grids; 99.7 % of CRS-to-CRS points within 1 m |
+| Datum shift grids, geoids, epochs | 250 of 250 cases (50,000 points) within 0.02 mm of GDAL with the same grids |
 
 ## Running the tests
 

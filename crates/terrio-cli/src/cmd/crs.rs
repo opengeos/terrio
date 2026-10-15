@@ -1,18 +1,30 @@
 //! `terrio crs`.
 
-use terrio::crs::{SpatialRef, Transformer};
+use terrio::crs::{SpatialRef, TransformOptions, Transformer};
 
 #[derive(clap::Args)]
 pub struct Args {
-    /// The CRS: `EPSG:4326`, WKT, a PROJ string, or a file holding one.
+    /// The CRS: `EPSG:4326`, `EPSG:4326+5773` (a compound CRS), WKT, a PROJ string, or a file
+    /// holding one.
     crs: String,
     /// Print the WKT definition.
     #[arg(long)]
     wkt: bool,
-    /// Transform coordinates into this CRS. Reads `x y` pairs from the arguments, or from standard
-    /// input when none are given.
+    /// Transform coordinates into this CRS. Reads `x y` pairs from the arguments, or lines of
+    /// `x y`, `x y z` or `x y z t` (t: a decimal year) from standard input when none are given,
+    /// as `gdaltransform` does (printing `transformation failed.` for a point that fails).
+    /// Heights go through geoid models between CRSs with heights (geographic 3D and compound
+    /// CRSs).
     #[arg(long, value_name = "CRS")]
     to: Option<String>,
+    /// The coordinate epoch of the source coordinates (a decimal year), for a dynamic source CRS,
+    /// as `gdaltransform -s_coord_epoch`.
+    #[arg(long = "s_coord_epoch", visible_alias = "s-coord-epoch", value_name = "YEAR")]
+    s_coord_epoch: Option<f64>,
+    /// The coordinate epoch of the target coordinates, for a dynamic target CRS, as
+    /// `gdaltransform -t_coord_epoch`.
+    #[arg(long = "t_coord_epoch", visible_alias = "t-coord-epoch", value_name = "YEAR")]
+    t_coord_epoch: Option<f64>,
     /// Coordinates to transform: x y [x y ...].
     #[arg(allow_negative_numbers = true)]
     coords: Vec<f64>,
@@ -34,10 +46,24 @@ pub fn run(a: Args) -> terrio::Result<()> {
         return Ok(());
     };
     let dst = SpatialRef::parse(&to)?;
-    let t = Transformer::new(&src, &dst)?;
-    let print = |x: f64, y: f64| -> terrio::Result<()> {
-        let (tx, ty) = t.transform(x, y)?;
-        println!("{tx} {ty}");
+    let opts = TransformOptions { source_coordinate_epoch: a.s_coord_epoch, target_coordinate_epoch: a.t_coord_epoch };
+    let t = Transformer::with_options(&src, &dst, &opts)?;
+    let print = |nums: &[f64]| -> terrio::Result<()> {
+        match nums {
+            [x, y] => {
+                let (tx, ty) = t.transform(*x, *y)?;
+                println!("{tx} {ty}");
+            }
+            [x, y, z] => {
+                let (tx, ty, tz) = t.transform_3d(*x, *y, *z)?;
+                println!("{tx} {ty} {tz}");
+            }
+            [x, y, z, time, ..] => {
+                let (tx, ty, tz) = t.transform_4d(*x, *y, *z, *time)?;
+                println!("{tx} {ty} {tz}");
+            }
+            _ => {}
+        }
         Ok(())
     };
     if !a.coords.is_empty() {
@@ -45,15 +71,16 @@ pub fn run(a: Args) -> terrio::Result<()> {
             return Err(terrio::Error::InvalidArgument("coordinates come in x y pairs".into()));
         }
         for p in a.coords.chunks(2) {
-            print(p[0], p[1])?;
+            print(p)?;
         }
         return Ok(());
     }
+    // As gdaltransform: a point that fails prints "transformation failed." and the others go on.
     for line in std::io::stdin().lines() {
         let line = line?;
         let nums: Vec<f64> = line.split([' ', ',', '\t']).filter(|s| !s.is_empty()).filter_map(|s| s.parse().ok()).collect();
-        if nums.len() >= 2 {
-            print(nums[0], nums[1])?;
+        if nums.len() >= 2 && print(&nums).is_err() {
+            println!("transformation failed.");
         }
     }
     Ok(())

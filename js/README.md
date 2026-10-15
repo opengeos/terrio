@@ -33,6 +33,8 @@ const ipc = roads.toArrowIPC(0, { geometryEncoding: "geoarrow" }); // Arrow IPC 
 const back = fromArrowIPC(ipc, "roads");
 
 const [xs, ys] = transformPoints([-122.4], [37.8], "EPSG:4326", "EPSG:32610");
+registerGrid("us_nga_egm96_15.tif", gridBytes);  // datum shift and geoid grids, from bytes
+const [lon, lat, h] = transformPoints([-100], [40], "EPSG:4979", "EPSG:4326+5773", [100]);
 
 // Point clouds: LAS, LAZ and COPC.
 const lidar = openPoints(lazBytes, "tile.laz");

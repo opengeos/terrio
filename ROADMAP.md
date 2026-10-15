@@ -133,7 +133,19 @@ thinning by voxel), and gridding with TIN or nearest-neighbour interpolation.
 ## Later
 
 - CRS: datum shift grids (NTv2, GeoTIFF grids), vertical datums, time-dependent transformations
-  between dynamic datums (coordinate epochs).
+  between dynamic datums (coordinate epochs). Done: PROJ's GeoTIFF grids (PROJ-data), NTv2 and GTX
+  read in pure Rust and interpolated as PROJ does (`hgridshift`, `vgridshift`, NADCON5's
+  biquadratic `gridshift`, `xyzgridshift`, `deformation`), looked up in `TERRIO_GRID_DIR`,
+  `PROJ_DATA` and PROJ's user directory, or downloaded from the PROJ CDN when network access is on
+  (or registered from bytes in WebAssembly); the transformations GDAL picks when the grids are
+  available, else those without grids; geoid models for compound and geographic 3D CRSs
+  (`EPSG:4326+5773`); time-dependent Helmert transformations with coordinate epochs as GDAL sets
+  them (`--s_coord_epoch`, `--t_coord_epoch`, `TransformOptions`, Python and JavaScript). Checked
+  against GDAL with the same grids: every grid of `scripts/proj_grids.txt` to the micrometre, and
+  every EPSG CRS's reference points (`scripts/compare_crs_grids_with_gdal.py`,
+  `epsg_accuracy_grids`). Still to do: PROJ's chains through several intermediate datums,
+  vertical-to-vertical transformations (VERTCON, offsets), moving coordinates between epochs
+  (point motion operations), and reading remote grids by range requests rather than whole.
 - NetCDF and HDF5 in pure Rust. Done: classic and netCDF-4 reading, with variables in groups
   below the root (`NETCDF:"file.nc":/group/var`) listed as `gdalinfo` lists them; classic
   (CDF-1/2/5) and netCDF-4 writing (`FORMAT=NC4`/`NC4C`, chunked, deflate and shuffle, CF
@@ -141,30 +153,3 @@ thinning by voxel), and gridding with TIN or nearest-neighbour interpolation.
   driver reads them (`HDF5:"file.h5"://group/dataset`, metadata, user blocks), checked on JPSS
   and Sentinel-5P products. Still to do: HDF-EOS5 grids and swaths and other product-specific
   georeferencing, compound and complex datasets, writing groups.
-- JPEG 2000 and other compressed raster formats as pure-Rust decoders mature.
-- Band histograms as `gdalinfo -hist` computes them (`terrio info --hist`, identical to GDAL's on
-  GeoTIFFs and scanline formats); color relief written as a VRT (`terrio dem color-relief -f
-  VRT`, lookup tables identical to `gdaldem`'s). Done.
-
-## Decisions
-
-- The core API is synchronous and reads datasets into memory; remote files are downloaded first.
-  GeoTIFFs, local or remote, can instead be opened lazily (`LazyRaster`) and read by window and
-  overview level, decoding only the tiles needed and fetching them with HTTP range requests.
-- HTTP goes through `ureq` (with rustls) and S3 requests are signed by terrio itself, rather than
-  through `object_store`, to keep the API synchronous and the dependencies small.
-- GeoPackage is read and written by terrio's own SQLite file reader and writer (pure Rust): no
-  C dependency, and files written in one go.
-- terrio carries its own EPSG table (`crates/terrio/data/epsg.tsv.zst`, about 220 KB, generated
-  from GDAL and PROJ by `scripts/gen_epsg_table.py`): the PROJ strings of the CRSs, their WKT and
-  the datum transformations GDAL lists for them, so that terrio picks the same transformation as
-  GDAL for each point. The projection formulas are PROJ's, ported to Rust; `wbprojection` remains
-  the fallback for projections EPSG CRSs do not use and for WKT 2 parsing.
-- NetCDF-4 and HDF5 are read with the pure-Rust `netcdf-reader` and `hdf5-reader` crates, and
-  netCDF-4 is written by terrio's own small HDF5 writer (superblock 2, version 2 object headers,
-  version 1 chunk B-trees, dimension scales), which the netCDF and HDF5 libraries read: no HDF5
-  write crate exists in pure Rust.
-- Point clouds use the `laz` crate for LASzip, and terrio's own LAS and COPC code rather than the
-  `las` crate (whose header reader keeps only the first EVLR) or `wblidar` (which reads COPC points
-  in hierarchy order and cannot read LASzip's unchunked compressor). Point clouds are not
-  `Dataset`s: they have their own reader (`pointcloud::open_points`) and columnar `PointCloud`.

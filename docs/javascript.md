@@ -25,6 +25,10 @@ const table = tableFromIPC(ipc);  // Apache Arrow JS; the geometry column is Geo
 const back = fromArrowIPC(tableToIPC(table), "roads");
 
 const [xs, ys] = transformPoints([-122.4], [37.8], "EPSG:4326", "EPSG:32610");
+// Datum shift and geoid grids from their bytes (https://cdn.proj.org), heights and epochs.
+registerGrid("us_nga_egm96_15.tif", new Uint8Array(await (await fetch(gridUrl)).arrayBuffer()));
+const [lon, lat, h] = transformPoints([-100], [40], "EPSG:4979", "EPSG:4326+5773", [100]);
+transformPoints([135], [-25], "EPSG:7912", "EPSG:7843", [0], { sCoordEpoch: 2010.0 });
 ```
 
 In WebAssembly, these formats are read from and written to memory:

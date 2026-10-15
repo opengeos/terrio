@@ -104,6 +104,14 @@ def rasters(tmp: Path) -> terrio.Raster:
     lon: float = float(xs[0])
     lat: float = float(ys[0])
     print(lon, lat)
+    _, _, heights = terrio.transform_points(
+        [-100.0], [40.0], "EPSG:4979", "EPSG:4326+5773", [100.0], s_coord_epoch=None
+    )
+    egm96: float = float(heights[0])
+    print(egm96)
+    terrio.set_grid_search_paths(["grids"])
+    terrio.set_grid_search_paths(None)
+    terrio.set_network_enabled(None)
     return r
 
 

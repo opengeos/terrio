@@ -15,7 +15,7 @@
 mod pointcloud;
 
 use serde::Deserialize;
-use terrio::crs::{SpatialRef, Transformer};
+use terrio::crs::{SpatialRef, TransformOptions, Transformer};
 use terrio::formats::{RasterDriver, VectorDriver};
 use terrio::ops::vector_filter::VectorTranslateOptions;
 use terrio::{DataType, Layer, LazyRaster, RasterDataset, RasterWriteOptions, VectorWriteOptions, Window, WindowOptions};
@@ -468,26 +468,74 @@ impl Dataset {
     }
 }
 
-/// Transforms coordinates between two CRSs (`EPSG:4326`, WKT or PROJ strings), x (longitude)
-/// first. Returns `[xs, ys]` as two `Float64Array`s.
+/// Options for [`transform_points`], as a JavaScript object.
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase", default, deny_unknown_fields)]
+struct TransformPointsOptions {
+    /// The coordinate epoch of the source coordinates (decimal year), for a dynamic source CRS.
+    s_coord_epoch: Option<f64>,
+    /// The coordinate epoch of the target coordinates, for a dynamic target CRS.
+    t_coord_epoch: Option<f64>,
+}
+
+/// Transforms coordinates between two CRSs (`EPSG:4326`, `EPSG:4326+5773`, WKT or PROJ
+/// strings), x (longitude) first. Returns `[xs, ys]` as two `Float64Array`s, or `[xs, ys, zs]`
+/// when heights `zs` are given (they go through geoid models between CRSs with heights).
+/// Options: `sCoordEpoch` and `tCoordEpoch`, the coordinate epochs of time-dependent
+/// transformations. Datum shift grids are used once registered with `registerGrid`.
 #[wasm_bindgen(js_name = transformPoints)]
-pub fn transform_points(xs: Vec<f64>, ys: Vec<f64>, src_crs: &str, dst_crs: &str) -> Result<js_sys::Array, JsError> {
-    if xs.len() != ys.len() {
-        return Err(JsError::new("xs and ys differ in length"));
+pub fn transform_points(
+    xs: Vec<f64>,
+    ys: Vec<f64>,
+    src_crs: &str,
+    dst_crs: &str,
+    zs: Option<Vec<f64>>,
+    options: JsValue,
+) -> Result<js_sys::Array, JsError> {
+    if xs.len() != ys.len() || zs.as_ref().is_some_and(|z| z.len() != xs.len()) {
+        return Err(JsError::new("xs, ys and zs differ in length"));
     }
+    let o: TransformPointsOptions = if options.is_undefined() || options.is_null() {
+        TransformPointsOptions::default()
+    } else {
+        let text: String = js_sys::JSON::stringify(&options).map_err(|_| JsError::new("invalid options"))?.into();
+        serde_json::from_str(&text).map_err(|e| JsError::new(&format!("options: {e}")))?
+    };
     let src = SpatialRef::parse(src_crs).map_err(js_err)?;
     let dst = SpatialRef::parse(dst_crs).map_err(js_err)?;
-    let t = Transformer::new(&src, &dst).map_err(js_err)?;
-    let (mut ox, mut oy) = (Vec::with_capacity(xs.len()), Vec::with_capacity(ys.len()));
-    for (x, y) in xs.iter().zip(&ys) {
-        let (a, b) = t.transform(*x, *y).map_err(js_err)?;
-        ox.push(a);
-        oy.push(b);
+    let opts = TransformOptions { source_coordinate_epoch: o.s_coord_epoch, target_coordinate_epoch: o.t_coord_epoch };
+    let t = Transformer::with_options(&src, &dst, &opts).map_err(js_err)?;
+    let (mut ox, mut oy, mut oz) = (Vec::with_capacity(xs.len()), Vec::with_capacity(ys.len()), Vec::new());
+    for (i, (x, y)) in xs.iter().zip(&ys).enumerate() {
+        match &zs {
+            Some(z) => {
+                let (a, b, c) = t.transform_3d(*x, *y, z[i]).map_err(js_err)?;
+                ox.push(a);
+                oy.push(b);
+                oz.push(c);
+            }
+            None => {
+                let (a, b) = t.transform(*x, *y).map_err(js_err)?;
+                ox.push(a);
+                oy.push(b);
+            }
+        }
     }
     let out = js_sys::Array::new();
     out.push(&js_sys::Float64Array::from(&ox[..]));
     out.push(&js_sys::Float64Array::from(&oy[..]));
+    if zs.is_some() {
+        out.push(&js_sys::Float64Array::from(&oz[..]));
+    }
     Ok(out)
+}
+
+/// Makes a datum shift or geoid grid (NTv2 `.gsb`, GTX, or a PROJ GeoTIFF grid from
+/// https://cdn.proj.org such as `us_noaa_conus.tif`) available under its name, from its bytes,
+/// for the transformations that use it.
+#[wasm_bindgen(js_name = registerGrid)]
+pub fn register_grid(name: &str, bytes: Vec<u8>) {
+    terrio::crs::register_grid(name, bytes);
 }
 
 /// Describes a CRS: `{ epsg, name, geographic, wkt }`.

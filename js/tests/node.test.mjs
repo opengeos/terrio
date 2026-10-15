@@ -165,6 +165,25 @@ test("CRS transforms", () => {
   assert.equal(crs.geographic, false);
 });
 
+test("CRS transforms with heights, epochs and grids", () => {
+  // Heights are kept between 2D CRSs.
+  const [, , zs] = terrio.transformPoints([0], [0], "EPSG:4326", "EPSG:3857", [100]);
+  assert.equal(zs[0], 100);
+  // ITRF2014 at epoch 2010.0 to GDA2020 (GDAL's result with the source coordinate epoch).
+  const [x, y, z] = terrio.transformPoints([135], [-25], "EPSG:9000", "EPSG:7844", [0], { sCoordEpoch: 2010 });
+  assert.ok(Math.abs(x[0] - 135.0000030617912) < 1e-11);
+  assert.ok(Math.abs(y[0] - -24.999994698869124) < 1e-11);
+  assert.ok(Math.abs(z[0] - -0.0015074610710144043) < 1e-6);
+  // A grid registered from its bytes: NAD27 to NAD83 as GDAL computes it with NADCON5.
+  const grid = DATA && join(DATA, "grids", "us_noaa_nadcon5_nad27_nad83_1986_conus.tif");
+  if (grid && existsSync(grid)) {
+    terrio.registerGrid("us_noaa_nadcon5_nad27_nad83_1986_conus.tif", readFileSync(grid));
+    const [lon, lat] = terrio.transformPoints([-100], [40], "EPSG:4267", "EPSG:4269");
+    assert.ok(Math.abs(lon[0] - -100.0004055982497) < 1e-10, `${lon[0]}`);
+    assert.ok(Math.abs(lat[0] - 40.00000580229538) < 1e-10, `${lat[0]}`);
+  }
+});
+
 test("errors", () => {
   assert.throws(() => terrio.open(new Uint8Array([1, 2, 3]), "x.unknown"), /not recognized/);
   assert.throws(() => terrio.describeCrs("nonsense"), /cannot parse/);

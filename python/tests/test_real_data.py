@@ -232,6 +232,53 @@ def test_geojson_matches_ogr_properties(data_dir, ogr):
                 assert value == expected
 
 
+def test_grid_transformations_match_osr(data_dir, gdal):
+    """Datum shift grids and geoid models give GDAL's results when both use the same grids."""
+    osr = pytest.importorskip("osgeo.osr")
+    grids = data_dir / "grids"
+    if not (grids / "us_noaa_conus.tif").exists():
+        pytest.skip("the grids are missing: run scripts/fetch_test_data.sh")
+    paths = osr.GetPROJSearchPaths()
+    proj_db = next((p for p in paths if os.path.exists(os.path.join(p, "proj.db"))), None)
+    if proj_db is None:
+        pytest.skip("PROJ's database is not found")
+    osr.SetPROJSearchPaths([str(grids), proj_db])
+    terrio.set_grid_search_paths([grids])
+    terrio.set_network_enabled(False)
+    try:
+        rng = np.random.default_rng(1)
+        cases = [
+            ("EPSG:4267", "EPSG:4269", (-124, 25, -67, 49), 0.0),
+            ("EPSG:4314", "EPSG:4258", (6, 47.5, 15, 55), 0.0),
+            ("EPSG:4979", "EPSG:4326+5773", (-180, -80, 180, 80), 100.0),
+            ("EPSG:6318+5703", "EPSG:6319", (-124, 25, -67, 49), 100.0),
+        ]
+        for src_crs, dst_crs, (w, s, e, n), h in cases:
+            lon, lat = rng.uniform(w, e, 50), rng.uniform(s, n, 50)
+            z = np.full(50, h)
+            xs, ys, zs = terrio.transform_points(lon, lat, src_crs, dst_crs, z)
+            src, dst = osr.SpatialReference(), osr.SpatialReference()
+            src.SetFromUserInput(src_crs)
+            dst.SetFromUserInput(dst_crs)
+            for sr in (src, dst):
+                sr.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
+            t = osr.CoordinateTransformation(src, dst)
+            expected = np.array([t.TransformPoint(*p) for p in zip(lon, lat, z, strict=True)])
+            np.testing.assert_allclose(
+                xs, expected[:, 0], atol=1e-9, err_msg=f"{src_crs} to {dst_crs}"
+            )
+            np.testing.assert_allclose(
+                ys, expected[:, 1], atol=1e-9, err_msg=f"{src_crs} to {dst_crs}"
+            )
+            np.testing.assert_allclose(
+                zs, expected[:, 2], atol=1e-6, err_msg=f"{src_crs} to {dst_crs}"
+            )
+    finally:
+        osr.SetPROJSearchPaths(paths)
+        terrio.set_grid_search_paths(None)
+        terrio.set_network_enabled(None)
+
+
 def test_transform_points_match_osr(gdal):
     osr = pytest.importorskip("osgeo.osr")
     rng = np.random.default_rng(0)

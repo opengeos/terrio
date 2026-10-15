@@ -1,7 +1,8 @@
 """Type stubs for the `terrio._terrio` extension module."""
 
+import os
 from collections.abc import Iterator, Mapping, Sequence
-from typing import Any, Literal, Protocol, TypeAlias, final
+from typing import Any, Literal, Protocol, TypeAlias, final, overload
 
 import numpy as np
 from numpy.typing import DTypeLike, NDArray
@@ -27,6 +28,8 @@ __all__ = [
     "rasterize",
     "polygonize",
     "transform_points",
+    "set_grid_search_paths",
+    "set_network_enabled",
     "translate",
     "warp",
     "mosaic",
@@ -410,9 +413,30 @@ def polygonize(
     append: bool = False,
     overwrite: bool = False,
 ) -> Layer: ...
+@overload
 def transform_points(
-    xs: Any, ys: Any, src_crs: str, dst_crs: str
+    xs: Any,
+    ys: Any,
+    src_crs: str,
+    dst_crs: str,
+    zs: None = None,
+    *,
+    s_coord_epoch: float | None = None,
+    t_coord_epoch: float | None = None,
 ) -> tuple[NDArray[np.float64], NDArray[np.float64]]: ...
+@overload
+def transform_points(
+    xs: Any,
+    ys: Any,
+    src_crs: str,
+    dst_crs: str,
+    zs: Any,
+    *,
+    s_coord_epoch: float | None = None,
+    t_coord_epoch: float | None = None,
+) -> tuple[NDArray[np.float64], NDArray[np.float64], NDArray[np.float64]]: ...
+def set_grid_search_paths(paths: Sequence[str | os.PathLike[str]] | None) -> None: ...
+def set_network_enabled(enabled: bool | None) -> None: ...
 def translate(
     src: _RasterSource,
     dst: str | None = None,

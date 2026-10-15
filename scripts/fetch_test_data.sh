@@ -135,9 +135,23 @@ if command -v ogr2ogr >/dev/null && command -v gdal_translate >/dev/null; then
     gdal_translate -q -of Zarr -co COMPRESS=BLOSC -co BLOSC_CNAME=lz4 srtm_sub.tif srtm_sub_blosc.zarr
   fi
 fi
+# Datum shift and geoid grids from the PROJ CDN (scripts/proj_grids.txt, 230 MB), and grids in
+# the formats PROJ used before PROJ 7 (NTv2, GTX), from proj-datumgrid 1.8.
+mkdir -p grids grids_legacy
+grep -v '^#' "$here/proj_grids.txt" | while read -r g; do
+  if [ -n "$g" ] && [ ! -e "grids/$g" ]; then curl -sSfL -o "grids/$g" "https://cdn.proj.org/$g"; fi
+done
+if [ ! -e grids_legacy/egm96_15.gtx ]; then
+  curl -sSfL -o grids_legacy/proj-datumgrid.zip https://download.osgeo.org/proj/proj-datumgrid-1.8.zip
+  unzip -q -o grids_legacy/proj-datumgrid.zip BETA2007.gsb ntf_r93.gsb nzgd2kgrid0005.gsb egm96_15.gtx -d grids_legacy
+  rm grids_legacy/proj-datumgrid.zip
+fi
 # GDAL's transformations for every EPSG CRS, which terrio's are checked against (needs pyproj and
-# GDAL's Python bindings).
+# GDAL's Python bindings): without grids, and with those of grids/.
 if [ ! -e epsg_points.tsv ] && python -c "import pyproj, osgeo" 2>/dev/null; then
   python "$here/gen_epsg_points.py" epsg_points.tsv
+fi
+if [ ! -e epsg_points_grids.tsv ] && python -c "import pyproj, osgeo" 2>/dev/null; then
+  python "$here/gen_epsg_points.py" epsg_points_grids.tsv --grids grids
 fi
 echo "Test data in $(pwd)"

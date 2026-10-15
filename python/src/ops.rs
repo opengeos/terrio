@@ -6,7 +6,8 @@ use crate::vector::{PyLayer, PyVectorDataset, layers_from_object};
 use crate::{PyResultExt, invalid};
 use numpy::{PyArray1, PyArrayMethods};
 use pyo3::prelude::*;
-use terrio::crs::{SpatialRef, Transformer};
+use pyo3::types::PyTuple;
+use terrio::crs::{SpatialRef, TransformOptions, Transformer};
 use terrio::formats::VectorDriver;
 use terrio::ops::Resampling;
 use terrio::ops::mosaic::{MosaicOptions, MosaicSource, ResolutionStrategy};
@@ -32,6 +33,8 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(rasterize, m)?)?;
     m.add_function(wrap_pyfunction!(polygonize, m)?)?;
     m.add_function(wrap_pyfunction!(transform_points, m)?)?;
+    m.add_function(wrap_pyfunction!(set_grid_search_paths, m)?)?;
+    m.add_function(wrap_pyfunction!(set_network_enabled, m)?)?;
     m.add_function(wrap_pyfunction!(translate, m)?)?;
     m.add_function(wrap_pyfunction!(warp, m)?)?;
     m.add_function(wrap_pyfunction!(mosaic, m)?)?;
@@ -653,32 +656,45 @@ fn polygonize(
     Ok(PyLayer { inner: layer })
 }
 
-/// Coordinate arrays: x, then y.
-type Coordinates<'py> = (Bound<'py, PyArray1<f64>>, Bound<'py, PyArray1<f64>>);
-
 /// Transforms coordinates from one CRS to another.
 ///
 /// Coordinates are in GIS order whatever the CRS's axis order: x (easting, longitude) first.
+/// Datum shift grids and geoid models are used when they can be found, as GDAL uses them (see
+/// :func:`set_grid_search_paths`). With heights, between CRSs that both have heights
+/// (geographic 3D CRSs such as ``"EPSG:4979"`` and compound CRSs such as ``"EPSG:4326+5773"``),
+/// heights go through the datum transformation and geoid models; otherwise they are kept, as
+/// GDAL keeps them between 2D CRSs.
 ///
 /// Args:
 ///     xs: The x coordinates (a sequence or a NumPy array).
 ///     ys: The y coordinates.
-///     src_crs: The source CRS: `"EPSG:4326"`, WKT or a PROJ string.
+///     src_crs: The source CRS: `"EPSG:4326"`, `"EPSG:4326+5773"`, WKT or a PROJ string.
 ///     dst_crs: The target CRS.
+///     zs: The heights, when transforming them.
+///     s_coord_epoch: The coordinate epoch of the source coordinates (a decimal year), for a
+///         dynamic source CRS (GDAL's ``-s_coord_epoch``).
+///     t_coord_epoch: The coordinate epoch of the target coordinates, for a dynamic target CRS
+///         (GDAL's ``-t_coord_epoch``).
 ///
 /// Returns:
-///     tuple[numpy.ndarray, numpy.ndarray]: The transformed x and y coordinates, as float64.
+///     tuple[numpy.ndarray, ...]: The transformed x and y coordinates, and heights when ``zs`` is
+///     given, as float64.
 ///
 /// Raises:
 ///     CRSError: If a CRS cannot be parsed or a point cannot be transformed.
 #[pyfunction]
+#[pyo3(signature = (xs, ys, src_crs, dst_crs, zs=None, *, s_coord_epoch=None, t_coord_epoch=None))]
+#[allow(clippy::too_many_arguments)]
 fn transform_points<'py>(
     py: Python<'py>,
     xs: &Bound<'py, PyAny>,
     ys: &Bound<'py, PyAny>,
     src_crs: &str,
     dst_crs: &str,
-) -> PyResult<Coordinates<'py>> {
+    zs: Option<&Bound<'py, PyAny>>,
+    s_coord_epoch: Option<f64>,
+    t_coord_epoch: Option<f64>,
+) -> PyResult<Bound<'py, PyTuple>> {
     let np = py.import("numpy")?;
     let coords = |v: &Bound<'py, PyAny>| -> PyResult<Vec<f64>> {
         let a = np.call_method1("ascontiguousarray", (v, "float64"))?.call_method0("ravel")?;
@@ -688,22 +704,65 @@ fn transform_points<'py>(
     if xs.len() != ys.len() {
         return Err(invalid(format!("xs and ys differ in length ({} and {})", xs.len(), ys.len())));
     }
+    let zs = zs.map(coords).transpose()?;
+    if let Some(z) = &zs
+        && z.len() != xs.len()
+    {
+        return Err(invalid(format!("xs and zs differ in length ({} and {})", xs.len(), z.len())));
+    }
     let src = SpatialRef::parse(src_crs).py()?;
     let dst = SpatialRef::parse(dst_crs).py()?;
-    let (ox, oy) = py
-        .detach(|| -> terrio::Result<(Vec<f64>, Vec<f64>)> {
-            let t = Transformer::new(&src, &dst)?;
+    let opts = TransformOptions { source_coordinate_epoch: s_coord_epoch, target_coordinate_epoch: t_coord_epoch };
+    let (ox, oy, oz) = py
+        .detach(|| -> terrio::Result<(Vec<f64>, Vec<f64>, Vec<f64>)> {
+            let t = Transformer::with_options(&src, &dst, &opts)?;
             let mut ox = Vec::with_capacity(xs.len());
             let mut oy = Vec::with_capacity(ys.len());
-            for (x, y) in xs.iter().zip(&ys) {
-                let (a, b) = t.transform(*x, *y)?;
-                ox.push(a);
-                oy.push(b);
+            let mut oz = Vec::with_capacity(zs.as_ref().map_or(0, Vec::len));
+            for (i, (x, y)) in xs.iter().zip(&ys).enumerate() {
+                match &zs {
+                    Some(z) => {
+                        let (a, b, c) = t.transform_3d(*x, *y, z[i])?;
+                        ox.push(a);
+                        oy.push(b);
+                        oz.push(c);
+                    }
+                    None => {
+                        let (a, b) = t.transform(*x, *y)?;
+                        ox.push(a);
+                        oy.push(b);
+                    }
+                }
             }
-            Ok((ox, oy))
+            Ok((ox, oy, oz))
         })
         .py()?;
-    Ok((PyArray1::from_vec(py, ox), PyArray1::from_vec(py, oy)))
+    let (ox, oy) = (PyArray1::from_vec(py, ox), PyArray1::from_vec(py, oy));
+    if zs.is_some() { PyTuple::new(py, [ox, oy, PyArray1::from_vec(py, oz)]) } else { PyTuple::new(py, [ox, oy]) }
+}
+
+/// Sets the directories datum shift and geoid grids are looked up in, instead of those of the
+/// environment (``TERRIO_GRID_DIR``, ``PROJ_DATA``, ``PROJ_LIB``, PROJ's user directory and
+/// terrio's download cache), as PROJ's ``proj_context_set_search_paths``.
+///
+/// Args:
+///     paths: The directories, in search order; ``None`` goes back to the environment's.
+#[pyfunction]
+#[pyo3(signature = (paths))]
+fn set_grid_search_paths(paths: Option<Vec<std::path::PathBuf>>) {
+    terrio::crs::set_grid_search_paths(paths);
+}
+
+/// Enables or disables downloading grids from the PROJ CDN (https://cdn.proj.org) into terrio's
+/// cache, instead of following the ``TERRIO_NETWORK`` (or ``PROJ_NETWORK``) environment
+/// variable.
+///
+/// Args:
+///     enabled: Whether to download grids; ``None`` goes back to the environment variable.
+#[pyfunction]
+#[pyo3(signature = (enabled))]
+fn set_network_enabled(enabled: Option<bool>) {
+    terrio::crs::set_network_enabled(enabled);
 }
 
 /// Parses a nodata argument: `None` for the datasets' own, `"none"` to ignore them, a number, or

@@ -13,24 +13,43 @@ tab-separated lines of three kinds:
 ``kind`` is ``g`` for geographic output (``unit`` in degrees per unit) or ``p`` for projected
 output (``unit`` in metres per unit), so that errors can be measured in metres.
 
-Usage: python scripts/gen_epsg_points.py OUT.tsv
+By default no datum shift grid is used, whatever PROJ has installed, so that the reference does
+not depend on the environment. With ``--grids DIR``, GDAL uses the grids of that directory (and
+only those, the network being off): the reference terrio is checked against when it finds the
+same grids (``epsg_points_grids.tsv`` in the test data, with the grids of
+``scripts/proj_grids.txt`` in its ``grids`` directory).
+
+Usage: python scripts/gen_epsg_points.py OUT.tsv [--grids DIR]
 """
 
+import argparse
 import multiprocessing
 import os
 import random
-import sys
+import tempfile
 import warnings
 
-import pyproj
-from osgeo import gdal, osr
-from pyproj.enums import PJType
+ARGS = argparse.ArgumentParser(description="Write GDAL reference points for terrio's EPSG transformations.")
+ARGS.add_argument("out", help="the output file")
+ARGS.add_argument("--grids", help="a directory of datum shift grids for GDAL to use")
+OPTIONS = ARGS.parse_args()
+
+# conda's PROJ activation turns PROJ's network access on, which downloads grids (NAD27 and others)
+# and makes the transformations depend on the environment: the network stays off, and PROJ
+# searches an empty directory (or the grid directory) and its database's directory only.
+os.environ["PROJ_NETWORK"] = "OFF"
+
+import pyproj  # noqa: E402
+from osgeo import gdal, osr  # noqa: E402
+from pyproj.enums import PJType  # noqa: E402
 
 osr.UseExceptions()
-# terrio applies no datum shift grids yet, so the reference must not use them either. conda's PROJ
-# activation turns PROJ's network access on, which downloads grids (NAD27 and others) and makes
-# the transformations depend on the environment.
-os.environ["PROJ_NETWORK"] = "OFF"
+PROJ_DB_DIR = pyproj.datadir.get_data_dir().split(os.pathsep)[0]
+GRID_DIR = os.path.abspath(OPTIONS.grids) if OPTIONS.grids else tempfile.mkdtemp()
+os.environ["PROJ_DATA"] = GRID_DIR + os.pathsep + PROJ_DB_DIR
+# PROJ's user directory (where projsync and the network cache put grids) is searched too.
+os.environ["XDG_DATA_HOME"] = tempfile.mkdtemp()
+osr.SetPROJSearchPaths([GRID_DIR, PROJ_DB_DIR])
 osr.SetPROJEnableNetwork(False)
 pyproj.network.set_network_enabled(False)
 gdal.PushErrorHandler("CPLQuietErrorHandler")
@@ -163,7 +182,7 @@ def main():
             continue
         if aou is not None:
             areas[code] = (aou.west, aou.south, aou.east, aou.north)
-    with multiprocessing.Pool(initializer=init, initargs=(areas,)) as pool, open(sys.argv[1], "w") as out:
+    with multiprocessing.Pool(initializer=init, initargs=(areas,)) as pool, open(OPTIONS.out, "w") as out:
         for lines in pool.imap(points, sorted(areas), chunksize=16):
             out.writelines(lines)
 
