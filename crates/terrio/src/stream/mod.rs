@@ -744,7 +744,6 @@ impl FeatureWriter {
 /// schema are written after it. The tables and values are those of the whole-layer writer,
 /// whose schema decisions (geometry type, Z, MEDIUMINT) are taken from the profile.
 struct GpkgSink {
-    path: String,
     table: crate::drivers::vector::sqlite::StreamTable<BufWriter<File>>,
     builder: crate::drivers::vector::geopackage::Builder,
     cols: crate::drivers::vector::geopackage::LayerColumns,
@@ -771,7 +770,6 @@ impl GpkgSink {
         // The file is created anew: pages left over from a larger file would remain at its end.
         let out = BufWriter::with_capacity(1 << 20, File::create(path)?);
         Ok(Some(Self {
-            path: path.to_string(),
             table: crate::drivers::vector::sqlite::StreamTable::new(out),
             builder,
             cols,
@@ -800,17 +798,158 @@ impl FeatureSink for GpkgSink {
     }
 
     fn finish(self: Box<Self>) -> Result<()> {
-        let Self { path, table, mut builder, cols, layer, extent, count } = *self;
-        let (root, base) = table.finish()?;
+        let Self { table, mut builder, cols, layer, extent, count } = *self;
+        let (root, mut next, mut out) = table.finish_with_output()?;
         let built = crate::drivers::vector::sqlite::BuiltTable { name: layer.name.clone(), sql: cols.sql.clone(), root };
-        builder.finish_layer(&layer.name, &cols, count, count as i64, extent, crate::drivers::vector::geopackage::LayerTable::Built(built));
-        let (page1, rest) = builder.finish_parts(base)?;
-        let mut f = std::fs::OpenOptions::new().write(true).open(&path)?;
-        f.seek(SeekFrom::Start(u64::from(base - 1) * page1.len() as u64))?;
-        f.write_all(&rest)?;
-        f.seek(SeekFrom::Start(0))?;
-        f.write_all(&page1)?;
-        f.flush()?;
+        // The R-tree's tables follow the layer's.
+        let mut write = |t| {
+            let (built, after, _) = crate::drivers::vector::sqlite::stream_table(&mut out, next, t)?;
+            next = after;
+            Ok(built)
+        };
+        let table = crate::drivers::vector::geopackage::LayerTable::Built(built);
+        builder.finish_layer(&layer.name, &cols, count, count as i64, extent, table, Some(&mut write))?;
+        let (page1, rest) = builder.finish_parts(next)?;
+        out.seek(SeekFrom::Start(u64::from(next - 1) * page1.len() as u64))?;
+        out.write_all(&rest)?;
+        out.seek(SeekFrom::Start(0))?;
+        out.write_all(&page1)?;
+        out.flush()?;
+        Ok(())
+    }
+}
+
+/// A GeoPackage of several layers whose features arrive in any interleaving (a chunk of one
+/// layer, then of another): each layer's rows are encoded as they come into a temporary file of
+/// its own, with their bounds, then copied into the database one table after another
+/// ([`StreamTable`](crate::drivers::vector::sqlite::StreamTable)). The profile deciding the
+/// schema (geometry type, Z, MEDIUMINT) is gathered on the way, as it only shows in the tables'
+/// definitions, written last. The tables and values are those of the whole-layer writer.
+pub(crate) struct GpkgLayersSink {
+    out: BufWriter<File>,
+    builder: crate::drivers::vector::geopackage::Builder,
+    layers: Vec<SpilledLayer>,
+}
+
+struct SpilledLayer {
+    schema: Layer,
+    cols: crate::drivers::vector::geopackage::LayerColumns,
+    profile: LayerProfile,
+    rows: BufWriter<Box<dyn crate::drivers::vector::Spill>>,
+    count: usize,
+}
+
+impl GpkgLayersSink {
+    /// `None` when a layer has an integer field named fid (which gives the rowids, to be checked
+    /// unique over all the features), or neither a geometry type nor a CRS (whether it is a
+    /// spatial table depends on all its geometries): such layers are written whole.
+    pub(crate) fn create(path: &str, schemas: &[Layer]) -> Result<Option<Self>> {
+        use wbvector::FieldType;
+        let mut builder = crate::drivers::vector::geopackage::Builder::new();
+        let mut layers = Vec::with_capacity(schemas.len());
+        for schema in schemas {
+            let fid = schema.schema.fields().iter().any(|f| f.name.eq_ignore_ascii_case("fid") && f.field_type == FieldType::Integer);
+            if fid || (schema.geom_type.is_none() && crate::crs::SpatialRef::from_layer(schema).is_unknown()) {
+                return Ok(None);
+            }
+            builder.claim(&schema.name)?;
+            // The columns as rows are encoded; their declared types are settled at the end.
+            let cols = builder.layer_columns(schema, false, None, false, None, |_| true);
+            let rows = BufWriter::with_capacity(1 << 20, crate::drivers::vector::spill()?);
+            layers.push(SpilledLayer { schema: schema_of(schema), cols, profile: LayerProfile::new(schema), rows, count: 0 });
+        }
+        // The file is created anew: pages left over from a larger file would remain at its end.
+        let out = BufWriter::with_capacity(1 << 20, File::create(path)?);
+        Ok(Some(Self { out, builder, layers }))
+    }
+
+    /// Adds a chunk of features of layer `i`.
+    pub(crate) fn write(&mut self, i: usize, chunk: &Layer) -> Result<()> {
+        let l = &mut self.layers[i];
+        l.profile.add(&chunk.features);
+        let fields = l.schema.schema.fields();
+        let first = l.count as i64 + 1;
+        let (cols, features) = (&l.cols, &chunk.features);
+        let rows = crate::par::map_range(features.len(), |n| {
+            let (rowid, values, bbox) = cols.row(&features[n], first + n as i64, fields);
+            let rec = crate::drivers::vector::sqlite::record(&values);
+            let mut b = Vec::with_capacity(rec.len() + 45);
+            b.extend_from_slice(&rowid.to_le_bytes());
+            match bbox {
+                Some(bb) => {
+                    b.push(1);
+                    for v in [bb.min_x, bb.min_y, bb.max_x, bb.max_y] {
+                        b.extend_from_slice(&v.to_le_bytes());
+                    }
+                }
+                None => b.push(0),
+            }
+            b.extend_from_slice(&(rec.len() as u32).to_le_bytes());
+            b.extend_from_slice(&rec);
+            b
+        });
+        for r in rows {
+            l.rows.write_all(&r)?;
+        }
+        l.count += features.len();
+        Ok(())
+    }
+
+    /// Writes the tables, one after another, then the rest of the database.
+    pub(crate) fn finish(self) -> Result<()> {
+        use crate::drivers::vector::geopackage::{LayerExtent, LayerTable};
+        use crate::drivers::vector::sqlite::{BuiltTable, StreamTable};
+        let Self { mut out, mut builder, layers } = self;
+        let mut next = 2;
+        for l in layers {
+            let mut rows = l.rows.into_inner().map_err(|e| Error::Io(e.into_error()))?;
+            rows.seek(SeekFrom::Start(0))?;
+            let mut rows = BufReader::with_capacity(1 << 20, rows);
+            let mut table = StreamTable::starting_at(&mut out, next);
+            let mut extent = LayerExtent::default();
+            let mut head = [0u8; 9];
+            let mut rec = Vec::new();
+            for _ in 0..l.count {
+                rows.read_exact(&mut head)?;
+                let rowid = i64::from_le_bytes(head[..8].try_into().unwrap_or_default());
+                let bbox = if head[8] == 1 {
+                    let mut b = [0u8; 32];
+                    rows.read_exact(&mut b)?;
+                    let v = |k: usize| f64::from_le_bytes(b[8 * k..8 * k + 8].try_into().unwrap_or_default());
+                    Some(wbvector::BBox::new(v(0), v(1), v(2), v(3)))
+                } else {
+                    None
+                };
+                let mut len = [0u8; 4];
+                rows.read_exact(&mut len)?;
+                rec.resize(u32::from_le_bytes(len) as usize, 0);
+                rows.read_exact(&mut rec)?;
+                table.push(rowid, &rec)?;
+                extent.add(rowid, bbox);
+            }
+            let (root, after) = table.finish()?;
+            next = after;
+            // The R-tree's tables follow the layer's.
+            let mut write = |t| {
+                let (built, after, _) = crate::drivers::vector::sqlite::stream_table(&mut out, next, t)?;
+                next = after;
+                Ok(built)
+            };
+            // The schema decisions of the whole-layer writer, from the profile.
+            let g = &l.profile.geometry;
+            let all_none = g.count == 0;
+            let declared = if all_none { l.schema.geom_type } else { l.profile.uniform_type() };
+            let small = |i: usize| l.profile.fields.get(i).is_none_or(|f| f.no_int_beyond_int32);
+            let cols = builder.layer_columns(&l.schema, all_none, declared, g.has_z, None, small);
+            let built = BuiltTable { name: l.schema.name.clone(), sql: cols.sql.clone(), root };
+            builder.finish_layer(&l.schema.name, &cols, l.count, l.count as i64, extent, LayerTable::Built(built), Some(&mut write))?;
+        }
+        let (page1, rest) = builder.finish_parts(next)?;
+        out.seek(SeekFrom::Start(u64::from(next - 1) * page1.len() as u64))?;
+        out.write_all(&rest)?;
+        out.seek(SeekFrom::Start(0))?;
+        out.write_all(&page1)?;
+        out.flush()?;
         Ok(())
     }
 }
@@ -1180,12 +1319,16 @@ impl Default for ConvertOptions {
 
 /// Whether [`convert`] streams a conversion from `src` to `dst`, rather than reading the layers
 /// whole: both formats are read and written as streams, and no option needs the whole layer.
+/// OpenStreetMap PBF files (`.pbf`) stream when sorted by type then id, as most are (the others
+/// are read whole).
 pub fn can_convert_stream(src: &str, dst: &str, options: &ConvertOptions) -> bool {
     let out = options.write.driver.or_else(|| VectorDriver::for_extension(dst));
-    let input = VectorDriver::for_extension(src).filter(|_| crate::formats::extension(src).as_deref() != Some("json"));
+    let ext = crate::formats::extension(src);
+    let input = VectorDriver::for_extension(src).filter(|_| ext.as_deref() != Some("json"));
+    let pbf = input == Some(VectorDriver::OSM) && ext.as_deref() == Some("pbf") && cfg!(not(target_arch = "wasm32"));
     options.translate.sql.is_none()
         && out.is_some_and(can_write_stream)
-        && input.is_some_and(can_read_stream)
+        && (input.is_some_and(can_read_stream) || pbf)
         && crate::vfs::Location::parse(src).is_local()
         && !same_dataset(src, dst)
 }
@@ -1214,32 +1357,42 @@ fn same_dataset(src: &str, dst: &str) -> bool {
 
 /// Converts a vector dataset, as `terrio convert` does, a chunk of features at a time when
 /// [`can_convert_stream`] says so (and otherwise reading the layers whole). Formats whose writers
-/// [`needs_profile`] read the input twice: once for the profile, then to write.
+/// [`needs_profile`] read the input twice: once for the profile, then to write. Several layers
+/// written to a GeoPackage go one after another, and OpenStreetMap PBF files sorted by type then
+/// id (as osmium, Geofabrik and the planet write them) are read a block at a time.
 pub fn convert(src: &str, dst: &str, options: &ConvertOptions) -> Result<()> {
-    if !can_convert_stream(src, dst, options) {
-        let ds = crate::open_vector(src, &options.open)?;
-        let layers = crate::ops::vector_filter::translate_owned(ds.layers, &options.translate)?;
-        return crate::write_vector(&layers, dst, &options.write);
+    if let Some(done) = convert_osm(src, dst, options) {
+        return done;
     }
-    let driver = options.write.driver.or_else(|| VectorDriver::for_extension(dst)).unwrap_or(VectorDriver::GeoJSON);
+    if !can_convert_stream(src, dst, options) || VectorDriver::for_extension(src) == Some(VectorDriver::OSM) {
+        return convert_whole(src, dst, options);
+    }
+    let driver = output_driver(dst, options);
     let chunk = options.chunk_size.max(1);
     let mut readers = open_layers(src, &options.open, chunk)?;
     match readers.len() {
         0 => return Err(Error::InvalidArgument("no layers to write".into())),
         1 => {}
-        // Several layers in one GeoPackage: written whole.
         _ if driver == VectorDriver::GPKG => {
-            drop(readers);
-            let ds = crate::open_vector(src, &options.open)?;
-            let layers = crate::ops::vector_filter::translate_owned(ds.layers, &options.translate)?;
-            return crate::write_vector(&layers, dst, &options.write);
+            let mut translators = readers.iter().map(|r| Translator::new(r.layer(), &options.translate)).collect::<Result<Vec<_>>>()?;
+            let schemas: Vec<Layer> = translators.iter().map(|t| t.schema().clone()).collect();
+            let Some(mut sink) = GpkgLayersSink::create(dst, &schemas)? else {
+                drop(readers);
+                return convert_whole(src, dst, options);
+            };
+            let written = (|| {
+                for (k, (reader, translator)) in readers.iter_mut().zip(&mut translators).enumerate() {
+                    while !translator.is_done()
+                        && let Some(c) = reader.read_chunk(chunk)?
+                    {
+                        sink.write(k, &translator.apply(c)?)?;
+                    }
+                }
+                sink.finish()
+            })();
+            return remove_on_error(dst, driver, written);
         }
-        _ => {
-            return Err(Error::InvalidArgument(format!(
-                "the {} format holds one layer: choose a layer, or write a GeoPackage",
-                driver.name()
-            )));
-        }
+        _ => return Err(one_layer_only(driver)),
     }
     let mut reader = readers.remove(0);
     let mut translator = Translator::new(reader.layer(), &options.translate)?;
@@ -1265,8 +1418,26 @@ pub fn convert(src: &str, dst: &str, options: &ConvertOptions) -> Result<()> {
         }
         writer.finish()
     })();
-    // A conversion that fails partway leaves no truncated output behind (one that fails before
-    // the output is created leaves what was there).
+    remove_on_error(dst, driver, written)
+}
+
+fn convert_whole(src: &str, dst: &str, options: &ConvertOptions) -> Result<()> {
+    let ds = crate::open_vector(src, &options.open)?;
+    let layers = crate::ops::vector_filter::translate_owned(ds.layers, &options.translate)?;
+    crate::write_vector(&layers, dst, &options.write)
+}
+
+fn output_driver(dst: &str, options: &ConvertOptions) -> VectorDriver {
+    options.write.driver.or_else(|| VectorDriver::for_extension(dst)).unwrap_or(VectorDriver::GeoJSON)
+}
+
+fn one_layer_only(driver: VectorDriver) -> Error {
+    Error::InvalidArgument(format!("the {} format holds one layer: choose a layer, or write a GeoPackage", driver.name()))
+}
+
+/// A conversion that fails partway leaves no truncated output behind (one that fails before the
+/// output is created leaves what was there).
+fn remove_on_error(dst: &str, driver: VectorDriver, written: Result<()>) -> Result<()> {
     if written.is_err() {
         let path = std::path::Path::new(dst);
         let _ = std::fs::remove_file(path);
@@ -1277,6 +1448,112 @@ pub fn convert(src: &str, dst: &str, options: &ConvertOptions) -> Result<()> {
         }
     }
     written
+}
+
+/// Converts an OpenStreetMap PBF file sorted by type then id a block at a time (see
+/// [`read_sorted_pbf`](crate::drivers::vector::osm::read_sorted_pbf)). `None` for other inputs
+/// and outputs, which are converted whole.
+fn convert_osm(src: &str, dst: &str, options: &ConvertOptions) -> Option<Result<()>> {
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = (src, dst, options);
+        None
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let local = crate::vfs::Location::parse(src).is_local();
+        if options.translate.sql.is_some()
+            || VectorDriver::for_extension(src) != Some(VectorDriver::OSM)
+            || !local
+            || !can_write_stream(output_driver(dst, options))
+            || same_dataset(src, dst)
+        {
+            return None;
+        }
+        let mut file = match File::open(src) {
+            Ok(f) => f,
+            Err(e) => return Some(Err(e.into())),
+        };
+        match crate::drivers::vector::osm::is_sorted_pbf(&mut file) {
+            Ok(true) => Some(convert_sorted_osm(&mut file, src, dst, options)),
+            Ok(false) => None,
+            Err(e) => Some(Err(e)),
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn convert_sorted_osm(data: &mut File, src: &str, dst: &str, options: &ConvertOptions) -> Result<()> {
+    use crate::drivers::vector::osm;
+    let driver = output_driver(dst, options);
+    let schemas = osm::layer_schemas();
+    // The layers asked for, as `open_vector` selects them.
+    let selected: Vec<usize> = if options.open.layers.is_empty() {
+        (0..schemas.len()).collect()
+    } else {
+        let s: Vec<usize> = (0..schemas.len()).filter(|&i| options.open.layers.contains(&schemas[i].name)).collect();
+        if s.is_empty() {
+            let names: Vec<&str> = schemas.iter().map(|l| l.name.as_str()).collect();
+            return Err(Error::InvalidArgument(format!(
+                "no layer named {} (layers: {})",
+                options.open.layers.join(", "),
+                names.join(", ")
+            )));
+        }
+        s
+    };
+    let mut wanted = [false; 5];
+    for &i in &selected {
+        wanted[i] = true;
+    }
+    let chunk_of = |l: usize, features: Vec<Feature>| {
+        let mut c = schema_of(&schemas[l]);
+        c.features = features;
+        c
+    };
+    let mut translators = selected.iter().map(|&i| Translator::new(&schemas[i], &options.translate)).collect::<Result<Vec<_>>>()?;
+    if driver == VectorDriver::GPKG {
+        let out: Vec<Layer> = translators.iter().map(|t| t.schema().clone()).collect();
+        let Some(mut sink) = GpkgLayersSink::create(dst, &out)? else { return convert_whole(src, dst, options) };
+        let written = (|| {
+            osm::read_sorted_pbf(data, wanted, &mut |l, features| {
+                let Some(k) = selected.iter().position(|&s| s == l) else { return Ok(()) };
+                if translators[k].is_done() {
+                    return Ok(());
+                }
+                let c = translators[k].apply(chunk_of(l, features))?;
+                sink.write(k, &c)
+            })?;
+            sink.finish()
+        })();
+        return remove_on_error(dst, driver, written);
+    }
+    let [l] = selected[..] else { return Err(one_layer_only(driver)) };
+    let profile = if needs_profile(driver) {
+        let mut t = Translator::new(&schemas[l], &options.translate)?;
+        let mut p = LayerProfile::new(t.schema());
+        osm::read_sorted_pbf(data, wanted, &mut |_, features| {
+            if !t.is_done() {
+                p.add(&t.apply(chunk_of(l, features))?.features);
+            }
+            Ok(())
+        })?;
+        Some(p)
+    } else {
+        None
+    };
+    let translator = &mut translators[0];
+    let mut writer = FeatureWriter::create(dst, translator.schema(), profile.as_ref(), &options.write)?;
+    let written = (|| {
+        osm::read_sorted_pbf(data, wanted, &mut |_, features| {
+            if translator.is_done() {
+                return Ok(());
+            }
+            writer.write(&translator.apply(chunk_of(l, features))?)
+        })?;
+        writer.finish()
+    })();
+    remove_on_error(dst, driver, written)
 }
 
 #[cfg(test)]

@@ -28,6 +28,22 @@ use crate::dataset::{VectorOpenOptions, VectorWriteOptions};
 use crate::formats::VectorDriver;
 use wbvector::{GeometryType, Layer};
 
+/// A temporary file to write and read back (in memory in WebAssembly).
+pub(crate) trait Spill: std::io::Read + std::io::Write + std::io::Seek + Send {}
+impl<T: std::io::Read + std::io::Write + std::io::Seek + Send> Spill for T {}
+
+/// A new, empty [`Spill`], deleted when dropped.
+pub(crate) fn spill() -> Result<Box<dyn Spill>> {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        Ok(Box::new(tempfile::tempfile()?))
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        Ok(Box::new(std::io::Cursor::new(Vec::new())))
+    }
+}
+
 /// Reads a dataset with terrio's own driver for the format. `None` when the format library reads it.
 pub(crate) fn read(path: &str, driver: VectorDriver, options: &VectorOpenOptions) -> Result<Option<Vec<Layer>>> {
     Ok(Some(match driver {

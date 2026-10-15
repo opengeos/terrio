@@ -455,7 +455,12 @@ impl<W: std::io::Write + std::io::Seek> StreamTable<W> {
     /// Starts a table whose pages go to `out`, a database file being written (page 1, the
     /// header and schema, is written last by [`write_database_parts`]).
     pub fn new(out: W) -> Self {
-        Self { out, next: 2, leaf: Vec::new(), used: 8, last_key: 0, level: Vec::new() }
+        Self::starting_at(out, 2)
+    }
+
+    /// Starts a table whose pages go to `out` from page `first` on, after other tables'.
+    pub fn starting_at(out: W, first: u32) -> Self {
+        Self { out, next: first, leaf: Vec::new(), used: 8, last_key: 0, level: Vec::new() }
     }
 
     fn alloc(&mut self) -> u32 {
@@ -528,7 +533,12 @@ impl<W: std::io::Write + std::io::Seek> StreamTable<W> {
     }
 
     /// Writes the rest of the table and returns its root page and the first page after it.
-    pub fn finish(mut self) -> Result<(u32, u32)> {
+    pub fn finish(self) -> Result<(u32, u32)> {
+        self.finish_with_output().map(|(root, next, _)| (root, next))
+    }
+
+    /// [`StreamTable::finish`], handing back the output for more pages.
+    pub fn finish_with_output(mut self) -> Result<(u32, u32, W)> {
         if !self.leaf.is_empty() || self.level.is_empty() {
             self.flush_leaf()?;
         }
@@ -575,8 +585,20 @@ impl<W: std::io::Write + std::io::Seek> StreamTable<W> {
             level = next_level;
         }
         self.out.flush()?;
-        Ok((level[0].0, self.next))
+        Ok((level[0].0, self.next, self.out))
     }
+}
+
+/// Writes a table whose rows are sorted by rowid (and has no automatic index) with a
+/// [`StreamTable`] from page `first` on: the table as listed in the schema, and the first page
+/// after it.
+pub fn stream_table<W: std::io::Write + std::io::Seek>(out: W, first: u32, table: Table) -> Result<(BuiltTable, u32, W)> {
+    let mut st = StreamTable::starting_at(out, first);
+    for (rowid, values) in &table.rows {
+        st.push(*rowid, &record(values))?;
+    }
+    let (root, next, out) = st.finish_with_output()?;
+    Ok((BuiltTable { name: table.name, sql: table.sql, root }, next, out))
 }
 
 /// A b-tree page (not page 1): header, cell pointers and cells packed at the end.

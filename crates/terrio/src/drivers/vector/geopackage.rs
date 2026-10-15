@@ -578,7 +578,7 @@ impl Builder {
         let max_fid = rows.last().map_or(0, |(id, _)| *id);
         let count = layer.len();
         let table = Table { name: layer.name.clone(), sql: cols.sql.clone(), rows, autoindexes: vec![] };
-        self.finish_layer(&layer.name, &cols, count, max_fid, extent, LayerTable::Rows(table));
+        self.finish_layer(&layer.name, &cols, count, max_fid, extent, LayerTable::Rows(table), None)?;
         Ok(())
     }
 
@@ -642,7 +642,9 @@ impl Builder {
 
     /// Records a layer's table and its metadata: `gpkg_contents` with the extent,
     /// `gpkg_geometry_columns`, `gpkg_ogr_contents` and its triggers, the sequence, and the
-    /// R-tree of the geometries' bounds.
+    /// R-tree of the geometries' bounds. With `write`, the R-tree's tables are handed to it to be
+    /// written as they are built (after the layer's table), rather than kept.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn finish_layer(
         &mut self,
         name: &str,
@@ -651,7 +653,8 @@ impl Builder {
         max_fid: i64,
         extent: LayerExtent,
         table: LayerTable,
-    ) {
+        write: Option<&mut dyn FnMut(Table) -> Result<BuiltTable>>,
+    ) -> Result<()> {
         let b = extent.bounds.map(|b| b.map(Value::Real)).unwrap_or([Value::Null, Value::Null, Value::Null, Value::Null]);
         let [min_x, min_y, max_x, max_y] = b;
         let (spatial, srs_id) = (cols.spatial, cols.srs_id);
@@ -707,9 +710,18 @@ impl Builder {
                 "http://www.geopackage.org/spec120/#extension_rtree",
                 "write-only",
             );
-            self.tables.extend(rtree_tables);
+            match write {
+                None => self.tables.extend(rtree_tables),
+                Some(write) => {
+                    for t in rtree_tables {
+                        let built = write(t)?;
+                        self.built.push((self.tables.len(), built));
+                    }
+                }
+            }
             self.objects.extend(rtree_objects);
         }
+        Ok(())
     }
 
     /// Adds a tile table: its `gpkg_contents` row (`data_type` is `tiles` or
