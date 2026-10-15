@@ -353,3 +353,25 @@ fn converts_osm_like_whole_conversions() {
     let all = ConvertOptions::default();
     assert!(convert(&src, &out.path().join("all.fgb").to_string_lossy(), &all).is_err());
 }
+
+/// A vector tile named `.pbf` is not taken for an OpenStreetMap file: it converts whole.
+#[test]
+fn converts_vector_tiles_named_pbf_whole() {
+    use crate::tiles::mvt;
+    let dir = tempfile::tempdir().unwrap();
+    let f = mvt::MvtFeature {
+        id: Some(3),
+        geom_type: mvt::POINT,
+        geometry: mvt::encode_points(&[(100, 200)]),
+        tags: vec![("name".into(), mvt::MvtValue::String("a".into()))],
+        size: 0.0,
+    };
+    let tile = mvt::encode(&[mvt::MvtLayer { name: "l".into(), extent: 4096, features: vec![f] }]);
+    let src = dir.path().join("0.pbf").to_string_lossy().into_owned();
+    std::fs::write(&src, tile).unwrap();
+    let dst = dir.path().join("out.geojson").to_string_lossy().into_owned();
+    let whole = dir.path().join("whole.geojson").to_string_lossy().into_owned();
+    convert(&src, &dst, &ConvertOptions::default()).unwrap();
+    crate::write_vector(&crate::open_vector(&src, &Default::default()).unwrap().layers, &whole, &Default::default()).unwrap();
+    assert_eq!(std::fs::read(&dst).unwrap(), std::fs::read(&whole).unwrap());
+}

@@ -1474,10 +1474,11 @@ fn convert_osm(src: &str, dst: &str, options: &ConvertOptions) -> Option<Result<
             Ok(f) => f,
             Err(e) => return Some(Err(e.into())),
         };
+        // Other files (unsorted, or not OpenStreetMap: vector tiles are `.pbf` files too) are
+        // converted whole.
         match crate::drivers::vector::osm::is_sorted_pbf(&mut file) {
             Ok(true) => Some(convert_sorted_osm(&mut file, src, dst, options)),
-            Ok(false) => None,
-            Err(e) => Some(Err(e)),
+            _ => None,
         }
     }
 }

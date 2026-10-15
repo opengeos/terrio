@@ -81,12 +81,17 @@ Point clouds (LAS, LAZ, COPC) convert to LAS, LAZ, COPC or a vector layer of poi
 [Point Clouds](point-clouds.md).
 
 Vector layers convert as streams, a chunk of features at a time, when the input is a local
-GeoPackage, FlatGeobuf, GeoParquet, Shapefile, GeoJSON, GeoJSONSeq or CSV file, the output a
-GeoPackage (of a single layer), FlatGeobuf, GeoParquet, Shapefile, GeoJSON, GeoJSONSeq or CSV
+GeoPackage, FlatGeobuf, GeoParquet, Shapefile, GeoJSON, GeoJSONSeq, CSV or OpenStreetMap PBF
+file, the output a GeoPackage, FlatGeobuf, GeoParquet, Shapefile, GeoJSON, GeoJSONSeq or CSV
 file other than the input, neither `--sql`, `--append` nor `--overwrite` is given, and `--lco`
 gives only CSV and GeoJSON options: memory stays bounded whatever the size of the layer (a
 15-million-polygon, 3.8 GB GeoPackage converts to GeoParquet in 192 MB, as `ogr2ogr` does in
-169 MB). The other conversions read the layers whole. See [Formats](formats.md#vectors).
+169 MB). Several layers go to a GeoPackage one after another; the other formats hold one layer,
+chosen with `-l`. OpenStreetMap PBF files stream when sorted by type then id, as osmium,
+Geofabrik and the planet files are: only the nodes (about 6 bytes each) and the ways relations
+use are kept (Colorado's 385 MB extract converts to a GeoPackage in 19 s and 1.5 GB, where
+`ogr2ogr` takes 44 s and 0.45 GB). The other conversions read the layers whole. See
+[Formats](formats.md#vectors).
 
 The `--where` language supports comparisons, `AND`/`OR`/`NOT`, parentheses, `IN`, `LIKE`/`ILIKE`,
 `IS [NOT] NULL`, `BETWEEN`, arithmetic, `||` and `FID`, with OGR SQL's null semantics.
