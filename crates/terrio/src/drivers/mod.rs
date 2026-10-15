@@ -17,6 +17,7 @@ mod gsbg;
 pub(crate) mod gtiff_write;
 pub(crate) mod hdf5;
 mod hdf5_write;
+pub(crate) mod hdfeos;
 mod hfa;
 pub(crate) mod jp2;
 pub(crate) mod netcdf;
@@ -106,6 +107,20 @@ pub(crate) fn open_subdataset(path: &str) -> Option<Result<RasterDataset>> {
     }))
 }
 
+/// Writes rasters into one netCDF-4 file, each in its group (see `netcdf_write::write_groups`).
+pub(crate) fn write_netcdf_groups(rasters: &[(&str, &RasterDataset)], path: &str, options: &crate::RasterWriteOptions) -> Result<()> {
+    let co = |key: &str| options.creation_options.iter().find(|(k, _)| k.eq_ignore_ascii_case(key)).map(|(_, v)| v.as_str());
+    let o = netcdf_write::Options {
+        format: co("FORMAT"),
+        compress: co("COMPRESS").or(options.compression.as_deref()),
+        zlevel: co("ZLEVEL"),
+        chunking: co("CHUNKING"),
+        group: None,
+    };
+    let entries: Vec<(&str, &Raster, Option<f64>)> = rasters.iter().map(|(g, ds)| (*g, &ds.raster, ds.nodata())).collect();
+    netcdf_write::write_groups(&entries, Path::new(path), &o)
+}
+
 /// Writes a raster with one of terrio's own drivers, declaring `nodata`, with the format's
 /// compression and creation options when it has a choice. `None` when none of them handles the format.
 pub(crate) fn write(
@@ -136,12 +151,13 @@ pub(crate) fn write(
                 compress: co("COMPRESS").or(compression),
                 zlevel: co("ZLEVEL"),
                 chunking: co("CHUNKING"),
+                group: co("GROUP"),
             };
             netcdf_write::write(r, nodata, p, &o)
         }
         RasterDriver::GPKG => gpkg::write(r, nodata, p, compression.or(co("TILE_FORMAT")), co("RASTER_TABLE")),
         RasterDriver::MBTiles | RasterDriver::PMTiles => {
-            let ds = RasterDataset { raster: r.clone(), driver, has_nodata: nodata.is_some(), affine: None };
+            let ds = RasterDataset::with_driver(r.clone(), driver, nodata.is_some());
             crate::tiles::write_raster(&ds, path, driver, options)
         }
         // Formats without a CRS of their own: GDAL's sidecar holds it.

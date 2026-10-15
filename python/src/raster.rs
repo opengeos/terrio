@@ -38,6 +38,30 @@ impl PyRaster {
     fn crs_ref(&self) -> SpatialRef {
         self.inner.crs()
     }
+
+    /// Whether the bands are complex (each held as a real and an imaginary band).
+    fn is_complex(&self) -> bool {
+        self.inner.dataset().is_some_and(|d| d.complex)
+    }
+}
+
+/// Complex values from bands of real parts followed by bands of imaginary parts (band `k`'s
+/// parts are bands `2k` and `2k + 1`), as a NumPy array of `complex64` (`complex128` for
+/// 64-bit floats) of the given shape.
+fn complex_to_numpy<'py>(py: Python<'py>, data: RasterData, plane: usize, shape: &[usize]) -> PyResult<Bound<'py, PyAny>> {
+    let double = data.data_type() == DataType::F64;
+    let v = data.to_f64_vec();
+    let bands = v.len() / (2 * plane).max(1);
+    let pairs = (0..bands).flat_map(|b| (0..plane).map(move |i| (b, i)));
+    if double {
+        let c: Vec<numpy::Complex64> =
+            pairs.map(|(b, i)| numpy::Complex64::new(v[2 * b * plane + i], v[(2 * b + 1) * plane + i])).collect();
+        Ok(PyArray1::from_vec(py, c).reshape(shape)?.into_any())
+    } else {
+        let c: Vec<numpy::Complex32> =
+            pairs.map(|(b, i)| numpy::Complex32::new(v[2 * b * plane + i] as f32, v[(2 * b + 1) * plane + i] as f32)).collect();
+        Ok(PyArray1::from_vec(py, c).reshape(shape)?.into_any())
+    }
 }
 
 /// The NumPy name of a pixel type.
@@ -117,19 +141,32 @@ impl PyRaster {
     /// The number of bands.
     #[getter]
     fn count(&self) -> usize {
-        self.inner.band_count()
+        if self.is_complex() { self.inner.band_count() / 2 } else { self.inner.band_count() }
     }
 
     /// The shape of the array `read()` returns: `(count, height, width)`.
     #[getter]
     fn shape(&self) -> (usize, usize, usize) {
-        (self.inner.band_count(), self.inner.height(), self.inner.width())
+        (self.count(), self.inner.height(), self.inner.width())
     }
 
-    /// The pixel type, as a NumPy dtype name such as `"uint8"` or `"float32"`.
+    /// The pixel type, as a NumPy dtype name such as `"uint8"` or `"float32"`; `"complex64"` or
+    /// `"complex128"` for complex bands (GDAL's `CInt16`... `CFloat64`).
     #[getter]
     fn dtype(&self) -> &'static str {
-        dtype_name(self.inner.data_type())
+        match (self.is_complex(), self.inner.data_type()) {
+            (true, DataType::F64) => "complex128",
+            (true, _) => "complex64",
+            (false, t) => dtype_name(t),
+        }
+    }
+
+    /// Where the longitude and latitude of each pixel are, for swaths and other rasters
+    /// georeferenced by geolocation arrays: GDAL's `GEOLOCATION` metadata items (`X_DATASET`,
+    /// `Y_DATASET`, `PIXEL_STEP`...), or `None`.
+    #[getter]
+    fn geolocation(&self) -> Option<Vec<(String, String)>> {
+        self.inner.dataset().and_then(|d| d.geolocation.as_ref()).map(|g| g.items())
     }
 
     /// The nodata value, or `None` when the raster declares none.
@@ -206,7 +243,7 @@ impl PyRaster {
     ///
     /// Returns:
     ///     numpy.ndarray: An array of shape `(rows, cols)` when `band` is an int, otherwise
-    ///     `(bands, rows, cols)`.
+    ///     `(bands, rows, cols)`; complex bands come as `complex64` (or `complex128`) values.
     ///
     /// Raises:
     ///     InvalidArgumentError: If a band, the window or the overview does not exist.
@@ -218,7 +255,16 @@ impl PyRaster {
         window: Option<(usize, usize, usize, usize)>,
         overview: Option<usize>,
     ) -> PyResult<Bound<'py, PyAny>> {
-        let (bands, single) = parse_bands(band)?;
+        let (mut bands, single) = parse_bands(band)?;
+        let complex = self.is_complex();
+        if complex {
+            // A complex band's real and imaginary parts.
+            if bands.is_empty() {
+                bands = (1..=self.inner.band_count()).collect();
+            } else {
+                bands = bands.iter().flat_map(|b| [2 * b - 1, 2 * b]).collect();
+            }
+        }
         let window = match window {
             Some((x, y, w, h)) => Window::new(x, y, w, h),
             None => {
@@ -236,6 +282,10 @@ impl PyRaster {
         let inner = &mut self.inner;
         let ds = py.detach(|| inner.read_window(window, &options)).py()?;
         let r = ds.raster;
+        if complex {
+            let shape = if single { vec![r.rows, r.cols] } else { vec![r.bands / 2, r.rows, r.cols] };
+            return complex_to_numpy(py, r.data, r.rows * r.cols, &shape);
+        }
         let shape = if single { vec![r.rows, r.cols] } else { vec![r.bands, r.rows, r.cols] };
         to_numpy(py, r.data, &shape)
     }

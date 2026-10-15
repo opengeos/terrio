@@ -57,7 +57,7 @@ pub(crate) fn read(path: &Path) -> Result<RasterDataset> {
         })
         .unwrap_or_default();
     let raster = common::make_raster(cols, rows, bands, pixels, gt, crs, nodata)?;
-    Ok(RasterDataset { raster, driver: RasterDriver::RST, has_nodata: nodata.is_some(), affine: None })
+    Ok(RasterDataset::with_driver(raster, RasterDriver::RST, nodata.is_some()))
 }
 
 /// The local CRS GDAL reads for an unnamed Idrisi reference system in metres.

@@ -272,7 +272,7 @@ pub(crate) mod codec {
         }
         if RasterDriver::for_extension(name) == Some(RasterDriver::AAIGrid) {
             let raster = wbraster::formats::esri_ascii::parse(Cursor::new(&bytes), name)?;
-            return Ok(Dataset::Raster(RasterDataset { raster, driver: RasterDriver::AAIGrid, has_nodata: true, affine: None }));
+            return Ok(Dataset::Raster(RasterDataset::with_driver(raster, RasterDriver::AAIGrid, true)));
         }
         let driver = vector_driver(&bytes, name).ok_or_else(|| Error::Unsupported(format!("'{name}': format not recognized")))?;
         let Some(layers) = crate::drivers::vector::read_bytes(bytes, name, driver, options)? else {

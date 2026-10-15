@@ -314,7 +314,7 @@ mod tests {
 
     fn raster(data: RasterData, cols: usize, rows: usize, nodata: Option<f64>) -> RasterDataset {
         let r = common::make_raster(cols, rows, 1, data, [0.0, 1.0, 0.0, 0.0, 0.0, -1.0], CrsInfo::default(), nodata).unwrap();
-        RasterDataset { raster: r, driver: crate::formats::RasterDriver::GTiff, has_nodata: nodata.is_some(), affine: None }
+        RasterDataset::with_driver(r, crate::formats::RasterDriver::GTiff, nodata.is_some())
     }
 
     #[test]

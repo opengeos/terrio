@@ -528,3 +528,30 @@ def test_color_relief_vrt_read_by_gdal(data_dir, gdal, tmp_path):
     expected = gdal_array(gdal, tmp_path / "g.vrt")
     assert_same_pixels(gdal_array(gdal, tmp_path / "t.vrt"), expected)
     assert_same_pixels(relief.read(), expected)
+
+
+def test_complex_hdf5_matches_gdal(data_dir, gdal):
+    """Complex (compound) HDF5 datasets read as GDAL's CFloat32 and CFloat64 arrays."""
+    path = data_dir / "gdal_hdf5" / "complex.h5"
+    if not path.exists():
+        pytest.skip("gdal_hdf5/complex.h5 is missing")
+    for name, dtype in (("f16", "complex64"), ("f32", "complex64"), ("f64", "complex128")):
+        sub = f'HDF5:"{path}"://{name}'
+        r = terrio.open_raster(sub)
+        assert (r.count, r.dtype) == (1, dtype)
+        a = r.read(1)
+        assert a.dtype == np.dtype(dtype)
+        expected = gdal.Open(sub).GetRasterBand(1).ReadAsArray()
+        np.testing.assert_array_equal(a, expected)
+        assert r.read().shape == (1, 5, 5)
+
+
+def test_swath_geolocation_matches_gdal(data_dir, gdal):
+    """An HDF-EOS5 swath's geolocation arrays, as GDAL's GEOLOCATION metadata."""
+    path = data_dir / "gdal_hdf5" / "dummy_HDFEOS_swath.h5"
+    if not path.exists():
+        pytest.skip("gdal_hdf5/dummy_HDFEOS_swath.h5 is missing")
+    sub = f'HDF5:"{path}"://HDFEOS/SWATHS/MySwath/Data_Fields/MyDataField'
+    r = terrio.open_raster(sub)
+    assert dict(r.geolocation) == gdal.Open(sub).GetMetadata("GEOLOCATION")
+    assert terrio.open_raster(str(data_dir / "srtm_sub.tif")).geolocation is None

@@ -344,7 +344,7 @@ impl TileRaster {
             metadata: self.metadata(),
             data: RasterData::new_filled(DataType::U8, 0, 0.0),
         };
-        RasterDataset { raster, driver: self.driver(), has_nodata: false, affine: None }
+        RasterDataset::with_driver(raster, self.driver(), false)
     }
 
     /// Reads the whole full resolution level.
@@ -361,7 +361,7 @@ impl TileRaster {
         let crs = SpatialRef::from_epsg(3857)?.to_crs_info();
         let mut raster = crate::drivers::common::make_raster(w, h, self.bands, data, self.geo_transform(), crs, None)?;
         raster.metadata = self.metadata();
-        Ok(RasterDataset { raster, driver: self.driver(), has_nodata: false, affine: None })
+        Ok(RasterDataset::with_driver(raster, self.driver(), false))
     }
 }
 
@@ -999,7 +999,7 @@ mod tests {
         let gt = [-MAX_GM + 300.0 * 256.0 * res, res, 0.0, MAX_GM - 400.0 * 256.0 * res, 0.0, -res];
         let raster =
             crate::drivers::common::make_raster(w, h, 3, RasterData::from_f64_vec(DataType::U8, v.clone()), gt, crs, None).unwrap();
-        let ds = RasterDataset { raster, driver: crate::formats::RasterDriver::GTiff, has_nodata: false, affine: None };
+        let ds = RasterDataset::with_driver(raster, crate::formats::RasterDriver::GTiff, false);
         let o = TileWriteOptions { resampling: Some("near".into()), ..Default::default() };
         let rt = make_tiles(&ds, &o).unwrap();
         assert_eq!(rt.max_zoom, 10);

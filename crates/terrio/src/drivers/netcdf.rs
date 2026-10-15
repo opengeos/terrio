@@ -80,9 +80,30 @@ impl VarRef<'_> {
         self.full.trim_start_matches('/').to_string()
     }
 
+    /// The full name GDAL gives a variable visible from this one's group: `lon` in the root
+    /// group, `/group/lon` below it.
+    fn full_name(&self, name: &str) -> Option<String> {
+        let (path, _) = self.lookup(name)?;
+        Some(if path.contains('/') { format!("/{path}") } else { path })
+    }
+
     /// A variable named `name` visible from this one's group (its group, then the enclosing
-    /// ones), with its read path.
+    /// ones), or by its absolute path (`/group/var`), with its read path.
     fn lookup(&self, name: &str) -> Option<(String, &NcVariable)> {
+        if let Some(abs) = name.strip_prefix('/') {
+            let mut parts: Vec<&str> = abs.split('/').filter(|p| !p.is_empty()).collect();
+            let leaf = parts.pop()?;
+            let mut g = *self.groups.first()?;
+            for p in &parts {
+                g = g.groups.iter().find(|c| c.name == *p)?;
+            }
+            let v = g.variables.iter().find(|v| v.name == leaf)?;
+            return Some((abs.trim_matches('/').to_string(), v));
+        }
+        self.lookup_relative(name)
+    }
+
+    fn lookup_relative(&self, name: &str) -> Option<(String, &NcVariable)> {
         for depth in (0..self.groups.len()).rev() {
             if let Some(v) = self.groups[depth].variables.iter().find(|v| v.name == name) {
                 let prefix: Vec<&str> = self.groups[1..=depth].iter().map(|g| g.name.as_str()).collect();
@@ -199,7 +220,21 @@ pub(crate) fn read(path: &Path, variable: Option<&str>) -> Result<RasterDataset>
                 .filter(|r| r.v.ndim() >= 1)
                 .ok_or_else(|| err(path, format!("no raster variable '{name}'")))?
         }
-        None => *candidates.first().ok_or_else(|| err(path, "no variable with two or more dimensions"))?,
+        // The first data variable that no other names in its CF `coordinates` attribute (a
+        // geolocation array), as GDAL's netCDF driver ignores those to pick the raster; they stay
+        // subdatasets.
+        None => {
+            let geolocation: Vec<String> = vars
+                .iter()
+                .filter_map(|r| attr_str(r.v, "coordinates"))
+                .flat_map(|c| c.split_whitespace().map(str::to_string).collect::<Vec<_>>())
+                .collect();
+            *candidates
+                .iter()
+                .find(|r| !geolocation.contains(&r.v.name))
+                .or(candidates.first())
+                .ok_or_else(|| err(path, "no variable with two or more dimensions"))?
+        }
     };
     let read_path = var.read_path();
     let (var_ref, var) = (var, var.v);
@@ -221,7 +256,15 @@ pub(crate) fn read(path: &Path, variable: Option<&str>) -> Result<RasterDataset>
             RasterData::$variant(f.read_variable::<$t>(&name).map_err(|e| err(path, e))?.iter().map(|v| *v as $u).collect())
         };
     }
+    // A compound of two members of the same numeric type: GDAL's complex bands (`CInt16`,
+    // `CInt32`, `CFloat32`, `CFloat64`), read as pairs of real and imaginary bands.
+    let complex = complex_part(var.dtype());
     let data = match (var.dtype(), unsigned) {
+        _ if complex.is_some() => {
+            let part = complex.unwrap_or(wbraster::DataType::F32);
+            let raw = f.read_variable_native_bytes(&name).map_err(|e| err(path, e))?;
+            complex_bands(&raw, part, cols * rows, bands)?
+        }
         (NcType::Byte, false) => typed!(i8, I8),
         (NcType::Byte, true) => reinterpret!(i8, u8, U8),
         (NcType::UByte, _) | (NcType::Char, _) => typed!(u8, U8),
@@ -244,21 +287,31 @@ pub(crate) fn read(path: &Path, variable: Option<&str>) -> Result<RasterDataset>
     // or the variable has `res` and `transform` attributes.
     let ignore_axis_checks = (attr(var, "res").is_some() && attr(var, "transform").is_some())
         || f.global_attributes().is_ok_and(|a| a.iter().any(|a| a.name == "GMT_version"));
-    let coord = |d: &str| -> Option<Vec<f64>> {
+    // The axis values, and whether they are stored as floats (spacing is checked more loosely).
+    let coord = |d: &str| -> Option<(Vec<f64>, bool, bool)> {
         let (p, v) = var_ref.lookup(d)?;
         let spatial = ignore_axis_checks || is_spatial_axis(v);
-        (v.ndim() == 1 && spatial).then(|| f.read_variable_as_f64(&p).ok().map(|a| a.iter().copied().collect())).flatten()
+        let values = (v.ndim() == 1 && spatial).then(|| f.read_variable_as_f64(&p).ok().map(|a| a.iter().copied().collect())).flatten()?;
+        Some((values, matches!(v.dtype(), NcType::Float), is_longitude(v)))
     };
     let (xs, ys) = if nd >= 2 { (coord(&dims[nd - 1].name), coord(&dims[nd - 2].name)) } else { (None, None) };
     let grid_mapping =
         attr_str(var, "grid_mapping").and_then(|g| var_ref.lookup(g.split_whitespace().next().unwrap_or_default())).map(|(_, v)| v);
+    let projected = grid_mapping.and_then(|g| attr_str(g, "grid_mapping_name")).is_some_and(|n| n != "latitude_longitude");
+    let xs = xs.map(|(mut x, float, longitude)| {
+        if longitude {
+            unwrap_longitudes(&mut x);
+        }
+        (x, float)
+    });
+    let ys = ys.map(|(y, float, _)| (y, float));
     let mut gt = None;
     let mut south_up = false;
-    if let (Some(x), Some(y)) = (&xs, &ys)
+    if let (Some((x, x_float)), Some((y, y_float))) = (&xs, &ys)
         && cols > 1
         && rows > 1
-        && regular(x)
-        && regular(y)
+        && evenly_spaced(x, *x_float, false)
+        && evenly_spaced(y, *y_float, !projected)
     {
         let dx = (x[cols - 1] - x[0]) / (cols - 1) as f64;
         let dy = (y[rows - 1] - y[0]) / (rows - 1) as f64;
@@ -277,18 +330,57 @@ pub(crate) fn read(path: &Path, variable: Option<&str>) -> Result<RasterDataset>
             south_up = true;
         }
     }
-    let degrees = |d: &str, unit: &str| {
-        var_ref.lookup(d).and_then(|(_, v)| attr_str(v, "units")).is_some_and(|u| u.to_ascii_lowercase().starts_with(unit))
-    };
-    let crs = match grid_mapping {
-        Some(g) => grid_mapping_crs(g),
-        // Longitude and latitude axes without a grid mapping: WGS 84, as GDAL assumes.
-        None if nd >= 2 && degrees(&dims[nd - 1].name, "degrees_e") && degrees(&dims[nd - 2].name, "degrees_n") => {
-            Some(CrsInfo::from_epsg(4326))
+    // GDAL takes the CRS from the grid mapping only: longitude and latitude axes alone leave the
+    // raster without one.
+    let crs = grid_mapping.and_then(grid_mapping_crs);
+    // Geolocation arrays: the CF `coordinates` (or 2D `lon` and `lat` on the variable's
+    // dimensions), NASA's ocean color and EMIT layouts, or irregular longitude and latitude axes.
+    let file = path.display().to_string();
+    let mut geolocation = None;
+    if nd >= 2 {
+        match cf_geolocation(&f, var_ref, var) {
+            Some((x, y)) => {
+                // The geotransform of coordinate axes that are not these arrays goes, unless the
+                // CRS is known.
+                let axes_are_arrays = Some(&x) == var_ref.full_name(&dims[nd - 1].name).as_ref()
+                    && Some(&y) == var_ref.full_name(&dims[nd - 2].name).as_ref();
+                if !axes_are_arrays && crs.is_none() && from_coordinates {
+                    gt = None;
+                }
+                geolocation = Some((x, y));
+            }
+            None if gt.is_none() => {
+                let axis = |d: &str, test: fn(&NcVariable) -> bool| var_ref.lookup(d).is_some_and(|(_, v)| v.ndim() == 1 && test(v));
+                if axis(&dims[nd - 1].name, is_longitude) && axis(&dims[nd - 2].name, is_latitude) {
+                    geolocation = Some((dims[nd - 1].name.clone(), dims[nd - 2].name.clone()));
+                }
+            }
+            None => {}
         }
-        None => None,
-    };
+    }
     let mut nodata = attr_f64(var, "_FillValue").or_else(|| attr_f64(var, "missing_value"));
+    // Without one, netCDF's default fill value of the type (not for bytes), as GDAL reports it.
+    // netCDF-4 variables written without fill values (`_NoFill`): HDF5 datasets whose fill value
+    // is undefined, as the netCDF library reads them.
+    let no_fill = attr_str(var, "_NoFill").is_some_and(|v| v.eq_ignore_ascii_case("true"))
+        || (!matches!(f.format(), NcFormat::Classic | NcFormat::Offset64 | NcFormat::Cdf5)
+            && super::hdf5::open_file(path)
+                .ok()
+                .and_then(|h| h.dataset(&format!("/{}", var_ref.read_path())).ok())
+                .is_some_and(|d| d.fill_value().is_none_or(|fv| !fv.defined)));
+    if nodata.is_none() && !no_fill && !unsigned && complex.is_none() {
+        nodata = match var.dtype() {
+            NcType::Short => Some(-32767.0),
+            NcType::Int => Some(-2147483647.0),
+            NcType::Float => Some(9.969_209_968_386_869e36),
+            NcType::Double => Some(9.969_209_968_386_869e36),
+            NcType::UShort => Some(65535.0),
+            NcType::UInt => Some(4294967295.0),
+            NcType::Int64 => Some(-9223372036854775806.0),
+            NcType::UInt64 => Some(18446744073709551614.0),
+            _ => None,
+        };
+    }
     // A signed type read as unsigned keeps its fill value's bits.
     if unsigned && let Some(nd) = nodata.filter(|v| *v < 0.0) {
         let bits = match var.dtype() {
@@ -301,7 +393,12 @@ pub(crate) fn read(path: &Path, variable: Option<&str>) -> Result<RasterDataset>
             nodata = Some(nd + (1u64 << bits) as f64);
         }
     }
-    let mut raster = common::make_raster(cols, rows, bands, data, gt.unwrap_or(common::NO_GEOTRANSFORM), crs.unwrap_or_default(), nodata)?;
+    if complex.is_some() {
+        nodata = None;
+    }
+    let raster_bands = if complex.is_some() { bands * 2 } else { bands };
+    let mut raster =
+        common::make_raster(cols, rows, raster_bands, data, gt.unwrap_or(common::NO_GEOTRANSFORM), crs.unwrap_or_default(), nodata)?;
     if south_up {
         flip(&mut raster);
     }
@@ -319,7 +416,152 @@ pub(crate) fn read(path: &Path, variable: Option<&str>) -> Result<RasterDataset>
             raster.metadata.push((format!("SUBDATASET_{}_DESC", i + 1), d));
         }
     }
-    Ok(RasterDataset { raster, driver: RasterDriver::NetCDF, has_nodata: nodata.is_some(), affine: None })
+    let mut out = RasterDataset::with_driver(raster, RasterDriver::NetCDF, nodata.is_some());
+    out.complex = complex.is_some();
+    // The arrays' CRS: the geographic CRS of the raster's (WGS 84 without one), as GDAL.
+    let geographic = out.crs().geographic_wkt();
+    out.geolocation = geolocation.map(|(x, y)| crate::Geolocation {
+        srs: geographic.unwrap_or_else(|| common::WGS84_LAT_LONG_WKT.to_string()),
+        x_dataset: format!("NETCDF:\"{file}\":{x}"),
+        x_band: 1,
+        y_dataset: format!("NETCDF:\"{file}\":{y}"),
+        y_band: 1,
+        pixel_offset: 0.0,
+        pixel_step: 1.0,
+        line_offset: 0.0,
+        line_step: 1.0,
+        pixel_center: true,
+    });
+    Ok(out)
+}
+
+/// Whether a variable holds longitudes, as GDAL's `NCDFIsVarLongitude()` decides for an existing
+/// variable: by its units, standard name, axis or long name, not with units `m` or `1`.
+fn is_longitude(v: &NcVariable) -> bool {
+    is_axis(v, &["degrees_east", "degree_east", "degrees_E"], "longitude", "X")
+}
+
+/// Whether a variable holds latitudes (`NCDFIsVarLatitude()`).
+fn is_latitude(v: &NcVariable) -> bool {
+    is_axis(v, &["degrees_north", "degree_north", "degrees_N"], "latitude", "Y")
+}
+
+fn is_axis(v: &NcVariable, units: &[&str], name: &str, axis: &str) -> bool {
+    let get = |k: &str| attr_str(v, k).map(|s| s.trim_end_matches('\0').to_string());
+    let is = |k: &str, values: &[&str]| get(k).is_some_and(|s| values.iter().any(|x| s.eq_ignore_ascii_case(x)));
+    let found = is("units", units) || is("standard_name", &[name]) || is("axis", &[axis]) || is("long_name", &[name]);
+    found && !is("units", &["m", "1"])
+}
+
+/// The geolocation arrays of a variable, as GDAL's netCDF driver finds them
+/// (`ProcessCFGeolocation()`): the longitude and latitude variables its CF `coordinates`
+/// attribute names (or 2D `lon` and `lat` variables on its last two dimensions), else NASA's
+/// ocean color layout (`navigation_data`) and EMIT's (`location`). Their full names.
+fn cf_geolocation(f: &NcFile, var_ref: &VarRef, var: &NcVariable) -> Option<(String, String)> {
+    let dims = var.dimensions();
+    let nd = dims.len();
+    let same_dims = |a: &[netcdf_reader::NcDimension], b: &[netcdf_reader::NcDimension]| {
+        a.len() == b.len() && a.iter().zip(b).all(|(x, y)| x.name == y.name && x.size == y.size)
+    };
+    let coordinates = attr_str(var, "coordinates").or_else(|| {
+        // `lon` and `lat` in the variable's own group.
+        let group = var_ref.groups.last()?;
+        let lon = group.variables.iter().find(|v| v.name == "lon")?;
+        let lat = group.variables.iter().find(|v| v.name == "lat")?;
+        (lon.ndim() == 2
+            && lat.ndim() == 2
+            && same_dims(lon.dimensions(), lat.dimensions())
+            && same_dims(lon.dimensions(), &dims[nd - 2..]))
+        .then(|| "lon lat".to_string())
+    });
+    if let Some(coordinates) = coordinates {
+        let tokens: Vec<&str> = coordinates.split_whitespace().collect();
+        if tokens.len() < 2 {
+            return None;
+        }
+        let (mut x, mut y) = (None, None);
+        for t in tokens {
+            let Some((_, v)) = var_ref.lookup(t) else { continue };
+            if is_longitude(v) {
+                x = Some(t);
+            } else if is_latitude(v) {
+                y = Some(t);
+            }
+        }
+        return Some((var_ref.full_name(x?)?, var_ref.full_name(y?)?));
+    }
+    let root = f.root_group().ok()?;
+    let group_named = |name: &str| root.groups.iter().find(|g| g.name == name);
+    let pair = |g: &NcGroup, lon: &str, lat: &str| -> Option<(Vec<netcdf_reader::NcDimension>, Vec<netcdf_reader::NcDimension>)> {
+        let (lon, lat) = (g.variables.iter().find(|v| v.name == lon)?, g.variables.iter().find(|v| v.name == lat)?);
+        (lon.ndim() == 2 && lat.ndim() == 2).then(|| (lon.dimensions().to_vec(), lat.dimensions().to_vec()))
+    };
+    // NASA ocean color level 2: geophysical_data variables, navigation_data/longitude and
+    // latitude of the same sizes.
+    let in_group = var_ref.groups.last().map(|g| g.name.as_str());
+    if in_group == Some("geophysical_data")
+        && nd == 2
+        && let Some(nav) = group_named("navigation_data")
+        && let Some((lon, lat)) = pair(nav, "longitude", "latitude")
+        && lon.iter().map(|d| &d.name).eq(lat.iter().map(|d| &d.name))
+        && lon.iter().map(|d| d.size).eq(dims.iter().map(|d| d.size))
+    {
+        return Some(("/navigation_data/longitude".into(), "/navigation_data/latitude".into()));
+    }
+    // EMIT: location/lon and lat on the variable's first two dimensions (its rows and columns).
+    if nd == 2
+        && let Some(loc) = group_named("location")
+        && let Some((lon, lat)) = pair(loc, "lon", "lat")
+        && same_dims(&lon, &lat)
+        && same_dims(&lon, &dims[..2])
+    {
+        return Some(("/location/lon".into(), "/location/lat".into()));
+    }
+    None
+}
+
+/// The type of the parts of a complex variable, as GDAL's netCDF driver reads compounds: two
+/// members, the first `short`, `int`, `float` or `double`, the element twice its size.
+fn complex_part(t: &NcType) -> Option<wbraster::DataType> {
+    let NcType::Compound { size, fields } = t else { return None };
+    let [first, _] = fields.as_slice() else { return None };
+    let part = match first.dtype {
+        NcType::Short => wbraster::DataType::I16,
+        NcType::Int => wbraster::DataType::I32,
+        NcType::Float => wbraster::DataType::F32,
+        NcType::Double => wbraster::DataType::F64,
+        _ => return None,
+    };
+    (first.offset == 0 && *size as usize == 2 * part.size_bytes()).then_some(part)
+}
+
+/// Splits complex elements (real then imaginary part, native byte order) into a real and an
+/// imaginary band per band.
+fn complex_bands(raw: &[u8], part: wbraster::DataType, plane: usize, bands: usize) -> Result<RasterData> {
+    let size = part.size_bytes();
+    if raw.len() < plane * bands * 2 * size {
+        return Err(Error::InvalidData("complex variable shorter than its dimensions".into()));
+    }
+    let mut parts = Vec::with_capacity(plane * bands * 2 * size);
+    for b in 0..bands {
+        for offset in [0, size] {
+            for i in 0..plane {
+                let at = (b * plane + i) * 2 * size + offset;
+                parts.extend_from_slice(&raw[at..at + size]);
+            }
+        }
+    }
+    let layout = common::Layout {
+        cols: plane,
+        rows: 1,
+        bands: bands * 2,
+        data_type: part,
+        little_endian: cfg!(target_endian = "little"),
+        interleave: common::Interleave::Bsq,
+        offset: 0,
+        bottom_up: false,
+    };
+    common::decode(&parts, &layout)
 }
 
 /// Whether a coordinate variable is a spatial axis as GDAL decides it (`NCDFIsVarLongitude()`,
@@ -344,13 +586,37 @@ fn is_spatial_axis(v: &NcVariable) -> bool {
         || ["lon", "longitude", "lat", "latitude"].iter().any(|n| v.name.eq_ignore_ascii_case(n))
 }
 
-/// Whether coordinates are evenly spaced (within 0.1% of a step).
-fn regular(v: &[f64]) -> bool {
-    if v.len() < 2 {
+/// Whether coordinates are evenly spaced, as GDAL checks them: the first, middle and last steps
+/// equal within 0.05 % (0.2 % for floats); for latitudes (`lenient`), within 0.1 degree.
+fn evenly_spaced(v: &[f64], float: bool, lenient: bool) -> bool {
+    let n = v.len();
+    if n < 2 {
         return false;
     }
-    let step = (v[v.len() - 1] - v[0]) / (v.len() - 1) as f64;
-    step != 0.0 && v.windows(2).all(|w| ((w[1] - w[0]) - step).abs() <= step.abs() * 1e-3)
+    if n == 2 {
+        return true;
+    }
+    let (begin, middle, last) = (v[1] - v[0], v[n / 2 + 1] - v[n / 2], v[n - 1] - v[n - 2]);
+    let eps = if float { 0.002 } else { 0.0005 } * begin.abs().max(middle.abs()).max(last.abs());
+    let below = |a: f64, b: f64, e: f64| (a - b).abs() <= e;
+    (below(begin, last, eps) && below(begin, middle, eps) && below(middle, last, eps))
+        || (lenient && below(begin, last, 0.1) && below(begin, middle, 0.1) && below(middle, last, 0.1))
+}
+
+/// Longitudes as GDAL reads them: ]180, 540] shifted to ]-180, 180], and a single wrap around
+/// the antimeridian (west east of east) undone.
+fn unwrap_longitudes(x: &mut [f64]) {
+    let n = x.len();
+    if n < 2 {
+        return;
+    }
+    if x[0].min(x[n - 1]) > 180.0 && x[0].max(x[n - 1]) <= 540.0 {
+        x.iter_mut().for_each(|v| *v -= 360.0);
+    }
+    if n > 2 && x[0] >= x[n - 1] && x.windows(2).filter(|w| w[1] < w[0]).count() == 1 {
+        let last = x[n - 1];
+        x.iter_mut().filter(|v| **v > last).for_each(|v| *v -= 360.0);
+    }
 }
 
 /// Reverses the row order of every band.

@@ -778,7 +778,7 @@ impl Jp2Window {
             metadata: Vec::new(),
             data: RasterData::new_filled(data_type, 0, 0.0),
         };
-        let mut ds = RasterDataset { raster, driver: RasterDriver::JP2, has_nodata: false, affine: None };
+        let mut ds = RasterDataset::with_driver(raster, RasterDriver::JP2, false);
         // Without georeferencing, unit pixels with the image's bottom at y = 0, as terrio's other
         // readers do.
         ds.set_geo_transform(gt.unwrap_or([0.0, 1.0, 0.0, h as f64, 0.0, -1.0]));

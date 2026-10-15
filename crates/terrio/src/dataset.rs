@@ -21,12 +21,89 @@ pub struct RasterDataset {
     /// cannot hold (they then hold the extent of its footprint); `None` for north-up rasters.
     /// Set it with [`RasterDataset::set_geo_transform`].
     pub affine: Option<[f64; 6]>,
+    /// Whether the bands hold complex numbers, as GDAL's `CInt16`, `CInt32`, `CFloat32` and
+    /// `CFloat64` bands: each complex band is two bands of `raster`, its real parts then its
+    /// imaginary parts, of the parts' type (`Int16` for `CInt16`). Band `k` (from 0) of the
+    /// dataset is bands `2k` and `2k + 1` of the raster.
+    pub complex: bool,
+    /// Geolocation arrays, as GDAL's `GEOLOCATION` metadata: for swaths and other rasters
+    /// georeferenced by a longitude and a latitude per pixel rather than a geotransform.
+    pub geolocation: Option<Geolocation>,
+}
+
+/// Where the longitude and latitude of each pixel of a raster are, as GDAL describes geolocation
+/// arrays (its `GEOLOCATION` metadata domain, RFC 4): two rasters (`x_dataset`, `y_dataset`),
+/// sampled every `pixel_step` columns from `pixel_offset` and every `line_step` rows from
+/// `line_offset`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Geolocation {
+    /// The CRS of the arrays' coordinates, as WKT (WGS 84 for swaths).
+    pub srs: String,
+    /// The dataset of the x coordinates (longitudes), as GDAL names it (`HDF5:"f.h5"://...`).
+    pub x_dataset: String,
+    /// Its band, from 1.
+    pub x_band: usize,
+    /// The dataset of the y coordinates (latitudes).
+    pub y_dataset: String,
+    /// Its band, from 1.
+    pub y_band: usize,
+    /// The column of the raster that the arrays' first column is for.
+    pub pixel_offset: f64,
+    /// The number of raster columns per column of the arrays.
+    pub pixel_step: f64,
+    /// The row of the raster that the arrays' first row is for.
+    pub line_offset: f64,
+    /// The number of raster rows per row of the arrays.
+    pub line_step: f64,
+    /// Whether the coordinates are those of pixel centers (`GEOREFERENCING_CONVENTION`
+    /// `PIXEL_CENTER`) rather than of their top left corners.
+    pub pixel_center: bool,
+}
+
+impl Geolocation {
+    /// The metadata items GDAL lists in its `GEOLOCATION` domain, in `gdalinfo`'s order.
+    pub fn items(&self) -> Vec<(String, String)> {
+        let n = |v: f64| if v.fract() == 0.0 && v.abs() < 1e15 { format!("{}", v as i64) } else { format!("{v}") };
+        let mut items = vec![
+            ("SRS".to_string(), self.srs.clone()),
+            ("X_DATASET".to_string(), self.x_dataset.clone()),
+            ("X_BAND".to_string(), self.x_band.to_string()),
+            ("Y_DATASET".to_string(), self.y_dataset.clone()),
+            ("Y_BAND".to_string(), self.y_band.to_string()),
+            ("PIXEL_OFFSET".to_string(), n(self.pixel_offset)),
+            ("PIXEL_STEP".to_string(), n(self.pixel_step)),
+            ("LINE_OFFSET".to_string(), n(self.line_offset)),
+            ("LINE_STEP".to_string(), n(self.line_step)),
+        ];
+        if self.pixel_center {
+            items.push(("GEOREFERENCING_CONVENTION".to_string(), "PIXEL_CENTER".to_string()));
+        }
+        items
+    }
+
+    /// Geolocation from GDAL's `GEOLOCATION` metadata items; `None` without the datasets.
+    pub fn from_items(items: &[(String, String)]) -> Option<Self> {
+        let get = |k: &str| items.iter().find(|(key, _)| key.eq_ignore_ascii_case(k)).map(|(_, v)| v.trim());
+        let num = |k: &str, default: f64| get(k).and_then(|v| v.parse().ok()).unwrap_or(default);
+        Some(Self {
+            srs: get("SRS").unwrap_or_default().to_string(),
+            x_dataset: get("X_DATASET")?.to_string(),
+            x_band: num("X_BAND", 1.0) as usize,
+            y_dataset: get("Y_DATASET")?.to_string(),
+            y_band: num("Y_BAND", 1.0) as usize,
+            pixel_offset: num("PIXEL_OFFSET", 0.0),
+            pixel_step: num("PIXEL_STEP", 1.0),
+            line_offset: num("LINE_OFFSET", 0.0),
+            line_step: num("LINE_STEP", 1.0),
+            pixel_center: get("GEOREFERENCING_CONVENTION").is_some_and(|v| v.eq_ignore_ascii_case("PIXEL_CENTER")),
+        })
+    }
 }
 
 impl RasterDataset {
     /// Wraps a raster created in memory.
     pub fn new(raster: Raster, has_nodata: bool) -> Self {
-        Self { raster, driver: RasterDriver::GTiff, has_nodata, affine: None }
+        Self::with_driver(raster, RasterDriver::GTiff, has_nodata)
     }
 
     /// The raster with this geotransform (see [`RasterDataset::set_geo_transform`]): its pixels.
@@ -59,6 +136,23 @@ impl RasterDataset {
         r.cell_size_x = if r.cols > 0 { (max_x - min_x) / w } else { gt[1].hypot(gt[4]) };
         r.cell_size_y = if r.rows > 0 { (max_y - min_y) / h } else { gt[2].hypot(gt[5]) };
         self.affine = Some(gt);
+    }
+
+    /// Wraps a raster read by a driver: real-valued bands, without geolocation arrays.
+    pub fn with_driver(raster: Raster, driver: RasterDriver, has_nodata: bool) -> Self {
+        Self { raster, driver, has_nodata, affine: None, complex: false, geolocation: None }
+    }
+
+    /// The number of bands as GDAL counts them: complex bands count once.
+    pub fn band_count(&self) -> usize {
+        if self.complex { self.raster.bands / 2 } else { self.raster.bands }
+    }
+
+    /// GDAL's name of the bands' data type: `Int16`, `Float32`... and `CInt16`, `CFloat32`...
+    /// for complex bands.
+    pub fn data_type_name(&self) -> String {
+        let name = crate::info::gdal_type_name(self.raster.data_type);
+        if self.complex { format!("C{name}") } else { name.to_string() }
     }
 
     /// The CRS.
@@ -520,7 +614,7 @@ pub fn read_gcps(path: &str) -> Result<Vec<Gcp>> {
 
 /// Writes a raster, declaring its nodata value.
 pub fn write_raster(raster: &Raster, path: &str, options: &RasterWriteOptions) -> Result<()> {
-    write_raster_with_nodata(raster, Some(raster.nodata), path, options)
+    write_raster_with_nodata(raster, Some(raster.nodata), false, path, options)
 }
 
 /// Writes a raster dataset, declaring a nodata value only when the dataset has one.
@@ -545,12 +639,12 @@ pub fn write_raster_dataset(ds: &RasterDataset, path: &str, options: &RasterWrit
         && options.geo_transform.is_none()
     {
         let options = RasterWriteOptions { geo_transform: Some(gt), ..options.clone() };
-        return write_raster_with_nodata(&ds.raster, ds.nodata(), path, &options);
+        return write_raster_with_nodata(&ds.raster, ds.nodata(), ds.complex, path, &options);
     }
-    write_raster_with_nodata(&ds.raster, ds.nodata(), path, options)
+    write_raster_with_nodata(&ds.raster, ds.nodata(), ds.complex, path, options)
 }
 
-fn write_raster_with_nodata(raster: &Raster, nodata: Option<f64>, path: &str, options: &RasterWriteOptions) -> Result<()> {
+fn write_raster_with_nodata(raster: &Raster, nodata: Option<f64>, complex: bool, path: &str, options: &RasterWriteOptions) -> Result<()> {
     ensure_writable_location(path)?;
     let driver = match options.driver.or_else(|| RasterDriver::for_extension(path)) {
         Some(d) => d,
@@ -558,7 +652,7 @@ fn write_raster_with_nodata(raster: &Raster, nodata: Option<f64>, path: &str, op
             // With the GDAL backend, the GDAL driver of the extension (`.ntf`: NITF).
             #[cfg(feature = "gdal")]
             if let Some(d) = crate::gdal_backend::driver_for_path(path, false) {
-                return crate::gdal_backend::write_raster_with(raster, nodata, path, &d, &options.creation_options);
+                return crate::gdal_backend::write_raster_with(raster, nodata, complex, path, &d, &options.creation_options);
             }
             return Err(Error::InvalidArgument(format!("cannot tell the output format of '{path}': give it explicitly")));
         }
@@ -569,7 +663,10 @@ fn write_raster_with_nodata(raster: &Raster, nodata: Option<f64>, path: &str, op
     let tiff = matches!(driver, RasterDriver::GTiff | RasterDriver::Cog);
     if tiff {
         // terrio's writer handles the lossless compressions; wbraster the lossy ones.
-        if let Some(opts) = crate::drivers::gtiff_write::TiffOptions::from_write_options(options, driver == RasterDriver::Cog, nodata)? {
+        if let Some(mut opts) = crate::drivers::gtiff_write::TiffOptions::from_write_options(options, driver == RasterDriver::Cog, nodata)?
+        {
+            // Complex bands as complex samples, as GDAL writes CInt16... CFloat64 GeoTIFFs.
+            opts.complex = complex;
             return crate::drivers::gtiff_write::write(raster, path, &opts);
         }
     }
@@ -586,7 +683,7 @@ fn write_raster_with_nodata(raster: &Raster, nodata: Option<f64>, path: &str, op
     let north_up;
     let raster = match options.geo_transform {
         Some(gt) if gt != geo_transform(raster) => {
-            north_up = RasterDataset { raster: raster.clone(), driver, has_nodata: false, affine: None }.with_geo_transform(gt);
+            north_up = RasterDataset::with_driver(raster.clone(), driver, false).with_geo_transform(gt);
             &north_up
         }
         _ => raster,
@@ -601,7 +698,7 @@ fn write_raster_with_nodata(raster: &Raster, nodata: Option<f64>, path: &str, op
         if let Some(c) = &options.compression {
             co.push(("COMPRESSED".into(), if c.eq_ignore_ascii_case("NONE") { "NO" } else { "YES" }.into()));
         }
-        return crate::gdal_backend::write_raster_with(raster, nodata, path, "HFA", &co);
+        return crate::gdal_backend::write_raster_with(raster, nodata, complex, path, "HFA", &co);
     }
     let compression = options.compression.as_deref().map(parse_compression).transpose()?;
     match driver {
@@ -620,6 +717,27 @@ fn write_raster_with_nodata(raster: &Raster, nodata: Option<f64>, path: &str, op
         d => raster.write(path, d.to_wb())?,
     }
     Ok(())
+}
+
+/// Writes rasters into one netCDF-4 file, each in its group: `/science/grid` (groups created as
+/// needed) or `/` for the root, with its own dimensions, coordinate variables and grid mapping,
+/// as the netCDF library lays out groups. A single raster goes in a group with the `GROUP`
+/// creation option of [`write_raster_dataset`]. The creation options are the netCDF driver's
+/// (`FORMAT` defaults to `NC4`, which groups need; `COMPRESS=DEFLATE`, `ZLEVEL`, `CHUNKING`).
+///
+/// ```no_run
+/// let dem = terrio::open_raster("dem.tif")?;
+/// let slope = terrio::open_raster("slope.tif")?;
+/// terrio::write_netcdf_groups(&[("/terrain/dem", &dem), ("/terrain/slope", &slope)], "terrain.nc", &Default::default())?;
+/// // Read back by GDAL's names: NETCDF:"terrain.nc":/terrain/slope/Band1
+/// # Ok::<(), terrio::Error>(())
+/// ```
+pub fn write_netcdf_groups(rasters: &[(&str, &RasterDataset)], path: &str, options: &RasterWriteOptions) -> Result<()> {
+    ensure_writable_location(path)?;
+    if rasters.is_empty() {
+        return Err(Error::InvalidArgument("no rasters to write".into()));
+    }
+    crate::drivers::write_netcdf_groups(rasters, path, options)
 }
 
 fn parse_compression(s: &str) -> Result<wbraster::GeoTiffCompression> {

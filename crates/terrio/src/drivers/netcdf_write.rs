@@ -95,6 +95,9 @@ pub(crate) struct Options<'a> {
     pub zlevel: Option<&'a str>,
     /// `CHUNKING`: whether compressed variables are chunked by row (the default) or whole.
     pub chunking: Option<&'a str>,
+    /// `GROUP`: the netCDF-4 group (`/science/grid`) the raster's variables go in, created with
+    /// its parents (terrio's option; netCDF-4 only).
+    pub group: Option<&'a str>,
 }
 
 struct Writer {
@@ -179,7 +182,7 @@ fn type_size(t: NcType) -> usize {
 }
 
 /// Encodes a file: dimensions `(name, length)`, global attributes and variables.
-fn encode(version: Version, dims: &[(&str, usize)], globals: &[(String, Attr)], vars: &[Var]) -> Vec<u8> {
+fn encode(version: Version, dims: &[(String, usize)], globals: &[(String, Attr)], vars: &[Var]) -> Vec<u8> {
     let mut w = Writer { version, out: Vec::new() };
     w.out.extend_from_slice(&[b'C', b'D', b'F', version as u8]);
     w.non_neg(0); // no record variables
@@ -384,9 +387,15 @@ fn grid_mapping(s: &crate::crs::SpatialRef) -> (String, Vec<(String, Attr)>) {
 /// netCDF-4 (`NC4`, or `NC4C` for the classic model), chunked by row and compressed with the shuffle
 /// and deflate filters with `COMPRESS=DEFLATE`. CDF-2 is used when the data is too large for CDF-1.
 /// Outside CDF-5 and netCDF-4, UInt32 and 64-bit integers are written as doubles, as GDAL writes
-/// them.
+/// them. With `GROUP`, the variables go in that netCDF-4 group.
 pub(crate) fn write(r: &Raster, nodata: Option<f64>, path: &Path, options: &Options) -> Result<()> {
+    write_groups(&[(options.group.unwrap_or(""), r, nodata)], path, options)
+}
+
+/// The format a file is written in, and the deflate level when compressed.
+fn version_of(options: &Options, groups: bool) -> Result<(Version, Option<u32>)> {
     let mut version = match options.format.map(str::to_ascii_uppercase).as_deref() {
+        None if groups => Version::Nc4,
         None | Some("NC") => Version::Classic,
         Some("NC2") => Version::Offset64,
         Some("NC5") | Some("CDF5") => Version::Cdf5,
@@ -396,6 +405,9 @@ pub(crate) fn write(r: &Raster, nodata: Option<f64>, path: &Path, options: &Opti
             return Err(Error::InvalidArgument(format!("netCDF format '{other}' is not supported (NC, NC2, NC5, NC4, NC4C)")));
         }
     };
+    if groups && version != Version::Nc4 {
+        return Err(Error::InvalidArgument("netCDF groups need the netCDF-4 format (FORMAT=NC4)".into()));
+    }
     let deflate = match options.compress.map(str::to_ascii_uppercase).as_deref() {
         None | Some("NONE") => None,
         Some("DEFLATE") => {
@@ -408,7 +420,65 @@ pub(crate) fn write(r: &Raster, nodata: Option<f64>, path: &Path, options: &Opti
         }
         Some(other) => return Err(Error::InvalidArgument(format!("netCDF compression '{other}' is not supported (NONE, DEFLATE)"))),
     };
+    Ok((version, deflate))
+}
+
+/// Writes rasters into one netCDF file, each in its group (`""` or `/` for the root group;
+/// `/science/grid` creates the groups as needed), with its own dimensions, coordinate variables
+/// and grid mapping there, as the netCDF library writes groups. Groups need netCDF-4: `FORMAT`
+/// defaults to `NC4` when any raster is below the root.
+pub(crate) fn write_groups(rasters: &[(&str, &Raster, Option<f64>)], path: &Path, options: &Options) -> Result<()> {
+    let group_of = |g: &str| g.trim_matches('/').to_string();
+    let any_group = rasters.iter().any(|(g, ..)| !group_of(g).is_empty());
+    for (i, (g, ..)) in rasters.iter().enumerate() {
+        if rasters[..i].iter().any(|(o, ..)| group_of(o) == group_of(g)) {
+            return Err(Error::InvalidArgument(format!("two rasters in the netCDF group '/{}'", group_of(g))));
+        }
+    }
+    let (version, deflate) = version_of(options, any_group)?;
     let chunking = !options.chunking.is_some_and(|c| matches!(c.to_ascii_uppercase().as_str(), "NO" | "FALSE" | "OFF" | "0"));
+    let mut dims: Vec<(String, usize)> = Vec::new();
+    let mut vars: Vec<Var> = Vec::new();
+    let mut globals: Vec<(String, Attr)> = vec![("Conventions".into(), Attr::Text("CF-1.5".into()))];
+    for (g, r, nodata) in rasters {
+        let group = group_of(g);
+        let (rdims, rvars) = raster_vars(r, *nodata, version)?;
+        let prefix = |name: &str| if group.is_empty() { name.to_string() } else { format!("{group}/{name}") };
+        let base = dims.len();
+        dims.extend(rdims.into_iter().map(|(n, size)| (prefix(&n), size)));
+        for mut v in rvars {
+            v.name = prefix(&v.name);
+            v.dims.iter_mut().for_each(|d| *d += base);
+            vars.push(v);
+        }
+        for (k, v) in &r.metadata {
+            if let Some(name) = k.strip_prefix("NC_GLOBAL#")
+                && name != "Conventions"
+                && !globals.iter().any(|(n, _)| n == name)
+            {
+                globals.push((name.to_string(), Attr::Text(v.clone())));
+            }
+        }
+    }
+    globals.push(("history".into(), Attr::Text("Created by terrio".into())));
+    let size: usize = rasters.iter().map(|(_, r, _)| r.data_type.size_bytes() * r.cols * r.rows * r.bands).sum();
+    let version = if version == Version::Classic && size > (1 << 31) - (1 << 20) { Version::Offset64 } else { version };
+    let bytes = match version {
+        Version::Nc4 | Version::Nc4Classic => {
+            let storage = Nc4Storage { deflate, chunking, classic_model: version == Version::Nc4Classic };
+            hdf5_write::encode(&to_hdf5(&dims, &globals, &vars, &storage))
+        }
+        _ => encode(version, &dims, &globals, &vars),
+    };
+    std::fs::write(path, bytes)?;
+    Ok(())
+}
+
+/// The dimensions and variables of one raster, as GDAL writes them.
+/// The dimensions `(name, length)` and the variables of a raster.
+type RasterVars = (Vec<(String, usize)>, Vec<Var>);
+
+fn raster_vars(r: &Raster, nodata: Option<f64>, version: Version) -> Result<RasterVars> {
     // The classic formats have no unsigned 32-bit or 64-bit integers: GDAL reads them as signed,
     // and does not read CDF-5. They are stored as doubles, as GDAL stores them.
     let converted;
@@ -418,16 +488,14 @@ pub(crate) fn write(r: &Raster, nodata: Option<f64>, path: &Path, options: &Opti
     } else {
         r
     };
-    let size = r.data_type.size_bytes() * r.cols * r.rows * r.bands;
-    let version = if version == Version::Classic && size > (1 << 31) - (1 << 20) { Version::Offset64 } else { version };
     let crs = common::spatial_ref(&r.crs);
     let geographic = !crs.is_unknown() && crs.is_geographic();
     let (xn, yn) = if geographic { ("lon", "lat") } else { ("x", "y") };
 
-    let mut dims = vec![(xn, r.cols), (yn, r.rows)];
+    let mut dims: Vec<(String, usize)> = vec![(xn.to_string(), r.cols), (yn.to_string(), r.rows)];
     let multi = r.bands > 1;
     if multi {
-        dims.push(("band", r.bands));
+        dims.push(("band".to_string(), r.bands));
     }
     let mut vars = Vec::new();
     let gt = [r.x_min, r.cell_size_x, 0.0, r.y_max(), 0.0, -r.cell_size_y];
@@ -518,24 +586,7 @@ pub(crate) fn write(r: &Raster, nodata: Option<f64>, path: &Path, options: &Opti
         data: common::encode(r, &layout),
     });
 
-    let mut globals: Vec<(String, Attr)> = vec![("Conventions".into(), Attr::Text("CF-1.5".into()))];
-    for (k, v) in &r.metadata {
-        if let Some(name) = k.strip_prefix("NC_GLOBAL#")
-            && name != "Conventions"
-        {
-            globals.push((name.to_string(), Attr::Text(v.clone())));
-        }
-    }
-    globals.push(("history".into(), Attr::Text("Created by terrio".into())));
-    let bytes = match version {
-        Version::Nc4 | Version::Nc4Classic => {
-            let storage = Nc4Storage { deflate, chunking, classic_model: version == Version::Nc4Classic };
-            hdf5_write::encode(&to_hdf5(&dims, &globals, &vars, &storage))
-        }
-        _ => encode(version, &dims, &globals, &vars),
-    };
-    std::fs::write(path, bytes)?;
-    Ok(())
+    Ok((dims, vars))
 }
 
 /// How a netCDF-4 file stores its variables.
@@ -628,9 +679,11 @@ fn int_attr(name: &str, values: &[i32], scalar: bool) -> hdf5_write::Attr {
 /// The netCDF-4 layout of a file: every dimension a coordinate variable stored as an HDF5
 /// dimension scale (`CLASS`, `NAME`, `_Netcdf4Dimid`, `REFERENCE_LIST`), the other variables
 /// attached to them (`DIMENSION_LIST`, `_Netcdf4Coordinates`), as netCDF-C writes them.
-fn to_hdf5(dims: &[(&str, usize)], globals: &[(String, Attr)], vars: &[Var], storage: &Nc4Storage) -> hdf5_write::File {
-    // The variable holding each dimension's coordinates.
+fn to_hdf5(dims: &[(String, usize)], globals: &[(String, Attr)], vars: &[Var], storage: &Nc4Storage) -> hdf5_write::File {
+    // The variable holding each dimension's coordinates (both named by their path in groups).
     let scale_of = |d: usize| vars.iter().position(|v| v.dims == [d] && v.name == dims[d].0);
+    // A dimension's name, without its group.
+    let leaf = |d: usize| dims[d].0.rsplit('/').next().unwrap_or(&dims[d].0).to_string();
     let mut datasets: Vec<hdf5_write::Dataset> = Vec::new();
     for v in vars {
         let size = type_size(v.nc_type);
@@ -659,7 +712,7 @@ fn to_hdf5(dims: &[(&str, usize)], globals: &[(String, Attr)], vars: &[Var], sto
         let mut attrs: Vec<hdf5_write::Attr> = v.attrs.iter().map(|(k, a)| h5_attr(k, a)).collect();
         if let Some(d) = (0..dims.len()).find(|d| scale_of(*d).is_some_and(|i| std::ptr::eq(&vars[i], v))) {
             attrs.push(h5ds_text("CLASS", "DIMENSION_SCALE"));
-            attrs.push(h5ds_text("NAME", dims[d].0));
+            attrs.push(h5ds_text("NAME", &leaf(d)));
             attrs.push(int_attr("_Netcdf4Dimid", &[d as i32], true));
             let refs: Vec<(usize, u32)> = vars
                 .iter()
@@ -705,7 +758,7 @@ fn to_hdf5(dims: &[(&str, usize)], globals: &[(String, Attr)], vars: &[Var], sto
     if storage.classic_model {
         attrs.push(int_attr("_nc3_strict", &[1], true));
     }
-    hdf5_write::File { attrs, datasets }
+    hdf5_write::File { attrs, datasets, ..Default::default() }
 }
 
 #[cfg(test)]
@@ -785,7 +838,7 @@ mod tests {
                 for (bands, crs) in [(1, 4326), (3, 32633)] {
                     let r = raster(t, bands, crs);
                     let p = dir.path().join(format!("t_{format}_{t:?}_{bands}.nc"));
-                    let o = Options { format: Some(format), compress, zlevel: Some("6"), chunking };
+                    let o = Options { format: Some(format), compress, zlevel: Some("6"), chunking, group: None };
                     write(&r, Some(3.0), &p, &o).unwrap();
                     assert_eq!(&std::fs::read(&p).unwrap()[..8], b"\x89HDF\r\n\x1a\n");
                     let ds = super::super::netcdf::read(&p, None).unwrap();

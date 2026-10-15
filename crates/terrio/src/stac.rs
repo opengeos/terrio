@@ -634,7 +634,7 @@ fn open_mosaic(source: &str, groups: Groups, resolution: Option<&str>) -> Result
         metadata,
         data: RasterData::new_filled(data_type, 0, 0.0),
     };
-    let header = RasterDataset { raster, driver: RasterDriver::STACIT, has_nodata: nodata.is_some(), affine: None };
+    let header = RasterDataset::with_driver(raster, RasterDriver::STACIT, nodata.is_some());
     let mut items: Vec<(AssetItem, Option<LazyRaster>)> = items.into_iter().map(|i| (i, None)).collect();
     if let Some(slot) = items.iter_mut().find(|(i, _)| i.href == first_href) {
         slot.1 = Some(first);
@@ -659,7 +659,7 @@ fn may_be_stac(path: &str) -> bool {
 /// for local files). A remote JSON document that is not STAC is opened as GeoJSON.
 enum Probe {
     Stac(Value),
-    Other(Dataset),
+    Other(Box<Dataset>),
 }
 
 fn probe(path: &str) -> Option<Result<Probe>> {
@@ -684,7 +684,7 @@ fn probe(path: &str) -> Option<Result<Probe>> {
     match serde_json::from_slice::<Value>(&bytes) {
         Ok(v) if kind(&v).is_some() => Some(Ok(Probe::Stac(v))),
         _ if loc.is_local() => None,
-        _ => Some(crate::memory::open_bytes(bytes, &loc.file_name()).map(Probe::Other)),
+        _ => Some(crate::memory::open_bytes(bytes, &loc.file_name()).map(|ds| Probe::Other(Box::new(ds)))),
     }
 }
 
@@ -706,7 +706,7 @@ pub(crate) fn open(path: &str) -> Option<Result<Dataset>> {
     }
     Some(match probe(path)? {
         Ok(Probe::Stac(doc)) => footprint_dataset(doc, path, DEFAULT_MAX_ITEMS).map(|(v, _)| Dataset::Vector(v)),
-        Ok(Probe::Other(ds)) => Ok(ds),
+        Ok(Probe::Other(ds)) => Ok(*ds),
         Err(e) => Err(e),
     })
 }

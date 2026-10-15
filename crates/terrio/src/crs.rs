@@ -155,6 +155,33 @@ impl SpatialRef {
         Err(Error::Crs(format!("cannot parse '{s}'")))
     }
 
+    /// The WKT of the geographic CRS this CRS is based on (its own when geographic): from the
+    /// EPSG table for an EPSG CRS, else the `GEOGCS` node of its WKT 1. `None` when neither is
+    /// known.
+    pub(crate) fn geographic_wkt(&self) -> Option<String> {
+        if let Some(e) = self.epsg.and_then(epsg::get)
+            && let Some(g) = epsg::get(e.geog)
+        {
+            return Some(g.wkt.clone());
+        }
+        let wkt = self.to_wkt()?;
+        let start = wkt.find("GEOGCS[")?;
+        let mut depth = 0usize;
+        for (i, c) in wkt[start..].char_indices() {
+            match c {
+                '[' => depth += 1,
+                ']' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Some(wkt[start..=start + i].to_string());
+                    }
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+
     /// Whether nothing is known about the CRS.
     pub fn is_unknown(&self) -> bool {
         self.epsg.is_none() && self.wkt.is_none() && self.proj4.is_none()
@@ -281,6 +308,17 @@ const REALIZATIONS: &[&str] = &["2011", "HARN", "NSRS", "CSRS", "CORS", "MA11", 
 /// Identifies the EPSG code of a WKT definition. Among equally good matches, prefers the base
 /// datum over its later realizations (NAD83 over NAD83(HARN) and NAD83(2011)) unless the WKT names
 /// one, then the lowest code: what GDAL picks for ESRI `.prj` files.
+/// The semi-major axis of the first `SPHEROID` or `ELLIPSOID` of a WKT definition.
+fn semi_major_axis(wkt: &str) -> Option<f64> {
+    let upper = wkt.to_ascii_uppercase();
+    let start = upper.find("SPHEROID[").or_else(|| upper.find("ELLIPSOID["))?;
+    let body = &wkt[start..];
+    let rest = &body[body.find('[')? + 1..];
+    // Skip the quoted name, then read the number after it.
+    let after_name = rest.strip_prefix('"').and_then(|r| r.find('"').map(|i| &r[i + 1..]))?;
+    after_name.trim_start_matches([',', ' ']).split([',', ']']).next()?.trim().parse().ok()
+}
+
 pub(crate) fn identify_epsg(wkt: &str) -> Option<u32> {
     if let Some(code) = declared_epsg(wkt) {
         return Some(code);
@@ -290,7 +328,15 @@ pub(crate) fn identify_epsg(wkt: &str) -> Option<u32> {
     // as the WKT does (GDAL leaves a custom CRS without code).
     let own = Def::wkt_conversion(wkt);
     let fits = |code: u32| {
-        let Some(own) = &own else { return true };
+        // A projection terrio cannot compare: at least the same ellipsoid (a sinusoidal
+        // projection on MODIS's sphere is not ESRI's World Sinusoidal on WGS 84).
+        let Some(own) = &own else {
+            let candidate = wbp::to_ogc_wkt(code).ok();
+            return match (semi_major_axis(wkt), candidate.as_deref().and_then(semi_major_axis)) {
+                (Some(a), Some(b)) => (a - b).abs() < 1e-3,
+                _ => true,
+            };
+        };
         let registered = SpatialRef { epsg: Some(code), wkt: None, proj4: None };
         Def::new(&registered).is_ok_and(|d| own.same_conversion(&d))
     };

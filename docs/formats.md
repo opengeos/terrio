@@ -67,8 +67,16 @@ root group by their path, `NETCDF:"file.nc":/group/variable`. A file of several 
 its first and lists them all as subdatasets, as `gdalinfo` does: every variable of two or more
 dimensions, in every group (root first, then each group in definition order), named by its full
 path and described by its dimensions, standard name and type. Coordinates are used for the
-geotransform when GDAL would (named or marked as spatial axes); otherwise rows are read
-bottom-up, as GDAL reads them.
+geotransform when GDAL would (named or marked as spatial axes, evenly spaced as GDAL checks
+them; longitudes over 180 shifted), and the CRS from the grid mapping; otherwise rows are read
+bottom-up, as GDAL reads them. Without a `_FillValue`, the type's default netCDF fill value is the
+nodata value, as GDAL reports it (not for bytes, nor for netCDF-4 variables written without fill
+values). Variables georeferenced by longitude and latitude arrays rather than axes get them as
+geolocation arrays (GDAL's `GEOLOCATION` metadata, shown by `terrio info`): the CF `coordinates`
+attribute (relative or absolute paths, as Sentinel-5P's), 2D `lon` and `lat` variables, NASA's
+ocean color level 2 (`navigation_data`) and EMIT (`location`) layouts, and irregular longitude
+and latitude axes. Compound variables of a real and an imaginary member are read as complex
+bands (see below).
 
 netCDF files are written as GDAL writes rasters, with its creation options:
 
@@ -78,6 +86,11 @@ netCDF files are written as GDAL writes rasters, with its creation options:
 | `COMPRESS` | `NONE` or `DEFLATE` (with the shuffle filter, as GDAL sets it; a classic format becomes `NC4C`, as in GDAL) |
 | `ZLEVEL` | The deflate level, 1 (the default) to 9 |
 | `CHUNKING` | `YES` (compressed variables chunked by row, GDAL's default) or `NO` (one chunk per band) |
+| `GROUP` | A netCDF-4 group for the variables, such as `/science/grid` (terrio's option; groups are created as needed, `FORMAT` defaults to `NC4`) |
+
+Several rasters go into one netCDF-4 file, each in its group with its own dimensions,
+coordinate variables and grid mapping, with `terrio::write_netcdf_groups`; they read back as
+`NETCDF:"file.nc":/group/Band1`, in terrio and GDAL (classic and multidimensional APIs).
 
 netCDF-4 files are HDF5 files written by terrio itself (no HDF5 or netCDF library): the
 coordinate variables as dimension scales, the CF grid mapping, `_FillValue` and the other
@@ -92,9 +105,34 @@ opens it, a file with several opens the first and lists them all, with every gro
 dataset's attributes as metadata (`group_subgroup_attribute=value`). A three-dimensional
 dataset's first dimension is its bands; `_FillValue` is its nodata value. Files with a user
 block (JPSS products) are read too. The CF `grid_mapping` of a two-dimensional dataset gives its
-CRS, and NISAR's coordinates its geotransform, as GDAL 3.13 reads them; product-specific
-georeferencing (HDF-EOS grids and swaths, COSMO-SkyMed, GCPs from latitude and longitude
-arrays) is not read, nor are complex and compound datasets.
+CRS, and NISAR's coordinates its geotransform, as GDAL 3.13 reads them. Product-specific
+georeferencing is read as GDAL's HDF5 driver reads it:
+
+- HDF-EOS5 grids (`HDFEOS INFORMATION/StructMetadata.0`): the geotransform of the grid's corners
+  (in packed degrees, minutes and seconds for geographic grids) and the CRS of its GCTP projection
+  and sphere code (geographic, UTM, sinusoidal, polar stereographic, Lambert, Albers, transverse
+  Mercator and the other GCTP projections GDAL reads; WGS 84 CRSs as EPSG codes), with the
+  field's `XDim` and `YDim` as columns and rows and its other dimension, wherever it is, as bands.
+  Checked on VIIRS Black Marble (geographic), VIIRS surface reflectance (sinusoidal) and AMSR2 sea
+  ice (polar stereographic) products.
+- HDF-EOS5 swaths: rows, columns and bands from the dimension maps, and the swath's `Longitude`
+  and `Latitude` fields as geolocation arrays (GDAL's `GEOLOCATION` metadata, with the maps'
+  offsets and increments); subdatasets described with their dimensions' names, as `gdalinfo`
+  lists them (`[(nscans=1980)x(npixs=392)]`). Checked on an AMSR2 precipitation swath.
+- COSMO-SkyMed, KOMPSAT-5 and COSMO-SkyMed Second Generation: the UTM (or UPS) projection and
+  geotransform of geocoded products (GEC, GTC), WGS 84 for the others (whose corners GDAL gives
+  as GCPs, which terrio does not model), and the I and Q bands of single-look complex products.
+- ODIM radar composites (DWD's, for instance): the PROJ definition of `where/projdef` and the
+  geotransform of its projected corners.
+
+Compound datasets of a real and an imaginary member of the same type (`r`/`i`, as h5py and
+NISAR write them) are complex datasets: GDAL's `CInt16`, `CInt32`, `CFloat32` (from 16- and
+32-bit floats) and `CFloat64` bands, described `complex, 32-bit floating-point`. terrio holds
+each complex band as two bands, its real parts then its imaginary parts (`RasterDataset::complex`),
+reports the complex type and GDAL's band count in `terrio info` (statistics of the real parts, as
+GDAL computes them), and writes complex GeoTIFFs (`SampleFormat` 5 and 6) that GDAL reads as
+`CInt16`... `CFloat64`. Python's `read()` returns complex arrays. Other formats write the parts as
+bands. Groups that contain themselves (hard links to an ancestor) are walked once.
 
 GeoPackage rasters are written as GDAL writes them: Byte rasters (1 to 4 bands) as PNG tiles, or
 JPEG with `--compress JPEG`; one-band Int16, UInt16 and Float32 rasters as gridded coverages

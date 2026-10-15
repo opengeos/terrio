@@ -122,25 +122,168 @@ pub fn subdatasets(path: &str) -> Result<Vec<(String, String)>> {
 /// one. Drivers that can only copy datasets (`CreateCopy`) work too: the raster goes through an
 /// in-memory GDAL dataset.
 pub fn write_raster(ds: &RasterDataset, path: &str, driver: &str, creation_options: &[(String, String)]) -> Result<()> {
-    write_raster_gt(&ds.raster, ds.nodata(), ds.affine, path, driver, creation_options)
+    write_raster_gt(&ds.raster, ds.nodata(), ds.complex, ds.affine, path, driver, creation_options)
 }
 
-/// Writes a raster with a GDAL driver, declaring `nodata`.
+/// GDAL's complex type of a part type: `CInt16` for `Int16` parts...
+fn complex_type(t: wbraster::DataType) -> Option<gdal_sys::GDALDataType::Type> {
+    use gdal_sys::GDALDataType::*;
+    Some(match t {
+        wbraster::DataType::I16 => GDT_CInt16,
+        wbraster::DataType::I32 => GDT_CInt32,
+        wbraster::DataType::F32 => GDT_CFloat32,
+        wbraster::DataType::F64 => GDT_CFloat64,
+        _ => return None,
+    })
+}
+
+/// A MEM dataset of complex bands (`CInt16`... `CFloat64`) holding a raster's pairs of real and
+/// imaginary bands.
+fn complex_mem_dataset(r: &wbraster::Raster) -> Result<GdalDataset> {
+    let t = complex_type(r.data_type).ok_or_else(|| Error::Unsupported(format!("complex bands of {:?} parts", r.data_type)))?;
+    let bands = r.bands / 2;
+    let mem = DriverManager::get_driver_by_name("MEM").map_err(gdal_err)?;
+    let too_large = || Error::InvalidArgument("raster too large for GDAL".into());
+    let (cols, rows) = (i32::try_from(r.cols).map_err(|_| too_large())?, i32::try_from(r.rows).map_err(|_| too_large())?);
+    let n = r.cols * r.rows;
+    let size = r.data_type.size_bytes();
+    // Each band's values, real and imaginary parts interleaved, in native byte order.
+    macro_rules! interleave {
+        ($v:ident) => {
+            (0..bands)
+                .map(|b| {
+                    let (re, im) = (&$v[2 * b * n..(2 * b + 1) * n], &$v[(2 * b + 1) * n..(2 * b + 2) * n]);
+                    let mut out = Vec::with_capacity(n * 2 * size);
+                    for i in 0..n {
+                        out.extend_from_slice(&re[i].to_ne_bytes());
+                        out.extend_from_slice(&im[i].to_ne_bytes());
+                    }
+                    out
+                })
+                .collect::<Vec<Vec<u8>>>()
+        };
+    }
+    let buffers = match &r.data {
+        RasterData::I16(v) => interleave!(v),
+        RasterData::I32(v) => interleave!(v),
+        RasterData::F32(v) => interleave!(v),
+        RasterData::F64(v) => interleave!(v),
+        _ => return Err(Error::Unsupported(format!("complex bands of {:?} parts", r.data_type))),
+    };
+    let name = std::ffi::CString::default();
+    // SAFETY: the MEM dataset is created with `bands` bands of the complex type and owned by the
+    // returned `Dataset`; each RasterIO call writes `cols` x `rows` complex values from a buffer
+    // of that many.
+    unsafe {
+        let h = gdal_sys::GDALCreate(mem.c_driver(), name.as_ptr(), cols, rows, bands as i32, t, std::ptr::null_mut());
+        if h.is_null() {
+            return Err(Error::InvalidData(format!("GDAL: cannot create a complex MEM dataset: {}", last_error().unwrap_or_default())));
+        }
+        let ds = GdalDataset::from_c_dataset(h);
+        for (b, mut buf) in buffers.into_iter().enumerate() {
+            let band = gdal_sys::GDALGetRasterBand(h, b as i32 + 1);
+            let e = gdal_sys::GDALRasterIO(
+                band,
+                gdal_sys::GDALRWFlag::GF_Write,
+                0,
+                0,
+                cols,
+                rows,
+                buf.as_mut_ptr().cast(),
+                cols,
+                rows,
+                t,
+                0,
+                0,
+            );
+            if e != gdal_sys::CPLErr::CE_None {
+                return Err(Error::InvalidData(format!("GDAL: {}", last_error().unwrap_or_default())));
+            }
+        }
+        Ok(ds)
+    }
+}
+
+/// Reads the complex bands of a GDAL dataset as pairs of real and imaginary bands of the part
+/// type (`Int16` for `CInt16`...).
+fn read_complex(ds: &GdalDataset, t: gdal_sys::GDALDataType::Type, cols: usize, rows: usize, bands: usize) -> Result<RasterData> {
+    use gdal_sys::GDALDataType::*;
+    let (ct, part) = if t == GDT_CInt16 {
+        (GDT_CInt16, wbraster::DataType::I16)
+    } else if t == GDT_CInt32 {
+        (GDT_CInt32, wbraster::DataType::I32)
+    } else if t == GDT_CFloat64 {
+        (GDT_CFloat64, wbraster::DataType::F64)
+    } else {
+        // CFloat16 too, read as CFloat32.
+        (GDT_CFloat32, wbraster::DataType::F32)
+    };
+    let size = part.size_bytes();
+    let n = cols * rows;
+    let mut raw = vec![0u8; n * 2 * size];
+    let mut parts: Vec<u8> = Vec::with_capacity(bands * 2 * n * size);
+    for b in 1..=bands {
+        let band = ds.rasterband(b).map_err(gdal_err)?;
+        // SAFETY: the band handle is valid while `band` lives; the buffer holds `cols` x `rows`
+        // complex values of the requested type.
+        let e = unsafe {
+            gdal_sys::GDALRasterIO(
+                band.c_rasterband(),
+                gdal_sys::GDALRWFlag::GF_Read,
+                0,
+                0,
+                cols as i32,
+                rows as i32,
+                raw.as_mut_ptr().cast(),
+                cols as i32,
+                rows as i32,
+                ct,
+                0,
+                0,
+            )
+        };
+        if e != gdal_sys::CPLErr::CE_None {
+            return Err(Error::InvalidData(format!("GDAL: {}", last_error().unwrap_or_default())));
+        }
+        for offset in [0, size] {
+            for i in 0..n {
+                let at = i * 2 * size + offset;
+                parts.extend_from_slice(&raw[at..at + size]);
+            }
+        }
+    }
+    let layout = common::Layout {
+        cols,
+        rows,
+        bands: bands * 2,
+        data_type: part,
+        little_endian: cfg!(target_endian = "little"),
+        interleave: common::Interleave::Bsq,
+        offset: 0,
+        bottom_up: false,
+    };
+    common::decode(&parts, &layout)
+}
+
+/// Writes a raster with a GDAL driver, declaring `nodata`; pairs of bands as complex bands when
+/// `complex`.
 pub(crate) fn write_raster_with(
     r: &wbraster::Raster,
     nodata: Option<f64>,
+    complex: bool,
     path: &str,
     driver: &str,
     creation_options: &[(String, String)],
 ) -> Result<()> {
-    write_raster_gt(r, nodata, None, path, driver, creation_options)
+    write_raster_gt(r, nodata, complex, None, path, driver, creation_options)
 }
 
-/// Writes a raster with a GDAL driver, declaring `nodata`, with a rotated or south-up
-/// geotransform in place of the raster's when `affine` is given.
+/// [`write_raster_with`], with a rotated or south-up geotransform in place of the raster's when
+/// `affine` is given.
 fn write_raster_gt(
     r: &wbraster::Raster,
     nodata: Option<f64>,
+    complex: bool,
     affine: Option<[f64; 6]>,
     path: &str,
     driver: &str,
@@ -149,6 +292,10 @@ fn write_raster_gt(
     let _quiet = Quiet::new();
     let target =
         DriverManager::get_driver_by_name(driver).map_err(|e| Error::Unsupported(format!("GDAL has no driver '{driver}': {e}")))?;
+    if complex {
+        let mut mem = complex_mem_dataset(r)?;
+        return finish_copy(&mut mem, r, nodata, affine, path, &target, creation_options);
+    }
     let mem_driver = DriverManager::get_driver_by_name("MEM").map_err(gdal_err)?;
     macro_rules! create {
         ($t:ty, $v:ident) => {{
@@ -176,6 +323,20 @@ fn write_raster_gt(
         wbraster::DataType::F32 => create!(f32, F32),
         wbraster::DataType::F64 => create!(f64, F64),
     };
+    finish_copy(&mut mem, r, nodata, affine, path, &target, creation_options)
+}
+
+/// Sets a MEM dataset's georeferencing (`affine`, else the raster's) and nodata value, then
+/// copies it with `target`.
+fn finish_copy(
+    mem: &mut GdalDataset,
+    r: &wbraster::Raster,
+    nodata: Option<f64>,
+    affine: Option<[f64; 6]>,
+    path: &str,
+    target: &gdal::Driver,
+    creation_options: &[(String, String)],
+) -> Result<()> {
     let gt = affine.unwrap_or_else(|| crate::geo_transform(r));
     mem.set_geo_transform(&gt).map_err(gdal_err)?;
     let crs = crate::crs::SpatialRef::from_raster_crs(&r.crs);
@@ -187,7 +348,7 @@ fn write_raster_gt(
         mem.set_spatial_ref(&srs).map_err(gdal_err)?;
     }
     if let Some(nodata) = nodata {
-        for b in 1..=r.bands {
+        for b in 1..=mem.raster_count() {
             let mut band = mem.rasterband(b).map_err(gdal_err)?;
             match r.data_type {
                 wbraster::DataType::U64 => band.set_no_data_value_u64(Some(nodata as u64)),
@@ -201,7 +362,7 @@ fn write_raster_gt(
     for (k, v) in creation_options {
         options.set_name_value(k, v).map_err(gdal_err)?;
     }
-    mem.create_copy(&target, path, &options).map_err(gdal_err)?;
+    mem.create_copy(target, path, &options).map_err(gdal_err)?;
     Ok(())
 }
 
@@ -682,6 +843,11 @@ fn raster_from(ds: &GdalDataset, path: &str) -> Result<RasterDataset> {
     let (cols, rows) = ds.raster_size();
     let bands = ds.raster_count();
     let first = ds.rasterband(1).map_err(gdal_err)?;
+    // SAFETY: plain queries of a valid band handle and a data type.
+    let raw_type = unsafe { gdal_sys::GDALGetRasterDataType(first.c_rasterband()) };
+    if unsafe { gdal_sys::GDALDataTypeIsComplex(raw_type) } != 0 {
+        return complex_raster_from(ds, &first, raw_type, path);
+    }
     let band_type = first.band_type();
     macro_rules! read {
         ($t:ty, $v:ident) => {{
@@ -713,9 +879,41 @@ fn raster_from(ds: &GdalDataset, path: &str) -> Result<RasterDataset> {
         GdalDataType::Int64 => first.no_data_value_i64().map(|v| v as f64),
         _ => first.no_data_value(),
     };
-    let gt = ds.geo_transform().unwrap_or(common::NO_GEOTRANSFORM);
-    let crs = ds.spatial_ref().ok().and_then(|srs| srs_to_crs(&srs)).unwrap_or_default();
-    let mut raster = common::make_raster(cols, rows, bands, data, gt, crs, nodata)?;
+    let raster =
+        common::make_raster(cols, rows, bands, data, ds.geo_transform().unwrap_or(common::NO_GEOTRANSFORM), dataset_crs(ds), nodata)?;
+    finish_raster(ds, &first, raster, nodata.is_some(), false)
+}
+
+/// The CRS of a GDAL dataset.
+fn dataset_crs(ds: &GdalDataset) -> wbraster::CrsInfo {
+    ds.spatial_ref().ok().and_then(|srs| srs_to_crs(&srs)).unwrap_or_default()
+}
+
+/// A dataset of complex bands (`CInt16`... `CFloat64`), read as pairs of real and imaginary bands.
+fn complex_raster_from(
+    ds: &GdalDataset,
+    first: &gdal::raster::RasterBand,
+    t: gdal_sys::GDALDataType::Type,
+    path: &str,
+) -> Result<RasterDataset> {
+    let (cols, rows) = ds.raster_size();
+    let bands = ds.raster_count();
+    let data = read_complex(ds, t, cols, rows, bands).map_err(|e| Error::InvalidData(format!("'{path}': {e}")))?;
+    let nodata = first.no_data_value();
+    let raster =
+        common::make_raster(cols, rows, bands * 2, data, ds.geo_transform().unwrap_or(common::NO_GEOTRANSFORM), dataset_crs(ds), nodata)?;
+    finish_raster(ds, first, raster, nodata.is_some(), true)
+}
+
+/// Adds a GDAL dataset's scale, offset, metadata, subdatasets and geolocation arrays to a raster
+/// read from it.
+fn finish_raster(
+    ds: &GdalDataset,
+    first: &gdal::raster::RasterBand,
+    mut raster: wbraster::Raster,
+    has_nodata: bool,
+    complex: bool,
+) -> Result<RasterDataset> {
     if let Some(scale) = first.scale().filter(|s| *s != 1.0) {
         raster.metadata.push(("scale_factor".into(), format!("{scale}")));
     }
@@ -731,7 +929,16 @@ fn raster_from(ds: &GdalDataset, path: &str) -> Result<RasterDataset> {
         raster.metadata.push((format!("SUBDATASET_{}_NAME", i + 1), name));
         raster.metadata.push((format!("SUBDATASET_{}_DESC", i + 1), desc));
     }
-    Ok(RasterDataset { raster, driver: RasterDriver::Gdal, has_nodata: nodata.is_some(), affine: None })
+    let mut out = RasterDataset::with_driver(raster, RasterDriver::Gdal, has_nodata);
+    out.complex = complex;
+    let geolocation: Vec<(String, String)> = ds
+        .metadata_domain("GEOLOCATION")
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|item| item.split_once('=').map(|(k, v)| (k.to_string(), v.to_string())))
+        .collect();
+    out.geolocation = crate::Geolocation::from_items(&geolocation);
+    Ok(out)
 }
 
 /// terrio's CRS for a GDAL spatial reference: the EPSG code GDAL identifies (as `gdalsrsinfo -e`
