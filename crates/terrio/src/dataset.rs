@@ -149,7 +149,7 @@ pub fn open(path: &str) -> Result<Dataset> {
     result
 }
 
-fn open_native(path: &str) -> Result<Dataset> {
+pub(crate) fn open_native(path: &str) -> Result<Dataset> {
     if let Some(result) = crate::stac::open(path) {
         return result;
     }
@@ -230,7 +230,7 @@ pub fn open_vector(path: &str, options: &VectorOpenOptions) -> Result<VectorData
     result
 }
 
-fn open_vector_native(path: &str, options: &VectorOpenOptions) -> Result<VectorDataset> {
+pub(crate) fn open_vector_native(path: &str, options: &VectorOpenOptions) -> Result<VectorDataset> {
     if let Some(result) = crate::stac::open(path) {
         return match result? {
             Dataset::Vector(v) => Ok(v),
@@ -277,7 +277,7 @@ fn list_layers_native(path: &str) -> Result<Vec<String>> {
 /// error is kept. Missing local files and invalid arguments are not retried, nor are network
 /// errors.
 #[cfg(feature = "gdal")]
-fn gdal_fallback<T>(path: &str, result: Result<T>, gdal: impl FnOnce(&str) -> Result<T>) -> Result<T> {
+pub(crate) fn gdal_fallback<T>(path: &str, result: Result<T>, gdal: impl FnOnce(&str) -> Result<T>) -> Result<T> {
     let Err(e) = result else { return result };
     let retry = match &e {
         Error::InvalidArgument(_) | Error::Http(_) => false,
@@ -552,10 +552,16 @@ pub fn write_raster_dataset(ds: &RasterDataset, path: &str, options: &RasterWrit
 
 fn write_raster_with_nodata(raster: &Raster, nodata: Option<f64>, path: &str, options: &RasterWriteOptions) -> Result<()> {
     ensure_writable_location(path)?;
-    let driver = match options.driver {
+    let driver = match options.driver.or_else(|| RasterDriver::for_extension(path)) {
         Some(d) => d,
-        None => RasterDriver::for_extension(path)
-            .ok_or_else(|| Error::InvalidArgument(format!("cannot tell the output format of '{path}': give it explicitly")))?,
+        None => {
+            // With the GDAL backend, the GDAL driver of the extension (`.ntf`: NITF).
+            #[cfg(feature = "gdal")]
+            if let Some(d) = crate::gdal_backend::driver_for_path(path, false) {
+                return crate::gdal_backend::write_raster_with(raster, nodata, path, &d, &options.creation_options);
+            }
+            return Err(Error::InvalidArgument(format!("cannot tell the output format of '{path}': give it explicitly")));
+        }
     };
     if !driver.info().write {
         return Err(Error::Unsupported(format!("the {} driver cannot write", driver.name())));
@@ -643,6 +649,9 @@ pub struct VectorWriteOptions {
 /// Writes vector layers. GeoPackage, GPX, KML, KMZ and TopoJSON hold several layers in one file;
 /// for the other formats, write one layer at a time.
 ///
+/// With the `gdal` feature, an extension terrio has no driver for is written by the GDAL driver
+/// that claims it (`.dxf`, `.gdb`; see `gdal_backend::write_vector`).
+///
 /// ```no_run
 /// let ds = terrio::open_vector("countries.shp", &Default::default())?;
 /// terrio::write_vector(&ds.layers, "countries.gpkg", &Default::default())?;
@@ -653,10 +662,16 @@ pub struct VectorWriteOptions {
 /// ```
 pub fn write_vector(layers: &[Layer], path: &str, options: &VectorWriteOptions) -> Result<()> {
     ensure_writable_location(path)?;
-    let driver = match options.driver {
+    let driver = match options.driver.or_else(|| VectorDriver::for_extension(path)) {
         Some(d) => d,
-        None => VectorDriver::for_extension(path)
-            .ok_or_else(|| Error::InvalidArgument(format!("cannot tell the output format of '{path}': give it explicitly")))?,
+        None => {
+            // With the GDAL backend, the GDAL driver of the extension (`.dxf`, `.gdb`...).
+            #[cfg(feature = "gdal")]
+            if let Some(d) = crate::gdal_backend::driver_for_path(path, true) {
+                return crate::gdal_backend::write_vector(layers, path, &d, &[], &[]);
+            }
+            return Err(Error::InvalidArgument(format!("cannot tell the output format of '{path}': give it explicitly")));
+        }
     };
     if !driver.info().write {
         return Err(Error::Unsupported(format!("the {} driver cannot write", driver.name())));

@@ -11,8 +11,9 @@ pub struct Args {
     /// The output path.
     output: String,
     /// The output format's short name (`GTiff`, `COG`, `GPKG`, `ESRI Shapefile`...). By default,
-    /// chosen from the output's extension. Builds with the GDAL backend also write rasters with
-    /// any GDAL driver (`NITF`, `KEA`, `GRIB`...).
+    /// chosen from the output's extension. Builds with the GDAL backend also write with any GDAL
+    /// driver: rasters (`NITF`, `KEA`, `GRIB`...) and vector layers (`DXF`, `OpenFileGDB`,
+    /// `MapInfo File`, `SQLite`...), and choose GDAL's driver for extensions terrio has none for.
     #[arg(short = 'f', long = "format")]
     format: Option<String>,
     /// Only these layers of a vector dataset.
@@ -52,6 +53,10 @@ pub struct Args {
     /// SIMPLIFICATION_MAX_ZOOM, NAME, DESCRIPTION, TYPE).
     #[arg(long = "lco", value_name = "KEY=VALUE")]
     creation_options: Vec<String>,
+    /// A dataset creation option of a GDAL vector driver (`ogr2ogr -dsco`): `KEY=VALUE`. Builds
+    /// with the GDAL backend only; GDAL drivers also take `--lco` as GDAL defines it.
+    #[arg(long = "dsco", value_name = "KEY=VALUE")]
+    dataset_options: Vec<String>,
     /// A raster creation option, as GDAL names it: `KEY=VALUE` (Zarr: FORMAT=ZARR_V2|ZARR_V3;
     /// netCDF: FORMAT=NC|NC2|NC5; PMTiles and MBTiles: TILE_FORMAT, RESAMPLING,
     /// ZOOM_LEVEL_STRATEGY, MINZOOM, MAXZOOM, QUALITY, NAME, DESCRIPTION, TYPE).
@@ -186,13 +191,18 @@ pub fn run(mut a: Args) -> terrio::Result<()> {
                 }
                 return terrio::tiles::update_raster(&a.output, &r, &o);
             }
-            // A format terrio does not write itself: GDAL's driver of that name, when built in.
+            // A format terrio does not write itself: GDAL's driver of that name (or of the
+            // output's extension), when built in.
             #[cfg(feature = "gdal")]
-            if let Some(f) = a.format.as_deref()
-                && RasterDriver::from_name(f).is_none()
-                && terrio::gdal_backend::has_driver(f)
             {
-                return terrio::gdal_backend::write_raster(&r, &a.output, f, &creation_options);
+                let gdal_driver = match a.format.as_deref() {
+                    Some(f) if RasterDriver::from_name(f).is_none() && terrio::gdal_backend::has_driver(f) => Some(f.to_string()),
+                    None if RasterDriver::for_extension(&a.output).is_none() => terrio::gdal_backend::driver_for_path(&a.output, false),
+                    _ => None,
+                };
+                if let Some(d) = gdal_driver {
+                    return terrio::gdal_backend::write_raster(&r, &a.output, &d, &creation_options);
+                }
             }
             let driver = a
                 .format
@@ -210,12 +220,33 @@ pub fn run(mut a: Args) -> terrio::Result<()> {
             terrio::write_raster_dataset(&r, &a.output, &opts)
         }
         Dataset::Vector(v) => {
+            let layers = terrio::ops::vector_filter::translate_owned(v.layers, &a.vector.to_options(t_srs)?)?;
+            #[cfg(feature = "gdal")]
+            {
+                let gdal_driver = match a.format.as_deref() {
+                    Some(f) if VectorDriver::from_name(f).is_none() && terrio::gdal_backend::has_driver(f) => Some(f.to_string()),
+                    None if VectorDriver::for_extension(&a.output).is_none() => terrio::gdal_backend::driver_for_path(&a.output, true),
+                    _ => None,
+                };
+                if let Some(d) = gdal_driver {
+                    if a.vector.write_mode() == terrio::ops::vector_filter::WriteMode::Append {
+                        return Err(terrio::Error::Unsupported(format!("--append is not supported with GDAL's {d} driver")));
+                    }
+                    let pairs = |o: &[String]| -> terrio::Result<Vec<(String, String)>> {
+                        Ok(key_values(o)?.into_iter().map(|(k, v)| (k.to_string(), v.to_string())).collect())
+                    };
+                    let (dsco, lco) = (pairs(&a.dataset_options)?, pairs(&a.creation_options)?);
+                    return terrio::gdal_backend::write_vector(&layers, &a.output, &d, &dsco, &lco);
+                }
+            }
+            if !a.dataset_options.is_empty() {
+                return Err(terrio::Error::InvalidArgument("--dsco applies to GDAL drivers (builds with the GDAL backend)".into()));
+            }
             let driver = a
                 .format
                 .as_deref()
                 .map(|f| VectorDriver::from_name(f).ok_or_else(|| terrio::Error::InvalidArgument(format!("unknown vector format '{f}'"))))
                 .transpose()?;
-            let layers = terrio::ops::vector_filter::translate_owned(v.layers, &a.vector.to_options(t_srs)?)?;
             let mut options = VectorWriteOptions { driver, ..Default::default() };
             options.tiles.min_zoom = a.minzoom;
             options.tiles.max_zoom = a.maxzoom;
