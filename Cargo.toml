@@ -12,6 +12,8 @@ homepage = "https://github.com/opengeos/terrio"
 authors = ["Qiusheng Wu <giswqs@gmail.com>"]
 
 [workspace.dependencies]
+# Memory-mapped reads of SQLite files (GeoPackage, MBTiles), native builds only.
+memmap2 = "0.9"
 terrio = { path = "crates/terrio", version = "0.2.0" }
 
 # Format drivers, coordinate reference systems

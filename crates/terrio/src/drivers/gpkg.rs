@@ -109,7 +109,7 @@ fn select_bands(bands: usize, values: Vec<f64>, n: usize) -> Vec<f64> {
 
 /// Reads the first raster table of a GeoPackage.
 pub(crate) fn read(path: &Path) -> Result<RasterDataset> {
-    read_db(&Db::new(std::fs::read(path)?)?, None, path)
+    read_db(&Db::open(path)?, None, path)
 }
 
 /// Reads a raster table of a GeoPackage held in memory (the first when `table` is `None`).

@@ -66,7 +66,7 @@ pub(crate) fn contents(db: &Db) -> Result<(Vec<Content>, Vec<Content>)> {
 
 /// The vector layer names of a GeoPackage file.
 pub(crate) fn list_layers(path: &str) -> Result<Vec<String>> {
-    let db = Db::new(std::fs::read(path)?)?;
+    let db = Db::open(std::path::Path::new(path))?;
     Ok(contents(&db)?.0.into_iter().map(|c| c.name).collect())
 }
 
@@ -76,7 +76,7 @@ pub(crate) type Rect = (f64, f64, f64, f64);
 /// Reads the layers of a GeoPackage file (`wanted` names them; all when empty), keeping only the
 /// features whose bounding box intersects `bbox` when it is given.
 pub(crate) fn read(path: &str, wanted: &[String], bbox: Option<Rect>) -> Result<Vec<Layer>> {
-    read_db(&Db::new(std::fs::read(path)?)?, wanted, bbox)
+    read_db(&Db::open(std::path::Path::new(path))?, wanted, bbox)
 }
 
 /// Reads the layers of a GeoPackage held in memory (`wanted` names them; all when empty).
@@ -460,7 +460,7 @@ pub(crate) struct LayerSummary {
 /// Also gives the raster tables.
 pub(crate) fn summarize(path: &str) -> Result<Option<(Vec<LayerSummary>, Vec<Content>)>> {
     crate::crs::prefetch();
-    let db = Db::new(crate::par::read_file(std::path::Path::new(path))?)?;
+    let db = Db::open(std::path::Path::new(path))?;
     let (layers, rasters) = contents(&db)?;
     if layers.is_empty() {
         return Ok(None);
@@ -469,16 +469,32 @@ pub(crate) fn summarize(path: &str) -> Result<Option<(Vec<LayerSummary>, Vec<Con
     Ok(Some((layers, rasters)))
 }
 
+/// The feature count GDAL keeps for a table in `gpkg_ogr_contents`, when the file has one.
+fn stored_feature_count(db: &Db, table: &str) -> Option<usize> {
+    let t = db.table("gpkg_ogr_contents").ok()?;
+    let r = t.rows.iter().find(|r| t.get(r, "table_name").and_then(Value::as_str).is_some_and(|n| n.eq_ignore_ascii_case(table)))?;
+    usize::try_from(t.get(r, "feature_count")?.as_i64()?).ok()
+}
+
+/// A table's extent in `gpkg_contents`, when all four bounds are set.
+fn stored_extent(db: &Db, table: &str) -> Option<(f64, f64, f64, f64)> {
+    let t = db.table("gpkg_contents").ok()?;
+    let r = t.rows.iter().find(|r| t.get(r, "table_name").and_then(Value::as_str).is_some_and(|n| n.eq_ignore_ascii_case(table)))?;
+    let v = |name: &str| t.get(r, name).and_then(Value::as_f64).filter(|v| v.is_finite());
+    Some((v("min_x")?, v("min_y")?, v("max_x")?, v("max_y")?))
+}
+
 /// What a layer summary needs of a geometry: its type, whether it has Z coordinates, its bounds.
 type GeometrySummary = (GeometryType, bool, Option<(f64, f64, f64, f64)>);
 
 fn summarize_layer(db: &Db, c: &Content, path: &str) -> Result<LayerSummary> {
     let sql = db.table_sql(&c.name).ok_or_else(|| bad(format!("no table '{}'", c.name)))?;
     let columns = sqlite::column_types(&sql);
-    let rows = db.raw_rows(&c.name)?;
 
     // The geometry column, its type and SRS, and the fields, as `read_layer` reads them.
     let mut geom_col = None;
+    // The `z` flag of the geometry column: 0 prohibited, 1 mandatory, 2 optional.
+    let mut z_flag = None;
     let mut layer = Layer::new(c.name.clone());
     if let Ok(g) = db.table("gpkg_geometry_columns")
         && let Some(r) =
@@ -487,6 +503,7 @@ fn summarize_layer(db: &Db, c: &Content, path: &str) -> Result<LayerSummary> {
         let col = g.get(r, "column_name").and_then(Value::as_str).unwrap_or_default();
         geom_col = columns.iter().position(|(n, _)| n.eq_ignore_ascii_case(col));
         layer.geom_type = g.get(r, "geometry_type_name").and_then(Value::as_str).and_then(geometry_type);
+        z_flag = g.get(r, "z").and_then(Value::as_i64);
         if let Some(srs_id) = g.get(r, "srs_id").and_then(Value::as_i64) {
             set_crs(db, &mut layer, srs_id);
         }
@@ -502,6 +519,20 @@ fn summarize_layer(db: &Db, c: &Content, path: &str) -> Result<LayerSummary> {
         layer.add_field(f);
     }
     let layer = crate::dataset::fix_layer(layer, path, crate::formats::VectorDriver::GPKG);
+
+    // As `ogrinfo -so` does: the feature count GDAL keeps in `gpkg_ogr_contents`, the extent of
+    // `gpkg_contents` and the declared geometry type, without reading the features. Each falls
+    // back to the features when the file doesn't have it.
+    let stored_count = stored_feature_count(db, &c.name);
+    let stored_extent = stored_extent(db, &c.name);
+    let declared = layer.geom_type.filter(|_| matches!(z_flag, Some(0 | 1)));
+    if let (Some(feature_count), Some(t)) = (stored_count, declared)
+        && (stored_extent.is_some() || feature_count == 0)
+    {
+        let geometry_type = crate::vector::geometry_type_name_of(Some(t), std::iter::empty(), z_flag == Some(1));
+        return Ok(LayerSummary { layer, feature_count, geometry_type, extent: stored_extent });
+    }
+    let rows = db.raw_rows(&c.name)?;
 
     // Each geometry's type, Z flag and bounds.
     let geometries: Vec<Option<GeometrySummary>> = crate::par::map_range(rows.len(), |i| {

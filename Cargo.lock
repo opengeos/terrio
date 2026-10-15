@@ -2284,6 +2284,7 @@ dependencies = [
  "lerc-reader",
  "lz4_flex 0.14.0",
  "lzma-rust2",
+ "memmap2",
  "netcdf-reader",
  "openjp2",
  "osmpbfreader 0.19.1",

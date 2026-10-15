@@ -62,9 +62,29 @@ pub(crate) type SchemaEntry = (String, String, String, u32, String);
 
 /// An SQLite database file in memory.
 pub(crate) struct Db {
-    data: Vec<u8>,
+    data: Bytes,
     page_size: usize,
     usable: usize,
+}
+
+/// A database's bytes: in memory, or a file mapped into memory (native builds), which reads only
+/// the pages used and keeps them out of the process's own memory.
+enum Bytes {
+    Owned(Vec<u8>),
+    #[cfg(not(target_arch = "wasm32"))]
+    Mapped(memmap2::Mmap),
+}
+
+impl std::ops::Deref for Bytes {
+    type Target = [u8];
+
+    fn deref(&self) -> &[u8] {
+        match self {
+            Self::Owned(v) => v,
+            #[cfg(not(target_arch = "wasm32"))]
+            Self::Mapped(m) => m,
+        }
+    }
 }
 
 fn bad(msg: &str) -> Error {
@@ -91,6 +111,27 @@ fn varint(b: &[u8], i: usize) -> Option<(i64, usize)> {
 impl Db {
     /// Opens a database from its bytes.
     pub(crate) fn new(data: Vec<u8>) -> Result<Self> {
+        Self::from_bytes(Bytes::Owned(data))
+    }
+
+    /// Opens a database file. Native builds map it into memory rather than reading it: a
+    /// GeoPackage's pages are then read as they are used, and a summary of a multi-gigabyte file
+    /// reads only its metadata. The file must not be changed while it is open, as with any
+    /// SQLite reader that does not lock it.
+    pub(crate) fn open(path: &std::path::Path) -> Result<Self> {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let file = std::fs::File::open(path)?;
+            // SAFETY: the map is read-only, and lives as long as `Db`; a file changed or
+            // truncated by another process while it is open is outside what terrio supports.
+            if let Ok(map) = unsafe { memmap2::Mmap::map(&file) } {
+                return Self::from_bytes(Bytes::Mapped(map));
+            }
+        }
+        Self::new(std::fs::read(path)?)
+    }
+
+    fn from_bytes(data: Bytes) -> Result<Self> {
         if data.len() < 100 || !data.starts_with(b"SQLite format 3\0") {
             return Err(bad("not an SQLite database"));
         }
