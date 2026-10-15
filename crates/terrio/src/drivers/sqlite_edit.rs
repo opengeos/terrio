@@ -292,16 +292,16 @@ impl Editor {
                 return Err(bad("cell offset"));
             }
             let len = match kind {
-                0x05 => 4 + varint(&page, off + 4).ok_or_else(|| bad("cell"))?.1,
+                0x05 => 4 + varint(page, off + 4).ok_or_else(|| bad("cell"))?.1,
                 0x0d => {
-                    let (sz, n1) = varint(&page, off).ok_or_else(|| bad("cell"))?;
-                    let (_, n2) = varint(&page, off + n1).ok_or_else(|| bad("cell"))?;
+                    let (sz, n1) = varint(page, off).ok_or_else(|| bad("cell"))?;
+                    let (_, n2) = varint(page, off + n1).ok_or_else(|| bad("cell"))?;
                     let local = self.local_len(kind, sz as usize);
                     n1 + n2 + local + if local < sz as usize { 4 } else { 0 }
                 }
                 _ => {
                     let start = if kind == 0x02 { off + 4 } else { off };
-                    let (sz, n1) = varint(&page, start).ok_or_else(|| bad("cell"))?;
+                    let (sz, n1) = varint(page, start).ok_or_else(|| bad("cell"))?;
                     let local = self.local_len(kind, sz as usize);
                     (start - off) + n1 + local + if local < sz as usize { 4 } else { 0 }
                 }
@@ -1000,11 +1000,7 @@ pub(crate) fn has_hot_journal(path: &Path) -> bool {
 /// Opens a database as SQLite readers see it: mapped in place, or, when a hot journal goes with
 /// it, read with the journal's original pages put back (see [`read_consistent`]).
 pub(crate) fn open_consistent(path: &Path) -> Result<crate::drivers::sqlite::Db> {
-    if has_hot_journal(path) {
-        crate::drivers::sqlite::Db::new(read_consistent(path)?)
-    } else {
-        crate::drivers::sqlite::Db::open(path)
-    }
+    if has_hot_journal(path) { crate::drivers::sqlite::Db::new(read_consistent(path)?) } else { crate::drivers::sqlite::Db::open(path) }
 }
 
 /// Plays back a hot journal left by an interrupted transaction: the original pages are written
