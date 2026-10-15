@@ -109,8 +109,14 @@ conventions are read too: [`spatial:`](https://github.com/zarr-conventions/spati
 [`proj:`](https://github.com/zarr-conventions/proj) (`proj:code`, `proj:wkt2`, `proj:projjson`, and
 the EOPF samples' `proj:epsg`) on the array, its group or the multiscales group, and
 [`multiscales`](https://github.com/zarr-conventions/multiscales) layouts, whose lower-resolution
-levels are the raster's overviews (`terrio info` lists them, `--overview N` reads one). The
-creation options say how a written store is georeferenced and whether it holds overviews:
+levels are the raster's overviews (`terrio info` lists them, `--overview N` reads one). A CF
+`grid_mapping` variable without `crs_wkt` gives its CRS by its CF parameters, as GDAL reads them,
+and coordinate arrays and grid mappings are looked for in the groups above the array too. Stores
+are read chunk by chunk, local or remote (see [Remote data](remote-data.md)), with the codecs
+none, zlib, gzip, Zstandard, LZ4 and Blosc, transposition, CRC32C checksums, v3 sharding
+(`sharding_indexed`, inner chunks read by range), and the `scale_offset` and `cast_value` codecs
+of the EOPF GeoZarr samples; `float16` arrays (NOAA's HRRR) are read as Float32. The creation
+options say how a written store is georeferenced and whether it holds overviews:
 
 | Creation option | Values |
 |---|---|

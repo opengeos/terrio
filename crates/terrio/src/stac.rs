@@ -652,6 +652,10 @@ fn may_be_stac(path: &str) -> bool {
     if base.ends_with(".json") || base.ends_with(".geojson") {
         return true;
     }
+    // Zarr stores (`.../collections/.../x.zarr/...`) are not STAC documents.
+    if base.split('/').any(|s| s.ends_with(".zarr")) {
+        return false;
+    }
     is_url(path) && (base.contains("/search") || base.ends_with("/items") || base.contains("/collections/"))
 }
 

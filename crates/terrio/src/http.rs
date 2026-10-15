@@ -137,6 +137,9 @@ struct Client {
     /// The URL requests go to (after S3 region discovery or a redirect).
     url: String,
     s3: Option<S3Auth>,
+    /// Whether a missing object (status 404, or 403 as anonymous S3 requests get for missing
+    /// keys) is an answer rather than an error.
+    missing_ok: bool,
 }
 
 struct S3Auth {
@@ -148,15 +151,12 @@ struct S3Auth {
 
 impl Client {
     fn new(remote: &Remote, options: HttpOptions) -> Self {
-        let agent: ureq::Agent = ureq::Agent::config_builder()
-            .http_status_as_error(false)
-            .max_redirects(0)
-            .accept_encoding("identity")
-            .user_agent(options.user_agent.as_str())
-            .timeout_global(options.timeout)
-            .timeout_connect(Some(options.connect_timeout))
-            .build()
-            .into();
+        let agent = agent(&options);
+        Self::with_agent(remote, options, agent)
+    }
+
+    /// A client sending its requests through `agent` (whose connections it shares).
+    fn with_agent(remote: &Remote, options: HttpOptions, agent: ureq::Agent) -> Self {
         let (url, s3) = match remote {
             Remote::Url(u) => (u.clone(), None),
             Remote::S3(o) => {
@@ -164,18 +164,23 @@ impl Client {
                 (o.url(region.as_deref()), Some(S3Auth { creds: Credentials::from_env(), region, discovered: false }))
             }
         };
-        Self { agent, options, remote: remote.clone(), url, s3 }
+        Self { agent, options, remote: remote.clone(), url, s3, missing_ok: false }
     }
 
     /// Sends a `GET` (of the inclusive byte range `range`, if any) and returns the response once it
     /// has a final status: 200, 206 or 416. Other statuses are errors.
     fn send(&mut self, range: Option<(u64, u64)>) -> Result<ureq::http::Response<ureq::Body>> {
+        self.send_range(range.map(|(a, b)| format!("bytes={a}-{b}")))
+    }
+
+    /// Sends a `GET` with a `Range` header value (`bytes=0-99`, `bytes=-16`), if any. With
+    /// `missing_ok`, a missing object's response (404 or 403) is returned too.
+    fn send_range(&mut self, range_header: Option<String>) -> Result<ureq::http::Response<ureq::Body>> {
         let started = Instant::now();
         let mut url = self.url.clone();
         let mut redirects = 0;
         let mut attempt = 0;
         loop {
-            let range_header = range.map(|(a, b)| format!("bytes={a}-{b}"));
             let mut req = self.agent.get(&url);
             if let Some(r) = &range_header {
                 req = req.header("Range", r);
@@ -244,6 +249,7 @@ impl Client {
             }
             match status {
                 200 | 206 | 416 => return Ok(response),
+                403 | 404 if self.missing_ok => return Ok(response),
                 429 | 500 | 502 | 503 | 504 if attempt < self.options.max_retry => self.backoff(&mut attempt),
                 _ => {
                     let hint = match (&self.s3, status) {
@@ -266,9 +272,14 @@ impl Client {
     /// Fetches the inclusive byte range `range` (or the whole file), retrying when the transfer
     /// breaks off.
     fn fetch(&mut self, range: Option<(u64, u64)>) -> Result<Fetched> {
+        self.fetch_range(range.map(|(a, b)| format!("bytes={a}-{b}")))
+    }
+
+    /// Fetches with a `Range` header value, if any: see [`Client::send_range`].
+    fn fetch_range(&mut self, range: Option<String>) -> Result<Fetched> {
         let mut attempt = 0;
         loop {
-            let response = self.send(range)?;
+            let response = self.send_range(range.clone())?;
             let status = response.status().as_u16();
             let content_range = response.headers().get("content-range").and_then(|v| v.to_str().ok()).and_then(content_range_total);
             let mut data = Vec::new();
@@ -287,6 +298,90 @@ impl Client {
             }
             let total_len = if status == 200 { Some(data.len() as u64) } else { content_range };
             return Ok(Fetched { status, total_len, data });
+        }
+    }
+}
+
+/// The agent requests are sent with: no automatic redirects (followed by [`Client`], which
+/// signs only the first request), no compression.
+fn agent(options: &HttpOptions) -> ureq::Agent {
+    ureq::Agent::config_builder()
+        .http_status_as_error(false)
+        .max_redirects(0)
+        .accept_encoding("identity")
+        .user_agent(options.user_agent.as_str())
+        .timeout_global(options.timeout)
+        .timeout_connect(Some(options.connect_timeout))
+        .build()
+        .into()
+}
+
+/// The part of an object to fetch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ByteRange {
+    /// The whole object.
+    Whole,
+    /// `length` bytes from `offset`.
+    At(u64, u64),
+    /// The last `n` bytes.
+    Suffix(u64),
+}
+
+/// Fetches many small objects (such as the chunks of a Zarr store) through one pool of
+/// connections, from any number of threads. An S3 bucket's region, once learned, is reused.
+pub(crate) struct ObjectFetcher {
+    agent: ureq::Agent,
+    options: HttpOptions,
+    region: Mutex<Option<String>>,
+}
+
+impl ObjectFetcher {
+    /// A fetcher with the options from the environment.
+    pub(crate) fn new() -> Self {
+        let options = HttpOptions::from_env();
+        Self { agent: agent(&options), options, region: Mutex::new(None) }
+    }
+
+    /// Fetches an object, or part of it. `None` when the object does not exist (status 404, or
+    /// 403 as S3 answers anonymous requests for missing keys).
+    pub(crate) fn get(&self, remote: &Remote, range: ByteRange) -> Result<Option<Vec<u8>>> {
+        let mut client = Client::with_agent(remote, self.options.clone(), self.agent.clone());
+        client.missing_ok = true;
+        let known = self.region.lock().ok().and_then(|r| r.clone());
+        if let (Remote::S3(object), Some(auth), Some(region)) = (remote, client.s3.as_mut(), known) {
+            auth.discovered = true;
+            client.url = object.url(Some(&region));
+            auth.region = Some(region);
+        }
+        let header = match range {
+            ByteRange::Whole => None,
+            ByteRange::At(_, 0) => return Ok(Some(Vec::new())),
+            ByteRange::At(offset, len) => Some(format!("bytes={offset}-{}", offset + len - 1)),
+            ByteRange::Suffix(n) => Some(format!("bytes=-{n}")),
+        };
+        let fetched = client.fetch_range(header)?;
+        if let Some(S3Auth { region: Some(r), discovered: true, .. }) = &client.s3
+            && let Ok(mut known) = self.region.lock()
+        {
+            *known = Some(r.clone());
+        }
+        match (fetched.status, range) {
+            (403 | 404, _) => Ok(None),
+            (200 | 206, ByteRange::Whole) => Ok(Some(fetched.data)),
+            // A server that ignores ranges sends the whole object: cut the part asked.
+            (200, ByteRange::At(offset, len)) => Ok(Some(
+                fetched
+                    .data
+                    .get(offset as usize..(offset + len) as usize)
+                    .ok_or_else(|| Error::Http(format!("{}: bytes {offset}+{len} past the end", redact(&client.url))))?
+                    .to_vec(),
+            )),
+            (200, ByteRange::Suffix(n)) => {
+                let d = fetched.data;
+                Ok(Some(d[d.len().saturating_sub(n as usize)..].to_vec()))
+            }
+            (206, _) => Ok(Some(fetched.data)),
+            (status, _) => Err(Error::Http(format!("{}: unexpected status {status}", redact(&client.url)))),
         }
     }
 }

@@ -17,8 +17,9 @@ Prefixes nest as in GDAL: `/vsizip//vsicurl/https://example.com/data.zip/roads.s
 ## Reading in place
 
 GeoTIFFs and COGs are opened lazily: `terrio info` fetches the header only, and window or overview
-reads fetch only the tiles they touch, merging adjacent ranges into one request. Other formats are
-downloaded to a temporary directory first; a remote shapefile's `.shx`, `.dbf`, `.prj` and `.cpg`
+reads fetch only the tiles they touch, merging adjacent ranges into one request. PMTiles archives
+and Zarr stores are read in place too (below). Other formats are downloaded to a temporary
+directory first; a remote shapefile's `.shx`, `.dbf`, `.prj` and `.cpg`
 come with it.
 
 ```sh
@@ -42,7 +43,31 @@ terrio convert https://.../tiles.pmtiles world.tif --overview 6
 terrio convert --oo ZOOM_LEVEL=5 https://.../zcta.pmtiles zcta_z5.gpkg
 ```
 
-From Python, `terrio.open_raster(url, lazy=True).read(1, window=(x, y, w, h), overview=0)`.
+Zarr stores (v2 and v3, GeoZarr included) are read in place over HTTP(S), S3, Google Cloud
+Storage and Azure: opening reads the metadata (all of it in one request when the store has
+consolidated metadata, v2's `.zmetadata` or the `consolidated_metadata` of a v3 root group), and a
+window reads only the chunks it touches, in parallel. In a sharded v3 array, a window reads each
+shard's index, then the inner chunks it needs, nearby ones in one range request. Missing chunks
+read as the fill value. A store is recognized by a path component ending in `.zarr`, or named as
+GDAL names it: `ZARR:"store"` or `ZARR:"store":/group/array`, the store a URL, an `s3://`, `gs://`
+or `az://` object or a `/vsicurl/`, `/vsis3/`, `/vsigs/` or `/vsiaz/` name. A path may also name
+an array or a group inside the store (`.../S2A_....zarr/measurements/reflectance/r10m/b02`); the
+coordinate arrays and the GeoZarr attributes of the groups above it are found as GDAL finds them.
+Without consolidated metadata, a remote group cannot be listed: name its array, unless the store
+holds one named after it, as GDAL writes stores.
+
+```sh
+# Sentinel-2 L2A from the EOPF sample service (Zarr v2): a window fetches 1 chunk of 2048 x 2048.
+terrio info "https://data.eodc.eu/collections/EOPF_ZARR/products/cpm_v270/S02MSIL2A/.../S2C_MSIL2A_....zarr/measurements/reflectance/r10m/b02"
+terrio translate "https://.../S2C_MSIL2A_....zarr/measurements/reflectance/r10m/b02" b02.tif --srcwin 4900 5100 1000 700
+# NOAA HRRR on S3, CMIP6 on Google Cloud Storage (time steps as bands), Daymet on Azure.
+AWS_NO_SIGN_REQUEST=YES terrio info 'ZARR:"/vsis3/hrrrzarr/sfc/20240101/20240101_00z_anl.zarr/2m_above_ground/TMP/2m_above_ground/TMP"'
+terrio translate 'ZARR:"gs://cmip6/CMIP6/CMIP/NOAA-GFDL/GFDL-CM4/historical/r1i1p1f1/Amon/tas/gr1/v20180701":/tas' tas.tif -b 1980 --srcwin 0 0 288 180
+AZURE_STORAGE_SAS_TOKEN=... terrio info 'ZARR:"az://daymeteuwest/daymet-zarr/daily/hi.zarr":/tmax'
+```
+
+From Python, `terrio.open_raster(url, lazy=True).read(1, window=(x, y, w, h), overview=0)`; Zarr
+stores, local or remote, open lazily with `terrio.open` too.
 
 JPEG 2000 files (`.jp2`, `.j2k`) are read in place too, by window and resolution level: decoding a
 window reads the header of each tile part before those it needs, skipping their data, and fetches

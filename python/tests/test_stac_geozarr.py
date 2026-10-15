@@ -91,3 +91,35 @@ def test_geozarr_write_and_overviews(tmp_path):
     attrs = json.loads((tmp_path / "geo.zarr" / "geo" / "zarr.json").read_text())["attributes"]
     assert attrs["proj:code"] == "EPSG:4326"
     assert attrs["spatial:transform"] == [0.01, 0.0, -110.0, 0.0, -0.01, 40.0]
+
+
+def test_remote_zarr_read_in_place(tmp_path):
+    """A Zarr store served over HTTP is opened lazily and read by window and overview."""
+    import functools
+    import http.server
+    import threading
+
+    data = np.arange(600 * 300, dtype="float32").reshape(300, 600)
+    r = terrio.Raster.from_array(data, (-110.0, 0.01, 0.0, 40.0, 0.0, -0.01), crs="EPSG:4326")
+    r.write(str(tmp_path / "geo.zarr"), options={"FORMAT": "ZARR_V3", "OVERVIEW_LEVELS": "2"})
+
+    class Quiet(http.server.SimpleHTTPRequestHandler):
+        def log_message(self, *args):
+            """Log nothing."""
+
+    server = http.server.ThreadingHTTPServer(
+        ("127.0.0.1", 0), functools.partial(Quiet, directory=str(tmp_path))
+    )
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        url = f"http://127.0.0.1:{server.server_address[1]}/geo.zarr"
+        back = terrio.open_raster(url, lazy=True)
+        assert back.is_lazy
+        assert (back.width, back.height) == (600, 300)
+        assert back.overviews == [(300, 150)]
+        np.testing.assert_array_equal(back.read(1, window=(250, 20, 40, 30)), data[20:50, 250:290])
+        np.testing.assert_array_equal(back.read(1, overview=0), data[::2, ::2])
+        gdal_name = terrio.open_raster(f'ZARR:"{url}":/geo', lazy=True)
+        np.testing.assert_array_equal(gdal_name.read(1), data)
+    finally:
+        server.shutdown()

@@ -44,6 +44,7 @@ terrio convert https://host/cog.tif w.tif --srcwin 1024 1024 512 512 --overview 
 terrio convert roads.geojson roads.fgb --t-srs EPSG:3857
 terrio convert countries.geojson europe.gpkg --where "CONTINENT = 'Europe'" --select NAME,POP_EST
 terrio info https://host/tiles.pmtiles           # PMTiles read in place (header, then the tiles needed)
+terrio info "ZARR:\"/vsis3/bucket/store.zarr\":/group/array"  # Zarr v2/v3 read in place (chunks needed only)
 terrio convert landsat.tif landsat.pmtiles       # raster tiles in EPSG:3857, every zoom level (or .mbtiles)
 terrio convert countries.gpkg countries.pmtiles --maxzoom 6   # vector tiles (MVT), or -f MVT for a directory
 terrio convert counties.gpkg tn.gpkg --spat -90.3 34.9 -81.6 36.7  # through the GeoPackage's R-tree
@@ -224,6 +225,7 @@ python scripts/compare_ops_with_gdal.py ../terrio-data # compare translate, warp
 python scripts/compare_dem_calc_with_gdal.py ../terrio-data  # dem, calc, proximity and sieve vs GDAL
 python scripts/compare_stac_geozarr.py stac            # STAC footprints and STACIT mosaics vs GDAL (Earth Search)
 python scripts/compare_stac_geozarr.py geozarr ../terrio-data  # GeoZarr stores read by GDAL and rioxarray
+python scripts/compare_remote_zarr.py                  # public cloud Zarr stores read in place vs GDAL and xarray
 python scripts/compare_tiles_with_gdal.py ../terrio-data  # PMTiles, MBTiles and MVT vs GDAL's drivers
 python scripts/compare_pointclouds.py ../terrio-data   # point clouds: every value vs laspy, headers, COPC
                                                        # queries, grids and reprojection vs PDAL

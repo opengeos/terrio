@@ -31,6 +31,7 @@ pub(crate) mod vector;
 pub(crate) mod wkt;
 mod xyz;
 mod zarr;
+mod zarr_store;
 
 /// Reads a raster with one of terrio's own drivers. `None` when none of them handles the file.
 pub(crate) fn read(path: &str) -> Option<Result<RasterDataset>> {
@@ -74,11 +75,17 @@ pub(crate) fn read(path: &str) -> Option<Result<RasterDataset>> {
     }))
 }
 
-/// Opens a raster read by window with one of terrio's own drivers (Zarr multiscales pyramids,
-/// JPEG 2000 by tile and resolution level). `None` when none of them reads the file so.
+/// Opens a raster read by window with one of terrio's own drivers (Zarr stores, local or remote,
+/// read chunk by chunk; JPEG 2000 by tile and resolution level). `None` when none of them reads
+/// the file so.
 pub(crate) fn open_lazy(path: &str) -> Option<Result<crate::LazyRaster>> {
-    let p = Path::new(path);
-    if zarr::is_zarr(p) { zarr::open_lazy(p) } else { jp2::open_lazy(path) }
+    zarr::open_lazy(path).or_else(|| jp2::open_lazy(path))
+}
+
+/// Reads a dataset that terrio's own drivers read in place rather than downloading it (remote
+/// Zarr stores, GDAL's `ZARR:` names). `None` when `path` is no such dataset.
+pub(crate) fn open_in_place(path: &str) -> Option<Result<RasterDataset>> {
+    zarr::open_named(path)
 }
 
 /// Opens a subdataset named as GDAL names them (`NETCDF:"file.nc":variable`,
