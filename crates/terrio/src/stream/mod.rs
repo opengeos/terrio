@@ -377,10 +377,10 @@ impl ShpSource {
             self.shp_done = true;
             return Ok(None);
         }
-        let words = u32::from_be_bytes([head[4], head[5], head[6], head[7]]) as usize;
-        let mut rec = vec![0u8; 2 * words];
-        let n = read_full(&mut self.shp, &mut rec)?;
-        rec.truncate(n);
+        let words = u32::from_be_bytes([head[4], head[5], head[6], head[7]]);
+        // Read as it comes rather than allocated from the (untrusted) length.
+        let mut rec = Vec::new();
+        (&mut self.shp).take(2 * u64::from(words)).read_to_end(&mut rec)?;
         Ok(Some(shapefile::decode_shape(&rec)))
     }
 
@@ -487,9 +487,10 @@ impl FeatureSource for FgbSource {
                 break;
             }
             let n = u32::from_le_bytes(len) as usize;
-            let mut buf = vec![0u8; 4 + n];
-            buf[..4].copy_from_slice(&len);
-            if read_full(&mut self.r, &mut buf[4..])? < n {
+            // Read as it comes rather than allocated from the (untrusted) length.
+            let mut buf = len.to_vec();
+            (&mut self.r).take(n as u64).read_to_end(&mut buf)?;
+            if buf.len() < 4 + n {
                 return Err(Error::InvalidData("FlatGeobuf: truncated feature".into()));
             }
             raw.push(buf);
@@ -561,7 +562,10 @@ impl FeatureSource for GpkgSource {
                 }
             }
             GpkgRows::Lookup { root, ids } => {
-                for id in ids.by_ref().take(self.batch) {
+                // Ids without a row (stale R-tree entries) are skipped: only the end of the ids
+                // ends the stream.
+                while rows.len() < self.batch {
+                    let Some(id) = ids.next() else { break };
                     if let Some(p) = gpkg_read::Tables::lookup(&self.db, *root, id)? {
                         rows.push((id, p));
                     }
@@ -1183,6 +1187,23 @@ pub fn can_convert_stream(src: &str, dst: &str, options: &ConvertOptions) -> boo
         && out.is_some_and(can_write_stream)
         && input.is_some_and(can_read_stream)
         && crate::vfs::Location::parse(src).is_local()
+        && !same_dataset(src, dst)
+}
+
+/// Whether writing `dst` would overwrite `src` (the same file, or the same shapefile through
+/// another of its files): such conversions read the input whole before writing.
+fn same_dataset(src: &str, dst: &str) -> bool {
+    let key = |p: &str| {
+        let p = std::path::Path::new(p);
+        let dir = p.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(std::path::Path::new("."));
+        let shp = matches!(VectorDriver::for_extension(&p.to_string_lossy()), Some(VectorDriver::Shapefile));
+        let name = if shp { p.file_stem() } else { p.file_name() };
+        Some((std::fs::canonicalize(dir).ok()?, name?.to_os_string(), shp))
+    };
+    match (key(src), key(dst)) {
+        (Some((a, x, s)), Some((b, y, t))) => a == b && x == y && s == t,
+        _ => false,
+    }
 }
 
 /// Converts a vector dataset, as `terrio convert` does, a chunk of features at a time when

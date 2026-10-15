@@ -82,8 +82,9 @@ Point clouds (LAS, LAZ, COPC) convert to LAS, LAZ, COPC or a vector layer of poi
 
 Vector layers convert as streams, a chunk of features at a time, when the input is a local
 GeoPackage, FlatGeobuf, GeoParquet, Shapefile, GeoJSON, GeoJSONSeq or CSV file, the output a
-FlatGeobuf, GeoParquet, Shapefile, GeoJSON, GeoJSONSeq or CSV file, and neither `--sql`,
-`--append` nor `--overwrite` is given: memory stays bounded whatever the size of the layer (a
+GeoPackage (of a single layer), FlatGeobuf, GeoParquet, Shapefile, GeoJSON, GeoJSONSeq or CSV
+file other than the input, neither `--sql`, `--append` nor `--overwrite` is given, and `--lco`
+gives only CSV and GeoJSON options: memory stays bounded whatever the size of the layer (a
 15-million-polygon, 3.8 GB GeoPackage converts to GeoParquet in 192 MB, as `ogr2ogr` does in
 169 MB). The other conversions read the layers whole. See [Formats](formats.md#vectors).
 

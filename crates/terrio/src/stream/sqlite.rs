@@ -106,7 +106,7 @@ impl FileDb {
 
     /// A cursor over the rows of the table b-tree rooted at `root`, in rowid order.
     pub(crate) fn cursor(&self, root: u32) -> Cursor {
-        Cursor { stack: vec![(root, 0)] }
+        Cursor { stack: vec![vec![root].into_iter()] }
     }
 
     /// The root page and `CREATE TABLE` statement of a rowid table.
@@ -130,15 +130,20 @@ impl FileDb {
 /// Rows `(rowid, payload)`.
 pub(crate) type Rows = Vec<(i64, Vec<u8>)>;
 
-/// A position in a table b-tree: the pages from the root down, with the next child to visit.
+/// A position in a table b-tree: for each level from the root down, the pages still to visit
+/// (each interior page is read once).
 pub(crate) struct Cursor {
-    stack: Vec<(u32, usize)>,
+    stack: Vec<std::vec::IntoIter<u32>>,
 }
 
 impl Cursor {
     /// The rows `(rowid, payload)` of the next leaf page; `None` past the last.
     pub(crate) fn next_leaf(&mut self, db: &FileDb) -> Result<Option<Rows>> {
-        while let Some((n, next)) = self.stack.pop() {
+        while let Some(level) = self.stack.last_mut() {
+            let Some(n) = level.next() else {
+                self.stack.pop();
+                continue;
+            };
             if self.stack.len() > 64 {
                 return Err(bad("b-tree too deep"));
             }
@@ -148,18 +153,15 @@ impl Cursor {
             match page[h] {
                 0x05 => {
                     // Interior: the cells' left children, then the right-most pointer.
-                    if next > cells {
-                        continue;
-                    }
-                    self.stack.push((n, next + 1));
-                    let child = if next < cells {
-                        let p = h + 12 + 2 * next;
+                    let mut children = Vec::with_capacity(cells + 1);
+                    for c in 0..cells {
+                        let p = h + 12 + 2 * c;
                         let off = u16::from_be_bytes([page[p], page[p + 1]]) as usize;
-                        u32::from_be_bytes(page.get(off..off + 4).and_then(|b| b.try_into().ok()).ok_or_else(|| bad("cell"))?)
-                    } else {
-                        u32::from_be_bytes(page[h + 8..h + 12].try_into().map_err(|_| bad("page"))?)
-                    };
-                    self.stack.push((child, 0));
+                        children
+                            .push(u32::from_be_bytes(page.get(off..off + 4).and_then(|b| b.try_into().ok()).ok_or_else(|| bad("cell"))?));
+                    }
+                    children.push(u32::from_be_bytes(page[h + 8..h + 12].try_into().map_err(|_| bad("page"))?));
+                    self.stack.push(children.into_iter());
                 }
                 0x0d => {
                     let mut out = Vec::with_capacity(cells);

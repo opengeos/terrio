@@ -214,3 +214,20 @@ fn arrow_streams_match_whole_tables() {
         assert_eq!(batches, table.batches);
     }
 }
+
+#[test]
+fn converts_a_file_onto_itself_whole() {
+    let dir = tempfile::tempdir().unwrap();
+    let layer = sample(40);
+    for ext in ["geojson", "shp", "fgb"] {
+        let path = dir.path().join(format!("same.{ext}")).to_string_lossy().into_owned();
+        crate::write_vector(std::slice::from_ref(&layer), &path, &Default::default()).unwrap();
+        let options = ConvertOptions::default();
+        assert!(!can_convert_stream(&path, &path, &options), "{ext}");
+        let other = dir.path().join(format!("other.{ext}")).to_string_lossy().into_owned();
+        assert!(can_convert_stream(&path, &other, &options), "{ext}");
+        convert(&path, &path, &options).unwrap();
+        let read = crate::open_vector(&path, &Default::default()).unwrap().layers.remove(0);
+        assert_eq!(read.features.len(), 40, "{ext}");
+    }
+}

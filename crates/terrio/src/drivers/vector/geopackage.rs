@@ -618,7 +618,11 @@ impl Builder {
             }
             let t = match f.field_type {
                 FieldType::Integer => {
-                    if small(i) { "MEDIUMINT".to_string() } else { "INTEGER".to_string() }
+                    if small(i) {
+                        "MEDIUMINT".to_string()
+                    } else {
+                        "INTEGER".to_string()
+                    }
                 }
                 FieldType::Float => "REAL".into(),
                 FieldType::Boolean => "BOOLEAN".into(),
@@ -639,7 +643,15 @@ impl Builder {
     /// Records a layer's table and its metadata: `gpkg_contents` with the extent,
     /// `gpkg_geometry_columns`, `gpkg_ogr_contents` and its triggers, the sequence, and the
     /// R-tree of the geometries' bounds.
-    pub(crate) fn finish_layer(&mut self, name: &str, cols: &LayerColumns, count: usize, max_fid: i64, extent: LayerExtent, table: LayerTable) {
+    pub(crate) fn finish_layer(
+        &mut self,
+        name: &str,
+        cols: &LayerColumns,
+        count: usize,
+        max_fid: i64,
+        extent: LayerExtent,
+        table: LayerTable,
+    ) {
         let b = extent.bounds.map(|b| b.map(Value::Real)).unwrap_or([Value::Null, Value::Null, Value::Null, Value::Null]);
         let [min_x, min_y, max_x, max_y] = b;
         let (spatial, srs_id) = (cols.spatial, cols.srs_id);
@@ -688,7 +700,13 @@ impl Builder {
         }
         if spatial {
             let (rtree_tables, rtree_objects) = rtree_index(name, "geom", extent.entries);
-            self.extension(Some(name), Some("geom"), "gpkg_rtree_index", "http://www.geopackage.org/spec120/#extension_rtree", "write-only");
+            self.extension(
+                Some(name),
+                Some("geom"),
+                "gpkg_rtree_index",
+                "http://www.geopackage.org/spec120/#extension_rtree",
+                "write-only",
+            );
             self.tables.extend(rtree_tables);
             self.objects.extend(rtree_objects);
         }
