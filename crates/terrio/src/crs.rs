@@ -305,9 +305,6 @@ impl std::fmt::Display for SpatialRef {
 /// Datum realizations, which a WKT definition names when it means them.
 const REALIZATIONS: &[&str] = &["2011", "HARN", "NSRS", "CSRS", "CORS", "MA11", "PA11", "NAD83(", "ITRF", "GDA2020", "ETRF"];
 
-/// Identifies the EPSG code of a WKT definition. Among equally good matches, prefers the base
-/// datum over its later realizations (NAD83 over NAD83(HARN) and NAD83(2011)) unless the WKT names
-/// one, then the lowest code: what GDAL picks for ESRI `.prj` files.
 /// The semi-major axis of the first `SPHEROID` or `ELLIPSOID` of a WKT definition.
 fn semi_major_axis(wkt: &str) -> Option<f64> {
     let upper = wkt.to_ascii_uppercase();
@@ -319,6 +316,9 @@ fn semi_major_axis(wkt: &str) -> Option<f64> {
     after_name.trim_start_matches([',', ' ']).split([',', ']']).next()?.trim().parse().ok()
 }
 
+/// Identifies the EPSG code of a WKT definition. Among equally good matches, prefers the base
+/// datum over its later realizations (NAD83 over NAD83(HARN) and NAD83(2011)) unless the WKT names
+/// one, then the lowest code: what GDAL picks for ESRI `.prj` files.
 pub(crate) fn identify_epsg(wkt: &str) -> Option<u32> {
     if let Some(code) = declared_epsg(wkt) {
         return Some(code);
