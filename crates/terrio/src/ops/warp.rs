@@ -12,10 +12,11 @@
 //!   reproduce GDAL's warp kernel, including its treatment of nodata and of image edges.
 
 use super::Ct as Transformer;
-use super::{Grid, Resampling, apply_gt, band_f64, build_raster, invert_gt, is_nodata, warp_round};
+use super::{Grid, Resampling, apply_gt, invert_gt, is_nodata, warp_round};
 use crate::crs::SpatialRef;
 use crate::{Error, RasterDataset, Result};
 use wbraster::DataType;
+use wbraster::raster::RasterData;
 
 /// Nodata handling for an input or the output.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -1003,14 +1004,20 @@ pub fn warp(sources: &[&RasterDataset], o: &WarpOptions) -> Result<RasterDataset
     };
     let init = dst_nodata.unwrap_or(0.0);
     let n = grid.width * grid.height;
-    let mut out: Vec<Vec<f64>> = vec![vec![init; n]; bands];
+    // The output, in its type: chunks are warped into `f64` rows, then stored (the values are
+    // already rounded to the type, see `Sink::value`).
+    let mut out = RasterData::new_filled(out_type, n * bands, 0.0);
+    crate::pixel::with_data!(&mut out, v => {
+        let fill = warp_round(init, out_type);
+        v.iter_mut().for_each(|x| *x = fill as _);
+    });
 
-    for s in &srcs {
+    for (k, s) in srcs.iter().enumerate() {
         let mut t = s.transformer(&dst_srs)?;
         t.set_dst_gt(grid.geo_transform);
         let nodata: Vec<Option<f64>> = (0..bands).map(|b| src_nodata_of(s, b)).collect();
         let unified = matches!(o.src_nodata, Nodata::Values(_)) && bands > 1;
-        let src_bands: Vec<Vec<f64>> = (0..bands).map(|b| band_f64(&s.ds.raster, b)).collect();
+        let src_bands: Vec<super::BandView> = (0..bands).map(|b| super::BandView::of(&s.ds.raster, b)).collect();
         let cut_mask = match &o.cutline {
             Some(c) => Some(cutline_mask(c, s)?),
             None => None,
@@ -1039,11 +1046,40 @@ pub fn warp(sources: &[&RasterDataset], o: &WarpOptions) -> Result<RasterDataset
         // As GDAL's warp kernel: valid pixels equal to the output nodata are nudged off it,
         // except with a nodata value unified across several bands.
         let sink = Sink { out_type, dst_nodata, avoid_nodata: masked && (bands == 1 || !unified) };
+        let mut staged: Vec<Vec<f64>> = vec![Vec::new(); bands];
+        let fill = warp_round(init, out_type);
         for c in chunks {
-            ctx.warp_chunk(&c, &data, &sink, chunk_rows(&mut out, grid.width, &c));
+            // The chunk's part of the output as `f64` (the first source's chunks don't overlap:
+            // the output there is still its initial value), warped, then stored back.
+            let (w, rows) = (grid.width, c.dy..c.dy + c.dh);
+            for (b, part) in staged.iter_mut().enumerate() {
+                part.clear();
+                part.resize(c.dw * c.dh, fill);
+                if k > 0 {
+                    crate::pixel::with_data!(&out, v => {
+                        let src = &v[b * n + rows.start * w..b * n + rows.end * w];
+                        crate::par::chunks_mut(part, c.dw, |r, o| {
+                            for (o, x) in o.iter_mut().zip(&src[r * w + c.dx..r * w + c.dx + c.dw]) {
+                                *o = crate::pixel::Pixel::to_f64(*x);
+                            }
+                        });
+                    });
+                }
+            }
+            ctx.warp_chunk(&c, &data, &sink, chunk_rows(&mut staged, c.dw, &Chunk { dx: 0, dy: 0, ..c }));
+            for (b, part) in staged.iter().enumerate() {
+                crate::pixel::with_data!(&mut out, v => {
+                    let dst = &mut v[b * n + rows.start * w..b * n + rows.end * w];
+                    crate::par::chunks_mut(dst, w, |r, o| {
+                        for (o, x) in o[c.dx..c.dx + c.dw].iter_mut().zip(&part[r * c.dw..(r + 1) * c.dw]) {
+                            *o = warp_round(*x, out_type) as _;
+                        }
+                    });
+                });
+            }
         }
     }
-    build_raster(grid, out, out_type, dst_nodata, &dst_srs, warp_round)
+    super::build_raster_data(grid, out, bands, dst_nodata, &dst_srs)
 }
 
 /// Whether the destination grid is the source grid shifted by whole pixels.
@@ -1059,7 +1095,7 @@ fn is_pixel_translation(src: &[f64; 6], dst: &[f64; 6]) -> bool {
 
 /// Per-band validity masks (`None`: all valid), from nodata values and a cutline mask. With a
 /// unified nodata, a pixel is invalid only when every band is nodata.
-fn validity(bands: &[Vec<f64>], nodata: &[Option<f64>], unified: bool, cut: Option<Vec<bool>>) -> Vec<Option<Vec<bool>>> {
+fn validity(bands: &[super::BandView], nodata: &[Option<f64>], unified: bool, cut: Option<Vec<bool>>) -> Vec<Option<Vec<bool>>> {
     let combine = |m: Option<Vec<bool>>| -> Option<Vec<bool>> {
         match (m, &cut) {
             (Some(mut m), Some(c)) => {
@@ -1072,11 +1108,11 @@ fn validity(bands: &[Vec<f64>], nodata: &[Option<f64>], unified: bool, cut: Opti
     };
     if unified && nodata.iter().all(Option::is_some) {
         let n = bands[0].len();
-        let m: Vec<bool> = (0..n).map(|i| bands.iter().zip(nodata).any(|(b, nd)| !is_nodata(b[i], nd.unwrap()))).collect();
+        let m: Vec<bool> = (0..n).map(|i| bands.iter().zip(nodata).any(|(b, nd)| !is_nodata(b.get(i), nd.unwrap()))).collect();
         let m = combine(Some(m));
         return vec![m; bands.len()];
     }
-    bands.iter().zip(nodata).map(|(b, nd)| combine(nd.map(|nd| super::par_map(b, |v| !is_nodata(*v, nd))))).collect()
+    bands.iter().zip(nodata).map(|(b, nd)| combine(nd.map(|nd| crate::par::map_range(b.len(), |i| !is_nodata(b.get(i), nd))))).collect()
 }
 
 /// The transformed extent of a cutline, as `gdalwarp -crop_to_cutline` computes it.
@@ -1221,7 +1257,7 @@ struct WarpContext<'a> {
 }
 
 struct SrcData<'a> {
-    bands: &'a [Vec<f64>],
+    bands: &'a [super::BandView<'a>],
     valid: &'a [Option<Vec<bool>>],
     width: usize,
 }
@@ -1778,7 +1814,7 @@ impl Kernel<'_> {
 
     #[inline]
     fn value(&self, b: usize, x: usize, y: usize) -> f64 {
-        self.src.bands[b][self.index(x, y)]
+        self.src.bands[b].get(self.index(x, y))
     }
 
     #[inline]

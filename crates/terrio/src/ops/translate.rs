@@ -7,10 +7,11 @@
 
 use super::Ct as Transformer;
 use super::vrt::SourceRead;
-use super::{Grid, Resampling, band_f64, build_raster, convert_value, is_nodata, type_range};
+use super::{Grid, Resampling, convert_value, type_range};
 use crate::crs::SpatialRef;
 use crate::{Error, RasterDataset, Result};
 use wbraster::DataType;
+use wbraster::raster::RasterData;
 
 /// An output dimension: pixels or a percentage of the source window.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -179,13 +180,13 @@ pub fn translate(ds: &RasterDataset, o: &TranslateOptions) -> Result<RasterDatas
 
     let complex = o.scale.is_some() || o.exponent.is_some();
     let n = ow * oh;
-    let mut out = Vec::with_capacity(bands.len());
+    let mut out = RasterData::new_filled(out_type, n * bands.len(), 0.0);
+    let mut out_bands = Vec::with_capacity(bands.len());
     for &b in &bands {
-        let values = band_f64(r, b - 1);
-        let valid: Option<Vec<bool>> = src_nodata.map(|nd| super::par_map(&values, |v| !is_nodata(*v, nd)));
-        let mut buf = vec![out_nodata.unwrap_or(0.0); n];
+        let values = super::BandView::of(r, b - 1);
+        let valid: Option<Vec<bool>> = src_nodata.map(|nd| values.valid(nd));
         let read = SourceRead {
-            values: &values,
+            values,
             valid: if complex || !nearest { valid.as_deref() } else { None },
             width: r.cols,
             height: r.rows,
@@ -201,7 +202,7 @@ pub fn translate(ds: &RasterDataset, o: &TranslateOptions) -> Result<RasterDatas
             let sc = o.scale.unwrap_or_default();
             let (smin, mut smax) = match sc.src {
                 Some(r) => r,
-                None => min_max(&values, valid.as_deref()).unwrap_or((0.0, 0.0)),
+                None => min_max(values, valid.as_deref()).unwrap_or((0.0, 0.0)),
             };
             if smax == smin {
                 smax += 0.1;
@@ -217,7 +218,8 @@ pub fn translate(ds: &RasterDataset, o: &TranslateOptions) -> Result<RasterDatas
             None
         };
         let float_working = matches!(r.data_type, DataType::F64 | DataType::I32 | DataType::U32 | DataType::I64 | DataType::U64);
-        read.read(ow, oh, &mut buf, |v| match scaling {
+        let fill = convert_value(out_nodata.unwrap_or(0.0), out_type);
+        let scaled = |v: f64| match scaling {
             None => v,
             Some((smin, smax, dmin, dmax)) => {
                 let s = match o.exponent {
@@ -232,19 +234,26 @@ pub fn translate(ds: &RasterDataset, o: &TranslateOptions) -> Result<RasterDatas
                 };
                 if float_working { s } else { s as f32 as f64 }
             }
+        };
+        // Written in the output's type, converted as they are stored.
+        let k = out_bands.len();
+        crate::pixel::with_data!(&mut out, v => {
+            let band = &mut v[k * n..(k + 1) * n];
+            band.iter_mut().for_each(|x| *x = fill as _);
+            read.read(ow, oh, band, |x| convert_value(scaled(x), out_type) as _);
         });
-        out.push(buf);
+        out_bands.push(b);
     }
     let grid = Grid { width: ow, height: oh, geo_transform: gt };
     let srs = o.assign_srs.clone().unwrap_or_else(|| ds.crs());
-    let mut res = build_raster(grid, out, out_type, out_nodata, &srs, convert_value)?;
+    let mut res = super::build_raster_data(grid, out, bands.len(), out_nodata, &srs)?;
     res.driver = ds.driver;
     Ok(res)
 }
 
 /// The smallest and largest valid values.
-fn min_max(values: &[f64], valid: Option<&[bool]>) -> Option<(f64, f64)> {
-    let mut it = values.iter().enumerate().filter(|(i, v)| !v.is_nan() && valid.is_none_or(|m| m[*i])).map(|(_, v)| *v);
+fn min_max(values: super::BandView, valid: Option<&[bool]>) -> Option<(f64, f64)> {
+    let mut it = (0..values.len()).map(|i| (i, values.get(i))).filter(|(i, v)| !v.is_nan() && valid.is_none_or(|m| m[*i])).map(|(_, v)| v);
     let first = it.next()?;
     Some(it.fold((first, first), |(a, b), v| (a.min(v), b.max(v))))
 }

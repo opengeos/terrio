@@ -539,10 +539,10 @@ impl WindowSource for Mosaic {
             }
             let sub = r.read_window(Window::new(sx0, sy0, sw, sh), &WindowOptions { bands: bands.to_vec(), overview: None })?;
             for (bi, buf) in out.iter_mut().enumerate() {
-                let values = crate::ops::band_f64(&sub.raster, bi);
-                let valid: Option<Vec<bool>> = self.nodata.map(|nd| crate::ops::par_map(&values, |v| !crate::ops::is_nodata(*v, nd)));
+                let values = crate::ops::BandView::of(&sub.raster, bi);
+                let valid: Option<Vec<bool>> = self.nodata.map(|nd| values.valid(nd));
                 let req = SourceRead {
-                    values: &values,
+                    values,
                     valid: valid.as_deref(),
                     width: sw,
                     height: sh,
