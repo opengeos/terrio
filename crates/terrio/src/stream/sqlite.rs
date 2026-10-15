@@ -53,9 +53,11 @@ impl FileDb {
         }
         let page_size = match u16::from_be_bytes([h[16], h[17]]) {
             1 => 65536,
-            p => p as usize,
+            p if p >= 512 && p.is_power_of_two() => p as usize,
+            _ => return Err(bad("invalid page size")),
         };
-        let usable = page_size - h[20] as usize;
+        // SQLite requires at least 480 usable bytes a page.
+        let usable = page_size.checked_sub(h[20] as usize).filter(|&u| u >= 480).ok_or_else(|| bad("invalid reserved space"))?;
         let len = file.metadata()?.len();
         let mut db = Self { file: Mutex::new(file), page_size, usable, pages: len / page_size as u64, schema: Vec::new() };
         let mut entries = Vec::new();
@@ -87,7 +89,11 @@ impl FileDb {
         let u = self.usable;
         let x = u - 35;
         if size <= x {
-            return page.get(start..start + size).map(<[u8]>::to_vec).ok_or_else(|| bad("payload"));
+            return start.checked_add(size).and_then(|end| page.get(start..end)).map(<[u8]>::to_vec).ok_or_else(|| bad("payload"));
+        }
+        // Each overflow page holds `u - 4` bytes; a chain longer than the file is corrupt.
+        if (size / (u - 4)) as u64 > self.pages {
+            return Err(bad("payload"));
         }
         let m = ((u - 12) * 32 / 255) - 23;
         let k = m + (size - m) % (u - 4);
@@ -100,6 +106,9 @@ impl FileDb {
             next = u32::from_be_bytes([p[0], p[1], p[2], p[3]]);
             let take = (size - out.len()).min(u - 4);
             out.extend_from_slice(&p[4..4 + take]);
+        }
+        if out.len() < size {
+            return Err(bad("payload"));
         }
         Ok(out)
     }
@@ -125,6 +134,12 @@ impl FileDb {
         }
         Err(bad(&format!("no table '{name}'")))
     }
+}
+
+/// The cell offset stored at `p` in a page's cell pointer array.
+fn cell_pointer(page: &[u8], p: usize) -> Result<usize> {
+    let b = page.get(p..p + 2).ok_or_else(|| bad("cell pointer"))?;
+    Ok(u16::from_be_bytes([b[0], b[1]]) as usize)
 }
 
 /// Rows `(rowid, payload)`.
@@ -155,8 +170,7 @@ impl Cursor {
                     // Interior: the cells' left children, then the right-most pointer.
                     let mut children = Vec::with_capacity(cells + 1);
                     for c in 0..cells {
-                        let p = h + 12 + 2 * c;
-                        let off = u16::from_be_bytes([page[p], page[p + 1]]) as usize;
+                        let off = cell_pointer(&page, h + 12 + 2 * c)?;
                         children
                             .push(u32::from_be_bytes(page.get(off..off + 4).and_then(|b| b.try_into().ok()).ok_or_else(|| bad("cell"))?));
                     }
@@ -166,11 +180,11 @@ impl Cursor {
                 0x0d => {
                     let mut out = Vec::with_capacity(cells);
                     for c in 0..cells {
-                        let p = h + 8 + 2 * c;
-                        let off = u16::from_be_bytes([page[p], page[p + 1]]) as usize;
+                        let off = cell_pointer(&page, h + 8 + 2 * c)?;
                         let (size, n1) = varint(&page, off).ok_or_else(|| bad("cell"))?;
                         let (rowid, n2) = varint(&page, off + n1).ok_or_else(|| bad("cell"))?;
-                        out.push((rowid, db.payload(&page, off + n1 + n2, size as usize)?));
+                        let size = usize::try_from(size).map_err(|_| bad("cell"))?;
+                        out.push((rowid, db.payload(&page, off + n1 + n2, size)?));
                     }
                     return Ok(Some(out));
                 }
@@ -208,10 +222,7 @@ impl Tables for FileDb {
             let kind = page[h];
             let cells = u16::from_be_bytes([page[h + 3], page[h + 4]]) as usize;
             let header_len = if kind == 0x05 { 12 } else { 8 };
-            let cell = |c: usize| -> Result<usize> {
-                let p = h + header_len + 2 * c;
-                Ok(u16::from_be_bytes([*page.get(p).ok_or_else(|| bad("cell"))?, *page.get(p + 1).ok_or_else(|| bad("cell"))?]) as usize)
-            };
+            let cell = |c: usize| cell_pointer(&page, h + header_len + 2 * c);
             match kind {
                 0x05 => {
                     let (mut lo, mut hi) = (0, cells);
@@ -237,7 +248,10 @@ impl Tables for FileDb {
                         match key.cmp(&rowid) {
                             std::cmp::Ordering::Less => lo = mid + 1,
                             std::cmp::Ordering::Greater => hi = mid,
-                            std::cmp::Ordering::Equal => return self.payload(&page, off + n1 + n2, size as usize).map(Some),
+                            std::cmp::Ordering::Equal => {
+                                let size = usize::try_from(size).map_err(|_| bad("cell"))?;
+                                return self.payload(&page, off + n1 + n2, size).map(Some);
+                            }
                         }
                     }
                     return Ok(None);

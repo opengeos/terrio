@@ -1256,8 +1256,8 @@ pub fn convert(src: &str, dst: &str, options: &ConvertOptions) -> Result<()> {
     } else {
         None
     };
+    let mut writer = FeatureWriter::create(dst, translator.schema(), profile.as_ref(), &options.write)?;
     let written = (|| {
-        let mut writer = FeatureWriter::create(dst, translator.schema(), profile.as_ref(), &options.write)?;
         while !translator.is_done()
             && let Some(c) = reader.read_chunk(chunk)?
         {
@@ -1265,7 +1265,8 @@ pub fn convert(src: &str, dst: &str, options: &ConvertOptions) -> Result<()> {
         }
         writer.finish()
     })();
-    // A conversion that fails partway leaves no truncated output behind.
+    // A conversion that fails partway leaves no truncated output behind (one that fails before
+    // the output is created leaves what was there).
     if written.is_err() {
         let path = std::path::Path::new(dst);
         let _ = std::fs::remove_file(path);

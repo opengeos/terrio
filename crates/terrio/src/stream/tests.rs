@@ -241,13 +241,56 @@ fn converts_a_file_onto_itself_whole() {
 #[test]
 fn failed_conversions_leave_no_output() {
     let dir = tempfile::tempdir().unwrap();
-    let src = dir.path().join("bad.geojsonl");
-    let good = r#"{"type":"Feature","properties":{"a":1},"geometry":{"type":"Point","coordinates":[1,2]}}"#;
-    std::fs::write(&src, format!("{good}\n{good}\nnot json\n")).unwrap();
-    for ext in ["geojson", "shp"] {
+    // A FlatGeobuf whose last feature is cut short: reading fails after features were written.
+    let src = dir.path().join("cut.fgb").to_string_lossy().into_owned();
+    crate::write_vector(&[sample(40)], &src, &Default::default()).unwrap();
+    let bytes = std::fs::read(&src).unwrap();
+    std::fs::write(&src, &bytes[..bytes.len() - 10]).unwrap();
+    // Shapefiles profile the layer first, so they fail before the output is created.
+    for ext in ["geojson", "geojsonl", "shp"] {
         let dst = dir.path().join(format!("out.{ext}"));
         let options = ConvertOptions { chunk_size: 1, ..Default::default() };
-        assert!(convert(&src.to_string_lossy(), &dst.to_string_lossy(), &options).is_err(), "{ext}");
+        assert!(can_convert_stream(&src, &dst.to_string_lossy(), &options));
+        assert!(convert(&src, &dst.to_string_lossy(), &options).is_err(), "{ext}");
         assert!(!dst.exists() && !dst.with_extension("dbf").exists(), "{ext}");
+    }
+}
+
+#[test]
+fn corrupt_geopackages_are_errors_not_panics() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("c.gpkg").to_string_lossy().into_owned();
+    crate::write_vector(&[sample(300)], &path, &Default::default()).unwrap();
+    let good = std::fs::read(&path).unwrap();
+    let read = |bytes: &[u8]| {
+        std::fs::write(&path, bytes).unwrap();
+        open_layers(&path, &Default::default(), 50).and_then(|mut r| match r.pop() {
+            Some(r) => r.read_all().map(|_| ()),
+            None => Ok(()),
+        })
+    };
+    // Invalid page sizes; reserved space leaving too few usable bytes.
+    for (offset, value) in [(16usize, 0u8), (17, 7)] {
+        let mut b = good.clone();
+        b[offset] = value;
+        assert!(read(&b).is_err(), "header byte {offset}");
+    }
+    let mut b = good.clone();
+    b[16..18].copy_from_slice(&512u16.to_be_bytes());
+    b[20] = 100;
+    assert!(read(&b).is_err());
+    // Huge cell counts, then a huge payload size in the first cell, on every page.
+    for page in 0..good.len() / 4096 {
+        let h = if page == 0 { 100 } else { 0 };
+        let mut b = good.clone();
+        b[page * 4096 + h + 3..page * 4096 + h + 5].copy_from_slice(&[0xff, 0xff]);
+        let _ = read(&b);
+        let mut b = good.clone();
+        let ptr = page * 4096 + h + if b[page * 4096 + h] == 0x05 { 12 } else { 8 };
+        let cell = page * 4096 + u16::from_be_bytes([b[ptr], b[ptr + 1]]) as usize;
+        if b[page * 4096 + h] == 0x0d && cell + 9 <= b.len() {
+            b[cell..cell + 9].copy_from_slice(&[0xff; 9]);
+            let _ = read(&b);
+        }
     }
 }
