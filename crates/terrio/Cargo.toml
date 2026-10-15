@@ -57,6 +57,7 @@ openjp2.workspace = true
 lerc-reader.workspace = true
 lerc-core.workspace = true
 jxl-oxide.workspace = true
+rusty_av1d.workspace = true
 lzma-rust2.workspace = true
 
 # The optional GDAL backend: opens what GDAL can when terrio has no driver for it. Needs GDAL

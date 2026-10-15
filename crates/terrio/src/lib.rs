@@ -136,6 +136,7 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
 pub mod arrow;
+mod avif;
 mod cog;
 pub mod crs;
 mod dataset;

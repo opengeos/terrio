@@ -19,8 +19,8 @@ GDAL's drivers (the formats marked * are written that way): see
 | HDF5 | HDF5 datasets, as GDAL's HDF5 driver reads them | ✓ | | h5, hdf5, he5 |
 | HFA | ERDAS Imagine (written with the `gdal` feature) | ✓ | ✓* | img |
 | GPKG | GeoPackage tiles and gridded coverages | ✓ | ✓ | gpkg |
-| PMTiles | PMTiles v3 raster tiles (PNG, JPEG, WebP) | ✓ | ✓ | pmtiles |
-| MBTiles | MBTiles raster tiles (PNG, JPEG, WebP) | ✓ | ✓ | mbtiles |
+| PMTiles | PMTiles v3 raster tiles (PNG, JPEG, WebP; AVIF read) | ✓ | ✓ | pmtiles |
+| MBTiles | MBTiles raster tiles (PNG, JPEG, WebP; AVIF read) | ✓ | ✓ | mbtiles |
 | VRT | GDAL Virtual Raster | ✓ | ✓ | vrt |
 | STACIT | Mosaics of STAC items' assets (`STACIT:"search or items":asset=name`) | ✓ | | |
 | ENVI | ENVI labelled raster | ✓ | ✓ | envi, hdr, dat, bsq, bip |
@@ -219,7 +219,7 @@ PMTiles (v3) and MBTiles archives hold raster tiles or Mapbox Vector Tiles (MVT)
 Mercator tiling scheme (EPSG:3857). They open as GDAL's PMTiles, MBTiles and MVT drivers open
 them:
 
-- **Raster tiles** (PNG, JPEG, WebP) open as a raster in EPSG:3857 at the resolution of the
+- **Raster tiles** (PNG, JPEG, WebP, AVIF) open as a raster in EPSG:3857 at the resolution of the
   highest zoom level, with the lower zoom levels as overviews, read by window (only the tiles a
   window needs are fetched and decoded). MBTiles extents come from the `bounds` metadata, and
   MBTiles open as 4 bands (RGBA), as in GDAL's MBTiles driver; PMTiles extents are the header's
@@ -230,6 +230,13 @@ them:
   as GDAL types them. A single tile (`.mvt`, `.pbf`) is georeferenced when its path ends in
   `z/x/y.pbf`; a directory of `z/x/y.pbf` tiles with a `metadata.json` (as `ogr2ogr -f MVT`
   writes) opens like an archive.
+
+AVIF tiles are decoded in pure Rust (WebAssembly included): the HEIF container by terrio, the
+AV1 bitstream by `rusty_av1d` (a port of dav1d without its assembly), and YUV converted to RGB as
+libavif's built-in converter does (bilinear chroma upsampling), so that the pixels are those GDAL's
+AVIF driver reads (identical on 4:2:0, 4:2:2, 4:4:4, lossless, gray and alpha images). 8-bit
+images only; grid images (large AVIF made of several tiles) are not read. GDAL's MBTiles driver
+does not read AVIF tiles; terrio reads them in MBTiles and PMTiles archives.
 
 Open options (`terrio convert --oo`, `VectorOpenOptions::tiles`): `ZOOM_LEVEL` (the zoom level
 read; lower ones are overviews of rasters) and `CLIP=NO` (keep features whole, buffer included).
@@ -257,12 +264,30 @@ is left out of the tiles where GEOS fails to clip it, as GDAL leaves it out. Lay
 `TYPE`. The metadata holds `vector_layers` and `tilestats`, so that GDAL and MapLibre read the
 fields and their types. `-f MVT` writes a directory of tiles with a `metadata.json`.
 
+Existing archives are updated (`terrio convert --append`, `--overwrite`;
+`tiles::update_raster`, `tiles::update_vector`; `write_vector(..., append=True)` in Python):
+
+- **Rasters** are added as `gdalwarp` into an existing MBTiles file followed by `gdaladdo` add
+  them: warped onto the pixel grid of the archive's highest zoom level and laid over its tiles
+  where they are not transparent, the extent grown to hold them (GDAL keeps the extent), and the
+  lower zoom levels computed again. Tiles keep their format (PNG, JPEG or WebP) and the archive
+  its metadata.
+- **Vector layers** are cut into the archive's zoom levels and tile extent; their features join
+  the tiles' layers of the same name (`--append`) or replace those layers in every tile
+  (`--overwrite`), other layers stay, and `vector_layers`, `tilestats`, bounds and zoom levels are
+  merged. GDAL cannot update vector tiles: the result reads as the layers written at once.
+
+Archives are rewritten whole and replace the original once complete (PMTiles cannot be updated
+in place; MBTiles are written by terrio's SQLite writer).
+
 Checked against GDAL 3.12 (`scripts/compare_tiles_with_gdal.py`): rasters written as MBTiles
 have GDAL's size, geotransform, zoom levels and tiles, with identical pixels at full resolution
 and overviews within one grey level for 99.8% to 100% of the pixels (GDAL's overview filter
 rounds a little differently); vector tiles written by GDAL (and by Tippecanoe) read as GDAL reads
 them, feature for feature; vector tiles written by terrio read in GDAL with GDAL's feature
-counts and areas, invalid polygons included: Natural Earth's countries (Sudan is invalid) at zoom
+counts and areas (and so do archives updated with `--append`: rasters identical at full
+resolution to `gdalwarp` into GDAL's MBTiles, vector tiles to the layers written at once), invalid
+polygons included: Natural Earth's countries (Sudan is invalid) at zoom
 levels 0 to 6 and US counties at zoom levels 0 to 8 give GDAL's features and areas tile by tile
 (all but one county at one zoom level, whose `MakeValid` output starts its rings elsewhere). GDAL 3.12 reads PMTiles vector tiles only: raster PMTiles follow GDAL's
 development version.

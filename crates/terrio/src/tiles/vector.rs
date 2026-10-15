@@ -887,6 +887,22 @@ pub(crate) struct VectorTiles {
 /// feature is reprojected to EPSG:3857, clipped to every tile it touches (with the buffer),
 /// simplified when asked, quantized to the tile grid, and keeps its attributes.
 pub(crate) fn make_tiles(layers: &[Layer], o: &TileWriteOptions) -> Result<VectorTiles> {
+    let cut = cut_layers(layers, o)?;
+    let tiles = cut.tiles.into_iter().map(|((z, x, y), layers)| (z, x, y, encode_limited(layers, o))).collect();
+    Ok(VectorTiles { tiles, json: cut.json, bounds: cut.bounds, min_zoom: cut.min_zoom, max_zoom: cut.max_zoom })
+}
+
+/// Vector layers cut into tiles, before the tiles are encoded.
+struct CutLayers {
+    tiles: BTreeMap<(u8, u32, u32), Vec<MvtLayer>>,
+    json: Json,
+    bounds: [f64; 4],
+    min_zoom: u8,
+    max_zoom: u8,
+}
+
+/// The tiles' layers of [`make_tiles`], not yet encoded.
+fn cut_layers(layers: &[Layer], o: &TileWriteOptions) -> Result<CutLayers> {
     let min_zoom = o.min_zoom.unwrap_or(0);
     let max_zoom = o.max_zoom.unwrap_or(5);
     if min_zoom > max_zoom {
@@ -1006,8 +1022,146 @@ pub(crate) fn make_tiles(layers: &[Layer], o: &TileWriteOptions) -> Result<Vecto
         "vector_layers": vector_layers,
         "tilestats": { "layerCount": stat_layers.len(), "layers": stat_layers },
     });
-    let tiles = tiles.into_iter().map(|((z, x, y), layers)| (z, x, y, encode_limited(layers, o))).collect();
-    Ok(VectorTiles { tiles, json, bounds: [lon0, lat0, lon1, lat1], min_zoom, max_zoom })
+    Ok(CutLayers { tiles, json, bounds: [lon0, lat0, lon1, lat1], min_zoom, max_zoom })
+}
+
+/// Adds vector layers to an archive of vector tiles: their features cut into the archive's zoom
+/// levels (or `MINZOOM` to `MAXZOOM`) and tile extent, and added to the tiles' layers of the same
+/// name (or, with `overwrite`, replacing those layers in every tile), other layers kept; the
+/// metadata (`vector_layers`, `tilestats`, bounds, zoom levels) merged.
+pub(crate) fn update_tiles(archive: &mut TileArchive, layers: &[Layer], o: &TileWriteOptions, overwrite: bool) -> Result<VectorTiles> {
+    if !archive.is_vector() {
+        return Err(Error::InvalidArgument("the archive holds image tiles: vector layers cannot be added to it".into()));
+    }
+    let (min_z, max_z) = archive.zoom_range();
+    let mut o = o.clone();
+    o.min_zoom = Some(o.min_zoom.unwrap_or(min_z));
+    o.max_zoom = Some(o.max_zoom.unwrap_or(max_z));
+    let mut tiles: BTreeMap<(u8, u32, u32), Vec<MvtLayer>> = BTreeMap::new();
+    for z in min_z..=max_z {
+        let present = archive.tiles_at_zoom(z)?;
+        for chunk in present.chunks(256) {
+            let wanted: Vec<(u8, u32, u32)> = chunk.iter().map(|&(x, y)| (z, x, y)).collect();
+            for (key, bytes) in wanted.iter().zip(archive.tiles(&wanted)?) {
+                let Some(bytes) = bytes else { continue };
+                let mut layers = mvt::decode(&bytes)?;
+                for f in layers.iter_mut().flat_map(|l| l.features.iter_mut()) {
+                    f.size = mvt::decode_geometry(f.geom_type, &f.geometry).map_or(0.0, |g| mvt::geometry_size(&g));
+                }
+                tiles.insert(*key, layers);
+            }
+        }
+    }
+    // The archive's tile extent.
+    if let Some(e) = tiles.values().flatten().map(|l| l.extent).next() {
+        o.extent = e;
+    }
+    if overwrite {
+        let names: Vec<&str> = layers.iter().map(|l| l.name.as_str()).collect();
+        for t in tiles.values_mut() {
+            t.retain(|l| !names.contains(&l.name.as_str()));
+        }
+    }
+    let cut = cut_layers(layers, &o)?;
+    for (key, added) in cut.tiles {
+        let t = tiles.entry(key).or_default();
+        for layer in added {
+            match t.iter_mut().find(|l| l.name == layer.name) {
+                Some(l) => l.features.extend(layer.features),
+                None => t.push(layer),
+            }
+        }
+    }
+    let encoded = tiles
+        .into_iter()
+        .filter(|(_, ls)| ls.iter().any(|l| !l.features.is_empty()))
+        .map(|((z, x, y), ls)| (z, x, y, encode_limited(ls, &o)))
+        .collect();
+    let bounds = match archive.bounds() {
+        Some(b) => [b[0].min(cut.bounds[0]), b[1].min(cut.bounds[1]), b[2].max(cut.bounds[2]), b[3].max(cut.bounds[3])],
+        None => cut.bounds,
+    };
+    Ok(VectorTiles {
+        tiles: encoded,
+        json: merge_metadata(&archive.json(), &cut.json, overwrite),
+        bounds,
+        min_zoom: cut.min_zoom.min(min_z),
+        max_zoom: cut.max_zoom.max(max_z),
+    })
+}
+
+/// Merges the metadata of layers added to an archive (`vector_layers` and `tilestats`) into the
+/// archive's: a layer written replaces the archive's of the same name with `overwrite`, or
+/// extends it (fields, zoom levels and statistics combined).
+fn merge_metadata(old: &Json, new: &Json, overwrite: bool) -> Json {
+    let mut out = if old.is_object() { old.clone() } else { json!({}) };
+    let list = |v: &Json, k: &str| v.get(k).and_then(Json::as_array).cloned().unwrap_or_default();
+    // vector_layers, by id.
+    let mut layers = list(old, "vector_layers");
+    for n in list(new, "vector_layers") {
+        match layers.iter_mut().find(|l| l.get("id") == n.get("id")) {
+            Some(l) if !overwrite => {
+                if let (Some(fields), Some(added)) =
+                    (l.get_mut("fields").and_then(Json::as_object_mut), n.get("fields").and_then(Json::as_object))
+                {
+                    for (k, v) in added {
+                        fields.entry(k.clone()).or_insert_with(|| v.clone());
+                    }
+                }
+                for (k, pick) in [("minzoom", u64::min as fn(u64, u64) -> u64), ("maxzoom", u64::max)] {
+                    if let (Some(a), Some(b)) = (l.get(k).and_then(Json::as_u64), n.get(k).and_then(Json::as_u64)) {
+                        l[k] = json!(pick(a, b));
+                    }
+                }
+            }
+            Some(l) => *l = n,
+            None => layers.push(n),
+        }
+    }
+    out["vector_layers"] = Json::Array(layers);
+    // tilestats, by layer.
+    let old_stats = old.pointer("/tilestats/layers").and_then(Json::as_array).cloned().unwrap_or_default();
+    let mut stats = old_stats;
+    for n in new.pointer("/tilestats/layers").and_then(Json::as_array).cloned().unwrap_or_default() {
+        match stats.iter_mut().find(|l| l.get("layer") == n.get("layer")) {
+            Some(l) if !overwrite => {
+                let count = l.get("count").and_then(Json::as_u64).unwrap_or(0) + n.get("count").and_then(Json::as_u64).unwrap_or(0);
+                l["count"] = json!(count);
+                let mut attrs = l.get("attributes").and_then(Json::as_array).cloned().unwrap_or_default();
+                for na in n.get("attributes").and_then(Json::as_array).cloned().unwrap_or_default() {
+                    match attrs.iter_mut().find(|a| a.get("attribute") == na.get("attribute")) {
+                        Some(a) => {
+                            let c =
+                                a.get("count").and_then(Json::as_u64).unwrap_or(0) + na.get("count").and_then(Json::as_u64).unwrap_or(0);
+                            a["count"] = json!(c);
+                            let mut values = a.get("values").and_then(Json::as_array).cloned().unwrap_or_default();
+                            for v in na.get("values").and_then(Json::as_array).cloned().unwrap_or_default() {
+                                if values.len() < 1000 && !values.contains(&v) {
+                                    values.push(v);
+                                }
+                            }
+                            a["values"] = Json::Array(values);
+                            for (k, smaller) in [("min", true), ("max", false)] {
+                                if let (Some(x), Some(y)) = (a.get(k).and_then(Json::as_f64), na.get(k).and_then(Json::as_f64)) {
+                                    let keep_old = if smaller { x <= y } else { x >= y };
+                                    if !keep_old {
+                                        a[k] = na[k].clone();
+                                    }
+                                }
+                            }
+                        }
+                        None => attrs.push(na),
+                    }
+                }
+                l["attributeCount"] = json!(attrs.len());
+                l["attributes"] = Json::Array(attrs);
+            }
+            Some(l) => *l = n,
+            None => stats.push(n),
+        }
+    }
+    out["tilestats"] = json!({ "layerCount": stats.len(), "layers": stats });
+    out
 }
 
 /// A tile's layers with their geometries at a lower resolution (`extent` instead of `from`), as

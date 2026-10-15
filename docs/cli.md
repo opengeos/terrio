@@ -67,7 +67,7 @@ terrio convert INPUT OUTPUT [-f FORMAT] [options]
 | `--nln NAME`, `--nlt TYPE` | vectors | New layer name, geometry type (`PROMOTE_TO_MULTI`...) |
 | `--explodecollections` | vectors | One feature per part |
 | `--s-srs`, `--a-srs` | vectors | Override or assign the CRS |
-| `--append`, `--overwrite` | vectors | Add to or replace layers of an existing GeoPackage |
+| `--append`, `--overwrite` | vectors, rasters (`--append`) | Add to or replace layers of an existing GeoPackage or vector tile archive; add a raster to a PMTiles or MBTiles archive of image tiles |
 | `--oo`, `--lco KEY=VALUE` | vectors | Open and layer creation options (`RFC7946=YES`...) |
 | `--co KEY=VALUE` | rasters | Creation options (Zarr; netCDF: `FORMAT=NC4`, `COMPRESS=DEFLATE`, `ZLEVEL`, `CHUNKING`; PMTiles and MBTiles: `TILE_FORMAT=WEBP`...) |
 | `--minzoom N`, `--maxzoom N` | both | Zoom levels of PMTiles, MBTiles and MVT outputs |

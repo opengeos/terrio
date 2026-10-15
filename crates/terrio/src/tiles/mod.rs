@@ -1,4 +1,4 @@
-//! Tile archives: PMTiles (v3) and MBTiles, holding raster tiles (PNG, JPEG, WebP) or Mapbox
+//! Tile archives: PMTiles (v3) and MBTiles, holding raster tiles (PNG, JPEG, WebP, AVIF) or Mapbox
 //! Vector Tiles, in the Web Mercator tiling scheme (EPSG:3857, 256-pixel tiles).
 //!
 //! They open as GDAL's MBTiles, PMTiles and MVT drivers open them:
@@ -58,7 +58,7 @@ pub enum TileFormat {
     Jpeg,
     /// WebP images.
     Webp,
-    /// AVIF images (not decoded).
+    /// AVIF images.
     Avif,
     /// Not declared.
     Unknown,
@@ -96,6 +96,8 @@ impl TileFormat {
             TileFormat::Jpeg
         } else if b.len() > 12 && &b[0..4] == b"RIFF" && &b[8..12] == b"WEBP" {
             TileFormat::Webp
+        } else if crate::avif::is_avif(b) {
+            TileFormat::Avif
         } else if b.starts_with(&[0x1f, 0x8b]) || b.first() == Some(&0x1a) {
             TileFormat::Mvt
         } else {
@@ -486,10 +488,22 @@ pub(crate) fn open_dataset_bytes(bytes: Vec<u8>, name: &str, options: &crate::Ve
 
 /// Encodes a tile pyramid of image tiles as an archive, with the metadata GDAL writes.
 pub(crate) fn write_raster_archive(rt: &raster::RasterTiles, o: &TileWriteOptions, name: &str, kind: ArchiveKind) -> Result<Vec<u8>> {
+    write_raster_archive_with(rt, o, name, kind, &[])
+}
+
+/// [`write_raster_archive`], keeping the metadata items `kept` (an updated archive's) that it does
+/// not write itself.
+fn write_raster_archive_with(
+    rt: &raster::RasterTiles,
+    o: &TileWriteOptions,
+    name: &str,
+    kind: ArchiveKind,
+    kept: &[(String, String)],
+) -> Result<Vec<u8>> {
     let b = rt.bounds;
     let name = o.name.clone().unwrap_or_else(|| name.to_string());
     let format = rt.format.name();
-    let md: Vec<(String, String)> = vec![
+    let mut md: Vec<(String, String)> = vec![
         ("name".into(), name.clone()),
         ("type".into(), o.tileset_type.clone()),
         ("description".into(), o.description.clone().unwrap_or(name)),
@@ -499,6 +513,7 @@ pub(crate) fn write_raster_archive(rt: &raster::RasterTiles, o: &TileWriteOption
         ("minzoom".into(), rt.min_zoom.to_string()),
         ("maxzoom".into(), rt.max_zoom.to_string()),
     ];
+    keep_items(&mut md, kept);
     match kind {
         ArchiveKind::MBTiles => mbtiles::write(&md, rt.tiles.clone()),
         ArchiveKind::PMTiles => {
@@ -530,7 +545,20 @@ fn g17(v: f64) -> String {
 /// Encodes vector tiles as an archive, with the metadata GDAL writes: MBTiles' items and `json`
 /// (`vector_layers`, `tilestats`); for PMTiles, the same items as JSON members.
 pub(crate) fn write_vector_archive(vt: &vector::VectorTiles, o: &TileWriteOptions, name: &str, kind: ArchiveKind) -> Result<Vec<u8>> {
+    write_vector_archive_with(vt, o, name, kind, &[])
+}
+
+/// [`write_vector_archive`], keeping the metadata items `kept` (an updated archive's) that it does
+/// not write itself.
+fn write_vector_archive_with(
+    vt: &vector::VectorTiles,
+    o: &TileWriteOptions,
+    name: &str,
+    kind: ArchiveKind,
+    kept: &[(String, String)],
+) -> Result<Vec<u8>> {
     let mut md = vector::metadata_items(vt, o, name);
+    keep_items(&mut md, kept);
     let gz = |d: &[u8]| pmtiles::compress(d, pmtiles::COMPRESSION_GZIP);
     match kind {
         ArchiveKind::MBTiles => {
@@ -566,6 +594,84 @@ pub(crate) fn write_vector_archive(vt: &vector::VectorTiles, o: &TileWriteOption
             pmtiles::write_archive(tiles, serde_json::Value::Object(json).to_string().as_bytes(), &params)
         }
     }
+}
+
+/// Adds the items of `kept` that `md` lacks (but those the writers derive from the tiles).
+fn keep_items(md: &mut Vec<(String, String)>, kept: &[(String, String)]) {
+    const DERIVED: [&str; 4] = ["json", "scheme", "vector_layers", "tilestats"];
+    for (k, v) in kept {
+        if !DERIVED.contains(&k.as_str()) && !md.iter().any(|(m, _)| m == k) {
+            md.push((k.clone(), v.clone()));
+        }
+    }
+}
+
+/// The options to rewrite an archive with: its own name, description and type, unless given.
+fn options_of(archive: &TileArchive, o: &TileWriteOptions) -> (TileWriteOptions, Vec<(String, String)>) {
+    let items = archive.metadata();
+    let item = |k: &str| items.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone());
+    let mut o = o.clone();
+    o.name = o.name.or_else(|| item("name"));
+    o.description = o.description.or_else(|| item("description"));
+    if o.tileset_type == TileWriteOptions::default().tileset_type
+        && let Some(t) = item("type")
+    {
+        o.tileset_type = t;
+    }
+    (o, items)
+}
+
+/// Adds a raster to an archive of image tiles held in memory, as `gdalwarp` into an existing
+/// MBTiles file followed by `gdaladdo` does: the raster is warped onto the grid of the archive's
+/// highest zoom level and laid over its tiles (where it is not transparent), the extent grows to
+/// hold it, and the lower zoom levels are computed again. The tiles keep their format (PNG, JPEG
+/// or WebP); the archive keeps its metadata.
+pub fn update_raster_bytes(bytes: Vec<u8>, ds: &crate::RasterDataset, o: &TileWriteOptions) -> Result<Vec<u8>> {
+    let archive = TileArchive::from_bytes(bytes)?;
+    let kind = archive.kind();
+    let (o, items) = options_of(&archive, o);
+    let rt = raster::update_tiles(archive, ds, &o)?;
+    write_raster_archive_with(&rt, &o, "tiles", kind, &items)
+}
+
+/// Adds vector layers to an archive of vector tiles held in memory: each layer's features are
+/// cut into the archive's zoom levels and added to the tiles' layer of the same name, or with
+/// `overwrite` replace that layer in every tile; other layers are kept, and the metadata
+/// (`vector_layers`, `tilestats`, bounds, zoom levels) is merged. GDAL's MBTiles and PMTiles
+/// drivers cannot update vector tiles: the result is what writing all the layers at once gives.
+pub fn update_vector_bytes(bytes: Vec<u8>, layers: &[wbvector::Layer], o: &TileWriteOptions, overwrite: bool) -> Result<Vec<u8>> {
+    let mut archive = TileArchive::from_bytes(bytes)?;
+    let kind = archive.kind();
+    let (o, items) = options_of(&archive, o);
+    let vt = vector::update_tiles(&mut archive, layers, &o, overwrite)?;
+    write_vector_archive_with(&vt, &o, "tiles", kind, &items)
+}
+
+/// Writes bytes over a file, through a temporary file renamed over it once complete.
+#[cfg(not(target_arch = "wasm32"))]
+fn replace_file(path: &str, bytes: &[u8]) -> Result<()> {
+    let tmp = format!("{path}.terrio-update");
+    std::fs::write(&tmp, bytes)?;
+    std::fs::rename(&tmp, path).inspect_err(|_| {
+        let _ = std::fs::remove_file(&tmp);
+    })?;
+    Ok(())
+}
+
+/// Adds a raster to a local PMTiles or MBTiles archive of image tiles: see
+/// [`update_raster_bytes`]. The archive is rewritten, and replaced once complete.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn update_raster(path: &str, ds: &crate::RasterDataset, o: &TileWriteOptions) -> Result<()> {
+    let bytes = update_raster_bytes(std::fs::read(path)?, ds, o)?;
+    replace_file(path, &bytes)
+}
+
+/// Adds vector layers to a local PMTiles or MBTiles archive of vector tiles: see
+/// [`update_vector_bytes`]. The archive is rewritten, and replaced once complete.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn update_vector(path: &str, layers: &[wbvector::Layer], o: &TileWriteOptions, overwrite: bool) -> Result<()> {
+    let bytes = update_vector_bytes(std::fs::read(path)?, layers, o, overwrite)?;
+    replace_file(path, &bytes)
 }
 
 /// Writes a raster as a PMTiles or MBTiles archive (see [`TileWriteOptions`]).

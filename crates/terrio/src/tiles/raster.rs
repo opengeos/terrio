@@ -25,7 +25,7 @@ pub(crate) struct Image {
     pub palette: bool,
 }
 
-/// Decodes a PNG, JPEG or WebP tile to 8-bit samples.
+/// Decodes a PNG, JPEG, WebP or AVIF tile to 8-bit samples.
 pub(crate) fn decode_image(b: &[u8]) -> Result<Image> {
     let err = |e: &dyn std::fmt::Display| Error::InvalidData(format!("tile image: {e}"));
     if b.starts_with(b"\x89PNG") {
@@ -52,7 +52,11 @@ pub(crate) fn decode_image(b: &[u8]) -> Result<Image> {
         d.read_image(&mut data).map_err(|e| err(&e))?;
         return Ok(Image { w: w as usize, h: h as usize, channels, data, palette: false });
     }
-    Err(err(&"unsupported tile format (PNG, JPEG and WebP are supported)"))
+    if crate::avif::is_avif(b) {
+        let img = crate::avif::decode(b)?;
+        return Ok(Image { w: img.width, h: img.height, channels: img.channels, data: img.data, palette: false });
+    }
+    Err(err(&"unsupported tile format (PNG, JPEG, WebP and AVIF are supported)"))
 }
 
 /// One pixel of a tile as `bands` values: gray and RGB values for the first bands, alpha (opaque
@@ -157,9 +161,6 @@ impl TileRaster {
     pub(crate) fn new(mut archive: TileArchive, zoom_level: Option<u8>) -> Result<Self> {
         if archive.is_vector() {
             return Err(Error::Unsupported("the archive holds vector tiles, not a raster".into()));
-        }
-        if archive.format() == TileFormat::Avif {
-            return Err(Error::Unsupported("AVIF tiles are not supported".into()));
         }
         let (min_z, max_z) = archive.zoom_range();
         let zoom = zoom_level.unwrap_or(max_z);
@@ -555,6 +556,42 @@ pub(crate) struct RasterTiles {
 /// by whole pixels; and the lower zoom levels as overviews computed from it (as `gdaladdo`
 /// would), down to `min_zoom` or the level whose single tile covers the raster.
 pub(crate) fn make_tiles(ds: &RasterDataset, o: &TileWriteOptions) -> Result<RasterTiles> {
+    let format = tile_format(o)?;
+    let w = warp_level(ds, o, None)?;
+    pyramid(w.level, w.zoom, w.minx, w.maxy, o, format, None)
+}
+
+/// The tile format `TILE_FORMAT` asks for (PNG by default).
+fn tile_format(o: &TileWriteOptions) -> Result<TileFormat> {
+    Ok(match o.tile_format.as_deref().map(str::to_ascii_uppercase).as_deref() {
+        None | Some("PNG") | Some("PNG8") => TileFormat::Png,
+        Some("JPEG") | Some("JPG") => TileFormat::Jpeg,
+        Some("WEBP") => TileFormat::Webp,
+        Some(f) => return Err(Error::InvalidArgument(format!("unknown tile format '{f}' (PNG, JPEG, WEBP)"))),
+    })
+}
+
+/// A raster warped to EPSG:3857 at a zoom level's resolution: its pixels (with an alpha band)
+/// and the coordinates of its top left corner.
+struct Warped {
+    level: Pixels,
+    zoom: u8,
+    minx: f64,
+    maxy: f64,
+}
+
+/// The pixel grid of an existing archive's full resolution: its zoom level, and the top left
+/// corner of its extent.
+#[derive(Clone, Copy)]
+struct Grid {
+    zoom: u8,
+    x0: f64,
+    y0: f64,
+}
+
+/// Warps a raster to EPSG:3857 as GDAL's MBTiles driver does, at the zoom level it picks (or
+/// `MAXZOOM`), or onto an existing archive's pixel grid (as `gdalwarp` into an existing dataset).
+fn warp_level(ds: &RasterDataset, o: &TileWriteOptions, grid: Option<Grid>) -> Result<Warped> {
     let r = &ds.raster;
     if r.data_type != DataType::U8 || !(1..=4).contains(&r.bands) {
         return Err(Error::Unsupported(format!(
@@ -563,12 +600,6 @@ pub(crate) fn make_tiles(ds: &RasterDataset, o: &TileWriteOptions) -> Result<Ras
             crate::info::gdal_type_name(r.data_type)
         )));
     }
-    let format = match o.tile_format.as_deref().map(str::to_ascii_uppercase).as_deref() {
-        None | Some("PNG") | Some("PNG8") => TileFormat::Png,
-        Some("JPEG") | Some("JPG") => TileFormat::Jpeg,
-        Some("WEBP") => TileFormat::Webp,
-        Some(f) => return Err(Error::InvalidArgument(format!("unknown tile format '{f}' (PNG, JPEG, WEBP)"))),
-    };
     let src_srs = ds.crs();
     if src_srs.is_unknown() {
         return Err(Error::InvalidArgument("the raster has no CRS: tiles need one to be reprojected to EPSG:3857".into()));
@@ -636,7 +667,20 @@ pub(crate) fn make_tiles(ds: &RasterDataset, o: &TileWriteOptions) -> Result<Ras
     if let Some(z) = o.max_zoom {
         zoom = z;
     }
+    if let Some(g) = grid {
+        zoom = g.zoom;
+    }
     let res = res0 / (1u64 << zoom) as f64;
+    if let Some(g) = grid {
+        // Whole pixels of the grid, covering the raster.
+        const EPS: f64 = 1e-6;
+        ext[0] = g.x0 + ((ext[0] - g.x0) / res + EPS).floor() * res;
+        ext[2] = g.x0 + ((ext[2] - g.x0) / res - EPS).ceil() * res;
+        ext[3] = g.y0 - ((g.y0 - ext[3]) / res + EPS).floor() * res;
+        ext[1] = g.y0 - ((g.y0 - ext[1]) / res - EPS).ceil() * res;
+        sgt[0] = ext[0];
+        sgt[3] = ext[3];
+    }
     let width = (0.5 + (ext[2] - ext[0]) / res) as usize;
     let height = (0.5 + (ext[3] - ext[1]) / res) as usize;
     if width == 0 || height == 0 {
@@ -692,6 +736,17 @@ pub(crate) fn make_tiles(ds: &RasterDataset, o: &TileWriteOptions) -> Result<Ras
     };
     let data = bytes(crate::ops::warp::warp(&[&color], &wo)?);
     wo.src_nodata = crate::ops::warp::Nodata::None;
+    // On an existing grid, the pixels the warper writes (as `gdalwarp` into a dataset leaves the
+    // others alone): those its resampling reaches.
+    let written = if grid.is_some() {
+        let mut w = wo.clone();
+        w.dst_nodata = crate::ops::warp::Nodata::Values(vec![f64::NAN]);
+        w.output_type = Some(DataType::F32);
+        let cover = crate::ops::warp::warp(&[&with_bands(vec![1.0; sn], 1, DataType::F32)], &w)?;
+        Some(cover.raster.data.to_f64_vec().into_iter().map(|v| !v.is_nan()).collect::<Vec<bool>>())
+    } else {
+        None
+    };
     // The alpha band: the source's, or opaque where the source is; GDAL's warper takes it from
     // the nearest source pixel.
     let alpha = if src_alpha || add_alpha {
@@ -701,9 +756,17 @@ pub(crate) fn make_tiles(ds: &RasterDataset, o: &TileWriteOptions) -> Result<Ras
     } else {
         vec![255u8; width * height]
     };
+    let mut alpha = alpha;
+    if let Some(written) = written {
+        for (a, w) in alpha.iter_mut().zip(written) {
+            if !w {
+                *a = 0;
+            }
+        }
+    }
     // Pixels left transparent are not written by the warper.
     let mut data = data;
-    if src_alpha {
+    if src_alpha || grid.is_some() {
         let n = width * height;
         for (i, x) in data.iter_mut().enumerate() {
             if alpha[i % n] == 0 {
@@ -711,7 +774,27 @@ pub(crate) fn make_tiles(ds: &RasterDataset, o: &TileWriteOptions) -> Result<Ras
             }
         }
     }
-    let mut level = Pixels { w: width, h: height, bands: data_bands, data, alpha };
+    let level = Pixels { w: width, h: height, bands: data_bands, data, alpha };
+    Ok(Warped { level, zoom, minx: sgt[0], maxy: sgt[3] })
+}
+
+/// A tile pyramid from a level at zoom `zoom` whose top left corner is `(minx, maxy)`: the level
+/// cut into tiles, and the lower zoom levels as overviews computed from it (as `gdaladdo` would),
+/// down to `MINZOOM` or the level whose single tile covers the raster.
+/// `bounds`, when given, are recorded instead of those of the level (an updated archive keeps
+/// its own when its extent does not change).
+fn pyramid(
+    mut level: Pixels,
+    zoom: u8,
+    minx: f64,
+    maxy: f64,
+    o: &TileWriteOptions,
+    format: TileFormat,
+    bounds: Option<[f64; 4]>,
+) -> Result<RasterTiles> {
+    let res0 = 2.0 * MAX_GM / 256.0;
+    let res = res0 / (1u64 << zoom) as f64;
+    let (width, height) = (level.w, level.h);
 
     // Overviews: down to the level whose single tile covers the raster (GDAL's PMTiles driver).
     let min_zoom = match o.min_zoom {
@@ -728,7 +811,6 @@ pub(crate) fn make_tiles(ds: &RasterDataset, o: &TileWriteOptions) -> Result<Ras
         "cubic" | "cubicspline" | "lanczos" => "cubic",
         _ => "bilinear",
     };
-    let (minx, maxy) = (sgt[0], sgt[3]);
     let (maxx, miny) = (minx + width as f64 * res, maxy - height as f64 * res);
 
     // The bounds, as GDAL records them.
@@ -743,6 +825,9 @@ pub(crate) fn make_tiles(ds: &RasterDataset, o: &TileWriteOptions) -> Result<Ras
     let ok_max = mercator_to_lonlat(0.0, MAX_GM).1;
     lat1 = lat1.min(ok_max);
     lat0 = lat0.max(-ok_max);
+    if let Some(b) = bounds {
+        (lon0, lat0, lon1, lat1) = (b[0], b[1], b[2], b[3]);
+    }
 
     // Overviews are laid out over the extent read back from the bounds, as GDAL builds them on
     // the file it wrote.
@@ -763,6 +848,84 @@ pub(crate) fn make_tiles(ds: &RasterDataset, o: &TileWriteOptions) -> Result<Ras
         tiles.extend(cut_tiles(&level, z, sx, sy, format, o.quality)?);
     }
     Ok(RasterTiles { tiles, bounds: [lon0, lat0, lon1, lat1], min_zoom, max_zoom: zoom, format })
+}
+
+/// Adds a raster to an archive of image tiles, as `gdalwarp` into an existing MBTiles file then
+/// `gdaladdo` do: the raster warped onto the pixel grid of the archive's full resolution and laid
+/// over it (where it is not transparent), the archive's extent grown to hold it, and the lower
+/// zoom levels computed again from the result, down to the archive's lowest (or `MINZOOM`). The
+/// tiles keep the archive's format.
+pub(crate) fn update_tiles(archive: TileArchive, ds: &RasterDataset, o: &TileWriteOptions) -> Result<RasterTiles> {
+    let format = archive.format();
+    if !matches!(format, TileFormat::Png | TileFormat::Jpeg | TileFormat::Webp) {
+        return Err(Error::Unsupported(format!(
+            "tiles of format '{}' cannot be written: only PNG, JPEG and WebP archives can be updated",
+            format.name()
+        )));
+    }
+    let (min_zoom, _) = archive.zoom_range();
+    let archive_bounds = archive.bounds();
+    let mut tr = TileRaster::new(archive, None)?;
+    if tr.tile_size != 256 {
+        return Err(Error::Unsupported(format!("archives of {}-pixel tiles cannot be updated (256-pixel tiles only)", tr.tile_size)));
+    }
+    let zoom = tr.levels[0].zoom;
+    let res = resolution(zoom, 256);
+    let (x0, y0) = (tr.extent[0], tr.extent[3]);
+    let (w, h) = (tr.width(), tr.height());
+    let new = warp_level(ds, o, Some(Grid { zoom, x0, y0 }))?;
+    // The new raster's place relative to the archive's full resolution, and the union of both.
+    let nx = ((new.minx - x0) / res).round() as i64;
+    let ny = ((y0 - new.maxy) / res).round() as i64;
+    let (nw, nh) = (new.level.w as i64, new.level.h as i64);
+    let (cx0, cy0) = (nx.min(0), ny.min(0));
+    let (cx1, cy1) = ((nx + nw).max(w as i64), (ny + nh).max(h as i64));
+    let (cw, ch) = ((cx1 - cx0) as usize, (cy1 - cy0) as usize);
+    if (cw as u64) * (ch as u64) > 1 << 31 {
+        return Err(Error::Unsupported(format!("the updated archive would be {cw} x {ch} pixels at zoom level {zoom}")));
+    }
+    let existing_alpha = matches!(tr.bands, 2 | 4);
+    let existing_data = if existing_alpha { tr.bands - 1 } else { tr.bands };
+    let bands = existing_data.max(new.level.bands);
+    let n = cw * ch;
+    let mut data = vec![0u8; bands * n];
+    let mut alpha = vec![0u8; n];
+    let all: Vec<usize> = (1..=tr.bands).collect();
+    let old = match tr.read(0, crate::Window::full(w, h), &all)? {
+        RasterData::U8(v) => v,
+        other => other.to_f64_vec().into_iter().map(|v| v as u8).collect(),
+    };
+    let (ox, oy) = ((-cx0) as usize, (-cy0) as usize);
+    for y in 0..h {
+        for x in 0..w {
+            let (i, c) = (y * w + x, (y + oy) * cw + x + ox);
+            alpha[c] = if existing_alpha { old[existing_data * w * h + i] } else { 255 };
+            for b in 0..bands {
+                data[b * n + c] = old[b.min(existing_data - 1) * w * h + i];
+            }
+        }
+    }
+    let l = &new.level;
+    let (px, py) = ((nx - cx0) as usize, (ny - cy0) as usize);
+    let ln = l.w * l.h;
+    for y in 0..l.h {
+        for x in 0..l.w {
+            let i = y * l.w + x;
+            if l.alpha[i] == 0 {
+                continue;
+            }
+            let c = (y + py) * cw + x + px;
+            alpha[c] = l.alpha[i];
+            for b in 0..bands {
+                data[b * n + c] = l.data[b.min(l.bands - 1) * ln + i];
+            }
+        }
+    }
+    let canvas = Pixels { w: cw, h: ch, bands, data, alpha };
+    let mut o = o.clone();
+    o.min_zoom = Some(o.min_zoom.unwrap_or(min_zoom).min(zoom));
+    let same = cx0 == 0 && cy0 == 0 && cw == w && ch == h;
+    pyramid(canvas, zoom, x0 + cx0 as f64 * res, y0 - cy0 as f64 * res, &o, format, archive_bounds.filter(|_| same))
 }
 
 /// Cuts a level into 256-pixel tiles of zoom `z`, its first pixel at global pixel `(sx, sy)`.

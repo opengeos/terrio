@@ -39,7 +39,8 @@ pub struct VectorArgs {
     /// Assign this CRS to the output, without reprojecting.
     #[arg(long = "a-srs", value_name = "CRS", help_heading = "Vector options")]
     a_srs: Option<String>,
-    /// Add the features to the layers of an existing output.
+    /// Add the features to the layers of an existing output (a GeoPackage, or the tiles of a
+    /// PMTiles or MBTiles archive); for a raster, add it to an existing archive of image tiles.
     #[arg(long, conflicts_with = "overwrite", help_heading = "Vector options")]
     append: bool,
     /// Replace the layers of the same name in an existing output (other GeoPackage layers stay).
@@ -87,6 +88,22 @@ impl VectorArgs {
             dst_srs: t_srs,
             assign_srs: srs(&self.a_srs)?,
         })
+    }
+
+    /// Whether `--append` is the only option given (it also applies to rasters added to tile
+    /// archives).
+    pub fn append_only(&self) -> bool {
+        self.append
+            && self.where_clause.is_none()
+            && self.spat.is_none()
+            && self.select.is_none()
+            && self.limit.is_none()
+            && self.sql.is_none()
+            && self.nln.is_none()
+            && self.nlt.is_none()
+            && !self.explodecollections
+            && self.s_srs.is_none()
+            && self.a_srs.is_none()
     }
 
     /// How to treat an existing output.

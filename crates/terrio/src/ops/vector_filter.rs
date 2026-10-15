@@ -616,7 +616,8 @@ pub enum WriteMode {
     /// `-append`: add the features to the layers of the same name (fields are matched by name;
     /// fields the existing layer lacks are dropped), creating the layers that do not exist. In a
     /// GeoPackage, the features get new ids and the layer's R-tree, extent and feature count
-    /// are updated, as GDAL does.
+    /// are updated, as GDAL does. In a PMTiles or MBTiles archive of vector tiles, the features
+    /// are added to the tiles (see [`crate::tiles::update_vector`]).
     Append,
 }
 
@@ -631,6 +632,11 @@ pub fn write_vector_with_mode(layers: &[Layer], path: &str, options: &VectorWrit
         use crate::drivers::vector::gpkg_update::{UpdateMode, update};
         let mode = if mode == WriteMode::Append { UpdateMode::Append } else { UpdateMode::Overwrite };
         return update(path, layers, mode);
+    }
+    // Tile archives get the layers' features added to their tiles.
+    #[cfg(not(target_arch = "wasm32"))]
+    if matches!(driver, Some(crate::formats::VectorDriver::MBTiles | crate::formats::VectorDriver::PMTiles)) {
+        return crate::tiles::update_vector(path, layers, &options.tiles, mode == WriteMode::Overwrite);
     }
     let mut existing = crate::open_vector(path, &Default::default())?.layers;
     for layer in layers {

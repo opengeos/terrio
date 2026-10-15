@@ -156,7 +156,8 @@ pub fn run(mut a: Args) -> terrio::Result<()> {
     let t_srs = a.t_srs.as_deref().map(SpatialRef::parse).transpose()?;
     match ds {
         Dataset::Raster(mut r) => {
-            if a.vector.is_set() {
+            let append = a.vector.append_only();
+            if a.vector.is_set() && !append {
                 return Err(terrio::Error::InvalidArgument("the vector options apply to vector inputs only".into()));
             }
             if let Some(dst) = t_srs {
@@ -167,6 +168,24 @@ pub fn run(mut a: Args) -> terrio::Result<()> {
                 key_values(&a.raster_options)?.into_iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
             creation_options.extend(a.minzoom.map(|z| ("MINZOOM".to_string(), z.to_string())));
             creation_options.extend(a.maxzoom.map(|z| ("MAXZOOM".to_string(), z.to_string())));
+            if append {
+                // Added to an existing archive of image tiles.
+                if !terrio::tiles::is_archive(&a.output) || !std::path::Path::new(&a.output).exists() {
+                    return Err(terrio::Error::InvalidArgument(
+                        "--append adds a raster to an existing PMTiles or MBTiles archive only".into(),
+                    ));
+                }
+                let mut o = terrio::tiles::TileWriteOptions::default();
+                if let Some(c) = &a.compress {
+                    o.tile_format = Some(c.to_ascii_uppercase());
+                }
+                for (k, v) in &creation_options {
+                    if !o.set(k, v)? {
+                        return Err(terrio::Error::InvalidArgument(format!("unknown creation option '{k}' for tile archives")));
+                    }
+                }
+                return terrio::tiles::update_raster(&a.output, &r, &o);
+            }
             // A format terrio does not write itself: GDAL's driver of that name, when built in.
             #[cfg(feature = "gdal")]
             if let Some(f) = a.format.as_deref()

@@ -296,6 +296,102 @@ def compare_repaired_polygons(data, terrio, tmp):
             report(f"{name} zoom {z}", vector_stats(g, key, z, clip=False), vector_stats(t, key, z, clip=False))
 
 
+def compare_updates(data, terrio, tmp):
+    """Updates archives with both tools and compares them.
+
+    Rasters: ``gdalwarp -r bilinear`` into an MBTiles file then ``gdaladdo -r bilinear``, against
+    ``terrio convert --append`` (a window of landsat.tif, inverted, in EPSG:3857 and EPSG:4326).
+    Vectors (GDAL cannot update vector tiles): layers appended by terrio against the same
+    layers written at once by ``ogr2ogr``, both read by GDAL.
+
+    Args:
+        data: The test data directory.
+        terrio: The terrio executable.
+        tmp: A temporary directory.
+    """
+    print("Updates of archives:")
+    src = os.path.join(data, "landsat.tif")
+    if not os.path.exists(src):
+        print("  landsat.tif: missing")
+        return
+    part = gdal.Translate(os.path.join(tmp, "part.tif"), src, srcWin=[600, 400, 700, 500], bandList=[1, 2, 3])
+    inverted = 255 - part.ReadAsArray()
+    for i in range(3):
+        part.GetRasterBand(i + 1).WriteArray(inverted[i])
+    part = None
+    gdal.Warp(os.path.join(tmp, "part4326.tif"), os.path.join(tmp, "part.tif"), dstSRS="EPSG:4326")
+    for added in ("part.tif", "part4326.tif"):
+        g, t = os.path.join(tmp, "upd_g.mbtiles"), os.path.join(tmp, "upd_t.mbtiles")
+        for f in (g, t):
+            if os.path.exists(f):
+                os.remove(f)
+        run(["gdal_translate", "-q", "-of", "MBTiles", src, g])
+        run(["gdaladdo", "-q", "-r", "bilinear", g])
+        run([terrio, "convert", src, t])
+        run(["gdalwarp", "-q", "-r", "bilinear", os.path.join(tmp, added), g])
+        run(["gdaladdo", "-q", "-r", "bilinear", g])
+        run([terrio, "convert", "--append", os.path.join(tmp, added), t])
+        for i, ((_, a), (_, b)) in enumerate(zip(levels(g), levels(t))):
+            label = "full resolution" if i == 0 else f"overview {i - 1}"
+            print(f"  raster {added} appended, {label}: {agreement(a, b) if a.shape == b.shape else f'size {a.shape} vs {b.shape}'}")
+    countries = os.path.join(data, "countries.geojson")
+    g, t = os.path.join(tmp, "upd_g.pmtiles"), os.path.join(tmp, "upd_t.pmtiles")
+    for f in (g, t):
+        if os.path.exists(f):
+            os.remove(f)
+    run(["ogr2ogr", "-dsco", "MAXZOOM=4", g, countries])
+    run([terrio, "convert", "--maxzoom", "4", "--where", "CONTINENT = 'Africa'", countries, t])
+    run([terrio, "convert", "--append", "--where", "CONTINENT <> 'Africa'", countries, t])
+    for z in (0, 2, 4):
+        report(f"countries appended to vector tiles, zoom {z}", vector_stats(g, "ADM0_A3", z, clip=False), vector_stats(t, "ADM0_A3", z, clip=False))
+
+
+def compare_avif(data, terrio, tmp):
+    """Reads AVIF tiles with terrio and with GDAL's AVIF driver (when GDAL has it).
+
+    The tiles of landsat.mbtiles are encoded as AVIF by GDAL's AVIF driver; GDAL's MBTiles driver
+    does not read AVIF tiles, so the AVIF tiles decoded by GDAL's AVIF driver are stored as PNG
+    and that archive read by GDAL is compared with the AVIF archive read by terrio.
+
+    Args:
+        data: The test data directory.
+        terrio: The terrio executable.
+        tmp: A temporary directory.
+    """
+    print("AVIF tiles:")
+    if gdal.GetDriverByName("AVIF") is None:
+        print("  skipped: this GDAL has no AVIF driver")
+        return
+    import shutil
+    import sqlite3
+
+    src = os.path.join(data, "landsat.mbtiles")
+    avif, png = os.path.join(tmp, "avif.mbtiles"), os.path.join(tmp, "avif_as_png.mbtiles")
+    for out, driver, options in ((avif, "AVIF", ["QUALITY=60", "YUV_SUBSAMPLING=420"]), (png, "PNG", [])):
+        shutil.copy(src if out == avif else avif, out)
+        db = sqlite3.connect(out)
+        for z, x, y, blob in db.execute("SELECT zoom_level, tile_column, tile_row, tile_data FROM tiles").fetchall():
+            gdal.FileFromMemBuffer("/vsimem/tile_in", bytes(blob))
+            gdal.GetDriverByName(driver).CreateCopy("/vsimem/tile_out", gdal.Open("/vsimem/tile_in"), options=options)
+            f = gdal.VSIFOpenL("/vsimem/tile_out", "rb")
+            gdal.VSIFSeekL(f, 0, 2)
+            n = gdal.VSIFTellL(f)
+            gdal.VSIFSeekL(f, 0, 0)
+            encoded = gdal.VSIFReadL(1, n, f)
+            gdal.VSIFCloseL(f)
+            db.execute("UPDATE tiles SET tile_data=? WHERE zoom_level=? AND tile_column=? AND tile_row=?", (encoded, z, x, y))
+        db.execute("UPDATE metadata SET value=? WHERE name='format'", ("avif" if out == avif else "png",))
+        db.commit()
+        db.close()
+    ref = levels(png)
+    for i, (_, a) in enumerate(ref):
+        out = os.path.join(tmp, f"avif_{i}.tif")
+        run([terrio, "convert", avif, out] + (["--overview", str(i - 1)] if i else []))
+        b = gdal.Open(out).ReadAsArray().astype(np.int64)
+        label = "full resolution" if i == 0 else f"overview {i - 1}"
+        print(f"  landsat.mbtiles as AVIF, {label}: {agreement(a, b)}")
+
+
 def main():
     """Runs the comparisons."""
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
@@ -306,6 +402,8 @@ def main():
         compare_rasters(args.data, args.terrio, tmp)
         compare_vectors(args.data, args.terrio, tmp)
         compare_repaired_polygons(args.data, args.terrio, tmp)
+        compare_updates(args.data, args.terrio, tmp)
+        compare_avif(args.data, args.terrio, tmp)
     return 0
 
 
