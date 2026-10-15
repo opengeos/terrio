@@ -314,7 +314,7 @@ fn read_db(db: &Db, table: Option<&str>, path: &Path) -> Result<RasterDataset> {
     let gt = [minx, rx, 0.0, maxy, 0.0, -ry];
     let nodata = if gridded { coverage.2 } else { tile_nodata };
     let raster = common::make_raster(cols, rows, bands, data, gt, crs, nodata)?;
-    Ok(RasterDataset { raster, driver: RasterDriver::GPKG, has_nodata: nodata.is_some() })
+    Ok(RasterDataset { raster, driver: RasterDriver::GPKG, has_nodata: nodata.is_some(), affine: None })
 }
 
 /// The CRS of a `gpkg_spatial_ref_sys` entry.

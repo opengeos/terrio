@@ -17,12 +17,48 @@ pub struct RasterDataset {
     pub driver: RasterDriver,
     /// Whether the file declares a nodata value (the raster always carries one).
     pub has_nodata: bool,
+    /// The geotransform of a rotated or south-up raster, which the raster's origin and cell sizes
+    /// cannot hold (they then hold the extent of its footprint); `None` for north-up rasters.
+    /// Set it with [`RasterDataset::set_geo_transform`].
+    pub affine: Option<[f64; 6]>,
 }
 
 impl RasterDataset {
     /// Wraps a raster created in memory.
     pub fn new(raster: Raster, has_nodata: bool) -> Self {
-        Self { raster, driver: RasterDriver::GTiff, has_nodata }
+        Self { raster, driver: RasterDriver::GTiff, has_nodata, affine: None }
+    }
+
+    /// The raster with this geotransform (see [`RasterDataset::set_geo_transform`]): its pixels.
+    fn with_geo_transform(mut self, gt: [f64; 6]) -> Raster {
+        self.set_geo_transform(gt);
+        self.raster
+    }
+
+    /// Sets the geotransform: a north-up one goes to the raster's origin and cell sizes; a rotated
+    /// or south-up one is kept in [`RasterDataset::affine`], the raster's origin and cell sizes
+    /// then describing the bounding box of its footprint.
+    pub fn set_geo_transform(&mut self, gt: [f64; 6]) {
+        let r = &mut self.raster;
+        if is_north_up(&gt) {
+            r.x_min = gt[0];
+            r.cell_size_x = gt[1];
+            r.cell_size_y = -gt[5];
+            r.y_min = gt[3] + gt[5] * r.rows as f64;
+            self.affine = None;
+            return;
+        }
+        let (w, h) = (r.cols as f64, r.rows as f64);
+        let corners = [(0.0, 0.0), (w, 0.0), (0.0, h), (w, h)].map(|(c, l)| (gt[0] + c * gt[1] + l * gt[2], gt[3] + c * gt[4] + l * gt[5]));
+        let min_x = corners.iter().map(|p| p.0).fold(f64::INFINITY, f64::min);
+        let max_x = corners.iter().map(|p| p.0).fold(f64::NEG_INFINITY, f64::max);
+        let min_y = corners.iter().map(|p| p.1).fold(f64::INFINITY, f64::min);
+        let max_y = corners.iter().map(|p| p.1).fold(f64::NEG_INFINITY, f64::max);
+        r.x_min = min_x;
+        r.y_min = min_y;
+        r.cell_size_x = if r.cols > 0 { (max_x - min_x) / w } else { gt[1].hypot(gt[4]) };
+        r.cell_size_y = if r.rows > 0 { (max_y - min_y) / h } else { gt[2].hypot(gt[5]) };
+        self.affine = Some(gt);
     }
 
     /// The CRS.
@@ -30,9 +66,11 @@ impl RasterDataset {
         SpatialRef::from_raster_crs(&self.raster.crs)
     }
 
-    /// The GDAL-style geotransform: `[x_origin, pixel_width, 0, y_origin, 0, -pixel_height]`.
+    /// The GDAL-style geotransform: `[x_origin, pixel_width, row_rotation, y_origin,
+    /// column_rotation, pixel_height]`, `[x_origin, pixel_width, 0, y_origin, 0, -pixel_height]` for
+    /// north-up rasters.
     pub fn geo_transform(&self) -> [f64; 6] {
-        geo_transform(&self.raster)
+        self.affine.unwrap_or_else(|| geo_transform(&self.raster))
     }
 
     /// The nodata value, when the file declares one.
@@ -41,7 +79,14 @@ impl RasterDataset {
     }
 }
 
-/// The GDAL-style geotransform of a raster.
+/// Whether a geotransform is north-up: no rotation, a positive pixel width and a negative pixel
+/// height.
+pub fn is_north_up(gt: &[f64; 6]) -> bool {
+    gt[2] == 0.0 && gt[4] == 0.0 && gt[1] > 0.0 && gt[5] < 0.0
+}
+
+/// The GDAL-style geotransform of a raster (north-up: see [`RasterDataset::geo_transform`] for
+/// rotated ones).
 pub fn geo_transform(r: &Raster) -> [f64; 6] {
     [r.x_min, r.cell_size_x, 0.0, r.y_max(), 0.0, -r.cell_size_y]
 }
@@ -411,6 +456,40 @@ pub struct RasterWriteOptions {
     pub overviews: Vec<usize>,
     /// The overview resampling: `nearest` (the default), `average`, `min`, `max` or `mode`.
     pub overview_resampling: Option<String>,
+    /// The geotransform to write in place of the raster's own: a rotated or south-up one, which
+    /// GeoTIFFs store in a `ModelTransformationTag`, as GDAL writes them.
+    /// [`write_raster_dataset`] sets it from [`RasterDataset::affine`].
+    pub geo_transform: Option<[f64; 6]>,
+    /// Ground control points to georeference the raster with instead of a geotransform (GeoTIFF:
+    /// tie points), in the raster's CRS.
+    pub gcps: Vec<Gcp>,
+    /// A validity mask of the whole raster, `cols * rows` values row by row, 0 for invalid
+    /// pixels: GeoTIFFs store it as GDAL's internal mask (a 1-bit transparency mask image).
+    pub mask: Option<Vec<u8>>,
+    /// Rational polynomial coefficients, the 92 values of the GeoTIFF `RPCCoefficientTag` in its
+    /// order (error bias and random error, offsets, scales, then the line numerator and
+    /// denominator, sample numerator and denominator coefficients). Empty for none.
+    pub rpc: Vec<f64>,
+}
+
+/// A ground control point: a pixel position and its georeferenced coordinates, as GDAL's
+/// `GDAL_GCP`.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Gcp {
+    /// An identifier.
+    pub id: String,
+    /// A description.
+    pub info: String,
+    /// The column, from the image's left edge (0.5 is the first pixel's centre).
+    pub pixel: f64,
+    /// The row, from the image's top edge.
+    pub line: f64,
+    /// The georeferenced X (easting or longitude).
+    pub x: f64,
+    /// The georeferenced Y (northing or latitude).
+    pub y: f64,
+    /// The elevation.
+    pub z: f64,
 }
 
 /// The descriptive metadata of a band, as GDAL keeps it.
@@ -428,6 +507,14 @@ pub struct BandMetadata {
     pub color_interp: Option<String>,
     /// Metadata items (GDAL's band metadata, default domain).
     pub items: Vec<(String, String)>,
+}
+
+/// The ground control points of a GeoTIFF (local, remote or in an archive), as GDAL reads them:
+/// tie points without a pixel scale or transformation matrix, in the file's CRS. Empty for
+/// rasters georeferenced by a geotransform, and for other formats.
+pub fn read_gcps(path: &str) -> Result<Vec<Gcp>> {
+    let local = vfs::resolve(path)?;
+    Ok(crate::geotiff::read_geo_tags(local.path()).map(|t| t.gcps).unwrap_or_default())
 }
 
 /// Writes a raster, declaring its nodata value.
@@ -453,6 +540,12 @@ pub fn write_raster(raster: &Raster, path: &str, options: &RasterWriteOptions) -
 /// # Ok::<(), terrio::Error>(())
 /// ```
 pub fn write_raster_dataset(ds: &RasterDataset, path: &str, options: &RasterWriteOptions) -> Result<()> {
+    if let Some(gt) = ds.affine
+        && options.geo_transform.is_none()
+    {
+        let options = RasterWriteOptions { geo_transform: Some(gt), ..options.clone() };
+        return write_raster_with_nodata(&ds.raster, ds.nodata(), path, &options);
+    }
     write_raster_with_nodata(&ds.raster, ds.nodata(), path, options)
 }
 
@@ -466,12 +559,31 @@ fn write_raster_with_nodata(raster: &Raster, nodata: Option<f64>, path: &str, op
     if !driver.info().write {
         return Err(Error::Unsupported(format!("the {} driver cannot write", driver.name())));
     }
-    if matches!(driver, RasterDriver::GTiff | RasterDriver::Cog) {
+    let tiff = matches!(driver, RasterDriver::GTiff | RasterDriver::Cog);
+    if tiff {
         // terrio's writer handles the lossless compressions; wbraster the lossy ones.
         if let Some(opts) = crate::drivers::gtiff_write::TiffOptions::from_write_options(options, driver == RasterDriver::Cog, nodata)? {
             return crate::drivers::gtiff_write::write(raster, path, &opts);
         }
     }
+    if options.geo_transform.is_some_and(|gt| !is_north_up(&gt))
+        || !options.gcps.is_empty()
+        || options.mask.is_some()
+        || !options.rpc.is_empty()
+    {
+        return Err(Error::Unsupported(format!(
+            "the {} writer cannot store rotated or south-up geotransforms, GCPs, masks or RPCs (GeoTIFF can, with a lossless compression)",
+            driver.name()
+        )));
+    }
+    let north_up;
+    let raster = match options.geo_transform {
+        Some(gt) if gt != geo_transform(raster) => {
+            north_up = RasterDataset { raster: raster.clone(), driver, has_nodata: false, affine: None }.with_geo_transform(gt);
+            &north_up
+        }
+        _ => raster,
+    };
     if let Some(result) = crate::drivers::write(raster, nodata, path, driver, options) {
         return result;
     }

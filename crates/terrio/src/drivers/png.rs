@@ -63,7 +63,7 @@ pub(crate) fn read(path: &Path) -> Result<RasterDataset> {
     };
     let gt = read_world_file(path).unwrap_or(common::NO_GEOTRANSFORM);
     let raster = common::make_raster(cols, rows, bands, data, gt, Default::default(), nodata)?;
-    Ok(RasterDataset { raster, driver: RasterDriver::PNG, has_nodata: nodata.is_some() })
+    Ok(RasterDataset { raster, driver: RasterDriver::PNG, has_nodata: nodata.is_some(), affine: None })
 }
 
 /// The geotransform of a world file next to `path` (`.wld`, or `.pgw`-style).
@@ -81,7 +81,7 @@ pub(crate) fn read_jpeg(path: &Path) -> Result<RasterDataset> {
     }
     let gt = read_world_file(path).unwrap_or(common::NO_GEOTRANSFORM);
     let raster = common::make_raster(cols, rows, bands, RasterData::U8(data), gt, Default::default(), None)?;
-    Ok(RasterDataset { raster, driver: RasterDriver::JPEG, has_nodata: false })
+    Ok(RasterDataset { raster, driver: RasterDriver::JPEG, has_nodata: false, affine: None })
 }
 
 pub(crate) fn read_world_file(path: &Path) -> Option<[f64; 6]> {

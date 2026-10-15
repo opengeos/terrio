@@ -52,7 +52,7 @@ pub(crate) fn read(path: &Path) -> Result<RasterDataset> {
     let data = RasterData::from_f64_vec(data_type, grid);
     let gt = [x0 - dx / 2.0, dx, 0.0, y1 + dy / 2.0, 0.0, -dy];
     let raster = common::make_raster(cols, rows, 1, data, gt, Default::default(), None)?;
-    Ok(RasterDataset { raster, driver: RasterDriver::XYZ, has_nodata: false })
+    Ok(RasterDataset { raster, driver: RasterDriver::XYZ, has_nodata: false, affine: None })
 }
 
 /// Writes an XYZ grid: integers for integer types up to 32 bits, Float32 values otherwise.

@@ -102,9 +102,12 @@ terrio warp INPUT... OUTPUT [options]
 
 `--t-srs`, `--s-srs`, `--tr`, `--te` (+ `--te-srs`), `--ts`, `--tap`, `-r` (`near`, `bilinear`,
 `cubic`, `cubicspline`, `lanczos`, `average`, `rms`, `mode`, `min`, `max`, `med`, `q1`, `q3`,
-`sum`), `--srcnodata`, `--dstnodata`, `--ot`, `--cutline` (+ `--crop-to-cutline`), `--et`. Several
-inputs are mosaicked into one output. The default output grid follows GDAL's
-`GDALSuggestedWarpOutput2`.
+`sum`), `--srcnodata`, `--dstnodata`, `--ot`, `--cutline` (+ `--crop-to-cutline`), `--et`,
+`--order` and `--tps`. Several inputs are mosaicked into one output. The default output grid
+follows GDAL's `GDALSuggestedWarpOutput2`. Rotated and south-up inputs are warped through their
+geotransform; a GeoTIFF georeferenced by GCPs is warped with GDAL's GCP transformers: a
+homography from 4 or 5 GCPs, otherwise a polynomial (of order 2 from 6 GCPs, else 1, or
+`--order 1|2|3`), or thin plate splines (`--tps`), giving `gdalwarp`'s pixels.
 
 ## mosaic
 

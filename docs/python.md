@@ -36,6 +36,17 @@ tile = cog.read(1, window=(1024, 1024, 512, 512))  # (col_off, row_off, width, h
 thumb = cog.read(overview=2)
 # PMTiles and MBTiles raster tiles too: zoom levels are overviews (PMTiles read in place).
 tiles = terrio.open_raster("https://example.com/tiles.pmtiles", lazy=True)
+# JPEG 2000 (Sentinel-2 bands) too: resolution levels are overviews, windows decode their tiles.
+b04 = terrio.open_raster("T10SEG_20240630T185919_B04.jp2", lazy=True)
+patch = b04.read(1, window=(2000, 6000, 1024, 1024))
+mask = terrio.open_raster("masked.tif", lazy=True).read_mask()  # a GeoTIFF's internal mask, or None
+
+# A GeoTIFF larger than memory, written in rows (band after band, from the top).
+w = terrio.GeoTiffWriter("big.tif", 100000, 80000, 1, "uint16", transform, crs="EPSG:32610",
+                         compress="DEFLATE", tile_size=512, mask=True)
+for rows, valid in row_blocks:  # (1, n, 100000) uint16 and (n, 100000) uint8 arrays
+    w.write(rows, valid)
+w.close()
 
 out = terrio.Raster.from_array(elevation * 3.28084, dem.transform, crs=dem.crs, nodata=dem.nodata)
 out.write("dem_feet.tif", compress="DEFLATE")

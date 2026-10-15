@@ -50,7 +50,14 @@ JPEG 2000 is decoded and encoded with the Rust port of OpenJPEG, the codec of GD
 driver, so pixels are GDAL's (Sentinel-2 L1C and L2A bands included). Georeferencing comes from
 the GeoJP2 box or the GMLJP2 box (Sentinel-2's), a 1-bit alpha channel is promoted to 0 and 255 as
 GDAL does, and files are written losslessly with a GeoJP2 box, the nodata value in a `.aux.xml`
-sidecar.
+sidecar. Files are read in place by window and resolution level, as GDAL reads them: the resolution
+levels are the overviews (each halving the size, down to about 128 pixels, with GDAL's block
+sizes), and a window decodes only the tiles, precincts and code blocks it covers, its tiles in
+parallel, from local files, bytes or HTTP range requests. On a 10980 x 10980 Sentinel-2 band, a
+1024 x 1024 window takes 0.05 s and 81 MB where decoding the whole band takes 0.5 s (6.3 s on one
+thread) and 1.7 GB, and the smallest overview 0.05 s (GDAL: 0.09 s, 1.1 s and 0.33 s); every
+window and overview is identical to GDAL's. GeoTIFFs compressed with JPEG XL are read tile by tile
+the same way (JPEG XL files themselves are not a format terrio reads).
 
 netCDF variables are opened as `NETCDF:"file.nc":variable`, as in GDAL, and those below the
 root group by their path, `NETCDF:"file.nc":/group/variable`. A file of several variables opens

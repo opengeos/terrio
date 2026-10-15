@@ -852,7 +852,7 @@ pub(crate) fn read(path: &Path) -> Result<RasterDataset> {
     if south_up {
         flip_rows(&mut raster);
     }
-    Ok(RasterDataset { raster, driver: RasterDriver::Zarr, has_nodata: array.fill.is_some() })
+    Ok(RasterDataset { raster, driver: RasterDriver::Zarr, has_nodata: array.fill.is_some(), affine: None })
 }
 
 /// The spatial axes `(x, y)` of an array: from `spatial:dimensions` in `attrs`, or from the
@@ -1503,7 +1503,7 @@ pub(crate) fn write_with(r: &Raster, nodata: Option<f64>, path: &Path, compressi
     // The overviews, resampled from the full resolution.
     let mut levels: Vec<(usize, RasterDataset)> = Vec::new();
     if !factors.is_empty() {
-        let full = RasterDataset { raster: r.clone(), driver: RasterDriver::Zarr, has_nodata: nodata.is_some() };
+        let full = RasterDataset { raster: r.clone(), driver: RasterDriver::Zarr, has_nodata: nodata.is_some(), affine: None };
         for f in &factors {
             let (w, h) = (r.cols.div_ceil(*f), r.rows.div_ceil(*f));
             if resampling == crate::ops::Resampling::Nearest {

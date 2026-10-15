@@ -141,6 +141,15 @@ pub(crate) struct TiffOptions {
     /// Write the pixel scale and tie point (`GEOREFERENCED=NO` leaves the file without a
     /// geotransform, as GDAL writes rasters whose geotransform is the identity).
     pub georeferenced: bool,
+    /// The geotransform to write instead of the raster's: rotated or south-up ones go to a
+    /// `ModelTransformationTag`.
+    pub geo_transform: Option<[f64; 6]>,
+    /// Ground control points, written as tie points instead of a geotransform.
+    pub gcps: Vec<crate::Gcp>,
+    /// A validity mask (`cols * rows`, 0 for invalid), written as GDAL's internal mask.
+    pub mask: Option<Vec<u8>>,
+    /// The 92 values of the `RPCCoefficientTag`, or none.
+    pub rpc: Vec<f64>,
 }
 
 impl Default for TiffOptions {
@@ -163,6 +172,10 @@ impl Default for TiffOptions {
             overview_resampling: OverviewResampling::Nearest,
             georeferenced: true,
             predictor: 1,
+            geo_transform: None,
+            gcps: Vec::new(),
+            mask: None,
+            rpc: Vec::new(),
         }
     }
 }
@@ -217,6 +230,10 @@ impl TiffOptions {
             nodata,
             band_metadata: options.band_metadata.clone(),
             color_table: options.color_table.clone(),
+            geo_transform: options.geo_transform,
+            gcps: options.gcps.clone(),
+            mask: options.mask.clone(),
+            rpc: options.rpc.clone(),
             ..Default::default()
         };
         if cog {
@@ -341,7 +358,17 @@ impl Prepared {
 }
 
 /// Splits a raster (and its overviews) into compressed chunks with their tags.
-fn prepare(raster: &Raster, opts: &TiffOptions) -> Result<Prepared> {
+/// What every image of a file shares: the tiling, the layout of the samples, and the tags of the
+/// full-resolution image (georeferencing, metadata, color map).
+struct Plan {
+    tile: Option<(u32, u32)>,
+    layout: Layout,
+    geo: Vec<(u16, Value)>,
+    color_map: Option<Value>,
+}
+
+/// Checks the options against the raster (only its header is read) and plans the file.
+fn plan(raster: &Raster, opts: &TiffOptions) -> Result<Plan> {
     if raster.cols == 0 || raster.rows == 0 || raster.bands == 0 {
         return Err(Error::InvalidArgument("cannot write an empty raster".into()));
     }
@@ -386,10 +413,40 @@ fn prepare(raster: &Raster, opts: &TiffOptions) -> Result<Prepared> {
     let layout =
         Layout { tile, rows_per_strip: opts.rows_per_strip, planar: opts.planar && raster.bands > 1, photometric, extra, predictor };
     let mut geo = geo_tags(raster, opts.nodata, &opts.band_metadata)?;
-    if !opts.georeferenced {
+    if !opts.georeferenced || !opts.gcps.is_empty() || opts.geo_transform.is_some_and(|gt| !crate::is_north_up(&gt)) {
         geo.retain(|(tag, _)| !matches!(tag, 33550 | 33922));
     }
+    if !opts.gcps.is_empty() {
+        // GCPs as tie points, as GDAL writes them (with a CRS, GeoKeys as for a geotransform).
+        let ties = opts.gcps.iter().flat_map(|g| [g.pixel, g.line, 0.0, g.x, g.y, g.z]).collect();
+        geo.push((33922, Value::Doubles(ties)));
+    } else if let Some(gt) = opts.geo_transform.filter(|_| opts.georeferenced) {
+        if crate::is_north_up(&gt) {
+            geo.retain(|(tag, _)| !matches!(tag, 33550 | 33922));
+            geo.push((33550, Value::Doubles(vec![gt[1], -gt[5], 0.0])));
+            geo.push((33922, Value::Doubles(vec![0.0, 0.0, 0.0, gt[0], gt[3], 0.0])));
+        } else {
+            let m = vec![gt[1], gt[2], 0.0, gt[0], gt[4], gt[5], 0.0, gt[3], 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0];
+            geo.push((34264, Value::Doubles(m)));
+        }
+    }
+    if !opts.rpc.is_empty() {
+        if opts.rpc.len() != 92 {
+            return Err(Error::InvalidArgument(format!("RPCs are 92 coefficients, not {}", opts.rpc.len())));
+        }
+        geo.push((50844, Value::Doubles(opts.rpc.clone())));
+    }
     let color_map = (photometric == 3).then(|| color_map_tag(&opts.color_table, raster.data_type));
+    Ok(Plan { tile, layout, geo, color_map })
+}
+
+fn prepare(raster: &Raster, opts: &TiffOptions) -> Result<Prepared> {
+    let Plan { tile, layout, geo, color_map } = plan(raster, opts)?;
+    if let Some(m) = &opts.mask
+        && m.len() != raster.cols * raster.rows
+    {
+        return Err(Error::InvalidArgument(format!("the mask has {} values for {} pixels", m.len(), raster.cols * raster.rows)));
+    }
 
     // The full-resolution image, then overviews: a COG's until one fits in a tile, or the
     // factors asked for.
@@ -429,11 +486,73 @@ fn prepare(raster: &Raster, opts: &TiffOptions) -> Result<Prepared> {
         }
         img.tags.sort_by_key(|(t, _)| *t);
         images.push(img);
+        // GDAL's internal mask follows the full-resolution image.
+        if let (0, Some(m)) = (i, &opts.mask) {
+            let main = &images[0];
+            let tag = |t: u16| {
+                main.tags.iter().find_map(|(k, v)| match v {
+                    Value::Longs(v) if *k == t => v.first().map(|x| *x as usize),
+                    _ => None,
+                })
+            };
+            let block = match (tag(322), tag(323), tag(278)) {
+                (Some(w), Some(h), _) => (w, h, true),
+                (_, _, Some(rows)) => (raster.cols, rows, false),
+                _ => (raster.cols, raster.rows, false),
+            };
+            images.push(mask_image(m, raster.cols, raster.rows, block));
+        }
     }
 
     let data_len: u64 = images.iter().flat_map(|i| i.chunks.iter()).map(|c| c.len() as u64 + 8).sum();
     let big = opts.bigtiff || data_len > (u32::MAX as u64) - (1 << 24);
     Ok(Prepared { images, big, cog: opts.cog })
+}
+
+/// GDAL's internal mask (`GDAL_TIFF_INTERNAL_MASK`): a 1-bit transparency mask image
+/// (`NewSubfileType` 4, `PhotometricInterpretation` 4) in the blocks of the image it masks
+/// (`block`: width, height, tiled), Deflate compressed, bits set for valid pixels.
+fn mask_image(mask: &[u8], cols: usize, rows: usize, block: (usize, usize, bool)) -> Image {
+    let compression = Compression::Deflate;
+    let (chunk_w, chunk_h, tiled) = block;
+    let (across, down) = (cols.div_ceil(chunk_w), rows.div_ceil(chunk_h));
+    let row_bytes = chunk_w.div_ceil(8);
+    let chunks = crate::par::map_range(across * down, |j| {
+        let (x0, y0) = ((j % across) * chunk_w, (j / across) * chunk_h);
+        let h = if tiled { chunk_h } else { chunk_h.min(rows - y0) };
+        let mut buf = vec![0u8; row_bytes * h];
+        for r in 0..h {
+            let y = y0 + r;
+            if y >= rows {
+                break;
+            }
+            for c in 0..chunk_w {
+                let x = x0 + c;
+                if x < cols && mask[y * cols + x] != 0 {
+                    buf[r * row_bytes + c / 8] |= 0x80 >> (c % 8);
+                }
+            }
+        }
+        compression.compress(buf).unwrap_or_default()
+    });
+    let mut tags = vec![
+        (254, Value::Longs(vec![4])),
+        (256, Value::Longs(vec![cols as u32])),
+        (257, Value::Longs(vec![rows as u32])),
+        (258, Value::Shorts(vec![1])),
+        (259, Value::Shorts(vec![compression.code()])),
+        (262, Value::Shorts(vec![4])),
+        (277, Value::Shorts(vec![1])),
+        (284, Value::Shorts(vec![1])),
+    ];
+    if tiled {
+        tags.push((322, Value::Longs(vec![chunk_w as u32])));
+        tags.push((323, Value::Longs(vec![chunk_h as u32])));
+    } else {
+        tags.push((278, Value::Longs(vec![chunk_h as u32])));
+    }
+    tags.sort_by_key(|(t, _)| *t);
+    Image { tags, chunks, tiled }
 }
 
 /// The `ColorMap` tag of a color table: every red value, then green, then blue, as 16 bits.
@@ -992,8 +1111,383 @@ fn xml_escape(s: &str) -> String {
     s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
 }
 
+/// A GeoTIFF written a few rows at a time, so that rasters larger than memory can be written: the
+/// image data first, as rows of blocks are complete, then the image's directory at the end of the
+/// file (a layout GDAL writes too, and reads as any GeoTIFF). The lossless compressions,
+/// predictors, tiles or strips, pixel or band interleaving, georeferencing (rotated or by GCPs),
+/// metadata, color tables, RPCs and GDAL's internal mask are written as by
+/// [`crate::write_raster_dataset`]; overviews and COGs need the whole raster and are not.
+///
+/// ```no_run
+/// use terrio::{GeoTiffWriter, RasterDataset, RasterWriteOptions};
+///
+/// # fn header() -> RasterDataset { unimplemented!() }
+/// let header: RasterDataset = header(); // size, bands, data type, georeferencing, no pixels
+/// let options = RasterWriteOptions { compression: Some("DEFLATE".into()), tile_size: Some(256), ..Default::default() };
+/// let mut w = GeoTiffWriter::create("big.tif", &header, &options)?;
+/// # let (rows, data) = (0, wbraster::raster::RasterData::U8(vec![]));
+/// w.write_rows(&data, rows, None)?; // band after band, `rows` full rows, from the top
+/// w.finish()?;
+/// # Ok::<(), terrio::Error>(())
+/// ```
+pub struct GeoTiffWriter {
+    file: std::io::BufWriter<std::fs::File>,
+    pos: u64,
+    big: bool,
+    cols: usize,
+    rows: usize,
+    bands: usize,
+    data_type: DataType,
+    compression: Compression,
+    layout: Layout,
+    /// The block height: the tile height, or the rows per strip.
+    block_rows: usize,
+    chunk_w: usize,
+    across: usize,
+    offsets: Vec<u64>,
+    counts: Vec<u64>,
+    /// Rows received but not yet written (less than a block row), band after band.
+    pending: RasterData,
+    pending_mask: Vec<u8>,
+    pending_rows: usize,
+    rows_done: usize,
+    tags: Vec<(u16, Value)>,
+    /// The internal mask's compressed chunks, written after the image data.
+    mask: Option<Vec<Vec<u8>>>,
+}
+
+impl std::fmt::Debug for GeoTiffWriter {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GeoTiffWriter")
+            .field("cols", &self.cols)
+            .field("rows", &self.rows)
+            .field("bands", &self.bands)
+            .finish_non_exhaustive()
+    }
+}
+
+impl GeoTiffWriter {
+    /// Creates the file. `header` describes the raster (its size, bands, data type,
+    /// georeferencing, CRS, nodata and metadata); its pixels are not read. `options` are those of
+    /// [`crate::write_raster_dataset`] for GeoTIFFs; `options.mask` is ignored: masks are given
+    /// with the rows.
+    ///
+    /// # Errors
+    /// For COGs, overviews and lossy compressions, which need the whole raster, and when the file
+    /// cannot be created.
+    pub fn create(path: &str, header: &crate::RasterDataset, options: &crate::RasterWriteOptions) -> Result<Self> {
+        if matches!(options.driver, Some(d) if d != crate::formats::RasterDriver::GTiff) {
+            return Err(Error::Unsupported("rasters are written in rows as GeoTIFFs only".into()));
+        }
+        if !options.overviews.is_empty() {
+            return Err(Error::Unsupported("overviews need the whole raster: build them after writing".into()));
+        }
+        let mut options = options.clone();
+        if options.geo_transform.is_none() {
+            options.geo_transform = header.affine;
+        }
+        let with_mask = options.mask.take().is_some();
+        let opts = TiffOptions::from_write_options(&options, false, header.nodata())?
+            .ok_or_else(|| Error::Unsupported("lossy compressions need the whole raster".into()))?;
+        let r = &header.raster;
+        let plan = plan(r, &opts)?;
+        let (cols, rows, bands) = (r.cols, r.rows, r.bands);
+        let size = r.data_type.size_bytes();
+        let planar = plan.layout.planar;
+        let chunk_spp = if planar { 1 } else { bands };
+        let (chunk_w, block_rows, across, down) = match plan.tile {
+            Some((tw, th)) => (tw as usize, th as usize, cols.div_ceil(tw as usize), rows.div_ceil(th as usize)),
+            None => {
+                let per = match opts.rows_per_strip {
+                    Some(n) => (n as usize).clamp(1, rows),
+                    None => ((1usize << 16) / (cols * chunk_spp * size).max(1)).clamp(1, rows),
+                };
+                (cols, per, 1, rows.div_ceil(per))
+            }
+        };
+        let planes = if planar { bands } else { 1 };
+        let mut layout = plan.layout;
+        layout.rows_per_strip = Some(block_rows as u32);
+        let raw = (cols * rows * bands * size) as u64;
+        let big = opts.bigtiff || raw + raw / 8 > (u32::MAX as u64) - (1 << 24);
+        let mut tags = plan.geo;
+        if let Some(cm) = plan.color_map {
+            tags.push((320, cm));
+        }
+        let mut file = std::io::BufWriter::with_capacity(1 << 20, std::fs::File::create(path)?);
+        let head: Vec<u8> = if big {
+            [b"II".as_slice(), &43u16.to_le_bytes(), &8u16.to_le_bytes(), &0u16.to_le_bytes(), &0u64.to_le_bytes()].concat()
+        } else {
+            [b"II".as_slice(), &42u16.to_le_bytes(), &0u32.to_le_bytes()].concat()
+        };
+        file.write_all(&head)?;
+        let n = planes * across * down;
+        Ok(Self {
+            file,
+            pos: head.len() as u64,
+            big,
+            cols,
+            rows,
+            bands,
+            data_type: r.data_type,
+            compression: opts.compression,
+            layout,
+            block_rows,
+            chunk_w,
+            across,
+            offsets: vec![0; n],
+            counts: vec![0; n],
+            pending: RasterData::new_filled(r.data_type, 0, 0.0),
+            pending_mask: Vec::new(),
+            pending_rows: 0,
+            rows_done: 0,
+            tags,
+            mask: with_mask.then(Vec::new),
+        })
+    }
+
+    /// The number of rows given so far.
+    pub fn rows_written(&self) -> usize {
+        self.rows_done + self.pending_rows
+    }
+
+    /// Appends `rows` full rows of every band (`data`: band after band, of the raster's data
+    /// type), and of the mask (0 for invalid pixels) when the file has one.
+    ///
+    /// # Errors
+    /// When the data does not hold `rows` rows of every band, rows go past the raster's height,
+    /// or the file cannot be written.
+    pub fn write_rows(&mut self, data: &RasterData, rows: usize, mask: Option<&[u8]>) -> Result<()> {
+        if rows == 0 {
+            return Ok(());
+        }
+        if self.rows_written() + rows > self.rows {
+            return Err(Error::InvalidArgument(format!("{} rows past the raster's {}", self.rows_written() + rows, self.rows)));
+        }
+        let n = self.cols * rows;
+        if data.len() != n * self.bands {
+            return Err(Error::InvalidArgument(format!(
+                "{} values for {rows} rows of {} bands of {} columns",
+                data.len(),
+                self.bands,
+                self.cols
+            )));
+        }
+        if self.mask.is_some() {
+            let m = mask.ok_or_else(|| Error::InvalidArgument("the file has a mask: give its rows".into()))?;
+            if m.len() != n {
+                return Err(Error::InvalidArgument(format!("{} mask values for {rows} rows of {} columns", m.len(), self.cols)));
+            }
+            self.pending_mask.extend_from_slice(m);
+        }
+        // Pending rows are kept band after band, in the raster's type.
+        let old = self.pending_rows;
+        let (cols, bands) = (self.cols, self.bands);
+        macro_rules! merge {
+            ($($v:ident),*) => {
+                match (&mut self.pending, data) {
+                    $((RasterData::$v(p), RasterData::$v(d)) => {
+                        let mut merged = Vec::with_capacity(cols * (old + rows) * bands);
+                        for b in 0..bands {
+                            merged.extend_from_slice(&p[b * cols * old..(b + 1) * cols * old]);
+                            merged.extend_from_slice(&d[b * n..(b + 1) * n]);
+                        }
+                        *p = merged;
+                    })*
+                    _ => return Err(Error::InvalidArgument("the rows are not of the raster's data type".into())),
+                }
+            };
+        }
+        merge!(U8, I8, U16, I16, U32, I32, U64, I64, F32, F64);
+        self.pending_rows = old + rows;
+        while self.pending_rows >= self.block_rows || (self.pending_rows > 0 && self.rows_written() == self.rows) {
+            self.flush_block_row()?;
+        }
+        Ok(())
+    }
+
+    /// Compresses and writes the first block row of the pending rows.
+    fn flush_block_row(&mut self) -> Result<()> {
+        let h = self.block_rows.min(self.pending_rows);
+        let (cols, bands, total) = (self.cols, self.bands, self.pending_rows);
+        macro_rules! split {
+            ($($v:ident),*) => {
+                match &mut self.pending {
+                    $(RasterData::$v(p) => {
+                        let mut slab = Vec::with_capacity(cols * h * bands);
+                        let mut rest = Vec::with_capacity(cols * (total - h) * bands);
+                        for b in 0..bands {
+                            let src = b * cols * total;
+                            slab.extend_from_slice(&p[src..src + cols * h]);
+                            rest.extend_from_slice(&p[src + cols * h..src + cols * total]);
+                        }
+                        *p = rest;
+                        RasterData::$v(slab)
+                    })*
+                }
+            };
+        }
+        let data = split!(U8, I8, U16, I16, U32, I32, U64, I64, F32, F64);
+        self.pending_rows -= h;
+        let level = Level { cols, rows: h, bands, data: std::borrow::Cow::Owned(data) };
+        // Tiles are padded to full height: the slab is laid out as one row of blocks.
+        let mut layout = Layout { rows_per_strip: Some(h as u32), extra: self.layout.extra.clone(), ..self.layout };
+        if let Some((tw, _)) = layout.tile {
+            layout.tile = Some((tw, self.block_rows as u32));
+        }
+        let img = level.image(self.data_type, self.compression, &layout)?;
+        let block_row = self.rows_done / self.block_rows;
+        let per_plane = self.across * self.rows.div_ceil(self.block_rows);
+        for (k, chunk) in img.chunks.iter().enumerate() {
+            let (plane, i) = (k / self.across, k % self.across);
+            let idx = plane * per_plane + block_row * self.across + i;
+            self.offsets[idx] = self.pos;
+            self.counts[idx] = chunk.len() as u64;
+            self.file.write_all(chunk)?;
+            self.pos += chunk.len() as u64;
+        }
+        if self.tags.iter().all(|(t, _)| *t != 256) {
+            self.tags.extend(img.tags);
+        }
+        if let Some(chunks) = &mut self.mask {
+            let m: Vec<u8> = self.pending_mask.drain(..cols * h).collect();
+            let tiled = self.layout.tile.is_some();
+            let mi = mask_image(&m, cols, h, (self.chunk_w, if tiled { self.block_rows } else { h }, tiled));
+            chunks.extend(mi.chunks);
+        }
+        self.rows_done += h;
+        Ok(())
+    }
+
+    /// Writes the image's directory (and the mask's) and closes the file.
+    ///
+    /// # Errors
+    /// When rows are missing, or the file cannot be written.
+    pub fn finish(mut self) -> Result<()> {
+        if self.rows_written() != self.rows {
+            return Err(Error::InvalidArgument(format!("{} rows written of {}", self.rows_written(), self.rows)));
+        }
+        let tiled = self.layout.tile.is_some();
+        let mut tags = std::mem::take(&mut self.tags);
+        for (t, v) in tags.iter_mut() {
+            if *t == 257 {
+                *v = Value::Longs(vec![self.rows as u32]);
+            }
+            if *t == 278 {
+                *v = Value::Longs(vec![self.block_rows as u32]);
+            }
+        }
+        let (off_tag, cnt_tag) = if tiled { (324, 325) } else { (273, 279) };
+        tags.push((off_tag, Value::Offsets(self.offsets.clone())));
+        tags.push((cnt_tag, Value::Offsets(self.counts.clone())));
+        tags.sort_by_key(|(t, _)| *t);
+        // The mask's data, then its directory.
+        let mut mask_ifd: Option<Vec<(u16, Value)>> = None;
+        if let Some(chunks) = self.mask.take() {
+            let mut offsets = Vec::with_capacity(chunks.len());
+            let mut counts = Vec::with_capacity(chunks.len());
+            for c in &chunks {
+                offsets.push(self.pos);
+                counts.push(c.len() as u64);
+                self.file.write_all(c)?;
+                self.pos += c.len() as u64;
+            }
+            let full = mask_image(&[], self.cols, 0, (self.chunk_w, self.block_rows, tiled));
+            let mut mt: Vec<(u16, Value)> = full.tags.into_iter().filter(|(t, _)| *t != 257 && *t != 278).collect();
+            mt.push((257, Value::Longs(vec![self.rows as u32])));
+            if !tiled {
+                mt.push((278, Value::Longs(vec![self.block_rows as u32])));
+            }
+            mt.push((off_tag, Value::Offsets(offsets)));
+            mt.push((cnt_tag, Value::Offsets(counts)));
+            mt.sort_by_key(|(t, _)| *t);
+            mask_ifd = Some(mt);
+        }
+        // Word-aligned directories.
+        if self.pos % 2 == 1 {
+            self.file.write_all(&[0])?;
+            self.pos += 1;
+        }
+        let first = self.pos;
+        let main = encode_ifd(&tags, first, 0, self.big);
+        let second = first + main.len() as u64 + (main.len() as u64 % 2);
+        let main = match &mask_ifd {
+            Some(_) => encode_ifd(&tags, first, second, self.big),
+            None => main,
+        };
+        self.file.write_all(&main)?;
+        if let Some(mt) = mask_ifd {
+            if main.len() % 2 == 1 {
+                self.file.write_all(&[0])?;
+            }
+            self.file.write_all(&encode_ifd(&mt, second, 0, self.big))?;
+        }
+        // The first directory's offset, in the header.
+        let mut file = self.file.into_inner().map_err(|e| Error::Io(e.into_error()))?;
+        use std::io::{Seek, SeekFrom};
+        if self.big {
+            file.seek(SeekFrom::Start(8))?;
+            file.write_all(&first.to_le_bytes())?;
+        } else {
+            file.seek(SeekFrom::Start(4))?;
+            file.write_all(&(first as u32).to_le_bytes())?;
+        }
+        file.flush()?;
+        Ok(())
+    }
+}
+
 /// GDAL's structural metadata for COGs, written just after the header.
 const COG_GHOST: &str = "LAYOUT=IFDS_BEFORE_DATA\nBLOCK_ORDER=ROW_MAJOR\nBLOCK_LEADER=SIZE_AS_UINT4\nBLOCK_TRAILER=LAST_4_BYTES_REPEATED\nKNOWN_INCOMPATIBLE_EDITION=NO\n ";
+
+/// Encodes an IFD starting at file offset `start`: its entries, the offset of the next IFD, then
+/// the values that do not fit in the entries.
+fn encode_ifd(tags: &[(u16, Value)], start: u64, next: u64, big: bool) -> Vec<u8> {
+    let (entry_len, count_len, inline_len) = if big { (20u64, 8u64, 8usize) } else { (12, 2, 4) };
+    let next_len = if big { 8 } else { 4 };
+    let mut out = Vec::new();
+    let n = tags.len() as u64;
+    if big {
+        out.extend(n.to_le_bytes());
+    } else {
+        out.extend((n as u16).to_le_bytes());
+    }
+    let mut extra_pos = start + count_len + entry_len * n + next_len;
+    let mut extra = Vec::new();
+    for (tag, v) in tags {
+        let (typ, count, bytes) = v.encode(big);
+        out.extend(tag.to_le_bytes());
+        out.extend(typ.to_le_bytes());
+        if big {
+            out.extend(count.to_le_bytes());
+        } else {
+            out.extend((count as u32).to_le_bytes());
+        }
+        if bytes.len() <= inline_len {
+            let mut inline = bytes.clone();
+            inline.resize(inline_len, 0);
+            out.extend(inline);
+        } else {
+            if big {
+                out.extend(extra_pos.to_le_bytes());
+            } else {
+                out.extend((extra_pos as u32).to_le_bytes());
+            }
+            extra.extend(&bytes);
+            if bytes.len() % 2 == 1 {
+                extra.push(0);
+            }
+            extra_pos += (bytes.len() as u64).next_multiple_of(2);
+        }
+    }
+    if big {
+        out.extend(next.to_le_bytes());
+    } else {
+        out.extend((next as u32).to_le_bytes());
+    }
+    out.extend(extra);
+    out
+}
 
 /// Lays the file out: header, (COG) structural metadata, every IFD, then the image data.
 fn assemble(mut images: Vec<Image>, big: bool, cog: bool, w: &mut impl Write) -> std::io::Result<()> {
@@ -1074,47 +1568,7 @@ fn assemble(mut images: Vec<Image>, big: bool, cog: bool, w: &mut impl Write) ->
         }
         let start = out.len() as u64;
         debug_assert_eq!(start, ifd_offsets[i]);
-        let n = img.tags.len() as u64;
-        if big {
-            out.extend(n.to_le_bytes());
-        } else {
-            out.extend((n as u16).to_le_bytes());
-        }
-        let mut extra_pos = start + count_len + entry_len * n + next_len;
-        let mut extra = Vec::new();
-        for (tag, v) in &img.tags {
-            let (typ, count, bytes) = v.encode(big);
-            out.extend(tag.to_le_bytes());
-            out.extend(typ.to_le_bytes());
-            if big {
-                out.extend(count.to_le_bytes());
-            } else {
-                out.extend((count as u32).to_le_bytes());
-            }
-            if bytes.len() <= inline_len {
-                let mut inline = bytes.clone();
-                inline.resize(inline_len, 0);
-                out.extend(inline);
-            } else {
-                if big {
-                    out.extend(extra_pos.to_le_bytes());
-                } else {
-                    out.extend((extra_pos as u32).to_le_bytes());
-                }
-                extra.extend(&bytes);
-                if bytes.len() % 2 == 1 {
-                    extra.push(0);
-                }
-                extra_pos += (bytes.len() as u64).next_multiple_of(2);
-            }
-        }
-        let next = ifd_offsets.get(i + 1).copied().unwrap_or(0);
-        if big {
-            out.extend(next.to_le_bytes());
-        } else {
-            out.extend((next as u32).to_le_bytes());
-        }
-        out.extend(extra);
+        out.extend(encode_ifd(&img.tags, start, ifd_offsets.get(i + 1).copied().unwrap_or(0), big));
     }
 
     w.write_all(&out)?;

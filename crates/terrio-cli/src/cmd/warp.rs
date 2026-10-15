@@ -1,6 +1,7 @@
 //! `terrio warp`.
 
 use super::rasterout::{OutputArgs, open, srs};
+use terrio::ops::gcp::GcpMethod;
 use terrio::ops::warp::{Cutline, Nodata, WarpOptions, warp};
 use terrio::ops::{Resampling, parse_data_type};
 
@@ -53,6 +54,13 @@ pub struct Args {
     /// Maximum error of the approximate transformer, in pixels (0: exact).
     #[arg(long, default_value_t = 0.125)]
     et: f64,
+    /// The order of the polynomial fitted to the first source's GCPs (1, 2 or 3), as
+    /// `gdalwarp -order`. By default, GDAL's choice.
+    #[arg(long)]
+    order: Option<u32>,
+    /// Fit thin plate splines to the first source's GCPs, as `gdalwarp -tps`.
+    #[arg(long)]
+    tps: bool,
     #[command(flatten)]
     out: OutputArgs,
 }
@@ -77,6 +85,15 @@ pub fn run(a: Args) -> terrio::Result<()> {
         cutline: a.cutline.as_deref().map(|p| super::quiet(|| Cutline::open(p))).transpose()?,
         crop_to_cutline: a.crop_to_cutline,
         error_threshold: a.et,
+        gcps: if refs[0].affine.is_none() && refs[0].geo_transform() == [0.0, 1.0, 0.0, refs[0].raster.rows as f64, 0.0, -1.0] {
+            terrio::read_gcps(&inputs[0])?
+        } else {
+            Vec::new()
+        },
+        // As gdalwarp: `-order` sets the polynomial's order, but 4 or 5 GCPs still make a
+        // homography.
+        gcp_method: if a.tps { GcpMethod::Tps } else { GcpMethod::Auto },
+        order: a.order.unwrap_or(0),
         ..Default::default()
     };
     if o.target_aligned_pixels && o.resolution.is_none() {

@@ -103,6 +103,10 @@ enum Inner {
 pub(crate) trait WindowSource: Send + Sync {
     /// The sizes `(width, height)` of the overviews, largest first.
     fn overviews(&self) -> Vec<(usize, usize)>;
+    /// The block size `(width, height)` reads are best aligned to, when the format has one.
+    fn block_size(&self) -> Option<(usize, usize)> {
+        None
+    }
     /// Reads a window of some bands (numbered from 1) of a level (0 for full resolution, `i + 1`
     /// for overview `i`), band after band.
     fn read(&mut self, level: usize, window: Window, bands: &[usize]) -> Result<RasterData>;
@@ -265,11 +269,12 @@ impl LazyRaster {
     }
 
     /// The tile (or strip) size `(width, height)` of the full-resolution image, when it is read on
-    /// demand.
+    /// demand (for JPEG 2000, the block size GDAL gives it).
     pub fn block_size(&self) -> Option<(usize, usize)> {
         match &self.inner {
             Inner::Tiff(t) => Some(t.levels[0].block),
-            Inner::Memory(_) | Inner::Source(..) => None,
+            Inner::Memory(_) => None,
+            Inner::Source(_, s) => s.block_size(),
         }
     }
 
@@ -302,22 +307,23 @@ impl LazyRaster {
         if let Inner::Source(ds, _) = &self.inner {
             return ds.clone();
         }
-        let gt = self.geo_transform();
         let raster = wbraster::Raster {
             cols: self.width(),
             rows: self.height(),
             bands: self.band_count(),
-            x_min: gt[0],
-            y_min: gt[3] + gt[5] * self.height() as f64,
-            cell_size_x: gt[1],
-            cell_size_y: -gt[5],
+            x_min: 0.0,
+            y_min: 0.0,
+            cell_size_x: 1.0,
+            cell_size_y: 1.0,
             nodata: self.nodata().unwrap_or(-9999.0),
             data_type: self.data_type(),
             crs: self.crs().to_crs_info(),
             metadata: Vec::new(),
             data: wbraster::raster::RasterData::new_filled(self.data_type(), 0, 0.0),
         };
-        RasterDataset { raster, driver: self.driver(), has_nodata: self.nodata().is_some() }
+        let mut ds = RasterDataset { raster, driver: self.driver(), has_nodata: self.nodata().is_some(), affine: None };
+        ds.set_geo_transform(self.geo_transform());
+        ds
     }
 
     /// Reads the whole full-resolution image.
@@ -362,16 +368,62 @@ impl LazyRaster {
             crs: crs.unwrap_or_default(),
             ..Default::default()
         };
-        let mut raster = crate::pixel::raster_from_data(cfg, data)?;
-        raster.cell_size_x = gt[1];
-        raster.cell_size_y = -gt[5];
-        raster.x_min = gt[0] + window.x as f64 * gt[1];
-        raster.y_min = gt[3] + (window.y + window.height) as f64 * gt[5];
-        Ok(RasterDataset { raster, driver: self.driver(), has_nodata })
+        let raster = crate::pixel::raster_from_data(cfg, data)?;
+        let (x, y) = (window.x as f64, window.y as f64);
+        let mut ds = RasterDataset { raster, driver: self.driver(), has_nodata, affine: None };
+        ds.set_geo_transform([gt[0] + x * gt[1] + y * gt[2], gt[1], gt[2], gt[3] + x * gt[4] + y * gt[5], gt[4], gt[5]]);
+        Ok(ds)
     }
 }
 
 impl LazyRaster {
+    /// Whether the raster has a per-dataset mask: a GeoTIFF's internal mask (GDAL's
+    /// `GMF_PER_DATASET`).
+    pub fn has_mask(&self) -> bool {
+        match &self.inner {
+            Inner::Tiff(t) => t.masks.iter().any(|m| !m.overview && (m.width, m.height) == (t.levels[0].width, t.levels[0].height)),
+            _ => false,
+        }
+    }
+
+    /// Reads a window of the per-dataset mask, at full resolution or of an overview: 255 for
+    /// valid pixels, 0 for invalid ones, row by row. `None` when the raster has no mask (for an
+    /// overview without a mask of its own, the full-resolution mask is sampled by nearest
+    /// neighbour, as GDAL does).
+    pub fn read_mask(&mut self, window: Window, overview: Option<usize>) -> Result<Option<Vec<u8>>> {
+        let (lw, lh) = self.level_size(overview)?;
+        if !window.fits(lw, lh) {
+            return Err(Error::InvalidArgument(format!(
+                "window {}x{} at ({}, {}) is outside the {lw}x{lh} image",
+                window.width, window.height, window.x, window.y
+            )));
+        }
+        let (fw, fh) = (self.width(), self.height());
+        let Inner::Tiff(t) = &mut self.inner else { return Ok(None) };
+        let w = (window.x, window.y, window.width, window.height);
+        let own = t.masks.iter().find(|m| m.overview == overview.is_some() && (m.width, m.height) == (lw, lh)).cloned();
+        let reader = t.decoder.inner();
+        if let Some(m) = own {
+            return crate::tiff_mask::read_mask(reader, &m, w).map(Some);
+        }
+        let Some(full) = t.masks.iter().find(|m| !m.overview && (m.width, m.height) == (fw, fh)).cloned() else { return Ok(None) };
+        // Nearest neighbour from the full-resolution mask.
+        let (sx, sy) = (fw as f64 / lw as f64, fh as f64 / lh as f64);
+        let col = |c: usize| (((c as f64 + 0.5) * sx) as usize).min(fw - 1);
+        let row = |r: usize| (((r as f64 + 0.5) * sy) as usize).min(fh - 1);
+        let (c0, c1) = (col(window.x), col(window.x + window.width - 1));
+        let (r0, r1) = (row(window.y), row(window.y + window.height - 1));
+        let src = crate::tiff_mask::read_mask(reader, &full, (c0, r0, c1 - c0 + 1, r1 - r0 + 1))?;
+        let sw = c1 - c0 + 1;
+        let mut out = Vec::with_capacity(window.width * window.height);
+        for r in window.y..window.y + window.height {
+            for c in window.x..window.x + window.width {
+                out.push(src[(row(r) - r0) * sw + col(c) - c0]);
+            }
+        }
+        Ok(Some(out))
+    }
+
     /// A raster read by window by `source`, described by `header` (a dataset without pixels).
     pub(crate) fn from_source(header: RasterDataset, source: Box<dyn WindowSource>) -> Self {
         Self { inner: Inner::Source(header, source) }
@@ -479,6 +531,8 @@ struct TiffRaster {
     geo_transform: [f64; 6],
     /// The full-resolution image, then the overviews, largest first.
     levels: Vec<Level>,
+    /// GDAL's internal masks (of the full-resolution image and of overviews).
+    masks: Vec<crate::tiff_mask::MaskImage>,
     /// The index of the image the decoder is on.
     current_ifd: usize,
     /// Keeps a file extracted from an archive.
@@ -495,6 +549,7 @@ fn tiff_err(e: tiff::TiffError) -> Error {
 impl TiffRaster {
     fn new(mut source: Source, local: Option<vfs::LocalPath>) -> Result<Self> {
         let tags = read_geo_tags_from(&mut source).ok_or_else(|| Error::InvalidData("not a TIFF file".into()))?;
+        let masks = crate::tiff_mask::find_masks(&mut source);
         source.seek(SeekFrom::Start(0))?;
         let mut dec = Decoder::new(PatchedReader::new(source, &tags)).map_err(tiff_err)?.with_limits(Limits::unlimited());
         let (w, h) = dec.dimensions().map_err(tiff_err)?;
@@ -522,17 +577,10 @@ impl TiffRaster {
         if ifd > 1 {
             dec.seek_to_image(0).map_err(tiff_err)?;
         }
-        let geo_transform = match tags.geo_transform {
-            Some(gt) if gt[2] == 0.0 && gt[4] == 0.0 && gt[1] > 0.0 && gt[5] < 0.0 => {
-                // PixelIsPoint tie points refer to pixel centres; shift to the corner, as GDAL does.
-                let (dx, dy) = if tags.pixel_is_point { (gt[1] / 2.0, gt[5] / 2.0) } else { (0.0, 0.0) };
-                [gt[0] - dx, gt[1], 0.0, gt[3] - dy, 0.0, gt[5]]
-            }
-            Some(_) => return Err(Error::Unsupported("rotated or south-up geotransforms are not supported".into())),
-            // As the in-memory reader does: unit pixels, with the image's bottom at y = 0.
-            None => [0.0, 1.0, 0.0, h as f64, 0.0, -1.0],
-        };
-        Ok(Self { decoder: dec, tags, bands, data_type, geo_transform, levels, current_ifd: 0, _local: local, file: None })
+        // As the in-memory reader does without georeferencing: unit pixels, with the image's
+        // bottom at y = 0.
+        let geo_transform = tags.corner_geo_transform().unwrap_or([0.0, 1.0, 0.0, h as f64, 0.0, -1.0]);
+        Ok(Self { decoder: dec, tags, bands, data_type, geo_transform, levels, masks, current_ifd: 0, _local: local, file: None })
     }
 
     /// Reads a window of some bands (numbered from 1) of a level, band-major.

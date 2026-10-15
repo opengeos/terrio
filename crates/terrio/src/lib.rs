@@ -169,13 +169,15 @@ pub mod raster {
     pub use wbraster::{CrsInfo, RasterError, ReprojectOptions, ResampleMethod};
 }
 pub mod stac;
+mod tiff_mask;
 pub mod vfs;
 
 pub use cog::{LazyRaster, Window, WindowOptions, open_raster_lazy};
 pub use dataset::{
-    BandMetadata, Dataset, RasterDataset, RasterWriteOptions, VectorDataset, VectorOpenOptions, VectorWriteOptions, geo_transform,
-    list_layers, open, open_raster, open_vector, write_raster, write_raster_dataset, write_vector,
+    BandMetadata, Dataset, Gcp, RasterDataset, RasterWriteOptions, VectorDataset, VectorOpenOptions, VectorWriteOptions, geo_transform,
+    is_north_up, list_layers, open, open_raster, open_vector, read_gcps, write_raster, write_raster_dataset, write_vector,
 };
+pub use drivers::gtiff_write::GeoTiffWriter;
 pub use drivers::vector::csv::{CsvGeometry, CsvOptions};
 pub use drivers::vector::geojson::GeoJsonOptions;
 pub use error::{Error, Result};

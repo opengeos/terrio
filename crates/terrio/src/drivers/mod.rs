@@ -73,11 +73,11 @@ pub(crate) fn read(path: &str) -> Option<Result<RasterDataset>> {
     }))
 }
 
-/// Opens a raster read by window with one of terrio's own drivers (Zarr multiscales pyramids).
-/// `None` when none of them reads the file so.
+/// Opens a raster read by window with one of terrio's own drivers (Zarr multiscales pyramids,
+/// JPEG 2000 by tile and resolution level). `None` when none of them reads the file so.
 pub(crate) fn open_lazy(path: &str) -> Option<Result<crate::LazyRaster>> {
     let p = Path::new(path);
-    if zarr::is_zarr(p) { zarr::open_lazy(p) } else { None }
+    if zarr::is_zarr(p) { zarr::open_lazy(p) } else { jp2::open_lazy(path) }
 }
 
 /// Opens a subdataset named as GDAL names them (`NETCDF:"file.nc":variable`,
@@ -141,7 +141,7 @@ pub(crate) fn write(
         }
         RasterDriver::GPKG => gpkg::write(r, nodata, p, compression.or(co("TILE_FORMAT")), co("RASTER_TABLE")),
         RasterDriver::MBTiles | RasterDriver::PMTiles => {
-            let ds = RasterDataset { raster: r.clone(), driver, has_nodata: nodata.is_some() };
+            let ds = RasterDataset { raster: r.clone(), driver, has_nodata: nodata.is_some(), affine: None };
             crate::tiles::write_raster(&ds, path, driver, options)
         }
         // Formats without a CRS of their own: GDAL's sidecar holds it.

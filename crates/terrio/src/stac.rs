@@ -634,7 +634,7 @@ fn open_mosaic(source: &str, groups: Groups, resolution: Option<&str>) -> Result
         metadata,
         data: RasterData::new_filled(data_type, 0, 0.0),
     };
-    let header = RasterDataset { raster, driver: RasterDriver::STACIT, has_nodata: nodata.is_some() };
+    let header = RasterDataset { raster, driver: RasterDriver::STACIT, has_nodata: nodata.is_some(), affine: None };
     let mut items: Vec<(AssetItem, Option<LazyRaster>)> = items.into_iter().map(|i| (i, None)).collect();
     if let Some(slot) = items.iter_mut().find(|(i, _)| i.href == first_href) {
         slot.1 = Some(first);

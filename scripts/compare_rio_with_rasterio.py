@@ -765,6 +765,19 @@ def _w_ovr(rio: Any, ctx: Ctx) -> Any:
     return out
 
 
+@check("writing", "open in w mode without a driver: the driver from the extension")
+def _w_driver_from_ext(rio: Any, ctx: Ctx) -> Any:
+    out = []
+    data = np.arange(12, dtype="uint8").reshape(1, 3, 4)
+    for ext in (".tif", ".asc", ".png", ".nc"):
+        path = str(ctx.out / f"no_driver_{rio.__name__.replace('.', '_')}{ext}")
+        with rio.open(path, "w", width=4, height=3, count=1, dtype="uint8", crs="EPSG:32611", transform=rio.transform.from_origin(500000, 4100000, 30, 30)) as dst:
+            dst.write(data)
+        with ctx.reference.open(path) as ds:
+            out.append([ext, ds.driver, ds.read()])
+    return out
+
+
 @check("writing", "MemoryFile: write then read back")
 def _w_memfile(rio: Any, ctx: Ctx) -> Any:
     with rio.open(synthetic(rio, ctx)) as src:
@@ -775,6 +788,232 @@ def _w_memfile(rio: Any, ctx: Ctx) -> Any:
         buf = mem.read()
     with rio.io.MemoryFile(buf) as mem, mem.open() as ds:
         return [ds.read(), ds.profile["blockxsize"], ds.nodata]
+
+
+# ─── Georeferencing, masks, nodata, file tools ──────────────────────────────────────────────────
+
+
+def _sub(rio: Any, name: str) -> Any:
+    """A submodule of the module under test, such as `shutil` or `stack`.
+
+    Args:
+        rio: `rasterio` or `terrio.rio`.
+        name: The submodule.
+
+    Returns:
+        module: The submodule.
+    """
+    import importlib
+
+    return importlib.import_module(f"{rio.__name__}.{name}")
+
+
+def _small(rio: Any, path: str, transform: Any, **kw: Any) -> None:
+    """Writes a small 3-band uint8 GeoTIFF.
+
+    Args:
+        rio: The module writing it.
+        path: The output path.
+        transform: Its transform.
+        **kw: Profile overrides.
+    """
+    data = (np.arange(3 * 40 * 50).reshape(3, 40, 50) % 251).astype("uint8")
+    profile = dict(driver="GTiff", width=50, height=40, count=3, dtype="uint8", crs="EPSG:32611", transform=transform)
+    profile.update(kw)
+    with rio.open(path, "w", **profile) as dst:
+        dst.write(data)
+
+
+def _gcps(rio: Any, n: int) -> list[Any]:
+    """Ground control points over a 150 x 120 raster: 4 (corners) or 16 (a grid), with distortion.
+
+    Args:
+        rio: The module whose `GroundControlPoint` to use.
+        n: 4 or 16.
+
+    Returns:
+        list: The points.
+    """
+    gcp = _sub(rio, "control").GroundControlPoint
+    steps = ((0, 150), (0, 120)) if n == 4 else ((0, 50, 100, 150), (0, 40, 80, 120))
+    out = []
+    for r in steps[1]:
+        for c in steps[0]:
+            x = 500000 + c * 10 + r * 1.5 + 0.002 * c * r
+            y = 4100000 - r * 10 + c * 0.8 - 0.0005 * c * c
+            out.append(gcp(row=r, col=c, x=x, y=y, z=0.0))
+    return out
+
+
+@check("georeferencing", "rotated and south-up transforms: written, read back by both, windows")
+def _g_rotated(rio: Any, ctx: Ctx) -> Any:
+    out = []
+    for name, t in (("rot", rio.Affine(10, 2, 500000, 1.5, -10, 4100000)), ("south", rio.Affine(10, 0, 500000, 0, 10, 4000000))):
+        path = str(ctx.out / f"{name}.tif")
+        _small(rio, path, t)
+        for reader in (rio, ctx.reference):
+            with reader.open(path) as ds:
+                out.append([tuple(ds.transform), ds.bounds, ds.res, ds.read(), ds.read(2, window=((5, 15), (7, 20)))])
+    return out
+
+
+@check("georeferencing", "rotated and south-up sources reprojected (nearest, bilinear, to EPSG:4326)", expect="tolerance", rtol=1e-12, atol=1e-9, reason="PROJ and terrio's projection arithmetic differ in the last digits")
+def _g_rotated_reproject(rio: Any, ctx: Ctx) -> Any:
+    out = []
+    for name, t in (("rot", rio.Affine(10, 2, 500000, 1.5, -10, 4100000)), ("south", rio.Affine(10, 0, 500000, 0, 10, 4000000))):
+        path = str(ctx.out / f"{name}.tif")
+        _small(ctx.reference, path, t)
+        with rio.open(path) as src:
+            for crs, r in (("EPSG:32611", "nearest"), ("EPSG:32611", "bilinear"), ("EPSG:4326", "cubic")):
+                dst, dt = rio.warp.reproject(rio.band(src, 1), dst_crs=crs, resampling=rio.enums.Resampling[r])
+                out.append([dst, tuple(dt)])
+    return out
+
+
+@check("georeferencing", "GCPs: written as tie points, read back by both (CRS, no transform)")
+def _g_gcps(rio: Any, ctx: Ctx) -> Any:
+    out = []
+    for n in (4, 16):
+        path = str(ctx.out / f"gcps{n}.tif")
+        with rio.open(path, "w", driver="GTiff", width=150, height=120, count=1, dtype="uint8") as dst:
+            dst.write(np.ones((1, 120, 150), "uint8"))
+            dst.gcps = (_gcps(rio, n), "EPSG:32611")
+        for reader in (rio, ctx.reference):
+            with reader.open(path) as ds:
+                gcps, crs = ds.gcps
+                out.append([[(g.row, g.col, g.x, g.y, g.z, g.id) for g in gcps], crs, ds.crs, tuple(ds.transform)])
+    return out
+
+
+@check("georeferencing", "reproject with GCPs: GDAL's default (homography from 4, polynomial from 16), MAX_GCP_ORDER 2 and 3, TPS", expect="tolerance", rtol=1e-12, atol=1e-9, reason="PROJ and terrio's projection arithmetic differ in the last digits")
+def _g_gcp_reproject(rio: Any, ctx: Ctx) -> Any:
+    rng = np.random.default_rng(1)
+    src = np.cumsum((rng.random((1, 120, 150)) * 250).astype("uint8"), axis=2).astype("uint8")
+    out = []
+    for n, opts in ((4, {}), (16, {}), (16, {"MAX_GCP_ORDER": 2}), (16, {"MAX_GCP_ORDER": 3}), (16, {"SRC_METHOD": "GCP_TPS"}), (4, {"SRC_METHOD": "GCP_TPS"})):
+        for crs in ("EPSG:32611", "EPSG:4326"):
+            t = rio.warp.calculate_default_transform("EPSG:32611", crs, 150, 120, gcps=_gcps(rio, n), **opts)
+            dst, dt = rio.warp.reproject(src, gcps=_gcps(rio, n), src_crs="EPSG:32611", dst_crs=crs, **opts)
+            out.append([tuple(t[0]), t[1:], dst, tuple(dt)])
+    return out
+
+
+@check("georeferencing", "xy, rowcol and dataset xy/index with GCPs (GDAL's GCP polynomial)", expect="tolerance", rtol=1e-12, atol=1e-6, reason="least squares solved in another order")
+def _g_gcp_xy(rio: Any, ctx: Ctx) -> Any:
+    out = []
+    for n in (4, 16):
+        g = _gcps(rio, n)
+        out.append(rio.transform.xy(g, [5, 60.5, 100], [3, 70, 140]))
+        out.append(rio.transform.rowcol(g, [500500, 500900], [4099500, 4099100]))
+        path = str(ctx.out / f"gcp_xy{n}.tif")
+        with ctx.reference.open(path, "w", driver="GTiff", width=150, height=120, count=1, dtype="uint8") as dst:
+            dst.write(np.zeros((1, 120, 150), "uint8"))
+            dst.gcps = (_gcps(ctx.reference, n), "EPSG:32611")
+        with rio.open(path) as ds:
+            m = rio.enums.TransformMethod.gcps
+            out.append([ds.xy(10, 20, transform_method=m), ds.index(500300, 4099800, transform_method=m)])
+    return out
+
+
+@check("georeferencing", "RPCs: written to the RPC tag, read back by both")
+def _g_rpcs(rio: Any, ctx: Ctx) -> Any:
+    items = {
+        "HEIGHT_OFF": "250", "HEIGHT_SCALE": "500", "LAT_OFF": "35.6", "LAT_SCALE": "0.05", "LONG_OFF": "-115.2", "LONG_SCALE": "0.06",
+        "LINE_OFF": "1000", "LINE_SCALE": "1000", "SAMP_OFF": "1200", "SAMP_SCALE": "1200",
+        "LINE_NUM_COEFF": " ".join(str(0.001 * i) for i in range(20)), "LINE_DEN_COEFF": "1 " + " ".join("0" for _ in range(19)),
+        "SAMP_NUM_COEFF": " ".join(str(-0.002 * i) for i in range(20)), "SAMP_DEN_COEFF": "1 " + " ".join("0" for _ in range(19)),
+    }
+    rpc = _sub(rio, "rpc").RPC.from_gdal(items)
+    path = str(ctx.out / "rpcs.tif")
+    with rio.open(path, "w", driver="GTiff", width=20, height=10, count=1, dtype="uint8") as dst:
+        dst.write(np.zeros((1, 10, 20), "uint8"))
+        dst.rpcs = rpc
+    out = []
+    for reader in (rio, ctx.reference):
+        with reader.open(path) as ds:
+            r = ds.rpcs
+            out.append(r.to_dict())
+    return out
+
+
+@check("masks", "internal masks: write_mask saved to the file (tiled, striped, r+), read back by both")
+def _m_internal(rio: Any, ctx: Ctx) -> Any:
+    m = np.full((40, 50), 255, np.uint8)
+    m[10:20, 5:30] = 0
+    out = []
+    for name, kw in (("tiled", dict(tiled=True, blockxsize=16, blockysize=16, compress="deflate")), ("strips", {})):
+        path = str(ctx.out / f"mask_{name}.tif")
+        _small(rio, path, rio.Affine(10, 0, 500000, 0, -10, 4100000), **kw)
+        with rio.open(path, "r+") as dst:
+            dst.write_mask(m)
+        for reader in (rio, ctx.reference):
+            with reader.open(path) as ds:
+                out.append([ds.mask_flag_enums, ds.dataset_mask(), ds.read_masks(2, window=((8, 22), (0, 40))), ds.read(1, masked=True), ds.dataset_mask(out_shape=(20, 25))])
+        with rio.open(path, "r+") as dst:
+            dst.update_tags(edited="yes")
+        with ctx.reference.open(path) as ds:
+            out.append(ds.dataset_mask())
+    return out
+
+
+@check("masks", "per-band nodata from a .aux.xml sidecar: nodatavals, masks, masked reads")
+def _m_band_nodata(rio: Any, ctx: Ctx) -> Any:
+    path = str(ctx.out / "band_nodata.tif")
+    _small(ctx.reference, path, rio.Affine(10, 0, 500000, 0, -10, 4100000))
+    with open(path + ".aux.xml", "w") as f:
+        f.write('<PAMDataset><PAMRasterBand band="1"><NoDataValue>0</NoDataValue></PAMRasterBand>'
+                '<PAMRasterBand band="2"><NoDataValue>5</NoDataValue></PAMRasterBand>'
+                '<PAMRasterBand band="3"><NoDataValue>250</NoDataValue></PAMRasterBand></PAMDataset>')
+    with rio.open(path) as ds:
+        return [ds.nodatavals, ds.nodata, ds.read_masks(), ds.read(masked=True), ds.mask_flag_enums]
+
+
+@check("tools", "shutil: exists, copy (to GTiff, with creation options), copyfiles, delete")
+def _t_shutil(rio: Any, ctx: Ctx) -> Any:
+    sh = _sub(rio, "shutil")
+    src = synthetic(rio, ctx)
+    out: list[Any] = [sh.exists(src), sh.exists(str(ctx.out / "missing.tif"))]
+    dst = str(ctx.out / "copy.tif")
+    sh.copy(src, dst, compress="lzw", tiled=True)
+    with ctx.reference.open(dst) as ds:
+        out.append([ds.read(), ds.nodata, ds.crs, tuple(ds.transform), ds.compression, ds.is_tiled, ds.tags()["source"], ds.descriptions])
+    with rio.open(src) as s:
+        sh.copy(s, str(ctx.out / "copy2.tif"))
+    with ctx.reference.open(str(ctx.out / "copy2.tif")) as ds:
+        out.append(ds.read())
+    files = str(ctx.out / "files.tif")
+    sh.copyfiles(dst, files)
+    with ctx.reference.open(files) as ds:
+        out.append(ds.read())
+    sh.delete(files)
+    out.append(sh.exists(files))
+    for bad in (lambda: sh.delete(str(ctx.out / "missing.tif")), lambda: sh.copy(dst, dst), lambda: sh.copyfiles(dst, dst)):
+        try:
+            bad()
+            out.append("no error")
+        except Exception as e:  # noqa: BLE001
+            out.append(type(e).__name__)
+    return out
+
+
+@check("tools", "stack: bands of several files, indexes, bounds, resolution, masked, dst_path")
+def _t_stack(rio: Any, ctx: Ctx) -> Any:
+    stack = _sub(rio, "stack").stack
+    a = synthetic(rio, ctx)
+    b = synthetic(rio, ctx, "synth_b.tif", overviews=False, transform=ctx.reference.transform.from_origin(503000, 4098000, 30, 30), nodata=None)
+    out = []
+    arr, t = stack([a, b])
+    out.append([arr, tuple(t)])
+    arr, t = stack([a, b], indexes=[[1, 3], 2], bounds=(500500, 4093000, 508000, 4099500), res=45, masked=True)
+    out.append([arr, tuple(t)])
+    with rio.open(a) as s1, rio.open(b) as s2:
+        arr, t = stack([s1, s2], use_highest_res=True, target_aligned_pixels=True, res=(30, 30))
+        out.append([arr, tuple(t)])
+    dst = str(ctx.out / "stacked.tif")
+    stack([a, b], dst_path=dst, dst_kwds={"compress": "deflate"})
+    with ctx.reference.open(dst) as ds:
+        out.append([meta_of(ds)["profile"], ds.read()])
+    return out
 
 
 # ─── Features, warping, merging, masking ────────────────────────────────────────────────────────

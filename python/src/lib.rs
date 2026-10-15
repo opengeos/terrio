@@ -59,6 +59,7 @@ pub(crate) fn crs_string(crs: &terrio::crs::SpatialRef) -> Option<String> {
 fn _terrio(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("__version__", terrio::VERSION)?;
     m.add_class::<raster::PyRaster>()?;
+    m.add_class::<raster::PyGeoTiffWriter>()?;
     m.add_class::<vector::PyLayer>()?;
     m.add_class::<vector::PyVectorDataset>()?;
     m.add_class::<arrow::PyArrowTable>()?;

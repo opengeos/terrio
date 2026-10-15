@@ -115,7 +115,7 @@ pub(crate) fn read(path: &Path) -> Result<RasterDataset> {
             raster.metadata.push((format!("band_{}_name", i + 1), name.to_string()));
         }
     }
-    Ok(RasterDataset { raster, driver: RasterDriver::ENVI, has_nodata: nodata.is_some() })
+    Ok(RasterDataset { raster, driver: RasterDriver::ENVI, has_nodata: nodata.is_some(), affine: None })
 }
 
 /// The geotransform and (for UTM and geographic grids) CRS of a `map info` value.

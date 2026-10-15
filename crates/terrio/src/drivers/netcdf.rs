@@ -319,7 +319,7 @@ pub(crate) fn read(path: &Path, variable: Option<&str>) -> Result<RasterDataset>
             raster.metadata.push((format!("SUBDATASET_{}_DESC", i + 1), d));
         }
     }
-    Ok(RasterDataset { raster, driver: RasterDriver::NetCDF, has_nodata: nodata.is_some() })
+    Ok(RasterDataset { raster, driver: RasterDriver::NetCDF, has_nodata: nodata.is_some(), affine: None })
 }
 
 /// Whether a coordinate variable is a spatial axis as GDAL decides it (`NCDFIsVarLongitude()`,

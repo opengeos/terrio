@@ -11,6 +11,7 @@ from numpy.typing import DTypeLike, NDArray
 __all__ = [
     "__version__",
     "Raster",
+    "GeoTiffWriter",
     "Layer",
     "VectorDataset",
     "ArrowTable",
@@ -49,6 +50,7 @@ __all__ = [
     "tiff_tags",
     "crs_info",
     "suggested_grid",
+    "gcp_transform",
 ]
 
 __version__: str
@@ -76,6 +78,35 @@ _Bounds: TypeAlias = tuple[float, float, float, float]
 _Bounds3D: TypeAlias = tuple[float, float, float, float, float, float]
 _Window: TypeAlias = tuple[int, int, int, int]
 _XYZ: TypeAlias = tuple[float, float, float]
+
+@final
+class GeoTiffWriter:
+    def __new__(
+        cls,
+        path: str,
+        width: int,
+        height: int,
+        count: int,
+        dtype: str,
+        transform: Sequence[float],
+        crs: str | None = None,
+        nodata: float | None = None,
+        metadata: Mapping[str, Any] | Sequence[tuple[Any, Any]] | None = None,
+        *,
+        compress: str | None = None,
+        tile_size: int | None = None,
+        bigtiff: bool = False,
+        options: Mapping[str, str] | None = None,
+        band_metadata: Sequence[Mapping[str, Any]] | None = None,
+        colormap: Sequence[tuple[int, int, int, int]] | None = None,
+        gcps: Sequence[tuple[float, float, float, float, float]] | None = None,
+        rpc: Sequence[float] | None = None,
+        mask: bool = False,
+    ) -> GeoTiffWriter: ...
+    @property
+    def rows_written(self) -> int: ...
+    def write(self, array: NDArray[Any], mask: NDArray[Any] | None = None) -> None: ...
+    def close(self) -> None: ...
 
 @final
 class Raster:
@@ -109,12 +140,19 @@ class Raster:
     def overviews(self) -> list[tuple[int, int]]: ...
     @property
     def is_lazy(self) -> bool: ...
+    @property
+    def has_mask(self) -> bool: ...
+    @property
+    def block_size(self) -> tuple[int, int] | None: ...
     def read(
         self,
         band: int | Sequence[int] | None = None,
         window: _Window | None = None,
         overview: int | None = None,
     ) -> NDArray[Any]: ...
+    def read_mask(
+        self, window: _Window | None = None, overview: int | None = None
+    ) -> NDArray[Any] | None: ...
     @staticmethod
     def from_array(
         array: NDArray[Any],
@@ -136,6 +174,9 @@ class Raster:
         colormap: Sequence[tuple[int, int, int, int]] | None = None,
         overviews: Sequence[int] | None = None,
         overview_resampling: str | None = None,
+        gcps: Sequence[tuple[float, float, float, float, float]] | None = None,
+        mask: NDArray[Any] | None = None,
+        rpc: Sequence[float] | None = None,
     ) -> None: ...
     def to_bytes(
         self,
@@ -577,6 +618,9 @@ def warp(
     compress: str | None = None,
     tile_size: int | None = None,
     bigtiff: bool = False,
+    gcps: Sequence[tuple[float, float, float, float, float]] | None = None,
+    order: int = 0,
+    gcp_method: str = "auto",
 ) -> Raster: ...
 def mosaic(
     srcs: _RasterSource | Sequence[_RasterSource],
@@ -738,6 +782,21 @@ def grid_points(
 
 def tiff_tags(path: str) -> list[dict[int, str | bytes | list[int] | list[float]]] | None: ...
 def crs_info(crs: str) -> dict[str, Any]: ...
+def gcp_transform(
+    gcps: Sequence[tuple[float, float, float, float, float]],
+    xs: Sequence[float],
+    ys: Sequence[float],
+    inverse: bool = False,
+    method: str = "polynomial",
+    order: int = 0,
+) -> tuple[list[float], list[float]]: ...
 def suggested_grid(
-    width: int, height: int, transform: Sequence[float], src_crs: str, dst_crs: str
+    width: int,
+    height: int,
+    transform: Sequence[float],
+    src_crs: str,
+    dst_crs: str,
+    gcps: Sequence[tuple[float, float, float, float, float]] | None = None,
+    order: int = 0,
+    gcp_method: str = "auto",
 ) -> tuple[tuple[float, float, float, float, float, float], int, int]: ...

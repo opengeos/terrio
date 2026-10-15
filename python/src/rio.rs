@@ -13,6 +13,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(tiff_tags, m)?)?;
     m.add_function(wrap_pyfunction!(crs_info, m)?)?;
     m.add_function(wrap_pyfunction!(suggested_grid, m)?)?;
+    m.add_function(wrap_pyfunction!(gcp_transform, m)?)?;
     Ok(())
 }
 
@@ -259,6 +260,10 @@ fn crs_info<'py>(py: Python<'py>, crs: &str) -> PyResult<Bound<'py, PyDict>> {
 ///     transform: The source's GDAL-style geotransform.
 ///     src_crs: The source CRS.
 ///     dst_crs: The output CRS.
+///     gcps: Ground control points georeferencing the source instead of `transform`:
+///         `(pixel, line, x, y, z)` tuples.
+///     order: The GCP polynomial order (0 picks GDAL's default).
+///     gcp_method: `"auto"`, `"polynomial"`, `"tps"` or `"homography"`.
 ///
 /// Returns:
 ///     tuple: The output geotransform (6 floats), width and height.
@@ -266,7 +271,8 @@ fn crs_info<'py>(py: Python<'py>, crs: &str) -> PyResult<Bound<'py, PyDict>> {
 /// Raises:
 ///     CRSError: If a CRS cannot be parsed or the transformation fails.
 #[pyfunction]
-#[allow(clippy::type_complexity)]
+#[pyo3(signature = (width, height, transform, src_crs, dst_crs, gcps=None, order=0, gcp_method="auto"))]
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
 fn suggested_grid(
     py: Python<'_>,
     width: usize,
@@ -274,11 +280,59 @@ fn suggested_grid(
     transform: [f64; 6],
     src_crs: &str,
     dst_crs: &str,
+    gcps: Option<Vec<(f64, f64, f64, f64, f64)>>,
+    order: u32,
+    gcp_method: &str,
 ) -> PyResult<((f64, f64, f64, f64, f64, f64), usize, usize)> {
     let (src, dst) = (SpatialRef::parse(src_crs).py()?, SpatialRef::parse(dst_crs).py()?);
-    if transform[1] == 0.0 || transform[5] == 0.0 {
+    let gcps = crate::raster::parse_gcps(gcps);
+    let method = terrio::ops::gcp::GcpMethod::parse(gcp_method).py()?;
+    if gcps.is_empty() && transform[1] * transform[5] - transform[2] * transform[4] == 0.0 {
         return Err(invalid("the source transform is degenerate"));
     }
-    let (g, w, h) = py.detach(|| terrio::ops::warp::suggested_grid(width, height, transform, &src, &dst)).py()?;
+    let (g, w, h) = py
+        .detach(|| {
+            if gcps.is_empty() {
+                terrio::ops::warp::suggested_grid(width, height, transform, &src, &dst)
+            } else {
+                terrio::ops::warp::suggested_grid_gcps(width, height, &gcps, method, order, &src, &dst)
+            }
+        })
+        .py()?;
     Ok(((g[0], g[1], g[2], g[3], g[4], g[5]), w, h))
+}
+
+/// Transforms coordinates with GCPs, as GDAL's GCP transformers do: from pixel/line to
+/// georeferenced coordinates, or back with `inverse`.
+///
+/// Args:
+///     gcps: The ground control points, `(pixel, line, x, y, z)` tuples.
+///     xs: The first coordinates (columns, or map x with `inverse`).
+///     ys: The second coordinates (rows, or map y).
+///     inverse: Map coordinates to pixel/line.
+///     method: `"polynomial"`, `"tps"`, `"homography"` or `"auto"`.
+///     order: The polynomial order (0 picks GDAL's default).
+///
+/// Returns:
+///     tuple: The transformed `(xs, ys)`.
+///
+/// Raises:
+///     InvalidArgumentError: If the GCPs cannot be fitted.
+#[pyfunction]
+#[pyo3(signature = (gcps, xs, ys, inverse=false, method="polynomial", order=0))]
+fn gcp_transform(
+    gcps: Vec<(f64, f64, f64, f64, f64)>,
+    xs: Vec<f64>,
+    ys: Vec<f64>,
+    inverse: bool,
+    method: &str,
+    order: u32,
+) -> PyResult<(Vec<f64>, Vec<f64>)> {
+    if xs.len() != ys.len() {
+        return Err(invalid("xs and ys differ in length"));
+    }
+    let gcps = crate::raster::parse_gcps(Some(gcps));
+    let method = terrio::ops::gcp::GcpMethod::parse(method).py()?;
+    let t = terrio::ops::gcp::GcpTransformer::new(&gcps, method, order).py()?;
+    Ok(xs.iter().zip(&ys).map(|(&x, &y)| if inverse { t.to_pixel(x, y) } else { t.to_geo(x, y) }).unzip())
 }

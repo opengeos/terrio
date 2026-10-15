@@ -22,6 +22,7 @@
 
 pub mod calc;
 pub mod dem;
+pub mod gcp;
 pub mod mosaic;
 pub mod polygonize;
 pub mod proximity;

@@ -238,6 +238,7 @@ def open(
         if not driver:
             driver = driver_from_extension(path)
         get_writer_for_driver(driver)
+        write_args["driver"] = driver
         return DatasetWriter(path, mode, **write_args, **kwargs)
     raise DriverCapabilityError(f"mode must be one of 'r', 'r+', or 'w', not {mode}")
 

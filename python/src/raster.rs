@@ -69,7 +69,7 @@ pub(crate) fn to_numpy<'py>(py: Python<'py>, data: RasterData, shape: &[usize]) 
 }
 
 /// Copies a NumPy array's values, in C order, into raster pixels.
-fn from_numpy(array: &Bound<'_, PyUntypedArray>) -> PyResult<RasterData> {
+pub(crate) fn from_numpy(array: &Bound<'_, PyUntypedArray>) -> PyResult<RasterData> {
     let py = array.py();
     let dtype = array.dtype();
     macro_rules! try_types {
@@ -150,7 +150,8 @@ impl PyRaster {
         self.crs_ref().to_wkt()
     }
 
-    /// The GDAL-style geotransform `(x_origin, pixel_width, 0, y_origin, 0, -pixel_height)`.
+    /// The GDAL-style geotransform `(x_origin, pixel_width, row_rotation, y_origin,
+    /// column_rotation, pixel_height)`.
     #[getter]
     fn transform(&self) -> (f64, f64, f64, f64, f64, f64) {
         let g = self.inner.geo_transform();
@@ -161,7 +162,7 @@ impl PyRaster {
     #[getter]
     fn res(&self) -> (f64, f64) {
         let g = self.inner.geo_transform();
-        (g[1].abs(), g[5].abs())
+        (g[1].hypot(g[4]), g[2].hypot(g[5]))
     }
 
     /// The extent `(min_x, min_y, max_x, max_y)` in CRS units.
@@ -169,7 +170,11 @@ impl PyRaster {
     fn bounds(&self) -> (f64, f64, f64, f64) {
         let g = self.inner.geo_transform();
         let (w, h) = (self.inner.width() as f64, self.inner.height() as f64);
-        (g[0], g[3] + h * g[5], g[0] + w * g[1], g[3])
+        let xs = [g[0], g[0] + w * g[1], g[0] + h * g[2], g[0] + w * g[1] + h * g[2]];
+        let ys = [g[3], g[3] + w * g[4], g[3] + h * g[5], g[3] + w * g[4] + h * g[5]];
+        let min = |v: [f64; 4]| v.iter().copied().fold(f64::INFINITY, f64::min);
+        let max = |v: [f64; 4]| v.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+        (min(xs), min(ys), max(xs), max(ys))
     }
 
     /// The name of the format driver that read the raster, such as `"GTiff"`.
@@ -235,13 +240,61 @@ impl PyRaster {
         to_numpy(py, r.data, &shape)
     }
 
+    /// Whether the raster has a per-dataset mask (a GeoTIFF's internal mask, GDAL's
+    /// `GMF_PER_DATASET`).
+    #[getter]
+    fn has_mask(&self) -> bool {
+        self.inner.has_mask()
+    }
+
+    /// The block (tile or strip) size `(width, height)` reads are best aligned to, when the raster
+    /// is read on demand.
+    #[getter]
+    fn block_size(&self) -> Option<(usize, usize)> {
+        self.inner.block_size()
+    }
+
+    /// Reads the per-dataset mask: 255 for valid pixels, 0 for invalid ones.
+    ///
+    /// Args:
+    ///     window: The pixels to read, `(col_off, row_off, width, height)`, or `None` for the
+    ///         whole image (of the overview, with `overview`).
+    ///     overview: Read the mask of this overview (0 is the largest).
+    ///
+    /// Returns:
+    ///     numpy.ndarray | None: A uint8 array `(rows, cols)`, or `None` without a mask.
+    ///
+    /// Raises:
+    ///     InvalidArgumentError: If the window or the overview does not exist.
+    #[pyo3(signature = (window=None, overview=None))]
+    fn read_mask<'py>(
+        &mut self,
+        py: Python<'py>,
+        window: Option<(usize, usize, usize, usize)>,
+        overview: Option<usize>,
+    ) -> PyResult<Option<Bound<'py, PyAny>>> {
+        let window = match window {
+            Some((x, y, w, h)) => Window::new(x, y, w, h),
+            None => {
+                let (w, h) = match overview {
+                    None => (self.inner.width(), self.inner.height()),
+                    Some(i) => self.inner.overviews().get(i).copied().ok_or_else(|| invalid(format!("no overview {i}")))?,
+                };
+                Window::full(w, h)
+            }
+        };
+        let inner = &mut self.inner;
+        let mask = py.detach(|| inner.read_mask(window, overview)).py()?;
+        mask.map(|m| to_numpy(py, RasterData::U8(m), &[window.height, window.width])).transpose()
+    }
+
     /// Creates a raster from a NumPy array.
     ///
     /// Args:
     ///     array: A 2-D `(rows, cols)` or 3-D `(bands, rows, cols)` array of an integer or float
     ///         dtype (booleans are stored as uint8).
-    ///     transform: The GDAL-style geotransform `(x_origin, pixel_width, 0, y_origin, 0,
-    ///         -pixel_height)` of a north-up raster.
+    ///     transform: The GDAL-style geotransform `(x_origin, pixel_width, row_rotation,
+    ///         y_origin, column_rotation, pixel_height)`: north-up, rotated or south-up.
     ///     crs: The CRS: `"EPSG:4326"`, WKT or a PROJ string. `None` leaves it unknown.
     ///     nodata: The nodata value, or `None`.
     ///     metadata: Dataset metadata items: a mapping, or `(key, value)` pairs. GeoTIFFs store
@@ -251,7 +304,7 @@ impl PyRaster {
     ///     Raster: The raster, in memory.
     ///
     /// Raises:
-    ///     InvalidArgumentError: If the array or the transform is not supported.
+    ///     InvalidArgumentError: If the array is not supported or the transform not invertible.
     ///     CRSError: If the CRS cannot be parsed.
     #[staticmethod]
     #[pyo3(signature = (array, transform, crs=None, nodata=None, metadata=None))]
@@ -273,8 +326,8 @@ impl PyRaster {
             return Err(invalid("the array is empty"));
         }
         let g = transform;
-        if g[2] != 0.0 || g[4] != 0.0 || g[1] <= 0.0 || g[5] >= 0.0 {
-            return Err(invalid("only north-up transforms (no rotation, positive pixel width, negative pixel height) are supported"));
+        if g[1] * g[5] - g[2] * g[4] == 0.0 || g.iter().any(|v| !v.is_finite()) {
+            return Err(invalid("the transform is not invertible"));
         }
         let crs = crs.map(SpatialRef::parse).transpose().py()?.unwrap_or_default();
         let data = from_numpy(array)?;
@@ -288,12 +341,10 @@ impl PyRaster {
             metadata,
             ..Default::default()
         };
-        let mut raster = terrio::Raster::from_data_native(cfg, data).map_err(terrio::Error::from).py()?;
-        raster.x_min = g[0];
-        raster.cell_size_x = g[1];
-        raster.cell_size_y = -g[5];
-        raster.y_min = g[3] + rows as f64 * g[5];
-        Ok(Self::from_dataset(RasterDataset::new(raster, nodata.is_some())))
+        let raster = terrio::Raster::from_data_native(cfg, data).map_err(terrio::Error::from).py()?;
+        let mut ds = RasterDataset::new(raster, nodata.is_some());
+        ds.set_geo_transform(g);
+        Ok(Self::from_dataset(ds))
     }
 
     /// Writes the raster to a file.
@@ -317,12 +368,18 @@ impl PyRaster {
     ///     overviews: GeoTIFF overviews to build, as decimation factors such as `[2, 4]`.
     ///     overview_resampling: `"nearest"` (the default), `"average"`, `"min"`, `"max"` or
     ///         `"mode"`.
+    ///     gcps: GeoTIFF ground control points, in the raster's CRS: `(pixel, line, x, y, z)`
+    ///         tuples, written as tie points instead of the geotransform.
+    ///     mask: A per-dataset validity mask, a 2-D uint8 array (0 for invalid pixels), written
+    ///         as GDAL's internal GeoTIFF mask.
+    ///     rpc: The 92 rational polynomial coefficients of the GeoTIFF `RPCCoefficientTag`.
     ///
     /// Raises:
     ///     TerrioError: If the raster cannot be written.
     #[pyo3(signature = (
         path, driver=None, compress=None, tile_size=None, bigtiff=false, options=None, *,
-        band_metadata=None, colormap=None, overviews=None, overview_resampling=None
+        band_metadata=None, colormap=None, overviews=None, overview_resampling=None, gcps=None,
+        mask=None, rpc=None
     ))]
     #[allow(clippy::too_many_arguments)]
     fn write(
@@ -338,8 +395,26 @@ impl PyRaster {
         colormap: Option<Vec<[u8; 4]>>,
         overviews: Option<Vec<usize>>,
         overview_resampling: Option<String>,
+        gcps: Option<Vec<(f64, f64, f64, f64, f64)>>,
+        mask: Option<numpy::PyReadonlyArray2<'_, u8>>,
+        rpc: Option<Vec<f64>>,
     ) -> PyResult<()> {
         let mut options_ = write_options(driver, compress, tile_size, bigtiff)?;
+        options_.gcps = parse_gcps(gcps);
+        options_.rpc = rpc.unwrap_or_default();
+        if let Some(m) = mask {
+            let shape = m.shape();
+            if shape != [self.inner.height(), self.inner.width()] {
+                return Err(invalid(format!(
+                    "the mask is {}x{}, the raster {}x{}",
+                    shape[0],
+                    shape[1],
+                    self.inner.height(),
+                    self.inner.width()
+                )));
+            }
+            options_.mask = Some(m.as_array().iter().copied().collect());
+        }
         options_.creation_options = options.unwrap_or_default().into_iter().collect();
         options_.band_metadata = band_metadata.unwrap_or_default().iter().map(parse_band_metadata).collect::<PyResult<_>>()?;
         options_.color_table = colormap.unwrap_or_default();
@@ -406,6 +481,15 @@ impl PyRaster {
     }
 }
 
+/// GCPs from `(pixel, line, x, y, z)` tuples.
+pub(crate) fn parse_gcps(gcps: Option<Vec<(f64, f64, f64, f64, f64)>>) -> Vec<terrio::Gcp> {
+    gcps.unwrap_or_default()
+        .into_iter()
+        .enumerate()
+        .map(|(i, (pixel, line, x, y, z))| terrio::Gcp { id: (i + 1).to_string(), info: String::new(), pixel, line, x, y, z })
+        .collect()
+}
+
 /// Raster write options from Python arguments.
 pub(crate) fn write_options(
     driver: Option<&str>,
@@ -418,7 +502,7 @@ pub(crate) fn write_options(
 }
 
 /// `(key, value)` string pairs from a mapping or a sequence of pairs, in order.
-fn string_pairs(obj: &Bound<'_, PyAny>) -> PyResult<Vec<(String, String)>> {
+pub(crate) fn string_pairs(obj: &Bound<'_, PyAny>) -> PyResult<Vec<(String, String)>> {
     let items = if obj.hasattr("items")? { obj.call_method0("items")? } else { obj.clone() };
     let mut out = Vec::new();
     for item in items.try_iter()? {
@@ -430,7 +514,7 @@ fn string_pairs(obj: &Bound<'_, PyAny>) -> PyResult<Vec<(String, String)>> {
 
 /// A band's metadata from a dictionary with the keys `description`, `scale`, `offset`, `unit`,
 /// `color_interp` and `items`.
-fn parse_band_metadata(d: &Bound<'_, PyDict>) -> PyResult<terrio::BandMetadata> {
+pub(crate) fn parse_band_metadata(d: &Bound<'_, PyDict>) -> PyResult<terrio::BandMetadata> {
     let get = |key: &str| -> PyResult<Option<Bound<'_, PyAny>>> { Ok(d.get_item(key)?.filter(|v| !v.is_none())) };
     for key in d.keys() {
         let key: String = key.extract()?;
@@ -446,4 +530,164 @@ fn parse_band_metadata(d: &Bound<'_, PyDict>) -> PyResult<terrio::BandMetadata> 
         color_interp: get("color_interp")?.map(|v| v.extract()).transpose()?,
         items: get("items")?.map(|v| string_pairs(&v)).transpose()?.unwrap_or_default(),
     })
+}
+
+/// A GeoTIFF written a few rows at a time, without the whole raster in memory: rows of blocks are
+/// compressed and written as soon as they are complete, the image directory at the end. The
+/// lossless compressions, tiles or strips, interleaving, georeferencing (rotated or by GCPs),
+/// metadata, color tables, RPCs and an internal mask are written as `Raster.write` writes them;
+/// overviews and COGs, which need the whole raster, are not.
+///
+/// Args:
+///     path: The output path.
+///     width: The number of columns.
+///     height: The number of rows.
+///     count: The number of bands.
+///     dtype: The NumPy data type name, such as `"uint16"`.
+///     transform: The GDAL-style geotransform (north-up, rotated or south-up).
+///     crs: The CRS, or `None`.
+///     nodata: The nodata value, or `None`.
+///     metadata: Dataset metadata items.
+///     compress: `"NONE"`, `"LZW"`, `"DEFLATE"`, `"ZSTD"` or `"PACKBITS"`.
+///     tile_size: Tiles of this size (else strips).
+///     bigtiff: Write a BigTIFF (by default, when the file may exceed 4 GB).
+///     options: GDAL creation options (`TILED`, `BLOCKXSIZE`, `BLOCKYSIZE`, `INTERLEAVE`,
+///         `PHOTOMETRIC`, `ALPHA`, `PREDICTOR`, `GEOREFERENCED`).
+///     band_metadata: One dictionary per band, as for `Raster.write`.
+///     colormap: A color table, as for `Raster.write`.
+///     gcps: Ground control points `(pixel, line, x, y, z)`, written instead of the transform.
+///     rpc: The 92 RPC coefficients.
+///     mask: Write an internal mask, whose rows `write` then takes too.
+///
+/// Raises:
+///     TerrioError: If the options are not supported or the file cannot be created.
+#[pyclass(module = "terrio", name = "GeoTiffWriter")]
+pub struct PyGeoTiffWriter {
+    inner: Option<terrio::GeoTiffWriter>,
+    width: usize,
+    count: usize,
+    data_type: DataType,
+}
+
+#[pymethods]
+impl PyGeoTiffWriter {
+    #[new]
+    #[pyo3(signature = (
+        path, width, height, count, dtype, transform, crs=None, nodata=None, metadata=None, *,
+        compress=None, tile_size=None, bigtiff=false, options=None, band_metadata=None, colormap=None,
+        gcps=None, rpc=None, mask=false
+    ))]
+    #[allow(clippy::too_many_arguments)]
+    fn new(
+        path: &str,
+        width: usize,
+        height: usize,
+        count: usize,
+        dtype: &str,
+        transform: [f64; 6],
+        crs: Option<&str>,
+        nodata: Option<f64>,
+        metadata: Option<&Bound<'_, PyAny>>,
+        compress: Option<String>,
+        tile_size: Option<u32>,
+        bigtiff: bool,
+        options: Option<std::collections::BTreeMap<String, String>>,
+        band_metadata: Option<Vec<Bound<'_, PyDict>>>,
+        colormap: Option<Vec<[u8; 4]>>,
+        gcps: Option<Vec<(f64, f64, f64, f64, f64)>>,
+        rpc: Option<Vec<f64>>,
+        mask: bool,
+    ) -> PyResult<Self> {
+        if width == 0 || height == 0 || count == 0 {
+            return Err(invalid("the raster is empty"));
+        }
+        let data_type = match dtype {
+            "uint8" | "bool" => DataType::U8,
+            "int8" => DataType::I8,
+            "uint16" => DataType::U16,
+            "int16" => DataType::I16,
+            "uint32" => DataType::U32,
+            "int32" => DataType::I32,
+            "uint64" => DataType::U64,
+            "int64" => DataType::I64,
+            "float32" => DataType::F32,
+            "float64" => DataType::F64,
+            other => return Err(invalid(format!("unsupported dtype {other}"))),
+        };
+        let crs = crs.map(SpatialRef::parse).transpose().py()?.unwrap_or_default();
+        let cfg = terrio::RasterConfig {
+            cols: 1,
+            rows: 1,
+            bands: 1,
+            nodata: nodata.unwrap_or(-9999.0),
+            data_type,
+            crs: crs.to_crs_info(),
+            metadata: metadata.map(string_pairs).transpose()?.unwrap_or_default(),
+            ..Default::default()
+        };
+        let mut raster = terrio::Raster::new(cfg);
+        raster.cols = width;
+        raster.rows = height;
+        raster.bands = count;
+        raster.data = RasterData::new_filled(data_type, 0, 0.0);
+        let mut header = RasterDataset::new(raster, nodata.is_some());
+        header.set_geo_transform(transform);
+        let mut o = write_options(Some("GTiff"), compress, tile_size, bigtiff)?;
+        o.creation_options = options.unwrap_or_default().into_iter().collect();
+        o.band_metadata = band_metadata.unwrap_or_default().iter().map(parse_band_metadata).collect::<PyResult<_>>()?;
+        o.color_table = colormap.unwrap_or_default();
+        o.gcps = parse_gcps(gcps);
+        o.rpc = rpc.unwrap_or_default();
+        if mask {
+            o.mask = Some(Vec::new());
+        }
+        let inner = terrio::GeoTiffWriter::create(path, &header, &o).py()?;
+        Ok(Self { inner: Some(inner), width, count, data_type })
+    }
+
+    /// The number of rows written so far.
+    #[getter]
+    fn rows_written(&self) -> usize {
+        self.inner.as_ref().map_or(0, |w| w.rows_written())
+    }
+
+    /// Appends rows: a `(count, rows, width)` array (or `(rows, width)` for one band) of the
+    /// writer's dtype, and the mask's `(rows, width)` uint8 rows (0 for invalid) when it has one.
+    ///
+    /// Args:
+    ///     array: The rows.
+    ///     mask: The mask's rows.
+    ///
+    /// Raises:
+    ///     InvalidArgumentError: If the shapes or dtype do not match, or the writer is closed.
+    #[pyo3(signature = (array, mask=None))]
+    fn write(&mut self, py: Python<'_>, array: &Bound<'_, PyUntypedArray>, mask: Option<numpy::PyReadonlyArray2<'_, u8>>) -> PyResult<()> {
+        let shape = array.shape().to_vec();
+        let (bands, rows, cols) = match shape[..] {
+            [r, c] => (1, r, c),
+            [b, r, c] => (b, r, c),
+            _ => return Err(invalid("expected a 2-D or 3-D array")),
+        };
+        if bands != self.count || cols != self.width {
+            return Err(invalid(format!("expected {} bands of {} columns, got {bands} of {cols}", self.count, self.width)));
+        }
+        let data = from_numpy(array)?;
+        if data.data_type() != self.data_type {
+            return Err(invalid("the array's dtype is not the writer's"));
+        }
+        let mask: Option<Vec<u8>> = mask.map(|m| m.as_array().iter().copied().collect());
+        let w = self.inner.as_mut().ok_or_else(|| invalid("the writer is closed"))?;
+        py.detach(|| w.write_rows(&data, rows, mask.as_deref())).py()
+    }
+
+    /// Writes the directory and closes the file.
+    ///
+    /// Raises:
+    ///     InvalidArgumentError: If rows are missing.
+    fn close(&mut self, py: Python<'_>) -> PyResult<()> {
+        match self.inner.take() {
+            Some(w) => py.detach(|| w.finish()).py(),
+            None => Ok(()),
+        }
+    }
 }

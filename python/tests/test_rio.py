@@ -402,3 +402,96 @@ def test_profile_classes():
     with pytest.raises(TypeError):
         p["affine"] = Affine.identity()
     assert json.dumps(dict(p))
+
+
+def test_rotated_gcps_rpcs_masks(tmp_path):
+    rot = Affine(10, 2, 500000, 1.5, -10, 4100000)
+    data = (np.arange(3 * 40 * 50).reshape(3, 40, 50) % 251).astype("uint8")
+    path = str(tmp_path / "rot.tif")
+    with rio.open(path, "w", width=50, height=40, count=3, dtype="uint8", crs="EPSG:32611", transform=rot) as dst:
+        dst.write(data)
+    with rio.open(path) as ds:
+        assert ds.transform == rot and np.array_equal(ds.read(), data)
+        assert ds.res == pytest.approx((math.hypot(10, 1.5), math.hypot(2, 10)))
+    from terrio.rio.control import GroundControlPoint
+    from terrio.rio.rpc import RPC
+
+    gcps = [GroundControlPoint(row=r, col=c, x=500000 + c * 10, y=4100000 - r * 10) for r in (0, 40) for c in (0, 50)]
+    path = str(tmp_path / "gcps.tif")
+    with rio.open(path, "w", width=50, height=40, count=1, dtype="uint8", gcps=gcps, crs="EPSG:32611") as dst:
+        dst.write(data[:1])
+    with rio.open(path) as ds:
+        got, crs = ds.gcps
+        assert [(g.row, g.col, g.x, g.y) for g in got] == [(g.row, g.col, g.x, g.y) for g in gcps]
+        assert crs.to_epsg() == 32611 and ds.crs is None
+        out, t = warp.reproject(rio.band(ds, 1), dst_crs="EPSG:32611")
+        assert out.shape[-2:] == (40, 50) and t.a == pytest.approx(10.0)
+    vals = [float(i) for i in range(92)]
+    path = str(tmp_path / "rpc.tif")
+    with rio.open(path, "w", driver="GTiff", width=5, height=4, count=1, dtype="uint8") as dst:
+        dst.write(np.zeros((1, 4, 5), "uint8"))
+        dst.rpcs = RPC.from_tiff_tag(vals)
+    with rio.open(path) as ds:
+        assert ds.rpcs.to_tiff_tag() == vals
+    mask = np.full((40, 50), 255, np.uint8)
+    mask[5:9, 3:20] = 0
+    path = str(tmp_path / "mask.tif")
+    with rio.open(path, "w", width=50, height=40, count=3, dtype="uint8", tiled=True, blockxsize=16, blockysize=16) as dst:
+        dst.write(data)
+        dst.write_mask(mask)
+    with rio.open(path) as ds:
+        assert ds.mask_flag_enums[0] == [MaskFlags.per_dataset]
+        assert np.array_equal(ds.dataset_mask(), mask)
+        assert ds.read(1, masked=True).mask.sum() == (mask == 0).sum()
+
+
+def test_per_band_nodata_shutil_stack(tmp_path):
+    from terrio.rio import shutil as rshutil
+    from terrio.rio.stack import stack
+
+    path = str(tmp_path / "a.tif")
+    data = np.arange(2 * 10 * 12, dtype="uint8").reshape(2, 10, 12)
+    with rio.open(path, "w", width=12, height=10, count=2, dtype="uint8", crs="EPSG:32611", transform=T) as dst:
+        dst.write(data)
+    with open(path + ".aux.xml", "w") as f:
+        f.write('<PAMDataset><PAMRasterBand band="2"><NoDataValue>130</NoDataValue></PAMRasterBand></PAMDataset>')
+    with rio.open(path) as ds:
+        assert ds.nodatavals == (None, 130.0)
+        assert ds.read(masked=True).mask.sum() == 1
+    assert rshutil.exists(path) and not rshutil.exists(str(tmp_path / "no.tif"))
+    copy = str(tmp_path / "b.tif")
+    rshutil.copy(path, copy, compress="deflate")
+    with rio.open(copy) as ds:
+        assert np.array_equal(ds.read(), data) and ds.compression.name == "deflate"
+    rshutil.copyfiles(path, str(tmp_path / "c.tif"))
+    assert (tmp_path / "c.tif.aux.xml").exists()
+    rshutil.delete(str(tmp_path / "c.tif"))
+    assert not (tmp_path / "c.tif").exists() and not (tmp_path / "c.tif.aux.xml").exists()
+    with pytest.raises(RasterioIOError):
+        rshutil.delete(str(tmp_path / "c.tif"))
+    arr, t = stack([path, copy], indexes=[1, [1, 2]])
+    assert arr.shape == (3, 10, 12) and t == T
+    assert np.array_equal(arr[1:], data)
+
+
+def test_streaming_writes(tmp_path, monkeypatch):
+    monkeypatch.setenv("TERRIO_RIO_IN_MEMORY_LIMIT", "1000")
+    data = (np.arange(2 * 300 * 400) % 65000).astype("uint16").reshape(2, 300, 400)
+    mask = np.full((300, 400), 255, np.uint8)
+    mask[100:110] = 0
+    for kw in ({}, dict(tiled=True, blockxsize=64, blockysize=32, compress="deflate"), dict(interleave="band", compress="lzw")):
+        path = str(tmp_path / "s.tif")
+        with rio.open(path, "w", width=400, height=300, count=2, dtype="uint16", crs="EPSG:32611", transform=T, nodata=7, **kw) as dst:
+            assert isinstance(dst._data, np.memmap)
+            for y in range(0, 300, 70):
+                dst.write(data[:, y : y + 70], window=Window(0, y, 400, min(70, 300 - y)))
+            dst.write_mask(mask)
+        assert not [p for p in tmp_path.iterdir() if "terrio-" in p.name]
+        with rio.open(path) as ds:
+            assert np.array_equal(ds.read(), data) and ds.nodata == 7
+            assert np.array_equal(ds.dataset_mask(), mask)
+        with rio.open(path, "r+") as ds:
+            ds.write(np.zeros((2, 5, 5), "uint16"), window=Window(0, 0, 5, 5))
+        with rio.open(path) as ds:
+            assert ds.read(1, window=Window(0, 0, 6, 6))[:, 5].tolist() == data[0, :6, 5].tolist()
+            assert np.array_equal(ds.dataset_mask(), mask)

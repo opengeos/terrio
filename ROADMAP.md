@@ -153,7 +153,16 @@ Python:
 - A rasterio-compatible API, `terrio.rio` (`import terrio.rio as rasterio`): datasets opened for
   reading, writing and update with profiles, windowed and incremental writes, masks, `windows`,
   `transform`, `features`, `warp`, `merge`, `mask`, `WarpedVRT` and `MemoryFile`, checked against
-  rasterio on the same scripts.
+  rasterio on the same scripts. Done, and its known gaps closed: rotated and south-up rasters read,
+  written (`ModelTransformationTag`) and warped as GDAL does, in the core raster model too
+  (`RasterDataset::affine`); GDAL's internal TIFF masks read and written (`write_mask` saved to
+  the file); GCPs read and written (GeoTIFF tie points), with GDAL's GCP transformers in the
+  warper and in `transform.xy`/`rowcol` (a homography from 4 or 5 GCPs, polynomials of order 1 to
+  3, thin plate splines; `gdalwarp -order`/`-tps` pixels in `terrio warp` too); RPCs read (the
+  GeoTIFF tag, `_RPC.TXT` and `.RPB` sidecars) and written; per-band nodata from `.aux.xml`
+  sidecars; `rasterio.shutil` and `rasterio.stack`; writers larger than memory kept in a mapped
+  temporary file and written to GeoTIFF in rows of blocks (`terrio.GeoTiffWriter`, Rust's
+  `GeoTiffWriter`). Still to do: RPC transformers, `.msk` sidecars, a `rio` command line.
 - xarray integration like rioxarray: a `terrio` backend engine with lazy windowed reads (remote
   COGs read tile by tile, dask chunks), and an accessor with rioxarray's methods (`reproject`,
   `reproject_match`, `clip`, `clip_box`, `pad_box`, `to_raster`, `merge_arrays`). Done:
@@ -167,10 +176,22 @@ Python:
   synthetic and real files (257 checks, none differing). Still to do: subdatasets, GCPs and
   RPCs.
 - Wheels with the GDAL backend as an optional extra, for the formats terrio doesn't read itself.
+  Done: the Python package's `gdal` feature, built from source against an installed GDAL
+  (`maturin build --features gdal`). Still to do: prebuilt `terrio-gdal` wheels bundling GDAL
+  (vcpkg and cibuildwheel, as rasterio's), or a conda-forge package linking `libgdal-core` (see
+  docs/gdal.md).
 - Streaming vector reads and writes, so layers larger than memory can be converted and filtered.
 - GeoPackage updates in place (appends without rewriting the file).
 - Windowed decoding of JPEG 2000 and JPEG XL, so Sentinel-2 bands are read by window as COGs are.
+  Done: JPEG 2000 read by window and resolution level (OpenJPEG's decode area and reduce factor,
+  tiles decoded in parallel) through `LazyRaster`, `terrio convert --srcwin/--overview`, Python's
+  lazy reads and `terrio.rio`, with GDAL's overviews and block sizes; a 1024 x 1024 window of a
+  10980 x 10980 Sentinel-2 band takes 0.05 s and 81 MB where the whole band takes 0.5 s and 1.7 GB,
+  and fetches 3.4 MB of the 26 MB file over HTTP; JPEG XL GeoTIFFs decoded tile by tile. Every
+  window and overview is identical to GDAL's.
 - Wheels for more platforms (musl aarch64, Windows ARM64) and for Pyodide, to run in the browser.
+  Done: musllinux aarch64 and Windows ARM64 wheels; a Pyodide 0.29 wheel (Python 3.13) attached
+  to each GitHub release, tested in Pyodide under Node.js in the release workflow.
 
 WebAssembly (the `terrio-js` npm package):
 
@@ -216,8 +237,11 @@ WebAssembly (the `terrio-js` npm package):
   with Deflate or with Zstandard), JPEG XL and LZMA are read, natively and in WebAssembly; JPEG
   (GeoTIFF, GeoPackage and tile archive tiles, `.jpg` files) is decoded exactly as libjpeg decodes
   it for GDAL; ZSTD GeoTIFFs are written in WebAssembly. Every case is compared with GDAL on
-  Sentinel-2 bands, GDAL's JPEG 2000 test files and GDAL-written GeoTIFFs. Still to do: writing
-  LERC, JPEG XL and JPEG GeoTIFFs in WebAssembly, and reading JPEG XL and JPEG 2000 by window.
+  Sentinel-2 bands, GDAL's JPEG 2000 test files and GDAL-written GeoTIFFs. JPEG 2000 files are
+  read by window and resolution level as GDAL reads them (their resolution levels as overviews,
+  only the tiles, precincts and code blocks of a window decoded, tiles in parallel, locally or
+  with HTTP range requests), and JPEG XL GeoTIFFs tile by tile; every window and overview is
+  identical to GDAL's. Still to do: writing LERC, JPEG XL and JPEG GeoTIFFs in WebAssembly.
 - Band histograms as `gdalinfo -hist` computes them (`terrio info --hist`, identical to GDAL's on
   GeoTIFFs and scanline formats); color relief written as a VRT (`terrio dem color-relief -f
   VRT`, lookup tables identical to `gdaldem`'s). Done.

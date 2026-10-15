@@ -248,7 +248,7 @@ pub(crate) fn read(path: &Path) -> Result<RasterDataset> {
     let data = RasterData::from_f64_vec(data_type, values);
     let crs = super::nodata::hfa_pe_string(path).unwrap_or_default();
     let raster = common::make_raster(cols, rows, layers.len(), data, gt, crs, nodata)?;
-    Ok(RasterDataset { raster, driver: RasterDriver::HFA, has_nodata: nodata.is_some() })
+    Ok(RasterDataset { raster, driver: RasterDriver::HFA, has_nodata: nodata.is_some(), affine: None })
 }
 
 #[cfg(test)]

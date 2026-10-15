@@ -39,6 +39,21 @@ pub(crate) struct GeoTags {
     pub palette_photometric_offsets: Vec<u64>,
     /// Whether the file is little-endian.
     pub little_endian: bool,
+    /// Ground control points: the tie points of a file without a pixel scale or transformation
+    /// matrix, as GDAL reads them.
+    pub gcps: Vec<crate::Gcp>,
+}
+
+impl GeoTags {
+    /// The geotransform of the pixels' corners: PixelIsPoint tie points refer to pixel centres,
+    /// shifted by half a pixel as GDAL does. Rotated and south-up geotransforms included.
+    pub(crate) fn corner_geo_transform(&self) -> Option<[f64; 6]> {
+        let gt = self.geo_transform?;
+        if !self.pixel_is_point {
+            return Some(gt);
+        }
+        Some([gt[0] - (gt[1] * 0.5 + gt[2] * 0.5), gt[1], gt[2], gt[3] - (gt[4] * 0.5 + gt[5] * 0.5), gt[4], gt[5]])
+    }
 }
 
 /// One TIFF tag's raw values.
@@ -186,11 +201,22 @@ pub(crate) fn read_geo_tags_from<R: Read + Seek>(mut f: R) -> Option<GeoTags> {
     });
 
     let mut out = GeoTags { palette_photometric_offsets: palette_offsets, little_endian: le, ..Default::default() };
+    let has_scale = doubles(MODEL_PIXEL_SCALE).is_some_and(|s| s.len() >= 2);
+    if let Some(tie) = doubles(MODEL_TIEPOINT).filter(|t| t.len() >= 6)
+        && doubles(MODEL_TRANSFORMATION).is_none()
+        && (tie.len() > 6 || !has_scale)
+    {
+        out.gcps = tie
+            .chunks_exact(6)
+            .enumerate()
+            .map(|(i, t)| crate::Gcp { id: (i + 1).to_string(), info: String::new(), pixel: t[0], line: t[1], x: t[3], y: t[4], z: t[5] })
+            .collect();
+    }
     if let Some(m) = doubles(MODEL_TRANSFORMATION).filter(|m| m.len() >= 8) {
         out.geo_transform = Some([m[3], m[0], m[1], m[7], m[4], m[5]]);
     } else if let (Some(scale), Some(tie)) = (doubles(MODEL_PIXEL_SCALE), doubles(MODEL_TIEPOINT))
         && scale.len() >= 2
-        && tie.len() >= 6
+        && tie.len() == 6
     {
         let (i, j, x, y) = (tie[0], tie[1], tie[3], tie[4]);
         // A negative Y scale is taken as positive, as GDAL does: the image is north-up.
@@ -203,6 +229,13 @@ pub(crate) fn read_geo_tags_from<R: Read + Seek>(mut f: R) -> Option<GeoTags> {
 
     if let Some(keys) = keys {
         apply_geokeys(&mut out, keys, doubles(GEO_DOUBLE_PARAMS), ascii(GEO_ASCII_PARAMS));
+    }
+    if out.pixel_is_point {
+        // GCPs of PixelIsPoint files refer to pixel centres, as GDAL reads them.
+        for g in &mut out.gcps {
+            g.pixel += 0.5;
+            g.line += 0.5;
+        }
     }
     Some(out)
 }
@@ -619,27 +652,20 @@ pub(crate) fn read_geotiff(path: &std::path::Path) -> crate::Result<crate::Raste
         metadata: tags.metadata.clone(),
         ..Default::default()
     };
-    let mut raster = crate::pixel::raster_from_data(cfg, data)?;
-    match tags.geo_transform {
-        Some(gt) if gt[2] == 0.0 && gt[4] == 0.0 && gt[1] > 0.0 && gt[5] < 0.0 => {
-            // PixelIsPoint tie points refer to pixel centres; shift to the corner, as GDAL does.
-            let (dx, dy) = if tags.pixel_is_point { (gt[1] / 2.0, gt[5] / 2.0) } else { (0.0, 0.0) };
-            raster.cell_size_x = gt[1];
-            raster.cell_size_y = -gt[5];
-            raster.x_min = gt[0] - dx;
-            raster.y_min = gt[3] - dy + gt[5] * h as f64;
-        }
-        Some(_) => {
-            return Err(Error::Unsupported(format!("{}: rotated or south-up geotransforms are not supported", path.display())));
-        }
+    let raster = crate::pixel::raster_from_data(cfg, data)?;
+    let has_nodata = tags.nodata.is_some();
+    let mut ds = crate::RasterDataset { raster, driver: crate::formats::RasterDriver::GTiff, has_nodata, affine: None };
+    match tags.corner_geo_transform() {
+        Some(gt) => ds.set_geo_transform(gt),
         None => {
-            raster.cell_size_x = 1.0;
-            raster.cell_size_y = 1.0;
-            raster.x_min = 0.0;
-            raster.y_min = 0.0;
+            let r = &mut ds.raster;
+            r.cell_size_x = 1.0;
+            r.cell_size_y = 1.0;
+            r.x_min = 0.0;
+            r.y_min = 0.0;
         }
     }
-    Ok(crate::RasterDataset { raster, driver: crate::formats::RasterDriver::GTiff, has_nodata: tags.nodata.is_some() })
+    Ok(ds)
 }
 
 /// A reader that replaces two bytes at some file offsets.

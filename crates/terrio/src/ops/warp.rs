@@ -153,6 +153,15 @@ pub struct WarpOptions {
     pub error_threshold: f64,
     /// Working memory per chunk, in bytes (`-wm`), which decides how the output is split.
     pub memory_limit: f64,
+    /// Ground control points georeferencing the (first) source in place of its geotransform,
+    /// in the source CRS: warped with a GCP polynomial or thin plate splines, as `gdalwarp` warps
+    /// a raster with GCPs.
+    pub gcps: Vec<crate::Gcp>,
+    /// How the GCPs georeference the source: GDAL's choice (a homography from 4 or 5 GCPs, else
+    /// a polynomial), a polynomial (`-order`), thin plate splines (`-tps`) or a homography.
+    pub gcp_method: super::gcp::GcpMethod,
+    /// The order of the GCP polynomial (`-order`: 1, 2 or 3; 0 picks GDAL's default).
+    pub order: u32,
 }
 
 impl Default for WarpOptions {
@@ -173,6 +182,9 @@ impl Default for WarpOptions {
             crop_to_cutline: false,
             error_threshold: 0.125,
             memory_limit: 64.0 * 1024.0 * 1024.0,
+            gcps: Vec::new(),
+            gcp_method: super::gcp::GcpMethod::Auto,
+            order: 0,
         }
     }
 }
@@ -184,6 +196,8 @@ impl Default for WarpOptions {
 struct GenImgProj {
     src_gt: [f64; 6],
     src_inv: [f64; 6],
+    /// Source pixels to georeferenced coordinates by GCPs, in place of the geotransform.
+    src_gcp: Option<super::gcp::GcpTransformer>,
     dst_gt: [f64; 6],
     dst_inv: [f64; 6],
     /// Source CRS to destination CRS, and back; `None` when both are the same.
@@ -200,7 +214,30 @@ impl GenImgProj {
         } else {
             Some((Transformer::new(src_srs, dst_srs)?, Transformer::new(dst_srs, src_srs)?))
         };
-        Ok(Self { src_gt, src_inv, dst_gt: IDENTITY, dst_inv: IDENTITY, ct })
+        Ok(Self { src_gt, src_inv, src_gcp: None, dst_gt: IDENTITY, dst_inv: IDENTITY, ct })
+    }
+
+    /// A transformer whose source is georeferenced by GCPs.
+    fn with_gcps(src_srs: &SpatialRef, dst_srs: &SpatialRef, gcps: super::gcp::GcpTransformer) -> Result<Self> {
+        let mut t = Self::new(IDENTITY, src_srs, dst_srs)?;
+        t.src_gcp = Some(gcps);
+        Ok(t)
+    }
+
+    /// Source pixel/line to source georeferenced coordinates.
+    fn src_to_geo(&self, c: f64, r: f64) -> (f64, f64) {
+        match &self.src_gcp {
+            Some(g) => g.to_geo(c, r),
+            None => apply_gt(&self.src_gt, c, r),
+        }
+    }
+
+    /// Source georeferenced coordinates to source pixel/line.
+    fn geo_to_src(&self, x: f64, y: f64) -> (f64, f64) {
+        match &self.src_gcp {
+            Some(g) => g.to_pixel(x, y),
+            None => apply_gt(&self.src_inv, x, y),
+        }
     }
 
     fn set_dst_gt(&mut self, gt: [f64; 6]) {
@@ -220,9 +257,9 @@ impl GenImgProj {
         if dst_to_src {
             let (gx, gy) = apply_gt(&self.dst_gt, x, y);
             let (sx, sy) = self.reproject(true, gx, gy)?;
-            Some(apply_gt(&self.src_inv, sx, sy))
+            Some(self.geo_to_src(sx, sy))
         } else {
-            let (gx, gy) = apply_gt(&self.src_gt, x, y);
+            let (gx, gy) = self.src_to_geo(x, y);
             let (dx, dy) = self.reproject(false, gx, gy)?;
             Some(apply_gt(&self.dst_inv, dx, dy))
         }
@@ -370,6 +407,27 @@ pub fn suggested_grid(width: usize, height: usize, gt: [f64; 6], src: &SpatialRe
     Ok((gt, w, h))
 }
 
+/// The output grid GDAL suggests for a raster of `width` x `height` pixels georeferenced by GCPs
+/// (in `src`) reprojected to `dst`, with a GCP method and polynomial `order` (0 for GDAL's
+/// default).
+pub fn suggested_grid_gcps(
+    width: usize,
+    height: usize,
+    gcps: &[crate::Gcp],
+    method: super::gcp::GcpMethod,
+    order: u32,
+    src: &SpatialRef,
+    dst: &SpatialRef,
+) -> Result<([f64; 6], usize, usize)> {
+    if width == 0 || height == 0 {
+        return Err(Error::InvalidArgument("the source raster is empty".into()));
+    }
+    let g = super::gcp::GcpTransformer::new(gcps, method, order)?;
+    let t = GenImgProj::with_gcps(src, dst, g)?;
+    let (gt, w, h, _) = suggested_warp_output(&t, width, height, src, dst)?;
+    Ok((gt, w, h))
+}
+
 /// GDAL's `GDALSuggestedWarpOutput2()`: the extent of the transformed source and a square pixel
 /// size that keeps the number of pixels along the diagonal. Returns the geotransform, the size and
 /// the extent `[min_x, min_y, max_x, max_y]`.
@@ -381,9 +439,15 @@ fn suggested_warp_output(
     dst_srs: &SpatialRef,
 ) -> Result<([f64; 6], usize, usize, [f64; 4])> {
     let (wf, hf) = (w as f64, h as f64);
-    if t.ct.is_none() && t.src_gt[2] == 0.0 && t.src_gt[4] == 0.0 {
-        let gt = t.src_gt;
-        let ext = [gt[0], gt[3] + hf * gt[5], gt[0] + wf * gt[1], gt[3]];
+    if t.ct.is_none() && t.src_gt[2] == 0.0 && t.src_gt[4] == 0.0 && t.src_gcp.is_none() {
+        let mut gt = t.src_gt;
+        let mut ext = [gt[0], gt[3] + hf * gt[5], gt[0] + wf * gt[1], gt[3]];
+        // South-up: the output is north-up, over the same extent.
+        if gt[5] >= 0.0 {
+            gt[3] += hf * gt[5];
+            gt[5] = -gt[5];
+            ext.swap(1, 3);
+        }
         return Ok((gt, w, h, ext));
     }
     let steps = ((w.min(h) as f64 / 50.0 + 0.5) as usize).clamp(20, 100);
@@ -507,7 +571,7 @@ fn suggested_warp_output(
                     && px.is_finite()
                     && py.is_finite()
                 {
-                    let (c, r) = apply_gt(&t.src_inv, px, py);
+                    let (c, r) = t.geo_to_src(px, py);
                     if (-1e-5..=wf + 1e-5).contains(&c)
                         && (-1e-5..=hf + 1e-5).contains(&r)
                         && let Ok((_, y2)) = fwd.transform(px, py)
@@ -525,7 +589,7 @@ fn suggested_warp_output(
             }
         }
         let gt = &t.src_gt;
-        if gt[2] == 0.0 && gt[4] == 0.0 {
+        if gt[2] == 0.0 && gt[4] == 0.0 && t.src_gcp.is_none() {
             let (x1, y1) = (gt[0] + gt[1] * wf, gt[3] + gt[5] * hf);
             if let Ok(b) = super::transform_bounds(fwd, (gt[0].min(x1), gt[3].min(y1), gt[0].max(x1), gt[3].max(y1)), 2) {
                 minx = minx.min(b.0);
@@ -605,6 +669,18 @@ struct Source<'a> {
     ds: &'a RasterDataset,
     grid: Grid,
     srs: SpatialRef,
+    /// GCPs georeferencing the source in place of its geotransform.
+    gcp: Option<super::gcp::GcpTransformer>,
+}
+
+impl Source<'_> {
+    /// The transformer from this source's pixels to the output CRS.
+    fn transformer(&self, dst_srs: &SpatialRef) -> Result<GenImgProj> {
+        match &self.gcp {
+            Some(g) => GenImgProj::with_gcps(&self.srs, dst_srs, g.clone()),
+            None => GenImgProj::new(self.grid.geo_transform, &self.srs, dst_srs),
+        }
+    }
 }
 
 /// The output grid `gdalwarp` would create (`GDALWarpCreateOutput()`).
@@ -615,7 +691,7 @@ fn output_grid(sources: &[Source], dst_srs: &SpatialRef, o: &WarpOptions, te: Op
     let (force_w, force_h) = o.size.unwrap_or((0, 0));
 
     // Geographic to Mercator: clamp the latitudes to ±85.0511°.
-    if sources.len() == 1 && !have_te && is_mercator(dst_srs) && sources[0].srs.is_geographic() {
+    if sources.len() == 1 && !have_te && is_mercator(dst_srs) && sources[0].srs.is_geographic() && sources[0].gcp.is_none() {
         const MAX_LAT: f64 = 85.0511287798066;
         let (x0, y0, x1, y1) = sources[0].grid.bounds();
         if x0 >= -180.0 - 1e-3 && x1 <= 180.0 + 1e-3 && ((y1 > MAX_LAT && y0 < MAX_LAT) || (y1 > -MAX_LAT && y0 < -MAX_LAT)) {
@@ -634,7 +710,7 @@ fn output_grid(sources: &[Source], dst_srs: &SpatialRef, o: &WarpOptions, te: Op
     let mut res_from_te = f64::INFINITY;
     let mut unique: Option<GenImgProj> = None;
     for s in sources {
-        let t = GenImgProj::new(s.grid.geo_transform, &s.srs, dst_srs)?;
+        let t = s.transformer(dst_srs)?;
         if te_without_res {
             res_from_te = res_from_te.min(resolution_from_target_extent(&t, &s.grid, (min_x, min_y, max_x, max_y)));
         }
@@ -645,6 +721,7 @@ fn output_grid(sources: &[Source], dst_srs: &SpatialRef, o: &WarpOptions, te: Op
         }
         let sgt = s.grid.geo_transform;
         if needs_suggested
+            && s.gcp.is_none()
             && xres == 0.0
             && yres == 0.0
             && force_w == 0
@@ -875,8 +952,21 @@ fn is_mercator(srs: &SpatialRef) -> bool {
 /// sources are drawn over earlier ones where they have valid pixels.
 pub fn warp(sources: &[&RasterDataset], o: &WarpOptions) -> Result<RasterDataset> {
     let first = sources.first().ok_or_else(|| Error::InvalidArgument("no source rasters".into()))?;
-    let srcs: Vec<Source> =
-        sources.iter().map(|ds| Source { ds, grid: Grid::of(&ds.raster), srs: o.src_srs.clone().unwrap_or_else(|| ds.crs()) }).collect();
+    let mut srcs: Vec<Source> = sources
+        .iter()
+        .map(|ds| Source {
+            ds,
+            grid: Grid { width: ds.raster.cols, height: ds.raster.rows, geo_transform: ds.geo_transform() },
+            srs: o.src_srs.clone().unwrap_or_else(|| ds.crs()),
+            gcp: None,
+        })
+        .collect();
+    if !o.gcps.is_empty() {
+        if o.cutline.is_some() {
+            return Err(Error::Unsupported("cutlines are not supported with GCPs".into()));
+        }
+        srcs[0].gcp = Some(super::gcp::GcpTransformer::new(&o.gcps, o.gcp_method, o.order)?);
+    }
     let dst_srs = o.dst_srs.clone().unwrap_or_else(|| srcs[0].srs.clone());
     let bands = first.raster.bands;
     if srcs.iter().any(|s| s.ds.raster.bands != bands) {
@@ -916,7 +1006,7 @@ pub fn warp(sources: &[&RasterDataset], o: &WarpOptions) -> Result<RasterDataset
     let mut out: Vec<Vec<f64>> = vec![vec![init; n]; bands];
 
     for s in &srcs {
-        let mut t = GenImgProj::new(s.grid.geo_transform, &s.srs, &dst_srs)?;
+        let mut t = s.transformer(&dst_srs)?;
         t.set_dst_gt(grid.geo_transform);
         let nodata: Vec<Option<f64>> = (0..bands).map(|b| src_nodata_of(s, b)).collect();
         let unified = matches!(o.src_nodata, Nodata::Values(_)) && bands > 1;
@@ -927,7 +1017,7 @@ pub fn warp(sources: &[&RasterDataset], o: &WarpOptions) -> Result<RasterDataset
         };
         let valid = validity(&src_bands, &nodata, unified, cut_mask);
         let masked = valid.iter().any(Option::is_some);
-        let translation = t.ct.is_none() && is_pixel_translation(&s.grid.geo_transform, &grid.geo_transform);
+        let translation = t.ct.is_none() && s.gcp.is_none() && is_pixel_translation(&s.grid.geo_transform, &grid.geo_transform);
         let ctx = WarpContext {
             t: &t,
             approx: Approx { base: &t, max_error: o.error_threshold },

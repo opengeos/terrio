@@ -57,6 +57,9 @@ pub fn open_raster_lazy_bytes(bytes: Vec<u8>, name: &str) -> Result<LazyRaster> 
     if crate::tiles::archive_kind(name).is_some() {
         return Ok(LazyRaster::from_tiles(crate::tiles::raster::open_lazy_bytes(bytes)?));
     }
+    if crate::drivers::jp2::is_jpeg2000(&bytes) {
+        return crate::drivers::jp2::open_lazy_bytes(bytes);
+    }
     if codec::is_tiff(&bytes) {
         if let Some(r) = LazyRaster::from_tiff_bytes(bytes)? {
             return Ok(r);
@@ -247,7 +250,7 @@ pub(crate) mod codec {
         }
         if RasterDriver::for_extension(name) == Some(RasterDriver::AAIGrid) {
             let raster = wbraster::formats::esri_ascii::parse(Cursor::new(&bytes), name)?;
-            return Ok(Dataset::Raster(RasterDataset { raster, driver: RasterDriver::AAIGrid, has_nodata: true }));
+            return Ok(Dataset::Raster(RasterDataset { raster, driver: RasterDriver::AAIGrid, has_nodata: true, affine: None }));
         }
         let driver = vector_driver(&bytes, name).ok_or_else(|| Error::Unsupported(format!("'{name}': format not recognized")))?;
         let Some(layers) = crate::drivers::vector::read_bytes(bytes, name, driver, options)? else {

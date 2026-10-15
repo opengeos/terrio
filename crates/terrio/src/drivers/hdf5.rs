@@ -452,7 +452,7 @@ fn read_dataset(f: &Hdf5File, path: &Path, w: &Walk, e: &Entry, metadata: Option
             md
         }
     };
-    Ok(RasterDataset { raster, driver: RasterDriver::HDF5, has_nodata: nodata.is_some() })
+    Ok(RasterDataset { raster, driver: RasterDriver::HDF5, has_nodata: nodata.is_some(), affine: None })
 }
 
 /// GDAL's generic georeferencing of a two-dimensional dataset (`CreateProjections()`): the CRS of

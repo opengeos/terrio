@@ -352,29 +352,103 @@ class AffineTransformer(TransformerBase):
         return "<AffineTransformer>"
 
 
-def get_transformer(transform: Any, **rpc_options: Any) -> Callable[[], AffineTransformer]:
+class GCPTransformer(TransformerBase):
+    """A transformer fitted to ground control points, as GDAL's GCP transformer: polynomials
+    (GDAL's default order), or thin plate splines with `tps`."""
+
+    def __init__(self, gcps: Any, tps: bool = False) -> None:
+        """Creates the transformer.
+
+        Args:
+            gcps: `GroundControlPoint`s.
+            tps: Use thin plate splines instead of polynomials.
+
+        Raises:
+            ValueError: If the points are not `GroundControlPoint`s.
+        """
+        from terrio.rio.control import GroundControlPoint
+
+        super().__init__()
+        gcps = list(gcps)
+        if gcps and not isinstance(gcps[0], GroundControlPoint):
+            raise ValueError("GCPTransformer requires sequence of GroundControlPoint")
+        self._gcps = [
+            (float(g.col), float(g.row), float(g.x), float(g.y), float(g.z or 0.0)) for g in gcps
+        ]
+        self._method = "tps" if tps else "polynomial"
+        self._transformer = self._gcps
+
+    def _transform(
+        self, xs: Any, ys: Any, zs: Any, transform_direction: TransformDirection
+    ) -> tuple[Any, Any]:
+        """Transforms coordinates through the fitted functions.
+
+        Args:
+            xs: First coordinates.
+            ys: Second coordinates.
+            zs: Heights (unused).
+            transform_direction: Forward (pixel to map) or reverse.
+
+        Returns:
+            tuple: The transformed coordinates.
+
+        Raises:
+            TransformError: If the GCPs cannot be fitted.
+        """
+        from terrio import _terrio
+
+        bi = np.broadcast(xs, ys)
+        xa = np.array([v for v, _ in bi], dtype="float64")
+        bi = np.broadcast(xs, ys)
+        ya = np.array([v for _, v in bi], dtype="float64")
+        try:
+            ox, oy = _terrio.gcp_transform(
+                self._gcps,
+                xa.tolist(),
+                ya.tolist(),
+                inverse=transform_direction is TransformDirection.reverse,
+                method=self._method,
+            )
+        except Exception as err:
+            raise TransformError(str(err)) from err
+        return np.asarray(ox), np.asarray(oy)
+
+    def __repr__(self) -> str:
+        """The representation.
+
+        Returns:
+            str: `<open GCPTransformer>`.
+        """
+        return "<open GCPTransformer>"
+
+
+def get_transformer(transform: Any, **rpc_options: Any) -> Callable[[], TransformerBase]:
     """A transformer factory for a transform.
 
     Args:
-        transform: An `Affine`.
-        **rpc_options: Unused: RPC and GCP transformers are not supported.
+        transform: An `Affine`, or a sequence of `GroundControlPoint`s.
+        **rpc_options: Unused: RPC transformers are not supported.
 
     Returns:
         callable: A function creating the transformer.
 
     Raises:
         ValueError: If the transform is missing.
-        TransformError: If the transform is not affine.
+        TransformError: If the transform is RPCs.
     """
+    from terrio.rio.rpc import RPC
+
     if transform is None:
         raise ValueError("Invalid transform")
-    if not isinstance(transform, Affine):
-        raise TransformError("only affine transforms are supported by terrio.rio")
-    return lambda: AffineTransformer(transform)
+    if isinstance(transform, Affine):
+        return lambda: AffineTransformer(transform)
+    if isinstance(transform, RPC):
+        raise TransformError("RPC transformers are not supported by terrio.rio")
+    return lambda: GCPTransformer(transform)
 
 
 def xy(
-    transform: Affine,
+    transform: Any,
     rows: Any,
     cols: Any,
     zs: Any = None,
@@ -384,7 +458,7 @@ def xy(
     """The map coordinates of pixels.
 
     Args:
-        transform: The transform.
+        transform: The transform (an `Affine`), or GCPs.
         rows: Row indices.
         cols: Column indices.
         zs: Heights (unused).
@@ -399,7 +473,7 @@ def xy(
 
 
 def rowcol(
-    transform: Affine,
+    transform: Any,
     xs: Any,
     ys: Any,
     zs: Any = None,
@@ -410,7 +484,7 @@ def rowcol(
     """The rows and columns of map coordinates.
 
     Args:
-        transform: The transform.
+        transform: The transform (an `Affine`), or GCPs.
         xs: The x coordinates.
         ys: The y coordinates.
         zs: Heights (unused).
@@ -446,18 +520,37 @@ class TransformMethodsMixin:
             col: The column index.
             z: Height (unused).
             offset: Which point of the pixel: `center`, `ul`, `ur`, `ll` or `lr`.
-            transform_method: Only `TransformMethod.affine` is supported.
+            transform_method: `TransformMethod.affine`, or `TransformMethod.gcps` for the
+                dataset's GCPs.
             **rpc_options: Unused.
 
         Returns:
             tuple: `(x, y)`.
 
         Raises:
-            AttributeError: If the transform method is not affine.
+            AttributeError: If the dataset has no such transform.
         """
-        if transform_method is not TransformMethod.affine:
-            raise AttributeError(f"Dataset has no {transform_method}")
-        return xy(self.transform, row, col, zs=z, offset=offset)
+        return xy(self._transform_for(transform_method), row, col, zs=z, offset=offset)
+
+    def _transform_for(self, method: TransformMethod) -> Any:
+        """The transform of a transform method: the affine transform, or the GCPs.
+
+        Args:
+            method: The method.
+
+        Returns:
+            Any: An `Affine` or GCPs.
+
+        Raises:
+            AttributeError: If the dataset has none.
+        """
+        if method is TransformMethod.affine:
+            return self.transform
+        if method is TransformMethod.gcps:
+            gcps: Any = getattr(self, "gcps", ([], None))[0]
+            if gcps:
+                return gcps
+        raise AttributeError(f"Dataset has no {method}")
 
     def index(
         self,
@@ -477,14 +570,15 @@ class TransformMethodsMixin:
             z: Height (unused).
             op: The rounding function, `numpy.floor` by default.
             precision: Unused, deprecated.
-            transform_method: Only `TransformMethod.affine` is supported.
+            transform_method: `TransformMethod.affine`, or `TransformMethod.gcps` for the
+                dataset's GCPs.
             **rpc_options: Unused.
 
         Returns:
             tuple: `(row, col)`, as ints.
 
         Raises:
-            AttributeError: If the transform method is not affine.
+            AttributeError: If the dataset has no such transform.
         """
         if precision is not None:
             warnings.warn(
@@ -492,15 +586,15 @@ class TransformMethodsMixin:
                 RasterioDeprecationWarning,
                 stacklevel=2,
             )
-        if transform_method is not TransformMethod.affine:
-            raise AttributeError(f"Dataset has no {transform_method}")
-        return tuple(int(v) for v in rowcol(self.transform, x, y, zs=z, op=op))
+        t = self._transform_for(transform_method)
+        return tuple(int(v) for v in rowcol(t, x, y, zs=z, op=op))
 
 
 __all__ = [
     "IDENTITY",
     "Affine",
     "AffineTransformer",
+    "GCPTransformer",
     "TransformMethodsMixin",
     "array_bounds",
     "from_bounds",

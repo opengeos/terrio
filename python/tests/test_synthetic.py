@@ -88,7 +88,7 @@ def test_from_array_rejects_bad_input():
     with pytest.raises(terrio.InvalidArgumentError):
         terrio.Raster.from_array(np.zeros(5), TRANSFORM)
     with pytest.raises(terrio.InvalidArgumentError):
-        terrio.Raster.from_array(np.zeros((2, 2)), (0, 1, 0.5, 0, 0, -1))
+        terrio.Raster.from_array(np.zeros((2, 2)), (0, 1, 2, 0, 0.5, 1))
     with pytest.raises(terrio.InvalidArgumentError):
         terrio.Raster.from_array(np.zeros((2, 2), dtype=np.complex64), TRANSFORM)
     with pytest.raises(terrio.CRSError):

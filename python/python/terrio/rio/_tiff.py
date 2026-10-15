@@ -30,7 +30,11 @@ COLOR_MAP = 320
 TILE_WIDTH = 322
 TILE_LENGTH = 323
 EXTRA_SAMPLES = 338
+PIXEL_SCALE = 33550
+TIEPOINTS = 33922
+MODEL_TRANSFORMATION = 34264
 GEO_KEYS = 34735
+RPC_COEFFICIENTS = 50844
 GDAL_METADATA = 42112
 LERC_PARAMETERS = 50674
 
@@ -145,7 +149,14 @@ class Structure:
     offsets: list[float] = field(default_factory=list)
     units: list[str | None] = field(default_factory=list)
     nodata_override: float | None = None
+    # Per-band nodata values from a sidecar (band index from 0 to value).
+    band_nodata: dict[int, float | None] = field(default_factory=dict)
     has_mask: bool = False
+    # Ground control points `(pixel, line, x, y, z)`, as GDAL reads them from tie points.
+    gcps: list[tuple[float, float, float, float, float]] = field(default_factory=list)
+    # The 92 values of the RPCCoefficientTag, or GDAL's RPC items of a sidecar.
+    rpc_tag: list[float] | None = None
+    rpc_items: dict[str, str] | None = None
 
     def alpha_band(self) -> int | None:
         """The band GDAL uses as the alpha of the others (1-based), as `GetMaskFlags` does.
@@ -387,6 +398,30 @@ def tiff_structure(path: str, raster: Any) -> Structure | None:
         tags["AREA_OR_POINT"] = "Point" if _geokey(t, 1025) == 2 else "Area"
     s.tags = tags
 
+    # Ground control points: tie points without a pixel scale or a transformation matrix, as GDAL
+    # reads them (PixelIsPoint ones shifted by half a pixel).
+    ties = t.get(TIEPOINTS)
+    if (
+        isinstance(ties, list)
+        and len(ties) >= 6
+        and MODEL_TRANSFORMATION not in t
+        and (len(ties) > 6 or PIXEL_SCALE not in t)
+    ):
+        shift = 0.5 if _geokey(t, 1025) == 2 else 0.0
+        s.gcps = [
+            (
+                float(ties[i]) + shift,
+                float(ties[i + 1]) + shift,
+                float(ties[i + 3]),
+                float(ties[i + 4]),
+                float(ties[i + 5]),
+            )
+            for i in range(0, len(ties) - 5, 6)
+        ]
+    rpc = t.get(RPC_COEFFICIENTS)
+    if isinstance(rpc, list) and len(rpc) == 92:
+        s.rpc_tag = [float(v) for v in rpc]
+
     # A per-dataset mask: a transparency mask image.
     for ifd in ifds[1:]:
         if _first(ifd.get(NEW_SUBFILE_TYPE)) & 4 and _first(ifd.get(PHOTOMETRIC)) == 4:
@@ -480,8 +515,11 @@ def apply_pam(s: Structure, path: str) -> None:
                 s.units[b] = text or None
             elif child.tag == "ColorInterp":
                 s.colorinterp[b] = color_interp_from_name(text)
-            elif child.tag == "NoDataValue" and b == 0:
-                s.nodata_override = _parse_float(text)
+            elif child.tag == "NoDataValue":
+                value = _parse_float(text)
+                s.band_nodata[b] = value
+                if b == 0:
+                    s.nodata_override = value
             elif child.tag == "Metadata" and not child.get("domain"):
                 for mdi in child.findall("MDI"):
                     key = mdi.get("key")

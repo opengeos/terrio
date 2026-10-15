@@ -119,7 +119,7 @@ pub(crate) fn read(path: &Path) -> Result<RasterDataset> {
     };
     let crs = common::read_prj(path).unwrap_or_default();
     let raster = common::make_raster(cols, rows, bands, pixels, gt, crs, nodata)?;
-    Ok(RasterDataset { raster, driver: RasterDriver::EHdr, has_nodata: nodata.is_some() })
+    Ok(RasterDataset { raster, driver: RasterDriver::EHdr, has_nodata: nodata.is_some(), affine: None })
 }
 
 /// Writes an EHdr raster: the BIL data file at `path`, a `.hdr` and a `.prj`.

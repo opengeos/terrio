@@ -227,3 +227,118 @@ fn remote_info_reads_only_the_header() {
     assert_eq!(info.crs.epsg, Some(32610));
     assert_eq!(info.bands[0].nodata, Some(0.0));
 }
+
+/// JPEG 2000 files (Sentinel-2 bands, GDAL-written and GDAL test files) and tiled JPEG XL COGs,
+/// read by window and resolution level: the overview and block sizes GDAL gives them, and window
+/// sums from GDAL 3.12's JP2OpenJPEG and GTiff drivers; each window also matches the same window
+/// cut from the whole image.
+#[test]
+fn jpeg2000_and_jpeg_xl_windows_match_gdal() {
+    type Case = (Option<usize>, (usize, usize, usize, usize), i64);
+    let files: &[(&str, &[(usize, usize)], (usize, usize), &[Case])] = &[
+        (
+            "s2_l1c_B04.jp2",
+            &[(5490, 5490), (2745, 2745), (1373, 1373), (687, 687)],
+            (1024, 1024),
+            &[(None, (2196, 3660, 700, 300), 341535348), (Some(3), (0, 0, 687, 687), 200071686), (Some(0), (1830, 1372, 300, 200), 0)],
+        ),
+        (
+            "s2_l1c_B01.jp2",
+            &[(915, 915), (458, 458), (229, 229), (115, 115)],
+            (192, 192),
+            &[(None, (366, 610, 700, 300), 52890137), (Some(3), (0, 0, 115, 115), 7397382), (Some(0), (305, 228, 300, 200), 0)],
+        ),
+        (
+            "s2_l2a_TCI_60m.jp2",
+            &[(915, 915), (458, 458), (229, 229), (115, 115)],
+            (256, 256),
+            &[(None, (366, 610, 700, 300), 5342262), (Some(3), (0, 0, 115, 115), 810811), (Some(0), (305, 228, 300, 200), 0)],
+        ),
+        (
+            "s2_l2a_SCL_20m.jp2",
+            &[(2745, 2745), (1373, 1373), (687, 687), (344, 344)],
+            (640, 640),
+            &[(None, (1098, 1830, 700, 300), 502083), (Some(3), (0, 0, 344, 344), 154234), (Some(0), (915, 686, 300, 200), 0)],
+        ),
+        (
+            "lv_dem.jp2",
+            &[(485, 249)],
+            (970, 498),
+            &[(None, (194, 166, 700, 300), 141125515), (Some(0), (0, 0, 485, 249), 81197111), (Some(0), (161, 62, 300, 187), 37660690)],
+        ),
+        (
+            "srtm_sub.jp2",
+            &[(250, 200), (125, 100)],
+            (500, 400),
+            &[(None, (100, 133, 400, 267), 173280356), (Some(1), (0, 0, 125, 100), 20040825), (Some(0), (83, 50, 167, 150), 43230010)],
+        ),
+        (
+            "stefan_full_rgba_alpha_1bit.jp2",
+            &[(81, 75)],
+            (162, 150),
+            &[(None, (32, 50, 130, 100), 2083828), (Some(0), (0, 0, 81, 75), 1000629), (Some(0), (27, 18, 54, 57), 448307)],
+        ),
+        (
+            "3_13bit_and_1bit.jp2",
+            &[(101, 154)],
+            (202, 308),
+            &[(None, (40, 102, 162, 206), 10422228), (Some(0), (0, 0, 101, 154), 5132090), (Some(0), (33, 38, 68, 116), 2633044)],
+        ),
+        ("gmljp2_dtedsm_epsg_4326_axes.jp2", &[], (121, 121), &[(None, (24, 40, 97, 81), 424078)]),
+        (
+            "gtiff_codecs/rgb_jxl_cog.tif",
+            &[(1091, 959), (546, 480)],
+            (256, 256),
+            &[(None, (436, 639, 700, 300), 15080697), (Some(1), (0, 0, 546, 480), 28200014), (Some(0), (363, 239, 300, 200), 4796499)],
+        ),
+        (
+            "gtiff_codecs/u16_jxl_cog.tif",
+            &[(1024, 1024), (512, 512), (256, 256), (128, 128)],
+            (256, 256),
+            &[(None, (409, 682, 700, 300), 147087606), (Some(3), (0, 0, 128, 128), 10025250), (Some(0), (341, 256, 300, 200), 1516136)],
+        ),
+    ];
+    for (name, overviews, block, cases) in files {
+        let Some(p) = data(name) else { return };
+        let mut lazy = terrio::open_raster_lazy(&p).unwrap();
+        assert!(lazy.is_lazy(), "{name}");
+        assert_eq!(lazy.overviews(), overviews.to_vec(), "{name}");
+        assert_eq!(lazy.block_size(), Some(*block), "{name}");
+        // The whole image, decoded in memory, for the smaller files (in debug builds, decoding a
+        // 10980 x 10980 Sentinel-2 band whole takes long).
+        let full = (lazy.width() * lazy.height() <= 40_000_000).then(|| terrio::open_raster(&p).unwrap());
+        if let Some(full) = &full {
+            assert_eq!(lazy.geo_transform(), full.geo_transform(), "{name}");
+        }
+        for &(overview, (x, y, w, h), sum) in cases.iter() {
+            let ds = lazy.read_window(Window::new(x, y, w, h), &WindowOptions { bands: vec![], overview }).unwrap();
+            assert_eq!((ds.raster.cols, ds.raster.rows, ds.raster.bands), (w, h, lazy.band_count()), "{name}");
+            let total: i64 = (0..ds.raster.bands).map(|b| ds.raster.band_view(b).as_slice().iter().map(|v| *v as i64).sum::<i64>()).sum();
+            assert_eq!(total, sum, "{name} {overview:?} {x} {y} {w} {h}");
+            if let (None, Some(full)) = (overview, &full) {
+                for b in 0..full.raster.bands {
+                    let cut: Vec<u64> = (y..y + h)
+                        .flat_map(|row| (x..x + w).map(move |col| (row, col)))
+                        .map(|(row, col)| full.raster.band_view(b).as_slice()[row * full.raster.cols + col].to_bits())
+                        .collect();
+                    assert!(band_bits(&ds, b) == cut, "{name} band {}", b + 1);
+                }
+                // A band subset.
+                let one = lazy.read_window(Window::new(x, y, w, h), &WindowOptions { bands: vec![ds.raster.bands], overview }).unwrap();
+                assert!(band_bits(&one, 0) == band_bits(&ds, ds.raster.bands - 1), "{name}");
+            }
+        }
+    }
+}
+
+/// A Sentinel-2 L1C band, JPEG 2000 in the public Google Cloud copy of the Copernicus archive,
+/// read by window and resolution level over HTTP: only the tiles needed are fetched.
+#[test]
+#[ignore = "network"]
+fn sentinel2_jpeg2000_window_over_http() {
+    let url = "https://storage.googleapis.com/gcp-public-data-sentinel-2/tiles/10/S/EG/S2B_MSIL1C_20240630T185919_N0510_R013_T10SEG_20240630T211017.SAFE/GRANULE/L1C_T10SEG_A038220_20240630T190812/IMG_DATA/T10SEG_20240630T185919_B04.jp2";
+    // The file is 26 MB, in 121 tiles without TLM markers: the header of each tile part before
+    // the window's is read (GDAL fetches 3.0 MB for the same window).
+    check_remote_window(url, Window::new(2000, 6000, 1024, 1024), None, 4_000_000, &[(201403540.0, 2177.0, 0.0)]);
+    check_remote_window(url, Window::new(300, 400, 256, 128), Some(2), 3_000_000, &[(13068642.0, 1848.0, 0.0)]);
+}

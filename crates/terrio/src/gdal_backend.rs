@@ -320,7 +320,7 @@ fn raster_from(ds: &GdalDataset, path: &str) -> Result<RasterDataset> {
         raster.metadata.push((format!("SUBDATASET_{}_NAME", i + 1), name));
         raster.metadata.push((format!("SUBDATASET_{}_DESC", i + 1), desc));
     }
-    Ok(RasterDataset { raster, driver: RasterDriver::Gdal, has_nodata: nodata.is_some() })
+    Ok(RasterDataset { raster, driver: RasterDriver::Gdal, has_nodata: nodata.is_some(), affine: None })
 }
 
 /// terrio's CRS for a GDAL spatial reference: the EPSG code GDAL identifies (as `gdalsrsinfo -e`

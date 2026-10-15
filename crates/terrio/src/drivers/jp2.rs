@@ -2,6 +2,11 @@
 //! behind GDAL's JP2OpenJPEG driver), so decoded pixels match GDAL's, signed samples included, in
 //! native and WebAssembly builds alike.
 //!
+//! Files are read in place by window and resolution level, as GDAL's driver reads them: the
+//! resolution levels are the overviews (each halving the size, down to about 128 pixels), and a
+//! window decodes only the tiles, precincts and code blocks it covers, the tiles in parallel
+//! (OpenJPEG's decode area and reduce factor), from local files, HTTP range requests or bytes.
+//!
 //! Georeferencing is read from the GeoJP2 box (a small GeoTIFF) or, failing that, from the GML
 //! (GMLJP2) box, as GDAL reads them; it is written as a GeoJP2 box. A 1-bit alpha channel of 8-bit
 //! colours is promoted to 0 and 255, as GDAL does. Nodata goes to a `.aux.xml` sidecar, where GDAL
@@ -15,7 +20,7 @@
 use super::common;
 use crate::formats::RasterDriver;
 use crate::{Error, RasterDataset, Result};
-use codec::{Component, decode, encode};
+use codec::{Component, encode};
 use std::path::Path;
 use wbraster::raster::RasterData;
 use wbraster::{CrsInfo, DataType, Raster};
@@ -42,38 +47,49 @@ mod codec {
         pos: usize,
     }
 
-    /// The bytes OpenJPEG streams read from.
+    /// A seekable byte stream OpenJPEG streams read from: a file, a remote file read by range
+    /// requests, or bytes in memory.
+    pub(crate) trait ReadSeek: std::io::Read + std::io::Seek + Send + Sync {}
+    impl<T: std::io::Read + std::io::Seek + Send + Sync> ReadSeek for T {}
+
+    /// What OpenJPEG streams read from.
     struct Source<'a> {
-        data: &'a [u8],
-        pos: usize,
+        r: &'a mut dyn ReadSeek,
     }
 
     unsafe extern "C" fn read_fn(dst: *mut c_void, n: usize, user: *mut c_void) -> usize {
         // SAFETY: `user` is the `Source` registered with the stream, alive while the stream is.
-        let b = unsafe { &mut *(user as *mut Source) };
-        let left = b.data.len().saturating_sub(b.pos);
-        if left == 0 || dst.is_null() {
-            return usize::MAX; // end of stream
+        let s = unsafe { &mut *(user as *mut Source) };
+        if dst.is_null() {
+            return usize::MAX;
         }
-        let k = left.min(n);
         // SAFETY: OpenJPEG passes a buffer of at least `n` bytes.
-        unsafe { std::ptr::copy_nonoverlapping(b.data.as_ptr().add(b.pos), dst as *mut u8, k) };
-        b.pos += k;
-        k
+        let buf = unsafe { std::slice::from_raw_parts_mut(dst as *mut u8, n) };
+        let mut k = 0;
+        while k < n {
+            match s.r.read(&mut buf[k..]) {
+                Ok(0) => break,
+                Ok(m) => k += m,
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(_) => break,
+            }
+        }
+        if k == 0 { usize::MAX } else { k } // `usize::MAX`: end of stream
     }
 
     unsafe extern "C" fn read_skip_fn(n: i64, user: *mut c_void) -> i64 {
         // SAFETY: as in `read_fn`.
-        let b = unsafe { &mut *(user as *mut Source) };
-        b.pos = (b.pos as i64 + n).max(0) as usize;
-        n
+        let s = unsafe { &mut *(user as *mut Source) };
+        match s.r.seek(std::io::SeekFrom::Current(n)) {
+            Ok(_) => n,
+            Err(_) => -1,
+        }
     }
 
     unsafe extern "C" fn read_seek_fn(n: i64, user: *mut c_void) -> i32 {
         // SAFETY: as in `read_fn`.
-        let b = unsafe { &mut *(user as *mut Source) };
-        b.pos = n.max(0) as usize;
-        1
+        let s = unsafe { &mut *(user as *mut Source) };
+        s.r.seek(std::io::SeekFrom::Start(n.max(0) as u64)).is_ok() as i32
     }
 
     unsafe extern "C" fn write_fn(src: *mut c_void, n: usize, user: *mut c_void) -> usize {
@@ -132,53 +148,59 @@ mod codec {
         }
     }
 
-    /// Decodes a JP2 file or a J2K codestream: `(width, height, pixels band after band)`, the
-    /// pixels of the type the widest component needs. A 1-bit alpha component (`alpha`, its
-    /// index) of 8-bit colours is promoted to 8 bits (0 or 255), as GDAL does.
-    pub(super) fn decode(bytes: &[u8], alpha: Option<usize>) -> Result<(usize, usize, RasterData)> {
-        let format = if bytes.starts_with(openjp2::J2K_CODESTREAM_MAGIC) { OPJ_CODEC_J2K } else { OPJ_CODEC_JP2 };
-        let mut source = Source { data: bytes, pos: 0 };
+    /// What a codestream's main header tells: the image area on the reference grid, the
+    /// components, the tiling and the number of resolution levels.
+    #[derive(Debug, Clone)]
+    pub(super) struct Header {
+        /// The image area `(x0, y0, x1, y1)` on the reference grid.
+        pub area: [u32; 4],
+        /// The precision (bits) of each component.
+        pub precisions: Vec<u32>,
+        /// Whether the samples are signed.
+        pub signed: bool,
+        /// Whether a component is subsampled.
+        pub subsampled: bool,
+        /// The tile size.
+        pub tile: (u32, u32),
+        /// The origin of the tile grid on the reference grid.
+        pub tile_origin: (u32, u32),
+        /// The number of resolution levels of the first component (of the default tile).
+        pub resolutions: u32,
+    }
+
+    /// Opens a codec over a stream positioned at the file's start and reads the main header,
+    /// then runs `f` with the codec, stream and image, and releases them.
+    ///
+    /// # Safety
+    /// `f` must not keep the pointers it is given.
+    unsafe fn with_codec<T>(
+        r: &mut dyn ReadSeek,
+        len: u64,
+        j2k: bool,
+        f: impl FnOnce(*mut opj_codec_t, *mut opj_stream_t, *mut opj_image_t) -> Result<T>,
+    ) -> Result<T> {
+        r.seek(std::io::SeekFrom::Start(0))?;
+        let format = if j2k { OPJ_CODEC_J2K } else { OPJ_CODEC_JP2 };
+        let mut source = Source { r };
         // SAFETY: the stream, codec and image are created, used and destroyed here; the source
         // outlives the stream.
         unsafe {
-            let stream = opj_stream_default_create(1);
+            // A small buffer: a window's decoding reads the header of every tile part before
+            // its own (skipping their data), and remote files fetch what the buffer asks for.
+            let stream = opj_stream_create(16 * 1024, 1);
             opj_stream_set_read_function(stream, Some(read_fn));
             opj_stream_set_skip_function(stream, Some(read_skip_fn));
             opj_stream_set_seek_function(stream, Some(read_seek_fn));
-            opj_stream_set_user_data_length(stream, bytes.len() as u64);
+            opj_stream_set_user_data_length(stream, len);
             opj_stream_set_user_data(stream, &mut source as *mut Source as *mut c_void, None);
             let codec = opj_create_decompress(format);
             let mut params = opj_dparameters_t::default();
             let mut image: *mut opj_image_t = std::ptr::null_mut();
-            let ok = !codec.is_null()
-                && opj_setup_decoder(codec, &mut params) != 0
-                && opj_read_header(stream, codec, &mut image) != 0
-                && opj_decode(codec, stream, image) != 0
-                && opj_end_decompress(codec, stream) != 0;
+            let ok = !codec.is_null() && opj_setup_decoder(codec, &mut params) != 0 && opj_read_header(stream, codec, &mut image) != 0;
             let result = if ok && !image.is_null() {
-                let img = &*image;
-                let comps = std::slice::from_raw_parts(img.comps, img.numcomps as usize);
-                let (w, h) = (comps[0].w as usize, comps[0].h as usize);
-                if comps.iter().any(|c| c.w as usize != w || c.h as usize != h || c.data.is_null()) {
-                    Err(Error::Unsupported("JPEG 2000 components with different sizes are not supported".into()))
-                } else {
-                    let mut planes: Vec<&[i32]> = comps.iter().map(|c| std::slice::from_raw_parts(c.data, w * h)).collect();
-                    let mut precisions: Vec<u32> = comps.iter().map(|c| c.prec).collect();
-                    let promoted: Vec<i32>;
-                    if let Some(a) = alpha.filter(|&a| a < comps.len()) {
-                        let colour = if a == 0 && comps.len() > 1 { 1 } else { 0 };
-                        if precisions[a] == 1 && precisions[colour] == 8 {
-                            promoted = planes[a].iter().map(|v| v * 255).collect();
-                            planes[a] = &promoted;
-                            precisions[a] = 8;
-                        }
-                    }
-                    let precision = precisions.iter().copied().max().unwrap_or(8);
-                    let signed = comps[0].sgnd != 0;
-                    Ok((w, h, collect(&planes, precision, signed)))
-                }
+                f(codec, stream, image)
             } else {
-                Err(Error::InvalidData("cannot decode the JPEG 2000 codestream".into()))
+                Err(Error::InvalidData("cannot read the JPEG 2000 codestream header".into()))
             };
             if !image.is_null() {
                 opj_image_destroy(image);
@@ -188,6 +210,116 @@ mod codec {
             }
             opj_stream_destroy(stream);
             result
+        }
+    }
+
+    /// Reads the main header of a JP2 file or a J2K codestream (`j2k`).
+    pub(super) fn read_header(r: &mut dyn ReadSeek, len: u64, j2k: bool) -> Result<Header> {
+        // SAFETY: the pointers are those `with_codec` passes, valid during the call.
+        unsafe {
+            with_codec(r, len, j2k, |codec, _, image| {
+                let img = &*image;
+                let comps = std::slice::from_raw_parts(img.comps, img.numcomps as usize);
+                if comps.is_empty() {
+                    return Err(Error::InvalidData("JPEG 2000 image without components".into()));
+                }
+                let mut info = opj_get_cstr_info(codec);
+                let (tile, tile_origin, resolutions) = if info.is_null() {
+                    ((img.x1 - img.x0, img.y1 - img.y0), (img.x0, img.y0), 1)
+                } else {
+                    let i = &*info;
+                    let tccp = i.m_default_tile_info.tccp_info;
+                    let res = if tccp.is_null() { 1 } else { (*tccp).numresolutions };
+                    let out = ((i.tdx, i.tdy), (i.tx0, i.ty0), res);
+                    opj_destroy_cstr_info(&mut info);
+                    out
+                };
+                Ok(Header {
+                    area: [img.x0, img.y0, img.x1, img.y1],
+                    precisions: comps.iter().map(|c| c.prec).collect(),
+                    signed: comps[0].sgnd != 0,
+                    subsampled: comps.iter().any(|c| c.dx != 1 || c.dy != 1),
+                    tile,
+                    tile_origin,
+                    resolutions,
+                })
+            })
+        }
+    }
+
+    /// Decodes an area of an image from a stream, at a resolution level: `area` is `(x0, y0, x1,
+    /// y1)` on the reference grid (the full-resolution image, offset by the image origin), `None`
+    /// for the whole image; `reduce` the number of resolution levels dropped (each halving the
+    /// size). Only the tiles, precincts and code blocks the area needs are decoded.
+    pub(super) fn decode_area(
+        r: &mut dyn ReadSeek,
+        len: u64,
+        j2k: bool,
+        area: Option<[u32; 4]>,
+        reduce: u32,
+        alpha: Option<usize>,
+    ) -> Result<(usize, usize, RasterData)> {
+        // SAFETY: the pointers are those `with_codec` passes, valid during the call.
+        unsafe {
+            with_codec(r, len, j2k, |codec, stream, image| {
+                if reduce > 0 && opj_set_decoded_resolution_factor(codec, reduce) == 0 {
+                    return Err(Error::InvalidData(format!("cannot decode JPEG 2000 resolution level {reduce}")));
+                }
+                if let Some([x0, y0, x1, y1]) = area {
+                    // The decode area is on the reference grid; the image's components must
+                    // know the resolution factor first (as GDAL sets them).
+                    let img = &mut *image;
+                    for c in std::slice::from_raw_parts_mut(img.comps, img.numcomps as usize) {
+                        c.factor = reduce;
+                    }
+                    if opj_set_decode_area(codec, image, x0 as i32, y0 as i32, x1 as i32, y1 as i32) == 0 {
+                        return Err(Error::InvalidArgument("invalid JPEG 2000 decode area".into()));
+                    }
+                }
+                if opj_decode(codec, stream, image) == 0 || opj_end_decompress(codec, stream) == 0 {
+                    return Err(Error::InvalidData("cannot decode the JPEG 2000 codestream".into()));
+                }
+                let img = &*image;
+                let comps = std::slice::from_raw_parts(img.comps, img.numcomps as usize);
+                let (w, h) = (comps[0].w as usize, comps[0].h as usize);
+                if comps.iter().any(|c| c.w as usize != w || c.h as usize != h || c.data.is_null()) {
+                    return Err(Error::Unsupported("JPEG 2000 components with different sizes are not supported".into()));
+                }
+                let mut planes: Vec<&[i32]> = comps.iter().map(|c| std::slice::from_raw_parts(c.data, w * h)).collect();
+                let mut precisions: Vec<u32> = comps.iter().map(|c| c.prec).collect();
+                let promoted: Vec<i32>;
+                if let Some(a) = alpha.filter(|&a| a < comps.len()) {
+                    let colour = if a == 0 && comps.len() > 1 { 1 } else { 0 };
+                    if precisions[a] == 1 && precisions[colour] == 8 {
+                        promoted = planes[a].iter().map(|v| v * 255).collect();
+                        planes[a] = &promoted;
+                        precisions[a] = 8;
+                    }
+                }
+                let precision = precisions.iter().copied().max().unwrap_or(8);
+                let signed = comps[0].sgnd != 0;
+                Ok((w, h, collect(&planes, precision, signed)))
+            })
+        }
+    }
+
+    /// The data type `collect` gives components of these precisions, the alpha one promoted as
+    /// `decode_area` promotes it.
+    pub(super) fn data_type(precisions: &[u32], signed: bool, alpha: Option<usize>) -> wbraster::DataType {
+        let mut p = precisions.to_vec();
+        if let Some(a) = alpha.filter(|&a| a < p.len()) {
+            let colour = if a == 0 && p.len() > 1 { 1 } else { 0 };
+            if p[a] == 1 && p[colour] == 8 {
+                p[a] = 8;
+            }
+        }
+        match (p.iter().copied().max().unwrap_or(8), signed) {
+            (0..=8, false) => wbraster::DataType::U8,
+            (0..=8, true) => wbraster::DataType::I8,
+            (9..=16, false) => wbraster::DataType::U16,
+            (9..=16, true) => wbraster::DataType::I16,
+            (_, false) => wbraster::DataType::U32,
+            (_, true) => wbraster::DataType::I32,
         }
     }
 
@@ -510,18 +642,326 @@ pub(crate) fn is_jpeg2000(b: &[u8]) -> bool {
     b.starts_with(&[0, 0, 0, 0x0c, b'j', b'P', b' ', b' ', 0x0d, 0x0a, 0x87, 0x0a]) || b.starts_with(openjp2::J2K_CODESTREAM_MAGIC)
 }
 
-/// Reads a JPEG 2000 file.
+/// Reads the boxes of a JP2 file before its codestream (`jp2c`), as a buffer of boxes that
+/// [`boxes`] parses, without reading the codestream. Empty for a J2K codestream.
+fn header_boxes(r: &mut dyn codec::ReadSeek) -> Result<Vec<u8>> {
+    use std::io::SeekFrom;
+    let len = r.seek(SeekFrom::End(0))?;
+    let mut pos = 0u64;
+    let mut out = Vec::new();
+    while pos + 8 <= len {
+        r.seek(SeekFrom::Start(pos))?;
+        let mut h = [0u8; 16];
+        r.read_exact(&mut h[..8])?;
+        let size = u32::from_be_bytes([h[0], h[1], h[2], h[3]]) as u64;
+        let (header, total) = match size {
+            0 => (8, len - pos),
+            1 => {
+                r.read_exact(&mut h[8..16])?;
+                (16, u64::from_be_bytes(h[8..16].try_into().unwrap_or_default()))
+            }
+            n => (8, n),
+        };
+        if total < header || pos + total > len || &h[4..8] == b"jp2c" {
+            break;
+        }
+        // Metadata boxes are small; a box larger than this is not one terrio reads.
+        if total <= 64 << 20 {
+            let mut b = vec![0u8; total as usize];
+            r.seek(SeekFrom::Start(pos))?;
+            r.read_exact(&mut b)?;
+            out.extend(b);
+        }
+        pos += total;
+    }
+    Ok(out)
+}
+
+/// Where a JPEG 2000 file's bytes are: each read opens its own stream, so that tiles are decoded
+/// in parallel.
+enum StreamSource {
+    File(std::path::PathBuf),
+    Bytes(std::sync::Arc<[u8]>),
+    #[cfg(not(target_arch = "wasm32"))]
+    Http(crate::http::RangeReader),
+}
+
+impl StreamSource {
+    fn open(&self) -> Result<Box<dyn codec::ReadSeek>> {
+        Ok(match self {
+            Self::File(p) => Box::new(std::io::BufReader::with_capacity(1 << 16, std::fs::File::open(p)?)),
+            Self::Bytes(b) => Box::new(std::io::Cursor::new(b.clone())),
+            #[cfg(not(target_arch = "wasm32"))]
+            Self::Http(r) => Box::new(r.clone()),
+        })
+    }
+}
+
+/// A JPEG 2000 file read by window and resolution level, as GDAL's JP2OpenJPEG driver reads it:
+/// the resolution levels as overviews, a window decoding only the tiles, precincts and code blocks
+/// it covers (the tiles in parallel).
+struct Jp2Window {
+    source: StreamSource,
+    len: u64,
+    j2k: bool,
+    header: codec::Header,
+    alpha: Option<usize>,
+    overviews: Vec<(usize, usize)>,
+    block: (usize, usize),
+}
+
+impl Jp2Window {
+    /// Opens a JP2 file or a J2K codestream: its boxes, georeferencing and main header. Returns
+    /// the reader and the dataset header (without pixels).
+    fn open(source: StreamSource) -> Result<(Self, RasterDataset)> {
+        use std::io::SeekFrom;
+        let mut stream = source.open()?;
+        let len = stream.seek(SeekFrom::End(0))?;
+        stream.seek(SeekFrom::Start(0))?;
+        let mut magic = [0u8; 12];
+        stream.read_exact(&mut magic[..len.min(12) as usize])?;
+        let j2k = magic.starts_with(openjp2::J2K_CODESTREAM_MAGIC);
+        let boxes_bytes = if j2k { Vec::new() } else { header_boxes(stream.as_mut())? };
+        let (gt, crs) = georeferencing(&boxes_bytes);
+        let alpha = alpha_channel(&boxes_bytes);
+        let header = codec::read_header(stream.as_mut(), len, j2k)?;
+        if header.subsampled {
+            return Err(Error::Unsupported("JPEG 2000 components with different sizes are not supported".into()));
+        }
+        let [x0, y0, x1, y1] = header.area;
+        let (w, h) = ((x1 - x0) as usize, (y1 - y0) as usize);
+        let bands = header.precisions.len();
+        let data_type = codec::data_type(&header.precisions, header.signed, alpha);
+        let palette =
+            boxes(&boxes_bytes).into_iter().find(|(t, _)| t == b"jp2h").is_some_and(|(_, p)| boxes(p).iter().any(|(t, _)| t == b"pclr"));
+        let (overviews, block) = levels(w, h, header.tile, if palette { 0 } else { header.resolutions });
+        let raster = Raster {
+            cols: w,
+            rows: h,
+            bands,
+            x_min: 0.0,
+            y_min: 0.0,
+            cell_size_x: 1.0,
+            cell_size_y: 1.0,
+            nodata: -9999.0,
+            data_type,
+            crs: crs.unwrap_or_default(),
+            metadata: Vec::new(),
+            data: RasterData::new_filled(data_type, 0, 0.0),
+        };
+        let mut ds = RasterDataset { raster, driver: RasterDriver::JP2, has_nodata: false, affine: None };
+        ds.set_geo_transform(gt.unwrap_or(common::NO_GEOTRANSFORM));
+        Ok((Self { source, len, j2k, header, alpha, overviews, block }, ds))
+    }
+
+    /// Decodes an area of the reference grid at a resolution level, on a stream of its own.
+    fn decode(&self, area: [u32; 4], reduce: u32) -> Result<(usize, usize, RasterData)> {
+        let mut stream = self.source.open()?;
+        codec::decode_area(stream.as_mut(), self.len, self.j2k, Some(area), reduce, self.alpha)
+    }
+}
+
+/// `ceil(a / 2^r)`, as JPEG 2000 maps reference grid coordinates to a resolution level.
+fn ceil_shift(a: u32, r: u32) -> usize {
+    (((a as u64) + (1u64 << r) - 1) >> r) as usize
+}
+
+/// The overview sizes and block size GDAL's JP2OpenJPEG driver gives an image of `w` x `h` pixels
+/// in tiles of `tile` with `resolutions` resolution levels: each level halves the size (rounding
+/// up), down to about 128 pixels, and needs either a decode area or even tile sizes.
+fn levels(w: usize, h: usize, tile: (u32, u32), resolutions: u32) -> (Vec<(usize, usize)>, (usize, usize)) {
+    let (mut tw, mut th) = (tile.0 as usize, tile.1 as usize);
+    let single = w == tw && h == th;
+    let mut block = (tw.min(w), th.min(h));
+    let decode_area = if w <= 1024 && h <= 1024 && tw < 32 && th < 32 {
+        block = (w, h);
+        true
+    } else if w < tw && h < th {
+        block = (w.min(2048), h.min(2048));
+        true
+    } else {
+        let area = single && (w > 1024 || h > 1024);
+        if area && !(th == 1 && tw < 20 * 1024 * 1024) {
+            block = (block.0.min(1024), block.1.min(1024));
+        }
+        area
+    };
+    let mut out = Vec::new();
+    let (mut ow, mut oh) = (w, h);
+    while out.len() + 1 < resolutions as usize && (ow > 128 || oh > 128) && (decode_area || (tw % 2 == 0 && th % 2 == 0)) {
+        ow = ow.div_ceil(2);
+        oh = oh.div_ceil(2);
+        if !decode_area {
+            tw /= 2;
+            th /= 2;
+        }
+        out.push((ow, oh));
+    }
+    (out, block)
+}
+
+impl crate::cog::WindowSource for Jp2Window {
+    fn overviews(&self) -> Vec<(usize, usize)> {
+        self.overviews.clone()
+    }
+
+    fn block_size(&self) -> Option<(usize, usize)> {
+        Some(self.block)
+    }
+
+    fn read(&mut self, level: usize, window: crate::Window, bands: &[usize]) -> Result<RasterData> {
+        let [x0, y0, x1, y1] = self.header.area;
+        let r = level as u32;
+        let edge =
+            |o: u32, p: usize, end: u32| -> u32 { o.saturating_add(u32::try_from(p).unwrap_or(u32::MAX).saturating_mul(1 << r)).min(end) };
+        let area =
+            [edge(x0, window.x, x1), edge(y0, window.y, y1), edge(x0, window.x + window.width, x1), edge(y0, window.y + window.height, y1)];
+        // The tiles the area covers, decoded in parallel when there are several.
+        let (tw, th) = (self.header.tile.0.max(1), self.header.tile.1.max(1));
+        let (tx0, ty0) = self.header.tile_origin;
+        let span = |a0: u32, a1: u32, o: u32, t: u32| ((a0 - o.min(a0)) / t)..=((a1 - 1 - o.min(a1 - 1)) / t);
+        let cols: Vec<u32> = span(area[0], area[2], tx0, tw).collect();
+        let rows: Vec<u32> = span(area[1], area[3], ty0, th).collect();
+        let parts: Vec<[u32; 4]> = rows
+            .iter()
+            .flat_map(|j| {
+                cols.iter().map(move |i| {
+                    [area[0].max(tx0 + i * tw), area[1].max(ty0 + j * th), area[2].min(tx0 + (i + 1) * tw), area[3].min(ty0 + (j + 1) * th)]
+                })
+            })
+            .collect();
+        let (w, h) = (window.width, window.height);
+        let all = self.header.precisions.len();
+        let decoded: Vec<Result<(usize, usize, RasterData)>> = if parts.len() == 1 {
+            vec![self.decode(area, r)]
+        } else {
+            let this = &*self;
+            crate::par::map_range(parts.len(), |k| this.decode(parts[k], r))
+        };
+        let (ox, oy) = (ceil_shift(area[0], r), ceil_shift(area[1], r));
+        let mut out: Option<RasterData> = None;
+        for (part, d) in parts.iter().zip(decoded) {
+            let (pw, ph, data) = d?;
+            let (px, py) = (ceil_shift(part[0], r) - ox, ceil_shift(part[1], r) - oy);
+            if px + pw > w || py + ph > h {
+                return Err(Error::InvalidData(format!("JPEG 2000 decoded {pw}x{ph} pixels at ({px}, {py}) for a {w}x{h} window")));
+            }
+            if parts.len() == 1 && (pw, ph) == (w, h) {
+                out = Some(data);
+                break;
+            }
+            let dst = out.get_or_insert_with(|| RasterData::new_filled(data.data_type(), w * h * all, 0.0));
+            macro_rules! place {
+                ($($v:ident),*) => {
+                    match (dst, &data) {
+                        $((RasterData::$v(o), RasterData::$v(src)) => {
+                            for b in 0..all {
+                                for row in 0..ph {
+                                    let s0 = b * pw * ph + row * pw;
+                                    let d0 = b * w * h + (py + row) * w + px;
+                                    o[d0..d0 + pw].copy_from_slice(&src[s0..s0 + pw]);
+                                }
+                            }
+                        })*
+                        _ => return Err(Error::InvalidData("JPEG 2000 tiles of different sample types".into())),
+                    }
+                };
+            }
+            place!(U8, I8, U16, I16, U32, I32, U64, I64, F32, F64);
+        }
+        let data = out.ok_or_else(|| Error::InvalidData("empty JPEG 2000 window".into()))?;
+        if data.len() != w * h * all {
+            return Err(Error::InvalidData(format!("JPEG 2000 decoded {} values for a {w}x{h} window of {all} bands", data.len())));
+        }
+        if bands.len() == all && bands.iter().enumerate().all(|(i, b)| *b == i + 1) {
+            return Ok(data);
+        }
+        let n = w * h;
+        macro_rules! pick {
+            ($($v:ident),*) => {
+                match &data {
+                    $(RasterData::$v(src) => {
+                        let mut out = Vec::with_capacity(bands.len() * n);
+                        for b in bands {
+                            out.extend_from_slice(&src[(b - 1) * n..b * n]);
+                        }
+                        RasterData::$v(out)
+                    })*
+                }
+            };
+        }
+        Ok(pick!(U8, I8, U16, I16, U32, I32, U64, I64, F32, F64))
+    }
+}
+
+/// Opens a JPEG 2000 file (a local path, URL or object store path) to be read by window and
+/// resolution level. `None` when the file is not JPEG 2000.
+pub(crate) fn open_lazy(path: &str) -> Option<Result<crate::LazyRaster>> {
+    use crate::vfs::Location;
+    use std::io::Read;
+    let source = match Location::parse(path) {
+        Location::Local(p) => {
+            let mut f = std::fs::File::open(&p).ok()?;
+            let mut magic = [0u8; 12];
+            let n = f.read(&mut magic).ok()?;
+            if !is_jpeg2000(&magic[..n]) {
+                return None;
+            }
+            StreamSource::File(p)
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        loc @ (Location::Url(_) | Location::S3 { .. }) => {
+            let lower = path.to_ascii_lowercase();
+            let lower = lower.split(['?', '#']).next().unwrap_or_default();
+            if ![".jp2", ".j2k", ".j2c", ".jpx"].iter().any(|e| lower.ends_with(e)) {
+                return None;
+            }
+            let remote = loc.remote()?;
+            // Small blocks: tile part headers are read one after another, their data skipped.
+            let options = crate::http::HttpOptions { block_size: 16 * 1024, ..crate::http::HttpOptions::from_env() };
+            match crate::http::RangeReader::open_with(&remote, options) {
+                Ok(r) => StreamSource::Http(r),
+                Err(e) => return Some(Err(e)),
+            }
+        }
+        _ => return None,
+    };
+    Some(open_lazy_source(source, Some(path)))
+}
+
+/// Opens a JPEG 2000 file held in memory to be read by window and resolution level.
+pub(crate) fn open_lazy_bytes(bytes: Vec<u8>) -> Result<crate::LazyRaster> {
+    open_lazy_source(StreamSource::Bytes(bytes.into()), None)
+}
+
+fn open_lazy_source(source: StreamSource, path: Option<&str>) -> Result<crate::LazyRaster> {
+    let (reader, mut ds) = Jp2Window::open(source).map_err(|e| match path {
+        Some(p) => Error::InvalidData(format!("{p}: {e}")),
+        None => e,
+    })?;
+    if let Some(p) = path {
+        super::nodata::apply_pam(p, &mut ds);
+    }
+    Ok(crate::LazyRaster::from_source(ds, Box::new(reader)))
+}
+
+/// Reads a JPEG 2000 file, its tiles decoded in parallel.
 pub(crate) fn read(path: &Path) -> Result<RasterDataset> {
-    read_bytes(&std::fs::read(path)?).map_err(|e| Error::InvalidData(format!("{}: {e}", path.display())))
+    read_source(StreamSource::File(path.to_path_buf())).map_err(|e| Error::InvalidData(format!("{}: {e}", path.display())))
 }
 
 /// Reads a JP2 file or a J2K codestream held in memory.
 pub(crate) fn read_bytes(bytes: &[u8]) -> Result<RasterDataset> {
-    let (gt, crs) = georeferencing(bytes);
-    let (cols, rows, data) = decode(bytes, alpha_channel(bytes))?;
-    let bands = data.len() / (cols * rows).max(1);
-    let raster = common::make_raster(cols, rows, bands, data, gt.unwrap_or(common::NO_GEOTRANSFORM), crs.unwrap_or_default(), None)?;
-    Ok(RasterDataset { raster, driver: RasterDriver::JP2, has_nodata: false })
+    read_source(StreamSource::Bytes(bytes.into()))
+}
+
+fn read_source(source: StreamSource) -> Result<RasterDataset> {
+    use crate::cog::WindowSource;
+    let (mut reader, mut ds) = Jp2Window::open(source)?;
+    let (w, h, bands) = (ds.raster.cols, ds.raster.rows, ds.raster.bands);
+    let all: Vec<usize> = (1..=bands).collect();
+    ds.raster.data = reader.read(0, crate::Window::full(w, h), &all)?;
+    Ok(ds)
 }
 
 /// Writes a lossless JP2 with a GeoJP2 box; nodata goes to a `.aux.xml` sidecar.

@@ -234,6 +234,39 @@ def transform_bounds(
     return float(ox[ok].min()), float(oy[ok].min()), float(ox[ok].max()), float(oy[ok].max())
 
 
+def _gcp_args(gcps: Any, kwargs: dict[str, Any]) -> dict[str, Any]:
+    """The GCP arguments of terrio's warp: the points and the transformer GDAL's options ask for.
+
+    Args:
+        gcps: `GroundControlPoint`s.
+        kwargs: Transformer options: `MAX_GCP_ORDER` (the polynomial order; 0, the default, picks
+            GDAL's; -1 for thin plate splines) and `SRC_METHOD` (`GCP_POLYNOMIAL`, `GCP_TPS` or
+            `GCP_HOMOGRAPHY`; by default, GDAL's choice).
+
+    Returns:
+        dict: `gcps`, `order` and `gcp_method` keyword arguments.
+
+    Raises:
+        ValueError: If the method is not a GCP one.
+    """
+    opts = {str(k).upper(): v for k, v in kwargs.items()}
+    method = str(opts.get("SRC_METHOD", "AUTO")).upper()
+    if method not in ("AUTO", "GCP_POLYNOMIAL", "GCP_TPS", "GCP_HOMOGRAPHY"):
+        raise ValueError(
+            f"terrio.rio warps GCPs with GCP_POLYNOMIAL, GCP_TPS or GCP_HOMOGRAPHY, not {method}"
+        )
+    order = int(opts.get("MAX_GCP_ORDER", 0))
+    if method == "AUTO" and order < 0:
+        method = "GCP_TPS"
+    return {
+        "gcps": [
+            (float(g.col), float(g.row), float(g.x), float(g.y), float(g.z or 0.0)) for g in gcps
+        ],
+        "order": max(order, 0),
+        "gcp_method": method.lower(),
+    }
+
+
 def calculate_default_transform(
     src_crs: Any,
     dst_crs: Any,
@@ -262,13 +295,14 @@ def calculate_default_transform(
         bottom: The source's bottom bound.
         right: The source's right bound.
         top: The source's top bound.
-        gcps: Unsupported.
+        gcps: Ground control points georeferencing the source instead of bounds.
         rpcs: Unsupported.
         resolution: The output resolution (a number or `(x, y)`).
         dst_width: The output width (with `dst_height`).
         dst_height: The output height.
         src_geoloc_array: Unsupported.
-        **kwargs: Unused.
+        **kwargs: Transformer options: `MAX_GCP_ORDER`, `SRC_METHOD` (`GCP_POLYNOMIAL`, `GCP_TPS` or
+            `GCP_HOMOGRAPHY`) with GCPs.
 
     Returns:
         tuple: `(transform, width, height)`.
@@ -276,8 +310,12 @@ def calculate_default_transform(
     Raises:
         ValueError: If the bounds are missing or the options conflict.
     """
-    if gcps is not None or rpcs is not None or src_geoloc_array is not None:
-        raise ValueError("terrio.rio supports bounds only, not GCPs, RPCs or geolocation arrays")
+    if rpcs is not None or src_geoloc_array is not None:
+        raise ValueError("terrio.rio supports bounds and GCPs, not RPCs or geolocation arrays")
+    if gcps is not None:
+        if any(v is not None for v in (left, bottom, right, top)):
+            raise ValueError("Bounding box parameters and gcps are mutually exclusive.")
+        left, bottom, right, top = 0.0, -float(height), float(width), 0.0
     if left is None or bottom is None or right is None or top is None:
         if any(v is not None for v in (left, bottom, right, top)):
             raise ValueError("Some, but not all, bounding box parameters were provided.")
@@ -288,8 +326,9 @@ def calculate_default_transform(
     if resolution and dims:
         raise ValueError("Resolution cannot be used with dst_width and dst_height.")
     t = from_bounds(left, bottom, right, top, width, height)
+    gcp_kw = _gcp_args(gcps, kwargs) if gcps is not None else {}
     gt, w, h = _terrio.suggested_grid(
-        int(width), int(height), t.to_gdal(), _crs_text(src_crs), _crs_text(dst_crs)
+        int(width), int(height), t.to_gdal(), _crs_text(src_crs), _crs_text(dst_crs), **gcp_kw
     )
     aff = Affine.from_gdal(*gt)
     out_w, out_h = int(w), int(h)
@@ -385,7 +424,8 @@ def reproject(
         source: A 2-D or 3-D array, a `Band` (`terrio.rio.band(dataset, bidx)`) or a dataset.
         destination: A 2-D or 3-D array (or a `Band` of a writer) to fill; created when None.
         src_transform: The source's transform (arrays only).
-        gcps: Unsupported.
+        gcps: Ground control points georeferencing the source (arrays; datasets with GCPs give
+            theirs), warped with a GCP polynomial or thin plate splines (see `**kwargs`).
         rpcs: Unsupported.
         src_crs: The source CRS (arrays only; datasets give theirs).
         src_nodata: The source nodata value (by default, the dataset's).
@@ -403,7 +443,8 @@ def reproject(
         tolerance: The approximate transformer's maximum error, in pixels.
         warp_mem_limit: Unused.
         src_geoloc_array: Unsupported.
-        **kwargs: Unused GDAL warp options.
+        **kwargs: GDAL transformer options: `MAX_GCP_ORDER` and `SRC_METHOD` (`GCP_POLYNOMIAL`,
+            `GCP_TPS` or `GCP_HOMOGRAPHY`) with GCPs; other warp options are unused.
 
     Returns:
         tuple: `(destination, dst_transform)`.
@@ -419,8 +460,8 @@ def reproject(
             "src_transform, gcps, rpcs, and src_geoloc_array are mutually exclusive parameters "
             "and may not be used together."
         )
-    if gcps is not None or rpcs is not None or src_geoloc_array is not None:
-        raise ValueError("terrio.rio reprojects with affine transforms only")
+    if rpcs is not None or src_geoloc_array is not None:
+        raise ValueError("terrio.rio reprojects with affine transforms and GCPs only")
     try:
         if resampling == 7:
             raise ValueError("Gauss resampling is not supported")
@@ -443,12 +484,16 @@ def reproject(
         ds, bidx = source.ds, source.bidx
         arr = ds.read(bidx)
         src_transform = ds.transform
+        ds_gcps, ds_gcp_crs = ds.gcps
+        if ds_gcps and not ds._georeferenced:
+            gcps = ds_gcps
+            src_crs = src_crs or ds_gcp_crs
         src_crs = src_crs or ds.crs
         if src_nodata is None:
             src_nodata = ds.nodata
     else:
         arr = source
-        if src_transform is None:
+        if src_transform is None and gcps is None:
             raise ValueError("src_transform is required for arrays")
     if isinstance(arr, np.ma.MaskedArray):
         if src_nodata is None:
@@ -481,14 +526,23 @@ def reproject(
         dst_h, dst_w = d3[-2], d3[-1]
     else:
         dest_arr = None
+    gcp_kw = _gcp_args(gcps, kwargs) if gcps is not None else {}
+    if gcps is not None:
+        src_transform = Affine.identity()
+    assert src_transform is not None
     if dst_transform is None:
-        left, bottom, right, top = array_bounds(src_h, src_w, src_transform)
         kw: dict[str, Any] = {"resolution": dst_resolution}
         if dest_arr is not None:
             kw = {"dst_width": dst_w, "dst_height": dst_h}
-        dst_transform, dst_w, dst_h = calculate_default_transform(
-            src_crs, dst_crs, src_w, src_h, left, bottom, right, top, **kw
-        )
+        if gcps is not None:
+            dst_transform, dst_w, dst_h = calculate_default_transform(
+                src_crs, dst_crs, src_w, src_h, gcps=gcps, **kw, **kwargs
+            )
+        else:
+            left, bottom, right, top = array_bounds(src_h, src_w, src_transform)
+            dst_transform, dst_w, dst_h = calculate_default_transform(
+                src_crs, dst_crs, src_w, src_h, left, bottom, right, top, **kw
+            )
     if dest_arr is None and dest_band is None:
         dest_arr = np.empty((src_count, dst_h, dst_w), dtype=arr.dtype)
         if masked:
@@ -526,6 +580,7 @@ def reproject(
         dstnodata=dstnd,
         ot=ot,
         et=tolerance,
+        **gcp_kw,
     )
     res = np.asarray(out.read())
     if keep:

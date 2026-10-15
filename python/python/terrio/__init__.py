@@ -23,6 +23,7 @@ formats, local or remote, without GDAL::
 
 from terrio._terrio import (
     ArrowTable,
+    GeoTiffWriter,
     Layer,
     PointChunks,
     PointCloud,
@@ -73,6 +74,7 @@ from terrio.errors import (
 __all__ = [
     "ArrowTable",
     "CRSError",
+    "GeoTiffWriter",
     "InvalidArgumentError",
     "InvalidDataError",
     "Layer",

@@ -44,6 +44,18 @@ terrio convert --oo ZOOM_LEVEL=5 https://.../zcta.pmtiles zcta_z5.gpkg
 
 From Python, `terrio.open_raster(url, lazy=True).read(1, window=(x, y, w, h), overview=0)`.
 
+JPEG 2000 files (`.jp2`, `.j2k`) are read in place too, by window and resolution level: decoding a
+window reads the header of each tile part before those it needs, skipping their data, and fetches
+the tiles it decodes. A 1024 x 1024 window of a 26 MB Sentinel-2 band fetches 3.4 MB (GDAL: 3.0 MB);
+files with TLM markers are not read faster, as the OpenJPEG port does not use them.
+
+```sh
+B04=https://storage.googleapis.com/gcp-public-data-sentinel-2/tiles/10/S/EG/S2B_MSIL1C_20240630T185919_N0510_R013_T10SEG_20240630T211017.SAFE/GRANULE/L1C_T10SEG_A038220_20240630T190812/IMG_DATA/T10SEG_20240630T185919_B04.jp2
+terrio info $B04                                          # overviews 5490, 2745, 1373, 687
+terrio convert $B04 window.tif --srcwin 2000 6000 1024 1024
+terrio convert $B04 small.tif --overview 3
+```
+
 ## STAC
 
 STAC items, item collections, collections and STAC API searches are read from their URLs (see

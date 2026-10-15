@@ -1,7 +1,9 @@
 """Datasets: `DatasetReader`, `DatasetWriter` and `MemoryFile`, as rasterio defines them.
 
-Readers read GeoTIFFs (local or remote) lazily, by window, through terrio; other formats are read
-into memory when opened. Writers hold the pixels in memory and write the file when closed.
+Readers read GeoTIFFs and JPEG 2000 files (local or remote) lazily, by window, through terrio;
+other formats are read into memory when opened. Writers hold the pixels in memory (or, above
+`TERRIO_RIO_IN_MEMORY_LIMIT` bytes, in a temporary file mapped in memory, written to GeoTIFF in rows
+of blocks) and write the file when closed.
 """
 
 from __future__ import annotations
@@ -69,6 +71,24 @@ _EXTENSIONS = {
     ".mbtiles": "MBTiles",
     ".pmtiles": "PMTiles",
 }
+
+# Writers larger than this (in bytes; `TERRIO_RIO_IN_MEMORY_LIMIT` overrides it) keep their
+# pixels in a temporary file next to the output, mapped in memory, and are written to GeoTIFF in
+# rows of blocks, without holding the raster in RAM.
+_IN_MEMORY_LIMIT = 512 * 1024 * 1024
+
+
+def _in_memory_limit() -> int:
+    """The size above which writers keep their pixels on disk.
+
+    Returns:
+        int: Bytes.
+    """
+    try:
+        return int(os.environ.get("TERRIO_RIO_IN_MEMORY_LIMIT", _IN_MEMORY_LIMIT))
+    except ValueError:
+        return _IN_MEMORY_LIMIT
+
 
 # Resampling names for overviews.
 _OVERVIEW_RESAMPLING = {
@@ -183,6 +203,10 @@ class DatasetBase(WindowMethodsMixin, TransformMethodsMixin):
         self._closed = False
         self._env = ExitStack()
         self._georeferenced = True
+        self._nodatavals: list[float | None] | None = None
+        self._gcps: list[Any] = []
+        self._gcp_crs: CRS | None = None
+        self._rpcs: Any = None
 
     # Context manager and state.
 
@@ -472,21 +496,63 @@ class DatasetBase(WindowMethodsMixin, TransformMethodsMixin):
 
     @property
     def gcps(self) -> tuple[list[Any], CRS | None]:
-        """Ground control points (terrio reads none).
+        """Ground control points, and their CRS (GeoTIFF tie points, as GDAL reads them).
 
         Returns:
-            tuple: `([], None)`.
+            tuple: `([GroundControlPoint, ...], crs)`, `([], None)` without GCPs.
         """
-        return ([], None)
+        return (list(self._gcps), self._gcp_crs if self._gcps else None)
+
+    @gcps.setter
+    def gcps(self, value: Any) -> None:
+        """Sets the ground control points (write modes only).
+
+        Args:
+            value: `(gcps, crs)`.
+        """
+        self._set_gcps(*value)
+
+    def _set_gcps(self, gcps: Any, crs: Any = None) -> None:
+        """Sets ground control points.
+
+        Args:
+            gcps: `GroundControlPoint`s.
+            crs: Their CRS.
+
+        Raises:
+            DatasetAttributeError: In read mode.
+        """
+        raise DatasetAttributeError("read-only attribute")
 
     @property
-    def rpcs(self) -> None:
-        """Rational polynomial coefficients (terrio reads none).
+    def rpcs(self) -> Any:
+        """Rational polynomial coefficients (the GeoTIFF RPCCoefficientTag, or a `_RPC.TXT` or
+        `.RPB` sidecar, as GDAL reads them).
 
         Returns:
-            None.
+            RPC | None: The coefficients.
         """
-        return None
+        return self._rpcs
+
+    @rpcs.setter
+    def rpcs(self, value: Any) -> None:
+        """Sets the rational polynomial coefficients (write modes only).
+
+        Args:
+            value: An `RPC` or GDAL's RPC items.
+        """
+        self._set_rpcs(value)
+
+    def _set_rpcs(self, value: Any) -> None:
+        """Sets RPCs.
+
+        Args:
+            value: The coefficients.
+
+        Raises:
+            DatasetAttributeError: In read mode.
+        """
+        raise DatasetAttributeError("read-only attribute")
 
     # Nodata and masks.
 
@@ -497,10 +563,10 @@ class DatasetBase(WindowMethodsMixin, TransformMethodsMixin):
         Returns:
             tuple: The values.
         """
-        nd = self._nodata
-        if nd is not None and not in_dtype_range(nd, self._dtype):
-            nd = None
-        return tuple(nd for _ in range(self._count))
+        vals = self._nodatavals if self._nodatavals is not None else [self._nodata] * self._count
+        return tuple(
+            None if nd is None or not in_dtype_range(nd, self._dtype) else nd for nd in vals
+        )
 
     def get_nodatavals(self) -> tuple[float | None, ...]:
         """The nodata value of each band.
@@ -856,12 +922,26 @@ class DatasetBase(WindowMethodsMixin, TransformMethodsMixin):
         Returns:
             list: The paths.
         """
-        if self.name and os.path.exists(self.name):
-            out = [self.name]
-            if os.path.exists(self.name + ".aux.xml"):
-                out.append(self.name + ".aux.xml")
-            return out
-        return []
+        if not (self.name and os.path.exists(self.name)):
+            return []
+        out = [self.name]
+        stem, ext = os.path.splitext(self.name)
+        world = "." + ext[1:2] + ext[-1:] + "w" if len(ext) > 2 else ".wld"
+        sidecars = [
+            self.name + ".aux.xml",
+            self.name + ".ovr",
+            self.name + ".msk",
+            stem + world,
+            stem + ".wld",
+            stem + "_rpc.txt",
+            stem + "_RPC.TXT",
+            stem + ".RPB",
+            stem + ".rpb",
+        ]
+        for f in sidecars:
+            if f not in out and os.path.isfile(f):
+                out.append(f)
+        return out
 
     @property
     def subdatasets(self) -> list[str]:
@@ -955,11 +1035,43 @@ class DatasetReader(DatasetBase):
             _tiff.apply_pam(structure, self._path)
         if structure.nodata_override is not None:
             self._nodata = structure.nodata_override
+        if len(structure.band_nodata) > 0:
+            vals = [structure.band_nodata.get(b, self._nodata) for b in range(self._count)]
+            if len(set(map(repr, vals))) > 1:
+                self._nodatavals = vals
         self._structure = structure
+        self._load_gcps_rpcs(structure)
         if self._transform == Affine(1.0, 0.0, 0.0, 0.0, -1.0, float(self.height)):
             # terrio's default for rasters without georeferencing.
             self._transform = Affine.identity()
             self._georeferenced = False
+
+    def _load_gcps_rpcs(self, structure: _tiff.Structure) -> None:
+        """Takes the GCPs and RPCs of a structure (or of RPC sidecars).
+
+        Args:
+            structure: The dataset's structure.
+        """
+        from terrio.rio.control import GroundControlPoint
+        from terrio.rio.rpc import RPC, read_rpc_file
+
+        if structure.gcps:
+            self._gcps = [
+                GroundControlPoint(row=line, col=pixel, x=x, y=y, z=z, id=str(i + 1), info="")
+                for i, (pixel, line, x, y, z) in enumerate(structure.gcps)
+            ]
+            # GDAL reports the CRS as the GCPs' and the dataset as not georeferenced.
+            self._gcp_crs = self._crs
+            self._crs = None
+        if structure.rpc_tag is not None:
+            self._rpcs = RPC.from_tiff_tag(structure.rpc_tag)
+        elif not _is_remote(self._path) and os.path.isfile(self._path):
+            stem = os.path.splitext(self._path)[0]
+            for side in (stem + "_rpc.txt", stem + "_RPC.TXT", stem + ".RPB", stem + ".rpb"):
+                items = read_rpc_file(side) if os.path.isfile(side) else None
+                if items:
+                    self._rpcs = RPC.from_gdal(items)
+                    break
 
     def close(self) -> None:
         """Closes the dataset, releasing the file."""
@@ -1098,11 +1210,36 @@ class DatasetReader(DatasetBase):
                     out[k] = np.where(a == 0, 0, np.clip(a.astype(np.int64) >> 8, 1, 255))
                 else:
                     out[k] = np.clip(a, 0, 255).astype(np.uint8)
-            elif f & MaskFlags.per_dataset.value:
-                warnings.warn(
-                    "terrio does not read internal TIFF masks: the mask reads as all valid",
-                    stacklevel=3,
-                )
+            elif f & MaskFlags.per_dataset.value and self.structure.has_mask:
+                out[k] = self._internal_mask(window, buf)
+        return out
+
+    def _internal_mask(self, window: Window | None, buf: Any) -> np.ndarray:
+        """Reads the internal (per-dataset) mask of a GeoTIFF into a buffer.
+
+        Args:
+            window: The window, or None for the whole raster.
+            buf: The output `(height, width)`.
+
+        Returns:
+            numpy.ndarray: The mask, 0 or 255.
+        """
+        raster = self._raster
+
+        def read(bands: Sequence[int], w: tuple[int, int, int, int], level: int | None) -> Any:
+            m = raster.read_mask(window=w, overview=level)
+            if m is None:
+                return np.full((1, w[3], w[2]), 255, np.uint8)
+            return np.asarray(m)[np.newaxis]
+
+        fw: tuple[float, float, float, float] = (
+            (0, 0, self.width, self.height)
+            if window is None
+            else (window.col_off, window.row_off, window.width, window.height)
+        )
+        out: np.ndarray = np.asarray(
+            raster_io(read, [1], (self.width, self.height), self._overview_sizes, fw, buf, 0, None)
+        )[0]
         return out
 
     def _prepare(
@@ -1521,9 +1658,12 @@ class DatasetWriter(DatasetReader):
         self._overview_factors: list[int] = []
         self._overview_resampling = "nearest"
         self._mask: np.ndarray | None = None
+        self._spill: list[str] = []
         kwargs = {k.lower(): v for k, v in kwargs.items()}
         kwargs.pop("sharing", None)
         kwargs.pop("thread_safe", None)
+        gcps = kwargs.pop("gcps", None)
+        rpcs = kwargs.pop("rpcs", None)
         if mode in ("w", "w+"):
             if not isinstance(driver, str):
                 raise TypeError("A driver name string is required.")
@@ -1554,7 +1694,7 @@ class DatasetWriter(DatasetReader):
             self._options = self._creation_options(kwargs)
             fill = self._nodata if self._nodata is not None else 0
             with np.errstate(invalid="ignore"):
-                self._data = np.full((count, height, width), fill, dtype=dt)
+                self._data = self._allocate((count, height, width), dt, fill)
             self._structure = self._new_structure()
             if transform is not None:
                 self._transform = guard_transform(transform)
@@ -1565,6 +1705,74 @@ class DatasetWriter(DatasetReader):
             self._open_update(kwargs)
         else:
             raise ValueError(f"Invalid mode: '{mode}'")
+        if gcps:
+            self._set_gcps(gcps, crs)
+        if rpcs:
+            self._set_rpcs(rpcs)
+
+    def _streams(self, shape: tuple[int, ...], dtype: Any) -> bool:
+        """Whether pixels of this shape are kept on disk and written in rows of blocks.
+
+        Args:
+            shape: The array's shape.
+            dtype: Its data type.
+
+        Returns:
+            bool: True for GeoTIFFs larger than the in-memory limit.
+        """
+        size = int(np.prod(shape)) * np.dtype(dtype).itemsize
+        return self.driver == "GTiff" and size > _in_memory_limit()
+
+    def _allocate(self, shape: tuple[int, ...], dtype: Any, fill: Any) -> np.ndarray:
+        """An array for pixels: in memory, or mapped from a temporary file beside the output when
+        it is larger than the in-memory limit.
+
+        Args:
+            shape: The shape.
+            dtype: The data type.
+            fill: The initial value.
+
+        Returns:
+            numpy.ndarray: The array.
+        """
+        if not self._streams(shape, dtype):
+            return np.full(shape, fill, dtype=dtype)
+        spill = self._path + f".terrio-{uuid.uuid4().hex}.tmp"
+        self._spill.append(spill)
+        arr = np.memmap(spill, dtype=dtype, mode="w+", shape=shape)
+        if fill != 0:
+            for y, n in self._slabs():
+                arr[..., y : y + n, :] = fill
+        return arr
+
+    def _slabs(self) -> Iterator[tuple[int, int]]:
+        """Rows of blocks of about 16 MB.
+
+        Yields:
+            tuple: `(first row, number of rows)`.
+        """
+        row = max(1, self.width * max(self._count, 1) * np.dtype(self._dtype).itemsize)
+        n = max(1, (16 << 20) // row)
+        block = self.structure.block_shape[0] if self._structure is not None else 1
+        n = max(block, n - n % max(block, 1))
+        for y in range(0, self.height, n):
+            yield y, min(n, self.height - y)
+
+    def _release_spill(self) -> None:
+        """Deletes the temporary files of file-backed arrays."""
+        data = getattr(self, "_data", None)
+        if isinstance(data, np.memmap):
+            data._mmap.close()  # type: ignore[attr-defined]
+        if isinstance(self._mask, np.memmap):
+            self._mask._mmap.close()  # type: ignore[attr-defined]
+        self._data = np.empty((0, 0, 0), self._dtype)
+        self._mask = None
+        for f in self._spill:
+            try:
+                os.remove(f)
+            except OSError:
+                pass
+        self._spill = []
 
     def _creation_options(self, kwargs: dict[str, Any]) -> dict[str, str]:
         """Checks creation options and fills in GDAL's defaults for the GeoTIFF layout.
@@ -1674,7 +1882,16 @@ class DatasetWriter(DatasetReader):
         raster = self._raster
         assert raster is not None
         try:
-            self._data = np.asarray(raster.read())
+            shape = (self._count, self.height, self.width)
+            if self._streams(shape, self._dtype):
+                # Copied into a file-backed array, block row by block row.
+                self._data = self._allocate(shape, self._dtype, 0)
+                for y, n in self._slabs():
+                    self._data[:, y : y + n, :] = np.asarray(
+                        raster.read(window=(0, y, self.width, n))
+                    )
+            else:
+                self._data = np.asarray(raster.read())
         except Exception as err:
             raise RasterioIOError(f"Read failed: {err}") from err
         self._out_driver = self.driver
@@ -1699,6 +1916,10 @@ class DatasetWriter(DatasetReader):
             opts["ALPHA"] = "YES"
         self._options = opts
         self._overview_factors = DatasetBase.overviews(self, 1)
+        if s.has_mask:
+            m = raster.read_mask()
+            if m is not None:
+                self._mask = np.asarray(m)
         self._raster = None
         self._overview_sizes = []
 
@@ -1794,18 +2015,43 @@ class DatasetWriter(DatasetReader):
         self._dirty = True
 
     def _set_nodatavals(self, vals: Sequence[float | None]) -> None:
-        """Sets the nodata value (terrio keeps one value for all bands).
+        """Sets the nodata values of the bands.
+
+        GeoTIFFs hold one nodata value for all bands (GDAL's `GDAL_NODATA` tag): when the bands'
+        values differ, the last band's is written, as GDAL does, with GDAL's warning.
 
         Args:
             vals: One value per band.
-
-        Raises:
-            ValueError: If the bands' values differ.
         """
+        vals = [None if v is None else float(v) for v in vals]
         if len(set(map(repr, vals))) > 1:
-            raise ValueError("terrio stores one nodata value for all bands")
-        v = vals[0] if vals else None
-        self._nodata = None if v is None else float(v)
+            self._nodatavals = list(vals)
+            self._nodata = vals[-1]
+        else:
+            self._nodatavals = None
+            self._nodata = vals[0] if vals else None
+        self._dirty = True
+
+    def _set_gcps(self, gcps: Any, crs: Any = None) -> None:
+        """Sets ground control points, written as GeoTIFF tie points instead of a transform.
+
+        Args:
+            gcps: `GroundControlPoint`s.
+            crs: Their CRS (by default, the dataset's).
+        """
+        self._gcps = list(gcps)
+        self._gcp_crs = CRS.from_user_input(crs) if crs is not None else self._crs
+        self._dirty = True
+
+    def _set_rpcs(self, value: Any) -> None:
+        """Sets rational polynomial coefficients, written to the GeoTIFF RPCCoefficientTag.
+
+        Args:
+            value: An `RPC`, or GDAL's RPC items.
+        """
+        from terrio.rio.rpc import RPC
+
+        self._rpcs = value if isinstance(value, RPC) else RPC.from_gdal(dict(value))
         self._dirty = True
 
     def _set_all(self, attr: str, value: Sequence[Any], what: str) -> None:
@@ -1885,17 +2131,15 @@ class DatasetWriter(DatasetReader):
         self._dirty = True
 
     def write_mask(self, mask_array: Any, window: Any = None) -> None:
-        """Sets the dataset's validity mask (written as an alpha-free per-dataset mask).
-
-        terrio cannot write TIFF mask images; a written mask applies to reads of this dataset
-        and is not saved to the file.
+        """Sets the dataset's validity mask: a per-dataset mask, saved in GeoTIFFs as GDAL's
+        internal mask (a 1-bit mask image).
 
         Args:
             mask_array: True/False, or a 2-D array (bool, or uint8 with 0 for invalid).
             window: The window to write.
         """
         if self._mask is None:
-            self._mask = np.full((self.height, self.width), 255, np.uint8)
+            self._mask = self._allocate((self.height, self.width), np.uint8, 255)
         if mask_array is True or mask_array is np.True_:
             vals: Any = 255
         elif mask_array is False or mask_array is np.False_:
@@ -1910,9 +2154,7 @@ class DatasetWriter(DatasetReader):
             self._mask[r : r + int(window.height), c : c + int(window.width)] = vals
         else:
             self._mask[...] = vals
-        warnings.warn(
-            "terrio does not write TIFF masks: the mask is not saved to the file", stacklevel=2
-        )
+        self._dirty = True
 
     def write(
         self, arr: Any, indexes: Any = None, window: Any = None, masked: bool = False
@@ -2051,6 +2293,7 @@ class DatasetWriter(DatasetReader):
             if self._dirty and self.mode in ("w", "w+", "r+"):
                 self._flush()
         finally:
+            self._release_spill()
             DatasetBase.close(self)
 
     def _flush(self) -> None:
@@ -2062,15 +2305,31 @@ class DatasetWriter(DatasetReader):
         s = self.structure
         t = self._transform
         georef = not (t == Affine.identity() or [abs(v) for v in t[:6]] == [0, 1, 0, 0, 0, 1])
-        if georef and (t.b != 0 or t.d != 0 or t.a <= 0 or t.e >= 0):
-            raise RasterioIOError("terrio writes north-up rasters only (no rotation, no flip)")
         gt = t.to_gdal() if georef else (0.0, 1.0, 0.0, float(self.height), 0.0, -1.0)
         tags = {k: v for k, v in s.tags.items() if k != "AREA_OR_POINT"}
-        crs = self._crs.to_wkt() if self._crs else None
-        try:
-            raster = _terrio.Raster.from_array(self._data, gt, crs or None, self._nodata, tags)
-        except Exception as err:
-            raise RasterioIOError(f"Write failed: {err}") from err
+        crs_obj = self._crs if self._crs is not None else (self._gcp_crs if self._gcps else None)
+        crs = crs_obj.to_wkt() if crs_obj else None
+        if self._nodatavals is not None and len(set(map(repr, self._nodatavals))) > 1:
+            warnings.warn(
+                f"The TIFFTAG_GDAL_NODATA only support one value per dataset. This value of "
+                f"{self._nodata} will be used for all bands on re-opening",
+                stacklevel=3,
+            )
+        streaming = (
+            isinstance(self._data, np.memmap)
+            and self._out_driver == "GTiff"
+            and not self._overview_factors
+            and str(self._options.get("COMPRESS", "NONE")).upper()
+            in ("NONE", "LZW", "DEFLATE", "ZIP", "ZSTD", "PACKBITS")
+        )
+        raster: Any = None
+        if not streaming:
+            try:
+                raster = _terrio.Raster.from_array(
+                    np.asarray(self._data), gt, crs or None, self._nodata, tags
+                )
+            except Exception as err:
+                raise RasterioIOError(f"Write failed: {err}") from err
         driver = self._out_driver
         opts = dict(self._options)
         compress = opts.pop("COMPRESS", None)
@@ -2100,8 +2359,31 @@ class DatasetWriter(DatasetReader):
             ]
         if not georef:
             opts["GEOREFERENCED"] = "NO"
+        extra: dict[str, Any] = {}
+        if self._gcps:
+            extra["gcps"] = [
+                (float(g.col), float(g.row), float(g.x), float(g.y), float(g.z or 0.0))
+                for g in self._gcps
+            ]
+        if self._rpcs is not None:
+            extra["rpc"] = self._rpcs.to_tiff_tag()
+        if self._mask is not None and not streaming:
+            extra["mask"] = np.ascontiguousarray(self._mask, dtype=np.uint8)
         tmp = self._path + f".tmp-{uuid.uuid4().hex}"
         target = tmp if self.mode == "r+" else self._path
+        if streaming:
+            try:
+                self._write_streaming(
+                    target, gt, crs, tags, compress, opts, band_md, colormap, extra
+                )
+                if target != self._path:
+                    os.replace(target, self._path)
+            except Exception as err:
+                if os.path.exists(tmp):
+                    os.remove(tmp)
+                raise RasterioIOError(f"Write failed: {err}") from err
+            self._dirty = False
+            return
         try:
             raster.write(
                 target,
@@ -2112,6 +2394,7 @@ class DatasetWriter(DatasetReader):
                 colormap=colormap,
                 overviews=self._overview_factors or None,
                 overview_resampling=self._overview_resampling,
+                **extra,
             )
             if target != self._path:
                 os.replace(target, self._path)
@@ -2120,6 +2403,57 @@ class DatasetWriter(DatasetReader):
                 os.remove(tmp)
             raise RasterioIOError(f"Write failed: {err}") from err
         self._dirty = False
+
+    def _write_streaming(
+        self,
+        target: str,
+        gt: Sequence[float],
+        crs: str | None,
+        tags: dict[str, str],
+        compress: str | None,
+        opts: dict[str, str],
+        band_md: list[dict[str, Any]],
+        colormap: list[tuple[int, int, int, int]] | None,
+        extra: dict[str, Any],
+    ) -> None:
+        """Writes a GeoTIFF in rows of blocks from the file-backed pixels.
+
+        Args:
+            target: The output path.
+            gt: The geotransform.
+            crs: The CRS as WKT.
+            tags: Dataset metadata.
+            compress: The compression.
+            opts: Creation options.
+            band_md: Band metadata.
+            colormap: The color table.
+            extra: GCPs and RPCs (the mask is taken from the dataset).
+        """
+        w = _terrio.GeoTiffWriter(
+            target,
+            self.width,
+            self.height,
+            self._count,
+            self._dtype,
+            tuple(gt),
+            crs or None,
+            self._nodata,
+            tags,
+            compress=compress,
+            options=opts,
+            band_metadata=band_md if any(band_md) else None,
+            colormap=colormap,
+            gcps=extra.get("gcps"),
+            rpc=extra.get("rpc"),
+            mask=self._mask is not None,
+        )
+        try:
+            for y, n in self._slabs():
+                rows = np.ascontiguousarray(self._data[:, y : y + n, :])
+                m = None if self._mask is None else np.ascontiguousarray(self._mask[y : y + n])
+                w.write(rows, m)
+        finally:
+            w.close()
 
     def _new_structure_defaults(self) -> list[ColorInterp]:
         """The color interpretations GDAL derives from the creation options.
