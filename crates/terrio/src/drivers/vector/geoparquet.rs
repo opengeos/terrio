@@ -25,7 +25,9 @@ use arrow_array::{
 use arrow_schema::{DataType, Field, Fields, Schema, TimeUnit};
 use parquet::arrow::ArrowWriter;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+use parquet::arrow::arrow_writer::{ArrowLeafColumn, ArrowRowGroupWriterFactory, compute_leaves};
 use parquet::file::properties::WriterProperties;
+use parquet::file::writer::SerializedFileWriter;
 use serde_json::{Value, json};
 use std::sync::Arc;
 use wbvector::{Coord, Feature, FieldDef, FieldType, FieldValue, Geometry, GeometryType, Layer, Ring};
@@ -609,7 +611,7 @@ pub fn to_bytes(layer: &Layer) -> Result<Vec<u8>> {
     for chunk in layer.features.chunks(BATCH) {
         enc.write(&mut writer, chunk)?;
     }
-    writer.close().map_err(|e| perr(&e))?;
+    writer.close()?;
     Ok(buf)
 }
 
@@ -639,7 +641,7 @@ impl ParquetEncoder {
     }
 
     /// A Parquet writer of the file into `out`.
-    pub(crate) fn writer<W: std::io::Write + Send>(&self, out: W) -> Result<ArrowWriter<W>> {
+    pub(crate) fn writer<W: std::io::Write + Send>(&self, out: W) -> Result<ParquetFileWriter<W>> {
         let props = WriterProperties::builder()
             .set_compression(parquet::basic::Compression::SNAPPY)
             // GDAL's default row group size: with the covering column's statistics, readers skip
@@ -647,19 +649,29 @@ impl ParquetEncoder {
             .set_max_row_group_row_count(Some(BATCH))
             .set_key_value_metadata(Some(vec![parquet::file::metadata::KeyValue::new("geo".into(), self.geo.to_string())]))
             .build();
-        ArrowWriter::try_new(out, self.schema.clone(), Some(props)).map_err(|e| perr(&e))
+        // ArrowWriter sets up the file (its `ARROW:schema` metadata included); its row groups
+        // are encoded here, their columns in parallel.
+        let arrow = ArrowWriter::try_new(out, self.schema.clone(), Some(props)).map_err(|e| perr(&e))?;
+        let (writer, factory) = arrow.into_serialized_writer().map_err(|e| perr(&e))?;
+        Ok(ParquetFileWriter { writer, factory, schema: self.schema.clone(), pending: Vec::new(), rows: 0, groups: 0 })
     }
 
     /// Writes features, in batches of at most the row group size.
-    pub(crate) fn write<W: std::io::Write + Send>(&self, writer: &mut ArrowWriter<W>, features: &[Feature]) -> Result<()> {
-        for chunk in features.chunks(BATCH) {
-            writer.write(&self.batch(chunk)?).map_err(|e| perr(&e))?;
+    pub(crate) fn write<W: std::io::Write + Send>(&self, writer: &mut ParquetFileWriter<W>, features: &[Feature]) -> Result<()> {
+        for b in self.batches(features)? {
+            writer.push(b)?;
         }
         Ok(())
     }
 
+    /// The record batches of features, of at most the row group size.
+    pub(crate) fn batches(&self, features: &[Feature]) -> Result<Vec<RecordBatch>> {
+        features.chunks(BATCH).map(|chunk| self.batch(chunk)).collect()
+    }
+
     fn batch(&self, chunk: &[Feature]) -> Result<RecordBatch> {
-        let mut columns: Vec<ArrayRef> = self.kinds.iter().enumerate().map(|(i, k)| k.build(chunk, i)).collect();
+        // The columns, built in parallel.
+        let mut columns: Vec<ArrayRef> = crate::par::map_range(self.kinds.len(), |i| self.kinds[i].build(chunk, i));
         let mut wkb = BinaryBuilder::new();
         let mut bounds = [Float64Builder::new(), Float64Builder::new(), Float64Builder::new(), Float64Builder::new()];
         let mut valid = Vec::with_capacity(chunk.len());
@@ -685,6 +697,80 @@ impl ParquetEncoder {
         let bbox = StructArray::try_new(self.bbox_fields.clone(), bbox_arrays, Some(valid.into())).map_err(|e| perr(&e))?;
         columns.push(Arc::new(bbox));
         RecordBatch::try_new(self.schema.clone(), columns).map_err(|e| perr(&e))
+    }
+}
+
+/// A Parquet file being written in row groups of [`BATCH`] rows, as `ArrowWriter` writes them
+/// (each batch written to the column writers in turn), the columns of a row group encoded in
+/// parallel.
+pub(crate) struct ParquetFileWriter<W: std::io::Write + Send> {
+    writer: SerializedFileWriter<W>,
+    factory: ArrowRowGroupWriterFactory,
+    schema: Arc<Schema>,
+    pending: Vec<RecordBatch>,
+    rows: usize,
+    groups: usize,
+}
+
+impl<W: std::io::Write + Send> ParquetFileWriter<W> {
+    /// Adds a batch, writing the row groups it completes.
+    pub(crate) fn push(&mut self, mut batch: RecordBatch) -> Result<()> {
+        while batch.num_rows() > 0 {
+            let take = batch.num_rows().min(BATCH - self.rows);
+            self.pending.push(batch.slice(0, take));
+            self.rows += take;
+            batch = batch.slice(take, batch.num_rows() - take);
+            if self.rows == BATCH {
+                self.flush_group()?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Writes the pending rows as a row group.
+    fn flush_group(&mut self) -> Result<()> {
+        if self.pending.is_empty() {
+            return Ok(());
+        }
+        // The leaf columns of each batch, by column.
+        let mut by_column: Vec<Vec<ArrowLeafColumn>> = Vec::new();
+        for batch in std::mem::take(&mut self.pending) {
+            let mut k = 0;
+            for (array, field) in batch.columns().iter().zip(self.schema.fields()) {
+                for leaf in compute_leaves(field, array).map_err(|e| perr(&e))? {
+                    if by_column.len() == k {
+                        by_column.push(Vec::new());
+                    }
+                    by_column[k].push(leaf);
+                    k += 1;
+                }
+            }
+        }
+        let writers = self.factory.create_column_writers(self.groups).map_err(|e| perr(&e))?;
+        let work: Vec<std::sync::Mutex<Option<_>>> = writers.into_iter().zip(by_column).map(|w| std::sync::Mutex::new(Some(w))).collect();
+        let chunks = crate::par::map_range(work.len(), |i| {
+            let Some((mut writer, leaves)) = work[i].lock().ok().and_then(|mut w| w.take()) else {
+                return Err(perr(&"column writer"));
+            };
+            for leaf in &leaves {
+                writer.write(leaf).map_err(|e| perr(&e))?;
+            }
+            writer.close().map_err(|e| perr(&e))
+        });
+        let mut group = self.writer.next_row_group().map_err(|e| perr(&e))?;
+        for chunk in chunks {
+            chunk?.append_to_row_group(&mut group).map_err(|e| perr(&e))?;
+        }
+        group.close().map_err(|e| perr(&e))?;
+        self.groups += 1;
+        self.rows = 0;
+        Ok(())
+    }
+
+    /// Writes the last row group and the footer, and returns the output.
+    pub(crate) fn close(mut self) -> Result<W> {
+        self.flush_group()?;
+        self.writer.into_inner().map_err(|e| perr(&e))
     }
 }
 

@@ -720,7 +720,7 @@ impl FeatureWriter {
             (true, VectorDriver::Parquet, Some(p)) => {
                 let enc = geoparquet::ParquetEncoder::new(&schema, p);
                 let writer = enc.writer(BufWriter::with_capacity(1 << 20, File::create(path)?))?;
-                Box::new(ParquetSink { writer: Some(writer), enc })
+                Box::new(ParquetSink::new(writer, enc))
             }
             _ => unreachable!("every streamed driver is handled"),
         };
@@ -1040,25 +1040,95 @@ impl Drop for FgbSink {
     }
 }
 
+/// Record batches are built as chunks come, and encoded on a thread of their own (in WebAssembly,
+/// right away), so that reading goes on while row groups are encoded.
 struct ParquetSink {
-    writer: Option<parquet::arrow::ArrowWriter<BufWriter<File>>>,
     enc: geoparquet::ParquetEncoder,
+    #[cfg(not(target_arch = "wasm32"))]
+    encoder: Option<(std::sync::mpsc::SyncSender<arrow_array::RecordBatch>, std::thread::JoinHandle<Result<()>>)>,
+    /// Set when the sink is dropped unfinished: the file is left without its footer.
+    #[cfg(not(target_arch = "wasm32"))]
+    abort: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    #[cfg(target_arch = "wasm32")]
+    writer: geoparquet::ParquetFileWriter<BufWriter<File>>,
+}
+
+impl ParquetSink {
+    fn new(mut writer: geoparquet::ParquetFileWriter<BufWriter<File>>, enc: geoparquet::ParquetEncoder) -> Self {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            // Two batches in flight at most.
+            let (tx, rx) = std::sync::mpsc::sync_channel::<arrow_array::RecordBatch>(2);
+            let abort = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let aborted = abort.clone();
+            let handle = std::thread::spawn(move || {
+                for batch in rx {
+                    writer.push(batch)?;
+                }
+                if !aborted.load(std::sync::atomic::Ordering::SeqCst) {
+                    writer.close()?.flush()?;
+                }
+                Ok(())
+            });
+            Self { enc, encoder: Some((tx, handle)), abort }
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = &mut writer;
+            Self { enc, writer }
+        }
+    }
 }
 
 impl FeatureSink for ParquetSink {
     fn write(&mut self, chunk: &Layer) -> Result<()> {
-        match &mut self.writer {
-            Some(w) => self.enc.write(w, &chunk.features),
-            None => Ok(()),
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let Some((tx, _)) = &self.encoder else { return Ok(()) };
+            for batch in self.enc.batches(&chunk.features)? {
+                if tx.send(batch).is_err() {
+                    // The encoder stopped on an error, which finishing reports.
+                    return self.stop();
+                }
+            }
+            Ok(())
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            self.enc.write(&mut self.writer, &chunk.features)
         }
     }
 
-    fn finish(mut self: Box<Self>) -> Result<()> {
-        if let Some(w) = self.writer.take() {
-            let mut out = w.into_inner().map_err(|e| Error::InvalidData(format!("Parquet: {e}")))?;
-            out.flush()?;
+    fn finish(self: Box<Self>) -> Result<()> {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let mut s = self;
+            s.stop()
         }
-        Ok(())
+        #[cfg(target_arch = "wasm32")]
+        {
+            self.writer.close()?.flush()?;
+            Ok(())
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl ParquetSink {
+    /// Ends the encoder thread: the file is complete, or its error.
+    fn stop(&mut self) -> Result<()> {
+        let Some((tx, handle)) = self.encoder.take() else { return Ok(()) };
+        drop(tx);
+        handle.join().map_err(|_| Error::InvalidData("Parquet: the encoder thread panicked".into()))?
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl Drop for ParquetSink {
+    /// An unfinished sink waits for its encoder, which leaves the file without a footer.
+    fn drop(&mut self) {
+        self.abort.store(true, std::sync::atomic::Ordering::SeqCst);
+        let _ = self.stop();
     }
 }
 

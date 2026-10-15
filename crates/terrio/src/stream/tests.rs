@@ -247,7 +247,7 @@ fn failed_conversions_leave_no_output() {
     let bytes = std::fs::read(&src).unwrap();
     std::fs::write(&src, &bytes[..bytes.len() - 10]).unwrap();
     // Shapefiles profile the layer first, so they fail before the output is created.
-    for ext in ["geojson", "geojsonl", "shp"] {
+    for ext in ["geojson", "geojsonl", "shp", "parquet"] {
         let dst = dir.path().join(format!("out.{ext}"));
         let options = ConvertOptions { chunk_size: 1, ..Default::default() };
         assert!(can_convert_stream(&src, &dst.to_string_lossy(), &options));
