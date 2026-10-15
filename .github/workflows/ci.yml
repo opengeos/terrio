@@ -136,7 +136,8 @@ jobs:
       - name: Install the wheel
         shell: bash
         # rasterio (with its bundled GDAL) and shapely: terrio.rio is compared with rasterio.
-        run: python -m pip install pytest rasterio shapely python/dist/*.whl
+        # xarray, dask, rioxarray, zarr and scipy: terrio.xarray is compared with rioxarray.
+        run: python -m pip install pytest rasterio shapely xarray "dask[array]" rioxarray zarr scipy python/dist/*.whl
       - name: Test
         working-directory: python
         run: python -m pytest -v
@@ -164,7 +165,7 @@ jobs:
           environment-name: gdal
           # The reference: the EPSG table and test points come from GDAL 3.12.2 and PROJ 9.7.1, and
           # newer EPSG databases change some transformations.
-          create-args: gdal=3.12.2 libgdal-core=3.12.2 proj=9.7.1 libgdal-arrow-parquet libgdal-jp2openjpeg libgdal-netcdf libgdal-hdf5 numpy pip pytest maturin pyproj pdal laspy lazrs-python pyarrow geopandas shapely rasterio
+          create-args: gdal=3.12.2 libgdal-core=3.12.2 proj=9.7.1 libgdal-arrow-parquet libgdal-jp2openjpeg libgdal-netcdf libgdal-hdf5 numpy pip pytest maturin pyproj pdal laspy lazrs-python pyarrow geopandas shapely rasterio xarray dask rioxarray zarr scipy
           cache-environment: true
       - uses: actions/cache@v6
         with:
@@ -188,6 +189,11 @@ jobs:
           maturin build --release -m python/Cargo.toml -o python/dist
           python -m pip install --no-deps python/dist/*.whl
           cd python && python -m pytest -v
+      - name: Compare terrio.xarray with rioxarray
+        shell: micromamba-shell {0}
+        run: |
+          python scripts/compare_xarray_with_rioxarray.py terrio-data --output xarray.md
+          cat xarray.md >> "$GITHUB_STEP_SUMMARY"
       - name: Compare point clouds with laspy and PDAL
         shell: micromamba-shell {0}
         run: python scripts/compare_pointclouds.py terrio-data

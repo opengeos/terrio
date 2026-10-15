@@ -283,6 +283,32 @@ def rio(tmp: Path) -> None:
     print(mask.sum(), crs.to_epsg(), crs.is_geographic)
 
 
+def xarray_api(tmp: Path) -> None:
+    """terrio.xarray: rioxarray's API on terrio.
+
+    Args:
+        tmp: A directory for outputs.
+    """
+    import xarray as xr
+
+    import terrio.xarray as txr
+
+    data = np.arange(40 * 50, dtype="float32").reshape(1, 40, 50)
+    terrio.Raster.from_array(data, TRANSFORM, crs="EPSG:32611", nodata=-1.0).write(
+        str(tmp / "xr.tif")
+    )
+    opened = txr.open_rasterio(str(tmp / "xr.tif"), masked=True, chunks={"x": 25})
+    assert isinstance(opened, xr.DataArray)
+    acc: txr.TerrioArray = opened.terrio
+    left, bottom, right, top = acc.bounds()
+    clipped = acc.clip_box(left, bottom, (left + right) / 2, (bottom + top) / 2)
+    reprojected = clipped.terrio.reproject("EPSG:4326", resampling="bilinear")
+    reprojected.terrio.to_raster(str(tmp / "xr_4326.tif"), compress="DEFLATE")
+    merged = txr.merge_arrays([opened, opened])
+    ds = xr.open_dataset(str(tmp / "xr.tif"), engine="terrio")
+    print(acc.crs, acc.transform(), acc.resolution(), merged.shape, ds.terrio.crs)
+
+
 def main() -> None:
     """Runs every example in a temporary directory."""
     with tempfile.TemporaryDirectory() as d:
@@ -291,6 +317,7 @@ def main() -> None:
         vectors(tmp, raster)
         points(tmp)
         rio(tmp)
+        xarray_api(tmp)
     try:
         terrio.open_raster("does-not-exist.tif")
     except terrio.NotFoundError as e:

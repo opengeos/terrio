@@ -165,6 +165,13 @@ rasterio scripts run with an import change, `import terrio.rio as rasterio`: dat
 CRSs, features, warping, merging, masking and memory files follow rasterio's API, compared with
 rasterio on real files. See [Coming from rasterio](https://terrio.opengeos.org/rasterio/).
 
+`terrio.xarray` is rioxarray's API without GDAL (`pip install "terrio[xarray]"`):
+`terrio.xarray.open_rasterio` and `xr.open_dataset(path, engine="terrio")` open rasters lazily
+(remote COGs fetch only the tiles a window needs, chunked with dask), and the `.terrio` accessor
+has rioxarray's `.rio` methods (`clip_box`, `clip`, `reproject`, `reproject_match`, `pad_box`,
+`to_raster`...), compared with rioxarray on real files. See
+[xarray](https://terrio.opengeos.org/xarray/).
+
 ## JavaScript
 
 The `terrio-js` npm package is the library compiled to WebAssembly, for browsers and Node.js:

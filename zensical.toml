@@ -25,6 +25,7 @@ nav = [
   { "Coming from rasterio" = "rasterio.md" },
   { "Rust Library" = "rust.md" },
   { "Python" = "python.md" },
+  { "xarray" = "xarray.md" },
   { "JavaScript" = "javascript.md" },
   { "Testing Against GDAL" = "testing.md" },
   { "Conformance" = "conformance.md" },

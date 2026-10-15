@@ -31,6 +31,22 @@ with rasterio.open("https://example.com/cog.tif") as src:  # read lazily, by win
     dem = src.read(1, out_shape=(512, 512), masked=True)  # through the overviews
 ```
 
+## xarray
+
+`terrio.xarray` is rioxarray's API without GDAL (`pip install "terrio[xarray]"`): rasters open
+lazily as DataArrays with rioxarray's coordinates, attributes and encoding, and the `.terrio`
+accessor has rioxarray's `.rio` methods. See [xarray](https://terrio.opengeos.org/xarray/).
+
+```python
+import xarray as xr
+import terrio.xarray as txr
+
+da = txr.open_rasterio("https://example.com/cog.tif", masked=True, chunks=True)
+ds = xr.open_dataset("dem.tif", engine="terrio")
+sub = da.terrio.clip_box(-105.5, 39.5, -105.0, 40.0, crs="EPSG:4326")  # fetches its tiles only
+sub.terrio.reproject("EPSG:32613", resampling="bilinear").terrio.to_raster("sub.tif", driver="COG")
+```
+
 ## Rasters
 
 ```python

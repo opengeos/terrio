@@ -13,6 +13,10 @@ The [quickstart notebook](notebooks.md) runs these functions on real data, in Go
 Coming from rasterio? `import terrio.rio as rasterio` runs typical rasterio scripts unchanged: see
 [Coming from rasterio](rasterio.md).
 
+Working with xarray? `terrio.xarray.open_rasterio` (or `xr.open_dataset(path, engine="terrio")`)
+opens rasters lazily as DataArrays, as rioxarray does, and the `.terrio` accessor has rioxarray's
+`.rio` methods (`clip`, `reproject`, `to_raster`...): see [xarray](xarray.md).
+
 ## Rasters
 
 ```python

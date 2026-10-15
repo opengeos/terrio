@@ -94,6 +94,16 @@ of GDAL: the long tail of formats stays reachable through an optional GDAL backe
   `windows`, `features`, `warp`, `merge`, `mask`, `vrt.WarpedVRT`, `io.MemoryFile`, `env`,
   `plot`; every function compared with rasterio on synthetic and real files, and rasterio's
   documentation examples run unchanged but for the import.
+- xarray integration, `terrio.xarray`: rioxarray's API without GDAL. Done: an xarray backend
+  (`engine="terrio"`) and `open_rasterio` reading lazily by window (remote COGs fetch only the
+  tiles needed; dask chunks read in parallel, thread-safe and picklable), with rioxarray's
+  coordinates, `spatial_ref` grid mapping, attributes and encoding (masked, mask_and_scale,
+  overviews, band_as_variable); the `.terrio` accessor with rioxarray's `.rio` methods (CRS,
+  transform, bounds, nodata, `isel_window`, `clip_box`, `clip`, `pad_box`, `reproject`,
+  `reproject_match`, `interpolate_na`, `to_raster` to GeoTIFF, COG and GeoZarr),
+  `merge_arrays` and `merge_datasets`, and an opt-in `.rio` alias; compared with rioxarray on
+  synthetic and real files (257 checks, none differing). Still to do: subdatasets, GCPs and
+  RPCs.
 - An npm package built from the WebAssembly target. Done: datasets opened from bytes (GeoTIFF,
   ASCII grid and the text and FlatGeobuf vector formats), bands as typed arrays, GeoJSON out,
   conversion to bytes, CRS transforms, zipped Shapefile and MapInfo and GeoPackage from memory,
