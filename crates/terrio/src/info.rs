@@ -283,9 +283,20 @@ pub fn lazy_raster_info(r: &mut LazyRaster, options: &InfoOptions) -> crate::Res
 
 fn lazy_raster_info_at(r: &mut LazyRaster, options: &InfoOptions, path: Option<&str>) -> crate::Result<RasterInfo> {
     let overviews = r.overviews().into_iter().map(|(w, h)| [w, h]).collect();
-    if options.statistics || options.histogram {
+    if options.histogram {
         let ds = r.read()?;
         let mut info = raster_info_at(&ds, options, path, Some(r));
+        info.overviews = overviews;
+        return Ok(info);
+    }
+    if options.statistics {
+        // Strip by strip: a large raster is never in memory whole.
+        let stats = lazy_band_statistics(r)?;
+        let header = r.header();
+        let mut info = raster_info_at(&header, &InfoOptions { statistics: false, ..*options }, path, None);
+        for (band, s) in info.bands.iter_mut().zip(stats) {
+            band.statistics = s;
+        }
         info.overviews = overviews;
         return Ok(info);
     }
@@ -387,20 +398,71 @@ pub fn info_path(path: &str, options: &InfoOptions) -> crate::Result<Info> {
 
 /// Computes a band's statistics over its valid pixels. `None` when every pixel is nodata.
 pub fn band_statistics(ds: &RasterDataset, band: usize) -> Option<Statistics> {
-    let nodata = ds.nodata();
-    let (mut n, mut min, mut max, mut mean, mut m2) = (0u64, f64::INFINITY, f64::NEG_INFINITY, 0.0, 0.0);
-    for v in ds.raster.band_view(band).as_slice().iter().copied() {
-        if v.is_nan() || nodata.is_some_and(|nd| v == nd) {
-            continue;
-        }
-        n += 1;
-        min = min.min(v);
-        max = max.max(v);
-        let d = v - mean;
-        mean += d / n as f64;
-        m2 += d * (v - mean);
+    let mut acc = StatsAcc::new(ds.nodata());
+    acc.add(ds.raster.band_view(band).as_slice());
+    acc.finish()
+}
+
+/// Statistics accumulated over pixels given in order (Welford's method): adding a band's pixels
+/// whole, or row by row in order, gives the same values.
+struct StatsAcc {
+    nodata: Option<f64>,
+    n: u64,
+    min: f64,
+    max: f64,
+    mean: f64,
+    m2: f64,
+}
+
+impl StatsAcc {
+    fn new(nodata: Option<f64>) -> Self {
+        Self { nodata, n: 0, min: f64::INFINITY, max: f64::NEG_INFINITY, mean: 0.0, m2: 0.0 }
     }
-    (n > 0).then(|| Statistics { min, max, mean, std_dev: (m2 / n as f64).sqrt(), valid_count: n })
+
+    fn add(&mut self, values: &[f64]) {
+        for &v in values {
+            if v.is_nan() || self.nodata.is_some_and(|nd| v == nd) {
+                continue;
+            }
+            self.n += 1;
+            self.min = self.min.min(v);
+            self.max = self.max.max(v);
+            let d = v - self.mean;
+            self.mean += d / self.n as f64;
+            self.m2 += d * (v - self.mean);
+        }
+    }
+
+    fn finish(&self) -> Option<Statistics> {
+        (self.n > 0).then(|| Statistics {
+            min: self.min,
+            max: self.max,
+            mean: self.mean,
+            std_dev: (self.m2 / self.n as f64).sqrt(),
+            valid_count: self.n,
+        })
+    }
+}
+
+/// Each band's statistics, read from a lazily opened raster a strip of rows at a time, in order,
+/// so that only the strip is in memory: the values are those of [`band_statistics`] over the
+/// whole raster.
+fn lazy_band_statistics(r: &mut LazyRaster) -> crate::Result<Vec<Option<Statistics>>> {
+    let (w, h, bands) = (r.width(), r.height(), r.band_count());
+    // Whole blocks, about 64 MB of float64 values per strip.
+    let block = r.block_size().map_or(256, |(_, bh)| bh.max(1));
+    let rows = ((64 << 20) / (8 * w.max(1) * bands.max(1))).max(1).div_ceil(block) * block;
+    let mut acc: Vec<StatsAcc> = (0..bands).map(|_| StatsAcc::new(r.nodata())).collect();
+    let mut y = 0;
+    while y < h {
+        let n = rows.min(h - y);
+        let strip = r.read_window(crate::cog::Window::new(0, y, w, n), &crate::cog::WindowOptions::default())?;
+        for (b, a) in acc.iter_mut().enumerate() {
+            a.add(strip.raster.band_view(b).as_slice());
+        }
+        y += n;
+    }
+    Ok(acc.iter().map(StatsAcc::finish).collect())
 }
 
 /// GDAL's name for a data type.
