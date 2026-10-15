@@ -90,3 +90,19 @@
   margin: 0;
   font-size: inherit;
 }
+#terrio-playground [hidden] {
+  display: none;
+}
+/* The file input stays in the tab order; its label shows the focus. */
+#terrio-playground .tp-visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+#terrio-playground label.tp-link:focus-within {
+  outline: 2px solid var(--md-accent-fg-color);
+  outline-offset: 2px;
+}

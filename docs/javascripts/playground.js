@@ -23,8 +23,14 @@
     ["TopoJSON", "TopoJSON", "topojson"],
   ];
 
+  // Vector layers with more features than this are not drawn: serialising and drawing them all
+  // would hold up the page. They can still be converted.
+  const PREVIEW_MAX_FEATURES = 50000;
+
   let modulePromise = null;
   let current = null; // { ds, name }
+  // Each open gets a number; an open that finishes after a newer one started is discarded.
+  let generation = 0;
 
   /** Loads and initialises the WebAssembly module once. */
   function terrio() {
@@ -49,14 +55,21 @@
     return e && e.message ? e.message : String(e);
   }
 
-  async function openBytes(bytes, name) {
-    const t = await terrio();
+  function release() {
     if (current) {
       current.ds.free();
       current = null;
     }
+  }
+
+  async function openBytes(bytes, name, gen) {
+    const t = await terrio();
+    if (gen !== generation) return;
     status(`Opening ${name}…`);
+    // Open the new dataset before releasing the old one, so a file that fails to open leaves the
+    // previous result usable.
     const ds = t.open(bytes, name);
+    release();
     current = { ds, name };
     $("tp-result").hidden = false;
     $("tp-name").textContent = name;
@@ -171,6 +184,11 @@
   function previewVector(ds) {
     const [c, ctx] = canvas();
     const names = ds.layerNames();
+    const count = ds.info().layers?.[0]?.feature_count ?? 0;
+    if (count > PREVIEW_MAX_FEATURES) {
+      $("tp-preview-note").textContent = `Layer "${names[0]}" has ${count} features: too many to preview here, but it can be converted.`;
+      return;
+    }
     const fc = ds.toGeoJSON(names[0]);
     const features = fc.features || [];
     let [x0, y0, x1, y1] = [Infinity, Infinity, -Infinity, -Infinity];
@@ -309,28 +327,37 @@
   // ----- Wiring -----
 
   async function openFile(file) {
+    const gen = ++generation;
     try {
-      await openBytes(new Uint8Array(await file.arrayBuffer()), file.name);
+      await openBytes(new Uint8Array(await file.arrayBuffer()), file.name, gen);
     } catch (e) {
-      status(`Could not open ${file.name}: ${message(e)}`, true);
+      if (gen === generation) status(`Could not open ${file.name}: ${message(e)}`, true);
     }
   }
 
   async function openUrl(url) {
+    const gen = ++generation;
     const name = url.split("/").pop();
     try {
       status(`Downloading ${name}…`);
       const response = await fetch(url);
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      await openBytes(new Uint8Array(await response.arrayBuffer()), name);
+      const bytes = new Uint8Array(await response.arrayBuffer());
+      await openBytes(bytes, name, gen);
     } catch (e) {
-      status(`Could not open ${name}: ${message(e)}`, true);
+      if (gen === generation) status(`Could not open ${name}: ${message(e)}`, true);
     }
   }
 
   function init() {
     const root = $("terrio-playground");
-    if (!root || root.dataset.ready) return;
+    if (!root) {
+      // Instant navigation left the playground: drop the dataset and any open still in flight.
+      generation++;
+      release();
+      return;
+    }
+    if (root.dataset.ready) return;
     root.dataset.ready = "1";
     terrio().then(
       (t) => status(`terrio ${t.version()} is ready. Open a file to start.`),

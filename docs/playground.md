@@ -8,7 +8,7 @@ downloads about 4 MB.
   <p class="tp-status" id="tp-status">Loading terrio…</p>
 
   <div class="tp-drop" id="tp-drop">
-    <p><strong>Drop a file here</strong> or <label class="tp-link">choose one<input type="file" id="tp-file" hidden></label>.</p>
+    <p><strong>Drop a file here</strong> or <label class="tp-link">choose one<input type="file" id="tp-file" class="tp-visually-hidden"></label>.</p>
     <p class="tp-hint">GeoTIFF/COG, GeoPackage, GeoJSON, FlatGeobuf, GeoParquet, CSV, KML/KMZ, GML, GPX, TopoJSON, OSM, or a zip of a shapefile.</p>
     <p class="tp-samples">Or a sample:
       <button type="button" data-sample="https://raw.githubusercontent.com/opengeos/data/main/world/countries.geojson">countries (GeoJSON, 240 KB)</button>
