@@ -1110,7 +1110,7 @@ fn mosaic(
         py.detach(|| {
             let sources: Vec<MosaicSource> = inputs.iter().map(|(p, ds)| MosaicSource { path: p.clone(), ds }).collect();
             let dir = std::path::Path::new(path).parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(std::path::Path::new("."));
-            terrio::ops::mosaic::build_vrt(&sources, &o, Some(dir))?.write(path)
+            Ok(std::fs::write(path, terrio::ops::mosaic::build_vrt(&sources, &o, Some(dir))?.to_xml())?)
         })
         .py()?;
         return Ok(None);

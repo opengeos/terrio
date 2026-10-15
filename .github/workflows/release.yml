@@ -60,6 +60,74 @@ jobs:
           name: sdist
           path: python/dist
 
+  # Pyodide (WebAssembly in the browser and Node.js): a wheel for the Python and Emscripten
+  # versions of the pinned Pyodide release, tested in Pyodide under Node.js. It is attached to the
+  # GitHub release, not published to PyPI.
+  pyodide:
+    name: wheels (pyodide)
+    runs-on: ubuntu-latest
+    env:
+      PYODIDE_VERSION: "0.29.5"
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+      # Rust's Emscripten target uses WebAssembly exception handling, as Pyodide 0.28 and later
+      # need, by default since Rust 1.93: stable Rust builds the wheel.
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-emscripten
+      - name: Install pyodide-build and the cross-build environment
+        run: |
+          python -m pip install pyodide-build
+          pyodide xbuildenv install "$PYODIDE_VERSION"
+          echo "EMSCRIPTEN_VERSION=$(pyodide config get emscripten_version)" >> "$GITHUB_ENV"
+      - uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: ${{ env.EMSCRIPTEN_VERSION }}
+      - name: Build the wheel
+        working-directory: python
+        # pyodide-build's default flags are for its pinned nightly toolchain (-Z flags); stable
+        # Rust needs only the side-module link flag.
+        env:
+          CARGO_TARGET_WASM32_UNKNOWN_EMSCRIPTEN_RUSTFLAGS: "-C link-arg=-sSIDE_MODULE=2"
+        run: pyodide build -o dist
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - name: Test the wheel in Pyodide under Node.js
+        run: |
+          mkdir -p "$RUNNER_TEMP/pyodide" && cd "$RUNNER_TEMP/pyodide"
+          npm init -y > /dev/null
+          npm install "pyodide@$PYODIDE_VERSION"
+          cp "$GITHUB_WORKSPACE/python/tests/pyodide/smoke.mjs" .
+          node smoke.mjs "$(ls "$GITHUB_WORKSPACE"/python/dist/*.whl)"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: pyodide-wheel
+          path: python/dist/*.whl
+
+  pyodide-release:
+    needs: pyodide
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: pyodide-wheel
+          path: dist
+      - name: Attach the Pyodide wheel to the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          tag="${GITHUB_REF#refs/tags/}"
+          gh release view "$tag" > /dev/null 2>&1 || gh release create "$tag" --verify-tag --generate-notes
+          gh release upload "$tag" dist/*.whl --clobber
+
   publish:
     needs: [wheels, sdist]
     runs-on: ubuntu-latest
@@ -68,10 +136,17 @@ jobs:
     permissions:
       id-token: write
     steps:
+      # The native wheels and the source distribution (the Pyodide wheel goes to the GitHub
+      # release only).
       - uses: actions/download-artifact@v8
         with:
+          pattern: wheels-*
           path: dist
           merge-multiple: true
+      - uses: actions/download-artifact@v8
+        with:
+          name: sdist
+          path: dist
       - uses: pypa/gh-action-pypi-publish@release/v1
         with:
           packages-dir: dist

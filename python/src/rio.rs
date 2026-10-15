@@ -181,6 +181,8 @@ impl Reader {
 fn tags_of(path: &str) -> terrio::Result<Option<Ifds>> {
     let loc = Location::parse(path);
     let tags = match &loc {
+        // WebAssembly (Pyodide) builds have no HTTP client.
+        #[cfg(not(target_arch = "wasm32"))]
         Location::Url(_) | Location::S3 { .. } => {
             let remote = loc.remote().ok_or_else(|| terrio::Error::InvalidArgument(format!("'{path}' is not remote")))?;
             let mut r = terrio::http::RangeReader::open(&remote)?;
@@ -188,6 +190,8 @@ fn tags_of(path: &str) -> terrio::Result<Option<Ifds>> {
         }
         Location::Local(p) if p.is_file() => read_ifds(&mut std::io::BufReader::new(std::fs::File::open(p)?))?,
         Location::Local(_) => None,
+        #[cfg(target_arch = "wasm32")]
+        Location::Url(_) | Location::S3 { .. } => None,
         _ => {
             let local = terrio::vfs::resolve(path)?;
             read_ifds(&mut std::io::BufReader::new(std::fs::File::open(local.path())?))?

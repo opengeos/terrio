@@ -169,7 +169,7 @@ fn dem(
                 let text = std::fs::read_to_string(file)
                     .map_err(|e| terrio::Error::InvalidArgument(format!("cannot read the color file '{file}': {e}")))?;
                 let map = ColorMap::parse(&text, &ds, band, pam_statistics(src_path, band))?;
-                terrio::ops::dem::color_relief_vrt(&ds, src_path, &map, &o, Some(out_path))?.write(out_path)?;
+                std::fs::write(out_path, terrio::ops::dem::color_relief_vrt(&ds, src_path, &map, &o, Some(out_path))?.to_xml())?;
                 terrio::open_raster(out_path)
             })
             .py()?;
