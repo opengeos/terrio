@@ -2400,6 +2400,7 @@ dependencies = [
  "laz",
  "lerc-core",
  "lerc-reader",
+ "libc",
  "lz4_flex 0.14.0",
  "lzma-rust2",
  "memmap2",

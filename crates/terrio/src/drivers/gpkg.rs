@@ -109,7 +109,7 @@ fn select_bands(bands: usize, values: Vec<f64>, n: usize) -> Vec<f64> {
 
 /// Reads the first raster table of a GeoPackage.
 pub(crate) fn read(path: &Path) -> Result<RasterDataset> {
-    read_db(&Db::open(path)?, None, path)
+    read_db(&super::sqlite_edit::open_consistent(std::path::Path::new(path))?, None, path)
 }
 
 /// Reads a raster table of a GeoPackage held in memory (the first when `table` is `None`).
@@ -120,7 +120,7 @@ pub(crate) fn read_bytes(bytes: Vec<u8>, table: Option<&str>) -> Result<RasterDa
 /// Opens a GeoPackage: its vector layers when it has some, otherwise its first raster.
 pub(crate) fn open(path: &str, options: &crate::VectorOpenOptions) -> Result<crate::Dataset> {
     crate::crs::prefetch();
-    open_bytes(crate::par::read_file(Path::new(path))?, path, options)
+    open_bytes(super::sqlite_edit::read_consistent(Path::new(path))?, path, options)
 }
 
 /// Opens a GeoPackage held in memory, `name` being its file name.
@@ -141,7 +141,7 @@ pub(crate) fn open_bytes(bytes: Vec<u8>, name: &str, options: &crate::VectorOpen
 /// The raster tables of a GeoPackage, as GDAL's subdatasets: `(name, description)`, the name
 /// being `GPKG:<path>:<table>`.
 pub(crate) fn subdatasets(path: &str) -> Vec<(String, String)> {
-    let Ok(db) = std::fs::read(path).map_err(Error::from).and_then(Db::new) else { return Vec::new() };
+    let Ok(db) = super::sqlite_edit::read_consistent(Path::new(path)).and_then(Db::new) else { return Vec::new() };
     let Ok((_, rasters)) = crate::drivers::vector::gpkg_read::contents(&db) else { return Vec::new() };
     rasters
         .into_iter()

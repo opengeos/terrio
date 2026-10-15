@@ -7,6 +7,7 @@ pub mod geojson;
 pub mod geopackage;
 pub mod geoparquet;
 pub mod gml;
+pub(crate) mod gpkg_inplace;
 pub(crate) mod gpkg_read;
 pub(crate) mod gpkg_update;
 pub mod gpx;

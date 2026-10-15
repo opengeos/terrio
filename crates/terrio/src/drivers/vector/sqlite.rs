@@ -1,7 +1,6 @@
 //! A writer of SQLite database files, enough for GeoPackages: tables (rowid b-trees, any size,
 //! with overflow pages) and small indexes (the automatic indexes of UNIQUE and PRIMARY KEY
-//! constraints), written in one go; or a large table first, streamed to the file row by row
-//! ([`StreamTable`]), and the rest of the database after it ([`write_database_parts`]).
+//! constraints), written in one go.
 //!
 //! The format is described at <https://www.sqlite.org/fileformat2.html>.
 
@@ -39,7 +38,7 @@ pub struct Table {
     pub autoindexes: Vec<Vec<usize>>,
 }
 
-fn varint(out: &mut Vec<u8>, v: u64) {
+pub(crate) fn varint(out: &mut Vec<u8>, v: u64) {
     if v <= 0x7f {
         out.push(v as u8);
         return;
@@ -66,7 +65,7 @@ fn varint(out: &mut Vec<u8>, v: u64) {
     }
 }
 
-fn varint_len(v: u64) -> usize {
+pub(crate) fn varint_len(v: u64) -> usize {
     let mut b = Vec::new();
     varint(&mut b, v);
     b.len()
@@ -119,6 +118,16 @@ pub fn record(values: &[Value]) -> Vec<u8> {
     out
 }
 
+/// Page storage a b-tree is built in: pages allocated and written by number (1-based).
+pub(crate) trait PageStore {
+    /// The page size (and usable size: no bytes are reserved).
+    fn page_size(&self) -> usize;
+    /// Allocates a zeroed page and returns its number.
+    fn alloc(&mut self) -> Result<u32>;
+    /// The page to write.
+    fn page_mut(&mut self, n: u32) -> Result<&mut [u8]>;
+}
+
 /// The pages being built: page 1, and pages `base..` (pages 2 to `base - 1` belong to tables
 /// already written, see [`StreamTable`]).
 struct Pager {
@@ -131,67 +140,111 @@ impl Pager {
     fn new(base: u32) -> Self {
         Self { page1: vec![0; PAGE_SIZE], pages: Vec::new(), base }
     }
+}
 
-    /// Allocates a page and returns its number (1-based).
-    fn alloc(&mut self) -> u32 {
+impl PageStore for Pager {
+    fn page_size(&self) -> usize {
+        PAGE_SIZE
+    }
+
+    /// Allocates a page after page 1 (never the lock-byte page).
+    fn alloc(&mut self) -> Result<u32> {
         self.pages.push(vec![0; PAGE_SIZE]);
         let n = self.base + self.pages.len() as u32 - 1;
         if n != LOCK_PAGE {
-            return n;
+            return Ok(n);
         }
         self.pages.push(vec![0; PAGE_SIZE]);
-        n + 1
+        Ok(n + 1)
     }
 
-    fn page(&mut self, n: u32) -> &mut Vec<u8> {
-        if n == 1 { &mut self.page1 } else { &mut self.pages[(n - self.base) as usize] }
+    fn page_mut(&mut self, n: u32) -> Result<&mut [u8]> {
+        if n == 1 {
+            return Ok(&mut self.page1);
+        }
+        let i = n.checked_sub(self.base).ok_or_else(|| crate::Error::InvalidData(format!("page {n} was not built here")))? as usize;
+        self.pages.get_mut(i).map(Vec::as_mut_slice).ok_or_else(|| crate::Error::InvalidData(format!("page {n} was not built here")))
     }
+}
 
-    /// Stores a payload: the local part, and the rest in a chain of overflow pages.
-    fn payload(&mut self, payload: &[u8], max_local: usize, min_local: usize) -> (Vec<u8>, Option<u32>) {
-        if payload.len() <= max_local {
-            return (payload.to_vec(), None);
-        }
-        let usable = PAGE_SIZE;
-        let k = min_local + (payload.len() - min_local) % (usable - 4);
-        let local = if k <= max_local { k } else { min_local };
-        let mut rest = &payload[local..];
-        let first = self.alloc();
-        let mut page = first;
-        loop {
-            let n = rest.len().min(usable - 4);
-            let next = if rest.len() > n { self.alloc() } else { 0 };
-            let p = self.page(page);
-            p[..4].copy_from_slice(&next.to_be_bytes());
-            p[4..4 + n].copy_from_slice(&rest[..n]);
-            rest = &rest[n..];
-            if next == 0 {
-                break;
-            }
-            page = next;
-        }
-        (payload[..local].to_vec(), Some(first))
-    }
+/// The most and least bytes of a payload kept in a table leaf cell, before overflow pages.
+pub(crate) fn table_local_limits(usable: usize) -> (usize, usize) {
+    (usable - 35, (usable - 12) * 32 / 255 - 23)
+}
 
-    /// Writes a b-tree page: header, cell pointers and cells (packed at the end of the page).
-    fn write_node(&mut self, n: u32, flag: u8, cells: &[Vec<u8>], right: Option<u32>) {
-        let offset = if n == 1 { 100 } else { 0 };
-        let p = self.page(n);
-        p[offset] = flag;
-        p[offset + 3..offset + 5].copy_from_slice(&(cells.len() as u16).to_be_bytes());
-        let header = if right.is_some() { 12 } else { 8 };
-        if let Some(r) = right {
-            p[offset + 8..offset + 12].copy_from_slice(&r.to_be_bytes());
-        }
-        let mut end = PAGE_SIZE;
-        for (i, c) in cells.iter().enumerate() {
-            end -= c.len();
-            p[end..end + c.len()].copy_from_slice(c);
-            let ptr = offset + header + 2 * i;
-            p[ptr..ptr + 2].copy_from_slice(&(end as u16).to_be_bytes());
-        }
-        p[offset + 5..offset + 7].copy_from_slice(&(end as u16).to_be_bytes());
+/// The most and least bytes of a payload kept in an index cell, before overflow pages.
+pub(crate) fn index_local_limits(usable: usize) -> (usize, usize) {
+    ((usable - 12) * 64 / 255 - 23, (usable - 12) * 32 / 255 - 23)
+}
+
+/// Stores a payload: the local part, and the rest in a chain of overflow pages.
+pub(crate) fn store_payload<S: PageStore + ?Sized>(
+    store: &mut S,
+    payload: &[u8],
+    max_local: usize,
+    min_local: usize,
+) -> Result<(Vec<u8>, Option<u32>)> {
+    if payload.len() <= max_local {
+        return Ok((payload.to_vec(), None));
     }
+    let usable = store.page_size();
+    let k = min_local + (payload.len() - min_local) % (usable - 4);
+    let local = if k <= max_local { k } else { min_local };
+    let mut rest = &payload[local..];
+    let first = store.alloc()?;
+    let mut page = first;
+    loop {
+        let n = rest.len().min(usable - 4);
+        let next = if rest.len() > n { store.alloc()? } else { 0 };
+        let p = store.page_mut(page)?;
+        p[..4].copy_from_slice(&next.to_be_bytes());
+        p[4..4 + n].copy_from_slice(&rest[..n]);
+        rest = &rest[n..];
+        if next == 0 {
+            break;
+        }
+        page = next;
+    }
+    Ok((payload[..local].to_vec(), Some(first)))
+}
+
+/// Writes a b-tree page: header, cell pointers and cells (packed at the end of the page). On
+/// page 1 the first 100 bytes (the database header) are kept.
+pub(crate) fn write_node<S: PageStore + ?Sized>(store: &mut S, n: u32, flag: u8, cells: &[Vec<u8>], right: Option<u32>) -> Result<()> {
+    let size = store.page_size();
+    let offset = if n == 1 { 100 } else { 0 };
+    let p = store.page_mut(n)?;
+    p[offset..].fill(0);
+    p[offset] = flag;
+    p[offset + 3..offset + 5].copy_from_slice(&(cells.len() as u16).to_be_bytes());
+    let header = if right.is_some() { 12 } else { 8 };
+    if let Some(r) = right {
+        p[offset + 8..offset + 12].copy_from_slice(&r.to_be_bytes());
+    }
+    let mut end = size;
+    for (i, c) in cells.iter().enumerate() {
+        end -= c.len();
+        p[end..end + c.len()].copy_from_slice(c);
+        let ptr = offset + header + 2 * i;
+        p[ptr..ptr + 2].copy_from_slice(&(end as u16).to_be_bytes());
+    }
+    // A content area starting at 65536 is stored as 0.
+    p[offset + 5..offset + 7].copy_from_slice(&((end % 65536) as u16).to_be_bytes());
+    Ok(())
+}
+
+/// A table b-tree cell: payload size, rowid, the local payload and the first overflow page.
+pub(crate) fn table_cell<S: PageStore + ?Sized>(store: &mut S, rowid: i64, rec: &[u8]) -> Result<Vec<u8>> {
+    let (max_local, min_local) = table_local_limits(store.page_size());
+    let (local, overflow) = store_payload(store, rec, max_local, min_local)?;
+    let mut c = Vec::with_capacity(local.len() + 18);
+    varint(&mut c, rec.len() as u64);
+    varint(&mut c, rowid as u64);
+    c.extend_from_slice(&local);
+    if let Some(o) = overflow {
+        c.extend_from_slice(&o.to_be_bytes());
+    }
+    Ok(c)
 }
 
 /// Splits cells into nodes that fit a page.
@@ -211,40 +264,43 @@ fn pack(cells: Vec<Vec<u8>>, header: usize, room: usize) -> Vec<Vec<Vec<u8>>> {
     nodes
 }
 
-/// Builds a table b-tree and returns its root page. With `root`, the root is that page.
-fn build_table(pager: &mut Pager, rows: &[(i64, Vec<u8>)], root: Option<u32>) -> u32 {
-    let max_local = PAGE_SIZE - 35;
-    let min_local = (PAGE_SIZE - 12) * 32 / 255 - 23;
+/// Moves a b-tree root built on page `from` to page `to` (neither being page 1, so that the
+/// page layouts are the same), freeing nothing: `from` is returned to the caller to free.
+fn move_root<S: PageStore + ?Sized>(store: &mut S, from: u32, to: u32) -> Result<()> {
+    let bytes = store.page_mut(from)?.to_vec();
+    store.page_mut(to)?.copy_from_slice(&bytes);
+    Ok(())
+}
+
+/// Builds a table b-tree of encoded records and returns its root page. With `root`, the root is
+/// that page.
+pub(crate) fn build_table<S: PageStore + ?Sized>(store: &mut S, rows: &[(i64, Vec<u8>)], root: Option<u32>) -> Result<u32> {
+    let size = store.page_size();
     let mut cells = Vec::with_capacity(rows.len());
     let mut keys = Vec::with_capacity(rows.len());
     for (rowid, rec) in rows {
-        let (local, overflow) = pager.payload(rec, max_local, min_local);
-        let mut c = Vec::with_capacity(local.len() + 18);
-        varint(&mut c, rec.len() as u64);
-        varint(&mut c, *rowid as u64);
-        c.extend_from_slice(&local);
-        if let Some(o) = overflow {
-            c.extend_from_slice(&o.to_be_bytes());
-        }
-        cells.push(c);
+        cells.push(table_cell(store, *rowid, rec)?);
         keys.push(*rowid);
     }
-    let root_room = if root == Some(1) { PAGE_SIZE - 100 } else { PAGE_SIZE };
+    let root_room = if root == Some(1) { size - 100 } else { size };
     // Leaves sized for the root's room, so that a single leaf can be the root.
     // (A root with no cell but its right-most pointer is valid, as SQLite's balance_deeper makes.)
     let leaves = pack(cells, 8, root_room);
     if leaves.len() == 1 && leaves[0].iter().map(|c| c.len() + 2).sum::<usize>() + 8 <= root_room {
-        let n = root.unwrap_or_else(|| pager.alloc());
-        pager.write_node(n, 0x0D, &leaves[0], None);
-        return n;
+        let n = match root {
+            Some(r) => r,
+            None => store.alloc()?,
+        };
+        write_node(store, n, 0x0D, &leaves[0], None)?;
+        return Ok(n);
     }
     // Leaves, then interior levels up to the root. Each child is known by its largest key.
     let mut level: Vec<(u32, i64)> = Vec::new();
     let mut k = 0;
     for leaf in leaves {
-        let n = pager.alloc();
+        let n = store.alloc()?;
         k += leaf.len();
-        pager.write_node(n, 0x0D, &leaf, None);
+        write_node(store, n, 0x0D, &leaf, None)?;
         level.push((n, keys[k - 1]));
     }
     loop {
@@ -253,7 +309,7 @@ fn build_table(pager: &mut Pager, rows: &[(i64, Vec<u8>)], root: Option<u32>) ->
         let mut used = 12;
         for &(child, key) in &level {
             let len = 4 + varint_len(key as u64) + 2;
-            if groups.last().is_some_and(|g| !g.is_empty()) && used + len > PAGE_SIZE - 100 {
+            if groups.last().is_some_and(|g| !g.is_empty()) && used + len > size - 100 {
                 groups.push(Vec::new());
                 used = 12;
             }
@@ -270,7 +326,7 @@ fn build_table(pager: &mut Pager, rows: &[(i64, Vec<u8>)], root: Option<u32>) ->
         {
             groups[n - 1].insert(0, moved);
         }
-        let node = |pager: &mut Pager, g: &[(u32, i64)], page: Option<u32>| -> (u32, i64) {
+        let node = |store: &mut S, g: &[(u32, i64)], page: Option<u32>| -> Result<(u32, i64)> {
             let cells: Vec<Vec<u8>> = g[..g.len() - 1]
                 .iter()
                 .map(|&(child, key)| {
@@ -280,19 +336,22 @@ fn build_table(pager: &mut Pager, rows: &[(i64, Vec<u8>)], root: Option<u32>) ->
                 })
                 .collect();
             let (right, key) = g[g.len() - 1];
-            let n = page.unwrap_or_else(|| pager.alloc());
-            pager.write_node(n, 0x05, &cells, Some(right));
-            (n, key)
+            let n = match page {
+                Some(p) => p,
+                None => store.alloc()?,
+            };
+            write_node(store, n, 0x05, &cells, Some(right))?;
+            Ok((n, key))
         };
         if groups.len() == 1 {
-            return node(pager, &groups[0], root).0;
+            return Ok(node(store, &groups[0], root)?.0);
         }
-        level = groups.iter().map(|g| node(pager, g, None)).collect();
+        level = groups.iter().map(|g| node(store, g, None)).collect::<Result<_>>()?;
     }
 }
 
 /// Compares index keys as SQLite does with the BINARY collation: NULL < numbers < text < blobs.
-fn compare(a: &[Value], b: &[Value]) -> std::cmp::Ordering {
+pub(crate) fn compare(a: &[Value], b: &[Value]) -> std::cmp::Ordering {
     use std::cmp::Ordering;
     let rank = |v: &Value| match v {
         Value::Null => 0,
@@ -306,6 +365,8 @@ fn compare(a: &[Value], b: &[Value]) -> std::cmp::Ordering {
             (Value::Text(p), Value::Text(q)) => p.as_bytes().cmp(q.as_bytes()),
             (Value::Blob(p), Value::Blob(q)) => p.cmp(q),
             (Value::Real(p), Value::Real(q)) => p.total_cmp(q),
+            (Value::Int(p), Value::Real(q)) => (*p as f64).total_cmp(q),
+            (Value::Real(p), Value::Int(q)) => p.total_cmp(&(*q as f64)),
             _ => rank(x).cmp(&rank(y)),
         };
         if o != Ordering::Equal {
@@ -315,11 +376,10 @@ fn compare(a: &[Value], b: &[Value]) -> std::cmp::Ordering {
     a.len().cmp(&b.len())
 }
 
-/// Builds an index b-tree of any size and returns its root page. Index b-trees hold each key
-/// once: in a leaf, or as the divider between two children in an interior node.
-fn build_index(pager: &mut Pager, table: &Table, columns: &[usize]) -> u32 {
-    let mut keys: Vec<Vec<Value>> = table
-        .rows
+/// The keys of an index over `columns` of a table's rows: the column values then the rowid,
+/// sorted.
+pub(crate) fn index_keys(rows: &[(i64, Vec<Value>)], columns: &[usize]) -> Vec<Vec<Value>> {
+    let mut keys: Vec<Vec<Value>> = rows
         .iter()
         .map(|(rowid, values)| {
             let mut k: Vec<Value> = columns.iter().map(|&c| values.get(c).cloned().unwrap_or(Value::Null)).collect();
@@ -328,13 +388,25 @@ fn build_index(pager: &mut Pager, table: &Table, columns: &[usize]) -> u32 {
         })
         .collect();
     keys.sort_by(|a, b| compare(a, b));
-    let max_local = (PAGE_SIZE - 12) * 64 / 255 - 23;
-    let min_local = (PAGE_SIZE - 12) * 32 / 255 - 23;
+    keys
+}
+
+/// Builds an index b-tree of any size over sorted keys and returns its root page. Index b-trees
+/// hold each key once: in a leaf, or as the divider between two children in an interior node.
+/// With `root`, the root is that page (not page 1), and the page the root was built in is
+/// pushed to `spare`.
+pub(crate) fn build_index<S: PageStore + ?Sized>(
+    store: &mut S,
+    keys: &[Vec<Value>],
+    root: Option<u32>,
+    spare: &mut Vec<u32>,
+) -> Result<u32> {
+    let (max_local, min_local) = index_local_limits(store.page_size());
     // Each key's payload as stored in a cell (without the child pointer of interior cells).
     let mut payloads: Vec<Vec<u8>> = Vec::with_capacity(keys.len());
-    for k in &keys {
+    for k in keys {
         let rec = record(k);
-        let (local, overflow) = pager.payload(&rec, max_local, min_local);
+        let (local, overflow) = store_payload(store, &rec, max_local, min_local)?;
         let mut c = Vec::with_capacity(local.len() + 13);
         varint(&mut c, rec.len() as u64);
         c.extend_from_slice(&local);
@@ -344,16 +416,16 @@ fn build_index(pager: &mut Pager, table: &Table, columns: &[usize]) -> u32 {
         payloads.push(c);
     }
     // The leaves, with the keys between them as dividers.
-    let (mut children, mut dividers) = split_index_level(payloads, 8, 0, pager, |pager, cells, _| {
-        let n = pager.alloc();
-        pager.write_node(n, 0x0A, &cells, None);
-        n
-    });
+    let (mut children, mut dividers) = split_index_level(payloads, 8, 0, store, |store, cells, _| {
+        let n = store.alloc()?;
+        write_node(store, n, 0x0A, &cells, None)?;
+        Ok(n)
+    })?;
     // Interior levels until one node is left.
     while children.len() > 1 {
         let kids = children.clone();
         let items: Vec<Vec<u8>> = dividers;
-        let (c, d) = split_index_level(items, 12, 4, pager, |pager, cells, range: (usize, usize)| {
+        let (c, d) = split_index_level(items, 12, 4, store, |store, cells, range: (usize, usize)| {
             // Dividers `range.0..range.1`, each with the child on its left; the child after the
             // last is the right-most pointer.
             let with_children: Vec<Vec<u8>> = cells
@@ -365,24 +437,33 @@ fn build_index(pager: &mut Pager, table: &Table, columns: &[usize]) -> u32 {
                     v
                 })
                 .collect();
-            let n = pager.alloc();
-            pager.write_node(n, 0x02, &with_children, Some(kids[range.1]));
-            n
-        });
+            let n = store.alloc()?;
+            write_node(store, n, 0x02, &with_children, Some(kids[range.1]))?;
+            Ok(n)
+        })?;
         children = c;
         dividers = d;
     }
-    children[0]
+    match root {
+        Some(r) => {
+            move_root(store, children[0], r)?;
+            spare.push(children[0]);
+            Ok(r)
+        }
+        None => Ok(children[0]),
+    }
 }
 
 /// Groups a level's items into nodes that fit a page, keeping the item after each full node as
 /// the divider passed up to the parent level. `extra` is the size of each cell besides its item
 /// (the child pointer of interior cells); `make` writes a node of items `range.0..range.1` and
 /// returns its page. Returns the nodes and the dividers between them.
-fn split_index_level<F>(items: Vec<Vec<u8>>, header: usize, extra: usize, pager: &mut Pager, mut make: F) -> (Vec<u32>, Vec<Vec<u8>>)
+fn split_index_level<S, F>(items: Vec<Vec<u8>>, header: usize, extra: usize, store: &mut S, mut make: F) -> Result<(Vec<u32>, Vec<Vec<u8>>)>
 where
-    F: FnMut(&mut Pager, Vec<Vec<u8>>, (usize, usize)) -> u32,
+    S: PageStore + ?Sized,
+    F: FnMut(&mut S, Vec<Vec<u8>>, (usize, usize)) -> Result<u32>,
 {
+    let size = store.page_size();
     let n = items.len();
     let mut nodes = Vec::new();
     let mut dividers = Vec::new();
@@ -391,7 +472,7 @@ where
         let start = i;
         let mut used = header;
         let mut cells = Vec::new();
-        while i < n && (cells.is_empty() || used + items[i].len() + extra + 2 <= PAGE_SIZE) {
+        while i < n && (cells.is_empty() || used + items[i].len() + extra + 2 <= size) {
             used += items[i].len() + extra + 2;
             cells.push(items[i].clone());
             i += 1;
@@ -402,14 +483,14 @@ where
             cells.pop();
             i -= 1;
         }
-        nodes.push(make(pager, cells, (start, i)));
+        nodes.push(make(store, cells, (start, i))?);
         if i >= n {
             break;
         }
         dividers.push(items[i].clone());
         i += 1;
     }
-    (nodes, dividers)
+    Ok((nodes, dividers))
 }
 
 /// A schema entry without storage of its own: a trigger, or a virtual table.
@@ -663,6 +744,7 @@ pub fn write_database_parts(
     base: u32,
 ) -> Result<(Vec<u8>, Vec<u8>)> {
     let mut pager = Pager::new(base);
+    let mut spare = Vec::new();
     let mut schema_rows = Vec::new();
     let built_row = |b: &BuiltTable| {
         vec![
@@ -678,7 +760,7 @@ pub fn write_database_parts(
             schema_rows.push(built_row(b));
         }
         let rows: Vec<(i64, Vec<u8>)> = crate::par::map_range(t.rows.len(), |i| (t.rows[i].0, record(&t.rows[i].1)));
-        let root = build_table(&mut pager, &rows, None);
+        let root = build_table(&mut pager, &rows, None)?;
         schema_rows.push(vec![
             Value::Text("table".into()),
             Value::Text(t.name.clone()),
@@ -687,7 +769,7 @@ pub fn write_database_parts(
             Value::Text(t.sql.clone()),
         ]);
         for (i, cols) in t.autoindexes.iter().enumerate() {
-            let root = build_index(&mut pager, t, cols);
+            let root = build_index(&mut pager, &index_keys(&t.rows, cols), None, &mut spare)?;
             schema_rows.push(vec![
                 Value::Text("index".into()),
                 Value::Text(format!("sqlite_autoindex_{}_{}", t.name, i + 1)),
@@ -697,7 +779,7 @@ pub fn write_database_parts(
             ]);
         }
         for ix in indexes.iter().filter(|ix| ix.table.eq_ignore_ascii_case(&t.name)) {
-            let root = build_index(&mut pager, t, &ix.columns);
+            let root = build_index(&mut pager, &index_keys(&t.rows, &ix.columns), None, &mut spare)?;
             schema_rows.push(vec![
                 Value::Text("index".into()),
                 Value::Text(ix.name.clone()),
@@ -720,10 +802,10 @@ pub fn write_database_parts(
         ]);
     }
     let schema: Vec<(i64, Vec<u8>)> = schema_rows.iter().enumerate().map(|(i, r)| (i as i64 + 1, record(r))).collect();
-    build_table(&mut pager, &schema, Some(1));
+    build_table(&mut pager, &schema, Some(1))?;
 
     let count = base - 1 + pager.pages.len() as u32;
-    let h = pager.page(1);
+    let h = pager.page_mut(1)?;
     h[..16].copy_from_slice(b"SQLite format 3\0");
     h[16..18].copy_from_slice(&(PAGE_SIZE as u16).to_be_bytes());
     h[18] = 1; // write version: legacy
@@ -772,7 +854,7 @@ mod tests {
     #[test]
     fn skips_the_lock_byte_page() {
         let mut pager = Pager::new(LOCK_PAGE - 1);
-        assert_eq!([pager.alloc(), pager.alloc(), pager.alloc()], [LOCK_PAGE - 1, LOCK_PAGE + 1, LOCK_PAGE + 2]);
+        assert_eq!([pager.alloc().unwrap(), pager.alloc().unwrap(), pager.alloc().unwrap()], [LOCK_PAGE - 1, LOCK_PAGE + 1, LOCK_PAGE + 2]);
         assert_eq!(pager.pages.len(), 4);
         let mut table = StreamTable::new(std::io::Cursor::new(Vec::new()));
         table.next = LOCK_PAGE - 1;

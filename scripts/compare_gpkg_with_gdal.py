@@ -7,7 +7,13 @@ files, and compares the results:
 * every layer, feature by feature: feature ids, attribute values and geometries (WKB);
 * ``gpkg_contents`` extents, ``gpkg_ogr_contents`` feature counts and ``sqlite_sequence``;
 * R-tree indexes: SQLite's ``rtreecheck()``, and ``ogr2ogr -spat`` read through them;
-* ``PRAGMA integrity_check``, GDAL's ``validate_gpkg.py``, and raster tables (checksums).
+* ``PRAGMA integrity_check``, GDAL's ``validate_gpkg.py``, and raster tables (checksums);
+* that the file was changed in place (the same inode), not rewritten.
+
+Appends to a large file: ``terrio convert --append`` against ``ogr2ogr -append`` on the
+benchmark file (timings, feature counts, the checks above), and crash safety: terrio killed
+while it commits an append (as soon as its rollback journal appears, and a little later), after
+which SQLite must find the file intact, holding either all the features or none of the new ones.
 
 Spatial filters: ``terrio convert --spat`` against ``ogr2ogr -spat`` on GeoPackages (feature
 ids and values), and the time both take on a large file with and without the R-tree.
@@ -255,11 +261,15 @@ def update_cases(data: Path, terrio: str, work: Path) -> list[tuple[str, list[st
             p.unlink(missing_ok=True)
             if base is not None:
                 shutil.copy(base, p)
+        inode = a.stat().st_ino if base is not None else None
         for s in terrio_steps:
             run([terrio, "convert", *[a if x == "OUT" else x for x in s]])
         for s in gdal_steps:
             run(["ogr2ogr", *[b if x == "OUT" else x for x in s]])
-        cases.append((name, compare(a, b)))
+        diffs = compare(a, b)
+        if inode is not None and a.stat().st_ino != inode:
+            diffs.append("the file was rewritten, not changed in place")
+        cases.append((name, diffs))
 
     # A GDAL-written file: features appended to its layer.
     base = work / "base_gdal.gpkg"
@@ -375,19 +385,15 @@ def spatial_cases(data: Path, terrio: str, work: Path) -> list[tuple[str, list[s
     return cases
 
 
-def benchmark(terrio: str, work: Path, n: int) -> list[str]:
-    """Times a spatial filter on a large GeoPackage.
-
-    terrio with the R-tree, terrio scanning the whole file (the same file without its R-tree), and
-    ``ogr2ogr``.
+def big_file(work: Path, n: int) -> Path:
+    """A GeoPackage of random points written by ``ogr2ogr``, created once.
 
     Args:
-        terrio: The terrio executable.
-        work: A scratch directory.
+        work: The scratch directory holding it.
         n: The number of points.
 
     Returns:
-        Lines describing the timings.
+        The file.
     """
     import random
 
@@ -414,6 +420,144 @@ def benchmark(terrio: str, work: Path, n: int) -> list[str]:
                 "points",
             ]
         )
+    return big
+
+
+def points_csv(path: Path, n: int, seed: int) -> Path:
+    """A CSV file of random points, to append.
+
+    Args:
+        path: The file to write.
+        n: The number of points.
+        seed: The random seed.
+
+    Returns:
+        The file.
+    """
+    import random
+
+    rnd = random.Random(seed)
+    with open(path, "w") as f:
+        f.write("id,name,x,y\n")
+        for i in range(n):
+            f.write(f"{i},q{i},{rnd.uniform(-180, 180):.6f},{rnd.uniform(-90, 90):.6f}\n")
+    return path
+
+
+def count_and_check(path: Path) -> tuple[int, str, str]:
+    """What SQLite finds in the benchmark file: features, integrity and R-tree checks.
+
+    Opening the file plays back a hot rollback journal, as any SQLite connection does.
+
+    Args:
+        path: The file.
+
+    Returns:
+        The number of points, ``PRAGMA integrity_check`` and ``rtreecheck()`` results.
+    """
+    c = sqlite3.connect(path)
+    n = c.execute("SELECT count(*) FROM points").fetchone()[0]
+    integrity = c.execute("PRAGMA integrity_check").fetchone()[0]
+    rtree = c.execute("SELECT rtreecheck('rtree_points_geom')").fetchone()[0]
+    c.close()
+    return n, integrity, rtree
+
+
+def append_benchmark(terrio: str, work: Path, n: int) -> tuple[list[str], int]:
+    """Times appends to the large file, compares them with GDAL's, and kills terrio mid-commit.
+
+    Args:
+        terrio: The terrio executable.
+        work: A scratch directory.
+        n: The number of points of the large file.
+
+    Returns:
+        Lines describing the results, and the number of failed checks.
+    """
+    import os
+    import signal
+
+    big = big_file(work, n)
+    lines = []
+    failed = 0
+    oo = ["-oo", "X_POSSIBLE_NAMES=x", "-oo", "Y_POSSIBLE_NAMES=y", "-a_srs", "EPSG:4326"]
+    too = ["--oo", "X_POSSIBLE_NAMES=x", "--oo", "Y_POSSIBLE_NAMES=y", "--a-srs", "EPSG:4326"]
+    for m in (1_000, 100_000, n):
+        src = points_csv(work / f"append_{m}.csv", m, m)
+        a, b = work / "append_terrio.gpkg", work / "append_gdal.gpkg"
+        times = {}
+        for label, out, cmd in [
+            (
+                "terrio",
+                a,
+                [terrio, "convert", src, a, "--append", "--nln", "points", *too],
+            ),
+            ("ogr2ogr", b, ["ogr2ogr", "-append", b, src, "-nln", "points", *oo]),
+        ]:
+            shutil.copy(big, out)
+            t = time.perf_counter()
+            run(cmd)
+            times[label] = time.perf_counter() - t
+        ca, cb = count_and_check(a), count_and_check(b)
+        problems = validate(a)
+        ok = ca[0] == cb[0] == n + m and ca[1:] == ("ok", "ok") and not problems
+        failed += not ok
+        lines.append(
+            f"append {m:>9} points to {n}: terrio {times['terrio']:7.3f} s, "
+            f"ogr2ogr {times['ogr2ogr']:7.3f} s; {ca[0]} vs {cb[0]} features, "
+            f"integrity {ca[1]}, rtreecheck {ca[2]}, validate_gpkg "
+            f"{'ok' if not problems else problems[:2]}{'' if ok else '  BAD'}"
+        )
+    # Crash safety: terrio killed during the commit.
+    src = points_csv(work / "append_crash.csv", 200_000, 7)
+    victim = work / "crash.gpkg"
+    journal = Path(str(victim) + "-journal")
+    for delay in (0.0, 0.002, 0.01, 0.05):
+        shutil.copy(big, victim)
+        journal.unlink(missing_ok=True)
+        proc = subprocess.Popen(
+            [terrio, "convert", src, victim, "--append", "--nln", "points", *too],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        seen = False
+        while proc.poll() is None:
+            if journal.exists():
+                seen = True
+                time.sleep(delay)
+                os.kill(proc.pid, signal.SIGKILL)
+                break
+        proc.wait()
+        hot = journal.exists() and journal.stat().st_size > 0
+        got = count_and_check(victim)
+        # SQLite plays a hot journal back and deletes it; an empty one (terrio killed as it
+        # created it) is not hot and may stay.
+        left = journal.exists() and journal.stat().st_size > 0
+        ok = got[0] in (n, n + 200_000) and got[1:] == ("ok", "ok") and not left
+        failed += not ok
+        lines.append(
+            f"killed {delay * 1000:4.0f} ms into the commit ({'hot journal' if hot else 'empty journal'}"
+            f"{'' if seen else ', finished first'}): SQLite finds {got[0]} features, "
+            f"integrity {got[1]}, rtreecheck {got[2]}{'' if ok else '  BAD'}"
+        )
+    return lines, failed
+
+
+def benchmark(terrio: str, work: Path, n: int) -> list[str]:
+    """Times a spatial filter on a large GeoPackage.
+
+    terrio with the R-tree, terrio scanning the whole file (the same file without its R-tree), and
+    ``ogr2ogr``.
+
+    Args:
+        terrio: The terrio executable.
+        work: A scratch directory.
+        n: The number of points.
+
+    Returns:
+        Lines describing the timings.
+    """
+    big = big_file(work, n)
     noindex = work / "big_noindex.gpkg"
     shutil.copy(big, noindex)
     c = sqlite3.connect(noindex)
@@ -498,6 +642,11 @@ def main() -> int:
     if args.points:
         print(f"\nSpatial filter on {args.points} points (best of 3):")
         for line in benchmark(args.terrio, work, args.points):
+            print("  " + line)
+        print(f"\nAppends to {args.points} points:")
+        lines, failed = append_benchmark(args.terrio, work, args.points)
+        bad += failed
+        for line in lines:
             print("  " + line)
     if not args.work:
         shutil.rmtree(work, ignore_errors=True)

@@ -26,6 +26,7 @@ mod png;
 mod rst;
 mod saga;
 pub(crate) mod sqlite;
+pub(crate) mod sqlite_edit;
 pub(crate) mod vector;
 pub(crate) mod wkt;
 mod xyz;

@@ -4,10 +4,12 @@
 //! added, and everything else in the file kept: other layers, rasters, metadata, extensions,
 //! triggers and views.
 //!
-//! terrio's SQLite writer writes files in one go, so the file is read whole (every table's rows
-//! as stored, every index, trigger and view) and written anew, then renamed over the original.
-//! Files with tables or indexes it cannot rewrite (`WITHOUT ROWID` tables, indexes on
-//! expressions, UTF-16 text) are left untouched, with an error.
+//! Files are changed in place (see [`super::gpkg_inplace`]). Those that cannot be (a write-ahead
+//! log, auto-vacuum, triggers this module does not emulate) and GeoPackages held in memory are
+//! read whole (every table's rows as stored, every index, trigger and view) and written anew;
+//! a file is then renamed over the original. Files with tables or indexes that cannot be
+//! rewritten (`WITHOUT ROWID` tables, indexes on expressions, UTF-16 text) are left untouched,
+//! with an error.
 
 use super::geopackage::{self as gw, Builder};
 use super::sqlite::{self as w, Index, SchemaObject, Table};
@@ -28,7 +30,7 @@ fn unsupported(msg: impl std::fmt::Display) -> Error {
     Error::Unsupported(format!("GeoPackage update: {msg}"))
 }
 
-fn to_w(v: r::Value) -> w::Value {
+pub(super) fn to_w(v: r::Value) -> w::Value {
     match v {
         r::Value::Null => w::Value::Null,
         r::Value::Int(i) => w::Value::Int(i),
@@ -38,14 +40,14 @@ fn to_w(v: r::Value) -> w::Value {
     }
 }
 
-fn text(v: &w::Value) -> Option<&str> {
+pub(super) fn text(v: &w::Value) -> Option<&str> {
     match v {
         w::Value::Text(s) => Some(s),
         _ => None,
     }
 }
 
-fn int(v: &w::Value) -> Option<i64> {
+pub(super) fn int(v: &w::Value) -> Option<i64> {
     match v {
         w::Value::Int(i) => Some(*i),
         w::Value::Real(f) => Some(*f as i64),
@@ -62,8 +64,13 @@ fn real(v: &w::Value) -> Option<f64> {
 }
 
 /// Adds layers to a GeoPackage file, or features to its layers, as `mode` says for the layers
-/// that exist. The file is rewritten and replaces the original only once complete.
+/// that exist. The file is changed in place, as SQLite changes it (only the pages that change
+/// are written, in a transaction protected by a rollback journal); files that cannot be changed
+/// that way are rewritten, the new file replacing the original once complete.
 pub fn update(path: &str, layers: &[Layer], mode: UpdateMode) -> Result<()> {
+    if super::gpkg_inplace::update_in_place(std::path::Path::new(path), layers, mode)? {
+        return Ok(());
+    }
     let bytes = update_bytes(std::fs::read(path)?, layers, mode)?;
     let tmp = format!("{path}.terrio-update");
     std::fs::write(&tmp, bytes)?;
@@ -101,12 +108,12 @@ pub fn update_bytes(bytes: Vec<u8>, layers: &[Layer], mode: UpdateMode) -> Resul
 }
 
 /// A database read whole: its tables with their rows as stored, indexes and schema objects.
-struct Database {
-    tables: Vec<Table>,
-    indexes: Vec<Index>,
-    objects: Vec<SchemaObject>,
-    user_version: u32,
-    application_id: u32,
+pub(super) struct Database {
+    pub(super) tables: Vec<Table>,
+    pub(super) indexes: Vec<Index>,
+    pub(super) objects: Vec<SchemaObject>,
+    pub(super) user_version: u32,
+    pub(super) application_id: u32,
 }
 
 impl Database {
@@ -156,15 +163,15 @@ impl Database {
         Ok(Self { tables, indexes, objects, user_version: db.header_u32(60), application_id: db.header_u32(68) })
     }
 
-    fn has(&self, name: &str) -> bool {
+    pub(super) fn has(&self, name: &str) -> bool {
         self.tables.iter().any(|t| t.name.eq_ignore_ascii_case(name)) || self.objects.iter().any(|o| o.name.eq_ignore_ascii_case(name))
     }
 
-    fn table(&self, name: &str) -> Option<&Table> {
+    pub(super) fn table(&self, name: &str) -> Option<&Table> {
         self.tables.iter().find(|t| t.name.eq_ignore_ascii_case(name))
     }
 
-    fn table_mut(&mut self, name: &str) -> Option<&mut Table> {
+    pub(super) fn table_mut(&mut self, name: &str) -> Option<&mut Table> {
         self.tables.iter_mut().find(|t| t.name.eq_ignore_ascii_case(name))
     }
 
@@ -206,7 +213,7 @@ impl Database {
     }
 
     /// The value of `column` in the row of `table` whose `key` column is `name`.
-    fn lookup(&self, table: &str, key: &str, name: &str, column: &str) -> Option<w::Value> {
+    pub(super) fn lookup(&self, table: &str, key: &str, name: &str, column: &str) -> Option<w::Value> {
         let t = self.table(table)?;
         let cols = columns(&t.sql);
         let k = cols.iter().position(|c| c.eq_ignore_ascii_case(key))?;
@@ -218,7 +225,7 @@ impl Database {
     }
 
     /// Sets `column` in the rows of `table` whose `key` column is `name`.
-    fn set(&mut self, table: &str, key: &str, name: &str, column: &str, value: w::Value) {
+    pub(super) fn set(&mut self, table: &str, key: &str, name: &str, column: &str, value: w::Value) {
         let Some(t) = self.table_mut(table) else { return };
         let cols = columns(&t.sql);
         let (Some(k), Some(c)) =
@@ -232,7 +239,7 @@ impl Database {
     }
 
     /// The geometry column of a layer: its name, SRS id and `z` flag.
-    fn geometry_column(&self, layer: &str) -> Option<(String, i64, i64)> {
+    pub(super) fn geometry_column(&self, layer: &str) -> Option<(String, i64, i64)> {
         let column = self.lookup("gpkg_geometry_columns", "table_name", layer, "column_name")?;
         let srs = self.lookup("gpkg_geometry_columns", "table_name", layer, "srs_id").as_ref().and_then(int).unwrap_or(0);
         let z = self.lookup("gpkg_geometry_columns", "table_name", layer, "z").as_ref().and_then(int).unwrap_or(0);
@@ -240,7 +247,7 @@ impl Database {
     }
 
     /// Removes a layer: its table, R-tree, triggers, indexes and the rows describing it.
-    fn remove_layer(&mut self, name: &str) {
+    pub(super) fn remove_layer(&mut self, name: &str) {
         let rtree = self.geometry_column(name).map(|(g, ..)| format!("rtree_{name}_{g}"));
         let gone = |n: &str| {
             n.eq_ignore_ascii_case(name)
@@ -266,7 +273,7 @@ impl Database {
 
     /// Adds a layer, as a new file would hold it, its CRS reusing an entry of
     /// `gpkg_spatial_ref_sys` that matches.
-    fn add_layer(&mut self, layer: &Layer) -> Result<()> {
+    pub(super) fn add_layer(&mut self, layer: &Layer) -> Result<()> {
         let mut b = Builder::new();
         b.add_layer(layer)?;
         let mut parts = b.into_layer_parts();
@@ -381,7 +388,7 @@ impl Database {
         Ok(())
     }
 
-    fn set_sequence(&mut self, name: &str, seq: i64) {
+    pub(super) fn set_sequence(&mut self, name: &str, seq: i64) {
         let t = self.ensure("sqlite_sequence", "CREATE TABLE sqlite_sequence(name,seq)");
         match t.rows.iter_mut().find(|(_, v)| v.first().and_then(text).is_some_and(|s| s.eq_ignore_ascii_case(name))) {
             Some((_, v)) => v[1] = w::Value::Int(seq),
@@ -396,75 +403,18 @@ impl Database {
         let geometry = self.geometry_column(name);
         let t = self.table(name).ok_or_else(|| Error::InvalidData(format!("GeoPackage: no table '{name}'")))?;
         let sql = t.sql.clone();
-        let decls = r::column_types(&sql);
-        let defaults = r::column_defaults(&sql);
-        let ipk = r::rowid_column(&sql);
-        let geom_col = geometry.as_ref().and_then(|(g, ..)| decls.iter().position(|(n, _)| n.eq_ignore_ascii_case(g)));
-        let srs_id = geometry.as_ref().map_or(0, |(_, s, _)| *s);
-        let fields = layer.schema.fields();
-        let map: Vec<Option<usize>> = decls
-            .iter()
-            .enumerate()
-            .map(|(i, (n, _))| {
-                if Some(i) == ipk || Some(i) == geom_col {
-                    return None;
-                }
-                fields.iter().position(|f| f.name.eq_ignore_ascii_case(n))
-            })
-            .collect();
-        let seq = self
-            .table("sqlite_sequence")
-            .and_then(|s| s.rows.iter().find(|(_, v)| v.first().and_then(text).is_some_and(|x| x.eq_ignore_ascii_case(name))))
-            .and_then(|(_, v)| v.get(1).and_then(int))
-            .unwrap_or(0);
         let max_rowid = t.rows.iter().map(|(id, _)| *id).max().unwrap_or(0);
-        let mut next = seq.max(max_rowid) + 1;
-        let mut bounds: Option<[f64; 4]> = None;
-        let mut has_z = false;
-        let mut rows = Vec::with_capacity(layer.len());
-        for f in &layer.features {
-            let mut values: Vec<w::Value> = defaults.iter().map(|d| d.clone().map_or(w::Value::Null, to_w)).collect();
-            values.resize(decls.len(), w::Value::Null);
-            if let Some(ipk) = ipk {
-                values[ipk] = w::Value::Null;
-            }
-            if let Some(gi) = geom_col {
-                values[gi] = match &f.geometry {
-                    Some(g) => {
-                        if let Some(b) = g.bbox().filter(|b| b.min_x.is_finite() && b.min_y.is_finite()) {
-                            bounds = Some(match bounds {
-                                None => [b.min_x, b.min_y, b.max_x, b.max_y],
-                                Some(a) => [a[0].min(b.min_x), a[1].min(b.min_y), a[2].max(b.max_x), a[3].max(b.max_y)],
-                            });
-                        }
-                        has_z |= crate::vector::geometry_has_z(g);
-                        w::Value::Blob(gw::gpkg_geometry(g, srs_id as i32))
-                    }
-                    None => w::Value::Null,
-                };
-            }
-            for (i, m) in map.iter().enumerate() {
-                if let Some(fi) = m
-                    && let Some(v) = f.attributes.get(*fi)
-                    && !v.is_null()
-                {
-                    values[i] = convert(v, &decls[i].1);
-                }
-            }
-            rows.push((next, values));
-            next += 1;
-        }
+        let next = self.sequence(name).max(max_rowid) + 1;
+        let enc = encode_append(&sql, geometry.as_ref(), layer, next);
+        let geom_col = enc.geom_col;
         let total = {
             let t = self.table_mut(name).expect("the table exists");
-            t.rows.extend(rows);
+            t.rows.extend(enc.rows.iter().cloned());
             t.rows.len()
         };
-        if keywords_contain(&sql, "AUTOINCREMENT") {
-            self.set_sequence(name, next - 1);
-        }
 
         // The R-tree, rebuilt over all the features.
-        if let (Some((g, _, z)), Some(gi)) = (&geometry, geom_col) {
+        if let (Some((g, ..)), Some(gi)) = (&geometry, geom_col) {
             let rt = format!("rtree_{name}_{g}");
             if self.table(&format!("{rt}_node")).is_some() {
                 let t = self.table(name).expect("the table exists");
@@ -472,9 +422,7 @@ impl Database {
                     .rows
                     .iter()
                     .filter_map(|(id, v)| match v.get(gi) {
-                        Some(w::Value::Blob(b)) => {
-                            envelope(b).map(|e| (*id, [gw::f32_down(e[0]), gw::f32_up(e[1]), gw::f32_down(e[2]), gw::f32_up(e[3])]))
-                        }
+                        Some(w::Value::Blob(b)) => envelope(b).map(|e| (*id, rtree_box(e))),
                         _ => None,
                     })
                     .collect();
@@ -485,13 +433,37 @@ impl Database {
                     }
                 }
             }
-            if has_z && *z == 0 {
-                self.set("gpkg_geometry_columns", "table_name", name, "z", w::Value::Int(2));
-            }
+        }
+        self.appended(name, &sql, &enc, total as i64);
+        Ok(())
+    }
+
+    /// The `sqlite_sequence` value of a table (0 when it has none).
+    pub(super) fn sequence(&self, name: &str) -> i64 {
+        self.table("sqlite_sequence")
+            .and_then(|s| s.rows.iter().find(|(_, v)| v.first().and_then(text).is_some_and(|x| x.eq_ignore_ascii_case(name))))
+            .and_then(|(_, v)| v.get(1).and_then(int))
+            .unwrap_or(0)
+    }
+
+    /// Updates what describes a layer after features were appended to it: its sequence, `z`
+    /// flag, extent, last change and feature count (`total`).
+    pub(super) fn appended(&mut self, name: &str, sql: &str, enc: &Encoded, total: i64) {
+        if keywords_contain(sql, "AUTOINCREMENT")
+            && let Some((last, _)) = enc.rows.last()
+        {
+            let seq = self.sequence(name).max(*last);
+            self.set_sequence(name, seq);
+        }
+        if let Some((_, _, z)) = self.geometry_column(name)
+            && enc.has_z
+            && z == 0
+        {
+            self.set("gpkg_geometry_columns", "table_name", name, "z", w::Value::Int(2));
         }
 
         // The extent and the feature count.
-        if let Some(b) = bounds {
+        if let Some(b) = enc.bounds {
             let get = |d: &Database, c: &str| d.lookup("gpkg_contents", "table_name", name, c).as_ref().and_then(real);
             let merged = [
                 get(self, "min_x").map_or(b[0], |v| v.min(b[0])),
@@ -504,8 +476,7 @@ impl Database {
             }
         }
         self.set("gpkg_contents", "table_name", name, "last_change", w::Value::Text(gw::now()));
-        self.set("gpkg_ogr_contents", "table_name", name, "feature_count", w::Value::Int(total as i64));
-        Ok(())
+        self.set("gpkg_ogr_contents", "table_name", name, "feature_count", w::Value::Int(total));
     }
 
     fn finish(mut self) -> Result<Vec<u8>> {
@@ -521,13 +492,97 @@ impl Database {
     }
 }
 
+/// Features encoded as rows of an existing feature table.
+pub(super) struct Encoded {
+    /// `(rowid, values)`, by increasing rowid; the rowid alias column holds NULL.
+    pub rows: Vec<(i64, Vec<w::Value>)>,
+    /// The geometry column's index.
+    pub geom_col: Option<usize>,
+    /// The extent of the geometries: `[min_x, min_y, max_x, max_y]`.
+    pub bounds: Option<[f64; 4]>,
+    /// Whether a geometry has z values.
+    pub has_z: bool,
+}
+
+/// Encodes the features of `layer` as rows of the feature table created by `sql`, with ids
+/// from `first`: fields matched by name (ignoring case; others dropped), column defaults for
+/// the others, geometries in the layer's SRS id (`geometry` is the table's geometry column,
+/// SRS id and `z` flag).
+pub(super) fn encode_append(sql: &str, geometry: Option<&(String, i64, i64)>, layer: &Layer, first: i64) -> Encoded {
+    let decls = r::column_types(sql);
+    let defaults = r::column_defaults(sql);
+    let ipk = r::rowid_column(sql);
+    let geom_col = geometry.and_then(|(g, ..)| decls.iter().position(|(n, _)| n.eq_ignore_ascii_case(g)));
+    let srs_id = geometry.map_or(0, |(_, s, _)| *s);
+    let fields = layer.schema.fields();
+    let map: Vec<Option<usize>> = decls
+        .iter()
+        .enumerate()
+        .map(|(i, (n, _))| {
+            if Some(i) == ipk || Some(i) == geom_col {
+                return None;
+            }
+            fields.iter().position(|f| f.name.eq_ignore_ascii_case(n))
+        })
+        .collect();
+    let encoded = crate::par::map_range(layer.len(), |k| {
+        let f = &layer.features[k];
+        let mut values: Vec<w::Value> = defaults.iter().map(|d| d.clone().map_or(w::Value::Null, to_w)).collect();
+        values.resize(decls.len(), w::Value::Null);
+        if let Some(ipk) = ipk {
+            values[ipk] = w::Value::Null;
+        }
+        let mut bbox = None;
+        let mut z = false;
+        if let Some(gi) = geom_col {
+            values[gi] = match &f.geometry {
+                Some(g) => {
+                    bbox = g.bbox().filter(|b| b.min_x.is_finite() && b.min_y.is_finite());
+                    z = crate::vector::geometry_has_z(g);
+                    w::Value::Blob(gw::gpkg_geometry(g, srs_id as i32))
+                }
+                None => w::Value::Null,
+            };
+        }
+        for (i, m) in map.iter().enumerate() {
+            if let Some(fi) = m
+                && let Some(v) = f.attributes.get(*fi)
+                && !v.is_null()
+            {
+                values[i] = convert(v, &decls[i].1);
+            }
+        }
+        (values, bbox, z)
+    });
+    let mut bounds: Option<[f64; 4]> = None;
+    let mut has_z = false;
+    let mut rows = Vec::with_capacity(encoded.len());
+    for ((values, bbox, z), id) in encoded.into_iter().zip(first..) {
+        if let Some(b) = bbox {
+            bounds = Some(match bounds {
+                None => [b.min_x, b.min_y, b.max_x, b.max_y],
+                Some(a) => [a[0].min(b.min_x), a[1].min(b.min_y), a[2].max(b.max_x), a[3].max(b.max_y)],
+            });
+        }
+        has_z |= z;
+        rows.push((id, values));
+    }
+    Encoded { rows, geom_col, bounds, has_z }
+}
+
+/// An envelope `[min_x, max_x, min_y, max_y]` as SQLite's R-tree stores it, rounded outwards to
+/// floats.
+pub(super) fn rtree_box(e: [f64; 4]) -> [f32; 4] {
+    [gw::f32_down(e[0]), gw::f32_up(e[1]), gw::f32_down(e[2]), gw::f32_up(e[3])]
+}
+
 /// The column names of a `CREATE TABLE` statement.
-fn columns(sql: &str) -> Vec<String> {
+pub(super) fn columns(sql: &str) -> Vec<String> {
     r::column_types(sql).into_iter().map(|(n, _)| n).collect()
 }
 
 /// Whether a statement contains a keyword sequence outside quotes and parentheses.
-fn keywords_contain(sql: &str, words: &str) -> bool {
+pub(super) fn keywords_contain(sql: &str, words: &str) -> bool {
     sql.to_ascii_uppercase().split_whitespace().collect::<Vec<_>>().join(" ").contains(words)
 }
 
@@ -569,7 +624,7 @@ fn convert(v: &FieldValue, decl: &str) -> w::Value {
 
 /// The envelope `[min_x, max_x, min_y, max_y]` of a GeoPackage geometry blob: from its header,
 /// or else its geometry. `None` for empty geometries.
-fn envelope(b: &[u8]) -> Option<[f64; 4]> {
+pub(super) fn envelope(b: &[u8]) -> Option<[f64; 4]> {
     if b.len() >= 8 && &b[..2] == b"GP" {
         let flags = b[3];
         if flags & 0x10 != 0 {
