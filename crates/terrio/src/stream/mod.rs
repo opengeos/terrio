@@ -1200,6 +1200,12 @@ fn same_dataset(src: &str, dst: &str) -> bool {
         let name = if shp { p.file_stem() } else { p.file_name() };
         Some((std::fs::canonicalize(dir).ok()?, name?.to_os_string(), shp))
     };
+    // The same file under another name (a symbolic link, say).
+    if let (Ok(a), Ok(b)) = (std::fs::canonicalize(src), std::fs::canonicalize(dst))
+        && a == b
+    {
+        return true;
+    }
     match (key(src), key(dst)) {
         (Some((a, x, s)), Some((b, y, t))) => a == b && x == y && s == t,
         _ => false,
@@ -1250,13 +1256,26 @@ pub fn convert(src: &str, dst: &str, options: &ConvertOptions) -> Result<()> {
     } else {
         None
     };
-    let mut writer = FeatureWriter::create(dst, translator.schema(), profile.as_ref(), &options.write)?;
-    while !translator.is_done()
-        && let Some(c) = reader.read_chunk(chunk)?
-    {
-        writer.write(&translator.apply(c)?)?;
+    let written = (|| {
+        let mut writer = FeatureWriter::create(dst, translator.schema(), profile.as_ref(), &options.write)?;
+        while !translator.is_done()
+            && let Some(c) = reader.read_chunk(chunk)?
+        {
+            writer.write(&translator.apply(c)?)?;
+        }
+        writer.finish()
+    })();
+    // A conversion that fails partway leaves no truncated output behind.
+    if written.is_err() {
+        let path = std::path::Path::new(dst);
+        let _ = std::fs::remove_file(path);
+        if driver == VectorDriver::Shapefile {
+            for ext in ["shp", "shx", "dbf", "prj", "cpg"] {
+                let _ = std::fs::remove_file(path.with_extension(ext));
+            }
+        }
     }
-    writer.finish()
+    written
 }
 
 #[cfg(test)]

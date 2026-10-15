@@ -226,8 +226,28 @@ fn converts_a_file_onto_itself_whole() {
         assert!(!can_convert_stream(&path, &path, &options), "{ext}");
         let other = dir.path().join(format!("other.{ext}")).to_string_lossy().into_owned();
         assert!(can_convert_stream(&path, &other, &options), "{ext}");
+        #[cfg(unix)]
+        {
+            let link = dir.path().join(format!("link.{ext}"));
+            std::os::unix::fs::symlink(&path, &link).unwrap();
+            assert!(!can_convert_stream(&path, &link.to_string_lossy(), &options), "{ext}");
+        }
         convert(&path, &path, &options).unwrap();
         let read = crate::open_vector(&path, &Default::default()).unwrap().layers.remove(0);
         assert_eq!(read.features.len(), 40, "{ext}");
+    }
+}
+
+#[test]
+fn failed_conversions_leave_no_output() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("bad.geojsonl");
+    let good = r#"{"type":"Feature","properties":{"a":1},"geometry":{"type":"Point","coordinates":[1,2]}}"#;
+    std::fs::write(&src, format!("{good}\n{good}\nnot json\n")).unwrap();
+    for ext in ["geojson", "shp"] {
+        let dst = dir.path().join(format!("out.{ext}"));
+        let options = ConvertOptions { chunk_size: 1, ..Default::default() };
+        assert!(convert(&src.to_string_lossy(), &dst.to_string_lossy(), &options).is_err(), "{ext}");
+        assert!(!dst.exists() && !dst.with_extension("dbf").exists(), "{ext}");
     }
 }
