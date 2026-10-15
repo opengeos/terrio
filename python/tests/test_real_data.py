@@ -242,7 +242,10 @@ def test_grid_transformations_match_osr(data_dir, gdal):
     proj_db = next((p for p in paths if os.path.exists(os.path.join(p, "proj.db"))), None)
     if proj_db is None:
         pytest.skip("PROJ's database is not found")
+    # GDAL uses the same grids as terrio, and only them (conda turns PROJ's network access on).
+    network = osr.GetPROJEnableNetwork()
     osr.SetPROJSearchPaths([str(grids), proj_db])
+    osr.SetPROJEnableNetwork(False)
     terrio.set_grid_search_paths([grids])
     terrio.set_network_enabled(False)
     try:
@@ -275,6 +278,7 @@ def test_grid_transformations_match_osr(data_dir, gdal):
             )
     finally:
         osr.SetPROJSearchPaths(paths)
+        osr.SetPROJEnableNetwork(network)
         terrio.set_grid_search_paths(None)
         terrio.set_network_enabled(None)
 
