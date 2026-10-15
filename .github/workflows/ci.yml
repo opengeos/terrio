@@ -165,7 +165,7 @@ jobs:
           environment-name: gdal
           # The reference: the EPSG table and test points come from GDAL 3.12.2 and PROJ 9.7.1, and
           # newer EPSG databases change some transformations.
-          create-args: gdal=3.12.2 libgdal-core=3.12.2 proj=9.7.1 libgdal-arrow-parquet libgdal-jp2openjpeg libgdal-netcdf libgdal-hdf5 numpy pip pytest maturin pyproj pdal laspy lazrs-python pyarrow geopandas shapely rasterio xarray dask rioxarray zarr scipy
+          create-args: gdal=3.12.2 libgdal-core=3.12.2 proj=9.7.1 libgdal-arrow-parquet libgdal-jp2openjpeg libgdal-netcdf libgdal-hdf5 numpy pip pytest maturin pyproj pdal laspy lazrs-python pyarrow geopandas shapely rasterio
           cache-environment: true
       - uses: actions/cache@v6
         with:
@@ -175,6 +175,10 @@ jobs:
       - name: Fetch test data
         shell: micromamba-shell {0}
         run: scripts/fetch_test_data.sh terrio-data
+      - name: Install xarray, dask, rioxarray, zarr and scipy
+        # With pip, on top of the cached environment: terrio.xarray is compared with rioxarray.
+        shell: micromamba-shell {0}
+        run: python -m pip install xarray "dask[array]" rioxarray zarr scipy
       - name: Build
         run: cargo build --release
       - name: Real-data tests

@@ -494,7 +494,11 @@ def compare_plain(a: Any, b: Any, c: Check) -> Outcome:
                 return Outcome("tolerance", f"max |diff| {np.nanmax(np.abs(fa - fb)):.3g}")
         except (TypeError, ValueError):
             pass
-    return Outcome("differs", f"{na!r} vs {nb!r}"[:300])
+    if isinstance(na, dict) and isinstance(nb, dict):
+        keys = sorted(set(na) | set(nb), key=str)
+        diffs = [f"{k}: {na.get(k)!r} vs {nb.get(k)!r}" for k in keys if na.get(k) != nb.get(k)]
+        return Outcome("differs", "; ".join(diffs)[:600])
+    return Outcome("differs", f"{na!r} vs {nb!r}"[:600])
 
 
 def _flatten(v: Any) -> list[Any]:
@@ -720,12 +724,13 @@ def synthetic_files(out: Path) -> dict[str, str]:
         transform=from_origin(-11700000, 4860000, 50, 50),
         nodata=float("nan"),
     )
-    # uint16, two bands, no nodata, Albers.
+    # uint16, two bands, no nodata, a polar stereographic CRS (on the WGS 84 datum: GDAL's choice
+    # of a NAD83 to WGS 84 transformation varies between builds).
     u16 = np.stack([base, base[::-1]]).astype("uint16")
     write(
         "synth_u16.tif",
         u16,
-        crs="EPSG:5070",
+        crs="EPSG:3413",
         transform=from_origin(-760000, 1900000, 100, 100),
         tiled=True,
         blockxsize=256,
@@ -1307,7 +1312,8 @@ def _poly(a: Any) -> dict[str, Any]:
     Returns:
         dict: The GeoJSON polygon.
     """
-    x0, y0, x1, y1 = _box(a, (0.2, 0.25, 0.7, 0.8))
+    # Vertices off pixel edges: a vertex on an edge makes all_touched depend on float rounding.
+    x0, y0, x1, y1 = _box(a, (0.2037, 0.2511, 0.6973, 0.8029))
     cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
     ring = [(x0, cy), (cx, y0), (x1, cy), (cx, y1), (x0, cy)]
     return {"type": "Polygon", "coordinates": [ring]}
@@ -1454,6 +1460,11 @@ for _n in ("synth_f64.tif", "synth_rgb.tif", "synth_f32.tif", "synth_u16.tif"):
     # pixels (which renormalize the weights of the valid neighbours) differ from terrio's.
     _frac = 0.02 if _n == "synth_f32.tif" else 0.0
     _why = _KERNEL_REASON + ("; GDAL's warp kernels next to nodata pixels" if _frac else "")
+    # Integer outputs: kernel results within float rounding of x.5 may round either way.
+    _int = _n in ("synth_rgb.tif", "synth_u16.tif")
+    _katol = 1.0 if _int else 1e-6
+    if _int:
+        _why += "; integer outputs: results within float rounding of x.5 round either way (by 1)"
     add(
         "reproject",
         f"{_n} EPSG:4326 nearest",
@@ -1469,7 +1480,7 @@ for _n in ("synth_f64.tif", "synth_rgb.tif", "synth_f32.tif", "synth_u16.tif"):
         expect="tolerance",
         coord_rtol=1e-12,
         rtol=1e-6,
-        atol=1e-6,
+        atol=_katol,
         max_frac=_frac,
         reason=_why,
     )
@@ -1480,7 +1491,7 @@ for _n in ("synth_f64.tif", "synth_rgb.tif", "synth_f32.tif", "synth_u16.tif"):
         expect="tolerance",
         coord_rtol=1e-12,
         rtol=1e-6,
-        atol=1e-6,
+        atol=_katol,
         max_frac=_frac,
         reason=_why,
     )
@@ -1499,7 +1510,7 @@ for _n in ("synth_f64.tif", "synth_rgb.tif", "synth_f32.tif", "synth_u16.tif"):
         _reproject_match(_n, "bilinear"),
         expect="tolerance",
         rtol=1e-6,
-        atol=1e-6,
+        atol=_katol,
         max_frac=_frac,
         reason=_why,
     )
@@ -1520,7 +1531,7 @@ for _n in ("dem.tif", "landsat.tif", "USGS_1_n40w106.tif"):
         expect="tolerance",
         coord_rtol=1e-12,
         rtol=1e-6,
-        atol=1e-6,
+        atol=1.0 if _n == "landsat.tif" else 1e-6,
         max_frac=0.01,
         reason=_KERNEL_REASON + "; GDAL's warp kernels next to nodata pixels",
         needs_data=True,

@@ -138,9 +138,9 @@ With the real files and the remote COG, 257 checks:
 - **Within tolerance.** Reprojections compute GDAL's suggested output grid with terrio's
   arithmetic: transforms agree to 1e-15 (relative), which moves pixel-centre coordinates by as
   much; with nearest-neighbour resampling, pixels are identical. Bilinear and cubic kernels sum
-  their weights in another order than GDAL (values within 1e-9, relative) and, next to nodata
-  pixels, GDAL's warper renormalizes weights differently (under 1% of the pixels of rasters with
-  nodata).
+  their weights in another order than GDAL (values within 1e-9, relative; integer outputs within
+  float rounding of x.5 can round either way, by 1) and, next to nodata pixels, GDAL's warper
+  renormalizes weights differently (under 1% of the pixels of rasters with nodata).
 - **Bytes fetched.** A window read over HTTP fetches only the tiles it needs: 0.4 to 1.6 MB of 6
   to 52 MB files, within 15% of what GDAL fetches; opening fetches 0.13 MB of headers (GDAL:
   0.02 MB). With dask, each concurrent reader opens the file again (headers only) and caches its
