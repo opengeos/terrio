@@ -56,13 +56,36 @@ test("raster from array, to GeoTIFF bytes and back", () => {
   assert.deepEqual(info.size, [4, 3]);
   assert.equal(info.bands[0].statistics.min, -5);
   // Compressed and tiled, and as a COG.
-  for (const options of [{ compress: "DEFLATE", tileSize: 16 }, { format: "COG" }]) {
+  for (const options of [{ compress: "DEFLATE", tileSize: 16 }, { compress: "ZSTD" }, { format: "COG" }]) {
     const again = terrio.open(back.toBytes("c.tif", options), "c.tif");
     assert.deepEqual([...again.readBand(2)], [...band2]);
   }
   // Windows and bands, written as an ASCII grid.
   const asc = new TextDecoder().decode(back.toBytes("w.asc", { srcwin: [0, 0, 2, 2], bands: [1] }));
   assert.match(asc, /ncols\s+2/);
+});
+
+test("JPEG 2000 to bytes and back", () => {
+  // Int16 with a nodata value: the JP2 file and its .aux.xml sidecar, zipped, as GDAL keeps it.
+  const dem = new Int16Array(40 * 30).map((_, i) => ((i * 37) % 3000) - 1500);
+  const ds = terrio.rasterFromArray(dem, 40, 30, [500000, 10, 0, 4100000, 0, -10], "EPSG:32611", -1500);
+  const zipped = ds.toBytes("dem.jp2");
+  assert.deepEqual([...zipped.slice(0, 2)], [0x50, 0x4b]);
+  const back = terrio.open(zipped, "dem.zip");
+  assert.equal(back.dtype, "int16");
+  assert.equal(back.nodata, -1500);
+  assert.equal(back.crs, "EPSG:32611");
+  assert.deepEqual([...back.transform], [500000, 10, 0, 4100000, 0, -10]);
+  assert.deepEqual([...back.readBand(1)], [...dem]);
+  // RGB bytes, without nodata: the JP2 file alone, recognized by its signature.
+  const rgb = new Uint8Array(3 * 64 * 48).map((_, i) => (i * 7) % 256);
+  const jp2 = terrio.rasterFromArray(rgb, 64, 48, [10, 0.001, 0, 50, 0, -0.001], "EPSG:4326").toBytes("rgb.jp2");
+  assert.deepEqual([...jp2.slice(4, 8)], [0x6a, 0x50, 0x20, 0x20]);
+  const img = terrio.open(jp2, "rgb");
+  assert.equal(img.count, 3);
+  assert.equal(img.crs, "EPSG:4326");
+  assert.deepEqual([...img.readBand(3)], [...rgb.slice(2 * 64 * 48)]);
+  assert.throws(() => terrio.rasterFromArray(new Float32Array(4), 2, 2, [0, 1, 0, 2, 0, -1]).toBytes("f.jp2"), /8- and 16-bit integers/);
 });
 
 test("vector layers as Arrow IPC streams, and back", () => {
@@ -224,6 +247,98 @@ for (const name of RASTERS) {
       assert.ok(close(min, expected.min), `${name} band ${b} min ${min} != ${expected.min}`);
       assert.ok(close(max, expected.max), `${name} band ${b} max ${max} != ${expected.max}`);
       assert.ok(Math.abs(sum / n - expected.mean) <= 1e-6 * Math.max(1, Math.abs(expected.mean)), `${name} band ${b} mean`);
+    }
+  });
+}
+
+/** A band's sum of pixels weighted by their position, `value * (index % 251)`. */
+const weightedSum = (band) => band.reduce((s, v, i) => s + v * (i % 251), 0);
+
+// JPEG 2000 files as GDAL 3.12.2 (JP2OpenJPEG) reads them: size, type, CRS, geotransform and each
+// band's weighted sum (computed with NumPy).
+const JPEG2000 = [
+  // Sentinel-2 L1C and L2A bands, georeferenced by their GMLJP2 boxes.
+  ["s2_l1c_B01.jp2", [1830, 1830], "uint16", "EPSG:32610", [499980, 60, 0, 4200000, 0, -60], [230149703898]],
+  ["s2_l2a_B01_60m.jp2", [1830, 1830], "uint16", "EPSG:32610", [499980, 60, 0, 4200000, 0, -60], [166014464965]],
+  ["s2_l2a_SCL_20m.jp2", [5490, 5490], "uint8", "EPSG:32610", [499980, 20, 0, 4200000, 0, -20], [4811992167]],
+  ["s2_l2a_TCI_60m.jp2", [1830, 1830], "uint8", "EPSG:32610", [499980, 60, 0, 4200000, 0, -60], [8077143450, 8388213892, 8191826120]],
+  // GMLJP2 in EPSG:4326, latitude first.
+  [
+    "gmljp2_dtedsm_epsg_4326_axes.jp2",
+    [121, 121],
+    "int16",
+    "EPSG:4326",
+    [42.99958333333337, 0.00827134986225895, 0, 34.00041666666663, 0, -0.00827134986225895],
+    [109686149],
+  ],
+  // A 1-bit alpha channel, promoted to 0 and 255.
+  ["stefan_full_rgba_alpha_1bit.jp2", [162, 150], "uint8", undefined, null, [65041074, 60546965, 9711194, 362353215]],
+  // JPEG 2000 copies of test rasters, written by GDAL.
+  ["lv_dem.jp2", [970, 498], "int16", "EPSG:3857", [-12824908, 1, 0, 4317505, 0, -1], [40594721304]],
+  [
+    "srtm_sub.jp2",
+    [500, 400],
+    "int16",
+    "EPSG:4326",
+    [-119.94744359355316, 0.0008084837557075694, 0, 37.81843967840713, 0, -0.0008084837557075694],
+    [40199496687],
+  ],
+];
+
+for (const [name, size, dtype, crs, transform, sums] of JPEG2000) {
+  test(`${name} reads as GDAL reads it`, { skip: !DATA && "TERRIO_TEST_DATA is not set" }, (t) => {
+    const path = join(DATA, name);
+    if (!existsSync(path)) return t.skip(`${name} is missing`);
+    const ds = terrio.open(readFileSync(path), name);
+    assert.deepEqual([ds.width, ds.height], size);
+    assert.equal(ds.dtype, dtype);
+    assert.equal(ds.crs, crs);
+    if (transform) {
+      ds.transform.forEach((v, i) => assert.ok(Math.abs(v - transform[i]) <= 1e-9 * Math.max(1, Math.abs(transform[i])), `${name} transform`));
+    }
+    const got = Array.from({ length: ds.count }, (_, b) => weightedSum(ds.readBand(b + 1)));
+    assert.deepEqual(got, sums);
+    // Written back as JPEG 2000, losslessly.
+    const again = terrio.open(ds.toBytes("again.jp2"), "again.jp2");
+    assert.deepEqual([...again.readBand(1)], [...ds.readBand(1)]);
+    assert.equal(again.crs, crs);
+  });
+}
+
+// GeoTIFFs in the compressions GDAL writes beyond the common ones, as GDAL reads them: each band's
+// weighted sum (integer files) or sum and NaN count (Float32 files).
+const GTIFF_CODECS = [
+  ["rgb_jpeg_ycbcr.tif", [1679542889, 943807543, 1835727455]],
+  ["rgb_jpeg.tif", [1674413809, 935764082, 1858995246]],
+  ["rgb_webp.tif", [1694423642, 943937085, 1860784108]],
+  ["rgb_jxl.tif", [1670997934, 927535433, 1854570638]],
+  ["rgb_lerc.tif", [1670997934, 927535433, 1854570638]],
+  ["rgb_lzma.tif", [1670997934, 927535433, 1854570638]],
+  ["i16_lerc_deflate.tif", [40199496687]],
+  ["i16_lerc_zstd.tif", [40199496687]],
+  ["u16_jxl.tif", [42699017287]],
+  ["f32_lerc.tif", [27721949.789093018], 247638],
+  ["f32_lerc_lossy_cog.tif", [27721952.621803284], 247638],
+  ["f32_jxl.tif", [27721949.789093018], 247638],
+  ["f32_lzma.tif", [27721949.789093018], 247638],
+];
+
+for (const [name, expected, nans] of GTIFF_CODECS) {
+  test(`gtiff_codecs/${name} reads as GDAL reads it`, { skip: !DATA && "TERRIO_TEST_DATA is not set" }, (t) => {
+    const path = join(DATA, "gtiff_codecs", name);
+    if (!existsSync(path)) return t.skip(`${name} is missing`);
+    const ds = terrio.open(readFileSync(path), name);
+    assert.equal(ds.count, expected.length);
+    for (let b = 1; b <= ds.count; b++) {
+      const band = ds.readBand(b);
+      if (nans === undefined) {
+        assert.equal(weightedSum(band), expected[b - 1], `${name} band ${b}`);
+      } else {
+        const valid = band.filter((v) => !Number.isNaN(v));
+        assert.equal(band.length - valid.length, nans);
+        const sum = valid.reduce((s, v) => s + v, 0);
+        assert.ok(Math.abs(sum - expected[b - 1]) <= 1e-9 * expected[b - 1], `${name} band ${b}: ${sum}`);
+      }
     }
   });
 }

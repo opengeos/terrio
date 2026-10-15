@@ -42,7 +42,13 @@ pub(crate) fn finish(path: &str, driver: RasterDriver, mut raster: Raster) -> Ra
 
 /// Fills in what a GDAL `.aux.xml` sidecar holds and the file does not: CRS, geotransform, nodata.
 pub(crate) fn apply_pam(path: &str, ds: &mut RasterDataset) {
-    let Some(pam) = common::read_pam(Path::new(path)) else { return };
+    if let Some(pam) = common::read_pam(Path::new(path)) {
+        apply(pam, ds);
+    }
+}
+
+/// Fills in what a sidecar holds and the dataset does not.
+pub(crate) fn apply(pam: common::Pam, ds: &mut RasterDataset) {
     let r = &mut ds.raster;
     if r.crs.is_unknown()
         && let Some(crs) = pam.crs

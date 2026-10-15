@@ -67,9 +67,10 @@ fn zstd_compress(data: &[u8]) -> Result<Vec<u8>> {
     Ok(zstd::bulk::compress(data, 9)?)
 }
 
+/// WebAssembly builds compress with the pure-Rust encoder (its fastest level).
 #[cfg(target_arch = "wasm32")]
-fn zstd_compress(_data: &[u8]) -> Result<Vec<u8>> {
-    Err(Error::Unsupported("ZSTD compression is not available in WebAssembly builds".into()))
+fn zstd_compress(data: &[u8]) -> Result<Vec<u8>> {
+    Ok(ruzstd::encoding::compress_to_vec(data, ruzstd::encoding::CompressionLevel::Fastest))
 }
 
 /// PackBits run-length encoding, as TIFF defines it.

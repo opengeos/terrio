@@ -8,11 +8,11 @@
 //! format reads and writes exactly as from files. WebAssembly builds have no file system and use
 //! in-memory codecs instead, for the formats that have one:
 //!
-//! - reading: GeoTIFF, Esri ASCII grid, GeoPackage (vector layers and rasters), PMTiles and
+//! - reading: GeoTIFF, Esri ASCII grid, JPEG 2000 (JP2 and J2K), GeoPackage (vector layers and rasters), PMTiles and
 //!   MBTiles (raster and vector tiles), MVT tiles, GeoJSON, TopoJSON,
 //!   FlatGeobuf, CSV, GeoParquet, KML, KMZ, GML, GPX, OSM PBF and XML, and zip archives of these,
 //!   and Shapefile and MapInfo (MIF/MID and TAB) in zip archives (or their `.shp` or `.mif` alone);
-//! - writing: GeoTIFF and COG (with lossless compressions), Esri ASCII grid, GeoPackage (vector
+//! - writing: GeoTIFF and COG (with lossless compressions), Esri ASCII grid, JPEG 2000, GeoPackage (vector
 //!   layers and rasters), PMTiles and MBTiles, GeoJSON, TopoJSON, FlatGeobuf, CSV, GeoParquet, KML, KMZ, GML (without
 //!   its schema) and GPX.
 //!
@@ -239,6 +239,9 @@ pub(crate) mod codec {
         if bytes.starts_with(b"SQLite format 3\0") {
             return crate::drivers::gpkg::open_bytes(bytes, name, options);
         }
+        if crate::drivers::jp2::is_jpeg2000(&bytes) {
+            return crate::drivers::jp2::read_bytes(&bytes).map(Dataset::Raster);
+        }
         if is_zip(&bytes) && ext != "kmz" {
             return open_zip(&bytes, name, options);
         }
@@ -249,7 +252,7 @@ pub(crate) mod codec {
         let driver = vector_driver(&bytes, name).ok_or_else(|| Error::Unsupported(format!("'{name}': format not recognized")))?;
         let Some(layers) = crate::drivers::vector::read_bytes(bytes, name, driver, options)? else {
             return Err(Error::Unsupported(format!(
-                "the {} format cannot be read from memory in this build (in memory: GeoTIFF, AAIGrid, GeoPackage, GeoJSON, \
+                "the {} format cannot be read from memory in this build (in memory: GeoTIFF, AAIGrid, GeoPackage, JPEG 2000, GeoJSON, \
                  TopoJSON, FlatGeobuf, CSV, GeoParquet, KML, KMZ, GML, GPX, OSM PBF, and Shapefile and MapInfo in zip \
                  archives)",
                 driver.name()
@@ -294,7 +297,17 @@ pub(crate) mod codec {
             let layers: Vec<Layer> = layers.into_iter().map(|l| crate::dataset::fix_layer(l, &main, driver)).collect();
             return finish_vector(layers, driver, options);
         }
-        open(member, &main, options)
+        let mut ds = open(member, &main, options)?;
+        // A raster's `.aux.xml` sidecar (a JPEG 2000's nodata value).
+        let aux = format!("{main}.aux.xml");
+        if let Dataset::Raster(r) = &mut ds
+            && names.contains(&aux)
+        {
+            let mut xml = String::new();
+            zip.by_name(&aux)?.read_to_string(&mut xml)?;
+            crate::drivers::nodata::apply(crate::drivers::common::parse_pam(&xml), r);
+        }
+        Ok(ds)
     }
 
     /// Keeps the layers the options ask for.
@@ -335,13 +348,26 @@ pub(crate) mod codec {
                 Ok(out)
             }
             RasterDriver::GPKG => crate::drivers::gpkg::to_bytes(&ds.raster, ds.nodata(), table, options.compression.as_deref()),
+            RasterDriver::JP2 => {
+                let jp2 = crate::drivers::jp2::to_bytes(&ds.raster)?;
+                // The nodata value goes to a `.aux.xml` sidecar, the two files zipped as the file
+                // drivers' output is.
+                let Some(xml) = crate::drivers::common::pam_xml(None, ds.nodata(), ds.raster.bands) else { return Ok(jp2) };
+                let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
+                let opts = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+                zip.start_file(format!("{table}.jp2"), opts)?;
+                std::io::Write::write_all(&mut zip, &jp2)?;
+                zip.start_file(format!("{table}.jp2.aux.xml"), opts)?;
+                std::io::Write::write_all(&mut zip, xml.as_bytes())?;
+                Ok(zip.finish()?.into_inner())
+            }
             RasterDriver::MBTiles | RasterDriver::PMTiles => {
                 let kind =
                     if driver == RasterDriver::MBTiles { crate::tiles::ArchiveKind::MBTiles } else { crate::tiles::ArchiveKind::PMTiles };
                 crate::tiles::raster_to_bytes(ds, &crate::tiles::raster_write_options(options)?, table, kind)
             }
             d => Err(Error::Unsupported(format!(
-                "the {} format cannot be written to memory in this build (GTiff, COG, AAIGrid, GPKG, MBTiles, PMTiles)",
+                "the {} format cannot be written to memory in this build (GTiff, COG, AAIGrid, GPKG, JP2, MBTiles, PMTiles)",
                 d.name()
             ))),
         }
@@ -466,6 +492,30 @@ mod tests {
         assert_eq!(back.layers[0].name, "p");
         assert_eq!(back.layers[0].features[0].geometry, v.layers[0].features[0].geometry);
         assert_eq!(back.layers[0].crs_epsg(), Some(4326));
+    }
+
+    #[test]
+    fn jpeg2000_codec_round_trips() {
+        for (bands, dt) in [(1, DataType::I16), (3, DataType::U8), (2, DataType::U16)] {
+            let ds = raster(bands, dt);
+            let bytes = codec::write_raster(&ds, RasterDriver::JP2, &Default::default(), "x").unwrap();
+            // The nodata value comes in a `.aux.xml` sidecar: the two files are zipped.
+            assert!(bytes.starts_with(b"PK"));
+            let Dataset::Raster(back) = codec::open(bytes, "x.zip", &Default::default()).unwrap() else { panic!() };
+            assert_eq!((back.raster.cols, back.raster.rows, back.raster.bands, back.raster.data_type), (5, 3, bands, dt));
+            assert_eq!(back.raster.data.to_f64_vec(), ds.raster.data.to_f64_vec());
+            assert_eq!(back.geo_transform(), [500000.0, 30.0, 0.0, 4000090.0, 0.0, -30.0]);
+            assert_eq!(back.crs().epsg, Some(32610));
+            assert_eq!(back.nodata(), Some(-1.0));
+            // Without nodata, the JP2 file alone, recognized by its signature too.
+            let mut plain = ds.clone();
+            plain.has_nodata = false;
+            let jp2 = codec::write_raster(&plain, RasterDriver::JP2, &Default::default(), "x").unwrap();
+            assert!(crate::drivers::jp2::is_jpeg2000(&jp2));
+            let Dataset::Raster(back) = codec::open(jp2, "noext", &Default::default()).unwrap() else { panic!() };
+            assert_eq!(back.raster.data.to_f64_vec(), ds.raster.data.to_f64_vec());
+            assert_eq!(back.nodata(), None);
+        }
     }
 
     #[test]

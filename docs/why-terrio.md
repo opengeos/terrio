@@ -34,7 +34,7 @@ for every operation, GDAL is still the answer.
 | **GeoArrow / `geoparquet`** | Columnar geometry in Arrow memory | GeoParquet, Arrow IPC, and others through GDAL or adapters | Yes | Not its job |
 | **whitebox_next_gen** (`wbraster`, `wbvector`, `wbprojection`) | Whitebox's pure-Rust format and projection crates | Many rasters and vectors | Yes | `wbprojection` |
 | **OxiGeo** (formerly OxiGDAL) | Another pure-Rust GDAL alternative | About 16 drivers by its own count, including HDF5 and GRIB | Yes | Its own |
-| **terrio** | Pure-Rust I/O with GDAL as the reference | The common raster, vector and tile formats, point clouds and STAC ([Formats](formats.md)); the rest through optional GDAL | Yes (JPEG 2000 native only) | GDAL's operations for 6,354 EPSG CRSs |
+| **terrio** | Pure-Rust I/O with GDAL as the reference | The common raster, vector and tile formats, point clouds and STAC ([Formats](formats.md)); the rest through optional GDAL | Yes | GDAL's operations for 6,354 EPSG CRSs |
 
 ### GDAL and the `gdal` crate
 

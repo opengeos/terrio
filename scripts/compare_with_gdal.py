@@ -591,7 +591,10 @@ def main():
     args = [a for a in sys.argv[1:] if a != "--pixels"]
     pixels = "--pixels" in sys.argv[1:]
     data = args[0]
-    files = args[1:] or sorted(os.listdir(data))
+    # The data directory's files, and the GeoTIFFs of each compression in gtiff_codecs/.
+    codecs = os.path.join(data, "gtiff_codecs")
+    extra = [f"gtiff_codecs/{n}" for n in sorted(os.listdir(codecs))] if os.path.isdir(codecs) else []
+    files = args[1:] or sorted(os.listdir(data)) + extra
     failed = 0
     for name in files:
         path = os.path.join(data, name)

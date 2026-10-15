@@ -351,7 +351,11 @@ pub(crate) struct Pam {
 pub(crate) fn read_pam(path: &Path) -> Option<Pam> {
     let mut aux = path.as_os_str().to_owned();
     aux.push(".aux.xml");
-    let xml = std::fs::read_to_string(aux).ok()?;
+    Some(parse_pam(&std::fs::read_to_string(aux).ok()?))
+}
+
+/// Parses the text of a `.aux.xml` sidecar.
+pub(crate) fn parse_pam(xml: &str) -> Pam {
     let element = |name: &str| -> Option<String> {
         let start = xml.find(&format!("<{name}"))?;
         let body = &xml[start..];
@@ -365,7 +369,7 @@ pub(crate) fn read_pam(path: &Path) -> Option<Pam> {
         <[f64; 6]>::try_from(v).ok()
     });
     let nodata = element("NoDataValue").and_then(|v| parse_f64(&v));
-    Some(Pam { crs, geo_transform, nodata })
+    Pam { crs, geo_transform, nodata }
 }
 
 /// Writes the CRS to a `.aux.xml` sidecar, as GDAL does for formats without a CRS of their own.
@@ -376,9 +380,20 @@ pub(crate) fn write_pam(path: &Path, crs: &CrsInfo) -> Result<()> {
 /// Writes a `.aux.xml` sidecar with a CRS and a nodata value for each of `bands` bands. Nothing
 /// is written when there is nothing to record.
 pub(crate) fn write_pam_with(path: &Path, crs: Option<&CrsInfo>, nodata: Option<f64>, bands: usize) -> Result<()> {
+    if let Some(xml) = pam_xml(crs, nodata, bands) {
+        let mut aux = path.as_os_str().to_owned();
+        aux.push(".aux.xml");
+        std::fs::write(aux, xml)?;
+    }
+    Ok(())
+}
+
+/// The text of a `.aux.xml` sidecar with a CRS and a nodata value for each of `bands` bands;
+/// `None` when there is nothing to record.
+pub(crate) fn pam_xml(crs: Option<&CrsInfo>, nodata: Option<f64>, bands: usize) -> Option<String> {
     let wkt = crs.and_then(esri_wkt);
     if wkt.is_none() && (nodata.is_none() || bands == 0) {
-        return Ok(());
+        return None;
     }
     let mut xml = String::from("<PAMDataset>\n");
     if let Some(wkt) = wkt {
@@ -394,10 +409,7 @@ pub(crate) fn write_pam_with(path: &Path, crs: Option<&CrsInfo>, nodata: Option<
         }
     }
     xml.push_str("</PAMDataset>\n");
-    let mut aux = path.as_os_str().to_owned();
-    aux.push(".aux.xml");
-    std::fs::write(aux, xml)?;
-    Ok(())
+    Some(xml)
 }
 
 fn xml_unescape(s: &str) -> String {

@@ -41,12 +41,8 @@ pub(crate) fn decode_image(b: &[u8]) -> Result<Image> {
         return Ok(Image { w, h, channels, data: buf, palette });
     }
     if b.starts_with(&[0xff, 0xd8]) {
-        let mut d = jpeg_decoder::Decoder::new(std::io::Cursor::new(b));
-        let data = d.decode().map_err(|e| err(&e))?;
-        let info = d.info().ok_or_else(|| err(&"no JPEG header"))?;
-        let (w, h) = (info.width as usize, info.height as usize);
-        let channels = (data.len() / (w * h).max(1)).clamp(1, 4);
-        return Ok(Image { w, h, channels, data, palette: false });
+        let img = crate::jpeg::decode_file(b).map_err(|e| err(&e))?;
+        return Ok(Image { w: img.width, h: img.height, channels: img.components, data: img.data, palette: false });
     }
     if b.len() > 12 && &b[0..4] == b"RIFF" && &b[8..12] == b"WEBP" {
         let mut d = image_webp::WebPDecoder::new(std::io::Cursor::new(b)).map_err(|e| err(&e))?;

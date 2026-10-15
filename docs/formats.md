@@ -38,8 +38,20 @@ GDAL's drivers (the formats marked * are written that way): see
 | XYZ | XYZ ASCII grid | ✓ | ✓ | xyz |
 | DTED | DTED elevation | ✓ | ✓ | dt0, dt1, dt2 |
 
-GeoTIFF compression: none, LZW, Deflate (including the legacy code), PackBits, JPEG, WebP and
-Zstandard, with horizontal and floating-point predictors, tiled or striped, chunky or planar.
+GeoTIFF compression: none, LZW, Deflate (including the legacy code), PackBits, JPEG, WebP,
+Zstandard, LZMA, LERC (alone, with Deflate or with Zstandard, lossless or not, with NaN masks) and
+JPEG XL, with horizontal and floating-point predictors, tiled or striped, chunky or planar. JPEG
+(in GeoTIFFs, GeoPackage and tile archive tiles, and `.jpg` files) is decoded exactly as GDAL's
+libjpeg decodes it: the same integer IDCT, chroma upsampling and YCbCr conversion, so the pixels are
+GDAL's. Lossy JPEG XL can differ from libjxl's by 1 in a few pixels. LERC, JPEG XL and LZMA are
+read, not written.
+
+JPEG 2000 is decoded and encoded with the Rust port of OpenJPEG, the codec of GDAL's JP2OpenJPEG
+driver, so pixels are GDAL's (Sentinel-2 L1C and L2A bands included). Georeferencing comes from
+the GeoJP2 box or the GMLJP2 box (Sentinel-2's), a 1-bit alpha channel is promoted to 0 and 255 as
+GDAL does, and files are written losslessly with a GeoJP2 box, the nodata value in a `.aux.xml`
+sidecar.
+
 netCDF variables are opened as `NETCDF:"file.nc":variable`, as in GDAL, and those below the
 root group by their path, `NETCDF:"file.nc":/group/variable`. A file of several variables opens
 its first and lists them all as subdatasets, as `gdalinfo` does: every variable of two or more
@@ -245,7 +257,9 @@ See [Point Clouds](point-clouds.md).
 
 ## In WebAssembly
 
-The browser and Node.js package reads from bytes. JPEG 2000 is not available there. Formats made
+The browser and Node.js package reads from bytes. JPEG 2000 is read and written there with the same
+codec as natively (written with a nodata value, it comes back as a zip archive of the JP2 file and
+its `.aux.xml` sidecar), and GeoTIFFs in every compression above are read. Formats made
 of several files (Shapefile, MapInfo MIF and TAB) are read from zip archives of their files;
 OSM is read from PBF or XML bytes. GeoPackage (layers and rasters), PMTiles and MBTiles (raster
 and vector tiles) are read from and written to bytes; MVT tiles are read from bytes.

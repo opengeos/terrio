@@ -18,7 +18,7 @@ pub(crate) mod gtiff_write;
 pub(crate) mod hdf5;
 mod hdf5_write;
 mod hfa;
-mod jp2;
+pub(crate) mod jp2;
 pub(crate) mod netcdf;
 mod netcdf_write;
 pub(crate) mod nodata;
@@ -58,6 +58,7 @@ pub(crate) fn read(path: &str) -> Option<Result<RasterDataset>> {
             RasterDriver::XYZ => xyz::read(p),
             RasterDriver::RST => rst::read(p),
             RasterDriver::PNG => png::read(p),
+            RasterDriver::JPEG => png::read_jpeg(p),
             RasterDriver::JP2 => jp2::read(p),
             RasterDriver::GPKG => gpkg::read(p),
             RasterDriver::HFA => hfa::read(p),

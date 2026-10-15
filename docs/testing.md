@@ -18,6 +18,9 @@ GDAL:
   ENVI, Esri grids, GeoPackage tiles and more
 - HDF5 and netCDF-4 products: JPSS ATMS and VIIRS sensor data records (NOAA open data) and a
   Sentinel-5P methane product with nested groups
+- Sentinel-2 L1C and L2A band files (JPEG 2000 with GMLJP2 boxes) and GDAL's JPEG 2000 test files
+- GeoTIFFs written by GDAL in each compression it offers beyond the common ones: JPEG (YCbCr and
+  RGB), WebP, JPEG XL, LERC (with Deflate and Zstandard, lossy and with NaN masks) and LZMA
 
 ## The conformance suite
 

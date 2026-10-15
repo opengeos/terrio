@@ -1193,6 +1193,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "lerc-core"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1a0c91e9f8d44d5a5440367be3b181fb33466753f78dfceffbfcb8d87281dc15"
+
+[[package]]
+name = "lerc-reader"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "81a8e65e8b87181753724ad932f79c4a0a4ebc54516ce944c622bb9b07f3acc2"
+dependencies = [
+ "lerc-core",
+]
+
+[[package]]
 name = "libc"
 version = "0.2.190"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1263,6 +1278,15 @@ name = "lz4_flex"
 version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ecbdfe44b1bd960b68170b417450a628c43f7cf56bb3c5317e61cb230ee7f226"
+
+[[package]]
+name = "lzma-rust2"
+version = "0.22.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7277c9742229dc25243236d578b6471a798c554512c6f6a04365ec2e87c2a3bb"
+dependencies = [
+ "sha2",
+]
 
 [[package]]
 name = "matrixmultiply"
@@ -2219,8 +2243,12 @@ dependencies = [
  "image-webp",
  "jpeg-decoder",
  "jpeg-encoder 0.7.1",
+ "jxl-oxide",
  "laz",
+ "lerc-core",
+ "lerc-reader",
  "lz4_flex 0.14.0",
+ "lzma-rust2",
  "netcdf-reader",
  "openjp2",
  "osmpbfreader 0.19.1",

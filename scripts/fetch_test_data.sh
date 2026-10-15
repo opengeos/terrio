@@ -56,6 +56,20 @@ for f in ATMS-SDR/2023/01/01/SATMS_j01_d20230101_t0000026_e0000343_b26525_c20230
 done
 s5p=S5P_OFFL_L2__CH4____20230101T000319_20230101T014449_27036_03_020400_20230103T110255.nc
 [ -e $s5p ] || curl -sSfL -o $s5p "https://meeo-s5p.s3.amazonaws.com/OFFL/L2__CH4___/2023/01/01/$s5p"
+# JPEG 2000: Sentinel-2 band files, georeferenced by GMLJP2 boxes (L1C and L2A, tile 10SEG, from
+# the public Google Cloud copy of the Copernicus archive), and GDAL's test files (GMLJP2 in EPSG
+# axis order, a 1-bit alpha channel, a GeoJP2 box written by the ECW SDK).
+s2=https://storage.googleapis.com/gcp-public-data-sentinel-2
+l1c=$s2/tiles/10/S/EG/S2B_MSIL1C_20240630T185919_N0510_R013_T10SEG_20240630T211017.SAFE/GRANULE/L1C_T10SEG_A038220_20240630T190812/IMG_DATA
+l2a=$s2/L2/tiles/10/S/EG/S2B_MSIL2A_20240630T185919_N0510_R013_T10SEG_20240630T215047.SAFE/GRANULE/L2A_T10SEG_A038220_20240630T190812/IMG_DATA
+[ -e s2_l1c_B01.jp2 ] || curl -sSfL -o s2_l1c_B01.jp2 "$l1c/T10SEG_20240630T185919_B01.jp2"
+[ -e s2_l2a_B01_60m.jp2 ] || curl -sSfL -o s2_l2a_B01_60m.jp2 "$l2a/R60m/T10SEG_20240630T185919_B01_60m.jp2"
+[ -e s2_l2a_TCI_60m.jp2 ] || curl -sSfL -o s2_l2a_TCI_60m.jp2 "$l2a/R60m/T10SEG_20240630T185919_TCI_60m.jp2"
+[ -e s2_l2a_SCL_20m.jp2 ] || curl -sSfL -o s2_l2a_SCL_20m.jp2 "$l2a/R20m/T10SEG_20240630T185919_SCL_20m.jp2"
+gdal_jp2=https://raw.githubusercontent.com/OSGeo/gdal/v3.12.2/autotest/gdrivers/data/jpeg2000
+for f in gmljp2_dtedsm_epsg_4326_axes.jp2 stefan_full_rgba_alpha_1bit.jp2 3_13bit_and_1bit.jp2; do
+  [ -e "$f" ] || curl -sSfL -o "$f" "$gdal_jp2/$f"
+done
 for z in ne_countries ne_places nybb; do [ -d "$z" ] || unzip -q -o "$z.zip" -d "$z"; done
 # OSM XML, when osmium is installed.
 if [ ! -e liechtenstein.osm ] && command -v osmium >/dev/null; then
@@ -133,6 +147,30 @@ if command -v ogr2ogr >/dev/null && command -v gdal_translate >/dev/null; then
     gdal_translate -q -of JP2OpenJPEG -co REVERSIBLE=YES -co QUALITY=100 srtm_sub.tif srtm_sub.jp2
     gdal_translate -q -of Zarr -co FORMAT=ZARR_V3 -co COMPRESS=ZSTD srtm_sub.tif srtm_sub_v3.zarr
     gdal_translate -q -of Zarr -co COMPRESS=BLOSC -co BLOSC_CNAME=lz4 srtm_sub.tif srtm_sub_blosc.zarr
+  fi
+  # GeoTIFFs in the compressions GDAL writes that the tiff crate does not read: JPEG (YCbCr and
+  # RGB), WebP, JPEG XL (lossless and lossy), LERC (with Deflate or Zstandard, lossless and lossy,
+  # with a NaN mask) and LZMA (with predictors, planar).
+  if [ ! -e gtiff_codecs/f32_lzma.tif ]; then
+    mkdir -p gtiff_codecs
+    t="gdal_translate -q"
+    $t -srcwin 500 500 700 600 landsat7.tif gtiff_codecs/rgb.tif
+    $t -ot Float32 -srcwin 1000 600 700 500 dem.tif gtiff_codecs/f32.tif
+    $t -ot UInt16 -scale -100 4500 0 4600 srtm_sub.tif gtiff_codecs/u16.tif
+    $t -co COMPRESS=JPEG -co PHOTOMETRIC=YCBCR -co TILED=YES gtiff_codecs/rgb.tif gtiff_codecs/rgb_jpeg_ycbcr.tif
+    $t -co COMPRESS=JPEG gtiff_codecs/rgb.tif gtiff_codecs/rgb_jpeg.tif
+    $t -co COMPRESS=WEBP gtiff_codecs/rgb.tif gtiff_codecs/rgb_webp.tif
+    $t -co COMPRESS=JXL gtiff_codecs/rgb.tif gtiff_codecs/rgb_jxl.tif
+    $t -co COMPRESS=JXL -co JXL_LOSSLESS=NO gtiff_codecs/rgb.tif gtiff_codecs/rgb_jxl_lossy.tif
+    $t -co COMPRESS=LERC gtiff_codecs/rgb.tif gtiff_codecs/rgb_lerc.tif
+    $t -co COMPRESS=LZMA -co PREDICTOR=2 -co INTERLEAVE=BAND gtiff_codecs/rgb.tif gtiff_codecs/rgb_lzma.tif
+    $t -co COMPRESS=LERC_DEFLATE srtm_sub.tif gtiff_codecs/i16_lerc_deflate.tif
+    $t -co COMPRESS=LERC_ZSTD -co TILED=YES srtm_sub.tif gtiff_codecs/i16_lerc_zstd.tif
+    $t -co COMPRESS=JXL gtiff_codecs/u16.tif gtiff_codecs/u16_jxl.tif
+    $t -co COMPRESS=LERC gtiff_codecs/f32.tif gtiff_codecs/f32_lerc.tif
+    $t -of COG -co COMPRESS=LERC -co MAX_Z_ERROR=0.01 gtiff_codecs/f32.tif gtiff_codecs/f32_lerc_lossy_cog.tif
+    $t -co COMPRESS=JXL gtiff_codecs/f32.tif gtiff_codecs/f32_jxl.tif
+    $t -co COMPRESS=LZMA -co PREDICTOR=3 gtiff_codecs/f32.tif gtiff_codecs/f32_lzma.tif
   fi
 fi
 # Datum shift and geoid grids from the PROJ CDN (scripts/proj_grids.txt, 230 MB), and grids in

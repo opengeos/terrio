@@ -67,6 +67,23 @@ pub(crate) fn read(path: &Path) -> Result<RasterDataset> {
 }
 
 /// The geotransform of a world file next to `path` (`.wld`, or `.pgw`-style).
+/// Reads a JPEG file with its world file, decoded as GDAL's JPEG driver decodes it (libjpeg's
+/// output, see [`crate::jpeg`]).
+pub(crate) fn read_jpeg(path: &Path) -> Result<RasterDataset> {
+    let img = crate::jpeg::decode_file(&std::fs::read(path)?).map_err(|e| Error::InvalidData(format!("{}: {e}", path.display())))?;
+    let (cols, rows, bands) = (img.width, img.height, img.components);
+    let n = cols * rows;
+    let mut data = vec![0u8; n * bands];
+    for (i, px) in img.data.chunks_exact(bands).enumerate() {
+        for (b, v) in px.iter().enumerate() {
+            data[b * n + i] = *v;
+        }
+    }
+    let gt = read_world_file(path).unwrap_or(common::NO_GEOTRANSFORM);
+    let raster = common::make_raster(cols, rows, bands, RasterData::U8(data), gt, Default::default(), None)?;
+    Ok(RasterDataset { raster, driver: RasterDriver::JPEG, has_nodata: false })
+}
+
 pub(crate) fn read_world_file(path: &Path) -> Option<[f64; 6]> {
     let ext = path.extension()?.to_str()?.to_ascii_lowercase();
     let short = format!("{}{}w", &ext[..1], &ext[ext.len() - 1..]);

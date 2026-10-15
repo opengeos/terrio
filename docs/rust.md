@@ -152,8 +152,17 @@ terrio is heading for a stable 1.0 API. What to rely on, and the decisions behin
 
 ## WebAssembly
 
-The library builds for `wasm32-unknown-unknown`. Network access, temporary files and JPEG 2000 are
-native only.
+The library builds for `wasm32-unknown-unknown`; network access and temporary files are native
+only. JPEG 2000 works there too, with two settings in the program that is built: the global
+allocator `terrio::NullSafeAllocator` (the OpenJPEG port releases null pointers, which the
+WebAssembly allocator does not tolerate), and the link flag `-C link-arg=--allow-undefined` for
+`wasm32-unknown-unknown`, as in the repository's `.cargo/config.toml` (the port is built as a C
+library too, whose C allocator calls terrio defines):
+
+```rust
+#[global_allocator]
+static ALLOCATOR: terrio::NullSafeAllocator = terrio::NullSafeAllocator;
+```
 
 API documentation: [docs.rs/terrio](https://docs.rs/terrio), or `cargo doc -p terrio --open` in
 the repository.

@@ -59,11 +59,8 @@ fn decode_tile(b: &[u8]) -> Result<Tile> {
         return Ok((w, h, bands, values));
     }
     if b.starts_with(&[0xff, 0xd8]) {
-        let mut d = jpeg_decoder::Decoder::new(std::io::Cursor::new(b));
-        let pixels = d.decode().map_err(|e| err(&e))?;
-        let info = d.info().ok_or_else(|| err(&"no JPEG header"))?;
-        let bands = pixels.len() / (info.width as usize * info.height as usize).max(1);
-        return Ok((info.width as usize, info.height as usize, bands, pixels.into_iter().map(f64::from).collect()));
+        let img = crate::jpeg::decode_file(b).map_err(|e| err(&e))?;
+        return Ok((img.width, img.height, img.components, img.data.into_iter().map(f64::from).collect()));
     }
     if b.starts_with(b"II*\0") || b.starts_with(b"MM\0*") {
         use tiff::decoder::{Decoder, DecodingResult};

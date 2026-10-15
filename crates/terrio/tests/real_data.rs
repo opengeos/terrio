@@ -13,6 +13,12 @@ fn data(name: &str) -> Option<String> {
     Some(p.to_string_lossy().into_owned())
 }
 
+/// The sum of a band's integer pixels weighted by their position, `value * (index % 251)`: a check
+/// of values and places, computed for GDAL's reads with NumPy.
+fn weighted_sum(band: &[f64]) -> i64 {
+    band.iter().enumerate().map(|(i, v)| *v as i64 * (i % 251) as i64).sum()
+}
+
 fn assert_close(a: f64, b: f64, what: &str) {
     assert!((a - b).abs() <= 1e-9 * b.abs().max(1.0), "{what}: {a} != {b}");
 }
@@ -280,6 +286,136 @@ fn gdal_derived_las_vegas_dem() {
     assert_eq!(jp2.raster.data_type, terrio::DataType::I16);
     let s = terrio::info::band_statistics(&jp2, 0).unwrap();
     assert_eq!((s.min, s.max), (-32767.0, 679.0));
+}
+
+#[test]
+fn jpeg2000_files_match_gdal() {
+    use terrio::DataType::{I16, U8, U16};
+    /// A file, its size, type, EPSG code, geotransform and each band's weighted sum.
+    type Case<'a> = (&'a str, (usize, usize), terrio::DataType, Option<u32>, [f64; 6], &'a [i64]);
+    // GDAL 3.12.2 (JP2OpenJPEG): size, type, EPSG code, geotransform and each band's sum of pixels
+    // weighted by their position (`value * (index % 251)`), which checks values and places.
+    let cases: [Case; 7] = [
+        // Sentinel-2, georeferenced by their GMLJP2 boxes.
+        ("s2_l1c_B01.jp2", (1830, 1830), U16, Some(32610), [499980.0, 60.0, 0.0, 4200000.0, 0.0, -60.0], &[230149703898]),
+        ("s2_l2a_B01_60m.jp2", (1830, 1830), U16, Some(32610), [499980.0, 60.0, 0.0, 4200000.0, 0.0, -60.0], &[166014464965]),
+        ("s2_l2a_SCL_20m.jp2", (5490, 5490), U8, Some(32610), [499980.0, 20.0, 0.0, 4200000.0, 0.0, -20.0], &[4811992167]),
+        (
+            "s2_l2a_TCI_60m.jp2",
+            (1830, 1830),
+            U8,
+            Some(32610),
+            [499980.0, 60.0, 0.0, 4200000.0, 0.0, -60.0],
+            &[8077143450, 8388213892, 8191826120],
+        ),
+        // GMLJP2 in EPSG:4326, latitude first.
+        (
+            "gmljp2_dtedsm_epsg_4326_axes.jp2",
+            (121, 121),
+            I16,
+            Some(4326),
+            [42.99958333333337, 0.00827134986225895, 0.0, 34.00041666666663, 0.0, -0.00827134986225895],
+            &[109686149],
+        ),
+        // A 1-bit alpha channel, promoted to 0 and 255. No georeferencing: terrio's rasters are
+        // north-up, and GDAL's default geotransform is south-up.
+        (
+            "stefan_full_rgba_alpha_1bit.jp2",
+            (162, 150),
+            U8,
+            None,
+            [0.0, 1.0, 0.0, 150.0, 0.0, -1.0],
+            &[65041074, 60546965, 9711194, 362353215],
+        ),
+        // A GeoJP2 box written by the ECW SDK, with a negative Y pixel scale (taken as north-up).
+        (
+            "3_13bit_and_1bit.jp2",
+            (202, 308),
+            U16,
+            None,
+            [1208.784993489582, 1.0, 0.0, 1825.009602864582, 0.0, -1.0],
+            &[891759481, 874251895, 787618572, 7659047],
+        ),
+    ];
+    for (name, size, dtype, epsg, gt, sums) in cases {
+        let Some(p) = data(name) else { return };
+        let ds = terrio::open_raster(&p).unwrap_or_else(|e| panic!("{name}: {e}"));
+        let r = &ds.raster;
+        assert_eq!(((r.cols, r.rows), r.data_type, r.bands), (size, dtype, sums.len()), "{name}");
+        assert_eq!(ds.crs().epsg, epsg, "{name}");
+        for (a, b) in ds.geo_transform().iter().zip(gt) {
+            assert_close(*a, b, name);
+        }
+        let values = r.data.to_f64_vec();
+        let got: Vec<i64> = values.chunks(r.cols * r.rows).map(weighted_sum).collect();
+        assert_eq!(got, sums, "{name}");
+        // Read from bytes too, as in WebAssembly.
+        let mem = terrio::memory::open_raster_bytes(std::fs::read(&p).unwrap(), name).unwrap();
+        assert_eq!(mem.raster.data.to_f64_vec(), values, "{name} from bytes");
+    }
+}
+
+#[test]
+fn geotiff_compressions_match_gdal() {
+    use terrio::DataType::{F32, I16, U8, U16};
+    // GDAL 3.12.2: each band's sum (NaN skipped) and NaN count; the JPEG files decode as libjpeg
+    // decodes them. Lossy JPEG XL decodes within a mean difference per pixel of 0.2 (libjxl and
+    // jxl-oxide round differently).
+    // Integer files: each band's weighted sum (see `weighted_sum`) too, when the codec is exact.
+    let weighted: [(&str, &[i64]); 9] = [
+        ("rgb_jpeg_ycbcr.tif", &[1679542889, 943807543, 1835727455]),
+        ("rgb_jpeg.tif", &[1674413809, 935764082, 1858995246]),
+        ("rgb_webp.tif", &[1694423642, 943937085, 1860784108]),
+        ("rgb_jxl.tif", &[1670997934, 927535433, 1854570638]),
+        ("rgb_lerc.tif", &[1670997934, 927535433, 1854570638]),
+        ("rgb_lzma.tif", &[1670997934, 927535433, 1854570638]),
+        ("i16_lerc_deflate.tif", &[40199496687]),
+        ("i16_lerc_zstd.tif", &[40199496687]),
+        ("u16_jxl.tif", &[42699017287]),
+    ];
+    let cases: [(&str, terrio::DataType, &[f64], usize, f64); 14] = [
+        ("rgb_jpeg_ycbcr.tif", U8, &[13447289.0, 7559854.0, 14694242.0], 0, 0.0),
+        ("rgb_jpeg.tif", U8, &[13408022.0, 7495329.0, 14879760.0], 0, 0.0),
+        ("rgb_webp.tif", U8, &[13566206.0, 7562856.0, 14894674.0], 0, 0.0),
+        ("rgb_jxl.tif", U8, &[13379233.0, 7430623.0, 14846406.0], 0, 0.0),
+        ("rgb_jxl_lossy.tif", U8, &[13418374.0, 7533479.0, 14888094.0], 0, 0.2),
+        ("rgb_lerc.tif", U8, &[13379233.0, 7430623.0, 14846406.0], 0, 0.0),
+        ("rgb_lzma.tif", U8, &[13379233.0, 7430623.0, 14846406.0], 0, 0.0),
+        ("i16_lerc_deflate.tif", I16, &[320738103.0], 0, 0.0),
+        ("i16_lerc_zstd.tif", I16, &[320738103.0], 0, 0.0),
+        ("u16_jxl.tif", U16, &[340738103.0], 0, 0.0),
+        ("f32_lerc.tif", F32, &[27721949.789093018], 247638, 0.0),
+        ("f32_lerc_lossy_cog.tif", F32, &[27721952.621803284], 247638, 0.0),
+        ("f32_jxl.tif", F32, &[27721949.789093018], 247638, 0.0),
+        ("f32_lzma.tif", F32, &[27721949.789093018], 247638, 0.0),
+    ];
+    for (name, dtype, sums, nans, tolerance) in cases {
+        let Some(p) = data(&format!("gtiff_codecs/{name}")) else { return };
+        let file = terrio::open_raster(&p).unwrap_or_else(|e| panic!("{name}: {e}"));
+        // In memory too, read by window as in WebAssembly.
+        let mut lazy = terrio::memory::open_raster_lazy_bytes(std::fs::read(&p).unwrap(), name).unwrap();
+        let mem = lazy.read().unwrap();
+        for ds in [&file, &mem] {
+            let r = &ds.raster;
+            assert_eq!((r.data_type, r.bands), (dtype, sums.len()), "{name}");
+            let values = r.data.to_f64_vec();
+            let n = r.cols * r.rows;
+            assert_eq!(values.iter().filter(|v| v.is_nan()).count(), nans, "{name}");
+            for (b, band) in values.chunks(n).enumerate() {
+                let sum: f64 = band.iter().filter(|v| !v.is_nan()).sum();
+                let allowed = (tolerance * n as f64).max(1e-9 * sums[b].abs());
+                assert!((sum - sums[b]).abs() <= allowed, "{name} band {}: sum {sum} != {}", b + 1, sums[b]);
+            }
+            if let Some((_, w)) = weighted.iter().find(|(n, _)| *n == name) {
+                assert_eq!(values.chunks(n).map(weighted_sum).collect::<Vec<_>>(), *w, "{name}");
+            }
+        }
+        assert_eq!(
+            file.raster.data.to_f64_vec().iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+            mem.raster.data.to_f64_vec().iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+            "{name}"
+        );
+    }
 }
 
 #[test]

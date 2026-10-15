@@ -42,12 +42,18 @@ lz4_flex = { version = "0.14", default-features = false, features = ["alloc", "s
 ruzstd = "0.9"
 netcdf-reader = { version = "0.9", default-features = false, features = ["netcdf4"] }
 hdf5-reader = { version = "0.9", default-features = false }
-jpeg-decoder = { version = "0.3", default-features = false }
+# The portable decoder: the same pixels on every platform, closer to libjpeg's than its SIMD paths.
+jpeg-decoder = { version = "0.3", default-features = false, features = ["platform_independent"] }
 # GeoPackage JPEG tiles; the version wbraster already uses.
 jpeg-encoder = "0.7"
 # WebP tiles of PMTiles and MBTiles archives; the version tiff already uses.
 image-webp = "0.2"
 openjp2 = { version = "0.6", default-features = false, features = ["std"] }
+# GeoTIFF compressions GDAL writes and the tiff crate does not read: LERC, JPEG XL and LZMA (XZ).
+lerc-reader = { version = "0.5", default-features = false }
+lerc-core = "0.5"
+jxl-oxide = { version = "0.12", default-features = false }
+lzma-rust2 = { version = "0.22", default-features = false, features = ["std", "xz"] }
 zstd = "0.14"
 thiserror = "2"
 serde = { version = "1", features = ["derive"] }

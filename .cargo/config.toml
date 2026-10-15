@@ -1,0 +1,7 @@
+# OpenJPEG's Rust port (`openjp2`, the JPEG 2000 codec) is built as a C-ABI library too, and that
+# library calls the C allocator, which WebAssembly has no libc to supply. Its link may leave those
+# symbols undefined: terrio's own wasm32 builds define them (`drivers::jp2::wasm_libc`), so the
+# libraries and packages built from it resolve them. Projects building terrio for
+# wasm32-unknown-unknown need the same flag.
+[target.wasm32-unknown-unknown]
+rustflags = ["-C", "link-arg=--allow-undefined"]

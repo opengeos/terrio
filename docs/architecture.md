@@ -49,4 +49,6 @@ bytes as a single-threaded run gives. WebAssembly builds run the same code seque
 ## Pure Rust
 
 There are no C dependencies apart from the Zstandard codec, which compiles for WebAssembly too.
-JPEG 2000 uses a Rust port of OpenJPEG that is native only.
+JPEG 2000 uses a Rust port of OpenJPEG, in WebAssembly too: terrio supplies the C allocator calls
+the port makes. JPEG is decoded by terrio's own decoder, which reproduces libjpeg's arithmetic;
+LERC, JPEG XL and LZMA by pure-Rust crates.

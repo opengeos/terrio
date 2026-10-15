@@ -50,6 +50,12 @@ jpeg-decoder.workspace = true
 laz.workspace = true
 jpeg-encoder.workspace = true
 image-webp.workspace = true
+# JPEG 2000, in WebAssembly builds too (see `drivers::jp2` for the allocator it links against).
+openjp2.workspace = true
+lerc-reader.workspace = true
+lerc-core.workspace = true
+jxl-oxide.workspace = true
+lzma-rust2.workspace = true
 
 # The optional GDAL backend: opens what GDAL can when terrio has no driver for it. Needs GDAL
 # (3.4 or later) installed, found with pkg-config or GDAL_HOME.
@@ -62,8 +68,6 @@ default = []
 gdal = ["dep:gdal", "dep:gdal-sys"]
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-# OpenJPEG's port is built as a C-ABI library too, which does not link for wasm32.
-openjp2.workspace = true
 zstd.workspace = true
 tempfile.workspace = true
 ureq.workspace = true

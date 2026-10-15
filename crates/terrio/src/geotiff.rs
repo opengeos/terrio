@@ -193,7 +193,9 @@ pub(crate) fn read_geo_tags_from<R: Read + Seek>(mut f: R) -> Option<GeoTags> {
         && tie.len() >= 6
     {
         let (i, j, x, y) = (tie[0], tie[1], tie[3], tie[4]);
-        out.geo_transform = Some([x - i * scale[0], scale[0], 0.0, y + j * scale[1], 0.0, -scale[1]]);
+        // A negative Y scale is taken as positive, as GDAL does: the image is north-up.
+        let sy = scale[1].abs();
+        out.geo_transform = Some([x - i * scale[0], scale[0], 0.0, y + j * sy, 0.0, -sy]);
     }
     out.nodata = ascii(GDAL_NODATA).and_then(|s| parse_nodata(s.trim()));
     out.metadata = ascii(GDAL_METADATA).map(crate::drivers::gtiff_write::parse_gdal_metadata).unwrap_or_default();
@@ -438,6 +440,18 @@ pub(crate) type Reopen<'a> = &'a (dyn Fn() -> crate::Result<FileDecoder> + Sync)
 /// holds.
 pub(crate) type DecodedChunk = (u32, tiff::decoder::DecodingResult, (usize, usize));
 
+/// Decodes one chunk, with `codec` when the `tiff` crate does not decode the image's compression.
+fn read_chunk<R: Read + Seek>(
+    dec: &mut tiff::decoder::Decoder<R>,
+    codec: Option<&crate::tiff_codecs::ChunkCodec>,
+    idx: u32,
+) -> tiff::TiffResult<tiff::decoder::DecodingResult> {
+    match codec {
+        Some(c) => c.read(dec, idx),
+        None => dec.read_chunk(idx),
+    }
+}
+
 /// Decodes chunks (tiles or strips) of the image `ifd`, handing each to `place`, in no particular
 /// order. With `reopen`, several threads decode, each with its own decoder over the file, while
 /// the calling thread places the chunks; `dec`, positioned on the image, decodes the chunks no
@@ -450,10 +464,13 @@ pub(crate) fn decode_chunks<R: Read + Seek>(
     err: &(dyn Fn(tiff::TiffError) -> crate::Error + Sync),
     mut place: impl FnMut(DecodedChunk) -> crate::Result<()>,
 ) -> crate::Result<()> {
+    // The compressions the `tiff` crate does not decode (alone).
+    let codec = crate::tiff_codecs::ChunkCodec::new(dec).map_err(err)?;
+    let codec = codec.as_ref();
     // Chunks `..first` were decoded by other threads.
     #[cfg(not(target_arch = "wasm32"))]
     let first = match reopen {
-        Some(reopen) => decode_in_threads(reopen, ifd, chunks, err, &mut place)?,
+        Some(reopen) => decode_in_threads(reopen, ifd, chunks, codec, err, &mut place)?,
         None => 0,
     };
     #[cfg(target_arch = "wasm32")]
@@ -462,7 +479,7 @@ pub(crate) fn decode_chunks<R: Read + Seek>(
         0
     };
     for &idx in &chunks[first..] {
-        let c = dec.read_chunk(idx).map_err(err)?;
+        let c = read_chunk(dec, codec, idx).map_err(err)?;
         let (w, h) = dec.chunk_data_dimensions(idx);
         place((idx, c, (w as usize, h as usize)))?;
     }
@@ -477,6 +494,7 @@ fn decode_in_threads(
     reopen: Reopen,
     ifd: usize,
     chunks: &[u32],
+    codec: Option<&crate::tiff_codecs::ChunkCodec>,
     err: &(dyn Fn(tiff::TiffError) -> crate::Error + Sync),
     place: &mut impl FnMut(DecodedChunk) -> crate::Result<()>,
 ) -> crate::Result<usize> {
@@ -499,7 +517,7 @@ fn decode_in_threads(
                     while !stop.load(Ordering::Relaxed) {
                         let i = next.fetch_add(1, Ordering::Relaxed);
                         let Some(&idx) = chunks.get(i) else { break };
-                        let r = d.read_chunk(idx).map_err(err).map(|c| {
+                        let r = read_chunk(&mut d, codec, idx).map_err(err).map(|c| {
                             let (w, h) = d.chunk_data_dimensions(idx);
                             (idx, c, (w as usize, h as usize))
                         });

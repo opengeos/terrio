@@ -51,12 +51,18 @@ In WebAssembly, these formats are read from and written to memory:
 
 | | Read | Write |
 |---|---|---|
-| Raster | GeoTIFF/COG, Esri ASCII grid, GeoPackage | GeoTIFF, COG (lossless compressions), Esri ASCII grid, GeoPackage |
+| Raster | GeoTIFF/COG (LZW, Deflate, PackBits, ZSTD, LZMA, JPEG, WebP, LERC, JPEG XL), JPEG 2000 (JP2 and J2K), Esri ASCII grid, GeoPackage | GeoTIFF, COG (lossless compressions, ZSTD included), JPEG 2000, Esri ASCII grid, GeoPackage |
 | Vector | GeoJSON, TopoJSON, FlatGeobuf\*, GeoPackage, GeoParquet, CSV, KML, KMZ, GML, GPX, OSM PBF, zip archives of these, Shapefile and MapInfo (MIF/MID) in zip archives | GeoJSON, TopoJSON, FlatGeobuf, GeoPackage, KML, KMZ, GML, GPX |
 | Point cloud | LAS, LAZ, COPC | LAS, LAZ, COPC |
 
 \* The format library's FlatGeobuf reader overflows on large files in 32-bit WebAssembly; terrio's
 own FlatGeobuf driver will replace it.
+
+JPEG 2000 files decode with the codec of GDAL's JP2OpenJPEG driver (a Rust port of OpenJPEG), with
+their GeoJP2 or GMLJP2 georeferencing: a Sentinel-2 band (`T10SEG_..._B04.jp2`, 10980 x 10980)
+opens in about 6 seconds in Node.js. Written with a nodata value, a JPEG 2000 comes back as a zip
+archive of the `.jp2` file and the `.aux.xml` sidecar that holds the value, as GDAL writes it;
+`open` reads that archive back.
 
 
 ## Building

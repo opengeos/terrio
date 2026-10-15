@@ -22,6 +22,10 @@ use terrio::{DataType, Layer, LazyRaster, RasterDataset, RasterWriteOptions, Vec
 use wasm_bindgen::prelude::*;
 use wbraster::raster::RasterData;
 
+/// The allocator JPEG 2000 needs in WebAssembly: see [`terrio::NullSafeAllocator`].
+#[global_allocator]
+static ALLOCATOR: terrio::NullSafeAllocator = terrio::NullSafeAllocator;
+
 /// Reports Rust panics on the JavaScript console, with their message.
 #[wasm_bindgen(start)]
 pub fn start() {

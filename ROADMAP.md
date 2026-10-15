@@ -185,3 +185,37 @@ WebAssembly (the `terrio-js` npm package):
   driver reads them (`HDF5:"file.h5"://group/dataset`, metadata, user blocks), checked on JPSS
   and Sentinel-5P products. Still to do: HDF-EOS5 grids and swaths and other product-specific
   georeferencing, compound and complex datasets, writing groups.
+- JPEG 2000 and other compressed raster formats. Done: JPEG 2000 (JP2 and J2K, GeoJP2 and
+  GMLJP2 georeferencing) is read and written in WebAssembly too, with the same OpenJPEG port as
+  native builds, and the npm package reads and writes it; GeoTIFFs compressed with LERC (alone,
+  with Deflate or with Zstandard), JPEG XL and LZMA are read, natively and in WebAssembly; JPEG
+  (GeoTIFF, GeoPackage and tile archive tiles, `.jpg` files) is decoded exactly as libjpeg decodes
+  it for GDAL; ZSTD GeoTIFFs are written in WebAssembly. Every case is compared with GDAL on
+  Sentinel-2 bands, GDAL's JPEG 2000 test files and GDAL-written GeoTIFFs. Still to do: writing
+  LERC, JPEG XL and JPEG GeoTIFFs in WebAssembly, and reading JPEG XL and JPEG 2000 by window.
+- Band histograms as `gdalinfo -hist` computes them (`terrio info --hist`, identical to GDAL's on
+  GeoTIFFs and scanline formats); color relief written as a VRT (`terrio dem color-relief -f
+  VRT`, lookup tables identical to `gdaldem`'s). Done.
+
+## Decisions
+
+- The core API is synchronous and reads datasets into memory; remote files are downloaded first.
+  GeoTIFFs, local or remote, can instead be opened lazily (`LazyRaster`) and read by window and
+  overview level, decoding only the tiles needed and fetching them with HTTP range requests.
+- HTTP goes through `ureq` (with rustls) and S3 requests are signed by terrio itself, rather than
+  through `object_store`, to keep the API synchronous and the dependencies small.
+- GeoPackage is read and written by terrio's own SQLite file reader and writer (pure Rust): no
+  C dependency, and files written in one go.
+- terrio carries its own EPSG table (`crates/terrio/data/epsg.tsv.zst`, about 220 KB, generated
+  from GDAL and PROJ by `scripts/gen_epsg_table.py`): the PROJ strings of the CRSs, their WKT and
+  the datum transformations GDAL lists for them, so that terrio picks the same transformation as
+  GDAL for each point. The projection formulas are PROJ's, ported to Rust; `wbprojection` remains
+  the fallback for projections EPSG CRSs do not use and for WKT 2 parsing.
+- NetCDF-4 and HDF5 are read with the pure-Rust `netcdf-reader` and `hdf5-reader` crates, and
+  netCDF-4 is written by terrio's own small HDF5 writer (superblock 2, version 2 object headers,
+  version 1 chunk B-trees, dimension scales), which the netCDF and HDF5 libraries read: no HDF5
+  write crate exists in pure Rust.
+- Point clouds use the `laz` crate for LASzip, and terrio's own LAS and COPC code rather than the
+  `las` crate (whose header reader keeps only the first EVLR) or `wblidar` (which reads COPC points
+  in hierarchy order and cannot read LASzip's unchunked compressor). Point clouds are not
+  `Dataset`s: they have their own reader (`pointcloud::open_points`) and columnar `PointCloud`.

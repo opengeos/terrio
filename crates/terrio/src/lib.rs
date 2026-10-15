@@ -150,6 +150,7 @@ mod histogram;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod http;
 pub mod info;
+mod jpeg;
 pub mod memory;
 pub mod ops;
 mod par;
@@ -157,6 +158,7 @@ mod pixel;
 pub mod pointcloud;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod s3;
+mod tiff_codecs;
 pub mod tiles;
 pub mod vector;
 
@@ -182,6 +184,48 @@ pub use error::{Error, Result};
 pub use wbraster::{DataType, Raster, RasterConfig};
 /// The vector types: layers of features with geometries and attributes.
 pub use wbvector::{Feature, FieldDef, FieldType, FieldValue, Geometry, GeometryType, Layer};
+
+/// The system allocator, ignoring the release of null pointers.
+///
+/// OpenJPEG's Rust port, terrio's JPEG 2000 codec, releases code-block buffers it never allocated:
+/// null pointers. The C allocators of native builds ignore those; the allocator of
+/// `wasm32-unknown-unknown` does not, and traps. Programs built for WebAssembly that read or write
+/// JPEG 2000 make this their global allocator (terrio's npm package does):
+///
+/// ```
+/// #[global_allocator]
+/// static ALLOCATOR: terrio::NullSafeAllocator = terrio::NullSafeAllocator;
+/// ```
+///
+/// Their link also needs `-C link-arg=--allow-undefined` (see `.cargo/config.toml` in terrio's
+/// repository): the port is built as a C library too, which leaves the C allocator undefined.
+pub struct NullSafeAllocator;
+
+// SAFETY: every call goes to the system allocator, except releases of null pointers, which
+// allocate nothing.
+unsafe impl std::alloc::GlobalAlloc for NullSafeAllocator {
+    unsafe fn alloc(&self, layout: std::alloc::Layout) -> *mut u8 {
+        // SAFETY: as the caller guarantees.
+        unsafe { std::alloc::System.alloc(layout) }
+    }
+
+    unsafe fn alloc_zeroed(&self, layout: std::alloc::Layout) -> *mut u8 {
+        // SAFETY: as the caller guarantees.
+        unsafe { std::alloc::System.alloc_zeroed(layout) }
+    }
+
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: std::alloc::Layout) {
+        if !ptr.is_null() {
+            // SAFETY: a pointer this allocator returned, as the caller guarantees.
+            unsafe { std::alloc::System.dealloc(ptr, layout) }
+        }
+    }
+
+    unsafe fn realloc(&self, ptr: *mut u8, layout: std::alloc::Layout, new_size: usize) -> *mut u8 {
+        // SAFETY: as the caller guarantees.
+        unsafe { std::alloc::System.realloc(ptr, layout, new_size) }
+    }
+}
 
 /// The version of this crate.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
