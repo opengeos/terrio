@@ -645,6 +645,7 @@ pub fn can_write_stream(driver: VectorDriver) -> bool {
         driver,
         VectorDriver::GeoJSON
             | VectorDriver::GeoJSONSeq
+            | VectorDriver::GPKG
             | VectorDriver::CSV
             | VectorDriver::Shapefile
             | VectorDriver::FlatGeobuf
@@ -655,7 +656,7 @@ pub fn can_write_stream(driver: VectorDriver) -> bool {
 /// Whether the writer of a driver needs a [`LayerProfile`] of the features to write them as a
 /// stream.
 pub fn needs_profile(driver: VectorDriver) -> bool {
-    matches!(driver, VectorDriver::CSV | VectorDriver::Shapefile | VectorDriver::FlatGeobuf | VectorDriver::Parquet)
+    matches!(driver, VectorDriver::CSV | VectorDriver::Shapefile | VectorDriver::FlatGeobuf | VectorDriver::Parquet | VectorDriver::GPKG)
 }
 
 /// A vector layer written as a stream of features.
@@ -702,6 +703,16 @@ impl FeatureWriter {
             }
             (true, VectorDriver::Shapefile, Some(p)) => Box::new(ShpSink::create(path, &schema, p)?),
             (true, VectorDriver::FlatGeobuf, Some(p)) => Box::new(FgbSink::create(path, &schema, p)?),
+            (true, VectorDriver::GPKG, Some(p)) => match GpkgSink::create(path, &schema, p)? {
+                Some(sink) => Box::new(sink),
+                // A field named fid would give the rowids, which must then be checked unique over
+                // all the features: written whole.
+                None => Box::new(WholeSink {
+                    layer: schema,
+                    path: path.to_string(),
+                    options: VectorWriteOptions { driver: Some(driver), ..options.clone() },
+                }),
+            },
             (true, VectorDriver::Parquet, Some(p)) => {
                 let enc = geoparquet::ParquetEncoder::new(&schema, p);
                 let writer = enc.writer(BufWriter::with_capacity(1 << 20, File::create(path)?))?;
@@ -720,6 +731,83 @@ impl FeatureWriter {
     /// Completes the file.
     pub fn finish(self) -> Result<()> {
         self.sink.finish()
+    }
+}
+
+/// A GeoPackage written as the features come: the layer's table is streamed to the file
+/// ([`StreamTable`](crate::drivers::vector::sqlite::StreamTable)), its rows encoded a chunk at a
+/// time, keeping only each geometry's bounds for the R-tree; the metadata tables, R-tree and
+/// schema are written after it. The tables and values are those of the whole-layer writer,
+/// whose schema decisions (geometry type, Z, MEDIUMINT) are taken from the profile.
+struct GpkgSink {
+    path: String,
+    table: crate::drivers::vector::sqlite::StreamTable<BufWriter<File>>,
+    builder: crate::drivers::vector::geopackage::Builder,
+    cols: crate::drivers::vector::geopackage::LayerColumns,
+    layer: Layer,
+    extent: crate::drivers::vector::geopackage::LayerExtent,
+    count: usize,
+}
+
+impl GpkgSink {
+    /// `None` when the layer has an integer field named fid (see `FeatureWriter::create`).
+    fn create(path: &str, schema: &Layer, profile: &LayerProfile) -> Result<Option<Self>> {
+        use wbvector::FieldType;
+        let fields = schema.schema.fields();
+        if fields.iter().any(|f| f.name.eq_ignore_ascii_case("fid") && f.field_type == FieldType::Integer) {
+            return Ok(None);
+        }
+        let mut builder = crate::drivers::vector::geopackage::Builder::new();
+        builder.claim(&schema.name)?;
+        let g = &profile.geometry;
+        let all_none = g.count == 0;
+        let declared = if all_none { schema.geom_type } else { g.first.filter(|(_, same)| *same).map(|(t, _)| t) };
+        let small = |i: usize| profile.fields.get(i).is_none_or(|f| f.no_int_beyond_int32);
+        let cols = builder.layer_columns(schema, all_none, declared, g.has_z, None, small);
+        // The file is created anew: pages left over from a larger file would remain at its end.
+        let out = BufWriter::with_capacity(1 << 20, File::create(path)?);
+        Ok(Some(Self {
+            path: path.to_string(),
+            table: crate::drivers::vector::sqlite::StreamTable::new(out),
+            builder,
+            cols,
+            layer: schema.clone(),
+            extent: Default::default(),
+            count: 0,
+        }))
+    }
+}
+
+impl FeatureSink for GpkgSink {
+    fn write(&mut self, chunk: &Layer) -> Result<()> {
+        let fields = self.layer.schema.fields();
+        let first = self.count as i64 + 1;
+        let (cols, features) = (&self.cols, &chunk.features);
+        let rows = crate::par::map_range(features.len(), |n| {
+            let (rowid, values, bbox) = cols.row(&features[n], first + n as i64, fields);
+            (rowid, crate::drivers::vector::sqlite::record(&values), bbox)
+        });
+        for (rowid, rec, bbox) in rows {
+            self.table.push(rowid, &rec)?;
+            self.extent.add(rowid, bbox);
+        }
+        self.count += features.len();
+        Ok(())
+    }
+
+    fn finish(self: Box<Self>) -> Result<()> {
+        let Self { path, table, mut builder, cols, layer, extent, count } = *self;
+        let (root, base) = table.finish()?;
+        let built = crate::drivers::vector::sqlite::BuiltTable { name: layer.name.clone(), sql: cols.sql.clone(), root };
+        builder.finish_layer(&layer.name, &cols, count, count as i64, extent, crate::drivers::vector::geopackage::LayerTable::Built(built));
+        let (page1, rest) = builder.finish_parts(base)?;
+        let mut f = std::fs::OpenOptions::new().write(true).open(&path)?;
+        f.seek(SeekFrom::Start(u64::from(base - 1) * page1.len() as u64))?;
+        f.write_all(&rest)?;
+        f.seek(SeekFrom::Start(0))?;
+        f.write_all(&page1)?;
+        f.flush()?;
+        Ok(())
     }
 }
 
@@ -1112,6 +1200,13 @@ pub fn convert(src: &str, dst: &str, options: &ConvertOptions) -> Result<()> {
     match readers.len() {
         0 => return Err(Error::InvalidArgument("no layers to write".into())),
         1 => {}
+        // Several layers in one GeoPackage: written whole.
+        _ if driver == VectorDriver::GPKG => {
+            drop(readers);
+            let ds = crate::open_vector(src, &options.open)?;
+            let layers = crate::ops::vector_filter::translate_owned(ds.layers, &options.translate)?;
+            return crate::write_vector(&layers, dst, &options.write);
+        }
         _ => {
             return Err(Error::InvalidArgument(format!(
                 "the {} format holds one layer: choose a layer, or write a GeoPackage",

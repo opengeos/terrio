@@ -133,7 +133,8 @@ fn streamed_writes_match_whole_writes() {
                 w.write(&chunk).unwrap();
             }
             w.finish().unwrap();
-            if *driver == VectorDriver::Parquet {
+            // GeoParquet row groups and GeoPackage pages are laid out differently when streamed.
+            if matches!(driver, VectorDriver::Parquet | VectorDriver::GPKG) {
                 let a = crate::open_vector(&whole, &Default::default()).unwrap().layers.remove(0);
                 let b = crate::open_vector(&streamed, &Default::default()).unwrap().layers.remove(0);
                 same_content(&a, &b);
@@ -166,7 +167,7 @@ fn converts_as_streams_like_whole_conversions() {
         let streamed = dir.path().join(format!("s.{ext}")).to_string_lossy().into_owned();
         let whole = dir.path().join(format!("w.{ext}")).to_string_lossy().into_owned();
         let options = ConvertOptions { translate: translate.clone(), chunk_size: 16, ..Default::default() };
-        assert_eq!(can_convert_stream(&src, &streamed, &options), ext != "gpkg");
+        assert!(can_convert_stream(&src, &streamed, &options), "{ext}");
         convert(&src, &streamed, &options).unwrap();
         let layers =
             crate::ops::vector_filter::translate(&crate::open_vector(&src, &Default::default()).unwrap().layers, &translate).unwrap();

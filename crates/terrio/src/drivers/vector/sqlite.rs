@@ -1,12 +1,16 @@
 //! A writer of SQLite database files, enough for GeoPackages: tables (rowid b-trees, any size,
 //! with overflow pages) and small indexes (the automatic indexes of UNIQUE and PRIMARY KEY
-//! constraints), written in one go.
+//! constraints), written in one go; or a large table first, streamed to the file row by row
+//! ([`StreamTable`]), and the rest of the database after it ([`write_database_parts`]).
 //!
 //! The format is described at <https://www.sqlite.org/fileformat2.html>.
 
 use crate::Result;
 
 const PAGE_SIZE: usize = 4096;
+/// The page holding the bytes at 1 GiB, which SQLite uses for file locks: never part of the
+/// database, a file larger than 1 GiB has it unused.
+const LOCK_PAGE: u32 = (0x4000_0000 / PAGE_SIZE) as u32 + 1;
 
 /// A value stored in a record.
 #[derive(Debug, Clone, PartialEq)]
@@ -115,19 +119,32 @@ pub fn record(values: &[Value]) -> Vec<u8> {
     out
 }
 
+/// The pages being built: page 1, and pages `base..` (pages 2 to `base - 1` belong to tables
+/// already written, see [`StreamTable`]).
 struct Pager {
+    page1: Vec<u8>,
     pages: Vec<Vec<u8>>,
+    base: u32,
 }
 
 impl Pager {
+    fn new(base: u32) -> Self {
+        Self { page1: vec![0; PAGE_SIZE], pages: Vec::new(), base }
+    }
+
     /// Allocates a page and returns its number (1-based).
     fn alloc(&mut self) -> u32 {
         self.pages.push(vec![0; PAGE_SIZE]);
-        self.pages.len() as u32
+        let n = self.base + self.pages.len() as u32 - 1;
+        if n != LOCK_PAGE {
+            return n;
+        }
+        self.pages.push(vec![0; PAGE_SIZE]);
+        n + 1
     }
 
     fn page(&mut self, n: u32) -> &mut Vec<u8> {
-        &mut self.pages[n as usize - 1]
+        if n == 1 { &mut self.page1 } else { &mut self.pages[(n - self.base) as usize] }
     }
 
     /// Stores a payload: the local part, and the rest in a chain of overflow pages.
@@ -419,6 +436,179 @@ pub struct Index {
     pub columns: Vec<usize>,
 }
 
+/// A table written to a database file as its rows arrive, before the rest of the database: its
+/// leaves and overflow pages from page 2 on, each written once filled, then its interior pages.
+/// Only the current leaf is held, and the page and largest rowid of each node of the level being
+/// built, so a table of any size is written in little memory. The pages are those
+/// [`write_database`] writes for the same rows, except that overflow pages come before the leaf
+/// that points to them rather than before all leaves.
+pub struct StreamTable<W: std::io::Write + std::io::Seek> {
+    out: W,
+    next: u32,
+    leaf: Vec<Vec<u8>>,
+    used: usize,
+    last_key: i64,
+    level: Vec<(u32, i64)>,
+}
+
+impl<W: std::io::Write + std::io::Seek> StreamTable<W> {
+    /// Starts a table whose pages go to `out`, a database file being written (page 1, the
+    /// header and schema, is written last by [`write_database_parts`]).
+    pub fn new(out: W) -> Self {
+        Self { out, next: 2, leaf: Vec::new(), used: 8, last_key: 0, level: Vec::new() }
+    }
+
+    fn alloc(&mut self) -> u32 {
+        if self.next == LOCK_PAGE {
+            self.next += 1;
+        }
+        self.next += 1;
+        self.next - 1
+    }
+
+    fn write_page(&mut self, n: u32, page: &[u8]) -> Result<()> {
+        self.out.seek(std::io::SeekFrom::Start(u64::from(n - 1) * PAGE_SIZE as u64))?;
+        self.out.write_all(page)?;
+        Ok(())
+    }
+
+    /// Adds a row (an encoded [`record`]); rowids must increase.
+    pub fn push(&mut self, rowid: i64, rec: &[u8]) -> Result<()> {
+        let max_local = PAGE_SIZE - 35;
+        let min_local = (PAGE_SIZE - 12) * 32 / 255 - 23;
+        // The payload, with its overflow pages written now (as `Pager::payload` lays them out).
+        let (local, overflow) = if rec.len() <= max_local {
+            (rec, None)
+        } else {
+            let usable = PAGE_SIZE;
+            let k = min_local + (rec.len() - min_local) % (usable - 4);
+            let local = if k <= max_local { k } else { min_local };
+            let mut rest = &rec[local..];
+            let first = self.alloc();
+            let mut page = first;
+            loop {
+                let n = rest.len().min(usable - 4);
+                let next = if rest.len() > n { self.alloc() } else { 0 };
+                let mut p = vec![0u8; PAGE_SIZE];
+                p[..4].copy_from_slice(&next.to_be_bytes());
+                p[4..4 + n].copy_from_slice(&rest[..n]);
+                self.write_page(page, &p)?;
+                rest = &rest[n..];
+                if next == 0 {
+                    break;
+                }
+                page = next;
+            }
+            (&rec[..local], Some(first))
+        };
+        let mut c = Vec::with_capacity(local.len() + 18);
+        varint(&mut c, rec.len() as u64);
+        varint(&mut c, rowid as u64);
+        c.extend_from_slice(local);
+        if let Some(o) = overflow {
+            c.extend_from_slice(&o.to_be_bytes());
+        }
+        // As `pack` splits cells into leaves.
+        if self.used + c.len() + 2 > PAGE_SIZE && !self.leaf.is_empty() {
+            self.flush_leaf()?;
+        }
+        self.used += c.len() + 2;
+        self.leaf.push(c);
+        self.last_key = rowid;
+        Ok(())
+    }
+
+    fn flush_leaf(&mut self) -> Result<()> {
+        let n = self.alloc();
+        let page = node_bytes(0x0D, &std::mem::take(&mut self.leaf), None);
+        self.write_page(n, &page)?;
+        self.level.push((n, self.last_key));
+        self.used = 8;
+        Ok(())
+    }
+
+    /// Writes the rest of the table and returns its root page and the first page after it.
+    pub fn finish(mut self) -> Result<(u32, u32)> {
+        if !self.leaf.is_empty() || self.level.is_empty() {
+            self.flush_leaf()?;
+        }
+        let mut level = std::mem::take(&mut self.level);
+        // A single leaf is the root.
+        while level.len() > 1 {
+            // As `build_table` groups children into interior nodes.
+            let mut groups: Vec<Vec<(u32, i64)>> = vec![Vec::new()];
+            let mut used = 12;
+            for &(child, key) in &level {
+                let len = 4 + varint_len(key as u64) + 2;
+                if groups.last().is_some_and(|g| !g.is_empty()) && used + len > PAGE_SIZE - 100 {
+                    groups.push(Vec::new());
+                    used = 12;
+                }
+                used += len;
+                if let Some(g) = groups.last_mut() {
+                    g.push((child, key));
+                }
+            }
+            let n = groups.len();
+            if n > 1
+                && groups[n - 1].len() == 1
+                && let Some(moved) = groups[n - 2].pop()
+            {
+                groups[n - 1].insert(0, moved);
+            }
+            let mut next_level = Vec::with_capacity(groups.len());
+            for g in &groups {
+                let cells: Vec<Vec<u8>> = g[..g.len() - 1]
+                    .iter()
+                    .map(|&(child, key)| {
+                        let mut c = child.to_be_bytes().to_vec();
+                        varint(&mut c, key as u64);
+                        c
+                    })
+                    .collect();
+                let (right, key) = g[g.len() - 1];
+                let page = self.alloc();
+                let bytes = node_bytes(0x05, &cells, Some(right));
+                self.write_page(page, &bytes)?;
+                next_level.push((page, key));
+            }
+            level = next_level;
+        }
+        self.out.flush()?;
+        Ok((level[0].0, self.next))
+    }
+}
+
+/// A b-tree page (not page 1): header, cell pointers and cells packed at the end.
+fn node_bytes(flag: u8, cells: &[Vec<u8>], right: Option<u32>) -> Vec<u8> {
+    let mut p = vec![0u8; PAGE_SIZE];
+    p[0] = flag;
+    p[3..5].copy_from_slice(&(cells.len() as u16).to_be_bytes());
+    let header = if right.is_some() { 12 } else { 8 };
+    if let Some(r) = right {
+        p[8..12].copy_from_slice(&r.to_be_bytes());
+    }
+    let mut end = PAGE_SIZE;
+    for (i, c) in cells.iter().enumerate() {
+        end -= c.len();
+        p[end..end + c.len()].copy_from_slice(c);
+        let ptr = header + 2 * i;
+        p[ptr..ptr + 2].copy_from_slice(&(end as u16).to_be_bytes());
+    }
+    p[5..7].copy_from_slice(&(end as u16).to_be_bytes());
+    p
+}
+
+/// A table already written (by a [`StreamTable`]): its name, `CREATE TABLE` statement and root.
+pub struct BuiltTable {
+    /// The table name.
+    pub name: String,
+    /// The `CREATE TABLE` statement.
+    pub sql: String,
+    /// Its root page.
+    pub root: u32,
+}
+
 /// Writes a database file holding the tables and schema objects, with `user_version` and
 /// `application_id` set.
 pub fn write_database(tables: &[Table], objects: &[SchemaObject], user_version: u32, application_id: u32) -> Result<Vec<u8>> {
@@ -434,10 +624,37 @@ pub fn write_database_with_indexes(
     user_version: u32,
     application_id: u32,
 ) -> Result<Vec<u8>> {
-    let mut pager = Pager { pages: Vec::new() };
-    pager.alloc(); // page 1: the schema table's root
+    let (page1, rest) = write_database_parts(tables, &[], indexes, objects, user_version, application_id, 2)?;
+    Ok([page1, rest].concat())
+}
+
+/// Writes the parts of a database file whose pages 2 to `base - 1` hold tables already written
+/// (`built`, each listed in the schema before the table of `tables` at its index, or after them
+/// all): page 1, and the pages from `base` on, holding `tables`, their indexes and the schema.
+pub fn write_database_parts(
+    tables: &[Table],
+    built: &[(usize, BuiltTable)],
+    indexes: &[Index],
+    objects: &[SchemaObject],
+    user_version: u32,
+    application_id: u32,
+    base: u32,
+) -> Result<(Vec<u8>, Vec<u8>)> {
+    let mut pager = Pager::new(base);
     let mut schema_rows = Vec::new();
-    for t in tables {
+    let built_row = |b: &BuiltTable| {
+        vec![
+            Value::Text("table".into()),
+            Value::Text(b.name.clone()),
+            Value::Text(b.name.clone()),
+            Value::Int(i64::from(b.root)),
+            Value::Text(b.sql.clone()),
+        ]
+    };
+    for (ti, t) in tables.iter().enumerate() {
+        for (_, b) in built.iter().filter(|(at, _)| *at == ti) {
+            schema_rows.push(built_row(b));
+        }
         let rows: Vec<(i64, Vec<u8>)> = crate::par::map_range(t.rows.len(), |i| (t.rows[i].0, record(&t.rows[i].1)));
         let root = build_table(&mut pager, &rows, None);
         schema_rows.push(vec![
@@ -468,6 +685,9 @@ pub fn write_database_with_indexes(
             ]);
         }
     }
+    for (_, b) in built.iter().filter(|(at, _)| *at >= tables.len()) {
+        schema_rows.push(built_row(b));
+    }
     for o in objects {
         schema_rows.push(vec![
             Value::Text(o.kind.into()),
@@ -480,7 +700,7 @@ pub fn write_database_with_indexes(
     let schema: Vec<(i64, Vec<u8>)> = schema_rows.iter().enumerate().map(|(i, r)| (i as i64 + 1, record(r))).collect();
     build_table(&mut pager, &schema, Some(1));
 
-    let count = pager.pages.len() as u32;
+    let count = base - 1 + pager.pages.len() as u32;
     let h = pager.page(1);
     h[..16].copy_from_slice(b"SQLite format 3\0");
     h[16..18].copy_from_slice(&(PAGE_SIZE as u16).to_be_bytes());
@@ -498,7 +718,7 @@ pub fn write_database_with_indexes(
     h[68..72].copy_from_slice(&application_id.to_be_bytes());
     h[92..96].copy_from_slice(&1u32.to_be_bytes()); // version-valid-for
     h[96..100].copy_from_slice(&3_045_000u32.to_be_bytes()); // SQLite version number
-    Ok(pager.pages.concat())
+    Ok((pager.page1, pager.pages.concat()))
 }
 
 #[cfg(test)]
@@ -525,5 +745,53 @@ mod tests {
         let db = write_database(&[t], &[], 0, 0).unwrap();
         assert_eq!(db.len() % PAGE_SIZE, 0);
         assert_eq!(&db[..16], b"SQLite format 3\0");
+    }
+
+    #[test]
+    fn skips_the_lock_byte_page() {
+        let mut pager = Pager::new(LOCK_PAGE - 1);
+        assert_eq!([pager.alloc(), pager.alloc(), pager.alloc()], [LOCK_PAGE - 1, LOCK_PAGE + 1, LOCK_PAGE + 2]);
+        assert_eq!(pager.pages.len(), 4);
+        let mut table = StreamTable::new(std::io::Cursor::new(Vec::new()));
+        table.next = LOCK_PAGE - 1;
+        assert_eq!([table.alloc(), table.alloc(), table.alloc()], [LOCK_PAGE - 1, LOCK_PAGE + 1, LOCK_PAGE + 2]);
+    }
+
+    #[test]
+    fn streamed_tables_match_built_tables() {
+        let sql = "CREATE TABLE t (id INTEGER PRIMARY KEY, s TEXT, v REAL)";
+        // No row, a single leaf, interior levels, and then rows with overflow pages.
+        for (n, len) in [(0i64, 10), (3, 10), (20000, 50), (5000, 9000)] {
+            let rows: Vec<(i64, Vec<Value>)> = (1..=n)
+                .map(|i| (i * 2, vec![Value::Null, Value::Text("y".repeat((i * 37 % len) as usize)), Value::Real(i as f64)]))
+                .collect();
+            let t = Table { name: "t".into(), sql: sql.into(), rows: rows.clone(), autoindexes: vec![] };
+            let whole = write_database(&[t], &[], 7, 9).unwrap();
+
+            let mut file = std::io::Cursor::new(Vec::new());
+            let mut table = StreamTable::new(&mut file);
+            for (rowid, values) in &rows {
+                table.push(*rowid, &record(values)).unwrap();
+            }
+            let (root, base) = table.finish().unwrap();
+            let built = BuiltTable { name: "t".into(), sql: sql.into(), root };
+            let (page1, rest) = write_database_parts(&[], &[(0, built)], &[], &[], 7, 9, base).unwrap();
+            let mut streamed = file.into_inner();
+            streamed.resize((base as usize - 1) * PAGE_SIZE, 0);
+            streamed.extend_from_slice(&rest);
+            streamed[..PAGE_SIZE].copy_from_slice(&page1);
+            if len < 1000 {
+                assert!(streamed == whole, "{n} rows");
+            } else {
+                assert_eq!(streamed.len(), whole.len());
+            }
+            let db = crate::drivers::sqlite::Db::new(streamed).unwrap();
+            let read = db.raw_rows("t").unwrap();
+            assert_eq!(read.len(), rows.len());
+            for ((rowid, rec), (k, values)) in read.iter().zip(&rows) {
+                assert_eq!(rowid, k);
+                assert!(*rec == record(values), "row {k}");
+            }
+        }
     }
 }
