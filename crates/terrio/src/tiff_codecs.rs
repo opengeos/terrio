@@ -76,33 +76,43 @@ impl Sample {
     }
 }
 
-/// Decompresses a chunk coded with one of TIFF's lossless compressions.
-fn decompress(compression: u16, raw: Vec<u8>) -> TiffResult<Vec<u8>> {
+/// Decompresses a chunk coded with one of TIFF's lossless compressions, into at most `limit`
+/// bytes: a stream that would expand further is cut there (it cannot be a valid chunk), and one
+/// that ends short is an error rather than missing pixels.
+fn decompress(compression: u16, raw: Vec<u8>, limit: usize) -> TiffResult<Vec<u8>> {
     let mut out = Vec::new();
+    // Reads at most `limit` bytes of a decompressing reader.
+    let bounded = |r: &mut dyn Read, out: &mut Vec<u8>| r.take(limit as u64).read_to_end(out).map(|_| ());
     match compression {
-        1 => return Ok(raw),
+        1 => out = raw,
         5 => {
-            weezl::decode::Decoder::with_tiff_size_switch(weezl::BitOrder::Msb, 8)
-                .into_vec(&mut out)
-                .decode_all(&raw)
-                .status
-                .map_err(|e| invalid(format!("LZW: {e}")))?;
+            out.resize(limit, 0);
+            let mut dec = weezl::decode::Decoder::with_tiff_size_switch(weezl::BitOrder::Msb, 8);
+            let (mut consumed, mut written) = (0, 0);
+            while written < limit {
+                let r = dec.decode_bytes(&raw[consumed..], &mut out[written..]);
+                consumed += r.consumed_in;
+                written += r.consumed_out;
+                match r.status.map_err(|e| invalid(format!("LZW: {e}")))? {
+                    weezl::LzwStatus::Done => break,
+                    weezl::LzwStatus::NoProgress if r.consumed_in == 0 && r.consumed_out == 0 => break,
+                    _ => {}
+                }
+            }
+            out.truncate(written);
         }
-        8 | 32946 => {
-            flate2::read::ZlibDecoder::new(&raw[..]).read_to_end(&mut out)?;
-        }
-        LZMA => {
-            lzma_rust2::XzReader::new(&raw[..], true).read_to_end(&mut out).map_err(|e| invalid(format!("LZMA: {e}")))?;
-        }
+        8 | 32946 => bounded(&mut flate2::read::ZlibDecoder::new(&raw[..]), &mut out)?,
+        LZMA => bounded(&mut lzma_rust2::XzReader::new(&raw[..], true), &mut out).map_err(|e| invalid(format!("LZMA: {e}")))?,
         50000 => {
             let mut src = &raw[..];
-            ruzstd::decoding::StreamingDecoder::new(&mut src).map_err(|e| invalid(format!("Zstandard: {e}")))?.read_to_end(&mut out)?;
+            let mut z = ruzstd::decoding::StreamingDecoder::new(&mut src).map_err(|e| invalid(format!("Zstandard: {e}")))?;
+            bounded(&mut z, &mut out)?;
         }
         32773 => {
             // PackBits: a count byte n, then n + 1 literal bytes (n >= 0) or one byte repeated
             // 1 - n times (n < 0, -128 skipped).
             let mut i = 0;
-            while i < raw.len() {
+            while i < raw.len() && out.len() < limit {
                 let n = raw[i] as i8;
                 i += 1;
                 if n >= 0 {
@@ -119,6 +129,10 @@ fn decompress(compression: u16, raw: Vec<u8>) -> TiffResult<Vec<u8>> {
         }
         other => return Err(invalid(format!("TIFF compression {other} with packed samples is not supported"))),
     }
+    if out.len() < limit {
+        return Err(invalid(format!("TIFF chunk decompressed to {} bytes, {limit} expected", out.len())));
+    }
+    out.truncate(limit);
     Ok(out)
 }
 
@@ -143,6 +157,8 @@ pub(crate) struct ChunkCodec {
     predictor: u16,
     /// The bits of a sample in the file.
     bits: u16,
+    /// `FillOrder` 2: the bits of each byte are stored least significant first.
+    lsb_first: bool,
     /// LERC: the compression wrapping the blobs (0 none, 1 Deflate, 2 Zstandard).
     lerc_wrapper: u32,
     /// LERC: the last sample is an alpha channel, coded as the blob's mask.
@@ -220,6 +236,7 @@ impl ChunkCodec {
             big_endian: dec.byte_order() == tiff::tags::ByteOrder::BigEndian,
             predictor,
             bits,
+            lsb_first: dec.find_tag_unsigned::<u16>(Tag::FillOrder)? == Some(2),
             lerc_wrapper,
             lerc_alpha: !planar && samples > 1 && extra.last() == Some(&2) && sample == Sample::U8,
             jpeg_tables: match codec {
@@ -262,13 +279,18 @@ impl ChunkCodec {
             Codec::Lerc => self.lerc(raw, w, h)?,
             Codec::Jxl => self.jxl(&raw, w, h)?,
             Codec::Jpeg => self.jpeg(&raw, w, h)?,
-            Codec::Packed(compression) => self.unpack(&decompress(compression, raw)?, w, h),
+            Codec::Packed(compression) => {
+                let row_bytes = (w * self.spp).checked_mul(usize::from(self.bits)).map(|b| b.div_ceil(8));
+                let size = row_bytes.and_then(|r| r.checked_mul(h)).ok_or_else(|| invalid("TIFF chunk too large"))?;
+                self.unpack(&decompress(compression, raw, size)?, w, h)
+            }
         };
         Ok(self.result(&bytes, w, dw, dh))
     }
 
     /// Unpacks `h` rows of `w` pixels of samples of `self.bits` bits, MSB first with each row
-    /// starting on a byte (as libtiff packs them), into native-endian samples of the output type.
+    /// starting on a byte (as libtiff packs them; with `FillOrder` 2 each byte's bits are
+    /// reversed first), into native-endian samples of the output type.
     fn unpack(&self, packed: &[u8], w: usize, h: usize) -> Vec<u8> {
         let bits = usize::from(self.bits);
         let per_row = w * self.spp;
@@ -281,7 +303,9 @@ impl ChunkCodec {
                 let mut v: u32 = 0;
                 let first = i * bits;
                 for b in first..first + bits {
-                    let bit = row.get(b / 8).map_or(0, |byte| (byte >> (7 - b % 8)) & 1);
+                    // FillOrder 2 stores each byte's bits least significant first.
+                    let byte = row.get(b / 8).map_or(0, |&x| if self.lsb_first { x.reverse_bits() } else { x });
+                    let bit = (byte >> (7 - b % 8)) & 1;
                     v = (v << 1) | u32::from(bit);
                 }
                 let at = (r * per_row + i) * size;
@@ -551,6 +575,7 @@ mod tests {
             big_endian: false,
             predictor: 1,
             bits,
+            lsb_first: false,
             lerc_wrapper: 0,
             lerc_alpha: false,
             jpeg_tables: vec![],
@@ -593,10 +618,24 @@ mod tests {
     }
 
     #[test]
+    fn reads_lsb_first_bytes() {
+        // FillOrder 2: the same packed samples with each byte's bits reversed.
+        let rows = vec![vec![1u32, 32_767, 12_345, 7], vec![0, 1 << 14, 3, 32_000]];
+        let mut codec = packed(15, 1);
+        codec.lsb_first = true;
+        let lsb: Vec<u8> = pack(&rows, 15).iter().map(|b| b.reverse_bits()).collect();
+        let DecodingResult::U16(got) = codec.result(&codec.unpack(&lsb, 4, 2), 4, 4, 2) else { unreachable!() };
+        assert_eq!(got.iter().map(|v| u32::from(*v)).collect::<Vec<_>>(), rows.concat());
+    }
+
+    #[test]
     fn decompresses_packbits() {
         // A literal run of 3, a repeat of 4, the -128 no-op, a literal of 1.
         let raw = vec![2, 1, 2, 3, 0xFD, 9, 0x80, 0, 7];
-        assert_eq!(decompress(32773, raw).unwrap(), vec![1, 2, 3, 9, 9, 9, 9, 7]);
+        assert_eq!(decompress(32773, raw.clone(), 8).unwrap(), vec![1, 2, 3, 9, 9, 9, 9, 7]);
+        // A chunk that ends short is an error; one that would expand further is cut.
+        assert!(decompress(32773, raw.clone(), 9).is_err());
+        assert_eq!(decompress(32773, raw, 4).unwrap(), vec![1, 2, 3, 9]);
     }
 
     #[test]
@@ -612,6 +651,7 @@ mod tests {
             big_endian: false,
             predictor: 3,
             bits: 32,
+            lsb_first: false,
             lerc_wrapper: 0,
             lerc_alpha: false,
             jpeg_tables: Vec::new(),

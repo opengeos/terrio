@@ -38,8 +38,8 @@ def main():
             ds.GetRasterBand(b + 1).WriteArray(a[b])
         ds = None
         files.append(p)
-    for p in files:
-        q = p + ".terrio.tif"
+    for i, p in enumerate(files):
+        q = os.path.join(out, f"terrio_{i}_{os.path.basename(p)}")
         r = subprocess.run([terrio, "convert", p, q], capture_output=True, text=True)
         ref = gdal.Open(p).ReadAsArray()
         if r.returncode:
@@ -53,6 +53,7 @@ def main():
         if not same:
             print(f"DIFF {os.path.basename(p)}: {ref.dtype}{ref.shape} vs {got.dtype}{got.shape}")
     print(f"{ok} identical, {bad} not")
+    sys.exit(1 if bad else 0)
 
 
 if __name__ == "__main__":
