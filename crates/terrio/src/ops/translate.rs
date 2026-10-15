@@ -181,8 +181,7 @@ pub fn translate(ds: &RasterDataset, o: &TranslateOptions) -> Result<RasterDatas
     let complex = o.scale.is_some() || o.exponent.is_some();
     let n = ow * oh;
     let mut out = RasterData::new_filled(out_type, n * bands.len(), 0.0);
-    let mut out_bands = Vec::with_capacity(bands.len());
-    for &b in &bands {
+    for (k, &b) in bands.iter().enumerate() {
         let values = super::BandView::of(r, b - 1);
         let valid: Option<Vec<bool>> = src_nodata.map(|nd| values.valid(nd));
         let read = SourceRead {
@@ -236,13 +235,11 @@ pub fn translate(ds: &RasterDataset, o: &TranslateOptions) -> Result<RasterDatas
             }
         };
         // Written in the output's type, converted as they are stored.
-        let k = out_bands.len();
         crate::pixel::with_data!(&mut out, v => {
             let band = &mut v[k * n..(k + 1) * n];
             band.iter_mut().for_each(|x| *x = fill as _);
             read.read(ow, oh, band, |x| convert_value(scaled(x), out_type) as _);
         });
-        out_bands.push(b);
     }
     let grid = Grid { width: ow, height: oh, geo_transform: gt };
     let srs = o.assign_srs.clone().unwrap_or_else(|| ds.crs());

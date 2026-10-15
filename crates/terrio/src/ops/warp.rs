@@ -1042,44 +1042,19 @@ pub fn warp(sources: &[&RasterDataset], o: &WarpOptions) -> Result<RasterDataset
         let mut chunks = Vec::new();
         ctx.collect_chunks(0, 0, grid.width, grid.height, &mut chunks);
         chunks.sort_by_key(|c| (c.dy, c.dx));
-        let data = SrcData { bands: &src_bands, valid: &valid, width: s.grid.width };
         // As GDAL's warp kernel: valid pixels equal to the output nodata are nudged off it,
         // except with a nodata value unified across several bands.
         let sink = Sink { out_type, dst_nodata, avoid_nodata: masked && (bands == 1 || !unified) };
-        let mut staged: Vec<Vec<f64>> = vec![Vec::new(); bands];
         let fill = warp_round(init, out_type);
-        for c in chunks {
-            // The chunk's part of the output as `f64` (the first source's chunks don't overlap:
-            // the output there is still its initial value), warped, then stored back. The chunks
-            // of a source partition the output (`collect_chunks`), and the values stored are
-            // already rounded to the output type (`Sink::value`), so storing them back is exact.
-            let (w, rows) = (grid.width, c.dy..c.dy + c.dh);
-            for (b, part) in staged.iter_mut().enumerate() {
-                part.clear();
-                part.resize(c.dw * c.dh, fill);
-                if k > 0 {
-                    crate::pixel::with_data!(&out, v => {
-                        let src = &v[b * n + rows.start * w..b * n + rows.end * w];
-                        crate::par::chunks_mut(part, c.dw, |r, o| {
-                            for (o, x) in o.iter_mut().zip(&src[r * w + c.dx..r * w + c.dx + c.dw]) {
-                                *o = crate::pixel::Pixel::to_f64(*x);
-                            }
-                        });
-                    });
-                }
-            }
-            ctx.warp_chunk(&c, &data, &sink, chunk_rows(&mut staged, c.dw, &Chunk { dx: 0, dy: 0, ..c }));
-            for (b, part) in staged.iter().enumerate() {
-                crate::pixel::with_data!(&mut out, v => {
-                    let dst = &mut v[b * n + rows.start * w..b * n + rows.end * w];
-                    crate::par::chunks_mut(dst, w, |r, o| {
-                        for (o, x) in o[c.dx..c.dx + c.dw].iter_mut().zip(&part[r * c.dw..(r + 1) * c.dw]) {
-                            *o = warp_round(*x, out_type) as _;
-                        }
-                    });
-                });
-            }
-        }
+        // The source's bands in their type: the kernels are compiled for each (no conversion of
+        // the bands, and no dispatch on the type per pixel).
+        let sn = s.grid.width * s.grid.height;
+        let target = Target { out: &mut out, width: grid.width, n, fill, out_type, first: k == 0 };
+        crate::pixel::with_data!(&s.ds.raster.data, v => {
+            let typed: Vec<&[_]> = (0..bands).map(|b| &v[b * sn..(b + 1) * sn]).collect();
+            let data = SrcData { bands: &typed, valid: &valid, width: s.grid.width };
+            warp_source(&ctx, &chunks, &data, &sink, target);
+        });
     }
     super::build_raster_data(grid, out, bands, dst_nodata, &dst_srs)
 }
@@ -1258,10 +1233,60 @@ struct WarpContext<'a> {
     cutline: bool,
 }
 
-struct SrcData<'a> {
-    bands: &'a [super::BandView<'a>],
+struct SrcData<'a, T> {
+    bands: &'a [&'a [T]],
     valid: &'a [Option<Vec<bool>>],
     width: usize,
+}
+
+/// The output warped into: all its bands (`n` values each, rows of `width`), in its type.
+struct Target<'a> {
+    out: &'a mut RasterData,
+    width: usize,
+    n: usize,
+    /// The initial value, rounded to the output type.
+    fill: f64,
+    out_type: DataType,
+    /// Whether this is the first source (whose chunks find the output at its initial value).
+    first: bool,
+}
+
+/// Warps a source's chunks into the output: each chunk's part of the output as `f64` (the first
+/// source's chunks don't overlap: the output there is still its initial value), warped, then
+/// stored back. The chunks of a source partition the output (`collect_chunks`), and the values
+/// stored are already rounded to the output type (`Sink::value`), so storing them back is exact.
+fn warp_source<T: crate::pixel::Pixel>(ctx: &WarpContext, chunks: &[Chunk], data: &SrcData<T>, sink: &Sink, t: Target) {
+    let bands = data.bands.len();
+    let (w, n) = (t.width, t.n);
+    let mut staged: Vec<Vec<f64>> = vec![Vec::new(); bands];
+    for c in chunks {
+        let rows = c.dy..c.dy + c.dh;
+        for (b, part) in staged.iter_mut().enumerate() {
+            part.clear();
+            part.resize(c.dw * c.dh, t.fill);
+            if !t.first {
+                crate::pixel::with_data!(&*t.out, v => {
+                    let src = &v[b * n + rows.start * w..b * n + rows.end * w];
+                    crate::par::chunks_mut(part, c.dw, |r, o| {
+                        for (o, x) in o.iter_mut().zip(&src[r * w + c.dx..r * w + c.dx + c.dw]) {
+                            *o = crate::pixel::Pixel::to_f64(*x);
+                        }
+                    });
+                });
+            }
+        }
+        ctx.warp_chunk(c, data, sink, chunk_rows(&mut staged, c.dw, &Chunk { dx: 0, dy: 0, ..*c }));
+        for (b, part) in staged.iter().enumerate() {
+            crate::pixel::with_data!(&mut *t.out, v => {
+                let dst = &mut v[b * n + rows.start * w..b * n + rows.end * w];
+                crate::par::chunks_mut(dst, w, |r, o| {
+                    for (o, x) in o[c.dx..c.dx + c.dw].iter_mut().zip(&part[r * c.dw..(r + 1) * c.dw]) {
+                        *o = warp_round(*x, t.out_type) as _;
+                    }
+                });
+            });
+        }
+    }
 }
 
 /// How warped values are stored in the output.
@@ -1537,7 +1562,7 @@ impl WarpContext<'_> {
     }
 
     /// Warps a chunk, its output rows in parallel.
-    fn warp_chunk(&self, c: &Chunk, src: &SrcData, sink: &Sink, rows: Vec<RowOut>) {
+    fn warp_chunk<T: crate::pixel::Pixel>(&self, c: &Chunk, src: &SrcData<T>, sink: &Sink, rows: Vec<RowOut>) {
         let (xscale, yscale) = self.scales(c);
         let k = Kernel { src, win: *c, xscale, yscale, method: self.resampling };
         if self.resampling.is_area_based() {
@@ -1548,7 +1573,7 @@ impl WarpContext<'_> {
     }
 
     /// Warps one output row of a chunk.
-    fn warp_row(&self, c: &Chunk, k: &Kernel, sink: &Sink, row: usize, out: &mut [&mut [f64]]) {
+    fn warp_row<T: crate::pixel::Pixel>(&self, c: &Chunk, k: &Kernel<T>, sink: &Sink, row: usize, out: &mut [&mut [f64]]) {
         let (xscale, yscale) = (k.xscale, k.yscale);
         let four = matches!(self.resampling, Resampling::Bilinear | Resampling::Cubic) && xscale >= 0.95 && yscale >= 0.95;
         let mut xs = vec![0.0; c.dw];
@@ -1640,7 +1665,7 @@ impl WarpContext<'_> {
     }
 
     /// The area-based methods (average, mode, min, max, quantiles, RMS, sum).
-    fn warp_area_row(&self, c: &Chunk, k: &Kernel, sink: &Sink, row: usize, out: &mut [&mut [f64]]) {
+    fn warp_area_row<T: crate::pixel::Pixel>(&self, c: &Chunk, k: &Kernel<T>, sink: &Sink, row: usize, out: &mut [&mut [f64]]) {
         let xmargin = 2.0 * (1.0f64).max((1.0 / k.xscale).ceil());
         let ymargin = 2.0 * (1.0f64).max((1.0 / k.yscale).ceil());
         let n = c.dw;
@@ -1800,15 +1825,15 @@ pub(crate) fn area_value(method: Resampling, values: &mut [(f64, f64)], small_in
 }
 
 /// The interpolation kernels, on a chunk's source window.
-struct Kernel<'a> {
-    src: &'a SrcData<'a>,
+struct Kernel<'a, T> {
+    src: &'a SrcData<'a, T>,
     win: Chunk,
     xscale: f64,
     yscale: f64,
     method: Resampling,
 }
 
-impl Kernel<'_> {
+impl<T: crate::pixel::Pixel> Kernel<'_, T> {
     #[inline]
     fn index(&self, x: usize, y: usize) -> usize {
         (self.win.sy + y) * self.src.width + self.win.sx + x
@@ -1816,7 +1841,7 @@ impl Kernel<'_> {
 
     #[inline]
     fn value(&self, b: usize, x: usize, y: usize) -> f64 {
-        self.src.bands[b].get(self.index(x, y))
+        crate::pixel::Pixel::to_f64(self.src.bands[b][self.index(x, y)])
     }
 
     #[inline]
