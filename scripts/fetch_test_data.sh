@@ -100,6 +100,39 @@ done
 if [ ! -e pointcloud/synthetic/format10.laz ] && python3 -c "import laspy, lazrs" 2>/dev/null; then
   python3 "$here/make_pointcloud_samples.py" pointcloud/synthetic
 fi
+# EPT datasets (LASzip, binary and Zstandard data, hierarchy pages), PLY and E57 files from the
+# PDAL test suite, E57 files from the e57 crate's, and an airborne survey with full waveforms
+# (LAS 1.3, point format 4, internal waveform packets; NERC-ARF's tutorial data, 140 MB).
+ept_files=(
+  1.2-with-color/ept.json 1.2-with-color/ept-data/0-0-0-0.laz 1.2-with-color/ept-hierarchy/0-0-0-0.json
+  ellipsoid-binary/ept.json ellipsoid-binary/ept-data/0-0-0-0.bin ellipsoid-binary/ept-hierarchy/0-0-0-0.json
+  ellipsoid-zstandard/ept.json ellipsoid-zstandard/ept-data/0-0-0-0.zst ellipsoid-zstandard/ept-hierarchy/0-0-0-0.json
+  lone-star-laszip/ept.json lone-star-laszip/ept-hierarchy/0-0-0-0.json
+)
+for k in 0-0-0-0 1-0-0-0 1-0-1-0 1-1-0-0 1-1-1-0 1-1-1-1 2-2-2-1 2-2-2-2 2-2-3-1 2-3-2-1 2-3-3-1 3-5-4-3 3-5-4-4; do
+  ept_files+=("lone-star-laszip/ept-data/$k.laz")
+done
+for k in 2-2-2-1 2-2-2-2 2-2-3-1 2-3-2-1 2-3-3-1; do
+  ept_files+=("lone-star-laszip/ept-hierarchy/$k.json")
+done
+for f in "${ept_files[@]}"; do
+  mkdir -p "pointcloud/ept/$(dirname "$f")"
+  [ -e "pointcloud/ept/$f" ] || curl -sSfL -o "pointcloud/ept/$f" "$pdal/ept/$f"
+done
+mkdir -p pointcloud/ply pointcloud/e57 pointcloud/waveform
+for f in simple_text.ply simple_binary.ply sized_dims.ply unsized_dims.ply text_extradim.ply mesh.ply issue_2421.ply; do
+  [ -e "pointcloud/ply/$f" ] || curl -sSfL -o "pointcloud/ply/$f" "$pdal/ply/$f"
+done
+for f in A4.e57 A4_moved.e57 A_B.e57 A_B_different_dims.e57 B2.e57; do
+  [ -e "pointcloud/e57/$f" ] || curl -sSfL -o "pointcloud/e57/$f" "$pdal/e57/$f"
+done
+e57rs=https://raw.githubusercontent.com/cry-inc/e57/0.11.13/testdata
+for f in bunnyDouble.e57 bunnyFloat.e57 bunnyInt19.e57 bunnyInt32.e57 tinyCartesianFloatRgb.e57 tiny_spherical.e57 \
+  integer_intensity.e57 scaled_integer_intensity.e57; do
+  [ -e "pointcloud/e57/$f" ] || curl -sSfL -o "pointcloud/e57/$f" "$e57rs/$f"
+done
+[ -e pointcloud/waveform/full_waveform_tutorial_data.las ] || curl -sSfL -o pointcloud/waveform/full_waveform_tutorial_data.las \
+  https://nerc-arf-dan.pml.ac.uk/files/full_waveform_tutorial_data.LAS
 
 if command -v ogr2ogr >/dev/null && command -v gdal_translate >/dev/null; then
   [ -e countries.gpkg ] || ogr2ogr -f GPKG countries.gpkg countries.geojson -nln countries

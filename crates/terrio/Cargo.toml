@@ -48,6 +48,8 @@ netcdf-reader.workspace = true
 hdf5-reader.workspace = true
 jpeg-decoder.workspace = true
 laz.workspace = true
+e57.workspace = true
+delaunator.workspace = true
 jpeg-encoder.workspace = true
 image-webp.workspace = true
 # JPEG 2000, in WebAssembly builds too (see `drivers::jp2` for the allocator it links against).

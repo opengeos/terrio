@@ -487,15 +487,18 @@ def suite_vector_ops(ctx):
 
 
 def suite_pointclouds(ctx):
-    """LAS, LAZ and COPC against laspy and PDAL."""
+    """LAS, LAZ, COPC, EPT, PLY and E57 against laspy, PDAL and gdal_grid."""
     s = Suite(
         "pointclouds",
         "Point clouds",
-        "laspy (every value) and PDAL (headers, COPC queries, grids, reprojection)",
+        "laspy (every value), PDAL (headers, PLY, E57 and EPT, COPC and EPT queries, filters, grids, "
+        "reprojection) and gdal_grid (TIN and nearest-neighbour grids)",
         "Every dimension of every point equal to laspy's; headers equal to laspy's and PDAL's; "
-        "written files read back identically by laspy and PDAL; COPC queries returning the same "
-        "points as PDAL's `readers.copc`; grids equal to PDAL's `writers.gdal`. Reprojections are "
-        "within 2e-7 degrees or 2 mm of PDAL's.",
+        "written files read back identically by laspy and PDAL; PLY, E57 and EPT points equal to "
+        "PDAL's; COPC and EPT queries returning the same points as PDAL's; waveform samples equal "
+        "to the file's packets; filters giving the same classes or points as PDAL's; grids equal "
+        "to PDAL's `writers.gdal`. Reprojections are within 2e-7 degrees or 2 mm of PDAL's; TIN "
+        "grids differ from `gdal_grid`'s where points share an x and y.",
     )
     missing = missing_modules("terrio", "laspy", "numpy")
     if missing:
@@ -508,17 +511,28 @@ def suite_pointclouds(ctx):
             continue
         text = m[2]
         name, _, detail = text.partition(": ") if m[1] == "FAIL" else (text, "", "")
+        tolerance = re.match(r"^(.*) \[within tolerance: (.*)\]$", name)
+        if tolerance:
+            name, detail = tolerance[1], tolerance[2]
         first = name.split()[0]
         against = "PDAL" if "PDAL" in name or "pdal" in name else "laspy"
         group = {
             "read": f"read vs {against}",
             "header": f"header vs {against}",
             "COPC": "COPC queries vs PDAL",
+            "EPT": "EPT queries vs PDAL",
+            "readfmt": "PLY, E57 and EPT vs PDAL",
+            "writefmt": "PLY and E57 written, read by PDAL",
+            "waveform": "waveforms",
+            "filter": "filters vs PDAL",
             "grid": "grid vs PDAL writers.gdal",
+            "interp": "TIN and nearest grids vs gdal_grid",
             "reproject": "reproject vs PDAL",
         }.get(first, f"write and read back ({against})")
         if m[1] == "FAIL":
             s.cases.append(Case(group, name, DIFFERS, detail))
+        elif tolerance:
+            s.cases.append(Case(group, name, TOLERANCE, detail))
         elif first == "reproject":
             s.cases.append(Case(group, name.split(" vs PDAL")[0], TOLERANCE, name.split(": ", 1)[-1]))
         else:

@@ -1,13 +1,16 @@
-//! The `PointCloud` and `PointCloudFile` classes: LAS, LAZ and COPC point clouds.
+//! The `PointCloud`, `PointCloudFile` and `PointCloudWriter` classes: LAS, LAZ, COPC, EPT, PLY
+//! and E57 point clouds.
 
 use crate::{PyResultExt, crs_string, invalid};
 use numpy::{PyArray1, PyArrayDescrMethods, PyArrayDyn, PyArrayMethods, PyUntypedArray, PyUntypedArrayMethods};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 use terrio::crs::SpatialRef;
-use terrio::pointcloud::grid::{GridOptions, GridStat};
+use terrio::pointcloud::filters::{self, DimRange, OutlierMethod, OutlierOptions, SampleOptions, SmrfOptions, VoxelMode};
+use terrio::pointcloud::grid::{GridMethod, GridOptions, GridStat};
 use terrio::pointcloud::{
-    self, Dimension, PointCloud, PointCloudReader, PointFilter, PointFormat, PointReadOptions, PointWriteOptions, ReturnKind, Values,
+    self, Dimension, PlyEncoding, PointCloud, PointCloudReader, PointFilter, PointFormat, PointReadOptions, PointWriteOptions, PointWriter,
+    ReturnKind, Values,
 };
 
 /// A point cloud in memory: columns of values, one per dimension.
@@ -21,10 +24,11 @@ pub struct PyPointCloud {
     pub(crate) inner: PointCloud,
 }
 
-/// An open LAS, LAZ or COPC file: its header is read, its points on demand.
+/// An open point cloud (LAS, LAZ, COPC, EPT, PLY or E57): its header is read, its points on
+/// demand, whole (`read`) or in chunks (`chunks`).
 ///
-/// Remote COPC files are read in place: `read` fetches only the octree nodes that intersect the
-/// bounds asked for, down to the level asked for, with HTTP range requests.
+/// Remote COPC files and EPT datasets are read in place: `read` fetches only the octree nodes
+/// that intersect the bounds asked for, down to the level asked for.
 #[pyclass(module = "terrio", name = "PointCloudFile")]
 pub struct PyPointCloudFile {
     inner: PointCloudReader,
@@ -101,11 +105,13 @@ fn read_options(
     })
 }
 
-/// Opens a LAS, LAZ or COPC file, reading only its header.
+/// Opens a point cloud, reading only its header.
 ///
 /// Args:
-///     path: The file's path or URL (`https://`, `s3://`, `gs://`, `az://`), or a zip archive
-///         member. Remote COPC files are read in place; other remote files are downloaded.
+///     path: A LAS, LAZ, COPC, PLY or E57 file, or an EPT dataset's `ept.json` (or an `ept://`
+///         path): a path or URL (`https://`, `s3://`, `gs://`, `az://`), or a zip archive
+///         member. Remote COPC files and EPT datasets are read in place; other remote files are
+///         downloaded.
 ///
 /// Returns:
 ///     PointCloudFile: The open file.
@@ -115,7 +121,7 @@ pub(crate) fn open_points(py: Python<'_>, path: &str) -> PyResult<PyPointCloudFi
     Ok(PyPointCloudFile { inner })
 }
 
-/// Reads the points of a LAS, LAZ or COPC file.
+/// Reads the points of a point cloud (LAS, LAZ, COPC, EPT, PLY or E57).
 ///
 /// Args:
 ///     path: The file's path or URL, as for `open_points`.
@@ -124,10 +130,10 @@ pub(crate) fn open_points(py: Python<'_>, path: &str) -> PyResult<PyPointCloudFi
 ///     classes: Keep the points of these classifications.
 ///     returns: Keep these returns of each pulse: `"first"`, `"last"`, `"intermediate"`,
 ///         `"only"`.
-///     max_level: COPC: the deepest octree level to read (0 is the root).
-///     resolution: COPC: read the levels needed for this point spacing.
-///     max_points: At most about this many points: COPC files are read down to the deepest
-///         level that fits, other files are thinned by keeping every n-th point.
+///     max_level: COPC and EPT: the deepest octree level to read (0 is the root).
+///     resolution: COPC and EPT: read the levels needed for this point spacing.
+///     max_points: At most about this many points: COPC and EPT datasets are read down to the
+///         deepest level that fits, other files are thinned by keeping every n-th point.
 ///
 /// Returns:
 ///     PointCloud: The points.
@@ -150,7 +156,7 @@ pub(crate) fn read_points(
     Ok(PyPointCloud { inner })
 }
 
-/// Reads a LAS, LAZ or COPC file held in memory.
+/// Reads a LAS, LAZ, COPC, PLY or E57 file held in memory.
 ///
 /// Args:
 ///     data: The file's contents.
@@ -163,13 +169,15 @@ pub(crate) fn read_points_bytes(py: Python<'_>, data: Vec<u8>) -> PyResult<PyPoi
     Ok(PyPointCloud { inner })
 }
 
-/// Converts a point cloud to LAS, LAZ, COPC or a vector point layer, filtering and reprojecting
-/// on the way, as `terrio convert` does.
+/// Converts a point cloud to LAS, LAZ, COPC, PLY, E57 or a vector point layer, filtering and
+/// reprojecting on the way, as `terrio convert` does. Point cloud outputs other than E57 are
+/// written as the points are read, in chunks: files larger than memory convert in bounded
+/// memory.
 ///
 /// Args:
 ///     src: The input file's path or URL.
-///     dst: The output path: `.las`, `.laz`, `.copc.laz`, or a vector format (`.gpkg`, `.fgb`,
-///         `.parquet`, `.geojson`, `.shp`...) for a layer of points.
+///     dst: The output path: `.las`, `.laz`, `.copc.laz`, `.ply`, `.e57`, or a vector format
+///         (`.gpkg`, `.fgb`, `.parquet`, `.geojson`, `.shp`...) for a layer of points.
 ///     bounds: Keep the points in `(min_x, min_y, max_x, max_y)`, in the input's CRS.
 ///     z_range: Keep the points with `z` in `(min, max)`.
 ///     classes: Keep the points of these classifications.
@@ -183,11 +191,16 @@ pub(crate) fn read_points_bytes(py: Python<'_>, data: Vec<u8>) -> PyResult<PyPoi
 ///     minor_version: The output LAS minor version (0 to 4).
 ///     scale: The output scale `(x, y, z)`.
 ///     offset: The output offset `(x, y, z)`.
-///     dimensions: For vector outputs, the dimensions written as attributes (all by default).
+///     dimensions: For vector, PLY and E57 outputs, the dimensions written (all by default).
+///     chunk_points: The points read and written at a time (about a million by default).
+///     ply_encoding: PLY outputs: `"ascii"` (the default), `"binary_little_endian"` or
+///         `"binary_big_endian"`.
+///     ply_precision: PLY ASCII outputs: the digits after the decimal point of floats.
 #[pyfunction]
 #[pyo3(signature = (
     src, dst, *, bounds=None, z_range=None, classes=None, returns=None, max_level=None, resolution=None, max_points=None,
-    a_srs=None, t_srs=None, point_format=None, minor_version=None, scale=None, offset=None, dimensions=None
+    a_srs=None, t_srs=None, point_format=None, minor_version=None, scale=None, offset=None, dimensions=None,
+    chunk_points=0, ply_encoding=None, ply_precision=None
 ))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn convert_points(
@@ -208,6 +221,9 @@ pub(crate) fn convert_points(
     scale: Option<(f64, f64, f64)>,
     offset: Option<(f64, f64, f64)>,
     dimensions: Option<Vec<String>>,
+    chunk_points: usize,
+    ply_encoding: Option<&str>,
+    ply_precision: Option<usize>,
 ) -> PyResult<()> {
     let options = pointcloud::ConvertOptions {
         read: read_options(bounds, z_range, classes, returns, max_level, resolution, max_points)?,
@@ -218,19 +234,52 @@ pub(crate) fn convert_points(
             minor_version,
             scale: scale.map(|s| [s.0, s.1, s.2]),
             offset: offset.map(|o| [o.0, o.1, o.2]),
+            ply_encoding: ply_encoding.map(PlyEncoding::parse).transpose().py()?.unwrap_or_default(),
+            ply_precision,
+            dimensions: dimensions.clone().unwrap_or_default(),
             ..Default::default()
         },
         layer: pointcloud::vector::ToLayerOptions { dimensions: dimensions.unwrap_or_default(), ..Default::default() },
+        chunk_points,
     };
     py.detach(|| pointcloud::convert(src, dst, &options)).py()
 }
 
 #[pymethods]
 impl PyPointCloudFile {
-    /// `"LAS"`, `"LAZ"` or `"COPC"`.
+    /// `"LAS"`, `"LAZ"`, `"COPC"`, `"EPT"`, `"PLY"` or `"E57"`.
     #[getter]
     fn format(&self) -> &'static str {
         self.inner.format_name()
+    }
+
+    /// The metadata of an EPT dataset (bounds, data type, span, schema...), or `None`.
+    #[getter]
+    fn ept_info<'py>(&self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyAny>>> {
+        self.inner.ept_info().map(|i| to_python(py, i)).transpose()
+    }
+
+    /// The wave packet descriptors of a LAS file with waveforms (point formats 4, 5, 9 and 10):
+    /// one dict per descriptor, with its `index`, `bits_per_sample`, `number_of_samples`,
+    /// `temporal_sample_spacing` (picoseconds), `digitizer_gain` and `digitizer_offset`.
+    #[getter]
+    fn wave_packet_descriptors<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        to_python(py, &self.inner.wave_packet_descriptors())
+    }
+
+    /// The waveform of a point, from the waveform data packets in the file or its `.wdp` file.
+    ///
+    /// Args:
+    ///     index: The point's `wavepacket_index`.
+    ///     offset: The point's `wavepacket_offset`.
+    ///     size: The point's `wavepacket_size`.
+    ///
+    /// Returns:
+    ///     numpy.ndarray: The samples, as digitized (uint32); volts are
+    ///         `digitizer_offset + digitizer_gain * samples`.
+    fn waveform<'py>(&mut self, py: Python<'py>, index: u8, offset: u64, size: u32) -> PyResult<Bound<'py, PyAny>> {
+        let w = py.detach(|| self.inner.waveform(index, offset, size)).py()?;
+        Ok(PyArray1::from_vec(py, w.samples).into_any())
     }
 
     /// The number of points.
@@ -319,6 +368,52 @@ impl PyPointCloudFile {
         Ok(PyPointCloud { inner })
     }
 
+    /// Reads the points in chunks, for point clouds larger than memory.
+    ///
+    /// Args:
+    ///     chunk_points: About how many points each chunk has (about a million by default).
+    ///     bounds: Keep the points in `(min_x, min_y, max_x, max_y)`, in the file's CRS.
+    ///     z_range: Keep the points with `z` in `(min, max)`.
+    ///     classes: Keep the points of these classifications.
+    ///     returns: Keep these returns: `"first"`, `"last"`, `"intermediate"`, `"only"`.
+    ///     max_level: COPC and EPT: the deepest octree level to read.
+    ///     resolution: COPC and EPT: read the levels needed for this point spacing.
+    ///     max_points: At most about this many points.
+    ///
+    /// Returns:
+    ///     PointChunks: An iterator of `PointCloud` chunks.
+    #[pyo3(signature = (chunk_points=0, *, bounds=None, z_range=None, classes=None, returns=None, max_level=None, resolution=None, max_points=None))]
+    #[allow(clippy::too_many_arguments)]
+    fn chunks(
+        slf: Bound<'_, Self>,
+        chunk_points: usize,
+        bounds: Option<(f64, f64, f64, f64)>,
+        z_range: Option<(f64, f64)>,
+        classes: Option<Vec<u8>>,
+        returns: Option<Vec<String>>,
+        max_level: Option<u32>,
+        resolution: Option<f64>,
+        max_points: Option<u64>,
+    ) -> PyResult<PyPointChunks> {
+        let options = read_options(bounds, z_range, classes, returns, max_level, resolution, max_points)?;
+        {
+            let mut f = slf.borrow_mut();
+            let py = slf.py();
+            let reader = &mut f.inner;
+            py.detach(|| reader.start_chunks(&options, chunk_points)).py()?;
+        }
+        Ok(PyPointChunks { file: slf.unbind() })
+    }
+
+    /// A point cloud without points, with the file's header, CRS and dimensions: the template of
+    /// a `PointCloudWriter`.
+    ///
+    /// Returns:
+    ///     PointCloud: The template.
+    fn template(&mut self, py: Python<'_>) -> PyResult<PyPointCloud> {
+        Ok(PyPointCloud { inner: py.detach(|| self.inner.template()).py()? })
+    }
+
     fn __repr__(&self) -> String {
         let h = self.inner.header();
         format!(
@@ -330,6 +425,184 @@ impl PyPointCloudFile {
             h.point_count
         )
     }
+}
+
+/// The chunks of points of a `PointCloudFile`: an iterator of `PointCloud`.
+#[pyclass(module = "terrio", name = "PointChunks")]
+pub struct PyPointChunks {
+    file: Py<PyPointCloudFile>,
+}
+
+#[pymethods]
+impl PyPointChunks {
+    fn __iter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
+        slf
+    }
+
+    fn __next__(&self, py: Python<'_>) -> PyResult<Option<PyPointCloud>> {
+        let mut f = self.file.borrow_mut(py);
+        let reader = &mut f.inner;
+        let chunk = py.detach(|| reader.next_chunk()).py()?;
+        Ok(chunk.map(|inner| PyPointCloud { inner }))
+    }
+}
+
+/// Writes points as they come, in chunks, to a LAS, LAZ, COPC or PLY file: for point clouds
+/// larger than memory. Use it as a context manager, or call `close`.
+///
+/// Args:
+///     path: The output path: `.las`, `.laz`, `.copc.laz` or `.ply` (unless `format` says).
+///     template: Points like the ones to write (their header, CRS and dimensions), such as
+///         `PointCloudFile.template()` or the first chunk.
+///     format: `"LAS"`, `"LAZ"`, `"COPC"` or `"PLY"`.
+///     point_format: The point format (0 to 10).
+///     minor_version: The LAS minor version.
+///     scale: The scale of the stored coordinates `(x, y, z)`.
+///     offset: The offset of the stored coordinates `(x, y, z)`.
+#[pyclass(module = "terrio", name = "PointCloudWriter")]
+pub struct PyPointCloudWriter {
+    inner: Option<PointWriter>,
+}
+
+#[pymethods]
+impl PyPointCloudWriter {
+    #[new]
+    #[pyo3(signature = (path, template, *, format=None, point_format=None, minor_version=None, scale=None, offset=None))]
+    #[allow(clippy::too_many_arguments)]
+    fn new(
+        py: Python<'_>,
+        path: &str,
+        template: PyRef<'_, PyPointCloud>,
+        format: Option<&str>,
+        point_format: Option<u8>,
+        minor_version: Option<u8>,
+        scale: Option<(f64, f64, f64)>,
+        offset: Option<(f64, f64, f64)>,
+    ) -> PyResult<Self> {
+        let options = write_options(format, point_format, minor_version, scale, offset)?;
+        let t = &template.inner;
+        let inner = py.detach(|| PointWriter::create(path, t, &options)).py()?;
+        Ok(Self { inner: Some(inner) })
+    }
+
+    /// Writes points.
+    ///
+    /// Args:
+    ///     points: The points.
+    fn write(&mut self, py: Python<'_>, points: PyRef<'_, PyPointCloud>) -> PyResult<()> {
+        let w = self.inner.as_mut().ok_or_else(|| invalid("the writer is closed"))?;
+        let c = &points.inner;
+        py.detach(|| w.write(c)).py()
+    }
+
+    /// Finishes the file (its counts, bounds and, for COPC, octree).
+    fn close(&mut self, py: Python<'_>) -> PyResult<()> {
+        match self.inner.take() {
+            Some(w) => py.detach(|| w.finish()).py(),
+            None => Ok(()),
+        }
+    }
+
+    fn __enter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
+        slf
+    }
+
+    #[pyo3(signature = (*_args))]
+    fn __exit__(&mut self, py: Python<'_>, _args: &Bound<'_, pyo3::types::PyTuple>) -> PyResult<bool> {
+        self.close(py)?;
+        Ok(false)
+    }
+}
+
+/// Grids a point cloud read in chunks: for the statistics, in bounded memory, whatever its size.
+///
+/// Args:
+///     path: The point cloud, as for `open_points`.
+///     resolution: The cell size.
+///     method: `"statistics"` (PDAL's `writers.gdal`, the default), `"linear"` (a TIN, as
+///         `gdal_grid -a linear`) or `"nearest"` (as `gdal_grid -a nearest`).
+///     stat: The statistics, as for `PointCloud.grid`.
+///     dimension: The dimension gridded. `"z"` by default.
+///     radius: As for `PointCloud.grid`.
+///     power: The power of the inverse distance weights.
+///     window_size: Fill empty cells from the cells within this many cells.
+///     bin_mode: Count each point in its own cell only.
+///     bounds: The grid `(min_x, min_y, max_x, max_y)`. By default the points' bounds.
+///     nodata: The nodata value.
+///     ot: The output data type.
+///     classes: Grid the points of these classifications.
+///     returns: Grid these returns.
+///     a_srs: Assign this CRS to the points.
+///
+/// Returns:
+///     Raster: The grid.
+#[pyfunction]
+#[pyo3(signature = (path, resolution, *, method="statistics", stat=None, dimension="z", radius=None, power=1.0, window_size=0, bin_mode=false, bounds=None, nodata=-9999.0, ot=None, classes=None, returns=None, a_srs=None))]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn grid_points(
+    py: Python<'_>,
+    path: &str,
+    resolution: f64,
+    method: &str,
+    stat: Option<&Bound<'_, PyAny>>,
+    dimension: &str,
+    radius: Option<f64>,
+    power: f64,
+    window_size: usize,
+    bin_mode: bool,
+    bounds: Option<(f64, f64, f64, f64)>,
+    nodata: f64,
+    ot: Option<&str>,
+    classes: Option<Vec<u8>>,
+    returns: Option<Vec<String>>,
+    a_srs: Option<&str>,
+) -> PyResult<crate::raster::PyRaster> {
+    let options = grid_options(resolution, method, stat, dimension, radius, power, window_size, bin_mode, bounds, nodata, ot)?;
+    let read = read_options(None, None, classes, returns, None, None, None)?;
+    let srs = a_srs.map(SpatialRef::parse).transpose().py()?;
+    let ds = py
+        .detach(|| {
+            let mut r = pointcloud::open_points(path)?;
+            pointcloud::grid::grid_reader(&mut r, &read, &options, srs.as_ref())
+        })
+        .py()?;
+    Ok(crate::raster::PyRaster::from_dataset(ds))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn grid_options(
+    resolution: f64,
+    method: &str,
+    stat: Option<&Bound<'_, PyAny>>,
+    dimension: &str,
+    radius: Option<f64>,
+    power: f64,
+    window_size: usize,
+    bin_mode: bool,
+    bounds: Option<(f64, f64, f64, f64)>,
+    nodata: f64,
+    ot: Option<&str>,
+) -> PyResult<GridOptions> {
+    let stats = match stat {
+        None => Vec::new(),
+        Some(s) => match s.extract::<String>() {
+            Ok(s) => GridStat::parse_list(&s).py()?,
+            Err(_) => s.extract::<Vec<String>>()?.iter().map(|s| GridStat::parse(s)).collect::<terrio::Result<_>>().py()?,
+        },
+    };
+    Ok(GridOptions {
+        resolution,
+        method: GridMethod::parse(method).py()?,
+        stats,
+        dimension: dimension.to_string(),
+        radius,
+        power,
+        window_size,
+        bin_mode,
+        bounds: bounds.map(|b| [b.0, b.1, b.2, b.3]),
+        nodata,
+        data_type: ot.map(terrio::ops::parse_data_type).transpose().py()?.unwrap_or(terrio::DataType::F64),
+    })
 }
 
 #[pymethods]
@@ -487,17 +760,23 @@ impl PyPointCloud {
         self.inner.classification_counts().into_iter().collect()
     }
 
-    /// Writes the points to a LAS, LAZ or COPC file.
+    /// Writes the points to a LAS, LAZ, COPC, PLY or E57 file.
     ///
     /// Args:
-    ///     path: The output path: `.las`, `.laz` or `.copc.laz` (unless `format` says).
-    ///     format: `"LAS"`, `"LAZ"` or `"COPC"`.
+    ///     path: The output path: `.las`, `.laz`, `.copc.laz`, `.ply` or `.e57` (unless `format`
+    ///         says).
+    ///     format: `"LAS"`, `"LAZ"`, `"COPC"`, `"PLY"` or `"E57"`.
     ///     point_format: The point format (0 to 10). By default, the source's (6 to 8 for COPC).
     ///     minor_version: The LAS minor version. By default, the source's, raised as the point
     ///         format needs.
     ///     scale: The scale of the stored coordinates `(x, y, z)`.
     ///     offset: The offset of the stored coordinates `(x, y, z)`.
-    #[pyo3(signature = (path, *, format=None, point_format=None, minor_version=None, scale=None, offset=None))]
+    ///     ply_encoding: PLY: `"ascii"` (the default), `"binary_little_endian"` or
+    ///         `"binary_big_endian"`.
+    ///     ply_precision: PLY, ASCII: the digits after the decimal point of floats (by default,
+    ///         as many as needed to read the same values back).
+    ///     dimensions: PLY and E57: the dimensions written (all by default).
+    #[pyo3(signature = (path, *, format=None, point_format=None, minor_version=None, scale=None, offset=None, ply_encoding=None, ply_precision=None, dimensions=None))]
     #[allow(clippy::too_many_arguments)]
     fn write(
         &self,
@@ -508,15 +787,21 @@ impl PyPointCloud {
         minor_version: Option<u8>,
         scale: Option<(f64, f64, f64)>,
         offset: Option<(f64, f64, f64)>,
+        ply_encoding: Option<&str>,
+        ply_precision: Option<usize>,
+        dimensions: Option<Vec<String>>,
     ) -> PyResult<()> {
-        let options = write_options(format, point_format, minor_version, scale, offset)?;
+        let mut options = write_options(format, point_format, minor_version, scale, offset)?;
+        options.ply_encoding = ply_encoding.map(PlyEncoding::parse).transpose().py()?.unwrap_or_default();
+        options.ply_precision = ply_precision;
+        options.dimensions = dimensions.unwrap_or_default();
         py.detach(|| pointcloud::write_points(&self.inner, path, &options)).py()
     }
 
-    /// The points as the bytes of a LAS, LAZ or COPC file.
+    /// The points as the bytes of a LAS, LAZ, COPC, PLY or E57 file.
     ///
     /// Args:
-    ///     format: `"LAS"`, `"LAZ"` or `"COPC"`.
+    ///     format: `"LAS"`, `"LAZ"`, `"COPC"`, `"PLY"` or `"E57"`.
     ///     point_format: The point format (0 to 10).
     ///
     /// Returns:
@@ -528,15 +813,21 @@ impl PyPointCloud {
         Ok(pyo3::types::PyBytes::new(py, &bytes))
     }
 
-    /// Grids the points into a raster, as PDAL's `writers.gdal` does.
+    /// Grids the points into a raster: statistics per cell as PDAL's `writers.gdal` does, or
+    /// interpolated as `gdal_grid` does.
     ///
     /// Args:
     ///     resolution: The cell size.
+    ///     method: `"statistics"` (the default), `"linear"` (linear interpolation in the
+    ///         points' Delaunay triangulation, a TIN, as `gdal_grid -a linear`) or `"nearest"`
+    ///         (the nearest point's value, as `gdal_grid -a nearest`).
     ///     stat: The statistics, one band each: `"min"`, `"max"`, `"mean"`, `"idw"`, `"count"`,
     ///         `"stdev"`, a list of them, or `"all"`. `"mean"` by default.
     ///     dimension: The dimension gridded. `"z"` by default.
-    ///     radius: Points closer than this to a cell centre count. By default the cell
-    ///         diagonal.
+    ///     radius: Statistics: points closer than this to a cell centre count (by default the
+    ///         cell diagonal). Linear: the search radius of the nearest point outside the
+    ///         triangulation (negative: none, the default; 0: nodata). Nearest: the half-side
+    ///         of the square searched (all points by default).
     ///     power: The power of the inverse distance weights.
     ///     window_size: Fill empty cells from the cells within this many cells.
     ///     bin_mode: Count each point in its own cell only.
@@ -546,12 +837,13 @@ impl PyPointCloud {
     ///
     /// Returns:
     ///     Raster: The grid.
-    #[pyo3(signature = (resolution, *, stat=None, dimension="z", radius=None, power=1.0, window_size=0, bin_mode=false, bounds=None, nodata=-9999.0, ot=None))]
+    #[pyo3(signature = (resolution, *, method="statistics", stat=None, dimension="z", radius=None, power=1.0, window_size=0, bin_mode=false, bounds=None, nodata=-9999.0, ot=None))]
     #[allow(clippy::too_many_arguments)]
     fn grid(
         &self,
         py: Python<'_>,
         resolution: f64,
+        method: &str,
         stat: Option<&Bound<'_, PyAny>>,
         dimension: &str,
         radius: Option<f64>,
@@ -562,27 +854,151 @@ impl PyPointCloud {
         nodata: f64,
         ot: Option<&str>,
     ) -> PyResult<crate::raster::PyRaster> {
-        let stats = match stat {
-            None => Vec::new(),
-            Some(s) => match s.extract::<String>() {
-                Ok(s) => GridStat::parse_list(&s).py()?,
-                Err(_) => s.extract::<Vec<String>>()?.iter().map(|s| GridStat::parse(s)).collect::<terrio::Result<_>>().py()?,
-            },
-        };
-        let options = GridOptions {
-            resolution,
-            stats,
-            dimension: dimension.to_string(),
-            radius,
-            power,
-            window_size,
-            bin_mode,
-            bounds: bounds.map(|b| [b.0, b.1, b.2, b.3]),
-            nodata,
-            data_type: ot.map(terrio::ops::parse_data_type).transpose().py()?.unwrap_or(terrio::DataType::F64),
-        };
+        let options = grid_options(resolution, method, stat, dimension, radius, power, window_size, bin_mode, bounds, nodata, ot)?;
         let ds = py.detach(|| pointcloud::grid::grid(&self.inner, &options)).py()?;
         Ok(crate::raster::PyRaster::from_dataset(ds))
+    }
+
+    /// The points within ranges of dimensions, as PDAL's `filters.range`.
+    ///
+    /// Args:
+    ///     limits: Ranges as PDAL writes them, comma-separated: `"Classification[2:2]"`,
+    ///         `"Z[0:100), Intensity[:500]"`, `"Classification![7:7]"`. A point passes when it is
+    ///         in any range of each dimension named.
+    ///
+    /// Returns:
+    ///     PointCloud: The points that pass.
+    fn range(&self, limits: &str) -> PyResult<Self> {
+        let ranges = DimRange::parse_list(limits).py()?;
+        Ok(Self { inner: filters::range(&self.inner, &ranges).py()? })
+    }
+
+    /// Poisson sampling, as PDAL's `filters.sample`: keeps each point, in order, at least
+    /// `radius` from every point kept before it.
+    ///
+    /// Args:
+    ///     radius: The smallest distance between points kept.
+    ///     cell: Or the voxel size (the radius is then `cell / 2 * sqrt(3)`).
+    ///     origin: The voxels' origin `(x, y, z)`. By default, the first point's.
+    ///
+    /// Returns:
+    ///     PointCloud: The points kept.
+    #[pyo3(signature = (radius=None, *, cell=None, origin=None))]
+    fn sample(&self, py: Python<'_>, radius: Option<f64>, cell: Option<f64>, origin: Option<(f64, f64, f64)>) -> PyResult<Self> {
+        let o = SampleOptions { cell, radius, origin: origin.map(|o| [o.0, o.1, o.2]) };
+        Ok(Self { inner: py.detach(|| filters::sample(&self.inner, &o)).py()? })
+    }
+
+    /// The point nearest the center of each voxel, as PDAL's
+    /// `filters.voxelcenternearestneighbor`.
+    ///
+    /// Args:
+    ///     cell: The voxel size. 1 by default.
+    ///
+    /// Returns:
+    ///     PointCloud: The points kept.
+    #[pyo3(signature = (cell=1.0))]
+    fn voxel_center_nearest_neighbor(&self, py: Python<'_>, cell: f64) -> PyResult<Self> {
+        Ok(Self { inner: py.detach(|| filters::voxel_center_nearest_neighbor(&self.inner, cell)).py()? })
+    }
+
+    /// The first point of each voxel, as PDAL's `filters.voxeldownsize`.
+    ///
+    /// Args:
+    ///     cell: The voxel size. 0.001 by default.
+    ///     mode: `"center"` (the default: the point moves to the voxel's center) or `"first"`.
+    ///
+    /// Returns:
+    ///     PointCloud: The points kept.
+    #[pyo3(signature = (cell=0.001, mode="center"))]
+    fn voxel_downsize(&self, py: Python<'_>, cell: f64, mode: &str) -> PyResult<Self> {
+        let mode = VoxelMode::parse(mode).py()?;
+        Ok(Self { inner: py.detach(|| filters::voxel_downsize(&self.inner, cell, mode)).py()? })
+    }
+
+    /// Classifies outliers as noise, as PDAL's `filters.outlier`: all points are kept, outliers
+    /// with the classification `classification`.
+    ///
+    /// Args:
+    ///     method: `"statistical"` (the default) or `"radius"`.
+    ///     min_k: Radius: the fewest neighbours within `radius` to be kept. 2 by default.
+    ///     radius: Radius: the radius. 1 by default.
+    ///     mean_k: Statistical: the number of neighbours. 8 by default.
+    ///     multiplier: Statistical: the number of standard deviations. 2 by default.
+    ///     classification: The class of outliers. 7 (low point, noise) by default.
+    ///
+    /// Returns:
+    ///     PointCloud: The points, outliers classified.
+    #[pyo3(signature = (method="statistical", *, min_k=2, radius=1.0, mean_k=8, multiplier=2.0, classification=7))]
+    #[allow(clippy::too_many_arguments)]
+    fn outlier(
+        &self,
+        py: Python<'_>,
+        method: &str,
+        min_k: usize,
+        radius: f64,
+        mean_k: usize,
+        multiplier: f64,
+        classification: u8,
+    ) -> PyResult<Self> {
+        let o = OutlierOptions { method: OutlierMethod::parse(method).py()?, min_k, radius, mean_k, multiplier, class: classification };
+        Ok(Self { inner: py.detach(|| filters::outlier(&self.inner, &o)).py()? })
+    }
+
+    /// Classifies ground points with the Simple Morphological Filter, as PDAL's `filters.smrf`:
+    /// of the returns selected, ground points become class 2 and others class 1; other points
+    /// keep their class.
+    ///
+    /// Args:
+    ///     cell: The cell size. 1 by default.
+    ///     slope: The slope (rise over run). 0.15 by default.
+    ///     window: The largest window, in CRS units. 18 cells by default.
+    ///     scalar: The elevation scalar. 1.25 by default.
+    ///     threshold: The elevation threshold. 0.5 by default.
+    ///     cut: The cut net size (0, the default: no net cutting).
+    ///     ignore: Leave alone the points in these ranges (as for `range`).
+    ///     returns: The returns classified. `["last", "only"]` by default.
+    ///     ground_class: The class of ground points. 2 by default.
+    ///     other_class: The class of other points. 1 by default.
+    ///     only_ground: Change the class of ground points only.
+    ///
+    /// Returns:
+    ///     PointCloud: The points, classified.
+    #[pyo3(signature = (*, cell=1.0, slope=0.15, window=None, scalar=1.25, threshold=0.5, cut=0.0, ignore=None, returns=None, ground_class=2, other_class=1, only_ground=false))]
+    #[allow(clippy::too_many_arguments)]
+    fn smrf(
+        &self,
+        py: Python<'_>,
+        cell: f64,
+        slope: f64,
+        window: Option<f64>,
+        scalar: f64,
+        threshold: f64,
+        cut: f64,
+        ignore: Option<&str>,
+        returns: Option<Vec<String>>,
+        ground_class: u8,
+        other_class: u8,
+        only_ground: bool,
+    ) -> PyResult<Self> {
+        let returns = match returns {
+            None => vec![ReturnKind::Last, ReturnKind::Only],
+            Some(r) => r.iter().map(|k| ReturnKind::parse(k)).collect::<terrio::Result<_>>().py()?,
+        };
+        let o = SmrfOptions {
+            cell,
+            slope,
+            window,
+            scalar,
+            threshold,
+            cut,
+            ignore: ignore.map(DimRange::parse_list).transpose().py()?.unwrap_or_default(),
+            returns,
+            ground_class,
+            other_class,
+            only_ground,
+        };
+        Ok(Self { inner: py.detach(|| filters::smrf(&self.inner, &o)).py()? })
     }
 
     /// The points as a vector layer, one point feature each, with the dimensions as attributes.
@@ -612,7 +1028,7 @@ fn write_options(
     offset: Option<(f64, f64, f64)>,
 ) -> PyResult<PointWriteOptions> {
     let format = format
-        .map(|f| PointFormat::from_name(f).ok_or_else(|| invalid(format!("unknown point cloud format '{f}' (LAS, LAZ, COPC)"))))
+        .map(|f| PointFormat::from_name(f).ok_or_else(|| invalid(format!("unknown point cloud format '{f}' (LAS, LAZ, COPC, PLY, E57)"))))
         .transpose()?;
     Ok(PointWriteOptions {
         format,
@@ -628,6 +1044,9 @@ fn write_options(
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyPointCloud>()?;
     m.add_class::<PyPointCloudFile>()?;
+    m.add_class::<PyPointChunks>()?;
+    m.add_class::<PyPointCloudWriter>()?;
+    m.add_function(wrap_pyfunction!(grid_points, m)?)?;
     m.add_function(wrap_pyfunction!(open_points, m)?)?;
     m.add_function(wrap_pyfunction!(read_points, m)?)?;
     m.add_function(wrap_pyfunction!(read_points_bytes, m)?)?;

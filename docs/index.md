@@ -20,8 +20,10 @@ terrio rasterize counties.gpkg counties.tif -a FIPS --tr 0.01 0.01
   ENVI, Esri grids, GeoPackage tiles, VRT and more. See [Formats](formats.md).
 - **Vectors**: GeoPackage, GeoParquet, FlatGeobuf, Shapefile, GeoJSON, CSV, KML/KMZ, GML, GPX,
   TopoJSON, MapInfo and OpenStreetMap PBF.
-- **Point clouds**: LAS 1.0 to 1.4, LAZ and COPC, read and written; remote COPC files read by
-  bounds and octree level; gridding to DEMs as PDAL does. See [Point Clouds](point-clouds.md).
+- **Point clouds**: LAS 1.0 to 1.4 (with waveforms), LAZ, COPC, PLY and E57, read and written,
+  and EPT read; remote COPC and EPT read by bounds and octree level; files larger than memory in
+  chunks; PDAL's filters (SMRF ground classification, outliers, ranges, sampling, voxels);
+  gridding to DEMs as PDAL and `gdal_grid` do. See [Point Clouds](point-clouds.md).
 - **Cloud data in place**: HTTP(S) range requests, `s3://`, `gs://` and `az://` objects, zip
   archives, and GDAL's `/vsicurl/`, `/vsis3/`, `/vsizip/` prefixes. Remote COGs are read window by
   window. See [Remote Data](remote-data.md).

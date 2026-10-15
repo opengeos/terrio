@@ -156,32 +156,13 @@ pub fn point_cloud_info(r: &mut PointCloudReader, statistics: bool) -> Result<Po
         }
         None => None,
     };
-    let statistics = if statistics {
-        let cloud = r.read(&PointReadOptions::default())?;
-        let dimensions = cloud
-            .dimensions
-            .iter()
-            .filter_map(|d| {
-                let v = d.to_f64();
-                let valid: Vec<f64> = v.into_iter().filter(|x| !x.is_nan()).collect();
-                if valid.is_empty() {
-                    return None;
-                }
-                let min = valid.iter().copied().fold(f64::INFINITY, f64::min);
-                let max = valid.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-                let mean = valid.iter().sum::<f64>() / valid.len() as f64;
-                Some(DimensionStatistics { name: d.name.clone(), min, max, mean })
-            })
-            .collect();
-        Some(PointStatistics { classification_counts: cloud.classification_counts(), return_counts: cloud.return_counts(), dimensions })
-    } else {
-        None
-    };
+    let statistics = if statistics { Some(statistics_of(r)?) } else { None };
     let vlr_info = |v: &super::Vlr| VlrInfo {
         user_id: v.user_id.clone(),
         record_id: v.record_id,
         description: v.description.clone(),
-        length: v.data.len(),
+        // The waveform packets are not read with the header.
+        length: if v.is_waveform_data() { h.waveform_data_size as usize } else { v.data.len() },
     };
     let standard = super::las::STANDARD_DIMENSIONS;
     Ok(PointCloudInfo {
@@ -213,6 +194,45 @@ pub fn point_cloud_info(r: &mut PointCloudReader, statistics: bool) -> Result<Po
         evlrs: h.evlrs.iter().map(vlr_info).collect(),
         copc,
         statistics,
+    })
+}
+
+/// Counts and ranges of every point, read in chunks.
+fn statistics_of(r: &mut PointCloudReader) -> Result<PointStatistics> {
+    let names: Vec<String> = r.dimensions().into_iter().map(|(n, _)| n).collect();
+    let mut acc: Vec<(f64, f64, f64, u64)> = vec![(f64::INFINITY, f64::NEG_INFINITY, 0.0, 0); names.len()];
+    let mut classes = [0u64; 256];
+    let mut returns = [0u64; 256];
+    r.start_chunks(&PointReadOptions::default(), 0)?;
+    while let Some(chunk) = r.next_chunk()? {
+        for (a, d) in acc.iter_mut().zip(&chunk.dimensions) {
+            for v in d.to_f64() {
+                if v.is_nan() {
+                    continue;
+                }
+                a.0 = a.0.min(v);
+                a.1 = a.1.max(v);
+                a.2 += v;
+                a.3 += 1;
+            }
+        }
+        for (c, n) in chunk.classification_counts() {
+            classes[c as usize] += n;
+        }
+        for (c, n) in chunk.return_counts() {
+            returns[c as usize] += n;
+        }
+    }
+    let counts = |a: &[u64; 256]| a.iter().enumerate().filter(|(_, n)| **n > 0).map(|(c, n)| (c as u8, *n)).collect();
+    Ok(PointStatistics {
+        classification_counts: counts(&classes),
+        return_counts: counts(&returns),
+        dimensions: names
+            .into_iter()
+            .zip(acc)
+            .filter(|(_, a)| a.3 > 0)
+            .map(|(name, a)| DimensionStatistics { name, min: a.0, max: a.1, mean: a.2 / a.3 as f64 })
+            .collect(),
     })
 }
 

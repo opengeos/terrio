@@ -1,16 +1,23 @@
-//! `terrio grid`: points to a raster, like PDAL's `writers.gdal`.
+//! `terrio grid`: points to a raster, like PDAL's `writers.gdal`, or interpolated like GDAL's
+//! `gdal_grid`.
 
-use terrio::pointcloud::grid::{GridOptions, GridStat};
+use terrio::pointcloud::grid::{GridMethod, GridOptions, GridStat};
 
 #[derive(clap::Args)]
 pub struct Args {
-    /// The point cloud (LAS, LAZ or COPC; a path, URL or `s3://` object).
+    /// The point cloud (LAS, LAZ, COPC, EPT, PLY or E57; a path, URL or `s3://` object).
     input: String,
     /// The output raster.
     output: String,
     /// The cell size.
     #[arg(long, value_name = "RES")]
     tr: f64,
+    /// How cells are computed: statistics of the points near each cell, as PDAL's writers.gdal
+    /// (the default; the points are read in chunks, in bounded memory); linear, interpolated in
+    /// the points' Delaunay triangulation (a TIN), as gdal_grid -a linear; or nearest, the
+    /// nearest point's value, as gdal_grid -a nearest.
+    #[arg(long, value_name = "METHOD", default_value = "statistics")]
+    method: String,
     /// The statistics, one band each (comma-separated): min, max, mean, idw, count, stdev, or all.
     /// Bands are in that order.
     #[arg(long, value_name = "STATS", default_value = "mean")]
@@ -18,8 +25,11 @@ pub struct Args {
     /// The dimension gridded.
     #[arg(long = "dim", value_name = "DIMENSION", default_value = "z")]
     dimension: String,
-    /// Points closer than this to a cell centre count towards it. By default the cell diagonal.
-    #[arg(long)]
+    /// Statistics: points closer than this to a cell centre count towards it (by default the
+    /// cell diagonal). Linear: the search radius of the nearest point outside the triangulation
+    /// (0: nodata there). Nearest: the half-side of the square searched (by default, all
+    /// points).
+    #[arg(long, allow_negative_numbers = true)]
     radius: Option<f64>,
     /// The power of the inverse distance weights.
     #[arg(long, default_value_t = 1.0)]
@@ -50,12 +60,9 @@ pub struct Args {
 }
 
 pub fn run(a: Args) -> terrio::Result<()> {
-    let mut cloud = terrio::pointcloud::read_points(&a.input, &a.points.to_options()?)?;
-    if let Some(crs) = super::rasterout::srs(&a.a_srs)? {
-        cloud.crs = crs;
-    }
     let options = GridOptions {
         resolution: a.tr,
+        method: GridMethod::parse(&a.method)?,
         stats: GridStat::parse_list(&a.stat)?,
         dimension: a.dimension,
         radius: a.radius,
@@ -66,6 +73,8 @@ pub fn run(a: Args) -> terrio::Result<()> {
         nodata: a.nodata,
         data_type: a.ot.as_deref().map(terrio::ops::parse_data_type).transpose()?.unwrap_or(terrio::DataType::F64),
     };
-    let ds = terrio::pointcloud::grid::grid(&cloud, &options)?;
+    let mut reader = terrio::pointcloud::open_points(&a.input)?;
+    let srs = super::rasterout::srs(&a.a_srs)?;
+    let ds = terrio::pointcloud::grid::grid_reader(&mut reader, &a.points.to_options()?, &options, srs.as_ref())?;
     a.out.write(&ds, &a.output)
 }

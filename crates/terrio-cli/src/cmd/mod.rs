@@ -4,6 +4,7 @@ pub mod calc;
 pub mod convert;
 pub mod crs;
 pub mod dem;
+pub mod filter;
 pub mod formats;
 pub mod grid;
 pub mod info;

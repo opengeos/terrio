@@ -78,8 +78,12 @@ terrio.write_vector(collection, "countries.geojson")  # GeoJSON dicts, GeoDataFr
 
 ## Point clouds
 
-LAS 1.0 to 1.4 (point formats 0 to 10, extra bytes), LAZ and COPC. Remote COPC files are read in
-place: only the octree nodes a read needs are fetched, with HTTP range requests.
+LAS 1.0 to 1.4 (point formats 0 to 10, extra bytes, waveforms), LAZ, COPC, EPT, PLY and E57.
+Remote COPC files and EPT datasets are read in place: only the octree nodes a read needs are
+fetched. Files larger than memory are read and written in chunks (`PointCloudFile.chunks`,
+`PointCloudWriter`); PDAL's filters (`smrf`, `outlier`, `range`, `sample`, `voxel_downsize`,
+`voxel_center_nearest_neighbor`) and TIN and nearest-neighbour gridding are `PointCloud`
+methods.
 
 ```python
 f = terrio.open_points("https://s3.amazonaws.com/hobu-lidar/autzen-classified.copc.laz")
@@ -91,7 +95,7 @@ points = terrio.read_points("tile.laz", classes=[2], returns=["last", "only"])
 z = points["z"]  # NumPy arrays: x, y, z (scaled float64), intensity (uint16), classification...
 points.to_dict()  # {name: array}
 points.to_numpy()  # a structured array
-points.write("ground.copc.laz")  # LAS, LAZ or COPC
+points.write("ground.copc.laz")  # LAS, LAZ, COPC, PLY or E57
 dem = points.grid(1.0, stat="idw")  # a Raster (min, max, mean, idw, count, stdev; like PDAL)
 points.to_layer(dimensions=["z", "intensity"]).to_geopandas()
 terrio.convert_points("tile.laz", "tile_wgs84.laz", t_srs="EPSG:4326")

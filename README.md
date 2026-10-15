@@ -69,7 +69,8 @@ terrio convert 'STACIT:"https://.../search?...":asset=red' red.tif --srcwin 0 0 
 terrio convert dem.tif dem.zarr --co GEOREFERENCING_CONVENTION=SPATIAL_PROJ --co OVERVIEW_LEVELS=AUTO  # GeoZarr
 terrio formats                                   # list the drivers
 
-# Point clouds: LAS 1.0-1.4 (formats 0-10, extra bytes), LAZ, COPC (read in place, local or remote)
+# Point clouds: LAS 1.0-1.4 (formats 0-10, extra bytes, waveforms), LAZ, COPC and EPT (read in
+# place, local or remote), PLY, E57; files larger than memory converted in chunks
 terrio info tile.laz --stats                     # header, CRS, classes and returns (like pdal info)
 terrio info https://host/lidar.copc.laz          # COPC octree depth and points per level
 terrio convert tile.laz tile.copc.laz            # LAS <-> LAZ <-> COPC
@@ -78,6 +79,10 @@ terrio convert tile.laz ground.laz --class 2 --returns last,only --t-srs EPSG:43
 terrio convert tile.laz points.gpkg --dims z,intensity,classification   # to a vector layer of points
 terrio grid tile.laz dsm.tif --tr 1 --stat max                          # like PDAL's writers.gdal
 terrio grid tile.laz dtm.tif --tr 1 --stat idw --class 2 --window-size 3
+terrio grid tile.laz tin.tif --tr 1 --class 2 --method linear           # like gdal_grid -a linear
+terrio filter smrf tile.laz classified.laz                              # PDAL's filters.smrf
+terrio filter outlier tile.laz clean.laz --remove                       # filters.outlier
+terrio convert scan.e57 scan.laz                                        # E57, PLY, EPT
 ```
 
 ## Library

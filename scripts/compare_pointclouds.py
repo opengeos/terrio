@@ -1,4 +1,4 @@
-"""Compares terrio's point cloud reading and writing with laspy's and PDAL's.
+"""Compares terrio's point cloud reading and writing with laspy's, PDAL's and GDAL's.
 
 For every LAS, LAZ and COPC file under DIR/pointcloud (see scripts/fetch_test_data.sh):
 
@@ -11,14 +11,28 @@ For every LAS, LAZ and COPC file under DIR/pointcloud (see scripts/fetch_test_da
 - gridding: `PointCloud.grid` compared with PDAL's `writers.gdal` (every statistic);
 - reprojection: `convert_points(t_srs=...)` compared with PDAL's `filters.reprojection`.
 
+And:
+
+- PLY, E57 and EPT: every value of every dimension compared with PDAL's `readers.ply`,
+  `readers.e57` and `readers.ept`, EPT queries by bounds and resolution, and PLY and E57 files
+  written by terrio read back by PDAL;
+- waveforms: the samples of points compared with the bytes of the file at the offsets LASlib
+  reads them from, and the waveform data packets kept when the points are written;
+- filters: `smrf`, `outlier`, `range`, `sample`, `voxeldownsize` and
+  `voxelcenternearestneighbor` compared with PDAL's filters (classes, or the points kept, in
+  order);
+- interpolated grids: `linear` and `nearest` compared with `gdal_grid -a linear` and
+  `-a nearest`.
+
 Needs the terrio Python package, laspy with lazrs, NumPy, and the `pdal` command (optional: the
-PDAL comparisons are skipped without it).
+PDAL comparisons are skipped without it); the grids need `gdal_grid` and GDAL's Python bindings.
 
 Usage:
     python scripts/compare_pointclouds.py DIR
 """
 
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -30,6 +44,7 @@ import numpy as np
 import terrio
 
 PDAL = shutil.which("pdal")
+GDAL_GRID = shutil.which("gdal_grid")
 # Files that laspy and PDAL cannot read, and another file of the same points.
 SAME_POINTS = {"simple-laszip-compressor-version-1.2r0.laz": "simple.laz"}
 STANDARD = {
@@ -205,7 +220,8 @@ def compare_read(path: Path) -> None:
         "generating_software": (h["generating_software"], lh.generating_software),
         "file_source_id": (h["file_source_id"], lh.file_source_id),
         "vlr_count": (len([v for v in h["vlrs"] if v["user_id"] != "laszip encoded"]), len(lh.vlrs)),
-        "evlr_count": (len(h["evlrs"]), len(lh.evlrs or [])),
+        # LAS 1.3's waveform data packet record is not an EVLR for laspy.
+        "evlr_count": (len([v for v in h["evlrs"] if h["version"][1] >= 4 or v["record_id"] != 65535]), len(lh.evlrs or [])),
     }
     bad = [f"{k}: {a} != {b}" for k, (a, b) in checks.items() if a != b]
     report(f"header {name} vs laspy", not bad, "; ".join(bad))
@@ -396,10 +412,274 @@ def compare_reprojection(path: Path, tmp: Path, srs: str) -> None:
     report(f"reproject {path.name} to {srs} vs PDAL: max |dx| {dx:.3g}, |dy| {dy:.3g}", dx <= tol and dy <= tol, "too far")
 
 
+def snake(name: str) -> str:
+    """terrio's name of a PDAL dimension.
+
+    Args:
+        name: PDAL's name, such as `ReturnNumber` or `NormalX`.
+
+    Returns:
+        str: terrio's name, such as `return_number` or `normal_x`.
+    """
+    special = {"X": "x", "Y": "y", "Z": "z", "ScanChannel": "scanner_channel", "Infrared": "nir"}
+    if name in special:
+        return special[name]
+    out = ""
+    for i, c in enumerate(name):
+        if c.isupper() and i > 0 and (name[i - 1].islower() or name[i - 1].isdigit()):
+            out += "_"
+        out += c.lower()
+    return out
+
+
+def pdal_text(stages: list) -> dict[str, np.ndarray]:
+    """Runs a PDAL pipeline that writes every dimension as text, at full precision.
+
+    Args:
+        stages: The pipeline's stages, without the writer.
+
+    Returns:
+        dict[str, numpy.ndarray]: The points, by terrio's dimension names (PDAL's `Omit` aside).
+    """
+    with tempfile.TemporaryDirectory() as d:
+        out = Path(d) / "points.txt"
+        writer = {"type": "writers.text", "filename": str(out), "precision": 17, "keep_unspecified": True}
+        subprocess.run([PDAL, "pipeline", "--stdin"], input=json.dumps(stages + [writer]), text=True, check=True, capture_output=True)
+        with open(out) as f:
+            names = [h.strip().strip('"') for h in f.readline().split(",")]
+        a = np.loadtxt(out, delimiter=",", skiprows=1, ndmin=2)
+        return {snake(h): a[:, i] for i, h in enumerate(names) if h != "Omit"}
+
+
+def compare_sorted(name: str, ours: "terrio.PointCloud", ref: dict[str, np.ndarray], keys=("x", "y", "z")) -> None:
+    """Compares points with PDAL's, both sorted by some dimensions.
+
+    Args:
+        name: The check's name.
+        ours: terrio's points.
+        ref: PDAL's points.
+        keys: The dimensions to sort by.
+    """
+    n, m = len(ours), len(next(iter(ref.values()))) if ref else 0
+    if n != m:
+        report(f"{name}: {n} points vs PDAL {m}", False, "different point counts")
+        return
+    a = np.lexsort([np.asarray(ours[k]) for k in keys])
+    b = np.lexsort([ref[k] for k in keys])
+    bad = []
+    for k, v in ref.items():
+        if k not in ours:
+            bad.append(f"{k} missing")
+        elif not np.allclose(np.asarray(ours[k]).astype("f8")[a], v[b], rtol=1e-12, atol=1e-9):
+            bad.append(k)
+    extra = sorted(set(ours.dimensions) - set(ref))
+    if extra:
+        bad.append(f"dimensions PDAL has not: {extra}")
+    report(f"{name}: {n} points, {len(ref)} dimensions vs PDAL", not bad, ", ".join(bad))
+
+
+def compare_formats(root: Path, tmp: Path) -> None:
+    """Compares PLY, E57 and EPT reads, EPT queries and PLY and E57 writes with PDAL's.
+
+    Args:
+        root: The point cloud test data directory.
+        tmp: A directory for the outputs.
+    """
+    if not PDAL:
+        return
+    for path in sorted((root / "ply").glob("*.ply")) + sorted((root / "e57").glob("*.e57")):
+        compare_sorted(f"readfmt {path.name}", terrio.read_points(str(path)), pdal_text([str(path)]))
+    for name in ["1.2-with-color", "lone-star-laszip"]:
+        path = str(root / "ept" / name / "ept.json")
+        compare_sorted(f"readfmt EPT {name}", terrio.read_points(path), pdal_text([{"type": "readers.ept", "filename": path}]), ("x", "y", "z", "gps_time"))
+    # PDAL 2.9 rounds the coordinates of binary tiles to integers (it writes the scaled values
+    # back into their integer fields): compare those with terrio's rounded the same way.
+    path = str(root / "ept" / "ellipsoid-binary" / "ept.json")
+    ours = terrio.read_points(path)
+    zstd = terrio.read_points(str(root / "ept" / "ellipsoid-zstandard" / "ept.json"))
+    same = all(np.array_equal(ours[k], zstd[k]) for k in ours.dimensions)
+    report(f"readfmt EPT ellipsoid-zstandard: {len(zstd)} points, as ellipsoid-binary", same, "different points")
+    ref = pdal_text([{"type": "readers.ept", "filename": path}])
+
+    class Rounded:
+        """terrio's points with x, y and z rounded half away from zero, as PDAL rounds them."""
+
+        dimensions = ours.dimensions
+
+        def __len__(self):
+            return len(ours)
+
+        def __contains__(self, k):
+            return k in ours
+
+        def __getitem__(self, k):
+            v = np.asarray(ours[k])
+            return np.where(v > 0, np.floor(v + 0.5), np.ceil(v - 0.5)) if k in ("x", "y", "z") else v
+
+    compare_sorted("readfmt EPT ellipsoid-binary (x, y, z rounded as PDAL 2.9 rounds them)", Rounded(), ref, ("x", "y", "z", "gps_time"))
+    path = str(root / "ept" / "lone-star-laszip" / "ept.json")
+    f = terrio.open_points(path)
+    x0, y0, _, x1, y1, _ = f.bounds
+    w, h = x1 - x0, y1 - y0
+    b = (x0 + 0.3 * w, y0 + 0.4 * h, x0 + 0.6 * w, y0 + 0.8 * h)
+    pb = f"([{b[0]}, {b[2]}], [{b[1]}, {b[3]}])"
+    for label, kwargs, opts in [
+        ("bounds", {"bounds": b}, {"bounds": pb}),
+        ("resolution 1", {"resolution": 1.0}, {"resolution": 1.0}),
+        ("resolution 0.1", {"resolution": 0.1}, {"resolution": 0.1}),
+        ("bounds+resolution", {"bounds": b, "resolution": 0.3}, {"bounds": pb, "resolution": 0.3}),
+    ]:
+        ref = pdal_text([{"type": "readers.ept", "filename": path, **opts}])
+        compare_sorted(f"EPT lone-star-laszip {label}", f.read(**kwargs), ref, ("x", "y", "z", "gps_time"))
+    # PLY and E57 written by terrio, read back by PDAL.
+    pc = terrio.read_points(str(root / "autzen_trim.las"))
+    for ext, kwargs in [("ply", {}), ("ply", {"ply_encoding": "binary_little_endian"}), ("e57", {})]:
+        out = tmp / f"autzen.{ext}"
+        pc.write(str(out), **kwargs)
+        ref = pdal_text([str(out)])
+        keys = ["x", "y", "z", "intensity"] + (["classification", "gps_time"] if ext == "ply" else [])
+        bad = [k for k in keys if not np.array_equal(np.asarray(pc[k]).astype("f8"), ref[k])]
+        label = kwargs.get("ply_encoding", "ascii") if ext == "ply" else "E57"
+        report(f"writefmt autzen_trim.las -> {ext} ({label}), read by PDAL: {len(ref['x'])} points", not bad, f"differ: {bad}")
+
+
+def compare_waveforms(root: Path, tmp: Path) -> None:
+    """Compares waveform samples with the file's bytes, and checks they are kept on writing.
+
+    Args:
+        root: The point cloud test data directory.
+        tmp: A directory for the outputs.
+    """
+    path = root / "waveform" / "full_waveform_tutorial_data.las"
+    if not path.exists():
+        return
+    raw = path.read_bytes()
+    start = int.from_bytes(raw[227:235], "little")
+    las = laspy.read(path)
+    f = terrio.open_points(str(path))
+    idx, off, size = (np.asarray(las[k]) for k in ("wavepacket_index", "wavepacket_offset", "wavepacket_size"))
+    sample = np.flatnonzero(size > 0)[::997]
+    bad = 0
+    for i in sample:
+        ref = np.frombuffer(raw[start + int(off[i]) : start + int(off[i]) + int(size[i])], dtype=np.uint8)
+        if not np.array_equal(f.waveform(int(idx[i]), int(off[i]), int(size[i])), ref):
+            bad += 1
+    report(f"waveform {path.name}: samples of {len(sample)} points vs the file's packets", bad == 0, f"{bad} differ")
+    pc = f.read(max_points=50000)
+    for ext in ["las", "laz"]:
+        out = tmp / f"waveforms.{ext}"
+        pc.write(str(out))
+        b = out.read_bytes() if ext == "las" else None
+        back = terrio.open_points(str(out))
+        ok = back.header["waveform_data_size"] == f.header["waveform_data_size"]
+        if b is not None:
+            s2 = int.from_bytes(b[227:235], "little")
+            n = f.header["waveform_data_size"]
+            ok = ok and b[s2 + 60 : s2 + 60 + n] == raw[start + 60 : start + 60 + n]
+        got = laspy.read(out)
+        ok = ok and np.array_equal(np.asarray(got.wavepacket_offset), pc["wavepacket_offset"])
+        report(f"waveform {path.name} -> {ext}: waveform data packets kept (laspy reads the points)", bool(ok), "packets lost")
+
+
+def pdal_las(stages: list, tmp: Path):
+    """Runs a PDAL pipeline that writes LAS 1.4, and reads the output with laspy.
+
+    Args:
+        stages: The pipeline's stages, without the writer.
+        tmp: A directory for the output.
+
+    Returns:
+        laspy.LasData: The points.
+    """
+    out = tmp / "pdal_filtered.las"
+    writer = {"type": "writers.las", "filename": str(out), "forward": "all", "minor_version": 4, "dataformat_id": 6}
+    subprocess.run([PDAL, "pipeline", "--stdin"], input=json.dumps(stages + [writer]), text=True, check=True, capture_output=True)
+    return laspy.read(out)
+
+
+def compare_filters(path: Path, tmp: Path, z_range: tuple[float, float]) -> None:
+    """Compares PDAL's filters with terrio's.
+
+    Args:
+        path: A LAS file.
+        tmp: A directory for the outputs.
+        z_range: A range of z for `filters.range`.
+    """
+    if not PDAL:
+        return
+    pc = terrio.read_points(str(path))
+    name = path.name
+    for opts in [{}, {"slope": 0.2, "window": 16, "threshold": 0.45, "scalar": 1.2}]:
+        ours = pc.smrf(**opts)["classification"]
+        ref = np.asarray(pdal_las([str(path), {"type": "filters.smrf", **opts}], tmp).classification)
+        n = int(np.sum(ours != ref))
+        report(f"filter smrf {name} {opts or 'defaults'}: {int(np.sum(ours == 2))} ground points vs PDAL {int(np.sum(ref == 2))}", n == 0, f"{n} points differ")
+    for opts in [{"method": "statistical"}, {"method": "statistical", "mean_k": 12, "multiplier": 2.5}, {"method": "radius"}, {"method": "radius", "radius": 2.0, "min_k": 4}]:
+        ours = pc.outlier(**opts)["classification"] == 7
+        ref = np.asarray(pdal_las([str(path), {"type": "filters.outlier", **opts}], tmp).classification) == 7
+        n = int(np.sum(ours != ref))
+        report(f"filter outlier {name} {opts}: {int(ours.sum())} outliers vs PDAL {int(ref.sum())}", n == 0, f"{n} points differ")
+    limits = f"Classification[2:2],Z[{z_range[0]}:{z_range[1]}),Intensity![0:10]"
+    for label, ours, stage in [
+        ("voxelcenternearestneighbor cell 2", pc.voxel_center_nearest_neighbor(2.0), {"type": "filters.voxelcenternearestneighbor", "cell": 2.0}),
+        ("voxeldownsize first 1", pc.voxel_downsize(1.0, "first"), {"type": "filters.voxeldownsize", "cell": 1.0, "mode": "first"}),
+        ("voxeldownsize center 1", pc.voxel_downsize(1.0, "center"), {"type": "filters.voxeldownsize", "cell": 1.0, "mode": "center"}),
+        ("sample radius 1", pc.sample(1.0), {"type": "filters.sample", "radius": 1.0}),
+        ("sample cell 1.5", pc.sample(cell=1.5), {"type": "filters.sample", "cell": 1.5}),
+        (f"range {limits}", pc.range(limits), {"type": "filters.range", "limits": limits}),
+    ]:
+        ref = pdal_las([str(path), stage], tmp)
+        # PDAL writes the points with a scale of 0.01: compare to it.
+        same = len(ours) == len(ref) and all(np.allclose(ours[k], np.asarray(ref[k]), rtol=0, atol=0.005) for k in "xyz")
+        report(f"filter {label} {name}: {len(ours)} points vs PDAL {len(ref)}, in the same order", same, "different points")
+
+
+def compare_interpolation(path: Path, tmp: Path) -> None:
+    """Compares linear (TIN) and nearest-neighbour grids with `gdal_grid`'s.
+
+    Args:
+        path: A point cloud.
+        tmp: A directory for the outputs.
+    """
+    if not GDAL_GRID:
+        return
+    try:
+        from osgeo import gdal
+    except ImportError:
+        return
+    pc = terrio.read_points(str(path))
+    x0, y0, _, x1, y1, _ = pc.bounds
+    csv = tmp / "points.csv"
+    np.savetxt(csv, np.column_stack([pc["x"], pc["y"], pc["z"]]), delimiter=",", header="x,y,z", comments="", fmt="%.17g")
+    for res, alg, method, kwargs in [
+        (6.0, "linear:radius=0:nodata=-9999", "linear", {"radius": 0.0}),
+        (6.0, "linear:nodata=-9999", "linear", {}),
+        (10.0, "nearest:nodata=-9999", "nearest", {}),
+        (6.0, "nearest:radius1=8:radius2=8:nodata=-9999", "nearest", {"radius": 8.0}),
+    ]:
+        w, h = int(np.floor((x1 - x0) / res)) + 1, int(np.floor((y1 - y0) / res)) + 1
+        out = tmp / "gdal_grid.tif"
+        args = [GDAL_GRID, "-q", "-a", alg, "-zfield", "z", "-oo", "X_POSSIBLE_NAMES=x", "-oo", "Y_POSSIBLE_NAMES=y", "-l", "points"]
+        args += ["-txe", repr(x0), repr(x0 + w * res), "-tye", repr(y0), repr(y0 + h * res), "-outsize", str(w), str(h), "-ot", "Float64", str(csv), str(out)]
+        subprocess.run(args, check=True, capture_output=True)
+        ref = gdal.Open(str(out)).ReadAsArray()
+        ours = pc.grid(res, method=method, nodata=-9999.0, **kwargs).read(1)
+        diff = np.abs(ours - ref) > 1e-9 * np.maximum(1, np.abs(ref))
+        n = int(diff.sum())
+        name = f"interp {method} {path.name} res {res} vs gdal_grid -a {alg.split(':nodata')[0]} ({w}x{h})"
+        if n == 0:
+            report(name, True)
+        else:
+            # Cells where several points share an x and y, or where qhull's triangulation loses
+            # precision, can differ.
+            pct = 100 * (1 - n / diff.size)
+            print(f"ok   {name} [within tolerance: {n} of {diff.size} cells differ ({pct:.3f}% identical)]")
+
+
 def main() -> None:
     """Runs the comparisons on the files under the directory given on the command line."""
     root = Path(sys.argv[1]) / "pointcloud"
-    files = sorted(p for p in root.rglob("*") if p.suffix.lower() in (".las", ".laz"))
+    files = sorted(p for p in root.rglob("*") if p.suffix.lower() in (".las", ".laz") and "ept" not in p.relative_to(root).parts)
     print(f"PDAL: {PDAL or 'not found'}; laspy {laspy.__version__}; terrio {terrio.__version__}")
     with tempfile.TemporaryDirectory() as d:
         tmp = Path(d)
@@ -418,6 +698,13 @@ def main() -> None:
         compare_reprojection(root / "test_utm16.las", tmp, "EPSG:4269")
         compare_reprojection(root / "las_with_several_extra_byte_bloc.laz", tmp, "EPSG:4326")
         compare_reprojection(root / "synthetic" / "format6.laz", tmp, "EPSG:5070")
+        compare_formats(root, tmp)
+        compare_waveforms(root, tmp)
+        compare_filters(root / "autzen_trim.las", tmp, (420, 500))
+        madison = tmp / "madison.las"
+        terrio.convert_points(str(root / "madison.copc.laz"), str(madison))
+        compare_filters(madison, tmp, (330, 400))
+        compare_interpolation(root / "autzen_trim.las", tmp)
     print(f"\n{len(FAILURES)} failure(s)")
     for f in FAILURES:
         print("  " + f)

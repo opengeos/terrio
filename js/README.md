@@ -36,12 +36,12 @@ const [xs, ys] = transformPoints([-122.4], [37.8], "EPSG:4326", "EPSG:32610");
 registerGrid("us_nga_egm96_15.tif", gridBytes);  // datum shift and geoid grids, from bytes
 const [lon, lat, h] = transformPoints([-100], [40], "EPSG:4979", "EPSG:4326+5773", [100]);
 
-// Point clouds: LAS, LAZ and COPC.
+// Point clouds: LAS, LAZ, COPC, PLY and E57.
 const lidar = openPoints(lazBytes, "tile.laz");
 lidar.format, lidar.pointCount, lidar.crs, lidar.info();
 const ground = lidar.read({ classes: [2], bounds: [x0, y0, x1, y1] }); // COPC: also maxLevel, resolution
 ground.get("z");                  // Float64Array; intensity is a Uint16Array...
-ground.toBytes("ground.copc.laz"); // LAS, LAZ or COPC
+ground.toBytes("ground.copc.laz"); // LAS, LAZ, COPC, PLY or E57
 ground.grid(1, { stat: ["idw"] }); // a raster Dataset
 ground.toVectorBytes("ground.fgb", ["z", "intensity"]);
 pointsFromArrays({ x, y, z, classification }, "EPSG:32610");
@@ -53,7 +53,7 @@ In WebAssembly, these formats are read from and written to memory:
 |---|---|---|
 | Raster | GeoTIFF/COG (LZW, Deflate, PackBits, ZSTD, LZMA, JPEG, WebP, LERC, JPEG XL), JPEG 2000 (JP2 and J2K), Esri ASCII grid, GeoPackage | GeoTIFF, COG (lossless compressions, ZSTD included), JPEG 2000, Esri ASCII grid, GeoPackage |
 | Vector | GeoJSON, TopoJSON, FlatGeobuf\*, GeoPackage, GeoParquet, CSV, KML, KMZ, GML, GPX, OSM PBF, zip archives of these, Shapefile and MapInfo (MIF/MID) in zip archives | GeoJSON, TopoJSON, FlatGeobuf, GeoPackage, KML, KMZ, GML, GPX |
-| Point cloud | LAS, LAZ, COPC | LAS, LAZ, COPC |
+| Point cloud | LAS, LAZ, COPC, PLY, E57 | LAS, LAZ, COPC, PLY, E57 |
 
 \* The format library's FlatGeobuf reader overflows on large files in 32-bit WebAssembly; terrio's
 own FlatGeobuf driver will replace it.

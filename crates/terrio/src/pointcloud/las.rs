@@ -17,6 +17,12 @@ pub(crate) const LASF_PROJECTION: &str = "LASF_Projection";
 /// The user id and record id of the LASzip record.
 pub(crate) const LASZIP_USER_ID: &str = "laszip encoded";
 pub(crate) const LASZIP_RECORD_ID: u16 = 22204;
+/// The record id of the waveform data packet record (an EVLR of `LASF_Spec`).
+pub(crate) const WAVEFORM_RECORD_ID: u16 = 65535;
+/// The global encoding bit of waveform data packets inside the file.
+pub(crate) const WAVEFORM_INTERNAL_BIT: u16 = 2;
+/// The global encoding bit of waveform data packets in an external `.wdp` file.
+pub(crate) const WAVEFORM_EXTERNAL_BIT: u16 = 4;
 
 /// The standard dimension names, in the order of the LAS 1.4 formats.
 pub(crate) const STANDARD_DIMENSIONS: &[&str] = &[
@@ -83,6 +89,12 @@ impl Vlr {
     /// Whether this record has the given user id and record id.
     pub fn is(&self, user_id: &str, record_id: u16) -> bool {
         self.user_id == user_id && self.record_id == record_id
+    }
+
+    /// Whether the record is the waveform data packet record (`LASF_Spec` 65535; some writers
+    /// name the user `LAS_Spec`).
+    pub fn is_waveform_data(&self) -> bool {
+        self.record_id == WAVEFORM_RECORD_ID && (self.user_id == LASF_SPEC || self.user_id == "LAS_Spec")
     }
 
     /// Whether the record is the LASzip compression record.
@@ -153,8 +165,13 @@ pub struct LasHeader {
     pub min: [f64; 3],
     /// The maximum X, Y and Z.
     pub max: [f64; 3],
-    /// The offset of the waveform data packet record (LAS 1.3 and later).
+    /// The offset of the waveform data packet record (LAS 1.3 and later): the header of the EVLR
+    /// that holds the waveforms of the points when they are in the file (global encoding bit 1).
     pub start_of_waveform_data: u64,
+    /// The size of the waveform data packets in the file (the payload of their record), 0 when
+    /// there are none. The record is listed among the EVLRs, without its payload, which
+    /// [`super::PointCloudReader`] reads when it reads points that refer to it.
+    pub waveform_data_size: u64,
     /// The offset of the first EVLR (LAS 1.4).
     pub start_of_first_evlr: u64,
     /// The variable-length records.
@@ -186,6 +203,7 @@ impl Default for LasHeader {
             min: [0.0; 3],
             max: [0.0; 3],
             start_of_waveform_data: 0,
+            waveform_data_size: 0,
             start_of_first_evlr: 0,
             vlrs: Vec::new(),
             evlrs: Vec::new(),
@@ -242,6 +260,7 @@ impl LasHeader {
             max: [f64_at(&b, 179), f64_at(&b, 195), f64_at(&b, 211)],
             min: [f64_at(&b, 187), f64_at(&b, 203), f64_at(&b, 219)],
             start_of_waveform_data: 0,
+            waveform_data_size: 0,
             start_of_first_evlr: 0,
             vlrs: Vec::new(),
             evlrs: Vec::new(),
@@ -290,12 +309,34 @@ impl LasHeader {
                 if len > (1 << 32) {
                     return Err(Error::InvalidData(format!("EVLR of {len} bytes")));
                 }
-                // The COPC hierarchy is read page by page when needed, not here.
-                let skip = c_str(&vh[2..18]) == super::copc::COPC_USER_ID && u16_at(&vh, 18) == 1000;
+                // The COPC hierarchy is read page by page when needed, and the waveform packets
+                // when points that refer to them are read, not here.
+                let user_id = c_str(&vh[2..18]);
+                let record_id = u16_at(&vh, 18);
+                let waveforms = record_id == WAVEFORM_RECORD_ID && (user_id == LASF_SPEC || user_id == "LAS_Spec");
+                let skip = waveforms || (user_id == super::copc::COPC_USER_ID && record_id == 1000);
+                if waveforms {
+                    h.start_of_waveform_data = at;
+                    h.waveform_data_size = len;
+                }
                 let mut data = vec![0u8; if skip { 0 } else { len as usize }];
                 r.read_exact(&mut data)?;
-                h.evlrs.push(Vlr { user_id: c_str(&vh[2..18]), record_id: u16_at(&vh, 18), description: c_str(&vh[28..60]), data });
+                h.evlrs.push(Vlr { user_id, record_id, description: c_str(&vh[28..60]), data });
                 at += EVLR_HEADER_LEN as u64 + len;
+            }
+        } else if version == (1, 3) && h.start_of_waveform_data > 0 {
+            // LAS 1.3: the waveform data packet record, the only record after the points, in the
+            // EVLR format.
+            r.seek(SeekFrom::Start(h.start_of_waveform_data))?;
+            let mut vh = [0u8; EVLR_HEADER_LEN];
+            if read_up_to(r, &mut vh)? == EVLR_HEADER_LEN {
+                h.waveform_data_size = u64_at(&vh, 20);
+                h.evlrs.push(Vlr {
+                    user_id: c_str(&vh[2..18]),
+                    record_id: u16_at(&vh, 18),
+                    description: c_str(&vh[28..60]),
+                    data: Vec::new(),
+                });
             }
         }
         if (h.point_record_length as usize) < standard_record_length(point_format) {
@@ -813,6 +854,11 @@ pub(crate) struct Columns {
 impl Columns {
     pub fn new(layout: &Layout, capacity: usize) -> Self {
         Self { specs: layout.fields.clone(), values: layout.fields.iter().map(|f| Values::with_capacity(f.value_type, capacity)).collect() }
+    }
+
+    /// The number of points.
+    pub fn len(&self) -> usize {
+        self.values.first().map_or(0, |v| v.len())
     }
 
     /// Appends the dimensions of a record.

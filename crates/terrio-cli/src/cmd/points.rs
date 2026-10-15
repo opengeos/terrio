@@ -1,7 +1,7 @@
 //! Options shared by the commands that read point clouds, and `terrio convert` for them.
 
 use terrio::crs::SpatialRef;
-use terrio::pointcloud::{self, ConvertOptions, PointFilter, PointFormat, PointReadOptions, PointWriteOptions, ReturnKind};
+use terrio::pointcloud::{self, ConvertOptions, PlyEncoding, PointFilter, PointFormat, PointReadOptions, PointWriteOptions, ReturnKind};
 
 /// Which points to read.
 #[derive(clap::Args)]
@@ -18,13 +18,13 @@ pub struct PointArgs {
     /// Keep these returns of each pulse (comma-separated): first, last, intermediate, only.
     #[arg(long, value_name = "RETURNS", value_delimiter = ',', help_heading = "Point cloud options")]
     returns: Vec<String>,
-    /// COPC: read down to this octree level (0 is the root).
+    /// COPC and EPT: read down to this octree level (0 is the root).
     #[arg(long = "max-level", value_name = "LEVEL", help_heading = "Point cloud options")]
     max_level: Option<u32>,
-    /// COPC: read the octree levels needed for this point spacing.
+    /// COPC and EPT: read the octree levels needed for this point spacing.
     #[arg(long, value_name = "SPACING", help_heading = "Point cloud options")]
     resolution: Option<f64>,
-    /// Read at most about this many points: COPC files down to the deepest level that fits,
+    /// Read at most about this many points: COPC and EPT down to the deepest level that fits,
     /// others by keeping every n-th point.
     #[arg(long = "max-points", value_name = "N", help_heading = "Point cloud options")]
     max_points: Option<u64>,
@@ -63,9 +63,53 @@ pub struct PointWriteArgs {
     /// The offset of the stored X, Y and Z.
     #[arg(long, num_args = 3, value_names = ["X", "Y", "Z"], allow_negative_numbers = true, help_heading = "Point cloud options")]
     offset: Option<Vec<f64>>,
-    /// For vector outputs, the dimensions written as attributes (comma-separated). All by default.
+    /// For vector, PLY and E57 outputs, the dimensions written (comma-separated). All by default.
     #[arg(long, value_name = "DIMS", value_delimiter = ',', help_heading = "Point cloud options")]
     dims: Vec<String>,
+    /// PLY outputs: ascii (the default, as PDAL's), binary_little_endian or binary_big_endian.
+    #[arg(long = "ply-encoding", value_name = "ENCODING", help_heading = "Point cloud options")]
+    ply_encoding: Option<String>,
+    /// PLY ASCII outputs: the digits after the decimal point of floats (by default, as many as
+    /// needed to read the same values back).
+    #[arg(long = "ply-precision", value_name = "DIGITS", help_heading = "Point cloud options")]
+    ply_precision: Option<usize>,
+    /// The points read and written at a time: point clouds are converted in chunks, in bounded
+    /// memory, whatever their size (about a million points by default).
+    #[arg(long = "chunk-points", value_name = "N", default_value_t = 0, help_heading = "Point cloud options")]
+    pub chunk_points: usize,
+}
+
+impl PointWriteArgs {
+    /// The library's write options.
+    pub fn to_options(&self, format: Option<&str>) -> terrio::Result<PointWriteOptions> {
+        let minor = match self.las_version.as_deref() {
+            None => None,
+            Some(s) => Some(
+                s.strip_prefix("1.")
+                    .and_then(|m| m.parse::<u8>().ok())
+                    .filter(|m| *m <= 4)
+                    .ok_or_else(|| terrio::Error::InvalidArgument(format!("unknown LAS version '{s}' (1.0 to 1.4)")))?,
+            ),
+        };
+        let format = match format {
+            None => None,
+            Some(f) => match PointFormat::from_name(f) {
+                Some(p) => Some(p),
+                None => return Err(terrio::Error::InvalidArgument(format!("unknown point cloud format '{f}' (LAS, LAZ, COPC, PLY, E57)"))),
+            },
+        };
+        Ok(PointWriteOptions {
+            format,
+            point_format: self.point_format,
+            minor_version: minor,
+            scale: self.scale.as_deref().map(|s| [s[0], s[1], s[2]]),
+            offset: self.offset.as_deref().map(|o| [o[0], o[1], o[2]]),
+            ply_encoding: self.ply_encoding.as_deref().map(PlyEncoding::parse).transpose()?.unwrap_or_default(),
+            ply_precision: self.ply_precision,
+            dimensions: self.dims.clone(),
+            ..Default::default()
+        })
+    }
 }
 
 /// Converts a point cloud.
@@ -92,35 +136,13 @@ pub fn convert(
     if let Some((x0, y0, x1, y1)) = v.spatial_filter {
         read.filter.bounds = Some([x0, y0, x1, y1]);
     }
-    let minor = match write.las_version.as_deref() {
-        None => None,
-        Some(s) => Some(
-            s.strip_prefix("1.")
-                .and_then(|m| m.parse::<u8>().ok())
-                .filter(|m| *m <= 4)
-                .ok_or_else(|| terrio::Error::InvalidArgument(format!("unknown LAS version '{s}' (1.0 to 1.4)")))?,
-        ),
-    };
-    let format = match format {
-        None => None,
-        Some(f) => match PointFormat::from_name(f) {
-            Some(p) => Some(p),
-            None => return Err(terrio::Error::InvalidArgument(format!("unknown point cloud format '{f}' (LAS, LAZ, COPC)"))),
-        },
-    };
     let options = ConvertOptions {
         read,
         assign_srs: v.assign_srs,
         target_srs: t_srs,
-        write: PointWriteOptions {
-            format,
-            point_format: write.point_format,
-            minor_version: minor,
-            scale: write.scale.as_deref().map(|s| [s[0], s[1], s[2]]),
-            offset: write.offset.as_deref().map(|o| [o[0], o[1], o[2]]),
-            ..Default::default()
-        },
+        write: write.to_options(format)?,
         layer: pointcloud::vector::ToLayerOptions { dimensions: write.dims.clone(), ..Default::default() },
+        chunk_points: write.chunk_points,
     };
     pointcloud::convert(input, output, &options)
 }

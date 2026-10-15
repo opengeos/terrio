@@ -420,6 +420,23 @@ pub fn all_drivers() -> Vec<DriverInfo> {
             read: true,
             write: true,
         },
+        DriverInfo {
+            name: "EPT",
+            long_name: "Entwine Point Tile",
+            kind: Kind::PointCloud,
+            extensions: &["json"],
+            read: true,
+            write: false,
+        },
+        DriverInfo { name: "PLY", long_name: "Polygon File Format", kind: Kind::PointCloud, extensions: &["ply"], read: true, write: true },
+        DriverInfo {
+            name: "E57",
+            long_name: "ASTM E57 3D imaging data",
+            kind: Kind::PointCloud,
+            extensions: &["e57"],
+            read: true,
+            write: true,
+        },
     ];
     RasterDriver::ALL.iter().map(|d| d.info()).chain(VectorDriver::ALL.iter().map(|d| d.info())).chain(point_clouds).collect()
 }

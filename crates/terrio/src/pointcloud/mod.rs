@@ -1,5 +1,7 @@
-//! Point clouds: LAS 1.0 to 1.4 (point formats 0 to 10, extra bytes, VLRs and EVLRs), LAZ
-//! (LASzip-compressed LAS) and COPC (Cloud Optimized Point Clouds).
+//! Point clouds: LAS 1.0 to 1.4 (point formats 0 to 10, extra bytes, VLRs and EVLRs, waveforms),
+//! LAZ (LASzip-compressed LAS), COPC (Cloud Optimized Point Clouds), EPT (Entwine Point Tiles),
+//! PLY and E57; read whole or in chunks (for files larger than memory), filtered as PDAL's
+//! filters do ([`filters`]) and gridded ([`grid`]).
 //!
 //! Points are read into columns, one typed vector per dimension, named as laspy names them (`x`,
 //! `y`, `z`, `intensity`, `return_number`, `classification`, `gps_time`, `red`...). Filters
@@ -25,19 +27,28 @@
 
 pub mod copc;
 pub(crate) mod crs;
+mod e57;
+pub mod ept;
+pub mod filters;
 pub mod grid;
 pub mod info;
+mod kdtree;
 pub mod las;
+pub mod names;
+mod ply;
 mod read;
 mod values;
 pub mod vector;
+pub mod waveform;
 mod write;
 
 pub use copc::{CopcInfo, CopcNode, VoxelKey};
+pub use ept::{EptDimension, EptInfo};
 pub use las::{ExtraBytes, LasHeader, Vlr, standard_value_type};
-pub use read::{PointCloudReader, open_points, open_points_bytes};
+pub use read::{DEFAULT_CHUNK_POINTS, PointChunks, PointCloudReader, open_points, open_points_bytes};
 pub use values::{Dimension, ValueType, Values};
-pub use write::{PointFormat, PointWriteOptions, from_dimensions, write_points, write_points_bytes};
+pub use waveform::{WavePacketDescriptor, Waveform};
+pub use write::{PlyEncoding, PointFormat, PointWriteOptions, PointWriter, from_dimensions, write_points, write_points_bytes};
 
 use crate::Result;
 use crate::crs::SpatialRef;
@@ -109,7 +120,25 @@ impl PointCloud {
         PointCloud {
             header: self.header.clone(),
             crs: self.crs.clone(),
-            dimensions: self.dimensions.iter().map(|d| Dimension { values: d.values.select(keep), ..d.clone() }).collect(),
+            dimensions: self.dimensions.iter().map(|d| d.with_values(d.values.select(keep))).collect(),
+        }
+    }
+
+    /// The points from `start` to `end` (excluded).
+    pub fn slice(&self, start: usize, end: usize) -> PointCloud {
+        PointCloud {
+            header: self.header.clone(),
+            crs: self.crs.clone(),
+            dimensions: self.dimensions.iter().map(|d| d.with_values(d.values.slice(start, end))).collect(),
+        }
+    }
+
+    /// The points at these positions, in this order.
+    pub fn take(&self, idx: &[usize]) -> PointCloud {
+        PointCloud {
+            header: self.header.clone(),
+            crs: self.crs.clone(),
+            dimensions: self.dimensions.iter().map(|d| d.with_values(d.values.take(idx))).collect(),
         }
     }
 
@@ -118,10 +147,15 @@ impl PointCloud {
         if filter.is_empty() {
             return self.clone();
         }
+        self.select(&self.filter_mask(filter))
+    }
+
+    /// Whether each point passes a filter.
+    pub fn filter_mask(&self, filter: &PointFilter) -> Vec<bool> {
         let get = |name: &str| self.dim(name);
         let (x, y, z) = (get("x"), get("y"), get("z"));
         let (rn, nr, class) = (get("return_number"), get("number_of_returns"), get("classification"));
-        let keep: Vec<bool> = (0..self.len())
+        (0..self.len())
             .map(|i| {
                 let v = |d: Option<&Dimension>| d.map_or(0.0, |d| d.values.get_f64(i));
                 filter.keeps(&las::RecordCore {
@@ -133,8 +167,7 @@ impl PointCloud {
                     classification: v(class) as u8,
                 })
             })
-            .collect();
-        self.select(&keep)
+            .collect()
     }
 
     /// Reprojects the `x` and `y` coordinates (and `z`, for transformations that change heights)
@@ -144,12 +177,23 @@ impl PointCloud {
             return Err(crate::Error::Crs("the point cloud has no CRS to reproject from".into()));
         }
         let t = crate::crs::Transformer::new(&self.crs, dst)?;
+        self.transform_coords(&t)?;
+        self.crs = dst.clone();
+        // The file's scale and offset may no longer suit the coordinates: the writer picks new
+        // ones from these.
+        let bounds = self.bounds().map(|b| [b[0], b[1]]);
+        reproject_header(&mut self.header, dst, bounds);
+        Ok(())
+    }
+
+    /// Transforms the `x` and `y` coordinates, leaving the CRS and header alone.
+    pub(crate) fn transform_coords(&mut self, t: &crate::crs::Transformer) -> Result<()> {
         let n = self.len();
         let xs = self.coords("x").map(<[f64]>::to_vec).unwrap_or_default();
         let ys = self.coords("y").map(<[f64]>::to_vec).unwrap_or_default();
         let mut nx = Vec::with_capacity(n);
         let mut ny = Vec::with_capacity(n);
-        for i in 0..n {
+        for i in 0..n.min(xs.len()).min(ys.len()) {
             let (a, b) = t.transform(xs[i], ys[i])?;
             nx.push(a);
             ny.push(b);
@@ -159,17 +203,6 @@ impl PointCloud {
         }
         if let Some(d) = self.dim_mut("y") {
             d.values = Values::F64(ny);
-        }
-        self.crs = dst.clone();
-        // The file's scale and offset may no longer suit the coordinates: the writer picks new
-        // ones from these.
-        let geographic = dst.is_geographic();
-        let s = if geographic { 1e-7 } else { self.header.scale[0].max(self.header.scale[1]).clamp(1e-4, 0.01) };
-        self.header.scale[0] = s;
-        self.header.scale[1] = s;
-        if let Some(b) = self.bounds() {
-            self.header.offset[0] = round_offset(b[0], s);
-            self.header.offset[1] = round_offset(b[1], s);
         }
         Ok(())
     }
@@ -210,6 +243,18 @@ impl PointCloud {
             }
         }
         counts.iter().enumerate().filter(|(_, n)| **n > 0).map(|(c, n)| (c as u8, *n)).collect()
+    }
+}
+
+/// A scale and offset for coordinates reprojected into `dst`, whose minimum x and y are `min`:
+/// 1e-7 for geographic CRSs, otherwise the old scale (within 0.1 mm and 1 cm).
+pub(crate) fn reproject_header(header: &mut LasHeader, dst: &SpatialRef, min: Option<[f64; 2]>) {
+    let s = if dst.is_geographic() { 1e-7 } else { header.scale[0].max(header.scale[1]).clamp(1e-4, 0.01) };
+    header.scale[0] = s;
+    header.scale[1] = s;
+    if let Some(m) = min {
+        header.offset[0] = round_offset(m[0], s);
+        header.offset[1] = round_offset(m[1], s);
     }
 }
 
@@ -320,11 +365,15 @@ pub fn read_points(path: &str, options: &PointReadOptions) -> Result<PointCloud>
     open_points(path)?.read(options)
 }
 
-/// Whether a path names a point cloud file, by its extension (`.las`, `.laz`, `.copc.laz`).
+/// Whether a path names a point cloud, by its name: `.las`, `.laz` (and `.copc.laz`), `.ply`,
+/// `.e57`, an EPT dataset's `ept.json`, or an `ept://` path.
 pub fn is_point_cloud_path(path: &str) -> bool {
+    if path.starts_with("ept://") {
+        return true;
+    }
     let name = crate::vfs::Location::parse(path).file_name().to_ascii_lowercase();
     let name = name.split(['?', '#']).next().unwrap_or_default();
-    name.ends_with(".las") || name.ends_with(".laz")
+    name.ends_with(".las") || name.ends_with(".laz") || name.ends_with(".ply") || name.ends_with(".e57") || name == "ept.json"
 }
 
 /// How to convert a point cloud.
@@ -341,12 +390,30 @@ pub struct ConvertOptions {
     pub write: PointWriteOptions,
     /// How to write vector outputs.
     pub layer: vector::ToLayerOptions,
+    /// The points read and written at a time, for outputs written as the points are read
+    /// ([`DEFAULT_CHUNK_POINTS`] when 0).
+    pub chunk_points: usize,
 }
 
-/// Converts a point cloud to another point cloud format (LAS, LAZ, COPC) or to a vector point
-/// layer (any vector format terrio writes, chosen by the output's extension), filtering and
+/// Converts a point cloud to another point cloud format (LAS, LAZ, COPC, PLY, E57) or to a vector
+/// point layer (any vector format terrio writes, chosen by the output's extension), filtering and
 /// reprojecting on the way.
+///
+/// Outputs other than E57 and vector layers are written as the points are read, in chunks of
+/// [`ConvertOptions::chunk_points`], so that files larger than memory convert in bounded memory.
 pub fn convert(src: &str, dst: &str, options: &ConvertOptions) -> Result<()> {
+    let format = options.write.format.or_else(|| PointFormat::for_path(dst));
+    match format {
+        Some(PointFormat::E57) => {}
+        Some(_) => return convert_streaming(src, dst, options),
+        None => {
+            if crate::formats::VectorDriver::for_extension(dst).is_none() {
+                return Err(crate::Error::InvalidArgument(format!(
+                    "cannot tell the output format of '{dst}': use .las, .laz, .copc.laz, .ply, .e57 or a vector format"
+                )));
+            }
+        }
+    }
     let mut cloud = read_points(src, &options.read)?;
     if let Some(crs) = &options.assign_srs {
         cloud.crs = crs.clone();
@@ -354,12 +421,50 @@ pub fn convert(src: &str, dst: &str, options: &ConvertOptions) -> Result<()> {
     if let Some(dst_srs) = &options.target_srs {
         cloud.reproject(dst_srs)?;
     }
-    if options.write.format.is_some() || PointFormat::for_path(dst).is_some() {
+    if format.is_some() {
         return write_points(&cloud, dst, &options.write);
     }
-    if crate::formats::VectorDriver::for_extension(dst).is_some() {
-        let layer = vector::to_layer(&cloud, &options.layer)?;
-        return crate::write_vector(&[layer], dst, &Default::default());
+    let layer = vector::to_layer(&cloud, &options.layer)?;
+    crate::write_vector(&[layer], dst, &Default::default())
+}
+
+/// Converts chunk by chunk.
+fn convert_streaming(src: &str, dst: &str, options: &ConvertOptions) -> Result<()> {
+    let mut reader = open_points(src)?;
+    let mut template = reader.template()?;
+    if let Some(crs) = &options.assign_srs {
+        template.crs = crs.clone();
     }
-    Err(crate::Error::InvalidArgument(format!("cannot tell the output format of '{dst}': use .las, .laz, .copc.laz or a vector format")))
+    let transformer = match &options.target_srs {
+        Some(dst_srs) => {
+            if template.crs.is_unknown() {
+                return Err(crate::Error::Crs("the point cloud has no CRS to reproject from".into()));
+            }
+            let t = crate::crs::Transformer::new(&template.crs, dst_srs)?;
+            // The new scale and offset, from the header's bounds reprojected.
+            let h = &template.header;
+            let min = t.transform_bounds((h.min[0], h.min[1], h.max[0], h.max[1])).ok().map(|b| [b.0, b.1]);
+            reproject_header(&mut template.header, dst_srs, min);
+            template.crs = dst_srs.clone();
+            Some(t)
+        }
+        None => None,
+    };
+    let mut writer = PointWriter::create(dst, &template, &options.write)?;
+    reader.start_chunks(&options.read, options.chunk_points)?;
+    while let Some(mut chunk) = reader.next_chunk()? {
+        if let Some(t) = &transformer {
+            chunk.transform_coords(t)?;
+        }
+        writer.write(&chunk)?;
+    }
+    writer.finish()?;
+    // Points that keep their waveforms in a `.wdp` file next to the input keep them next to the
+    // output.
+    if let Some(wdp) = reader.waveform_file()
+        && PointFormat::for_path(dst).is_some_and(|f| matches!(f, PointFormat::Las | PointFormat::Laz))
+    {
+        std::fs::copy(wdp, std::path::Path::new(dst).with_extension("wdp"))?;
+    }
+    Ok(())
 }

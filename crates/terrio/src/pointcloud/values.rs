@@ -293,6 +293,57 @@ impl Values {
         }
     }
 
+    /// The values from `start` to `end` (excluded).
+    pub fn slice(&self, start: usize, end: usize) -> Values {
+        match self {
+            Values::U8(v) => Values::U8(v[start..end].to_vec()),
+            Values::I8(v) => Values::I8(v[start..end].to_vec()),
+            Values::U16(v) => Values::U16(v[start..end].to_vec()),
+            Values::I16(v) => Values::I16(v[start..end].to_vec()),
+            Values::U32(v) => Values::U32(v[start..end].to_vec()),
+            Values::I32(v) => Values::I32(v[start..end].to_vec()),
+            Values::U64(v) => Values::U64(v[start..end].to_vec()),
+            Values::I64(v) => Values::I64(v[start..end].to_vec()),
+            Values::F32(v) => Values::F32(v[start..end].to_vec()),
+            Values::F64(v) => Values::F64(v[start..end].to_vec()),
+        }
+    }
+
+    /// The values at these positions, in this order.
+    pub fn take(&self, idx: &[usize]) -> Values {
+        fn t<T: Copy>(v: &[T], idx: &[usize]) -> Vec<T> {
+            idx.iter().map(|&i| v[i]).collect()
+        }
+        match self {
+            Values::U8(v) => Values::U8(t(v, idx)),
+            Values::I8(v) => Values::I8(t(v, idx)),
+            Values::U16(v) => Values::U16(t(v, idx)),
+            Values::I16(v) => Values::I16(t(v, idx)),
+            Values::U32(v) => Values::U32(t(v, idx)),
+            Values::I32(v) => Values::I32(t(v, idx)),
+            Values::U64(v) => Values::U64(t(v, idx)),
+            Values::I64(v) => Values::I64(t(v, idx)),
+            Values::F32(v) => Values::F32(t(v, idx)),
+            Values::F64(v) => Values::F64(t(v, idx)),
+        }
+    }
+
+    /// Sets the value at `i` from a float, converted (saturating) to the column's type.
+    pub fn set_f64(&mut self, i: usize, x: f64) {
+        match self {
+            Values::U8(v) => v[i] = x as u8,
+            Values::I8(v) => v[i] = x as i8,
+            Values::U16(v) => v[i] = x as u16,
+            Values::I16(v) => v[i] = x as i16,
+            Values::U32(v) => v[i] = x as u32,
+            Values::I32(v) => v[i] = x as i32,
+            Values::U64(v) => v[i] = x as u64,
+            Values::I64(v) => v[i] = x as i64,
+            Values::F32(v) => v[i] = x as f32,
+            Values::F64(v) => v[i] = x,
+        }
+    }
+
     /// The values at the positions where `keep` is true.
     pub(crate) fn select(&self, keep: &[bool]) -> Values {
         fn sel<T: Copy>(v: &[T], keep: &[bool]) -> Vec<T> {
@@ -352,6 +403,18 @@ impl Dimension {
     /// A dimension without scale, offset or description.
     pub fn new(name: &str, values: Values) -> Self {
         Self { name: name.to_string(), values, scale: None, offset: None, no_data: None, description: String::new() }
+    }
+
+    /// A dimension of the same name, scale, offset, nodata and description with other values.
+    pub fn with_values(&self, values: Values) -> Self {
+        Self {
+            name: self.name.clone(),
+            values,
+            scale: self.scale,
+            offset: self.offset,
+            no_data: self.no_data,
+            description: self.description.clone(),
+        }
     }
 
     /// The value at `i` as a float, with the scale and offset applied.

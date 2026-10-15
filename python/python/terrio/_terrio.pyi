@@ -39,6 +39,9 @@ __all__ = [
     "sieve",
     "PointCloud",
     "PointCloudFile",
+    "PointChunks",
+    "PointCloudWriter",
+    "grid_points",
     "open_points",
     "read_points",
     "read_points_bytes",
@@ -265,12 +268,51 @@ class PointCloud:
         minor_version: int | None = None,
         scale: _XYZ | None = None,
         offset: _XYZ | None = None,
+        ply_encoding: str | None = None,
+        ply_precision: int | None = None,
+        dimensions: Sequence[str] | None = None,
     ) -> None: ...
     def to_bytes(self, format: str = "LAZ", point_format: int | None = None) -> bytes: ...
+    def range(self, limits: str) -> PointCloud: ...
+    def sample(
+        self,
+        radius: float | None = None,
+        *,
+        cell: float | None = None,
+        origin: _XYZ | None = None,
+    ) -> PointCloud: ...
+    def voxel_center_nearest_neighbor(self, cell: float = 1.0) -> PointCloud: ...
+    def voxel_downsize(self, cell: float = 0.001, mode: str = "center") -> PointCloud: ...
+    def outlier(
+        self,
+        method: str = "statistical",
+        *,
+        min_k: int = 2,
+        radius: float = 1.0,
+        mean_k: int = 8,
+        multiplier: float = 2.0,
+        classification: int = 7,
+    ) -> PointCloud: ...
+    def smrf(
+        self,
+        *,
+        cell: float = 1.0,
+        slope: float = 0.15,
+        window: float | None = None,
+        scalar: float = 1.25,
+        threshold: float = 0.5,
+        cut: float = 0.0,
+        ignore: str | None = None,
+        returns: Sequence[str] | None = None,
+        ground_class: int = 2,
+        other_class: int = 1,
+        only_ground: bool = False,
+    ) -> PointCloud: ...
     def grid(
         self,
         resolution: float,
         *,
+        method: str = "statistics",
         stat: str | Sequence[str] | None = None,
         dimension: str = "z",
         radius: float | None = None,
@@ -286,11 +328,56 @@ class PointCloud:
     ) -> Layer: ...
 
 @final
+class PointChunks:
+    """The chunks of points of a `PointCloudFile`: an iterator of `PointCloud`."""
+
+    def __iter__(self) -> PointChunks: ...
+    def __next__(self) -> PointCloud: ...
+
+@final
+class PointCloudWriter:
+    """Writes points as they come, in chunks, to a LAS, LAZ, COPC or PLY file."""
+
+    def __init__(
+        self,
+        path: str,
+        template: PointCloud,
+        *,
+        format: str | None = None,
+        point_format: int | None = None,
+        minor_version: int | None = None,
+        scale: _XYZ | None = None,
+        offset: _XYZ | None = None,
+    ) -> None: ...
+    def write(self, points: PointCloud) -> None: ...
+    def close(self) -> None: ...
+    def __enter__(self) -> PointCloudWriter: ...
+    def __exit__(self, *args: object) -> bool: ...
+
+@final
 class PointCloudFile:
-    """An open LAS, LAZ or COPC file: its header is read, its points on demand."""
+    """An open point cloud (LAS, LAZ, COPC, EPT, PLY or E57): its header is read, its points on demand."""
 
     @property
     def format(self) -> str: ...
+    @property
+    def ept_info(self) -> dict[str, Any] | None: ...
+    @property
+    def wave_packet_descriptors(self) -> list[dict[str, Any]]: ...
+    def waveform(self, index: int, offset: int, size: int) -> NDArray[np.uint32]: ...
+    def chunks(
+        self,
+        chunk_points: int = 0,
+        *,
+        bounds: _Bounds | None = None,
+        z_range: tuple[float, float] | None = None,
+        classes: Sequence[int] | None = None,
+        returns: Sequence[str] | None = None,
+        max_level: int | None = None,
+        resolution: float | None = None,
+        max_points: int | None = None,
+    ) -> PointChunks: ...
+    def template(self) -> PointCloud: ...
     @property
     def point_count(self) -> int: ...
     @property
@@ -624,7 +711,28 @@ def convert_points(
     scale: _XYZ | None = None,
     offset: _XYZ | None = None,
     dimensions: Sequence[str] | None = None,
+    chunk_points: int = 0,
+    ply_encoding: str | None = None,
+    ply_precision: int | None = None,
 ) -> None: ...
+def grid_points(
+    path: str,
+    resolution: float,
+    *,
+    method: str = "statistics",
+    stat: str | Sequence[str] | None = None,
+    dimension: str = "z",
+    radius: float | None = None,
+    power: float = 1.0,
+    window_size: int = 0,
+    bin_mode: bool = False,
+    bounds: _Bounds | None = None,
+    nodata: float = ...,  # -9999.0
+    ot: str | None = None,
+    classes: Sequence[int] | None = None,
+    returns: Sequence[str] | None = None,
+    a_srs: str | None = None,
+) -> Raster: ...
 
 # Helpers of terrio.rio.
 

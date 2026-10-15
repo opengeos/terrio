@@ -1,8 +1,9 @@
-//! Point clouds (LAS, LAZ, COPC) from bytes.
+//! Point clouds (LAS, LAZ, COPC, PLY, E57) from bytes.
 
 use super::{Dataset, Inner, crs_string, js_err, to_js};
 use serde::Deserialize;
-use terrio::pointcloud::grid::{GridOptions, GridStat};
+use terrio::pointcloud::filters::{self, DimRange, OutlierMethod, OutlierOptions, SampleOptions, SmrfOptions, VoxelMode};
+use terrio::pointcloud::grid::{GridMethod, GridOptions, GridStat};
 use terrio::pointcloud::{
     self, PointCloud, PointCloudReader, PointFilter, PointFormat, PointReadOptions, PointWriteOptions, ReturnKind, Values,
 };
@@ -55,6 +56,7 @@ impl ReadOptions {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", default, deny_unknown_fields)]
 struct JsGridOptions {
+    method: String,
     stat: Vec<String>,
     dimension: String,
     radius: Option<f64>,
@@ -68,6 +70,7 @@ struct JsGridOptions {
 impl Default for JsGridOptions {
     fn default() -> Self {
         Self {
+            method: "statistics".into(),
             stat: Vec::new(),
             dimension: "z".into(),
             radius: None,
@@ -89,7 +92,69 @@ fn parse<T: for<'de> Deserialize<'de> + Default>(options: JsValue) -> Result<T, 
     serde_json::from_str(&text).map_err(|e| JsError::new(&format!("options: {e}")))
 }
 
-/// An open LAS, LAZ or COPC file: its header is read, its points on demand.
+/// Options of `PointCloud.smrf`, as a JavaScript object (PDAL's `filters.smrf` options).
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", default, deny_unknown_fields)]
+struct JsSmrfOptions {
+    cell: f64,
+    slope: f64,
+    window: Option<f64>,
+    scalar: f64,
+    threshold: f64,
+    cut: f64,
+    ignore: Option<String>,
+    returns: Vec<String>,
+    ground_class: u8,
+    other_class: u8,
+    only_ground: bool,
+}
+
+impl Default for JsSmrfOptions {
+    fn default() -> Self {
+        let d = SmrfOptions::default();
+        Self {
+            cell: d.cell,
+            slope: d.slope,
+            window: d.window,
+            scalar: d.scalar,
+            threshold: d.threshold,
+            cut: d.cut,
+            ignore: None,
+            returns: vec!["last".into(), "only".into()],
+            ground_class: d.ground_class,
+            other_class: d.other_class,
+            only_ground: d.only_ground,
+        }
+    }
+}
+
+/// Options of `PointCloud.outlier`, as a JavaScript object (PDAL's `filters.outlier` options).
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", default, deny_unknown_fields)]
+struct JsOutlierOptions {
+    method: String,
+    min_k: usize,
+    radius: f64,
+    mean_k: usize,
+    multiplier: f64,
+    classification: u8,
+}
+
+impl Default for JsOutlierOptions {
+    fn default() -> Self {
+        let d = OutlierOptions::default();
+        Self {
+            method: "statistical".into(),
+            min_k: d.min_k,
+            radius: d.radius,
+            mean_k: d.mean_k,
+            multiplier: d.multiplier,
+            classification: d.class,
+        }
+    }
+}
+
+/// An open LAS, LAZ, COPC, PLY or E57 file: its header is read, its points on demand.
 #[wasm_bindgen]
 pub struct PointCloudFile {
     inner: PointCloudReader,
@@ -101,13 +166,13 @@ pub struct JsPointCloud {
     inner: PointCloud,
 }
 
-/// Opens a LAS, LAZ or COPC file from its bytes, reading only its header.
+/// Opens a LAS, LAZ, COPC, PLY or E57 file from its bytes, reading only its header.
 #[wasm_bindgen(js_name = openPoints)]
 pub fn open_points(bytes: Vec<u8>, filename: &str) -> Result<PointCloudFile, JsError> {
     Ok(PointCloudFile { inner: pointcloud::open_points_bytes(bytes, filename).map_err(js_err)? })
 }
 
-/// Reads the points of a LAS, LAZ or COPC file from its bytes. `options`: `bounds`, `zRange`,
+/// Reads the points of a LAS, LAZ, COPC, PLY or E57 file from its bytes. `options`: `bounds`, `zRange`,
 /// `classes`, `returns`, `maxLevel`, `resolution`, `maxPoints`.
 #[wasm_bindgen(js_name = readPoints)]
 pub fn read_points(bytes: Vec<u8>, filename: &str, options: JsValue) -> Result<JsPointCloud, JsError> {
@@ -164,7 +229,7 @@ pub fn points_from_arrays(arrays: &js_sys::Object, crs: Option<String>) -> Resul
 
 #[wasm_bindgen]
 impl PointCloudFile {
-    /// `"LAS"`, `"LAZ"` or `"COPC"`.
+    /// `"LAS"`, `"LAZ"`, `"COPC"`, `"PLY"` or `"E57"`.
     #[wasm_bindgen(getter)]
     pub fn format(&self) -> String {
         self.inner.format_name().into()
@@ -246,8 +311,9 @@ impl JsPointCloud {
         })
     }
 
-    /// The points as a LAS, LAZ or COPC file: `filename`'s extension (`.las`, `.laz`,
-    /// `.copc.laz`) tells the format unless `format` does; `pointFormat` (0 to 10).
+    /// The points as a LAS, LAZ, COPC, PLY or E57 file: `filename`'s extension (`.las`, `.laz`,
+    /// `.copc.laz`, `.ply`, `.e57`) tells the format unless `format` does; `pointFormat` (0 to
+    /// 10).
     #[wasm_bindgen(js_name = toBytes)]
     pub fn to_bytes(&self, filename: &str, format: Option<String>, point_format: Option<u8>) -> Result<Vec<u8>, JsError> {
         let format = format
@@ -266,14 +332,16 @@ impl JsPointCloud {
         terrio::memory::write_vector_bytes(&[layer], filename, &VectorWriteOptions::default()).map_err(js_err)
     }
 
-    /// Grids the points into a raster, as PDAL's `writers.gdal` does. `options`: `stat` (a list of
-    /// `min`, `max`, `mean`, `idw`, `count`, `stdev`; `mean` by default), `dimension`, `radius`,
-    /// `power`, `windowSize`, `binMode`, `bounds`, `nodata`.
+    /// Grids the points into a raster, as PDAL's `writers.gdal` does, or interpolated as
+    /// `gdal_grid` does. `options`: `method` (`statistics`, the default; `linear`, a TIN; or
+    /// `nearest`), `stat` (a list of `min`, `max`, `mean`, `idw`, `count`, `stdev`; `mean` by
+    /// default), `dimension`, `radius`, `power`, `windowSize`, `binMode`, `bounds`, `nodata`.
     pub fn grid(&self, resolution: f64, options: JsValue) -> Result<Dataset, JsError> {
         let o: JsGridOptions = parse(options)?;
         let stats = o.stat.iter().map(|s| GridStat::parse(s)).collect::<terrio::Result<_>>().map_err(js_err)?;
         let options = GridOptions {
             resolution,
+            method: GridMethod::parse(&o.method).map_err(js_err)?,
             stats,
             dimension: o.dimension,
             radius: o.radius,
@@ -286,5 +354,70 @@ impl JsPointCloud {
         };
         let ds = pointcloud::grid::grid(&self.inner, &options).map_err(js_err)?;
         Ok(Dataset { inner: Inner::Raster(LazyRaster::from(ds)) })
+    }
+
+    /// The points within ranges of dimensions, as PDAL's `filters.range`: `limits` such as
+    /// `"Classification[2:2],Z[0:100)"`.
+    pub fn range(&self, limits: &str) -> Result<JsPointCloud, JsError> {
+        let ranges = DimRange::parse_list(limits).map_err(js_err)?;
+        Ok(JsPointCloud { inner: filters::range(&self.inner, &ranges).map_err(js_err)? })
+    }
+
+    /// Poisson sampling, as PDAL's `filters.sample`: the points at least `radius` from those
+    /// kept before them.
+    pub fn sample(&self, radius: f64) -> Result<JsPointCloud, JsError> {
+        let o = SampleOptions { radius: Some(radius), ..Default::default() };
+        Ok(JsPointCloud { inner: filters::sample(&self.inner, &o).map_err(js_err)? })
+    }
+
+    /// The first point of each voxel, as PDAL's `filters.voxeldownsize`; `mode` is `center`
+    /// (the default) or `first`.
+    #[wasm_bindgen(js_name = voxelDownsize)]
+    pub fn voxel_downsize(&self, cell: f64, mode: Option<String>) -> Result<JsPointCloud, JsError> {
+        let mode = VoxelMode::parse(mode.as_deref().unwrap_or("center")).map_err(js_err)?;
+        Ok(JsPointCloud { inner: filters::voxel_downsize(&self.inner, cell, mode).map_err(js_err)? })
+    }
+
+    /// The point nearest the center of each voxel, as PDAL's
+    /// `filters.voxelcenternearestneighbor`.
+    #[wasm_bindgen(js_name = voxelCenterNearestNeighbor)]
+    pub fn voxel_center_nearest_neighbor(&self, cell: f64) -> Result<JsPointCloud, JsError> {
+        Ok(JsPointCloud { inner: filters::voxel_center_nearest_neighbor(&self.inner, cell).map_err(js_err)? })
+    }
+
+    /// Classifies outliers as noise, as PDAL's `filters.outlier`. `options`: `method`
+    /// (`statistical` or `radius`), `minK`, `radius`, `meanK`, `multiplier`, `classification`.
+    pub fn outlier(&self, options: JsValue) -> Result<JsPointCloud, JsError> {
+        let o: JsOutlierOptions = parse(options)?;
+        let o = OutlierOptions {
+            method: OutlierMethod::parse(&o.method).map_err(js_err)?,
+            min_k: o.min_k,
+            radius: o.radius,
+            mean_k: o.mean_k,
+            multiplier: o.multiplier,
+            class: o.classification,
+        };
+        Ok(JsPointCloud { inner: filters::outlier(&self.inner, &o).map_err(js_err)? })
+    }
+
+    /// Classifies ground points with the Simple Morphological Filter, as PDAL's `filters.smrf`.
+    /// `options`: `cell`, `slope`, `window`, `scalar`, `threshold`, `cut`, `ignore`, `returns`,
+    /// `groundClass`, `otherClass`, `onlyGround`.
+    pub fn smrf(&self, options: JsValue) -> Result<JsPointCloud, JsError> {
+        let o: JsSmrfOptions = parse(options)?;
+        let o = SmrfOptions {
+            cell: o.cell,
+            slope: o.slope,
+            window: o.window,
+            scalar: o.scalar,
+            threshold: o.threshold,
+            cut: o.cut,
+            ignore: o.ignore.as_deref().map(DimRange::parse_list).transpose().map_err(js_err)?.unwrap_or_default(),
+            returns: o.returns.iter().map(|r| ReturnKind::parse(r)).collect::<terrio::Result<_>>().map_err(js_err)?,
+            ground_class: o.ground_class,
+            other_class: o.other_class,
+            only_ground: o.only_ground,
+        };
+        Ok(JsPointCloud { inner: filters::smrf(&self.inner, &o).map_err(js_err)? })
     }
 }

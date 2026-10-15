@@ -132,9 +132,19 @@ and from vector point layers; `terrio info`, `terrio convert` and `terrio grid`;
 JavaScript (typed arrays) bindings. Every value is compared with laspy, and headers, COPC queries,
 grids and reprojections with PDAL (`scripts/compare_pointclouds.py`).
 
-Still to do: EPT and other point cloud formats (PLY, E57), streaming reads and writes of files
-larger than memory, waveform data packets, more PDAL filters (ground classification, outliers,
-thinning by voxel), and gridding with TIN or nearest-neighbour interpolation.
+Done: EPT read (LASzip, binary and Zstandard tiles; local, HTTP and S3, in place, by bounds,
+resolution and depth, as PDAL's `readers.ept`, checked on a USGS 3DEP EPT of 11.5 billion
+points); PLY (ASCII and binary) and E57 read and written, with PDAL's dimension names and values;
+reads and writes of LAS, LAZ, COPC and PLY in chunks for files larger than memory (`terrio
+convert`, `info --stats`, `grid`, `filter range`; COPC octrees built out of core), verified on a
+3 GB file of 101.7 million points in at most 251 MB; waveform data packets (point formats 4, 5, 9
+and 10, in the file or a `.wdp` file) read and kept on write; PDAL's `filters.smrf`,
+`filters.outlier`, `filters.range`, `filters.sample`, `filters.voxeldownsize` and
+`filters.voxelcenternearestneighbor`, identical to PDAL's on USGS 3DEP lidar (`terrio filter`);
+gridding by TIN (linear) and nearest-neighbour interpolation as `gdal_grid` does
+(`terrio grid --method`).
+
+Still to do: EPT writing, E57 written in chunks, and PDAL's other filters.
 
 ## Bindings: Python and WebAssembly
 

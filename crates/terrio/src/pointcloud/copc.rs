@@ -255,14 +255,9 @@ impl Copc {
         Ok(nodes)
     }
 
-    /// Reads the points of the nodes the options select, in file order.
-    pub fn read(
-        &mut self,
-        source: &mut Source,
-        h: &LasHeader,
-        layout: &Layout,
-        options: &PointReadOptions,
-    ) -> Result<Vec<super::Dimension>> {
+    /// The nodes the options select (by bounds, level, resolution and point budget), in file
+    /// order.
+    pub fn select(&mut self, source: &mut Source, options: &PointReadOptions) -> Result<Vec<CopcNode>> {
         let f = &options.filter;
         let bounds = match (f.bounds, f.z_range) {
             (None, None) => None,
@@ -282,30 +277,39 @@ impl Copc {
         }
         let mut nodes = self.walk(source, bounds, max_level)?;
         if let Some(limit) = options.max_points {
-            // The deepest level whose cumulative point count stays within the limit.
-            let mut per_level: Vec<u64> = Vec::new();
-            for n in &nodes {
-                let l = n.key.level as usize;
-                if per_level.len() <= l {
-                    per_level.resize(l + 1, 0);
-                }
-                per_level[l] += n.point_count as u64;
-            }
-            let mut total = 0;
-            let mut deepest = 0;
-            for (l, c) in per_level.iter().enumerate() {
-                total += c;
-                if total > limit && l > 0 {
-                    break;
-                }
-                deepest = l as i32;
-            }
+            let deepest = deepest_level_within(nodes.iter().map(|n| (n.key.level as usize, n.point_count.max(0) as u64)), limit);
             nodes.retain(|n| n.key.level <= deepest);
         }
         nodes.sort_by_key(|n| n.offset);
-        let total: usize = nodes.iter().map(|n| n.point_count as usize).sum();
-        let capacity = if f.is_empty() { total } else { total.min(1 << 20) };
+        Ok(nodes)
+    }
+
+    /// Reads the points of the nodes the options select, in file order.
+    pub fn read(
+        &mut self,
+        source: &mut Source,
+        h: &LasHeader,
+        layout: &Layout,
+        options: &PointReadOptions,
+    ) -> Result<Vec<super::Dimension>> {
+        let nodes = self.select(source, options)?;
+        let total: usize = nodes.iter().map(|n| n.point_count.max(0) as usize).sum();
+        let capacity = if options.filter.is_empty() { total } else { total.min(1 << 20) };
         let mut columns = Columns::new(layout, capacity);
+        self.decode(source, h, layout, &nodes, &options.filter, &mut columns)?;
+        Ok(columns.into_dimensions())
+    }
+
+    /// Decodes the points of nodes (in file order) that pass a filter into columns.
+    pub fn decode(
+        &self,
+        source: &mut Source,
+        h: &LasHeader,
+        layout: &Layout,
+        nodes: &[CopcNode],
+        f: &super::PointFilter,
+        columns: &mut Columns,
+    ) -> Result<()> {
         let rl = layout.record_len;
         let mut i = 0;
         while i < nodes.len() {
@@ -322,7 +326,7 @@ impl Copc {
             }
             for n in &nodes[i..j] {
                 let data = source.read_at(n.offset, n.byte_size.max(0) as usize)?;
-                let records = self.decompress(data, n.point_count as usize, rl)?;
+                let records = self.decompress(data, n.point_count.max(0) as usize, rl)?;
                 for rec in records.chunks_exact(rl) {
                     if !f.is_empty() && !f.keeps(&record_core(rec, h.point_format, &h.scale, &h.offset)) {
                         continue;
@@ -332,7 +336,7 @@ impl Copc {
             }
             i = j;
         }
-        Ok(columns.into_dimensions())
+        Ok(())
     }
 
     fn decompress(&self, data: Vec<u8>, count: usize, record_len: usize) -> Result<Vec<u8>> {
@@ -351,7 +355,7 @@ impl Copc {
 }
 
 /// How to build a COPC octree.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct CopcBuild {
     /// The deepest level; 16 by default.
     pub max_depth: Option<u32>,
@@ -359,69 +363,142 @@ pub(crate) struct CopcBuild {
     pub leaf_points: Option<u64>,
 }
 
-/// Writes records (all of `layout`'s format, 6 to 8) as a COPC file. `header` has the VLRs to
-/// write besides the COPC and LASzip ones, the scale, offset and version; its counts and bounds
-/// are computed here.
-pub(crate) fn write_copc<W: Write + Seek>(
-    w: &mut W,
-    mut header: LasHeader,
-    layout: &Layout,
-    records: &[u8],
-    build: CopcBuild,
-) -> Result<()> {
-    let rl = layout.record_len;
-    let n = records.len() / rl;
-    let format = layout.format;
-    let core = |i: usize| record_core(&records[i * rl..(i + 1) * rl], format, &header.scale, &header.offset);
-    // The cube: the bounds' center and their largest half extent.
-    let mut lo = [f64::INFINITY; 3];
-    let mut hi = [f64::NEG_INFINITY; 3];
-    let (mut tmin, mut tmax) = (f64::INFINITY, f64::NEG_INFINITY);
-    let gps = super::las::standard_fields(format).iter().find(|f| f.name == "gps_time").map(|f| f.field);
-    for i in 0..n {
-        let p = core(i);
-        for (k, v) in [p.x, p.y, p.z].into_iter().enumerate() {
-            lo[k] = lo[k].min(v);
-            hi[k] = hi[k].max(v);
-        }
-        if let Some(super::las::Field::Plain(o)) = gps {
-            let t = f64::from_le_bytes(records[i * rl + o..i * rl + o + 8].try_into().unwrap_or_default());
-            tmin = tmin.min(t);
-            tmax = tmax.max(t);
+/// The most points a [`CopcStreamWriter`] holds in memory at a time, by default: more are built
+/// out of core, one octree node of a coarse level at a time.
+#[cfg(not(target_arch = "wasm32"))]
+const MEMORY_POINTS: u64 = 4_000_000;
+
+/// The octree's cube and parameters.
+#[derive(Debug, Clone, Copy)]
+struct Cube {
+    center: [f64; 3],
+    half: f64,
+    max_depth: i32,
+    leaf_points: u64,
+}
+
+impl Cube {
+    /// The cube of points within bounds: the bounds' center and their largest half extent.
+    fn new(lo: [f64; 3], hi: [f64; 3], scale: f64, build: CopcBuild) -> Self {
+        let center = [(lo[0] + hi[0]) / 2.0, (lo[1] + hi[1]) / 2.0, (lo[2] + hi[2]) / 2.0];
+        let half = ((hi[0] - lo[0]).max(hi[1] - lo[1]).max(hi[2] - lo[2]) / 2.0).max(scale) * (1.0 + 1e-9);
+        Self {
+            center,
+            half,
+            max_depth: build.max_depth.unwrap_or(MAX_DEPTH).min(MAX_DEPTH) as i32,
+            leaf_points: build.leaf_points.unwrap_or(LEAF_POINTS).max(1),
         }
     }
-    if n == 0 {
-        lo = [0.0; 3];
-        hi = [0.0; 3];
-        tmin = 0.0;
-        tmax = 0.0;
-    }
-    let center = [(lo[0] + hi[0]) / 2.0, (lo[1] + hi[1]) / 2.0, (lo[2] + hi[2]) / 2.0];
-    let half = ((hi[0] - lo[0]).max(hi[1] - lo[1]).max(hi[2] - lo[2]) / 2.0).max(header.scale[0]) * (1.0 + 1e-9);
-    let spacing = 2.0 * half / GRID as f64;
-    let max_depth = build.max_depth.unwrap_or(MAX_DEPTH).min(MAX_DEPTH) as i32;
-    let leaf_points = build.leaf_points.unwrap_or(LEAF_POINTS).max(1);
-    let rel = |i: usize| {
-        let p = core(i);
+
+    /// A point's position in the cube, each coordinate in [0, 1).
+    fn rel(&self, p: &super::las::RecordCore) -> [f64; 3] {
+        let (c, h) = (self.center, self.half);
         [
-            ((p.x - (center[0] - half)) / (2.0 * half)).clamp(0.0, 1.0 - 1e-12),
-            ((p.y - (center[1] - half)) / (2.0 * half)).clamp(0.0, 1.0 - 1e-12),
-            ((p.z - (center[2] - half)) / (2.0 * half)).clamp(0.0, 1.0 - 1e-12),
+            ((p.x - (c[0] - h)) / (2.0 * h)).clamp(0.0, 1.0 - 1e-12),
+            ((p.y - (c[1] - h)) / (2.0 * h)).clamp(0.0, 1.0 - 1e-12),
+            ((p.z - (c[2] - h)) / (2.0 * h)).clamp(0.0, 1.0 - 1e-12),
         ]
-    };
-    let key_at = |r: &[f64; 3], level: i32| {
+    }
+
+    /// The node a position is in at a level.
+    fn key(r: &[f64; 3], level: i32) -> VoxelKey {
         let cells = (1u64 << level) as f64;
         VoxelKey { level, x: (r[0] * cells) as i32, y: (r[1] * cells) as i32, z: (r[2] * cells) as i32 }
-    };
+    }
+
+    /// The cell of a node's sampling grid a position is in.
+    fn cell(r: &[f64; 3], key: VoxelKey) -> u32 {
+        let cells = (1u64 << key.level) as f64;
+        let g = GRID as f64;
+        let c = |k: usize, at: i32| (((r[k] * cells) - at as f64) * g).clamp(0.0, g - 1.0) as u32;
+        c(0, key.x) | (c(1, key.y) << 7) | (c(2, key.z) << 14)
+    }
+}
+
+fn parent(k: VoxelKey) -> VoxelKey {
+    VoxelKey { level: k.level - 1, x: k.x >> 1, y: k.y >> 1, z: k.z >> 1 }
+}
+
+/// What the levels above the buckets share across buckets: the number of points in each node
+/// (counted for the nodes whose parent is not a leaf, as within a bucket), the sampling grid
+/// cells taken, and the points kept.
+#[derive(Default)]
+struct Upper {
+    levels: i32,
+    counts: HashMap<VoxelKey, u64>,
+    occupied: HashMap<VoxelKey, HashSet<u32>>,
+    /// The points of each node: `(index, record)`.
+    members: HashMap<VoxelKey, Vec<(u64, Vec<u8>)>>,
+}
+
+/// Point records with the index of each in the whole cloud (which sets their pseudo-random
+/// sampling order).
+struct Bucket<'a> {
+    records: &'a [u8],
+    /// The index of each record; `None` when they are `0..n`.
+    index: Option<&'a [u64]>,
+}
+
+/// Writes node chunks and keeps their hierarchy entries.
+struct ChunkSink<'w, W: Write + Seek> {
+    w: &'w mut W,
+    items: Vec<laz::LazItem>,
+    table: laz::laszip::ChunkTable,
+    entries: Vec<CopcNode>,
+}
+
+impl<W: Write + Seek> ChunkSink<'_, W> {
+    fn write_node(&mut self, key: VoxelKey, records: &[u8], rl: usize) -> Result<()> {
+        let mut c = laz::record::LayeredPointRecordCompressor::new(Cursor::new(Vec::new()));
+        c.set_fields_from(&self.items).map_err(|e| Error::InvalidArgument(format!("LAZ: {e}")))?;
+        c.compress_many(records)?;
+        c.done()?;
+        let chunk = c.into_inner().into_inner();
+        let offset = self.w.stream_position()?;
+        self.w.write_all(&chunk)?;
+        let count = (records.len() / rl) as u64;
+        self.table.push(laz::laszip::ChunkTableEntry { point_count: count, byte_count: chunk.len() as u64 });
+        self.entries.push(CopcNode { key, offset, byte_size: chunk.len() as i32, point_count: count as i32 });
+        Ok(())
+    }
+}
+
+/// The GPS time of a record, or 0 for formats without.
+fn gps_time(rec: &[u8], gps: Option<usize>) -> f64 {
+    gps.map_or(0.0, |o| f64::from_le_bytes(rec[o..o + 8].try_into().unwrap_or_default()))
+}
+
+/// Builds the nodes of one bucket: all the points, or (out of core) those of one node of level
+/// `upper.levels`. A leaf (a node of at most `leaf_points` points, or at the deepest level) takes
+/// all the points that reach it; another node keeps the first point to land in each cell of its
+/// grid, in a pseudo-random order so that each level is an even sample, and passes the others
+/// down. The bucket's nodes are written; the points of the levels above go to `upper`.
+#[allow(clippy::too_many_arguments)]
+fn build_bucket<W: Write + Seek>(
+    bucket: &Bucket<'_>,
+    rl: usize,
+    h: &LasHeader,
+    gps: Option<usize>,
+    cube: &Cube,
+    upper: &mut Upper,
+    sink: &mut ChunkSink<'_, W>,
+) -> Result<()> {
+    let n = bucket.records.len() / rl;
+    let rec = |i: usize| &bucket.records[i * rl..(i + 1) * rl];
+    let index = |i: usize| bucket.index.map_or(i as u64, |x| x[i]);
+    let rel: Vec<[f64; 3]> = (0..n).map(|i| cube.rel(&record_core(rec(i), h.point_format, &h.scale, &h.offset))).collect();
+    let l0 = upper.levels;
     // The points in each node's cube, level by level, down to the nodes small enough to be
     // leaves.
     let mut counts: HashMap<VoxelKey, u64> = HashMap::new();
-    for level in 0..=max_depth {
+    let count_of = |counts: &HashMap<VoxelKey, u64>, upper: &Upper, k: VoxelKey| -> Option<u64> {
+        if k.level < l0 { upper.counts.get(&k).copied() } else { counts.get(&k).copied() }
+    };
+    for level in l0..=cube.max_depth {
         let mut any = false;
-        for i in 0..n {
-            let key = key_at(&rel(i), level);
-            let parent = VoxelKey { level: level - 1, x: key.x >> 1, y: key.y >> 1, z: key.z >> 1 };
-            if level == 0 || counts.get(&parent).is_some_and(|c| *c > leaf_points) {
+        for r in &rel {
+            let key = Cube::key(r, level);
+            if level == 0 || count_of(&counts, upper, parent(key)).is_some_and(|c| c > cube.leaf_points) {
                 *counts.entry(key).or_default() += 1;
                 any = true;
             }
@@ -430,66 +507,130 @@ pub(crate) fn write_copc<W: Write + Seek>(
             break;
         }
     }
-
-    // Assign points to nodes, top down: a leaf (a node of at most `leaf_points` points, or at the
-    // deepest level) takes all the points that reach it; another node keeps the first point to
-    // land in each cell of its grid, in a pseudo-random order so that each level is an even
-    // sample, and passes the others down.
     let mut order: Vec<usize> = (0..n).collect();
-    order.sort_by_key(|&i| scramble(i as u64));
+    order.sort_by_key(|&i| scramble(index(i)));
     let mut occupied: HashMap<VoxelKey, HashSet<u32>> = HashMap::new();
     let mut members: HashMap<VoxelKey, Vec<usize>> = HashMap::new();
     for &i in &order {
-        let r = rel(i);
-        for level in 0..=max_depth {
-            let key = key_at(&r, level);
-            let leaf = level == max_depth || counts.get(&key).is_none_or(|c| *c <= leaf_points);
+        let r = &rel[i];
+        for level in 0..=cube.max_depth {
+            let key = Cube::key(r, level);
+            let leaf = level == cube.max_depth || count_of(&counts, upper, key).is_none_or(|c| c <= cube.leaf_points);
             if !leaf {
-                let cells = (1u64 << level) as f64;
-                let g = GRID as f64;
-                let c = |k: usize, at: i32| (((r[k] * cells) - at as f64) * g).clamp(0.0, g - 1.0) as u32;
-                let cell = c(0, key.x) | (c(1, key.y) << 7) | (c(2, key.z) << 14);
-                if !occupied.entry(key).or_default().insert(cell) {
+                let taken = if level < l0 { &mut upper.occupied } else { &mut occupied };
+                if !taken.entry(key).or_default().insert(Cube::cell(r, key)) {
                     continue;
                 }
             }
-            members.entry(key).or_default().push(i);
+            if level < l0 {
+                upper.members.entry(key).or_default().push((index(i), rec(i).to_vec()));
+            } else {
+                members.entry(key).or_default().push(i);
+            }
             break;
         }
     }
     drop(occupied);
     // Within a node, the points in acquisition (GPS time) order, which LASzip's predictors
     // compress best; without GPS times, in the input's order.
-    let time = |i: usize| match gps {
-        Some(super::las::Field::Plain(o)) => f64::from_le_bytes(records[i * rl + o..i * rl + o + 8].try_into().unwrap_or_default()),
-        _ => 0.0,
-    };
-    for m in members.values_mut() {
-        m.sort_unstable_by(|&a, &b| time(a).total_cmp(&time(b)).then(a.cmp(&b)));
-    }
-    // The nodes in key order (level by level); every ancestor of a node needs an entry.
     let mut keys: Vec<VoxelKey> = members.keys().copied().collect();
-    let mut all: HashSet<VoxelKey> = keys.iter().copied().collect();
-    for k in &keys {
-        let mut k = *k;
-        while k.level > 0 {
-            k = VoxelKey { level: k.level - 1, x: k.x >> 1, y: k.y >> 1, z: k.z >> 1 };
-            all.insert(k);
+    keys.sort();
+    let mut buf = Vec::new();
+    for key in keys {
+        let m = members.get_mut(&key).expect("a node");
+        m.sort_unstable_by(|&a, &b| gps_time(rec(a), gps).total_cmp(&gps_time(rec(b), gps)).then(index(a).cmp(&index(b))));
+        buf.clear();
+        for &i in m.iter() {
+            buf.extend_from_slice(rec(i));
+        }
+        sink.write_node(key, &buf, rl)?;
+    }
+    Ok(())
+}
+
+/// Counts, bounds and GPS time range of the records written, to fill in the header.
+#[derive(Debug, Clone)]
+struct Stats {
+    n: u64,
+    lo: [f64; 3],
+    hi: [f64; 3],
+    tmin: f64,
+    tmax: f64,
+    by_return: Vec<u64>,
+}
+
+impl Stats {
+    fn new() -> Self {
+        Self {
+            n: 0,
+            lo: [f64::INFINITY; 3],
+            hi: [f64::NEG_INFINITY; 3],
+            tmin: f64::INFINITY,
+            tmax: f64::NEG_INFINITY,
+            by_return: vec![0; 15],
         }
     }
-    all.insert(VoxelKey::ROOT);
-    keys.sort();
-    let mut empty: Vec<VoxelKey> = all.into_iter().filter(|k| !members.contains_key(k)).collect();
-    empty.sort();
 
-    // The header and VLRs: the COPC info record first, then the LASzip record.
+    fn add(&mut self, records: &[u8], rl: usize, h: &LasHeader, gps: Option<usize>) {
+        for rec in records.chunks_exact(rl) {
+            let p = record_core(rec, h.point_format, &h.scale, &h.offset);
+            for (k, v) in [p.x, p.y, p.z].into_iter().enumerate() {
+                self.lo[k] = self.lo[k].min(v);
+                self.hi[k] = self.hi[k].max(v);
+            }
+            if gps.is_some() {
+                let t = gps_time(rec, gps);
+                self.tmin = self.tmin.min(t);
+                self.tmax = self.tmax.max(t);
+            }
+            let r = p.return_number as usize;
+            if (1..=15).contains(&r) {
+                self.by_return[r - 1] += 1;
+            }
+            self.n += 1;
+        }
+    }
+
+    fn finish(&mut self) {
+        if self.n == 0 {
+            self.lo = [0.0; 3];
+            self.hi = [0.0; 3];
+        }
+        if !self.tmin.is_finite() {
+            self.tmin = 0.0;
+            self.tmax = 0.0;
+        }
+    }
+}
+
+/// Writes a COPC file whose nodes `build` writes: the header and VLRs (the COPC info record
+/// first, then the LASzip record), the node chunks, the chunk table, the hierarchy, then the
+/// header again with the counts, bounds and offsets.
+fn write_copc_with<W: Write + Seek>(
+    w: &mut W,
+    mut header: LasHeader,
+    layout: &Layout,
+    stats: &Stats,
+    cube: &Cube,
+    build: impl FnOnce(&mut ChunkSink<'_, W>) -> Result<()>,
+) -> Result<()> {
+    let rl = layout.record_len;
+    let format = layout.format;
     let items = laz::LazItemRecordBuilder::default_for_point_format_id(format, (rl - super::las::standard_record_length(format)) as u16)
         .map_err(|e| Error::InvalidArgument(format!("LAZ: {e}")))?;
     let vlr = laz::LazVlrBuilder::new(items.clone()).with_variable_chunk_size().build();
     let mut laz_data = Vec::new();
     vlr.write_to(&mut laz_data)?;
-    let mut info =
-        CopcInfo { center, halfsize: half, spacing, root_hier_offset: 0, root_hier_size: 0, gpstime_minimum: tmin, gpstime_maximum: tmax };
+    let spacing = 2.0 * cube.half / GRID as f64;
+    let mut info = CopcInfo {
+        center: cube.center,
+        halfsize: cube.half,
+        spacing,
+        root_hier_offset: 0,
+        root_hier_size: 0,
+        gpstime_minimum: stats.tmin,
+        gpstime_maximum: stats.tmax,
+    };
     let mut vlrs = vec![
         super::las::Vlr::new(COPC_USER_ID, 1, "COPC info VLR", info.to_bytes()),
         super::las::Vlr::new(super::las::LASZIP_USER_ID, super::las::LASZIP_RECORD_ID, "https://laszip.org", laz_data),
@@ -500,17 +641,12 @@ pub(crate) fn write_copc<W: Write + Seek>(
     header.compressed = true;
     header.point_format = format;
     header.point_record_length = rl as u16;
-    header.point_count = n as u64;
-    header.min = lo;
-    header.max = hi;
-    let mut by_return = vec![0u64; 15];
-    for i in 0..n {
-        let r = core(i).return_number as usize;
-        if (1..=15).contains(&r) {
-            by_return[r - 1] += 1;
-        }
-    }
-    header.points_by_return = by_return;
+    header.point_count = stats.n;
+    header.min = stats.lo;
+    header.max = stats.hi;
+    header.points_by_return = stats.by_return.clone();
+    header.start_of_waveform_data = 0;
+    header.waveform_data_size = 0;
     header.offset_to_point_data = header.data_offset() as u32;
     let start = w.stream_position()?;
     header.write(w)?;
@@ -518,25 +654,9 @@ pub(crate) fn write_copc<W: Write + Seek>(
     // The points: one LASzip chunk per node, then the chunk table.
     let data_start = w.stream_position()?;
     w.write_all(&(-1i64).to_le_bytes())?;
-    let mut table = laz::laszip::ChunkTable::default();
-    let mut entries = Vec::with_capacity(keys.len() + empty.len());
-    let mut buf = Vec::new();
-    for key in &keys {
-        let idx = &members[key];
-        buf.clear();
-        for &i in idx {
-            buf.extend_from_slice(&records[i * rl..(i + 1) * rl]);
-        }
-        let mut c = laz::record::LayeredPointRecordCompressor::new(Cursor::new(Vec::new()));
-        c.set_fields_from(&items).map_err(|e| Error::InvalidArgument(format!("LAZ: {e}")))?;
-        c.compress_many(&buf)?;
-        c.done()?;
-        let chunk = c.into_inner().into_inner();
-        let offset = w.stream_position()?;
-        w.write_all(&chunk)?;
-        table.push(laz::laszip::ChunkTableEntry { point_count: idx.len() as u64, byte_count: chunk.len() as u64 });
-        entries.push(CopcNode { key: *key, offset, byte_size: chunk.len() as i32, point_count: idx.len() as i32 });
-    }
+    let mut sink = ChunkSink { w: &mut *w, items, table: laz::laszip::ChunkTable::default(), entries: Vec::new() };
+    build(&mut sink)?;
+    let ChunkSink { table, mut entries, .. } = sink;
     let table_pos = w.stream_position()?;
     table.write_to(&mut *w, &vlr)?;
     let end_of_points = w.stream_position()?;
@@ -544,9 +664,20 @@ pub(crate) fn write_copc<W: Write + Seek>(
     w.write_all(&(table_pos as i64).to_le_bytes())?;
     w.seek(SeekFrom::Start(end_of_points))?;
 
-    // The hierarchy: one page, in an EVLR, then the other EVLRs.
-    for key in &empty {
-        entries.push(CopcNode { key: *key, offset: 0, byte_size: 0, point_count: 0 });
+    // The hierarchy: one page, in an EVLR, then the other EVLRs. Every ancestor of a node with
+    // points needs an entry.
+    let mut all: HashSet<VoxelKey> = entries.iter().map(|e| e.key).collect();
+    let with_points: HashSet<VoxelKey> = all.clone();
+    for k in with_points.iter() {
+        let mut k = *k;
+        while k.level > 0 {
+            k = parent(k);
+            all.insert(k);
+        }
+    }
+    all.insert(VoxelKey::ROOT);
+    for key in all.into_iter().filter(|k| !with_points.contains(k)) {
+        entries.push(CopcNode { key, offset: 0, byte_size: 0, point_count: 0 });
     }
     entries.sort_by_key(|e| e.key);
     let mut page = Vec::with_capacity(entries.len() * ENTRY_LEN);
@@ -556,7 +687,7 @@ pub(crate) fn write_copc<W: Write + Seek>(
     info.root_hier_offset = end_of_points + super::las::EVLR_HEADER_LEN as u64;
     info.root_hier_size = page.len() as u64;
     let mut evlrs = vec![super::las::Vlr::new(COPC_USER_ID, 1000, "EPT hierarchy", page)];
-    evlrs.append(&mut header.evlrs);
+    evlrs.extend(header.evlrs.drain(..).filter(|v| !v.is_waveform_data()));
     header.evlrs = evlrs;
     header.start_of_first_evlr = end_of_points;
     header.write_evlrs(w)?;
@@ -569,8 +700,253 @@ pub(crate) fn write_copc<W: Write + Seek>(
     Ok(())
 }
 
+/// Where the GPS time of a format's records is.
+fn gps_offset(format: u8) -> Option<usize> {
+    super::las::standard_fields(format).iter().find(|f| f.name == "gps_time").and_then(|f| match f.field {
+        super::las::Field::Plain(o) => Some(o),
+        _ => None,
+    })
+}
+
+/// Writes records (all of `layout`'s format, 6 to 8) as a COPC file. `header` has the VLRs to
+/// write besides the COPC and LASzip ones, the scale, offset and version; its counts and bounds
+/// are computed here.
+pub(crate) fn write_copc<W: Write + Seek>(w: &mut W, header: LasHeader, layout: &Layout, records: &[u8], build: CopcBuild) -> Result<()> {
+    let rl = layout.record_len;
+    let gps = gps_offset(layout.format);
+    let mut stats = Stats::new();
+    stats.add(records, rl, &header, gps);
+    stats.finish();
+    let cube = Cube::new(stats.lo, stats.hi, header.scale[0], build);
+    let h = header.clone();
+    write_copc_with(w, header, layout, &stats, &cube, |sink| {
+        build_bucket(&Bucket { records, index: None }, rl, &h, gps, &cube, &mut Upper::default(), sink)
+    })
+}
+
+/// A function called with each spilled point: its index, record and position in the cube.
+#[cfg(not(target_arch = "wasm32"))]
+type EachPoint<'a> = dyn FnMut(u64, &[u8], [f64; 3]) -> Result<()> + 'a;
+
+/// Writes a COPC file of points that come in chunks, larger than memory: the records are spilled
+/// to a temporary file, then the octree is built one node of a coarse level (a bucket) at a time,
+/// giving the same nodes as building it in memory.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) struct CopcStreamWriter {
+    out: std::io::BufWriter<std::fs::File>,
+    header: LasHeader,
+    layout: Layout,
+    build: CopcBuild,
+    gps: Option<usize>,
+    stats: Stats,
+    /// `(index, record)` of every point, in order.
+    spill: std::io::BufWriter<tempfile::NamedTempFile>,
+    /// The most points held in memory at a time.
+    memory_points: u64,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl CopcStreamWriter {
+    pub fn new(
+        out: std::io::BufWriter<std::fs::File>,
+        header: LasHeader,
+        layout: Layout,
+        build: CopcBuild,
+        memory_points: Option<u64>,
+    ) -> Result<Self> {
+        let spill = std::io::BufWriter::with_capacity(1 << 20, tempfile::NamedTempFile::new()?);
+        let gps = gps_offset(layout.format);
+        let memory_points = memory_points.unwrap_or(MEMORY_POINTS).max(1);
+        Ok(Self { out, header, layout, build, gps, stats: Stats::new(), spill, memory_points })
+    }
+
+    pub fn write_cloud(&mut self, cloud: &super::PointCloud) -> Result<()> {
+        let records = super::write::encode(cloud, &self.layout, self.header.scale, self.header.offset)?;
+        let rl = self.layout.record_len;
+        self.stats.add(&records, rl, &self.header, self.gps);
+        let first = self.stats.n - (records.len() / rl) as u64;
+        for (i, rec) in records.chunks_exact(rl).enumerate() {
+            self.spill.write_all(&(first + i as u64).to_le_bytes())?;
+            self.spill.write_all(rec)?;
+        }
+        Ok(())
+    }
+
+    pub fn finish(mut self) -> Result<()> {
+        use std::io::{BufRead, Read};
+        self.stats.finish();
+        let rl = self.layout.record_len;
+        let entry = rl + 8;
+        let spill = self.spill.into_inner().map_err(|e| Error::Io(e.into_error()))?;
+        let n = self.stats.n;
+        let cube = Cube::new(self.stats.lo, self.stats.hi, self.header.scale[0], self.build);
+        let h = self.header.clone();
+        let gps = self.gps;
+        let mut out = self.out;
+        let read_all = |mut f: &std::fs::File| -> Result<Vec<u8>> {
+            f.seek(SeekFrom::Start(0))?;
+            let mut b = Vec::with_capacity((n as usize) * entry);
+            f.read_to_end(&mut b)?;
+            Ok(b)
+        };
+        if n <= self.memory_points || cube.max_depth == 0 {
+            // Small enough to build in memory.
+            let all = read_all(spill.as_file())?;
+            let mut records = Vec::with_capacity(n as usize * rl);
+            for e in all.chunks_exact(entry) {
+                records.extend_from_slice(&e[8..]);
+            }
+            drop(all);
+            write_copc_with(&mut out, self.header, &self.layout, &self.stats, &cube, |sink| {
+                build_bucket(&Bucket { records: &records, index: None }, rl, &h, gps, &cube, &mut Upper::default(), sink)
+            })?;
+            out.flush()?;
+            return Ok(());
+        }
+        // Pass 1: the points per node at the levels above the buckets (counted as in memory, for
+        // nodes whose parent is not a leaf), and at each level whatever its parent, to choose the
+        // buckets' level: the coarsest whose nodes fit in memory.
+        let pass = |f: &std::fs::File, mut each: Box<EachPoint<'_>>| -> Result<()> {
+            let mut f = f;
+            f.seek(SeekFrom::Start(0))?;
+            let mut r = std::io::BufReader::with_capacity(1 << 22, f);
+            let mut e = vec![0u8; entry];
+            loop {
+                if r.fill_buf()?.is_empty() {
+                    break;
+                }
+                r.read_exact(&mut e)?;
+                let idx = u64::from_le_bytes(e[..8].try_into().unwrap_or_default());
+                let rel = cube.rel(&record_core(&e[8..], h.point_format, &h.scale, &h.offset));
+                each(idx, &e[8..], rel)?;
+            }
+            Ok(())
+        };
+        let deepest = cube.max_depth.min(7);
+        let mut plain: Vec<HashMap<VoxelKey, u64>> = vec![HashMap::new(); deepest as usize + 1];
+        pass(
+            spill.as_file(),
+            Box::new(|_, _, r| {
+                for (l, m) in plain.iter_mut().enumerate() {
+                    *m.entry(Cube::key(&r, l as i32)).or_default() += 1;
+                }
+                Ok(())
+            }),
+        )?;
+        let l0 = (1..=deepest).find(|&l| plain[l as usize].values().all(|c| *c <= self.memory_points)).unwrap_or(deepest);
+        let mut upper = Upper { levels: l0, ..Default::default() };
+        // The counts above the buckets, from the plain counts: a node is counted when its parent
+        // is not a leaf.
+        for level in 0..l0 {
+            for (k, c) in &plain[level as usize] {
+                if level == 0 || upper.counts.get(&parent(*k)).is_some_and(|p| *p > cube.leaf_points) {
+                    upper.counts.insert(*k, *c);
+                }
+            }
+        }
+        let buckets = std::mem::take(&mut plain[l0 as usize]);
+        drop(plain);
+        // Pass 2: the points of each bucket together, in segments of a second temporary file.
+        let mut parts = std::io::BufWriter::with_capacity(1 << 20, tempfile::NamedTempFile::new()?);
+        let flush_at = ((64usize << 20) / buckets.len().max(1)).clamp(16 << 10, 1 << 20);
+        let mut buffers: HashMap<VoxelKey, Vec<u8>> = HashMap::new();
+        let mut segments: HashMap<VoxelKey, Vec<(u64, usize)>> = HashMap::new();
+        let mut at = 0u64;
+        {
+            let parts = &mut parts;
+            pass(
+                spill.as_file(),
+                Box::new(|idx, rec, r| {
+                    let key = Cube::key(&r, l0);
+                    let b = buffers.entry(key).or_default();
+                    b.extend_from_slice(&idx.to_le_bytes());
+                    b.extend_from_slice(rec);
+                    if b.len() >= flush_at {
+                        parts.write_all(b)?;
+                        segments.entry(key).or_default().push((at, b.len()));
+                        at += b.len() as u64;
+                        b.clear();
+                    }
+                    Ok(())
+                }),
+            )?;
+        }
+        for (key, b) in buffers.iter_mut() {
+            if !b.is_empty() {
+                parts.write_all(b)?;
+                segments.entry(*key).or_default().push((at, b.len()));
+                at += b.len() as u64;
+            }
+        }
+        drop(buffers);
+        drop(spill);
+        let parts = parts.into_inner().map_err(|e| Error::Io(e.into_error()))?;
+        let mut keys: Vec<VoxelKey> = segments.keys().copied().collect();
+        keys.sort();
+        write_copc_with(&mut out, self.header, &self.layout, &self.stats, &cube, |sink| {
+            let mut f = parts.as_file();
+            for key in keys {
+                let mut bytes = Vec::new();
+                for (offset, len) in &segments[&key] {
+                    f.seek(SeekFrom::Start(*offset))?;
+                    let start = bytes.len();
+                    bytes.resize(start + len, 0);
+                    f.read_exact(&mut bytes[start..])?;
+                }
+                let m = bytes.len() / entry;
+                let mut index = Vec::with_capacity(m);
+                let mut records = Vec::with_capacity(m * rl);
+                for e in bytes.chunks_exact(entry) {
+                    index.push(u64::from_le_bytes(e[..8].try_into().unwrap_or_default()));
+                    records.extend_from_slice(&e[8..]);
+                }
+                drop(bytes);
+                build_bucket(&Bucket { records: &records, index: Some(&index) }, rl, &h, gps, &cube, &mut upper, sink)?;
+            }
+            // The nodes above the buckets.
+            let mut keys: Vec<VoxelKey> = upper.members.keys().copied().collect();
+            keys.sort();
+            let mut buf = Vec::new();
+            for key in keys {
+                let m = upper.members.get_mut(&key).expect("a node");
+                m.sort_unstable_by(|a, b| gps_time(&a.1, gps).total_cmp(&gps_time(&b.1, gps)).then(a.0.cmp(&b.0)));
+                buf.clear();
+                for (_, r) in m.iter() {
+                    buf.extend_from_slice(r);
+                }
+                sink.write_node(key, &buf, rl)?;
+            }
+            Ok(())
+        })?;
+        out.flush()?;
+        Ok(())
+    }
+}
+
+/// The deepest octree level whose cumulative point count stays within a budget (at least the
+/// root's), from `(level, points)` of each node.
+pub(crate) fn deepest_level_within(nodes: impl Iterator<Item = (usize, u64)>, limit: u64) -> i32 {
+    let mut per_level: Vec<u64> = Vec::new();
+    for (l, c) in nodes {
+        if per_level.len() <= l {
+            per_level.resize(l + 1, 0);
+        }
+        per_level[l] += c;
+    }
+    let mut total = 0;
+    let mut deepest = 0;
+    for (l, c) in per_level.iter().enumerate() {
+        total += c;
+        if total > limit && l > 0 {
+            break;
+        }
+        deepest = l as i32;
+    }
+    deepest
+}
+
 /// A bijective scramble of an index (a 64-bit mix), for a deterministic pseudo-random order.
-fn scramble(mut x: u64) -> u64 {
+pub(crate) fn scramble(mut x: u64) -> u64 {
     x ^= x >> 33;
     x = x.wrapping_mul(0xff51_afd7_ed55_8ccd);
     x ^= x >> 33;

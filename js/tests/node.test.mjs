@@ -416,6 +416,31 @@ test("points from arrays, to LAS, LAZ and COPC bytes and back", () => {
   assert.equal(fgb.toGeoJSON().features.length, n);
 });
 
+test("PLY and E57 bytes, PDAL's filters and TIN gridding", () => {
+  const n = 4000;
+  const x = Float64Array.from({ length: n }, (_, i) => 500000 + (i % 80) * 0.5);
+  const y = Float64Array.from({ length: n }, (_, i) => 4100000 + Math.floor(i / 80) * 0.5);
+  const z = Float64Array.from({ length: n }, (_, i) => 100 + (i % 80) * 0.1);
+  const returnNumber = new Uint8Array(n).fill(1);
+  const numberOfReturns = new Uint8Array(n).fill(1);
+  const pc = terrio.pointsFromArrays({ x, y, z, return_number: returnNumber, number_of_returns: numberOfReturns }, "EPSG:32610");
+  for (const name of ["a.ply", "a.e57"]) {
+    const back = terrio.readPoints(pc.toBytes(name), name);
+    assert.equal(back.length, n);
+    assert.deepEqual(Array.from(back.get("z").slice(0, 3)), Array.from(z.slice(0, 3)));
+  }
+  // A tilted plane: all ground.
+  const ground = pc.smrf({ cell: 1 });
+  assert.ok(ground.get("classification").every((c) => c === 2));
+  assert.equal(pc.range("Z[100:101)").length, 10 * 50);
+  assert.equal(pc.voxelDownsize(1, "first").length, 1066);
+  assert.equal(pc.outlier({ method: "radius", radius: 0.6, minK: 1 }).get("classification").filter((c) => c === 7).length, 0);
+  // Linear interpolation of a plane is exact.
+  const tin = pc.grid(1, { method: "linear", radius: 0 });
+  const band = tin.readBand(1);
+  assert.ok(band.some((v) => v !== -9999));
+});
+
 test("COPC files read by octree level", { skip: !DATA && "TERRIO_TEST_DATA is not set" }, (t) => {
   const path = join(DATA, "pointcloud", "simple.copc.laz");
   if (!existsSync(path)) return t.skip("simple.copc.laz is missing");
