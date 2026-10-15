@@ -1050,7 +1050,9 @@ pub fn warp(sources: &[&RasterDataset], o: &WarpOptions) -> Result<RasterDataset
         let fill = warp_round(init, out_type);
         for c in chunks {
             // The chunk's part of the output as `f64` (the first source's chunks don't overlap:
-            // the output there is still its initial value), warped, then stored back.
+            // the output there is still its initial value), warped, then stored back. The chunks
+            // of a source partition the output (`collect_chunks`), and the values stored are
+            // already rounded to the output type (`Sink::value`), so storing them back is exact.
             let (w, rows) = (grid.width, c.dy..c.dy + c.dh);
             for (b, part) in staged.iter_mut().enumerate() {
                 part.clear();
@@ -2065,5 +2067,41 @@ mod tests {
         let m = rasterize_polygons(&[square], 4, 4);
         let on: Vec<usize> = m.iter().enumerate().filter(|(_, b)| **b).map(|(i, _)| i).collect();
         assert_eq!(on, vec![5, 6, 9, 10]);
+    }
+
+    /// Several sources warped in one chunk and in many, in integer types (rounded where stored),
+    /// the second source laid over the first where it has data: the values are those of the
+    /// warper writing `f64` output bands (checksums of its results at 0f256c4).
+    #[test]
+    fn typed_output_keeps_values() {
+        let a = raster(60, 40, [500000.0, 30.0, 0.0, 4000000.0, 0.0, -30.0], 32610, |c, r| (c * 7 + r * 3) as f64 + 0.37);
+        let b = raster(50, 30, [500600.0, 30.0, 0.0, 3999400.0, 0.0, -30.0], 32610, |c, r| {
+            if (c + r) % 5 == 0 { -9999.0 } else { 1000.0 - (c * 3 + r) as f64 * 1.5 }
+        });
+        let expected = [
+            (Resampling::Bilinear, DataType::I16, 0x84d523e9ef65765d_u64, 0xd4b833e9ef65765d_u64),
+            (Resampling::Cubic, DataType::U8, 0xa34c60e9ef65765d, 0xa34c60e9ef65765d),
+            (Resampling::Nearest, DataType::F32, 0xfcbcca5b6f65765d, 0xfcbcca5b6f65765d),
+        ];
+        for (resampling, out_type, one_chunk, many_chunks) in expected {
+            let o = |memory_limit: f64| WarpOptions {
+                dst_srs: Some(SpatialRef::from_epsg(4326).unwrap()),
+                resampling,
+                output_type: Some(out_type),
+                src_nodata: Nodata::Values(vec![-9999.0]),
+                memory_limit,
+                error_threshold: 0.0,
+                ..Default::default()
+            };
+            let sum = |d: &RasterDataset| {
+                super::super::band_f64(&d.raster, 0)
+                    .iter()
+                    .fold(0xcbf29ce484222325u64, |h, x| (h ^ x.to_bits()).wrapping_mul(0x100000001b3))
+            };
+            let one = warp(&[&a, &b], &o(1e9)).unwrap();
+            let many = warp(&[&a, &b], &o(4096.0)).unwrap();
+            assert_eq!(one.raster.data_type, out_type);
+            assert_eq!((sum(&one), sum(&many)), (one_chunk, many_chunks), "{resampling:?}");
+        }
     }
 }

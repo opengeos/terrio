@@ -449,6 +449,7 @@ pub(crate) fn build_raster(
     srs: &SpatialRef,
     convert: fn(f64, DataType) -> f64,
 ) -> Result<RasterDataset> {
+    north_up(&grid)?;
     let nbands = bands.len().max(1);
     let n = grid.width * grid.height;
     let mut data = RasterData::new_filled(data_type, n * nbands, 0.0);
@@ -487,10 +488,11 @@ pub(crate) fn build_raster_data(
     nodata: Option<f64>,
     srs: &SpatialRef,
 ) -> Result<RasterDataset> {
-    let gt = grid.geo_transform;
-    if gt[2] != 0.0 || gt[4] != 0.0 || gt[1] <= 0.0 || gt[5] >= 0.0 {
-        return Err(Error::Unsupported("only north-up rasters are supported".into()));
+    north_up(&grid)?;
+    if data.len() != grid.width * grid.height * nbands {
+        return Err(Error::InvalidData(format!("{} values for {nbands} band(s) of {}x{} pixels", data.len(), grid.width, grid.height)));
     }
+    let gt = grid.geo_transform;
     let data_type = data.data_type();
     let cfg = RasterConfig {
         cols: grid.width,
@@ -507,6 +509,15 @@ pub(crate) fn build_raster_data(
     };
     let raster = crate::pixel::raster_from_data(cfg, data)?;
     Ok(RasterDataset::new(raster, nodata.is_some()))
+}
+
+/// Rasters are built north-up only.
+fn north_up(grid: &Grid) -> Result<()> {
+    let gt = grid.geo_transform;
+    if gt[2] != 0.0 || gt[4] != 0.0 || gt[1] <= 0.0 || gt[5] >= 0.0 {
+        return Err(Error::Unsupported("only north-up rasters are supported".into()));
+    }
+    Ok(())
 }
 
 /// The nodata value stored in rasters that declare none (rasters always carry one).
