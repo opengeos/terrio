@@ -161,6 +161,15 @@ if command -v ogr2ogr >/dev/null && command -v gdal_translate >/dev/null; then
   fi
   [ -e countries_mvt.mbtiles ] || ogr2ogr -f MBTiles countries_mvt.mbtiles countries.geojson -dsco MAXZOOM=3
   [ -e countries_mvt.pmtiles ] || ogr2ogr -f PMTiles countries_mvt.pmtiles countries.geojson -dsco MAXZOOM=3
+  # GeoParquet in row groups of 1000 rows, read by row group.
+  [ -e ne_places_rg.parquet ] || ogr2ogr -f Parquet -lco ROW_GROUP_SIZE=1000 ne_places_rg.parquet \
+    ne_places/ne_10m_populated_places_simple.shp
+  # A FlatGeobuf larger than 100 MB (the US counties nine times, 127 MB), which overflowed 32-bit
+  # WebAssembly in the format library's reader.
+  if [ ! -e big_counties.fgb ]; then
+    for _ in 1 2 3 4 5 6 7 8 9; do ogr2ogr -append -nln big_counties big_counties.gpkg UScounties.fgb; done
+    ogr2ogr -f FlatGeobuf big_counties.fgb big_counties.gpkg && rm big_counties.gpkg
+  fi
   # A land cover subset (NLCD 2021, 90 m) around Knoxville, read in place from a COG.
   [ -e nlcd_knoxville.tif ] || gdal_translate -q -projwin_srs EPSG:4326 -projwin -84.4 36.25 -83.5 35.75 \
     -co COMPRESS=DEFLATE "/vsicurl/$base/raster/nlcd_2021_land_cover_90m.tif" nlcd_knoxville.tif
@@ -212,6 +221,39 @@ if command -v ogr2ogr >/dev/null && command -v gdal_translate >/dev/null; then
     landsat7.tif gtiff_codecs/rgb_jxl_cog.tif
   [ -e gtiff_codecs/u16_jxl_cog.tif ] || gdal_translate -q -ot UInt16 -of COG -co COMPRESS=JXL \
     -co BLOCKSIZE=256 -srcwin 1500 5500 2048 2048 s2_l1c_B04.jp2 gtiff_codecs/u16_jxl_cog.tif
+fi
+# The outputs of GDAL's tools that the WebAssembly build's operations are checked against
+# (js/tests/node.test.mjs), for the cases where terrio's native output is identical to GDAL's.
+if command -v gdaldem >/dev/null && command -v gdal_calc.py >/dev/null && [ ! -e wasm_refs/done ]; then
+  mkdir -p wasm_refs
+  r=wasm_refs
+  gdal_translate -q -srcwin 100 200 500 400 usgs_dem.tif $r/translate_srcwin.tif
+  gdal_translate -q -outsize 25% 25% las_vegas_dem.tif $r/translate_outsize.tif
+  gdal_translate -q -b 3 -b 1 -ot Int16 landsat.tif $r/translate_bands.tif
+  gdal_translate -q -ot Byte -scale 1000 4000 0 255 usgs_dem.tif $r/translate_scale.tif
+  gdalwarp -q -t_srs EPSG:4326 -srcnodata 0 -dstnodata -1 las_vegas_dem.tif $r/warp_4326.tif
+  gdalwarp -q -t_srs EPSG:3857 usgs_dem.tif $r/warp_3857.tif
+  printf '%s' '{"type":"FeatureCollection","features":[{"type":"Feature","properties":{},"geometry":{"type":"Polygon",
+    "coordinates":[[[-115.2075,36.1222],[-115.2005,36.1220],[-115.2010,36.1195],[-115.2070,36.1197],[-115.2075,36.1222]]]}}]}' \
+    > $r/cutline.geojson
+  gdalwarp -q -cutline $r/cutline.geojson -crop_to_cutline -dstnodata -9999 las_vegas_dem.tif $r/warp_cutline.tif
+  gdal_translate -q -srcwin 0 0 300 250 srtm_sub.tif $r/part1.tif
+  gdal_translate -q -srcwin 200 150 300 250 srtm_sub.tif $r/part2.tif
+  gdal_merge.py -q -n -32768 -init -32768 -a_nodata -32768 -o $r/mosaic.tif $r/part2.tif $r/part1.tif
+  for m in hillshade slope aspect TRI TPI roughness; do gdaldem $m -q srtm_sub.tif $r/dem_$m.tif; done
+  gdaldem hillshade -q -multidirectional -compute_edges srtm_sub.tif $r/dem_hillshade_multi.tif
+  gdaldem slope -q -p -alg ZevenbergenThorne srtm_sub.tif $r/dem_slope_zt.tif
+  printf 'nv 0 0 0 0\n0 46 154 88\n500 251 255 128\n1000 224 108 31\n2000 200 55 55\n3000 255 255 255\n' > $r/colors.txt
+  gdaldem color-relief -q -alpha srtm_sub.tif $r/colors.txt $r/dem_color.tif
+  gdal_calc.py --quiet -A landsat.tif --A_band 3 -B landsat.tif --B_band 4 \
+    --calc "(B.astype(float32) - A) / (B.astype(float32) + A)" --type Float32 --outfile $r/calc_ndvi.tif
+  gdal_calc.py --quiet -A srtm_sub.tif --calc "A * 20" --outfile $r/calc_wrap.tif
+  gdal_proximity.py -q nlcd_knoxville.tif $r/proximity.tif -values 11
+  gdal_sieve.py -q -st 10 nlcd_knoxville.tif $r/sieve.tif
+  gdal_rasterize -q -burn 1 -tr 0.1 0.1 -ot Byte countries.geojson $r/rasterize_burn.tif
+  gdal_rasterize -q -a POPULATION -tr 0.002 0.002 -ot Int32 TN_Counties.geojson $r/rasterize_attribute.tif
+  gdal_polygonize.py -q nlcd_knoxville.tif -f FlatGeobuf $r/polygonize.fgb
+  touch $r/done
 fi
 # Datum shift and geoid grids from the PROJ CDN (scripts/proj_grids.txt, 230 MB), and grids in
 # the formats PROJ used before PROJ 7 (NTv2, GTX), from proj-datumgrid 1.8.

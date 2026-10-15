@@ -44,22 +44,93 @@ pub(crate) struct Column {
 /// stay the row numbers in the file, as in GDAL.
 pub fn read_filtered(path: &str, bbox: Option<(f64, f64, f64, f64)>) -> Result<Layer> {
     let name = std::path::Path::new(path).file_stem().and_then(|s| s.to_str()).unwrap_or("layer");
-    parse_source(|| Ok(std::fs::File::open(path)?), name, bbox)
+    parse_source(|| Ok(std::fs::File::open(path)?), name, None, bbox, None)
 }
 
 /// Parses a GeoParquet (or plain Parquet) file held in memory. `name` names the layer.
 pub fn parse(bytes: Vec<u8>, name: &str) -> Result<Layer> {
     let bytes = bytes::Bytes::from(bytes);
-    parse_source(|| Ok(bytes.clone()), name, None)
+    parse_source(|| Ok(bytes.clone()), name, None, None, None)
 }
 
-/// Parses a file whose bytes `open` gives (once, or twice with a filter).
+/// A row group of a GeoParquet file.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct RowGroupInfo {
+    /// The number of rows.
+    pub rows: u64,
+    /// The row number (feature id) of its first row.
+    pub first_row: u64,
+    /// The bounding box `[min_x, min_y, max_x, max_y]` of its geometries, from the statistics of
+    /// the bounding-box covering column, when the file has them.
+    pub bbox: Option<[f64; 4]>,
+    /// The size in bytes of its column chunks.
+    pub bytes: u64,
+}
+
+/// The row groups of a GeoParquet file, from its footer.
+pub(crate) fn row_groups<R: parquet::file::reader::ChunkReader + 'static>(input: R) -> Result<Vec<RowGroupInfo>> {
+    use parquet::file::statistics::Statistics as S;
+    let err = |e: &dyn std::fmt::Display| Error::InvalidData(format!("Parquet: {e}"));
+    let builder = ParquetRecordBatchReaderBuilder::try_new(input).map_err(|e| err(&e))?;
+    let meta = builder.metadata().clone();
+    let descr = meta.file_metadata().schema_descr();
+    let geo: Value = meta
+        .file_metadata()
+        .key_value_metadata()
+        .and_then(|kv| kv.iter().find(|k| k.key == "geo"))
+        .and_then(|k| k.value.as_deref())
+        .and_then(|v| serde_json::from_str(v).ok())
+        .unwrap_or(Value::Null);
+    let primary = geo["primary_column"].as_str().unwrap_or("geometry");
+    let cov = &geo["columns"][primary]["covering"]["bbox"];
+    let leaf = |k: &str| -> Option<usize> {
+        let p: Vec<&str> = cov.get(k)?.as_array()?.iter().filter_map(Value::as_str).collect();
+        (0..descr.num_columns()).find(|&i| descr.column(i).path().parts() == p.as_slice())
+    };
+    let leaves = (|| Some([leaf("xmin")?, leaf("ymin")?, leaf("xmax")?, leaf("ymax")?]))();
+    let mut out = Vec::new();
+    let mut first_row = 0u64;
+    for rg in meta.row_groups() {
+        let stat = |leaf: usize, max: bool| -> Option<f64> {
+            match rg.column(leaf).statistics()? {
+                S::Double(s) => if max { s.max_opt() } else { s.min_opt() }.copied(),
+                S::Float(s) => if max { s.max_opt() } else { s.min_opt() }.map(|v| *v as f64),
+                _ => None,
+            }
+        };
+        let bbox = leaves.and_then(|l| Some([stat(l[0], false)?, stat(l[1], false)?, stat(l[2], true)?, stat(l[3], true)?]));
+        let bytes = rg.columns().iter().map(|c| c.byte_range().1).sum();
+        out.push(RowGroupInfo { rows: rg.num_rows() as u64, first_row, bbox, bytes });
+        first_row += rg.num_rows() as u64;
+    }
+    Ok(out)
+}
+
+/// Reads a file whose bytes the caller fetches: the rows of some row groups whose bounding box
+/// intersects `bbox`, fetching only the column chunks needed.
+pub(crate) fn read_sparse(
+    file: &crate::sparse::SparseFile,
+    name: &str,
+    row_groups: Option<&[usize]>,
+    bbox: Option<(f64, f64, f64, f64)>,
+) -> Result<Layer> {
+    let prefetch = |ranges: &[(u64, u64)]| -> Result<()> { Ok(file.prefetch(ranges)?) };
+    parse_source(|| Ok(file.clone()), name, row_groups, bbox, Some(&prefetch))
+}
+
+/// Announces the byte ranges about to be read, to readers whose bytes the caller fetches.
+type Prefetch<'a> = Option<crate::sparse::Prefetch<'a>>;
+
+/// Parses a file whose bytes `open` gives (once, or twice with a filter): the rows of
+/// `row_groups` (all by default) that intersect `bbox`.
 fn parse_source<R: parquet::file::reader::ChunkReader + 'static>(
     open: impl Fn() -> Result<R>,
     name: &str,
+    row_groups: Option<&[usize]>,
     bbox: Option<(f64, f64, f64, f64)>,
+    prefetch: Prefetch<'_>,
 ) -> Result<Layer> {
-    let mut s = ParquetStream::open(open, name, bbox, 65536)?;
+    let mut s = ParquetStream::open(open, name, row_groups, bbox, 65536, prefetch)?;
     let mut layer = s.layer.clone();
     while let Some(batch) = s.next_batch()? {
         layer.features.extend(batch);
@@ -80,16 +151,23 @@ pub(crate) struct ParquetStream {
 }
 
 impl ParquetStream {
-    /// Opens a file whose bytes `open` gives (once, or twice with a filter), to read it in
-    /// batches of `batch_size` rows.
+    /// Opens a file whose bytes `open` gives (once, or twice with a filter), to read the rows of
+    /// `row_groups` (all by default) that intersect `bbox` in batches of `batch_size` rows.
+    /// `prefetch`, when given, is told the byte ranges about to be read.
     pub(crate) fn open<R: parquet::file::reader::ChunkReader + 'static>(
         open: impl Fn() -> Result<R>,
         name: &str,
+        row_groups: Option<&[usize]>,
         bbox: Option<(f64, f64, f64, f64)>,
         batch_size: usize,
+        prefetch: Prefetch<'_>,
     ) -> Result<Self> {
         let err = |e: &dyn std::fmt::Display| Error::InvalidData(format!("Parquet: {e}"));
         let builder = ParquetRecordBatchReaderBuilder::try_new(open()?).map_err(|e| err(&e))?;
+        let num_groups = builder.metadata().num_row_groups();
+        if let Some(g) = row_groups.and_then(|g| g.iter().find(|&&g| g >= num_groups)) {
+            return Err(Error::InvalidArgument(format!("no row group {g}: the file has {num_groups}")));
+        }
         let geo: Value = builder
             .metadata()
             .file_metadata()
@@ -134,10 +212,35 @@ impl ParquetStream {
         // With a filter: the row groups whose statistics overlap it, then the rows that do.
         let mut builder = builder;
         let mut fids: Option<Vec<u64>> = None;
+        let meta = builder.metadata().clone();
+        let mut groups: Vec<usize> = match row_groups {
+            Some(g) => {
+                let mut g = g.to_vec();
+                g.sort_unstable();
+                g.dedup();
+                g
+            }
+            None => (0..num_groups).collect(),
+        };
         if let Some(rect) = bbox {
-            let (groups, selection, kept) = select_rows(&builder, open()?, covering, geom_index, &encoding, rect)?;
-            builder = builder.with_row_groups(groups).with_row_selection(selection);
+            let (kept_groups, selection, kept) = select_rows(&builder, open()?, covering, geom_index, &encoding, rect, &groups, prefetch)?;
+            groups = kept_groups;
+            builder = builder.with_row_groups(groups.clone()).with_row_selection(selection);
             fids = Some(kept);
+        } else if row_groups.is_some() {
+            // Feature ids stay the row numbers in the file.
+            let mut first = Vec::with_capacity(num_groups);
+            let mut n = 0u64;
+            for rg in meta.row_groups() {
+                first.push(n);
+                n += rg.num_rows() as u64;
+            }
+            fids = Some(groups.iter().flat_map(|&g| first[g]..first[g] + meta.row_group(g).num_rows() as u64).collect());
+            builder = builder.with_row_groups(groups.clone());
+        }
+        if let Some(p) = prefetch {
+            let ranges: Vec<(u64, u64)> = groups.iter().flat_map(|&g| meta.row_group(g).columns().iter().map(|c| c.byte_range())).collect();
+            p(&ranges)?;
         }
         let reader = builder.with_batch_size(batch_size.max(1)).build().map_err(|e| err(&e))?;
 
@@ -202,6 +305,7 @@ pub(crate) fn apply_crs(layer: &mut Layer, crs: &Value) {
 /// rows. Row groups are kept when the statistics of the covering column overlap the rectangle
 /// (or are missing); rows when their covering bounding box (or else their geometry's) does.
 #[allow(clippy::type_complexity)]
+#[allow(clippy::too_many_arguments)]
 fn select_rows<T: parquet::file::reader::ChunkReader + 'static>(
     builder: &ParquetRecordBatchReaderBuilder<T>,
     input: T,
@@ -209,6 +313,8 @@ fn select_rows<T: parquet::file::reader::ChunkReader + 'static>(
     geom_index: Option<usize>,
     encoding: &str,
     rect: (f64, f64, f64, f64),
+    allowed: &[usize],
+    prefetch: Prefetch<'_>,
 ) -> Result<(Vec<usize>, parquet::arrow::arrow_reader::RowSelection, Vec<u64>)> {
     use parquet::arrow::ProjectionMask;
     use parquet::arrow::arrow_reader::{RowSelection, RowSelector};
@@ -243,7 +349,7 @@ fn select_rows<T: parquet::file::reader::ChunkReader + 'static>(
                 || stat(rg, l[2], true).is_some_and(|v| v < fxmin)
                 || stat(rg, l[3], true).is_some_and(|v| v < fymin)
         });
-        if !outside {
+        if !outside && allowed.binary_search(&rg).is_ok() {
             groups.push(rg);
             first_rows.push(start);
         }
@@ -255,6 +361,15 @@ fn select_rows<T: parquet::file::reader::ChunkReader + 'static>(
         (None, Some(g)) => ProjectionMask::roots(descr, [g]),
         (None, None) => ProjectionMask::all(),
     };
+    if let Some(p) = prefetch {
+        let leaves: Vec<usize> = (0..descr.num_columns()).filter(|&i| mask.leaf_included(i)).collect();
+        let ranges: Vec<(u64, u64)> = groups
+            .iter()
+            .flat_map(|&g| leaves.iter().map(|&l| (g, l)).collect::<Vec<_>>())
+            .map(|(g, l)| meta.row_group(g).column(l).byte_range())
+            .collect();
+        p(&ranges)?;
+    }
     let src = ParquetRecordBatchReaderBuilder::new_with_metadata(
         input,
         parquet::arrow::arrow_reader::ArrowReaderMetadata::try_new(meta.clone(), Default::default()).map_err(|e| err(&e))?,
@@ -284,12 +399,19 @@ fn select_rows<T: parquet::file::reader::ChunkReader + 'static>(
             keep.extend(std::iter::repeat_n(true, batch.num_rows()));
         }
     }
-    // Run-length selectors, and the file row numbers of the kept rows.
+    // Run-length selectors over the row groups with rows kept (the others are not read), and
+    // the file row numbers of the kept rows.
     let mut selectors: Vec<RowSelector> = Vec::new();
     let mut kept = Vec::new();
+    let mut kept_groups = Vec::new();
     let mut i = 0usize;
     for (g, &rg) in groups.iter().enumerate() {
         let n = meta.row_group(rg).num_rows() as usize;
+        if !keep[i.min(keep.len())..(i + n).min(keep.len())].contains(&true) {
+            i += n;
+            continue;
+        }
+        kept_groups.push(rg);
         for r in 0..n {
             let k = keep.get(i).copied().unwrap_or(false);
             if k {
@@ -302,7 +424,7 @@ fn select_rows<T: parquet::file::reader::ChunkReader + 'static>(
             i += 1;
         }
     }
-    Ok((groups, RowSelection::from(selectors), kept))
+    Ok((kept_groups, RowSelection::from(selectors), kept))
 }
 
 /// Adds the fields of a column, flattening structs as GDAL does.

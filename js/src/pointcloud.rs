@@ -1,19 +1,19 @@
 //! Point clouds (LAS, LAZ, COPC, PLY, E57) from bytes.
 
-use super::{Dataset, Inner, crs_string, js_err, to_js};
+use super::{Dataset, crs_string, js_err, to_js};
 use serde::Deserialize;
+use terrio::VectorWriteOptions;
 use terrio::pointcloud::filters::{self, DimRange, OutlierMethod, OutlierOptions, SampleOptions, SmrfOptions, VoxelMode};
 use terrio::pointcloud::grid::{GridMethod, GridOptions, GridStat};
 use terrio::pointcloud::{
     self, PointCloud, PointCloudReader, PointFilter, PointFormat, PointReadOptions, PointWriteOptions, ReturnKind, Values,
 };
-use terrio::{LazyRaster, VectorWriteOptions};
 use wasm_bindgen::prelude::*;
 
 /// Options for reading points, as a JavaScript object.
 #[derive(Deserialize, Default)]
 #[serde(rename_all = "camelCase", default, deny_unknown_fields)]
-struct ReadOptions {
+pub(crate) struct ReadOptions {
     /// Keep the points in `[minX, minY, maxX, maxY]`.
     bounds: Option<[f64; 4]>,
     /// Keep the points with z in `[min, max]`.
@@ -31,7 +31,7 @@ struct ReadOptions {
 }
 
 impl ReadOptions {
-    fn parse(options: JsValue) -> Result<PointReadOptions, JsError> {
+    pub(crate) fn parse(options: JsValue) -> Result<PointReadOptions, JsError> {
         let o: ReadOptions = if options.is_undefined() || options.is_null() {
             ReadOptions::default()
         } else {
@@ -164,6 +164,13 @@ pub struct PointCloudFile {
 #[wasm_bindgen(js_name = PointCloud)]
 pub struct JsPointCloud {
     inner: PointCloud,
+}
+
+impl JsPointCloud {
+    /// Points read elsewhere (from a remote file).
+    pub(crate) fn from_points(inner: PointCloud) -> Self {
+        Self { inner }
+    }
 }
 
 /// Opens a LAS, LAZ, COPC, PLY or E57 file from its bytes, reading only its header.
@@ -353,7 +360,7 @@ impl JsPointCloud {
             data_type: terrio::DataType::F64,
         };
         let ds = pointcloud::grid::grid(&self.inner, &options).map_err(js_err)?;
-        Ok(Dataset { inner: Inner::Raster(LazyRaster::from(ds)) })
+        Ok(Dataset::from_raster(ds))
     }
 
     /// The points within ranges of dimensions, as PDAL's `filters.range`: `limits` such as

@@ -150,6 +150,60 @@ pub fn map_coords(g: &mut Geometry, f: &mut dyn FnMut(&mut wbvector::Coord) -> c
     }
 }
 
+pub use crate::drivers::vector::flatgeobuf::FlatGeobufInfo;
+pub use crate::drivers::vector::geoparquet::RowGroupInfo;
+
+/// Reads a remote FlatGeobuf file whose bytes the caller fetches (see [`crate::sparse`]): its
+/// header, and the features whose bounding box intersects `bbox` (in the layer's CRS), found with
+/// the file's spatial index so that only the index nodes on the way and those features are read;
+/// every feature without `bbox` or without an index. `name` is the file name, whose stem names
+/// the layer when the header does not. Callers filter the features by their geometries, as
+/// `ogr2ogr -spat` does (see [`crate::ops::vector_filter`]).
+///
+/// Reads fail until the bytes they need are fetched, and are then run again.
+pub fn read_flatgeobuf_sparse(
+    file: &crate::sparse::SparseFile,
+    name: &str,
+    bbox: Option<(f64, f64, f64, f64)>,
+) -> crate::Result<(FlatGeobufInfo, Layer)> {
+    let mut r = file.clone();
+    let prefetch = |ranges: &[(u64, u64)]| -> crate::Result<()> { Ok(file.prefetch(ranges)?) };
+    let (info, layer) = crate::drivers::vector::flatgeobuf::read_filtered(&mut r, file.len(), bbox, &prefetch)?;
+    Ok((info, crate::dataset::fix_layer(layer, name, crate::formats::VectorDriver::FlatGeobuf)))
+}
+
+/// The header of a remote FlatGeobuf file whose bytes the caller fetches (see
+/// [`crate::sparse`]), and its layer without features.
+pub fn read_flatgeobuf_header_sparse(file: &crate::sparse::SparseFile, name: &str) -> crate::Result<(FlatGeobufInfo, Layer)> {
+    let mut r = file.clone();
+    let (info, layer) = crate::drivers::vector::flatgeobuf::read_header(&mut r, file.len())?;
+    Ok((info, crate::dataset::fix_layer(layer, name, crate::formats::VectorDriver::FlatGeobuf)))
+}
+
+/// The row groups of a remote GeoParquet file whose bytes the caller fetches (see
+/// [`crate::sparse`]): their row counts and bounding boxes (from the statistics of the
+/// bounding-box covering column).
+pub fn geoparquet_row_groups_sparse(file: &crate::sparse::SparseFile) -> crate::Result<Vec<RowGroupInfo>> {
+    crate::drivers::vector::geoparquet::row_groups(file.clone())
+}
+
+/// Reads a remote GeoParquet file whose bytes the caller fetches (see [`crate::sparse`]): the
+/// rows of `row_groups` (all by default) whose bounding box intersects `bbox`, reading only the
+/// column chunks of those row groups. Feature ids are the row numbers in the file, as in GDAL.
+/// `name` is the file name, whose stem names the layer.
+///
+/// Reads fail until the bytes they need are fetched, and are then run again.
+pub fn read_geoparquet_sparse(
+    file: &crate::sparse::SparseFile,
+    name: &str,
+    row_groups: Option<&[usize]>,
+    bbox: Option<(f64, f64, f64, f64)>,
+) -> crate::Result<Layer> {
+    let stem = std::path::Path::new(name).file_stem().and_then(|s| s.to_str()).unwrap_or("layer");
+    let layer = crate::drivers::vector::geoparquet::read_sparse(file, stem, row_groups, bbox)?;
+    Ok(crate::dataset::fix_layer(layer, name, crate::formats::VectorDriver::Parquet))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

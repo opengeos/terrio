@@ -12,9 +12,14 @@
 //! const points = readPoints(lazBytes, "lidar.laz", { classes: [2] }); // LAS, LAZ, COPC
 //! ```
 
+mod ops;
 mod pointcloud;
+mod remote;
 
 use serde::Deserialize;
+use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
+use std::rc::{Rc, Weak};
 use terrio::crs::{SpatialRef, TransformOptions, Transformer};
 use terrio::formats::{RasterDriver, VectorDriver};
 use terrio::ops::vector_filter::VectorTranslateOptions;
@@ -49,6 +54,15 @@ fn crs_string(crs: &SpatialRef) -> Option<String> {
         Some(code) => Some(format!("EPSG:{code}")),
         None => crs.to_wkt(),
     }
+}
+
+/// Parses an options object (`undefined` or `null` for the defaults).
+pub(crate) fn parse_options<T: serde::de::DeserializeOwned + Default>(options: &JsValue) -> Result<T, JsError> {
+    if options.is_undefined() || options.is_null() {
+        return Ok(T::default());
+    }
+    let text: String = js_sys::JSON::stringify(options).map_err(|_| JsError::new("invalid options"))?.into();
+    serde_json::from_str(&text).map_err(|e| JsError::new(&format!("options: {e}")))
 }
 
 /// Pixels as a typed array of their own type.
@@ -138,10 +152,61 @@ enum Inner {
     Vector(Vec<Layer>, VectorDriver),
 }
 
+thread_local! {
+    /// The datasets alive, by handle: operations given datasets as JavaScript values find them
+    /// here, without taking them from JavaScript.
+    static DATASETS: RefCell<HashMap<u32, Weak<RefCell<Inner>>>> = RefCell::new(HashMap::new());
+    static NEXT_HANDLE: Cell<u32> = const { Cell::new(1) };
+}
+
 /// A raster or vector dataset opened from bytes.
 #[wasm_bindgen]
 pub struct Dataset {
-    inner: Inner,
+    handle: u32,
+    inner: Rc<RefCell<Inner>>,
+}
+
+impl Drop for Dataset {
+    fn drop(&mut self) {
+        DATASETS.with(|d| d.borrow_mut().remove(&self.handle));
+    }
+}
+
+impl Dataset {
+    fn new(inner: Inner) -> Self {
+        let inner = Rc::new(RefCell::new(inner));
+        let handle = NEXT_HANDLE.with(|n| {
+            let h = n.get();
+            n.set(h.wrapping_add(1).max(1));
+            h
+        });
+        DATASETS.with(|d| d.borrow_mut().insert(handle, Rc::downgrade(&inner)));
+        Self { handle, inner }
+    }
+
+    /// A raster dataset in memory.
+    pub(crate) fn from_raster(ds: RasterDataset) -> Self {
+        Self::new(Inner::Raster(LazyRaster::from(ds)))
+    }
+
+    /// A raster read by window.
+    pub(crate) fn from_lazy(r: LazyRaster) -> Self {
+        Self::new(Inner::Raster(r))
+    }
+
+    /// A vector dataset.
+    pub(crate) fn from_layers(layers: Vec<Layer>, driver: VectorDriver) -> Self {
+        Self::new(Inner::Vector(layers, driver))
+    }
+
+    /// The dataset a JavaScript value is, when it is one.
+    pub(crate) fn lookup(value: &JsValue) -> Option<Rc<RefCell<Inner>>> {
+        if !value.is_object() {
+            return None;
+        }
+        let handle = js_sys::Reflect::get(value, &JsValue::from_str("__handle")).ok()?.as_f64()? as u32;
+        DATASETS.with(|d| d.borrow().get(&handle).and_then(Weak::upgrade))
+    }
 }
 
 /// Opens a dataset from its bytes. `filename`'s extension tells the format (`dem.tif`,
@@ -153,14 +218,14 @@ pub struct Dataset {
 pub fn open(bytes: Vec<u8>, filename: &str) -> Result<Dataset, JsError> {
     let is_tiff = matches!(bytes.get(..4), Some(b"II*\0" | b"MM\0*" | b"II+\0" | b"MM\0+"));
     if is_tiff {
-        return Ok(Dataset { inner: Inner::Raster(terrio::memory::open_raster_lazy_bytes(bytes, filename).map_err(js_err)?) });
+        return Ok(Dataset::from_lazy(terrio::memory::open_raster_lazy_bytes(bytes, filename).map_err(js_err)?));
     }
     if terrio::tiles::is_archive(filename) && !terrio::tiles::TileArchive::from_bytes(bytes.clone()).map_err(js_err)?.is_vector() {
-        return Ok(Dataset { inner: Inner::Raster(terrio::memory::open_raster_lazy_bytes(bytes, filename).map_err(js_err)?) });
+        return Ok(Dataset::from_lazy(terrio::memory::open_raster_lazy_bytes(bytes, filename).map_err(js_err)?));
     }
     Ok(match terrio::memory::open_bytes(bytes, filename).map_err(js_err)? {
-        terrio::Dataset::Raster(r) => Dataset { inner: Inner::Raster(LazyRaster::from(r)) },
-        terrio::Dataset::Vector(v) => Dataset { inner: Inner::Vector(v.layers, v.driver) },
+        terrio::Dataset::Raster(r) => Dataset::from_raster(r),
+        terrio::Dataset::Vector(v) => Dataset::from_layers(v.layers, v.driver),
     })
 }
 
@@ -201,7 +266,7 @@ pub fn raster_from_array(
     raster.cell_size_x = g[1];
     raster.cell_size_y = -g[5];
     raster.y_min = g[3] + height as f64 * g[5];
-    Ok(Dataset { inner: Inner::Raster(LazyRaster::from(RasterDataset::new(raster, nodata.is_some()))) })
+    Ok(Dataset::from_raster(RasterDataset::new(raster, nodata.is_some())))
 }
 
 /// Creates a vector dataset from GeoJSON: an object or a JSON string. `crs` is the coordinates'
@@ -216,7 +281,7 @@ pub fn from_geojson(geojson: JsValue, name: Option<String>, crs: Option<String>)
     layer.name = name.unwrap_or_else(|| "layer".into());
     let crs = SpatialRef::parse(crs.as_deref().unwrap_or("EPSG:4326")).map_err(js_err)?;
     crs.apply_to_layer(&mut layer);
-    Ok(Dataset { inner: Inner::Vector(vec![layer], VectorDriver::GeoJSON) })
+    Ok(Dataset::from_layers(vec![layer], VectorDriver::GeoJSON))
 }
 
 /// Creates a vector dataset from an Arrow IPC stream or file (as Apache Arrow JS's
@@ -225,7 +290,7 @@ pub fn from_geojson(geojson: JsValue, name: Option<String>, crs: Option<String>)
 #[wasm_bindgen(js_name = fromArrowIPC)]
 pub fn from_arrow_ipc(bytes: Vec<u8>, name: Option<String>) -> Result<Dataset, JsError> {
     let layer = terrio::arrow::from_ipc(&bytes, name.as_deref().unwrap_or("layer")).map_err(js_err)?;
-    Ok(Dataset { inner: Inner::Vector(vec![layer], VectorDriver::GeoJSON) })
+    Ok(Dataset::from_layers(vec![layer], VectorDriver::GeoJSON))
 }
 
 #[wasm_bindgen]
@@ -233,37 +298,38 @@ impl Dataset {
     /// `"raster"` or `"vector"`.
     #[wasm_bindgen(getter)]
     pub fn kind(&self) -> String {
-        match self.inner {
+        match &*self.inner.borrow() {
             Inner::Raster(_) => "raster".into(),
             Inner::Vector(..) => "vector".into(),
         }
     }
 
-    fn raster(&self) -> Result<&LazyRaster, JsError> {
-        match &self.inner {
-            Inner::Raster(r) => Ok(r),
-            Inner::Vector(..) => Err(JsError::new("the dataset is a vector dataset, not a raster")),
-        }
+    /// The handle operations find the dataset by.
+    #[wasm_bindgen(getter, js_name = __handle, skip_typescript)]
+    pub fn handle(&self) -> u32 {
+        self.handle
     }
 
-    fn raster_mut(&mut self) -> Result<&mut LazyRaster, JsError> {
-        match &mut self.inner {
-            Inner::Raster(r) => Ok(r),
-            Inner::Vector(..) => Err(JsError::new("the dataset is a vector dataset, not a raster")),
-        }
+    fn raster(&self) -> Result<std::cell::RefMut<'_, LazyRaster>, JsError> {
+        std::cell::RefMut::filter_map(self.inner.borrow_mut(), |i| match i {
+            Inner::Raster(r) => Some(r),
+            Inner::Vector(..) => None,
+        })
+        .map_err(|_| JsError::new("the dataset is a vector dataset, not a raster"))
     }
 
-    fn layers(&self) -> Result<&[Layer], JsError> {
-        match &self.inner {
-            Inner::Vector(l, _) => Ok(l),
-            Inner::Raster(_) => Err(JsError::new("the dataset is a raster, not a vector dataset")),
-        }
+    fn layers(&self) -> Result<std::cell::Ref<'_, [Layer]>, JsError> {
+        std::cell::Ref::filter_map(self.inner.borrow(), |i| match i {
+            Inner::Vector(l, _) => Some(l.as_slice()),
+            Inner::Raster(_) => None,
+        })
+        .map_err(|_| JsError::new("the dataset is a raster, not a vector dataset"))
     }
 
     /// The summary `terrio info --json` prints, as an object.
-    pub fn info(&mut self, stats: Option<bool>) -> Result<JsValue, JsError> {
+    pub fn info(&self, stats: Option<bool>) -> Result<JsValue, JsError> {
         let options = terrio::info::InfoOptions { statistics: stats.unwrap_or(false), histogram: false };
-        match &mut self.inner {
+        match &mut *self.inner.borrow_mut() {
             Inner::Raster(r) => {
                 let info = terrio::info::lazy_raster_info(r, &options).map_err(js_err)?;
                 to_js(&terrio::info::Info::Raster(Box::new(info)))
@@ -309,7 +375,7 @@ impl Dataset {
     /// datasets, the first layer's.
     #[wasm_bindgen(getter)]
     pub fn crs(&self) -> Option<String> {
-        match &self.inner {
+        match &*self.inner.borrow() {
             Inner::Raster(r) => crs_string(&r.crs()),
             Inner::Vector(l, _) => l.first().and_then(|l| crs_string(&SpatialRef::from_layer(l))),
         }
@@ -331,8 +397,8 @@ impl Dataset {
     /// `Uint8Array`...), row after row. `window` is `[col_off, row_off, width, height]` (in the
     /// overview's pixels with `overview`, numbered from 0); by default, the whole image.
     #[wasm_bindgen(js_name = readBand)]
-    pub fn read_band(&mut self, band: usize, window: Option<Vec<usize>>, overview: Option<usize>) -> Result<JsValue, JsError> {
-        let r = self.raster_mut()?;
+    pub fn read_band(&self, band: usize, window: Option<Vec<usize>>, overview: Option<usize>) -> Result<JsValue, JsError> {
+        let mut r = self.raster()?;
         let window = match window.as_deref() {
             Some(&[x, y, w, h]) => Window::new(x, y, w, h),
             Some(_) => return Err(JsError::new("window is [col_off, row_off, width, height]")),
@@ -355,15 +421,18 @@ impl Dataset {
     }
 
     /// A vector layer: by name or position, the first by default.
-    fn layer(&self, layer: &JsValue) -> Result<&terrio::Layer, JsError> {
+    fn layer(&self, layer: &JsValue) -> Result<std::cell::Ref<'_, terrio::Layer>, JsError> {
         let layers = self.layers()?;
-        if let Some(name) = layer.as_string() {
-            layers.iter().find(|l| l.name == name).ok_or_else(|| JsError::new(&format!("no layer named {name}")))
+        let index = if let Some(name) = layer.as_string() {
+            layers.iter().position(|l| l.name == name).ok_or_else(|| JsError::new(&format!("no layer named {name}")))?
         } else if let Some(i) = layer.as_f64() {
-            layers.get(i as usize).ok_or_else(|| JsError::new(&format!("no layer {i}")))
+            Some(i as usize).filter(|&i| i < layers.len()).ok_or_else(|| JsError::new(&format!("no layer {i}")))?
+        } else if layers.is_empty() {
+            return Err(JsError::new("no layers"));
         } else {
-            layers.first().ok_or_else(|| JsError::new("no layers"))
-        }
+            0
+        };
+        Ok(std::cell::Ref::map(layers, |l| &l[index]))
     }
 
     /// A vector layer (by name or position, the first by default) as a GeoJSON FeatureCollection
@@ -371,7 +440,7 @@ impl Dataset {
     #[wasm_bindgen(js_name = toGeoJSON)]
     pub fn to_geojson(&self, layer: JsValue) -> Result<JsValue, JsError> {
         let l = self.layer(&layer)?;
-        js_sys::JSON::parse(&wbvector::geojson::to_string(l)).map_err(|_| JsError::new("invalid GeoJSON"))
+        js_sys::JSON::parse(&wbvector::geojson::to_string(&l)).map_err(|_| JsError::new("invalid GeoJSON"))
     }
 
     /// A vector layer (by name or position, the first by default) as an Arrow IPC stream, with
@@ -396,7 +465,7 @@ impl Dataset {
         if let Some(c) = get("coordinates") {
             o.coordinates = terrio::arrow::CoordinateLayout::parse(&c).map_err(js_err)?;
         }
-        terrio::arrow::to_ipc_stream(l, &o).map_err(js_err)
+        terrio::arrow::to_ipc_stream(&l, &o).map_err(js_err)
     }
 
     /// Writes the dataset in a format, to bytes: the format of `filename`'s extension, or
@@ -404,15 +473,10 @@ impl Dataset {
     /// `where`, `select` and `limit`, for rasters `srcwin`, `overview`, `bands`, `compress` and
     /// `tileSize`.
     #[wasm_bindgen(js_name = toBytes)]
-    pub fn to_bytes(&mut self, filename: &str, options: JsValue) -> Result<Vec<u8>, JsError> {
-        let o: WriteOptions = if options.is_undefined() || options.is_null() {
-            WriteOptions::default()
-        } else {
-            let text: String = js_sys::JSON::stringify(&options).map_err(|_| JsError::new("invalid options"))?.into();
-            serde_json::from_str(&text).map_err(|e| JsError::new(&format!("options: {e}")))?
-        };
+    pub fn to_bytes(&self, filename: &str, options: JsValue) -> Result<Vec<u8>, JsError> {
+        let o: WriteOptions = parse_options(&options)?;
         let t_srs = o.t_srs.as_deref().map(SpatialRef::parse).transpose().map_err(js_err)?;
-        match &mut self.inner {
+        match &mut *self.inner.borrow_mut() {
             Inner::Raster(r) => {
                 if o.layers.is_some() || o.r#where.is_some() || o.select.is_some() || o.limit.is_some() {
                     return Err(JsError::new("layers, where, select and limit apply to vector datasets"));
@@ -500,12 +564,7 @@ pub fn transform_points(
     if xs.len() != ys.len() || zs.as_ref().is_some_and(|z| z.len() != xs.len()) {
         return Err(JsError::new("xs, ys and zs differ in length"));
     }
-    let o: TransformPointsOptions = if options.is_undefined() || options.is_null() {
-        TransformPointsOptions::default()
-    } else {
-        let text: String = js_sys::JSON::stringify(&options).map_err(|_| JsError::new("invalid options"))?.into();
-        serde_json::from_str(&text).map_err(|e| JsError::new(&format!("options: {e}")))?
-    };
+    let o: TransformPointsOptions = parse_options(&options)?;
     let src = SpatialRef::parse(src_crs).map_err(js_err)?;
     let dst = SpatialRef::parse(dst_crs).map_err(js_err)?;
     let opts = TransformOptions { source_coordinate_epoch: o.s_coord_epoch, target_coordinate_epoch: o.t_coord_epoch };

@@ -45,7 +45,7 @@ mod write;
 pub use copc::{CopcInfo, CopcNode, VoxelKey};
 pub use ept::{EptDimension, EptInfo};
 pub use las::{ExtraBytes, LasHeader, Vlr, standard_value_type};
-pub use read::{DEFAULT_CHUNK_POINTS, PointChunks, PointCloudReader, open_points, open_points_bytes};
+pub use read::{DEFAULT_CHUNK_POINTS, PointChunks, PointCloudReader, open_points, open_points_bytes, open_points_sparse};
 pub use values::{Dimension, ValueType, Values};
 pub use waveform::{WavePacketDescriptor, Waveform};
 pub use write::{PlyEncoding, PointFormat, PointWriteOptions, PointWriter, from_dimensions, write_points, write_points_bytes};

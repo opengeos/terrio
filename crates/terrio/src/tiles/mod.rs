@@ -309,6 +309,19 @@ impl TileArchive {
         Ok(Self { inner: Inner::Pm(Box::new(pmtiles::Reader::open(ByteSource::Memory(bytes))?)), _local: None })
     }
 
+    /// Opens a remote PMTiles archive whose bytes the caller fetches (see [`crate::sparse`]):
+    /// reads fail until the bytes they need are fetched, and are then run again.
+    pub fn from_sparse(file: crate::sparse::SparseFile) -> Result<Self> {
+        Ok(Self { inner: Inner::Pm(Box::new(pmtiles::Reader::open(ByteSource::Sparse(file))?)), _local: None })
+    }
+
+    /// The archive as a dataset: a raster for image tiles (at the zoom level of `options.tiles`),
+    /// vector layers for vector tiles (those of `options.layers`, from the tiles that intersect
+    /// `options.spatial_filter`, in EPSG:3857). `name` is the archive's file name.
+    pub fn into_dataset(self, name: &str, options: &crate::VectorOpenOptions) -> Result<crate::Dataset> {
+        archive_dataset(self, name, options)
+    }
+
     /// PMTiles or MBTiles.
     pub fn kind(&self) -> ArchiveKind {
         match self.inner {
@@ -320,6 +333,11 @@ impl TileArchive {
     /// Whether the archive is read in place from a remote file.
     pub fn is_remote(&self) -> bool {
         matches!(&self.inner, Inner::Pm(r) if r.is_remote())
+    }
+
+    /// Whether the archive is read from a remote file whose bytes the caller fetches.
+    pub(crate) fn is_sparse(&self) -> bool {
+        matches!(&self.inner, Inner::Pm(r) if r.is_sparse())
     }
 
     /// The tiles' format.

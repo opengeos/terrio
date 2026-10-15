@@ -1125,6 +1125,7 @@ pub(crate) fn is_sorted_pbf(input: &mut dyn PbfInput) -> bool {
 }
 
 /// The schemas of GDAL's five layers (no features).
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn layer_schemas() -> Vec<Layer> {
     SPECS.iter().map(Spec::layer).collect()
 }

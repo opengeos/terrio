@@ -20,6 +20,8 @@ pub(crate) enum Source {
     Memory(Cursor<Vec<u8>>),
     #[cfg(not(target_arch = "wasm32"))]
     Http(crate::http::RangeReader),
+    /// A remote file whose bytes the caller fetches (see [`crate::sparse`]).
+    Sparse(crate::sparse::SparseFile),
 }
 
 impl Read for Source {
@@ -29,6 +31,7 @@ impl Read for Source {
             Source::Memory(c) => c.read(buf),
             #[cfg(not(target_arch = "wasm32"))]
             Source::Http(h) => h.read(buf),
+            Source::Sparse(s) => s.read(buf),
         }
     }
 }
@@ -40,6 +43,7 @@ impl Seek for Source {
             Source::Memory(c) => c.seek(pos),
             #[cfg(not(target_arch = "wasm32"))]
             Source::Http(h) => h.seek(pos),
+            Source::Sparse(s) => s.seek(pos),
         }
     }
 }
@@ -51,7 +55,9 @@ impl Source {
         if let Source::Http(h) = self {
             h.prefetch(ranges)?;
         }
-        let _ = ranges;
+        if let Source::Sparse(s) = self {
+            s.prefetch(ranges)?;
+        }
         Ok(())
     }
 
@@ -69,6 +75,9 @@ impl Source {
         if let Source::Http(h) = self {
             return Some(h.len());
         }
+        if let Source::Sparse(s) = self {
+            return Some(s.len());
+        }
         None
     }
 
@@ -78,7 +87,12 @@ impl Source {
         if let Source::Http(_) = self {
             return true;
         }
-        false
+        matches!(self, Source::Sparse(_))
+    }
+
+    /// Whether the caller fetches the bytes: reads fail until it has, and are run again.
+    pub(crate) fn is_sparse(&self) -> bool {
+        matches!(self, Source::Sparse(_))
     }
 
     /// An empty source, to stand in for one moved elsewhere for a while.
@@ -256,6 +270,18 @@ pub fn open_points_bytes(bytes: Vec<u8>, name: &str) -> Result<PointCloudReader>
         let header = LasHeader::read(&mut source)?;
         Box::new(LasReader::new(source, header, None, None)?)
     };
+    Ok(PointCloudReader { inner, name: name.to_string() })
+}
+
+/// Opens a remote COPC file whose bytes the caller fetches (see [`crate::sparse`]): reads fail
+/// until the bytes they need are fetched, and are then run again. `name` is the file name.
+pub fn open_points_sparse(file: crate::sparse::SparseFile, name: &str) -> Result<PointCloudReader> {
+    let mut source = Source::Sparse(file);
+    let header = LasHeader::read(&mut source)?;
+    if !Copc::is_copc(&header) {
+        return Err(Error::Unsupported(format!("'{name}' is not a COPC file: only COPC point clouds are read in place")));
+    }
+    let inner: Box<dyn FormatReader> = Box::new(LasReader::new(source, header, None, None)?);
     Ok(PointCloudReader { inner, name: name.to_string() })
 }
 

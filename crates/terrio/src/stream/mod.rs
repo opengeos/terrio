@@ -191,7 +191,7 @@ pub fn open_layers(path: &str, options: &VectorOpenOptions, batch: usize) -> Res
         VectorDriver::Shapefile => open_shapefile(path)?,
         VectorDriver::FlatGeobuf => open_fgb(path, batch)?,
         _ => {
-            let s = geoparquet::ParquetStream::open(|| Ok(File::open(path)?), stem, options.spatial_filter, batch)?;
+            let s = geoparquet::ParquetStream::open(|| Ok(File::open(path)?), stem, None, options.spatial_filter, batch, None)?;
             (s.layer.clone(), Box::new(ParquetSource(s)))
         }
     };

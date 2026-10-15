@@ -13,6 +13,8 @@ pub(crate) enum ByteSource {
     /// A remote file.
     #[cfg(not(target_arch = "wasm32"))]
     Http(crate::http::RangeReader),
+    /// A remote file whose bytes the caller fetches (see [`crate::sparse`]).
+    Sparse(crate::sparse::SparseFile),
 }
 
 impl ByteSource {
@@ -48,6 +50,7 @@ impl ByteSource {
             ByteSource::File(_, len) => *len,
             #[cfg(not(target_arch = "wasm32"))]
             ByteSource::Http(r) => r.len(),
+            ByteSource::Sparse(s) => s.len(),
         }
     }
 
@@ -57,7 +60,7 @@ impl ByteSource {
         if matches!(self, ByteSource::Http(_)) {
             return true;
         }
-        false
+        matches!(self, ByteSource::Sparse(_))
     }
 
     /// Reads `len` bytes at `offset`.
@@ -87,15 +90,23 @@ impl ByteSource {
                 r.read_exact(&mut buf)?;
                 Ok(buf)
             }
+            ByteSource::Sparse(s) => {
+                if offset.checked_add(len).is_none_or(|e| e > s.len()) {
+                    return Err(bad());
+                }
+                Ok(s.read_exact_at(offset, len as usize)?)
+            }
         }
     }
 
     /// Fetches byte ranges `(offset, length)` ahead of reading them, merging nearby ones.
-    #[cfg_attr(target_arch = "wasm32", allow(unused_variables))]
     pub(crate) fn prefetch(&mut self, ranges: &[(u64, u64)]) -> Result<()> {
         #[cfg(not(target_arch = "wasm32"))]
         if let ByteSource::Http(r) = self {
             r.prefetch(ranges)?;
+        }
+        if let ByteSource::Sparse(s) = self {
+            s.prefetch(ranges)?;
         }
         Ok(())
     }

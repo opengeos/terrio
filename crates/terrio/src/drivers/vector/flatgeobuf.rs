@@ -37,8 +37,14 @@ pub(crate) struct FgbHeader {
     has_z: bool,
     has_m: bool,
     columns: Vec<ColumnType>,
+    /// The number of features (0 when the writer did not know it).
+    features_count: u64,
+    /// The node size of the packed R-tree spatial index, 0 without one.
+    index_node_size: u16,
+    /// The extent `[min_x, min_y, max_x, max_y]`, when the header has it.
+    extent: Option<[f64; 4]>,
     /// The size of the spatial index following the header, in bytes.
-    pub index_size: usize,
+    pub index_size: u64,
 }
 
 /// The length of the header (magic bytes and size-prefixed header) from the first 12 bytes of
@@ -84,14 +90,15 @@ pub(crate) fn parse_header(buf: &[u8]) -> Result<(Layer, FgbHeader)> {
         layer.add_field(def);
     }
     let count = header.features_count();
-    let index_size =
-        if header.index_node_size() > 0 && count > 0 { PackedRTree::index_size(count as usize, header.index_node_size()) } else { 0 };
     let meta = FgbHeader {
         geometry_type: header.geometry_type(),
         has_z: header.has_z(),
         has_m: header.has_m(),
         columns: columns.iter().map(|c| c.type_()).collect(),
-        index_size,
+        features_count: count,
+        index_node_size: header.index_node_size(),
+        extent: header.envelope().filter(|e| e.len() >= 4).map(|e| [e.get(0), e.get(1), e.get(2), e.get(3)]),
+        index_size: index_size(count, header.index_node_size()),
     };
     Ok((layer, meta))
 }
@@ -107,10 +114,48 @@ pub(crate) fn decode_feature(fbuf: &[u8], h: &FgbHeader, fid: u64) -> Result<Fea
     Ok(Feature { fid, geometry, attributes })
 }
 
+/// The size in bytes of the packed R-tree of `count` features, 0 without one. Computed in 64
+/// bits, so that it does not overflow in 32-bit WebAssembly.
+fn index_size(count: u64, node_size: u16) -> u64 {
+    level_bounds(count, node_size).first().map_or(0, |l| l.1 * NODE_ITEM_LEN)
+}
+
+/// The size of an index node item: a bounding box and an offset.
+const NODE_ITEM_LEN: u64 = 40;
+
+/// The node ranges `[start, end)` of each level of a packed R-tree, the leaves first, as the
+/// FlatGeobuf specification lays them out (the root first in the file).
+fn level_bounds(count: u64, node_size: u16) -> Vec<(u64, u64)> {
+    if count == 0 || node_size < 2 {
+        return Vec::new();
+    }
+    let ns = node_size as u64;
+    let mut n = count;
+    let mut level_counts = vec![n];
+    // At least two levels, as the reference implementation lays out one feature.
+    loop {
+        n = n.div_ceil(ns);
+        level_counts.push(n);
+        if n == 1 {
+            break;
+        }
+    }
+    let total: u64 = level_counts.iter().sum();
+    // Levels from the root down start at the file's first node; the leaves are last.
+    let mut out = Vec::with_capacity(level_counts.len());
+    let mut end = total;
+    for c in &level_counts {
+        out.push((end - c, end));
+        end -= c;
+    }
+    out
+}
+
 /// Parses a FlatGeobuf file held in memory.
 pub fn parse(buf: &[u8]) -> Result<Layer> {
     let (mut layer, h) = parse_header(buf)?;
-    let mut pos = header_len(buf)? + h.index_size;
+    let index_size = usize::try_from(h.index_size).map_err(|_| bad("an index too large for this platform"))?;
+    let mut pos = header_len(buf)? + index_size;
     let mut fid = 0u64;
     while pos + 4 <= buf.len() {
         let len = u32::from_le_bytes([buf[pos], buf[pos + 1], buf[pos + 2], buf[pos + 3]]) as usize;
@@ -120,6 +165,170 @@ pub fn parse(buf: &[u8]) -> Result<Layer> {
         fid += 1;
     }
     Ok(layer)
+}
+
+/// What a FlatGeobuf header says about the file.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct FlatGeobufInfo {
+    /// The layer name.
+    pub name: String,
+    /// The number of features (0 when the writer did not know it).
+    pub feature_count: u64,
+    /// The extent `[min_x, min_y, max_x, max_y]`, when the header has it.
+    pub extent: Option<[f64; 4]>,
+    /// The node size of the packed R-tree spatial index, 0 without one.
+    pub index_node_size: u16,
+    /// The size of the header (magic bytes included).
+    pub header_size: u64,
+    /// The size of the spatial index.
+    pub index_size: u64,
+}
+
+/// Reads a FlatGeobuf file's header, and the features whose bounding box intersects `bbox`
+/// `(min_x, min_y, max_x, max_y)`, found with the packed R-tree spatial index: only the index
+/// nodes on the way and those features are read. All features without a filter (or without an
+/// index). Feature ids are the features' positions in the file, as in GDAL.
+///
+/// `prefetch` is told the byte ranges `(offset, length)` about to be read: the index nodes of a
+/// level, then the features (see [`crate::sparse`]). Offsets are 64-bit throughout, so that
+/// files larger than 4 GB are read in 32-bit WebAssembly too.
+pub fn read_filtered<R: std::io::Read + std::io::Seek>(
+    r: &mut R,
+    file_len: u64,
+    bbox: Option<(f64, f64, f64, f64)>,
+    prefetch: crate::sparse::Prefetch<'_>,
+) -> Result<(FlatGeobufInfo, Layer)> {
+    read_impl(r, file_len, bbox, false, prefetch)
+}
+
+/// Reads a FlatGeobuf file's header, and the layer it describes, without features.
+pub fn read_header<R: std::io::Read + std::io::Seek>(r: &mut R, file_len: u64) -> Result<(FlatGeobufInfo, Layer)> {
+    read_impl(r, file_len, None, true, &|_| Ok(()))
+}
+
+fn read_impl<R: std::io::Read + std::io::Seek>(
+    r: &mut R,
+    file_len: u64,
+    bbox: Option<(f64, f64, f64, f64)>,
+    header_only: bool,
+    prefetch: crate::sparse::Prefetch<'_>,
+) -> Result<(FlatGeobufInfo, Layer)> {
+    use std::io::SeekFrom;
+    let mut read_at = |offset: u64, len: u64| -> Result<Vec<u8>> {
+        r.seek(SeekFrom::Start(offset))?;
+        let mut b = vec![0u8; usize::try_from(len).map_err(|_| bad("a read too large for this platform"))?];
+        r.read_exact(&mut b)?;
+        Ok(b)
+    };
+    let start = read_at(0, 12.min(file_len))?;
+    let hlen = header_len(&start)? as u64;
+    let (mut layer, header) = parse_header(&read_at(0, hlen)?)?;
+    let count = header.features_count;
+    let node_size = header.index_node_size;
+    let index_start = hlen;
+    let isize = header.index_size;
+    let data_start = index_start + isize;
+    let info = FlatGeobufInfo {
+        name: layer.name.clone(),
+        feature_count: count,
+        extent: header.extent,
+        index_node_size: node_size,
+        header_size: index_start,
+        index_size: isize,
+    };
+    if header_only {
+        return Ok((info, layer));
+    }
+
+    // The features to read: (fid, offset in the data section, end offset or None for the file's
+    // end).
+    let mut wanted: Vec<(u64, u64, Option<u64>)> = Vec::new();
+    match bbox {
+        Some((x0, y0, x1, y1)) if isize > 0 => {
+            let levels = level_bounds(count, node_size);
+            let (leaf_start, leaf_end) = levels[0];
+            let ns = node_size as u64;
+            // Nodes to visit at the current level: (first node, end), read a level at a time.
+            let root = *levels.last().unwrap_or(&(0, 1));
+            let mut current: Vec<(u64, u64)> = vec![root];
+            for level in (0..levels.len()).rev() {
+                let is_leaf = level == 0;
+                // Leaves are read with the next item, whose offset ends the last feature found.
+                let ranges: Vec<(u64, u64)> = current
+                    .iter()
+                    .map(|&(a, b)| {
+                        let b = if is_leaf { (b + 1).min(leaf_end) } else { b };
+                        (index_start + a * NODE_ITEM_LEN, (b - a) * NODE_ITEM_LEN)
+                    })
+                    .collect();
+                prefetch(&ranges)?;
+                let mut next = Vec::new();
+                for (&(a, b), &(off, len)) in current.iter().zip(&ranges) {
+                    let bytes = read_at(off, len)?;
+                    let item = |k: usize| -> (f64, f64, f64, f64, u64) {
+                        let c = &bytes[k * 40..k * 40 + 40];
+                        let f = |i: usize| f64::from_le_bytes(c[i * 8..i * 8 + 8].try_into().unwrap_or_default());
+                        (f(0), f(1), f(2), f(3), u64::from_le_bytes(c[32..40].try_into().unwrap_or_default()))
+                    };
+                    for k in 0..(b - a) as usize {
+                        let (nx0, ny0, nx1, ny1, offset) = item(k);
+                        if nx0 > x1 || ny0 > y1 || nx1 < x0 || ny1 < y0 {
+                            continue;
+                        }
+                        if is_leaf {
+                            let fid = a + k as u64 - leaf_start;
+                            let end = ((k + 1) * 40 < bytes.len()).then(|| item(k + 1).4);
+                            wanted.push((fid, offset, end));
+                        } else {
+                            // `offset` is the index of the child node's first item.
+                            let child_level = levels[level - 1];
+                            next.push((offset, (offset + ns).min(child_level.1)));
+                        }
+                    }
+                }
+                // Merge adjacent nodes into runs, to read them together.
+                next.sort_unstable();
+                let mut merged: Vec<(u64, u64)> = Vec::new();
+                for (a, b) in next {
+                    match merged.last_mut() {
+                        Some(last) if last.1 == a => last.1 = b,
+                        _ => merged.push((a, b)),
+                    }
+                }
+                current = merged;
+                if current.is_empty() {
+                    break;
+                }
+            }
+            wanted.sort_unstable_by_key(|w| w.1);
+        }
+        _ => {
+            // Every feature, in order: read the data section whole.
+            let data = read_at(data_start, file_len.saturating_sub(data_start))?;
+            let mut pos = 0usize;
+            let mut fid = 0u64;
+            while pos + 4 <= data.len() {
+                let len = u32::from_le_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]]) as usize;
+                let fbuf = data.get(pos..pos + 4 + len).ok_or_else(|| bad("truncated feature"))?;
+                pos += 4 + len;
+                layer.push(decode_feature(fbuf, &header, fid)?);
+                fid += 1;
+            }
+            return Ok((info, layer));
+        }
+    }
+    let ranges: Vec<(u64, u64)> = wanted
+        .iter()
+        .map(|&(_, off, end)| (data_start + off, end.map_or(file_len - (data_start + off), |e| e.saturating_sub(off))))
+        .collect();
+    prefetch(&ranges)?;
+    for (&(fid, ..), &(off, _)) in wanted.iter().zip(&ranges) {
+        let size = read_at(off, 4)?;
+        let len = u32::from_le_bytes([size[0], size[1], size[2], size[3]]) as u64;
+        let fbuf = read_at(off, 4 + len)?;
+        layer.push(decode_feature(&fbuf, &header, fid)?);
+    }
+    Ok((info, layer))
 }
 
 fn from_fgb_type(t: FgbType) -> Option<GeometryType> {

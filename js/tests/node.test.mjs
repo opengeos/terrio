@@ -454,3 +454,340 @@ test("COPC files read by octree level", { skip: !DATA && "TERRIO_TEST_DATA is no
   assert.equal(laz.length, 110000);
   assert.equal(laz.get("x")[0], 637177.98);
 });
+
+// ─── Operations ─────────────────────────────────────────────────────────────────────────────────
+
+const SKIP_DATA = !DATA && "TERRIO_TEST_DATA is not set";
+
+/// Compares a raster with a GDAL-written reference: size, geotransform, pixel type, nodata and
+/// pixels (identical, NaN equal to NaN, or within `tol`).
+function sameRaster(got, refPath, { tol = 0, nodata = true } = {}) {
+  const ref = terrio.open(readFileSync(refPath), refPath.split("/").pop());
+  assert.deepEqual([got.width, got.height, got.count], [ref.width, ref.height, ref.count], refPath);
+  assert.equal(got.dtype, ref.dtype, refPath);
+  got.transform.forEach((v, i) => assert.ok(Math.abs(v - ref.transform[i]) <= 1e-9 * Math.max(1, Math.abs(v)), `${refPath}: transform ${got.transform} != ${ref.transform}`));
+  // Float32 nodata values as GDAL writes them (3.402823466e+38 for the largest).
+  const same = (a, b) => a === b || (got.dtype === "float32" && a !== undefined && b !== undefined && Math.fround(a) === Math.fround(b));
+  if (nodata) assert.ok(same(got.nodata, ref.nodata), `${refPath}: nodata ${got.nodata} != ${ref.nodata}`);
+  for (let b = 1; b <= ref.count; b++) {
+    const a = got.readBand(b);
+    const r = ref.readBand(b);
+    let diff = 0;
+    for (let i = 0; i < r.length; i++) {
+      const x = a[i];
+      const y = r[i];
+      if (x === y || (x !== x && y !== y)) continue;
+      if (tol > 0 && Math.abs(Number(x) - Number(y)) <= tol) continue;
+      diff++;
+    }
+    assert.equal(diff, 0, `${refPath}: band ${b}, ${diff} of ${r.length} pixels differ`);
+  }
+}
+
+test("operations on in-memory rasters and layers", () => {
+  const data = new Float32Array(20 * 10).map((_, i) => (i % 20) * 10 + Math.floor(i / 20));
+  const dem = terrio.rasterFromArray(data, 20, 10, [500000, 30, 0, 4100000, 0, -30], "EPSG:32610", -9999);
+  const warped = terrio.warp(dem, { tSrs: "EPSG:4326", resampling: "bilinear" });
+  assert.equal(warped.crs, "EPSG:4326");
+  const t = terrio.translate(dem, { srcwin: [2, 3, 5, 4], ot: "Int16" });
+  assert.deepEqual([t.width, t.height, t.dtype], [5, 4, "int16"]);
+  assert.equal(t.readBand(1)[0], 23);
+  const half = terrio.translate(dem, { outsize: ["50%", "50%"] });
+  assert.deepEqual([half.width, half.height], [10, 5]);
+  const hs = terrio.dem(dem, "hillshade", { z: 2 });
+  assert.equal(hs.dtype, "uint8");
+  const relief = terrio.dem(dem, "color-relief", { colorTable: "0 0 0 255\n300 255 0 0\n", alpha: true });
+  assert.equal(relief.count, 4);
+  const sum = terrio.calc("A + B * 2", { A: dem, B: dem }, { type: "Float32" });
+  assert.equal(sum.readBand(1)[21], data[21] * 3);
+  assert.throws(() => terrio.calc("A", { A: dem }, { bands: { Z: 1 } }), /not an input/);
+  const parts = [terrio.translate(dem, { srcwin: [0, 0, 10, 10] }), terrio.translate(dem, { srcwin: [10, 0, 10, 10] })];
+  const merged = terrio.mosaic(parts, {});
+  assert.deepEqual([...merged.readBand(1)], [...dem.readBand(1)]);
+  // Bytes as inputs, and the input left usable.
+  const fromBytes = terrio.warp([dem.toBytes("a.tif"), dem], { tSrs: "EPSG:32610" });
+  assert.equal(fromBytes.width, 20);
+  assert.equal(dem.width, 20);
+
+  const mask = terrio.calc("A > 150", { A: dem }, { type: "Byte", nodata: "none" });
+  const prox = terrio.proximity(mask, { distunits: "GEO" });
+  assert.equal(prox.dtype, "float32");
+  const sieved = terrio.sieve(mask, { threshold: 3, connectedness: 8 });
+  assert.equal(sieved.width, 20);
+  const polys = terrio.polygonize(mask, { field: "v" });
+  assert.equal(polys.kind, "vector");
+  const fc = polys.toGeoJSON();
+  assert.ok(fc.features.length >= 2);
+  assert.ok("v" in fc.features[0].properties);
+  // Rasterize GeoJSON, a dataset or bytes; cut a raster with GeoJSON polygons.
+  const squares = terrio.fromGeoJSON(SQUARES);
+  for (const src of [SQUARES, squares, squares.toBytes("s.fgb")]) {
+    const r = terrio.rasterize(src, { attribute: "value", tr: [1, 1], te: [0, 0, 30, 10], ot: "Byte" });
+    assert.deepEqual([r.width, r.height], [30, 10]);
+    assert.equal(r.readBand(1)[0], 3);
+    assert.equal(r.readBand(1)[29], 7);
+  }
+  const like = terrio.rasterize(SQUARES, { burn: [5], like: terrio.rasterize(SQUARES, { burn: 1, ts: [60, 20] }) });
+  assert.deepEqual([like.width, like.height], [60, 20]);
+  const cut = terrio.warp(terrio.rasterize(SQUARES, { burn: 1, tr: [1, 1], te: [0, 0, 30, 10], ot: "Byte", init: 9 }), {
+    cutline: { type: "Polygon", coordinates: [[[0, 0], [5, 0], [5, 5], [0, 5], [0, 0]]] },
+    cropToCutline: true,
+  });
+  assert.deepEqual([cut.width, cut.height], [5, 5]);
+  assert.throws(() => terrio.warp(dem, { unknown: 1 }), /unknown field/);
+  assert.throws(() => terrio.dem(dem, "color-relief"), /colorTable/);
+  assert.throws(() => terrio.translate(squares, {}), /vector dataset/);
+});
+
+const GDAL_OPS = [
+  ["translate srcwin", "translate_srcwin.tif", (r) => terrio.translate(r("usgs_dem.tif"), { srcwin: [100, 200, 500, 400] })],
+  ["translate outsize", "translate_outsize.tif", (r) => terrio.translate(r("las_vegas_dem.tif"), { outsize: ["25%", "25%"] })],
+  ["translate bands and type", "translate_bands.tif", (r) => terrio.translate(r("landsat.tif"), { bands: [3, 1], ot: "Int16" })],
+  ["translate scale", "translate_scale.tif", (r) => terrio.translate(r("usgs_dem.tif"), { ot: "Byte", scale: [1000, 4000, 0, 255] })],
+  ["warp to EPSG:4326 with nodata", "warp_4326.tif", (r) => terrio.warp(r("las_vegas_dem.tif"), { tSrs: "EPSG:4326", srcNodata: 0, dstNodata: -1 })],
+  ["warp to EPSG:3857", "warp_3857.tif", (r) => terrio.warp(r("usgs_dem.tif"), { tSrs: "EPSG:3857" })],
+  [
+    "warp with a cutline",
+    "warp_cutline.tif",
+    (r) => terrio.warp(r("las_vegas_dem.tif"), { cutline: JSON.parse(readFileSync(join(DATA, "wasm_refs", "cutline.geojson"), "utf8")), cropToCutline: true, dstNodata: -9999 }),
+  ],
+  ["mosaic", "mosaic.tif", (r) => terrio.mosaic([r("wasm_refs/part2.tif"), r("wasm_refs/part1.tif")])],
+  ...["hillshade", "slope", "aspect", "TRI", "TPI", "roughness"].map((m) => [`dem ${m}`, `dem_${m}.tif`, (r) => terrio.dem(r("srtm_sub.tif"), m)]),
+  ["dem multidirectional hillshade", "dem_hillshade_multi.tif", (r) => terrio.dem(r("srtm_sub.tif"), "hillshade", { multidirectional: true, computeEdges: true })],
+  ["dem slope ZevenbergenThorne", "dem_slope_zt.tif", (r) => terrio.dem(r("srtm_sub.tif"), "slope", { percent: true, alg: "ZevenbergenThorne" })],
+  ["dem color relief", "dem_color.tif", (r) => terrio.dem(r("srtm_sub.tif"), "color-relief", { colorTable: readFileSync(join(DATA, "wasm_refs", "colors.txt"), "utf8"), alpha: true })],
+  [
+    "calc NDVI",
+    "calc_ndvi.tif",
+    (r) => {
+      const l = r("landsat.tif");
+      return terrio.calc("(B.astype(float32) - A) / (B.astype(float32) + A)", { A: l, B: l }, { bands: { A: 3, B: 4 }, type: "Float32" });
+    },
+  ],
+  ["calc Int16 wrap-around", "calc_wrap.tif", (r) => terrio.calc("A * 20", { A: r("srtm_sub.tif") })],
+  ["proximity", "proximity.tif", (r) => terrio.proximity(r("nlcd_knoxville.tif"), { values: [11] })],
+  ["sieve", "sieve.tif", (r) => terrio.sieve(r("nlcd_knoxville.tif"), { threshold: 10 })],
+  ["rasterize burn", "rasterize_burn.tif", (r) => terrio.rasterize(readFileSync(join(DATA, "countries.geojson")), { burn: 1, tr: [0.1, 0.1], ot: "Byte" })],
+  ["rasterize attribute", "rasterize_attribute.tif", (r) => terrio.rasterize({ bytes: readFileSync(join(DATA, "TN_Counties.geojson")), filename: "TN_Counties.geojson" }, { attribute: "POPULATION", tr: [0.002, 0.002], ot: "Int32" })],
+];
+
+for (const [name, ref, run, options] of GDAL_OPS) {
+  test(`${name}: GDAL's pixels`, { skip: SKIP_DATA }, (t) => {
+    const refPath = join(DATA, "wasm_refs", ref);
+    if (!existsSync(refPath)) return t.skip("the GDAL references are missing: run scripts/fetch_test_data.sh with GDAL");
+    const cache = new Map();
+    const read = (f) => {
+      if (!cache.has(f)) cache.set(f, terrio.open(readFileSync(join(DATA, f)), f.split("/").pop()));
+      return cache.get(f);
+    };
+    sameRaster(run(read), refPath, options);
+  });
+}
+
+test("polygonize: GDAL's polygons", { skip: SKIP_DATA }, (t) => {
+  const refPath = join(DATA, "wasm_refs", "polygonize.fgb");
+  if (!existsSync(refPath)) return t.skip("the GDAL references are missing");
+  const nlcd = terrio.open(readFileSync(join(DATA, "nlcd_knoxville.tif")), "nlcd_knoxville.tif");
+  const mine = terrio.polygonize(nlcd).toGeoJSON().features;
+  const gdal = terrio.open(readFileSync(refPath), "polygonize.fgb").toGeoJSON().features;
+  assert.equal(mine.length, gdal.length);
+  const perValue = (fs) => {
+    const m = new Map();
+    for (const f of fs) m.set(f.properties.DN, (m.get(f.properties.DN) ?? 0) + 1);
+    return [...m.entries()].sort((a, b) => a[0] - b[0]);
+  };
+  assert.deepEqual(perValue(mine), perValue(gdal));
+});
+
+test("a FlatGeobuf larger than 100 MB", { skip: SKIP_DATA }, (t) => {
+  const path = join(DATA, "big_counties.fgb");
+  if (!existsSync(path)) return t.skip("big_counties.fgb is missing");
+  const bytes = readFileSync(path);
+  assert.ok(bytes.length > 100e6);
+  const ds = terrio.open(bytes, "big_counties.fgb");
+  const info = ds.info();
+  assert.equal(info.layers[0].feature_count, 9 * 3221);
+  const sub = terrio.open(ds.toBytes("sub.fgb", { limit: 5 }), "sub.fgb");
+  assert.equal(sub.toGeoJSON().features.length, 5);
+});
+
+// ─── Remote files ───────────────────────────────────────────────────────────────────────────────
+
+/// Serves a directory over HTTP with range requests, counting the bytes sent.
+async function serve(dir) {
+  const { createServer } = await import("node:http");
+  const { statSync, openSync, readSync, closeSync } = await import("node:fs");
+  const stats = { requests: 0, bytes: 0 };
+  const server = createServer((req, res) => {
+    const path = join(dir, decodeURIComponent(req.url.split("?")[0]));
+    let size;
+    try {
+      size = statSync(path).size;
+    } catch {
+      res.writeHead(404);
+      return res.end();
+    }
+    stats.requests++;
+    const m = /bytes=(\d+)-(\d+)?/.exec(req.headers.range ?? "");
+    if (req.method === "HEAD" || !m) {
+      res.writeHead(200, { "Content-Length": size });
+      if (req.method === "HEAD") return res.end();
+      stats.bytes += size;
+      return res.end(readFileSync(path));
+    }
+    const a = +m[1];
+    const b = Math.min(m[2] ? +m[2] : size - 1, size - 1);
+    const buf = Buffer.alloc(b - a + 1);
+    const fd = openSync(path, "r");
+    readSync(fd, buf, 0, buf.length, a);
+    closeSync(fd);
+    stats.bytes += buf.length;
+    res.writeHead(206, { "Content-Range": `bytes ${a}-${b}/${size}`, "Content-Length": buf.length });
+    res.end(buf);
+  });
+  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  return { url: `http://127.0.0.1:${server.address().port}/`, stats, close: () => server.close() };
+}
+
+test("remote files read with range requests", async () => {
+  const { mkdtempSync, writeFileSync, rmSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const dir = mkdtempSync(join(tmpdir(), "terrio-remote-"));
+  // A COG, a FlatGeobuf, a GeoParquet file, PMTiles and COPC, written by terrio.
+  const data = new Float32Array(1500 * 1200).map((_, i) => i % 7919);
+  const dem = terrio.rasterFromArray(data, 1500, 1200, [500000, 10, 0, 4100000, 0, -10], "EPSG:32610", -1);
+  writeFileSync(join(dir, "dem.tif"), dem.toBytes("dem.tif", { format: "COG", compress: "DEFLATE" }));
+  const cells = { type: "FeatureCollection", features: [] };
+  for (let i = 0; i < 50; i++) {
+    for (let j = 0; j < 30; j++) {
+      const [x, y] = [-170 + i * 6, -80 + j * 5];
+      cells.features.push({ type: "Feature", properties: { id: i * 30 + j }, geometry: { type: "Polygon", coordinates: [[[x, y], [x + 4, y], [x + 4, y + 4], [x, y + 4], [x, y]]] } });
+    }
+  }
+  const layer = terrio.fromGeoJSON(cells, "cells");
+  writeFileSync(join(dir, "cells.fgb"), layer.toBytes("cells.fgb"));
+  writeFileSync(join(dir, "cells.parquet"), layer.toBytes("cells.parquet"));
+  writeFileSync(join(dir, "cells.pmtiles"), layer.toBytes("cells.pmtiles", { maxzoom: 4 }));
+  const n = 20000;
+  const pts = { x: new Float64Array(n), y: new Float64Array(n), z: new Float64Array(n) };
+  for (let i = 0; i < n; i++) [pts.x[i], pts.y[i], pts.z[i]] = [(i * 7919) % 1000, (i * 104729) % 1000, i % 50];
+  writeFileSync(join(dir, "pts.copc.laz"), terrio.pointsFromArrays(pts, "EPSG:32610").toBytes("pts.copc.laz"));
+  const server = await serve(dir);
+  try {
+    const cog = await terrio.openUrl(server.url + "dem.tif", { blockSize: 16384 });
+    assert.deepEqual([cog.kind, cog.format, cog.width, cog.height, cog.crs], ["raster", "GTiff", 1500, 1200, "EPSG:32610"]);
+    assert.ok(cog.overviews.length > 0);
+    const w = await cog.readBand(1, [600, 500, 100, 80]);
+    assert.ok(w instanceof Float32Array);
+    assert.deepEqual([...w], [...dem.readBand(1, [600, 500, 100, 80])]);
+    // The headers and the two tiles under the window.
+    assert.ok(cog.stats().bytes < cog.size / 3, `${cog.stats().bytes} of ${cog.size} bytes`);
+    const ovr = await cog.readBand(1, undefined, 0);
+    assert.equal(ovr.length, cog.overviews[0][0] * cog.overviews[0][1]);
+    const sub = await cog.read({ window: [0, 0, 64, 32] });
+    assert.deepEqual([sub.kind, sub.width, sub.height], ["raster", 64, 32]);
+
+    const fgb = await terrio.openUrl(server.url + "cells.fgb");
+    assert.equal(fgb.info().feature_count, 1500);
+    const before = fgb.stats().bytes;
+    // The squares that intersect the box, edges included (as ogr2ogr -spat keeps them).
+    const expected = cells.features
+      .filter((f) => {
+        const [[x0, y0], , [x1, y1]] = f.geometry.coordinates[0];
+        return x0 <= 10 && x1 >= 0 && y0 <= 10 && y1 >= 0;
+      })
+      .map((f) => f.properties.id);
+    assert.equal(expected.length, 9);
+    const hits = (await fgb.read({ bbox: [0, 0, 10, 10] })).toGeoJSON().features;
+    assert.deepEqual(hits.map((f) => f.properties.id).sort((a, b) => a - b), expected);
+    assert.ok(fgb.stats().bytes - before < fgb.size / 4);
+
+    const pq = await terrio.openUrl(server.url + "cells.parquet");
+    const groups = pq.info().rowGroups;
+    assert.equal(groups.reduce((s, g) => s + g.rows, 0), 1500);
+    const last = await pq.read({ rowGroups: [groups.length - 1] });
+    assert.equal(last.toGeoJSON().features.length, groups.at(-1).rows);
+    const inBox = (await pq.read({ bbox: [0, 0, 10, 10] })).toGeoJSON().features;
+    assert.deepEqual(inBox.map((f) => f.properties.id).sort((a, b) => a - b), expected);
+
+    const tiles = await terrio.openUrl(server.url + "cells.pmtiles");
+    assert.equal(tiles.kind, "tiles");
+    const tile = await tiles.getTile(0, 0, 0);
+    assert.ok(tile instanceof Uint8Array && tile.length > 0);
+    assert.equal(await tiles.getTile(4, 15, 0), undefined);
+    const vt = await tiles.read({ zoom: 4, bbox: [0, 0, 1e6, 1e6] });
+    assert.ok(vt.toGeoJSON().features.length > 0);
+
+    const copc = await terrio.openUrl(server.url + "pts.copc.laz");
+    assert.deepEqual([copc.kind, copc.format, copc.crs], ["pointcloud", "COPC", "EPSG:32610"]);
+    const box = await copc.read({ bounds: [100, 100, 300, 300] });
+    const all = terrio.readPoints(readFileSync(join(dir, "pts.copc.laz")), "pts.copc.laz", { bounds: [100, 100, 300, 300] });
+    assert.equal(box.length, all.length);
+    const coarse = await copc.read({ maxLevel: 0 });
+    assert.equal(coarse.length, terrio.readPoints(readFileSync(join(dir, "pts.copc.laz")), "pts.copc.laz", { maxLevel: 0 }).length);
+
+    await assert.rejects(terrio.openUrl(server.url + "missing.tif"), /404/);
+    // The requests the server saw are those terrio counted.
+    const counted = [cog, fgb, pq, tiles, copc].reduce((s, d) => s + d.stats().bytes, 0);
+    assert.equal(counted, server.stats.bytes);
+  } finally {
+    server.close();
+    rmSync(dir, { recursive: true });
+  }
+});
+
+test("remote real files read with range requests, as GDAL reads them", { skip: SKIP_DATA }, async (t) => {
+  if (!existsSync(join(DATA, "ne_places_rg.parquet"))) return t.skip("ne_places_rg.parquet is missing");
+  const server = await serve(DATA);
+  try {
+    const cog = await terrio.openUrl(server.url + "usgs_dem.tif");
+    const local = terrio.open(readFileSync(join(DATA, "usgs_dem.tif")), "usgs_dem.tif");
+    const w = await cog.readBand(1, [1500, 1500, 512, 512]);
+    assert.deepEqual([...w], [...local.readBand(1, [1500, 1500, 512, 512])]);
+    const o = await cog.readBand(1, [0, 0, 400, 400], 1);
+    assert.deepEqual([...o], [...local.readBand(1, [0, 0, 400, 400], 1)]);
+    assert.ok(cog.stats().bytes < cog.size / 8, `${cog.stats().bytes} of ${cog.size}`);
+    // GDAL's -spat results.
+    const fgb = await terrio.openUrl(server.url + "UScounties.fgb");
+    const ids = (await fgb.read({ bbox: [-100, 35, -95, 40] })).toGeoJSON().features.length;
+    assert.equal(ids, 138);
+    assert.ok(fgb.stats().bytes < fgb.size / 4);
+    const pq = await terrio.openUrl(server.url + "ne_places_rg.parquet");
+    assert.deepEqual(pq.info().rowGroups.map((g) => g.rows), [1000, 1000, 1000, 1000, 1000, 1000, 1000, 342]);
+    assert.equal((await pq.read({ bbox: [0, 40, 20, 55] })).toGeoJSON().features.length, 306);
+    const copc = await terrio.openUrl(server.url + "pointcloud/madison.copc.laz");
+    const h = copc.info();
+    const [cx, cy] = [(h.min[0] + h.max[0]) / 2, (h.min[1] + h.max[1]) / 2];
+    const opts = { bounds: [cx - 100, cy - 100, cx + 100, cy + 100], maxLevel: 3 };
+    const remote = await copc.read(opts);
+    const whole = terrio.readPoints(readFileSync(join(DATA, "pointcloud", "madison.copc.laz")), "madison.copc.laz", opts);
+    assert.equal(remote.length, whole.length);
+    assert.deepEqual([...remote.get("z").slice(0, 100)], [...whole.get("z").slice(0, 100)]);
+    assert.ok(copc.stats().bytes < copc.size / 3);
+    const pm = await terrio.openUrl(server.url + "cb_2018_us_zcta510_500k.pmtiles");
+    const vt = await pm.read({ zoom: 7, bbox: [-9000000, 4000000, -8900000, 4100000] });
+    assert.ok(vt.toGeoJSON().features.length > 0);
+    assert.ok(pm.stats().bytes < pm.size / 10);
+  } finally {
+    server.close();
+  }
+});
+
+// Public files (opt in with TERRIO_NETWORK_TESTS=1): the bytes fetched show that only the ranges
+// needed are read.
+test("remote public files", { skip: !process.env.TERRIO_NETWORK_TESTS && "TERRIO_NETWORK_TESTS is not set" }, async () => {
+  const cog = await terrio.openUrl("https://prd-tnm.s3.amazonaws.com/StagedProducts/Elevation/1/TIFF/current/n40w106/USGS_1_n40w106.tif");
+  assert.equal((await cog.readBand(1, [1500, 1500, 512, 512])).length, 512 * 512);
+  assert.equal((await cog.readBand(1, undefined, 2)).length, cog.overviews[2][0] * cog.overviews[2][1]);
+  const pm = await terrio.openUrl("https://r2-public.protomaps.com/protomaps-sample-datasets/cb_2018_us_zcta510_500k.pmtiles");
+  assert.ok((await pm.getTile(7, 37, 48)).length > 0);
+  const copc = await terrio.openUrl("https://s3.amazonaws.com/hobu-lidar/autzen-classified.copc.laz");
+  assert.ok((await copc.read({ maxLevel: 1 })).length > 0);
+  const fgb = await terrio.openUrl("https://flatgeobuf.org/test/data/UScounties.fgb");
+  assert.equal((await fgb.read({ bbox: [-100, 35, -95, 40] })).toGeoJSON().features.length, 138);
+  for (const d of [cog, pm, copc, fgb]) {
+    const { requests, bytes } = d.stats();
+    console.log(`${d.url}: ${requests} requests, ${bytes} of ${d.size} bytes (${((100 * bytes) / d.size).toFixed(2)}%)`);
+    assert.ok(bytes < d.size / 4);
+  }
+});

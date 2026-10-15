@@ -47,7 +47,15 @@ pub(crate) fn spill() -> Result<Box<dyn Spill>> {
 /// Reads a dataset with terrio's own driver for the format. `None` when the format library reads it.
 pub(crate) fn read(path: &str, driver: VectorDriver, options: &VectorOpenOptions) -> Result<Option<Vec<Layer>>> {
     Ok(Some(match driver {
-        VectorDriver::FlatGeobuf => vec![flatgeobuf::read(path)?],
+        VectorDriver::FlatGeobuf => match options.spatial_filter {
+            // With a filter, only the index nodes on the way and the features found are read.
+            Some(rect) => {
+                let mut f = std::io::BufReader::new(std::fs::File::open(path)?);
+                let len = std::fs::metadata(path)?.len();
+                vec![flatgeobuf::read_filtered(&mut f, len, Some(rect), &|_| Ok(()))?.1]
+            }
+            None => vec![flatgeobuf::read(path)?],
+        },
         VectorDriver::GeoJSON => vec![geojson::read(path)?],
         VectorDriver::GeoJSONSeq => {
             let stem = std::path::Path::new(path).file_stem().and_then(|s| s.to_str()).unwrap_or("layer");

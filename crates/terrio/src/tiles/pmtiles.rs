@@ -383,6 +383,11 @@ impl Reader {
         self.source.is_remote()
     }
 
+    /// Whether the archive's bytes are fetched by the caller.
+    pub(crate) fn is_sparse(&self) -> bool {
+        matches!(self.source, ByteSource::Sparse(_))
+    }
+
     fn leaf(&mut self, offset: u64, length: u32) -> Result<Vec<Entry>> {
         if let Some(e) = self.leaves.get(&(offset, length)) {
             return Ok(e.clone());

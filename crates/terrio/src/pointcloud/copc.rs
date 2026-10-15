@@ -187,13 +187,15 @@ impl Copc {
     }
 
     fn load_page(&mut self, source: &mut Source, offset: u64, size: u64) -> Result<()> {
-        if !self.loaded_pages.insert(offset) {
+        if self.loaded_pages.contains(&offset) {
             return Ok(());
         }
         if size > 1 << 30 {
             return Err(Error::InvalidData(format!("a COPC hierarchy page of {size} bytes")));
         }
+        // Marked loaded once read: a read that fails (bytes not fetched yet) is run again.
         let b = source.read_at(offset, size as usize)?;
+        self.loaded_pages.insert(offset);
         for e in b.as_chunks::<ENTRY_LEN>().0.iter().map(|c| CopcNode::parse(c)) {
             // A page reference never replaces the node's own entry.
             if e.is_page() && self.nodes.get(&e.key).is_some_and(|n| !n.is_page()) {
@@ -311,6 +313,12 @@ impl Copc {
         columns: &mut Columns,
     ) -> Result<()> {
         let rl = layout.record_len;
+        // Bytes the caller fetches: ask for them all at once, the read being run again until
+        // they are there.
+        if source.is_sparse() {
+            let ranges: Vec<(u64, u64)> = nodes.iter().map(|n| (n.offset, n.byte_size.max(0) as u64)).collect();
+            source.prefetch(&ranges)?;
+        }
         let mut i = 0;
         while i < nodes.len() {
             // Fetch a batch of nodes in as few requests as possible, then decode them.

@@ -338,11 +338,19 @@ pub(crate) fn read_layers(
         b.by_name.insert(d.name, b.layers.len());
         b.layers.push(l);
     }
-    let mut tiles = archive.tiles_at_zoom(z)?;
+    let mut tiles = match filter.and_then(|f| tiles_in_rect(z, f)) {
+        // A remote archive and a small rectangle: the tiles under it, rather than every tile of the
+        // zoom level from the directories (missing tiles are skipped).
+        Some(t) if archive.is_remote() => t,
+        _ => archive.tiles_at_zoom(z)?,
+    };
     if let Some(f) = filter {
         tiles.retain(|&(x, y)| clip::overlaps(TileFrame::new(z, x, y).rect(), f) || clip::contains(TileFrame::new(z, x, y).rect(), f));
     }
-    for chunk in tiles.chunks(256) {
+    // Remote archives whose bytes the caller fetches: every tile at once, in one round of
+    // requests.
+    let chunk_len = if archive.is_sparse() { tiles.len().max(1) } else { 256 };
+    for chunk in tiles.chunks(chunk_len) {
         let wanted_tiles: Vec<(u8, u32, u32)> = chunk.iter().map(|&(x, y)| (z, x, y)).collect();
         let data = archive.tiles(&wanted_tiles)?;
         for (&(_, x, y), bytes) in wanted_tiles.iter().zip(data) {
@@ -352,6 +360,22 @@ pub(crate) fn read_layers(
         }
     }
     Ok(b.layers)
+}
+
+/// The tiles `(x, y)` at zoom `z` under a rectangle in EPSG:3857, in tile id order (as the
+/// directories list them), when there are at most 4096.
+fn tiles_in_rect(z: u8, r: Rect) -> Option<Vec<(u32, u32)>> {
+    let dim = tile_dim(z);
+    let n = 1u64 << z;
+    let col = |x: f64| (((x + MAX_GM) / dim).floor().max(0.0) as u64).min(n - 1);
+    let row = |y: f64| (((MAX_GM - y) / dim).floor().max(0.0) as u64).min(n - 1);
+    let (x0, x1, y0, y1) = (col(r.0), col(r.2), row(r.3), row(r.1));
+    if (x1 - x0 + 1) * (y1 - y0 + 1) > 4096 {
+        return None;
+    }
+    let mut out: Vec<(u32, u32)> = (y0..=y1).flat_map(|y| (x0..=x1).map(move |x| (x as u32, y as u32))).collect();
+    out.sort_by_key(|&(x, y)| super::pmtiles::zxy_to_tile_id(z, x, y));
+    Some(out)
 }
 
 /// Reads a single MVT tile file. A path ending in `z/x/y.pbf` (or `.mvt`) is georeferenced in

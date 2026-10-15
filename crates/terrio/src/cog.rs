@@ -173,6 +173,27 @@ impl LazyRaster {
         TiffRaster::new(source, None).map(|t| Some(Self { inner: Inner::Tiff(Box::new(t)) }))
     }
 
+    /// Opens a remote GeoTIFF whose bytes the caller fetches (see [`crate::sparse`]), reading
+    /// only its headers. Reads fail until the bytes they need are fetched, and are then run
+    /// again. Returns `None` when the file is not a TIFF.
+    pub fn from_sparse(file: crate::sparse::SparseFile) -> Result<Option<Self>> {
+        let mut source = Source::Sparse(file);
+        source.seek(SeekFrom::Start(0))?;
+        let mut magic = [0u8; 4];
+        source.read_exact(&mut magic)?;
+        if !matches!(&magic, b"II*\0" | b"MM\0*" | b"II+\0" | b"MM\0+") {
+            return Ok(None);
+        }
+        source.seek(SeekFrom::Start(0))?;
+        TiffRaster::new(source, None).map(|t| Some(Self { inner: Inner::Tiff(Box::new(t)) }))
+    }
+
+    /// Opens an archive of image tiles (PMTiles or MBTiles) for reading by window, zoom levels
+    /// as overviews.
+    pub fn from_tile_archive(archive: crate::tiles::TileArchive) -> Result<Self> {
+        Ok(Self::from_tiles(crate::tiles::raster::TileRaster::new(archive, None)?))
+    }
+
     /// The raster in memory, when it is not read on demand.
     pub fn dataset(&self) -> Option<&RasterDataset> {
         match &self.inner {
@@ -477,6 +498,8 @@ enum Source {
     Memory(std::io::Cursor<Vec<u8>>),
     #[cfg(not(target_arch = "wasm32"))]
     Http(crate::http::RangeReader),
+    /// A remote file whose bytes the caller fetches (see [`crate::sparse`]).
+    Sparse(crate::sparse::SparseFile),
 }
 
 impl Source {
@@ -487,6 +510,7 @@ impl Source {
             Source::File(_) | Source::Memory(_) => Ok(()),
             #[cfg(not(target_arch = "wasm32"))]
             Source::Http(r) => Ok(r.prefetch(ranges)?),
+            Source::Sparse(s) => Ok(s.prefetch(ranges)?),
         }
     }
 }
@@ -498,6 +522,7 @@ impl Read for Source {
             Source::Memory(m) => m.read(buf),
             #[cfg(not(target_arch = "wasm32"))]
             Source::Http(r) => r.read(buf),
+            Source::Sparse(s) => s.read(buf),
         }
     }
 }
@@ -509,6 +534,7 @@ impl Seek for Source {
             Source::Memory(m) => m.seek(pos),
             #[cfg(not(target_arch = "wasm32"))]
             Source::Http(r) => r.seek(pos),
+            Source::Sparse(s) => s.seek(pos),
         }
     }
 }
