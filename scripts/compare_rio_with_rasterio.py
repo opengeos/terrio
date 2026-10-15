@@ -90,6 +90,8 @@ class Check:
     reason: str = ""
     needs_data: bool = False
     needs_remote: bool = False
+    # The oldest rasterio whose behaviour terrio.rio follows here, as (major, minor, patch).
+    min_rasterio: tuple[int, ...] = ()
 
 
 @dataclass
@@ -295,6 +297,24 @@ def compare(a: Any, b: Any, c: Check) -> Outcome:
         return Outcome("known" if c.expect == "known" else "different", "; ".join(notes)[:600])
     worst.detail = "; ".join(notes)[:600]
     return worst
+
+
+def rasterio_version(rasterio: Any) -> tuple[int, ...]:
+    """The installed rasterio's version.
+
+    Args:
+        rasterio: The rasterio module.
+
+    Returns:
+        tuple: The leading numeric parts, e.g. (1, 5, 2).
+    """
+    parts = []
+    for p in str(rasterio.__version__).split(".")[:3]:
+        digits = re.match(r"\d+", p)
+        if digits is None:
+            break
+        parts.append(int(digits.group()))
+    return tuple(parts)
 
 
 def run_check(c: Check, rasterio: Any, trio: Any, data: Path | None, out: Path) -> Outcome:
@@ -996,7 +1016,9 @@ def _t_shutil(rio: Any, ctx: Ctx) -> Any:
     return out
 
 
-@check("tools", "stack: bands of several files, indexes, bounds, resolution, masked, dst_path")
+# rasterio.stack changed after 1.5.0 (which wrote each source over the whole output instead of
+# by chunk); terrio.rio follows 1.5.2.
+@check("tools", "stack: bands of several files, indexes, bounds, resolution, masked, dst_path", min_rasterio=(1, 5, 2))
 def _t_stack(rio: Any, ctx: Ctx) -> Any:
     stack = _sub(rio, "stack").stack
     a = synthetic(rio, ctx)
@@ -1486,6 +1508,8 @@ def run_all(data: Path | None, remote: bool, only: str | None = None, out: Path 
             if only and c.section != only:
                 continue
             if (c.needs_data and data is None) or (c.needs_remote and not remote):
+                continue
+            if c.min_rasterio and rasterio_version(rasterio) < c.min_rasterio:
                 continue
             o = run_check(c, rasterio, trio, data, tmp)
             rows.append(Row(c.section, c.name, c.expect, o, c.reason))

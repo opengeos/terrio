@@ -67,6 +67,10 @@ def test_check(check, scratch):
         pytest.skip("TERRIO_TEST_DATA is not set")
     if check.needs_remote and not os.environ.get("TERRIO_TEST_REMOTE"):
         pytest.skip("TERRIO_TEST_REMOTE is not set")
+    if check.min_rasterio and compare.rasterio_version(rasterio) < check.min_rasterio:
+        pytest.skip(
+            f"terrio.rio follows rasterio {'.'.join(map(str, check.min_rasterio))} here; {rasterio.__version__} is installed"
+        )
     outcome = compare.run_check(check, rasterio, trio, data, scratch)
     row = compare.Row(check.section, check.name, check.expect, outcome, check.reason)
     assert not compare.failed(row), outcome.detail
