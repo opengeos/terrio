@@ -1063,6 +1063,10 @@ impl ParquetSink {
             let aborted = abort.clone();
             let handle = std::thread::spawn(move || {
                 for batch in rx {
+                    // Dropped unfinished: the rest is not encoded.
+                    if aborted.load(std::sync::atomic::Ordering::SeqCst) {
+                        break;
+                    }
                     writer.push(batch)?;
                 }
                 if !aborted.load(std::sync::atomic::Ordering::SeqCst) {
