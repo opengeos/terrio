@@ -887,16 +887,19 @@ pub(crate) fn update_tiles(archive: TileArchive, ds: &RasterDataset, o: &TileWri
     let ny = ((y0 - new.maxy) / res).round() as i64;
     let (nw, nh) = (new.level.w as i64, new.level.h as i64);
     let (cx0, cy0) = (nx.min(0), ny.min(0));
-    let (cx1, cy1) = ((nx + nw).max(w as i64), (ny + nh).max(h as i64));
-    let (cw, ch) = ((cx1 - cx0) as usize, (cy1 - cy0) as usize);
+    let (cx1, cy1) = (nx.saturating_add(nw).max(w as i64), ny.saturating_add(nh).max(h as i64));
     // The archive and the raster are held whole at full resolution (bands, alpha and a copy of
     // the archive's pixels): 2^28 pixels at most (2^26 in WebAssembly).
     const MAX_PIXELS: u64 = if cfg!(target_arch = "wasm32") { 1 << 26 } else { 1 << 28 };
-    if (cw as u64) * (ch as u64) > MAX_PIXELS {
+    let (sw, sh) = (cx1.saturating_sub(cx0), cy1.saturating_sub(cy0));
+    let fits = u64::try_from(sw).ok().zip(u64::try_from(sh).ok()).and_then(|(a, b)| a.checked_mul(b)).is_some_and(|n| n <= MAX_PIXELS);
+    if !fits {
         return Err(Error::Unsupported(format!(
-            "the updated archive would be {cw} x {ch} pixels at zoom level {zoom} (at most {MAX_PIXELS} are updated in memory)"
+            "the updated archive would be {sw} x {sh} pixels at zoom level {zoom} (at most {MAX_PIXELS} are updated in memory)"
         )));
     }
+    // Both fit in `usize`: their product is at most `MAX_PIXELS`.
+    let (cw, ch) = (sw as usize, sh as usize);
     let existing_alpha = matches!(tr.bands, 2 | 4);
     let existing_data = if existing_alpha { tr.bands - 1 } else { tr.bands };
     let bands = existing_data.max(new.level.bands);
