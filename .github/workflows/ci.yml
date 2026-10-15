@@ -62,8 +62,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      # The `rust-version` of Cargo.toml: keep the two in step.
-      - uses: dtolnay/rust-toolchain@1.120
+      # The `rust-version` of Cargo.toml: keep the two in step. It is an input, not the action's ref,
+      # which Dependabot would update as if it were the action's version.
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.90"
       - uses: Swatinem/rust-cache@v2
       - run: cargo check --workspace --all-targets --locked
 
