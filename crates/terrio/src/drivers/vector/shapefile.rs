@@ -9,6 +9,7 @@
 //! digits for integers, 24 with 15 decimals for reals, 80 characters (or the longest value) for
 //! strings.
 
+use super::profile::LayerProfile;
 use crate::crs::SpatialRef;
 use crate::{Error, Result};
 use std::path::{Path, PathBuf};
@@ -41,18 +42,7 @@ pub fn read(path: &str) -> Result<Layer> {
 /// Reads a shapefile from the contents of its `.shp`, `.dbf`, `.prj` and `.cpg` files. `name`
 /// names the layer.
 pub fn parse(shp: &[u8], dbf: Option<&[u8]>, prj: Option<&str>, cpg: Option<&str>, name: &str) -> Result<Layer> {
-    if shp.len() < 100 || u32::from_be_bytes([shp[0], shp[1], shp[2], shp[3]]) != 9994 {
-        return Err(Error::InvalidData("not a shapefile".into()));
-    }
-    let shape_type = i32::from_le_bytes([shp[32], shp[33], shp[34], shp[35]]);
-    let mut layer = Layer::new(name);
-    layer.geom_type = match if shape_type == 31 { 0 } else { shape_type % 10 } {
-        1 => Some(GeometryType::Point),
-        3 => Some(GeometryType::LineString),
-        5 => Some(GeometryType::Polygon),
-        8 => Some(GeometryType::MultiPoint),
-        _ => None,
-    };
+    let mut layer = header_layer(shp, name)?;
 
     let mut geometries = Vec::new();
     let mut pos = 100;
@@ -78,18 +68,44 @@ pub fn parse(shp: &[u8], dbf: Option<&[u8]>, prj: Option<&str>, cpg: Option<&str
         let attributes = records.next().unwrap_or_else(|| vec![FieldValue::Null; layer.schema.len()]);
         layer.push(Feature { fid: fid as u64, geometry, attributes });
     }
+    apply_prj(&mut layer, prj);
+    Ok(layer)
+}
+
+/// The layer of a `.shp` header (its first 100 bytes), without fields or features.
+pub(crate) fn header_layer(shp: &[u8], name: &str) -> Result<Layer> {
+    if shp.len() < 100 || u32::from_be_bytes([shp[0], shp[1], shp[2], shp[3]]) != 9994 {
+        return Err(Error::InvalidData("not a shapefile".into()));
+    }
+    let shape_type = i32::from_le_bytes([shp[32], shp[33], shp[34], shp[35]]);
+    let mut layer = Layer::new(name);
+    layer.geom_type = match if shape_type == 31 { 0 } else { shape_type % 10 } {
+        1 => Some(GeometryType::Point),
+        3 => Some(GeometryType::LineString),
+        5 => Some(GeometryType::Polygon),
+        8 => Some(GeometryType::MultiPoint),
+        _ => None,
+    };
+    Ok(layer)
+}
+
+/// Sets a layer's CRS from a `.prj` file, as GDAL's Shapefile driver does (FindBestMatch()):
+/// the EPSG CRS the `.prj` is identified as, and otherwise its definition.
+pub(crate) fn apply_prj(layer: &mut Layer, prj: Option<&str>) {
     if let Some(prj) = prj.filter(|s| !s.trim().is_empty()) {
-        // As GDAL's Shapefile driver (FindBestMatch()), the EPSG CRS the `.prj` is identified as,
-        // and otherwise its definition.
         match SpatialRef::from_wkt(prj.trim()).epsg.and_then(|code| SpatialRef::from_epsg(code).ok()) {
-            Some(s) => s.apply_to_layer(&mut layer),
+            Some(s) => s.apply_to_layer(layer),
             None => {
-                SpatialRef::from_wkt(prj.trim()).apply_to_layer(&mut layer);
+                SpatialRef::from_wkt(prj.trim()).apply_to_layer(layer);
                 layer.set_crs_wkt(Some(prj.trim().to_string()));
             }
         }
     }
-    Ok(layer)
+}
+
+/// Decodes a `.shp` record's content (after its 8-byte record header).
+pub(crate) fn decode_shape(rec: &[u8]) -> Option<Geometry> {
+    parse_shape(rec)
 }
 
 fn parse_shape(rec: &[u8]) -> Option<Geometry> {
@@ -213,17 +229,36 @@ fn decode(bytes: &[u8], utf8: bool) -> String {
     }
 }
 
-/// Parses a `.dbf` file into field definitions and records.
-fn parse_dbf(d: &[u8], cpg: Option<&str>) -> Result<(Vec<FieldDef>, Vec<Vec<FieldValue>>)> {
+/// The fields and record layout of a `.dbf` file.
+pub(crate) struct DbfLayout {
+    /// The fields.
+    pub fields: Vec<FieldDef>,
+    layout: Vec<(usize, usize, u8)>,
+    utf8: bool,
+    /// The number of records the header declares.
+    pub count: usize,
+    /// The length of the header, where the records start.
+    pub header_len: usize,
+    /// The length of a record.
+    pub record_len: usize,
+}
+
+/// The length of a `.dbf` header from its first 32 bytes.
+pub(crate) fn dbf_header_len(d: &[u8]) -> Result<usize> {
     if d.len() < 32 {
         return Err(Error::InvalidData("truncated .dbf file".into()));
     }
+    Ok(u16::from_le_bytes([d[8], d[9]]) as usize)
+}
+
+/// Reads a `.dbf` header (`d` holds at least the header).
+pub(crate) fn dbf_layout(d: &[u8], cpg: Option<&str>) -> Result<DbfLayout> {
+    let header_len = dbf_header_len(d)?;
     let utf8 = cpg.is_some_and(|c| {
         let c = c.trim().to_ascii_uppercase();
         c.contains("UTF-8") || c.contains("UTF8") || c == "65001"
     });
     let count = u32::from_le_bytes([d[4], d[5], d[6], d[7]]) as usize;
-    let header_len = u16::from_le_bytes([d[8], d[9]]) as usize;
     let record_len = u16::from_le_bytes([d[10], d[11]]) as usize;
     let mut fields = Vec::new();
     let mut layout = Vec::new();
@@ -252,13 +287,16 @@ fn parse_dbf(d: &[u8], cpg: Option<&str>) -> Result<(Vec<FieldDef>, Vec<Vec<Fiel
         offset += width;
         pos += 32;
     }
-    // Records are decoded in parallel, up to the first one the file does not hold whole.
-    let records = crate::par::map_range(count, |i| {
-        let start = header_len + i * record_len;
-        let rec = d.get(start..start + record_len)?;
-        let values = layout
+    Ok(DbfLayout { fields, layout, utf8, count, header_len, record_len })
+}
+
+impl DbfLayout {
+    /// Decodes a record.
+    pub(crate) fn record(&self, rec: &[u8]) -> Vec<FieldValue> {
+        let utf8 = self.utf8;
+        self.layout
             .iter()
-            .zip(&fields)
+            .zip(&self.fields)
             .map(|(&(off, width, kind), def)| {
                 let raw = rec.get(off..(off + width).min(rec.len())).unwrap_or_default();
                 if kind == b'I' && raw.len() == 4 {
@@ -285,11 +323,21 @@ fn parse_dbf(d: &[u8], cpg: Option<&str>) -> Result<(Vec<FieldDef>, Vec<Vec<Fiel
                     _ => FieldValue::Text(text.trim_end_matches([' ', '\0']).to_string()),
                 }
             })
-            .collect::<Vec<FieldValue>>();
-        Some(values)
+            .collect()
+    }
+}
+
+/// Parses a `.dbf` file into field definitions and records.
+fn parse_dbf(d: &[u8], cpg: Option<&str>) -> Result<(Vec<FieldDef>, Vec<Vec<FieldValue>>)> {
+    let l = dbf_layout(d, cpg)?;
+    // Records are decoded in parallel, up to the first one the file does not hold whole.
+    let records = crate::par::map_range(l.count, |i| {
+        let start = l.header_len + i * l.record_len;
+        let rec = d.get(start..start + l.record_len)?;
+        Some(l.record(rec))
     });
     let records = records.into_iter().map_while(|r| r).collect();
-    Ok((fields, records))
+    Ok((l.fields, records))
 }
 
 /// Writes a layer as a shapefile. `path` names the `.shp` file; the other files are written next
@@ -313,10 +361,10 @@ pub fn write(layer: &Layer, path: &str) -> Result<()> {
 }
 
 /// The shape type for the layer's geometries, as GDAL chooses it.
-fn shape_type(layer: &Layer) -> Result<i32> {
-    let has_z = layer.features.iter().filter_map(|f| f.geometry.as_ref()).any(crate::vector::geometry_has_z);
-    let base = match super::features_type(layer) {
-        None if layer.features.iter().all(|f| f.geometry.is_none()) => return Ok(NULL_SHAPE),
+fn shape_type(layer: &Layer, profile: &LayerProfile) -> Result<i32> {
+    let has_z = profile.geometry.has_z;
+    let base = match profile.features_type() {
+        None if profile.no_geometry() => return Ok(NULL_SHAPE),
         Some(GeometryType::Point) => 1,
         Some(GeometryType::MultiPoint) => 8,
         Some(GeometryType::LineString | GeometryType::MultiLineString) => 3,
@@ -332,10 +380,10 @@ fn shape_type(layer: &Layer) -> Result<i32> {
 }
 
 #[derive(Clone, Copy)]
-struct Bounds([f64; 6]);
+pub(crate) struct Bounds([f64; 6]);
 
 impl Bounds {
-    fn empty() -> Self {
+    pub(crate) fn empty() -> Self {
         Self([f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY, f64::INFINITY, f64::NEG_INFINITY])
     }
     fn add(&mut self, c: &Coord) {
@@ -355,38 +403,141 @@ impl Bounds {
 
 /// Encodes the `.shp` and `.shx` files.
 fn encode_shapes(layer: &Layer) -> Result<(Vec<u8>, Vec<u8>)> {
-    let st = shape_type(layer)?;
-    let has_z = st > 10;
+    let enc = ShpEncoder::new(layer, &LayerProfile::of(layer))?;
     let mut total = Bounds::empty();
     let mut shp = vec![0u8; 100];
     let mut shx = vec![0u8; 100];
     for (i, f) in layer.features.iter().enumerate() {
-        let rec = match &f.geometry {
-            Some(g) => encode_shape(g, st, has_z, &mut total),
-            None => NULL_SHAPE.to_le_bytes().to_vec(),
-        };
-        let offset = shp.len() / 2;
-        if (shp.len() + 8 + rec.len()) / 2 > i32::MAX as usize {
-            return Err(Error::Unsupported("the shapefile would be larger than the format's 4 GB limit".into()));
-        }
-        shx.extend_from_slice(&(offset as u32).to_be_bytes());
-        shx.extend_from_slice(&((rec.len() / 2) as u32).to_be_bytes());
-        shp.extend_from_slice(&((i + 1) as u32).to_be_bytes());
-        shp.extend_from_slice(&((rec.len() / 2) as u32).to_be_bytes());
+        let (rec, idx) = enc.record(i as u64, f, shp.len() as u64, &mut total)?;
+        shx.extend_from_slice(&idx);
         shp.extend_from_slice(&rec);
     }
-    let b = total.or_zero();
-    for buf in [&mut shp, &mut shx] {
-        let words = (buf.len() / 2) as u32;
+    let (shp_len, shx_len) = (shp.len() as u64, shx.len() as u64);
+    shp[..100].copy_from_slice(&enc.header(shp_len, &total));
+    shx[..100].copy_from_slice(&enc.header(shx_len, &total));
+    Ok((shp, shx))
+}
+
+/// Encodes a layer's features as shapefile records (`.shp`, `.shx` and `.dbf`), with the shape
+/// type and field widths its profile decides.
+pub(crate) struct ShpEncoder {
+    st: i32,
+    has_z: bool,
+    fields: Vec<DbfField>,
+}
+
+impl ShpEncoder {
+    /// An encoder for the features of `layer` (its fields), which `profile` describes.
+    pub(crate) fn new(layer: &Layer, profile: &LayerProfile) -> Result<Self> {
+        let st = shape_type(layer, profile)?;
+        let fields = dbf_fields(layer, profile);
+        let record_len = 1 + fields.iter().map(|f| f.width).sum::<usize>();
+        let header_len = 32 + 32 * fields.len() + 1;
+        if record_len > 65535 || header_len > 65535 {
+            return Err(Error::Unsupported("too many fields for a shapefile".into()));
+        }
+        Ok(Self { st, has_z: st > 10, fields })
+    }
+
+    /// The `.shp` record of the `i`-th feature (from 0), written at byte `offset` of the file,
+    /// with its `.shx` entry. Adds the feature's coordinates to `total`.
+    pub(crate) fn record(&self, i: u64, f: &Feature, offset: u64, total: &mut Bounds) -> Result<(Vec<u8>, [u8; 8])> {
+        let rec = match &f.geometry {
+            Some(g) => encode_shape(g, self.st, self.has_z, total),
+            None => NULL_SHAPE.to_le_bytes().to_vec(),
+        };
+        if (offset as usize + 8 + rec.len()) / 2 > i32::MAX as usize {
+            return Err(Error::Unsupported("the shapefile would be larger than the format's 4 GB limit".into()));
+        }
+        let mut idx = [0u8; 8];
+        idx[..4].copy_from_slice(&((offset / 2) as u32).to_be_bytes());
+        idx[4..].copy_from_slice(&((rec.len() / 2) as u32).to_be_bytes());
+        let mut out = Vec::with_capacity(rec.len() + 8);
+        out.extend_from_slice(&((i + 1) as u32).to_be_bytes());
+        out.extend_from_slice(&((rec.len() / 2) as u32).to_be_bytes());
+        out.extend_from_slice(&rec);
+        Ok((out, idx))
+    }
+
+    /// The 100-byte header of a `.shp` or `.shx` file of `len` bytes whose shapes are within
+    /// `total`.
+    pub(crate) fn header(&self, len: u64, total: &Bounds) -> [u8; 100] {
+        let b = total.or_zero();
+        let mut buf = [0u8; 100];
         buf[0..4].copy_from_slice(&9994u32.to_be_bytes());
-        buf[24..28].copy_from_slice(&words.to_be_bytes());
+        buf[24..28].copy_from_slice(&((len / 2) as u32).to_be_bytes());
         buf[28..32].copy_from_slice(&1000u32.to_le_bytes());
-        buf[32..36].copy_from_slice(&st.to_le_bytes());
+        buf[32..36].copy_from_slice(&self.st.to_le_bytes());
         for (k, v) in [b[0], b[1], b[2], b[3], b[4], b[5], 0.0, 0.0].iter().enumerate() {
             buf[36 + 8 * k..44 + 8 * k].copy_from_slice(&v.to_le_bytes());
         }
+        buf
     }
-    Ok((shp, shx))
+
+    /// The `.dbf` header of a file of `count` records.
+    pub(crate) fn dbf_header(&self, count: u64) -> Vec<u8> {
+        let fields = &self.fields;
+        let record_len = 1 + fields.iter().map(|f| f.width).sum::<usize>();
+        let header_len = 32 + 32 * fields.len() + 1;
+        let mut out = Vec::with_capacity(header_len);
+        out.push(0x03);
+        out.extend_from_slice(&[125, 1, 1]); // last update (2025-01-01): a fixed date keeps outputs reproducible
+        out.extend_from_slice(&(count as u32).to_le_bytes());
+        out.extend_from_slice(&(header_len as u16).to_le_bytes());
+        out.extend_from_slice(&(record_len as u16).to_le_bytes());
+        out.extend_from_slice(&[0u8; 20]);
+        for f in fields {
+            let mut name = [0u8; 11];
+            name[..f.name.len()].copy_from_slice(f.name.as_bytes());
+            out.extend_from_slice(&name);
+            out.push(f.kind);
+            out.extend_from_slice(&[0u8; 4]);
+            out.push(f.width as u8);
+            out.push(f.decimals as u8);
+            out.extend_from_slice(&[0u8; 14]);
+        }
+        out.push(0x0D);
+        out
+    }
+
+    /// Appends a feature's `.dbf` record.
+    pub(crate) fn dbf_record(&self, feat: &Feature, out: &mut Vec<u8>) {
+        out.push(b' ');
+        for (i, f) in self.fields.iter().enumerate() {
+            let v = feat.attributes.get(i).unwrap_or(&FieldValue::Null);
+            let cell: Vec<u8> = match (f.kind, v) {
+                (b'N', FieldValue::Null) => vec![b'*'; f.width],
+                (b'D', FieldValue::Null) => vec![b'0'; f.width],
+                (b'L', FieldValue::Null) => vec![b'?'],
+                (_, FieldValue::Null) => vec![b' '; f.width],
+                (b'N', v) => {
+                    let s = if f.decimals == 0 {
+                        v.as_i64().or_else(|| v.as_f64().map(|x| x.round() as i64)).map(|x| x.to_string()).unwrap_or_default()
+                    } else {
+                        v.as_f64().map(|x| format_real(x, f.width, f.decimals)).unwrap_or_default()
+                    };
+                    format!("{s:>w$}", w = f.width).into_bytes()
+                }
+                (b'L', v) => vec![if v.as_bool().unwrap_or(false) { b'T' } else { b'F' }],
+                (b'D', v) => {
+                    let digits: String = text(v).chars().filter(char::is_ascii_digit).take(8).collect();
+                    format!("{digits:0<8}").into_bytes()
+                }
+                (_, v) => {
+                    let s = text(v);
+                    let mut end = s.len().min(f.width);
+                    while !s.is_char_boundary(end) {
+                        end -= 1;
+                    }
+                    let mut b = s.as_bytes()[..end].to_vec();
+                    b.resize(f.width, b' ');
+                    b
+                }
+            };
+            out.extend_from_slice(&cell[..f.width.min(cell.len())]);
+            out.extend(std::iter::repeat_n(b' ', f.width.saturating_sub(cell.len())));
+        }
+    }
 }
 
 /// Closes a ring and orients it: clockwise for exterior rings, counter-clockwise for holes.
@@ -536,7 +687,7 @@ struct DbfField {
     decimals: usize,
 }
 
-fn dbf_fields(layer: &Layer) -> Vec<DbfField> {
+fn dbf_fields(layer: &Layer, profile: &LayerProfile) -> Vec<DbfField> {
     let names: Vec<String> = layer.schema.fields().iter().map(|f| f.name.clone()).collect();
     let names = dbf_field_names(&names);
     layer
@@ -546,17 +697,17 @@ fn dbf_fields(layer: &Layer) -> Vec<DbfField> {
         .enumerate()
         .zip(names)
         .map(|((i, f), name)| {
-            let values = || layer.features.iter().filter_map(move |ft| ft.attributes.get(i)).filter(|v| !v.is_null());
+            let p = profile.fields.get(i).cloned().unwrap_or_default();
             let (kind, width, decimals) = match f.field_type {
                 FieldType::Integer => {
-                    let longest = values().filter_map(|v| v.as_i64()).map(|v| v.to_string().len()).max().unwrap_or(0);
+                    let longest = p.longest_int;
                     (b'N', if longest <= 9 { 9 } else { longest.max(18) }, 0)
                 }
                 FieldType::Float => (b'N', 24, 15),
                 FieldType::Boolean => (b'L', 1, 0),
                 FieldType::Date => (b'D', 8, 0),
                 _ => {
-                    let longest = values().map(|v| text(v).len()).max().unwrap_or(0);
+                    let longest = p.longest_text;
                     let declared = if f.width > 0 { f.width } else { 80 };
                     (b'C', declared.max(longest).clamp(1, 254), 0)
                 }
@@ -591,66 +742,10 @@ fn format_real(v: f64, width: usize, decimals: usize) -> String {
 
 /// Encodes the `.dbf` file.
 fn encode_dbf(layer: &Layer) -> Result<Vec<u8>> {
-    let fields = dbf_fields(layer);
-    let record_len = 1 + fields.iter().map(|f| f.width).sum::<usize>();
-    let header_len = 32 + 32 * fields.len() + 1;
-    if record_len > 65535 || header_len > 65535 {
-        return Err(Error::Unsupported("too many fields for a shapefile".into()));
-    }
-    let mut out = Vec::with_capacity(header_len + record_len * layer.len() + 1);
-    out.push(0x03);
-    out.extend_from_slice(&[125, 1, 1]); // last update (2025-01-01): a fixed date keeps outputs reproducible
-    out.extend_from_slice(&(layer.len() as u32).to_le_bytes());
-    out.extend_from_slice(&(header_len as u16).to_le_bytes());
-    out.extend_from_slice(&(record_len as u16).to_le_bytes());
-    out.extend_from_slice(&[0u8; 20]);
-    for f in &fields {
-        let mut name = [0u8; 11];
-        name[..f.name.len()].copy_from_slice(f.name.as_bytes());
-        out.extend_from_slice(&name);
-        out.push(f.kind);
-        out.extend_from_slice(&[0u8; 4]);
-        out.push(f.width as u8);
-        out.push(f.decimals as u8);
-        out.extend_from_slice(&[0u8; 14]);
-    }
-    out.push(0x0D);
+    let enc = ShpEncoder::new(layer, &LayerProfile::of(layer))?;
+    let mut out = enc.dbf_header(layer.len() as u64);
     for feat in &layer.features {
-        out.push(b' ');
-        for (i, f) in fields.iter().enumerate() {
-            let v = feat.attributes.get(i).unwrap_or(&FieldValue::Null);
-            let cell: Vec<u8> = match (f.kind, v) {
-                (b'N', FieldValue::Null) => vec![b'*'; f.width],
-                (b'D', FieldValue::Null) => vec![b'0'; f.width],
-                (b'L', FieldValue::Null) => vec![b'?'],
-                (_, FieldValue::Null) => vec![b' '; f.width],
-                (b'N', v) => {
-                    let s = if f.decimals == 0 {
-                        v.as_i64().or_else(|| v.as_f64().map(|x| x.round() as i64)).map(|x| x.to_string()).unwrap_or_default()
-                    } else {
-                        v.as_f64().map(|x| format_real(x, f.width, f.decimals)).unwrap_or_default()
-                    };
-                    format!("{s:>w$}", w = f.width).into_bytes()
-                }
-                (b'L', v) => vec![if v.as_bool().unwrap_or(false) { b'T' } else { b'F' }],
-                (b'D', v) => {
-                    let digits: String = text(v).chars().filter(char::is_ascii_digit).take(8).collect();
-                    format!("{digits:0<8}").into_bytes()
-                }
-                (_, v) => {
-                    let s = text(v);
-                    let mut end = s.len().min(f.width);
-                    while !s.is_char_boundary(end) {
-                        end -= 1;
-                    }
-                    let mut b = s.as_bytes()[..end].to_vec();
-                    b.resize(f.width, b' ');
-                    b
-                }
-            };
-            out.extend_from_slice(&cell[..f.width.min(cell.len())]);
-            out.extend(std::iter::repeat_n(b' ', f.width.saturating_sub(cell.len())));
-        }
+        enc.dbf_record(feat, &mut out);
     }
     out.push(0x1A);
     Ok(out)

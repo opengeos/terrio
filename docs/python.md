@@ -83,6 +83,34 @@ terrio.convert("more.shp", "world.gpkg", layer_name="countries", overwrite=True)
 The updated file is written anew and then replaces the original (terrio's SQLite writer writes
 whole files), so appending to a large GeoPackage costs a rewrite of it.
 
+### Streams
+
+Layers larger than memory are read a chunk of features at a time with `terrio.open_stream`
+(GeoPackage, FlatGeobuf, GeoParquet, Shapefile, GeoJSON, GeoJSONSeq and CSV; other formats are
+read whole and handed out in chunks), and `terrio.convert` streams vector conversions between
+those formats (all but GeoPackage as outputs), as the command line does:
+
+```python
+stream = terrio.open_stream("buildings.gpkg", "buildings", batch_size=100_000)
+stream.name, stream.crs, stream.fields, stream.geometry_type
+for chunk in stream:  # terrio.Layer chunks of at most 100,000 features
+    gdf = chunk.to_geopandas()
+
+for feature in terrio.iter_features("buildings.fgb"):  # GeoJSON-like dicts, one at a time
+    print(feature["properties"])
+
+# Arrow record batches, read as the consumer asks for them.
+reader = pa.RecordBatchReader.from_stream(terrio.open_stream("buildings.parquet"))
+for batch in reader:
+    ...
+
+terrio.convert("buildings.gpkg", "buildings.parquet", where="height > 10")  # in bounded memory
+```
+
+`bbox=(min_x, min_y, max_x, max_y)` reads only the features a GeoPackage's R-tree or a
+GeoParquet file's bounding boxes find. The Arrow stream has the schema `Layer.to_arrow()` gives
+(WKB geometries); a layer with date fields is read twice, once to choose their Arrow types.
+
 ### Arrow
 
 Layers convert to and from [Apache Arrow](https://arrow.apache.org) through the

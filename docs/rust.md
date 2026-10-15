@@ -49,6 +49,29 @@ terrio::write_raster_dataset(&ds, "dem_cog.tif", &options)?;
 `ops::vector_filter::write_vector_with_mode` appends to or overwrites the layers of an existing
 output; GeoPackages are updated keeping their other tables.
 
+## Streams
+
+`terrio::stream` reads and writes vector layers a chunk of features at a time, for layers larger
+than memory: `open_layers` gives a `FeatureReader` per layer (an iterator of features, or chunks
+with `read_chunk`), `FeatureWriter` writes chunks, `ArrowStream` gives Arrow record batches (an
+`arrow_array::RecordBatchReader`), and `convert` combines them with the `ogr2ogr`-style options
+(`ops::vector_filter::Translator` applies them chunk by chunk), as `terrio convert` does.
+
+```rust,no_run
+use terrio::stream::{ConvertOptions, open_layers};
+
+let mut readers = open_layers("buildings.gpkg", &Default::default(), 65536)?;
+while let Some(chunk) = readers[0].read_chunk(10_000)? {
+    println!("{} features", chunk.features.len());
+}
+terrio::stream::convert("buildings.gpkg", "buildings.fgb", &ConvertOptions::default())?;
+# Ok::<(), terrio::Error>(())
+```
+
+Writers whose headers or column types depend on the values (CSV, Shapefile, FlatGeobuf,
+GeoParquet) take a `LayerProfile` of all the features, which `convert` computes in a first pass
+over the input, so that a streamed file is identical to the one `write_vector` writes.
+
 ## Arrow
 
 `terrio::arrow` converts layers to and from Arrow record batches with a GeoArrow geometry column

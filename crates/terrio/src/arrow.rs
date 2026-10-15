@@ -31,6 +31,7 @@
 
 use crate::crs::SpatialRef;
 use crate::drivers::vector::geoparquet as gp;
+use crate::drivers::vector::profile::LayerProfile;
 use crate::{Error, Result};
 use arrow_array::builder::{BinaryBuilder, StringBuilder};
 use arrow_array::cast::AsArray;
@@ -293,27 +294,26 @@ fn as_integer(v: &FieldValue) -> Option<i64> {
 }
 
 /// Whether a date-time string ends with a UTC offset (`Z`, `+hh:mm`, `-hhmm`).
-fn has_offset(s: &str) -> bool {
+pub(crate) fn has_offset(s: &str) -> bool {
     let time = s.get(10..).unwrap_or_default();
     time.ends_with('Z') || time.get(1..).is_some_and(|t| t.contains('+') || t.rfind('-').is_some_and(|i| i >= 6))
 }
 
-fn column_kind(layer: &Layer, i: usize, t: FieldType) -> Kind {
-    let values = || layer.features.iter().filter_map(move |f| f.attributes.get(i)).filter(|v| !v.is_null());
+fn column_kind(profile: &LayerProfile, i: usize, t: FieldType) -> Kind {
+    let p = profile.fields.get(i).cloned().unwrap_or_default();
     match t {
         FieldType::Integer => Kind::Int64,
         FieldType::Float => Kind::Float64,
         FieldType::Boolean => Kind::Bool,
         FieldType::Blob => Kind::Binary,
         FieldType::Json => Kind::Json,
-        FieldType::Date if values().all(|v| v.as_str().and_then(gp::parse_date).is_some()) => Kind::Date32,
-        FieldType::DateTime if values().all(|v| v.as_str().and_then(gp::parse_datetime).is_some()) => {
+        FieldType::Date if p.all_dates => Kind::Date32,
+        FieldType::DateTime if p.all_datetimes => {
             // One time zone for the whole column: UTC when every value has an offset, local
             // (none) when none has; text otherwise.
-            let with = values().filter(|v| v.as_str().is_some_and(has_offset)).count();
-            match with {
+            match p.with_offset {
                 0 => Kind::Timestamp { utc: false },
-                n if n == values().count() => Kind::Timestamp { utc: true },
+                n if n == p.non_null => Kind::Timestamp { utc: true },
                 _ => Kind::Utf8,
             }
         }
@@ -348,10 +348,10 @@ fn crs_metadata(layer: &Layer) -> String {
 
 /// The native type a layer's geometries can be written as: their shared type, a mix of a type
 /// and its multi-part form counting as the multi-part form.
-fn native_type(layer: &Layer) -> Result<Native> {
-    let t = match crate::drivers::vector::features_type(layer) {
+fn native_type(layer: &Layer, profile: &LayerProfile) -> Result<Native> {
+    let t = match profile.features_type() {
         Some(t) => Some(t),
-        None if layer.features.iter().all(|f| f.geometry.is_none()) => layer.geom_type,
+        None if profile.no_geometry() => layer.geom_type,
         None => {
             return Err(Error::Unsupported(format!(
                 "layer '{}' mixes geometry types, which GeoArrow's native encodings cannot hold: use WKB",
@@ -369,18 +369,13 @@ fn native_type(layer: &Layer) -> Result<Native> {
     }
 }
 
-/// Which coordinate dimensions a layer's geometries have: `(z, m)`.
-fn dimensions(layer: &Layer) -> (bool, bool) {
+/// Whether some coordinate of a geometry has a Z value, and whether some has an M value.
+pub(crate) fn geometry_dims(g: &Geometry) -> (bool, bool) {
     let (mut z, mut m) = (false, false);
-    for g in layer.features.iter().filter_map(|f| f.geometry.as_ref()) {
-        visit_coords(g, &mut |c| {
-            z |= c.z.is_some();
-            m |= c.m.is_some();
-        });
-        if z && m {
-            break;
-        }
-    }
+    visit_coords(g, &mut |c| {
+        z |= c.z.is_some();
+        m |= c.m.is_some();
+    });
     (z, m)
 }
 
@@ -587,44 +582,75 @@ fn native_column(features: &[Feature], kind: Native, z: bool, m: bool, layout: C
 
 /// Converts a layer to an Arrow schema and record batches.
 pub fn layer_to_arrow(layer: &Layer, options: &ArrowWriteOptions) -> Result<ArrowTable> {
-    let fields = layer.schema.fields();
-    let kinds: Vec<Kind> = fields.iter().enumerate().map(|(i, f)| column_kind(layer, i, f.field_type)).collect();
-    let mut schema_fields: Vec<Field> = Vec::new();
-    if let Some(fid) = &options.fid_column {
-        schema_fields.push(Field::new(fid, DataType::Int64, false));
-    }
-    for (f, k) in fields.iter().zip(&kinds) {
-        let mut field = Field::new(&f.name, k.data_type(), true);
-        if matches!(k, Kind::Json) {
-            field = field.with_metadata(HashMap::from([(EXTENSION_NAME.to_string(), "arrow.json".to_string())]));
-        }
-        schema_fields.push(field);
-    }
-    let native = match options.geometry_encoding {
-        GeometryEncoding::Wkb => None,
-        GeometryEncoding::GeoArrow => {
-            let (z, m) = dimensions(layer);
-            Some((native_type(layer)?, z, m))
-        }
-    };
-    let (ext, geom_type) = match native {
-        None => ("geoarrow.wkb".to_string(), DataType::Binary),
-        Some((kind, z, m)) => (format!("geoarrow.{}", kind.name()), native_data_type(kind, z, m, options.coordinates)),
-    };
-    let metadata = HashMap::from([(EXTENSION_NAME.to_string(), ext), (EXTENSION_METADATA.to_string(), crs_metadata(layer))]);
-    schema_fields.push(Field::new(&options.geometry_column, geom_type, true).with_metadata(metadata));
-    let schema = Arc::new(Schema::new(schema_fields));
-
-    let mut batches = Vec::new();
+    let enc = ArrowEncoder::new(layer, &LayerProfile::of(layer), options)?;
     let size = options.batch_size.max(1);
     let chunks: Vec<&[Feature]> = if layer.features.is_empty() { vec![&[]] } else { layer.features.chunks(size).collect() };
-    for chunk in chunks {
+    let batches = chunks.into_iter().map(|c| enc.encode(c)).collect::<Result<Vec<_>>>()?;
+    Ok(ArrowTable { schema: enc.schema(), batches })
+}
+
+/// Encodes the features of a layer as record batches of one schema, chunk by chunk: the column
+/// types depend on the values (dates that parse, time zones, the geometry type of native
+/// encodings), which a [`LayerProfile`] of all the features gives.
+pub struct ArrowEncoder {
+    kinds: Vec<Kind>,
+    native: Option<(Native, bool, bool)>,
+    schema: SchemaRef,
+    options: ArrowWriteOptions,
+}
+
+impl ArrowEncoder {
+    /// An encoder for the features of `layer` (its fields and CRS; its features are not read),
+    /// which `profile` describes.
+    pub fn new(layer: &Layer, profile: &LayerProfile, options: &ArrowWriteOptions) -> Result<Self> {
+        let fields = layer.schema.fields();
+        let kinds: Vec<Kind> = fields.iter().enumerate().map(|(i, f)| column_kind(profile, i, f.field_type)).collect();
+        let mut schema_fields: Vec<Field> = Vec::new();
+        if let Some(fid) = &options.fid_column {
+            schema_fields.push(Field::new(fid, DataType::Int64, false));
+        }
+        for (f, k) in fields.iter().zip(&kinds) {
+            let mut field = Field::new(&f.name, k.data_type(), true);
+            if matches!(k, Kind::Json) {
+                field = field.with_metadata(HashMap::from([(EXTENSION_NAME.to_string(), "arrow.json".to_string())]));
+            }
+            schema_fields.push(field);
+        }
+        let native = match options.geometry_encoding {
+            GeometryEncoding::Wkb => None,
+            GeometryEncoding::GeoArrow => Some((native_type(layer, profile)?, profile.geometry.any_z, profile.geometry.has_m)),
+        };
+        let (ext, geom_type) = match native {
+            None => ("geoarrow.wkb".to_string(), DataType::Binary),
+            Some((kind, z, m)) => (format!("geoarrow.{}", kind.name()), native_data_type(kind, z, m, options.coordinates)),
+        };
+        let metadata = HashMap::from([(EXTENSION_NAME.to_string(), ext), (EXTENSION_METADATA.to_string(), crs_metadata(layer))]);
+        schema_fields.push(Field::new(&options.geometry_column, geom_type, true).with_metadata(metadata));
+        Ok(Self { kinds, native, schema: Arc::new(Schema::new(schema_fields)), options: options.clone() })
+    }
+
+    /// Whether the schema depends on the values of the features of `layer`, so that
+    /// [`ArrowEncoder::new`] needs a profile of them: layers with date or date-time fields, and
+    /// native geometry encodings. Otherwise an empty profile gives the same schema.
+    pub fn needs_profile(layer: &Layer, options: &ArrowWriteOptions) -> bool {
+        options.geometry_encoding != GeometryEncoding::Wkb
+            || layer.schema.fields().iter().any(|f| matches!(f.field_type, FieldType::Date | FieldType::DateTime))
+    }
+
+    /// The schema of the record batches.
+    pub fn schema(&self) -> SchemaRef {
+        self.schema.clone()
+    }
+
+    /// Encodes features as a record batch.
+    pub fn encode(&self, chunk: &[Feature]) -> Result<RecordBatch> {
+        let schema = &self.schema;
         let mut columns: Vec<ArrayRef> = Vec::with_capacity(schema.fields().len());
-        if options.fid_column.is_some() {
+        if self.options.fid_column.is_some() {
             columns.push(Arc::new(chunk.iter().map(|f| Some(f.fid as i64)).collect::<Int64Array>()));
         }
-        columns.extend(kinds.iter().enumerate().map(|(i, k)| k.build(chunk, i)));
-        columns.push(match native {
+        columns.extend(self.kinds.iter().enumerate().map(|(i, k)| k.build(chunk, i)));
+        columns.push(match self.native {
             None => {
                 let mut b = BinaryBuilder::new();
                 for f in chunk {
@@ -632,11 +658,10 @@ pub fn layer_to_arrow(layer: &Layer, options: &ArrowWriteOptions) -> Result<Arro
                 }
                 Arc::new(b.finish())
             }
-            Some((kind, z, m)) => native_column(chunk, kind, z, m, options.coordinates)?,
+            Some((kind, z, m)) => native_column(chunk, kind, z, m, self.options.coordinates)?,
         });
-        batches.push(RecordBatch::try_new(schema.clone(), columns).map_err(arrow_err)?);
+        RecordBatch::try_new(schema.clone(), columns).map_err(arrow_err)
     }
-    Ok(ArrowTable { schema, batches })
 }
 
 /// Writes a layer as an Arrow IPC stream (the `.arrows` format, `application/vnd.apache.arrow.stream`).

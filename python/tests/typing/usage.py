@@ -175,6 +175,26 @@ def vectors(tmp: Path, raster: terrio.Raster) -> None:
         print(anything.layer_names)
 
     terrio.convert(gpkg, str(tmp / "west.fgb"), where="value < 5", select=["name"])
+    stream: terrio.FeatureStream = terrio.open_stream(
+        gpkg, "parcels", batch_size=1, bbox=(0.0, 0.0, 50.0, 50.0)
+    )
+    print(
+        stream.name,
+        stream.crs,
+        stream.geometry_type,
+        stream.fields,
+        stream.batch_size,
+        repr(stream),
+    )
+    chunk: terrio.Layer
+    for chunk in stream:
+        print(len(chunk))
+    rest: terrio.Layer = terrio.open_stream(gpkg).read_all()
+    capsule: object = terrio.open_stream(gpkg).__arrow_c_stream__()
+    feature: dict[str, Any]
+    for feature in terrio.iter_features(gpkg, batch_size=2):
+        print(feature["properties"])
+    print(len(rest), capsule is not None)
     burned = terrio.rasterize(layer, attribute="value", tr=(1.0, 1.0), ot="Int32")
     like = terrio.rasterize(gpkg, burn=1, like=burned, all_touched=True)
     polygons = terrio.polygonize(raster, band=1, connectedness=8)

@@ -158,6 +158,7 @@ terrio info 'STAC:"https://earth-search.aws.element84.com/v1/collections/sentine
 | FlatGeobuf | FlatGeobuf | ✓ | ✓ | fgb |
 | ESRI Shapefile | Shapefile | ✓ | ✓ | shp |
 | GeoJSON | GeoJSON | ✓ | ✓ | geojson, json |
+| GeoJSONSeq | GeoJSON text sequences (a feature per line) | ✓ | ✓ | geojsonl, geojsons, geojsonseq |
 | CSV | CSV with X/Y or WKT columns | ✓ | ✓ | csv, tsv |
 | KML | KML | ✓ | ✓ | kml |
 | KMZ | Zipped KML | ✓ | ✓ | kmz |
@@ -186,6 +187,20 @@ reads it.
   `--overwrite` replaces a layer, and layers are added to files holding other layers or rasters.
   Everything else in the file (tables, rasters, metadata, extensions, triggers, views) is kept;
   the file is written anew and replaces the original.
+- **Streaming**: GeoPackage, FlatGeobuf, GeoParquet, Shapefile, GeoJSON, GeoJSONSeq and CSV
+  layers are read a chunk of features at a time (GeoPackages a leaf page of the table at a time,
+  through the R-tree with `--spat`; GeoParquet a record batch at a time), and FlatGeobuf,
+  GeoParquet, Shapefile, GeoJSON, GeoJSONSeq and CSV are written that way, so `terrio convert`
+  between them works in bounded memory, whatever the size of the layer (see
+  [convert](cli.md#convert)). GeoJSON and CSV inputs are read twice, the first time to infer the
+  fields, as GDAL does; CSV, Shapefile, FlatGeobuf and GeoParquet outputs need the field widths,
+  integer ranges and geometry types of all the features before the first is written, so the input
+  is read twice for them too. FlatGeobuf features are spooled to a temporary file next to the
+  output, then written in the order of the spatial index. A streamed file is identical to the one
+  written from the whole layer.
+- **GeoJSONSeq** files hold a GeoJSON feature per line (RFC 8142, optionally with record
+  separators), written in WGS 84 with counter-clockwise exterior rings, as GDAL's GeoJSONSeq
+  driver writes them.
 - **GeoParquet** is written as GeoParquet 1.1: the CRS as PROJJSON (none for EPSG:4326, which
   the specification makes the default), a `geometry_bbox` covering column, and row groups of
   65536 rows with statistics. Reading with a bounding box (`terrio convert --spat` on a Parquet

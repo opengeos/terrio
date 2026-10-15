@@ -392,6 +392,23 @@ fn convert(
         _ => Some(vector_write_options(format)?),
     };
     py.detach(|| -> terrio::Result<()> {
+        // Vector conversions between formats read and written as streams go a chunk of
+        // features at a time, in bounded memory.
+        if srcwin.is_none() && overview.is_none() && mode == WriteMode::Create && !terrio::tiles::is_archive(src) {
+            let stream = terrio::stream::ConvertOptions {
+                open: VectorOpenOptions {
+                    layers: layers.clone().unwrap_or_default(),
+                    spatial_filter: vector_options.read_filter(src),
+                    ..Default::default()
+                },
+                translate: vector_options.clone(),
+                write: vector_write.clone().unwrap_or_default(),
+                ..Default::default()
+            };
+            if vector_write.is_some() && terrio::stream::can_convert_stream(src, dst, &stream) {
+                return terrio::stream::convert(src, dst, &stream);
+            }
+        }
         let ds = if srcwin.is_some() || overview.is_some() {
             let mut r = terrio::open_raster_lazy(src)?;
             let window = match srcwin {

@@ -85,6 +85,9 @@ pub enum RasterDriver {
 pub enum VectorDriver {
     /// GeoJSON.
     GeoJSON,
+    /// GeoJSON text sequences (RFC 8142): a feature per line, as GDAL's GeoJSONSeq driver reads
+    /// and writes them.
+    GeoJSONSeq,
     /// TopoJSON.
     TopoJSON,
     /// GeoPackage.
@@ -298,6 +301,7 @@ impl VectorDriver {
     /// Every vector driver.
     pub const ALL: &[VectorDriver] = &[
         Self::GeoJSON,
+        Self::GeoJSONSeq,
         Self::TopoJSON,
         Self::GPKG,
         Self::Parquet,
@@ -321,6 +325,7 @@ impl VectorDriver {
     pub fn info(self) -> DriverInfo {
         let (name, long_name, extensions, read, write): (_, _, &'static [&'static str], _, _) = match self {
             Self::GeoJSON => ("GeoJSON", "GeoJSON", &["geojson", "json"], true, true),
+            Self::GeoJSONSeq => ("GeoJSONSeq", "GeoJSON text sequences", &["geojsonl", "geojsons", "geojsonseq"], true, true),
             Self::TopoJSON => ("TopoJSON", "TopoJSON", &["topojson"], true, true),
             Self::GPKG => ("GPKG", "GeoPackage", &["gpkg"], true, true),
             Self::Parquet => ("Parquet", "GeoParquet", &["parquet", "geoparquet"], true, true),
@@ -388,7 +393,7 @@ impl VectorDriver {
             Self::GPX => F::Gpx,
             Self::MapInfo => F::MapInfoMif,
             Self::OSM => F::OsmPbf,
-            Self::CSV | Self::MBTiles | Self::PMTiles | Self::MVT | Self::Gdal => return None,
+            Self::GeoJSONSeq | Self::CSV | Self::MBTiles | Self::PMTiles | Self::MVT | Self::Gdal => return None,
         })
     }
 }

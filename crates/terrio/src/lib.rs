@@ -169,6 +169,7 @@ pub mod raster {
     pub use wbraster::{CrsInfo, RasterError, ReprojectOptions, ResampleMethod};
 }
 pub mod stac;
+pub mod stream;
 mod tiff_mask;
 pub mod vfs;
 

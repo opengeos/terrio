@@ -3,10 +3,11 @@
 //! The whole file is held in memory. Writing sorts the features along a Hilbert curve and writes
 //! the packed R-tree spatial index, as GDAL does.
 
+use super::profile::LayerProfile;
 use crate::crs::SpatialRef;
 use crate::{Error, Result};
 use flatbuffers::{FlatBufferBuilder, ForwardsUOffset, Vector, WIPOffset};
-use flatgeobuf::packed_r_tree::{NodeItem, PackedRTree, calc_extent, hilbert_sort};
+pub(crate) use flatgeobuf::packed_r_tree::{NodeItem, PackedRTree, calc_extent, hilbert_sort};
 use flatgeobuf::{
     Column, ColumnArgs, ColumnType, Crs, CrsArgs, Feature as FgbFeature, FeatureArgs, Geometry as FgbGeometry, GeometryArgs,
     GeometryType as FgbType, Header, HeaderArgs,
@@ -21,17 +22,40 @@ pub fn read(path: &str) -> Result<Layer> {
     parse(&std::fs::read(path)?)
 }
 
-/// Parses a FlatGeobuf file held in memory.
-pub fn parse(buf: &[u8]) -> Result<Layer> {
-    let bad = |what: &str| Error::InvalidData(format!("FlatGeobuf: {what}"));
-    if buf.len() < 12 || buf[..3] != MAGIC[..3] || buf[4..7] != MAGIC[4..7] {
+fn bad(what: &str) -> Error {
+    Error::InvalidData(format!("FlatGeobuf: {what}"))
+}
+
+fn verifier() -> flatbuffers::VerifierOptions {
+    flatbuffers::VerifierOptions { max_tables: usize::MAX, max_apparent_size: usize::MAX, ..Default::default() }
+}
+
+/// What decoding features needs of a file's header.
+#[derive(Debug, Clone)]
+pub(crate) struct FgbHeader {
+    geometry_type: FgbType,
+    has_z: bool,
+    has_m: bool,
+    columns: Vec<ColumnType>,
+    /// The size of the spatial index following the header, in bytes.
+    pub index_size: usize,
+}
+
+/// The length of the header (magic bytes and size-prefixed header) from the first 12 bytes of
+/// a file.
+pub(crate) fn header_len(start: &[u8]) -> Result<usize> {
+    if start.len() < 12 || start[..3] != MAGIC[..3] || start[4..7] != MAGIC[4..7] {
         return Err(bad("not a FlatGeobuf file"));
     }
-    let header_len = u32::from_le_bytes([buf[8], buf[9], buf[10], buf[11]]) as usize;
-    let header_end = 12 + header_len;
+    Ok(12 + u32::from_le_bytes([start[8], start[9], start[10], start[11]]) as usize)
+}
+
+/// Reads a file's header (`buf` holds at least its first [`header_len`] bytes): the layer
+/// without its features, and what decoding them needs.
+pub(crate) fn parse_header(buf: &[u8]) -> Result<(Layer, FgbHeader)> {
+    let header_end = header_len(buf)?;
     let header_buf = buf.get(8..header_end).ok_or_else(|| bad("truncated header"))?;
-    let opts = flatbuffers::VerifierOptions { max_tables: usize::MAX, max_apparent_size: usize::MAX, ..Default::default() };
-    let header = flatgeobuf::size_prefixed_root_as_header_with_opts(&opts, header_buf).map_err(|e| bad(&format!("header: {e}")))?;
+    let header = flatgeobuf::size_prefixed_root_as_header_with_opts(&verifier(), header_buf).map_err(|e| bad(&format!("header: {e}")))?;
 
     let mut layer = Layer::new(header.name().unwrap_or_default());
     layer.geom_type = from_fgb_type(header.geometry_type());
@@ -59,25 +83,40 @@ pub fn parse(buf: &[u8]) -> Result<Layer> {
         }
         layer.add_field(def);
     }
+    let count = header.features_count();
+    let index_size =
+        if header.index_node_size() > 0 && count > 0 { PackedRTree::index_size(count as usize, header.index_node_size()) } else { 0 };
+    let meta = FgbHeader {
+        geometry_type: header.geometry_type(),
+        has_z: header.has_z(),
+        has_m: header.has_m(),
+        columns: columns.iter().map(|c| c.type_()).collect(),
+        index_size,
+    };
+    Ok((layer, meta))
+}
 
-    let count = header.features_count() as usize;
-    let mut pos = header_end;
-    if header.index_node_size() > 0 && count > 0 {
-        pos += PackedRTree::index_size(count, header.index_node_size());
+/// Decodes a feature: `fbuf` is its size-prefixed flatbuffer.
+pub(crate) fn decode_feature(fbuf: &[u8], h: &FgbHeader, fid: u64) -> Result<Feature> {
+    let f = flatgeobuf::size_prefixed_root_as_feature_with_opts(&verifier(), fbuf).map_err(|e| bad(&format!("feature {fid}: {e}")))?;
+    let geometry = f.geometry().and_then(|g| to_geometry(&g, h.geometry_type, h.has_z, h.has_m));
+    let mut attributes = vec![FieldValue::Null; h.columns.len()];
+    if let Some(props) = f.properties() {
+        read_properties(props.bytes(), &h.columns, &mut attributes).map_err(|e| bad(&format!("feature {fid}: {e}")))?;
     }
-    let (has_z, has_m) = (header.has_z(), header.has_m());
+    Ok(Feature { fid, geometry, attributes })
+}
+
+/// Parses a FlatGeobuf file held in memory.
+pub fn parse(buf: &[u8]) -> Result<Layer> {
+    let (mut layer, h) = parse_header(buf)?;
+    let mut pos = header_len(buf)? + h.index_size;
     let mut fid = 0u64;
     while pos + 4 <= buf.len() {
         let len = u32::from_le_bytes([buf[pos], buf[pos + 1], buf[pos + 2], buf[pos + 3]]) as usize;
         let fbuf = buf.get(pos..pos + 4 + len).ok_or_else(|| bad("truncated feature"))?;
         pos += 4 + len;
-        let f = flatgeobuf::size_prefixed_root_as_feature_with_opts(&opts, fbuf).map_err(|e| bad(&format!("feature {fid}: {e}")))?;
-        let geometry = f.geometry().and_then(|g| to_geometry(&g, header.geometry_type(), has_z, has_m));
-        let mut attributes = vec![FieldValue::Null; columns.len()];
-        if let Some(props) = f.properties() {
-            read_properties(props.bytes(), &columns, &mut attributes).map_err(|e| bad(&format!("feature {fid}: {e}")))?;
-        }
-        layer.push(Feature { fid, geometry, attributes });
+        layer.push(decode_feature(fbuf, &h, fid)?);
         fid += 1;
     }
     Ok(layer)
@@ -108,7 +147,7 @@ fn field_type(t: ColumnType) -> FieldType {
     }
 }
 
-fn read_properties(mut b: &[u8], columns: &[Column], out: &mut [FieldValue]) -> std::result::Result<(), String> {
+fn read_properties(mut b: &[u8], columns: &[ColumnType], out: &mut [FieldValue]) -> std::result::Result<(), String> {
     fn take<'a>(b: &mut &'a [u8], n: usize) -> std::result::Result<&'a [u8], String> {
         if b.len() < n {
             return Err("truncated properties".into());
@@ -123,7 +162,7 @@ fn read_properties(mut b: &[u8], columns: &[Column], out: &mut [FieldValue]) -> 
     while !b.is_empty() {
         let i = u16::from_le_bytes(arr(&mut b)?) as usize;
         let col = columns.get(i).ok_or_else(|| format!("column {i} out of range"))?;
-        let v = match col.type_() {
+        let v = match *col {
             ColumnType::Byte => FieldValue::Integer(i8::from_le_bytes(arr(&mut b)?) as i64),
             ColumnType::UByte => FieldValue::Integer(u8::from_le_bytes(arr(&mut b)?) as i64),
             ColumnType::Bool => FieldValue::Boolean(u8::from_le_bytes(arr(&mut b)?) != 0),
@@ -220,97 +259,19 @@ pub fn write(layer: &Layer, path: &str) -> Result<()> {
 
 /// Encodes a layer as a FlatGeobuf file.
 pub fn to_bytes(layer: &Layer) -> Result<Vec<u8>> {
-    let geom_type = layer_type(layer);
-    let has_z = layer.features.iter().filter_map(|f| f.geometry.as_ref()).any(crate::vector::geometry_has_z);
-    let fields = layer.schema.fields();
-    let col_types: Vec<ColumnType> = fields.iter().enumerate().map(|(i, f)| column_type(layer, i, f)).collect();
-
-    // Features, each a size-prefixed flatbuffer, with their bounds, encoded in parallel.
-    let encoded = crate::par::map_range(layer.len(), |i| {
-        let f = &layer.features[i];
-        // Sized for the coordinates, so that the buffer is not regrown as it fills.
-        let coords = f.geometry.as_ref().map_or(0, coord_count);
-        let mut fbb = FlatBufferBuilder::with_capacity(1024 + coords * if has_z { 24 } else { 16 } + f.attributes.len() * 16);
-        let mut node = NodeItem::create(i as u64);
-        let bbox = f.geometry.as_ref().and_then(|g| g.bbox());
-        if let Some(b) = &bbox {
-            node.min_x = b.min_x;
-            node.min_y = b.min_y;
-            node.max_x = b.max_x;
-            node.max_y = b.max_y;
-        }
-        let geometry = f.geometry.as_ref().map(|g| build_geometry(&mut fbb, g, geom_type == FgbType::Unknown, has_z));
-        let mut props = Vec::new();
-        for (ci, (v, t)) in f.attributes.iter().zip(&col_types).enumerate() {
-            write_property(&mut props, ci as u16, v, *t);
-        }
-        let properties = (!props.is_empty()).then(|| fbb.create_vector(&props));
-        let feature = FgbFeature::create(&mut fbb, &FeatureArgs { geometry, properties, columns: None });
-        fbb.finish_size_prefixed(feature, None);
-        (fbb.finished_data().to_vec(), node, bbox.is_some())
-    });
-    let all_have_geometry = encoded.iter().all(|e| e.2);
-    let (features, nodes): (Vec<Vec<u8>>, Vec<NodeItem>) = encoded.into_iter().map(|(f, n, _)| (f, n)).unzip();
-    let mut nodes = nodes;
-    let index = all_have_geometry && !features.is_empty();
+    let profile = LayerProfile::of(layer);
+    let enc = FgbEncoder::new(layer, &profile);
+    let encoded = enc.encode(&layer.features, 0);
+    let (features, mut nodes): (Vec<Vec<u8>>, Vec<NodeItem>) = encoded.into_iter().unzip();
+    let index = !profile.geometry.missing_bbox && !features.is_empty();
     let extent = calc_extent(&nodes);
-
-    // Header.
-    let mut fbb = FlatBufferBuilder::new();
-    let name = fbb.create_string(&layer.name);
-    let columns: Vec<WIPOffset<Column>> = fields
-        .iter()
-        .zip(&col_types)
-        .map(|(f, t)| {
-            let name = fbb.create_string(&f.name);
-            let width = if f.field_type == FieldType::Text { f.width as i32 } else { 0 };
-            Column::create(&mut fbb, &ColumnArgs { name: Some(name), type_: *t, width, nullable: true, ..Default::default() })
-        })
-        .collect();
-    let columns: Option<WIPOffset<Vector<ForwardsUOffset<Column>>>> = (!columns.is_empty()).then(|| fbb.create_vector(&columns));
-    let srs = SpatialRef::from_layer(layer);
-    let code = super::trusted_epsg(layer);
-    let crs = (!srs.is_unknown()).then(|| {
-        let wkt = super::output_wkt(layer).map(|w| fbb.create_string(&w));
-        let org = code.map(|_| fbb.create_string("EPSG"));
-        Crs::create(&mut fbb, &CrsArgs { org, code: code.unwrap_or(0) as i32, wkt, ..Default::default() })
-    });
-    let envelope = extent.min_x.is_finite().then(|| fbb.create_vector(&[extent.min_x, extent.min_y, extent.max_x, extent.max_y]));
-    let header = Header::create(
-        &mut fbb,
-        &HeaderArgs {
-            name: Some(name),
-            envelope,
-            geometry_type: geom_type,
-            has_z,
-            columns,
-            features_count: features.len() as u64,
-            index_node_size: if index { NODE_SIZE } else { 0 },
-            crs,
-            ..Default::default()
-        },
-    );
-    fbb.finish_size_prefixed(header, None);
-
     let mut out = Vec::with_capacity(features.iter().map(Vec::len).sum::<usize>() + 4096);
-    out.extend_from_slice(&MAGIC);
-    out.extend_from_slice(fbb.finished_data());
+    out.extend_from_slice(&enc.header(layer, features.len() as u64, &extent, index));
     if index {
-        hilbert_sort(&mut nodes, &extent);
-        let mut offset = 0u64;
-        let sorted: Vec<NodeItem> = nodes
-            .iter()
-            .map(|n| {
-                let mut item = n.clone();
-                item.offset = offset;
-                offset += features[n.offset as usize].len() as u64;
-                item
-            })
-            .collect();
-        let tree = PackedRTree::build(&sorted, &extent, NODE_SIZE).map_err(|e| Error::InvalidData(format!("FlatGeobuf index: {e}")))?;
+        let (tree, order) = sorted_index(&mut nodes, &extent, |i| features[i].len() as u64)?;
         tree.stream_write(&mut out)?;
-        for n in &nodes {
-            out.extend_from_slice(&features[n.offset as usize]);
+        for i in order {
+            out.extend_from_slice(&features[i as usize]);
         }
     } else {
         for f in &features {
@@ -320,12 +281,120 @@ pub fn to_bytes(layer: &Layer) -> Result<Vec<u8>> {
     Ok(out)
 }
 
+/// Sorts index nodes (whose `offset` holds the feature number) along the Hilbert curve and
+/// builds the packed R-tree over them, with the byte offsets of the features in that order
+/// (`len` gives the size of feature `i`). Returns the tree and the feature numbers in order; the
+/// nodes are left holding the byte offsets.
+pub(crate) fn sorted_index(nodes: &mut [NodeItem], extent: &NodeItem, len: impl Fn(usize) -> u64) -> Result<(PackedRTree, Vec<u64>)> {
+    hilbert_sort(nodes, extent);
+    let order: Vec<u64> = nodes.iter().map(|n| n.offset).collect();
+    let mut offset = 0u64;
+    for n in nodes.iter_mut() {
+        let size = len(n.offset as usize);
+        n.offset = offset;
+        offset += size;
+    }
+    let tree = PackedRTree::build(nodes, extent, NODE_SIZE).map_err(|e| Error::InvalidData(format!("FlatGeobuf index: {e}")))?;
+    Ok((tree, order))
+}
+
+/// Encodes the features of a layer, chunk by chunk, with the types its profile decides.
+pub(crate) struct FgbEncoder {
+    geom_type: FgbType,
+    has_z: bool,
+    col_types: Vec<ColumnType>,
+}
+
+impl FgbEncoder {
+    /// An encoder for the features of `layer` (its fields; its features are not read), whose
+    /// features `profile` describes.
+    pub(crate) fn new(layer: &Layer, profile: &LayerProfile) -> Self {
+        let fields = layer.schema.fields();
+        Self {
+            geom_type: layer_type(layer, profile),
+            has_z: profile.geometry.has_z,
+            col_types: fields.iter().enumerate().map(|(i, f)| column_type(profile, i, f)).collect(),
+        }
+    }
+
+    /// Each feature as a size-prefixed flatbuffer, with its index node (bounds, and the
+    /// feature's number from `first` in `offset`), encoded in parallel.
+    pub(crate) fn encode(&self, features: &[Feature], first: u64) -> Vec<(Vec<u8>, NodeItem)> {
+        let (geom_type, has_z, col_types) = (self.geom_type, self.has_z, &self.col_types);
+        crate::par::map_range(features.len(), |i| {
+            let f = &features[i];
+            // Sized for the coordinates, so that the buffer is not regrown as it fills.
+            let coords = f.geometry.as_ref().map_or(0, coord_count);
+            let mut fbb = FlatBufferBuilder::with_capacity(1024 + coords * if has_z { 24 } else { 16 } + f.attributes.len() * 16);
+            let mut node = NodeItem::create(first + i as u64);
+            if let Some(b) = f.geometry.as_ref().and_then(|g| g.bbox()) {
+                node.min_x = b.min_x;
+                node.min_y = b.min_y;
+                node.max_x = b.max_x;
+                node.max_y = b.max_y;
+            }
+            let geometry = f.geometry.as_ref().map(|g| build_geometry(&mut fbb, g, geom_type == FgbType::Unknown, has_z));
+            let mut props = Vec::new();
+            for (ci, (v, t)) in f.attributes.iter().zip(col_types).enumerate() {
+                write_property(&mut props, ci as u16, v, *t);
+            }
+            let properties = (!props.is_empty()).then(|| fbb.create_vector(&props));
+            let feature = FgbFeature::create(&mut fbb, &FeatureArgs { geometry, properties, columns: None });
+            fbb.finish_size_prefixed(feature, None);
+            (fbb.finished_data().to_vec(), node)
+        })
+    }
+
+    /// The magic bytes and header of a file of `count` features within `extent`.
+    pub(crate) fn header(&self, layer: &Layer, count: u64, extent: &NodeItem, index: bool) -> Vec<u8> {
+        let fields = layer.schema.fields();
+        let mut fbb = FlatBufferBuilder::new();
+        let name = fbb.create_string(&layer.name);
+        let columns: Vec<WIPOffset<Column>> = fields
+            .iter()
+            .zip(&self.col_types)
+            .map(|(f, t)| {
+                let name = fbb.create_string(&f.name);
+                let width = if f.field_type == FieldType::Text { f.width as i32 } else { 0 };
+                Column::create(&mut fbb, &ColumnArgs { name: Some(name), type_: *t, width, nullable: true, ..Default::default() })
+            })
+            .collect();
+        let columns: Option<WIPOffset<Vector<ForwardsUOffset<Column>>>> = (!columns.is_empty()).then(|| fbb.create_vector(&columns));
+        let srs = SpatialRef::from_layer(layer);
+        let code = super::trusted_epsg(layer);
+        let crs = (!srs.is_unknown()).then(|| {
+            let wkt = super::output_wkt(layer).map(|w| fbb.create_string(&w));
+            let org = code.map(|_| fbb.create_string("EPSG"));
+            Crs::create(&mut fbb, &CrsArgs { org, code: code.unwrap_or(0) as i32, wkt, ..Default::default() })
+        });
+        let envelope = extent.min_x.is_finite().then(|| fbb.create_vector(&[extent.min_x, extent.min_y, extent.max_x, extent.max_y]));
+        let header = Header::create(
+            &mut fbb,
+            &HeaderArgs {
+                name: Some(name),
+                envelope,
+                geometry_type: self.geom_type,
+                has_z: self.has_z,
+                columns,
+                features_count: count,
+                index_node_size: if index { NODE_SIZE } else { 0 },
+                crs,
+                ..Default::default()
+            },
+        );
+        fbb.finish_size_prefixed(header, None);
+        let mut out = MAGIC.to_vec();
+        out.extend_from_slice(fbb.finished_data());
+        out
+    }
+}
+
 /// The geometry type to declare: the type every feature has, as GDAL declares it, and `Unknown`
 /// (each geometry carrying its own type) otherwise. Without geometries, the declared type.
-fn layer_type(layer: &Layer) -> FgbType {
-    let t = match super::uniform_type(layer) {
+fn layer_type(layer: &Layer, profile: &LayerProfile) -> FgbType {
+    let t = match profile.uniform_type() {
         Some(t) => Some(t),
-        None if layer.features.iter().all(|f| f.geometry.is_none()) => layer.geom_type,
+        None if profile.no_geometry() => layer.geom_type,
         None => None,
     };
     match t {
@@ -340,11 +409,14 @@ fn layer_type(layer: &Layer) -> FgbType {
     }
 }
 
-fn column_type(layer: &Layer, i: usize, f: &FieldDef) -> ColumnType {
+fn column_type(profile: &LayerProfile, i: usize, f: &FieldDef) -> ColumnType {
     match f.field_type {
         FieldType::Integer => {
-            let fits = layer.features.iter().filter_map(|ft| ft.attributes.get(i)?.as_i64()).all(|v| i32::try_from(v).is_ok());
-            if fits { ColumnType::Int } else { ColumnType::Long }
+            if profile.fields.get(i).is_none_or(|p| p.no_int_beyond_int32) {
+                ColumnType::Int
+            } else {
+                ColumnType::Long
+            }
         }
         FieldType::Float => ColumnType::Double,
         FieldType::Boolean => ColumnType::Bool,

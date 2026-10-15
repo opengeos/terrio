@@ -20,6 +20,8 @@ Suites:
     vector-ops        ogr2ogr options, rasterize, polygonize (compare_vector_ops_with_gdal.py)
     arrow             Arrow and GeoArrow export and import (compare_arrow_with_gdal.py)
     gpkg              GeoPackage updates and R-tree filters (compare_gpkg_with_gdal.py)
+    streams           streamed vector conversions vs whole ones and ogr2ogr
+                      (compare_streams_with_gdal.py)
     pointclouds       LAS, LAZ and COPC vs laspy and PDAL (compare_pointclouds.py)
     crs               every EPSG CRS's transformations vs GDAL's (tests/epsg_accuracy.rs)
     crs-grids         the same with datum shift grids, then grids, geoid models and coordinate
@@ -713,6 +715,35 @@ def suite_gpkg(ctx):
     return s
 
 
+def suite_streams(ctx):
+    """Streamed vector conversions vs whole-layer ones, and a large layer vs ogr2ogr."""
+    s = Suite(
+        "streams",
+        "Streamed vector conversions",
+        "terrio's whole-layer conversions, `ogr2ogr`",
+        "Vector conversions read and written a chunk of features at a time, compared with the same "
+        "conversions of whole layers (identical files; GeoParquet by content) and read back by GDAL; "
+        "a synthetic layer of 100,000 polygons converted by terrio and `ogr2ogr`, compared by feature "
+        "count and a sample of features.",
+    )
+    _code, out, err = run(
+        [sys.executable, str(SCRIPTS / "compare_streams_with_gdal.py"), ctx.data, "--terrio", ctx.terrio, "--features", "100000"]
+    )
+    for line in out.splitlines():
+        m = re.match(r"^(ok |BAD) (\S+)->(\S+)\s{2}(.*)$", line)
+        if m:
+            status = IDENTICAL if m[1] == "ok " else DIFFERS
+            s.cases.append(Case(f"stream to {m[3]}", m[2], status, "" if status == IDENTICAL else m[4]))
+            continue
+        m = re.match(r"^\s+(\S+ -> \S+)\s.*\s(same|DIFFERS) \((.*)\)$", line)
+        if m:
+            status = IDENTICAL if m[2] == "same" else DIFFERS
+            s.cases.append(Case("large layer vs ogr2ogr", m[1], status, "" if status == IDENTICAL else m[3]))
+    if not s.cases:
+        s.error = tail(err or out)
+    return s
+
+
 SUITES = OrderedDict(
     [
         ("summaries", suite_summaries),
@@ -726,6 +757,7 @@ SUITES = OrderedDict(
         ("vector-ops", suite_vector_ops),
         ("arrow", suite_arrow),
         ("gpkg", suite_gpkg),
+        ("streams", suite_streams),
         ("pointclouds", suite_pointclouds),
         ("crs", suite_crs),
         ("crs-grids", suite_crs_grids),

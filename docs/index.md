@@ -18,8 +18,9 @@ terrio rasterize counties.gpkg counties.tif -a FIPS --tr 0.01 0.01
 - **Rasters**: GeoTIFF, Cloud Optimized GeoTIFF, JPEG 2000, Zarr v2/v3, netCDF (classic and
   netCDF-4, with groups), HDF5, ERDAS Imagine,
   ENVI, Esri grids, GeoPackage tiles, VRT and more. See [Formats](formats.md).
-- **Vectors**: GeoPackage, GeoParquet, FlatGeobuf, Shapefile, GeoJSON, CSV, KML/KMZ, GML, GPX,
-  TopoJSON, MapInfo and OpenStreetMap PBF.
+- **Vectors**: GeoPackage, GeoParquet, FlatGeobuf, Shapefile, GeoJSON (and GeoJSONSeq), CSV,
+  KML/KMZ, GML, GPX, TopoJSON, MapInfo and OpenStreetMap PBF; layers larger than memory read and
+  converted as streams of features.
 - **Point clouds**: LAS 1.0 to 1.4 (with waveforms), LAZ, COPC, PLY and E57, read and written,
   and EPT read; remote COPC and EPT read by bounds and octree level; files larger than memory in
   chunks; PDAL's filters (SMRF ground classification, outliers, ranges, sampling, voxels);

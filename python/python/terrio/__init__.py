@@ -21,8 +21,12 @@ formats, local or remote, without GDAL::
     dem = points.grid(1.0, stat="idw")  # a Raster
 """
 
+from collections.abc import Iterator as _Iterator
+from typing import Any as _Any
+
 from terrio._terrio import (
     ArrowTable,
+    FeatureStream,
     GeoTiffWriter,
     Layer,
     PointChunks,
@@ -46,6 +50,7 @@ from terrio._terrio import (
     open_bytes,
     open_points,
     open_raster,
+    open_stream,
     open_vector,
     polygonize,
     proximity,
@@ -74,6 +79,7 @@ from terrio.errors import (
 __all__ = [
     "ArrowTable",
     "CRSError",
+    "FeatureStream",
     "GeoTiffWriter",
     "InvalidArgumentError",
     "InvalidDataError",
@@ -97,12 +103,14 @@ __all__ = [
     "drivers",
     "from_arrow",
     "info",
+    "iter_features",
     "list_layers",
     "mosaic",
     "open",
     "open_bytes",
     "open_points",
     "open_raster",
+    "open_stream",
     "open_vector",
     "polygonize",
     "proximity",
@@ -118,3 +126,33 @@ __all__ = [
     "write_raster",
     "write_vector",
 ]
+
+
+def iter_features(
+    path: str,
+    layer: str | None = None,
+    *,
+    batch_size: int = 65536,
+    bbox: tuple[float, float, float, float] | None = None,
+) -> _Iterator[dict[str, _Any]]:
+    """Iterates over the features of a vector layer, reading it a chunk at a time.
+
+    The features come as GeoJSON-like dictionaries (the ``__geo_interface__`` of each
+    feature), so that layers larger than memory can be processed feature by feature. See
+    ``open_stream`` for the formats read as streams.
+
+    Args:
+        path: The dataset's path or URL.
+        layer: The layer's name. By default, the first layer.
+        batch_size: The most features read at a time.
+        bbox: Only the features whose bounding box intersects this rectangle
+            ``(min_x, min_y, max_x, max_y)``, in the layer's CRS (GeoPackage and GeoParquet).
+
+    Yields:
+        dict: A GeoJSON ``Feature``: ``id``, ``geometry`` and ``properties``.
+
+    Raises:
+        InvalidArgumentError: If the dataset has no such layer.
+    """
+    for chunk in open_stream(path, layer, batch_size=batch_size, bbox=bbox):
+        yield from chunk.__geo_interface__["features"]

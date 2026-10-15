@@ -51,6 +51,8 @@ __all__ = [
     "crs_info",
     "suggested_grid",
     "gcp_transform",
+    "FeatureStream",
+    "open_stream",
 ]
 
 __version__: str
@@ -484,6 +486,32 @@ def write_vector(
     append: bool = False,
     overwrite: bool = False,
 ) -> None: ...
+@final
+class FeatureStream:
+    """A vector layer read as a stream of `Layer` chunks."""
+
+    @property
+    def name(self) -> str: ...
+    @property
+    def crs(self) -> str | None: ...
+    @property
+    def geometry_type(self) -> str: ...
+    @property
+    def fields(self) -> dict[str, str]: ...
+    @property
+    def batch_size(self) -> int: ...
+    def __iter__(self) -> FeatureStream: ...
+    def __next__(self) -> Layer: ...
+    def read_all(self) -> Layer: ...
+    def __arrow_c_stream__(self, requested_schema: object | None = None) -> object: ...
+
+def open_stream(
+    path: str,
+    layer: str | None = None,
+    *,
+    batch_size: int = 65536,
+    bbox: _Bounds | None = None,
+) -> FeatureStream: ...
 def convert(
     src: str,
     dst: str,

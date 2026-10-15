@@ -14,6 +14,7 @@ pub mod kml;
 pub mod kml_style;
 pub mod mapinfo;
 pub mod osm;
+pub(crate) mod profile;
 pub(crate) mod projjson;
 pub mod shapefile;
 pub mod sqlite;
@@ -32,6 +33,10 @@ pub(crate) fn read(path: &str, driver: VectorDriver, options: &VectorOpenOptions
     Ok(Some(match driver {
         VectorDriver::FlatGeobuf => vec![flatgeobuf::read(path)?],
         VectorDriver::GeoJSON => vec![geojson::read(path)?],
+        VectorDriver::GeoJSONSeq => {
+            let stem = std::path::Path::new(path).file_stem().and_then(|s| s.to_str()).unwrap_or("layer");
+            vec![geojson::parse_seq(&std::fs::read(path)?, stem)?]
+        }
         VectorDriver::CSV => vec![csv::read(path, &options.csv)?],
         VectorDriver::Parquet => vec![geoparquet::read_filtered(path, options.spatial_filter)?],
         VectorDriver::Shapefile => vec![shapefile::read(path)?],
@@ -52,6 +57,7 @@ pub(crate) fn write(layer: &Layer, path: &str, driver: VectorDriver, options: &V
     match driver {
         VectorDriver::FlatGeobuf => flatgeobuf::write(layer, path)?,
         VectorDriver::GeoJSON => geojson::write(layer, path, &options.geojson)?,
+        VectorDriver::GeoJSONSeq => std::fs::write(path, geojson::to_seq_string(layer)?)?,
         VectorDriver::CSV => csv::write(layer, path, &options.csv)?,
         VectorDriver::Parquet => geoparquet::write(layer, path)?,
         VectorDriver::Shapefile => shapefile::write(layer, path)?,
@@ -79,6 +85,7 @@ pub(crate) fn read_bytes(bytes: Vec<u8>, name: &str, driver: VectorDriver, optio
     Ok(Some(match driver {
         VectorDriver::FlatGeobuf => vec![flatgeobuf::parse(&bytes)?],
         VectorDriver::GeoJSON => vec![geojson::parse(&bytes, stem)?],
+        VectorDriver::GeoJSONSeq => vec![geojson::parse_seq(&bytes, stem)?],
         VectorDriver::CSV => {
             let tsv = crate::formats::extension(name).as_deref() == Some("tsv");
             let options = csv::CsvOptions { separator: options.csv.separator.or(tsv.then_some(b'\t')), ..options.csv.clone() };
@@ -128,6 +135,7 @@ pub(crate) fn write_bytes(layers: &[Layer], driver: VectorDriver, options: &Vect
         VectorDriver::TopoJSON => topojson::to_string(layers)?.into_bytes(),
         VectorDriver::FlatGeobuf => flatgeobuf::to_bytes(first)?,
         VectorDriver::GeoJSON => geojson::to_string(first, &options.geojson)?.into_bytes(),
+        VectorDriver::GeoJSONSeq => geojson::to_seq_string(first)?.into_bytes(),
         VectorDriver::CSV => csv::to_string(first, &options.csv)?.into_bytes(),
         VectorDriver::Parquet => geoparquet::to_bytes(first)?,
         // Without its schema file: readers infer the field types.
@@ -170,24 +178,6 @@ pub(crate) fn uniform_type(layer: &Layer) -> Option<GeometryType> {
     let mut types = layer.features.iter().filter_map(|f| f.geometry.as_ref()).map(|g| g.geom_type());
     let first = types.next()?;
     types.all(|t| t == first).then_some(first)
-}
-
-/// The type the features' geometries share, counting a mix of single and multi-part forms as the
-/// multi-part type. `None` when there are no geometries or they mix other types.
-pub(crate) fn features_type(layer: &Layer) -> Option<GeometryType> {
-    use GeometryType as T;
-    let mut found: Option<GeometryType> = None;
-    for t in layer.features.iter().filter_map(|f| f.geometry.as_ref()).map(|g| g.geom_type()) {
-        found = Some(match (found, t) {
-            (None, t) => t,
-            (Some(a), b) if a == b => a,
-            (Some(T::Point | T::MultiPoint), T::Point | T::MultiPoint) => T::MultiPoint,
-            (Some(T::LineString | T::MultiLineString), T::LineString | T::MultiLineString) => T::MultiLineString,
-            (Some(T::Polygon | T::MultiPolygon), T::Polygon | T::MultiPolygon) => T::MultiPolygon,
-            _ => return None,
-        });
-    }
-    found
 }
 
 /// Builds polygons from rings by containment, whatever their orientation, as GDAL's

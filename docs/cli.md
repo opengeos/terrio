@@ -80,6 +80,13 @@ Point clouds (LAS, LAZ, COPC) convert to LAS, LAZ, COPC or a vector layer of poi
 `--t-srs`, `--a-srs`, `--point-format`, `--las-version`, `--scale`, `--offset` and `--dims`; see
 [Point Clouds](point-clouds.md).
 
+Vector layers convert as streams, a chunk of features at a time, when the input is a local
+GeoPackage, FlatGeobuf, GeoParquet, Shapefile, GeoJSON, GeoJSONSeq or CSV file, the output a
+FlatGeobuf, GeoParquet, Shapefile, GeoJSON, GeoJSONSeq or CSV file, and neither `--sql`,
+`--append` nor `--overwrite` is given: memory stays bounded whatever the size of the layer (a
+15-million-polygon, 3.8 GB GeoPackage converts to GeoParquet in 192 MB, as `ogr2ogr` does in
+169 MB). The other conversions read the layers whole. See [Formats](formats.md#vectors).
+
 The `--where` language supports comparisons, `AND`/`OR`/`NOT`, parentheses, `IN`, `LIKE`/`ILIKE`,
 `IS [NOT] NULL`, `BETWEEN`, arithmetic, `||` and `FID`, with OGR SQL's null semantics.
 

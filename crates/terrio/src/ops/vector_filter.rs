@@ -133,99 +133,163 @@ fn translate_layer<'a>(
     o: &VectorTranslateOptions,
     sql_limit: Option<usize>,
 ) -> Result<Layer> {
-    let mut src_srs = SpatialRef::from_layer(layer);
-    if let Some(s) = &o.src_srs {
-        src_srs = s.clone();
+    let mut t = Translator::with_limit(layer, o, sql_limit)?;
+    t.apply_iter(features)
+}
+
+/// [`translate`] applied to a layer chunk by chunk, for layers read and written as streams: the
+/// filters, the field selection, geometry conversions and reprojection apply to each chunk, and
+/// the limit counts the features of all the chunks. `--sql` needs the whole layer.
+pub struct Translator {
+    src: Layer,
+    options: VectorTranslateOptions,
+    filter: Option<crate::ops::sql::BoundExpression>,
+    spatial: Option<SpatialFilter>,
+    limit: Option<usize>,
+    taken: usize,
+    mapping: Option<Vec<usize>>,
+    schema: Layer,
+}
+
+impl Translator {
+    /// A translator for the features of `layer` (its fields and CRS; its features are not read).
+    pub fn new(layer: &Layer, options: &VectorTranslateOptions) -> Result<Self> {
+        if options.sql.is_some() {
+            return Err(Error::Unsupported("an SQL statement needs the whole layer: it cannot be applied to a stream".into()));
+        }
+        Self::with_limit(layer, options, None)
     }
-    let filter = o.where_clause.as_deref().map(|w| Expression::parse(w)?.bind(&layer.schema)).transpose()?;
-    let spatial = match o.spatial_filter {
-        Some(rect) => Some(SpatialFilter::new(rect, o.spatial_filter_srs.as_ref(), &src_srs)?),
-        None => None,
-    };
-    let limit = match (o.limit, sql_limit) {
-        (Some(a), Some(b)) => Some(a.min(b)),
-        (a, b) => a.or(b),
-    };
-    let mut out = Layer::new(layer.name.clone());
-    out.geom_type = layer.geom_type;
-    out.crs = layer.crs.clone();
-    let mapping: Option<Vec<usize>> = match &o.select {
-        Some(names) => {
-            let mut idx = Vec::new();
-            for n in names.iter().map(|n| n.trim()).filter(|n| !n.is_empty()) {
-                idx.push(
-                    field_index(&layer.schema, n)
-                        .ok_or_else(|| Error::InvalidArgument(format!("field '{n}' not found in layer '{}'", layer.name)))?,
-                );
-            }
-            Some(idx)
+
+    fn with_limit(layer: &Layer, o: &VectorTranslateOptions, sql_limit: Option<usize>) -> Result<Self> {
+        let mut src_srs = SpatialRef::from_layer(layer);
+        if let Some(s) = &o.src_srs {
+            src_srs = s.clone();
         }
-        None => None,
-    };
-    match &mapping {
-        Some(idx) => idx.iter().for_each(|&i| out.schema.add_field(layer.schema.fields()[i].clone())),
-        None => out.schema = layer.schema.clone(),
-    }
-    // The limit counts source features, as ogr2ogr does, even when exploding collections.
-    let mut taken = 0;
-    for f in features {
-        if limit.is_some_and(|n| taken >= n) {
-            break;
-        }
-        if let Some(sf) = &spatial
-            && !f.geometry.as_ref().is_some_and(|g| sf.intersects(g))
-        {
-            continue;
-        }
-        if let Some(e) = &filter
-            && !e.matches(&f)
-        {
-            continue;
-        }
-        taken += 1;
-        let f = f.into_owned();
-        let attributes: Vec<FieldValue> = match &mapping {
-            Some(idx) => idx.iter().map(|&i| f.attributes.get(i).cloned().unwrap_or(FieldValue::Null)).collect(),
-            None => f.attributes,
+        let filter = o.where_clause.as_deref().map(|w| Expression::parse(w)?.bind(&layer.schema)).transpose()?;
+        let spatial = match o.spatial_filter {
+            Some(rect) => Some(SpatialFilter::new(rect, o.spatial_filter_srs.as_ref(), &src_srs)?),
+            None => None,
         };
-        match (f.geometry, o.explode_collections) {
-            (Some(g), true) => {
-                for g in explode(&g) {
-                    out.features.push(Feature { fid: f.fid, geometry: Some(g), attributes: attributes.clone() });
+        let limit = match (o.limit, sql_limit) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        };
+        let mapping: Option<Vec<usize>> = match &o.select {
+            Some(names) => {
+                let mut idx = Vec::new();
+                for n in names.iter().map(|n| n.trim()).filter(|n| !n.is_empty()) {
+                    idx.push(
+                        field_index(&layer.schema, n)
+                            .ok_or_else(|| Error::InvalidArgument(format!("field '{n}' not found in layer '{}'", layer.name)))?,
+                    );
+                }
+                Some(idx)
+            }
+            None => None,
+        };
+        let mut src = Layer::new(layer.name.clone());
+        src.geom_type = layer.geom_type;
+        src.crs = layer.crs.clone();
+        match &mapping {
+            Some(idx) => idx.iter().for_each(|&i| src.schema.add_field(layer.schema.fields()[i].clone())),
+            None => src.schema = layer.schema.clone(),
+        }
+        let mut t = Self { src, options: o.clone(), filter, spatial, limit, taken: 0, mapping, schema: Layer::new(String::new()) };
+        t.schema = t.finish(t.empty())?;
+        Ok(t)
+    }
+
+    fn empty(&self) -> Layer {
+        let mut out = Layer::new(self.src.name.clone());
+        out.geom_type = self.src.geom_type;
+        out.crs = self.src.crs.clone();
+        out.schema = self.src.schema.clone();
+        out
+    }
+
+    /// The output layer, without features: its name, fields, geometry type and CRS.
+    pub fn schema(&self) -> &Layer {
+        &self.schema
+    }
+
+    /// Whether the limit has been reached: no further feature will be kept.
+    pub fn is_done(&self) -> bool {
+        self.limit.is_some_and(|n| self.taken >= n)
+    }
+
+    /// Translates a chunk of features (a layer with the input's fields).
+    pub fn apply(&mut self, chunk: Layer) -> Result<Layer> {
+        self.apply_iter(chunk.features.into_iter().map(Cow::Owned))
+    }
+
+    fn apply_iter<'a>(&mut self, features: impl Iterator<Item = Cow<'a, Feature>>) -> Result<Layer> {
+        let mut out = self.empty();
+        // The limit counts source features, as ogr2ogr does, even when exploding collections.
+        for f in features {
+            if self.is_done() {
+                break;
+            }
+            if let Some(sf) = &self.spatial
+                && !f.geometry.as_ref().is_some_and(|g| sf.intersects(g))
+            {
+                continue;
+            }
+            if let Some(e) = &self.filter
+                && !e.matches(&f)
+            {
+                continue;
+            }
+            self.taken += 1;
+            let f = f.into_owned();
+            let attributes: Vec<FieldValue> = match &self.mapping {
+                Some(idx) => idx.iter().map(|&i| f.attributes.get(i).cloned().unwrap_or(FieldValue::Null)).collect(),
+                None => f.attributes,
+            };
+            match (f.geometry, self.options.explode_collections) {
+                (Some(g), true) => {
+                    for g in explode(&g) {
+                        out.features.push(Feature { fid: f.fid, geometry: Some(g), attributes: attributes.clone() });
+                    }
+                }
+                (g, _) => out.features.push(Feature { fid: f.fid, geometry: g, attributes }),
+            }
+        }
+        self.finish(out)
+    }
+
+    /// The geometry conversion, reprojection, CRS assignment and renaming of a chunk.
+    fn finish(&self, mut out: Layer) -> Result<Layer> {
+        let o = &self.options;
+        if let Some(conv) = o.geometry_type {
+            for f in &mut out.features {
+                if let Some(g) = f.geometry.take() {
+                    f.geometry = Some(convert_geometry(g, conv));
                 }
             }
-            (g, _) => out.features.push(Feature { fid: f.fid, geometry: g, attributes }),
+            out.geom_type = match conv {
+                GeometryConversion::To(t) => Some(t),
+                GeometryConversion::Any => None,
+                GeometryConversion::Keep => out.geom_type,
+                GeometryConversion::PromoteToMulti => out.geom_type.map(promote_type),
+            };
+        } else if o.explode_collections {
+            out.geom_type = out.geom_type.map(single_type);
         }
-    }
-    if let Some(conv) = o.geometry_type {
-        for f in &mut out.features {
-            if let Some(g) = f.geometry.take() {
-                f.geometry = Some(convert_geometry(g, conv));
-            }
+        if let Some(s) = &o.src_srs {
+            s.apply_to_layer(&mut out);
         }
-        out.geom_type = match conv {
-            GeometryConversion::To(t) => Some(t),
-            GeometryConversion::Any => None,
-            GeometryConversion::Keep => out.geom_type,
-            GeometryConversion::PromoteToMulti => out.geom_type.map(promote_type),
-        };
-    } else if o.explode_collections {
-        out.geom_type = out.geom_type.map(single_type);
+        if let Some(dst) = &o.dst_srs {
+            out = crate::vector::reproject_layer_owned(out, dst)?;
+        }
+        if let Some(a) = &o.assign_srs {
+            a.apply_to_layer(&mut out);
+        }
+        if let Some(name) = &o.layer_name {
+            out.name = name.clone();
+        }
+        out.extent = None;
+        Ok(out)
     }
-    if let Some(s) = &o.src_srs {
-        s.apply_to_layer(&mut out);
-    }
-    if let Some(dst) = &o.dst_srs {
-        out = crate::vector::reproject_layer_owned(out, dst)?;
-    }
-    if let Some(a) = &o.assign_srs {
-        a.apply_to_layer(&mut out);
-    }
-    if let Some(name) = &o.layer_name {
-        out.name = name.clone();
-    }
-    out.extent = None;
-    Ok(out)
 }
 
 /// Runs a `SELECT` on the layer it names. Returns the result and its `LIMIT`.

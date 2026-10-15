@@ -27,9 +27,38 @@ pub(crate) struct Content {
     pub description: String,
 }
 
+/// What reading layers needs of a database: its schema and its small tables, read whole.
+pub(crate) trait Tables {
+    /// The schema: `(type, name, table, root page, sql)` of every table, index, view and trigger.
+    fn schema(&self) -> Result<Vec<sqlite::SchemaEntry>>;
+    /// Reads a whole table by name.
+    fn table(&self, name: &str) -> Result<sqlite::Table>;
+    /// The payload of the row `rowid` of the table b-tree rooted at `root`.
+    fn lookup(&self, root: u32, rowid: i64) -> Result<Option<Vec<u8>>>;
+    /// The `CREATE TABLE` statement of a table.
+    fn table_sql(&self, name: &str) -> Option<String> {
+        self.schema().ok()?.into_iter().find(|(t, n, ..)| t == "table" && n.eq_ignore_ascii_case(name)).map(|r| r.4)
+    }
+}
+
+impl Tables for Db {
+    fn schema(&self) -> Result<Vec<sqlite::SchemaEntry>> {
+        Db::schema(self)
+    }
+    fn table(&self, name: &str) -> Result<sqlite::Table> {
+        Db::table(self, name)
+    }
+    fn lookup(&self, root: u32, rowid: i64) -> Result<Option<Vec<u8>>> {
+        Db::lookup(self, root, rowid)
+    }
+    fn table_sql(&self, name: &str) -> Option<String> {
+        Db::table_sql(self, name)
+    }
+}
+
 /// The tables of a GeoPackage: vector layers (features, then attributes, in GDAL's order) and
 /// rasters (tiles and gridded coverages, in `gpkg_contents` order).
-pub(crate) fn contents(db: &Db) -> Result<(Vec<Content>, Vec<Content>)> {
+pub(crate) fn contents(db: &impl Tables) -> Result<(Vec<Content>, Vec<Content>)> {
     let t = db.table("gpkg_contents")?;
     let all: Vec<Content> = t
         .rows
@@ -123,7 +152,7 @@ fn field_type(decl: &str) -> (FieldType, usize) {
 /// Sets a layer's CRS from a `gpkg_spatial_ref_sys` entry: its EPSG code when the organization
 /// is EPSG and the registry knows the code, otherwise its definition. The undefined SRSs (-1,
 /// 0, GDAL's 99999, or a definition of `undefined`) give none.
-fn set_crs(db: &Db, layer: &mut Layer, srs_id: i64) {
+fn set_crs(db: &impl Tables, layer: &mut Layer, srs_id: i64) {
     let Ok(t) = db.table("gpkg_spatial_ref_sys") else { return };
     let Some(row) = t.rows.iter().find(|r| t.get(r, "srs_id").and_then(Value::as_i64) == Some(srs_id)) else { return };
     let org = t.get(row, "organization").and_then(Value::as_str).unwrap_or_default();
@@ -307,7 +336,7 @@ fn geometry_type(name: &str) -> Option<GeometryType> {
 
 /// The feature ids the R-tree index `rtree` finds in `bbox`: the ids of the leaf entries whose
 /// box intersects it, ascending. `None` when the index (its `_node` shadow table) is missing.
-fn rtree_candidates(db: &Db, rtree: &str, bbox: Rect) -> Result<Option<Vec<i64>>> {
+pub(crate) fn rtree_candidates(db: &impl Tables, rtree: &str, bbox: Rect) -> Result<Option<Vec<i64>>> {
     let node_table = format!("{rtree}_node");
     let Some(root) = db.schema()?.into_iter().find(|e| e.0 == "table" && e.1.eq_ignore_ascii_case(&node_table) && e.3 > 0).map(|e| e.3)
     else {
@@ -354,11 +383,26 @@ fn rtree_candidates(db: &Db, rtree: &str, bbox: Rect) -> Result<Option<Vec<i64>>
 }
 
 /// Whether a geometry's bounding box intersects a rectangle.
-fn bbox_intersects(g: &Geometry, (x0, y0, x1, y1): Rect) -> bool {
+pub(crate) fn bbox_intersects(g: &Geometry, (x0, y0, x1, y1): Rect) -> bool {
     g.bbox().is_some_and(|b| b.min_x <= x1 && b.max_x >= x0 && b.min_y <= y1 && b.max_y >= y0)
 }
 
-fn read_layer(db: &Db, c: &Content, bbox: Option<Rect>) -> Result<Layer> {
+/// How the rows of a table make the features of a layer.
+pub(crate) struct LayerDef {
+    /// The layer, without its features.
+    pub layer: Layer,
+    /// The geometry column's name.
+    pub geom_name: Option<String>,
+    /// The index of the geometry column.
+    pub geom_col: Option<usize>,
+    /// The index of the rowid alias column (the feature ids).
+    pub fid_col: Option<usize>,
+    /// The columns that are fields, with their types.
+    kept: Vec<(usize, FieldType)>,
+}
+
+/// How the rows of the table `c` make the features of a layer.
+pub(crate) fn layer_def(db: &impl Tables, c: &Content) -> Result<LayerDef> {
     let sql = db.table_sql(&c.name).ok_or_else(|| bad(format!("no table '{}'", c.name)))?;
     let columns = sqlite::column_types(&sql);
 
@@ -376,19 +420,8 @@ fn read_layer(db: &Db, c: &Content, bbox: Option<Rect>) -> Result<Layer> {
             set_crs(db, &mut layer, srs_id);
         }
     }
-    // The rows: with a filter on a spatial table, those its R-tree finds (by lookups of their
-    // feature ids, the rowid alias), otherwise all of them.
     let fid_col = sqlite::rowid_column(&sql);
-    let candidates = match (&geom_name, bbox, fid_col) {
-        (Some(g), Some(rect), Some(_)) => rtree_candidates(db, &format!("rtree_{}_{g}", c.name), rect)?,
-        _ => None,
-    };
-    let table = match &candidates {
-        Some(ids) => db.table_rows(&c.name, ids)?,
-        None => db.table(&c.name)?,
-    };
-    let geom_col = geom_name.as_deref().and_then(|g| table.column(g));
-
+    let geom_col = geom_name.as_deref().and_then(|g| columns.iter().position(|(n, _)| n.eq_ignore_ascii_case(g)));
     let mut kept = Vec::new();
     for (i, (name, decl)) in columns.iter().enumerate() {
         if Some(i) == geom_col || Some(i) == fid_col {
@@ -400,22 +433,26 @@ fn read_layer(db: &Db, c: &Content, bbox: Option<Rect>) -> Result<Layer> {
         layer.add_field(f);
         kept.push((i, t));
     }
+    Ok(LayerDef { layer, geom_name, geom_col, fid_col, kept })
+}
 
-    // Rows are decoded in parallel, and kept in order.
-    let features = crate::par::map_range(table.rows.len(), |n| -> Option<Feature> {
-        let row = &table.rows[n];
-        let fid = fid_col.and_then(|i| row.get(i)?.as_i64()).unwrap_or(n as i64 + 1);
-        let geometry = geom_col.and_then(|i| match row.get(i) {
+impl LayerDef {
+    /// The feature of a row (the `n`-th, from 0, numbering a table without a rowid alias), or
+    /// `None` when `bbox` is given and the geometry's bounding box does not intersect it.
+    pub(crate) fn feature(&self, row: &[Value], n: i64, bbox: Option<Rect>) -> Option<Feature> {
+        let fid = self.fid_col.and_then(|i| row.get(i)?.as_i64()).unwrap_or(n + 1);
+        let geometry = self.geom_col.and_then(|i| match row.get(i) {
             Some(Value::Blob(b)) => decode_geometry(b),
             _ => None,
         });
         // The exact test of the boxes the R-tree (in single precision) or the scan found.
-        if let (Some(rect), Some(_)) = (bbox, geom_col)
+        if let (Some(rect), Some(_)) = (bbox, self.geom_col)
             && !geometry.as_ref().is_some_and(|g| bbox_intersects(g, rect))
         {
             return None;
         }
-        let attributes = kept
+        let attributes = self
+            .kept
             .iter()
             .map(|&(i, t)| {
                 let v = row.get(i).unwrap_or(&Value::Null);
@@ -438,7 +475,24 @@ fn read_layer(db: &Db, c: &Content, bbox: Option<Rect>) -> Result<Layer> {
             })
             .collect();
         Some(Feature { fid: fid as u64, geometry, attributes })
-    });
+    }
+}
+
+fn read_layer(db: &Db, c: &Content, bbox: Option<Rect>) -> Result<Layer> {
+    let def = layer_def(db, c)?;
+    // The rows: with a filter on a spatial table, those its R-tree finds (by lookups of their
+    // feature ids, the rowid alias), otherwise all of them.
+    let candidates = match (&def.geom_name, bbox, def.fid_col) {
+        (Some(g), Some(rect), Some(_)) => rtree_candidates(db, &format!("rtree_{}_{g}", c.name), rect)?,
+        _ => None,
+    };
+    let table = match &candidates {
+        Some(ids) => db.table_rows(&c.name, ids)?,
+        None => db.table(&c.name)?,
+    };
+    let mut layer = def.layer.clone();
+    // Rows are decoded in parallel, and kept in order.
+    let features = crate::par::map_range(table.rows.len(), |n| def.feature(&table.rows[n], n as i64, bbox));
     for f in features.into_iter().flatten() {
         layer.push(f);
     }

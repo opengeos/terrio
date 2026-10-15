@@ -9,6 +9,7 @@
 //! `geometry_bbox` covering column, Snappy compression, and the `geo` metadata with the geometry
 //! types, bounds and CRS.
 
+use super::profile::LayerProfile;
 use crate::crs::SpatialRef;
 use crate::{Error, Result};
 use arrow_array::builder::{BinaryBuilder, Float64Builder, StringBuilder};
@@ -56,82 +57,118 @@ fn parse_source<R: parquet::file::reader::ChunkReader + 'static>(
     name: &str,
     bbox: Option<(f64, f64, f64, f64)>,
 ) -> Result<Layer> {
-    let err = |e: &dyn std::fmt::Display| Error::InvalidData(format!("Parquet: {e}"));
-    let builder = ParquetRecordBatchReaderBuilder::try_new(open()?).map_err(|e| err(&e))?;
-    let geo: Value = builder
-        .metadata()
-        .file_metadata()
-        .key_value_metadata()
-        .and_then(|kv| kv.iter().find(|k| k.key == "geo"))
-        .and_then(|k| k.value.as_deref())
-        .and_then(|v| serde_json::from_str(v).ok())
-        .unwrap_or(Value::Null);
-    let schema = builder.schema().clone();
-    let primary = geo["primary_column"].as_str().unwrap_or("geometry").to_string();
-    let col = &geo["columns"][&primary];
-    let encoding = col["encoding"].as_str().unwrap_or("WKB").to_ascii_lowercase();
-
-    // Columns that are not attributes: the geometry columns and the covering columns.
-    let mut hidden: Vec<String> = geo["columns"].as_object().map(|c| c.keys().cloned().collect()).unwrap_or_default();
-    if let Some(cov) = col["covering"]["bbox"].as_object() {
-        hidden.extend(cov.values().filter_map(|p| p.get(0)?.as_str().map(str::to_string)));
-    }
-    let geom_index = schema.fields().iter().position(|f| f.name() == &primary && !geo.is_null());
-
-    let mut layer = Layer::new(name);
-    let mut columns = Vec::new();
-    for (i, f) in schema.fields().iter().enumerate() {
-        if !hidden.contains(f.name()) {
-            add_columns(&mut layer, &mut columns, vec![i], f.name().clone(), f.data_type());
-        }
-    }
-
-    // The covering column's members, by top-level column and member index.
-    let covering: Option<[(usize, usize); 4]> = (|| {
-        let cov = col["covering"]["bbox"].as_object()?;
-        let member = |k: &str| -> Option<(usize, usize)> {
-            let p = cov.get(k)?.as_array()?;
-            let (c, m) = (p.first()?.as_str()?, p.get(1)?.as_str()?);
-            let ci = schema.fields().iter().position(|f| f.name() == c)?;
-            let DataType::Struct(members) = schema.field(ci).data_type() else { return None };
-            Some((ci, members.iter().position(|f| f.name() == m)?))
-        };
-        Some([member("xmin")?, member("ymin")?, member("xmax")?, member("ymax")?])
-    })();
-
-    // With a filter: the row groups whose statistics overlap it, then the rows that do.
-    let mut builder = builder;
-    let mut fids: Option<Vec<u64>> = None;
-    if let Some(rect) = bbox {
-        let (groups, selection, kept) = select_rows(&builder, open()?, covering, geom_index, &encoding, rect)?;
-        builder = builder.with_row_groups(groups).with_row_selection(selection);
-        fids = Some(kept);
-    }
-    let reader = builder.with_batch_size(65536).build().map_err(|e| err(&e))?;
-    let mut fid = 0u64;
-    for batch in reader {
-        let batch = batch.map_err(|e| err(&e))?;
-        let geoms = geom_index.map(|i| batch.column(i).clone());
-        let arrays: Vec<ArrayRef> = columns.iter().map(|c| nested(&batch, &c.path)).collect();
-        for row in 0..batch.num_rows() {
-            let geometry = geoms.as_ref().and_then(|g| geometry(g.as_ref(), row, &encoding));
-            let attributes = columns.iter().zip(&arrays).map(|(c, a)| value(a.as_ref(), row, c.field_type)).collect();
-            let id = fids.as_ref().and_then(|f| f.get(fid as usize).copied()).unwrap_or(fid);
-            layer.push(Feature { fid: id, geometry, attributes });
-            fid += 1;
-        }
-    }
-
-    match col.get("crs") {
-        _ if geo.is_null() => {}
-        None => layer.set_crs_epsg(Some(4326)),
-        Some(crs) => apply_crs(&mut layer, crs),
-    }
-    if let Some(types) = col["geometry_types"].as_array() {
-        let types: Vec<&str> = types.iter().filter_map(Value::as_str).map(|t| t.trim_end_matches(" Z").trim_end_matches(" M")).collect();
-        layer.geom_type = declared_type(&types);
+    let mut s = ParquetStream::open(open, name, bbox, 65536)?;
+    let mut layer = s.layer.clone();
+    while let Some(batch) = s.next_batch()? {
+        layer.features.extend(batch);
     }
     Ok(layer)
+}
+
+/// The features of a GeoParquet file, read a record batch at a time.
+pub(crate) struct ParquetStream {
+    /// The layer, without its features.
+    pub layer: Layer,
+    reader: parquet::arrow::arrow_reader::ParquetRecordBatchReader,
+    columns: Vec<Column>,
+    geom_index: Option<usize>,
+    encoding: String,
+    fids: Option<Vec<u64>>,
+    fid: u64,
+}
+
+impl ParquetStream {
+    /// Opens a file whose bytes `open` gives (once, or twice with a filter), to read it in
+    /// batches of `batch_size` rows.
+    pub(crate) fn open<R: parquet::file::reader::ChunkReader + 'static>(
+        open: impl Fn() -> Result<R>,
+        name: &str,
+        bbox: Option<(f64, f64, f64, f64)>,
+        batch_size: usize,
+    ) -> Result<Self> {
+        let err = |e: &dyn std::fmt::Display| Error::InvalidData(format!("Parquet: {e}"));
+        let builder = ParquetRecordBatchReaderBuilder::try_new(open()?).map_err(|e| err(&e))?;
+        let geo: Value = builder
+            .metadata()
+            .file_metadata()
+            .key_value_metadata()
+            .and_then(|kv| kv.iter().find(|k| k.key == "geo"))
+            .and_then(|k| k.value.as_deref())
+            .and_then(|v| serde_json::from_str(v).ok())
+            .unwrap_or(Value::Null);
+        let schema = builder.schema().clone();
+        let primary = geo["primary_column"].as_str().unwrap_or("geometry").to_string();
+        let col = &geo["columns"][&primary];
+        let encoding = col["encoding"].as_str().unwrap_or("WKB").to_ascii_lowercase();
+
+        // Columns that are not attributes: the geometry columns and the covering columns.
+        let mut hidden: Vec<String> = geo["columns"].as_object().map(|c| c.keys().cloned().collect()).unwrap_or_default();
+        if let Some(cov) = col["covering"]["bbox"].as_object() {
+            hidden.extend(cov.values().filter_map(|p| p.get(0)?.as_str().map(str::to_string)));
+        }
+        let geom_index = schema.fields().iter().position(|f| f.name() == &primary && !geo.is_null());
+
+        let mut layer = Layer::new(name);
+        let mut columns = Vec::new();
+        for (i, f) in schema.fields().iter().enumerate() {
+            if !hidden.contains(f.name()) {
+                add_columns(&mut layer, &mut columns, vec![i], f.name().clone(), f.data_type());
+            }
+        }
+
+        // The covering column's members, by top-level column and member index.
+        let covering: Option<[(usize, usize); 4]> = (|| {
+            let cov = col["covering"]["bbox"].as_object()?;
+            let member = |k: &str| -> Option<(usize, usize)> {
+                let p = cov.get(k)?.as_array()?;
+                let (c, m) = (p.first()?.as_str()?, p.get(1)?.as_str()?);
+                let ci = schema.fields().iter().position(|f| f.name() == c)?;
+                let DataType::Struct(members) = schema.field(ci).data_type() else { return None };
+                Some((ci, members.iter().position(|f| f.name() == m)?))
+            };
+            Some([member("xmin")?, member("ymin")?, member("xmax")?, member("ymax")?])
+        })();
+
+        // With a filter: the row groups whose statistics overlap it, then the rows that do.
+        let mut builder = builder;
+        let mut fids: Option<Vec<u64>> = None;
+        if let Some(rect) = bbox {
+            let (groups, selection, kept) = select_rows(&builder, open()?, covering, geom_index, &encoding, rect)?;
+            builder = builder.with_row_groups(groups).with_row_selection(selection);
+            fids = Some(kept);
+        }
+        let reader = builder.with_batch_size(batch_size.max(1)).build().map_err(|e| err(&e))?;
+
+        match col.get("crs") {
+            _ if geo.is_null() => {}
+            None => layer.set_crs_epsg(Some(4326)),
+            Some(crs) => apply_crs(&mut layer, crs),
+        }
+        if let Some(types) = col["geometry_types"].as_array() {
+            let types: Vec<&str> =
+                types.iter().filter_map(Value::as_str).map(|t| t.trim_end_matches(" Z").trim_end_matches(" M")).collect();
+            layer.geom_type = declared_type(&types);
+        }
+        Ok(Self { layer, reader, columns, geom_index, encoding, fids, fid: 0 })
+    }
+
+    /// The features of the next record batch, decoded in parallel; `None` at the end.
+    pub(crate) fn next_batch(&mut self) -> Result<Option<Vec<Feature>>> {
+        let Some(batch) = self.reader.next() else { return Ok(None) };
+        let batch = batch.map_err(|e| Error::InvalidData(format!("Parquet: {e}")))?;
+        let geoms = self.geom_index.map(|i| batch.column(i).clone());
+        let arrays: Vec<ArrayRef> = self.columns.iter().map(|c| nested(&batch, &c.path)).collect();
+        let (columns, encoding, fids, first) = (&self.columns, self.encoding.as_str(), &self.fids, self.fid);
+        let features = crate::par::map_range(batch.num_rows(), |row| {
+            let geometry = geoms.as_ref().and_then(|g| geometry(g.as_ref(), row, encoding));
+            let attributes = columns.iter().zip(&arrays).map(|(c, a)| value(a.as_ref(), row, c.field_type)).collect();
+            let n = first + row as u64;
+            let id = fids.as_ref().and_then(|f| f.get(n as usize).copied()).unwrap_or(n);
+            Feature { fid: id, geometry, attributes }
+        });
+        self.fid += batch.num_rows() as u64;
+        Ok(Some(features))
+    }
 }
 
 /// Sets a layer's CRS from a GeoParquet or GeoArrow `crs` value: PROJJSON, or a string PROJ
@@ -566,27 +603,63 @@ const BATCH: usize = 65536;
 
 /// Encodes a layer as a GeoParquet file.
 pub fn to_bytes(layer: &Layer) -> Result<Vec<u8>> {
-    let err = |e: &dyn std::fmt::Display| Error::InvalidData(format!("Parquet: {e}"));
-    let fields = layer.schema.fields();
-    let kinds: Vec<Kind> = fields.iter().enumerate().map(|(i, f)| column_kind(layer, i, f.field_type)).collect();
-    let bbox_fields: Fields = ["xmin", "ymin", "xmax", "ymax"].iter().map(|n| Field::new(*n, DataType::Float64, false)).collect();
-    let mut schema_fields: Vec<Field> = fields.iter().zip(&kinds).map(|(f, k)| Field::new(&f.name, k.data_type(), true)).collect();
-    schema_fields.push(Field::new("geometry", DataType::Binary, true));
-    schema_fields.push(Field::new("geometry_bbox", DataType::Struct(bbox_fields.clone()), true));
-
-    let geo = geo_metadata(layer);
-    let schema = Arc::new(Schema::new(schema_fields));
-    let props = WriterProperties::builder()
-        .set_compression(parquet::basic::Compression::SNAPPY)
-        // GDAL's default row group size: with the covering column's statistics, readers skip
-        // the row groups outside a bounding-box filter.
-        .set_max_row_group_row_count(Some(BATCH))
-        .set_key_value_metadata(Some(vec![parquet::file::metadata::KeyValue::new("geo".into(), geo.to_string())]))
-        .build();
+    let enc = ParquetEncoder::new(layer, &LayerProfile::of(layer));
     let mut buf = Vec::new();
-    let mut writer = ArrowWriter::try_new(&mut buf, schema.clone(), Some(props)).map_err(|e| err(&e))?;
+    let mut writer = enc.writer(&mut buf)?;
     for chunk in layer.features.chunks(BATCH) {
-        let mut columns: Vec<ArrayRef> = kinds.iter().enumerate().map(|(i, k)| k.build(chunk, i)).collect();
+        enc.write(&mut writer, chunk)?;
+    }
+    writer.close().map_err(|e| perr(&e))?;
+    Ok(buf)
+}
+
+fn perr(e: &dyn std::fmt::Display) -> Error {
+    Error::InvalidData(format!("Parquet: {e}"))
+}
+
+/// Encodes the features of a layer as record batches of a GeoParquet file, with the column
+/// types and `geo` metadata its profile decides.
+pub(crate) struct ParquetEncoder {
+    kinds: Vec<Kind>,
+    bbox_fields: Fields,
+    schema: Arc<Schema>,
+    geo: Value,
+}
+
+impl ParquetEncoder {
+    /// An encoder for the features of `layer` (its fields and CRS), which `profile` describes.
+    pub(crate) fn new(layer: &Layer, profile: &LayerProfile) -> Self {
+        let fields = layer.schema.fields();
+        let kinds: Vec<Kind> = fields.iter().enumerate().map(|(i, f)| column_kind(profile, i, f.field_type)).collect();
+        let bbox_fields: Fields = ["xmin", "ymin", "xmax", "ymax"].iter().map(|n| Field::new(*n, DataType::Float64, false)).collect();
+        let mut schema_fields: Vec<Field> = fields.iter().zip(&kinds).map(|(f, k)| Field::new(&f.name, k.data_type(), true)).collect();
+        schema_fields.push(Field::new("geometry", DataType::Binary, true));
+        schema_fields.push(Field::new("geometry_bbox", DataType::Struct(bbox_fields.clone()), true));
+        Self { kinds, bbox_fields, schema: Arc::new(Schema::new(schema_fields)), geo: geo_metadata(layer, profile) }
+    }
+
+    /// A Parquet writer of the file into `out`.
+    pub(crate) fn writer<W: std::io::Write + Send>(&self, out: W) -> Result<ArrowWriter<W>> {
+        let props = WriterProperties::builder()
+            .set_compression(parquet::basic::Compression::SNAPPY)
+            // GDAL's default row group size: with the covering column's statistics, readers skip
+            // the row groups outside a bounding-box filter.
+            .set_max_row_group_row_count(Some(BATCH))
+            .set_key_value_metadata(Some(vec![parquet::file::metadata::KeyValue::new("geo".into(), self.geo.to_string())]))
+            .build();
+        ArrowWriter::try_new(out, self.schema.clone(), Some(props)).map_err(|e| perr(&e))
+    }
+
+    /// Writes features, in batches of at most the row group size.
+    pub(crate) fn write<W: std::io::Write + Send>(&self, writer: &mut ArrowWriter<W>, features: &[Feature]) -> Result<()> {
+        for chunk in features.chunks(BATCH) {
+            writer.write(&self.batch(chunk)?).map_err(|e| perr(&e))?;
+        }
+        Ok(())
+    }
+
+    fn batch(&self, chunk: &[Feature]) -> Result<RecordBatch> {
+        let mut columns: Vec<ArrayRef> = self.kinds.iter().enumerate().map(|(i, k)| k.build(chunk, i)).collect();
         let mut wkb = BinaryBuilder::new();
         let mut bounds = [Float64Builder::new(), Float64Builder::new(), Float64Builder::new(), Float64Builder::new()];
         let mut valid = Vec::with_capacity(chunk.len());
@@ -609,35 +682,15 @@ pub fn to_bytes(layer: &Layer) -> Result<Vec<u8>> {
         }
         columns.push(Arc::new(wkb.finish()));
         let bbox_arrays: Vec<ArrayRef> = bounds.iter_mut().map(|b| Arc::new(b.finish()) as ArrayRef).collect();
-        let bbox = StructArray::try_new(bbox_fields.clone(), bbox_arrays, Some(valid.into())).map_err(|e| err(&e))?;
+        let bbox = StructArray::try_new(self.bbox_fields.clone(), bbox_arrays, Some(valid.into())).map_err(|e| perr(&e))?;
         columns.push(Arc::new(bbox));
-        let batch = RecordBatch::try_new(schema.clone(), columns).map_err(|e| err(&e))?;
-        writer.write(&batch).map_err(|e| err(&e))?;
+        RecordBatch::try_new(self.schema.clone(), columns).map_err(|e| perr(&e))
     }
-    writer.close().map_err(|e| err(&e))?;
-    Ok(buf)
 }
 
-fn geo_metadata(layer: &Layer) -> Value {
-    let mut types: Vec<String> = Vec::new();
-    let mut bounds: Option<[f64; 4]> = None;
-    // Each geometry's type and bounds, computed in parallel, then combined in order.
-    let summaries = crate::par::map_range(layer.features.len(), |i| {
-        let g = layer.features[i].geometry.as_ref()?;
-        let name = format!("{}{}", g.geom_type().as_str(), if crate::vector::geometry_has_z(g) { " Z" } else { "" });
-        Some((name, g.bbox()))
-    });
-    for (name, bbox) in summaries.into_iter().flatten() {
-        if !types.contains(&name) {
-            types.push(name);
-        }
-        if let Some(b) = bbox {
-            bounds = Some(match bounds {
-                None => [b.min_x, b.min_y, b.max_x, b.max_y],
-                Some(a) => [a[0].min(b.min_x), a[1].min(b.min_y), a[2].max(b.max_x), a[3].max(b.max_y)],
-            });
-        }
-    }
+fn geo_metadata(layer: &Layer, profile: &LayerProfile) -> Value {
+    let types = &profile.geometry.type_names;
+    let bounds = profile.geometry.bbox;
     let mut col = json!({
         "encoding": "WKB",
         "geometry_types": types,
@@ -678,16 +731,16 @@ enum Kind {
     Timestamp,
 }
 
-fn column_kind(layer: &Layer, i: usize, t: FieldType) -> Kind {
-    let values = || layer.features.iter().filter_map(move |f| f.attributes.get(i)).filter(|v| !v.is_null());
+fn column_kind(profile: &LayerProfile, i: usize, t: FieldType) -> Kind {
+    let p = profile.fields.get(i).cloned().unwrap_or_default();
     match t {
-        FieldType::Integer if values().all(|v| v.as_i64().is_some_and(|x| i32::try_from(x).is_ok())) => Kind::Int32,
+        FieldType::Integer if p.all_int32 => Kind::Int32,
         FieldType::Integer => Kind::Int64,
         FieldType::Float => Kind::Float64,
         FieldType::Boolean => Kind::Bool,
         FieldType::Blob => Kind::Binary,
-        FieldType::Date if values().all(|v| v.as_str().and_then(parse_date).is_some()) => Kind::Date32,
-        FieldType::DateTime if values().all(|v| v.as_str().and_then(parse_datetime).is_some()) => Kind::Timestamp,
+        FieldType::Date if p.all_dates => Kind::Date32,
+        FieldType::DateTime if p.all_datetimes => Kind::Timestamp,
         _ => Kind::Utf8,
     }
 }

@@ -79,12 +79,47 @@ pub(super) fn key_values(options: &[String]) -> terrio::Result<Vec<(&str, &str)>
         .collect()
 }
 
+/// The options of a vector conversion that reads and writes the features as streams, a chunk
+/// at a time (see `terrio::stream`), when the formats and options allow it. `None` otherwise.
+fn stream_options(a: &Args) -> terrio::Result<Option<terrio::stream::ConvertOptions>> {
+    use terrio::ops::vector_filter::WriteMode;
+    let driver = match a.format.as_deref() {
+        Some(f) => match VectorDriver::from_name(f) {
+            Some(d) => Some(d),
+            None => return Ok(None),
+        },
+        None => None,
+    };
+    if a.srcwin.is_some() || a.overview.is_some() || a.vector.write_mode() != WriteMode::Create || terrio::tiles::is_archive(&a.input) {
+        return Ok(None);
+    }
+    let t_srs = a.t_srs.as_deref().map(SpatialRef::parse).transpose()?;
+    let translate = a.vector.to_options(t_srs)?;
+    let mut open = VectorOpenOptions { layers: a.layers.clone(), spatial_filter: a.vector.spatial_hint(&a.input), ..Default::default() };
+    for (k, v) in key_values(&a.open_options)? {
+        if !open.csv.set(k, v)? && !open.tiles.set(k, v)? {
+            return Err(terrio::Error::InvalidArgument(format!("unknown open option '{k}'")));
+        }
+    }
+    let mut write = VectorWriteOptions { driver, ..Default::default() };
+    for (k, v) in key_values(&a.creation_options)? {
+        if !(write.csv.set(k, v)? || write.geojson.set(k, v)?) {
+            return Ok(None);
+        }
+    }
+    let options = terrio::stream::ConvertOptions { open, translate, write, ..Default::default() };
+    Ok(terrio::stream::can_convert_stream(&a.input, &a.output, &options).then_some(options))
+}
+
 pub fn run(mut a: Args) -> terrio::Result<()> {
     a.input = super::with_driver(&a.input, a.driver.as_deref())?;
     if terrio::pointcloud::is_point_cloud_path(&a.input) {
         let t_srs = a.t_srs.as_deref().map(SpatialRef::parse).transpose()?;
         let format = a.format.as_deref().filter(|f| terrio::pointcloud::PointFormat::from_name(f).is_some());
         return super::points::convert(&a.input, &a.output, format, t_srs, &a.vector, &a.points, &a.point_write);
+    }
+    if let Some(options) = stream_options(&a)? {
+        return terrio::stream::convert(&a.input, &a.output, &options);
     }
     let ds = if a.srcwin.is_some() || a.overview.is_some() {
         let mut r = super::quiet(|| terrio::open_raster_lazy(&a.input))?;
