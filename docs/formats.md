@@ -44,7 +44,8 @@ JPEG XL, with horizontal and floating-point predictors, tiled or striped, chunky
 (in GeoTIFFs, GeoPackage and tile archive tiles, and `.jpg` files) is decoded exactly as GDAL's
 libjpeg decodes it: the same integer IDCT, chroma upsampling and YCbCr conversion, so the pixels are
 GDAL's. Lossy JPEG XL can differ from libjxl's by 1 in a few pixels. LERC, JPEG XL and LZMA are
-read, not written.
+read, not written. Samples packed in 9 to 31 bits (GDAL's `NBITS`, as GDAL
+writes Sentinel-2's 15-bit bands) are read as UInt16 or UInt32, as GDAL reads them.
 
 JPEG 2000 is decoded and encoded with the Rust port of OpenJPEG, the codec of GDAL's JP2OpenJPEG
 driver, so pixels are GDAL's (Sentinel-2 L1C and L2A bands included). Georeferencing comes from

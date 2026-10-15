@@ -735,8 +735,9 @@ fn sample_type<R: Read + Seek>(dec: &mut Decoder<R>) -> Result<DataType> {
         (3, 16 | 32) => DataType::F32,
         (3, 64) => DataType::F64,
         (_, 1..=8) => DataType::U8,
-        (_, 16) => DataType::U16,
-        (_, 32) => DataType::U32,
+        // Packed samples (GDAL's NBITS) are read as the type GDAL gives them.
+        (1, 9..=16) => DataType::U16,
+        (1, 17..=32) => DataType::U32,
         (_, 64) => DataType::U64,
         _ => return Err(Error::Unsupported(format!("TIFF samples of {bits} bits (format {format}) are not supported"))),
     })
