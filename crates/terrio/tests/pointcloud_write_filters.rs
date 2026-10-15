@@ -367,3 +367,31 @@ fn filters_as_pdal_does_on_autzen() {
     let ids = filters::cluster(&c, &ClusterOptions::default()).unwrap().dim("cluster_id").unwrap().to_f64();
     assert_eq!(ids.iter().copied().fold(0.0, f64::max), 103_568.0);
 }
+
+/// Writing over an EPT dataset replaces it once the new one is complete: a writer dropped
+/// unfinished leaves the previous dataset as it was, and no work directory stays behind.
+#[test]
+fn ept_datasets_are_replaced_whole() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("set/ept.json");
+    let path = path.to_str().unwrap();
+    let first = cloud(20_000, 13);
+    let options = PointWriteOptions { copc_leaf_points: Some(3_000), ..Default::default() };
+    pointcloud::write_points(&first, path, &options).unwrap();
+    let points = |p: &str| pointcloud::open_points(p).unwrap().ept_info().unwrap().points;
+    assert_eq!(points(path), 20_000);
+    // A writer of another cloud, dropped before finishing.
+    let second = cloud(30_000, 14);
+    let mut w = PointWriter::create(path, &second, &options).unwrap();
+    w.write(&second.slice(0, 10_000)).unwrap();
+    drop(w);
+    assert_eq!(points(path), 20_000);
+    assert_eq!(pointcloud::read_points(path, &Default::default()).unwrap().len(), 20_000);
+    // Written whole: the second replaces the first.
+    pointcloud::write_points(&second, path, &options).unwrap();
+    assert_eq!(points(path), 30_000);
+    assert_eq!(pointcloud::read_points(path, &Default::default()).unwrap().len(), 30_000);
+    let left: Vec<String> =
+        std::fs::read_dir(dir.path().join("set")).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+    assert!(!left.iter().any(|n| n.starts_with(".terrio")), "{left:?}");
+}

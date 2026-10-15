@@ -160,6 +160,12 @@ impl Default for ClusterOptions {
 /// closer than the tolerance, numbered from 1 in the order of their first points, in
 /// `cluster_id` (0 for the points of clusters too small or too large).
 pub fn cluster(cloud: &PointCloud, o: &ClusterOptions) -> Result<PointCloud> {
+    if o.min_points > o.max_points {
+        return Err(Error::InvalidArgument(format!(
+            "cluster: the least points of a cluster ({}) exceed the most ({})",
+            o.min_points, o.max_points
+        )));
+    }
     if o.tolerance.is_nan() || o.tolerance <= 0.0 {
         return Err(Error::InvalidArgument("the tolerance must be positive".into()));
     }

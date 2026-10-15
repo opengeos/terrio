@@ -406,8 +406,16 @@ fn write_many(io: &Io, clouds: Vec<PointCloud>) -> terrio::Result<()> {
         }
         return Ok(());
     }
-    let template = read_template(&io.input)?;
-    let mut writer = PointWriter::create(&io.output, clouds.first().unwrap_or(&template), &options)?;
+    // The input's dimensions and CRS, read again only when no part has any.
+    let template;
+    let first = match clouds.first() {
+        Some(c) => c,
+        None => {
+            template = read_template(&io.input)?;
+            &template
+        }
+    };
+    let mut writer = PointWriter::create(&io.output, first, &options)?;
     for c in &clouds {
         writer.write(c)?;
     }

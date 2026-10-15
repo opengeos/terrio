@@ -34,7 +34,10 @@ pub(crate) fn dataset_dir(path: &str) -> PathBuf {
 
 /// An EPT dataset being written.
 pub(crate) struct EptTarget {
+    /// The dataset's directory.
     dir: PathBuf,
+    /// Where the dataset is built (in `dir`), moved into place once complete.
+    work: PathBuf,
     data_type: EptDataType,
     crs: SpatialRef,
 }
@@ -67,17 +70,36 @@ fn legacy_overlap(c: f64) -> f64 {
 }
 
 impl EptTarget {
-    /// A dataset to write in `dir` (created when missing; its `ept-data` and `ept-hierarchy`
-    /// directories are replaced).
+    /// A dataset to write in `dir` (created when missing). It is built in a directory of its
+    /// own in `dir`, and replaces the `ept.json`, `ept-data` and `ept-hierarchy` already there
+    /// only once complete: a write that fails leaves the previous dataset as it was.
     pub fn new(dir: PathBuf, data_type: EptDataType, crs: SpatialRef) -> Result<Self> {
-        for sub in ["ept-data", "ept-hierarchy"] {
-            let d = dir.join(sub);
-            if d.exists() {
-                std::fs::remove_dir_all(&d)?;
-            }
-            std::fs::create_dir_all(&d).map_err(|e| Error::Io(std::io::Error::new(e.kind(), format!("'{}': {e}", d.display()))))?;
+        let io = |d: &Path, e: std::io::Error| Error::Io(std::io::Error::new(e.kind(), format!("'{}': {e}", d.display())));
+        let work = dir.join(".terrio-ept-new");
+        // Left by a write that was interrupted.
+        if work.exists() {
+            std::fs::remove_dir_all(&work).map_err(|e| io(&work, e))?;
         }
-        Ok(Self { dir, data_type, crs })
+        for sub in ["ept-data", "ept-hierarchy"] {
+            let d = work.join(sub);
+            std::fs::create_dir_all(&d).map_err(|e| io(&d, e))?;
+        }
+        Ok(Self { dir, work, data_type, crs })
+    }
+
+    /// Moves the dataset built into place, replacing the previous one.
+    fn commit(&self) -> Result<()> {
+        let io = |d: &Path, e: std::io::Error| Error::Io(std::io::Error::new(e.kind(), format!("'{}': {e}", d.display())));
+        for name in ["ept-data", "ept-hierarchy", "ept.json"] {
+            let old = self.dir.join(name);
+            if old.is_dir() {
+                std::fs::remove_dir_all(&old).map_err(|e| io(&old, e))?;
+            } else if old.exists() {
+                std::fs::remove_file(&old).map_err(|e| io(&old, e))?;
+            }
+            std::fs::rename(self.work.join(name), &old).map_err(|e| io(&old, e))?;
+        }
+        std::fs::remove_dir(&self.work).map_err(|e| io(&self.work, e))
     }
 
     /// Writes the nodes `build` makes, then the hierarchy and `ept.json`. `bounds` is the octree's
@@ -91,14 +113,30 @@ impl EptTarget {
         span: u64,
         build: impl FnOnce(&mut dyn NodeSink) -> Result<()>,
     ) -> Result<()> {
+        let written = self.build_all(header, layout, bounds, conforming, span, build).and_then(|()| self.commit());
+        if written.is_err() {
+            let _ = std::fs::remove_dir_all(&self.work);
+        }
+        written
+    }
+
+    fn build_all(
+        &self,
+        header: LasHeader,
+        layout: &Layout,
+        bounds: [f64; 6],
+        conforming: [f64; 6],
+        span: u64,
+        build: impl FnOnce(&mut dyn NodeSink) -> Result<()>,
+    ) -> Result<()> {
         let schema = schema(&header, layout)?;
-        let mut sink = EptSink { target: &self, header: &header, layout, schema: &schema, counts: BTreeMap::new() };
+        let mut sink = EptSink { target: self, header: &header, layout, schema: &schema, counts: BTreeMap::new() };
         build(&mut sink)?;
         let counts = std::mem::take(&mut sink.counts);
         let points: u64 = counts.values().sum();
         // The hierarchy: one page, nodes in octree order.
         let page: serde_json::Map<String, Value> = counts.iter().map(|(k, n)| (key_name(*k), json!(n))).collect();
-        write_json(&self.dir.join("ept-hierarchy/0-0-0-0.json"), &Value::Object(page))?;
+        write_json(&self.work.join("ept-hierarchy/0-0-0-0.json"), &Value::Object(page))?;
         let schema_json: Vec<Value> = schema
             .iter()
             .map(|d| {
@@ -130,7 +168,7 @@ impl EptTarget {
             "srs": Value::Object(srs),
             "version": "1.1.0",
         });
-        write_json(&self.dir.join("ept.json"), &ept)
+        write_json(&self.work.join("ept.json"), &ept)
     }
 }
 
@@ -256,7 +294,11 @@ impl NodeSink for EptSink<'_> {
             return Ok(());
         }
         let t = self.target;
-        let path = t.dir.join(format!("ept-data/{}.{}", key_name(key), t.data_type.extension()));
+        // Each node once: its count goes to the hierarchy as written.
+        if self.counts.contains_key(&key) {
+            return Err(Error::InvalidData(format!("EPT: node {} written twice", key_name(key))));
+        }
+        let path = t.work.join(format!("ept-data/{}.{}", key_name(key), t.data_type.extension()));
         let bytes = match t.data_type {
             EptDataType::Laszip => las_bytes(self.header, self.layout, records, true)?,
             kind => {
