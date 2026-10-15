@@ -266,7 +266,8 @@ impl Editor {
     pub(crate) fn node(&mut self, n: u32) -> Result<Node> {
         let h = Self::header_offset(n);
         let size = self.page_size;
-        let page = self.page(n)?.to_vec();
+        self.load(n)?;
+        let page = &self.cache[&n];
         let kind = page[h];
         let interior = matches!(kind, 0x02 | 0x05);
         if !matches!(kind, 0x02 | 0x05 | 0x0a | 0x0d) {
@@ -443,18 +444,55 @@ impl Editor {
     pub(crate) fn lookup(&mut self, root: u32, rowid: i64) -> Result<Option<Vec<u8>>> {
         let mut n = root;
         for _ in 0..64 {
-            let node = self.node(n)?;
-            match node.kind {
+            self.load(n)?;
+            let h = Self::header_offset(n);
+            let page = &self.cache[&n];
+            let kind = page[h];
+            let count = u16::from_be_bytes([page[h + 3], page[h + 4]]) as usize;
+            let header = if kind == 0x05 { 12 } else { 8 };
+            let cell = |c: usize| -> Result<usize> {
+                let p = h + header + 2 * c;
+                let off = u16::from_be_bytes([page[p], page[p + 1]]) as usize;
+                if off >= page.len() { Err(bad("cell offset")) } else { Ok(off) }
+            };
+            // A binary search of the cells' keys, read in place.
+            let key = |c: usize| -> Result<i64> {
+                let off = cell(c)?;
+                if kind == 0x05 {
+                    return varint(page, off + 4).map(|v| v.0).ok_or_else(|| bad("cell"));
+                }
+                let (_, n1) = varint(page, off).ok_or_else(|| bad("cell"))?;
+                varint(page, off + n1).map(|v| v.0).ok_or_else(|| bad("cell"))
+            };
+            let (mut lo, mut hi) = (0, count);
+            while lo < hi {
+                let mid = (lo + hi) / 2;
+                if key(mid)? < rowid {
+                    lo = mid + 1;
+                } else {
+                    hi = mid;
+                }
+            }
+            match kind {
                 0x05 => {
-                    let i = Self::position(&node, rowid)?;
-                    n = if i < node.cells.len() { Self::child(&node.cells[i]) } else { node.right.unwrap_or(0) };
+                    n = if lo < count {
+                        let off = cell(lo)?;
+                        Self::child(&page[off..off + 4])
+                    } else {
+                        u32::from_be_bytes([page[h + 8], page[h + 9], page[h + 10], page[h + 11]])
+                    };
                 }
                 0x0d => {
-                    let i = Self::position(&node, rowid)?;
-                    return match node.cells.get(i) {
-                        Some(c) if Self::cell_key(0x0d, c)? == rowid => self.cell_payload(0x0d, c).map(Some),
-                        _ => Ok(None),
-                    };
+                    if lo >= count || key(lo)? != rowid {
+                        return Ok(None);
+                    }
+                    let off = cell(lo)?;
+                    let (sz, n1) = varint(page, off).ok_or_else(|| bad("cell"))?;
+                    let (_, n2) = varint(page, off + n1).ok_or_else(|| bad("cell"))?;
+                    let local = self.local_len(0x0d, sz as usize);
+                    let len = n1 + n2 + local + if local < sz as usize { 4 } else { 0 };
+                    let c = page.get(off..off + len).ok_or_else(|| bad("cell"))?.to_vec();
+                    return self.cell_payload(0x0d, &c).map(Some);
                 }
                 _ => return Err(bad("not a table b-tree")),
             }
@@ -631,43 +669,64 @@ impl Editor {
         }
     }
 
-    /// Inserts a row into a table b-tree, replacing the row with the same rowid.
-    pub(crate) fn insert(&mut self, root: u32, rowid: i64, record: &[u8]) -> Result<()> {
-        let mut path = Vec::new();
-        let mut n = root;
-        let node = loop {
-            let node = self.node(n)?;
-            match node.kind {
-                0x05 => {
-                    let i = Self::position(&node, rowid)?;
-                    path.push((n, i));
-                    n = if i < node.cells.len() { Self::child(&node.cells[i]) } else { node.right.unwrap_or(0) };
-                    if path.len() > 64 {
-                        return Err(bad("b-tree too deep"));
+    /// Inserts rows into a table b-tree, replacing those with the same rowids: rows sorted by
+    /// rowid, each leaf rewritten once for all the rows that fall in it.
+    pub(crate) fn upsert(&mut self, root: u32, rows: Vec<(i64, Vec<u8>)>) -> Result<()> {
+        if rows.windows(2).any(|w| w[0].0 >= w[1].0) {
+            return Err(Error::InvalidArgument("rows not sorted by rowid".into()));
+        }
+        let mut rows = rows.into_iter().peekable();
+        while let Some(&(first, _)) = rows.peek() {
+            // Down to the leaf holding `first`, with the largest key it may hold.
+            let mut path = Vec::new();
+            let mut n = root;
+            let mut bound = i64::MAX;
+            let node = loop {
+                let node = self.node(n)?;
+                match node.kind {
+                    0x05 => {
+                        let i = Self::position(&node, first)?;
+                        path.push((n, i));
+                        if i < node.cells.len() {
+                            bound = Self::cell_key(0x05, &node.cells[i])?;
+                            n = Self::child(&node.cells[i]);
+                        } else {
+                            n = node.right.unwrap_or(0);
+                        }
+                        if path.len() > 64 {
+                            return Err(bad("b-tree too deep"));
+                        }
                     }
+                    0x0d => break node,
+                    _ => return Err(bad("not a table b-tree")),
                 }
-                0x0d => break node,
-                _ => return Err(bad("not a table b-tree")),
+            };
+            let mut cells = node.cells;
+            let mut keys: Vec<i64> = cells.iter().map(|c| Self::cell_key(0x0d, c)).collect::<Result<_>>()?;
+            while let Some((rowid, rec)) = rows.next_if(|(k, _)| *k <= bound) {
+                let i = keys.partition_point(|k| *k < rowid);
+                let cell = w::table_cell(self, rowid, &rec)?;
+                if keys.get(i) == Some(&rowid) {
+                    let mut freed = Vec::new();
+                    self.overflow_pages(0x0d, &cells[i], &mut freed)?;
+                    for p in freed {
+                        self.free(p)?;
+                    }
+                    cells[i] = cell;
+                } else {
+                    cells.insert(i, cell);
+                    keys.insert(i, rowid);
+                }
             }
-        };
-        let mut cells = node.cells;
-        let i = Self::position(&Node { kind: 0x0d, cells: cells.clone(), right: None }, rowid)?;
-        let replace = cells.get(i).map(|c| Self::cell_key(0x0d, c)).transpose()? == Some(rowid);
-        if replace {
-            let old = cells[i].clone();
-            let mut freed = Vec::new();
-            self.overflow_pages(0x0d, &old, &mut freed)?;
-            for p in freed {
-                self.free(p)?;
-            }
+            self.store(&path, n, 0x0d, cells, None)?;
         }
-        let cell = w::table_cell(self, rowid, record)?;
-        if replace {
-            cells[i] = cell;
-        } else {
-            cells.insert(i, cell);
-        }
-        self.store(&path, n, 0x0d, cells, None)
+        Ok(())
+    }
+
+    /// Inserts a row into a table b-tree, replacing the row with the same rowid.
+    #[cfg(test)]
+    pub(crate) fn insert(&mut self, root: u32, rowid: i64, record: &[u8]) -> Result<()> {
+        self.upsert(root, vec![(rowid, record.to_vec())])
     }
 
     /// Appends rows to a table b-tree, by increasing rowids larger than its largest: the

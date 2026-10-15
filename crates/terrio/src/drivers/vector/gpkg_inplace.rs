@@ -593,28 +593,19 @@ impl Rtree {
 
     /// Writes the changed nodes and the `_rowid` and `_parent` rows that changed.
     fn flush(self, ed: &mut Editor) -> Result<()> {
-        let mut appended = Vec::new();
-        for id in &self.dirty {
-            let rec = w::record(&[w::Value::Null, w::Value::Blob(self.encode(*id, &self.nodes[id]))]);
-            if *id <= self.old_max_node {
-                ed.insert(self.node_root, *id, &rec)?;
-            } else {
-                appended.push((*id, rec));
-            }
-        }
-        ed.append(self.node_root, appended)?;
-        for (root, map) in [(self.rowid_root, &self.rowids), (self.parent_root, &self.parents)] {
+        let nodes: Vec<(i64, Vec<u8>)> =
+            self.dirty.iter().map(|id| (*id, w::record(&[w::Value::Null, w::Value::Blob(self.encode(*id, &self.nodes[id]))]))).collect();
+        let rows = |map: &BTreeMap<i64, i64>| -> Vec<(i64, Vec<u8>)> {
+            map.iter().map(|(k, v)| (*k, w::record(&[w::Value::Null, w::Value::Int(*v)]))).collect()
+        };
+        for (root, all) in [(self.node_root, nodes), (self.rowid_root, rows(&self.rowids)), (self.parent_root, rows(&self.parents))] {
+            // Rows replaced (or inserted between others), then rows past the last appended.
             let max = ed.max_rowid(root)?;
-            let mut appended = Vec::new();
-            for (k, v) in map {
-                let rec = w::record(&[w::Value::Null, w::Value::Int(*v)]);
-                if *k <= max {
-                    ed.insert(root, *k, &rec)?;
-                } else {
-                    appended.push((*k, rec));
-                }
-            }
-            ed.append(root, appended)?;
+            let split = all.partition_point(|(k, _)| *k <= max);
+            let mut all = all;
+            let tail = all.split_off(split);
+            ed.upsert(root, all)?;
+            ed.append(root, tail)?;
         }
         Ok(())
     }
