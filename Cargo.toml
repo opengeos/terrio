@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/*", "python", "js"]
 
 [workspace.package]
-version = "0.1.1"
+version = "0.2.0"
 edition = "2024"
 license = "MIT"
 rust-version = "1.90"
@@ -12,7 +12,7 @@ homepage = "https://github.com/opengeos/terrio"
 authors = ["Qiusheng Wu <giswqs@gmail.com>"]
 
 [workspace.dependencies]
-terrio = { path = "crates/terrio", version = "0.1.1" }
+terrio = { path = "crates/terrio", version = "0.2.0" }
 
 # Format drivers, coordinate reference systems
 wbraster = "0.2.1"
