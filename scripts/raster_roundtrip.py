@@ -78,9 +78,26 @@ NETCDF4_DEFAULT_FILL = NETCDF_DEFAULT_FILL | {"Byte": 255.0, "UInt32": 429496729
 # for floats when the source has no nodata (GDAL writes an invalid null fill value).
 ZARR_V3_DEFAULT_FILL = {t: 0.0 for t in ("Byte", "Int8", "Int16", "UInt16", "Int32", "UInt32", "Int64", "UInt64")} | {"Float32": math.nan, "Float64": math.nan}
 
+# The types LERC encodes.
+LERC_TYPES = {"Byte", "Int8", "Int16", "UInt16", "Int32", "UInt32", "Float32", "Float64"}
+
 # Extra ``terrio convert`` options to try when writing, per format.
 WRITE_VARIANTS = {
-    "GTiff": [[], ["--compress", "LZW"], ["--compress", "DEFLATE", "--tile-size", "256"], ["--compress", "ZSTD", "--bigtiff"], ["--compress", "PACKBITS"]],
+    "GTiff": [
+        [],
+        ["--compress", "LZW"],
+        ["--compress", "DEFLATE", "--tile-size", "256"],
+        ["--compress", "ZSTD", "--bigtiff"],
+        ["--compress", "PACKBITS"],
+        # Compressions for some types only: (options, types, max bands, lossy).
+        (["--compress", "LERC"], LERC_TYPES, 8, False),
+        (["--compress", "LERC_DEFLATE", "--tile-size", "256"], LERC_TYPES, 8, False),
+        (["--compress", "LERC_ZSTD", "--co", "INTERLEAVE=BAND"], LERC_TYPES, 8, False),
+        (["--compress", "JXL"], {"Byte", "UInt16"}, 3, False),
+        (["--compress", "JXL", "--tile-size", "256", "--co", "INTERLEAVE=BAND"], {"Byte", "UInt16"}, 8, False),
+        (["--compress", "JPEG"], {"Byte"}, 3, True),
+        (["--compress", "JPEG", "--tile-size", "256", "--co", "JPEG_QUALITY=90"], {"Byte"}, 3, True),
+    ],
     "COG": [[], ["--compress", "DEFLATE"], ["--compress", "ZSTD", "--tile-size", "256", "--bigtiff"], ["--compress", "NONE"]],
     "Zarr": [[], ["--compress", "ZLIB"], ["--co", "FORMAT=ZARR_V3"], ["--co", "FORMAT=ZARR_V3", "--compress", "ZSTD"], ["--co", "FORMAT=ZARR_V3", "--compress", "GZIP"]],
     "netCDF": [
@@ -326,6 +343,12 @@ def check_format(fmt, sources, tmp):
         if not writable:
             continue
         for v, variant in enumerate(WRITE_VARIANTS.get(fmt, [[]])):
+            variant_lossy = lossy
+            if isinstance(variant, tuple):
+                variant, types, max_bands, variant_lossy = variant
+                # JPEG and interleaved JPEG XL hold 1 or 3 bands.
+                if dtype not in types or bands > max_bands or (max_bands == 3 and bands == 2):
+                    continue
             t_path = os.path.join(tmp, f"terrio_{fmt}_{name}_{v}{ext}")
             err = terrio("convert", src, t_path, "-f", TERRIO_NAMES.get(fmt, fmt), *variant)
             label = f"{name} {' '.join(variant)}".strip()
@@ -336,7 +359,7 @@ def check_format(fmt, sources, tmp):
                 diffs = compare(
                     src_ds,
                     gdal.Open(t_path),
-                    lossy=64 if lossy else 0,
+                    lossy=64 if variant_lossy else 0,
                     check_nodata=fmt not in NO_NODATA,
                     check_type=fmt not in NO_TYPE,
                     type_changes=None if "FORMAT=NC4" in variant else TYPE_CHANGES.get(fmt),

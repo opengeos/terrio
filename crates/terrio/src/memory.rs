@@ -69,6 +69,15 @@ pub fn open_raster_lazy_bytes(bytes: Vec<u8>, name: &str) -> Result<LazyRaster> 
     open_raster_bytes(bytes, name).map(LazyRaster::from)
 }
 
+/// Opens a Zarr store (or GeoZarr) from its files: `(path, bytes)` pairs, paths relative to the
+/// store's directory or its parent (`.zgroup`, `dem/.zarray`, `dem/0.0`...), as a key-value store
+/// holds them.
+pub fn open_zarr_store(files: Vec<(String, Vec<u8>)>) -> Result<RasterDataset> {
+    let names: Vec<String> = files.iter().map(|(n, _)| n.clone()).collect();
+    let root = codec::zarr_root(&names).ok_or_else(|| Error::InvalidData("not a Zarr store: no .zgroup, .zarray or zarr.json".into()))?;
+    codec::open_zarr_store(files, &root)
+}
+
 /// Opens a vector dataset from its bytes.
 pub fn open_vector_bytes(bytes: Vec<u8>, name: &str, options: &VectorOpenOptions) -> Result<VectorDataset> {
     #[cfg(not(target_arch = "wasm32"))]
@@ -91,6 +100,11 @@ pub fn write_raster_bytes(ds: &RasterDataset, name: &str, options: &RasterWriteO
         None => RasterDriver::for_extension(name)
             .ok_or_else(|| Error::InvalidArgument(format!("cannot tell the output format of '{name}': give it explicitly")))?,
     };
+    // A Zarr store is a directory: written in memory and zipped, on every platform.
+    if driver == RasterDriver::Zarr {
+        let stem = std::path::Path::new(name).file_stem().and_then(|s| s.to_str()).unwrap_or("raster");
+        return codec::write_raster(ds, driver, options, stem.trim_end_matches(".zarr"));
+    }
     #[cfg(not(target_arch = "wasm32"))]
     {
         let dir = native::temp_dir()?;
@@ -227,6 +241,24 @@ pub(crate) mod codec {
 
     /// Opens a dataset from bytes with the in-memory codecs.
     pub(crate) fn open(bytes: Vec<u8>, name: &str, options: &VectorOpenOptions) -> Result<Dataset> {
+        // Subdatasets named as GDAL names them: `NETCDF:"file.nc":var`, `HDF5:"file.h5"://path`.
+        if let Some((file, dataset)) = crate::drivers::hdf5::parse_subdataset(name) {
+            return crate::drivers::hdf5::read_bytes(bytes, &file, Some(&dataset)).map(Dataset::Raster);
+        }
+        if let Some((file, variable)) = crate::drivers::netcdf::parse_subdataset(name) {
+            return crate::drivers::netcdf::read_bytes(&bytes, &file, Some(&variable)).map(Dataset::Raster);
+        }
+        if bytes.starts_with(b"CDF") {
+            return crate::drivers::netcdf::read_bytes(&bytes, name, None).map(Dataset::Raster);
+        }
+        if crate::drivers::hdf5::signature_offset_in(&bytes).is_some() {
+            // NetCDF-4 files are HDF5 files with netCDF's extensions.
+            let ext = extension(name).unwrap_or_default();
+            if ["nc", "nc4", "cdf", "nc2", "nc3"].contains(&ext.as_str()) {
+                return crate::drivers::netcdf::read_bytes(&bytes, name, None).map(Dataset::Raster);
+            }
+            return crate::drivers::hdf5::read_bytes(bytes, name, None).map(Dataset::Raster);
+        }
         if is_tiff(&bytes) {
             let mut r = LazyRaster::from_tiff_bytes(bytes)?.ok_or_else(|| Error::InvalidData(format!("'{name}' is not a valid TIFF")))?;
             return r.read().map(Dataset::Raster);
@@ -255,9 +287,9 @@ pub(crate) mod codec {
         let driver = vector_driver(&bytes, name).ok_or_else(|| Error::Unsupported(format!("'{name}': format not recognized")))?;
         let Some(layers) = crate::drivers::vector::read_bytes(bytes, name, driver, options)? else {
             return Err(Error::Unsupported(format!(
-                "the {} format cannot be read from memory in this build (in memory: GeoTIFF, AAIGrid, GeoPackage, JPEG 2000, GeoJSON, \
-                 TopoJSON, FlatGeobuf, CSV, GeoParquet, KML, KMZ, GML, GPX, OSM PBF, and Shapefile and MapInfo in zip \
-                 archives)",
+                "the {} format cannot be read from memory in this build (in memory: GeoTIFF, AAIGrid, GeoPackage, JPEG 2000, netCDF, \
+                 HDF5, Zarr in zip archives, GeoJSON, TopoJSON, FlatGeobuf, CSV, GeoParquet, KML, KMZ, GML, GPX, OSM PBF, and \
+                 Shapefile and MapInfo in zip archives)",
                 driver.name()
             )));
         };
@@ -276,6 +308,16 @@ pub(crate) mod codec {
             }
         }
         names.sort();
+        // A Zarr store: its files, read under a directory in memory.
+        if let Some(root) = zarr_root(&names) {
+            let mut files = Vec::with_capacity(names.len());
+            for n in &names {
+                let mut b = Vec::new();
+                zip.by_name(n)?.read_to_end(&mut b)?;
+                files.push((n.clone(), b));
+            }
+            return open_zarr_store(files, &root).map(Dataset::Raster);
+        }
         let main: String = crate::vfs::MAIN_DATASET_EXTENSIONS
             .iter()
             .find_map(|ext| names.iter().find(|n| extension(n.as_str()).as_deref() == Some(*ext)))
@@ -313,6 +355,42 @@ pub(crate) mod codec {
         Ok(ds)
     }
 
+    /// The root of the Zarr store among file names: the shortest directory holding a `.zgroup`,
+    /// `.zarray` or `zarr.json` (`""` for the top), or `None` when there is none.
+    pub(crate) fn zarr_root(names: &[String]) -> Option<String> {
+        names
+            .iter()
+            .filter_map(|n| {
+                let n = n.trim_start_matches("./");
+                let (dir, file) = n.rsplit_once('/').unwrap_or(("", n));
+                [".zgroup", ".zarray", "zarr.json"].contains(&file).then(|| dir.to_string())
+            })
+            .min_by_key(|d| (d.matches('/').count(), d.len()))
+    }
+
+    /// Reads a Zarr store from its files (paths relative to the store's parent, and the root
+    /// directory among them), as GDAL reads a store directory.
+    pub(crate) fn open_zarr_store(files: Vec<(String, Vec<u8>)>, root: &str) -> Result<RasterDataset> {
+        let mount = crate::memfs::Mount::new(files.into_iter().map(|(n, b)| (n.trim_start_matches("./").to_string(), b)));
+        let dir = if root.is_empty() { mount.path().to_path_buf() } else { mount.path().join(root) };
+        crate::drivers::zarr::read(&dir)
+    }
+
+    /// Writes a raster as a Zarr store, returned as a zip archive of its files (in a directory
+    /// named `<name>.zarr`).
+    fn write_zarr(ds: &RasterDataset, options: &RasterWriteOptions, name: &str) -> Result<Vec<u8>> {
+        let mount = crate::memfs::Mount::new(std::iter::empty());
+        let dir = mount.path().join(format!("{name}.zarr"));
+        crate::drivers::zarr::write_with(&ds.raster, ds.nodata(), &dir, options.compression.as_deref(), &options.creation_options)?;
+        let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        let opts = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+        for (path, bytes) in mount.files() {
+            zip.start_file(path, opts)?;
+            std::io::Write::write_all(&mut zip, &bytes)?;
+        }
+        Ok(zip.finish()?.into_inner())
+    }
+
     /// Keeps the layers the options ask for.
     fn finish_vector(layers: Vec<Layer>, driver: VectorDriver, options: &VectorOpenOptions) -> Result<Dataset> {
         let names: Vec<String> = layers.iter().map(|l| l.name.clone()).collect();
@@ -333,7 +411,10 @@ pub(crate) mod codec {
                 let cog = driver == RasterDriver::Cog;
                 let opts = TiffOptions::from_write_options(options, cog, ds.nodata())?.ok_or_else(|| {
                     let name = options.compression.as_deref().unwrap_or_default();
-                    Error::Unsupported(format!("{name} compression cannot be written in this build (NONE, LZW, DEFLATE, PACKBITS, ZSTD)"))
+                    Error::Unsupported(format!(
+                        "{name} compression cannot be written in this build (NONE, LZW, DEFLATE, PACKBITS, ZSTD, LERC, LERC_DEFLATE, \
+                         LERC_ZSTD, JXL, JPEG)"
+                    ))
                 })?;
                 encode(&ds.raster, &opts)
             }
@@ -356,13 +437,25 @@ pub(crate) mod codec {
                 std::io::Write::write_all(&mut zip, xml.as_bytes())?;
                 Ok(zip.finish()?.into_inner())
             }
+            RasterDriver::NetCDF => {
+                let co =
+                    |key: &str| options.creation_options.iter().rev().find(|(k, _)| k.eq_ignore_ascii_case(key)).map(|(_, v)| v.as_str());
+                let o = crate::drivers::netcdf_write::Options {
+                    format: co("FORMAT"),
+                    compress: co("COMPRESS").or(options.compression.as_deref()),
+                    zlevel: co("ZLEVEL"),
+                    chunking: co("CHUNKING"),
+                };
+                crate::drivers::netcdf_write::to_bytes(&ds.raster, ds.nodata(), &o)
+            }
+            RasterDriver::Zarr => write_zarr(ds, options, table),
             RasterDriver::MBTiles | RasterDriver::PMTiles => {
                 let kind =
                     if driver == RasterDriver::MBTiles { crate::tiles::ArchiveKind::MBTiles } else { crate::tiles::ArchiveKind::PMTiles };
                 crate::tiles::raster_to_bytes(ds, &crate::tiles::raster_write_options(options)?, table, kind)
             }
             d => Err(Error::Unsupported(format!(
-                "the {} format cannot be written to memory in this build (GTiff, COG, AAIGrid, GPKG, JP2, MBTiles, PMTiles)",
+                "the {} format cannot be written to memory in this build (GTiff, COG, AAIGrid, GPKG, JP2, netCDF, Zarr, MBTiles, PMTiles)",
                 d.name()
             ))),
         }
@@ -510,6 +603,90 @@ mod tests {
             let Dataset::Raster(back) = codec::open(jp2, "noext", &Default::default()).unwrap() else { panic!() };
             assert_eq!(back.raster.data.to_f64_vec(), ds.raster.data.to_f64_vec());
             assert_eq!(back.nodata(), None);
+        }
+    }
+
+    #[test]
+    fn netcdf_hdf5_and_zarr_codecs_round_trip() {
+        for (dt, bands) in [(DataType::I16, 1), (DataType::F32, 2)] {
+            let ds = raster(bands, dt);
+            for format in ["NC", "NC4"] {
+                let options = RasterWriteOptions { creation_options: vec![("FORMAT".into(), format.into())], ..Default::default() };
+                let bytes = codec::write_raster(&ds, RasterDriver::NetCDF, &options, "x").unwrap();
+                let Dataset::Raster(back) = codec::open(bytes.clone(), "x.nc", &Default::default()).unwrap() else { panic!() };
+                assert_eq!((back.raster.cols, back.raster.rows, back.raster.bands), (5, 3, bands), "{format}");
+                assert_eq!(back.raster.data.to_f64_vec(), ds.raster.data.to_f64_vec(), "{format}");
+                assert_eq!(back.geo_transform(), [500000.0, 30.0, 0.0, 4000090.0, 0.0, -30.0], "{format}");
+                assert_eq!(back.crs().epsg, Some(32610), "{format}");
+                if format == "NC4" {
+                    // A netCDF-4 file is an HDF5 file too.
+                    let Dataset::Raster(h5) = codec::open(bytes, "x.h5", &Default::default()).unwrap() else { panic!() };
+                    assert_eq!(h5.raster.data.to_f64_vec().len(), 15 * bands);
+                }
+            }
+            let zipped = write_raster_bytes(&ds, "x.zarr", &Default::default()).unwrap();
+            let Dataset::Raster(back) = codec::open(zipped.clone(), "x.zip", &Default::default()).unwrap() else { panic!() };
+            assert_eq!(back.raster.data.to_f64_vec(), ds.raster.data.to_f64_vec());
+            assert_eq!(back.geo_transform(), [500000.0, 30.0, 0.0, 4000090.0, 0.0, -30.0]);
+            assert_eq!(back.crs().epsg, Some(32610));
+            // The store's files, as a key-value store gives them (without the store's directory).
+            let mut zip = zip::ZipArchive::new(std::io::Cursor::new(zipped)).unwrap();
+            let mut files = Vec::new();
+            for i in 0..zip.len() {
+                let mut f = zip.by_index(i).unwrap();
+                let name = f.name().unwrap().trim_start_matches("x.zarr/").to_string();
+                let mut b = Vec::new();
+                std::io::Read::read_to_end(&mut f, &mut b).unwrap();
+                files.push((name, b));
+            }
+            assert!(files.iter().any(|(n, _)| n == ".zgroup"));
+            let back = open_zarr_store(files).unwrap();
+            assert_eq!(back.raster.data.to_f64_vec(), ds.raster.data.to_f64_vec());
+        }
+    }
+
+    #[test]
+    fn lerc_jxl_and_jpeg_geotiffs_round_trip() {
+        let (cols, rows) = (40, 33);
+        let make = |bands: usize, dt: DataType| {
+            let v: Vec<f64> = (0..cols * rows * bands).map(|i| ((i * 7) % 200) as f64).collect();
+            let cfg = wbraster::RasterConfig { cols, rows, bands, nodata: -1.0, data_type: dt, ..Default::default() };
+            RasterDataset::new(Raster::from_data_native(cfg, RasterData::from_f64_vec(dt, v)).unwrap(), false)
+        };
+        let cases = [
+            ("LERC", DataType::F32, 1, Some(16)),
+            ("LERC_DEFLATE", DataType::I16, 2, None),
+            ("LERC_ZSTD", DataType::U8, 3, Some(16)),
+            ("JXL", DataType::U8, 3, Some(16)),
+            ("JXL", DataType::U16, 1, None),
+        ];
+        for (c, dt, bands, tile) in cases {
+            let ds = make(bands, dt);
+            let options = RasterWriteOptions { compression: Some(c.into()), tile_size: tile, ..Default::default() };
+            let bytes = codec::write_raster(&ds, RasterDriver::GTiff, &options, "x").unwrap();
+            let Dataset::Raster(back) = codec::open(bytes, "x.tif", &Default::default()).unwrap() else { panic!() };
+            assert_eq!(back.raster.data.to_f64_vec(), ds.raster.data.to_f64_vec(), "{c} {dt:?}");
+        }
+        // Lossy: LERC within its error, JPEG close.
+        let ds = make(1, DataType::F32);
+        let options = RasterWriteOptions {
+            compression: Some("LERC".into()),
+            creation_options: vec![("MAX_Z_ERROR".into(), "0.5".into())],
+            ..Default::default()
+        };
+        let bytes = codec::write_raster(&ds, RasterDriver::Cog, &options, "x").unwrap();
+        let Dataset::Raster(back) = codec::open(bytes, "x.tif", &Default::default()).unwrap() else { panic!() };
+        assert!(back.raster.data.to_f64_vec().iter().zip(ds.raster.data.to_f64_vec()).all(|(a, b)| (a - b).abs() <= 0.5));
+        for (bands, tile) in [(3, Some(32)), (1, None)] {
+            let v: Vec<f64> = (0..cols * rows * bands).map(|i| ((i % cols) * 3 + (i / cols % rows) * 2) as f64).collect();
+            let cfg = wbraster::RasterConfig { cols, rows, bands, data_type: DataType::U8, ..Default::default() };
+            let ds = RasterDataset::new(Raster::from_data_native(cfg, RasterData::from_f64_vec(DataType::U8, v)).unwrap(), false);
+            let options = RasterWriteOptions { compression: Some("JPEG".into()), tile_size: tile, ..Default::default() };
+            let bytes = codec::write_raster(&ds, RasterDriver::GTiff, &options, "x").unwrap();
+            let Dataset::Raster(back) = codec::open(bytes, "x.tif", &Default::default()).unwrap() else { panic!() };
+            let (a, b) = (back.raster.data.to_f64_vec(), ds.raster.data.to_f64_vec());
+            let err = a.iter().zip(&b).map(|(x, y)| (x - y).abs()).sum::<f64>() / a.len() as f64;
+            assert!(err < 3.0, "JPEG {bands} bands: mean error {err}");
         }
     }
 

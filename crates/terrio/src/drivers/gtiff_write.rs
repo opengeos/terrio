@@ -20,6 +20,39 @@ pub(crate) enum Compression {
     Deflate,
     PackBits,
     Zstd,
+    /// LERC, alone or with Deflate or Zstandard over its blobs, as GDAL writes it.
+    Lerc,
+    LercDeflate,
+    LercZstd,
+    /// Lossless JPEG XL (GDAL's code 50002), for Byte and UInt16 data of 1 to 4 bands.
+    Jxl,
+    /// Baseline JPEG, for Byte data of 1 band, or 3 bands in YCbCr.
+    Jpeg,
+}
+
+/// The parameters of the lossy and variable compressions.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct CodecParams {
+    /// LERC: the largest error allowed (0 for lossless).
+    pub max_z_error: f64,
+    /// JPEG: the quality, 1 to 100.
+    pub jpeg_quality: u8,
+    /// JPEG: three bands in YCbCr (`PHOTOMETRIC=YCBCR`), subsampled.
+    pub jpeg_ycbcr: bool,
+}
+
+impl Default for CodecParams {
+    fn default() -> Self {
+        Self { max_z_error: 0.0, jpeg_quality: 75, jpeg_ycbcr: false }
+    }
+}
+
+/// The geometry of a chunk to compress: its size and samples.
+struct ChunkInfo {
+    w: usize,
+    h: usize,
+    spp: usize,
+    t: DataType,
 }
 
 impl Compression {
@@ -31,6 +64,11 @@ impl Compression {
             "DEFLATE" | "ZIP" => Self::Deflate,
             "PACKBITS" => Self::PackBits,
             "ZSTD" => Self::Zstd,
+            "LERC" => Self::Lerc,
+            "LERC_DEFLATE" => Self::LercDeflate,
+            "LERC_ZSTD" => Self::LercZstd,
+            "JXL" => Self::Jxl,
+            "JPEG" => Self::Jpeg,
             _ => return None,
         })
     }
@@ -42,24 +80,149 @@ impl Compression {
             Self::Deflate => 8,
             Self::PackBits => 32773,
             Self::Zstd => 50000,
+            Self::Lerc | Self::LercDeflate | Self::LercZstd => 34887,
+            Self::Jxl => 50002,
+            Self::Jpeg => 7,
         }
     }
 
-    fn compress(self, data: Vec<u8>) -> Result<Vec<u8>> {
+    /// Whether the compression takes the TIFF predictor.
+    fn takes_predictor(self) -> bool {
+        matches!(self, Self::Lzw | Self::Deflate | Self::Zstd)
+    }
+
+    fn compress(self, data: Vec<u8>, c: &ChunkInfo, p: &CodecParams) -> Result<Vec<u8>> {
         Ok(match self {
             Self::None => data,
             Self::Lzw => weezl::encode::Encoder::with_tiff_size_switch(weezl::BitOrder::Msb, 8)
                 .encode(&data)
                 .map_err(|e| Error::InvalidData(format!("LZW: {e}")))?,
-            Self::Deflate => {
-                let mut enc = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::new(6));
-                enc.write_all(&data)?;
-                enc.finish()?
-            }
+            Self::Deflate => deflate(&data)?,
             Self::PackBits => packbits(&data),
             Self::Zstd => zstd_compress(&data)?,
+            Self::Lerc => lerc_encode(&data, c, p.max_z_error)?,
+            Self::LercDeflate => deflate(&lerc_encode(&data, c, p.max_z_error)?)?,
+            Self::LercZstd => zstd_compress(&lerc_encode(&data, c, p.max_z_error)?)?,
+            Self::Jxl => jxl_encode(data, c)?,
+            Self::Jpeg => jpeg_encode(&data, c, p.jpeg_quality, p.jpeg_ycbcr)?,
         })
     }
+}
+
+fn deflate(data: &[u8]) -> Result<Vec<u8>> {
+    let mut enc = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::new(6));
+    enc.write_all(data)?;
+    Ok(enc.finish()?)
+}
+
+/// Encodes a chunk (little-endian samples, interleaved) as a LERC blob of `spp` values per pixel,
+/// as GDAL's LERC codec does. Floating-point chunks of one sample with NaNs get a mask of the
+/// valid pixels.
+fn lerc_encode(data: &[u8], c: &ChunkInfo, max_z_error: f64) -> Result<Vec<u8>> {
+    let lerc = |e: lerc_core::Error| Error::InvalidData(format!("LERC: {e}"));
+    let options = lerc_writer::EncodeOptions::new().with_max_z_error(max_z_error);
+    let (w, h, d) = (c.w as u32, c.h as u32, c.spp as u32);
+    macro_rules! encode {
+        ($t:ty, $n:expr) => {{
+            let v: Vec<$t> = data.chunks_exact($n).map(|b| <$t>::from_le_bytes(b.try_into().unwrap_or_default())).collect();
+            let raster = lerc_writer::RasterView::new(w, h, d, &v).map_err(lerc)?;
+            lerc_writer::encode(raster, None, options).map_err(lerc)?
+        }};
+    }
+    macro_rules! encode_float {
+        ($t:ty, $n:expr) => {{
+            let v: Vec<$t> = data.chunks_exact($n).map(|b| <$t>::from_le_bytes(b.try_into().unwrap_or_default())).collect();
+            let valid: Vec<u8> = v.chunks_exact(c.spp).map(|px| u8::from(!px.iter().any(|x| x.is_nan()))).collect();
+            let raster = lerc_writer::RasterView::new(w, h, d, &v).map_err(lerc)?;
+            if valid.contains(&0) {
+                // Masked pixels: their values are not stored.
+                let filled: Vec<$t> = v.iter().map(|x| if x.is_nan() { 0.0 } else { *x }).collect();
+                let raster = lerc_writer::RasterView::new(w, h, d, &filled).map_err(lerc)?;
+                let mask = lerc_writer::MaskView::new(w, h, &valid).map_err(lerc)?;
+                lerc_writer::encode(raster, Some(mask), options).map_err(lerc)?
+            } else {
+                lerc_writer::encode(raster, None, options).map_err(lerc)?
+            }
+        }};
+    }
+    Ok(match c.t {
+        DataType::U8 => lerc_writer::encode(lerc_writer::RasterView::new(w, h, d, data).map_err(lerc)?, None, options).map_err(lerc)?,
+        DataType::I8 => encode!(i8, 1),
+        DataType::U16 => encode!(u16, 2),
+        DataType::I16 => encode!(i16, 2),
+        DataType::U32 => encode!(u32, 4),
+        DataType::I32 => encode!(i32, 4),
+        DataType::F32 => encode_float!(f32, 4),
+        DataType::F64 => encode_float!(f64, 8),
+        t => return Err(Error::Unsupported(format!("LERC does not encode {t:?} data"))),
+    })
+}
+
+/// Encodes a chunk as a lossless JPEG XL codestream: 1 to 4 channels (gray, gray and alpha, RGB,
+/// RGBA) of 8 or 16 bits.
+fn jxl_encode(mut data: Vec<u8>, c: &ChunkInfo) -> Result<Vec<u8>> {
+    use zune_core::bit_depth::BitDepth;
+    use zune_core::colorspace::ColorSpace;
+    let depth = match c.t {
+        DataType::U8 => BitDepth::Eight,
+        DataType::U16 => {
+            // The encoder reads 16-bit samples in native byte order.
+            if cfg!(target_endian = "big") {
+                data.as_chunks_mut::<2>().0.iter_mut().for_each(|b| b.swap(0, 1));
+            }
+            BitDepth::Sixteen
+        }
+        t => return Err(Error::Unsupported(format!("JPEG XL is written for Byte and UInt16 data, not {t:?}"))),
+    };
+    let colorspace = match c.spp {
+        1 => ColorSpace::Luma,
+        2 => ColorSpace::LumaA,
+        3 => ColorSpace::RGB,
+        4 => ColorSpace::RGBA,
+        n => return Err(Error::Unsupported(format!("JPEG XL is written for 1 to 4 bands per chunk, not {n}"))),
+    };
+    let options = zune_core::options::EncoderOptions::new(c.w, c.h, colorspace, depth).set_num_threads(1);
+    let mut out = Vec::new();
+    zune_jpegxl::JxlSimpleEncoder::new(&data, options).encode(&mut out).map_err(|e| Error::InvalidData(format!("JPEG XL: {e:?}")))?;
+    Ok(out)
+}
+
+/// Encodes a chunk of Byte samples as a baseline JPEG: gray; RGB components as they are, all
+/// with the luminance quantization table, as libjpeg encodes `JCS_RGB` for GDAL's default
+/// `PHOTOMETRIC=RGB`; or YCbCr with 4:2:0 subsampling (`PHOTOMETRIC=YCBCR`).
+fn jpeg_encode(data: &[u8], c: &ChunkInfo, quality: u8, ycbcr: bool) -> Result<Vec<u8>> {
+    let color = match (c.t, c.spp) {
+        (DataType::U8, 1) => jpeg_encoder::ColorType::Luma,
+        (DataType::U8, 3) if ycbcr => jpeg_encoder::ColorType::Rgb,
+        // Components written as given: no color transform.
+        (DataType::U8, 3) => jpeg_encoder::ColorType::Ycbcr,
+        (t, n) => return Err(Error::Unsupported(format!("JPEG is written for 1 or 3 Byte bands, not {n} {t:?} bands"))),
+    };
+    let (w, h) = (u16::try_from(c.w), u16::try_from(c.h));
+    let (Ok(w), Ok(h)) = (w, h) else { return Err(Error::Unsupported("JPEG chunks are at most 65535 pixels wide and high".into())) };
+    let mut out = Vec::new();
+    let mut enc = jpeg_encoder::Encoder::new(&mut out, quality.clamp(1, 100));
+    if c.spp == 3 && ycbcr {
+        enc.set_sampling_factor(jpeg_encoder::SamplingFactor::R_4_2_0);
+    } else if c.spp == 3 {
+        enc.set_sampling_factor(jpeg_encoder::SamplingFactor::R_4_4_4);
+        const ANNEX_K_LUMA: [u16; 64] = [
+            16, 11, 10, 16, 24, 40, 51, 61, 12, 12, 14, 19, 26, 58, 60, 55, 14, 13, 16, 24, 40, 57, 69, 56, 14, 17, 22, 29, 51, 87, 80, 62,
+            18, 22, 37, 56, 68, 109, 103, 77, 24, 35, 55, 64, 81, 104, 113, 92, 49, 64, 78, 87, 103, 121, 120, 101, 72, 92, 95, 98, 112,
+            100, 103, 99,
+        ];
+        // The luminance table for every component, scaled by the quality as libjpeg scales it
+        // (`jpeg_quality_scaling`, baseline values).
+        let q = quality.clamp(1, 100) as u32;
+        let scale = if q < 50 { 5000 / q } else { 200 - 2 * q };
+        let table = ANNEX_K_LUMA.map(|v| ((v as u32 * scale + 50) / 100).clamp(1, 255) as u16);
+        enc.set_quantization_tables(
+            jpeg_encoder::QuantizationTableType::Custom(Box::new(table)),
+            jpeg_encoder::QuantizationTableType::Custom(Box::new(table)),
+        );
+    }
+    enc.encode(data, w, h, color).map_err(|e| Error::InvalidData(format!("JPEG: {e}")))?;
+    Ok(out)
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -150,6 +313,8 @@ pub(crate) struct TiffOptions {
     pub mask: Option<Vec<u8>>,
     /// The 92 values of the `RPCCoefficientTag`, or none.
     pub rpc: Vec<f64>,
+    /// The parameters of LERC and JPEG.
+    pub codec: CodecParams,
 }
 
 impl Default for TiffOptions {
@@ -176,6 +341,7 @@ impl Default for TiffOptions {
             gcps: Vec::new(),
             mask: None,
             rpc: Vec::new(),
+            codec: CodecParams::default(),
         }
     }
 }
@@ -265,7 +431,12 @@ impl TiffOptions {
                 "MINISBLACK" => 1,
                 "RGB" => 2,
                 "PALETTE" => 3,
-                other => return Err(Error::Unsupported(format!("PHOTOMETRIC={other} is not supported (MINISBLACK, RGB, PALETTE)"))),
+                "YCBCR" if o.compression == Compression::Jpeg => 6,
+                other => {
+                    return Err(Error::Unsupported(format!(
+                        "PHOTOMETRIC={other} is not supported (MINISBLACK, RGB, PALETTE, YCBCR with JPEG)"
+                    )));
+                }
             });
         }
         o.georeferenced = !co("GEOREFERENCED").is_some_and(|v| !yes(v));
@@ -277,6 +448,26 @@ impl TiffOptions {
                 other => return Err(Error::InvalidArgument(format!("invalid PREDICTOR '{other}' (1, 2, 3)"))),
             };
         }
+        if let Some(v) = co("MAX_Z_ERROR") {
+            o.codec.max_z_error = v
+                .trim()
+                .parse::<f64>()
+                .ok()
+                .filter(|e| *e >= 0.0)
+                .ok_or_else(|| Error::InvalidArgument(format!("invalid MAX_Z_ERROR '{v}'")))?;
+        }
+        if let Some(v) = co("JPEG_QUALITY").or_else(|| co("QUALITY")) {
+            o.codec.jpeg_quality = v
+                .trim()
+                .parse::<u8>()
+                .ok()
+                .filter(|q| (1..=100).contains(q))
+                .ok_or_else(|| Error::InvalidArgument(format!("invalid JPEG_QUALITY '{v}' (1 to 100)")))?;
+        }
+        if o.compression == Compression::Jxl && co("JXL_LOSSLESS").is_some_and(|v| !yes(v)) {
+            return Err(Error::Unsupported("lossy JPEG XL is not written: JXL_LOSSLESS=YES only".into()));
+        }
+        o.codec.jpeg_ycbcr = o.photometric == Some(6);
         o.alpha = co("ALPHA").is_some_and(|v| yes(v) || v.eq_ignore_ascii_case("NON-PREMULTIPLIED"));
         if !o.color_table.is_empty() && o.photometric.is_none() {
             o.photometric = Some(3);
@@ -385,8 +576,23 @@ fn plan(raster: &Raster, opts: &TiffOptions) -> Result<Plan> {
             }
         }
     }
-    let photometric = opts.photometric.unwrap_or(if raster.bands == 3 && raster.data_type == DataType::U8 { 2 } else { 1 });
-    let base_samples = if photometric == 2 { 3 } else { 1 };
+    let jpeg = opts.compression == Compression::Jpeg;
+    if jpeg && (raster.data_type != DataType::U8 || !matches!(raster.bands, 1 | 3) || opts.planar || !opts.color_table.is_empty()) {
+        return Err(Error::Unsupported("JPEG is written for 1 or 3 Byte bands, pixel-interleaved".into()));
+    }
+    // Two or four interleaved bands would be gray and alpha or RGBA in JPEG XL, which GDAL reads
+    // as extra channels.
+    if opts.compression == Compression::Jxl && !opts.planar && !matches!(raster.bands, 1 | 3) {
+        return Err(Error::Unsupported("JPEG XL is written for 1 or 3 interleaved bands (others with INTERLEAVE=BAND)".into()));
+    }
+    let photometric = match opts.photometric {
+        Some(6) if jpeg && raster.bands == 3 => 6,
+        Some(6) => return Err(Error::Unsupported("PHOTOMETRIC=YCBCR needs JPEG compression of 3 bands".into())),
+        Some(p) => p,
+        None if raster.bands == 3 && raster.data_type == DataType::U8 => 2,
+        None => 1,
+    };
+    let base_samples = if matches!(photometric, 2 | 6) { 3 } else { 1 };
     if raster.bands < base_samples {
         return Err(Error::InvalidArgument(format!("PHOTOMETRIC=RGB needs 3 bands or more, not {}", raster.bands)));
     }
@@ -406,7 +612,7 @@ fn plan(raster: &Raster, opts: &TiffOptions) -> Result<Plan> {
         }
     }
     // As GDAL, the predictor only applies to compressed files; 3 to floating-point samples.
-    let predictor = if opts.compression == Compression::None { 1 } else { opts.predictor };
+    let predictor = if opts.compression.takes_predictor() { opts.predictor } else { 1 };
     if predictor == 3 && !matches!(raster.data_type, DataType::F32 | DataType::F64) {
         return Err(Error::InvalidArgument("PREDICTOR=3 is only supported for floating-point data".into()));
     }
@@ -471,7 +677,7 @@ fn prepare(raster: &Raster, opts: &TiffOptions) -> Result<Prepared> {
     }
     let mut images = Vec::with_capacity(levels.len());
     for (i, level) in levels.iter().enumerate() {
-        let mut img = level.image(raster.data_type, opts.compression, &layout)?;
+        let mut img = level.image(raster.data_type, opts.compression, &opts.codec, &layout)?;
         if i > 0 {
             img.tags.push((254, Value::Longs(vec![1])));
         }
@@ -533,7 +739,7 @@ fn mask_image(mask: &[u8], cols: usize, rows: usize, block: (usize, usize, bool)
                 }
             }
         }
-        compression.compress(buf).unwrap_or_default()
+        compression.compress(buf, &ChunkInfo { w: chunk_w, h, spp: 1, t: DataType::U8 }, &CodecParams::default()).unwrap_or_default()
     });
     let mut tags = vec![
         (254, Value::Longs(vec![4])),
@@ -615,7 +821,7 @@ impl<'a> Level<'a> {
     }
 
     /// Splits the level into compressed strips or tiles, with its structural tags.
-    fn image(&self, t: DataType, compression: Compression, layout: &Layout) -> Result<Image> {
+    fn image(&self, t: DataType, compression: Compression, codec: &CodecParams, layout: &Layout) -> Result<Image> {
         let size = t.size_bytes();
         let spp = self.bands;
         // Samples per chunk.
@@ -628,10 +834,14 @@ impl<'a> Level<'a> {
             }
             None => {
                 let row_bytes = self.cols * chunk_spp * size;
-                let rows_per_strip = match layout.rows_per_strip {
+                let mut rows_per_strip = match layout.rows_per_strip {
                     Some(r) => (r as usize).clamp(1, self.rows),
                     None => ((1usize << 16) / row_bytes.max(1)).clamp(1, self.rows),
                 };
+                // JPEG strips hold whole MCUs (16 rows with 4:2:0 subsampling).
+                if compression == Compression::Jpeg && rows_per_strip < self.rows {
+                    rows_per_strip = (rows_per_strip / 16 * 16).max(16).min(self.rows);
+                }
                 (self.cols, rows_per_strip, 1, self.rows.div_ceil(rows_per_strip), false)
             }
         };
@@ -648,7 +858,7 @@ impl<'a> Level<'a> {
                 with_data!(self.data.as_ref(), v => chunk_bytes(v, self.cols, self.rows, spp, x0, y0, chunk_w, h))
             };
             apply_predictor(&mut buf, layout.predictor, chunk_w * chunk_spp, chunk_spp, size);
-            compression.compress(buf)
+            compression.compress(buf, &ChunkInfo { w: chunk_w, h, spp: chunk_spp, t }, codec)
         });
         let chunks = chunks.into_iter().collect::<Result<Vec<_>>>()?;
         let (bits, format) = sample_format(t);
@@ -667,6 +877,17 @@ impl<'a> Level<'a> {
         }
         if layout.predictor > 1 {
             tags.push((317, Value::Shorts(vec![layout.predictor])));
+        }
+        if layout.photometric == 6 {
+            // YCbCrSubSampling: the JPEG streams' 4:2:0.
+            tags.push((530, Value::Shorts(vec![2, 2])));
+        }
+        // LercParameters: LERC 2.4, and the compression over its blobs (none, Deflate, Zstandard).
+        match compression {
+            Compression::Lerc => tags.push((50674, Value::Longs(vec![4, 0]))),
+            Compression::LercDeflate => tags.push((50674, Value::Longs(vec![4, 1]))),
+            Compression::LercZstd => tags.push((50674, Value::Longs(vec![4, 2]))),
+            _ => {}
         }
         if tiled {
             tags.push((322, Value::Longs(vec![chunk_w as u32])));
@@ -1139,6 +1360,7 @@ pub struct GeoTiffWriter {
     bands: usize,
     data_type: DataType,
     compression: Compression,
+    codec: CodecParams,
     layout: Layout,
     /// The block height: the tile height, or the rows per strip.
     block_rows: usize,
@@ -1173,8 +1395,8 @@ impl GeoTiffWriter {
     /// with the rows.
     ///
     /// # Errors
-    /// For COGs, overviews and lossy compressions, which need the whole raster, and when the file
-    /// cannot be created.
+    /// For COGs, overviews and compressions terrio's own writer does not encode (WEBP...), which
+    /// need the whole raster, and when the file cannot be created.
     pub fn create(path: &str, header: &crate::RasterDataset, options: &crate::RasterWriteOptions) -> Result<Self> {
         if matches!(options.driver, Some(d) if d != crate::formats::RasterDriver::GTiff) {
             return Err(Error::Unsupported("rasters are written in rows as GeoTIFFs only".into()));
@@ -1187,8 +1409,10 @@ impl GeoTiffWriter {
             options.geo_transform = header.affine;
         }
         let with_mask = options.mask.take().is_some();
-        let opts = TiffOptions::from_write_options(&options, false, header.nodata())?
-            .ok_or_else(|| Error::Unsupported("lossy compressions need the whole raster".into()))?;
+        let opts = TiffOptions::from_write_options(&options, false, header.nodata())?.ok_or_else(|| {
+            let name = options.compression.as_deref().unwrap_or_default();
+            Error::Unsupported(format!("{name} compression needs the whole raster"))
+        })?;
         let r = &header.raster;
         let plan = plan(r, &opts)?;
         let (cols, rows, bands) = (r.cols, r.rows, r.bands);
@@ -1231,6 +1455,7 @@ impl GeoTiffWriter {
             bands,
             data_type: r.data_type,
             compression: opts.compression,
+            codec: opts.codec,
             layout,
             block_rows,
             chunk_w,
@@ -1335,7 +1560,7 @@ impl GeoTiffWriter {
         if let Some((tw, _)) = layout.tile {
             layout.tile = Some((tw, self.block_rows as u32));
         }
-        let img = level.image(self.data_type, self.compression, &layout)?;
+        let img = level.image(self.data_type, self.compression, &self.codec, &layout)?;
         let block_row = self.rows_done / self.block_rows;
         let per_plane = self.across * self.rows.div_ceil(self.block_rows);
         for (k, chunk) in img.chunks.iter().enumerate() {

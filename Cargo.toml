@@ -54,6 +54,10 @@ openjp2 = { version = "0.6", default-features = false, features = ["std"] }
 # GeoTIFF compressions GDAL writes and the tiff crate does not read: LERC, JPEG XL and LZMA (XZ).
 lerc-reader = { version = "0.5", default-features = false }
 lerc-core = "0.5"
+lerc-writer = "0.5"
+# Lossless JPEG XL encoding of GeoTIFF chunks (without threads, for WebAssembly).
+zune-jpegxl = { version = "0.5", default-features = false, features = ["std"] }
+zune-core = "0.5"
 jxl-oxide = { version = "0.12", default-features = false }
 # AVIF tiles: a pure-Rust port of dav1d, without its assembly so that it builds for WebAssembly.
 rusty_av1d = { version = "1.2", default-features = false, features = ["bitdepth_8"] }

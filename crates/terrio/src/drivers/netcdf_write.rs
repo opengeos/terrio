@@ -386,6 +386,12 @@ fn grid_mapping(s: &crate::crs::SpatialRef) -> (String, Vec<(String, Attr)>) {
 /// Outside CDF-5 and netCDF-4, UInt32 and 64-bit integers are written as doubles, as GDAL writes
 /// them.
 pub(crate) fn write(r: &Raster, nodata: Option<f64>, path: &Path, options: &Options) -> Result<()> {
+    std::fs::write(path, to_bytes(r, nodata, options)?)?;
+    Ok(())
+}
+
+/// Encodes a raster as a NetCDF file: see [`write`].
+pub(crate) fn to_bytes(r: &Raster, nodata: Option<f64>, options: &Options) -> Result<Vec<u8>> {
     let mut version = match options.format.map(str::to_ascii_uppercase).as_deref() {
         None | Some("NC") => Version::Classic,
         Some("NC2") => Version::Offset64,
@@ -534,8 +540,7 @@ pub(crate) fn write(r: &Raster, nodata: Option<f64>, path: &Path, options: &Opti
         }
         _ => encode(version, &dims, &globals, &vars),
     };
-    std::fs::write(path, bytes)?;
-    Ok(())
+    Ok(bytes)
 }
 
 /// How a netCDF-4 file stores its variables.

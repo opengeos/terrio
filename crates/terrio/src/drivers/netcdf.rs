@@ -96,12 +96,12 @@ impl VarRef<'_> {
 
 /// Every variable, in GDAL's order: the root group's in definition order, then each subgroup's
 /// (in definition order, recursively).
-fn all_variables<'a>(f: &'a NcFile, path: &Path) -> Result<Vec<VarRef<'a>>> {
+fn all_variables<'a>(f: &'a NcFile, path: &Path, hdf5: &dyn Fn() -> Option<hdf5_reader::Hdf5File>) -> Result<Vec<VarRef<'a>>> {
     let root = f.root_group().map_err(|e| err(path, e))?;
     let classic = matches!(f.format(), NcFormat::Classic | NcFormat::Offset64 | NcFormat::Cdf5);
     // NetCDF-4 groups and variables come back in name order; their object headers were allocated
     // in definition order, which is GDAL's order.
-    let addresses = if classic { None } else { super::hdf5::open_file(path).ok() };
+    let addresses = if classic { None } else { hdf5() };
     let group_address = |group_path: &str| -> u64 {
         addresses
             .as_ref()
@@ -188,7 +188,18 @@ fn subdatasets(vars: &[VarRef], file: &str) -> Vec<(String, String)> {
 /// root group are named by their path, `/group/var`.
 pub(crate) fn read(path: &Path, variable: Option<&str>) -> Result<RasterDataset> {
     let f = NcFile::open(path).map_err(|e| err(path, e))?;
-    let vars = all_variables(&f, path)?;
+    read_file(&f, path, &|| super::hdf5::open_file(path).ok(), variable)
+}
+
+/// Reads a NetCDF variable of a file held in memory: see [`read`]. `name` is the file name.
+pub(crate) fn read_bytes(bytes: &[u8], name: &str, variable: Option<&str>) -> Result<RasterDataset> {
+    let path = Path::new(name);
+    let f = NcFile::from_bytes(bytes).map_err(|e| err(path, e))?;
+    read_file(&f, path, &|| super::hdf5::open_bytes(bytes.to_vec(), name).ok(), variable)
+}
+
+fn read_file(f: &NcFile, path: &Path, hdf5: &dyn Fn() -> Option<hdf5_reader::Hdf5File>, variable: Option<&str>) -> Result<RasterDataset> {
+    let vars = all_variables(f, path, hdf5)?;
     let candidates = data_variables(&vars);
     let var = match variable {
         Some(name) => {

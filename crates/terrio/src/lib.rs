@@ -152,6 +152,7 @@ mod histogram;
 pub mod http;
 pub mod info;
 mod jpeg;
+mod memfs;
 pub mod memory;
 pub mod ops;
 mod par;

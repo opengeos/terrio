@@ -372,8 +372,35 @@ fn subdatasets(w: &Walk, file: &str) -> Vec<(String, String)> {
 /// `//group/dataset`), or the file's only subdataset, or its first one (listing them all).
 /// `name` is the file as given, used to name the subdatasets.
 pub(crate) fn read(path: &Path, name: &str, subdataset: Option<&str>) -> Result<RasterDataset> {
-    let f = open_file(path)?;
-    let w = walk(&f)?;
+    read_file(&open_file(path)?, path, name, subdataset)
+}
+
+/// Where the HDF5 signature is in bytes: 0, or 512, 1024, 2048... after a user block.
+pub(crate) fn signature_offset_in(b: &[u8]) -> Option<usize> {
+    let mut offset = 0usize;
+    for _ in 0..20 {
+        if b.get(offset..offset + 8)? == b"\x89HDF\r\n\x1a\n" {
+            return Some(offset);
+        }
+        offset = if offset == 0 { 512 } else { offset * 2 };
+    }
+    None
+}
+
+/// Opens an HDF5 file held in memory (after its user block, when it has one).
+pub(crate) fn open_bytes(mut bytes: Vec<u8>, name: &str) -> Result<Hdf5File> {
+    let offset = signature_offset_in(&bytes).ok_or_else(|| err(Path::new(name), "not an HDF5 file"))?;
+    bytes.drain(..offset);
+    Hdf5File::from_vec(bytes).map_err(|e| err(Path::new(name), e))
+}
+
+/// Reads an HDF5 dataset held in memory as a raster: see [`read`]. `name` is the file name.
+pub(crate) fn read_bytes(bytes: Vec<u8>, name: &str, subdataset: Option<&str>) -> Result<RasterDataset> {
+    read_file(&open_bytes(bytes, name)?, Path::new(name), name, subdataset)
+}
+
+fn read_file(f: &Hdf5File, path: &Path, name: &str, subdataset: Option<&str>) -> Result<RasterDataset> {
+    let w = walk(f)?;
     let subs = subdatasets(&w, name);
     let (entry, metadata) = match subdataset {
         Some(s) => {
@@ -400,7 +427,7 @@ pub(crate) fn read(path: &Path, name: &str, subdataset: Option<&str>) -> Result<
             }
         }
     };
-    read_dataset(&f, path, &w, entry, metadata)
+    read_dataset(f, path, &w, entry, metadata)
 }
 
 fn read_dataset(f: &Hdf5File, path: &Path, w: &Walk, e: &Entry, metadata: Option<Vec<(String, String)>>) -> Result<RasterDataset> {

@@ -791,3 +791,87 @@ test("remote public files", { skip: !process.env.TERRIO_NETWORK_TESTS && "TERRIO
     assert.ok(bytes < d.size / 4);
   }
 });
+
+// ─── More formats in memory ─────────────────────────────────────────────────────────────────────
+
+test("netCDF, HDF5 and Zarr in memory; LERC, JPEG XL and JPEG GeoTIFFs", () => {
+  const data = new Int16Array(2 * 30 * 20).map((_, i) => (i * 37) % 2000);
+  const ds = terrio.rasterFromArray(data, 30, 20, [500000, 30, 0, 4100000, 0, -30], "EPSG:32610", -9999);
+  for (const [name, options] of [
+    ["x.nc", {}],
+    ["x.nc", { creationOptions: { FORMAT: "NC4", COMPRESS: "DEFLATE" } }],
+    ["x.zarr", {}],
+    ["x.zarr", { creationOptions: { FORMAT: "ZARR_V3" }, compress: "ZSTD" }],
+  ]) {
+    const bytes = ds.toBytes(name, options);
+    // Zarr stores come back zipped.
+    const back = terrio.open(bytes, name.endsWith(".zarr") ? "x.zip" : name);
+    assert.deepEqual([back.width, back.height, back.count, back.crs], [30, 20, 2, "EPSG:32610"], name);
+    assert.deepEqual([...back.transform], [500000, 30, 0, 4100000, 0, -30], name);
+    assert.deepEqual([...back.readBand(2)], [...data.slice(600)], name);
+  }
+  // A netCDF-4 file is HDF5: read through the HDF5 driver by its name.
+  const nc4 = ds.toBytes("x.nc", { creationOptions: { FORMAT: "NC4" } });
+  assert.equal(terrio.open(nc4, "x.h5").width, 30);
+  // Lossless GeoTIFF compressions, and JPEG.
+  const bytes8 = new Uint8Array(3 * 64 * 48).map((_, i) => (i % 64) * 2 + Math.floor(i / 64) % 48);
+  const rgb = terrio.rasterFromArray(bytes8, 64, 48, [0, 1, 0, 48, 0, -1], "EPSG:3857");
+  for (const options of [{ compress: "LERC" }, { compress: "LERC_ZSTD", tileSize: 16 }, { compress: "JXL" }, { format: "COG", compress: "LERC_DEFLATE" }]) {
+    const back = terrio.open(rgb.toBytes("c.tif", options), "c.tif");
+    for (let b = 1; b <= 3; b++) assert.deepEqual([...back.readBand(b)], [...rgb.readBand(b)], JSON.stringify(options));
+  }
+  const floats = terrio.rasterFromArray(new Float32Array(40 * 30).map((_, i) => Math.sin(i) * 100), 40, 30, [0, 1, 0, 30, 0, -1], "EPSG:4326");
+  const lossy = terrio.open(floats.toBytes("f.tif", { compress: "LERC", creationOptions: { MAX_Z_ERROR: 0.01 } }), "f.tif").readBand(1);
+  const exact = floats.readBand(1);
+  assert.ok(lossy.every((v, i) => Math.abs(v - exact[i]) <= 0.01 + 1e-6));
+  const jpeg = terrio.open(rgb.toBytes("j.tif", { compress: "JPEG", creationOptions: { JPEG_QUALITY: 90 } }), "j.tif");
+  const [a, b] = [jpeg.readBand(1), rgb.readBand(1)];
+  const meanError = a.reduce((s, v, i) => s + Math.abs(v - b[i]), 0) / a.length;
+  assert.ok(meanError < 3, `JPEG mean error ${meanError}`);
+  assert.throws(() => floats.toBytes("j.tif", { compress: "JPEG" }), /JPEG is written for/);
+});
+
+test("Zarr stores and netCDF/HDF5 products as GDAL reads them", { skip: SKIP_DATA }, async (t) => {
+  const { readdirSync, statSync } = await import("node:fs");
+  const srtm = terrio.open(readFileSync(join(DATA, "srtm_sub.tif")), "srtm_sub.tif");
+  const same = (ds, label) => {
+    assert.deepEqual([ds.width, ds.height, ds.crs], [srtm.width, srtm.height, srtm.crs], label);
+    ds.transform.forEach((v, i) => assert.ok(Math.abs(v - srtm.transform[i]) < 1e-9, `${label} transform`));
+    assert.deepEqual([...ds.readBand(1)], [...srtm.readBand(1)], label);
+  };
+  same(terrio.open(readFileSync(join(DATA, "srtm_sub.nc")), "srtm_sub.nc"), "srtm_sub.nc");
+  // Zarr stores written by GDAL, as key-value stores (v2 Blosc, v3 Zstandard).
+  const store = (dir) => {
+    const m = new Map();
+    const walk = (d, prefix) => {
+      for (const f of readdirSync(d)) {
+        const p = join(d, f);
+        if (statSync(p).isDirectory()) walk(p, `${prefix}${f}/`);
+        else m.set(`${prefix}${f}`, readFileSync(p));
+      }
+    };
+    walk(dir, "");
+    return m;
+  };
+  for (const z of ["srtm_sub_v3.zarr", "srtm_sub_blosc.zarr"]) {
+    if (existsSync(join(DATA, z))) same(terrio.openZarr(store(join(DATA, z))), z);
+  }
+  // Subdatasets of an HDF5 (JPSS ATMS, with a user block) and a netCDF-4 product (Sentinel-5P).
+  const refs = [
+    ["h5_bt.tif", "SATMS_j01_d20230101_t0000026_e0000343_b26525_c20230101002941202701_oeac_ops.h5", "HDF5:\"x.h5\"://All_Data/ATMS-SDR_All/BrightnessTemperature"],
+    ["nc4_methane.tif", "S5P_OFFL_L2__CH4____20230101T000319_20230101T014449_27036_03_020400_20230103T110255.nc", "NETCDF:\"x.nc\":/PRODUCT/methane_mixing_ratio"],
+  ];
+  for (const [ref, file, name] of refs) {
+    if (!existsSync(join(DATA, "wasm_refs", ref)) || !existsSync(join(DATA, file))) {
+      t.diagnostic(`${ref} or ${file} is missing`);
+      continue;
+    }
+    const ds = terrio.open(readFileSync(join(DATA, file)), name);
+    const gdal = terrio.open(readFileSync(join(DATA, "wasm_refs", ref)), ref);
+    assert.deepEqual([ds.width, ds.height, ds.count, ds.dtype], [gdal.width, gdal.height, gdal.count, gdal.dtype], ref);
+    for (let b = 1; b <= gdal.count; b++) {
+      const [x, y] = [ds.readBand(b), gdal.readBand(b)];
+      assert.ok(x.every((v, i) => v === y[i] || (v !== v && y[i] !== y[i])), `${ref} band ${b}`);
+    }
+  }
+});

@@ -253,6 +253,9 @@ if command -v gdaldem >/dev/null && command -v gdal_calc.py >/dev/null && [ ! -e
   gdal_rasterize -q -burn 1 -tr 0.1 0.1 -ot Byte countries.geojson $r/rasterize_burn.tif
   gdal_rasterize -q -a POPULATION -tr 0.002 0.002 -ot Int32 TN_Counties.geojson $r/rasterize_attribute.tif
   gdal_polygonize.py -q nlcd_knoxville.tif -f FlatGeobuf $r/polygonize.fgb
+  # Subdatasets of HDF5 and netCDF-4 products, read from memory.
+  gdal_translate -q "HDF5:\"SATMS_j01_d20230101_t0000026_e0000343_b26525_c20230101002941202701_oeac_ops.h5\"://All_Data/ATMS-SDR_All/BrightnessTemperature" $r/h5_bt.tif
+  gdal_translate -q "NETCDF:\"$s5p\":/PRODUCT/methane_mixing_ratio" $r/nc4_methane.tif
   touch $r/done
 fi
 # Datum shift and geoid grids from the PROJ CDN (scripts/proj_grids.txt, 230 MB), and grids in

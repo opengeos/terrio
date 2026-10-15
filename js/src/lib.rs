@@ -144,6 +144,8 @@ struct WriteOptions {
     minzoom: Option<u8>,
     /// PMTiles, MBTiles: the highest zoom level written.
     maxzoom: Option<u8>,
+    /// Raster creation options, as GDAL's (`{ FORMAT: "NC4", MAX_Z_ERROR: "0.01" }`).
+    creation_options: Option<std::collections::BTreeMap<String, serde_json::Value>>,
 }
 
 #[allow(clippy::large_enum_variant)]
@@ -227,6 +229,35 @@ pub fn open(bytes: Vec<u8>, filename: &str) -> Result<Dataset, JsError> {
         terrio::Dataset::Raster(r) => Dataset::from_raster(r),
         terrio::Dataset::Vector(v) => Dataset::from_layers(v.layers, v.driver),
     })
+}
+
+/// Opens a Zarr store (v2 or v3, GeoZarr conventions included) from its files: a `Map` or an
+/// object of paths to `Uint8Array`s (`.zgroup`, `dem/.zarray`, `dem/0.0`...), as an in-memory
+/// key-value store holds them. A zip archive of a store opens with `open`.
+#[wasm_bindgen(js_name = openZarr)]
+pub fn open_zarr(store: JsValue) -> Result<Dataset, JsError> {
+    let entries = if store.is_instance_of::<js_sys::Map>() {
+        js_sys::Array::from(&js_sys::Map::from(store).entries().into())
+    } else if store.is_object() {
+        js_sys::Object::entries(&js_sys::Object::from(store))
+    } else {
+        return Err(JsError::new("expected a Map or an object of paths to Uint8Arrays"));
+    };
+    let mut files = Vec::with_capacity(entries.length() as usize);
+    for e in entries.iter() {
+        let pair = js_sys::Array::from(&e);
+        let key = pair.get(0).as_string().ok_or_else(|| JsError::new("store keys are strings"))?;
+        let value = pair.get(1);
+        let bytes = match value.dyn_ref::<js_sys::Uint8Array>() {
+            Some(a) => a.to_vec(),
+            None => match value.as_string() {
+                Some(text) => text.into_bytes(),
+                None => return Err(JsError::new(&format!("'{key}': expected a Uint8Array or a string"))),
+            },
+        };
+        files.push((key, bytes));
+    }
+    Ok(Dataset::from_raster(terrio::memory::open_zarr_store(files).map_err(js_err)?))
 }
 
 /// Creates a raster from a typed array of pixels, band after band, row after row.
@@ -470,8 +501,11 @@ impl Dataset {
 
     /// Writes the dataset in a format, to bytes: the format of `filename`'s extension, or
     /// `options.format`. Options: `format`, `tSrs` (reproject), and for vector datasets `layers`,
-    /// `where`, `select` and `limit`, for rasters `srcwin`, `overview`, `bands`, `compress` and
-    /// `tileSize`.
+    /// `where`, `select` and `limit`, for rasters `srcwin`, `overview`, `bands`, `compress`
+    /// (GeoTIFF/COG: `NONE`, `LZW`, `DEFLATE`, `PACKBITS`, `ZSTD`, `LERC`, `LERC_DEFLATE`,
+    /// `LERC_ZSTD`, `JXL`, `JPEG`), `tileSize` and `creationOptions` (GDAL's: `MAX_Z_ERROR`,
+    /// `JPEG_QUALITY`, `PREDICTOR`, `FORMAT=NC4` for netCDF, `FORMAT=ZARR_V3` for Zarr...). Zarr
+    /// stores come back as a zip archive of their files.
     #[wasm_bindgen(js_name = toBytes)]
     pub fn to_bytes(&self, filename: &str, options: JsValue) -> Result<Vec<u8>, JsError> {
         let o: WriteOptions = parse_options(&options)?;
@@ -500,7 +534,12 @@ impl Dataset {
                     let o = terrio::ops::warp::WarpOptions { dst_srs: Some(dst), ..Default::default() };
                     ds = terrio::ops::warp::warp(&[&ds], &o).map_err(js_err)?;
                 }
-                let mut creation_options = Vec::new();
+                let mut creation_options: Vec<(String, String)> = o
+                    .creation_options
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|(k, v)| (k, v.as_str().map(str::to_string).unwrap_or_else(|| v.to_string())))
+                    .collect();
                 creation_options.extend(o.minzoom.map(|z| ("MINZOOM".to_string(), z.to_string())));
                 creation_options.extend(o.maxzoom.map(|z| ("MAXZOOM".to_string(), z.to_string())));
                 let options =
@@ -513,8 +552,14 @@ impl Dataset {
                     .as_deref()
                     .map(|f| VectorDriver::from_name(f).ok_or_else(|| JsError::new(&format!("unknown vector format '{f}'"))))
                     .transpose()?;
-                if o.srcwin.is_some() || o.overview.is_some() || o.bands.is_some() || o.compress.is_some() || o.tile_size.is_some() {
-                    return Err(JsError::new("srcwin, overview, bands, compress and tileSize apply to rasters"));
+                if o.srcwin.is_some()
+                    || o.overview.is_some()
+                    || o.bands.is_some()
+                    || o.compress.is_some()
+                    || o.tile_size.is_some()
+                    || o.creation_options.is_some()
+                {
+                    return Err(JsError::new("srcwin, overview, bands, compress, tileSize and creationOptions apply to rasters"));
                 }
                 let chosen: Vec<Layer> = match &o.layers {
                     Some(names) => layers.iter().filter(|l| names.contains(&l.name)).cloned().collect(),

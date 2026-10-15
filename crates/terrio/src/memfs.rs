@@ -1,0 +1,166 @@
+//! Files held in memory under virtual paths, for the drivers that read a directory of files (Zarr
+//! stores) when the files are in memory: zip archives, and key-value stores given by WebAssembly
+//! callers. Paths under a mount read the files in memory; other paths read the file system.
+
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+
+/// The prefix of virtual paths.
+const ROOT: &str = "/vsimem/terrio";
+
+static FILES: Mutex<BTreeMap<String, Arc<Vec<u8>>>> = Mutex::new(BTreeMap::new());
+static NEXT: AtomicU64 = AtomicU64::new(1);
+
+/// A path as a key: `/` separators, without a trailing one.
+fn key(p: &Path) -> Option<String> {
+    let s = p.to_str()?.replace('\\', "/");
+    s.starts_with(ROOT).then(|| s.trim_end_matches('/').to_string())
+}
+
+fn files() -> std::sync::MutexGuard<'static, BTreeMap<String, Arc<Vec<u8>>>> {
+    FILES.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Files mounted under a virtual directory, removed when dropped.
+pub(crate) struct Mount {
+    root: PathBuf,
+}
+
+impl Mount {
+    /// Mounts files given by their paths relative to the mount (`a/.zarray`).
+    pub(crate) fn new(entries: impl IntoIterator<Item = (String, Vec<u8>)>) -> Self {
+        let root = format!("{ROOT}/{}", NEXT.fetch_add(1, Ordering::Relaxed));
+        let mut f = files();
+        for (name, bytes) in entries {
+            let name = name.replace('\\', "/");
+            let name = name.trim_matches('/');
+            if !name.is_empty() {
+                f.insert(format!("{root}/{name}"), Arc::new(bytes));
+            }
+        }
+        Self { root: PathBuf::from(root) }
+    }
+
+    /// The mount's directory.
+    pub(crate) fn path(&self) -> &Path {
+        &self.root
+    }
+
+    /// The files under the mount, by their paths relative to it, sorted.
+    pub(crate) fn files(&self) -> Vec<(String, Vec<u8>)> {
+        let prefix = format!("{}/", self.root.to_string_lossy());
+        files()
+            .range(prefix.clone()..)
+            .take_while(|(f, _)| f.starts_with(&prefix))
+            .map(|(f, b)| (f[prefix.len()..].to_string(), b.as_ref().clone()))
+            .collect()
+    }
+}
+
+impl Drop for Mount {
+    fn drop(&mut self) {
+        let prefix = format!("{}/", self.root.to_string_lossy());
+        files().retain(|k, _| !k.starts_with(&prefix));
+    }
+}
+
+/// Reads a file, in memory or on disk.
+pub(crate) fn read(p: &Path) -> std::io::Result<Vec<u8>> {
+    match key(p) {
+        Some(k) => files()
+            .get(&k)
+            .map(|b| b.as_ref().clone())
+            .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, format!("{k}: no such file"))),
+        None => std::fs::read(p),
+    }
+}
+
+/// Writes a file, in memory or on disk.
+pub(crate) fn write(p: &Path, bytes: impl AsRef<[u8]>) -> std::io::Result<()> {
+    match key(p) {
+        Some(k) => {
+            files().insert(k, Arc::new(bytes.as_ref().to_vec()));
+            Ok(())
+        }
+        None => std::fs::write(p, bytes),
+    }
+}
+
+/// Creates a directory and its parents: on disk only, directories in memory being implied by
+/// their files.
+pub(crate) fn create_dir_all(p: &Path) -> std::io::Result<()> {
+    match key(p) {
+        Some(_) => Ok(()),
+        None => std::fs::create_dir_all(p),
+    }
+}
+
+/// Whether a path exists, in memory or on disk.
+pub(crate) fn exists(p: &Path) -> bool {
+    match key(p) {
+        Some(_) => is_file(p) || is_dir(p),
+        None => p.exists(),
+    }
+}
+
+/// Whether a path is a file, in memory or on disk.
+pub(crate) fn is_file(p: &Path) -> bool {
+    match key(p) {
+        Some(k) => files().contains_key(&k),
+        None => p.is_file(),
+    }
+}
+
+/// Whether a path is a directory, in memory or on disk.
+pub(crate) fn is_dir(p: &Path) -> bool {
+    match key(p) {
+        Some(k) => {
+            let prefix = format!("{k}/");
+            files().range(prefix.clone()..).next().is_some_and(|(f, _)| f.starts_with(&prefix))
+        }
+        None => p.is_dir(),
+    }
+}
+
+/// The subdirectories of a directory, in memory or on disk: `(name, path)`.
+pub(crate) fn subdirs(p: &Path) -> Vec<(String, PathBuf)> {
+    match key(p) {
+        Some(k) => {
+            let prefix = format!("{k}/");
+            let mut names: Vec<String> = files()
+                .range(prefix.clone()..)
+                .take_while(|(f, _)| f.starts_with(&prefix))
+                .filter_map(|(f, _)| f[prefix.len()..].split_once('/').map(|(d, _)| d.to_string()))
+                .collect();
+            names.dedup();
+            names.into_iter().map(|n| (n.clone(), p.join(n))).collect()
+        }
+        None => std::fs::read_dir(p)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter(|e| e.path().is_dir())
+            .filter_map(|e| Some((e.file_name().to_str()?.to_string(), e.path())))
+            .collect(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mounts_files() {
+        let m = Mount::new([("s/.zgroup".to_string(), b"{}".to_vec()), ("s/a/.zarray".into(), b"x".to_vec()), ("s/b/0.0".into(), vec![1])]);
+        let s = m.path().join("s");
+        assert!(is_dir(&s) && !is_file(&s));
+        assert!(is_file(&s.join(".zgroup")));
+        assert_eq!(read(&s.join("a").join(".zarray")).unwrap(), b"x");
+        assert_eq!(subdirs(&s).into_iter().map(|(n, _)| n).collect::<Vec<_>>(), ["a", "b"]);
+        let root = m.path().to_path_buf();
+        drop(m);
+        assert!(!is_dir(&root.join("s")));
+    }
+}

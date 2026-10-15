@@ -351,7 +351,7 @@ pub(crate) struct Pam {
 pub(crate) fn read_pam(path: &Path) -> Option<Pam> {
     let mut aux = path.as_os_str().to_owned();
     aux.push(".aux.xml");
-    Some(parse_pam(&std::fs::read_to_string(aux).ok()?))
+    Some(parse_pam(&String::from_utf8(crate::memfs::read(std::path::Path::new(&aux)).ok()?).ok()?))
 }
 
 /// Parses the text of a `.aux.xml` sidecar.

@@ -562,7 +562,7 @@ fn write_raster_with_nodata(raster: &Raster, nodata: Option<f64>, path: &str, op
     }
     let tiff = matches!(driver, RasterDriver::GTiff | RasterDriver::Cog);
     if tiff {
-        // terrio's writer handles the lossless compressions; wbraster the lossy ones.
+        // terrio's writer handles the compressions it encodes; wbraster the others.
         if let Some(opts) = crate::drivers::gtiff_write::TiffOptions::from_write_options(options, driver == RasterDriver::Cog, nodata)? {
             return crate::drivers::gtiff_write::write(raster, path, &opts);
         }

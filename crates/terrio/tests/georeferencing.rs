@@ -197,11 +197,14 @@ fn internal_masks_and_rows_written_in_order() {
             mask[r * 50 + c] = 0;
         }
     }
-    for (name, co) in [("tiles", vec![("TILED", "YES"), ("BLOCKXSIZE", "16"), ("BLOCKYSIZE", "16")]), ("strips", vec![("BLOCKYSIZE", "7")])]
+    let tiled = vec![("TILED", "YES"), ("BLOCKXSIZE", "16"), ("BLOCKYSIZE", "16")];
+    // LERC (lossless here) is encoded by terrio's writer too, so rows are written with it.
+    for (name, compression, co) in
+        [("tiles", "DEFLATE", tiled.clone()), ("strips", "DEFLATE", vec![("BLOCKYSIZE", "7")]), ("lerc_tiles", "LERC_ZSTD", tiled)]
     {
         let creation_options: Vec<(String, String)> = co.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
         let o =
-            RasterWriteOptions { compression: Some("DEFLATE".into()), creation_options, mask: Some(mask.clone()), ..Default::default() };
+            RasterWriteOptions { compression: Some(compression.into()), creation_options, mask: Some(mask.clone()), ..Default::default() };
         let whole = dir.path().join(format!("{name}.tif"));
         terrio::write_raster_dataset(&ds, whole.to_str().unwrap(), &o).unwrap();
         // The same file, written 6 rows at a time.

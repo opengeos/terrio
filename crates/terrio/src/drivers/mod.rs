@@ -20,7 +20,7 @@ mod hdf5_write;
 mod hfa;
 pub(crate) mod jp2;
 pub(crate) mod netcdf;
-mod netcdf_write;
+pub(crate) mod netcdf_write;
 pub(crate) mod nodata;
 mod png;
 mod rst;
@@ -29,7 +29,7 @@ pub(crate) mod sqlite;
 pub(crate) mod vector;
 pub(crate) mod wkt;
 mod xyz;
-mod zarr;
+pub(crate) mod zarr;
 
 /// Reads a raster with one of terrio's own drivers. `None` when none of them handles the file.
 pub(crate) fn read(path: &str) -> Option<Result<RasterDataset>> {
