@@ -353,8 +353,10 @@ class AffineTransformer(TransformerBase):
 
 
 class GCPTransformer(TransformerBase):
-    """A transformer fitted to ground control points, as GDAL's GCP transformer: polynomials
-    (GDAL's default order), or thin plate splines with `tps`."""
+    """A transformer fitted to ground control points, as GDAL's GCP transformer.
+
+    Polynomials of GDAL's default order, or thin plate splines with `tps`.
+    """
 
     def __init__(self, gcps: Any, tps: bool = False) -> None:
         """Creates the transformer.

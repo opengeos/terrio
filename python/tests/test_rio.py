@@ -408,7 +408,9 @@ def test_rotated_gcps_rpcs_masks(tmp_path):
     rot = Affine(10, 2, 500000, 1.5, -10, 4100000)
     data = (np.arange(3 * 40 * 50).reshape(3, 40, 50) % 251).astype("uint8")
     path = str(tmp_path / "rot.tif")
-    with rio.open(path, "w", width=50, height=40, count=3, dtype="uint8", crs="EPSG:32611", transform=rot) as dst:
+    with rio.open(
+        path, "w", width=50, height=40, count=3, dtype="uint8", crs="EPSG:32611", transform=rot
+    ) as dst:
         dst.write(data)
     with rio.open(path) as ds:
         assert ds.transform == rot and np.array_equal(ds.read(), data)
@@ -416,9 +418,15 @@ def test_rotated_gcps_rpcs_masks(tmp_path):
     from terrio.rio.control import GroundControlPoint
     from terrio.rio.rpc import RPC
 
-    gcps = [GroundControlPoint(row=r, col=c, x=500000 + c * 10, y=4100000 - r * 10) for r in (0, 40) for c in (0, 50)]
+    gcps = [
+        GroundControlPoint(row=r, col=c, x=500000 + c * 10, y=4100000 - r * 10)
+        for r in (0, 40)
+        for c in (0, 50)
+    ]
     path = str(tmp_path / "gcps.tif")
-    with rio.open(path, "w", width=50, height=40, count=1, dtype="uint8", gcps=gcps, crs="EPSG:32611") as dst:
+    with rio.open(
+        path, "w", width=50, height=40, count=1, dtype="uint8", gcps=gcps, crs="EPSG:32611"
+    ) as dst:
         dst.write(data[:1])
     with rio.open(path) as ds:
         got, crs = ds.gcps
@@ -436,7 +444,17 @@ def test_rotated_gcps_rpcs_masks(tmp_path):
     mask = np.full((40, 50), 255, np.uint8)
     mask[5:9, 3:20] = 0
     path = str(tmp_path / "mask.tif")
-    with rio.open(path, "w", width=50, height=40, count=3, dtype="uint8", tiled=True, blockxsize=16, blockysize=16) as dst:
+    with rio.open(
+        path,
+        "w",
+        width=50,
+        height=40,
+        count=3,
+        dtype="uint8",
+        tiled=True,
+        blockxsize=16,
+        blockysize=16,
+    ) as dst:
         dst.write(data)
         dst.write_mask(mask)
     with rio.open(path) as ds:
@@ -451,10 +469,15 @@ def test_per_band_nodata_shutil_stack(tmp_path):
 
     path = str(tmp_path / "a.tif")
     data = np.arange(2 * 10 * 12, dtype="uint8").reshape(2, 10, 12)
-    with rio.open(path, "w", width=12, height=10, count=2, dtype="uint8", crs="EPSG:32611", transform=T) as dst:
+    with rio.open(
+        path, "w", width=12, height=10, count=2, dtype="uint8", crs="EPSG:32611", transform=T
+    ) as dst:
         dst.write(data)
     with open(path + ".aux.xml", "w") as f:
-        f.write('<PAMDataset><PAMRasterBand band="2"><NoDataValue>130</NoDataValue></PAMRasterBand></PAMDataset>')
+        f.write(
+            '<PAMDataset><PAMRasterBand band="2"><NoDataValue>130</NoDataValue>'
+            "</PAMRasterBand></PAMDataset>"
+        )
     with rio.open(path) as ds:
         assert ds.nodatavals == (None, 130.0)
         assert ds.read(masked=True).mask.sum() == 1
@@ -479,9 +502,24 @@ def test_streaming_writes(tmp_path, monkeypatch):
     data = (np.arange(2 * 300 * 400) % 65000).astype("uint16").reshape(2, 300, 400)
     mask = np.full((300, 400), 255, np.uint8)
     mask[100:110] = 0
-    for kw in ({}, dict(tiled=True, blockxsize=64, blockysize=32, compress="deflate"), dict(interleave="band", compress="lzw")):
+    for kw in (
+        {},
+        dict(tiled=True, blockxsize=64, blockysize=32, compress="deflate"),
+        dict(interleave="band", compress="lzw"),
+    ):
         path = str(tmp_path / "s.tif")
-        with rio.open(path, "w", width=400, height=300, count=2, dtype="uint16", crs="EPSG:32611", transform=T, nodata=7, **kw) as dst:
+        with rio.open(
+            path,
+            "w",
+            width=400,
+            height=300,
+            count=2,
+            dtype="uint16",
+            crs="EPSG:32611",
+            transform=T,
+            nodata=7,
+            **kw,
+        ) as dst:
             assert isinstance(dst._data, np.memmap)
             for y in range(0, 300, 70):
                 dst.write(data[:, y : y + 70], window=Window(0, y, 400, min(70, 300 - y)))

@@ -1,6 +1,7 @@
 //! Module-level functions: opening, writing, information, conversion and the processing
 //! operations, with keyword arguments named after the command-line options.
 
+use crate::raster::GcpTuple;
 use crate::raster::{PyRaster, write_options};
 use crate::vector::{PyLayer, PyVectorDataset, layers_from_object};
 use crate::{PyResultExt, invalid};
@@ -981,7 +982,7 @@ fn warp(
     compress: Option<String>,
     tile_size: Option<u32>,
     bigtiff: bool,
-    gcps: Option<Vec<(f64, f64, f64, f64, f64)>>,
+    gcps: Option<Vec<GcpTuple>>,
     order: u32,
     gcp_method: &str,
 ) -> PyResult<PyRaster> {

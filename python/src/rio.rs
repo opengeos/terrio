@@ -1,6 +1,7 @@
 //! Helpers for `terrio.rio`, the rasterio-compatible API: the raw tags of a TIFF's images, CRS
 //! details, and the output grid GDAL suggests for a reprojection.
 
+use crate::raster::GcpTuple;
 use crate::{PyResultExt, invalid};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
@@ -284,7 +285,7 @@ fn suggested_grid(
     transform: [f64; 6],
     src_crs: &str,
     dst_crs: &str,
-    gcps: Option<Vec<(f64, f64, f64, f64, f64)>>,
+    gcps: Option<Vec<GcpTuple>>,
     order: u32,
     gcp_method: &str,
 ) -> PyResult<((f64, f64, f64, f64, f64, f64), usize, usize)> {
@@ -325,7 +326,7 @@ fn suggested_grid(
 #[pyfunction]
 #[pyo3(signature = (gcps, xs, ys, inverse=false, method="polynomial", order=0))]
 fn gcp_transform(
-    gcps: Vec<(f64, f64, f64, f64, f64)>,
+    gcps: Vec<GcpTuple>,
     xs: Vec<f64>,
     ys: Vec<f64>,
     inverse: bool,

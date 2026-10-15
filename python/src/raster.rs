@@ -395,7 +395,7 @@ impl PyRaster {
         colormap: Option<Vec<[u8; 4]>>,
         overviews: Option<Vec<usize>>,
         overview_resampling: Option<String>,
-        gcps: Option<Vec<(f64, f64, f64, f64, f64)>>,
+        gcps: Option<Vec<GcpTuple>>,
         mask: Option<numpy::PyReadonlyArray2<'_, u8>>,
         rpc: Option<Vec<f64>>,
     ) -> PyResult<()> {
@@ -481,8 +481,11 @@ impl PyRaster {
     }
 }
 
+/// A GCP as Python gives it: `(pixel, line, x, y, z)`.
+pub(crate) type GcpTuple = (f64, f64, f64, f64, f64);
+
 /// GCPs from `(pixel, line, x, y, z)` tuples.
-pub(crate) fn parse_gcps(gcps: Option<Vec<(f64, f64, f64, f64, f64)>>) -> Vec<terrio::Gcp> {
+pub(crate) fn parse_gcps(gcps: Option<Vec<GcpTuple>>) -> Vec<terrio::Gcp> {
     gcps.unwrap_or_default()
         .into_iter()
         .enumerate()
@@ -594,7 +597,7 @@ impl PyGeoTiffWriter {
         options: Option<std::collections::BTreeMap<String, String>>,
         band_metadata: Option<Vec<Bound<'_, PyDict>>>,
         colormap: Option<Vec<[u8; 4]>>,
-        gcps: Option<Vec<(f64, f64, f64, f64, f64)>>,
+        gcps: Option<Vec<GcpTuple>>,
         rpc: Option<Vec<f64>>,
         mask: bool,
     ) -> PyResult<Self> {

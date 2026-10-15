@@ -235,7 +235,8 @@ fn remote_info_reads_only_the_header() {
 #[test]
 fn jpeg2000_and_jpeg_xl_windows_match_gdal() {
     type Case = (Option<usize>, (usize, usize, usize, usize), i64);
-    let files: &[(&str, &[(usize, usize)], (usize, usize), &[Case])] = &[
+    type File<'a> = (&'a str, &'a [(usize, usize)], (usize, usize), &'a [Case]);
+    let files: &[File] = &[
         (
             "s2_l1c_B04.jp2",
             &[(5490, 5490), (2745, 2745), (1373, 1373), (687, 687)],
@@ -317,10 +318,9 @@ fn jpeg2000_and_jpeg_xl_windows_match_gdal() {
             assert_eq!(total, sum, "{name} {overview:?} {x} {y} {w} {h}");
             if let (None, Some(full)) = (overview, &full) {
                 for b in 0..full.raster.bands {
-                    let cut: Vec<u64> = (y..y + h)
-                        .flat_map(|row| (x..x + w).map(move |col| (row, col)))
-                        .map(|(row, col)| full.raster.band_view(b).as_slice()[row * full.raster.cols + col].to_bits())
-                        .collect();
+                    let all = band_bits(full, b);
+                    let cols = full.raster.cols;
+                    let cut: Vec<u64> = (y..y + h).flat_map(|row| all[row * cols + x..row * cols + x + w].to_vec()).collect();
                     assert!(band_bits(&ds, b) == cut, "{name} band {}", b + 1);
                 }
                 // A band subset.

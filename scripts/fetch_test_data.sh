@@ -66,6 +66,8 @@ l2a=$s2/L2/tiles/10/S/EG/S2B_MSIL2A_20240630T185919_N0510_R013_T10SEG_20240630T2
 [ -e s2_l2a_B01_60m.jp2 ] || curl -sSfL -o s2_l2a_B01_60m.jp2 "$l2a/R60m/T10SEG_20240630T185919_B01_60m.jp2"
 [ -e s2_l2a_TCI_60m.jp2 ] || curl -sSfL -o s2_l2a_TCI_60m.jp2 "$l2a/R60m/T10SEG_20240630T185919_TCI_60m.jp2"
 [ -e s2_l2a_SCL_20m.jp2 ] || curl -sSfL -o s2_l2a_SCL_20m.jp2 "$l2a/R20m/T10SEG_20240630T185919_SCL_20m.jp2"
+# A full-resolution band (10980 x 10980, 26 MB), read by window and resolution level.
+[ -e s2_l1c_B04.jp2 ] || curl -sSfL -o s2_l1c_B04.jp2 "$l1c/T10SEG_20240630T185919_B04.jp2"
 gdal_jp2=https://raw.githubusercontent.com/OSGeo/gdal/v3.12.2/autotest/gdrivers/data/jpeg2000
 for f in gmljp2_dtedsm_epsg_4326_axes.jp2 stefan_full_rgba_alpha_1bit.jp2 3_13bit_and_1bit.jp2; do
   [ -e "$f" ] || curl -sSfL -o "$f" "$gdal_jp2/$f"
@@ -205,6 +207,11 @@ if command -v ogr2ogr >/dev/null && command -v gdal_translate >/dev/null; then
     $t -co COMPRESS=JXL gtiff_codecs/f32.tif gtiff_codecs/f32_jxl.tif
     $t -co COMPRESS=LZMA -co PREDICTOR=3 gtiff_codecs/f32.tif gtiff_codecs/f32_lzma.tif
   fi
+  # Tiled JPEG XL COGs with overviews, read by window.
+  [ -e gtiff_codecs/rgb_jxl_cog.tif ] || gdal_translate -q -of COG -co COMPRESS=JXL -co BLOCKSIZE=256 \
+    landsat7.tif gtiff_codecs/rgb_jxl_cog.tif
+  [ -e gtiff_codecs/u16_jxl_cog.tif ] || gdal_translate -q -ot UInt16 -of COG -co COMPRESS=JXL \
+    -co BLOCKSIZE=256 -srcwin 1500 5500 2048 2048 s2_l1c_B04.jp2 gtiff_codecs/u16_jxl_cog.tif
 fi
 # Datum shift and geoid grids from the PROJ CDN (scripts/proj_grids.txt, 230 MB), and grids in
 # the formats PROJ used before PROJ 7 (NTv2, GTX), from proj-datumgrid 1.8.

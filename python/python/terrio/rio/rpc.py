@@ -138,8 +138,9 @@ class RPC:
 
     @classmethod
     def from_tiff_tag(cls, values: list[float]) -> RPC:
-        """Reads the 92 values of a GeoTIFF `RPCCoefficientTag`, as GDAL reads them (through its
-        RPC metadata items, numbers rounded to 15 significant digits).
+        """Reads the 92 values of a GeoTIFF `RPCCoefficientTag`, as GDAL reads them.
+
+        GDAL turns them into its RPC metadata items, numbers rounded to 15 significant digits.
 
         Args:
             values: The tag's values.
@@ -153,7 +154,9 @@ class RPC:
         if len(values) != 92:
             raise ValueError(f"an RPCCoefficientTag has 92 values, not {len(values)}")
         # GDAL turns the tag into its RPC metadata items, numbers printed with 15 digits.
-        items = {k.upper(): f"{float(v):.15g}" for k, v in zip(_TAG_SCALARS, values[:12])}
+        items = {
+            k.upper(): f"{float(v):.15g}" for k, v in zip(_TAG_SCALARS, values[:12], strict=True)
+        }
         for i, k in enumerate(_TAG_LISTS):
             vals = values[12 + 20 * i : 32 + 20 * i]
             items[k.upper()] = " ".join(f"{float(v):.15g}" for v in vals)
@@ -165,9 +168,7 @@ class RPC:
         Returns:
             list: The values (missing errors as -1, as GDAL writes them).
         """
-        vals = [
-            -1.0 if getattr(self, k) is None else float(getattr(self, k)) for k in _TAG_SCALARS
-        ]
+        vals = [-1.0 if getattr(self, k) is None else float(getattr(self, k)) for k in _TAG_SCALARS]
         for k in _TAG_LISTS:
             coeffs = [float(v) for v in getattr(self, k)]
             if len(coeffs) != 20:
@@ -177,8 +178,9 @@ class RPC:
 
 
 def read_rpc_file(path: str) -> dict[str, str] | None:
-    """Reads the RPCs of a `_RPC.TXT` or `.RPB` sidecar, as GDAL's `GDALLoadRPCFile` and
-    `GDALLoadRPBFile` do.
+    """Reads the RPCs of a `_RPC.TXT` or `.RPB` sidecar.
+
+    As GDAL's `GDALLoadRPCFile` and `GDALLoadRPBFile` do.
 
     Args:
         path: The sidecar's path.

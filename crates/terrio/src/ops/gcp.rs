@@ -234,7 +234,7 @@ fn homography_from_gcps(gcps: &[Gcp]) -> Result<[f64; 9]> {
     }
     let cross12 = c[1].0 * c[2].1 - c[2].0 * c[1].1;
     let cross23 = c[2].0 * c[3].1 - c[3].0 * c[2].1;
-    if !(cross12 * cross23 > 0.0) {
+    if cross12 * cross23 <= 0.0 || (cross12 * cross23).is_nan() {
         return Err(Error::InvalidArgument("the GCPs' homography does not map the image to a convex quadrilateral".into()));
     }
     Ok(compose_homographies(&compose_homographies(&pl, &hn), &inv_geo))
@@ -343,6 +343,7 @@ impl Polynomial {
 
 /// The coefficients mapping `(e1, n1)` to `(e2, n2)`: exactly with as many points as terms, else
 /// by least squares (GRASS's `calccoef`).
+#[allow(clippy::needless_range_loop)] // GRASS's indexing, kept to follow it.
 fn coefficients(pts: &[(f64, f64, f64, f64)], mean: (f64, f64), order: u32) -> Result<([f64; 10], [f64; 10])> {
     let m = ((order + 1) * (order + 2) / 2) as usize;
     if pts.len() < m {

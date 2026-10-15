@@ -207,7 +207,9 @@ pub(crate) fn read_geo_tags_from<R: Read + Seek>(mut f: R) -> Option<GeoTags> {
         && (tie.len() > 6 || !has_scale)
     {
         out.gcps = tie
-            .chunks_exact(6)
+            .as_chunks::<6>()
+            .0
+            .iter()
             .enumerate()
             .map(|(i, t)| crate::Gcp { id: (i + 1).to_string(), info: String::new(), pixel: t[0], line: t[1], x: t[3], y: t[4], z: t[5] })
             .collect();

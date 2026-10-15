@@ -1,5 +1,7 @@
-"""Raster file management, as `rasterio.shutil`: whether a dataset exists, copying a dataset to
-another format or its files to another place, and deleting a dataset's files.
+"""Raster file management, as `rasterio.shutil`.
+
+Whether a dataset exists, copying a dataset to another format or its files to another place, and
+deleting a dataset's files.
 
 A dataset's files are its main file and the sidecars GDAL keeps beside it (`.aux.xml`, `.ovr`,
 `.msk`, world files, RPC files), as `DatasetBase.files` lists them.
@@ -59,7 +61,9 @@ def exists(path: Any) -> bool:
         return False
 
 
-def copy(src: Any, dst: Any, driver: str | None = None, strict: bool = True, **creation_options: Any) -> None:
+def copy(
+    src: Any, dst: Any, driver: str | None = None, strict: bool = True, **creation_options: Any
+) -> None:
     """Copies a raster to a new file, with GDAL's `CreateCopy` semantics.
 
     The copy keeps the pixels, georeferencing, nodata values, tags, band descriptions, color

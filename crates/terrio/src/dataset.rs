@@ -102,6 +102,7 @@ pub struct VectorDataset {
 
 /// A dataset of either kind.
 #[derive(Debug, Clone)]
+#[allow(clippy::large_enum_variant)]
 pub enum Dataset {
     /// A raster.
     Raster(RasterDataset),

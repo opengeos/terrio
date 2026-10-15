@@ -526,8 +526,9 @@ class DatasetBase(WindowMethodsMixin, TransformMethodsMixin):
 
     @property
     def rpcs(self) -> Any:
-        """Rational polynomial coefficients (the GeoTIFF RPCCoefficientTag, or a `_RPC.TXT` or
-        `.RPB` sidecar, as GDAL reads them).
+        """Rational polynomial coefficients, as GDAL reads them.
+
+        From the GeoTIFF RPCCoefficientTag, or a `_RPC.TXT` or `.RPB` sidecar.
 
         Returns:
             RPC | None: The coefficients.
@@ -1724,8 +1725,9 @@ class DatasetWriter(DatasetReader):
         return self.driver == "GTiff" and size > _in_memory_limit()
 
     def _allocate(self, shape: tuple[int, ...], dtype: Any, fill: Any) -> np.ndarray:
-        """An array for pixels: in memory, or mapped from a temporary file beside the output when
-        it is larger than the in-memory limit.
+        """An array for pixels, in memory or mapped from a temporary file.
+
+        The file, beside the output, is used when the array is larger than the in-memory limit.
 
         Args:
             shape: The shape.
@@ -2131,8 +2133,9 @@ class DatasetWriter(DatasetReader):
         self._dirty = True
 
     def write_mask(self, mask_array: Any, window: Any = None) -> None:
-        """Sets the dataset's validity mask: a per-dataset mask, saved in GeoTIFFs as GDAL's
-        internal mask (a 1-bit mask image).
+        """Sets the dataset's validity mask, a per-dataset mask.
+
+        GeoTIFFs save it as GDAL's internal mask (a 1-bit mask image).
 
         Args:
             mask_array: True/False, or a 2-D array (bool, or uint8 with 0 for invalid).

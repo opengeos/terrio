@@ -155,7 +155,7 @@ def stack(
         xs: list[float] = []
         ys: list[float] = []
         output_count = 0
-        for dataset, src_indexes in zip(sources, indexes):
+        for dataset, src_indexes in zip(sources, indexes, strict=False):
             with opener(dataset) as src:
                 src_transform = src.transform
                 if src_indexes is None:
@@ -261,7 +261,7 @@ def stack(
             if inrange:
                 dest.fill(nodataval)
             dst_idx = 0
-            for dataset, src_indexes in zip(sources, indexes):
+            for dataset, src_indexes in zip(sources, indexes, strict=False):
                 with opener(dataset) as src:
                     if disjoint_bounds(chunk_bounds, src.bounds):
                         continue

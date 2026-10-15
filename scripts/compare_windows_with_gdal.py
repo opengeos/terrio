@@ -1,14 +1,17 @@
-"""Compare terrio's windowed and overview reads of GeoTIFFs with GDAL's, locally and over HTTP.
+"""Compare terrio's windowed and overview reads of GeoTIFFs and JPEG 2000 files with GDAL's,
+locally and over HTTP.
 
 Usage:
     python scripts/compare_windows_with_gdal.py local DATA_DIR
     python scripts/compare_windows_with_gdal.py remote
 
-``local`` reads windows of every level (full resolution and each overview) of every ``.tif`` in
-DATA_DIR with ``terrio convert --srcwin ... --overview N`` and with GDAL, and checks that the pixels
-are identical. ``remote`` does the same on public Cloud Optimized GeoTIFFs (Sentinel-2 L2A, a USGS
-3DEP tile and a Copernicus DEM tile), and reports the requests, bytes and time each tool takes for
-``info`` and for a 512 x 512 window read, from a fresh process.
+``local`` reads windows of every level (full resolution and each overview) of every ``.tif`` and
+``.jp2`` in DATA_DIR (and of the tiled JPEG XL COGs of ``gtiff_codecs``) with ``terrio convert
+--srcwin ... --overview N`` and with GDAL, and checks that the pixels are identical; the resolution
+levels of JPEG 2000 files are their overviews, as in GDAL's JP2OpenJPEG driver. ``remote`` does
+the same on public Cloud Optimized GeoTIFFs (Sentinel-2 L2A, a USGS 3DEP tile and a Copernicus DEM
+tile) and a Sentinel-2 L1C JPEG 2000 band, and reports the requests, bytes and time each tool
+takes for ``info`` and for a 512 x 512 window read, from a fresh process.
 
 Needs GDAL's Python bindings (``osgeo``) and NumPy, and a built ``terrio`` binary
 (``target/release/terrio``, or the path in ``TERRIO_BIN``). Exits non-zero when any read differs.
@@ -33,6 +36,11 @@ TERRIO = os.environ.get("TERRIO_BIN", os.path.join(os.path.dirname(__file__), ".
 STAC = "https://earth-search.aws.element84.com/v1/collections/sentinel-2-l2a/items?limit=1&bbox=-122.5,37.5,-122,38"
 USGS = "https://prd-tnm.s3.amazonaws.com/StagedProducts/Elevation/1/TIFF/current/n40w106/USGS_1_n40w106.tif"
 COPERNICUS = "copernicus-dem-30m/Copernicus_DSM_COG_10_N37_00_W123_00_DEM/Copernicus_DSM_COG_10_N37_00_W123_00_DEM.tif"
+S2_JP2 = (
+    "https://storage.googleapis.com/gcp-public-data-sentinel-2/tiles/10/S/EG/"
+    "S2B_MSIL1C_20240630T185919_N0510_R013_T10SEG_20240630T211017.SAFE/GRANULE/"
+    "L1C_T10SEG_A038220_20240630T190812/IMG_DATA/T10SEG_20240630T185919_B04.jp2"
+)
 
 # GDAL reads remote files fastest without listing their directory; AWS_NO_SIGN_REQUEST reads the
 # public buckets anonymously, in both tools.
@@ -213,10 +221,12 @@ def compare_local(data_dir):
         The number of windows that differ.
     """
     failures = 0
+    names = [n for n in sorted(os.listdir(data_dir)) if n.endswith((".tif", ".jp2"))]
+    codecs = os.path.join(data_dir, "gtiff_codecs")
+    if os.path.isdir(codecs):
+        names += [f"gtiff_codecs/{n}" for n in sorted(os.listdir(codecs)) if n.endswith("_jxl_cog.tif")]
     with tempfile.TemporaryDirectory() as tmp:
-        for name in sorted(os.listdir(data_dir)):
-            if not name.endswith(".tif"):
-                continue
+        for name in names:
             path = os.path.join(data_dir, name)
             ds = gdal.Open(path)
             b = ds.GetRasterBand(1)
@@ -250,6 +260,7 @@ def compare_remote():
     targets = [(label, url, "/vsicurl/" + url) for label, url in sentinel2_hrefs()]
     targets.append(("USGS 3DEP 1\" n40w106", USGS, "/vsicurl/" + USGS))
     targets.append(("Copernicus DEM 30 m N37 W123", "s3://" + COPERNICUS, "/vsis3/" + COPERNICUS))
+    targets.append(("Sentinel-2 L1C T10SEG B04 (JPEG 2000)", S2_JP2, "/vsicurl/" + S2_JP2))
     failures = 0
     rows = []
     with tempfile.TemporaryDirectory() as tmp:

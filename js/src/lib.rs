@@ -132,6 +132,7 @@ struct WriteOptions {
     maxzoom: Option<u8>,
 }
 
+#[allow(clippy::large_enum_variant)]
 enum Inner {
     Raster(LazyRaster),
     Vector(Vec<Layer>, VectorDriver),

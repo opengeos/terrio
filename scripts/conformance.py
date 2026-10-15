@@ -14,7 +14,7 @@ Suites:
     histograms        ``terrio info --hist`` vs ``gdalinfo -hist`` (compare_hist_with_gdal.py)
     vector-roundtrip  vector files converted by terrio, read back by GDAL (compare_with_gdal.py)
     raster-roundtrip  raster drivers, GDAL writing and terrio reading and back (raster_roundtrip.py)
-    windows           windowed and overview reads of GeoTIFFs (compare_windows_with_gdal.py)
+    windows           windowed and overview reads of GeoTIFFs and JPEG 2000 (compare_windows_with_gdal.py)
     ops               translate, warp, mosaic vs GDAL's tools (compare_ops_with_gdal.py)
     dem-calc          dem, calc, proximity, sieve vs GDAL's tools (compare_dem_calc_with_gdal.py)
     vector-ops        ogr2ogr options, rasterize, polygonize (compare_vector_ops_with_gdal.py)
@@ -329,12 +329,14 @@ def suite_raster_roundtrip(ctx):
 
 
 def suite_windows(ctx):
-    """Windowed and overview reads of the GeoTIFFs, locally (and remote COGs with --remote)."""
+    """Windowed and overview reads of the GeoTIFFs and JPEG 2000 files, locally (and remote files
+    with --remote)."""
     s = Suite(
         "windows",
         "Windowed and overview reads",
         "GDAL reading the same windows",
-        "Windows of every GeoTIFF of the test data, at full resolution and from each overview, read "
+        "Windows of every GeoTIFF and JPEG 2000 file of the test data, at full resolution and from each "
+        "overview (JPEG 2000 resolution levels), read "
         "in place by `terrio convert --srcwin --overview`: pixels identical, geotransforms within "
         "1e-9." + (" Remote: the same on public Cloud Optimized GeoTIFFs over HTTP." if ctx.remote else ""),
     )
@@ -345,14 +347,16 @@ def suite_windows(ctx):
             m = re.match(r"^(.+?): (full|ovr \d+)\s+(\(.*?\)): (.*)$", line)
             if m:
                 level = "full resolution" if m[2] == "full" else "overviews"
-                group = f"GTiff {mode}, {level}"
+                fmt = "JPEG 2000" if m[1].endswith(".jp2") or "JPEG 2000" in m[1] else "GTiff"
+                group = f"{fmt} {mode}, {level}"
                 ok = m[4].strip() == "ok"
                 s.cases.append(Case(group, f"{m[1]} {m[2]} {m[3]}", IDENTICAL if ok else DIFFERS, "" if ok else m[4]))
                 continue
             m = re.match(r"^(.+?): info (ok|DIFFERENT)", line)
             if m:
                 ok = m[2] == "ok"
-                s.cases.append(Case(f"GTiff {mode}, headers", m[1], IDENTICAL if ok else DIFFERS))
+                fmt = "JPEG 2000" if "JPEG 2000" in m[1] else "GTiff"
+                s.cases.append(Case(f"{fmt} {mode}, headers", m[1], IDENTICAL if ok else DIFFERS))
         if not s.cases:
             s.error = tail(err or out)
     return s

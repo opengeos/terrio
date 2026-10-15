@@ -87,7 +87,7 @@ fn rotated_and_south_up_round_trip_and_warp_as_gdal() {
         terrio::write_raster_dataset(&ds, p, &Default::default()).unwrap();
         let back = terrio::open_raster(p).unwrap();
         assert_eq!(back.geo_transform(), gt, "{name}");
-        assert_eq!(back.raster.data, ds.raster.data, "{name}");
+        assert_eq!(back.raster.data_u8().unwrap(), ds.raster.data_u8().unwrap(), "{name}");
         let mut lazy = terrio::open_raster_lazy(p).unwrap();
         assert_eq!(lazy.geo_transform(), gt, "{name}");
         let w = lazy.read_window(Window::new(7, 5, 13, 10), &WindowOptions::default()).unwrap();
@@ -223,7 +223,7 @@ fn internal_masks_and_rows_written_in_order() {
         for p in [&whole, &rows] {
             let p = p.to_str().unwrap();
             let back = terrio::open_raster(p).unwrap();
-            assert_eq!(back.raster.data, ds.raster.data, "{p}");
+            assert_eq!(back.raster.data_u8().unwrap(), ds.raster.data_u8().unwrap(), "{p}");
             assert_eq!(back.geo_transform(), ds.geo_transform(), "{p}");
             let mut lazy = terrio::open_raster_lazy(p).unwrap();
             assert!(lazy.has_mask(), "{p}");
