@@ -9,7 +9,7 @@ cargo build --release
 python scripts/conformance.py ../terrio-data --output docs/conformance.md
 ```
 
-Generated on 2026-10-14 with terrio 0.1.1 (9857e91), GDAL 3.12.2, PROJ 9.7.1, PDAL 2.9.3, laspy 2.7.0.
+Generated on 2026-10-14 with terrio 0.1.1 (9e7f7f5), GDAL 3.12.2, PROJ 9.7.1, PDAL 2.9.3, laspy 2.7.0.
 
 ## Summary
 
@@ -23,10 +23,10 @@ Generated on 2026-10-14 with terrio 0.1.1 (9857e91), GDAL 3.12.2, PROJ 9.7.1, PD
 | [Terrain analysis and raster algebra](#terrain-analysis-and-raster-algebra) | `gdaldem`, `gdal_calc.py`, `gdal_proximity.py`, `gdal_sieve.py` | 131 | 129 | 2 | 0 |
 | [Vector operations](#vector-operations) | `ogr2ogr`, `gdal_rasterize`, `gdal_polygonize.py` | 51 | 51 | 0 | 0 |
 | [Arrow and GeoArrow](#arrow-and-geoarrow) | GDAL's Arrow streams, pyarrow, GeoPandas | 180 | 171 | 9 | 0 |
-| [GeoPackage updates and spatial filters](#geopackage-updates-and-spatial-filters) | `ogr2ogr`, GDAL's `validate_gpkg.py` | 12 | 11 | 0 | 1 |
+| [GeoPackage updates and spatial filters](#geopackage-updates-and-spatial-filters) | `ogr2ogr`, GDAL's `validate_gpkg.py` | 12 | 12 | 0 | 0 |
 | [Point clouds](#point-clouds) | laspy (every value) and PDAL (headers, COPC queries, grids, reprojection) | 614 | 611 | 3 | 0 |
 | [Coordinate transformations](#coordinate-transformations) | GDAL 3.12 and PROJ (`gdaltransform`) | 19,003 | 18,870 | 76 | 57 |
-| **All** | | **20,800** | **20,645** | **97** | **58** |
+| **All** | | **20,800** | **20,646** | **97** | **57** |
 
 ## Dataset summaries and pixels
 
@@ -252,14 +252,8 @@ Cases that are not identical:
 | Format or operation | Cases | Identical | Within tolerance | Differs |
 |---|---:|---:|---:|---:|
 | append | 4 | 4 | 0 | 0 |
-| add | 2 | 1 | 0 | 1 |
+| add | 2 | 2 | 0 | 0 |
 | --spat | 6 | 6 | 0 | 0 |
-
-Cases that are not identical:
-
-| Format or operation | Case | Result | Details |
-|---|---|---|---|
-| add | add a layer, overwrite another | differs | contents[places]: ('features', -179.5899789, -89.9999998, 179.3833036, 82.4833232, 100001) vs ('features', -179.5899789, -89.9999998, 179.3833036, 82.4833232, 4326); contents[countries]: ('features', None, None, None, None, 100001) vs ('features', None, None, None, None, 4326); geometry_columns[plac |
 
 ## Point clouds
 
