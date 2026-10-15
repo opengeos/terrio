@@ -805,6 +805,16 @@ fn geoparquet_bbox_filter() {
     assert_eq!((back.layers[0].len(), back.layers[0].crs_epsg()), (752, Some(3035)));
 }
 
+/// `info` summarizes a PBF file a block at a time as it summarizes the layers read whole.
+#[test]
+fn osm_pbf_info_like_whole_layers() {
+    let Some(path) = data("liechtenstein.osm.pbf") else { return };
+    let streamed = terrio::info::info_path(&path, &Default::default()).unwrap();
+    let whole = terrio::info::vector_info(&terrio::open_vector(&path, &Default::default()).unwrap());
+    let terrio::info::Info::Vector(streamed) = streamed else { panic!("not a vector summary") };
+    assert_eq!(serde_json::to_string(&streamed).unwrap(), serde_json::to_string(&whole).unwrap());
+}
+
 #[test]
 fn osm_xml_like_pbf() {
     // Made from the PBF file when osmium is available (see fetch_test_data.sh).

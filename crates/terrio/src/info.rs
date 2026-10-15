@@ -375,6 +375,9 @@ pub fn info_path(path: &str, options: &InfoOptions) -> crate::Result<Info> {
     if let Some(v) = gpkg_vector_info(path)? {
         return Ok(Info::Vector(v));
     }
+    if let Some(v) = osm_vector_info(path)? {
+        return Ok(Info::Vector(v));
+    }
     let mut summary = match crate::open(path)? {
         Dataset::Raster(r) => Info::Raster(Box::new(raster_info_at(&r, options, Some(path), None))),
         Dataset::Vector(v) => Info::Vector(vector_info(&v)),
@@ -532,6 +535,62 @@ fn gpkg_vector_info(path: &str) -> crate::Result<Option<VectorInfo>> {
         })
         .collect();
     Ok(Some(VectorInfo { driver: crate::formats::VectorDriver::GPKG.name().to_string(), layers, subdatasets }))
+}
+
+/// Summarizes the layers of a local OpenStreetMap PBF file sorted by type then id a block at a
+/// time, as [`vector_info`] summarizes them read whole. `None` for other files.
+#[cfg(not(target_arch = "wasm32"))]
+fn osm_vector_info(path: &str) -> crate::Result<Option<VectorInfo>> {
+    use crate::drivers::vector::osm;
+    if crate::formats::extension(path).as_deref() != Some("pbf")
+        || crate::formats::VectorDriver::for_extension(path) != Some(crate::formats::VectorDriver::OSM)
+        || !matches!(crate::vfs::Location::parse(path), crate::vfs::Location::Local(_))
+        || !std::path::Path::new(path).is_file()
+    {
+        return Ok(None);
+    }
+    let mut file = std::fs::File::open(path)?;
+    if !osm::is_sorted_pbf(&mut file).unwrap_or(false) {
+        return Ok(None);
+    }
+    let schemas = osm::layer_schemas();
+    /// What a layer's summary needs of its features.
+    #[derive(Clone, Default)]
+    struct Acc {
+        count: usize,
+        extent: Option<(f64, f64, f64, f64)>,
+        geometries: usize,
+        /// One of the first 100 geometries has Z coordinates.
+        has_z: bool,
+    }
+    let mut acc = vec![Acc::default(); schemas.len()];
+    osm::read_sorted_pbf(&mut file, [true; 5], &mut |l, features| {
+        let a = &mut acc[l];
+        a.count += features.len();
+        let boxes = features.iter().filter_map(|f| f.geometry.as_ref()?.bbox()).map(|b| (b.min_x, b.min_y, b.max_x, b.max_y));
+        a.extent = crate::vector::extent_of(a.extent.into_iter().chain(boxes));
+        for g in features.iter().filter_map(|f| f.geometry.as_ref()) {
+            if a.geometries < 100 {
+                a.has_z |= crate::vector::geometry_has_z(g);
+            }
+            a.geometries += 1;
+        }
+        Ok(())
+    })?;
+    let layers = schemas
+        .iter()
+        .zip(acc)
+        .map(|(l, a)| {
+            let types = l.geom_type.into_iter().take(usize::from(a.geometries > 0));
+            layer_info(l, a.count, crate::vector::geometry_type_name_of(l.geom_type, types, a.has_z), a.extent)
+        })
+        .collect();
+    Ok(Some(VectorInfo { driver: crate::formats::VectorDriver::OSM.name().to_string(), layers, subdatasets: Vec::new() }))
+}
+
+#[cfg(target_arch = "wasm32")]
+fn osm_vector_info(_path: &str) -> crate::Result<Option<VectorInfo>> {
+    Ok(None)
 }
 
 fn wgs84_extent(crs: &SpatialRef, e: [f64; 4]) -> Option<[f64; 4]> {
