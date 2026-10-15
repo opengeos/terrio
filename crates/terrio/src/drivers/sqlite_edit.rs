@@ -135,9 +135,15 @@ impl PageStore for Editor {
 impl Editor {
     /// Opens a database file for changes, after playing back a hot journal a stopped update
     /// left. `Ok(Err(..))` when the file is one this editor does not change in place (a
-    /// write-ahead log, auto-vacuum, UTF-16 text or reserved page bytes).
+    /// write-ahead log, auto-vacuum, UTF-16 text or reserved page bytes), or on a platform
+    /// where it does not take SQLite's locks.
     pub(crate) fn open(path: &Path) -> Result<std::result::Result<Self, NotInPlace>> {
+        if !cfg!(unix) {
+            // Without SQLite's locks a reader could see a half-written file.
+            return Ok(Err(NotInPlace("in-place changes need SQLite's file locks, not taken on this platform".into())));
+        }
         let mut file = OpenOptions::new().read(true).write(true).open(path)?;
+        #[cfg(unix)]
         lock(&file, path)?;
         recover(&mut file, path)?;
         let wal = with_suffix(path, "-wal");
@@ -732,7 +738,7 @@ impl Editor {
     }
 
     /// Inserts a row into a table b-tree, replacing the row with the same rowid.
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub(crate) fn insert(&mut self, root: u32, rowid: i64, record: &[u8]) -> Result<()> {
         self.upsert(root, vec![(rowid, record.to_vec())])
     }
@@ -974,7 +980,7 @@ pub(crate) fn journal_pages(journal: &[u8]) -> Option<JournalPages<'_>> {
 /// interrupted (or is under way), without changing the file: what SQLite readers see.
 pub(crate) fn read_consistent(path: &Path) -> Result<Vec<u8>> {
     let mut data = crate::par::read_file(path)?;
-    if let Ok(journal) = std::fs::read(with_suffix(path, "-journal"))
+    if let Some(journal) = read_journal(path)?
         && let Some((original, page_size, pages)) = journal_pages(&journal)
     {
         // Pages are restored in reverse, so that the first image of a page journaled twice wins.
@@ -992,22 +998,31 @@ pub(crate) fn read_consistent(path: &Path) -> Result<Vec<u8>> {
     Ok(data)
 }
 
+/// The rollback journal going with a database file, `None` without one.
+fn read_journal(path: &Path) -> Result<Option<Vec<u8>>> {
+    match std::fs::read(with_suffix(path, "-journal")) {
+        Ok(j) => Ok(Some(j)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e.into()),
+    }
+}
+
 /// Whether a hot journal (one an interrupted transaction left) goes with the database file.
-pub(crate) fn has_hot_journal(path: &Path) -> bool {
-    std::fs::read(with_suffix(path, "-journal")).is_ok_and(|j| journal_pages(&j).is_some())
+pub(crate) fn has_hot_journal(path: &Path) -> Result<bool> {
+    Ok(read_journal(path)?.is_some_and(|j| journal_pages(&j).is_some()))
 }
 
 /// Opens a database as SQLite readers see it: mapped in place, or, when a hot journal goes with
 /// it, read with the journal's original pages put back (see [`read_consistent`]).
 pub(crate) fn open_consistent(path: &Path) -> Result<crate::drivers::sqlite::Db> {
-    if has_hot_journal(path) { crate::drivers::sqlite::Db::new(read_consistent(path)?) } else { crate::drivers::sqlite::Db::open(path) }
+    if has_hot_journal(path)? { crate::drivers::sqlite::Db::new(read_consistent(path)?) } else { crate::drivers::sqlite::Db::open(path) }
 }
 
 /// Plays back a hot journal left by an interrupted transaction: the original pages are written
 /// back and the file truncated to its original size, then the journal is deleted.
 fn recover(file: &mut File, path: &Path) -> Result<()> {
     let journal_path = with_suffix(path, "-journal");
-    let Ok(journal) = std::fs::read(&journal_path) else { return Ok(()) };
+    let Some(journal) = read_journal(path)? else { return Ok(()) };
     let Some((original, page_size, pages)) = journal_pages(&journal) else {
         // An empty or zeroed journal is not hot.
         let _ = std::fs::remove_file(&journal_path);
@@ -1052,12 +1067,8 @@ fn lock(file: &File, path: &Path) -> Result<()> {
     Ok(())
 }
 
-#[cfg(not(unix))]
-fn lock(_file: &File, _path: &Path) -> Result<()> {
-    Ok(())
-}
-
-#[cfg(test)]
+// In-place changes are made where SQLite's locks are taken.
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use crate::drivers::sqlite::Db;

@@ -611,7 +611,8 @@ impl Rtree {
     }
 }
 
-#[cfg(test)]
+// In-place changes are made where SQLite's locks are taken.
+#[cfg(all(test, unix))]
 mod tests {
     use super::super::gpkg_read;
     use super::*;
