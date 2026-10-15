@@ -3,13 +3,14 @@
 (function () {
   "use strict";
 
-  const VERSION = "0.1.1";
+  const VERSION = "0.2.0";
   const CDN = `https://cdn.jsdelivr.net/npm/terrio-js@${VERSION}/terrio.js`;
 
   const RASTER_FORMATS = [
     ["GeoTIFF", "GTiff", "tif"],
     ["Cloud Optimized GeoTIFF", "COG", "tif"],
     ["GeoPackage", "GPKG", "gpkg"],
+    ["JPEG 2000", "JP2", "jp2"],
     ["Esri ASCII grid", "AAIGrid", "asc"],
   ];
   const VECTOR_FORMATS = [
@@ -299,8 +300,12 @@
       const t0 = performance.now();
       const bytes = current.ds.toBytes(filename, options);
       const ms = Math.round(performance.now() - t0);
-      download(bytes, filename);
-      $("tp-convert-note").textContent = `Wrote ${filename}: ${(bytes.length / 1024).toFixed(1)} KB in ${ms} ms.`;
+      // Formats with sidecar files (a JPEG 2000 with nodata keeps it in a .aux.xml) come back
+      // as a zip archive of the files.
+      const zipped = bytes[0] === 0x50 && bytes[1] === 0x4b && !/\.(kmz|zip)$/.test(filename);
+      const saved = zipped ? `${filename}.zip` : filename;
+      download(bytes, saved);
+      $("tp-convert-note").textContent = `Wrote ${saved}: ${(bytes.length / 1024).toFixed(1)} KB in ${ms} ms.`;
       $("tp-convert-note").classList.remove("tp-error");
     } catch (e) {
       $("tp-convert-note").textContent = message(e);

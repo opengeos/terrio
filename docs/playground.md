@@ -9,7 +9,7 @@ downloads about 4 MB.
 
   <div class="tp-drop" id="tp-drop">
     <p><strong>Drop a file here</strong> or <label class="tp-link">choose one<input type="file" id="tp-file" class="tp-visually-hidden"></label>.</p>
-    <p class="tp-hint">GeoTIFF/COG, GeoPackage, GeoJSON, FlatGeobuf, GeoParquet, CSV, KML/KMZ, GML, GPX, TopoJSON, OSM, or a zip of a shapefile.</p>
+    <p class="tp-hint">GeoTIFF/COG (including LERC, JPEG XL and LZMA), JPEG 2000, GeoPackage, PMTiles, MBTiles, GeoJSON, FlatGeobuf, GeoParquet, CSV, KML/KMZ, GML, GPX, TopoJSON, OSM, or a zip of a shapefile.</p>
     <p class="tp-samples">Or a sample:
       <button type="button" data-sample="https://raw.githubusercontent.com/opengeos/data/main/world/countries.geojson">countries (GeoJSON, 240 KB)</button>
       <button type="button" data-sample="https://raw.githubusercontent.com/opengeos/data/main/vector/cables.geojson">submarine cables (GeoJSON, 590 KB)</button>
