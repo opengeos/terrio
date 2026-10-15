@@ -87,18 +87,46 @@ impl EptTarget {
         Ok(Self { dir, work, data_type, crs })
     }
 
-    /// Moves the dataset built into place, replacing the previous one.
+    /// Moves the dataset built into place, replacing the previous one: the previous entries are
+    /// first moved aside, and moved back if the new ones cannot all be moved in. `ept.json` goes
+    /// first aside and last in, so that readers find either dataset whole or no `ept.json`.
     fn commit(&self) -> Result<()> {
         let io = |d: &Path, e: std::io::Error| Error::Io(std::io::Error::new(e.kind(), format!("'{}': {e}", d.display())));
-        for name in ["ept-data", "ept-hierarchy", "ept.json"] {
-            let old = self.dir.join(name);
-            if old.is_dir() {
-                std::fs::remove_dir_all(&old).map_err(|e| io(&old, e))?;
-            } else if old.exists() {
-                std::fs::remove_file(&old).map_err(|e| io(&old, e))?;
-            }
-            std::fs::rename(self.work.join(name), &old).map_err(|e| io(&old, e))?;
+        let old = self.dir.join(".terrio-ept-old");
+        if old.exists() {
+            std::fs::remove_dir_all(&old).map_err(|e| io(&old, e))?;
         }
+        std::fs::create_dir(&old).map_err(|e| io(&old, e))?;
+        let names = ["ept.json", "ept-data", "ept-hierarchy"];
+        let mut aside = Vec::new();
+        let mut moved_in = Vec::new();
+        let swapped = (|| -> Result<()> {
+            for name in names {
+                let current = self.dir.join(name);
+                if current.exists() {
+                    std::fs::rename(&current, old.join(name)).map_err(|e| io(&current, e))?;
+                    aside.push(name);
+                }
+            }
+            for name in names.iter().rev() {
+                let target = self.dir.join(name);
+                std::fs::rename(self.work.join(name), &target).map_err(|e| io(&target, e))?;
+                moved_in.push(*name);
+            }
+            Ok(())
+        })();
+        if let Err(e) = swapped {
+            // Back as it was: the new entries out, the previous ones in.
+            for name in &moved_in {
+                let _ = std::fs::rename(self.dir.join(name), self.work.join(name));
+            }
+            for name in &aside {
+                let _ = std::fs::rename(old.join(name), self.dir.join(name));
+            }
+            let _ = std::fs::remove_dir_all(&old);
+            return Err(e);
+        }
+        std::fs::remove_dir_all(&old).map_err(|e| io(&old, e))?;
         std::fs::remove_dir(&self.work).map_err(|e| io(&self.work, e))
     }
 
@@ -313,12 +341,11 @@ impl NodeSink for EptSink<'_> {
                             // The stored integers, from the coordinates with the header's scale
                             // and offset (those of the records, so exact).
                             Some((s, o)) => Values::I32(src.to_f64().iter().map(|v| ((v - o) / s).round() as i32).collect()),
-                            None if d.derive.is_some() => {
-                                let f = d.derive.expect("checked");
-                                Values::F64(src.to_f64().into_iter().map(f).collect()).cast(d.stored)
-                            }
-                            None if d.factor != 1.0 => Values::F64(src.to_f64().iter().map(|v| v * d.factor).collect()).cast(d.stored),
-                            None => src.values.cast(d.stored),
+                            None => match d.derive {
+                                Some(f) => Values::F64(src.to_f64().into_iter().map(f).collect()).cast(d.stored),
+                                None if d.factor != 1.0 => Values::F64(src.to_f64().iter().map(|v| v * d.factor).collect()).cast(d.stored),
+                                None => src.values.cast(d.stored),
+                            },
                         })
                     })
                     .collect::<Result<_>>()?;

@@ -395,3 +395,17 @@ fn ept_datasets_are_replaced_whole() {
         std::fs::read_dir(dir.path().join("set")).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
     assert!(!left.iter().any(|n| n.starts_with(".terrio")), "{left:?}");
 }
+
+/// A stream writer refused for its dimensions leaves an existing E57 file as it was.
+#[test]
+fn e57_writers_refused_leave_files_alone() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("c.e57");
+    let path = path.to_str().unwrap();
+    let c = cloud(1_000, 15);
+    pointcloud::write_points(&c, path, &Default::default()).unwrap();
+    let before = std::fs::read(path).unwrap();
+    let options = PointWriteOptions { dimensions: vec!["no_such_dimension".into()], ..Default::default() };
+    assert!(PointWriter::create(path, &c, &options).is_err());
+    assert_eq!(std::fs::read(path).unwrap(), before);
+}

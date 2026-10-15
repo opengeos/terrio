@@ -598,6 +598,8 @@ impl PointWriter {
             PointFormat::Ply => WriterKind::Ply(Box::new(super::ply::PlyStreamWriter::new(open()?, template, options)?)),
             #[cfg(not(target_arch = "wasm32"))]
             PointFormat::E57 => {
+                // The dimensions checked before the file is created (and an existing one emptied).
+                super::e57::plan_e57(template, &options.dimensions)?;
                 let file = std::fs::OpenOptions::new()
                     .read(true)
                     .write(true)
