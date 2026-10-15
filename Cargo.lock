@@ -1259,6 +1259,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "lz4_flex"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ecbdfe44b1bd960b68170b417450a628c43f7cf56bb3c5317e61cb230ee7f226"
+
+[[package]]
 name = "matrixmultiply"
 version = "0.3.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2214,7 +2220,7 @@ dependencies = [
  "jpeg-decoder",
  "jpeg-encoder 0.7.1",
  "laz",
- "lz4_flex 0.13.1",
+ "lz4_flex 0.14.0",
  "netcdf-reader",
  "openjp2",
  "osmpbfreader 0.19.1",

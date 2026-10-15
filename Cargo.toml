@@ -38,7 +38,7 @@ half = "2"
 flate2 = "1"
 weezl = "0.2"
 png = "0.18"
-lz4_flex = { version = "0.13", default-features = false, features = ["safe-decode", "checked-decode"] }
+lz4_flex = { version = "0.14", default-features = false, features = ["safe-decode", "checked-decode"] }
 ruzstd = "0.9"
 netcdf-reader = { version = "0.9", default-features = false, features = ["netcdf4"] }
 hdf5-reader = { version = "0.9", default-features = false }
