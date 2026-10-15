@@ -8,6 +8,8 @@ NumPy.
 pip install terrio
 ```
 
+The [quickstart notebook](notebooks.md) runs these functions on real data, in Google Colab or locally.
+
 ## Rasters
 
 ```python

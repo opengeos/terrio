@@ -15,6 +15,7 @@ nav = [
   { "Installation" = "installation.md" },
   { "Getting Started" = "getting-started.md" },
   { "Playground" = "playground.md" },
+  { "Notebooks" = "notebooks.md" },
   { "Command Line" = "cli.md" },
   { "Formats" = "formats.md" },
   { "Point Clouds" = "point-clouds.md" },
