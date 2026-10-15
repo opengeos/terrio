@@ -5,7 +5,7 @@
 //! back to Latin-1 for text that is not UTF-8.
 //!
 //! Writing stores text as UTF-8, declared in a `.cpg` file. Field names are truncated to 10 bytes
-//! and made unique the way GDAL does it (`populati_1`), and field widths follow GDAL's: 9 or 18
+//! and made unique the way `ogr2ogr` does it (`populati_1`, `NAME2`), and field widths follow GDAL's: 9 or 18
 //! digits for integers, 24 with 15 decimals for reals, 80 characters (or the longest value) for
 //! strings.
 
@@ -467,7 +467,14 @@ fn encode_shape(g: &Geometry, st: i32, has_z: bool, total: &mut Bounds) -> Vec<u
     out
 }
 
-/// Field names as GDAL launders them: at most 10 bytes, unique ignoring case.
+/// Field names as `ogr2ogr` writes them into a shapefile, unique ignoring case.
+///
+/// First `ogr2ogr`'s renaming: a name already taken (ignoring case) gets the first number suffix,
+/// from 2, that makes it unique among the names written and the source's names (`NAME` after
+/// `name` becomes `NAME2`, or `NAME3` when the source has a `name2`; the next `Name`, `Name4`).
+/// Then the Shapefile driver's: at most 10 bytes, trailing spaces trimmed and `:` replaced by
+/// `_`, and a name taken by then made unique as `populati_1` to `populati_9`, then
+/// `populati10` to `populati99`.
 pub(crate) fn dbf_field_names(names: &[String]) -> Vec<String> {
     let truncate = |s: &str, n: usize| -> String {
         let mut end = s.len().min(n);
@@ -476,19 +483,40 @@ pub(crate) fn dbf_field_names(names: &[String]) -> Vec<String> {
         }
         s[..end].to_string()
     };
+    let upper = |s: &str| s.to_ascii_uppercase();
+    let sources: std::collections::HashSet<String> = names.iter().map(|n| upper(n)).collect();
+    let mut taken: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut last_suffix: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
     let mut out: Vec<String> = Vec::new();
     for name in names {
-        let taken = |c: &str, out: &[String]| out.iter().any(|o| o.eq_ignore_ascii_case(c));
-        let mut candidate = truncate(name, 10);
+        // ogr2ogr: a numbered name, when the name is taken.
+        let mut name = name.clone();
+        let radix = upper(&name);
+        if taken.contains(&radix) {
+            let mut n = last_suffix.get(&radix).copied().unwrap_or(1);
+            loop {
+                n += 1;
+                let candidate = format!("{radix}{n}");
+                if !taken.contains(&candidate) && !sources.contains(&candidate) {
+                    name = format!("{name}{n}");
+                    last_suffix.insert(radix, n);
+                    break;
+                }
+            }
+        }
+        // The driver: truncated, trimmed and normalized, then made unique.
+        let radix = truncate(&name, 10).trim_end_matches(|c: char| c.is_ascii_whitespace()).replace(':', "_");
+        let mut candidate = radix.clone();
         let mut n = 1;
-        while taken(&candidate, &out) && n < 10 {
-            candidate = format!("{}_{n}", truncate(name, 8));
+        while taken.contains(&upper(&candidate)) && n < 10 {
+            candidate = format!("{}_{n}", truncate(&radix, 8));
             n += 1;
         }
-        while taken(&candidate, &out) && n < 100 {
-            candidate = format!("{}{n:02}", truncate(name, 8));
+        while taken.contains(&upper(&candidate)) && n < 100 {
+            candidate = format!("{}{n:02}", truncate(&radix, 8));
             n += 1;
         }
+        taken.insert(upper(&candidate));
         out.push(candidate);
     }
     out
@@ -628,8 +656,40 @@ mod tests {
 
     #[test]
     fn launders_names_like_gdal() {
-        let names: Vec<String> = ["population_total", "population_totals", "population_totalz", "name", "NAME"].map(String::from).into();
-        assert_eq!(dbf_field_names(&names), ["population", "populati_1", "populati_2", "name", "NAME_1"]);
+        // The names ogr2ogr 3.12 writes into a shapefile from these GeoJSON properties.
+        let names: Vec<String> = [
+            "population_total",
+            "population_totals",
+            "population_totalz",
+            "name",
+            "NAME",
+            "Name",
+            "name2",
+            "abcdefghi :x",
+            "abc:def",
+            "abcdefgh_1",
+            "abcdefghij",
+            "abcdefghijk",
+        ]
+        .map(String::from)
+        .into();
+        assert_eq!(
+            dbf_field_names(&names),
+            [
+                "population",
+                "populati_1",
+                "populati_2",
+                "name",
+                "NAME3",
+                "Name4",
+                "name2",
+                "abcdefghi",
+                "abc_def",
+                "abcdefgh_1",
+                "abcdefghij",
+                "abcdefgh_2"
+            ]
+        );
     }
 
     #[test]

@@ -96,23 +96,30 @@ fn parse_with(text: &str, default_name: &str, root_layer: bool) -> Result<Vec<La
     let mut schemas = Vec::new();
     collect_schemas(&root, &mut schemas);
 
-    let mut containers: Vec<(String, Vec<&Element>)> = Vec::new();
+    let mut containers: Vec<(String, Vec<&Element>, &Element)> = Vec::new();
     let top = root.children.iter().find(|c| is_container(c));
     match top {
         Some(top) => {
             let direct: Vec<&Element> = top.children.iter().filter(|c| is_feature(c)).collect();
             if !direct.is_empty() || root_layer {
-                containers.push((top.child_text("name").unwrap_or(default_name).to_string(), direct));
+                containers.push((top.child_text("name").unwrap_or(default_name).to_string(), direct, top));
             }
             collect_containers(top, &mut containers);
         }
         None => {
             let direct: Vec<&Element> = root.children.iter().filter(|c| is_feature(c)).collect();
-            containers.push((default_name.to_string(), direct));
+            containers.push((default_name.to_string(), direct, &root));
         }
     }
     let styles = kml_style::table(&root);
-    let mut layers: Vec<Layer> = containers.into_iter().map(|(name, features)| layer(&name, &features, &schemas, &styles)).collect();
+    let mut layers: Vec<Layer> = containers
+        .into_iter()
+        .map(|(name, features, container)| {
+            let mut l = layer(&name, &features, &schemas, &styles);
+            l.extent = container_bounds(container);
+            l
+        })
+        .collect();
     // Layer names must be unique.
     for i in 1..layers.len() {
         let mut n = 2;
@@ -136,12 +143,31 @@ fn collect_schemas<'a>(e: &'a Element, out: &mut Vec<&'a Element>) {
 }
 
 /// Every container below `e`, depth first, with its own features.
-fn collect_containers<'a>(e: &'a Element, out: &mut Vec<(String, Vec<&'a Element>)>) {
+fn collect_containers<'a>(e: &'a Element, out: &mut Vec<(String, Vec<&'a Element>, &'a Element)>) {
     for c in e.children.iter().filter(|c| is_container(c)) {
         let features = c.children.iter().filter(|f| is_feature(f)).collect();
-        out.push((c.child_text("name").unwrap_or(&c.name).to_string(), features));
+        out.push((c.child_text("name").unwrap_or(&c.name).to_string(), features, c));
         collect_containers(c, out);
     }
+}
+
+/// A container's bounds as libkml's `GetFeatureBounds` computes them, which LIBKML reports as
+/// the layer's extent: the placemarks and ground overlays of the container and of every container
+/// nested in it (whose features are layers of their own). `None` when nothing has bounds.
+fn container_bounds(e: &Element) -> Option<wbvector::BBox> {
+    let boxes = e.children.iter().filter_map(|c| {
+        let b = if is_container(c) {
+            container_bounds(c)
+        } else if c.name == "Placemark" {
+            c.children.iter().find(|g| is_geometry(g)).and_then(geometry).and_then(|g| g.bbox())
+        } else if c.name == "GroundOverlay" {
+            ground_overlay(c).and_then(|g| g.bbox())
+        } else {
+            None
+        }?;
+        Some((b.min_x, b.min_y, b.max_x, b.max_y))
+    });
+    crate::vector::extent_of(boxes).map(|(min_x, min_y, max_x, max_y)| wbvector::BBox { min_x, min_y, max_x, max_y })
 }
 
 fn simple_field_type(t: &str) -> FieldType {
@@ -680,5 +706,25 @@ mod tests {
         let back = read_kmz(kmz.to_str().unwrap()).unwrap();
         assert_eq!(back.iter().map(|l| l.name.as_str()).collect::<Vec<_>>(), ["D", "F", "Empty"]);
         assert_eq!(get(&back[0], 0, "x"), FieldValue::Float(1.5));
+    }
+
+    #[test]
+    fn layer_extent_is_the_container_bounds() {
+        // As in kml_samples.kml: a folder whose only placemark has no geometry, holding a document
+        // with a point. GDAL (LIBKML) reports the point as the folder layer's extent too, and an
+        // extent for a folder with no placemarks of its own; the empty folder has none.
+        let kml = r##"<kml><Document><Folder><name>Styles and Markup</name>
+            <Document><name>Highlighted Icon</name><Placemark><Point><coordinates>-122.0856545755255,37.42243077405461,0</coordinates></Point></Placemark></Document>
+            <Placemark><name>Descriptive HTML</name></Placemark></Folder>
+            <Folder><name>Polygons</name><Folder><name>A</name><GroundOverlay><LatLonBox><north>3</north><south>1</south><east>4</east><west>2</west></LatLonBox></GroundOverlay></Folder>
+              <Folder><name>B</name><Placemark><LineString><coordinates>5,0 6,2</coordinates></LineString></Placemark></Folder></Folder>
+            <Folder><name>Empty</name></Folder></Document></kml>"##;
+        let layers = parse(kml, "file").unwrap();
+        let ext = |i: usize| layers[i].extent.as_ref().map(|b| [b.min_x, b.min_y, b.max_x, b.max_y]);
+        let p = [-122.0856545755255, 37.42243077405461, -122.0856545755255, 37.42243077405461];
+        assert_eq!(ext(0), Some(p));
+        assert_eq!(ext(1), Some(p));
+        assert_eq!(ext(2), Some([2.0, 0.0, 6.0, 3.0]));
+        assert_eq!(ext(5), None);
     }
 }

@@ -7,7 +7,10 @@ Usage:
 The first form compares ``terrio info`` with GDAL for each file (and, with ``--pixels``, the
 raster pixels). The second converts FILE with ``terrio convert`` into each format (by extension,
 such as ``fgb`` or ``csv``) and compares what GDAL reads from the output with what GDAL reads from
-FILE: feature counts, fields, CRSs, extents and a sample of geometries and attribute values.
+FILE: feature counts, fields, CRSs, extents and a sample of geometries and attribute values. A
+difference GDAL's own conversion (``ogr2ogr``, with the creation options terrio's defaults stand
+for) has too is the format's, not terrio's: KML naming the ``name`` field ``Name``, a shapefile
+truncating field names, MapInfo rounding coordinates to its grid, a CSV without a CRS.
 
 Needs GDAL's Python bindings (``osgeo``) and a built ``terrio`` binary (``target/release/terrio``,
 or the path in ``TERRIO_BIN``). Prints one line per file and exits non-zero when any differ.
@@ -59,22 +62,26 @@ def terrio_info(path, stats=False):
     return json.loads(p.stdout)
 
 
-def epsg_of(wkt):
-    """Identify the EPSG code of a WKT definition with GDAL.
+def epsg_of(crs):
+    """Identify the EPSG code of a CRS with GDAL.
 
     Args:
-        wkt: The WKT definition.
+        crs: The CRS: an ``osr.SpatialReference`` (identified as GDAL holds it, axis order
+            included, which a WKT1 export loses), or a WKT definition.
 
     Returns:
         The EPSG code as an int, or None.
     """
-    if not wkt:
+    if not crs:
         return None
-    srs = osr.SpatialReference()
-    try:
-        srs.ImportFromWkt(wkt)
-    except RuntimeError:
-        return None
+    if isinstance(crs, osr.SpatialReference):
+        srs = crs.Clone()
+    else:
+        srs = osr.SpatialReference()
+        try:
+            srs.ImportFromWkt(crs)
+        except RuntimeError:
+            return None
     try:
         srs.AutoIdentifyEPSG()
     except RuntimeError:
@@ -131,7 +138,7 @@ def compare_raster(path, t):
     gt = ds.GetGeoTransform()
     if not all(close(a, b, 1e-9) for a, b in zip(t["geo_transform"], gt)):
         diffs.append(f"geotransform {t['geo_transform']} vs {list(gt)}")
-    g_epsg = epsg_of(ds.GetProjection())
+    g_epsg = epsg_of(ds.GetSpatialRef())
     if t["crs"]["epsg"] != g_epsg:
         diffs.append(f"epsg {t['crs']['epsg']} vs {g_epsg}")
     for tb in t["bands"]:
@@ -244,7 +251,7 @@ def compare_vector(path, t):
             extra = [f for f in t_fields if f not in g_fields]
             diffs.append(f"{tl['name']}: fields differ (missing {missing[:5]}, extra {extra[:5]}, order differs: {not missing and not extra})")
         srs = gl.GetSpatialRef()
-        g_epsg = epsg_of(srs.ExportToWkt()) if srs else None
+        g_epsg = epsg_of(srs)
         if tl["crs"]["epsg"] != g_epsg and not (no_gdal_crs and g_epsg is None):
             diffs.append(f"{tl['name']}: epsg {tl['crs']['epsg']} vs {g_epsg}")
         # Layers without geometries have no extent (GDAL reports zeros).
@@ -360,7 +367,7 @@ def same_geometry(a, b):
     return close(a.GetArea(), b.GetArea(), 1e-6) and close(a.Length(), b.Length(), 1e-6)
 
 
-def compare_roundtrip(src, out, limit=200):
+def compare_roundtrip(src, out, limit=200, missing_fields=None):
     """Compare what GDAL reads from a source and from terrio's conversion of it.
 
     Features are matched by position when both keep the order, and otherwise by their
@@ -370,6 +377,8 @@ def compare_roundtrip(src, out, limit=200):
         src: The source dataset path.
         out: The converted dataset path.
         limit: How many features to compare per layer.
+        missing_fields: A dict that receives, for each layer missing fields, its difference
+            message and the set of the missing fields.
 
     Returns:
         A list of differences.
@@ -386,10 +395,12 @@ def compare_roundtrip(src, out, limit=200):
         missing = [f for f in fa if f not in fb]
         if missing:
             diffs.append(f"{name}: fields missing {missing[:5]}")
+            if missing_fields is not None:
+                missing_fields[diffs[-1]] = set(missing)
         sa_srs, sb_srs = la.GetSpatialRef(), lb.GetSpatialRef()
         if (sa_srs is None) != (sb_srs is None) or (sa_srs is not None and not sa_srs.IsSame(sb_srs)):
-            ea_code = epsg_of(sa_srs.ExportToWkt()) if sa_srs else None
-            eb_code = epsg_of(sb_srs.ExportToWkt()) if sb_srs else None
+            ea_code = epsg_of(sa_srs)
+            eb_code = epsg_of(sb_srs)
             if ea_code != eb_code or ea_code is None:
                 diffs.append(f"{name}: crs EPSG:{eb_code} vs EPSG:{ea_code}")
         if la.GetFeatureCount():
@@ -415,8 +426,38 @@ def compare_roundtrip(src, out, limit=200):
     return diffs
 
 
+# The ogr2ogr options terrio's default conversion into a format stands for (None: GDAL cannot
+# write the format).
+OGR2OGR_OPTIONS = {
+    "csv": ["-lco", "GEOMETRY=AS_WKT"],
+    "topojson": None,
+}
+
+
+def ogr2ogr_reference(src, out, ext):
+    """Convert a file with ``ogr2ogr`` as terrio converts it by default, as a reference.
+
+    Args:
+        src: The source dataset path.
+        out: The output path.
+        ext: The output extension.
+
+    Returns:
+        The output path, or None when GDAL cannot write the format or the conversion failed.
+    """
+    options = OGR2OGR_OPTIONS.get(ext, [])
+    if options is None:
+        return None
+    # Features GDAL fails to write (an invalid polygon in KML) are skipped, not fatal.
+    p = subprocess.run(["ogr2ogr", "-skipfailures", *options, out, src], capture_output=True, text=True)
+    return out if p.returncode == 0 and os.path.exists(out) else None
+
+
 def roundtrip_main(args):
     """Convert a file into each format with terrio and compare GDAL's reading of the results.
+
+    Differences from the source that GDAL's reading of ``ogr2ogr``'s conversion has too are the
+    format's, and are reported as such on an ``OK`` line.
 
     Args:
         args: DATA_DIR, FILE, then the output extensions.
@@ -425,8 +466,10 @@ def roundtrip_main(args):
     src = os.path.join(data, name)
     failed = 0
     with tempfile.TemporaryDirectory() as tmp:
+        os.mkdir(os.path.join(tmp, "gdal"))
         for ext in exts:
-            out = os.path.join(tmp, os.path.splitext(os.path.basename(name))[0] + "." + ext)
+            base = os.path.splitext(os.path.basename(name))[0] + "." + ext
+            out = os.path.join(tmp, base)
             p = subprocess.run([TERRIO, "convert", src, out], capture_output=True, text=True)
             label = f"{name} -> {ext}"
             if p.returncode != 0:
@@ -434,12 +477,30 @@ def roundtrip_main(args):
                 failed += 1
                 continue
             try:
-                diffs = compare_roundtrip(src, out)
+                missing = {}
+                diffs = compare_roundtrip(src, out, missing_fields=missing)
+                shared = []
+                ref = ogr2ogr_reference(src, os.path.join(tmp, "gdal", base), ext) if diffs else None
+                if ref:
+                    gdal_missing = {}
+                    gdal_diffs = set(compare_roundtrip(src, ref, missing_fields=gdal_missing))
+                    # Per layer, the fields GDAL's conversion is missing too.
+                    gdal_missing = {d.split(": fields missing")[0]: f for d, f in gdal_missing.items()}
+
+                    def as_gdal(d):
+                        if d in missing:
+                            return missing[d] <= gdal_missing.get(d.split(": fields missing")[0], set())
+                        return d in gdal_diffs
+
+                    shared = [d for d in diffs if as_gdal(d)]
+                    diffs = [d for d in diffs if not as_gdal(d)]
             except Exception as e:  # noqa: BLE001 - report and continue with the next format
-                diffs = [f"GDAL error: {e}"]
+                diffs, shared = [f"GDAL error: {e}"], []
             if diffs:
                 failed += 1
                 print(f"DIFF  {label}: " + "; ".join(diffs))
+            elif shared:
+                print(f"OK    {label}: as ogr2ogr: " + "; ".join(shared))
             else:
                 print(f"OK    {label}")
     sys.exit(1 if failed else 0)

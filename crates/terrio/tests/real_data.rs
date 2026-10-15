@@ -482,6 +482,15 @@ fn kml_and_kmz_like_libkml() {
             ("Absolute and Relative", 4)
         ]
     );
+    // LIBKML's layer extents are the containers' bounds, nested containers included: a point
+    // for "Styles and Markup", whose only placemark has no geometry, and the bounds of three
+    // folders for "Polygons", which has no placemark.
+    let info = terrio::info::vector_info(&samples);
+    let extent = |name: &str| info.layers.iter().find(|l| l.name == name).unwrap().extent;
+    let p = [-122.0856545755255, 37.42243077405461];
+    assert_eq!(extent("Styles and Markup"), Some([p[0], p[1], p[0], p[1]]));
+    assert_eq!(extent("Polygons"), Some([-122.0860162273783, 36.14531751871353, -77.0531553685479, 38.87291016281703]));
+    assert_eq!(extent("Screen Overlays"), None);
     // LIBKML renames a NAME field that clashes with Name.
     assert!(field_names(&vector("census_states.kml").unwrap().layers[0]).contains(&"NAME2"));
     assert_eq!(vector("ne_places.kmz").unwrap().layers[0].len(), 7342);

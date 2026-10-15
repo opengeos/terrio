@@ -327,8 +327,13 @@ pub fn gdal_type_name(t: wbraster::DataType) -> &'static str {
 
 /// Summarizes a vector dataset.
 pub fn vector_info(ds: &VectorDataset) -> VectorInfo {
-    let layers =
-        ds.layers.iter().map(|l| layer_info(l, l.len(), crate::vector::geometry_type_name(l), crate::vector::layer_extent(l))).collect();
+    // LIBKML reports a container's bounds, which take in its nested containers' features too.
+    let kml = matches!(ds.driver, crate::formats::VectorDriver::KML | crate::formats::VectorDriver::KMZ);
+    let extent = |l: &wbvector::Layer| match (&l.extent, kml) {
+        (Some(b), true) => Some((b.min_x, b.min_y, b.max_x, b.max_y)),
+        _ => crate::vector::layer_extent(l),
+    };
+    let layers = ds.layers.iter().map(|l| layer_info(l, l.len(), crate::vector::geometry_type_name(l), extent(l))).collect();
     VectorInfo { driver: ds.driver.name().to_string(), layers, subdatasets: Vec::new() }
 }
 

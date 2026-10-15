@@ -101,6 +101,8 @@ def compare(gdal_path, terrio_path, tol):
     with np.errstate(invalid="ignore"):
         diff = np.abs(gd - td)
     diff[np.isnan(gd) & np.isnan(td)] = 0
+    # Equal infinities (valid pixels once a nodata other than -inf is assigned) are equal.
+    diff[gd == td] = 0
     diff[np.isnan(diff)] = np.inf
     diff = diff[both]
     res["valid_gdal"] = int(gv.sum())

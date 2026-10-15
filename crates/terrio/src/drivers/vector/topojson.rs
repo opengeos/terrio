@@ -3,8 +3,14 @@
 //! Each GeometryCollection object is a layer of its geometries; the other objects form a layer
 //! named `TopoJSON`, as in GDAL, with the object's key as its `id`. Fields are `id` (a string)
 //! and the properties, typed from their JSON values (objects and arrays become JSON text). The
-//! CRS is EPSG:4326 when every coordinate is a longitude/latitude, and unknown otherwise.
+//! CRS is the one a GeoJSON 2008 `crs` member of the topology names, as GDAL reads it; without
+//! one, EPSG:4326 when every coordinate is a longitude/latitude, and unknown otherwise.
+//!
+//! Writing names the layers' CRS in a `crs` member (TopoJSON has no default CRS, and GDAL, which
+//! has no TopoJSON writer, reads the member): `urn:ogc:def:crs:OGC:1.3:CRS84` for EPSG:4326,
+//! `urn:ogc:def:crs:EPSG::<code>` for the others.
 
+use crate::crs::SpatialRef;
 use crate::{Error, Result};
 use serde_json::{Map, Value, json};
 use wbvector::{Coord, Feature, FieldDef, FieldType, FieldValue, Geometry, Layer, Ring};
@@ -93,6 +99,7 @@ pub fn parse(bytes: &[u8]) -> Result<Vec<Layer>> {
         let pair = |k: &str| -> Option<[f64; 2]> { Some([t.get(k)?.get(0)?.as_f64()?, t.get(k)?.get(1)?.as_f64()?]) };
         Some((pair("scale")?, pair("translate")?))
     });
+    let crs = doc["crs"]["properties"]["name"].as_str().and_then(|n| SpatialRef::parse(n).ok());
     let mut topo = Topology { arcs: Vec::new(), transform };
     // Quantized arcs are delta-encoded.
     for arc in doc["arcs"].as_array().into_iter().flatten() {
@@ -170,7 +177,9 @@ pub fn parse(bytes: &[u8]) -> Result<Vec<Layer>> {
             }
             layer.push(Feature { fid: fid as u64, geometry, attributes: attrs });
         }
-        if lonlat && layer.features.iter().any(|f| f.geometry.is_some()) {
+        if let Some(crs) = &crs {
+            crs.apply_to_layer(&mut layer);
+        } else if lonlat && layer.features.iter().any(|f| f.geometry.is_some()) {
             layer.set_crs_epsg(Some(4326));
         }
         layers.push(layer);
@@ -257,7 +266,22 @@ pub fn to_string(layers: &[Layer]) -> Result<String> {
         }
         objects.insert(layer.name.clone(), json!({"type": "GeometryCollection", "geometries": geometries}));
     }
-    Ok(json!({"type": "Topology", "objects": objects, "arcs": arcs}).to_string())
+    let mut doc = json!({"type": "Topology", "objects": objects, "arcs": arcs});
+    if let Some(name) = crs_name(layers) {
+        doc["crs"] = json!({"type": "name", "properties": {"name": name}});
+    }
+    Ok(doc.to_string())
+}
+
+/// The name of the layers' CRS for a `crs` member: their EPSG code (when every layer with a CRS
+/// has the same one), as GDAL's GeoJSON writer names it, but EPSG:4326 too.
+fn crs_name(layers: &[Layer]) -> Option<String> {
+    let mut codes = layers.iter().filter(|l| !SpatialRef::from_layer(l).is_unknown()).map(super::naming_epsg);
+    let first = codes.next()??;
+    if !codes.all(|c| c == Some(first)) {
+        return None;
+    }
+    Some(if first == 4326 { "urn:ogc:def:crs:OGC:1.3:CRS84".to_string() } else { format!("urn:ogc:def:crs:EPSG::{first}") })
 }
 
 /// A position: x and y only, as TopoJSON readers (GDAL's among them) expect.
@@ -325,8 +349,28 @@ mod tests {
         assert_eq!(layers[1].features[0].attributes[0], FieldValue::Text("b".into()));
         assert_eq!(a.crs_epsg(), Some(4326));
 
-        let back = parse(to_string(std::slice::from_ref(a)).unwrap().as_bytes()).unwrap();
+        let text = to_string(std::slice::from_ref(a)).unwrap();
+        // GDAL reads EPSG:4326 from the crs member (it assumes no CRS without one).
+        assert!(text.contains(r#""crs":{"type":"name","properties":{"name":"urn:ogc:def:crs:OGC:1.3:CRS84"}}"#), "{text}");
+        let back = parse(text.as_bytes()).unwrap();
         assert_eq!(back[0].features[0].geometry, a.features[0].geometry);
         assert_eq!(back[0].features[0].attributes, a.features[0].attributes);
+        assert_eq!(back[0].crs_epsg(), Some(4326));
+    }
+
+    #[test]
+    fn names_a_projected_crs() {
+        let mut l = Layer::new("utm");
+        l.add_field(FieldDef::new("id", FieldType::Text));
+        l.push(Feature { fid: 0, geometry: Some(Geometry::point(500000.0, 4e6)), attributes: vec![FieldValue::Null] });
+        l.set_crs_epsg(Some(32633));
+        let text = to_string(std::slice::from_ref(&l)).unwrap();
+        assert!(text.contains("urn:ogc:def:crs:EPSG::32633"), "{text}");
+        assert_eq!(parse(text.as_bytes()).unwrap()[0].crs_epsg(), Some(32633));
+        // Without a CRS, no member, and coordinates beyond longitudes and latitudes have none.
+        l.set_crs_epsg(None);
+        let text = to_string(std::slice::from_ref(&l)).unwrap();
+        assert!(!text.contains("\"crs\""), "{text}");
+        assert_eq!(parse(text.as_bytes()).unwrap()[0].crs_epsg(), None);
     }
 }

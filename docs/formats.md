@@ -117,7 +117,10 @@ terrio info 'STAC:"https://earth-search.aws.element84.com/v1/collections/sentine
 
 Layer and field models follow GDAL's: GPX has GDAL's five layers, KML has the LIBKML driver's
 fields, OSM has the `points`, `lines`, `multilinestrings`, `multipolygons` and `other_relations`
-layers, and shapefile field names are truncated as GDAL truncates them.
+layers, and shapefile field names are truncated and made unique as `ogr2ogr` does it. TopoJSON
+files are written with a `crs` member naming their CRS, which GDAL reads (it assumes none
+otherwise), and a CSV file's CRS is read from a `.prj` file next to it, as GDAL's CSV driver
+reads it.
 
 - **GeoPackage** layers are read with spatial filters through their R-tree index (`terrio convert
   --spat`, `VectorOpenOptions::spatial_filter`, Python's `open_vector(bbox=...)`): the

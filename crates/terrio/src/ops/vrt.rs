@@ -433,7 +433,11 @@ impl SourceRead<'_> {
             });
             return;
         }
-        let res = resample_window(self, (fx, fy, fw, fh), (ow, oh));
+        let res = if self.resampling == Resampling::Average {
+            gdal_average(self, w.req_off, (fx, fy, fw, fh), (ow, oh))
+        } else {
+            resample_window(self, (fx, fy, fw, fh), (ow, oh))
+        };
         crate::par::chunks_mut(rows, dw, |r, line| {
             for c in 0..ow {
                 match res[r * ow + c] {
@@ -592,6 +596,332 @@ struct Window {
     out_size: (usize, usize),
 }
 
+/// The type GDAL resamples a source type in (`GDALGetOvrWorkDataType()`) for the averaging and
+/// convolution methods.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum WorkType {
+    U8,
+    U16,
+    F32,
+    F64,
+}
+
+impl WorkType {
+    fn of(dt: DataType) -> Self {
+        match dt {
+            DataType::U8 => Self::U8,
+            DataType::U16 => Self::U16,
+            DataType::I8 | DataType::I16 | DataType::F32 => Self::F32,
+            _ => Self::F64,
+        }
+    }
+
+    /// A value in the type, as `static_cast<T>()` makes it.
+    fn cast(self, v: f64) -> f64 {
+        match self {
+            Self::U8 => v as u8 as f64,
+            Self::U16 => v as u16 as f64,
+            Self::F32 => v as f32 as f64,
+            Self::F64 => v,
+        }
+    }
+
+    /// `GDALGetNoDataReplacementValue()`: what a computed value equal to the nodata value
+    /// becomes.
+    fn nodata_replacement(self, nodata: f64) -> f64 {
+        let (min, max) = match self {
+            Self::U8 => (0.0, 255.0),
+            Self::U16 => (0.0, 65535.0),
+            Self::F32 => (f32::MIN as f64, f32::MAX as f64),
+            Self::F64 => (f64::MIN, f64::MAX),
+        };
+        if nodata > max || nodata < min {
+            return 0.0;
+        }
+        match self {
+            Self::U8 | Self::U16 if nodata == max => max - 1.0,
+            Self::U8 | Self::U16 => nodata + 1.0,
+            Self::F32 => {
+                let f = nodata as f32;
+                (if nodata == max { f.next_down() } else { f.next_up() }) as f64
+            }
+            Self::F64 => {
+                if nodata == max {
+                    nodata.next_down()
+                } else {
+                    nodata.next_up()
+                }
+            }
+        }
+    }
+}
+
+/// The chunks `GDALRasterBand::RasterIOResampled()` processes a request in: destination
+/// windows `(x, y, width, height)`, each with the source window `(x0, y0, x1, y1)` it reads
+/// (with `radius` pixels of margin). Chunks hold at most 1024 × 1024 source pixels; a raster
+/// whose block is as wide as the request would be cut in height first, which is not known here,
+/// so the larger dimension is cut, as for tiled rasters.
+fn gdal_chunks(
+    s: &SourceRead,
+    req_off: (usize, usize),
+    ratio: (f64, f64),
+    out: (usize, usize),
+    radius: usize,
+) -> Vec<([usize; 4], [usize; 4])> {
+    let (w, h) = (s.width as f64, s.height as f64);
+    let (mut bw, mut bh) = out;
+    loop {
+        let cx = (3.0 + bw as f64 * ratio.0).min(w) as usize;
+        let cy = (3.0 + bh as f64 * ratio.1).min(h) as usize;
+        if (bw == 1 && bh == 1) || cx * cy <= 1024 * 1024 {
+            break;
+        }
+        if bw > 1 && (cx > cy || bh == 1) {
+            bw /= 2;
+        } else {
+            bh /= 2;
+        }
+    }
+    let factor = |r: f64| ((0.5 + r) as usize).max(1);
+    let (mx, my) = (radius * factor(ratio.0), radius * factor(ratio.1));
+    let mut chunks = Vec::new();
+    for dy in (0..out.1).step_by(bh) {
+        let ny = bh.min(out.1 - dy);
+        let y0 = req_off.1 + (dy as f64 * ratio.1) as usize;
+        let y1 = (req_off.1 + 1 + ((dy + ny) as f64 * ratio.1).ceil() as usize).min(s.height);
+        for dx in (0..out.0).step_by(bw) {
+            let nx = bw.min(out.0 - dx);
+            let x0 = req_off.0 + (dx as f64 * ratio.0) as usize;
+            let x1 = (req_off.0 + 1 + ((dx + nx) as f64 * ratio.0).ceil() as usize).min(s.width);
+            chunks
+                .push(([dx, dy, nx, ny], [x0.saturating_sub(mx), y0.saturating_sub(my), (x1 + mx).min(s.width), (y1 + my).min(s.height)]));
+        }
+    }
+    chunks
+}
+
+/// Averages a source window into `out` pixels with the arithmetic of GDAL's overview code
+/// (`GDALResampleChunk_AverageOrRMS_T()`, through `GDALRasterBand::RasterIOResampled()`): per
+/// chunk, a weighted sum scaled by the pixel count where the chunk has no nodata pixel (and, at a
+/// factor of two, GDAL's sum of quarters in the work type), a sum over the valid pixels otherwise,
+/// in the work type of the source's data type; `None` where no pixel is valid.
+fn gdal_average(s: &SourceRead, req_off: (usize, usize), win: (f64, f64, f64, f64), out: (usize, usize)) -> Vec<Option<f64>> {
+    let (fx, fy, fw, fh) = win;
+    let (ow, oh) = out;
+    let mut res = vec![None; ow * oh];
+    if ow == 0 || oh == 0 {
+        return res;
+    }
+    let ratio = (fw / ow as f64, fh / oh as f64);
+    // Offsets are relative to the request's integer origin, as in GDAL.
+    let delta = (fx - req_off.0 as f64, fy - req_off.1 as f64);
+    let wt = WorkType::of(s.src_type);
+    let float = matches!(wt, WorkType::F32 | WorkType::F64);
+    let nodata = s.valid.and(s.invalid_value);
+    let replace = |v: f64| match nodata {
+        Some(nd) if v == wt.cast(nd) => wt.nodata_replacement(nd),
+        _ => v,
+    };
+    let val = |x: usize, y: usize| wt.cast(s.values[y * s.width + x]);
+    let valid = |x: usize, y: usize| s.valid.is_none_or(|m| m[y * s.width + x]);
+    for (dst, src) in gdal_chunks(s, req_off, ratio, out, 0) {
+        let [dx0, dy0, nx, ny] = dst;
+        let [cx0, cy0, cx1, cy1] = src;
+        // GDAL reads the chunk's mask: all valid, it averages without one; none valid, nodata.
+        let mut any_valid = false;
+        let mut all_valid = true;
+        for y in cy0..cy1 {
+            for x in cx0..cx1 {
+                let v = valid(x, y);
+                any_valid |= v;
+                all_valid &= v;
+            }
+        }
+        if !any_valid {
+            continue;
+        }
+        let masked = !all_valid;
+        // Request-relative chunk bounds.
+        let (rx0, rx1) = (cx0 as i64 - req_off.0 as i64, cx1 as i64 - req_off.0 as i64);
+        let (ry0, ry1) = (cy0 as i64 - req_off.1 as i64, cy1 as i64 - req_off.1 as i64);
+        struct SrcX {
+            x0: i64,
+            x1: i64,
+            left: f64,
+            right: f64,
+            full: f64,
+        }
+        let mut spacing_two = true;
+        let mut last_x1 = -1i64;
+        let xs: Vec<SrcX> = (dx0..dx0 + nx)
+            .map(|i| {
+                let a = delta.0 + i as f64 * ratio.0;
+                let x0 = ((a + 1e-8) as i64).max(rx0);
+                let b = delta.0 + (i + 1) as f64 * ratio.0;
+                let mut x1 = (b - 1e-8).ceil() as i64;
+                if x1 == x0 {
+                    x1 += 1;
+                }
+                x1 = x1.min(rx1);
+                let left = if x1 == x0 + 1 { 1.0 } else { 1.0 - (a - x0 as f64) };
+                let right = 1.0 - (x1 as f64 - b);
+                let mut full = left;
+                if x0 + 1 < x1 {
+                    full += (x1 - x0 - 2) as f64;
+                    full += right;
+                }
+                if x1 - x0 != 2 || (last_x1 >= 0 && last_x1 != x0) {
+                    spacing_two = false;
+                }
+                last_x1 = x1;
+                SrcX { x0, x1, left, right, full }
+            })
+            .collect();
+        // Absolute source coordinates of request-relative ones.
+        let ax = |x: i64| (x + req_off.0 as i64) as usize;
+        let ay = |y: i64| (y + req_off.1 as i64) as usize;
+        for j in dy0..dy0 + ny {
+            let a = delta.1 + j as f64 * ratio.1;
+            let y0 = ((a + 1e-8) as i64).max(ry0);
+            let b = delta.1 + (j + 1) as f64 * ratio.1;
+            let mut y1 = (b - 1e-8).ceil() as i64;
+            if y1 == y0 {
+                y1 += 1;
+            }
+            y1 = y1.min(ry1);
+            let line = &mut res[j * ow..(j + 1) * ow];
+            if spacing_two && y1 == y0 + 2 && !masked {
+                // A factor of two without nodata.
+                let (r0, r1) = (ay(y0), ay(y0 + 1));
+                let quad = |c: usize| {
+                    let x = ax(xs[c].x0);
+                    (val(x, r0), val(x + 1, r0), val(x, r1), val(x + 1, r1))
+                };
+                match wt {
+                    WorkType::U8 | WorkType::U16 => {
+                        for c in 0..nx {
+                            let (p, q, r, t) = quad(c);
+                            line[dx0 + c] = Some(((p + q + r + t + 2.0) / 4.0).floor());
+                        }
+                    }
+                    WorkType::F32 => {
+                        let q = |v: f64| 0.25f32 * v as f32;
+                        let mut c = 0;
+                        // SSE2, four pixels at a time: (a + c) + (b + d) of the quarters.
+                        while nx >= 4 && c < nx - 3 {
+                            for k in c..c + 4 {
+                                let (p0, p1, p2, p3) = quad(k);
+                                line[dx0 + k] = Some(((q(p0) + q(p2)) + (q(p1) + q(p3))) as f64);
+                            }
+                            c += 4;
+                        }
+                        for k in c..nx {
+                            let (p0, p1, p2, p3) = quad(k);
+                            line[dx0 + k] = Some((q(p0) + q(p1) + q(p2) + q(p3)) as f64);
+                        }
+                    }
+                    WorkType::F64 => {
+                        let mut c = 0;
+                        while nx >= 2 && c < nx - 1 {
+                            for k in c..c + 2 {
+                                let (p0, p1, p2, p3) = quad(k);
+                                line[dx0 + k] = Some((0.25 * p0 + 0.25 * p2) + (0.25 * p1 + 0.25 * p3));
+                            }
+                            c += 2;
+                        }
+                        for k in c..nx {
+                            let (p0, p1, p2, p3) = quad(k);
+                            line[dx0 + k] = Some(0.25 * p0 + 0.25 * p1 + 0.25 * p2 + 0.25 * p3);
+                        }
+                    }
+                }
+                continue;
+            }
+            let bottom = if y0 + 1 == y1 { 1.0 } else { 1.0 - (a - y0 as f64) };
+            let top = 1.0 - (y1 as f64 - b);
+            let mut full_col = bottom;
+            if y0 + 1 < y1 {
+                full_col += (y1 - y0 - 2) as f64;
+                full_col += top;
+            }
+            for (c, sx) in xs.iter().enumerate() {
+                let (mut total, mut total_weight, mut mul) = (0.0, 0.0, 1.0);
+                if !masked {
+                    let mut inv = 1.0;
+                    if float {
+                        mul = ((y1 - y0) * (sx.x1 - sx.x0)) as f64;
+                        inv = 1.0 / mul;
+                    }
+                    let mut counter = y1 - y0 - 1;
+                    let mut wy = bottom;
+                    let mut y = y0;
+                    loop {
+                        let row = ay(y);
+                        let mut t = val(ax(sx.x0), row) * inv * sx.left;
+                        if sx.x0 + 1 < sx.x1 {
+                            for x in sx.x0 + 1..sx.x1 - 1 {
+                                t += val(ax(x), row) * inv;
+                            }
+                            t += val(ax(sx.x1 - 1), row) * inv * sx.right;
+                        }
+                        total += t * wy;
+                        counter -= 1;
+                        if counter < 0 {
+                            break;
+                        }
+                        y += 1;
+                        wy = if counter == 0 { top } else { 1.0 };
+                    }
+                    total_weight = sx.full * full_col;
+                } else {
+                    let mut count = 0usize;
+                    for y in y0..y1 {
+                        let row = ay(y);
+                        let (mut t, mut tw) = (0.0, 0.0);
+                        if valid(ax(sx.x0), row) {
+                            count += 1;
+                            tw = sx.left;
+                            t = val(ax(sx.x0), row) * sx.left;
+                        }
+                        if sx.x0 < sx.x1 - 1 {
+                            for x in sx.x0 + 1..sx.x1 - 1 {
+                                if valid(ax(x), row) {
+                                    count += 1;
+                                    tw += 1.0;
+                                    t += val(ax(x), row);
+                                }
+                            }
+                            if valid(ax(sx.x1 - 1), row) {
+                                count += 1;
+                                tw += sx.right;
+                                t += val(ax(sx.x1 - 1), row) * sx.right;
+                            }
+                        }
+                        let wy = if y == y0 {
+                            bottom
+                        } else if y + 1 == y1 {
+                            top
+                        } else {
+                            1.0
+                        };
+                        total += t * wy;
+                        total_weight += tw * wy;
+                    }
+                    if count == 0 {
+                        continue;
+                    }
+                }
+                let v = match wt {
+                    WorkType::U8 | WorkType::U16 => wt.cast(total / total_weight + 0.5),
+                    _ => wt.cast(mul * (total / total_weight)),
+                };
+                line[dx0 + c] = Some(replace(v));
+            }
+        }
+    }
+    res
+}
+
 /// Resamples a floating-point source window to `out` pixels as GDAL's overview code does
 /// (`GDALRasterIOResampled()`): separable convolution kernels stretched when downsampling,
 /// coverage-weighted averages, or the most frequent value.
@@ -656,23 +986,39 @@ fn resample_window(s: &SourceRead, win: (f64, f64, f64, f64), out: (usize, usize
                 (start, w)
             };
             let xt: Vec<(usize, Vec<f64>)> = (0..ow).map(|c| taps(c, rx, fx, s.width)).collect();
+            let negative_weights = matches!(method, Resampling::Cubic | Resampling::Lanczos);
             crate::par::chunks_mut(&mut res, ow, |r, line| {
                 let (y0, wys) = taps(r, ry, fy, s.height);
                 for c in 0..ow {
                     let (x0, wxs) = &xt[c];
                     let (mut acc, mut wsum) = (0.0, 0.0);
+                    let mut nan = false;
                     for (j, wy) in wys.iter().enumerate() {
                         let row = (y0 + j) * s.width;
+                        // GDAL filters rows first, adding `value * weight * mask` for every
+                        // pixel: an infinite nodata value (weight 0) makes the row NaN, and a
+                        // NaN row the result, unless the row has no valid pixel (or too few
+                        // consecutive ones for a kernel with negative weights) and is skipped.
+                        let (mut alpha, mut infinite) = (0.0, false);
+                        let (mut run, mut longest) = (0, 0);
                         for (i, wx) in wxs.iter().enumerate() {
                             let idx = row + x0 + i;
                             if is_valid(idx) {
                                 acc += s.values[idx] * wx * wy;
                                 wsum += wx * wy;
+                                alpha += wx;
+                                run += 1;
+                                longest = longest.max(run);
+                            } else {
+                                infinite |= s.values[idx].is_infinite();
+                                run = 0;
                             }
                         }
+                        let skipped = negative_weights && longest < wxs.len() / 2;
+                        nan |= infinite && alpha > 0.0 && !skipped;
                     }
                     if wsum != 0.0 && (s.valid.is_none() || wsum > 1e-10) {
-                        line[c] = Some(acc / wsum);
+                        line[c] = Some(if nan { f64::NAN } else { acc / wsum });
                     }
                 }
             });

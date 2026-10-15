@@ -363,4 +363,81 @@ mod tests {
         // Nearest: output pixel (0, 0) reads source (1, 1).
         assert_eq!(out.raster.data.to_f64_vec()[0], 11.0);
     }
+
+    /// A float32 raster of uneven values, with -inf nodata pixels at the left corners if `nodata`.
+    fn uneven(cols: usize, rows: usize, nodata: bool) -> RasterDataset {
+        let cfg = RasterConfig {
+            cols,
+            rows,
+            bands: 1,
+            x_min: 100.0,
+            y_min: 200.0 - rows as f64 * 10.0,
+            cell_size: 10.0,
+            cell_size_y: Some(10.0),
+            nodata: f64::NEG_INFINITY,
+            data_type: DataType::F32,
+            crs: wbraster::CrsInfo::default(),
+            metadata: vec![],
+        };
+        let mut data: Vec<f64> = (0..cols * rows).map(|i| (((i * 7919) % 1000) as f64 / 7.3) as f32 as f64).collect();
+        if nodata {
+            data[0] = f64::NEG_INFINITY;
+            data[(rows - 1) * cols] = f64::NEG_INFINITY;
+        }
+        RasterDataset::new(Raster::from_data(cfg, data).unwrap(), nodata)
+    }
+
+    fn bits(d: &RasterDataset, o: &TranslateOptions) -> Vec<u32> {
+        translate(d, o).unwrap().raster.data.to_f64_vec().iter().map(|v| (*v as f32).to_bits()).collect()
+    }
+
+    #[test]
+    fn resamples_with_gdal_arithmetic() {
+        // gdal_translate 3.12's outputs (float32 bits) for the same rasters.
+        let size = |w, h| Some((Size::Pixels(w), Size::Pixels(h)));
+        let average = |w, h| TranslateOptions { out_size: size(w, h), resampling: Some(Resampling::Average), ..Default::default() };
+        // -outsize 4 3 -r average, with nodata: the sums over valid pixels.
+        let expected = [
+            0x427fa334, 0x42d30c40, 0x429a1539, 0x423b1ea6, 0x420ad453, 0x424acdc4, 0x42d01be0, 0x42a1d174, 0x428202b3, 0x421a4cc9,
+            0x424c0abf, 0x42c60dc1,
+        ];
+        assert_eq!(bits(&uneven(11, 7, true), &average(4, 3)), expected);
+        // Without nodata: weighted sums scaled by the pixel count.
+        let expected = [
+            0x4257cc43, 0x42d30c40, 0x429a1539, 0x423b1ea6, 0x420ad453, 0x424acdc4, 0x42d01be0, 0x42a1d174, 0x4289ac4b, 0x421a4cc9,
+            0x424c0abf, 0x42c60dc1,
+        ];
+        assert_eq!(bits(&uneven(11, 7, false), &average(4, 3)), expected);
+        // A factor of two: float32 sums of quarters, four pixels at a time, then one by one.
+        let expected = [
+            0x4281b9dd, 0x42de542a, 0x42b1f1f9, 0x42858fc8, 0x42325b2e, 0x41b32d96, 0x42192694, 0x42edabd6, 0x42c149a5, 0x4294e774,
+            0x42510a86, 0x41f08c46, 0x413b65b2, 0x42fd0382, 0x42d0a150, 0x42a43f20, 0x426fb9dc, 0x4216f57b, 0x419b1189, 0x42835eaf,
+            0x42dff8fc, 0x42b396cc, 0x4287349b, 0x4235a4d2,
+        ];
+        assert_eq!(bits(&uneven(12, 8, false), &average(6, 4)), expected);
+        // -outsize 5 3 -r bilinear: an infinite nodata pixel in a kernel makes GDAL's result NaN.
+        let o = TranslateOptions { out_size: size(5, 3), resampling: Some(Resampling::Bilinear), ..Default::default() };
+        let out = translate(&uneven(11, 7, true), &o).unwrap().raster.data.to_f64_vec();
+        let expected = [
+            0xffc00000u32,
+            0x42cebddf,
+            0x42bc9c4e,
+            0x428aadd7,
+            0x423f3b9e,
+            0x42156352,
+            0x42273fe1,
+            0x429f2136,
+            0x42c75050,
+            0x429f9bce,
+            0xffc00000,
+            0x42391b8e,
+            0x41ff0784,
+            0x42988216,
+            0x42ccf694,
+        ];
+        for (v, e) in out.iter().zip(expected) {
+            let e = f32::from_bits(e);
+            assert!(if e.is_nan() { v.is_nan() } else { *v as f32 == e }, "{v} vs {e}");
+        }
+    }
 }

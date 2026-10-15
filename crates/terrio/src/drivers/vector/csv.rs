@@ -128,7 +128,16 @@ pub fn read(path: &str, options: &CsvOptions) -> Result<Layer> {
     let text = super::xml::decode(&std::fs::read(path)?);
     let name = std::path::Path::new(path).file_stem().and_then(|s| s.to_str()).unwrap_or("layer");
     let tsv = crate::formats::extension(path).as_deref() == Some("tsv");
-    parse(&text, name, &CsvOptions { separator: options.separator.or(tsv.then_some(b'\t')), ..options.clone() })
+    let mut layer = parse(&text, name, &CsvOptions { separator: options.separator.or(tsv.then_some(b'\t')), ..options.clone() })?;
+    // As GDAL's CSV driver, the CRS of a `.prj` file next to it (which GDAL writes with
+    // CREATE_CSVT=YES), for a layer with geometries.
+    if options.crs.is_none() && layer.features.iter().any(|f| f.geometry.is_some()) {
+        let prj = std::path::Path::new(path).with_extension("prj");
+        if let Some(crs) = std::fs::read(&prj).ok().and_then(|b| SpatialRef::parse(String::from_utf8_lossy(&b).trim()).ok()) {
+            crs.apply_to_layer(&mut layer);
+        }
+    }
+    Ok(layer)
 }
 
 /// Parses CSV text into a layer.
@@ -448,5 +457,20 @@ mod tests {
         let opts = CsvOptions { keep_geom_columns: false, ..Default::default() };
         let l = parse("WKT,name\nPOINT (1.5 2),a b\n", "pts", &opts).unwrap();
         assert_eq!(to_string(&l, &opts).unwrap(), "WKT,name\nPOINT (1.5 2),a b\n");
+    }
+
+    #[test]
+    fn reads_the_crs_of_a_prj_file() {
+        // GDAL's CSV driver reads a .prj next to the file (CREATE_CSVT=YES writes one).
+        let dir = tempfile::tempdir().unwrap();
+        let csv = dir.path().join("utm.csv");
+        std::fs::write(&csv, "WKT,id\nPOINT (500000 4000000),1\n").unwrap();
+        let path = csv.to_str().unwrap();
+        assert_eq!(read(path, &CsvOptions::default()).unwrap().crs_epsg(), None);
+        std::fs::write(dir.path().join("utm.prj"), SpatialRef::from_epsg(32633).unwrap().to_wkt().unwrap()).unwrap();
+        assert_eq!(read(path, &CsvOptions::default()).unwrap().crs_epsg(), Some(32633));
+        // Without geometries, no CRS.
+        std::fs::write(&csv, "id\n1\n").unwrap();
+        assert_eq!(read(path, &CsvOptions::default()).unwrap().crs_epsg(), None);
     }
 }

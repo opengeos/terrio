@@ -216,7 +216,10 @@ def suite_vector_roundtrip(ctx):
         "GDAL reading terrio's output",
         "A file converted by `terrio convert` into each format, then read by GDAL: feature counts, "
         "fields, CRS, extent and a sample of geometries and attribute values must match what GDAL "
-        "reads from the original.",
+        "reads from the original, but for the differences GDAL's reading of `ogr2ogr`'s own "
+        "conversion into that format has too (KML naming the `name` field `Name`, shapefiles "
+        "truncating field names, MapInfo rounding coordinates to its grid, CSV files without a "
+        "CRS).",
     )
     errors = []
     for src, exts in VECTOR_ROUNDTRIPS:
