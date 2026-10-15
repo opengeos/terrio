@@ -541,7 +541,9 @@ def test_complex_hdf5_matches_gdal(data_dir, gdal):
         assert (r.count, r.dtype) == (1, dtype)
         a = r.read(1)
         assert a.dtype == np.dtype(dtype)
-        expected = gdal.Open(sub).GetRasterBand(1).ReadAsArray()
+        # The dataset kept while its band is read (a band outliving it is invalid).
+        ds = gdal.Open(sub)
+        expected = ds.GetRasterBand(1).ReadAsArray()
         np.testing.assert_array_equal(a, expected)
         assert r.read().shape == (1, 5, 5)
 

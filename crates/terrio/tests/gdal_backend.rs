@@ -324,7 +324,10 @@ fn sample_layer() -> terrio::Layer {
 
 /// Reads every feature of a GDAL dataset's first layer with GDAL itself: WKT of the geometry and
 /// the fields as strings.
-fn read_with_gdal(path: &str) -> (Option<u32>, Vec<String>, Vec<(String, Vec<Option<String>>)>) {
+/// A layer's EPSG code, field names, and features as `(geometry WKT, field values)`.
+type GdalLayer = (Option<u32>, Vec<String>, Vec<(String, Vec<Option<String>>)>);
+
+fn read_with_gdal(path: &str) -> GdalLayer {
     let ds = gdal::Dataset::open(path).unwrap();
     let mut layer = ds.layer(0).unwrap();
     // MapInfo files keep the definition, not the code: identified as `gdalsrsinfo -e` does.
@@ -369,7 +372,7 @@ fn vectors_written_through_gdal() {
         let (wkt, values) = &features[1];
         // File Geodatabases hold polygons as multipolygons, with rings clockwise.
         let numbers: Vec<f64> = wkt.split(|c: char| !(c.is_ascii_digit() || c == '.' || c == '-')).filter_map(|t| t.parse().ok()).collect();
-        let points: Vec<(f64, f64)> = numbers.chunks_exact(2).map(|p| (p[0], p[1])).collect();
+        let points: Vec<(f64, f64)> = numbers.as_chunks::<2>().0.iter().map(|p| (p[0], p[1])).collect();
         let ring = [(401000.0, 3980000.0), (401500.0, 3980000.0), (401500.0, 3980250.5), (401000.0, 3980250.5)];
         assert!(wkt.contains("POLYGON ((") && points.len() == 5, "{driver}: {wkt}");
         assert!(ring.iter().all(|r| points.contains(r)), "{driver}: {wkt}");
