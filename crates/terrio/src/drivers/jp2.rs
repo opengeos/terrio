@@ -55,6 +55,9 @@ mod codec {
     /// What OpenJPEG streams read from.
     struct Source<'a> {
         r: &'a mut dyn ReadSeek,
+        /// The first read error, reported once OpenJPEG is done (it takes errors for the end of
+        /// a truncated stream, and decodes what it read).
+        error: Option<std::io::Error>,
     }
 
     unsafe extern "C" fn read_fn(dst: *mut c_void, n: usize, user: *mut c_void) -> usize {
@@ -71,7 +74,10 @@ mod codec {
                 Ok(0) => break,
                 Ok(m) => k += m,
                 Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
-                Err(_) => break,
+                Err(e) => {
+                    s.error.get_or_insert(e);
+                    break;
+                }
             }
         }
         if k == 0 { usize::MAX } else { k } // `usize::MAX`: end of stream
@@ -82,14 +88,23 @@ mod codec {
         let s = unsafe { &mut *(user as *mut Source) };
         match s.r.seek(std::io::SeekFrom::Current(n)) {
             Ok(_) => n,
-            Err(_) => -1,
+            Err(e) => {
+                s.error.get_or_insert(e);
+                -1
+            }
         }
     }
 
     unsafe extern "C" fn read_seek_fn(n: i64, user: *mut c_void) -> i32 {
         // SAFETY: as in `read_fn`.
         let s = unsafe { &mut *(user as *mut Source) };
-        s.r.seek(std::io::SeekFrom::Start(n.max(0) as u64)).is_ok() as i32
+        match s.r.seek(std::io::SeekFrom::Start(n.max(0) as u64)) {
+            Ok(_) => 1,
+            Err(e) => {
+                s.error.get_or_insert(e);
+                0
+            }
+        }
     }
 
     unsafe extern "C" fn write_fn(src: *mut c_void, n: usize, user: *mut c_void) -> usize {
@@ -181,7 +196,7 @@ mod codec {
     ) -> Result<T> {
         r.seek(std::io::SeekFrom::Start(0))?;
         let format = if j2k { OPJ_CODEC_J2K } else { OPJ_CODEC_JP2 };
-        let mut source = Source { r };
+        let mut source = Source { r, error: None };
         // SAFETY: the stream, codec and image are created, used and destroyed here; the source
         // outlives the stream.
         unsafe {
@@ -209,7 +224,10 @@ mod codec {
                 opj_destroy_codec(codec);
             }
             opj_stream_destroy(stream);
-            result
+            match source.error.take() {
+                Some(e) => Err(e.into()),
+                None => result,
+            }
         }
     }
 
@@ -518,7 +536,7 @@ fn boxes(b: &[u8]) -> Vec<([u8; 4], &[u8])> {
             1 if i + 16 <= b.len() => (16, u64::from_be_bytes(b[i + 8..i + 16].try_into().unwrap_or_default()) as usize),
             _ => (8, len),
         };
-        if total < header || i + total > b.len() {
+        if total < header || i.checked_add(total).is_none_or(|end| end > b.len()) {
             break;
         }
         out.push((typ, &b[i + header..i + total]));
@@ -662,7 +680,8 @@ fn header_boxes(r: &mut dyn codec::ReadSeek) -> Result<Vec<u8>> {
             }
             n => (8, n),
         };
-        if total < header || pos + total > len || &h[4..8] == b"jp2c" {
+        let Some(end) = pos.checked_add(total) else { break };
+        if total < header || end > len || &h[4..8] == b"jp2c" {
             break;
         }
         // Metadata boxes are small; a box larger than this is not one terrio reads.
@@ -672,7 +691,7 @@ fn header_boxes(r: &mut dyn codec::ReadSeek) -> Result<Vec<u8>> {
             r.read_exact(&mut b)?;
             out.extend(b);
         }
-        pos += total;
+        pos = end;
     }
     Ok(out)
 }
@@ -730,10 +749,20 @@ impl Jp2Window {
         }
         let [x0, y0, x1, y1] = header.area;
         let (w, h) = ((x1 - x0) as usize, (y1 - y0) as usize);
-        let bands = header.precisions.len();
-        let data_type = codec::data_type(&header.precisions, header.signed, alpha);
         let palette =
             boxes(&boxes_bytes).into_iter().find(|(t, _)| t == b"jp2h").is_some_and(|(_, p)| boxes(p).iter().any(|(t, _)| t == b"pclr"));
+        let mut header = header;
+        let (bands, data_type) = if palette {
+            // OpenJPEG applies the palette when decoding: the bands and type are those of a
+            // decoded pixel.
+            let mut s = source.open()?;
+            let (_, _, px) = codec::decode_area(s.as_mut(), len, j2k, Some([x0, y0, x0 + 1, y0 + 1]), 0, alpha)?;
+            let n = px.len().max(1);
+            header.precisions = vec![header.precisions[0]; n];
+            (n, px.data_type())
+        } else {
+            (header.precisions.len(), codec::data_type(&header.precisions, header.signed, alpha))
+        };
         let (overviews, block) = levels(w, h, header.tile, if palette { 0 } else { header.resolutions });
         let raster = Raster {
             cols: w,
@@ -750,7 +779,9 @@ impl Jp2Window {
             data: RasterData::new_filled(data_type, 0, 0.0),
         };
         let mut ds = RasterDataset { raster, driver: RasterDriver::JP2, has_nodata: false, affine: None };
-        ds.set_geo_transform(gt.unwrap_or(common::NO_GEOTRANSFORM));
+        // Without georeferencing, unit pixels with the image's bottom at y = 0, as terrio's other
+        // readers do.
+        ds.set_geo_transform(gt.unwrap_or([0.0, 1.0, 0.0, h as f64, 0.0, -1.0]));
         Ok((Self { source, len, j2k, header, alpha, overviews, block }, ds))
     }
 

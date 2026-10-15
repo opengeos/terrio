@@ -233,7 +233,7 @@ def stack(
             if isinstance(dst_path, DatasetWriter):
                 dst = dst_path
             else:
-                out_profile = first_profile
+                out_profile = dict(first_profile)
                 out_profile.update(**(dst_kwds or {}))
                 out_profile["transform"] = output_transform
                 out_profile["height"] = output_height
@@ -263,7 +263,14 @@ def stack(
             dst_idx = 0
             for dataset, src_indexes in zip(sources, indexes, strict=False):
                 with opener(dataset) as src:
+                    if src_indexes is None:
+                        src_indexes = src.indexes
+                    elif isinstance(src_indexes, int):
+                        src_indexes = [src_indexes]
+                    # A source that doesn't reach this chunk still owns its output bands: skip
+                    # past them, or later sources would land in the wrong bands.
                     if disjoint_bounds(chunk_bounds, src.bounds):
+                        dst_idx += len(src_indexes)
                         continue
                     if first_crs != src.crs:
                         raise RasterioError(f"CRS mismatch with source: {dataset}")
@@ -272,11 +279,8 @@ def stack(
                         sw = windows.from_bounds(*ibounds, src.transform)
                         cw = windows.from_bounds(*ibounds, chunk_transform)
                     except (ValueError, WindowError):
+                        dst_idx += len(src_indexes)
                         continue
-                    if src_indexes is None:
-                        src_indexes = src.indexes
-                    elif isinstance(src_indexes, int):
-                        src_indexes = [src_indexes]
                     cw = _win_align(cw)
                     data = src.read(
                         out_shape=(len(src_indexes), cw.height, cw.width),

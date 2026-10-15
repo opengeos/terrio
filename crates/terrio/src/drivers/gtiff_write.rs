@@ -1209,7 +1209,7 @@ impl GeoTiffWriter {
         let mut layout = plan.layout;
         layout.rows_per_strip = Some(block_rows as u32);
         let raw = (cols * rows * bands * size) as u64;
-        let big = opts.bigtiff || raw + raw / 8 > (u32::MAX as u64) - (1 << 24);
+        let big = opts.bigtiff || raw + raw / 4 > (u32::MAX as u64) - (1 << 24);
         let mut tags = plan.geo;
         if let Some(cm) = plan.color_map {
             tags.push((320, cm));
@@ -1345,6 +1345,7 @@ impl GeoTiffWriter {
             self.counts[idx] = chunk.len() as u64;
             self.file.write_all(chunk)?;
             self.pos += chunk.len() as u64;
+            self.check_size()?;
         }
         if self.tags.iter().all(|(t, _)| *t != 256) {
             self.tags.extend(img.tags);
@@ -1356,6 +1357,15 @@ impl GeoTiffWriter {
             chunks.extend(mi.chunks);
         }
         self.rows_done += h;
+        Ok(())
+    }
+
+    /// Fails when a classic TIFF grows past what its 32-bit offsets address (the choice of
+    /// BigTIFF is made from the uncompressed size, which compression may exceed).
+    fn check_size(&self) -> Result<()> {
+        if !self.big && self.pos > (u32::MAX as u64) - (1 << 24) {
+            return Err(Error::InvalidData("the GeoTIFF exceeds 4 GiB: write it as a BigTIFF (BIGTIFF=YES)".into()));
+        }
         Ok(())
     }
 
@@ -1391,6 +1401,7 @@ impl GeoTiffWriter {
                 counts.push(c.len() as u64);
                 self.file.write_all(c)?;
                 self.pos += c.len() as u64;
+                self.check_size()?;
             }
             let full = mask_image(&[], self.cols, 0, (self.chunk_w, self.block_rows, tiled));
             let mut mt: Vec<(u16, Value)> = full.tags.into_iter().filter(|(t, _)| *t != 257 && *t != 278).collect();

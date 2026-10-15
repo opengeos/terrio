@@ -34,9 +34,10 @@ and Windows (x64 and ARM64), for Python 3.10 and later. They need only NumPy (an
 ### Pyodide
 
 A wheel for [Pyodide](https://pyodide.org) (Python in WebAssembly, in browsers and Node.js) is
-attached to each [GitHub release](https://github.com/opengeos/terrio/releases), built for the
-Pyodide release it names (0.29, Python 3.13). Install it with `micropip`, from the release or a
-copy served next to the page:
+attached to each [GitHub release](https://github.com/opengeos/terrio/releases) from the first
+release after 0.1.1 (earlier releases have none), built for the Pyodide release it names (0.29,
+Python 3.13). Install it with `micropip`, from the release or a copy served next to the page (the
+URL below is that of a future 0.2.0 release):
 
 ```python
 import micropip

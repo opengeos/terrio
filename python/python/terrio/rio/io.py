@@ -8,6 +8,7 @@ of blocks) and write the file when closed.
 
 from __future__ import annotations
 
+import contextlib
 import math
 import os
 import shutil
@@ -1034,10 +1035,12 @@ class DatasetReader(DatasetBase):
             structure = _tiff.default_structure(raster)
         if not _is_remote(self._path):
             _tiff.apply_pam(structure, self._path)
+        # Bands a PAM sidecar doesn't list keep the file's own nodata, not band 1's PAM value.
+        file_nodata = self._nodata
         if structure.nodata_override is not None:
             self._nodata = structure.nodata_override
         if len(structure.band_nodata) > 0:
-            vals = [structure.band_nodata.get(b, self._nodata) for b in range(self._count)]
+            vals = [structure.band_nodata.get(b, file_nodata) for b in range(self._count)]
             if len(set(map(repr, vals))) > 1:
                 self._nodatavals = vals
         self._structure = structure
@@ -2455,8 +2458,13 @@ class DatasetWriter(DatasetReader):
                 rows = np.ascontiguousarray(self._data[:, y : y + n, :])
                 m = None if self._mask is None else np.ascontiguousarray(self._mask[y : y + n])
                 w.write(rows, m)
-        finally:
-            w.close()
+        except BaseException:
+            # Closing an incomplete writer fails too ("N rows written of M"): keep the first
+            # error, which says what went wrong.
+            with contextlib.suppress(Exception):
+                w.close()
+            raise
+        w.close()
 
     def _new_structure_defaults(self) -> list[ColorInterp]:
         """The color interpretations GDAL derives from the creation options.

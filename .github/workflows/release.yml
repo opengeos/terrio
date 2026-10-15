@@ -109,7 +109,8 @@ jobs:
           path: python/dist/*.whl
 
   pyodide-release:
-    needs: pyodide
+    # Once the packages are on PyPI, so that a release never announces a version that is not.
+    needs: [pyodide, publish]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v')
     permissions:

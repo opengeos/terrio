@@ -113,13 +113,26 @@ pub fn subdatasets(path: &str) -> Result<Vec<(String, String)>> {
 /// one. Drivers that can only copy datasets (`CreateCopy`) work too: the raster goes through an
 /// in-memory GDAL dataset.
 pub fn write_raster(ds: &RasterDataset, path: &str, driver: &str, creation_options: &[(String, String)]) -> Result<()> {
-    write_raster_with(&ds.raster, ds.nodata(), path, driver, creation_options)
+    write_raster_gt(&ds.raster, ds.nodata(), ds.affine, path, driver, creation_options)
 }
 
 /// Writes a raster with a GDAL driver, declaring `nodata`.
 pub(crate) fn write_raster_with(
     r: &wbraster::Raster,
     nodata: Option<f64>,
+    path: &str,
+    driver: &str,
+    creation_options: &[(String, String)],
+) -> Result<()> {
+    write_raster_gt(r, nodata, None, path, driver, creation_options)
+}
+
+/// Writes a raster with a GDAL driver, declaring `nodata`, with a rotated or south-up
+/// geotransform in place of the raster's when `affine` is given.
+fn write_raster_gt(
+    r: &wbraster::Raster,
+    nodata: Option<f64>,
+    affine: Option<[f64; 6]>,
     path: &str,
     driver: &str,
     creation_options: &[(String, String)],
@@ -154,7 +167,7 @@ pub(crate) fn write_raster_with(
         wbraster::DataType::F32 => create!(f32, F32),
         wbraster::DataType::F64 => create!(f64, F64),
     };
-    let gt = crate::geo_transform(r);
+    let gt = affine.unwrap_or_else(|| crate::geo_transform(r));
     mem.set_geo_transform(&gt).map_err(gdal_err)?;
     let crs = crate::crs::SpatialRef::from_raster_crs(&r.crs);
     let srs = match crs.epsg {

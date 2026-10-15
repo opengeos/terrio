@@ -95,9 +95,9 @@ class RPC:
             "SAMP_OFF": str(self.samp_off),
             "SAMP_SCALE": str(self.samp_scale),
         }
-        if self.err_bias:
+        if self.err_bias is not None:
             out["ERR_BIAS"] = str(self.err_bias)
-        if self.err_rand:
+        if self.err_rand is not None:
             out["ERR_RAND"] = str(self.err_rand)
         return out
 
@@ -222,21 +222,24 @@ def read_rpc_file(path: str) -> dict[str, str] | None:
             value = rest.split(";", 1)[0].strip().strip("()")
             out[dst] = " ".join(v.strip() for v in value.split(",") if v.strip())
     else:
-        coeffs: dict[str, list[str]] = {k: [] for k in _COEFFS}
+        # Coefficients are placed by their number (LINE_NUM_COEFF_1 to _20), as GDAL reads them,
+        # whatever order the file lists them in.
+        coeffs: dict[str, dict[int, str]] = {k: {} for k in _COEFFS}
         for line in text.splitlines():
             if ":" not in line:
                 continue
             key, value = (p.strip() for p in line.split(":", 1))
             value = value.split()[0] if value.split() else ""
             for c in _COEFFS:
-                if key.startswith(c + "_"):
-                    coeffs[c].append(value)
+                suffix = key[len(c) + 1 :] if key.startswith(c + "_") else ""
+                if suffix.isdigit():
+                    coeffs[c][int(suffix)] = value
                     break
             else:
                 out[key] = value
-        for c, vals in coeffs.items():
-            if vals:
-                out[c] = " ".join(vals)
+        for c, by_index in coeffs.items():
+            if sorted(by_index) == list(range(1, 21)):
+                out[c] = " ".join(by_index[i] for i in range(1, 21))
     needed = {"LINE_OFF", "SAMP_OFF", "LAT_OFF", "LONG_OFF", "HEIGHT_OFF", *_COEFFS}
     return out if needed <= out.keys() else None
 

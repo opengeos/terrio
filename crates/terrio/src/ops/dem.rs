@@ -930,7 +930,12 @@ pub fn dem(ds: &RasterDataset, product: DemProduct, o: &DemOptions) -> Result<Ra
     } else {
         values.iter().map(|v| *v as f64).collect()
     };
-    build_raster(Grid::of(&ds.raster), vec![values], out_type, dst_nodata, &ds.crs(), |v, _| v)
+    let mut out = build_raster(Grid::of(&ds.raster), vec![values], out_type, dst_nodata, &ds.crs(), |v, _| v)?;
+    // A rotated or south-up input keeps its geotransform.
+    if let Some(gt) = ds.affine {
+        out.set_geo_transform(gt);
+    }
+    Ok(out)
 }
 
 /// GDAL's conversion of a `Float32` value to a byte: NaN becomes 0, others are rounded half up
