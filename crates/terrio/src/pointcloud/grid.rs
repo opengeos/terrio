@@ -456,7 +456,11 @@ fn interpolate(
     let search = match (options.method, radius) {
         (GridMethod::Linear, Some(0.0)) => None,
         (GridMethod::Linear, Some(r)) if r > 0.0 => Some(Search::Square(r)),
-        (GridMethod::Linear, _) => Some(Search::Growing(initial())),
+        // Points with no extent in x or y give no first square: search them all.
+        (GridMethod::Linear, _) => Some(match initial() {
+            r if r > 0.0 && r.is_finite() => Search::Growing(r),
+            _ => Search::All,
+        }),
         (_, Some(r)) if r > 0.0 && xs.len() > 100 => Some(Search::Square(r)),
         (_, Some(r)) if r > 0.0 => Some(Search::Circle(r)),
         _ => Some(Search::All),

@@ -342,12 +342,19 @@ impl PlyReader {
                                 reader.word(&mut self.source, &mut word)?;
                             }
                         }
-                        (_, Property::Scalar(_, t)) => reader.read_exact(&mut self.source, &mut vec![0; t.size()])?,
+                        (_, Property::Scalar(_, t)) => reader.read_exact(&mut self.source, &mut [0u8; 8][..t.size()])?,
                         (enc, Property::List(ct, it)) => {
-                            let mut b = vec![0; ct.size()];
-                            reader.read_exact(&mut self.source, &mut b)?;
-                            let n = ct.decode(&b, enc == Encoding::Be) as usize;
-                            reader.read_exact(&mut self.source, &mut vec![0; n * it.size()])?;
+                            let mut b = [0u8; 8];
+                            reader.read_exact(&mut self.source, &mut b[..ct.size()])?;
+                            let n = ct.decode(&b, enc == Encoding::Be) as u64;
+                            // Skip the items through a small buffer: the count is the file's.
+                            let mut left = n.saturating_mul(it.size() as u64);
+                            let mut skip = [0u8; 4096];
+                            while left > 0 {
+                                let k = left.min(skip.len() as u64) as usize;
+                                reader.read_exact(&mut self.source, &mut skip[..k])?;
+                                left -= k as u64;
+                            }
                         }
                     }
                 }

@@ -184,7 +184,7 @@ pub fn sample_mask(cloud: &PointCloud, options: &SampleOptions) -> Result<Vec<bo
     }
     let (xs, ys, zs) = xyz(cloud)?;
     let r2 = radius * radius;
-    let mut voxels: HashMap<(i32, i32, i32), Vec<[f64; 3]>> = HashMap::new();
+    let mut voxels: HashMap<(i64, i64, i64), Vec<[f64; 3]>> = HashMap::new();
     let mut origin = options.origin.unwrap_or([0.0; 3]);
     let mut keep = vec![false; cloud.len()];
     for i in 0..cloud.len() {
@@ -192,7 +192,7 @@ pub fn sample_mask(cloud: &PointCloud, options: &SampleOptions) -> Result<Vec<bo
         if voxels.is_empty() && options.origin.is_none() {
             origin = [x, y, y];
         }
-        let v = (((x - origin[0]) / cell).floor() as i32, ((y - origin[1]) / cell).floor() as i32, ((z - origin[2]) / cell).floor() as i32);
+        let v = (((x - origin[0]) / cell).floor() as i64, ((y - origin[1]) / cell).floor() as i64, ((z - origin[2]) / cell).floor() as i64);
         let near = |p: &[f64; 3]| (p[0] - x) * (p[0] - x) + (p[1] - y) * (p[1] - y) + (p[2] - z) * (p[2] - z) < r2;
         let mut ok = true;
         'search: for dx in -1..=1 {
@@ -271,7 +271,7 @@ pub fn voxel_downsize(cloud: &PointCloud, cell: f64, mode: VoxelMode) -> Result<
         return Err(Error::InvalidArgument(format!("invalid cell {cell}")));
     }
     let (xs, ys, zs) = xyz(cloud)?;
-    let mut seen: HashSet<(i32, i32, i32)> = HashSet::new();
+    let mut seen: HashSet<(i64, i64, i64)> = HashSet::new();
     let mut origin = [0.0; 3];
     let mut idx = Vec::new();
     let mut centers = Vec::new();
@@ -280,9 +280,9 @@ pub fn voxel_downsize(cloud: &PointCloud, cell: f64, mode: VoxelMode) -> Result<
             origin = [xs[i] - cell / 2.0, ys[i] - cell / 2.0, zs[i] - cell / 2.0];
         }
         let v = (
-            ((xs[i] - origin[0]) / cell).floor() as i32,
-            ((ys[i] - origin[1]) / cell).floor() as i32,
-            ((zs[i] - origin[2]) / cell).floor() as i32,
+            ((xs[i] - origin[0]) / cell).floor() as i64,
+            ((ys[i] - origin[1]) / cell).floor() as i64,
+            ((zs[i] - origin[2]) / cell).floor() as i64,
         );
         if seen.insert(v) {
             idx.push(i);

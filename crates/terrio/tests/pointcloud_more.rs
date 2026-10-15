@@ -321,6 +321,22 @@ fn grids_a_plane_linearly_and_the_nearest_values() {
 }
 
 #[test]
+fn grids_collinear_points_from_the_nearest() {
+    // No triangles and no extent in y: every cell takes the nearest point's value.
+    let c = PointCloud::new(
+        vec![
+            Dimension::new("x", Values::F64(vec![0.0, 5.0, 10.0])),
+            Dimension::new("y", Values::F64(vec![0.0, 0.0, 0.0])),
+            Dimension::new("z", Values::F64(vec![1.0, 2.0, 3.0])),
+        ],
+        SpatialRef::default(),
+    );
+    let o = GridOptions { resolution: 2.0, method: GridMethod::Linear, ..Default::default() };
+    let g = grid(&c, &o).unwrap();
+    assert_eq!(g.raster.band_view(0).as_slice(), &[1.0, 2.0, 2.0, 2.0, 3.0, 3.0]);
+}
+
+#[test]
 fn keeps_waveforms_when_writing() {
     // Point format 4 with a wave packet descriptor (8 bits, 4 samples) and the packets in the
     // file.
@@ -447,6 +463,23 @@ fn reads_and_keeps_full_waveforms() {
         assert_eq!(offsets.dim("wavepacket_offset").unwrap().values, c.dim("wavepacket_offset").unwrap().values);
         assert_eq!(back.waveform(1, 124732, 256).unwrap().samples.iter().sum::<u32>(), 3914, "{ext}");
     }
+    // Converted in chunks, the packets are copied in blocks from the file.
+    let out = dir.path().join("converted.laz");
+    pointcloud::convert(&p, out.to_str().unwrap(), &Default::default()).unwrap();
+    let mut back = pointcloud::open_points(out.to_str().unwrap()).unwrap();
+    assert_eq!((back.header().point_count, back.header().waveform_data_size), (779_869, 95_749_632));
+    assert_eq!(back.waveform(1, 60, 256).unwrap().samples.iter().sum::<u32>(), 3782);
+    // Waveforms read during a chunked read do not end it.
+    let mut chunks = 0;
+    let mut points = 0;
+    r.start_chunks(&Default::default(), 200_000).unwrap();
+    while let Some(c) = r.next_chunk().unwrap() {
+        assert_eq!(r.waveform(1, 316, 256).unwrap().samples.iter().sum::<u32>(), 3951);
+        chunks += 1;
+        points += c.len();
+    }
+    assert!(chunks > 2, "{chunks} chunks");
+    assert_eq!(points, 779_869);
 }
 
 /// autzen_trim.las, read once.

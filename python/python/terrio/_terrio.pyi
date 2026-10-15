@@ -338,8 +338,8 @@ class PointChunks:
 class PointCloudWriter:
     """Writes points as they come, in chunks, to a LAS, LAZ, COPC or PLY file."""
 
-    def __init__(
-        self,
+    def __new__(
+        cls,
         path: str,
         template: PointCloud,
         *,
@@ -348,7 +348,7 @@ class PointCloudWriter:
         minor_version: int | None = None,
         scale: _XYZ | None = None,
         offset: _XYZ | None = None,
-    ) -> None: ...
+    ) -> PointCloudWriter: ...
     def write(self, points: PointCloud) -> None: ...
     def close(self) -> None: ...
     def __enter__(self) -> PointCloudWriter: ...

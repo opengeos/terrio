@@ -228,6 +228,21 @@ def points(tmp: Path) -> None:
     print(dem.count, idw.dtype, len(layer))
     terrio.convert_points(path, str(tmp / "points.gpkg"), classes=[2], dimensions=["z"])
 
+    # Formats, chunks, filters and interpolation.
+    pc.write(str(tmp / "points.ply"), ply_encoding="binary_little_endian")
+    terrio.convert_points(path, str(tmp / "points.e57"), chunk_points=1000)
+    with terrio.PointCloudWriter(str(tmp / "chunks.laz"), f.template()) as w:
+        for chunk in f.chunks(1000):
+            w.write(chunk)
+    ground = pc.smrf(cell=2.0).range("Classification[2:2]")
+    thin = pc.outlier(method="radius", radius=5.0).voxel_downsize(2.0, "first").sample(1.0)
+    nn = pc.voxel_center_nearest_neighbor(2.0)
+    tin = pc.grid(1.0, method="linear", radius=0.0)
+    big = terrio.grid_points(path, 2.0, stat="max")
+    print(
+        len(ground), len(thin), len(nn), tin.count, big.count, f.ept_info, f.wave_packet_descriptors
+    )
+
 
 def rio(tmp: Path) -> None:
     """The rasterio-compatible API: writing, reading, windows, CRSs, features and warping.

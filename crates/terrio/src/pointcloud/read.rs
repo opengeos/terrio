@@ -308,12 +308,17 @@ impl PointCloudReader {
         self.inner.ept_info()
     }
 
-    /// A point cloud without points, with the header (and, for LAS files with waveforms, the
-    /// waveform data packets), CRS and dimensions of the points a read gives: the template of a
-    /// [`super::PointWriter`].
+    /// A point cloud without points, with the header, CRS and dimensions of the points a read
+    /// gives: the template of a [`super::PointWriter`]. For LAS files with waveforms in the file,
+    /// [`super::PointWriter::finish_with_waveforms`] copies their packets.
     pub fn template(&mut self) -> Result<PointCloud> {
         let dimensions = self.inner.dimensions().iter().map(|(n, t)| Dimension::new(n, Values::with_capacity(*t, 0))).collect();
-        Ok(PointCloud { header: self.inner.cloud_header()?, crs: self.inner.crs().horizontal.clone(), dimensions })
+        Ok(PointCloud { header: self.inner.header().clone(), crs: self.inner.crs().horizontal.clone(), dimensions })
+    }
+
+    /// Bytes of the waveform data packet record (its 60-byte header included), for writers.
+    pub(crate) fn waveform_bytes(&mut self, offset: u64, len: usize) -> Result<Vec<u8>> {
+        self.inner.waveform_data(offset, len)
     }
 
     /// The `.wdp` file that holds the waveforms of a LAS file's points, when they are in one.
@@ -665,8 +670,19 @@ impl FormatReader for LasReader {
         if self.header.waveform_data_size == 0 || self.header.start_of_waveform_data == 0 {
             return Err(Error::InvalidData("the file has no waveform data packets".into()));
         }
-        self.finish_chunks();
-        self.source.read_at(self.header.start_of_waveform_data + offset, len)
+        let at = self.header.start_of_waveform_data + offset;
+        // Read with a handle of its own, so that a chunked read goes on where it is.
+        if let Some(local) = &self._local {
+            let mut f = std::fs::File::open(local.path())?;
+            f.seek(SeekFrom::Start(at))?;
+            let mut b = vec![0u8; len];
+            f.read_exact(&mut b)?;
+            return Ok(b);
+        }
+        if !matches!(self.cursor, LasCursor::None) {
+            return Err(Error::InvalidArgument("waveforms of files in memory cannot be read during a chunked read".into()));
+        }
+        self.source.read_at(at, len)
     }
 }
 

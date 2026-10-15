@@ -102,7 +102,7 @@ impl Vlr {
         self.is(LASZIP_USER_ID, LASZIP_RECORD_ID)
     }
 
-    fn write<W: Write>(&self, w: &mut W, extended: bool) -> Result<()> {
+    pub(crate) fn write<W: Write>(&self, w: &mut W, extended: bool) -> Result<()> {
         w.write_all(&[0, 0])?;
         w.write_all(&fixed_str(&self.user_id, 16))?;
         w.write_all(&self.record_id.to_le_bytes())?;
@@ -115,6 +115,16 @@ impl Vlr {
         }
         w.write_all(&fixed_str(&self.description, 32))?;
         w.write_all(&self.data)?;
+        Ok(())
+    }
+
+    /// Writes the record's 60-byte EVLR header, for a payload of `len` bytes written apart.
+    pub(crate) fn write_evlr_header<W: Write>(&self, w: &mut W, len: u64) -> Result<()> {
+        w.write_all(&[0, 0])?;
+        w.write_all(&fixed_str(&self.user_id, 16))?;
+        w.write_all(&self.record_id.to_le_bytes())?;
+        w.write_all(&len.to_le_bytes())?;
+        w.write_all(&fixed_str(&self.description, 32))?;
         Ok(())
     }
 

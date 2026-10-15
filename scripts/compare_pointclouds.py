@@ -701,9 +701,10 @@ def main() -> None:
         compare_formats(root, tmp)
         compare_waveforms(root, tmp)
         compare_filters(root / "autzen_trim.las", tmp, (420, 500))
-        madison = tmp / "madison.las"
-        terrio.convert_points(str(root / "madison.copc.laz"), str(madison))
-        compare_filters(madison, tmp, (330, 400))
+        if PDAL and (root / "madison.copc.laz").exists():
+            madison = tmp / "madison.las"
+            terrio.convert_points(str(root / "madison.copc.laz"), str(madison))
+            compare_filters(madison, tmp, (330, 400))
         compare_interpolation(root / "autzen_trim.las", tmp)
     print(f"\n{len(FAILURES)} failure(s)")
     for f in FAILURES:

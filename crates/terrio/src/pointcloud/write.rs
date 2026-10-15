@@ -253,13 +253,25 @@ pub(crate) fn prepare(cloud: &PointCloud, format: PointFormat, options: &PointWr
         && cloud.dim("wavepacket_index").is_some()
         && format != PointFormat::Copc;
     if waves {
-        if let Some(record) = src.evlrs.iter().find(|v| v.is_waveform_data() && !v.data.is_empty()) {
-            evlrs.insert(0, record.clone());
-            global_encoding |= WAVEFORM_INTERNAL_BIT;
-            start_of_waveform_data = 1; // set when written
-            waveform_data_size = record.data.len() as u64;
-        } else if src.global_encoding & WAVEFORM_EXTERNAL_BIT != 0 {
-            global_encoding |= WAVEFORM_EXTERNAL_BIT;
+        let record = src.evlrs.iter().find(|v| v.is_waveform_data());
+        let internal = src.global_encoding & WAVEFORM_EXTERNAL_BIT == 0;
+        match record {
+            Some(r) if !r.data.is_empty() => {
+                evlrs.insert(0, r.clone());
+                global_encoding |= WAVEFORM_INTERNAL_BIT;
+                start_of_waveform_data = 1; // set when written
+                waveform_data_size = r.data.len() as u64;
+            }
+            // The packets are still in the source file: a writer finished with
+            // `PointWriter::finish_with_waveforms` copies them from it.
+            Some(r) if internal && src.waveform_data_size > 0 => {
+                evlrs.insert(0, r.clone());
+                global_encoding |= WAVEFORM_INTERNAL_BIT;
+                start_of_waveform_data = 1;
+                waveform_data_size = src.waveform_data_size;
+            }
+            _ if !internal => global_encoding |= WAVEFORM_EXTERNAL_BIT,
+            _ => {}
         }
     }
     let header = LasHeader {
@@ -332,8 +344,15 @@ fn write_to<W: Write + Seek + Send + Sync>(cloud: &PointCloud, w: &mut W, format
         lw.write_cloud(&cloud.slice(i, j))?;
         i = j;
     }
-    lw.finish()
+    lw.finish(None)
 }
+
+/// Reads `len` bytes of the source's waveform data packet record from an offset (its header
+/// included).
+pub(crate) type WaveformSource<'a> = &'a mut dyn FnMut(u64, usize) -> Result<Vec<u8>>;
+
+/// The most bytes of waveform data packets copied at a time.
+const WAVEFORM_BLOCK: u64 = 16 << 20;
 
 /// Writes LAS or LAZ records as they come: the header first (its counts and bounds rewritten at
 /// the end), the points (compressed chunk by chunk for LAZ), then the waveform data packets and
@@ -420,8 +439,9 @@ impl<'a, W: Write + Seek + Send + Sync + 'a> LasStreamWriter<'a, W> {
         Ok(())
     }
 
-    /// Writes the waveform data packets and EVLRs, and rewrites the header.
-    pub fn finish(mut self) -> Result<()> {
+    /// Writes the waveform data packets (copied in blocks from `waveforms` when the header has
+    /// them without their bytes) and EVLRs, and rewrites the header.
+    pub fn finish(mut self, waveforms: Option<WaveformSource<'_>>) -> Result<()> {
         let mut w = match (self.laz.take(), self.out.take()) {
             (Some(mut c), _) => {
                 c.done()?;
@@ -450,7 +470,35 @@ impl<'a, W: Write + Seek + Send + Sync + 'a> LasStreamWriter<'a, W> {
                 // LAS 1.3: the waveform data packet record is the only one after the points.
                 header.evlrs.truncate(usize::from(header.start_of_waveform_data != 0));
             }
-            header.write_evlrs(&mut w)?;
+            let pending = header.start_of_waveform_data != 0 && header.evlrs[0].data.is_empty() && header.waveform_data_size > 0;
+            match (pending, waveforms) {
+                (true, Some(read)) => {
+                    let size = header.waveform_data_size;
+                    header.evlrs[0].write_evlr_header(&mut w, size)?;
+                    let mut at = 0;
+                    while at < size {
+                        let n = (size - at).min(WAVEFORM_BLOCK);
+                        w.write_all(&read(super::las::EVLR_HEADER_LEN as u64 + at, n as usize)?)?;
+                        at += n;
+                    }
+                    let rest = Vec::from(&header.evlrs[1..]);
+                    for v in &rest {
+                        v.write(&mut w, true)?;
+                    }
+                }
+                (true, None) => {
+                    // No packets to write: the points no longer have them.
+                    header.evlrs.remove(0);
+                    header.start_of_waveform_data = 0;
+                    header.waveform_data_size = 0;
+                    header.global_encoding &= !WAVEFORM_INTERNAL_BIT;
+                    header.write_evlrs(&mut w)?;
+                }
+                _ => header.write_evlrs(&mut w)?,
+            }
+            if header.evlrs.is_empty() {
+                header.start_of_first_evlr = 0;
+            }
         }
         let end = w.stream_position()?;
         w.seek(SeekFrom::Start(self.start))?;
@@ -537,10 +585,22 @@ impl PointWriter {
     /// Finishes the file: the counts, bounds and (COPC) the octree.
     pub fn finish(self) -> Result<()> {
         match self.inner {
-            WriterKind::Las(w) => w.finish(),
+            WriterKind::Las(w) => w.finish(None),
             #[cfg(not(target_arch = "wasm32"))]
             WriterKind::Copc(w) => w.finish(),
             WriterKind::Ply(w) => w.finish(),
+        }
+    }
+}
+
+impl PointWriter {
+    /// Finishes the file, copying the waveform data packets the points refer to from the file
+    /// they are read from (in blocks: the packets are not held in memory), when the template was
+    /// that file's ([`super::PointCloudReader::template`]).
+    pub fn finish_with_waveforms(self, reader: &mut super::PointCloudReader) -> Result<()> {
+        match self.inner {
+            WriterKind::Las(w) => w.finish(Some(&mut |offset, len| reader.waveform_bytes(offset, len))),
+            _ => self.finish(),
         }
     }
 }

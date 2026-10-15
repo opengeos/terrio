@@ -167,6 +167,10 @@ pub fn run(a: Args) -> terrio::Result<()> {
             let cloud = read(&io)?;
             if remove {
                 let outliers = filters::outlier_mask(&cloud, &options)?;
+                // As when classifying: when every point would be an outlier, none is.
+                if outliers.iter().all(|o| *o) {
+                    return write(&io, &cloud);
+                }
                 let keep: Vec<bool> = outliers.iter().map(|o| !o).collect();
                 return write(&io, &cloud.select(&keep));
             }
@@ -182,7 +186,7 @@ pub fn run(a: Args) -> terrio::Result<()> {
             while let Some(chunk) = reader.next_chunk()? {
                 writer.write(&filters::range(&chunk, &ranges)?)?;
             }
-            writer.finish()
+            writer.finish_with_waveforms(&mut reader)
         }
         Filter::Sample { io, radius, cell } => {
             let cloud = read(&io)?;

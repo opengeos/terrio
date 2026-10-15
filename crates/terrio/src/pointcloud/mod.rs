@@ -428,6 +428,21 @@ pub fn convert(src: &str, dst: &str, options: &ConvertOptions) -> Result<()> {
     crate::write_vector(&[layer], dst, &Default::default())
 }
 
+/// Whether two paths are the same file (hard links included).
+#[cfg(unix)]
+fn same_file(a: &std::path::Path, b: &std::path::Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    match (std::fs::metadata(a), std::fs::metadata(b)) {
+        (Ok(x), Ok(y)) => x.dev() == y.dev() && x.ino() == y.ino(),
+        _ => false,
+    }
+}
+
+#[cfg(not(unix))]
+fn same_file(_: &std::path::Path, _: &std::path::Path) -> bool {
+    false
+}
+
 /// Converts chunk by chunk.
 fn convert_streaming(src: &str, dst: &str, options: &ConvertOptions) -> Result<()> {
     let mut reader = open_points(src)?;
@@ -458,13 +473,20 @@ fn convert_streaming(src: &str, dst: &str, options: &ConvertOptions) -> Result<(
         }
         writer.write(&chunk)?;
     }
-    writer.finish()?;
+    writer.finish_with_waveforms(&mut reader)?;
     // Points that keep their waveforms in a `.wdp` file next to the input keep them next to the
-    // output.
+    // output (unless that is the same file).
     if let Some(wdp) = reader.waveform_file()
         && PointFormat::for_path(dst).is_some_and(|f| matches!(f, PointFormat::Las | PointFormat::Laz))
     {
-        std::fs::copy(wdp, std::path::Path::new(dst).with_extension("wdp"))?;
+        let target = std::path::Path::new(dst).with_extension("wdp");
+        let same = match (std::fs::canonicalize(wdp), std::fs::canonicalize(&target)) {
+            (Ok(a), Ok(b)) => a == b || same_file(&a, &b),
+            _ => false,
+        };
+        if !same {
+            std::fs::copy(wdp, target)?;
+        }
     }
     Ok(())
 }
