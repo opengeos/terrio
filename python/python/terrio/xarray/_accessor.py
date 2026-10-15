@@ -27,7 +27,7 @@ from terrio.rio import warp, windows
 from terrio.rio.crs import CRS
 from terrio.rio.enums import Resampling
 from terrio.rio.errors import WindowError
-from terrio.rio.io import MemoryFile
+from terrio.rio.io import MemoryFile, driver_from_extension
 from terrio.xarray._crs import crs_from_user_input, crs_to_cf
 from terrio.xarray._options import EXPORT_GRID_MAPPING, SKIP_MISSING_SPATIAL_DIMS, get_option
 from terrio.xarray._spatial import (
@@ -970,9 +970,11 @@ def _utm_epsg(lon: float, lat: float, datum_name: str) -> int:
     if not (-180 <= lon <= 180 and -80 <= lat <= 84):
         raise RuntimeError("Unable to determine UTM CRS")
     shifted = lon + 180.0
-    zone = min(int(shifted // 6) + 1, 60)
-    if shifted % 6 == 0 and zone > 1:
-        # On a zone boundary, PROJ's database query lists the lower zone first.
+    raw_zone = int(shifted // 6) + 1
+    zone = min(raw_zone, 60)
+    if shifted % 6 == 0 and 1 < raw_zone <= 60:
+        # On a zone boundary, PROJ's database query lists the lower zone first (180°E stays in
+        # zone 60).
         zone -= 1
     name = datum_name.upper().replace(" ", "")
     if name in ("WGS84", "WGS1984"):
@@ -1683,6 +1685,11 @@ class TerrioArray(XRasterBase):
         if driver is None:
             if Path(raster_path).suffix.lower() in (".tif", ".tiff"):
                 driver = "GTiff"
+            else:
+                try:
+                    driver = driver_from_extension(os.fspath(raster_path))
+                except ValueError:
+                    driver = None  # terrio.rio.open reports the unknown extension
         out_profile = dict(self._source.profile) if self._source is not None else {}
         out_profile.update(profile_kwargs)
         out_profile = {

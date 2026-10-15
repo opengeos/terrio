@@ -10,6 +10,7 @@ window needs.
 from __future__ import annotations
 
 import contextlib
+import copy
 import os
 import threading
 import warnings
@@ -497,6 +498,19 @@ class TerrioArrayWrapper(BackendArray):
             tuple: The shape.
         """
         return self._shape
+
+    def __deepcopy__(self, memo: dict[int, Any]) -> TerrioArrayWrapper:
+        """A copy sharing the raster and the lock (deep copies of arrays copy their wrappers).
+
+        Args:
+            memo: The `copy.deepcopy` memo.
+
+        Returns:
+            TerrioArrayWrapper: The copy.
+        """
+        new = copy.copy(self)
+        memo[id(self)] = new
+        return new
 
     @property
     def fill_value(self) -> Any:

@@ -322,6 +322,12 @@ def write_raster(
     if not compute and is_dask_collection(da.data):
         from dask.delayed import delayed
 
-        return delayed(_write)(raster_path, da, numpy_dtype, tags, windowed, kwargs)
+        def write_later() -> None:
+            """Writes the file (the array, in the closure, stays a dask array)."""
+            _write(raster_path, da, numpy_dtype, tags, windowed, kwargs)
+
+        # A function without arguments: dask computes a DataArray passed as an argument before
+        # the call, which would hold the whole array in memory twice.
+        return delayed(write_later)()
     _write(raster_path, da, numpy_dtype, tags, windowed, kwargs)
     return None

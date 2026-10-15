@@ -141,6 +141,10 @@ def merge_arrays(
         crs = dataarrays[0].terrio.crs
     if res is None:
         res = tuple(abs(v) for v in dataarrays[0].terrio.resolution())
+    elif isinstance(res, (int, float)):
+        res = (float(res), float(res))
+    else:
+        res = (res[0], res[0]) if len(res) == 1 else (res[0], res[1])
     ducks = []
     for da in dataarrays:
         da_res = tuple(abs(v) for v in da.terrio.resolution())

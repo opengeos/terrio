@@ -274,8 +274,16 @@ def _normalize_crs_text(a: Any, b: Any) -> tuple[Any, str]:
         except Exception:  # noqa: BLE001
             same = False
         inv_a, inv_b = ga.get("inverse_flattening"), gb.get("inverse_flattening")
-        if inv_a is not None and inv_b is not None:
-            same = same or math.isclose(inv_a, inv_b, rel_tol=1e-9)
+        if not same and inv_a is not None and inv_b is not None:
+            # When the CRSs do not compare equal, every CF attribute but those derived from the
+            # WKT text (names, the inverse flattening's digits) must match.
+            rest_a = {k: v for k, v in ga.items() if k not in _WKT_ATTRS}
+            rest_b = {k: v for k, v in gb.items() if k not in _WKT_ATTRS}
+            same = (
+                bool(rest_a)
+                and repr(rest_a) == repr(rest_b)
+                and math.isclose(inv_a, inv_b, rel_tol=1e-9)
+            )
         if not same:
             continue
         b = b.copy()

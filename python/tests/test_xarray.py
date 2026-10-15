@@ -374,3 +374,69 @@ def test_unsupported(files):
         txr.open_rasterio(files["dem"], variable="x")
     with pytest.raises(NotImplementedError):
         txr.open_rasterio(files["dem"]).terrio.write_crs("EPSG:4326", convention="ZARR")
+
+
+def test_utm_zones():
+    from terrio.xarray._accessor import _utm_epsg
+
+    assert _utm_epsg(180.0, 10.0, "WGS 84") == 32660
+    assert _utm_epsg(-180.0, 10.0, "WGS 84") == 32601
+    assert _utm_epsg(-102.0, 40.0, "WGS 84") == 32613  # a boundary: the lower zone, as PROJ
+    assert _utm_epsg(-101.9, -40.0, "WGS 84") == 32714
+    assert _utm_epsg(-105.0, 40.0, "NAD83") == 26913
+
+
+def test_deep_copy_with_a_lock(files):
+    lock = threading.Lock()
+    da = txr.open_rasterio(files["dem"], lock=lock)
+    copied = da.terrio.write_nodata(0)  # a deep copy of the lazy array
+    wrapper = copied.variable._data.array.array.array
+    assert wrapper.lock is lock
+    np.testing.assert_array_equal(copied.values, da.values)
+
+
+def test_merge_scalar_resolution(files, monkeypatch):
+    da = txr.open_rasterio(files["dem"])
+    a = da.terrio.clip_box(500000, 4091000, 508000, 4100000)
+    b = da.terrio.clip_box(504000, 4091000, 512000, 4100000)
+    calls = []
+    reproject = txr.TerrioArray.reproject
+
+    def spy(self, *args, **kwargs):
+        calls.append(args)
+        return reproject(self, *args, **kwargs)
+
+    monkeypatch.setattr(txr.TerrioArray, "reproject", spy)
+    merged = txr.merge_arrays([a, b], res=30)
+    assert not calls  # arrays already at 30 m are not reprojected
+    np.testing.assert_array_equal(merged.values, da.values)
+    assert txr.merge_arrays([a, b], res=[30]).shape == da.shape
+
+
+def test_to_raster_lazy_and_options(files, tmp_path, monkeypatch):
+    from terrio.xarray import _writer
+
+    chunks = []
+    setitem = _writer._StoreTarget.__setitem__
+
+    def spy_setitem(self, key, item):
+        chunks.append(key)
+        return setitem(self, key, item)
+
+    monkeypatch.setattr(_writer._StoreTarget, "__setitem__", spy_setitem)
+    da = txr.open_rasterio(files["rgb"], chunks={"x": 100, "y": 100})
+    delayed = da.terrio.to_raster(str(tmp_path / "later.tif"), compute=False)
+    delayed.compute()
+    assert len(chunks) == 3 * 4  # written chunk by chunk, not computed first
+    np.testing.assert_array_equal(txr.open_rasterio(str(tmp_path / "later.tif")).values, da.values)
+    opened = []
+    rio_open = _writer.rio_open
+
+    def spy_open(path, mode="r", **kwargs):
+        opened.append(kwargs)
+        return rio_open(path, mode, **kwargs)
+
+    monkeypatch.setattr(_writer, "rio_open", spy_open)
+    txr.open_rasterio(files["rgb"]).terrio.to_raster(str(tmp_path / "x.zarr"))
+    assert opened[-1]["driver"] == "Zarr"
+    assert "blockxsize" not in opened[-1] and "tiled" not in opened[-1]
