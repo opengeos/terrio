@@ -72,7 +72,14 @@ of GDAL: the long tail of formats stays reachable through an optional GDAL backe
 - Zarr 2 and 3, and GeoZarr conventions. Done: GeoZarr's `spatial:`, `proj:` and `multiscales`
   conventions read (multiscales levels as overviews, read by window) and written
   (`GEOREFERENCING_CONVENTION=SPATIAL_PROJ`, overviews laid out as GDAL lays them out), and CF grid
-  mappings written as rioxarray writes them. Still to do: remote Zarr stores, read in place.
+  mappings written as rioxarray writes them; remote stores (HTTP(S), S3, Google Cloud Storage,
+  Azure, and GDAL's `/vsicurl/`-style names) read in place, Zarr 2 and 3 with consolidated
+  metadata, the v3 sharding codec (shard indexes, then only the inner chunks needed), float16 and
+  the `scale_offset`/`cast_value` codecs, windows fetching only the chunks they touch in parallel,
+  GeoZarr multiscales as overviews; identical to GDAL's Zarr driver and xarray on EOPF Sentinel-2
+  (v2 and sharded GeoZarr v3), NOAA HRRR on S3, CMIP6 on GCS and Daymet on Azure
+  (`scripts/compare_remote_zarr.py`). Still to do: listing remote groups without consolidated
+  metadata, arrays of more than three dimensions.
 - KML/KMZ, GPX, GML, TopoJSON.
 - PMTiles and MBTiles archives. Done: raster tiles (PNG, JPEG, WebP) read as rasters with their
   zoom levels as overviews, and vector tiles (MVT) as layers, as GDAL's MBTiles, PMTiles and MVT
