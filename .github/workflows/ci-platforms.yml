@@ -62,7 +62,7 @@ jobs:
     needs: platforms
     if: needs.platforms.outputs.os != '[]'
     concurrency:
-      group: ci-platforms-check-${{ github.event.pull_request.number || github.ref }}
+      group: ci-platforms-check-${{ matrix.os }}-${{ github.event.pull_request.number || github.ref }}
       cancel-in-progress: true
     name: ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
@@ -84,7 +84,7 @@ jobs:
     needs: platforms
     if: needs.platforms.outputs.os != '[]'
     concurrency:
-      group: ci-platforms-python-${{ github.event.pull_request.number || github.ref }}
+      group: ci-platforms-python-${{ matrix.os }}-${{ github.event.pull_request.number || github.ref }}
       cancel-in-progress: true
     name: python (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
