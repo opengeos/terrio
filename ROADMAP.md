@@ -130,6 +130,38 @@ Still to do: EPT and other point cloud formats (PLY, E57), streaming reads and w
 larger than memory, waveform data packets, more PDAL filters (ground classification, outliers,
 thinning by voxel), and gridding with TIN or nearest-neighbour interpolation.
 
+## Bindings: Python and WebAssembly
+
+Python:
+
+- A rasterio-compatible API, `terrio.rio` (`import terrio.rio as rasterio`): datasets opened for
+  reading, writing and update with profiles, windowed and incremental writes, masks, `windows`,
+  `transform`, `features`, `warp`, `merge`, `mask`, `WarpedVRT` and `MemoryFile`, checked against
+  rasterio on the same scripts.
+- xarray integration like rioxarray: a `terrio` backend engine with lazy windowed reads (remote
+  COGs read tile by tile, dask chunks), and an accessor with rioxarray's methods (`reproject`,
+  `reproject_match`, `clip`, `clip_box`, `pad_box`, `to_raster`, `merge_arrays`).
+- Wheels with the GDAL backend as an optional extra, for the formats terrio doesn't read itself.
+- Streaming vector reads and writes, so layers larger than memory can be converted and filtered.
+- GeoPackage updates in place (appends without rewriting the file).
+- Windowed decoding of JPEG 2000 and JPEG XL, so Sentinel-2 bands are read by window as COGs are.
+- Wheels for more platforms (musl aarch64, Windows ARM64) and for Pyodide, to run in the browser.
+
+WebAssembly (the `terrio-js` npm package):
+
+- The operations: `warp` with all its options, `translate`, `rasterize`, `polygonize`, `dem`,
+  `calc`, `mosaic`, `proximity` and `sieve`, as the command line and Python offer them.
+- Remote data read lazily with HTTP range requests (`fetch`), as native builds do: COGs by window
+  and overview, PMTiles, COPC and FlatGeobuf by bounding box, GeoParquet by row group.
+- More formats in memory: Zarr and GeoZarr, netCDF and HDF5, point clouds (LAS, LAZ, COPC), and
+  writing LERC, JPEG XL and JPEG GeoTIFFs.
+- terrio's own FlatGeobuf reader in place of the format library's, which overflows on large files
+  in 32-bit WebAssembly.
+- Multithreaded decoding and writing with WebAssembly threads, where the page allows them.
+- A smaller download: optional formats split out or loaded on demand, and size-optimized builds.
+- Datasets larger than 4 GB, with the 64-bit memory proposal (memory64) where runtimes support
+  it.
+
 ## Later
 
 - CRS: datum shift grids (NTv2, GeoTIFF grids), vertical datums, time-dependent transformations
