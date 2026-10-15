@@ -1,9 +1,12 @@
 name: CI (macOS and Windows)
 
-# The Rust and Python jobs of ci.yml on macOS and Windows, which are slow and run on demand only:
-# by hand (Actions > CI (macOS and Windows) > Run workflow), or for a pull request with the label
-# ci:macos, ci:windows or ci:all (when the label is added, and on each push while it stays).
+# The Rust and Python jobs of ci.yml on macOS and Windows, which are slow: they run on every push
+# to main, and for pull requests on demand only, by hand (Actions > CI (macOS and Windows) > Run
+# workflow) or with the label ci:macos, ci:windows or ci:all (when the label is added, and on
+# each push while it stays).
 on:
+  push:
+    branches: [main]
   pull_request:
     types: [opened, synchronize, reopened, labeled]
   workflow_dispatch:
@@ -41,7 +44,9 @@ jobs:
             exit 0
           fi
           want() {
-            if [ "$EVENT" = workflow_dispatch ]; then
+            if [ "$EVENT" = push ]; then
+              true
+            elif [ "$EVENT" = workflow_dispatch ]; then
               [ "$CHOICE" = all ] || [ "$CHOICE" = "$1" ]
             else
               echo "$LABELS" | jq -e --arg l "ci:$1" 'index($l) != null or index("ci:all") != null' > /dev/null

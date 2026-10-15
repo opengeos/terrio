@@ -12,8 +12,8 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # Linux only: macOS and Windows run on demand (ci-platforms.yml: by hand, or for pull requests
-  # labelled ci:macos, ci:windows or ci:all).
+  # Linux only: macOS and Windows run in ci-platforms.yml, on every push to main and, for pull
+  # requests, by hand or with the label ci:macos, ci:windows or ci:all.
   check:
     name: ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
