@@ -699,10 +699,15 @@ def suite_gpkg(ctx):
         "GeoPackage updates and spatial filters",
         "`ogr2ogr`, GDAL's `validate_gpkg.py`",
         "`--append`, `--overwrite` and added layers compared with `ogr2ogr` (features, extents, "
-        "counts, sequences, R-trees, `integrity_check`, the GeoPackage validator, rasters kept), and "
-        "`--spat` through the R-tree compared with `ogr2ogr -spat`.",
+        "counts, sequences, R-trees, `integrity_check`, the GeoPackage validator, rasters kept, the "
+        "file changed in place), `--spat` through the R-tree compared with `ogr2ogr -spat`, appends "
+        "to a file of 200,000 points compared with `ogr2ogr -append`, and terrio killed while it "
+        "commits an append (SQLite must then find the file intact, with all or none of the new "
+        "features).",
     )
-    _code, out, err = run([sys.executable, str(SCRIPTS / "compare_gpkg_with_gdal.py"), ctx.data, "--terrio", ctx.terrio, "--points", "0"])
+    _code, out, err = run(
+        [sys.executable, str(SCRIPTS / "compare_gpkg_with_gdal.py"), ctx.data, "--terrio", ctx.terrio, "--points", "200000"]
+    )
     current = None
     for line in out.splitlines():
         m = re.match(r"^(ok |BAD) (.+)$", line)

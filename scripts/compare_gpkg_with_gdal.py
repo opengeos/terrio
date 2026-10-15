@@ -503,10 +503,11 @@ def append_benchmark(terrio: str, work: Path, n: int) -> tuple[list[str], int]:
         ok = ca[0] == cb[0] == n + m and ca[1:] == ("ok", "ok") and not problems
         failed += not ok
         lines.append(
-            f"append {m:>9} points to {n}: terrio {times['terrio']:7.3f} s, "
+            f"{'ok ' if ok else 'BAD'} in-place append of {m} points to {n}: "
+            f"terrio {times['terrio']:7.3f} s, "
             f"ogr2ogr {times['ogr2ogr']:7.3f} s; {ca[0]} vs {cb[0]} features, "
             f"integrity {ca[1]}, rtreecheck {ca[2]}, validate_gpkg "
-            f"{'ok' if not problems else problems[:2]}{'' if ok else '  BAD'}"
+            f"{'ok' if not problems else problems[:2]}"
         )
     # Crash safety: terrio killed during the commit.
     src = points_csv(work / "append_crash.csv", 200_000, 7)
@@ -536,9 +537,9 @@ def append_benchmark(terrio: str, work: Path, n: int) -> tuple[list[str], int]:
         ok = got[0] in (n, n + 200_000) and got[1:] == ("ok", "ok") and not left
         failed += not ok
         lines.append(
-            f"killed {delay * 1000:4.0f} ms into the commit ({'hot journal' if hot else 'empty journal'}"
+            f"{'ok ' if ok else 'BAD'} crash: terrio killed {delay * 1000:.0f} ms into the commit ({'hot journal' if hot else 'empty journal'}"
             f"{'' if seen else ', finished first'}): SQLite finds {got[0]} features, "
-            f"integrity {got[1]}, rtreecheck {got[2]}{'' if ok else '  BAD'}"
+            f"integrity {got[1]}, rtreecheck {got[2]}"
         )
     return lines, failed
 
@@ -647,7 +648,7 @@ def main() -> int:
         lines, failed = append_benchmark(args.terrio, work, args.points)
         bad += failed
         for line in lines:
-            print("  " + line)
+            print(line)
     if not args.work:
         shutil.rmtree(work, ignore_errors=True)
     return 1 if bad else 0
