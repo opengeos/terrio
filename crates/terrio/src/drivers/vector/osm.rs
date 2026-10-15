@@ -1377,7 +1377,7 @@ mod tests {
         let nodes = pts.iter().fold(Msg::default(), |m, &(id, lat, lon)| m.bytes(1, &node(id, lat, lon)));
         let way = |id: u64, refs: &[i64], k: u64, v: u64| {
             let mut prev = 0;
-            let deltas: Vec<u64> = refs.iter().map(|&r| (zz(r - std::mem::replace(&mut prev, r)))).collect();
+            let deltas: Vec<u64> = refs.iter().map(|&r| zz(r - std::mem::replace(&mut prev, r))).collect();
             Msg::default().int(1, id).packed(2, &[k]).packed(3, &[v]).packed(8, &deltas).0
         };
         let ways = Msg::default().bytes(3, &way(10, &[1, 2, 3, 4, 1], 1, 2)).bytes(3, &way(11, &[1, 5, 3], 3, 4));
