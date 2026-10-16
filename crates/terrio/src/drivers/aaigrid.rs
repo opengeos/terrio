@@ -100,7 +100,7 @@ pub(crate) fn read(path: &Path) -> Result<RasterDataset> {
     };
     let crs = common::read_prj(path).unwrap_or_default();
     let raster = common::make_raster(cols, rows, 1, data, gt, crs, nodata)?;
-    Ok(RasterDataset { raster, driver: RasterDriver::AAIGrid, has_nodata: nodata.is_some(), affine: None })
+    Ok(RasterDataset::with_driver(raster, RasterDriver::AAIGrid, nodata.is_some()))
 }
 
 /// A nodata value as GDAL stores it for a Float32 grid.

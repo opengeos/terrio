@@ -15,6 +15,7 @@
 //! grids and swaths, COSMO-SkyMed, ODIM, GCPs from latitude and longitude arrays) is not read.
 
 use super::common::{self, Interleave, Layout};
+use super::hdfeos::{Eos, FieldKind};
 use crate::formats::RasterDriver;
 use crate::{Error, RasterDataset, Result};
 use hdf5_reader::messages::datatype::{Datatype, StringSize, VarLenKind};
@@ -98,6 +99,45 @@ struct NumType {
     /// A 16-bit float, read as Float32.
     half: bool,
     little_endian: bool,
+    /// For a complex type (a compound of a real and an imaginary member of the same type, as GDAL
+    /// reads it): the byte offsets of the imaginary part, and the size of an element.
+    complex: Option<(usize, usize)>,
+}
+
+impl NumType {
+    /// The size in bytes of one element (or of one part of a complex element) in the file.
+    fn part_size(self) -> usize {
+        if self.half { 2 } else { self.data_type.size_bytes() }
+    }
+
+    /// The size in bytes of one element in the file.
+    fn element_size(self) -> usize {
+        self.complex.map_or(self.part_size(), |(_, size)| size)
+    }
+}
+
+/// The type of a dataset's pixels: a numeric type, or a complex type as GDAL's `GetDataType()`
+/// recognizes compounds (two members of the same type, named `r...` and `i...`: `CInt16`,
+/// `CInt32`, `CFloat32` from 16- and 32-bit floats, `CFloat64`).
+fn pixel_type(dt: &Datatype) -> Option<NumType> {
+    let Datatype::Compound { size, fields } = dt else { return num_type(dt) };
+    let [re, im] = fields.as_slice() else { return None };
+    let first = |n: &str, c: char| n.chars().next().is_some_and(|f| f.eq_ignore_ascii_case(&c));
+    if !first(&re.name, 'r') || !first(&im.name, 'i') || re.byte_offset != 0 {
+        return None;
+    }
+    let t = num_type(&re.datatype)?;
+    let part = t.part_size();
+    // `hdf5-reader` misreads the members after the first of version 1 and 2 compound types (it
+    // pads their names from the start of the message, not of the name): a second member at
+    // offset 0 is such a misreading, of the second half of the element.
+    let misread = im.byte_offset == 0 && *size as usize == 2 * part;
+    if im.datatype != re.datatype && !misread {
+        return None;
+    }
+    let im_offset = if misread { part } else { im.byte_offset as usize };
+    let supported = t.half || matches!(t.data_type, DataType::I16 | DataType::I32 | DataType::F32 | DataType::F64);
+    supported.then_some(NumType { complex: Some((im_offset, *size as usize)), ..t })
 }
 
 fn num_type(dt: &Datatype) -> Option<NumType> {
@@ -121,11 +161,16 @@ fn num_type(dt: &Datatype) -> Option<NumType> {
         Datatype::FloatingPoint { size: 8, byte_order } => (DataType::F64, false, *byte_order),
         _ => return None,
     };
-    Some(NumType { data_type, half, little_endian: order == ByteOrder::LittleEndian })
+    Some(NumType { data_type, half, little_endian: order == ByteOrder::LittleEndian, complex: None })
 }
 
 /// GDAL's description of a type (`HDF5Dataset::GetDataTypeName()`, with C's `char` signed).
-fn type_description(t: NumType) -> &'static str {
+fn type_description(t: NumType) -> String {
+    let base = base_type_description(t);
+    if t.complex.is_some() { format!("complex, {base}") } else { base.to_string() }
+}
+
+fn base_type_description(t: NumType) -> &'static str {
     if t.half {
         return "16-bit floating-point";
     }
@@ -274,6 +319,8 @@ struct Walk {
     container_metadata: Vec<(String, String)>,
     /// The metadata of a subdataset: every group's attributes.
     group_metadata: Vec<(String, String)>,
+    /// The addresses of the groups walked.
+    visited: std::collections::HashSet<u64>,
 }
 
 /// Sets a metadata item, replacing an earlier one with the same key in place (`CSLSetNameValue`).
@@ -311,7 +358,9 @@ fn gdal_child_path(parent: &str, name: &str) -> String {
 }
 
 fn walk_group(g: &hdf5_reader::group::Group, path: &str, gdal_path: &str, w: &mut Walk, depth: usize) -> Result<()> {
-    if depth > 64 {
+    // Hard links can make groups their own descendants: each group is walked once, as GDAL skips
+    // the groups it has seen.
+    if depth > 64 || !w.visited.insert(g.address()) {
         return Ok(());
     }
     let leaf = |n: &str| n.rsplit('/').next().unwrap_or(n).to_string();
@@ -330,7 +379,7 @@ fn walk_group(g: &hdf5_reader::group::Group, path: &str, gdal_path: &str, w: &mu
         match child {
             Child::Group(c) => walk_group(&c, &child_path, &child_gdal, w, depth + 1)?,
             Child::Dataset(d) => {
-                let t = num_type(d.dtype());
+                let t = pixel_type(d.dtype());
                 if t.is_some() {
                     add_attributes(&mut w.container_metadata, &key_prefix(&child_gdal), &d.attributes());
                 }
@@ -352,9 +401,22 @@ fn walk(f: &Hdf5File) -> Result<Walk> {
     Ok(w)
 }
 
+/// The HDF-EOS5 structure of a file (`HDFEOS INFORMATION/StructMetadata.0`), when it has one
+/// that describes grids or swaths.
+fn eos_structure(f: &Hdf5File) -> Option<Eos> {
+    let d = f.dataset("/HDFEOS INFORMATION/StructMetadata.0").ok()?;
+    if !matches!(d.dtype(), Datatype::String { size: StringSize::Fixed(_), .. }) || !d.shape().is_empty() {
+        return None;
+    }
+    let raw = d.read_raw_bytes().ok()?;
+    let text = raw.split(|b| *b == 0).next().unwrap_or_default();
+    Eos::parse(&String::from_utf8_lossy(text))
+}
+
 /// The subdatasets of a file, `(name, description)`, as GDAL lists them: the datasets of two or
-/// three dimensions of a numeric type.
-fn subdatasets(w: &Walk, file: &str) -> Vec<(String, String)> {
+/// three dimensions of a numeric (or complex) type, swath fields described by their dimensions'
+/// names.
+fn subdatasets(w: &Walk, file: &str, eos: Option<&Eos>) -> Vec<(String, String)> {
     w.datasets
         .iter()
         .filter_map(|e| {
@@ -362,8 +424,11 @@ fn subdatasets(w: &Walk, file: &str) -> Vec<(String, String)> {
             if !(2..=3).contains(&e.shape.len()) || e.shape.iter().any(|d| *d > i32::MAX as u64) {
                 return None;
             }
-            let dims: Vec<String> = e.shape.iter().map(u64::to_string).collect();
-            Some((format!("HDF5:\"{file}\":{}", e.gdal_path), format!("[{}] {} ({})", dims.join("x"), e.gdal_path, type_description(t))))
+            let dims = eos
+                .and_then(|eos| eos.field(&e.gdal_path, e.shape.len()))
+                .and_then(|f| f.swath_description())
+                .unwrap_or_else(|| e.shape.iter().map(u64::to_string).collect::<Vec<_>>().join("x"));
+            Some((format!("HDF5:\"{file}\":{}", e.gdal_path), format!("[{dims}] {} ({})", e.gdal_path, type_description(t))))
         })
         .collect()
 }
@@ -401,7 +466,8 @@ pub(crate) fn read_bytes(bytes: Vec<u8>, name: &str, subdataset: Option<&str>) -
 
 fn read_file(f: &Hdf5File, path: &Path, name: &str, subdataset: Option<&str>) -> Result<RasterDataset> {
     let w = walk(f)?;
-    let subs = subdatasets(&w, name);
+    let eos = eos_structure(f);
+    let subs = subdatasets(&w, name, eos.as_ref());
     let (entry, metadata) = match subdataset {
         Some(s) => {
             let e = w
@@ -427,49 +493,161 @@ fn read_file(f: &Hdf5File, path: &Path, name: &str, subdataset: Option<&str>) ->
             }
         }
     };
-    read_dataset(f, path, &w, entry, metadata)
+    read_dataset(f, path, name, &w, eos.as_ref(), entry, metadata)
 }
 
-fn read_dataset(f: &Hdf5File, path: &Path, w: &Walk, e: &Entry, metadata: Option<Vec<(String, String)>>) -> Result<RasterDataset> {
-    let t = e.num_type.ok_or_else(|| Error::Unsupported(format!("{}: {}: unsupported HDF5 data type", path.display(), e.path)))?;
-    let ds = f.dataset(&e.path).map_err(|e| err(path, e))?;
-    let shape = &e.shape;
+/// Reorders the elements of an array into bands, rows and columns: `x`, `y` and `other` are the
+/// dimensions of the columns, rows and bands (rows of 1 without `y`, one band without `other`).
+fn to_bsq(raw: &[u8], shape: &[usize], element: usize, x: usize, y: Option<usize>, other: Option<usize>) -> Vec<u8> {
     let nd = shape.len();
-    if nd == 0 {
-        return Err(err(path, format!("{} is a scalar", e.path)));
+    let mut strides = vec![1usize; nd];
+    for d in (0..nd.saturating_sub(1)).rev() {
+        strides[d] = strides[d + 1] * shape[d + 1];
     }
-    let cols = shape[nd - 1] as usize;
-    let rows = if nd >= 2 { shape[nd - 2] as usize } else { 1 };
-    let bands = if nd == 3 { shape[0] as usize } else { 1 };
-    let raw = ds.read_raw_bytes().map_err(|e| err(path, e))?;
-    let size = if t.half { 2 } else { t.data_type.size_bytes() };
-    let n = cols * rows * bands;
-    let raw = raw.get(..n * size).ok_or_else(|| err(path, "dataset shorter than its shape"))?;
-    let data = if t.half {
+    let (cols, rows, bands) = (shape[x], y.map_or(1, |y| shape[y]), other.map_or(1, |o| shape[o]));
+    let mut out = Vec::with_capacity(cols * rows * bands * element);
+    for b in 0..bands {
+        for r in 0..rows {
+            let base = other.map_or(0, |o| b * strides[o]) + y.map_or(0, |y| r * strides[y]);
+            if strides[x] == 1 {
+                out.extend_from_slice(&raw[base * element..(base + cols) * element]);
+            } else {
+                for c in 0..cols {
+                    let i = (base + c * strides[x]) * element;
+                    out.extend_from_slice(&raw[i..i + element]);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Decodes elements of a numeric type laid out band by band.
+fn decode_parts(raw: &[u8], t: NumType, cols: usize, rows: usize, bands: usize) -> Result<RasterData> {
+    if t.half {
         let v: Vec<f32> = raw
             .as_chunks::<2>()
             .0
             .iter()
             .map(|c| half_to_f32(if t.little_endian { u16::from_le_bytes(*c) } else { u16::from_be_bytes(*c) }))
             .collect();
-        RasterData::F32(v)
+        return Ok(RasterData::F32(v));
+    }
+    let layout = Layout {
+        cols,
+        rows,
+        bands,
+        data_type: t.data_type,
+        little_endian: t.little_endian,
+        interleave: Interleave::Bsq,
+        offset: 0,
+        bottom_up: false,
+    };
+    common::decode(raw, &layout)
+}
+
+fn read_dataset(
+    f: &Hdf5File,
+    path: &Path,
+    name: &str,
+    w: &Walk,
+    eos: Option<&Eos>,
+    e: &Entry,
+    metadata: Option<Vec<(String, String)>>,
+) -> Result<RasterDataset> {
+    let t = e.num_type.ok_or_else(|| Error::Unsupported(format!("{}: {}: unsupported HDF5 data type", path.display(), e.path)))?;
+    let ds = f.dataset(&e.path).map_err(|e| err(path, e))?;
+    let shape: Vec<usize> = e.shape.iter().map(|d| *d as usize).collect();
+    let nd = shape.len();
+    if nd == 0 {
+        return Err(err(path, format!("{} is a scalar", e.path)));
+    }
+    // GDAL's layout: the last two dimensions are the rows and columns, the first of three the
+    // bands; HDF-EOS5 fields say which of their dimensions are which.
+    let field = eos.and_then(|eos| eos.field(&e.gdal_path, nd));
+    let (mut x, mut y, mut other) = (nd - 1, (nd >= 2).then(|| nd - 2), (nd == 3).then_some(0));
+    let mut grid = None;
+    let mut swath_geolocation = None;
+    match field.map(|f| (f, &f.kind)) {
+        Some((f, FieldKind::Grid(g))) => {
+            if let Some(fx) = f.x {
+                x = fx;
+            }
+            if f.y.is_some() {
+                y = f.y;
+            }
+            if f.other.is_some() {
+                other = f.other;
+            }
+            grid = Some(g);
+        }
+        Some((f, FieldKind::Swath(geolocation))) if f.x.is_some() && f.y.is_some() => {
+            x = f.x.unwrap_or(x);
+            y = f.y;
+            other = f.other;
+            swath_geolocation = geolocation.as_ref();
+        }
+        _ => {}
+    }
+    // COSMO-SkyMed single-look complex products (SCS): rows, columns, then the I and Q bands.
+    let csk = csk_product(w).filter(|_| !e.gdal_path.contains("QLK") && !name.contains("QLK"));
+    if field.is_none() && nd == 3 && csk.as_deref().is_some_and(|p| starts_with_ci(p, "SCS")) {
+        (x, y, other) = (1, Some(0), Some(2));
+    }
+    let (cols, rows, bands) = (shape[x], y.map_or(1, |y| shape[y]), other.map_or(1, |o| shape[o]));
+    let raw = ds.read_raw_bytes().map_err(|e| err(path, e))?;
+    let element = t.element_size();
+    let n = cols * rows * bands;
+    // The whole dataset: a layout other than GDAL's is gathered with the strides of its shape.
+    let whole = raw.get(..shape.iter().product::<usize>() * element).ok_or_else(|| err(path, "dataset shorter than its shape"))?;
+    let standard = x == nd - 1 && y == nd.checked_sub(2) && (other.is_none() || other == Some(0));
+    let ordered = if standard {
+        std::borrow::Cow::Borrowed(&whole[..n * element])
     } else {
-        let layout = Layout {
-            cols,
-            rows,
-            bands,
-            data_type: t.data_type,
-            little_endian: t.little_endian,
-            interleave: Interleave::Bsq,
-            offset: 0,
-            bottom_up: false,
-        };
-        common::decode(raw, &layout)?
+        std::borrow::Cow::Owned(to_bsq(whole, &shape, element, x, y, other))
+    };
+    let (data, raster_bands) = match t.complex {
+        // Complex elements: each band becomes its real parts then its imaginary parts.
+        Some((im, size)) => {
+            let part = t.part_size();
+            let plane = cols * rows;
+            let mut parts = Vec::with_capacity(n * 2 * part);
+            for b in 0..bands {
+                for offset in [0, im] {
+                    for i in 0..plane {
+                        let at = (b * plane + i) * size + offset;
+                        parts.extend_from_slice(&ordered[at..at + part]);
+                    }
+                }
+            }
+            (decode_parts(&parts, t, cols, rows, bands * 2)?, bands * 2)
+        }
+        None => (decode_parts(&ordered, t, cols, rows, bands)?, bands),
     };
     let attrs = ds.attributes();
-    let nodata = attr_f64(&attrs, "_FillValue");
-    let (gt, crs) = georeferencing(f, w, e, &attrs, nd);
-    let mut raster = common::make_raster(cols, rows, bands, data, gt.unwrap_or(common::NO_GEOTRANSFORM), crs.unwrap_or_default(), nodata)?;
+    let nodata = if t.complex.is_some() { None } else { attr_f64(&attrs, "_FillValue") };
+    let (mut gt, mut crs) = (None, None);
+    if let Some(g) = grid {
+        gt = g.geo_transform();
+        crs = g.crs();
+    }
+    if grid.is_none() && swath_geolocation.is_none() {
+        (gt, crs) = match &csk {
+            Some(level) => csk_georeferencing(f, w, &attrs, level),
+            None => georeferencing(f, w, e, &attrs, nd),
+        };
+        if csk.is_none()
+            && gt.is_none()
+            && crs.is_none()
+            && rows >= 100
+            && cols >= 30
+            && !w.datasets.iter().any(|d| d.path.ends_with("/Latitude"))
+        {
+            (gt, crs) = odim_georeferencing(w, cols, rows);
+        }
+    }
+    let mut raster =
+        common::make_raster(cols, rows, raster_bands, data, gt.unwrap_or(common::NO_GEOTRANSFORM), crs.unwrap_or_default(), nodata)?;
     raster.metadata = match metadata {
         Some(md) => md,
         None => {
@@ -479,7 +657,123 @@ fn read_dataset(f: &Hdf5File, path: &Path, w: &Walk, e: &Entry, metadata: Option
             md
         }
     };
-    Ok(RasterDataset { raster, driver: RasterDriver::HDF5, has_nodata: nodata.is_some(), affine: None })
+    let mut out = RasterDataset::with_driver(raster, RasterDriver::HDF5, nodata.is_some());
+    out.complex = t.complex.is_some();
+    out.geolocation = swath_geolocation.map(|g| crate::Geolocation {
+        srs: crate::drivers::common::WGS84_LAT_LONG_WKT.to_string(),
+        x_dataset: format!("HDF5:\"{name}\":{}", g.longitude),
+        x_band: 1,
+        y_dataset: format!("HDF5:\"{name}\":{}", g.latitude),
+        y_band: 1,
+        pixel_offset: g.pixel_offset as f64,
+        pixel_step: g.pixel_step as f64,
+        line_offset: g.line_offset as f64,
+        line_step: g.line_step as f64,
+        pixel_center: true,
+    });
+    Ok(out)
+}
+
+/// Whether `s` starts with `prefix`, ignoring case.
+fn starts_with_ci(s: &str, prefix: &str) -> bool {
+    s.get(..prefix.len()).is_some_and(|p| p.eq_ignore_ascii_case(prefix))
+}
+
+/// A metadata item of the file's groups (root attributes such as `Mission_ID`).
+fn group_item<'a>(w: &'a Walk, key: &str) -> Option<&'a str> {
+    w.group_metadata.iter().find(|(k, _)| k.eq_ignore_ascii_case(key)).map(|(_, v)| v.as_str())
+}
+
+/// The product type (`SCS_B`, `DGM_B`, `GEC_B`...) of a COSMO-SkyMed, KOMPSAT-5 or COSMO-SkyMed
+/// Second Generation file, as GDAL identifies them by their `Mission ID`.
+fn csk_product(w: &Walk) -> Option<String> {
+    let mission = group_item(w, "Mission_ID")?;
+    ["CSK", "KMPS", "CSG"]
+        .iter()
+        .any(|m| mission.eq_ignore_ascii_case(m))
+        .then(|| group_item(w, "Product_Type").unwrap_or_default().to_string())
+}
+
+/// The values of a numeric attribute, as doubles.
+fn attr_f64s(attrs: &[Attribute], name: &str) -> Option<Vec<f64>> {
+    let a = attrs.iter().find(|a| a.name == name)?;
+    let t = num_type(&a.datatype)?;
+    a.raw_data.chunks_exact(t.part_size()).map(|c| value_f64(c, t)).collect()
+}
+
+/// COSMO-SkyMed georeferencing, as GDAL's `CreateProjections()` reads it: for geocoded products
+/// (GEC, GTC) the geotransform from the image's `Top Left East-North`, `Line Spacing` and
+/// `Column Spacing`, and the UTM or UPS projection of the root's `Map Projection` attributes;
+/// WGS 84 for the others (whose corners GDAL gives as GCPs, which terrio does not model).
+fn csk_georeferencing(f: &Hdf5File, w: &Walk, attrs: &[Attribute], level: &str) -> (Option<[f64; 6]>, Option<wbraster::CrsInfo>) {
+    let wgs84 = wbraster::CrsInfo::from_epsg(4326);
+    if !(starts_with_ci(level, "GEC") || starts_with_ci(level, "GTC")) {
+        return (None, Some(wgs84));
+    }
+    let first = |name: &str| attr_f64s(attrs, name).filter(|v| !v.is_empty());
+    let gt = match (first("Top Left East-North"), first("Line Spacing"), first("Column Spacing")) {
+        (Some(ul), Some(dx), Some(dy)) if ul.len() >= 2 => Some([ul[0], dx[0], 0.0, ul[1], 0.0, -dy[0]]),
+        _ => None,
+    };
+    let root = f.root_group().ok().and_then(|g| g.attributes().ok()).unwrap_or_default();
+    let get = |name: &str| attr_f64s(&root, name).filter(|v| !v.is_empty());
+    let crs = match (
+        get("Map Projection False East-North"),
+        get("Map Projection Scale Factor"),
+        get("Map Projection Centre"),
+        group_item(w, "Projection_ID"),
+    ) {
+        (Some(fe), Some(k), Some(c), Some(id)) if fe.len() >= 2 && c.len() >= 2 => {
+            let (x0, y0) = (fe[0], fe[1]);
+            // A UTM zone on WGS 84 is identified as its EPSG code, as GDAL's `AutoIdentifyEPSG()`.
+            let zone = ((c[1] + 183.0) / 6.0).round();
+            let utm = c[0] == 0.0
+                && k[0] == 0.9996
+                && x0 == 500_000.0
+                && (y0 == 0.0 || y0 == 10_000_000.0)
+                && (1.0..=60.0).contains(&zone)
+                && (zone * 6.0 - 183.0 - c[1]).abs() < 1e-9;
+            if id.eq_ignore_ascii_case("UTM") && utm {
+                return (gt, Some(wbraster::CrsInfo::from_epsg(if y0 == 0.0 { 32600 } else { 32700 } + zone as u32)));
+            }
+            let proj = if id.eq_ignore_ascii_case("UTM") {
+                Some(format!("+proj=tmerc +lat_0={} +lon_0={} +k={} +x_0={x0} +y_0={y0} +datum=WGS84 +units=m +no_defs", c[0], c[1], k[0]))
+            } else if id.eq_ignore_ascii_case("UPS") {
+                let pole = if c[0] < 0.0 { -90.0 } else { 90.0 };
+                Some(format!("+proj=stere +lat_0={pole} +lon_0={} +k={} +x_0={x0} +y_0={y0} +datum=WGS84 +units=m +no_defs", c[1], k[0]))
+            } else {
+                None
+            };
+            match proj {
+                Some(p) => crate::crs::SpatialRef::from_proj4(&p).ok().map(|s| s.to_crs_info()),
+                None => Some(wgs84),
+            }
+        }
+        // Malformed: GDAL clears the CRS.
+        _ => None,
+    };
+    (gt, crs)
+}
+
+/// The georeferencing of an ODIM HDF5 radar composite (`where` group): its PROJ definition, and
+/// the geotransform of its lower left and upper right corners (longitudes and latitudes),
+/// projected, as GDAL's `CreateODIMH5Projection()`.
+fn odim_georeferencing(w: &Walk, cols: usize, rows: usize) -> (Option<[f64; 6]>, Option<wbraster::CrsInfo>) {
+    let get = |k: &str| group_item(w, k);
+    let num = |k: &str| get(k).and_then(|v| v.trim().parse::<f64>().ok());
+    let (Some(projdef), Some(ll_lon), Some(ll_lat), Some(ur_lon), Some(ur_lat)) =
+        (get("where_projdef"), num("where_LL_lon"), num("where_LL_lat"), num("where_UR_lon"), num("where_UR_lat"))
+    else {
+        return (None, None);
+    };
+    let Ok(srs) = crate::crs::SpatialRef::from_proj4(projdef.trim()) else { return (None, None) };
+    let Ok(wgs84) = crate::crs::SpatialRef::from_epsg(4326) else { return (None, None) };
+    let Ok(t) = crate::crs::Transformer::new(&wgs84, &srs) else { return (None, None) };
+    let (Ok((llx, lly)), Ok((urx, ury))) = (t.transform(ll_lon, ll_lat), t.transform(ur_lon, ur_lat)) else {
+        return (None, Some(srs.to_crs_info()));
+    };
+    let (dx, dy) = ((urx - llx) / cols as f64, (ury - lly) / rows as f64);
+    (Some([llx, dx, 0.0, ury, 0.0, -dy]), Some(srs.to_crs_info()))
 }
 
 /// GDAL's generic georeferencing of a two-dimensional dataset (`CreateProjections()`): the CRS of
@@ -561,6 +855,50 @@ mod tests {
         assert_eq!(key_prefix("/"), "");
     }
 
+    /// An ODIM HDF5 radar composite (DWD's `composite_hx`, at a tenth of its resolution): the
+    /// corners of `where` projected with its PROJ definition, as GDAL computes the geotransform
+    /// (GDAL 3.12 reads `[-124.99999993981328, 250.00000000001472, 0, 125.00000000139698, 0,
+    /// -249.99999999991724]` for the full 4400 x 4800 composite).
+    #[test]
+    fn reads_odim_georeferencing() {
+        use super::super::hdf5_write::{Attr, Dataset, File, H5Type, Storage};
+        let num = |name: &str, v: f64| Attr::numbers(name, H5Type::Float { size: 8 }, 1, v.to_le_bytes().to_vec());
+        let projdef = "+proj=stere +lat_ts=60 +lat_0=90 +lon_0=10 +x_0=543571.83521776402 +y_0=3622213.8619310022 +units=m +a=6378137 +b=6356752.3142451802 +no_defs";
+        let (cols, rows) = (440usize, 480usize);
+        let f = File {
+            attrs: vec![],
+            group_attrs: vec![(
+                "where".into(),
+                vec![
+                    Attr::text("projdef", projdef),
+                    num("LL_lat", 45.6964253773901),
+                    num("LL_lon", 3.56699463500789),
+                    num("UR_lat", 55.8454385632558),
+                    num("UR_lon", 18.7316164546675),
+                ],
+            )],
+            datasets: vec![Dataset {
+                name: "dataset1/data1/data".into(),
+                dtype: H5Type::Int { size: 1, signed: false },
+                shape: Some(vec![rows as u64, cols as u64]),
+                data: vec![7; cols * rows],
+                fill: vec![0],
+                storage: Storage::default(),
+                attrs: vec![],
+            }],
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("odim.h5");
+        std::fs::write(&p, super::super::hdf5_write::encode(&f)).unwrap();
+        let r = read(&p, "odim.h5", None).unwrap();
+        let gt = r.geo_transform();
+        let expected = [-124.99999993981328, 2500.0000000001472, 0.0, 125.00000000139698, 0.0, -2499.9999999991724];
+        for (a, b) in gt.iter().zip(expected) {
+            assert!((a - b).abs() < 1e-4, "{gt:?} != {expected:?}");
+        }
+        assert!(r.crs().proj4.unwrap_or_default().contains("+proj=stere"));
+    }
+
     /// A NISAR-like file (GDAL's `fake_NISAR_L2_epsg_code.h5`): its CRS from the grid mapping's
     /// `epsg_code`, its geotransform from the coordinates, as GDAL 3.13 reads them.
     #[test]
@@ -578,6 +916,7 @@ mod tests {
         };
         let f = File {
             attrs: vec![Attr::text("mission_name", "NISAR")],
+            group_attrs: Vec::new(),
             datasets: vec![
                 ds(
                     "test",

@@ -47,6 +47,7 @@ __all__ = [
     "read_points",
     "read_points_bytes",
     "convert_points",
+    "merge_points",
     "tiff_tags",
     "crs_info",
     "suggested_grid",
@@ -124,6 +125,8 @@ class Raster:
     def shape(self) -> tuple[int, int, int]: ...
     @property
     def dtype(self) -> str: ...
+    @property
+    def geolocation(self) -> list[tuple[str, str]] | None: ...
     @property
     def nodata(self) -> float | None: ...
     @property
@@ -314,6 +317,7 @@ class PointCloud:
         ply_encoding: str | None = None,
         ply_precision: int | None = None,
         dimensions: Sequence[str] | None = None,
+        ept_data_type: str | None = None,
     ) -> None: ...
     def to_bytes(self, format: str = "LAZ", point_format: int | None = None) -> bytes: ...
     def range(self, limits: str) -> PointCloud: ...
@@ -350,6 +354,91 @@ class PointCloud:
         ground_class: int = 2,
         other_class: int = 1,
         only_ground: bool = False,
+    ) -> PointCloud: ...
+    def pmf(
+        self,
+        *,
+        cell_size: float = 1.0,
+        exponential: bool = True,
+        initial_distance: float = 0.15,
+        max_distance: float = 2.5,
+        max_window_size: float = 33.0,
+        slope: float = 1.0,
+        ignore: str | None = None,
+        returns: Sequence[str] | None = None,
+        ground_class: int = 2,
+        other_class: int = 1,
+        only_ground: bool = False,
+    ) -> PointCloud: ...
+    def csf(
+        self,
+        *,
+        resolution: float = 1.0,
+        rigidness: int = 3,
+        step: float = 0.65,
+        threshold: float = 0.5,
+        hdiff: float = 0.3,
+        iterations: int = 500,
+        smooth: bool = True,
+        ignore: str | None = None,
+        returns: Sequence[str] | None = None,
+        ground_class: int = 2,
+        other_class: int = 1,
+        only_ground: bool = False,
+    ) -> PointCloud: ...
+    def elm(
+        self, *, cell: float = 10.0, threshold: float = 1.0, classification: int = 7
+    ) -> PointCloud: ...
+    def hag_nn(
+        self,
+        *,
+        count: int = 1,
+        max_distance: float = 0.0,
+        allow_extrapolation: bool = True,
+        ground_class: int = 2,
+    ) -> PointCloud: ...
+    def hag_delaunay(
+        self, *, count: int = 10, allow_extrapolation: bool = True, ground_class: int = 2
+    ) -> PointCloud: ...
+    def crop(
+        self,
+        *,
+        bounds: Sequence[str] | None = None,
+        polygons: Sequence[str] | None = None,
+        points: Sequence[Sequence[float]] | None = None,
+        distance: float = 0.0,
+        outside: bool = False,
+        a_srs: str | None = None,
+    ) -> PointCloud: ...
+    def decimation(
+        self, step: float = 1.0, *, offset: int = 0, limit: int | None = None
+    ) -> PointCloud: ...
+    def expression(self, expression: str) -> PointCloud: ...
+    def assign(
+        self,
+        *,
+        assignment: str | Sequence[str] | None = None,
+        condition: str | None = None,
+        value: str | Sequence[str] | None = None,
+    ) -> PointCloud: ...
+    def splitter(
+        self,
+        length: float = 1000.0,
+        *,
+        origin: tuple[float, float] | None = None,
+        buffer: float = 0.0,
+    ) -> list[PointCloud]: ...
+    def chipper(self, capacity: int = 5000) -> list[PointCloud]: ...
+    def normal(
+        self, *, knn: int = 8, viewpoint: _XYZ | None = None, always_up: bool = True
+    ) -> PointCloud: ...
+    def cluster(
+        self,
+        tolerance: float = 1.0,
+        *,
+        min_points: int = 1,
+        max_points: int | None = None,
+        is3d: bool = True,
     ) -> PointCloud: ...
     def grid(
         self,
@@ -786,7 +875,9 @@ def convert_points(
     chunk_points: int = 0,
     ply_encoding: str | None = None,
     ply_precision: int | None = None,
+    ept_data_type: str | None = None,
 ) -> None: ...
+def merge_points(clouds: Sequence[PointCloud]) -> PointCloud: ...
 def grid_points(
     path: str,
     resolution: float,

@@ -178,8 +178,9 @@ pub mod vfs;
 
 pub use cog::{LazyRaster, Window, WindowOptions, open_raster_lazy};
 pub use dataset::{
-    BandMetadata, Dataset, Gcp, RasterDataset, RasterWriteOptions, VectorDataset, VectorOpenOptions, VectorWriteOptions, geo_transform,
-    is_north_up, list_layers, open, open_raster, open_vector, read_gcps, write_raster, write_raster_dataset, write_vector,
+    BandMetadata, Dataset, Gcp, Geolocation, RasterDataset, RasterWriteOptions, VectorDataset, VectorOpenOptions, VectorWriteOptions,
+    geo_transform, is_north_up, list_layers, open, open_raster, open_vector, read_gcps, write_netcdf_groups, write_raster,
+    write_raster_dataset, write_vector,
 };
 pub use drivers::gtiff_write::GeoTiffWriter;
 pub use drivers::vector::csv::{CsvGeometry, CsvOptions};

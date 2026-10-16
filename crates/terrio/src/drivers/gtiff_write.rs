@@ -330,6 +330,9 @@ pub(crate) struct TiffOptions {
     pub rpc: Vec<f64>,
     /// The parameters of LERC and JPEG.
     pub codec: CodecParams,
+    /// The raster's bands are pairs of real and imaginary parts (a complex dataset): written as
+    /// complex samples (`SampleFormat` 5 or 6, GDAL's `CInt16`... `CFloat64`).
+    pub complex: bool,
 }
 
 impl Default for TiffOptions {
@@ -357,6 +360,7 @@ impl Default for TiffOptions {
             mask: None,
             rpc: Vec::new(),
             codec: CodecParams::default(),
+            complex: false,
         }
     }
 }
@@ -591,35 +595,51 @@ fn plan(raster: &Raster, opts: &TiffOptions) -> Result<Plan> {
             }
         }
     }
+    let parts = if opts.complex { 2 } else { 1 };
+    if opts.complex
+        && (!raster.bands.is_multiple_of(2) || !matches!(raster.data_type, DataType::I16 | DataType::I32 | DataType::F32 | DataType::F64))
+    {
+        return Err(Error::InvalidArgument("complex GeoTIFF samples need pairs of Int16, Int32, Float32 or Float64 bands".into()));
+    }
+    if opts.complex
+        && !matches!(
+            opts.compression,
+            Compression::None | Compression::Lzw | Compression::Deflate | Compression::PackBits | Compression::Zstd
+        )
+    {
+        return Err(Error::Unsupported("complex GeoTIFF samples are written uncompressed or with LZW, DEFLATE, PACKBITS or ZSTD".into()));
+    }
+    // TIFF samples per pixel: a complex sample holds two bands.
+    let samples = raster.bands / parts;
     let jpeg = opts.compression == Compression::Jpeg;
-    if jpeg && (raster.data_type != DataType::U8 || !matches!(raster.bands, 1 | 3) || opts.planar || !opts.color_table.is_empty()) {
+    if jpeg && (raster.data_type != DataType::U8 || !matches!(samples, 1 | 3) || opts.planar || !opts.color_table.is_empty()) {
         return Err(Error::Unsupported("JPEG is written for 1 or 3 Byte bands, pixel-interleaved".into()));
     }
     // Two or four interleaved bands would be gray and alpha or RGBA in JPEG XL, which GDAL reads
     // as extra channels.
-    if opts.compression == Compression::Jxl && !opts.planar && !matches!(raster.bands, 1 | 3) {
+    if opts.compression == Compression::Jxl && !opts.planar && !matches!(samples, 1 | 3) {
         return Err(Error::Unsupported("JPEG XL is written for 1 or 3 interleaved bands (others with INTERLEAVE=BAND)".into()));
     }
     let photometric = match opts.photometric {
-        Some(6) if jpeg && raster.bands == 3 => 6,
+        Some(6) if jpeg && samples == 3 => 6,
         Some(6) => return Err(Error::Unsupported("PHOTOMETRIC=YCBCR needs JPEG compression of 3 bands".into())),
         Some(p) => p,
-        None if raster.bands == 3 && raster.data_type == DataType::U8 => 2,
+        None if samples == 3 && raster.data_type == DataType::U8 => 2,
         None => 1,
     };
     let base_samples = if matches!(photometric, 2 | 6) { 3 } else { 1 };
-    if raster.bands < base_samples {
-        return Err(Error::InvalidArgument(format!("PHOTOMETRIC=RGB needs 3 bands or more, not {}", raster.bands)));
+    if samples < base_samples {
+        return Err(Error::InvalidArgument(format!("PHOTOMETRIC=RGB needs 3 bands or more, not {samples}")));
     }
     if photometric == 3 {
-        if raster.bands != 1 || !matches!(raster.data_type, DataType::U8 | DataType::U16) {
+        if samples != 1 || !matches!(raster.data_type, DataType::U8 | DataType::U16) {
             return Err(Error::InvalidArgument("a color table needs a single Byte or UInt16 band".into()));
         }
         if opts.color_table.is_empty() {
             return Err(Error::InvalidArgument("PHOTOMETRIC=PALETTE needs a color table".into()));
         }
     }
-    let mut extra = vec![0u16; raster.bands - base_samples];
+    let mut extra = vec![0u16; samples - base_samples];
     if opts.alpha {
         match extra.last_mut() {
             Some(last) => *last = 2,
@@ -627,12 +647,12 @@ fn plan(raster: &Raster, opts: &TiffOptions) -> Result<Plan> {
         }
     }
     // As GDAL, the predictor only applies to compressed files; 3 to floating-point samples.
-    let predictor = if opts.compression.takes_predictor() { opts.predictor } else { 1 };
+    let predictor = if opts.compression.takes_predictor() && !opts.complex { opts.predictor } else { 1 };
     if predictor == 3 && !matches!(raster.data_type, DataType::F32 | DataType::F64) {
         return Err(Error::InvalidArgument("PREDICTOR=3 is only supported for floating-point data".into()));
     }
     let layout =
-        Layout { tile, rows_per_strip: opts.rows_per_strip, planar: opts.planar && raster.bands > 1, photometric, extra, predictor };
+        Layout { tile, rows_per_strip: opts.rows_per_strip, planar: opts.planar && samples > 1, photometric, extra, predictor, parts };
     let mut geo = geo_tags(raster, opts.nodata, &opts.band_metadata)?;
     if !opts.georeferenced || !opts.gcps.is_empty() || opts.geo_transform.is_some_and(|gt| !crate::is_north_up(&gt)) {
         geo.retain(|(tag, _)| !matches!(tag, 33550 | 33922));
@@ -801,6 +821,8 @@ struct Layout {
     extra: Vec<u16>,
     /// The TIFF predictor.
     predictor: u16,
+    /// The bands per TIFF sample: 2 for complex samples (real and imaginary parts), else 1.
+    parts: usize,
 }
 
 /// One resolution level's pixels, band-major: the raster's own, or an overview's.
@@ -838,9 +860,11 @@ impl<'a> Level<'a> {
 
     /// Splits the level into compressed strips or tiles, with its structural tags.
     fn image(&self, t: DataType, compression: Compression, codec: &CodecParams, layout: &Layout) -> Result<Image> {
+        let parts = layout.parts;
+        // The size of a sample's part, and the TIFF samples per pixel.
         let size = t.size_bytes();
-        let spp = self.bands;
-        // Samples per chunk.
+        let spp = self.bands / parts;
+        // Samples per chunk (each of `parts` values).
         let chunk_spp = if layout.planar { 1 } else { spp };
         let planes = if layout.planar { spp } else { 1 };
         let (chunk_w, chunk_h, across, down, tiled) = match layout.tile {
@@ -849,7 +873,7 @@ impl<'a> Level<'a> {
                 (tw, th, self.cols.div_ceil(tw), self.rows.div_ceil(th), true)
             }
             None => {
-                let rows_per_strip = strip_rows(layout.rows_per_strip, self.rows, self.cols * chunk_spp * size, compression);
+                let rows_per_strip = strip_rows(layout.rows_per_strip, self.rows, self.cols * chunk_spp * parts * size, compression);
                 (self.cols, rows_per_strip, 1, self.rows.div_ceil(rows_per_strip), false)
             }
         };
@@ -860,16 +884,20 @@ impl<'a> Level<'a> {
             let (x0, y0) = ((j % across) * chunk_w, (j / across) * chunk_h);
             // Strips stop at the last row; tiles are padded to full size.
             let h = if tiled { chunk_h } else { chunk_h.min(self.rows - y0) };
+            // A complex sample's parts are interleaved like the bands of a pixel.
             let mut buf = if layout.planar {
-                with_data!(self.data.as_ref(), v => chunk_bytes(&v[plane * band_len..(plane + 1) * band_len], self.cols, self.rows, 1, x0, y0, chunk_w, h))
+                let plane_len = parts * band_len;
+                with_data!(self.data.as_ref(), v => chunk_bytes(&v[plane * plane_len..(plane + 1) * plane_len], self.cols, self.rows, parts, x0, y0, chunk_w, h))
             } else {
-                with_data!(self.data.as_ref(), v => chunk_bytes(v, self.cols, self.rows, spp, x0, y0, chunk_w, h))
+                with_data!(self.data.as_ref(), v => chunk_bytes(v, self.cols, self.rows, spp * parts, x0, y0, chunk_w, h))
             };
             apply_predictor(&mut buf, layout.predictor, chunk_w * chunk_spp, chunk_spp, size);
             compression.compress(buf, &ChunkInfo { w: chunk_w, h, spp: chunk_spp, t }, codec)
         });
         let chunks = chunks.into_iter().collect::<Result<Vec<_>>>()?;
         let (bits, format) = sample_format(t);
+        // Complex samples: twice the bits, `SampleFormat` 5 (integers) or 6 (floats).
+        let (bits, format) = if parts == 2 { (bits * 2, format + 3) } else { (bits, format) };
         let mut tags = vec![
             (256, Value::Longs(vec![self.cols as u32])),
             (257, Value::Longs(vec![self.rows as u32])),

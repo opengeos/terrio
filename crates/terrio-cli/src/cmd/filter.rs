@@ -1,6 +1,9 @@
 //! `terrio filter`: PDAL's point cloud filters.
 
-use terrio::pointcloud::filters::{self, DimRange, OutlierMethod, OutlierOptions, SampleOptions, SmrfOptions, VoxelMode};
+use terrio::pointcloud::filters::{
+    self, AssignOptions, ClusterOptions, CropBox, CropOptions, CsfOptions, DimRange, HagOptions, NormalOptions, OutlierMethod,
+    OutlierOptions, PmfOptions, SampleOptions, SmrfOptions, SplitterOptions, VoxelMode,
+};
 use terrio::pointcloud::{self, PointCloud, PointWriter, ReturnKind};
 
 #[derive(clap::Args)]
@@ -14,7 +17,7 @@ pub struct Args {
 struct Io {
     /// The point cloud (LAS, LAZ, COPC, EPT, PLY or E57; a path, URL or `s3://` object).
     input: String,
-    /// The output: LAS, LAZ, COPC, PLY or E57, by its extension.
+    /// The output: LAS, LAZ, COPC, PLY, E57 or EPT (`ept.json`), by its extension.
     output: String,
     #[command(flatten)]
     points: super::points::PointArgs,
@@ -133,6 +136,323 @@ enum Filter {
         #[arg(long, default_value_t = 1.0)]
         cell: f64,
     },
+    /// Classify ground points with the Progressive Morphological Filter (PDAL's filters.pmf): of
+    /// the returns classified, ground points become class 2 and others class 1.
+    Pmf {
+        #[command(flatten)]
+        io: Io,
+        /// The cell size.
+        #[arg(long = "cell-size", default_value_t = 1.0)]
+        cell: f64,
+        /// Grow the windows linearly rather than exponentially.
+        #[arg(long)]
+        linear: bool,
+        /// The initial height threshold.
+        #[arg(long = "initial-distance", default_value_t = 0.15)]
+        initial_distance: f64,
+        /// The largest height threshold.
+        #[arg(long = "max-distance", default_value_t = 2.5)]
+        max_distance: f64,
+        /// The largest window size.
+        #[arg(long = "max-window-size", default_value_t = 33.0)]
+        max_window: f64,
+        /// The slope.
+        #[arg(long, default_value_t = 1.0)]
+        slope: f64,
+        /// Leave alone the points in these ranges (PDAL's ignore), such as "Classification[7:7]".
+        #[arg(long, value_name = "RANGES")]
+        ignore: Option<String>,
+        /// The returns classified (comma-separated): first, last, intermediate, only.
+        #[arg(long = "pmf-returns", value_name = "RETURNS", value_delimiter = ',', default_value = "last,only")]
+        pmf_returns: Vec<String>,
+        /// The class of ground points.
+        #[arg(long = "ground-class", default_value_t = 2)]
+        ground_class: u8,
+        /// The class of other points.
+        #[arg(long = "other-class", default_value_t = 1)]
+        other_class: u8,
+        /// Change the class of ground points only.
+        #[arg(long = "only-ground")]
+        only_ground: bool,
+    },
+    /// Classify ground points with the Cloth Simulation Filter (PDAL's filters.csf): of the
+    /// returns classified, ground points become class 2 and others class 1.
+    Csf {
+        #[command(flatten)]
+        io: Io,
+        /// The cloth's resolution (PDAL's resolution).
+        #[arg(long = "cloth-resolution", default_value_t = 1.0)]
+        cloth_resolution: f64,
+        /// The cloth's rigidness (1 to 3).
+        #[arg(long, default_value_t = 3)]
+        rigidness: usize,
+        /// The time step.
+        #[arg(long, default_value_t = 0.65)]
+        step: f64,
+        /// The largest distance of ground points from the cloth.
+        #[arg(long, default_value_t = 0.5)]
+        threshold: f64,
+        /// The height difference threshold of slope handling.
+        #[arg(long, default_value_t = 0.3)]
+        hdiff: f64,
+        /// The most simulation steps.
+        #[arg(long, default_value_t = 500)]
+        iterations: usize,
+        /// No slope handling after the simulation.
+        #[arg(long = "no-smooth")]
+        no_smooth: bool,
+        /// Leave alone the points in these ranges (PDAL's ignore), such as "Classification[7:7]".
+        #[arg(long, value_name = "RANGES")]
+        ignore: Option<String>,
+        /// The returns classified (comma-separated): first, last, intermediate, only.
+        #[arg(long = "csf-returns", value_name = "RETURNS", value_delimiter = ',', default_value = "last,only")]
+        csf_returns: Vec<String>,
+        /// The class of ground points.
+        #[arg(long = "ground-class", default_value_t = 2)]
+        ground_class: u8,
+        /// The class of other points.
+        #[arg(long = "other-class", default_value_t = 1)]
+        other_class: u8,
+        /// Change the class of ground points only.
+        #[arg(long = "only-ground")]
+        only_ground: bool,
+    },
+    /// Classify low noise with the Extended Local Minimum (PDAL's filters.elm).
+    Elm {
+        #[command(flatten)]
+        io: Io,
+        /// The cell size.
+        #[arg(long, default_value_t = 10.0)]
+        cell: f64,
+        /// The elevation difference above which the lower point is noise.
+        #[arg(long, default_value_t = 1.0)]
+        threshold: f64,
+        /// The class of noise points (7: low point).
+        #[arg(long = "noise-class", value_name = "CLASS", default_value_t = 7)]
+        class: u8,
+    },
+    /// Compute heights above the nearest ground points, in HeightAboveGround (PDAL's
+    /// filters.hag_nn).
+    #[command(name = "hag_nn")]
+    HagNn {
+        #[command(flatten)]
+        io: Io,
+        #[command(flatten)]
+        hag: HagArgs,
+        /// The ground points used for each point.
+        #[arg(long, default_value_t = 1)]
+        count: usize,
+        /// Ground points farther than this are not used (0: no limit).
+        #[arg(long = "max-distance", default_value_t = 0.0)]
+        max_distance: f64,
+    },
+    /// Compute heights above a Delaunay triangulation of the nearest ground points, in
+    /// HeightAboveGround (PDAL's filters.hag_delaunay).
+    #[command(name = "hag_delaunay")]
+    HagDelaunay {
+        #[command(flatten)]
+        io: Io,
+        #[command(flatten)]
+        hag: HagArgs,
+        /// The ground points triangulated for each point.
+        #[arg(long, default_value_t = 10)]
+        count: usize,
+    },
+    /// Keep the points in boxes, polygons, circles or spheres (PDAL's filters.crop).
+    Crop {
+        #[command(flatten)]
+        io: Io,
+        /// A box, as PDAL writes them: "([xmin, xmax], [ymin, ymax])" or with "[zmin, zmax]".
+        #[arg(long = "crop-bounds", value_name = "BOUNDS")]
+        crop_bounds: Vec<String>,
+        /// A polygon or multipolygon, as WKT or GeoJSON.
+        #[arg(long)]
+        polygon: Vec<String>,
+        /// The centre of a circle (x,y) or sphere (x,y,z), with --distance.
+        #[arg(long, value_name = "X,Y[,Z]", allow_hyphen_values = true)]
+        point: Vec<String>,
+        /// The radius of the circles and spheres.
+        #[arg(long, default_value_t = 0.0)]
+        distance: f64,
+        /// Keep the points outside instead.
+        #[arg(long)]
+        outside: bool,
+        /// The CRS of the geometries, when it is not the points'.
+        #[arg(long = "geometry-srs", value_name = "SRS")]
+        geometry_srs: Option<String>,
+    },
+    /// Keep every n-th point (PDAL's filters.decimation).
+    Decimation {
+        #[command(flatten)]
+        io: Io,
+        /// The step (points to skip between those kept, plus one; a fraction is allowed).
+        #[arg(long, default_value_t = 1.0)]
+        step: f64,
+        /// The index of the first point considered (PDAL's offset).
+        #[arg(long, default_value_t = 0)]
+        start: usize,
+        /// The index past the last point considered (PDAL's limit).
+        #[arg(long)]
+        end: Option<usize>,
+    },
+    /// Keep the points for which an expression is true (PDAL's filters.expression), read and
+    /// written in chunks, such as "Classification == 2 && Z > 100".
+    Expression {
+        #[command(flatten)]
+        io: Io,
+        /// The expression.
+        #[arg(long)]
+        expression: String,
+    },
+    /// Assign values to dimensions (PDAL's filters.assign).
+    Assign {
+        #[command(flatten)]
+        io: Io,
+        /// A range and a value: "Classification[1:1]=2".
+        #[arg(long)]
+        assignment: Vec<String>,
+        /// Only change the points in this range, such as "ReturnNumber[1:1]".
+        #[arg(long)]
+        condition: Option<String>,
+        /// An expression: "Classification = 2 WHERE HeightAboveGround < 0.5".
+        #[arg(long)]
+        value: Vec<String>,
+    },
+    /// Merge point clouds into one (PDAL's filters.merge).
+    Merge {
+        /// The point clouds, then the output.
+        #[arg(num_args = 2.., required = true)]
+        paths: Vec<String>,
+        #[command(flatten)]
+        points: super::points::PointArgs,
+        #[command(flatten)]
+        write: super::points::PointWriteArgs,
+    },
+    /// Split points into squares (PDAL's filters.splitter): a file per square when the output's
+    /// file name has a '#' (replaced by 1, 2...), else all in one file, square after square.
+    Splitter {
+        #[command(flatten)]
+        io: Io,
+        /// The side of the squares.
+        #[arg(long, default_value_t = 1000.0)]
+        length: f64,
+        /// The squares' origin (by default, the first point).
+        #[arg(long, num_args = 2, value_names = ["X", "Y"], allow_negative_numbers = true)]
+        origin: Option<Vec<f64>>,
+        /// A buffer around each square whose points it takes too.
+        #[arg(long, default_value_t = 0.0)]
+        buffer: f64,
+    },
+    /// Split points into squarish chips of at most a number of points (PDAL's filters.chipper): a
+    /// file per chip when the output's file name has a '#', else all in one file.
+    Chipper {
+        #[command(flatten)]
+        io: Io,
+        /// The most points of a chip.
+        #[arg(long, default_value_t = 5000)]
+        capacity: usize,
+    },
+    /// Compute normals and curvature (PDAL's filters.normal): NormalX, NormalY, NormalZ and
+    /// Curvature.
+    Normal {
+        #[command(flatten)]
+        io: Io,
+        /// The neighbours of each point.
+        #[arg(long, default_value_t = 8)]
+        knn: usize,
+        /// Orient the normals towards this point (rather than up).
+        #[arg(long, num_args = 3, value_names = ["X", "Y", "Z"], allow_negative_numbers = true)]
+        viewpoint: Option<Vec<f64>>,
+        /// Do not orient the normals up.
+        #[arg(long = "not-always-up")]
+        not_always_up: bool,
+    },
+    /// Label Euclidean clusters (PDAL's filters.cluster), in ClusterID.
+    Cluster {
+        #[command(flatten)]
+        io: Io,
+        /// The fewest points of a cluster (PDAL's min_points).
+        #[arg(long = "min-cluster-points", default_value_t = 1)]
+        min_cluster_points: u64,
+        /// The most points of a cluster (PDAL's max_points).
+        #[arg(long = "max-cluster-points")]
+        max_cluster_points: Option<u64>,
+        /// The distance within which points are neighbours.
+        #[arg(long, default_value_t = 1.0)]
+        tolerance: f64,
+        /// Measure distances in x and y only.
+        #[arg(long = "2d")]
+        two_d: bool,
+    },
+}
+
+/// The options of the height above ground filters.
+#[derive(clap::Args)]
+struct HagArgs {
+    /// Do not extrapolate: points outside the ground points' bounds get a height of 0.
+    #[arg(long = "no-extrapolation")]
+    no_extrapolation: bool,
+    /// The class of ground points.
+    #[arg(long = "ground-class", default_value_t = 2)]
+    ground_class: u8,
+}
+
+/// The output path with the last '#' of its file name replaced by `k`, `None` when the file name
+/// has none (a '#' in a directory name is kept).
+fn numbered(output: &str, k: usize) -> Option<String> {
+    let name_start = output.rfind(['/', '\\']).map_or(0, |i| i + 1);
+    let hash = name_start + output[name_start..].rfind('#')?;
+    Some(format!("{}{k}{}", &output[..hash], &output[hash + 1..]))
+}
+
+/// Writes clouds to one file each (the last '#' of the output's file name replaced by 1, 2...),
+/// or all to one file.
+fn write_many(io: &Io, clouds: Vec<PointCloud>) -> terrio::Result<()> {
+    let options = io.write.to_options(None)?;
+    if numbered(&io.output, 0).is_some() {
+        if clouds.is_empty() {
+            // No points: one empty file, numbered 1, as one file holds none without a '#'.
+            let path = numbered(&io.output, 1).unwrap_or_else(|| io.output.clone());
+            return PointWriter::create(&path, &read_template(&io.input)?, &options)?.finish();
+        }
+        for (k, c) in clouds.iter().enumerate() {
+            let path = numbered(&io.output, k + 1).unwrap_or_else(|| io.output.clone());
+            pointcloud::write_points(c, &path, &options)?;
+        }
+        return Ok(());
+    }
+    // The input's dimensions and CRS, read again only when no part has any.
+    let template;
+    let first = match clouds.first() {
+        Some(c) => c,
+        None => {
+            template = read_template(&io.input)?;
+            &template
+        }
+    };
+    let mut writer = PointWriter::create(&io.output, first, &options)?;
+    for c in &clouds {
+        writer.write(c)?;
+    }
+    writer.finish()
+}
+
+fn read_template(path: &str) -> terrio::Result<PointCloud> {
+    pointcloud::open_points(path)?.template()
+}
+
+/// A point: "x,y" or "x,y,z".
+fn parse_point(s: &str) -> terrio::Result<Vec<f64>> {
+    let v: Vec<f64> = s
+        .split([',', ' '])
+        .filter(|t| !t.trim().is_empty())
+        .map(|t| t.trim().parse::<f64>())
+        .collect::<Result<_, _>>()
+        .map_err(|_| terrio::Error::InvalidArgument(format!("invalid point '{s}': use x,y or x,y,z")))?;
+    if v.len() != 2 && v.len() != 3 {
+        return Err(terrio::Error::InvalidArgument(format!("invalid point '{s}': use x,y or x,y,z")));
+    }
+    Ok(v)
 }
 
 fn read(io: &Io) -> terrio::Result<PointCloud> {
@@ -200,5 +520,160 @@ pub fn run(a: Args) -> terrio::Result<()> {
             let cloud = read(&io)?;
             write(&io, &filters::voxel_center_nearest_neighbor(&cloud, cell)?)
         }
+        Filter::Pmf {
+            io,
+            cell,
+            linear,
+            initial_distance,
+            max_distance,
+            max_window,
+            slope,
+            ignore,
+            pmf_returns,
+            ground_class,
+            other_class,
+            only_ground,
+        } => {
+            let options = PmfOptions {
+                cell,
+                exponential: !linear,
+                initial_distance,
+                max_distance,
+                max_window,
+                slope,
+                ignore: ignore.as_deref().map(DimRange::parse_list).transpose()?.unwrap_or_default(),
+                returns: pmf_returns.iter().map(|r| ReturnKind::parse(r)).collect::<terrio::Result<_>>()?,
+                ground_class,
+                other_class,
+                only_ground,
+            };
+            let cloud = read(&io)?;
+            write(&io, &filters::pmf(&cloud, &options)?)
+        }
+        Filter::Csf {
+            io,
+            cloth_resolution,
+            rigidness,
+            step,
+            threshold,
+            hdiff,
+            iterations,
+            no_smooth,
+            ignore,
+            csf_returns,
+            ground_class,
+            other_class,
+            only_ground,
+        } => {
+            let options = CsfOptions {
+                smooth: !no_smooth,
+                step,
+                threshold,
+                hdiff,
+                resolution: cloth_resolution,
+                rigidness,
+                iterations,
+                ignore: ignore.as_deref().map(DimRange::parse_list).transpose()?.unwrap_or_default(),
+                returns: csf_returns.iter().map(|r| ReturnKind::parse(r)).collect::<terrio::Result<_>>()?,
+                ground_class,
+                other_class,
+                only_ground,
+            };
+            let cloud = read(&io)?;
+            write(&io, &filters::csf(&cloud, &options)?)
+        }
+        Filter::Elm { io, cell, threshold, class } => {
+            let cloud = read(&io)?;
+            write(&io, &filters::elm(&cloud, cell, threshold, class)?)
+        }
+        Filter::HagNn { io, hag, count, max_distance } => {
+            let options = HagOptions { count, max_distance, allow_extrapolation: !hag.no_extrapolation, class: hag.ground_class };
+            let cloud = read(&io)?;
+            write(&io, &filters::hag_nn(&cloud, &options)?)
+        }
+        Filter::HagDelaunay { io, hag, count } => {
+            let options =
+                HagOptions { count, allow_extrapolation: !hag.no_extrapolation, class: hag.ground_class, ..HagOptions::delaunay() };
+            let cloud = read(&io)?;
+            write(&io, &filters::hag_delaunay(&cloud, &options)?)
+        }
+        Filter::Crop { io, crop_bounds, polygon, point, distance, outside, geometry_srs } => {
+            let options = CropOptions {
+                bounds: crop_bounds.iter().map(|b| CropBox::parse(b)).collect::<terrio::Result<_>>()?,
+                polygons: polygon,
+                points: point.iter().map(|p| parse_point(p)).collect::<terrio::Result<_>>()?,
+                distance,
+                outside,
+                a_srs: geometry_srs.as_deref().map(terrio::crs::SpatialRef::parse).transpose()?,
+            };
+            let cloud = read(&io)?;
+            write(&io, &filters::crop(&cloud, &options)?)
+        }
+        Filter::Decimation { io, step, start, end } => {
+            let cloud = read(&io)?;
+            write(&io, &filters::decimation(&cloud, step, start, end)?)
+        }
+        Filter::Expression { io, expression } => {
+            // A condition looks at one point at a time: read and write in chunks.
+            let condition = filters::expr::Condition::parse(&expression)?;
+            let mut reader = pointcloud::open_points(&io.input)?;
+            let template = reader.template()?;
+            let mut writer = PointWriter::create(&io.output, &template, &io.write.to_options(None)?)?;
+            reader.start_chunks(&io.points.to_options()?, io.write.chunk_points)?;
+            while let Some(chunk) = reader.next_chunk()? {
+                writer.write(&chunk.select(&condition.mask(&chunk)?))?;
+            }
+            writer.finish_with_waveforms(&mut reader)
+        }
+        Filter::Assign { io, assignment, condition, value } => {
+            let options =
+                AssignOptions { assignments: assignment, condition: condition.as_deref().map(DimRange::parse).transpose()?, values: value };
+            let cloud = read(&io)?;
+            write(&io, &filters::assign(&cloud, &options)?)
+        }
+        Filter::Merge { mut paths, points, write: w } => {
+            let output = paths.pop().unwrap_or_default();
+            let read_opts = points.to_options()?;
+            let clouds = paths.iter().map(|p| pointcloud::read_points(p, &read_opts)).collect::<terrio::Result<Vec<_>>>()?;
+            pointcloud::write_points(&filters::merge(&clouds)?, &output, &w.to_options(None)?)
+        }
+        Filter::Splitter { io, length, origin, buffer } => {
+            let options = SplitterOptions { length, origin: origin.map(|o| [o[0], o[1]]), buffer };
+            let cloud = read(&io)?;
+            write_many(&io, filters::splitter(&cloud, &options)?.into_iter().map(|(_, c)| c).collect())
+        }
+        Filter::Chipper { io, capacity } => {
+            let cloud = read(&io)?;
+            write_many(&io, filters::chipper(&cloud, capacity)?)
+        }
+        Filter::Normal { io, knn, viewpoint, not_always_up } => {
+            let options = NormalOptions { knn, viewpoint: viewpoint.map(|v| [v[0], v[1], v[2]]), always_up: !not_always_up };
+            let cloud = read(&io)?;
+            write(&io, &filters::normal(&cloud, &options)?)
+        }
+        Filter::Cluster { io, min_cluster_points, max_cluster_points, tolerance, two_d } => {
+            let options = ClusterOptions {
+                min_points: min_cluster_points,
+                max_points: max_cluster_points.unwrap_or(u64::MAX),
+                tolerance,
+                is_3d: !two_d,
+            };
+            let cloud = read(&io)?;
+            write(&io, &filters::cluster(&cloud, &options)?)
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::numbered;
+
+    #[test]
+    fn numbers_the_file_name_only() {
+        assert_eq!(numbered("out/tile_#.laz", 3).as_deref(), Some("out/tile_3.laz"));
+        assert_eq!(numbered("out#1/tile_#.laz", 2).as_deref(), Some("out#1/tile_2.laz"));
+        assert_eq!(numbered("a#b#.laz", 4).as_deref(), Some("a#b4.laz"));
+        assert_eq!(numbered("out#1/tile.laz", 1), None);
+        assert_eq!(numbered("tile.laz", 1), None);
     }
 }

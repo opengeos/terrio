@@ -398,6 +398,13 @@ impl Cube {
         }
     }
 
+    /// The cube: `[min_x, min_y, min_z, max_x, max_y, max_z]`.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn bounds(&self) -> [f64; 6] {
+        let (c, h) = (self.center, self.half);
+        [c[0] - h, c[1] - h, c[2] - h, c[0] + h, c[1] + h, c[2] + h]
+    }
+
     /// A point's position in the cube, each coordinate in [0, 1).
     fn rel(&self, p: &super::las::RecordCore) -> [f64; 3] {
         let (c, h) = (self.center, self.half);
@@ -455,7 +462,13 @@ struct ChunkSink<'w, W: Write + Seek> {
     entries: Vec<CopcNode>,
 }
 
-impl<W: Write + Seek> ChunkSink<'_, W> {
+/// Where the octree's nodes go: the chunks of a COPC file, or the tiles of an EPT dataset.
+pub(crate) trait NodeSink {
+    /// Writes the records of a node.
+    fn write_node(&mut self, key: VoxelKey, records: &[u8], rl: usize) -> Result<()>;
+}
+
+impl<W: Write + Seek> NodeSink for ChunkSink<'_, W> {
     fn write_node(&mut self, key: VoxelKey, records: &[u8], rl: usize) -> Result<()> {
         let mut c = laz::record::LayeredPointRecordCompressor::new(Cursor::new(Vec::new()));
         c.set_fields_from(&self.items).map_err(|e| Error::InvalidArgument(format!("LAZ: {e}")))?;
@@ -482,14 +495,14 @@ fn gps_time(rec: &[u8], gps: Option<usize>) -> f64 {
 /// grid, in a pseudo-random order so that each level is an even sample, and passes the others
 /// down. The bucket's nodes are written; the points of the levels above go to `upper`.
 #[allow(clippy::too_many_arguments)]
-fn build_bucket<W: Write + Seek>(
+fn build_bucket(
     bucket: &Bucket<'_>,
     rl: usize,
     h: &LasHeader,
     gps: Option<usize>,
     cube: &Cube,
     upper: &mut Upper,
-    sink: &mut ChunkSink<'_, W>,
+    sink: &mut dyn NodeSink,
 ) -> Result<()> {
     let n = bucket.records.len() / rl;
     let rec = |i: usize| &bucket.records[i * rl..(i + 1) * rl];
@@ -620,7 +633,7 @@ fn write_copc_with<W: Write + Seek>(
     layout: &Layout,
     stats: &Stats,
     cube: &Cube,
-    build: impl FnOnce(&mut ChunkSink<'_, W>) -> Result<()>,
+    build: impl FnOnce(&mut dyn NodeSink) -> Result<()>,
 ) -> Result<()> {
     let rl = layout.record_len;
     let format = layout.format;
@@ -741,7 +754,7 @@ type EachPoint<'a> = dyn FnMut(u64, &[u8], [f64; 3]) -> Result<()> + 'a;
 /// giving the same nodes as building it in memory.
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) struct CopcStreamWriter {
-    out: std::io::BufWriter<std::fs::File>,
+    target: OctreeTarget,
     header: LasHeader,
     layout: Layout,
     build: CopcBuild,
@@ -755,17 +768,11 @@ pub(crate) struct CopcStreamWriter {
 
 #[cfg(not(target_arch = "wasm32"))]
 impl CopcStreamWriter {
-    pub fn new(
-        out: std::io::BufWriter<std::fs::File>,
-        header: LasHeader,
-        layout: Layout,
-        build: CopcBuild,
-        memory_points: Option<u64>,
-    ) -> Result<Self> {
+    pub fn new(target: OctreeTarget, header: LasHeader, layout: Layout, build: CopcBuild, memory_points: Option<u64>) -> Result<Self> {
         let spill = std::io::BufWriter::with_capacity(1 << 20, tempfile::NamedTempFile::new()?);
         let gps = gps_offset(layout.format);
         let memory_points = memory_points.unwrap_or(MEMORY_POINTS).max(1);
-        Ok(Self { out, header, layout, build, gps, stats: Stats::new(), spill, memory_points })
+        Ok(Self { target, header, layout, build, gps, stats: Stats::new(), spill, memory_points })
     }
 
     pub fn write_cloud(&mut self, cloud: &super::PointCloud) -> Result<()> {
@@ -790,7 +797,7 @@ impl CopcStreamWriter {
         let cube = Cube::new(self.stats.lo, self.stats.hi, self.header.scale[0], self.build);
         let h = self.header.clone();
         let gps = self.gps;
-        let mut out = self.out;
+        let target = self.target;
         let read_all = |mut f: &std::fs::File| -> Result<Vec<u8>> {
             f.seek(SeekFrom::Start(0))?;
             let mut b = Vec::with_capacity((n as usize) * entry);
@@ -805,11 +812,9 @@ impl CopcStreamWriter {
                 records.extend_from_slice(&e[8..]);
             }
             drop(all);
-            write_copc_with(&mut out, self.header, &self.layout, &self.stats, &cube, |sink| {
+            return target.emit(self.header, &self.layout, &self.stats, &cube, |sink| {
                 build_bucket(&Bucket { records: &records, index: None }, rl, &h, gps, &cube, &mut Upper::default(), sink)
-            })?;
-            out.flush()?;
-            return Ok(());
+            });
         }
         // Pass 1: the points per node at the levels above the buckets (counted as in memory, for
         // nodes whose parent is not a leaf), and at each level whatever its parent, to choose the
@@ -891,7 +896,7 @@ impl CopcStreamWriter {
         let parts = parts.into_inner().map_err(|e| Error::Io(e.into_error()))?;
         let mut keys: Vec<VoxelKey> = segments.keys().copied().collect();
         keys.sort();
-        write_copc_with(&mut out, self.header, &self.layout, &self.stats, &cube, |sink| {
+        target.emit(self.header, &self.layout, &self.stats, &cube, |sink| {
             let mut f = parts.as_file();
             for key in keys {
                 let mut bytes = Vec::new();
@@ -925,9 +930,42 @@ impl CopcStreamWriter {
                 sink.write_node(key, &buf, rl)?;
             }
             Ok(())
-        })?;
-        out.flush()?;
-        Ok(())
+        })
+    }
+}
+
+/// Where a [`CopcStreamWriter`] writes its octree: a COPC file, or an EPT dataset.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) enum OctreeTarget {
+    /// A COPC file.
+    Copc(std::io::BufWriter<std::fs::File>),
+    /// An EPT dataset's directory.
+    Ept(super::ept_write::EptTarget),
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl OctreeTarget {
+    /// Writes the nodes `build` makes, and the structures around them.
+    fn emit(
+        self,
+        header: LasHeader,
+        layout: &Layout,
+        stats: &Stats,
+        cube: &Cube,
+        build: impl FnOnce(&mut dyn NodeSink) -> Result<()>,
+    ) -> Result<()> {
+        match self {
+            OctreeTarget::Copc(mut out) => {
+                write_copc_with(&mut out, header, layout, stats, cube, build)?;
+                out.flush()?;
+                Ok(())
+            }
+            OctreeTarget::Ept(t) => {
+                let bounds = cube.bounds();
+                let conforming = [stats.lo[0], stats.lo[1], stats.lo[2], stats.hi[0], stats.hi[1], stats.hi[2]];
+                t.write(header, layout, bounds, conforming, GRID as u64, build)
+            }
+        }
     }
 }
 

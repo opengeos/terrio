@@ -344,7 +344,7 @@ impl TileRaster {
             metadata: self.metadata(),
             data: RasterData::new_filled(DataType::U8, 0, 0.0),
         };
-        RasterDataset { raster, driver: self.driver(), has_nodata: false, affine: None }
+        RasterDataset::with_driver(raster, self.driver(), false)
     }
 
     /// Reads the whole full resolution level.
@@ -361,7 +361,7 @@ impl TileRaster {
         let crs = SpatialRef::from_epsg(3857)?.to_crs_info();
         let mut raster = crate::drivers::common::make_raster(w, h, self.bands, data, self.geo_transform(), crs, None)?;
         raster.metadata = self.metadata();
-        Ok(RasterDataset { raster, driver: self.driver(), has_nodata: false, affine: None })
+        Ok(RasterDataset::with_driver(raster, self.driver(), false))
     }
 }
 
@@ -863,6 +863,14 @@ pub(crate) fn update_tiles(archive: TileArchive, ds: &RasterDataset, o: &TileWri
             format.name()
         )));
     }
+    // The tiles keep the archive's format: another one asked for is an error, not ignored.
+    if o.tile_format.is_some() && tile_format(o)? != format {
+        return Err(Error::InvalidArgument(format!(
+            "the archive's tiles are {}: an update keeps their format, not {}",
+            format.name(),
+            o.tile_format.as_deref().unwrap_or_default()
+        )));
+    }
     let (min_zoom, _) = archive.zoom_range();
     let archive_bounds = archive.bounds();
     let mut tr = TileRaster::new(archive, None)?;
@@ -879,11 +887,19 @@ pub(crate) fn update_tiles(archive: TileArchive, ds: &RasterDataset, o: &TileWri
     let ny = ((y0 - new.maxy) / res).round() as i64;
     let (nw, nh) = (new.level.w as i64, new.level.h as i64);
     let (cx0, cy0) = (nx.min(0), ny.min(0));
-    let (cx1, cy1) = ((nx + nw).max(w as i64), (ny + nh).max(h as i64));
-    let (cw, ch) = ((cx1 - cx0) as usize, (cy1 - cy0) as usize);
-    if (cw as u64) * (ch as u64) > 1 << 31 {
-        return Err(Error::Unsupported(format!("the updated archive would be {cw} x {ch} pixels at zoom level {zoom}")));
+    let (cx1, cy1) = (nx.saturating_add(nw).max(w as i64), ny.saturating_add(nh).max(h as i64));
+    // The archive and the raster are held whole at full resolution (bands, alpha and a copy of
+    // the archive's pixels): 2^28 pixels at most (2^26 in WebAssembly).
+    const MAX_PIXELS: u64 = if cfg!(target_arch = "wasm32") { 1 << 26 } else { 1 << 28 };
+    let (sw, sh) = (cx1.saturating_sub(cx0), cy1.saturating_sub(cy0));
+    let fits = u64::try_from(sw).ok().zip(u64::try_from(sh).ok()).and_then(|(a, b)| a.checked_mul(b)).is_some_and(|n| n <= MAX_PIXELS);
+    if !fits {
+        return Err(Error::Unsupported(format!(
+            "the updated archive would be {sw} x {sh} pixels at zoom level {zoom} (at most {MAX_PIXELS} are updated in memory)"
+        )));
     }
+    // Both fit in `usize`: their product is at most `MAX_PIXELS`.
+    let (cw, ch) = (sw as usize, sh as usize);
     let existing_alpha = matches!(tr.bands, 2 | 4);
     let existing_data = if existing_alpha { tr.bands - 1 } else { tr.bands };
     let bands = existing_data.max(new.level.bands);
@@ -999,7 +1015,7 @@ mod tests {
         let gt = [-MAX_GM + 300.0 * 256.0 * res, res, 0.0, MAX_GM - 400.0 * 256.0 * res, 0.0, -res];
         let raster =
             crate::drivers::common::make_raster(w, h, 3, RasterData::from_f64_vec(DataType::U8, v.clone()), gt, crs, None).unwrap();
-        let ds = RasterDataset { raster, driver: crate::formats::RasterDriver::GTiff, has_nodata: false, affine: None };
+        let ds = RasterDataset::with_driver(raster, crate::formats::RasterDriver::GTiff, false);
         let o = TileWriteOptions { resampling: Some("near".into()), ..Default::default() };
         let rt = make_tiles(&ds, &o).unwrap();
         assert_eq!(rt.max_zoom, 10);

@@ -82,7 +82,10 @@ terrio grid tile.laz dtm.tif --tr 1 --stat idw --class 2 --window-size 3
 terrio grid tile.laz tin.tif --tr 1 --class 2 --method linear           # like gdal_grid -a linear
 terrio filter smrf tile.laz classified.laz                              # PDAL's filters.smrf
 terrio filter outlier tile.laz clean.laz --remove                       # filters.outlier
+terrio filter csf tile.laz classified.laz                               # filters.csf, pmf, elm...
+terrio filter hag_nn classified.laz hag.laz                             # filters.hag_nn, crop, normal...
 terrio convert scan.e57 scan.laz                                        # E57, PLY, EPT
+terrio convert tile.laz tile-ept/ept.json                               # write an EPT dataset
 ```
 
 ## Library

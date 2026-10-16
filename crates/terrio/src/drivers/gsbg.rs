@@ -41,7 +41,7 @@ pub(crate) fn read(path: &Path) -> Result<RasterDataset> {
     let gt = [xlo - dx / 2.0, dx, 0.0, yhi - dy / 2.0, 0.0, dy];
     let crs = common::read_prj(path).unwrap_or_default();
     let raster = common::make_raster(nx, ny, 1, data, gt, crs, Some(BLANK as f64))?;
-    Ok(RasterDataset { raster, driver: RasterDriver::GSBG, has_nodata: true, affine: None })
+    Ok(RasterDataset::with_driver(raster, RasterDriver::GSBG, true))
 }
 
 /// Writes a Surfer 6 binary grid (Float32), with nodata cells blanked.

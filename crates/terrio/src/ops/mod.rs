@@ -340,16 +340,78 @@ pub(crate) fn band_f64(r: &Raster, band: usize) -> Vec<f64> {
     out
 }
 
-/// Maps `f` over values in parallel, keeping the order.
-pub(crate) fn par_map<T: Sync, R: Send + Default + Clone>(values: &[T], f: impl Fn(&T) -> R + Sync + Send) -> Vec<R> {
-    let mut out = vec![R::default(); values.len()];
-    let len = crate::par::chunk_len(values.len(), 1 << 16);
-    crate::par::chunks_mut(&mut out, len, |i, o| {
-        for (o, x) in o.iter_mut().zip(&values[i * len..]) {
-            *o = f(x);
+/// A band's values in their type, read as `f64` where they are used (no `f64` copy of the band).
+#[derive(Clone, Copy)]
+pub(crate) enum BandView<'a> {
+    U8(&'a [u8]),
+    I8(&'a [i8]),
+    U16(&'a [u16]),
+    I16(&'a [i16]),
+    U32(&'a [u32]),
+    I32(&'a [i32]),
+    U64(&'a [u64]),
+    I64(&'a [i64]),
+    F32(&'a [f32]),
+    F64(&'a [f64]),
+}
+
+impl<'a> BandView<'a> {
+    /// Band `band` (from 0) of a raster.
+    pub(crate) fn of(r: &'a Raster, band: usize) -> Self {
+        let n = r.rows * r.cols;
+        let s = band * n..(band + 1) * n;
+        match &r.data {
+            wbraster::raster::RasterData::U8(v) => Self::U8(&v[s]),
+            wbraster::raster::RasterData::I8(v) => Self::I8(&v[s]),
+            wbraster::raster::RasterData::U16(v) => Self::U16(&v[s]),
+            wbraster::raster::RasterData::I16(v) => Self::I16(&v[s]),
+            wbraster::raster::RasterData::U32(v) => Self::U32(&v[s]),
+            wbraster::raster::RasterData::I32(v) => Self::I32(&v[s]),
+            wbraster::raster::RasterData::U64(v) => Self::U64(&v[s]),
+            wbraster::raster::RasterData::I64(v) => Self::I64(&v[s]),
+            wbraster::raster::RasterData::F32(v) => Self::F32(&v[s]),
+            wbraster::raster::RasterData::F64(v) => Self::F64(&v[s]),
         }
-    });
-    out
+    }
+
+    /// Value `i`, as `f64`.
+    #[inline]
+    pub(crate) fn get(self, i: usize) -> f64 {
+        use crate::pixel::Pixel;
+        match self {
+            Self::U8(v) => v[i].to_f64(),
+            Self::I8(v) => v[i].to_f64(),
+            Self::U16(v) => v[i].to_f64(),
+            Self::I16(v) => v[i].to_f64(),
+            Self::U32(v) => v[i].to_f64(),
+            Self::I32(v) => v[i].to_f64(),
+            Self::U64(v) => v[i].to_f64(),
+            Self::I64(v) => v[i].to_f64(),
+            Self::F32(v) => v[i].to_f64(),
+            Self::F64(v) => v[i],
+        }
+    }
+
+    /// Which values are not `nodata` (see [`is_nodata`]).
+    pub(crate) fn valid(self, nodata: f64) -> Vec<bool> {
+        crate::par::map_range(self.len(), |i| !is_nodata(self.get(i), nodata))
+    }
+
+    /// The number of values.
+    pub(crate) fn len(self) -> usize {
+        match self {
+            Self::U8(v) => v.len(),
+            Self::I8(v) => v.len(),
+            Self::U16(v) => v.len(),
+            Self::I16(v) => v.len(),
+            Self::U32(v) => v.len(),
+            Self::I32(v) => v.len(),
+            Self::U64(v) => v.len(),
+            Self::I64(v) => v.len(),
+            Self::F32(v) => v.len(),
+            Self::F64(v) => v.len(),
+        }
+    }
 }
 
 /// A raster grid: size and geotransform.
@@ -387,10 +449,7 @@ pub(crate) fn build_raster(
     srs: &SpatialRef,
     convert: fn(f64, DataType) -> f64,
 ) -> Result<RasterDataset> {
-    let gt = grid.geo_transform;
-    if gt[2] != 0.0 || gt[4] != 0.0 || gt[1] <= 0.0 || gt[5] >= 0.0 {
-        return Err(Error::Unsupported("only north-up rasters are supported".into()));
-    }
+    north_up(&grid)?;
     let nbands = bands.len().max(1);
     let n = grid.width * grid.height;
     let mut data = RasterData::new_filled(data_type, n * nbands, 0.0);
@@ -418,6 +477,23 @@ pub(crate) fn build_raster(
             RasterData::F64(v) => fill!(v, f64),
         }
     }
+    build_raster_data(grid, data, nbands, nodata, srs)
+}
+
+/// Builds a raster dataset from its values (`nbands` bands, band after band), of their type.
+pub(crate) fn build_raster_data(
+    grid: Grid,
+    data: RasterData,
+    nbands: usize,
+    nodata: Option<f64>,
+    srs: &SpatialRef,
+) -> Result<RasterDataset> {
+    north_up(&grid)?;
+    if data.len() != grid.width * grid.height * nbands {
+        return Err(Error::InvalidData(format!("{} values for {nbands} band(s) of {}x{} pixels", data.len(), grid.width, grid.height)));
+    }
+    let gt = grid.geo_transform;
+    let data_type = data.data_type();
     let cfg = RasterConfig {
         cols: grid.width,
         rows: grid.height,
@@ -433,6 +509,15 @@ pub(crate) fn build_raster(
     };
     let raster = crate::pixel::raster_from_data(cfg, data)?;
     Ok(RasterDataset::new(raster, nodata.is_some()))
+}
+
+/// Rasters are built north-up only.
+fn north_up(grid: &Grid) -> Result<()> {
+    let gt = grid.geo_transform;
+    if gt[2] != 0.0 || gt[4] != 0.0 || gt[1] <= 0.0 || gt[5] >= 0.0 {
+        return Err(Error::Unsupported("only north-up rasters are supported".into()));
+    }
+    Ok(())
 }
 
 /// The nodata value stored in rasters that declare none (rasters always carry one).

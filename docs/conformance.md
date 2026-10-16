@@ -24,10 +24,10 @@ Generated on 2026-10-14 with terrio 0.1.1 (9e7f7f5), GDAL 3.12.2, PROJ 9.7.1, PD
 | [Vector operations](#vector-operations) | `ogr2ogr`, `gdal_rasterize`, `gdal_polygonize.py` | 51 | 51 | 0 | 0 |
 | [Arrow and GeoArrow](#arrow-and-geoarrow) | GDAL's Arrow streams, pyarrow, GeoPandas | 180 | 171 | 9 | 0 |
 | [GeoPackage updates and spatial filters](#geopackage-updates-and-spatial-filters) | `ogr2ogr`, GDAL's `validate_gpkg.py` | 12 | 12 | 0 | 0 |
-| [Point clouds](#point-clouds) | laspy (every value), PDAL (headers, PLY, E57 and EPT, COPC and EPT queries, filters, grids, reprojection) and gdal_grid (TIN and nearest-neighbour grids) | 550 | 544 | 6 | 0 |
+| [Point clouds](#point-clouds) | laspy (every value), PDAL (headers, PLY, E57 and EPT, COPC and EPT queries, filters, grids, reprojection) and gdal_grid (TIN and nearest-neighbour grids) | 615 | 609 | 6 | 0 |
 | [Coordinate transformations](#coordinate-transformations) | GDAL 3.12 and PROJ (`gdaltransform`) | 19,003 | 18,919 | 72 | 12 |
 | [Datum shift grids, geoid models and coordinate epochs](#datum-shift-grids-geoid-models-and-coordinate-epochs) | GDAL 3.12 and PROJ, with the same grids | 19,253 | 19,123 | 110 | 20 |
-| **All** | | **39,989** | **39,751** | **206** | **32** |
+| **All** | | **40,054** | **39,816** | **206** | **32** |
 
 ## Dataset summaries and pixels
 
@@ -272,9 +272,9 @@ Every dimension of every point equal to laspy's; headers equal to laspy's and PD
 | reproject vs PDAL | 3 | 0 | 3 | 0 |
 | PLY, E57 and EPT vs PDAL | 24 | 24 | 0 | 0 |
 | EPT queries vs PDAL | 4 | 4 | 0 | 0 |
-| PLY and E57 written, read by PDAL | 3 | 3 | 0 | 0 |
+| PLY, E57 and EPT written, read back | 8 | 8 | 0 | 0 |
 | waveforms | 3 | 3 | 0 | 0 |
-| filters vs PDAL | 24 | 24 | 0 | 0 |
+| filters vs PDAL | 84 | 84 | 0 | 0 |
 | TIN and nearest grids vs gdal_grid | 4 | 1 | 3 | 0 |
 
 Cases that are not identical:

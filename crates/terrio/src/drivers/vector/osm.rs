@@ -895,7 +895,7 @@ impl NodeStore {
             return false;
         }
         if self.groups.is_empty() || self.in_group == NODE_GROUP {
-            // A group (at most 64 nodes of 3 varints) never straddles two pages.
+            // A group (at most `NODE_GROUP` nodes of 3 varints) never straddles two pages.
             if self.pages.last().is_none_or(|p| p.len() + NODE_GROUP * 30 > NODE_PAGE) {
                 self.pages.push(Vec::with_capacity(NODE_PAGE));
             }
@@ -1058,11 +1058,17 @@ type Area = (i64, Vec<Coord>, Vec<(String, String)>);
 
 /// Reads the next spilled area: `None` at the end.
 fn read_area(r: &mut impl std::io::Read) -> Result<Option<Area>> {
+    // The end of the file only before a record: one cut short is an error.
     let mut b8 = [0u8; 8];
-    match r.read_exact(&mut b8) {
-        Ok(()) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(None),
-        Err(e) => return Err(e.into()),
+    let mut got = 0;
+    while got < 8 {
+        match r.read(&mut b8[got..]) {
+            Ok(0) if got == 0 => return Ok(None),
+            Ok(0) => return Err(Error::InvalidData("OSM PBF: spilled area cut short".into())),
+            Ok(n) => got += n,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(e) => return Err(e.into()),
+        }
     }
     let id = i64::from_le_bytes(b8);
     let u32_ = |r: &mut dyn std::io::Read| -> Result<usize> {
@@ -1488,6 +1494,18 @@ mod tests {
         assert!(is_unsorted(&e));
         assert!(is_sorted_pbf(&mut std::io::Cursor::new(&relations_first)));
         assert!(!is_sorted_pbf(&mut std::io::Cursor::new(b"<?xml version='1.0'?><osm/>".as_slice())));
+    }
+
+    /// A spill read to its end gives `None`; one cut short in a record, an error.
+    #[test]
+    fn spilled_areas_cut_short_are_errors() {
+        let area = encode_area(7, &[Coord::xy(1.0, 2.0), Coord::xy(3.0, 4.0)], &[("building", "yes")]);
+        let mut whole = std::io::Cursor::new(area.clone());
+        assert_eq!(read_area(&mut whole).unwrap().map(|a| a.0), Some(7));
+        assert!(read_area(&mut whole).unwrap().is_none());
+        for cut in [3, 12, area.len() - 1] {
+            assert!(read_area(&mut std::io::Cursor::new(&area[..cut])).is_err(), "cut at {cut}");
+        }
     }
 
     #[test]

@@ -89,6 +89,25 @@ With the feature enabled:
 - Rasters can be written with any GDAL driver: `terrio convert dem.tif dem.ntf -f NITF`
   (`--co KEY=VALUE` passes GDAL creation options). ERDAS Imagine (`.img`), which terrio reads
   itself, is written through GDAL.
+- Vector layers can be written with any GDAL vector driver, as `ogr2ogr -f` writes them: ESRI
+  File Geodatabases (`terrio convert roads.gpkg roads.gdb`, GDAL's `OpenFileGDB`), DXF, MapInfo,
+  SQLite and SpatiaLite, GML, spreadsheets... (`-f "MapInfo File"`, `--dsco KEY=VALUE` and
+  `--lco KEY=VALUE` for GDAL's dataset and layer creation options). Fields, geometry types (Z
+  included; a layer of unknown type gets the type its features share, single geometries promoted
+  to multi ones as `-nlt PROMOTE_TO_MULTI` does) and CRSs are kept; an existing output is
+  replaced.
+- An output extension terrio has no driver for goes to the GDAL driver that claims it (`.dxf`,
+  `.gdb`, `.ntf`...), in `terrio convert` and in `terrio::write_vector` and
+  `write_raster_dataset`.
+- Bytes in memory: `terrio::memory::open_bytes` (and `open_raster_bytes`, `open_vector_bytes`)
+  hands what terrio cannot read to GDAL through its `/vsimem/` file system, zip archives through
+  `/vsizip/`; `memory::write_raster_bytes` and `write_vector_bytes` write the formats only GDAL
+  has to bytes (several files, such as a File Geodatabase, as a zip archive; GDAL's `.aux.xml`
+  sidecar left out). `gdal_backend::open_bytes`, `write_raster_bytes` and `write_vector_bytes`
+  take GDAL driver names directly.
+- Complex bands (`CInt16`, `CInt32`, `CFloat32`, `CFloat64`) are read and written as complex
+  datasets, and GDAL's `GEOLOCATION` metadata (swaths) is kept as the dataset's geolocation
+  arrays.
 
 What GDAL opens is converted into terrio's data model, so every operation works on it: rasters
 are read into memory with all their bands, the geotransform, the CRS (identified as an EPSG code
@@ -96,9 +115,22 @@ the way `gdalsrsinfo -e` does), the first band's nodata value, scale and offset,
 metadata; vector layers keep their schema (list fields become JSON text), geometries (curves are
 linearized) and CRS. Datasets opened this way report the `GDAL` driver.
 
-Not covered: complex-valued bands, rotated geotransforms and GCP-only georeferencing (as for
-terrio's own drivers), writing vector layers through GDAL, and opening bytes in memory
-(`terrio::memory`) through GDAL.
+```rust
+# #[cfg(feature = "gdal")] {
+let roads = terrio::open_vector("roads.gpkg", &Default::default())?;
+// An ESRI File Geodatabase, with a layer creation option.
+let lco = [("FEATURE_DATASET".to_string(), "transport".to_string())];
+terrio::gdal_backend::write_vector(&roads.layers, "roads.gdb", "OpenFileGDB", &[], &lco)?;
+// A DXF drawing, as bytes.
+let dxf = terrio::memory::write_vector_bytes(&roads.layers, "roads.dxf", &Default::default())?;
+// A NITF file from bytes: GDAL reads it from memory.
+let ntf = terrio::memory::open_raster_bytes(std::fs::read("image.ntf")?, "image.ntf")?;
+# }
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+Not covered: rotated geotransforms and GCP-only georeferencing (as for terrio's own drivers),
+appending to existing datasets through GDAL (`--append`), and updating GDAL datasets in place.
 
 ## Python wheels with GDAL
 

@@ -153,6 +153,9 @@ impl Route {
         };
         match &self.kind {
             Kind::Same => Some(p),
+            // No transformation at all (a CRS of an unknown datum, defined by its ellipsoid alone):
+            // no shift, PROJ's ballpark transformation.
+            Kind::List(list) if list.is_empty() => Some(p),
             Kind::List(list) => {
                 let boxes = self.boxes.get_or_init(|| list.iter().map(|l| src.areas(&l.op)).collect());
                 let ops: Vec<&Op> = list.iter().map(|l| l.op.as_ref()).collect();

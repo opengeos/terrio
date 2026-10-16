@@ -2,7 +2,8 @@
 //! compatible with HDF5 1.8 (superblock version 2, version 2 object headers, version 1 B-trees
 //! for chunks), so that the netCDF-C library and h5py read them.
 //!
-//! - one group (the root) holding datasets, with link and attribute creation order tracked;
+//! - groups (the root, and those of datasets named by a path such as `group/sub/var`) holding
+//!   datasets and subgroups, with link and attribute creation order tracked;
 //! - datasets of fixed-point, floating-point and fixed-length string types, contiguous or
 //!   chunked, optionally with the shuffle and deflate filters;
 //! - attributes of those types, plus object references for dimension scales: variable-length
@@ -146,15 +147,49 @@ pub(crate) struct Dataset {
     pub attrs: Vec<Attr>,
 }
 
-/// A file: the root group's attributes and datasets.
+/// A file: the root group's attributes and the datasets, those of subgroups named by their path
+/// (`group/sub/var`), the groups being created as needed.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct File {
     pub attrs: Vec<Attr>,
     pub datasets: Vec<Dataset>,
+    /// Attributes of subgroups, by path (`group/sub`).
+    pub group_attrs: Vec<(String, Vec<Attr>)>,
+}
+
+/// The groups of a file below the root, by path, parents before children, in the order their
+/// datasets or attributes first name them.
+fn group_paths(f: &File) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut add = |path: &str| {
+        let parts: Vec<&str> = path.split('/').filter(|p| !p.is_empty()).collect();
+        for i in 1..=parts.len() {
+            let p = parts[..i].join("/");
+            if !out.contains(&p) {
+                out.push(p);
+            }
+        }
+    };
+    for (path, _) in &f.group_attrs {
+        add(path);
+    }
+    for d in &f.datasets {
+        if let Some((parent, _)) = d.name.rsplit_once('/') {
+            add(parent);
+        }
+    }
+    out
+}
+
+/// The parent group path (empty for the root) and the leaf name of a path.
+fn split_path(path: &str) -> (&str, &str) {
+    path.rsplit_once('/').unwrap_or(("", path))
 }
 
 /// Addresses known once the file is laid out.
 struct Addresses {
+    /// Each subgroup's object header, in `group_paths` order.
+    groups: Vec<u64>,
     /// Each dataset's object header.
     datasets: Vec<u64>,
     /// The global heap collection.
@@ -447,27 +482,48 @@ pub(crate) fn encode(f: &File) -> Vec<u8> {
 
     // Headers depend on addresses only through fixed-size fields: lay them out with placeholder
     // addresses, then encode them again with the real ones.
-    let build = |addr: &Addresses| -> (Vec<u8>, Vec<Vec<u8>>) {
-        let mut root = Header { messages: Vec::new() };
-        let mut li = vec![0, 0x01];
-        li.extend_from_slice(&(f.datasets.len() as u64).to_le_bytes());
-        li.extend_from_slice(&UNDEF.to_le_bytes());
-        li.extend_from_slice(&UNDEF.to_le_bytes());
-        root.messages.push((MSG_LINK_INFO, li));
-        root.messages.push((MSG_GROUP_INFO, vec![0, 0]));
+    let groups = group_paths(f);
+    // A group's header: hard links (with their creation order) to its datasets and subgroups,
+    // in the order they appear, then its attributes.
+    let group_header = |path: &str, attrs: &[Attr], addr: &Addresses| -> Vec<u8> {
+        let mut links: Vec<(&str, u64)> = Vec::new();
+        for (gi, g) in groups.iter().enumerate() {
+            let (parent, name) = split_path(g);
+            if parent == path {
+                links.push((name, addr.groups[gi]));
+            }
+        }
         for (i, d) in f.datasets.iter().enumerate() {
-            // A hard link, with its creation order.
+            let (parent, name) = split_path(&d.name);
+            if parent == path {
+                links.push((name, addr.datasets[i]));
+            }
+        }
+        let mut h = Header { messages: Vec::new() };
+        let mut li = vec![0, 0x01];
+        li.extend_from_slice(&(links.len() as u64).to_le_bytes());
+        li.extend_from_slice(&UNDEF.to_le_bytes());
+        li.extend_from_slice(&UNDEF.to_le_bytes());
+        h.messages.push((MSG_LINK_INFO, li));
+        h.messages.push((MSG_GROUP_INFO, vec![0, 0]));
+        for (order, (name, target)) in links.iter().enumerate() {
             let mut l = vec![1, 0x04];
-            l.extend_from_slice(&(i as u64).to_le_bytes());
-            l.push(d.name.len() as u8);
-            l.extend_from_slice(d.name.as_bytes());
-            l.extend_from_slice(&addr.datasets[i].to_le_bytes());
-            root.messages.push((MSG_LINK, l));
+            l.extend_from_slice(&(order as u64).to_le_bytes());
+            l.push(name.len() as u8);
+            l.extend_from_slice(name.as_bytes());
+            l.extend_from_slice(&target.to_le_bytes());
+            h.messages.push((MSG_LINK, l));
         }
-        root.messages.push((MSG_ATTRIBUTE_INFO, attribute_info(f.attrs.len())));
-        for a in &f.attrs {
-            root.messages.push((MSG_ATTRIBUTE, attribute(a, addr, &[])));
+        h.messages.push((MSG_ATTRIBUTE_INFO, attribute_info(attrs.len())));
+        for a in attrs {
+            h.messages.push((MSG_ATTRIBUTE, attribute(a, addr, &[])));
         }
+        h.encode()
+    };
+    let group_attrs = |path: &str| f.group_attrs.iter().find(|(p, _)| p.trim_matches('/') == path).map_or(&[][..], |(_, a)| a.as_slice());
+    let build = |addr: &Addresses| -> (Vec<u8>, Vec<Vec<u8>>, Vec<Vec<u8>>) {
+        let root = group_header("", &f.attrs, addr);
+        let group_headers: Vec<Vec<u8>> = groups.iter().map(|g| group_header(g, group_attrs(g), addr)).collect();
         let mut headers = Vec::new();
         for (i, d) in f.datasets.iter().enumerate() {
             let mut h = Header { messages: Vec::new() };
@@ -516,13 +572,18 @@ pub(crate) fn encode(f: &File) -> Vec<u8> {
             }
             headers.push(h.encode());
         }
-        (root.encode(), headers)
+        (root, group_headers, headers)
     };
 
     let n = f.datasets.len();
-    let placeholder = Addresses { datasets: vec![0; n], heap: 0, data: vec![0; n] };
-    let (root, headers) = build(&placeholder);
+    let placeholder = Addresses { groups: vec![0; groups.len()], datasets: vec![0; n], heap: 0, data: vec![0; n] };
+    let (root, group_headers, headers) = build(&placeholder);
     let mut at = 48 + root.len() as u64;
+    let mut group_addrs = Vec::with_capacity(groups.len());
+    for h in &group_headers {
+        group_addrs.push(at);
+        at += h.len() as u64;
+    }
     let mut dataset_addrs = Vec::with_capacity(n);
     for h in &headers {
         dataset_addrs.push(at);
@@ -560,8 +621,8 @@ pub(crate) fn encode(f: &File) -> Vec<u8> {
             None => {}
         }
     }
-    let addr = Addresses { datasets: dataset_addrs, heap: heap_addr, data: data_addrs };
-    let (root, headers) = build(&addr);
+    let addr = Addresses { groups: group_addrs, datasets: dataset_addrs, heap: heap_addr, data: data_addrs };
+    let (root, group_headers, headers) = build(&addr);
     let eof = at;
 
     let mut out = Vec::with_capacity(eof as usize);
@@ -574,7 +635,7 @@ pub(crate) fn encode(f: &File) -> Vec<u8> {
     let sum = hdf5_reader::checksum::jenkins_lookup3(&out);
     out.extend_from_slice(&sum.to_le_bytes());
     out.extend_from_slice(&root);
-    for h in &headers {
+    for h in group_headers.iter().chain(&headers) {
         out.extend_from_slice(h);
     }
     if !heap_objects.is_empty() {
@@ -622,6 +683,7 @@ mod tests {
         let x: Vec<u8> = (0..7).flat_map(|i| (i as f64).to_le_bytes()).collect();
         File {
             attrs: vec![Attr::text("Conventions", "CF-1.5")],
+            group_attrs: Vec::new(),
             datasets: vec![
                 Dataset {
                     name: "x".into(),

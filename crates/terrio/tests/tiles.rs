@@ -460,7 +460,12 @@ fn raster_archives_are_updated() {
         let path = dir.path().join(format!("r.{ext}"));
         let path = path.to_str().unwrap();
         terrio::write_raster_dataset(&base, path, &Default::default()).unwrap();
-        terrio::tiles::update_raster(path, &right, &Default::default()).unwrap();
+        // The tiles keep the archive's format: another one asked for is refused.
+        let jpeg = terrio::tiles::TileWriteOptions { tile_format: Some("JPEG".into()), ..Default::default() };
+        let e = terrio::tiles::update_raster(path, &right, &jpeg).unwrap_err();
+        assert!(e.to_string().contains("keeps their format"), "{e}");
+        let png = terrio::tiles::TileWriteOptions { tile_format: Some("png".into()), ..Default::default() };
+        terrio::tiles::update_raster(path, &right, &png).unwrap();
         let mut lazy = terrio::open_raster_lazy(path).unwrap();
         assert_eq!((lazy.width(), lazy.height()), (1536, 512), "{ext}");
         let all = lazy.read().unwrap();

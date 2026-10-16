@@ -46,7 +46,7 @@ pub(crate) fn read(path: &Path) -> Result<RasterDataset> {
     let nodata = num("NODATA_VALUE");
     let crs = common::read_prj(&data).unwrap_or_default();
     let raster = common::make_raster(cols, rows, 1, pixels, gt, crs, nodata)?;
-    Ok(RasterDataset { raster, driver: RasterDriver::SAGA, has_nodata: nodata.is_some(), affine: None })
+    Ok(RasterDataset::with_driver(raster, RasterDriver::SAGA, nodata.is_some()))
 }
 
 /// Writes a SAGA grid: `.sdat`, `.sgrd` and `.prj`, bottom-up as GDAL writes them.

@@ -15,12 +15,14 @@ And:
 
 - PLY, E57 and EPT: every value of every dimension compared with PDAL's `readers.ply`,
   `readers.e57` and `readers.ept`, EPT queries by bounds and resolution, and PLY and E57 files
-  written by terrio read back by PDAL;
+  and EPT datasets (LASzip, binary and Zstandard tiles) written by terrio read back by PDAL;
 - waveforms: the samples of points compared with the bytes of the file at the offsets LASlib
   reads them from, and the waveform data packets kept when the points are written;
-- filters: `smrf`, `outlier`, `range`, `sample`, `voxeldownsize` and
-  `voxelcenternearestneighbor` compared with PDAL's filters (classes, or the points kept, in
-  order);
+- filters: `smrf`, `pmf`, `csf`, `elm`, `outlier`, `range`, `sample`, `voxeldownsize`,
+  `voxelcenternearestneighbor`, `hag_nn`, `hag_delaunay`, `crop`, `decimation`, `expression`,
+  `assign`, `merge`, `splitter`, `chipper`, `normal` and `cluster` compared with PDAL's filters
+  (classes, heights, normals, cluster ids, or the points kept, in order), on autzen_trim.las and
+  USGS 3DEP lidar over Madison;
 - interpolated grids: `linear` and `nearest` compared with `gdal_grid -a linear` and
   `-a nearest`.
 
@@ -541,6 +543,40 @@ def compare_formats(root: Path, tmp: Path) -> None:
         bad = [k for k in keys if not np.array_equal(np.asarray(pc[k]).astype("f8"), ref[k])]
         label = kwargs.get("ply_encoding", "ascii") if ext == "ply" else "E57"
         report(f"writefmt autzen_trim.las -> {ext} ({label}), read by PDAL: {len(ref['x'])} points", not bad, f"differ: {bad}")
+    # EPT datasets written by terrio, read back by PDAL's readers.ept: every dimension of every
+    # point as PDAL reads the source (binary tiles: x, y and z compared as PDAL 2.9 rounds them,
+    # as above). PDAL reads Zstandard tiles only when built with Zstandard: those are compared
+    # with terrio's reading of the source.
+    src = root / "autzen_trim.laz"
+    ref = pdal_text([str(src)])
+    for data_type in ["laszip", "binary", "zstandard"]:
+        out = tmp / f"ept_{data_type}" / "ept.json"
+        terrio.convert_points(str(src), str(out), ept_data_type=data_type)
+        try:
+            got = pdal_text([{"type": "readers.ept", "filename": str(out)}])
+        except subprocess.CalledProcessError as e:
+            got = None
+            if data_type == "zstandard":
+                print(f"skip writefmt autzen_trim.laz -> EPT ({data_type}), read by PDAL: this PDAL cannot read {data_type} tiles")
+            else:
+                report(f"writefmt autzen_trim.laz -> EPT ({data_type}), read by PDAL readers.ept", False, (e.stderr or "")[:200])
+        if data_type != "laszip":
+            ref_cmp = {k: (np.where(v > 0, np.floor(v + 0.5), np.ceil(v - 0.5)) if k in ("x", "y", "z") else v) for k, v in ref.items()}
+        else:
+            ref_cmp = ref
+        keys = ["x", "y", "z", "gps_time"]
+        if got is not None:
+            n, m = len(got["x"]), len(ref["x"])
+            a = np.lexsort([got[k] for k in keys])
+            b = np.lexsort([ref_cmp[k] for k in keys])
+            bad = [k for k in ref if k not in got or (n == m and not np.array_equal(got[k][a], ref_cmp[k][b]))]
+            report(f"writefmt autzen_trim.laz -> EPT ({data_type}), read by PDAL readers.ept: {n} points vs {m}", n == m and not bad, f"differ: {bad}")
+        back = terrio.read_points(str(out))
+        las = terrio.read_points(str(src))
+        a = np.lexsort([np.asarray(back[k]) for k in keys])
+        b = np.lexsort([np.asarray(las[k]) for k in keys])
+        bad = [k for k in las.dimensions if k in back and not np.array_equal(np.asarray(back[k]).astype("f8")[a], np.asarray(las[k]).astype("f8")[b])]
+        report(f"writefmt autzen_trim.laz -> EPT ({data_type}), read back by terrio", len(back) == len(las) and not bad, f"differ: {bad}")
 
 
 def compare_waveforms(root: Path, tmp: Path) -> None:
@@ -634,6 +670,114 @@ def compare_filters(path: Path, tmp: Path, z_range: tuple[float, float]) -> None
         report(f"filter {label} {name}: {len(ours)} points vs PDAL {len(ref)}, in the same order", same, "different points")
 
 
+def compare_more_filters(path: Path, tmp: Path) -> None:
+    """Compares PDAL's ground, height, selection, tiling and feature filters with terrio's.
+
+    `pmf`, `csf` and `elm` (classes), `hag_nn` and `hag_delaunay` (heights above the ground SMRF finds),
+    `crop`, `decimation`, `expression`, `assign` and `merge` (the points, in order), `splitter`
+    and `chipper` (the points of each tile, in order), `normal` (normals and curvature) and
+    `cluster` (cluster ids).
+
+    Args:
+        path: A LAS file.
+        tmp: A directory for the outputs.
+    """
+    if not PDAL:
+        return
+    pc = terrio.read_points(str(path))
+    name = path.name
+    n = len(pc)
+
+    def check(label: str, ours: "terrio.PointCloud", ref: dict[str, np.ndarray], dims: list[str], atol: float = 0.0) -> None:
+        m = len(next(iter(ref.values()))) if ref else 0
+        if len(ours) != m:
+            report(f"filter {label} {name}", False, f"{len(ours)} points vs PDAL {m}")
+            return
+        bad = [d for d in dims if not np.allclose(np.asarray(ours[d]).astype("f8"), ref[d], rtol=0, atol=atol, equal_nan=True)]
+        report(f"filter {label} {name}: {m} points, {', '.join(dims)} as PDAL's, in order", not bad, f"differ: {bad}")
+
+    for opts in [{}, {"cell_size": 2.0, "max_window_size": 20, "slope": 0.5, "initial_distance": 0.3}]:
+        ours = pc.pmf(**opts)["classification"]
+        ref = np.asarray(pdal_las([str(path), {"type": "filters.pmf", **opts}], tmp).classification)
+        k = int(np.sum(ours != ref))
+        report(f"filter pmf {name} {opts or 'defaults'}: {int(np.sum(ours == 2))} ground points vs PDAL {int(np.sum(ref == 2))}", k == 0, f"{k} points differ")
+    for opts in [{}, {"resolution": 5.0, "rigidness": 2}]:
+        ours = pc.csf(**opts)["classification"]
+        ref = np.asarray(pdal_las([str(path), {"type": "filters.csf", **opts}], tmp).classification)
+        k = int(np.sum(ours != ref))
+        report(f"filter csf {name} {opts or 'defaults'}: {int(np.sum(ours == 2))} ground points vs PDAL {int(np.sum(ref == 2))}", k == 0, f"{k} points differ")
+    for opts in [{}, {"cell": 5.0, "threshold": 0.5}]:
+        ours = pc.elm(**opts)["classification"] == 7
+        ref = np.asarray(pdal_las([str(path), {"type": "filters.elm", **opts}], tmp).classification) == 7
+        k = int(np.sum(ours != ref))
+        report(f"filter elm {name} {opts or 'defaults'}: {int(ours.sum())} noise points vs PDAL {int(ref.sum())}", k == 0, f"{k} points differ")
+    ground = pc.smrf()
+    for stage, ours in [
+        ({"type": "filters.hag_nn"}, ground.hag_nn()),
+        ({"type": "filters.hag_nn", "count": 5}, ground.hag_nn(count=5)),
+        ({"type": "filters.hag_nn", "count": 3, "max_distance": 4.0, "allow_extrapolation": False}, ground.hag_nn(count=3, max_distance=4.0, allow_extrapolation=False)),
+        ({"type": "filters.hag_delaunay"}, ground.hag_delaunay()),
+        ({"type": "filters.hag_delaunay", "count": 6, "allow_extrapolation": False}, ground.hag_delaunay(count=6, allow_extrapolation=False)),
+    ]:
+        ref = pdal_text([str(path), {"type": "filters.smrf"}, stage])
+        opts = {k: v for k, v in stage.items() if k != "type"}
+        check(f"{stage['type'][8:]} {opts or 'defaults'}", ours, ref, ["height_above_ground"], 1e-9)
+    x0, y0, z0, x1, y1, z1 = pc.bounds
+    w, h = x1 - x0, y1 - y0
+    cx, cy = x0 + 0.5 * w, y0 + 0.5 * h
+    box = f"([{x0 + 0.2 * w}, {x0 + 0.6 * w}], [{y0 + 0.1 * h}, {y0 + 0.7 * h}])"
+    box3 = f"([{x0 + 0.2 * w}, {x0 + 0.6 * w}], [{y0 + 0.1 * h}, {y0 + 0.7 * h}], [{z0}, {z0 + 0.4 * (z1 - z0)}])"
+    poly = f"POLYGON(({x0 + 0.1 * w} {y0 + 0.1 * h}, {x0 + 0.9 * w} {y0 + 0.2 * h}, {x0 + 0.5 * w} {y0 + 0.9 * h}, {x0 + 0.1 * w} {y0 + 0.1 * h}))"
+    r = 0.2 * min(w, h)
+    for label, ours, stage in [
+        ("crop bounds", pc.crop(bounds=[box]), {"bounds": box}),
+        ("crop 3D bounds outside", pc.crop(bounds=[box3], outside=True), {"bounds": box3, "outside": True}),
+        ("crop polygon", pc.crop(polygons=[poly]), {"polygon": poly}),
+        ("crop circle", pc.crop(points=[[cx, cy]], distance=r), {"point": f"POINT({cx} {cy})", "distance": r}),
+        ("crop sphere", pc.crop(points=[[cx, cy, z0 + 0.5 * (z1 - z0)]], distance=r), {"point": f"POINT({cx} {cy} {z0 + 0.5 * (z1 - z0)})", "distance": r}),
+    ]:
+        check(label, ours, pdal_text([str(path), {"type": "filters.crop", **stage}]), ["x", "y", "z", "gps_time"])
+    for label, ours, stage in [
+        ("decimation step 3", pc.decimation(3), {"type": "filters.decimation", "step": 3}),
+        ("decimation step 2.5 offset 7 limit", pc.decimation(2.5, offset=7, limit=n // 2), {"type": "filters.decimation", "step": 2.5, "offset": 7, "limit": n // 2}),
+        ("expression", pc.expression("Classification == 2 && Z > 430 || ReturnNumber > 2"), {"type": "filters.expression", "expression": "Classification == 2 && Z > 430 || ReturnNumber > 2"}),
+        ("expression functions", pc.expression("!(abs(ScanAngleRank) >= 10) && floor(Intensity / 10) != 3"), {"type": "filters.expression", "expression": "!(abs(ScanAngleRank) >= 10) && floor(Intensity / 10) != 3"}),
+    ]:
+        check(label, ours, pdal_text([str(path), stage]), ["x", "y", "z", "gps_time", "intensity"])
+    assign = {"assignment": "Classification[1:1]=5", "condition": "ReturnNumber[1:1]", "value": ["Intensity = Intensity * 2 + 1 WHERE Z > 450", "Foo = Z / 3"]}
+    ours = pc.assign(**assign)
+    ref = pdal_text([str(path), {"type": "filters.assign", **assign}])
+    check("assign", ours, ref, ["classification", "intensity", "foo"], 1e-9)
+    ours = terrio.merge_points([pc, pc.decimation(7)])
+    stages = [{"type": "readers.las", "filename": str(path), "tag": "a"}, {"type": "readers.las", "filename": str(path), "tag": "b"},
+              {"type": "filters.decimation", "step": 7, "inputs": ["b"], "tag": "c"}, {"type": "filters.merge", "inputs": ["a", "c"]}]
+    check("merge", ours, pdal_text(stages), ["x", "y", "z", "gps_time"])
+    for label, tiles, stage in [
+        ("splitter length 300", pc.splitter(300.0), {"type": "filters.splitter", "length": 300}),
+        ("splitter length 250 buffer 20", pc.splitter(250.0, buffer=20.0), {"type": "filters.splitter", "length": 250, "buffer": 20}),
+        ("chipper 5000", pc.chipper(), {"type": "filters.chipper"}),
+        ("chipper 777", pc.chipper(777), {"type": "filters.chipper", "capacity": 777}),
+    ]:
+        out = tmp / "tiles"
+        shutil.rmtree(out, ignore_errors=True)
+        out.mkdir()
+        writer = {"type": "writers.las", "filename": str(out / "t_#.las"), "forward": "all"}
+        subprocess.run([PDAL, "pipeline", "--stdin"], input=json.dumps([str(path), stage, writer]), text=True, check=True, capture_output=True)
+        refs = [laspy.read(out / f"t_{i + 1}.las") for i in range(len(list(out.iterdir())))]
+        ok = len(refs) == len(tiles) and all(
+            len(t) == len(r) and all(np.allclose(t[k], np.asarray(r[k]), rtol=0, atol=0.005) for k in "xyz") for t, r in zip(tiles, refs)
+        )
+        report(f"filter {label} {name}: {len(tiles)} tiles vs PDAL {len(refs)}, the same points in the same order", ok, "different tiles")
+    for opts in [{}, {"knn": 16}]:
+        ours = pc.normal(**opts)
+        ref = pdal_text([str(path), {"type": "filters.normal", **opts}])
+        check(f"normal {opts or 'defaults'}", ours, ref, ["normal_x", "normal_y", "normal_z", "curvature"], 1e-6)
+    for opts, kwargs in [({}, {}), ({"tolerance": 2.0, "min_points": 10, "is3d": False}, {"tolerance": 2.0, "min_points": 10, "is3d": False})]:
+        ours = pc.cluster(**kwargs)
+        ref = pdal_text([str(path), {"type": "filters.cluster", **opts}])
+        check(f"cluster {opts or 'defaults'}", ours, {"cluster_id": ref["cluster_id"]}, ["cluster_id"])
+
+
 def compare_interpolation(path: Path, tmp: Path) -> None:
     """Compares linear (TIN) and nearest-neighbour grids with `gdal_grid`'s.
 
@@ -701,10 +845,15 @@ def main() -> None:
         compare_formats(root, tmp)
         compare_waveforms(root, tmp)
         compare_filters(root / "autzen_trim.las", tmp, (420, 500))
+        compare_more_filters(root / "autzen_trim.las", tmp)
         if PDAL and (root / "madison.copc.laz").exists():
             madison = tmp / "madison.las"
             terrio.convert_points(str(root / "madison.copc.laz"), str(madison))
             compare_filters(madison, tmp, (330, 400))
+            # The other filters on a 2 x 2 km part of it (half a million points).
+            part = tmp / "madison_part.las"
+            terrio.convert_points(str(root / "madison.copc.laz"), str(part), bounds=(2354500, 1077000, 2356500, 1079000))
+            compare_more_filters(part, tmp)
         compare_interpolation(root / "autzen_trim.las", tmp)
     print(f"\n{len(FAILURES)} failure(s)")
     for f in FAILURES:
