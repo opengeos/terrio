@@ -686,6 +686,12 @@ test("remote files read with range requests", async () => {
     assert.equal(ovr.length, cog.overviews[0][0] * cog.overviews[0][1]);
     const sub = await cog.read({ window: [0, 0, 64, 32] });
     assert.deepEqual([sub.kind, sub.width, sub.height], ["raster", 64, 32]);
+    // Reads awaited together, with a cache too small to keep their blocks: they run in turn, so
+    // that one read's trimming does not evict the blocks another fetched and still needs.
+    const busy = await terrio.openUrl(server.url + "dem.tif", { blockSize: 4096, cacheSize: 4096 });
+    const windows = [[0, 0, 300, 200], [1200, 1000, 300, 200], [600, 500, 100, 80], [50, 900, 200, 250]];
+    const reads = await Promise.all(windows.map((w) => busy.readBand(1, w)));
+    windows.forEach((w, k) => assert.deepEqual([...reads[k]], [...dem.readBand(1, w)], `window ${w}`));
 
     const fgb = await terrio.openUrl(server.url + "cells.fgb");
     assert.equal(fgb.info().feature_count, 1500);
@@ -728,7 +734,7 @@ test("remote files read with range requests", async () => {
 
     await assert.rejects(terrio.openUrl(server.url + "missing.tif"), /404/);
     // The requests the server saw are those terrio counted.
-    const counted = [cog, fgb, pq, tiles, copc].reduce((s, d) => s + d.stats().bytes, 0);
+    const counted = [cog, busy, fgb, pq, tiles, copc].reduce((s, d) => s + d.stats().bytes, 0);
     assert.equal(counted, server.stats.bytes);
   } finally {
     server.close();

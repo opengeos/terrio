@@ -161,11 +161,34 @@ struct State {
     format: &'static str,
     cache_size: u64,
     reader: RefCell<Option<Reader>>,
+    /// The end of the last read queued: reads run one at a time, as they share the blocks
+    /// fetched, the blocks missed and the cache's trimming.
+    queue: RefCell<js_sys::Promise>,
+}
+
+/// A read's turn, which lets the next queued read run when dropped.
+struct Turn(js_sys::Function);
+
+impl Drop for Turn {
+    fn drop(&mut self) {
+        let _ = self.0.call0(&JsValue::NULL);
+    }
 }
 
 impl State {
-    /// Runs a read until it no longer misses blocks, fetching them in between.
+    /// Waits for the reads queued before this one to finish.
+    async fn turn(&self) -> Turn {
+        let mut resolve = None;
+        let mine = js_sys::Promise::new(&mut |res, _| resolve = Some(res));
+        let previous = self.queue.replace(mine);
+        let _ = wasm_bindgen_futures::JsFuture::from(previous).await;
+        Turn(resolve.expect("a promise's executor runs at once"))
+    }
+
+    /// Runs a read until it no longer misses blocks, fetching them in between. Reads of one
+    /// dataset run one after another, even when their promises are awaited together.
     async fn run<T>(&self, mut read: impl FnMut(&mut Option<Reader>) -> terrio::Result<T>) -> Result<T, JsError> {
+        let _turn = self.turn().await;
         for _ in 0..MAX_ROUNDS {
             let result = read(&mut self.reader.borrow_mut());
             let missing = self.file.missing();
@@ -270,7 +293,15 @@ pub async fn open_url(url: String, options: JsValue) -> Result<RemoteDataset, Js
     let path = url.split(['?', '#']).next().unwrap_or(&url);
     let name = path.rsplit('/').next().filter(|n| !n.is_empty()).unwrap_or("remote").to_string();
     let format = detect(&name, &first.data, o.format.as_deref())?;
-    let state = Rc::new(State { file, fetcher, name, format, cache_size: o.cache_size, reader: RefCell::new(None) });
+    let state = Rc::new(State {
+        file,
+        fetcher,
+        name,
+        format,
+        cache_size: o.cache_size,
+        reader: RefCell::new(None),
+        queue: RefCell::new(js_sys::Promise::resolve(&JsValue::UNDEFINED)),
+    });
     let (file, name) = (state.file.clone(), state.name.clone());
     state
         .run(|r| {

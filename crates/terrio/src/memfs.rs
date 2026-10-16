@@ -16,7 +16,8 @@ static NEXT: AtomicU64 = AtomicU64::new(1);
 /// A path as a key: `/` separators, without a trailing one.
 fn key(p: &Path) -> Option<String> {
     let s = p.to_str()?.replace('\\', "/");
-    s.starts_with(ROOT).then(|| s.trim_end_matches('/').to_string())
+    // Under the root only: not `/vsimem/terrio_other`.
+    (s.strip_prefix(ROOT).is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))).then(|| s.trim_end_matches('/').to_string())
 }
 
 fn files() -> std::sync::MutexGuard<'static, BTreeMap<String, Arc<Vec<u8>>>> {
@@ -150,6 +151,14 @@ pub(crate) fn subdirs(p: &Path) -> Vec<(String, PathBuf)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn virtual_paths_end_at_a_separator() {
+        assert_eq!(key(Path::new("/vsimem/terrio")).as_deref(), Some("/vsimem/terrio"));
+        assert_eq!(key(Path::new("/vsimem/terrio/3/a/")).as_deref(), Some("/vsimem/terrio/3/a"));
+        assert_eq!(key(Path::new("/vsimem/terrio_other/a")), None);
+        assert_eq!(key(Path::new("/vsimem/terrioX")), None);
+    }
 
     #[test]
     fn mounts_files() {
