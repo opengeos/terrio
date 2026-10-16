@@ -123,7 +123,7 @@ pub(crate) fn read(path: &Path) -> Result<RasterDataset> {
         .unwrap_or_default();
     let nodata = f("rasterinfo.nullcellvalue");
     let raster = common::make_raster(layout.cols, layout.rows, layout.bands, pixels, gt, crs, nodata)?;
-    Ok(RasterDataset { raster, driver: RasterDriver::ERS, has_nodata: nodata.is_some(), affine: None })
+    Ok(RasterDataset::with_driver(raster, RasterDriver::ERS, nodata.is_some()))
 }
 
 /// The data file of a header: the header's path without its extension.

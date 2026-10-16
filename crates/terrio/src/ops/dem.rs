@@ -18,7 +18,7 @@
 //! - on x86-64, the default hillshade uses the same approximate reciprocal square root as GDAL's
 //!   SSE code path on the rows where it uses it.
 
-use super::{Grid, build_raster};
+use super::{Grid, build_raster, build_raster_data};
 use crate::{Error, RasterDataset, Result};
 use std::f64::consts::PI;
 use wbraster::DataType;
@@ -741,13 +741,13 @@ fn process<T: Px>(src: &[T], width: usize, height: usize, nodata: Option<T>, dst
     out
 }
 
-/// A band read as GDAL's DEM tools read it.
-enum Band {
+/// A band read as GDAL's DEM tools read it (a `Float32` band as it is stored).
+enum Band<'a> {
     Int(Vec<i32>, Option<i32>),
-    Float(Vec<f32>, Option<f32>),
+    Float(std::borrow::Cow<'a, [f32]>, Option<f32>),
 }
 
-fn read_band(ds: &RasterDataset, band: usize) -> Result<Band> {
+fn read_band(ds: &RasterDataset, band: usize) -> Result<Band<'_>> {
     let r = &ds.raster;
     if band == 0 || band > r.bands {
         return Err(Error::InvalidArgument(format!("unable to fetch band #{band}")));
@@ -766,7 +766,7 @@ fn read_band(ds: &RasterDataset, band: usize) -> Result<Band> {
     }
     macro_rules! float {
         ($v:expr) => {
-            Band::Float($v[s..s + n].iter().map(|x| *x as f32).collect(), nodata.map(|d| d as f32))
+            Band::Float(std::borrow::Cow::Owned($v[s..s + n].iter().map(|x| *x as f32).collect()), nodata.map(|d| d as f32))
         };
     }
     Ok(match &r.data {
@@ -778,7 +778,7 @@ fn read_band(ds: &RasterDataset, band: usize) -> Result<Band> {
         RasterData::I32(v) => float!(v),
         RasterData::U64(v) => float!(v),
         RasterData::I64(v) => float!(v),
-        RasterData::F32(v) => Band::Float(v[s..s + n].to_vec(), nodata.map(|d| d as f32)),
+        RasterData::F32(v) => Band::Float(std::borrow::Cow::Borrowed(&v[s..s + n]), nodata.map(|d| d as f32)),
         RasterData::F64(v) => float!(v),
     })
 }
@@ -930,12 +930,14 @@ pub fn dem(ds: &RasterDataset, product: DemProduct, o: &DemOptions) -> Result<Ra
         Band::Int(v, nd) => run!(i32, v, *nd),
         Band::Float(v, nd) => run!(f32, v, *nd),
     };
-    let values: Vec<f64> = if out_type == DataType::U8 {
-        values.iter().map(|v| float_to_byte(*v)).collect()
+    drop(band);
+    // The values as they are stored: bytes, or the Float32 values themselves.
+    let data = if out_type == DataType::U8 {
+        RasterData::U8(crate::par::map_range(values.len(), |i| float_to_byte(values[i]) as u8))
     } else {
-        values.iter().map(|v| *v as f64).collect()
+        RasterData::F32(values)
     };
-    let mut out = build_raster(Grid::of(&ds.raster), vec![values], out_type, dst_nodata, &ds.crs(), |v, _| v)?;
+    let mut out = build_raster_data(Grid::of(&ds.raster), data, 1, dst_nodata, &ds.crs())?;
     // A rotated or south-up input keeps its geotransform.
     if let Some(gt) = ds.affine {
         out.set_geo_transform(gt);

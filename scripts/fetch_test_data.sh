@@ -56,6 +56,35 @@ for f in ATMS-SDR/2023/01/01/SATMS_j01_d20230101_t0000026_e0000343_b26525_c20230
 done
 s5p=S5P_OFFL_L2__CH4____20230101T000319_20230101T014449_27036_03_020400_20230103T110255.nc
 [ -e $s5p ] || curl -sSfL -o $s5p "https://meeo-s5p.s3.amazonaws.com/OFFL/L2__CH4___/2023/01/01/$s5p"
+# HDF-EOS5 grids (geographic, sinusoidal and UTM) and swaths, complex (compound) datasets,
+# COSMO-SkyMed products and netCDF geolocation arrays (CF coordinates, NASA ocean color, EMIT,
+# irregular axes), from GDAL's test suite.
+gdal_data=https://raw.githubusercontent.com/OSGeo/gdal/v3.12.2/autotest/gdrivers/data
+mkdir -p gdal_hdf5 gdal_netcdf
+for f in dummy_HDFEOS_swath.h5 dummy_HDFEOS_with_sinu_projection.h5 dummy_HDFEOS_with_utm_projection.h5 \
+  dummy_HDFEOS_with_geo_projection.h5 hdfeos_sample_swath.h5 complex.h5 CSK_GEC.h5 CSK_DGM.h5 recursive_groups.h5; do
+  [ -e "gdal_hdf5/$f" ] || curl -sSfL -o "gdal_hdf5/$f" "$gdal_data/hdf5/$f"
+done
+for f in GLMELT_4X5.OCN.nc fake_SNPP_VIIRS.20230406T024200.L2.OC.NRT.nc cf_lon_lat_with_coordinates_no_crs.nc \
+  fake_EMIT_L2B_MIN.nc sentinel5p_fake.nc uint16_netcdf4_without_fill.nc; do
+  [ -e "gdal_netcdf/$f" ] || curl -sSfL -o "gdal_netcdf/$f" "$gdal_data/netcdf/$f"
+done
+# NASA HDF-EOS5 products, when Earthdata Login credentials are in ~/.netrc (not in CI): a VIIRS
+# Black Marble grid (geographic, LAADS), a VIIRS surface reflectance grid (sinusoidal, LP DAAC),
+# AMSR2 sea ice polar stereographic grids and a precipitation swath (NSIDC).
+if grep -qs urs.earthdata.nasa.gov ~/.netrc; then
+  mkdir -p hdfeos5
+  edl() { [ -e "hdfeos5/$1" ] || curl -sSfL -n -c hdfeos5/.cookies -b hdfeos5/.cookies -o "hdfeos5/$1" "$2" || rm -f "hdfeos5/$1"; }
+  edl VNP46A2.A2022365.h11v09.002.2025135012224.h5 \
+    https://data.laadsdaac.earthdatacloud.nasa.gov/prod-lads/VNP46A2/VNP46A2.A2022365.h11v09.002.2025135012224.h5
+  edl VNP09GA.A2026284.h01v11.002.2026286234935.h5 \
+    https://data.lpdaac.earthdatacloud.nasa.gov/lp-prod-protected/VNP09GA.002/VNP09GA.A2026284.h01v11.002.2026286234935/VNP09GA.A2026284.h01v11.002.2026286234935.h5
+  edl AMSR_U2_L3_SeaIce12km_B04_20250831.he5 \
+    https://data.nsidc.earthdatacloud.nasa.gov/nsidc-cumulus-prod-protected/AMSA/AU_SI12/1/2025/08/31/AMSR_U2_L3_SeaIce12km_B04_20250831.he5
+  edl AMSR_U2_L2_Rain_V02_202508312319_A.he5 \
+    https://data.nsidc.earthdatacloud.nasa.gov/nsidc-cumulus-prod-protected/AMSA/AU_Rain/1/2025/08/31/AMSR_U2_L2_Rain_V02_202508312319_A.he5
+  rm -f hdfeos5/.cookies
+fi
 # JPEG 2000: Sentinel-2 band files, georeferenced by GMLJP2 boxes (L1C and L2A, tile 10SEG, from
 # the public Google Cloud copy of the Copernicus archive), and GDAL's test files (GMLJP2 in EPSG
 # axis order, a 1-bit alpha channel, a GeoJP2 box written by the ECW SDK).

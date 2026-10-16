@@ -157,7 +157,18 @@ and 10, in the file or a `.wdp` file) read and kept on write; PDAL's `filters.sm
 gridding by TIN (linear) and nearest-neighbour interpolation as `gdal_grid` does
 (`terrio grid --method`).
 
-Still to do: EPT writing, E57 written in chunks, and PDAL's other filters.
+Done: EPT writing (LASzip, binary and Zstandard tiles, the COPC octree built out of core, read by
+PDAL's `readers.ept` as it reads the source, checked on 4.07 million points of USGS 3DEP lidar);
+E57 written in chunks (packet by packet, 59 MB for 4.07 million points); PDAL's `filters.pmf`,
+`filters.csf`, `filters.elm`, `filters.hag_nn`, `filters.hag_delaunay`, `filters.crop` (boxes,
+polygons, circles and spheres), `filters.decimation`, `filters.expression` and `filters.assign`
+(PDAL's expression language), `filters.merge`, `filters.splitter`, `filters.chipper`,
+`filters.normal` and `filters.cluster`, identical to PDAL's on autzen and USGS 3DEP lidar
+(`terrio filter`, Python and JavaScript); `filters.reprojection` is `terrio convert --t-srs`.
+
+Still to do: PDAL's other filters (`filters.dbscan`, `filters.covariancefeatures`,
+`filters.lof`, `filters.dem`, `filters.colorization`, `filters.overlay` and the long tail), and
+EPT datasets updated in place (appending points, as Entwine's `--subset` and merge do).
 
 ## Bindings: Python and WebAssembly
 

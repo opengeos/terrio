@@ -135,8 +135,6 @@ struct Item {
     properties: Vec<usize>,
 }
 
-/// The AV1 bitstreams of an AVIF file's primary image and of its alpha plane, and the colour
-/// description of the primary image.
 /// An AVIF file's contents: the primary image's AV1 bitstream, its alpha plane's, its colours.
 type Container = (Vec<u8>, Option<Vec<u8>>, Option<Nclx>);
 
@@ -457,6 +455,12 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Image> {
     let (color, alpha, nclx) = read_container(bytes)?;
     let frame = decode_av1(color)?;
     let alpha = alpha.map(decode_av1).transpose()?;
+    // libavif rejects an alpha plane of another size than the image.
+    if let Some(a) = &alpha
+        && (a.width != frame.width || a.height != frame.height)
+    {
+        return Err(bad("the alpha plane's size differs from the image's"));
+    }
     to_rgb(&frame, alpha.as_ref(), nclx)
 }
 

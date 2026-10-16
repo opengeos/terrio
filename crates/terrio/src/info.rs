@@ -50,6 +50,9 @@ pub struct RasterInfo {
     /// The rasters the file holds besides this one, as GDAL's subdatasets.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub subdatasets: Vec<Subdataset>,
+    /// GDAL's `GEOLOCATION` metadata: where the longitude and latitude arrays of a swath are.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub geolocation: Vec<(String, String)>,
 }
 
 /// A dataset inside a file (GDAL's subdatasets): a raster table of a GeoPackage, a netCDF
@@ -189,23 +192,25 @@ fn raster_info_at(ds: &RasterDataset, options: &InfoOptions, path: Option<&str>,
     let r = &ds.raster;
     let crs = ds.crs();
     let extent = [r.x_min, r.y_min, r.x_max(), r.y_max()];
-    let bands = (0..r.bands)
+    // A complex band's statistics and histogram are those of its real parts, as GDAL's.
+    let part = if ds.complex { 2 } else { 1 };
+    let bands = (0..ds.band_count())
         .map(|b| {
-            let statistics = options.statistics.then(|| band_statistics(ds, b)).flatten();
+            let statistics = options.statistics.then(|| band_statistics(ds, b * part)).flatten();
             let histogram = options
                 .histogram
                 .then(|| {
-                    let ctx = histogram_context(ds, b, path, lazy.as_deref_mut());
-                    crate::histogram::default_histogram(ds, b, &ctx, statistics.map(|s| (s.min, s.max)))
+                    let ctx = histogram_context(ds, b * part, path, lazy.as_deref_mut());
+                    crate::histogram::default_histogram(ds, b * part, &ctx, statistics.map(|s| (s.min, s.max)))
                 })
                 .flatten();
-            BandInfo { band: b + 1, data_type: gdal_type_name(r.data_type).to_string(), nodata: ds.nodata(), statistics, histogram }
+            BandInfo { band: b + 1, data_type: ds.data_type_name(), nodata: ds.nodata(), statistics, histogram }
         })
         .collect();
     RasterInfo {
         driver: ds.driver.name().to_string(),
         size: [r.cols, r.rows],
-        band_count: r.bands,
+        band_count: ds.band_count(),
         geo_transform: ds.geo_transform(),
         wgs84_extent: wgs84_extent(&crs, extent),
         crs: CrsSummary::new(&crs),
@@ -214,6 +219,7 @@ fn raster_info_at(ds: &RasterDataset, options: &InfoOptions, path: Option<&str>,
         overviews: Vec::new(),
         metadata: r.metadata.iter().filter(|(k, _)| subdataset_index(k).is_none()).cloned().collect(),
         subdatasets: subdatasets_from_metadata(&r.metadata),
+        geolocation: ds.geolocation.as_ref().map(|g| g.items()).unwrap_or_default(),
     }
 }
 
@@ -283,6 +289,12 @@ pub fn lazy_raster_info(r: &mut LazyRaster, options: &InfoOptions) -> crate::Res
 
 fn lazy_raster_info_at(r: &mut LazyRaster, options: &InfoOptions, path: Option<&str>) -> crate::Result<RasterInfo> {
     let overviews = r.overviews().into_iter().map(|(w, h)| [w, h]).collect();
+    // Held in memory whole: summarized as read eagerly (complex bands, geolocation arrays).
+    if let Some(ds) = r.dataset() {
+        let mut info = raster_info_at(ds, options, path, None);
+        info.overviews = overviews;
+        return Ok(info);
+    }
     if options.histogram {
         let ds = r.read()?;
         let mut info = raster_info_at(&ds, options, path, Some(r));
@@ -325,6 +337,7 @@ fn lazy_raster_info_at(r: &mut LazyRaster, options: &InfoOptions, path: Option<&
         overviews,
         metadata: r.metadata(),
         subdatasets: Vec::new(),
+        geolocation: Vec::new(),
     })
 }
 
@@ -632,6 +645,12 @@ impl Info {
                     let _ = writeln!(s, "Metadata: {k}={v}");
                 }
                 write_subdatasets(&mut s, &r.subdatasets);
+                if !r.geolocation.is_empty() {
+                    let _ = writeln!(s, "Geolocation:");
+                    for (k, v) in &r.geolocation {
+                        let _ = writeln!(s, "  {k}={v}");
+                    }
+                }
                 for b in &r.bands {
                     let _ = write!(s, "Band {}: {}", b.band, b.data_type);
                     if let Some(nd) = b.nodata {

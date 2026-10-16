@@ -656,7 +656,7 @@ pub(crate) fn read_geotiff(path: &std::path::Path) -> crate::Result<crate::Raste
     };
     let raster = crate::pixel::raster_from_data(cfg, data)?;
     let has_nodata = tags.nodata.is_some();
-    let mut ds = crate::RasterDataset { raster, driver: crate::formats::RasterDriver::GTiff, has_nodata, affine: None };
+    let mut ds = crate::RasterDataset::with_driver(raster, crate::formats::RasterDriver::GTiff, has_nodata);
     match tags.corner_geo_transform() {
         Some(gt) => ds.set_geo_transform(gt),
         None => {

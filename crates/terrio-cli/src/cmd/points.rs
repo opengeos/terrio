@@ -73,6 +73,10 @@ pub struct PointWriteArgs {
     /// needed to read the same values back).
     #[arg(long = "ply-precision", value_name = "DIGITS", help_heading = "Point cloud options")]
     ply_precision: Option<usize>,
+    /// EPT outputs: how the nodes' points are stored: laszip (the default, as Entwine), binary or
+    /// zstandard.
+    #[arg(long = "ept-data-type", value_name = "TYPE", help_heading = "Point cloud options")]
+    ept_data_type: Option<String>,
     /// The points read and written at a time: point clouds are converted in chunks, in bounded
     /// memory, whatever their size (about a million points by default).
     #[arg(long = "chunk-points", value_name = "N", default_value_t = 0, help_heading = "Point cloud options")]
@@ -95,7 +99,11 @@ impl PointWriteArgs {
             None => None,
             Some(f) => match PointFormat::from_name(f) {
                 Some(p) => Some(p),
-                None => return Err(terrio::Error::InvalidArgument(format!("unknown point cloud format '{f}' (LAS, LAZ, COPC, PLY, E57)"))),
+                None => {
+                    return Err(terrio::Error::InvalidArgument(format!(
+                        "unknown point cloud format '{f}' (LAS, LAZ, COPC, PLY, E57, EPT)"
+                    )));
+                }
             },
         };
         Ok(PointWriteOptions {
@@ -107,6 +115,7 @@ impl PointWriteArgs {
             ply_encoding: self.ply_encoding.as_deref().map(PlyEncoding::parse).transpose()?.unwrap_or_default(),
             ply_precision: self.ply_precision,
             dimensions: self.dims.clone(),
+            ept_data_type: self.ept_data_type.as_deref().map(pointcloud::EptDataType::parse).transpose()?.unwrap_or_default(),
             ..Default::default()
         })
     }

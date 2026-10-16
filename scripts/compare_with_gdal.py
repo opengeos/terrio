@@ -37,7 +37,7 @@ gdal.PushErrorHandler("CPLQuietErrorHandler")
 TERRIO = os.environ.get("TERRIO_BIN", os.path.join(os.path.dirname(__file__), "..", "target", "release", "terrio"))
 RASTER_EXT = {".tif", ".tiff", ".asc", ".jp2", ".img", ".hdr", ".zarr", ".flt", ".bil", ".envi", ".sdat", ".rst", ".ers", ".dt1", ".dt2", ".xyz", ".grd", ".png", ".jpg", ".nc", ".h5"}
 # Containers of subdatasets, compared one subdataset at a time with --subdatasets.
-CONTAINER_EXT = {".nc", ".h5"}
+CONTAINER_EXT = {".nc", ".h5", ".he5"}
 VECTOR_EXT = {".geojson", ".json", ".gpkg", ".parquet", ".fgb", ".shp", ".kml", ".kmz", ".gml", ".gpx", ".topojson", ".mif", ".tab", ".osm", ".csv", ".zip", ".pbf"}
 
 GDAL_TYPES = {
@@ -149,6 +149,17 @@ def compare_raster(path, t):
     g_epsg = epsg_of(ds.GetSpatialRef())
     if t["crs"]["epsg"] != g_epsg:
         diffs.append(f"epsg {t['crs']['epsg']} vs {g_epsg}")
+    # Geolocation arrays (swaths): GDAL's GEOLOCATION metadata, item for item.
+    g_geoloc = ds.GetMetadata("GEOLOCATION") or {}
+    t_geoloc = dict(t.get("geolocation", []))
+    if "SRS" in g_geoloc and "SRS" in t_geoloc and g_geoloc["SRS"] != t_geoloc["SRS"]:
+        # The same geographic CRS, in WKT 1 or 2.
+        a, b = osr.SpatialReference(), osr.SpatialReference()
+        if a.SetFromUserInput(g_geoloc["SRS"]) == 0 and b.SetFromUserInput(t_geoloc["SRS"]) == 0 and a.IsSameGeogCS(b):
+            t_geoloc["SRS"] = g_geoloc["SRS"]
+    if t_geoloc != g_geoloc:
+        keys = sorted(k for k in set(g_geoloc) | set(t_geoloc) if g_geoloc.get(k) != t_geoloc.get(k))
+        diffs.append(f"geolocation {keys[0]}: {t_geoloc.get(keys[0])!r} vs {g_geoloc.get(keys[0])!r}")
     for tb in t["bands"]:
         b = ds.GetRasterBand(tb["band"])
         gtype = gdal.GetDataTypeName(b.DataType)
@@ -159,7 +170,11 @@ def compare_raster(path, t):
         if not close(nd, b.GetNoDataValue()):
             diffs.append(f"band {tb['band']} nodata {tb['nodata']} vs {b.GetNoDataValue()}")
         if tb.get("statistics"):
-            mn, mx, mean, std = b.ComputeStatistics(False)
+            try:
+                mn, mx, mean, std = b.ComputeStatistics(False)
+            except RuntimeError:
+                diffs.append(f"band {tb['band']} has statistics, GDAL finds no valid pixel")
+                continue
             s = tb["statistics"]
             for name, a, g in (("min", s["min"], mn), ("max", s["max"], mx), ("mean", s["mean"], mean), ("std", s["std_dev"], std)):
                 if not close(a, g, 1e-4):
@@ -191,7 +206,11 @@ def compare_pixels(path, gdal_path):
         t = gdal.Open(out)
         diffs = []
         for i in range(1, g.RasterCount + 1):
-            a, b = g.GetRasterBand(i).ReadAsArray(), t.GetRasterBand(i).ReadAsArray()
+            try:
+                a = g.GetRasterBand(i).ReadAsArray()
+            except RuntimeError:
+                continue  # pixels GDAL cannot read
+            b = t.GetRasterBand(i).ReadAsArray()
             if a.shape != b.shape:
                 return [f"band {i} shape {b.shape} vs {a.shape}"]
             same = (a == b) | (np.isnan(a) & np.isnan(b)) if a.dtype.kind == "f" else a == b
@@ -526,7 +545,10 @@ def compare_subdatasets(path):
     """
     out = []
     t = terrio_info(path)
-    g = gdal.Open(path)
+    try:
+        g = gdal.Open(path)
+    except RuntimeError:
+        return []  # what GDAL cannot open
     gsubs = g.GetSubDatasets()
     if isinstance(t, str):
         return [("subdataset list", [f"terrio error: {t}"])]
@@ -544,7 +566,7 @@ def compare_subdatasets(path):
         if isinstance(ts, str):
             return [(os.path.basename(path), [f"terrio error: {ts}"])]
         return [(os.path.basename(path), diffs + compare_raster(path, ts) + compare_pixels(path, path))]
-    if path.endswith(".h5"):
+    if path.lower().endswith((".h5", ".he5")):
         # GDAL's metadata of an HDF5 container: every group's attributes and its datasets'.
         tmd = {k: v for k, v in t["metadata"]}
         gmd = g.GetMetadata()

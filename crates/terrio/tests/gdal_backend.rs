@@ -290,3 +290,228 @@ fn hdf5_subdatasets() {
     let same = |a: &[f64], b: &[f64]| a.iter().zip(b).all(|(x, y)| x == y || (x.is_nan() && y.is_nan()));
     assert!(same(&native_hdf5.raster.data.to_f64_vec(), &via_hdf5.raster.data.to_f64_vec()));
 }
+
+/// A small layer of polygons with every field type terrio has, in UTM zone 17N.
+fn sample_layer() -> terrio::Layer {
+    use terrio::{FieldDef, FieldType, Geometry};
+    let mut layer = terrio::Layer::new("parcels");
+    layer.geom_type = Some(terrio::GeometryType::Polygon);
+    layer.set_crs_epsg(Some(32617));
+    for (name, t) in [
+        ("name", FieldType::Text),
+        ("count", FieldType::Integer),
+        ("area", FieldType::Float),
+        ("built", FieldType::Date),
+        ("flag", FieldType::Boolean),
+    ] {
+        layer.add_field(FieldDef::new(name, t));
+    }
+    for i in 0..4i64 {
+        let (x, y) = (400_000.0 + i as f64 * 1000.0, 3_980_000.0);
+        let ring = vec![(x, y), (x + 500.0, y), (x + 500.0, y + 250.5), (x, y + 250.5), (x, y)];
+        let geometry = Geometry::polygon(ring.into_iter().map(|(x, y)| wbvector::Coord::xy(x, y)).collect(), vec![]);
+        let attributes = vec![
+            if i == 2 { FieldValue::Null } else { FieldValue::Text(format!("parcel é{i}")) },
+            FieldValue::Integer(i * 1_000_000_007),
+            FieldValue::Float(125_250.0 + i as f64 / 8.0),
+            FieldValue::Date(format!("2024-0{}-15", i + 1)),
+            FieldValue::Boolean(i % 2 == 0),
+        ];
+        layer.push(terrio::Feature { fid: i as u64, geometry: Some(geometry), attributes });
+    }
+    layer
+}
+
+/// A layer's EPSG code, field names, and features as `(geometry WKT, field values)`.
+type GdalLayer = (Option<u32>, Vec<String>, Vec<(String, Vec<Option<String>>)>);
+
+/// Reads every feature of a GDAL dataset's first layer with GDAL itself: WKT of the geometry and
+/// the fields as strings.
+fn read_with_gdal(path: &str) -> GdalLayer {
+    let ds = gdal::Dataset::open(path).unwrap();
+    let mut layer = ds.layer(0).unwrap();
+    // MapInfo files keep the definition, not the code: identified as `gdalsrsinfo -e` does.
+    let epsg = layer
+        .spatial_ref()
+        .and_then(|mut s| s.auth_code().ok().or_else(|| s.auto_identify_epsg().ok().and_then(|()| s.auth_code().ok())).map(|c| c as u32));
+    let names: Vec<String> = layer.defn().fields().map(|f| f.name()).collect();
+    let features = layer
+        .features()
+        .map(|f| {
+            let wkt = f.geometry().map(|g| g.wkt().unwrap()).unwrap_or_default();
+            (wkt, (0..names.len()).map(|i| f.field_as_string(i).unwrap()).collect())
+        })
+        .collect();
+    (epsg, names, features)
+}
+
+/// Vector layers written through GDAL's drivers, and read back with GDAL: every feature's
+/// geometry and fields.
+#[test]
+fn vectors_written_through_gdal() {
+    let dir = tempfile::tempdir().unwrap();
+    let layer = sample_layer();
+    for (driver, ext) in [("OpenFileGDB", "gdb"), ("MapInfo File", "tab"), ("SQLite", "sqlite"), ("GML", "gml"), ("ESRI Shapefile", "shp")]
+    {
+        if !terrio::gdal_backend::has_driver(driver) {
+            continue;
+        }
+        let path = dir.path().join(format!("parcels.{ext}")).to_string_lossy().into_owned();
+        terrio::gdal_backend::write_vector(std::slice::from_ref(&layer), &path, driver, &[], &[])
+            .unwrap_or_else(|e| panic!("{driver}: {e}"));
+        // Written twice: the output is replaced.
+        terrio::gdal_backend::write_vector(std::slice::from_ref(&layer), &path, driver, &[], &[])
+            .unwrap_or_else(|e| panic!("{driver}, again: {e}"));
+        let (epsg, names, features) = read_with_gdal(&path);
+        assert_eq!(epsg, Some(32617), "{driver}: CRS");
+        assert_eq!(features.len(), 4, "{driver}");
+        let lower: Vec<String> = names.iter().map(|n| n.to_ascii_lowercase()).collect();
+        for name in ["name", "count", "area", "built", "flag"] {
+            assert!(lower.contains(&name.to_string()), "{driver}: field {name} missing from {names:?}");
+        }
+        let col = |n: &str| lower.iter().position(|x| x == n).unwrap();
+        let (wkt, values) = &features[1];
+        // File Geodatabases hold polygons as multipolygons, with rings clockwise.
+        let numbers: Vec<f64> = wkt.split(|c: char| !(c.is_ascii_digit() || c == '.' || c == '-')).filter_map(|t| t.parse().ok()).collect();
+        let points: Vec<(f64, f64)> = numbers.as_chunks::<2>().0.iter().map(|p| (p[0], p[1])).collect();
+        let ring = [(401000.0, 3980000.0), (401500.0, 3980000.0), (401500.0, 3980250.5), (401000.0, 3980250.5)];
+        assert!(wkt.contains("POLYGON ((") && points.len() == 5, "{driver}: {wkt}");
+        assert!(ring.iter().all(|r| points.contains(r)), "{driver}: {wkt}");
+        assert_eq!(values[col("name")].as_deref(), Some("parcel é1"), "{driver}");
+        assert_eq!(values[col("count")].as_deref(), Some("1000000007"), "{driver}");
+        assert_eq!(values[col("area")].as_deref().map(|v| v.parse::<f64>().unwrap()), Some(125_250.125), "{driver}");
+        assert!(values[col("built")].as_deref().is_some_and(|v| v.starts_with("2024/02/15") || v.starts_with("2024-02-15")), "{driver}");
+        // A null stays null where the format has nulls.
+        if driver != "MapInfo File" && driver != "ESRI Shapefile" {
+            assert_eq!(features[2].1[col("name")], None, "{driver}");
+        }
+        // And terrio reads it back (through GDAL for the formats it lacks).
+        let back = terrio::open_vector(&path, &Default::default()).unwrap();
+        assert_eq!(back.layers[0].features.len(), 4, "{driver}");
+        assert_eq!(back.layers[0].crs_epsg(), Some(32617), "{driver}");
+    }
+    // Layer creation options reach GDAL: a layer in a File Geodatabase feature dataset.
+    let path = dir.path().join("options.gdb").to_string_lossy().into_owned();
+    let lco = [("FEATURE_DATASET".to_string(), "survey".to_string())];
+    terrio::gdal_backend::write_vector(std::slice::from_ref(&layer), &path, "OpenFileGDB", &[], &lco).unwrap();
+    let ds = gdal::Dataset::open(&path).unwrap();
+    assert_eq!(ds.layer(0).unwrap().name(), "parcels");
+    // A driver that cannot write vector layers is refused.
+    assert!(terrio::gdal_backend::write_vector(std::slice::from_ref(&layer), &path, "NoSuchDriver", &[], &[]).is_err());
+    // A directory that is not a dataset of the driver is not removed to make room.
+    let other = dir.path().join("work.tab");
+    std::fs::create_dir(&other).unwrap();
+    std::fs::write(other.join("keep.txt"), "mine").unwrap();
+    assert!(terrio::gdal_backend::write_vector(std::slice::from_ref(&layer), other.to_str().unwrap(), "MapInfo File", &[], &[]).is_err());
+    assert_eq!(std::fs::read_to_string(other.join("keep.txt")).unwrap(), "mine");
+}
+
+/// `terrio::write_vector` and `write_raster_dataset` hand extensions terrio has no driver for to
+/// the GDAL driver that claims them.
+#[test]
+fn gdal_driver_chosen_by_extension() {
+    assert_eq!(terrio::gdal_backend::driver_for_path("a.dxf", true).as_deref(), Some("DXF"));
+    assert_eq!(terrio::gdal_backend::driver_for_path("a.gdb", true).as_deref(), Some("OpenFileGDB"));
+    assert_eq!(terrio::gdal_backend::driver_for_path("a.ntf", false).as_deref(), Some("NITF"));
+    assert_eq!(terrio::gdal_backend::driver_for_path("a.unknown-ext", true), None);
+    let dir = tempfile::tempdir().unwrap();
+    let mut lines = terrio::Layer::new("lines");
+    lines.geom_type = Some(terrio::GeometryType::LineString);
+    let coords = [(0.0, 0.0), (10.0, 5.0), (20.0, 0.0)].map(|(x, y)| wbvector::Coord::xy(x, y)).to_vec();
+    lines.push(terrio::Feature { fid: 0, geometry: Some(terrio::Geometry::line_string(coords)), attributes: vec![] });
+    let dxf = dir.path().join("lines.dxf").to_string_lossy().into_owned();
+    terrio::write_vector(&[lines], &dxf, &Default::default()).unwrap();
+    let (_, _, features) = read_with_gdal(&dxf);
+    assert_eq!(features[0].0, "LINESTRING (0 0,10 5,20 0)");
+    let gdb = dir.path().join("parcels.gdb").to_string_lossy().into_owned();
+    terrio::write_vector(&[sample_layer()], &gdb, &Default::default()).unwrap();
+    assert_eq!(read_with_gdal(&gdb).2.len(), 4);
+    let ntf = dir.path().join("sample.ntf").to_string_lossy().into_owned();
+    terrio::write_raster_dataset(&sample(), &ntf, &Default::default()).unwrap();
+    assert_same_raster(&terrio::open_raster(&ntf).unwrap(), &sample(), "NITF by extension");
+}
+
+/// A real layer (Natural Earth countries) through GDAL's File Geodatabase and MapInfo writers:
+/// GDAL reads the same geometries and attributes back as terrio wrote.
+#[test]
+fn real_vector_written_through_gdal() {
+    let Some(p) = data("countries.gpkg") else { return };
+    let src = terrio::open_vector(&p, &Default::default()).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    for (driver, ext) in [("OpenFileGDB", "gdb"), ("MapInfo File", "tab"), ("DXF", "dxf")] {
+        let path = dir.path().join(format!("countries.{ext}")).to_string_lossy().into_owned();
+        terrio::gdal_backend::write_vector(&src.layers, &path, driver, &[], &[]).unwrap();
+        let back = terrio::open_vector(&format!("GDAL:{path}"), &Default::default()).unwrap();
+        let (a, b) = (&back.layers[0], &src.layers[0]);
+        if driver == "DXF" {
+            // DXF splits multipolygons into several hatches.
+            assert!(a.features.len() >= b.features.len(), "{driver}");
+            continue;
+        }
+        assert_eq!(a.features.len(), b.features.len(), "{driver}");
+        for (fa, fb) in a.features.iter().zip(&b.features) {
+            // Polygons may come back as multipolygons (File Geodatabase) or with rings closed
+            // differently: compare the coordinates.
+            let coords = |g: &Option<terrio::Geometry>| g.as_ref().map(|g| g.to_wkb().len());
+            if driver == "OpenFileGDB" {
+                assert_eq!(coords(&fa.geometry).is_some(), coords(&fb.geometry).is_some(), "{driver}: feature {}", fb.fid);
+            }
+        }
+        let name = |l: &terrio::Layer, i: usize| {
+            let col = l.schema.fields().iter().position(|f| f.name.eq_ignore_ascii_case("NAME")).unwrap();
+            l.features[i].attributes[col].clone()
+        };
+        for i in [0, 50, b.features.len() - 1] {
+            assert_eq!(name(a, i), name(b, i), "{driver}: feature {i}");
+        }
+    }
+}
+
+/// Bytes in memory through GDAL's `/vsimem/`: formats terrio cannot read open from bytes, and
+/// formats only GDAL writes come back as bytes.
+#[test]
+fn bytes_through_gdal() {
+    let dir = tempfile::tempdir().unwrap();
+    // A NITF raster: written by GDAL to bytes, opened from them. (NITF has no nodata value: GDAL
+    // keeps it in an `.aux.xml` sidecar, which bytes leave out.)
+    let mut src = sample();
+    src.has_nodata = false;
+    let ntf = terrio::gdal_backend::write_raster_bytes(&src, "sample.ntf", "NITF", &[]).unwrap();
+    assert!(ntf.starts_with(b"NITF"));
+    let back = terrio::memory::open_raster_bytes(ntf.clone(), "sample.ntf").unwrap();
+    assert_eq!(back.driver, RasterDriver::Gdal);
+    assert_same_raster(&back, &src, "NITF from bytes");
+    // The same bytes without an extension: GDAL recognizes the content.
+    assert_eq!(terrio::memory::open_raster_bytes(ntf, "upload").unwrap().driver, RasterDriver::Gdal);
+    // `memory::write_raster_bytes` picks GDAL's driver for the extension.
+    let ntf = terrio::memory::write_raster_bytes(&sample(), "x.ntf", &Default::default()).unwrap();
+    assert!(ntf.starts_with(b"NITF"));
+    // Vector: a File Geodatabase (a directory) comes back as a zip archive of it, which GDAL
+    // and terrio open from bytes.
+    let gdb = terrio::memory::write_vector_bytes(&[sample_layer()], "parcels.gdb", &Default::default()).unwrap();
+    assert!(gdb.starts_with(b"PK"));
+    let zip_path = dir.path().join("parcels.gdb.zip");
+    std::fs::write(&zip_path, &gdb).unwrap();
+    let (epsg, _, features) = read_with_gdal(&format!("/vsizip/{}/parcels.gdb", zip_path.display()));
+    assert_eq!((epsg, features.len()), (Some(32617), 4));
+    let ds = terrio::memory::open_vector_bytes(gdb, "parcels.gdb.zip", &Default::default()).unwrap();
+    assert_eq!(ds.driver, VectorDriver::Gdal);
+    assert_eq!(ds.layers[0].name, "parcels");
+    assert_eq!(ds.layers[0].features.len(), 4);
+    // A DXF drawing from bytes.
+    let dxf = terrio::gdal_backend::write_vector_bytes(&[sample_layer()], "parcels.dxf", "DXF", &[], &[]).unwrap();
+    let ds = terrio::memory::open_bytes(dxf, "parcels.dxf").unwrap();
+    let terrio::Dataset::Vector(v) = ds else { panic!("not a vector dataset") };
+    assert_eq!(v.layers[0].features.len(), 4);
+    // An SQLite database (not a GeoPackage) from bytes.
+    let sqlite = terrio::gdal_backend::write_vector_bytes(&[sample_layer()], "p.sqlite", "SQLite", &[], &[]).unwrap();
+    let v = terrio::memory::open_vector_bytes(sqlite, "p.sqlite", &Default::default()).unwrap();
+    assert_eq!(v.driver, VectorDriver::Gdal);
+    assert_eq!(v.layers[0].features.len(), 4);
+    assert_eq!(v.layers[0].crs_epsg(), Some(32617));
+    // terrio's own formats still read with terrio's drivers.
+    let tif = terrio::memory::write_raster_bytes(&sample(), "s.tif", &Default::default()).unwrap();
+    assert_eq!(terrio::memory::open_raster_bytes(tif, "s.tif").unwrap().driver, RasterDriver::GTiff);
+    // Nothing is left in /vsimem/.
+    assert!(gdal::vsi::read_dir("/vsimem/", false).unwrap_or_default().iter().all(|p| !p.to_string_lossy().starts_with("terrio-")));
+}

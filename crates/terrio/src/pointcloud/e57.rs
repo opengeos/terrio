@@ -376,20 +376,22 @@ fn guid() -> String {
     format!("{{{:08x}-{:04x}-{:04x}-{:04x}-{:012x}}}", a >> 32, (a >> 16) & 0xffff, a & 0xffff, b >> 48, b & 0xffff_ffff_ffff)
 }
 
-/// Writes a point cloud as an E57 file of one scan: `x`, `y` and `z` as doubles, colours and
-/// intensities as integers of 0 to 65535 (with limits of 0 to 65535, so that PDAL reads them
-/// unchanged), normals in the `nor` extension, and the other dimensions as doubles in terrio's
-/// own extension.
-pub(crate) fn write_e57<T: Read + Write + Seek>(cloud: &PointCloud, out: T, options: &PointWriteOptions) -> Result<()> {
-    let err = |e: e57::Error| Error::InvalidData(format!("E57: {e}"));
-    let pick: Vec<&Dimension> = if options.dimensions.is_empty() {
+/// What an E57 file holds: its records, and the dimension each comes from.
+pub(crate) struct E57Plan {
+    prototype: Vec<e57::Record>,
+    sources: Vec<String>,
+    normals: bool,
+    own: bool,
+}
+
+/// The records of an E57 file of these dimensions (`names`, or all when empty): coordinates,
+/// colours (red, green and blue together), intensity, normals and the others in terrio's own
+/// namespace.
+pub(crate) fn plan_e57(cloud: &PointCloud, names: &[String]) -> Result<E57Plan> {
+    let pick: Vec<&Dimension> = if names.is_empty() {
         cloud.dimensions.iter().collect()
     } else {
-        options
-            .dimensions
-            .iter()
-            .map(|n| cloud.dim(n).ok_or_else(|| Error::InvalidArgument(format!("no dimension '{n}'"))))
-            .collect::<Result<_>>()?
+        names.iter().map(|n| cloud.dim(n).ok_or_else(|| Error::InvalidArgument(format!("no dimension '{n}'")))).collect::<Result<_>>()?
     };
     for c in ["x", "y", "z"] {
         if !pick.iter().any(|d| d.name == c) {
@@ -398,11 +400,7 @@ pub(crate) fn write_e57<T: Read + Write + Seek>(cloud: &PointCloud, out: T, opti
     }
     // E57 has colours as all of red, green and blue, or none.
     let colours = ["red", "green", "blue"].iter().all(|c| pick.iter().any(|d| d.name == *c));
-    let mut w = e57::E57Writer::new(out, &guid()).map_err(err)?;
-    let mut prototype = Vec::new();
-    let mut sources = Vec::new();
-    let mut normals = false;
-    let mut own = false;
+    let mut plan = E57Plan { prototype: Vec::new(), sources: Vec::new(), normals: false, own: false };
     let int16 = RecordDataType::Integer { min: 0, max: 65535 };
     for d in &pick {
         let name = match d.name.as_str() {
@@ -417,7 +415,7 @@ pub(crate) fn write_e57<T: Read + Write + Seek>(cloud: &PointCloud, out: T, opti
             "blue" if colours => RecordName::ColorBlue,
             "intensity" => RecordName::Intensity,
             "normal_x" | "normal_y" | "normal_z" => {
-                normals = true;
+                plan.normals = true;
                 let n = match d.name.as_str() {
                     "normal_x" => "normalX",
                     "normal_y" => "normalY",
@@ -431,7 +429,7 @@ pub(crate) fn write_e57<T: Read + Write + Seek>(cloud: &PointCloud, out: T, opti
                 {
                     continue;
                 }
-                own = true;
+                plan.own = true;
                 RecordName::Unknown { namespace: NAMESPACE.into(), name: other.into() }
             }
         };
@@ -439,32 +437,127 @@ pub(crate) fn write_e57<T: Read + Write + Seek>(cloud: &PointCloud, out: T, opti
             RecordName::ColorRed | RecordName::ColorGreen | RecordName::ColorBlue | RecordName::Intensity => int16.clone(),
             _ => RecordDataType::Double { min: None, max: None },
         };
-        prototype.push(e57::Record { name, data_type });
-        sources.push(*d);
+        plan.prototype.push(e57::Record { name, data_type });
+        plan.sources.push(d.name.clone());
     }
-    if normals {
+    Ok(plan)
+}
+
+/// Writes an E57 file of one point cloud (scan) whose points `feed` passes, chunk after chunk,
+/// to the function it is given: the points are written in packets as they come.
+pub(crate) fn write_e57_with<T: Read + Write + Seek>(
+    out: T,
+    plan: &E57Plan,
+    feed: impl FnOnce(&mut dyn FnMut(&PointCloud) -> Result<()>) -> Result<()>,
+) -> Result<()> {
+    let err = |e: e57::Error| Error::InvalidData(format!("E57: {e}"));
+    let mut w = e57::E57Writer::new(out, &guid()).map_err(err)?;
+    if plan.normals {
         w.register_extension(e57::Extension { namespace: "nor".into(), url: "http://www.libe57.org/E57_NOR_surface_normals.txt".into() })
             .map_err(err)?;
     }
-    if own {
+    if plan.own {
         w.register_extension(e57::Extension { namespace: NAMESPACE.into(), url: "https://github.com/opengeos/terrio".into() })
             .map_err(err)?;
     }
     {
-        let mut pc = w.add_pointcloud(&guid(), prototype.clone()).map_err(err)?;
-        for i in 0..cloud.len() {
-            let values = prototype
-                .iter()
-                .zip(&sources)
-                .map(|(r, d)| match r.data_type {
-                    RecordDataType::Integer { .. } => RecordValue::Integer((d.get(i).round() as i64).clamp(0, 65535)),
-                    _ => RecordValue::Double(d.get(i)),
-                })
-                .collect();
-            pc.add_point(values).map_err(err)?;
-        }
+        let mut pc = w.add_pointcloud(&guid(), plan.prototype.clone()).map_err(err)?;
+        let mut add = |cloud: &PointCloud| -> Result<()> {
+            // Dimensions missing from a chunk are written as zeros.
+            let dims: Vec<Option<&Dimension>> = plan.sources.iter().map(|n| cloud.dim(n)).collect();
+            for i in 0..cloud.len() {
+                let values = plan
+                    .prototype
+                    .iter()
+                    .zip(&dims)
+                    .map(|(r, d)| {
+                        let v = d.map_or(0.0, |d| d.get(i));
+                        match r.data_type {
+                            RecordDataType::Integer { .. } => RecordValue::Integer((v.round() as i64).clamp(0, 65535)),
+                            _ => RecordValue::Double(v),
+                        }
+                    })
+                    .collect();
+                pc.add_point(values).map_err(err)?;
+            }
+            Ok(())
+        };
+        feed(&mut add)?;
         pc.finalize().map_err(err)?;
     }
     w.finalize().map_err(err)?;
     Ok(())
+}
+
+/// Writes a point cloud as an E57 file.
+pub(crate) fn write_e57<T: Read + Write + Seek>(cloud: &PointCloud, out: T, options: &PointWriteOptions) -> Result<()> {
+    let plan = plan_e57(cloud, &options.dimensions)?;
+    write_e57_with(out, &plan, |add| add(cloud))
+}
+
+/// Writes an E57 file of points that come in chunks, in bounded memory: a thread writes the
+/// packets of each chunk as it comes (the E57 writer holds no more than a packet).
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) struct E57StreamWriter {
+    tx: Option<std::sync::mpsc::SyncSender<PointCloud>>,
+    handle: Option<std::thread::JoinHandle<Result<()>>>,
+    /// Set when the writer is dropped unfinished: the thread then stops without finishing the
+    /// file, which is not left looking complete.
+    aborted: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl E57StreamWriter {
+    /// Creates the file for points like `template`'s.
+    pub fn new(file: std::fs::File, template: &PointCloud, options: &PointWriteOptions) -> Result<Self> {
+        let plan = plan_e57(template, &options.dimensions)?;
+        let (tx, rx) = std::sync::mpsc::sync_channel::<PointCloud>(1);
+        let aborted = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let stop = aborted.clone();
+        let handle = std::thread::Builder::new().name("terrio-e57-writer".into()).spawn(move || {
+            write_e57_with(file, &plan, |add| {
+                for chunk in rx {
+                    add(&chunk)?;
+                }
+                if stop.load(std::sync::atomic::Ordering::SeqCst) {
+                    return Err(Error::InvalidData("E57: the writer was dropped before the file was finished".into()));
+                }
+                Ok(())
+            })
+        })?;
+        Ok(Self { tx: Some(tx), handle: Some(handle), aborted })
+    }
+
+    /// The writing thread's result, once it has stopped.
+    fn join(&mut self) -> Result<()> {
+        self.tx = None;
+        match self.handle.take() {
+            Some(h) => h.join().map_err(|_| Error::InvalidData("E57: the writing thread panicked".into()))?,
+            None => Ok(()),
+        }
+    }
+
+    /// Writes points.
+    pub fn write_cloud(&mut self, cloud: &PointCloud) -> Result<()> {
+        let sent = self.tx.as_ref().is_some_and(|tx| tx.send(cloud.clone()).is_ok());
+        if sent {
+            return Ok(());
+        }
+        // The thread stopped: its error.
+        self.join()?;
+        Err(Error::InvalidData("E57: the file is already finished".into()))
+    }
+
+    /// Finishes the file.
+    pub fn finish(mut self) -> Result<()> {
+        self.join()
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl Drop for E57StreamWriter {
+    fn drop(&mut self) {
+        self.aborted.store(true, std::sync::atomic::Ordering::SeqCst);
+        let _ = self.join();
+    }
 }

@@ -37,7 +37,7 @@ pub(crate) fn finish(path: &str, driver: RasterDriver, mut raster: Raster) -> Ra
         }
         _ => true,
     };
-    RasterDataset { raster, driver, has_nodata, affine: None }
+    RasterDataset::with_driver(raster, driver, has_nodata)
 }
 
 /// Fills in what a GDAL `.aux.xml` sidecar holds and the file does not: CRS, geotransform, nodata.

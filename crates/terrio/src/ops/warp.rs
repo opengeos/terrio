@@ -12,10 +12,11 @@
 //!   reproduce GDAL's warp kernel, including its treatment of nodata and of image edges.
 
 use super::Ct as Transformer;
-use super::{Grid, Resampling, apply_gt, band_f64, build_raster, invert_gt, is_nodata, warp_round};
+use super::{Grid, Resampling, apply_gt, invert_gt, is_nodata, warp_round};
 use crate::crs::SpatialRef;
 use crate::{Error, RasterDataset, Result};
 use wbraster::DataType;
+use wbraster::raster::RasterData;
 
 /// Nodata handling for an input or the output.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -1003,14 +1004,20 @@ pub fn warp(sources: &[&RasterDataset], o: &WarpOptions) -> Result<RasterDataset
     };
     let init = dst_nodata.unwrap_or(0.0);
     let n = grid.width * grid.height;
-    let mut out: Vec<Vec<f64>> = vec![vec![init; n]; bands];
+    // The output, in its type: chunks are warped into `f64` rows, then stored (the values are
+    // already rounded to the type, see `Sink::value`).
+    let mut out = RasterData::new_filled(out_type, n * bands, 0.0);
+    crate::pixel::with_data!(&mut out, v => {
+        let fill = warp_round(init, out_type);
+        v.iter_mut().for_each(|x| *x = fill as _);
+    });
 
-    for s in &srcs {
+    for (k, s) in srcs.iter().enumerate() {
         let mut t = s.transformer(&dst_srs)?;
         t.set_dst_gt(grid.geo_transform);
         let nodata: Vec<Option<f64>> = (0..bands).map(|b| src_nodata_of(s, b)).collect();
         let unified = matches!(o.src_nodata, Nodata::Values(_)) && bands > 1;
-        let src_bands: Vec<Vec<f64>> = (0..bands).map(|b| band_f64(&s.ds.raster, b)).collect();
+        let src_bands: Vec<super::BandView> = (0..bands).map(|b| super::BandView::of(&s.ds.raster, b)).collect();
         let cut_mask = match &o.cutline {
             Some(c) => Some(cutline_mask(c, s)?),
             None => None,
@@ -1035,15 +1042,21 @@ pub fn warp(sources: &[&RasterDataset], o: &WarpOptions) -> Result<RasterDataset
         let mut chunks = Vec::new();
         ctx.collect_chunks(0, 0, grid.width, grid.height, &mut chunks);
         chunks.sort_by_key(|c| (c.dy, c.dx));
-        let data = SrcData { bands: &src_bands, valid: &valid, width: s.grid.width };
         // As GDAL's warp kernel: valid pixels equal to the output nodata are nudged off it,
         // except with a nodata value unified across several bands.
         let sink = Sink { out_type, dst_nodata, avoid_nodata: masked && (bands == 1 || !unified) };
-        for c in chunks {
-            ctx.warp_chunk(&c, &data, &sink, chunk_rows(&mut out, grid.width, &c));
-        }
+        let fill = warp_round(init, out_type);
+        // The source's bands in their type: the kernels are compiled for each (no conversion of
+        // the bands, and no dispatch on the type per pixel).
+        let sn = s.grid.width * s.grid.height;
+        let target = Target { out: &mut out, width: grid.width, n, fill, out_type, first: k == 0 };
+        crate::pixel::with_data!(&s.ds.raster.data, v => {
+            let typed: Vec<&[_]> = (0..bands).map(|b| &v[b * sn..(b + 1) * sn]).collect();
+            let data = SrcData { bands: &typed, valid: &valid, width: s.grid.width };
+            warp_source(&ctx, &chunks, &data, &sink, target);
+        });
     }
-    build_raster(grid, out, out_type, dst_nodata, &dst_srs, warp_round)
+    super::build_raster_data(grid, out, bands, dst_nodata, &dst_srs)
 }
 
 /// Whether the destination grid is the source grid shifted by whole pixels.
@@ -1059,7 +1072,7 @@ fn is_pixel_translation(src: &[f64; 6], dst: &[f64; 6]) -> bool {
 
 /// Per-band validity masks (`None`: all valid), from nodata values and a cutline mask. With a
 /// unified nodata, a pixel is invalid only when every band is nodata.
-fn validity(bands: &[Vec<f64>], nodata: &[Option<f64>], unified: bool, cut: Option<Vec<bool>>) -> Vec<Option<Vec<bool>>> {
+fn validity(bands: &[super::BandView], nodata: &[Option<f64>], unified: bool, cut: Option<Vec<bool>>) -> Vec<Option<Vec<bool>>> {
     let combine = |m: Option<Vec<bool>>| -> Option<Vec<bool>> {
         match (m, &cut) {
             (Some(mut m), Some(c)) => {
@@ -1072,11 +1085,11 @@ fn validity(bands: &[Vec<f64>], nodata: &[Option<f64>], unified: bool, cut: Opti
     };
     if unified && nodata.iter().all(Option::is_some) {
         let n = bands[0].len();
-        let m: Vec<bool> = (0..n).map(|i| bands.iter().zip(nodata).any(|(b, nd)| !is_nodata(b[i], nd.unwrap()))).collect();
+        let m: Vec<bool> = (0..n).map(|i| bands.iter().zip(nodata).any(|(b, nd)| !is_nodata(b.get(i), nd.unwrap()))).collect();
         let m = combine(Some(m));
         return vec![m; bands.len()];
     }
-    bands.iter().zip(nodata).map(|(b, nd)| combine(nd.map(|nd| super::par_map(b, |v| !is_nodata(*v, nd))))).collect()
+    bands.iter().zip(nodata).map(|(b, nd)| combine(nd.map(|nd| crate::par::map_range(b.len(), |i| !is_nodata(b.get(i), nd))))).collect()
 }
 
 /// The transformed extent of a cutline, as `gdalwarp -crop_to_cutline` computes it.
@@ -1220,10 +1233,60 @@ struct WarpContext<'a> {
     cutline: bool,
 }
 
-struct SrcData<'a> {
-    bands: &'a [Vec<f64>],
+struct SrcData<'a, T> {
+    bands: &'a [&'a [T]],
     valid: &'a [Option<Vec<bool>>],
     width: usize,
+}
+
+/// The output warped into: all its bands (`n` values each, rows of `width`), in its type.
+struct Target<'a> {
+    out: &'a mut RasterData,
+    width: usize,
+    n: usize,
+    /// The initial value, rounded to the output type.
+    fill: f64,
+    out_type: DataType,
+    /// Whether this is the first source (whose chunks find the output at its initial value).
+    first: bool,
+}
+
+/// Warps a source's chunks into the output: each chunk's part of the output as `f64` (the first
+/// source's chunks don't overlap: the output there is still its initial value), warped, then
+/// stored back. The chunks of a source partition the output (`collect_chunks`), and the values
+/// stored are already rounded to the output type (`Sink::value`), so storing them back is exact.
+fn warp_source<T: crate::pixel::Pixel>(ctx: &WarpContext, chunks: &[Chunk], data: &SrcData<T>, sink: &Sink, t: Target) {
+    let bands = data.bands.len();
+    let (w, n) = (t.width, t.n);
+    let mut staged: Vec<Vec<f64>> = vec![Vec::new(); bands];
+    for c in chunks {
+        let rows = c.dy..c.dy + c.dh;
+        for (b, part) in staged.iter_mut().enumerate() {
+            part.clear();
+            part.resize(c.dw * c.dh, t.fill);
+            if !t.first {
+                crate::pixel::with_data!(&*t.out, v => {
+                    let src = &v[b * n + rows.start * w..b * n + rows.end * w];
+                    crate::par::chunks_mut(part, c.dw, |r, o| {
+                        for (o, x) in o.iter_mut().zip(&src[r * w + c.dx..r * w + c.dx + c.dw]) {
+                            *o = crate::pixel::Pixel::to_f64(*x);
+                        }
+                    });
+                });
+            }
+        }
+        ctx.warp_chunk(c, data, sink, chunk_rows(&mut staged, c.dw, &Chunk { dx: 0, dy: 0, ..*c }));
+        for (b, part) in staged.iter().enumerate() {
+            crate::pixel::with_data!(&mut *t.out, v => {
+                let dst = &mut v[b * n + rows.start * w..b * n + rows.end * w];
+                crate::par::chunks_mut(dst, w, |r, o| {
+                    for (o, x) in o[c.dx..c.dx + c.dw].iter_mut().zip(&part[r * c.dw..(r + 1) * c.dw]) {
+                        *o = warp_round(*x, t.out_type) as _;
+                    }
+                });
+            });
+        }
+    }
 }
 
 /// How warped values are stored in the output.
@@ -1499,7 +1562,7 @@ impl WarpContext<'_> {
     }
 
     /// Warps a chunk, its output rows in parallel.
-    fn warp_chunk(&self, c: &Chunk, src: &SrcData, sink: &Sink, rows: Vec<RowOut>) {
+    fn warp_chunk<T: crate::pixel::Pixel>(&self, c: &Chunk, src: &SrcData<T>, sink: &Sink, rows: Vec<RowOut>) {
         let (xscale, yscale) = self.scales(c);
         let k = Kernel { src, win: *c, xscale, yscale, method: self.resampling };
         if self.resampling.is_area_based() {
@@ -1510,7 +1573,7 @@ impl WarpContext<'_> {
     }
 
     /// Warps one output row of a chunk.
-    fn warp_row(&self, c: &Chunk, k: &Kernel, sink: &Sink, row: usize, out: &mut [&mut [f64]]) {
+    fn warp_row<T: crate::pixel::Pixel>(&self, c: &Chunk, k: &Kernel<T>, sink: &Sink, row: usize, out: &mut [&mut [f64]]) {
         let (xscale, yscale) = (k.xscale, k.yscale);
         let four = matches!(self.resampling, Resampling::Bilinear | Resampling::Cubic) && xscale >= 0.95 && yscale >= 0.95;
         let mut xs = vec![0.0; c.dw];
@@ -1602,7 +1665,7 @@ impl WarpContext<'_> {
     }
 
     /// The area-based methods (average, mode, min, max, quantiles, RMS, sum).
-    fn warp_area_row(&self, c: &Chunk, k: &Kernel, sink: &Sink, row: usize, out: &mut [&mut [f64]]) {
+    fn warp_area_row<T: crate::pixel::Pixel>(&self, c: &Chunk, k: &Kernel<T>, sink: &Sink, row: usize, out: &mut [&mut [f64]]) {
         let xmargin = 2.0 * (1.0f64).max((1.0 / k.xscale).ceil());
         let ymargin = 2.0 * (1.0f64).max((1.0 / k.yscale).ceil());
         let n = c.dw;
@@ -1762,15 +1825,15 @@ pub(crate) fn area_value(method: Resampling, values: &mut [(f64, f64)], small_in
 }
 
 /// The interpolation kernels, on a chunk's source window.
-struct Kernel<'a> {
-    src: &'a SrcData<'a>,
+struct Kernel<'a, T> {
+    src: &'a SrcData<'a, T>,
     win: Chunk,
     xscale: f64,
     yscale: f64,
     method: Resampling,
 }
 
-impl Kernel<'_> {
+impl<T: crate::pixel::Pixel> Kernel<'_, T> {
     #[inline]
     fn index(&self, x: usize, y: usize) -> usize {
         (self.win.sy + y) * self.src.width + self.win.sx + x
@@ -1778,7 +1841,7 @@ impl Kernel<'_> {
 
     #[inline]
     fn value(&self, b: usize, x: usize, y: usize) -> f64 {
-        self.src.bands[b][self.index(x, y)]
+        crate::pixel::Pixel::to_f64(self.src.bands[b][self.index(x, y)])
     }
 
     #[inline]
@@ -2029,5 +2092,41 @@ mod tests {
         let m = rasterize_polygons(&[square], 4, 4);
         let on: Vec<usize> = m.iter().enumerate().filter(|(_, b)| **b).map(|(i, _)| i).collect();
         assert_eq!(on, vec![5, 6, 9, 10]);
+    }
+
+    /// Several sources warped in one chunk and in many, in integer types (rounded where stored),
+    /// the second source laid over the first where it has data: the values are those of the
+    /// warper writing `f64` output bands (checksums of its results at 0f256c4).
+    #[test]
+    fn typed_output_keeps_values() {
+        let a = raster(60, 40, [500000.0, 30.0, 0.0, 4000000.0, 0.0, -30.0], 32610, |c, r| (c * 7 + r * 3) as f64 + 0.37);
+        let b = raster(50, 30, [500600.0, 30.0, 0.0, 3999400.0, 0.0, -30.0], 32610, |c, r| {
+            if (c + r) % 5 == 0 { -9999.0 } else { 1000.0 - (c * 3 + r) as f64 * 1.5 }
+        });
+        let expected = [
+            (Resampling::Bilinear, DataType::I16, 0x84d523e9ef65765d_u64, 0xd4b833e9ef65765d_u64),
+            (Resampling::Cubic, DataType::U8, 0xa34c60e9ef65765d, 0xa34c60e9ef65765d),
+            (Resampling::Nearest, DataType::F32, 0xfcbcca5b6f65765d, 0xfcbcca5b6f65765d),
+        ];
+        for (resampling, out_type, one_chunk, many_chunks) in expected {
+            let o = |memory_limit: f64| WarpOptions {
+                dst_srs: Some(SpatialRef::from_epsg(4326).unwrap()),
+                resampling,
+                output_type: Some(out_type),
+                src_nodata: Nodata::Values(vec![-9999.0]),
+                memory_limit,
+                error_threshold: 0.0,
+                ..Default::default()
+            };
+            let sum = |d: &RasterDataset| {
+                super::super::band_f64(&d.raster, 0)
+                    .iter()
+                    .fold(0xcbf29ce484222325u64, |h, x| (h ^ x.to_bits()).wrapping_mul(0x100000001b3))
+            };
+            let one = warp(&[&a, &b], &o(1e9)).unwrap();
+            let many = warp(&[&a, &b], &o(4096.0)).unwrap();
+            assert_eq!(one.raster.data_type, out_type);
+            assert_eq!((sum(&one), sum(&many)), (one_chunk, many_chunks), "{resampling:?}");
+        }
     }
 }

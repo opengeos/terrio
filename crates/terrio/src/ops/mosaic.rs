@@ -8,6 +8,7 @@ use super::{Grid, Resampling};
 use crate::crs::SpatialRef;
 use crate::{Error, RasterDataset, Result};
 use std::path::Path;
+use wbraster::raster::RasterData;
 
 /// How the mosaic's resolution is chosen from the sources' (`gdalbuildvrt -resolution`).
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -282,19 +283,24 @@ pub fn mosaic(sources: &[MosaicSource], o: &MosaicOptions) -> Result<RasterDatas
 fn vrt_from_memory(vrt: &VrtDataset, sources: &[MosaicSource]) -> Result<RasterDataset> {
     use super::vrt::SourceRead;
     let n = vrt.width * vrt.height;
-    let mut out = Vec::with_capacity(vrt.bands.len());
-    for band in &vrt.bands {
-        let mut buf = vec![band.nodata.unwrap_or(0.0); n];
+    // The output in its type, the values converted as they are stored.
+    let data_type = vrt.bands[0].data_type;
+    let mut out = RasterData::new_filled(data_type, n * vrt.bands.len(), 0.0);
+    for (b, band) in vrt.bands.iter().enumerate() {
+        crate::pixel::with_data!(&mut out, v => {
+            let fill = super::convert_value(band.nodata.unwrap_or(0.0), data_type);
+            v[b * n..(b + 1) * n].iter_mut().for_each(|x| *x = fill as _);
+        });
         for src in &band.sources {
             let ds = sources
                 .iter()
                 .find(|s| absolute(&s.path) == src.filename)
                 .map(|s| s.ds)
                 .ok_or_else(|| Error::InvalidData(format!("unknown source '{}'", src.filename)))?;
-            let values = super::band_f64(&ds.raster, src.band - 1);
-            let valid: Option<Vec<bool>> = src.nodata.map(|nd| super::par_map(&values, |v| !super::is_nodata(*v, nd)));
+            let values = super::BandView::of(&ds.raster, src.band - 1);
+            let valid: Option<Vec<bool>> = src.nodata.map(|nd| values.valid(nd));
             let read = SourceRead {
-                values: &values,
+                values,
                 valid: valid.as_deref(),
                 width: ds.raster.cols,
                 height: ds.raster.rows,
@@ -305,12 +311,13 @@ fn vrt_from_memory(vrt: &VrtDataset, sources: &[MosaicSource]) -> Result<RasterD
                 working_float: src.complex,
                 invalid_value: None,
             };
-            read.read(vrt.width, vrt.height, &mut buf, |v| v);
+            crate::pixel::with_data!(&mut out, v => {
+                read.read(vrt.width, vrt.height, &mut v[b * n..(b + 1) * n], |x| super::convert_value(x, data_type) as _);
+            });
         }
-        out.push(buf);
     }
     let grid = Grid { width: vrt.width, height: vrt.height, geo_transform: vrt.geo_transform.unwrap_or([0.0, 1.0, 0.0, 0.0, 0.0, -1.0]) };
-    super::build_raster(grid, out, vrt.bands[0].data_type, vrt.bands[0].nodata, &vrt.srs.clone().unwrap_or_default(), super::convert_value)
+    super::build_raster_data(grid, out, vrt.bands.len(), vrt.bands[0].nodata, &vrt.srs.clone().unwrap_or_default())
 }
 
 #[cfg(test)]

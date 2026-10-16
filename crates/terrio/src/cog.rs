@@ -321,7 +321,7 @@ impl LazyRaster {
             metadata: Vec::new(),
             data: wbraster::raster::RasterData::new_filled(self.data_type(), 0, 0.0),
         };
-        let mut ds = RasterDataset { raster, driver: self.driver(), has_nodata: self.nodata().is_some(), affine: None };
+        let mut ds = RasterDataset::with_driver(raster, self.driver(), self.nodata().is_some());
         ds.set_geo_transform(self.geo_transform());
         ds
     }
@@ -370,7 +370,7 @@ impl LazyRaster {
         };
         let raster = crate::pixel::raster_from_data(cfg, data)?;
         let (x, y) = (window.x as f64, window.y as f64);
-        let mut ds = RasterDataset { raster, driver: self.driver(), has_nodata, affine: None };
+        let mut ds = RasterDataset::with_driver(raster, self.driver(), has_nodata);
         ds.set_geo_transform([gt[0] + x * gt[1] + y * gt[2], gt[1], gt[2], gt[3] + x * gt[4] + y * gt[5], gt[4], gt[5]]);
         Ok(ds)
     }

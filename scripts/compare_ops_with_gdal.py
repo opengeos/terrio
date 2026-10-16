@@ -150,6 +150,37 @@ def compare(gdal_path, terrio_path, tol):
     return res
 
 
+def inner_cutline(raster, path):
+    """Write a cutline within a raster's footprint: a pentagon inset from its corners, in WGS 84.
+
+    Args:
+        raster: The raster's path.
+        path: The GeoJSON file to write.
+
+    Returns:
+        The path.
+    """
+    ds = gdal.Open(raster)
+    gt, w, h = ds.GetGeoTransform(), ds.RasterXSize, ds.RasterYSize
+    src = osr.SpatialReference(wkt=ds.GetProjection())
+    dst = osr.SpatialReference()
+    dst.ImportFromEPSG(4326)
+    for s in (src, dst):
+        s.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
+    ct = osr.CoordinateTransformation(src, dst)
+    # Fractions of the width and height.
+    corners = [(0.15, 0.2), (0.85, 0.15), (0.9, 0.7), (0.5, 0.9), (0.1, 0.75), (0.15, 0.2)]
+    ring = []
+    for fx, fy in corners:
+        x, y = gt[0] + fx * w * gt[1] + fy * h * gt[2], gt[3] + fx * w * gt[4] + fy * h * gt[5]
+        lon, lat, _ = ct.TransformPoint(x, y)
+        ring.append([lon, lat])
+    feature = {"type": "Feature", "properties": {}, "geometry": {"type": "Polygon", "coordinates": [ring]}}
+    with open(path, "w") as f:
+        json.dump({"type": "FeatureCollection", "features": [feature]}, f)
+    return path
+
+
 def cases(d, tmp):
     """The comparison cases: name, GDAL commands, terrio commands, outputs and tolerance.
 
@@ -253,7 +284,10 @@ def cases(d, tmp):
     add("warp landsat ->3857 cubic", ["gdalwarp", "-t_srs", "EPSG:3857", "-r", "cubic", landsat], ["warp", landsat, "--t-srs", "EPSG:3857", "-r", "cubic"], 1.0)
     add("warp cog 4326->3857 near", ["gdalwarp", "-t_srs", "EPSG:3857", cog], ["warp", cog, "--t-srs", "EPSG:3857"])
     add("warp las vegas ->4326 srcnodata dstnodata", ["gdalwarp", "-t_srs", "EPSG:4326", "-srcnodata", "0", "-dstnodata", "-1", lv], ["warp", lv, "--t-srs", "EPSG:4326", "--srcnodata", "0", "--dstnodata", "-1"])
-    add("warp cutline crop", ["gdalwarp", "-cutline", cut, "-crop_to_cutline", lv], ["warp", lv, "--cutline", cut, "--crop-to-cutline"])
+    # Cropped to a cutline within the DEM (the city's bounds are 2,500 times its area: cropped to
+    # them, the output is 56119 × 57327 pixels).
+    inner = inner_cutline(lv, os.path.join(tmp, "las_vegas_inner.geojson"))
+    add("warp cutline crop", ["gdalwarp", "-cutline", inner, "-crop_to_cutline", lv], ["warp", lv, "--cutline", inner, "--crop-to-cutline"])
     add("warp cutline reproject", ["gdalwarp", "-t_srs", "EPSG:32611", "-cutline", cut, "-dstnodata", "-9999", lv], ["warp", lv, "--t-srs", "EPSG:32611", "--cutline", cut, "--dstnodata", "-9999"])
     if all(os.path.exists(t) for t in tiles):
         add("warp mosaic 4 tiles ->UTM (-ovr NONE)", ["gdalwarp", "-ovr", "NONE", "-t_srs", "EPSG:32613", "-tr", "90", "90"] + tiles, ["warp"] + tiles + ["--t-srs", "EPSG:32613", "--tr", "90", "90"])

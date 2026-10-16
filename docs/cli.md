@@ -17,6 +17,7 @@ terrio <COMMAND>
   crs         Describe a coordinate reference system, or transform coordinates between two
   formats     List the formats terrio reads and writes
   grid        Grid a point cloud into a raster (like PDAL's writers.gdal)
+  filter      PDAL's point cloud filters (smrf, pmf, csf, elm, hag_nn, crop, expression...)
 ```
 
 Every input can be a local path, a URL, a cloud object or a zip archive member; see
@@ -75,10 +76,11 @@ terrio convert INPUT OUTPUT [-f FORMAT] [options]
 Tile archives (PMTiles, MBTiles, MVT) take `--oo ZOOM_LEVEL=N` and `--oo CLIP=NO` as inputs; see
 [Formats](formats.md#tile-archives).
 
-Point clouds (LAS, LAZ, COPC) convert to LAS, LAZ, COPC or a vector layer of points, with
-`--bounds`, `--z-range`, `--class`, `--returns`, `--max-level`, `--resolution`, `--max-points`,
-`--t-srs`, `--a-srs`, `--point-format`, `--las-version`, `--scale`, `--offset` and `--dims`; see
-[Point Clouds](point-clouds.md).
+Point clouds (LAS, LAZ, COPC, EPT, PLY, E57) convert to LAS, LAZ, COPC, PLY, E57, an EPT
+dataset (an output named `ept.json`, `--ept-data-type laszip|binary|zstandard`) or a vector
+layer of points, with `--bounds`, `--z-range`, `--class`, `--returns`, `--max-level`,
+`--resolution`, `--max-points`, `--t-srs`, `--a-srs`, `--point-format`, `--las-version`,
+`--scale`, `--offset` and `--dims`; see [Point Clouds](point-clouds.md).
 
 Vector layers convert as streams, a chunk of features at a time, when the input is a local
 GeoPackage, FlatGeobuf, GeoParquet, Shapefile, GeoJSON, GeoJSONSeq, CSV or OpenStreetMap PBF

@@ -213,18 +213,27 @@ def suite_subdatasets(ctx):
         "subdatasets",
         "NetCDF and HDF5 subdatasets",
         "GDAL's netCDF and HDF5 drivers",
-        "Every netCDF and HDF5 file of the test data (netCDF-4 groups, HDF5 products): the "
-        "subdataset list (names and descriptions) and, for HDF5, the metadata as GDAL reports them, "
-        "then each subdataset's summary and every pixel.",
+        "Every netCDF and HDF5 file of the test data (netCDF-4 groups, HDF5 products, GDAL's "
+        "HDF-EOS5, complex, COSMO-SkyMed and netCDF geolocation test files, NASA HDF-EOS5 grids and "
+        "swaths when fetched): the subdataset list (names and descriptions) and, for HDF5, the "
+        "metadata as GDAL reports them, then each subdataset's summary (geolocation arrays "
+        "included) and every pixel.",
     )
-    _code, out, err = run(
-        [sys.executable, str(SCRIPTS / "compare_with_gdal.py"), "--subdatasets", ctx.data], {"TERRIO_BIN": ctx.terrio}
-    )
-    for line in out.splitlines():
-        m = re.match(r"^(OK|DIFF)\s+(\S+) (.+?)(?::\s+(.*))?$", line)
-        if m:
-            group = "HDF5" if m[2].lower().endswith(".h5") else "netCDF"
-            s.cases.append(Case(group, f"{m[2]} {m[3]}", IDENTICAL if m[1] == "OK" else DIFFERS, m[4] or ""))
+    out, err = "", ""
+    for sub in ("", "gdal_hdf5", "gdal_netcdf", "hdfeos5"):
+        d = os.path.join(ctx.data, sub)
+        if not os.path.isdir(d):
+            continue
+        _code, o, e = run([sys.executable, str(SCRIPTS / "compare_with_gdal.py"), "--subdatasets", d], {"TERRIO_BIN": ctx.terrio})
+        out += o
+        err += e
+        for line in o.splitlines():
+            m = re.match(r"^(OK|DIFF)\s+(\S+) (.+?)(?::\s+(.*))?$", line)
+            if m:
+                name = m[2].lower()
+                group = "HDF-EOS5" if sub == "hdfeos5" else "HDF5" if name.endswith((".h5", ".he5")) else "netCDF"
+                label = f"{sub}/{m[2]}" if sub else m[2]
+                s.cases.append(Case(group, f"{label} {m[3]}", IDENTICAL if m[1] == "OK" else DIFFERS, m[4] or ""))
     if not s.cases:
         s.error = tail(err or out)
     return s
@@ -535,7 +544,7 @@ def suite_pointclouds(ctx):
             "COPC": "COPC queries vs PDAL",
             "EPT": "EPT queries vs PDAL",
             "readfmt": "PLY, E57 and EPT vs PDAL",
-            "writefmt": "PLY and E57 written, read by PDAL",
+            "writefmt": "PLY, E57 and EPT written, read back",
             "waveform": "waveforms",
             "filter": "filters vs PDAL",
             "grid": "grid vs PDAL writers.gdal",

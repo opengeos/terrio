@@ -8,13 +8,14 @@
 //! `SrcRect`/`DstRect` windows. Derived bands, kernel filters, pixel functions and warped VRTs are
 //! not supported.
 
-use super::{Grid, Resampling, band_f64, convert_value, data_type_name, is_nodata, parse_data_type};
+use super::{Grid, Resampling, convert_value, data_type_name, parse_data_type};
 use crate::crs::SpatialRef;
 use crate::formats::RasterDriver;
 use crate::{Error, RasterDataset, Result};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use wbraster::DataType;
+use wbraster::raster::RasterData;
 
 /// A virtual raster.
 #[derive(Debug, Clone, PartialEq)]
@@ -269,10 +270,14 @@ impl VrtDataset {
         let n = self.width * self.height;
         let data_type = self.bands[0].data_type;
         let nodata = self.bands[0].nodata;
-        let mut out = Vec::with_capacity(self.bands.len());
+        // The output in its type, values converted as they are stored.
+        let mut out = RasterData::new_filled(data_type, n * self.bands.len(), 0.0);
         let mut srs = self.srs.clone();
-        for band in &self.bands {
-            let mut buf = vec![band.nodata.unwrap_or(0.0); n];
+        for (bi, band) in self.bands.iter().enumerate() {
+            crate::pixel::with_data!(&mut out, v => {
+                let fill = convert_value(band.nodata.unwrap_or(0.0), data_type);
+                v[bi * n..(bi + 1) * n].iter_mut().for_each(|x| *x = fill as _);
+            });
             for src in &band.sources {
                 let path = if src.relative_to_vrt || Path::new(&src.filename).is_relative() {
                     base.join(&src.filename)
@@ -292,12 +297,12 @@ impl VrtDataset {
                 if src.band == 0 || src.band > r.bands {
                     return Err(Error::InvalidData(format!("VRT: '{}' has no band {}", path.display(), src.band)));
                 }
-                let values = band_f64(r, src.band - 1);
+                let values = super::BandView::of(r, src.band - 1);
                 let skip = if src.complex { src.nodata } else { None };
-                let valid: Option<Vec<bool>> = skip.map(|nd| super::par_map(&values, |v| !is_nodata(*v, nd)));
+                let valid: Option<Vec<bool>> = skip.map(|nd| values.valid(nd));
                 let src_rect = if src.src_rect[0].is_nan() { [0.0, 0.0, r.cols as f64, r.rows as f64] } else { src.src_rect };
                 let req = SourceRead {
-                    values: &values,
+                    values,
                     valid: valid.as_deref(),
                     width: r.cols,
                     height: r.rows,
@@ -311,7 +316,7 @@ impl VrtDataset {
                 // GDAL's complex sources work in double precision for some types, else in float.
                 let double = is_float_working(r.data_type)
                     || matches!(band.data_type, DataType::I32 | DataType::U32 | DataType::I64 | DataType::U64 | DataType::F64);
-                req.read(self.width, self.height, &mut buf, |v| {
+                let value = |v: f64| {
                     let v = match src.scale {
                         Some((off, ratio)) => {
                             let v = v * ratio + off;
@@ -334,13 +339,15 @@ impl VrtDataset {
                         }
                         None => v,
                     }
+                };
+                crate::pixel::with_data!(&mut out, v => {
+                    req.read(self.width, self.height, &mut v[bi * n..(bi + 1) * n], |x| convert_value(value(x), data_type) as _);
                 });
             }
-            out.push(buf);
         }
         let grid =
             Grid { width: self.width, height: self.height, geo_transform: self.geo_transform.unwrap_or([0.0, 1.0, 0.0, 0.0, 0.0, -1.0]) };
-        let mut ds = super::build_raster(grid, out, data_type, nodata, &srs.unwrap_or_default(), convert_value)?;
+        let mut ds = super::build_raster_data(grid, out, self.bands.len(), nodata, &srs.unwrap_or_default())?;
         ds.driver = RasterDriver::VRT;
         Ok(ds)
     }
@@ -441,7 +448,7 @@ pub(crate) fn fmt_number(v: f64) -> String {
 /// (`VRTSimpleSource::GetSrcDstWindow()` followed by `GDALRasterBand::RasterIO()`).
 pub(crate) struct SourceRead<'a> {
     /// The source band's pixels.
-    pub values: &'a [f64],
+    pub values: super::BandView<'a>,
     /// Which source pixels are valid (`None`: all).
     pub valid: Option<&'a [bool]>,
     /// The source's size.
@@ -467,7 +474,7 @@ pub(crate) struct SourceRead<'a> {
 impl SourceRead<'_> {
     /// Reads into a destination `out` of `dw × dh` pixels, setting each valid destination pixel
     /// the source covers to `f(value)`. Rows are read in parallel.
-    pub fn read(&self, dw: usize, dh: usize, out: &mut [f64], f: impl Fn(f64) -> f64 + Sync + Send) {
+    pub fn read<T: Send>(&self, dw: usize, dh: usize, out: &mut [T], f: impl Fn(f64) -> T + Sync + Send) {
         let Some(w) = self.window(dw as f64, dh as f64, dw, dh) else { return };
         let (ow, oh) = (w.out_size.0, w.out_size.1);
         if ow == 0 || oh == 0 {
@@ -492,7 +499,7 @@ impl SourceRead<'_> {
                     }
                     let i = sy * self.width + sx;
                     if is_valid(i) {
-                        line[x0 + c] = f(self.values[i]);
+                        line[x0 + c] = f(self.values.get(i));
                     }
                 }
             });
@@ -511,7 +518,7 @@ impl SourceRead<'_> {
                     sxf += incx;
                     let i = sy * self.width + sx;
                     if is_valid(i) {
-                        line[x0 + c] = f(self.values[i]);
+                        line[x0 + c] = f(self.values.get(i));
                     }
                 }
             });
@@ -806,7 +813,7 @@ fn gdal_average(s: &SourceRead, req_off: (usize, usize), win: (f64, f64, f64, f6
         Some(nd) if v == wt.cast(nd) => wt.nodata_replacement(nd),
         _ => v,
     };
-    let val = |x: usize, y: usize| wt.cast(s.values[y * s.width + x]);
+    let val = |x: usize, y: usize| wt.cast(s.values.get(y * s.width + x));
     let valid = |x: usize, y: usize| s.valid.is_none_or(|m| m[y * s.width + x]);
     for (dst, src) in gdal_chunks(s, req_off, ratio, out, 0) {
         let [dx0, dy0, nx, ny] = dst;
@@ -1050,7 +1057,7 @@ fn resample_window(s: &SourceRead, win: (f64, f64, f64, f64), out: (usize, usize
                             let wx = (x1.min(x as f64 + 1.0) - x0.max(x as f64)).max(0.0);
                             let weight = if s.resampling == Resampling::Average || s.resampling == Resampling::Rms { wx * wy } else { 1.0 };
                             if weight > 0.0 {
-                                vals.push((s.values[i], weight));
+                                vals.push((s.values.get(i), weight));
                             }
                         }
                     }
@@ -1088,13 +1095,13 @@ fn resample_window(s: &SourceRead, win: (f64, f64, f64, f64), out: (usize, usize
                         for (i, wx) in wxs.iter().enumerate() {
                             let idx = row + x0 + i;
                             if is_valid(idx) {
-                                acc += s.values[idx] * wx * wy;
+                                acc += s.values.get(idx) * wx * wy;
                                 wsum += wx * wy;
                                 alpha += wx;
                                 run += 1;
                                 longest = longest.max(run);
                             } else {
-                                infinite |= s.values[idx].is_infinite();
+                                infinite |= s.values.get(idx).is_infinite();
                                 run = 0;
                             }
                         }
@@ -1294,7 +1301,7 @@ mod tests {
         // A 4×4 source placed at (2, 1) in a 8×6 destination.
         let values: Vec<f64> = (0..16).map(f64::from).collect();
         let r = SourceRead {
-            values: &values,
+            values: crate::ops::BandView::F64(&values),
             valid: None,
             width: 4,
             height: 4,

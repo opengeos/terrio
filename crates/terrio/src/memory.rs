@@ -19,6 +19,10 @@
 //! Formats made of several files (a shapefile's `.shp`, `.dbf`, `.prj`...) are written as a zip
 //! archive of them.
 //!
+//! With the `gdal` feature, what terrio cannot read is opened by GDAL from memory, through its
+//! `/vsimem/` file system, and extensions terrio has no driver for are written by the GDAL
+//! driver that claims them (see `gdal_backend::open_bytes` and `gdal_backend::write_vector_bytes`).
+//!
 //! ```no_run
 //! let bytes = std::fs::read("countries.geojson")?;
 //! let ds = terrio::memory::open_bytes(bytes, "countries.geojson")?;
@@ -37,7 +41,11 @@ pub fn open_bytes(bytes: Vec<u8>, name: &str) -> Result<Dataset> {
     #[cfg(not(target_arch = "wasm32"))]
     {
         let (_dir, path) = native::spill(&bytes, name)?;
-        crate::open(&path)
+        let result = crate::dataset::open_native(&path);
+        // What terrio cannot read, GDAL reads from memory (`/vsimem/`).
+        #[cfg(feature = "gdal")]
+        let result = crate::dataset::gdal_fallback(&path, result, |_| crate::gdal_backend::open_bytes(bytes, name));
+        result
     }
     #[cfg(target_arch = "wasm32")]
     codec::open(bytes, name, &VectorOpenOptions::default())
@@ -74,7 +82,10 @@ pub fn open_vector_bytes(bytes: Vec<u8>, name: &str, options: &VectorOpenOptions
     #[cfg(not(target_arch = "wasm32"))]
     {
         let (_dir, path) = native::spill(&bytes, name)?;
-        crate::open_vector(&path, options)
+        let result = crate::dataset::open_vector_native(&path, options);
+        #[cfg(feature = "gdal")]
+        let result = crate::dataset::gdal_fallback(&path, result, |_| crate::gdal_backend::open_vector_bytes(bytes, name, options));
+        result
     }
     #[cfg(target_arch = "wasm32")]
     match codec::open(bytes, name, options)? {
@@ -86,10 +97,16 @@ pub fn open_vector_bytes(bytes: Vec<u8>, name: &str, options: &VectorOpenOptions
 /// Writes a raster to bytes, declaring its nodata value when it has one. `name` is a file name
 /// whose extension tells the format, unless the options name the driver.
 pub fn write_raster_bytes(ds: &RasterDataset, name: &str, options: &RasterWriteOptions) -> Result<Vec<u8>> {
-    let driver = match options.driver {
+    let driver = match options.driver.or_else(|| RasterDriver::for_extension(name)) {
         Some(d) => d,
-        None => RasterDriver::for_extension(name)
-            .ok_or_else(|| Error::InvalidArgument(format!("cannot tell the output format of '{name}': give it explicitly")))?,
+        None => {
+            // With the GDAL backend, the GDAL driver of the extension, writing to memory.
+            #[cfg(feature = "gdal")]
+            if let Some(d) = crate::gdal_backend::driver_for_path(name, false) {
+                return crate::gdal_backend::write_raster_bytes(ds, name, &d, &options.creation_options);
+            }
+            return Err(Error::InvalidArgument(format!("cannot tell the output format of '{name}': give it explicitly")));
+        }
     };
     #[cfg(not(target_arch = "wasm32"))]
     {
@@ -106,10 +123,15 @@ pub fn write_raster_bytes(ds: &RasterDataset, name: &str, options: &RasterWriteO
 /// Writes vector layers to bytes. `name` is a file name whose extension tells the format, unless
 /// the options name the driver. GeoPackage, GPX, KML, KMZ and TopoJSON hold several layers.
 pub fn write_vector_bytes(layers: &[Layer], name: &str, options: &VectorWriteOptions) -> Result<Vec<u8>> {
-    let driver = match options.driver {
+    let driver = match options.driver.or_else(|| VectorDriver::for_extension(name)) {
         Some(d) => d,
-        None => VectorDriver::for_extension(name)
-            .ok_or_else(|| Error::InvalidArgument(format!("cannot tell the output format of '{name}': give it explicitly")))?,
+        None => {
+            #[cfg(feature = "gdal")]
+            if let Some(d) = crate::gdal_backend::driver_for_path(name, true) {
+                return crate::gdal_backend::write_vector_bytes(layers, name, &d, &[], &[]);
+            }
+            return Err(Error::InvalidArgument(format!("cannot tell the output format of '{name}': give it explicitly")));
+        }
     };
     #[cfg(not(target_arch = "wasm32"))]
     {
@@ -250,7 +272,7 @@ pub(crate) mod codec {
         }
         if RasterDriver::for_extension(name) == Some(RasterDriver::AAIGrid) {
             let raster = wbraster::formats::esri_ascii::parse(Cursor::new(&bytes), name)?;
-            return Ok(Dataset::Raster(RasterDataset { raster, driver: RasterDriver::AAIGrid, has_nodata: true, affine: None }));
+            return Ok(Dataset::Raster(RasterDataset::with_driver(raster, RasterDriver::AAIGrid, true)));
         }
         let driver = vector_driver(&bytes, name).ok_or_else(|| Error::Unsupported(format!("'{name}': format not recognized")))?;
         let Some(layers) = crate::drivers::vector::read_bytes(bytes, name, driver, options)? else {

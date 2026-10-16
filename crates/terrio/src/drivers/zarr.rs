@@ -1248,7 +1248,7 @@ fn open_node(node: &Node) -> Result<(RasterDataset, ZarrSource)> {
         metadata: Vec::new(),
         data: RasterData::new_filled(array.data_type, 0, 0.0),
     };
-    let header = RasterDataset { raster, driver: RasterDriver::Zarr, has_nodata: array.fill.is_some(), affine: None };
+    let header = RasterDataset::with_driver(raster, RasterDriver::Zarr, array.fill.is_some());
 
     // The lower-resolution levels of the multiscales layout, largest first.
     let mut levels: Vec<Level> = Vec::new();
@@ -1900,7 +1900,7 @@ pub(crate) fn write_with(r: &Raster, nodata: Option<f64>, path: &Path, compressi
     // The overviews, resampled from the full resolution.
     let mut levels: Vec<(usize, RasterDataset)> = Vec::new();
     if !factors.is_empty() {
-        let full = RasterDataset { raster: r.clone(), driver: RasterDriver::Zarr, has_nodata: nodata.is_some(), affine: None };
+        let full = RasterDataset::with_driver(r.clone(), RasterDriver::Zarr, nodata.is_some());
         for f in &factors {
             let (w, h) = (r.cols.div_ceil(*f), r.rows.div_ceil(*f));
             if resampling == crate::ops::Resampling::Nearest {
