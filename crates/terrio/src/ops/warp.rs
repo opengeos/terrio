@@ -1106,8 +1106,8 @@ pub fn warp(sources: &[&RasterDataset], o: &WarpOptions) -> Result<RasterDataset
 /// Warps rasters as [`warp`] does and writes the output to `path`. A single source without a
 /// cutline is read a chunk at a time (the source window each chunk of the output needs), and a
 /// GeoTIFF output written as its rows are done: neither is held whole. Otherwise (and when
-/// `path` is the source) the sources are read whole. Without `o.gcps`, a first source with no geotransform is georeferenced by
-/// its GCPs, as `gdalwarp` does.
+/// `path` is the source) the sources are read whole. Without `o.gcps`, a first source with no
+/// geotransform is georeferenced by its GCPs, as `gdalwarp` does.
 ///
 /// ```no_run
 /// use terrio::ops::warp::{WarpOptions, warp_to_path};

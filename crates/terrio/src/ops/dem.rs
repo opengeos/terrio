@@ -1004,6 +1004,9 @@ pub fn dem(ds: &RasterDataset, product: DemProduct, o: &DemOptions) -> Result<Ra
 /// the DEM and writing a GeoTIFF output a strip of rows at a time: neither is held whole (other
 /// formats are written whole). The values are those of [`dem`].
 ///
+/// `path` must not be the file `src` reads, which writing it would truncate: read such a DEM
+/// whole with [`crate::open_raster`] and use [`dem`].
+///
 /// ```no_run
 /// use terrio::ops::dem::{DemOptions, DemProduct, dem_to_path};
 ///
