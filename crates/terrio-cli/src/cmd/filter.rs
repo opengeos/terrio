@@ -329,7 +329,7 @@ enum Filter {
         write: super::points::PointWriteArgs,
     },
     /// Split points into squares (PDAL's filters.splitter): a file per square when the output's
-    /// file name with a '#' (replaced by 1, 2...), else all in one file, square after square.
+    /// file name has a '#' (replaced by 1, 2...), else all in one file, square after square.
     Splitter {
         #[command(flatten)]
         io: Io,
