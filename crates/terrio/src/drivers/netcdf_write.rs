@@ -460,7 +460,11 @@ pub(crate) fn write_groups(rasters: &[(&str, &Raster, Option<f64>)], path: &Path
             }
         }
     }
-    globals.push(("history".into(), Attr::Text("Created by terrio".into())));
+    // The history of a file read again goes on, newest first, as GDAL records it.
+    match globals.iter_mut().find(|(n, _)| n == "history") {
+        Some((_, Attr::Text(h))) => *h = format!("Created by terrio\n{h}"),
+        _ => globals.push(("history".into(), Attr::Text("Created by terrio".into()))),
+    }
     let size: usize = rasters.iter().map(|(_, r, _)| r.data_type.size_bytes() * r.cols * r.rows * r.bands).sum();
     let version = if version == Version::Classic && size > (1 << 31) - (1 << 20) { Version::Offset64 } else { version };
     let bytes = match version {
@@ -802,6 +806,18 @@ mod tests {
                 assert!((gt[0] - 10.0).abs() < 1e-9 && (gt[3] - 50.0).abs() < 1e-9 && (gt[5] + 0.25).abs() < 1e-12, "{gt:?}");
             }
         }
+    }
+
+    #[test]
+    fn history_goes_on_when_written_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let (a, b) = (dir.path().join("a.nc"), dir.path().join("b.nc"));
+        write(&raster(DataType::F32, 1, 4326), None, &a, &Options::default()).unwrap();
+        let first = super::super::netcdf::read(&a, None).unwrap();
+        write(&first.raster, None, &b, &Options::default()).unwrap();
+        let second = super::super::netcdf::read(&b, None).unwrap();
+        let history: Vec<&String> = second.raster.metadata.iter().filter(|(k, _)| k == "NC_GLOBAL#history").map(|(_, v)| v).collect();
+        assert_eq!(history, ["Created by terrio\nCreated by terrio"]);
     }
 
     #[test]

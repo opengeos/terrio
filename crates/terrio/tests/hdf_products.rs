@@ -81,6 +81,31 @@ fn hdfeos5_swaths() {
     assert_eq!((lon.raster.cols, lon.raster.rows), (4, 3));
 }
 
+/// A swath field's dimension that maps to a geolocation dimension other than the longitudes'
+/// holds its bands: here the `Time` geolocation field is made to run along `Band` (the structural
+/// metadata of a copy of the file edited in place, same length).
+#[test]
+fn hdfeos5_swath_bands_on_another_geolocation_dimension() {
+    let Some(p) = data("gdal_hdf5/dummy_HDFEOS_swath.h5") else { return };
+    let mut bytes = std::fs::read(&p).unwrap();
+    let from = "GeoFieldName=\"Time\"";
+    let at = bytes.windows(from.len()).position(|w| w == from.as_bytes()).expect("the Time geolocation field");
+    for (old, new) in
+        [("DimList=(\"AlongTrack\")", "DimList=(\"Band\")      "), ("MaxdimList=(\"AlongTrack\")", "MaxdimList=(\"Band\")      ")]
+    {
+        let i = at + bytes[at..].windows(old.len()).position(|w| w == old.as_bytes()).expect(old);
+        bytes[i..i + new.len()].copy_from_slice(new.as_bytes());
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let copy = dir.path().join("swath.h5");
+    std::fs::write(&copy, bytes).unwrap();
+    let ds = open(&format!("HDF5:\"{}\"://HDFEOS/SWATHS/MySwath/Data_Fields/MyDataField", copy.display()));
+    assert_eq!((ds.raster.cols, ds.raster.rows, ds.band_count()), (4, 3, 2));
+    assert!(ds.geolocation.is_some());
+    let whole = open(&format!("HDF5:\"{p}\"://HDFEOS/SWATHS/MySwath/Data_Fields/MyDataField"));
+    assert_eq!(ds.raster.data_u8().unwrap(), whole.raster.data_u8().unwrap());
+}
+
 /// Complex (compound) HDF5 datasets: one complex band of CFloat32 as GDAL reads it, real and
 /// imaginary parts as bands; statistics of the real parts.
 #[test]
@@ -102,6 +127,13 @@ fn hdf5_complex_datasets() {
         assert_eq!(info.band_count, 1);
         let s = info.bands[0].statistics.unwrap();
         assert_eq!((s.min, s.max, s.mean), (0.0, 24.0 * step, 12.0 * step), "{name}");
+        // The same through a lazy raster held in memory (as the npm package summarizes it).
+        let mut lazy = terrio::open_raster_lazy(&format!("HDF5:\"{p}\"://{name}")).unwrap();
+        for statistics in [false, true] {
+            let info = terrio::info::lazy_raster_info(&mut lazy, &terrio::info::InfoOptions { statistics, ..Default::default() }).unwrap();
+            assert_eq!((info.band_count, info.bands.len()), (1, 1), "{name}");
+            assert_eq!(info.bands[0].data_type, t, "{name}");
+        }
     }
 }
 

@@ -351,8 +351,12 @@ pub(crate) fn read(path: &Path, variable: Option<&str>) -> Result<RasterDataset>
             }
             None if gt.is_none() => {
                 let axis = |d: &str, test: fn(&NcVariable) -> bool| var_ref.lookup(d).is_some_and(|(_, v)| v.ndim() == 1 && test(v));
-                if axis(&dims[nd - 1].name, is_longitude) && axis(&dims[nd - 2].name, is_latitude) {
-                    geolocation = Some((dims[nd - 1].name.clone(), dims[nd - 2].name.clone()));
+                // By the axes' names from the root, which may be in the variable's group.
+                if axis(&dims[nd - 1].name, is_longitude)
+                    && axis(&dims[nd - 2].name, is_latitude)
+                    && let (Some(x), Some(y)) = (var_ref.full_name(&dims[nd - 1].name), var_ref.full_name(&dims[nd - 2].name))
+                {
+                    geolocation = Some((x, y));
                 }
             }
             None => {}
@@ -362,13 +366,16 @@ pub(crate) fn read(path: &Path, variable: Option<&str>) -> Result<RasterDataset>
     // Without one, netCDF's default fill value of the type (not for bytes), as GDAL reports it.
     // netCDF-4 variables written without fill values (`_NoFill`): HDF5 datasets whose fill value
     // is undefined, as the netCDF library reads them.
-    let no_fill = attr_str(var, "_NoFill").is_some_and(|v| v.eq_ignore_ascii_case("true"))
-        || (!matches!(f.format(), NcFormat::Classic | NcFormat::Offset64 | NcFormat::Cdf5)
-            && super::hdf5::open_file(path)
-                .ok()
-                .and_then(|h| h.dataset(&format!("/{}", var_ref.read_path())).ok())
-                .is_some_and(|d| d.fill_value().is_none_or(|fv| !fv.defined)));
-    if nodata.is_none() && !no_fill && !unsigned && complex.is_none() {
+    // Looked for only without a fill value attribute: netCDF-4 files are opened again for it.
+    let no_fill = || {
+        attr_str(var, "_NoFill").is_some_and(|v| v.eq_ignore_ascii_case("true"))
+            || (!matches!(f.format(), NcFormat::Classic | NcFormat::Offset64 | NcFormat::Cdf5)
+                && super::hdf5::open_file(path)
+                    .ok()
+                    .and_then(|h| h.dataset(&format!("/{}", var_ref.read_path())).ok())
+                    .is_some_and(|d| d.fill_value().is_none_or(|fv| !fv.defined)))
+    };
+    if nodata.is_none() && !unsigned && complex.is_none() && !no_fill() {
         nodata = match var.dtype() {
             NcType::Short => Some(-32767.0),
             NcType::Int => Some(-2147483647.0),
@@ -521,10 +528,13 @@ fn cf_geolocation(f: &NcFile, var_ref: &VarRef, var: &NcVariable) -> Option<(Str
 }
 
 /// The type of the parts of a complex variable, as GDAL's netCDF driver reads compounds: two
-/// members, the first `short`, `int`, `float` or `double`, the element twice its size.
+/// members of the same type, `short`, `int`, `float` or `double`, one after the other.
 fn complex_part(t: &NcType) -> Option<wbraster::DataType> {
     let NcType::Compound { size, fields } = t else { return None };
-    let [first, _] = fields.as_slice() else { return None };
+    let [first, second] = fields.as_slice() else { return None };
+    if second.dtype != first.dtype {
+        return None;
+    }
     let part = match first.dtype {
         NcType::Short => wbraster::DataType::I16,
         NcType::Int => wbraster::DataType::I32,
@@ -532,7 +542,7 @@ fn complex_part(t: &NcType) -> Option<wbraster::DataType> {
         NcType::Double => wbraster::DataType::F64,
         _ => return None,
     };
-    (first.offset == 0 && *size as usize == 2 * part.size_bytes()).then_some(part)
+    (first.offset == 0 && second.offset as usize == part.size_bytes() && *size as usize == 2 * part.size_bytes()).then_some(part)
 }
 
 /// Splits complex elements (real then imaginary part, native byte order) into a real and an
@@ -722,5 +732,16 @@ mod tests {
         assert_eq!(parse_subdataset("NETCDF:\"/data/a b.nc\":u_wind"), Some(("/data/a b.nc".into(), "u_wind".into())));
         assert_eq!(parse_subdataset("netcdf:wind.nc:v"), Some(("wind.nc".into(), "v".into())));
         assert_eq!(parse_subdataset("wind.nc"), None);
+    }
+
+    #[test]
+    fn complex_compounds_have_two_parts_of_one_type() {
+        let field = |name: &str, offset: u64, dtype: NcType| netcdf_reader::NcCompoundField { name: name.into(), offset, dtype };
+        let compound = |size: u32, fields| NcType::Compound { size, fields };
+        let ok = compound(8, vec![field("r", 0, NcType::Float), field("i", 4, NcType::Float)]);
+        assert_eq!(complex_part(&ok), Some(wbraster::DataType::F32));
+        // The second part of another type, or not right after the first.
+        assert_eq!(complex_part(&compound(8, vec![field("r", 0, NcType::Float), field("i", 4, NcType::Int)])), None);
+        assert_eq!(complex_part(&compound(16, vec![field("r", 0, NcType::Float), field("i", 8, NcType::Float)])), None);
     }
 }

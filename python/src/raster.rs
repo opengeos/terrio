@@ -262,6 +262,11 @@ impl PyRaster {
             if bands.is_empty() {
                 bands = (1..=self.inner.band_count()).collect();
             } else {
+                // Checked by the complex bands' numbers, which the parts' numbers are not.
+                let count = self.count();
+                if let Some(b) = bands.iter().find(|b| **b == 0 || **b > count) {
+                    return Err(invalid(format!("no band {b}: the raster has {count} band(s)")));
+                }
                 bands = bands.iter().flat_map(|b| [2 * b - 1, 2 * b]).collect();
             }
         }

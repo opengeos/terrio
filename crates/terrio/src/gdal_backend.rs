@@ -280,7 +280,7 @@ pub(crate) fn write_raster_with(
 
 /// [`write_raster_with`], with a rotated or south-up geotransform in place of the raster's when
 /// `affine` is given.
-fn write_raster_gt(
+pub(crate) fn write_raster_gt(
     r: &wbraster::Raster,
     nodata: Option<f64>,
     complex: bool,
@@ -375,7 +375,9 @@ pub fn driver_for_path(path: &str, vector: bool) -> Option<String> {
     let mut found: Vec<String> = Vec::new();
     for d in DriverManager::all() {
         let yes = |key: &str| d.metadata_item(key, "").is_some_and(|v| v.eq_ignore_ascii_case("YES"));
-        if !yes(capability) || !(yes("DCAP_CREATE") || yes("DCAP_CREATECOPY")) {
+        // Vector datasets are written with `GDALCreate` (see [`write_vector`]), rasters either way.
+        let creates = yes("DCAP_CREATE") || (!vector && yes("DCAP_CREATECOPY"));
+        if !yes(capability) || !creates {
             continue;
         }
         let extensions = d.metadata_item("DMD_EXTENSIONS", "").or_else(|| d.metadata_item("DMD_EXTENSION", ""));
@@ -416,9 +418,16 @@ pub fn write_vector(
     let p = std::path::Path::new(path);
     if p.exists() {
         // As `ogr2ogr -overwrite`: the driver deletes what it wrote (all of a shapefile's files),
-        // anything else is removed as a file or directory.
+        // anything else is removed as a file, or as a directory only when empty: a directory
+        // that is not a dataset of the driver is left alone.
         if target.delete(path).is_err() && p.exists() {
-            if p.is_dir() { std::fs::remove_dir_all(p)? } else { std::fs::remove_file(p)? }
+            if !p.is_dir() {
+                std::fs::remove_file(p)?;
+            } else if std::fs::read_dir(p)?.next().is_none() {
+                std::fs::remove_dir(p)?;
+            } else {
+                return Err(Error::InvalidArgument(format!("'{path}' is a directory that is not a {driver} dataset: not replaced")));
+            }
         }
     }
     let mut options = gdal::cpl::CslStringList::new();

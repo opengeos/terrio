@@ -566,7 +566,7 @@ def compare_subdatasets(path):
         if isinstance(ts, str):
             return [(os.path.basename(path), [f"terrio error: {ts}"])]
         return [(os.path.basename(path), diffs + compare_raster(path, ts) + compare_pixels(path, path))]
-    if path.endswith(".h5"):
+    if path.lower().endswith((".h5", ".he5")):
         # GDAL's metadata of an HDF5 container: every group's attributes and its datasets'.
         tmd = {k: v for k, v in t["metadata"]}
         gmd = g.GetMetadata()

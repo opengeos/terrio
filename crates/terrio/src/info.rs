@@ -289,6 +289,12 @@ pub fn lazy_raster_info(r: &mut LazyRaster, options: &InfoOptions) -> crate::Res
 
 fn lazy_raster_info_at(r: &mut LazyRaster, options: &InfoOptions, path: Option<&str>) -> crate::Result<RasterInfo> {
     let overviews = r.overviews().into_iter().map(|(w, h)| [w, h]).collect();
+    // Held in memory whole: summarized as read eagerly (complex bands, geolocation arrays).
+    if let Some(ds) = r.dataset() {
+        let mut info = raster_info_at(ds, options, path, None);
+        info.overviews = overviews;
+        return Ok(info);
+    }
     if options.histogram {
         let ds = r.read()?;
         let mut info = raster_info_at(&ds, options, path, Some(r));

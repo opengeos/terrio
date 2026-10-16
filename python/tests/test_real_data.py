@@ -546,6 +546,10 @@ def test_complex_hdf5_matches_gdal(data_dir, gdal):
         expected = ds.GetRasterBand(1).ReadAsArray()
         np.testing.assert_array_equal(a, expected)
         assert r.read().shape == (1, 5, 5)
+        # Band numbers are the complex bands', not their parts'.
+        for band in (0, 2):
+            with pytest.raises(terrio.InvalidArgumentError, match="the raster has 1 band"):
+                r.read(band)
 
 
 def test_swath_geolocation_matches_gdal(data_dir, gdal):

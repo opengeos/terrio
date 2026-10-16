@@ -571,10 +571,14 @@ fn read_dataset(
     let raw = ds.read_raw_bytes().map_err(|e| err(path, e))?;
     let element = t.element_size();
     let n = cols * rows * bands;
-    let raw = raw.get(..n * element).ok_or_else(|| err(path, "dataset shorter than its shape"))?;
+    // The whole dataset: a layout other than GDAL's is gathered with the strides of its shape.
+    let whole = raw.get(..shape.iter().product::<usize>() * element).ok_or_else(|| err(path, "dataset shorter than its shape"))?;
     let standard = x == nd - 1 && y == nd.checked_sub(2) && (other.is_none() || other == Some(0));
-    let ordered =
-        if standard { std::borrow::Cow::Borrowed(raw) } else { std::borrow::Cow::Owned(to_bsq(raw, &shape, element, x, y, other)) };
+    let ordered = if standard {
+        std::borrow::Cow::Borrowed(&whole[..n * element])
+    } else {
+        std::borrow::Cow::Owned(to_bsq(whole, &shape, element, x, y, other))
+    };
     let (data, raster_bands) = match t.complex {
         // Complex elements: each band becomes its real parts then its imaginary parts.
         Some((im, size)) => {

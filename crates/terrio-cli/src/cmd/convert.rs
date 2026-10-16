@@ -232,6 +232,11 @@ pub fn run(mut a: Args) -> terrio::Result<()> {
                     if a.vector.write_mode() == terrio::ops::vector_filter::WriteMode::Append {
                         return Err(terrio::Error::Unsupported(format!("--append is not supported with GDAL's {d} driver")));
                     }
+                    if a.minzoom.is_some() || a.maxzoom.is_some() {
+                        return Err(terrio::Error::InvalidArgument(format!(
+                            "--minzoom and --maxzoom apply to tile archives, not to GDAL's {d} driver"
+                        )));
+                    }
                     let pairs = |o: &[String]| -> terrio::Result<Vec<(String, String)>> {
                         Ok(key_values(o)?.into_iter().map(|(k, v)| (k.to_string(), v.to_string())).collect())
                     };

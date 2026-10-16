@@ -322,11 +322,11 @@ fn sample_layer() -> terrio::Layer {
     layer
 }
 
-/// Reads every feature of a GDAL dataset's first layer with GDAL itself: WKT of the geometry and
-/// the fields as strings.
 /// A layer's EPSG code, field names, and features as `(geometry WKT, field values)`.
 type GdalLayer = (Option<u32>, Vec<String>, Vec<(String, Vec<Option<String>>)>);
 
+/// Reads every feature of a GDAL dataset's first layer with GDAL itself: WKT of the geometry and
+/// the fields as strings.
 fn read_with_gdal(path: &str) -> GdalLayer {
     let ds = gdal::Dataset::open(path).unwrap();
     let mut layer = ds.layer(0).unwrap();
@@ -360,7 +360,8 @@ fn vectors_written_through_gdal() {
         terrio::gdal_backend::write_vector(std::slice::from_ref(&layer), &path, driver, &[], &[])
             .unwrap_or_else(|e| panic!("{driver}: {e}"));
         // Written twice: the output is replaced.
-        terrio::gdal_backend::write_vector(std::slice::from_ref(&layer), &path, driver, &[], &[]).unwrap();
+        terrio::gdal_backend::write_vector(std::slice::from_ref(&layer), &path, driver, &[], &[])
+            .unwrap_or_else(|e| panic!("{driver}, again: {e}"));
         let (epsg, names, features) = read_with_gdal(&path);
         assert_eq!(epsg, Some(32617), "{driver}: CRS");
         assert_eq!(features.len(), 4, "{driver}");
@@ -397,6 +398,12 @@ fn vectors_written_through_gdal() {
     assert_eq!(ds.layer(0).unwrap().name(), "parcels");
     // A driver that cannot write vector layers is refused.
     assert!(terrio::gdal_backend::write_vector(std::slice::from_ref(&layer), &path, "NoSuchDriver", &[], &[]).is_err());
+    // A directory that is not a dataset of the driver is not removed to make room.
+    let other = dir.path().join("work.tab");
+    std::fs::create_dir(&other).unwrap();
+    std::fs::write(other.join("keep.txt"), "mine").unwrap();
+    assert!(terrio::gdal_backend::write_vector(std::slice::from_ref(&layer), other.to_str().unwrap(), "MapInfo File", &[], &[]).is_err());
+    assert_eq!(std::fs::read_to_string(other.join("keep.txt")).unwrap(), "mine");
 }
 
 /// `terrio::write_vector` and `write_raster_dataset` hand extensions terrio has no driver for to

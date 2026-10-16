@@ -652,7 +652,16 @@ fn write_raster_with_nodata(raster: &Raster, nodata: Option<f64>, complex: bool,
             // With the GDAL backend, the GDAL driver of the extension (`.ntf`: NITF).
             #[cfg(feature = "gdal")]
             if let Some(d) = crate::gdal_backend::driver_for_path(path, false) {
-                return crate::gdal_backend::write_raster_with(raster, nodata, complex, path, &d, &options.creation_options);
+                if !options.gcps.is_empty() || options.mask.is_some() || !options.rpc.is_empty() {
+                    return Err(Error::Unsupported(format!("GCPs, masks and RPCs are not written through GDAL's {d} driver")));
+                }
+                let mut co = options.creation_options.clone();
+                if let Some(c) = &options.compression
+                    && !co.iter().any(|(k, _)| k.eq_ignore_ascii_case("COMPRESS"))
+                {
+                    co.push(("COMPRESS".into(), c.clone()));
+                }
+                return crate::gdal_backend::write_raster_gt(raster, nodata, complex, options.geo_transform, path, &d, &co);
             }
             return Err(Error::InvalidArgument(format!("cannot tell the output format of '{path}': give it explicitly")));
         }
@@ -669,6 +678,13 @@ fn write_raster_with_nodata(raster: &Raster, nodata: Option<f64>, complex: bool,
             opts.complex = complex;
             return crate::drivers::gtiff_write::write(raster, path, &opts);
         }
+    }
+    // Complex samples: GeoTIFFs written above, and GDAL's HFA driver below.
+    if complex && !(cfg!(feature = "gdal") && driver == RasterDriver::HFA) {
+        return Err(Error::Unsupported(format!(
+            "the {} writer cannot store complex bands (GeoTIFF can, with a compression terrio's writer encodes)",
+            driver.name()
+        )));
     }
     if options.geo_transform.is_some_and(|gt| !is_north_up(&gt))
         || !options.gcps.is_empty()

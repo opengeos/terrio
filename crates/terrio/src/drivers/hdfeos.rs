@@ -364,8 +364,8 @@ impl Eos {
                                 x = Some(i);
                                 x_name = Some(d.name.clone());
                             }
-                            Some(_) => {}
-                            None => other = Some(i),
+                            // Any other dimension holds the bands.
+                            _ => other = Some(i),
                         }
                     }
                     if x.is_some() && y.is_some() {
