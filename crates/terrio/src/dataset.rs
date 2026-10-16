@@ -837,7 +837,7 @@ pub fn write_vector(layers: &[Layer], path: &str, options: &VectorWriteOptions) 
     }
 }
 
-fn ensure_writable_location(path: &str) -> Result<()> {
+pub(crate) fn ensure_writable_location(path: &str) -> Result<()> {
     if !vfs::Location::parse(path).is_local() {
         return Err(Error::Unsupported(format!("cannot write to '{path}': only local outputs are supported")));
     }

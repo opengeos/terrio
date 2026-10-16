@@ -277,6 +277,10 @@ WebAssembly (the `terrio-js` npm package):
 - The core API is synchronous and reads datasets into memory; remote files are downloaded first.
   GeoTIFFs, local or remote, can instead be opened lazily (`LazyRaster`) and read by window and
   overview level, decoding only the tiles needed and fetching them with HTTP range requests.
+  Terrain analysis, warping and mosaics read their inputs that way and write GeoTIFF outputs a
+  strip of rows at a time (`ops::dem::dem_to_path`, `ops::warp::warp_to_path`,
+  `ops::mosaic::mosaic_to_path`, which the command line uses), with the values of the in-memory
+  operations.
 - HTTP goes through `ureq` (with rustls) and S3 requests are signed by terrio itself, rather than
   through `object_store`, to keep the API synchronous and the dependencies small.
 - GeoPackage is read and written by terrio's own SQLite file reader and writer (pure Rust): no

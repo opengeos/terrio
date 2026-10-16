@@ -949,73 +949,140 @@ fn is_mercator(srs: &SpatialRef) -> bool {
 
 // ─── The warp itself ────────────────────────────────────────────────────────────────────────────
 
+/// A warp set up from the sources' metadata: the output grid, type and nodata.
+struct Plan<'a> {
+    srcs: Vec<Source<'a>>,
+    dst_srs: SpatialRef,
+    grid: Grid,
+    bands: usize,
+    out_type: DataType,
+    dst_nodata: Option<f64>,
+}
+
+impl<'a> Plan<'a> {
+    /// Reads only the sources' metadata.
+    fn new(sources: &[&'a RasterDataset], o: &WarpOptions) -> Result<Self> {
+        let first = sources.first().ok_or_else(|| Error::InvalidArgument("no source rasters".into()))?;
+        let mut srcs: Vec<Source> = sources
+            .iter()
+            .map(|ds| Source {
+                ds,
+                grid: Grid { width: ds.raster.cols, height: ds.raster.rows, geo_transform: ds.geo_transform() },
+                srs: o.src_srs.clone().unwrap_or_else(|| ds.crs()),
+                gcp: None,
+            })
+            .collect();
+        if !o.gcps.is_empty() {
+            if o.cutline.is_some() {
+                return Err(Error::Unsupported("cutlines are not supported with GCPs".into()));
+            }
+            srcs[0].gcp = Some(super::gcp::GcpTransformer::new(&o.gcps, o.gcp_method, o.order)?);
+        }
+        let dst_srs = o.dst_srs.clone().unwrap_or_else(|| srcs[0].srs.clone());
+        let bands = first.raster.bands;
+        if srcs.iter().any(|s| s.ds.raster.bands != bands) {
+            return Err(Error::InvalidArgument("all sources must have the same number of bands".into()));
+        }
+
+        // The target extent, in the output CRS.
+        let mut te = o.extent;
+        if let (Some(b), Some(srs)) = (te, &o.extent_srs)
+            && !same_crs(srs, &dst_srs)
+        {
+            te = Some(super::transform_bounds(&Transformer::new(srs, &dst_srs)?, b, 21)?);
+        }
+        // The cutline, in each source's pixel space, and its extent.
+        if o.crop_to_cutline {
+            let c = o.cutline.as_ref().ok_or_else(|| Error::InvalidArgument("cropping to the cutline needs a cutline".into()))?;
+            te = Some(cutline_extent(c, &srcs[0], &dst_srs, o.resolution.is_some())?);
+        }
+
+        let grid = output_grid(&srcs, &dst_srs, o, te)?;
+        let out_type = o.output_type.unwrap_or(first.raster.data_type);
+        // The output's nodata defaults to the source's.
+        let dst_nodata: Option<f64> = match &o.dst_nodata {
+            Nodata::Auto => src_nodata(&srcs[0], o, 0),
+            Nodata::None => None,
+            v => v.value(0),
+        };
+        Ok(Self { srcs, dst_srs, grid, bands, out_type, dst_nodata })
+    }
+
+    /// The output's initial value, rounded to its type.
+    fn fill(&self) -> f64 {
+        warp_round(self.dst_nodata.unwrap_or(0.0), self.out_type)
+    }
+
+    /// The transformer from source `k`'s pixels to the output's.
+    fn transformer(&self, k: usize) -> Result<GenImgProj> {
+        let mut t = self.srcs[k].transformer(&self.dst_srs)?;
+        t.set_dst_gt(self.grid.geo_transform);
+        Ok(t)
+    }
+
+    /// Source `k`'s nodata values, band by band.
+    fn src_nodata(&self, k: usize, o: &WarpOptions) -> Vec<Option<f64>> {
+        (0..self.bands).map(|b| src_nodata(&self.srcs[k], o, b)).collect()
+    }
+
+    /// The warp of source `k`, through `t` ([`Plan::transformer`]), and the chunks of the output
+    /// it is warped in, in order.
+    fn context<'t>(&self, k: usize, t: &'t GenImgProj, o: &WarpOptions) -> (WarpContext<'t>, Vec<Chunk>, Sink) {
+        let s = &self.srcs[k];
+        let nodata = self.src_nodata(k, o);
+        let unified = matches!(o.src_nodata, Nodata::Values(_)) && self.bands > 1;
+        let translation = t.ct.is_none() && s.gcp.is_none() && is_pixel_translation(&s.grid.geo_transform, &self.grid.geo_transform);
+        let ctx = WarpContext {
+            t,
+            approx: Approx { base: t, max_error: o.error_threshold },
+            src_w: s.grid.width,
+            src_h: s.grid.height,
+            resampling: o.resampling,
+            translation,
+            memory_limit: o.memory_limit,
+            bands: self.bands,
+            out_bits: self.out_type.size_bytes() * 8,
+            src_has_nodata: nodata.iter().any(Option::is_some),
+            dst_has_nodata: self.dst_nodata.is_some(),
+            cutline: o.cutline.is_some(),
+        };
+        let mut chunks = Vec::new();
+        ctx.collect_chunks(0, 0, self.grid.width, self.grid.height, &mut chunks);
+        chunks.sort_by_key(|c| (c.dy, c.dx));
+        // As GDAL's warp kernel: valid pixels equal to the output nodata are nudged off it,
+        // except with a nodata value unified across several bands. Pixels are masked by nodata
+        // values and cutlines (see `validity`).
+        let masked = nodata.iter().any(Option::is_some) || o.cutline.is_some();
+        let sink = Sink { out_type: self.out_type, dst_nodata: self.dst_nodata, avoid_nodata: masked && (self.bands == 1 || !unified) };
+        (ctx, chunks, sink)
+    }
+}
+
+/// A source's nodata value for a band: explicit, else declared by the source.
+fn src_nodata(s: &Source, o: &WarpOptions, band: usize) -> Option<f64> {
+    match &o.src_nodata {
+        Nodata::Auto => s.ds.nodata(),
+        Nodata::None => None,
+        v => v.value(band),
+    }
+}
+
 /// Reprojects and resamples one or more rasters into one output, as `gdalwarp` does. Later
 /// sources are drawn over earlier ones where they have valid pixels.
 pub fn warp(sources: &[&RasterDataset], o: &WarpOptions) -> Result<RasterDataset> {
-    let first = sources.first().ok_or_else(|| Error::InvalidArgument("no source rasters".into()))?;
-    let mut srcs: Vec<Source> = sources
-        .iter()
-        .map(|ds| Source {
-            ds,
-            grid: Grid { width: ds.raster.cols, height: ds.raster.rows, geo_transform: ds.geo_transform() },
-            srs: o.src_srs.clone().unwrap_or_else(|| ds.crs()),
-            gcp: None,
-        })
-        .collect();
-    if !o.gcps.is_empty() {
-        if o.cutline.is_some() {
-            return Err(Error::Unsupported("cutlines are not supported with GCPs".into()));
-        }
-        srcs[0].gcp = Some(super::gcp::GcpTransformer::new(&o.gcps, o.gcp_method, o.order)?);
-    }
-    let dst_srs = o.dst_srs.clone().unwrap_or_else(|| srcs[0].srs.clone());
-    let bands = first.raster.bands;
-    if srcs.iter().any(|s| s.ds.raster.bands != bands) {
-        return Err(Error::InvalidArgument("all sources must have the same number of bands".into()));
-    }
-
-    // The target extent, in the output CRS.
-    let mut te = o.extent;
-    if let (Some(b), Some(srs)) = (te, &o.extent_srs)
-        && !same_crs(srs, &dst_srs)
-    {
-        te = Some(super::transform_bounds(&Transformer::new(srs, &dst_srs)?, b, 21)?);
-    }
-    // The cutline, in each source's pixel space, and its extent.
-    if o.crop_to_cutline {
-        let c = o.cutline.as_ref().ok_or_else(|| Error::InvalidArgument("cropping to the cutline needs a cutline".into()))?;
-        te = Some(cutline_extent(c, &srcs[0], &dst_srs, o.resolution.is_some())?);
-    }
-
-    let grid = output_grid(&srcs, &dst_srs, o, te)?;
-    let out_type = o.output_type.unwrap_or(first.raster.data_type);
-    // Nodata: explicit, else declared by the source; the output's defaults to the source's.
-    let src_nodata_of = |s: &Source, b: usize| -> Option<f64> {
-        match &o.src_nodata {
-            Nodata::Auto => s.ds.nodata(),
-            Nodata::None => None,
-            v => v.value(b),
-        }
-    };
-    let dst_nodata: Option<f64> = match &o.dst_nodata {
-        Nodata::Auto => src_nodata_of(&srcs[0], 0),
-        Nodata::None => None,
-        v => v.value(0),
-    };
-    let init = dst_nodata.unwrap_or(0.0);
+    let p = Plan::new(sources, o)?;
+    let (grid, bands, out_type) = (p.grid, p.bands, p.out_type);
     let n = grid.width * grid.height;
     // The output, in its type: chunks are warped into `f64` rows, then stored (the values are
     // already rounded to the type, see `Sink::value`).
+    let fill = p.fill();
     let mut out = RasterData::new_filled(out_type, n * bands, 0.0);
-    crate::pixel::with_data!(&mut out, v => {
-        let fill = warp_round(init, out_type);
-        v.iter_mut().for_each(|x| *x = fill as _);
-    });
+    crate::pixel::with_data!(&mut out, v => v.iter_mut().for_each(|x| *x = fill as _));
 
-    for (k, s) in srcs.iter().enumerate() {
-        let mut t = s.transformer(&dst_srs)?;
-        t.set_dst_gt(grid.geo_transform);
-        let nodata: Vec<Option<f64>> = (0..bands).map(|b| src_nodata_of(s, b)).collect();
+    for (k, s) in p.srcs.iter().enumerate() {
+        let t = p.transformer(k)?;
+        let (ctx, chunks, sink) = p.context(k, &t, o);
+        let nodata = p.src_nodata(k, o);
         let unified = matches!(o.src_nodata, Nodata::Values(_)) && bands > 1;
         let src_bands: Vec<super::BandView> = (0..bands).map(|b| super::BandView::of(&s.ds.raster, b)).collect();
         let cut_mask = match &o.cutline {
@@ -1023,40 +1090,129 @@ pub fn warp(sources: &[&RasterDataset], o: &WarpOptions) -> Result<RasterDataset
             None => None,
         };
         let valid = validity(&src_bands, &nodata, unified, cut_mask);
-        let masked = valid.iter().any(Option::is_some);
-        let translation = t.ct.is_none() && s.gcp.is_none() && is_pixel_translation(&s.grid.geo_transform, &grid.geo_transform);
-        let ctx = WarpContext {
-            t: &t,
-            approx: Approx { base: &t, max_error: o.error_threshold },
-            src_w: s.grid.width,
-            src_h: s.grid.height,
-            resampling: o.resampling,
-            translation,
-            memory_limit: o.memory_limit,
-            bands,
-            out_bits: out_type.size_bytes() * 8,
-            src_has_nodata: nodata.iter().any(Option::is_some),
-            dst_has_nodata: dst_nodata.is_some(),
-            cutline: o.cutline.is_some(),
-        };
-        let mut chunks = Vec::new();
-        ctx.collect_chunks(0, 0, grid.width, grid.height, &mut chunks);
-        chunks.sort_by_key(|c| (c.dy, c.dx));
-        // As GDAL's warp kernel: valid pixels equal to the output nodata are nudged off it,
-        // except with a nodata value unified across several bands.
-        let sink = Sink { out_type, dst_nodata, avoid_nodata: masked && (bands == 1 || !unified) };
-        let fill = warp_round(init, out_type);
         // The source's bands in their type: the kernels are compiled for each (no conversion of
         // the bands, and no dispatch on the type per pixel).
         let sn = s.grid.width * s.grid.height;
         let target = Target { out: &mut out, width: grid.width, n, fill, out_type, first: k == 0 };
         crate::pixel::with_data!(&s.ds.raster.data, v => {
             let typed: Vec<&[_]> = (0..bands).map(|b| &v[b * sn..(b + 1) * sn]).collect();
-            let data = SrcData { bands: &typed, valid: &valid, width: s.grid.width };
+            let data = SrcData { bands: &typed, valid: &valid, width: s.grid.width, origin: (0, 0) };
             warp_source(&ctx, &chunks, &data, &sink, target);
         });
     }
-    super::build_raster_data(grid, out, bands, dst_nodata, &dst_srs)
+    super::build_raster_data(grid, out, bands, p.dst_nodata, &p.dst_srs)
+}
+
+/// Warps rasters as [`warp`] does and writes the output to `path`. A single source without a
+/// cutline is read a chunk at a time (the source window each chunk of the output needs), and a
+/// GeoTIFF output written as its rows are done: neither is held whole. Otherwise the sources
+/// are read whole.
+///
+/// ```no_run
+/// use terrio::ops::warp::{WarpOptions, warp_to_path};
+///
+/// let o = WarpOptions { dst_srs: Some(terrio::crs::SpatialRef::parse("EPSG:3857")?), ..Default::default() };
+/// warp_to_path(&["dem.tif".to_string()], &o, "dem_3857.tif", &Default::default())?;
+/// # Ok::<(), terrio::Error>(())
+/// ```
+pub fn warp_to_path(paths: &[String], o: &WarpOptions, path: &str, options: &crate::RasterWriteOptions) -> Result<()> {
+    if paths.len() != 1 || o.cutline.is_some() {
+        let sources = paths.iter().map(|p| crate::open_raster(p)).collect::<Result<Vec<_>>>()?;
+        let refs: Vec<&RasterDataset> = sources.iter().collect();
+        return crate::write_raster_dataset(&warp(&refs, o)?, path, options);
+    }
+    let mut src = crate::open_raster_lazy(&paths[0])?;
+    let header = src.header();
+    let p = Plan::new(&[&header], o)?;
+    let (grid, bands, out_type) = (p.grid, p.bands, p.out_type);
+    let w = grid.width;
+    let t = p.transformer(0)?;
+    let (ctx, chunks, sink) = p.context(0, &t, o);
+    let nodata = p.src_nodata(0, o);
+    let unified = matches!(o.src_nodata, Nodata::Values(_)) && bands > 1;
+    let fill = p.fill();
+    let mut out =
+        super::strips::StripWriter::create(&super::raster_header(grid, out_type, bands, p.dst_nodata, &p.dst_srs)?, path, options)?;
+
+    // The last chunk (in order) writing each row: rows are written once it is warped.
+    let mut last: Vec<Option<usize>> = vec![None; grid.height];
+    for (i, c) in chunks.iter().enumerate() {
+        last[c.dy..c.dy + c.dh].iter_mut().for_each(|l| *l = Some(i));
+    }
+    // The rows warped but not yet written, from row `base`, band after band, in the output type.
+    let mut rows = RasterData::new_filled(out_type, 0, 0.0);
+    let mut base = 0;
+    // Adds rows of the initial value up to row `upto`.
+    let grow = |rows: &mut RasterData, base: usize, upto: usize| {
+        let (old, new) = (rows.len() / bands / w, upto.saturating_sub(base));
+        if new > old {
+            crate::pixel::with_data!(rows, v => {
+                let mut grown = Vec::with_capacity(new * w * bands);
+                for b in 0..bands {
+                    grown.extend_from_slice(&v[b * old * w..(b + 1) * old * w]);
+                    grown.resize((b + 1) * new * w, fill as _);
+                }
+                *v = grown;
+            });
+        }
+    };
+    let mut write_done = |rows: &mut RasterData, base: &mut usize, upto: usize| -> Result<()> {
+        if upto <= *base {
+            return Ok(());
+        }
+        grow(rows, *base, upto);
+        let (n, total) = ((upto - *base) * w, rows.len() / bands);
+        let data = crate::pixel::map_data!(&*rows, v => (0..bands).flat_map(|b| v[b * total..b * total + n].iter().copied()).collect());
+        crate::pixel::with_data!(rows, v => {
+            *v = (0..bands).flat_map(|b| v[b * total + n..(b + 1) * total].iter().copied()).collect();
+        });
+        *base = upto;
+        out.write(data, n / w)
+    };
+    // Rows no chunk writes, at the top.
+    let first_row = |from: usize, done: usize| (from..grid.height).find(|r| last[*r].is_some_and(|l| l > done)).unwrap_or(grid.height);
+    if chunks.is_empty() {
+        write_done(&mut rows, &mut base, grid.height)?;
+    }
+    super::strips::pipelined(
+        chunks.len(),
+        |i| {
+            let c = &chunks[i];
+            src.read_window(crate::Window::new(c.sx, c.sy, c.sw, c.sh), &crate::WindowOptions::default())
+        },
+        |i, window| {
+            let c = &chunks[i];
+            // The chunk's part of the output, as `f64`: the output's initial value (the chunks of
+            // a source don't overlap), warped.
+            let mut staged: Vec<Vec<f64>> = vec![vec![fill; c.dw * c.dh]; bands];
+            let src_bands: Vec<super::BandView> = (0..bands).map(|b| super::BandView::of(&window.raster, b)).collect();
+            let valid = validity(&src_bands, &nodata, unified, None);
+            let sn = c.sw * c.sh;
+            crate::pixel::with_data!(&window.raster.data, v => {
+                let typed: Vec<&[_]> = (0..bands).map(|b| &v[b * sn..(b + 1) * sn]).collect();
+                let data = SrcData { bands: &typed, valid: &valid, width: c.sw, origin: (c.sx, c.sy) };
+                ctx.warp_chunk(c, &data, &sink, chunk_rows(&mut staged, c.dw, &Chunk { dx: 0, dy: 0, ..*c }));
+            });
+            // Stored in the pending rows, rounded to the output type.
+            grow(&mut rows, base, c.dy + c.dh);
+            let total = rows.len() / bands;
+            crate::pixel::with_data!(&mut rows, v => {
+                for (b, part) in staged.iter().enumerate() {
+                    for (r, line) in part.chunks(c.dw).enumerate() {
+                        let at = b * total + (c.dy + r - base) * w + c.dx;
+                        for (o, x) in v[at..at + c.dw].iter_mut().zip(line) {
+                            *o = warp_round(*x, out_type) as _;
+                        }
+                    }
+                }
+            });
+            let upto = first_row(base, i);
+            write_done(&mut rows, &mut base, upto)
+        },
+    )?;
+    write_done(&mut rows, &mut base, grid.height)?;
+    drop(write_done);
+    out.finish()
 }
 
 /// Whether the destination grid is the source grid shifted by whole pixels.
@@ -1233,10 +1389,12 @@ struct WarpContext<'a> {
     cutline: bool,
 }
 
+/// A source's pixels, or a window of them: `width` columns from the source's pixel `origin`.
 struct SrcData<'a, T> {
     bands: &'a [&'a [T]],
     valid: &'a [Option<Vec<bool>>],
     width: usize,
+    origin: (usize, usize),
 }
 
 /// The output warped into: all its bands (`n` values each, rows of `width`), in its type.
@@ -1836,7 +1994,7 @@ struct Kernel<'a, T> {
 impl<T: crate::pixel::Pixel> Kernel<'_, T> {
     #[inline]
     fn index(&self, x: usize, y: usize) -> usize {
-        (self.win.sy + y) * self.src.width + self.win.sx + x
+        (self.win.sy + y - self.src.origin.1) * self.src.width + self.win.sx + x - self.src.origin.0
     }
 
     #[inline]
@@ -2018,6 +2176,38 @@ mod tests {
         };
         let data = (0..rows).flat_map(|r| (0..cols).map(move |c| (r, c))).map(|(r, c)| f(c, r)).collect();
         RasterDataset::new(Raster::from_data(cfg, data).unwrap(), false)
+    }
+
+    /// A source warped a chunk at a time, read by windows and written as its rows are done (as a
+    /// GeoTIFF, and in another format), is the warp of the whole source.
+    #[test]
+    fn chunks_read_by_windows_give_the_whole_warp() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut ds = raster(37, 29, [500000.0, 30.0, 0.0, 4000000.0, 0.0, -30.0], 32610, |c, r| ((c * 7 + r * 13) % 50) as f64 + 0.25);
+        ds.has_nodata = true;
+        ds.raster.set(0, 5, 6, -9999.0).unwrap();
+        let input = dir.path().join("src.tif");
+        crate::write_raster_dataset(&ds, input.to_str().unwrap(), &Default::default()).unwrap();
+        let paths = [input.to_str().unwrap().to_string()];
+        let utm11 = SpatialRef::parse("EPSG:32611").unwrap();
+        for resampling in [Resampling::Nearest, Resampling::Bilinear, Resampling::Cubic, Resampling::Average] {
+            for (memory_limit, ext) in [(64.0 * 1024.0 * 1024.0, "tif"), (2000.0, "tif"), (500.0, "tif"), (2000.0, "asc")] {
+                let o = WarpOptions {
+                    dst_srs: Some(utm11.clone()),
+                    resampling,
+                    memory_limit,
+                    output_type: Some(DataType::F64),
+                    ..Default::default()
+                };
+                let whole = dir.path().join(format!("whole.{ext}"));
+                crate::write_raster_dataset(&warp(&[&ds], &o).unwrap(), whole.to_str().unwrap(), &Default::default()).unwrap();
+                let out = dir.path().join(format!("out.{ext}"));
+                warp_to_path(&paths, &o, out.to_str().unwrap(), &Default::default()).unwrap();
+                let (a, b) = (crate::open_raster(whole.to_str().unwrap()).unwrap(), crate::open_raster(out.to_str().unwrap()).unwrap());
+                assert_eq!((a.raster.cols, a.raster.rows, a.geo_transform()), (b.raster.cols, b.raster.rows, b.geo_transform()));
+                assert_eq!(a.raster.data.to_f64_vec(), b.raster.data.to_f64_vec(), "{resampling:?} {memory_limit} {ext}");
+            }
+        }
     }
 
     #[test]

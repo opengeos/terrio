@@ -198,32 +198,41 @@ fn internal_masks_and_rows_written_in_order() {
         }
     }
     let tiled = vec![("TILED", "YES"), ("BLOCKXSIZE", "16"), ("BLOCKYSIZE", "16")];
+    let planar_tiles = [tiled.clone(), vec![("INTERLEAVE", "BAND")]].concat();
     // LERC (lossless here) is encoded by terrio's writer too, so rows are written with it.
-    for (name, compression, co) in
-        [("tiles", "DEFLATE", tiled.clone()), ("strips", "DEFLATE", vec![("BLOCKYSIZE", "7")]), ("lerc_tiles", "LERC_ZSTD", tiled)]
-    {
+    for (name, compression, co) in [
+        ("tiles", "DEFLATE", tiled.clone()),
+        ("strips", "DEFLATE", vec![("BLOCKYSIZE", "7")]),
+        ("planar_strips", "DEFLATE", vec![("BLOCKYSIZE", "7"), ("INTERLEAVE", "BAND")]),
+        ("planar_tiles", "ZSTD", planar_tiles),
+        ("lerc_tiles", "LERC_ZSTD", tiled),
+    ] {
         let creation_options: Vec<(String, String)> = co.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
         let o =
             RasterWriteOptions { compression: Some(compression.into()), creation_options, mask: Some(mask.clone()), ..Default::default() };
         let whole = dir.path().join(format!("{name}.tif"));
         terrio::write_raster_dataset(&ds, whole.to_str().unwrap(), &o).unwrap();
-        // The same file, written 6 rows at a time.
-        let rows = dir.path().join(format!("{name}_rows.tif"));
-        let mut header = ds.clone();
-        header.raster.data = RasterData::U8(Vec::new());
-        let mut w = GeoTiffWriter::create(rows.to_str().unwrap(), &header, &o).unwrap();
-        let band = 50 * 40;
-        for y in (0..40).step_by(6) {
-            let n = 6.min(40 - y);
-            let mut chunk = Vec::new();
-            for b in 0..3 {
-                chunk.extend_from_slice(&ds.raster.data_u8().unwrap()[b * band + y * 50..b * band + (y + n) * 50]);
+        // The same file, written 6 rows at a time (less than a block), and 40 (several blocks).
+        let mut written = vec![whole];
+        for step in [6, 40] {
+            let rows = dir.path().join(format!("{name}_rows{step}.tif"));
+            let mut header = ds.clone();
+            header.raster.data = RasterData::U8(Vec::new());
+            let mut w = GeoTiffWriter::create(rows.to_str().unwrap(), &header, &o).unwrap();
+            let band = 50 * 40;
+            for y in (0..40).step_by(step) {
+                let n = step.min(40 - y);
+                let mut chunk = Vec::new();
+                for b in 0..3 {
+                    chunk.extend_from_slice(&ds.raster.data_u8().unwrap()[b * band + y * 50..b * band + (y + n) * 50]);
+                }
+                w.write_rows(&RasterData::U8(chunk), n, Some(&mask[y * 50..(y + n) * 50])).unwrap();
             }
-            w.write_rows(&RasterData::U8(chunk), n, Some(&mask[y * 50..(y + n) * 50])).unwrap();
+            assert_eq!(w.rows_written(), 40);
+            w.finish().unwrap();
+            written.push(rows);
         }
-        assert_eq!(w.rows_written(), 40);
-        w.finish().unwrap();
-        for p in [&whole, &rows] {
+        for p in &written {
             let p = p.to_str().unwrap();
             let back = terrio::open_raster(p).unwrap();
             assert_eq!(back.raster.data_u8().unwrap(), ds.raster.data_u8().unwrap(), "{p}");

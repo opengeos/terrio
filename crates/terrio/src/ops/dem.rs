@@ -18,7 +18,7 @@
 //! - on x86-64, the default hillshade uses the same approximate reciprocal square root as GDAL's
 //!   SSE code path on the rows where it uses it.
 
-use super::{Grid, build_raster, build_raster_data};
+use super::{Grid, build_raster};
 use crate::{Error, RasterDataset, Result};
 use std::f64::consts::PI;
 use wbraster::DataType;
@@ -604,18 +604,32 @@ struct Kernel<'a, T> {
     multi: Option<Alg<'a, T>>,
 }
 
-/// `GDALGeneric3x3Processing()`: runs a 3×3 algorithm over a band.
-fn process<T: Px>(src: &[T], width: usize, height: usize, nodata: Option<T>, dst_nodata: f32, edges: bool, k: &Kernel<T>) -> Vec<f32> {
-    let (w, h) = (width, height);
-    let mut out = vec![dst_nodata; w * h];
-    if w == 0 || h == 0 {
+/// The rows of a band a 3×3 algorithm runs over: `src` holds rows `src_rows` of a band of
+/// `width` × `height` pixels, and the algorithm computes rows `out_rows`, which `src_rows` covers
+/// with a row more on each side (where the band has one).
+struct Rows<'a, T> {
+    src: &'a [T],
+    width: usize,
+    height: usize,
+    src_rows: std::ops::Range<usize>,
+    out_rows: std::ops::Range<usize>,
+}
+
+/// `GDALGeneric3x3Processing()`: runs a 3×3 algorithm over rows of a band, returning the rows
+/// computed. The values do not depend on how the band is split in rows.
+fn process<T: Px>(rows: Rows<T>, nodata: Option<T>, dst_nodata: f32, edges: bool, k: &Kernel<T>) -> Vec<f32> {
+    let Rows { src, width: w, height: h, src_rows, out_rows } = rows;
+    let (s0, o0, o1) = (src_rows.start, out_rows.start, out_rows.end);
+    let mut out = vec![dst_nodata; w * (o1 - o0)];
+    if w == 0 || h == 0 || o1 <= o0 {
         return out;
     }
     let has_nd = nodata.is_some();
     let nd = nodata.unwrap_or_else(|| src[0]);
     let nd_nan = has_nd && nd.f64().is_nan();
-    let line_nd: Vec<bool> = (0..h).map(|r| has_nd && src[r * w..(r + 1) * w].iter().any(|v| v.line_nodata(nd))).collect();
-    let row = |r: usize| &src[r * w..(r + 1) * w];
+    let line_nd: Vec<bool> = (0..src_rows.len()).map(|r| has_nd && src[r * w..(r + 1) * w].iter().any(|v| v.line_nodata(nd))).collect();
+    let line_nd = |r: usize| line_nd[r - s0];
+    let row = |r: usize| &src[(r - s0) * w..(r - s0 + 1) * w];
     let interpol = |a: T, b: T| T::interpol(a, b, has_nd, nd);
     let compute = |mut win: [T; 9], check: bool| -> f32 {
         if check {
@@ -636,7 +650,7 @@ fn process<T: Px>(src: &[T], width: usize, height: usize, nodata: Option<T>, dst
     };
 
     // The first row.
-    if edges && w >= 2 && h >= 2 {
+    if o0 == 0 && edges && w >= 2 && h >= 2 {
         let (r0, r1) = (row(0), row(1));
         for j in 0..w {
             let (jmin, jmax) = (j.saturating_sub(1), (j + 1).min(w - 1));
@@ -658,7 +672,7 @@ fn process<T: Px>(src: &[T], width: usize, height: usize, nodata: Option<T>, dst
     // The inner rows.
     let inner = |i: usize, o: &mut [f32]| {
         let (l1, l2, l3) = (row(i - 1), row(i), row(i + 1));
-        let check = has_nd && (line_nd[i - 1] || line_nd[i] || line_nd[i + 1]);
+        let check = has_nd && (line_nd(i - 1) || line_nd(i) || line_nd(i + 1));
         if edges && w >= 2 {
             let win = [interpol(l1[0], l1[1]), l1[0], l1[1], interpol(l2[0], l2[1]), l2[0], l2[1], interpol(l3[0], l3[1]), l3[0], l3[1]];
             o[0] = compute(win, check);
@@ -695,18 +709,20 @@ fn process<T: Px>(src: &[T], width: usize, height: usize, nodata: Option<T>, dst
             o[j] = compute(win, check);
         }
     };
-    if h >= 3 {
-        let body = &mut out[w..(h - 1) * w];
+    // The inner rows this computes.
+    let (i0, i1) = (o0.max(1), o1.min(h.saturating_sub(1)));
+    if i1 > i0 {
+        let body = &mut out[(i0 - o0) * w..(i1 - o0) * w];
         #[cfg(not(target_arch = "wasm32"))]
         {
             let threads = std::thread::available_parallelism().map_or(1, |n| n.get()).min(16);
-            let rows_per = (h - 2).div_ceil(threads).max(1);
+            let rows_per = (i1 - i0).div_ceil(threads).max(1);
             std::thread::scope(|s| {
                 for (c, chunk) in body.chunks_mut(rows_per * w).enumerate() {
                     let inner = &inner;
                     s.spawn(move || {
                         for (k, o) in chunk.chunks_mut(w).enumerate() {
-                            inner(1 + c * rows_per + k, o);
+                            inner(i0 + c * rows_per + k, o);
                         }
                     });
                 }
@@ -714,14 +730,14 @@ fn process<T: Px>(src: &[T], width: usize, height: usize, nodata: Option<T>, dst
         }
         #[cfg(target_arch = "wasm32")]
         for (k, o) in body.chunks_mut(w).enumerate() {
-            inner(1 + k, o);
+            inner(i0 + k, o);
         }
     }
 
     // The last row.
-    if edges && w >= 2 && h >= 2 {
+    if o1 == h && edges && w >= 2 && h >= 2 {
         let (l1, l2) = (row(h - 2), row(h - 1));
-        let o = &mut out[(h - 1) * w..];
+        let o = &mut out[(h - 1 - o0) * w..];
         for j in 0..w {
             let (jmin, jmax) = (j.saturating_sub(1), (j + 1).min(w - 1));
             let win = [
@@ -865,84 +881,178 @@ impl DemProduct {
     }
 }
 
+/// A terrain product of a DEM band, set up from the DEM's metadata.
+struct Terrain {
+    product: DemProduct,
+    o: DemOptions,
+    gt: [f64; 6],
+    xscale: f64,
+    yscale: f64,
+    width: usize,
+    height: usize,
+    out_type: DataType,
+    dst_nodata: Option<f64>,
+}
+
+impl Terrain {
+    /// `ds` is only read for its metadata.
+    fn new(ds: &RasterDataset, product: DemProduct, o: &DemOptions) -> Result<Self> {
+        o.validate()?;
+        if o.shading != Shading::Standard && product != DemProduct::Hillshade {
+            return Err(Error::InvalidArgument("combined, multidirectional and Igor shading apply to hillshade only".into()));
+        }
+        let gt = ds.geo_transform();
+        // Gradients take the pixel sizes from the geotransform's diagonal (as gdaldem does), which a
+        // rotated grid doesn't have.
+        if matches!(product, DemProduct::Hillshade | DemProduct::Slope | DemProduct::Aspect) && (gt[2] != 0.0 || gt[4] != 0.0) {
+            return Err(Error::Unsupported("hillshade, slope and aspect of rotated grids are not supported".into()));
+        }
+        if o.band == 0 || o.band > ds.raster.bands {
+            return Err(Error::InvalidArgument(format!("unable to fetch band #{}", o.band)));
+        }
+        let (xscale, yscale) = scales(ds, o);
+        let (out_type, dst_nodata) = match product {
+            DemProduct::Hillshade => (DataType::U8, Some(0.0)),
+            DemProduct::Aspect if o.zero_for_flat => (DataType::F32, None),
+            _ => (DataType::F32, Some(-9999.0)),
+        };
+        Ok(Self { product, o: o.clone(), gt, xscale, yscale, width: ds.raster.cols, height: ds.raster.rows, out_type, dst_nodata })
+    }
+
+    /// The output's metadata, without pixels.
+    fn header(&self, ds: &RasterDataset) -> Result<RasterDataset> {
+        let mut out = super::raster_header(Grid::of(&ds.raster), self.out_type, 1, self.dst_nodata, &ds.crs())?;
+        // A rotated or south-up input keeps its geotransform.
+        if let Some(gt) = ds.affine {
+            out.set_geo_transform(gt);
+        }
+        Ok(out)
+    }
+
+    /// Computes rows `out_rows` from rows `src_rows` of the band, in the output's type.
+    fn compute(&self, band: &Band, src_rows: std::ops::Range<usize>, out_rows: std::ops::Range<usize>) -> RasterData {
+        let (product, o, gt) = (self.product, &self.o, self.gt);
+        let (xscale, yscale, w, h) = (self.xscale, self.yscale, self.width, self.height);
+        let dst_nd = self.dst_nodata.unwrap_or(0.0) as f32;
+        macro_rules! run {
+            ($t:ty, $src:expr, $nd:expr) => {{
+                let hs = HillshadeParams::new(&gt, o, xscale, yscale);
+                let md = MultiDirectionalParams::new(&gt, o, xscale, yscale);
+                let same_res = gt[1] == -gt[5] && xscale == yscale;
+                let (ew, ns) = (gt[1] * xscale, gt[5] * yscale);
+                let azimuth = !o.trigonometric;
+                let f: Box<dyn Fn(&[$t; 9]) -> f32 + Sync> = match product {
+                    DemProduct::Hillshade => match o.shading {
+                        Shading::MultiDirectional => Box::new(move |w| md.shade(w)),
+                        Shading::Combined => Box::new(move |w| hs.combined(w)),
+                        Shading::Igor => Box::new(move |w| hs.igor(w)),
+                        Shading::Standard if o.gradient == GradientAlg::Horn && same_res => Box::new(move |w| hs.same_res(w)),
+                        Shading::Standard => Box::new(move |w| hs.standard(w)),
+                    },
+                    DemProduct::Slope => {
+                        let (alg, percent) = (o.gradient, o.slope_percent);
+                        Box::new(move |w| slope(w, alg, ew, ns, percent))
+                    }
+                    DemProduct::Aspect => {
+                        let alg = o.gradient;
+                        Box::new(move |w| aspect(w, alg, azimuth, dst_nd))
+                    }
+                    DemProduct::Tri if o.tri == TriAlg::Wilson => Box::new(tri_wilson::<$t>),
+                    DemProduct::Tri => Box::new(tri_riley::<$t>),
+                    DemProduct::Tpi => Box::new(tpi::<$t>),
+                    DemProduct::Roughness => Box::new(roughness::<$t>),
+                };
+                #[cfg(target_arch = "x86_64")]
+                let simd = move |w: &[$t; 9]| hs.same_res_simd(w);
+                #[cfg(target_arch = "x86_64")]
+                let multi: Option<&(dyn Fn(&[$t; 9]) -> f32 + Sync)> =
+                    (product == DemProduct::Hillshade && o.shading == Shading::Standard && o.gradient == GradientAlg::Horn && same_res)
+                        .then_some(&simd);
+                #[cfg(not(target_arch = "x86_64"))]
+                let multi: Option<&(dyn Fn(&[$t; 9]) -> f32 + Sync)> = None;
+                let rows = Rows { src: $src, width: w, height: h, src_rows, out_rows };
+                process::<$t>(rows, $nd, dst_nd, o.compute_edges, &Kernel { f: &*f, multi })
+            }};
+        }
+        let values = match band {
+            Band::Int(v, nd) => run!(i32, v, *nd),
+            Band::Float(v, nd) => run!(f32, v, *nd),
+        };
+        // The values as they are stored: bytes, or the Float32 values themselves.
+        if self.out_type == DataType::U8 {
+            RasterData::U8(crate::par::map_range(values.len(), |i| float_to_byte(values[i]) as u8))
+        } else {
+            RasterData::F32(values)
+        }
+    }
+}
+
 /// Computes a terrain product of a DEM band, as `gdaldem` does.
 pub fn dem(ds: &RasterDataset, product: DemProduct, o: &DemOptions) -> Result<RasterDataset> {
-    o.validate()?;
-    if o.shading != Shading::Standard && product != DemProduct::Hillshade {
-        return Err(Error::InvalidArgument("combined, multidirectional and Igor shading apply to hillshade only".into()));
-    }
-    let gt = ds.geo_transform();
-    // Gradients take the pixel sizes from the geotransform's diagonal (as gdaldem does), which a
-    // rotated grid doesn't have.
-    if matches!(product, DemProduct::Hillshade | DemProduct::Slope | DemProduct::Aspect) && (gt[2] != 0.0 || gt[4] != 0.0) {
-        return Err(Error::Unsupported("hillshade, slope and aspect of rotated grids are not supported".into()));
-    }
-    let (xscale, yscale) = scales(ds, o);
-    let (w, h) = (ds.raster.cols, ds.raster.rows);
-    let (out_type, dst_nodata) = match product {
-        DemProduct::Hillshade => (DataType::U8, Some(0.0)),
-        DemProduct::Aspect if o.zero_for_flat => (DataType::F32, None),
-        _ => (DataType::F32, Some(-9999.0)),
+    let t = Terrain::new(ds, product, o)?;
+    let h = ds.raster.rows;
+    let data = {
+        let band = read_band(ds, o.band)?;
+        t.compute(&band, 0..h, 0..h)
     };
-    let dst_nd = dst_nodata.unwrap_or(0.0) as f32;
-    let band = read_band(ds, o.band)?;
-
-    macro_rules! run {
-        ($t:ty, $src:expr, $nd:expr) => {{
-            let hs = HillshadeParams::new(&gt, o, xscale, yscale);
-            let md = MultiDirectionalParams::new(&gt, o, xscale, yscale);
-            let same_res = gt[1] == -gt[5] && xscale == yscale;
-            let (ew, ns) = (gt[1] * xscale, gt[5] * yscale);
-            let azimuth = !o.trigonometric;
-            let f: Box<dyn Fn(&[$t; 9]) -> f32 + Sync> = match product {
-                DemProduct::Hillshade => match o.shading {
-                    Shading::MultiDirectional => Box::new(move |w| md.shade(w)),
-                    Shading::Combined => Box::new(move |w| hs.combined(w)),
-                    Shading::Igor => Box::new(move |w| hs.igor(w)),
-                    Shading::Standard if o.gradient == GradientAlg::Horn && same_res => Box::new(move |w| hs.same_res(w)),
-                    Shading::Standard => Box::new(move |w| hs.standard(w)),
-                },
-                DemProduct::Slope => {
-                    let (alg, percent) = (o.gradient, o.slope_percent);
-                    Box::new(move |w| slope(w, alg, ew, ns, percent))
-                }
-                DemProduct::Aspect => {
-                    let alg = o.gradient;
-                    Box::new(move |w| aspect(w, alg, azimuth, dst_nd))
-                }
-                DemProduct::Tri if o.tri == TriAlg::Wilson => Box::new(tri_wilson::<$t>),
-                DemProduct::Tri => Box::new(tri_riley::<$t>),
-                DemProduct::Tpi => Box::new(tpi::<$t>),
-                DemProduct::Roughness => Box::new(roughness::<$t>),
-            };
-            #[cfg(target_arch = "x86_64")]
-            let simd = move |w: &[$t; 9]| hs.same_res_simd(w);
-            #[cfg(target_arch = "x86_64")]
-            let multi: Option<&(dyn Fn(&[$t; 9]) -> f32 + Sync)> =
-                (product == DemProduct::Hillshade && o.shading == Shading::Standard && o.gradient == GradientAlg::Horn && same_res)
-                    .then_some(&simd);
-            #[cfg(not(target_arch = "x86_64"))]
-            let multi: Option<&(dyn Fn(&[$t; 9]) -> f32 + Sync)> = None;
-            process::<$t>($src, w, h, $nd, dst_nd, o.compute_edges, &Kernel { f: &*f, multi })
-        }};
-    }
-    let values = match &band {
-        Band::Int(v, nd) => run!(i32, v, *nd),
-        Band::Float(v, nd) => run!(f32, v, *nd),
-    };
-    drop(band);
-    // The values as they are stored: bytes, or the Float32 values themselves.
-    let data = if out_type == DataType::U8 {
-        RasterData::U8(crate::par::map_range(values.len(), |i| float_to_byte(values[i]) as u8))
-    } else {
-        RasterData::F32(values)
-    };
-    let mut out = build_raster_data(Grid::of(&ds.raster), data, 1, dst_nodata, &ds.crs())?;
-    // A rotated or south-up input keeps its geotransform.
-    if let Some(gt) = ds.affine {
-        out.set_geo_transform(gt);
-    }
+    let mut out = t.header(ds)?;
+    out.raster.data = data;
     Ok(out)
+}
+
+/// Computes a terrain product of a DEM band and writes it to `path`, as `gdaldem` does, reading
+/// the DEM and writing a GeoTIFF output a strip of rows at a time: neither is held whole (other
+/// formats are written whole). The values are those of [`dem`].
+///
+/// ```no_run
+/// use terrio::ops::dem::{DemOptions, DemProduct, dem_to_path};
+///
+/// let mut src = terrio::open_raster_lazy("dem.tif")?;
+/// dem_to_path(&mut src, DemProduct::Hillshade, &DemOptions::default(), "hillshade.tif", &Default::default())?;
+/// # Ok::<(), terrio::Error>(())
+/// ```
+pub fn dem_to_path(
+    src: &mut crate::LazyRaster,
+    product: DemProduct,
+    o: &DemOptions,
+    path: &str,
+    options: &crate::RasterWriteOptions,
+) -> Result<()> {
+    let rows = super::strips::strip_rows(src.width(), 1, src.data_type().size_bytes().max(4), src.block_size().map(|b| b.1));
+    dem_in_strips(src, product, o, path, options, rows)
+}
+
+/// [`dem_to_path`] in strips of `rows` rows.
+fn dem_in_strips(
+    src: &mut crate::LazyRaster,
+    product: DemProduct,
+    o: &DemOptions,
+    path: &str,
+    options: &crate::RasterWriteOptions,
+    rows: usize,
+) -> Result<()> {
+    let header = src.header();
+    let t = Terrain::new(&header, product, o)?;
+    let (w, h) = (t.width, t.height);
+    let mut out = super::strips::StripWriter::create(&t.header(&header)?, path, options)?;
+    let read = crate::WindowOptions { bands: vec![o.band], ..Default::default() };
+    // Rows `y0..y1` of strip `i`, read with a row more on each side, for the 3×3 window.
+    let span = |i: usize| {
+        let (y0, y1) = (i * rows, ((i + 1) * rows).min(h));
+        (y0, y1, y0.saturating_sub(1), (y1 + 1).min(h))
+    };
+    super::strips::pipelined(
+        h.div_ceil(rows),
+        |i| {
+            let (_, _, s0, s1) = span(i);
+            src.read_window(crate::Window::new(0, s0, w, s1 - s0), &read)
+        },
+        |i, strip| {
+            let (y0, y1, s0, s1) = span(i);
+            out.write(t.compute(&read_band(&strip, 1)?, s0..s1, y0..y1), y1 - y0)
+        },
+    )?;
+    out.finish()
 }
 
 /// GDAL's conversion of a `Float32` value to a byte: NaN becomes 0, others are rounded half up
@@ -1408,6 +1518,37 @@ mod tests {
 
     fn plane(w: usize, h: usize) -> Vec<f64> {
         (0..h).flat_map(|r| (0..w).map(move |c| (c as f64) * 10.0 + (r as f64) * 5.0)).collect()
+    }
+
+    /// Every product computed a few rows at a time, written as a GeoTIFF and in another format,
+    /// is the product of the whole band.
+    #[test]
+    fn strips_give_the_whole_band_values() {
+        let dir = tempfile::tempdir().unwrap();
+        let values: Vec<f64> = (0..13 * 11).map(|i| ((i * 37 % 101) as f64) * 3.5 - 40.0).collect();
+        let mut v = values.clone();
+        v[20] = -9999.0;
+        v[13 * 10 + 4] = -9999.0;
+        for (dt, nodata) in [(DataType::F32, Some(-9999.0)), (DataType::I16, None)] {
+            let ds = dem_ds(v.clone(), 13, 11, dt, nodata, 10.0);
+            let input = dir.path().join("dem.tif");
+            crate::write_raster_dataset(&ds, input.to_str().unwrap(), &Default::default()).unwrap();
+            let products =
+                [DemProduct::Hillshade, DemProduct::Slope, DemProduct::Aspect, DemProduct::Tri, DemProduct::Tpi, DemProduct::Roughness];
+            for (product, edges) in products.iter().flat_map(|p| [(*p, false), (*p, true)]) {
+                let o = DemOptions { compute_edges: edges, ..Default::default() };
+                let whole = dem(&ds, product, &o).unwrap();
+                for (rows, ext) in [(1, "tif"), (2, "tif"), (4, "tif"), (11, "tif"), (3, "asc")] {
+                    let out = dir.path().join(format!("out.{ext}"));
+                    let mut src = crate::open_raster_lazy(input.to_str().unwrap()).unwrap();
+                    dem_in_strips(&mut src, product, &o, out.to_str().unwrap(), &Default::default(), rows).unwrap();
+                    let back = crate::open_raster(out.to_str().unwrap()).unwrap();
+                    let (a, b) = (super::super::band_f64(&whole.raster, 0), super::super::band_f64(&back.raster, 0));
+                    assert_eq!(a, b, "{dt:?} {product:?} edges {edges} rows {rows} {ext}");
+                    assert_eq!(back.nodata(), whole.nodata());
+                }
+            }
+        }
     }
 
     #[test]

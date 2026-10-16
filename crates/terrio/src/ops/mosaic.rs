@@ -250,11 +250,7 @@ fn absolute(path: &str) -> String {
 pub fn mosaic(sources: &[MosaicSource], o: &MosaicOptions) -> Result<RasterDataset> {
     let first = sources.first().ok_or_else(|| Error::InvalidArgument("no source rasters".into()))?;
     let dst = o.dst_srs.clone().unwrap_or_else(|| first.ds.crs());
-    let reproject = sources.iter().any(|s| {
-        let c = s.ds.crs();
-        !c.is_unknown() && !dst.is_unknown() && !c.same_as(&dst)
-    });
-    if reproject {
+    if reprojected(sources, o) {
         if o.separate {
             return Err(Error::Unsupported("--separate with sources in different CRSs is not supported".into()));
         }
@@ -277,6 +273,156 @@ pub fn mosaic(sources: &[MosaicSource], o: &MosaicOptions) -> Result<RasterDatas
     let vrt = build_vrt(sources, o, None)?;
     // Read from the datasets already in memory rather than reopening the files.
     vrt_from_memory(&vrt, sources)
+}
+
+/// Whether the sources are reprojected: some are in another CRS than the output's.
+fn reprojected(sources: &[MosaicSource], o: &MosaicOptions) -> bool {
+    let Some(first) = sources.first() else { return false };
+    let dst = o.dst_srs.clone().unwrap_or_else(|| first.ds.crs());
+    sources.iter().any(|s| {
+        let c = s.ds.crs();
+        !c.is_unknown() && !dst.is_unknown() && !c.same_as(&dst)
+    })
+}
+
+/// Mosaics rasters as [`mosaic`] does and writes the mosaic to `path`. When every source is
+/// copied pixel for pixel (same CRS and resolution, whole-pixel offsets), they are read by windows
+/// and a GeoTIFF output written a strip of rows at a time: neither the sources nor the output are
+/// held whole. Otherwise the sources are read whole.
+///
+/// ```no_run
+/// use terrio::ops::mosaic::{MosaicOptions, mosaic_to_path};
+///
+/// let tiles = ["n39w105.tif".to_string(), "n39w106.tif".to_string()];
+/// mosaic_to_path(&tiles, &MosaicOptions::default(), "mosaic.tif", &Default::default())?;
+/// # Ok::<(), terrio::Error>(())
+/// ```
+pub fn mosaic_to_path(paths: &[String], o: &MosaicOptions, path: &str, options: &crate::RasterWriteOptions) -> Result<()> {
+    let mut lazy = paths.iter().map(|p| crate::open_raster_lazy(p)).collect::<Result<Vec<_>>>()?;
+    let headers: Vec<RasterDataset> = lazy.iter().map(|l| l.header()).collect();
+    let sources: Vec<MosaicSource> = paths.iter().zip(&headers).map(|(p, ds)| MosaicSource { path: p.clone(), ds }).collect();
+    let plan = if reprojected(&sources, o) { None } else { copy_plan(&sources, o)? };
+    let Some((vrt, copies)) = plan else {
+        drop(lazy);
+        let full = paths.iter().map(|p| crate::open_raster(p)).collect::<Result<Vec<_>>>()?;
+        let sources: Vec<MosaicSource> = paths.iter().zip(&full).map(|(p, ds)| MosaicSource { path: p.clone(), ds }).collect();
+        return crate::write_raster_dataset(&mosaic(&sources, o)?, path, options);
+    };
+    let rows = super::strips::strip_rows(vrt.width, vrt.bands.len(), vrt.bands[0].data_type.size_bytes(), None);
+    copy_in_strips(&vrt, &copies, &mut lazy, path, options, rows)
+}
+
+/// Writes a mosaic whose sources are all copied pixel for pixel, in strips of `rows` rows.
+fn copy_in_strips(
+    vrt: &VrtDataset,
+    copies: &[Copy],
+    lazy: &mut [crate::LazyRaster],
+    path: &str,
+    options: &crate::RasterWriteOptions,
+    rows: usize,
+) -> Result<()> {
+    let (w, h, nbands) = (vrt.width, vrt.height, vrt.bands.len());
+    let data_type = vrt.bands[0].data_type;
+    let grid = Grid { width: w, height: h, geo_transform: vrt.geo_transform.unwrap_or([0.0, 1.0, 0.0, 0.0, 0.0, -1.0]) };
+    let header = super::raster_header(grid, data_type, nbands, vrt.bands[0].nodata, &vrt.srs.clone().unwrap_or_default())?;
+    let mut out = super::strips::StripWriter::create(&header, path, options)?;
+    let span = |i: usize| (i * rows, ((i + 1) * rows).min(h));
+    super::strips::pipelined(
+        h.div_ceil(rows),
+        // Each copy's rows in the strip, read from its source.
+        |i| {
+            let (y0, y1) = span(i);
+            let mut reads = Vec::new();
+            for (k, c) in copies.iter().enumerate() {
+                let (r0, r1) = (c.copy.dst_rows.start.max(y0), c.copy.dst_rows.end.min(y1));
+                if r0 >= r1 {
+                    continue;
+                }
+                let window = crate::Window::new(c.copy.src.0, c.copy.src.1 + r0 - c.copy.dst_rows.start, c.copy.cols, r1 - r0);
+                let read = crate::WindowOptions { bands: vec![c.band], ..Default::default() };
+                reads.push((k, r0, lazy[c.source].read_window(window, &read)?));
+            }
+            Ok(reads)
+        },
+        |i, reads| {
+            let (y0, y1) = span(i);
+            let n = w * (y1 - y0);
+            let mut data = RasterData::new_filled(data_type, n * nbands, 0.0);
+            for (b, band) in vrt.bands.iter().enumerate() {
+                crate::pixel::with_data!(&mut data, v => {
+                    let fill = super::convert_value(band.nodata.unwrap_or(0.0), data_type);
+                    v[b * n..(b + 1) * n].iter_mut().for_each(|x| *x = fill as _);
+                });
+            }
+            // In the sources' order: later ones on top.
+            for (k, r0, ds) in &reads {
+                let c = &copies[*k];
+                let values = super::BandView::of(&ds.raster, 0);
+                let cols = c.copy.cols;
+                crate::pixel::with_data!(&mut data, v => {
+                    let band = &mut v[c.out_band * n..(c.out_band + 1) * n];
+                    let rows = &mut band[(r0 - y0) * w..(r0 - y0 + ds.raster.rows) * w];
+                    crate::par::chunks_mut(rows, w, |r, line| {
+                        for (x, o) in line[c.copy.dst_x..c.copy.dst_x + cols].iter_mut().enumerate() {
+                            let value = values.get(r * cols + x);
+                            if c.nodata.is_none_or(|nd| !super::is_nodata(value, nd)) {
+                                *o = super::convert_value(value, data_type) as _;
+                            }
+                        }
+                    });
+                });
+            }
+            out.write(data, y1 - y0)
+        },
+    )?;
+    out.finish()
+}
+
+/// A source band copied into a band of the mosaic.
+struct Copy {
+    /// The source, by index.
+    source: usize,
+    /// Its band, from 1.
+    band: usize,
+    /// The mosaic's band, from 0.
+    out_band: usize,
+    /// Its pixels with this value are not copied.
+    nodata: Option<f64>,
+    copy: super::vrt::PlainCopy,
+}
+
+/// The mosaic's VRT, and the copies that fill it in drawing order; `None` when a source is
+/// resampled.
+fn copy_plan(sources: &[MosaicSource], o: &MosaicOptions) -> Result<Option<(VrtDataset, Vec<Copy>)>> {
+    let vrt = build_vrt(sources, o, None)?;
+    let mut copies = Vec::new();
+    for (b, band) in vrt.bands.iter().enumerate() {
+        for src in &band.sources {
+            let source = sources
+                .iter()
+                .position(|s| absolute(&s.path) == src.filename)
+                .ok_or_else(|| Error::InvalidData(format!("unknown source '{}'", src.filename)))?;
+            let ds = sources[source].ds;
+            let read = super::vrt::SourceRead {
+                values: super::BandView::F64(&[]),
+                valid: None,
+                width: ds.raster.cols,
+                height: ds.raster.rows,
+                src_type: ds.raster.data_type,
+                src_rect: src.src_rect,
+                dst_rect: src.dst_rect,
+                resampling: src.resampling,
+                working_float: src.complex,
+                invalid_value: None,
+            };
+            match read.plain_copy(vrt.width, vrt.height) {
+                Ok(Some(copy)) => copies.push(Copy { source, band: src.band, out_band: b, nodata: src.nodata, copy }),
+                Ok(None) => {}
+                Err(()) => return Ok(None),
+            }
+        }
+    }
+    Ok(Some((vrt, copies)))
 }
 
 /// Reads a VRT whose sources are already open.
@@ -366,6 +512,47 @@ mod tests {
         assert_eq!(out.raster.cols, 6);
         // b's nodata pixel at (2, 0) lets a's value show through.
         assert_eq!(&out.raster.data.to_f64_vec()[..6], &[-1.0, 1.0, 1.0, 2.0, 2.0, 2.0]);
+    }
+
+    /// Overlapping tiles, offset in both directions, copied a few rows at a time, are the
+    /// mosaic read whole.
+    #[test]
+    fn strips_give_the_whole_mosaic() {
+        let dir = tempfile::tempdir().unwrap();
+        let shifted = |x0: f64, y1: f64, k: f64| {
+            let mut t = tile(x0, y1, 0.0);
+            let v: Vec<f64> = (0..16).map(|i| if i % 5 == 0 { -1.0 } else { k * 100.0 + i as f64 }).collect();
+            (0..16).for_each(|i| t.raster.set(0, i / 4, i % 4, v[i as usize]).unwrap());
+            t
+        };
+        let tiles = [shifted(0.0, 4.0, 1.0), shifted(2.0, 6.0, 2.0), shifted(5.0, 3.0, 3.0)];
+        let paths: Vec<String> = (0..3).map(|i| dir.path().join(format!("t{i}.tif")).to_str().unwrap().to_string()).collect();
+        for (t, p) in tiles.iter().zip(&paths) {
+            crate::write_raster_dataset(t, p, &Default::default()).unwrap();
+        }
+        let srcs: Vec<MosaicSource> = paths.iter().zip(&tiles).map(|(p, ds)| MosaicSource { path: p.clone(), ds }).collect();
+        for o in [MosaicOptions::default(), MosaicOptions { separate: true, ..Default::default() }] {
+            let whole = mosaic(&srcs, &o).unwrap();
+            let (vrt, copies) = copy_plan(&srcs, &o).unwrap().expect("copied pixel for pixel");
+            for rows in [1, 2, 3, 100] {
+                let out = dir.path().join("out.tif");
+                let mut lazy: Vec<crate::LazyRaster> = paths.iter().map(|p| crate::open_raster_lazy(p).unwrap()).collect();
+                copy_in_strips(&vrt, &copies, &mut lazy, out.to_str().unwrap(), &Default::default(), rows).unwrap();
+                let back = crate::open_raster(out.to_str().unwrap()).unwrap();
+                assert_eq!(back.raster.data.to_f64_vec(), whole.raster.data.to_f64_vec(), "separate {} rows {rows}", o.separate);
+                assert_eq!((back.geo_transform(), back.nodata()), (whole.geo_transform(), whole.nodata()));
+            }
+            mosaic_to_path(&paths, &o, dir.path().join("all.tif").to_str().unwrap(), &Default::default()).unwrap();
+        }
+        // Resampled sources are read whole.
+        let o = MosaicOptions { resolution: ResolutionStrategy::User(0.5, 0.5), ..Default::default() };
+        assert!(copy_plan(&srcs, &o).unwrap().is_none());
+        let out = dir.path().join("resampled.tif");
+        mosaic_to_path(&paths, &o, out.to_str().unwrap(), &Default::default()).unwrap();
+        assert_eq!(
+            crate::open_raster(out.to_str().unwrap()).unwrap().raster.data.to_f64_vec(),
+            mosaic(&srcs, &o).unwrap().raster.data.to_f64_vec()
+        );
     }
 
     #[test]

@@ -28,6 +28,11 @@ pub struct OutputArgs {
 impl OutputArgs {
     /// Writes a raster to `path`.
     pub fn write(&self, ds: &RasterDataset, path: &str) -> terrio::Result<()> {
+        terrio::write_raster_dataset(ds, path, &self.options()?)
+    }
+
+    /// The write options.
+    pub fn options(&self) -> terrio::Result<RasterWriteOptions> {
         let driver = self
             .format
             .as_deref()
@@ -35,16 +40,21 @@ impl OutputArgs {
             .transpose()?;
         let creation_options =
             super::convert::key_values(&self.creation_options)?.into_iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
-        let opts = RasterWriteOptions {
+        Ok(RasterWriteOptions {
             driver,
             compression: self.compress.clone(),
             tile_size: self.tile_size,
             bigtiff: self.bigtiff,
             creation_options,
             ..Default::default()
-        };
-        terrio::write_raster_dataset(ds, path, &opts)
+        })
     }
+}
+
+/// Opens a raster quietly, for reading by windows (GeoTIFFs are read in place; other formats
+/// are read whole).
+pub fn open_lazy(path: &str) -> terrio::Result<terrio::LazyRaster> {
+    super::quiet(|| terrio::open_raster_lazy(path))
 }
 
 /// Opens a raster quietly.

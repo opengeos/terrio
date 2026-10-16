@@ -1,9 +1,9 @@
 //! `terrio mosaic`.
 
-use super::rasterout::{OutputArgs, open, srs};
+use super::rasterout::{OutputArgs, open_lazy, srs};
 use std::path::Path;
 use terrio::ops::Resampling;
-use terrio::ops::mosaic::{MosaicOptions, MosaicSource, ResolutionStrategy, build_vrt, mosaic};
+use terrio::ops::mosaic::{MosaicOptions, MosaicSource, ResolutionStrategy, build_vrt, mosaic_to_path};
 use terrio::ops::warp::Nodata;
 
 #[derive(clap::Args)]
@@ -51,14 +51,6 @@ pub struct Args {
 
 pub fn run(a: Args) -> terrio::Result<()> {
     let (output, inputs) = a.paths.split_last().expect("clap requires two paths");
-    let to_vrt = output.to_ascii_lowercase().ends_with(".vrt");
-    // A VRT only references its inputs: read their headers, not their pixels.
-    let datasets = if to_vrt {
-        inputs.iter().map(|p| super::quiet(|| terrio::open_raster_lazy(p)).map(|l| l.header())).collect::<terrio::Result<Vec<_>>>()?
-    } else {
-        inputs.iter().map(|p| open(p)).collect::<terrio::Result<Vec<_>>>()?
-    };
-    let sources: Vec<MosaicSource> = inputs.iter().zip(&datasets).map(|(p, ds)| MosaicSource { path: p.clone(), ds }).collect();
     let resolution = match (&a.tr, a.resolution.to_ascii_lowercase().as_str()) {
         (Some(v), _) => ResolutionStrategy::User(v[0], v[1]),
         (None, "user") => return Err(terrio::Error::InvalidArgument("--resolution user needs --tr".into())),
@@ -77,11 +69,13 @@ pub fn run(a: Args) -> terrio::Result<()> {
         resampling: Resampling::parse(&a.resampling)?,
         dst_srs: srs(&a.t_srs)?,
     };
-    if to_vrt {
-        let dir = Path::new(output).parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
-        let vrt = build_vrt(&sources, &o, Some(dir))?;
-        return vrt.write(output);
+    if !output.to_ascii_lowercase().ends_with(".vrt") {
+        // The inputs read by windows where they can be.
+        return super::quiet(|| mosaic_to_path(inputs, &o, output, &a.out.options()?));
     }
-    let out = mosaic(&sources, &o)?;
-    a.out.write(&out, output)
+    // A VRT only references its inputs: read their headers, not their pixels.
+    let datasets = inputs.iter().map(|p| open_lazy(p).map(|l| l.header())).collect::<terrio::Result<Vec<_>>>()?;
+    let sources: Vec<MosaicSource> = inputs.iter().zip(&datasets).map(|(p, ds)| MosaicSource { path: p.clone(), ds }).collect();
+    let dir = Path::new(output).parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
+    build_vrt(&sources, &o, Some(dir))?.write(output)
 }

@@ -29,6 +29,7 @@ pub mod proximity;
 pub mod rasterize;
 pub mod sieve;
 pub mod sql;
+pub(crate) mod strips;
 pub mod translate;
 pub mod vector_filter;
 pub mod vrt;
@@ -488,13 +489,45 @@ pub(crate) fn build_raster_data(
     nodata: Option<f64>,
     srs: &SpatialRef,
 ) -> Result<RasterDataset> {
-    north_up(&grid)?;
     if data.len() != grid.width * grid.height * nbands {
         return Err(Error::InvalidData(format!("{} values for {nbands} band(s) of {}x{} pixels", data.len(), grid.width, grid.height)));
     }
+    let cfg = raster_config(grid, data.data_type(), nbands, nodata, srs)?;
+    let raster = crate::pixel::raster_from_data(cfg, data)?;
+    Ok(RasterDataset::new(raster, nodata.is_some()))
+}
+
+/// The metadata of a raster dataset (size, bands, data type, georeferencing, nodata), without
+/// its pixels: its data is empty. For outputs written a strip at a time ([`strips`]).
+pub(crate) fn raster_header(
+    grid: Grid,
+    data_type: DataType,
+    nbands: usize,
+    nodata: Option<f64>,
+    srs: &SpatialRef,
+) -> Result<RasterDataset> {
+    let cfg = raster_config(grid, data_type, nbands, nodata, srs)?;
+    let raster = Raster {
+        cols: cfg.cols,
+        rows: cfg.rows,
+        bands: cfg.bands,
+        x_min: cfg.x_min,
+        y_min: cfg.y_min,
+        cell_size_x: cfg.cell_size,
+        cell_size_y: cfg.cell_size_y.unwrap_or(cfg.cell_size),
+        nodata: cfg.nodata,
+        data_type,
+        crs: cfg.crs,
+        metadata: cfg.metadata,
+        data: RasterData::new_filled(data_type, 0, 0.0),
+    };
+    Ok(RasterDataset::new(raster, nodata.is_some()))
+}
+
+fn raster_config(grid: Grid, data_type: DataType, nbands: usize, nodata: Option<f64>, srs: &SpatialRef) -> Result<RasterConfig> {
+    north_up(&grid)?;
     let gt = grid.geo_transform;
-    let data_type = data.data_type();
-    let cfg = RasterConfig {
+    Ok(RasterConfig {
         cols: grid.width,
         rows: grid.height,
         bands: nbands,
@@ -506,9 +539,7 @@ pub(crate) fn build_raster_data(
         data_type,
         crs: crs_info(srs),
         metadata: Vec::new(),
-    };
-    let raster = crate::pixel::raster_from_data(cfg, data)?;
-    Ok(RasterDataset::new(raster, nodata.is_some()))
+    })
 }
 
 /// Rasters are built north-up only.

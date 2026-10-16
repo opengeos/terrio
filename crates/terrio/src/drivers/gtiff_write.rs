@@ -1559,47 +1559,66 @@ impl GeoTiffWriter {
         }
         merge!(U8, I8, U16, I16, U32, I32, U64, I64, F32, F64);
         self.pending_rows = old + rows;
-        while self.pending_rows >= self.block_rows || (self.pending_rows > 0 && self.rows_written() == self.rows) {
-            self.flush_block_row()?;
+        // The complete block rows (and the last rows of the raster), compressed together, then
+        // the rows left over, kept for the next call.
+        let total = self.pending_rows;
+        let start = if self.rows_done + total == self.rows { total } else { total / self.block_rows * self.block_rows };
+        if start > 0 {
+            self.flush_block_rows(start, total)?;
+        }
+        if start > 0 {
+            macro_rules! keep {
+                ($($v:ident),*) => {
+                    match &mut self.pending {
+                        $(RasterData::$v(p) => {
+                            let mut rest = Vec::with_capacity(cols * (total - start) * bands);
+                            for b in 0..bands {
+                                rest.extend_from_slice(&p[(b * total + start) * cols..(b + 1) * total * cols]);
+                            }
+                            *p = rest;
+                        })*
+                    }
+                };
+            }
+            keep!(U8, I8, U16, I16, U32, I32, U64, I64, F32, F64);
+            if self.mask.is_some() {
+                self.pending_mask.drain(..start * cols);
+            }
+            self.pending_rows = total - start;
         }
         Ok(())
     }
 
-    /// Compresses and writes the first block row of the pending rows.
-    fn flush_block_row(&mut self) -> Result<()> {
-        let h = self.block_rows.min(self.pending_rows);
-        let (cols, bands, total) = (self.cols, self.bands, self.pending_rows);
-        macro_rules! split {
+    /// Compresses (in parallel) and writes the first `h` pending rows (of `total`): whole block
+    /// rows, or the raster's last rows.
+    fn flush_block_rows(&mut self, h: usize, total: usize) -> Result<()> {
+        let (cols, bands) = (self.cols, self.bands);
+        macro_rules! slab {
             ($($v:ident),*) => {
-                match &mut self.pending {
+                match &self.pending {
                     $(RasterData::$v(p) => {
                         let mut slab = Vec::with_capacity(cols * h * bands);
-                        let mut rest = Vec::with_capacity(cols * (total - h) * bands);
                         for b in 0..bands {
-                            let src = b * cols * total;
+                            let src = b * total * cols;
                             slab.extend_from_slice(&p[src..src + cols * h]);
-                            rest.extend_from_slice(&p[src + cols * h..src + cols * total]);
                         }
-                        *p = rest;
                         RasterData::$v(slab)
                     })*
                 }
             };
         }
-        let data = split!(U8, I8, U16, I16, U32, I32, U64, I64, F32, F64);
-        self.pending_rows -= h;
+        let data = slab!(U8, I8, U16, I16, U32, I32, U64, I64, F32, F64);
         let level = Level { cols, rows: h, bands, data: std::borrow::Cow::Owned(data) };
-        // Tiles are padded to full height: the slab is laid out as one row of blocks.
-        let mut layout = Layout { rows_per_strip: Some(h as u32), extra: self.layout.extra.clone(), ..self.layout };
-        if let Some((tw, _)) = layout.tile {
-            layout.tile = Some((tw, self.block_rows as u32));
-        }
+        // Tiles are padded to full height.
+        let layout = Layout { rows_per_strip: Some(self.block_rows as u32), extra: self.layout.extra.clone(), ..self.layout };
         let img = level.image(self.data_type, self.compression, &self.codec, &layout)?;
         let block_row = self.rows_done / self.block_rows;
         let per_plane = self.across * self.rows.div_ceil(self.block_rows);
+        // The chunks of each plane, block row after block row.
+        let slab_per_plane = self.across * h.div_ceil(self.block_rows);
         for (k, chunk) in img.chunks.iter().enumerate() {
-            let (plane, i) = (k / self.across, k % self.across);
-            let idx = plane * per_plane + block_row * self.across + i;
+            let (plane, j) = (k / slab_per_plane, k % slab_per_plane);
+            let idx = plane * per_plane + block_row * self.across + j;
             self.offsets[idx] = self.pos;
             self.counts[idx] = chunk.len() as u64;
             self.file.write_all(chunk)?;
@@ -1610,9 +1629,8 @@ impl GeoTiffWriter {
             self.tags.extend(img.tags);
         }
         if let Some(chunks) = &mut self.mask {
-            let m: Vec<u8> = self.pending_mask.drain(..cols * h).collect();
-            let tiled = self.layout.tile.is_some();
-            let mi = mask_image(&m, cols, h, (self.chunk_w, if tiled { self.block_rows } else { h }, tiled))?;
+            let m = &self.pending_mask[..h * cols];
+            let mi = mask_image(m, cols, h, (self.chunk_w, self.block_rows, self.layout.tile.is_some()))?;
             chunks.extend(mi.chunks);
         }
         self.rows_done += h;

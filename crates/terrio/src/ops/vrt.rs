@@ -543,6 +543,27 @@ impl SourceRead<'_> {
         });
     }
 
+    /// How a read of the whole destination of `dw × dh` pixels copies source pixels, when it
+    /// copies them one for one, without resampling: `Ok(None)` when it reads nothing, `Err(())`
+    /// when it resamples.
+    pub fn plain_copy(&self, dw: usize, dh: usize) -> std::result::Result<Option<PlainCopy>, ()> {
+        let Some(w) = self.window(dw as f64, dh as f64, dw, dh) else { return Ok(None) };
+        let (ow, oh) = w.out_size;
+        if ow == 0 || oh == 0 {
+            return Ok(None);
+        }
+        if w.req_size != w.out_size {
+            return Err(());
+        }
+        // Source pixels past the source's edges, and rows past the destination's, are not read.
+        let cols = ow.min(self.width.saturating_sub(w.req_off.0));
+        let rows = oh.min(self.height.saturating_sub(w.req_off.1)).min(dh.saturating_sub(w.out_off.1));
+        if cols == 0 || rows == 0 {
+            return Ok(None);
+        }
+        Ok(Some(PlainCopy { src: w.req_off, dst_x: w.out_off.0, cols, dst_rows: w.out_off.1..w.out_off.1 + rows }))
+    }
+
     /// `VRTSimpleSource::GetSrcDstWindow()` for a request covering the whole destination.
     fn window(&self, xsize: f64, ysize: f64, buf_w: usize, buf_h: usize) -> Option<Window> {
         let [sxo, syo, sxs, sys] = self.src_rect;
@@ -676,6 +697,17 @@ impl SourceRead<'_> {
             out_size: (oxs as usize, oys as usize),
         })
     }
+}
+
+/// A read of source pixels one for one ([`SourceRead::plain_copy`]): source pixel
+/// `(src.0 + c, src.1 + r)` goes to destination pixel `(dst_x + c, dst_rows.start + r)`, for `c`
+/// below `cols`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PlainCopy {
+    pub src: (usize, usize),
+    pub dst_x: usize,
+    pub cols: usize,
+    pub dst_rows: std::ops::Range<usize>,
 }
 
 struct Window {
