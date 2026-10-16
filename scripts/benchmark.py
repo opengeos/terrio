@@ -5,9 +5,10 @@ once to warm the file cache and then ``--runs`` times; the median wall time is r
 the large-data cases the peak memory (resident set size) too. Results print as a Markdown table
 per group.
 
-Usage: python scripts/benchmark.py DATA_DIR [--runs N] [--remote] [--large DIR] [--large-runs N] [--out FILE]
+Usage: python scripts/benchmark.py [DATA_DIR] [--runs N] [--remote] [--large DIR] [--large-runs N] [--out FILE]
 
-``--large`` adds cases on gigabyte-sized files, which ``scripts/fetch_large_data.sh`` downloads.
+``--large`` adds cases on gigabyte-sized files, which ``scripts/fetch_large_data.sh`` downloads;
+without ``DATA_DIR``, only those run.
 
 Needs the GDAL command-line tools on PATH and a release build of terrio
 (``target/release/terrio``, or the path in ``TERRIO_BIN``).
@@ -346,7 +347,7 @@ def gdal_version(env):
 def main():
     """Run the benchmark and print Markdown tables."""
     ap = argparse.ArgumentParser()
-    ap.add_argument("data")
+    ap.add_argument("data", nargs="?", help="the test data (see scripts/fetch_test_data.sh)")
     ap.add_argument("--runs", type=int, default=5)
     ap.add_argument("--remote", action="store_true", help="include remote reads")
     ap.add_argument("--large", help="include the cases on large files in this directory (see scripts/fetch_large_data.sh)")
@@ -357,7 +358,9 @@ def main():
     # opening remote files, as recommended for cloud data.
     env = dict(os.environ, GDAL_PAM_ENABLED="NO", GDAL_DISABLE_READDIR_ON_OPEN="EMPTY_DIR")
     out = tempfile.mkdtemp(prefix="terrio-bench-")
-    all_cases = [(c, args.runs, False) for c in cases(os.path.abspath(args.data), out)]
+    if not args.data and not args.large:
+        ap.error("give DATA_DIR, --large DIR or both")
+    all_cases = [(c, args.runs, False) for c in (cases(os.path.abspath(args.data), out) if args.data else [])]
     all_cases += [(c, args.runs, False) for c in (remote_cases() if args.remote else [])]
     all_cases += [(c, args.large_runs, True) for c in (large_cases(os.path.abspath(args.large), out) if args.large else [])]
     lines = [

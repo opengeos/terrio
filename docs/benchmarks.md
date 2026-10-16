@@ -64,6 +64,43 @@ Machine: Intel Xeon w7-3445 (x86_64), 40 threads, Linux. GDAL 3.12.2 "Chicoutimi
 |---|---|---|---|
 | Info of a remote COG (USGS 3DEP on S3) | 451 ms | 587 ms | 1.3× faster |
 
+## Large files
+
+The same comparison on gigabyte-sized files, with the peak resident memory of each command
+(measured with `wait4`): a 14412×14412 Float32 mosaic of 16 USGS 3DEP tiles (an 800 MB tiled
+Deflate GeoTIFF), a Sentinel-2 L1C red band (10980×10980, JPEG 2000), and the OpenStreetMap
+extract of Colorado (a 400 MB PBF, and the 6.2 M-feature GeoPackage `ogr2ogr` makes of it). Each
+command runs once to warm the file cache, then three times; the tables show the median time and
+the largest peak memory. Same machine, terrio 0.2.0.
+
+### Large rasters
+
+| Task | terrio | GDAL | terrio vs GDAL | terrio memory | GDAL memory |
+|---|---|---|---|---|---|
+| Statistics: 14412² Float32 mosaic | 1.82 s | 3.80 s | 2.1× faster | 143 MB | 859 MB |
+| GeoTIFF → COG (Deflate): the mosaic | 1.54 s | 20.98 s | 13.6× faster | 1.9 GB | 1.2 GB |
+| Window 2048² of the mosaic | 34 ms | 102 ms | 3.0× faster | 80 MB | 65 MB |
+| Warp the mosaic to EPSG:3857, bilinear | 2.18 s | 16.44 s | 7.5× faster | 718 MB | 1.6 GB |
+| Mosaic 16 USGS 3DEP tiles → GeoTIFF | 929 ms | 6.73 s | 7.2× faster | 521 MB | 1.9 GB |
+| Hillshade of the mosaic | 593 ms | 4.55 s | 7.7× faster | 371 MB | 855 MB |
+| Slope of the mosaic | 738 ms | 5.93 s | 8.0× faster | 611 MB | 857 MB |
+| Sentinel-2 band: JPEG 2000 → GeoTIFF | 478 ms | 3.23 s | 6.8× faster | 753 MB | 517 MB |
+| Statistics: Sentinel-2 band (15-bit samples) | 1.01 s | 2.80 s | 2.8× faster | 111 MB | 278 MB |
+
+### Large vectors
+
+| Task | terrio | GDAL | terrio vs GDAL | terrio memory | GDAL memory |
+|---|---|---|---|---|---|
+| Info: Colorado OpenStreetMap GeoPackage (6.2 M features) | 13 ms | 30 ms | 2.3× faster | 26 MB | 45 MB |
+| Lines (2.0 M) → FlatGeobuf | 6.63 s | 5.83 s | 1.1× slower | 549 MB | 563 MB |
+| Polygons (2.3 M) → GeoParquet | 3.88 s | 3.30 s | 1.2× slower | 1.6 GB | 958 MB |
+| Lines → GeoJSON | 3.48 s | 42.69 s | 12.3× faster | 458 MB | 503 MB |
+| Lines → Shapefile | 4.78 s | 5.25 s | 1.1× faster | 405 MB | 502 MB |
+| Filter + reproject lines → GeoPackage | 3.98 s | 6.09 s | 1.5× faster | 596 MB | 189 MB |
+| Polygons → GeoPackage | 5.48 s | 7.07 s | 1.3× faster | 1.3 GB | 773 MB |
+| GeoPackage (5 layers) → GeoPackage | 16.03 s | 18.38 s | 1.1× faster | 1.3 GB | 785 MB |
+| OpenStreetMap PBF (Colorado) → GeoPackage | 17.75 s | 39.60 s | 2.2× faster | 1.6 GB | 456 MB |
+
 ## Notes
 
 - **Raster info** reads only the GeoTIFF header and the tags it needs.
@@ -77,6 +114,15 @@ Machine: Intel Xeon w7-3445 (x86_64), 40 threads, Linux. GDAL 3.12.2 "Chicoutimi
   and writes it as an uncompressed 192 MB GeoTIFF.
 - `.aux.xml` statistics caches are disabled (`GDAL_PAM_ENABLED=NO`), and the statistics case uses a
   file without statistics stored in its metadata, so both tools compute them from the pixels.
+- **Large rasters**: statistics, translation, terrain products, warping and mosaicking read their
+  inputs by windows, and write GeoTIFF outputs a strip of rows at a time, so neither is held
+  whole. A COG is written whole, since its overviews need the full-resolution raster, and the
+  JPEG 2000 band is decoded whole.
+- **Mosaic of 16 tiles**: terrio copies each tile's pixels into place; `gdalwarp` warps them.
+- **Large vectors** are converted a chunk of features at a time. GeoParquet, FlatGeobuf,
+  Shapefile and GeoPackage outputs first read the input once to settle the column types and the
+  header (see [#88](https://github.com/opengeos/terrio/issues/88)), which most of the GeoParquet
+  gap comes from.
 
 ## Running the benchmarks
 
@@ -84,6 +130,13 @@ Machine: Intel Xeon w7-3445 (x86_64), 40 threads, Linux. GDAL 3.12.2 "Chicoutimi
 scripts/fetch_test_data.sh ../terrio-data
 cargo build --release
 python scripts/benchmark.py ../terrio-data --runs 5 --remote --out benchmarks.md
+```
+
+The large-file cases download about 3.5 GB, and run alone when no test data directory is given:
+
+```sh
+scripts/fetch_large_data.sh ../terrio-large-data
+python scripts/benchmark.py --large ../terrio-large-data --large-runs 3
 ```
 
 The script needs the GDAL command-line tools on `PATH`.
