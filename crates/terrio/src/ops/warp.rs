@@ -1106,7 +1106,8 @@ pub fn warp(sources: &[&RasterDataset], o: &WarpOptions) -> Result<RasterDataset
 /// Warps rasters as [`warp`] does and writes the output to `path`. A single source without a
 /// cutline is read a chunk at a time (the source window each chunk of the output needs), and a
 /// GeoTIFF output written as its rows are done: neither is held whole. Otherwise the sources
-/// are read whole.
+/// are read whole. Without `o.gcps`, a first source with no geotransform is georeferenced by
+/// its GCPs, as `gdalwarp` does.
 ///
 /// ```no_run
 /// use terrio::ops::warp::{WarpOptions, warp_to_path};
@@ -1119,10 +1120,12 @@ pub fn warp_to_path(paths: &[String], o: &WarpOptions, path: &str, options: &cra
     if paths.len() != 1 || o.cutline.is_some() {
         let sources = paths.iter().map(|p| crate::open_raster(p)).collect::<Result<Vec<_>>>()?;
         let refs: Vec<&RasterDataset> = sources.iter().collect();
-        return crate::write_raster_dataset(&warp(&refs, o)?, path, options);
+        let o = with_file_gcps(o, &paths[0], &sources[0])?;
+        return crate::write_raster_dataset(&warp(&refs, &o)?, path, options);
     }
     let mut src = crate::open_raster_lazy(&paths[0])?;
     let header = src.header();
+    let o = &*with_file_gcps(o, &paths[0], &header)?;
     let p = Plan::new(&[&header], o)?;
     let (grid, bands, out_type) = (p.grid, p.bands, p.out_type);
     let w = grid.width;
@@ -1213,6 +1216,20 @@ pub fn warp_to_path(paths: &[String], o: &WarpOptions, path: &str, options: &cra
     write_done(&mut rows, &mut base, grid.height)?;
     drop(write_done);
     out.finish()
+}
+
+/// `o`, with the GCPs of the raster at `path` (opened as `ds`) when `o` has none and the raster
+/// has no geotransform.
+fn with_file_gcps<'a>(o: &'a WarpOptions, path: &str, ds: &RasterDataset) -> Result<std::borrow::Cow<'a, WarpOptions>> {
+    let default_gt = [0.0, 1.0, 0.0, ds.raster.rows as f64, 0.0, -1.0];
+    if !o.gcps.is_empty() || ds.affine.is_some() || ds.geo_transform() != default_gt {
+        return Ok(std::borrow::Cow::Borrowed(o));
+    }
+    let gcps = crate::read_gcps(path)?;
+    if gcps.is_empty() {
+        return Ok(std::borrow::Cow::Borrowed(o));
+    }
+    Ok(std::borrow::Cow::Owned(WarpOptions { gcps, ..o.clone() }))
 }
 
 /// Whether the destination grid is the source grid shifted by whole pixels.

@@ -1,6 +1,6 @@
 //! `terrio warp`.
 
-use super::rasterout::{OutputArgs, open_lazy, srs};
+use super::rasterout::{OutputArgs, srs};
 use terrio::ops::gcp::GcpMethod;
 use terrio::ops::warp::{Cutline, Nodata, WarpOptions, warp_to_path};
 use terrio::ops::{Resampling, parse_data_type};
@@ -67,8 +67,6 @@ pub struct Args {
 
 pub fn run(a: Args) -> terrio::Result<()> {
     let (output, inputs) = a.paths.split_last().expect("clap requires two paths");
-    // The first input's metadata, for its GCPs.
-    let first = open_lazy(&inputs[0])?.header();
     let pair = |v: &Option<Vec<f64>>| v.as_ref().map(|v| (v[0], v[1]));
     let o = WarpOptions {
         src_srs: srs(&a.s_srs)?,
@@ -85,12 +83,7 @@ pub fn run(a: Args) -> terrio::Result<()> {
         cutline: a.cutline.as_deref().map(|p| super::quiet(|| Cutline::open(p))).transpose()?,
         crop_to_cutline: a.crop_to_cutline,
         error_threshold: a.et,
-        gcps: if first.affine.is_none() && first.geo_transform() == [0.0, 1.0, 0.0, first.raster.rows as f64, 0.0, -1.0] {
-            terrio::read_gcps(&inputs[0])?
-        } else {
-            Vec::new()
-        },
-        // As gdalwarp: `-order` sets the polynomial's order, but 4 or 5 GCPs still make a
+        // The first input's GCPs, read by `warp_to_path`. As gdalwarp: `-order` sets the polynomial's order, but 4 or 5 GCPs still make a
         // homography.
         gcp_method: if a.tps { GcpMethod::Tps } else { GcpMethod::Auto },
         order: a.order.unwrap_or(0),

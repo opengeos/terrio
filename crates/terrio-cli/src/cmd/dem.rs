@@ -136,9 +136,13 @@ pub fn run(a: Args) -> terrio::Result<()> {
         return Err(Error::InvalidArgument("VRT output is only supported for color-relief".into()));
     }
     // Terrain products a strip at a time, without holding the DEM or the output whole.
-    let (Some(colors), None) = (colors, product) else {
-        let mut src = open_lazy(input)?;
-        return dem_to_path(&mut src, product.expect("not color-relief"), &o, output, &a.out.options()?);
+    let colors = match (colors, product) {
+        (None, Some(product)) => {
+            let mut src = open_lazy(input)?;
+            return dem_to_path(&mut src, product, &o, output, &a.out.options()?);
+        }
+        (Some(colors), None) => colors,
+        _ => unreachable!("color-relief alone takes a color file"),
     };
     let ds = open(input)?;
     let text =

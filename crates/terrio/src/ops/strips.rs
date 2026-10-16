@@ -20,9 +20,12 @@ pub(crate) fn strip_rows(width: usize, bands: usize, value_size: usize, block: O
     (STRIP_BYTES / row / block).max(1) * block
 }
 
-/// An output raster written a strip of rows at a time, from the top.
+/// An output raster written a strip of rows at a time, from the top. A GeoTIFF dropped before
+/// [`StripWriter::finish`] (an operation failing midway) is removed.
 pub(crate) struct StripWriter {
-    inner: Inner,
+    /// `None` once finished.
+    inner: Option<Inner>,
+    path: String,
     rows: usize,
     bands: usize,
     width: usize,
@@ -35,7 +38,7 @@ enum Inner {
     #[cfg(target_arch = "wasm32")]
     Tiff(GeoTiffWriter),
     /// The output gathered whole, written at the end.
-    Whole { ds: Box<RasterDataset>, path: String, options: Box<RasterWriteOptions>, done: usize },
+    Whole { ds: Box<RasterDataset>, options: Box<RasterWriteOptions>, done: usize },
 }
 
 impl StripWriter {
@@ -46,11 +49,13 @@ impl StripWriter {
         let tiff = options.driver.or_else(|| RasterDriver::for_extension(path)) == Some(RasterDriver::GTiff)
             && options.mask.is_none()
             && options.overviews.is_empty();
-        if tiff {
+        // Compressions only wbraster encodes are written whole; invalid options fail here, before
+        // any work.
+        if tiff && crate::drivers::gtiff_write::TiffOptions::from_write_options(options, false, header.nodata())?.is_some() {
             crate::dataset::ensure_writable_location(path)?;
-            match GeoTiffWriter::create(path, header, options) {
+            let inner = match GeoTiffWriter::create(path, header, options)? {
                 #[cfg(not(target_arch = "wasm32"))]
-                Ok(mut w) => {
+                mut w => {
                     let (tx, rx) = std::sync::mpsc::sync_channel::<(RasterData, usize)>(1);
                     let handle = std::thread::spawn(move || {
                         for (data, n) in rx {
@@ -58,19 +63,18 @@ impl StripWriter {
                         }
                         w.finish()
                     });
-                    return Ok(Self { inner: Inner::Thread { tx, handle: Some(handle) }, rows, bands, width });
+                    Inner::Thread { tx, handle: Some(handle) }
                 }
                 #[cfg(target_arch = "wasm32")]
-                Ok(w) => return Ok(Self { inner: Inner::Tiff(w), rows, bands, width }),
-                // Compressions the writer encodes only whole.
-                Err(Error::Unsupported(_)) => {}
-                Err(e) => return Err(e),
-            }
+                w => Inner::Tiff(w),
+            };
+            return Ok(Self { inner: Some(inner), path: path.to_string(), rows, bands, width });
         }
         let mut ds = header.clone();
         ds.raster.data = RasterData::new_filled(r.data_type, width * rows * bands, 0.0);
         Ok(Self {
-            inner: Inner::Whole { ds: Box::new(ds), path: path.to_string(), options: Box::new(options.clone()), done: 0 },
+            inner: Some(Inner::Whole { ds: Box::new(ds), options: Box::new(options.clone()), done: 0 }),
+            path: path.to_string(),
             rows,
             bands,
             width,
@@ -79,7 +83,8 @@ impl StripWriter {
 
     /// Writes the next `rows` rows of every band (`data`: band after band, of the output's type).
     pub fn write(&mut self, data: RasterData, rows: usize) -> Result<()> {
-        match &mut self.inner {
+        let Some(inner) = &mut self.inner else { return Err(Error::InvalidArgument("the raster is written".into())) };
+        match inner {
             #[cfg(not(target_arch = "wasm32"))]
             Inner::Thread { tx, handle } => {
                 if tx.send((data, rows)).is_ok() {
@@ -118,8 +123,9 @@ impl StripWriter {
     }
 
     /// Finishes the file.
-    pub fn finish(self) -> Result<()> {
-        match self.inner {
+    pub fn finish(mut self) -> Result<()> {
+        let Some(inner) = self.inner.take() else { return Ok(()) };
+        let result = match inner {
             #[cfg(not(target_arch = "wasm32"))]
             Inner::Thread { tx, handle } => {
                 drop(tx);
@@ -130,13 +136,38 @@ impl StripWriter {
             }
             #[cfg(target_arch = "wasm32")]
             Inner::Tiff(w) => w.finish(),
-            Inner::Whole { ds, path, options, done } => {
+            Inner::Whole { ds, options, done } => {
                 if done != self.rows {
                     return Err(Error::InvalidArgument(format!("{done} rows written of {}", self.rows)));
                 }
-                crate::write_raster_dataset(&ds, &path, &options)
+                return crate::write_raster_dataset(&ds, &self.path, &options);
             }
+        };
+        if result.is_err() {
+            let _ = std::fs::remove_file(&self.path);
         }
+        result
+    }
+}
+
+impl Drop for StripWriter {
+    fn drop(&mut self) {
+        let Some(inner) = self.inner.take() else { return };
+        match inner {
+            // Nothing written yet.
+            Inner::Whole { .. } => return,
+            // The writer thread stops (its channel closed) before the file is removed.
+            #[cfg(not(target_arch = "wasm32"))]
+            Inner::Thread { tx, handle } => {
+                drop(tx);
+                if let Some(h) = handle {
+                    let _ = h.join();
+                }
+            }
+            #[cfg(target_arch = "wasm32")]
+            Inner::Tiff(w) => drop(w),
+        }
+        let _ = std::fs::remove_file(&self.path);
     }
 }
 
@@ -173,4 +204,45 @@ pub(crate) fn pipelined<R: Send>(
         }
         Ok(())
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::crs::SpatialRef;
+    use crate::ops::{Grid, raster_header};
+    use wbraster::DataType;
+
+    fn header(data_type: DataType) -> RasterDataset {
+        let grid = Grid { width: 4, height: 6, geo_transform: [0.0, 1.0, 0.0, 6.0, 0.0, -1.0] };
+        raster_header(grid, data_type, 1, None, &SpatialRef::parse("EPSG:4326").unwrap()).unwrap()
+    }
+
+    /// A GeoTIFF dropped before it is finished (its operation failing) is removed; a finished one
+    /// is kept.
+    #[test]
+    fn unfinished_outputs_are_removed() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("out.tif");
+        let path = path.to_str().unwrap();
+        let rows = || RasterData::new_filled(DataType::U8, 4 * 3, 7.0);
+        let mut w = StripWriter::create(&header(DataType::U8), path, &Default::default()).unwrap();
+        w.write(rows(), 3).unwrap();
+        drop(w);
+        assert!(!std::path::Path::new(path).exists());
+        let mut w = StripWriter::create(&header(DataType::U8), path, &Default::default()).unwrap();
+        w.write(rows(), 3).unwrap();
+        w.write(rows(), 3).unwrap();
+        w.finish().unwrap();
+        assert!(std::path::Path::new(path).exists());
+    }
+
+    /// Options the GeoTIFF writer refuses fail before any strip is computed.
+    #[test]
+    fn invalid_options_fail_at_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("out.tif");
+        let options = RasterWriteOptions { compression: Some("JPEG".into()), ..Default::default() };
+        assert!(StripWriter::create(&header(DataType::F32), path.to_str().unwrap(), &options).is_err());
+    }
 }
