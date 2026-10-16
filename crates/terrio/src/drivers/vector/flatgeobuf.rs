@@ -90,6 +90,10 @@ pub(crate) fn parse_header(buf: &[u8]) -> Result<(Layer, FgbHeader)> {
         layer.add_field(def);
     }
     let count = header.features_count();
+    // More features than any file can hold: the index's size would overflow.
+    if count > u64::MAX >> 8 {
+        return Err(bad("implausible feature count"));
+    }
     let meta = FgbHeader {
         geometry_type: header.geometry_type(),
         has_z: header.has_z(),
@@ -214,7 +218,12 @@ fn read_impl<R: std::io::Read + std::io::Seek>(
     prefetch: crate::sparse::Prefetch<'_>,
 ) -> Result<(FlatGeobufInfo, Layer)> {
     use std::io::SeekFrom;
+    // Lengths and offsets come from the file: they are checked against its size before anything
+    // is allocated.
     let mut read_at = |offset: u64, len: u64| -> Result<Vec<u8>> {
+        if offset.checked_add(len).is_none_or(|end| end > file_len) {
+            return Err(bad("truncated file"));
+        }
         r.seek(SeekFrom::Start(offset))?;
         let mut b = vec![0u8; usize::try_from(len).map_err(|_| bad("a read too large for this platform"))?];
         r.read_exact(&mut b)?;
@@ -227,7 +236,7 @@ fn read_impl<R: std::io::Read + std::io::Seek>(
     let node_size = header.index_node_size;
     let index_start = hlen;
     let isize = header.index_size;
-    let data_start = index_start + isize;
+    let data_start = index_start.checked_add(isize).filter(|&d| d <= file_len).ok_or_else(|| bad("truncated index"))?;
     let info = FlatGeobufInfo {
         name: layer.name.clone(),
         feature_count: count,
@@ -282,6 +291,9 @@ fn read_impl<R: std::io::Read + std::io::Seek>(
                         } else {
                             // `offset` is the index of the child node's first item.
                             let child_level = levels[level - 1];
+                            if offset < child_level.0 || offset >= child_level.1 {
+                                return Err(bad("an index node points outside its level"));
+                            }
                             next.push((offset, (offset + ns).min(child_level.1)));
                         }
                     }
@@ -319,7 +331,10 @@ fn read_impl<R: std::io::Read + std::io::Seek>(
     }
     let ranges: Vec<(u64, u64)> = wanted
         .iter()
-        .map(|&(_, off, end)| (data_start + off, end.map_or(file_len - (data_start + off), |e| e.saturating_sub(off))))
+        .map(|&(_, off, end)| {
+            let at = data_start.saturating_add(off);
+            (at, end.map_or(file_len.saturating_sub(at), |e| e.saturating_sub(off)))
+        })
         .collect();
     prefetch(&ranges)?;
     for (&(fid, ..), &(off, _)) in wanted.iter().zip(&ranges) {

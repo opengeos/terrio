@@ -370,6 +370,10 @@ fn tiles_in_rect(z: u8, r: Rect) -> Option<Vec<(u32, u32)>> {
     let col = |x: f64| (((x + MAX_GM) / dim).floor().max(0.0) as u64).min(n - 1);
     let row = |y: f64| (((MAX_GM - y) / dim).floor().max(0.0) as u64).min(n - 1);
     let (x0, x1, y0, y1) = (col(r.0), col(r.2), row(r.3), row(r.1));
+    // An inverted rectangle covers no tile.
+    if x1 < x0 || y1 < y0 {
+        return Some(Vec::new());
+    }
     if (x1 - x0 + 1) * (y1 - y0 + 1) > 4096 {
         return None;
     }
@@ -1323,6 +1327,13 @@ pub(crate) fn metadata_items(vt: &VectorTiles, o: &TileWriteOptions, name: &str)
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn inverted_rectangles_cover_no_tile() {
+        assert_eq!(tiles_in_rect(4, (1e6, 0.0, -1e6, 1e6)), Some(Vec::new()));
+        assert_eq!(tiles_in_rect(4, (0.0, 1e6, 1e6, -1e6)), Some(Vec::new()));
+        assert_eq!(tiles_in_rect(1, (-1.0, -1.0, 1.0, 1.0)).map(|t| t.len()), Some(4));
+    }
 
     #[test]
     fn layers_round_trip_through_tiles() {

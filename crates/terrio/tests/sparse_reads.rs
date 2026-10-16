@@ -114,6 +114,40 @@ fn flatgeobuf_by_bbox() {
     assert_eq!(all.features[7].geometry, whole.layers[0].features[7].geometry);
 }
 
+/// Offsets and lengths from a corrupt file are errors, not panics or huge allocations.
+#[test]
+fn corrupt_flatgeobuf_indexes_are_errors() {
+    let bytes = terrio::memory::write_vector_bytes(&countries(), "s.fgb", &Default::default()).unwrap();
+    let file = SparseFile::new(bytes.len() as u64);
+    let ((info, _), _) = sparse(&bytes, &file, || terrio::vector::read_flatgeobuf_header_sparse(&file, "s.fgb"));
+    let (start, nodes) = (info.header_size as usize, info.index_size as usize / 40);
+    let read = |b: &[u8]| {
+        let file = SparseFile::new(b.len() as u64);
+        read_with(
+            &file,
+            32,
+            |o, n| Ok(b[o as usize..(o + n) as usize].to_vec()),
+            || terrio::vector::read_flatgeobuf_sparse(&file, "s.fgb", Some((-180.0, -90.0, 180.0, 90.0))),
+        )
+    };
+    // The root points outside the next level.
+    let mut b = bytes.clone();
+    b[start + 32..start + 40].copy_from_slice(&u64::MAX.to_le_bytes());
+    assert!(read(&b).unwrap_err().to_string().contains("outside its level"));
+    // The leaves point past the end of the file.
+    let mut b = bytes.clone();
+    for k in nodes - 2400..nodes {
+        let at = start + k * 40 + 32;
+        b[at..at + 8].copy_from_slice(&(u64::MAX / 2).to_le_bytes());
+    }
+    assert!(read(&b).unwrap_err().to_string().contains("truncated"));
+    // A feature's length past the end of the file.
+    let mut b = bytes.clone();
+    let data = start + nodes * 40;
+    b[data..data + 4].copy_from_slice(&u32::MAX.to_le_bytes());
+    assert!(read(&b).unwrap_err().to_string().contains("truncated"));
+}
+
 #[test]
 fn geoparquet_by_row_group() {
     let layers = countries();

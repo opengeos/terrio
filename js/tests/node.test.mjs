@@ -649,6 +649,41 @@ async function serve(dir) {
   return { url: `http://127.0.0.1:${server.address().port}/`, stats, close: () => server.close() };
 }
 
+test("remote reads send at most 12 range requests at once", async () => {
+  const { mkdtempSync, writeFileSync, rmSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const dir = mkdtempSync(join(tmpdir(), "terrio-remote-"));
+  // 30,000 small squares: a strip across them is scattered over the file (Hilbert order).
+  const grid = { type: "FeatureCollection", features: [] };
+  for (let i = 0; i < 200; i++) {
+    for (let j = 0; j < 150; j++) {
+      const [x, y] = [-180 + i * 1.8, -90 + j * 1.2];
+      grid.features.push({ type: "Feature", properties: { id: i * 150 + j }, geometry: { type: "Polygon", coordinates: [[[x, y], [x + 1, y], [x + 1, y + 1], [x, y + 1], [x, y]]] } });
+    }
+  }
+  writeFileSync(join(dir, "grid.fgb"), terrio.fromGeoJSON(grid, "grid").toBytes("grid.fgb"));
+  const server = await serve(dir);
+  try {
+    let [inFlight, peak] = [0, 0];
+    const counting = (...args) => {
+      peak = Math.max(peak, ++inFlight);
+      return fetch(...args).finally(() => inFlight--);
+    };
+    const ds = await terrio.openUrl(server.url + "grid.fgb", { blockSize: 512, fetch: counting });
+    const ids = (await ds.read({ bbox: [-180, 0, 180, 0.5] })).toGeoJSON().features.map((f) => f.properties.id);
+    const expected = grid.features
+      .filter((f) => f.geometry.coordinates[0][0][1] <= 0.5 && f.geometry.coordinates[0][2][1] >= 0)
+      .map((f) => f.properties.id);
+    assert.equal(expected.length, 200);
+    assert.deepEqual(ids.sort((a, b) => a - b), expected.sort((a, b) => a - b));
+    assert.ok(ds.stats().requests > 12, `${ds.stats().requests} requests`);
+    assert.ok(peak <= 12, `${peak} requests at once`);
+  } finally {
+    server.close();
+    rmSync(dir, { recursive: true });
+  }
+});
+
 test("remote files read with range requests", async () => {
   const { mkdtempSync, writeFileSync, rmSync } = await import("node:fs");
   const { tmpdir } = await import("node:os");

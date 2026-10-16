@@ -132,7 +132,12 @@ fn lerc_encode(data: &[u8], c: &ChunkInfo, max_z_error: f64) -> Result<Vec<u8>> 
     macro_rules! encode_float {
         ($t:ty, $n:expr) => {{
             let v: Vec<$t> = data.chunks_exact($n).map(|b| <$t>::from_le_bytes(b.try_into().unwrap_or_default())).collect();
-            let valid: Vec<u8> = v.chunks_exact(c.spp).map(|px| u8::from(!px.iter().any(|x| x.is_nan()))).collect();
+            // LERC's mask is per pixel: a pixel is masked when all its samples are NaN. A pixel
+            // with some NaN samples only cannot be stored with its other samples.
+            if v.chunks_exact(c.spp).any(|px| px.iter().any(|x| x.is_nan()) && !px.iter().all(|x| x.is_nan())) {
+                return Err(Error::Unsupported("LERC: NaN in some bands of a pixel only (write with INTERLEAVE=BAND)".into()));
+            }
+            let valid: Vec<u8> = v.chunks_exact(c.spp).map(|px| u8::from(!px.iter().all(|x| x.is_nan()))).collect();
             let raster = lerc_writer::RasterView::new(w, h, d, &v).map_err(lerc)?;
             if valid.contains(&0) {
                 // Masked pixels: their values are not stored.
@@ -156,6 +161,16 @@ fn lerc_encode(data: &[u8], c: &ChunkInfo, max_z_error: f64) -> Result<Vec<u8>> 
         DataType::F64 => encode_float!(f64, 8),
         t => return Err(Error::Unsupported(format!("LERC does not encode {t:?} data"))),
     })
+}
+
+/// The rows of each strip: those asked for, or about 64 KB of rows. JPEG strips hold whole MCUs
+/// (16 rows with 4:2:0 subsampling), the last one aside.
+fn strip_rows(asked: Option<u32>, rows: usize, row_bytes: usize, compression: Compression) -> usize {
+    let per = match asked {
+        Some(r) => (r as usize).clamp(1, rows),
+        None => ((1usize << 16) / row_bytes.max(1)).clamp(1, rows),
+    };
+    if compression == Compression::Jpeg && per < rows { (per / 16 * 16).max(16).min(rows) } else { per }
 }
 
 /// Encodes a chunk as a lossless JPEG XL codestream: 1 to 4 channels (gray, gray and alpha, RGB,
@@ -706,7 +721,7 @@ fn prepare(raster: &Raster, opts: &TiffOptions) -> Result<Prepared> {
                 (_, _, Some(rows)) => (raster.cols, rows, false),
                 _ => (raster.cols, raster.rows, false),
             };
-            images.push(mask_image(m, raster.cols, raster.rows, block));
+            images.push(mask_image(m, raster.cols, raster.rows, block)?);
         }
     }
 
@@ -718,7 +733,7 @@ fn prepare(raster: &Raster, opts: &TiffOptions) -> Result<Prepared> {
 /// GDAL's internal mask (`GDAL_TIFF_INTERNAL_MASK`): a 1-bit transparency mask image
 /// (`NewSubfileType` 4, `PhotometricInterpretation` 4) in the blocks of the image it masks
 /// (`block`: width, height, tiled), Deflate compressed, bits set for valid pixels.
-fn mask_image(mask: &[u8], cols: usize, rows: usize, block: (usize, usize, bool)) -> Image {
+fn mask_image(mask: &[u8], cols: usize, rows: usize, block: (usize, usize, bool)) -> Result<Image> {
     let compression = Compression::Deflate;
     let (chunk_w, chunk_h, tiled) = block;
     let (across, down) = (cols.div_ceil(chunk_w), rows.div_ceil(chunk_h));
@@ -739,8 +754,9 @@ fn mask_image(mask: &[u8], cols: usize, rows: usize, block: (usize, usize, bool)
                 }
             }
         }
-        compression.compress(buf, &ChunkInfo { w: chunk_w, h, spp: 1, t: DataType::U8 }, &CodecParams::default()).unwrap_or_default()
+        compression.compress(buf, &ChunkInfo { w: chunk_w, h, spp: 1, t: DataType::U8 }, &CodecParams::default())
     });
+    let chunks = chunks.into_iter().collect::<Result<Vec<_>>>()?;
     let mut tags = vec![
         (254, Value::Longs(vec![4])),
         (256, Value::Longs(vec![cols as u32])),
@@ -758,7 +774,7 @@ fn mask_image(mask: &[u8], cols: usize, rows: usize, block: (usize, usize, bool)
         tags.push((278, Value::Longs(vec![chunk_h as u32])));
     }
     tags.sort_by_key(|(t, _)| *t);
-    Image { tags, chunks, tiled }
+    Ok(Image { tags, chunks, tiled })
 }
 
 /// The `ColorMap` tag of a color table: every red value, then green, then blue, as 16 bits.
@@ -833,15 +849,7 @@ impl<'a> Level<'a> {
                 (tw, th, self.cols.div_ceil(tw), self.rows.div_ceil(th), true)
             }
             None => {
-                let row_bytes = self.cols * chunk_spp * size;
-                let mut rows_per_strip = match layout.rows_per_strip {
-                    Some(r) => (r as usize).clamp(1, self.rows),
-                    None => ((1usize << 16) / row_bytes.max(1)).clamp(1, self.rows),
-                };
-                // JPEG strips hold whole MCUs (16 rows with 4:2:0 subsampling).
-                if compression == Compression::Jpeg && rows_per_strip < self.rows {
-                    rows_per_strip = (rows_per_strip / 16 * 16).max(16).min(self.rows);
-                }
+                let rows_per_strip = strip_rows(layout.rows_per_strip, self.rows, self.cols * chunk_spp * size, compression);
                 (self.cols, rows_per_strip, 1, self.rows.div_ceil(rows_per_strip), false)
             }
         };
@@ -1422,10 +1430,7 @@ impl GeoTiffWriter {
         let (chunk_w, block_rows, across, down) = match plan.tile {
             Some((tw, th)) => (tw as usize, th as usize, cols.div_ceil(tw as usize), rows.div_ceil(th as usize)),
             None => {
-                let per = match opts.rows_per_strip {
-                    Some(n) => (n as usize).clamp(1, rows),
-                    None => ((1usize << 16) / (cols * chunk_spp * size).max(1)).clamp(1, rows),
-                };
+                let per = strip_rows(opts.rows_per_strip, rows, cols * chunk_spp * size, opts.compression);
                 (cols, per, 1, rows.div_ceil(per))
             }
         };
@@ -1578,7 +1583,7 @@ impl GeoTiffWriter {
         if let Some(chunks) = &mut self.mask {
             let m: Vec<u8> = self.pending_mask.drain(..cols * h).collect();
             let tiled = self.layout.tile.is_some();
-            let mi = mask_image(&m, cols, h, (self.chunk_w, if tiled { self.block_rows } else { h }, tiled));
+            let mi = mask_image(&m, cols, h, (self.chunk_w, if tiled { self.block_rows } else { h }, tiled))?;
             chunks.extend(mi.chunks);
         }
         self.rows_done += h;
@@ -1628,7 +1633,7 @@ impl GeoTiffWriter {
                 self.pos += c.len() as u64;
                 self.check_size()?;
             }
-            let full = mask_image(&[], self.cols, 0, (self.chunk_w, self.block_rows, tiled));
+            let full = mask_image(&[], self.cols, 0, (self.chunk_w, self.block_rows, tiled))?;
             let mut mt: Vec<(u16, Value)> = full.tags.into_iter().filter(|(t, _)| *t != 257 && *t != 278).collect();
             mt.push((257, Value::Longs(vec![self.rows as u32])));
             if !tiled {
@@ -1901,6 +1906,56 @@ mod tests {
             _ => RasterData::I16((0..n).map(|i| (i % 1000) as i16 - 1).collect()),
         };
         Raster::from_data_native(cfg, data).unwrap()
+    }
+
+    #[test]
+    fn jpeg_strips_hold_whole_mcus() {
+        // About 64 KB of rows (21 of 3000 bytes), rounded down to 16; the last strip may be short.
+        assert_eq!(strip_rows(None, 1000, 3000, Compression::Jpeg), 16);
+        assert_eq!(strip_rows(Some(7), 100, 300, Compression::Jpeg), 16);
+        assert_eq!(strip_rows(Some(7), 10, 300, Compression::Jpeg), 10);
+        assert_eq!(strip_rows(Some(7), 100, 300, Compression::Deflate), 7);
+        assert_eq!(strip_rows(None, 1000, 3000, Compression::Deflate), 21);
+    }
+
+    #[test]
+    fn lerc_masks_pixels_whose_samples_are_all_nan() {
+        let mut r = layouts_raster(2, DataType::F32);
+        // The raster's bands are band-sequential in memory.
+        let band = 70 * 50;
+        let set = |r: &mut Raster, i: usize, x: f32| {
+            if let RasterData::F32(v) = &mut r.data {
+                v[i] = x;
+            }
+        };
+        set(&mut r, 0, f32::NAN);
+        set(&mut r, band, f32::NAN);
+        set(&mut r, 5, f32::NAN);
+        let second = r.data_f32().unwrap()[band + 5];
+        let lerc = |r: &Raster, interleave: &str| {
+            let options = crate::RasterWriteOptions {
+                compression: Some("LERC".into()),
+                creation_options: vec![("INTERLEAVE".into(), interleave.into())],
+                ..Default::default()
+            };
+            let opts = TiffOptions::from_write_options(&options, false, None).unwrap().unwrap();
+            let dir = tempfile::tempdir().unwrap();
+            let p = dir.path().join("t.tif");
+            write(r, p.to_str().unwrap(), &opts).map(|()| crate::geotiff::read_geotiff(&p).unwrap())
+        };
+        // Pixel 5 has a NaN in its first sample only: its second cannot be stored under a mask.
+        let err = lerc(&r, "PIXEL").unwrap_err().to_string();
+        assert!(err.contains("INTERLEAVE=BAND"), "{err}");
+        let back = lerc(&r, "BAND").unwrap();
+        let RasterData::F32(b) = &back.raster.data else { unreachable!() };
+        assert!(b[0].is_nan() && b[band].is_nan() && b[5].is_nan());
+        assert_eq!(b[band + 5], second);
+        // Whole pixels of NaN are masked when interleaved by pixel.
+        set(&mut r, 5, 1.0);
+        let back = lerc(&r, "PIXEL").unwrap();
+        let RasterData::F32(b) = &back.raster.data else { unreachable!() };
+        assert!(b[0].is_nan() && b[band].is_nan());
+        assert_eq!(b[5], 1.0);
     }
 
     #[test]

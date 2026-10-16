@@ -22,6 +22,9 @@ use wasm_bindgen_futures::JsFuture;
 /// The most rounds of fetches a read may take.
 const MAX_ROUNDS: usize = 64;
 
+/// The range requests sent at once: browsers queue more, and servers may rate-limit them.
+const MAX_PARALLEL: usize = 12;
+
 /// Options of [`open_url`].
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", default, deny_unknown_fields)]
@@ -122,8 +125,16 @@ impl Fetcher {
         Ok(len.and_then(|l| l.trim().parse().ok()))
     }
 
-    /// Fetches byte ranges `(offset, length)` in parallel into the file.
+    /// Fetches byte ranges `(offset, length)` into the file, [`MAX_PARALLEL`] requests at a time.
     async fn fetch_into(&self, file: &SparseFile, ranges: &[(u64, u64)]) -> Result<(), JsError> {
+        for batch in ranges.chunks(MAX_PARALLEL) {
+            self.fetch_batch(file, batch).await?;
+        }
+        Ok(())
+    }
+
+    /// Fetches byte ranges in parallel into the file.
+    async fn fetch_batch(&self, file: &SparseFile, ranges: &[(u64, u64)]) -> Result<(), JsError> {
         let promises: Vec<js_sys::Promise> =
             ranges.iter().map(|&(o, n)| self.request(Some((o, o + n - 1)), false)).collect::<Result<_, _>>()?;
         for (&(offset, len), p) in ranges.iter().zip(promises) {
@@ -275,21 +286,22 @@ pub async fn open_url(url: String, options: JsValue) -> Result<RemoteDataset, Js
     let block = o.block_size.max(512);
     // The first block: the file's length, and its first bytes.
     let first = fetcher.response(fetcher.request(Some((0, block - 1)), false)?).await?;
-    let (len, whole) = match (first.status, first.total) {
-        (206, Some(total)) => (total, false),
+    // A server that ignores `Range` sends the whole file: every block is then held, and nothing
+    // more is requested.
+    let len = match (first.status, first.total) {
+        (206, Some(total)) => total,
         (206, None) => match fetcher.head_len().await? {
-            Some(len) => (len, false),
+            Some(len) => len,
             None => {
                 return Err(JsError::new(&format!(
                     "{url}: the server's response has no Content-Range (cross-origin servers must expose it) and no Content-Length"
                 )));
             }
         },
-        _ => (first.data.len() as u64, true),
+        _ => first.data.len() as u64,
     };
     let file = SparseFile::with_block_size(len, block);
     file.insert(0, &first.data);
-    let _ = whole;
     let path = url.split(['?', '#']).next().unwrap_or(&url);
     let name = path.rsplit('/').next().filter(|n| !n.is_empty()).unwrap_or("remote").to_string();
     let format = detect(&name, &first.data, o.format.as_deref())?;
