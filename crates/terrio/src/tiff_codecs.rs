@@ -23,6 +23,9 @@ enum Codec {
     Lerc,
     Jxl,
     Lzma,
+    /// LZW of 8 to 64-bit samples, decoded whole: the `tiff` crate's reader fails on some chunks
+    /// it reads row by row (edge tiles narrower than the tile).
+    Lzw,
     Jpeg,
     /// Unsigned samples of 9 to 31 bits (not 16), packed MSB first with each row starting on a
     /// byte, under compression `.0`.
@@ -181,6 +184,7 @@ impl ChunkCodec {
             LERC => Codec::Lerc,
             JXL | JXL_DNG => Codec::Jxl,
             LZMA => Codec::Lzma,
+            5 => Codec::Lzw,
             7 => Codec::Jpeg,
             _ => return Ok(None),
         };
@@ -198,6 +202,13 @@ impl ChunkCodec {
         let spp = if planar { 1 } else { samples };
         // JPEG of 8-bit samples: 12-bit JPEG is left to the `tiff` crate.
         if codec == Codec::Jpeg && bits != 8 {
+            return Ok(None);
+        }
+        // LZW: other sample types, and WhiteIsZero images (which the crate inverts), are left to
+        // the `tiff` crate.
+        if codec == Codec::Lzw
+            && (Sample::new(format, bits).is_none() || dec.find_tag_unsigned::<u16>(Tag::PhotometricInterpretation)? == Some(0))
+        {
             return Ok(None);
         }
         let sample = match codec {
@@ -263,12 +274,19 @@ impl ChunkCodec {
         // Tiles are coded whole, strips with their own rows.
         let (w, h) = if self.tiled { self.chunk } else { (dw, dh) };
         let bytes = match self.codec {
-            Codec::Lzma => {
-                let mut out = Vec::new();
-                lzma_rust2::XzReader::new(&raw[..], true).read_to_end(&mut out).map_err(|e| invalid(format!("LZMA: {e}")))?;
+            Codec::Lzma | Codec::Lzw => {
                 let size = self.sample.size();
-                out.resize(w * h * self.spp * size, 0);
-                if self.big_endian && size > 1 {
+                let n = w * h * self.spp * size;
+                let mut out = Vec::new();
+                if self.codec == Codec::Lzw {
+                    out = decompress(5, raw, n)?;
+                } else {
+                    lzma_rust2::XzReader::new(&raw[..], true).read_to_end(&mut out).map_err(|e| invalid(format!("LZMA: {e}")))?;
+                }
+                out.resize(n, 0);
+                // The floating-point predictor's byte planes give native-endian samples whatever
+                // the file's byte order, as libtiff's.
+                if self.big_endian && size > 1 && self.predictor != 3 {
                     for v in out.chunks_exact_mut(size) {
                         v.reverse();
                     }

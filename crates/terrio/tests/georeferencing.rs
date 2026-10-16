@@ -204,7 +204,9 @@ fn internal_masks_and_rows_written_in_order() {
         ("tiles", "DEFLATE", tiled.clone()),
         ("strips", "DEFLATE", vec![("BLOCKYSIZE", "7")]),
         ("planar_strips", "DEFLATE", vec![("BLOCKYSIZE", "7"), ("INTERLEAVE", "BAND")]),
-        ("planar_tiles", "ZSTD", planar_tiles),
+        // LZW edge tiles (50 x 40 in 16 x 16 tiles), which the `tiff` crate reads row by row,
+        // and failed on for some streams.
+        ("planar_tiles", "LZW", planar_tiles),
         ("lerc_tiles", "LERC_ZSTD", tiled),
     ] {
         let creation_options: Vec<(String, String)> = co.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
