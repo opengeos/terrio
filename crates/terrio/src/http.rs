@@ -174,7 +174,8 @@ impl Client {
     }
 
     /// Sends a `GET` with a `Range` header value (`bytes=0-99`, `bytes=-16`), if any. With
-    /// `missing_ok`, a missing object's response (404 or 403) is returned too.
+    /// `missing_ok`, a missing object's response (404, or 403 to an unsigned request) is returned
+    /// too.
     fn send_range(&mut self, range_header: Option<String>) -> Result<ureq::http::Response<ureq::Body>> {
         let started = Instant::now();
         let mut url = self.url.clone();
@@ -249,7 +250,10 @@ impl Client {
             }
             match status {
                 200 | 206 | 416 => return Ok(response),
-                403 | 404 if self.missing_ok => return Ok(response),
+                404 if self.missing_ok => return Ok(response),
+                // S3 (and GCS) answer anonymous requests for missing keys with 403; a signed
+                // request's 403 is a denied one (expired or insufficient credentials).
+                403 if self.missing_ok && !signed => return Ok(response),
                 429 | 500 | 502 | 503 | 504 if attempt < self.options.max_retry => self.backoff(&mut attempt),
                 _ => {
                     let hint = match (&self.s3, status) {
@@ -343,7 +347,7 @@ impl ObjectFetcher {
     }
 
     /// Fetches an object, or part of it. `None` when the object does not exist (status 404, or
-    /// 403 as S3 answers anonymous requests for missing keys).
+    /// 403 as S3 answers anonymous requests for missing keys; a signed request's 403 is an error).
     pub(crate) fn get(&self, remote: &Remote, range: ByteRange) -> Result<Option<Vec<u8>>> {
         let mut client = Client::with_agent(remote, self.options.clone(), self.agent.clone());
         client.missing_ok = true;
@@ -661,6 +665,8 @@ mod tests {
         Flaky,
         /// `/old` redirects to `/data`.
         Redirect,
+        /// Every request is answered 403, as S3 answers for a missing key or denied access.
+        Forbidden,
     }
 
     /// Serves `data` on a local port. Returns the URL and a counter of the requests served.
@@ -692,6 +698,7 @@ mod tests {
                     format!("HTTP/1.1 {status}\r\nContent-Length: {len}\r\nConnection: close\r\n{extra}\r\n")
                 };
                 let response = match (mode, range) {
+                    (Mode::Forbidden, _) => head("403 Forbidden", "", 0).into_bytes(),
                     (Mode::Flaky, _) if !failed => {
                         failed = true;
                         head("503 Service Unavailable", "", 0).into_bytes()
@@ -723,6 +730,19 @@ mod tests {
         let mut buf = vec![0u8; len];
         r.read_exact(&mut buf).unwrap();
         buf
+    }
+
+    #[test]
+    fn forbidden_is_missing_only_for_unsigned_requests() {
+        let (url, _) = serve(Vec::new(), Mode::Forbidden);
+        let mut client = Client::new(&Remote::Url(url), options());
+        client.missing_ok = true;
+        // Anonymous: a missing key.
+        assert_eq!(client.fetch_range(None).unwrap().status, 403);
+        // Signed: access denied, an error.
+        let creds = Credentials { access_key_id: "AKID".into(), secret_access_key: "secret".into(), session_token: None };
+        client.s3 = Some(S3Auth { creds: Some(creds), region: Some("us-east-1".into()), discovered: true });
+        assert!(client.fetch_range(None).is_err());
     }
 
     #[test]

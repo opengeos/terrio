@@ -20,6 +20,8 @@ use terrio::{DataType, Raster, RasterConfig, RasterDataset, RasterWriteOptions, 
 struct Counter {
     requests: Arc<AtomicU64>,
     bytes: Arc<AtomicU64>,
+    /// While set, every request is answered 401 (as a server failing or denying access).
+    fail: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl Counter {
@@ -58,6 +60,10 @@ fn serve(root: PathBuf) -> (String, Counter) {
                     }
                 }
                 c.requests.fetch_add(1, Ordering::SeqCst);
+                if c.fail.load(Ordering::SeqCst) {
+                    let _ = stream.write_all(b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                    return;
+                }
                 let path = first.split_whitespace().nth(1).unwrap_or("/").split('?').next().unwrap().trim_start_matches('/').to_string();
                 let file = root.join(&path);
                 let Ok(data) = std::fs::read(&file).map_err(|_| ()).and_then(|d| if file.is_file() { Ok(d) } else { Err(()) }) else {
@@ -147,6 +153,22 @@ fn remote_stores_are_read_by_window() {
         let gdal_name = format!("ZARR:\"/vsicurl/{url}/{name}\"");
         assert_eq!(terrio::open_raster_lazy(&gdal_name).unwrap().width(), 700);
     }
+}
+
+/// A metadata document that cannot be read is an error naming the failure (not "no Zarr
+/// metadata"), and is not remembered as missing: the store opens once the server answers.
+#[test]
+fn metadata_read_failures_are_errors() {
+    let dir = tempfile::tempdir().unwrap();
+    write_zarr(dir.path(), "v2.zarr", &raster(30, 20, 1), &[]);
+    let (url, counter) = serve(dir.path().to_path_buf());
+    let remote = format!("{url}/v2.zarr");
+    counter.fail.store(true, Ordering::SeqCst);
+    let Err(err) = terrio::open_raster_lazy(&remote) else { panic!("the server fails") };
+    let err = err.to_string();
+    assert!(err.contains("401"), "{err}");
+    counter.fail.store(false, Ordering::SeqCst);
+    assert_eq!(terrio::open_raster_lazy(&remote).unwrap().width(), 30);
 }
 
 /// Little-endian bytes of the CRC32C checksum (Castagnoli) of `data`.

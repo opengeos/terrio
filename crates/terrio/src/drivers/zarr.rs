@@ -255,8 +255,8 @@ fn v2_codec(c: &Value) -> Result<Option<Codec>> {
 
 /// Reads an array's metadata, from a v2 `.zarray` (with `.zattrs`) or a v3 `zarr.json`.
 fn read_array(node: &Node) -> Result<Array> {
-    if let Some(m) = node.json(".zarray") {
-        let attrs = node.json(".zattrs").unwrap_or(json!({}));
+    if let Some(m) = node.json(".zarray")? {
+        let attrs = node.json(".zattrs")?.unwrap_or(json!({}));
         let (data_type, little_endian, stored) = v2_dtype(m["dtype"].as_str().ok_or_else(|| bad("no dtype"))?)?;
         let mut codecs: Vec<Codec> = Vec::new();
         if let Some(filters) = m["filters"].as_array()
@@ -288,7 +288,7 @@ fn read_array(node: &Node) -> Result<Array> {
             attrs,
         });
     }
-    let m = node.json("zarr.json").ok_or_else(|| bad(format!("{} is not a Zarr array", node.display())))?;
+    let m = node.json("zarr.json")?.ok_or_else(|| bad(format!("{} is not a Zarr array", node.display())))?;
     if m["node_type"].as_str() != Some("array") {
         return Err(bad(format!("{} is not a Zarr array", node.display())));
     }
@@ -850,16 +850,17 @@ const SPATIAL_UUID: &str = "689b58e2-cf7b-45e0-9fff-9cfc0883d6b4";
 const PROJ_UUID: &str = "f17cb550-5864-4468-aeb7-f3180cfb622f";
 const MULTISCALES_UUID: &str = "d35379db-88df-4056-af3a-620245f8e347";
 
-/// A group's attributes (v2 `.zattrs`, v3 `zarr.json`).
+/// A group's attributes (v2 `.zattrs`, v3 `zarr.json`). Best effort: none when they cannot be
+/// read.
 fn group_attrs(node: &Node) -> Value {
-    if let Some(v) = node.json(".zattrs") {
+    if let Ok(Some(v)) = node.json(".zattrs") {
         return v;
     }
-    node.json("zarr.json").map(|m| m["attributes"].clone()).filter(Value::is_object).unwrap_or(json!({}))
+    node.json("zarr.json").ok().flatten().map(|m| m["attributes"].clone()).filter(Value::is_object).unwrap_or(json!({}))
 }
 
 fn is_group(node: &Node) -> bool {
-    node.json(".zgroup").is_some() || node.json("zarr.json").is_some_and(|m| m["node_type"] == "group")
+    node.json(".zgroup").is_ok_and(|g| g.is_some()) || node.json("zarr.json").ok().flatten().is_some_and(|m| m["node_type"] == "group")
 }
 
 /// A `multiscales` layout: the group holding it and its levels.

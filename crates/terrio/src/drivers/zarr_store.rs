@@ -155,38 +155,39 @@ impl Store {
         matches!(self.backend, Backend::Local(_))
     }
 
-    /// A metadata document (JSON), from the consolidated metadata or read and cached.
-    fn json(&self, key: &str) -> Option<Value> {
+    /// A metadata document (JSON), from the consolidated metadata or read and cached. A read
+    /// that fails (a network error) is an error, and is not cached: only missing documents are.
+    fn json(&self, key: &str) -> Result<Option<Value>> {
         if let Some(c) = &self.consolidated
             && let Some(v) = c.get(key)
         {
-            return Some(v.clone());
+            return Ok(Some(v.clone()));
         }
         // Consolidated metadata lists every node of a remote store: the rest is not looked for.
         if self.consolidated.is_some() && !self.is_local() {
-            return None;
+            return Ok(None);
         }
         if let Some(v) = self.cache.lock().ok().and_then(|c| c.get(key).cloned()) {
-            return v;
+            return Ok(v);
         }
-        let v = self.get(key, Range::Whole).ok().flatten().and_then(|b| serde_json::from_slice::<Value>(&b).ok());
+        let v = self.get(key, Range::Whole)?.and_then(|b| serde_json::from_slice::<Value>(&b).ok());
         if let Ok(mut c) = self.cache.lock() {
             c.insert(key.to_string(), v.clone());
         }
-        v
+        Ok(v)
     }
 
     /// Reads the consolidated metadata at the root, when there is some: v2's `.zmetadata`, or the
     /// `consolidated_metadata` of a v3 root group.
-    fn load_consolidated(&mut self) {
+    fn load_consolidated(&mut self) -> Result<()> {
         let mut map = HashMap::new();
-        if let Some(m) = self.json(".zmetadata")
+        if let Some(m) = self.json(".zmetadata")?
             && let Some(meta) = m["metadata"].as_object()
         {
             for (k, v) in meta {
                 map.insert(k.trim_start_matches('/').to_string(), v.clone());
             }
-        } else if let Some(root) = self.json("zarr.json")
+        } else if let Some(root) = self.json("zarr.json")?
             && let Some(meta) = root["consolidated_metadata"]["metadata"].as_object()
             && !meta.is_empty()
         {
@@ -202,6 +203,7 @@ impl Store {
         if !map.is_empty() {
             self.consolidated = Some(map);
         }
+        Ok(())
     }
 }
 
@@ -218,7 +220,8 @@ impl Node {
         }
         let key = path.strip_prefix(&root).map(|k| k.to_string_lossy().replace('\\', "/")).unwrap_or_default();
         let mut store = Store::new(Backend::Local(root.clone()), root.display().to_string());
-        store.load_consolidated();
+        // Local files are read as they are found: unreadable metadata is reported when used.
+        let _ = store.load_consolidated();
         Node { store: Arc::new(store), key }
     }
 
@@ -249,9 +252,16 @@ impl Node {
             _ => return Err(crate::Error::InvalidArgument("not a remote location".into())),
         };
         let mut store = Store::new(Backend::Remote { base, fetcher: Box::new(crate::http::ObjectFetcher::new()) }, name);
-        store.load_consolidated();
+        store.load_consolidated()?;
         let node = Node { store: Arc::new(store), key };
-        if node.store.consolidated.is_none() && !METADATA_FILES.iter().any(|f| node.store.json(&join_key(&node.key, f)).is_some()) {
+        let mut found = node.store.consolidated.is_some();
+        for f in METADATA_FILES {
+            if found {
+                break;
+            }
+            found = node.store.json(&join_key(&node.key, f))?.is_some();
+        }
+        if !found {
             return Err(crate::Error::InvalidData(format!("Zarr: no Zarr metadata at {}", node.display())));
         }
         Ok(node)
@@ -281,8 +291,9 @@ impl Node {
         if self.key.is_empty() { self.store.name.clone() } else { format!("{}/{}", self.store.name.trim_end_matches('/'), self.key) }
     }
 
-    /// A metadata document of the node (`.zarray`, `zarr.json`...).
-    pub(crate) fn json(&self, file: &str) -> Option<Value> {
+    /// A metadata document of the node (`.zarray`, `zarr.json`...), `None` when missing; an
+    /// error when it cannot be read.
+    pub(crate) fn json(&self, file: &str) -> Result<Option<Value>> {
         self.store.json(&join_key(&self.key, file))
     }
 
