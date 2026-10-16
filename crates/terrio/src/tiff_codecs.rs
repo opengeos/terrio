@@ -308,9 +308,8 @@ impl ChunkCodec {
             }
             out
         } else {
-            let mut out = Vec::new();
-            lzma_rust2::XzReader::new(&raw[..], true).read_to_end(&mut out).map_err(|e| invalid(format!("LZMA: {e}")))?;
-            out
+            // At most the chunk's size, however far the stream would expand.
+            decompress(LZMA, raw, n)?
         };
         out.resize(n, 0);
         // The floating-point predictor's byte planes give native-endian samples whatever the
