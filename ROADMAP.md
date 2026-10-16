@@ -62,12 +62,24 @@ of GDAL: the long tail of formats stays reachable through an optional GDAL backe
   (feature and attribute tables, R-tree spatial indexes, tile pyramids with PNG or JPEG tiles,
   gridded coverages for Int16, UInt16 and Float32 rasters, files holding both), from files or
   bytes; spatial filters through the R-tree; existing files updated (features appended, layers
-  replaced or added, other tables kept), checked against `ogr2ogr` and `validate_gpkg.py`.
-  Still to do: updates in place (files are rewritten whole).
+  replaced or added, other tables kept), checked against `ogr2ogr` and `validate_gpkg.py`;
+  files updated in place as SQLite updates them (b-tree page inserts and splits, R*-tree inserts
+  and node splits, freed pages on the freelist and reused, only the changed pages written, in a
+  transaction protected by a rollback journal SQLite plays back after a crash, under SQLite's
+  locks), checked with `PRAGMA integrity_check`, `rtreecheck()`, `validate_gpkg.py` and terrio
+  killed mid-commit; appending 100,000 points to a 2-million-point file takes 2.7 s
+  (`ogr2ogr -append`: 6.7 s).
 - Zarr 2 and 3, and GeoZarr conventions. Done: GeoZarr's `spatial:`, `proj:` and `multiscales`
   conventions read (multiscales levels as overviews, read by window) and written
   (`GEOREFERENCING_CONVENTION=SPATIAL_PROJ`, overviews laid out as GDAL lays them out), and CF grid
-  mappings written as rioxarray writes them. Still to do: remote Zarr stores, read in place.
+  mappings written as rioxarray writes them; remote stores (HTTP(S), S3, Google Cloud Storage,
+  Azure, and GDAL's `/vsicurl/`-style names) read in place, Zarr 2 and 3 with consolidated
+  metadata, the v3 sharding codec (shard indexes, then only the inner chunks needed), float16 and
+  the `scale_offset`/`cast_value` codecs, windows fetching only the chunks they touch in parallel,
+  GeoZarr multiscales as overviews; identical to GDAL's Zarr driver and xarray on EOPF Sentinel-2
+  (v2 and sharded GeoZarr v3), NOAA HRRR on S3, CMIP6 on GCS and Daymet on Azure
+  (`scripts/compare_remote_zarr.py`). Still to do: listing remote groups without consolidated
+  metadata, arrays of more than three dimensions.
 - KML/KMZ, GPX, GML, TopoJSON.
 - PMTiles and MBTiles archives. Done: raster tiles (PNG, JPEG, WebP) read as rasters with their
   zoom levels as overviews, and vector tiles (MVT) as layers, as GDAL's MBTiles, PMTiles and MVT
@@ -112,7 +124,8 @@ of GDAL: the long tail of formats stays reachable through an optional GDAL backe
   (`#![warn(missing_docs)]`, rustdoc warnings denied in CI), a tour in the crate documentation,
   examples on the entry points, the API decisions written down (the `wbraster`/`wbvector` data
   model, `#[non_exhaustive]` enums, options built with `Default`), docs.rs metadata, and the crate
-  packaging verified (`cargo publish --dry-run`). Still to do: the first crates.io release.
+  packaging verified (`cargo publish --dry-run`); released: terrio 0.1.0 and 0.1.1 on
+  crates.io and npm (`terrio-js`), 0.1.1 on PyPI.
 - A conformance suite of real-world files per format, with results compared against GDAL. Done:
   `scripts/conformance.py` runs every comparison (summaries and pixels, vector and raster round
   trips, windows, operations, terrain and algebra, vector operations, point clouds, CRS accuracy)
@@ -192,7 +205,9 @@ Python:
   (vcpkg and cibuildwheel, as rasterio's), or a conda-forge package linking `libgdal-core` (see
   docs/gdal.md).
 - Streaming vector reads and writes, so layers larger than memory can be converted and filtered.
-- GeoPackage updates in place (appends without rewriting the file).
+- GeoPackage updates in place (appends without rewriting the file). Done: `write_vector(...,
+  append=True)` and `convert(..., overwrite=True)` change the file in place, as GDAL does
+  through SQLite, with a rollback journal.
 - Windowed decoding of JPEG 2000 and JPEG XL, so Sentinel-2 bands are read by window as COGs are.
   Done: JPEG 2000 read by window and resolution level (OpenJPEG's decode area and reduce factor,
   tiles decoded in parallel) through `LazyRaster`, `terrio convert --srcwin/--overview`, Python's

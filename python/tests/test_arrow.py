@@ -2,6 +2,8 @@
 spatial filters and updates."""
 
 import json
+import os
+import sqlite3
 
 import pytest
 
@@ -192,11 +194,18 @@ def test_open_vector_bbox_and_gpkg_append(layer, tmp_path):
     geojson = str(tmp_path / "s.geojson")
     layer.write(geojson)
     assert terrio.open_vector(geojson, bbox=(25, 5, 40, 20))[0].columns()["name"] == ["east"]
-    # Appending to the layer of a GeoPackage, and adding another.
+    # Appending to the layer of a GeoPackage, and adding another, in place (the same file).
+    inode = os.stat(path).st_ino
     terrio.write_vector(layer, path, append=True)
     other = layer.to_crs("EPSG:3857")
     other.name = "other"
     terrio.write_vector(other, path, append=True)
+    assert os.stat(path).st_ino == inode
+    assert not os.path.exists(path + "-journal")
+    con = sqlite3.connect(path)
+    assert con.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+    assert con.execute("SELECT rtreecheck('rtree_squares_geom')").fetchone()[0] == "ok"
+    con.close()
     ds = terrio.open_vector(path)
     assert ds.layer_names == ["squares", "other"]
     assert len(ds["squares"]) == 6 and len(ds["other"]) == 3

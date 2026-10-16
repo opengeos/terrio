@@ -95,7 +95,7 @@ pub(crate) fn contents(db: &impl Tables) -> Result<(Vec<Content>, Vec<Content>)>
 
 /// The vector layer names of a GeoPackage file.
 pub(crate) fn list_layers(path: &str) -> Result<Vec<String>> {
-    let db = Db::open(std::path::Path::new(path))?;
+    let db = crate::drivers::sqlite_edit::open_consistent(std::path::Path::new(path))?;
     Ok(contents(&db)?.0.into_iter().map(|c| c.name).collect())
 }
 
@@ -105,7 +105,7 @@ pub(crate) type Rect = (f64, f64, f64, f64);
 /// Reads the layers of a GeoPackage file (`wanted` names them; all when empty), keeping only the
 /// features whose bounding box intersects `bbox` when it is given.
 pub(crate) fn read(path: &str, wanted: &[String], bbox: Option<Rect>) -> Result<Vec<Layer>> {
-    read_db(&Db::open(std::path::Path::new(path))?, wanted, bbox)
+    read_db(&crate::drivers::sqlite_edit::open_consistent(std::path::Path::new(path))?, wanted, bbox)
 }
 
 /// Reads the layers of a GeoPackage held in memory (`wanted` names them; all when empty).
@@ -514,7 +514,7 @@ pub(crate) struct LayerSummary {
 /// Also gives the raster tables.
 pub(crate) fn summarize(path: &str) -> Result<Option<(Vec<LayerSummary>, Vec<Content>)>> {
     crate::crs::prefetch();
-    let db = Db::open(std::path::Path::new(path))?;
+    let db = crate::drivers::sqlite_edit::open_consistent(std::path::Path::new(path))?;
     let (layers, rasters) = contents(&db)?;
     if layers.is_empty() {
         return Ok(None);

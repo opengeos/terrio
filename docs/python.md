@@ -80,8 +80,11 @@ terrio.write_vector(layer, "world.gpkg", append=True)
 terrio.convert("more.shp", "world.gpkg", layer_name="countries", overwrite=True)
 ```
 
-The updated file is written anew and then replaces the original (terrio's SQLite writer writes
-whole files), so appending to a large GeoPackage costs a rewrite of it.
+The file is changed in place, as SQLite changes it: only the pages that change are written (new
+rows, R-tree nodes, the tables describing the layer), in a transaction protected by a rollback
+journal, so appending to a large GeoPackage costs about as much as the features appended, and a
+process stopped in the middle leaves the file as it was (SQLite, GDAL and terrio play the journal
+back).
 
 ### Streams
 

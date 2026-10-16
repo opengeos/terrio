@@ -250,6 +250,9 @@ pub(crate) fn open_native(path: &str) -> Result<Dataset> {
     if let Some(result) = crate::drivers::open_subdataset(path) {
         return result.map(Dataset::Raster);
     }
+    if let Some(result) = crate::drivers::open_in_place(path) {
+        return result.map(Dataset::Raster);
+    }
     // Tile archives, local or remote, are read in place.
     if is_tile_archive(path) {
         return crate::tiles::open_dataset(path, &VectorOpenOptions::default());
@@ -288,6 +291,9 @@ fn open_raster_native(path: &str) -> Result<RasterDataset> {
         };
     }
     if let Some(result) = crate::drivers::open_subdataset(path) {
+        return result;
+    }
+    if let Some(result) = crate::drivers::open_in_place(path) {
         return result;
     }
     if is_tile_archive(path) {

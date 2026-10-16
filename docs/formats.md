@@ -147,8 +147,14 @@ conventions are read too: [`spatial:`](https://github.com/zarr-conventions/spati
 [`proj:`](https://github.com/zarr-conventions/proj) (`proj:code`, `proj:wkt2`, `proj:projjson`, and
 the EOPF samples' `proj:epsg`) on the array, its group or the multiscales group, and
 [`multiscales`](https://github.com/zarr-conventions/multiscales) layouts, whose lower-resolution
-levels are the raster's overviews (`terrio info` lists them, `--overview N` reads one). The
-creation options say how a written store is georeferenced and whether it holds overviews:
+levels are the raster's overviews (`terrio info` lists them, `--overview N` reads one). A CF
+`grid_mapping` variable without `crs_wkt` gives its CRS by its CF parameters, as GDAL reads them,
+and coordinate arrays and grid mappings are looked for in the groups above the array too. Stores
+are read chunk by chunk, local or remote (see [Remote data](remote-data.md)), with the codecs
+none, zlib, gzip, Zstandard, LZ4 and Blosc, transposition, CRC32C checksums, v3 sharding
+(`sharding_indexed`, inner chunks read by range), and the `scale_offset` and `cast_value` codecs
+of the EOPF GeoZarr samples; `float16` arrays (NOAA's HRRR) are read as Float32. The creation
+options say how a written store is georeferenced and whether it holds overviews:
 
 | Creation option | Values |
 |---|---|
@@ -223,8 +229,15 @@ reads it.
   `--append` adds features to a layer (fields matched by name, new feature ids continuing the
   layer's sequence, its R-tree, `gpkg_contents` extent and `gpkg_ogr_contents` count updated),
   `--overwrite` replaces a layer, and layers are added to files holding other layers or rasters.
-  Everything else in the file (tables, rasters, metadata, extensions, triggers, views) is kept;
-  the file is written anew and replaces the original.
+  Everything else in the file (tables, rasters, metadata, extensions, triggers, views) is kept.
+  Files are changed in place, as SQLite changes them: rows are added to the table's b-tree
+  (pages split as SQLite splits them), boxes inserted into the R-tree (nodes split as SQLite's
+  R*-tree splits them), dropped layers' pages put on the freelist and reused, and only the pages
+  that change are written, in a transaction protected by a rollback journal (`<file>-journal`,
+  played back by SQLite, GDAL and terrio after a crash) and under SQLite's file locks. Appending
+  1,000 points to a 2-million-point file takes about as long as `ogr2ogr -append`. Files in
+  write-ahead-log mode with a pending log, with auto-vacuum, or with triggers on the layer other
+  than GDAL's are rewritten whole instead.
 - **Streaming**: GeoPackage, FlatGeobuf, GeoParquet, Shapefile, GeoJSON, GeoJSONSeq and CSV
   layers are read a chunk of features at a time (GeoPackages a leaf page of the table at a time,
   through the R-tree with `--spat`; GeoParquet a record batch at a time), and FlatGeobuf,

@@ -23,21 +23,18 @@
 //! method).
 
 use super::common;
+use super::zarr_store::{Node, Range};
 use crate::formats::RasterDriver;
 use crate::memfs;
 use crate::{Error, RasterDataset, Result};
 use serde_json::{Value, json};
 use std::io::Read;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use wbraster::raster::RasterData;
 use wbraster::{CrsInfo, DataType, Raster};
 
 fn bad(msg: impl std::fmt::Display) -> Error {
     Error::InvalidData(format!("Zarr: {msg}"))
-}
-
-fn read_json(p: &Path) -> Option<Value> {
-    serde_json::from_slice(&memfs::read(p).ok()?).ok()
 }
 
 /// Whether a directory is a Zarr store (or array).
@@ -57,6 +54,61 @@ enum Codec {
     Crc32c,
 }
 
+/// How elements are stored when not as the array's data type.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Stored {
+    /// IEEE half precision (read as Float32, as GDAL before 3.11 and xarray's float32 casts do).
+    F16,
+    Type(DataType),
+}
+
+impl Stored {
+    fn size(self) -> usize {
+        match self {
+            Stored::F16 => 2,
+            Stored::Type(t) => t.size_bytes(),
+        }
+    }
+
+    /// Reads one element.
+    fn read(self, b: &[u8], little: bool) -> f64 {
+        macro_rules! num {
+            ($t:ty) => {{
+                let a: [u8; size_of::<$t>()] = b.try_into().unwrap_or_default();
+                (if little { <$t>::from_le_bytes(a) } else { <$t>::from_be_bytes(a) }) as f64
+            }};
+        }
+        match self {
+            Stored::F16 => {
+                let a: [u8; 2] = b.try_into().unwrap_or_default();
+                half::f16::from_bits(if little { u16::from_le_bytes(a) } else { u16::from_be_bytes(a) }).to_f64()
+            }
+            Stored::Type(t) => match t {
+                DataType::U8 => b[0] as f64,
+                DataType::I8 => b[0] as i8 as f64,
+                DataType::U16 => num!(u16),
+                DataType::I16 => num!(i16),
+                DataType::U32 => num!(u32),
+                DataType::I32 => num!(i32),
+                DataType::U64 => num!(u64),
+                DataType::I64 => num!(i64),
+                DataType::F32 => num!(f32),
+                DataType::F64 => num!(f64),
+            },
+        }
+    }
+}
+
+/// An array-to-array codec that changes the values (Zarr v3 extensions).
+#[derive(Debug, Clone)]
+enum Step {
+    /// `scale_offset`: stored as `(value - offset) * scale`.
+    ScaleOffset { scale: f64, offset: f64 },
+    /// `cast_value`: stored in another type, with the stored values mapped to special values
+    /// (`(stored, value)`, NaN matching NaN).
+    Cast { decode: Vec<(f64, f64)> },
+}
+
 /// How a chunk's bytes encode its elements.
 #[derive(Debug, Clone)]
 struct Pipeline {
@@ -68,11 +120,15 @@ struct Pipeline {
     codecs: Vec<Codec>,
     /// A sharded chunk: inner chunks and their index.
     shard: Option<Box<Shard>>,
+    /// The stored element type, when not the array's.
+    stored: Option<Stored>,
+    /// The array-to-array codecs changing values, in encoding order.
+    steps: Vec<Step>,
 }
 
 impl Default for Pipeline {
     fn default() -> Self {
-        Self { order: None, little_endian: true, codecs: Vec::new(), shard: None }
+        Self { order: None, little_endian: true, codecs: Vec::new(), shard: None, stored: None, steps: Vec::new() }
     }
 }
 
@@ -87,10 +143,18 @@ struct Shard {
     index_at_start: bool,
 }
 
+impl Shard {
+    /// The number of inner chunks of a shard of shape `shape`, and the length of its index.
+    fn index_len(&self, shape: &[usize]) -> (usize, usize) {
+        let count: usize = shape.iter().zip(&self.chunks).map(|(c, i)| c.div_ceil(*i)).product();
+        (count, count * 16 + if self.index_checksum { 4 } else { 0 })
+    }
+}
+
 /// An array's metadata.
 #[derive(Debug)]
 struct Array {
-    dir: PathBuf,
+    node: Node,
     shape: Vec<usize>,
     chunks: Vec<usize>,
     data_type: DataType,
@@ -101,6 +165,23 @@ struct Array {
     separator: String,
     dims: Vec<String>,
     attrs: Value,
+}
+
+impl Array {
+    /// The key of the chunk at grid position `idx`.
+    fn chunk_key(&self, idx: &[usize]) -> String {
+        if idx.is_empty() {
+            return format!("{}0", self.key_prefix);
+        }
+        format!("{}{}", self.key_prefix, idx.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(&self.separator))
+    }
+
+    /// The fill value as one little-endian element.
+    fn fill_bytes(&self) -> Vec<u8> {
+        let mut one = Vec::new();
+        super::gtiff_write::encode_sample_le(self.data_type, self.fill.unwrap_or(0.0), &mut one);
+        one
+    }
 }
 
 fn parse_fill(v: &Value) -> Option<f64> {
@@ -117,7 +198,9 @@ fn parse_fill(v: &Value) -> Option<f64> {
     }
 }
 
-fn v2_dtype(s: &str) -> Result<(DataType, bool)> {
+/// A v2 data type: the array's type, whether it is little-endian, and how it is stored when not
+/// as that type.
+fn v2_dtype(s: &str) -> Result<(DataType, bool, Option<Stored>)> {
     let little = !s.starts_with('>');
     let t = match &s[1.min(s.len())..] {
         "u1" | "b1" => DataType::U8,
@@ -128,27 +211,33 @@ fn v2_dtype(s: &str) -> Result<(DataType, bool)> {
         "i4" => DataType::I32,
         "u8" => DataType::U64,
         "i8" => DataType::I64,
+        "f2" => return Ok((DataType::F32, little, Some(Stored::F16))),
         "f4" => DataType::F32,
         "f8" => DataType::F64,
         other => return Err(Error::Unsupported(format!("Zarr data type '{other}' is not supported"))),
     };
-    Ok((t, little))
+    Ok((t, little, None))
 }
 
-fn v3_dtype(s: &str) -> Result<DataType> {
-    Ok(match s {
-        "bool" | "uint8" => DataType::U8,
-        "int8" => DataType::I8,
-        "uint16" => DataType::U16,
-        "int16" => DataType::I16,
-        "uint32" => DataType::U32,
-        "int32" => DataType::I32,
-        "uint64" => DataType::U64,
-        "int64" => DataType::I64,
-        "float32" => DataType::F32,
-        "float64" => DataType::F64,
-        other => return Err(Error::Unsupported(format!("Zarr data type '{other}' is not supported"))),
-    })
+/// A v3 data type, and how it is stored when not as the type terrio reads it as.
+fn v3_dtype(s: &str) -> Result<(DataType, Option<Stored>)> {
+    Ok((
+        match s {
+            "bool" | "uint8" => DataType::U8,
+            "int8" => DataType::I8,
+            "uint16" => DataType::U16,
+            "int16" => DataType::I16,
+            "uint32" => DataType::U32,
+            "int32" => DataType::I32,
+            "uint64" => DataType::U64,
+            "int64" => DataType::I64,
+            "float16" => return Ok((DataType::F32, Some(Stored::F16))),
+            "float32" => DataType::F32,
+            "float64" => DataType::F64,
+            other => return Err(Error::Unsupported(format!("Zarr data type '{other}' is not supported"))),
+        },
+        None,
+    ))
 }
 
 fn v2_codec(c: &Value) -> Result<Option<Codec>> {
@@ -166,10 +255,21 @@ fn v2_codec(c: &Value) -> Result<Option<Codec>> {
 }
 
 /// Reads an array's metadata, from a v2 `.zarray` (with `.zattrs`) or a v3 `zarr.json`.
-fn read_array(dir: &Path) -> Result<Array> {
-    if let Some(m) = read_json(&dir.join(".zarray")) {
-        let attrs = read_json(&dir.join(".zattrs")).unwrap_or(json!({}));
-        let (data_type, little_endian) = v2_dtype(m["dtype"].as_str().ok_or_else(|| bad("no dtype"))?)?;
+fn read_array(node: &Node) -> Result<Array> {
+    read_array_opt(node)?.ok_or_else(|| bad(format!("{} is not a Zarr array", node.display())))
+}
+
+/// Reads an array's metadata: `None` when the node has none (a group, or nothing). Metadata that
+/// cannot be read is an error, and so is a document that is not JSON, unless the other Zarr
+/// version's document describes the node (some servers answer unknown paths with a page).
+fn read_array_opt(node: &Node) -> Result<Option<Array>> {
+    let v2 = match node.json(".zarray") {
+        Err(e @ Error::InvalidData(_)) => Err(e),
+        r => Ok(r?),
+    };
+    if let Ok(Some(m)) = v2 {
+        let attrs = node.json(".zattrs")?.unwrap_or(json!({}));
+        let (data_type, little_endian, stored) = v2_dtype(m["dtype"].as_str().ok_or_else(|| bad("no dtype"))?)?;
         let mut codecs: Vec<Codec> = Vec::new();
         if let Some(filters) = m["filters"].as_array()
             && !filters.is_empty()
@@ -187,28 +287,32 @@ fn read_array(dir: &Path) -> Result<Array> {
         let shape = usizes(&m["shape"]);
         // Fortran order: the chunk's dimensions are stored last first.
         let order = (m["order"].as_str() == Some("F")).then(|| (0..shape.len()).rev().collect());
-        return Ok(Array {
-            dir: dir.to_path_buf(),
+        return Ok(Some(Array {
+            node: node.clone(),
             shape,
             chunks: usizes(&m["chunks"]),
             data_type,
-            pipeline: Pipeline { order, little_endian, codecs, shard: None },
+            pipeline: Pipeline { order, little_endian, codecs, shard: None, stored, steps: Vec::new() },
             fill: parse_fill(&m["fill_value"]),
             key_prefix: String::new(),
             separator: m["dimension_separator"].as_str().unwrap_or(".").to_string(),
             dims,
             attrs,
-        });
+        }));
     }
-    let m = read_json(&dir.join("zarr.json")).ok_or_else(|| bad(format!("{} is not a Zarr array", dir.display())))?;
+    let m = match (v2, node.json("zarr.json")?) {
+        (_, Some(m)) => m,
+        (Err(e), None) => return Err(e),
+        (Ok(_), None) => return Ok(None),
+    };
     if m["node_type"].as_str() != Some("array") {
-        return Err(bad(format!("{} is not a Zarr array", dir.display())));
+        return Ok(None);
     }
-    let data_type = v3_dtype(m["data_type"].as_str().unwrap_or_default())?;
+    let (data_type, stored) = v3_dtype(m["data_type"].as_str().unwrap_or_default())?;
     let usizes =
         |v: &Value| v.as_array().map(|a| a.iter().filter_map(|x| x.as_u64().map(|x| x as usize)).collect::<Vec<_>>()).unwrap_or_default();
     let shape = usizes(&m["shape"]);
-    let pipeline = v3_pipeline(&m["codecs"], shape.len())?;
+    let pipeline = v3_pipeline(&m["codecs"], shape.len(), stored)?;
     let encoding = &m["chunk_key_encoding"];
     let separator = encoding["configuration"]["separator"]
         .as_str()
@@ -217,8 +321,8 @@ fn read_array(dir: &Path) -> Result<Array> {
     let key_prefix = if encoding["name"].as_str() == Some("v2") { String::new() } else { format!("c{separator}") };
     let dims =
         m["dimension_names"].as_array().map(|a| a.iter().map(|d| d.as_str().unwrap_or_default().to_string()).collect()).unwrap_or_default();
-    Ok(Array {
-        dir: dir.to_path_buf(),
+    Ok(Some(Array {
+        node: node.clone(),
         shape,
         chunks: usizes(&m["chunk_grid"]["configuration"]["chunk_shape"]),
         data_type,
@@ -228,12 +332,13 @@ fn read_array(dir: &Path) -> Result<Array> {
         separator,
         dims,
         attrs: m["attributes"].clone(),
-    })
+    }))
 }
 
-/// Parses a Zarr v3 codec chain for an array of `nd` dimensions.
-fn v3_pipeline(codecs: &Value, nd: usize) -> Result<Pipeline> {
-    let mut p = Pipeline::default();
+/// Parses a Zarr v3 codec chain for an array of `nd` dimensions, whose elements are stored as
+/// `stored` when not as its data type.
+fn v3_pipeline(codecs: &Value, nd: usize, stored: Option<Stored>) -> Result<Pipeline> {
+    let mut p = Pipeline { stored, ..Default::default() };
     for c in codecs.as_array().into_iter().flatten() {
         let config = &c["configuration"];
         match c["name"].as_str().unwrap_or_default() {
@@ -256,13 +361,32 @@ fn v3_pipeline(codecs: &Value, nd: usize) -> Result<Pipeline> {
                     None => order,
                 });
             }
+            "scale_offset" => {
+                let scale = config["scale"].as_f64().unwrap_or(1.0);
+                let offset = config["offset"].as_f64().unwrap_or(0.0);
+                if scale == 0.0 {
+                    return Err(bad("scale_offset with a zero scale"));
+                }
+                p.steps.push(Step::ScaleOffset { scale, offset });
+            }
+            "cast_value" => {
+                let (t, s) = v3_dtype(config["data_type"].as_str().unwrap_or_default())?;
+                p.stored = Some(s.unwrap_or(Stored::Type(t)));
+                let decode = config["scalar_map"]["decode"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|pair| Some((parse_fill(pair.get(0)?)?, parse_fill(pair.get(1)?)?)))
+                    .collect();
+                p.steps.push(Step::Cast { decode });
+            }
             "sharding_indexed" => {
                 let chunks: Vec<usize> =
                     config["chunk_shape"].as_array().into_iter().flatten().filter_map(|x| x.as_u64().map(|x| x as usize)).collect();
                 if chunks.len() != nd || chunks.contains(&0) {
                     return Err(bad("sharding: invalid inner chunk shape"));
                 }
-                let inner = v3_pipeline(&config["codecs"], nd)?;
+                let inner = v3_pipeline(&config["codecs"], nd, p.stored)?;
                 let index = config["index_codecs"].as_array().cloned().unwrap_or_default();
                 let mut index_checksum = false;
                 for c in &index {
@@ -277,6 +401,8 @@ fn v3_pipeline(codecs: &Value, nd: usize) -> Result<Pipeline> {
                 }
                 let index_at_start = config["index_location"].as_str() == Some("start");
                 p.shard = Some(Box::new(Shard { chunks, inner, index_checksum, index_at_start }));
+                // The shard's inner chunks hold the elements.
+                p.stored = None;
             }
             "gzip" => p.codecs.push(Codec::Gzip),
             "zstd" => p.codecs.push(Codec::Zstd),
@@ -464,44 +590,257 @@ fn blosclz_decompress(src: &[u8], maxout: usize) -> Result<Vec<u8>> {
     Ok(out)
 }
 
-/// Reads an array's values (row-major over its shape).
-fn read_values(a: &Array) -> Result<RasterData> {
-    let n: usize = a.shape.iter().product();
-    let size = a.data_type.size_bytes();
-    let nd = a.shape.len();
-    if a.chunks.len() != nd {
-        return Err(bad("chunk shape and array shape differ in rank"));
+/// Converts a chunk's decoded bytes (`n` stored elements) to little-endian elements of the
+/// array's type, in the stored order.
+fn to_array_elements(p: &Pipeline, data: &[u8], n: usize, t: DataType) -> Result<Vec<u8>> {
+    let size = t.size_bytes();
+    let stored = p.stored.unwrap_or(Stored::Type(t));
+    let ssize = stored.size();
+    if data.len() < n * ssize {
+        return Err(bad(format!("holds {} bytes, expected {}", data.len(), n * ssize)));
     }
-    let mut bytes = vec![0u8; n * size];
-    // Fill with the fill value, for missing chunks.
-    if let Some(fill) = a.fill
-        && fill != 0.0
-    {
-        let mut one = Vec::new();
-        super::gtiff_write::encode_sample_le(a.data_type, fill, &mut one);
-        for c in bytes.chunks_mut(size) {
-            c.copy_from_slice(&one);
+    if p.steps.is_empty() && stored == Stored::Type(t) {
+        let mut out = data[..n * size].to_vec();
+        if !p.little_endian && size > 1 {
+            for e in out.chunks_mut(size) {
+                e.reverse();
+            }
         }
+        return Ok(out);
     }
-    let grid: Vec<usize> = a.shape.iter().zip(&a.chunks).map(|(s, c)| s.div_ceil((*c).max(1))).collect();
-    let total: usize = grid.iter().product();
-    let mut idx = vec![0usize; nd];
-    let mut out = Output { bytes: &mut bytes, shape: &a.shape, size };
-    for _ in 0..total {
-        let key = format!("{}{}", a.key_prefix, idx.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(&a.separator));
-        let key = if nd == 0 { format!("{}0", a.key_prefix) } else { key };
-        if let Ok(raw) = memfs::read(&a.dir.join(&key)) {
-            let origin: Vec<usize> = idx.iter().zip(&a.chunks).map(|(i, c)| i * c).collect();
-            decode_chunk(&a.pipeline, raw, &origin, &a.chunks, &mut out).map_err(|e| bad(format!("chunk {key}: {e}")))?;
+    let f32_math = t == DataType::F32;
+    let mut out = Vec::with_capacity(n * size);
+    for e in data[..n * ssize].chunks(ssize) {
+        let mut v = stored.read(e, p.little_endian);
+        for step in p.steps.iter().rev() {
+            match step {
+                Step::Cast { decode } => {
+                    if let Some((_, to)) = decode.iter().find(|(from, _)| *from == v || (from.is_nan() && v.is_nan())) {
+                        v = *to;
+                    }
+                }
+                Step::ScaleOffset { scale, offset } => {
+                    v = if f32_math { ((v as f32) / (*scale as f32) + (*offset as f32)) as f64 } else { v / scale + offset };
+                }
+            }
         }
+        super::gtiff_write::encode_sample_le(t, v, &mut out);
+    }
+    Ok(out)
+}
+
+/// Decodes a chunk of shape `cshape` into little-endian elements of type `t` in C order, inner
+/// chunks of a shard missing from it set to `fill` (one element).
+fn chunk_buffer(p: &Pipeline, raw: Vec<u8>, cshape: &[usize], t: DataType, fill: &[u8]) -> Result<Vec<u8>> {
+    let mut data = raw;
+    for c in &p.codecs {
+        data = decompress(c, data)?;
+    }
+    let nd = cshape.len();
+    let n: usize = cshape.iter().product();
+    if let Some(shard) = &p.shard {
+        let (count, index_len) = shard.index_len(cshape);
+        if data.len() < index_len {
+            return Err(bad("shard smaller than its index"));
+        }
+        let index_start = if shard.index_at_start { 0 } else { data.len() - index_len };
+        let index = parse_index(&data[index_start..index_start + count * 16]);
+        let mut out = fill.repeat(n);
+        let inner_grid: Vec<usize> = cshape.iter().zip(&shard.chunks).map(|(c, i)| c.div_ceil(*i)).collect();
+        let zeros = vec![0usize; nd];
+        for (j, entry) in index.iter().enumerate() {
+            let Some((o, l)) = *entry else { continue };
+            let chunk = data.get(o..o.saturating_add(l)).ok_or_else(|| bad("shard index out of range"))?.to_vec();
+            let buf = chunk_buffer(&shard.inner, chunk, &shard.chunks, t, fill)?;
+            let origin: Vec<usize> = unravel(j, &inner_grid).iter().zip(&shard.chunks).map(|(i, c)| i * c).collect();
+            scatter(&buf, &origin, &shard.chunks, &mut out, &zeros, cshape, t.size_bytes());
+        }
+        return Ok(out);
+    }
+    let elems = to_array_elements(p, &data, n, t)?;
+    let Some(order) = &p.order else { return Ok(elems) };
+    // Elements are stored in C order over the stored (transposed) dimensions.
+    let size = t.size_bytes();
+    let sshape: Vec<usize> = order.iter().map(|&d| cshape[d]).collect();
+    let cstrides: Vec<usize> = (0..nd).map(|d| cshape[d + 1..].iter().product()).collect();
+    let mut out = vec![0u8; n * size];
+    let mut sidx = vec![0usize; nd];
+    for e in 0..n {
+        let flat: usize = order.iter().enumerate().map(|(i, &d)| sidx[i] * cstrides[d]).sum();
+        out[flat * size..(flat + 1) * size].copy_from_slice(&elems[e * size..(e + 1) * size]);
         for d in (0..nd).rev() {
-            idx[d] += 1;
-            if idx[d] < grid[d] {
+            sidx[d] += 1;
+            if sidx[d] < sshape[d] {
                 break;
             }
-            idx[d] = 0;
+            sidx[d] = 0;
         }
     }
+    Ok(out)
+}
+
+/// A shard index: `(offset, length)` of each inner chunk, `None` for missing ones.
+fn parse_index(b: &[u8]) -> Vec<Option<(usize, usize)>> {
+    b.as_chunks::<16>()
+        .0
+        .iter()
+        .map(|e| {
+            let o = u64::from_le_bytes(e[..8].try_into().unwrap_or_default());
+            let l = u64::from_le_bytes(e[8..].try_into().unwrap_or_default());
+            (o != u64::MAX || l != u64::MAX).then_some((o as usize, l as usize))
+        })
+        .collect()
+}
+
+/// The grid position of the `j`-th cell (C order) of a grid.
+fn unravel(mut j: usize, grid: &[usize]) -> Vec<usize> {
+    let mut idx = vec![0; grid.len()];
+    for d in (0..grid.len()).rev() {
+        idx[d] = j % grid[d].max(1);
+        j /= grid[d].max(1);
+    }
+    idx
+}
+
+/// Copies the part of a chunk (C order, shape `cshape`, at `origin`) inside the region of shape
+/// `shape` at `start` into the region's buffer (C order), elements of `size` bytes.
+fn scatter(chunk: &[u8], origin: &[usize], cshape: &[usize], out: &mut [u8], start: &[usize], shape: &[usize], size: usize) {
+    let nd = cshape.len();
+    if nd == 0 {
+        out[..size].copy_from_slice(&chunk[..size]);
+        return;
+    }
+    let lo: Vec<usize> = (0..nd).map(|d| origin[d].max(start[d])).collect();
+    let hi: Vec<usize> = (0..nd).map(|d| (origin[d] + cshape[d]).min(start[d] + shape[d])).collect();
+    if (0..nd).any(|d| lo[d] >= hi[d]) {
+        return;
+    }
+    let run = (hi[nd - 1] - lo[nd - 1]) * size;
+    let mut idx = lo.clone();
+    loop {
+        let (mut c, mut o) = (0usize, 0usize);
+        for d in 0..nd {
+            c = c * cshape[d] + (idx[d] - origin[d]);
+            o = o * shape[d] + (idx[d] - start[d]);
+        }
+        out[o * size..o * size + run].copy_from_slice(&chunk[c * size..c * size + run]);
+        // The next run: dimensions before the last.
+        let mut d = nd - 1;
+        loop {
+            if d == 0 {
+                return;
+            }
+            d -= 1;
+            idx[d] += 1;
+            if idx[d] < hi[d] {
+                break;
+            }
+            idx[d] = lo[d];
+        }
+    }
+}
+
+/// Byte ranges of a shard closer than this are fetched in one request.
+const MERGE_GAP: usize = 256 * 1024;
+/// The most bytes fetched in one request of inner chunks, so that large reads go in parallel.
+const MAX_RUN: usize = 16 * 1024 * 1024;
+
+/// Reads the region of shape `shape` at `start` of an array: little-endian elements in C order,
+/// missing chunks set to the fill value. Only the chunks (or, in shards, the inner chunks)
+/// intersecting the region are read, in parallel.
+fn read_region(a: &Array, start: &[usize], shape: &[usize]) -> Result<Vec<u8>> {
+    let nd = a.shape.len();
+    if a.chunks.len() != nd || a.chunks.contains(&0) {
+        return Err(bad("chunk shape and array shape differ in rank"));
+    }
+    let size = a.data_type.size_bytes();
+    let n: usize = shape.iter().product();
+    let fill = a.fill_bytes();
+    let out = std::sync::Mutex::new(fill.repeat(n));
+    if n == 0 {
+        return Ok(Vec::new());
+    }
+    let first: Vec<usize> = (0..nd).map(|d| start[d] / a.chunks[d]).collect();
+    let counts: Vec<usize> = (0..nd).map(|d| (start[d] + shape[d] - 1) / a.chunks[d] - first[d] + 1).collect();
+    let total: usize = counts.iter().product();
+    let put = |buf: &[u8], origin: &[usize], cshape: &[usize]| {
+        if let Ok(mut o) = out.lock() {
+            scatter(buf, origin, cshape, &mut o, start, shape, size);
+        }
+    };
+    let p = &a.pipeline;
+    let results = crate::par::map_range(total, |i| -> Result<()> {
+        let idx: Vec<usize> = unravel(i, &counts).iter().zip(&first).map(|(k, f)| k + f).collect();
+        let origin: Vec<usize> = idx.iter().zip(&a.chunks).map(|(i, c)| i * c).collect();
+        let key = a.chunk_key(&idx);
+        let err = |e: Error| bad(format!("chunk {}/{key}: {e}", a.node.display()));
+        match &p.shard {
+            // A shard read by parts: its index, then the inner chunks in the region.
+            Some(shard) if p.codecs.is_empty() => {
+                let (count, index_len) = shard.index_len(&a.chunks);
+                let range = if shard.index_at_start { Range::At(0, index_len as u64) } else { Range::Suffix(index_len as u64) };
+                let Some(index) = a.node.get(&key, range).map_err(err)? else { return Ok(()) };
+                if index.len() < count * 16 {
+                    return Err(err(bad("shard smaller than its index")));
+                }
+                let index = parse_index(&index[..count * 16]);
+                let inner_grid: Vec<usize> = a.chunks.iter().zip(&shard.chunks).map(|(c, i)| c.div_ceil(*i)).collect();
+                // The inner chunks in the region, by offset in the shard.
+                let mut wanted: Vec<(usize, usize, Vec<usize>)> = Vec::new();
+                for (j, entry) in index.iter().enumerate() {
+                    let Some((o, l)) = *entry else { continue };
+                    let iorigin: Vec<usize> =
+                        unravel(j, &inner_grid).iter().zip(&shard.chunks).zip(&origin).map(|((i, c), o)| o + i * c).collect();
+                    if (0..nd).all(|d| iorigin[d] < start[d] + shape[d] && iorigin[d] + shard.chunks[d] > start[d]) {
+                        wanted.push((o, l, iorigin));
+                    }
+                }
+                wanted.sort_by_key(|w| w.0);
+                // Runs of nearby inner chunks, each fetched in one request.
+                let mut runs: Vec<(usize, usize)> = Vec::new();
+                for (k, w) in wanted.iter().enumerate() {
+                    match runs.last_mut() {
+                        Some((s, e))
+                            if {
+                                let prev = &wanted[*e - 1];
+                                w.0 <= prev.0 + prev.1 + MERGE_GAP && w.0 + w.1 - wanted[*s].0 <= MAX_RUN
+                            } =>
+                        {
+                            *e = k + 1
+                        }
+                        _ => runs.push((k, k + 1)),
+                    }
+                }
+                let fetched = crate::par::map_range(runs.len(), |r| -> Result<()> {
+                    let (s, e) = runs[r];
+                    let from = wanted[s].0;
+                    let to = wanted[s..e].iter().map(|w| w.0 + w.1).max().unwrap_or(from);
+                    let Some(bytes) = a.node.get(&key, Range::At(from as u64, (to - from) as u64))? else { return Ok(()) };
+                    for (o, l, iorigin) in &wanted[s..e] {
+                        let part = bytes.get(o - from..o - from + l).ok_or_else(|| bad("shard index out of range"))?.to_vec();
+                        let buf = chunk_buffer(&shard.inner, part, &shard.chunks, a.data_type, &fill)?;
+                        put(&buf, iorigin, &shard.chunks);
+                    }
+                    Ok(())
+                });
+                fetched.into_iter().collect::<Result<()>>().map_err(err)
+            }
+            _ => {
+                let Some(raw) = a.node.get(&key, Range::Whole).map_err(err)? else { return Ok(()) };
+                let buf = chunk_buffer(p, raw, &a.chunks, a.data_type, &fill).map_err(err)?;
+                put(&buf, &origin, &a.chunks);
+                Ok(())
+            }
+        }
+    });
+    results.into_iter().collect::<Result<()>>()?;
+    out.into_inner().map_err(|_| bad("a chunk decoder panicked"))
+}
+
+/// An array's values, all of them, as `f64` (for coordinate arrays).
+fn read_all_f64(a: &Array) -> Option<Vec<f64>> {
+    let bytes = read_region(a, &vec![0; a.shape.len()], &a.shape).ok()?;
+    let n = bytes.len() / a.data_type.size_bytes();
     let layout = common::Layout {
         cols: n,
         rows: 1,
@@ -512,102 +851,12 @@ fn read_values(a: &Array) -> Result<RasterData> {
         offset: 0,
         bottom_up: false,
     };
-    common::decode(&bytes, &layout)
-}
-
-/// The array's samples being read: little-endian, row-major.
-struct Output<'a> {
-    bytes: &'a mut [u8],
-    shape: &'a [usize],
-    size: usize,
-}
-
-/// Decodes a chunk of shape `cshape` at `origin` (in array elements) into the output.
-fn decode_chunk(p: &Pipeline, raw: Vec<u8>, origin: &[usize], cshape: &[usize], out: &mut Output) -> Result<()> {
-    let mut data = raw;
-    for c in &p.codecs {
-        data = decompress(c, data)?;
-    }
-    let nd = cshape.len();
-    if let Some(shard) = &p.shard {
-        let inner_grid: Vec<usize> = cshape.iter().zip(&shard.chunks).map(|(c, i)| c.div_ceil(*i)).collect();
-        let count: usize = inner_grid.iter().product();
-        let index_len = count * 16 + if shard.index_checksum { 4 } else { 0 };
-        if data.len() < index_len {
-            return Err(bad("shard smaller than its index"));
-        }
-        let index_start = if shard.index_at_start { 0 } else { data.len() - index_len };
-        let u64_at = |i: usize| u64::from_le_bytes(data[i..i + 8].try_into().unwrap_or_default());
-        let mut iidx = vec![0usize; nd];
-        for j in 0..count {
-            let (offset, length) = (u64_at(index_start + 16 * j), u64_at(index_start + 16 * j + 8));
-            if offset != u64::MAX || length != u64::MAX {
-                let (o, l) = (offset as usize, length as usize);
-                let chunk = data.get(o..o.saturating_add(l)).ok_or_else(|| bad("shard index out of range"))?.to_vec();
-                let inner_origin: Vec<usize> = (0..nd).map(|d| origin[d] + iidx[d] * shard.chunks[d]).collect();
-                decode_chunk(&shard.inner, chunk, &inner_origin, &shard.chunks, out)?;
-            }
-            for d in (0..nd).rev() {
-                iidx[d] += 1;
-                if iidx[d] < inner_grid[d] {
-                    break;
-                }
-                iidx[d] = 0;
-            }
-        }
-        return Ok(());
-    }
-    let size = out.size;
-    let chunk_len: usize = cshape.iter().product();
-    if data.len() < chunk_len * size {
-        return Err(bad(format!("holds {} bytes, expected {}", data.len(), chunk_len * size)));
-    }
-    // Elements are stored in C order over the stored (possibly transposed) dimensions.
-    let order: Vec<usize> = p.order.clone().unwrap_or_else(|| (0..nd).collect());
-    let sshape: Vec<usize> = order.iter().map(|&d| cshape[d]).collect();
-    let mut sidx = vec![0usize; nd];
-    let mut cidx = vec![0usize; nd];
-    for e in 0..chunk_len {
-        for (i, &d) in order.iter().enumerate() {
-            cidx[d] = sidx[i];
-        }
-        let mut flat = 0usize;
-        let mut inside = true;
-        for d in 0..nd {
-            let g = origin[d] + cidx[d];
-            if g >= out.shape[d] {
-                inside = false;
-                break;
-            }
-            flat = flat * out.shape[d] + g;
-        }
-        if inside {
-            let src = &data[e * size..(e + 1) * size];
-            let dst = &mut out.bytes[flat * size..(flat + 1) * size];
-            if p.little_endian {
-                dst.copy_from_slice(src);
-            } else {
-                for k in 0..size {
-                    dst[k] = src[size - 1 - k];
-                }
-            }
-        }
-        for d in (0..nd).rev() {
-            sidx[d] += 1;
-            if sidx[d] < sshape[d] {
-                break;
-            }
-            sidx[d] = 0;
-        }
-    }
-    Ok(())
+    common::decode(&bytes, &layout).ok().map(|v| v.to_f64_vec())
 }
 
 /// The arrays of a group: `(name, metadata)`, sorted by name.
-fn group_arrays(dir: &Path) -> Vec<(String, Array)> {
-    let mut out: Vec<(String, Array)> = memfs::subdirs(dir).into_iter().filter_map(|(n, p)| Some((n, read_array(&p).ok()?))).collect();
-    out.sort_by(|a, b| a.0.cmp(&b.0));
-    out
+fn group_arrays(node: &Node) -> Vec<(String, Array)> {
+    node.children().into_iter().filter_map(|name| Some((name.clone(), read_array(&node.join(&name)).ok()?))).collect()
 }
 
 const X_NAMES: &[&str] = &["x", "lon", "longitude", "easting"];
@@ -617,66 +866,75 @@ const SPATIAL_UUID: &str = "689b58e2-cf7b-45e0-9fff-9cfc0883d6b4";
 const PROJ_UUID: &str = "f17cb550-5864-4468-aeb7-f3180cfb622f";
 const MULTISCALES_UUID: &str = "d35379db-88df-4056-af3a-620245f8e347";
 
-/// A group's attributes (v2 `.zattrs`, v3 `zarr.json`).
-fn group_attrs(dir: &Path) -> Value {
-    if let Some(v) = read_json(&dir.join(".zattrs")) {
+/// A group's attributes (v2 `.zattrs`, v3 `zarr.json`). Best effort: none when they cannot be
+/// read.
+fn group_attrs(node: &Node) -> Value {
+    if let Ok(Some(v)) = node.json(".zattrs") {
         return v;
     }
-    read_json(&dir.join("zarr.json")).map(|m| m["attributes"].clone()).filter(Value::is_object).unwrap_or(json!({}))
+    node.json("zarr.json").ok().flatten().map(|m| m["attributes"].clone()).filter(Value::is_object).unwrap_or(json!({}))
 }
 
-fn is_group(dir: &Path) -> bool {
-    memfs::is_file(&dir.join(".zgroup")) || read_json(&dir.join("zarr.json")).is_some_and(|m| m["node_type"] == "group")
+fn is_group(node: &Node) -> bool {
+    node.json(".zgroup").is_ok_and(|g| g.is_some()) || node.json("zarr.json").ok().flatten().is_some_and(|m| m["node_type"] == "group")
 }
 
 /// A `multiscales` layout: the group holding it and its levels.
 struct Multiscales {
-    group: PathBuf,
+    group: Node,
     layout: Vec<Value>,
 }
 
-fn multiscales(dir: &Path) -> Option<Multiscales> {
-    let attrs = group_attrs(dir);
+fn multiscales(node: &Node) -> Option<Multiscales> {
+    let attrs = group_attrs(node);
     let layout = attrs["multiscales"]["layout"].as_array().filter(|l| !l.is_empty())?.clone();
-    Some(Multiscales { group: dir.to_path_buf(), layout })
+    Some(Multiscales { group: node.clone(), layout })
 }
 
 /// The array a layout level's `asset` names: an array, or the array named `name` (by default the
 /// first of two or more dimensions) in a group.
-fn layout_array(ms: &Multiscales, level: &Value, name: Option<&str>) -> Option<PathBuf> {
+fn layout_array(ms: &Multiscales, level: &Value, name: Option<&str>) -> Option<Node> {
     let p = ms.group.join(level["asset"].as_str()?);
     if is_group(&p) {
         return match name {
             Some(n) => Some(p.join(n)).filter(|a| read_array(a).is_ok()),
-            None => group_arrays(&p).into_iter().find(|(_, a)| a.shape.len() >= 2).map(|(n, _)| p.join(n)),
+            None => group_arrays(&p).into_iter().find(|(_, a)| a.shape.len() >= 2).map(|(n, _)| p.join(&n)),
         };
     }
     read_array(&p).is_ok().then_some(p)
 }
 
-/// The raster array of a store or array path, its group, and the multiscales layout it is the
+/// The raster array of a store or array node, its group, and the multiscales layout it is the
 /// base of.
-fn locate(path: &Path) -> Result<(Array, Option<PathBuf>, Option<Multiscales>)> {
-    if let Ok(a) = read_array(path) {
-        let group = path.parent().map(Path::to_path_buf);
+fn locate(node: &Node) -> Result<(Array, Option<Node>, Option<Multiscales>)> {
+    // The node's own metadata, when it cannot be read, is reported (not looked past).
+    if let Some(a) = read_array_opt(node)? {
+        let group = node.parent();
         // The multiscales layout of the array's group, or of the group above (GDAL's lookup).
-        let ms = group.as_deref().and_then(|g| multiscales(g).or_else(|| g.parent().and_then(multiscales)));
+        let ms = group.as_ref().and_then(|g| multiscales(g).or_else(|| g.parent().as_ref().and_then(multiscales)));
         return Ok((a, group, ms));
     }
-    if let Some(ms) = multiscales(path)
+    if let Some(ms) = multiscales(node)
         && let Some(base) = ms.layout.first().and_then(|l| layout_array(&ms, l, None))
         && let Ok(a) = read_array(&base)
     {
-        return Ok((a, base.parent().map(Path::to_path_buf), Some(ms)));
+        return Ok((a, base.parent(), Some(ms)));
     }
-    let arrays = group_arrays(path);
+    let mut arrays = group_arrays(node);
+    if arrays.is_empty() && node.is_remote() {
+        // A remote group without consolidated metadata cannot be listed: the array GDAL and
+        // terrio name after the store (`dem.zarr/dem`).
+        let name = node.name();
+        let stem = name.strip_suffix(".zarr").unwrap_or(&name).to_string();
+        arrays.extend(read_array(&node.join(&stem)).ok().map(|a| (stem, a)));
+    }
     // The raster: the first array of two or more dimensions.
-    let (_, a) = arrays
-        .into_iter()
-        .find(|(_, a)| a.shape.len() >= 2)
-        .ok_or_else(|| bad(format!("{}: no array of two or more dimensions", path.display())))?;
-    let ms = multiscales(path);
-    Ok((a, Some(path.to_path_buf()), ms))
+    let (_, a) = arrays.into_iter().find(|(_, a)| a.shape.len() >= 2).ok_or_else(|| {
+        let hint = if node.is_remote() { " (or no consolidated metadata listing its arrays: name the array)" } else { "" };
+        bad(format!("{}: no array of two or more dimensions{hint}", node.display()))
+    })?;
+    let ms = multiscales(node);
+    Ok((a, Some(node.clone()), ms))
 }
 
 /// GeoZarr georeferencing: the spatial dimensions `(y, x)`, geotransform and CRS, from the first
@@ -744,74 +1002,202 @@ fn proj_crs(a: &Value) -> Option<CrsInfo> {
     Some(s.to_crs_info())
 }
 
-/// Reads a Zarr store or array as a raster.
-pub(crate) fn read(path: &Path) -> Result<RasterDataset> {
-    let path = path.to_path_buf();
-    let (array, group, ms) = locate(&path)?;
+/// An array read as a raster: its spatial and band dimensions.
+struct Level {
+    array: Array,
+    xd: usize,
+    yd: usize,
+    bd: Option<usize>,
+    /// Rows stored south first (latitudes increasing), read north-up.
+    south_up: bool,
+}
+
+impl Level {
+    fn size(&self) -> (usize, usize) {
+        (self.array.shape[self.xd], self.array.shape[self.yd])
+    }
+
+    /// Reads a window (in north-up rows) of some bands (numbered from 1), band after band. Bands
+    /// whose chunks lie apart are read apart, so that the chunks between them are not read.
+    fn read(&self, w: crate::Window, bands: &[usize]) -> Result<RasterData> {
+        let Some(bd) = self.bd else { return self.read_group(w, bands) };
+        let step = self.array.chunks[bd].max(1);
+        let mut unique: Vec<usize> = bands.to_vec();
+        unique.sort_unstable();
+        unique.dedup();
+        let mut groups: Vec<Vec<usize>> = Vec::new();
+        for b in unique {
+            match groups.last_mut() {
+                Some(g) if b - g[g.len() - 1] < step => g.push(b),
+                _ => groups.push(vec![b]),
+            }
+        }
+        if groups.len() == 1 && groups[0] == bands {
+            return self.read_group(w, bands);
+        }
+        let parts = crate::par::map_range(groups.len(), |i| Ok((groups[i].clone(), self.read_group(w, &groups[i])?)))
+            .into_iter()
+            .collect::<Result<Vec<_>>>()?;
+        let n = w.width * w.height;
+        let find =
+            |b: usize| parts.iter().enumerate().find_map(|(p, (g, _))| g.iter().position(|x| *x == b).map(|i| (p, i))).unwrap_or((0, 0));
+        macro_rules! pick {
+            ($($v:ident),*) => {
+                match &parts[0].1 {
+                    $(RasterData::$v(_) => {
+                        let mut out = Vec::with_capacity(bands.len() * n);
+                        for &b in bands {
+                            let (p, i) = find(b);
+                            if let RasterData::$v(v) = &parts[p].1 {
+                                out.extend_from_slice(&v[i * n..(i + 1) * n]);
+                            }
+                        }
+                        RasterData::$v(out)
+                    })*
+                }
+            };
+        }
+        Ok(pick!(U8, I8, U16, I16, U32, I32, U64, I64, F32, F64))
+    }
+
+    /// Reads a window of some bands, those between the first and the last (in band order) read
+    /// together.
+    fn read_group(&self, w: crate::Window, bands: &[usize]) -> Result<RasterData> {
+        let a = &self.array;
+        let nd = a.shape.len();
+        let (_, rows) = self.size();
+        let mut start = vec![0usize; nd];
+        let mut shape = vec![1usize; nd];
+        start[self.xd] = w.x;
+        shape[self.xd] = w.width;
+        start[self.yd] = if self.south_up { rows - w.y - w.height } else { w.y };
+        shape[self.yd] = w.height;
+        let bmin = bands.iter().min().copied().unwrap_or(1).max(1);
+        if let Some(bd) = self.bd {
+            let bmax = bands.iter().max().copied().unwrap_or(1).max(1);
+            start[bd] = bmin - 1;
+            shape[bd] = bmax - bmin + 1;
+        }
+        let bytes = read_region(a, &start, &shape)?;
+        let n: usize = shape.iter().product();
+        let layout = common::Layout {
+            cols: n,
+            rows: 1,
+            bands: 1,
+            data_type: a.data_type,
+            little_endian: true,
+            interleave: common::Interleave::Bsq,
+            offset: 0,
+            bottom_up: false,
+        };
+        let values = common::decode(&bytes, &layout)?;
+        // Rearranged band-major, north-up.
+        let strides: Vec<usize> = (0..nd).map(|d| shape[d + 1..].iter().product()).collect();
+        let (xs, ys) = (strides[self.xd], strides[self.yd]);
+        let bs = self.bd.map(|d| strides[d]).unwrap_or(0);
+        let index = |b: usize, r: usize, c: usize| {
+            let rr = if self.south_up { w.height - 1 - r } else { r };
+            c * xs + rr * ys + (b - bmin) * bs
+        };
+        macro_rules! reorder {
+            ($v:expr, $variant:ident) => {{
+                let mut out = Vec::with_capacity(bands.len() * w.width * w.height);
+                for &b in bands {
+                    for r in 0..w.height {
+                        for c in 0..w.width {
+                            out.push($v[index(b, r, c)]);
+                        }
+                    }
+                }
+                RasterData::$variant(out)
+            }};
+        }
+        Ok(match values {
+            RasterData::U8(v) => reorder!(v, U8),
+            RasterData::I8(v) => reorder!(v, I8),
+            RasterData::U16(v) => reorder!(v, U16),
+            RasterData::I16(v) => reorder!(v, I16),
+            RasterData::U32(v) => reorder!(v, U32),
+            RasterData::I32(v) => reorder!(v, I32),
+            RasterData::U64(v) => reorder!(v, U64),
+            RasterData::I64(v) => reorder!(v, I64),
+            RasterData::F32(v) => reorder!(v, F32),
+            RasterData::F64(v) => reorder!(v, F64),
+        })
+    }
+}
+
+/// A Zarr raster read by window: its full-resolution array and the lower-resolution levels of
+/// its multiscales layout.
+struct ZarrSource {
+    levels: Vec<Level>,
+}
+
+impl crate::cog::WindowSource for ZarrSource {
+    fn overviews(&self) -> Vec<(usize, usize)> {
+        self.levels[1..].iter().map(Level::size).collect()
+    }
+
+    fn read(&mut self, level: usize, window: crate::Window, bands: &[usize]) -> Result<RasterData> {
+        let l = self.levels.get(level).ok_or_else(|| bad(format!("no overview {}", level.saturating_sub(1))))?;
+        let (w, h) = l.size();
+        if !window.fits(w, h) {
+            return Err(bad(format!("window outside the {w}x{h} level")));
+        }
+        l.read(window, bands)
+    }
+}
+
+/// Opens the raster of a store, group or array node: its header (without pixels) and reader.
+fn open_node(node: &Node) -> Result<(RasterDataset, ZarrSource)> {
+    let (array, group, ms) = locate(node)?;
     let nd = array.shape.len();
     if !(2..=3).contains(&nd) {
         return Err(Error::Unsupported(format!("Zarr arrays of {nd} dimensions are not supported as rasters")));
     }
     // GeoZarr attributes: the array's, its group's, its multiscales level's and the multiscales
     // group's.
-    let group_attrs_v = group.as_deref().map(group_attrs).unwrap_or(json!({}));
-    let level_item = ms.as_ref().and_then(|m| {
-        m.layout.iter().find(|l| layout_array(m, l, array.dir.file_name().and_then(|n| n.to_str())).as_deref() == Some(array.dir.as_path()))
-    });
+    let group_attrs_v = group.as_ref().map(group_attrs).unwrap_or(json!({}));
+    let name = array.node.name();
+    let level_item = ms.as_ref().and_then(|m| m.layout.iter().find(|l| layout_array(m, l, Some(&name)).as_ref() == Some(&array.node)));
     let ms_attrs = ms.as_ref().map(|m| group_attrs(&m.group)).unwrap_or(json!({}));
     let null = Value::Null;
     let attr_sets: Vec<&Value> = vec![&array.attrs, &group_attrs_v, level_item.unwrap_or(&null), &ms_attrs];
     let dim_size = |name: &str| array.dims.iter().position(|d| d == name).map(|i| array.shape[i]);
     let geo = geozarr(&attr_sets, |y, x| Some((dim_size(y)?, dim_size(x)?)));
-    let lower: Vec<String> = array.dims.iter().map(|d| d.to_ascii_lowercase()).collect();
-    let find = |names: &[&str], default: usize| lower.iter().position(|d| names.contains(&d.as_str())).unwrap_or(default);
-    let by_name = |n: &str| array.dims.iter().position(|d| d == n);
-    let (xd, yd) = match geo.dims.as_ref().and_then(|(y, x)| Some((by_name(x)?, by_name(y)?))) {
-        Some(d) => d,
-        None => (find(X_NAMES, nd - 1), find(Y_NAMES, nd - 2)),
-    };
+    let (xd, yd) = axes(&array, &attr_sets);
     let bd = (0..nd).find(|d| *d != xd && *d != yd);
     let (cols, rows) = (array.shape[xd], array.shape[yd]);
     let bands = bd.map(|d| array.shape[d]).unwrap_or(1);
 
-    // Rearrange into band-major order.
-    let values = read_values(&array)?;
-    let strides: Vec<usize> = (0..nd).map(|d| array.shape[d + 1..].iter().product()).collect();
-    let n = cols * rows * bands;
-    macro_rules! reorder {
-        ($v:expr, $variant:ident) => {{
-            let mut out = Vec::with_capacity(n);
-            for b in 0..bands {
-                for r in 0..rows {
-                    for c in 0..cols {
-                        let i = c * strides[xd] + r * strides[yd] + bd.map(|d| b * strides[d]).unwrap_or(0);
-                        out.push($v[i]);
-                    }
-                }
-            }
-            RasterData::$variant(out)
-        }};
-    }
-    let data = match values {
-        RasterData::U8(v) => reorder!(v, U8),
-        RasterData::I8(v) => reorder!(v, I8),
-        RasterData::U16(v) => reorder!(v, U16),
-        RasterData::I16(v) => reorder!(v, I16),
-        RasterData::U32(v) => reorder!(v, U32),
-        RasterData::I32(v) => reorder!(v, I32),
-        RasterData::U64(v) => reorder!(v, U64),
-        RasterData::I64(v) => reorder!(v, I64),
-        RasterData::F32(v) => reorder!(v, F32),
-        RasterData::F64(v) => reorder!(v, F64),
-    };
-
     // Georeferencing: a grid mapping variable (xarray), or X/Y coordinate arrays (GDAL).
     let mut gt = geo.gt;
     let mut crs = geo.crs;
-    let sibling = |name: &str| group.as_ref().and_then(|g| read_array(&g.join(name)).ok());
+    // A coordinate or grid mapping array: in the array's group or, as GDAL looks for them, in a
+    // group above.
+    let sibling = |name: &str| {
+        let mut g = group.clone();
+        while let Some(n) = g {
+            if let Ok(a) = read_array(&n.join(name)) {
+                return Some(a);
+            }
+            g = n.parent();
+        }
+        None
+    };
     if let Some(gm) = array.attrs["grid_mapping"].as_str().and_then(sibling) {
         if crs.is_none() {
-            crs = gm.attrs["crs_wkt"].as_str().or(gm.attrs["spatial_ref"].as_str()).and_then(common::crs_from_text);
+            // Its WKT, or its CF parameters (as GDAL reads them).
+            let numbers = |k: &str| match &gm.attrs[k] {
+                Value::Number(n) => n.as_f64().map(|v| vec![v]),
+                Value::Array(a) => Some(a.iter().filter_map(Value::as_f64).collect()),
+                _ => None,
+            };
+            crs = super::netcdf::cf_crs(|k| gm.attrs[k].as_str().map(str::to_string), numbers).map(|c| match &c.proj4 {
+                // CF parameters: a PROJ string, parsed by terrio (not matched to an EPSG code).
+                Some(p) => crate::crs::SpatialRef::parse(p).map(|s| s.to_crs_info()).unwrap_or(c),
+                None => c,
+            });
         }
         if gt.is_none() {
             gt = gm.attrs["GeoTransform"].as_str().and_then(|s| {
@@ -823,7 +1209,7 @@ pub(crate) fn read(path: &Path) -> Result<RasterDataset> {
     if gt.is_none() {
         let coord = |d: usize| -> Option<Vec<f64>> {
             let a = sibling(array.dims.get(d)?)?;
-            (a.shape == [array.shape[d]]).then(|| read_values(&a).ok().map(|v| v.to_f64_vec())).flatten()
+            (a.shape == [array.shape[d]]).then(|| read_all_f64(&a)).flatten()
         };
         if let (Some(x), Some(y)) = (coord(xd), coord(yd))
             && cols > 1
@@ -837,17 +1223,55 @@ pub(crate) fn read(path: &Path) -> Result<RasterDataset> {
     if crs.is_none() {
         crs = crs_attribute(&array.attrs["_CRS"]);
     }
-    if crs.is_none() {
+    if crs.is_none()
+        && array.key_prefix.starts_with('c')
+        && let Some(g) = &group
+    {
         // GDAL's Zarr v3 writer keeps the CRS in a sidecar inside the store.
-        crs = group.as_ref().and_then(|g| common::read_pam(&g.join("pam"))).and_then(|p| p.crs);
+        crs = g.get("pam.aux.xml", Range::Whole).ok().flatten().and_then(|b| common::parse_pam(&String::from_utf8_lossy(&b)).crs);
     }
     let south_up = gt.is_some_and(|g| g[5] > 0.0);
     let gt = gt.unwrap_or(common::NO_GEOTRANSFORM);
-    let mut raster = common::make_raster(cols, rows, bands, data, gt, crs.unwrap_or_default(), array.fill)?;
-    if south_up {
-        flip_rows(&mut raster);
+    if gt[2] != 0.0 || gt[4] != 0.0 {
+        return Err(Error::Unsupported("rotated geotransforms are not supported".into()));
     }
-    Ok(RasterDataset::with_driver(raster, RasterDriver::Zarr, array.fill.is_some()))
+    let raster = Raster {
+        cols,
+        rows,
+        bands,
+        x_min: gt[0],
+        y_min: if south_up { gt[3] } else { gt[3] + gt[5] * rows as f64 },
+        cell_size_x: gt[1],
+        cell_size_y: gt[5].abs(),
+        nodata: array.fill.unwrap_or(-9999.0),
+        data_type: array.data_type,
+        crs: crs.unwrap_or_default(),
+        metadata: Vec::new(),
+        data: RasterData::new_filled(array.data_type, 0, 0.0),
+    };
+    let header = RasterDataset::with_driver(raster, RasterDriver::Zarr, array.fill.is_some());
+
+    // The lower-resolution levels of the multiscales layout, largest first.
+    let mut levels: Vec<Level> = Vec::new();
+    if let Some(ms) = &ms {
+        for item in &ms.layout {
+            let Some(n) = layout_array(ms, item, Some(&name)).or_else(|| layout_array(ms, item, None)) else { continue };
+            if n == array.node || levels.iter().any(|l| l.array.node == n) {
+                continue;
+            }
+            let Ok(a) = read_array(&n) else { continue };
+            if a.shape.len() != nd || a.data_type != array.data_type {
+                continue;
+            }
+            let (w, h) = (a.shape[xd], a.shape[yd]);
+            if w <= cols && h <= rows && (w, h) != (cols, rows) && w > 0 && h > 0 && bd.is_none_or(|d| a.shape[d] == bands) {
+                levels.push(Level { array: a, xd, yd, bd, south_up });
+            }
+        }
+    }
+    levels.sort_by_key(|l| std::cmp::Reverse(l.size().0 * l.size().1));
+    levels.insert(0, Level { array, xd, yd, bd, south_up });
+    Ok((header, ZarrSource { levels }))
 }
 
 /// The spatial axes `(x, y)` of an array: from `spatial:dimensions` in `attrs`, or from the
@@ -864,105 +1288,84 @@ fn axes(a: &Array, attrs: &[&Value]) -> (usize, usize) {
     (find(X_NAMES, nd - 1), find(Y_NAMES, nd - 2))
 }
 
-/// The lower-resolution levels of a multiscales layout the raster at `path` is the base of:
-/// `(array, width, height)`, largest first.
-pub(crate) fn overview_levels(path: &Path) -> Vec<(PathBuf, usize, usize)> {
-    let Ok((base, group, Some(ms))) = locate(path) else { return Vec::new() };
-    let name = base.dir.file_name().and_then(|n| n.to_str()).map(str::to_string);
-    let gattrs = group.as_deref().map(group_attrs).unwrap_or(json!({}));
-    let mattrs = group_attrs(&ms.group);
-    let (xd, yd) = axes(&base, &[&base.attrs, &gattrs, &mattrs]);
-    let (bw, bh) = (base.shape[xd], base.shape[yd]);
-    let mut out: Vec<(PathBuf, usize, usize)> = Vec::new();
-    for level in &ms.layout {
-        let Some(dir) = layout_array(&ms, level, name.as_deref()).or_else(|| layout_array(&ms, level, None)) else { continue };
-        if dir == base.dir || out.iter().any(|(d, _, _)| *d == dir) {
-            continue;
-        }
-        let Ok(a) = read_array(&dir) else { continue };
-        if a.shape.len() != base.shape.len() || a.data_type != base.data_type {
-            continue;
-        }
-        let (w, h) = (a.shape[xd], a.shape[yd]);
-        if w <= bw && h <= bh && (w, h) != (bw, bh) && w > 0 && h > 0 {
-            out.push((dir, w, h));
-        }
-    }
-    out.sort_by_key(|a| std::cmp::Reverse(a.1 * a.2));
-    out
+/// Reads a local Zarr store or array as a raster.
+pub(crate) fn read(path: &Path) -> Result<RasterDataset> {
+    read_node(&Node::local(path))
 }
 
-/// A multiscales pyramid read by window: the base raster and its lower-resolution levels, each
-/// read when first needed.
-struct Pyramid {
-    base: RasterDataset,
-    levels: Vec<(PathBuf, usize, usize, Option<RasterDataset>)>,
+fn read_node(node: &Node) -> Result<RasterDataset> {
+    let (mut header, mut source) = open_node(node)?;
+    let r = &header.raster;
+    let bands: Vec<usize> = (1..=r.bands).collect();
+    header.raster.data = crate::cog::WindowSource::read(&mut source, 0, crate::Window::full(r.cols, r.rows), &bands)?;
+    Ok(header)
 }
 
-impl crate::cog::WindowSource for Pyramid {
-    fn overviews(&self) -> Vec<(usize, usize)> {
-        self.levels.iter().map(|l| (l.1, l.2)).collect()
+/// The store and node a dataset name designates: GDAL's `ZARR:"store"` and
+/// `ZARR:"store":/path/to/array` names, a local directory, or a remote location (HTTP(S),
+/// `s3://`, `gs://`, `az://` or GDAL's `/vsi` names) with a path component ending in `.zarr`.
+/// `None` when the name is none of these.
+pub(crate) fn parse_name(name: &str) -> Option<(String, Option<String>)> {
+    let t = name.trim();
+    if t.len() > 5 && t[..5].eq_ignore_ascii_case("ZARR:") {
+        let rest = &t[5..];
+        if let Some(q) = rest.strip_prefix('"') {
+            let (store, after) = q.split_once('"')?;
+            let array = after.strip_prefix(':').map(str::to_string).filter(|a| !a.is_empty());
+            return Some((store.to_string(), array));
+        }
+        return Some((rest.to_string(), None));
     }
+    let loc = crate::vfs::Location::parse(t);
+    match &loc {
+        crate::vfs::Location::Local(p) => is_zarr(p).then(|| (t.to_string(), None)),
+        crate::vfs::Location::Url(u) => {
+            let path = u.split(['?', '#']).next().unwrap_or(u);
+            path.split('/').any(|s| s.to_ascii_lowercase().ends_with(".zarr")).then(|| (t.to_string(), None))
+        }
+        crate::vfs::Location::S3 { key, .. } => {
+            key.split('/').any(|s| s.to_ascii_lowercase().ends_with(".zarr")).then(|| (t.to_string(), None))
+        }
+        crate::vfs::Location::Zip { .. } => None,
+    }
+}
 
-    fn read(&mut self, level: usize, window: crate::Window, bands: &[usize]) -> Result<RasterData> {
-        let ds = if level == 0 {
-            &self.base
-        } else {
-            let l = self.levels.get_mut(level - 1).ok_or_else(|| bad(format!("no overview {}", level - 1)))?;
-            if l.3.is_none() {
-                l.3 = Some(read(&l.0)?);
+/// Opens the node a dataset name designates (see [`parse_name`]).
+fn open_name(store: &str, array: Option<&str>) -> Result<Node> {
+    let loc = crate::vfs::Location::parse(store);
+    let node = match &loc {
+        crate::vfs::Location::Local(p) => {
+            if !is_zarr(p) {
+                return Err(bad(format!("{} is not a Zarr store", p.display())));
             }
-            l.3.as_ref().ok_or_else(|| bad("unreachable"))?
-        };
-        if !window.fits(ds.raster.cols, ds.raster.rows) {
-            return Err(bad(format!("{} is {}x{}, not as its multiscales layout says", ds.raster.cols, ds.raster.rows, level)));
+            Node::local(p)
         }
-        Ok(crate::cog::cut(&ds.raster, window, bands))
-    }
-}
-
-/// Opens a Zarr store with a multiscales layout lazily, its levels as overviews. `None` when the
-/// store has no lower-resolution levels.
-pub(crate) fn open_lazy(path: &Path) -> Option<Result<crate::LazyRaster>> {
-    let levels = overview_levels(path);
-    if levels.is_empty() {
-        return None;
-    }
-    let base = match super::read(path.to_str()?)? {
-        Ok(b) => b,
-        Err(e) => return Some(Err(e)),
+        #[cfg(not(target_arch = "wasm32"))]
+        crate::vfs::Location::Url(_) | crate::vfs::Location::S3 { .. } => Node::remote(&loc)?,
+        _ => return Err(Error::Unsupported(format!("Zarr stores at '{store}' are not supported"))),
     };
-    let mut header = base.clone();
-    header.raster.data = RasterData::new_filled(base.raster.data_type, 0, 0.0);
-    let levels = levels.into_iter().map(|(d, w, h)| (d, w, h, None)).collect();
-    Some(Ok(crate::LazyRaster::from_source(header, Box::new(Pyramid { base, levels }))))
+    Ok(match array {
+        Some(a) => node.join(a.trim_start_matches('/')),
+        None => node,
+    })
 }
 
-/// Turns a south-up raster (latitudes increasing with the row) north-up.
-fn flip_rows(r: &mut Raster) {
-    let (cols, rows) = (r.cols, r.rows);
-    macro_rules! flip {
-        ($v:expr) => {
-            for band in $v.chunks_mut(cols * rows) {
-                for row in 0..rows / 2 {
-                    let (a, b) = band.split_at_mut((rows - 1 - row) * cols);
-                    a[row * cols..(row + 1) * cols].swap_with_slice(&mut b[..cols]);
-                }
-            }
-        };
-    }
-    match &mut r.data {
-        RasterData::U8(v) => flip!(v),
-        RasterData::I8(v) => flip!(v),
-        RasterData::U16(v) => flip!(v),
-        RasterData::I16(v) => flip!(v),
-        RasterData::U32(v) => flip!(v),
-        RasterData::I32(v) => flip!(v),
-        RasterData::U64(v) => flip!(v),
-        RasterData::I64(v) => flip!(v),
-        RasterData::F32(v) => flip!(v),
-        RasterData::F64(v) => flip!(v),
-    }
+/// Opens a Zarr store, group or array read by window, chunks read when a window needs them:
+/// local, remote (read in place), or named as GDAL names them. `None` when `name` is not a Zarr
+/// dataset name.
+pub(crate) fn open_lazy(name: &str) -> Option<Result<crate::LazyRaster>> {
+    let (store, array) = parse_name(name)?;
+    Some(open_name(&store, array.as_deref()).and_then(|node| {
+        let (header, source) = open_node(&node)?;
+        Ok(crate::LazyRaster::from_source(header, Box::new(source)))
+    }))
+}
+
+/// Reads a Zarr dataset whole, local or remote (see [`open_lazy`]). `None` when `name` is not a
+/// Zarr dataset name.
+pub(crate) fn open_named(name: &str) -> Option<Result<RasterDataset>> {
+    let (store, array) = parse_name(name)?;
+    Some(open_name(&store, array.as_deref()).and_then(|node| read_node(&node)))
 }
 
 /// The CRS of a GDAL `_CRS` attribute: its URL, PROJJSON identifier or WKT.

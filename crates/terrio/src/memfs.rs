@@ -67,6 +67,11 @@ impl Drop for Mount {
     }
 }
 
+/// Whether a path is under the in-memory root (whether or not a file is there).
+pub(crate) fn is_virtual(p: &Path) -> bool {
+    key(p).is_some()
+}
+
 /// Reads a file, in memory or on disk.
 pub(crate) fn read(p: &Path) -> std::io::Result<Vec<u8>> {
     match key(p) {

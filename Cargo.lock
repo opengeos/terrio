@@ -2410,6 +2410,7 @@ dependencies = [
  "lerc-core",
  "lerc-reader",
  "lerc-writer",
+ "libc",
  "lz4_flex 0.14.0",
  "lzma-rust2",
  "memmap2",

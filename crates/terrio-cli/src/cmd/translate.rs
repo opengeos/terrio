@@ -54,8 +54,9 @@ pub struct Args {
     out: OutputArgs,
 }
 
-pub fn run(a: Args) -> terrio::Result<()> {
-    // A window inside a GeoTIFF is read alone: only the tiles it touches are decoded.
+pub fn run(mut a: Args) -> terrio::Result<()> {
+    // A window inside a GeoTIFF or a Zarr store is read alone: only the tiles or chunks it touches
+    // (of the bands asked for) are read.
     let mut src_win = a.srcwin.as_ref().map(|v| (v[0], v[1], v[2], v[3]));
     let ds = match src_win {
         Some((x, y, w, h)) if x >= 0.0 && y >= 0.0 && w > 0.0 && h > 0.0 && [x, y, w, h].iter().all(|v| v.fract() == 0.0) => {
@@ -63,7 +64,9 @@ pub fn run(a: Args) -> terrio::Result<()> {
             let window = terrio::Window::new(x as usize, y as usize, w as usize, h as usize);
             if lazy.is_lazy() && window.fits(lazy.width(), lazy.height()) {
                 src_win = None;
-                lazy.read_window(window, &Default::default())?
+                let bands_valid = a.bands.iter().all(|b| (1..=lazy.band_count()).contains(b));
+                let bands = if bands_valid { std::mem::take(&mut a.bands) } else { Vec::new() };
+                lazy.read_window(window, &terrio::WindowOptions { bands, overview: None })?
             } else {
                 open(&a.input)?
             }
