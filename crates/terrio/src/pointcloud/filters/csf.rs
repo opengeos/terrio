@@ -475,7 +475,8 @@ pub fn csf_classes(cloud: &PointCloud, o: &CsfOptions) -> Result<Vec<Option<u8>>
     let origin = [lo[0] - buffer * res, hi[1] + 0.05, lo[2] - buffer * res];
     let width = ((hi[0] - lo[0]) / res).floor() as usize + 4;
     let height = ((hi[2] - lo[2]) / res).floor() as usize + 4;
-    if width.saturating_mul(height) > 1_000_000_000 {
+    // About 150 bytes per particle (its heights, flags and neighbour list): 15 GB at the limit.
+    if width.saturating_mul(height) > 100_000_000 {
         return Err(Error::InvalidArgument(format!("cloth of {width} x {height} particles: use a coarser resolution")));
     }
     let mut cloth = Cloth::new(origin, width, height, res, o.hdiff, 9999.0, o.rigidness, o.step);

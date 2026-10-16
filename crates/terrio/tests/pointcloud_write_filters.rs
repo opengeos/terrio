@@ -146,6 +146,13 @@ fn e57_writer_dropped_unfinished_leaves_no_complete_file() {
 }
 
 #[test]
+fn ground_filters_keep_empty_clouds_empty() {
+    let empty = cloud(10, 17).slice(0, 0);
+    assert_eq!(filters::pmf(&empty, &PmfOptions::default()).unwrap().len(), 0);
+    assert_eq!(filters::csf(&empty, &CsfOptions::default()).unwrap().len(), 0);
+}
+
+#[test]
 fn assigns_scaled_extra_bytes_dimensions_in_their_units() {
     let mut c = cloud(10, 16);
     let mut hag = Dimension::new("height_above_ground", Values::U16(vec![0; 10]));

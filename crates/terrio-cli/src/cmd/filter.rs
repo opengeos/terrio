@@ -269,7 +269,7 @@ enum Filter {
         #[arg(long)]
         polygon: Vec<String>,
         /// The centre of a circle (x,y) or sphere (x,y,z), with --distance.
-        #[arg(long, value_name = "X,Y[,Z]", allow_negative_numbers = true)]
+        #[arg(long, value_name = "X,Y[,Z]", allow_hyphen_values = true)]
         point: Vec<String>,
         /// The radius of the circles and spheres.
         #[arg(long, default_value_t = 0.0)]
@@ -410,6 +410,11 @@ fn numbered(output: &str, k: usize) -> Option<String> {
 fn write_many(io: &Io, clouds: Vec<PointCloud>) -> terrio::Result<()> {
     let options = io.write.to_options(None)?;
     if numbered(&io.output, 0).is_some() {
+        if clouds.is_empty() {
+            // No points: one empty file, numbered 1, as one file holds none without a '#'.
+            let path = numbered(&io.output, 1).unwrap_or_else(|| io.output.clone());
+            return PointWriter::create(&path, &read_template(&io.input)?, &options)?.finish();
+        }
         for (k, c) in clouds.iter().enumerate() {
             let path = numbered(&io.output, k + 1).unwrap_or_else(|| io.output.clone());
             pointcloud::write_points(c, &path, &options)?;

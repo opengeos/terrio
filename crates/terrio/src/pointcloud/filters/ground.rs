@@ -111,6 +111,10 @@ pub fn pmf_classes(cloud: &PointCloud, o: &PmfOptions) -> Result<Vec<Option<u8>>
     if o.ground_class == o.other_class && !o.only_ground {
         return Err(Error::InvalidArgument("the ground and other classes cannot be equal unless only ground is set".into()));
     }
+    // An empty cloud (as one cropped to nothing upstream) stays empty, as with CSF.
+    if cloud.is_empty() {
+        return Ok(Vec::new());
+    }
     let (xs, ys, zs) = xyz(cloud)?;
     let inliers = classified_points(cloud, &o.ignore, &o.returns)?;
     let mut out = vec![None; cloud.len()];
