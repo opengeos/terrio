@@ -20,6 +20,7 @@ import platform
 import shutil
 import statistics
 import subprocess
+import sys
 import tempfile
 import time
 
@@ -163,7 +164,11 @@ def large_cases(d, out):
     o = lambda name: os.path.join(out, name)  # noqa: E731
     t = TERRIO
     dem, s2, gpkg, pbf = p("dem16.tif"), p("s2_b04.tif"), p("colorado.gpkg"), p("colorado.osm.pbf")
-    tiles = sorted(p(f) for f in os.listdir(d) if f.startswith("USGS_1_n") and f.endswith(".tif"))
+    # The 16 tiles scripts/fetch_large_data.sh downloads, not other tiles the directory may hold.
+    tiles = [p(f"USGS_1_n{lat}w{lon}.tif") for lat in range(39, 43) for lon in range(104, 108)]
+    missing = [t for t in tiles if not os.path.exists(t)]
+    if missing:
+        sys.exit(f"missing large-data files (run scripts/fetch_large_data.sh): {', '.join(missing)}")
     r, v = "Large rasters", "Large vectors"
     return [
         (r, "Statistics: 14412² Float32 mosaic", [t, "info", "--stats", dem], ["gdalinfo", "-stats", dem]),

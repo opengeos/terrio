@@ -16,24 +16,35 @@ here="$(cd "$(dirname "$0")" && pwd)"
 dir="${1:-$here/../../terrio-large-data}"
 mkdir -p "$dir"
 cd "$dir"
+# Each file is written under a temporary name and renamed once complete, so an interrupted run
+# leaves no truncated file that the next run would take as done.
+fetch() { [ -e "$1" ] || { curl -sSfL -o "$1.part" "$2" && mv "$1.part" "$1"; }; }
 usgs=https://prd-tnm.s3.amazonaws.com/StagedProducts/Elevation/1/TIFF/current
 tiles=()
 for lat in 39 40 41 42; do
   for lon in 104 105 106 107; do
     t="USGS_1_n${lat}w${lon}.tif"
-    [ -e "$t" ] || curl -sSfL -o "$t" "$usgs/n${lat}w${lon}/$t"
+    fetch "$t" "$usgs/n${lat}w${lon}/$t"
     tiles+=("$t")
   done
 done
 if [ ! -e dem16.tif ]; then
   gdalbuildvrt -q tiles16.vrt "${tiles[@]}"
-  gdal_translate -q -co TILED=YES -co COMPRESS=DEFLATE tiles16.vrt dem16.tif
+  gdal_translate -q -of GTiff -co TILED=YES -co COMPRESS=DEFLATE tiles16.vrt dem16.tif.part
+  mv dem16.tif.part dem16.tif
   rm tiles16.vrt
 fi
 s2=https://storage.googleapis.com/gcp-public-data-sentinel-2
 l1c=$s2/tiles/10/S/EG/S2B_MSIL1C_20240630T185919_N0510_R013_T10SEG_20240630T211017.SAFE/GRANULE/L1C_T10SEG_A038220_20240630T190812/IMG_DATA
-[ -e s2_l1c_B04.jp2 ] || curl -sSfL -o s2_l1c_B04.jp2 "$l1c/T10SEG_20240630T185919_B04.jp2"
-[ -e s2_b04.tif ] || gdal_translate -q s2_l1c_B04.jp2 s2_b04.tif
-[ -e colorado.osm.pbf ] || curl -sSfL -o colorado.osm.pbf https://download.geofabrik.de/north-america/us/colorado-latest.osm.pbf
-[ -e colorado.gpkg ] || ogr2ogr -f GPKG colorado.gpkg colorado.osm.pbf
-ls -l "$dir"
+fetch s2_l1c_B04.jp2 "$l1c/T10SEG_20240630T185919_B04.jp2"
+if [ ! -e s2_b04.tif ]; then
+  gdal_translate -q -of GTiff s2_l1c_B04.jp2 s2_b04.tif.part
+  mv s2_b04.tif.part s2_b04.tif
+fi
+fetch colorado.osm.pbf https://download.geofabrik.de/north-america/us/colorado-latest.osm.pbf
+if [ ! -e colorado.gpkg ]; then
+  rm -f colorado.gpkg.part
+  ogr2ogr -f GPKG colorado.gpkg.part colorado.osm.pbf
+  mv colorado.gpkg.part colorado.gpkg
+fi
+ls -l .
