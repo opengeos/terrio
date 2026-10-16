@@ -86,7 +86,15 @@ impl Fetcher {
     fn request(&self, range: Option<(u64, u64)>, head: bool) -> Result<js_sys::Promise, JsError> {
         let headers = js_sys::Object::new();
         if self.headers.is_object() {
-            js_sys::Object::assign(&headers, &js_sys::Object::from(self.headers.clone()));
+            // `Headers` instances and arrays of pairs are iterable: their entries, not their own
+            // properties.
+            let iterable = js_sys::Reflect::has(&self.headers, &js_sys::Symbol::iterator()).unwrap_or(false);
+            let given = if iterable {
+                js_sys::Object::from_entries(&self.headers).map_err(js_error)?
+            } else {
+                js_sys::Object::from(self.headers.clone())
+            };
+            js_sys::Object::assign(&headers, &given);
         }
         if let Some((a, b)) = range {
             js_sys::Reflect::set(&headers, &"Range".into(), &format!("bytes={a}-{b}").into()).map_err(js_error)?;
@@ -139,10 +147,18 @@ impl Fetcher {
 
     /// Fetches byte ranges in parallel into the file.
     async fn fetch_batch(&self, file: &SparseFile, ranges: &[(u64, u64)]) -> Result<(), JsError> {
-        let promises: Vec<js_sys::Promise> =
-            ranges.iter().map(|&(o, n)| self.request(Some((o, o + n - 1)), false)).collect::<Result<_, _>>()?;
-        for (&(offset, len), p) in ranges.iter().zip(promises) {
-            let f = self.response(p).await?;
+        let promises = js_sys::Array::new();
+        for &(o, n) in ranges {
+            promises.push(self.request(Some((o, o + n - 1)), false)?.as_ref());
+        }
+        // Every request settled before any is looked at: returning on the first failure leaves
+        // no rejected promise unhandled (which ends a Node process).
+        let settled = js_sys::Array::from(&JsFuture::from(js_sys::Promise::all_settled(&promises)).await.map_err(js_error)?);
+        for (&(offset, len), s) in ranges.iter().zip(settled.iter()) {
+            if get(&s, "status").as_string().as_deref() != Some("fulfilled") {
+                return Err(js_error(get(&s, "reason")));
+            }
+            let f = self.response(js_sys::Promise::resolve(&get(&s, "value"))).await?;
             match f.status {
                 206 if f.data.len() as u64 == len => file.insert(offset, &f.data),
                 200 if f.data.len() as u64 == file.len() => {
@@ -153,7 +169,8 @@ impl Fetcher {
                 }
                 status => {
                     return Err(JsError::new(&format!(
-                        "{}: bytes {offset}-{}: unexpected response (status {status}, {} bytes)",
+                        "{}: bytes {offset}-{}: unexpected response (status {status}, {} bytes): the server must \
+                         answer Range requests, without a Content-Encoding",
                         self.url,
                         offset + len - 1,
                         f.data.len()
@@ -266,7 +283,8 @@ fn detect(name: &str, head: &[u8], forced: Option<&str>) -> Result<&'static str,
 ///
 /// Options: `headers` (sent with every request, for authorization), `fetch` (the function to
 /// call instead of `globalThis.fetch`), `blockSize` (64 KiB: reads fetch whole blocks),
-/// `cacheSize` (256 MB kept between reads), `format` (when the URL does not tell it).
+/// `cacheSize` (256 MB kept between reads, not during one: a read holds all the bytes it needs),
+/// `format` (when the URL does not tell it).
 ///
 /// Servers must answer range requests; in browsers, cross-origin servers must allow the `Range`
 /// header and expose `Content-Range` (CORS).

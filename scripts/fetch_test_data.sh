@@ -196,7 +196,8 @@ if command -v ogr2ogr >/dev/null && command -v gdal_translate >/dev/null; then
   # A FlatGeobuf larger than 100 MB (the US counties nine times, 127 MB), which overflowed 32-bit
   # WebAssembly in the format library's reader.
   if [ ! -e big_counties.fgb ]; then
-    for _ in 1 2 3 4 5 6 7 8 9; do ogr2ogr -append -nln big_counties big_counties.gpkg UScounties.fgb; done
+    rm -f big_counties.gpkg
+    for _ in 1 2 3 4 5 6 7 8 9; do ogr2ogr -f GPKG -append -nln big_counties big_counties.gpkg UScounties.fgb; done
     ogr2ogr -f FlatGeobuf big_counties.fgb big_counties.gpkg && rm big_counties.gpkg
   fi
   # A land cover subset (NLCD 2021, 90 m) around Knoxville, read in place from a COG.
@@ -253,7 +254,9 @@ if command -v ogr2ogr >/dev/null && command -v gdal_translate >/dev/null; then
 fi
 # The outputs of GDAL's tools that the WebAssembly build's operations are checked against
 # (js/tests/node.test.mjs), for the cases where terrio's native output is identical to GDAL's.
-if command -v gdaldem >/dev/null && command -v gdal_calc.py >/dev/null && [ ! -e wasm_refs/done ]; then
+have_tools() { for t in "$@"; do command -v "$t" >/dev/null || return 1; done; }
+if have_tools gdal_translate gdalwarp gdaldem gdal_calc.py gdal_merge.py gdal_proximity.py gdal_sieve.py \
+  gdal_rasterize gdal_polygonize.py && [ ! -e wasm_refs/done ]; then
   mkdir -p wasm_refs
   r=wasm_refs
   gdal_translate -q -srcwin 100 200 500 400 usgs_dem.tif $r/translate_srcwin.tif
@@ -283,8 +286,9 @@ if command -v gdaldem >/dev/null && command -v gdal_calc.py >/dev/null && [ ! -e
   gdal_rasterize -q -a POPULATION -tr 0.002 0.002 -ot Int32 TN_Counties.geojson $r/rasterize_attribute.tif
   gdal_polygonize.py -q nlcd_knoxville.tif -f FlatGeobuf $r/polygonize.fgb
   # Subdatasets of HDF5 and netCDF-4 products, read from memory.
-  gdal_translate -q "HDF5:\"SATMS_j01_d20230101_t0000026_e0000343_b26525_c20230101002941202701_oeac_ops.h5\"://All_Data/ATMS-SDR_All/BrightnessTemperature" $r/h5_bt.tif
-  gdal_translate -q "NETCDF:\"$s5p\":/PRODUCT/methane_mixing_ratio" $r/nc4_methane.tif
+  atms=SATMS_j01_d20230101_t0000026_e0000343_b26525_c20230101002941202701_oeac_ops.h5
+  [ ! -e "$atms" ] || gdal_translate -q "HDF5:\"$atms\"://All_Data/ATMS-SDR_All/BrightnessTemperature" $r/h5_bt.tif
+  [ ! -e "$s5p" ] || gdal_translate -q "NETCDF:\"$s5p\":/PRODUCT/methane_mixing_ratio" $r/nc4_methane.tif
   touch $r/done
 fi
 # Datum shift and geoid grids from the PROJ CDN (scripts/proj_grids.txt, 230 MB), and grids in
