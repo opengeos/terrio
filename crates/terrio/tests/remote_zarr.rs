@@ -169,6 +169,15 @@ fn metadata_read_failures_are_errors() {
     assert!(err.contains("401"), "{err}");
     counter.fail.store(false, Ordering::SeqCst);
     assert_eq!(terrio::open_raster_lazy(&remote).unwrap().width(), 30);
+    // An array document that is not JSON (as a truncated or error body sent with 200) is
+    // reported as such, not taken for a missing array.
+    let store = dir.path().join("v2.zarr");
+    let _ = std::fs::remove_file(store.join(".zmetadata"));
+    // The data variable is named after the store.
+    std::fs::write(store.join("v2/.zarray"), b"{\"zarr_format\": 2, \"shape\"").unwrap();
+    let Err(err) = terrio::open_raster_lazy(&format!("{remote}/v2")) else { panic!("a broken .zarray") };
+    let err = err.to_string();
+    assert!(err.contains("not valid JSON"), "{err}");
 }
 
 /// Little-endian bytes of the CRC32C checksum (Castagnoli) of `data`.

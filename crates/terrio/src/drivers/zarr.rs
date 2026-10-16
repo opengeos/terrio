@@ -255,7 +255,18 @@ fn v2_codec(c: &Value) -> Result<Option<Codec>> {
 
 /// Reads an array's metadata, from a v2 `.zarray` (with `.zattrs`) or a v3 `zarr.json`.
 fn read_array(node: &Node) -> Result<Array> {
-    if let Some(m) = node.json(".zarray")? {
+    read_array_opt(node)?.ok_or_else(|| bad(format!("{} is not a Zarr array", node.display())))
+}
+
+/// Reads an array's metadata: `None` when the node has none (a group, or nothing). Metadata that
+/// cannot be read is an error, and so is a document that is not JSON, unless the other Zarr
+/// version's document describes the node (some servers answer unknown paths with a page).
+fn read_array_opt(node: &Node) -> Result<Option<Array>> {
+    let v2 = match node.json(".zarray") {
+        Err(e @ Error::InvalidData(_)) => Err(e),
+        r => Ok(r?),
+    };
+    if let Ok(Some(m)) = v2 {
         let attrs = node.json(".zattrs")?.unwrap_or(json!({}));
         let (data_type, little_endian, stored) = v2_dtype(m["dtype"].as_str().ok_or_else(|| bad("no dtype"))?)?;
         let mut codecs: Vec<Codec> = Vec::new();
@@ -275,7 +286,7 @@ fn read_array(node: &Node) -> Result<Array> {
         let shape = usizes(&m["shape"]);
         // Fortran order: the chunk's dimensions are stored last first.
         let order = (m["order"].as_str() == Some("F")).then(|| (0..shape.len()).rev().collect());
-        return Ok(Array {
+        return Ok(Some(Array {
             node: node.clone(),
             shape,
             chunks: usizes(&m["chunks"]),
@@ -286,11 +297,15 @@ fn read_array(node: &Node) -> Result<Array> {
             separator: m["dimension_separator"].as_str().unwrap_or(".").to_string(),
             dims,
             attrs,
-        });
+        }));
     }
-    let m = node.json("zarr.json")?.ok_or_else(|| bad(format!("{} is not a Zarr array", node.display())))?;
+    let m = match (v2, node.json("zarr.json")?) {
+        (_, Some(m)) => m,
+        (Err(e), None) => return Err(e),
+        (Ok(_), None) => return Ok(None),
+    };
     if m["node_type"].as_str() != Some("array") {
-        return Err(bad(format!("{} is not a Zarr array", node.display())));
+        return Ok(None);
     }
     let (data_type, stored) = v3_dtype(m["data_type"].as_str().unwrap_or_default())?;
     let usizes =
@@ -305,7 +320,7 @@ fn read_array(node: &Node) -> Result<Array> {
     let key_prefix = if encoding["name"].as_str() == Some("v2") { String::new() } else { format!("c{separator}") };
     let dims =
         m["dimension_names"].as_array().map(|a| a.iter().map(|d| d.as_str().unwrap_or_default().to_string()).collect()).unwrap_or_default();
-    Ok(Array {
+    Ok(Some(Array {
         node: node.clone(),
         shape,
         chunks: usizes(&m["chunk_grid"]["configuration"]["chunk_shape"]),
@@ -316,7 +331,7 @@ fn read_array(node: &Node) -> Result<Array> {
         separator,
         dims,
         attrs: m["attributes"].clone(),
-    })
+    }))
 }
 
 /// Parses a Zarr v3 codec chain for an array of `nd` dimensions, whose elements are stored as
@@ -891,7 +906,8 @@ fn layout_array(ms: &Multiscales, level: &Value, name: Option<&str>) -> Option<N
 /// The raster array of a store or array node, its group, and the multiscales layout it is the
 /// base of.
 fn locate(node: &Node) -> Result<(Array, Option<Node>, Option<Multiscales>)> {
-    if let Ok(a) = read_array(node) {
+    // The node's own metadata, when it cannot be read, is reported (not looked past).
+    if let Some(a) = read_array_opt(node)? {
         let group = node.parent();
         // The multiscales layout of the array's group, or of the group above (GDAL's lookup).
         let ms = group.as_ref().and_then(|g| multiscales(g).or_else(|| g.parent().as_ref().and_then(multiscales)));

@@ -156,7 +156,8 @@ impl Store {
     }
 
     /// A metadata document (JSON), from the consolidated metadata or read and cached. A read
-    /// that fails (a network error) is an error, and is not cached: only missing documents are.
+    /// that fails (a network error) or a document that is not JSON is an error, and is not
+    /// cached: only missing documents are.
     fn json(&self, key: &str) -> Result<Option<Value>> {
         if let Some(c) = &self.consolidated
             && let Some(v) = c.get(key)
@@ -170,24 +171,39 @@ impl Store {
         if let Some(v) = self.cache.lock().ok().and_then(|c| c.get(key).cloned()) {
             return Ok(v);
         }
-        let v = self.get(key, Range::Whole)?.and_then(|b| serde_json::from_slice::<Value>(&b).ok());
+        let v = match self.get(key, Range::Whole)? {
+            Some(b) => Some(
+                serde_json::from_slice::<Value>(&b)
+                    .map_err(|e| crate::Error::InvalidData(format!("Zarr: {key} of {} is not valid JSON: {e}", self.name)))?,
+            ),
+            None => None,
+        };
         if let Ok(mut c) = self.cache.lock() {
             c.insert(key.to_string(), v.clone());
         }
         Ok(v)
     }
 
+    /// A metadata document looked for (that may not be there): one that is not JSON counts as
+    /// missing, as some servers answer unknown paths with a page; read failures are errors.
+    fn probe(&self, key: &str) -> Result<Option<Value>> {
+        match self.json(key) {
+            Err(crate::Error::InvalidData(_)) => Ok(None),
+            r => r,
+        }
+    }
+
     /// Reads the consolidated metadata at the root, when there is some: v2's `.zmetadata`, or the
     /// `consolidated_metadata` of a v3 root group.
     fn load_consolidated(&mut self) -> Result<()> {
         let mut map = HashMap::new();
-        if let Some(m) = self.json(".zmetadata")?
+        if let Some(m) = self.probe(".zmetadata")?
             && let Some(meta) = m["metadata"].as_object()
         {
             for (k, v) in meta {
                 map.insert(k.trim_start_matches('/').to_string(), v.clone());
             }
-        } else if let Some(root) = self.json("zarr.json")?
+        } else if let Some(root) = self.probe("zarr.json")?
             && let Some(meta) = root["consolidated_metadata"]["metadata"].as_object()
             && !meta.is_empty()
         {
@@ -259,7 +275,7 @@ impl Node {
             if found {
                 break;
             }
-            found = node.store.json(&join_key(&node.key, f))?.is_some();
+            found = node.store.probe(&join_key(&node.key, f))?.is_some();
         }
         if !found {
             return Err(crate::Error::InvalidData(format!("Zarr: no Zarr metadata at {}", node.display())));
