@@ -238,7 +238,12 @@ impl Node {
     /// Opens a local directory: the store is rooted at its outermost ancestor that is a Zarr node,
     /// so that the groups above it are found.
     pub(crate) fn local(path: &Path) -> Node {
-        let path = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
+        // Paths in memory stay as they are: on Windows, `absolute` would prefix the drive.
+        let path = if crate::memfs::is_virtual(path) {
+            path.to_path_buf()
+        } else {
+            std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf())
+        };
         let mut root = path.clone();
         while let Some(parent) = root.parent()
             && local_node(parent)
