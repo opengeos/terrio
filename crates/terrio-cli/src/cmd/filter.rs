@@ -328,8 +328,8 @@ enum Filter {
         #[command(flatten)]
         write: super::points::PointWriteArgs,
     },
-    /// Split points into squares (PDAL's filters.splitter): a file per square when the output has
-    /// a '#' (replaced by 1, 2...), else all in one file, square after square.
+    /// Split points into squares (PDAL's filters.splitter): a file per square when the output's
+    /// file name with a '#' (replaced by 1, 2...), else all in one file, square after square.
     Splitter {
         #[command(flatten)]
         io: Io,
@@ -344,7 +344,7 @@ enum Filter {
         buffer: f64,
     },
     /// Split points into squarish chips of at most a number of points (PDAL's filters.chipper): a
-    /// file per chip when the output has a '#', else all in one file.
+    /// file per chip when the output's file name has a '#', else all in one file.
     Chipper {
         #[command(flatten)]
         io: Io,
@@ -397,12 +397,22 @@ struct HagArgs {
     ground_class: u8,
 }
 
-/// Writes clouds to one file each (the output's '#' replaced by 1, 2...), or all to one file.
+/// The output path with the last '#' of its file name replaced by `k`, `None` when the file name
+/// has none (a '#' in a directory name is kept).
+fn numbered(output: &str, k: usize) -> Option<String> {
+    let name_start = output.rfind(['/', '\\']).map_or(0, |i| i + 1);
+    let hash = name_start + output[name_start..].rfind('#')?;
+    Some(format!("{}{k}{}", &output[..hash], &output[hash + 1..]))
+}
+
+/// Writes clouds to one file each (the last '#' of the output's file name replaced by 1, 2...),
+/// or all to one file.
 fn write_many(io: &Io, clouds: Vec<PointCloud>) -> terrio::Result<()> {
     let options = io.write.to_options(None)?;
-    if io.output.contains('#') {
+    if numbered(&io.output, 0).is_some() {
         for (k, c) in clouds.iter().enumerate() {
-            pointcloud::write_points(c, &io.output.replacen('#', &(k + 1).to_string(), 1), &options)?;
+            let path = numbered(&io.output, k + 1).unwrap_or_else(|| io.output.clone());
+            pointcloud::write_points(c, &path, &options)?;
         }
         return Ok(());
     }
@@ -646,5 +656,19 @@ pub fn run(a: Args) -> terrio::Result<()> {
             let cloud = read(&io)?;
             write(&io, &filters::cluster(&cloud, &options)?)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::numbered;
+
+    #[test]
+    fn numbers_the_file_name_only() {
+        assert_eq!(numbered("out/tile_#.laz", 3).as_deref(), Some("out/tile_3.laz"));
+        assert_eq!(numbered("out#1/tile_#.laz", 2).as_deref(), Some("out#1/tile_2.laz"));
+        assert_eq!(numbered("a#b#.laz", 4).as_deref(), Some("a#b4.laz"));
+        assert_eq!(numbered("out#1/tile.laz", 1), None);
+        assert_eq!(numbered("tile.laz", 1), None);
     }
 }
