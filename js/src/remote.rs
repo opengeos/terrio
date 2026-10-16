@@ -121,6 +121,10 @@ impl Fetcher {
     /// The length of the file, from a `HEAD` request's `Content-Length`.
     async fn head_len(&self) -> Result<Option<u64>, JsError> {
         let resp = JsFuture::from(self.request(None, true)?).await.map_err(js_error)?;
+        let status = get(&resp, "status").as_f64().unwrap_or(0.0) as u16;
+        if !(200..300).contains(&status) {
+            return Err(JsError::new(&format!("{}: HEAD: HTTP status {status}", self.url)));
+        }
         let len = call(&get(&resp, "headers"), "get", &["content-length".into()])?.as_string();
         Ok(len.and_then(|l| l.trim().parse().ok()))
     }
@@ -141,7 +145,12 @@ impl Fetcher {
             let f = self.response(p).await?;
             match f.status {
                 206 if f.data.len() as u64 == len => file.insert(offset, &f.data),
-                200 if f.data.len() as u64 == file.len() => file.insert(0, &f.data),
+                200 if f.data.len() as u64 == file.len() => {
+                    // The server ignored `Range`: the file is held whole, and the rest of the
+                    // batch is not needed.
+                    file.insert(0, &f.data);
+                    return Ok(());
+                }
                 status => {
                     return Err(JsError::new(&format!(
                         "{}: bytes {offset}-{}: unexpected response (status {status}, {} bytes)",
@@ -283,7 +292,8 @@ pub async fn open_url(url: String, options: JsValue) -> Result<RemoteDataset, Js
         get(&js_sys::global(), "fetch").dyn_into().map_err(|_| JsError::new("no fetch function: pass one as options.fetch"))?
     };
     let fetcher = Fetcher { url: url.clone(), fetch, headers, requests: Cell::new(0), bytes: Cell::new(0) };
-    let block = o.block_size.max(512);
+    // Blocks of 512 bytes to 16 MiB: the first request is one block.
+    let block = o.block_size.clamp(512, 16 << 20);
     // The first block: the file's length, and its first bytes.
     let first = fetcher.response(fetcher.request(Some((0, block - 1)), false)?).await?;
     // A server that ignores `Range` sends the whole file: every block is then held, and nothing

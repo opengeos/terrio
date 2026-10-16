@@ -208,6 +208,7 @@ fn jxl_encode(mut data: Vec<u8>, c: &ChunkInfo) -> Result<Vec<u8>> {
 fn jpeg_encode(data: &[u8], c: &ChunkInfo, quality: u8, ycbcr: bool) -> Result<Vec<u8>> {
     let color = match (c.t, c.spp) {
         (DataType::U8, 1) => jpeg_encoder::ColorType::Luma,
+        // RGB input, converted to YCbCr by the encoder.
         (DataType::U8, 3) if ycbcr => jpeg_encoder::ColorType::Rgb,
         // Components written as given: no color transform.
         (DataType::U8, 3) => jpeg_encoder::ColorType::Ycbcr,

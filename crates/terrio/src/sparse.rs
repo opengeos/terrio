@@ -135,7 +135,8 @@ impl SparseFile {
     }
 
     /// Stores fetched bytes, `data` starting at byte `offset`. The blocks it covers whole are
-    /// kept (and the file's last block, which may be short).
+    /// kept (and the file's last block, which may be short); a partial block at the end of a
+    /// short response is dropped, so callers check that they got the bytes they asked for.
     pub fn insert(&self, offset: u64, data: &[u8]) {
         let mut s = self.lock();
         let bs = s.block_size;
@@ -234,7 +235,7 @@ impl SparseFile {
         if pos >= self.len || buf.is_empty() {
             return Ok(0);
         }
-        let end = (pos + buf.len() as u64).min(self.len);
+        let end = pos.saturating_add(buf.len() as u64).min(self.len);
         let mut s = self.lock();
         let bs = s.block_size;
         // Read what is held from `pos` on; stop at the first missing block.
@@ -265,7 +266,7 @@ impl SparseFile {
         let mut out = vec![0u8; len];
         let mut done = 0;
         while done < len {
-            let n = self.read_at(offset + done as u64, &mut out[done..])?;
+            let n = self.read_at(offset.saturating_add(done as u64), &mut out[done..])?;
             if n == 0 {
                 return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "read past the end of the file"));
             }

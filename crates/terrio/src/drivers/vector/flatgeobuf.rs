@@ -191,7 +191,8 @@ pub struct FlatGeobufInfo {
 /// Reads a FlatGeobuf file's header, and the features whose bounding box intersects `bbox`
 /// `(min_x, min_y, max_x, max_y)`, found with the packed R-tree spatial index: only the index
 /// nodes on the way and those features are read. All features without a filter (or without an
-/// index). Feature ids are the features' positions in the file, as in GDAL.
+/// index: `index_size` is then 0, and the caller filters them, as it does the bounding-box
+/// matches by their geometries). Feature ids are the features' positions in the file, as in GDAL.
 ///
 /// `prefetch` is told the byte ranges `(offset, length)` about to be read: the index nodes of a
 /// level, then the features (see [`crate::sparse`]). Offsets are 64-bit throughout, so that
