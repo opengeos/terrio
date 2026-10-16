@@ -1565,8 +1565,6 @@ impl GeoTiffWriter {
         let start = if self.rows_done + total == self.rows { total } else { total / self.block_rows * self.block_rows };
         if start > 0 {
             self.flush_block_rows(start, total)?;
-        }
-        if start > 0 {
             macro_rules! keep {
                 ($($v:ident),*) => {
                     match &mut self.pending {

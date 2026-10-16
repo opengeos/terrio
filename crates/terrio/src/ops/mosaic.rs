@@ -288,7 +288,7 @@ fn reprojected(sources: &[MosaicSource], o: &MosaicOptions) -> bool {
 /// Mosaics rasters as [`mosaic`] does and writes the mosaic to `path`. When every source is
 /// copied pixel for pixel (same CRS and resolution, whole-pixel offsets), they are read by windows
 /// and a GeoTIFF output written a strip of rows at a time: neither the sources nor the output are
-/// held whole. Otherwise the sources are read whole.
+/// held whole. Otherwise (and when `path` is one of the sources) the sources are read whole.
 ///
 /// ```no_run
 /// use terrio::ops::mosaic::{MosaicOptions, mosaic_to_path};
@@ -301,7 +301,8 @@ pub fn mosaic_to_path(paths: &[String], o: &MosaicOptions, path: &str, options: 
     let mut lazy = paths.iter().map(|p| crate::open_raster_lazy(p)).collect::<Result<Vec<_>>>()?;
     let headers: Vec<RasterDataset> = lazy.iter().map(|l| l.header()).collect();
     let sources: Vec<MosaicSource> = paths.iter().zip(&headers).map(|(p, ds)| MosaicSource { path: p.clone(), ds }).collect();
-    let plan = if reprojected(&sources, o) { None } else { copy_plan(&sources, o)? };
+    let whole = reprojected(&sources, o) || super::strips::overwrites(path, paths);
+    let plan = if whole { None } else { copy_plan(&sources, o)? };
     let Some((vrt, copies)) = plan else {
         drop(lazy);
         let full = paths.iter().map(|p| crate::open_raster(p)).collect::<Result<Vec<_>>>()?;

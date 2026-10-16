@@ -1105,8 +1105,8 @@ pub fn warp(sources: &[&RasterDataset], o: &WarpOptions) -> Result<RasterDataset
 
 /// Warps rasters as [`warp`] does and writes the output to `path`. A single source without a
 /// cutline is read a chunk at a time (the source window each chunk of the output needs), and a
-/// GeoTIFF output written as its rows are done: neither is held whole. Otherwise the sources
-/// are read whole. Without `o.gcps`, a first source with no geotransform is georeferenced by
+/// GeoTIFF output written as its rows are done: neither is held whole. Otherwise (and when
+/// `path` is the source) the sources are read whole. Without `o.gcps`, a first source with no geotransform is georeferenced by
 /// its GCPs, as `gdalwarp` does.
 ///
 /// ```no_run
@@ -1117,7 +1117,10 @@ pub fn warp(sources: &[&RasterDataset], o: &WarpOptions) -> Result<RasterDataset
 /// # Ok::<(), terrio::Error>(())
 /// ```
 pub fn warp_to_path(paths: &[String], o: &WarpOptions, path: &str, options: &crate::RasterWriteOptions) -> Result<()> {
-    if paths.len() != 1 || o.cutline.is_some() {
+    if paths.is_empty() {
+        return Err(Error::InvalidArgument("no source rasters".into()));
+    }
+    if paths.len() != 1 || o.cutline.is_some() || super::strips::overwrites(path, paths) {
         let sources = paths.iter().map(|p| crate::open_raster(p)).collect::<Result<Vec<_>>>()?;
         let refs: Vec<&RasterDataset> = sources.iter().collect();
         let o = with_file_gcps(o, &paths[0], &sources[0])?;

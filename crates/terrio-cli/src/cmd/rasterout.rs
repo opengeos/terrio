@@ -57,6 +57,11 @@ pub fn open_lazy(path: &str) -> terrio::Result<terrio::LazyRaster> {
     super::quiet(|| terrio::open_raster_lazy(path))
 }
 
+/// Whether two paths are the same existing file, under any name.
+pub fn same_file(a: &str, b: &str) -> bool {
+    matches!((std::fs::canonicalize(a), std::fs::canonicalize(b)), (Ok(a), Ok(b)) if a == b)
+}
+
 /// Opens a raster quietly.
 pub fn open(path: &str) -> terrio::Result<RasterDataset> {
     super::quiet(|| terrio::open_raster(path))

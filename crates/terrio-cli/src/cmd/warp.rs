@@ -83,8 +83,8 @@ pub fn run(a: Args) -> terrio::Result<()> {
         cutline: a.cutline.as_deref().map(|p| super::quiet(|| Cutline::open(p))).transpose()?,
         crop_to_cutline: a.crop_to_cutline,
         error_threshold: a.et,
-        // The first input's GCPs, read by `warp_to_path`. As gdalwarp: `-order` sets the polynomial's order, but 4 or 5 GCPs still make a
-        // homography.
+        // The first input's GCPs are read by `warp_to_path`. As gdalwarp: `-order` sets the
+        // polynomial's order, but 4 or 5 GCPs still make a homography.
         gcp_method: if a.tps { GcpMethod::Tps } else { GcpMethod::Auto },
         order: a.order.unwrap_or(0),
         ..Default::default()

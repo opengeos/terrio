@@ -1,10 +1,10 @@
 //! `terrio dem`.
 
-use super::rasterout::{OutputArgs, open, open_lazy};
+use super::rasterout::{OutputArgs, open, open_lazy, same_file};
 use terrio::Error;
 use terrio::formats::RasterDriver;
 use terrio::ops::dem::{
-    ColorMap, ColorSelection, DemOptions, DemProduct, GradientAlg, Shading, TriAlg, color_relief, color_relief_vrt, dem_to_path,
+    ColorMap, ColorSelection, DemOptions, DemProduct, GradientAlg, Shading, TriAlg, color_relief, color_relief_vrt, dem, dem_to_path,
     pam_statistics,
 };
 
@@ -137,9 +137,11 @@ pub fn run(a: Args) -> terrio::Result<()> {
     }
     // Terrain products a strip at a time, without holding the DEM or the output whole.
     let colors = match (colors, product) {
+        // The DEM read whole first when it is also the output.
+        (None, Some(product)) if same_file(input, output) => return a.out.write(&dem(&open(input)?, product, &o)?, output),
         (None, Some(product)) => {
             let mut src = open_lazy(input)?;
-            return dem_to_path(&mut src, product, &o, output, &a.out.options()?);
+            return super::quiet(|| dem_to_path(&mut src, product, &o, output, &a.out.options()?));
         }
         (Some(colors), None) => colors,
         _ => unreachable!("color-relief alone takes a color file"),

@@ -20,6 +20,13 @@ pub(crate) fn strip_rows(width: usize, bands: usize, value_size: usize, block: O
     (STRIP_BYTES / row / block).max(1) * block
 }
 
+/// Whether writing `output` would overwrite one of `inputs` (the same file, under any name):
+/// those inputs are read whole before the output is written.
+pub(crate) fn overwrites(output: &str, inputs: &[String]) -> bool {
+    let Ok(out) = std::fs::canonicalize(output) else { return false };
+    inputs.iter().any(|p| std::fs::canonicalize(p).is_ok_and(|p| p == out))
+}
+
 /// An output raster written a strip of rows at a time, from the top. A GeoTIFF dropped before
 /// [`StripWriter::finish`] (an operation failing midway) is removed.
 pub(crate) struct StripWriter {
