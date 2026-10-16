@@ -349,7 +349,7 @@ impl Node {
         if let Backend::Local(root) = &self.store.backend {
             let dir = if self.key.is_empty() { root.clone() } else { root.join(&self.key) };
             for (n, _) in crate::memfs::subdirs(&dir) {
-                if !out.iter().any(|o| *o == n) {
+                if !out.contains(&n) {
                     out.push(n);
                 }
             }
