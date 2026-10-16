@@ -1,7 +1,9 @@
 # Testing Against GDAL
 
 GDAL is terrio's reference: every driver and operation is compared with GDAL 3.12 on real-world
-files, and the comparisons run in continuous integration on every pull request.
+files, and the comparisons run in continuous integration on every pull request. Pull requests
+compare the point cloud filters with PDAL's on `autzen_trim.las` only; pushes to `main` on the
+Madison lidar (4 million points) too (`scripts/compare_pointclouds.py --quick` skips it).
 
 ## Test data
 

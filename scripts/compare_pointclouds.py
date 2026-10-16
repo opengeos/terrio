@@ -29,10 +29,14 @@ And:
 Needs the terrio Python package, laspy with lazrs, NumPy, and the `pdal` command (optional: the
 PDAL comparisons are skipped without it); the grids need `gdal_grid` and GDAL's Python bindings.
 
+With `--quick`, the filters are compared on autzen_trim.las only, not also on the Madison lidar
+(4 million points), which takes most of the time: pull requests' CI runs it so.
+
 Usage:
-    python scripts/compare_pointclouds.py DIR
+    python scripts/compare_pointclouds.py DIR [--quick]
 """
 
+import argparse
 import json
 import os
 import shutil
@@ -822,7 +826,11 @@ def compare_interpolation(path: Path, tmp: Path) -> None:
 
 def main() -> None:
     """Runs the comparisons on the files under the directory given on the command line."""
-    root = Path(sys.argv[1]) / "pointcloud"
+    ap = argparse.ArgumentParser(description="Compares terrio's point clouds with laspy's, PDAL's and GDAL's.")
+    ap.add_argument("data", help="the test data directory (see scripts/fetch_test_data.sh)")
+    ap.add_argument("--quick", action="store_true", help="compare the filters on autzen_trim.las only, not on the Madison lidar")
+    args = ap.parse_args()
+    root = Path(args.data) / "pointcloud"
     files = sorted(p for p in root.rglob("*") if p.suffix.lower() in (".las", ".laz") and "ept" not in p.relative_to(root).parts)
     print(f"PDAL: {PDAL or 'not found'}; laspy {laspy.__version__}; terrio {terrio.__version__}")
     with tempfile.TemporaryDirectory() as d:
@@ -846,7 +854,7 @@ def main() -> None:
         compare_waveforms(root, tmp)
         compare_filters(root / "autzen_trim.las", tmp, (420, 500))
         compare_more_filters(root / "autzen_trim.las", tmp)
-        if PDAL and (root / "madison.copc.laz").exists():
+        if PDAL and not args.quick and (root / "madison.copc.laz").exists():
             madison = tmp / "madison.las"
             terrio.convert_points(str(root / "madison.copc.laz"), str(madison))
             compare_filters(madison, tmp, (330, 400))
