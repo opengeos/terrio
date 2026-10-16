@@ -89,10 +89,14 @@ fn decompress(compression: u16, raw: Vec<u8>, limit: usize) -> TiffResult<Vec<u8
     match compression {
         1 => out = raw,
         5 => {
-            out.resize(limit, 0);
             let mut dec = weezl::decode::Decoder::with_tiff_size_switch(weezl::BitOrder::Msb, 8);
             let (mut consumed, mut written) = (0, 0);
             while written < limit {
+                // The output grows as it is decoded: a chunk size from the header is not
+                // allocated before the stream backs it.
+                if written == out.len() {
+                    out.resize(limit.min(written.max(1 << 16) * 2), 0);
+                }
                 let r = dec.decode_bytes(&raw[consumed..], &mut out[written..]);
                 consumed += r.consumed_in;
                 written += r.consumed_out;
@@ -274,26 +278,7 @@ impl ChunkCodec {
         // Tiles are coded whole, strips with their own rows.
         let (w, h) = if self.tiled { self.chunk } else { (dw, dh) };
         let bytes = match self.codec {
-            Codec::Lzma | Codec::Lzw => {
-                let size = self.sample.size();
-                let n = w * h * self.spp * size;
-                let mut out = Vec::new();
-                if self.codec == Codec::Lzw {
-                    out = decompress(5, raw, n)?;
-                } else {
-                    lzma_rust2::XzReader::new(&raw[..], true).read_to_end(&mut out).map_err(|e| invalid(format!("LZMA: {e}")))?;
-                }
-                out.resize(n, 0);
-                // The floating-point predictor's byte planes give native-endian samples whatever
-                // the file's byte order, as libtiff's.
-                if self.big_endian && size > 1 && self.predictor != 3 {
-                    for v in out.chunks_exact_mut(size) {
-                        v.reverse();
-                    }
-                }
-                self.unpredict(&mut out, w);
-                out
-            }
+            Codec::Lzma | Codec::Lzw => self.lossless(raw, w, h)?,
             Codec::Lerc => self.lerc(raw, w, h)?,
             Codec::Jxl => self.jxl(&raw, w, h)?,
             Codec::Jpeg => self.jpeg(&raw, w, h)?,
@@ -304,6 +289,39 @@ impl ChunkCodec {
             }
         };
         Ok(self.result(&bytes, w, dw, dh))
+    }
+
+    /// Decodes an LZMA or LZW chunk of `h` rows of `w` pixels into native-endian samples, its
+    /// predictor undone.
+    fn lossless(&self, raw: Vec<u8>, w: usize, h: usize) -> TiffResult<Vec<u8>> {
+        let size = self.sample.size();
+        let n = w
+            .checked_mul(h)
+            .and_then(|n| n.checked_mul(self.spp))
+            .and_then(|n| n.checked_mul(size))
+            .ok_or_else(|| invalid("TIFF chunk too large"))?;
+        let mut out = if self.codec == Codec::Lzw {
+            let out = decompress(5, raw, n)?;
+            // A truncated stream is an error, as in libtiff, rather than missing pixels.
+            if out.len() < n {
+                return Err(invalid(format!("LZW: chunk of {} bytes, {n} expected", out.len())));
+            }
+            out
+        } else {
+            let mut out = Vec::new();
+            lzma_rust2::XzReader::new(&raw[..], true).read_to_end(&mut out).map_err(|e| invalid(format!("LZMA: {e}")))?;
+            out
+        };
+        out.resize(n, 0);
+        // The floating-point predictor's byte planes give native-endian samples whatever the
+        // file's byte order, as libtiff's.
+        if self.big_endian && size > 1 && self.predictor != 3 {
+            for v in out.chunks_exact_mut(size) {
+                v.reverse();
+            }
+        }
+        self.unpredict(&mut out, w);
+        Ok(out)
     }
 
     /// Unpacks `h` rows of `w` pixels of samples of `self.bits` bits, MSB first with each row
@@ -580,6 +598,70 @@ fn pixels_f64(p: &lerc_core::PixelData) -> Vec<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn lzw(sample: Sample, spp: usize, predictor: u16, big_endian: bool) -> ChunkCodec {
+        ChunkCodec { codec: Codec::Lzw, sample, spp, predictor, big_endian, ..packed(8, spp) }
+    }
+
+    fn lzw_encode(bytes: &[u8]) -> Vec<u8> {
+        weezl::encode::Encoder::with_tiff_size_switch(weezl::BitOrder::Msb, 8).encode(bytes).unwrap()
+    }
+
+    /// Big- and little-endian LZW chunks with the horizontal predictor, coded as libtiff codes
+    /// them: samples differenced along the row, then stored in the file's byte order.
+    #[test]
+    fn lzw_with_the_horizontal_predictor() {
+        let (w, h, spp) = (5, 3, 2);
+        let values: Vec<u16> = (0..w * h * spp).map(|i| (i * 7919 % 65521) as u16).collect();
+        for big_endian in [false, true] {
+            let mut coded = Vec::new();
+            for row in values.chunks(w * spp) {
+                for (i, v) in row.iter().enumerate() {
+                    let d = if i < spp { *v } else { v.wrapping_sub(row[i - spp]) };
+                    coded.extend(if big_endian { d.to_be_bytes() } else { d.to_le_bytes() });
+                }
+            }
+            let out = lzw(Sample::U16, spp, 2, big_endian).lossless(lzw_encode(&coded), w, h).unwrap();
+            let back: Vec<u16> = out.as_chunks::<2>().0.iter().map(|c| u16::from_ne_bytes(*c)).collect();
+            assert_eq!(back, values, "big endian {big_endian}");
+        }
+    }
+
+    /// LZW chunks with the floating-point predictor, coded as libtiff codes them: each row's
+    /// samples split into byte planes, most significant first, then differenced byte by byte. The
+    /// planes are the same in big- and little-endian files.
+    #[test]
+    fn lzw_with_the_floating_point_predictor() {
+        let (w, h) = (6, 4);
+        let values: Vec<f32> = (0..w * h).map(|i| (i as f32 * 1.37).sin() * 1000.0).collect();
+        let mut coded = Vec::new();
+        for row in values.chunks(w) {
+            let mut planes = vec![0u8; w * 4];
+            for (i, v) in row.iter().enumerate() {
+                for (b, byte) in v.to_be_bytes().iter().enumerate() {
+                    planes[b * w + i] = *byte;
+                }
+            }
+            for i in (1..planes.len()).rev() {
+                planes[i] = planes[i].wrapping_sub(planes[i - 1]);
+            }
+            coded.extend(planes);
+        }
+        for big_endian in [false, true] {
+            let out = lzw(Sample::F32, 1, 3, big_endian).lossless(lzw_encode(&coded), w, h).unwrap();
+            let back: Vec<f32> = out.as_chunks::<4>().0.iter().map(|c| f32::from_ne_bytes(*c)).collect();
+            assert_eq!(back, values, "big endian {big_endian}");
+        }
+    }
+
+    /// A truncated LZW chunk is an error, and a header's chunk size overflowing is refused.
+    #[test]
+    fn short_and_oversized_lzw_chunks_are_errors() {
+        let c = lzw(Sample::U8, 1, 1, false);
+        assert!(c.lossless(lzw_encode(&[1, 2, 3]), 4, 4).is_err());
+        assert!(c.lossless(lzw_encode(&[1; 16]), 4, 4).is_ok());
+        assert!(c.lossless(lzw_encode(&[1]), usize::MAX, 2).is_err());
+    }
 
     fn packed(bits: u16, spp: usize) -> ChunkCodec {
         ChunkCodec {
