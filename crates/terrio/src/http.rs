@@ -157,11 +157,17 @@ impl Client {
 
     /// A client sending its requests through `agent` (whose connections it shares).
     fn with_agent(remote: &Remote, options: HttpOptions, agent: ureq::Agent) -> Self {
+        let auth = matches!(remote, Remote::S3(_)).then(|| (Credentials::from_env(), s3::region_from_env()));
+        Self::with_auth(remote, options, agent, auth)
+    }
+
+    /// A client with S3 credentials and region already resolved (`auth`, for S3 objects).
+    fn with_auth(remote: &Remote, options: HttpOptions, agent: ureq::Agent, auth: Option<(Option<Credentials>, Option<String>)>) -> Self {
         let (url, s3) = match remote {
             Remote::Url(u) => (u.clone(), None),
             Remote::S3(o) => {
-                let region = s3::region_from_env();
-                (o.url(region.as_deref()), Some(S3Auth { creds: Credentials::from_env(), region, discovered: false }))
+                let (creds, region) = auth.unwrap_or_else(|| (Credentials::from_env(), s3::region_from_env()));
+                (o.url(region.as_deref()), Some(S3Auth { creds, region, discovered: false }))
             }
         };
         Self { agent, options, remote: remote.clone(), url, s3, missing_ok: false }
@@ -337,19 +343,22 @@ pub(crate) struct ObjectFetcher {
     agent: ureq::Agent,
     options: HttpOptions,
     region: Mutex<Option<String>>,
+    /// S3 credentials and region from the environment, read once rather than for every object.
+    auth: (Option<Credentials>, Option<String>),
 }
 
 impl ObjectFetcher {
-    /// A fetcher with the options from the environment.
+    /// A fetcher with the options and S3 credentials from the environment.
     pub(crate) fn new() -> Self {
         let options = HttpOptions::from_env();
-        Self { agent: agent(&options), options, region: Mutex::new(None) }
+        let auth = (Credentials::from_env(), s3::region_from_env());
+        Self { agent: agent(&options), options, region: Mutex::new(None), auth }
     }
 
     /// Fetches an object, or part of it. `None` when the object does not exist (status 404, or
     /// 403 as S3 answers anonymous requests for missing keys; a signed request's 403 is an error).
     pub(crate) fn get(&self, remote: &Remote, range: ByteRange) -> Result<Option<Vec<u8>>> {
-        let mut client = Client::with_agent(remote, self.options.clone(), self.agent.clone());
+        let mut client = Client::with_auth(remote, self.options.clone(), self.agent.clone(), Some(self.auth.clone()));
         client.missing_ok = true;
         let known = self.region.lock().ok().and_then(|r| r.clone());
         if let (Remote::S3(object), Some(auth), Some(region)) = (remote, client.s3.as_mut(), known) {
@@ -359,8 +368,11 @@ impl ObjectFetcher {
         }
         let header = match range {
             ByteRange::Whole => None,
-            ByteRange::At(_, 0) => return Ok(Some(Vec::new())),
-            ByteRange::At(offset, len) => Some(format!("bytes={offset}-{}", offset + len - 1)),
+            ByteRange::At(_, 0) | ByteRange::Suffix(0) => return Ok(Some(Vec::new())),
+            ByteRange::At(offset, len) => {
+                let last = offset.checked_add(len - 1).ok_or_else(|| Error::Http(format!("bytes {offset}+{len}: out of range")))?;
+                Some(format!("bytes={offset}-{last}"))
+            }
             ByteRange::Suffix(n) => Some(format!("bytes=-{n}")),
         };
         let fetched = client.fetch_range(header)?;
@@ -373,13 +385,12 @@ impl ObjectFetcher {
             (403 | 404, _) => Ok(None),
             (200 | 206, ByteRange::Whole) => Ok(Some(fetched.data)),
             // A server that ignores ranges sends the whole object: cut the part asked.
-            (200, ByteRange::At(offset, len)) => Ok(Some(
-                fetched
-                    .data
-                    .get(offset as usize..(offset + len) as usize)
-                    .ok_or_else(|| Error::Http(format!("{}: bytes {offset}+{len} past the end", redact(&client.url))))?
-                    .to_vec(),
-            )),
+            (200, ByteRange::At(offset, len)) => {
+                let past = || Error::Http(format!("{}: bytes {offset}+{len} past the end", redact(&client.url)));
+                let start = usize::try_from(offset).map_err(|_| past())?;
+                let end = offset.checked_add(len).and_then(|e| usize::try_from(e).ok()).ok_or_else(past)?;
+                Ok(Some(fetched.data.get(start..end).ok_or_else(past)?.to_vec()))
+            }
             (200, ByteRange::Suffix(n)) => {
                 let d = fetched.data;
                 Ok(Some(d[d.len().saturating_sub(n as usize)..].to_vec()))
