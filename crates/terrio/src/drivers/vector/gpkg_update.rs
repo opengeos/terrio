@@ -8,8 +8,8 @@
 //! log, auto-vacuum, triggers this module does not emulate) and GeoPackages held in memory are
 //! read whole (every table's rows as stored, every index, trigger and view) and written anew;
 //! a file is then renamed over the original. Files with tables or indexes that cannot be
-//! rewritten (`WITHOUT ROWID` tables, indexes on expressions, UTF-16 text) are left untouched,
-//! with an error.
+//! rewritten (`WITHOUT ROWID` tables, indexes on expressions, UTF-16 text) or that a hot
+//! rollback journal goes with are left untouched, with an error.
 
 use super::geopackage::{self as gw, Builder};
 use super::sqlite::{self as w, Index, SchemaObject, Table};
@@ -70,6 +70,20 @@ fn real(v: &w::Value) -> Option<f64> {
 pub fn update(path: &str, layers: &[Layer], mode: UpdateMode) -> Result<()> {
     if super::gpkg_inplace::update_in_place(std::path::Path::new(path), layers, mode)? {
         return Ok(());
+    }
+    rewrite(path, layers, mode)
+}
+
+/// Updates a GeoPackage file by writing it anew, the new file renamed over the original. A file
+/// with a hot rollback journal is left untouched, with an error: without SQLite's locks (where
+/// files are not changed in place) a transaction interrupted cannot be told from one under way,
+/// and the journal, left next to the new file, would be rolled back over it.
+fn rewrite(path: &str, layers: &[Layer], mode: UpdateMode) -> Result<()> {
+    if crate::drivers::sqlite_edit::has_hot_journal(std::path::Path::new(path))? {
+        return Err(Error::Unsupported(format!(
+            "{path}: the database has a hot rollback journal (a transaction interrupted or under way); \
+             open it with SQLite to recover it first"
+        )));
     }
     let bytes = update_bytes(std::fs::read(path)?, layers, mode)?;
     let tmp = format!("{path}.terrio-update");
@@ -703,6 +717,29 @@ mod tests {
         assert_eq!(layers.iter().map(|l| (l.name.as_str(), l.len())).collect::<Vec<_>>(), [("a", 500), ("b", 2), ("c", 3)]);
         assert_eq!(layers[1].features[0].fid, 1);
         assert_eq!(layers[2].crs_epsg(), Some(4326));
+    }
+
+    #[test]
+    fn rewrite_refuses_a_hot_journal() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.gpkg");
+        let base = super::super::geopackage::to_bytes(&[layer("a", 3, 0.0)]).unwrap();
+        std::fs::write(&path, &base).unwrap();
+        // A journal header (magic, no records, 1 page originally, 512-byte sectors and pages).
+        let mut journal = vec![0xd9, 0xd5, 0x05, 0xf9, 0x20, 0xa1, 0x63, 0xd7, 0, 0, 0, 0, 0, 0, 0, 0];
+        journal.extend([1u32, 512, 512].iter().flat_map(|v| v.to_be_bytes()));
+        journal.resize(512, 0);
+        let journal_path = dir.path().join("a.gpkg-journal");
+        std::fs::write(&journal_path, &journal).unwrap();
+        let p = path.to_str().unwrap();
+        assert!(rewrite(p, &[layer("a", 2, 10.0)], UpdateMode::Append).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), base);
+        assert!(journal_path.exists());
+        // An empty journal is not hot.
+        std::fs::write(&journal_path, []).unwrap();
+        rewrite(p, &[layer("a", 2, 10.0)], UpdateMode::Append).unwrap();
+        let db = Db::new(std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(super::super::gpkg_read::read_db(&db, &[], None).unwrap()[0].len(), 5);
     }
 
     #[test]
