@@ -30,7 +30,7 @@ const READ_PAGES: u32 = 16;
 /// The sector size the journal header is padded to, as SQLite assumes by default.
 const SECTOR: usize = 512;
 /// The byte offsets of SQLite's file locks (`PENDING_BYTE` at 1 GiB).
-#[cfg(unix)]
+#[cfg(all(unix, not(target_os = "emscripten")))]
 const PENDING_BYTE: i64 = 0x4000_0000;
 
 fn bad(msg: impl std::fmt::Display) -> Error {
@@ -138,12 +138,12 @@ impl Editor {
     /// write-ahead log, auto-vacuum, UTF-16 text or reserved page bytes), or on a platform
     /// where it does not take SQLite's locks.
     pub(crate) fn open(path: &Path) -> Result<std::result::Result<Self, NotInPlace>> {
-        if !cfg!(unix) {
+        if !cfg!(all(unix, not(target_os = "emscripten"))) {
             // Without SQLite's locks a reader could see a half-written file.
             return Ok(Err(NotInPlace("in-place changes need SQLite's file locks, not taken on this platform".into())));
         }
         let mut file = OpenOptions::new().read(true).write(true).open(path)?;
-        #[cfg(unix)]
+        #[cfg(all(unix, not(target_os = "emscripten")))]
         lock(&file, path)?;
         recover(&mut file, path)?;
         let wal = with_suffix(path, "-wal");
@@ -738,7 +738,7 @@ impl Editor {
     }
 
     /// Inserts a row into a table b-tree, replacing the row with the same rowid.
-    #[cfg(all(test, unix))]
+    #[cfg(all(test, unix, not(target_os = "emscripten")))]
     pub(crate) fn insert(&mut self, root: u32, rowid: i64, record: &[u8]) -> Result<()> {
         self.upsert(root, vec![(rowid, record.to_vec())])
     }
@@ -1043,7 +1043,7 @@ fn recover(file: &mut File, path: &Path) -> Result<()> {
 
 /// Takes SQLite's exclusive lock on the file (POSIX advisory locks on the pending, reserved and
 /// shared bytes), failing when another connection holds a lock.
-#[cfg(unix)]
+#[cfg(all(unix, not(target_os = "emscripten")))]
 fn lock(file: &File, path: &Path) -> Result<()> {
     use std::os::fd::AsRawFd;
     let fd = file.as_raw_fd();
@@ -1068,7 +1068,7 @@ fn lock(file: &File, path: &Path) -> Result<()> {
 }
 
 // In-place changes are made where SQLite's locks are taken.
-#[cfg(all(test, unix))]
+#[cfg(all(test, unix, not(target_os = "emscripten")))]
 mod tests {
     use super::*;
     use crate::drivers::sqlite::Db;
