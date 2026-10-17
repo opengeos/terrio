@@ -727,7 +727,8 @@ const BATCH: usize = 65536;
 
 /// Encodes a layer as a GeoParquet file.
 pub fn to_bytes(layer: &Layer) -> Result<Vec<u8>> {
-    let enc = ParquetEncoder::new(layer, &LayerProfile::of(layer));
+    let profile = if ParquetEncoder::needs_profile(layer) { LayerProfile::of(layer) } else { LayerProfile::new(layer) };
+    let enc = ParquetEncoder::new(layer, &profile);
     let mut buf = Vec::new();
     let mut writer = enc.writer(&mut buf)?;
     for chunk in layer.features.chunks(BATCH) {
@@ -742,16 +743,59 @@ fn perr(e: &dyn std::fmt::Display) -> Error {
 }
 
 /// Encodes the features of a layer as record batches of a GeoParquet file, with the column
-/// types and `geo` metadata its profile decides.
+/// types its profile decides. The geometry types and extent of the `geo` metadata are gathered
+/// from the batches and written in the footer.
 pub(crate) struct ParquetEncoder {
     kinds: Vec<Kind>,
     bbox_fields: Fields,
     schema: Arc<Schema>,
-    geo: Value,
+    crs: Option<Value>,
+}
+
+/// A record batch, and what its geometries hold for the `geo` metadata.
+pub(crate) type EncodedBatch = (RecordBatch, GeoStats);
+
+/// The geometry types and extent of the features written, for the `geo` metadata.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct GeoStats {
+    /// The geometry type names, in the order they first appear.
+    type_names: Vec<String>,
+    /// The extent `[min_x, min_y, max_x, max_y]`.
+    bbox: Option<[f64; 4]>,
+}
+
+impl GeoStats {
+    /// Adds the stats of the features that follow.
+    fn merge(&mut self, o: &GeoStats) {
+        for n in &o.type_names {
+            if !self.type_names.contains(n) {
+                self.type_names.push(n.clone());
+            }
+        }
+        if let Some(b) = o.bbox {
+            self.add_bbox(b);
+        }
+    }
+
+    /// Extends the extent to a geometry's bounds.
+    fn add_bbox(&mut self, b: [f64; 4]) {
+        self.bbox = Some(match self.bbox {
+            None => b,
+            Some(a) => [a[0].min(b[0]), a[1].min(b[1]), a[2].max(b[2]), a[3].max(b[3])],
+        });
+    }
 }
 
 impl ParquetEncoder {
-    /// An encoder for the features of `layer` (its fields and CRS), which `profile` describes.
+    /// Whether the column types depend on the values of the features of `layer`, so that
+    /// [`ParquetEncoder::new`] needs a profile of them: layers with integer, date or date-time
+    /// fields. Otherwise an empty profile gives the same columns.
+    pub(crate) fn needs_profile(layer: &Layer) -> bool {
+        layer.schema.fields().iter().any(|f| matches!(f.field_type, FieldType::Integer | FieldType::Date | FieldType::DateTime))
+    }
+
+    /// An encoder for the features of `layer` (its fields and CRS), whose field values `profile`
+    /// describes (when [`ParquetEncoder::needs_profile`]; its geometries are not used).
     pub(crate) fn new(layer: &Layer, profile: &LayerProfile) -> Self {
         let fields = layer.schema.fields();
         let kinds: Vec<Kind> = fields.iter().enumerate().map(|(i, f)| column_kind(profile, i, f.field_type)).collect();
@@ -759,7 +803,7 @@ impl ParquetEncoder {
         let mut schema_fields: Vec<Field> = fields.iter().zip(&kinds).map(|(f, k)| Field::new(&f.name, k.data_type(), true)).collect();
         schema_fields.push(Field::new("geometry", DataType::Binary, true));
         schema_fields.push(Field::new("geometry_bbox", DataType::Struct(bbox_fields.clone()), true));
-        Self { kinds, bbox_fields, schema: Arc::new(Schema::new(schema_fields)), geo: geo_metadata(layer, profile) }
+        Self { kinds, bbox_fields, schema: Arc::new(Schema::new(schema_fields)), crs: geo_crs(layer) }
     }
 
     /// A Parquet writer of the file into `out`.
@@ -769,13 +813,21 @@ impl ParquetEncoder {
             // GDAL's default row group size: with the covering column's statistics, readers skip
             // the row groups outside a bounding-box filter.
             .set_max_row_group_row_count(Some(BATCH))
-            .set_key_value_metadata(Some(vec![parquet::file::metadata::KeyValue::new("geo".into(), self.geo.to_string())]))
             .build();
         // ArrowWriter sets up the file (its `ARROW:schema` metadata included); its row groups
         // are encoded here, their columns in parallel.
         let arrow = ArrowWriter::try_new(out, self.schema.clone(), Some(props)).map_err(|e| perr(&e))?;
         let (writer, factory) = arrow.into_serialized_writer().map_err(|e| perr(&e))?;
-        Ok(ParquetFileWriter { writer, factory, schema: self.schema.clone(), pending: Vec::new(), rows: 0, groups: 0 })
+        Ok(ParquetFileWriter {
+            writer,
+            factory,
+            schema: self.schema.clone(),
+            pending: Vec::new(),
+            rows: 0,
+            groups: 0,
+            crs: self.crs.clone(),
+            geo: GeoStats::default(),
+        })
     }
 
     /// Writes features, in batches of at most the row group size.
@@ -787,23 +839,31 @@ impl ParquetEncoder {
     }
 
     /// The record batches of features, of at most the row group size.
-    pub(crate) fn batches(&self, features: &[Feature]) -> Result<Vec<RecordBatch>> {
+    pub(crate) fn batches(&self, features: &[Feature]) -> Result<Vec<EncodedBatch>> {
         features.chunks(BATCH).map(|chunk| self.batch(chunk)).collect()
     }
 
-    fn batch(&self, chunk: &[Feature]) -> Result<RecordBatch> {
+    fn batch(&self, chunk: &[Feature]) -> Result<EncodedBatch> {
         // The columns, built in parallel.
         let mut columns: Vec<ArrayRef> = crate::par::map_range(self.kinds.len(), |i| self.kinds[i].build(chunk, i));
         let mut wkb = BinaryBuilder::new();
         let mut bounds = [Float64Builder::new(), Float64Builder::new(), Float64Builder::new(), Float64Builder::new()];
         let mut valid = Vec::with_capacity(chunk.len());
-        // Each geometry's bounds and WKB, computed in parallel.
+        let mut geo = GeoStats::default();
+        // Each geometry's bounds, WKB, type and Z, computed in parallel.
         let encoded = crate::par::map_range(chunk.len(), |j| {
             let g = chunk[j].geometry.as_ref();
             let bb = g.and_then(|g| g.bbox());
-            (bb.is_some().then(|| g.map(Geometry::to_wkb)).flatten(), bb)
+            let t = g.map(|g| (g.geom_type(), crate::vector::geometry_has_z(g)));
+            (bb.is_some().then(|| g.map(Geometry::to_wkb)).flatten(), bb, t)
         });
-        for (geometry, bb) in encoded {
+        for (geometry, bb, t) in encoded {
+            if let Some((t, z)) = t {
+                super::profile::add_type_name(&mut geo.type_names, t, z);
+            }
+            if let Some(b) = &bb {
+                geo.add_bbox([b.min_x, b.min_y, b.max_x, b.max_y]);
+            }
             match geometry {
                 Some(w) => wkb.append_value(w),
                 None => wkb.append_null(),
@@ -818,7 +878,7 @@ impl ParquetEncoder {
         let bbox_arrays: Vec<ArrayRef> = bounds.iter_mut().map(|b| Arc::new(b.finish()) as ArrayRef).collect();
         let bbox = StructArray::try_new(self.bbox_fields.clone(), bbox_arrays, Some(valid.into())).map_err(|e| perr(&e))?;
         columns.push(Arc::new(bbox));
-        RecordBatch::try_new(self.schema.clone(), columns).map_err(|e| perr(&e))
+        Ok((RecordBatch::try_new(self.schema.clone(), columns).map_err(|e| perr(&e))?, geo))
     }
 }
 
@@ -832,11 +892,15 @@ pub(crate) struct ParquetFileWriter<W: std::io::Write + Send> {
     pending: Vec<RecordBatch>,
     rows: usize,
     groups: usize,
+    /// The `crs` of the `geo` metadata (see `geo_metadata`).
+    crs: Option<Value>,
+    geo: GeoStats,
 }
 
 impl<W: std::io::Write + Send> ParquetFileWriter<W> {
     /// Adds a batch, writing the row groups it completes.
-    pub(crate) fn push(&mut self, mut batch: RecordBatch) -> Result<()> {
+    pub(crate) fn push(&mut self, (mut batch, geo): EncodedBatch) -> Result<()> {
+        self.geo.merge(&geo);
         while batch.num_rows() > 0 {
             let take = batch.num_rows().min(BATCH - self.rows);
             self.pending.push(batch.slice(0, take));
@@ -889,16 +953,19 @@ impl<W: std::io::Write + Send> ParquetFileWriter<W> {
         Ok(())
     }
 
-    /// Writes the last row group and the footer, and returns the output.
+    /// Writes the last row group and the footer, with the `geo` metadata, and returns the output.
     pub(crate) fn close(mut self) -> Result<W> {
         self.flush_group()?;
+        let geo = geo_metadata(self.crs.take(), &self.geo);
+        self.writer.append_key_value_metadata(parquet::file::metadata::KeyValue::new("geo".into(), geo.to_string()));
         self.writer.into_inner().map_err(|e| perr(&e))
     }
 }
 
-fn geo_metadata(layer: &Layer, profile: &LayerProfile) -> Value {
-    let types = &profile.geometry.type_names;
-    let bounds = profile.geometry.bbox;
+/// The `geo` metadata of a file whose geometries `geo` describes, with `crs` (from `geo_crs`).
+fn geo_metadata(crs: Option<Value>, geo: &GeoStats) -> Value {
+    let types = &geo.type_names;
+    let bounds = geo.bbox;
     let mut col = json!({
         "encoding": "WKB",
         "geometry_types": types,
@@ -910,20 +977,29 @@ fn geo_metadata(layer: &Layer, profile: &LayerProfile) -> Value {
     if let Some(b) = bounds {
         col["bbox"] = json!(b);
     }
+    if let Some(crs) = crs {
+        col["crs"] = crs;
+    }
+    json!({"version": "1.1.0", "primary_column": "geometry", "columns": {"geometry": col}})
+}
+
+/// The `crs` of the `geo` metadata for a layer: `None` to leave it out.
+fn geo_crs(layer: &Layer) -> Option<Value> {
     // A missing `crs` means OGC:CRS84 (longitude/latitude on WGS 84) and `null` an unknown CRS;
     // others are PROJJSON, as the specification asks (WKT, which GDAL and PROJ-based readers
     // also accept, for what cannot be converted).
     let srs = SpatialRef::from_layer(layer);
     if srs.is_unknown() {
-        col["crs"] = Value::Null;
+        Some(Value::Null)
     } else if super::trusted_epsg(layer) != Some(4326) {
         let wkt = super::output_wkt(layer);
-        col["crs"] = match wkt.as_deref().and_then(|w| super::projjson::from_wkt1(w, super::trusted_epsg(layer))) {
+        Some(match wkt.as_deref().and_then(|w| super::projjson::from_wkt1(w, super::trusted_epsg(layer))) {
             Some(j) => j,
             None => wkt.map_or(Value::Null, Value::String),
-        };
+        })
+    } else {
+        None
     }
-    json!({"version": "1.1.0", "primary_column": "geometry", "columns": {"geometry": col}})
 }
 
 /// How a field is stored.

@@ -113,6 +113,14 @@ fn shared_type(a: GeometryType, b: GeometryType) -> Option<GeometryType> {
     }
 }
 
+/// Adds the name of a geometry type (`Polygon`, `Point Z`) to `names` when it is not there yet.
+pub(crate) fn add_type_name(names: &mut Vec<String>, t: GeometryType, z: bool) {
+    let (base, suffix) = (t.as_str(), if z { " Z" } else { "" });
+    if !names.iter().any(|n| n.strip_prefix(base) == Some(suffix)) {
+        names.push(format!("{base}{suffix}"));
+    }
+}
+
 /// What the geometries of a layer hold.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct GeometryProfile {
@@ -251,10 +259,7 @@ impl LayerProfile {
                 g.has_m |= am;
             }
             g.non_point |= !matches!(geom, wbvector::Geometry::Point(_));
-            let (base, suffix) = (t.as_str(), if z { " Z" } else { "" });
-            if !g.type_names.iter().any(|n| n.strip_prefix(base) == Some(suffix)) {
-                g.type_names.push(format!("{base}{suffix}"));
-            }
+            add_type_name(&mut g.type_names, t, z);
             match geom.bbox() {
                 Some(b) => {
                     g.bbox = Some(match g.bbox {

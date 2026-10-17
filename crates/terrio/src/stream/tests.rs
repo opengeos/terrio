@@ -125,7 +125,7 @@ fn streamed_writes_match_whole_writes() {
             let whole = dir.path().join(format!("whole_{}.{ext}", layer.name)).to_string_lossy().into_owned();
             let streamed = dir.path().join(format!("stream_{}.{ext}", layer.name)).to_string_lossy().into_owned();
             crate::write_vector(std::slice::from_ref(&layer), &whole, &Default::default()).unwrap();
-            let profile = needs_profile(*driver).then(|| LayerProfile::of(&layer));
+            let profile = needs_profile(*driver, &layer).then(|| LayerProfile::of(&layer));
             let mut w = FeatureWriter::create(&streamed, &layer, profile.as_ref(), &Default::default()).unwrap();
             for c in layer.features.chunks(6) {
                 let mut chunk = schema_of(&layer);
@@ -149,6 +149,55 @@ fn streamed_writes_match_whole_writes() {
         }
         assert!(!dir.path().read_dir().unwrap().any(|e| e.unwrap().file_name().to_string_lossy().contains("terrio-features")));
     }
+}
+
+/// The `geo` metadata of a GeoParquet file.
+fn parquet_geo(path: &str) -> serde_json::Value {
+    use parquet::file::reader::FileReader;
+    let reader = parquet::file::reader::SerializedFileReader::new(File::open(path).unwrap()).unwrap();
+    let kv = reader.metadata().file_metadata().key_value_metadata().unwrap();
+    let geo = kv.iter().find(|k| k.key == "geo").and_then(|k| k.value.as_deref()).unwrap();
+    serde_json::from_str(geo).unwrap()
+}
+
+/// Layers without integer or date fields stream to GeoParquet without a profile, their geometry
+/// types and extent gathered as they are written.
+#[test]
+fn geoparquet_streams_text_fields_without_a_profile() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut layer = Layer::new("t").with_epsg(4326);
+    layer.add_field(FieldDef::new("name", FieldType::Text));
+    for k in 0..40 {
+        let x = k as f64 - 10.0;
+        let geometry = match k % 5 {
+            0 => None,
+            1 => Some(Geometry::point(x, 2.0)),
+            2 => Some(Geometry::multi_point(vec![Coord::xy(x, -3.0), Coord::xy(x + 1.0, 4.5)])),
+            3 if k > 20 => Some(Geometry::point_z(x, 1.0, 9.0)),
+            _ => Some(Geometry::point(x, 0.0)),
+        };
+        layer.push(Feature { fid: k, geometry, attributes: vec![FieldValue::Text(format!("f{k}"))] });
+    }
+    assert!(!needs_profile(VectorDriver::Parquet, &layer));
+    assert!(needs_profile(VectorDriver::Parquet, &sample(1)));
+    let whole = dir.path().join("whole.parquet").to_string_lossy().into_owned();
+    let streamed = dir.path().join("stream.parquet").to_string_lossy().into_owned();
+    crate::write_vector(std::slice::from_ref(&layer), &whole, &Default::default()).unwrap();
+    let mut w = FeatureWriter::create(&streamed, &layer, None, &Default::default()).unwrap();
+    for c in layer.features.chunks(6) {
+        let mut chunk = schema_of(&layer);
+        chunk.features = c.to_vec();
+        w.write(&chunk).unwrap();
+    }
+    w.finish().unwrap();
+    let geo = parquet_geo(&streamed);
+    assert_eq!(geo, parquet_geo(&whole));
+    let col = &geo["columns"]["geometry"];
+    assert_eq!(col["geometry_types"], serde_json::json!(["Point", "MultiPoint", "Point Z"]));
+    assert_eq!(col["bbox"], serde_json::json!([-9.0, -3.0, 29.0, 4.5]));
+    let a = crate::open_vector(&whole, &Default::default()).unwrap().layers.remove(0);
+    let b = crate::open_vector(&streamed, &Default::default()).unwrap().layers.remove(0);
+    same_content(&a, &b);
 }
 
 #[test]

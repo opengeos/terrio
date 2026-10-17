@@ -657,10 +657,14 @@ pub fn can_write_stream(driver: VectorDriver) -> bool {
     )
 }
 
-/// Whether the writer of a driver needs a [`LayerProfile`] of the features to write them as a
-/// stream.
-pub fn needs_profile(driver: VectorDriver) -> bool {
-    matches!(driver, VectorDriver::CSV | VectorDriver::Shapefile | VectorDriver::FlatGeobuf | VectorDriver::Parquet | VectorDriver::GPKG)
+/// Whether the writer of a driver needs a [`LayerProfile`] of the features of `layer` (its
+/// fields) to write them as a stream. GeoParquet needs one only for integer, date and date-time
+/// fields, whose column types depend on the values.
+pub fn needs_profile(driver: VectorDriver, layer: &Layer) -> bool {
+    match driver {
+        VectorDriver::Parquet => geoparquet::ParquetEncoder::needs_profile(layer),
+        _ => matches!(driver, VectorDriver::CSV | VectorDriver::Shapefile | VectorDriver::FlatGeobuf | VectorDriver::GPKG),
+    }
 }
 
 /// A vector layer written as a stream of features.
@@ -683,7 +687,7 @@ impl FeatureWriter {
                 .ok_or_else(|| Error::InvalidArgument(format!("cannot tell the output format of '{path}': give it explicitly")))?,
         };
         let schema = schema_of(layer);
-        let streamed = can_write_stream(driver) && (profile.is_some() || !needs_profile(driver));
+        let streamed = can_write_stream(driver) && (profile.is_some() || !needs_profile(driver, &schema));
         let sink: Box<dyn FeatureSink> = match (streamed, driver, profile) {
             (false, ..) => Box::new(WholeSink {
                 layer: schema,
@@ -717,8 +721,8 @@ impl FeatureWriter {
                     options: VectorWriteOptions { driver: Some(driver), ..options.clone() },
                 }),
             },
-            (true, VectorDriver::Parquet, Some(p)) => {
-                let enc = geoparquet::ParquetEncoder::new(&schema, p);
+            (true, VectorDriver::Parquet, p) => {
+                let enc = geoparquet::ParquetEncoder::new(&schema, p.unwrap_or(&LayerProfile::new(&schema)));
                 let writer = enc.writer(BufWriter::with_capacity(1 << 20, File::create(path)?))?;
                 Box::new(ParquetSink::new(writer, enc))
             }
@@ -1184,7 +1188,7 @@ impl Drop for FgbSink {
 struct ParquetSink {
     enc: geoparquet::ParquetEncoder,
     #[cfg(not(target_arch = "wasm32"))]
-    encoder: Option<(std::sync::mpsc::SyncSender<arrow_array::RecordBatch>, std::thread::JoinHandle<Result<()>>)>,
+    encoder: Option<(std::sync::mpsc::SyncSender<geoparquet::EncodedBatch>, std::thread::JoinHandle<Result<()>>)>,
     /// Set when the sink is dropped unfinished: the file is left without its footer.
     #[cfg(not(target_arch = "wasm32"))]
     abort: std::sync::Arc<std::sync::atomic::AtomicBool>,
@@ -1197,7 +1201,7 @@ impl ParquetSink {
         #[cfg(not(target_arch = "wasm32"))]
         {
             // Two batches in flight at most.
-            let (tx, rx) = std::sync::mpsc::sync_channel::<arrow_array::RecordBatch>(2);
+            let (tx, rx) = std::sync::mpsc::sync_channel::<geoparquet::EncodedBatch>(2);
             let abort = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
             let aborted = abort.clone();
             let handle = std::thread::spawn(move || {
@@ -1475,7 +1479,7 @@ pub fn convert(src: &str, dst: &str, options: &ConvertOptions) -> Result<()> {
     }
     let mut reader = readers.remove(0);
     let mut translator = Translator::new(reader.layer(), &options.translate)?;
-    let profile = if needs_profile(driver) {
+    let profile = if needs_profile(driver, translator.schema()) {
         let mut first = open_layers(src, &options.open, chunk)?.remove(0);
         let mut t = Translator::new(first.layer(), &options.translate)?;
         let mut p = LayerProfile::new(t.schema());
@@ -1613,7 +1617,7 @@ fn convert_sorted_osm(data: &mut File, src: &str, dst: &str, options: &ConvertOp
         return remove_on_error(dst, driver, written);
     }
     let [l] = selected[..] else { return Err(one_layer_only(driver)) };
-    let profile = if needs_profile(driver) {
+    let profile = if needs_profile(driver, translators[0].schema()) {
         let mut t = Translator::new(&schemas[l], &options.translate)?;
         let mut p = LayerProfile::new(t.schema());
         osm::read_sorted_pbf(data, wanted, &mut |_, features| {
