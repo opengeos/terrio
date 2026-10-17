@@ -88,7 +88,10 @@ gdal-sys = "0.12"
 
 # openjp2 frees never-allocated code-block buffers (a null `dealloc`, harmless with the system
 # allocator) and trips the standard library's debug-mode precondition checks: build it as in
-# release.
+# release. Its inverse wavelet transform of a decode area also adds samples just outside the area,
+# uninitialized memory whose results are discarded: with overflow checks, a window read panicked
+# now and then, as the garbage happened to overflow (OpenJPEG wraps, as a release build does).
 [profile.dev.package.openjp2]
 debug-assertions = false
+overflow-checks = false
 opt-level = 3
