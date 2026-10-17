@@ -2385,7 +2385,7 @@ dependencies = [
 
 [[package]]
 name = "terrio"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -2442,7 +2442,7 @@ dependencies = [
 
 [[package]]
 name = "terrio-cli"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "clap",
  "gag",
@@ -2453,7 +2453,7 @@ dependencies = [
 
 [[package]]
 name = "terrio-js"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "console_error_panic_hook",
  "js-sys",
@@ -2468,7 +2468,7 @@ dependencies = [
 
 [[package]]
 name = "terrio-py"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "arrow-array",
  "numpy",

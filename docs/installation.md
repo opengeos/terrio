@@ -42,8 +42,8 @@ release or a copy served next to the page:
 import micropip
 
 await micropip.install(
-    "https://github.com/opengeos/terrio/releases/download/v0.3.0/"
-    "terrio-0.3.0-cp310-abi3-pyemscripten_2025_0_wasm32.whl"
+    "https://github.com/opengeos/terrio/releases/download/v0.3.1/"
+    "terrio-0.3.1-cp310-abi3-pyemscripten_2025_0_wasm32.whl"
 )
 ```
 

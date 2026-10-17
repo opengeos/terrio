@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/*", "python", "js"]
 
 [workspace.package]
-version = "0.3.0"
+version = "0.3.1"
 edition = "2024"
 license = "MIT"
 rust-version = "1.90"
@@ -14,7 +14,7 @@ authors = ["Qiusheng Wu <giswqs@gmail.com>"]
 [workspace.dependencies]
 # Memory-mapped reads of SQLite files (GeoPackage, MBTiles), native builds only.
 memmap2 = "0.9"
-terrio = { path = "crates/terrio", version = "0.3.0" }
+terrio = { path = "crates/terrio", version = "0.3.1" }
 
 # Format drivers, coordinate reference systems
 wbraster = "0.2.1"
