@@ -49,6 +49,7 @@ mod params;
 mod projections;
 mod route;
 mod wkt1;
+mod wkt2;
 
 pub(crate) use def::Def;
 pub use grid::{register_grid, reset_grid_cache, set_grid_search_paths, set_network_enabled};
