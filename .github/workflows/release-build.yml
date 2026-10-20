@@ -1,7 +1,8 @@
 name: Release build
 
 # The release artifacts: the Python wheels for every platform, the source distribution, the
-# Pyodide wheel (tested in Pyodide under Node.js) and the `terrio` command-line binaries. Called by release.yml, which publishes them on
+# Pyodide wheel (tested in Pyodide under Node.js) and the `terrio` command-line binaries, with
+# the installers that download them. Called by release.yml, which publishes them on
 # tags, and by release-dry-run.yml, which builds them for pull requests without publishing.
 on:
   workflow_call:
@@ -163,3 +164,53 @@ jobs:
         with:
           name: cli-${{ matrix.platform.target }}
           path: dist/*
+
+  # The installers (docs/install.sh, docs/install.ps1, served by the documentation site), run
+  # against the binaries just built: served from a local HTTP server standing in for the release.
+  installers:
+    name: installer (${{ matrix.os }})
+    needs: [cli]
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest, windows-latest, windows-11-arm]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: cli-*
+          path: release
+          merge-multiple: true
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Serve the archives
+        shell: bash
+        run: |
+          echo "TERRIO_VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)" >> "$GITHUB_ENV"
+          echo "TERRIO_DOWNLOAD_URL=http://127.0.0.1:8000" >> "$GITHUB_ENV"
+          cp docs/install.sh docs/install.ps1 release/
+          cd release && nohup python -m http.server 8000 --bind 127.0.0.1 > /dev/null 2>&1 &
+          for _ in $(seq 30); do curl -sf http://127.0.0.1:8000/ > /dev/null && break; sleep 1; done
+      - name: install.sh (sh, and shellcheck)
+        if: runner.os != 'Windows'
+        run: |
+          if [ "${{ matrix.os }}" = ubuntu-latest ]; then shellcheck docs/install.sh; fi
+          curl -LsSf http://127.0.0.1:8000/install.sh | sh
+          test "$("$HOME/.local/bin/terrio" --version)" = "terrio $TERRIO_VERSION"
+      - name: install.ps1 (Windows PowerShell)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          irm http://127.0.0.1:8000/install.ps1 | iex
+          if ((& "$env:USERPROFILE\.local\bin\terrio.exe" --version) -ne "terrio $env:TERRIO_VERSION") { throw "wrong version" }
+      - name: install.ps1 (PowerShell 7, into another directory)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          TERRIO_INSTALL_DIR: ${{ runner.temp }}\terrio-bin
+          TERRIO_NO_MODIFY_PATH: "1"
+        run: |
+          irm http://127.0.0.1:8000/install.ps1 | iex
+          if ((& "$env:TERRIO_INSTALL_DIR\terrio.exe" --version) -ne "terrio $env:TERRIO_VERSION") { throw "wrong version" }

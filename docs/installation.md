@@ -5,28 +5,35 @@ terrio is published on [crates.io](https://crates.io/crates/terrio),
 
 ## Command-line tool
 
-The `terrio` command comes with the Python package, without a Rust toolchain:
+The installer downloads the standalone `terrio` binary for your platform (Linux x86_64 and aarch64,
+static, any distribution; macOS Intel and Apple silicon; Windows x64 and ARM64) from the latest
+[GitHub release](https://github.com/opengeos/terrio/releases), checks its SHA-256 checksum and
+puts it in `~/.local/bin` (`%USERPROFILE%\.local\bin` on Windows). No Rust or Python is needed.
+
+```sh
+# Linux and macOS
+curl -LsSf https://terrio.opengeos.org/install.sh | sh
+```
+
+```powershell
+# Windows
+powershell -ExecutionPolicy ByPass -c "irm https://terrio.opengeos.org/install.ps1 | iex"
+```
+
+Set `TERRIO_VERSION` (`TERRIO_VERSION=0.4.0`) to install another release, and `TERRIO_INSTALL_DIR`
+to install elsewhere. The Windows installer adds the directory to your `PATH`
+(`TERRIO_NO_MODIFY_PATH=1` to leave it); the shell installer prints the line to add when it isn't
+on it. Run the installer again to update terrio, and delete the binary to uninstall it.
+
+The command also comes with the Python package (`python -m terrio` runs it too):
 
 ```sh
 pip install terrio      # or: uv tool install terrio, pipx install terrio
-terrio --version
 ```
 
-`python -m terrio` runs it too. Each [GitHub release](https://github.com/opengeos/terrio/releases)
-also has standalone binaries, for Linux (x86_64 and aarch64, static, any distribution), macOS
-(Intel and Apple silicon) and Windows (x64 and ARM64): download the archive for your platform and
-put `terrio` (`terrio.exe`) on your `PATH`. [cargo-binstall](https://github.com/cargo-bins/cargo-binstall)
-installs them as well:
-
-```sh
-cargo binstall terrio-cli
-```
-
-With [Rust](https://rustup.rs) installed, build it instead:
-
-```sh
-cargo install terrio-cli
-```
+[cargo-binstall](https://github.com/cargo-bins/cargo-binstall) installs the release binaries
+(`cargo binstall terrio-cli`), and with [Rust](https://rustup.rs) installed, `cargo install
+terrio-cli` builds it from source.
 
 The optional [GDAL backend](gdal.md), for formats terrio doesn't read itself, needs GDAL installed:
 `cargo install terrio-cli --features gdal`.

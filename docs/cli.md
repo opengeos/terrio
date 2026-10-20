@@ -20,7 +20,8 @@ terrio <COMMAND>
   filter      PDAL's point cloud filters (smrf, pmf, csf, elm, hag_nn, crop, expression...)
 ```
 
-Install it with `pip install terrio`, from the binaries on each GitHub release or with
+Install it with `curl -LsSf https://terrio.opengeos.org/install.sh | sh` (on Windows,
+`irm https://terrio.opengeos.org/install.ps1 | iex` in PowerShell), `pip install terrio` or
 `cargo install terrio-cli`; see [Installation](installation.md).
 
 Every input can be a local path, a URL, a cloud object or a zip archive member; see

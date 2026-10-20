@@ -34,9 +34,15 @@ centimetre, and 99 % of a sample of transformations between two CRSs within a me
 
 ## Command line
 
-`pip install terrio` installs the `terrio` command; standalone binaries for Linux, macOS and Windows
-are attached to each [GitHub release](https://github.com/opengeos/terrio/releases) (or
-`cargo binstall terrio-cli`), and `cargo install terrio-cli` builds it from source.
+Install the `terrio` command, a standalone binary, with:
+
+```sh
+curl -LsSf https://terrio.opengeos.org/install.sh | sh                                # Linux, macOS
+powershell -ExecutionPolicy ByPass -c "irm https://terrio.opengeos.org/install.ps1 | iex"  # Windows
+```
+
+`pip install terrio` installs it too, and `cargo install terrio-cli` builds it from source (see
+[Installation](https://terrio.opengeos.org/installation/)).
 
 ```sh
 terrio info countries.gpkg                       # summarize a dataset (--json, --stats)
