@@ -497,14 +497,15 @@ fn towgs84(root: &Node) -> Result<Option<Vec<f64>>> {
     }
     let method = t.child("METHOD").map(|m| (norm(m.name().unwrap_or("")), m.epsg())).unwrap_or_default();
     // So is one that is not a 3 or 7 parameter Helmert transformation (a grid's, NTv2 or
-    // NADCON, whose file is a PARAMETERFILE).
+    // NADCON, whose file is a PARAMETERFILE): geocentric translations, position vector and
+    // coordinate frame, in the geog2D, geocentric and geog3D domains.
     let helmert = ["geocentrictranslations", "positionvector", "coordinateframe"].iter().any(|m| method.0.starts_with(m))
-        || matches!(method.1, Some(9603 | 9606 | 9607 | 1031 | 1032 | 1033 | 1035 | 1037 | 1038 | 9032 | 9033 | 9065));
+        || matches!(method.1, Some(9603 | 1031 | 1035 | 9606 | 1033 | 1037 | 9607 | 1032 | 1038));
     if !helmert {
         return Ok(None);
     }
     // Coordinate frame rotations turn the other way from PROJ's (position vector) `+towgs84`.
-    let frame = method.0.contains("coordinateframe") || matches!(method.1, Some(9607 | 1032 | 9032));
+    let frame = method.0.contains("coordinateframe") || matches!(method.1, Some(9607 | 1032 | 1038));
     let mut v = [0.0; 7];
     let mut seven = false;
     for p in t.children("PARAMETER") {
