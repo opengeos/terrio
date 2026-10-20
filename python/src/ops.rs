@@ -398,7 +398,7 @@ fn convert(
         Some(None) => None,
         _ => Some(vector_write_options(format)?),
     };
-    py.detach(|| -> terrio::Result<()> {
+    let result = py.detach(|| -> terrio::Result<()> {
         // Vector conversions between formats read and written as streams go a chunk of
         // features at a time, in bounded memory.
         if srcwin.is_none() && overview.is_none() && mode == WriteMode::Create && !terrio::tiles::is_archive(src) {
@@ -465,8 +465,9 @@ fn convert(
                 terrio::ops::vector_filter::write_vector_with_mode(&layers, dst, &options, mode)
             }
         }
-    })
-    .py()
+    });
+    crate::emit_warnings(py)?;
+    result.py()
 }
 
 /// Opens the layers given to an operation: a path, or layers in memory.
