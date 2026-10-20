@@ -362,7 +362,7 @@ impl LazyRaster {
     /// use terrio::RasterWriteOptions;
     ///
     /// let mut r = terrio::open_raster_lazy("big.tif")?;
-    /// let options = RasterWriteOptions { driver: Some(terrio::RasterDriver::Cog), ..Default::default() };
+    /// let options = RasterWriteOptions { driver: Some(terrio::formats::RasterDriver::Cog), ..Default::default() };
     /// r.write("big_cog.tif", &options)?;
     /// # Ok::<(), terrio::Error>(())
     /// ```
