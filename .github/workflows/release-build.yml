@@ -131,6 +131,9 @@ jobs:
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y musl-tools
       - name: Build
+        # Without the symbol table, about a quarter of the binary.
+        env:
+          CARGO_PROFILE_RELEASE_STRIP: symbols
         run: cargo build --release --locked -p terrio-cli --target ${{ matrix.platform.target }}
       - name: Check the binary runs
         shell: bash

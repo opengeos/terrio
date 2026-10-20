@@ -22,7 +22,6 @@ def main() -> int:
     if hasattr(signal, "SIGPIPE"):
         signal.signal(signal.SIGPIPE, signal.SIG_DFL)
     signal.signal(signal.SIGINT, signal.SIG_DFL)
-    sys.stdout.flush()
     return cli_main(["terrio", *sys.argv[1:]])
 
 
