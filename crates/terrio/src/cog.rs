@@ -353,6 +353,47 @@ impl LazyRaster {
         self.read_window(window, &WindowOptions::default())
     }
 
+    /// Writes the full-resolution image to `path`, as [`crate::write_raster_dataset`] writes the
+    /// raster [`LazyRaster::read`] reads. A GeoTIFF read in place and written as a GeoTIFF or a COG
+    /// (in a compression terrio's own writer encodes) is read and written a strip of rows at a
+    /// time, so that it is never held whole; other rasters are read whole, then written.
+    ///
+    /// ```no_run
+    /// use terrio::RasterWriteOptions;
+    ///
+    /// let mut r = terrio::open_raster_lazy("big.tif")?;
+    /// let options = RasterWriteOptions { driver: Some(terrio::RasterDriver::Cog), ..Default::default() };
+    /// r.write("big_cog.tif", &options)?;
+    /// # Ok::<(), terrio::Error>(())
+    /// ```
+    pub fn write(&mut self, path: &str, options: &crate::RasterWriteOptions) -> Result<()> {
+        let Inner::Tiff(t) = &self.inner else { return crate::write_raster_dataset(&self.read()?, path, options) };
+        // An output that replaces the input is written from the input read whole.
+        let inputs: Vec<String> = t.file.iter().map(|f| f.to_string_lossy().into_owned()).collect();
+        if t.file.is_none() || crate::ops::strips::overwrites(path, &inputs) {
+            return crate::write_raster_dataset(&self.read()?, path, options);
+        }
+        // The header the whole raster is read with.
+        let mut header = self.header();
+        header.raster.crs = t.tags.crs_info();
+        header.raster.metadata = t.tags.metadata.clone();
+        let (width, height, bands) = (self.width(), self.height(), self.band_count());
+        let block = self.block_size().map(|(_, h)| h);
+        let rows = crate::ops::strips::strip_rows(width, bands, self.data_type().size_bytes(), block);
+        let mut out = crate::ops::strips::StripWriter::create(&header, path, options)?;
+        let read = WindowOptions::default();
+        crate::ops::strips::pipelined(
+            height.div_ceil(rows),
+            |i| {
+                let y = i * rows;
+                let h = rows.min(height - y);
+                Ok((self.read_window(Window::new(0, y, width, h), &read)?.raster.data, h))
+            },
+            |_, (data, h)| out.write(data, h),
+        )?;
+        out.finish()
+    }
+
     /// Reads a window of some bands, at full resolution or from an overview, as a raster
     /// georeferenced to the window.
     pub fn read_window(&mut self, window: Window, options: &WindowOptions) -> Result<RasterDataset> {

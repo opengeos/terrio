@@ -1,8 +1,9 @@
 //! Outputs written a strip of rows at a time, so that operations reading their input by windows
-//! never hold the output whole when it is a GeoTIFF: [`StripWriter`] writes GeoTIFF strips as
-//! they come (with [`GeoTiffWriter`], on another thread), and gathers those of other formats (and
-//! of COGs, whose overviews need the whole raster) to write them at the end.
+//! never hold the output whole when it is a GeoTIFF or a COG: [`StripWriter`] writes GeoTIFF
+//! strips as they come (with [`GeoTiffWriter`], on another thread), compresses those of COGs as
+//! they come (with [`CogWriter`]), and gathers those of other formats to write them at the end.
 
+use crate::drivers::gtiff_write::{CogWriter, TiffOptions};
 use crate::formats::RasterDriver;
 use crate::{Error, GeoTiffWriter, RasterDataset, RasterWriteOptions, Result};
 use wbraster::raster::RasterData;
@@ -43,7 +44,7 @@ enum Inner {
     #[cfg(not(target_arch = "wasm32"))]
     Thread { tx: std::sync::mpsc::SyncSender<(RasterData, usize)>, handle: Option<std::thread::JoinHandle<Result<()>>> },
     #[cfg(target_arch = "wasm32")]
-    Tiff(GeoTiffWriter),
+    Tiff(Tiff),
     /// The output gathered whole, written at the end.
     Whole { ds: Box<RasterDataset>, options: Box<RasterWriteOptions>, done: usize },
 }
@@ -53,27 +54,22 @@ impl StripWriter {
     pub fn create(header: &RasterDataset, path: &str, options: &RasterWriteOptions) -> Result<Self> {
         let r = &header.raster;
         let (rows, bands, width) = (r.rows, r.bands, r.cols);
-        let tiff = options.driver.or_else(|| RasterDriver::for_extension(path)) == Some(RasterDriver::GTiff)
-            && options.mask.is_none()
-            && options.overviews.is_empty();
-        // Compressions only wbraster encodes are written whole; invalid options fail here, before
-        // any work.
-        if tiff && crate::drivers::gtiff_write::TiffOptions::from_write_options(options, false, header.nodata())?.is_some() {
-            crate::dataset::ensure_writable_location(path)?;
-            let inner = match GeoTiffWriter::create(path, header, options)? {
+        if let Some(tiff) = Tiff::create(header, path, options)? {
+            let inner = {
                 #[cfg(not(target_arch = "wasm32"))]
-                mut w => {
+                {
+                    let mut w = tiff;
                     let (tx, rx) = std::sync::mpsc::sync_channel::<(RasterData, usize)>(1);
                     let handle = std::thread::spawn(move || {
                         for (data, n) in rx {
-                            w.write_rows(&data, n, None)?;
+                            w.write_rows(data, n)?;
                         }
                         w.finish()
                     });
                     Inner::Thread { tx, handle: Some(handle) }
                 }
                 #[cfg(target_arch = "wasm32")]
-                w => Inner::Tiff(w),
+                Inner::Tiff(tiff)
             };
             return Ok(Self { inner: Some(inner), path: path.to_string(), rows, bands, width });
         }
@@ -104,7 +100,7 @@ impl StripWriter {
                 }
             }
             #[cfg(target_arch = "wasm32")]
-            Inner::Tiff(w) => w.write_rows(&data, rows, None),
+            Inner::Tiff(w) => w.write_rows(data, rows),
             Inner::Whole { ds, done, .. } => {
                 let (w, n) = (self.width, self.width * self.rows);
                 if *done + rows > self.rows || data.len() != w * rows * self.bands {
@@ -178,6 +174,51 @@ impl Drop for StripWriter {
     }
 }
 
+/// A GeoTIFF or COG written as its rows come, by terrio's own writer.
+enum Tiff {
+    GeoTiff(GeoTiffWriter),
+    Cog(CogWriter),
+}
+
+impl Tiff {
+    /// The writer of `path`, when it is a GeoTIFF or COG terrio's writer streams (without
+    /// overviews or a mask, in a compression it encodes); `None` for other outputs. Invalid
+    /// options fail here, before any work.
+    fn create(header: &RasterDataset, path: &str, options: &RasterWriteOptions) -> Result<Option<Self>> {
+        let driver = options.driver.or_else(|| RasterDriver::for_extension(path));
+        let cog = driver == Some(RasterDriver::Cog);
+        if !(cog || driver == Some(RasterDriver::GTiff)) || options.mask.is_some() || !options.overviews.is_empty() {
+            return Ok(None);
+        }
+        // Compressions only wbraster encodes are written whole.
+        let Some(mut opts) = TiffOptions::from_write_options(options, cog, header.nodata())? else { return Ok(None) };
+        crate::dataset::ensure_writable_location(path)?;
+        if !cog {
+            return Ok(Some(Self::GeoTiff(GeoTiffWriter::create(path, header, options)?)));
+        }
+        // As `crate::write_raster_dataset` writes it.
+        if opts.geo_transform.is_none() {
+            opts.geo_transform = header.affine;
+        }
+        opts.complex = header.complex;
+        Ok(Some(Self::Cog(CogWriter::create(path, &header.raster, &opts)?)))
+    }
+
+    fn write_rows(&mut self, data: RasterData, rows: usize) -> Result<()> {
+        match self {
+            Self::GeoTiff(w) => w.write_rows(&data, rows, None),
+            Self::Cog(w) => w.write_rows(data, rows),
+        }
+    }
+
+    fn finish(self) -> Result<()> {
+        match self {
+            Self::GeoTiff(w) => w.finish(),
+            Self::Cog(w) => w.finish(),
+        }
+    }
+}
+
 /// Runs `work` on `n` strips in order, `read` reading each: on another thread, a strip ahead of
 /// the one worked on (in turn on WebAssembly).
 pub(crate) fn pipelined<R: Send>(
@@ -242,6 +283,63 @@ mod tests {
         w.write(rows(), 3).unwrap();
         w.finish().unwrap();
         assert!(std::path::Path::new(path).exists());
+    }
+
+    /// A raster of 300 x 200 Float32 values with nodata and metadata, in UTM.
+    fn utm_raster() -> RasterDataset {
+        let (w, h) = (300, 200);
+        let values: Vec<f32> = (0..w * h).map(|i| if i % 41 == 0 { -9999.0 } else { (i % 1013) as f32 * 0.5 }).collect();
+        let cfg = wbraster::RasterConfig {
+            cols: w,
+            rows: h,
+            bands: 1,
+            nodata: -9999.0,
+            data_type: DataType::F32,
+            crs: wbraster::CrsInfo::from_epsg(32613),
+            metadata: vec![("SOURCE".into(), "test".into())],
+            ..Default::default()
+        };
+        let raster = crate::pixel::raster_from_data(cfg, RasterData::F32(values)).unwrap();
+        let mut ds = RasterDataset::with_driver(raster, RasterDriver::GTiff, true);
+        ds.set_geo_transform([450000.0, 30.0, 0.0, 4400000.0, 0.0, -30.0]);
+        ds
+    }
+
+    /// COGs written a strip at a time, and GeoTIFFs written as COGs from a lazy read, are those
+    /// written from the whole raster.
+    #[test]
+    fn cogs_are_written_in_strips() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = |name: &str| dir.path().join(name).to_str().unwrap().to_string();
+        let ds = utm_raster();
+        let cog = RasterWriteOptions {
+            driver: Some(RasterDriver::Cog),
+            compression: Some("DEFLATE".into()),
+            tile_size: Some(64),
+            ..Default::default()
+        };
+        crate::write_raster_dataset(&ds, &path("whole.tif"), &cog).unwrap();
+        let whole = std::fs::read(path("whole.tif")).unwrap();
+
+        let mut header = ds.clone();
+        header.raster.data = RasterData::new_filled(DataType::F32, 0, 0.0);
+        let mut w = StripWriter::create(&header, &path("strips.tif"), &cog).unwrap();
+        for y in (0..200).step_by(37) {
+            let h = 37.min(200 - y);
+            let rows = crate::cog::cut(&ds.raster, crate::Window::new(0, y, 300, h), &[1]);
+            w.write(rows, h).unwrap();
+        }
+        w.finish().unwrap();
+        assert!(std::fs::read(path("strips.tif")).unwrap() == whole);
+
+        // From a tiled GeoTIFF read in place.
+        let tiled = RasterWriteOptions { tile_size: Some(32), compression: Some("LZW".into()), ..Default::default() };
+        crate::write_raster_dataset(&ds, &path("src.tif"), &tiled).unwrap();
+        let mut lazy = crate::open_raster_lazy(&path("src.tif")).unwrap();
+        lazy.write(&path("lazy.tif"), &cog).unwrap();
+        let crate::Dataset::Raster(read) = crate::open(&path("src.tif")).unwrap() else { panic!("not a raster") };
+        crate::write_raster_dataset(&read, &path("read.tif"), &cog).unwrap();
+        assert!(std::fs::read(path("lazy.tif")).unwrap() == std::fs::read(path("read.tif")).unwrap());
     }
 
     /// Options the GeoTIFF writer refuses fail before any strip is computed.

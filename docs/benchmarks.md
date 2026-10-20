@@ -78,7 +78,7 @@ the largest peak memory. Same machine, terrio 0.2.0.
 | Task | terrio | GDAL | terrio vs GDAL | terrio memory | GDAL memory |
 |---|---|---|---|---|---|
 | Statistics: 14412² Float32 mosaic | 1.82 s | 3.80 s | 2.1× faster | 143 MB | 859 MB |
-| GeoTIFF → COG (Deflate): the mosaic | 1.54 s | 20.98 s | 13.6× faster | 1.9 GB | 1.2 GB |
+| GeoTIFF → COG (Deflate): the mosaic | 1.54 s | 20.98 s | 13.6× faster | 784 MB | 1.2 GB |
 | Window 2048² of the mosaic | 34 ms | 102 ms | 3.0× faster | 80 MB | 65 MB |
 | Warp the mosaic to EPSG:3857, bilinear | 2.18 s | 16.44 s | 7.5× faster | 718 MB | 1.6 GB |
 | Mosaic 16 USGS 3DEP tiles → GeoTIFF | 929 ms | 6.73 s | 7.2× faster | 521 MB | 1.9 GB |
@@ -115,9 +115,11 @@ the largest peak memory. Same machine, terrio 0.2.0.
 - `.aux.xml` statistics caches are disabled (`GDAL_PAM_ENABLED=NO`), and the statistics case uses a
   file without statistics stored in its metadata, so both tools compute them from the pixels.
 - **Large rasters**: statistics, translation, terrain products, warping and mosaicking read their
-  inputs by windows, and write GeoTIFF outputs a strip of rows at a time, so neither is held
-  whole. A COG is written whole, since its overviews need the full-resolution raster, and the
-  JPEG 2000 band is decoded whole.
+  inputs by windows, and write GeoTIFF and COG outputs a strip of rows at a time, so neither is
+  held whole. A COG's levels are compressed by rows of tiles as the rows come, each overview
+  averaged from pairs of rows of the level above, and the tiles wait in temporary files until
+  the file is laid out (the IFDs first, then the smallest overview's tiles). The JPEG 2000 band
+  is decoded whole.
 - **Mosaic of 16 tiles**: terrio copies each tile's pixels into place; `gdalwarp` warps them.
 - **Large vectors** are converted a chunk of features at a time: at most 65,536 features, and
   about 64 MB of them, so that a run of large polygons is not held at once. Shapefile and GeoPackage

@@ -811,6 +811,7 @@ fn color_map_tag(table: &[[u8; 4]], t: DataType) -> Value {
 }
 
 /// How the pixels are laid out in the file.
+#[derive(Clone)]
 struct Layout {
     /// Tile width and height; strips when `None`.
     tile: Option<(u32, u32)>,
@@ -1723,6 +1724,327 @@ impl GeoTiffWriter {
     }
 }
 
+/// Rows `range` of band-major `data`, which holds `total` rows of `bands` bands of `cols` columns.
+fn slice_rows(data: &RasterData, total: usize, range: std::ops::Range<usize>, cols: usize, bands: usize) -> RasterData {
+    map_data!(data, v => {
+        let mut out = Vec::with_capacity(range.len() * cols * bands);
+        for b in 0..bands {
+            out.extend_from_slice(&v[(b * total + range.start) * cols..(b * total + range.end) * cols]);
+        }
+        out
+    })
+}
+
+/// The `a_rows` rows of `a` followed by the `b_rows` rows of `b`, band after band.
+fn append_rows(a: &RasterData, a_rows: usize, b: &RasterData, b_rows: usize, cols: usize, bands: usize) -> Result<RasterData> {
+    macro_rules! join {
+        ($($v:ident),*) => {
+            match (a, b) {
+                $((RasterData::$v(a), RasterData::$v(b)) => {
+                    let mut out = Vec::with_capacity(cols * (a_rows + b_rows) * bands);
+                    for band in 0..bands {
+                        out.extend_from_slice(&a[band * cols * a_rows..(band + 1) * cols * a_rows]);
+                        out.extend_from_slice(&b[band * cols * b_rows..(band + 1) * cols * b_rows]);
+                    }
+                    Ok(RasterData::$v(out))
+                })*
+                _ => Err(Error::InvalidArgument("the rows are not of the raster's data type".into())),
+            }
+        };
+    }
+    join!(U8, I8, U16, I16, U32, I32, U64, I64, F32, F64)
+}
+
+/// Where a COG level's compressed chunks (with their leaders and trailers) wait until the file is
+/// laid out: an unnamed temporary file, or memory on WebAssembly.
+#[cfg(not(target_arch = "wasm32"))]
+type ChunkSpool = std::fs::File;
+#[cfg(target_arch = "wasm32")]
+type ChunkSpool = std::io::Cursor<Vec<u8>>;
+
+fn chunk_spool() -> Result<ChunkSpool> {
+    #[cfg(not(target_arch = "wasm32"))]
+    return Ok(tempfile::tempfile()?);
+    #[cfg(target_arch = "wasm32")]
+    Ok(Default::default())
+}
+
+/// One resolution level of a [`CogWriter`].
+struct CogLevel {
+    cols: usize,
+    rows: usize,
+    /// The rows received so far.
+    received: usize,
+    /// Rows received but not yet compressed (less than a row of tiles), band after band.
+    pending: RasterData,
+    pending_rows: usize,
+    /// The last row received, when the next level waits for the row it is averaged with.
+    carry: Option<RasterData>,
+    /// The compressed chunks of each plane, and their sizes.
+    spools: Vec<ChunkSpool>,
+    sizes: Vec<Vec<u64>>,
+    /// The structural tags, from the first row of tiles.
+    tags: Vec<(u16, Value)>,
+}
+
+/// A COG written a few rows at a time, from the top, so that the raster is never held whole. Each
+/// level (the full resolution, then the overviews down to one that fits in a tile) compresses its
+/// rows of tiles as they are complete, into a temporary file, and halves its rows a pair at a time
+/// into the next level, as [`write`] computes the overviews from the whole raster. Once the last
+/// row is in, the file is laid out as [`write`] lays it out: the IFDs, then the levels' tiles from
+/// the smallest overview, copied from the temporary files. The file is byte for byte the same.
+pub(crate) struct CogWriter {
+    file: std::io::BufWriter<std::fs::File>,
+    bands: usize,
+    data_type: DataType,
+    encoding: std::sync::Arc<(Compression, CodecParams, Layout)>,
+    tile: usize,
+    nodata: Option<f64>,
+    nearest: bool,
+    bigtiff: bool,
+    /// The full-resolution image's georeferencing and metadata tags (nodata on every level).
+    geo: Vec<(u16, Value)>,
+    color_map: Option<Value>,
+    levels: Vec<CogLevel>,
+    /// Rows of tiles being compressed, in the order they were given: their level, number of
+    /// rows, and the compressed image to come.
+    #[cfg(not(target_arch = "wasm32"))]
+    in_flight: std::collections::VecDeque<(usize, usize, std::sync::mpsc::Receiver<Result<Image>>)>,
+}
+
+/// The most rows of tiles a [`CogWriter`] compresses at once, so that the tiles of the next rows
+/// keep the threads busy while the last tiles of the first are compressed.
+#[cfg(not(target_arch = "wasm32"))]
+const COG_IN_FLIGHT: usize = 3;
+
+impl CogWriter {
+    /// Creates the file, for a raster described by `raster` (its pixels are not read). `opts` are
+    /// a COG's, without a mask.
+    pub(crate) fn create(path: &str, raster: &Raster, opts: &TiffOptions) -> Result<Self> {
+        if !opts.cog || opts.mask.is_some() {
+            return Err(Error::Unsupported("COGs are written in rows without a mask only".into()));
+        }
+        let Plan { tile, layout, geo, color_map } = plan(raster, opts)?;
+        let tile = tile.map_or(512, |(t, _)| t as usize);
+        let planes = if layout.planar { raster.bands / layout.parts } else { 1 };
+        let mut sizes = vec![(raster.cols, raster.rows)];
+        while let Some(&(c, r)) = sizes.last().filter(|(c, r)| *c > tile || *r > tile) {
+            sizes.push((c.div_ceil(2), r.div_ceil(2)));
+        }
+        let levels = sizes
+            .into_iter()
+            .map(|(cols, rows)| {
+                Ok(CogLevel {
+                    cols,
+                    rows,
+                    received: 0,
+                    pending: RasterData::new_filled(raster.data_type, 0, 0.0),
+                    pending_rows: 0,
+                    carry: None,
+                    spools: (0..planes).map(|_| chunk_spool()).collect::<Result<_>>()?,
+                    sizes: vec![Vec::new(); planes],
+                    tags: Vec::new(),
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let file = std::io::BufWriter::with_capacity(1 << 20, std::fs::File::create(path)?);
+        Ok(Self {
+            file,
+            bands: raster.bands,
+            data_type: raster.data_type,
+            encoding: std::sync::Arc::new((opts.compression, opts.codec, layout)),
+            tile,
+            nodata: opts.nodata,
+            nearest: opts.nearest_overviews,
+            bigtiff: opts.bigtiff,
+            geo,
+            color_map,
+            levels,
+            #[cfg(not(target_arch = "wasm32"))]
+            in_flight: Default::default(),
+        })
+    }
+
+    /// Appends the next `rows` full rows of every band (`data`: band after band, of the raster's
+    /// data type).
+    pub(crate) fn write_rows(&mut self, data: RasterData, rows: usize) -> Result<()> {
+        let l = &self.levels[0];
+        if l.received + rows > l.rows {
+            return Err(Error::InvalidArgument(format!("{} rows past the raster's {}", l.received + rows, l.rows)));
+        }
+        if data.len() != l.cols * rows * self.bands {
+            return Err(Error::InvalidArgument(format!(
+                "{} values for {rows} rows of {} bands of {} columns",
+                data.len(),
+                self.bands,
+                l.cols
+            )));
+        }
+        if rows > 0 { self.push(0, data, rows) } else { Ok(()) }
+    }
+
+    /// Adds `rows` rows to level `i`: halved into the next level, and compressed by rows of tiles.
+    fn push(&mut self, i: usize, data: RasterData, rows: usize) -> Result<()> {
+        let bands = self.bands;
+        let (cols, done) = {
+            let l = &mut self.levels[i];
+            l.received += rows;
+            (l.cols, l.received == l.rows)
+        };
+        if i + 1 < self.levels.len() {
+            // Pairs of rows, and the level's last row alone.
+            let carry = self.levels[i].carry.take();
+            let joined = carry.as_ref().map(|c| append_rows(c, 1, &data, rows, cols, bands)).transpose()?;
+            let (src, n) = match &joined {
+                Some(j) => (j, rows + 1),
+                None => (&data, rows),
+            };
+            let even = if done { n } else { n / 2 * 2 };
+            if even < n {
+                self.levels[i].carry = Some(slice_rows(src, n, even..n, cols, bands));
+            }
+            if even > 0 {
+                let cut;
+                let src = if even < n {
+                    cut = slice_rows(src, n, 0..even, cols, bands);
+                    &cut
+                } else {
+                    src
+                };
+                let (half_cols, half_rows) = (cols.div_ceil(2), even.div_ceil(2));
+                let (nodata, nearest) = (self.nodata, self.nearest);
+                let half = map_data!(src, v => downsample(v, cols, even, half_cols, half_rows, bands, nodata, nearest));
+                self.push(i + 1, half, half_rows)?;
+            }
+        }
+        // Whole rows of tiles, and the level's last rows.
+        let l = &mut self.levels[i];
+        if l.pending_rows == 0 {
+            l.pending = data;
+        } else {
+            l.pending = append_rows(&l.pending, l.pending_rows, &data, rows, cols, bands)?;
+        }
+        l.pending_rows += rows;
+        let total = l.pending_rows;
+        let ready = if done { total } else { total / self.tile * self.tile };
+        if ready > 0 {
+            let (slab, rest) = if ready == total {
+                (std::mem::replace(&mut l.pending, RasterData::new_filled(self.data_type, 0, 0.0)), None)
+            } else {
+                (slice_rows(&l.pending, total, 0..ready, cols, bands), Some(slice_rows(&l.pending, total, ready..total, cols, bands)))
+            };
+            if let Some(rest) = rest {
+                l.pending = rest;
+            }
+            l.pending_rows = total - ready;
+            self.compress(i, slab, ready)?;
+        }
+        Ok(())
+    }
+
+    /// Compresses rows of tiles of level `i` (in parallel, on the thread pool, while the next rows
+    /// are given), to be added to its spools in turn.
+    fn compress(&mut self, i: usize, data: RasterData, rows: usize) -> Result<()> {
+        let level = Level { cols: self.levels[i].cols, rows, bands: self.bands, data: std::borrow::Cow::Owned(data) };
+        let (data_type, encoding) = (self.data_type, self.encoding.clone());
+        let encode = move || {
+            let (compression, codec, layout) = &*encoding;
+            level.image(data_type, *compression, codec, layout)
+        };
+        #[cfg(target_arch = "wasm32")]
+        return self.add(i, rows, encode()?);
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let (tx, rx) = std::sync::mpsc::sync_channel(1);
+            rayon::spawn(move || {
+                let _ = tx.send(encode());
+            });
+            self.in_flight.push_back((i, rows, rx));
+            while self.in_flight.len() > COG_IN_FLIGHT {
+                self.land()?;
+            }
+            Ok(())
+        }
+    }
+
+    /// Adds the oldest rows of tiles being compressed to their level's spools.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn land(&mut self) -> Result<()> {
+        let Some((i, rows, rx)) = self.in_flight.pop_front() else { return Ok(()) };
+        let img = rx.recv().map_err(|_| Error::InvalidData("a COG tile compression stopped".into()))??;
+        self.add(i, rows, img)
+    }
+
+    /// Adds compressed rows of tiles of level `i` to its spools.
+    fn add(&mut self, i: usize, rows: usize, img: Image) -> Result<()> {
+        let l = &mut self.levels[i];
+        let per_plane = l.cols.div_ceil(self.tile) * rows.div_ceil(self.tile);
+        let mut framed = vec![Vec::new(); l.spools.len()];
+        for (k, c) in img.chunks.iter().enumerate() {
+            let plane = k / per_plane;
+            framed[plane].extend_from_slice(&chunk_leader(c));
+            framed[plane].extend_from_slice(c);
+            framed[plane].extend_from_slice(&chunk_trailer(c));
+            l.sizes[plane].push(c.len() as u64);
+        }
+        for (spool, bytes) in l.spools.iter_mut().zip(framed) {
+            spool.write_all(&bytes)?;
+        }
+        if l.tags.is_empty() {
+            l.tags = img.tags;
+        }
+        Ok(())
+    }
+
+    /// Lays the file out and closes it.
+    ///
+    /// # Errors
+    /// When rows are missing, or the file cannot be written.
+    pub(crate) fn finish(mut self) -> Result<()> {
+        let (got, rows) = (self.levels[0].received, self.levels[0].rows);
+        if got != rows {
+            return Err(Error::InvalidArgument(format!("{got} rows written of {rows}")));
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        while !self.in_flight.is_empty() {
+            self.land()?;
+        }
+        let mut dirs = Vec::with_capacity(self.levels.len());
+        for (i, l) in self.levels.iter_mut().enumerate() {
+            let mut tags = std::mem::take(&mut l.tags);
+            for (t, v) in tags.iter_mut() {
+                if *t == 257 {
+                    *v = Value::Longs(vec![l.rows as u32]);
+                }
+            }
+            if i > 0 {
+                tags.push((254, Value::Longs(vec![1])));
+            }
+            // Georeferencing on the full-resolution image; nodata on every image, as GDAL does.
+            tags.extend(self.geo.iter().filter(|(t, _)| i == 0 || *t == 42113).cloned());
+            if let Some(cm) = &self.color_map {
+                tags.push((320, cm.clone()));
+            }
+            tags.sort_by_key(|(t, _)| *t);
+            dirs.push(Directory { tags, sizes: l.sizes.concat(), tiled: true });
+        }
+        let data_len: u64 = dirs.iter().flat_map(|d| &d.sizes).map(|s| s + 8).sum();
+        let big = self.bigtiff || data_len > (u32::MAX as u64) - (1 << 24);
+        self.file.write_all(&directories(dirs, big, true))?;
+        use std::io::{Seek, SeekFrom};
+        for i in data_order(self.levels.len(), true) {
+            for spool in &mut self.levels[i].spools {
+                spool.seek(SeekFrom::Start(0))?;
+                std::io::copy(spool, &mut self.file)?;
+            }
+            // The level's temporary files are closed as soon as they are copied.
+            self.levels[i].spools.clear();
+        }
+        self.file.flush()?;
+        Ok(())
+    }
+}
+
 /// GDAL's structural metadata for COGs, written just after the header.
 const COG_GHOST: &str = "LAYOUT=IFDS_BEFORE_DATA\nBLOCK_ORDER=ROW_MAJOR\nBLOCK_LEADER=SIZE_AS_UINT4\nBLOCK_TRAILER=LAST_4_BYTES_REPEATED\nKNOWN_INCOMPATIBLE_EDITION=NO\n ";
 
@@ -1775,8 +2097,62 @@ fn encode_ifd(tags: &[(u16, Value)], start: u64, next: u64, big: bool) -> Vec<u8
     out
 }
 
+/// One image's directory before it is laid out: its tags without the chunk offsets and byte
+/// counts, the sizes of its chunks, and whether they are tiles.
+struct Directory {
+    tags: Vec<(u16, Value)>,
+    sizes: Vec<u64>,
+    tiled: bool,
+}
+
 /// Lays the file out: header, (COG) structural metadata, every IFD, then the image data.
-fn assemble(mut images: Vec<Image>, big: bool, cog: bool, w: &mut impl Write) -> std::io::Result<()> {
+fn assemble(images: Vec<Image>, big: bool, cog: bool, w: &mut impl Write) -> std::io::Result<()> {
+    let mut chunks = Vec::with_capacity(images.len());
+    let dirs = images
+        .into_iter()
+        .map(|img| {
+            let sizes = img.chunks.iter().map(|c| c.len() as u64).collect();
+            chunks.push(img.chunks);
+            Directory { tags: img.tags, sizes, tiled: img.tiled }
+        })
+        .collect();
+    w.write_all(&directories(dirs, big, cog))?;
+    for i in data_order(chunks.len(), cog) {
+        for c in &chunks[i] {
+            if cog {
+                w.write_all(&chunk_leader(c))?;
+                w.write_all(c)?;
+                w.write_all(&chunk_trailer(c))?;
+            } else {
+                w.write_all(c)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The order the images' data is written in: COGs store the smallest overview first.
+fn data_order(images: usize, cog: bool) -> Vec<usize> {
+    if cog { (0..images).rev().collect() } else { (0..images).collect() }
+}
+
+/// A COG chunk's leader: its size.
+fn chunk_leader(c: &[u8]) -> [u8; 4] {
+    (c.len() as u32).to_le_bytes()
+}
+
+/// A COG chunk's trailer: its last 4 bytes, zero-padded at the front.
+fn chunk_trailer(c: &[u8]) -> [u8; 4] {
+    let mut tail = [0u8; 4];
+    let n = c.len().min(4);
+    tail[4 - n..].copy_from_slice(&c[c.len() - n..]);
+    tail
+}
+
+/// The start of a TIFF file: the header, (COG) structural metadata and every image's IFD, with
+/// the offsets of the image data that follows, laid out in [`data_order`] (with each COG chunk's
+/// leader and trailer).
+fn directories(mut images: Vec<Directory>, big: bool, cog: bool) -> Vec<u8> {
     let mut out = Vec::new();
     if big {
         out.extend(b"II");
@@ -1798,14 +2174,14 @@ fn assemble(mut images: Vec<Image>, big: bool, cog: bool, w: &mut impl Write) ->
     // out-of-line values.
     let (entry_len, count_len, inline_len) = if big { (20u64, 8u64, 8usize) } else { (12, 2, 4) };
     for img in images.iter_mut() {
-        let n = img.chunks.len();
+        let n = img.sizes.len();
         let (off_tag, cnt_tag) = if img.tiled { (324, 325) } else { (273, 279) };
         img.tags.push((off_tag, Value::Offsets(vec![0; n])));
-        img.tags.push((cnt_tag, Value::Offsets(img.chunks.iter().map(|c| c.len() as u64).collect())));
+        img.tags.push((cnt_tag, Value::Offsets(img.sizes.clone())));
         img.tags.sort_by_key(|(t, _)| *t);
     }
     let next_len = if big { 8 } else { 4 };
-    let ifd_size = |img: &Image| -> u64 {
+    let ifd_size = |img: &Directory| -> u64 {
         let extra: u64 = img
             .tags
             .iter()
@@ -1817,7 +2193,7 @@ fn assemble(mut images: Vec<Image>, big: bool, cog: bool, w: &mut impl Write) ->
         count_len + entry_len * img.tags.len() as u64 + next_len + extra
     };
 
-    // IFD offsets, then data offsets. COGs store the smallest overview first.
+    // IFD offsets, then data offsets.
     out.resize(out.len().next_multiple_of(2), 0);
     let mut pos = out.len() as u64;
     let mut ifd_offsets = Vec::with_capacity(images.len());
@@ -1825,15 +2201,14 @@ fn assemble(mut images: Vec<Image>, big: bool, cog: bool, w: &mut impl Write) ->
         ifd_offsets.push(pos);
         pos += ifd_size(img);
     }
-    let order: Vec<usize> = if cog { (0..images.len()).rev().collect() } else { (0..images.len()).collect() };
-    let mut chunk_offsets: Vec<Vec<u64>> = images.iter().map(|i| vec![0; i.chunks.len()]).collect();
-    for &i in &order {
-        for (j, c) in images[i].chunks.iter().enumerate() {
+    let mut chunk_offsets: Vec<Vec<u64>> = images.iter().map(|i| vec![0; i.sizes.len()]).collect();
+    for i in data_order(images.len(), cog) {
+        for (j, size) in images[i].sizes.iter().enumerate() {
             if cog {
                 pos += 4; // leader: the chunk size
             }
             chunk_offsets[i][j] = pos;
-            pos += c.len() as u64;
+            pos += size;
             if cog {
                 pos += 4; // trailer: the chunk's last 4 bytes
             }
@@ -1856,23 +2231,7 @@ fn assemble(mut images: Vec<Image>, big: bool, cog: bool, w: &mut impl Write) ->
         debug_assert_eq!(start, ifd_offsets[i]);
         out.extend(encode_ifd(&img.tags, start, ifd_offsets.get(i + 1).copied().unwrap_or(0), big));
     }
-
-    w.write_all(&out)?;
-    for &i in &order {
-        for c in &images[i].chunks {
-            if cog {
-                w.write_all(&(c.len() as u32).to_le_bytes())?;
-            }
-            w.write_all(c)?;
-            if cog {
-                let mut tail = [0u8; 4];
-                let n = c.len().min(4);
-                tail[4 - n..].copy_from_slice(&c[c.len() - n..]);
-                w.write_all(&tail)?;
-            }
-        }
-    }
-    Ok(())
+    out
 }
 
 #[cfg(test)]
@@ -1928,6 +2287,63 @@ mod tests {
             assert_eq!(ds.nodata(), Some(-1.0));
             assert_eq!(ds.crs().epsg, Some(32610));
             assert_eq!(ds.geo_transform(), [500000.0, 10.0, 0.0, 4000500.0, 0.0, -10.0]);
+        }
+    }
+
+    /// COGs written a few rows at a time are those written from the whole raster, byte for
+    /// byte: odd sizes, several overview levels, interleaved and planar bands, rows given one at
+    /// a time or in uneven runs.
+    #[test]
+    fn cogs_written_in_rows_are_those_written_whole() {
+        let dir = tempfile::tempdir().unwrap();
+        for (cols, rows, bands, t, planar, nearest, compression) in [
+            (70, 50, 1, DataType::F32, false, false, Compression::Deflate),
+            (157, 133, 3, DataType::U8, false, false, Compression::Lzw),
+            (157, 133, 2, DataType::I16, true, false, Compression::Zstd),
+            (33, 129, 1, DataType::U8, false, true, Compression::None),
+            (16, 16, 1, DataType::F32, false, false, Compression::Deflate),
+        ] {
+            let cfg = wbraster::RasterConfig {
+                cols,
+                rows,
+                bands,
+                x_min: 500000.0,
+                y_min: 4000000.0,
+                cell_size: 10.0,
+                nodata: -1.0,
+                data_type: t,
+                crs: wbraster::CrsInfo::from_epsg(32610),
+                ..Default::default()
+            };
+            let n = cols * rows * bands;
+            let data = match t {
+                DataType::F32 => RasterData::F32((0..n).map(|i| if i % 37 == 0 { -1.0 } else { (i % 977) as f32 * 0.25 }).collect()),
+                DataType::U8 => RasterData::U8((0..n).map(|i| (i * 7 % 251) as u8).collect()),
+                _ => RasterData::I16((0..n).map(|i| (i % 1000) as i16 - 1).collect()),
+            };
+            let r = Raster::from_data_native(cfg, data.clone()).unwrap();
+            let opts = TiffOptions {
+                compression,
+                cog: true,
+                tile_size: Some(16),
+                nodata: Some(-1.0),
+                planar,
+                nearest_overviews: nearest,
+                ..Default::default()
+            };
+            let whole = encode(&r, &opts).unwrap();
+            for step in [1, 7, 16, 40, rows] {
+                let p = dir.path().join("rows.tif");
+                let mut w = CogWriter::create(p.to_str().unwrap(), &r, &opts).unwrap();
+                let mut y = 0;
+                while y < rows {
+                    let h = step.min(rows - y);
+                    w.write_rows(slice_rows(&data, rows, y..y + h, cols, bands), h).unwrap();
+                    y += h;
+                }
+                w.finish().unwrap();
+                assert!(std::fs::read(&p).unwrap() == whole, "{cols}x{rows}x{bands} {t:?} planar {planar}, rows by {step}");
+            }
         }
     }
 

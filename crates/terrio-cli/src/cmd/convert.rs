@@ -116,6 +116,42 @@ fn stream_options(a: &Args) -> terrio::Result<Option<terrio::stream::ConvertOpti
     Ok(terrio::stream::can_convert_stream(&a.input, &a.output, &options).then_some(options))
 }
 
+/// A GeoTIFF converted to a GeoTIFF or COG with no option that needs the raster whole: the input
+/// opened lazily, to be written a strip of rows at a time (see `terrio::LazyRaster::write`), and
+/// the write options. `None` otherwise.
+fn streamed_raster(a: &Args) -> terrio::Result<Option<(terrio::LazyRaster, RasterWriteOptions)>> {
+    let driver = match a.format.as_deref() {
+        Some(f) => match RasterDriver::from_name(f) {
+            Some(d) => Some(d),
+            None => return Ok(None),
+        },
+        None => None,
+    };
+    let tiff_out = matches!(driver.or_else(|| RasterDriver::for_extension(&a.output)), Some(RasterDriver::GTiff | RasterDriver::Cog));
+    let plain = a.srcwin.is_none()
+        && a.overview.is_none()
+        && a.t_srs.is_none()
+        && !a.vector.is_set()
+        && a.minzoom.is_none()
+        && a.maxzoom.is_none()
+        && a.layers.is_empty()
+        && a.open_options.is_empty();
+    if !tiff_out || !plain || RasterDriver::for_extension(&a.input) != Some(RasterDriver::GTiff) {
+        return Ok(None);
+    }
+    let r = super::quiet(|| terrio::open_raster_lazy(&a.input))?;
+    let creation_options = key_values(&a.raster_options)?.into_iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+    let options = RasterWriteOptions {
+        driver,
+        compression: a.compress.clone(),
+        tile_size: a.tile_size,
+        bigtiff: a.bigtiff,
+        creation_options,
+        ..Default::default()
+    };
+    Ok(Some((r, options)))
+}
+
 pub fn run(mut a: Args) -> terrio::Result<()> {
     a.input = super::with_driver(&a.input, a.driver.as_deref())?;
     if terrio::pointcloud::is_point_cloud_path(&a.input) {
@@ -125,6 +161,9 @@ pub fn run(mut a: Args) -> terrio::Result<()> {
     }
     if let Some(options) = stream_options(&a)? {
         return terrio::stream::convert(&a.input, &a.output, &options);
+    }
+    if let Some((mut r, options)) = streamed_raster(&a)? {
+        return r.write(&a.output, &options);
     }
     let ds = if a.srcwin.is_some() || a.overview.is_some() {
         let mut r = super::quiet(|| terrio::open_raster_lazy(&a.input))?;
