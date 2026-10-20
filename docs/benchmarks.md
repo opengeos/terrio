@@ -99,7 +99,7 @@ the largest peak memory. Same machine, terrio 0.2.0.
 | Filter + reproject lines → GeoPackage | 3.98 s | 6.09 s | 1.5× faster | 596 MB | 189 MB |
 | Polygons → GeoPackage | 5.48 s | 7.07 s | 1.3× faster | 1.3 GB | 773 MB |
 | GeoPackage (5 layers) → GeoPackage | 16.03 s | 18.38 s | 1.1× faster | 1.3 GB | 785 MB |
-| OpenStreetMap PBF (Colorado) → GeoPackage | 17.75 s | 39.60 s | 2.2× faster | 1.6 GB | 456 MB |
+| OpenStreetMap PBF (Colorado) → GeoPackage | 19.36 s | 45.21 s | 2.3× faster | 1.4 GB | 455 MB |
 
 ## Notes
 

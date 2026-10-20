@@ -225,21 +225,26 @@ pub(crate) fn polygons_from_rings(rings: Vec<Vec<wbvector::Coord>>) -> Option<wb
     let inside = |a: &Ring, b: &Ring| a.0.iter().find(|p| !on_boundary(b, p.x, p.y)).is_some_and(|p| shapefile::ring_contains(b, p.x, p.y));
     let depth: Vec<usize> =
         rings.iter().enumerate().map(|(i, r)| rings.iter().enumerate().filter(|(j, o)| *j != i && inside(r, o)).count()).collect();
+    // The rings are moved into the polygons: exteriors first, then each hole to its owner.
+    let mut rings: Vec<Option<Ring>> = rings.into_iter().map(Some).collect();
     let mut polygons: Vec<(usize, Ring, Vec<Ring>)> = Vec::new();
-    for (i, r) in rings.iter().enumerate() {
-        if depth[i].is_multiple_of(2) {
-            polygons.push((i, r.clone(), Vec::new()));
+    for (i, r) in rings.iter_mut().enumerate() {
+        if depth[i].is_multiple_of(2)
+            && let Some(r) = r.take()
+        {
+            polygons.push((i, r, Vec::new()));
         }
     }
-    for (i, r) in rings.iter().enumerate() {
-        if depth[i] % 2 == 1 {
-            let owner = polygons
-                .iter_mut()
-                .filter(|(_, e, _)| inside(r, e))
-                .min_by(|a, b| a.1.signed_area().abs().total_cmp(&b.1.signed_area().abs()));
-            if let Some((_, _, holes)) = owner {
-                holes.push(r.clone());
-            }
+    let areas: Vec<f64> = polygons.iter().map(|(_, e, _)| e.signed_area().abs()).collect();
+    for r in rings.into_iter().flatten() {
+        let owner = polygons
+            .iter()
+            .enumerate()
+            .filter(|(_, (_, e, _))| inside(&r, e))
+            .min_by(|a, b| areas[a.0].total_cmp(&areas[b.0]))
+            .map(|(k, _)| k);
+        if let Some(k) = owner {
+            polygons[k].2.push(r);
         }
     }
     let mut polygons: Vec<(Ring, Vec<Ring>)> = polygons.into_iter().map(|(_, e, h)| (e, h)).collect();

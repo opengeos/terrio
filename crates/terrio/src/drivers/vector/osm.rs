@@ -340,10 +340,16 @@ impl Builder {
         // Member ways as relations see them: their coordinates, area flag and tags.
         let member = |id: i64| ways.get(&id).map(|w| MemberWay { coords: coords(w), area: w.area, tags: &w.tags });
         let node = |id: i64| nodes.get(&id).cloned();
-        let used_as_outer =
-            relation_features(&relations, &member, &node, &layers.iter().map(|l| l.schema.clone()).collect::<Vec<_>>(), &mut |i, f| {
+        let used_as_outer = relation_features(
+            &relations,
+            &[true; 5],
+            &member,
+            &node,
+            &layers.iter().map(|l| l.schema.clone()).collect::<Vec<_>>(),
+            &mut |i, f| {
                 layers[i].push(f);
-            });
+            },
+        );
         for id in standalone {
             if used_as_outer.contains(&id) {
                 continue;
@@ -367,16 +373,18 @@ struct MemberWay<'a> {
 
 /// The features of the relations, in order, to `out` with their layer index: `multipolygon` and
 /// `boundary` relations to `multipolygons`, `multilinestring` and `route` relations to
-/// `multilinestrings`, the others to `other_relations`. Returns the closed ways used as outer
-/// rings, which make no polygon of their own. Relations are built in parallel.
+/// `multilinestrings`, the others to `other_relations`; only those of the layers `wanted` are
+/// built. Returns the closed ways used as outer rings, which make no polygon of their own.
+/// Relations are built in parallel.
 fn relation_features<'a>(
     relations: &[Relation],
+    wanted: &[bool; 5],
     way: &(dyn Fn(i64) -> Option<MemberWay<'a>> + Sync),
     node: &(dyn Fn(i64) -> Option<Coord> + Sync),
     schemas: &[wbvector::Schema],
     out: &mut dyn FnMut(usize, Feature),
 ) -> std::collections::HashSet<i64> {
-    let built = crate::par::map_range(relations.len(), |i| relation_feature(&relations[i], way, node, schemas));
+    let built = crate::par::map_range(relations.len(), |i| relation_feature(&relations[i], wanted, way, node, schemas));
     let mut used_as_outer = std::collections::HashSet::new();
     for (feature, outer) in built {
         used_as_outer.extend(outer);
@@ -391,28 +399,32 @@ fn relation_features<'a>(
 /// rings.
 fn relation_feature<'a>(
     r: &Relation,
+    wanted: &[bool; 5],
     way: &(dyn Fn(i64) -> Option<MemberWay<'a>> + Sync),
     node: &(dyn Fn(i64) -> Option<Coord> + Sync),
     schemas: &[wbvector::Schema],
 ) -> (Option<(usize, Feature)>, Vec<i64>) {
     let mut outer = Vec::new();
+    let rtype = r.tags.iter().find(|(k, _)| k == "type").map(|(_, v)| v.as_str());
+    if !wanted[relation_layer(rtype)] {
+        return (None, outer);
+    }
     let tags: Vec<(&str, &str)> = r.tags.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
-    let rtype = tags.iter().find(|(k, _)| *k == "type").map(|(_, v)| *v);
     let interesting = tags.iter().any(|(k, _)| *k != "type" && *k != "created_by");
     let members: Vec<(&(Member, String), Option<MemberWay>)> =
         r.members.iter().filter(|m| m.1 != "subarea").map(|m| (m, if let Member::Way(w) = m.0 { way(w) } else { None })).collect();
     match rtype {
         Some("multipolygon" | "boundary") => {
-            let way_members: Vec<_> = members.iter().filter(|(m, _)| matches!(m.0, Member::Way(_))).collect();
+            let way_members: Vec<_> = members.into_iter().filter(|(m, _)| matches!(m.0, Member::Way(_))).collect();
             if way_members.iter().any(|(_, w)| w.is_none()) {
                 return (None, outer); // missing ways
             }
             let mut rings = Vec::new();
             let mut edges = Vec::new();
             let mut first_outer_tags = None;
-            for (m, w) in &way_members {
+            for (m, w) in way_members {
                 let Some(w) = w else { unreachable!() };
-                let cs = w.coords.clone();
+                let cs = w.coords;
                 if first_outer_tags.is_none() && m.1 == "outer" {
                     first_outer_tags = Some(w.tags);
                 }
@@ -448,7 +460,7 @@ fn relation_feature<'a>(
             (Some((3, Feature { fid: r.id as u64, geometry: Some(g), attributes: attrs })), outer)
         }
         Some("multilinestring" | "route") => {
-            let lines: Vec<Vec<Coord>> = members.iter().filter_map(|(_, w)| w.as_ref().map(|w| w.coords.clone())).collect();
+            let lines: Vec<Vec<Coord>> = members.into_iter().filter_map(|(_, w)| w.map(|w| w.coords)).collect();
             if lines.is_empty() {
                 return (None, outer);
             }
@@ -457,11 +469,11 @@ fn relation_feature<'a>(
         }
         _ => {
             let mut parts = Vec::new();
-            for (m, w) in &members {
+            for (m, w) in members {
                 match (m.0, w) {
                     (Member::Node(n), _) => parts.extend(node(n).map(Geometry::Point)),
                     (Member::Way(_), Some(w)) => {
-                        let cs = w.coords.clone();
+                        let cs = w.coords;
                         parts.push(if w.area {
                             Geometry::Polygon { exterior: ring(cs), interiors: vec![] }
                         } else {
@@ -477,6 +489,15 @@ fn relation_feature<'a>(
             let attrs = SPECS[4].attributes(&schemas[4], r.id, false, &tags);
             (Some((4, Feature { fid: r.id as u64, geometry: Some(Geometry::GeometryCollection(parts)), attributes: attrs })), outer)
         }
+    }
+}
+
+/// The layer a relation of type `rtype` goes to (see [`relation_features`]).
+fn relation_layer(rtype: Option<&str>) -> usize {
+    match rtype {
+        Some("multipolygon" | "boundary") => 3,
+        Some("multilinestring" | "route") => 2,
+        _ => 4,
     }
 }
 
@@ -916,6 +937,11 @@ impl NodeStore {
 
     /// A node's coordinates on GDAL's grid.
     fn get(&self, id: i64) -> Option<Coord> {
+        self.get_raw(id).map(|[lon, lat]| node_coords(lon, lat).1)
+    }
+
+    /// A node's longitude and latitude, in decimicro degrees.
+    fn get_raw(&self, id: i64) -> Option<[i32; 2]> {
         let g = self.groups.partition_point(|&(first, _)| first <= id).checked_sub(1)?;
         let (mut at, end) = (self.groups[g].1, self.groups.get(g + 1).map(|&(_, o)| o));
         let page = &self.pages[(at >> 32) as usize];
@@ -931,7 +957,7 @@ impl NodeStore {
             lat += unzigzag(pb_varint(page, &mut i)?);
             at = (at & !0xffff_ffff) | i as u64;
             if nid == id {
-                return Some(node_coords(lon as i32, lat as i32).1);
+                return Some([lon as i32, lat as i32]);
             }
             if nid > id {
                 return None;
@@ -991,8 +1017,9 @@ struct WayOut {
     member: Option<MemberCoords>,
 }
 
-/// A way relations use: its coordinates, area flag and tags.
-type MemberCoords = (Vec<[f64; 2]>, bool, Vec<(String, String)>);
+/// A way relations use: its coordinates (in decimicro degrees, half the size of the grid's), area
+/// flag and tags.
+type MemberCoords = (Vec<[i32; 2]>, bool, Vec<(String, String)>);
 
 /// What a way of a sorted file gives (see [`Builder::finish`], which this mirrors).
 fn way_out(
@@ -1012,10 +1039,11 @@ fn way_out(
         return out;
     }
     let n = if area { w.nodes.len() - 1 } else { w.nodes.len() };
-    let mut cs: Vec<Coord> = w.nodes[..n].iter().filter_map(|n| nodes.get(n.0)).collect();
-    if area && !cs.is_empty() {
-        cs.push(cs[0].clone());
+    let mut raw: Vec<[i32; 2]> = w.nodes[..n].iter().filter_map(|n| nodes.get_raw(n.0)).collect();
+    if area && !raw.is_empty() {
+        raw.push(raw[0]);
     }
+    let cs: Vec<Coord> = raw.iter().map(|&[lon, lat]| node_coords(lon, lat).1).collect();
     if w.nodes.len() >= 2 && cs.len() >= 2 {
         if area {
             const STORED_WITHOUT: [&str; 7] = ["area", "created_by", "converted_by", "note", "todo", "fixme", "FIXME"];
@@ -1028,8 +1056,7 @@ fn way_out(
         }
     }
     if is_member {
-        out.member =
-            Some((cs.iter().map(|c| [c.x, c.y]).collect(), area, tags.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()));
+        out.member = Some((raw, area, tags.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()));
     }
     out
 }
@@ -1097,6 +1124,43 @@ fn read_area(r: &mut impl std::io::Read) -> Result<Option<Area>> {
         tags.push((k, v));
     }
     Ok(Some((id, cs, tags)))
+}
+
+/// The relations in chunks built at once: at most 8192 relations, whose member ways (of the
+/// layers `wanted`) hold at most about four million coordinates, unless one relation has more, so
+/// that a run of large boundaries or long routes does not hold them all at once.
+fn relation_chunks<'r>(
+    relations: &'r [Relation],
+    wanted: &[bool; 5],
+    member_ways: &HashMap<i64, MemberCoords>,
+) -> impl Iterator<Item = &'r [Relation]> {
+    const MAX_RELATIONS: usize = 8192;
+    const MAX_COORDS: usize = 1 << 22;
+    let size = |r: &Relation| -> usize {
+        let rtype = r.tags.iter().find(|(k, _)| k == "type").map(|(_, v)| v.as_str());
+        if !wanted[relation_layer(rtype)] {
+            return 0;
+        }
+        r.members.iter().filter_map(|m| if let Member::Way(w) = m.0 { member_ways.get(&w).map(|c| c.0.len()) } else { None }).sum()
+    };
+    let mut start = 0;
+    std::iter::from_fn(move || {
+        if start == relations.len() {
+            return None;
+        }
+        let (mut end, mut coords) = (start, 0);
+        while end < relations.len() && end - start < MAX_RELATIONS {
+            let n = size(&relations[end]);
+            if end > start && coords + n > MAX_COORDS {
+                break;
+            }
+            coords += n;
+            end += 1;
+        }
+        let chunk = &relations[start..end];
+        start = end;
+        Some(chunk)
+    })
 }
 
 /// Whether a PBF file says it is sorted by type then id, so that [`read_sorted_pbf`] reads it:
@@ -1244,16 +1308,16 @@ pub(crate) fn read_sorted_pbf(
     // The relations, a chunk at a time, then the areas standing alone.
     let member = |id: i64| {
         member_ways.get(&id).map(|(coords, area, tags)| MemberWay {
-            coords: coords.iter().map(|&[x, y]| Coord::xy(x, y)).collect(),
+            coords: coords.iter().map(|&[lon, lat]| node_coords(lon, lat).1).collect(),
             area: *area,
             tags,
         })
     };
     let node = |id: i64| nodes.get(id);
     let mut used_as_outer = std::collections::HashSet::new();
-    for rels in relations.chunks(8192) {
+    for rels in relation_chunks(&relations, &wanted, &member_ways) {
         let mut out: Vec<Vec<Feature>> = vec![Vec::new(); 5];
-        used_as_outer.extend(relation_features(rels, &member, &node, &schemas, &mut |l, f| out[l].push(f)));
+        used_as_outer.extend(relation_features(rels, &wanted, &member, &node, &schemas, &mut |l, f| out[l].push(f)));
         for (l, features) in out.into_iter().enumerate() {
             if wanted[l] && !features.is_empty() {
                 emit(l, features)?;
@@ -1494,6 +1558,68 @@ mod tests {
         assert!(is_unsorted(&e));
         assert!(is_sorted_pbf(&mut std::io::Cursor::new(&relations_first)));
         assert!(!is_sorted_pbf(&mut std::io::Cursor::new(b"<?xml version='1.0'?><osm/>".as_slice())));
+    }
+
+    /// A layer read alone (its relations built, the others skipped) has the features it has when
+    /// every layer is read.
+    #[test]
+    fn layers_read_alone_match_all_layers() {
+        let bytes = {
+            let (n, w, r) = objects();
+            pbf(&[vec![n], vec![w], vec![r]])
+        };
+        let mut all: Vec<Vec<Feature>> = vec![Vec::new(); 5];
+        read_sorted_pbf(&mut std::io::Cursor::new(&bytes), [true; 5], &mut |l, f| {
+            all[l].extend(f);
+            Ok(())
+        })
+        .unwrap();
+        for l in 0..5 {
+            let mut wanted = [false; 5];
+            wanted[l] = true;
+            let mut alone: Vec<Vec<Feature>> = vec![Vec::new(); 5];
+            read_sorted_pbf(&mut std::io::Cursor::new(&bytes), wanted, &mut |k, f| {
+                alone[k].extend(f);
+                Ok(())
+            })
+            .unwrap();
+            let content = |fs: &[Feature]| fs.iter().map(|f| (f.fid, f.attributes.clone(), f.geometry.clone())).collect::<Vec<_>>();
+            for k in 0..5 {
+                let expected = if k == l { content(&all[k]) } else { Vec::new() };
+                assert_eq!(content(&alone[k]), expected, "layer {k} with {l} wanted");
+            }
+        }
+        assert_eq!(all[3].len(), 1);
+    }
+
+    /// Relations are built in chunks of at most 8192, and of at most about four million member
+    /// coordinates unless one relation has more; relations of layers not wanted count for none.
+    #[test]
+    fn chunks_relations_by_member_coordinates() {
+        let rel = |id: i64, rtype: &str, way: i64| Relation {
+            id,
+            members: vec![(Member::Way(way), "outer".into())],
+            tags: vec![("type".into(), rtype.into())],
+        };
+        let mut member_ways: HashMap<i64, MemberCoords> = HashMap::new();
+        member_ways.insert(1, (vec![[0, 0]; 3 << 20], false, Vec::new()));
+        member_ways.insert(2, (vec![[0, 0]; 5 << 20], false, Vec::new()));
+        member_ways.insert(3, (vec![[0, 0]; 4], false, Vec::new()));
+        let relations = vec![
+            rel(1, "multipolygon", 1),
+            rel(2, "multipolygon", 1),
+            rel(3, "multipolygon", 2),
+            rel(4, "route", 2),
+            rel(5, "multipolygon", 3),
+        ];
+        let sizes = |wanted: [bool; 5]| relation_chunks(&relations, &wanted, &member_ways).map(<[Relation]>::len).collect::<Vec<_>>();
+        // 3 M + 3 M is over the limit; 5 M alone is taken whole.
+        assert_eq!(sizes([false, false, false, true, false]), [1, 1, 1, 2]);
+        assert_eq!(sizes([false, false, true, true, false]), [1, 1, 1, 1, 1]);
+        assert_eq!(sizes([true, true, false, false, true]), [5]);
+        let many: Vec<Relation> = (0..10_000).map(|i| rel(i, "multipolygon", 3)).collect();
+        let n: Vec<usize> = relation_chunks(&many, &[true; 5], &member_ways).map(<[Relation]>::len).collect();
+        assert_eq!(n, [8192, 1808]);
     }
 
     /// A spill read to its end gives `None`; one cut short in a record, an error.
