@@ -333,7 +333,11 @@ fn user_defined_proj4(
     let k0 = p(3092).or_else(|| p(3093)).unwrap_or(1.0);
     let body = match transform? {
         1 => format!("+proj=tmerc +lat_0={lat0} +lon_0={lon0} +k={k0} +x_0={x0} +y_0={y0}"),
-        7 => format!("+proj=merc +lon_0={lon0} +k={k0} +x_0={x0} +y_0={y0}"),
+        // Mercator 2SP has its standard parallel in ProjStdParallel1GeoKey, 1SP a scale.
+        7 => match p(3078) {
+            Some(ts) => format!("+proj=merc +lon_0={lon0} +lat_ts={ts} +x_0={x0} +y_0={y0}"),
+            None => format!("+proj=merc +lon_0={lon0} +k={k0} +x_0={x0} +y_0={y0}"),
+        },
         8 => format!("+proj=lcc +lat_0={lat0} +lon_0={lon0} +lat_1={} +lat_2={} +x_0={x0} +y_0={y0}", v(3078), v(3079)),
         9 => format!("+proj=lcc +lat_0={lat0} +lat_1={lat0} +lon_0={lon0} +k_0={k0} +x_0={x0} +y_0={y0}"),
         10 => format!("+proj=laea +lat_0={lat0} +lon_0={lon0} +x_0={x0} +y_0={y0}"),
@@ -341,7 +345,10 @@ fn user_defined_proj4(
         12 => format!("+proj=aeqd +lat_0={lat0} +lon_0={lon0} +x_0={x0} +y_0={y0}"),
         14 => format!("+proj=stere +lat_0={lat0} +lon_0={lon0} +k={k0} +x_0={x0} +y_0={y0}"),
         15 => {
-            let lat_ts = p(3078);
+            // Variant B's standard parallel is in ProjStdParallel1GeoKey for some writers, and in
+            // ProjNatOriginLatGeoKey for GDAL (which writes a scale of 1 too); a natural origin
+            // latitude of ±90 is variant A, with its scale.
+            let lat_ts = p(3078).or_else(|| p(3081).filter(|lat| (lat.abs() - 90.0).abs() > 1e-9));
             let pole_lon = p(3095).unwrap_or(lon0);
             let lat_0 = if lat_ts.unwrap_or(lat0) < 0.0 { -90 } else { 90 };
             match lat_ts {
@@ -723,5 +730,71 @@ mod tests {
         assert_eq!(user_defined_projected(Some(16010), None, Some("WGS 84 / UTM zone 10N".into())), Some(32610));
         assert_eq!(user_defined_projected(None, Some(4269), Some("NAD83 / UTM zone 15N".into())), Some(26915));
         assert_eq!(user_defined_projected(Some(16133), None, None), Some(32733));
+    }
+
+    /// The GeoKeys GDAL 3.12 writes for a WGS 84 CRS with no EPSG code and the projection method
+    /// `method`, with `params` (key, value) as GeoDoubleParams.
+    fn gdal_keys(method: u16, params: &[(u16, f64)]) -> (Vec<u16>, Vec<f64>) {
+        let mut keys = vec![1, 1, 0, 0, 1024, 0, 1, 1, 1025, 0, 1, 1, 2048, 0, 1, 32767, 2050, 0, 1, 6326, 2054, 0, 1, 9102];
+        keys.extend([2057, GEO_DOUBLE_PARAMS, 1, 0, 2059, GEO_DOUBLE_PARAMS, 1, 1]);
+        keys.extend([3072, 0, 1, 32767, 3074, 0, 1, 32767, 3075, 0, 1, method, 3076, 0, 1, 9001]);
+        let mut doubles = vec![6378137.0, 298.257223563];
+        for (id, v) in params {
+            keys.extend([*id, GEO_DOUBLE_PARAMS, 1, doubles.len() as u16]);
+            doubles.push(*v);
+        }
+        keys[3] = (keys.len() / 4 - 1) as u16;
+        (keys, doubles)
+    }
+
+    #[test]
+    fn reads_standard_parallels_of_mercator_and_polar_stereographic() {
+        // (method, parameters as GDAL writes them, point, PROJ's coordinates for it)
+        type Case = (u16, &'static [(u16, f64)], (f64, f64), (f64, f64));
+        let cases: [Case; 5] = [
+            // +proj=merc +lat_ts=30
+            (7, &[(3078, 30.0), (3080, 0.0), (3081, 0.0), (3082, 0.0), (3083, 0.0)], (5.0, 60.0), (482431.4012544825, 7248377.351122094)),
+            // +proj=merc +k=0.997 +lon_0=10
+            (
+                7,
+                &[(3080, 10.0), (3081, 0.0), (3082, 0.0), (3083, 0.0), (3092, 0.997)],
+                (5.0, 60.0),
+                (-554927.6616044687, 8337610.452855245),
+            ),
+            // +proj=stere +lat_0=90 +lat_ts=70 +lon_0=-45 (variant B)
+            (
+                15,
+                &[(3081, 70.0), (3082, 0.0), (3083, 0.0), (3092, 1.0), (3095, -45.0)],
+                (5.0, 75.0),
+                (1251624.3097635235, -1050237.4966950903),
+            ),
+            // +proj=stere +lat_0=-90 +lat_ts=-71 +lon_0=0 (variant B, south)
+            (
+                15,
+                &[(3081, -71.0), (3082, 0.0), (3083, 0.0), (3092, 1.0), (3095, 0.0)],
+                (5.0, -75.0),
+                (142829.37034579527, 1632547.17342291),
+            ),
+            // +proj=stere +lat_0=90 +k=0.994 +lon_0=0 (variant A)
+            (
+                15,
+                &[(3081, 90.0), (3082, 0.0), (3083, 0.0), (3092, 0.994), (3095, 0.0)],
+                (5.0, 75.0),
+                (145946.66590136578, -1668178.0246662465),
+            ),
+        ];
+        let wgs84 = crate::crs::SpatialRef::parse("EPSG:4326").unwrap();
+        for (method, params, (lon, lat), (x, y)) in cases {
+            let (keys, doubles) = gdal_keys(method, params);
+            let info = crs_from_geokeys(&keys, Some(&doubles), None);
+            assert_eq!(info.epsg, None, "{info:?}");
+            let crs = crate::crs::SpatialRef::from_raster_crs(&info);
+            // The CRS, and its WKT (as terrio reports it) read back.
+            let wkt = crate::crs::SpatialRef::parse(&crs.to_wkt().unwrap()).unwrap();
+            for c in [&crs, &wkt] {
+                let (tx, ty) = crate::crs::Transformer::new(&wgs84, c).unwrap().transform(lon, lat).unwrap();
+                assert!((tx - x).abs() < 1e-3 && (ty - y).abs() < 1e-3, "{c:?}: ({tx}, {ty}) vs ({x}, {y})");
+            }
+        }
     }
 }
