@@ -1124,12 +1124,7 @@ pub fn warp(sources: &[&RasterDataset], o: &WarpOptions) -> Result<RasterDataset
             warp_source(&ctx, &chunks, &data, &sink, target);
         });
     }
-    let (stored, gt) = stored_grid(grid);
-    let mut ds = super::build_raster_data(stored, out, bands, p.dst_nodata, &p.dst_srs)?;
-    if let Some(gt) = gt {
-        ds.set_geo_transform(gt);
-    }
-    Ok(ds)
+    output_dataset(grid, out, bands, p.dst_nodata, &p.dst_srs)
 }
 
 /// Warps one raster as [`warp`] does, reading from it only the source window each chunk of the
@@ -1167,8 +1162,13 @@ pub fn warp_lazy(src: &mut crate::LazyRaster, o: &WarpOptions) -> Result<RasterD
             warp_source(&ctx, std::slice::from_ref(c), &data, &sink, target);
         });
     }
+    output_dataset(grid, out, bands, p.dst_nodata, &p.dst_srs)
+}
+
+/// The warped raster of `grid`, holding `out`, whatever its geotransform.
+fn output_dataset(grid: Grid, out: RasterData, bands: usize, nodata: Option<f64>, srs: &SpatialRef) -> Result<RasterDataset> {
     let (stored, gt) = stored_grid(grid);
-    let mut ds = super::build_raster_data(stored, out, bands, p.dst_nodata, &p.dst_srs)?;
+    let mut ds = super::build_raster_data(stored, out, bands, nodata, srs)?;
     if let Some(gt) = gt {
         ds.set_geo_transform(gt);
     }
