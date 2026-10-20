@@ -552,7 +552,7 @@ fn geoparquet_row_groups_do_not_follow_chunks() {
     let dir = tempfile::tempdir().unwrap();
     let mut layer = Layer::new("t").with_epsg(4326);
     layer.add_field(FieldDef::new("name", FieldType::Text));
-    for k in 0..(65_546) {
+    for k in 0..65_546 {
         layer.push(Feature { fid: k, geometry: Some(Geometry::point(k as f64, 0.0)), attributes: vec![FieldValue::Text(format!("f{k}"))] });
     }
     let whole = dir.path().join("whole.parquet").to_string_lossy().into_owned();
