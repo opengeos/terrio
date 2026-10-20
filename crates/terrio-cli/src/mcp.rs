@@ -263,7 +263,14 @@ fn run(terrio: &[OsString], name: &str, args: Vec<OsString>, cancel: &AtomicBool
 fn read_bounded(mut r: impl Read + Send + 'static) -> JoinHandle<Output> {
     std::thread::spawn(move || {
         let (mut kept, mut total, mut buf) = (Vec::new(), 0, [0u8; 8192]);
-        while let Ok(n @ 1..) = r.read(&mut buf) {
+        loop {
+            let n = match r.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => n,
+                // A signal: the pipe is still open, so keep draining it.
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(_) => break,
+            };
             let room = MAX_OUTPUT.saturating_sub(kept.len());
             kept.extend_from_slice(&buf[..n.min(room)]);
             total += n;
