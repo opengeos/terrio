@@ -11,6 +11,10 @@
 
 Pure-Rust geospatial raster, vector and point cloud data I/O.
 
+<p align="center">
+  <img src="https://raw.githubusercontent.com/opengeos/terrio/main/docs/assets/terrio-banner.webp" alt="terrio: geospatial data I/O in pure Rust. Rasters, vectors and point clouds, from the command line, Python, JavaScript and Rust, with an MCP server for AI agents" width="800">
+</p>
+
 Documentation: <https://terrio.opengeos.org>
 
 terrio aims to read, write, convert and reproject the geospatial formats most workflows use, without

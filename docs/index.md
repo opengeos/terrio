@@ -2,6 +2,8 @@
 
 **Pure-Rust geospatial raster, vector and point cloud data I/O.**
 
+![terrio: geospatial data I/O in pure Rust. Rasters, vectors and point clouds, from the command line, Python, JavaScript and Rust, with an MCP server for AI agents](assets/terrio-banner.webp)
+
 terrio reads, writes, converts and reprojects the geospatial formats most workflows use, without
 C dependencies. It builds anywhere Rust does, WebAssembly included, and it is tested file by file
 against [GDAL](https://gdal.org) on real-world data.
