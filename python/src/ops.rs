@@ -90,9 +90,10 @@ fn data_type(name: &str) -> PyResult<DataType> {
 ///     UnsupportedError: If the format is not recognized.
 #[pyfunction]
 fn open(py: Python<'_>, path: &str) -> PyResult<Py<PyAny>> {
-    let ds = py.detach(|| terrio::open(path)).py()?;
+    // Warnings are issued whether the open succeeds or not, so none is left for a later call.
+    let ds = py.detach(|| terrio::open(path));
     crate::emit_warnings(py)?;
-    dataset_to_py(py, ds)
+    dataset_to_py(py, ds.py()?)
 }
 
 /// Opens a raster.
@@ -115,13 +116,13 @@ fn open(py: Python<'_>, path: &str) -> PyResult<Py<PyAny>> {
 #[pyo3(signature = (path, lazy=false))]
 fn open_raster(py: Python<'_>, path: &str, lazy: bool) -> PyResult<PyRaster> {
     if lazy {
-        let r = py.detach(|| terrio::open_raster_lazy(path)).py()?;
+        let r = py.detach(|| terrio::open_raster_lazy(path));
         crate::emit_warnings(py)?;
-        return Ok(PyRaster { inner: r });
+        return Ok(PyRaster { inner: r.py()? });
     }
-    let ds = py.detach(|| terrio::open_raster(path)).py()?;
+    let ds = py.detach(|| terrio::open_raster(path));
     crate::emit_warnings(py)?;
-    Ok(PyRaster::from_dataset(ds))
+    Ok(PyRaster::from_dataset(ds.py()?))
 }
 
 /// Opens a vector dataset.

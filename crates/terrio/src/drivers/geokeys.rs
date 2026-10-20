@@ -54,7 +54,8 @@ pub(crate) fn esri_pe_crs(k: &GeoKeys) -> Option<wbraster::CrsInfo> {
 /// The PROJ definition of a user-defined projected CRS: the projection method and its parameters,
 /// the datum and the linear unit. `None` for a method terrio does not map.
 pub(crate) fn user_defined_proj4(k: &GeoKeys) -> Option<String> {
-    let geog = geographic_proj(k)?;
+    // GeoKeys that name no datum or ellipsoid are taken as WGS 84.
+    let geog = geographic_proj(k).unwrap_or_else(|| "+datum=WGS84".to_string());
     let (units, to_meter) = units(k);
     Some(format!("+proj={} {geog} {units} +no_defs", projection(k, to_meter)?))
 }

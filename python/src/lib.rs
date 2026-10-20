@@ -53,7 +53,7 @@ pub(crate) fn invalid(message: impl Into<String>) -> PyErr {
 /// Issues terrio's warnings (see `terrio::warnings`) as Python `UserWarning`s.
 pub(crate) fn emit_warnings(py: Python<'_>) -> PyResult<()> {
     for w in terrio::warnings::take() {
-        let message = std::ffi::CString::new(w.replace('\0', " ")).unwrap_or_default();
+        let message = std::ffi::CString::new(w.replace('\0', " ")).expect("no NUL bytes left");
         PyErr::warn(py, &py.get_type::<pyo3::exceptions::PyUserWarning>(), &message, 2)?;
     }
     Ok(())

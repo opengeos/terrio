@@ -280,7 +280,7 @@ fn apply_geokeys(out: &mut GeoTags, keys: &[u16], doubles: Option<&[f64]>, ascii
             out.proj4 = crate::drivers::geokeys::user_defined_proj4(&k);
             if let Some(method) = crate::drivers::geokeys::unmapped_method(&k) {
                 crate::warnings::warn(format!(
-                    "GeoTIFF projection method {method} (ProjCoordTransGeoKey) is not supported: the raster has no CRS"
+                    "GeoTIFF projection method {method} (ProjCoordTransGeoKey) is not supported, or its parameters are incomplete: the raster has no CRS"
                 ));
             }
         }
