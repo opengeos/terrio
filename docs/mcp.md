@@ -55,5 +55,9 @@ commands write their output files, and can overwrite existing ones. Clients ask 
 tool unless you allow it, so review the arguments before you approve a command that writes.
 
 Relative paths are relative to the directory the client started the server in; agents do better
-with absolute paths. A command's output is cut after 100,000 bytes; for a large dataset, ask for
-`info --json` of one layer (`-l`) rather than all of them.
+with absolute paths. A command's output (standard output and error together) is cut after 100,000
+bytes; for a large dataset, ask for `info --json` of one layer (`-l`) rather than all of them.
+
+Commands run in the background, so the server keeps answering while a long `warp` or `filter`
+works. When the client cancels a call (or times it out, if it sends a cancellation), or quits, the
+command is stopped.

@@ -90,7 +90,7 @@ pub fn run_as(args: Vec<OsString>, terrio: Option<Vec<OsString>>) -> i32 {
         Command::Sieve(a) => cmd::sieve::run(a),
         Command::Grid(a) => cmd::grid::run(a),
         Command::Filter(a) => cmd::filter::run(a),
-        Command::Mcp => terrio.map_or_else(mcp::this_binary, Ok).and_then(mcp::serve).map_err(terrio::Error::from),
+        Command::Mcp => serve_mcp(terrio),
     };
     match result {
         Ok(()) => 0,
@@ -99,6 +99,15 @@ pub fn run_as(args: Vec<OsString>, terrio: Option<Vec<OsString>>) -> i32 {
             1
         }
     }
+}
+
+/// `terrio mcp`, running its tools with `terrio`, or this executable.
+fn serve_mcp(terrio: Option<Vec<OsString>>) -> terrio::Result<()> {
+    let terrio = match terrio {
+        Some(t) => t,
+        None => mcp::this_binary()?,
+    };
+    Ok(mcp::serve(terrio)?)
 }
 
 #[cfg(test)]

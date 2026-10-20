@@ -96,14 +96,19 @@ def test_mcp(tmp_path):
             },
         },
     ]
-    result = subprocess.run(
+    with subprocess.Popen(
         [sys.executable, "-m", "terrio", "mcp"],
-        input="".join(json.dumps(m) + "\n" for m in messages),
-        capture_output=True,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
         text=True,
-    )
-    assert result.returncode == 0, result.stderr
-    replies = [json.loads(line) for line in result.stdout.splitlines()]
+    ) as server:
+        for m in messages:
+            server.stdin.write(json.dumps(m) + "\n")
+        server.stdin.flush()
+        # Read every reply before closing standard input, which stops the commands running.
+        replies = {r["id"]: r for r in (json.loads(server.stdout.readline()) for _ in messages)}
+        server.stdin.close()
+        assert server.wait() == 0
     assert replies[0]["result"]["serverInfo"]["name"] == "terrio"
     assert "convert" in [t["name"] for t in replies[1]["result"]["tools"]]
     # The tool ran `python -m terrio info`, with this interpreter.
