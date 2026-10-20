@@ -92,4 +92,9 @@ fn boundcrs_without_a_helmert_to_wgs84_keeps_its_source() {
     ] {
         assert!(max_distance(&forward(&wkt, &points).unwrap(), &plain) < 1e-6, "{wkt}");
     }
+    // A BOUNDCRS of a CRS the reader does not convert is not refused by it.
+    let vertical = r#"BOUNDCRS[SOURCECRS[VERTCRS["EGM96 height",VDATUM["EGM96 geoid"],CS[vertical,1],AXIS["gravity-related height (H)",up,LENGTHUNIT["metre",1]]]],TARGETCRS[GEOGCRS["WGS 84",DATUM["World Geodetic System 1984",ELLIPSOID["WGS 84",6378137,298.257223563]],CS[ellipsoidal,2],AXIS["latitude",north],AXIS["longitude",east],ANGLEUNIT["degree",0.0174532925199433]]],ABRIDGEDTRANSFORMATION["t",METHOD["Geographic3D to GravityRelatedHeight (EGM96)"],PARAMETERFILE["Geoid (height correction) model file","egm96_15.gtx"]]]"#;
+    if let Err(e) = SpatialRef::parse(vertical).and_then(|s| Transformer::new(&s, &s)) {
+        assert!(!e.to_string().contains("unsupported WKT 2"), "{e}");
+    }
 }

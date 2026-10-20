@@ -17,7 +17,11 @@ const BASE: [&str; 4] = ["BASEGEOGCRS", "BASEGEODCRS", "BASEGEOGRAPHICCRS", "BAS
 /// Whether `root` is a WKT 2 CRS this reader converts.
 pub(crate) fn handles(root: &Node) -> bool {
     let key = root.key.to_ascii_uppercase();
-    GEOGRAPHIC.contains(&key.as_str()) || PROJECTED.contains(&key.as_str()) || key == "BOUNDCRS"
+    if key == "BOUNDCRS" {
+        // Only of a CRS this reader converts.
+        return root.child("SOURCECRS").and_then(first_node).is_some_and(handles);
+    }
+    GEOGRAPHIC.contains(&key.as_str()) || PROJECTED.contains(&key.as_str())
 }
 
 /// Converts a WKT 2 geographic or projected CRS, or a `BOUNDCRS` to WGS 84 of one, into a PROJ
@@ -125,7 +129,8 @@ pub(crate) fn to_proj(root: &Node) -> Result<Converted> {
     } else if is(&["popularvisualisationpseudomercator"], &[1024]) {
         push("lon_0", lon_0());
         // Spherical formulas on the semi-major axis.
-        tail[1] = format!("+b={}", geog.a);
+        tail.retain(|t| !t.starts_with("+rf=") && !t.starts_with("+b="));
+        tail.push(format!("+b={}", geog.a));
         "merc"
     } else if is(&["polarstereographicvarianta"], &[9810]) {
         let lat = lat_0().unwrap_or(90.0);
