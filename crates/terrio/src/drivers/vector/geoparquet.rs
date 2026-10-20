@@ -723,7 +723,7 @@ pub fn write(layer: &Layer, path: &str) -> Result<()> {
     Ok(())
 }
 
-pub(crate) const BATCH: usize = 65536;
+const BATCH: usize = 65536;
 
 /// Encodes a layer as a GeoParquet file.
 pub fn to_bytes(layer: &Layer) -> Result<Vec<u8>> {

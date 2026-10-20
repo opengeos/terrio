@@ -88,16 +88,15 @@ pub fn schema_of(layer: &Layer) -> Layer {
 pub struct FeatureReader {
     layer: Layer,
     source: Box<dyn FeatureSource>,
-    buffer: VecDeque<Feature>,
-    /// The size of each feature in `buffer` (see [`feature_size`]), and their sum.
-    sizes: VecDeque<usize>,
+    /// The features read ahead, with their sizes (see [`feature_size`]), and the sum of those.
+    buffer: VecDeque<(Feature, usize)>,
     buffered: usize,
     done: bool,
 }
 
 impl FeatureReader {
     fn new(layer: Layer, source: Box<dyn FeatureSource>) -> Self {
-        Self { layer: schema_of(&layer), source, buffer: VecDeque::new(), sizes: VecDeque::new(), buffered: 0, done: false }
+        Self { layer: schema_of(&layer), source, buffer: VecDeque::new(), buffered: 0, done: false }
     }
 
     /// The layer, without its features: its name, fields, geometry type and CRS.
@@ -111,8 +110,7 @@ impl FeatureReader {
                 Some(batch) => {
                     let sizes = crate::par::map_range(batch.len(), |i| feature_size(&batch[i]));
                     self.buffered += sizes.iter().sum::<usize>();
-                    self.sizes.extend(sizes);
-                    self.buffer.extend(batch);
+                    self.buffer.extend(batch.into_iter().zip(sizes));
                 }
                 None => self.done = true,
             }
@@ -131,13 +129,12 @@ impl FeatureReader {
         }
         let (mut n, mut size) = (0, 0);
         while n < max.min(self.buffer.len()) && (n == 0 || size < CHUNK_BYTES) {
-            size += self.sizes[n];
+            size += self.buffer[n].1;
             n += 1;
         }
         self.buffered -= size;
-        self.sizes.drain(..n);
         let mut chunk = schema_of(&self.layer);
-        chunk.features = self.buffer.drain(..n).collect();
+        chunk.features = self.buffer.drain(..n).map(|(f, _)| f).collect();
         Ok(Some(chunk))
     }
 
@@ -158,12 +155,11 @@ impl Iterator for FeatureReader {
         if let Err(e) = self.fill(1) {
             self.done = true;
             self.buffer.clear();
-            self.sizes.clear();
             self.buffered = 0;
             return Some(Err(e));
         }
-        let f = self.buffer.pop_front()?;
-        self.buffered -= self.sizes.pop_front().unwrap_or(0);
+        let (f, size) = self.buffer.pop_front()?;
+        self.buffered -= size;
         Some(Ok(f))
     }
 }
@@ -1311,12 +1307,9 @@ impl Drop for FgbSink {
 }
 
 /// Record batches are built as chunks come, and encoded on a thread of their own (in WebAssembly,
-/// right away), so that reading goes on while row groups are encoded. Features wait in `pending`
-/// until they fill a row group, so that the row groups are those of the whole-layer writer
-/// whatever the size of the chunks.
+/// right away), so that reading goes on while row groups are encoded.
 struct ParquetSink {
     enc: geoparquet::ParquetEncoder,
-    pending: Vec<Feature>,
     #[cfg(not(target_arch = "wasm32"))]
     encoder: Option<(std::sync::mpsc::SyncSender<geoparquet::EncodedBatch>, std::thread::JoinHandle<Result<()>>)>,
     /// Set when the sink is dropped unfinished: the file is left without its footer.
@@ -1347,63 +1340,22 @@ impl ParquetSink {
                 }
                 Ok(())
             });
-            Self { enc, pending: Vec::new(), encoder: Some((tx, handle)), abort }
+            Self { enc, encoder: Some((tx, handle)), abort }
         }
         #[cfg(target_arch = "wasm32")]
         {
             let _ = &mut writer;
-            Self { enc, pending: Vec::new(), writer }
+            Self { enc, writer }
         }
     }
 }
 
 impl FeatureSink for ParquetSink {
     fn write(&mut self, chunk: &Layer) -> Result<()> {
-        self.pending.extend(chunk.features.iter().cloned());
-        self.encode_full()
-    }
-
-    fn write_owned(&mut self, chunk: Layer) -> Result<()> {
-        self.pending.extend(chunk.features);
-        self.encode_full()
-    }
-
-    fn finish(self: Box<Self>) -> Result<()> {
-        let mut s = self;
-        let rest = std::mem::take(&mut s.pending);
-        s.encode(&rest)?;
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            s.stop()
-        }
-        #[cfg(target_arch = "wasm32")]
-        {
-            s.writer.close()?.flush()?;
-            Ok(())
-        }
-    }
-}
-
-impl ParquetSink {
-    /// Encodes the pending features that fill row groups.
-    fn encode_full(&mut self) -> Result<()> {
-        let full = self.pending.len() / geoparquet::BATCH * geoparquet::BATCH;
-        if full == 0 {
-            return Ok(());
-        }
-        let rest = self.pending.split_off(full);
-        let features = std::mem::replace(&mut self.pending, rest);
-        self.encode(&features)
-    }
-
-    fn encode(&mut self, features: &[Feature]) -> Result<()> {
-        if features.is_empty() {
-            return Ok(());
-        }
         #[cfg(not(target_arch = "wasm32"))]
         {
             let Some((tx, _)) = &self.encoder else { return Ok(()) };
-            for batch in self.enc.batches(features)? {
+            for batch in self.enc.batches(&chunk.features)? {
                 if tx.send(batch).is_err() {
                     // The encoder stopped on an error, which finishing reports.
                     return self.stop();
@@ -1413,7 +1365,20 @@ impl ParquetSink {
         }
         #[cfg(target_arch = "wasm32")]
         {
-            self.enc.write(&mut self.writer, features)
+            self.enc.write(&mut self.writer, &chunk.features)
+        }
+    }
+
+    fn finish(self: Box<Self>) -> Result<()> {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let mut s = self;
+            s.stop()
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            self.writer.close()?.flush()?;
+            Ok(())
         }
     }
 }

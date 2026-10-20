@@ -93,7 +93,7 @@ the largest peak memory. Same machine, terrio 0.2.0.
 |---|---|---|---|---|---|
 | Info: Colorado OpenStreetMap GeoPackage (6.2 M features) | 13 ms | 30 ms | 2.3× faster | 26 MB | 45 MB |
 | Lines (2.0 M) → FlatGeobuf | 5.70 s | 6.18 s | 1.1× faster | 474 MB | 556 MB |
-| Polygons (2.3 M) → GeoParquet | 2.63 s | 3.49 s | 1.3× faster | 1.4 GB | 960 MB |
+| Polygons (2.3 M) → GeoParquet | 2.65 s | 3.49 s | 1.3× faster | 936 MB | 960 MB |
 | Lines → GeoJSON | 3.48 s | 42.69 s | 12.3× faster | 458 MB | 503 MB |
 | Lines → Shapefile | 5.24 s | 5.38 s | 1.0× faster | 347 MB | 505 MB |
 | Filter + reproject lines → GeoPackage | 4.36 s | 6.16 s | 1.4× faster | 528 MB | 186 MB |

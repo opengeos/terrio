@@ -523,8 +523,9 @@ fn flatgeobuf_reencodes_rings_and_values_as_they_were() {
 fn chunks_stop_at_their_size() {
     let mut layer = Layer::new("big").with_epsg(4326);
     layer.add_field(FieldDef::new("k", FieldType::Integer));
-    // About 24 MB of coordinates each.
-    let line: Vec<Coord> = (0..500_000).map(|i| Coord::xy(i as f64, 0.0)).collect();
+    // A little over a third of a chunk each, whatever the size of a coordinate.
+    let n = CHUNK_BYTES / 3 / std::mem::size_of::<Coord>() + 1;
+    let line: Vec<Coord> = (0..n).map(|i| Coord::xy(i as f64, 0.0)).collect();
     for k in 0..6 {
         layer.push(Feature {
             fid: k,
@@ -544,13 +545,14 @@ fn chunks_stop_at_their_size() {
     assert_eq!(fids, (0..6).collect::<Vec<_>>());
 }
 
-/// GeoParquet row groups are those of the whole-layer writer whatever the size of the chunks.
+/// GeoParquet row groups (of 65,536 rows) are those of the whole-layer writer whatever the size of
+/// the chunks.
 #[test]
 fn geoparquet_row_groups_do_not_follow_chunks() {
     let dir = tempfile::tempdir().unwrap();
     let mut layer = Layer::new("t").with_epsg(4326);
     layer.add_field(FieldDef::new("name", FieldType::Text));
-    for k in 0..(geoparquet::BATCH as u64 + 10) {
+    for k in 0..(65_546) {
         layer.push(Feature { fid: k, geometry: Some(Geometry::point(k as f64, 0.0)), attributes: vec![FieldValue::Text(format!("f{k}"))] });
     }
     let whole = dir.path().join("whole.parquet").to_string_lossy().into_owned();
