@@ -613,9 +613,11 @@ def suite_crs(ctx):
         "GDAL 3.12 and PROJ (`gdaltransform`)",
         "A reference point per EPSG geographic and projected CRS, transformed from WGS 84 "
         "(forward) and back (inverse), and between pairs of CRSs, compared with GDAL's results, "
-        "neither using datum shift grids. Identical: within 1 mm. Within tolerance: within 1 cm "
-        "(forward, inverse) or 1 m (CRS to CRS, where the datum transformations GDAL picks can "
-        "differ by area of use).",
+        "neither using datum shift grids; then projections EPSG has no code for, against PROJ "
+        "(crates/terrio/tests/geostationary.rs: points from nadir to near the limb, forward "
+        "within 1 mm and inverse within 1e-8°, and points the satellite cannot see refused). "
+        "Identical: within 1 mm. Within tolerance: within 1 cm (forward, inverse) or 1 m (CRS to "
+        "CRS, where the datum transformations GDAL picks can differ by area of use).",
     )
     if not shutil.which("cargo"):
         s.skipped = "needs cargo"
@@ -624,7 +626,33 @@ def suite_crs(ctx):
         s.skipped = "epsg_points.tsv is missing from the test data (scripts/gen_epsg_points.py)"
         return s
     epsg_cases(s, ctx, "epsg_accuracy", "epsg_points.tsv")
+    proj_cases(s)
     return s
+
+
+# The PROJ definitions without an EPSG code that crates/terrio/tests/geostationary.rs checks.
+PROJ_CASES = {
+    "goes16_sweep_x_matches_proj": "GOES-16: `+proj=geos +h=35786023 +lon_0=-75 +sweep=x +ellps=GRS80`",
+    "seviri_sweep_y_matches_proj": "Meteosat SEVIRI: `+proj=geos +h=35785831 +lon_0=0 +sweep=y +a=6378169 +b=6356583.8`",
+}
+
+
+def proj_cases(s):
+    """Runs the tests of projections EPSG has no code for and adds a case per definition.
+
+    Args:
+        s: The suite the cases go to.
+    """
+    _code, out, err = run(["cargo", "test", "--release", "-p", "terrio", "--test", "geostationary"])
+    group = "PROJ definitions without an EPSG code"
+    for test, name in PROJ_CASES.items():
+        m = re.search(rf"^test {test} \.\.\. (\w+)$", out, re.M)
+        if not m:
+            s.cases.append(Case(group, name, DIFFERS, "the test did not run: " + tail(err or out, 3)))
+        elif m.group(1) == "ok":
+            s.cases.append(Case(group, name, IDENTICAL))
+        else:
+            s.cases.append(Case(group, name, DIFFERS, "differs from PROJ"))
 
 
 def suite_crs_grids(ctx):

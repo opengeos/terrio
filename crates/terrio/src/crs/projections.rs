@@ -81,6 +81,7 @@ pub(crate) fn build(name: &str, s: &mut Setup<'_>) -> Result<Option<Box<dyn Proj
         "col_urban" => Box::new(ColUrban::new(s)),
         "aeqd" => Box::new(Aeqd::new(s)),
         "ortho" => Box::new(Ortho::new(s)),
+        "geos" => Box::new(Geos::new(s)?),
         _ => return Ok(None),
     }))
 }
@@ -2229,5 +2230,73 @@ impl Proj for Ortho {
             }
         }
         Some((lam, phi))
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Geostationary satellite view: the scan angles of a satellite at height `h` above the equator,
+// times `h`. `+sweep=x` (GOES) sweeps the x angle across the y one, `+sweep=y` (Meteosat,
+// Himawari, the default) the other way round.
+
+#[derive(Debug)]
+struct Geos {
+    /// The satellite height above the ellipsoid, over the semi-major axis.
+    h: f64,
+    /// `a² / b²`.
+    rp: f64,
+    /// The semi-minor axis over the semi-major axis.
+    b: f64,
+    es: f64,
+    sweep_x: bool,
+}
+
+impl Geos {
+    fn new(s: &mut Setup<'_>) -> Result<Self> {
+        let h = s.p.f64("h").ok_or_else(|| err("geos needs +h"))?;
+        if h.is_nan() || h <= 0.0 {
+            return Err(err("invalid geos height +h"));
+        }
+        let sweep_x = match s.p.str("sweep") {
+            None | Some("y") => false,
+            Some("x") => true,
+            Some(_) => return Err(err("geos +sweep must be x or y")),
+        };
+        let es = s.ell.es;
+        Ok(Self { h: h / s.ell.a, rp: 1.0 / s.ell.one_es, b: s.ell.one_es.sqrt(), es, sweep_x })
+    }
+}
+
+impl Proj for Geos {
+    fn fwd(&self, lam: f64, phi: f64) -> Option<(f64, f64)> {
+        // The point on the ellipsoid, from its geocentric latitude.
+        let phic = (phi.tan() / self.rp).atan();
+        let (sinc, cosc) = phic.sin_cos();
+        let r = self.b / (1.0 - self.es * cosc * cosc).sqrt();
+        let (vx, vy, vz) = (r * cosc * lam.cos(), r * cosc * lam.sin(), r * sinc);
+        let d = 1.0 + self.h - vx;
+        // Hidden from the satellite.
+        if d * vx - vy * vy - self.rp * vz * vz < 0.0 {
+            return None;
+        }
+        let (x, y) = if self.sweep_x { ((vy / vz.hypot(d)).atan(), (vz / d).atan()) } else { ((vy / d).atan(), (vz / vy.hypot(d)).atan()) };
+        Some((self.h * x, self.h * y))
+    }
+
+    fn inv(&self, x: f64, y: f64) -> Option<(f64, f64)> {
+        // The ray from the satellite along the scan angles, met with the ellipsoid.
+        let (tx, ty) = (x / self.h, y / self.h);
+        let (ux, uy, uz) = if self.sweep_x { (-ty.cos(), tx.tan(), ty.sin()) } else { (-tx.cos(), tx.sin(), ty.tan()) };
+        let sx = 1.0 + self.h;
+        let qa = ux * ux + uy * uy + self.rp * uz * uz;
+        let qb = 2.0 * sx * ux;
+        let qc = sx * sx - 1.0;
+        let disc = qb * qb - 4.0 * qa * qc;
+        if disc < 0.0 {
+            return None;
+        }
+        // The nearer root, in the form that keeps its precision near the limb.
+        let t = 2.0 * qc / (-qb + disc.sqrt());
+        let (px, py, pz) = (sx + t * ux, t * uy, t * uz);
+        Some((py.atan2(px), (self.rp * pz / px.hypot(py)).atan()))
     }
 }

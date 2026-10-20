@@ -25,9 +25,9 @@ Generated on 2026-10-14 with terrio 0.1.1 (9e7f7f5), GDAL 3.12.2, PROJ 9.7.1, PD
 | [Arrow and GeoArrow](#arrow-and-geoarrow) | GDAL's Arrow streams, pyarrow, GeoPandas | 180 | 171 | 9 | 0 |
 | [GeoPackage updates and spatial filters](#geopackage-updates-and-spatial-filters) | `ogr2ogr`, GDAL's `validate_gpkg.py` | 12 | 12 | 0 | 0 |
 | [Point clouds](#point-clouds) | laspy (every value), PDAL (headers, PLY, E57 and EPT, COPC and EPT queries, filters, grids, reprojection) and gdal_grid (TIN and nearest-neighbour grids) | 615 | 609 | 6 | 0 |
-| [Coordinate transformations](#coordinate-transformations) | GDAL 3.12 and PROJ (`gdaltransform`) | 19,003 | 18,919 | 72 | 12 |
+| [Coordinate transformations](#coordinate-transformations) | GDAL 3.12 and PROJ (`gdaltransform`) | 19,005 | 18,921 | 72 | 12 |
 | [Datum shift grids, geoid models and coordinate epochs](#datum-shift-grids-geoid-models-and-coordinate-epochs) | GDAL 3.12 and PROJ, with the same grids | 19,253 | 19,123 | 110 | 20 |
-| **All** | | **40,054** | **39,816** | **206** | **32** |
+| **All** | | **40,056** | **39,818** | **206** | **32** |
 
 ## Dataset summaries and pixels
 
@@ -290,13 +290,14 @@ Cases that are not identical:
 
 ## Coordinate transformations
 
-A reference point per EPSG geographic and projected CRS, transformed from WGS 84 (forward) and back (inverse), and between pairs of CRSs, compared with GDAL's results, neither using datum shift grids. Identical: within 1 mm. Within tolerance: within 1 cm (forward, inverse) or 1 m (CRS to CRS, where the datum transformations GDAL picks can differ by area of use).
+A reference point per EPSG geographic and projected CRS, transformed from WGS 84 (forward) and back (inverse), and between pairs of CRSs, compared with GDAL's results, neither using datum shift grids; then projections EPSG has no code for, against PROJ (crates/terrio/tests/geostationary.rs: points from nadir to near the limb, forward within 1 mm and inverse within 1e-8°, and points the satellite cannot see refused). Identical: within 1 mm. Within tolerance: within 1 cm (forward, inverse) or 1 m (CRS to CRS, where the datum transformations GDAL picks can differ by area of use).
 
 | Format or operation | Cases | Identical | Within tolerance | Differs |
 |---|---:|---:|---:|---:|
 | forward (WGS 84 to CRS) | 6,354 | 6,353 | 1 | 0 |
 | inverse (CRS to WGS 84) | 6,354 | 6,344 | 10 | 0 |
 | CRS to CRS | 6,295 | 6,222 | 61 | 12 |
+| PROJ definitions without an EPSG code | 2 | 2 | 0 | 0 |
 
 Cases that are not identical:
 
