@@ -98,11 +98,7 @@ impl SpatialRef {
             && let Ok(own) = Def::from_proj(&proj4)
         {
             // Its EPSG code: declared, or one whose definition converts as the PROJ string does.
-            let epsg = declared_epsg(wkt).or_else(|| {
-                let code = identify_epsg(wkt)?;
-                let registered = Def::new(&SpatialRef { epsg: Some(code), wkt: None, proj4: None }).ok()?;
-                own.same_conversion(&registered).then_some(code)
-            });
+            let epsg = declared_epsg(wkt).or_else(|| identify_epsg(wkt).filter(|code| is_registered_as(&own, *code)));
             return Self { epsg, wkt: Some(wkt.to_string()), proj4: Some(proj4) };
         }
         let epsg = if def::split_compound(wkt).is_some() { declared_epsg(wkt) } else { identify_epsg(wkt) };
@@ -311,14 +307,22 @@ impl SpatialRef {
     }
 }
 
-/// The WKT 1 of a PROJ string, extended with the PROJ string itself (`EXTENSION["PROJ4", ...]`,
-/// as GDAL writes it): the WKT can describe less than the PROJ string (a south-orientated
-/// transverse Mercator, an oblique Mercator variant), and the extension keeps the rest.
+/// The WKT 1 of a PROJ string. When the WKT describes less than the PROJ string (a
+/// south-orientated transverse Mercator, an oblique Mercator variant), it is extended with the
+/// PROJ string itself (`EXTENSION["PROJ4", ...]`), as GDAL writes it.
 fn proj_to_wkt(p: &str) -> Option<String> {
     let extension = format!("EXTENSION[\"PROJ4\",\"{}\"]", p.trim().replace('"', ""));
     if let Ok(crs) = wbp::from_proj_string(&mercator_lat_ts_as_k(p)) {
         let wkt = wbp::crs_to_wkt(&crs);
-        return Some(format!("{},{extension}]", wkt.strip_suffix(']')?));
+        // Faithful when it converts as the PROJ string does, and is not identified as a CRS on
+        // another datum (a Bessel stereographic without TOWGS84 is not Amersfoort / RD New).
+        let faithful = Def::wkt_conversion(&wkt)
+            .zip(Def::from_proj(p).ok())
+            .is_some_and(|(w, own)| w.same_conversion(&own) && identify_epsg(&wkt).is_none_or(|code| is_registered_as(&own, code)));
+        if faithful {
+            return Some(wkt);
+        }
+        return Some(format!("{},{extension}]", wkt.trim_end().strip_suffix(']')?));
     }
     // A projection wbprojection does not know: GDAL's `custom_proj4`, on the PROJ string's datum.
     Def::from_proj(p).ok()?;
@@ -326,6 +330,11 @@ fn proj_to_wkt(p: &str) -> Option<String> {
     let datum: Vec<&str> = p.split_whitespace().filter(|t| DATUM.iter().any(|d| t.starts_with(d))).collect();
     let geogcs = wbp::crs_to_wkt(&wbp::from_proj_string(&format!("+proj=longlat {}", datum.join(" "))).ok()?);
     Some(format!("PROJCS[\"unknown\",{geogcs},PROJECTION[\"custom_proj4\"],UNIT[\"metre\",1],{extension}]"))
+}
+
+/// Whether the EPSG CRS `code` is the CRS of `own`: the same conversion on the same datum.
+fn is_registered_as(own: &Def, code: u32) -> bool {
+    Def::new(&SpatialRef { epsg: Some(code), wkt: None, proj4: None }).is_ok_and(|r| own.same_conversion(&r) && own.same_datum(&r))
 }
 
 /// The PROJ string of a WKT 1's root `EXTENSION["PROJ4", ...]`.

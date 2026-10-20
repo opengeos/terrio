@@ -183,6 +183,8 @@ fn projection(k: &GeoKeys, to_meter: f64) -> Option<String> {
             let origin = k.double(NAT_ORIGIN_LAT).unwrap_or(90.0);
             let ts = lat1.or(((origin.abs() - 90.0).abs() > 1e-9).then_some(origin));
             let pole = if ts.unwrap_or(origin) < 0.0 { -90.0 } else { 90.0 };
+            // The longitude is ProjStraightVertPoleLongGeoKey's, whatever other origin keys say.
+            let lon0 = k.double(STRAIGHT_VERT_POLE_LONG).unwrap_or(lon0);
             match ts {
                 Some(ts) => format!("stere +lat_0={pole} +lat_ts={ts} +lon_0={lon0} {false_xy}"),
                 None => format!("stere +lat_0={pole} +lon_0={lon0} +k={scale} {false_xy}"),
