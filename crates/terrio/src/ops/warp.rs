@@ -136,6 +136,10 @@ pub struct WarpOptions {
     pub extent_srs: Option<SpatialRef>,
     /// The output size `(width, height)`; a 0 is computed from the other (`-ts`).
     pub size: Option<(usize, usize)>,
+    /// The output geotransform, in GDAL's order: any affine grid, rotated or not, of
+    /// [`WarpOptions::size`] pixels (which it needs, both non-zero). Excludes the extent, the
+    /// resolution, `-tap` and cropping to the cutline.
+    pub dst_transform: Option<[f64; 6]>,
     /// Align the output extent on multiples of the resolution (`-tap`; needs a resolution).
     pub target_aligned_pixels: bool,
     /// The resampling method (`-r`).
@@ -174,6 +178,7 @@ impl Default for WarpOptions {
             extent: None,
             extent_srs: None,
             size: None,
+            dst_transform: None,
             target_aligned_pixels: false,
             resampling: Resampling::Nearest,
             src_nodata: Nodata::Auto,
@@ -886,6 +891,22 @@ fn output_grid(sources: &[Source], dst_srs: &SpatialRef, o: &WarpOptions, te: Op
     Ok(Grid { width: pixels, height: lines, geo_transform: gt })
 }
 
+/// The output grid of [`WarpOptions::dst_transform`] and [`WarpOptions::size`].
+fn given_grid(gt: [f64; 6], o: &WarpOptions) -> Result<Grid> {
+    let Some((width, height)) = o.size.filter(|(w, h)| *w != 0 && *h != 0) else {
+        return Err(Error::InvalidArgument("an output geotransform needs an output size".into()));
+    };
+    if o.extent.is_some() || o.resolution.is_some() || o.target_aligned_pixels || o.crop_to_cutline {
+        return Err(Error::InvalidArgument(
+            "an output geotransform excludes an extent, a resolution, -tap and cropping to the cutline".into(),
+        ));
+    }
+    if !gt.iter().all(|v| v.is_finite()) || invert_gt(&gt).is_none() {
+        return Err(Error::InvalidArgument("the output geotransform is not invertible".into()));
+    }
+    Ok(Grid { width, height, geo_transform: gt })
+}
+
 /// The resolution of the source, in output units, over the target extent (`gdalwarp` with `-te`
 /// and no `-tr` or `-ts`).
 fn resolution_from_target_extent(t: &GenImgProj, grid: &Grid, te: (f64, f64, f64, f64)) -> f64 {
@@ -997,7 +1018,10 @@ impl<'a> Plan<'a> {
             te = Some(cutline_extent(c, &srcs[0], &dst_srs, o.resolution.is_some())?);
         }
 
-        let grid = output_grid(&srcs, &dst_srs, o, te)?;
+        let grid = match o.dst_transform {
+            Some(gt) => given_grid(gt, o)?,
+            None => output_grid(&srcs, &dst_srs, o, te)?,
+        };
         let out_type = o.output_type.unwrap_or(first.raster.data_type);
         // The output's nodata defaults to the source's.
         let dst_nodata: Option<f64> = match &o.dst_nodata {
@@ -1100,7 +1124,65 @@ pub fn warp(sources: &[&RasterDataset], o: &WarpOptions) -> Result<RasterDataset
             warp_source(&ctx, &chunks, &data, &sink, target);
         });
     }
-    super::build_raster_data(grid, out, bands, p.dst_nodata, &p.dst_srs)
+    let (stored, gt) = stored_grid(grid);
+    let mut ds = super::build_raster_data(stored, out, bands, p.dst_nodata, &p.dst_srs)?;
+    if let Some(gt) = gt {
+        ds.set_geo_transform(gt);
+    }
+    Ok(ds)
+}
+
+/// Warps one raster as [`warp`] does, reading from it only the source window each chunk of the
+/// output needs: for a lazy raster (a GeoTIFF or COG read on demand), a small output costs the
+/// pixels it reads, not the whole source. The result is [`warp`]'s, bit for bit. Without a
+/// cutline, which masks the whole source.
+pub fn warp_lazy(src: &mut crate::LazyRaster, o: &WarpOptions) -> Result<RasterDataset> {
+    if let Some(ds) = src.dataset() {
+        return warp(&[ds], o);
+    }
+    if o.cutline.is_some() {
+        return Err(Error::Unsupported("a cutline needs the source in memory".into()));
+    }
+    let header = src.header();
+    let p = Plan::new(&[&header], o)?;
+    let (grid, bands, out_type) = (p.grid, p.bands, p.out_type);
+    let n = grid.width * grid.height;
+    let t = p.transformer(0)?;
+    let (ctx, chunks, sink) = p.context(0, &t, o);
+    let nodata = p.src_nodata(0, o);
+    let unified = matches!(o.src_nodata, Nodata::Values(_)) && bands > 1;
+    let fill = p.fill();
+    let mut out = RasterData::new_filled(out_type, n * bands, 0.0);
+    crate::pixel::with_data!(&mut out, v => v.iter_mut().for_each(|x| *x = fill as _));
+    for c in &chunks {
+        let window = src.read_window(crate::Window::new(c.sx, c.sy, c.sw, c.sh), &crate::WindowOptions::default())?;
+        let src_bands: Vec<super::BandView> = (0..bands).map(|b| super::BandView::of(&window.raster, b)).collect();
+        let valid = validity(&src_bands, &nodata, unified, None);
+        let sn = c.sw * c.sh;
+        // The chunks partition the output: each finds it at its initial value.
+        let target = Target { out: &mut out, width: grid.width, n, fill, out_type, first: true };
+        crate::pixel::with_data!(&window.raster.data, v => {
+            let typed: Vec<&[_]> = (0..bands).map(|b| &v[b * sn..(b + 1) * sn]).collect();
+            let data = SrcData { bands: &typed, valid: &valid, width: c.sw, origin: (c.sx, c.sy) };
+            warp_source(&ctx, std::slice::from_ref(c), &data, &sink, target);
+        });
+    }
+    let (stored, gt) = stored_grid(grid);
+    let mut ds = super::build_raster_data(stored, out, bands, p.dst_nodata, &p.dst_srs)?;
+    if let Some(gt) = gt {
+        ds.set_geo_transform(gt);
+    }
+    Ok(ds)
+}
+
+/// `grid` with a north-up geotransform, as rasters are built, and its own geotransform when it
+/// is not north-up (a rotated [`WarpOptions::dst_transform`]), to set on the output after.
+fn stored_grid(grid: Grid) -> (Grid, Option<[f64; 6]>) {
+    if crate::is_north_up(&grid.geo_transform) {
+        (grid, None)
+    } else {
+        (Grid { geo_transform: [0.0, 1.0, 0.0, grid.height as f64, 0.0, -1.0], ..grid }, Some(grid.geo_transform))
+    }
 }
 
 /// Warps rasters as [`warp`] does and writes the output to `path`. A single source without a
@@ -1137,8 +1219,12 @@ pub fn warp_to_path(paths: &[String], o: &WarpOptions, path: &str, options: &cra
     let nodata = p.src_nodata(0, o);
     let unified = matches!(o.src_nodata, Nodata::Values(_)) && bands > 1;
     let fill = p.fill();
-    let mut out =
-        super::strips::StripWriter::create(&super::raster_header(grid, out_type, bands, p.dst_nodata, &p.dst_srs)?, path, options)?;
+    let (stored, gt) = stored_grid(grid);
+    let mut header = super::raster_header(stored, out_type, bands, p.dst_nodata, &p.dst_srs)?;
+    if let Some(gt) = gt {
+        header.set_geo_transform(gt);
+    }
+    let mut out = super::strips::StripWriter::create(&header, path, options)?;
 
     // The last chunk (in order) writing each row: rows are written once it is warped.
     let mut last: Vec<Option<usize>> = vec![None; grid.height];
@@ -2228,6 +2314,59 @@ mod tests {
                 assert_eq!(a.raster.data.to_f64_vec(), b.raster.data.to_f64_vec(), "{resampling:?} {memory_limit} {ext}");
             }
         }
+    }
+
+    #[test]
+    fn lazy_warp_gives_the_whole_warp() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut ds = raster(97, 83, [500000.0, 30.0, 0.0, 4000000.0, 0.0, -30.0], 32610, |c, r| ((c * 7 + r * 13) % 50) as f64 + 0.25);
+        ds.has_nodata = true;
+        ds.raster.set(0, 40, 30, -9999.0).unwrap();
+        let input = dir.path().join("src.tif");
+        crate::write_raster_dataset(&ds, input.to_str().unwrap(), &Default::default()).unwrap();
+        let th = 30f64.to_radians();
+        let rotated = [500900.0, 40.0 * th.cos(), 40.0 * th.sin(), 3998200.0, 40.0 * th.sin(), -40.0 * th.cos()];
+        for resampling in [Resampling::Nearest, Resampling::Bilinear, Resampling::Cubic, Resampling::Average] {
+            for (dst_transform, size, memory_limit) in [
+                (None, None, 64.0 * 1024.0 * 1024.0),
+                (None, None, 2000.0),
+                (Some(rotated), Some((20, 16)), 64.0 * 1024.0 * 1024.0),
+                (Some(rotated), Some((20, 16)), 500.0),
+            ] {
+                let o = WarpOptions {
+                    dst_srs: Some(SpatialRef::parse("EPSG:32611").unwrap()),
+                    dst_transform,
+                    size,
+                    resampling,
+                    memory_limit,
+                    ..Default::default()
+                };
+                let whole = warp(&[&ds], &o).unwrap();
+                let mut lazy = crate::open_raster_lazy(input.to_str().unwrap()).unwrap();
+                let out = warp_lazy(&mut lazy, &o).unwrap();
+                assert_eq!(whole.geo_transform(), out.geo_transform());
+                assert_eq!(whole.raster.data.to_f64_vec(), out.raster.data.to_f64_vec(), "{resampling:?} {memory_limit}");
+            }
+        }
+    }
+
+    #[test]
+    fn rotated_output_grid() {
+        // A 90° rotation of the source grid onto itself: output pixel (c, r) is source pixel
+        // (r, c), read by nearest neighbour exactly.
+        let ds = raster(6, 4, [0.0, 1.0, 0.0, 4.0, 0.0, -1.0], 32610, |c, r| (c * 10 + r) as f64);
+        let o = WarpOptions { dst_transform: Some([0.0, 0.0, 1.0, 4.0, -1.0, 0.0]), size: Some((4, 6)), ..Default::default() };
+        let out = warp(&[&ds], &o).unwrap();
+        assert_eq!(out.geo_transform(), [0.0, 0.0, 1.0, 4.0, -1.0, 0.0]);
+        assert_eq!((out.raster.cols, out.raster.rows), (4, 6));
+        for r in 0..6 {
+            for c in 0..4 {
+                assert_eq!(out.raster.get(0, r as isize, c as isize), (r * 10 + c) as f64, "({c}, {r})");
+            }
+        }
+        // A geotransform needs a size, and excludes an extent.
+        assert!(warp(&[&ds], &WarpOptions { dst_transform: o.dst_transform, ..Default::default() }).is_err());
+        assert!(warp(&[&ds], &WarpOptions { extent: Some((0.0, 0.0, 1.0, 1.0)), ..o.clone() }).is_err());
     }
 
     #[test]

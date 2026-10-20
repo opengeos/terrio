@@ -1159,6 +1159,28 @@ def _wp_vrt(rio: Any, ctx: Ctx) -> Any:
     return out
 
 
+@check("warp", "rotated destination grids: reproject (nearest, bilinear, cubic) and WarpedVRT (nearest, and bilinear block by block)", expect="tolerance", atol=2, max_frac=0.01, reason="GDAL's warp kernels next to nodata pixels")
+def _wp_rotated_dst(rio: Any, ctx: Ctx) -> Any:
+    W = rio.warp
+    out = []
+    with rio.open(synthetic(rio, ctx)) as ds:
+        x, y = ds.transform * (ds.width / 4, ds.height / 4)
+        for deg in (30, -65, 180):
+            th = math.radians(deg)
+            t = rio.transform.Affine(40 * math.cos(th), 40 * math.sin(th), x, 40 * math.sin(th), -40 * math.cos(th), y)
+            for r in ("nearest", "bilinear", "cubic"):
+                dst = np.zeros((3, 64, 64), "int16")
+                W.reproject(rio.band(ds, [1, 2, 3]), dst, dst_transform=t, dst_crs=ds.crs, resampling=rio.enums.Resampling[r])
+                out.append(dst)
+            with rio.vrt.WarpedVRT(ds, crs=ds.crs, transform=t, width=64, height=64) as v:
+                out += [v.transform, v.read()]
+            # GDAL's whole-image read of a warped VRT (GDAL_VRT_WARP_USE_DATASET_RASTERIO) samples
+            # rotated grids differently from its own blocks and from reproject: read row by row.
+            with rio.vrt.WarpedVRT(ds, crs=ds.crs, transform=t, width=64, height=64, resampling=rio.enums.Resampling.bilinear) as v:
+                out.append(np.concatenate([v.read(window=rio.windows.Window(0, row, 64, 1)) for row in range(64)], axis=1))
+    return out
+
+
 @check("merge", "merge: union, resolution, bounds, methods, indexes, nodata, target_aligned_pixels")
 def _m_merge(rio: Any, ctx: Ctx) -> Any:
     a = synthetic(rio, ctx)
