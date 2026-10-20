@@ -185,24 +185,27 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
-      - name: Serve the archives
+      # Each step starts its own server: a background process need not outlive its step.
+      - name: Stage the archives and the installers
         shell: bash
         run: |
           echo "TERRIO_VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)" >> "$GITHUB_ENV"
           echo "TERRIO_DOWNLOAD_URL=http://127.0.0.1:8000" >> "$GITHUB_ENV"
           cp docs/install.sh docs/install.ps1 release/
-          cd release && nohup python -m http.server 8000 --bind 127.0.0.1 > /dev/null 2>&1 &
-          for _ in $(seq 30); do curl -sf http://127.0.0.1:8000/ > /dev/null && break; sleep 1; done
       - name: install.sh (sh, and shellcheck)
         if: runner.os != 'Windows'
         run: |
           if [ "${{ matrix.os }}" = ubuntu-latest ]; then shellcheck docs/install.sh; fi
+          (cd release && python -m http.server 8000 --bind 127.0.0.1 > /dev/null 2>&1 &)
+          for _ in $(seq 30); do curl -sf http://127.0.0.1:8000/ > /dev/null && break; sleep 1; done
           curl -LsSf http://127.0.0.1:8000/install.sh | sh
           test "$("$HOME/.local/bin/terrio" --version)" = "terrio $TERRIO_VERSION"
       - name: install.ps1 (Windows PowerShell)
         if: runner.os == 'Windows'
         shell: powershell
         run: |
+          Start-Process python -ArgumentList "-m", "http.server", "8000", "--bind", "127.0.0.1" -WorkingDirectory release -WindowStyle Hidden
+          foreach ($i in 1..30) { try { Invoke-WebRequest http://127.0.0.1:8000/ -UseBasicParsing | Out-Null; break } catch { Start-Sleep 1 } }
           irm http://127.0.0.1:8000/install.ps1 | iex
           if ((& "$env:USERPROFILE\.local\bin\terrio.exe" --version) -ne "terrio $env:TERRIO_VERSION") { throw "wrong version" }
       - name: install.ps1 (PowerShell 7, into another directory)
@@ -212,5 +215,8 @@ jobs:
           TERRIO_INSTALL_DIR: ${{ runner.temp }}\terrio-bin
           TERRIO_NO_MODIFY_PATH: "1"
         run: |
+          # The server of the previous step, if it is still running, or a new one.
+          Start-Process python -ArgumentList "-m", "http.server", "8000", "--bind", "127.0.0.1" -WorkingDirectory release -WindowStyle Hidden
+          foreach ($i in 1..30) { try { Invoke-WebRequest http://127.0.0.1:8000/ -UseBasicParsing | Out-Null; break } catch { Start-Sleep 1 } }
           irm http://127.0.0.1:8000/install.ps1 | iex
           if ((& "$env:TERRIO_INSTALL_DIR\terrio.exe" --version) -ne "terrio $env:TERRIO_VERSION") { throw "wrong version" }

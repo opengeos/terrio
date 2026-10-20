@@ -28,7 +28,11 @@ function Install-Terrio {
 
     $version = $env:TERRIO_VERSION
     if (-not $version) {
-        $version = (Invoke-RestMethod "https://api.github.com/repos/$repo/releases/latest").tag_name
+        try {
+            $version = (Invoke-RestMethod "https://api.github.com/repos/$repo/releases/latest").tag_name
+        } catch {
+            throw "Could not find the latest release of $repo; set TERRIO_VERSION to the version to install"
+        }
     }
     $version = "v" + $version.TrimStart("v")
 

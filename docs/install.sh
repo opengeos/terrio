@@ -64,6 +64,22 @@ target() {
     esac
 }
 
+# The tag of the latest release: from where github.com/$REPO/releases/latest redirects with curl
+# (not rate-limited as the GitHub API is), from the API with wget.
+latest() {
+    if has curl; then
+        url=$(curl --proto-redir '=https' --tlsv1.2 -fsSL -o /dev/null -w '%{url_effective}' "https://github.com/$REPO/releases/latest") || return 1
+        tag="${url##*/}"
+    else
+        json=$(download "https://api.github.com/repos/$REPO/releases/latest" -) || return 1
+        tag=$(printf '%s\n' "$json" | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -n 1)
+    fi
+    case "$tag" in
+        v[0-9]*) echo "$tag" ;;
+        *) return 1 ;;
+    esac
+}
+
 sha256() {
     if has sha256sum; then
         sha256sum "$1" | cut -d ' ' -f 1
@@ -79,9 +95,8 @@ main() {
 
     version="${TERRIO_VERSION:-}"
     if [ -z "$version" ]; then
-        version=$(download "https://api.github.com/repos/$REPO/releases/latest" - |
-            sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -n 1)
-        [ -n "$version" ] || err "could not find the latest release of $REPO"
+        version=$(latest) ||
+            err "could not find the latest release of $REPO; set TERRIO_VERSION to the version to install"
     fi
     version="v${version#v}"
 
