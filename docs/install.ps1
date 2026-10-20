@@ -51,7 +51,7 @@ function Install-Terrio {
             Invoke-WebRequest "$base/$name.zip" -OutFile $zip -UseBasicParsing
             Invoke-WebRequest "$base/$name.zip.sha256" -OutFile "$zip.sha256" -UseBasicParsing
         } catch {
-            throw "Release $version has no terrio binary for $target; install it with pip install terrio or cargo install terrio-cli"
+            throw "Could not download terrio $version for $target ($($_.Exception.Message)); install it with pip install terrio or cargo install terrio-cli"
         }
         $expected = ((Get-Content "$zip.sha256" -Raw).Trim() -split "\s+")[0]
         if ((Get-FileHash $zip -Algorithm SHA256).Hash -ne $expected.ToUpper()) {
@@ -66,17 +66,19 @@ function Install-Terrio {
         Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue
     }
 
-    $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
-    $onPath = ($userPath -split ";") -contains $installDir
-    if (-not $onPath) {
-        if ($env:TERRIO_NO_MODIFY_PATH) {
+    if ($env:TERRIO_NO_MODIFY_PATH) {
+        if (-not (($env:Path -split ";") -contains $installDir)) {
             Write-Host "terrio-installer: $installDir is not on your PATH"
-        } else {
+        }
+    } else {
+        $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
+        if (-not (($userPath -split ";") -contains $installDir)) {
             [Environment]::SetEnvironmentVariable("Path", (@($installDir) + ($userPath -split ";" | Where-Object { $_ })) -join ";", "User")
-            # This session too: the script runs in the caller's (irm | iex).
-            if (-not (($env:Path -split ";") -contains $installDir)) { $env:Path = "$installDir;$env:Path" }
             Write-Host "terrio-installer: added $installDir to your PATH"
         }
+        # This session too (the script runs in the caller's, with irm | iex), which may predate
+        # the user PATH having it.
+        if (-not (($env:Path -split ";") -contains $installDir)) { $env:Path = "$installDir;$env:Path" }
     }
     & (Join-Path $installDir "terrio.exe") --version
 }

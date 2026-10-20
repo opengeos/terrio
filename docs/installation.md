@@ -8,7 +8,8 @@ terrio is published on [crates.io](https://crates.io/crates/terrio),
 The installer downloads the standalone `terrio` binary for your platform (Linux x86_64 and aarch64,
 static, any distribution; macOS Intel and Apple silicon; Windows x64 and ARM64) from the latest
 [GitHub release](https://github.com/opengeos/terrio/releases), checks its SHA-256 checksum and
-puts it in `~/.local/bin` (`%USERPROFILE%\.local\bin` on Windows). No Rust or Python is needed.
+puts it in `$XDG_BIN_HOME` if set, otherwise `~/.local/bin` (`%USERPROFILE%\.local\bin` on
+Windows). No Rust or Python is needed.
 
 ```sh
 # Linux and macOS
@@ -20,10 +21,19 @@ curl -LsSf https://terrio.opengeos.org/install.sh | sh
 powershell -ExecutionPolicy ByPass -c "irm https://terrio.opengeos.org/install.ps1 | iex"
 ```
 
-Set `TERRIO_VERSION` (`TERRIO_VERSION=0.4.0`) to install another release, and `TERRIO_INSTALL_DIR`
-to install elsewhere. The Windows installer adds the directory to your `PATH`
-(`TERRIO_NO_MODIFY_PATH=1` to leave it); the shell installer prints the line to add when it isn't
-on it. Run the installer again to update terrio, and delete the binary to uninstall it.
+Set `TERRIO_VERSION` to install another release, and `TERRIO_INSTALL_DIR` to install elsewhere:
+
+```sh
+curl -LsSf https://terrio.opengeos.org/install.sh | TERRIO_VERSION=0.4.0 sh
+```
+
+```powershell
+$env:TERRIO_VERSION = "0.4.0"; irm https://terrio.opengeos.org/install.ps1 | iex
+```
+
+The Windows installer adds the directory to your `PATH` (`TERRIO_NO_MODIFY_PATH=1` to leave it);
+the shell installer prints the line to add when it isn't on it. Run the installer again to update
+terrio, and delete the binary to uninstall it.
 
 The command also comes with the Python package (`python -m terrio` runs it too):
 

@@ -108,10 +108,11 @@ main() {
     trap 'rm -rf "$tmp"' EXIT
 
     say "downloading terrio $version for $target"
+    # curl and wget print the cause (a 404 when the release has no binary for this target).
     download "$base/$name.tar.gz" "$tmp/$name.tar.gz" ||
-        err "release $version has no terrio binary for $target; install it with pip install terrio or cargo install terrio-cli"
+        err "could not download terrio $version for $target; install it with pip install terrio or cargo install terrio-cli"
     download "$base/$name.tar.gz.sha256" "$tmp/$name.tar.gz.sha256" ||
-        err "release $version has no checksum for $name.tar.gz"
+        err "could not download the checksum of $name.tar.gz"
     expected=$(cut -d ' ' -f 1 < "$tmp/$name.tar.gz.sha256")
     [ "$(sha256 "$tmp/$name.tar.gz")" = "$expected" ] || err "checksum mismatch for $name.tar.gz"
 
@@ -120,10 +121,12 @@ main() {
     cp "$tmp/$name/terrio" "$install_dir/terrio.tmp"
     chmod 755 "$install_dir/terrio.tmp"
     mv -f "$install_dir/terrio.tmp" "$install_dir/terrio"
-    say "installed $install_dir/terrio"
+
+    "$install_dir/terrio" --version > /dev/null || err "the installed $install_dir/terrio does not run"
+    say "installed $("$install_dir/terrio" --version) in $install_dir"
 
     case ":$PATH:" in
-        *":$install_dir:"*) "$install_dir/terrio" --version ;;
+        *":$install_dir:"*) ;;
         *)
             say "$install_dir is not on your PATH; add it in your shell's startup file:"
             printf '\n    export PATH="%s:$PATH"\n\n' "$install_dir"
