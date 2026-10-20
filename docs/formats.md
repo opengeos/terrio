@@ -244,11 +244,13 @@ reads it.
   GeoParquet, Shapefile, GeoJSON, GeoJSONSeq and CSV are written that way, so `terrio convert`
   between them works in bounded memory, whatever the size of the layer (see
   [convert](cli.md#convert)). GeoJSON and CSV inputs are read twice, the first time to infer the
-  fields, as GDAL does; CSV, Shapefile, FlatGeobuf and GeoParquet outputs need the field widths,
-  integer ranges and geometry types of all the features before the first is written, so the input
-  is read twice for them too. FlatGeobuf features are spooled to a temporary file next to the
-  output, then written in the order of the spatial index. A streamed file is identical to the one
-  written from the whole layer.
+  fields, as GDAL does; CSV, Shapefile and GeoParquet outputs need the field widths, integer
+  ranges and geometry types of all the features before the first is written, so the input is read
+  twice for them too (GeoParquet only with integer, date or date-time fields). FlatGeobuf outputs
+  read the input once: their features are spooled to a temporary file next to the output, with
+  the types of the features seen so far (re-encoded if a later feature widens them), then written
+  in the order of the spatial index. A streamed file is identical to the one written from the
+  whole layer.
 - **GeoJSONSeq** files hold a GeoJSON feature per line (RFC 8142, optionally with record
   separators), written in WGS 84 with counter-clockwise exterior rings, as GDAL's GeoJSONSeq
   driver writes them.

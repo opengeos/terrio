@@ -426,3 +426,42 @@ fn converts_vector_tiles_named_pbf_whole() {
     crate::write_vector(&crate::open_vector(&src, &Default::default()).unwrap().layers, &whole, &Default::default()).unwrap();
     assert_eq!(std::fs::read(&dst).unwrap(), std::fs::read(&whole).unwrap());
 }
+
+/// FlatGeobuf streams without a profile: when a later chunk widens the types (an integer beyond
+/// 32 bits, Z, a second geometry type, the first geometry after features without), the features
+/// already spooled are re-encoded, and the file is the one written whole.
+#[test]
+fn flatgeobuf_streams_without_a_profile_when_types_widen() {
+    let dir = tempfile::tempdir().unwrap();
+    assert!(!needs_profile(VectorDriver::FlatGeobuf, &sample(1)));
+    let mut layer = Layer::new("t").with_epsg(4326);
+    layer.add_field(FieldDef::new("a", FieldType::Integer));
+    layer.add_field(FieldDef::new("b", FieldType::Integer));
+    layer.add_field(FieldDef::new("name", FieldType::Text));
+    for k in 0..60i64 {
+        let x = k as f64 - 10.0;
+        let geometry = match k {
+            0..=4 => None,
+            _ if k % 7 == 0 => Some(Geometry::line_string(vec![Coord::xy(x, 0.0), Coord::xy(x + 1.0, 1.0)])),
+            _ if k > 30 && k % 5 == 0 => Some(Geometry::point_z(x, 1.0, 9.0)),
+            _ => Some(Geometry::point(x, 2.0)),
+        };
+        let a = if k == 45 { FieldValue::Integer(1 << 40) } else { FieldValue::Integer(k) };
+        let b = if k == 20 { FieldValue::Integer(-(1 << 35)) } else { FieldValue::Null };
+        layer.push(Feature { fid: k as u64, geometry, attributes: vec![a, b, FieldValue::Text(format!("f{k}"))] });
+    }
+    let whole = dir.path().join("whole.fgb").to_string_lossy().into_owned();
+    crate::write_vector(std::slice::from_ref(&layer), &whole, &Default::default()).unwrap();
+    for size in [1, 4, 6, 60] {
+        let streamed = dir.path().join(format!("stream_{size}.fgb")).to_string_lossy().into_owned();
+        let mut w = FeatureWriter::create(&streamed, &layer, None, &Default::default()).unwrap();
+        for c in layer.features.chunks(size) {
+            let mut chunk = schema_of(&layer);
+            chunk.features = c.to_vec();
+            w.write(&chunk).unwrap();
+        }
+        w.finish().unwrap();
+        assert!(std::fs::read(&whole).unwrap() == std::fs::read(&streamed).unwrap(), "chunks of {size} differ");
+    }
+    assert!(!dir.path().read_dir().unwrap().any(|e| e.unwrap().file_name().to_string_lossy().contains("terrio-features")));
+}

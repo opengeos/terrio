@@ -542,6 +542,26 @@ impl FgbEncoder {
         }
     }
 
+    /// Whether `other` encodes features as this encoder does (same geometry type, Z and column
+    /// types).
+    pub(crate) fn same_encoding(&self, other: &FgbEncoder) -> bool {
+        (self.geom_type, self.has_z, &self.col_types) == (other.geom_type, other.has_z, &other.col_types)
+    }
+
+    /// What [`decode_feature`] needs to decode the features this encoder encodes.
+    pub(crate) fn decoder(&self) -> FgbHeader {
+        FgbHeader {
+            geometry_type: self.geom_type,
+            has_z: self.has_z,
+            has_m: false,
+            columns: self.col_types.clone(),
+            features_count: 0,
+            index_node_size: 0,
+            extent: None,
+            index_size: 0,
+        }
+    }
+
     /// Each feature as a size-prefixed flatbuffer, with its index node (bounds, and the
     /// feature's number from `first` in `offset`), encoded in parallel.
     pub(crate) fn encode(&self, features: &[Feature], first: u64) -> Vec<(Vec<u8>, NodeItem)> {

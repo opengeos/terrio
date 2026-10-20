@@ -10,11 +10,12 @@
 //! [`FeatureWriter`] writes a layer chunk by chunk: GeoJSON, GeoJSON text sequences, CSV,
 //! Shapefile, FlatGeobuf (its features spooled to a temporary file, then sorted along the
 //! Hilbert curve behind the spatial index, as GDAL does) and GeoParquet (a row group at a time).
-//! The column types and headers of CSV, Shapefile, FlatGeobuf and GeoParquet files depend on the
+//! The column types and headers of CSV, Shapefile, GeoPackage and GeoParquet files depend on the
 //! values (the widths of Shapefile fields, 32 or 64-bit integers...): those writers take a
 //! [`LayerProfile`] of the features, which a first pass over them computes, so that a streamed
-//! file is identical to the one [`crate::write_vector`] writes. Other formats are written whole
-//! when the writer finishes.
+//! file is identical to the one [`crate::write_vector`] writes. FlatGeobuf needs no first pass:
+//! its types are decided as the features come, and the features spooled before they widen are
+//! re-encoded. Other formats are written whole when the writer finishes.
 //!
 //! [`convert`] combines them, as `terrio convert` does for vector layers: the features flow from
 //! the reader through the `ogr2ogr`-style options ([`crate::ops::vector_filter::Translator`]) to
@@ -663,7 +664,7 @@ pub fn can_write_stream(driver: VectorDriver) -> bool {
 pub fn needs_profile(driver: VectorDriver, layer: &Layer) -> bool {
     match driver {
         VectorDriver::Parquet => geoparquet::ParquetEncoder::needs_profile(layer),
-        _ => matches!(driver, VectorDriver::CSV | VectorDriver::Shapefile | VectorDriver::FlatGeobuf | VectorDriver::GPKG),
+        _ => matches!(driver, VectorDriver::CSV | VectorDriver::Shapefile | VectorDriver::GPKG),
     }
 }
 
@@ -710,7 +711,7 @@ impl FeatureWriter {
                 Box::new(CsvSink { out, enc })
             }
             (true, VectorDriver::Shapefile, Some(p)) => Box::new(ShpSink::create(path, &schema, p)?),
-            (true, VectorDriver::FlatGeobuf, Some(p)) => Box::new(FgbSink::create(path, &schema, p)?),
+            (true, VectorDriver::FlatGeobuf, _) => Box::new(FgbSink::create(path, &schema)?),
             (true, VectorDriver::GPKG, Some(p)) => match GpkgSink::create(path, &schema, p)? {
                 Some(sink) => Box::new(sink),
                 // A field named fid would give the rowids, which must then be checked unique over
@@ -1099,39 +1100,93 @@ impl FeatureSink for ShpSink {
     }
 }
 
+/// A FlatGeobuf written in one pass over the features. The column and geometry types depend on
+/// the values (32 or 64-bit integers, one geometry type or several, Z): they are decided from
+/// the features seen so far, and when a chunk widens them the features already spooled are
+/// re-encoded with the final types as the file is assembled, so that it is identical to the one
+/// [`crate::write_vector`] writes.
 struct FgbSink {
     path: String,
     tmp_path: String,
     tmp: BufWriter<File>,
     layer: Layer,
+    profile: LayerProfile,
     enc: fgb::FgbEncoder,
+    /// The features encoded with earlier types: where each run starts, and how to decode it. The
+    /// features from `fresh` on are encoded with `enc`.
+    stale: Vec<(usize, fgb::FgbHeader)>,
+    fresh: usize,
     nodes: Vec<fgb::NodeItem>,
     /// Each feature's offset in the temporary file, and the end of the last.
     offsets: Vec<u64>,
-    offset: u64,
-    missing_bbox: bool,
 }
 
 impl FgbSink {
-    fn create(path: &str, layer: &Layer, profile: &LayerProfile) -> Result<Self> {
+    fn create(path: &str, layer: &Layer) -> Result<Self> {
         let tmp_path = format!("{path}.terrio-features");
         let tmp = BufWriter::with_capacity(1 << 20, File::create(&tmp_path)?);
+        let profile = LayerProfile::new(layer);
         Ok(Self {
             path: path.to_string(),
             tmp_path,
             tmp,
             layer: layer.clone(),
-            enc: fgb::FgbEncoder::new(layer, profile),
+            enc: fgb::FgbEncoder::new(layer, &profile),
+            profile,
+            stale: Vec::new(),
+            fresh: 0,
             nodes: Vec::new(),
             offsets: vec![0],
-            offset: 0,
-            missing_bbox: false,
         })
+    }
+
+    /// Re-encodes the features encoded with earlier types into a new temporary file, followed
+    /// by the others as they are.
+    fn reencode_stale(&mut self) -> Result<()> {
+        const BATCH: usize = 65536;
+        let new_path = format!("{}.2", self.tmp_path);
+        let mut out = BufWriter::with_capacity(1 << 20, File::create(&new_path)?);
+        let mut tmp = BufReader::with_capacity(1 << 20, File::open(&self.tmp_path)?);
+        let mut offsets = vec![0u64];
+        let mut offset = 0u64;
+        for (run, (start, header)) in self.stale.iter().enumerate() {
+            let end = self.stale.get(run + 1).map_or(self.fresh, |s| s.0);
+            for first in (*start..end).step_by(BATCH) {
+                let last = (first + BATCH).min(end);
+                let mut raw = Vec::with_capacity(last - first);
+                for i in first..last {
+                    let mut buf = vec![0; (self.offsets[i + 1] - self.offsets[i]) as usize];
+                    tmp.read_exact(&mut buf)?;
+                    raw.push(buf);
+                }
+                let features: Result<Vec<Feature>> =
+                    crate::par::map_range(raw.len(), |i| fgb::decode_feature(&raw[i], header, (first + i) as u64)).into_iter().collect();
+                for (bytes, _) in self.enc.encode(&features?, first as u64) {
+                    out.write_all(&bytes)?;
+                    offset += bytes.len() as u64;
+                    offsets.push(offset);
+                }
+            }
+        }
+        // The rest is copied as it is, shifted.
+        let shift = |o: u64| o - self.offsets[self.fresh] + offset;
+        offsets.extend(self.offsets[self.fresh + 1..].iter().map(|o| shift(*o)));
+        std::io::copy(&mut tmp, &mut out)?;
+        out.flush()?;
+        drop((out, tmp));
+        std::fs::rename(&new_path, &self.tmp_path)?;
+        self.offsets = offsets;
+        self.stale.clear();
+        self.fresh = 0;
+        Ok(())
     }
 
     fn assemble(&mut self) -> Result<()> {
         self.tmp.flush()?;
-        let index = !self.missing_bbox && !self.nodes.is_empty();
+        if !self.stale.is_empty() {
+            self.reencode_stale()?;
+        }
+        let index = !self.profile.geometry.missing_bbox && !self.nodes.is_empty();
         let extent = fgb::calc_extent(&self.nodes);
         let mut out = BufWriter::with_capacity(1 << 20, File::create(&self.path)?);
         out.write_all(&self.enc.header(&self.layer, self.nodes.len() as u64, &extent, index))?;
@@ -1160,11 +1215,21 @@ impl FgbSink {
 
 impl FeatureSink for FgbSink {
     fn write(&mut self, chunk: &Layer) -> Result<()> {
-        self.missing_bbox |= chunk.features.iter().any(|f| f.geometry.as_ref().and_then(|g| g.bbox()).is_none());
+        self.profile.add(&chunk.features);
+        let enc = fgb::FgbEncoder::new(&self.layer, &self.profile);
+        if !enc.same_encoding(&self.enc) {
+            let n = self.nodes.len();
+            if n > self.fresh {
+                self.stale.push((self.fresh, self.enc.decoder()));
+                self.fresh = n;
+            }
+            self.enc = enc;
+        }
+        let mut offset = *self.offsets.last().unwrap_or(&0);
         for (bytes, node) in self.enc.encode(&chunk.features, self.nodes.len() as u64) {
             self.tmp.write_all(&bytes)?;
-            self.offset += bytes.len() as u64;
-            self.offsets.push(self.offset);
+            offset += bytes.len() as u64;
+            self.offsets.push(offset);
             self.nodes.push(node);
         }
         Ok(())
@@ -1180,6 +1245,7 @@ impl FeatureSink for FgbSink {
 impl Drop for FgbSink {
     fn drop(&mut self) {
         let _ = std::fs::remove_file(&self.tmp_path);
+        let _ = std::fs::remove_file(format!("{}.2", self.tmp_path));
     }
 }
 

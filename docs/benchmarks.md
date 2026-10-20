@@ -92,7 +92,7 @@ the largest peak memory. Same machine, terrio 0.2.0.
 | Task | terrio | GDAL | terrio vs GDAL | terrio memory | GDAL memory |
 |---|---|---|---|---|---|
 | Info: Colorado OpenStreetMap GeoPackage (6.2 M features) | 13 ms | 30 ms | 2.3× faster | 26 MB | 45 MB |
-| Lines (2.0 M) → FlatGeobuf | 6.63 s | 5.83 s | 1.1× slower | 549 MB | 563 MB |
+| Lines (2.0 M) → FlatGeobuf | 5.65 s | 6.18 s | 1.1× faster | 552 MB | 556 MB |
 | Polygons (2.3 M) → GeoParquet | 2.47 s | 3.44 s | 1.4× faster | 1.5 GB | 954 MB |
 | Lines → GeoJSON | 3.48 s | 42.69 s | 12.3× faster | 458 MB | 503 MB |
 | Lines → Shapefile | 4.78 s | 5.25 s | 1.1× faster | 405 MB | 502 MB |
@@ -119,10 +119,11 @@ the largest peak memory. Same machine, terrio 0.2.0.
   whole. A COG is written whole, since its overviews need the full-resolution raster, and the
   JPEG 2000 band is decoded whole.
 - **Mosaic of 16 tiles**: terrio copies each tile's pixels into place; `gdalwarp` warps them.
-- **Large vectors** are converted a chunk of features at a time. FlatGeobuf, Shapefile and
-  GeoPackage outputs first read the input once to settle the column types and the header (see
+- **Large vectors** are converted a chunk of features at a time. Shapefile and GeoPackage
+  outputs first read the input once to settle the column types and the header (see
   [#88](https://github.com/opengeos/terrio/issues/88)); GeoParquet outputs do so only for integer,
-  date and date-time fields, and gather the geometry types and extent as they write.
+  date and date-time fields, and gather the geometry types and extent as they write. FlatGeobuf
+  outputs read the input once, deciding the types as the features come.
 
 ## Running the benchmarks
 
