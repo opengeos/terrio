@@ -942,15 +942,18 @@ impl Spool {
     /// The bytes appended: all of them once sealed, else those not yet written to the file.
     fn bytes(&self) -> &[u8] {
         #[cfg(not(target_arch = "wasm32"))]
-        if let Some(map) = &self.map {
-            return map;
+        {
+            debug_assert!(self.file.is_none() || self.map.is_some(), "a spool past a page is read once sealed");
+            if let Some(map) = &self.map {
+                return map;
+            }
         }
         &self.buf
     }
 
     /// Drops the mapped pages read so far from the process's memory; they stay in the page cache.
     fn release(&self) {
-        #[cfg(unix)]
+        #[cfg(all(unix, not(target_arch = "wasm32")))]
         if let Some(map) = &self.map {
             // SAFETY: the mapping is read only and backed by the file, so its pages read back
             // unchanged.
@@ -1134,7 +1137,7 @@ fn decode_member(b: &[u8], mut at: usize) -> Option<MemberWay<'_>> {
         let mut pair = ["", ""];
         for s in &mut pair {
             let len = pb_varint(b, &mut at)? as usize;
-            *s = std::str::from_utf8(b.get(at..at + len)?).ok()?;
+            *s = std::str::from_utf8(b.get(at..at.checked_add(len)?)?).ok()?;
             at += len;
         }
         tags.push((pair[0], pair[1]));
