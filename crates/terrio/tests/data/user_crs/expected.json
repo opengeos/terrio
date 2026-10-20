@@ -1,0 +1,205 @@
+{
+ "tmerc": {
+  "gdal": "+proj=tmerc +lat_0=10 +lon_0=-103 +k=0.9996 +x_0=500000 +y_0=100000 +datum=WGS84 +units=m +no_defs +type=crs",
+  "lon": -101,
+  "lat": 14,
+  "x": 716020.5551275758,
+  "y": 543226.1972685172
+ },
+ "omerc_a": {
+  "gdal": "+proj=omerc +no_uoff +lat_0=4 +lonc=115 +alpha=53.31582047 +gamma=53.13010236 +k=0.99984 +x_0=590476.87 +y_0=442857.65 +datum=WGS84 +units=m +no_defs +type=crs",
+  "lon": 116,
+  "lat": 5,
+  "x": 1291527.3092145696,
+  "y": 996742.6711208448
+ },
+ "omerc_b": {
+  "gdal": "+proj=omerc +lat_0=4 +lonc=115 +alpha=53.31582047 +gamma=53.13010236 +k=0.99984 +x_0=590476.87 +y_0=442857.65 +datum=WGS84 +units=m +no_defs +type=crs",
+  "lon": 116,
+  "lat": 5,
+  "x": 701006.0174886261,
+  "y": 553851.7024204992
+ },
+ "merc": {
+  "gdal": "+proj=merc +lon_0=10 +k=0.997 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs +type=crs",
+  "lon": 14,
+  "lat": 50,
+  "x": 443942.1292835751,
+  "y": 6394284.02038115
+ },
+ "lcc_2sp": {
+  "gdal": "+proj=lcc +lat_0=39 +lon_0=-96 +lat_1=33 +lat_2=45 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs +type=crs",
+  "lon": -90,
+  "lat": 41,
+  "x": 501971.2931072337,
+  "y": 237473.58141679486
+ },
+ "lcc_1sp": {
+  "gdal": "+proj=lcc +lat_1=40 +lat_0=40 +lon_0=-96 +k_0=0.9998 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs +type=crs",
+  "lon": -90,
+  "lat": 41,
+  "x": 504406.000645272,
+  "y": 128010.53086398786
+ },
+ "laea": {
+  "gdal": "+proj=laea +lat_0=60 +lon_0=-40 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs +type=crs",
+  "lon": -30,
+  "lat": 62,
+  "x": 521892.19752597547,
+  "y": 262519.2372362052
+ },
+ "aea": {
+  "gdal": "+proj=aea +lat_0=23 +lon_0=-96 +lat_1=29.5 +lat_2=45.5 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs +type=crs",
+  "lon": -90,
+  "lat": 41,
+  "x": 500331.1777548069,
+  "y": 2014790.586884308
+ },
+ "aeqd": {
+  "gdal": "+proj=aeqd +lat_0=40 +lon_0=-100 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs +type=crs",
+  "lon": -95,
+  "lat": 44,
+  "x": 401127.21273753914,
+  "y": 455863.26535443973
+ },
+ "eqdc": {
+  "gdal": "+proj=eqdc +lat_0=40 +lon_0=-96 +lat_1=33 +lat_2=45 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs +type=crs",
+  "lon": -90,
+  "lat": 41,
+  "x": 501951.64917758305,
+  "y": 127560.6137329791
+ },
+ "stere": {
+  "gdal": "+proj=stere +lat_0=45 +lon_0=10 +k=0.9999 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs +type=crs",
+  "lon": 12,
+  "lat": 47,
+  "x": 152152.5458888749,
+  "y": 224220.52286224137
+ },
+ "stere_polar": {
+  "gdal": "+proj=stere +lat_0=90 +lat_ts=70 +lon_0=-45 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs +type=crs",
+  "lon": 5,
+  "lat": 75,
+  "x": 1251624.3097635235,
+  "y": -1050237.4966950903
+ },
+ "sterea": {
+  "gdal": "+proj=sterea +lat_0=52.1561605555556 +lon_0=5.38763888888889 +k=0.9999079 +x_0=155000 +y_0=463000 +ellps=bessel +units=m +no_defs +type=crs",
+  "lon": 6,
+  "lat": 52.5,
+  "x": 196576.69537343044,
+  "y": 501428.3094026892
+ },
+ "eqc": {
+  "gdal": "+proj=eqc +lat_ts=30 +lat_0=0 +lon_0=10 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs +type=crs",
+  "lon": 14,
+  "lat": 50,
+  "x": 385622.0278532915,
+  "y": 5565974.539663678
+ },
+ "cass": {
+  "gdal": "+proj=cass +lat_0=10.4416666666667 +lon_0=-61.3333333333333 +x_0=86501.46392052 +y_0=65379.0134283 +datum=WGS84 +units=m +no_defs +type=crs",
+  "lon": -61,
+  "lat": 10.6,
+  "x": 122978.8762336325,
+  "y": 82911.98924480833
+ },
+ "gnom": {
+  "gdal": "+proj=gnom +lat_0=40 +lon_0=-100 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs +type=crs",
+  "lon": -95,
+  "lat": 44,
+  "x": 402344.6626633615,
+  "y": 457246.8431346738
+ },
+ "mill": {
+  "gdal": "+proj=mill +R_A +lon_0=10 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs +type=crs",
+  "lon": 14,
+  "lat": 50,
+  "x": 444780.20791236404,
+  "y": 6075628.589791843
+ },
+ "ortho": {
+  "gdal": "+proj=ortho +lat_0=40 +lon_0=-100 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs +type=crs",
+  "lon": -95,
+  "lat": 44,
+  "x": 400522.1550526852,
+  "y": 455172.9983030763
+ },
+ "poly": {
+  "gdal": "+proj=poly +lat_0=0 +lon_0=-54 +x_0=5000000 +y_0=10000000 +datum=WGS84 +units=m +no_defs +type=crs",
+  "lon": -50,
+  "lat": -10,
+  "x": 5438546.714220983,
+  "y": 8891486.898702603
+ },
+ "robin": {
+  "gdal": "+proj=robin +lon_0=10 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs +type=crs",
+  "lon": 14,
+  "lat": 50,
+  "x": 327985.8440965786,
+  "y": 5326895.725982913
+ },
+ "sinu": {
+  "gdal": "+proj=sinu +lon_0=10 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs +type=crs",
+  "lon": 14,
+  "lat": 50,
+  "x": 286783.01446401206,
+  "y": 5540847.041684148
+ },
+ "vandg": {
+  "gdal": "+proj=vandg +R_A +lon_0=10 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs +type=crs",
+  "lon": 14,
+  "lat": 50,
+  "x": 403862.4327624273,
+  "y": 6072095.490247018
+ },
+ "nzmg": {
+  "gdal": "+proj=nzmg +lat_0=-41 +lon_0=173 +x_0=2510000 +y_0=6023150 +ellps=intl +units=m +no_defs +type=crs",
+  "lon": 174,
+  "lat": -40,
+  "x": 2595407.4406507504,
+  "y": 6133693.792935734
+ },
+ "tmerc_south": {
+  "gdal": "+proj=tmerc +axis=wsu +lat_0=-22 +lon_0=17 +k=1 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs +type=crs",
+  "lon": 18,
+  "lat": -23,
+  "x": -102526.1768393603,
+  "y": 111086.7159827067
+ },
+ "cea": {
+  "gdal": "+proj=cea +lat_ts=30 +lon_0=10 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs +type=crs",
+  "lon": 14,
+  "lat": 50,
+  "x": 385945.1210035861,
+  "y": 5614050.1030608
+ },
+ "eqearth_sidecar": {
+  "gdal": "+proj=eqearth +lon_0=10 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs +type=crs",
+  "lon": 14,
+  "lat": 50,
+  "x": 316415.7492203598,
+  "y": 5985837.899110155
+ },
+ "geos_esri_pe": {
+  "gdal": "+proj=geos +sweep=x +lon_0=-75 +h=35786023 +x_0=0 +y_0=0 +ellps=GRS80 +units=m +no_defs +type=crs",
+  "lon": -60,
+  "lat": 20,
+  "x": 1523184.4656911022,
+  "y": 2130217.3580596023
+ },
+ "sidecar_override": {
+  "gdal": "+proj=utm +zone=14 +datum=WGS84 +units=m +no_defs +type=crs",
+  "lon": -99,
+  "lat": 40,
+  "x": 500000.0,
+  "y": 4427757.218738374
+ },
+ "sidecar_only": {
+  "gdal": "+proj=utm +zone=13 +datum=WGS84 +units=m +no_defs +type=crs",
+  "lon": -105,
+  "lat": 40,
+  "x": 499999.9999999989,
+  "y": 4427757.218738374
+ }
+}

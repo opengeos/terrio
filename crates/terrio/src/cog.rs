@@ -159,6 +159,9 @@ impl LazyRaster {
             return Ok(None);
         }
         let mut t = TiffRaster::new(source, local)?;
+        if let Location::Local(p) = &loc {
+            t.tags.apply_sidecar_crs(p);
+        }
         t.file = file;
         Ok(Some(Self { inner: Inner::Tiff(Box::new(t)) }))
     }

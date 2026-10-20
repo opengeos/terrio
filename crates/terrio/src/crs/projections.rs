@@ -56,6 +56,7 @@ pub(crate) fn build(name: &str, s: &mut Setup<'_>) -> Result<Option<Box<dyn Proj
         "lcc" => Box::new(Lcc::new(s)?),
         "merc" => Box::new(Merc::new(s)?),
         "aea" => Box::new(Aea::new(s)?),
+        "eqdc" => Box::new(Eqdc::new(s)?),
         "laea" => Box::new(Laea::new(s)),
         "stere" => Box::new(Stere::new(s)),
         "ups" => {
@@ -469,6 +470,82 @@ impl Proj for Aea {
                 HALFPI
             };
         }
+        Some((x.atan2(y) / self.n, phi))
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Equidistant Conic.
+
+#[derive(Debug)]
+struct Eqdc {
+    en: Mlfn,
+    n: f64,
+    c: f64,
+    rho0: f64,
+    ellips: bool,
+}
+
+impl Eqdc {
+    fn new(s: &mut Setup<'_>) -> Result<Self> {
+        let phi1 = s.p.angle("lat_1").unwrap_or(0.0);
+        let phi2 = s.p.angle("lat_2").unwrap_or(0.0);
+        if (phi1 + phi2).abs() < 1e-10 {
+            return Err(err("eqdc: lat_1 = -lat_2"));
+        }
+        let es = s.ell.es;
+        let en = Mlfn::new(es);
+        let (sinphi, cosphi) = phi1.sin_cos();
+        let secant = (phi1 - phi2).abs() >= 1e-10;
+        let ellips = es > 0.0;
+        let mut n = sinphi;
+        let (c, rho0);
+        if ellips {
+            let m1 = msfn(sinphi, cosphi, es);
+            let ml1 = en.mlfn(phi1, sinphi, cosphi);
+            if secant {
+                let (sinphi2, cosphi2) = phi2.sin_cos();
+                n = (m1 - msfn(sinphi2, cosphi2, es)) / (en.mlfn(phi2, sinphi2, cosphi2) - ml1);
+                if n == 0.0 {
+                    return Err(err("eqdc: invalid standard parallels"));
+                }
+            }
+            c = ml1 + m1 / n;
+            rho0 = c - en.mlfn(s.phi0, s.phi0.sin(), s.phi0.cos());
+        } else {
+            if secant {
+                n = (cosphi - phi2.cos()) / (phi2 - phi1);
+            }
+            if n == 0.0 {
+                return Err(err("eqdc: invalid standard parallels"));
+            }
+            c = phi1 + cosphi / n;
+            rho0 = c - s.phi0;
+        }
+        Ok(Self { en, n, c, rho0, ellips })
+    }
+}
+
+impl Proj for Eqdc {
+    fn fwd(&self, lam: f64, phi: f64) -> Option<(f64, f64)> {
+        let rho = self.c - if self.ellips { self.en.mlfn(phi, phi.sin(), phi.cos()) } else { phi };
+        let lam = lam * self.n;
+        Some((rho * lam.sin(), self.rho0 - rho * lam.cos()))
+    }
+
+    fn inv(&self, x: f64, y: f64) -> Option<(f64, f64)> {
+        let (mut x, mut y) = (x, self.rho0 - y);
+        let mut rho = x.hypot(y);
+        if rho == 0.0 {
+            return Some((0.0, if self.n > 0.0 { HALFPI } else { -HALFPI }));
+        }
+        if self.n < 0.0 {
+            rho = -rho;
+            x = -x;
+            y = -y;
+        }
+        let phi = self.c - rho;
+        let phi = if self.ellips { self.en.inv(phi) } else { phi };
         Some((x.atan2(y) / self.n, phi))
     }
 }

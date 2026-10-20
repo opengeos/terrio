@@ -724,7 +724,6 @@ def warp(
     te: _Bounds | None = None,
     te_srs: str | None = None,
     ts: tuple[int, int] | None = None,
-    dst_transform: tuple[float, float, float, float, float, float] | None = None,
     tap: bool = False,
     resampling: str = "near",
     srcnodata: _Nodata | None = None,

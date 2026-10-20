@@ -43,22 +43,38 @@ impl GeoKeys<'_> {
     }
 }
 
+/// The CRS of an ESRI PE string in a citation key (`ESRI PE String = <WKT>`), which describes a
+/// user-defined CRS more completely than the GeoKeys. Its EPSG code is the root node's: codes on
+/// inner nodes (a unit's, a datum's) are not the CRS's.
+pub(crate) fn esri_pe_crs(k: &GeoKeys) -> Option<wbraster::CrsInfo> {
+    let wkt = [3073, 1026, 2049].iter().find_map(|id| k.text(*id).and_then(|c| c.strip_prefix("ESRI PE String = ")))?.trim();
+    Some(wbraster::CrsInfo { epsg: crate::crs::identify_epsg(wkt), wkt: Some(wkt.to_string()), proj4: None })
+}
+
+/// The PROJ definition of a user-defined projected CRS: the projection method and its parameters,
+/// the datum and the linear unit. `None` for a method terrio does not map.
+pub(crate) fn user_defined_proj4(k: &GeoKeys) -> Option<String> {
+    let geog = geographic_proj(k)?;
+    let (units, to_meter) = units(k);
+    Some(format!("+proj={} {geog} {units} +no_defs", projection(k, to_meter)?))
+}
+
+/// The projection method of projected GeoKeys that [`user_defined_proj4`] does not map, for a
+/// warning: `None` when there is none or it is mapped.
+pub(crate) fn unmapped_method(k: &GeoKeys) -> Option<u16> {
+    let method = k.short(3075).filter(|m| *m != 0 && *m != USER_DEFINED)?;
+    (k.short(1024) == Some(1) && projection(k, 1.0).is_none()).then_some(method)
+}
+
 /// The CRS of GeoKeys that use no EPSG code for the whole CRS: an ESRI PE citation's WKT, or a
 /// PROJ definition built from the projection method, its parameters and the datum.
 pub(crate) fn user_defined_crs(k: &GeoKeys) -> Option<wbraster::CrsInfo> {
-    for id in [3073, 1026, 2049] {
-        if let Some(wkt) = k.text(id).and_then(|c| c.strip_prefix("ESRI PE String = ")) {
-            return Some(wbraster::CrsInfo::from_wkt(wkt.trim()));
-        }
+    if let Some(crs) = esri_pe_crs(k) {
+        return Some(crs);
     }
-    let model = k.short(1024)?;
-    let geog = geographic_proj(k)?;
-    let proj = match model {
-        2 => format!("+proj=longlat {geog}"),
-        1 => {
-            let (units, to_meter) = units(k);
-            format!("+proj={} {geog} {units}", projection(k, to_meter)?)
-        }
+    let proj = match k.short(1024)? {
+        2 => format!("+proj=longlat {}", geographic_proj(k)?),
+        1 => user_defined_proj4(k)?,
         _ => return None,
     };
     let crs = wbraster::CrsInfo::from_proj4(proj.trim());
@@ -79,7 +95,7 @@ fn geographic_proj(k: &GeoKeys) -> Option<String> {
     };
     let named = match datum {
         Some(6326) => Some("+datum=WGS84"),
-        Some(6269) => Some("+datum=NAD83"),
+        Some(6269) | Some(6152) => Some("+datum=NAD83"),
         Some(6267) => Some("+datum=NAD27"),
         Some(6258) | Some(6283) | Some(6167) | Some(6619) => Some("+ellps=GRS80 +towgs84=0,0,0"),
         Some(6322) => Some("+ellps=WGS72"),
@@ -128,6 +144,7 @@ fn projection(k: &GeoKeys, to_meter: f64) -> Option<String> {
     const SCALE_AT_CENTER: u16 = 3093;
     const AZIMUTH: u16 = 3094;
     const STRAIGHT_VERT_POLE_LONG: u16 = 3095;
+    const RECTIFIED_GRID_ANGLE: u16 = 3096;
 
     let lon0 = k.first(&[NAT_ORIGIN_LONG, FALSE_ORIGIN_LONG, CENTER_LONG, STRAIGHT_VERT_POLE_LONG]).unwrap_or(0.0);
     let lat0 = k.first(&[NAT_ORIGIN_LAT, FALSE_ORIGIN_LAT, CENTER_LAT]).unwrap_or(0.0);
@@ -137,9 +154,18 @@ fn projection(k: &GeoKeys, to_meter: f64) -> Option<String> {
     let lat1 = k.double(STD_PARALLEL_1);
     let lat2 = k.double(STD_PARALLEL_2);
     let false_xy = format!("+x_0={x0} +y_0={y0}");
+    let oblique_mercator = |variant: &str| -> Option<String> {
+        let gamma = k.double(RECTIFIED_GRID_ANGLE).map(|g| format!(" +gamma={g}")).unwrap_or_default();
+        Some(format!("omerc{variant} +lat_0={lat0} +lonc={lon0} +alpha={}{gamma} +k={scale} {false_xy}", k.double(AZIMUTH)?))
+    };
     Some(match k.short(3075)? {
         1 => format!("tmerc +lat_0={lat0} +lon_0={lon0} +k={scale} {false_xy}"),
-        7 => match lat1 {
+        // Hotine oblique Mercator: variant A (natural origin) and B (centre of projection).
+        3 => oblique_mercator(" +no_uoff")?,
+        9815 => oblique_mercator("")?,
+        // Mercator 2SP has its standard parallel in ProjStdParallel1GeoKey, 1SP a scale (with
+        // which a zero standard parallel is taken as unused).
+        7 => match lat1.filter(|ts| *ts != 0.0 || scale == 1.0) {
             Some(ts) => format!("merc +lon_0={lon0} +lat_ts={ts} {false_xy}"),
             None => format!("merc +lon_0={lon0} +k={scale} {false_xy}"),
         },
@@ -148,21 +174,34 @@ fn projection(k: &GeoKeys, to_meter: f64) -> Option<String> {
         10 => format!("laea +lat_0={lat0} +lon_0={lon0} {false_xy}"),
         11 => format!("aea +lat_1={} +lat_2={} +lat_0={lat0} +lon_0={lon0} {false_xy}", lat1?, lat2.or(lat1)?),
         12 => format!("aeqd +lat_0={lat0} +lon_0={lon0} {false_xy}"),
+        13 => format!("eqdc +lat_1={} +lat_2={} +lat_0={lat0} +lon_0={lon0} {false_xy}", lat1?, lat2.or(lat1)?),
         14 => format!("stere +lat_0={lat0} +lon_0={lon0} +k={scale} {false_xy}"),
         15 => {
-            let ts = k.double(NAT_ORIGIN_LAT).unwrap_or(90.0);
-            let pole = if ts < 0.0 { -90.0 } else { 90.0 };
-            match k.double(SCALE_AT_NAT_ORIGIN) {
-                Some(s) if k.double(STD_PARALLEL_1).is_none() && (ts.abs() - 90.0).abs() < 1e-9 => {
-                    format!("stere +lat_0={pole} +lon_0={lon0} +k={s} {false_xy}")
-                }
-                _ => format!("stere +lat_0={pole} +lat_ts={} +lon_0={lon0} {false_xy}", lat1.unwrap_or(ts)),
+            // Variant B's standard parallel is in ProjStdParallel1GeoKey for some writers, and in
+            // ProjNatOriginLatGeoKey for GDAL (which writes a scale of 1 too); a natural origin
+            // latitude of ±90 is variant A, with its scale.
+            let origin = k.double(NAT_ORIGIN_LAT).unwrap_or(90.0);
+            let ts = lat1.or(((origin.abs() - 90.0).abs() > 1e-9).then_some(origin));
+            let pole = if ts.unwrap_or(origin) < 0.0 { -90.0 } else { 90.0 };
+            match ts {
+                Some(ts) => format!("stere +lat_0={pole} +lat_ts={ts} +lon_0={lon0} {false_xy}"),
+                None => format!("stere +lat_0={pole} +lon_0={lon0} +k={scale} {false_xy}"),
             }
         }
         16 => format!("sterea +lat_0={lat0} +lon_0={lon0} +k={scale} {false_xy}"),
         17 => format!("eqc +lat_ts={} +lat_0={lat0} +lon_0={lon0} {false_xy}", lat1.unwrap_or(0.0)),
+        18 => format!("cass +lat_0={lat0} +lon_0={lon0} {false_xy}"),
+        19 => format!("gnom +lat_0={lat0} +lon_0={lon0} {false_xy}"),
+        20 => format!("mill +lat_0={lat0} +lon_0={lon0} {false_xy}"),
+        21 => format!("ortho +lat_0={lat0} +lon_0={lon0} {false_xy}"),
+        22 => format!("poly +lat_0={lat0} +lon_0={lon0} {false_xy}"),
+        23 => format!("robin +lon_0={lon0} {false_xy}"),
         24 => format!("sinu +lon_0={lon0} {false_xy}"),
-        3 => format!("omerc +lat_0={lat0} +lonc={lon0} +alpha={} +k={scale} {false_xy}", k.double(AZIMUTH)?),
+        25 => format!("vandg +lon_0={lon0} {false_xy}"),
+        26 => format!("nzmg +lat_0={lat0} +lon_0={lon0} {false_xy}"),
+        // Transverse Mercator, south-orientated: x westwards and y southwards.
+        27 => format!("tmerc +axis=wsu +lat_0={lat0} +lon_0={lon0} +k={scale} {false_xy}"),
+        28 => format!("cea +lat_ts={} +lon_0={lon0} {false_xy}", lat1.unwrap_or(0.0)),
         _ => return None,
     })
 }

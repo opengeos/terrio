@@ -92,6 +92,9 @@ pub fn run_as(args: Vec<OsString>, terrio: Option<Vec<OsString>>) -> i32 {
         Command::Filter(a) => cmd::filter::run(a),
         Command::Mcp => serve_mcp(terrio),
     };
+    for w in terrio::warnings::take() {
+        eprintln!("terrio: warning: {w}");
+    }
     match result {
         Ok(()) => 0,
         Err(e) => {

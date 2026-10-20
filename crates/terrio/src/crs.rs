@@ -92,6 +92,19 @@ impl SpatialRef {
 
     /// A CRS from a WKT definition (WKT1 or WKT2). The EPSG code is identified when possible.
     pub fn from_wkt(wkt: &str) -> Self {
+        // A WKT 1 extended with its PROJ string (`EXTENSION["PROJ4", ...]`, as GDAL writes CRSs
+        // WKT 1 cannot describe) is that PROJ string, as GDAL reads it.
+        if let Some(proj4) = proj4_extension(wkt)
+            && let Ok(own) = Def::from_proj(&proj4)
+        {
+            // Its EPSG code: declared, or one whose definition converts as the PROJ string does.
+            let epsg = declared_epsg(wkt).or_else(|| {
+                let code = identify_epsg(wkt)?;
+                let registered = Def::new(&SpatialRef { epsg: Some(code), wkt: None, proj4: None }).ok()?;
+                own.same_conversion(&registered).then_some(code)
+            });
+            return Self { epsg, wkt: Some(wkt.to_string()), proj4: Some(proj4) };
+        }
         let epsg = if def::split_compound(wkt).is_some() { declared_epsg(wkt) } else { identify_epsg(wkt) };
         Self { epsg, wkt: Some(wkt.to_string()), proj4: None }
     }
@@ -264,7 +277,10 @@ impl SpatialRef {
 
     pub(crate) fn from_raster_crs(c: &wbraster::CrsInfo) -> Self {
         let mut s = Self { epsg: c.epsg, wkt: c.wkt.clone(), proj4: c.proj4.clone() };
+        // A WKT made from a PROJ string is not identified: it can describe less than the PROJ
+        // string (the registry's loose matches took a Robinson on another meridian for ESRI's).
         if s.epsg.is_none()
+            && s.proj4.is_none()
             && let Some(w) = &s.wkt
         {
             s.epsg = identify_epsg(w);
@@ -295,9 +311,31 @@ impl SpatialRef {
     }
 }
 
-/// The WKT of a PROJ string.
+/// The WKT 1 of a PROJ string, extended with the PROJ string itself (`EXTENSION["PROJ4", ...]`,
+/// as GDAL writes it): the WKT can describe less than the PROJ string (a south-orientated
+/// transverse Mercator, an oblique Mercator variant), and the extension keeps the rest.
 fn proj_to_wkt(p: &str) -> Option<String> {
-    wbp::from_proj_string(&mercator_lat_ts_as_k(p)).ok().map(|c| wbp::crs_to_wkt(&c))
+    let extension = format!("EXTENSION[\"PROJ4\",\"{}\"]", p.trim().replace('"', ""));
+    if let Ok(crs) = wbp::from_proj_string(&mercator_lat_ts_as_k(p)) {
+        let wkt = wbp::crs_to_wkt(&crs);
+        return Some(format!("{},{extension}]", wkt.strip_suffix(']')?));
+    }
+    // A projection wbprojection does not know: GDAL's `custom_proj4`, on the PROJ string's datum.
+    Def::from_proj(p).ok()?;
+    const DATUM: [&str; 9] = ["+datum=", "+ellps=", "+a=", "+b=", "+rf=", "+f=", "+R=", "+towgs84=", "+nadgrids="];
+    let datum: Vec<&str> = p.split_whitespace().filter(|t| DATUM.iter().any(|d| t.starts_with(d))).collect();
+    let geogcs = wbp::crs_to_wkt(&wbp::from_proj_string(&format!("+proj=longlat {}", datum.join(" "))).ok()?);
+    Some(format!("PROJCS[\"unknown\",{geogcs},PROJECTION[\"custom_proj4\"],UNIT[\"metre\",1],{extension}]"))
+}
+
+/// The PROJ string of a WKT 1's root `EXTENSION["PROJ4", ...]`.
+fn proj4_extension(wkt: &str) -> Option<String> {
+    let root = wkt1::parse(wkt)?;
+    let ext = root.children("EXTENSION").find(|n| n.name().is_some_and(|k| k.eq_ignore_ascii_case("PROJ4")))?;
+    match ext.args.get(1)? {
+        wkt1::Arg::Str(p) if p.trim_start().starts_with('+') => Some(p.trim().to_string()),
+        _ => None,
+    }
 }
 
 /// A PROJ string whose Mercator standard parallel (`+lat_ts`) is given as the scale at the

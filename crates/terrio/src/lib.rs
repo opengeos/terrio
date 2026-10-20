@@ -175,6 +175,7 @@ pub mod stac;
 pub mod stream;
 mod tiff_mask;
 pub mod vfs;
+pub mod warnings;
 
 pub use cog::{LazyRaster, Window, WindowOptions, open_raster_lazy};
 pub use dataset::{

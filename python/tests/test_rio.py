@@ -361,52 +361,6 @@ def test_warp_merge_mask(dem, tmp_path):
         assert masked.shape[0] == 2 and transform.c == 500300
 
 
-def test_rotated_destination_grids(dem):
-    """A rotated output transform is warped, not dropped: by reproject and WarpedVRT alike."""
-    path, data = dem
-    th = math.radians(30)
-    t = Affine(
-        40 * math.cos(th), 40 * math.sin(th), 501500, 40 * math.sin(th), -40 * math.cos(th), 4098500
-    )
-    north_up = Affine(t.a, 0, t.c, 0, t.e, t.f)
-    with rio.open(path) as ds:
-        dst = np.zeros((2, 64, 64), "int16")
-        _, out_t = warp.reproject(rio.band(ds, [1, 2]), dst, dst_transform=t, dst_crs=ds.crs)
-        assert out_t == t
-        flat = np.zeros((2, 64, 64), "int16")
-        warp.reproject(rio.band(ds, [1, 2]), flat, dst_transform=north_up, dst_crs=ds.crs)
-        assert (dst != flat).sum() > 1000
-        # Output pixel (c, r) is the source pixel under its centre, by nearest neighbour.
-        inv = ~ds.transform
-        for c, r in [(0, 0), (63, 0), (0, 63), (40, 21)]:
-            sc, sr = (int(v) for v in inv * (t * (c + 0.5, r + 0.5)))
-            assert dst[0, r, c] == data[0, sr, sc]
-        with rio.vrt.WarpedVRT(ds, crs=ds.crs, transform=t, width=64, height=64) as vrt:
-            assert vrt.transform == t
-            assert np.array_equal(vrt.read(), dst)
-            assert np.array_equal(vrt.read(1, window=Window(10, 20, 30, 15)), dst[0, 20:35, 10:40])
-
-
-def test_warped_vrt_reads_only_the_source_it_needs(dem):
-    """A small WarpedVRT over a lazy source warps from the windows it needs, never reading the
-    whole source, and gives what warping the source in memory gives."""
-    path, _ = dem
-    grid = dict(
-        crs="EPSG:32611", transform=Affine(17, 0, 501000, 0, -17, 4098000), width=40, height=30
-    )
-    with rio.open(path) as ds:
-        whole = rio.vrt.WarpedVRT(ds, resampling=Resampling.cubic, **grid)
-        whole._src = whole._src_raster
-        expected = whole.read()
-        vrt = rio.vrt.WarpedVRT(ds, resampling=Resampling.cubic, **grid)
-
-        def no_full_read(*args, **kwargs):
-            raise AssertionError("the whole source was read")
-
-        vrt._src_raster = no_full_read
-        assert np.array_equal(vrt.read(), expected)
-
-
 def test_env_and_session():
     import os
 

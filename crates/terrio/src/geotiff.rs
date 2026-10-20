@@ -273,32 +273,35 @@ fn apply_geokeys(out: &mut GeoTags, keys: &[u16], doubles: Option<&[f64]>, ascii
         (Some(1), _, _) => user_defined_projected(short_key(3074), geographic, ascii_key(1026).or_else(|| ascii_key(3073))),
         _ => None,
     };
-    if out.epsg.is_none() && short_key(1024) == Some(1) {
-        let double_key = |id: u16| {
-            key(id).and_then(|(loc, _, off)| match loc {
-                GEO_DOUBLE_PARAMS => doubles.and_then(|d| d.get(off as usize).copied()),
-                0 => Some(off as f64),
-                _ => None,
-            })
-        };
-        // A user-defined geographic CRS still names its datum (GeogGeodeticDatumGeoKey).
-        let datum = geographic.filter(|g| *g != 32767).or(match short_key(2050) {
-            Some(6269 | 6152) => Some(4269),
-            Some(6267) => Some(4267),
-            _ => None,
-        });
-        out.proj4 = user_defined_proj4(short_key(3075), datum, short_key(3076), &double_key);
-    }
-    if out.epsg.is_none() && out.proj4.is_none() {
-        // Geographic user-defined CRSs, ESRI PE citations, and methods not handled above.
-        let doubles = doubles.unwrap_or_default();
-        let ascii = ascii.unwrap_or_default();
-        out.crs = crate::drivers::geokeys::user_defined_crs(&crate::drivers::geokeys::GeoKeys { keys, doubles, ascii });
-        out.epsg = out.crs.as_ref().and_then(|c| c.epsg);
+    if out.epsg.is_none() {
+        // Geographic and projected user-defined CRSs, and ESRI PE citations.
+        let k = crate::drivers::geokeys::GeoKeys { keys, doubles: doubles.unwrap_or_default(), ascii: ascii.unwrap_or_default() };
+        if short_key(1024) == Some(1) && crate::drivers::geokeys::esri_pe_crs(&k).is_none() {
+            out.proj4 = crate::drivers::geokeys::user_defined_proj4(&k);
+            if let Some(method) = crate::drivers::geokeys::unmapped_method(&k) {
+                crate::warnings::warn(format!(
+                    "GeoTIFF projection method {method} (ProjCoordTransGeoKey) is not supported: the raster has no CRS"
+                ));
+            }
+        }
+        if out.proj4.is_none() {
+            out.crs = crate::drivers::geokeys::user_defined_crs(&k);
+            out.epsg = out.crs.as_ref().and_then(|c| c.epsg);
+        }
     }
 }
 
 impl GeoTags {
+    /// Takes the CRS of the `.aux.xml` sidecar of the file at `path`, when it holds one: it
+    /// overrides the GeoKeys, as GDAL reads it (GDAL writes there the CRSs GeoKeys cannot hold).
+    pub(crate) fn apply_sidecar_crs(&mut self, path: &std::path::Path) {
+        if let Some(crs) = crate::drivers::common::read_pam(path).and_then(|p| p.crs) {
+            self.epsg = crs.epsg;
+            self.proj4 = None;
+            self.crs = Some(crs);
+        }
+    }
+
     /// The CRS, from the EPSG code or the user-defined parameters.
     pub(crate) fn crs_info(&self) -> wbraster::CrsInfo {
         match (self.epsg, &self.proj4) {
@@ -307,72 +310,6 @@ impl GeoTags {
             (None, None) => self.crs.clone().unwrap_or_default(),
         }
     }
-}
-
-/// Builds a PROJ string for a user-defined projected CRS from its GeoKeys: the coordinate
-/// transformation (`ProjCoordTransGeoKey`), its parameters, the geographic CRS (datum) and the
-/// linear unit. Returns `None` for transformations not handled here.
-fn user_defined_proj4(
-    transform: Option<u16>,
-    geographic: Option<u16>,
-    unit: Option<u16>,
-    p: &dyn Fn(u16) -> Option<f64>,
-) -> Option<String> {
-    let v = |id: u16| p(id).unwrap_or(0.0);
-    // Origin parameters have several possible keys depending on the projection.
-    let lon0 = p(3080).or_else(|| p(3084)).or_else(|| p(3088)).unwrap_or(0.0);
-    let lat0 = p(3081).or_else(|| p(3085)).or_else(|| p(3089)).unwrap_or(0.0);
-    // GeoKeys give false eastings and northings in the CRS's linear unit; PROJ takes metres.
-    let to_metre = match unit {
-        Some(9002) => 0.3048,
-        Some(9003) => 1200.0 / 3937.0,
-        _ => 1.0,
-    };
-    let x0 = p(3082).or_else(|| p(3086)).or_else(|| p(3090)).unwrap_or(0.0) * to_metre;
-    let y0 = p(3083).or_else(|| p(3087)).or_else(|| p(3091)).unwrap_or(0.0) * to_metre;
-    let k0 = p(3092).or_else(|| p(3093)).unwrap_or(1.0);
-    let body = match transform? {
-        1 => format!("+proj=tmerc +lat_0={lat0} +lon_0={lon0} +k={k0} +x_0={x0} +y_0={y0}"),
-        // Mercator 2SP has its standard parallel in ProjStdParallel1GeoKey, 1SP a scale (with
-        // which a zero standard parallel is taken as unused).
-        7 => match p(3078).filter(|ts| *ts != 0.0 || k0 == 1.0) {
-            Some(ts) => format!("+proj=merc +lon_0={lon0} +lat_ts={ts} +x_0={x0} +y_0={y0}"),
-            None => format!("+proj=merc +lon_0={lon0} +k={k0} +x_0={x0} +y_0={y0}"),
-        },
-        8 => format!("+proj=lcc +lat_0={lat0} +lon_0={lon0} +lat_1={} +lat_2={} +x_0={x0} +y_0={y0}", v(3078), v(3079)),
-        9 => format!("+proj=lcc +lat_0={lat0} +lat_1={lat0} +lon_0={lon0} +k_0={k0} +x_0={x0} +y_0={y0}"),
-        10 => format!("+proj=laea +lat_0={lat0} +lon_0={lon0} +x_0={x0} +y_0={y0}"),
-        11 => format!("+proj=aea +lat_0={lat0} +lon_0={lon0} +lat_1={} +lat_2={} +x_0={x0} +y_0={y0}", v(3078), v(3079)),
-        12 => format!("+proj=aeqd +lat_0={lat0} +lon_0={lon0} +x_0={x0} +y_0={y0}"),
-        14 => format!("+proj=stere +lat_0={lat0} +lon_0={lon0} +k={k0} +x_0={x0} +y_0={y0}"),
-        15 => {
-            // Variant B's standard parallel is in ProjStdParallel1GeoKey for some writers, and in
-            // ProjNatOriginLatGeoKey for GDAL (which writes a scale of 1 too); a natural origin
-            // latitude of ±90 is variant A, with its scale.
-            let lat_ts = p(3078).or_else(|| p(3081).filter(|lat| (lat.abs() - 90.0).abs() > 1e-9));
-            let pole_lon = p(3095).unwrap_or(lon0);
-            let lat_0 = if lat_ts.unwrap_or(lat0) < 0.0 { -90 } else { 90 };
-            match lat_ts {
-                Some(ts) => format!("+proj=stere +lat_0={lat_0} +lat_ts={ts} +lon_0={pole_lon} +x_0={x0} +y_0={y0}"),
-                None => format!("+proj=stere +lat_0={lat_0} +lon_0={pole_lon} +k={k0} +x_0={x0} +y_0={y0}"),
-            }
-        }
-        16 => format!("+proj=sterea +lat_0={lat0} +lon_0={lon0} +k={k0} +x_0={x0} +y_0={y0}"),
-        17 => format!("+proj=eqc +lat_ts={} +lon_0={lon0} +x_0={x0} +y_0={y0}", p(3078).unwrap_or(lat0)),
-        24 => format!("+proj=sinu +lon_0={lon0} +x_0={x0} +y_0={y0}"),
-        _ => return None,
-    };
-    let datum = match geographic {
-        Some(4269) => "+datum=NAD83",
-        Some(4267) => "+datum=NAD27",
-        _ => "+datum=WGS84",
-    };
-    let units = match unit {
-        Some(9002) => "+units=ft",
-        Some(9003) => "+units=us-ft",
-        _ => "+units=m",
-    };
-    Some(format!("{body} {datum} {units} +no_defs"))
 }
 
 /// Reads a file offset (4 bytes, or 8 in a BigTIFF) at the stream's position.
@@ -598,7 +535,8 @@ pub(crate) fn read_geotiff(path: &std::path::Path) -> crate::Result<crate::Raste
     use wbraster::raster::RasterData;
 
     let tiff_err = |e: tiff::TiffError| Error::InvalidData(format!("{}: {e}", path.display()));
-    let tags = read_geo_tags(path).unwrap_or_default();
+    let mut tags = read_geo_tags(path).unwrap_or_default();
+    tags.apply_sidecar_crs(path);
     // The decoder rejects palette images; read their indices as grayscale instead.
     let mut dec = open_decoder(path, &tags)?;
     let (w, h) = dec.dimensions().map_err(tiff_err)?;
@@ -797,5 +735,16 @@ mod tests {
                 assert!((tx - x).abs() < 1e-3 && (ty - y).abs() < 1e-3, "{c:?}: ({tx}, {ty}) vs ({x}, {y})");
             }
         }
+    }
+
+    #[test]
+    fn warns_of_a_projection_method_it_cannot_read() {
+        // A WGS 84 CRS projected with method 4 (oblique Mercator, Laborde), which terrio does
+        // not map.
+        let keys = [1, 1, 0, 4, 1024, 0, 1, 1, 2048, 0, 1, 4326, 3072, 0, 1, 32767, 3075, 0, 1, 4];
+        let _ = crate::warnings::take();
+        assert!(crs_from_geokeys(&keys, None, None).wkt.is_none());
+        let w = crate::warnings::take();
+        assert!(w.len() == 1 && w[0].contains("projection method 4"), "{w:?}");
     }
 }

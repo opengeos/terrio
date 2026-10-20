@@ -29,10 +29,6 @@ pub struct Args {
     /// The output size in pixels; 0 computes one dimension from the other.
     #[arg(long, num_args = 2, value_names = ["WIDTH", "HEIGHT"])]
     ts: Option<Vec<usize>>,
-    /// The output geotransform, in GDAL's order, for a rotated output grid (or any affine one):
-    /// needs `--ts`, and excludes `--te`, `--tr` and `--tap`.
-    #[arg(long = "dst-transform", num_args = 6, value_names = ["X0", "A", "B", "Y0", "D", "E"], allow_negative_numbers = true)]
-    dst_transform: Option<Vec<f64>>,
     /// Align the output extent on multiples of `--tr`.
     #[arg(long)]
     tap: bool,
@@ -79,7 +75,6 @@ pub fn run(a: Args) -> terrio::Result<()> {
         extent: a.te.as_ref().map(|v| (v[0], v[1], v[2], v[3])),
         extent_srs: srs(&a.te_srs)?,
         size: a.ts.as_ref().map(|v| (v[0], v[1])),
-        dst_transform: a.dst_transform.as_ref().map(|v| [v[0], v[1], v[2], v[3], v[4], v[5]]),
         target_aligned_pixels: a.tap,
         resampling: Resampling::parse(&a.resampling)?,
         src_nodata: a.srcnodata.as_deref().map(Nodata::parse).transpose()?.unwrap_or_default(),

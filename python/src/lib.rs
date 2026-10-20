@@ -50,6 +50,15 @@ pub(crate) fn invalid(message: impl Into<String>) -> PyErr {
     to_py(terrio::Error::InvalidArgument(message.into()))
 }
 
+/// Issues terrio's warnings (see `terrio::warnings`) as Python `UserWarning`s.
+pub(crate) fn emit_warnings(py: Python<'_>) -> PyResult<()> {
+    for w in terrio::warnings::take() {
+        let message = std::ffi::CString::new(w.replace('\0', " ")).unwrap_or_default();
+        PyErr::warn(py, &py.get_type::<pyo3::exceptions::PyUserWarning>(), &message, 2)?;
+    }
+    Ok(())
+}
+
 /// A CRS as Python sees it: `EPSG:xxxx` when the code is known, otherwise the WKT, or `None`.
 pub(crate) fn crs_string(crs: &terrio::crs::SpatialRef) -> Option<String> {
     match crs.epsg {

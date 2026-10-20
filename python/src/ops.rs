@@ -91,6 +91,7 @@ fn data_type(name: &str) -> PyResult<DataType> {
 #[pyfunction]
 fn open(py: Python<'_>, path: &str) -> PyResult<Py<PyAny>> {
     let ds = py.detach(|| terrio::open(path)).py()?;
+    crate::emit_warnings(py)?;
     dataset_to_py(py, ds)
 }
 
@@ -107,14 +108,19 @@ fn open(py: Python<'_>, path: &str) -> PyResult<Py<PyAny>> {
 ///
 /// Raises:
 ///     UnsupportedError: If the dataset is not a raster.
+///
+/// Warns:
+///     UserWarning: If the raster declares a CRS terrio cannot represent (it then has none).
 #[pyfunction]
 #[pyo3(signature = (path, lazy=false))]
 fn open_raster(py: Python<'_>, path: &str, lazy: bool) -> PyResult<PyRaster> {
     if lazy {
         let r = py.detach(|| terrio::open_raster_lazy(path)).py()?;
+        crate::emit_warnings(py)?;
         return Ok(PyRaster { inner: r });
     }
     let ds = py.detach(|| terrio::open_raster(path)).py()?;
+    crate::emit_warnings(py)?;
     Ok(PyRaster::from_dataset(ds))
 }
 
@@ -947,9 +953,6 @@ fn translate(
 ///     te: The output extent `(min_x, min_y, max_x, max_y)`, in output CRS units (or `te_srs`).
 ///     te_srs: The CRS of `te`.
 ///     ts: The output size `(width, height)`; 0 computes one from the other.
-///     dst_transform: The output geotransform `(x0, a, b, y0, d, e)`, in GDAL's order, for a
-///         rotated output grid (or any affine one). Needs `ts`, and excludes `te`, `tr` and
-///         `tap`.
 ///     tap: Align the extent on multiples of `tr`.
 ///     resampling: `"near"`, `"bilinear"`, `"cubic"`, `"cubicspline"`, `"lanczos"`,
 ///         `"average"`, `"rms"`, `"mode"`, `"min"`, `"max"`, `"med"`, `"q1"`, `"q3"` or `"sum"`.
@@ -975,9 +978,9 @@ fn translate(
 ///     Raster: The result, in memory.
 #[pyfunction]
 #[pyo3(signature = (
-    src, dst=None, *, s_srs=None, t_srs=None, tr=None, te=None, te_srs=None, ts=None, dst_transform=None, tap=false,
-    resampling="near", srcnodata=None, dstnodata=None, ot=None, cutline=None, crop_to_cutline=false, et=0.125,
-    format=None, compress=None, tile_size=None, bigtiff=false, gcps=None, order=0, gcp_method="auto"
+    src, dst=None, *, s_srs=None, t_srs=None, tr=None, te=None, te_srs=None, ts=None, tap=false, resampling="near",
+    srcnodata=None, dstnodata=None, ot=None, cutline=None, crop_to_cutline=false, et=0.125, format=None,
+    compress=None, tile_size=None, bigtiff=false, gcps=None, order=0, gcp_method="auto"
 ))]
 #[allow(clippy::too_many_arguments)]
 fn warp(
@@ -990,7 +993,6 @@ fn warp(
     te: Option<(f64, f64, f64, f64)>,
     te_srs: Option<&str>,
     ts: Option<(usize, usize)>,
-    dst_transform: Option<[f64; 6]>,
     tap: bool,
     resampling: &str,
     srcnodata: Option<&Bound<'_, PyAny>>,
@@ -1025,7 +1027,6 @@ fn warp(
         extent: te,
         extent_srs: srs(te_srs)?,
         size: ts,
-        dst_transform,
         target_aligned_pixels: tap,
         resampling: Resampling::parse(resampling).py()?,
         src_nodata: nodata_arg(srcnodata)?,
@@ -1039,18 +1040,6 @@ fn warp(
         gcp_method: terrio::ops::gcp::GcpMethod::parse(gcp_method).py()?,
         ..Default::default()
     };
-    // A lazy raster is read a chunk's source window at a time, not whole.
-    // Borrowing raises (rather than panics) when the raster is in use elsewhere.
-    if o.cutline.is_none()
-        && let Ok(r) = src.cast::<PyRaster>()
-        && r.try_borrow()?.inner.is_lazy()
-    {
-        let mut r = r.try_borrow_mut()?;
-        let lazy = &mut r.inner;
-        let out = py.detach(|| terrio::ops::warp::warp_lazy(lazy, &o)).py()?;
-        drop(r);
-        return finish_raster(py, out, dst, format, compress, tile_size, bigtiff);
-    }
     let sources = input_rasters(py, src)?;
     let out = py
         .detach(|| {
