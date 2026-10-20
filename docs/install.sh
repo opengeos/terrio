@@ -129,6 +129,8 @@ main() {
         *":$install_dir:"*) ;;
         *)
             say "$install_dir is not on your PATH; add it in your shell's startup file:"
+            # $PATH is for the startup file to expand, not this script.
+            # shellcheck disable=SC2016
             printf '\n    export PATH="%s:$PATH"\n\n' "$install_dir"
             ;;
     esac
