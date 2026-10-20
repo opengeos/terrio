@@ -54,6 +54,7 @@ __all__ = [
     "gcp_transform",
     "FeatureStream",
     "open_stream",
+    "cli_main",
 ]
 
 __version__: str
@@ -919,3 +920,4 @@ def suggested_grid(
     order: int = 0,
     gcp_method: str = "auto",
 ) -> tuple[tuple[float, float, float, float, float, float], int, int]: ...
+def cli_main(args: Sequence[str]) -> int: ...

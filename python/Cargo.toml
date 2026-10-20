@@ -18,7 +18,7 @@ doctest = false
 [features]
 ## The optional GDAL backend (`terrio/gdal`): `maturin build --features gdal`, with GDAL 3.4 or
 ## later installed where pkg-config (or GDAL_HOME) finds it.
-gdal = ["terrio/gdal"]
+gdal = ["terrio/gdal", "terrio-cli/gdal"]
 
 [dependencies]
 terrio.workspace = true
@@ -30,3 +30,7 @@ serde_json.workspace = true
 serde.workspace = true
 # The Arrow C data and stream interfaces, for the Arrow PyCapsule interface.
 arrow-array = { workspace = true, features = ["ffi"] }
+
+# The `terrio` command (`terrio.__main__`); not in the Pyodide wheel, where there is no shell.
+[target.'cfg(not(target_os = "emscripten"))'.dependencies]
+terrio-cli.workspace = true

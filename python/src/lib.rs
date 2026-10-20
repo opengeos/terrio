@@ -2,6 +2,8 @@
 //! Python package.
 
 mod arrow;
+#[cfg(not(target_os = "emscripten"))]
+mod cli;
 mod ops;
 mod pointcloud;
 mod raster;
@@ -70,5 +72,7 @@ fn _terrio(m: &Bound<'_, PyModule>) -> PyResult<()> {
     pointcloud::register(m)?;
     rio::register(m)?;
     stream::register(m)?;
+    #[cfg(not(target_os = "emscripten"))]
+    cli::register(m)?;
     Ok(())
 }

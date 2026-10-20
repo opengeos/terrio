@@ -18,9 +18,28 @@ default = []
 ## rasters with GDAL's drivers (`-f NITF`). Needs GDAL installed.
 gdal = ["terrio/gdal"]
 
+# The command line as a library (`terrio_cli::run`), which the Python package's `terrio` command
+# runs too.
+[lib]
+name = "terrio_cli"
+path = "src/lib.rs"
+
 [[bin]]
 name = "terrio"
 path = "src/main.rs"
+
+# `cargo binstall terrio-cli` installs the binaries attached to the GitHub release
+# (release-build.yml); Linux hosts get the static musl builds.
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/terrio-cli-v{ version }-{ target }{ archive-suffix }"
+bin-dir = "terrio-cli-v{ version }-{ target }/{ bin }{ binary-ext }"
+pkg-fmt = "tgz"
+
+[package.metadata.binstall.overrides.x86_64-pc-windows-msvc]
+pkg-fmt = "zip"
+
+[package.metadata.binstall.overrides.aarch64-pc-windows-msvc]
+pkg-fmt = "zip"
 
 [dependencies]
 terrio.workspace = true

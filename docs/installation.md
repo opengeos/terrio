@@ -5,11 +5,27 @@ terrio is published on [crates.io](https://crates.io/crates/terrio),
 
 ## Command-line tool
 
-With [Rust](https://rustup.rs) installed:
+The `terrio` command comes with the Python package, without a Rust toolchain:
+
+```sh
+pip install terrio      # or: uv tool install terrio, pipx install terrio
+terrio --version
+```
+
+`python -m terrio` runs it too. Each [GitHub release](https://github.com/opengeos/terrio/releases)
+also has standalone binaries, for Linux (x86_64 and aarch64, static, any distribution), macOS
+(Intel and Apple silicon) and Windows (x64 and ARM64): download the archive for your platform and
+put `terrio` (`terrio.exe`) on your `PATH`. [cargo-binstall](https://github.com/cargo-bins/cargo-binstall)
+installs them as well:
+
+```sh
+cargo binstall terrio-cli
+```
+
+With [Rust](https://rustup.rs) installed, build it instead:
 
 ```sh
 cargo install terrio-cli
-terrio --version
 ```
 
 The optional [GDAL backend](gdal.md), for formats terrio doesn't read itself, needs GDAL installed:

@@ -34,6 +34,10 @@ centimetre, and 99 % of a sample of transformations between two CRSs within a me
 
 ## Command line
 
+`pip install terrio` installs the `terrio` command; standalone binaries for Linux, macOS and Windows
+are attached to each [GitHub release](https://github.com/opengeos/terrio/releases) (or
+`cargo binstall terrio-cli`), and `cargo install terrio-cli` builds it from source.
+
 ```sh
 terrio info countries.gpkg                       # summarize a dataset (--json, --stats)
 terrio info s3://bucket/image.tif                # remote: http(s)://, s3://, gs://, az://, /vsicurl/

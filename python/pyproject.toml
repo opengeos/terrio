@@ -28,6 +28,9 @@ plot = ["matplotlib>=3.5"]
 # For terrio.xarray (dask for chunked arrays); interpolate_na also needs scipy.
 xarray = ["xarray>=2024.1", "dask[array]>=2024.1"]
 
+[project.scripts]
+terrio = "terrio.__main__:main"
+
 [project.entry-points."xarray.backends"]
 terrio = "terrio.xarray._backend:TerrioBackendEntrypoint"
 

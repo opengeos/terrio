@@ -17,6 +17,13 @@ NumPy (and the small `affine` package).
 pip install terrio
 ```
 
+It installs the `terrio` command line too (`terrio info`, `convert`, `warp`, `translate`...; see
+[Command Line](https://terrio.opengeos.org/cli/)):
+
+```sh
+terrio convert countries.shp europe.gpkg --where "CONTINENT = 'Europe'"
+```
+
 ## Coming from rasterio
 
 rasterio scripts run with an import change: `terrio.rio` follows rasterio's API (datasets,

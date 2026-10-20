@@ -1,7 +1,7 @@
 name: Release build
 
-# The release artifacts: the Python wheels for every platform, the source distribution and the
-# Pyodide wheel (tested in Pyodide under Node.js). Called by release.yml, which publishes them on
+# The release artifacts: the Python wheels for every platform, the source distribution, the
+# Pyodide wheel (tested in Pyodide under Node.js) and the `terrio` command-line binaries. Called by release.yml, which publishes them on
 # tags, and by release-dry-run.yml, which builds them for pull requests without publishing.
 on:
   workflow_call:
@@ -104,3 +104,59 @@ jobs:
         with:
           name: pyodide-wheel
           path: python/dist/*.whl
+
+  # The `terrio` command-line tool, for those without a Rust toolchain: an archive per platform
+  # (tar.gz, zip on Windows) with the binary, the license and the README, attached to the GitHub
+  # release, where `cargo binstall terrio-cli` finds them too. Linux builds are static (musl), so
+  # they run on any distribution.
+  cli:
+    name: cli (${{ matrix.platform.target }})
+    runs-on: ${{ matrix.platform.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - { os: ubuntu-latest, target: x86_64-unknown-linux-musl }
+          - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-musl }
+          - { os: macos-latest, target: x86_64-apple-darwin }
+          - { os: macos-latest, target: aarch64-apple-darwin }
+          - { os: windows-latest, target: x86_64-pc-windows-msvc }
+          - { os: windows-11-arm, target: aarch64-pc-windows-msvc }
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.platform.target }}
+      - name: Install the musl C toolchain
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - name: Build
+        run: cargo build --release --locked -p terrio-cli --target ${{ matrix.platform.target }}
+      - name: Check the binary runs
+        shell: bash
+        run: |
+          bin="target/${{ matrix.platform.target }}/release/terrio"
+          "$bin" --version
+          "$bin" formats > /dev/null
+      - name: Package
+        shell: bash
+        run: |
+          version=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "terrio-cli") | .version')
+          name="terrio-cli-v$version-${{ matrix.platform.target }}"
+          mkdir -p "dist/$name"
+          cp LICENSE README.md "dist/$name/"
+          cd dist
+          if [ "$RUNNER_OS" = Windows ]; then
+            cp "../target/${{ matrix.platform.target }}/release/terrio.exe" "$name/"
+            7z a -tzip -bd "$name.zip" "$name" > /dev/null
+            sha256sum "$name.zip" > "$name.zip.sha256"
+          else
+            cp "../target/${{ matrix.platform.target }}/release/terrio" "$name/"
+            tar -czf "$name.tar.gz" "$name"
+            shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256"
+          fi
+          rm -r "$name"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: cli-${{ matrix.platform.target }}
+          path: dist/*

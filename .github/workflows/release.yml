@@ -1,7 +1,8 @@
 name: Release
 
 # On version tags, publishes the Python wheels and source distribution to PyPI, the terrio and
-# terrio-cli crates to crates.io, and the WebAssembly package to npm. All three use trusted
+# terrio-cli crates to crates.io, and the WebAssembly package to npm, and attaches the Pyodide
+# wheel and the command-line binaries to the GitHub release. All three use trusted
 # publishing: no API tokens are stored, each registry trusts this workflow and its environment
 # (pypi, crates-io, npm). The artifacts are built by release-build.yml, which
 # release-dry-run.yml also runs for pull requests, without publishing.
@@ -16,7 +17,7 @@ jobs:
   build:
     uses: ./.github/workflows/release-build.yml
 
-  pyodide-release:
+  github-release:
     # Once the packages are on PyPI, so that a release never announces a version that is not.
     needs: [build, publish]
     runs-on: ubuntu-latest
@@ -28,14 +29,19 @@ jobs:
         with:
           name: pyodide-wheel
           path: dist
-      - name: Attach the Pyodide wheel to the GitHub release
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: cli-*
+          path: dist
+          merge-multiple: true
+      - name: Attach the Pyodide wheel and the command-line binaries to the GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
           tag="${GITHUB_REF#refs/tags/}"
           gh release view "$tag" > /dev/null 2>&1 || gh release create "$tag" --verify-tag --generate-notes
-          gh release upload "$tag" dist/*.whl --clobber
+          gh release upload "$tag" dist/*.whl dist/terrio-cli-* --clobber
 
   publish:
     needs: [build]
