@@ -32,7 +32,7 @@ nav = [
   { "Benchmarks" = "benchmarks.md" },
   { "Architecture" = "architecture.md" },
   { "Contributing" = "contributing.md" },
-  { "Roadmap" = "https://github.com/opengeos/terrio/blob/main/ROADMAP.md" },
+  { "Roadmap" = "roadmap.md" },
   { "Report Issues" = "https://github.com/opengeos/terrio/issues" },
 ]
 
@@ -77,3 +77,9 @@ toggle.name = "Switch to light mode"
 [project.markdown_extensions.pymdownx.inlinehilite]
 [project.markdown_extensions.pymdownx.tabbed]
 alternate_style = true
+# The roadmap page includes ROADMAP.md from the repository root.
+[project.markdown_extensions.pymdownx.snippets]
+base_path = ["."]
+check_paths = true
+[project.markdown_extensions.pymdownx.tasklist]
+custom_checkbox = true
