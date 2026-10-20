@@ -338,7 +338,13 @@ impl Builder {
         }
 
         // Member ways as relations see them: their coordinates, area flag and tags.
-        let member = |id: i64| ways.get(&id).map(|w| MemberWay { coords: coords(w), area: w.area, tags: &w.tags });
+        let member = |id: i64| {
+            ways.get(&id).map(|w| MemberWay {
+                coords: coords(w),
+                area: w.area,
+                tags: w.tags.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect(),
+            })
+        };
         let node = |id: i64| nodes.get(&id).cloned();
         let used_as_outer = relation_features(
             &relations,
@@ -368,7 +374,7 @@ impl Builder {
 struct MemberWay<'a> {
     coords: Vec<Coord>,
     area: bool,
-    tags: &'a [(String, String)],
+    tags: Vec<(&'a str, &'a str)>,
 }
 
 /// The features of the relations, in order, to `out` with their layer index: `multipolygon` and
@@ -452,7 +458,7 @@ fn relation_feature<'a>(
             let tags = if interesting {
                 &tags
             } else {
-                owned = first_outer_tags.map(|t| t.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect()).unwrap_or_default();
+                owned = first_outer_tags.unwrap_or_default();
                 owned.push(("type", rtype.unwrap_or_default()));
                 &owned
             };
@@ -878,20 +884,94 @@ fn node_coords(lon: i32, lat: i32) -> (Coord, Coord) {
     (c, stored)
 }
 
+/// Bytes appended in order, then read in place. Past 16 MB they go to a temporary file, read
+/// back through a memory map once [`Spool::seal`]ed: the operating system's page cache holds them
+/// rather than the process, and [`Spool::release`] drops the pages read from the process's memory.
+#[derive(Default)]
+struct Spool {
+    buf: Vec<u8>,
+    written: u64,
+    #[cfg(not(target_arch = "wasm32"))]
+    file: Option<std::fs::File>,
+    #[cfg(not(target_arch = "wasm32"))]
+    map: Option<memmap2::Mmap>,
+}
+
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+const SPOOL_PAGE: usize = 1 << 24;
+
+impl Spool {
+    /// The number of bytes appended.
+    fn len(&self) -> u64 {
+        self.written + self.buf.len() as u64
+    }
+
+    /// Writes the bytes appended to the file when they reach a page.
+    fn flush_full(&mut self) -> Result<()> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.buf.len() >= SPOOL_PAGE {
+            let file = match &mut self.file {
+                Some(f) => f,
+                None => self.file.insert(tempfile::tempfile()?),
+            };
+            std::io::Write::write_all(file, &self.buf)?;
+            self.written += self.buf.len() as u64;
+            self.buf.clear();
+        }
+        Ok(())
+    }
+
+    /// Ends the appending: what went to the file is mapped, with the rest written after it.
+    fn seal(&mut self) -> Result<()> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(file) = &mut self.file
+            && self.map.is_none()
+        {
+            std::io::Write::write_all(file, &self.buf)?;
+            self.written += self.buf.len() as u64;
+            self.buf = Vec::new();
+            // SAFETY: the file is our own unnamed temporary file, not changed while mapped.
+            let map = unsafe { memmap2::Mmap::map(&*file)? };
+            #[cfg(unix)]
+            let _ = map.advise(memmap2::Advice::Random);
+            self.map = Some(map);
+        }
+        Ok(())
+    }
+
+    /// The bytes appended: all of them once sealed, else those not yet written to the file.
+    fn bytes(&self) -> &[u8] {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(map) = &self.map {
+            return map;
+        }
+        &self.buf
+    }
+
+    /// Drops the mapped pages read so far from the process's memory; they stay in the page cache.
+    fn release(&self) {
+        #[cfg(unix)]
+        if let Some(map) = &self.map {
+            // SAFETY: the mapping is read only and backed by the file, so its pages read back
+            // unchanged.
+            let _ = unsafe { map.unchecked_advise(memmap2::UncheckedAdvice::DontNeed) };
+        }
+    }
+}
+
 /// The nodes of a sorted file, by increasing id, in groups of 16: each group's first id and
 /// where it starts, then each node as varints (the id's difference from the previous one, the
 /// zigzag differences of its longitude and latitude in decimicro degrees). About 6 bytes a node,
-/// in pages of 16 MB.
+/// in a [`Spool`], sealed before nodes are looked up.
 #[derive(Default)]
 struct NodeStore {
     groups: Vec<(i64, u64)>,
-    pages: Vec<Vec<u8>>,
+    bytes: Spool,
     in_group: usize,
     last: (i64, i32, i32),
 }
 
 const NODE_GROUP: usize = 16;
-const NODE_PAGE: usize = 1 << 24;
 
 fn put_varint(b: &mut Vec<u8>, mut v: u64) {
     while v >= 0x80 {
@@ -911,28 +991,24 @@ fn unzigzag(v: u64) -> i64 {
 
 impl NodeStore {
     /// Adds a node; `false` when its id is not above the last one.
-    fn push(&mut self, id: i64, lon: i32, lat: i32) -> bool {
+    fn push(&mut self, id: i64, lon: i32, lat: i32) -> Result<bool> {
         if !self.groups.is_empty() && id <= self.last.0 {
-            return false;
+            return Ok(false);
         }
         if self.groups.is_empty() || self.in_group == NODE_GROUP {
-            // A group (at most `NODE_GROUP` nodes of 3 varints) never straddles two pages.
-            if self.pages.last().is_none_or(|p| p.len() + NODE_GROUP * 30 > NODE_PAGE) {
-                self.pages.push(Vec::with_capacity(NODE_PAGE));
-            }
-            let page = self.pages.len() - 1;
-            self.groups.push((id, ((page as u64) << 32) | self.pages[page].len() as u64));
+            self.bytes.flush_full()?;
+            self.groups.push((id, self.bytes.len()));
             self.in_group = 0;
             self.last = (id, 0, 0);
         }
         let (last_id, last_lon, last_lat) = self.last;
-        let Some(b) = self.pages.last_mut() else { return false };
+        let b = &mut self.bytes.buf;
         put_varint(b, (id - last_id) as u64);
         put_varint(b, zigzag(i64::from(lon) - i64::from(last_lon)));
         put_varint(b, zigzag(i64::from(lat) - i64::from(last_lat)));
         self.last = (id, lon, lat);
         self.in_group += 1;
-        true
+        Ok(true)
     }
 
     /// A node's coordinates on GDAL's grid.
@@ -943,19 +1019,18 @@ impl NodeStore {
     /// A node's longitude and latitude, in decimicro degrees.
     fn get_raw(&self, id: i64) -> Option<[i32; 2]> {
         let g = self.groups.partition_point(|&(first, _)| first <= id).checked_sub(1)?;
-        let (mut at, end) = (self.groups[g].1, self.groups.get(g + 1).map(|&(_, o)| o));
-        let page = &self.pages[(at >> 32) as usize];
-        let mut i = (at & 0xffff_ffff) as usize;
+        let data = self.bytes.bytes();
+        let end = self.groups.get(g + 1).map_or(data.len(), |&(_, o)| o as usize);
+        let mut i = self.groups[g].1 as usize;
         let (mut nid, mut lon, mut lat) = (self.groups[g].0, 0i64, 0i64);
         for k in 0..NODE_GROUP {
-            if end == Some(at) || i >= page.len() {
+            if i >= end {
                 return None;
             }
-            let d = pb_varint(page, &mut i)? as i64;
+            let d = pb_varint(data, &mut i)? as i64;
             nid = if k == 0 { nid } else { nid + d };
-            lon += unzigzag(pb_varint(page, &mut i)?);
-            lat += unzigzag(pb_varint(page, &mut i)?);
-            at = (at & !0xffff_ffff) | i as u64;
+            lon += unzigzag(pb_varint(data, &mut i)?);
+            lat += unzigzag(pb_varint(data, &mut i)?);
             if nid == id {
                 return Some([lon as i32, lat as i32]);
             }
@@ -1014,12 +1089,58 @@ struct WayOut {
     id: i64,
     line: Option<Feature>,
     area: Option<Vec<u8>>,
-    member: Option<MemberCoords>,
+    member: Option<(Vec<u8>, usize)>,
 }
 
-/// A way relations use: its coordinates (in decimicro degrees, half the size of the grid's), area
-/// flag and tags.
-type MemberCoords = (Vec<[i32; 2]>, bool, Vec<(String, String)>);
+/// Where a way relations use starts in its [`Spool`], and its number of coordinates.
+type MemberAt = (u64, usize);
+
+/// A way relations use, as spooled: its number of coordinates, its coordinates (the zigzag
+/// differences of its longitudes and latitudes in decimicro degrees), its area flag and its tags.
+fn encode_member(raw: &[[i32; 2]], area: bool, tags: &[(&str, &str)]) -> Vec<u8> {
+    let mut b = Vec::with_capacity(8 + 4 * raw.len());
+    put_varint(&mut b, raw.len() as u64);
+    let mut last = [0i64; 2];
+    for c in raw {
+        for (v, l) in c.iter().zip(&mut last) {
+            put_varint(&mut b, zigzag(i64::from(*v) - *l));
+            *l = i64::from(*v);
+        }
+    }
+    b.push(u8::from(area));
+    put_varint(&mut b, tags.len() as u64);
+    for s in tags.iter().flat_map(|(k, v)| [k, v]) {
+        put_varint(&mut b, s.len() as u64);
+        b.extend_from_slice(s.as_bytes());
+    }
+    b
+}
+
+/// A spooled way (see [`encode_member`]) as relations see it, from `b[at..]`.
+fn decode_member(b: &[u8], mut at: usize) -> Option<MemberWay<'_>> {
+    let n = pb_varint(b, &mut at)? as usize;
+    let mut coords = Vec::with_capacity(n);
+    let mut last = [0i64; 2];
+    for _ in 0..n {
+        for l in &mut last {
+            *l += unzigzag(pb_varint(b, &mut at)?);
+        }
+        coords.push(node_coords(last[0] as i32, last[1] as i32).1);
+    }
+    let area = *b.get(at)? != 0;
+    at += 1;
+    let mut tags = Vec::new();
+    for _ in 0..pb_varint(b, &mut at)? {
+        let mut pair = ["", ""];
+        for s in &mut pair {
+            let len = pb_varint(b, &mut at)? as usize;
+            *s = std::str::from_utf8(b.get(at..at + len)?).ok()?;
+            at += len;
+        }
+        tags.push((pair[0], pair[1]));
+    }
+    Some(MemberWay { coords, area, tags })
+}
 
 /// What a way of a sorted file gives (see [`Builder::finish`], which this mirrors).
 fn way_out(
@@ -1056,7 +1177,7 @@ fn way_out(
         }
     }
     if is_member {
-        out.member = Some((raw, area, tags.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()));
+        out.member = Some((encode_member(&raw, area, &tags), raw.len()));
     }
     out
 }
@@ -1132,7 +1253,7 @@ fn read_area(r: &mut impl std::io::Read) -> Result<Option<Area>> {
 fn relation_chunks<'r>(
     relations: &'r [Relation],
     wanted: &[bool; 5],
-    member_ways: &HashMap<i64, MemberCoords>,
+    member_ways: &HashMap<i64, MemberAt>,
 ) -> impl Iterator<Item = &'r [Relation]> {
     const MAX_RELATIONS: usize = 8192;
     const MAX_COORDS: usize = 1 << 22;
@@ -1141,7 +1262,7 @@ fn relation_chunks<'r>(
         if !wanted[relation_layer(rtype)] {
             return 0;
         }
-        r.members.iter().filter_map(|m| if let Member::Way(w) = m.0 { member_ways.get(&w).map(|c| c.0.len()) } else { None }).sum()
+        r.members.iter().filter_map(|m| if let Member::Way(w) = m.0 { member_ways.get(&w).map(|c| c.1) } else { None }).sum()
     };
     let mut start = 0;
     std::iter::from_fn(move || {
@@ -1202,9 +1323,9 @@ pub(crate) fn layer_schemas() -> Vec<Layer> {
 
 /// Reads a PBF file sorted by type then id (as its header says) into GDAL's five layers, a
 /// batch of blocks at a time, decoded in parallel: `emit` gets each layer's features in GDAL's
-/// order, as `(layer index, features)`, for the layers `wanted`. Only the nodes (about 6 bytes each),
-/// the ways relations use and the areas waiting for the relations (in a temporary file) are
-/// kept. `false`, having emitted nothing, when the header doesn't say the file is sorted.
+/// order, as `(layer index, features)`, for the layers `wanted`. Only the nodes (about 6 bytes each)
+/// and the ways relations use, in [`Spool`]s, and the areas waiting for the relations, in a
+/// temporary file, are kept. `false`, having emitted nothing, when the header doesn't say the file is sorted.
 pub(crate) fn read_sorted_pbf(
     input: &mut dyn PbfInput,
     wanted: [bool; 5],
@@ -1245,7 +1366,9 @@ pub(crate) fn read_sorted_pbf(
 
     // Nodes, then ways, a batch of blocks at a time.
     let mut nodes = NodeStore::default();
-    let mut member_ways: HashMap<i64, MemberCoords> = HashMap::new();
+    // The ways relations use, in a spool of their own.
+    let mut member_ways: HashMap<i64, MemberAt> = HashMap::new();
+    let mut members_spool = Spool::default();
     // Candidate areas wait for the relations in a temporary file.
     let mut areas = std::io::BufWriter::with_capacity(1 << 20, super::spill()?);
     let (mut in_ways, mut in_relations) = (false, false);
@@ -1275,7 +1398,7 @@ pub(crate) fn read_sorted_pbf(
             }
             in_relations |= block.has_relations;
             for &(id, lon, lat) in &block.nodes {
-                if !nodes.push(id, lon, lat) {
+                if !nodes.push(id, lon, lat)? {
                     return Err(unsorted());
                 }
             }
@@ -1284,6 +1407,9 @@ pub(crate) fn read_sorted_pbf(
             }
             if block.ways.is_empty() {
                 continue;
+            }
+            if !in_ways {
+                nodes.bytes.seal()?;
             }
             in_ways = true;
             let ways = block.ways;
@@ -1294,25 +1420,24 @@ pub(crate) fn read_sorted_pbf(
                 if let Some(a) = o.area {
                     std::io::Write::write_all(&mut areas, &a)?;
                 }
-                if let Some(m) = o.member {
-                    member_ways.insert(o.id, m);
+                if let Some((m, n)) = o.member {
+                    member_ways.insert(o.id, (members_spool.len(), n));
+                    members_spool.buf.extend_from_slice(&m);
+                    members_spool.flush_full()?;
                 }
             }
             if !lines.is_empty() {
                 emit(1, lines)?;
             }
+            nodes.bytes.release();
         }
         i += n;
     }
+    nodes.bytes.seal()?;
+    members_spool.seal()?;
 
     // The relations, a chunk at a time, then the areas standing alone.
-    let member = |id: i64| {
-        member_ways.get(&id).map(|(coords, area, tags)| MemberWay {
-            coords: coords.iter().map(|&[lon, lat]| node_coords(lon, lat).1).collect(),
-            area: *area,
-            tags,
-        })
-    };
+    let member = |id: i64| member_ways.get(&id).and_then(|&(at, _)| decode_member(members_spool.bytes(), at as usize));
     let node = |id: i64| nodes.get(id);
     let mut used_as_outer = std::collections::HashSet::new();
     for rels in relation_chunks(&relations, &wanted, &member_ways) {
@@ -1323,9 +1448,12 @@ pub(crate) fn read_sorted_pbf(
                 emit(l, features)?;
             }
         }
+        nodes.bytes.release();
+        members_spool.release();
     }
     drop(nodes);
     drop(member_ways);
+    drop(members_spool);
     let mut spilled = areas.into_inner().map_err(|e| Error::Io(e.into_error()))?;
     spilled.seek(std::io::SeekFrom::Start(0))?;
     let mut r = std::io::BufReader::with_capacity(1 << 20, spilled);
@@ -1601,10 +1729,7 @@ mod tests {
             members: vec![(Member::Way(way), "outer".into())],
             tags: vec![("type".into(), rtype.into())],
         };
-        let mut member_ways: HashMap<i64, MemberCoords> = HashMap::new();
-        member_ways.insert(1, (vec![[0, 0]; 3 << 20], false, Vec::new()));
-        member_ways.insert(2, (vec![[0, 0]; 5 << 20], false, Vec::new()));
-        member_ways.insert(3, (vec![[0, 0]; 4], false, Vec::new()));
+        let member_ways: HashMap<i64, MemberAt> = HashMap::from([(1, (0, 3 << 20)), (2, (0, 5 << 20)), (3, (0, 4))]);
         let relations = vec![
             rel(1, "multipolygon", 1),
             rel(2, "multipolygon", 1),
@@ -1646,15 +1771,56 @@ mod tests {
             })
             .collect();
         for &(id, lon, lat) in &nodes {
-            assert!(store.push(id, lon, lat));
+            assert!(store.push(id, lon, lat).unwrap());
         }
-        assert!(!store.push(nodes[999].0, 0, 0), "ids must increase");
+        assert!(!store.push(nodes[999].0, 0, 0).unwrap(), "ids must increase");
         for &(id, lon, lat) in &nodes {
             assert_eq!(store.get(id), Some(node_coords(lon, lat).1));
             assert_eq!(store.get(id + 1), None);
         }
         assert_eq!(store.get(4), None);
         assert!(store.groups.len() == 1000usize.div_ceil(NODE_GROUP));
+    }
+
+    #[test]
+    fn stores_nodes_past_a_page_in_a_file() {
+        let mut store = NodeStore::default();
+        // Coordinates far apart take about 9 bytes a node: these fill more than a page.
+        let n = 2 * SPOOL_PAGE as i64 / 11;
+        let node = |k: i64| (2 * k + 1, if k % 2 == 0 { -1_799_999_999 } else { 1_799_999_999 }, (k % 1000) as i32 * 900_000);
+        for k in 0..n {
+            let (id, lon, lat) = node(k);
+            assert!(store.push(id, lon, lat).unwrap());
+        }
+        assert!(store.bytes.len() > SPOOL_PAGE as u64);
+        store.bytes.seal().unwrap();
+        #[cfg(not(target_arch = "wasm32"))]
+        assert!(store.bytes.map.is_some());
+        for k in [0, 1, n / 2, n - 1].into_iter().chain((0..n).step_by(9973)) {
+            let (id, lon, lat) = node(k);
+            assert_eq!(store.get_raw(id), Some([lon, lat]));
+            assert_eq!(store.get_raw(id + 1), None);
+        }
+        store.bytes.release();
+        let (id, lon, lat) = node(n - 1);
+        assert_eq!(store.get_raw(id), Some([lon, lat]), "released pages read back");
+    }
+
+    #[test]
+    fn spooled_member_ways_read_back() {
+        let raw = [[-1_799_999_999, 899_999_999], [1_800_000_000, -900_000_000], [0, 0]];
+        let tags = [("name", "Lake été"), ("natural", "water")];
+        let mut spool = Spool::default();
+        spool.buf.extend_from_slice(&encode_member(&[], false, &[]));
+        let at = spool.len() as usize;
+        spool.buf.extend_from_slice(&encode_member(&raw, true, &tags));
+        let w = decode_member(spool.bytes(), at).unwrap();
+        assert_eq!(w.coords, raw.map(|[lon, lat]| node_coords(lon, lat).1));
+        assert!(w.area);
+        assert_eq!(w.tags, tags);
+        let empty = decode_member(spool.bytes(), 0).unwrap();
+        assert!(empty.coords.is_empty() && !empty.area && empty.tags.is_empty());
+        assert!(decode_member(&spool.bytes()[..spool.bytes().len() - 1], at).is_none(), "cut short");
     }
 
     #[test]

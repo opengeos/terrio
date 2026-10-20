@@ -99,7 +99,7 @@ the largest peak memory. Same machine, terrio 0.2.0.
 | Filter + reproject lines → GeoPackage | 4.36 s | 6.16 s | 1.4× faster | 528 MB | 186 MB |
 | Polygons → GeoPackage | 6.09 s | 6.90 s | 1.1× faster | 981 MB | 770 MB |
 | GeoPackage (5 layers) → GeoPackage | 10.91 s | 18.81 s | 1.7× faster | 999 MB | 782 MB |
-| OpenStreetMap PBF (Colorado) → GeoPackage | 19.36 s | 45.21 s | 2.3× faster | 1.4 GB | 455 MB |
+| OpenStreetMap PBF (Colorado) → GeoPackage | 19.96 s | 45.21 s | 2.3× faster | 1.1 GB | 455 MB |
 
 ## Notes
 
@@ -125,6 +125,9 @@ the largest peak memory. Same machine, terrio 0.2.0.
   [#88](https://github.com/opengeos/terrio/issues/88)); GeoParquet outputs do so only for integer,
   date and date-time fields, and gather the geometry types and extent as they write. FlatGeobuf
   outputs read the input once, deciding the types as the features come.
+- **OpenStreetMap PBF** files sorted by type then id are read a batch of blocks at a time. The
+  nodes, packed to about 6 bytes each, and the ways relations use go to temporary files read back
+  through memory maps, so the operating system's page cache rather than the process holds them.
 
 ## Running the benchmarks
 
