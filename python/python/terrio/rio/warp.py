@@ -551,19 +551,11 @@ def reproject(
         dst_nodata = src_nodata
 
     out_dtype = dest_arr.dtype if dest_arr is not None else np.dtype(dest_band.dtype)  # type: ignore[union-attr]
-    if dst_transform.b != 0 or dst_transform.d != 0 or dst_transform.a <= 0 or dst_transform.e >= 0:
-        raise ValueError("terrio.rio reprojects into north-up grids only")
     src_raster = _terrio.Raster.from_array(
         np.ascontiguousarray(src3),
         src_transform.to_gdal(),
         _crs_text(src_crs),
         None if src_nodata is None else float(src_nodata),
-    )
-    te = (
-        dst_transform.c,
-        dst_transform.f + dst_transform.e * dst_h,
-        dst_transform.c + dst_transform.a * dst_w,
-        dst_transform.f,
     )
     keep = not init_dest_nodata
     ot = "Float64" if keep else _gdal_typename(np.dtype(out_dtype).name)
@@ -571,7 +563,7 @@ def reproject(
     out = _terrio.warp(
         src_raster,
         t_srs=_crs_text(dst_crs),
-        te=te,
+        dst_transform=Affine(*dst_transform[:6]).to_gdal(),
         ts=(int(dst_w), int(dst_h)),
         resampling=name,
         # An explicit source nodata is unified across bands, as rasterio's warps

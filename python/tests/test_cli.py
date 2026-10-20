@@ -115,3 +115,22 @@ def test_mcp(tmp_path):
     info = replies[2]["result"]
     assert not info["isError"], info
     assert "points" in info["content"][0]["text"]
+
+
+def test_warp_dst_transform(tmp_path):
+    import numpy as np
+
+    src = str(tmp_path / "src.tif")
+    values = np.arange(24, dtype="float32").reshape(1, 4, 6)
+    terrio.Raster.from_array(values, (0.0, 1.0, 0.0, 4.0, 0.0, -1.0), "EPSG:32610").write(src)
+    out = str(tmp_path / "rotated.tif")
+    # A 90° rotation: output pixel (c, r) is source pixel (r, c).
+    result = run(
+        "warp", src, out, "--dst-transform", "0", "0", "1", "4", "-1", "0", "--ts", "4", "6"
+    )
+    assert result.returncode == 0, result.stderr
+    r = terrio.open_raster(out)
+    assert r.transform == (0.0, 0.0, 1.0, 4.0, -1.0, 0.0)
+    assert np.array_equal(np.asarray(r.read())[0], values[0].T)
+    result = run("warp", src, out, "--dst-transform", "0", "0", "1", "4", "-1", "0")
+    assert result.returncode != 0 and "size" in result.stderr

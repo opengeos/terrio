@@ -136,7 +136,7 @@ class WarpedVRT(DatasetReader):
         self._full: np.ndarray | None = None
 
     def _src_raster(self) -> Any:
-        """The source raster in memory, read on first use.
+        """The whole source in memory, read on first use.
 
         Returns:
             terrio.Raster: The source.
@@ -151,6 +151,26 @@ class WarpedVRT(DatasetReader):
                 None if self.src_nodata is None else float(self.src_nodata),
             )
         return self._source
+
+    def _src(self) -> Any:
+        """The source to warp, read only where the output needs it when it can be.
+
+        The dataset's own raster when it is read on demand, from which the warp reads only the
+        windows the output needs; else the whole source in memory.
+
+        Returns:
+            terrio.Raster: The source.
+        """
+        ds = self.src_dataset
+        raster = getattr(ds, "_raster", None)
+        if (
+            getattr(ds, "mode", None) == "r"
+            and raster is not None
+            and raster.is_lazy
+            and self.src_transform == ds.transform
+        ):
+            return raster
+        return self._src_raster()
 
     def _read_level(
         self, bands: Any, window: tuple[int, int, int, int], level: int | None
@@ -187,19 +207,17 @@ class WarpedVRT(DatasetReader):
         Returns:
             numpy.ndarray: `(count, h, w)`.
         """
-        t = self._transform
-        left = t.c + x * t.a
-        top = t.f + y * t.e
-        te = (left, top + h * t.e, left + w * t.a, top)
+        t = self._transform * Affine.translation(x, y)
         nd: Any = (
             "none"
             if self.dst_nodata is None
             else ("nan" if np.isnan(self.dst_nodata) else float(self.dst_nodata))
         )
         out = _terrio.warp(
-            self._src_raster(),
+            self._src(),
+            s_srs=_crs_text(self.src_crs),
             t_srs=_crs_text(self.dst_crs),
-            te=te,
+            dst_transform=t.to_gdal(),
             ts=(w, h),
             resampling=_WARP_NAMES[self.resampling],
             srcnodata="none" if self.src_nodata is None else float(self.src_nodata),
