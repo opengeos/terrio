@@ -1160,7 +1160,9 @@ impl FgbSink {
                     raw.push(buf);
                 }
                 let features: Result<Vec<Feature>> =
-                    crate::par::map_range(raw.len(), |i| fgb::decode_feature(&raw[i], header, (first + i) as u64)).into_iter().collect();
+                    crate::par::map_range(raw.len(), |i| fgb::decode_feature_exact(&raw[i], header, (first + i) as u64))
+                        .into_iter()
+                        .collect();
                 for (bytes, _) in self.enc.encode(&features?, first as u64) {
                     out.write_all(&bytes)?;
                     offset += bytes.len() as u64;

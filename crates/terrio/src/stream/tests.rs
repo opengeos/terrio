@@ -465,3 +465,54 @@ fn flatgeobuf_streams_without_a_profile_when_types_widen() {
     }
     assert!(!dir.path().read_dir().unwrap().any(|e| e.unwrap().file_name().to_string_lossy().contains("terrio-features")));
 }
+
+/// Re-encoded FlatGeobuf features keep what they had: rings closed with a different Z, rings of
+/// two equal points, multipolygons, and float, date, date-time and blob values, when an integer
+/// widens after them.
+#[test]
+fn flatgeobuf_reencodes_rings_and_values_as_they_were() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut layer = Layer::new("t").with_epsg(32633);
+    for (name, t) in [
+        ("i", FieldType::Integer),
+        ("f", FieldType::Float),
+        ("d", FieldType::Date),
+        ("dt", FieldType::DateTime),
+        ("b", FieldType::Blob),
+        ("ok", FieldType::Boolean),
+    ] {
+        layer.add_field(FieldDef::new(name, t));
+    }
+    for k in 0..30i64 {
+        let x = 10.0 * k as f64;
+        // Closed explicitly, with another Z on the closing vertex.
+        let closed = vec![Coord::xyz(x, 0.0, 1.0), Coord::xyz(x + 5.0, 0.0, 2.0), Coord::xyz(x + 5.0, 5.0, 3.0), Coord::xyz(x, 0.0, 9.0)];
+        let degenerate = vec![Coord::xyz(x, 1.0, 1.0), Coord::xyz(x, 1.0, 1.0)];
+        let geometry = match k % 3 {
+            0 => Geometry::polygon(closed, vec![degenerate]),
+            1 => Geometry::multi_polygon(vec![(closed.clone(), vec![]), (degenerate, vec![])]),
+            _ => Geometry::polygon(closed[..3].to_vec(), vec![]),
+        };
+        let i = if k == 25 { FieldValue::Integer(1 << 40) } else { FieldValue::Integer(k) };
+        let attributes = vec![
+            i,
+            FieldValue::Float(k as f64 / 3.0),
+            FieldValue::Date(format!("2024-01-{:02}", k % 28 + 1)),
+            FieldValue::DateTime(format!("2024-01-01T00:00:{:02}Z", k % 60)),
+            FieldValue::Blob(vec![k as u8, 0, 255]),
+            FieldValue::Boolean(k % 2 == 0),
+        ];
+        layer.push(Feature { fid: k as u64, geometry: Some(geometry), attributes });
+    }
+    let whole = dir.path().join("whole.fgb").to_string_lossy().into_owned();
+    crate::write_vector(std::slice::from_ref(&layer), &whole, &Default::default()).unwrap();
+    let streamed = dir.path().join("stream.fgb").to_string_lossy().into_owned();
+    let mut w = FeatureWriter::create(&streamed, &layer, None, &Default::default()).unwrap();
+    for c in layer.features.chunks(4) {
+        let mut chunk = schema_of(&layer);
+        chunk.features = c.to_vec();
+        w.write(&chunk).unwrap();
+    }
+    w.finish().unwrap();
+    assert!(std::fs::read(&whole).unwrap() == std::fs::read(&streamed).unwrap());
+}

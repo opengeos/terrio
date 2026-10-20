@@ -109,8 +109,18 @@ pub(crate) fn parse_header(buf: &[u8]) -> Result<(Layer, FgbHeader)> {
 
 /// Decodes a feature: `fbuf` is its size-prefixed flatbuffer.
 pub(crate) fn decode_feature(fbuf: &[u8], h: &FgbHeader, fid: u64) -> Result<Feature> {
+    decode(fbuf, h, fid, false)
+}
+
+/// Decodes a feature [`FgbEncoder::encode`] encoded, keeping the closing coordinate of each ring
+/// as it is stored, so that encoding it again gives the same bytes.
+pub(crate) fn decode_feature_exact(fbuf: &[u8], h: &FgbHeader, fid: u64) -> Result<Feature> {
+    decode(fbuf, h, fid, true)
+}
+
+fn decode(fbuf: &[u8], h: &FgbHeader, fid: u64, exact: bool) -> Result<Feature> {
     let f = flatgeobuf::size_prefixed_root_as_feature_with_opts(&verifier(), fbuf).map_err(|e| bad(&format!("feature {fid}: {e}")))?;
-    let geometry = f.geometry().and_then(|g| to_geometry(&g, h.geometry_type, h.has_z, h.has_m));
+    let geometry = f.geometry().and_then(|g| to_geometry(&g, h.geometry_type, h.has_z, h.has_m, exact));
     let mut attributes = vec![FieldValue::Null; h.columns.len()];
     if let Some(props) = f.properties() {
         read_properties(props.bytes(), &h.columns, &mut attributes).map_err(|e| bad(&format!("feature {fid}: {e}")))?;
@@ -440,20 +450,21 @@ fn split(cs: Vec<Coord>, ends: Option<Vector<u32>>) -> Vec<Vec<Coord>> {
     }
 }
 
-fn ring(mut cs: Vec<Coord>) -> Ring {
-    if cs.len() > 1 && cs.first().map(|c| (c.x, c.y)) == cs.last().map(|c| (c.x, c.y)) {
+/// A ring without its closing coordinate (with it, as stored, when `exact`).
+fn ring(mut cs: Vec<Coord>, exact: bool) -> Ring {
+    if !exact && cs.len() > 1 && cs.first().map(|c| (c.x, c.y)) == cs.last().map(|c| (c.x, c.y)) {
         cs.pop();
     }
     Ring::new(cs)
 }
 
-fn polygon_rings(g: &FgbGeometry, has_z: bool, has_m: bool) -> Option<(Ring, Vec<Ring>)> {
-    let mut rings = split(coords(g, has_z, has_m), g.ends()).into_iter().map(ring);
+fn polygon_rings(g: &FgbGeometry, has_z: bool, has_m: bool, exact: bool) -> Option<(Ring, Vec<Ring>)> {
+    let mut rings = split(coords(g, has_z, has_m), g.ends()).into_iter().map(|cs| ring(cs, exact));
     let exterior = rings.next()?;
     Some((exterior, rings.collect()))
 }
 
-fn to_geometry(g: &FgbGeometry, header_type: FgbType, has_z: bool, has_m: bool) -> Option<Geometry> {
+fn to_geometry(g: &FgbGeometry, header_type: FgbType, has_z: bool, has_m: bool, exact: bool) -> Option<Geometry> {
     let t = if header_type == FgbType::Unknown { g.type_() } else { header_type };
     Some(match t {
         FgbType::Point => Geometry::Point(coords(g, has_z, has_m).into_iter().next()?),
@@ -461,16 +472,16 @@ fn to_geometry(g: &FgbGeometry, header_type: FgbType, has_z: bool, has_m: bool) 
         FgbType::LineString => Geometry::LineString(coords(g, has_z, has_m)),
         FgbType::MultiLineString => Geometry::MultiLineString(split(coords(g, has_z, has_m), g.ends())),
         FgbType::Polygon => {
-            let (exterior, interiors) = polygon_rings(g, has_z, has_m)?;
+            let (exterior, interiors) = polygon_rings(g, has_z, has_m, exact)?;
             Geometry::Polygon { exterior, interiors }
         }
         FgbType::MultiPolygon => match g.parts() {
-            Some(parts) => Geometry::MultiPolygon(parts.iter().filter_map(|p| polygon_rings(&p, has_z, has_m)).collect()),
+            Some(parts) => Geometry::MultiPolygon(parts.iter().filter_map(|p| polygon_rings(&p, has_z, has_m, exact)).collect()),
             // A multipolygon of one polygon may be stored without parts.
-            None => Geometry::MultiPolygon(polygon_rings(g, has_z, has_m).into_iter().collect()),
+            None => Geometry::MultiPolygon(polygon_rings(g, has_z, has_m, exact).into_iter().collect()),
         },
         FgbType::GeometryCollection => Geometry::GeometryCollection(
-            g.parts().map(|ps| ps.iter().filter_map(|p| to_geometry(&p, p.type_(), has_z, has_m)).collect()).unwrap_or_default(),
+            g.parts().map(|ps| ps.iter().filter_map(|p| to_geometry(&p, p.type_(), has_z, has_m, exact)).collect()).unwrap_or_default(),
         ),
         _ => return None,
     })
