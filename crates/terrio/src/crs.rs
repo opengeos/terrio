@@ -314,12 +314,11 @@ fn proj_to_wkt(p: &str) -> Option<String> {
     let extension = format!("EXTENSION[\"PROJ4\",\"{}\"]", p.trim().replace('"', ""));
     if let Ok(crs) = wbp::from_proj_string(&mercator_lat_ts_as_k(p)) {
         let wkt = wbp::crs_to_wkt(&crs);
-        // Faithful when it converts as the PROJ string does, on the same datum, and is not
-        // identified as a CRS on another datum (a Bessel stereographic without TOWGS84 is not
-        // Amersfoort / RD New).
-        let faithful = Def::wkt_conversion(&wkt).zip(Def::from_proj(p).ok()).is_some_and(|(w, own)| {
-            w.same_conversion(&own) && w.same_datum(&own) && identify_epsg(&wkt).is_none_or(|code| is_registered_as(&own, code))
-        });
+        // Faithful when terrio reads it back (identifying its EPSG code, its geographic CRS) as
+        // the PROJ string: the same conversion on the same datum. A Bessel stereographic without
+        // TOWGS84 is not Amersfoort / RD New, which shifts its datum.
+        let faithful = Def::from_proj(p)
+            .is_ok_and(|own| Def::new(&SpatialRef::from_wkt(&wkt)).is_ok_and(|w| w.same_conversion(&own) && w.same_datum(&own)));
         if faithful {
             return Some(wkt);
         }
