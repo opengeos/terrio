@@ -516,12 +516,14 @@ fn towgs84(root: &Node) -> Result<Option<Vec<f64>>> {
             0..=2 => x * unit.unwrap_or(1.0),
             // Arc-seconds, and parts per million.
             3..=5 => x * unit.map(|r| r.to_degrees() * 3600.0).unwrap_or(1.0) * if frame { -1.0 } else { 1.0 },
-            // A scale difference in parts per million, or as a ratio near 1 (as PROJ writes
-            // one without a unit).
-            _ => {
-                let r = x * unit.unwrap_or(if x.abs() > 0.5 { 1.0 } else { 1e-6 });
-                if r.abs() > 0.5 { (r - 1.0) * 1e6 } else { r * 1e6 }
-            }
+            // A scale difference in its unit, or without one as the ratio PROJ writes
+            // (1.0000067 for 6.7 ppm): any other unit-less value is ambiguous.
+            _ => match unit {
+                Some(u) if (x * u - 1.0).abs() < 0.01 => (x * u - 1.0) * 1e6,
+                Some(u) => x * u * 1e6,
+                None if (x - 1.0).abs() < 0.01 => (x - 1.0) * 1e6,
+                None => return Err(bad("a scale difference without its unit")),
+            },
         };
         seven |= i >= 3;
     }
