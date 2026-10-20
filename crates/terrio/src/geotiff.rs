@@ -333,8 +333,9 @@ fn user_defined_proj4(
     let k0 = p(3092).or_else(|| p(3093)).unwrap_or(1.0);
     let body = match transform? {
         1 => format!("+proj=tmerc +lat_0={lat0} +lon_0={lon0} +k={k0} +x_0={x0} +y_0={y0}"),
-        // Mercator 2SP has its standard parallel in ProjStdParallel1GeoKey, 1SP a scale.
-        7 => match p(3078) {
+        // Mercator 2SP has its standard parallel in ProjStdParallel1GeoKey, 1SP a scale (with
+        // which a zero standard parallel is taken as unused).
+        7 => match p(3078).filter(|ts| *ts != 0.0 || k0 == 1.0) {
             Some(ts) => format!("+proj=merc +lon_0={lon0} +lat_ts={ts} +x_0={x0} +y_0={y0}"),
             None => format!("+proj=merc +lon_0={lon0} +k={k0} +x_0={x0} +y_0={y0}"),
         },

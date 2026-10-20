@@ -694,6 +694,20 @@ mod tests {
     use super::*;
 
     #[test]
+    fn mercator_standard_parallel_survives_wkt() {
+        // On another ellipsoid, and with a +k that the standard parallel overrides. (wbprojection
+        // writes a spherical Mercator as Mercator_Auxiliary_Sphere, without its scale.)
+        let wgs84 = SpatialRef::from_epsg(4326).unwrap();
+        for p in ["+proj=merc +lat_ts=-41 +lon_0=20 +ellps=intl +units=m", "+proj=merc +lat_ts=30 +k=1 +datum=WGS84 +units=m"] {
+            let crs = SpatialRef::from_proj4(p).unwrap();
+            let from_wkt = SpatialRef::parse(&crs.to_wkt().unwrap()).unwrap();
+            let (x, y) = Transformer::new(&wgs84, &crs).unwrap().transform(25.0, -50.0).unwrap();
+            let (wx, wy) = Transformer::new(&wgs84, &from_wkt).unwrap().transform(25.0, -50.0).unwrap();
+            assert!((x - wx).abs() < 1e-3 && (y - wy).abs() < 1e-3, "{p}: ({x}, {y}) vs ({wx}, {wy})");
+        }
+    }
+
+    #[test]
     fn declared_codes_win() {
         let nad83 = r#"GEOGCS["NAD83",DATUM["North_American_Datum_1983",SPHEROID["GRS 1980",6378137,298.257222101,AUTHORITY["EPSG","7019"]],AUTHORITY["EPSG","6269"]],PRIMEM["Greenwich",0,AUTHORITY["EPSG","8901"]],UNIT["degree",0.0174532925199433,AUTHORITY["EPSG","9122"]],AXIS["Latitude",NORTH],AXIS["Longitude",EAST],AUTHORITY["EPSG","4269"]]"#;
         assert_eq!(declared_epsg(nad83), Some(4269));
