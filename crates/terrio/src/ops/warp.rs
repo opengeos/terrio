@@ -2348,6 +2348,27 @@ mod tests {
                 assert_eq!(whole.raster.data.to_f64_vec(), out.raster.data.to_f64_vec(), "{resampling:?} {memory_limit}");
             }
         }
+        // Georeferenced by GCPs, with each of GDAL's transformers.
+        let gcp = |pixel: f64, line: f64, x: f64, y: f64| crate::Gcp { pixel, line, x, y, ..Default::default() };
+        let gcps = vec![
+            gcp(0.0, 0.0, 500000.0, 4000000.0),
+            gcp(97.0, 0.0, 502910.0, 4000050.0),
+            gcp(0.0, 83.0, 499950.0, 3997510.0),
+            gcp(97.0, 83.0, 502890.0, 3997480.0),
+            gcp(48.0, 40.0, 501445.0, 3998790.0),
+            gcp(20.0, 70.0, 500610.0, 3997905.0),
+        ];
+        for gcp_method in [super::super::gcp::GcpMethod::Polynomial, super::super::gcp::GcpMethod::Tps] {
+            for memory_limit in [64.0 * 1024.0 * 1024.0, 2000.0] {
+                let o =
+                    WarpOptions { gcps: gcps.clone(), gcp_method, resampling: Resampling::Bilinear, memory_limit, ..Default::default() };
+                let whole = warp(&[&ds], &o).unwrap();
+                let mut lazy = crate::open_raster_lazy(input.to_str().unwrap()).unwrap();
+                let out = warp_lazy(&mut lazy, &o).unwrap();
+                assert_eq!(whole.geo_transform(), out.geo_transform());
+                assert_eq!(whole.raster.data.to_f64_vec(), out.raster.data.to_f64_vec(), "{gcp_method:?} {memory_limit}");
+            }
+        }
     }
 
     #[test]
