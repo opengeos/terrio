@@ -15,9 +15,9 @@ import terrio.rio as rio
 
 DATA = Path(__file__).resolve().parents[2] / "crates" / "terrio" / "tests" / "data" / "user_crs"
 EXPECTED = json.loads((DATA / "expected.json").read_text())
-# terrio computes these projections differently from PROJ, or reads these WKTs with other
-# parameters: only the presence of a CRS is checked (see crates/terrio/tests/user_crs.rs).
-PROJECTION_DIFFERS = {"gnom", "mill", "robin", "sinu", "vandg", "eqearth_sidecar"}
+# terrio computes these projections differently from PROJ: only the presence of a CRS is checked
+# (see crates/terrio/tests/user_crs.rs).
+PROJECTION_DIFFERS = {"gnom", "mill", "robin", "sinu", "vandg"}
 
 
 def _crs_of(name: str, how: str) -> str | None:
@@ -61,6 +61,12 @@ def test_warns_of_a_projection_it_cannot_read(tmp_path):
     for lazy in (False, True):
         with pytest.warns(UserWarning, match="projection method 4"):
             assert terrio.open_raster(str(path), lazy=lazy).crs is None
+    # A sidecar's CRS takes its place, with no warning.
+    shutil.copy(DATA / "sidecar_only.tif.aux.xml", f"{path}.aux.xml")
+    for lazy in (False, True):
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            assert terrio.open_raster(str(path), lazy=lazy).crs == "EPSG:32613"
 
 
 def test_sidecar_crs_overrides_geokeys(tmp_path):

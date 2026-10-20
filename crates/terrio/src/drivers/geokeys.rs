@@ -96,6 +96,7 @@ fn geographic_proj(k: &GeoKeys) -> Option<String> {
     };
     let named = match datum {
         Some(6326) => Some("+datum=WGS84"),
+        // NAD83(HARN) as NAD83, within a metre, as GDAL's PROJ strings write it.
         Some(6269) | Some(6152) => Some("+datum=NAD83"),
         Some(6267) => Some("+datum=NAD27"),
         Some(6258) | Some(6283) | Some(6167) | Some(6619) => Some("+ellps=GRS80 +towgs84=0,0,0"),

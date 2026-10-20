@@ -489,7 +489,11 @@ fn input_layers(py: Python<'_>, src: &Bound<'_, PyAny>, layers: Option<Vec<Strin
 /// Opens the raster given to an operation: a path, or a `Raster`.
 pub(crate) fn input_raster(py: Python<'_>, src: &Bound<'_, PyAny>) -> PyResult<RasterDataset> {
     match src.extract::<String>() {
-        Ok(path) => py.detach(|| terrio::open_raster(&path)).py(),
+        Ok(path) => {
+            let r = py.detach(|| terrio::open_raster(&path));
+            crate::emit_warnings(py)?;
+            r.py()
+        }
         Err(_) => {
             let mut r = src.cast::<PyRaster>().map_err(|_| invalid("expected a path or a terrio.Raster"))?.borrow_mut();
             r.with_dataset(|ds| Ok(ds.clone())).py()

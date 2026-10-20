@@ -162,6 +162,7 @@ impl LazyRaster {
         if let Location::Local(p) = &loc {
             t.tags.apply_sidecar_crs(p);
         }
+        t.tags.warn_unreadable();
         t.file = file;
         Ok(Some(Self { inner: Inner::Tiff(Box::new(t)) }))
     }
@@ -173,7 +174,9 @@ impl LazyRaster {
         if !is_tiff(&mut source) {
             return Ok(None);
         }
-        TiffRaster::new(source, None).map(|t| Some(Self { inner: Inner::Tiff(Box::new(t)) }))
+        let t = TiffRaster::new(source, None)?;
+        t.tags.warn_unreadable();
+        Ok(Some(Self { inner: Inner::Tiff(Box::new(t)) }))
     }
 
     /// Opens a remote GeoTIFF whose bytes the caller fetches (see [`crate::sparse`]), reading
@@ -188,7 +191,9 @@ impl LazyRaster {
             return Ok(None);
         }
         source.seek(SeekFrom::Start(0))?;
-        TiffRaster::new(source, None).map(|t| Some(Self { inner: Inner::Tiff(Box::new(t)) }))
+        let t = TiffRaster::new(source, None)?;
+        t.tags.warn_unreadable();
+        Ok(Some(Self { inner: Inner::Tiff(Box::new(t)) }))
     }
 
     /// Opens an archive of image tiles (PMTiles or MBTiles) for reading by window, zoom levels

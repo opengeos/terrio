@@ -27,14 +27,7 @@ fn expected() -> Vec<Expected> {
 /// WKT) reads with other parameters: their CRS read is checked against GDAL's parameters instead.
 const PROJECTION_DIFFERS: &[&str] = &[
     // Spherical or approximate formulas in wbprojection.
-    "gnom",
-    "mill",
-    "robin",
-    "sinu",
-    "vandg",
-    // The WKT 2 of the sidecar: its parameters are a WKT 2 reading issue.
-    "eqearth_sidecar",
-    "geos_esri_pe",
+    "gnom", "mill", "robin", "sinu", "vandg",
 ];
 
 /// The parameters of a PROJ string, by name.

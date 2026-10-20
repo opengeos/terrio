@@ -42,6 +42,9 @@ pub(crate) struct GeoTags {
     /// Ground control points: the tie points of a file without a pixel scale or transformation
     /// matrix, as GDAL reads them.
     pub gcps: Vec<crate::Gcp>,
+    /// A GeoKeys projection method terrio cannot read (or whose parameters are incomplete),
+    /// which left the raster without CRS: warned of by [`GeoTags::warn_unreadable`].
+    pub unreadable_method: Option<u16>,
 }
 
 impl GeoTags {
@@ -247,6 +250,7 @@ pub(crate) fn read_geo_tags_from<R: Read + Seek>(mut f: R) -> Option<GeoTags> {
 pub(crate) fn crs_from_geokeys(keys: &[u16], doubles: Option<&[f64]>, ascii: Option<&str>) -> wbraster::CrsInfo {
     let mut out = GeoTags::default();
     apply_geokeys(&mut out, keys, doubles, ascii);
+    out.warn_unreadable();
     out.crs_info()
 }
 
@@ -278,11 +282,7 @@ fn apply_geokeys(out: &mut GeoTags, keys: &[u16], doubles: Option<&[f64]>, ascii
         let k = crate::drivers::geokeys::GeoKeys { keys, doubles: doubles.unwrap_or_default(), ascii: ascii.unwrap_or_default() };
         if short_key(1024) == Some(1) && crate::drivers::geokeys::esri_pe_crs(&k).is_none() {
             out.proj4 = crate::drivers::geokeys::user_defined_proj4(&k);
-            if let Some(method) = crate::drivers::geokeys::unmapped_method(&k) {
-                crate::warnings::warn(format!(
-                    "GeoTIFF projection method {method} (ProjCoordTransGeoKey) is not supported, or its parameters are incomplete: the raster has no CRS"
-                ));
-            }
+            out.unreadable_method = crate::drivers::geokeys::unmapped_method(&k);
         }
         if out.proj4.is_none() {
             out.crs = crate::drivers::geokeys::user_defined_crs(&k);
@@ -299,6 +299,17 @@ impl GeoTags {
             self.epsg = crs.epsg;
             self.proj4 = None;
             self.crs = Some(crs);
+            self.unreadable_method = None;
+        }
+    }
+
+    /// Warns of a GeoKeys projection method that left the raster without CRS (see
+    /// [`GeoTags::unreadable_method`]), once the sidecar had its chance to give one.
+    pub(crate) fn warn_unreadable(&self) {
+        if let Some(method) = self.unreadable_method {
+            crate::warnings::warn(format!(
+                "GeoTIFF projection method {method} (ProjCoordTransGeoKey) is not supported, or its parameters are incomplete: the raster has no CRS"
+            ));
         }
     }
 
@@ -537,6 +548,7 @@ pub(crate) fn read_geotiff(path: &std::path::Path) -> crate::Result<crate::Raste
     let tiff_err = |e: tiff::TiffError| Error::InvalidData(format!("{}: {e}", path.display()));
     let mut tags = read_geo_tags(path).unwrap_or_default();
     tags.apply_sidecar_crs(path);
+    tags.warn_unreadable();
     // The decoder rejects palette images; read their indices as grayscale instead.
     let mut dec = open_decoder(path, &tags)?;
     let (w, h) = dec.dimensions().map_err(tiff_err)?;
