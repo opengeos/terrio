@@ -148,7 +148,12 @@ impl Server {
         self.workers.retain(|w| !w.is_finished());
         self.workers.push(std::thread::spawn(move || {
             let reply = call_tool(&terrio, &name, args, &cancel);
-            running.lock().unwrap().remove(&key);
+            // Unless a request reusing the id took the entry meanwhile.
+            let mut running = running.lock().unwrap();
+            if running.get(&key).is_some_and(|c| Arc::ptr_eq(c, &cancel)) {
+                running.remove(&key);
+            }
+            drop(running);
             // A cancelled request gets no reply.
             if let Some(r) = reply {
                 let _ = send.send(json!({"jsonrpc": "2.0", "id": id, "result": r}).to_string());
@@ -190,15 +195,17 @@ fn call_tool(terrio: &[OsString], name: &str, args: Vec<OsString>, cancel: &Atom
     let (text, failed) = match run(terrio, name, args, cancel) {
         Ok(None) => return None,
         Ok(Some((status, stdout, stderr))) => {
-            let total = stdout.1 + stderr.1;
-            let mut text = String::from_utf8_lossy(&stdout.0).into_owned();
-            if !stderr.0.is_empty() {
+            // Standard error, which says why a command failed, first: standard output gets the room
+            // it leaves.
+            let stderr = clip(String::from_utf8_lossy(&stderr.0).into_owned(), stderr.1, MAX_OUTPUT);
+            let room = MAX_OUTPUT.saturating_sub(stderr.len());
+            let mut text = clip(String::from_utf8_lossy(&stdout.0).into_owned(), stdout.1, room);
+            if !stderr.is_empty() {
                 if !text.is_empty() && !text.ends_with('\n') {
                     text.push('\n');
                 }
-                text.push_str(&String::from_utf8_lossy(&stderr.0));
+                text.push_str(&stderr);
             }
-            let mut text = clip(text, total);
             if !status.success() {
                 let code = status.code().map_or_else(|| "a signal".to_string(), |c| format!("exit code {c}"));
                 text.push_str(&format!("\n(terrio {name} failed with {code})"));
@@ -232,8 +239,14 @@ fn run(terrio: &[OsString], name: &str, args: Vec<OsString>, cancel: &AtomicBool
     let stdout = read_bounded(child.stdout.take().expect("piped"));
     let stderr = read_bounded(child.stderr.take().expect("piped"));
     let status = loop {
-        if let Some(status) = child.try_wait()? {
-            break status;
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) => {}
+            Err(e) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(e);
+            }
         }
         if cancel.load(Ordering::Relaxed) {
             let _ = child.kill();
@@ -340,18 +353,18 @@ fn tool_list() -> Vec<Value> {
         .collect()
 }
 
-/// `text`, cut to [`MAX_OUTPUT`] bytes, saying so when it is or when the command wrote `total`
-/// bytes, more than were kept.
-fn clip(mut text: String, total: usize) -> String {
-    if text.len() <= MAX_OUTPUT && total <= MAX_OUTPUT {
+/// `text`, cut to `max` bytes, saying so when it is or when the command wrote `total` bytes, more
+/// than were kept.
+fn clip(mut text: String, total: usize, max: usize) -> String {
+    if text.len() <= max && total <= text.len() {
         return text;
     }
-    let mut end = MAX_OUTPUT.min(text.len());
+    let mut end = max.min(text.len());
     while !text.is_char_boundary(end) {
         end -= 1;
     }
     text.truncate(end);
-    format!("{text}\n… (output cut at {MAX_OUTPUT} of {} bytes)", total.max(end))
+    format!("{text}\n… (output cut at {end} of {} bytes)", total.max(text.len()))
 }
 
 fn error(id: &Value, code: i64, message: &str) -> Value {
@@ -428,10 +441,11 @@ mod tests {
     #[test]
     fn clips_long_output() {
         let long = "é".repeat(MAX_OUTPUT);
-        let clipped = clip(long.clone(), long.len());
+        let clipped = clip(long.clone(), long.len(), MAX_OUTPUT);
         assert!(clipped.len() < long.len() && clipped.ends_with(&format!("of {} bytes)", long.len())));
         // Output read only in part says how much there was.
-        assert!(clip("abc".into(), MAX_OUTPUT + 1).ends_with(&format!("of {} bytes)", MAX_OUTPUT + 1)));
-        assert_eq!(clip("abc".into(), 3), "abc");
+        assert!(clip("abc".into(), MAX_OUTPUT + 1, MAX_OUTPUT).ends_with(&format!("of {} bytes)", MAX_OUTPUT + 1)));
+        assert_eq!(clip("abc".into(), 3, MAX_OUTPUT), "abc");
+        assert_eq!(clip("abc".into(), 3, 1), "a\n… (output cut at 1 of 3 bytes)");
     }
 }
