@@ -327,7 +327,11 @@ impl Geodetic {
         });
         let geog = geog.or_else(|| {
             let name = n.name().filter(|s| !s.eq_ignore_ascii_case("unknown"))?;
-            super::epsg::named(name).into_iter().find(|c| same_ellipsoid(*c, a, if rf == 0.0 { 0.0 } else { (2.0 - 1.0 / rf) / rf }))
+            // The official name is exact (realizations have their own, "NAD83(HARN)"); still,
+            // an ambiguous name identifies nothing.
+            let es = if rf == 0.0 { 0.0 } else { (2.0 - 1.0 / rf) / rf };
+            let found: Vec<u32> = super::epsg::named(name).into_iter().filter(|c| same_ellipsoid(*c, a, es)).collect();
+            (found.len() == 1).then(|| found[0])
         });
         Ok(Self {
             node: n.clone(),
