@@ -66,6 +66,12 @@ fn unknown_wkt2_methods_and_parameters_raise() {
         .replace(r#"PARAMETER["Latitude of natural origin",10,"#, r#"PARAMETER["Latitude of something",10,"#)
         .replace(r#"ID["EPSG",8801]"#, r#"ID["EPSG",1]"#);
     assert!(SpatialRef::parse(&parameter).and_then(|s| Transformer::new(&SpatialRef::parse("EPSG:4326")?, &s)).is_err());
+    // Modified azimuthal equidistant (Guam) is not plain azimuthal equidistant.
+    let aeqd = CASES.iter().find(|c| c.name == "aeqd").unwrap().wkt2_2019;
+    let guam =
+        aeqd.replace(r#"METHOD["Azimuthal Equidistant",ID["EPSG",1125]]"#, r#"METHOD["Modified Azimuthal Equidistant",ID["EPSG",9832]]"#);
+    assert_ne!(guam, aeqd);
+    assert!(SpatialRef::parse(&guam).and_then(|s| Transformer::new(&SpatialRef::parse("EPSG:4326")?, &s)).is_err());
     // Nodes that do not change coordinates are ignored.
     let remark = tmerc.replacen(r#"CS[Cartesian,2]"#, r#"REMARK["a remark"],CS[Cartesian,2]"#, 1);
     let points = [(-103.0, 10.0)];

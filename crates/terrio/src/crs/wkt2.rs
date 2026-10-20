@@ -21,7 +21,13 @@ pub(crate) fn handles(root: &Node) -> bool {
         // Only of a CRS this reader converts.
         return root.child("SOURCECRS").and_then(first_node).is_some_and(handles);
     }
-    GEOGRAPHIC.contains(&key.as_str()) || PROJECTED.contains(&key.as_str())
+    if GEOGRAPHIC.contains(&key.as_str()) {
+        // A geocentric GEODCRS (a Cartesian CS) is not a longitude-latitude CRS.
+        return !root
+            .child("CS")
+            .is_some_and(|cs| matches!(cs.args.first(), Some(Arg::Ident(t)) if !t.eq_ignore_ascii_case("ellipsoidal")));
+    }
+    PROJECTED.contains(&key.as_str())
 }
 
 /// Converts a WKT 2 geographic or projected CRS, or a `BOUNDCRS` to WGS 84 of one, into a PROJ
@@ -193,7 +199,7 @@ pub(crate) fn to_proj(root: &Node) -> Result<Converted> {
         push("lat_ts", p.get(SP1));
         push("lon_0", lon_0());
         "cea"
-    } else if is(&["azimuthalequidistant", "modifiedazimuthalequidistant"], &[1125, 9832]) {
+    } else if is(&["azimuthalequidistant"], &[1125]) {
         push("lat_0", lat_0());
         push("lon_0", lon_0());
         "aeqd"
@@ -523,7 +529,6 @@ fn towgs84(root: &Node) -> Result<Option<Vec<f64>>> {
             // A scale difference in its unit, or without one as the ratio PROJ writes
             // (1.0000067 for 6.7 ppm): any other unit-less value is ambiguous.
             _ => match unit {
-                Some(u) if (x * u - 1.0).abs() < 0.01 => (x * u - 1.0) * 1e6,
                 Some(u) => x * u * 1e6,
                 None if (x - 1.0).abs() < 0.01 => (x - 1.0) * 1e6,
                 None => return Err(bad("a scale difference without its unit")),
