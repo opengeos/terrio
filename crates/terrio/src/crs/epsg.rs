@@ -259,17 +259,22 @@ pub(crate) fn get(code: u32) -> Option<&'static Entry> {
     table().entry(code)
 }
 
-/// The codes of the CRSs with an official name, whatever its case.
+/// The codes of the CRSs with an official name, whatever its case, in order: from an index of
+/// the names built on first use.
 pub(crate) fn named(name: &str) -> Vec<u32> {
-    let t = table();
-    let mut codes: Vec<u32> = t
-        .crs
-        .iter()
-        .filter(|(_, l)| t.text[l.line.0 as usize..l.line.1 as usize].split('\t').next().is_some_and(|n| n.eq_ignore_ascii_case(name)))
-        .map(|(c, _)| *c)
-        .collect();
-    codes.sort_unstable();
-    codes
+    static NAMES: OnceLock<HashMap<String, Vec<u32>>> = OnceLock::new();
+    let names = NAMES.get_or_init(|| {
+        let t = table();
+        let mut names = HashMap::<String, Vec<u32>>::new();
+        for (code, l) in &t.crs {
+            if let Some(n) = t.text[l.line.0 as usize..l.line.1 as usize].split('\t').next() {
+                names.entry(n.to_ascii_lowercase()).or_default().push(*code);
+            }
+        }
+        names.values_mut().for_each(|c| c.sort_unstable());
+        names
+    });
+    names.get(&name.to_ascii_lowercase()).cloned().unwrap_or_default()
 }
 
 /// The single transformations from each geographic CRS, by the CRS they lead to.

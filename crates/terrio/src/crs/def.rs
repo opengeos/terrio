@@ -363,7 +363,9 @@ impl Def {
             }
             return Ok(d);
         }
-        // Other WKT 2 CRSs and WKT 1 projections the reader does not know: wbprojection's parser.
+        // Other kinds of WKT 2 CRS and WKT 1 projections the readers do not know: wbprojection's
+        // parser. A WKT 2 geographic or projected CRS the reader refuses is not handed to it: its
+        // WKT 2 parameters and method names would be read wrongly, silently (#123).
         let crs = wbprojection::Crs::from_wkt(w).map_err(|e| Error::Crs(format!("{e}")))?;
         let geographic = crs.is_geographic();
         let e = &crs.datum.ellipsoid;
