@@ -373,7 +373,7 @@ pub fn is_point_cloud_path(path: &str) -> bool {
     if path.starts_with("ept://") {
         return true;
     }
-    let name = crate::vfs::Location::parse(path).file_name().to_ascii_lowercase();
+    let name = crate::vfs::Location::parse(path).dataset_name().to_ascii_lowercase();
     let name = name.split(['?', '#']).next().unwrap_or_default();
     name.ends_with(".las") || name.ends_with(".laz") || name.ends_with(".ply") || name.ends_with(".e57") || name == "ept.json"
 }

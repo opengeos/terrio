@@ -14,6 +14,10 @@
 
 Prefixes nest as in GDAL: `/vsizip//vsicurl/https://example.com/data.zip/roads.shp`.
 
+An archive named without a member opens its main dataset: the first file, by name, of the first
+kind found among vector layers, rasters and point clouds (LAS, LAZ, COPC, PLY, E57), so
+`terrio info tile.las.zip` reads the LAS file inside.
+
 ## Reading in place
 
 GeoTIFFs and COGs are opened lazily: `terrio info` fetches the header only, and window or overview

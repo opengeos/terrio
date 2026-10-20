@@ -417,6 +417,48 @@ fn converts_with_reprojection_and_to_vector_layers() {
     assert_eq!(SpatialRef::from_layer(layer).epsg, Some(26916));
 }
 
+/// Zips files into an archive.
+fn zip_files(archive: &std::path::Path, files: &[(&str, &std::path::Path)]) {
+    use std::io::Write;
+    let mut zip = zip::ZipWriter::new(std::fs::File::create(archive).unwrap());
+    for (name, path) in files {
+        zip.start_file(*name, zip::write::SimpleFileOptions::default()).unwrap();
+        zip.write_all(&std::fs::read(path).unwrap()).unwrap();
+    }
+    zip.finish().unwrap();
+}
+
+#[test]
+fn opens_the_point_cloud_of_a_zip_archive() {
+    // As swisstopo's swissSURFACE3D tiles: one point cloud in a zip, opened as the archive.
+    let cloud = synthetic(1, 100);
+    let dir = tempfile::tempdir().unwrap();
+    let las = dir.path().join("tile.las");
+    pointcloud::write_points(&cloud, las.to_str().unwrap(), &Default::default()).unwrap();
+    let readme = dir.path().join("readme.txt");
+    std::fs::write(&readme, "a tile").unwrap();
+    let ply = dir.path().join("tile.ply");
+    pointcloud::write_points(&cloud, ply.to_str().unwrap(), &Default::default()).unwrap();
+    // Archives whose names do not tell what they hold: the listing does.
+    for (archive, member) in [("tile.las.zip", &las), ("las.zip", &las), ("ply.zip", &ply)] {
+        let zip = dir.path().join(archive);
+        let name = member.file_name().unwrap().to_str().unwrap();
+        zip_files(&zip, &[("readme.txt", &readme), (&format!("dir/{name}"), member)]);
+        let path = zip.to_str().unwrap();
+        assert!(pointcloud::is_point_cloud_path(path), "{archive}");
+        let r = pointcloud::open_points(path).unwrap();
+        assert_eq!(r.header().point_count, 100, "{archive}");
+        assert_eq!(r.format_name(), if member == &ply { "PLY" } else { "LAS" }, "{archive}");
+        let terrio::info::Info::PointCloud(info) = terrio::info::info_path(path, &Default::default()).unwrap() else {
+            panic!("{archive}: not a point cloud")
+        };
+        assert_eq!(info.point_count, 100, "{archive}");
+    }
+    // A remote archive is not listed: its name tells.
+    assert!(pointcloud::is_point_cloud_path("https://example.com/tile.las.zip"));
+    assert!(!pointcloud::is_point_cloud_path("https://example.com/tile.zip"));
+}
+
 #[test]
 #[ignore = "reads a public cloud file"]
 fn reads_remote_copc_in_place() {

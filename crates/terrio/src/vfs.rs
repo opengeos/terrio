@@ -47,6 +47,10 @@ pub(crate) const MAIN_DATASET_EXTENSIONS: &[&str] = &[
     "asc",
     "hdr",
     "zarr",
+    "las",
+    "laz",
+    "ply",
+    "e57",
 ];
 
 /// A dataset location resolved to the local file system.
@@ -198,6 +202,37 @@ impl Location {
             Location::Zip { archive, inner: None } => archive.file_name(),
         }
     }
+
+    /// The file name of the dataset at this location: for an archive named without a member,
+    /// that of its main dataset, found in a local archive's listing (else the archive's name
+    /// without `.zip`, as `tile.las` for `tile.las.zip`).
+    pub fn dataset_name(&self) -> String {
+        let Location::Zip { archive, inner: None } = self else {
+            return self.file_name();
+        };
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Location::Local(p) = archive.as_ref()
+            && let Some(name) = archive_main_member(p)
+        {
+            return name.rsplit('/').next().unwrap_or(&name).to_string();
+        }
+        let name = archive.file_name();
+        match name.len().checked_sub(4).filter(|&i| name.is_char_boundary(i) && name[i..].eq_ignore_ascii_case(".zip")) {
+            Some(i) => name[..i].to_string(),
+            None => name,
+        }
+    }
+}
+
+/// The main dataset of a local zip archive, from its listing: the first member (by name) with
+/// the highest-priority extension.
+#[cfg(not(target_arch = "wasm32"))]
+fn archive_main_member(path: &Path) -> Option<String> {
+    let file = std::fs::File::open(path).ok()?;
+    let zip = zip::ZipArchive::new(std::io::BufReader::new(file)).ok()?;
+    let mut names: Vec<String> = zip.file_names().filter_map(|n| n.ok()).filter(|n| !n.ends_with('/')).map(|n| n.into_owned()).collect();
+    names.sort_unstable();
+    MAIN_DATASET_EXTENSIONS.iter().find_map(|ext| names.iter().find(|n| extension_of(n).as_deref() == Some(*ext))).cloned()
 }
 
 /// The byte offset just past the `.zip` archive name in a `/vsizip/` path.
