@@ -894,7 +894,7 @@ fn output_grid(sources: &[Source], dst_srs: &SpatialRef, o: &WarpOptions, te: Op
 /// The output grid of [`WarpOptions::dst_transform`] and [`WarpOptions::size`].
 fn given_grid(gt: [f64; 6], o: &WarpOptions) -> Result<Grid> {
     let Some((width, height)) = o.size.filter(|(w, h)| *w != 0 && *h != 0) else {
-        return Err(Error::InvalidArgument("an output geotransform needs an output size".into()));
+        return Err(Error::InvalidArgument("an output geotransform needs an output size, both non-zero".into()));
     };
     if o.extent.is_some() || o.resolution.is_some() || o.target_aligned_pixels || o.crop_to_cutline {
         return Err(Error::InvalidArgument(

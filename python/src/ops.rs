@@ -1044,7 +1044,8 @@ fn warp(
         && let Ok(r) = src.cast::<PyRaster>()
         && r.borrow().inner.is_lazy()
     {
-        let mut r = r.borrow_mut();
+        // Raises (rather than panics) when the raster is in use elsewhere.
+        let mut r = r.try_borrow_mut()?;
         let lazy = &mut r.inner;
         let out = py.detach(|| terrio::ops::warp::warp_lazy(lazy, &o)).py()?;
         drop(r);
