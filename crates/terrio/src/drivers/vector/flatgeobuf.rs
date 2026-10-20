@@ -779,7 +779,7 @@ fn build_geometry<'a>(fbb: &mut FlatBufferBuilder<'a>, g: &Geometry, typed: bool
 }
 
 /// The number of coordinates of a geometry.
-fn coord_count(g: &Geometry) -> usize {
+pub(crate) fn coord_count(g: &Geometry) -> usize {
     match g {
         Geometry::Point(_) => 1,
         Geometry::LineString(cs) | Geometry::MultiPoint(cs) => cs.len(),

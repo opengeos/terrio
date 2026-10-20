@@ -92,13 +92,13 @@ the largest peak memory. Same machine, terrio 0.2.0.
 | Task | terrio | GDAL | terrio vs GDAL | terrio memory | GDAL memory |
 |---|---|---|---|---|---|
 | Info: Colorado OpenStreetMap GeoPackage (6.2 M features) | 13 ms | 30 ms | 2.3× faster | 26 MB | 45 MB |
-| Lines (2.0 M) → FlatGeobuf | 5.65 s | 6.18 s | 1.1× faster | 552 MB | 556 MB |
-| Polygons (2.3 M) → GeoParquet | 2.47 s | 3.44 s | 1.4× faster | 1.5 GB | 954 MB |
+| Lines (2.0 M) → FlatGeobuf | 5.70 s | 6.18 s | 1.1× faster | 474 MB | 556 MB |
+| Polygons (2.3 M) → GeoParquet | 2.63 s | 3.49 s | 1.3× faster | 1.4 GB | 960 MB |
 | Lines → GeoJSON | 3.48 s | 42.69 s | 12.3× faster | 458 MB | 503 MB |
-| Lines → Shapefile | 4.78 s | 5.25 s | 1.1× faster | 405 MB | 502 MB |
-| Filter + reproject lines → GeoPackage | 3.98 s | 6.09 s | 1.5× faster | 596 MB | 189 MB |
-| Polygons → GeoPackage | 5.48 s | 7.07 s | 1.3× faster | 1.3 GB | 773 MB |
-| GeoPackage (5 layers) → GeoPackage | 16.03 s | 18.38 s | 1.1× faster | 1.3 GB | 785 MB |
+| Lines → Shapefile | 5.24 s | 5.38 s | 1.0× faster | 347 MB | 505 MB |
+| Filter + reproject lines → GeoPackage | 4.36 s | 6.16 s | 1.4× faster | 528 MB | 186 MB |
+| Polygons → GeoPackage | 6.09 s | 6.90 s | 1.1× faster | 981 MB | 770 MB |
+| GeoPackage (5 layers) → GeoPackage | 10.91 s | 18.81 s | 1.7× faster | 999 MB | 782 MB |
 | OpenStreetMap PBF (Colorado) → GeoPackage | 19.36 s | 45.21 s | 2.3× faster | 1.4 GB | 455 MB |
 
 ## Notes
@@ -119,7 +119,8 @@ the largest peak memory. Same machine, terrio 0.2.0.
   whole. A COG is written whole, since its overviews need the full-resolution raster, and the
   JPEG 2000 band is decoded whole.
 - **Mosaic of 16 tiles**: terrio copies each tile's pixels into place; `gdalwarp` warps them.
-- **Large vectors** are converted a chunk of features at a time. Shapefile and GeoPackage
+- **Large vectors** are converted a chunk of features at a time: at most 65,536 features, and
+  about 64 MB of them, so that a run of large polygons is not held at once. Shapefile and GeoPackage
   outputs first read the input once to settle the column types and the header (see
   [#88](https://github.com/opengeos/terrio/issues/88)); GeoParquet outputs do so only for integer,
   date and date-time fields, and gather the geometry types and extent as they write. FlatGeobuf

@@ -43,10 +43,28 @@ use crate::{Error, Result};
 use std::collections::VecDeque;
 use std::fs::File;
 use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
-use wbvector::{Feature, Layer};
+use wbvector::{Feature, FieldValue, Layer};
 
 /// The default number of features in a chunk.
 pub const DEFAULT_CHUNK: usize = 65536;
+
+/// The most a chunk holds, about, in bytes: a chunk stops there even short of the number of
+/// features asked for, so that layers of large geometries are read in bounded memory.
+pub const CHUNK_BYTES: usize = 64 << 20;
+
+/// The raw bytes (WKB and record payloads) a source reads into a batch, at most about: an eighth
+/// of [`CHUNK_BYTES`], as a coordinate of 16 bytes in WKB takes 48 decoded, and batches small
+/// next to a chunk keep the features buffered beyond it few.
+const SOURCE_BYTES: usize = CHUNK_BYTES / 8;
+
+/// The memory a feature takes, about: its coordinates and its values (without their text, which
+/// large geometries outweigh).
+fn feature_size(f: &Feature) -> usize {
+    let coords = f.geometry.as_ref().map_or(0, fgb::coord_count);
+    std::mem::size_of::<Feature>()
+        + coords * std::mem::size_of::<wbvector::Coord>()
+        + f.attributes.len() * std::mem::size_of::<FieldValue>()
+}
 
 /// A source of features, read a batch at a time.
 trait FeatureSource: Send {
@@ -71,12 +89,15 @@ pub struct FeatureReader {
     layer: Layer,
     source: Box<dyn FeatureSource>,
     buffer: VecDeque<Feature>,
+    /// The size of each feature in `buffer` (see [`feature_size`]), and their sum.
+    sizes: VecDeque<usize>,
+    buffered: usize,
     done: bool,
 }
 
 impl FeatureReader {
     fn new(layer: Layer, source: Box<dyn FeatureSource>) -> Self {
-        Self { layer: schema_of(&layer), source, buffer: VecDeque::new(), done: false }
+        Self { layer: schema_of(&layer), source, buffer: VecDeque::new(), sizes: VecDeque::new(), buffered: 0, done: false }
     }
 
     /// The layer, without its features: its name, fields, geometry type and CRS.
@@ -85,24 +106,36 @@ impl FeatureReader {
     }
 
     fn fill(&mut self, n: usize) -> Result<()> {
-        while !self.done && self.buffer.len() < n {
+        while !self.done && self.buffer.len() < n && self.buffered < CHUNK_BYTES {
             match self.source.next_batch()? {
-                Some(batch) => self.buffer.extend(batch),
+                Some(batch) => {
+                    let sizes = crate::par::map_range(batch.len(), |i| feature_size(&batch[i]));
+                    self.buffered += sizes.iter().sum::<usize>();
+                    self.sizes.extend(sizes);
+                    self.buffer.extend(batch);
+                }
                 None => self.done = true,
             }
         }
         Ok(())
     }
 
-    /// The next chunk of at most `max` features, as a layer with this layer's fields; `None`
-    /// once every feature has been read.
+    /// The next chunk of at most `max` features, and of about [`CHUNK_BYTES`] at most (at least
+    /// one feature), as a layer with this layer's fields; `None` once every feature has been
+    /// read.
     pub fn read_chunk(&mut self, max: usize) -> Result<Option<Layer>> {
         let max = max.max(1);
         self.fill(max)?;
         if self.buffer.is_empty() {
             return Ok(None);
         }
-        let n = max.min(self.buffer.len());
+        let (mut n, mut size) = (0, 0);
+        while n < max.min(self.buffer.len()) && (n == 0 || size < CHUNK_BYTES) {
+            size += self.sizes[n];
+            n += 1;
+        }
+        self.buffered -= size;
+        self.sizes.drain(..n);
         let mut chunk = schema_of(&self.layer);
         chunk.features = self.buffer.drain(..n).collect();
         Ok(Some(chunk))
@@ -125,9 +158,13 @@ impl Iterator for FeatureReader {
         if let Err(e) = self.fill(1) {
             self.done = true;
             self.buffer.clear();
+            self.sizes.clear();
+            self.buffered = 0;
             return Some(Err(e));
         }
-        self.buffer.pop_front().map(Ok)
+        let f = self.buffer.pop_front()?;
+        self.buffered -= self.sizes.pop_front().unwrap_or(0);
+        Some(Ok(f))
     }
 }
 
@@ -481,8 +518,8 @@ struct FgbSource {
 
 impl FeatureSource for FgbSource {
     fn next_batch(&mut self) -> Result<Option<Vec<Feature>>> {
-        let mut raw = Vec::new();
-        while raw.len() < self.batch {
+        let (mut raw, mut bytes) = (Vec::new(), 0);
+        while raw.len() < self.batch && bytes < SOURCE_BYTES {
             let mut len = [0u8; 4];
             if read_full(&mut self.r, &mut len)? < 4 {
                 break;
@@ -494,6 +531,7 @@ impl FeatureSource for FgbSource {
             if buf.len() < 4 + n {
                 return Err(Error::InvalidData("FlatGeobuf: truncated feature".into()));
             }
+            bytes += buf.len();
             raw.push(buf);
         }
         if raw.is_empty() {
@@ -555,9 +593,13 @@ impl FeatureSource for GpkgSource {
         let mut rows: Vec<(i64, Vec<u8>)> = Vec::new();
         match &mut self.rows {
             GpkgRows::Scan(cursor) => {
-                while rows.len() < self.batch {
+                let mut bytes = 0;
+                while rows.len() < self.batch && bytes < SOURCE_BYTES {
                     match cursor.next_leaf(&self.db)? {
-                        Some(leaf) => rows.extend(leaf),
+                        Some(leaf) => {
+                            bytes += leaf.iter().map(|(_, p)| p.len()).sum::<usize>();
+                            rows.extend(leaf);
+                        }
                         None => break,
                     }
                 }
@@ -565,9 +607,11 @@ impl FeatureSource for GpkgSource {
             GpkgRows::Lookup { root, ids } => {
                 // Ids without a row (stale R-tree entries) are skipped: only the end of the ids
                 // ends the stream.
-                while rows.len() < self.batch {
+                let mut bytes = 0;
+                while rows.len() < self.batch && bytes < SOURCE_BYTES {
                     let Some(id) = ids.next() else { break };
                     if let Some(p) = gpkg_read::Tables::lookup(&self.db, *root, id)? {
+                        bytes += p.len();
                         rows.push((id, p));
                     }
                 }
@@ -640,6 +684,10 @@ fn open_layers_whole(path: &str, options: &VectorOpenOptions, batch: usize) -> R
 /// A destination of features, written a chunk at a time.
 trait FeatureSink: Send {
     fn write(&mut self, chunk: &Layer) -> Result<()>;
+    /// Writes a chunk the sink may keep.
+    fn write_owned(&mut self, chunk: Layer) -> Result<()> {
+        self.write(&chunk)
+    }
     fn finish(self: Box<Self>) -> Result<()>;
 }
 
@@ -735,6 +783,12 @@ impl FeatureWriter {
     /// Writes a chunk of features (a layer with the fields given to [`FeatureWriter::create`]).
     pub fn write(&mut self, chunk: &Layer) -> Result<()> {
         self.sink.write(chunk)
+    }
+
+    /// Writes a chunk of features, as [`FeatureWriter::write`], without copying those the
+    /// writer keeps.
+    pub(crate) fn write_owned(&mut self, chunk: Layer) -> Result<()> {
+        self.sink.write_owned(chunk)
     }
 
     /// Completes the file.
@@ -969,6 +1023,11 @@ struct WholeSink {
 impl FeatureSink for WholeSink {
     fn write(&mut self, chunk: &Layer) -> Result<()> {
         self.layer.features.extend(chunk.features.iter().cloned());
+        Ok(())
+    }
+
+    fn write_owned(&mut self, chunk: Layer) -> Result<()> {
+        self.layer.features.extend(chunk.features);
         Ok(())
     }
 
@@ -1252,9 +1311,12 @@ impl Drop for FgbSink {
 }
 
 /// Record batches are built as chunks come, and encoded on a thread of their own (in WebAssembly,
-/// right away), so that reading goes on while row groups are encoded.
+/// right away), so that reading goes on while row groups are encoded. Features wait in `pending`
+/// until they fill a row group, so that the row groups are those of the whole-layer writer
+/// whatever the size of the chunks.
 struct ParquetSink {
     enc: geoparquet::ParquetEncoder,
+    pending: Vec<Feature>,
     #[cfg(not(target_arch = "wasm32"))]
     encoder: Option<(std::sync::mpsc::SyncSender<geoparquet::EncodedBatch>, std::thread::JoinHandle<Result<()>>)>,
     /// Set when the sink is dropped unfinished: the file is left without its footer.
@@ -1285,22 +1347,63 @@ impl ParquetSink {
                 }
                 Ok(())
             });
-            Self { enc, encoder: Some((tx, handle)), abort }
+            Self { enc, pending: Vec::new(), encoder: Some((tx, handle)), abort }
         }
         #[cfg(target_arch = "wasm32")]
         {
             let _ = &mut writer;
-            Self { enc, writer }
+            Self { enc, pending: Vec::new(), writer }
         }
     }
 }
 
 impl FeatureSink for ParquetSink {
     fn write(&mut self, chunk: &Layer) -> Result<()> {
+        self.pending.extend(chunk.features.iter().cloned());
+        self.encode_full()
+    }
+
+    fn write_owned(&mut self, chunk: Layer) -> Result<()> {
+        self.pending.extend(chunk.features);
+        self.encode_full()
+    }
+
+    fn finish(self: Box<Self>) -> Result<()> {
+        let mut s = self;
+        let rest = std::mem::take(&mut s.pending);
+        s.encode(&rest)?;
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            s.stop()
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            s.writer.close()?.flush()?;
+            Ok(())
+        }
+    }
+}
+
+impl ParquetSink {
+    /// Encodes the pending features that fill row groups.
+    fn encode_full(&mut self) -> Result<()> {
+        let full = self.pending.len() / geoparquet::BATCH * geoparquet::BATCH;
+        if full == 0 {
+            return Ok(());
+        }
+        let rest = self.pending.split_off(full);
+        let features = std::mem::replace(&mut self.pending, rest);
+        self.encode(&features)
+    }
+
+    fn encode(&mut self, features: &[Feature]) -> Result<()> {
+        if features.is_empty() {
+            return Ok(());
+        }
         #[cfg(not(target_arch = "wasm32"))]
         {
             let Some((tx, _)) = &self.encoder else { return Ok(()) };
-            for batch in self.enc.batches(&chunk.features)? {
+            for batch in self.enc.batches(features)? {
                 if tx.send(batch).is_err() {
                     // The encoder stopped on an error, which finishing reports.
                     return self.stop();
@@ -1310,20 +1413,7 @@ impl FeatureSink for ParquetSink {
         }
         #[cfg(target_arch = "wasm32")]
         {
-            self.enc.write(&mut self.writer, &chunk.features)
-        }
-    }
-
-    fn finish(self: Box<Self>) -> Result<()> {
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            let mut s = self;
-            s.stop()
-        }
-        #[cfg(target_arch = "wasm32")]
-        {
-            self.writer.close()?.flush()?;
-            Ok(())
+            self.enc.write(&mut self.writer, features)
         }
     }
 }
@@ -1448,7 +1538,8 @@ pub struct ConvertOptions {
     pub translate: VectorTranslateOptions,
     /// How to write the output.
     pub write: VectorWriteOptions,
-    /// The number of features read, translated and written at a time.
+    /// The number of features read, translated and written at a time (fewer when they take
+    /// more than [`CHUNK_BYTES`]).
     pub chunk_size: usize,
 }
 
@@ -1565,7 +1656,7 @@ pub fn convert(src: &str, dst: &str, options: &ConvertOptions) -> Result<()> {
         while !translator.is_done()
             && let Some(c) = reader.read_chunk(chunk)?
         {
-            writer.write(&translator.apply(c)?)?;
+            writer.write_owned(translator.apply(c)?)?;
         }
         writer.finish()
     })();
@@ -1705,7 +1796,7 @@ fn convert_sorted_osm(data: &mut File, src: &str, dst: &str, options: &ConvertOp
             if translator.is_done() {
                 return Ok(());
             }
-            writer.write(&translator.apply(chunk_of(l, features))?)
+            writer.write_owned(translator.apply(chunk_of(l, features))?)
         })?;
         writer.finish()
     })();

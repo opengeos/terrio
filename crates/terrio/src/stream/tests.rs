@@ -516,3 +516,57 @@ fn flatgeobuf_reencodes_rings_and_values_as_they_were() {
     w.finish().unwrap();
     assert!(std::fs::read(&whole).unwrap() == std::fs::read(&streamed).unwrap());
 }
+
+/// Chunks of large geometries stop at about `CHUNK_BYTES`, short of the number of features
+/// asked for, and keep every feature in order.
+#[test]
+fn chunks_stop_at_their_size() {
+    let mut layer = Layer::new("big").with_epsg(4326);
+    layer.add_field(FieldDef::new("k", FieldType::Integer));
+    // About 24 MB of coordinates each.
+    let line: Vec<Coord> = (0..500_000).map(|i| Coord::xy(i as f64, 0.0)).collect();
+    for k in 0..6 {
+        layer.push(Feature {
+            fid: k,
+            geometry: Some(Geometry::line_string(line.clone())),
+            attributes: vec![FieldValue::Integer(k as i64)],
+        });
+    }
+    let source = MemorySource { features: std::mem::take(&mut layer.features).into_iter(), batch: 4 };
+    let mut reader = FeatureReader::new(layer, Box::new(source));
+    let mut sizes = Vec::new();
+    let mut fids = Vec::new();
+    while let Some(chunk) = reader.read_chunk(DEFAULT_CHUNK).unwrap() {
+        sizes.push(chunk.features.len());
+        fids.extend(chunk.features.iter().map(|f| f.fid));
+    }
+    assert_eq!(sizes, [3, 3]);
+    assert_eq!(fids, (0..6).collect::<Vec<_>>());
+}
+
+/// GeoParquet row groups are those of the whole-layer writer whatever the size of the chunks.
+#[test]
+fn geoparquet_row_groups_do_not_follow_chunks() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut layer = Layer::new("t").with_epsg(4326);
+    layer.add_field(FieldDef::new("name", FieldType::Text));
+    for k in 0..(geoparquet::BATCH as u64 + 10) {
+        layer.push(Feature { fid: k, geometry: Some(Geometry::point(k as f64, 0.0)), attributes: vec![FieldValue::Text(format!("f{k}"))] });
+    }
+    let whole = dir.path().join("whole.parquet").to_string_lossy().into_owned();
+    crate::write_vector(std::slice::from_ref(&layer), &whole, &Default::default()).unwrap();
+    let streamed = dir.path().join("stream.parquet").to_string_lossy().into_owned();
+    let mut w = FeatureWriter::create(&streamed, &layer, None, &Default::default()).unwrap();
+    for c in layer.features.chunks(1000) {
+        let mut chunk = schema_of(&layer);
+        chunk.features = c.to_vec();
+        w.write_owned(chunk).unwrap();
+    }
+    w.finish().unwrap();
+    let groups = |p: &str| geoparquet::row_groups(File::open(p).unwrap()).unwrap().len();
+    assert_eq!(groups(&streamed), 2);
+    assert_eq!(groups(&streamed), groups(&whole));
+    let a = crate::open_vector(&whole, &Default::default()).unwrap().layers.remove(0);
+    let b = crate::open_vector(&streamed, &Default::default()).unwrap().layers.remove(0);
+    same_content(&a, &b);
+}
