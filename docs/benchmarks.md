@@ -126,7 +126,8 @@ the largest peak memory. Same machine, terrio 0.2.0.
   date and date-time fields, and gather the geometry types and extent as they write. FlatGeobuf
   outputs read the input once, deciding the types as the features come.
   GeoPackage outputs keep only each geometry's box (24 bytes) for the R-tree, whose tables are
-  written a row at a time once the boxes are packed.
+  written a row at a time once the boxes are packed (with each feature's leaf, 16 bytes, while
+  its `_rowid` table is written).
 - **OpenStreetMap PBF** files sorted by type then id are read a batch of blocks at a time. The
   nodes, packed to about 6 bytes each, and the ways relations use go to temporary files read back
   through memory maps, so the operating system's page cache rather than the process holds them.

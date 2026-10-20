@@ -749,12 +749,10 @@ impl Builder {
                 "http://www.geopackage.org/spec120/#extension_rtree",
                 "write-only",
             );
-            for ((name, sql), k) in rtree_tables.into_iter().zip(0..) {
-                let mut rows: Box<sqlite::Rows> = match k {
-                    0 => Box::new(tree.rowid_rows()),
-                    1 => tree.node_rows(),
-                    _ => tree.parent_rows(),
-                };
+            let [rowid, node, parent] = rtree_tables;
+            let shadow: [(_, Box<sqlite::Rows>); 3] =
+                [(rowid, Box::new(tree.rowid_rows())), (node, tree.node_rows()), (parent, tree.parent_rows())];
+            for ((name, sql), mut rows) in shadow {
                 let t = Table { name, sql, rows: Vec::new(), autoindexes: vec![] };
                 match &mut write {
                     None => self.tables.push(Table { rows: rows.collect(), ..t }),
