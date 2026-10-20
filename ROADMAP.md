@@ -85,11 +85,9 @@ of GDAL: the long tail of formats stays reachable through an optional GDAL backe
 - [x] PMTiles and MBTiles archives. Done: raster tiles (PNG, JPEG, WebP) read as rasters with their
       zoom levels as overviews, and vector tiles (MVT) as layers, as GDAL's MBTiles, PMTiles and MVT
       drivers read them; PMTiles read in place over HTTP; rasters written as tile pyramids and vector
-      layers as MVT tiles (archives or directories), as GDAL writes them. Checked against GDAL
-      (`scripts/compare_tiles_with_gdal.py`).
-    - [ ] Updating existing archives.
-    - [ ] AVIF tiles.
-    - [ ] Repairing invalid polygons as GEOS does.
+      layers as MVT tiles (archives or directories), as GDAL writes them; invalid polygons repaired
+      as GDAL's MVT writer repairs them with GEOS; AVIF tiles; existing archives updated (rasters
+      and vector layers appended). Checked against GDAL (`scripts/compare_tiles_with_gdal.py`).
 - [x] STAC items and collections as datasets. Done: items, item collections, collections and STAC
       API searches (local or remote, following `next` links) as footprint layers read as GDAL reads
       STAC GeoJSON; assets opened as `STAC:"item":asset` (COGs in place); mosaics of an asset over
@@ -118,10 +116,9 @@ of GDAL: the long tail of formats stays reachable through an optional GDAL backe
 - [x] Datasets opened from and written to bytes (`terrio::memory`).
 - [x] An optional `gdal` feature that opens anything GDAL can when it is installed, through the same
       data model. Done: fallback in `open`, `open_raster`, `open_vector` and `list_layers`, a `GDAL:`
-      prefix and `--driver gdal`, GDAL dataset names and subdatasets, rasters written with any GDAL
-      driver (ERDAS Imagine included).
-    - [ ] Vector layers written through GDAL.
-    - [ ] GDAL opening bytes in memory.
+      prefix and `--driver gdal`, GDAL dataset names and subdatasets, rasters and vector layers
+      written with any GDAL driver (ERDAS Imagine, OpenFileGDB, DXF...), and bytes terrio can't read
+      opened through GDAL's `/vsimem/`.
 - [x] Arrow and GeoArrow import and export for vector layers.
 - [x] The command line without a Rust toolchain: `pip install terrio` installs the `terrio`
       command, standalone binaries for Linux, macOS and Windows are attached to each release
@@ -266,9 +263,8 @@ WebAssembly (the `terrio-js` npm package):
       (CDF-1/2/5) and netCDF-4 writing (`FORMAT=NC4`/`NC4C`, chunked, deflate and shuffle, CF
       georeferencing, as GDAL writes them; terrio's own HDF5 writer); HDF5 rasters as GDAL's HDF5
       driver reads them (`HDF5:"file.h5"://group/dataset`, metadata, user blocks), checked on JPSS
-      and Sentinel-5P products.
-    - [ ] HDF-EOS5 grids and swaths and other product-specific georeferencing.
-    - [ ] Compound and complex datasets.
+      and Sentinel-5P products; HDF-EOS5 grids and swaths, COSMO-SkyMed and ODIM georeferencing,
+      netCDF geolocation arrays and complex (compound) datasets, as GDAL 3.12 reads them.
     - [ ] Writing groups.
 - [x] JPEG 2000 and other compressed raster formats. Done: JPEG 2000 (JP2 and J2K, GeoJP2 and
       GMLJP2 georeferencing) is read and written in WebAssembly too, with the same OpenJPEG port as
