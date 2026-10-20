@@ -857,8 +857,8 @@ impl FeatureSink for GpkgSink {
         let (root, mut next, mut out) = table.finish_with_output()?;
         let built = crate::drivers::vector::sqlite::BuiltTable { name: layer.name.clone(), sql: cols.sql.clone(), root };
         // The R-tree's tables follow the layer's.
-        let mut write = |t| {
-            let (built, after, _) = crate::drivers::vector::sqlite::stream_table(&mut out, next, t)?;
+        let mut write = |t, rows: &mut crate::drivers::vector::sqlite::Rows| {
+            let (built, after, _) = crate::drivers::vector::sqlite::stream_table(&mut out, next, t, rows)?;
             next = after;
             Ok(built)
         };
@@ -985,8 +985,8 @@ impl GpkgLayersSink {
             let (root, after) = table.finish()?;
             next = after;
             // The R-tree's tables follow the layer's.
-            let mut write = |t| {
-                let (built, after, _) = crate::drivers::vector::sqlite::stream_table(&mut out, next, t)?;
+            let mut write = |t, rows: &mut crate::drivers::vector::sqlite::Rows| {
+                let (built, after, _) = crate::drivers::vector::sqlite::stream_table(&mut out, next, t, rows)?;
                 next = after;
                 Ok(built)
             };

@@ -671,12 +671,15 @@ impl<W: std::io::Write + std::io::Seek> StreamTable<W> {
 }
 
 /// Writes a table whose rows are sorted by rowid (and has no automatic index) with a
-/// [`StreamTable`] from page `first` on: the table as listed in the schema, and the first page
-/// after it.
-pub fn stream_table<W: std::io::Write + std::io::Seek>(out: W, first: u32, table: Table) -> Result<(BuiltTable, u32, W)> {
+/// [`StreamTable`] from page `first` on: the rows of `table` then `more`. Returns the table as
+/// listed in the schema, and the first page after it.
+pub fn stream_table<W: std::io::Write + std::io::Seek>(out: W, first: u32, table: Table, more: &mut Rows) -> Result<(BuiltTable, u32, W)> {
     let mut st = StreamTable::starting_at(out, first);
     for (rowid, values) in &table.rows {
         st.push(*rowid, &record(values))?;
+    }
+    for (rowid, values) in more {
+        st.push(rowid, &record(&values))?;
     }
     let (root, next, out) = st.finish_with_output()?;
     Ok((BuiltTable { name: table.name, sql: table.sql, root }, next, out))
@@ -701,6 +704,9 @@ fn node_bytes(flag: u8, cells: &[Vec<u8>], right: Option<u32>) -> Vec<u8> {
     p[5..7].copy_from_slice(&(end as u16).to_be_bytes());
     p
 }
+
+/// A table's rows (rowid and values) by increasing rowid, made as they are read.
+pub type Rows<'a> = dyn Iterator<Item = (i64, Vec<Value>)> + 'a;
 
 /// A table already written (by a [`StreamTable`]): its name, `CREATE TABLE` statement and root.
 pub struct BuiltTable {

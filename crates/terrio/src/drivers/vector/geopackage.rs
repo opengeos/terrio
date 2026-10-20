@@ -161,8 +161,9 @@ fn union(entries: &[RtreeEntry]) -> [f32; 4] {
     })
 }
 
-/// Groups entries into nodes of at most 51 by sort-tile-recursive packing.
-fn str_pack(mut entries: Vec<RtreeEntry>) -> Vec<Vec<RtreeEntry>> {
+/// Groups entries into nodes of at most 51 by sort-tile-recursive packing, in place: returns
+/// where each node starts in `entries`, then their end.
+fn str_pack(entries: &mut [RtreeEntry]) -> Vec<usize> {
     let n = entries.len();
     let nodes = n.div_ceil(RTREE_MAX_CELLS).max(1);
     let slices = (nodes as f64).sqrt().ceil() as usize;
@@ -170,12 +171,13 @@ fn str_pack(mut entries: Vec<RtreeEntry>) -> Vec<Vec<RtreeEntry>> {
     let cx = |e: &RtreeEntry| f64::from(e.1[0]) + f64::from(e.1[1]);
     let cy = |e: &RtreeEntry| f64::from(e.1[2]) + f64::from(e.1[3]);
     entries.sort_by(|a, b| cx(a).total_cmp(&cx(b)));
-    let mut out = Vec::with_capacity(nodes);
-    for slice in entries.chunks_mut(per_slice) {
+    let mut starts = Vec::with_capacity(nodes + 1);
+    for (k, slice) in entries.chunks_mut(per_slice).enumerate() {
         slice.sort_by(|a, b| cy(a).total_cmp(&cy(b)));
-        out.extend(slice.chunks(RTREE_MAX_CELLS).map(<[RtreeEntry]>::to_vec));
+        starts.extend((0..slice.len()).step_by(RTREE_MAX_CELLS).map(|i| k * per_slice + i));
     }
-    out
+    starts.push(n);
+    starts
 }
 
 /// The shadow tables of a two-dimensional SQLite R-tree holding the boxes, built in one go:
@@ -183,95 +185,129 @@ fn str_pack(mut entries: Vec<RtreeEntry>) -> Vec<Vec<RtreeEntry>> {
 pub(super) type RtreeRows = (Vec<(i64, Vec<Value>)>, Vec<(i64, Vec<Value>)>, Vec<(i64, Vec<Value>)>);
 
 pub(super) fn build_rtree(entries: Vec<RtreeEntry>) -> RtreeRows {
-    let encode = |depth: u16, cells: &[RtreeEntry]| {
-        let mut b = Vec::with_capacity(RTREE_NODE_SIZE);
-        b.extend_from_slice(&depth.to_be_bytes());
-        b.extend_from_slice(&(cells.len() as u16).to_be_bytes());
-        for (id, bx) in cells {
-            b.extend_from_slice(&id.to_be_bytes());
-            for v in bx {
-                b.extend_from_slice(&v.to_be_bytes());
-            }
-        }
-        b.resize(RTREE_NODE_SIZE, 0);
-        b
-    };
-    let (mut nodes, mut rowids, mut parents) = (Vec::new(), Vec::new(), Vec::new());
-    if entries.is_empty() {
-        nodes.push((1, vec![Value::Null, Value::Blob(vec![0; RTREE_NODE_SIZE])]));
-        return (nodes, rowids, parents);
-    }
-    // Levels from the leaves up; node numbers are given once the root (node 1) is known.
-    let mut levels: Vec<Vec<Vec<RtreeEntry>>> = vec![str_pack(entries)];
-    while levels.last().is_some_and(|l| l.len() > 1) {
-        let last = levels.last().map(Vec::as_slice).unwrap_or_default();
-        // Placeholder ids: the index of the child in its level.
-        let up: Vec<RtreeEntry> = last.iter().enumerate().map(|(i, cells)| (i as i64, union(cells))).collect();
-        levels.push(str_pack(up));
-    }
-    // Number the nodes from the root down.
-    let depth = levels.len() - 1;
-    let mut numbers: Vec<Vec<i64>> = levels.iter().map(|l| vec![0; l.len()]).collect();
-    let mut next = 1;
-    for level in (0..levels.len()).rev() {
-        for n in numbers[level].iter_mut() {
-            *n = next;
-            next += 1;
-        }
-    }
-    for (level, nodes_at) in levels.iter().enumerate() {
-        for (i, cells) in nodes_at.iter().enumerate() {
-            let me = numbers[level][i];
-            let cells: Vec<RtreeEntry> = if level == 0 {
-                for (id, _) in cells {
-                    rowids.push((*id, vec![Value::Null, Value::Int(me)]));
-                }
-                cells.clone()
-            } else {
-                cells
-                    .iter()
-                    .map(|(child, bx)| {
-                        let child = numbers[level - 1][*child as usize];
-                        parents.push((child, vec![Value::Null, Value::Int(me)]));
-                        (child, *bx)
-                    })
-                    .collect()
-            };
-            let d = if level == depth { depth as u16 } else { 0 };
-            nodes.push((me, vec![Value::Null, Value::Blob(encode(d, &cells))]));
-        }
-    }
-    nodes.sort_by_key(|(n, _)| *n);
-    rowids.sort_by_key(|(n, _)| *n);
-    parents.sort_by_key(|(n, _)| *n);
-    (nodes, rowids, parents)
+    let tree = Rtree::new(entries);
+    (tree.node_rows().collect(), tree.rowid_rows().collect(), tree.parent_rows().collect())
 }
 
-/// The R-tree index of a feature table's geometry column, as GDAL creates it: the virtual table,
-/// its shadow tables, and the triggers that keep it up to date.
-fn rtree_index(table: &str, column: &str, entries: Vec<RtreeEntry>) -> (Vec<Table>, Vec<SchemaObject>) {
+/// A two-dimensional SQLite R-tree of boxes, packed: its levels from the leaves up, each the
+/// entries of its nodes in order (features in the leaves, and above them the indexes of the
+/// children in the level below) and where each node starts. Its shadow tables' rows are made as
+/// they are read, so that only the entries are held.
+pub(super) struct Rtree {
+    levels: Vec<(Vec<RtreeEntry>, Vec<usize>)>,
+}
+
+/// An R-tree node's blob: its depth (set on the root only), number of cells and cells, the ids of
+/// `cells` offset by `offset`.
+fn rtree_node(depth: u16, cells: &[RtreeEntry], offset: i64) -> Vec<u8> {
+    let mut b = Vec::with_capacity(RTREE_NODE_SIZE);
+    b.extend_from_slice(&depth.to_be_bytes());
+    b.extend_from_slice(&(cells.len() as u16).to_be_bytes());
+    for (id, bx) in cells {
+        b.extend_from_slice(&(id + offset).to_be_bytes());
+        for v in bx {
+            b.extend_from_slice(&v.to_be_bytes());
+        }
+    }
+    b.resize(RTREE_NODE_SIZE, 0);
+    b
+}
+
+impl Rtree {
+    pub(super) fn new(mut entries: Vec<RtreeEntry>) -> Self {
+        let mut levels = Vec::new();
+        if entries.is_empty() {
+            return Self { levels };
+        }
+        let starts = str_pack(&mut entries);
+        levels.push((entries, starts));
+        while let Some((entries, starts)) = levels.last()
+            && starts.len() > 2
+        {
+            // Placeholder ids: the index of the child in its level.
+            let mut up: Vec<RtreeEntry> = starts.windows(2).enumerate().map(|(i, w)| (i as i64, union(&entries[w[0]..w[1]]))).collect();
+            let starts = str_pack(&mut up);
+            levels.push((up, starts));
+        }
+        Self { levels }
+    }
+
+    /// The number of each level's first node: the root is node 1, and each level's nodes follow
+    /// those of the level above.
+    fn bases(&self) -> Vec<i64> {
+        let mut bases = vec![0; self.levels.len()];
+        let mut next = 1;
+        for (base, (_, starts)) in bases.iter_mut().zip(&self.levels).rev() {
+            *base = next;
+            next += starts.len() as i64 - 1;
+        }
+        bases
+    }
+
+    /// The rows of the `_node` table, by node number.
+    pub(super) fn node_rows(&self) -> Box<sqlite::Rows<'_>> {
+        if self.levels.is_empty() {
+            return Box::new(std::iter::once((1, vec![Value::Null, Value::Blob(vec![0; RTREE_NODE_SIZE])])));
+        }
+        let bases = self.bases();
+        let depth = self.levels.len() - 1;
+        Box::new((0..=depth).rev().flat_map(move |level| {
+            let (entries, starts) = &self.levels[level];
+            let (base, children) = (bases[level], if level == 0 { 0 } else { bases[level - 1] });
+            let d = if level == depth { depth as u16 } else { 0 };
+            starts
+                .windows(2)
+                .enumerate()
+                .map(move |(i, w)| (base + i as i64, vec![Value::Null, Value::Blob(rtree_node(d, &entries[w[0]..w[1]], children))]))
+        }))
+    }
+
+    /// The rows of the `_rowid` table: each feature's leaf, by feature id.
+    pub(super) fn rowid_rows(&self) -> impl Iterator<Item = (i64, Vec<Value>)> + use<> {
+        let mut leaves: Vec<(i64, i64)> = Vec::new();
+        if let Some((entries, starts)) = self.levels.first() {
+            let base = self.bases()[0];
+            leaves.reserve_exact(entries.len());
+            for (i, w) in starts.windows(2).enumerate() {
+                leaves.extend(entries[w[0]..w[1]].iter().map(|(id, _)| (*id, base + i as i64)));
+            }
+        }
+        leaves.sort_unstable();
+        leaves.into_iter().map(|(id, node)| (id, vec![Value::Null, Value::Int(node)]))
+    }
+
+    /// The rows of the `_parent` table: each node's parent, by node number (the root has none).
+    pub(super) fn parent_rows(&self) -> Box<sqlite::Rows<'_>> {
+        let bases = self.bases();
+        Box::new((1..self.levels.len()).rev().flat_map(move |above| {
+            let (entries, starts) = &self.levels[above];
+            let mut parents = vec![0; self.levels[above - 1].1.len() - 1];
+            for (i, w) in starts.windows(2).enumerate() {
+                for (child, _) in &entries[w[0]..w[1]] {
+                    parents[*child as usize] = bases[above] + i as i64;
+                }
+            }
+            let base = bases[above - 1];
+            parents.into_iter().enumerate().map(move |(c, p)| (base + c as i64, vec![Value::Null, Value::Int(p)]))
+        }))
+    }
+}
+
+/// The R-tree index of a feature table's geometry column, as GDAL creates it: the packed tree,
+/// the names and statements of its shadow tables (`_rowid`, `_node` and `_parent`, whose rows
+/// the tree gives), and the virtual table and the triggers that keep it up to date.
+fn rtree_index(table: &str, column: &str, entries: Vec<RtreeEntry>) -> (Rtree, [(String, String); 3], Vec<SchemaObject>) {
     let rt = format!("rtree_{table}_{column}");
     let (t, c, r) = (quote(table), quote(column), quote(&rt));
-    let (nodes, rowids, parents) = build_rtree(entries);
-    let tables = vec![
-        Table {
-            name: format!("{rt}_rowid"),
-            sql: format!("CREATE TABLE {}(rowid INTEGER PRIMARY KEY,nodeno)", quote(&format!("{rt}_rowid"))),
-            rows: rowids,
-            autoindexes: vec![],
-        },
-        Table {
-            name: format!("{rt}_node"),
-            sql: format!("CREATE TABLE {}(nodeno INTEGER PRIMARY KEY,data)", quote(&format!("{rt}_node"))),
-            rows: nodes,
-            autoindexes: vec![],
-        },
-        Table {
-            name: format!("{rt}_parent"),
-            sql: format!("CREATE TABLE {}(nodeno INTEGER PRIMARY KEY,parentnode)", quote(&format!("{rt}_parent"))),
-            rows: parents,
-            autoindexes: vec![],
-        },
+    let shadow = |suffix: &str, columns: &str| {
+        let name = format!("{rt}_{suffix}");
+        let sql = format!("CREATE TABLE {}({columns})", quote(&name));
+        (name, sql)
+    };
+    let tables = [
+        shadow("rowid", "rowid INTEGER PRIMARY KEY,nodeno"),
+        shadow("node", "nodeno INTEGER PRIMARY KEY,data"),
+        shadow("parent", "nodeno INTEGER PRIMARY KEY,parentnode"),
     ];
     let bounds = |g: &str| format!("ST_MinX({g}), ST_MaxX({g}),ST_MinY({g}), ST_MaxY({g})");
     let new = format!("NEW.{c}");
@@ -327,7 +363,7 @@ fn rtree_index(table: &str, column: &str, entries: Vec<RtreeEntry>) -> (Vec<Tabl
         let name = format!("{rt}_{suffix}");
         objects.push(SchemaObject { kind: "trigger", sql: format!("CREATE TRIGGER {} {body}", quote(&name)), name, table: table.into() });
     }
-    (tables, objects)
+    (Rtree::new(entries), tables, objects)
 }
 
 /// The columns of a layer's table (see [`Builder::layer_columns`]).
@@ -389,6 +425,9 @@ impl LayerExtent {
         }
     }
 }
+
+/// Writes a table (its rows, then those given) after the tables already written.
+pub(crate) type WriteTable<'a> = dyn FnMut(Table, &mut sqlite::Rows) -> Result<BuiltTable> + 'a;
 
 /// A layer's table: its rows, or already written by a [`sqlite::StreamTable`].
 pub(crate) enum LayerTable {
@@ -653,7 +692,7 @@ impl Builder {
         max_fid: i64,
         extent: LayerExtent,
         table: LayerTable,
-        write: Option<&mut dyn FnMut(Table) -> Result<BuiltTable>>,
+        mut write: Option<&mut WriteTable>,
     ) -> Result<()> {
         let b = extent.bounds.map(|b| b.map(Value::Real)).unwrap_or([Value::Null, Value::Null, Value::Null, Value::Null]);
         let [min_x, min_y, max_x, max_y] = b;
@@ -702,7 +741,7 @@ impl Builder {
             LayerTable::Built(b) => self.built.push((self.tables.len(), b)),
         }
         if spatial {
-            let (rtree_tables, rtree_objects) = rtree_index(name, "geom", extent.entries);
+            let (tree, rtree_tables, rtree_objects) = rtree_index(name, "geom", extent.entries);
             self.extension(
                 Some(name),
                 Some("geom"),
@@ -710,11 +749,17 @@ impl Builder {
                 "http://www.geopackage.org/spec120/#extension_rtree",
                 "write-only",
             );
-            match write {
-                None => self.tables.extend(rtree_tables),
-                Some(write) => {
-                    for t in rtree_tables {
-                        let built = write(t)?;
+            for ((name, sql), k) in rtree_tables.into_iter().zip(0..) {
+                let mut rows: Box<sqlite::Rows> = match k {
+                    0 => Box::new(tree.rowid_rows()),
+                    1 => tree.node_rows(),
+                    _ => tree.parent_rows(),
+                };
+                let t = Table { name, sql, rows: Vec::new(), autoindexes: vec![] };
+                match &mut write {
+                    None => self.tables.push(Table { rows: rows.collect(), ..t }),
+                    Some(write) => {
+                        let built = write(t, &mut rows)?;
                         self.built.push((self.tables.len(), built));
                     }
                 }
@@ -964,6 +1009,104 @@ pub fn to_bytes(layers: &[Layer]) -> Result<Vec<u8>> {
 mod tests {
     use super::*;
     use wbvector::{Coord, Feature, FieldDef};
+
+    /// The R-tree as it was built whole, before its rows were made as they are read.
+    fn old_str_pack(mut entries: Vec<RtreeEntry>) -> Vec<Vec<RtreeEntry>> {
+        let n = entries.len();
+        let nodes = n.div_ceil(RTREE_MAX_CELLS).max(1);
+        let slices = (nodes as f64).sqrt().ceil() as usize;
+        let per_slice = slices * RTREE_MAX_CELLS;
+        let cx = |e: &RtreeEntry| f64::from(e.1[0]) + f64::from(e.1[1]);
+        let cy = |e: &RtreeEntry| f64::from(e.1[2]) + f64::from(e.1[3]);
+        entries.sort_by(|a, b| cx(a).total_cmp(&cx(b)));
+        let mut out = Vec::with_capacity(nodes);
+        for slice in entries.chunks_mut(per_slice) {
+            slice.sort_by(|a, b| cy(a).total_cmp(&cy(b)));
+            out.extend(slice.chunks(RTREE_MAX_CELLS).map(<[RtreeEntry]>::to_vec));
+        }
+        out
+    }
+
+    fn old_rtree(entries: Vec<RtreeEntry>) -> RtreeRows {
+        let encode = |depth: u16, cells: &[RtreeEntry]| {
+            let mut b = Vec::with_capacity(RTREE_NODE_SIZE);
+            b.extend_from_slice(&depth.to_be_bytes());
+            b.extend_from_slice(&(cells.len() as u16).to_be_bytes());
+            for (id, bx) in cells {
+                b.extend_from_slice(&id.to_be_bytes());
+                for v in bx {
+                    b.extend_from_slice(&v.to_be_bytes());
+                }
+            }
+            b.resize(RTREE_NODE_SIZE, 0);
+            b
+        };
+        let (mut nodes, mut rowids, mut parents) = (Vec::new(), Vec::new(), Vec::new());
+        if entries.is_empty() {
+            nodes.push((1, vec![Value::Null, Value::Blob(vec![0; RTREE_NODE_SIZE])]));
+            return (nodes, rowids, parents);
+        }
+        // Levels from the leaves up; node numbers are given once the root (node 1) is known.
+        let mut levels: Vec<Vec<Vec<RtreeEntry>>> = vec![old_str_pack(entries)];
+        while levels.last().is_some_and(|l| l.len() > 1) {
+            let last = levels.last().map(Vec::as_slice).unwrap_or_default();
+            // Placeholder ids: the index of the child in its level.
+            let up: Vec<RtreeEntry> = last.iter().enumerate().map(|(i, cells)| (i as i64, union(cells))).collect();
+            levels.push(old_str_pack(up));
+        }
+        // Number the nodes from the root down.
+        let depth = levels.len() - 1;
+        let mut numbers: Vec<Vec<i64>> = levels.iter().map(|l| vec![0; l.len()]).collect();
+        let mut next = 1;
+        for level in (0..levels.len()).rev() {
+            for n in numbers[level].iter_mut() {
+                *n = next;
+                next += 1;
+            }
+        }
+        for (level, nodes_at) in levels.iter().enumerate() {
+            for (i, cells) in nodes_at.iter().enumerate() {
+                let me = numbers[level][i];
+                let cells: Vec<RtreeEntry> = if level == 0 {
+                    for (id, _) in cells {
+                        rowids.push((*id, vec![Value::Null, Value::Int(me)]));
+                    }
+                    cells.clone()
+                } else {
+                    cells
+                        .iter()
+                        .map(|(child, bx)| {
+                            let child = numbers[level - 1][*child as usize];
+                            parents.push((child, vec![Value::Null, Value::Int(me)]));
+                            (child, *bx)
+                        })
+                        .collect()
+                };
+                let d = if level == depth { depth as u16 } else { 0 };
+                nodes.push((me, vec![Value::Null, Value::Blob(encode(d, &cells))]));
+            }
+        }
+        nodes.sort_by_key(|(n, _)| *n);
+        rowids.sort_by_key(|(n, _)| *n);
+        parents.sort_by_key(|(n, _)| *n);
+        (nodes, rowids, parents)
+    }
+
+    #[test]
+    fn rtree_rows_are_those_built_whole() {
+        // Up to four levels, with boxes in no order and repeated.
+        for n in [0, 1, 51, 52, 2601, 2602, 140_000] {
+            let entries: Vec<RtreeEntry> = (0..n)
+                .map(|i: i64| {
+                    let (x, y) = (((i * 7919) % 1000) as f32, ((i * 104_729) % 997) as f32 / 3.0);
+                    (i + 1, [x, x + (i % 5) as f32, y, y + 1.0])
+                })
+                .collect();
+            let (nodes, rowids, parents) = build_rtree(entries.clone());
+            let want = old_rtree(entries);
+            assert!(nodes == want.0 && rowids == want.1 && parents == want.2, "{n} entries");
+        }
+    }
 
     #[test]
     fn reads_back_with_wbvector() {
