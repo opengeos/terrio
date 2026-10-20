@@ -50,13 +50,19 @@ pub(crate) fn invalid(message: impl Into<String>) -> PyErr {
     to_py(terrio::Error::InvalidArgument(message.into()))
 }
 
-/// Issues terrio's warnings (see `terrio::warnings`) as Python `UserWarning`s.
-pub(crate) fn emit_warnings(py: Python<'_>) -> PyResult<()> {
+/// Runs `f` without the GIL and issues the warnings it records (see `terrio::warnings`) as Python
+/// `UserWarning`s, whether it succeeds or fails. Warnings left by earlier calls are dropped first,
+/// so none is attributed to this call; `f`'s own error is preferred to a warning turned into one.
+pub(crate) fn with_warnings<T: Send>(py: Python<'_>, f: impl FnOnce() -> terrio::Result<T> + Send) -> PyResult<T> {
+    let _ = terrio::warnings::take();
+    let result = py.detach(f).py();
+    let mut warned = Ok(());
     for w in terrio::warnings::take() {
         let message = std::ffi::CString::new(w.replace('\0', " ")).expect("no NUL bytes left");
-        PyErr::warn(py, &py.get_type::<pyo3::exceptions::PyUserWarning>(), &message, 2)?;
+        warned = warned.and(PyErr::warn(py, &py.get_type::<pyo3::exceptions::PyUserWarning>(), &message, 2));
     }
-    Ok(())
+    let value = result?;
+    warned.map(|()| value)
 }
 
 /// A CRS as Python sees it: `EPSG:xxxx` when the code is known, otherwise the WKT, or `None`.

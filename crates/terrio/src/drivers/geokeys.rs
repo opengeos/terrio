@@ -48,7 +48,10 @@ impl GeoKeys<'_> {
 /// inner nodes (a unit's, a datum's) are not the CRS's.
 pub(crate) fn esri_pe_crs(k: &GeoKeys) -> Option<wbraster::CrsInfo> {
     let wkt = [3073, 1026, 2049].iter().find_map(|id| k.text(*id).and_then(|c| c.strip_prefix("ESRI PE String = ")))?.trim();
-    Some(wbraster::CrsInfo { epsg: crate::crs::identify_epsg(wkt), wkt: Some(wkt.to_string()), proj4: None })
+    // Read as any WKT: the code identified, and its PROJ4 extension (GDAL writes the sweep axis
+    // of a geostationary CRS there) taken as the CRS.
+    let s = crate::crs::SpatialRef::from_wkt(wkt);
+    Some(wbraster::CrsInfo { epsg: s.epsg, wkt: Some(wkt.to_string()), proj4: s.proj4 })
 }
 
 /// The PROJ definition of a user-defined projected CRS: the projection method and its parameters,

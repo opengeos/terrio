@@ -250,7 +250,7 @@ pub(crate) fn read_geo_tags_from<R: Read + Seek>(mut f: R) -> Option<GeoTags> {
 pub(crate) fn crs_from_geokeys(keys: &[u16], doubles: Option<&[f64]>, ascii: Option<&str>) -> wbraster::CrsInfo {
     let mut out = GeoTags::default();
     apply_geokeys(&mut out, keys, doubles, ascii);
-    out.warn_unreadable();
+    out.warn_unreadable("GeoKeys");
     out.crs_info()
 }
 
@@ -304,11 +304,12 @@ impl GeoTags {
     }
 
     /// Warns of a GeoKeys projection method that left the raster without CRS (see
-    /// [`GeoTags::unreadable_method`]), once the sidecar had its chance to give one.
-    pub(crate) fn warn_unreadable(&self) {
+    /// [`GeoTags::unreadable_method`]), once the sidecar had its chance to give one. `source`
+    /// names the file in the warning.
+    pub(crate) fn warn_unreadable(&self, source: &str) {
         if let Some(method) = self.unreadable_method {
             crate::warnings::warn(format!(
-                "GeoTIFF projection method {method} (ProjCoordTransGeoKey) is not supported, or its parameters are incomplete: the raster has no CRS"
+                "{source}: GeoTIFF projection method {method} (ProjCoordTransGeoKey) is not supported, or its parameters are incomplete: the raster has no CRS"
             ));
         }
     }
@@ -548,7 +549,7 @@ pub(crate) fn read_geotiff(path: &std::path::Path) -> crate::Result<crate::Raste
     let tiff_err = |e: tiff::TiffError| Error::InvalidData(format!("{}: {e}", path.display()));
     let mut tags = read_geo_tags(path).unwrap_or_default();
     tags.apply_sidecar_crs(path);
-    tags.warn_unreadable();
+    tags.warn_unreadable(&path.display().to_string());
     // The decoder rejects palette images; read their indices as grayscale instead.
     let mut dec = open_decoder(path, &tags)?;
     let (w, h) = dec.dimensions().map_err(tiff_err)?;

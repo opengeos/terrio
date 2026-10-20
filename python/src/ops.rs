@@ -91,9 +91,8 @@ fn data_type(name: &str) -> PyResult<DataType> {
 #[pyfunction]
 fn open(py: Python<'_>, path: &str) -> PyResult<Py<PyAny>> {
     // Warnings are issued whether the open succeeds or not, so none is left for a later call.
-    let ds = py.detach(|| terrio::open(path));
-    crate::emit_warnings(py)?;
-    dataset_to_py(py, ds.py()?)
+    let ds = crate::with_warnings(py, || terrio::open(path))?;
+    dataset_to_py(py, ds)
 }
 
 /// Opens a raster.
@@ -116,13 +115,11 @@ fn open(py: Python<'_>, path: &str) -> PyResult<Py<PyAny>> {
 #[pyo3(signature = (path, lazy=false))]
 fn open_raster(py: Python<'_>, path: &str, lazy: bool) -> PyResult<PyRaster> {
     if lazy {
-        let r = py.detach(|| terrio::open_raster_lazy(path));
-        crate::emit_warnings(py)?;
-        return Ok(PyRaster { inner: r.py()? });
+        let r = crate::with_warnings(py, || terrio::open_raster_lazy(path))?;
+        return Ok(PyRaster { inner: r });
     }
-    let ds = py.detach(|| terrio::open_raster(path));
-    crate::emit_warnings(py)?;
-    Ok(PyRaster::from_dataset(ds.py()?))
+    let ds = crate::with_warnings(py, || terrio::open_raster(path))?;
+    Ok(PyRaster::from_dataset(ds))
 }
 
 /// Opens a vector dataset.
@@ -398,7 +395,7 @@ fn convert(
         Some(None) => None,
         _ => Some(vector_write_options(format)?),
     };
-    let result = py.detach(|| -> terrio::Result<()> {
+    crate::with_warnings(py, || -> terrio::Result<()> {
         // Vector conversions between formats read and written as streams go a chunk of
         // features at a time, in bounded memory.
         if srcwin.is_none() && overview.is_none() && mode == WriteMode::Create && !terrio::tiles::is_archive(src) {
@@ -465,9 +462,7 @@ fn convert(
                 terrio::ops::vector_filter::write_vector_with_mode(&layers, dst, &options, mode)
             }
         }
-    });
-    crate::emit_warnings(py)?;
-    result.py()
+    })
 }
 
 /// Opens the layers given to an operation: a path, or layers in memory.
@@ -490,11 +485,7 @@ fn input_layers(py: Python<'_>, src: &Bound<'_, PyAny>, layers: Option<Vec<Strin
 /// Opens the raster given to an operation: a path, or a `Raster`.
 pub(crate) fn input_raster(py: Python<'_>, src: &Bound<'_, PyAny>) -> PyResult<RasterDataset> {
     match src.extract::<String>() {
-        Ok(path) => {
-            let r = py.detach(|| terrio::open_raster(&path));
-            crate::emit_warnings(py)?;
-            r.py()
-        }
+        Ok(path) => crate::with_warnings(py, || terrio::open_raster(&path)),
         Err(_) => {
             let mut r = src.cast::<PyRaster>().map_err(|_| invalid("expected a path or a terrio.Raster"))?.borrow_mut();
             r.with_dataset(|ds| Ok(ds.clone())).py()
