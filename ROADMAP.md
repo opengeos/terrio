@@ -300,7 +300,8 @@ WebAssembly (the `terrio-js` npm package):
   from GDAL and PROJ by `scripts/gen_epsg_table.py`): the PROJ strings of the CRSs, their WKT and
   the datum transformations GDAL lists for them, so that terrio picks the same transformation as
   GDAL for each point. The projection formulas are PROJ's, ported to Rust; `wbprojection` remains
-  the fallback for projections EPSG CRSs do not use and for WKT 2 parsing.
+  the fallback for projections EPSG CRSs do not use. WKT 1 and the geographic and projected
+  CRSs of WKT 2 are read by terrio's own reader.
 - NetCDF-4 and HDF5 are read with the pure-Rust `netcdf-reader` and `hdf5-reader` crates, and
   netCDF-4 is written by terrio's own small HDF5 writer (superblock 2, version 2 object headers,
   version 1 chunk B-trees, dimension scales), which the netCDF and HDF5 libraries read: no HDF5

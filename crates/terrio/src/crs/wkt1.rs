@@ -142,7 +142,7 @@ fn node(b: &[u8], i: &mut usize) -> Option<Node> {
     Some(Node { key, args })
 }
 
-fn norm(s: &str) -> String {
+pub(crate) fn norm(s: &str) -> String {
     s.chars().filter(|c| c.is_ascii_alphanumeric()).collect::<String>().to_ascii_lowercase()
 }
 
@@ -151,6 +151,10 @@ pub(crate) struct Converted {
     pub proj: String,
     /// The `GEOGCS` node, for identifying the datum.
     pub geogcs: Node,
+    /// The EPSG geographic CRS, when the reader knows it.
+    pub geog: Option<u32>,
+    /// A WKT 1 `GEOGCS` to identify the datum by, when the WKT has none of its own (WKT 2).
+    pub geogcs_wkt1: Option<String>,
 }
 
 /// Converts a WKT 1 `GEOGCS` or `PROJCS` (ESRI or OGC flavour) into a PROJ string. `None` for
@@ -191,7 +195,7 @@ pub(crate) fn to_proj(root: &Node) -> Option<Converted> {
             tail.push(format!("+to_deg={ang}"));
         }
         out.extend(tail);
-        return Some(Converted { proj: out.join(" "), geogcs: geogcs.clone() });
+        return Some(Converted { proj: out.join(" "), geogcs: geogcs.clone(), geog: None, geogcs_wkt1: None });
     }
 
     let to_meter = root.children("UNIT").last().and_then(|u| u.num(1)).unwrap_or(1.0);
@@ -380,7 +384,7 @@ pub(crate) fn to_proj(root: &Node) -> Option<Converted> {
     out.push(format!("+y_0={fn_}"));
     out.push(format!("+to_meter={to_meter}"));
     out.extend(tail);
-    Some(Converted { proj: out.join(" "), geogcs: geogcs.clone() })
+    Some(Converted { proj: out.join(" "), geogcs: geogcs.clone(), geog: None, geogcs_wkt1: None })
 }
 
 #[cfg(test)]

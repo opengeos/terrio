@@ -136,6 +136,8 @@ nanoflann orders them; PMF and ELM find a point's cell from the floor of its off
 dividing by the cell size; `filters.decimation` keeps the points it keeps when streaming, as
 `pdal translate` runs it; `filters.normal`'s `refine` changes nothing in PDAL 2.9 and is left
 out). Reprojection (`filters.reprojection`) is `terrio convert --t-srs`.
+Every filter takes `--a-srs` to assign a CRS to points that have none or a wrong one, as
+`terrio grid` and `terrio convert` do (PDAL's `readers.las.override_srs`).
 
 ```sh
 terrio filter smrf tile.laz classified.laz
@@ -148,6 +150,7 @@ terrio filter assign tile.laz fixed.laz --value "Classification = 7 WHERE Z < -1
 terrio filter crop tile.laz part.laz --polygon "POLYGON((0 0, 100 0, 50 80, 0 0))"
 terrio filter splitter tile.laz "tiles/tile_#.laz" --length 500
 terrio filter merge a.laz b.laz merged.laz
+terrio filter smrf tile.las.zip ground.laz --a-srs EPSG:2056   # a zipped LAS without a CRS
 ```
 
 ## COPC, local or remote

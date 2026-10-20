@@ -6,7 +6,7 @@ use super::datum::{self, Op};
 use super::math::*;
 use super::params::Params;
 use super::projections::{self, Proj, Setup};
-use super::{SpatialRef, epsg, wkt1};
+use super::{SpatialRef, epsg, wkt1, wkt2};
 use crate::{Error, Result};
 use std::sync::Arc;
 
@@ -15,7 +15,7 @@ use std::sync::Arc;
 pub(crate) struct Def {
     /// The projection, `None` for a geographic CRS.
     proj: Option<Arc<dyn Proj>>,
-    ell: Ell,
+    pub(crate) ell: Ell,
     lam0: f64,
     /// The latitude of origin (for comparing definitions).
     phi0: f64,
@@ -293,7 +293,8 @@ impl Def {
 
     /// The coordinate conversion of a WKT 1 definition (without its datum), when terrio reads it.
     pub fn wkt_conversion(w: &str) -> Option<Self> {
-        let c = wkt1::to_proj(&wkt1::parse(w)?)?;
+        let root = wkt1::parse(w)?;
+        let c = if wkt2::handles(&root) { wkt2::to_proj(&root).ok()? } else { wkt1::to_proj(&root)? };
         Self::from_proj(&c.proj).ok()
     }
 
@@ -337,14 +338,19 @@ impl Def {
             d.vertical = vertical_from_wkt(&vertical).map(Arc::new);
             return Ok(d);
         }
-        if let Some(root) = wkt1::parse(w)
-            && let Some(c) = wkt1::to_proj(&root)
-        {
+        let root = wkt1::parse(w);
+        let converted = match &root {
+            Some(r) if wkt2::handles(r) => Some(wkt2::to_proj(r)?),
+            Some(r) => wkt1::to_proj(r),
+            None => None,
+        };
+        if let Some(c) = converted {
             let mut d = Self::from_proj(&c.proj)?;
             if d.ops.is_empty() && !c.proj.contains("+towgs84=") {
-                let geog = c.geogcs.epsg().or_else(|| {
-                    let text = geogcs_text(w)?;
-                    super::identify_epsg(text)
+                let geog = c.geog.or_else(|| c.geogcs.epsg()).or_else(|| match &c.geogcs_wkt1 {
+                    // WKT 2: identified loosely, so on the same ellipsoid only.
+                    Some(text) => super::identify_epsg(text).filter(|g| wkt2::same_ellipsoid(*g, d.ell.a, d.ell.es)),
+                    None => super::identify_epsg(geogcs_text(w)?),
                 });
                 if let Some(e) = geog.and_then(epsg::get)
                     && e.proj.starts_with("+proj=longlat")
@@ -357,7 +363,9 @@ impl Def {
             }
             return Ok(d);
         }
-        // WKT 2 and projections the reader does not know: wbprojection's parser.
+        // Other kinds of WKT 2 CRS and WKT 1 projections the readers do not know: wbprojection's
+        // parser. A WKT 2 geographic or projected CRS the reader refuses is not handed to it: its
+        // WKT 2 parameters and method names would be read wrongly, silently (#123).
         let crs = wbprojection::Crs::from_wkt(w).map_err(|e| Error::Crs(format!("{e}")))?;
         let geographic = crs.is_geographic();
         let e = &crs.datum.ellipsoid;

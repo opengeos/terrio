@@ -259,6 +259,24 @@ pub(crate) fn get(code: u32) -> Option<&'static Entry> {
     table().entry(code)
 }
 
+/// The codes of the CRSs with an official name, whatever its case, in order: from an index of
+/// the names built on first use.
+pub(crate) fn named(name: &str) -> Vec<u32> {
+    static NAMES: OnceLock<HashMap<String, Vec<u32>>> = OnceLock::new();
+    let names = NAMES.get_or_init(|| {
+        let t = table();
+        let mut names = HashMap::<String, Vec<u32>>::new();
+        for (code, l) in &t.crs {
+            if let Some(n) = t.text[l.line.0 as usize..l.line.1 as usize].split('\t').next() {
+                names.entry(n.to_ascii_lowercase()).or_default().push(*code);
+            }
+        }
+        names.values_mut().for_each(|c| c.sort_unstable());
+        names
+    });
+    names.get(&name.to_ascii_lowercase()).cloned().unwrap_or_default()
+}
+
 /// The single transformations from each geographic CRS, by the CRS they lead to.
 pub(crate) type Adjacency = HashMap<u32, Vec<(u32, Vec<Leg>)>>;
 

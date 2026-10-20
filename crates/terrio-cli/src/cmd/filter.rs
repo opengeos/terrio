@@ -19,6 +19,9 @@ struct Io {
     input: String,
     /// The output: LAS, LAZ, COPC, PLY, E57 or EPT (`ept.json`), by its extension.
     output: String,
+    /// Assign this CRS to the points, without reprojecting (when the file has none or a wrong one).
+    #[arg(long = "a-srs", value_name = "CRS", help_heading = "Point cloud options")]
+    a_srs: Option<String>,
     #[command(flatten)]
     points: super::points::PointArgs,
     #[command(flatten)]
@@ -323,6 +326,10 @@ enum Filter {
         /// The point clouds, then the output.
         #[arg(num_args = 2.., required = true)]
         paths: Vec<String>,
+        /// Assign this CRS to the points, without reprojecting (when the files have none or a
+        /// wrong one).
+        #[arg(long = "a-srs", value_name = "CRS", help_heading = "Point cloud options")]
+        a_srs: Option<String>,
         #[command(flatten)]
         points: super::points::PointArgs,
         #[command(flatten)]
@@ -413,7 +420,7 @@ fn write_many(io: &Io, clouds: Vec<PointCloud>) -> terrio::Result<()> {
         if clouds.is_empty() {
             // No points: one empty file, numbered 1, as one file holds none without a '#'.
             let path = numbered(&io.output, 1).unwrap_or_else(|| io.output.clone());
-            return PointWriter::create(&path, &read_template(&io.input)?, &options)?.finish();
+            return PointWriter::create(&path, &read_template(io)?, &options)?.finish();
         }
         for (k, c) in clouds.iter().enumerate() {
             let path = numbered(&io.output, k + 1).unwrap_or_else(|| io.output.clone());
@@ -426,7 +433,7 @@ fn write_many(io: &Io, clouds: Vec<PointCloud>) -> terrio::Result<()> {
     let first = match clouds.first() {
         Some(c) => c,
         None => {
-            template = read_template(&io.input)?;
+            template = read_template(io)?;
             &template
         }
     };
@@ -437,8 +444,19 @@ fn write_many(io: &Io, clouds: Vec<PointCloud>) -> terrio::Result<()> {
     writer.finish()
 }
 
-fn read_template(path: &str) -> terrio::Result<PointCloud> {
-    pointcloud::open_points(path)?.template()
+/// The input's dimensions and CRS, without its points.
+fn read_template(io: &Io) -> terrio::Result<PointCloud> {
+    let mut template = pointcloud::open_points(&io.input)?.template()?;
+    assign_srs(&io.a_srs, &mut template)?;
+    Ok(template)
+}
+
+/// Assigns `--a-srs`, when given, to a cloud.
+fn assign_srs(a_srs: &Option<String>, cloud: &mut PointCloud) -> terrio::Result<()> {
+    if let Some(s) = a_srs {
+        cloud.crs = terrio::crs::SpatialRef::parse(s)?;
+    }
+    Ok(())
 }
 
 /// A point: "x,y" or "x,y,z".
@@ -456,7 +474,9 @@ fn parse_point(s: &str) -> terrio::Result<Vec<f64>> {
 }
 
 fn read(io: &Io) -> terrio::Result<PointCloud> {
-    pointcloud::read_points(&io.input, &io.points.to_options()?)
+    let mut cloud = pointcloud::read_points(&io.input, &io.points.to_options()?)?;
+    assign_srs(&io.a_srs, &mut cloud)?;
+    Ok(cloud)
 }
 
 fn write(io: &Io, cloud: &PointCloud) -> terrio::Result<()> {
@@ -500,7 +520,8 @@ pub fn run(a: Args) -> terrio::Result<()> {
             // Ranges look at one point at a time: read and write in chunks.
             let ranges = DimRange::parse_list(&limits)?;
             let mut reader = pointcloud::open_points(&io.input)?;
-            let template = reader.template()?;
+            let mut template = reader.template()?;
+            assign_srs(&io.a_srs, &mut template)?;
             let mut writer = PointWriter::create(&io.output, &template, &io.write.to_options(None)?)?;
             reader.start_chunks(&io.points.to_options()?, io.write.chunk_points)?;
             while let Some(chunk) = reader.next_chunk()? {
@@ -617,7 +638,8 @@ pub fn run(a: Args) -> terrio::Result<()> {
             // A condition looks at one point at a time: read and write in chunks.
             let condition = filters::expr::Condition::parse(&expression)?;
             let mut reader = pointcloud::open_points(&io.input)?;
-            let template = reader.template()?;
+            let mut template = reader.template()?;
+            assign_srs(&io.a_srs, &mut template)?;
             let mut writer = PointWriter::create(&io.output, &template, &io.write.to_options(None)?)?;
             reader.start_chunks(&io.points.to_options()?, io.write.chunk_points)?;
             while let Some(chunk) = reader.next_chunk()? {
@@ -631,10 +653,13 @@ pub fn run(a: Args) -> terrio::Result<()> {
             let cloud = read(&io)?;
             write(&io, &filters::assign(&cloud, &options)?)
         }
-        Filter::Merge { mut paths, points, write: w } => {
+        Filter::Merge { mut paths, a_srs, points, write: w } => {
             let output = paths.pop().unwrap_or_default();
             let read_opts = points.to_options()?;
-            let clouds = paths.iter().map(|p| pointcloud::read_points(p, &read_opts)).collect::<terrio::Result<Vec<_>>>()?;
+            let mut clouds = paths.iter().map(|p| pointcloud::read_points(p, &read_opts)).collect::<terrio::Result<Vec<_>>>()?;
+            for c in &mut clouds {
+                assign_srs(&a_srs, c)?;
+            }
             pointcloud::write_points(&filters::merge(&clouds)?, &output, &w.to_options(None)?)
         }
         Filter::Splitter { io, length, origin, buffer } => {
@@ -666,7 +691,16 @@ pub fn run(a: Args) -> terrio::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::numbered;
+    use super::{Args, numbered, run};
+    use clap::Parser;
+    use terrio::crs::SpatialRef;
+    use terrio::pointcloud::{self, Dimension, PointCloud, Values};
+
+    #[derive(clap::Parser)]
+    struct Cli {
+        #[command(flatten)]
+        args: Args,
+    }
 
     #[test]
     fn numbers_the_file_name_only() {
@@ -675,5 +709,34 @@ mod tests {
         assert_eq!(numbered("a#b#.laz", 4).as_deref(), Some("a#b4.laz"));
         assert_eq!(numbered("out#1/tile.laz", 1), None);
         assert_eq!(numbered("tile.laz", 1), None);
+    }
+
+    #[test]
+    fn assigns_a_crs_to_points_without_one() {
+        let dir = std::env::temp_dir().join(format!("terrio-filter-a-srs-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let input = dir.join("in.las").to_string_lossy().into_owned();
+        let coords = |base: f64| Values::F64((0..10).map(|i| base + i as f64).collect());
+        let dims = vec![
+            Dimension::new("x", coords(2_830_000.0)),
+            Dimension::new("y", coords(1_168_000.0)),
+            Dimension::new("z", coords(500.0)),
+            Dimension::new("classification", Values::U8(vec![2; 10])),
+        ];
+        pointcloud::write_points(&PointCloud::new(dims, SpatialRef::default()), &input, &Default::default()).unwrap();
+        // Filters reading the points whole, in chunks, and from several files.
+        for (filter, extra) in [("decimation", vec!["--step", "2"]), ("range", vec!["--limits", "Classification[2:2]"]), ("merge", vec![])]
+        {
+            let output = dir.join(format!("{filter}.las")).to_string_lossy().into_owned();
+            let mut argv = vec!["terrio", filter, &input];
+            if filter == "merge" {
+                argv.push(&input);
+            }
+            argv.extend([output.as_str(), "--a-srs", "EPSG:2056"]);
+            argv.extend(extra);
+            run(Cli::try_parse_from(argv).unwrap().args).unwrap();
+            assert_eq!(pointcloud::open_points(&output).unwrap().crs().epsg, Some(2056), "{filter}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

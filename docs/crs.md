@@ -10,7 +10,9 @@ Everywhere a CRS is expected (`--t-srs`, `--a-srs`, `terrio crs`, the APIs), ter
 - a horizontal and a vertical CRS, as GDAL builds them: `EPSG:4326+5773` (WGS 84 with EGM96
   heights);
 - `OGC:CRS84` and `WGS84`;
-- WKT1 and WKT2 definitions, including ESRI `.prj` WKT;
+- WKT1 and WKT2 (2015 and 2019) definitions, including ESRI `.prj` WKT and WKT2 `BOUNDCRS`s
+  (a CRS with its transformation to WGS 84, as `+towgs84`); an unknown WKT2 projection method
+  or parameter is an error rather than ignored;
 - PROJ strings: `+proj=utm +zone=13 +datum=WGS84`, with `+nadgrids=` and `+geoidgrids=` for
   datum shift and geoid grids;
 - the path of a file holding one of these.

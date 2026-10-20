@@ -223,7 +223,7 @@ fn format_of(path: &str) -> &'static str {
     if path.starts_with("ept://") {
         return "EPT";
     }
-    let name = crate::vfs::Location::parse(path).file_name().to_ascii_lowercase();
+    let name = crate::vfs::Location::parse(path).dataset_name().to_ascii_lowercase();
     let name = name.split(['?', '#']).next().unwrap_or_default();
     if name == "ept.json" {
         "EPT"
