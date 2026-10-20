@@ -18,6 +18,7 @@ terrio <COMMAND>
   formats     List the formats terrio reads and writes
   grid        Grid a point cloud into a raster (like PDAL's writers.gdal)
   filter      PDAL's point cloud filters (smrf, pmf, csf, elm, hag_nn, crop, expression...)
+  mcp         Serve these commands to AI agents over the Model Context Protocol
 ```
 
 Install it with `curl -LsSf https://terrio.opengeos.org/install.sh | sh` (on Windows,
@@ -249,3 +250,12 @@ terrio grid INPUT OUTPUT --tr RES [--stat min,max,mean,idw,count,stdev|all] [--d
 Grids a point cloud into a raster as PDAL's `writers.gdal` does: a DSM with `--stat max`, a DTM
 with `--class 2 --stat idw`, a density map with `--stat count --bin`. See
 [Point Clouds](point-clouds.md).
+
+## mcp
+
+```sh
+terrio mcp
+```
+
+Serves the other commands to AI agents (Claude Code, Claude Desktop, Cursor, VS Code) as a Model
+Context Protocol server over standard input and output. See [AI Agents](mcp.md).

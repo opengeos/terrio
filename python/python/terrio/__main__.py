@@ -22,7 +22,8 @@ def main() -> int:
     if hasattr(signal, "SIGPIPE"):
         signal.signal(signal.SIGPIPE, signal.SIG_DFL)
     signal.signal(signal.SIGINT, signal.SIG_DFL)
-    return cli_main(["terrio", *sys.argv[1:]])
+    # `terrio mcp` runs each tool as `python -m terrio <command>`, with this interpreter.
+    return cli_main(["terrio", *sys.argv[1:]], [sys.executable, "-m", "terrio"])
 
 
 if __name__ == "__main__":

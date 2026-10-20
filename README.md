@@ -99,6 +99,10 @@ terrio convert scan.e57 scan.laz                                        # E57, P
 terrio convert tile.laz tile-ept/ept.json                               # write an EPT dataset
 ```
 
+`terrio mcp` serves the commands to AI agents (Claude Code, Claude Desktop, Cursor, VS Code) over
+the Model Context Protocol: `claude mcp add terrio -- terrio mcp` (see
+[AI Agents](https://terrio.opengeos.org/mcp/)).
+
 ## Library
 
 ```rust,no_run

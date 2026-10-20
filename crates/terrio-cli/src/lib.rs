@@ -2,6 +2,7 @@
 //! the Python package both run [`run`].
 
 mod cmd;
+mod mcp;
 
 use clap::{Parser, Subcommand};
 use std::ffi::OsString;
@@ -50,11 +51,21 @@ enum Command {
     /// Filter a point cloud as PDAL's filters do: ground classification (SMRF, PMF, CSF), noise,
     /// heights above ground, crops, expressions, assignments, tiles, normals, clusters, sampling.
     Filter(cmd::filter::Args),
+    /// Serve these commands to AI agents (Claude Code, Claude Desktop, Cursor, VS Code…) as a
+    /// Model Context Protocol server over standard input and output.
+    Mcp,
 }
 
 /// Runs the command line `args` (the program name first) and returns the process exit code: 0 on
 /// success, 1 when the command fails, 2 for a usage error (as clap reports it).
 pub fn run(args: Vec<OsString>) -> i32 {
+    run_as(args, None)
+}
+
+/// [`run`], where `terrio` is the command line that runs terrio (a Python interpreter with
+/// `-m terrio`, for the Python package), for `terrio mcp` to run its tools with. `None` is this
+/// executable.
+pub fn run_as(args: Vec<OsString>, terrio: Option<Vec<OsString>>) -> i32 {
     let cli = match Cli::try_parse_from(cmd::calc::rewrite_args(args)) {
         Ok(cli) => cli,
         Err(e) => {
@@ -79,6 +90,7 @@ pub fn run(args: Vec<OsString>) -> i32 {
         Command::Sieve(a) => cmd::sieve::run(a),
         Command::Grid(a) => cmd::grid::run(a),
         Command::Filter(a) => cmd::filter::run(a),
+        Command::Mcp => terrio.map_or_else(mcp::this_binary, Ok).and_then(mcp::serve).map_err(terrio::Error::from),
     };
     match result {
         Ok(()) => 0,

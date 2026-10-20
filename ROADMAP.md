@@ -124,6 +124,8 @@ of GDAL: the long tail of formats stays reachable through an optional GDAL backe
       command, standalone binaries for Linux, macOS and Windows are attached to each release
       (`cargo binstall terrio-cli`), and one-line installers download them
       (`curl -LsSf https://terrio.opengeos.org/install.sh | sh`, `install.ps1` on Windows).
+- [x] An MCP server (`terrio mcp`): AI agents run the commands as tools, each described by its
+      `--help`.
 
 ## 1.0: Stable
 
