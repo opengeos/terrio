@@ -82,3 +82,13 @@ fn goes16_sweep_x_matches_proj() {
 fn seviri_sweep_y_matches_proj() {
     check(SEVIRI, SEVIRI_GEOG, 0.0, SEVIRI_POINTS);
 }
+
+#[test]
+fn scan_angles_past_a_right_angle_are_refused() {
+    let geos = SpatialRef::from_proj4(GOES).unwrap();
+    let inv = Transformer::new(&geos, &SpatialRef::from_proj4(GOES_GEOG).unwrap()).unwrap();
+    // A y scan angle near pi (the outer angle for +sweep=x): the ray points away from the Earth.
+    let y = 35786023.0 * 3.0;
+    let r = inv.transform(0.0, y);
+    assert!(r.is_err() || !r.unwrap().0.is_finite(), "inverse of (0, {y}) succeeded");
+}

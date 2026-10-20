@@ -2253,7 +2253,7 @@ struct Geos {
 impl Geos {
     fn new(s: &mut Setup<'_>) -> Result<Self> {
         let h = s.p.f64("h").ok_or_else(|| err("geos needs +h"))?;
-        if h.is_nan() || h <= 0.0 {
+        if !h.is_finite() || h <= 0.0 || h / s.ell.a > 1e100 {
             return Err(err("invalid geos height +h"));
         }
         let sweep_x = match s.p.str("sweep") {
@@ -2296,6 +2296,10 @@ impl Proj for Geos {
         }
         // The nearer root, in the form that keeps its precision near the limb.
         let t = 2.0 * qc / (-qb + disc.sqrt());
+        // Scan angles past a right angle point the ray away from the Earth.
+        if t.is_nan() || t <= 0.0 {
+            return None;
+        }
         let (px, py, pz) = (sx + t * ux, t * uy, t * uz);
         Some((py.atan2(px), (self.rp * pz / px.hypot(py)).atan()))
     }
