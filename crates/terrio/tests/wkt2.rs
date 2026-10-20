@@ -71,3 +71,25 @@ fn unknown_wkt2_methods_and_parameters_raise() {
     let points = [(-103.0, 10.0)];
     assert!(max_distance(&forward(&remark, &points).unwrap(), &forward(tmerc, &points).unwrap()) < 1e-9);
 }
+
+/// A `BOUNDCRS` whose transformation is not to WGS 84, or is a grid's, keeps its source CRS.
+#[test]
+fn boundcrs_without_a_helmert_to_wgs84_keeps_its_source() {
+    let tmerc = CASES.iter().find(|c| c.name == "tmerc").unwrap().wkt2_2019;
+    let bound = |target: &str, transformation: &str| {
+        format!("BOUNDCRS[SOURCECRS[{tmerc}],TARGETCRS[{target}],ABRIDGEDTRANSFORMATION[\"t\",{transformation}]]")
+    };
+    let wgs84 = r#"GEOGCRS["WGS 84",DATUM["World Geodetic System 1984",ELLIPSOID["WGS 84",6378137,298.257223563]],CS[ellipsoidal,2],AXIS["latitude",north],AXIS["longitude",east],ANGLEUNIT["degree",0.0174532925199433],ID["EPSG",4326]]"#;
+    let nad83 = r#"GEOGCRS["NAD83",DATUM["North American Datum 1983",ELLIPSOID["GRS 1980",6378137,298.257222101]],CS[ellipsoidal,2],AXIS["latitude",north],AXIS["longitude",east],ANGLEUNIT["degree",0.0174532925199433],ID["EPSG",4269]]"#;
+    let points = [(-103.0, 10.0), (-100.0, 12.0)];
+    let plain = forward(tmerc, &points).unwrap();
+    for wkt in [
+        bound(wgs84, r#"METHOD["NTv2",ID["EPSG",9615]],PARAMETERFILE["Latitude and longitude difference file","grid.gsb"]"#),
+        bound(
+            nad83,
+            r#"METHOD["Geocentric translations (geog2D domain)",ID["EPSG",9603]],PARAMETER["X-axis translation",100],PARAMETER["Y-axis translation",0],PARAMETER["Z-axis translation",0]"#,
+        ),
+    ] {
+        assert!(max_distance(&forward(&wkt, &points).unwrap(), &plain) < 1e-6, "{wkt}");
+    }
+}

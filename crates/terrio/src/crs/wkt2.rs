@@ -475,10 +475,19 @@ fn towgs84(root: &Node) -> Result<Option<Vec<f64>>> {
                 .any(|d| norm(d.name().unwrap_or("")).starts_with("worldgeodeticsystem1984"))
     });
     let Some(t) = root.child("ABRIDGEDTRANSFORMATION") else { return Ok(None) };
+    // A transformation to another CRS has no `+towgs84`: the source CRS is kept, and its datum
+    // identified as without a BOUNDCRS (GDAL, too, reads the source CRS of such a BOUNDCRS).
     if !to_wgs84 {
         return Ok(None);
     }
     let method = t.child("METHOD").map(|m| (norm(m.name().unwrap_or("")), m.epsg())).unwrap_or_default();
+    // So is one that is not a 3 or 7 parameter Helmert transformation (a grid's, NTv2 or
+    // NADCON, whose file is a PARAMETERFILE).
+    let helmert = ["geocentrictranslations", "positionvector", "coordinateframe"].iter().any(|m| method.0.starts_with(m))
+        || matches!(method.1, Some(9603 | 9606 | 9607 | 1031 | 1032 | 1033 | 1035 | 1037 | 1038 | 9032 | 9033 | 9065));
+    if !helmert {
+        return Ok(None);
+    }
     // Coordinate frame rotations turn the other way from PROJ's (position vector) `+towgs84`.
     let frame = method.0.contains("coordinateframe") || matches!(method.1, Some(9607 | 1032 | 9032));
     let mut v = [0.0; 7];
