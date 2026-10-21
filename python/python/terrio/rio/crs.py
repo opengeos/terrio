@@ -343,7 +343,7 @@ class CRS(Mapping[str, Any]):
         """Whether the CRS is known by an EPSG code.
 
         Returns:
-            bool: True when it has one.
+            bool: True when it has one (not for an ESRI code such as `ESRI:54009`).
         """
         return self.to_epsg() is not None
 
@@ -459,11 +459,14 @@ class CRS(Mapping[str, Any]):
             confidence_threshold: Unused.
 
         Returns:
-            tuple | None: `("EPSG", "4326")`, or None.
+            tuple | None: `("EPSG", "4326")`, `("ESRI", "54009")`, or None.
         """
         code = self.to_epsg()
         if code is not None:
             return ("EPSG", str(code))
+        esri = self._info.get("esri")
+        if esri is not None:
+            return ("ESRI", str(esri))
         m = re.match(r"^\s*([A-Za-z]+):(\d+)\s*$", self._input)
         if m:
             return (m.group(1).upper(), m.group(2))
@@ -489,7 +492,7 @@ class CRS(Mapping[str, Any]):
         return self.wkt
 
     def to_string(self) -> str:
-        """The CRS as a string: `EPSG:n` when it has a code, else its WKT.
+        """The CRS as a string: `EPSG:n` (or `ESRI:n`) when it has a code, else its WKT.
 
         Returns:
             str: The string.
@@ -540,6 +543,9 @@ class CRS(Mapping[str, Any]):
         if not self.is_valid or not o.is_valid:
             return self.is_valid == o.is_valid
         a, b = self.to_epsg(), o.to_epsg()
+        if a is not None and b is not None:
+            return a == b
+        a, b = self._info.get("esri"), o._info.get("esri")
         if a is not None and b is not None:
             return a == b
         if self.wkt and self.wkt == o.wkt:

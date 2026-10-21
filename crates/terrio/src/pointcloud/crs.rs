@@ -36,7 +36,7 @@ pub(crate) fn header_crs(h: &LasHeader) -> LasCrs {
             // A user-defined CRS is kept as its PROJ string: the WKT made from it loses a foot
             // unit, and the EPSG code identified from that WKT would be the metre one.
             let horizontal = match (&info.epsg, &info.proj4) {
-                (None, Some(p)) => SpatialRef { epsg: None, wkt: None, proj4: Some(p.clone()) },
+                (None, Some(p)) => SpatialRef { proj4: Some(p.clone()), ..Default::default() },
                 _ => SpatialRef::from_raster_crs(&info),
             };
             let vertical_epsg = keys

@@ -114,7 +114,8 @@ impl PyLayer {
         self.inner.name = name;
     }
 
-    /// The CRS: `"EPSG:xxxx"` when its EPSG code is known, otherwise its WKT, or `None`.
+    /// The CRS: `"EPSG:xxxx"` (or `"ESRI:xxxx"`) when its code is known, otherwise its WKT, or
+    /// `None`.
     #[getter]
     fn crs(&self) -> Option<String> {
         crs_string(&SpatialRef::from_layer(&self.inner))
@@ -224,13 +225,7 @@ impl PyLayer {
     fn to_geopandas<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let gpd = py.import("geopandas")?;
         let kwargs = PyDict::new(py);
-        kwargs.set_item(
-            "crs",
-            self.crs_wkt().map(|w| match SpatialRef::from_layer(&self.inner).epsg {
-                Some(code) => format!("EPSG:{code}"),
-                None => w,
-            }),
-        )?;
+        kwargs.set_item("crs", self.crs_wkt().map(|w| SpatialRef::from_layer(&self.inner).authority_code().unwrap_or(w)))?;
         let geometry = gpd.getattr("GeoSeries")?.call_method("from_wkb", (self.to_wkb(py)?,), Some(&kwargs))?;
         let kwargs = PyDict::new(py);
         kwargs.set_item("geometry", geometry)?;

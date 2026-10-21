@@ -265,10 +265,11 @@ fn esri_name_epsg(wkt: &str) -> Option<u32> {
     }
 }
 
-/// A raster's CRS, identifying its EPSG code from its WKT only when the match is plausible.
+/// A raster's CRS, identifying its EPSG code from its WKT only when the match is plausible (or
+/// else its ESRI code).
 pub(crate) fn spatial_ref(crs: &CrsInfo) -> SpatialRef {
     let epsg = crs.epsg.or_else(|| crs.wkt.as_deref().and_then(crs_from_text).and_then(|c| c.epsg));
-    SpatialRef { epsg, wkt: crs.wkt.clone(), proj4: crs.proj4.clone() }
+    SpatialRef { epsg, wkt: crs.wkt.clone(), proj4: crs.proj4.clone(), esri: None }.with_esri()
 }
 
 /// The CRS as WKT that GDAL recognizes.

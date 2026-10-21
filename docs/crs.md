@@ -10,6 +10,9 @@ Everywhere a CRS is expected (`--t-srs`, `--a-srs`, `terrio crs`, the APIs), ter
 - a horizontal and a vertical CRS, as GDAL builds them: `EPSG:4326+5773` (WGS 84 with EGM96
   heights);
 - `OGC:CRS84` and `WGS84`;
+- ESRI codes, the geographic and projected CRSs of PROJ's ESRI authority: `ESRI:54009` (World
+  Mollweide), `esri:102003`, `urn:ogc:def:crs:ESRI::102003`. A few whose projection terrio does
+  not compute as PROJ does (Robinson, Bonne, the ellipsoidal sinusoidal and others) are refused;
 - WKT1 and WKT2 (2015 and 2019) definitions, including ESRI `.prj` WKT and WKT2 `BOUNDCRS`s
   (a CRS with its transformation to WGS 84, as `+towgs84`); an unknown WKT2 projection method
   or parameter is an error rather than ignored;
@@ -26,6 +29,10 @@ When a dataset stores WKT without an EPSG code, as shapefiles do, terrio identif
 several codes match equally, it prefers the base datum over its later realizations (NAD83 over
 NAD83(HARN) and NAD83(2011)) unless the WKT names one, then the lowest code. This is what GDAL
 reports: the New York City boroughs shapefile is EPSG:2263 in both.
+
+A CRS of PROJ's ESRI authority is reported under it, as GDAL reports it: a GeoTIFF GDAL writes in
+`ESRI:54009` is `ESRI:54009` (from the ESRI code the WKT declares or, for GDAL's ESRI PE strings,
+the ESRI CRS of the same name and definition), never an EPSG code.
 
 GeoTIFFs with user-defined projected CRSs, common in NASA products, are read from their GeoKeys:
 UTM zones become their EPSG codes, and other projections (Albers, Lambert conformal conic,

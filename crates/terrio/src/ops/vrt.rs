@@ -185,8 +185,8 @@ impl VrtDataset {
     /// The VRT's XML description, as GDAL writes it.
     pub fn to_xml(&self) -> String {
         let mut s = format!("<VRTDataset rasterXSize=\"{}\" rasterYSize=\"{}\">\n", self.width, self.height);
-        // GDAL reads any CRS definition here; an EPSG code is the most portable.
-        let srs = self.srs.as_ref().and_then(|s| s.epsg.map(|c| format!("EPSG:{c}")).or_else(|| s.to_wkt()));
+        // GDAL reads any CRS definition here; an EPSG (or ESRI) code is the most portable.
+        let srs = self.srs.as_ref().and_then(|s| s.authority_code().or_else(|| s.to_wkt()));
         if let Some(def) = srs {
             s += &format!("  <SRS>{}</SRS>\n", xml::escape(&def));
         }

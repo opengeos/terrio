@@ -25,7 +25,8 @@ tests compare its results with theirs, pixel for pixel and point for point.
 
 - The map projections in `crates/terrio/src/crs/` are ported from PROJ (MIT licence).
 - The EPSG table, with the coordinate operations GDAL uses for each CRS, is generated with GDAL and
-  PROJ by `scripts/gen_epsg_table.py`.
+  PROJ by `scripts/gen_epsg_table.py`, and the ESRI table, from PROJ's ESRI authority, by
+  `scripts/gen_esri_table.py`.
 - The point cloud filters follow PDAL's (`filters.csf`, `filters.pmf`, `filters.elm`,
   `filters.hag_nn`, `filters.normal` and others); the cloth simulation filter is a port of the
   [CSF](https://github.com/jianbingshen/CSF) code PDAL vendors, after Zhang et al. (2016),

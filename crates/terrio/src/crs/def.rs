@@ -147,19 +147,23 @@ impl Proj for WbProj {
 }
 
 impl Def {
-    /// The definition of a CRS: from the EPSG table when it has a code there, else from its
-    /// PROJ string or WKT.
+    /// The definition of a CRS: from the EPSG (or ESRI) table when it has a code there, else
+    /// from its PROJ string or WKT.
     pub fn new(s: &SpatialRef) -> Result<Self> {
         if let Some(code) = s.epsg
             && let Some(c) = epsg::compound(code)
         {
-            let mut d = Self::new(&SpatialRef { epsg: Some(c.horizontal), wkt: None, proj4: None })?;
+            let mut d = Self::new(&SpatialRef { epsg: Some(c.horizontal), ..Default::default() })?;
             d.vertical = Vertical::from_epsg(c.vertical).map(Arc::new);
             return Ok(d);
         }
-        if let Some(code) = s.epsg
-            && let Some(e) = epsg::get(code)
-        {
+        // An ESRI CRS whose projection terrio computes otherwise than PROJ goes by its WKT, as
+        // before terrio knew ESRI codes.
+        let entry = match s.epsg {
+            Some(code) => epsg::get(code),
+            None => s.esri.filter(|c| !super::ESRI_UNLIKE_PROJ.contains(c)).and_then(epsg::esri),
+        };
+        if let Some(e) = entry {
             let mut d = Self::from_proj(&e.proj)?;
             d.ops = epsg::usable(&e.ops, &e.grid_ops);
             d.datum = (e.datum != 0).then_some(e.datum);
@@ -196,7 +200,7 @@ impl Def {
         if let Some(init) = p.str("init") {
             let code = init.to_ascii_lowercase().strip_prefix("epsg:").and_then(|c| c.parse().ok());
             if let Some(code) = code {
-                return Self::new(&SpatialRef { epsg: Some(code), wkt: None, proj4: None });
+                return Self::new(&SpatialRef { epsg: Some(code), ..Default::default() });
             }
         }
         let name = p.str("proj").ok_or_else(|| Error::Crs(format!("no +proj in '{s}'")))?;
