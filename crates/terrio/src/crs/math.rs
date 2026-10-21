@@ -271,7 +271,7 @@ impl Mlfn {
     }
 }
 
-/// Coefficients converting authalic to geodetic latitudes, as PROJ since 9.6: the Fourier series
+/// Coefficients converting authalic to geodetic latitudes, as PROJ since 9.7: the Fourier series
 /// in the authalic latitude whose coefficients are Taylor series in the third flattening n, to
 /// order 6 (Karney, "On auxiliary latitudes", 2024; PROJ's `pj_auxlat_coeffs`, `C[phi,xi]`).
 pub(crate) fn authset(es: f64) -> [f64; 6] {
