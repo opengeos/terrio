@@ -25,10 +25,8 @@ fn expected() -> Vec<Expected> {
 
 /// Files whose CRS terrio reads but whose projection it computes differently from PROJ, or (from
 /// WKT) reads with other parameters: their CRS read is checked against GDAL's parameters instead.
-const PROJECTION_DIFFERS: &[&str] = &[
-    // Spherical or approximate formulas in wbprojection.
-    "robin",
-];
+/// None now: every projection of the fixtures matches PROJ.
+const PROJECTION_DIFFERS: &[&str] = &[];
 
 /// The parameters of a PROJ string, by name.
 fn params(proj: &str) -> std::collections::HashMap<String, String> {
