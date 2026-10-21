@@ -23,8 +23,6 @@ pub(crate) struct Leg {
 struct Chain {
     legs: [Leg; 2],
     rank: Op,
-    /// About how many steps PROJ's pipeline for it has.
-    pipeline_steps: usize,
 }
 
 #[derive(Debug)]
@@ -154,7 +152,12 @@ fn pseudo_area(a: &[f64; 4]) -> f64 {
 /// The area the transformations between two CRSs must intersect: the smaller of their areas of
 /// use, as PROJ's `SourceTargetCRSExtentUse::SMALLEST`.
 fn area_of_interest(src: &Def, dst: &Def) -> Option<[f64; 4]> {
-    match (src.area(), dst.area()) {
+    smaller(src.area(), dst.area())
+}
+
+/// The smaller of two areas, as PROJ measures them.
+fn smaller(a: Option<[f64; 4]>, b: Option<[f64; 4]>) -> Option<[f64; 4]> {
+    match (a, b) {
         (Some(a), Some(b)) => Some(if pseudo_area(&a) < pseudo_area(&b) { a } else { b }),
         (a, b) => a.or(b),
     }
@@ -188,11 +191,20 @@ impl Route {
                     // the grids missing).
                     Some((ops, reverse)) if ops.iter().any(|o| !o.ballpark && keep(o)) => {
                         let mut kind = list(&ops, reverse);
-                        // GDAL's order is for the two geographic CRSs: PROJ sorts the
-                        // transformations for the CRSs' area of interest.
-                        if let Kind::List(l) = &mut kind {
-                            let steps = |op: &Op| pipeline_steps(op, false, &Op::world(Vec::new()), false);
-                            l.sort_by(|x, y| proj_order(&x.op, steps(&x.op), &y.op, steps(&y.op), aoi.as_ref()));
+                        // GDAL's order is for the two geographic CRSs: between CRSs of another
+                        // area of interest, PROJ sorts the transformations for theirs.
+                        let area = |code: u32| epsg::get(code).and_then(|e| e.area);
+                        if let Kind::List(l) = &mut kind
+                            && aoi != smaller(area(a), area(b))
+                        {
+                            // Run in reverse, a transformation has the inverse's name.
+                            let key = |leg: &Leg| {
+                                let name = step_names(&leg.op, leg.reverse).join(" + ");
+                                SortKey::new(&leg.op, name, pipeline_steps(&[(&leg.op, leg.reverse)]), aoi.as_ref())
+                            };
+                            let mut keyed: Vec<(SortKey, Leg)> = l.drain(..).map(|leg| (key(&leg), leg)).collect();
+                            keyed.sort_by(|x, y| x.0.cmp(&y.0));
+                            l.extend(keyed.into_iter().map(|(_, leg)| leg));
                         }
                         kind
                     }
@@ -298,7 +310,8 @@ fn chains(a: u32, b: u32, src: &Def, dst: &Def, aoi: Option<&[f64; 4]>) -> Kind 
     // registers between geographic CRSs through NAD83 or WGS 84.
     let name = |code: u32| epsg::get(code).map_or("", |e| e.name.as_str());
     let csrs = name(a).starts_with("NAD83(CSRS)") && name(b).starts_with("NAD83(CSRS)");
-    let mut out: Vec<Chain> = Vec::new();
+    // The chains, each with what PROJ sorts it by.
+    let mut out: Vec<(SortKey, Chain)> = Vec::new();
     for (pivot, first) in from_a {
         let Some((_, second)) = from_b.iter().find(|(p, _)| p == pivot) else { continue };
         let excluded = csrs && matches!(name(*pivot), "NAD83" | "WGS 84");
@@ -353,78 +366,94 @@ fn chains(a: u32, b: u32, src: &Def, dst: &Def, aoi: Option<&[f64; 4]>) -> Kind 
                         && c.legs[0].op.steps == o1.steps
                         && c.legs[1].op.steps == o2.steps
                 };
-                if !out.iter().any(same) {
-                    let pipeline_steps = pipeline_steps(o1, l1.reverse, o2, back.reverse);
-                    out.push(Chain { legs: [l1.clone(), back], rank, pipeline_steps });
+                if !out.iter().any(|(_, c)| same(c)) {
+                    let key = SortKey::new(&rank, rank.name.clone(), pipeline_steps(&[(o1, l1.reverse), (o2, back.reverse)]), aoi);
+                    out.push((key, Chain { legs: [l1.clone(), back], rank }));
                 }
             }
         }
     }
-    out.sort_by(|x, y| proj_order(&x.rank, x.pipeline_steps, &y.rank, y.pipeline_steps, aoi));
-    let ballpark = !aoi.is_some_and(|a| out.iter().any(|c| !c.rank.needs_grids() && contains(&c.rank.bounds, a)));
-    Kind::Chains { chains: out, ballpark }
+    out.sort_by(|x, y| x.0.cmp(&y.0));
+    let chains: Vec<Chain> = out.into_iter().map(|(_, c)| c).collect();
+    let ballpark = !aoi.is_some_and(|a| chains.iter().any(|c| !c.rank.needs_grids() && contains(&c.rank.bounds, a)));
+    Kind::Chains { chains, ballpark }
 }
 
-/// How PROJ orders two transformations, given about how many steps their pipelines have:
-/// known accuracy first (unknown ones with grids first), then by decreasing area within the
-/// area of interest, then by accuracy, those without grids first, then those of fewer steps,
-/// then of fewer pipeline steps, then of shorter name, then of greater name.
-fn proj_order(x: &Op, x_steps: usize, y: &Op, y_steps: usize, aoi: Option<&[f64; 4]>) -> Ordering {
-    // A key per transformation, compared in turn: a total order.
-    let key = |op: &Op, pipeline_steps: usize| {
-        let (accuracy, grids) = (op.accuracy, op.needs_grids());
+/// What PROJ sorts a transformation by, in its order: known accuracy first (unknown ones with
+/// grids first), then decreasing area within the area of interest, then accuracy, those without
+/// grids first, then those of fewer steps, then of fewer pipeline steps, then of shorter name,
+/// then of greater name.
+struct SortKey {
+    unknown: bool,
+    unknown_without_grids: bool,
+    area: f64,
+    accuracy: f64,
+    grids: bool,
+    steps: usize,
+    pipeline_steps: usize,
+    name: String,
+}
+
+impl SortKey {
+    /// The key of a transformation with PROJ's name for it and about how many steps its
+    /// pipeline has.
+    fn new(op: &Op, name: String, pipeline_steps: usize, aoi: Option<&[f64; 4]>) -> Self {
         let area = aoi.map_or(Some(op.bounds), |a| intersection(&op.bounds, a)).map_or(0.0, |b| pseudo_area(&b));
-        let unknown = accuracy < 0.0;
-        (
+        let (unknown, grids) = (op.accuracy < 0.0, op.needs_grids());
+        Self {
             unknown,
-            unknown && !grids,
-            -area,
-            if unknown { 0.0 } else { accuracy },
+            unknown_without_grids: unknown && !grids,
+            area,
+            accuracy: if unknown { 0.0 } else { op.accuracy },
             grids,
-            op.name.split(" + ").count(),
+            steps: name.split(" + ").count(),
             pipeline_steps,
-            op.name.len(),
-        )
-    };
-    let (kx, ky) = (key(x, x_steps), key(y, y_steps));
-    kx.0.cmp(&ky.0)
-        .then(kx.1.cmp(&ky.1))
-        .then(kx.2.total_cmp(&ky.2))
-        .then(kx.3.total_cmp(&ky.3))
-        .then(kx.4.cmp(&ky.4))
-        .then(kx.5.cmp(&ky.5))
-        .then(kx.6.cmp(&ky.6))
-        .then(kx.7.cmp(&ky.7))
-        .then_with(|| y.name.cmp(&x.name))
+            name,
+        }
+    }
+
+    /// The order of two keys: a total order.
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.unknown
+            .cmp(&other.unknown)
+            .then(self.unknown_without_grids.cmp(&other.unknown_without_grids))
+            .then(other.area.total_cmp(&self.area))
+            .then(self.accuracy.total_cmp(&other.accuracy))
+            .then(self.grids.cmp(&other.grids))
+            .then(self.steps.cmp(&other.steps))
+            .then(self.pipeline_steps.cmp(&other.pipeline_steps))
+            .then(self.name.len().cmp(&other.name.len()))
+            .then_with(|| other.name.cmp(&self.name))
+    }
 }
 
-/// About how many steps PROJ's pipeline for the chain of `first` and `second` (run in their
-/// directions) has, which PROJ prefers fewer of: their datum steps, without the conversion
-/// from geocentric coordinates and back on the same ellipsoid at the pivot (which PROJ's
-/// pipeline optimization takes out), and the `push v_3` and `pop v_3` around geocentric steps.
-fn pipeline_steps(first: &Op, first_reverse: bool, second: &Op, second_reverse: bool) -> usize {
+/// About how many steps PROJ's pipeline for transformations run one after the other (each in
+/// its direction) has, which PROJ prefers fewer of: their datum steps, without a conversion to
+/// geocentric coordinates right after its inverse on the same ellipsoid (which PROJ's pipeline
+/// optimization takes out), and the `push v_3` and `pop v_3` around geocentric steps.
+fn pipeline_steps(legs: &[(&Op, bool)]) -> usize {
     // The ellipsoid of a conversion and whether it runs from geocentric coordinates.
-    let cart = |step: &Step, reverse: bool| match step {
-        Step::Cart { ell, inv } => Some((*ell, *inv != reverse)),
+    let cart = |step: &Step, inverted: bool| match step {
+        Step::Cart { ell, inv } => Some((*ell, *inv != inverted)),
         _ => None,
     };
     // The steps in the order they run, with whether each runs inverted.
-    fn directed(op: &Op, reverse: bool) -> Vec<(&Step, bool)> {
-        if reverse { op.steps.iter().rev().map(|s| (s, true)).collect() } else { op.steps.iter().map(|s| (s, false)).collect() }
-    }
-    let (mut a, mut b) = (directed(first, first_reverse), directed(second, second_reverse));
-    b.reverse();
-    while let (Some(&(x, rx)), Some(&(y, ry))) = (a.last(), b.last()) {
-        match (cart(x, rx), cart(y, ry)) {
-            (Some((e1, true)), Some((e2, false))) if e1 == e2 => {
-                a.pop();
-                b.pop();
+    let mut run: Vec<(&Step, bool)> = Vec::new();
+    for &(op, reverse) in legs {
+        let steps: Vec<(&Step, bool)> =
+            if reverse { op.steps.iter().rev().map(|s| (s, true)).collect() } else { op.steps.iter().map(|s| (s, false)).collect() };
+        for (step, inverted) in steps {
+            if let (Some(&(last, last_inverted)), Some((ell, false))) = (run.last(), cart(step, inverted))
+                && cart(last, last_inverted) == Some((ell, true))
+            {
+                run.pop();
+                continue;
             }
-            _ => break,
+            run.push((step, inverted));
         }
     }
-    let geocentric = a.iter().chain(&b).any(|&(s, _)| matches!(s, Step::Cart { .. }));
-    a.len() + b.len() + if geocentric { 2 } else { 0 }
+    let geocentric = run.iter().any(|&(s, _)| matches!(s, Step::Cart { .. }));
+    run.len() + if geocentric { 2 } else { 0 }
 }
 
 /// PROJ's name for the inverse of a single operation: the names PROJ makes (`Conversion from A

@@ -343,7 +343,7 @@ def step_accuracy(transfos):
     for t in transfos:
         try:
             total += float(t["accuracy"])
-        except (KeyError, ValueError):
+        except (KeyError, TypeError, ValueError):
             return -1.0
     return total
 
