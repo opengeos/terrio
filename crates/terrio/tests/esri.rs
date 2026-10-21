@@ -23,6 +23,9 @@ fn esri_codes_transform_as_proj() {
         ("ESRI:102003", -75.0, 45.0, 1640181.9421992023, 1020895.4097072422),
         ("ESRI:102100", 10.0, 50.0, 1113194.9079327357, 6446275.841017159),
         ("ESRI:54030", -100.0, 40.0, -8706986.515662674, 4276351.583838239),
+        // World Cassini, far from its central meridian (PROJ 9.8).
+        ("ESRI:54028", 60.0, 40.0, 4645488.692315031, 6553414.909136794),
+        ("ESRI:54028", -150.0, -60.0, 1880944.5962676061, -18865904.594271123),
     ];
     let wgs84 = SpatialRef::from_epsg(4326).unwrap();
     for (code, lon, lat, x, y) in cases {
@@ -41,9 +44,8 @@ fn esri_codes_transform_as_proj() {
 
 #[test]
 fn esri_codes_terrio_cannot_compute_are_refused() {
-    // World Cassini, whose area of use reaches beyond where terrio's Cassini holds, Goode's
-    // homolosine, which terrio does not compute, and a code PROJ does not know.
-    for code in ["ESRI:54028", "ESRI:54052", "ESRI:1"] {
+    // Goode's homolosine, which terrio does not compute, and a code PROJ does not know.
+    for code in ["ESRI:54052", "ESRI:1"] {
         assert!(SpatialRef::parse(code).is_err(), "{code}");
     }
 }

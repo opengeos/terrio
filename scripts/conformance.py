@@ -565,7 +565,8 @@ def suite_pointclouds(ctx):
 
 
 def epsg_cases(s, ctx, test, points, suffix=""):
-    """Runs an EPSG accuracy test and adds a case per reference point.
+    """Runs an EPSG accuracy test and adds a case per CRS (per pair of CRSs from CRS to CRS),
+    judged by its worst reference point.
 
     Args:
         s: The suite the cases go to.
@@ -587,21 +588,28 @@ def epsg_cases(s, ctx, test, points, suffix=""):
         groups = {"F": "forward (WGS 84 to CRS)", "I": "inverse (CRS to WGS 84)", "X": "CRS to CRS"}
         with open(report) as f:
             for line in f:
+                # kind, the code (source and target codes from CRS to CRS), the number of points,
+                # how many terrio cannot transform, the largest error and that point's input.
                 parts = line.rstrip("\n").split("\t")
-                kind, value = parts[0], parts[-1]
-                name = " to ".join(f"EPSG:{c}" for c in parts[1:-1])
+                kind = parts[0]
+                codes = parts[1:3] if kind == "X" else parts[1:2]
+                n, failed, value, x, y = parts[len(codes) + 1 :]
+                name = " to ".join(f"EPSG:{c}" for c in codes)
                 group = groups[kind] + suffix
                 tolerance = 1.0 if kind == "X" else 0.01
+                at = f"({float(x):.10g}, {float(y):.10g})"
                 if value == "fail":
-                    s.cases.append(Case(group, name, DIFFERS, "terrio cannot transform it"))
+                    detail = f"terrio cannot transform {failed} of {n} points, the first at {at}"
+                    s.cases.append(Case(group, name, DIFFERS, detail))
                     continue
                 e = float(value)
+                detail = f"{e:.4f} m at {at}, the largest of {n} points"
                 if e <= 0.001:
                     s.cases.append(Case(group, name, IDENTICAL))
                 elif e <= tolerance:
-                    s.cases.append(Case(group, name, TOLERANCE, f"{e:.4f} m"))
+                    s.cases.append(Case(group, name, TOLERANCE, detail))
                 else:
-                    s.cases.append(Case(group, name, DIFFERS, f"{e:.4f} m"))
+                    s.cases.append(Case(group, name, DIFFERS, detail))
     return True
 
 
@@ -611,16 +619,21 @@ def suite_crs(ctx):
         "crs",
         "Coordinate transformations",
         "GDAL 3.12 and PROJ (`gdaltransform`)",
-        "A reference point per EPSG geographic and projected CRS, transformed from WGS 84 "
-        "(forward) and back (inverse), and between pairs of CRSs, compared with GDAL's results, "
-        "neither using datum shift grids; then projections EPSG has no code for, against PROJ "
+        "50 reference points per EPSG geographic and projected CRS (the centre of its area of use "
+        "and random points of it), transformed from WGS 84 (forward), 50 more back (inverse), and "
+        "50 between the CRS and another whose area holds them, compared with GDAL's results, "
+        "neither using datum shift grids, a case per CRS judged by its worst point; then "
+        "projections EPSG has no code for, against PROJ "
         "(crates/terrio/tests/geostationary.rs: points from nadir to near the limb, forward "
         "within 1 mm and inverse within 1e-8°, and points the satellite cannot see refused; "
         "crates/terrio/tests/ellipsoidal_projections.rs: points over the globe on WGS 84 and on "
         "a sphere, forward within 1 mm and inverse within 1e-8°, and for the gnomonic points "
         "beyond the horizon refused). "
         "Identical: within 1 mm. Within tolerance: within 1 cm (forward, inverse) or 1 m (CRS to "
-        "CRS, where the datum transformations GDAL picks can differ by area of use).",
+        "CRS, where the datum transformations GDAL picks can differ by area of use). Known "
+        "differences: CRS-to-CRS pairs where GDAL picks another datum transformation than terrio "
+        "at points outside the areas of use of the pair's transformations, or chains through "
+        "several datums (#153).",
     )
     if not shutil.which("cargo"):
         s.skipped = "needs cargo"
@@ -647,6 +660,7 @@ PROJ_CASES = {
         "vandg_matches_proj": "Van der Grinten: `+proj=vandg`, WGS 84 and sphere",
         "gnom_matches_proj": "Gnomonic: `+proj=gnom` oblique, polar and equatorial, WGS 84 and sphere",
         "gnom_refuses_points_beyond_the_horizon": "Gnomonic near and beyond the horizon: `+proj=gnom +lat_0=40 +lon_0=-100`",
+        "cass_matches_proj": "Cassini-Soldner: `+proj=cass +lat_0=48 +lon_0=10` (WGS 84 and sphere) and `+hyperbolic`",
     },
 }
 
