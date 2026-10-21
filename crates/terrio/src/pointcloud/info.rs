@@ -261,13 +261,7 @@ impl PointCloudInfo {
         if !returns.is_empty() {
             let _ = writeln!(s, "Points by return: {}", returns.join(", "));
         }
-        let crs = match (self.crs.epsg, &self.crs.name) {
-            (Some(c), Some(n)) => format!("EPSG:{c} ({n})"),
-            (Some(c), None) => format!("EPSG:{c}"),
-            (None, Some(n)) => n.clone(),
-            (None, None) => "unknown".into(),
-        };
-        let _ = writeln!(s, "CRS: {crs}");
+        let _ = writeln!(s, "CRS: {}", self.crs.line());
         if let Some(v) = &self.vertical_crs {
             let _ = writeln!(s, "Vertical CRS: {v}{}", self.vertical_epsg.map(|c| format!(" (EPSG:{c})")).unwrap_or_default());
         }

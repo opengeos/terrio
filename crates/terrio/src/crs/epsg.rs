@@ -1,9 +1,11 @@
 //! The EPSG table terrio carries: official names, WKT, coordinate conversions as PROJ strings,
 //! the datum transformations GDAL uses (without and with grids), vertical and compound CRSs and
-//! geoid models, generated from GDAL and PROJ by `scripts/gen_epsg_table.py`.
+//! geoid models, generated from GDAL and PROJ by `scripts/gen_epsg_table.py`. The ESRI table
+//! (`scripts/gen_esri_table.py`) holds the geographic and projected CRSs of PROJ's ESRI
+//! authority in the same form.
 //!
 //! Derived from the EPSG Geodetic Parameter Dataset (<https://epsg.org>), whose terms of use
-//! permit redistribution with attribution.
+//! permit redistribution with attribution, and from PROJ's database.
 
 use super::datum::{Op, parse_steps};
 use super::route::Leg;
@@ -12,8 +14,13 @@ use std::io::Read;
 use std::sync::{Arc, Mutex, OnceLock};
 
 static DATA: &[u8] = include_bytes!("../../data/epsg.tsv.zst");
+static ESRI_DATA: &[u8] = include_bytes!("../../data/esri.tsv.zst");
 
-/// An EPSG CRS of the table.
+/// The names and aliases of EPSG datums, generated from PROJ by `scripts/gen_datum_names.py`:
+/// `code<TAB>rank<TAB>name` lines.
+static DATUM_NAMES: &[u8] = include_bytes!("../../data/datums.tsv.zst");
+
+/// An EPSG (or ESRI) CRS of the table.
 #[derive(Debug)]
 pub(crate) struct Entry {
     /// The official name.
@@ -94,16 +101,16 @@ impl<T> Lazy<T> {
     }
 }
 
-/// The table's decompressed text.
-fn decompress() -> String {
+/// A table's decompressed text.
+fn decompress(data: &[u8]) -> String {
     #[cfg(not(target_arch = "wasm32"))]
-    if let Ok(bytes) = zstd::stream::decode_all(DATA)
+    if let Ok(bytes) = zstd::stream::decode_all(data)
         && let Ok(text) = String::from_utf8(bytes)
     {
         return text;
     }
     let mut text = String::new();
-    if let Ok(mut d) = ruzstd::decoding::StreamingDecoder::new(&mut &DATA[..]) {
+    if let Ok(mut d) = ruzstd::decoding::StreamingDecoder::new(&mut &data[..]) {
         let _ = d.read_to_string(&mut text);
     }
     text
@@ -111,63 +118,71 @@ fn decompress() -> String {
 
 fn table() -> &'static Table {
     static TABLE: OnceLock<Table> = OnceLock::new();
-    TABLE.get_or_init(|| {
-        let text = decompress();
-        let (mut crs, mut ops, mut pairs) = (HashMap::new(), HashMap::new(), HashMap::new());
-        let (mut verticals, mut compounds, mut geoids) = (HashMap::new(), HashMap::new(), HashMap::<u32, Vec<_>>::new());
-        let mut alternatives = HashMap::<String, Vec<String>>::new();
-        let mut pos = 0;
-        for line in text.split_inclusive('\n') {
-            let start = pos;
-            pos += line.len();
-            let line = line.trim_end_matches(['\n', '\r']);
-            let end = start + line.len();
-            let mut f = line.splitn(3, '\t');
-            let (Some(kind), Some(key)) = (f.next(), f.next()) else { continue };
-            // The rest of the line, after the kind and key fields.
-            let rest = (start + kind.len() + key.len() + 2).min(end);
-            // The rest after one more field.
-            let after_second = || (rest + line[rest - start..].find('\t').map_or(end - rest, |i| i + 1)).min(end);
-            let second = || line[rest - start..].split('\t').next().and_then(|v| v.parse::<u32>().ok());
-            match kind {
-                "O" => {
-                    if let Ok(id) = key.parse::<u32>() {
-                        ops.insert(id, Lazy::new(rest, end));
-                    }
+    TABLE.get_or_init(|| load(DATA))
+}
+
+fn esri_table() -> &'static Table {
+    static TABLE: OnceLock<Table> = OnceLock::new();
+    TABLE.get_or_init(|| load(ESRI_DATA))
+}
+
+/// Decompresses a table and indexes its lines.
+fn load(data: &[u8]) -> Table {
+    let text = decompress(data);
+    let (mut crs, mut ops, mut pairs) = (HashMap::new(), HashMap::new(), HashMap::new());
+    let (mut verticals, mut compounds, mut geoids) = (HashMap::new(), HashMap::new(), HashMap::<u32, Vec<_>>::new());
+    let mut alternatives = HashMap::<String, Vec<String>>::new();
+    let mut pos = 0;
+    for line in text.split_inclusive('\n') {
+        let start = pos;
+        pos += line.len();
+        let line = line.trim_end_matches(['\n', '\r']);
+        let end = start + line.len();
+        let mut f = line.splitn(3, '\t');
+        let (Some(kind), Some(key)) = (f.next(), f.next()) else { continue };
+        // The rest of the line, after the kind and key fields.
+        let rest = (start + kind.len() + key.len() + 2).min(end);
+        // The rest after one more field.
+        let after_second = || (rest + line[rest - start..].find('\t').map_or(end - rest, |i| i + 1)).min(end);
+        let second = || line[rest - start..].split('\t').next().and_then(|v| v.parse::<u32>().ok());
+        match kind {
+            "O" => {
+                if let Ok(id) = key.parse::<u32>() {
+                    ops.insert(id, Lazy::new(rest, end));
                 }
-                "C" => {
-                    if let Ok(code) = key.parse::<u32>() {
-                        crs.insert(code, Lazy::new(rest, end));
-                    }
-                }
-                "P" => {
-                    if let (Ok(a), Some(b)) = (key.parse::<u32>(), second()) {
-                        pairs.insert((a, b), Lazy::new(after_second(), end));
-                    }
-                }
-                "V" => {
-                    if let Ok(code) = key.parse::<u32>() {
-                        verticals.insert(code, Lazy::new(rest, end));
-                    }
-                }
-                "K" => {
-                    if let Ok(code) = key.parse::<u32>() {
-                        compounds.insert(code, Lazy::new(rest, end));
-                    }
-                }
-                "G" => {
-                    if let (Ok(g), Some(v)) = (key.parse::<u32>(), second()) {
-                        geoids.entry(v).or_default().push((g, Lazy::new(after_second(), end)));
-                    }
-                }
-                "A" => {
-                    alternatives.entry(key.to_string()).or_default().push(line[rest - start..].to_string());
-                }
-                _ => {}
             }
+            "C" => {
+                if let Ok(code) = key.parse::<u32>() {
+                    crs.insert(code, Lazy::new(rest, end));
+                }
+            }
+            "P" => {
+                if let (Ok(a), Some(b)) = (key.parse::<u32>(), second()) {
+                    pairs.insert((a, b), Lazy::new(after_second(), end));
+                }
+            }
+            "V" => {
+                if let Ok(code) = key.parse::<u32>() {
+                    verticals.insert(code, Lazy::new(rest, end));
+                }
+            }
+            "K" => {
+                if let Ok(code) = key.parse::<u32>() {
+                    compounds.insert(code, Lazy::new(rest, end));
+                }
+            }
+            "G" => {
+                if let (Ok(g), Some(v)) = (key.parse::<u32>(), second()) {
+                    geoids.entry(v).or_default().push((g, Lazy::new(after_second(), end)));
+                }
+            }
+            "A" => {
+                alternatives.entry(key.to_string()).or_default().push(line[rest - start..].to_string());
+            }
+            _ => {}
         }
-        Table { text, crs, ops, pairs, verticals, compounds, geoids, alternatives }
-    })
+    }
+    Table { text, crs, ops, pairs, verticals, compounds, geoids, alternatives }
 }
 
 impl Table {
@@ -259,22 +274,145 @@ pub(crate) fn get(code: u32) -> Option<&'static Entry> {
     table().entry(code)
 }
 
+/// The table's entry for an ESRI code.
+pub(crate) fn esri(code: u32) -> Option<&'static Entry> {
+    esri_table().entry(code)
+}
+
+/// An index of a table's CRSs by name, as `key` gives it.
+fn name_index(t: &Table, key: impl Fn(&str) -> String) -> HashMap<String, Vec<u32>> {
+    let mut names = HashMap::<String, Vec<u32>>::new();
+    for (code, l) in &t.crs {
+        if let Some(n) = t.text[l.line.0 as usize..l.line.1 as usize].split('\t').next() {
+            names.entry(key(n)).or_default().push(*code);
+        }
+    }
+    names.values_mut().for_each(|c| c.sort_unstable());
+    names
+}
+
 /// The codes of the CRSs with an official name, whatever its case, in order: from an index of
 /// the names built on first use.
 pub(crate) fn named(name: &str) -> Vec<u32> {
     static NAMES: OnceLock<HashMap<String, Vec<u32>>> = OnceLock::new();
-    let names = NAMES.get_or_init(|| {
-        let t = table();
-        let mut names = HashMap::<String, Vec<u32>>::new();
-        for (code, l) in &t.crs {
-            if let Some(n) = t.text[l.line.0 as usize..l.line.1 as usize].split('\t').next() {
-                names.entry(n.to_ascii_lowercase()).or_default().push(*code);
+    let names = NAMES.get_or_init(|| name_index(table(), str::to_ascii_lowercase));
+    names.get(&name.to_ascii_lowercase()).cloned().unwrap_or_default()
+}
+
+/// A datum name as datums are compared by name: its ASCII letters, digits and `+` (CH1903+ is
+/// not CH1903), whatever their case, without ESRI's `D_` prefix.
+pub(crate) fn datum_key(name: &str) -> String {
+    let name = name.strip_prefix("D_").unwrap_or(name);
+    name.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '+').map(|c| c.to_ascii_lowercase()).collect()
+}
+
+/// The rank of the names ESRI writes for CRSs on another datum (`D_ETRS_1989` for ETRS89-NOR).
+const ESRI_WRITTEN: u8 = 5;
+
+/// The datum names of the table by rank: those of ranks 0 to 4, and those ESRI writes.
+type DatumNames = (HashMap<String, (u8, Vec<u32>)>, HashMap<String, Vec<u32>>);
+
+fn datum_names() -> &'static DatumNames {
+    static NAMES: OnceLock<DatumNames> = OnceLock::new();
+    NAMES.get_or_init(|| {
+        let (mut names, mut written) = (HashMap::<String, (u8, Vec<u32>)>::new(), HashMap::<String, Vec<u32>>::new());
+        for line in decompress(DATUM_NAMES).lines().filter(|l| !l.starts_with('#')) {
+            let mut f = line.splitn(3, '\t');
+            let (Some(Ok(code)), Some(Ok(rank)), Some(name)) = (f.next().map(str::parse::<u32>), f.next().map(str::parse::<u8>), f.next())
+            else {
+                continue;
+            };
+            if rank == ESRI_WRITTEN {
+                written.entry(datum_key(name)).or_default().push(code);
+                continue;
+            }
+            let e = names.entry(datum_key(name)).or_insert((rank, Vec::new()));
+            if rank < e.0 {
+                *e = (rank, Vec::new());
+            }
+            if rank == e.0 && !e.1.contains(&code) {
+                e.1.push(code);
             }
         }
-        names.values_mut().for_each(|c| c.sort_unstable());
-        names
+        names.values_mut().for_each(|(_, c)| c.sort_unstable());
+        written.values_mut().for_each(|c| c.sort_unstable());
+        // Without it, every WKT without a datum code would be left without EPSG code.
+        debug_assert!(!names.is_empty(), "the datum name table did not decompress");
+        (names, written)
+    })
+}
+
+/// The EPSG datums a name stands for, as PROJ's database lists them: those it is the official
+/// name (or GDAL's WKT 1 name) of, else an EPSG alias of, else a PROJ, an ESRI (`D_ETRS_1989`)
+/// or a former name of, in order of code.
+pub(crate) fn datums_named(name: &str) -> Vec<u32> {
+    datum_names().0.get(&datum_key(name)).map(|(_, c)| c.clone()).unwrap_or_default()
+}
+
+/// The other EPSG datums whose CRSs ESRI writes with a datum name: ETRS89-NOR for
+/// `D_ETRS_1989` (ETRS89-NOR [EUREF89] / NTM zone 18, EPSG:5118), S-JTSK (Ferro) for `D_S_JTSK`.
+pub(crate) fn datums_written_as(name: &str) -> &'static [u32] {
+    datum_names().1.get(&datum_key(name)).map_or(&[], Vec::as_slice)
+}
+
+/// The EPSG geographic 2D CRSs on a datum, without deprecated ones, in order of code.
+pub(crate) fn geographic_on(datum: u32) -> &'static [u32] {
+    static INDEX: OnceLock<HashMap<u32, Vec<u32>>> = OnceLock::new();
+    let index = INDEX.get_or_init(|| {
+        let t = table();
+        let mut index = HashMap::<u32, Vec<u32>>::new();
+        for (code, l) in &t.crs {
+            let f: Vec<&str> = t.text[l.line.0 as usize..l.line.1 as usize].splitn(9, '\t').collect();
+            // A deprecated code has its replacement's geographic CRS.
+            let [_, datum_field, geog, _, _, flags, _, proj, ..] = f[..] else { continue };
+            if geog.parse() == Ok(*code)
+                && !flags.contains('3')
+                && proj.starts_with("+proj=longlat")
+                && let Ok(d) = datum_field.parse::<u32>()
+            {
+                index.entry(d).or_default().push(*code);
+            }
+        }
+        index.values_mut().for_each(|c| c.sort_unstable());
+        index
     });
-    names.get(&name.to_ascii_lowercase()).cloned().unwrap_or_default()
+    index.get(&datum).map_or(&[], Vec::as_slice)
+}
+
+/// The EPSG projected CRSs on a geographic CRS, without deprecated ones, in order of code, with
+/// their projection method (`+proj=tmerc`).
+pub(crate) fn projected_on(geog: u32) -> &'static [(u32, &'static str)] {
+    static INDEX: OnceLock<HashMap<u32, Vec<(u32, &'static str)>>> = OnceLock::new();
+    let index = INDEX.get_or_init(|| {
+        let t = table();
+        let mut index = HashMap::<u32, Vec<(u32, &'static str)>>::new();
+        for (code, l) in &t.crs {
+            let f: Vec<&'static str> = t.text[l.line.0 as usize..l.line.1 as usize].splitn(9, '\t').collect();
+            let [_, _, geog, _, _, flags, _, proj, wkt] = f[..] else { continue };
+            // A deprecated code has its replacement's WKT.
+            let current = super::declared_epsg(wkt) == Some(*code);
+            let method = proj.split_whitespace().next().unwrap_or_default();
+            if current
+                && !flags.contains('3')
+                && method != "+proj=longlat"
+                && let Ok(g) = geog.parse::<u32>()
+            {
+                index.entry(g).or_default().push((*code, method));
+            }
+        }
+        index.values_mut().for_each(|c| c.sort_unstable());
+        index
+    });
+    index.get(&geog).map_or(&[], Vec::as_slice)
+}
+
+/// The ESRI codes of the CRSs with a name, whatever its case and with spaces for underscores
+/// (`World Mollweide` for `World_Mollweide`), in order.
+pub(crate) fn esri_named(name: &str) -> Vec<u32> {
+    static NAMES: OnceLock<HashMap<String, Vec<u32>>> = OnceLock::new();
+    let key = |n: &str| n.to_ascii_lowercase().replace(' ', "_");
+    let names = NAMES.get_or_init(|| name_index(esri_table(), key));
+    names.get(&key(name)).cloned().unwrap_or_default()
 }
 
 /// The single transformations from each geographic CRS, by the CRS they lead to.
@@ -406,5 +544,15 @@ mod tests {
         assert!(get(4979).unwrap().three_d && get(4979).unwrap().geog == 4326);
         assert!(get(9000).unwrap().dynamic);
         assert_eq!(grid_alternatives("us_noaa_conus.tif"), vec!["conus".to_string()]);
+    }
+
+    #[test]
+    fn esri_table_loads() {
+        let e = esri(102003).unwrap();
+        assert_eq!(e.name, "USA_Contiguous_Albers_Equal_Area_Conic");
+        assert_eq!((e.datum, e.geog), (6269, 4269));
+        assert!(e.proj.starts_with("+proj=aea") && !e.ops.is_empty());
+        assert!(esri(4326).is_none() && get(54009).is_none());
+        assert_eq!(esri_named("World Mollweide"), vec![54009]);
     }
 }

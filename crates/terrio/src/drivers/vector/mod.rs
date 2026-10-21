@@ -172,14 +172,16 @@ pub(crate) fn write_bytes(layers: &[Layer], driver: VectorDriver, options: &Vect
 /// The EPSG code to write for a layer's CRS: the layer's code when its WKT is absent or is the
 /// registry's definition of that code, otherwise only a code the WKT itself declares. Codes
 /// identified by matching parameters can be wrong (a US survey foot State Plane CRS matched to
-/// its metre twin), so a writer keeps the source WKT instead.
+/// its metre twin), so a writer keeps the source WKT instead. ESRI codes the registry holds as
+/// EPSG codes (54009) are not EPSG codes.
 pub(crate) fn trusted_epsg(layer: &Layer) -> Option<u32> {
-    match (layer.crs_epsg(), layer.crs_wkt()) {
+    let code = match (layer.crs_epsg(), layer.crs_wkt()) {
         (code, None) => code,
         (Some(code), Some(wkt)) if wbprojection::to_ogc_wkt(code).is_ok_and(|w| w == wkt) => Some(code),
         // Only CRS codes: the registry can return a datum's or prime meridian's.
         (_, Some(wkt)) => wbprojection::epsg::epsg_from_wkt(wkt).filter(|c| wbprojection::to_ogc_wkt(*c).is_ok()),
-    }
+    };
+    code.filter(|c| !crate::crs::is_esri_code(*c))
 }
 
 /// The WKT to write for a layer's CRS: GDAL-style WKT with the EPSG authority when the code is

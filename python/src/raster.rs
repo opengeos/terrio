@@ -175,7 +175,8 @@ impl PyRaster {
         self.inner.nodata()
     }
 
-    /// The CRS: `"EPSG:xxxx"` when its EPSG code is known, otherwise its WKT, or `None`.
+    /// The CRS: `"EPSG:xxxx"` (or `"ESRI:xxxx"`) when its code is known, otherwise its WKT, or
+    /// `None`.
     #[getter]
     fn crs(&self) -> Option<String> {
         crs_string(&self.crs_ref())

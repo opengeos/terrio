@@ -321,7 +321,9 @@ fn reads_extra_bytes_and_crs_records() {
     let r = pointcloud::open_points(&data("simple.copc.laz").unwrap()).unwrap();
     assert_eq!((r.crs().epsg, r.vertical_crs().0), (Some(2991), Some(6360)));
     let r = pointcloud::open_points(&data("file_with_both_wkt_and_geotiff_vlrs.las").unwrap()).unwrap();
-    assert_eq!(r.crs().epsg, Some(6516));
+    // In US survey feet, NAD83(2011) / Nebraska (ftUS) as GDAL identifies it, not the zone in
+    // metres (6516).
+    assert_eq!(r.crs().epsg, Some(6880));
     let r = pointcloud::open_points(&data("test_utm16.las").unwrap()).unwrap();
     assert_eq!(r.crs().epsg, Some(26916));
     // User-defined GeoKeys in feet (Lambert conformal conic, NAD83 HARN): GDAL puts the first

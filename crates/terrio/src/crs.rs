@@ -66,8 +66,20 @@ pub(crate) fn epsg_wkt(code: u32) -> Option<&'static str> {
     epsg::get(code).map(|e| e.wkt.as_str())
 }
 
-/// A coordinate reference system, known by an EPSG code, a WKT definition, a PROJ string or a
-/// combination of them.
+/// The ESRI CRSs whose projection terrio computes otherwise than PROJ (by more than a millimetre
+/// in their area of use, as `scripts/compare_esri_with_proj.py` reports with PROJ 9.8): World
+/// Cassini, whose area of use reaches far beyond where terrio's Cassini series holds. They are
+/// refused rather than transformed wrongly.
+pub(crate) const ESRI_UNLIKE_PROJ: &[u32] = &[54028];
+
+/// Whether a code taken for an EPSG code is one of PROJ's ESRI authority instead, outside the
+/// EPSG registry (wbprojection holds ESRI's 54008, 54009 and 54030 as EPSG codes).
+pub(crate) fn is_esri_code(code: u32) -> bool {
+    epsg::get(code).is_none() && epsg::compound(code).is_none() && epsg::vertical(code).is_none() && epsg::esri(code).is_some()
+}
+
+/// A coordinate reference system, known by an EPSG (or ESRI) code, a WKT definition, a PROJ
+/// string or a combination of them.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct SpatialRef {
     /// The EPSG code, when the CRS has (or was identified as having) one.
@@ -76,23 +88,51 @@ pub struct SpatialRef {
     pub wkt: Option<String>,
     /// The PROJ string definition.
     pub proj4: Option<String>,
+    /// The code of PROJ's ESRI authority (`ESRI:54009`), when the CRS has (or was identified as
+    /// having) one rather than an EPSG code.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub esri: Option<u32>,
 }
 
 impl SpatialRef {
     /// A CRS from an EPSG code. Fails when the code is not in the EPSG registry terrio carries.
+    /// The ESRI codes wbprojection holds as EPSG codes (54008, 54009 and 54030) give those ESRI
+    /// CRSs; other ESRI codes are not EPSG codes, as in PROJ.
     pub fn from_epsg(code: u32) -> Result<Self> {
         let wkt = match epsg::get(code) {
             Some(e) => e.wkt.clone(),
             None => match (epsg::compound(code), epsg::vertical(code)) {
                 (Some(c), _) => c.wkt.clone(),
                 (None, Some(v)) => v.wkt.clone(),
-                _ => wbp::to_ogc_wkt(code).map_err(|_| Error::Crs(format!("unknown EPSG code {code}")))?,
+                _ => {
+                    let w = wbp::to_ogc_wkt(code).map_err(|_| Error::Crs(format!("unknown EPSG code {code}")))?;
+                    if epsg::esri(code).is_some() {
+                        return Self::from_esri(code);
+                    }
+                    w
+                }
             },
         };
-        Ok(Self { epsg: Some(code), wkt: Some(wkt), proj4: None })
+        Ok(Self { epsg: Some(code), wkt: Some(wkt), ..Default::default() })
     }
 
-    /// A CRS from a WKT definition (WKT1 or WKT2). The EPSG code is identified when possible.
+    /// A CRS from a code of PROJ's ESRI authority, such as 54009 (World Mollweide), with the WKT
+    /// GDAL writes for it. Fails when terrio does not know the code or cannot compute its
+    /// projection.
+    pub fn from_esri(code: u32) -> Result<Self> {
+        let e = epsg::esri(code).ok_or_else(|| Error::Crs(format!("unknown ESRI code {code}")))?;
+        if ESRI_UNLIKE_PROJ.contains(&code) {
+            return Err(Error::Crs(format!(
+                "ESRI:{code} ({}) is not supported: terrio does not compute its projection as PROJ does",
+                e.name
+            )));
+        }
+        Def::from_proj(&e.proj).map_err(|err| Error::Crs(format!("ESRI:{code} ({}) is not supported: {err}", e.name)))?;
+        Ok(Self { esri: Some(code), wkt: Some(e.wkt.clone()), ..Default::default() })
+    }
+
+    /// A CRS from a WKT definition (WKT1 or WKT2). The EPSG code (or else the ESRI code) is
+    /// identified when possible.
     pub fn from_wkt(wkt: &str) -> Self {
         // A WKT 1 extended with its PROJ string (`EXTENSION["PROJ4", ...]`, as GDAL writes CRSs
         // WKT 1 cannot describe) is that PROJ string, as GDAL reads it.
@@ -101,10 +141,39 @@ impl SpatialRef {
         {
             // Its EPSG code: declared, or one whose definition converts as the PROJ string does.
             let epsg = declared_epsg(wkt).or_else(|| identify_epsg(wkt).filter(|code| is_registered_as(&own, *code)));
-            return Self { epsg, wkt: Some(wkt.to_string()), proj4: Some(proj4) };
+            return Self { epsg, wkt: Some(wkt.to_string()), proj4: Some(proj4), esri: None }.with_esri();
         }
         let epsg = if def::split_compound(wkt).is_some() { declared_epsg(wkt) } else { identify_epsg(wkt) };
-        Self { epsg, wkt: Some(wkt.to_string()), proj4: None }
+        Self { epsg, wkt: Some(wkt.to_string()), ..Default::default() }.with_esri()
+    }
+
+    /// The CRS with an ESRI code in place of a code terrio's EPSG registry does not hold (the
+    /// registry identifies ESRI's 54008, 54009 and 54030 as EPSG codes), or identified from the
+    /// WKT when there is no EPSG code: the ESRI code it declares, or that of the ESRI CRS of the
+    /// same name whose definition converts coordinates as the WKT does, as GDAL identifies them.
+    pub(crate) fn with_esri(mut self) -> Self {
+        // A declared ESRI code wins over an identified EPSG code (ESRI:102100 is EPSG:3857's
+        // definition), as GDAL keeps it.
+        if let Some(code) = self.wkt.as_deref().and_then(|w| declared_code(w, "ESRI")).filter(|c| epsg::esri(*c).is_some()) {
+            self.epsg = None;
+            self.esri = Some(code);
+            return self;
+        }
+        if let Some(code) = self.epsg
+            && is_esri_code(code)
+        {
+            self.epsg = None;
+            if self.wkt.is_none() {
+                self.esri = Some(code);
+            }
+        }
+        if self.epsg.is_none()
+            && self.esri.is_none()
+            && let Some(w) = &self.wkt
+        {
+            self.esri = identify_esri(w);
+        }
+        self
     }
 
     /// A compound CRS from the EPSG codes of a horizontal and a vertical CRS, as GDAL builds
@@ -114,7 +183,7 @@ impl SpatialRef {
         let v = epsg::vertical(vertical).ok_or_else(|| Error::Crs(format!("EPSG:{vertical} is not a vertical CRS")))?;
         let name = format!("{} + {}", h.name().unwrap_or_default(), v.name);
         let wkt = format!("COMPD_CS[\"{name}\",{},{}]", h.to_wkt().unwrap_or_default(), v.wkt);
-        Ok(Self { epsg: None, wkt: Some(wkt), proj4: None })
+        Ok(Self { wkt: Some(wkt), ..Default::default() })
     }
 
     /// A CRS from a PROJ string such as `+proj=utm +zone=33 +datum=WGS84`.
@@ -125,12 +194,12 @@ impl SpatialRef {
         }
         // Checks that terrio can transform with it.
         Def::from_proj(proj4)?;
-        Ok(Self { epsg: None, wkt: proj_to_wkt(proj4), proj4: Some(proj4.to_string()) })
+        Ok(Self { wkt: proj_to_wkt(proj4), proj4: Some(proj4.to_string()), ..Default::default() })
     }
 
     /// Parses a user-supplied CRS: `EPSG:4326`, `4326`, `urn:ogc:def:crs:EPSG::4326`, an OGC URL,
-    /// `OGC:CRS84`, `WGS84`, a WKT definition, a PROJ string, or the path of a file holding one
-    /// of these (such as a shapefile's `.prj`).
+    /// `OGC:CRS84`, `WGS84`, `ESRI:54009` (or `urn:ogc:def:crs:ESRI::54009`), a WKT definition,
+    /// a PROJ string, or the path of a file holding one of these (such as a shapefile's `.prj`).
     pub fn parse(s: &str) -> Result<Self> {
         let s = s.trim();
         if s.is_empty() {
@@ -155,6 +224,9 @@ impl SpatialRef {
         if looks_like_wkt(s) {
             return Ok(Self::from_wkt(s));
         }
+        if let Some(code) = esri_reference(&upper) {
+            return Self::from_esri(code);
+        }
         if let Some(code) = wbp::epsg_from_srs_reference(s) {
             return Self::from_epsg(code);
         }
@@ -169,7 +241,7 @@ impl SpatialRef {
     /// EPSG table for an EPSG CRS, else the `GEOGCS` node of its WKT 1. `None` when neither is
     /// known.
     pub(crate) fn geographic_wkt(&self) -> Option<String> {
-        if let Some(e) = self.epsg.and_then(epsg::get)
+        if let Some(e) = self.epsg.and_then(epsg::get).or_else(|| self.esri.and_then(epsg::esri))
             && let Some(g) = epsg::get(e.geog)
         {
             return Some(g.wkt.clone());
@@ -194,13 +266,32 @@ impl SpatialRef {
 
     /// Whether nothing is known about the CRS.
     pub fn is_unknown(&self) -> bool {
-        self.epsg.is_none() && self.wkt.is_none() && self.proj4.is_none()
+        self.epsg.is_none() && self.esri.is_none() && self.wkt.is_none() && self.proj4.is_none()
     }
 
-    /// The WKT definition, built from the EPSG code or PROJ string when no WKT is stored.
+    /// The authority and code of the CRS: `("EPSG", 4326)`, or `("ESRI", 54009)` for a CRS of
+    /// PROJ's ESRI authority.
+    pub fn authority(&self) -> Option<(&'static str, u32)> {
+        match (self.epsg, self.esri) {
+            (Some(code), _) => Some(("EPSG", code)),
+            (None, Some(code)) => Some(("ESRI", code)),
+            (None, None) => None,
+        }
+    }
+
+    /// The authority code as GDAL writes it: `EPSG:4326` or `ESRI:54009`.
+    pub fn authority_code(&self) -> Option<String> {
+        self.authority().map(|(a, code)| format!("{a}:{code}"))
+    }
+
+    /// The WKT definition, built from the EPSG (or ESRI) code or PROJ string when no WKT is
+    /// stored.
     pub fn to_wkt(&self) -> Option<String> {
         if let Some(w) = &self.wkt {
             return Some(w.clone());
+        }
+        if let Some(e) = self.esri.and_then(epsg::esri) {
+            return Some(e.wkt.clone());
         }
         if let Some(code) = self.epsg {
             return epsg::get(code)
@@ -224,6 +315,9 @@ impl SpatialRef {
         if let Some(v) = self.epsg.and_then(epsg::vertical) {
             return Some(v.name.clone());
         }
+        if let Some(e) = self.esri.and_then(epsg::esri) {
+            return Some(e.name.clone());
+        }
         let registry = self.epsg.and_then(|code| wbp::to_ogc_wkt(code).ok());
         registry
             .as_deref()
@@ -232,10 +326,10 @@ impl SpatialRef {
             .or_else(|| self.epsg.and_then(wbp::epsg::epsg_info).map(|i| i.name.to_string()))
     }
 
-    /// A short label: `EPSG:4326` when the code is known, otherwise the name.
+    /// A short label: `EPSG:4326` (or `ESRI:54009`) when the code is known, otherwise the name.
     pub fn label(&self) -> String {
-        match (self.epsg, self.name()) {
-            (Some(code), _) => format!("EPSG:{code}"),
+        match (self.authority_code(), self.name()) {
+            (Some(code), _) => code,
             (None, Some(name)) => name,
             (None, None) => "unknown".into(),
         }
@@ -263,7 +357,7 @@ impl SpatialRef {
 
     /// Whether both describe the same CRS, as far as can be told.
     pub fn same_as(&self, other: &SpatialRef) -> bool {
-        match (self.epsg, other.epsg) {
+        match (self.authority(), other.authority()) {
             (Some(a), Some(b)) => a == b,
             _ => self.to_wkt().is_some() && self.to_wkt() == other.to_wkt(),
         }
@@ -290,7 +384,7 @@ impl SpatialRef {
     }
 
     pub(crate) fn from_raster_crs(c: &wbraster::CrsInfo) -> Self {
-        let mut s = Self { epsg: c.epsg, wkt: c.wkt.clone(), proj4: c.proj4.clone() };
+        let mut s = Self { epsg: c.epsg, wkt: c.wkt.clone(), proj4: c.proj4.clone(), esri: None };
         // A WKT made from a PROJ string is not identified: it can describe less than the PROJ
         // string (the registry's loose matches took a Robinson on another meridian for ESRI's).
         if s.epsg.is_none()
@@ -299,6 +393,11 @@ impl SpatialRef {
         {
             s.epsg = identify_epsg(w);
         }
+        if s.proj4.is_none() {
+            return s.with_esri();
+        }
+        // Nor is it identified as an ESRI CRS, but a pseudo-EPSG ESRI code is not kept as EPSG's.
+        s.epsg = s.epsg.filter(|c| !is_esri_code(*c));
         s
     }
 
@@ -309,13 +408,13 @@ impl SpatialRef {
 
     /// The CRS a vector layer declares.
     pub fn from_layer(layer: &wbvector::Layer) -> Self {
-        let mut s = Self { epsg: layer.crs_epsg(), wkt: layer.crs_wkt().map(str::to_string), proj4: None };
+        let mut s = Self { epsg: layer.crs_epsg(), wkt: layer.crs_wkt().map(str::to_string), ..Default::default() };
         if s.epsg.is_none()
             && let Some(w) = &s.wkt
         {
             s.epsg = identify_epsg(w);
         }
-        s
+        s.with_esri()
     }
 
     /// Sets a vector layer's CRS to this one.
@@ -368,7 +467,7 @@ fn proj_to_wkt(p: &str) -> Option<String> {
 
 /// Whether the EPSG CRS `code` is the CRS of `own`: the same conversion on the same datum.
 fn is_registered_as(own: &Def, code: u32) -> bool {
-    Def::new(&SpatialRef { epsg: Some(code), wkt: None, proj4: None }).is_ok_and(|r| own.same_conversion(&r) && own.same_datum(&r))
+    Def::new(&SpatialRef { epsg: Some(code), ..Default::default() }).is_ok_and(|r| own.same_conversion(&r) && own.same_datum(&r))
 }
 
 /// The PROJ string of a WKT 1's root `EXTENSION["PROJ4", ...]`.
@@ -417,18 +516,111 @@ fn semi_major_axis(wkt: &str) -> Option<f64> {
     after_name.trim_start_matches([',', ' ']).split([',', ']']).next()?.trim().parse().ok()
 }
 
-/// Identifies the EPSG code of a WKT definition. Among equally good matches, prefers the base
-/// datum over its later realizations (NAD83 over NAD83(HARN) and NAD83(2011)) unless the WKT names
-/// one, then the lowest code: what GDAL picks for ESRI `.prj` files.
+/// The EPSG datums the geodetic datum of a WKT definition is: the one its `AUTHORITY` (WKT 1) or
+/// `ID` (WKT 2) declares, else those it is named as (`D_European_1950` is ED50). Empty for a datum
+/// with another name (`Unknown based on Bessel 1841 ellipsoid`), as for GDAL.
+fn wkt_datums(wkt: &str) -> Vec<u32> {
+    wkt_datums_and_others(wkt).0
+}
+
+/// The EPSG datums of a WKT definition's geodetic datum ([`wkt_datums`]), and the other datums
+/// whose CRSs ESRI writes with its name (ETRS89-NOR for `D_ETRS_1989`).
+fn wkt_datums_and_others(wkt: &str) -> (Vec<u32>, &'static [u32]) {
+    fn find(n: &wkt1::Node) -> Option<&wkt1::Node> {
+        const DATUMS: [&str; 5] = ["DATUM", "GEODETICDATUM", "TRF", "ENSEMBLE", "DATUMENSEMBLE"];
+        if DATUMS.iter().any(|k| n.key.eq_ignore_ascii_case(k)) {
+            return Some(n);
+        }
+        n.args.iter().find_map(|a| match a {
+            wkt1::Arg::Node(c) => find(c),
+            _ => None,
+        })
+    }
+    let Some(datum) = wkt1::parse(wkt).and_then(|root| find(&root).cloned()) else { return (Vec::new(), &[]) };
+    if let Some(code) = datum.epsg() {
+        return (vec![code], &[]);
+    }
+    let name = datum.name().unwrap_or_default();
+    (epsg::datums_named(name), epsg::datums_written_as(name))
+}
+
+/// Identifies the EPSG code of a WKT definition, as GDAL does: a CRS on the WKT's datum (by its
+/// code or name) with the same conversion, units and ellipsoid. A datum without code that terrio
+/// does not know by name has no code, whatever its ellipsoid (#125). Among the CRSs of terrio's
+/// table that match, the one named as the WKT's CRS, then the one with its axis order, then the
+/// lowest code; for other CRSs, wbprojection's registry, where among equally good matches the
+/// base datum is preferred over its later realizations (NAD83 over NAD83(HARN) and NAD83(2011))
+/// unless the WKT names one, then the lowest code.
 pub(crate) fn identify_epsg(wkt: &str) -> Option<u32> {
     if let Some(code) = declared_epsg(wkt) {
         return Some(code);
     }
+    let (datums, others) = wkt_datums_and_others(wkt);
+    // No known datum (or no datum node, or WKT the reader cannot parse): no code, and on purpose
+    // not the registry's loose guess (#125).
+    if datums.is_empty() {
+        return None;
+    }
+    let own = Def::wkt_conversion(wkt);
+    // The same conversion on the same ellipsoid.
+    let same = |own: &Def, code: u32| {
+        let registered = SpatialRef { epsg: Some(code), ..Default::default() };
+        Def::new(&registered)
+            .is_ok_and(|d| own.same_conversion(&d) && (own.ell.a - d.ell.a).abs() < 1e-3 && (own.ell.es - d.ell.es).abs() < 1e-9)
+    };
+    // Among CRSs that match, the one named as the WKT's CRS (`RGF93 v2 (lon-lat)`, ESRI's `GCS_`
+    // prefix aside), else the base datum over its later realizations (`NAD83`, which EPSG lists
+    // as an alias of NAD83(HARN) too) unless the WKT names one, else the lowest code.
+    let key = |n: &str| epsg::datum_key(n.strip_prefix("GCS_").unwrap_or(n));
+    let name = wkt_name(wkt).map(|n| key(&n));
+    let named = |c: u32| epsg::get(c).is_some_and(|e| Some(key(&e.name)) == name);
+    let upper = wkt.to_ascii_uppercase();
+    let wkt_names_realization = REALIZATIONS.iter().any(|r| upper.contains(r));
+    let realization = |code: u32| {
+        let name = wbp::epsg::epsg_info(code).map(|i| i.name.to_ascii_uppercase()).unwrap_or_default();
+        !wkt_names_realization && REALIZATIONS.iter().any(|r| name.contains(r))
+    };
+    // A CRS of the table on these datums with the WKT's conversion, as GDAL finds it.
+    let search = |datums: &[u32]| {
+        let own = own.as_ref()?;
+        let geogs = datums.iter().flat_map(|d| epsg::geographic_on(*d)).copied();
+        if own.is_geographic() {
+            return geogs.filter(|c| same(own, *c)).min_by_key(|c| (!named(*c), realization(*c), *c));
+        }
+        let method = conversion_method(wkt)?;
+        let found = geogs.flat_map(epsg::projected_on).filter(|(c, m)| same_method(m, &method) && same(own, *c)).map(|(c, _)| *c);
+        // Else the one with the WKT's axis order (ETRS89 / UTM zone 32N rather than its N-E
+        // variant for ESRI's WKT, without axes).
+        let own_north_first = north_first(wkt);
+        let axes = |c: u32| epsg::get(c).is_some_and(|e| north_first(&e.wkt) != own_north_first);
+        found.min_by_key(|c| (!named(*c), axes(*c), realization(*c), *c))
+    };
+    // On the datum the WKT names, else on those whose CRSs ESRI writes with its name: GDAL
+    // identifies ESRI's ETRS_1989_NTM_Zone_18 on D_ETRS_1989 by its name as EPSG:5118, on
+    // ETRS89-NOR.
+    if let Some(code) = search(&datums).or_else(|| search(others)) {
+        return Some(code);
+    }
+    // A current CRS on the WKT's datum. Its datum: its code in the table, else its WKT's (WKT 2
+    // CRSs of the table, on datum ensembles, and those only the registry has). A deprecated code
+    // has its replacement's WKT in the table.
+    let on_datum = |code: u32| {
+        let theirs = match epsg::get(code) {
+            Some(e) if declared_epsg(&e.wkt).is_some_and(|c| c != code) => return false,
+            Some(e) if e.datum != 0 => vec![e.datum],
+            Some(e) => wkt_datums(&e.wkt),
+            None => wbp::to_ogc_wkt(code).map(|w| wkt_datums(&w)).unwrap_or_default(),
+        };
+        theirs.iter().any(|d| datums.contains(d))
+    };
+    // Else wbprojection's registry (projections terrio cannot compare, CRSs its table lacks).
     let report = wbp::identify_epsg_from_wkt_report(wkt, wbp::EpsgIdentifyPolicy::Lenient)?;
     // The registry matches loosely: keep a code only when its definition converts coordinates
-    // as the WKT does (GDAL leaves a custom CRS without code).
-    let own = Def::wkt_conversion(wkt);
+    // as the WKT does, on its datum (GDAL leaves a custom CRS without code).
     let fits = |code: u32| {
+        if !on_datum(code) {
+            return false;
+        }
         // A projection terrio cannot compare: at least the same ellipsoid (a sinusoidal
         // projection on MODIS's sphere is not ESRI's World Sinusoidal on WGS 84).
         let Some(own) = &own else {
@@ -438,8 +630,7 @@ pub(crate) fn identify_epsg(wkt: &str) -> Option<u32> {
                 _ => true,
             };
         };
-        let registered = SpatialRef { epsg: Some(code), wkt: None, proj4: None };
-        Def::new(&registered).is_ok_and(|d| own.same_conversion(&d))
+        same(own, code)
     };
     // The registry can take a datum's or prime meridian's code for the CRS's: then match the WKT
     // by its parameters alone.
@@ -451,19 +642,33 @@ pub(crate) fn identify_epsg(wkt: &str) -> Option<u32> {
         return report.resolved_code.filter(|c| fits(*c));
     }
     let best = report.top_candidates.first()?.total_score;
-    let upper = wkt.to_ascii_uppercase();
-    let wkt_names_realization = REALIZATIONS.iter().any(|r| upper.contains(r));
-    let names_realization = |code: u32| {
-        let name = wbp::epsg::epsg_info(code).map(|i| i.name.to_ascii_uppercase()).unwrap_or_default();
-        REALIZATIONS.iter().any(|r| name.contains(r))
-    };
     report
         .top_candidates
         .iter()
         .filter(|c| c.total_score >= best && fits(c.code))
-        .min_by_key(|c| (!wkt_names_realization && names_realization(c.code), c.code))
+        .min_by_key(|c| (realization(c.code), c.code))
         .map(|c| c.code)
         .or(report.resolved_code.filter(|c| fits(*c)))
+}
+
+/// The projection method (`+proj=tmerc`) of a WKT definition's conversion.
+fn conversion_method(wkt: &str) -> Option<String> {
+    let root = wkt1::parse(wkt)?;
+    let c = if wkt2::handles(&root) { wkt2::to_proj(&root).ok()? } else { wkt1::to_proj(&root)? };
+    c.proj.split_whitespace().next().map(str::to_string)
+}
+
+/// Whether the first axis of a WKT definition's coordinate system points north or south
+/// (northing, easting), rather than east (or is not given).
+fn north_first(wkt: &str) -> bool {
+    let first = wkt1::parse(wkt).and_then(|root| root.child("AXIS").and_then(|a| a.args.get(1).cloned()));
+    matches!(first, Some(wkt1::Arg::Ident(d)) if ["north", "south"].iter().any(|n| d.eq_ignore_ascii_case(n)))
+}
+
+/// Whether two `+proj=` methods are the same (UTM being a transverse Mercator).
+fn same_method(a: &str, b: &str) -> bool {
+    let m = |s: &str| if s == "+proj=utm" { "+proj=tmerc".to_string() } else { s.to_string() };
+    m(a) == m(b)
 }
 
 /// A WKT definition without its `AUTHORITY[...]` nodes.
@@ -479,6 +684,11 @@ fn strip_authorities(wkt: &str) -> String {
 /// The EPSG code a WKT definition declares for itself: the `AUTHORITY["EPSG","4269"]` (WKT 1) or
 /// `ID["EPSG",4269]` (WKT 2) closing its outermost node, not those of its datum or units.
 fn declared_epsg(wkt: &str) -> Option<u32> {
+    declared_code(wkt, "EPSG")
+}
+
+/// The code of an authority a WKT definition declares for itself, as [`declared_epsg`].
+fn declared_code(wkt: &str, authority: &str) -> Option<u32> {
     let body = wkt.trim_end().strip_suffix(']')?.trim_end();
     // The last child node must be the identifier itself, not a node holding one.
     let body = body.strip_suffix(']')?;
@@ -491,10 +701,45 @@ fn declared_epsg(wkt: &str) -> Option<u32> {
         return None;
     }
     let mut parts = body[start + 1..].split(',').map(|p| p.trim().trim_matches('"'));
-    if !parts.next()?.eq_ignore_ascii_case("EPSG") {
+    if !parts.next()?.eq_ignore_ascii_case(authority) {
         return None;
     }
     parts.next()?.parse().ok()
+}
+
+/// The ESRI code of a WKT definition: the one it declares (`AUTHORITY["ESRI","54009"]`), or that
+/// of the ESRI CRS of the same name (GDAL's ESRI PE strings carry none) whose definition converts
+/// coordinates as the WKT does, on the same ellipsoid.
+fn identify_esri(wkt: &str) -> Option<u32> {
+    if let Some(code) = declared_code(wkt, "ESRI") {
+        return epsg::esri(code).is_some().then_some(code);
+    }
+    let name = wkt_name(wkt)?;
+    let candidates = epsg::esri_named(&name);
+    if candidates.is_empty() {
+        return None;
+    }
+    // The WKT's conversion, through wbprojection for projections terrio's WKT reader does not map;
+    // a name alone does not identify a CRS.
+    let own = Def::wkt_conversion(wkt).or_else(|| Def::new(&SpatialRef { wkt: Some(wkt.to_string()), ..Default::default() }).ok())?;
+    let a = semi_major_axis(wkt);
+    candidates.into_iter().find(|code| {
+        let Some(e) = epsg::esri(*code) else { return false };
+        let Ok(registered) = Def::from_proj(&e.proj) else { return false };
+        let same_ellipsoid = a.is_none_or(|a| (a - registered.ell.a).abs() < 1e-3);
+        same_ellipsoid && own.same_conversion(&registered)
+    })
+}
+
+/// The ESRI code of a reference such as `ESRI:54009` (whatever its case, as PROJ reads it),
+/// `urn:ogc:def:crs:ESRI::54009` or `http://www.opengis.net/def/crs/ESRI/0/54009`, given in
+/// upper case.
+fn esri_reference(upper: &str) -> Option<u32> {
+    let code = upper
+        .strip_prefix("ESRI:")
+        .or_else(|| upper.strip_prefix("URN:OGC:DEF:CRS:ESRI:").map(|r| r.rsplit(':').next().unwrap_or(r)))
+        .or_else(|| upper.split_once("/DEF/CRS/ESRI/").map(|(_, r)| r.rsplit('/').next().unwrap_or(r)))?;
+    code.trim().parse().ok()
 }
 
 fn looks_like_wkt(s: &str) -> bool {
@@ -608,7 +853,7 @@ impl Side {
 
 /// The definition of an EPSG geographic 3D CRS.
 fn def_of(code: u32) -> Option<Def> {
-    Def::new(&SpatialRef { epsg: Some(code), wkt: None, proj4: None }).ok()
+    Def::new(&SpatialRef { epsg: Some(code), ..Default::default() }).ok()
 }
 
 impl Heights {
@@ -799,6 +1044,123 @@ mod tests {
         // GeoPackage, from a GeoParquet file's CRS).
         let wgs84 = r#"GEOGCS["WGS 84",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563],AUTHORITY["EPSG","6326"]],PRIMEM["Greenwich",0,AUTHORITY["EPSG","8901"]],UNIT["Degree",0.0174532925199433],AXIS["Longitude",EAST],AXIS["Latitude",NORTH]]"#;
         assert_eq!(identify_epsg(wgs84), Some(4326));
+    }
+
+    #[test]
+    fn unknown_datums_are_not_guessed_and_named_ones_are_identified_as_in_gdal() {
+        // pyproj.CRS("+proj=tmerc +lon_0=10 +ellps=... +units=m +no_defs").to_wkt("WKT1_GDAL"):
+        // a datum without code nor TOWGS84, which GDAL and PROJ leave unshifted and without
+        // code. (These became Korean 1985, LUREF, Pulkovo 1942(58)... and took their shifts.)
+        let wgs84 = SpatialRef::from_epsg(4326).unwrap();
+        let ellipsoids = [
+            ("bessel", "Bessel 1841", "6377397.155,299.1528128"),
+            ("clrk66", "Clarke 1866", "6378206.4,294.978698213898"),
+            ("intl", "International 1924 (Hayford 1909, 1910)", "6378388,297"),
+            ("airy", "Airy 1830", "6377563.396,299.3249646"),
+            ("krass", "Krassovsky, 1942", "6378245,298.3"),
+            ("GRS80", "GRS 1980", "6378137,298.257222101,AUTHORITY[\"EPSG\",\"7019\"]"),
+        ];
+        for (ellps, name, spheroid) in ellipsoids {
+            let geogcs = format!(
+                r#"GEOGCS["unknown",DATUM["Unknown based on {name} ellipsoid",SPHEROID["{name}",{spheroid}]],PRIMEM["Greenwich",0,AUTHORITY["EPSG","8901"]],UNIT["degree",0.0174532925199433,AUTHORITY["EPSG","9122"]]]"#
+            );
+            let projcs = format!(
+                r#"PROJCS["unknown",{geogcs},PROJECTION["Transverse_Mercator"],PARAMETER["latitude_of_origin",0],PARAMETER["central_meridian",10],PARAMETER["scale_factor",1],PARAMETER["false_easting",0],PARAMETER["false_northing",0],UNIT["metre",1,AUTHORITY["EPSG","9001"]],AXIS["Easting",EAST],AXIS["Northing",NORTH]]"#
+            );
+            let proj = |p: &str| SpatialRef::from_proj4(p).unwrap();
+            let pairs = [
+                (projcs, proj(&format!("+proj=tmerc +lon_0=10 +ellps={ellps} +units=m +no_defs"))),
+                (geogcs, proj(&format!("+proj=longlat +ellps={ellps} +no_defs"))),
+            ];
+            for (wkt, string) in pairs {
+                let crs = SpatialRef::from_wkt(&wkt);
+                assert_eq!(crs.epsg, None, "{ellps}: {wkt}");
+                let (x, y) = Transformer::new(&wgs84, &string).unwrap().transform(12.0, 48.0).unwrap();
+                let (wx, wy) = Transformer::new(&wgs84, &crs).unwrap().transform(12.0, 48.0).unwrap();
+                // Within 1 mm (degrees: 1e-8 is about 1 mm).
+                let tol = if crs.is_geographic() { 1e-8 } else { 1e-3 };
+                assert!((x - wx).abs() < tol && (y - wy).abs() < tol, "{ellps}: {x} {y} != {wx} {wy}");
+            }
+        }
+        // ESRI WKT (pyproj's WKT1_ESRI) naming a datum by ESRI's name: the codes GDAL and pyproj
+        // identify, ED50 rather than ED50(ED77) (EPSG:4154), ETRS89 by its ESRI alias.
+        let esri = |code: u32, name: &str, datum: &str, spheroid: &str, rest: &str| {
+            let geogcs = format!(
+                r#"GEOGCS["GCS_{datum}",DATUM["D_{datum}",SPHEROID[{spheroid}]],PRIMEM["Greenwich",0.0],UNIT["Degree",0.0174532925199433]]"#
+            );
+            let wkt = if name.is_empty() { geogcs } else { format!(r#"PROJCS["{name}",{geogcs},{rest}]"#) };
+            assert_eq!(SpatialRef::from_wkt(&wkt).epsg, Some(code), "{wkt}");
+            wkt
+        };
+        let utm = |lon: i32| {
+            format!(
+                r#"PROJECTION["Transverse_Mercator"],PARAMETER["False_Easting",500000.0],PARAMETER["False_Northing",0.0],PARAMETER["Central_Meridian",{lon}.0],PARAMETER["Scale_Factor",0.9996],PARAMETER["Latitude_Of_Origin",0.0],UNIT["Meter",1.0]"#
+            )
+        };
+        let intl = r#""International_1924",6378388.0,297.0"#;
+        let grs80 = r#""GRS_1980",6378137.0,298.257222101"#;
+        let ed50 = esri(4230, "", "European_1950", intl, "");
+        let ed50_utm = esri(23032, "ED_1950_UTM_Zone_32N", "European_1950", intl, &utm(9));
+        esri(4269, "", "North_American_1983", grs80, "");
+        esri(26918, "NAD_1983_UTM_Zone_18N", "North_American_1983", grs80, &utm(-75));
+        esri(4258, "", "ETRS_1989", grs80, "");
+        esri(25832, "ETRS_1989_UTM_Zone_32N", "ETRS_1989", grs80, &utm(9));
+        // On ETRS89-NOR, which ESRI writes D_ETRS_1989 (GDAL identifies it by its ESRI name).
+        let ntm = r#"PROJECTION["Transverse_Mercator"],PARAMETER["False_Easting",100000.0],PARAMETER["False_Northing",1000000.0],PARAMETER["Central_Meridian",18.5],PARAMETER["Scale_Factor",1.0],PARAMETER["Latitude_Of_Origin",58.0],UNIT["Meter",1.0]"#;
+        esri(5118, "ETRS_1989_NTM_Zone_18", "ETRS_1989", grs80, ntm);
+        // With ED50's datum shift, as EPSG:4230 and EPSG:23032 (about 100 m in the Netherlands).
+        for (wkt, code, tol) in [(&ed50, 4230, 1e-8), (&ed50_utm, 23032, 1e-3)] {
+            let t = Transformer::new(&wgs84, &SpatialRef::from_wkt(wkt)).unwrap();
+            let (x, y) = t.transform(5.0, 52.0).unwrap();
+            let (ex, ey) = Transformer::new(&wgs84, &SpatialRef::from_epsg(code).unwrap()).unwrap().transform(5.0, 52.0).unwrap();
+            assert!((x - ex).abs() < tol && (y - ey).abs() < tol, "{code}: {x} {y} != {ex} {ey}");
+        }
+        let (x, _) = Transformer::new(&wgs84, &SpatialRef::from_wkt(&ed50)).unwrap().transform(5.0, 52.0).unwrap();
+        assert!((x - 5.0).abs() > 5e-4, "{x}");
+        // A misspelled datum is not known by name, so it has no code, even on ED50's ellipsoid
+        // and in its ESRI form: the registry is not asked to guess.
+        let misspelled = ed50.replace("D_European_1950", "D_Europaen_1950");
+        assert_eq!(SpatialRef::from_wkt(&misspelled).epsg, None);
+        // A WKT 2 CRS on a datum ensemble without IDs: known by the ensemble's name.
+        let wkt2 = r#"GEOGCRS["WGS 84",ENSEMBLE["World Geodetic System 1984 ensemble",MEMBER["World Geodetic System 1984 (G2139)"],ELLIPSOID["WGS 84",6378137,298.257223563,LENGTHUNIT["metre",1]],ENSEMBLEACCURACY[2.0]],PRIMEM["Greenwich",0,ANGLEUNIT["degree",0.0174532925199433]],CS[ellipsoidal,2],AXIS["geodetic latitude (Lat)",north,ORDER[1],ANGLEUNIT["degree",0.0174532925199433]],AXIS["geodetic longitude (Lon)",east,ORDER[2],ANGLEUNIT["degree",0.0174532925199433]]]"#;
+        assert_eq!(SpatialRef::from_wkt(wkt2).epsg, Some(4326));
+    }
+
+    #[test]
+    fn conversions_in_other_units_differ() {
+        // Nebraska in metres (EPSG:6516) and in US survey feet (EPSG:6880): the same positions on
+        // the ground, not the same conversion (identification and proj_to_wkt's faithfulness).
+        let lcc = "+proj=lcc +lat_0=39.8333333333333 +lon_0=-100 +lat_1=43 +lat_2=40 +x_0=500000 +y_0=0 +ellps=GRS80";
+        let m = Def::from_proj(&format!("{lcc} +units=m")).unwrap();
+        let ft = Def::from_proj(&format!("{lcc} +units=us-ft")).unwrap();
+        assert!(m.same_conversion(&Def::from_proj(&format!("{lcc} +units=m")).unwrap()));
+        assert!(!m.same_conversion(&ft) && !ft.same_conversion(&m));
+    }
+
+    #[test]
+    fn datum_names_are_read_from_the_generated_table() {
+        // As scripts/gen_datum_names.py normalizes them.
+        assert_eq!(epsg::datum_key("D_European_1950"), "european1950");
+        assert_eq!(epsg::datum_key("Militar-Geographische Institut"), "militargeographischeinstitut");
+        assert_eq!(epsg::datum_key("CH1903+"), "ch1903+");
+        // Official, GDAL's WKT 1, EPSG and ESRI names.
+        for (name, code) in [
+            ("European Datum 1950", 6230),
+            ("European_Datum_1950", 6230),
+            ("ED50", 6230),
+            ("D_European_1950", 6230),
+            ("D_ETRS_1989", 6258),
+            ("WGS_1984", 6326),
+            ("D_North_American_1983", 6269),
+            ("CH1903+", 6150),
+        ] {
+            assert_eq!(epsg::datums_named(name), vec![code], "{name}");
+        }
+        // EPSG lists NAD83 as an alias of NAD83(HARN) too: identification takes the base datum.
+        assert_eq!(epsg::datums_named("NAD83"), vec![6152, 6269]);
+        let nad83 = r#"GEOGCS["unknown",DATUM["NAD83",SPHEROID["GRS 1980",6378137,298.257222101]],PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433]]"#;
+        assert_eq!(identify_epsg(nad83), Some(4269));
+        assert!(epsg::datums_named("Unknown based on Bessel 1841 ellipsoid").is_empty());
     }
 
     #[test]

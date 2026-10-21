@@ -9,10 +9,14 @@ import dataclasses
 import importlib.util
 import os
 import platform
+import subprocess
 import sys
 from pathlib import Path
 
+import numpy as np
 import pytest
+
+import terrio
 
 rasterio = pytest.importorskip("rasterio")
 pytest.importorskip("shapely")
@@ -85,3 +89,32 @@ def test_example(script, scratch):
     outcome = compare.run_example(script, data, scratch)
     row = compare.Row("examples", script.name, "tolerance", outcome, "")
     assert not compare.failed(row), outcome.detail
+
+
+def test_esri_geotiff_reported_as_esri(tmp_path):
+    # GDAL writes ESRI:54009 as a user-defined CRS with its ESRI PE string; terrio reports it
+    # under the ESRI authority everywhere, as GDAL does, never as EPSG:54009.
+    path = tmp_path / "mollweide.tif"
+    profile = dict(driver="GTiff", width=4, height=4, count=1, dtype="float32", crs="ESRI:54009")
+    t = rasterio.transform.from_origin(0, 0, 1000, 1000)
+    with rasterio.open(path, "w", transform=t, **profile) as dst:
+        dst.write(np.zeros((1, 4, 4), "float32"))
+    for mod in (rasterio, trio):
+        with mod.open(path) as src:
+            c = src.crs
+            got = (c.to_string(), c.to_authority(), c.to_epsg(), c.is_epsg_code)
+            assert got == ("ESRI:54009", ("ESRI", "54009"), None, False), mod.__name__
+    r = terrio.open_raster(str(path))
+    assert r.crs == "ESRI:54009"
+    # The WKT is GDAL's ESRI PE string, as the file holds it.
+    assert r.crs_wkt.startswith('PROJCS["World_Mollweide",GEOGCS["GCS_WGS_1984"')
+    info = terrio.info(str(path))["crs"]
+    assert (info["epsg"], info["esri"], info["name"]) == (None, 54009, "World_Mollweide")
+    out = subprocess.run(
+        [sys.executable, "-m", "terrio", "info", str(path)],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    assert "CRS: ESRI:54009 (World_Mollweide)" in out, out
+    assert "EPSG:54009" not in out

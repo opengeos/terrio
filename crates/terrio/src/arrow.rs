@@ -335,12 +335,20 @@ fn crs_metadata(layer: &Layer) -> String {
         Some(s) => crate::drivers::wkt::gdal_wkt(&s),
         None => srs.to_wkt(),
     };
+    // An ESRI CRS keeps its ESRI code, as PROJ identifies it.
+    let esri = srs.esri.filter(|_| epsg.is_none());
     let meta = match wkt.as_deref().and_then(|w| crate::drivers::vector::projjson::from_wkt1(w, epsg)) {
-        Some(projjson) => json!({"crs": projjson, "crs_type": "projjson"}),
-        None => match (epsg, wkt) {
-            (Some(code), _) => json!({"crs": format!("EPSG:{code}"), "crs_type": "authority_code"}),
-            (None, Some(w)) => json!({"crs": w}),
-            (None, None) => json!({}),
+        Some(mut projjson) => {
+            if let Some(code) = esri {
+                projjson["id"] = json!({"authority": "ESRI", "code": code});
+            }
+            json!({"crs": projjson, "crs_type": "projjson"})
+        }
+        None => match (epsg, esri, wkt) {
+            (Some(code), _, _) => json!({"crs": format!("EPSG:{code}"), "crs_type": "authority_code"}),
+            (None, Some(code), _) => json!({"crs": format!("ESRI:{code}"), "crs_type": "authority_code"}),
+            (None, None, Some(w)) => json!({"crs": w}),
+            (None, None, None) => json!({}),
         },
     };
     meta.to_string()
