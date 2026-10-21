@@ -37,7 +37,7 @@ fn cf_params(lat: f64, lon: f64, o_lon: f64) -> [(&'static str, f64); 3] {
 }
 
 /// Points (lon, lat) and their EUR-11 grid coordinates, by PROJ.
-const FWD: [((f64, f64), (f64, f64)); 6] = [
+const FWD: [Pair; 6] = [
     ((10.0, 45.0), (-5.6732984750900215, -5.443208334080359)),
     ((-5.0, 52.0), (-13.944869601997066, 3.4234705910559105)),
     ((30.0, 70.0), (4.329059340342213, 19.601633368966866)),
@@ -47,7 +47,7 @@ const FWD: [((f64, f64), (f64, f64)); 6] = [
 ];
 
 /// EUR-11 grid coordinates and their longitude and latitude, by PROJ.
-const INV: [((f64, f64), (f64, f64)); 5] = [
+const INV: [Pair; 5] = [
     ((-5.67, -5.44), (10.004125482875015, 45.003544887124626)),
     ((-28.375, -23.375), (-10.063879662216037, 21.98782875683831)),
     ((20.0, 10.0), (54.751097928944496, 55.741263061720545)),
@@ -55,8 +55,11 @@ const INV: [((f64, f64), (f64, f64)); 5] = [
     ((-179.9, 60.0), (-161.94934126640257, 9.250034234418239)),
 ];
 
+/// A point and its transformed coordinates.
+type Pair = ((f64, f64), (f64, f64));
+
 /// Checks the transformations from and to WGS 84 against PROJ's, within 1e-9°.
-fn check(crs: &SpatialRef, fwd: &[((f64, f64), (f64, f64))], inv: &[((f64, f64), (f64, f64))], what: &str) {
+fn check(crs: &SpatialRef, fwd: &[Pair], inv: &[Pair], what: &str) {
     assert!(crs.is_rotated_pole() && !crs.is_geographic(), "{what}: not read as a rotated pole");
     let wgs84 = SpatialRef::from_epsg(4326).unwrap();
     let to = Transformer::new(&wgs84, crs).unwrap();
