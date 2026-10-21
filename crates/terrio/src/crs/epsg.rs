@@ -370,7 +370,7 @@ pub(crate) fn projected_on(geog: u32) -> &'static [(u32, &'static str)] {
             let f: Vec<&'static str> = t.text[l.line.0 as usize..l.line.1 as usize].splitn(9, '\t').collect();
             let [_, _, geog, _, _, flags, _, proj, wkt] = f[..] else { continue };
             // A deprecated code has its replacement's WKT.
-            let current = wkt.ends_with(&format!("[\"EPSG\",\"{code}\"]]")) || wkt.ends_with(&format!("[\"EPSG\",{code}]]"));
+            let current = super::declared_epsg(wkt) == Some(*code);
             let method = proj.split_whitespace().next().unwrap_or_default();
             if current
                 && !flags.contains('3')
