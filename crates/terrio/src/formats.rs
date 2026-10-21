@@ -205,7 +205,26 @@ impl RasterDriver {
             Self::PMTiles => ("PMTiles", "ProtoMap Tiles", &["pmtiles"], true, true),
             Self::Gdal => ("GDAL", "Any raster GDAL reads (optional backend)", &[], cfg!(feature = "gdal"), false),
         };
-        DriverInfo { name, long_name, kind: Kind::Raster, extensions, read, write }
+        let built = self.missing_feature().is_none();
+        DriverInfo { name, long_name, kind: Kind::Raster, extensions, read: read && built, write: write && built }
+    }
+
+    /// The cargo feature that builds the driver, when this build leaves it out.
+    pub(crate) fn missing_feature(self) -> Option<&'static str> {
+        let (feature, built) = match self {
+            Self::GPKG => ("sqlite", cfg!(feature = "sqlite")),
+            Self::JP2 => ("jp2", cfg!(feature = "jp2")),
+            Self::Zarr => ("zarr", cfg!(feature = "zarr")),
+            Self::NetCDF | Self::HDF5 => ("netcdf-hdf5", cfg!(feature = "netcdf-hdf5")),
+            Self::MBTiles | Self::PMTiles => ("tiles", cfg!(feature = "tiles")),
+            _ => return None,
+        };
+        (!built).then_some(feature)
+    }
+
+    /// Fails when this build leaves the driver out.
+    pub(crate) fn ensure_built(self) -> crate::Result<()> {
+        self.missing_feature().map_or(Ok(()), |f| Err(crate::Error::disabled(f)))
     }
 
     /// The driver's short name.
@@ -343,7 +362,26 @@ impl VectorDriver {
             Self::MVT => ("MVT", "Mapbox Vector Tiles", &["mvt"], true, true),
             Self::Gdal => ("GDAL", "Any vector format GDAL reads (optional backend)", &[], cfg!(feature = "gdal"), false),
         };
-        DriverInfo { name, long_name, kind: Kind::Vector, extensions, read, write }
+        let built = self.missing_feature().is_none();
+        DriverInfo { name, long_name, kind: Kind::Vector, extensions, read: read && built, write: write && built }
+    }
+
+    /// The cargo feature that builds the driver, when this build leaves it out.
+    pub(crate) fn missing_feature(self) -> Option<&'static str> {
+        let (feature, built) = match self {
+            Self::GPKG => ("sqlite", cfg!(feature = "sqlite")),
+            Self::Parquet => ("parquet", cfg!(feature = "parquet")),
+            Self::FlatGeobuf => ("flatgeobuf", cfg!(feature = "flatgeobuf")),
+            Self::OSM => ("osm", cfg!(feature = "osm")),
+            Self::MBTiles | Self::PMTiles | Self::MVT => ("tiles", cfg!(feature = "tiles")),
+            _ => return None,
+        };
+        (!built).then_some(feature)
+    }
+
+    /// Fails when this build leaves the driver out.
+    pub(crate) fn ensure_built(self) -> crate::Result<()> {
+        self.missing_feature().map_or(Ok(()), |f| Err(crate::Error::disabled(f)))
     }
 
     /// The driver's short name.
@@ -384,6 +422,7 @@ impl VectorDriver {
             Self::GeoJSON => F::GeoJson,
             Self::TopoJSON => F::TopoJson,
             Self::GPKG => F::GeoPackage,
+            #[cfg(feature = "parquet")]
             Self::Parquet => F::GeoParquet,
             Self::FlatGeobuf => F::FlatGeobuf,
             Self::Shapefile => F::Shapefile,
@@ -392,7 +431,12 @@ impl VectorDriver {
             Self::GML => F::Gml,
             Self::GPX => F::Gpx,
             Self::MapInfo => F::MapInfoMif,
+            #[cfg(feature = "osm")]
             Self::OSM => F::OsmPbf,
+            #[cfg(not(feature = "parquet"))]
+            Self::Parquet => return None,
+            #[cfg(not(feature = "osm"))]
+            Self::OSM => return None,
             Self::GeoJSONSeq | Self::CSV | Self::MBTiles | Self::PMTiles | Self::MVT | Self::Gdal => return None,
         })
     }
@@ -443,6 +487,11 @@ pub fn all_drivers() -> Vec<DriverInfo> {
             write: true,
         },
     ];
+    let point_clouds = point_clouds.map(|d| DriverInfo {
+        read: d.read && cfg!(feature = "pointcloud"),
+        write: d.write && cfg!(feature = "pointcloud"),
+        ..d
+    });
     RasterDriver::ALL.iter().map(|d| d.info()).chain(VectorDriver::ALL.iter().map(|d| d.info())).chain(point_clouds).collect()
 }
 

@@ -32,6 +32,14 @@ pub enum Error {
     InvalidData(String),
 }
 
+impl Error {
+    /// The error of a driver this build leaves out: terrio was built without `feature`.
+    #[allow(dead_code)]
+    pub(crate) fn disabled(feature: &str) -> Error {
+        Error::Unsupported(format!("built without the `{feature}` feature"))
+    }
+}
+
 impl From<wbprojection::ProjectionError> for Error {
     fn from(e: wbprojection::ProjectionError) -> Self {
         Error::Crs(e.to_string())

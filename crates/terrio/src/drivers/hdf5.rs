@@ -793,7 +793,7 @@ fn georeferencing(f: &Hdf5File, w: &Walk, e: &Entry, attrs: &[Attribute], nd: us
         let epsg = string_attr(&gattrs, "epsg_code").and_then(|s| s.trim().parse::<u32>().ok()).filter(|c| *c > 0);
         crs = match epsg {
             Some(code) => Some(wbraster::CrsInfo::from_epsg(code)),
-            None => super::netcdf::cf_crs(
+            None => super::cf::cf_crs(
                 |k| string_attr(&gattrs, k),
                 |k| {
                     let a = gattrs.iter().find(|a| a.name == k)?;

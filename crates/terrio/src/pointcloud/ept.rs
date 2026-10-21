@@ -183,7 +183,7 @@ struct EptCursor {
 fn fetch(base: &str, rel: &str) -> Result<Vec<u8>> {
     let path = format!("{base}{rel}");
     let location = crate::vfs::Location::parse(&path);
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(remote)]
     if let Some(remote) = location.remote() {
         return crate::http::get(&remote);
     }

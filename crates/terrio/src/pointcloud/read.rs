@@ -18,7 +18,7 @@ pub const DEFAULT_CHUNK_POINTS: usize = 1 << 20;
 pub(crate) enum Source {
     File(std::io::BufReader<std::fs::File>),
     Memory(Cursor<Vec<u8>>),
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(remote)]
     Http(crate::http::RangeReader),
     /// A remote file whose bytes the caller fetches (see [`crate::sparse`]).
     Sparse(crate::sparse::SparseFile),
@@ -29,7 +29,7 @@ impl Read for Source {
         match self {
             Source::File(f) => f.read(buf),
             Source::Memory(c) => c.read(buf),
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(remote)]
             Source::Http(h) => h.read(buf),
             Source::Sparse(s) => s.read(buf),
         }
@@ -41,7 +41,7 @@ impl Seek for Source {
         match self {
             Source::File(f) => f.seek(pos),
             Source::Memory(c) => c.seek(pos),
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(remote)]
             Source::Http(h) => h.seek(pos),
             Source::Sparse(s) => s.seek(pos),
         }
@@ -51,7 +51,7 @@ impl Seek for Source {
 impl Source {
     /// Fetches byte ranges `(offset, length)` ahead of reading them, when the source is remote.
     pub(crate) fn prefetch(&self, ranges: &[(u64, u64)]) -> Result<()> {
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(remote)]
         if let Source::Http(h) = self {
             h.prefetch(ranges)?;
         }
@@ -71,7 +71,7 @@ impl Source {
 
     /// The length of a remote file, `None` for local files and memory.
     pub(crate) fn remote_len(&self) -> Option<u64> {
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(remote)]
         if let Source::Http(h) = self {
             return Some(h.len());
         }
@@ -83,7 +83,7 @@ impl Source {
 
     /// Whether the bytes are fetched over HTTP.
     pub(crate) fn is_remote(&self) -> bool {
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(remote)]
         if let Source::Http(_) = self {
             return true;
         }
@@ -464,7 +464,7 @@ enum LasCursor {
 
 impl LasReader {
     fn open(path: &str) -> Result<Self> {
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(remote)]
         if let Some(remote) = crate::vfs::Location::parse(path).remote() {
             let mut http = crate::http::RangeReader::open(&remote)?;
             let header = LasHeader::read(&mut http)?;

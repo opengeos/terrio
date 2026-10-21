@@ -31,12 +31,19 @@
 //! ```
 
 mod json;
+#[cfg(feature = "sqlite")]
 mod sqlite;
 
 pub use crate::drivers::vector::profile::{FieldProfile, GeometryProfile, LayerProfile};
 
 use crate::dataset::{VectorOpenOptions, VectorWriteOptions};
-use crate::drivers::vector::{csv, flatgeobuf as fgb, geojson, geoparquet, gpkg_read, shapefile};
+#[cfg(feature = "flatgeobuf")]
+use crate::drivers::vector::flatgeobuf as fgb;
+#[cfg(feature = "parquet")]
+use crate::drivers::vector::geoparquet;
+#[cfg(feature = "sqlite")]
+use crate::drivers::vector::gpkg_read;
+use crate::drivers::vector::{csv, geojson, shapefile};
 use crate::formats::VectorDriver;
 use crate::ops::vector_filter::{Translator, VectorTranslateOptions};
 use crate::{Error, Result};
@@ -60,7 +67,7 @@ const SOURCE_BYTES: usize = CHUNK_BYTES / 8;
 /// The memory a feature takes, about: its coordinates and its values (without their text, which
 /// large geometries outweigh).
 fn feature_size(f: &Feature) -> usize {
-    let coords = f.geometry.as_ref().map_or(0, fgb::coord_count);
+    let coords = f.geometry.as_ref().map_or(0, crate::vector::coord_count);
     std::mem::size_of::<Feature>()
         + coords * std::mem::size_of::<wbvector::Coord>()
         + f.attributes.len() * std::mem::size_of::<FieldValue>()
@@ -179,16 +186,17 @@ impl FeatureSource for MemorySource {
 
 /// The drivers whose files [`open_layers`] reads as streams.
 pub fn can_read_stream(driver: VectorDriver) -> bool {
-    matches!(
-        driver,
-        VectorDriver::GPKG
-            | VectorDriver::FlatGeobuf
-            | VectorDriver::Parquet
-            | VectorDriver::Shapefile
-            | VectorDriver::GeoJSON
-            | VectorDriver::GeoJSONSeq
-            | VectorDriver::CSV
-    )
+    driver.missing_feature().is_none()
+        && matches!(
+            driver,
+            VectorDriver::GPKG
+                | VectorDriver::FlatGeobuf
+                | VectorDriver::Parquet
+                | VectorDriver::Shapefile
+                | VectorDriver::GeoJSON
+                | VectorDriver::GeoJSONSeq
+                | VectorDriver::CSV
+        )
 }
 
 /// Opens the layers of a vector dataset (those `options.layers` names, or all) as streams of
@@ -211,6 +219,7 @@ pub fn open_layers(path: &str, options: &VectorOpenOptions, batch: usize) -> Res
             })
             .collect());
     };
+    #[cfg(feature = "sqlite")]
     if driver == VectorDriver::GPKG {
         return open_gpkg(path, options, batch);
     }
@@ -223,11 +232,14 @@ pub fn open_layers(path: &str, options: &VectorOpenOptions, batch: usize) -> Res
             (s.layer.clone(), Box::new(CsvSource { s, batch }))
         }
         VectorDriver::Shapefile => open_shapefile(path)?,
+        #[cfg(feature = "flatgeobuf")]
         VectorDriver::FlatGeobuf => open_fgb(path, batch)?,
-        _ => {
+        #[cfg(feature = "parquet")]
+        VectorDriver::Parquet => {
             let s = geoparquet::ParquetStream::open(|| Ok(File::open(path)?), stem, None, options.spatial_filter, batch, None)?;
             (s.layer.clone(), Box::new(ParquetSource(s)))
         }
+        _ => unreachable!("every streamed driver is handled"),
     };
     let layer = crate::dataset::fix_layer(layer, path, driver);
     if !options.layers.is_empty() && !options.layers.iter().any(|n| *n == layer.name || n == stem) {
@@ -505,6 +517,7 @@ fn open_shapefile(path: &str) -> Result<(Layer, Box<dyn FeatureSource>)> {
 
 // FlatGeobuf
 
+#[cfg(feature = "flatgeobuf")]
 struct FgbSource {
     r: BufReader<File>,
     header: fgb::FgbHeader,
@@ -512,6 +525,7 @@ struct FgbSource {
     batch: usize,
 }
 
+#[cfg(feature = "flatgeobuf")]
 impl FeatureSource for FgbSource {
     fn next_batch(&mut self) -> Result<Option<Vec<Feature>>> {
         let (mut raw, mut bytes) = (Vec::new(), 0);
@@ -541,6 +555,7 @@ impl FeatureSource for FgbSource {
     }
 }
 
+#[cfg(feature = "flatgeobuf")]
 fn open_fgb(path: &str, batch: usize) -> Result<(Layer, Box<dyn FeatureSource>)> {
     let mut r = BufReader::with_capacity(1 << 20, File::open(path)?);
     let mut start = [0u8; 12];
@@ -558,8 +573,10 @@ fn open_fgb(path: &str, batch: usize) -> Result<(Layer, Box<dyn FeatureSource>)>
 
 // GeoParquet
 
+#[cfg(feature = "parquet")]
 struct ParquetSource(geoparquet::ParquetStream);
 
+#[cfg(feature = "parquet")]
 impl FeatureSource for ParquetSource {
     fn next_batch(&mut self) -> Result<Option<Vec<Feature>>> {
         self.0.next_batch()
@@ -568,6 +585,7 @@ impl FeatureSource for ParquetSource {
 
 // GeoPackage
 
+#[cfg(feature = "sqlite")]
 struct GpkgSource {
     db: sqlite::FileDb,
     def: gpkg_read::LayerDef,
@@ -579,11 +597,13 @@ struct GpkgSource {
     batch: usize,
 }
 
+#[cfg(feature = "sqlite")]
 enum GpkgRows {
     Scan(sqlite::Cursor),
     Lookup { root: u32, ids: std::vec::IntoIter<i64> },
 }
 
+#[cfg(feature = "sqlite")]
 impl FeatureSource for GpkgSource {
     fn next_batch(&mut self) -> Result<Option<Vec<Feature>>> {
         let mut rows: Vec<(i64, Vec<u8>)> = Vec::new();
@@ -626,6 +646,7 @@ impl FeatureSource for GpkgSource {
     }
 }
 
+#[cfg(feature = "sqlite")]
 fn open_gpkg(path: &str, options: &VectorOpenOptions, batch: usize) -> Result<Vec<FeatureReader>> {
     let db = sqlite::FileDb::open(path)?;
     let (layers, _) = gpkg_read::contents(&db)?;
@@ -690,23 +711,26 @@ trait FeatureSink: Send {
 /// The drivers [`FeatureWriter`] writes as streams (the others are written whole when the
 /// writer finishes).
 pub fn can_write_stream(driver: VectorDriver) -> bool {
-    matches!(
-        driver,
-        VectorDriver::GeoJSON
-            | VectorDriver::GeoJSONSeq
-            | VectorDriver::GPKG
-            | VectorDriver::CSV
-            | VectorDriver::Shapefile
-            | VectorDriver::FlatGeobuf
-            | VectorDriver::Parquet
-    )
+    driver.missing_feature().is_none()
+        && matches!(
+            driver,
+            VectorDriver::GeoJSON
+                | VectorDriver::GeoJSONSeq
+                | VectorDriver::GPKG
+                | VectorDriver::CSV
+                | VectorDriver::Shapefile
+                | VectorDriver::FlatGeobuf
+                | VectorDriver::Parquet
+        )
 }
 
 /// Whether the writer of a driver needs a [`LayerProfile`] of the features of `layer` (its
 /// fields) to write them as a stream. GeoParquet needs one only for integer, date and date-time
 /// fields, whose column types depend on the values.
+#[cfg_attr(not(feature = "parquet"), allow(unused_variables))]
 pub fn needs_profile(driver: VectorDriver, layer: &Layer) -> bool {
     match driver {
+        #[cfg(feature = "parquet")]
         VectorDriver::Parquet => geoparquet::ParquetEncoder::needs_profile(layer),
         _ => matches!(driver, VectorDriver::CSV | VectorDriver::Shapefile | VectorDriver::GPKG),
     }
@@ -755,7 +779,9 @@ impl FeatureWriter {
                 Box::new(CsvSink { out, enc })
             }
             (true, VectorDriver::Shapefile, Some(p)) => Box::new(ShpSink::create(path, &schema, p)?),
+            #[cfg(feature = "flatgeobuf")]
             (true, VectorDriver::FlatGeobuf, _) => Box::new(FgbSink::create(path, &schema)?),
+            #[cfg(feature = "sqlite")]
             (true, VectorDriver::GPKG, Some(p)) => match GpkgSink::create(path, &schema, p)? {
                 Some(sink) => Box::new(sink),
                 // A field named fid would give the rowids, which must then be checked unique over
@@ -766,6 +792,7 @@ impl FeatureWriter {
                     options: VectorWriteOptions { driver: Some(driver), ..options.clone() },
                 }),
             },
+            #[cfg(feature = "parquet")]
             (true, VectorDriver::Parquet, p) => {
                 let enc = geoparquet::ParquetEncoder::new(&schema, p.unwrap_or(&LayerProfile::new(&schema)));
                 let writer = enc.writer(BufWriter::with_capacity(1 << 20, File::create(path)?))?;
@@ -798,6 +825,7 @@ impl FeatureWriter {
 /// time, keeping only each geometry's bounds for the R-tree; the metadata tables, R-tree and
 /// schema are written after it. The tables and values are those of the whole-layer writer,
 /// whose schema decisions (geometry type, Z, MEDIUMINT) are taken from the profile.
+#[cfg(feature = "sqlite")]
 struct GpkgSink {
     table: crate::drivers::vector::sqlite::StreamTable<BufWriter<File>>,
     builder: crate::drivers::vector::geopackage::Builder,
@@ -807,6 +835,7 @@ struct GpkgSink {
     count: usize,
 }
 
+#[cfg(feature = "sqlite")]
 impl GpkgSink {
     /// `None` when the layer has an integer field named fid (see `FeatureWriter::create`).
     fn create(path: &str, schema: &Layer, profile: &LayerProfile) -> Result<Option<Self>> {
@@ -835,6 +864,7 @@ impl GpkgSink {
     }
 }
 
+#[cfg(feature = "sqlite")]
 impl FeatureSink for GpkgSink {
     fn write(&mut self, chunk: &Layer) -> Result<()> {
         let fields = self.layer.schema.fields();
@@ -880,12 +910,14 @@ impl FeatureSink for GpkgSink {
 /// ([`StreamTable`](crate::drivers::vector::sqlite::StreamTable)). The profile deciding the
 /// schema (geometry type, Z, MEDIUMINT) is gathered on the way, as it only shows in the tables'
 /// definitions, written last. The tables and values are those of the whole-layer writer.
+#[cfg(feature = "sqlite")]
 pub(crate) struct GpkgLayersSink {
     out: BufWriter<File>,
     builder: crate::drivers::vector::geopackage::Builder,
     layers: Vec<SpilledLayer>,
 }
 
+#[cfg(feature = "sqlite")]
 struct SpilledLayer {
     schema: Layer,
     cols: crate::drivers::vector::geopackage::LayerColumns,
@@ -894,6 +926,7 @@ struct SpilledLayer {
     count: usize,
 }
 
+#[cfg(feature = "sqlite")]
 impl GpkgLayersSink {
     /// `None` when a layer has an integer field named fid (which gives the rowids, to be checked
     /// unique over all the features), or neither a geometry type nor a CRS (whether it is a
@@ -1160,6 +1193,7 @@ impl FeatureSink for ShpSink {
 /// the features seen so far, and when a chunk widens them the features already spooled are
 /// re-encoded with the final types as the file is assembled, so that it is identical to the one
 /// [`crate::write_vector`] writes.
+#[cfg(feature = "flatgeobuf")]
 struct FgbSink {
     path: String,
     tmp_path: String,
@@ -1176,6 +1210,7 @@ struct FgbSink {
     offsets: Vec<u64>,
 }
 
+#[cfg(feature = "flatgeobuf")]
 impl FgbSink {
     fn create(path: &str, layer: &Layer) -> Result<Self> {
         let tmp_path = format!("{path}.terrio-features");
@@ -1270,6 +1305,7 @@ impl FgbSink {
     }
 }
 
+#[cfg(feature = "flatgeobuf")]
 impl FeatureSink for FgbSink {
     fn write(&mut self, chunk: &Layer) -> Result<()> {
         self.profile.add(&chunk.features);
@@ -1299,6 +1335,7 @@ impl FeatureSink for FgbSink {
     }
 }
 
+#[cfg(feature = "flatgeobuf")]
 impl Drop for FgbSink {
     fn drop(&mut self) {
         let _ = std::fs::remove_file(&self.tmp_path);
@@ -1308,6 +1345,7 @@ impl Drop for FgbSink {
 
 /// Record batches are built as chunks come, and encoded on a thread of their own (in WebAssembly,
 /// right away), so that reading goes on while row groups are encoded.
+#[cfg(feature = "parquet")]
 struct ParquetSink {
     enc: geoparquet::ParquetEncoder,
     #[cfg(not(target_arch = "wasm32"))]
@@ -1319,6 +1357,7 @@ struct ParquetSink {
     writer: geoparquet::ParquetFileWriter<BufWriter<File>>,
 }
 
+#[cfg(feature = "parquet")]
 impl ParquetSink {
     fn new(mut writer: geoparquet::ParquetFileWriter<BufWriter<File>>, enc: geoparquet::ParquetEncoder) -> Self {
         #[cfg(not(target_arch = "wasm32"))]
@@ -1350,6 +1389,7 @@ impl ParquetSink {
     }
 }
 
+#[cfg(feature = "parquet")]
 impl FeatureSink for ParquetSink {
     fn write(&mut self, chunk: &Layer) -> Result<()> {
         #[cfg(not(target_arch = "wasm32"))]
@@ -1383,7 +1423,7 @@ impl FeatureSink for ParquetSink {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "parquet", not(target_arch = "wasm32")))]
 impl ParquetSink {
     /// Ends the encoder thread: the file is complete, or its error.
     fn stop(&mut self) -> Result<()> {
@@ -1393,7 +1433,7 @@ impl ParquetSink {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "parquet", not(target_arch = "wasm32")))]
 impl Drop for ParquetSink {
     /// An unfinished sink waits for its encoder, which leaves the file without a footer.
     fn drop(&mut self) {
@@ -1406,6 +1446,8 @@ impl Drop for ParquetSink {
 
 /// A layer read as a stream of Arrow record batches (an `arrow_array::RecordBatchReader`), for
 /// Arrow consumers: the C stream interface, IPC streams, Parquet writers.
+#[cfg(feature = "parquet")]
+#[cfg_attr(docsrs, doc(cfg(feature = "parquet")))]
 pub struct ArrowStream {
     reader: FeatureReader,
     enc: crate::arrow::ArrowEncoder,
@@ -1413,6 +1455,7 @@ pub struct ArrowStream {
     started: bool,
 }
 
+#[cfg(feature = "parquet")]
 impl ArrowStream {
     /// Encodes the features of `reader`. When the schema depends on the values
     /// ([`crate::arrow::ArrowEncoder::needs_profile`]), `profile` must describe all the features
@@ -1478,6 +1521,7 @@ impl ArrowStream {
     }
 }
 
+#[cfg(feature = "parquet")]
 impl Iterator for ArrowStream {
     type Item = std::result::Result<arrow_array::RecordBatch, arrow_schema::ArrowError>;
 
@@ -1486,6 +1530,7 @@ impl Iterator for ArrowStream {
     }
 }
 
+#[cfg(feature = "parquet")]
 impl arrow_array::RecordBatchReader for ArrowStream {
     fn schema(&self) -> arrow_schema::SchemaRef {
         self.enc.schema()
@@ -1527,17 +1572,23 @@ pub fn can_convert_stream(src: &str, dst: &str, options: &ConvertOptions) -> boo
     let out = options.write.driver.or_else(|| VectorDriver::for_extension(dst));
     let ext = crate::formats::extension(src);
     let input = VectorDriver::for_extension(src).filter(|_| ext.as_deref() != Some("json"));
-    let pbf = || {
-        input == Some(VectorDriver::OSM)
-            && ext.as_deref() == Some("pbf")
-            && cfg!(not(target_arch = "wasm32"))
-            && File::open(src).is_ok_and(|mut f| crate::drivers::vector::osm::is_sorted_pbf(&mut f))
-    };
+    let pbf = || input == Some(VectorDriver::OSM) && ext.as_deref() == Some("pbf") && osm_sorted(src);
     options.translate.sql.is_none()
         && out.is_some_and(can_write_stream)
         && (input.is_some_and(can_read_stream) || pbf())
         && crate::vfs::Location::parse(src).is_local()
         && !same_dataset(src, dst)
+}
+
+/// Whether `src` is an OpenStreetMap PBF file sorted by type then id.
+fn osm_sorted(src: &str) -> bool {
+    #[cfg(all(feature = "osm", not(target_arch = "wasm32")))]
+    return File::open(src).is_ok_and(|mut f| crate::drivers::vector::osm::is_sorted_pbf(&mut f));
+    #[cfg(not(all(feature = "osm", not(target_arch = "wasm32"))))]
+    {
+        let _ = src;
+        false
+    }
 }
 
 /// Whether writing `dst` would overwrite `src` (the same file, or the same shapefile through
@@ -1580,6 +1631,7 @@ pub fn convert(src: &str, dst: &str, options: &ConvertOptions) -> Result<()> {
     match readers.len() {
         0 => return Err(Error::InvalidArgument("no layers to write".into())),
         1 => {}
+        #[cfg(feature = "sqlite")]
         _ if driver == VectorDriver::GPKG => {
             let mut translators = readers.iter().map(|r| Translator::new(r.layer(), &options.translate)).collect::<Result<Vec<_>>>()?;
             let schemas: Vec<Layer> = translators.iter().map(|t| t.schema().clone()).collect();
@@ -1661,12 +1713,12 @@ fn remove_on_error(dst: &str, driver: VectorDriver, written: Result<()>) -> Resu
 /// [`read_sorted_pbf`](crate::drivers::vector::osm::read_sorted_pbf)). `None` for other inputs
 /// and outputs, which are converted whole.
 fn convert_osm(src: &str, dst: &str, options: &ConvertOptions) -> Option<Result<()>> {
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(not(all(feature = "osm", not(target_arch = "wasm32"))))]
     {
         let _ = (src, dst, options);
         None
     }
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "osm", not(target_arch = "wasm32")))]
     {
         let local = crate::vfs::Location::parse(src).is_local();
         if options.translate.sql.is_some()
@@ -1694,7 +1746,8 @@ fn convert_osm(src: &str, dst: &str, options: &ConvertOptions) -> Option<Result<
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "osm", not(target_arch = "wasm32")))]
+#[cfg_attr(not(feature = "sqlite"), allow(unused_variables))]
 fn convert_sorted_osm(data: &mut File, src: &str, dst: &str, options: &ConvertOptions) -> Result<()> {
     use crate::drivers::vector::osm;
     let driver = output_driver(dst, options);
@@ -1724,6 +1777,7 @@ fn convert_sorted_osm(data: &mut File, src: &str, dst: &str, options: &ConvertOp
         c
     };
     let mut translators = selected.iter().map(|&i| Translator::new(&schemas[i], &options.translate)).collect::<Result<Vec<_>>>()?;
+    #[cfg(feature = "sqlite")]
     if driver == VectorDriver::GPKG {
         let out: Vec<Layer> = translators.iter().map(|t| t.schema().clone()).collect();
         let Some(mut sink) = GpkgLayersSink::create(dst, &out)? else { return convert_whole(src, dst, options) };

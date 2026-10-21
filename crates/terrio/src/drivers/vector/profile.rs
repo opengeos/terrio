@@ -91,9 +91,9 @@ impl FieldProfile {
         }
         if matches!(t, FieldType::Date | FieldType::DateTime) {
             let s = v.as_str();
-            self.all_dates &= s.and_then(super::geoparquet::parse_date).is_some();
-            self.all_datetimes &= s.and_then(super::geoparquet::parse_datetime).is_some();
-            if s.is_some_and(crate::arrow::has_offset) {
+            self.all_dates &= s.and_then(super::datetime::parse_date).is_some();
+            self.all_datetimes &= s.and_then(super::datetime::parse_datetime).is_some();
+            if s.is_some_and(super::datetime::has_offset) {
                 self.with_offset += 1;
             }
         }
@@ -254,7 +254,7 @@ impl LayerProfile {
             let z = crate::vector::geometry_has_z(geom);
             g.has_z |= z;
             if !(g.any_z && g.has_m) {
-                let (az, am) = crate::arrow::geometry_dims(geom);
+                let (az, am) = crate::vector::geometry_dims(geom);
                 g.any_z |= az;
                 g.has_m |= am;
             }

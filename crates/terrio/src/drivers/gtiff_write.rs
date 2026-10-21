@@ -109,6 +109,11 @@ impl Compression {
     }
 }
 
+#[cfg(not(feature = "lerc"))]
+fn lerc_encode(_data: &[u8], _c: &ChunkInfo, _max_z_error: f64) -> Result<Vec<u8>> {
+    Err(Error::disabled("lerc"))
+}
+
 fn deflate(data: &[u8]) -> Result<Vec<u8>> {
     let mut enc = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::new(6));
     enc.write_all(data)?;
@@ -118,6 +123,7 @@ fn deflate(data: &[u8]) -> Result<Vec<u8>> {
 /// Encodes a chunk (little-endian samples, interleaved) as a LERC blob of `spp` values per pixel,
 /// as GDAL's LERC codec does. Floating-point chunks of one sample with NaNs get a mask of the
 /// valid pixels.
+#[cfg(feature = "lerc")]
 fn lerc_encode(data: &[u8], c: &ChunkInfo, max_z_error: f64) -> Result<Vec<u8>> {
     let lerc = |e: lerc_core::Error| Error::InvalidData(format!("LERC: {e}"));
     let options = lerc_writer::EncodeOptions::new().with_max_z_error(max_z_error);
@@ -405,6 +411,10 @@ impl TiffOptions {
         let co = |key: &str| options.creation_options.iter().rev().find(|(k, _)| k.eq_ignore_ascii_case(key)).map(|(_, v)| v.as_str());
         let name = options.compression.as_deref().or_else(|| co("COMPRESS")).unwrap_or(if cog { "LZW" } else { "NONE" });
         let Some(compression) = Compression::parse(name) else { return Ok(None) };
+        #[cfg(not(feature = "lerc"))]
+        if matches!(compression, Compression::Lerc | Compression::LercDeflate | Compression::LercZstd) {
+            return Err(Error::disabled("lerc"));
+        }
         let size = |key: &str| -> Result<Option<u32>> {
             co(key).map(|v| v.trim().parse::<u32>().map_err(|_| Error::InvalidArgument(format!("invalid {key} '{v}'")))).transpose()
         };

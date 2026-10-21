@@ -29,48 +29,82 @@ serde.workspace = true
 serde_json = { workspace = true, features = ["preserve_order", "float_roundtrip", "raw_value"] }
 zip.workspace = true
 tiff.workspace = true
-flatgeobuf.workspace = true
-flatbuffers.workspace = true
-parquet.workspace = true
-arrow-array.workspace = true
-arrow-schema.workspace = true
-arrow-ipc.workspace = true
-arrow-buffer.workspace = true
-bytes.workspace = true
+flatgeobuf = { workspace = true, optional = true }
+flatbuffers = { workspace = true, optional = true }
+parquet = { workspace = true, optional = true }
+arrow-array = { workspace = true, optional = true }
+arrow-schema = { workspace = true, optional = true }
+arrow-ipc = { workspace = true, optional = true }
+arrow-buffer = { workspace = true, optional = true }
+bytes = { workspace = true, optional = true }
 quick-xml.workspace = true
-osmpbfreader.workspace = true
+osmpbfreader = { workspace = true, optional = true }
 half.workspace = true
 flate2.workspace = true
 weezl.workspace = true
 png.workspace = true
-lz4_flex.workspace = true
+lz4_flex = { workspace = true, optional = true }
 ruzstd.workspace = true
-netcdf-reader.workspace = true
-hdf5-reader.workspace = true
+netcdf-reader = { workspace = true, optional = true }
+hdf5-reader = { workspace = true, optional = true }
 jpeg-decoder.workspace = true
-laz.workspace = true
-e57.workspace = true
-delaunator.workspace = true
+laz = { workspace = true, optional = true }
+e57 = { workspace = true, optional = true }
+delaunator = { workspace = true, optional = true }
 jpeg-encoder.workspace = true
 image-webp.workspace = true
 # JPEG 2000, in WebAssembly builds too (see `drivers::jp2` for the allocator it links against).
-openjp2.workspace = true
-lerc-reader.workspace = true
-lerc-core.workspace = true
-lerc-writer.workspace = true
+openjp2 = { workspace = true, optional = true }
+lerc-reader = { workspace = true, optional = true }
+lerc-core = { workspace = true, optional = true }
+lerc-writer = { workspace = true, optional = true }
 zune-jpegxl.workspace = true
 zune-core.workspace = true
 jxl-oxide.workspace = true
-rusty_av1d.workspace = true
-lzma-rust2.workspace = true
+rusty_av1d = { workspace = true, optional = true }
+lzma-rust2 = { workspace = true, optional = true }
 
 # The optional GDAL backend: opens what GDAL can when terrio has no driver for it. Needs GDAL
 # (3.4 or later) installed, found with pkg-config or GDAL_HOME.
 gdal = { workspace = true, optional = true }
 gdal-sys = { workspace = true, optional = true }
 
+# Every driver is on by default. A build with `default-features = false` keeps the core: GeoTIFF
+# and COG (deflate, LZW, PackBits, ZSTD, WebP, JPEG, JPEG XL), the raw and ASCII rasters (AAIGrid,
+# EHdr, ENVI, ERS, HFA, RST, SAGA, GSBG, XYZ...), PNG, JPEG, VRT, GeoJSON, Shapefile, KML/KMZ,
+# GML, GPX, CSV, MapInfo, the CRS engine and the operations. Disabled drivers stay in the API
+# (`RasterDriver`, `VectorDriver`) and fail with "built without the `...` feature".
 [features]
-default = []
+default = ["geotiff", "parquet", "remote", "avif", "netcdf-hdf5", "osm", "lzma", "flatgeobuf", "jp2", "lerc", "pointcloud", "tiles", "zarr", "sqlite"]
+## GeoTIFF and COG reading and writing. Always built (it is the core): the feature exists so that
+## `features = ["geotiff"]` states what a build needs.
+geotiff = []
+## GeoParquet, the `arrow` module and Arrow streams of vector layers.
+parquet = ["dep:parquet", "dep:arrow-array", "dep:arrow-schema", "dep:arrow-ipc", "dep:arrow-buffer", "dep:bytes", "wbvector/geoparquet"]
+## HTTP(S), S3, GCS and Azure inputs, range reads of remote COGs and STAC (native builds only).
+remote = ["dep:ureq", "dep:hmac", "dep:sha2"]
+## AVIF tiles of PMTiles and MBTiles archives.
+avif = ["tiles", "dep:rusty_av1d"]
+## NetCDF, HDF5 and HDF-EOS reading, netCDF writing.
+netcdf-hdf5 = ["dep:netcdf-reader", "dep:hdf5-reader"]
+## OpenStreetMap PBF and XML.
+osm = ["dep:osmpbfreader", "wbvector/osmpbf"]
+## LZMA-compressed GeoTIFFs.
+lzma = ["dep:lzma-rust2"]
+## FlatGeobuf.
+flatgeobuf = ["dep:flatgeobuf", "dep:flatbuffers"]
+## JPEG 2000.
+jp2 = ["dep:openjp2"]
+## LERC-compressed GeoTIFFs (read and written).
+lerc = ["dep:lerc-reader", "dep:lerc-core", "dep:lerc-writer"]
+## Point clouds: LAS, LAZ, COPC, EPT, E57, PLY (the `pointcloud` module).
+pointcloud = ["dep:laz", "dep:e57", "dep:delaunator"]
+## Raster and vector tiles: MBTiles, PMTiles and MVT (the `tiles` module).
+tiles = ["sqlite"]
+## Zarr v2 and v3.
+zarr = ["dep:lz4_flex"]
+## GeoPackage (vector and raster tiles), SQLite/SpatiaLite and the SQLite store of MBTiles.
+sqlite = []
 ## Open any format GDAL reads, through the same data model, when terrio has no driver for it.
 gdal = ["dep:gdal", "dep:gdal-sys"]
 
@@ -78,9 +112,9 @@ gdal = ["dep:gdal", "dep:gdal-sys"]
 memmap2.workspace = true
 zstd.workspace = true
 tempfile.workspace = true
-ureq.workspace = true
-hmac.workspace = true
-sha2.workspace = true
+ureq = { workspace = true, optional = true }
+hmac = { workspace = true, optional = true }
+sha2 = { workspace = true, optional = true }
 rayon.workspace = true
 
 [target.'cfg(unix)'.dependencies]

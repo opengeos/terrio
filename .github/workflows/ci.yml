@@ -126,6 +126,35 @@ jobs:
           name: npm-package
           path: js/pkg
 
+  # The cargo features (see crates/terrio/Cargo.toml): each builds on its own, and so does the
+  # core without them, natively and for WebAssembly.
+  features:
+    name: Cargo features
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-hack
+      - name: Each feature on its own, and none
+        env:
+          RUSTFLAGS: -D warnings
+        run: cargo hack check -p terrio --each-feature --no-dev-deps --exclude-features gdal
+      - name: The core for WebAssembly
+        run: cargo build -p terrio --no-default-features --features geotiff --target wasm32-unknown-unknown
+      - name: A GeoTIFF build pulls none of the optional codecs
+        run: |
+          crates=$(cargo tree -p terrio -e normal --no-default-features --features geotiff --prefix none | cut -d' ' -f1 | sort -u)
+          found=$(echo "$crates" | grep -E '^(arrow|parquet|hdf5|netcdf|openjp2|rusty_av1d|lzma-rust2|lerc|laz|e57|flatgeobuf|osmpbfreader|ureq)' || true)
+          if [ -n "$found" ]; then echo "unexpected dependencies: $found"; exit 1; fi
+          echo "$(echo "$crates" | wc -l) crates"
+
   python:
     name: python (${{ matrix.os }})
     runs-on: ${{ matrix.os }}

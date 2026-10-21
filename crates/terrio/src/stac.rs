@@ -45,7 +45,7 @@ fn fetch(loc: &str) -> Result<Vec<u8>> {
     use crate::vfs::Location;
     match Location::parse(loc) {
         Location::Local(p) => Ok(std::fs::read(p)?),
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(remote)]
         l @ (Location::Url(_) | Location::S3 { .. }) => {
             let remote = l.remote().ok_or_else(|| bad(format!("'{loc}' is not remote")))?;
             crate::http::get(&remote)

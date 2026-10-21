@@ -628,13 +628,17 @@ pub fn write_vector_with_mode(layers: &[Layer], path: &str, options: &VectorWrit
     }
     // GeoPackages are updated in place, keeping their other tables.
     let driver = options.driver.or_else(|| crate::formats::VectorDriver::for_extension(path));
+    if let Some(d) = driver {
+        d.ensure_built()?;
+    }
+    #[cfg(feature = "sqlite")]
     if driver == Some(crate::formats::VectorDriver::GPKG) {
         use crate::drivers::vector::gpkg_update::{UpdateMode, update};
         let mode = if mode == WriteMode::Append { UpdateMode::Append } else { UpdateMode::Overwrite };
         return update(path, layers, mode);
     }
     // Tile archives get the layers' features added to their tiles.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "tiles", not(target_arch = "wasm32")))]
     if matches!(driver, Some(crate::formats::VectorDriver::MBTiles | crate::formats::VectorDriver::PMTiles)) {
         return crate::tiles::update_vector(path, layers, &options.tiles, mode == WriteMode::Overwrite);
     }

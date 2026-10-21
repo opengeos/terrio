@@ -148,9 +148,45 @@ rasters: see [Point Clouds](point-clouds.md).
 
 ## Features
 
+Every driver is on by default. A program that needs only part of terrio turns the default
+features off and names the ones it uses, for a smaller dependency tree, faster builds and a
+smaller WebAssembly module. A COG writer, say:
+
+```toml
+terrio = { version = "0.3", default-features = false, features = ["geotiff"] }
+```
+
+The core, always built, is GeoTIFF and COG (deflate, LZW, PackBits, ZSTD, WebP, JPEG and JPEG
+XL), the raw and ASCII rasters (AAIGrid, EHdr, ENVI, ERS, HFA, RST, SAGA, GSBG, XYZ...), PNG,
+JPEG, VRT, STAC, GeoJSON, TopoJSON, Shapefile, KML/KMZ, GML, GPX, CSV, MapInfo, the CRS engine,
+the operations and the streams. The other drivers are features:
+
 | Feature | Default | What it adds |
 |---|---|---|
+| `geotiff` | on | GeoTIFF and COG: always built, the feature exists so that `features = ["geotiff"]` says what a build needs. |
+| `parquet` | on | GeoParquet, the `arrow` module and Arrow streams of vector layers (arrow, parquet). |
+| `remote` | on | URLs, `s3://`, `gs://` and `az://` objects, range reads of remote COGs, COPC, PMTiles and Zarr, and datum grids from the PROJ CDN (native builds only). |
+| `netcdf-hdf5` | on | NetCDF, HDF5 and HDF-EOS reading, netCDF writing. |
+| `sqlite` | on | GeoPackage (vector and raster tiles) and SQLite/SpatiaLite. |
+| `tiles` | on | MBTiles, PMTiles and MVT, raster and vector (the `tiles` module's archives; needs `sqlite`). |
+| `avif` | on | AVIF tiles of tile archives (needs `tiles`). |
+| `zarr` | on | Zarr v2 and v3. |
+| `jp2` | on | JPEG 2000. |
+| `flatgeobuf` | on | FlatGeobuf. |
+| `osm` | on | OpenStreetMap PBF and XML. |
+| `pointcloud` | on | LAS, LAZ, COPC, EPT, PLY and E57 (the `pointcloud` module). |
+| `lerc` | on | LERC-compressed GeoTIFFs, read and written. |
+| `lzma` | on | LZMA-compressed GeoTIFFs. |
 | `gdal` | off | The optional GDAL backend: formats terrio has no driver for, through GDAL (needs GDAL installed). See [the GDAL backend](gdal.md#the-optional-gdal-backend). |
+
+The drivers stay in the API whatever the features (`formats::RasterDriver`,
+`formats::VectorDriver`): those a build leaves out are listed as neither read nor written, and
+opening or writing their files fails with "built without the `zarr` feature". Modules and types
+that belong to one feature (`terrio::arrow`, `terrio::pointcloud`, `terrio::http`,
+`terrio::s3`, `tiles::TileArchive`) exist only with it.
+
+The `geotiff` build still pulls the JPEG XL decoder and encoder (`jxl-oxide`, `zune-jpegxl`):
+`wbraster`, terrio's raster data model, depends on them through its GeoTIFF reader.
 
 ## API stability
 
@@ -175,8 +211,8 @@ terrio is heading for a stable 1.0 API. What to rely on, and the decisions behin
 
 ## WebAssembly
 
-The library builds for `wasm32-unknown-unknown`; network access and temporary files are native
-only. JPEG 2000 works there too, with two settings in the program that is built: the global
+The library builds for `wasm32-unknown-unknown`, with any features; network access and
+temporary files are native only. JPEG 2000 (the `jp2` feature) works there too, with two settings in the program that is built: the global
 allocator `terrio::NullSafeAllocator` (the OpenJPEG port releases null pointers, which the
 WebAssembly allocator does not tolerate), and the link flag `-C link-arg=--allow-undefined` for
 `wasm32-unknown-unknown`, as in the repository's `.cargo/config.toml` (the port is built as a C

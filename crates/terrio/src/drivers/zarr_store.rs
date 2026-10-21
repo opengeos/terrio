@@ -20,7 +20,7 @@ pub(crate) enum Range {
 
 enum Backend {
     Local(PathBuf),
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(remote)]
     Remote {
         base: RemoteBase,
         fetcher: Box<crate::http::ObjectFetcher>,
@@ -28,7 +28,7 @@ enum Backend {
 }
 
 /// The prefix remote keys are appended to.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(remote)]
 #[derive(Debug, Clone)]
 enum RemoteBase {
     /// An URL without its query, and the query (with its `?`, or empty) added to every key.
@@ -140,7 +140,7 @@ impl Store {
                 }
                 Ok(Some(out))
             }
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(remote)]
             Backend::Remote { base, fetcher } => {
                 use crate::http::{ByteRange, Remote};
                 let remote = match base {
@@ -259,7 +259,7 @@ impl Node {
 
     /// Opens a remote location. The store is rooted at the last path component ending in
     /// `.zarr` (or at the location itself), and the node is the rest of the path.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(remote)]
     pub(crate) fn remote(loc: &crate::vfs::Location) -> Result<Node> {
         use crate::vfs::Location;
         let split = |path: &str| -> (String, String) {

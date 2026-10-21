@@ -20,7 +20,7 @@ use crate::{Error, Result};
 use std::path::{Path, PathBuf};
 
 /// Extensions of the files that make up a shapefile besides the `.shp` itself.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(remote)]
 const SHAPEFILE_SIDECARS: &[&str] = &["shx", "dbf", "prj", "cpg"];
 
 /// Extensions tried, in order, to find the main dataset inside an archive.
@@ -266,8 +266,10 @@ pub fn resolve(input: &str) -> Result<LocalPath> {
 fn resolve_location(loc: &Location) -> Result<LocalPath> {
     match loc {
         Location::Local(p) => Ok(LocalPath::local(p.clone())),
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(remote)]
         Location::Url(_) | Location::S3 { .. } => download(loc),
+        #[cfg(all(not(remote), not(target_arch = "wasm32")))]
+        Location::Url(_) | Location::S3 { .. } => Err(Error::disabled("remote")),
         #[cfg(not(target_arch = "wasm32"))]
         Location::Zip { archive, inner } => extract(archive, inner.as_deref()),
         #[cfg(target_arch = "wasm32")]
@@ -277,7 +279,8 @@ fn resolve_location(loc: &Location) -> Result<LocalPath> {
 
 impl Location {
     /// The remote file at this location, when it is one.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(remote)]
+    #[cfg_attr(docsrs, doc(cfg(feature = "remote")))]
     pub fn remote(&self) -> Option<crate::http::Remote> {
         match self {
             Location::Url(u) => Some(crate::http::Remote::Url(u.clone())),
@@ -287,7 +290,7 @@ impl Location {
     }
 
     /// The same location with another extension (for sidecar files).
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(remote)]
     fn with_extension(&self, ext: &str) -> Option<Location> {
         let swap = |s: &str| {
             let (path, query) = s.split_once('?').map_or((s, None), |(p, q)| (p, Some(q)));
@@ -302,7 +305,7 @@ impl Location {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(remote)]
 fn download(loc: &Location) -> Result<LocalPath> {
     let remote = loc.remote().ok_or_else(|| Error::InvalidArgument("not a remote location".into()))?;
     let temp = tempfile::Builder::new().prefix("terrio-").tempdir()?;

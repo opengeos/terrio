@@ -296,12 +296,15 @@ impl Seek for SparseFile {
     }
 }
 
+// Row groups of remote GeoParquet files are read through the same blocks.
+#[cfg(feature = "parquet")]
 impl parquet::file::reader::Length for SparseFile {
     fn len(&self) -> u64 {
         self.len
     }
 }
 
+#[cfg(feature = "parquet")]
 impl parquet::file::reader::ChunkReader for SparseFile {
     type T = SparseFile;
 

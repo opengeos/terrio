@@ -580,7 +580,7 @@ impl FgbEncoder {
         crate::par::map_range(features.len(), |i| {
             let f = &features[i];
             // Sized for the coordinates, so that the buffer is not regrown as it fills.
-            let coords = f.geometry.as_ref().map_or(0, coord_count);
+            let coords = f.geometry.as_ref().map_or(0, crate::vector::coord_count);
             let mut fbb = FlatBufferBuilder::with_capacity(1024 + coords * if has_z { 24 } else { 16 } + f.attributes.len() * 16);
             let mut node = NodeItem::create(first + i as u64);
             if let Some(b) = f.geometry.as_ref().and_then(|g| g.bbox()) {
@@ -776,18 +776,6 @@ fn build_geometry<'a>(fbb: &mut FlatBufferBuilder<'a>, g: &Geometry, typed: bool
         ..Default::default()
     };
     FgbGeometry::create(fbb, &args)
-}
-
-/// The number of coordinates of a geometry.
-pub(crate) fn coord_count(g: &Geometry) -> usize {
-    match g {
-        Geometry::Point(_) => 1,
-        Geometry::LineString(cs) | Geometry::MultiPoint(cs) => cs.len(),
-        Geometry::Polygon { exterior, interiors } => exterior.0.len() + interiors.iter().map(|r| r.0.len()).sum::<usize>(),
-        Geometry::MultiLineString(ls) => ls.iter().map(Vec::len).sum(),
-        Geometry::MultiPolygon(ps) => ps.iter().map(|(e, h)| e.0.len() + h.iter().map(|r| r.0.len()).sum::<usize>()).sum(),
-        Geometry::GeometryCollection(gs) => gs.iter().map(coord_count).sum(),
-    }
 }
 
 /// Builds the geometry table of a polygon part of a multipolygon, as [`build_geometry`] builds an

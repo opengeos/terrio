@@ -1193,7 +1193,7 @@ fn open_node(node: &Node) -> Result<(RasterDataset, ZarrSource)> {
                 Value::Array(a) => Some(a.iter().filter_map(Value::as_f64).collect()),
                 _ => None,
             };
-            crs = super::netcdf::cf_crs(|k| gm.attrs[k].as_str().map(str::to_string), numbers).map(|c| match &c.proj4 {
+            crs = super::cf::cf_crs(|k| gm.attrs[k].as_str().map(str::to_string), numbers).map(|c| match &c.proj4 {
                 // CF parameters: a PROJ string, parsed by terrio (not matched to an EPSG code).
                 Some(p) => crate::crs::SpatialRef::parse(p).map(|s| s.to_crs_info()).unwrap_or(c),
                 None => c,
@@ -1340,7 +1340,7 @@ fn open_name(store: &str, array: Option<&str>) -> Result<Node> {
             }
             Node::local(p)
         }
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(remote)]
         crate::vfs::Location::Url(_) | crate::vfs::Location::S3 { .. } => Node::remote(&loc)?,
         _ => return Err(Error::Unsupported(format!("Zarr stores at '{store}' are not supported"))),
     };
