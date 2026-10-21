@@ -988,6 +988,17 @@ mod tests {
     }
 
     #[test]
+    fn conversions_in_other_units_differ() {
+        // Nebraska in metres (EPSG:6516) and in US survey feet (EPSG:6880): the same positions on
+        // the ground, not the same conversion (identification and proj_to_wkt's faithfulness).
+        let lcc = "+proj=lcc +lat_0=39.8333333333333 +lon_0=-100 +lat_1=43 +lat_2=40 +x_0=500000 +y_0=0 +ellps=GRS80";
+        let m = Def::from_proj(&format!("{lcc} +units=m")).unwrap();
+        let ft = Def::from_proj(&format!("{lcc} +units=us-ft")).unwrap();
+        assert!(m.same_conversion(&Def::from_proj(&format!("{lcc} +units=m")).unwrap()));
+        assert!(!m.same_conversion(&ft) && !ft.same_conversion(&m));
+    }
+
+    #[test]
     fn datum_names_are_read_from_the_generated_table() {
         // As scripts/gen_datum_names.py normalizes them.
         assert_eq!(epsg::datum_key("D_European_1950"), "european1950");
