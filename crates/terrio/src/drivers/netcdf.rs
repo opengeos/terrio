@@ -527,8 +527,8 @@ fn cf_geolocation(f: &NcFile, var_ref: &VarRef, var: &NcVariable) -> Option<(Str
         a.len() == b.len() && a.iter().zip(b).all(|(x, y)| x.name == y.name && x.size == y.size)
     };
     let coordinates = attr_str(var, "coordinates").or_else(|| {
-        // `lon` and `lat` in the variable's own group, on its last two dimensions (also when the
-        // last is a trailing `bands` dimension, as GDAL checks them).
+        // `lon` and `lat` in the variable's own group, on its last two dimensions (so never for a
+        // variable of a trailing `bands` dimension, as in GDAL).
         let group = var_ref.groups.last()?;
         let lon = group.variables.iter().find(|v| v.name == "lon")?;
         let lat = group.variables.iter().find(|v| v.name == "lat")?;
