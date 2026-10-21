@@ -1,11 +1,13 @@
 //! Product-specific HDF5 and netCDF georeferencing, complex datasets and netCDF groups, against
 //! the values GDAL 3.12 reports for the same files: HDF-EOS5 grids and swaths, COSMO-SkyMed,
 //! complex (compound) datasets, netCDF geolocation arrays (CF `coordinates`, NASA ocean color,
-//! EMIT, irregular axes), and NASA HDF-EOS5 products.
+//! EMIT, irregular axes), variables of a trailing `bands` dimension (EMIT's radiance and
+//! reflectance), and NASA HDF-EOS5 products.
 //!
 //! The files come from `scripts/fetch_test_data.sh` (GDAL's test files in `gdal_hdf5` and
 //! `gdal_netcdf`; NASA products in `hdfeos5`, fetched only with Earthdata Login credentials). The
-//! tests skip themselves without `TERRIO_TEST_DATA` or the files.
+//! tests skip themselves without `TERRIO_TEST_DATA` or the files. The trailing `bands` files are in
+//! `tests/data/netcdf_bands` (`scripts/make_netcdf_bands_fixtures.py`).
 
 // Geotransforms as `gdalinfo` prints them, digit for digit.
 #![allow(clippy::excessive_precision)]
@@ -204,6 +206,35 @@ fn netcdf_geolocation_arrays() {
     assert_eq!(open(&format!("{dir}/cf_lon_lat_with_coordinates_no_crs.nc")).crs().epsg, None);
     // A netCDF-4 variable written without fill value has no nodata value.
     assert_eq!(open(&format!("{dir}/uint16_netcdf4_without_fill.nc")).nodata(), None);
+}
+
+/// netCDF variables of a trailing `bands` dimension, as EMIT's radiance and reflectance
+/// (`downtrack, crosstrack, bands`), and their variants (`scripts/make_netcdf_bands_fixtures.py`):
+/// the bands, rows, columns, pixels, geotransform and `GEOLOCATION` items GDAL reads of them.
+#[test]
+fn netcdf_trailing_bands() {
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/data/netcdf_bands");
+    let text = std::fs::read_to_string(dir.join("expected.json")).unwrap();
+    let expected: serde_json::Value = serde_json::from_str(&text).unwrap();
+    for (case, e) in expected.as_object().unwrap() {
+        let (file, var) = case.split_once(':').unwrap();
+        let path = dir.join(file).to_string_lossy().into_owned();
+        let ds = open(&format!("NETCDF:\"{path}\":{var}"));
+        let size = |k: &str| e[k].as_u64().unwrap() as usize;
+        assert_eq!((ds.band_count(), ds.raster.rows, ds.raster.cols), (size("count"), size("height"), size("width")), "{case}");
+        let values: Vec<f64> = e["values"].as_array().unwrap().iter().map(|v| v.as_f64().unwrap()).collect();
+        assert_eq!(ds.raster.data.to_f64_vec(), values, "{case}");
+        if let Some(gt) = e["geotransform"].as_array() {
+            let gt: Vec<f64> = gt.iter().map(|v| v.as_f64().unwrap()).collect();
+            assert_gt(&ds, gt.try_into().unwrap(), case);
+        }
+        let mut items: Vec<(String, String)> =
+            ds.geolocation.map(|g| g.items()).unwrap_or_default().into_iter().map(|(k, v)| (k, v.replace(&path, "<file>"))).collect();
+        items.sort();
+        let gdal: Vec<(String, String)> =
+            e["geolocation"].as_object().unwrap().iter().map(|(k, v)| (k.clone(), v.as_str().unwrap().to_string())).collect();
+        assert_eq!(items, gdal, "{case}");
+    }
 }
 
 /// NASA HDF-EOS5 products (fetched with Earthdata Login credentials only): the georeferencing GDAL

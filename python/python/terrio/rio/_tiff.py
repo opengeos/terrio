@@ -257,6 +257,8 @@ def _first(v: Any, default: int = 0) -> int:
 def default_structure(raster: Any) -> Structure:
     """The structure of a raster terrio read whole: one-row blocks, gray then undefined bands.
 
+    Its geolocation arrays are GDAL's `GEOLOCATION` metadata domain.
+
     Args:
         raster: A `terrio.Raster`.
 
@@ -272,6 +274,10 @@ def default_structure(raster: Any) -> Structure:
     s.scales = [1.0] * n
     s.offsets = [0.0] * n
     s.units = [None] * n
+    # Geolocation arrays, as GDAL's `GEOLOCATION` metadata domain.
+    geolocation = getattr(raster, "geolocation", None)
+    if geolocation:
+        s.namespaces["GEOLOCATION"] = dict(geolocation)
     return s
 
 

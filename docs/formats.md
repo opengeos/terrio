@@ -66,17 +66,21 @@ netCDF variables are opened as `NETCDF:"file.nc":variable`, as in GDAL, and thos
 root group by their path, `NETCDF:"file.nc":/group/variable`. A file of several variables opens
 its first and lists them all as subdatasets, as `gdalinfo` does: every variable of two or more
 dimensions, in every group (root first, then each group in definition order), named by its full
-path and described by its dimensions, standard name and type. Coordinates are used for the
-geotransform when GDAL would (named or marked as spatial axes, evenly spaced as GDAL checks
-them; longitudes over 180 shifted), and the CRS from the grid mapping; otherwise rows are read
-bottom-up, as GDAL reads them. Without a `_FillValue`, the type's default netCDF fill value is the
-nodata value, as GDAL reports it (not for bytes, nor for netCDF-4 variables written without fill
-values). Variables georeferenced by longitude and latitude arrays rather than axes get them as
+path and described by its dimensions, standard name and type. A variable's last two dimensions
+are its rows and columns and any others its bands, except for a 3-D variable whose last dimension
+is named `bands` or `band`, as EMIT's L1B radiance and L2A reflectance,
+`(downtrack, crosstrack, bands)`: that dimension is the bands and the first two the rows and
+columns, as GDAL reads them. Coordinates are used for the geotransform when GDAL would (named
+or marked as spatial axes, evenly spaced as GDAL checks them; longitudes over 180 shifted), and
+the CRS from the grid mapping; otherwise rows are read bottom-up, as GDAL reads them. Without a
+`_FillValue`, the type's default netCDF fill value is the nodata value, as GDAL reports it (not
+for bytes, nor for netCDF-4 variables written without fill values). Variables georeferenced by longitude and latitude arrays rather than axes get them as
 geolocation arrays (GDAL's `GEOLOCATION` metadata, shown by `terrio info`): the CF `coordinates`
 attribute (relative or absolute paths, as Sentinel-5P's), 2D `lon` and `lat` variables, NASA's
-ocean color level 2 (`navigation_data`) and EMIT (`location`) layouts, and irregular longitude
-and latitude axes. Compound variables of a real and an imaginary member are read as complex
-bands (see below).
+ocean color level 2 (`navigation_data`) and EMIT (`location`, for 2-D variables and those of a
+trailing `bands` dimension whose first two dimensions are named as the arrays') layouts, and
+irregular longitude and latitude axes. Compound variables of a real and an imaginary member are
+read as complex bands (see below).
 
 netCDF files are written as GDAL writes rasters, with its creation options:
 

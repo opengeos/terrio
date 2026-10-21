@@ -1,9 +1,11 @@
 //! NetCDF (classic CDF-1/2/5 and netCDF-4/HDF5), read with the pure-Rust `netcdf-reader` crate
 //! and interpreted as GDAL's netCDF driver does: one variable at a time (a file with several
 //! opens its first; `NETCDF:"file.nc":var` selects one), its last two dimensions as rows and
-//! columns and any others as bands, the geotransform from the coordinate variables (south-up
-//! grids turned north-up), the CRS from the CF grid mapping, `_FillValue` as nodata, and
-//! `scale_factor`/`add_offset` reported as metadata (the values stay packed).
+//! columns and any others as bands (a 3-D variable whose last dimension is `bands` or `band`, as
+//! EMIT's radiance and reflectance, has it as bands and its first two as rows and columns), the
+//! geotransform from the coordinate variables (south-up grids turned north-up), the CRS from the
+//! CF grid mapping, `_FillValue` as nodata, and `scale_factor`/`add_offset` reported as metadata
+//! (the values stay packed).
 
 use super::common;
 use crate::formats::RasterDriver;
@@ -251,9 +253,17 @@ fn read_file(f: &NcFile, path: &Path, hdf5: &dyn Fn() -> Option<hdf5_reader::Hdf
     let (var_ref, var) = (var, var.v);
     let dims = var.dimensions();
     let nd = dims.len();
-    let cols = dims[nd - 1].size as usize;
-    let rows = if nd >= 2 { dims[nd - 2].size as usize } else { 1 };
-    let bands: usize = if nd > 2 { dims[..nd - 2].iter().map(|d| d.size as usize).product::<usize>().max(1) } else { 1 };
+    // The dimensions of the rows and columns: the last two, or the first two before a trailing
+    // `bands` dimension (whose values are then pixel-interleaved).
+    let interleaved = trailing_bands(var);
+    let (y_dim, x_dim) = if interleaved { (0, 1) } else { (nd.saturating_sub(2), nd - 1) };
+    let cols = dims[x_dim].size as usize;
+    let rows = if nd >= 2 { dims[y_dim].size as usize } else { 1 };
+    let bands: usize = match nd {
+        _ if interleaved => dims[2].size as usize,
+        0..=2 => 1,
+        _ => dims[..nd - 2].iter().map(|d| d.size as usize).product::<usize>().max(1),
+    };
     let unsigned = attr_str(var, "_Unsigned").is_some_and(|s| s.eq_ignore_ascii_case("true"));
     let name = read_path;
     macro_rules! typed {
@@ -274,7 +284,7 @@ fn read_file(f: &NcFile, path: &Path, hdf5: &dyn Fn() -> Option<hdf5_reader::Hdf
         _ if complex.is_some() => {
             let part = complex.unwrap_or(wbraster::DataType::F32);
             let raw = f.read_variable_native_bytes(&name).map_err(|e| err(path, e))?;
-            complex_bands(&raw, part, cols * rows, bands)?
+            complex_bands(&raw, part, cols * rows, bands, interleaved)?
         }
         (NcType::Byte, false) => typed!(i8, I8),
         (NcType::Byte, true) => reinterpret!(i8, u8, U8),
@@ -292,8 +302,9 @@ fn read_file(f: &NcFile, path: &Path, hdf5: &dyn Fn() -> Option<hdf5_reader::Hdf
         (NcType::Double, _) => typed!(f64, F64),
         (t, _) => return Err(Error::Unsupported(format!("{}: NetCDF type {t:?} is not supported", path.display()))),
     };
+    let data = if interleaved && complex.is_none() { band_sequential(data, bands) } else { data };
 
-    // Coordinates: the variables named after the last two dimensions.
+    // Coordinates: the variables named after the dimensions of the rows and columns.
     // GDAL ignores coordinates not named or marked as spatial ones, unless the file comes from GMT
     // or the variable has `res` and `transform` attributes.
     let ignore_axis_checks = (attr(var, "res").is_some() && attr(var, "transform").is_some())
@@ -305,7 +316,7 @@ fn read_file(f: &NcFile, path: &Path, hdf5: &dyn Fn() -> Option<hdf5_reader::Hdf
         let values = (v.ndim() == 1 && spatial).then(|| f.read_variable_as_f64(&p).ok().map(|a| a.iter().copied().collect())).flatten()?;
         Some((values, matches!(v.dtype(), NcType::Float), is_longitude(v)))
     };
-    let (xs, ys) = if nd >= 2 { (coord(&dims[nd - 1].name), coord(&dims[nd - 2].name)) } else { (None, None) };
+    let (xs, ys) = if nd >= 2 { (coord(&dims[x_dim].name), coord(&dims[y_dim].name)) } else { (None, None) };
     let grid_mapping =
         attr_str(var, "grid_mapping").and_then(|g| var_ref.lookup(g.split_whitespace().next().unwrap_or_default())).map(|(_, v)| v);
     let projected = grid_mapping.and_then(|g| attr_str(g, "grid_mapping_name")).is_some_and(|n| n != "latitude_longitude");
@@ -353,8 +364,8 @@ fn read_file(f: &NcFile, path: &Path, hdf5: &dyn Fn() -> Option<hdf5_reader::Hdf
             Some((x, y)) => {
                 // The geotransform of coordinate axes that are not these arrays goes, unless the
                 // CRS is known.
-                let axes_are_arrays = Some(&x) == var_ref.full_name(&dims[nd - 1].name).as_ref()
-                    && Some(&y) == var_ref.full_name(&dims[nd - 2].name).as_ref();
+                let axes_are_arrays =
+                    Some(&x) == var_ref.full_name(&dims[x_dim].name).as_ref() && Some(&y) == var_ref.full_name(&dims[y_dim].name).as_ref();
                 if !axes_are_arrays && crs.is_none() && from_coordinates {
                     gt = None;
                 }
@@ -363,9 +374,9 @@ fn read_file(f: &NcFile, path: &Path, hdf5: &dyn Fn() -> Option<hdf5_reader::Hdf
             None if gt.is_none() => {
                 let axis = |d: &str, test: fn(&NcVariable) -> bool| var_ref.lookup(d).is_some_and(|(_, v)| v.ndim() == 1 && test(v));
                 // By the axes' names from the root, which may be in the variable's group.
-                if axis(&dims[nd - 1].name, is_longitude)
-                    && axis(&dims[nd - 2].name, is_latitude)
-                    && let (Some(x), Some(y)) = (var_ref.full_name(&dims[nd - 1].name), var_ref.full_name(&dims[nd - 2].name))
+                if axis(&dims[x_dim].name, is_longitude)
+                    && axis(&dims[y_dim].name, is_latitude)
+                    && let (Some(x), Some(y)) = (var_ref.full_name(&dims[x_dim].name), var_ref.full_name(&dims[y_dim].name))
                 {
                     geolocation = Some((x, y));
                 }
@@ -453,6 +464,39 @@ fn read_file(f: &NcFile, path: &Path, hdf5: &dyn Fn() -> Option<hdf5_reader::Hdf
     Ok(out)
 }
 
+/// Whether a variable is laid out as EMIT's radiance and reflectance, `(downtrack, crosstrack,
+/// bands)`: three dimensions, the last named `bands` or `band` (exactly), which GDAL's netCDF driver
+/// reads as the bands, the first two as the rows and columns.
+fn trailing_bands(v: &NcVariable) -> bool {
+    let dims = v.dimensions();
+    dims.len() == 3 && matches!(dims[2].name.as_str(), "bands" | "band")
+}
+
+/// Pixel-interleaved values (`bands` per pixel) reordered band by band.
+fn band_sequential(data: RasterData, bands: usize) -> RasterData {
+    if bands <= 1 {
+        return data;
+    }
+    macro_rules! go {
+        ($v:expr, $variant:ident) => {{
+            let plane = $v.len() / bands;
+            RasterData::$variant((0..bands).flat_map(|b| (0..plane).map(move |i| i * bands + b)).map(|i| $v[i]).collect())
+        }};
+    }
+    match &data {
+        RasterData::U8(v) => go!(v, U8),
+        RasterData::I8(v) => go!(v, I8),
+        RasterData::U16(v) => go!(v, U16),
+        RasterData::I16(v) => go!(v, I16),
+        RasterData::U32(v) => go!(v, U32),
+        RasterData::I32(v) => go!(v, I32),
+        RasterData::U64(v) => go!(v, U64),
+        RasterData::I64(v) => go!(v, I64),
+        RasterData::F32(v) => go!(v, F32),
+        RasterData::F64(v) => go!(v, F64),
+    }
+}
+
 /// Whether a variable holds longitudes, as GDAL's `NCDFIsVarLongitude()` decides for an existing
 /// variable: by its units, standard name, axis or long name, not with units `m` or `1`.
 fn is_longitude(v: &NcVariable) -> bool {
@@ -474,7 +518,8 @@ fn is_axis(v: &NcVariable, units: &[&str], name: &str, axis: &str) -> bool {
 /// The geolocation arrays of a variable, as GDAL's netCDF driver finds them
 /// (`ProcessCFGeolocation()`): the longitude and latitude variables its CF `coordinates`
 /// attribute names (or 2D `lon` and `lat` variables on its last two dimensions), else NASA's
-/// ocean color layout (`navigation_data`) and EMIT's (`location`). Their full names.
+/// ocean color layout (`navigation_data`) and EMIT's (`location`, for 2-D variables and those of a
+/// trailing `bands` dimension). Their full names.
 fn cf_geolocation(f: &NcFile, var_ref: &VarRef, var: &NcVariable) -> Option<(String, String)> {
     let dims = var.dimensions();
     let nd = dims.len();
@@ -482,7 +527,8 @@ fn cf_geolocation(f: &NcFile, var_ref: &VarRef, var: &NcVariable) -> Option<(Str
         a.len() == b.len() && a.iter().zip(b).all(|(x, y)| x.name == y.name && x.size == y.size)
     };
     let coordinates = attr_str(var, "coordinates").or_else(|| {
-        // `lon` and `lat` in the variable's own group.
+        // `lon` and `lat` in the variable's own group, on its last two dimensions (also when the
+        // last is a trailing `bands` dimension, as GDAL checks them).
         let group = var_ref.groups.last()?;
         let lon = group.variables.iter().find(|v| v.name == "lon")?;
         let lat = group.variables.iter().find(|v| v.name == "lat")?;
@@ -526,8 +572,9 @@ fn cf_geolocation(f: &NcFile, var_ref: &VarRef, var: &NcVariable) -> Option<(Str
     {
         return Some(("/navigation_data/longitude".into(), "/navigation_data/latitude".into()));
     }
-    // EMIT: location/lon and lat on the variable's first two dimensions (its rows and columns).
-    if nd == 2
+    // EMIT: location/lon and lat on the variable's first two dimensions (its rows and columns),
+    // by name.
+    if (nd == 2 || trailing_bands(var))
         && let Some(loc) = group_named("location")
         && let Some((lon, lat)) = pair(loc, "lon", "lat")
         && same_dims(&lon, &lat)
@@ -556,9 +603,9 @@ fn complex_part(t: &NcType) -> Option<wbraster::DataType> {
     (first.offset == 0 && second.offset as usize == part.size_bytes() && *size as usize == 2 * part.size_bytes()).then_some(part)
 }
 
-/// Splits complex elements (real then imaginary part, native byte order) into a real and an
-/// imaginary band per band.
-fn complex_bands(raw: &[u8], part: wbraster::DataType, plane: usize, bands: usize) -> Result<RasterData> {
+/// Splits complex elements (real then imaginary part, native byte order), band by band or
+/// pixel-interleaved (`interleaved`), into a real and an imaginary band per band.
+fn complex_bands(raw: &[u8], part: wbraster::DataType, plane: usize, bands: usize, interleaved: bool) -> Result<RasterData> {
     let size = part.size_bytes();
     if raw.len() < plane * bands * 2 * size {
         return Err(Error::InvalidData("complex variable shorter than its dimensions".into()));
@@ -567,7 +614,8 @@ fn complex_bands(raw: &[u8], part: wbraster::DataType, plane: usize, bands: usiz
     for b in 0..bands {
         for offset in [0, size] {
             for i in 0..plane {
-                let at = (b * plane + i) * 2 * size + offset;
+                let element = if interleaved { i * bands + b } else { b * plane + i };
+                let at = element * 2 * size + offset;
                 parts.extend_from_slice(&raw[at..at + size]);
             }
         }
