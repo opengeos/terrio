@@ -373,6 +373,10 @@ pub(crate) fn to_proj(root: &Node) -> Option<Converted> {
             out.push("+proj=eqearth".into());
             push(&mut out, "lon_0", lon_0);
         }
+        "robinson" => {
+            out.push("+proj=robin".into());
+            push(&mut out, "lon_0", lon_0);
+        }
         "orthographic" => {
             out.push("+proj=ortho".into());
             push(&mut out, "lat_0", lat_0);
