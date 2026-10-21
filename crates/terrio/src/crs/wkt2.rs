@@ -45,6 +45,9 @@ pub(crate) fn to_proj(root: &Node) -> Result<Converted> {
         return Ok(c);
     }
     let projected = PROJECTED.contains(&key.as_str());
+    if !projected && let Some(conv) = root.child("DERIVINGCONVERSION") {
+        return derived(root, conv);
+    }
     let base = if projected { BASE.iter().find_map(|k| root.child(k)).ok_or_else(|| bad("a PROJCRS without its base CRS"))? } else { root };
     let geog = Geodetic::read(base, !projected)?;
     let mut tail = geog.tail();
@@ -251,6 +254,59 @@ pub(crate) fn to_proj(root: &Node) -> Result<Converted> {
     proj_str.push(format!("+to_meter={to_meter}"));
     proj_str.append(&mut tail);
     Ok(geog.converted(proj_str.join(" ")))
+}
+
+/// A derived geographic CRS (a `GEOGCRS` with a `DERIVINGCONVERSION`) as a PROJ string: a
+/// rotated-pole grid, in one of the three forms PROJ writes. Fails on any other conversion, which
+/// would otherwise be dropped.
+fn derived(root: &Node, conv: &Node) -> Result<Converted> {
+    let base = BASE.iter().find_map(|k| root.child(k)).ok_or_else(|| bad("a derived geographic CRS without its base CRS"))?;
+    let geog = Geodetic::read(base, false)?;
+    let method = conv.child("METHOD").ok_or_else(|| bad("a DERIVINGCONVERSION without its METHOD"))?;
+    let method_name = method.name().unwrap_or("");
+    // The parameters, in degrees, by normalised name.
+    let mut values = Vec::new();
+    for n in conv.children("PARAMETER") {
+        let name = n.name().unwrap_or("");
+        let v = n.num(1).ok_or_else(|| bad(&format!("parameter '{name}' without a value")))?;
+        let unit = n.child("ANGLEUNIT").or_else(|| n.child("UNIT")).and_then(|u| u.num(1));
+        values.push((norm(name), name.to_string(), v * unit.map(degrees).unwrap_or(geog.ang)));
+    }
+    let used = std::cell::RefCell::new(Vec::new());
+    let get = |key: &str| {
+        let v = values.iter().find(|v| v.0 == key)?;
+        used.borrow_mut().push(key.to_string());
+        Some(v.2)
+    };
+    let need = |key: &str| get(key).ok_or_else(|| bad(&format!("the method '{method_name}' without its parameter '{key}'")));
+    // `+o_lat_p`, `+o_lon_p` and `+lon_0`.
+    let (lat_p, lon_p, lon_0) = match norm(method_name).as_str() {
+        "projobtranoprojlonglat" => (need("olatp")?, get("olonp").unwrap_or(0.0), get("lon0").unwrap_or(0.0)),
+        // The grid's north pole, and the grid longitude of the geographic north pole.
+        "polerotationnetcdfcfconvention" => {
+            let lat = need("gridnorthpolelatitudenetcdfcfconvention")?;
+            let lon = need("gridnorthpolelongitudenetcdfcfconvention")?;
+            (lat, get("northpolegridlongitudenetcdfcfconvention").unwrap_or(0.0), lon + 180.0)
+        }
+        // The grid's south pole, and the rotation about its axis.
+        "polerotationgribconvention" => {
+            let lat = need("latitudeofthesouthernpolegribconvention")?;
+            let lon = need("longitudeofthesouthernpolegribconvention")?;
+            (-lat, -get("axisrotationgribconvention").unwrap_or(0.0), lon)
+        }
+        _ => return Err(Error::Crs(format!("unsupported WKT 2 deriving conversion '{method_name}'"))),
+    };
+    if let Some(unused) = values.iter().find(|v| !used.borrow().contains(&v.0)) {
+        return Err(bad(&format!("parameter '{}' of the method '{method_name}'", unused.1)));
+    }
+    let mut out = vec![format!("+proj=ob_tran +o_proj=longlat +o_lat_p={lat_p} +o_lon_p={lon_p} +lon_0={lon_0}")];
+    // The grid's angular unit: its CS axes'.
+    let unit = root.children("AXIS").find_map(|a| a.child("ANGLEUNIT").or_else(|| a.child("UNIT"))).and_then(|u| u.num(1));
+    if let Some(ang) = unit.map(degrees).filter(|a| (a - 1.0).abs() > 1e-12) {
+        out.push(format!("+to_deg={ang}"));
+    }
+    out.append(&mut geog.tail());
+    Ok(geog.converted(out.join(" ")))
 }
 
 /// Pseudocylindrical and other world projections PROJ names without an EPSG method, which take a

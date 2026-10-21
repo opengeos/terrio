@@ -729,6 +729,12 @@ pub(crate) fn cf_crs(text: impl Fn(&str) -> Option<String>, numbers: impl Fn(&st
             None => format!("+proj=merc +lon_0={lon0} +k={} {xy} {ellps}", p("scale_factor_at_projection_origin").unwrap_or(1.0)),
         },
         "sinusoidal" => format!("+proj=sinu +lon_0={lon0} {xy} {ellps}"),
+        // The grid's north pole, as PROJ maps it.
+        "rotated_latitude_longitude" => {
+            let (lat, lon) = (p("grid_north_pole_latitude")?, p("grid_north_pole_longitude")?);
+            let o_lon = p("north_pole_grid_longitude").unwrap_or(0.0);
+            format!("+proj=ob_tran +o_proj=longlat +o_lat_p={lat} +o_lon_p={o_lon} +lon_0={} {ellps}", lon + 180.0)
+        }
         _ => return None,
     };
     Some(CrsInfo::from_proj4(proj))
