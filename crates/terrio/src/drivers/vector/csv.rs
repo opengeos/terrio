@@ -577,14 +577,17 @@ fn is_real(s: &str) -> bool {
 }
 
 fn is_date(s: &str) -> bool {
-    let b = s.as_bytes();
+    is_date_bytes(s.as_bytes())
+}
+
+fn is_date_bytes(b: &[u8]) -> bool {
     b.len() == 10 && b[4] == b'-' && b[7] == b'-' && b.iter().enumerate().all(|(i, c)| i == 4 || i == 7 || c.is_ascii_digit())
 }
 
 fn is_datetime(s: &str) -> bool {
     let b = s.as_bytes();
-    s.len() >= 19
-        && is_date(&s[..10])
+    b.len() >= 19
+        && is_date_bytes(&b[..10])
         && (b[10] == b'T' || b[10] == b' ')
         && b[13] == b':'
         && b[16] == b':'
@@ -706,6 +709,14 @@ fn push_row<'a>(out: &mut String, cells: impl Iterator<Item = &'a str>, sep: cha
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reads_long_multibyte_text() {
+        // Byte 10 of this name falls inside a character; the date check must not slice there (#159).
+        let l = parse("id,name\n1,東京都千代田区\n", "t", &CsvOptions::default()).unwrap();
+        assert_eq!(l.schema.fields()[1].field_type, FieldType::Text);
+        assert_eq!(l.features[0].attributes[1], FieldValue::Text("東京都千代田区".into()));
+    }
 
     #[test]
     fn reads_points_from_lon_lat_columns() {

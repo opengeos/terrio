@@ -265,14 +265,17 @@ impl Kind {
 }
 
 fn is_date(s: &str) -> bool {
-    let b = s.as_bytes();
+    is_date_bytes(s.as_bytes())
+}
+
+fn is_date_bytes(b: &[u8]) -> bool {
     b.len() == 10 && b[4] == b'-' && b[7] == b'-' && b.iter().enumerate().all(|(i, c)| i == 4 || i == 7 || c.is_ascii_digit())
 }
 
 fn is_datetime(s: &str) -> bool {
     let b = s.as_bytes();
     b.len() >= 19
-        && is_date(&s[..10])
+        && is_date_bytes(&b[..10])
         && (b[10] == b'T' || b[10] == b' ')
         && b[13] == b':'
         && b[16] == b':'
@@ -577,6 +580,17 @@ fn encode(g: &Geometry, ccw: bool) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reads_long_multibyte_text() {
+        // Byte 10 of these names falls inside a character; the date check must not slice there (#159).
+        let text = r#"{"type":"FeatureCollection","features":[
+            {"type":"Feature","properties":{"name":"東京都千代田区"},"geometry":{"type":"Point","coordinates":[139.7,35.7]}},
+            {"type":"Feature","properties":{"name":"2020-01-0千代田区一丁目"},"geometry":null}]}"#;
+        let l = parse(text.as_bytes(), "file").unwrap();
+        assert_eq!(l.schema.fields()[0].field_type, FieldType::Text);
+        assert_eq!(l.features[0].attributes[0], FieldValue::Text("東京都千代田区".into()));
+    }
 
     #[test]
     fn reads_like_gdal() {

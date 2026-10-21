@@ -230,8 +230,10 @@ fn value(v: &str, t: FieldType) -> FieldValue {
         FieldType::Integer => s.parse().map_or(FieldValue::Null, FieldValue::Integer),
         FieldType::Float => s.parse().map_or(FieldValue::Null, FieldValue::Float),
         FieldType::Boolean => FieldValue::Boolean(matches!(s, "T" | "t" | "1")),
-        FieldType::Date if s.len() == 8 => FieldValue::Date(format!("{}-{}-{}", &s[..4], &s[4..6], &s[6..])),
-        FieldType::DateTime if s.len() >= 14 => {
+        FieldType::Date if s.len() == 8 && s.bytes().all(|b| b.is_ascii_digit()) => {
+            FieldValue::Date(format!("{}-{}-{}", &s[..4], &s[4..6], &s[6..]))
+        }
+        FieldType::DateTime if s.len() >= 14 && s.bytes().take(14).all(|b| b.is_ascii_digit()) => {
             FieldValue::DateTime(format!("{}-{}-{}T{}:{}:{}", &s[..4], &s[4..6], &s[6..8], &s[8..10], &s[10..12], &s[12..14]))
         }
         _ => FieldValue::Text(v.replace("\\n", "\n")),

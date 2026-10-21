@@ -36,9 +36,9 @@ pub(crate) fn parse_date(s: &str) -> Option<i32> {
     if b.len() < 10 || b[4] != b'-' || b[7] != b'-' {
         return None;
     }
-    let y: i64 = s[..4].parse().ok()?;
-    let m: i64 = s[5..7].parse().ok()?;
-    let d: i64 = s[8..10].parse().ok()?;
+    let y: i64 = s.get(..4)?.parse().ok()?;
+    let m: i64 = s.get(5..7)?.parse().ok()?;
+    let d: i64 = s.get(8..10)?.parse().ok()?;
     if !(1..=12).contains(&m) || !(1..=31).contains(&d) {
         return None;
     }
@@ -96,6 +96,9 @@ mod tests {
         assert_eq!(parse_date("2000-03-01"), Some(11017));
         assert_eq!(parse_datetime("1970-01-02T00:00:01.5Z"), Some(86_401_500));
         assert_eq!(parse_datetime("1970-01-01T01:00:00+01:00"), Some(0));
+        // Multi-byte text is not a date, and must not panic (#159).
+        assert_eq!(parse_date("2020-01-0千"), None);
+        assert_eq!(parse_datetime("東京都千代田区一丁目"), None);
     }
 
     #[test]
