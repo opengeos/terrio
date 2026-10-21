@@ -71,7 +71,12 @@ pub(crate) fn build(name: &str, s: &mut Setup<'_>) -> Result<Option<Box<dyn Proj
         "somerc" => Box::new(Somerc::new(s)),
         "cass" => Box::new(Cass::new(s)),
         "poly" => Box::new(Poly::new(s)),
-        "eqc" => Box::new(Eqc::new(s)),
+        "eqc" => Box::new(Eqc::new(s)?),
+        "sinu" => Box::new(Sinu::new(s)),
+        "bonne" => Box::new(Bonne::new(s)?),
+        "mill" => Box::new(Mill::new(s)),
+        "vandg" => Box::new(Vandg::new(s)),
+        "gnom" => Box::new(Gnom::new(s)),
         "cea" => Box::new(Cea::new(s)?),
         "eqearth" => Box::new(EqEarth::new(s)),
         "omerc" => Box::new(Omerc::new(s)?),
@@ -1339,27 +1344,393 @@ impl Proj for Poly {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Equidistant Cylindrical (spherical formulas on the semi-major axis, as PROJ does).
+// Equidistant Cylindrical: EPSG's ellipsoidal method 1028 on an ellipsoid (as PROJ 9.8 and later),
+// the spherical method 1029 on a sphere.
 
 #[derive(Debug)]
 struct Eqc {
     rc: f64,
     phi0: f64,
+    /// The meridian distance of an ellipsoid, and its value at the origin latitude.
+    en: Option<(Mlfn, f64)>,
 }
 
 impl Eqc {
-    fn new(s: &mut Setup<'_>) -> Self {
-        Self { rc: s.p.angle("lat_ts").unwrap_or(0.0).cos(), phi0: s.phi0 }
+    fn new(s: &mut Setup<'_>) -> Result<Self> {
+        let phi1 = s.p.angle("lat_ts").unwrap_or(0.0);
+        let (sin1, cos1) = phi1.sin_cos();
+        if cos1 <= 0.0 {
+            return Err(err("eqc: |lat_ts| must be less than 90°"));
+        }
+        if s.ell.es == 0.0 {
+            return Ok(Self { rc: cos1, phi0: s.phi0, en: None });
+        }
+        // ν(φ1) cos φ1: the radius of the standard parallel.
+        let rc = cos1 / (1.0 - s.ell.es * sin1 * sin1).sqrt();
+        let en = Mlfn::new(s.ell.es);
+        let m0 = en.mlfn(s.phi0, s.phi0.sin(), s.phi0.cos());
+        Ok(Self { rc, phi0: s.phi0, en: Some((en, m0)) })
     }
 }
 
 impl Proj for Eqc {
     fn fwd(&self, lam: f64, phi: f64) -> Option<(f64, f64)> {
-        Some((self.rc * lam, phi - self.phi0))
+        match &self.en {
+            Some((en, m0)) => Some((self.rc * lam, en.mlfn(phi, phi.sin(), phi.cos()) - m0)),
+            None => Some((self.rc * lam, phi - self.phi0)),
+        }
     }
 
     fn inv(&self, x: f64, y: f64) -> Option<(f64, f64)> {
-        Some((x / self.rc, y + self.phi0))
+        match &self.en {
+            Some((en, m0)) => Some((x / self.rc, en.inv(y + m0))),
+            None => Some((x / self.rc, y + self.phi0)),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Sinusoidal (Sanson-Flamsteed), with PROJ's ellipsoidal form on an ellipsoid.
+
+#[derive(Debug)]
+struct Sinu {
+    es: f64,
+    en: Mlfn,
+}
+
+impl Sinu {
+    fn new(s: &mut Setup<'_>) -> Self {
+        Self { es: s.ell.es, en: Mlfn::new(s.ell.es) }
+    }
+}
+
+impl Proj for Sinu {
+    fn fwd(&self, lam: f64, phi: f64) -> Option<(f64, f64)> {
+        if self.es == 0.0 {
+            return Some((lam * phi.cos(), phi));
+        }
+        let (s, c) = phi.sin_cos();
+        Some((lam * c / (1.0 - self.es * s * s).sqrt(), self.en.mlfn(phi, s, c)))
+    }
+
+    fn inv(&self, x: f64, y: f64) -> Option<(f64, f64)> {
+        if self.es == 0.0 {
+            return Some((x / y.cos(), y));
+        }
+        let phi = self.en.inv(y);
+        let t = phi.abs();
+        if t < HALFPI {
+            let s = phi.sin();
+            Some((x * (1.0 - self.es * s * s).sqrt() / phi.cos(), phi))
+        } else if t - 1e-10 < HALFPI {
+            Some((0.0, phi))
+        } else {
+            None
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Bonne.
+
+#[derive(Debug)]
+struct Bonne {
+    es: f64,
+    phi1: f64,
+    /// cot φ1 on a sphere, ν(φ1) cot φ1 on an ellipsoid: the radius of the standard parallel.
+    am1: f64,
+    /// The meridian distance of an ellipsoid, and its value at φ1.
+    en: Option<(Mlfn, f64)>,
+}
+
+impl Bonne {
+    fn new(s: &mut Setup<'_>) -> Result<Self> {
+        let phi1 = s.p.angle("lat_1").unwrap_or(0.0);
+        if phi1.abs() < 1e-10 {
+            return Err(err("bonne: lat_1 must not be 0"));
+        }
+        let es = s.ell.es;
+        if es == 0.0 {
+            let am1 = if phi1.abs() + 1e-10 >= HALFPI { 0.0 } else { 1.0 / phi1.tan() };
+            return Ok(Self { es, phi1, am1, en: None });
+        }
+        let en = Mlfn::new(es);
+        let (sin1, cos1) = phi1.sin_cos();
+        let m1 = en.mlfn(phi1, sin1, cos1);
+        let am1 = cos1 / ((1.0 - es * sin1 * sin1).sqrt() * sin1);
+        Ok(Self { es, phi1, am1, en: Some((en, m1)) })
+    }
+}
+
+impl Proj for Bonne {
+    fn fwd(&self, lam: f64, phi: f64) -> Option<(f64, f64)> {
+        let (sinphi, cosphi) = phi.sin_cos();
+        let (rh, e) = match &self.en {
+            Some((en, m1)) => {
+                let rh = self.am1 + m1 - en.mlfn(phi, sinphi, cosphi);
+                (rh, cosphi * lam / (rh * (1.0 - self.es * sinphi * sinphi).sqrt()))
+            }
+            None => {
+                let rh = self.am1 + self.phi1 - phi;
+                (rh, lam * cosphi / rh)
+            }
+        };
+        if rh.abs() <= 1e-10 {
+            return Some((0.0, 0.0));
+        }
+        Some((rh * e.sin(), self.am1 - rh * e.cos()))
+    }
+
+    fn inv(&self, x: f64, y: f64) -> Option<(f64, f64)> {
+        let y = self.am1 - y;
+        let rh = x.hypot(y).copysign(self.phi1);
+        let phi = match &self.en {
+            Some((en, m1)) => en.inv(self.am1 + m1 - rh),
+            None => self.am1 + self.phi1 - rh,
+        };
+        let t = phi.abs();
+        if t > HALFPI + 1e-10 {
+            return None;
+        }
+        if HALFPI - t <= 1e-10 {
+            return Some((0.0, phi));
+        }
+        let sinphi = phi.sin();
+        let lm = rh * (1.0 - self.es * sinphi * sinphi).sqrt() / phi.cos();
+        let lam = if self.phi1 > 0.0 { lm * x.atan2(y) } else { lm * (-x).atan2(-y) };
+        Some((lam, phi))
+    }
+}
+
+/// The radius, for a semi-major axis of 1, of the sphere PROJ puts its spherical-only Miller and
+/// Van der Grinten projections on: on an ellipsoid, the sphere of the same area (`+R_A`, which
+/// PROJ adds to their conversions), with PROJ's series in e².
+fn authalic_radius(ell: Ell) -> f64 {
+    let es = ell.es;
+    1.0 - es * (1.0 / 6.0 + es * (17.0 / 360.0 + es * 67.0 / 3024.0))
+}
+
+// ---------------------------------------------------------------------------------------------
+// Miller Cylindrical (spherical).
+
+#[derive(Debug)]
+struct Mill {
+    r: f64,
+}
+
+impl Mill {
+    fn new(s: &mut Setup<'_>) -> Self {
+        Self { r: authalic_radius(s.ell) }
+    }
+}
+
+impl Proj for Mill {
+    fn fwd(&self, lam: f64, phi: f64) -> Option<(f64, f64)> {
+        Some((self.r * lam, self.r * (FORTPI + 0.4 * phi).tan().ln() * 1.25))
+    }
+
+    fn inv(&self, x: f64, y: f64) -> Option<(f64, f64)> {
+        Some((x / self.r, 2.5 * ((0.8 * y / self.r).exp().atan() - FORTPI)))
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Van der Grinten (I) (spherical), after Snyder (1987), p. 241, as PROJ.
+
+#[derive(Debug)]
+struct Vandg {
+    r: f64,
+}
+
+impl Vandg {
+    fn new(s: &mut Setup<'_>) -> Self {
+        Self { r: authalic_radius(s.ell) }
+    }
+}
+
+const VANDG_TOL: f64 = 1e-10;
+const THIRD: f64 = 0.33333333333333333333;
+const C2_27: f64 = 0.07407407407407407407;
+const PI4_3: f64 = 4.18879020478639098458;
+const PISQ: f64 = 9.86960440108935861869;
+const TPISQ: f64 = 19.73920880217871723738;
+const HPISQ: f64 = 4.93480220054467930934;
+
+impl Proj for Vandg {
+    fn fwd(&self, lam: f64, phi: f64) -> Option<(f64, f64)> {
+        use std::f64::consts::PI;
+        let p2 = (phi / HALFPI).abs();
+        if p2 - VANDG_TOL > 1.0 {
+            return None;
+        }
+        let p2 = p2.min(1.0);
+        let (x, y) = if phi.abs() <= VANDG_TOL {
+            (lam, 0.0)
+        } else if lam.abs() <= VANDG_TOL || (p2 - 1.0).abs() < VANDG_TOL {
+            (0.0, (PI * (0.5 * p2.asin()).tan()).copysign(phi))
+        } else {
+            let al = 0.5 * (PI / lam - lam / PI).abs();
+            let al2 = al * al;
+            let g = (1.0 - p2 * p2).sqrt();
+            let g = g / (p2 + g - 1.0);
+            let g2 = g * g;
+            let p = g * (2.0 / p2 - 1.0);
+            let p2 = p * p;
+            let x = g - p2;
+            let g = p2 + al2;
+            let x = (PI * (al * x + (al2 * x * x - g * (g2 - p2)).sqrt()).abs() / g).copysign(lam);
+            let t = (x / PI).abs();
+            let t = 1.0 - t * (t + 2.0 * al);
+            if t < -VANDG_TOL {
+                return None;
+            }
+            (x, if t < 0.0 { 0.0 } else { t.sqrt() * PI.copysign(phi) })
+        };
+        Some((self.r * x, self.r * y))
+    }
+
+    fn inv(&self, x: f64, y: f64) -> Option<(f64, f64)> {
+        use std::f64::consts::PI;
+        let (x, y) = (x / self.r, y / self.r);
+        let x2 = x * x;
+        let ay = y.abs();
+        if ay < VANDG_TOL {
+            let t = x2 * x2 + TPISQ * (x2 + HPISQ);
+            let lam = if x.abs() <= VANDG_TOL { 0.0 } else { 0.5 * (x2 - PISQ + t.sqrt()) / x };
+            return Some((lam, 0.0));
+        }
+        let y2 = y * y;
+        let r = x2 + y2;
+        let r2 = r * r;
+        let c1 = -PI * ay * (r + PISQ);
+        let c3 = r2 + 2.0 * PI * (ay * r + PI * (y2 + PI * (ay + HALFPI)));
+        let c2 = (c1 + PISQ * (r - 3.0 * y2)) / c3;
+        let c0 = PI * ay;
+        let al = c1 / c3 - THIRD * c2 * c2;
+        let m = 2.0 * (-THIRD * al).sqrt();
+        let d = C2_27 * c2 * c2 * c2 + (c0 * c0 - THIRD * c2 * c1) / c3;
+        let al_m = al * m;
+        if al_m.abs() < 1e-16 {
+            return None;
+        }
+        let d = 3.0 * d / al_m;
+        let t = d.abs();
+        if t - VANDG_TOL > 1.0 {
+            return None;
+        }
+        let mut d = if t > 1.0 { if d > 0.0 { 0.0 } else { PI } } else { d.acos() };
+        if r > PISQ {
+            d = 2.0 * PI - d;
+        }
+        let phi = (PI * (m * (d * THIRD + PI4_3).cos() - THIRD * c2)).copysign(y);
+        let t = r2 + TPISQ * (x2 - y2 + HPISQ);
+        let lam = if x.abs() <= VANDG_TOL { 0.0 } else { 0.5 * (r - PISQ + if t <= 0.0 { 0.0 } else { t.sqrt() }) / x };
+        Some((lam, phi))
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Gnomonic. On an ellipsoid, Karney's ellipsoidal gnomonic ("Algorithms for geodesics", 2013,
+// section 8), as PROJ: ρ = m12 / M12 along the azimuth of the geodesic from the centre.
+
+#[derive(Debug)]
+struct Gnom {
+    mode: Mode,
+    phi0: f64,
+    sinph0: f64,
+    cosph0: f64,
+    /// The geodesics of an ellipsoid with a semi-major axis of 1.
+    geod: Option<geographiclib_rs::Geodesic>,
+}
+
+impl Gnom {
+    fn new(s: &mut Setup<'_>) -> Self {
+        let geod = (s.ell.es != 0.0).then(|| geographiclib_rs::Geodesic::new(1.0, 1.0 - s.ell.one_es.sqrt()));
+        let (sinph0, cosph0) = s.phi0.sin_cos();
+        Self { mode: azimuthal_mode(s.phi0), phi0: s.phi0, sinph0, cosph0, geod }
+    }
+}
+
+impl Proj for Gnom {
+    fn fwd(&self, lam: f64, phi: f64) -> Option<(f64, f64)> {
+        use geographiclib_rs::InverseGeodesic;
+        if let Some(g) = &self.geod {
+            let (_, azi1, _, m12, mm12, _, _): (f64, f64, f64, f64, f64, f64, f64) =
+                g.inverse(self.phi0.to_degrees(), 0.0, phi.to_degrees(), lam.to_degrees());
+            // Beyond the horizon (M12 <= 0, or NaN).
+            if mm12.is_nan() || mm12 <= 0.0 {
+                return None;
+            }
+            let rho = m12 / mm12;
+            let (sina, cosa) = azi1.to_radians().sin_cos();
+            return Some((rho * sina, rho * cosa));
+        }
+        let (sinphi, cosphi) = phi.sin_cos();
+        let coslam = lam.cos();
+        let d = match self.mode {
+            Mode::Equit => cosphi * coslam,
+            Mode::Obliq => self.sinph0 * sinphi + self.cosph0 * cosphi * coslam,
+            Mode::SPole => -sinphi,
+            Mode::NPole => sinphi,
+        };
+        if d <= 1e-10 {
+            return None;
+        }
+        let k = 1.0 / d;
+        let y = match self.mode {
+            Mode::Equit => k * sinphi,
+            Mode::Obliq => k * (self.cosph0 * sinphi - self.sinph0 * cosphi * coslam),
+            Mode::NPole => -k * cosphi * coslam,
+            Mode::SPole => k * cosphi * coslam,
+        };
+        Some((k * cosphi * lam.sin(), y))
+    }
+
+    fn inv(&self, x: f64, y: f64) -> Option<(f64, f64)> {
+        use geographiclib_rs::DirectGeodesic;
+        if let Some(g) = &self.geod {
+            // Newton's method for the distance s along the azimuth, with dρ/ds = 1 / M12², or
+            // beyond ρ = 1 on 1/ρ, with d(1/ρ)/ds = -1 / m12².
+            let eps = 0.01 * f64::EPSILON.sqrt();
+            let azi0 = x.atan2(y).to_degrees();
+            let lat0 = self.phi0.to_degrees();
+            let mut rho = x.hypot(y);
+            let mut s = rho.atan();
+            let little = rho <= 1.0;
+            if !little {
+                rho = 1.0 / rho;
+            }
+            let mut converged = false;
+            for _ in 0..10 {
+                let (lat, lon, _, m12, mm12, _): (f64, f64, f64, f64, f64, f64) = g.direct(lat0, 0.0, azi0, s);
+                if converged {
+                    return Some((lon.to_radians(), lat.to_radians()));
+                }
+                let ds = if little { (m12 - rho * mm12) * mm12 } else { (rho * m12 - mm12) * m12 };
+                s -= ds;
+                // As PROJ: a NaN ends the iteration too, and its result is then NaN.
+                if ds.is_nan() || ds.abs() < eps {
+                    converged = true;
+                }
+            }
+            return None;
+        }
+        let rh = x.hypot(y);
+        if rh <= 1e-10 {
+            return Some((0.0, self.phi0));
+        }
+        let z = rh.atan();
+        let (sinz, cosz) = z.sin_cos();
+        let (phi, x, y) = match self.mode {
+            Mode::Obliq => {
+                let phi = aasin(cosz * self.sinph0 + y * sinz * self.cosph0 / rh);
+                (phi, x * sinz * self.cosph0, (cosz - self.sinph0 * phi.sin()) * rh)
+            }
+            Mode::Equit => (aasin(y * sinz / rh), x * sinz, cosz * rh),
+            Mode::SPole => (z - HALFPI, x, y),
+            Mode::NPole => (HALFPI - z, x, -y),
+        };
+        Some((x.atan2(y), phi))
     }
 }
 

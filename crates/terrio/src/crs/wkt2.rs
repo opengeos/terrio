@@ -216,6 +216,15 @@ pub(crate) fn to_proj(root: &Node) -> Result<Converted> {
         push("lat_1", p.get(SP1));
         push("lat_2", p.get(SP2));
         "eqdc"
+    } else if is(&["gnomonic"], &[]) {
+        push("lat_0", lat_0());
+        push("lon_0", lon_0());
+        "gnom"
+    } else if is(&["bonne"], &[9827]) {
+        // PROJ's `lat_1` is EPSG's latitude of natural origin.
+        push("lat_1", lat_0());
+        push("lon_0", lon_0());
+        "bonne"
     } else if let Some(proj) = WORLD.iter().find(|(n, _)| *n == name).map(|(_, p)| *p) {
         push("lon_0", lon_0());
         proj

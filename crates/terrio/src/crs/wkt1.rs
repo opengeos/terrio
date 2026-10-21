@@ -378,6 +378,26 @@ pub(crate) fn to_proj(root: &Node) -> Option<Converted> {
             push(&mut out, "lat_0", lat_0);
             push(&mut out, "lon_0", lon_0);
         }
+        // Projections terrio computes on an ellipsoid as PROJ does (#126), not through wbprojection.
+        "sinusoidal" | "millercylindrical" | "vandergrinten" | "vandergrinteni" => {
+            let name = match method.as_str() {
+                "sinusoidal" => "sinu",
+                "millercylindrical" => "mill",
+                _ => "vandg",
+            };
+            out.push(format!("+proj={name}"));
+            push(&mut out, "lon_0", lon_0);
+        }
+        "gnomonic" => {
+            out.push("+proj=gnom".into());
+            push(&mut out, "lat_0", lat_0);
+            push(&mut out, "lon_0", lon_0);
+        }
+        "bonne" => {
+            out.push("+proj=bonne".into());
+            push(&mut out, "lat_1", sp1.or(lat_0));
+            push(&mut out, "lon_0", lon_0);
+        }
         _ => return None,
     }
     out.push(format!("+x_0={fe}"));
