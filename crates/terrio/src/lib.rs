@@ -122,6 +122,27 @@
 //!
 //! # Features
 //!
+//! Every driver is on by default. With `default-features = false`, terrio keeps its core: GeoTIFF
+//! and COG, the raw and ASCII rasters, PNG, JPEG, VRT, STAC, GeoJSON, TopoJSON, Shapefile,
+//! KML/KMZ, GML, GPX, CSV and MapInfo, the CRS engine, the operations and the streams. The other
+//! drivers are features:
+//!
+//! - `geotiff`: GeoTIFF and COG, always built (the feature names what a build needs:
+//!   `features = ["geotiff"]` is a COG reader and writer);
+//! - `parquet`: GeoParquet, the [`arrow`] module and Arrow streams;
+//! - `remote`: URLs, `s3://`, `gs://` and `az://` objects, read whole or by range (the [`http`]
+//!   and [`s3`] modules), and datum grids from the PROJ CDN; native builds only;
+//! - `netcdf-hdf5`: NetCDF, HDF5 and HDF-EOS;
+//! - `sqlite`: GeoPackage and SQLite/SpatiaLite;
+//! - `tiles`: MBTiles, PMTiles and MVT ([`tiles`]); `avif`: their AVIF tiles;
+//! - `zarr`, `jp2` (JPEG 2000), `flatgeobuf`, `osm` (OpenStreetMap);
+//! - `pointcloud`: LAS, LAZ, COPC, EPT, PLY and E57 ([`pointcloud`]);
+//! - `lerc` and `lzma`: GeoTIFFs with those compressions.
+//!
+//! The drivers a build leaves out stay in [`formats::RasterDriver`] and
+//! [`formats::VectorDriver`], listed as neither read nor written: opening or writing their files
+//! fails with [`Error::Unsupported`] ("built without the `zarr` feature").
+//!
 //! - `gdal` (off by default): the optional GDAL backend (`gdal_backend`), which opens the formats
 //!   terrio has no driver for through GDAL, and writes rasters with GDAL's drivers. It is the only
 //!   C dependency, opt-in: GDAL must be installed.
@@ -134,8 +155,30 @@
 
 #![warn(missing_docs)]
 #![cfg_attr(docsrs, feature(doc_cfg))]
+// Builds without some drivers leave helpers that only those drivers use.
+#![cfg_attr(
+    not(all(
+        feature = "parquet",
+        feature = "remote",
+        feature = "avif",
+        feature = "netcdf-hdf5",
+        feature = "osm",
+        feature = "lzma",
+        feature = "flatgeobuf",
+        feature = "jp2",
+        feature = "lerc",
+        feature = "pointcloud",
+        feature = "tiles",
+        feature = "zarr",
+        feature = "sqlite"
+    )),
+    allow(dead_code)
+)]
 
+#[cfg(feature = "parquet")]
+#[cfg_attr(docsrs, doc(cfg(feature = "parquet")))]
 pub mod arrow;
+#[cfg(feature = "avif")]
 mod avif;
 mod cog;
 pub mod crs;
@@ -148,7 +191,8 @@ pub mod formats;
 pub mod gdal_backend;
 mod geotiff;
 mod histogram;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(remote)]
+#[cfg_attr(docsrs, doc(cfg(feature = "remote")))]
 pub mod http;
 pub mod info;
 mod jpeg;
@@ -157,8 +201,11 @@ pub mod memory;
 pub mod ops;
 mod par;
 mod pixel;
+#[cfg(feature = "pointcloud")]
+#[cfg_attr(docsrs, doc(cfg(feature = "pointcloud")))]
 pub mod pointcloud;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(remote)]
+#[cfg_attr(docsrs, doc(cfg(feature = "remote")))]
 pub mod s3;
 pub mod sparse;
 mod tiff_codecs;
@@ -195,10 +242,11 @@ pub use wbvector::{Feature, FieldDef, FieldType, FieldValue, Geometry, GeometryT
 
 /// The system allocator, ignoring the release of null pointers.
 ///
-/// OpenJPEG's Rust port, terrio's JPEG 2000 codec, releases code-block buffers it never allocated:
-/// null pointers. The C allocators of native builds ignore those; the allocator of
-/// `wasm32-unknown-unknown` does not, and traps. Programs built for WebAssembly that read or write
-/// JPEG 2000 make this their global allocator (terrio's npm package does):
+/// OpenJPEG's Rust port, terrio's JPEG 2000 codec (the `jp2` feature), releases code-block
+/// buffers it never allocated: null pointers. The C allocators of native builds ignore those; the
+/// allocator of `wasm32-unknown-unknown` does not, and traps. Programs built for WebAssembly that
+/// read or write JPEG 2000 make this their global allocator (terrio's npm package does); builds
+/// without `jp2` need neither it nor the link flag below:
 ///
 /// ```
 /// #[global_allocator]

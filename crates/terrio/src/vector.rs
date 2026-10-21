@@ -68,6 +68,39 @@ pub fn geometry_has_z(g: &Geometry) -> bool {
     }
 }
 
+/// Whether some coordinate of a geometry has a Z value, and whether some has an M value.
+pub(crate) fn geometry_dims(g: &Geometry) -> (bool, bool) {
+    let (mut z, mut m) = (false, false);
+    visit_coords(g, &mut |c| {
+        z |= c.z.is_some();
+        m |= c.m.is_some();
+    });
+    (z, m)
+}
+
+fn visit_coords(g: &Geometry, f: &mut dyn FnMut(&Coord)) {
+    match g {
+        Geometry::Point(c) => f(c),
+        Geometry::LineString(cs) | Geometry::MultiPoint(cs) => cs.iter().for_each(f),
+        Geometry::Polygon { exterior, interiors } => exterior.0.iter().chain(interiors.iter().flat_map(|r| r.0.iter())).for_each(f),
+        Geometry::MultiLineString(ls) => ls.iter().flatten().for_each(f),
+        Geometry::MultiPolygon(ps) => ps.iter().flat_map(|(e, h)| e.0.iter().chain(h.iter().flat_map(|r| r.0.iter()))).for_each(f),
+        Geometry::GeometryCollection(gs) => gs.iter().for_each(|g| visit_coords(g, f)),
+    }
+}
+
+/// The number of coordinates of a geometry.
+pub(crate) fn coord_count(g: &Geometry) -> usize {
+    match g {
+        Geometry::Point(_) => 1,
+        Geometry::LineString(cs) | Geometry::MultiPoint(cs) => cs.len(),
+        Geometry::Polygon { exterior, interiors } => exterior.0.len() + interiors.iter().map(|r| r.0.len()).sum::<usize>(),
+        Geometry::MultiLineString(ls) => ls.iter().map(Vec::len).sum(),
+        Geometry::MultiPolygon(ps) => ps.iter().map(|(e, h)| e.0.len() + h.iter().map(|r| r.0.len()).sum::<usize>()).sum(),
+        Geometry::GeometryCollection(gs) => gs.iter().map(coord_count).sum(),
+    }
+}
+
 /// The bounds `(min_x, min_y, max_x, max_y)` of a layer's geometries.
 pub fn layer_extent(layer: &Layer) -> Option<(f64, f64, f64, f64)> {
     extent_of(layer.features.iter().filter_map(|f| f.geometry.as_ref()?.bbox()).map(|b| (b.min_x, b.min_y, b.max_x, b.max_y)))
@@ -150,9 +183,15 @@ pub fn map_coords(g: &mut Geometry, f: &mut dyn FnMut(&mut wbvector::Coord) -> c
     }
 }
 
+#[cfg(feature = "flatgeobuf")]
+#[cfg_attr(docsrs, doc(cfg(feature = "flatgeobuf")))]
 pub use crate::drivers::vector::flatgeobuf::FlatGeobufInfo;
+#[cfg(feature = "parquet")]
+#[cfg_attr(docsrs, doc(cfg(feature = "parquet")))]
 pub use crate::drivers::vector::geoparquet::RowGroupInfo;
 
+#[cfg(feature = "flatgeobuf")]
+#[cfg_attr(docsrs, doc(cfg(feature = "flatgeobuf")))]
 /// Reads a remote FlatGeobuf file whose bytes the caller fetches (see [`crate::sparse`]): its
 /// header, and the features whose bounding box intersects `bbox` (in the layer's CRS), found with
 /// the file's spatial index so that only the index nodes on the way and those features are read;
@@ -172,6 +211,8 @@ pub fn read_flatgeobuf_sparse(
     Ok((info, crate::dataset::fix_layer(layer, name, crate::formats::VectorDriver::FlatGeobuf)))
 }
 
+#[cfg(feature = "flatgeobuf")]
+#[cfg_attr(docsrs, doc(cfg(feature = "flatgeobuf")))]
 /// The header of a remote FlatGeobuf file whose bytes the caller fetches (see
 /// [`crate::sparse`]), and its layer without features.
 pub fn read_flatgeobuf_header_sparse(file: &crate::sparse::SparseFile, name: &str) -> crate::Result<(FlatGeobufInfo, Layer)> {
@@ -180,6 +221,8 @@ pub fn read_flatgeobuf_header_sparse(file: &crate::sparse::SparseFile, name: &st
     Ok((info, crate::dataset::fix_layer(layer, name, crate::formats::VectorDriver::FlatGeobuf)))
 }
 
+#[cfg(feature = "parquet")]
+#[cfg_attr(docsrs, doc(cfg(feature = "parquet")))]
 /// The row groups of a remote GeoParquet file whose bytes the caller fetches (see
 /// [`crate::sparse`]): their row counts and bounding boxes (from the statistics of the
 /// bounding-box covering column).
@@ -187,6 +230,8 @@ pub fn geoparquet_row_groups_sparse(file: &crate::sparse::SparseFile) -> crate::
     crate::drivers::vector::geoparquet::row_groups(file.clone())
 }
 
+#[cfg(feature = "parquet")]
+#[cfg_attr(docsrs, doc(cfg(feature = "parquet")))]
 /// Reads a remote GeoParquet file whose bytes the caller fetches (see [`crate::sparse`]): the
 /// rows of `row_groups` (all by default) whose bounding box intersects `bbox`, reading only the
 /// column chunks of those row groups. Feature ids are the row numbers in the file, as in GDAL.

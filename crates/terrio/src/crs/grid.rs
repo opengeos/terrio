@@ -850,7 +850,7 @@ fn present_locally(name: &str) -> bool {
     false
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(remote)]
 fn download(name: &str) -> Option<Arc<[u8]>> {
     if name.contains(['/', '\\']) || !name.ends_with(".tif") {
         return None;
@@ -890,7 +890,7 @@ fn load(name: &str) -> Option<Arc<GridFile>> {
             }
         }
     }
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(remote)]
     let bytes = if bytes.is_none() && network_enabled() { download(name) } else { bytes };
     let file = bytes.and_then(|b| read_file(name, b)).map(Arc::new);
     files().lock().ok()?.insert(name.to_string(), file.clone());

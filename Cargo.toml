@@ -20,7 +20,8 @@ terrio-cli = { path = "crates/terrio-cli" }
 
 # Format drivers, coordinate reference systems
 wbraster = "0.2.1"
-wbvector = { version = "0.1.6", features = ["geoparquet", "kmz", "osmpbf"] }
+# KMZ always; GeoParquet and OSM PBF with terrio's `parquet` and `osm` features.
+wbvector = { version = "0.1.6", features = ["kmz"] }
 wbprojection = "0.3.3"
 # Karney's geodesics, for the ellipsoidal gnomonic projection (pure Rust).
 geographiclib-rs = { version = "0.2.7", default-features = false }

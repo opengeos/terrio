@@ -2,22 +2,31 @@
 //! fixes applied to what the format libraries read.
 
 pub mod csv;
+pub(crate) mod datetime;
+#[cfg(feature = "flatgeobuf")]
 pub mod flatgeobuf;
 pub mod geojson;
+#[cfg(feature = "sqlite")]
 pub mod geopackage;
+#[cfg(feature = "parquet")]
 pub mod geoparquet;
 pub mod gml;
+#[cfg(feature = "sqlite")]
 pub(crate) mod gpkg_inplace;
+#[cfg(feature = "sqlite")]
 pub(crate) mod gpkg_read;
+#[cfg(feature = "sqlite")]
 pub(crate) mod gpkg_update;
 pub mod gpx;
 pub mod kml;
 pub mod kml_style;
 pub mod mapinfo;
+#[cfg(feature = "osm")]
 pub mod osm;
 pub(crate) mod profile;
 pub(crate) mod projjson;
 pub mod shapefile;
+#[cfg(feature = "sqlite")]
 pub mod sqlite;
 pub mod tab;
 pub mod topojson;
@@ -47,7 +56,9 @@ pub(crate) fn spill() -> Result<Box<dyn Spill>> {
 
 /// Reads a dataset with terrio's own driver for the format. `None` when the format library reads it.
 pub(crate) fn read(path: &str, driver: VectorDriver, options: &VectorOpenOptions) -> Result<Option<Vec<Layer>>> {
+    driver.ensure_built()?;
     Ok(Some(match driver {
+        #[cfg(feature = "flatgeobuf")]
         VectorDriver::FlatGeobuf => match options.spatial_filter {
             // With a filter, only the index nodes on the way and the features found are read.
             Some(rect) => {
@@ -63,6 +74,7 @@ pub(crate) fn read(path: &str, driver: VectorDriver, options: &VectorOpenOptions
             vec![geojson::parse_seq(&std::fs::read(path)?, stem)?]
         }
         VectorDriver::CSV => vec![csv::read(path, &options.csv)?],
+        #[cfg(feature = "parquet")]
         VectorDriver::Parquet => vec![geoparquet::read_filtered(path, options.spatial_filter)?],
         VectorDriver::Shapefile => vec![shapefile::read(path)?],
         VectorDriver::GML => gml::read(path)?,
@@ -72,6 +84,7 @@ pub(crate) fn read(path: &str, driver: VectorDriver, options: &VectorOpenOptions
         VectorDriver::TopoJSON => topojson::read(path)?,
         VectorDriver::MapInfo if crate::formats::extension(path).as_deref() == Some("tab") => vec![tab::read(path)?],
         VectorDriver::MapInfo => vec![mapinfo::read(path)?],
+        #[cfg(feature = "osm")]
         VectorDriver::OSM => osm::read(path)?,
         _ => return Ok(None),
     }))
@@ -79,11 +92,14 @@ pub(crate) fn read(path: &str, driver: VectorDriver, options: &VectorOpenOptions
 
 /// Writes layers with terrio's own driver for the format. `false` when the format library writes it.
 pub(crate) fn write(layer: &Layer, path: &str, driver: VectorDriver, options: &VectorWriteOptions) -> Result<bool> {
+    driver.ensure_built()?;
     match driver {
+        #[cfg(feature = "flatgeobuf")]
         VectorDriver::FlatGeobuf => flatgeobuf::write(layer, path)?,
         VectorDriver::GeoJSON => geojson::write(layer, path, &options.geojson)?,
         VectorDriver::GeoJSONSeq => std::fs::write(path, geojson::to_seq_string(layer)?)?,
         VectorDriver::CSV => csv::write(layer, path, &options.csv)?,
+        #[cfg(feature = "parquet")]
         VectorDriver::Parquet => geoparquet::write(layer, path)?,
         VectorDriver::Shapefile => shapefile::write(layer, path)?,
         VectorDriver::GML => gml::write(layer, path)?,
@@ -103,11 +119,13 @@ pub(crate) fn write(layer: &Layer, path: &str, driver: VectorDriver, options: &V
 /// from memory itself. Formats made of several files are read from their main file alone (a
 /// shapefile without attributes or CRS): see [`read_parts`].
 pub(crate) fn read_bytes(bytes: Vec<u8>, name: &str, driver: VectorDriver, options: &VectorOpenOptions) -> Result<Option<Vec<Layer>>> {
+    driver.ensure_built()?;
     if matches!(driver, VectorDriver::Shapefile | VectorDriver::MapInfo) {
         return read_parts(&bytes, name, driver, &|_: &str| None).map(Some);
     }
     let stem = std::path::Path::new(name).file_stem().and_then(|s| s.to_str()).unwrap_or("layer");
     Ok(Some(match driver {
+        #[cfg(feature = "flatgeobuf")]
         VectorDriver::FlatGeobuf => vec![flatgeobuf::parse(&bytes)?],
         VectorDriver::GeoJSON => vec![geojson::parse(&bytes, stem)?],
         VectorDriver::GeoJSONSeq => vec![geojson::parse_seq(&bytes, stem)?],
@@ -116,13 +134,16 @@ pub(crate) fn read_bytes(bytes: Vec<u8>, name: &str, driver: VectorDriver, optio
             let options = csv::CsvOptions { separator: options.csv.separator.or(tsv.then_some(b'\t')), ..options.csv.clone() };
             vec![csv::parse(&xml::decode(&bytes), stem, &options)?]
         }
+        #[cfg(feature = "parquet")]
         VectorDriver::Parquet => vec![geoparquet::parse(bytes, stem)?],
         VectorDriver::GML => gml::parse(&xml::parse(&xml::decode(&bytes))?, None)?,
         VectorDriver::GPX => gpx::parse(&xml::decode(&bytes))?,
         VectorDriver::KML => kml::parse(&xml::decode(&bytes), stem)?,
         VectorDriver::KMZ => kml::parse_kmz(bytes, stem)?,
         VectorDriver::TopoJSON => topojson::parse(&bytes)?,
+        #[cfg(feature = "osm")]
         VectorDriver::OSM => osm::parse(bytes)?,
+        #[cfg(feature = "sqlite")]
         VectorDriver::GPKG => gpkg_read::parse(bytes, &[])?,
         _ => return Ok(None),
     }))
@@ -152,16 +173,20 @@ pub(crate) fn read_parts(main: &[u8], name: &str, driver: VectorDriver, sidecar:
 /// first.
 pub(crate) fn write_bytes(layers: &[Layer], driver: VectorDriver, options: &VectorWriteOptions) -> Result<Option<Vec<u8>>> {
     let Some(first) = layers.first() else { return Err(crate::Error::InvalidArgument("no layers to write".into())) };
+    driver.ensure_built()?;
     Ok(Some(match driver {
+        #[cfg(feature = "sqlite")]
         VectorDriver::GPKG => geopackage::to_bytes(layers)?,
         VectorDriver::GPX => gpx::layers_to_string(layers)?.into_bytes(),
         VectorDriver::KML => kml::to_string(layers)?.into_bytes(),
         VectorDriver::KMZ => kml::kmz_bytes(layers)?,
         VectorDriver::TopoJSON => topojson::to_string(layers)?.into_bytes(),
+        #[cfg(feature = "flatgeobuf")]
         VectorDriver::FlatGeobuf => flatgeobuf::to_bytes(first)?,
         VectorDriver::GeoJSON => geojson::to_string(first, &options.geojson)?.into_bytes(),
         VectorDriver::GeoJSONSeq => geojson::to_seq_string(first)?.into_bytes(),
         VectorDriver::CSV => csv::to_string(first, &options.csv)?.into_bytes(),
+        #[cfg(feature = "parquet")]
         VectorDriver::Parquet => geoparquet::to_bytes(first)?,
         // Without its schema file: readers infer the field types.
         VectorDriver::GML => gml::to_string(first, "").into_bytes(),

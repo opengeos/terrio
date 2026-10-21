@@ -255,7 +255,7 @@ pub(crate) fn open_native(path: &str) -> Result<Dataset> {
     }
     // Tile archives, local or remote, are read in place.
     if is_tile_archive(path) {
-        return crate::tiles::open_dataset(path, &VectorOpenOptions::default());
+        return open_tile_archive(path, &VectorOpenOptions::default());
     }
     let local = vfs::resolve(path)?;
     open_local(local.as_str(), &VectorOpenOptions::default())
@@ -297,7 +297,7 @@ fn open_raster_native(path: &str) -> Result<RasterDataset> {
         return result;
     }
     if is_tile_archive(path) {
-        return match crate::tiles::open_dataset(path, &VectorOpenOptions::default())? {
+        return match open_tile_archive(path, &VectorOpenOptions::default())? {
             Dataset::Raster(r) => Ok(r),
             Dataset::Vector(_) => Err(Error::Unsupported(format!("'{path}' holds vector tiles, not a raster"))),
         };
@@ -338,7 +338,7 @@ pub(crate) fn open_vector_native(path: &str, options: &VectorOpenOptions) -> Res
         };
     }
     if is_tile_archive(path) {
-        return match crate::tiles::open_dataset(path, options)? {
+        return match open_tile_archive(path, options)? {
             Dataset::Vector(v) => Ok(v),
             Dataset::Raster(_) => Err(Error::Unsupported(format!("'{path}' holds raster tiles, not vector tiles"))),
         };
@@ -364,11 +364,17 @@ pub fn list_layers(path: &str) -> Result<Vec<String>> {
 
 fn list_layers_native(path: &str) -> Result<Vec<String>> {
     if is_tile_archive(path) {
+        #[cfg(feature = "tiles")]
         return crate::tiles::layer_names(path);
+        #[cfg(not(feature = "tiles"))]
+        return Err(Error::disabled("tiles"));
     }
     let local = vfs::resolve(path)?;
     if VectorDriver::for_extension(local.as_str()) == Some(VectorDriver::GPKG) {
+        #[cfg(feature = "sqlite")]
         return crate::drivers::vector::gpkg_read::list_layers(local.as_str());
+        #[cfg(not(feature = "sqlite"))]
+        return Err(Error::disabled("sqlite"));
     }
     Ok(open_vector_native(local.as_str(), &VectorOpenOptions::default())?.layers.into_iter().map(|l| l.name).collect())
 }
@@ -397,10 +403,20 @@ fn is_tile_archive(path: &str) -> bool {
     !matches!(loc, vfs::Location::Zip { .. }) && crate::tiles::archive_kind(&loc.file_name()).is_some()
 }
 
+/// Opens a PMTiles or MBTiles archive, local or remote, in place.
+#[cfg_attr(not(feature = "tiles"), allow(unused_variables))]
+fn open_tile_archive(path: &str, options: &VectorOpenOptions) -> Result<Dataset> {
+    #[cfg(feature = "tiles")]
+    return crate::tiles::open_dataset(path, options);
+    #[cfg(not(feature = "tiles"))]
+    Err(Error::disabled("tiles"))
+}
+
 fn open_local(path: &str, options: &VectorOpenOptions) -> Result<Dataset> {
     if crate::tiles::archive_kind(path).is_some() {
-        return crate::tiles::open_dataset(path, options);
+        return open_tile_archive(path, options);
     }
+    #[cfg(feature = "tiles")]
     if let Some(layers) = crate::tiles::open_mvt_local(path, options) {
         return layers.map(|l| Dataset::Vector(finish_vector(l, path, VectorDriver::MVT)));
     }
@@ -410,7 +426,10 @@ fn open_local(path: &str, options: &VectorOpenOptions) -> Result<Dataset> {
     let ext = extension(path).unwrap_or_default();
     // GeoPackages hold vector layers, raster tiles or both: prefer the vector layers.
     if ext == "gpkg" {
+        #[cfg(feature = "sqlite")]
         return crate::drivers::gpkg::open(path, options);
+        #[cfg(not(feature = "sqlite"))]
+        return Err(Error::disabled("sqlite"));
     }
     if let Some(driver) = VectorDriver::for_extension(path) {
         return read_vector_local(path, driver, options).map(Dataset::Vector);
@@ -466,9 +485,13 @@ fn read_raster_local(path: &str) -> Result<RasterDataset> {
 }
 
 fn read_vector_local(path: &str, driver: VectorDriver, options: &VectorOpenOptions) -> Result<VectorDataset> {
-    let layers = if driver == VectorDriver::GPKG {
-        crate::drivers::vector::gpkg_read::read(path, &options.layers, options.spatial_filter)?
-    } else if let Some(layers) = crate::drivers::vector::read(path, driver, options)? {
+    driver.ensure_built()?;
+    #[cfg(feature = "sqlite")]
+    if driver == VectorDriver::GPKG {
+        let layers = crate::drivers::vector::gpkg_read::read(path, &options.layers, options.spatial_filter)?;
+        return Ok(finish_vector(layers, path, driver));
+    }
+    let layers = if let Some(layers) = crate::drivers::vector::read(path, driver, options)? {
         select_layers(layers, path, options)?
     } else {
         let format = driver.to_wb().ok_or_else(|| Error::Unsupported(format!("the {} driver cannot read", driver.name())))?;
@@ -672,6 +695,7 @@ fn write_raster_with_nodata(raster: &Raster, nodata: Option<f64>, complex: bool,
             return Err(Error::InvalidArgument(format!("cannot tell the output format of '{path}': give it explicitly")));
         }
     };
+    driver.ensure_built()?;
     if !driver.info().write {
         return Err(Error::Unsupported(format!("the {} driver cannot write", driver.name())));
     }
@@ -754,12 +778,16 @@ fn write_raster_with_nodata(raster: &Raster, nodata: Option<f64>, complex: bool,
 /// // Read back by GDAL's names: NETCDF:"terrain.nc":/terrain/slope/Band1
 /// # Ok::<(), terrio::Error>(())
 /// ```
+#[cfg_attr(not(feature = "netcdf-hdf5"), allow(unused_variables))]
 pub fn write_netcdf_groups(rasters: &[(&str, &RasterDataset)], path: &str, options: &RasterWriteOptions) -> Result<()> {
     ensure_writable_location(path)?;
     if rasters.is_empty() {
         return Err(Error::InvalidArgument("no rasters to write".into()));
     }
-    crate::drivers::write_netcdf_groups(rasters, path, options)
+    #[cfg(feature = "netcdf-hdf5")]
+    return crate::drivers::write_netcdf_groups(rasters, path, options);
+    #[cfg(not(feature = "netcdf-hdf5"))]
+    Err(Error::disabled("netcdf-hdf5"))
 }
 
 fn parse_compression(s: &str) -> Result<wbraster::GeoTiffCompression> {
@@ -813,16 +841,19 @@ pub fn write_vector(layers: &[Layer], path: &str, options: &VectorWriteOptions) 
             return Err(Error::InvalidArgument(format!("cannot tell the output format of '{path}': give it explicitly")));
         }
     };
+    driver.ensure_built()?;
     if !driver.info().write {
         return Err(Error::Unsupported(format!("the {} driver cannot write", driver.name())));
     }
     match (driver, layers) {
         (_, []) => Err(Error::InvalidArgument("no layers to write".into())),
+        #[cfg(feature = "sqlite")]
         (VectorDriver::GPKG, _) => crate::drivers::vector::geopackage::write(layers, path),
         (VectorDriver::GPX, _) => crate::drivers::vector::gpx::write_layers(layers, path),
         (VectorDriver::KML, _) => crate::drivers::vector::kml::write(layers, path),
         (VectorDriver::KMZ, _) => crate::drivers::vector::kml::write_kmz(layers, path),
         (VectorDriver::TopoJSON, _) => crate::drivers::vector::topojson::write_layers(layers, path),
+        #[cfg(feature = "tiles")]
         (VectorDriver::MBTiles | VectorDriver::PMTiles | VectorDriver::MVT, _) => {
             crate::tiles::write_vector(layers, path, driver, &options.tiles)
         }

@@ -701,7 +701,7 @@ fn header_boxes(r: &mut dyn codec::ReadSeek) -> Result<Vec<u8>> {
 enum StreamSource {
     File(std::path::PathBuf),
     Bytes(std::sync::Arc<[u8]>),
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(remote)]
     Http(crate::http::RangeReader),
 }
 
@@ -710,7 +710,7 @@ impl StreamSource {
         Ok(match self {
             Self::File(p) => Box::new(std::io::BufReader::with_capacity(1 << 16, std::fs::File::open(p)?)),
             Self::Bytes(b) => Box::new(std::io::Cursor::new(b.clone())),
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(remote)]
             Self::Http(r) => Box::new(r.clone()),
         })
     }
@@ -940,7 +940,7 @@ pub(crate) fn open_lazy(path: &str) -> Option<Result<crate::LazyRaster>> {
             }
             StreamSource::File(p)
         }
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(remote)]
         loc @ (Location::Url(_) | Location::S3 { .. }) => {
             let lower = path.to_ascii_lowercase();
             let lower = lower.split(['?', '#']).next().unwrap_or_default();

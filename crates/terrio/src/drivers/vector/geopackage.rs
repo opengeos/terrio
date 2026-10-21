@@ -39,7 +39,7 @@ pub(super) fn now() -> String {
     let ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64);
     #[cfg(target_arch = "wasm32")]
     let ms = 0;
-    let s = super::geoparquet::format_datetime(ms - ms % 1000, true);
+    let s = super::datetime::format_datetime(ms - ms % 1000, true);
     s.replace('Z', ".000Z")
 }
 

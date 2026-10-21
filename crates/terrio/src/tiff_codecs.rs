@@ -109,7 +109,10 @@ fn decompress(compression: u16, raw: Vec<u8>, limit: usize) -> TiffResult<Vec<u8
             out.truncate(written);
         }
         8 | 32946 => bounded(&mut flate2::read::ZlibDecoder::new(&raw[..]), &mut out)?,
+        #[cfg(feature = "lzma")]
         LZMA => bounded(&mut lzma_rust2::XzReader::new(&raw[..], true), &mut out).map_err(|e| invalid(format!("LZMA: {e}")))?,
+        #[cfg(not(feature = "lzma"))]
+        LZMA => return Err(disabled("lzma")),
         50000 => {
             let mut src = &raw[..];
             let mut z = ruzstd::decoding::StreamingDecoder::new(&mut src).map_err(|e| invalid(format!("Zstandard: {e}")))?;
@@ -148,6 +151,12 @@ fn invalid(msg: impl Into<String>) -> TiffError {
     TiffError::IoError(std::io::Error::new(std::io::ErrorKind::InvalidData, msg.into()))
 }
 
+/// The error of a compression this build leaves out: terrio was built without `feature`.
+#[cfg(not(all(feature = "lerc", feature = "lzma")))]
+fn disabled(feature: &str) -> TiffError {
+    TiffError::IoError(std::io::Error::new(std::io::ErrorKind::Unsupported, format!("built without the `{feature}` feature")))
+}
+
 /// How the chunks of one image are decoded when the `tiff` crate cannot do it (alone).
 #[derive(Debug, Clone)]
 pub(crate) struct ChunkCodec {
@@ -167,8 +176,10 @@ pub(crate) struct ChunkCodec {
     /// `FillOrder` 2: the bits of each byte are stored least significant first.
     lsb_first: bool,
     /// LERC: the compression wrapping the blobs (0 none, 1 Deflate, 2 Zstandard).
+    #[cfg_attr(not(feature = "lerc"), allow(dead_code))]
     lerc_wrapper: u32,
     /// LERC: the last sample is an alpha channel, coded as the blob's mask.
+    #[cfg_attr(not(feature = "lerc"), allow(dead_code))]
     lerc_alpha: bool,
     /// JPEG: the tables the chunks share (a JPEG stream without an image).
     jpeg_tables: Vec<u8>,
@@ -410,6 +421,7 @@ impl ChunkCodec {
 
     /// Decodes LERC blobs into native-endian samples, as libtiff's LERC codec does: masked pixels
     /// of floating-point images are NaN, a mask coding the alpha channel becomes 0 or 255.
+    #[cfg(feature = "lerc")]
     fn lerc(&self, raw: Vec<u8>, w: usize, h: usize) -> TiffResult<Vec<u8>> {
         let blob = match self.lerc_wrapper {
             0 => raw,
@@ -473,6 +485,11 @@ impl ChunkCodec {
             return Err(invalid(format!("LERC: {} samples for a {w} x {h} chunk of {} samples per pixel", samples.len(), self.spp)));
         }
         Ok(self.to_bytes(&samples))
+    }
+
+    #[cfg(not(feature = "lerc"))]
+    fn lerc(&self, _raw: Vec<u8>, _w: usize, _h: usize) -> TiffResult<Vec<u8>> {
+        Err(disabled("lerc"))
     }
 
     /// Decodes a JPEG XL codestream into native-endian samples: the colour channels, then the extra
@@ -580,6 +597,7 @@ impl ChunkCodec {
 }
 
 /// LERC samples as `f64`, which holds every type LERC codes exactly.
+#[cfg(feature = "lerc")]
 fn pixels_f64(p: &lerc_core::PixelData) -> Vec<f64> {
     use lerc_core::PixelData as P;
     match p {
