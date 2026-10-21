@@ -393,7 +393,12 @@ impl SpatialRef {
         {
             s.epsg = identify_epsg(w);
         }
-        if s.proj4.is_none() { s.with_esri() } else { s }
+        if s.proj4.is_none() {
+            return s.with_esri();
+        }
+        // Nor is it identified as an ESRI CRS, but a pseudo-EPSG ESRI code is not kept as EPSG's.
+        s.epsg = s.epsg.filter(|c| !is_esri_code(*c));
+        s
     }
 
     /// The CRS as the raster model stores it.
