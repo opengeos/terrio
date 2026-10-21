@@ -239,7 +239,7 @@ pub fn open_layers(path: &str, options: &VectorOpenOptions, batch: usize) -> Res
             let s = geoparquet::ParquetStream::open(|| Ok(File::open(path)?), stem, None, options.spatial_filter, batch, None)?;
             (s.layer.clone(), Box::new(ParquetSource(s)))
         }
-        _ => unreachable!("every streamed driver is handled"),
+        d => return Err(Error::Unsupported(format!("the {} driver is not read as a stream", d.name()))),
     };
     let layer = crate::dataset::fix_layer(layer, path, driver);
     if !options.layers.is_empty() && !options.layers.iter().any(|n| *n == layer.name || n == stem) {
