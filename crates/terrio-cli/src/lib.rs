@@ -6,6 +6,7 @@ mod mcp;
 
 use clap::{Parser, Subcommand};
 use std::ffi::OsString;
+use std::sync::{Arc, Mutex};
 
 /// Pure-Rust geospatial raster, vector and point cloud data I/O.
 #[derive(Parser)]
@@ -68,14 +69,20 @@ pub fn run(args: Vec<OsString>) -> i32 {
 pub fn run_as(args: Vec<OsString>, terrio: Option<Vec<OsString>>) -> i32 {
     // On a thread of its own with Linux's 8 MiB stack: Windows gives its main thread 1 MiB, which
     // the debug build's deep frames (clap's parser, `terrio mcp`) can overflow.
-    std::thread::Builder::new()
-        .name("terrio".into())
-        .stack_size(STACK_SIZE)
-        .spawn(move || run_on_this_thread(args, terrio))
-        .map_or(1, |t| t.join().unwrap_or(101))
+    // Should the thread not start (its stack refused under a memory limit), the command runs here.
+    let job = Arc::new(Mutex::new(Some((args, terrio))));
+    let take = move |job: &Mutex<Option<_>>| {
+        let job = job.lock().unwrap().take();
+        job.map(|(args, terrio)| run_on_this_thread(args, terrio))
+    };
+    let on_thread = Arc::clone(&job);
+    match std::thread::Builder::new().name("terrio".into()).stack_size(STACK_SIZE).spawn(move || take(&on_thread)) {
+        Ok(t) => t.join().map_or(101, |code| code.unwrap_or(1)),
+        Err(_) => take(&job).unwrap_or(1),
+    }
 }
 
-/// The stack of the thread that runs a command.
+/// The stack of the thread that runs a command: Linux's default for its main thread.
 const STACK_SIZE: usize = 8 << 20;
 
 /// [`run_as`], on the calling thread.
