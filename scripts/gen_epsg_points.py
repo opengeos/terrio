@@ -45,6 +45,8 @@ ARGS.add_argument("out", help="the output file")
 ARGS.add_argument("--grids", help="a directory of datum shift grids for GDAL to use")
 ARGS.add_argument("--points", type=int, default=50, help="the points of each kind per CRS (default 50)")
 OPTIONS = ARGS.parse_args()
+if OPTIONS.points < 1:
+    ARGS.error("--points must be at least 1")
 
 # conda's PROJ activation turns PROJ's network access on, which downloads grids (NAD27 and others)
 # and makes the transformations depend on the environment: the network stays off, and PROJ

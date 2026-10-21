@@ -136,6 +136,12 @@ fn cass_matches_proj() {
     check(CASS_WGS84_PROJ, WGS84_GEOG, CASS_WGS84);
     check(CASS_SPHERE_PROJ, SPHERE_GEOG, CASS_SPHERE);
     check(CASS_HYPERBOLIC_WGS84_PROJ, WGS84_GEOG, CASS_HYPERBOLIC_WGS84);
+    // Where the inverse does not converge, PROJ refuses the point (World Cassini's projection of
+    // (100°, 40°), 90° from its meridian): so does terrio, rather than returning the series' guess.
+    let crs = SpatialRef::from_proj4("+proj=cass +ellps=WGS84 +units=m +no_defs").unwrap();
+    let inv = Transformer::new(&crs, &SpatialRef::from_proj4(WGS84_GEOG).unwrap()).unwrap();
+    let r = inv.transform(5574940.633736469, 12301864.447042266);
+    assert!(r.as_ref().map_or(true, |p| !p.0.is_finite()), "inverse of a point PROJ refuses succeeded: {r:?}");
 }
 
 // The reference points, from pyproj 3.8.0 (PROJ 9.8.1).

@@ -305,10 +305,10 @@ fi
 # GDAL's transformations for every EPSG CRS, which terrio's are checked against (needs pyproj,
 # NumPy and GDAL's Python bindings): without grids, and with those of grids/. 50 points of each
 # kind per CRS: about 950,000 lines and 83 MB per file, and 10 CPU minutes each to compute.
-if [ ! -e epsg_points.tsv ] && python -c "import pyproj, osgeo" 2>/dev/null; then
+if [ ! -e epsg_points.tsv ] && python -c "import numpy, pyproj, osgeo" 2>/dev/null; then
   python "$here/gen_epsg_points.py" epsg_points.tsv
 fi
-if [ ! -e epsg_points_grids.tsv ] && python -c "import pyproj, osgeo" 2>/dev/null; then
+if [ ! -e epsg_points_grids.tsv ] && python -c "import numpy, pyproj, osgeo" 2>/dev/null; then
   python "$here/gen_epsg_points.py" epsg_points_grids.tsv --grids grids
 fi
 echo "Test data in $(pwd)"
