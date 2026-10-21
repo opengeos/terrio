@@ -239,7 +239,8 @@ fn tiff_tags<'py>(py: Python<'py>, path: &str) -> PyResult<Option<Bound<'py, PyL
 ///     crs: A CRS definition: `EPSG:4326`, WKT, a PROJ string...
 ///
 /// Returns:
-///     dict: `epsg` (int or None), `wkt` (str or None), `proj4` (str or None), `name`
+///     dict: `epsg` (int or None), `esri` (the ESRI code of a CRS without EPSG code, int or
+///     None), `wkt` (str or None), `proj4` (str or None), `name`
 ///     (str or None) and `is_geographic` (bool).
 ///
 /// Raises:
@@ -249,6 +250,7 @@ fn crs_info<'py>(py: Python<'py>, crs: &str) -> PyResult<Bound<'py, PyDict>> {
     let s = SpatialRef::parse(crs).py()?;
     let d = PyDict::new(py);
     d.set_item("epsg", s.epsg)?;
+    d.set_item("esri", s.esri)?;
     d.set_item("wkt", s.to_wkt())?;
     d.set_item("proj4", s.proj4.clone())?;
     d.set_item("name", s.name())?;

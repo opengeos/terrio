@@ -65,12 +65,10 @@ pub(crate) fn with_warnings<T: Send>(py: Python<'_>, f: impl FnOnce() -> terrio:
     warned.map(|()| value)
 }
 
-/// A CRS as Python sees it: `EPSG:xxxx` when the code is known, otherwise the WKT, or `None`.
+/// A CRS as Python sees it: `EPSG:xxxx` (or `ESRI:xxxx`) when the code is known, otherwise the
+/// WKT, or `None`.
 pub(crate) fn crs_string(crs: &terrio::crs::SpatialRef) -> Option<String> {
-    match crs.epsg {
-        Some(code) => Some(format!("EPSG:{code}")),
-        None => crs.to_wkt(),
-    }
+    crs.authority_code().or_else(|| crs.to_wkt())
 }
 
 #[pymodule]

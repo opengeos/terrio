@@ -394,7 +394,10 @@ fn group_assets(items: &[(Value, String)], f: &Filters) -> Groups {
             let crs = if !get("proj:code").is_null() && get("proj:code").as_str().is_some() {
                 get("proj:code").as_str().unwrap_or_default().to_string()
             } else if !get("proj:epsg").is_null() {
-                format!("EPSG:{}", get("proj:epsg"))
+                // Older items give ESRI codes (54009) there too.
+                let code = get("proj:epsg");
+                let esri = code.as_u64().and_then(|c| u32::try_from(c).ok()).is_some_and(crate::crs::is_esri_code);
+                format!("{}:{code}", if esri { "ESRI" } else { "EPSG" })
             } else if let Some(w) = get("proj:wkt2").as_str() {
                 w.to_string()
             } else if get("proj:projjson").is_object() {

@@ -48,12 +48,9 @@ fn to_js<T: serde::Serialize>(value: &T) -> Result<JsValue, JsError> {
     js_sys::JSON::parse(&text).map_err(|_| JsError::new("invalid JSON"))
 }
 
-/// A CRS as `EPSG:xxxx` when its code is known, otherwise its WKT.
+/// A CRS as `EPSG:xxxx` (or `ESRI:xxxx`) when its code is known, otherwise its WKT.
 fn crs_string(crs: &SpatialRef) -> Option<String> {
-    match crs.epsg {
-        Some(code) => Some(format!("EPSG:{code}")),
-        None => crs.to_wkt(),
-    }
+    crs.authority_code().or_else(|| crs.to_wkt())
 }
 
 /// Parses an options object (`undefined` or `null` for the defaults).
@@ -647,12 +644,14 @@ pub fn register_grid(name: &str, bytes: Vec<u8>) {
     terrio::crs::register_grid(name, bytes);
 }
 
-/// Describes a CRS: `{ epsg, name, geographic, wkt }`.
+/// Describes a CRS: `{ epsg, esri, name, geographic, wkt }` (`esri`: the ESRI code of a CRS
+/// without EPSG code).
 #[wasm_bindgen(js_name = describeCrs)]
 pub fn describe_crs(crs: &str) -> Result<JsValue, JsError> {
     let s = SpatialRef::parse(crs).map_err(js_err)?;
     to_js(&serde_json::json!({
         "epsg": s.epsg,
+        "esri": s.esri,
         "name": s.name(),
         "geographic": s.is_geographic(),
         "wkt": s.to_wkt(),

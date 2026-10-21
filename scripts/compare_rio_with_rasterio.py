@@ -532,6 +532,26 @@ def _crs(rio: Any, ctx: Ctx) -> Any:
     return out
 
 
+@check("helpers", "crs: ESRI codes, and the ESRI CRS of a GeoTIFF GDAL wrote")
+def _crs_esri(rio: Any, ctx: Ctx) -> Any:
+    C = rio.crs.CRS
+    out = []
+    # (Lowercase `esri:54009`, which PROJ reads, rasterio refuses.)
+    for s in ["ESRI:54009", "ESRI:102003"]:
+        c = C.from_string(s)
+        out.append([c.to_epsg(), c.to_authority(), c.to_string(), c.is_epsg_code, c.is_projected, c.linear_units])
+    out.append([C.from_user_input("ESRI:102003") == "ESRI:102003", C.from_string("ESRI:54009") == "EPSG:4326"])
+    # GDAL writes it as a user-defined CRS with its ESRI PE string, which GDAL identifies.
+    path = str(ctx.out / "mollweide.tif")
+    t = ctx.reference.transform.from_origin(0, 0, 1000, 1000)
+    with ctx.reference.open(path, "w", driver="GTiff", width=4, height=4, count=1, dtype="float32", crs="ESRI:54009", transform=t) as dst:
+        dst.write(np.zeros((1, 4, 4), "float32"))
+    with rio.open(path) as ds:
+        c = ds.crs
+        out.append([c.to_string(), c.to_authority(), c.to_epsg(), c.is_epsg_code, c == "ESRI:54009", c.linear_units])
+    return out
+
+
 @check("helpers", "crs: invalid definitions raise CRSError")
 def _crs_bad(rio: Any, ctx: Ctx) -> Any:
     return rio.crs.CRS.from_string("not a crs")

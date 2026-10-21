@@ -115,11 +115,33 @@ pub struct CrsSummary {
     pub name: Option<String>,
     /// The WKT definition.
     pub wkt: Option<String>,
+    /// The code of PROJ's ESRI authority, for a CRS with one rather than an EPSG code.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub esri: Option<u32>,
 }
 
 impl CrsSummary {
     pub(crate) fn new(s: &SpatialRef) -> Self {
-        Self { epsg: s.epsg, name: s.name(), wkt: s.to_wkt() }
+        Self { epsg: s.epsg, name: s.name(), wkt: s.to_wkt(), esri: s.esri }
+    }
+
+    /// The authority code: `EPSG:4326` or `ESRI:54009`.
+    pub fn code(&self) -> Option<String> {
+        match (self.epsg, self.esri) {
+            (Some(code), _) => Some(format!("EPSG:{code}")),
+            (None, Some(code)) => Some(format!("ESRI:{code}")),
+            (None, None) => None,
+        }
+    }
+
+    /// The CRS as `info` prints it: `EPSG:4326 (WGS 84)`, else its name.
+    pub(crate) fn line(&self) -> String {
+        match (self.code(), &self.name) {
+            (Some(code), Some(name)) => format!("{code} ({name})"),
+            (Some(code), None) => code,
+            (None, Some(name)) => name.clone(),
+            (None, None) => "unknown".into(),
+        }
     }
 }
 
@@ -629,7 +651,7 @@ impl Info {
             Info::Raster(r) => {
                 let _ = writeln!(s, "Driver: {}", r.driver);
                 let _ = writeln!(s, "Size: {} x {}, {} band(s)", r.size[0], r.size[1], r.band_count);
-                let _ = writeln!(s, "CRS: {}", crs_line(&r.crs));
+                let _ = writeln!(s, "CRS: {}", r.crs.line());
                 let g = r.geo_transform;
                 let _ = writeln!(s, "Origin: ({}, {})", g[0], g[3]);
                 let _ = writeln!(s, "Pixel size: ({}, {})", g[1], g[5]);
@@ -676,7 +698,7 @@ impl Info {
                     let _ = writeln!(s, "\nLayer: {}", l.name);
                     let _ = writeln!(s, "Geometry: {}", l.geometry_type);
                     let _ = writeln!(s, "Features: {}", l.feature_count);
-                    let _ = writeln!(s, "CRS: {}", crs_line(&l.crs));
+                    let _ = writeln!(s, "CRS: {}", l.crs.line());
                     if let Some(e) = &l.extent {
                         let _ = writeln!(s, "Extent: {}", fmt_box(e));
                     }
@@ -702,15 +724,6 @@ fn write_subdatasets(s: &mut String, subdatasets: &[Subdataset]) {
     for (i, d) in subdatasets.iter().enumerate() {
         let _ = writeln!(s, "  SUBDATASET_{}_NAME={}", i + 1, d.name);
         let _ = writeln!(s, "  SUBDATASET_{}_DESC={}", i + 1, d.description);
-    }
-}
-
-fn crs_line(c: &CrsSummary) -> String {
-    match (c.epsg, &c.name) {
-        (Some(code), Some(name)) => format!("EPSG:{code} ({name})"),
-        (Some(code), None) => format!("EPSG:{code}"),
-        (None, Some(name)) => name.clone(),
-        (None, None) => "unknown".into(),
     }
 }
 

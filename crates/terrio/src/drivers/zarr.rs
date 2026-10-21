@@ -1643,8 +1643,8 @@ fn convention(name: &str, uuid: &str, what: &str) -> Value {
 
 /// The `proj:` attributes of a CRS: its code, or its PROJJSON.
 fn proj_attrs(s: &crate::crs::SpatialRef, attrs: &mut Value) {
-    if let Some(code) = s.epsg {
-        attrs["proj:code"] = json!(format!("EPSG:{code}"));
+    if let Some(code) = s.authority_code() {
+        attrs["proj:code"] = json!(code);
     } else if let Some(pj) = super::wkt::gdal_wkt(s).and_then(|w| crate::drivers::vector::projjson::from_wkt1(&w, None)) {
         attrs["proj:projjson"] = pj;
     }
