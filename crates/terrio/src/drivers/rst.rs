@@ -132,7 +132,7 @@ pub(crate) fn write(r: &Raster, nodata: Option<f64>, path: &Path) -> Result<()> 
         Some(4326) => ("latlong".to_string(), "deg", false),
         Some(c @ 32601..=32660) => (format!("utm-{}n", c - 32600), "m", false),
         Some(c @ 32701..=32760) => (format!("utm-{}s", c - 32700), "m", false),
-        _ => ("plane".to_string(), if crs.is_geographic() { "deg" } else { "m" }, !crs.is_unknown()),
+        _ => ("plane".to_string(), if crs.is_angular() { "deg" } else { "m" }, !crs.is_unknown()),
     };
     let values = r.data.to_f64_vec();
     let valid = values.iter().copied().filter(|v| !v.is_nan() && nodata.is_none_or(|nd| *v != nd));

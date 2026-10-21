@@ -47,6 +47,7 @@ mod grid;
 mod math;
 mod params;
 mod projections;
+mod rotation;
 mod route;
 mod wkt1;
 mod wkt2;
@@ -248,6 +249,18 @@ impl SpatialRef {
         }
     }
 
+    /// Whether this is a rotated-pole grid (PROJ's `+proj=ob_tran`, CF's
+    /// `rotated_latitude_longitude`): its coordinates are in degrees but are not longitudes and
+    /// latitudes, so it is not geographic.
+    pub fn is_rotated_pole(&self) -> bool {
+        self.epsg.is_none() && Def::new(self).is_ok_and(|d| d.is_rotated_pole())
+    }
+
+    /// Whether coordinates are in degrees: a geographic CRS or a rotated-pole grid.
+    pub(crate) fn is_angular(&self) -> bool {
+        self.is_geographic() || self.is_rotated_pole()
+    }
+
     /// Whether both describe the same CRS, as far as can be told.
     pub fn same_as(&self, other: &SpatialRef) -> bool {
         match (self.epsg, other.epsg) {
@@ -262,6 +275,10 @@ impl SpatialRef {
             && let Ok(c) = wbp::Crs::from_epsg(code)
         {
             return Ok(c);
+        }
+        // wbprojection would read a rotated-pole grid as its geographic base CRS.
+        if self.is_rotated_pole() {
+            return Err(Error::Crs("a rotated-pole CRS has no wbprojection equivalent".into()));
         }
         if let Some(w) = &self.wkt {
             return Ok(wbp::Crs::from_wkt(w)?);
@@ -313,6 +330,22 @@ impl SpatialRef {
 /// PROJ string itself (`EXTENSION["PROJ4", ...]`), as GDAL writes it.
 fn proj_to_wkt(p: &str) -> Option<String> {
     let extension = format!("EXTENSION[\"PROJ4\",\"{}\"]", p.trim().replace('"', ""));
+    // A rotated-pole grid: its base geographic CRS extended with the PROJ string, as GDAL 2 wrote
+    // it (wbprojection does not know `ob_tran`). Unnamed and without its code, so as not to be
+    // taken for the base CRS.
+    if Def::from_proj(p).ok()?.is_rotated_pole() {
+        const DATUM: [&str; 10] = ["+datum=", "+ellps=", "+a=", "+b=", "+rf=", "+f=", "+R=", "+towgs84=", "+nadgrids=", "+pm="];
+        let datum: Vec<&str> = p.split_whitespace().filter(|t| DATUM.iter().any(|d| t.starts_with(d))).collect();
+        let geogcs = wbp::crs_to_wkt(&wbp::from_proj_string(&format!("+proj=longlat {}", datum.join(" "))).ok()?);
+        let body = geogcs.trim_end().strip_prefix("GEOGCS[\"")?;
+        let body = body[body.find('"')? + 1..].strip_suffix(']')?;
+        // The root's own AUTHORITY: the last node, closed by the root's bracket.
+        let body = match body.rfind(",AUTHORITY[") {
+            Some(i) if body[i..].matches(']').count() == 1 => &body[..i],
+            _ => body,
+        };
+        return Some(format!("GEOGCS[\"unnamed\"{body},{extension}]"));
+    }
     if let Ok(crs) = wbp::from_proj_string(&mercator_lat_ts_as_k(p)) {
         let wkt = wbp::crs_to_wkt(&crs);
         // Faithful when terrio reads it back (identifying its EPSG code, its geographic CRS) as

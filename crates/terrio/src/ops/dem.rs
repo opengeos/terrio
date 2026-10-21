@@ -811,7 +811,7 @@ fn scales(ds: &RasterDataset, o: &DemOptions) -> (f64, f64) {
     let srs = ds.crs();
     let Some(wkt) = srs.to_wkt() else { return (1.0, 1.0) };
     let gt = ds.geo_transform();
-    if srs.is_geographic() {
+    if srs.is_angular() {
         let ang = wkt_unit(&wkt, &["ANGLEUNIT[", "UNIT["]).unwrap_or(0.0174532925199433);
         let Some(a) = wkt_semi_major(&wkt) else { return (1.0, 1.0) };
         let yscale = ang * a;

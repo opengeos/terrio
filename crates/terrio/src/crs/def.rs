@@ -6,6 +6,7 @@ use super::datum::{self, Op};
 use super::math::*;
 use super::params::Params;
 use super::projections::{self, Proj, Setup};
+use super::rotation::Rotation;
 use super::{SpatialRef, epsg, wkt1, wkt2};
 use crate::{Error, Result};
 use std::sync::Arc;
@@ -15,6 +16,9 @@ use std::sync::Arc;
 pub(crate) struct Def {
     /// The projection, `None` for a geographic CRS.
     proj: Option<Arc<dyn Proj>>,
+    /// The pole rotation of a rotated-pole grid (`+proj=ob_tran`), a CRS in degrees without a
+    /// projection, whose longitudes are relative to `lam0`.
+    rot: Option<Rotation>,
     pub(crate) ell: Ell,
     lam0: f64,
     /// The latitude of origin (for comparing definitions).
@@ -230,7 +234,8 @@ impl Def {
             x0: p.f64("x_0").unwrap_or(0.0),
             y0: p.f64("y_0").unwrap_or(0.0),
         };
-        let geographic = matches!(name, "longlat" | "latlong" | "lonlat" | "latlon");
+        let rot = if name == "ob_tran" { Some(Rotation::from_params(&p)?) } else { None };
+        let geographic = matches!(name, "longlat" | "latlong" | "lonlat" | "latlon") || rot.is_some();
         let proj: Option<Arc<dyn Proj>> = if geographic {
             None
         } else {
@@ -249,6 +254,7 @@ impl Def {
         let (ell, lam0, phi0, x0, y0) = (setup.ell, setup.lam0, setup.phi0, setup.x0, setup.y0);
         let mut d = Self {
             proj,
+            rot,
             ell,
             lam0,
             phi0,
@@ -302,7 +308,13 @@ impl Def {
     /// meridian), whatever their datums: compared on points around the projection's origin.
     pub fn same_conversion(&self, other: &Def) -> bool {
         match (&self.proj, &other.proj) {
-            (None, None) => (self.to_deg - other.to_deg).abs() < 1e-12 && (self.pm - other.pm).abs() < 1e-9 && self.axis == other.axis,
+            (None, None) => {
+                (self.to_deg - other.to_deg).abs() < 1e-12
+                    && (self.pm - other.pm).abs() < 1e-9
+                    && self.axis == other.axis
+                    && self.rot == other.rot
+                    && (self.rot.is_none() || (self.lam0 - other.lam0).abs() < 1e-12)
+            }
             (Some(_), Some(_)) => {
                 let lat0 = self.phi0.to_degrees().clamp(-89.0, 89.0);
                 let lon0 = (self.lam0 + self.pm).to_degrees();
@@ -372,6 +384,7 @@ impl Def {
         let ell = Ell::from_a_es(e.a, 2.0 * e.f - e.f * e.f);
         let mut d = Self {
             proj: None,
+            rot: None,
             ell,
             lam0: 0.0,
             phi0: 0.0,
@@ -395,9 +408,23 @@ impl Def {
         Ok(d)
     }
 
-    /// Whether this is a geographic CRS.
+    /// Whether this is a geographic CRS. A rotated-pole grid is not: its coordinates are in
+    /// degrees, but are not longitudes and latitudes.
     pub fn is_geographic(&self) -> bool {
-        self.proj.is_none()
+        self.proj.is_none() && self.rot.is_none()
+    }
+
+    /// Whether this is a rotated-pole grid (`+proj=ob_tran`).
+    pub fn is_rotated_pole(&self) -> bool {
+        self.rot.is_some()
+    }
+
+    /// A rotated-pole grid's CF parameters, in degrees: `grid_north_pole_latitude`,
+    /// `grid_north_pole_longitude` and `north_pole_grid_longitude`.
+    pub fn rotated_pole(&self) -> Option<[f64; 3]> {
+        let (lat, o_lon) = self.rot?.pole();
+        let lon = adjlon(self.lam0 + self.pm - std::f64::consts::PI);
+        Some([lat.to_degrees(), lon.to_degrees(), o_lon.to_degrees()])
     }
 
     /// The coordinates `(east, north)` of axis-ordered ones.
@@ -435,7 +462,16 @@ impl Def {
     pub fn unproject(&self, u: f64, v: f64) -> Option<(f64, f64)> {
         let (e, n) = self.unaxis(u, v);
         let (lam, phi) = match &self.proj {
-            None => ((e * self.to_deg).to_radians(), (n * self.to_deg).to_radians()),
+            None => {
+                let (lam, phi) = ((e * self.to_deg).to_radians(), (n * self.to_deg).to_radians());
+                match &self.rot {
+                    Some(r) => {
+                        let (lam, phi) = r.inv(lam, phi);
+                        (lam + self.lam0, phi)
+                    }
+                    None => (lam, phi),
+                }
+            }
             Some(p) => {
                 let x = (e * self.to_meter - self.x0) / self.ell.a;
                 let y = (n * self.to_meter - self.y0) / self.ell.a;
@@ -452,7 +488,7 @@ impl Def {
     /// The longitude and latitude in degrees (east of Greenwich) of coordinates in a geographic
     /// CRS, as given (without the round trip through radians); `None` for a projected CRS.
     pub fn source_degrees(&self, u: f64, v: f64) -> Option<(f64, f64)> {
-        if self.proj.is_some() {
+        if self.proj.is_some() || self.rot.is_some() {
             return None;
         }
         let (e, n) = self.unaxis(u, v);
@@ -467,7 +503,13 @@ impl Def {
     pub fn project(&self, lon: f64, lat: f64) -> Option<(f64, f64)> {
         let lon = lon - self.pm;
         let (e, n) = match &self.proj {
-            None => (adjlon(lon).to_degrees() / self.to_deg, lat.to_degrees() / self.to_deg),
+            None => {
+                let (lam, phi) = match &self.rot {
+                    Some(r) => r.fwd(adjlon(lon - self.lam0), lat),
+                    None => (adjlon(lon), lat),
+                };
+                (lam.to_degrees() / self.to_deg, phi.to_degrees() / self.to_deg)
+            }
             Some(p) => {
                 if lat.abs() > HALFPI + 1e-12 {
                     return None;
@@ -543,7 +585,7 @@ impl Def {
     /// geographic CRS, a world-wide area or one that does not project.
     pub fn areas(&self, op: &Op) -> Vec<[f64; 4]> {
         let [w, s, e, n] = op.bounds;
-        if self.proj.is_none() || (e - w >= 360.0 && n - s >= 180.0) {
+        if self.is_geographic() || (e - w >= 360.0 && n - s >= 180.0) {
             return Vec::new();
         }
         let parts = if w <= e { vec![[w, s, e, n]] } else { vec![[w, s, 180.0, n], [-180.0, s, e, n]] };
