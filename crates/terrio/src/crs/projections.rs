@@ -96,7 +96,8 @@ pub(crate) fn build(name: &str, s: &mut Setup<'_>) -> Result<Option<Box<dyn Proj
         "gstmerc" => Box::new(Gstmerc::new(s)),
         "fouc_s" => Box::new(FoucS::new(s)?),
         "mbtfps" => Box::new(Mbtfps::new()),
-        "putp4p" => Box::new(Putp4p),
+        "putp4p" => Box::new(Putp4p { cx: 0.874038744, cy: 3.883251825 }),
+        "weren" => Box::new(Putp4p { cx: 1.0, cy: 4.442882938 }),
         "murd2" => Box::new(Sconic::new(s, SconicKind::Murd2)?),
         "tissot" => Box::new(Sconic::new(s, SconicKind::Tissot)?),
         _ => return Ok(None),
@@ -602,7 +603,7 @@ struct Laea {
     ymf: f64,
     sinb1: f64,
     cosb1: f64,
-    apa: [f64; 3],
+    apa: [f64; 6],
 }
 
 impl Laea {
@@ -622,7 +623,7 @@ impl Laea {
             ymf: 0.0,
             sinb1: 0.0,
             cosb1: 0.0,
-            apa: [0.0; 3],
+            apa: [0.0; 6],
         };
         if es != 0.0 {
             l.qp = qsfn(1.0, e, one_es);
@@ -1758,7 +1759,7 @@ struct Cea {
     e: f64,
     one_es: f64,
     qp: f64,
-    apa: [f64; 3],
+    apa: [f64; 6],
 }
 
 impl Cea {
@@ -1771,7 +1772,7 @@ impl Cea {
                 return Err(err("cea: invalid lat_ts"));
             }
         }
-        let mut c = Self { k0: s.k0, e: s.ell.e, one_es: s.ell.one_es, qp: 0.0, apa: [0.0; 3] };
+        let mut c = Self { k0: s.k0, e: s.ell.e, one_es: s.ell.one_es, qp: 0.0, apa: [0.0; 6] };
         if s.ell.es != 0.0 {
             let t = t.sin();
             c.k0 /= (1.0 - s.ell.es * t * t).sqrt();
@@ -1813,7 +1814,7 @@ struct EqEarth {
     e: f64,
     qp: f64,
     rqda: f64,
-    apa: [f64; 3],
+    apa: [f64; 6],
 }
 
 const EE_A1: f64 = 1.340264;
@@ -1823,7 +1824,7 @@ const EE_A4: f64 = 0.003796;
 
 impl EqEarth {
     fn new(s: &mut Setup<'_>) -> Self {
-        let mut q = Self { es: s.ell.es, e: s.ell.e, qp: 0.0, rqda: 1.0, apa: [0.0; 3] };
+        let mut q = Self { es: s.ell.es, e: s.ell.e, qp: 0.0, rqda: 1.0, apa: [0.0; 6] };
         if q.es != 0.0 {
             q.apa = authset(q.es);
             q.qp = qsfn(1.0, q.e, 1.0 - q.es);
@@ -2029,11 +2030,15 @@ struct Krovak {
     ad: f64,
     czech: f64,
     modified: bool,
-    a: f64,
+    /// Bessel's semi-major axis over the CRS's, which normalized coordinates are in.
+    scale: f64,
 }
 
 const KROVAK_S0: f64 = 1.37008346281555;
 const KROVAK_UQ: f64 = 1.04216856380474;
+/// Bessel 1841, which PROJ's Krovak uses whatever the CRS's ellipsoid.
+const KROVAK_A: f64 = 6377397.155;
+const KROVAK_ES: f64 = 0.006674372230614;
 
 impl Krovak {
     fn new(s: &mut Setup<'_>, modified: bool) -> Result<Self> {
@@ -2048,7 +2053,8 @@ impl Krovak {
             s.k0 = 0.9999;
         }
         let czech = if p.has("czech") { 1.0 } else { -1.0 };
-        let (e, es, phi0) = (s.ell.e, s.ell.es, s.phi0);
+        // As PROJ, on Bessel's ellipsoid whatever the CRS's (which only its datum uses).
+        let (e, es, phi0) = (KROVAK_ES.sqrt(), KROVAK_ES, s.phi0);
         let alpha = (1.0 + (es * phi0.cos().powi(4)) / (1.0 - es)).sqrt();
         let u0 = (phi0.sin() / alpha).asin();
         let g = ((1.0 + e * phi0.sin()) / (1.0 - e * phi0.sin())).powf(alpha * e / 2.0);
@@ -2064,7 +2070,7 @@ impl Krovak {
         // PROJ applies the false origin to the southing and westing, before their sign change.
         s.x0 *= czech;
         s.y0 *= czech;
-        Ok(Self { e, alpha, k, n, rho0, ad, czech, modified, a: s.ell.a })
+        Ok(Self { e, alpha, k, n, rho0, ad, czech, modified, scale: KROVAK_A / s.ell.a })
     }
 
     /// The correction of Krovak Modified, in normalized units, from the normalized unmodified
@@ -2082,8 +2088,8 @@ impl Krovak {
         const C8: f64 = 4.408314235e-18;
         const C9: f64 = -8.331083518e-24;
         const C10: f64 = -3.689471323e-24;
-        let xr = xr * self.a - X0;
-        let yr = yr * self.a - Y0;
+        let xr = xr * KROVAK_A - X0;
+        let yr = yr * KROVAK_A - Y0;
         let xr2 = xr * xr;
         let yr2 = yr * yr;
         let xr2_yr2 = xr2 - yr2;
@@ -2094,7 +2100,7 @@ impl Krovak {
         let dy = C2 + C3 * yr + C4 * xr + 2.0 * C5 * xr * yr + C6 * xr2_yr2 + C8 * xr * (xr2 - 3.0 * yr2) + C7 * yr * (3.0 * xr2 - yr2)
             - 4.0 * C10 * xr * yr * xr2_yr2
             + C9 * quart;
-        (dx / self.a, dy / self.a)
+        (dx / KROVAK_A, dy / KROVAK_A)
     }
 }
 
@@ -2119,12 +2125,12 @@ impl Proj for Krovak {
             xs -= dx;
             yw -= dy;
         }
-        Some((yw * self.czech, xs * self.czech))
+        Some((yw * self.czech * self.scale, xs * self.czech * self.scale))
     }
 
     fn inv(&self, x: f64, y: f64) -> Option<(f64, f64)> {
-        let mut yw = x * self.czech;
-        let mut xs = y * self.czech;
+        let mut yw = x * self.czech / self.scale;
+        let mut xs = y * self.czech / self.scale;
         if self.modified {
             // The correction is small and smooth: a fixed-point iteration converges at once.
             let (x0, y0) = (xs, yw);
@@ -3258,26 +3264,26 @@ impl Proj for Mbtfps {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Putniņš P4′, with PROJ's constants as written: they are truncated, and the exact ones differ
-// from PROJ's results by a centimetre.
+// Putniņš P4′ and Werenskiold I (its scaled form), with PROJ's constants as written: they are
+// truncated, and the exact ones differ from PROJ's results by millimetres to a centimetre.
 
 #[derive(Debug)]
-struct Putp4p;
-
-const PUTP4P_CX: f64 = 0.874038744;
-const PUTP4P_CY: f64 = 3.883251825;
+struct Putp4p {
+    cx: f64,
+    cy: f64,
+}
 
 impl Proj for Putp4p {
     fn fwd(&self, lam: f64, phi: f64) -> Option<(f64, f64)> {
         let phi = aasin_checked(0.883883476 * phi.sin())?;
-        let x = PUTP4P_CX * lam * phi.cos();
+        let x = self.cx * lam * phi.cos();
         let phi = phi * 0.333333333333333;
-        Some((x / phi.cos(), PUTP4P_CY * phi.sin()))
+        Some((x / phi.cos(), self.cy * phi.sin()))
     }
 
     fn inv(&self, x: f64, y: f64) -> Option<(f64, f64)> {
-        let phi = aasin_checked(y / PUTP4P_CY)?;
-        let lam = x * phi.cos() / PUTP4P_CX;
+        let phi = aasin_checked(y / self.cy)?;
+        let lam = x * phi.cos() / self.cx;
         let phi = phi * 3.0;
         Some((lam / phi.cos(), aasin_checked(1.13137085 * phi.sin())?))
     }

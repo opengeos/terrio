@@ -25,9 +25,9 @@ Generated on 2026-10-14 with terrio 0.1.1 (9e7f7f5), GDAL 3.12.2, PROJ 9.7.1, PD
 | [Arrow and GeoArrow](#arrow-and-geoarrow) | GDAL's Arrow streams, pyarrow, GeoPandas | 180 | 171 | 9 | 0 |
 | [GeoPackage updates and spatial filters](#geopackage-updates-and-spatial-filters) | `ogr2ogr`, GDAL's `validate_gpkg.py` | 12 | 12 | 0 | 0 |
 | [Point clouds](#point-clouds) | laspy (every value), PDAL (headers, PLY, E57 and EPT, COPC and EPT queries, filters, grids, reprojection) and gdal_grid (TIN and nearest-neighbour grids) | 615 | 609 | 6 | 0 |
-| [Coordinate transformations](#coordinate-transformations) | GDAL 3.12 and PROJ (`gdaltransform`) | 19,013 | 18,862 | 98 | 53 |
-| [Datum shift grids, geoid models and coordinate epochs](#datum-shift-grids-geoid-models-and-coordinate-epochs) | GDAL 3.12 and PROJ, with the same grids | 19,253 | 19,036 | 140 | 77 |
-| **All** | | **40,064** | **39,672** | **262** | **130** |
+| [Coordinate transformations](#coordinate-transformations) | GDAL 3.12 and PROJ (`gdaltransform`) | 19,017 | 18,903 | 61 | 53 |
+| [Datum shift grids, geoid models and coordinate epochs](#datum-shift-grids-geoid-models-and-coordinate-epochs) | GDAL 3.12 and PROJ, with the same grids | 19,253 | 19,073 | 103 | 77 |
+| **All** | | **40,068** | **39,750** | **188** | **130** |
 
 ## Dataset summaries and pixels
 
@@ -290,14 +290,14 @@ Cases that are not identical:
 
 ## Coordinate transformations
 
-50 reference points per EPSG geographic and projected CRS (the centre of its area of use and random points of it), transformed from WGS 84 (forward), 50 more back (inverse), and 50 between the CRS and another whose area holds them, compared with GDAL's results, neither using datum shift grids, a case per CRS (per pair of CRSs from CRS to CRS) judged by its worst point; then projections EPSG has no code for, against PROJ (crates/terrio/tests/geostationary.rs: points from nadir to near the limb, forward within 1 mm and inverse within 1e-8°, and points the satellite cannot see refused; crates/terrio/tests/ellipsoidal_projections.rs: points over the globe on WGS 84 and on a sphere, forward within 1 mm and inverse within 1e-8°, and for the gnomonic points beyond the horizon refused). Identical: within 1 mm. Within tolerance: within 1 cm (forward, inverse) or 1 m (CRS to CRS, where the datum transformations GDAL picks can differ by area of use). Known differences: CRS-to-CRS pairs where GDAL picks another datum transformation than terrio at points outside the areas of use of the pair's transformations, or chains through several datums (#153).
+50 reference points per EPSG geographic and projected CRS (the centre of its area of use and random points of it), transformed from WGS 84 (forward), 50 more back (inverse), and 50 between the CRS and another whose area holds them, compared with GDAL's results, neither using datum shift grids, a case per CRS (per pair of CRSs from CRS to CRS) judged by its worst point; then projections EPSG has no code for, against PROJ (crates/terrio/tests/geostationary.rs: points from nadir to near the limb, forward within 1 mm and inverse within 1e-8°, and points the satellite cannot see refused; crates/terrio/tests/ellipsoidal_projections.rs: points over the globe on WGS 84 and on a sphere, forward within 1 mm and inverse within 1e-8°, and for the gnomonic points beyond the horizon refused; crates/terrio/tests/proj_strings.rs: every PROJ projection with typical parameters, on WGS 84 and on a sphere, as a PROJ string and as pyproj's WKT1_GDAL and WKT2_2019, 20 points each, matching PROJ or refused). Identical: within 1 mm. Within tolerance: within 1 cm (forward, inverse) or 1 m (CRS to CRS, where the datum transformations GDAL picks can differ by area of use). Known differences: CRS-to-CRS pairs where GDAL picks another datum transformation than terrio at points outside the areas of use of the pair's transformations, or chains through several datums (#153).
 
 | Format or operation | Cases | Identical | Within tolerance | Differs |
 |---|---:|---:|---:|---:|
 | forward (WGS 84 to CRS) | 6,354 | 6,354 | 0 | 0 |
-| inverse (CRS to WGS 84) | 6,354 | 6,335 | 19 | 0 |
-| CRS to CRS | 6,295 | 6,163 | 79 | 53 |
-| PROJ definitions without an EPSG code | 10 | 10 | 0 | 0 |
+| inverse (CRS to WGS 84) | 6,354 | 6,354 | 0 | 0 |
+| CRS to CRS | 6,295 | 6,181 | 61 | 53 |
+| PROJ definitions without an EPSG code | 14 | 14 | 0 | 0 |
 
 Cases that are not identical:
 
@@ -357,13 +357,13 @@ Cases that are not identical:
 | CRS to CRS | EPSG:29850 to EPSG:9054 | differs | 4.4402 m at (503396.6266, 837308.9496), the largest of 50 points |
 | CRS to CRS | EPSG:30178 to EPSG:8859 | differs | 625.1733 m at (9450.849671, 40725.91264), the largest of 50 points |
 | CRS to CRS | EPSG:2392 to EPSG:4124 | within tolerance | 0.5581 m at (2500642.641, 7632767.385), the largest of 50 points |
-| inverse (CRS to WGS 84) | EPSG:3035 | within tolerance | 0.0015 m at (2060534.633, 610408.0533), the largest of 50 points |
 | CRS to CRS | EPSG:3108 to EPSG:8998 | within tolerance | 0.3433 m at (69969.66614, 21639.94369), the largest of 50 points |
 | CRS to CRS | EPSG:3312 to EPSG:31171 | within tolerance | 0.0021 m at (823128.8384, 542294.9992), the largest of 50 points |
 | CRS to CRS | EPSG:3768 to EPSG:3908 | within tolerance | 0.7959 m at (278809.5528, 4726919.154), the largest of 50 points |
-| inverse (CRS to WGS 84) | EPSG:3973 | within tolerance | 0.0016 m at (4228164.137, -5958600.529), the largest of 50 points |
-| CRS to CRS | EPSG:3973 to EPSG:8859 | within tolerance | 0.0018 m at (-7059911.497, -1019540.445), the largest of 50 points |
-| | ... and 91 more | | |
+| CRS to CRS | EPSG:4149 to EPSG:4230 | within tolerance | 0.0011 m at (6.283819626, 45.83474531), the largest of 50 points |
+| CRS to CRS | EPSG:4179 to EPSG:4230 | within tolerance | 0.0020 m at (19.38060709, 42.48389042), the largest of 50 points |
+| CRS to CRS | EPSG:4745 to EPSG:5663 | within tolerance | 0.0011 m at (14.31513274, 50.44966061), the largest of 50 points |
+| | ... and 54 more | | |
 
 ## Datum shift grids, geoid models and coordinate epochs
 
@@ -372,8 +372,8 @@ The EPSG reference points again, GDAL and terrio both using the grids of `script
 | Format or operation | Cases | Identical | Within tolerance | Differs |
 |---|---:|---:|---:|---:|
 | forward (WGS 84 to CRS) with grids | 6,354 | 6,352 | 2 | 0 |
-| inverse (CRS to WGS 84) with grids | 6,354 | 6,332 | 22 | 0 |
-| CRS to CRS with grids | 6,295 | 6,102 | 116 | 77 |
+| inverse (CRS to WGS 84) with grids | 6,354 | 6,351 | 3 | 0 |
+| CRS to CRS with grids | 6,295 | 6,120 | 98 | 77 |
 | grids, geoids and epochs | 250 | 250 | 0 | 0 |
 
 Cases that are not identical:
@@ -440,4 +440,4 @@ Cases that are not identical:
 | CRS to CRS with grids | EPSG:26801 to EPSG:9056 | differs | 4.0809 m at (329281.4015, 1539306.993), the largest of 50 points |
 | CRS to CRS with grids | EPSG:26820 to EPSG:3162 | differs | 1.3179 m at (3031877.201, 1052309.622), the largest of 50 points |
 | CRS to CRS with grids | EPSG:26836 to EPSG:2036 | differs | 1.2013 m at (1318875.593, 744124.61), the largest of 50 points |
-| | ... and 157 more | | |
+| | ... and 120 more | | |

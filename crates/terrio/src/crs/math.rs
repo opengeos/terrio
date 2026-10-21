@@ -271,30 +271,60 @@ impl Mlfn {
     }
 }
 
-/// Coefficients converting authalic to geodetic latitudes (PROJ's `pj_authset`).
-pub(crate) fn authset(es: f64) -> [f64; 3] {
-    const P00: f64 = 0.33333333333333333333;
-    const P01: f64 = 0.17222222222222222222;
-    const P02: f64 = 0.10257936507936507937;
-    const P10: f64 = 0.06388888888888888888;
-    const P11: f64 = 0.06640211640211640212;
-    const P20: f64 = 0.01677689594356261023;
-    let mut apa = [0.0; 3];
-    apa[0] = es * P00;
-    let mut t = es * es;
-    apa[0] += t * P01;
-    apa[1] = t * P10;
-    t *= es;
-    apa[0] += t * P02;
-    apa[1] += t * P11;
-    apa[2] = t * P20;
+/// Coefficients converting authalic to geodetic latitudes, as PROJ since 9.6: the Fourier series
+/// in the authalic latitude whose coefficients are Taylor series in the third flattening n, to
+/// order 6 (Karney, "On auxiliary latitudes", 2024; PROJ's `pj_auxlat_coeffs`, `C[phi,xi]`).
+pub(crate) fn authset(es: f64) -> [f64; 6] {
+    const C: [f64; 21] = [
+        4.0 / 3.0,
+        4.0 / 45.0,
+        -16.0 / 35.0,
+        -2582.0 / 14175.0,
+        60136.0 / 467775.0,
+        28112932.0 / 212837625.0,
+        46.0 / 45.0,
+        152.0 / 945.0,
+        -11966.0 / 14175.0,
+        -21016.0 / 51975.0,
+        251310128.0 / 638512875.0,
+        3044.0 / 2835.0,
+        3802.0 / 14175.0,
+        -94388.0 / 66825.0,
+        -8797648.0 / 10945935.0,
+        6059.0 / 4725.0,
+        41072.0 / 93555.0,
+        -1472637812.0 / 638512875.0,
+        768272.0 / 467775.0,
+        455935736.0 / 638512875.0,
+        4210684958.0 / 1915538625.0,
+    ];
+    let b = (1.0 - es).sqrt();
+    let n = (1.0 - b) / (1.0 + b);
+    let mut apa = [0.0; 6];
+    let (mut o, mut d) = (0, n);
+    for (l, a) in apa.iter_mut().enumerate() {
+        // A polynomial in n of degree 5 - l, by Horner's method.
+        let p = &C[o..o + 6 - l];
+        *a = d * p.iter().rev().fold(0.0, |y, c| y * n + c);
+        o += 6 - l;
+        d *= n;
+    }
     apa
 }
 
-/// The geodetic latitude of an authalic latitude (PROJ's `pj_authlat`).
-pub(crate) fn authlat(beta: f64, apa: &[f64; 3]) -> f64 {
-    let t = beta + beta;
-    beta + apa[0] * t.sin() + apa[1] * (t + t).sin() + apa[2] * (t + t + t).sin()
+/// The geodetic latitude of an authalic latitude: `beta + Σ apa[k] sin((2k + 2) beta)`, by
+/// Clenshaw summation (PROJ's `pj_authalic_lat_inverse`, for ellipsoids of flattening up to
+/// about 1/50).
+pub(crate) fn authlat(beta: f64, apa: &[f64; 6]) -> f64 {
+    let (s, c) = beta.sin_cos();
+    let x = 2.0 * (c - s) * (c + s);
+    let (mut u0, mut u1) = (0.0, 0.0);
+    for a in apa.iter().rev() {
+        let t = x * u0 - u1 + a;
+        u1 = u0;
+        u0 = t;
+    }
+    beta + 2.0 * s * c * u0
 }
 
 /// π/4, for the formulas below.

@@ -629,7 +629,9 @@ def suite_crs(ctx):
         "within 1 mm and inverse within 1e-8°, and points the satellite cannot see refused; "
         "crates/terrio/tests/ellipsoidal_projections.rs: points over the globe on WGS 84 and on "
         "a sphere, forward within 1 mm and inverse within 1e-8°, and for the gnomonic points "
-        "beyond the horizon refused). "
+        "beyond the horizon refused; crates/terrio/tests/proj_strings.rs: every PROJ projection "
+        "with typical parameters, on WGS 84 and on a sphere, as a PROJ string and as pyproj's "
+        "WKT1_GDAL and WKT2_2019, 20 points each, matching PROJ or refused). "
         "Identical: within 1 mm. Within tolerance: within 1 cm (forward, inverse) or 1 m (CRS to "
         "CRS, where the datum transformations GDAL picks can differ by area of use). Known "
         "differences: CRS-to-CRS pairs where GDAL picks another datum transformation than terrio "
@@ -662,6 +664,12 @@ PROJ_CASES = {
         "gnom_matches_proj": "Gnomonic: `+proj=gnom` oblique, polar and equatorial, WGS 84 and sphere",
         "gnom_refuses_points_beyond_the_horizon": "Gnomonic near and beyond the horizon: `+proj=gnom +lat_0=40 +lon_0=-100`",
         "cass_matches_proj": "Cassini-Soldner: `+proj=cass +lat_0=48 +lon_0=10` (WGS 84 and sphere) and `+hyperbolic`",
+    },
+    "proj_strings": {
+        "proj_strings_match_proj_or_are_refused": "Every PROJ projection as a PROJ string (117, WGS 84 and sphere): matches PROJ or is refused",
+        "unsupported_projections_are_refused_in_every_encoding": "The projections terrio does not implement, refused as WKT too",
+        "pyproj_wkt_matches_proj": "The same CRSs as pyproj's WKT1_GDAL and WKT2_2019 (known differences: #119, #156)",
+        "own_wkt_reads_back_as_the_same_crs": "The same CRSs through the WKT terrio writes, read back by terrio",
     },
 }
 
