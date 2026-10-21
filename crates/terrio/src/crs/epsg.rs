@@ -318,6 +318,8 @@ fn datum_names() -> &'static DatumNames {
         }
         names.values_mut().for_each(|(_, c)| c.sort_unstable());
         written.values_mut().for_each(|c| c.sort_unstable());
+        // Without it, every WKT without a datum code would be left without EPSG code.
+        debug_assert!(!names.is_empty(), "the datum name table did not decompress");
         (names, written)
     })
 }
