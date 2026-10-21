@@ -288,19 +288,26 @@ pub(crate) fn datum_key(name: &str) -> String {
     name.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '+').map(|c| c.to_ascii_lowercase()).collect()
 }
 
-/// The EPSG datums a name stands for, as PROJ's database lists them: those it is the official
-/// name (or GDAL's WKT 1 name) of, else an EPSG alias of, else a PROJ, an ESRI (`D_ETRS_1989`)
-/// or a former name of, in order of code.
-pub(crate) fn datums_named(name: &str) -> Vec<u32> {
-    static NAMES: OnceLock<HashMap<String, (u8, Vec<u32>)>> = OnceLock::new();
-    let names = NAMES.get_or_init(|| {
-        let mut names = HashMap::<String, (u8, Vec<u32>)>::new();
+/// The rank of the names ESRI writes for CRSs on another datum (`D_ETRS_1989` for ETRS89-NOR).
+const ESRI_WRITTEN: u8 = 5;
+
+/// The datum names of the table by rank: those of ranks 0 to 4, and those ESRI writes.
+type DatumNames = (HashMap<String, (u8, Vec<u32>)>, HashMap<String, Vec<u32>>);
+
+fn datum_names() -> &'static DatumNames {
+    static NAMES: OnceLock<DatumNames> = OnceLock::new();
+    NAMES.get_or_init(|| {
+        let (mut names, mut written) = (HashMap::<String, (u8, Vec<u32>)>::new(), HashMap::<String, Vec<u32>>::new());
         for line in decompress(DATUM_NAMES).lines().filter(|l| !l.starts_with('#')) {
             let mut f = line.splitn(3, '\t');
             let (Some(Ok(code)), Some(Ok(rank)), Some(name)) = (f.next().map(str::parse::<u32>), f.next().map(str::parse::<u8>), f.next())
             else {
                 continue;
             };
+            if rank == ESRI_WRITTEN {
+                written.entry(datum_key(name)).or_default().push(code);
+                continue;
+            }
             let e = names.entry(datum_key(name)).or_insert((rank, Vec::new()));
             if rank < e.0 {
                 *e = (rank, Vec::new());
@@ -310,9 +317,22 @@ pub(crate) fn datums_named(name: &str) -> Vec<u32> {
             }
         }
         names.values_mut().for_each(|(_, c)| c.sort_unstable());
-        names
-    });
-    names.get(&datum_key(name)).map(|(_, c)| c.clone()).unwrap_or_default()
+        written.values_mut().for_each(|c| c.sort_unstable());
+        (names, written)
+    })
+}
+
+/// The EPSG datums a name stands for, as PROJ's database lists them: those it is the official
+/// name (or GDAL's WKT 1 name) of, else an EPSG alias of, else a PROJ, an ESRI (`D_ETRS_1989`)
+/// or a former name of, in order of code.
+pub(crate) fn datums_named(name: &str) -> Vec<u32> {
+    datum_names().0.get(&datum_key(name)).map(|(_, c)| c.clone()).unwrap_or_default()
+}
+
+/// The other EPSG datums whose CRSs ESRI writes with a datum name: ETRS89-NOR for
+/// `D_ETRS_1989` (ETRS89-NOR [EUREF89] / NTM zone 18, EPSG:5118), S-JTSK (Ferro) for `D_S_JTSK`.
+pub(crate) fn datums_written_as(name: &str) -> &'static [u32] {
+    datum_names().1.get(&datum_key(name)).map_or(&[], Vec::as_slice)
 }
 
 /// The EPSG geographic 2D CRSs on a datum, without deprecated ones, in order of code.

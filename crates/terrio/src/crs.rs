@@ -421,6 +421,12 @@ fn semi_major_axis(wkt: &str) -> Option<f64> {
 /// `ID` (WKT 2) declares, else those it is named as (`D_European_1950` is ED50). Empty for a datum
 /// with another name (`Unknown based on Bessel 1841 ellipsoid`), as for GDAL.
 fn wkt_datums(wkt: &str) -> Vec<u32> {
+    wkt_datums_and_others(wkt).0
+}
+
+/// The EPSG datums of a WKT definition's geodetic datum ([`wkt_datums`]), and the other datums
+/// whose CRSs ESRI writes with its name (ETRS89-NOR for `D_ETRS_1989`).
+fn wkt_datums_and_others(wkt: &str) -> (Vec<u32>, &'static [u32]) {
     fn find(n: &wkt1::Node) -> Option<&wkt1::Node> {
         const DATUMS: [&str; 5] = ["DATUM", "GEODETICDATUM", "TRF", "ENSEMBLE", "DATUMENSEMBLE"];
         if DATUMS.iter().any(|k| n.key.eq_ignore_ascii_case(k)) {
@@ -431,11 +437,12 @@ fn wkt_datums(wkt: &str) -> Vec<u32> {
             _ => None,
         })
     }
-    let Some(datum) = wkt1::parse(wkt).and_then(|root| find(&root).cloned()) else { return Vec::new() };
+    let Some(datum) = wkt1::parse(wkt).and_then(|root| find(&root).cloned()) else { return (Vec::new(), &[]) };
     if let Some(code) = datum.epsg() {
-        return vec![code];
+        return (vec![code], &[]);
     }
-    datum.name().map(epsg::datums_named).unwrap_or_default()
+    let name = datum.name().unwrap_or_default();
+    (epsg::datums_named(name), epsg::datums_written_as(name))
 }
 
 /// Identifies the EPSG code of a WKT definition, as GDAL does: a CRS on the WKT's datum (by its
@@ -449,7 +456,7 @@ pub(crate) fn identify_epsg(wkt: &str) -> Option<u32> {
     if let Some(code) = declared_epsg(wkt) {
         return Some(code);
     }
-    let datums = wkt_datums(wkt);
+    let (datums, others) = wkt_datums_and_others(wkt);
     // No known datum (or no datum node, or WKT the reader cannot parse): no code, and on purpose
     // not the registry's loose guess (#125).
     if datums.is_empty() {
@@ -474,25 +481,26 @@ pub(crate) fn identify_epsg(wkt: &str) -> Option<u32> {
         let name = wbp::epsg::epsg_info(code).map(|i| i.name.to_ascii_uppercase()).unwrap_or_default();
         !wkt_names_realization && REALIZATIONS.iter().any(|r| name.contains(r))
     };
-    if let Some(own) = own.as_ref().filter(|d| d.is_geographic()) {
-        let candidates = datums.iter().flat_map(|d| epsg::geographic_on(*d)).copied().filter(|c| same(own, *c));
-        if let Some(code) = candidates.min_by_key(|c| (!named(*c), realization(*c), *c)) {
-            return Some(code);
-        }
-    }
-    // A projected CRS on the WKT's datum with its conversion, as GDAL finds it.
-    if let Some(own) = &own
-        && let Some(method) = conversion_method(wkt)
-    {
+    // A CRS of the table on these datums with the WKT's conversion, as GDAL finds it.
+    let search = |datums: &[u32]| {
+        let own = own.as_ref()?;
         let geogs = datums.iter().flat_map(|d| epsg::geographic_on(*d)).copied();
+        if own.is_geographic() {
+            return geogs.filter(|c| same(own, *c)).min_by_key(|c| (!named(*c), realization(*c), *c));
+        }
+        let method = conversion_method(wkt)?;
         let found = geogs.flat_map(epsg::projected_on).filter(|(c, m)| same_method(m, &method) && same(own, *c)).map(|(c, _)| *c);
         // Else the one with the WKT's axis order (ETRS89 / UTM zone 32N rather than its N-E
         // variant for ESRI's WKT, without axes).
         let own_north_first = north_first(wkt);
         let axes = |c: u32| epsg::get(c).is_some_and(|e| north_first(&e.wkt) != own_north_first);
-        if let Some(code) = found.min_by_key(|c| (!named(*c), axes(*c), realization(*c), *c)) {
-            return Some(code);
-        }
+        found.min_by_key(|c| (!named(*c), axes(*c), realization(*c), *c))
+    };
+    // On the datum the WKT names, else on those whose CRSs ESRI writes with its name: GDAL
+    // identifies ESRI's ETRS_1989_NTM_Zone_18 on D_ETRS_1989 by its name as EPSG:5118, on
+    // ETRS89-NOR.
+    if let Some(code) = search(&datums).or_else(|| search(others)) {
+        return Some(code);
     }
     // A current CRS on the WKT's datum. Its datum: its code in the table, else its WKT's (WKT 2
     // CRSs of the table, on datum ensembles, and those only the registry has). A deprecated code
@@ -958,6 +966,9 @@ mod tests {
         esri(26918, "NAD_1983_UTM_Zone_18N", "North_American_1983", grs80, &utm(-75));
         esri(4258, "", "ETRS_1989", grs80, "");
         esri(25832, "ETRS_1989_UTM_Zone_32N", "ETRS_1989", grs80, &utm(9));
+        // On ETRS89-NOR, which ESRI writes D_ETRS_1989 (GDAL identifies it by its ESRI name).
+        let ntm = r#"PROJECTION["Transverse_Mercator"],PARAMETER["False_Easting",100000.0],PARAMETER["False_Northing",1000000.0],PARAMETER["Central_Meridian",18.5],PARAMETER["Scale_Factor",1.0],PARAMETER["Latitude_Of_Origin",58.0],UNIT["Meter",1.0]"#;
+        esri(5118, "ETRS_1989_NTM_Zone_18", "ETRS_1989", grs80, ntm);
         // With ED50's datum shift, as EPSG:4230 and EPSG:23032 (about 100 m in the Netherlands).
         for (wkt, code, tol) in [(&ed50, 4230, 1e-8), (&ed50_utm, 23032, 1e-3)] {
             let t = Transformer::new(&wgs84, &SpatialRef::from_wkt(wkt)).unwrap();

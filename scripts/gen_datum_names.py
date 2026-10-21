@@ -3,7 +3,9 @@
 Writes ``crates/terrio/data/datums.tsv.zst``, a zstd-compressed text table with lines
 ``code<TAB>rank<TAB>name``: a name of the EPSG datum ``code``, from its official name and the
 name GDAL writes in WKT 1 (rank 0), its EPSG aliases (1), PROJ's (2), ESRI's (3: ``D_ETRS_1989``
-for ETRS89) and the former EPSG and ESRI ones (4), from PROJ's database (``alias_name``). A WKT
+for ETRS89) and the former EPSG and ESRI ones (4), from PROJ's database (``alias_name``), and the
+datum name ESRI writes for CRSs on another datum (5: ``D_ETRS_1989`` for ETRS89-NOR), which terrio
+looks on only when no CRS on the datums of ranks 0 to 4 matches. A WKT
 datum named as several datums is taken for those of the best rank. Names equal after terrio's
 normalization (letters, digits and ``+`` only, case-insensitive, without ESRI's ``D_`` prefix) are
 listed once, with their best rank.
@@ -90,8 +92,51 @@ def rows():
         key = (code, normalize(name))
         if key[1] and (key not in best or rank < best[key][0]):
             best[key] = (rank, name)
+    names.extend(esri_written(db, best))
+    for code, rank, name in names:
+        key = (code, normalize(name))
+        if key[1] and (key not in best or rank < best[key][0]):
+            best[key] = (rank, name)
     for (code, _), (rank, name) in sorted(best.items(), key=lambda kv: (kv[0][0], kv[1][0], kv[1][1])):
         yield code, rank, name
+
+
+def esri_written(db, best):
+    """The datum names ESRI writes for CRSs on another datum (rank 5).
+
+    ESRI writes ``D_ETRS_1989`` in the WKT of ETRS89-NOR [EUREF89] / NTM zone 18 (EPSG:5118),
+    whose datum is ETRS89-NOR, and GDAL identifies that WKT by the CRS's ESRI name. terrio looks
+    on these datums when none on the datum the name stands for matches.
+
+    Args:
+        db: A connection to PROJ's database.
+        best: The names of ranks 0 to 4, as ``{(code, normalized name): (rank, name)}``.
+
+    Yields:
+        Tuples ``(code, 5, name)``.
+    """
+    by_name = {}
+    for (code, key), (rank, _) in best.items():
+        r, codes = by_name.get(key, (99, set()))
+        if rank < r:
+            by_name[key] = (rank, {code})
+        elif rank == r:
+            codes.add(code)
+    query = (
+        "SELECT p.code, g.datum_code FROM projected_crs p JOIN geodetic_crs g "
+        "ON g.auth_name = p.geodetic_crs_auth_name AND g.code = p.geodetic_crs_code "
+        "WHERE p.auth_name = 'EPSG' AND p.deprecated = 0 AND g.datum_auth_name = 'EPSG' "
+        "UNION SELECT code, datum_code FROM geodetic_crs WHERE auth_name = 'EPSG' "
+        "AND deprecated = 0 AND type = 'geographic 2D' AND datum_auth_name = 'EPSG'"
+    )
+    for crs, datum in db.execute(query).fetchall():
+        try:
+            wkt = pyproj.CRS.from_epsg(int(crs)).to_wkt("WKT1_ESRI")
+        except pyproj.exceptions.CRSError:
+            continue
+        m = re.search(r'DATUM\["([^"]+)"', wkt or "")
+        if m and int(datum) not in by_name.get(normalize(m.group(1)), (0, set()))[1]:
+            yield int(datum), 5, m.group(1)
 
 
 def main():
