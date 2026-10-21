@@ -139,19 +139,28 @@ impl SpatialRef {
         if let Some(proj4) = proj4_extension(wkt)
             && let Ok(own) = Def::from_proj(&proj4)
         {
-            // Its EPSG code, declared or identified, when its definition converts as the PROJ
-            // string does, on its datum: the extension wins over a code that does not, as over
-            // the nodes. A PROJ string without datum shift is on WGS 84 for a code on WGS 84
-            // itself (EPSG:3857's own WKT gives its datum as a null grid). A declared code
-            // terrio does not know converts as nothing, and is dropped.
-            let fits = |code: u32| {
-                Def::new(&SpatialRef { epsg: Some(code), ..Default::default() }).is_ok_and(|r| {
+            // Its EPSG (or ESRI) code, declared or identified, when its definition converts as
+            // the PROJ string does, on its ellipsoid and datum: the extension wins over a code
+            // that does not, as over the nodes. A PROJ string without datum shift is on WGS 84
+            // for a code on WGS 84 itself (EPSG:3857's own WKT gives its datum as a null grid).
+            // A declared code terrio does not know converts as nothing, and is dropped.
+            let fits = |code: SpatialRef| {
+                Def::new(&code).is_ok_and(|r| {
                     let unshifted = own.ops().is_empty() && own.datum_code().is_none() && r.is_wgs84();
-                    own.same_conversion(&r) && (unshifted || own.same_datum(&r))
+                    let ellipsoid = (own.ell.a - r.ell.a).abs() < 1e-3 && (own.ell.es - r.ell.es).abs() < 1e-9;
+                    own.same_conversion(&r) && ellipsoid && (unshifted || own.same_datum(&r))
                 })
             };
-            let epsg = declared_epsg(wkt).or_else(|| identify_epsg(wkt)).filter(|code| fits(*code));
-            return Self { epsg, wkt: Some(wkt.to_string()), proj4: Some(proj4), esri: None }.with_esri();
+            let epsg = declared_epsg(wkt)
+                .or_else(|| identify_epsg(wkt))
+                .filter(|code| fits(SpatialRef { epsg: Some(*code), ..Default::default() }));
+            let mut s = Self { epsg, wkt: Some(wkt.to_string()), proj4: Some(proj4), esri: None }.with_esri();
+            if let Some(code) = s.esri
+                && !fits(SpatialRef { esri: Some(code), ..Default::default() })
+            {
+                s.esri = None;
+            }
+            return s;
         }
         let epsg = if def::split_compound(wkt).is_some() { declared_epsg(wkt) } else { identify_epsg(wkt) };
         Self { epsg, wkt: Some(wkt.to_string()), ..Default::default() }.with_esri()
@@ -1058,6 +1067,17 @@ mod tests {
         assert_eq!(SpatialRef::from_wkt(utm).epsg, Some(32618));
         // EPSG:3857's WKT, whose extension gives the datum as a null grid.
         assert_eq!(SpatialRef::from_wkt(epsg_wkt(3857).unwrap()).epsg, Some(3857));
+        // Nor one on another ellipsoid.
+        assert_eq!(SpatialRef::from_wkt(&utm.replace("+datum=WGS84", "+ellps=intl")).epsg, None);
+        let geog = r#"GEOGCS["WGS 84",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563]],PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433],EXTENSION["PROJ4","+proj=longlat +ellps=intl +no_defs"],AUTHORITY["EPSG","4326"]]"#;
+        assert_eq!(SpatialRef::from_wkt(geog).epsg, None);
+        // Nor a declared ESRI code it does not convert as.
+        let moll = SpatialRef::from_esri(54009).unwrap().to_wkt().unwrap();
+        let i = moll.rfind(",AUTHORITY[").unwrap();
+        let other = format!("{},EXTENSION[\"PROJ4\",\"+proj=moll +lon_0=10 +datum=WGS84 +units=m\"]{}", &moll[..i], &moll[i..]);
+        assert_eq!(SpatialRef::from_wkt(&other).authority(), None);
+        let same = other.replace("+lon_0=10", "+lon_0=0");
+        assert_eq!(SpatialRef::from_wkt(&same).authority(), Some(("ESRI", 54009)));
         // Not a declared code on another datum than the extension's (ED50, which shifts).
         let ed50 = utm.replace("+zone=18 +datum=WGS84", "+zone=32 +ellps=intl").replace("-75", "9").replace("32618", "23032");
         assert_eq!(SpatialRef::from_wkt(&ed50).epsg, None);
