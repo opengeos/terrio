@@ -28,25 +28,32 @@ tests compare its results with theirs, pixel for pixel and point for point.
   [`geographiclib-rs`](https://crates.io/crates/geographiclib-rs) (MIT licence), a port of
   [GeographicLib](https://geographiclib.sourceforge.io).
 - The EPSG table, with the coordinate operations GDAL uses for each CRS, is generated with GDAL and
-  PROJ by `scripts/gen_epsg_table.py`, and the ESRI table, from PROJ's ESRI authority, by
-  `scripts/gen_esri_table.py`.
+  PROJ by `scripts/gen_epsg_table.py`, the ESRI table, from PROJ's ESRI authority, by
+  `scripts/gen_esri_table.py`, and the datum names by `scripts/gen_datum_names.py`.
 - The point cloud filters follow PDAL's (`filters.csf`, `filters.pmf`, `filters.elm`,
   `filters.hag_nn`, `filters.normal` and others); the cloth simulation filter is a port of the
-  [CSF](https://github.com/jianbingshen/CSF) code PDAL vendors, after Zhang et al. (2016),
+  [CSF](https://github.com/jianbingshen/CSF) code PDAL vendors (Apache-2.0, copyright the State
+  Key Laboratory of Remote Sensing Science, Beijing Normal University), after Zhang et al. (2016),
   *An Easy-to-Use Airborne LiDAR Data Filtering Method Based on Cloth Simulation*.
 
-## The EPSG dataset
+## The EPSG dataset and Esri's projection data
 
-terrio's EPSG table (`crates/terrio/data/epsg.tsv.zst`) is derived from the
-[EPSG Geodetic Parameter Dataset](https://epsg.org), copyright the International Association of
-Oil & Gas Producers (IOGP), whose [terms of use](https://epsg.org/terms-of-use.html) permit its
-redistribution with this attribution.
+terrio's EPSG table and datum names (`crates/terrio/data/epsg.tsv.zst` and `datums.tsv.zst`) are
+derived from the [EPSG Geodetic Parameter Dataset](https://epsg.org), copyright the International
+Association of Oil & Gas Producers (IOGP), whose [terms of use](https://epsg.org/terms-of-use.html)
+permit their redistribution with this attribution.
+
+Its ESRI table (`crates/terrio/data/esri.tsv.zst`) and the ESRI datum names are derived, through
+PROJ's database, from Esri's
+[projection engine data](https://github.com/Esri/projection-engine-db-doc), copyright Esri,
+under the Apache License 2.0.
 
 ## Python APIs
 
 terrio's Python package borrows its shape from [rasterio](https://rasterio.readthedocs.io),
 [xarray](https://xarray.dev) and [rioxarray](https://corteva.github.io/rioxarray), so that code
-written for them carries over.
+written for them carries over. `terrio.rio` follows rasterio's API and several of its algorithms
+(BSD-3-Clause, copyright Mapbox), and `terrio.xarray` is adapted from rioxarray (Apache-2.0).
 
 ## Pure-Rust codecs and format crates
 
@@ -78,6 +85,19 @@ runs it in parallel, [ureq](https://crates.io/crates/ureq) fetches remote data,
 [rust-numpy](https://github.com/PyO3/rust-numpy) build the Python package, and
 [wasm-bindgen](https://github.com/rustwasm/wasm-bindgen) builds the JavaScript one. The optional
 `gdal` feature uses the [`gdal`](https://crates.io/crates/gdal) crate.
+
+JPEG writing (through `jpeg-encoder`) is based in part on the work of the Independent JPEG
+Group.
+
+## Notices and licenses
+
+[`NOTICE`](https://github.com/opengeos/terrio/blob/main/NOTICE) holds the copyright and license
+notices of the code and data terrio adapts (PROJ, CSF, the EPSG dataset, Esri's projection data,
+rasterio, rioxarray, Apache Arrow and the IJG), and
+[`LICENSE-THIRD-PARTY.md`](https://github.com/opengeos/terrio/blob/main/LICENSE-THIRD-PARTY.md)
+the licenses of every Rust crate terrio's packages and binaries are built with, generated with
+[cargo-about](https://github.com/EmbarkStudios/cargo-about). Both ship with the Python wheels,
+the npm package and the command-line archives.
 
 The full list of dependencies is in `Cargo.toml` and `Cargo.lock`. If your work is missing here,
 please [open an issue](https://github.com/opengeos/terrio/issues).

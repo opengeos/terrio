@@ -289,10 +289,12 @@ terrio builds on the work of many projects and their authors:
 - [GDAL](https://gdal.org), [PROJ](https://proj.org) and [PDAL](https://pdal.io), the reference terrio
   follows and tests against; its projections are ported from PROJ, its point cloud filters follow
   PDAL's (the cloth simulation filter of Zhang et al., 2016, is a port of the CSF code PDAL vendors).
-- The [EPSG Geodetic Parameter Dataset](https://epsg.org) of IOGP, for the coordinate reference
-  systems.
+- The [EPSG Geodetic Parameter Dataset](https://epsg.org) of IOGP and Esri's
+  [projection engine data](https://github.com/Esri/projection-engine-db-doc), for the coordinate
+  reference systems.
 - [rasterio](https://rasterio.readthedocs.io), [xarray](https://xarray.dev) and
-  [rioxarray](https://corteva.github.io/rioxarray), whose APIs the Python package follows.
+  [rioxarray](https://corteva.github.io/rioxarray), whose APIs the Python package follows and
+  whose code parts of it are adapted from.
 - The pure-Rust crates terrio reads and writes its formats with, among them `tiff`, `png`,
   `jpeg-decoder`, `openjp2`, `rusty_av1d`, `jxl-oxide`, `lerc-reader`, `flatgeobuf`, Apache Arrow and
   Parquet, `netcdf-reader`, `hdf5-reader`, `laz` and `e57`; and clap, rayon, serde, PyO3 and
@@ -311,9 +313,13 @@ anything that looks wrong.
 
 MIT
 
-terrio's EPSG table (`crates/terrio/data/epsg.tsv.zst`) is derived from the
-[EPSG Geodetic Parameter Dataset](https://epsg.org), copyright the International Association of
-Oil & Gas Producers (IOGP), whose [terms of use](https://epsg.org/terms-of-use.html) permit its
-redistribution with this attribution; the table was produced with [PROJ](https://proj.org) and
-[GDAL](https://gdal.org). The projection formulas in `crates/terrio/src/crs/` are ported from
-PROJ (MIT licence).
+terrio's EPSG table and datum names (`crates/terrio/data/epsg.tsv.zst`, `datums.tsv.zst`) are
+derived from the [EPSG Geodetic Parameter Dataset](https://epsg.org), copyright the International
+Association of Oil & Gas Producers (IOGP), whose [terms of use](https://epsg.org/terms-of-use.html)
+permit their redistribution with this attribution; its ESRI table (`esri.tsv.zst`) from Esri's
+[projection engine data](https://github.com/Esri/projection-engine-db-doc) (Apache-2.0). The
+tables were produced with [PROJ](https://proj.org) and [GDAL](https://gdal.org). The projection
+formulas in `crates/terrio/src/crs/` are ported from PROJ (MIT licence), and the cloth simulation
+filter from CSF (Apache-2.0). [`NOTICE`](NOTICE) holds the notices of the code and data terrio
+adapts, and [`LICENSE-THIRD-PARTY.md`](LICENSE-THIRD-PARTY.md) the licenses of the Rust crates
+it is built with.

@@ -5,6 +5,11 @@
 //! A port of the CSF code PDAL vendors, step for step and in its order, so that the classes are
 //! PDAL's: the particles move only vertically (only their heights are kept), and the springs are
 //! relaxed particle after particle, in place.
+//!
+//! The CSF code this is ported from (and changed, to Rust) is Copyright 2017 State Key Laboratory
+//! of Remote Sensing Science, Institute of Remote Sensing Science and Engineering, Beijing Normal
+//! University, licensed under the Apache License, Version 2.0
+//! (<http://www.apache.org/licenses/LICENSE-2.0>); see `NOTICE`.
 
 use super::{DimRange, set_classes, xyz};
 use crate::pointcloud::{PointCloud, ReturnKind};

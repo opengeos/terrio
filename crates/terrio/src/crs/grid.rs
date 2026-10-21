@@ -1,6 +1,6 @@
 //! Datum shift and geoid grids, read and interpolated as PROJ (<https://proj.org>, MIT licence)
 //! does: NTv2 (`.gsb`), GTX (`.gtx`) and the GeoTIFF grids of PROJ-data (`.tif`, from
-//! <https://cdn.proj.org>), with their subgrids.
+//! <https://cdn.proj.org>), with their subgrids. PROJ's notice is in `NOTICE`.
 //!
 //! Grids are looked up by name in, in order: grids registered in memory ([`register_grid`]), the
 //! directories of `TERRIO_GRID_DIR`, `PROJ_DATA` and `PROJ_LIB`, PROJ's user directory (where

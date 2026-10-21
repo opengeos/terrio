@@ -2,7 +2,8 @@ name: Release dry run
 
 # Builds and checks everything a release publishes, without publishing: the wheels for every
 # platform, the source distribution, the Pyodide wheel and the command-line binaries
-# (release-build.yml, as the release builds them), the crates as `cargo publish` packages and verifies them, and the npm package.
+# (release-build.yml, as the release builds them), the crates as `cargo publish` packages and
+# verifies them, the npm package, and that LICENSE-THIRD-PARTY.md is up to date.
 # Run it by hand before tagging a release (Actions > Release dry run > Run workflow).
 on:
   workflow_dispatch:
@@ -29,6 +30,20 @@ jobs:
       - name: Package and verify terrio and terrio-cli
         run: cargo publish --dry-run --locked -p terrio -p terrio-cli
 
+  # LICENSE-THIRD-PARTY.md, which the packages ship, lists the dependencies being released.
+  licenses:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-about
+      - name: Check that LICENSE-THIRD-PARTY.md is up to date
+        run: |
+          cargo about generate --locked --all-features --fail about.hbs -o LICENSE-THIRD-PARTY.md
+          git diff --exit-code LICENSE-THIRD-PARTY.md
+
   npm:
     runs-on: ubuntu-latest
     steps:
@@ -45,7 +60,8 @@ jobs:
       - name: Build the package as the release does
         run: |
           wasm-pack build js --release --target web --out-dir pkg --out-name terrio
-          cp LICENSE js/pkg/
+          cp LICENSE NOTICE LICENSE-THIRD-PARTY.md js/pkg/
+          node -e "const f='js/pkg/package.json',p=require('./'+f);p.files.push('NOTICE','LICENSE-THIRD-PARTY.md');require('fs').writeFileSync(f,JSON.stringify(p,null,2)+'\\n')"
       - name: Check its name and version, and pack it
         working-directory: js/pkg
         run: |

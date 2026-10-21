@@ -1,5 +1,5 @@
 //! Ellipsoids, units and the helper functions map projections share, after PROJ's
-//! (<https://proj.org>, MIT licence) definitions and algorithms.
+//! (<https://proj.org>, MIT licence) definitions and algorithms; PROJ's notice is in `NOTICE`.
 
 // The constants are PROJ's, digit for digit.
 #![allow(clippy::excessive_precision)]

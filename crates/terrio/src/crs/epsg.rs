@@ -5,7 +5,8 @@
 //! authority in the same form.
 //!
 //! Derived from the EPSG Geodetic Parameter Dataset (<https://epsg.org>), whose terms of use
-//! permit redistribution with attribution, and from PROJ's database.
+//! permit redistribution with attribution, and from PROJ's database; the ESRI table and ESRI datum
+//! names from Esri's projection engine data (Apache-2.0). See `NOTICE`.
 
 use super::datum::{Op, parse_steps};
 use super::route::Leg;

@@ -1,0 +1,22 @@
+# The licences of terrio's dependencies, for LICENSE-THIRD-PARTY.md:
+# cargo about generate --all-features --fail about.hbs -o LICENSE-THIRD-PARTY.md
+accepted = [
+    "0BSD",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "CC0-1.0",
+    "CDLA-Permissive-2.0",
+    "IJG",
+    "ISC",
+    "MIT",
+    "MPL-2.0",
+    "Unicode-3.0",
+    "Unlicense",
+    "WTFPL",
+    "Zlib",
+]
+# Build and test tooling does not ship.
+ignore-build-dependencies = true
+ignore-dev-dependencies = true

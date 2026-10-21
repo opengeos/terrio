@@ -1,5 +1,5 @@
 //! The map projections EPSG CRSs use, ported from PROJ (<https://proj.org>, MIT licence) so that
-//! terrio's results match GDAL's.
+//! terrio's results match GDAL's. PROJ's copyright and permission notice is in `NOTICE`.
 //!
 //! As in PROJ, a projection works on an ellipsoid with a semi-major axis of 1: the forward
 //! projection takes the longitude relative to the central meridian and the latitude in radians,
