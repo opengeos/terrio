@@ -25,9 +25,9 @@ Generated on 2026-10-14 with terrio 0.1.1 (9e7f7f5), GDAL 3.12.2, PROJ 9.7.1, PD
 | [Arrow and GeoArrow](#arrow-and-geoarrow) | GDAL's Arrow streams, pyarrow, GeoPandas | 180 | 171 | 9 | 0 |
 | [GeoPackage updates and spatial filters](#geopackage-updates-and-spatial-filters) | `ogr2ogr`, GDAL's `validate_gpkg.py` | 12 | 12 | 0 | 0 |
 | [Point clouds](#point-clouds) | laspy (every value), PDAL (headers, PLY, E57 and EPT, COPC and EPT queries, filters, grids, reprojection) and gdal_grid (TIN and nearest-neighbour grids) | 615 | 609 | 6 | 0 |
-| [Coordinate transformations](#coordinate-transformations) | GDAL 3.12 and PROJ (`gdaltransform`) | 19,017 | 18,949 | 60 | 8 |
+| [Coordinate transformations](#coordinate-transformations) | GDAL 3.12 and PROJ (`gdaltransform`) | 19,017 | 18,950 | 59 | 8 |
 | [Datum shift grids, geoid models and coordinate epochs](#datum-shift-grids-geoid-models-and-coordinate-epochs) | GDAL 3.12 and PROJ, with the same grids | 19,253 | 19,137 | 94 | 22 |
-| **All** | | **40,068** | **39,860** | **178** | **30** |
+| **All** | | **40,068** | **39,861** | **177** | **30** |
 
 ## Dataset summaries and pixels
 
@@ -296,7 +296,7 @@ Cases that are not identical:
 |---|---:|---:|---:|---:|
 | forward (WGS 84 to CRS) | 6,354 | 6,354 | 0 | 0 |
 | inverse (CRS to WGS 84) | 6,354 | 6,354 | 0 | 0 |
-| CRS to CRS | 6,295 | 6,227 | 60 | 8 |
+| CRS to CRS | 6,295 | 6,228 | 59 | 8 |
 | PROJ definitions without an EPSG code | 14 | 14 | 0 | 0 |
 
 Cases that are not identical:
@@ -319,7 +319,6 @@ Cases that are not identical:
 | CRS to CRS | EPSG:4179 to EPSG:4230 | within tolerance | 0.0020 m at (19.38060709, 42.48389042), the largest of 50 points |
 | CRS to CRS | EPSG:4745 to EPSG:5663 | within tolerance | 0.0011 m at (14.31513274, 50.44966061), the largest of 50 points |
 | CRS to CRS | EPSG:5681 to EPSG:5664 | within tolerance | 0.0011 m at (10.31746658, 50.21108448), the largest of 50 points |
-| CRS to CRS | EPSG:6330 to EPSG:3338 | within tolerance | 0.9543 m at (686270.7053, 5699422.247), the largest of 50 points |
 | CRS to CRS | EPSG:6333 to EPSG:8993 | within tolerance | 0.0458 m at (448950.3671, 8287866.301), the largest of 50 points |
 | CRS to CRS | EPSG:6402 to EPSG:8990 | within tolerance | 0.0098 m at (572019.6081, 294295.6639), the largest of 50 points |
 | CRS to CRS | EPSG:6405 to EPSG:8991 | within tolerance | 0.0152 m at (421012.1843, 141401.7089), the largest of 50 points |
@@ -363,7 +362,8 @@ Cases that are not identical:
 | CRS to CRS | EPSG:7618 to EPSG:8991 | within tolerance | 0.0134 m at (108339.7665, 100694.5877), the largest of 50 points |
 | CRS to CRS | EPSG:7849 to EPSG:9053 | within tolerance | 0.3186 m at (731947.2023, 8696187.041), the largest of 50 points |
 | CRS to CRS | EPSG:8326 to EPSG:8988 | within tolerance | 0.0134 m at (156165.6381, 494.0238398), the largest of 50 points |
-| | ... and 8 more | | |
+| CRS to CRS | EPSG:8528 to EPSG:8993 | within tolerance | 0.0252 m at (11505204.67, 715213.2819), the largest of 50 points |
+| | ... and 7 more | | |
 
 ## Datum shift grids, geoid models and coordinate epochs
 

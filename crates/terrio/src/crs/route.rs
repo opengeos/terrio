@@ -353,11 +353,7 @@ fn chains(a: u32, b: u32, src: &Def, dst: &Def, aoi: Option<&[f64; 4]>) -> Kind 
     };
     out.sort_by(|x, y| {
         let (kx, ky) = (key(x), key(y));
-        kx.0.cmp(&ky.0)
-            .then(kx.1.cmp(&ky.1))
-            .then(kx.2.total_cmp(&ky.2))
-            .then(kx.3.total_cmp(&ky.3))
-            .then(kx.4.cmp(&ky.4))
+        kx.0.cmp(&ky.0).then(kx.1.cmp(&ky.1)).then(kx.2.total_cmp(&ky.2)).then(kx.3.total_cmp(&ky.3)).then(kx.4.cmp(&ky.4))
     });
     let ballpark = !aoi.is_some_and(|a| out.iter().any(|c| !c.rank.needs_grids() && contains(&c.rank.bounds, a)));
     Kind::Chains { chains: out, ballpark }
