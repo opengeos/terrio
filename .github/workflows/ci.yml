@@ -95,6 +95,13 @@ jobs:
         run: cargo test -p terrio --doc
       - name: The crate packages and verifies
         run: cargo publish -p terrio --dry-run
+      - name: python/LICENSE is a copy of LICENSE
+        run: cmp LICENSE python/LICENSE
+      - name: The Python sdist carries the license
+        working-directory: python
+        run: |
+          pipx run maturin sdist --out dist
+          tar tzf dist/*.tar.gz | grep -q '^[^/]*/python/LICENSE$'
 
   wasm:
     runs-on: ubuntu-latest

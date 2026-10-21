@@ -9,6 +9,3 @@ node_modules/
 *.so
 *.pyd
 site/
-python/LICENSE
-python/NOTICE
-python/LICENSE-THIRD-PARTY.md

@@ -33,10 +33,11 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
-      # The license files, which maturin puts in the wheel's and sdist's metadata (license-files).
-      - name: Add the license files
+      # The notices, which maturin puts in the wheel's and sdist's metadata (license-files) with
+      # python/LICENSE, a copy of LICENSE kept in the repository.
+      - name: Add the notices
         shell: bash
-        run: cp LICENSE NOTICE LICENSE-THIRD-PARTY.md python/
+        run: cp NOTICE LICENSE-THIRD-PARTY.md python/
       - uses: PyO3/maturin-action@v1
         with:
           working-directory: python
@@ -52,15 +53,21 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      # The license files, which maturin puts in the wheel's and sdist's metadata (license-files).
-      - name: Add the license files
+      # The notices, which maturin puts in the wheel's and sdist's metadata (license-files) with
+      # python/LICENSE, a copy of LICENSE kept in the repository.
+      - name: Add the notices
         shell: bash
-        run: cp LICENSE NOTICE LICENSE-THIRD-PARTY.md python/
+        run: cp NOTICE LICENSE-THIRD-PARTY.md python/
       - uses: PyO3/maturin-action@v1
         with:
           working-directory: python
           command: sdist
           args: --out dist
+      - name: Check that the sdist carries the license files
+        run: |
+          for f in LICENSE NOTICE LICENSE-THIRD-PARTY.md; do
+            tar tzf python/dist/*.tar.gz | grep -q "^[^/]*/python/$f\$" || { echo "sdist lacks $f"; exit 1; }
+          done
       - uses: actions/upload-artifact@v7
         with:
           name: sdist
@@ -92,8 +99,8 @@ jobs:
       - uses: mymindstorm/setup-emsdk@v16
         with:
           version: ${{ env.EMSCRIPTEN_VERSION }}
-      - name: Add the license files
-        run: cp LICENSE NOTICE LICENSE-THIRD-PARTY.md python/
+      - name: Add the notices
+        run: cp NOTICE LICENSE-THIRD-PARTY.md python/
       - name: Build the wheel
         working-directory: python
         # pyodide-build's default flags are for its pinned nightly toolchain (-Z flags); stable
