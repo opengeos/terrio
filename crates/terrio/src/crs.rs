@@ -139,9 +139,14 @@ impl SpatialRef {
         if let Some(proj4) = proj4_extension(wkt)
             && let Ok(own) = Def::from_proj(&proj4)
         {
-            // Its EPSG code: declared or identified, when its definition converts as the PROJ
-            // string does (the extension wins over a code that does not, as over the nodes).
-            let epsg = declared_epsg(wkt).or_else(|| identify_epsg(wkt)).filter(|code| is_registered_as(&own, *code));
+            // Its EPSG code: declared, when its definition has the PROJ string's conversion (the
+            // extension wins over a code that does not, as over the nodes; EPSG:3857's own WKT
+            // gives its datum as a null grid), else one whose definition converts as the PROJ
+            // string does, on its datum.
+            let same = |code: u32| Def::new(&SpatialRef { epsg: Some(code), ..Default::default() }).is_ok_and(|r| own.same_conversion(&r));
+            let epsg = declared_epsg(wkt)
+                .filter(|code| same(*code))
+                .or_else(|| identify_epsg(wkt).filter(|code| declared_epsg(wkt) != Some(*code) && is_registered_as(&own, *code)));
             return Self { epsg, wkt: Some(wkt.to_string()), proj4: Some(proj4), esri: None }.with_esri();
         }
         let epsg = if def::split_compound(wkt).is_some() { declared_epsg(wkt) } else { identify_epsg(wkt) };
@@ -1052,6 +1057,8 @@ mod tests {
         // A declared code it converts as is kept.
         let utm = r#"PROJCS["WGS 84 / UTM zone 18N",GEOGCS["WGS 84",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563]],PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433]],PROJECTION["Transverse_Mercator"],PARAMETER["central_meridian",-75],UNIT["metre",1],EXTENSION["PROJ4","+proj=utm +zone=18 +datum=WGS84 +units=m +no_defs"],AUTHORITY["EPSG","32618"]]"#;
         assert_eq!(SpatialRef::from_wkt(utm).epsg, Some(32618));
+        // EPSG:3857's WKT, whose extension gives the datum as a null grid.
+        assert_eq!(SpatialRef::from_wkt(epsg_wkt(3857).unwrap()).epsg, Some(3857));
     }
 
     #[test]
