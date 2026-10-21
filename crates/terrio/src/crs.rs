@@ -434,7 +434,9 @@ pub(crate) fn identify_epsg(wkt: &str) -> Option<u32> {
     let named = |c: u32| epsg::get(c).is_some_and(|e| Some(key(&e.name)) == name);
     if let Some(own) = own.as_ref().filter(|d| d.is_geographic()) {
         let candidates = datums.iter().flat_map(|d| epsg::geographic_on(*d)).filter(|c| same(own, *c));
-        return candidates.min_by_key(|c| (!named(*c), *c));
+        if let Some(code) = candidates.min_by_key(|c| (!named(*c), *c)) {
+            return Some(code);
+        }
     }
     // A projected CRS on the WKT's datum with its conversion, as GDAL finds it.
     if let Some(own) = &own
@@ -462,50 +464,48 @@ pub(crate) fn identify_epsg(wkt: &str) -> Option<u32> {
         };
         theirs.iter().any(|d| datums.contains(d))
     };
-    let registry = || {
-        let report = wbp::identify_epsg_from_wkt_report(wkt, wbp::EpsgIdentifyPolicy::Lenient)?;
-        // The registry matches loosely: keep a code only when its definition converts coordinates
-        // as the WKT does, on its datum (GDAL leaves a custom CRS without code).
-        let fits = |code: u32| {
-            if !on_datum(code) {
-                return false;
-            }
-            // A projection terrio cannot compare: at least the same ellipsoid (a sinusoidal
-            // projection on MODIS's sphere is not ESRI's World Sinusoidal on WGS 84).
-            let Some(own) = &own else {
-                let candidate = wbp::to_ogc_wkt(code).ok();
-                return match (semi_major_axis(wkt), candidate.as_deref().and_then(semi_major_axis)) {
-                    (Some(a), Some(b)) => (a - b).abs() < 1e-3,
-                    _ => true,
-                };
+    // Else wbprojection's registry (projections terrio cannot compare, CRSs its table lacks).
+    let report = wbp::identify_epsg_from_wkt_report(wkt, wbp::EpsgIdentifyPolicy::Lenient)?;
+    // The registry matches loosely: keep a code only when its definition converts coordinates
+    // as the WKT does, on its datum (GDAL leaves a custom CRS without code).
+    let fits = |code: u32| {
+        if !on_datum(code) {
+            return false;
+        }
+        // A projection terrio cannot compare: at least the same ellipsoid (a sinusoidal
+        // projection on MODIS's sphere is not ESRI's World Sinusoidal on WGS 84).
+        let Some(own) = &own else {
+            let candidate = wbp::to_ogc_wkt(code).ok();
+            return match (semi_major_axis(wkt), candidate.as_deref().and_then(semi_major_axis)) {
+                (Some(a), Some(b)) => (a - b).abs() < 1e-3,
+                _ => true,
             };
-            same(own, code)
         };
-        // The registry can take a datum's or prime meridian's code for the CRS's: then match the WKT
-        // by its parameters alone.
-        if report.used_embedded_epsg && !report.resolved_code.is_some_and(|c| wbp::to_ogc_wkt(c).is_ok()) {
-            let stripped = strip_authorities(wkt);
-            return if stripped != wkt { identify_epsg(&stripped) } else { None };
-        }
-        if report.used_embedded_epsg || !report.ambiguous {
-            return report.resolved_code.filter(|c| fits(*c));
-        }
-        let best = report.top_candidates.first()?.total_score;
-        let upper = wkt.to_ascii_uppercase();
-        let wkt_names_realization = REALIZATIONS.iter().any(|r| upper.contains(r));
-        let names_realization = |code: u32| {
-            let name = wbp::epsg::epsg_info(code).map(|i| i.name.to_ascii_uppercase()).unwrap_or_default();
-            REALIZATIONS.iter().any(|r| name.contains(r))
-        };
-        report
-            .top_candidates
-            .iter()
-            .filter(|c| c.total_score >= best && fits(c.code))
-            .min_by_key(|c| (!wkt_names_realization && names_realization(c.code), c.code))
-            .map(|c| c.code)
-            .or(report.resolved_code.filter(|c| fits(*c)))
+        same(own, code)
     };
-    registry()
+    // The registry can take a datum's or prime meridian's code for the CRS's: then match the WKT
+    // by its parameters alone.
+    if report.used_embedded_epsg && !report.resolved_code.is_some_and(|c| wbp::to_ogc_wkt(c).is_ok()) {
+        let stripped = strip_authorities(wkt);
+        return if stripped != wkt { identify_epsg(&stripped) } else { None };
+    }
+    if report.used_embedded_epsg || !report.ambiguous {
+        return report.resolved_code.filter(|c| fits(*c));
+    }
+    let best = report.top_candidates.first()?.total_score;
+    let upper = wkt.to_ascii_uppercase();
+    let wkt_names_realization = REALIZATIONS.iter().any(|r| upper.contains(r));
+    let names_realization = |code: u32| {
+        let name = wbp::epsg::epsg_info(code).map(|i| i.name.to_ascii_uppercase()).unwrap_or_default();
+        REALIZATIONS.iter().any(|r| name.contains(r))
+    };
+    report
+        .top_candidates
+        .iter()
+        .filter(|c| c.total_score >= best && fits(c.code))
+        .min_by_key(|c| (!wkt_names_realization && names_realization(c.code), c.code))
+        .map(|c| c.code)
+        .or(report.resolved_code.filter(|c| fits(*c)))
 }
 
 /// The projection method (`+proj=tmerc`) of a WKT definition's conversion.
