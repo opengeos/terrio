@@ -259,10 +259,12 @@ fn read_file(f: &NcFile, path: &Path, hdf5: &dyn Fn() -> Option<hdf5_reader::Hdf
     let (y_dim, x_dim) = if interleaved { (0, 1) } else { (nd.saturating_sub(2), nd - 1) };
     let cols = dims[x_dim].size as usize;
     let rows = if nd >= 2 { dims[y_dim].size as usize } else { 1 };
-    let bands: usize = match nd {
-        _ if interleaved => dims[2].size as usize,
-        0..=2 => 1,
-        _ => dims[..nd - 2].iter().map(|d| d.size as usize).product::<usize>().max(1),
+    let bands: usize = if interleaved {
+        dims[2].size as usize
+    } else if nd > 2 {
+        dims[..nd - 2].iter().map(|d| d.size as usize).product::<usize>().max(1)
+    } else {
+        1
     };
     let unsigned = attr_str(var, "_Unsigned").is_some_and(|s| s.eq_ignore_ascii_case("true"));
     let name = read_path;

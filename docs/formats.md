@@ -74,13 +74,14 @@ columns, as GDAL reads them. Coordinates are used for the geotransform when GDAL
 or marked as spatial axes, evenly spaced as GDAL checks them; longitudes over 180 shifted), and
 the CRS from the grid mapping; otherwise rows are read bottom-up, as GDAL reads them. Without a
 `_FillValue`, the type's default netCDF fill value is the nodata value, as GDAL reports it (not
-for bytes, nor for netCDF-4 variables written without fill values). Variables georeferenced by longitude and latitude arrays rather than axes get them as
-geolocation arrays (GDAL's `GEOLOCATION` metadata, shown by `terrio info`): the CF `coordinates`
-attribute (relative or absolute paths, as Sentinel-5P's), 2D `lon` and `lat` variables, NASA's
-ocean color level 2 (`navigation_data`) and EMIT (`location`, for 2-D variables and those of a
-trailing `bands` dimension whose first two dimensions are named as the arrays') layouts, and
-irregular longitude and latitude axes. Compound variables of a real and an imaginary member are
-read as complex bands (see below).
+for bytes, nor for netCDF-4 variables written without fill values). Variables georeferenced by
+longitude and latitude arrays rather than axes get them as geolocation arrays (GDAL's
+`GEOLOCATION` metadata, shown by `terrio info`): the CF `coordinates` attribute (relative or
+absolute paths, as Sentinel-5P's), 2D `lon` and `lat` variables, NASA's ocean color level 2
+(`navigation_data`) and EMIT (`location`, for 2-D variables and those of a trailing `bands`
+dimension whose first two dimensions are named as the arrays') layouts, and irregular longitude
+and latitude axes. Compound variables of a real and an imaginary member are read as complex bands
+(see below).
 
 netCDF files are written as GDAL writes rasters, with its creation options:
 

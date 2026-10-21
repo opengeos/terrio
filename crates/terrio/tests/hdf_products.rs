@@ -227,6 +227,9 @@ fn netcdf_trailing_bands() {
         if let Some(gt) = e["geotransform"].as_array() {
             let gt: Vec<f64> = gt.iter().map(|v| v.as_f64().unwrap()).collect();
             assert_gt(&ds, gt.try_into().unwrap(), case);
+        } else {
+            // None: terrio's top-left pixel corner at (0, rows), one unit per pixel.
+            assert_gt(&ds, [0.0, 1.0, 0.0, ds.raster.rows as f64, 0.0, -1.0], case);
         }
         let mut items: Vec<(String, String)> =
             ds.geolocation.map(|g| g.items()).unwrap_or_default().into_iter().map(|(k, v)| (k, v.replace(&path, "<file>"))).collect();
