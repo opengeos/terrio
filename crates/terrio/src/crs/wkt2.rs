@@ -253,6 +253,34 @@ pub(crate) fn to_proj(root: &Node) -> Result<Converted> {
         push("h", Some(p.get(SAT_HEIGHT).ok_or_else(|| bad("Geostationary Satellite without its Satellite Height"))?));
         sweep = Some(if name == "geostationarysatellitesweepx" { "x" } else { "y" });
         "geos"
+    } else if is(&["krovaknorthorientated"], &[1041]) {
+        // As PROJ, whose Krovak fixes the pseudo standard parallel and writes none.
+        p.get(LAT_PSEUDO_SP);
+        push("lat_0", p.get(LAT_CENTRE).or_else(lat_0));
+        push("lon_0", lon_0());
+        push("alpha", p.get(CO_LAT_CONE));
+        push("k", Some(p.get(K_PSEUDO_SP).or_else(|| p.get(K_NAT)).unwrap_or(0.9999)));
+        "krovak"
+    } else if is(&["loximuthal"], &[]) {
+        // PROJ's `lat_1` is the latitude of natural origin.
+        push("lat_1", lat_0());
+        push("lon_0", lon_0());
+        "loxim"
+    } else if is(&["transversecylindricalequalarea"], &[]) {
+        push("lat_0", lat_0());
+        push("lon_0", lon_0());
+        push("k", Some(p.get(K_NAT).unwrap_or(1.0)));
+        "tcea"
+    } else if is(&["twopointequidistant"], &[]) {
+        push("lat_1", p.get(LAT_P1));
+        push("lon_1", p.get(LON_P1));
+        push("lat_2", p.get(LAT_P2));
+        push("lon_2", p.get(LON_P2));
+        "tpeqd"
+    } else if is(&["wagneriii"], &[]) {
+        push("lat_ts", p.get(LAT_TRUE_SCALE));
+        push("lon_0", lon_0());
+        "wag3"
     } else if let Some(proj) = WORLD.iter().find(|(n, _)| *n == name).map(|(_, p)| *p) {
         push("lon_0", lon_0());
         proj
@@ -594,12 +622,48 @@ const FN_FALSE: Param = (&["northingatfalseorigin"], 8827, Kind::Length);
 const LAT_TS: Param = (&["latitudeofstandardparallel"], 8832, Kind::Angle);
 const LON_ORIGIN: Param = (&["longitudeoforigin"], 8833, Kind::Angle);
 
-/// PROJ's satellite height. EPSG has no code for it: `u32::MAX` matches no `ID`.
-const SAT_HEIGHT: Param = (&["satelliteheight"], u32::MAX, Kind::Length);
+const CO_LAT_CONE: Param = (&["colatitudeofconeaxis"], 1036, Kind::Angle);
+const LAT_PSEUDO_SP: Param = (&["latitudeofpseudostandardparallel"], 8818, Kind::Angle);
+const K_PSEUDO_SP: Param = (&["scalefactoronpseudostandardparallel"], 8819, Kind::Scale);
 
-const PARAMS: [Param; 21] = [
-    SAT_HEIGHT, LAT_NAT, LON_NAT, K_NAT, FE, FN, LAT_CENTRE, LON_CENTRE, AZIMUTH, GAMMA, K_CENTRE, FE_CENTRE, FN_CENTRE, LAT_FALSE,
-    LON_FALSE, SP1, SP2, FE_FALSE, FN_FALSE, LAT_TS, LON_ORIGIN,
+/// PROJ's parameters without an EPSG code: codes down from `u32::MAX`, which match no `ID`.
+const SAT_HEIGHT: Param = (&["satelliteheight"], u32::MAX, Kind::Length);
+const LAT_P1: Param = (&["latitudeof1stpoint"], u32::MAX - 1, Kind::Angle);
+const LON_P1: Param = (&["longitudeof1stpoint"], u32::MAX - 2, Kind::Angle);
+const LAT_P2: Param = (&["latitudeof2ndpoint"], u32::MAX - 3, Kind::Angle);
+const LON_P2: Param = (&["longitudeof2ndpoint"], u32::MAX - 4, Kind::Angle);
+const LAT_TRUE_SCALE: Param = (&["latitudeoftruescale"], u32::MAX - 5, Kind::Angle);
+
+const PARAMS: [Param; 29] = [
+    SAT_HEIGHT,
+    LAT_P1,
+    LON_P1,
+    LAT_P2,
+    LON_P2,
+    LAT_TRUE_SCALE,
+    LAT_NAT,
+    LON_NAT,
+    K_NAT,
+    FE,
+    FN,
+    LAT_CENTRE,
+    LON_CENTRE,
+    AZIMUTH,
+    GAMMA,
+    K_CENTRE,
+    FE_CENTRE,
+    FN_CENTRE,
+    LAT_FALSE,
+    LON_FALSE,
+    SP1,
+    SP2,
+    FE_FALSE,
+    FN_FALSE,
+    LAT_TS,
+    LON_ORIGIN,
+    CO_LAT_CONE,
+    LAT_PSEUDO_SP,
+    K_PSEUDO_SP,
 ];
 
 /// A conversion's parameters, in degrees, metres and unity, and which were used.
