@@ -268,15 +268,22 @@ fn read_file(f: &NcFile, path: &Path, hdf5: &dyn Fn() -> Option<hdf5_reader::Hdf
     };
     let unsigned = attr_str(var, "_Unsigned").is_some_and(|s| s.eq_ignore_ascii_case("true"));
     let name = read_path;
+    // The values band by band: pixel-interleaved ones are read through their bands axis first.
+    macro_rules! values {
+        ($t:ty) => {{
+            let a = f.read_variable::<$t>(&name).map_err(|e| err(path, e))?;
+            if interleaved { a.permuted_axes(vec![2, 0, 1]) } else { a }
+        }};
+    }
     macro_rules! typed {
         ($t:ty, $variant:ident) => {
-            RasterData::$variant(f.read_variable::<$t>(&name).map_err(|e| err(path, e))?.iter().copied().collect())
+            RasterData::$variant(values!($t).iter().copied().collect())
         };
     }
     // Signed types flagged `_Unsigned` keep their bits.
     macro_rules! reinterpret {
         ($t:ty, $u:ty, $variant:ident) => {
-            RasterData::$variant(f.read_variable::<$t>(&name).map_err(|e| err(path, e))?.iter().map(|v| *v as $u).collect())
+            RasterData::$variant(values!($t).iter().map(|v| *v as $u).collect())
         };
     }
     // A compound of two members of the same numeric type: GDAL's complex bands (`CInt16`,
@@ -304,7 +311,6 @@ fn read_file(f: &NcFile, path: &Path, hdf5: &dyn Fn() -> Option<hdf5_reader::Hdf
         (NcType::Double, _) => typed!(f64, F64),
         (t, _) => return Err(Error::Unsupported(format!("{}: NetCDF type {t:?} is not supported", path.display()))),
     };
-    let data = if interleaved && complex.is_none() { band_sequential(data, bands) } else { data };
 
     // Coordinates: the variables named after the dimensions of the rows and columns.
     // GDAL ignores coordinates not named or marked as spatial ones, unless the file comes from GMT
@@ -472,31 +478,6 @@ fn read_file(f: &NcFile, path: &Path, hdf5: &dyn Fn() -> Option<hdf5_reader::Hdf
 fn trailing_bands(v: &NcVariable) -> bool {
     let dims = v.dimensions();
     dims.len() == 3 && matches!(dims[2].name.as_str(), "bands" | "band")
-}
-
-/// Pixel-interleaved values (`bands` per pixel) reordered band by band.
-fn band_sequential(data: RasterData, bands: usize) -> RasterData {
-    if bands <= 1 {
-        return data;
-    }
-    macro_rules! go {
-        ($v:expr, $variant:ident) => {{
-            let plane = $v.len() / bands;
-            RasterData::$variant((0..bands).flat_map(|b| (0..plane).map(move |i| i * bands + b)).map(|i| $v[i]).collect())
-        }};
-    }
-    match &data {
-        RasterData::U8(v) => go!(v, U8),
-        RasterData::I8(v) => go!(v, I8),
-        RasterData::U16(v) => go!(v, U16),
-        RasterData::I16(v) => go!(v, I16),
-        RasterData::U32(v) => go!(v, U32),
-        RasterData::I32(v) => go!(v, I32),
-        RasterData::U64(v) => go!(v, U64),
-        RasterData::I64(v) => go!(v, I64),
-        RasterData::F32(v) => go!(v, F32),
-        RasterData::F64(v) => go!(v, F64),
-    }
 }
 
 /// Whether a variable holds longitudes, as GDAL's `NCDFIsVarLongitude()` decides for an existing
