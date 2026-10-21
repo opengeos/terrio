@@ -46,6 +46,20 @@ fn eqc_matches_proj() {
 }
 
 #[test]
+fn eqc_refuses_lat_ts_beyond_90() {
+    // As PROJ: |lat_ts| > 90° is refused; at 90° (cos rounds to 6e-17) the CRS is degenerate but
+    // accepted, PROJ giving x = 6.84e-11 m and y = 2212366.254 m for (10°, 20°) on WGS 84.
+    let geog = SpatialRef::from_proj4(WGS84_GEOG).unwrap();
+    for ts in ["95", "-100"] {
+        let crs = SpatialRef::from_proj4(&format!("+proj=eqc +lat_ts={ts} +ellps=WGS84 +units=m +no_defs"));
+        assert!(crs.and_then(|c| Transformer::new(&geog, &c)).is_err(), "lat_ts={ts} accepted");
+    }
+    let crs = SpatialRef::from_proj4("+proj=eqc +lat_ts=90 +ellps=WGS84 +units=m +no_defs").unwrap();
+    let (x, y) = Transformer::new(&geog, &crs).unwrap().transform(10.0, 20.0).unwrap();
+    assert!(x.abs() < 1e-6 && (y - 2212366.254171633).abs() < 1e-3, "lat_ts=90: ({x}, {y})");
+}
+
+#[test]
 fn eqc_epsg_codes_match_proj() {
     // EPSG:4087 (method 1028) and the deprecated 32662 and 32663 (method 9823, the spherical
     // one): PROJ uses the ellipsoidal formulas for all three since they are on WGS 84.
