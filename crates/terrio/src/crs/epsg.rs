@@ -316,7 +316,7 @@ pub(crate) fn datums_named(name: &str) -> Vec<u32> {
 }
 
 /// The EPSG geographic 2D CRSs on a datum, without deprecated ones, in order of code.
-pub(crate) fn geographic_on(datum: u32) -> Vec<u32> {
+pub(crate) fn geographic_on(datum: u32) -> &'static [u32] {
     static INDEX: OnceLock<HashMap<u32, Vec<u32>>> = OnceLock::new();
     let index = INDEX.get_or_init(|| {
         let t = table();
@@ -336,7 +336,7 @@ pub(crate) fn geographic_on(datum: u32) -> Vec<u32> {
         index.values_mut().for_each(|c| c.sort_unstable());
         index
     });
-    index.get(&datum).cloned().unwrap_or_default()
+    index.get(&datum).map_or(&[], Vec::as_slice)
 }
 
 /// The EPSG projected CRSs on a geographic CRS, without deprecated ones, in order of code, with
