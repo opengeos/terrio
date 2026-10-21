@@ -1711,20 +1711,23 @@ impl Proj for Gnom {
             if !little {
                 rho = 1.0 / rho;
             }
+            // As PROJ: the point at the last distance computed, once a step is small enough (or
+            // NaN, whose result is then refused), even when that is at the last iteration.
             let mut converged = false;
+            let mut point = (f64::NAN, f64::NAN);
             for _ in 0..10 {
                 let (lat, lon, _, m12, mm12, _): (f64, f64, f64, f64, f64, f64) = g.direct(lat0, 0.0, azi0, s);
+                point = (lon.to_radians(), lat.to_radians());
                 if converged {
-                    return Some((lon.to_radians(), lat.to_radians()));
+                    break;
                 }
                 let ds = if little { (m12 - rho * mm12) * mm12 } else { (rho * m12 - mm12) * m12 };
                 s -= ds;
-                // As PROJ: a NaN ends the iteration too, and its result is then NaN.
                 if ds.is_nan() || ds.abs() < eps {
                     converged = true;
                 }
             }
-            return None;
+            return converged.then_some(point);
         }
         let rh = x.hypot(y);
         if rh <= 1e-10 {
