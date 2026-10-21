@@ -379,8 +379,14 @@ fn proj_method(conv: &Node, method: &Node, ang: f64, to_meter: f64) -> Result<Op
             v * u
         } else if n.child("SCALEUNIT").is_some() {
             v
+        } else if key.starts_with("lat") || key.starts_with("lon") || matches!(key, "alpha" | "gamma" | "azi" | "theta" | "tilt") {
+            // Without a unit: angles in the CRS's angular unit, lengths in its linear unit, and
+            // the others (scale factors, shape parameters) as they are.
+            v * ang
+        } else if matches!(key, "x_0" | "y_0" | "h") {
+            v * to_meter
         } else {
-            v * if key.starts_with("lat") || key.starts_with("lon") { ang } else { to_meter }
+            v
         };
         params.push((key.to_string(), v));
     }
