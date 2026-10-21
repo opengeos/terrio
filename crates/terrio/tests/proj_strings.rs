@@ -59,8 +59,6 @@ const PROJ_DIFFERS: &[(&str, &str)] = &[(
 /// pyproj's WKT that terrio reads as another CRS than PROJ does, or refuses, on both figures:
 /// `(encoding, projection, why)`.
 const WKT_DIFFERS: &[(&str, &str, &str)] = &[
-    ("wkt1", "geos", "#119: the sweep axis"),
-    ("wkt2", "geos", "#119: the satellite height"),
     ("wkt2", "krovak", "#156: refused, the co-latitude of the cone axis"),
     ("wkt2", "loxim", "#156: refused, the method"),
     ("wkt2", "tcea", "#156: refused, the method"),
