@@ -30,7 +30,10 @@ of GDAL: the long tail of formats stays reachable through an optional GDAL backe
       Cloud Storage and Azure; zip archives.
 - [x] Coordinate reference systems: EPSG codes, WKT and PROJ strings in and out; transformations that
       match GDAL's (units, axis orders, prime meridians and datum transformations) for every EPSG
-      geographic and projected CRS. Done.
+      geographic and projected CRS. Done, and since: ESRI codes under the ESRI authority, WKT 1 and
+      WKT 2 read by terrio's own reader and identified by their datum, rotated-pole and
+      geostationary grids, PROJ's world projections, datum transformations between CRSs chosen as
+      PROJ lists them, and every PROJ projection checked against PROJ as a PROJ string and as WKT.
 - [x] GeoJSON and GeoTIFF read and write, so the model is proven on one vector and one raster format.
 - [x] `terrio info` for any supported dataset.
 
