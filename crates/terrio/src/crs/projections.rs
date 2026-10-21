@@ -1425,10 +1425,8 @@ impl Proj for Sinu {
     }
 
     fn inv(&self, x: f64, y: f64) -> Option<(f64, f64)> {
-        if self.es == 0.0 {
-            return Some((x / y.cos(), y));
-        }
-        let phi = self.en.inv(y);
+        let phi = if self.es == 0.0 { y } else { self.en.inv(y) };
+        // Past a pole, no point; at one, any longitude.
         let t = phi.abs();
         if t < HALFPI {
             let s = phi.sin();
@@ -1727,7 +1725,7 @@ impl Proj for Gnom {
                     converged = true;
                 }
             }
-            return converged.then_some(point);
+            return (converged && point.0.is_finite() && point.1.is_finite()).then_some(point);
         }
         let rh = x.hypot(y);
         if rh <= 1e-10 {

@@ -81,6 +81,12 @@ fn eqc_epsg_codes_match_proj() {
 fn sinu_matches_proj() {
     check(SINU_WGS84_PROJ, WGS84_GEOG, SINU_WGS84);
     check(SINU_SPHERE_PROJ, SPHERE_GEOG, SINU_SPHERE);
+    // Past the poles (y beyond the meridian's quarter length), no point, as PROJ.
+    for (proj, geog, y) in [(SINU_SPHERE_PROJ, SPHERE_GEOG, 1.01e7), (SINU_WGS84_PROJ, WGS84_GEOG, 1.01e7)] {
+        let inv = Transformer::new(&SpatialRef::from_proj4(proj).unwrap(), &SpatialRef::from_proj4(geog).unwrap()).unwrap();
+        let r = inv.transform(1000.0, y);
+        assert!(r.is_err() || !r.unwrap().0.is_finite(), "{proj}: inverse of (1000, {y}) succeeded");
+    }
 }
 
 #[test]
