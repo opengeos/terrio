@@ -475,11 +475,6 @@ fn proj_to_wkt(p: &str) -> Option<String> {
     Some(format!("PROJCS[\"unknown\",{geogcs},PROJECTION[\"custom_proj4\"],UNIT[\"metre\",1],{extension}]"))
 }
 
-/// Whether the EPSG CRS `code` is the CRS of `own`: the same conversion on the same datum.
-fn is_registered_as(own: &Def, code: u32) -> bool {
-    Def::new(&SpatialRef { epsg: Some(code), ..Default::default() }).is_ok_and(|r| own.same_conversion(&r) && own.same_datum(&r))
-}
-
 /// The PROJ string of a WKT 1's root `EXTENSION["PROJ4", ...]`.
 fn proj4_extension(wkt: &str) -> Option<String> {
     let root = wkt1::parse(wkt)?;
