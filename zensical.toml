@@ -33,6 +33,7 @@ nav = [
   { "Benchmarks" = "benchmarks.md" },
   { "Architecture" = "architecture.md" },
   { "Contributing" = "contributing.md" },
+  { "Acknowledgements" = "acknowledgements.md" },
   { "Roadmap" = "roadmap.md" },
   { "Report Issues" = "https://github.com/opengeos/terrio/issues" },
 ]

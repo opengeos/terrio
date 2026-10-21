@@ -267,6 +267,33 @@ TERRIO_TEST_DATA=../terrio-data cargo test --release --test epsg_accuracy -- --n
 
 See [ROADMAP.md](ROADMAP.md) for what is planned and in what order.
 
+## Acknowledgements
+
+terrio builds on the work of many projects and their authors:
+
+- [whitebox_next_gen](https://github.com/jblindsay/whitebox_next_gen) by John Lindsay, whose
+  pure-Rust format libraries (`wbraster`, `wbvector`, `wbprojection`) terrio began on.
+- [GDAL](https://gdal.org), [PROJ](https://proj.org) and [PDAL](https://pdal.io), the reference terrio
+  follows and tests against; its projections are ported from PROJ, its point cloud filters follow
+  PDAL's (the cloth simulation filter of Zhang et al., 2016, is a port of the CSF code PDAL vendors).
+- The [EPSG Geodetic Parameter Dataset](https://epsg.org) of IOGP, for the coordinate reference
+  systems.
+- [rasterio](https://rasterio.readthedocs.io), [xarray](https://xarray.dev) and
+  [rioxarray](https://corteva.github.io/rioxarray), whose APIs the Python package follows.
+- The pure-Rust crates terrio reads and writes its formats with, among them `tiff`, `png`,
+  `jpeg-decoder`, `openjp2`, `rusty_av1d`, `jxl-oxide`, `lerc-reader`, `flatgeobuf`, Apache Arrow and
+  Parquet, `netcdf-reader`, `hdf5-reader`, `laz` and `e57`; and clap, rayon, serde, PyO3 and
+  wasm-bindgen.
+
+See the [acknowledgements](https://terrio.opengeos.org/acknowledgements/) for the full list.
+
+## Disclaimer
+
+terrio is primarily built with [Claude Opus 5.5](https://www.anthropic.com/claude), an AI model by
+Anthropic, working under human direction and review. Its results are tested against GDAL, PROJ and
+PDAL, but check them for your own use, and please [report](https://github.com/opengeos/terrio/issues)
+anything that looks wrong.
+
 ## License
 
 MIT
