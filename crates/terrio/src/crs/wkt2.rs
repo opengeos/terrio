@@ -95,6 +95,7 @@ pub(crate) fn to_proj(root: &Node) -> Result<Converted> {
     let (mut fe, mut fn_) = (p.get(FE).unwrap_or(0.0), p.get(FN).unwrap_or(0.0));
     let mut south_orientated = false;
     let mut no_uoff = false;
+    let mut sweep = None;
     let proj = if is(&["transversemercator"], &[9807]) {
         push("lat_0", Some(lat_0().unwrap_or(0.0)));
         push("lon_0", lon_0());
@@ -228,6 +229,12 @@ pub(crate) fn to_proj(root: &Node) -> Result<Converted> {
         push("lat_1", lat_0());
         push("lon_0", lon_0());
         "bonne"
+    } else if is(&["geostationarysatellitesweepx", "geostationarysatellitesweepy"], &[]) {
+        push("lon_0", lon_0());
+        // PROJ refuses a geostationary CRS without a height.
+        push("h", Some(p.get(SAT_HEIGHT).ok_or_else(|| bad("Geostationary Satellite without its Satellite Height"))?));
+        sweep = Some(if name.ends_with("sweepx") { "x" } else { "y" });
+        "geos"
     } else if let Some(proj) = WORLD.iter().find(|(n, _)| *n == name).map(|(_, p)| *p) {
         push("lon_0", lon_0());
         proj
@@ -242,6 +249,9 @@ pub(crate) fn to_proj(root: &Node) -> Result<Converted> {
     let mut proj_str = vec![format!("+proj={proj}")];
     if no_uoff {
         proj_str.push("+no_uoff".into());
+    }
+    if let Some(s) = sweep {
+        proj_str.push(format!("+sweep={s}"));
     }
     proj_str.append(&mut out);
     if south_orientated {
@@ -488,9 +498,12 @@ const FN_FALSE: Param = (&["northingatfalseorigin"], 8827, Kind::Length);
 const LAT_TS: Param = (&["latitudeofstandardparallel"], 8832, Kind::Angle);
 const LON_ORIGIN: Param = (&["longitudeoforigin"], 8833, Kind::Angle);
 
-const PARAMS: [Param; 20] = [
-    LAT_NAT, LON_NAT, K_NAT, FE, FN, LAT_CENTRE, LON_CENTRE, AZIMUTH, GAMMA, K_CENTRE, FE_CENTRE, FN_CENTRE, LAT_FALSE, LON_FALSE, SP1,
-    SP2, FE_FALSE, FN_FALSE, LAT_TS, LON_ORIGIN,
+/// PROJ's satellite height, which EPSG has no code for.
+const SAT_HEIGHT: Param = (&["satelliteheight"], u32::MAX, Kind::Length);
+
+const PARAMS: [Param; 21] = [
+    SAT_HEIGHT, LAT_NAT, LON_NAT, K_NAT, FE, FN, LAT_CENTRE, LON_CENTRE, AZIMUTH, GAMMA, K_CENTRE, FE_CENTRE, FN_CENTRE, LAT_FALSE,
+    LON_FALSE, SP1, SP2, FE_FALSE, FN_FALSE, LAT_TS, LON_ORIGIN,
 ];
 
 /// A conversion's parameters, in degrees, metres and unity, and which were used.

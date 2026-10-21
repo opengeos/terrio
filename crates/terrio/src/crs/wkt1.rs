@@ -377,6 +377,13 @@ pub(crate) fn to_proj(root: &Node) -> Option<Converted> {
             out.push("+proj=robin".into());
             push(&mut out, "lon_0", lon_0);
         }
+        // GDAL's `satellite_height` and ESRI's `Height` (ESRI's `Option` changes nothing, and
+        // its WKT cannot give a sweep axis: sweep y). Without a height, PROJ refuses the CRS.
+        "geostationarysatellite" => {
+            out.push("+proj=geos".into());
+            push(&mut out, "lon_0", lon_0);
+            push(&mut out, "h", get(&["satelliteheight", "height"]).map(|h| h * to_meter));
+        }
         "orthographic" => {
             out.push("+proj=ortho".into());
             push(&mut out, "lat_0", lat_0);

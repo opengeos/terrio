@@ -301,8 +301,12 @@ impl Def {
         Ok(d)
     }
 
-    /// The coordinate conversion of a WKT 1 definition (without its datum), when terrio reads it.
+    /// The coordinate conversion of a WKT definition (without its datum), when terrio reads it: that
+    /// of its `PROJ4` extension when it has one.
     pub fn wkt_conversion(w: &str) -> Option<Self> {
+        if let Some(d) = super::proj4_extension(w).and_then(|p| Self::from_proj(&p).ok()) {
+            return Some(d);
+        }
         let root = wkt1::parse(w)?;
         let c = if wkt2::handles(&root) { wkt2::to_proj(&root).ok()? } else { wkt1::to_proj(&root)? };
         Self::from_proj(&c.proj).ok()
@@ -357,6 +361,11 @@ impl Def {
             let h = SpatialRef::from_wkt(&horizontal);
             let mut d = Self::new(&h)?;
             d.vertical = vertical_from_wkt(&vertical).map(Arc::new);
+            return Ok(d);
+        }
+        // A WKT 1 extended with its PROJ string (`EXTENSION["PROJ4", ...]`) is that PROJ string,
+        // whatever its nodes say, as GDAL and PROJ read it.
+        if let Some(d) = super::proj4_extension(w).and_then(|p| Self::from_proj(&p).ok()) {
             return Ok(d);
         }
         let root = wkt1::parse(w);

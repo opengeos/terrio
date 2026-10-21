@@ -1034,6 +1034,18 @@ mod tests {
     }
 
     #[test]
+    fn proj4_extension_describes_the_whole_crs() {
+        // GDAL and PROJ read a WKT 1 with a PROJ4 extension as that PROJ string, whatever its
+        // nodes say: here a central meridian of 10, not -75.
+        let wkt = r#"PROJCS["unknown",GEOGCS["WGS 84",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563]],PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433]],PROJECTION["Transverse_Mercator"],PARAMETER["latitude_of_origin",0],PARAMETER["central_meridian",-75],PARAMETER["scale_factor",1],PARAMETER["false_easting",0],PARAMETER["false_northing",0],UNIT["metre",1],EXTENSION["PROJ4","+proj=tmerc +lon_0=10 +datum=WGS84 +units=m +no_defs"]]"#;
+        let own = Def::from_proj("+proj=tmerc +lon_0=10 +datum=WGS84 +units=m +no_defs").unwrap();
+        let bare = SpatialRef { wkt: Some(wkt.into()), ..Default::default() };
+        for d in [Def::new(&SpatialRef::from_wkt(wkt)).unwrap(), Def::new(&bare).unwrap(), Def::wkt_conversion(wkt).unwrap()] {
+            assert!(d.same_conversion(&own));
+        }
+    }
+
+    #[test]
     fn declared_codes_win() {
         let nad83 = r#"GEOGCS["NAD83",DATUM["North_American_Datum_1983",SPHEROID["GRS 1980",6378137,298.257222101,AUTHORITY["EPSG","7019"]],AUTHORITY["EPSG","6269"]],PRIMEM["Greenwich",0,AUTHORITY["EPSG","8901"]],UNIT["degree",0.0174532925199433,AUTHORITY["EPSG","9122"]],AXIS["Latitude",NORTH],AXIS["Longitude",EAST],AUTHORITY["EPSG","4269"]]"#;
         assert_eq!(declared_epsg(nad83), Some(4269));

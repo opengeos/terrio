@@ -92,3 +92,78 @@ fn scan_angles_past_a_right_angle_are_refused() {
     let r = inv.transform(0.0, y);
     assert!(r.is_err() || !r.unwrap().0.is_finite(), "inverse of (0, {y}) succeeded");
 }
+
+// ─── WKT (#119) ──────────────────────────────────────────────────────────────────────────────
+
+/// GDAL's WKT 1 of GOES-16 (`+sweep=x`): the sweep axis is only in the `PROJ4` extension.
+const GOES_GDAL_WKT: &str = r#"PROJCS["unknown",GEOGCS["unknown",DATUM["Unknown based on GRS 1980 ellipsoid",SPHEROID["GRS 1980",6378137,298.257222101,AUTHORITY["EPSG","7019"]]],PRIMEM["Greenwich",0,AUTHORITY["EPSG","8901"]],UNIT["degree",0.0174532925199433,AUTHORITY["EPSG","9122"]]],PROJECTION["Geostationary_Satellite"],PARAMETER["central_meridian",-75],PARAMETER["satellite_height",35786023],PARAMETER["false_easting",0],PARAMETER["false_northing",0],UNIT["metre",1,AUTHORITY["EPSG","9001"]],AXIS["Easting",EAST],AXIS["Northing",NORTH],EXTENSION["PROJ4","+proj=geos +sweep=x +lon_0=-75 +h=35786023 +x_0=0 +y_0=0 +ellps=GRS80 +units=m +no_defs"]]"#;
+/// GDAL's WKT 1 of the same CRS with `+sweep=y`: no extension.
+const GOES_Y_GDAL_WKT: &str = r#"PROJCS["unknown",GEOGCS["unknown",DATUM["Unknown based on GRS 1980 ellipsoid",SPHEROID["GRS 1980",6378137,298.257222101,AUTHORITY["EPSG","7019"]]],PRIMEM["Greenwich",0,AUTHORITY["EPSG","8901"]],UNIT["degree",0.0174532925199433,AUTHORITY["EPSG","9122"]]],PROJECTION["Geostationary_Satellite"],PARAMETER["central_meridian",-75],PARAMETER["satellite_height",35786023],PARAMETER["false_easting",0],PARAMETER["false_northing",0],UNIT["metre",1,AUTHORITY["EPSG","9001"]],AXIS["Easting",EAST],AXIS["Northing",NORTH]]"#;
+/// ESRI's WKT 1 of the `+sweep=y` CRS, as GDAL writes it in a GeoTIFF's PE string: `Height`.
+const GOES_Y_ESRI_WKT: &str = r#"PROJCS["unknown",GEOGCS["GCS_unknown",DATUM["D_Unknown_based_on_GRS_1980_ellipsoid",SPHEROID["GRS_1980",6378137.0,298.257222101]],PRIMEM["Greenwich",0.0],UNIT["Degree",0.0174532925199433]],PROJECTION["Geostationary_Satellite"],PARAMETER["False_Easting",0.0],PARAMETER["False_Northing",0.0],PARAMETER["Longitude_Of_Center",-75.0],PARAMETER["Height",35786023.0],PARAMETER["Option",0.0],UNIT["Meter",1.0]]"#;
+/// PROJ's WKT 2 of both.
+const GOES_WKT2: &str = r#"PROJCRS["unknown",BASEGEOGCRS["unknown",DATUM["Unknown based on GRS 1980 ellipsoid",ELLIPSOID["GRS 1980",6378137,298.257222101,LENGTHUNIT["metre",1],ID["EPSG",7019]]],PRIMEM["Greenwich",0,ANGLEUNIT["degree",0.0174532925199433],ID["EPSG",8901]]],CONVERSION["unknown",METHOD["Geostationary Satellite (Sweep X)"],PARAMETER["Longitude of natural origin",-75,ANGLEUNIT["degree",0.0174532925199433],ID["EPSG",8802]],PARAMETER["Satellite Height",35786023,LENGTHUNIT["metre",1,ID["EPSG",9001]]],PARAMETER["False easting",0,LENGTHUNIT["metre",1],ID["EPSG",8806]],PARAMETER["False northing",0,LENGTHUNIT["metre",1],ID["EPSG",8807]]],CS[Cartesian,2],AXIS["(E)",east,ORDER[1],LENGTHUNIT["metre",1,ID["EPSG",9001]]],AXIS["(N)",north,ORDER[2],LENGTHUNIT["metre",1,ID["EPSG",9001]]]]"#;
+
+/// The coordinates of WGS 84 points in a CRS.
+fn from_wgs84(crs: &str) -> terrio::Result<Vec<(f64, f64)>> {
+    let t = Transformer::new(&SpatialRef::parse("EPSG:4326")?, &SpatialRef::parse(crs)?)?;
+    GOES_POINTS.iter().take(10).map(|p| t.transform(p.0, p.1)).collect()
+}
+
+fn assert_same(crs: &str, reference: &str, what: &str) {
+    let (a, b) = (from_wgs84(crs).unwrap_or_else(|e| panic!("{what}: {e}")), from_wgs84(reference).unwrap());
+    let d = a.iter().zip(&b).map(|(p, q)| (p.0 - q.0).hypot(p.1 - q.1)).fold(0.0, f64::max);
+    assert!(d < 1e-3, "{what}: {d} m from the PROJ string");
+}
+
+#[test]
+fn geostationary_wkt_keeps_its_sweep_axis_and_height() {
+    let goes_y = GOES.replace("+sweep=x", "+sweep=y");
+    // terrio's own WKT.
+    let own = SpatialRef::parse(GOES).unwrap().to_wkt().unwrap();
+    assert!(own.contains("EXTENSION[\"PROJ4\"") && own.contains("+sweep=x"), "{own}");
+    assert_same(&own, GOES, "terrio's WKT, sweep x");
+    let own_y = SpatialRef::parse(&goes_y).unwrap().to_wkt().unwrap();
+    assert!(!own_y.contains("EXTENSION"), "{own_y}");
+    assert_same(&own_y, &goes_y, "terrio's WKT, sweep y");
+    // GDAL's and ESRI's WKT 1, and PROJ's WKT 2.
+    assert_same(GOES_GDAL_WKT, GOES, "GDAL's WKT 1, sweep x");
+    assert_same(GOES_Y_GDAL_WKT, &goes_y, "GDAL's WKT 1, sweep y");
+    assert_same(GOES_Y_ESRI_WKT, &goes_y, "ESRI's WKT 1 (Height)");
+    assert_same(GOES_WKT2, GOES, "WKT 2, sweep x");
+    assert_same(&GOES_WKT2.replace("(Sweep X)", "(Sweep Y)"), &goes_y, "WKT 2, sweep y");
+    // And PROJ's coordinates, through GDAL's WKT.
+    let t = Transformer::new(&SpatialRef::parse(GOES_GEOG).unwrap(), &SpatialRef::parse(GOES_GDAL_WKT).unwrap()).unwrap();
+    for &(lon, lat, x, y) in GOES_POINTS.iter().take(10) {
+        let (tx, ty) = t.transform(lon, lat).unwrap();
+        assert!((tx - x).hypot(ty - y) < 1e-3, "({lon}, {lat}): ({tx}, {ty}) vs PROJ ({x}, {y})");
+    }
+}
+
+#[test]
+fn geostationary_wkt_without_a_height_is_refused() {
+    let gdal = GOES_Y_GDAL_WKT.replace(r#"PARAMETER["satellite_height",35786023],"#, "");
+    assert!(from_wgs84(&gdal).is_err());
+    let esri = GOES_Y_ESRI_WKT.replace(r#"PARAMETER["Height",35786023.0],"#, "");
+    assert!(from_wgs84(&esri).is_err());
+    let wkt2 = GOES_WKT2.replace(r#"PARAMETER["Satellite Height",35786023,LENGTHUNIT["metre",1,ID["EPSG",9001]]],"#, "");
+    assert!(from_wgs84(&wkt2).is_err());
+}
+
+#[test]
+fn geostationary_geotiff_keeps_its_sweep_axis() {
+    use terrio::raster::RasterData;
+    use terrio::{DataType, RasterConfig, RasterDataset};
+    // GeoTIFF has no geostationary method: the CRS goes in an ESRI PE string, which keeps the
+    // sweep axis in its `PROJ4` extension, as GDAL reads it.
+    let crs = SpatialRef::parse(GOES).unwrap();
+    let cfg = RasterConfig { cols: 4, rows: 4, bands: 1, data_type: DataType::F32, crs: crs.to_crs_info(), ..Default::default() };
+    let mut ds = RasterDataset::new(terrio::Raster::from_data_native(cfg, RasterData::F32(vec![0.0; 16])).unwrap(), false);
+    ds.set_geo_transform([0.0, 1000.0, 0.0, 0.0, 0.0, -1000.0]);
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("goes.tif").to_string_lossy().into_owned();
+    terrio::write_raster_dataset(&ds, &path, &Default::default()).unwrap();
+    let wkt = terrio::open_raster(&path).unwrap().crs().to_wkt().unwrap();
+    assert!(wkt.contains("EXTENSION[\"PROJ4\"") && wkt.contains("+sweep=x"), "{wkt}");
+    assert_same(&wkt, GOES, "terrio's GeoTIFF, sweep x");
+}
