@@ -1,9 +1,9 @@
 //! Projections PROJ computes with ellipsoidal formulas on an ellipsoid (#126): Equidistant
 //! Cylindrical (EPSG method 1028, PROJ 9.8 and later), Sinusoidal, Bonne and Gnomonic (Karney's
 //! ellipsoidal gnomonic), and Miller and Van der Grinten (spherical, on the sphere of the
-//! ellipsoid's area). Each is checked on WGS 84 and on a sphere, forward and inverse, against
-//! pyproj (PROJ 9.8.1), from the geographic CRS on the same ellipsoid, so that no datum
-//! transformation is involved.
+//! ellipsoid's area); and Cassini-Soldner far from its central meridian (#134). Each is checked
+//! on WGS 84 and on a sphere, forward and inverse, against pyproj (PROJ 9.8.1), from the
+//! geographic CRS on the same ellipsoid, so that no datum transformation is involved.
 
 use terrio::crs::{SpatialRef, Transformer};
 
@@ -127,6 +127,21 @@ fn gnom_refuses_points_beyond_the_horizon() {
     check_hidden(GNOM_WGS84_PROJ, WGS84_GEOG, GNOM_HIDDEN);
     check_hidden(GNOM_WGS84_PROJ, WGS84_GEOG, GNOM_PAST_EDGE_WGS84);
     check_hidden(GNOM_SPHERE_PROJ, SPHERE_GEOG, GNOM_HIDDEN);
+}
+
+#[test]
+fn cass_matches_proj() {
+    // Up to 30° from the central meridian, where the series PROJ used before 9.2 (an easting
+    // term of the wrong sign) drifts from it by metres; and the hyperbolic variant (Vanua Levu).
+    check(CASS_WGS84_PROJ, WGS84_GEOG, CASS_WGS84);
+    check(CASS_SPHERE_PROJ, SPHERE_GEOG, CASS_SPHERE);
+    check(CASS_HYPERBOLIC_WGS84_PROJ, WGS84_GEOG, CASS_HYPERBOLIC_WGS84);
+    // Where the inverse does not converge, PROJ refuses the point (World Cassini's projection of
+    // (100°, 40°), 90° from its meridian): so does terrio, rather than returning the series' guess.
+    let crs = SpatialRef::from_proj4("+proj=cass +ellps=WGS84 +units=m +no_defs").unwrap();
+    let inv = Transformer::new(&crs, &SpatialRef::from_proj4(WGS84_GEOG).unwrap()).unwrap();
+    let r = inv.transform(5574940.633736469, 12301864.447042266);
+    assert!(r.as_ref().map_or(true, |p| !p.0.is_finite()), "inverse of a point PROJ refuses succeeded: {r:?}");
 }
 
 // The reference points, from pyproj 3.8.0 (PROJ 9.8.1).
@@ -518,3 +533,44 @@ const GNOM_EDGE_WGS84: &[(f64, f64, f64, f64)] = &[
 /// Just past the horizon.
 const GNOM_PAST_EDGE_WGS84: &[(f64, f64)] =
     &[(-16.571835, -7.773334), (-16.410381, -7.90993), (-15.794332, -8.429705), (149.667193, 22.434058), (149.048894, 21.874031)];
+
+const CASS_WGS84_PROJ: &str = "+proj=cass +lat_0=48 +lon_0=10 +ellps=WGS84 +units=m +no_defs";
+const CASS_WGS84: &[(f64, f64, f64, f64)] = &[
+    (10.0, 48.0, 0.0, 0.0),
+    (10.0, 20.0, 0.0, -3106061.3413180583),
+    (12.0, 48.0, 149233.96512904114, 1936.163111474253),
+    (15.0, 52.0, 343119.1888939086, 456732.48332127766),
+    (20.0, 40.0, 852135.5512756129, -840689.6780951116),
+    (25.0, 60.0, 829798.3383349773, 1430801.9452744748),
+    (-5.0, 30.0, -1443079.164545573, -1901683.1017425514),
+    (30.0, 10.0, 2191380.875451505, -4142837.648018792),
+    (40.0, 48.0, 2179912.3130058134, 452423.8964503063),
+    (-20.0, 70.0, -1099340.2663023777, 2730466.30919624),
+    (35.0, -30.0, 2391969.081095733, -8916372.613530947),
+    (0.0, -60.0, -555871.2531151444, -12014725.046815822),
+];
+
+const CASS_SPHERE_PROJ: &str = "+proj=cass +lat_0=48 +lon_0=10 +R=6371000 +units=m +no_defs";
+const CASS_SPHERE: &[(f64, f64, f64, f64)] = &[
+    (10.0, 48.0, 0.0, 0.0),
+    (10.0, 20.0, 0.0, -3113457.946047645),
+    (12.0, 48.0, 148791.16507050567, 1930.416615402381),
+    (15.0, 52.0, 342022.1383603489, 456558.4025576732),
+    (20.0, 40.0, 850004.0481608562, -841471.9343985273),
+    (25.0, 60.0, 826786.7887523855, 1429140.9937651653),
+    (-5.0, 30.0, -1440256.6953776546, -1905049.5503022368),
+    (30.0, 10.0, 2188705.1250487166, -4155623.040268241),
+    (40.0, 48.0, 2173427.8707111822, 450769.1524080159),
+    (-20.0, 70.0, -1094886.620651688, 2724804.906467982),
+    (35.0, -30.0, 2387246.4954121225, -8951034.23971766),
+    (0.0, -60.0, -553853.625793906, -12051122.469596086),
+];
+
+const CASS_HYPERBOLIC_WGS84_PROJ: &str = "+proj=cass +hyperbolic +lat_0=-16.25 +lon_0=179.3333333333333 +ellps=WGS84 +units=m +no_defs";
+const CASS_HYPERBOLIC_WGS84: &[(f64, f64, f64, f64)] = &[
+    (179.3333333333333, -16.25, 2.992019323256531e-08, -2.0449846236556684e-23),
+    (178.5, -16.0, -89195.08226893001, 27486.10371824002),
+    (180.0, -17.0, 70990.41690619053, -83117.32193165741),
+    (177.0, -19.0, -245674.15193045686, -305871.5699545879),
+    (-178.0, -13.0, 289287.3929900019, 357892.4769032221),
+];

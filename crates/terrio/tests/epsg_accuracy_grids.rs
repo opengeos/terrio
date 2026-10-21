@@ -19,12 +19,15 @@ fn epsg_transformations_with_grids_match_gdal() {
     terrio::crs::set_grid_search_paths(Some(vec![grids]));
     terrio::crs::set_network_enabled(Some(false));
     let Some((fwd, inv, cross)) = epsg_common::check("epsg_points_grids.tsv") else { return };
-    // Regression guards. With GDAL 3.12 and PROJ 9.8, every forward and inverse point is within
-    // 1 cm, and 6180 of 6295 CRS-to-CRS points within 1 cm and 6266 within 1 m (PROJ chains some
-    // pairs through several intermediate datums that terrio does not try).
+    // Regression guards, counting CRSs (pairs from CRS to CRS) whose every point is within the
+    // distance. With GDAL 3.12 and PROJ 9.8 and 50 points of each kind per CRS, every point of
+    // the 6354 CRSs is within 1 cm forward and inverse, and 6218 of 6295 pairs are within 1 m
+    // (6137 within 1 cm): PROJ chains some pairs through several intermediate datums that
+    // terrio does not try, or picks other transformations at some points (#153).
     let n = fwd.errors.len();
-    assert!(n > 6000, "only {n} forward points");
+    assert!(n > 6000, "only {n} forward CRSs");
+    assert!(fwd.points > 300_000, "only {} forward points (an older reference? run scripts/gen_epsg_points.py)", fwd.points);
     assert!(fwd.count(0.01) >= 6300, "forward within 1 cm: {}", fwd.count(0.01));
     assert!(inv.count(0.01) >= 6300, "inverse within 1 cm: {}", inv.count(0.01));
-    assert!(cross.count(1.0) >= 6240, "CRS to CRS within 1 m: {}", cross.count(1.0));
+    assert!(cross.count(1.0) >= 6180, "CRS to CRS within 1 m: {}", cross.count(1.0));
 }

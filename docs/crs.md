@@ -12,8 +12,7 @@ Everywhere a CRS is expected (`--t-srs`, `--a-srs`, `terrio crs`, the APIs), ter
 - `OGC:CRS84` and `WGS84`;
 - ESRI codes, the geographic and projected CRSs of PROJ's ESRI authority: `ESRI:54009` (World
   Mollweide), `esri:102003`, `urn:ogc:def:crs:ESRI::102003`. The few whose projection terrio
-  does not compute as PROJ does (World Cassini) or at all (Goode homolosine, Peirce quincuncial
-  and others) are refused;
+  does not compute (Goode homolosine, Peirce quincuncial and others) are refused;
 - WKT1 and WKT2 (2015 and 2019) definitions, including ESRI `.prj` WKT and WKT2 `BOUNDCRS`s
   (a CRS with its transformation to WGS 84, as `+towgs84`); an unknown WKT2 projection method
   or parameter is an error rather than ignored;
@@ -163,11 +162,13 @@ With the same grids, terrio's results are GDAL's to the micrometre (`scripts/com
 compares random points through every grid of `scripts/proj_grids.txt`, legacy NTv2 and GTX files,
 geoid models, compound CRSs and epochs: 250 cases, 50,000 points, the largest difference 0.02 mm).
 For every EPSG CRS, GDAL's reference points computed with those grids
-(`gen_epsg_points.py --grids`, checked by `crates/terrio/tests/epsg_accuracy_grids.rs`) are
-matched within 1 cm forward and inverse; from CRS to CRS, 98 % of the points are within 1 cm and
-99.7 % within 1 m: PROJ chains some pairs through several intermediate datums (NAD27 to ITRF92
-through NAD83(HARN), NAD83(2011) and ITRF2008, for instance) where terrio tries a single
-intermediate datum.
+(`gen_epsg_points.py --grids`, 50 points of each kind per CRS spread over its area of use,
+checked by `crates/terrio/tests/epsg_accuracy_grids.rs`) are matched within 1 cm forward and
+inverse; from CRS to CRS, every point of 97.5 % of the pairs is within 1 cm and of 98.8 % within
+1 m: PROJ chains some pairs through several intermediate datums (NAD27 to ITRF92 through
+NAD83(HARN), NAD83(2011) and ITRF2008, for instance) where terrio tries a single intermediate
+datum, and picks another transformation than terrio at some points outside the areas of use of
+the pair's transformations.
 
 ## Attribution
 

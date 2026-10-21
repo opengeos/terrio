@@ -1220,7 +1220,8 @@ impl Proj for Cass {
         let a1 = lam * cosphi;
         let c = self.es * cosphi * cosphi / (1.0 - self.es);
         let a2 = a1 * a1;
-        let x = n * a1 * (1.0 - a2 * t * (C1 - (8.0 - t + 8.0 * c) * a2 * C2));
+        // EPSG guidance note 7-2 (and PROJ since 9.2): X = ν(A − T A³/6 − (8 − T + 8C) T A⁵/120).
+        let x = n * a1 * (1.0 - a2 * t * (C1 + (8.0 - t + 8.0 * c) * a2 * C2));
         y -= self.m0 - n * tn * a2 * (0.5 + (5.0 - t + 6.0 * c) * a2 * C3);
         if self.hyperbolic {
             let rho = (1.0 - self.es) * n * n * n;
@@ -1236,7 +1237,7 @@ impl Proj for Cass {
             let lam = x.tan().atan2(dd.cos());
             return Some((lam, phi));
         }
-        let mut y = y;
+        let (y0, mut y) = (y, y);
         if self.hyperbolic {
             let ph1 = self.en.inv(self.m0 + y);
             let sn = ph1.sin();
@@ -1255,7 +1256,9 @@ impl Proj for Cass {
         let d2 = dd * dd;
         let phi = ph1 - (n * tn / r) * d2 * (0.5 - (1.0 + 3.0 * t) * d2 * C3);
         let lam = dd * (1.0 + t * d2 * (-C4 + (1.0 + 3.0 * t) * d2 * C5)) / ph1.cos();
-        Some((lam, phi))
+        // The series is a first guess, refined on the forward projection as PROJ does: it drifts
+        // by centimetres away from the central meridian.
+        generic_inverse_2d(|lam, phi| self.fwd(lam, phi), x, y0, lam, phi, 1e-12)
     }
 }
 
