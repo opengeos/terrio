@@ -38,7 +38,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: taiki-e/install-action@v2
         with:
-          tool: cargo-about
+          # Pinned: the generated file depends on cargo-about's version and license data.
+          tool: cargo-about@0.9.2
       - name: Check that LICENSE-THIRD-PARTY.md is up to date
         run: |
           cargo about generate --locked --all-features --fail about.hbs -o LICENSE-THIRD-PARTY.md
@@ -60,8 +61,7 @@ jobs:
       - name: Build the package as the release does
         run: |
           wasm-pack build js --release --target web --out-dir pkg --out-name terrio
-          cp LICENSE NOTICE LICENSE-THIRD-PARTY.md js/pkg/
-          node -e "const f='js/pkg/package.json',p=require('./'+f);p.files.push('NOTICE','LICENSE-THIRD-PARTY.md');require('fs').writeFileSync(f,JSON.stringify(p,null,2)+'\\n')"
+          node .github/scripts/npm-notices.mjs js/pkg
       - name: Check its name and version, and pack it
         working-directory: js/pkg
         run: |

@@ -12,8 +12,23 @@ PROJ
 The map projections, ellipsoid helpers and datum grid interpolation in crates/terrio/src/crs/
 are ported from PROJ (https://proj.org).
 
+  Copyright (c) 2000, Frank Warmerdam
+  Copyright (c) 2004, Gerald I. Evenden
+  Copyright (c) 2012, Martin Raspaud
+  Copyright (c) 2019, Even Rouault
+  and the other PROJ contributors named in PROJ's source files.
+
   All source, data files and other contents of the PROJ package are available under the
-  following terms. [...] Copyright information can be found in source files.
+  following terms. Note that the PROJ 4.3 and earlier was "public domain" as is common with US
+  government work, but apparently this is not a well defined legal term in many countries.
+  Frank Warmerdam placed everything under the following MIT style license because he believed
+  it is effectively the same as public domain, allowing anyone to use the code as they wish,
+  including making proprietary derivatives.
+
+  Initial PROJ 4.3 public domain code was put as Frank Warmerdam as copyright holder, but he
+  didn't mean to imply he did the work. Essentially all work was done by Gerald Evenden.
+
+  Copyright information can be found in source files.
 
   Permission is hereby granted, free of charge, to any person obtaining a copy of this software
   and associated documentation files (the "Software"), to deal in the Software without

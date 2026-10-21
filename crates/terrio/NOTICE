@@ -1,1 +1,178 @@
-../../NOTICE
+terrio
+Copyright (c) 2026 Qiusheng Wu
+Licensed under the MIT License (see LICENSE).
+
+terrio adapts code and data from the projects below; their notices follow. The licenses of the
+Rust crates terrio's packages and binaries are built with are in LICENSE-THIRD-PARTY.md.
+
+-------------------------------------------------------------------------------
+PROJ
+-------------------------------------------------------------------------------
+
+The map projections, ellipsoid helpers and datum grid interpolation in crates/terrio/src/crs/
+are ported from PROJ (https://proj.org).
+
+  Copyright (c) 2000, Frank Warmerdam
+  Copyright (c) 2004, Gerald I. Evenden
+  Copyright (c) 2012, Martin Raspaud
+  Copyright (c) 2019, Even Rouault
+  and the other PROJ contributors named in PROJ's source files.
+
+  All source, data files and other contents of the PROJ package are available under the
+  following terms. Note that the PROJ 4.3 and earlier was "public domain" as is common with US
+  government work, but apparently this is not a well defined legal term in many countries.
+  Frank Warmerdam placed everything under the following MIT style license because he believed
+  it is effectively the same as public domain, allowing anyone to use the code as they wish,
+  including making proprietary derivatives.
+
+  Initial PROJ 4.3 public domain code was put as Frank Warmerdam as copyright holder, but he
+  didn't mean to imply he did the work. Essentially all work was done by Gerald Evenden.
+
+  Copyright information can be found in source files.
+
+  Permission is hereby granted, free of charge, to any person obtaining a copy of this software
+  and associated documentation files (the "Software"), to deal in the Software without
+  restriction, including without limitation the rights to use, copy, modify, merge, publish,
+  distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the
+  Software is furnished to do so, subject to the following conditions:
+
+  The above copyright notice and this permission notice shall be included in all copies or
+  substantial portions of the Software.
+
+  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING
+  BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+  NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
+  DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+-------------------------------------------------------------------------------
+CSF (cloth simulation filter)
+-------------------------------------------------------------------------------
+
+crates/terrio/src/pointcloud/filters/csf.rs is a port to Rust, modified, of the CSF code PDAL
+vendors (https://github.com/PDAL/PDAL/tree/master/filters/private/csf), after Zhang et al.
+(2016), "An Easy-to-Use Airborne LiDAR Data Filtering Method Based on Cloth Simulation".
+
+  Copyright 2017 State Key Laboratory of Remote Sensing Science,
+  Institute of Remote Sensing Science and Engineering, Beijing Normal University
+
+  Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file
+  except in compliance with the License. You may obtain a copy of the License at
+
+      http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing, software distributed under the
+  License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
+  either express or implied. See the License for the specific language governing permissions
+  and limitations under the License.
+
+-------------------------------------------------------------------------------
+EPSG Geodetic Parameter Dataset
+-------------------------------------------------------------------------------
+
+crates/terrio/data/epsg.tsv.zst and crates/terrio/data/datums.tsv.zst are derived from the EPSG
+Geodetic Parameter Dataset (https://epsg.org), copyright the International Association of Oil &
+Gas Producers (IOGP), through PROJ's database and GDAL. They are redistributed under the EPSG
+terms of use (https://epsg.org/terms-of-use.html), with this attribution. They are not the EPSG
+Dataset itself, and terrio is not endorsed by IOGP.
+
+-------------------------------------------------------------------------------
+Esri projection engine data
+-------------------------------------------------------------------------------
+
+crates/terrio/data/esri.tsv.zst, and the ESRI datum names in crates/terrio/data/datums.tsv.zst,
+are derived, through PROJ's database, from Esri's projection engine documentation
+(https://github.com/Esri/projection-engine-db-doc), modified.
+
+  Copyright (c) 2010-2026 Esri
+
+  Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file
+  except in compliance with the License. You may obtain a copy of the License at
+
+      http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing, software distributed under the
+  License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
+  either express or implied. See the License for the specific language governing permissions
+  and limitations under the License.
+
+-------------------------------------------------------------------------------
+rasterio
+-------------------------------------------------------------------------------
+
+The API and several algorithms of the Python package's terrio.rio module follow rasterio
+(https://github.com/rasterio/rasterio).
+
+  Copyright (c) 2013-2021, Mapbox
+  All rights reserved.
+
+  Redistribution and use in source and binary forms, with or without modification, are
+  permitted provided that the following conditions are met:
+
+  * Redistributions of source code must retain the above copyright notice, this list of
+    conditions and the following disclaimer.
+
+  * Redistributions in binary form must reproduce the above copyright notice, this list of
+    conditions and the following disclaimer in the documentation and/or other materials
+    provided with the distribution.
+
+  * Neither the name of Mapbox nor the names of its contributors may be used to endorse or
+    promote products derived from this software without specific prior written permission.
+
+  THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS
+  OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF
+  MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE
+  COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
+  EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE
+  GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED
+  AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
+  NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+  OF THE POSSIBILITY OF SUCH DAMAGE.
+
+-------------------------------------------------------------------------------
+rioxarray
+-------------------------------------------------------------------------------
+
+The Python package's terrio.xarray module (its accessor, open_rasterio, writer, merge and
+spatial helpers) follows rioxarray (https://github.com/corteva/rioxarray), modified.
+
+  Copyright (c) 2019-2026, Vylor™
+  All rights reserved.
+
+  Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file
+  except in compliance with the License. You may obtain a copy of the License at
+
+      http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing, software distributed under the
+  License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
+  either express or implied. See the License for the specific language governing permissions
+  and limitations under the License.
+
+-------------------------------------------------------------------------------
+Apache Arrow
+-------------------------------------------------------------------------------
+
+terrio's packages and binaries are built with the Rust implementation of Apache Arrow and
+Parquet (https://github.com/apache/arrow-rs), whose NOTICE reads:
+
+  Apache Arrow
+  Copyright 2016-2026 The Apache Software Foundation
+
+  This product includes software developed at
+  The Apache Software Foundation (http://www.apache.org/).
+
+  This product includes software from the chronoutil crate (MIT)
+   * Copyright (c) 2020-2022 Oliver Margetts
+   * https://github.com/olliemath/chronoutil
+
+  This product includes software from the compact-thrift project (Apache 2.0)
+   * Copyright Jörn Horstmann
+   * https://github.com/jhorstmann/compact-thrift
+
+-------------------------------------------------------------------------------
+Independent JPEG Group
+-------------------------------------------------------------------------------
+
+terrio writes JPEG with the jpeg-encoder crate, which contains code under the IJG license:
+this software is based in part on the work of the Independent JPEG Group.
