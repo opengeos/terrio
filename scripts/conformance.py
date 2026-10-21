@@ -615,7 +615,10 @@ def suite_crs(ctx):
         "(forward) and back (inverse), and between pairs of CRSs, compared with GDAL's results, "
         "neither using datum shift grids; then projections EPSG has no code for, against PROJ "
         "(crates/terrio/tests/geostationary.rs: points from nadir to near the limb, forward "
-        "within 1 mm and inverse within 1e-8°, and points the satellite cannot see refused). "
+        "within 1 mm and inverse within 1e-8°, and points the satellite cannot see refused; "
+        "crates/terrio/tests/ellipsoidal_projections.rs: points over the globe on WGS 84 and on "
+        "a sphere, forward within 1 mm and inverse within 1e-8°, and for the gnomonic points "
+        "beyond the horizon refused). "
         "Identical: within 1 mm. Within tolerance: within 1 cm (forward, inverse) or 1 m (CRS to "
         "CRS, where the datum transformations GDAL picks can differ by area of use).",
     )
@@ -630,10 +633,21 @@ def suite_crs(ctx):
     return s
 
 
-# The PROJ definitions without an EPSG code that crates/terrio/tests/geostationary.rs checks.
+# The PROJ definitions without an EPSG code that the tests check, by test file and test.
 PROJ_CASES = {
-    "goes16_sweep_x_matches_proj": "GOES-16: `+proj=geos +h=35786023 +lon_0=-75 +sweep=x +ellps=GRS80`",
-    "seviri_sweep_y_matches_proj": "Meteosat SEVIRI: `+proj=geos +h=35785831 +lon_0=0 +sweep=y +a=6378169 +b=6356583.8`",
+    "geostationary": {
+        "goes16_sweep_x_matches_proj": "GOES-16: `+proj=geos +h=35786023 +lon_0=-75 +sweep=x +ellps=GRS80`",
+        "seviri_sweep_y_matches_proj": "Meteosat SEVIRI: `+proj=geos +h=35785831 +lon_0=0 +sweep=y +a=6378169 +b=6356583.8`",
+    },
+    "ellipsoidal_projections": {
+        "eqc_matches_proj": "Equidistant Cylindrical: `+proj=eqc +lat_ts=30 +lat_0=10 +lon_0=-20`, WGS 84 and sphere",
+        "sinu_matches_proj": "Sinusoidal: `+proj=sinu +lon_0=15`, WGS 84 and sphere",
+        "bonne_matches_proj": "Bonne: `+proj=bonne +lat_1=45` and `+lat_1=-30`, WGS 84 and sphere",
+        "mill_matches_proj": "Miller Cylindrical: `+proj=mill +lon_0=-90`, WGS 84 and sphere",
+        "vandg_matches_proj": "Van der Grinten: `+proj=vandg`, WGS 84 and sphere",
+        "gnom_matches_proj": "Gnomonic: `+proj=gnom` oblique, polar and equatorial, WGS 84 and sphere",
+        "gnom_refuses_points_beyond_the_horizon": "Gnomonic near and beyond the horizon: `+proj=gnom +lat_0=40 +lon_0=-100`",
+    },
 }
 
 
@@ -643,16 +657,17 @@ def proj_cases(s):
     Args:
         s: The suite the cases go to.
     """
-    _code, out, err = run(["cargo", "test", "--release", "-p", "terrio", "--test", "geostationary"])
     group = "PROJ definitions without an EPSG code"
-    for test, name in PROJ_CASES.items():
-        m = re.search(rf"^test {test} \.\.\. (\w+)$", out, re.M)
-        if not m:
-            s.cases.append(Case(group, name, DIFFERS, "the test did not run: " + tail(err or out, 3)))
-        elif m.group(1) == "ok":
-            s.cases.append(Case(group, name, IDENTICAL))
-        else:
-            s.cases.append(Case(group, name, DIFFERS, "differs from PROJ"))
+    for file, tests in PROJ_CASES.items():
+        _code, out, err = run(["cargo", "test", "--release", "-p", "terrio", "--test", file])
+        for test, name in tests.items():
+            m = re.search(rf"^test {test} \.\.\. (\w+)$", out, re.M)
+            if not m:
+                s.cases.append(Case(group, name, DIFFERS, "the test did not run: " + tail(err or out, 3)))
+            elif m.group(1) == "ok":
+                s.cases.append(Case(group, name, IDENTICAL))
+            else:
+                s.cases.append(Case(group, name, DIFFERS, "differs from PROJ"))
 
 
 def suite_crs_grids(ctx):

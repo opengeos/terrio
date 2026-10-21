@@ -366,7 +366,7 @@ impl SpatialFilter {
             && !srs.same_as(layer_srs)
         {
             // GDAL densifies to 10 km segments, in degrees on geographic CRSs (6378137 m axis).
-            let step = if srs.is_geographic() { 10_000.0 / (6_378_137.0 * std::f64::consts::PI / 180.0) } else { 10_000.0 };
+            let step = if srs.is_angular() { 10_000.0 / (6_378_137.0 * std::f64::consts::PI / 180.0) } else { 10_000.0 };
             let t = Transformer::new(srs, layer_srs)?;
             let mut dense = Vec::new();
             for w in ring.windows(2) {

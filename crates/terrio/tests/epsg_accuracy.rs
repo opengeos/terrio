@@ -13,8 +13,8 @@ fn epsg_transformations_match_gdal() {
     terrio::crs::set_grid_search_paths(Some(Vec::new()));
     terrio::crs::set_network_enabled(Some(false));
     let Some((fwd, inv, cross)) = epsg_common::check("epsg_points.tsv") else { return };
-    // Regression guards. With GDAL 3.12 and PROJ 9.7 (which generated the EPSG table), every
-    // forward and inverse point is within 1 cm and 6283 of 6295 CRS-to-CRS points within 1 m;
+    // Regression guards. With GDAL 3.12 and PROJ 9.8 (which generated the EPSG table), every
+    // forward and inverse point is within 1 cm and 6276 of 6295 CRS-to-CRS points within 1 m;
     // the slack allows for reference points from other GDAL and PROJ versions.
     let n = fwd.errors.len();
     assert!(n > 6000, "only {n} forward points");

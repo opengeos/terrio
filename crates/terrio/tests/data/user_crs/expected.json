@@ -94,8 +94,8 @@
   "gdal": "+proj=eqc +lat_ts=30 +lat_0=0 +lon_0=10 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs +type=crs",
   "lon": 14,
   "lat": 50,
-  "x": 385622.0278532915,
-  "y": 5565974.539663678
+  "x": 385945.1210035861,
+  "y": 5540847.041684148
  },
  "cass": {
   "gdal": "+proj=cass +lat_0=10.4416666666667 +lon_0=-61.3333333333333 +x_0=86501.46392052 +y_0=65379.0134283 +datum=WGS84 +units=m +no_defs +type=crs",
