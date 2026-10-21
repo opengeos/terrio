@@ -139,16 +139,18 @@ impl SpatialRef {
         if let Some(proj4) = proj4_extension(wkt)
             && let Ok(own) = Def::from_proj(&proj4)
         {
-            // Its EPSG code: declared, when its definition has the PROJ string's conversion (the
-            // extension wins over a code that does not, as over the nodes; EPSG:3857's own WKT
-            // gives its datum as a null grid), else one whose definition converts as the PROJ
-            // string does, on its datum.
-            // A declared code terrio does not know converts as nothing, and is dropped.
-            let same = |code: u32| Def::new(&SpatialRef { epsg: Some(code), ..Default::default() }).is_ok_and(|r| own.same_conversion(&r));
-            let declared = declared_epsg(wkt);
-            let epsg = declared
-                .filter(|code| same(*code))
-                .or_else(|| identify_epsg(wkt).filter(|code| declared != Some(*code) && is_registered_as(&own, *code)));
+            // Its EPSG code, declared or identified, when its definition converts as the PROJ
+            // string does, on its datum: the extension wins over a code that does not, as over
+            // the nodes. A PROJ string without datum shift is on WGS 84 for a code on WGS 84
+            // itself (EPSG:3857's own WKT gives its datum as a null grid). A declared code
+            // terrio does not know converts as nothing, and is dropped.
+            let fits = |code: u32| {
+                Def::new(&SpatialRef { epsg: Some(code), ..Default::default() }).is_ok_and(|r| {
+                    let unshifted = own.ops().is_empty() && own.datum_code().is_none() && r.is_wgs84();
+                    own.same_conversion(&r) && (unshifted || own.same_datum(&r))
+                })
+            };
+            let epsg = declared_epsg(wkt).or_else(|| identify_epsg(wkt)).filter(|code| fits(*code));
             return Self { epsg, wkt: Some(wkt.to_string()), proj4: Some(proj4), esri: None }.with_esri();
         }
         let epsg = if def::split_compound(wkt).is_some() { declared_epsg(wkt) } else { identify_epsg(wkt) };
@@ -1061,6 +1063,9 @@ mod tests {
         assert_eq!(SpatialRef::from_wkt(utm).epsg, Some(32618));
         // EPSG:3857's WKT, whose extension gives the datum as a null grid.
         assert_eq!(SpatialRef::from_wkt(epsg_wkt(3857).unwrap()).epsg, Some(3857));
+        // Not a declared code on another datum than the extension's (ED50, which shifts).
+        let ed50 = utm.replace("+zone=18 +datum=WGS84", "+zone=32 +ellps=intl").replace("-75", "9").replace("32618", "23032");
+        assert_eq!(SpatialRef::from_wkt(&ed50).epsg, None);
     }
 
     #[test]
