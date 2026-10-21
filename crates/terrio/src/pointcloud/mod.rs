@@ -251,7 +251,7 @@ impl PointCloud {
 /// A scale and offset for coordinates reprojected into `dst`, whose minimum x and y are `min`:
 /// 1e-7 for geographic CRSs, otherwise the old scale (within 0.1 mm and 1 cm).
 pub(crate) fn reproject_header(header: &mut LasHeader, dst: &SpatialRef, min: Option<[f64; 2]>) {
-    let s = if dst.is_geographic() { 1e-7 } else { header.scale[0].max(header.scale[1]).clamp(1e-4, 0.01) };
+    let s = if dst.is_angular() { 1e-7 } else { header.scale[0].max(header.scale[1]).clamp(1e-4, 0.01) };
     header.scale[0] = s;
     header.scale[1] = s;
     if let Some(m) = min {

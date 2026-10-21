@@ -10,9 +10,9 @@ use terrio::crs::{SpatialRef, Transformer};
 use wkt2_cases::CASES;
 
 /// CRSs whose PROJ string or EPSG code terrio itself transforms differently from PROJ, whatever
-/// the WKT: Cassini-Soldner (0.4 m), Robinson and sinusoidal (through wbprojection), and NAD83
-/// to WGS 84 for EPSG:2263. Their WKT 2 is still compared with terrio's PROJ string or code.
-const PROJ_DIFFERS: [&str; 4] = ["cass", "robin", "sinu", "epsg_2263"];
+/// the WKT: Cassini-Soldner (0.4 m), sinusoidal (through wbprojection), and NAD83 to WGS 84 for
+/// EPSG:2263. Their WKT 2 is still compared with terrio's PROJ string or code.
+const PROJ_DIFFERS: [&str; 3] = ["cass", "sinu", "epsg_2263"];
 
 /// The coordinates of WGS 84 points in a CRS.
 fn forward(crs: &str, points: &[(f64, f64)]) -> terrio::Result<Vec<(f64, f64)>> {

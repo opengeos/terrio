@@ -269,6 +269,14 @@ fn encode_value(t: DataType, v: f64) -> Option<Vec<u8>> {
     })
 }
 
+/// The definition of a rotated-pole CRS and its CF parameters (`grid_north_pole_latitude`,
+/// `grid_north_pole_longitude`, `north_pole_grid_longitude`).
+fn rotated_pole(s: &crate::crs::SpatialRef) -> Option<(crate::crs::Def, [f64; 3])> {
+    let d = crate::crs::Def::new(s).ok()?;
+    let pole = d.rotated_pole()?;
+    Some((d, pole))
+}
+
 /// The CF grid mapping of a CRS: the variable name (GDAL names it after the mapping, `crs` for
 /// geographic CRSs and those without a CF mapping) and its attributes.
 fn grid_mapping(s: &crate::crs::SpatialRef) -> (String, Vec<(String, Attr)>) {
@@ -276,7 +284,22 @@ fn grid_mapping(s: &crate::crs::SpatialRef) -> (String, Vec<(String, Attr)>) {
     let mut attrs: Vec<(String, Attr)> = Vec::new();
     let d = |k: &str, v: f64| (k.to_string(), Attr::Doubles(vec![v]));
     let mut name = "crs".to_string();
-    if let Ok(crs) = s.to_wbp() {
+    let ellipsoid = |attrs: &mut Vec<(String, Attr)>, a: f64, f: f64| {
+        attrs.push(("long_name".into(), Attr::Text("CRS definition".into())));
+        attrs.push(d("longitude_of_prime_meridian", 0.0));
+        attrs.push(d("semi_major_axis", a));
+        if f > 0.0 {
+            attrs.push(d("inverse_flattening", 1.0 / f));
+        } else {
+            attrs.push(d("semi_minor_axis", a * (1.0 - f)));
+        }
+    };
+    if let Some((def, [lat, lon, o_lon])) = rotated_pole(s) {
+        name = "rotated_pole".into();
+        attrs.push(("grid_mapping_name".into(), Attr::Text("rotated_latitude_longitude".into())));
+        attrs.extend([d("grid_north_pole_latitude", lat), d("grid_north_pole_longitude", lon), d("north_pole_grid_longitude", o_lon)]);
+        ellipsoid(&mut attrs, def.ell.a, 1.0 - (1.0 - def.ell.es).sqrt());
+    } else if let Ok(crs) = s.to_wbp() {
         let p = crs.projection.params();
         let (fe, fnn, lat0, lon0, k) = (p.false_easting, p.false_northing, p.lat0, p.lon0, p.scale);
         let mapping: Option<(&str, Vec<(String, Attr)>)> = match &p.kind {
@@ -364,14 +387,7 @@ fn grid_mapping(s: &crate::crs::SpatialRef) -> (String, Vec<(String, Attr)>) {
             }
         }
         let e = &crs.datum.ellipsoid;
-        attrs.push(("long_name".into(), Attr::Text("CRS definition".into())));
-        attrs.push(d("longitude_of_prime_meridian", 0.0));
-        attrs.push(d("semi_major_axis", e.a));
-        if e.f > 0.0 {
-            attrs.push(d("inverse_flattening", 1.0 / e.f));
-        } else {
-            attrs.push(d("semi_minor_axis", e.b));
-        }
+        ellipsoid(&mut attrs, e.a, e.f);
     } else {
         attrs.push(("long_name".into(), Attr::Text("CRS definition".into())));
     }
@@ -505,7 +521,15 @@ fn raster_vars(r: &Raster, nodata: Option<f64>, version: Version) -> Result<Rast
     };
     let crs = common::spatial_ref(&r.crs);
     let geographic = !crs.is_unknown() && crs.is_geographic();
-    let (xn, yn) = if geographic { ("lon", "lat") } else { ("x", "y") };
+    // A rotated-pole grid's axes are CF's grid longitude and latitude, in degrees.
+    let rotated = !geographic && rotated_pole(&crs).is_some();
+    let (xn, yn) = if geographic {
+        ("lon", "lat")
+    } else if rotated {
+        ("rlon", "rlat")
+    } else {
+        ("x", "y")
+    };
 
     let mut dims: Vec<(String, usize)> = vec![(xn.to_string(), r.cols), (yn.to_string(), r.rows)];
     let multi = r.bands > 1;
@@ -535,6 +559,17 @@ fn raster_vars(r: &Raster, nodata: Option<f64>, version: Version) -> Result<Rast
             }
             (true, _) => {
                 vec![("standard_name".into(), t("longitude")), ("long_name".into(), t("longitude")), ("units".into(), t("degrees_east"))]
+            }
+            (false, a) if rotated => {
+                let (std, long) = if a == "y" { ("grid_latitude", "latitude") } else { ("grid_longitude", "longitude") };
+                let long = format!("{long} in rotated pole grid");
+                let axis = a.to_ascii_uppercase();
+                vec![
+                    ("standard_name".into(), t(std)),
+                    ("long_name".into(), t(&long)),
+                    ("units".into(), t("degrees")),
+                    ("axis".into(), t(&axis)),
+                ]
             }
             (false, a) => {
                 let mut v = vec![

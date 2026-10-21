@@ -779,7 +779,7 @@ pub(crate) fn made_up_header(
             h.offset = o;
         }
         None => {
-            let s = if crs.is_geographic() { 1e-7 } else { 0.001 };
+            let s = if crs.is_angular() { 1e-7 } else { 0.001 };
             h.scale = [s, s, 0.001];
             h.offset = [super::round_offset(b[0], s), super::round_offset(b[1], s), super::round_offset(b[2], 0.001)];
         }
