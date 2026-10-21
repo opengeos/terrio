@@ -344,11 +344,11 @@ pub(crate) fn geographic_on(datum: u32) -> &'static [u32] {
         for (code, l) in &t.crs {
             let f: Vec<&str> = t.text[l.line.0 as usize..l.line.1 as usize].splitn(9, '\t').collect();
             // A deprecated code has its replacement's geographic CRS.
-            let [_, datum, geog, _, _, flags, _, proj, ..] = f[..] else { continue };
+            let [_, datum_field, geog, _, _, flags, _, proj, ..] = f[..] else { continue };
             if geog.parse() == Ok(*code)
                 && !flags.contains('3')
                 && proj.starts_with("+proj=longlat")
-                && let Ok(d) = datum.parse::<u32>()
+                && let Ok(d) = datum_field.parse::<u32>()
             {
                 index.entry(d).or_default().push(*code);
             }
