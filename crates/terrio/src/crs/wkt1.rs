@@ -321,6 +321,16 @@ pub(crate) fn to_proj(root: &Node) -> Option<Converted> {
             push(&mut out, "gamma", gamma.or(azimuth));
             push(&mut out, "k", k.or(Some(1.0)));
         }
+        // With an azimuth and a rectified grid angle of 90°, the Swiss oblique Mercator, as PROJ
+        // reads it (and writes it, from `+proj=somerc`).
+        "hotineobliquemercatorazimuthcenter" | "hotineobliquemercatorvariantb"
+            if azimuth.is_some_and(|a| (a - 90.0).abs() < 1e-9) && gamma.is_some_and(|g| (g - 90.0).abs() < 1e-9) =>
+        {
+            out.push("+proj=somerc".into());
+            push(&mut out, "lat_0", lat_0);
+            push(&mut out, "lon_0", lon_0);
+            push(&mut out, "k_0", k.or(Some(1.0)));
+        }
         "hotineobliquemercatorazimuthcenter" | "obliquemercator" | "hotineobliquemercatorvariantb" => {
             out.push("+proj=omerc".into());
             push(&mut out, "lat_0", lat_0);
@@ -408,6 +418,34 @@ pub(crate) fn to_proj(root: &Node) -> Option<Converted> {
             out.push("+proj=bonne".into());
             push(&mut out, "lat_1", sp1.or(lat_0));
             push(&mut out, "lon_0", lon_0);
+        }
+        // World projections terrio ports from PROJ, as GDAL names them (wbprojection reads them as
+        // others).
+        "gallstereographic" | "flatpolarquartic" | "werenskioldi" => {
+            let name = match method.as_str() {
+                "gallstereographic" => "gall",
+                "flatpolarquartic" => "mbtfpq",
+                _ => "weren",
+            };
+            out.push(format!("+proj={name}"));
+            push(&mut out, "lon_0", lon_0);
+        }
+        "equidistantconic" => {
+            out.push("+proj=eqdc".into());
+            push(&mut out, "lat_0", lat_0);
+            push(&mut out, "lon_0", lon_0);
+            push(&mut out, "lat_1", sp1);
+            push(&mut out, "lat_2", sp2);
+        }
+        "winkeli" | "winkelii" | "winkeltripel" => {
+            let (name, parallel) = match method.as_str() {
+                "winkeli" => ("wink1", "lat_ts"),
+                "winkelii" => ("wink2", "lat_1"),
+                _ => ("wintri", "lat_1"),
+            };
+            out.push(format!("+proj={name}"));
+            push(&mut out, "lon_0", lon_0);
+            push(&mut out, parallel, sp1);
         }
         _ => return None,
     }

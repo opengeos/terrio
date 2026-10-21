@@ -79,7 +79,9 @@ pub(crate) fn to_proj(root: &Node) -> Result<Converted> {
 
     let conv = root.child("CONVERSION").ok_or_else(|| bad("a PROJCRS without its CONVERSION"))?;
     let method = conv.child("METHOD").ok_or_else(|| bad("a CONVERSION without its METHOD"))?;
-    let p = Params::read(conv, geog.ang, to_meter)?;
+    // PROJ's own methods (`METHOD["PROJ hammer"]`), with its parameters by their PROJ names.
+    let generic = proj_method(conv, method, geog.ang, to_meter)?;
+    let p = if generic.is_some() { Params::default() } else { Params::read(conv, geog.ang, to_meter)? };
     let (name, code) = (norm(method.name().unwrap_or("")), method.epsg());
     let is = |names: &[&str], codes: &[u32]| names.contains(&name.as_str()) || code.is_some_and(|c| codes.contains(&c));
 
@@ -167,10 +169,22 @@ pub(crate) fn to_proj(root: &Node) -> Result<Converted> {
         push("lon_0", lon_0());
         push("k", Some(p.get(K_NAT).unwrap_or(1.0)));
         "stere"
-    } else if is(&["lambertazimuthalequalarea"], &[9820]) {
+    } else if is(&["lambertazimuthalequalarea"], &[9820]) || (geog.rf == 0.0 && is(&["lambertazimuthalequalareaspherical"], &[1027])) {
         push("lat_0", lat_0());
         push("lon_0", lon_0());
         "laea"
+    } else if is(&["hotineobliquemercatorvariantb"], &[9815])
+        && p.get(AZIMUTH).is_some_and(|a| (a - 90.0).abs() < 1e-9)
+        && p.get(GAMMA).is_some_and(|g| (g - 90.0).abs() < 1e-9)
+    {
+        // With an azimuth and a rectified grid angle of 90°, the Swiss oblique Mercator, as PROJ
+        // reads it (and writes it, from `+proj=somerc`).
+        fe = p.get(FE_CENTRE).unwrap_or(fe);
+        fn_ = p.get(FN_CENTRE).unwrap_or(fn_);
+        push("lat_0", p.get(LAT_CENTRE).or_else(lat_0));
+        push("lon_0", p.get(LON_CENTRE).or_else(lon_0));
+        push("k_0", Some(p.get(K_CENTRE).or_else(|| p.get(K_NAT)).unwrap_or(1.0)));
+        "somerc"
     } else if is(&["hotineobliquemercatorvarianta"], &[9812]) || is(&["hotineobliquemercatorvariantb"], &[9815]) {
         let variant_b = is(&["hotineobliquemercatorvariantb"], &[9815]);
         if variant_b {
@@ -194,12 +208,12 @@ pub(crate) fn to_proj(root: &Node) -> Result<Converted> {
         push("lat_0", lat_0());
         push("lon_0", lon_0());
         "poly"
-    } else if is(&["equidistantcylindrical"], &[1028]) {
+    } else if is(&["equidistantcylindrical"], &[1028]) || (geog.rf == 0.0 && is(&["equidistantcylindricalspherical"], &[1029])) {
         push("lat_ts", p.get(SP1));
         push("lat_0", lat_0());
         push("lon_0", lon_0());
         "eqc"
-    } else if is(&["lambertcylindricalequalarea"], &[9835]) {
+    } else if is(&["lambertcylindricalequalarea"], &[9835]) || (geog.rf == 0.0 && is(&["lambertcylindricalequalareaspherical"], &[9834])) {
         push("lat_ts", p.get(SP1));
         push("lon_0", lon_0());
         "cea"
@@ -207,6 +221,10 @@ pub(crate) fn to_proj(root: &Node) -> Result<Converted> {
         push("lat_0", lat_0());
         push("lon_0", lon_0());
         "aeqd"
+    } else if is(&["newzealandmapgrid"], &[9811]) {
+        push("lat_0", lat_0());
+        push("lon_0", lon_0());
+        "nzmg"
     } else if is(&["equalearth"], &[1078]) {
         push("lon_0", lon_0());
         "eqearth"
@@ -238,6 +256,34 @@ pub(crate) fn to_proj(root: &Node) -> Result<Converted> {
     } else if let Some(proj) = WORLD.iter().find(|(n, _)| *n == name).map(|(_, p)| *p) {
         push("lon_0", lon_0());
         proj
+    } else if let Some((proj, parallel)) =
+        [("winkeli", "wink1", "lat_ts"), ("winkelii", "wink2", "lat_1"), ("winkeltripel", "wintri", "lat_1")]
+            .iter()
+            .find(|(n, _, _)| *n == name)
+            .map(|(_, p, k)| (*p, *k))
+    {
+        push("lon_0", lon_0());
+        push(parallel, p.get(SP1));
+        proj
+    } else if let Some((proj, params)) = &generic {
+        let mut seen: Vec<&str> = Vec::new();
+        for (k, v) in params {
+            if seen.contains(&k.as_str()) {
+                return Err(bad(&format!("parameter '{k}' given twice in the method 'PROJ {proj}'")));
+            }
+            seen.push(k);
+            match k.as_str() {
+                "x_0" => fe = *v,
+                "y_0" => fn_ = *v,
+                // The figure, datum, units and axes come from the CRS, not from the method.
+                "proj" | "ellps" | "datum" | "a" | "b" | "rf" | "f" | "es" | "e" | "R" | "R_A" | "units" | "to_meter" | "towgs84"
+                | "nadgrids" | "geoidgrids" | "init" | "type" | "pm" | "axis" | "no_defs" | "wktext" | "over" => {
+                    return Err(bad(&format!("parameter '{k}' of the method 'PROJ {proj}'")));
+                }
+                _ => push(k, Some(*v)),
+            }
+        }
+        proj.as_str()
     } else {
         return Err(Error::Crs(format!("unsupported WKT 2 projection method '{}'", method.name().unwrap_or(""))));
     };
@@ -319,9 +365,47 @@ fn derived(root: &Node, conv: &Node) -> Result<Converted> {
     Ok(geog.converted(out.join(" ")))
 }
 
+/// A PROJ projection and its parameters by their PROJ names.
+type ProjMethod = (String, Vec<(String, f64)>);
+
+/// A method PROJ writes as `PROJ name` (a projection without a WKT 2 method of its own), with
+/// its parameters, named as in PROJ strings: angles in degrees and lengths in metres. `None` for
+/// other methods.
+fn proj_method(conv: &Node, method: &Node, ang: f64, to_meter: f64) -> Result<Option<ProjMethod>> {
+    let Some(name) = method.name().and_then(|n| n.strip_prefix("PROJ ")) else { return Ok(None) };
+    if name.is_empty() || !name.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_') {
+        return Ok(None);
+    }
+    let mut params = Vec::new();
+    for n in conv.children("PARAMETER") {
+        let key = n.name().unwrap_or("");
+        if key.is_empty() || !key.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_') {
+            return Err(bad(&format!("parameter '{key}' of the method 'PROJ {name}'")));
+        }
+        let v = n.num(1).ok_or_else(|| bad(&format!("parameter '{key}' without a value")))?;
+        let v = if let Some(u) = n.child("ANGLEUNIT").and_then(|u| u.num(1)) {
+            v * degrees(u)
+        } else if let Some(u) = n.child("LENGTHUNIT").and_then(|u| u.num(1)) {
+            v * u
+        } else if n.child("SCALEUNIT").is_some() {
+            v
+        } else if key.starts_with("lat") || key.starts_with("lon") || matches!(key, "alpha" | "gamma" | "azi" | "theta" | "tilt") {
+            // Without a unit: angles in the CRS's angular unit, lengths in its linear unit, and
+            // the others (scale factors, shape parameters) as they are.
+            v * ang
+        } else if matches!(key, "x_0" | "y_0" | "h") {
+            v * to_meter
+        } else {
+            v
+        };
+        params.push((key.to_string(), v));
+    }
+    Ok(Some((name.to_string(), params)))
+}
+
 /// Pseudocylindrical and other world projections PROJ names without an EPSG method, which take a
 /// central meridian only.
-const WORLD: [(&str, &str); 14] = [
+const WORLD: [(&str, &str); 26] = [
     ("mollweide", "moll"),
     ("robinson", "robin"),
     ("sinusoidal", "sinu"),
@@ -336,6 +420,18 @@ const WORLD: [(&str, &str); 14] = [
     ("naturalearth", "natearth"),
     ("quarticauthalic", "qua_aut"),
     ("goodehomolosine", "igh"),
+    ("aitoff", "aitoff"),
+    ("crasterparabolic", "crast"),
+    ("naturalearthii", "natearth2"),
+    ("patterson", "patterson"),
+    ("times", "times"),
+    ("flatpolarquartic", "mbtfpq"),
+    ("wagneri", "wag1"),
+    ("wagnerii", "wag2"),
+    ("wagneriv", "wag4"),
+    ("wagnerv", "wag5"),
+    ("wagnervi", "wag6"),
+    ("gallstereographic", "gall"),
 ];
 
 /// The axis order of a projected CS as PROJ's `+axis`, when not east then north. As GDAL's
@@ -507,6 +603,7 @@ const PARAMS: [Param; 21] = [
 ];
 
 /// A conversion's parameters, in degrees, metres and unity, and which were used.
+#[derive(Default)]
 struct Params {
     values: Vec<(u32, String, f64)>,
     used: std::cell::RefCell<Vec<u32>>,
