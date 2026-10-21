@@ -67,10 +67,10 @@ pub(crate) fn epsg_wkt(code: u32) -> Option<&'static str> {
 }
 
 /// The ESRI CRSs whose projection terrio computes otherwise than PROJ (by more than a millimetre
-/// in their area of use, as `scripts/compare_esri_with_proj.py` reports): ellipsoidal forms of
-/// projections terrio computes on the sphere (sinusoidal, Miller, Van der Grinten, gnomonic),
-/// Bonne and the world-wide Cassini. They are refused rather than transformed wrongly.
-pub(crate) const ESRI_UNLIKE_PROJ: &[u32] = &[53024, 54003, 54008, 54024, 54028, 54029, 102011, 102034, 102036, 102163];
+/// in their area of use, as `scripts/compare_esri_with_proj.py` reports with PROJ 9.8): World
+/// Cassini, whose area of use reaches far beyond where terrio's Cassini series holds. They are
+/// refused rather than transformed wrongly.
+pub(crate) const ESRI_UNLIKE_PROJ: &[u32] = &[54028];
 
 /// Whether a code taken for an EPSG code is one of PROJ's ESRI authority instead, outside the
 /// EPSG registry (wbprojection holds ESRI's 54008, 54009 and 54030 as EPSG codes).

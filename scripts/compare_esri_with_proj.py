@@ -10,6 +10,9 @@ refuses: the codes whose projection terrio does not compute as PROJ does
 Usage:
     python scripts/compare_esri_with_proj.py
 
+terrio follows PROJ 9.8, whose equidistant cylindrical is ellipsoidal: with an older PROJ, the
+ESRI CRSs in that projection differ.
+
 Needs pyproj, terrio's Python module built from this tree (``maturin develop``) and the
 ``zstd`` command. Set ``TERRIO_GRID_CACHE`` to an empty directory when terrio's download cache
 holds grids PROJ does not find.
@@ -53,8 +56,13 @@ def main():
     details = collections.defaultdict(list)
     for row in rows:
         code, method = int(row[1]), row[9].split()[0]
-        crs = pyproj.CRS.from_authority("ESRI", code)
-        t = pyproj.Transformer.from_crs("EPSG:4326", crs, always_xy=True)
+        try:
+            crs = pyproj.CRS.from_authority("ESRI", code)
+            t = pyproj.Transformer.from_crs("EPSG:4326", crs, always_xy=True)
+        except (pyproj.exceptions.CRSError, pyproj.exceptions.ProjError):
+            # A PROJ other than the one that generated the table may not know the code.
+            stats["(unknown to this PROJ)"]["skipped"] += 1
+            continue
         pts = [(p, t.transform(*p)) for p in points(crs)]
         pts = [(p, q) for p, q in pts if abs(q[0]) < 1e20 and abs(q[1]) < 1e20]
         if not pts:

@@ -41,9 +41,9 @@ fn esri_codes_transform_as_proj() {
 
 #[test]
 fn esri_codes_terrio_cannot_compute_are_refused() {
-    // World Sinusoidal, which terrio computes on the sphere where PROJ uses the ellipsoid, Goode's
+    // World Cassini, whose area of use reaches beyond where terrio's Cassini holds, Goode's
     // homolosine, which terrio does not compute, and a code PROJ does not know.
-    for code in ["ESRI:54008", "ESRI:54052", "ESRI:1"] {
+    for code in ["ESRI:54028", "ESRI:54052", "ESRI:1"] {
         assert!(SpatialRef::parse(code).is_err(), "{code}");
     }
 }
