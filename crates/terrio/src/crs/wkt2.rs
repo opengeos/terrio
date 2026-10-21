@@ -259,8 +259,22 @@ pub(crate) fn to_proj(root: &Node) -> Result<Converted> {
         push(parallel, p.get(SP1));
         proj
     } else if let Some((proj, params)) = &generic {
+        let mut seen: Vec<&str> = Vec::new();
         for (k, v) in params {
-            push(k, Some(*v));
+            if seen.contains(&k.as_str()) {
+                return Err(bad(&format!("parameter '{k}' given twice in the method 'PROJ {proj}'")));
+            }
+            seen.push(k);
+            match k.as_str() {
+                "x_0" => fe = *v,
+                "y_0" => fn_ = *v,
+                // The figure, datum, units and axes come from the CRS, not from the method.
+                "proj" | "ellps" | "datum" | "a" | "b" | "rf" | "f" | "es" | "e" | "R" | "R_A" | "units" | "to_meter" | "towgs84"
+                | "nadgrids" | "geoidgrids" | "init" | "type" | "pm" | "axis" | "no_defs" | "wktext" | "over" => {
+                    return Err(bad(&format!("parameter '{k}' of the method 'PROJ {proj}'")));
+                }
+                _ => push(k, Some(*v)),
+            }
         }
         proj.as_str()
     } else {

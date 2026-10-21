@@ -264,3 +264,21 @@ fn own_wkt_reads_back_as_the_same_crs() {
     }
     assert!(problems.is_empty(), "{} CRSs:\n{}", problems.len(), problems.join("\n"));
 }
+
+#[test]
+fn proj_methods_keep_the_crs_figure_and_units() {
+    // A PROJ method's parameters are its projection's: one naming the figure, datum or units, or
+    // one given twice, is refused rather than overriding the CRS's.
+    let hammer = cases().into_iter().find(|c| c.name == "hammer" && c.earth == "wgs84").unwrap();
+    let (wkt, geog) = (&hammer.encodings["wkt2"], &hammer.encodings["wkt2_geog"]);
+    let usable = |w: &str| {
+        let (crs, geog) = (SpatialRef::parse(w), SpatialRef::parse(geog));
+        matches!(outcome(crs, geog, &hammer.points), Outcome::Matches | Outcome::Differs(_))
+    };
+    assert!(usable(wkt));
+    for extra in [r#"PARAMETER["towgs84",100]"#, r#"PARAMETER["R",6371000]"#, r#"PARAMETER["lon_0",10],PARAMETER["lon_0",20]"#] {
+        let bad = wkt.replace(r#"METHOD["PROJ hammer"]"#, &format!(r#"METHOD["PROJ hammer"],{extra}"#));
+        assert_ne!(&bad, wkt);
+        assert!(!usable(&bad), "{extra} accepted");
+    }
+}
