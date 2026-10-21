@@ -180,10 +180,10 @@ impl Route {
             match (src.geog(), dst.geog()) {
                 (Some(a), Some(b)) => match epsg::pair(a, b) {
                     // PROJ looks for transformations through other datums when its database has
-                    // none between the two for the CRSs' areas, with or without grids
-                    // (NAD83(CSRS) to NAD83 between Arctic CRSs, outside the offshore area of
-                    // their only one).
-                    Some((ops, reverse)) if epsg::pair_all(a, b).iter().any(|o| !o.ballpark && keep(o)) => list(&ops, reverse),
+                    // none it can use between the two for the CRSs' areas (NAD83(CSRS) to NAD83
+                    // between Arctic CRSs, outside the offshore area of their only one, or with
+                    // the grids missing).
+                    Some((ops, reverse)) if ops.iter().any(|o| !o.ballpark && keep(o)) => list(&ops, reverse),
                     _ => chains(a, b, src, dst, aoi.as_ref()),
                 },
                 _ => Kind::Hub,
@@ -344,16 +344,20 @@ fn chains(a: u32, b: u32, src: &Def, dst: &Def, aoi: Option<&[f64; 4]>) -> Kind 
     }
     // PROJ's order: known accuracy first (unknown ones with grids first), then by decreasing
     // area within the area of interest, then by accuracy, those without grids first.
-    let area = |c: &Chain| aoi.map_or(Some(c.rank.bounds), |a| intersection(&c.rank.bounds, a)).map_or(0.0, |b| pseudo_area(&b));
+    // A key per chain, compared in turn: a total order.
+    let key = |c: &Chain| {
+        let (accuracy, grids) = (c.rank.accuracy, c.rank.needs_grids());
+        let area = aoi.map_or(Some(c.rank.bounds), |a| intersection(&c.rank.bounds, a)).map_or(0.0, |b| pseudo_area(&b));
+        let known = accuracy >= 0.0;
+        (!known, !known && !grids, -area, if known { accuracy } else { 0.0 }, grids)
+    };
     out.sort_by(|x, y| {
-        let (ax, ay) = (x.rank.accuracy, y.rank.accuracy);
-        let (gx, gy) = (x.rank.needs_grids(), y.rank.needs_grids());
-        (ax < 0.0)
-            .cmp(&(ay < 0.0))
-            .then_with(|| if ax < 0.0 && ay < 0.0 { gy.cmp(&gx) } else { std::cmp::Ordering::Equal })
-            .then_with(|| area(y).total_cmp(&area(x)))
-            .then_with(|| if ax >= 0.0 && ay >= 0.0 { ax.total_cmp(&ay) } else { std::cmp::Ordering::Equal })
-            .then_with(|| if ax == ay { gx.cmp(&gy) } else { std::cmp::Ordering::Equal })
+        let (kx, ky) = (key(x), key(y));
+        kx.0.cmp(&ky.0)
+            .then(kx.1.cmp(&ky.1))
+            .then(kx.2.total_cmp(&ky.2))
+            .then(kx.3.total_cmp(&ky.3))
+            .then(kx.4.cmp(&ky.4))
     });
     let ballpark = !aoi.is_some_and(|a| out.iter().any(|c| !c.rank.needs_grids() && contains(&c.rank.bounds, a)));
     Kind::Chains { chains: out, ballpark }

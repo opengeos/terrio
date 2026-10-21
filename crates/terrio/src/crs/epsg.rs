@@ -476,14 +476,6 @@ pub(crate) fn pair(from: u32, to: u32) -> Option<(Vec<Arc<Op>>, bool)> {
     Some((usable(&found.0.0, &found.0.1), found.1))
 }
 
-/// All the direct transformations between two geographic CRSs, whatever the grids they need:
-/// those GDAL lists when every grid is available (else those it lists without grids).
-pub(crate) fn pair_all(a: u32, b: u32) -> Vec<Arc<Op>> {
-    let t = table();
-    let Some((ops, grid_ops)) = t.pair(a, b).or_else(|| t.pair(b, a)) else { return Vec::new() };
-    if grid_ops.is_empty() { ops.clone() } else { grid_ops.clone() }
-}
-
 /// An EPSG vertical CRS.
 pub(crate) fn vertical(code: u32) -> Option<&'static Vertical> {
     let t = table();

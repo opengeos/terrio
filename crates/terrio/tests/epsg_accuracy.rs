@@ -16,7 +16,7 @@ fn epsg_transformations_match_gdal() {
     // Regression guards, counting CRSs (pairs of CRSs from CRS to CRS) whose every point is
     // within the distance. With GDAL 3.12.2 and PROJ 9.8.1 (which generated the EPSG table, as
     // CI's reference) and 50 points of each kind per CRS, every point of the 6354 CRSs is within
-    // 1 cm forward and inverse, and 6287 of 6295 pairs are within 1 m (6243 within 1 cm). The
+    // 1 cm forward and inverse, and 6287 of 6295 pairs are within 1 m (6244 within 1 cm). The
     // others are pairs PROJ chains through more than two transformations (NTF (Paris) through
     // WGS 72, GDA94 through the WGS 84 realizations), or through geocentric CRSs at the
     // centimetre, and deprecated CRSs whose own datum PROJ uses (#153).
@@ -25,6 +25,6 @@ fn epsg_transformations_match_gdal() {
     assert!(fwd.points > 300_000, "only {} forward points (an older reference? run scripts/gen_epsg_points.py)", fwd.points);
     assert!(fwd.count(0.01) >= 6354, "forward within 1 cm: {}", fwd.count(0.01));
     assert!(inv.count(0.01) >= 6354, "inverse within 1 cm: {}", inv.count(0.01));
-    assert!(cross.count(0.01) >= 6243, "CRS to CRS within 1 cm: {}", cross.count(0.01));
+    assert!(cross.count(0.01) >= 6244, "CRS to CRS within 1 cm: {}", cross.count(0.01));
     assert!(cross.count(1.0) >= 6287, "CRS to CRS within 1 m: {}", cross.count(1.0));
 }
