@@ -58,13 +58,7 @@ const PROJ_DIFFERS: &[(&str, &str)] = &[(
 
 /// pyproj's WKT that terrio reads as another CRS than PROJ does, or refuses, on both figures:
 /// `(encoding, projection, why)`.
-const WKT_DIFFERS: &[(&str, &str, &str)] = &[
-    ("wkt2", "krovak", "#156: refused, the co-latitude of the cone axis"),
-    ("wkt2", "loxim", "#156: refused, the method"),
-    ("wkt2", "tcea", "#156: refused, the method"),
-    ("wkt2", "tpeqd", "#156: refused, the two points"),
-    ("wkt2", "wag3", "#156: refused, the latitude of true scale"),
-];
+const WKT_DIFFERS: &[(&str, &str, &str)] = &[];
 
 /// terrio's own WKT of a PROJ string that terrio reads back as another CRS, on both figures:
 /// `(projection, why)`. Listed ones that now read back are reported, not failed, as the WKT

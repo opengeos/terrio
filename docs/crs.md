@@ -23,10 +23,8 @@ Everywhere a CRS is expected (`--t-srs`, `--a-srs`, `terrio crs`, the APIs), ter
 Of PROJ's 117 projections, terrio computes 86 as PROJ does (within 1 mm, on a sphere and on WGS 84,
 as PROJ strings with typical parameters and as pyproj's WKT1 and WKT2 of them:
 `crates/terrio/tests/proj_strings.rs`) and refuses the 31 others (`airy`, `bacon`, `igh`, `nsper`,
-`tpers`, `vandg2` and others) rather than computing something else. Known differences: Krovak
-off Bessel's ellipsoid (PROJ's inverse is not the inverse of its forward there), the
-geostationary projection's WKT (#119) and the WKT 2 of five projections, which terrio refuses
-(#156).
+`tpers`, `vandg2` and others) rather than computing something else. The known difference is
+Krovak off Bessel's ellipsoid, where PROJ's inverse is not the inverse of its forward.
 
 Rotated-pole grids (regional climate models: CORDEX, COSMO-CLM) are read as PROJ strings
 (`+proj=ob_tran +o_proj=longlat` with `+o_lat_p`, `+o_lon_p` and `+lon_0`), as the WKT2 derived
