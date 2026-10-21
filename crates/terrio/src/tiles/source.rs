@@ -11,7 +11,7 @@ pub(crate) enum ByteSource {
     /// A local file, and its length.
     File(std::fs::File, u64),
     /// A remote file.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(remote)]
     Http(crate::http::RangeReader),
     /// A remote file whose bytes the caller fetches (see [`crate::sparse`]).
     Sparse(crate::sparse::SparseFile),
@@ -24,7 +24,7 @@ impl ByteSource {
         use crate::vfs::Location;
         let loc = Location::parse(path);
         match &loc {
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(remote)]
             Location::Url(_) | Location::S3 { .. } => {
                 let remote = loc.remote().ok_or_else(|| crate::Error::InvalidArgument(format!("'{path}' is not remote")))?;
                 Ok((ByteSource::Http(crate::http::RangeReader::open(&remote)?), None))
@@ -48,7 +48,7 @@ impl ByteSource {
         match self {
             ByteSource::Memory(b) => b.len() as u64,
             ByteSource::File(_, len) => *len,
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(remote)]
             ByteSource::Http(r) => r.len(),
             ByteSource::Sparse(s) => s.len(),
         }
@@ -56,7 +56,7 @@ impl ByteSource {
 
     /// Whether the bytes come over the network.
     pub(crate) fn is_remote(&self) -> bool {
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(remote)]
         if matches!(self, ByteSource::Http(_)) {
             return true;
         }
@@ -80,7 +80,7 @@ impl ByteSource {
                 f.read_exact(&mut buf)?;
                 Ok(buf)
             }
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(remote)]
             ByteSource::Http(r) => {
                 if offset.checked_add(len).is_none_or(|e| e > r.len()) {
                     return Err(bad());
@@ -101,7 +101,7 @@ impl ByteSource {
 
     /// Fetches byte ranges `(offset, length)` ahead of reading them, merging nearby ones.
     pub(crate) fn prefetch(&mut self, ranges: &[(u64, u64)]) -> Result<()> {
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(remote)]
         if let ByteSource::Http(r) = self {
             r.prefetch(ranges)?;
         }

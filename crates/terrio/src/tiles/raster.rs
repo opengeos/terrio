@@ -52,9 +52,14 @@ pub(crate) fn decode_image(b: &[u8]) -> Result<Image> {
         d.read_image(&mut data).map_err(|e| err(&e))?;
         return Ok(Image { w: w as usize, h: h as usize, channels, data, palette: false });
     }
-    if crate::avif::is_avif(b) {
-        let img = crate::avif::decode(b)?;
-        return Ok(Image { w: img.width, h: img.height, channels: img.channels, data: img.data, palette: false });
+    if crate::tiles::is_avif(b) {
+        #[cfg(feature = "avif")]
+        {
+            let img = crate::avif::decode(b)?;
+            return Ok(Image { w: img.width, h: img.height, channels: img.channels, data: img.data, palette: false });
+        }
+        #[cfg(not(feature = "avif"))]
+        return Err(Error::disabled("avif"));
     }
     Err(err(&"unsupported tile format (PNG, JPEG, WebP and AVIF are supported)"))
 }

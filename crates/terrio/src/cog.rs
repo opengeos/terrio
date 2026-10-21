@@ -128,6 +128,7 @@ impl LazyRaster {
         if let Some(result) = crate::drivers::open_lazy(path) {
             return result;
         }
+        #[cfg(feature = "tiles")]
         if let Some(t) = crate::tiles::raster::open_lazy(path)? {
             return Ok(Self::from_tiles(t));
         }
@@ -142,7 +143,7 @@ impl LazyRaster {
     pub fn open_tiff(path: &str) -> Result<Option<Self>> {
         let loc = Location::parse(path);
         let (mut source, local, file) = match &loc {
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(remote)]
             Location::Url(_) | Location::S3 { .. } => {
                 let remote = loc.remote().ok_or_else(|| Error::InvalidArgument(format!("'{path}' is not remote")))?;
                 (Source::Http(crate::http::RangeReader::open(&remote)?), None, None)
@@ -198,6 +199,8 @@ impl LazyRaster {
 
     /// Opens an archive of image tiles (PMTiles or MBTiles) for reading by window, zoom levels
     /// as overviews.
+    #[cfg(feature = "tiles")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "tiles")))]
     pub fn from_tile_archive(archive: crate::tiles::TileArchive) -> Result<Self> {
         Ok(Self::from_tiles(crate::tiles::raster::TileRaster::new(archive, None)?))
     }
@@ -500,6 +503,7 @@ impl LazyRaster {
     }
 
     /// Wraps an archive of image tiles (PMTiles, MBTiles), its zoom levels as overviews.
+    #[cfg(feature = "tiles")]
     pub(crate) fn from_tiles(t: crate::tiles::raster::TileRaster) -> Self {
         Self::from_source(t.header(), Box::new(t))
     }
@@ -545,7 +549,7 @@ pub(crate) fn cut(r: &wbraster::Raster, w: Window, bands: &[usize]) -> RasterDat
 enum Source {
     File(BufReader<std::fs::File>),
     Memory(std::io::Cursor<Vec<u8>>),
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(remote)]
     Http(crate::http::RangeReader),
     /// A remote file whose bytes the caller fetches (see [`crate::sparse`]).
     Sparse(crate::sparse::SparseFile),
@@ -553,11 +557,11 @@ enum Source {
 
 impl Source {
     /// Fetches byte ranges `(offset, length)` ahead of reading them, when that saves requests.
-    #[cfg_attr(target_arch = "wasm32", allow(unused_variables))]
+    #[cfg_attr(not(remote), allow(unused_variables))]
     fn prefetch(&self, ranges: &[(u64, u64)]) -> Result<()> {
         match self {
             Source::File(_) | Source::Memory(_) => Ok(()),
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(remote)]
             Source::Http(r) => Ok(r.prefetch(ranges)?),
             Source::Sparse(s) => Ok(s.prefetch(ranges)?),
         }
@@ -569,7 +573,7 @@ impl Read for Source {
         match self {
             Source::File(f) => f.read(buf),
             Source::Memory(m) => m.read(buf),
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(remote)]
             Source::Http(r) => r.read(buf),
             Source::Sparse(s) => s.read(buf),
         }
@@ -581,7 +585,7 @@ impl Seek for Source {
         match self {
             Source::File(f) => f.seek(pos),
             Source::Memory(m) => m.seek(pos),
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(remote)]
             Source::Http(r) => r.seek(pos),
             Source::Sparse(s) => s.seek(pos),
         }

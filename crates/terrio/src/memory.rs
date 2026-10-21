@@ -63,8 +63,12 @@ pub fn open_raster_bytes(bytes: Vec<u8>, name: &str) -> Result<RasterDataset> {
 /// other formats are decoded whole.
 pub fn open_raster_lazy_bytes(bytes: Vec<u8>, name: &str) -> Result<LazyRaster> {
     if crate::tiles::archive_kind(name).is_some() {
+        #[cfg(feature = "tiles")]
         return Ok(LazyRaster::from_tiles(crate::tiles::raster::open_lazy_bytes(bytes)?));
+        #[cfg(not(feature = "tiles"))]
+        return Err(Error::disabled("tiles"));
     }
+    #[cfg(feature = "jp2")]
     if crate::drivers::jp2::is_jpeg2000(&bytes) {
         return crate::drivers::jp2::open_lazy_bytes(bytes);
     }
@@ -263,16 +267,31 @@ pub(crate) mod codec {
 
     /// Opens a dataset from bytes with the in-memory codecs.
     pub(crate) fn open(bytes: Vec<u8>, name: &str, options: &VectorOpenOptions) -> Result<Dataset> {
+        // Formats this build leaves out, by their extension.
+        if let Some(feature) = RasterDriver::for_extension(name).and_then(RasterDriver::missing_feature) {
+            return Err(Error::disabled(feature));
+        }
         // Subdatasets named as GDAL names them: `NETCDF:"file.nc":var`, `HDF5:"file.h5"://path`.
+        #[cfg(not(feature = "netcdf-hdf5"))]
+        if bytes.starts_with(b"CDF")
+            || bytes.starts_with(b"\x89HDF\r\n\x1a\n")
+            || ["netcdf:", "hdf5:"].iter().any(|p| name.to_ascii_lowercase().starts_with(p))
+        {
+            return Err(Error::disabled("netcdf-hdf5"));
+        }
+        #[cfg(feature = "netcdf-hdf5")]
         if let Some((file, dataset)) = crate::drivers::hdf5::parse_subdataset(name) {
             return crate::drivers::hdf5::read_bytes(bytes, &file, Some(&dataset)).map(Dataset::Raster);
         }
+        #[cfg(feature = "netcdf-hdf5")]
         if let Some((file, variable)) = crate::drivers::netcdf::parse_subdataset(name) {
             return crate::drivers::netcdf::read_bytes(&bytes, &file, Some(&variable)).map(Dataset::Raster);
         }
+        #[cfg(feature = "netcdf-hdf5")]
         if bytes.starts_with(b"CDF") {
             return crate::drivers::netcdf::read_bytes(&bytes, name, None).map(Dataset::Raster);
         }
+        #[cfg(feature = "netcdf-hdf5")]
         if crate::drivers::hdf5::signature_offset_in(&bytes).is_some() {
             // NetCDF-4 files are HDF5 files with netCDF's extensions.
             let ext = extension(name).unwrap_or_default();
@@ -287,15 +306,23 @@ pub(crate) mod codec {
         }
         let ext = extension(name).unwrap_or_default();
         if bytes.starts_with(b"PMTiles") || ext == "mbtiles" {
+            #[cfg(feature = "tiles")]
             return crate::tiles::open_dataset_bytes(bytes, name, options);
+            #[cfg(not(feature = "tiles"))]
+            return Err(Error::disabled("tiles"));
         }
+        #[cfg(feature = "tiles")]
         if (ext == "mvt" || ext == "gz" || ext == "pbf") && crate::tiles::is_mvt(&bytes) {
             let layers = crate::tiles::vector::read_tile_file(&bytes, name, &options.tiles)?;
             return Ok(Dataset::Vector(crate::dataset::finish_vector(layers, name, VectorDriver::MVT)));
         }
         if bytes.starts_with(b"SQLite format 3\0") {
+            #[cfg(feature = "sqlite")]
             return crate::drivers::gpkg::open_bytes(bytes, name, options);
+            #[cfg(not(feature = "sqlite"))]
+            return Err(Error::disabled("sqlite"));
         }
+        #[cfg(feature = "jp2")]
         if crate::drivers::jp2::is_jpeg2000(&bytes) {
             return crate::drivers::jp2::read_bytes(&bytes).map(Dataset::Raster);
         }
@@ -392,14 +419,21 @@ pub(crate) mod codec {
 
     /// Reads a Zarr store from its files (paths relative to the store's parent, and the root
     /// directory among them), as GDAL reads a store directory.
+    #[cfg(feature = "zarr")]
     pub(crate) fn open_zarr_store(files: Vec<(String, Vec<u8>)>, root: &str) -> Result<RasterDataset> {
         let mount = crate::memfs::Mount::new(files.into_iter().map(|(n, b)| (n.trim_start_matches("./").to_string(), b)));
         let dir = if root.is_empty() { mount.path().to_path_buf() } else { mount.path().join(root) };
         crate::drivers::zarr::read(&dir)
     }
 
+    #[cfg(not(feature = "zarr"))]
+    pub(crate) fn open_zarr_store(_files: Vec<(String, Vec<u8>)>, _root: &str) -> Result<RasterDataset> {
+        Err(Error::disabled("zarr"))
+    }
+
     /// Writes a raster as a Zarr store, returned as a zip archive of its files (in a directory
     /// named `<name>.zarr`).
+    #[cfg(feature = "zarr")]
     fn write_zarr(ds: &RasterDataset, options: &RasterWriteOptions, name: &str) -> Result<Vec<u8>> {
         let mount = crate::memfs::Mount::new(std::iter::empty());
         let dir = mount.path().join(format!("{name}.zarr"));
@@ -426,8 +460,10 @@ pub(crate) mod codec {
 
     /// Writes a raster to bytes with the in-memory codecs.
     /// `table` names the raster in formats that hold several (GeoPackage).
+    #[cfg_attr(not(any(feature = "sqlite", feature = "jp2", feature = "zarr", feature = "tiles")), allow(unused_variables))]
     pub(crate) fn write_raster(ds: &RasterDataset, driver: RasterDriver, options: &RasterWriteOptions, table: &str) -> Result<Vec<u8>> {
         use crate::drivers::gtiff_write::{TiffOptions, encode};
+        driver.ensure_built()?;
         match driver {
             RasterDriver::GTiff | RasterDriver::Cog => {
                 let cog = driver == RasterDriver::Cog;
@@ -447,7 +483,9 @@ pub(crate) mod codec {
                 wbraster::formats::esri_ascii::write_to(&mut out, &ds.raster)?;
                 Ok(out)
             }
+            #[cfg(feature = "sqlite")]
             RasterDriver::GPKG => crate::drivers::gpkg::to_bytes(&ds.raster, ds.nodata(), table, options.compression.as_deref()),
+            #[cfg(feature = "jp2")]
             RasterDriver::JP2 => {
                 let jp2 = crate::drivers::jp2::to_bytes(&ds.raster)?;
                 // The nodata value goes to a `.aux.xml` sidecar, the two files zipped as the file
@@ -461,6 +499,7 @@ pub(crate) mod codec {
                 std::io::Write::write_all(&mut zip, xml.as_bytes())?;
                 Ok(zip.finish()?.into_inner())
             }
+            #[cfg(feature = "netcdf-hdf5")]
             RasterDriver::NetCDF => {
                 let co =
                     |key: &str| options.creation_options.iter().rev().find(|(k, _)| k.eq_ignore_ascii_case(key)).map(|(_, v)| v.as_str());
@@ -473,7 +512,9 @@ pub(crate) mod codec {
                 };
                 crate::drivers::netcdf_write::to_bytes(&ds.raster, ds.nodata(), &o)
             }
+            #[cfg(feature = "zarr")]
             RasterDriver::Zarr => write_zarr(ds, options, table),
+            #[cfg(feature = "tiles")]
             RasterDriver::MBTiles | RasterDriver::PMTiles => {
                 let kind =
                     if driver == RasterDriver::MBTiles { crate::tiles::ArchiveKind::MBTiles } else { crate::tiles::ArchiveKind::PMTiles };
@@ -488,6 +529,8 @@ pub(crate) mod codec {
 
     /// Writes layers to bytes with the in-memory codecs.
     pub(crate) fn write_vector(layers: &[Layer], driver: VectorDriver, options: &VectorWriteOptions) -> Result<Vec<u8>> {
+        driver.ensure_built()?;
+        #[cfg(feature = "tiles")]
         if matches!(driver, VectorDriver::MBTiles | VectorDriver::PMTiles) {
             let kind =
                 if driver == VectorDriver::MBTiles { crate::tiles::ArchiveKind::MBTiles } else { crate::tiles::ArchiveKind::PMTiles };

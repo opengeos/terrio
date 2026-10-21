@@ -19,6 +19,8 @@ pub enum Info {
     /// A vector summary.
     Vector(VectorInfo),
     /// A point cloud summary.
+    #[cfg(feature = "pointcloud")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "pointcloud")))]
     #[serde(rename = "pointcloud")]
     PointCloud(Box<crate::pointcloud::info::PointCloudInfo>),
 }
@@ -384,6 +386,7 @@ pub fn info_path(path: &str, options: &InfoOptions) -> crate::Result<Info> {
     if let Some(r) = crate::drivers::open_lazy(path) {
         return Ok(Info::Raster(Box::new(lazy_raster_info(&mut r?, options)?)));
     }
+    #[cfg(feature = "pointcloud")]
     if crate::pointcloud::is_point_cloud_path(path) {
         let mut r = crate::pointcloud::open_points(path)?;
         return Ok(Info::PointCloud(Box::new(crate::pointcloud::info::point_cloud_info(&mut r, options.statistics)?)));
@@ -394,6 +397,7 @@ pub fn info_path(path: &str, options: &InfoOptions) -> crate::Result<Info> {
     }
     // Tile archives (local or remote) are read in place: rasters by their headers only.
     let loc = crate::vfs::Location::parse(path);
+    #[cfg(feature = "tiles")]
     if !matches!(loc, crate::vfs::Location::Zip { .. }) && crate::tiles::archive_kind(&loc.file_name()).is_some() {
         let archive = crate::tiles::TileArchive::open(path)?;
         if archive.is_vector() {
@@ -407,17 +411,20 @@ pub fn info_path(path: &str, options: &InfoOptions) -> crate::Result<Info> {
     {
         return Ok(Info::Raster(Box::new(lazy_raster_info_at(&mut r, options, Some(path))?)));
     }
+    #[cfg(feature = "sqlite")]
     if let Some(v) = gpkg_vector_info(path)? {
         return Ok(Info::Vector(v));
     }
     if let Some(v) = osm_vector_info(path)? {
         return Ok(Info::Vector(v));
     }
+    #[cfg_attr(not(feature = "sqlite"), allow(unused_mut))]
     let mut summary = match crate::open(path)? {
         Dataset::Raster(r) => Info::Raster(Box::new(raster_info_at(&r, options, Some(path), None))),
         Dataset::Vector(v) => Info::Vector(vector_info(&v)),
     };
     // A GeoPackage's raster tables: all of them besides vector layers, or besides the first.
+    #[cfg(feature = "sqlite")]
     if crate::formats::extension(path).as_deref() == Some("gpkg")
         && let Ok(local) = crate::vfs::resolve(path)
     {
@@ -428,7 +435,9 @@ pub fn info_path(path: &str, options: &InfoOptions) -> crate::Result<Info> {
         match &mut summary {
             Info::Vector(v) => v.subdatasets = subdatasets,
             Info::Raster(r) if subdatasets.len() > 1 => r.subdatasets = subdatasets,
-            Info::Raster(_) | Info::PointCloud(_) => {}
+            #[cfg(feature = "pointcloud")]
+            Info::PointCloud(_) => {}
+            Info::Raster(_) => {}
         }
     }
     Ok(summary)
@@ -552,6 +561,7 @@ fn layer_info(l: &wbvector::Layer, feature_count: usize, geometry_type: String, 
 
 /// Summarizes the vector layers of a local GeoPackage without reading their attributes. `None`
 /// when it is not a local GeoPackage file with vector layers.
+#[cfg(feature = "sqlite")]
 fn gpkg_vector_info(path: &str) -> crate::Result<Option<VectorInfo>> {
     if crate::formats::extension(path).as_deref() != Some("gpkg")
         || !matches!(crate::vfs::Location::parse(path), crate::vfs::Location::Local(_))
@@ -574,7 +584,7 @@ fn gpkg_vector_info(path: &str) -> crate::Result<Option<VectorInfo>> {
 
 /// Summarizes the layers of a local OpenStreetMap PBF file sorted by type then id a block at a
 /// time, as [`vector_info`] summarizes them read whole. `None` for other files.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "osm", not(target_arch = "wasm32")))]
 fn osm_vector_info(path: &str) -> crate::Result<Option<VectorInfo>> {
     use crate::drivers::vector::osm;
     if crate::formats::extension(path).as_deref() != Some("pbf")
@@ -628,7 +638,7 @@ fn osm_vector_info(path: &str) -> crate::Result<Option<VectorInfo>> {
     Ok(Some(VectorInfo { driver: crate::formats::VectorDriver::OSM.name().to_string(), layers, subdatasets: Vec::new() }))
 }
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(any(not(feature = "osm"), target_arch = "wasm32"))]
 fn osm_vector_info(_path: &str) -> crate::Result<Option<VectorInfo>> {
     Ok(None)
 }
@@ -691,6 +701,7 @@ impl Info {
                     }
                 }
             }
+            #[cfg(feature = "pointcloud")]
             Info::PointCloud(p) => s.push_str(&p.to_text()),
             Info::Vector(v) => {
                 let _ = writeln!(s, "Driver: {}", v.driver);

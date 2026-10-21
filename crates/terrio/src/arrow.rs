@@ -30,6 +30,7 @@
 //! ```
 
 use crate::crs::SpatialRef;
+use crate::drivers::vector::datetime;
 use crate::drivers::vector::geoparquet as gp;
 use crate::drivers::vector::profile::LayerProfile;
 use crate::{Error, Result};
@@ -258,9 +259,12 @@ impl Kind {
                 }
                 Arc::new(b.finish())
             }
-            Kind::Date32 => Arc::new(values.map(|v| v.and_then(FieldValue::as_str).and_then(gp::parse_date)).collect::<Date32Array>()),
+            Kind::Date32 => {
+                Arc::new(values.map(|v| v.and_then(FieldValue::as_str).and_then(datetime::parse_date)).collect::<Date32Array>())
+            }
             Kind::Timestamp { utc } => {
-                let a: TimestampMillisecondArray = values.map(|v| v.and_then(FieldValue::as_str).and_then(gp::parse_datetime)).collect();
+                let a: TimestampMillisecondArray =
+                    values.map(|v| v.and_then(FieldValue::as_str).and_then(datetime::parse_datetime)).collect();
                 Arc::new(if utc { a.with_timezone("UTC") } else { a })
             }
             Kind::Utf8 | Kind::Json => {
@@ -291,12 +295,6 @@ fn as_integer(v: &FieldValue) -> Option<i64> {
         FieldValue::Text(s) => s.trim().parse().ok(),
         _ => None,
     }
-}
-
-/// Whether a date-time string ends with a UTC offset (`Z`, `+hh:mm`, `-hhmm`).
-pub(crate) fn has_offset(s: &str) -> bool {
-    let time = s.get(10..).unwrap_or_default();
-    time.ends_with('Z') || time.get(1..).is_some_and(|t| t.contains('+') || t.rfind('-').is_some_and(|i| i >= 6))
 }
 
 fn column_kind(profile: &LayerProfile, i: usize, t: FieldType) -> Kind {
@@ -374,27 +372,6 @@ fn native_type(layer: &Layer, profile: &LayerProfile) -> Result<Native> {
             layer.name
         ))),
         None => Err(Error::Unsupported(format!("layer '{}' has no geometry type for a native GeoArrow column: use WKB", layer.name))),
-    }
-}
-
-/// Whether some coordinate of a geometry has a Z value, and whether some has an M value.
-pub(crate) fn geometry_dims(g: &Geometry) -> (bool, bool) {
-    let (mut z, mut m) = (false, false);
-    visit_coords(g, &mut |c| {
-        z |= c.z.is_some();
-        m |= c.m.is_some();
-    });
-    (z, m)
-}
-
-fn visit_coords(g: &Geometry, f: &mut dyn FnMut(&Coord)) {
-    match g {
-        Geometry::Point(c) => f(c),
-        Geometry::LineString(cs) | Geometry::MultiPoint(cs) => cs.iter().for_each(f),
-        Geometry::Polygon { exterior, interiors } => exterior.0.iter().chain(interiors.iter().flat_map(|r| r.0.iter())).for_each(f),
-        Geometry::MultiLineString(ls) => ls.iter().flatten().for_each(f),
-        Geometry::MultiPolygon(ps) => ps.iter().flat_map(|(e, h)| e.0.iter().chain(h.iter().flat_map(|r| r.0.iter()))).for_each(f),
-        Geometry::GeometryCollection(gs) => gs.iter().for_each(|g| visit_coords(g, f)),
     }
 }
 

@@ -10,18 +10,6 @@ fn bad(msg: impl std::fmt::Display) -> Error {
     Error::InvalidData(format!("AVIF: {msg}"))
 }
 
-/// Whether bytes start like an AVIF file: an `ftyp` box naming the `avif` brand.
-pub(crate) fn is_avif(b: &[u8]) -> bool {
-    if b.len() < 16 || &b[4..8] != b"ftyp" {
-        return false;
-    }
-    let size = (u32::from_be_bytes([b[0], b[1], b[2], b[3]]) as usize).min(b.len());
-    // The major brand, then the compatible brands after the minor version.
-    std::iter::once(&b[8..12])
-        .chain(b.get(16..size).unwrap_or_default().as_chunks::<4>().0.iter().map(|c| &c[..]))
-        .any(|brand| brand == b"avif" || brand == b"avis")
-}
-
 /// A decoded image: width, height, channels (1 gray, 2 gray and alpha, 3 RGB, 4 RGBA) and 8-bit
 /// samples, interleaved.
 pub(crate) struct Image {
@@ -467,6 +455,7 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Image> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tiles::is_avif;
 
     /// 32 x 24 images written by GDAL's AVIF driver (libavif with aom), as hex.
     const RGBA420: &str = concat!(
