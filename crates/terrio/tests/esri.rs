@@ -62,6 +62,8 @@ fn esri_crss_are_identified_and_reported_as_esri() {
     assert_eq!(SpatialRef::from_wkt(&web.to_wkt().unwrap()).authority(), Some(("ESRI", 102100)));
     // wbprojection's pseudo-EPSG code for Mollweide is ESRI's.
     assert_eq!(SpatialRef::parse("EPSG:54009").unwrap().authority(), Some(("ESRI", 54009)));
+    // Other ESRI codes are not EPSG codes, as in PROJ.
+    assert!(SpatialRef::parse("EPSG:102003").is_err());
 }
 
 #[test]

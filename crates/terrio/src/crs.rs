@@ -96,16 +96,21 @@ pub struct SpatialRef {
 
 impl SpatialRef {
     /// A CRS from an EPSG code. Fails when the code is not in the EPSG registry terrio carries.
-    /// A code of PROJ's ESRI authority (which does not overlap EPSG's) gives that ESRI CRS, as
-    /// wbprojection takes ESRI's 54008, 54009 and 54030 for EPSG codes.
+    /// The ESRI codes wbprojection holds as EPSG codes (54008, 54009 and 54030) give those ESRI
+    /// CRSs; other ESRI codes are not EPSG codes, as in PROJ.
     pub fn from_epsg(code: u32) -> Result<Self> {
         let wkt = match epsg::get(code) {
             Some(e) => e.wkt.clone(),
             None => match (epsg::compound(code), epsg::vertical(code)) {
                 (Some(c), _) => c.wkt.clone(),
                 (None, Some(v)) => v.wkt.clone(),
-                _ if epsg::esri(code).is_some() => return Self::from_esri(code),
-                _ => wbp::to_ogc_wkt(code).map_err(|_| Error::Crs(format!("unknown EPSG code {code}")))?,
+                _ => {
+                    let w = wbp::to_ogc_wkt(code).map_err(|_| Error::Crs(format!("unknown EPSG code {code}")))?;
+                    if epsg::esri(code).is_some() {
+                        return Self::from_esri(code);
+                    }
+                    w
+                }
             },
         };
         Ok(Self { epsg: Some(code), wkt: Some(wkt), ..Default::default() })
