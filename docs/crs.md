@@ -12,7 +12,7 @@ Everywhere a CRS is expected (`--t-srs`, `--a-srs`, `terrio crs`, the APIs), ter
 - `OGC:CRS84` and `WGS84`;
 - ESRI codes, the geographic and projected CRSs of PROJ's ESRI authority: `ESRI:54009` (World
   Mollweide), `esri:102003`, `urn:ogc:def:crs:ESRI::102003`. A few whose projection terrio does
-  not compute as PROJ does (Robinson, Bonne, the ellipsoidal sinusoidal and others) are refused;
+  not compute as PROJ does (Bonne, the ellipsoidal sinusoidal and others) are refused;
 - WKT1 and WKT2 (2015 and 2019) definitions, including ESRI `.prj` WKT and WKT2 `BOUNDCRS`s
   (a CRS with its transformation to WGS 84, as `+towgs84`); an unknown WKT2 projection method
   or parameter is an error rather than ignored;

@@ -69,12 +69,8 @@ pub(crate) fn epsg_wkt(code: u32) -> Option<&'static str> {
 /// The ESRI CRSs whose projection terrio computes otherwise than PROJ (by more than a millimetre
 /// in their area of use, as `scripts/compare_esri_with_proj.py` reports): ellipsoidal forms of
 /// projections terrio computes on the sphere (sinusoidal, Miller, Van der Grinten, gnomonic),
-/// Bonne, Gall stereographic, Robinson, the Winkel projections and the world-wide Cassini. They
-/// are refused rather than transformed wrongly.
-pub(crate) const ESRI_UNLIKE_PROJ: &[u32] = &[
-    53016, 53018, 53019, 53024, 53030, 53042, 54003, 54008, 54016, 54018, 54019, 54024, 54028, 54029, 54030, 54042, 102011, 102034, 102036,
-    102163,
-];
+/// Bonne and the world-wide Cassini. They are refused rather than transformed wrongly.
+pub(crate) const ESRI_UNLIKE_PROJ: &[u32] = &[53024, 54003, 54008, 54024, 54028, 54029, 102011, 102034, 102036, 102163];
 
 /// Whether a code taken for an EPSG code is one of PROJ's ESRI authority instead, outside the
 /// EPSG registry (wbprojection holds ESRI's 54008, 54009 and 54030 as EPSG codes).
@@ -607,14 +603,15 @@ fn identify_esri(wkt: &str) -> Option<u32> {
     if candidates.is_empty() {
         return None;
     }
-    // The WKT's conversion, through wbprojection for projections terrio's WKT reader does not map.
-    let own = Def::wkt_conversion(wkt).or_else(|| Def::new(&SpatialRef { wkt: Some(wkt.to_string()), ..Default::default() }).ok());
+    // The WKT's conversion, through wbprojection for projections terrio's WKT reader does not map;
+    // a name alone does not identify a CRS.
+    let own = Def::wkt_conversion(wkt).or_else(|| Def::new(&SpatialRef { wkt: Some(wkt.to_string()), ..Default::default() }).ok())?;
     let a = semi_major_axis(wkt);
     candidates.into_iter().find(|code| {
         let Some(e) = epsg::esri(*code) else { return false };
         let Ok(registered) = Def::from_proj(&e.proj) else { return false };
         let same_ellipsoid = a.is_none_or(|a| (a - registered.ell.a).abs() < 1e-3);
-        same_ellipsoid && own.as_ref().is_none_or(|own| own.same_conversion(&registered))
+        same_ellipsoid && own.same_conversion(&registered)
     })
 }
 

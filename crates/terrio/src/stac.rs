@@ -396,10 +396,8 @@ fn group_assets(items: &[(Value, String)], f: &Filters) -> Groups {
             } else if !get("proj:epsg").is_null() {
                 // Older items give ESRI codes (54009) there too.
                 let code = get("proj:epsg");
-                code.as_u64()
-                    .and_then(|c| SpatialRef::from_epsg(c as u32).ok())
-                    .and_then(|s| s.authority_code())
-                    .unwrap_or_else(|| format!("EPSG:{code}"))
+                let esri = code.as_u64().and_then(|c| u32::try_from(c).ok()).is_some_and(crate::crs::is_esri_code);
+                format!("{}:{code}", if esri { "ESRI" } else { "EPSG" })
             } else if let Some(w) = get("proj:wkt2").as_str() {
                 w.to_string()
             } else if get("proj:projjson").is_object() {
