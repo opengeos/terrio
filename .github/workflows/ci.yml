@@ -103,12 +103,15 @@ jobs:
         working-directory: python
         run: |
           pipx run maturin sdist --out dist
-          tar tzf dist/*.tar.gz | grep -q '^[^/]*/python/LICENSE$'
+          tar tzf dist/*.tar.gz > sdist.list
+          grep -qx '[^/]*/python/LICENSE' sdist.list
       - name: The crates carry LICENSE and NOTICE
         run: |
-          cargo package --list -p terrio | grep -qx NOTICE
-          cargo package --list -p terrio | grep -qx LICENSE
-          cargo package --list -p terrio-cli | grep -qx LICENSE
+          cargo package --list -p terrio > terrio.list
+          cargo package --list -p terrio-cli > terrio-cli.list
+          grep -qx NOTICE terrio.list
+          grep -qx LICENSE terrio.list
+          grep -qx LICENSE terrio-cli.list
 
   wasm:
     runs-on: ubuntu-latest
