@@ -167,8 +167,8 @@ def write_files() -> dict[str, list[str]]:
 def main() -> None:
     """Writes the files and `expected.json`."""
     OUT.mkdir(parents=True, exist_ok=True)
-    for f in OUT.glob("*"):
-        f.unlink()
+    for f in [*OUT.glob("*.nc"), OUT / "expected.json"]:
+        f.unlink(missing_ok=True)
     expected = {}
     for file, names in write_files().items():
         path = str(OUT / file)
