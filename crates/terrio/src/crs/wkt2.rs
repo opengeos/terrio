@@ -233,7 +233,7 @@ pub(crate) fn to_proj(root: &Node) -> Result<Converted> {
         push("lon_0", lon_0());
         // PROJ refuses a geostationary CRS without a height.
         push("h", Some(p.get(SAT_HEIGHT).ok_or_else(|| bad("Geostationary Satellite without its Satellite Height"))?));
-        sweep = Some(if name.ends_with("sweepx") { "x" } else { "y" });
+        sweep = Some(if name == "geostationarysatellitesweepx" { "x" } else { "y" });
         "geos"
     } else if let Some(proj) = WORLD.iter().find(|(n, _)| *n == name).map(|(_, p)| *p) {
         push("lon_0", lon_0());
@@ -498,7 +498,7 @@ const FN_FALSE: Param = (&["northingatfalseorigin"], 8827, Kind::Length);
 const LAT_TS: Param = (&["latitudeofstandardparallel"], 8832, Kind::Angle);
 const LON_ORIGIN: Param = (&["longitudeoforigin"], 8833, Kind::Angle);
 
-/// PROJ's satellite height, which EPSG has no code for.
+/// PROJ's satellite height. EPSG has no code for it: `u32::MAX` matches no `ID`.
 const SAT_HEIGHT: Param = (&["satelliteheight"], u32::MAX, Kind::Length);
 
 const PARAMS: [Param; 21] = [

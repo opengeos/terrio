@@ -139,8 +139,9 @@ impl SpatialRef {
         if let Some(proj4) = proj4_extension(wkt)
             && let Ok(own) = Def::from_proj(&proj4)
         {
-            // Its EPSG code: declared, or one whose definition converts as the PROJ string does.
-            let epsg = declared_epsg(wkt).or_else(|| identify_epsg(wkt).filter(|code| is_registered_as(&own, *code)));
+            // Its EPSG code: declared or identified, when its definition converts as the PROJ
+            // string does (the extension wins over a code that does not, as over the nodes).
+            let epsg = declared_epsg(wkt).or_else(|| identify_epsg(wkt)).filter(|code| is_registered_as(&own, *code));
             return Self { epsg, wkt: Some(wkt.to_string()), proj4: Some(proj4), esri: None }.with_esri();
         }
         let epsg = if def::split_compound(wkt).is_some() { declared_epsg(wkt) } else { identify_epsg(wkt) };
@@ -1043,6 +1044,14 @@ mod tests {
         for d in [Def::new(&SpatialRef::from_wkt(wkt)).unwrap(), Def::new(&bare).unwrap(), Def::wkt_conversion(wkt).unwrap()] {
             assert!(d.same_conversion(&own));
         }
+        // Over a declared code it does not convert as (UTM zone 18N's central meridian is -75).
+        let declared = format!("{},AUTHORITY[\"EPSG\",\"32618\"]]", &wkt[..wkt.len() - 1]);
+        let s = SpatialRef::from_wkt(&declared);
+        assert_eq!(s.epsg, None);
+        assert!(Def::new(&s).unwrap().same_conversion(&own));
+        // A declared code it converts as is kept.
+        let utm = r#"PROJCS["WGS 84 / UTM zone 18N",GEOGCS["WGS 84",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563]],PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433]],PROJECTION["Transverse_Mercator"],PARAMETER["central_meridian",-75],UNIT["metre",1],EXTENSION["PROJ4","+proj=utm +zone=18 +datum=WGS84 +units=m +no_defs"],AUTHORITY["EPSG","32618"]]"#;
+        assert_eq!(SpatialRef::from_wkt(utm).epsg, Some(32618));
     }
 
     #[test]
