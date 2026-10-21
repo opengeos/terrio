@@ -26,6 +26,11 @@ impl Params {
         self.items.iter().any(|(k, _)| k == key)
     }
 
+    /// The parameters' names, in order.
+    pub fn keys(&self) -> impl Iterator<Item = &str> {
+        self.items.iter().map(|(k, _)| k.as_str())
+    }
+
     /// The parameter's value.
     pub fn str(&self, key: &str) -> Option<&str> {
         self.items.iter().find(|(k, _)| k == key).and_then(|(_, v)| v.as_deref())

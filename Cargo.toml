@@ -22,6 +22,8 @@ terrio-cli = { path = "crates/terrio-cli" }
 wbraster = "0.2.1"
 wbvector = { version = "0.1.6", features = ["geoparquet", "kmz", "osmpbf"] }
 wbprojection = "0.3.3"
+# Karney's geodesics, for the ellipsoidal gnomonic projection (pure Rust).
+geographiclib-rs = { version = "0.2.7", default-features = false }
 
 flatgeobuf = { version = "6", default-features = false }
 # The version flatgeobuf's generated code is built with.

@@ -689,7 +689,7 @@ impl PointWriter {
 pub fn from_dimensions(dimensions: Vec<super::Dimension>, crs: SpatialRef) -> PointCloud {
     let mut cloud = PointCloud::new(dimensions, crs);
     cloud.header.point_format = format_for(&cloud, 6, false);
-    let scale = if cloud.crs.is_geographic() { 1e-7 } else { 0.001 };
+    let scale = if cloud.crs.is_angular() { 1e-7 } else { 0.001 };
     cloud.header.scale = [scale, scale, 0.001];
     if let Some(b) = cloud.bounds() {
         cloud.header.offset = [super::round_offset(b[0], scale), super::round_offset(b[1], scale), super::round_offset(b[2], 0.001)];

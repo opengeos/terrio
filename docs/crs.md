@@ -17,6 +17,13 @@ Everywhere a CRS is expected (`--t-srs`, `--a-srs`, `terrio crs`, the APIs), ter
   datum shift and geoid grids;
 - the path of a file holding one of these.
 
+Rotated-pole grids (regional climate models: CORDEX, COSMO-CLM) are read as PROJ strings
+(`+proj=ob_tran +o_proj=longlat` with `+o_lat_p`, `+o_lon_p` and `+lon_0`), as the WKT2 derived
+geographic CRSs PROJ and GDAL write (the netCDF CF, GRIB and PROJ `ob_tran` pole rotations) and as
+CF `rotated_latitude_longitude` grid mappings. Their coordinates are in degrees, but they are not
+geographic CRSs: `is_geographic()` is false, and `is_rotated_pole()` is true. Other `ob_tran`
+forms, and other WKT2 deriving conversions, are errors.
+
 Coordinates are always in GIS order: x (easting, longitude) first, then y (northing, latitude),
 whatever the axis order the authority defines.
 

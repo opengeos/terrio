@@ -23,7 +23,10 @@ formats terrio supports, and they made a C-free geospatial library in Rust a rea
 terrio measures itself against. Its commands, options and outputs follow GDAL's and PDAL's, and its
 tests compare its results with theirs, pixel for pixel and point for point.
 
-- The map projections in `crates/terrio/src/crs/` are ported from PROJ (MIT licence).
+- The map projections in `crates/terrio/src/crs/` are ported from PROJ (MIT licence). The
+  ellipsoidal gnomonic, as PROJ's, uses Charles Karney's geodesic algorithms, from
+  [`geographiclib-rs`](https://crates.io/crates/geographiclib-rs) (MIT licence), a port of
+  [GeographicLib](https://geographiclib.sourceforge.io).
 - The EPSG table, with the coordinate operations GDAL uses for each CRS, is generated with GDAL and
   PROJ by `scripts/gen_epsg_table.py`.
 - The point cloud filters follow PDAL's (`filters.csf`, `filters.pmf`, `filters.elm`,

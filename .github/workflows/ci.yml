@@ -48,7 +48,7 @@ jobs:
         with:
           environment-name: gdal-backend
           # The GDAL the real-data job compares with, and the drivers the tests use.
-          create-args: libgdal-core=3.12.2 proj=9.7.1 libgdal-hdf4 libgdal-hdf5 libgdal-netcdf libgdal-kea
+          create-args: libgdal-core=3.12.2 proj=9.8.1 libgdal-hdf4 libgdal-hdf5 libgdal-netcdf libgdal-kea
           cache-environment: true
       - name: Point the build at GDAL
         run: |
@@ -179,22 +179,24 @@ jobs:
       - uses: mamba-org/setup-micromamba@v3
         with:
           environment-name: gdal
-          # The reference: the EPSG table and test points come from GDAL 3.12.2 and PROJ 9.7.1, and
-          # newer EPSG databases change some transformations.
-          create-args: gdal=3.12.2 libgdal-core=3.12.2 proj=9.7.1 libgdal-arrow-parquet libgdal-jp2openjpeg libgdal-netcdf libgdal-hdf5 numpy pip pytest maturin pyproj pdal laspy lazrs-python pyarrow geopandas shapely rasterio
+          # The reference: the EPSG table and test points come from GDAL 3.12.2 and PROJ 9.8.1, and
+          # newer EPSG databases change some transformations. rasterio comes from pip (with its
+          # bundled GDAL), as conda-forge has none for GDAL 3.12.2 with PROJ 9.8.
+          create-args: gdal=3.12.2 libgdal-core=3.12.2 proj=9.8.1 libgdal-arrow-parquet libgdal-jp2openjpeg libgdal-netcdf libgdal-hdf5 numpy pip pytest maturin pyproj pdal laspy lazrs-python pyarrow geopandas shapely
           cache-environment: true
       - uses: actions/cache@v6
         with:
           path: terrio-data
           # Holds the datum shift and geoid grids of scripts/proj_grids.txt too (230 MB).
-          key: terrio-data-gdal3.12.2-${{ hashFiles('scripts/fetch_test_data.sh', 'scripts/gen_epsg_points.py', 'scripts/proj_grids.txt') }}
+          key: terrio-data-gdal3.12.2-proj9.8.1-${{ hashFiles('scripts/fetch_test_data.sh', 'scripts/gen_epsg_points.py', 'scripts/proj_grids.txt') }}
       - name: Fetch test data
         shell: micromamba-shell {0}
         run: scripts/fetch_test_data.sh terrio-data
-      - name: Install xarray, dask, rioxarray, zarr and scipy
-        # With pip, on top of the cached environment: terrio.xarray is compared with rioxarray.
+      - name: Install rasterio, xarray, dask, rioxarray, zarr and scipy
+        # With pip, on top of the cached environment: terrio.rio is compared with rasterio, and
+        # terrio.xarray with rioxarray.
         shell: micromamba-shell {0}
-        run: python -m pip install xarray "dask[array]" rioxarray zarr scipy
+        run: python -m pip install rasterio xarray "dask[array]" rioxarray zarr scipy
       - name: Real-data tests
         env:
           TERRIO_TEST_DATA: ${{ github.workspace }}/terrio-data
@@ -226,13 +228,13 @@ jobs:
         with:
           environment-name: gdal
           # As in the real-data job: the two share the cached environment.
-          create-args: gdal=3.12.2 libgdal-core=3.12.2 proj=9.7.1 libgdal-arrow-parquet libgdal-jp2openjpeg libgdal-netcdf libgdal-hdf5 numpy pip pytest maturin pyproj pdal laspy lazrs-python pyarrow geopandas shapely rasterio
+          create-args: gdal=3.12.2 libgdal-core=3.12.2 proj=9.8.1 libgdal-arrow-parquet libgdal-jp2openjpeg libgdal-netcdf libgdal-hdf5 numpy pip pytest maturin pyproj pdal laspy lazrs-python pyarrow geopandas shapely
           cache-environment: true
       # Restores the real-data job's data; only that job saves it.
       - uses: actions/cache/restore@v6
         with:
           path: terrio-data
-          key: terrio-data-gdal3.12.2-${{ hashFiles('scripts/fetch_test_data.sh', 'scripts/gen_epsg_points.py', 'scripts/proj_grids.txt') }}
+          key: terrio-data-gdal3.12.2-proj9.8.1-${{ hashFiles('scripts/fetch_test_data.sh', 'scripts/gen_epsg_points.py', 'scripts/proj_grids.txt') }}
       - name: Fetch test data
         shell: micromamba-shell {0}
         run: scripts/fetch_test_data.sh terrio-data
