@@ -321,10 +321,10 @@ pub(crate) fn to_proj(root: &Node) -> Option<Converted> {
             push(&mut out, "gamma", gamma.or(azimuth));
             push(&mut out, "k", k.or(Some(1.0)));
         }
-        // With an azimuth and a rectified grid angle of 90°, the Swiss oblique Mercator, as PROJ
-        // reads it (and writes it, from `+proj=somerc`).
+        // With an azimuth (and a rectified grid angle, ESRI's being the azimuth) of 90°, the Swiss
+        // oblique Mercator, as PROJ reads it (and writes it, from `+proj=somerc`).
         "hotineobliquemercatorazimuthcenter" | "hotineobliquemercatorvariantb"
-            if azimuth.is_some_and(|a| (a - 90.0).abs() < 1e-9) && gamma.is_some_and(|g| (g - 90.0).abs() < 1e-9) =>
+            if azimuth.is_some_and(|a| (a - 90.0).abs() < 1e-9) && gamma.is_none_or(|g| (g - 90.0).abs() < 1e-9) =>
         {
             out.push("+proj=somerc".into());
             push(&mut out, "lat_0", lat_0);
@@ -346,11 +346,63 @@ pub(crate) fn to_proj(root: &Node) -> Option<Converted> {
             push(&mut out, "k_0", k.or(Some(1.0)));
         }
         "krovak" => {
-            out.push("+proj=krovak".into());
+            // Its axes: ESRI's scale and rotation of the plane (-1 and 90° for east-north), else
+            // the WKT's, east-north unless south and west, as PROJ reads them.
+            let east_north = match (get(&["xscale"]), get(&["xyplanerotation"])) {
+                (Some(sx), Some(rot)) => sx < 0.0 && (rot - 90.0).abs() < 1e-10,
+                _ => {
+                    let dirs: Vec<String> = root
+                        .children("AXIS")
+                        .filter_map(|a| match a.args.get(1) {
+                            Some(Arg::Ident(d)) => Some(d.to_ascii_lowercase()),
+                            _ => None,
+                        })
+                        .collect();
+                    !(dirs.iter().any(|d| d == "south") && dirs.iter().any(|d| d == "west"))
+                }
+            };
+            out.push(if east_north { "+proj=krovak" } else { "+proj=krovak +axis=swu" }.into());
             push(&mut out, "lat_0", lat_0);
             push(&mut out, "lon_0", lon_0);
             push(&mut out, "alpha", azimuth);
+            push(&mut out, "lat_ts", angle(&["pseudostandardparallel1"]));
             push(&mut out, "k", k.or(Some(0.9999)));
+        }
+        "labordeobliquemercator" => {
+            out.push("+proj=labrd".into());
+            push(&mut out, "lat_0", lat_0);
+            push(&mut out, "lon_0", lon_0);
+            push(&mut out, "azi", azimuth);
+            push(&mut out, "k_0", k.or(Some(1.0)));
+        }
+        "equidistantconic" => {
+            out.push("+proj=eqdc".into());
+            push(&mut out, "lat_0", lat_0);
+            push(&mut out, "lon_0", lon_0);
+            push(&mut out, "lat_1", sp1);
+            push(&mut out, "lat_2", sp2);
+        }
+        "gaussschreibertransversemercator" => {
+            out.push("+proj=gstmerc".into());
+            push(&mut out, "lat_0", lat_0);
+            push(&mut out, "lon_0", lon_0);
+            push(&mut out, "k_0", k.or(Some(1.0)));
+        }
+        // GDAL's latitude of origin, ESRI's central parallel.
+        "loximuthal" => {
+            out.push("+proj=loxim".into());
+            push(&mut out, "lat_1", lat_0.or_else(|| angle(&["centralparallel"])));
+            push(&mut out, "lon_0", lon_0);
+        }
+        "winkeltripel" | "winkeli" | "winkelii" => {
+            let (name, parallel) = match method.as_str() {
+                "winkeltripel" => ("wintri", "lat_1"),
+                "winkeli" => ("wink1", "lat_ts"),
+                _ => ("wink2", "lat_1"),
+            };
+            out.push(format!("+proj={name}"));
+            push(&mut out, parallel, sp1.or(Some(0.0)));
+            push(&mut out, "lon_0", lon_0);
         }
         "cassinisoldner" | "cassini" => {
             out.push("+proj=cass".into());
@@ -430,24 +482,12 @@ pub(crate) fn to_proj(root: &Node) -> Option<Converted> {
             out.push(format!("+proj={name}"));
             push(&mut out, "lon_0", lon_0);
         }
-        "equidistantconic" => {
-            out.push("+proj=eqdc".into());
-            push(&mut out, "lat_0", lat_0);
+        // World projections of a central meridian, as terrio writes them.
+        m => {
+            let (proj, _) = super::wkt1_write::WORLD.iter().find(|(_, w)| norm(w) == m)?;
+            out.push(format!("+proj={proj}"));
             push(&mut out, "lon_0", lon_0);
-            push(&mut out, "lat_1", sp1);
-            push(&mut out, "lat_2", sp2);
         }
-        "winkeli" | "winkelii" | "winkeltripel" => {
-            let (name, parallel) = match method.as_str() {
-                "winkeli" => ("wink1", "lat_ts"),
-                "winkelii" => ("wink2", "lat_1"),
-                _ => ("wintri", "lat_1"),
-            };
-            out.push(format!("+proj={name}"));
-            push(&mut out, "lon_0", lon_0);
-            push(&mut out, parallel, sp1);
-        }
-        _ => return None,
     }
     out.push(format!("+x_0={fe}"));
     out.push(format!("+y_0={fn_}"));

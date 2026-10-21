@@ -31,6 +31,10 @@ pub(crate) fn gdal_wkt(crs: &SpatialRef) -> Option<String> {
     if let Some(w) = crs.epsg.and_then(crate::crs::epsg_wkt) {
         return Some(w.to_string());
     }
+    // A PROJ string: GDAL's WKT 1 of it, which terrio stores.
+    if crs.epsg.is_none() && crs.proj4.is_some() {
+        return crs.to_wkt();
+    }
     let built = match crs.epsg {
         Some(code) => wbprojection::Crs::from_epsg(code).ok().and_then(|c| build(&c, Some(code))),
         None => crs.to_wbp().ok().and_then(|c| build(&c, None)),

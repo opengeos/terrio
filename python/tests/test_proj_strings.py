@@ -3,8 +3,8 @@
 The cases and PROJ's reference points are those of ``crates/terrio/tests/proj_strings.rs``
 (``crates/terrio/tests/data/proj_strings.tsv``, from ``scripts/gen_proj_string_points.py``): each
 PROJ string terrio accepts is written as WKT by terrio, read by pyproj, and PROJ's coordinates
-from that WKT compared with PROJ's from the PROJ string, within 1 mm. The CRSs whose WKT PROJ
-reads as another CRS are known differences of the WKT terrio writes (#124).
+from that WKT compared with PROJ's from the PROJ string, within 1 mm. Known differences, none
+since #124, are listed in ``KNOWN_DIFFERENCES``.
 """
 
 import math
@@ -19,45 +19,9 @@ pyproj = pytest.importorskip("pyproj")
 
 DATA = Path(__file__).resolve().parents[2] / "crates/terrio/tests/data/proj_strings.tsv"
 
-# PROJ strings whose WKT, as terrio writes it, PROJ reads as another CRS or refuses (#124), by
-# projection; both figures unless a figure is given.
-_UNKNOWN_METHOD = "#124: PROJ does not know the projection method terrio writes"
-KNOWN_DIFFERENCES: dict[str, str] = {
-    **dict.fromkeys(
-        [
-            "collg",
-            "euler",
-            "fahey",
-            "fouc",
-            "kav5",
-            "kav7",
-            "lagrng",
-            "mbt_s",
-            "mbtfpp",
-            "mbtfpq",
-            "murd1",
-            "murd3",
-            "nell",
-            "nell_h",
-            "putp1",
-            "putp2",
-            "putp3",
-            "putp3p",
-            "putp5",
-            "putp5p",
-            "putp6",
-            "putp6p",
-            "tobmerc",
-            "vitk1",
-            "weren",
-        ],
-        _UNKNOWN_METHOD,
-    ),
-    "eqc": "#124: PROJ reads it as another CRS (380 km away)",
-    "krovak": "#124: PROJ reads it as another CRS (2,800 km away)",
-    "merc wgs84": "#124: PROJ reads it as another CRS (670 km away)",
-    "omerc": "#124: PROJ reads it as another CRS (13 km away)",
-}
+# PROJ strings whose WKT, as terrio writes it, PROJ reads as another CRS or refuses, by
+# projection; both figures unless a figure is given. None since #124.
+KNOWN_DIFFERENCES: dict[str, str] = {}
 
 
 def _cases():
@@ -129,7 +93,7 @@ def test_proj_reads_terrios_wkt_as_the_same_crs(name, earth, proj, points):
         detail = f"{worst:.3g} m from PROJ's coordinates of the PROJ string"
     except (pyproj.exceptions.CRSError, pyproj.exceptions.ProjError) as err:
         ok, detail = False, f"PROJ refuses it: {err}"
-    # A known difference that now reads back passes: the writer is fixed separately (#124).
+    # A known difference that now reads back passes.
     if known and not ok:
         pytest.xfail(f"{known}: {detail}")
     assert ok, f"{name} ({earth}): {detail}\n{wkt}"

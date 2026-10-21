@@ -1214,7 +1214,7 @@ fn geo_tags(r: &Raster, nodata: Option<f64>, bands: &[crate::BandMetadata]) -> R
             }
             None => {
                 let name = crs.name().unwrap_or_else(|| "unnamed".into());
-                let user = crs.to_wbp().ok().and_then(|c| crate::drivers::geokeys::keys_for_crs(&c, &name));
+                let user = crate::drivers::geokeys::user_keys(&crs, &name);
                 match user {
                     Some(keys) => v = merge(v, keys),
                     None => {
@@ -1231,9 +1231,7 @@ fn geo_tags(r: &Raster, nodata: Option<f64>, bands: &[crate::BandMetadata]) -> R
     v.shorts.sort_by_key(|k| k.0);
     let mut keys: Vec<[u16; 4]> = v.shorts.iter().map(|(id, val)| [*id, 0, 1, *val]).collect();
     let doubles: Vec<f64> = v.doubles.iter().map(|d| d.1).collect();
-    for (i, (id, _)) in v.doubles.iter().enumerate() {
-        keys.push([*id, 34736, 1, i as u16]);
-    }
+    keys.extend(v.double_keys());
     let mut ascii = String::new();
     for (id, text) in &v.ascii {
         let text = format!("{text}|");

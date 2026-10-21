@@ -28,6 +28,14 @@ impl GeoKeys<'_> {
         self.key(id).filter(|(loc, _, _)| *loc == GEO_DOUBLE_PARAMS).and_then(|(_, _, off)| self.doubles.get(off as usize).copied())
     }
 
+    fn doubles(&self, id: u16) -> Option<&[f64]> {
+        let (loc, n, off) = self.key(id)?;
+        if loc != GEO_DOUBLE_PARAMS {
+            return None;
+        }
+        self.doubles.get(off as usize..off as usize + n as usize)
+    }
+
     fn text(&self, id: u16) -> Option<&str> {
         let (loc, n, off) = self.key(id)?;
         if loc != GEO_ASCII_PARAMS {
@@ -81,33 +89,54 @@ pub(crate) fn user_defined_crs(k: &GeoKeys) -> Option<wbraster::CrsInfo> {
         1 => user_defined_proj4(k)?,
         _ => return None,
     };
+    if let Some(crs) = projected_on_epsg_geographic(k) {
+        return Some(crs);
+    }
     let crs = wbraster::CrsInfo::from_proj4(proj.trim());
-    match crs.wkt {
-        Some(_) => Some(crs),
-        None => {
-            let wkt = wbprojection::from_proj_string(&proj).ok().map(|c| wbprojection::crs_to_wkt(&c));
-            Some(wbraster::CrsInfo { wkt, ..crs })
-        }
+    // The WKT GDAL writes for the PROJ string, which describes it whole.
+    let wkt = crate::crs::SpatialRef::from_proj4(proj.trim()).ok().and_then(|s| s.wkt).or(crs.wkt);
+    let wkt = wkt.or_else(|| wbprojection::from_proj_string(&proj).ok().map(|c| wbprojection::crs_to_wkt(&c)));
+    Some(wbraster::CrsInfo { wkt, ..crs })
+}
+
+/// A user-defined projected CRS on an EPSG geographic CRS a PROJ string does not name exactly
+/// (OSGB36, ED50, NAD83(HARN), ETRS89...): its WKT, whose `GEOGCS` identifies the datum and its
+/// transformations, as GDAL reads the GeoKeys. `None` for other GeoKeys.
+pub(crate) fn projected_on_epsg_geographic(k: &GeoKeys) -> Option<wbraster::CrsInfo> {
+    if k.short(1024) != Some(1) || esri_pe_crs(k).is_some() {
+        return None;
+    }
+    // WGS 84, NAD83 and NAD27 are PROJ's `+datum=` names.
+    let code = k.short(2048).filter(|c| !matches!(*c, USER_DEFINED | 4326 | 4269 | 4267))?;
+    let wkt = crate::crs::from_proj_on(&user_defined_proj4(k)?, code as u32)?;
+    Some(wbraster::CrsInfo { epsg: None, wkt: Some(wkt), proj4: None })
+}
+
+/// The PROJ datum (or ellipsoid and shift) of the EPSG datums PROJ strings name.
+fn named_datum(datum: Option<u32>) -> Option<&'static str> {
+    match datum? {
+        6326 => Some("+datum=WGS84"),
+        // NAD83(HARN) as NAD83, within a metre, as GDAL's PROJ strings write it.
+        6269 | 6152 => Some("+datum=NAD83"),
+        6267 => Some("+datum=NAD27"),
+        6258 | 6283 | 6167 | 6619 => Some("+ellps=GRS80 +towgs84=0,0,0"),
+        6322 => Some("+ellps=WGS72"),
+        _ => None,
     }
 }
 
 /// The datum or ellipsoid part of a PROJ definition.
 fn geographic_proj(k: &GeoKeys) -> Option<String> {
     let datum = match k.short(2048) {
-        Some(code) if code != USER_DEFINED => Some(code + 2000), // GCS 4326 -> datum 6326
-        _ => k.short(2050),
+        Some(code) if code != USER_DEFINED => Some(code as u32 + 2000), // GCS 4326 -> datum 6326
+        _ => k.short(2050).map(u32::from),
     };
-    let named = match datum {
-        Some(6326) => Some("+datum=WGS84"),
-        // NAD83(HARN) as NAD83, within a metre, as GDAL's PROJ strings write it.
-        Some(6269) | Some(6152) => Some("+datum=NAD83"),
-        Some(6267) => Some("+datum=NAD27"),
-        Some(6258) | Some(6283) | Some(6167) | Some(6619) => Some("+ellps=GRS80 +towgs84=0,0,0"),
-        Some(6322) => Some("+ellps=WGS72"),
-        _ => None,
-    };
-    if let Some(n) = named {
+    if let Some(n) = named_datum(datum) {
         return Some(n.to_string());
+    }
+    // The ellipsoid of another EPSG geographic CRS, when its datum cannot be named.
+    if let Some(e) = k.short(2048).filter(|c| *c != USER_DEFINED).and_then(|c| crate::crs::epsg_ellipsoid(c as u32)) {
+        return Some(e);
     }
     let ellipsoid = match k.short(2056) {
         Some(7030) => Some("+ellps=WGS84"),
@@ -118,15 +147,25 @@ fn geographic_proj(k: &GeoKeys) -> Option<String> {
         Some(7035) | Some(7047) => Some("+R=6371007.181"),
         _ => None,
     };
-    if let Some(e) = ellipsoid {
-        return Some(e.to_string());
+    let mut out = match ellipsoid {
+        Some(e) => e.to_string(),
+        None => {
+            let a = k.double(2057)?;
+            match (k.double(2059), k.double(2058)) {
+                (Some(rf), _) if rf > 0.0 => format!("+a={a} +rf={rf}"),
+                (_, Some(b)) => format!("+a={a} +b={b}"),
+                _ => format!("+R={a}"),
+            }
+        }
+    };
+    // GeogPrimeMeridianLongGeoKey and GeogTOWGS84GeoKey.
+    if let Some(pm) = k.double(2061).filter(|pm| *pm != 0.0) {
+        out.push_str(&format!(" +pm={pm}"));
     }
-    let a = k.double(2057)?;
-    Some(match (k.double(2059), k.double(2058)) {
-        (Some(rf), _) if rf > 0.0 => format!("+a={a} +rf={rf}"),
-        (_, Some(b)) => format!("+a={a} +b={b}"),
-        _ => format!("+R={a}"),
-    })
+    if let Some(t) = k.doubles(2062).filter(|t| t.len() == 3 || t.len() == 7) {
+        out.push_str(&format!(" +towgs84={}", t.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(",")));
+    }
+    Some(out)
 }
 
 /// The projection method and parameters of a PROJ definition. GeoTIFF gives false eastings and
@@ -167,6 +206,10 @@ fn projection(k: &GeoKeys, to_meter: f64) -> Option<String> {
         1 => format!("tmerc +lat_0={lat0} +lon_0={lon0} +k={scale} {false_xy}"),
         // Hotine oblique Mercator: variant A (natural origin) and B (centre of projection).
         3 => oblique_mercator(" +no_uoff")?,
+        // Swiss oblique Mercator, as GDAL writes it: variant B of azimuth 90°.
+        9815 if k.double(AZIMUTH) == Some(90.0) && k.double(RECTIFIED_GRID_ANGLE).is_none_or(|g| g == 90.0) => {
+            format!("somerc +lat_0={lat0} +lon_0={lon0} +k_0={scale} {false_xy}")
+        }
         9815 => oblique_mercator("")?,
         // Mercator 2SP has its standard parallel in ProjStdParallel1GeoKey, 1SP a scale (with
         // which a zero standard parallel is taken as unused).
@@ -219,6 +262,7 @@ fn units(k: &GeoKeys) -> (String, f64) {
     match k.short(3076) {
         Some(9002) => ("+units=ft".into(), 0.3048),
         Some(9003) => ("+units=us-ft".into(), 1200.0 / 3937.0),
+        Some(9036) => ("+units=km".into(), 1000.0),
         Some(USER_DEFINED) => match k.double(3077) {
             Some(m) if m > 0.0 => (format!("+to_meter={m}"), m),
             _ => ("+units=m".into(), 1.0),
@@ -227,8 +271,114 @@ fn units(k: &GeoKeys) -> (String, f64) {
     }
 }
 
-/// GeoKeys for a CRS without an EPSG code, as GDAL writes them: `(short keys, double keys,
-/// ascii keys)` by key id. `None` when the projection method has no GeoTIFF equivalent.
+/// GeoKeys for a CRS without an EPSG code, as GDAL writes them: from its PROJ string when it has
+/// one, else from the projection engine's model of it. `None` when GeoKeys cannot describe it.
+pub(crate) fn user_keys(crs: &crate::crs::SpatialRef, name: &str) -> Option<GeoKeyValues> {
+    if let Some(p) = &crs.proj4 {
+        return keys_for_proj(p, name, None);
+    }
+    // A WKT: its PROJ string as terrio reads it, on the EPSG geographic CRS it is identified on.
+    if let Some(p) = crs.wkt.as_deref().and_then(crate::crs::wkt_proj) {
+        let geog = crate::crs::Def::new(crs).ok().and_then(|d| d.geog());
+        return keys_for_proj(&p, name, geog);
+    }
+    crs.to_wbp().ok().and_then(|c| keys_for_crs(&c, name))
+}
+
+/// GeoKeys for a PROJ string, as GDAL writes them, from its WKT 1 description, on an EPSG
+/// geographic CRS when given one. `None` when the method or the linear unit has no GeoTIFF
+/// equivalent or the WKT 1 needs the PROJ string to describe it.
+pub(crate) fn keys_for_proj(proj4: &str, name: &str, geog: Option<u32>) -> Option<GeoKeyValues> {
+    let d = crate::crs::describe(proj4)?;
+    d.unit_code?;
+    let mut v = GeoKeyValues::default();
+    // The geographic CRS it was identified on, unless the PROJ string shifts its datum itself.
+    let geog = d.geog.or(geog.filter(|_| d.towgs84.is_none() && d.pm == 0.0));
+    match geog {
+        Some(code) => v.shorts.push((2048, u16::try_from(code).ok()?)),
+        None => {
+            v.shorts.push((2048, USER_DEFINED));
+            v.shorts.push((2050, USER_DEFINED));
+            v.shorts.push((2054, 9102));
+            v.shorts.push((2056, d.ellipsoid.and_then(|c| u16::try_from(c).ok()).unwrap_or(USER_DEFINED)));
+            v.doubles.push((2057, d.a));
+            if d.rf > 0.0 {
+                v.doubles.push((2059, d.rf));
+            } else {
+                v.doubles.push((2058, d.a));
+            }
+            if d.pm != 0.0 {
+                v.shorts.push((2051, USER_DEFINED));
+                v.doubles.push((2061, d.pm));
+            }
+            if let Some(t) = d.towgs84 {
+                v.doubles.extend(t.into_iter().map(|x| (2062, x)));
+            }
+        }
+    }
+    let Some(method) = d.method else {
+        v.shorts.push((1024, 2));
+        v.ascii.push((1026, name.to_string()));
+        return Some(v);
+    };
+    let get = |k: &str| d.params.iter().find(|(n, _)| *n == k).map(|(_, x)| *x).unwrap_or(0.0);
+    let (lat, lon, k, fe, fn_) =
+        (get("latitude_of_origin"), get("central_meridian"), get("scale_factor"), get("false_easting"), get("false_northing"));
+    let (clat, clon) = (get("latitude_of_center"), get("longitude_of_center"));
+    let sp = |i: u8| get(if i == 1 { "standard_parallel_1" } else { "standard_parallel_2" });
+    let natural = vec![(3081, lat), (3080, lon), (3092, k), (3082, fe), (3083, fn_)];
+    let oblique =
+        vec![(3089, clat), (3088, clon), (3094, get("azimuth")), (3096, get("rectified_grid_angle")), (3093, k), (3082, fe), (3083, fn_)];
+    let (code, params): (u16, Vec<(u16, f64)>) = match method {
+        "Transverse_Mercator" => (1, natural),
+        "Transverse_Mercator_South_Orientated" => (27, natural),
+        "Mercator_1SP" => (7, vec![(3081, 0.0), (3080, lon), (3092, k), (3082, fe), (3083, fn_)]),
+        "Mercator_2SP" => (7, vec![(3078, sp(1)), (3080, lon), (3082, fe), (3083, fn_)]),
+        "Lambert_Conformal_Conic_1SP" => (9, natural),
+        "Lambert_Conformal_Conic_2SP" => (8, vec![(3078, sp(1)), (3079, sp(2)), (3085, lat), (3084, lon), (3086, fe), (3087, fn_)]),
+        "Albers_Conic_Equal_Area" => (11, vec![(3078, sp(1)), (3079, sp(2)), (3081, clat), (3080, clon), (3082, fe), (3083, fn_)]),
+        "Equidistant_Conic" => (13, vec![(3078, sp(1)), (3079, sp(2)), (3081, clat), (3080, clon), (3082, fe), (3083, fn_)]),
+        "Lambert_Azimuthal_Equal_Area" => (10, vec![(3089, clat), (3088, clon), (3082, fe), (3083, fn_)]),
+        "Azimuthal_Equidistant" => (12, vec![(3089, clat), (3088, clon), (3082, fe), (3083, fn_)]),
+        "Stereographic" => (14, vec![(3089, lat), (3088, lon), (3092, k), (3082, fe), (3083, fn_)]),
+        "Polar_Stereographic" if d.params.iter().any(|(n, _)| *n == "scale_factor") => {
+            (15, vec![(3081, lat), (3095, lon), (3092, k), (3082, fe), (3083, fn_)])
+        }
+        "Polar_Stereographic" => (15, vec![(3081, lat), (3095, lon), (3082, fe), (3083, fn_)]),
+        "Oblique_Stereographic" => (16, natural),
+        "Equirectangular" => (17, vec![(3078, sp(1)), (3089, lat), (3088, lon), (3082, fe), (3083, fn_)]),
+        "Cassini_Soldner" => (18, vec![(3081, lat), (3080, lon), (3082, fe), (3083, fn_)]),
+        "Gnomonic" => (19, vec![(3081, lat), (3080, lon), (3082, fe), (3083, fn_)]),
+        "Miller_Cylindrical" => (20, vec![(3088, get("longitude_of_center")), (3082, fe), (3083, fn_)]),
+        "Orthographic" => (21, vec![(3081, lat), (3080, lon), (3082, fe), (3083, fn_)]),
+        "Polyconic" => (22, vec![(3081, lat), (3080, lon), (3082, fe), (3083, fn_)]),
+        "Robinson" => (23, vec![(3088, clon), (3082, fe), (3083, fn_)]),
+        "Sinusoidal" => (24, vec![(3088, clon), (3082, fe), (3083, fn_)]),
+        "VanDerGrinten" => (25, vec![(3088, lon), (3082, fe), (3083, fn_)]),
+        "Cylindrical_Equal_Area" => (28, vec![(3078, sp(1)), (3088, lon), (3082, fe), (3083, fn_)]),
+        // Hotine oblique Mercator, variant A and B (with Swiss oblique Mercator, as azimuths of
+        // 90°).
+        "Hotine_Oblique_Mercator" => (3, oblique),
+        "Hotine_Oblique_Mercator_Azimuth_Center" => (9815, oblique),
+        _ => return None,
+    };
+    v.shorts.push((1024, 1));
+    v.ascii.push((1026, name.to_string()));
+    v.shorts.push((3072, USER_DEFINED));
+    v.shorts.push((3074, USER_DEFINED));
+    v.shorts.push((3075, code));
+    v.shorts.push((3076, u16::try_from(d.unit_code?).ok()?));
+    // ProjLinearUnitsInterpCorrectGeoKey: the false eastings and northings are in that unit.
+    if d.to_meter != 1.0 {
+        v.shorts.push((3059, 1));
+    }
+    v.doubles.extend(params);
+    Some(v)
+}
+
+/// GeoKeys for a CRS of the projection engine's model, as GDAL writes them: `(short keys,
+/// double keys, ascii keys)` by key id. `None` when the projection method has no GeoTIFF
+/// equivalent.
 pub(crate) fn keys_for_crs(crs: &wbprojection::Crs, name: &str) -> Option<GeoKeyValues> {
     use wbprojection::ProjectionKind as K;
     let p = crs.projection.params();
@@ -306,15 +456,45 @@ pub(crate) fn keys_for_crs(crs: &wbprojection::Crs, name: &str) -> Option<GeoKey
 pub(crate) struct GeoKeyValues {
     /// SHORT keys.
     pub shorts: Vec<(u16, u16)>,
-    /// DOUBLE keys.
+    /// DOUBLE keys, in the order of GeoDoubleParamsTag; consecutive values of one key (the seven
+    /// of GeogTOWGS84GeoKey) are its values.
     pub doubles: Vec<(u16, f64)>,
     /// ASCII keys.
     pub ascii: Vec<(u16, String)>,
 }
 
+impl GeoKeyValues {
+    /// The directory entries of the DOUBLE keys: `[id, GeoDoubleParamsTag, count, offset]`.
+    pub fn double_keys(&self) -> Vec<[u16; 4]> {
+        let mut out: Vec<[u16; 4]> = Vec::new();
+        for (i, (id, _)) in self.doubles.iter().enumerate() {
+            match out.last_mut() {
+                Some(last) if last[0] == *id => last[2] += 1,
+                _ => out.push([*id, GEO_DOUBLE_PARAMS, 1, i as u16]),
+            }
+        }
+        out
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn keeps_the_epsg_geographic_crs_of_a_user_defined_projection() {
+        // A transverse Mercator on NAD83(HARN) (GeographicTypeGeoKey 4152): its WKT keeps the
+        // realization, not PROJ's +datum=NAD83.
+        let keys = [
+            1, 1, 0, 11, 1024, 0, 1, 1, 2048, 0, 1, 4152, 3072, 0, 1, 32767, 3074, 0, 1, 32767, 3075, 0, 1, 1, 3076, 0, 1, 9001, 3080,
+            34736, 1, 0, 3081, 34736, 1, 1, 3082, 34736, 1, 2, 3083, 34736, 1, 3, 3092, 34736, 1, 4,
+        ];
+        let doubles = [-100.0, 0.0, 500000.0, 0.0, 0.9996];
+        let crs = user_defined_crs(&GeoKeys { keys: &keys, doubles: &doubles, ascii: "" }).unwrap();
+        let wkt = crs.wkt.unwrap();
+        assert!(crs.proj4.is_none() && wkt.contains("AUTHORITY[\"EPSG\",\"4152\"]"), "{wkt}");
+        assert!(wkt.contains("PARAMETER[\"central_meridian\",-100]"), "{wkt}");
+    }
 
     #[test]
     fn reads_gdal_user_defined_lcc() {

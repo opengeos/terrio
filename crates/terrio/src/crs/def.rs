@@ -94,7 +94,7 @@ impl Vertical {
 }
 
 /// The EPSG geographic CRSs PROJ's `+datum=` names stand for.
-fn datum_geog(name: &str) -> Option<u32> {
+pub(crate) fn datum_geog(name: &str) -> Option<u32> {
     Some(match name {
         "WGS84" => 4326,
         "NAD83" => 4269,
@@ -110,7 +110,8 @@ fn datum_geog(name: &str) -> Option<u32> {
     })
 }
 
-fn datum_ellps(name: &str) -> Option<&'static str> {
+/// The ellipsoids of PROJ's `+datum=` names.
+pub(crate) fn datum_ellps(name: &str) -> Option<&'static str> {
     Some(match name {
         "WGS84" => "WGS84",
         "NAD83" => "GRS80",
@@ -175,8 +176,10 @@ impl Def {
             d.three_d = e.three_d;
             d.dynamic = e.dynamic;
             d.area = e.area;
-            // A WKT identified as this code but with its own TOWGS84: GDAL uses that shift.
-            if let Some(w) = s.wkt.as_deref().filter(|w| *w != e.wkt)
+            // A WKT identified as this code but with its own TOWGS84: GDAL uses that shift (not
+            // over a PROJ4 extension, which describes the whole CRS).
+            if s.proj4.is_none()
+                && let Some(w) = s.wkt.as_deref().filter(|w| *w != e.wkt)
                 && let Some(t) = wkt_towgs84(w)
             {
                 d.ops = vec![Arc::new(Op::world(datum::towgs84_steps(d.ell, &t)))];
@@ -424,6 +427,11 @@ impl Def {
             d.proj = Some(Arc::new(WbProj { crs, a: ell.a }));
         }
         Ok(d)
+    }
+
+    /// Metres per linear unit.
+    pub fn to_meter(&self) -> f64 {
+        self.to_meter
     }
 
     /// Whether this is a geographic CRS. A rotated-pole grid is not: its coordinates are in

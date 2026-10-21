@@ -50,10 +50,12 @@ mod projections;
 mod rotation;
 mod route;
 mod wkt1;
+mod wkt1_write;
 mod wkt2;
 
 pub(crate) use def::Def;
 pub use grid::{register_grid, reset_grid_cache, set_grid_search_paths, set_network_enabled};
+pub(crate) use wkt1_write::{describe, epsg_ellipsoid, from_proj_on};
 
 /// Starts loading terrio's EPSG table in the background, for work that will need it once it has
 /// read its input.
@@ -393,11 +395,14 @@ impl SpatialRef {
         if self.is_rotated_pole() {
             return Err(Error::Crs("a rotated-pole CRS has no wbprojection equivalent".into()));
         }
+        // The PROJ string over its WKT, which wbprojection reads with fewer parameters.
+        if let Some(p) = &self.proj4
+            && let Ok(c) = wbp::from_proj_string(&mercator_lat_ts_as_k(p))
+        {
+            return Ok(c);
+        }
         if let Some(w) = &self.wkt {
             return Ok(wbp::Crs::from_wkt(w)?);
-        }
-        if let Some(p) = &self.proj4 {
-            return Ok(wbp::from_proj_string(p)?);
         }
         Err(Error::Crs("the CRS is unknown".into()))
     }
@@ -443,45 +448,20 @@ impl SpatialRef {
     }
 }
 
-/// The WKT 1 of a PROJ string. When the WKT describes less than the PROJ string (a
-/// south-orientated transverse Mercator, an oblique Mercator variant), it is extended with the
-/// PROJ string itself (`EXTENSION["PROJ4", ...]`), as GDAL writes it.
+/// The WKT 1 of a PROJ string, as GDAL writes it (see [`wkt1_write`]).
 fn proj_to_wkt(p: &str) -> Option<String> {
-    let extension = format!("EXTENSION[\"PROJ4\",\"{}\"]", p.trim().replace('"', ""));
-    // A rotated-pole grid: its base geographic CRS extended with the PROJ string, as GDAL 2 wrote
-    // it (wbprojection does not know `ob_tran`). Unnamed and without its code, so as not to be
-    // taken for the base CRS.
-    if Def::from_proj(p).ok()?.is_rotated_pole() {
-        const DATUM: [&str; 10] = ["+datum=", "+ellps=", "+a=", "+b=", "+rf=", "+f=", "+R=", "+towgs84=", "+nadgrids=", "+pm="];
-        let datum: Vec<&str> = p.split_whitespace().filter(|t| DATUM.iter().any(|d| t.starts_with(d))).collect();
-        let geogcs = wbp::crs_to_wkt(&wbp::from_proj_string(&format!("+proj=longlat {}", datum.join(" "))).ok()?);
-        let body = geogcs.trim_end().strip_prefix("GEOGCS[\"")?;
-        let body = body[body.find('"')? + 1..].strip_suffix(']')?;
-        // The root's own AUTHORITY: the last node, closed by the root's bracket.
-        let body = match body.rfind(",AUTHORITY[") {
-            Some(i) if body[i..].matches(']').count() == 1 => &body[..i],
-            _ => body,
-        };
-        return Some(format!("GEOGCS[\"unnamed\"{body},{extension}]"));
+    wkt1_write::from_proj(p)
+}
+
+/// The PROJ string of a WKT definition as terrio reads it: its PROJ4 extension, else its WKT 1
+/// or WKT 2 conversion. `None` for a WKT terrio reads otherwise (through wbprojection).
+pub(crate) fn wkt_proj(wkt: &str) -> Option<String> {
+    if let Some(p) = proj4_extension(wkt) {
+        return Some(p);
     }
-    if let Ok(crs) = wbp::from_proj_string(&mercator_lat_ts_as_k(p)) {
-        let wkt = wbp::crs_to_wkt(&crs);
-        // Faithful when terrio reads it back (identifying its EPSG code, its geographic CRS) as
-        // the PROJ string: the same conversion on the same datum. A Bessel stereographic without
-        // TOWGS84 is not Amersfoort / RD New, which shifts its datum.
-        let faithful = Def::from_proj(p)
-            .is_ok_and(|own| Def::new(&SpatialRef::from_wkt(&wkt)).is_ok_and(|w| w.same_conversion(&own) && w.same_datum(&own)));
-        if faithful {
-            return Some(wkt);
-        }
-        return Some(format!("{},{extension}]", wkt.trim_end().strip_suffix(']')?));
-    }
-    // A projection wbprojection does not know: GDAL's `custom_proj4`, on the PROJ string's datum.
-    Def::from_proj(p).ok()?;
-    const DATUM: [&str; 9] = ["+datum=", "+ellps=", "+a=", "+b=", "+rf=", "+f=", "+R=", "+towgs84=", "+nadgrids="];
-    let datum: Vec<&str> = p.split_whitespace().filter(|t| DATUM.iter().any(|d| t.starts_with(d))).collect();
-    let geogcs = wbp::crs_to_wkt(&wbp::from_proj_string(&format!("+proj=longlat {}", datum.join(" "))).ok()?);
-    Some(format!("PROJCS[\"unknown\",{geogcs},PROJECTION[\"custom_proj4\"],UNIT[\"metre\",1],{extension}]"))
+    let root = wkt1::parse(wkt)?;
+    let c = if wkt2::handles(&root) { wkt2::to_proj(&root).ok()? } else { wkt1::to_proj(&root)? };
+    Some(c.proj)
 }
 
 /// The PROJ string of a WKT 1's root `EXTENSION["PROJ4", ...]`.
@@ -495,8 +475,7 @@ fn proj4_extension(wkt: &str) -> Option<String> {
 }
 
 /// A PROJ string whose Mercator standard parallel (`+lat_ts`) is given as the scale at the
-/// equator it implies (`+k`): wbprojection's Mercator has no standard parallel, so its WKT would
-/// otherwise describe the equator's Mercator (EPSG:3395's projection).
+/// equator it implies (`+k`): wbprojection's Mercator has no standard parallel.
 fn mercator_lat_ts_as_k(p: &str) -> std::borrow::Cow<'_, str> {
     let tokens: Vec<&str> = p.split_whitespace().collect();
     let lat_ts = tokens.iter().find_map(|t| t.strip_prefix("+lat_ts=")).and_then(|v| v.parse::<f64>().ok());
@@ -1065,6 +1044,11 @@ mod tests {
         // A declared code it converts as is kept.
         let utm = r#"PROJCS["WGS 84 / UTM zone 18N",GEOGCS["WGS 84",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563]],PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433]],PROJECTION["Transverse_Mercator"],PARAMETER["central_meridian",-75],UNIT["metre",1],EXTENSION["PROJ4","+proj=utm +zone=18 +datum=WGS84 +units=m +no_defs"],AUTHORITY["EPSG","32618"]]"#;
         assert_eq!(SpatialRef::from_wkt(utm).epsg, Some(32618));
+        // Whose TOWGS84 does not override the extension's datum.
+        let shifted = utm.replace("298.257223563]]", "298.257223563],TOWGS84[100,0,0,0,0,0,0]]");
+        let s = SpatialRef::from_wkt(&shifted);
+        let own = Def::from_proj("+proj=utm +zone=18 +datum=WGS84 +units=m +no_defs").unwrap();
+        assert!(shifted.contains("TOWGS84") && Def::new(&s).unwrap().same_datum(&own));
         // EPSG:3857's WKT, whose extension gives the datum as a null grid.
         assert_eq!(SpatialRef::from_wkt(epsg_wkt(3857).unwrap()).epsg, Some(3857));
         // Nor one on another ellipsoid.

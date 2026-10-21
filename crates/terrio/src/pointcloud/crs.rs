@@ -139,16 +139,14 @@ fn geokey_vlrs(crs: &SpatialRef) -> Option<Vec<Vlr>> {
         }
         None => {
             let name = crs.name().unwrap_or_else(|| "unnamed".into());
-            let user = crs.to_wbp().ok().and_then(|c| crate::drivers::geokeys::keys_for_crs(&c, &name))?;
+            let user = crate::drivers::geokeys::user_keys(crs, &name)?;
             v.shorts.extend(user.shorts);
             v.doubles.extend(user.doubles);
             v.ascii.extend(user.ascii);
         }
     }
     let mut keys: Vec<[u16; 4]> = v.shorts.iter().map(|(id, val)| [*id, 0, 1, *val]).collect();
-    for (i, (id, _)) in v.doubles.iter().enumerate() {
-        keys.push([*id, 34736, 1, i as u16]);
-    }
+    keys.extend(v.double_keys());
     let mut ascii = String::new();
     for (id, text) in &v.ascii {
         let text = format!("{text}|");

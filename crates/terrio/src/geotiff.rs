@@ -280,6 +280,10 @@ fn apply_geokeys(out: &mut GeoTags, keys: &[u16], doubles: Option<&[f64]>, ascii
     if out.epsg.is_none() {
         // Geographic and projected user-defined CRSs, and ESRI PE citations.
         let k = crate::drivers::geokeys::GeoKeys { keys, doubles: doubles.unwrap_or_default(), ascii: ascii.unwrap_or_default() };
+        if let Some(crs) = crate::drivers::geokeys::projected_on_epsg_geographic(&k) {
+            out.crs = Some(crs);
+            return;
+        }
         if short_key(1024) == Some(1) && crate::drivers::geokeys::esri_pe_crs(&k).is_none() {
             out.proj4 = crate::drivers::geokeys::user_defined_proj4(&k);
             out.unreadable_method = crate::drivers::geokeys::unmapped_method(&k);
