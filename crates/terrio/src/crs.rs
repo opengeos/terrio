@@ -143,10 +143,12 @@ impl SpatialRef {
             // extension wins over a code that does not, as over the nodes; EPSG:3857's own WKT
             // gives its datum as a null grid), else one whose definition converts as the PROJ
             // string does, on its datum.
+            // A declared code terrio does not know converts as nothing, and is dropped.
             let same = |code: u32| Def::new(&SpatialRef { epsg: Some(code), ..Default::default() }).is_ok_and(|r| own.same_conversion(&r));
-            let epsg = declared_epsg(wkt)
+            let declared = declared_epsg(wkt);
+            let epsg = declared
                 .filter(|code| same(*code))
-                .or_else(|| identify_epsg(wkt).filter(|code| declared_epsg(wkt) != Some(*code) && is_registered_as(&own, *code)));
+                .or_else(|| identify_epsg(wkt).filter(|code| declared != Some(*code) && is_registered_as(&own, *code)));
             return Self { epsg, wkt: Some(wkt.to_string()), proj4: Some(proj4), esri: None }.with_esri();
         }
         let epsg = if def::split_compound(wkt).is_some() { declared_epsg(wkt) } else { identify_epsg(wkt) };
