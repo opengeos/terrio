@@ -13,6 +13,10 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 static DATA: &[u8] = include_bytes!("../../data/epsg.tsv.zst");
 
+/// The names and aliases of EPSG datums, generated from PROJ by `scripts/gen_datum_names.py`:
+/// `code<TAB>rank<TAB>name` lines.
+static DATUM_NAMES: &[u8] = include_bytes!("../../data/datums.tsv.zst");
+
 /// An EPSG CRS of the table.
 #[derive(Debug)]
 pub(crate) struct Entry {
@@ -94,16 +98,16 @@ impl<T> Lazy<T> {
     }
 }
 
-/// The table's decompressed text.
-fn decompress() -> String {
+/// The decompressed text of an embedded table.
+fn decompress(data: &[u8]) -> String {
     #[cfg(not(target_arch = "wasm32"))]
-    if let Ok(bytes) = zstd::stream::decode_all(DATA)
+    if let Ok(bytes) = zstd::stream::decode_all(data)
         && let Ok(text) = String::from_utf8(bytes)
     {
         return text;
     }
     let mut text = String::new();
-    if let Ok(mut d) = ruzstd::decoding::StreamingDecoder::new(&mut &DATA[..]) {
+    if let Ok(mut d) = ruzstd::decoding::StreamingDecoder::new(&mut &data[..]) {
         let _ = d.read_to_string(&mut text);
     }
     text
@@ -112,7 +116,7 @@ fn decompress() -> String {
 fn table() -> &'static Table {
     static TABLE: OnceLock<Table> = OnceLock::new();
     TABLE.get_or_init(|| {
-        let text = decompress();
+        let text = decompress(DATA);
         let (mut crs, mut ops, mut pairs) = (HashMap::new(), HashMap::new(), HashMap::new());
         let (mut verticals, mut compounds, mut geoids) = (HashMap::new(), HashMap::new(), HashMap::<u32, Vec<_>>::new());
         let mut alternatives = HashMap::<String, Vec<String>>::new();
@@ -275,6 +279,91 @@ pub(crate) fn named(name: &str) -> Vec<u32> {
         names
     });
     names.get(&name.to_ascii_lowercase()).cloned().unwrap_or_default()
+}
+
+/// A datum name as datums are compared by name: its ASCII letters, digits and `+` (CH1903+ is
+/// not CH1903), whatever their case, without ESRI's `D_` prefix.
+pub(crate) fn datum_key(name: &str) -> String {
+    let name = name.strip_prefix("D_").unwrap_or(name);
+    name.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '+').map(|c| c.to_ascii_lowercase()).collect()
+}
+
+/// The EPSG datums a name stands for, as PROJ's database lists them: those it is the official
+/// name (or GDAL's WKT 1 name) of, else an EPSG alias of, else a PROJ, an ESRI (`D_ETRS_1989`)
+/// or a former name of, in order of code.
+pub(crate) fn datums_named(name: &str) -> Vec<u32> {
+    static NAMES: OnceLock<HashMap<String, (u8, Vec<u32>)>> = OnceLock::new();
+    let names = NAMES.get_or_init(|| {
+        let mut names = HashMap::<String, (u8, Vec<u32>)>::new();
+        for line in decompress(DATUM_NAMES).lines().filter(|l| !l.starts_with('#')) {
+            let mut f = line.splitn(3, '\t');
+            let (Some(Ok(code)), Some(Ok(rank)), Some(name)) = (f.next().map(str::parse::<u32>), f.next().map(str::parse::<u8>), f.next())
+            else {
+                continue;
+            };
+            let e = names.entry(datum_key(name)).or_insert((rank, Vec::new()));
+            if rank < e.0 {
+                *e = (rank, Vec::new());
+            }
+            if rank == e.0 && !e.1.contains(&code) {
+                e.1.push(code);
+            }
+        }
+        names.values_mut().for_each(|(_, c)| c.sort_unstable());
+        names
+    });
+    names.get(&datum_key(name)).map(|(_, c)| c.clone()).unwrap_or_default()
+}
+
+/// The EPSG geographic 2D CRSs on a datum, without deprecated ones, in order of code.
+pub(crate) fn geographic_on(datum: u32) -> Vec<u32> {
+    static INDEX: OnceLock<HashMap<u32, Vec<u32>>> = OnceLock::new();
+    let index = INDEX.get_or_init(|| {
+        let t = table();
+        let mut index = HashMap::<u32, Vec<u32>>::new();
+        for (code, l) in &t.crs {
+            let f: Vec<&str> = t.text[l.line.0 as usize..l.line.1 as usize].splitn(9, '\t').collect();
+            // A deprecated code has its replacement's geographic CRS.
+            let [_, datum, geog, _, _, flags, _, proj, ..] = f[..] else { continue };
+            if geog.parse() == Ok(*code)
+                && !flags.contains('3')
+                && proj.starts_with("+proj=longlat")
+                && let Ok(d) = datum.parse::<u32>()
+            {
+                index.entry(d).or_default().push(*code);
+            }
+        }
+        index.values_mut().for_each(|c| c.sort_unstable());
+        index
+    });
+    index.get(&datum).cloned().unwrap_or_default()
+}
+
+/// The EPSG projected CRSs on a geographic CRS, without deprecated ones, in order of code, with
+/// their projection method (`+proj=tmerc`).
+pub(crate) fn projected_on(geog: u32) -> &'static [(u32, &'static str)] {
+    static INDEX: OnceLock<HashMap<u32, Vec<(u32, &'static str)>>> = OnceLock::new();
+    let index = INDEX.get_or_init(|| {
+        let t = table();
+        let mut index = HashMap::<u32, Vec<(u32, &'static str)>>::new();
+        for (code, l) in &t.crs {
+            let f: Vec<&'static str> = t.text[l.line.0 as usize..l.line.1 as usize].splitn(9, '\t').collect();
+            let [_, _, geog, _, _, flags, _, proj, wkt] = f[..] else { continue };
+            // A deprecated code has its replacement's WKT.
+            let current = wkt.ends_with(&format!("[\"EPSG\",\"{code}\"]]")) || wkt.ends_with(&format!("[\"EPSG\",{code}]]"));
+            let method = proj.split_whitespace().next().unwrap_or_default();
+            if current
+                && !flags.contains('3')
+                && method != "+proj=longlat"
+                && let Ok(g) = geog.parse::<u32>()
+            {
+                index.entry(g).or_default().push((*code, method));
+            }
+        }
+        index.values_mut().for_each(|c| c.sort_unstable());
+        index
+    });
+    index.get(&geog).map_or(&[], Vec::as_slice)
 }
 
 /// The single transformations from each geographic CRS, by the CRS they lead to.

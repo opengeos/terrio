@@ -384,53 +384,148 @@ fn semi_major_axis(wkt: &str) -> Option<f64> {
     after_name.trim_start_matches([',', ' ']).split([',', ']']).next()?.trim().parse().ok()
 }
 
-/// Identifies the EPSG code of a WKT definition. Among equally good matches, prefers the base
-/// datum over its later realizations (NAD83 over NAD83(HARN) and NAD83(2011)) unless the WKT names
-/// one, then the lowest code: what GDAL picks for ESRI `.prj` files.
+/// The EPSG datums the geodetic datum of a WKT definition is: the one its `AUTHORITY` (WKT 1) or
+/// `ID` (WKT 2) declares, else those it is named as (`D_European_1950` is ED50). Empty for a datum
+/// with another name (`Unknown based on Bessel 1841 ellipsoid`), as for GDAL.
+fn wkt_datums(wkt: &str) -> Vec<u32> {
+    fn find(n: &wkt1::Node) -> Option<&wkt1::Node> {
+        const DATUMS: [&str; 5] = ["DATUM", "GEODETICDATUM", "TRF", "ENSEMBLE", "DATUMENSEMBLE"];
+        if DATUMS.iter().any(|k| n.key.eq_ignore_ascii_case(k)) {
+            return Some(n);
+        }
+        n.args.iter().find_map(|a| match a {
+            wkt1::Arg::Node(c) => find(c),
+            _ => None,
+        })
+    }
+    let Some(datum) = wkt1::parse(wkt).and_then(|root| find(&root).cloned()) else { return Vec::new() };
+    if let Some(code) = datum.epsg() {
+        return vec![code];
+    }
+    datum.name().map(epsg::datums_named).unwrap_or_default()
+}
+
+/// Identifies the EPSG code of a WKT definition, as GDAL does: a CRS on the WKT's datum (by its
+/// code or name) with the same conversion, units and ellipsoid. A datum without code that terrio
+/// does not know by name has no code, whatever its ellipsoid (#125). Among the CRSs of terrio's
+/// table that match, the one named as the WKT's CRS, then the one with its axis order, then the
+/// lowest code; for other CRSs, wbprojection's registry, where among equally good matches the
+/// base datum is preferred over its later realizations (NAD83 over NAD83(HARN) and NAD83(2011))
+/// unless the WKT names one, then the lowest code.
 pub(crate) fn identify_epsg(wkt: &str) -> Option<u32> {
     if let Some(code) = declared_epsg(wkt) {
         return Some(code);
     }
-    let report = wbp::identify_epsg_from_wkt_report(wkt, wbp::EpsgIdentifyPolicy::Lenient)?;
-    // The registry matches loosely: keep a code only when its definition converts coordinates
-    // as the WKT does (GDAL leaves a custom CRS without code).
+    let datums = wkt_datums(wkt);
+    if datums.is_empty() {
+        return None;
+    }
     let own = Def::wkt_conversion(wkt);
-    let fits = |code: u32| {
-        // A projection terrio cannot compare: at least the same ellipsoid (a sinusoidal
-        // projection on MODIS's sphere is not ESRI's World Sinusoidal on WGS 84).
-        let Some(own) = &own else {
-            let candidate = wbp::to_ogc_wkt(code).ok();
-            return match (semi_major_axis(wkt), candidate.as_deref().and_then(semi_major_axis)) {
-                (Some(a), Some(b)) => (a - b).abs() < 1e-3,
-                _ => true,
-            };
-        };
+    // The same conversion on the same ellipsoid.
+    let same = |own: &Def, code: u32| {
         let registered = SpatialRef { epsg: Some(code), wkt: None, proj4: None };
-        Def::new(&registered).is_ok_and(|d| own.same_conversion(&d))
+        Def::new(&registered)
+            .is_ok_and(|d| own.same_conversion(&d) && (own.ell.a - d.ell.a).abs() < 1e-3 && (own.ell.es - d.ell.es).abs() < 1e-9)
     };
-    // The registry can take a datum's or prime meridian's code for the CRS's: then match the WKT
-    // by its parameters alone.
-    if report.used_embedded_epsg && !report.resolved_code.is_some_and(|c| wbp::to_ogc_wkt(c).is_ok()) {
-        let stripped = strip_authorities(wkt);
-        return if stripped != wkt { identify_epsg(&stripped) } else { None };
+    // Among CRSs that match, the one named as the WKT's CRS (`RGF93 v2 (lon-lat)`, ESRI's `GCS_`
+    // prefix aside), else the lowest code.
+    let key = |n: &str| epsg::datum_key(n.strip_prefix("GCS_").unwrap_or(n));
+    let name = wkt_name(wkt).map(|n| key(&n));
+    let named = |c: u32| epsg::get(c).is_some_and(|e| Some(key(&e.name)) == name);
+    if let Some(own) = own.as_ref().filter(|d| d.is_geographic()) {
+        let candidates = datums.iter().flat_map(|d| epsg::geographic_on(*d)).filter(|c| same(own, *c));
+        return candidates.min_by_key(|c| (!named(*c), *c));
     }
-    if report.used_embedded_epsg || !report.ambiguous {
-        return report.resolved_code.filter(|c| fits(*c));
+    // A projected CRS on the WKT's datum with its conversion, as GDAL finds it.
+    if let Some(own) = &own
+        && let Some(method) = conversion_method(wkt)
+    {
+        let geogs = datums.iter().flat_map(|d| epsg::geographic_on(*d));
+        let found = geogs.flat_map(epsg::projected_on).filter(|(c, m)| same_method(m, &method) && same(own, *c)).map(|(c, _)| *c);
+        // Else the one with the WKT's axis order (ETRS89 / UTM zone 32N rather than its N-E
+        // variant for ESRI's WKT, without axes).
+        let own_north_first = north_first(wkt);
+        let axes = |c: u32| epsg::get(c).is_some_and(|e| north_first(&e.wkt) != own_north_first);
+        if let Some(code) = found.min_by_key(|c| (!named(*c), axes(*c), *c)) {
+            return Some(code);
+        }
     }
-    let best = report.top_candidates.first()?.total_score;
-    let upper = wkt.to_ascii_uppercase();
-    let wkt_names_realization = REALIZATIONS.iter().any(|r| upper.contains(r));
-    let names_realization = |code: u32| {
-        let name = wbp::epsg::epsg_info(code).map(|i| i.name.to_ascii_uppercase()).unwrap_or_default();
-        REALIZATIONS.iter().any(|r| name.contains(r))
+    // A current CRS on the WKT's datum. Its datum: its code in the table, else its WKT's (WKT 2
+    // CRSs of the table, on datum ensembles, and those only the registry has). A deprecated code
+    // has its replacement's WKT in the table.
+    let on_datum = |code: u32| {
+        let theirs = match epsg::get(code) {
+            Some(e) if declared_epsg(&e.wkt).is_some_and(|c| c != code) => return false,
+            Some(e) if e.datum != 0 => vec![e.datum],
+            Some(e) => wkt_datums(&e.wkt),
+            None => wbp::to_ogc_wkt(code).map(|w| wkt_datums(&w)).unwrap_or_default(),
+        };
+        theirs.iter().any(|d| datums.contains(d))
     };
-    report
-        .top_candidates
-        .iter()
-        .filter(|c| c.total_score >= best && fits(c.code))
-        .min_by_key(|c| (!wkt_names_realization && names_realization(c.code), c.code))
-        .map(|c| c.code)
-        .or(report.resolved_code.filter(|c| fits(*c)))
+    let registry = || {
+        let report = wbp::identify_epsg_from_wkt_report(wkt, wbp::EpsgIdentifyPolicy::Lenient)?;
+        // The registry matches loosely: keep a code only when its definition converts coordinates
+        // as the WKT does, on its datum (GDAL leaves a custom CRS without code).
+        let fits = |code: u32| {
+            if !on_datum(code) {
+                return false;
+            }
+            // A projection terrio cannot compare: at least the same ellipsoid (a sinusoidal
+            // projection on MODIS's sphere is not ESRI's World Sinusoidal on WGS 84).
+            let Some(own) = &own else {
+                let candidate = wbp::to_ogc_wkt(code).ok();
+                return match (semi_major_axis(wkt), candidate.as_deref().and_then(semi_major_axis)) {
+                    (Some(a), Some(b)) => (a - b).abs() < 1e-3,
+                    _ => true,
+                };
+            };
+            same(own, code)
+        };
+        // The registry can take a datum's or prime meridian's code for the CRS's: then match the WKT
+        // by its parameters alone.
+        if report.used_embedded_epsg && !report.resolved_code.is_some_and(|c| wbp::to_ogc_wkt(c).is_ok()) {
+            let stripped = strip_authorities(wkt);
+            return if stripped != wkt { identify_epsg(&stripped) } else { None };
+        }
+        if report.used_embedded_epsg || !report.ambiguous {
+            return report.resolved_code.filter(|c| fits(*c));
+        }
+        let best = report.top_candidates.first()?.total_score;
+        let upper = wkt.to_ascii_uppercase();
+        let wkt_names_realization = REALIZATIONS.iter().any(|r| upper.contains(r));
+        let names_realization = |code: u32| {
+            let name = wbp::epsg::epsg_info(code).map(|i| i.name.to_ascii_uppercase()).unwrap_or_default();
+            REALIZATIONS.iter().any(|r| name.contains(r))
+        };
+        report
+            .top_candidates
+            .iter()
+            .filter(|c| c.total_score >= best && fits(c.code))
+            .min_by_key(|c| (!wkt_names_realization && names_realization(c.code), c.code))
+            .map(|c| c.code)
+            .or(report.resolved_code.filter(|c| fits(*c)))
+    };
+    registry()
+}
+
+/// The projection method (`+proj=tmerc`) of a WKT definition's conversion.
+fn conversion_method(wkt: &str) -> Option<String> {
+    let root = wkt1::parse(wkt)?;
+    let c = if wkt2::handles(&root) { wkt2::to_proj(&root).ok()? } else { wkt1::to_proj(&root)? };
+    c.proj.split_whitespace().next().map(str::to_string)
+}
+
+/// Whether the first axis of a WKT definition's coordinate system points north or south
+/// (northing, easting), rather than east (or is not given).
+fn north_first(wkt: &str) -> bool {
+    let first = wkt1::parse(wkt).and_then(|root| root.child("AXIS").and_then(|a| a.args.get(1).cloned()));
+    matches!(first, Some(wkt1::Arg::Ident(d)) if ["north", "south"].iter().any(|n| d.eq_ignore_ascii_case(n)))
+}
+
+/// Whether two `+proj=` methods are the same (UTM being a transverse Mercator).
+fn same_method(a: &str, b: &str) -> bool {
+    let m = |s: &str| if s == "+proj=utm" { "+proj=tmerc".to_string() } else { s.to_string() };
+    m(a) == m(b)
 }
 
 /// A WKT definition without its `AUTHORITY[...]` nodes.
@@ -766,6 +861,76 @@ mod tests {
         // GeoPackage, from a GeoParquet file's CRS).
         let wgs84 = r#"GEOGCS["WGS 84",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563],AUTHORITY["EPSG","6326"]],PRIMEM["Greenwich",0,AUTHORITY["EPSG","8901"]],UNIT["Degree",0.0174532925199433],AXIS["Longitude",EAST],AXIS["Latitude",NORTH]]"#;
         assert_eq!(identify_epsg(wgs84), Some(4326));
+    }
+
+    #[test]
+    fn unknown_datums_are_not_guessed_and_named_ones_are_identified_as_in_gdal() {
+        // pyproj.CRS("+proj=tmerc +lon_0=10 +ellps=... +units=m +no_defs").to_wkt("WKT1_GDAL"):
+        // a datum without code nor TOWGS84, which GDAL and PROJ leave unshifted and without
+        // code. (These became Korean 1985, LUREF, Pulkovo 1942(58)... and took their shifts.)
+        let wgs84 = SpatialRef::from_epsg(4326).unwrap();
+        let ellipsoids = [
+            ("bessel", "Bessel 1841", "6377397.155,299.1528128"),
+            ("clrk66", "Clarke 1866", "6378206.4,294.978698213898"),
+            ("intl", "International 1924 (Hayford 1909, 1910)", "6378388,297"),
+            ("airy", "Airy 1830", "6377563.396,299.3249646"),
+            ("krass", "Krassovsky, 1942", "6378245,298.3"),
+            ("GRS80", "GRS 1980", "6378137,298.257222101,AUTHORITY[\"EPSG\",\"7019\"]"),
+        ];
+        for (ellps, name, spheroid) in ellipsoids {
+            let geogcs = format!(
+                r#"GEOGCS["unknown",DATUM["Unknown based on {name} ellipsoid",SPHEROID["{name}",{spheroid}]],PRIMEM["Greenwich",0,AUTHORITY["EPSG","8901"]],UNIT["degree",0.0174532925199433,AUTHORITY["EPSG","9122"]]]"#
+            );
+            let projcs = format!(
+                r#"PROJCS["unknown",{geogcs},PROJECTION["Transverse_Mercator"],PARAMETER["latitude_of_origin",0],PARAMETER["central_meridian",10],PARAMETER["scale_factor",1],PARAMETER["false_easting",0],PARAMETER["false_northing",0],UNIT["metre",1,AUTHORITY["EPSG","9001"]],AXIS["Easting",EAST],AXIS["Northing",NORTH]]"#
+            );
+            let proj = |p: &str| SpatialRef::from_proj4(p).unwrap();
+            let pairs = [
+                (projcs, proj(&format!("+proj=tmerc +lon_0=10 +ellps={ellps} +units=m +no_defs"))),
+                (geogcs, proj(&format!("+proj=longlat +ellps={ellps} +no_defs"))),
+            ];
+            for (wkt, string) in pairs {
+                let crs = SpatialRef::from_wkt(&wkt);
+                assert_eq!(crs.epsg, None, "{ellps}: {wkt}");
+                let (x, y) = Transformer::new(&wgs84, &string).unwrap().transform(12.0, 48.0).unwrap();
+                let (wx, wy) = Transformer::new(&wgs84, &crs).unwrap().transform(12.0, 48.0).unwrap();
+                // Within 1 mm (degrees: 1e-8 is about 1 mm).
+                let tol = if crs.is_geographic() { 1e-8 } else { 1e-3 };
+                assert!((x - wx).abs() < tol && (y - wy).abs() < tol, "{ellps}: {x} {y} != {wx} {wy}");
+            }
+        }
+        // ESRI WKT (pyproj's WKT1_ESRI) naming a datum by ESRI's name: the codes GDAL and pyproj
+        // identify, ED50 rather than ED50(ED77) (EPSG:4154), ETRS89 by its ESRI alias.
+        let esri = |code: u32, name: &str, datum: &str, spheroid: &str, rest: &str| {
+            let geogcs = format!(
+                r#"GEOGCS["GCS_{datum}",DATUM["D_{datum}",SPHEROID[{spheroid}]],PRIMEM["Greenwich",0.0],UNIT["Degree",0.0174532925199433]]"#
+            );
+            let wkt = if name.is_empty() { geogcs } else { format!(r#"PROJCS["{name}",{geogcs},{rest}]"#) };
+            assert_eq!(SpatialRef::from_wkt(&wkt).epsg, Some(code), "{wkt}");
+            wkt
+        };
+        let utm = |lon: i32| {
+            format!(
+                r#"PROJECTION["Transverse_Mercator"],PARAMETER["False_Easting",500000.0],PARAMETER["False_Northing",0.0],PARAMETER["Central_Meridian",{lon}.0],PARAMETER["Scale_Factor",0.9996],PARAMETER["Latitude_Of_Origin",0.0],UNIT["Meter",1.0]"#
+            )
+        };
+        let intl = r#""International_1924",6378388.0,297.0"#;
+        let grs80 = r#""GRS_1980",6378137.0,298.257222101"#;
+        let ed50 = esri(4230, "", "European_1950", intl, "");
+        let ed50_utm = esri(23032, "ED_1950_UTM_Zone_32N", "European_1950", intl, &utm(9));
+        esri(4269, "", "North_American_1983", grs80, "");
+        esri(26918, "NAD_1983_UTM_Zone_18N", "North_American_1983", grs80, &utm(-75));
+        esri(4258, "", "ETRS_1989", grs80, "");
+        esri(25832, "ETRS_1989_UTM_Zone_32N", "ETRS_1989", grs80, &utm(9));
+        // With ED50's datum shift, as EPSG:4230 and EPSG:23032 (about 100 m in the Netherlands).
+        for (wkt, code, tol) in [(&ed50, 4230, 1e-8), (&ed50_utm, 23032, 1e-3)] {
+            let t = Transformer::new(&wgs84, &SpatialRef::from_wkt(wkt)).unwrap();
+            let (x, y) = t.transform(5.0, 52.0).unwrap();
+            let (ex, ey) = Transformer::new(&wgs84, &SpatialRef::from_epsg(code).unwrap()).unwrap().transform(5.0, 52.0).unwrap();
+            assert!((x - ex).abs() < tol && (y - ey).abs() < tol, "{code}: {x} {y} != {ex} {ey}");
+        }
+        let (x, _) = Transformer::new(&wgs84, &SpatialRef::from_wkt(&ed50)).unwrap().transform(5.0, 52.0).unwrap();
+        assert!((x - 5.0).abs() > 5e-4, "{x}");
     }
 
     #[test]
