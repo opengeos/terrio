@@ -417,6 +417,8 @@ pub(crate) fn identify_epsg(wkt: &str) -> Option<u32> {
         return Some(code);
     }
     let datums = wkt_datums(wkt);
+    // No known datum (or no datum node, or WKT the reader cannot parse): no code, and on purpose
+    // not the registry's loose guess (#125).
     if datums.is_empty() {
         return None;
     }
