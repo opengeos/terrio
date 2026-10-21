@@ -105,6 +105,13 @@ jobs:
           pipx run maturin sdist --out dist
           tar tzf dist/*.tar.gz > sdist.list
           grep -qx '[^/]*/python/LICENSE' sdist.list
+      # As the release builds it: the notices copied in, all three files in the sdist.
+      - name: The Python sdist carries the notices when they are copied in
+        working-directory: python
+        run: |
+          cp ../NOTICE ../LICENSE-THIRD-PARTY.md .
+          rm -rf dist && pipx run maturin sdist --out dist
+          python3 ../.github/scripts/check-license-files.py dist/*.tar.gz
       - name: The crates carry LICENSE and NOTICE
         run: |
           cargo package --list -p terrio > terrio.list
