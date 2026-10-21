@@ -634,8 +634,8 @@ def suite_crs(ctx):
         "WKT1_GDAL and WKT2_2019, 20 points each, matching PROJ or refused). "
         "Identical: within 1 mm. Within tolerance: within 1 cm (forward, inverse) or 1 m (CRS to "
         "CRS, where the datum transformations GDAL picks can differ by area of use). Known "
-        "differences: CRS-to-CRS pairs PROJ chains through more than two transformations or "
-        "through geocentric CRSs, and deprecated CRSs whose own datum PROJ uses (#153).",
+        "differences: deprecated CRSs whose own datum PROJ uses, where terrio uses their "
+        "replacement's (#153).",
     )
     if not shutil.which("cargo"):
         s.skipped = "needs cargo"
@@ -704,7 +704,10 @@ def suite_crs_grids(ctx):
         "geoid models (GeoTIFF and GTX), NADCON5 and geocentric translation grids, compound CRSs "
         "and time-dependent transformations with coordinate epochs "
         "(scripts/compare_crs_grids_with_gdal.py), with the largest difference of each case. "
-        "Identical: within 1 mm. Within tolerance: within 1 cm, or 1 m from CRS to CRS.",
+        "Identical: within 1 mm. Within tolerance: within 1 cm, or 1 m from CRS to CRS. Known "
+        "differences: deprecated CRSs, and CRS-to-CRS pairs PROJ chains through more than two "
+        "transformations (NAD27 through NAD83(HARN), NAD83(FBN) and NAD83(NSRS2007)) or through "
+        "the steps of a concatenation its database registers (#153).",
     )
     if not shutil.which("cargo"):
         s.skipped = "needs cargo"

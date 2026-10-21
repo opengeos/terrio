@@ -25,9 +25,9 @@ Generated on 2026-10-14 with terrio 0.1.1 (9e7f7f5), GDAL 3.12.2, PROJ 9.7.1, PD
 | [Arrow and GeoArrow](#arrow-and-geoarrow) | GDAL's Arrow streams, pyarrow, GeoPandas | 180 | 171 | 9 | 0 |
 | [GeoPackage updates and spatial filters](#geopackage-updates-and-spatial-filters) | `ogr2ogr`, GDAL's `validate_gpkg.py` | 12 | 12 | 0 | 0 |
 | [Point clouds](#point-clouds) | laspy (every value), PDAL (headers, PLY, E57 and EPT, COPC and EPT queries, filters, grids, reprojection) and gdal_grid (TIN and nearest-neighbour grids) | 615 | 609 | 6 | 0 |
-| [Coordinate transformations](#coordinate-transformations) | GDAL 3.12 and PROJ (`gdaltransform`) | 19,017 | 18,950 | 59 | 8 |
-| [Datum shift grids, geoid models and coordinate epochs](#datum-shift-grids-geoid-models-and-coordinate-epochs) | GDAL 3.12 and PROJ, with the same grids | 19,253 | 19,137 | 94 | 22 |
-| **All** | | **40,068** | **39,861** | **177** | **30** |
+| [Coordinate transformations](#coordinate-transformations) | GDAL 3.12 and PROJ (`gdaltransform`) | 19,017 | 19,002 | 13 | 2 |
+| [Datum shift grids, geoid models and coordinate epochs](#datum-shift-grids-geoid-models-and-coordinate-epochs) | GDAL 3.12 and PROJ, with the same grids | 19,253 | 19,196 | 52 | 5 |
+| **All** | | **40,068** | **39,972** | **89** | **7** |
 
 ## Dataset summaries and pixels
 
@@ -290,13 +290,13 @@ Cases that are not identical:
 
 ## Coordinate transformations
 
-50 reference points per EPSG geographic and projected CRS (the centre of its area of use and random points of it), transformed from WGS 84 (forward), 50 more back (inverse), and 50 between the CRS and another whose area holds them, compared with GDAL's results, neither using datum shift grids, a case per CRS (per pair of CRSs from CRS to CRS) judged by its worst point; then projections EPSG has no code for, against PROJ (crates/terrio/tests/geostationary.rs: points from nadir to near the limb, forward within 1 mm and inverse within 1e-8°, and points the satellite cannot see refused; crates/terrio/tests/ellipsoidal_projections.rs: points over the globe on WGS 84 and on a sphere, forward within 1 mm and inverse within 1e-8°, and for the gnomonic points beyond the horizon refused; crates/terrio/tests/proj_strings.rs: every PROJ projection with typical parameters, on WGS 84 and on a sphere, as a PROJ string and as pyproj's WKT1_GDAL and WKT2_2019, 20 points each, matching PROJ or refused). Identical: within 1 mm. Within tolerance: within 1 cm (forward, inverse) or 1 m (CRS to CRS, where the datum transformations GDAL picks can differ by area of use). Known differences: CRS-to-CRS pairs PROJ chains through more than two transformations or through geocentric CRSs, and deprecated CRSs whose own datum PROJ uses (#153).
+50 reference points per EPSG geographic and projected CRS (the centre of its area of use and random points of it), transformed from WGS 84 (forward), 50 more back (inverse), and 50 between the CRS and another whose area holds them, compared with GDAL's results, neither using datum shift grids, a case per CRS (per pair of CRSs from CRS to CRS) judged by its worst point; then projections EPSG has no code for, against PROJ (crates/terrio/tests/geostationary.rs: points from nadir to near the limb, forward within 1 mm and inverse within 1e-8°, and points the satellite cannot see refused; crates/terrio/tests/ellipsoidal_projections.rs: points over the globe on WGS 84 and on a sphere, forward within 1 mm and inverse within 1e-8°, and for the gnomonic points beyond the horizon refused; crates/terrio/tests/proj_strings.rs: every PROJ projection with typical parameters, on WGS 84 and on a sphere, as a PROJ string and as pyproj's WKT1_GDAL and WKT2_2019, 20 points each, matching PROJ or refused). Identical: within 1 mm. Within tolerance: within 1 cm (forward, inverse) or 1 m (CRS to CRS, where the datum transformations GDAL picks can differ by area of use). Known differences: deprecated CRSs whose own datum PROJ uses, where terrio uses their replacement's (#153).
 
 | Format or operation | Cases | Identical | Within tolerance | Differs |
 |---|---:|---:|---:|---:|
 | forward (WGS 84 to CRS) | 6,354 | 6,354 | 0 | 0 |
 | inverse (CRS to WGS 84) | 6,354 | 6,354 | 0 | 0 |
-| CRS to CRS | 6,295 | 6,228 | 59 | 8 |
+| CRS to CRS | 6,295 | 6,280 | 13 | 2 |
 | PROJ definitions without an EPSG code | 14 | 14 | 0 | 0 |
 
 Cases that are not identical:
@@ -304,105 +304,41 @@ Cases that are not identical:
 | Format or operation | Case | Result | Details |
 |---|---|---|---|
 | CRS to CRS | EPSG:6054 to EPSG:4287 | differs | 267.0470 m at (31784658.69, 3344856.669), the largest of 50 points |
-| CRS to CRS | EPSG:8888 to EPSG:8994 | differs | 1.1602 m at (-110.1080215, 45.75882471), the largest of 50 points |
-| CRS to CRS | EPSG:10454 to EPSG:9054 | differs | 1.7455 m at (21616.19231, 243669.5191), the largest of 50 points |
-| CRS to CRS | EPSG:10459 to EPSG:10606 | differs | 1.8098 m at (19600.97347, 592323.339), the largest of 50 points |
-| CRS to CRS | EPSG:27573 to EPSG:32431 | differs | 1.1627 m at (412711.9036, 3155755.526), the largest of 50 points |
-| CRS to CRS | EPSG:27584 to EPSG:4324 | differs | 1.0232 m at (601143.9936, 4142662.515), the largest of 50 points |
-| CRS to CRS | EPSG:28357 to EPSG:9053 | differs | 1.5080 m at (194555.4687, 8181025.166), the largest of 50 points |
 | CRS to CRS | EPSG:29183 to EPSG:20823 | differs | 208.2056 m at (701491.5661, 7674422.233), the largest of 50 points |
-| CRS to CRS | EPSG:2392 to EPSG:4124 | within tolerance | 0.5581 m at (2500642.641, 7632767.385), the largest of 50 points |
-| CRS to CRS | EPSG:3108 to EPSG:8998 | within tolerance | 0.3433 m at (69969.66614, 21639.94369), the largest of 50 points |
 | CRS to CRS | EPSG:3312 to EPSG:31171 | within tolerance | 0.0021 m at (823128.8384, 542294.9992), the largest of 50 points |
 | CRS to CRS | EPSG:3768 to EPSG:3908 | within tolerance | 0.7959 m at (278809.5528, 4726919.154), the largest of 50 points |
 | CRS to CRS | EPSG:4149 to EPSG:4230 | within tolerance | 0.0011 m at (6.283819626, 45.83474531), the largest of 50 points |
 | CRS to CRS | EPSG:4179 to EPSG:4230 | within tolerance | 0.0020 m at (19.38060709, 42.48389042), the largest of 50 points |
 | CRS to CRS | EPSG:4745 to EPSG:5663 | within tolerance | 0.0011 m at (14.31513274, 50.44966061), the largest of 50 points |
 | CRS to CRS | EPSG:5681 to EPSG:5664 | within tolerance | 0.0011 m at (10.31746658, 50.21108448), the largest of 50 points |
-| CRS to CRS | EPSG:6333 to EPSG:8993 | within tolerance | 0.0458 m at (448950.3671, 8287866.301), the largest of 50 points |
-| CRS to CRS | EPSG:6402 to EPSG:8990 | within tolerance | 0.0098 m at (572019.6081, 294295.6639), the largest of 50 points |
-| CRS to CRS | EPSG:6405 to EPSG:8991 | within tolerance | 0.0152 m at (421012.1843, 141401.7089), the largest of 50 points |
-| CRS to CRS | EPSG:6423 to EPSG:8992 | within tolerance | 0.0151 m at (2103749.298, 431823.2823), the largest of 50 points |
-| CRS to CRS | EPSG:6432 to EPSG:8994 | within tolerance | 0.0146 m at (3590898.268, 1125158.116), the largest of 50 points |
-| CRS to CRS | EPSG:6446 to EPSG:8993 | within tolerance | 0.0234 m at (769511.2648, 542693.3232), the largest of 50 points |
-| CRS to CRS | EPSG:6448 to EPSG:8988 | within tolerance | 0.0138 m at (539882.5335, 41644.26552), the largest of 50 points |
-| CRS to CRS | EPSG:6449 to EPSG:8996 | within tolerance | 0.0138 m at (1429677.095, 158507.9261), the largest of 50 points |
-| CRS to CRS | EPSG:6454 to EPSG:8990 | within tolerance | 0.0145 m at (360527.4003, 55034.77122), the largest of 50 points |
-| CRS to CRS | EPSG:6459 to EPSG:8989 | within tolerance | 0.0144 m at (517275.6871, 998256.7377), the largest of 50 points |
-| CRS to CRS | EPSG:6464 to EPSG:8992 | within tolerance | 0.0141 m at (429772.6726, 40691.57902), the largest of 50 points |
-| CRS to CRS | EPSG:6475 to EPSG:8994 | within tolerance | 0.0146 m at (775337.7006, 1758203.993), the largest of 50 points |
-| CRS to CRS | EPSG:6506 to EPSG:8998 | within tolerance | 0.0015 m at (215294.6483, 139556.3631), the largest of 50 points |
-| CRS to CRS | EPSG:6512 to EPSG:8992 | within tolerance | 0.0147 m at (224894.2462, 19736.69661), the largest of 50 points |
-| CRS to CRS | EPSG:6532 to EPSG:8989 | within tolerance | 0.0152 m at (867500.5085, 46877.56129), the largest of 50 points |
-| CRS to CRS | EPSG:6541 to EPSG:8998 | within tolerance | 0.0014 m at (874392.5834, 1302633.456), the largest of 50 points |
-| CRS to CRS | EPSG:6549 to EPSG:8994 | within tolerance | 0.0141 m at (1645458.16, 202698.7194), the largest of 50 points |
-| CRS to CRS | EPSG:6550 to EPSG:8990 | within tolerance | 0.0143 m at (555635.3179, 48688.69894), the largest of 50 points |
-| CRS to CRS | EPSG:6556 to EPSG:8988 | within tolerance | 0.0138 m at (404898.7589, 35567.50055), the largest of 50 points |
-| CRS to CRS | EPSG:6576 to EPSG:8998 | within tolerance | 0.0015 m at (690252.7386, 279542.2873), the largest of 50 points |
-| CRS to CRS | EPSG:6597 to EPSG:8992 | within tolerance | 0.0130 m at (2461277.88, 85488.20856), the largest of 50 points |
-| CRS to CRS | EPSG:6607 to EPSG:8988 | within tolerance | 0.0133 m at (1308962.376, 92693.85938), the largest of 50 points |
-| CRS to CRS | EPSG:6614 to EPSG:8989 | within tolerance | 0.0140 m at (1600351.496, 525281.8563), the largest of 50 points |
-| CRS to CRS | EPSG:6616 to EPSG:8998 | within tolerance | 0.0016 m at (2390579.673, 554502.7513), the largest of 50 points |
-| CRS to CRS | EPSG:6787 to EPSG:8996 | within tolerance | 0.0134 m at (212359.103, 38055.72627), the largest of 50 points |
-| CRS to CRS | EPSG:6820 to EPSG:9000 | within tolerance | 0.0135 m at (27687.95835, 704.5658856), the largest of 50 points |
-| CRS to CRS | EPSG:6839 to EPSG:8992 | within tolerance | 0.0136 m at (221745.4798, 68625.68677), the largest of 50 points |
-| CRS to CRS | EPSG:6862 to EPSG:8990 | within tolerance | 0.0134 m at (58460.90809, 4149.408899), the largest of 50 points |
-| CRS to CRS | EPSG:7059 to EPSG:8988 | within tolerance | 0.0138 m at (13394559.48, 9046319.641), the largest of 50 points |
-| CRS to CRS | EPSG:7260 to EPSG:8995 | within tolerance | 0.0140 m at (801425.4128, 130723.6063), the largest of 50 points |
-| CRS to CRS | EPSG:7285 to EPSG:8994 | within tolerance | 0.0143 m at (246408.6281, 41823.3136), the largest of 50 points |
-| CRS to CRS | EPSG:7321 to EPSG:8990 | within tolerance | 0.0141 m at (223151.2771, 36085.48588), the largest of 50 points |
-| CRS to CRS | EPSG:7322 to EPSG:8990 | within tolerance | 0.0141 m at (735815.6184, 119633.3581), the largest of 50 points |
-| CRS to CRS | EPSG:7336 to EPSG:8991 | within tolerance | 0.0140 m at (753293.4484, 120517.0745), the largest of 50 points |
-| CRS to CRS | EPSG:7353 to EPSG:8990 | within tolerance | 0.0143 m at (256339.4178, 38058.00533), the largest of 50 points |
-| CRS to CRS | EPSG:7364 to EPSG:8991 | within tolerance | 0.0141 m at (752596.9208, 127294.949), the largest of 50 points |
-| CRS to CRS | EPSG:7543 to EPSG:8992 | within tolerance | 0.0132 m at (38773.75031, 30419.11574), the largest of 50 points |
-| CRS to CRS | EPSG:7604 to EPSG:8995 | within tolerance | 0.0135 m at (414442.8705, 199477.4671), the largest of 50 points |
-| CRS to CRS | EPSG:7606 to EPSG:8993 | within tolerance | 0.0287 m at (800368.808, 755799.3287), the largest of 50 points |
-| CRS to CRS | EPSG:7616 to EPSG:8989 | within tolerance | 0.0134 m at (700139.5807, 296580.6885), the largest of 50 points |
-| CRS to CRS | EPSG:7618 to EPSG:8991 | within tolerance | 0.0134 m at (108339.7665, 100694.5877), the largest of 50 points |
-| CRS to CRS | EPSG:7849 to EPSG:9053 | within tolerance | 0.3186 m at (731947.2023, 8696187.041), the largest of 50 points |
-| CRS to CRS | EPSG:8326 to EPSG:8988 | within tolerance | 0.0134 m at (156165.6381, 494.0238398), the largest of 50 points |
-| CRS to CRS | EPSG:8528 to EPSG:8993 | within tolerance | 0.0252 m at (11505204.67, 715213.2819), the largest of 50 points |
-| | ... and 7 more | | |
+| CRS to CRS | EPSG:9149 to EPSG:20048 | within tolerance | 0.0029 m at (676328.809, 5369453.639), the largest of 50 points |
+| CRS to CRS | EPSG:9404 to EPSG:4728 | within tolerance | 0.0022 m at (778106.4743, 3084377.471), the largest of 50 points |
+| CRS to CRS | EPSG:11117 to EPSG:3117 | within tolerance | 0.3107 m at (1112787.716, 1625740.3), the largest of 50 points |
+| CRS to CRS | EPSG:25394 to EPSG:3124 | within tolerance | 0.0020 m at (641386.12, 908387.1589), the largest of 50 points |
+| CRS to CRS | EPSG:29901 to EPSG:23029 | within tolerance | 0.0067 m at (208913.9987, 333999.2567), the largest of 50 points |
+| CRS to CRS | EPSG:31277 to EPSG:4284 | within tolerance | 0.0011 m at (7403421.197, 4703646.433), the largest of 50 points |
+| CRS to CRS | EPSG:31463 to EPSG:4668 | within tolerance | 0.0011 m at (3391059.234, 5261195.817), the largest of 50 points |
 
 ## Datum shift grids, geoid models and coordinate epochs
 
-The EPSG reference points again, GDAL and terrio both using the grids of `scripts/proj_grids.txt` (crates/terrio/tests/epsg_accuracy_grids.rs); then random points through every horizontal shift grid (NTv2 and GeoTIFF, forward and inverse), geoid models (GeoTIFF and GTX), NADCON5 and geocentric translation grids, compound CRSs and time-dependent transformations with coordinate epochs (scripts/compare_crs_grids_with_gdal.py), with the largest difference of each case. Identical: within 1 mm. Within tolerance: within 1 cm, or 1 m from CRS to CRS.
+The EPSG reference points again, GDAL and terrio both using the grids of `scripts/proj_grids.txt` (crates/terrio/tests/epsg_accuracy_grids.rs); then random points through every horizontal shift grid (NTv2 and GeoTIFF, forward and inverse), geoid models (GeoTIFF and GTX), NADCON5 and geocentric translation grids, compound CRSs and time-dependent transformations with coordinate epochs (scripts/compare_crs_grids_with_gdal.py), with the largest difference of each case. Identical: within 1 mm. Within tolerance: within 1 cm, or 1 m from CRS to CRS. Known differences: deprecated CRSs, and CRS-to-CRS pairs PROJ chains through more than two transformations (NAD27 through NAD83(HARN), NAD83(FBN) and NAD83(NSRS2007)) or through the steps of a concatenation its database registers (#153).
 
 | Format or operation | Cases | Identical | Within tolerance | Differs |
 |---|---:|---:|---:|---:|
 | forward (WGS 84 to CRS) with grids | 6,354 | 6,352 | 2 | 0 |
 | inverse (CRS to WGS 84) with grids | 6,354 | 6,351 | 3 | 0 |
-| CRS to CRS with grids | 6,295 | 6,184 | 89 | 22 |
-| grids, geoids and epochs | 250 | 250 | 0 | 0 |
+| CRS to CRS with grids | 6,295 | 6,244 | 46 | 5 |
+| grids, geoids and epochs | 250 | 249 | 1 | 0 |
 
 Cases that are not identical:
 
 | Format or operation | Case | Result | Details |
 |---|---|---|---|
-| CRS to CRS with grids | EPSG:2872 to EPSG:2227 | differs | 1.0191 m at (6951924.251, 1904527.179), the largest of 50 points |
 | CRS to CRS with grids | EPSG:3005 to EPSG:3716 | differs | 12.5894 m at (829873.6782, 684911.9161), the largest of 50 points |
 | CRS to CRS with grids | EPSG:3080 to EPSG:8992 | differs | 57.6746 m at (901098.7649, 2002140.947), the largest of 50 points |
-| CRS to CRS with grids | EPSG:4412 to EPSG:4740 | differs | 5.1219 m at (1448461.286, 17111165.79), the largest of 50 points |
 | CRS to CRS with grids | EPSG:6054 to EPSG:4287 | differs | 267.0470 m at (31784658.69, 3344856.669), the largest of 50 points |
-| CRS to CRS with grids | EPSG:6738 to EPSG:8992 | differs | 1.2011 m at (289579.0123, 7151069.136), the largest of 50 points |
-| CRS to CRS with grids | EPSG:7991 to EPSG:3979 | differs | 3.0020 m at (190175.5045, 4691055.015), the largest of 50 points |
-| CRS to CRS with grids | EPSG:8888 to EPSG:8994 | differs | 1.1602 m at (-110.1080215, 45.75882471), the largest of 50 points |
-| CRS to CRS with grids | EPSG:10454 to EPSG:9054 | differs | 1.7455 m at (21616.19231, 243669.5191), the largest of 50 points |
-| CRS to CRS with grids | EPSG:10459 to EPSG:10606 | differs | 1.8098 m at (19600.97347, 592323.339), the largest of 50 points |
-| CRS to CRS with grids | EPSG:26771 to EPSG:9755 | differs | 12.2594 m at (632691.1747, 1251507.259), the largest of 50 points |
-| CRS to CRS with grids | EPSG:26773 to EPSG:3348 | differs | 10.1678 m at (259292.3173, 951104.747), the largest of 50 points |
-| CRS to CRS with grids | EPSG:26774 to EPSG:9055 | differs | 11.6731 m at (424297.262, 965664.5296), the largest of 50 points |
-| CRS to CRS with grids | EPSG:26787 to EPSG:32419 | differs | 10.4565 m at (158417.3702, 74324.09744), the largest of 50 points |
-| CRS to CRS with grids | EPSG:26801 to EPSG:9056 | differs | 4.0809 m at (329281.4015, 1539306.993), the largest of 50 points |
 | CRS to CRS with grids | EPSG:26836 to EPSG:2036 | differs | 1.2013 m at (1318875.593, 744124.61), the largest of 50 points |
-| CRS to CRS with grids | EPSG:27573 to EPSG:32431 | differs | 1.1627 m at (412711.9036, 3155755.526), the largest of 50 points |
-| CRS to CRS with grids | EPSG:27584 to EPSG:4324 | differs | 1.0232 m at (601143.9936, 4142662.515), the largest of 50 points |
-| CRS to CRS with grids | EPSG:28357 to EPSG:9053 | differs | 1.5080 m at (194555.4687, 8181025.166), the largest of 50 points |
 | CRS to CRS with grids | EPSG:29183 to EPSG:20823 | differs | 210.4146 m at (701491.9215, 7674419.3), the largest of 50 points |
-| CRS to CRS with grids | EPSG:32054 to EPSG:10968 | differs | 7.3859 m at (2586725.893, 643614.9004), the largest of 50 points |
-| CRS to CRS with grids | EPSG:32218 to EPSG:2163 | differs | 6.8461 m at (560910.5466, 4580429.578), the largest of 50 points |
-| CRS to CRS with grids | EPSG:2392 to EPSG:4124 | within tolerance | 0.5581 m at (2500642.641, 7632767.385), the largest of 50 points |
 | CRS to CRS with grids | EPSG:2776 to EPSG:4759 | within tolerance | 0.0617 m at (228995.6064, 181083.031), the largest of 50 points |
 | CRS to CRS with grids | EPSG:2793 to EPSG:3529 | within tolerance | 0.0149 m at (823074.1448, 686596.2949), the largest of 50 points |
 | CRS to CRS with grids | EPSG:2840 to EPSG:5072 | within tolerance | 0.0589 m at (98039.12098, 19028.68932), the largest of 50 points |
@@ -413,8 +349,6 @@ Cases that are not identical:
 | CRS to CRS with grids | EPSG:2968 to EPSG:3529 | within tolerance | 0.0134 m at (2675916.407, 1136577.368), the largest of 50 points |
 | CRS to CRS with grids | EPSG:3006 to EPSG:9062 | within tolerance | 0.0082 m at (552348.3716, 6103006.669), the largest of 50 points |
 | CRS to CRS with grids | EPSG:3034 to EPSG:8993 | within tolerance | 0.0066 m at (3835189.368, 4208497.145), the largest of 50 points |
-| CRS to CRS with grids | EPSG:3087 to EPSG:26917 | within tolerance | 0.1962 m at (743696.8808, 717492.861), the largest of 50 points |
-| CRS to CRS with grids | EPSG:3108 to EPSG:8998 | within tolerance | 0.3433 m at (69969.66614, 21639.94369), the largest of 50 points |
 | CRS to CRS with grids | EPSG:3174 to EPSG:3162 | within tolerance | 0.0259 m at (617151.5571, 667112.2006), the largest of 50 points |
 | CRS to CRS with grids | EPSG:3300 to EPSG:9065 | within tolerance | 0.0024 m at (388814.7714, 6583119.914), the largest of 50 points |
 | CRS to CRS with grids | EPSG:3312 to EPSG:31171 | within tolerance | 0.0021 m at (823128.8384, 542294.9992), the largest of 50 points |
@@ -433,11 +367,27 @@ Cases that are not identical:
 | CRS to CRS with grids | EPSG:5513 to EPSG:5224 | within tolerance | 0.4927 m at (1055258.72, 504135.466), the largest of 50 points |
 | CRS to CRS with grids | EPSG:5651 to EPSG:9000 | within tolerance | 0.6140 m at (31577406.5, 5679755.699), the largest of 50 points |
 | CRS to CRS with grids | EPSG:5681 to EPSG:5664 | within tolerance | 0.0011 m at (10.31746658, 50.21108448), the largest of 50 points |
-| CRS to CRS with grids | EPSG:6333 to EPSG:8993 | within tolerance | 0.0458 m at (448950.3671, 8287866.301), the largest of 50 points |
-| CRS to CRS with grids | EPSG:6402 to EPSG:8990 | within tolerance | 0.0098 m at (572019.6081, 294295.6639), the largest of 50 points |
-| CRS to CRS with grids | EPSG:6405 to EPSG:8991 | within tolerance | 0.0152 m at (421012.1843, 141401.7089), the largest of 50 points |
-| CRS to CRS with grids | EPSG:6423 to EPSG:8992 | within tolerance | 0.0151 m at (2103749.298, 431823.2823), the largest of 50 points |
-| CRS to CRS with grids | EPSG:6432 to EPSG:8994 | within tolerance | 0.0146 m at (3590898.268, 1125158.116), the largest of 50 points |
-| CRS to CRS with grids | EPSG:6446 to EPSG:8993 | within tolerance | 0.0234 m at (769511.2648, 542693.3232), the largest of 50 points |
-| CRS to CRS with grids | EPSG:6448 to EPSG:8988 | within tolerance | 0.0138 m at (539882.5335, 41644.26552), the largest of 50 points |
-| | ... and 56 more | | |
+| CRS to CRS with grids | EPSG:8108 to EPSG:3591 | within tolerance | 0.1441 m at (818875.1391, 367824.1591), the largest of 50 points |
+| CRS to CRS with grids | EPSG:8115 to EPSG:3696 | within tolerance | 0.0383 m at (153073.0862, 131286.0573), the largest of 50 points |
+| CRS to CRS with grids | EPSG:8147 to EPSG:3589 | within tolerance | 0.0771 m at (247171.4731, 115051.5015), the largest of 50 points |
+| CRS to CRS with grids | EPSG:8187 to EPSG:5072 | within tolerance | 0.0718 m at (258189.6321, 163511.9343), the largest of 50 points |
+| CRS to CRS with grids | EPSG:8191 to EPSG:3700 | within tolerance | 0.0509 m at (221175.2382, 166160.5792), the largest of 50 points |
+| CRS to CRS with grids | EPSG:8210 to EPSG:4759 | within tolerance | 0.0678 m at (526724.8654, 318488.371), the largest of 50 points |
+| forward (WGS 84 to CRS) with grids | EPSG:8997 | within tolerance | 0.0028 m at (166.0884248, -34.67636972), the largest of 50 points |
+| inverse (CRS to WGS 84) with grids | EPSG:9000 | within tolerance | 0.0075 m at (168.8993947, -41.01545018), the largest of 50 points |
+| CRS to CRS with grids | EPSG:9060 to EPSG:9065 | within tolerance | 0.0020 m at (20.50319716, 66.70419935), the largest of 50 points |
+| inverse (CRS to WGS 84) with grids | EPSG:9062 | within tolerance | 0.0080 m at (14.12453145, 54.63356386), the largest of 50 points |
+| forward (WGS 84 to CRS) with grids | EPSG:9067 | within tolerance | 0.0020 m at (23.28842349, 54.00210046), the largest of 50 points |
+| inverse (CRS to WGS 84) with grids | EPSG:9067 | within tolerance | 0.0023 m at (20.22860091, 56.03457355), the largest of 50 points |
+| CRS to CRS with grids | EPSG:9149 to EPSG:20048 | within tolerance | 0.0029 m at (676328.809, 5369453.639), the largest of 50 points |
+| CRS to CRS with grids | EPSG:9404 to EPSG:4728 | within tolerance | 0.0022 m at (778106.4743, 3084377.471), the largest of 50 points |
+| CRS to CRS with grids | EPSG:10454 to EPSG:9054 | within tolerance | 0.4007 m at (65866.80438, 150719.7607), the largest of 50 points |
+| CRS to CRS with grids | EPSG:10459 to EPSG:10606 | within tolerance | 0.0977 m at (23088.82127, 586827.965), the largest of 50 points |
+| CRS to CRS with grids | EPSG:11117 to EPSG:3117 | within tolerance | 0.3107 m at (1112787.716, 1625740.3), the largest of 50 points |
+| CRS to CRS with grids | EPSG:20355 to EPSG:9309 | within tolerance | 0.0443 m at (756710.0855, 6824843.929), the largest of 50 points |
+| CRS to CRS with grids | EPSG:25394 to EPSG:3124 | within tolerance | 0.0020 m at (641386.12, 908387.1589), the largest of 50 points |
+| CRS to CRS with grids | EPSG:27593 to EPSG:7084 | within tolerance | 0.0013 m at (715820.8766, 299455.2569), the largest of 50 points |
+| CRS to CRS with grids | EPSG:29901 to EPSG:23029 | within tolerance | 0.0067 m at (208913.9987, 333999.2567), the largest of 50 points |
+| CRS to CRS with grids | EPSG:31277 to EPSG:4284 | within tolerance | 0.0011 m at (7403421.197, 4703646.433), the largest of 50 points |
+| CRS to CRS with grids | EPSG:32055 to EPSG:3348 | within tolerance | 0.3687 m at (404966.2857, 134550.9639), the largest of 50 points |
+| grids, geoids and epochs | NTF to RGF93 (xyzgridshift, EPSG:4275 to 4171) | within tolerance | 500 points, largest difference 1.09e-03 m |

@@ -2,15 +2,19 @@
 
 Writes ``crates/terrio/data/epsg.tsv.zst``, a zstd-compressed text table with these lines:
 
-- ``O<TAB>id<TAB>west,south,east,north<TAB>accuracy<TAB>flags<TAB>steps``: a datum transformation,
-  as the geodetic steps of the PROJ pipeline GDAL uses (``cart ellps=intl;helmert x=-87 y=-98
-  z=-121;inv cart ellps=WGS84``, ``hgridshift grids=us_noaa_conus.tif``; empty for a null
-  transformation), the area where it applies (in degrees), its accuracy in metres (-1 when
-  unknown) and flags for how PROJ ranks, chains and runs it (``o``: offshore area, ``u``:
-  unknown area, ``b``: ballpark, ``c``: a concatenation PROJ makes, rather than one the EPSG
-  dataset registers, ``h`` and ``g``: one PROJ's database registers between geographic 3D or
+- ``O<TAB>id<TAB>west,south,east,north<TAB>accuracy<TAB>flags<TAB>steps<TAB>name<TAB>steps accuracy``: a datum
+  transformation, as the geodetic steps of the PROJ pipeline GDAL uses (``cart ellps=intl;helmert
+  x=-87 y=-98 z=-121;inv cart ellps=WGS84``, ``hgridshift grids=us_noaa_conus.tif``; empty for a
+  null transformation), the area where it applies (in degrees), its accuracy in metres (-1 when
+  unknown), flags for how PROJ ranks, chains and runs it (``o``: offshore area, ``u``: unknown
+  area, ``b``: ballpark, ``c``: a concatenation PROJ makes, rather than one PROJ's database
+  registers, ``h`` and ``g``: one PROJ's database registers between geographic 3D or
   geocentric CRSs, ``p``: one PROJ prefers among those of equal accuracy, ``z``: the pipeline
-  keeps heights between 2D CRSs).
+  keeps heights between 2D CRSs) and PROJ's name for it, the names of its steps joined by `` + ``
+  (``NTF (Paris) to NTF (1) + NTF to WGS 84 (1)``), by which PROJ breaks the last ties when it
+  sorts the chains it makes, and for a concatenation PROJ's database registers with another
+  accuracy than its steps', the sum of theirs, which PROJ gives the chains it makes with it
+  (empty otherwise).
 - ``C<TAB>code<TAB>name<TAB>datum<TAB>geog<TAB>ops<TAB>grid ops<TAB>flags<TAB>area<TAB>PROJ string<TAB>WKT``:
   an EPSG geographic (2D or 3D) or projected CRS with its official name, EPSG datum code, the
   code of its geographic 2D CRS, its datum transformations to WGS 84 in the order GDAL lists them
@@ -74,6 +78,9 @@ GRID_STEPS = {"hgridshift", "vgridshift", "gridshift", "xyzgridshift", "deformat
 
 # Steps that neither (un)project nor shift datums.
 NEUTRAL_STEPS = {"push", "pop", "noop", "unitconvert", "axisswap", "set"}
+
+# The method of the conversions between geographic and geocentric CRSs.
+GEOCENTRIC = "Geographic/geocentric conversions"
 
 # Operations PROJ prefers among those of equal accuracy (``isPriorityOp`` in PROJ's
 # coord_operation.cpp), by name.
@@ -267,7 +274,8 @@ def transformations(source, target, pm=0.0, target_pm=0.0, grids=False):
         grids: Whether to list the operations GDAL uses when grids are available.
 
     Returns:
-        ``[(steps, (west, south, east, north), accuracy, flags)]`` in GDAL's order.
+        ``[(steps, (west, south, east, north), accuracy, flags, name, steps accuracy)]`` in GDAL's
+        order.
     """
     args = ["projinfo", "-s", source, "-t", target, "--spatial-test", "intersects"]
     args += ["--grid-check", "known_available" if grids else "discard_missing", "-o", "PROJ,PROJJSON", "--single-line"]
@@ -299,17 +307,45 @@ def transformations(source, target, pm=0.0, target_pm=0.0, grids=False):
         # A ballpark between CRSs on other prime meridians is "altered to use prime meridian" too.
         ballparks = [d for d in flatten(doc) if d.get("type") == "Transformation" and d.get("name", "").startswith("Ballpark")]
         flags += "b" if ballparks else ""
-        # Concatenations PROJ makes (not those the EPSG dataset registers, which PROJ chains
-        # further like single transformations).
-        flags += "c" if len(transfos) > 1 and "id" not in doc else ""
+        # Concatenations PROJ makes (not those its database registers, which PROJ chains further
+        # like single transformations; PROJJSON writes their steps without their id).
+        flags += "c" if len(transfos) > 1 and "id" not in doc and step_key(transfos) not in REGISTERED_CONCATENATIONS else ""
         # Transformations PROJ's database registers between geographic 3D CRSs, which PROJ does
         # not chain with others between 2D ones, or between geocentric CRSs.
         kinds = {registered_kind(t) for t in transfos}
         flags += ("h" if "geographic 3D" in kinds else "") + ("g" if "geocentric" in kinds else "")
         flags += "p" if any(p in doc.get("name", "") for p in PRIORITY_OPS) else ""
         flags += "z" if re.search(r"\bproj=push v_3\b", proj.replace("+", "")) else ""
-        out.append((steps, bounds, accuracy, flags))
+        # PROJ's name for the operation: its steps' names, as PROJ names the concatenations it
+        # makes (those PROJ chains it into too), without the (inverse) projection of a projected
+        # source, which PROJ does not chain. Ballparks, which terrio does not chain, go without.
+        named = [d for d in flatten(doc) if d.get("type") != "Conversion" or d.get("method", {}).get("name") == GEOCENTRIC]
+        name = "" if ballparks else " + ".join(d.get("name", "") for d in named).replace("\t", " ")
+        # PROJ chains a concatenation its database registers by its steps, with their summed
+        # accuracy rather than the one registered for it (1.5 m for NAD27 to WGS 84 (52), whose
+        # steps add up to 2.15 m): kept when it differs.
+        steps_accuracy = step_accuracy([d for d in flatten(doc) if d.get("type") == "Transformation"])
+        steps_accuracy = "" if steps_accuracy == accuracy else repr(steps_accuracy)
+        out.append((steps, bounds, accuracy, flags, name, steps_accuracy))
     return out
+
+
+def step_accuracy(transfos):
+    """Add up the accuracies of transformations, as PROJ does for the concatenations it makes.
+
+    Args:
+        transfos: The PROJJSON transformations.
+
+    Returns:
+        The sum of their accuracies in metres, -1 when one is unknown.
+    """
+    total = 0.0
+    for t in transfos:
+        try:
+            total += float(t["accuracy"])
+        except (KeyError, ValueError):
+            return -1.0
+    return total
 
 
 def source_types():
@@ -330,6 +366,48 @@ def source_types():
 
 
 SOURCE_TYPES = source_types()
+
+
+def registered_concatenations():
+    """List the steps of the concatenated operations PROJ's database registers.
+
+    Returns:
+        A set of sorted ``((authority, code), ...)`` tuples, one per concatenated operation (the
+        EPSG dataset's and PROJ's own, such as ``WGS 84 (G1762) to WGS 84 (G2296)``).
+    """
+    db = sqlite3.connect(os.path.join(pyproj.datadir.get_data_dir(), "proj.db"))
+    query = """
+        SELECT s.operation_auth_name, s.operation_code, s.step_auth_name, s.step_code
+        FROM concatenated_operation_step s
+        JOIN concatenated_operation c ON c.auth_name = s.operation_auth_name AND c.code = s.operation_code
+        WHERE c.deprecated = 0
+    """
+    steps = {}
+    for auth, code, step_auth, step_code in db.execute(query):
+        steps.setdefault((auth, code), []).append((step_auth, str(step_code)))
+    return {tuple(sorted(s)) for s in steps.values()}
+
+
+REGISTERED_CONCATENATIONS = registered_concatenations()
+
+
+def step_key(transfos):
+    """Key the transformations of an operation as ``registered_concatenations`` does.
+
+    Args:
+        transfos: The PROJJSON transformations of the operation, in order.
+
+    Returns:
+        The sorted ``(authority, code)`` of their ids, inverses as the operations they invert.
+    """
+    out = []
+    for t in transfos:
+        ident = t.get("id", {})
+        authority = ident.get("authority", "")
+        while m := re.fullmatch(r"(?:INVERSE|DERIVED_FROM)\((.*)\)", authority):
+            authority = m.group(1)
+        out.append((authority, str(ident.get("code"))))
+    return tuple(sorted(out))
 
 
 def registered_kind(doc):
@@ -542,7 +620,7 @@ def rows():
         """
         actual, is_wgs84, pm, three_d, _ = c
         if is_wgs84:
-            return [("", (-180.0, -90.0, 180.0, 90.0), -1.0, "")]
+            return [("", (-180.0, -90.0, 180.0, 90.0), -1.0, "", "", "")]
         return transformations(f"EPSG:{actual}", "EPSG:4979" if three_d else "EPSG:4326", pm, 0.0, grids)
 
     with ThreadPoolExecutor(os.cpu_count()) as pool:
@@ -561,11 +639,11 @@ def rows():
         """
         ids = []
         new = []
-        for steps, bounds, accuracy, flags in transfos:
-            key = (steps, bounds, accuracy, flags)
+        for steps, bounds, accuracy, flags, name, steps_accuracy in transfos:
+            key = (steps, bounds, accuracy, flags, name, steps_accuracy)
             if key not in ops:
                 ops[key] = len(ops)
-                new.append(("O", ops[key], ",".join(repr(round(b, 6)) for b in bounds), repr(accuracy), flags, steps))
+                new.append(("O", ops[key], ",".join(repr(round(b, 6)) for b in bounds), repr(accuracy), flags, steps, name, steps_accuracy))
             if ops[key] not in ids:
                 ids.append(ops[key])
         return ids, new
@@ -636,7 +714,8 @@ def rows():
         Returns:
             The transformations.
         """
-        return [t for t in transformations(f"EPSG:{p[0]}", f"EPSG:{p[1]}", 0.0, 0.0, grids) if "b" not in t[3]]
+        # Without their names, which only rank chains.
+        return [t[:4] + ("", "") for t in transformations(f"EPSG:{p[0]}", f"EPSG:{p[1]}", 0.0, 0.0, grids) if "b" not in t[3]]
 
     with ThreadPoolExecutor(os.cpu_count()) as pool:
         found = list(pool.map(lambda p: geoid_ops(p, False), gpairs))

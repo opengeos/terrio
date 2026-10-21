@@ -188,7 +188,7 @@ fn load(data: &[u8]) -> Table {
 
 impl Table {
     /// The transformation with an id, parsed from its line (`bounds`, `accuracy`, `flags`,
-    /// `steps`).
+    /// `steps`, `name`, `chain accuracy`).
     fn op(&self, id: u32) -> Option<Arc<Op>> {
         self.ops
             .get(&id)?
@@ -197,9 +197,12 @@ impl Table {
                 let (Some(bounds), Some(accuracy), Some(flags)) = (f.next(), f.next(), f.next()) else { return None };
                 let b: Vec<f64> = bounds.split(',').filter_map(|v| v.parse().ok()).collect();
                 let (true, Some(steps)) = (b.len() == 4, parse_steps(f.next().unwrap_or(""))) else { return None };
+                let name = f.next().unwrap_or("").to_string();
+                let accuracy = accuracy.parse().unwrap_or(-1.0);
                 Some(Arc::new(Op {
                     bounds: [b[0], b[1], b[2], b[3]],
-                    accuracy: accuracy.parse().unwrap_or(-1.0),
+                    accuracy,
+                    chain_accuracy: f.next().and_then(|a| a.parse().ok()).unwrap_or(accuracy),
                     offshore: flags.contains('o'),
                     unknown_area: flags.contains('u'),
                     ballpark: flags.contains('b'),
@@ -209,6 +212,7 @@ impl Table {
                     priority: flags.contains('p'),
                     keeps_height: flags.contains('z'),
                     steps,
+                    name,
                 }))
             })
             .clone()
@@ -261,6 +265,20 @@ pub(crate) fn usable(ops: &[Arc<Op>], grid_ops: &[Arc<Op>]) -> Vec<Arc<Op>> {
     }
     let kept: Vec<Arc<Op>> = grid_ops.iter().filter(|o| o.available()).cloned().collect();
     if kept.iter().any(|o| o.needs_grids() && !o.ballpark) { kept } else { ops.to_vec() }
+}
+
+/// The operations PROJ chains through other datums given the grids that can be found: those
+/// listed with grids whose grids can be found, and those listed without grids. PROJ chains the
+/// transformations its database registers, not only those it lists for the pair: GDA94 to
+/// WGS 84 (G1762) between geocentric CRSs, though GDAL lists a grid between the geographic CRSs.
+fn chainable(ops: &[Arc<Op>], grid_ops: &[Arc<Op>]) -> Vec<Arc<Op>> {
+    let mut out: Vec<Arc<Op>> = grid_ops.iter().filter(|o| o.available()).cloned().collect();
+    for op in ops {
+        if !out.iter().any(|o| Arc::ptr_eq(o, op)) {
+            out.push(op.clone());
+        }
+    }
+    out
 }
 
 /// Starts loading the table in the background, for work that will need it after reading its
@@ -418,12 +436,12 @@ pub(crate) fn esri_named(name: &str) -> Vec<u32> {
     names.get(&key(name)).cloned().unwrap_or_default()
 }
 
-/// The single transformations from each geographic CRS, by the CRS they lead to.
+/// The transformations PROJ chains from each geographic CRS, by the CRS they lead to.
 pub(crate) type Adjacency = HashMap<u32, Vec<(u32, Vec<Leg>)>>;
 
-/// For each geographic CRS, the geographic CRSs it has single transformations to (WGS 84 among
-/// them), with those transformations: what PROJ chains through intermediate datums. Rebuilt
-/// when the grids that can be found change.
+/// For each geographic CRS, the geographic CRSs it has single transformations (or
+/// concatenations PROJ's database registers) to, WGS 84 among them, with those transformations:
+/// what PROJ chains through intermediate datums. Rebuilt when the grids that can be found change.
 pub(crate) fn adjacency() -> Arc<Adjacency> {
     static ADJ: Mutex<Option<(u64, Arc<Adjacency>)>> = Mutex::new(None);
     let generation = super::grid::generation();
@@ -449,7 +467,7 @@ pub(crate) fn adjacency() -> Arc<Adjacency> {
         pair_keys.sort_unstable();
         for (a, b) in pair_keys {
             let Some((ops, grid_ops)) = t.pair(a, b) else { continue };
-            let ops = usable(ops, grid_ops);
+            let ops = chainable(ops, grid_ops);
             add(a, b, single(&ops, false));
             add(b, a, single(&ops, true));
         }
@@ -458,7 +476,7 @@ pub(crate) fn adjacency() -> Arc<Adjacency> {
         for code in codes {
             let Some(e) = t.entry(code) else { continue };
             if e.geog == code && code != 4326 && e.datum != 6326 && !e.three_d {
-                let ops = usable(&e.ops, &e.grid_ops);
+                let ops = chainable(&e.ops, &e.grid_ops);
                 add(code, 4326, single(&ops, false));
                 add(4326, code, single(&ops, true));
             }

@@ -96,6 +96,9 @@ pub(crate) struct Op {
     pub bounds: [f64; 4],
     /// The accuracy in metres, negative when unknown.
     pub accuracy: f64,
+    /// The accuracy PROJ gives it in the chains it makes: the sum of its steps', which differs
+    /// for a concatenation registered with its own.
+    pub chain_accuracy: f64,
     /// Whether its area is offshore (PROJ only uses those when no other fits).
     pub offshore: bool,
     /// Whether its area is named "unknown".
@@ -116,6 +119,9 @@ pub(crate) struct Op {
     /// Whether the pipeline keeps heights between 2D CRSs (PROJ's `push v_3` and `pop v_3`).
     pub keeps_height: bool,
     pub steps: Vec<Step>,
+    /// PROJ's name for it, the names of its steps joined by ` + ` (empty for ballparks), by which
+    /// PROJ breaks the last ties when it sorts the chains it makes.
+    pub name: String,
 }
 
 const SEC_TO_RAD: f64 = std::f64::consts::PI / 180.0 / 3600.0;
@@ -474,6 +480,7 @@ impl Op {
         Self {
             bounds: [-180.0, -90.0, 180.0, 90.0],
             accuracy: -1.0,
+            chain_accuracy: -1.0,
             offshore: false,
             unknown_area: false,
             ballpark: false,
@@ -483,6 +490,7 @@ impl Op {
             priority: false,
             keeps_height: true,
             steps,
+            name: String::new(),
         }
     }
 
