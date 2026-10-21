@@ -81,7 +81,7 @@ jobs:
           python -m pip install pyodide-build
           pyodide xbuildenv install "$PYODIDE_VERSION"
           echo "EMSCRIPTEN_VERSION=$(pyodide config get emscripten_version)" >> "$GITHUB_ENV"
-      - uses: mymindstorm/setup-emsdk@v14
+      - uses: mymindstorm/setup-emsdk@v16
         with:
           version: ${{ env.EMSCRIPTEN_VERSION }}
       - name: Build the wheel
