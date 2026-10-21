@@ -104,6 +104,12 @@ pub(crate) struct Op {
     pub ballpark: bool,
     /// Whether it chains several transformations through intermediate datums.
     pub concatenated: bool,
+    /// Whether PROJ's database registers it between geographic 3D CRSs, which PROJ does not
+    /// chain with transformations between 2D ones.
+    pub between_3d: bool,
+    /// Whether PROJ's database registers it between geocentric CRSs, which PROJ chains otherwise
+    /// than those between geographic CRSs.
+    pub geocentric: bool,
     /// Whether PROJ prefers it among those of equal accuracy (NADCON5 NAD83 to NAD83(HARN),
     /// GDA94 to WGS 84 (1), GDA2020 to WGS 84 (2)).
     pub priority: bool,
@@ -472,6 +478,8 @@ impl Op {
             unknown_area: false,
             ballpark: false,
             concatenated: false,
+            between_3d: false,
+            geocentric: false,
             priority: false,
             keeps_height: true,
             steps,

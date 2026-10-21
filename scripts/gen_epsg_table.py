@@ -8,7 +8,8 @@ Writes ``crates/terrio/data/epsg.tsv.zst``, a zstd-compressed text table with th
   transformation), the area where it applies (in degrees), its accuracy in metres (-1 when
   unknown) and flags for how PROJ ranks, chains and runs it (``o``: offshore area, ``u``:
   unknown area, ``b``: ballpark, ``c``: a concatenation PROJ makes, rather than one the EPSG
-  dataset registers, ``p``: one PROJ prefers among those of equal accuracy, ``z``: the pipeline
+  dataset registers, ``h`` and ``g``: one PROJ's database registers between geographic 3D or
+  geocentric CRSs, ``p``: one PROJ prefers among those of equal accuracy, ``z``: the pipeline
   keeps heights between 2D CRSs).
 - ``C<TAB>code<TAB>name<TAB>datum<TAB>geog<TAB>ops<TAB>grid ops<TAB>flags<TAB>area<TAB>PROJ string<TAB>WKT``:
   an EPSG geographic (2D or 3D) or projected CRS with its official name, EPSG datum code, the
@@ -295,14 +296,62 @@ def transformations(source, target, pm=0.0, target_pm=0.0, grids=False):
             bounds = (b["west_longitude"], b["south_latitude"], b["east_longitude"], b["north_latitude"])
         transfos = [d for d in flatten(doc) if d.get("type") == "Transformation" and not pm_change(d)]
         flags = ("o" if "- offshore" in name else "") + ("u" if name in ("", "unknown") else "")
-        flags += "b" if any(t.get("name", "").startswith("Ballpark") for t in transfos) else ""
+        # A ballpark between CRSs on other prime meridians is "altered to use prime meridian" too.
+        ballparks = [d for d in flatten(doc) if d.get("type") == "Transformation" and d.get("name", "").startswith("Ballpark")]
+        flags += "b" if ballparks else ""
         # Concatenations PROJ makes (not those the EPSG dataset registers, which PROJ chains
         # further like single transformations).
         flags += "c" if len(transfos) > 1 and "id" not in doc else ""
+        # Transformations PROJ's database registers between geographic 3D CRSs, which PROJ does
+        # not chain with others between 2D ones, or between geocentric CRSs.
+        kinds = {registered_kind(t) for t in transfos}
+        flags += ("h" if "geographic 3D" in kinds else "") + ("g" if "geocentric" in kinds else "")
         flags += "p" if any(p in doc.get("name", "") for p in PRIORITY_OPS) else ""
         flags += "z" if re.search(r"\bproj=push v_3\b", proj.replace("+", "")) else ""
         out.append((steps, bounds, accuracy, flags))
     return out
+
+
+def source_types():
+    """List the kind of source CRS of every transformation of PROJ's database.
+
+    Returns:
+        ``{(authority, code): type}``, such as ``"geographic 3D"``.
+    """
+    db = sqlite3.connect(os.path.join(pyproj.datadir.get_data_dir(), "proj.db"))
+    out = {}
+    for table in ("helmert_transformation", "grid_transformation", "other_transformation", "concatenated_operation"):
+        query = f"""
+            SELECT t.auth_name, t.code, s.type FROM {table} t
+            JOIN geodetic_crs s ON s.auth_name = t.source_crs_auth_name AND s.code = t.source_crs_code
+        """
+        out.update({(a, str(c)): kind for a, c, kind in db.execute(query)})
+    return out
+
+
+SOURCE_TYPES = source_types()
+
+
+def registered_kind(doc):
+    """Tell the kind of CRSs PROJ's database registers a transformation between.
+
+    PROJJSON gives the CRSs PROJ uses it between (2D ones for 2D CRSs), not those it is
+    registered for.
+
+    Args:
+        doc: The PROJJSON transformation.
+
+    Returns:
+        The type of its source CRS in the database (``"geographic 2D"``, ``"geographic 3D"`` or
+        ``"geocentric"``), ``None`` for one it is not in.
+    """
+    ident = doc.get("id", {})
+    # PROJ writes INVERSE(EPSG) for an inverse, DERIVED_FROM(EPSG) for one it adapted to other
+    # CRSs.
+    authority = ident.get("authority", "")
+    while m := re.fullmatch(r"(?:INVERSE|DERIVED_FROM)\((.*)\)", authority):
+        authority = m.group(1)
+    return SOURCE_TYPES.get((authority, str(ident.get("code"))))
 
 
 def pm_change(doc):
@@ -460,6 +509,10 @@ def rows():
         if not proj or "+proj=" not in proj:
             continue
         datum = srs.GetAuthorityCode("DATUM") or srs.GetAuthorityCode("GEOGCS|DATUM") or ""
+        # GDAL's WKT leaves the codes out for some CRSs (those on the WGS 84 ensemble, such as
+        # WGS 84 / Equal Earth Greenwich, and others): PROJ's are those of the base CRS.
+        if not datum and crs.datum:
+            datum = str(crs.datum.to_json_dict().get("id", {}).get("code", ""))
         # WGS 84 itself (its datum ensemble); its realizations (G1762...) have transformations
         # (of known accuracy) to it.
         is_wgs84 = datum == "6326"
@@ -467,6 +520,8 @@ def rows():
         pm = pm.longitude * pm.unit_conversion_factor * 180 / 3.141592653589793
         three_d = crs.type_name == "Geographic 3D CRS"
         geog = srs.GetAuthorityCode("GEOGCS") or ""
+        if not geog and crs.geodetic_crs:
+            geog = str(crs.geodetic_crs.to_2d().to_epsg() or "")
         if three_d:
             geog = str(crs.to_2d().to_epsg() or "")
         flags = ("d" if srs.IsDynamic() else "") + ("3" if three_d else "")

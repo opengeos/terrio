@@ -203,6 +203,8 @@ impl Table {
                     unknown_area: flags.contains('u'),
                     ballpark: flags.contains('b'),
                     concatenated: flags.contains('c'),
+                    between_3d: flags.contains('h'),
+                    geocentric: flags.contains('g'),
                     priority: flags.contains('p'),
                     keeps_height: flags.contains('z'),
                     steps,
@@ -472,6 +474,14 @@ pub(crate) fn pair(from: u32, to: u32) -> Option<(Vec<Arc<Op>>, bool)> {
     let t = table();
     let found = t.pair(from, to).map(|o| (o, false)).or_else(|| t.pair(to, from).map(|o| (o, true)))?;
     Some((usable(&found.0.0, &found.0.1), found.1))
+}
+
+/// All the direct transformations between two geographic CRSs, whatever the grids they need:
+/// those GDAL lists when every grid is available (else those it lists without grids).
+pub(crate) fn pair_all(a: u32, b: u32) -> Vec<Arc<Op>> {
+    let t = table();
+    let Some((ops, grid_ops)) = t.pair(a, b).or_else(|| t.pair(b, a)) else { return Vec::new() };
+    if grid_ops.is_empty() { ops.clone() } else { grid_ops.clone() }
 }
 
 /// An EPSG vertical CRS.

@@ -634,9 +634,8 @@ def suite_crs(ctx):
         "WKT1_GDAL and WKT2_2019, 20 points each, matching PROJ or refused). "
         "Identical: within 1 mm. Within tolerance: within 1 cm (forward, inverse) or 1 m (CRS to "
         "CRS, where the datum transformations GDAL picks can differ by area of use). Known "
-        "differences: CRS-to-CRS pairs where GDAL picks another datum transformation than terrio "
-        "at points outside the areas of use of the pair's transformations, or chains through "
-        "several datums (#153).",
+        "differences: CRS-to-CRS pairs PROJ chains through more than two transformations or "
+        "through geocentric CRSs, and deprecated CRSs whose own datum PROJ uses (#153).",
     )
     if not shutil.which("cargo"):
         s.skipped = "needs cargo"

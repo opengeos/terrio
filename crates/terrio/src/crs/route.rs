@@ -1,6 +1,8 @@
 //! How a transformation moves points between two datums, as PROJ (and so GDAL) does: from the
 //! transformations GDAL lists for the pair, or by chaining two transformations through an
-//! intermediate datum, picking for each point the most accurate whose area holds it.
+//! intermediate datum as PROJ lists them, picking for each point the most accurate whose area
+//! holds it, else the first that needs no grid (PROJ's `proj_trans`); a list of one is used for
+//! every point.
 
 use super::datum::{self, Op, Point};
 use super::def::Def;
@@ -28,9 +30,10 @@ enum Kind {
     Same,
     /// GDAL's list of transformations for the pair: the best for a point, else the first.
     List(Vec<Leg>),
-    /// Chains through intermediate datums: the best for a point, else no shift (PROJ's
-    /// ballpark).
-    Chains(Vec<Chain>),
+    /// Chains through intermediate datums, in PROJ's order: the best for a point, else no shift
+    /// when `ballpark` (PROJ's list then ends with its ballpark, which holds every point), else
+    /// the first chain that needs no grid.
+    Chains { chains: Vec<Chain>, ballpark: bool },
     /// CRSs without EPSG geographic CRS: through WGS 84 with each side's transformations.
     Hub,
 }
@@ -43,7 +46,7 @@ type Boxes = Vec<Vec<[f64; 4]>>;
 pub(crate) struct Route {
     kind: Kind,
     /// The areas of the transformations in source coordinates, computed when first needed: per
-    /// leg of `List`, or the two legs of each `Chain` in turn.
+    /// leg of `List`, or per `Chain`.
     boxes: OnceLock<Boxes>,
     /// The same, for the source's and target's transformations of `Hub`.
     hub_boxes: OnceLock<(Boxes, Boxes)>,
@@ -83,6 +86,59 @@ fn intersects(a: &[f64; 4], b: &[f64; 4]) -> bool {
     true
 }
 
+/// Whether area `a` holds area `b`, as PROJ's `GeographicBoundingBox::contains`.
+fn contains(a: &[f64; 4], b: &[f64; 4]) -> bool {
+    let [w, s, e, n] = *a;
+    let [ow, os, oe, on] = *b;
+    if !(s <= os && n >= on) {
+        return false;
+    }
+    if w == -180.0 && e == 180.0 {
+        return ow != oe;
+    }
+    if ow == -180.0 && oe == 180.0 {
+        return false;
+    }
+    if w < e {
+        return ow < oe && w <= ow && e >= oe;
+    }
+    if ow < oe { ow >= w || oe <= e } else { w <= ow && e >= oe }
+}
+
+/// The intersection of two areas, as PROJ's `GeographicBoundingBox::intersection`: `None` when
+/// they do not overlap; the larger part when it has two across the antimeridian.
+fn intersection(a: &[f64; 4], b: &[f64; 4]) -> Option<[f64; 4]> {
+    let [w, s, e, n] = *a;
+    let [ow, os, oe, on] = *b;
+    if n < os || s > on {
+        return None;
+    }
+    let (s2, n2) = (s.max(os), n.min(on));
+    if w == -180.0 && e == 180.0 && ow > oe {
+        return Some([ow, s2, oe, n2]);
+    }
+    if ow == -180.0 && oe == 180.0 && w > e {
+        return Some([w, s2, e, n2]);
+    }
+    if w <= e {
+        if ow <= oe {
+            let (rw, re) = (w.max(ow), e.min(oe));
+            return (rw < re).then_some([rw, s2, re, n2]);
+        }
+        if ow > 180.0 || oe < -180.0 {
+            return None;
+        }
+        return match (intersection(a, &[ow, os, 180.0, on]), intersection(a, &[-180.0, os, oe, on])) {
+            (Some(x), Some(y)) => Some(if x[2] - x[0] > y[2] - y[0] { x } else { y }),
+            (x, y) => x.or(y),
+        };
+    }
+    if ow <= oe {
+        return intersection(b, a);
+    }
+    Some([w.max(ow), s2, e.min(oe), n2])
+}
+
 /// PROJ's measure of the size of an area.
 fn pseudo_area(a: &[f64; 4]) -> f64 {
     let [w, s, mut e, n] = *a;
@@ -101,24 +157,19 @@ fn area_of_interest(src: &Def, dst: &Def) -> Option<[f64; 4]> {
     }
 }
 
-/// The intersection of two areas, `None` when they do not overlap or one crosses the
-/// antimeridian (then the chain is ranked by the other's area).
-fn intersect(a: &[f64; 4], b: &[f64; 4]) -> Option<[f64; 4]> {
-    if a[0] > a[2] || b[0] > b[2] {
-        return Some(if a[0] > a[2] { *b } else { *a });
-    }
-    let r = [a[0].max(b[0]), a[1].max(b[1]), a[2].min(b[2]), a[3].min(b[3])];
-    (r[0] <= r[2] && r[1] <= r[3]).then_some(r)
+/// Whether PROJ considers a transformation between two CRSs: its area must intersect both CRSs'
+/// areas (as PROJ queries its database) and the area of interest.
+fn relevant(op: &Op, src: &Def, dst: &Def, aoi: Option<&[f64; 4]>) -> bool {
+    op.ballpark || [src.area().as_ref(), dst.area().as_ref(), aoi].into_iter().flatten().all(|a| intersects(&op.bounds, a))
 }
 
 impl Route {
     /// The route from `src` to `dst`.
     pub fn new(src: &Def, dst: &Def) -> Self {
         let aoi = area_of_interest(src, dst);
-        let keep = |b: &[f64; 4]| aoi.is_none_or(|a| intersects(b, &a));
-        let list = |ops: &[Arc<Op>], reverse: bool| -> Kind {
-            Kind::List(legs(ops, reverse).into_iter().filter(|l| keep(&l.op.bounds)).collect())
-        };
+        let keep = |op: &Op| relevant(op, src, dst, aoi.as_ref());
+        let list =
+            |ops: &[Arc<Op>], reverse: bool| -> Kind { Kind::List(legs(ops, reverse).into_iter().filter(|l| keep(&l.op)).collect()) };
         let kind = if src.same_datum(dst) {
             Kind::Same
         } else if dst.is_wgs84() {
@@ -128,8 +179,12 @@ impl Route {
         } else {
             match (src.geog(), dst.geog()) {
                 (Some(a), Some(b)) => match epsg::pair(a, b) {
-                    Some((ops, reverse)) => list(&ops, reverse),
-                    None => Kind::Chains(chains(a, b).into_iter().filter(|c| keep(&c.rank.bounds)).collect()),
+                    // PROJ looks for transformations through other datums when its database has
+                    // none between the two for the CRSs' areas, with or without grids
+                    // (NAD83(CSRS) to NAD83 between Arctic CRSs, outside the offshore area of
+                    // their only one).
+                    Some((ops, reverse)) if epsg::pair_all(a, b).iter().any(|o| !o.ballpark && keep(o)) => list(&ops, reverse),
+                    _ => chains(a, b, src, dst, aoi.as_ref()),
                 },
                 _ => Kind::Hub,
             }
@@ -161,26 +216,35 @@ impl Route {
                 let ops: Vec<&Op> = list.iter().map(|l| l.op.as_ref()).collect();
                 datum::transform_with(&ops, |op, i| inside(op, boxes.get(i)), |i| datum::run_op(&list[i].op, p, list[i].reverse, three_d))
             }
-            Kind::Chains(chains) => {
-                let boxes = self.boxes.get_or_init(|| chains.iter().flat_map(|c| c.legs.iter().map(|l| src.areas(&l.op))).collect());
-                let ranks: Vec<&Op> = chains.iter().map(|c| &c.rank).collect();
-                let contains = |_: &Op, i: usize| {
-                    let c = &chains[i];
-                    inside(&c.legs[0].op, boxes.get(2 * i)) && inside(&c.legs[1].op, boxes.get(2 * i + 1))
+            // PROJ's ballpark alone: no shift.
+            Kind::Chains { chains, .. } if chains.is_empty() => Some(p),
+            Kind::Chains { chains, ballpark } => {
+                let run = |c: &Chain| {
+                    datum::run_op(&c.legs[0].op, p, c.legs[0].reverse, three_d)
+                        .and_then(|q| datum::run_op(&c.legs[1].op, q, c.legs[1].reverse, three_d))
                 };
+                // A single operation is used for every point, whatever its area, as PROJ does.
+                if chains.len() == 1 && !ballpark {
+                    return run(&chains[0]);
+                }
+                let boxes = self.boxes.get_or_init(|| chains.iter().map(|c| src.areas(&c.rank)).collect());
+                let ranks: Vec<&Op> = chains.iter().map(|c| &c.rank).collect();
                 let mut excluded = Vec::new();
                 for _ in 0..3 {
-                    let Some(i) = datum::pick_index(&ranks, &excluded, contains) else { break };
-                    let c = &chains[i];
-                    let r = datum::run_op(&c.legs[0].op, p, c.legs[0].reverse, three_d)
-                        .and_then(|q| datum::run_op(&c.legs[1].op, q, c.legs[1].reverse, three_d));
-                    if r.is_some() {
-                        return r;
+                    let Some(i) = datum::pick_index(&ranks, &excluded, |op, i| inside(op, boxes.get(i))) else { break };
+                    if let Some(r) = run(&chains[i]) {
+                        return Some(r);
                     }
                     excluded.push(i);
                 }
-                // No transformation for the point: no shift, as PROJ's ballpark.
-                Some(p)
+                if *ballpark {
+                    // The ballpark holds every point: no shift.
+                    return Some(p);
+                }
+                // No transformation for the point: the first that needs no grid, as PROJ's
+                // `proj_trans`.
+                let first = chains.iter().find(|c| !c.rank.needs_grids())?;
+                run(first)
             }
             Kind::Hub => {
                 let (sb, db) = self.hub_boxes.get_or_init(|| {
@@ -209,41 +273,125 @@ fn src_ops(src: &Def) -> &[Arc<Op>] {
 }
 
 /// The chains of two single transformations from geographic CRS `a` to `b` through the
-/// datums both have transformations to.
-fn chains(a: u32, b: u32) -> Vec<Chain> {
+/// datums both have transformations to, as PROJ lists them for CRSs `src` and `dst`: those
+/// whose transformations' areas intersect both CRSs' and each other, and whose common area
+/// intersects the area of interest, sorted as PROJ sorts them. PROJ ends the list with its
+/// ballpark (no shift) unless a chain that needs no grid holds the area of interest.
+fn chains(a: u32, b: u32, src: &Def, dst: &Def, aoi: Option<&[f64; 4]>) -> Kind {
     let adj = epsg::adjacency();
-    let (Some(from_a), Some(from_b)) = (adj.get(&a), adj.get(&b)) else { return Vec::new() };
-    let mut out = Vec::new();
+    let (Some(from_a), Some(from_b)) = (adj.get(&a), adj.get(&b)) else { return Kind::Chains { chains: Vec::new(), ballpark: true } };
+    // Between versions of NAD83(CSRS), PROJ does not chain transformations its database
+    // registers between geographic CRSs through NAD83 or WGS 84.
+    let name = |code: u32| epsg::get(code).map_or("", |e| e.name.as_str());
+    let csrs = name(a).starts_with("NAD83(CSRS)") && name(b).starts_with("NAD83(CSRS)");
+    let mut out: Vec<Chain> = Vec::new();
     for (pivot, first) in from_a {
         let Some((_, second)) = from_b.iter().find(|(p, _)| p == pivot) else { continue };
+        let excluded = csrs && matches!(name(*pivot), "NAD83" | "WGS 84");
         for l1 in first {
             for l2 in second {
                 let (o1, o2) = (&l1.op, &l2.op);
-                let Some(bounds) = intersect(&o1.bounds, &o2.bounds) else { continue };
+                // PROJ chains transformations whose areas intersect both CRSs', and not one
+                // registered between geographic 3D CRSs with one between 2D ones.
+                if o1.between_3d != o2.between_3d
+                    || (excluded && !o1.geocentric && !o2.geocentric)
+                    || !relevant(o1, src, dst, None)
+                    || !relevant(o2, src, dst, None)
+                {
+                    continue;
+                }
+                // The common area, with the name (and so the flags) of the leg whose area it is.
+                let Some(bounds) = intersection(&o1.bounds, &o2.bounds) else { continue };
+                if aoi.is_some_and(|a| !intersects(&bounds, a)) {
+                    continue;
+                }
+                let named = if contains(&o1.bounds, &o2.bounds) {
+                    Some(o2)
+                } else if contains(&o2.bounds, &o1.bounds) {
+                    Some(o1)
+                } else {
+                    None
+                };
                 let accuracy = if o1.accuracy >= 0.0 && o2.accuracy >= 0.0 { o1.accuracy + o2.accuracy } else { -1.0 };
                 let rank = Op {
                     bounds,
                     accuracy,
-                    offshore: o1.offshore || o2.offshore,
-                    unknown_area: o1.unknown_area || o2.unknown_area,
+                    offshore: named.is_some_and(|o| o.offshore),
+                    unknown_area: named.is_some_and(|o| o.unknown_area),
                     ballpark: false,
                     concatenated: true,
+                    between_3d: o1.between_3d,
+                    geocentric: o1.geocentric || o2.geocentric,
                     priority: o1.priority || o2.priority,
                     keeps_height: o1.keeps_height && o2.keeps_height,
                     steps: o1.steps.iter().chain(&o2.steps).cloned().collect(),
                 };
                 // The second leg runs from the pivot to `b`: the reverse of `b` to the pivot.
                 let back = Leg { op: o2.clone(), reverse: !l2.reverse };
-                out.push(Chain { legs: [l1.clone(), back], rank });
+                // PROJ keeps one of the chains with the same steps and area.
+                let same = |c: &Chain| {
+                    c.rank.bounds == rank.bounds
+                        && c.legs[0].reverse == l1.reverse
+                        && c.legs[1].reverse == back.reverse
+                        && c.legs[0].op.steps == o1.steps
+                        && c.legs[1].op.steps == o2.steps
+                };
+                if !out.iter().any(same) {
+                    out.push(Chain { legs: [l1.clone(), back], rank });
+                }
             }
         }
     }
-    // PROJ lists concatenations by accuracy, those of unknown accuracy last and by decreasing
-    // area.
+    // PROJ's order: known accuracy first (unknown ones with grids first), then by decreasing
+    // area within the area of interest, then by accuracy, those without grids first.
+    let area = |c: &Chain| aoi.map_or(Some(c.rank.bounds), |a| intersection(&c.rank.bounds, a)).map_or(0.0, |b| pseudo_area(&b));
     out.sort_by(|x, y| {
-        let key = |c: &Chain| if c.rank.accuracy < 0.0 { (f64::INFINITY, -c.rank.pseudo_area()) } else { (c.rank.accuracy, 0.0) };
-        let (kx, ky) = (key(x), key(y));
-        kx.0.total_cmp(&ky.0).then(kx.1.total_cmp(&ky.1))
+        let (ax, ay) = (x.rank.accuracy, y.rank.accuracy);
+        let (gx, gy) = (x.rank.needs_grids(), y.rank.needs_grids());
+        (ax < 0.0)
+            .cmp(&(ay < 0.0))
+            .then_with(|| if ax < 0.0 && ay < 0.0 { gy.cmp(&gx) } else { std::cmp::Ordering::Equal })
+            .then_with(|| area(y).total_cmp(&area(x)))
+            .then_with(|| if ax >= 0.0 && ay >= 0.0 { ax.total_cmp(&ay) } else { std::cmp::Ordering::Equal })
+            .then_with(|| if ax == ay { gx.cmp(&gy) } else { std::cmp::Ordering::Equal })
     });
-    out
+    let ballpark = !aoi.is_some_and(|a| out.iter().any(|c| !c.rank.needs_grids() && contains(&c.rank.bounds, a)));
+    Kind::Chains { chains: out, ballpark }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::crs::{SpatialRef, Transformer};
+
+    /// A point moved from one EPSG CRS to another.
+    fn moved(src: u32, dst: u32, x: f64, y: f64) -> (f64, f64) {
+        let (s, d) = (SpatialRef::from_epsg(src).unwrap(), SpatialRef::from_epsg(dst).unwrap());
+        Transformer::new(&s, &d).unwrap().transform(x, y).unwrap()
+    }
+
+    #[test]
+    fn areas_across_the_antimeridian() {
+        let russia = [18.92, 39.87, -168.97, 85.19];
+        let azores = [-31.34, 39.3, -31.02, 39.77];
+        assert_eq!(intersection(&russia, &azores), None);
+        assert!(!intersects(&russia, &azores));
+        assert_eq!(intersection(&russia, &[170.0, 50.0, -170.0, 60.0]), Some([170.0, 50.0, -170.0, 60.0]));
+        assert_eq!(intersection(&[-180.0, -90.0, 180.0, 90.0], &russia), Some(russia));
+        assert_eq!(intersection(&[100.0, 40.0, 120.0, 50.0], &russia), Some([100.0, 40.0, 120.0, 50.0]));
+        assert!(contains(&russia, &[170.0, 50.0, -170.0, 60.0]) && contains(&russia, &[30.0, 50.0, 40.0, 60.0]));
+        assert!(!contains(&russia, &azores) && !contains(&azores, &russia));
+        assert!(contains(&[-180.0, -90.0, 180.0, 90.0], &azores));
+    }
+
+    #[test]
+    fn chains_outside_their_areas_as_proj() {
+        // Just east of the Azores Occidental 1939 area: no chain holds the point, and one holds
+        // the area of interest (so PROJ drops its ballpark): the first chain, as GDAL.
+        let (x, y) = moved(4182, 4740, -31.016816380974838, 39.56501297818613);
+        assert!((x + 31.021097205869058).abs() < 1e-7 && (y - 39.566344404860935).abs() < 1e-7, "{x} {y}");
+        // A single chain is used whatever the point, as GDAL does.
+        let (x, y) = moved(2999, 9053, 298971.18861002335, 8694000.007133322);
+        assert!((x - 43.16443339530448).abs() < 1e-7 && (y + 11.811498334670878).abs() < 1e-7, "{x} {y}");
+    }
 }
