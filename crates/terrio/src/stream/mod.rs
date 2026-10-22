@@ -59,10 +59,17 @@ pub const DEFAULT_CHUNK: usize = 65536;
 /// features asked for, so that layers of large geometries are read in bounded memory.
 pub const CHUNK_BYTES: usize = 64 << 20;
 
-/// The raw bytes (WKB and record payloads) a source reads into a batch, at most about: an eighth
-/// of [`CHUNK_BYTES`], as a coordinate of 16 bytes in WKB takes 48 decoded, and batches small
-/// next to a chunk keep the features buffered beyond it few.
-const SOURCE_BYTES: usize = CHUNK_BYTES / 8;
+/// The chunks of conversions to GeoPackage and FlatGeobuf, whose rows are written one after
+/// another while the next chunk is read (see [`write_ahead`]): smaller chunks hold less, and cost
+/// no time there.
+const AHEAD_CHUNK_BYTES: usize = 16 << 20;
+
+/// The raw bytes (WKB and record payloads) a source reads into a batch, at most about, for
+/// chunks of `chunk_bytes`: an eighth, as a coordinate of 16 bytes in WKB takes 48 decoded, and
+/// batches small next to a chunk keep the features buffered beyond it few.
+fn source_bytes(chunk_bytes: usize) -> usize {
+    chunk_bytes / 8
+}
 
 /// The memory a feature takes, about: its coordinates and its values (without their text, which
 /// large geometries outweigh).
@@ -77,6 +84,9 @@ fn feature_size(f: &Feature) -> usize {
 trait FeatureSource: Send {
     /// The next batch of features; `None` at the end.
     fn next_batch(&mut self) -> Result<Option<Vec<Feature>>>;
+    /// Sets the raw bytes a batch holds, at most about (see [`source_bytes`]), for sources that
+    /// count them.
+    fn set_batch_bytes(&mut self, _bytes: usize) {}
 }
 
 /// A layer without its features: its name, fields, geometry type and CRS.
@@ -99,11 +109,19 @@ pub struct FeatureReader {
     buffer: VecDeque<(Feature, usize)>,
     buffered: usize,
     done: bool,
+    /// The most a chunk holds, about, in bytes, and the most read ahead.
+    chunk_bytes: usize,
 }
 
 impl FeatureReader {
     fn new(layer: Layer, source: Box<dyn FeatureSource>) -> Self {
-        Self { layer: schema_of(&layer), source, buffer: VecDeque::new(), buffered: 0, done: false }
+        Self { layer: schema_of(&layer), source, buffer: VecDeque::new(), buffered: 0, done: false, chunk_bytes: CHUNK_BYTES }
+    }
+
+    /// Reads chunks of about `bytes` at most rather than [`CHUNK_BYTES`].
+    fn set_chunk_bytes(&mut self, bytes: usize) {
+        self.chunk_bytes = bytes;
+        self.source.set_batch_bytes(source_bytes(bytes));
     }
 
     /// The layer, without its features: its name, fields, geometry type and CRS.
@@ -112,7 +130,7 @@ impl FeatureReader {
     }
 
     fn fill(&mut self, n: usize) -> Result<()> {
-        while !self.done && self.buffer.len() < n && self.buffered < CHUNK_BYTES {
+        while !self.done && self.buffer.len() < n && self.buffered < self.chunk_bytes {
             match self.source.next_batch()? {
                 Some(batch) => {
                     let sizes = crate::par::map_range(batch.len(), |i| feature_size(&batch[i]));
@@ -126,8 +144,8 @@ impl FeatureReader {
     }
 
     /// The next chunk of at most `max` features, and of about [`CHUNK_BYTES`] at most (at least
-    /// one feature), as a layer with this layer's fields; `None` once every feature has been
-    /// read.
+    /// one feature; conversions to GeoPackage and FlatGeobuf read smaller chunks), as a layer
+    /// with this layer's fields; `None` once every feature has been read.
     pub fn read_chunk(&mut self, max: usize) -> Result<Option<Layer>> {
         let max = max.max(1);
         self.fill(max)?;
@@ -135,7 +153,7 @@ impl FeatureReader {
             return Ok(None);
         }
         let (mut n, mut size) = (0, 0);
-        while n < max.min(self.buffer.len()) && (n == 0 || size < CHUNK_BYTES) {
+        while n < max.min(self.buffer.len()) && (n == 0 || size < self.chunk_bytes) {
             size += self.buffer[n].1;
             n += 1;
         }
@@ -523,13 +541,18 @@ struct FgbSource {
     header: fgb::FgbHeader,
     fid: u64,
     batch: usize,
+    batch_bytes: usize,
 }
 
 #[cfg(feature = "flatgeobuf")]
 impl FeatureSource for FgbSource {
+    fn set_batch_bytes(&mut self, bytes: usize) {
+        self.batch_bytes = bytes;
+    }
+
     fn next_batch(&mut self) -> Result<Option<Vec<Feature>>> {
         let (mut raw, mut bytes) = (Vec::new(), 0);
-        while raw.len() < self.batch && bytes < SOURCE_BYTES {
+        while raw.len() < self.batch && bytes < self.batch_bytes {
             let mut len = [0u8; 4];
             if read_full(&mut self.r, &mut len)? < 4 {
                 break;
@@ -568,7 +591,7 @@ fn open_fgb(path: &str, batch: usize) -> Result<(Layer, Box<dyn FeatureSource>)>
     }
     let (layer, header) = fgb::parse_header(&buf)?;
     r.seek_relative(header.index_size as i64)?;
-    Ok((layer, Box::new(FgbSource { r, header, fid: 0, batch })))
+    Ok((layer, Box::new(FgbSource { r, header, fid: 0, batch, batch_bytes: source_bytes(CHUNK_BYTES) })))
 }
 
 // GeoParquet
@@ -595,6 +618,7 @@ struct GpkgSource {
     bbox: Option<gpkg_read::Rect>,
     n: i64,
     batch: usize,
+    batch_bytes: usize,
 }
 
 #[cfg(feature = "sqlite")]
@@ -605,12 +629,16 @@ enum GpkgRows {
 
 #[cfg(feature = "sqlite")]
 impl FeatureSource for GpkgSource {
+    fn set_batch_bytes(&mut self, bytes: usize) {
+        self.batch_bytes = bytes;
+    }
+
     fn next_batch(&mut self) -> Result<Option<Vec<Feature>>> {
         let mut rows: Vec<(i64, Vec<u8>)> = Vec::new();
         match &mut self.rows {
             GpkgRows::Scan(cursor) => {
                 let mut bytes = 0;
-                while rows.len() < self.batch && bytes < SOURCE_BYTES {
+                while rows.len() < self.batch && bytes < self.batch_bytes {
                     match cursor.next_leaf(&self.db)? {
                         Some(leaf) => {
                             bytes += leaf.iter().map(|(_, p)| p.len()).sum::<usize>();
@@ -624,7 +652,7 @@ impl FeatureSource for GpkgSource {
                 // Ids without a row (stale R-tree entries) are skipped: only the end of the ids
                 // ends the stream.
                 let mut bytes = 0;
-                while rows.len() < self.batch && bytes < SOURCE_BYTES {
+                while rows.len() < self.batch && bytes < self.batch_bytes {
                     let Some(id) = ids.next() else { break };
                     if let Some(p) = gpkg_read::Tables::lookup(&self.db, *root, id)? {
                         bytes += p.len();
@@ -678,7 +706,7 @@ fn open_gpkg(path: &str, options: &VectorOpenOptions, batch: usize) -> Result<Ve
             None => GpkgRows::Scan(db.cursor(root)),
         };
         let layer = crate::dataset::fix_layer(def.layer.clone(), path, VectorDriver::GPKG);
-        let source = GpkgSource { db, def, columns, rowid_col, rows, bbox, n: 0, batch };
+        let source = GpkgSource { db, def, columns, rowid_col, rows, bbox, n: 0, batch, batch_bytes: source_bytes(CHUNK_BYTES) };
         out.push(FeatureReader::new(layer, Box::new(source)));
     }
     Ok(out)
@@ -1633,6 +1661,9 @@ pub fn convert(src: &str, dst: &str, options: &ConvertOptions) -> Result<()> {
         1 => {}
         #[cfg(feature = "sqlite")]
         _ if driver == VectorDriver::GPKG => {
+            for r in &mut readers {
+                r.set_chunk_bytes(AHEAD_CHUNK_BYTES);
+            }
             let mut translators = readers.iter().map(|r| Translator::new(r.layer(), &options.translate)).collect::<Result<Vec<_>>>()?;
             let schemas: Vec<Layer> = translators.iter().map(|t| t.schema().clone()).collect();
             let Some(mut sink) = GpkgLayersSink::create(dst, &schemas)? else {
@@ -1641,11 +1672,9 @@ pub fn convert(src: &str, dst: &str, options: &ConvertOptions) -> Result<()> {
             };
             let written = (|| {
                 for (k, (reader, translator)) in readers.iter_mut().zip(&mut translators).enumerate() {
-                    while !translator.is_done()
-                        && let Some(c) = reader.read_chunk(chunk)?
-                    {
-                        sink.write(k, &translator.apply(c)?)?;
-                    }
+                    let next =
+                        || if translator.is_done() { Ok(None) } else { reader.read_chunk(chunk)?.map(|c| translator.apply(c)).transpose() };
+                    write_ahead(next, |c| sink.write(k, &c))?;
                 }
                 sink.finish()
             })();
@@ -1653,10 +1682,14 @@ pub fn convert(src: &str, dst: &str, options: &ConvertOptions) -> Result<()> {
         }
         _ => return Err(one_layer_only(driver)),
     }
+    let ahead = matches!(driver, VectorDriver::GPKG | VectorDriver::FlatGeobuf);
+    let chunk_bytes = if ahead { AHEAD_CHUNK_BYTES } else { CHUNK_BYTES };
     let mut reader = readers.remove(0);
+    reader.set_chunk_bytes(chunk_bytes);
     let mut translator = Translator::new(reader.layer(), &options.translate)?;
     let profile = if needs_profile(driver, translator.schema()) {
         let mut first = open_layers(src, &options.open, chunk)?.remove(0);
+        first.set_chunk_bytes(chunk_bytes);
         let mut t = Translator::new(first.layer(), &options.translate)?;
         let mut p = LayerProfile::new(t.schema());
         while !t.is_done()
@@ -1670,14 +1703,50 @@ pub fn convert(src: &str, dst: &str, options: &ConvertOptions) -> Result<()> {
     };
     let mut writer = FeatureWriter::create(dst, translator.schema(), profile.as_ref(), &options.write)?;
     let written = (|| {
-        while !translator.is_done()
-            && let Some(c) = reader.read_chunk(chunk)?
-        {
-            writer.write_owned(translator.apply(c)?)?;
+        let mut next = || if translator.is_done() { Ok(None) } else { reader.read_chunk(chunk)?.map(|c| translator.apply(c)).transpose() };
+        if ahead {
+            write_ahead(next, |c| writer.write_owned(c))?;
+        } else {
+            while let Some(c) = next()? {
+                writer.write_owned(c)?;
+            }
         }
         writer.finish()
     })();
     remove_on_error(dst, driver, written)
+}
+
+/// Writes the chunks `next` gives with `write` until `next` gives `None`: the next chunk is read
+/// on another thread while one is written (in turn on WebAssembly), so that writing, often
+/// serial, does not keep the threads reading idle. At most one chunk waits to be written.
+fn write_ahead(mut next: impl FnMut() -> Result<Option<Layer>> + Send, mut write: impl FnMut(Layer) -> Result<()>) -> Result<()> {
+    #[cfg(target_arch = "wasm32")]
+    {
+        while let Some(c) = next()? {
+            write(c)?;
+        }
+        Ok(())
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    std::thread::scope(|s| {
+        let (tx, rx) = std::sync::mpsc::sync_channel(0);
+        s.spawn(move || {
+            loop {
+                let c = next();
+                let end = !matches!(c, Ok(Some(_)));
+                // The receiver is gone when writing failed.
+                if tx.send(c).is_err() || end {
+                    return;
+                }
+            }
+        });
+        loop {
+            match rx.recv().map_err(|_| Error::InvalidData("the chunk reader stopped".into()))?? {
+                Some(c) => write(c)?,
+                None => return Ok(()),
+            }
+        }
+    })
 }
 
 fn convert_whole(src: &str, dst: &str, options: &ConvertOptions) -> Result<()> {

@@ -268,6 +268,7 @@ pub(crate) fn pipelined<R: Send>(
 }
 
 /// How many strips [`read_ahead`] reads at once, ahead of the one worked on.
+#[cfg(not(target_arch = "wasm32"))]
 const READ_AHEAD: usize = 4;
 
 /// Runs `work` on `n` strips in order, `read` reading each: up to [`READ_AHEAD`] strips are read

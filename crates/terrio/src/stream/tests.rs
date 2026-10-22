@@ -543,6 +543,63 @@ fn chunks_stop_at_their_size() {
     }
     assert_eq!(sizes, [3, 3]);
     assert_eq!(fids, (0..6).collect::<Vec<_>>());
+
+    // Chunks of `AHEAD_CHUNK_BYTES` (a quarter of `CHUNK_BYTES`) hold one of them each.
+    let mut layer = schema_of(&reader.layer);
+    let features = (0..6).map(|k| Feature {
+        fid: k,
+        geometry: Some(Geometry::line_string(line.clone())),
+        attributes: vec![FieldValue::Integer(k as i64)],
+    });
+    let source = MemorySource { features: features.collect::<Vec<_>>().into_iter(), batch: 4 };
+    layer.features.clear();
+    let mut reader = FeatureReader::new(layer, Box::new(source));
+    reader.set_chunk_bytes(AHEAD_CHUNK_BYTES);
+    let mut sizes = Vec::new();
+    while let Some(chunk) = reader.read_chunk(DEFAULT_CHUNK).unwrap() {
+        sizes.push(chunk.features.len());
+    }
+    assert_eq!(sizes, [1; 6]);
+}
+
+/// Chunks read ahead are written in order, each once; an error reading or writing stops the
+/// writing and is returned, and a panic in either is propagated.
+#[test]
+fn chunks_written_ahead_are_written_in_order() {
+    let chunks = |n: u64, fail: Option<u64>| {
+        let mut k = 0;
+        move || {
+            k += 1;
+            if Some(k) == fail {
+                return Err(Error::InvalidData("read".into()));
+            }
+            let mut l = Layer::new("t");
+            l.push(Feature { fid: k, geometry: None, attributes: Vec::new() });
+            Ok((k <= n).then_some(l))
+        }
+    };
+    let mut fids = Vec::new();
+    write_ahead(chunks(20, None), |c| {
+        fids.push(c.features[0].fid);
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(fids, (1..=20).collect::<Vec<_>>());
+
+    let mut fids = Vec::new();
+    let read_fails = write_ahead(chunks(20, Some(6)), |c| {
+        fids.push(c.features[0].fid);
+        Ok(())
+    });
+    assert!(read_fails.is_err());
+    assert_eq!(fids, (1..6).collect::<Vec<_>>());
+    let write = |c: Layer| if c.features[0].fid == 3 { Err(Error::InvalidData("write".into())) } else { Ok(()) };
+    assert!(write_ahead(chunks(1000, None), write).is_err());
+
+    let read = || -> Result<Option<Layer>> { panic!("read") };
+    assert!(std::panic::catch_unwind(|| write_ahead(read, |_| Ok(()))).is_err());
+    let write = |_: Layer| -> Result<()> { panic!("write") };
+    assert!(std::panic::catch_unwind(|| write_ahead(chunks(1000, None), write)).is_err());
 }
 
 /// GeoParquet row groups (of 65,536 rows) are those of the whole-layer writer whatever the size of
