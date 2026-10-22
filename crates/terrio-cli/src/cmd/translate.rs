@@ -55,23 +55,29 @@ pub struct Args {
 }
 
 pub fn run(mut a: Args) -> terrio::Result<()> {
-    // A window inside a GeoTIFF or a Zarr store is read alone: only the tiles or chunks it touches
-    // (of the bands asked for) are read.
+    // A window inside a GeoTIFF or a Zarr store, or some of its bands, is read alone: only the
+    // tiles or chunks it touches (of the bands asked for) are read.
     let mut src_win = a.srcwin.as_ref().map(|v| (v[0], v[1], v[2], v[3]));
-    let ds = match src_win {
-        Some((x, y, w, h)) if x >= 0.0 && y >= 0.0 && w > 0.0 && h > 0.0 && [x, y, w, h].iter().all(|v| v.fract() == 0.0) => {
-            let mut lazy = super::quiet(|| terrio::open_raster_lazy(&a.input))?;
-            let window = terrio::Window::new(x as usize, y as usize, w as usize, h as usize);
-            if lazy.is_lazy() && window.fits(lazy.width(), lazy.height()) {
-                src_win = None;
-                let bands_valid = a.bands.iter().all(|b| (1..=lazy.band_count()).contains(b));
-                let bands = if bands_valid { std::mem::take(&mut a.bands) } else { Vec::new() };
-                lazy.read_window(window, &terrio::WindowOptions { bands, overview: None })?
-            } else {
-                open(&a.input)?
-            }
+    let whole_window = |v: &(f64, f64, f64, f64)| {
+        let (x, y, w, h) = *v;
+        x >= 0.0 && y >= 0.0 && w > 0.0 && h > 0.0 && [x, y, w, h].iter().all(|v| v.fract() == 0.0)
+    };
+    let ds = if src_win.as_ref().map_or(!a.bands.is_empty(), whole_window) {
+        let mut lazy = super::quiet(|| terrio::open_raster_lazy(&a.input))?;
+        let window = match src_win {
+            Some((x, y, w, h)) => terrio::Window::new(x as usize, y as usize, w as usize, h as usize),
+            None => terrio::Window::full(lazy.width(), lazy.height()),
+        };
+        if lazy.is_lazy() && window.fits(lazy.width(), lazy.height()) {
+            src_win = None;
+            let bands_valid = a.bands.iter().all(|b| (1..=lazy.band_count()).contains(b));
+            let bands = if bands_valid { std::mem::take(&mut a.bands) } else { Vec::new() };
+            lazy.read_window(window, &terrio::WindowOptions { bands, overview: None })?
+        } else {
+            open(&a.input)?
         }
-        _ => open(&a.input)?,
+    } else {
+        open(&a.input)?
     };
     let four = |v: &Option<Vec<f64>>| v.as_ref().map(|v| (v[0], v[1], v[2], v[3]));
     let scale = match a.scale.as_deref() {
