@@ -52,7 +52,9 @@ jobs:
     uses: ./.github/workflows/linux-packages.yml
     with:
       version: ${{ github.ref_name }}
-    secrets: inherit
+    secrets:
+      AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+      COPR_CONFIG: ${{ secrets.COPR_CONFIG }}
 
   publish:
     needs: [build]
