@@ -125,8 +125,10 @@ the largest peak memory. Same machine, terrio 0.2.0.
   4 MiB (`mallopt`), so that blocks that large go back to the system when they are freed rather
   than stay in the per-thread arenas, where glibc's adaptive threshold puts them once large blocks
   have been freed. That lowers peak memory by 12-60% on these files, for a few percent of time
-  (about 20% for the mosaic and GeoParquet). `MALLOC_MMAP_THRESHOLD_`, when set, is kept; the
-  Python and JavaScript packages leave the allocator to their host.
+  (about 20% for the mosaic and GeoParquet); for the OpenStreetMap PBF, the threshold accounts
+  for about 200 MB of its 290 MB drop, and decoding at most 20 blocks at once for the rest. A
+  threshold set in the environment (`MALLOC_MMAP_THRESHOLD_`, or `glibc.malloc.mmap_threshold` in
+  `GLIBC_TUNABLES`) is kept; the Python and JavaScript packages leave the allocator to their host.
 - **Mosaic of 16 tiles**: terrio copies each tile's pixels into place; `gdalwarp` warps them.
 - **Large vectors** are converted a chunk of features at a time: at most 65,536 features, and
   about 64 MB of them, so that a run of large polygons is not held at once. GeoPackage and
