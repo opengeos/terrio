@@ -955,8 +955,11 @@ impl Spool {
     fn release(&self) {
         #[cfg(all(unix, not(target_arch = "wasm32")))]
         if let Some(map) = &self.map {
-            // SAFETY: the mapping is read only and backed by the file, so its pages read back
-            // unchanged.
+            // SAFETY: the mapping is read only and backed by our own unlinked temporary file,
+            // which nothing writes once it is mapped, so its pages read back unchanged. That holds
+            // while other threads read it too: dropping a clean file-backed page is what the
+            // kernel may do at any time under memory pressure, and a reader faults the same bytes
+            // back in, so no reader can see a value change.
             let _ = unsafe { map.unchecked_advise(memmap2::UncheckedAdvice::DontNeed) };
         }
     }
