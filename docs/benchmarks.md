@@ -12,6 +12,8 @@ including start-up, reading and writing.
     with its default settings, which include multi-threaded GeoTIFF compression where the driver
     supports it. On machines with fewer cores, the parallel cases gain less.
 
+## Small files
+
 Machine: Intel Xeon w7-3445 (x86_64), 40 threads, Linux. GDAL 3.12.2 "Chicoutimi", released 2026/02/03; terrio 0.4.1. Median of 5 runs after a warm-up run; wall time of the whole command.
 
 
