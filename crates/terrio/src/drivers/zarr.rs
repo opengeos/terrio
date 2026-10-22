@@ -2048,6 +2048,18 @@ mod tests {
     use super::*;
 
     #[test]
+    fn numbers_bands_of_many_dimensions_as_gdal() {
+        // (time 2, level 3): band 1 is (0, 0), band 2 (0, 1), band 4 (1, 0).
+        assert_eq!(band_index(&[2, 3], 1), vec![0, 0]);
+        assert_eq!(band_index(&[2, 3], 2), vec![0, 1]);
+        assert_eq!(band_index(&[2, 3], 4), vec![1, 0]);
+        assert_eq!(band_index(&[2, 3], 6), vec![1, 2]);
+        assert_eq!(band_index(&[2, 3, 4], 24), vec![1, 2, 3]);
+        assert_eq!(band_index(&[5], 3), vec![2]);
+        assert!(band_index(&[], 1).is_empty());
+    }
+
+    #[test]
     fn blosclz_literals_and_matches() {
         // A literal run of 3 bytes, then a match of 4 bytes at distance 3.
         let stream = [2u8, b'a', b'b', b'c', (2 << 5), 2];
