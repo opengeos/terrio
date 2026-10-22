@@ -238,8 +238,12 @@ WebAssembly (the `terrio-js` npm package):
       and overview, PMTiles, COPC and FlatGeobuf by bounding box, GeoParquet by row group.
 - [x] More formats in memory: Zarr and GeoZarr, netCDF and HDF5, point clouds (LAS, LAZ, COPC), and
       writing LERC, JPEG XL and JPEG GeoTIFFs.
-- [ ] terrio's own FlatGeobuf reader in place of the format library's, which overflows on large files
-      in 32-bit WebAssembly.
+- [x] terrio's own FlatGeobuf reader in place of the format library's, which overflowed on large
+      files in 32-bit WebAssembly. Done: terrio's driver parses the files, with 64-bit offsets (the
+      format library supplies only the schema types and the writer's spatial index); an 867 MB file
+      of 2 million lines opens in Node.js in 3.3 s. A layer opened whole decodes to about five
+      times the file's size, so files above about 800 MB need the memory64 item below, or
+      `openUrl` to read them by bounding box.
 - [ ] Multithreaded decoding and writing with WebAssembly threads, where the page allows them.
 - [ ] A smaller download: optional formats split out or loaded on demand, and size-optimized builds.
 - [ ] Datasets larger than 4 GB, with the 64-bit memory proposal (memory64) where runtimes support

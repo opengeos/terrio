@@ -38,8 +38,10 @@ In WebAssembly, these formats are read from and written to memory:
 | Raster | GeoTIFF/COG (LZW, Deflate, PackBits, ZSTD, LZMA, JPEG, WebP, LERC, JPEG XL), JPEG 2000 (JP2 and J2K), Esri ASCII grid, GeoPackage, PMTiles and MBTiles (read by window, zoom levels as overviews) | GeoTIFF, COG (lossless compressions, ZSTD included), JPEG 2000, Esri ASCII grid, GeoPackage, PMTiles, MBTiles |
 | Vector | GeoJSON, TopoJSON, FlatGeobuf\*, GeoPackage, CSV, GeoParquet, KML, KMZ, GML, GPX, OSM (PBF and XML), PMTiles, MBTiles, MVT tiles, zip archives of these, and Shapefile and MapInfo (MIF and TAB) in zip archives | GeoJSON, TopoJSON, FlatGeobuf, GeoPackage, KML, KMZ, GML, GPX, PMTiles, MBTiles (`minzoom`, `maxzoom` options) |
 
-\* The format library's FlatGeobuf reader overflows on large files in 32-bit WebAssembly; terrio's
-own FlatGeobuf driver will replace it.
+\* FlatGeobuf files are read by terrio's own driver, with 64-bit offsets. `open` decodes a layer
+whole, into about five times the file's size, within WebAssembly's 4 GB of memory: an 867 MB file
+of 2 million OpenStreetMap lines opens in about 3 seconds in Node.js, and a 1 GB file of
+2.3 million polygons runs out of memory. `openUrl` reads larger files by bounding box.
 
 JPEG 2000 files decode with the codec of GDAL's JP2OpenJPEG driver (a Rust port of OpenJPEG), with
 their GeoJP2 or GMLJP2 georeferencing: a Sentinel-2 band (`T10SEG_..._B04.jp2`, 10980 x 10980)
