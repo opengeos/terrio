@@ -298,16 +298,22 @@ pub(crate) fn read_ahead<R: Send>(
         }
         let state = Mutex::new(State { next: 0, done: 0, stop: false });
         let turn = Condvar::new();
-        let stop = || {
-            state.lock().unwrap_or_else(|e| e.into_inner()).stop = true;
-            turn.notify_all();
-        };
+        /// Stops the readers when dropped: on every exit, a panic in `read` or `work` included,
+        /// so that no reader waits for a strip to be worked on that never will be.
+        struct Stop<'a>(&'a Mutex<State>, &'a Condvar);
+        impl Drop for Stop<'_> {
+            fn drop(&mut self) {
+                self.0.lock().unwrap_or_else(|e| e.into_inner()).stop = true;
+                self.1.notify_all();
+            }
+        }
         std::thread::scope(|s| {
             let (tx, rx) = std::sync::mpsc::channel();
             for _ in 0..ahead.min(n) {
                 let tx = tx.clone();
                 let (state, turn, read) = (&state, &turn, &read);
                 s.spawn(move || {
+                    let _stop = Stop(state, turn);
                     loop {
                         let i = {
                             let mut st = state.lock().unwrap_or_else(|e| e.into_inner());
@@ -331,8 +337,9 @@ pub(crate) fn read_ahead<R: Send>(
                 });
             }
             drop(tx);
+            let _stop = Stop(&state, &turn);
             let mut pending = BTreeMap::new();
-            let result = (|| {
+            (|| {
                 for i in 0..n {
                     let r = loop {
                         if let Some(r) = pending.remove(&i) {
@@ -346,11 +353,7 @@ pub(crate) fn read_ahead<R: Send>(
                     turn.notify_all();
                 }
                 Ok(())
-            })();
-            if result.is_err() {
-                stop();
-            }
-            result
+            })()
         })
     }
 }
@@ -479,6 +482,17 @@ mod tests {
         let work = |i, _| if i == 5 { Err(Error::InvalidData("work".into())) } else { Ok(()) };
         assert!(read_ahead(1000, Ok, work).is_err());
         assert!(read_ahead(0, Ok, |_, _: usize| Ok(())).is_ok());
+    }
+
+    /// A panic in a read or in the work is propagated rather than leaving the readers waiting.
+    #[test]
+    fn strips_read_ahead_propagate_panics() {
+        let read = |i| if i == 17 { panic!("read") } else { Ok(i) };
+        let run = std::panic::catch_unwind(|| read_ahead(40, read, |_, _| Ok(())));
+        assert!(run.is_err());
+        let work = |i, _| if i == 5 { panic!("work") } else { Ok(()) };
+        let run = std::panic::catch_unwind(|| read_ahead(40, Ok, work));
+        assert!(run.is_err());
     }
 
     /// Options the GeoTIFF writer refuses fail before any strip is computed.
