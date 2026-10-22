@@ -455,6 +455,89 @@ pub(crate) fn get(remote: &Remote) -> Result<Vec<u8>> {
     Ok(client.fetch(None)?.data)
 }
 
+/// Sends a `POST` of a JSON body (a STAC API search, for instance) and returns the response's
+/// body. Redirects are followed with the same request, and transient errors retried.
+pub(crate) fn post_json(url: &str, body: &[u8], headers: &[(String, String)]) -> Result<Vec<u8>> {
+    let options = HttpOptions::from_env();
+    let agent = agent(&options);
+    let mut url = url.to_string();
+    let (mut redirects, mut attempt) = (0, 0);
+    let backoff = |attempt: &mut u32| {
+        std::thread::sleep(options.retry_delay.saturating_mul(1 << (*attempt).min(16)));
+        *attempt += 1;
+    };
+    loop {
+        let mut req =
+            agent.post(&url).header("Content-Type", "application/json").header("Accept", "application/geo+json, application/json");
+        for (k, v) in headers {
+            req = req.header(k, v);
+        }
+        let result = req.send(body);
+        if options.log {
+            match &result {
+                Ok(r) => eprintln!("terrio: POST {} -> {}", redact(&url), r.status().as_u16()),
+                Err(e) => eprintln!("terrio: POST {} -> {e}", redact(&url)),
+            }
+        }
+        let response = match result {
+            Ok(r) => r,
+            Err(e) if attempt < options.max_retry && transient(&e) => {
+                backoff(&mut attempt);
+                continue;
+            }
+            Err(e) => return Err(Error::Http(format!("{}: {e}", redact(&url)))),
+        };
+        let status = response.status().as_u16();
+        // 307 and 308 keep the method and body; 301, 302 and 303 would turn them into a GET.
+        if matches!(status, 307 | 308)
+            && let Some(location) = response.headers().get("location").and_then(|v| v.to_str().ok())
+        {
+            redirects += 1;
+            if redirects > MAX_REDIRECTS {
+                return Err(Error::Http(format!("{}: too many redirects", redact(&url))));
+            }
+            url = resolve_redirect(&url, location);
+            continue;
+        }
+        if matches!(status, 429 | 500 | 502 | 503 | 504) && attempt < options.max_retry {
+            backoff(&mut attempt);
+            continue;
+        }
+        let mut data = Vec::new();
+        response.into_body().into_reader().read_to_end(&mut data).map_err(|e| Error::Http(format!("{}: {e}", redact(&url))))?;
+        REQUESTS.fetch_add(1, Ordering::Relaxed);
+        BYTES.fetch_add(data.len() as u64, Ordering::Relaxed);
+        if !(200..300).contains(&status) {
+            let text = String::from_utf8_lossy(&data[..data.len().min(300)]).into_owned();
+            return Err(Error::Http(format!("{}: status {status}: {}", redact(&url), text.trim())));
+        }
+        return Ok(data);
+    }
+}
+
+/// Fetches a whole remote file with extra request headers (an API key, for instance).
+pub(crate) fn get_with_headers(url: &str, headers: &[(String, String)]) -> Result<Vec<u8>> {
+    if headers.is_empty() {
+        return get(&Remote::Url(url.to_string()));
+    }
+    let options = HttpOptions::from_env();
+    let agent = agent(&options);
+    let mut req = agent.get(url);
+    for (k, v) in headers {
+        req = req.header(k, v);
+    }
+    let response = req.call().map_err(|e| Error::Http(format!("{}: {e}", redact(url))))?;
+    let status = response.status().as_u16();
+    let mut data = Vec::new();
+    response.into_body().into_reader().read_to_end(&mut data).map_err(|e| Error::Http(format!("{}: {e}", redact(url))))?;
+    REQUESTS.fetch_add(1, Ordering::Relaxed);
+    BYTES.fetch_add(data.len() as u64, Ordering::Relaxed);
+    if !(200..300).contains(&status) {
+        return Err(Error::Http(format!("{}: status {status}", redact(url))));
+    }
+    Ok(data)
+}
+
 /// A remote file read in place: `Read` and `Seek` over HTTP range requests, with a block cache.
 ///
 /// Clones share the cache and connection, each with its own position.

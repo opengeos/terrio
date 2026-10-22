@@ -191,11 +191,24 @@ and GeoJSON driver read them:
   and terrio's `resolution=highest|lowest|average` and `max_items=N`) is a mosaic of the asset over
   the items: items drawn in ascending datetime order, at their average resolution, read by window
   from their files.
+- Search pages are followed through `next` links that are `GET` or `POST` requests (with the
+  link's `body`, `merge` and `headers`, as STAC API paginates `POST` searches), and
+  `STACIT:"search-url":asset=red,method=POST` sends the URL's query parameters as a `POST` search
+  body, as pystac-client builds it (`bbox`, `collections`, `ids` and `sortby` as arrays, `query`,
+  `filter` and `intersects` as JSON, dates and months as RFC 3339 intervals).
+- Assets on Microsoft Planetary Computer are signed: the Azure Blob Storage hrefs of items read
+  from its API (or linking to it) get a SAS token from its token endpoint, as
+  `planetary_computer.sign()` adds them, one per storage account and container, renewed before
+  it expires. `PC_SDK_SUBSCRIPTION_KEY` is sent as the API key when set; `TERRIO_STAC_SIGN=none`
+  (or `sign=none` in a `STACIT:` name) turns signing off, and `planetary_computer` signs every
+  Azure Blob Storage href, of items read from files too.
 
 ```sh
 terrio info "https://earth-search.aws.element84.com/v1/search?collections=sentinel-2-l2a&bbox=-105.05,40.5,-104.95,40.6&datetime=2023-07-05"
 terrio convert 'STACIT:"https://earth-search.aws.element84.com/v1/search?collections=sentinel-2-l2a&bbox=-105.05,40.5,-104.95,40.6&datetime=2023-07-05":asset=red' red.tif --srcwin 9980 9980 512 512
 terrio info 'STAC:"https://earth-search.aws.element84.com/v1/collections/sentinel-2-l2a/items/S2B_13TDE_20230705_0_L2A":red'
+# Planetary Computer: a POST search, its pages followed, its assets signed
+terrio convert 'STACIT:"https://planetarycomputer.microsoft.com/api/stac/v1/search?collections=sentinel-2-l2a&bbox=-105.3,39.95,-105.2,40.05&datetime=2024-07-01/2024-07-10":asset=B04,method=POST' b04.tif --srcwin 5000 5000 512 512
 ```
 
 ## Vectors

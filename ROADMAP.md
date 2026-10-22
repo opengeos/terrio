@@ -94,10 +94,11 @@ of GDAL: the long tail of formats stays reachable through an optional GDAL backe
 - [x] STAC items and collections as datasets. Done: items, item collections, collections and STAC
       API searches (local or remote, following `next` links) as footprint layers read as GDAL reads
       STAC GeoJSON; assets opened as `STAC:"item":asset` (COGs in place); mosaics of an asset over
-      items as GDAL's STACIT driver builds them (`STACIT:"search":asset=red`), read by window.
-    - [ ] POST pagination.
+      items as GDAL's STACIT driver builds them (`STACIT:"search":asset=red`), read by window;
+      `POST` searches and pages (`method=POST`, `next` links with `body`, `merge` and `headers`),
+      and Planetary Computer's assets signed with its SAS tokens, mosaics identical to GDAL's
+      STACIT on the items pystac-client and `planetary_computer` return.
     - [ ] STACTA (tiled assets).
-    - [ ] Signed URLs (Planetary Computer).
 
 ## 0.5: Bindings and the GDAL backend
 
