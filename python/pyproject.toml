@@ -42,6 +42,13 @@ Issues = "https://github.com/opengeos/terrio/issues"
 module-name = "terrio._terrio"
 python-source = "python"
 manifest-path = "Cargo.toml"
+# The notices at the root of the sdist too, where PyPI looks for the License-File entries of its
+# metadata (maturin leaves them in python/, beside this file, which it moves to the root).
+include = [
+    { path = "LICENSE", format = "sdist" },
+    { path = "NOTICE", format = "sdist" },
+    { path = "LICENSE-THIRD-PARTY.md", format = "sdist" },
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

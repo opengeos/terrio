@@ -3,7 +3,8 @@
 Usage: python .github/scripts/check-license-files.py python/dist/*.whl python/dist/*.tar.gz
 
 A wheel must hold LICENSE, NOTICE and LICENSE-THIRD-PARTY.md in its ``.dist-info/licenses/``
-directory, and an sdist in its ``python/`` directory, where maturin finds them.
+directory, and an sdist in its ``python/`` directory, where maturin finds them when it builds
+from it, and at its root, where PyPI looks for the ``License-File`` entries of its metadata.
 """
 
 import sys
@@ -37,10 +38,13 @@ def main():
         for name in NAMES:
             if path.endswith(".whl"):
                 found = any(n.endswith(f".dist-info/licenses/{name}") for n in names)
-            else:
-                found = any(n.split("/", 1)[-1] == f"python/{name}" for n in names)
-            if not found:
-                missing.append(f"{path}: {name}")
+                if not found:
+                    missing.append(f"{path}: {name}")
+                continue
+            inside = {n.split("/", 1)[-1] for n in names}
+            for place in (f"python/{name}", name):
+                if place not in inside:
+                    missing.append(f"{path}: {place}")
     if not sys.argv[1:]:
         missing.append("no wheel or sdist given")
     for line in missing:
