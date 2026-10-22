@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/*", "python", "js"]
 
 [workspace.package]
-version = "0.4.0"
+version = "0.4.1"
 edition = "2024"
 license = "MIT"
 rust-version = "1.90"
@@ -14,7 +14,7 @@ authors = ["Qiusheng Wu <giswqs@gmail.com>"]
 [workspace.dependencies]
 # Memory-mapped reads of SQLite files (GeoPackage, MBTiles), native builds only.
 memmap2 = "0.9"
-terrio = { path = "crates/terrio", version = "0.4.0" }
+terrio = { path = "crates/terrio", version = "0.4.1" }
 # For the Python package (not published to crates.io), so without a version to keep in step.
 terrio-cli = { path = "crates/terrio-cli" }
 
