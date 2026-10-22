@@ -228,6 +228,36 @@ fn converts_as_streams_like_whole_conversions() {
     }
 }
 
+/// Shapefiles read as streams (a batch of records read, then decoded in parallel) are those read
+/// whole: past a batch, and with fewer shapes than records or fewer records than shapes.
+#[test]
+fn shapefiles_streamed_match_whole() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = |name: &str, ext: &str| dir.path().join(format!("{name}.{ext}"));
+    crate::write_vector(&[sample(9000)], &path("all", "shp").to_string_lossy(), &Default::default()).unwrap();
+    // The same files with the .shp, then the .dbf, cut short (points are 28-byte records).
+    let dbf = std::fs::read(path("all", "dbf")).unwrap();
+    let (header_len, record_len) = (u16::from_le_bytes([dbf[8], dbf[9]]) as usize, u16::from_le_bytes([dbf[10], dbf[11]]) as usize);
+    for (name, shp_len, dbf_len) in
+        [("all", None, None), ("few_shapes", Some(100 + 28 * 8500), None), ("few_records", None, Some(header_len + record_len * 8600))]
+    {
+        for ext in ["shp", "shx", "dbf", "prj", "cpg"] {
+            let mut bytes = std::fs::read(path("all", ext)).unwrap();
+            match ext {
+                "shp" => bytes.truncate(shp_len.unwrap_or(bytes.len())),
+                "dbf" => bytes.truncate(dbf_len.unwrap_or(bytes.len())),
+                _ => {}
+            }
+            std::fs::write(path(name, ext), bytes).unwrap();
+        }
+        let p = path(name, "shp").to_string_lossy().into_owned();
+        let whole = crate::open_vector(&p, &Default::default()).unwrap().layers.remove(0);
+        let streamed = open_layers(&p, &Default::default(), DEFAULT_CHUNK).unwrap().remove(0).read_all().unwrap();
+        assert_eq!(streamed.features.len(), 9000, "{name}");
+        same_features(&whole, &streamed);
+    }
+}
+
 #[test]
 fn reads_geojson_members_after_the_features() {
     let dir = tempfile::tempdir().unwrap();

@@ -430,9 +430,8 @@ struct ShpSource {
 }
 
 impl ShpSource {
-    /// The next shape: `None` at the end of the file, `Some(None)` for a null or unreadable
-    /// shape.
-    fn next_shape(&mut self) -> Result<Option<Option<wbvector::Geometry>>> {
+    /// The next shape record's bytes: `None` at the end of the file.
+    fn next_shape(&mut self) -> Result<Option<Vec<u8>>> {
         if self.shp_done {
             return Ok(None);
         }
@@ -445,21 +444,20 @@ impl ShpSource {
         // Read as it comes rather than allocated from the (untrusted) length.
         let mut rec = Vec::new();
         (&mut self.shp).take(2 * u64::from(words)).read_to_end(&mut rec)?;
-        Ok(Some(shapefile::decode_shape(&rec)))
+        Ok(Some(rec))
     }
 
-    fn next_record(&mut self) -> Result<Option<Vec<wbvector::FieldValue>>> {
-        let Some((r, layout, remaining)) = &mut self.dbf else { return Ok(None) };
-        if *remaining == 0 {
-            return Ok(None);
-        }
-        let mut rec = vec![0u8; layout.record_len];
-        if read_full(r, &mut rec)? < rec.len() {
-            *remaining = 0;
-            return Ok(None);
-        }
-        *remaining -= 1;
-        Ok(Some(layout.record(&rec)))
+    /// Up to `n` attribute records' bytes, one after another: how many were read.
+    fn next_records(&mut self, n: usize, out: &mut Vec<u8>) -> Result<usize> {
+        let Some((r, layout, remaining)) = &mut self.dbf else { return Ok(0) };
+        let n = n.min(*remaining);
+        let len = layout.record_len;
+        out.resize(n * len, 0);
+        let got = read_full(r, out)? / len.max(1);
+        out.truncate(got * len);
+        // A file cut short ends the records.
+        *remaining = if got < n { 0 } else { *remaining - got };
+        Ok(got)
     }
 }
 
@@ -479,18 +477,33 @@ fn read_full(r: &mut impl Read, buf: &mut [u8]) -> Result<usize> {
 
 impl FeatureSource for ShpSource {
     fn next_batch(&mut self) -> Result<Option<Vec<Feature>>> {
-        let mut out = Vec::new();
-        while out.len() < 8192 {
-            let shape = self.next_shape()?;
-            let record = self.next_record()?;
-            if shape.is_none() && record.is_none() {
-                break;
-            }
-            let attributes = record.unwrap_or_else(|| vec![wbvector::FieldValue::Null; self.fields]);
-            out.push(Feature { fid: self.fid, geometry: shape.flatten(), attributes });
-            self.fid += 1;
+        const BATCH: usize = 8192;
+        // The bytes are read in turn, then decoded in parallel.
+        let mut shapes = Vec::new();
+        while shapes.len() < BATCH
+            && let Some(rec) = self.next_shape()?
+        {
+            shapes.push(rec);
         }
-        Ok((!out.is_empty()).then_some(out))
+        let mut records = Vec::new();
+        // As many records as shapes; past the shapes' end, the records left, a batch at a time.
+        let n = self.next_records(if shapes.is_empty() { BATCH } else { shapes.len() }, &mut records)?;
+        let count = shapes.len().max(n);
+        if count == 0 {
+            return Ok(None);
+        }
+        let (fields, first) = (self.fields, self.fid);
+        let layout = self.dbf.as_ref().map(|(_, l, _)| l);
+        let out = crate::par::map_range(count, |i| {
+            let geometry = shapes.get(i).and_then(|rec| shapefile::decode_shape(rec));
+            let attributes = match layout {
+                Some(l) if i < n => l.record(&records[i * l.record_len..(i + 1) * l.record_len]),
+                _ => vec![wbvector::FieldValue::Null; fields],
+            };
+            Feature { fid: first + i as u64, geometry, attributes }
+        });
+        self.fid += count as u64;
+        Ok(Some(out))
     }
 }
 
