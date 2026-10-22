@@ -241,9 +241,10 @@ WebAssembly (the `terrio-js` npm package):
 - [x] terrio's own FlatGeobuf reader in place of the format library's, which overflowed on large
       files in 32-bit WebAssembly. Done: terrio's driver parses the files, with 64-bit offsets (the
       format library supplies only the schema types and the writer's spatial index); an 867 MB file
-      of 2 million lines opens in Node.js in 3.3 s. A layer opened whole decodes to about five
-      times the file's size, so files above about 800 MB need the memory64 item below, or
-      `openUrl` to read them by bounding box.
+      of 2 million lines opens in Node.js in 3.3 s. A layer opened whole takes, with the file's
+      bytes, about four times the file's size for lines and five for polygons, so a 1 GB file of
+      polygons needs the memory64 item below, or `openUrl` to read it by bounding box (with a
+      spatial index; a file without one is still read whole).
 - [ ] Multithreaded decoding and writing with WebAssembly threads, where the page allows them.
 - [ ] A smaller download: optional formats split out or loaded on demand, and size-optimized builds.
 - [ ] Datasets larger than 4 GB, with the 64-bit memory proposal (memory64) where runtimes support

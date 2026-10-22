@@ -56,9 +56,11 @@ In WebAssembly, these formats are read from and written to memory:
 | Point cloud | LAS, LAZ, COPC, PLY, E57 | LAS, LAZ, COPC, PLY, E57 |
 
 \* FlatGeobuf files are read by terrio's own driver, with 64-bit offsets. `open` decodes a layer
-whole, into about five times the file's size, within WebAssembly's 4 GB of memory: an 867 MB file
-of 2 million OpenStreetMap lines opens in about 3 seconds in Node.js, and a 1 GB file of
-2.3 million polygons runs out of memory. `openUrl` reads larger files by bounding box.
+whole, within WebAssembly's 4 GB of memory; with the file's bytes, that takes about four times the
+file's size for lines and five for polygons (3.2 GB and 5.4 GB in native builds): an 867 MB file of
+2 million OpenStreetMap lines opens in about 3 seconds in Node.js, and a 1 GB file of 2.3 million
+polygons runs out of memory. `openUrl` reads files with a spatial index by bounding box, decoding
+only the features found; a file without one is still read whole.
 
 JPEG 2000 files decode with the codec of GDAL's JP2OpenJPEG driver (a Rust port of OpenJPEG), with
 their GeoJP2 or GMLJP2 georeferencing: a Sentinel-2 band (`T10SEG_..._B04.jp2`, 10980 x 10980)
