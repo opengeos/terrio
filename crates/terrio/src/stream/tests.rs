@@ -235,12 +235,15 @@ fn shapefiles_streamed_match_whole() {
     let dir = tempfile::tempdir().unwrap();
     let path = |name: &str, ext: &str| dir.path().join(format!("{name}.{ext}"));
     crate::write_vector(&[sample(9000)], &path("all", "shp").to_string_lossy(), &Default::default()).unwrap();
-    // The same files with the .shp, then the .dbf, cut short (points are 28-byte records).
+    // The same files with the .shp, then the .dbf, cut short: points are 28-byte records and null
+    // shapes 12, and the first 8500 features hold 6375 points and 2125 null shapes.
     let dbf = std::fs::read(path("all", "dbf")).unwrap();
     let (header_len, record_len) = (u16::from_le_bytes([dbf[8], dbf[9]]) as usize, u16::from_le_bytes([dbf[10], dbf[11]]) as usize);
-    for (name, shp_len, dbf_len) in
-        [("all", None, None), ("few_shapes", Some(100 + 28 * 8500), None), ("few_records", None, Some(header_len + record_len * 8600))]
-    {
+    for (name, shp_len, dbf_len) in [
+        ("all", None, None),
+        ("few_shapes", Some(100 + 28 * 6375 + 12 * 2125), None),
+        ("few_records", None, Some(header_len + record_len * 8600)),
+    ] {
         for ext in ["shp", "shx", "dbf", "prj", "cpg"] {
             let mut bytes = std::fs::read(path("all", ext)).unwrap();
             match ext {

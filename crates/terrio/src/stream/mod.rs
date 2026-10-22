@@ -427,6 +427,7 @@ struct ShpSource {
     fields: usize,
     fid: u64,
     shp_done: bool,
+    batch_bytes: usize,
 }
 
 impl ShpSource {
@@ -476,18 +477,27 @@ fn read_full(r: &mut impl Read, buf: &mut [u8]) -> Result<usize> {
 }
 
 impl FeatureSource for ShpSource {
+    fn set_batch_bytes(&mut self, bytes: usize) {
+        self.batch_bytes = bytes;
+    }
+
     fn next_batch(&mut self) -> Result<Option<Vec<Feature>>> {
         const BATCH: usize = 8192;
-        // The bytes are read in turn, then decoded in parallel.
-        let mut shapes = Vec::new();
-        while shapes.len() < BATCH
+        // The bytes are read in turn, then decoded in parallel; large shapes or records end a
+        // batch sooner, the records read as many as the shapes.
+        let record_len = self.dbf.as_ref().map_or(0, |(_, l, _)| l.record_len);
+        let limit = BATCH.min(self.batch_bytes / record_len.max(1)).max(1);
+        let (mut shapes, mut bytes) = (Vec::new(), 0);
+        while shapes.len() < limit
+            && bytes < self.batch_bytes
             && let Some(rec) = self.next_shape()?
         {
+            bytes += rec.len();
             shapes.push(rec);
         }
         let mut records = Vec::new();
         // As many records as shapes; past the shapes' end, the records left, a batch at a time.
-        let n = self.next_records(if shapes.is_empty() { BATCH } else { shapes.len() }, &mut records)?;
+        let n = self.next_records(if shapes.is_empty() { limit } else { shapes.len() }, &mut records)?;
         let count = shapes.len().max(n);
         if count == 0 {
             return Ok(None);
@@ -543,7 +553,7 @@ fn open_shapefile(path: &str) -> Result<(Layer, Box<dyn FeatureSource>)> {
     }
     shapefile::apply_prj(&mut layer, prj.as_deref());
     let fields = layer.schema.len();
-    Ok((layer, Box::new(ShpSource { shp, dbf, fields, fid: 0, shp_done: false })))
+    Ok((layer, Box::new(ShpSource { shp, dbf, fields, fid: 0, shp_done: false, batch_bytes: source_bytes(CHUNK_BYTES) })))
 }
 
 // FlatGeobuf
