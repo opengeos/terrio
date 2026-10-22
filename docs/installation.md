@@ -35,6 +35,20 @@ The Windows installer adds the directory to your `PATH` (`TERRIO_NO_MODIFY_PATH=
 the shell installer prints the line to add when it isn't on it. Run the installer again to update
 terrio, and delete the binary to uninstall it.
 
+On Arch Linux and its derivatives, the [AUR](https://aur.archlinux.org/packages/terrio-bin) has
+`terrio-bin` (the release's binary) and `terrio` (built from source); on Fedora,
+[COPR](https://copr.fedorainfracloud.org/coprs/giswqs/terrio/) has `terrio`. Both are updated with
+each release:
+
+```sh
+# Arch Linux, with an AUR helper such as yay or paru
+yay -S terrio-bin
+
+# Fedora
+sudo dnf copr enable giswqs/terrio
+sudo dnf install terrio
+```
+
 The command also comes with the Python package (`python -m terrio` runs it too):
 
 ```sh

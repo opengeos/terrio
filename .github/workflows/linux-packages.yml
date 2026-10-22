@@ -1,0 +1,114 @@
+name: Linux packages
+
+# Publishes a release to the Arch User Repository (terrio, built from source, and terrio-bin, the
+# release's static binary) and builds it on Fedora COPR (giswqs/terrio). The packaging lives in
+# packaging/; only its version changes here. release.yml calls this once the release and its
+# binaries are on GitHub; it can also be run by hand for a release (Actions > Linux packages).
+# Each channel skips itself when its secret is missing and never fails the other.
+#
+# Repository secrets:
+#   AUR_SSH_PRIVATE_KEY - private SSH key registered on the AUR account (giswqs) that
+#                         maintains terrio and terrio-bin
+#   COPR_CONFIG         - the copr-cli config block from https://copr.fedorainfracloud.org/api/
+#                         (COPR expires API tokens after 180 days)
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: The release, such as 0.4.1 or v0.4.1
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      version:
+        description: The release, such as 0.4.1 or v0.4.1
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  aur:
+    name: AUR (${{ matrix.package }})
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        package: [terrio-bin, terrio]
+    concurrency:
+      group: aur-${{ matrix.package }}
+      cancel-in-progress: false
+    env:
+      AUR_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+    steps:
+      - uses: actions/checkout@v7
+        if: env.AUR_KEY != ''
+        with:
+          persist-credentials: false
+
+      - name: Set the version
+        if: env.AUR_KEY != ''
+        env:
+          VERSION: ${{ inputs.version }}
+          PKGBUILD: packaging/aur/${{ matrix.package }}/PKGBUILD
+        run: |
+          version="${VERSION#v}"
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+          sed -i "s/^pkgver=.*/pkgver=$version/; s/^pkgrel=.*/pkgrel=1/" "$PKGBUILD"
+
+      - name: Push ${{ matrix.package }} to the AUR
+        if: env.AUR_KEY != ''
+        # Pinned to a commit: this step receives the AUR key.
+        uses: KSXGitHub/github-actions-deploy-aur@084b0d9b15415bf9cdb65d44dad1efe37a354050 # v4.2.0
+        with:
+          pkgname: ${{ matrix.package }}
+          pkgbuild: packaging/aur/${{ matrix.package }}/PKGBUILD
+          # The checksums of the release's files, computed from them.
+          updpkgsums: true
+          commit_username: Qiusheng Wu
+          commit_email: giswqs@gmail.com
+          ssh_private_key: ${{ env.AUR_KEY }}
+          commit_message: Update to ${{ env.VERSION }}
+          allow_empty_commits: false
+
+  copr:
+    name: Fedora COPR
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    concurrency:
+      group: copr
+      cancel-in-progress: false
+    env:
+      COPR_CONFIG: ${{ secrets.COPR_CONFIG }}
+    steps:
+      - uses: actions/checkout@v7
+        if: env.COPR_CONFIG != ''
+        with:
+          persist-credentials: false
+
+      - name: Build the source RPM and submit it to giswqs/terrio
+        if: env.COPR_CONFIG != ''
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq rpm
+          # Pinned: this step holds the COPR token.
+          pipx install 'copr-cli==2.6'
+          mkdir -p ~/.config
+          (umask 077; printf '%s\n' "$COPR_CONFIG" > ~/.config/copr)
+          # Accept a partial paste of the API page's block: copr-cli needs the section header
+          # and copr_url, which are the same for everyone.
+          grep -q '^\[copr-cli\]' ~/.config/copr || sed -i '1i [copr-cli]' ~/.config/copr
+          grep -q '^copr_url' ~/.config/copr || echo 'copr_url = https://copr.fedorainfracloud.org' >> ~/.config/copr
+
+          version="${VERSION#v}"
+          sed -i "s/^Version: .*/Version:        $version/" packaging/copr/terrio.spec
+          src="$HOME/rpmbuild/SOURCES"
+          mkdir -p "$src"
+          curl -sSfL -o "$src/terrio-$version.tar.gz" "https://github.com/opengeos/terrio/archive/refs/tags/v$version.tar.gz"
+          srpm="$(rpmbuild -bs packaging/copr/terrio.spec --define "_topdir $HOME/rpmbuild" | sed -n 's/^Wrote: //p')"
+          [ -n "$srpm" ] || { echo "::error::rpmbuild wrote no source RPM"; exit 1; }
+          copr-cli build --nowait giswqs/terrio "$srpm"
