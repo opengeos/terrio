@@ -78,13 +78,13 @@ the largest peak memory. Same machine, terrio 0.2.0.
 | Task | terrio | GDAL | terrio vs GDAL | terrio memory | GDAL memory |
 |---|---|---|---|---|---|
 | Statistics: 14412² Float32 mosaic | 1.82 s | 3.80 s | 2.1× faster | 143 MB | 859 MB |
-| GeoTIFF → COG (Deflate): the mosaic | 1.54 s | 20.98 s | 13.6× faster | 784 MB | 1.2 GB |
+| GeoTIFF → COG (Deflate): the mosaic | 1.93 s | 20.98 s | 10.9× faster | 698 MB | 1.2 GB |
 | Window 2048² of the mosaic | 34 ms | 102 ms | 3.0× faster | 80 MB | 65 MB |
-| Warp the mosaic to EPSG:3857, bilinear | 2.18 s | 16.44 s | 7.5× faster | 718 MB | 1.6 GB |
-| Mosaic 16 USGS 3DEP tiles → GeoTIFF | 929 ms | 6.73 s | 7.2× faster | 521 MB | 1.9 GB |
-| Hillshade of the mosaic | 593 ms | 4.55 s | 7.7× faster | 371 MB | 855 MB |
-| Slope of the mosaic | 738 ms | 5.93 s | 8.0× faster | 611 MB | 857 MB |
-| Sentinel-2 band: JPEG 2000 → GeoTIFF | 670 ms | 3.23 s | 4.8× faster | 511 MB | 517 MB |
+| Warp the mosaic to EPSG:3857, bilinear | 2.27 s | 16.44 s | 7.2× faster | 670 MB | 1.6 GB |
+| Mosaic 16 USGS 3DEP tiles → GeoTIFF | 1.20 s | 6.73 s | 5.6× faster | 440 MB | 1.9 GB |
+| Hillshade of the mosaic | 485 ms | 4.55 s | 9.4× faster | 327 MB | 855 MB |
+| Slope of the mosaic | 800 ms | 5.93 s | 7.4× faster | 582 MB | 857 MB |
+| Sentinel-2 band: JPEG 2000 → GeoTIFF | 670 ms | 3.23 s | 4.8× faster | 348 MB | 517 MB |
 | Statistics: Sentinel-2 band (15-bit samples) | 1.01 s | 2.80 s | 2.8× faster | 111 MB | 278 MB |
 
 ### Large vectors
@@ -92,14 +92,14 @@ the largest peak memory. Same machine, terrio 0.2.0.
 | Task | terrio | GDAL | terrio vs GDAL | terrio memory | GDAL memory |
 |---|---|---|---|---|---|
 | Info: Colorado OpenStreetMap GeoPackage (6.2 M features) | 13 ms | 30 ms | 2.3× faster | 26 MB | 45 MB |
-| Lines (2.0 M) → FlatGeobuf | 5.56 s | 6.18 s | 1.1× faster | 311 MB | 556 MB |
-| Polygons (2.3 M) → GeoParquet | 2.65 s | 3.49 s | 1.3× faster | 936 MB | 960 MB |
-| Lines → GeoJSON | 3.48 s | 42.69 s | 12.3× faster | 458 MB | 503 MB |
-| Lines → Shapefile | 5.24 s | 5.38 s | 1.0× faster | 347 MB | 505 MB |
-| Filter + reproject lines → GeoPackage | 3.87 s | 6.16 s | 1.6× faster | 195 MB | 186 MB |
-| Polygons → GeoPackage | 5.44 s | 6.90 s | 1.3× faster | 543 MB | 770 MB |
-| GeoPackage (5 layers) → GeoPackage | 9.02 s | 18.81 s | 2.1× faster | 559 MB | 782 MB |
-| OpenStreetMap PBF (Colorado) → GeoPackage | 21.40 s | 45.21 s | 2.1× faster | 986 MB | 455 MB |
+| Lines (2.0 M) → FlatGeobuf | 5.32 s | 6.18 s | 1.2× faster | 288 MB | 556 MB |
+| Polygons (2.3 M) → GeoParquet | 3.00 s | 3.49 s | 1.2× faster | 635 MB | 960 MB |
+| Lines → GeoJSON | 3.69 s | 42.69 s | 11.6× faster | 288 MB | 503 MB |
+| Lines → Shapefile | 5.39 s | 5.38 s | same | 233 MB | 505 MB |
+| Filter + reproject lines → GeoPackage | 3.83 s | 6.16 s | 1.6× faster | 148 MB | 186 MB |
+| Polygons → GeoPackage | 5.38 s | 6.90 s | 1.3× faster | 224 MB | 770 MB |
+| GeoPackage (5 layers) → GeoPackage | 9.00 s | 18.81 s | 2.1× faster | 261 MB | 782 MB |
+| OpenStreetMap PBF (Colorado) → GeoPackage | 18.77 s | 45.21 s | 2.4× faster | 684 MB | 455 MB |
 
 ## Notes
 
@@ -121,6 +121,12 @@ the largest peak memory. Same machine, terrio 0.2.0.
   the file is laid out (the IFDs first, then the smallest overview's tiles). The JPEG 2000 band
   is decoded a row of tiles at a time, four rows at once, so that tiles slow to decode overlap
   the next rows' tiles.
+- **Memory**: on Linux with glibc, the `terrio` command fixes the allocator's mmap threshold at
+  4 MiB (`mallopt`), so that blocks that large go back to the system when they are freed rather
+  than stay in the per-thread arenas, where glibc's adaptive threshold puts them once large blocks
+  have been freed. That lowers peak memory by 12-60% on these files, for a few percent of time
+  (about 20% for the mosaic and GeoParquet). `MALLOC_MMAP_THRESHOLD_`, when set, is kept; the
+  Python and JavaScript packages leave the allocator to their host.
 - **Mosaic of 16 tiles**: terrio copies each tile's pixels into place; `gdalwarp` warps them.
 - **Large vectors** are converted a chunk of features at a time: at most 65,536 features, and
   about 64 MB of them, so that a run of large polygons is not held at once. GeoPackage and

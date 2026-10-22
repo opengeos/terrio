@@ -1324,6 +1324,10 @@ pub(crate) fn layer_schemas() -> Vec<Layer> {
     SPECS.iter().map(Spec::layer).collect()
 }
 
+/// The most blocks of nodes and ways [`read_sorted_pbf`] decodes at once: each batch is held
+/// decoded until its features are written, and more blocks than this barely speed it up.
+const MAX_BLOCKS: usize = 20;
+
 /// Reads a PBF file sorted by type then id (as its header says) into GDAL's five layers, a
 /// batch of blocks at a time, decoded in parallel: `emit` gets each layer's features in GDAL's
 /// order, as `(layer index, features)`, for the layers `wanted`. Only the nodes (about 6 bytes each)
@@ -1375,7 +1379,7 @@ pub(crate) fn read_sorted_pbf(
     // Candidate areas wait for the relations in a temporary file.
     let mut areas = std::io::BufWriter::with_capacity(1 << 20, super::spill()?);
     let (mut in_ways, mut in_relations) = (false, false);
-    let batch = crate::par::threads().max(1) * 2;
+    let batch = (crate::par::threads().max(1) * 2).min(MAX_BLOCKS);
     // Blocks from `last` on hold only relations; the one before, the last read here, may hold the
     // first relations too (read above).
     let end = if need_relations { last } else { spans.len() };
