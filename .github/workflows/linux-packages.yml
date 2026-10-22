@@ -5,7 +5,9 @@ name: Linux packages
 # packaging/; only its version changes here. release.yml calls this once the release and its
 # binaries are on GitHub; it can also be run by hand for a release (Actions > Linux packages).
 # Each channel skips itself when its secret is missing, runs whether or not the other succeeds,
-# and fails the workflow when it fails.
+# and fails the workflow when it fails. COPR builds take 30-40 minutes (the aarch64 chroots
+# compile every crate), so the build is submitted, not waited for: the run's summary links to it,
+# and a chroot that fails shows there, not in this workflow.
 #
 # Repository secrets:
 #   AUR_SSH_PRIVATE_KEY - private SSH key registered on the AUR account (giswqs) that
@@ -155,5 +157,11 @@ jobs:
           # and copr_url, which are the same for everyone.
           grep -q '^\[copr-cli\]' ~/.config/copr || sed -i '1i [copr-cli]' ~/.config/copr
           grep -q '^copr_url' ~/.config/copr || echo 'copr_url = https://copr.fedorainfracloud.org' >> ~/.config/copr
-          # Waits for the build: a chroot that fails fails the job.
-          copr-cli build giswqs/terrio "$SRPM"
+          # Submitted without waiting: the build takes 30-40 minutes.
+          out="$(copr-cli build --nowait giswqs/terrio "$SRPM")"
+          echo "$out"
+          id="$(printf '%s\n' "$out" | sed -n 's/^Created builds: \([0-9]*\).*/\1/p')"
+          [ -n "$id" ] || { echo "::error::copr-cli reported no build"; exit 1; }
+          url="https://copr.fedorainfracloud.org/coprs/giswqs/terrio/build/$id/"
+          echo "::notice::COPR build $id submitted: $url"
+          echo "COPR build [$id]($url) submitted for every chroot; check it there." >> "$GITHUB_STEP_SUMMARY"
