@@ -456,10 +456,35 @@ pub(crate) fn get(remote: &Remote) -> Result<Vec<u8>> {
 }
 
 /// Sends a `POST` of a JSON body (a STAC API search, for instance) and returns the response's
-/// body. Redirects are followed with the same request, and transient errors retried.
+/// body. Redirects that keep the method (307 and 308) are followed, and transient errors retried.
 pub(crate) fn post_json(url: &str, body: &[u8], headers: &[(String, String)]) -> Result<Vec<u8>> {
+    request("POST", url, Some(body), headers)
+}
+
+/// Fetches a whole remote file with extra request headers (an API key, for instance), following
+/// redirects and retrying transient errors.
+pub(crate) fn get_with_headers(url: &str, headers: &[(String, String)]) -> Result<Vec<u8>> {
+    if headers.is_empty() {
+        return get(&Remote::Url(url.to_string()));
+    }
+    request("GET", url, None, headers)
+}
+
+/// The scheme and host (with its port) of a URL.
+fn origin(url: &str) -> (String, String) {
+    let (scheme, rest) = url.split_once("://").unwrap_or(("", url));
+    let host = rest.split(['/', '?', '#']).next().unwrap_or(rest);
+    (scheme.to_ascii_lowercase(), host.to_ascii_lowercase())
+}
+
+/// Sends a `GET` or a `POST` (of a JSON `body`) with extra `headers`, and returns the response's
+/// body: redirects followed (for a `POST`, only those keeping the method, 307 and 308), the extra
+/// headers dropped when a redirect leads to another origin (they may hold keys), and transient
+/// errors and statuses (429, 500, 502, 503, 504) retried.
+fn request(method: &str, url: &str, body: Option<&[u8]>, headers: &[(String, String)]) -> Result<Vec<u8>> {
     let options = HttpOptions::from_env();
     let agent = agent(&options);
+    let first_origin = origin(url);
     let mut url = url.to_string();
     let (mut redirects, mut attempt) = (0, 0);
     let backoff = |attempt: &mut u32| {
@@ -467,16 +492,28 @@ pub(crate) fn post_json(url: &str, body: &[u8], headers: &[(String, String)]) ->
         *attempt += 1;
     };
     loop {
-        let mut req =
-            agent.post(&url).header("Content-Type", "application/json").header("Accept", "application/geo+json, application/json");
-        for (k, v) in headers {
-            req = req.header(k, v);
-        }
-        let result = req.send(body);
+        let extra: &[(String, String)] = if origin(&url) == first_origin { headers } else { &[] };
+        let result = match body {
+            Some(body) => {
+                let mut req =
+                    agent.post(&url).header("Content-Type", "application/json").header("Accept", "application/geo+json, application/json");
+                for (k, v) in extra {
+                    req = req.header(k, v);
+                }
+                req.send(body)
+            }
+            None => {
+                let mut req = agent.get(&url).header("Accept", "application/geo+json, application/json");
+                for (k, v) in extra {
+                    req = req.header(k, v);
+                }
+                req.call()
+            }
+        };
         if options.log {
             match &result {
-                Ok(r) => eprintln!("terrio: POST {} -> {}", redact(&url), r.status().as_u16()),
-                Err(e) => eprintln!("terrio: POST {} -> {e}", redact(&url)),
+                Ok(r) => eprintln!("terrio: {method} {} -> {}", redact(&url), r.status().as_u16()),
+                Err(e) => eprintln!("terrio: {method} {} -> {e}", redact(&url)),
             }
         }
         let response = match result {
@@ -488,10 +525,9 @@ pub(crate) fn post_json(url: &str, body: &[u8], headers: &[(String, String)]) ->
             Err(e) => return Err(Error::Http(format!("{}: {e}", redact(&url)))),
         };
         let status = response.status().as_u16();
-        // 307 and 308 keep the method and body; 301, 302 and 303 would turn them into a GET.
-        if matches!(status, 307 | 308)
-            && let Some(location) = response.headers().get("location").and_then(|v| v.to_str().ok())
-        {
+        // A POST follows only 307 and 308, which keep the method and body.
+        let follows = if body.is_some() { matches!(status, 307 | 308) } else { (300..400).contains(&status) };
+        if follows && let Some(location) = response.headers().get("location").and_then(|v| v.to_str().ok()) {
             redirects += 1;
             if redirects > MAX_REDIRECTS {
                 return Err(Error::Http(format!("{}: too many redirects", redact(&url))));
@@ -513,29 +549,6 @@ pub(crate) fn post_json(url: &str, body: &[u8], headers: &[(String, String)]) ->
         }
         return Ok(data);
     }
-}
-
-/// Fetches a whole remote file with extra request headers (an API key, for instance).
-pub(crate) fn get_with_headers(url: &str, headers: &[(String, String)]) -> Result<Vec<u8>> {
-    if headers.is_empty() {
-        return get(&Remote::Url(url.to_string()));
-    }
-    let options = HttpOptions::from_env();
-    let agent = agent(&options);
-    let mut req = agent.get(url);
-    for (k, v) in headers {
-        req = req.header(k, v);
-    }
-    let response = req.call().map_err(|e| Error::Http(format!("{}: {e}", redact(url))))?;
-    let status = response.status().as_u16();
-    let mut data = Vec::new();
-    response.into_body().into_reader().read_to_end(&mut data).map_err(|e| Error::Http(format!("{}: {e}", redact(url))))?;
-    REQUESTS.fetch_add(1, Ordering::Relaxed);
-    BYTES.fetch_add(data.len() as u64, Ordering::Relaxed);
-    if !(200..300).contains(&status) {
-        return Err(Error::Http(format!("{}: status {status}", redact(url))));
-    }
-    Ok(data)
 }
 
 /// A remote file read in place: `Read` and `Seek` over HTTP range requests, with a block cache.

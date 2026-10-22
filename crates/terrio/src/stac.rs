@@ -18,8 +18,11 @@
 //! - Search pages are followed through their `next` links whether they are `GET` or `POST`
 //!   requests (with the link's `body`, `merge` and `headers`), and `STACIT:"url":method=POST`
 //!   sends a search URL's query parameters as a `POST` body, as pystac-client does.
-//! - Assets on Microsoft Planetary Computer (Azure Blob Storage hrefs of items read from its API)
-//!   are signed with its SAS tokens, as `planetary_computer.sign()` does (see [`SignMode`]).
+//! - Assets on Microsoft Planetary Computer (Azure Blob Storage hrefs of items read from its API
+//!   or linking to it) are signed with its SAS tokens, as `planetary_computer.sign()` does (see
+//!   [`SignMode`]): `STACIT:` names take a `sign=` option, `STAC:` names follow
+//!   `TERRIO_STAC_SIGN`. An item file without links to Planetary Computer is signed only with
+//!   `planetary_computer`.
 //!
 //! [`crate::info::info_path`] lists an item's assets, or a collection's mosaics, as subdatasets.
 
@@ -317,7 +320,7 @@ impl SignMode {
     fn parse(v: &str) -> Option<Self> {
         match v.trim().to_ascii_lowercase().replace('-', "_").as_str() {
             "auto" | "" => Some(Self::Auto),
-            "planetary_computer" | "pc" | "yes" | "on" | "true" => Some(Self::PlanetaryComputer),
+            "planetary_computer" | "planetarycomputer" | "pc" | "yes" | "on" | "true" => Some(Self::PlanetaryComputer),
             "none" | "no" | "off" | "false" => Some(Self::None),
             _ => None,
         }
@@ -349,16 +352,24 @@ fn from_planetary_computer(item: &Value, base: &str) -> bool {
 
 /// An asset href of `item` (read from `base`), signed as `mode` says.
 fn sign_href(href: String, item: &Value, base: &str, mode: SignMode) -> Result<String> {
-    let Some((account, container)) = blob_container(&href) else { return Ok(href) };
+    if needs_signing(&href, item, base, mode) { signed(href) } else { Ok(href) }
+}
+
+/// Whether an asset href of `item` (read from `base`) is to be signed as `mode` says: an
+/// unsigned Azure Blob Storage href.
+fn needs_signing(href: &str, item: &Value, base: &str, mode: SignMode) -> bool {
     let sign = match mode {
         SignMode::None => false,
         SignMode::PlanetaryComputer => true,
         SignMode::Auto => from_planetary_computer(item, base),
     };
     // Already signed (a SAS token's signature is `sig=`).
-    if !sign || href.split_once('?').is_some_and(|(_, q)| q.split('&').any(|kv| kv.starts_with("sig="))) {
-        return Ok(href);
-    }
+    sign && blob_container(href).is_some() && !href.split_once('?').is_some_and(|(_, q)| q.split('&').any(|kv| kv.starts_with("sig=")))
+}
+
+/// An Azure Blob Storage href with a current Planetary Computer SAS token appended.
+fn signed(href: String) -> Result<String> {
+    let Some((account, container)) = blob_container(&href) else { return Ok(href) };
     let token = pc_token(account, container)?;
     Ok(format!("{href}{}{token}", if href.contains('?') { '&' } else { '?' }))
 }
@@ -544,6 +555,34 @@ struct Filters {
     /// `method=POST`: send the search URL's query as a `POST` body.
     post: bool,
     sign: Option<SignMode>,
+    /// An option with a value it does not take (`sign=nope`, `method=PUT`).
+    invalid: Option<String>,
+}
+
+impl Filters {
+    /// The options a mosaic's name keeps from these (`method=POST`, `sign=`), for the names of
+    /// the subdatasets it suggests.
+    fn kept_options(&self) -> String {
+        let mut out = String::new();
+        if self.post {
+            out.push_str(",method=POST");
+        }
+        match self.sign {
+            Some(SignMode::Auto) => out.push_str(",sign=auto"),
+            Some(SignMode::PlanetaryComputer) => out.push_str(",sign=planetary_computer"),
+            Some(SignMode::None) => out.push_str(",sign=none"),
+            None => {}
+        }
+        out
+    }
+
+    /// An error for an option with a value it does not take.
+    fn check(&self) -> Result<()> {
+        match &self.invalid {
+            Some(o) => Err(Error::InvalidArgument(format!("STACIT: invalid option '{o}'"))),
+            None => Ok(()),
+        }
+    }
 }
 
 /// Splits `"quoted":rest` or `unquoted:rest` (the rest after the last colon when it looks like
@@ -581,8 +620,11 @@ fn parse_name(path: &str) -> Option<Name> {
                 "crs" => filters.crs = Some(v.to_string()),
                 "resolution" => filters.resolution = Some(v.to_ascii_uppercase()),
                 "max_items" => filters.max_items = v.parse().ok(),
-                "method" => filters.post = v.eq_ignore_ascii_case("POST"),
-                "sign" => filters.sign = SignMode::parse(v),
+                "method" if v.eq_ignore_ascii_case("POST") || v.eq_ignore_ascii_case("GET") => {
+                    filters.post = v.eq_ignore_ascii_case("POST")
+                }
+                "sign" if SignMode::parse(v).is_some() => filters.sign = SignMode::parse(v),
+                "method" | "sign" => filters.invalid = Some(kv.to_string()),
                 _ => {}
             }
         }
@@ -627,11 +669,22 @@ fn asset_href(item_loc: &str, asset: &str) -> Result<String> {
 /// An item's asset in a mosaic.
 #[derive(Debug, Clone)]
 struct AssetItem {
+    /// The href, unsigned: a signed one is made when the file is opened, so that its token is
+    /// current.
     href: String,
+    /// Whether the href is signed before it is opened.
+    sign: bool,
     datetime: String,
     width: usize,
     height: usize,
     bounds: [f64; 4],
+}
+
+impl AssetItem {
+    /// Opens the item's file, its href signed now if it is to be signed.
+    fn open(&self) -> Result<LazyRaster> {
+        if self.sign { LazyRaster::open(&signed(self.href.clone())?) } else { LazyRaster::open(&self.href) }
+    }
 }
 
 /// Assets of one asset name, by CRS.
@@ -751,8 +804,10 @@ fn group_assets(items: &[(Value, String)], f: &Filters) -> Result<Groups> {
                 bands: if asset["bands"].is_array() { asset["bands"].clone() } else { asset["eo:bands"].clone() },
                 by_crs: BTreeMap::new(),
             });
+            let href = resolve_href(base, href);
             entry.by_crs.entry(crs).or_default().push(AssetItem {
-                href: sign_href(resolve_href(base, href), item, base, sign)?,
+                sign: needs_signing(&href, item, base, sign),
+                href,
                 datetime: props["datetime"].as_str().unwrap_or_default().to_string(),
                 width: width as usize,
                 height: height as usize,
@@ -764,9 +819,8 @@ fn group_assets(items: &[(Value, String)], f: &Filters) -> Result<Groups> {
 }
 
 /// The subdatasets of grouped assets, named and described as GDAL's STACIT driver does.
-fn stacit_subdatasets(source: &str, groups: &Groups, post: bool) -> Vec<Subdataset> {
+fn stacit_subdatasets(source: &str, groups: &Groups, kept: &str) -> Vec<Subdataset> {
     let mut out = Vec::new();
-    let method = if post { ",method=POST" } else { "" };
     for (collection, assets) in groups {
         for (asset, group) in assets {
             let (arg, text) = if groups.len() > 1 {
@@ -775,11 +829,11 @@ fn stacit_subdatasets(source: &str, groups: &Groups, post: bool) -> Vec<Subdatas
                 (format!("asset={asset}"), format!("Asset {asset}"))
             };
             if group.by_crs.len() == 1 {
-                out.push(Subdataset { name: format!("STACIT:\"{source}\":{arg}{method}"), description: format!("{text} of {source}") });
+                out.push(Subdataset { name: format!("STACIT:\"{source}\":{arg}{kept}"), description: format!("{text} of {source}") });
             } else {
                 for crs in group.by_crs.keys() {
                     out.push(Subdataset {
-                        name: format!("STACIT:\"{source}\":{arg},crs={}{method}", sanitize_crs(crs)),
+                        name: format!("STACIT:\"{source}\":{arg},crs={}{kept}", sanitize_crs(crs)),
                         description: format!("{text} of {source} in CRS {crs}"),
                     });
                 }
@@ -843,7 +897,7 @@ impl WindowSource for Mosaic {
                 continue;
             }
             if raster.is_none() {
-                *raster = Some(LazyRaster::open(&item.href)?);
+                *raster = Some(item.open()?);
             }
             let r = raster.as_mut().ok_or_else(|| bad("unreachable"))?;
             let (sw, sh) = (sx1 - sx0, sy1 - sy0);
@@ -874,13 +928,13 @@ impl WindowSource for Mosaic {
 }
 
 /// Opens the one mosaic of grouped assets (GDAL's `STACITDataset::SetupDataset()`).
-fn open_mosaic(source: &str, groups: Groups, resolution: Option<&str>) -> Result<LazyRaster> {
+fn open_mosaic(source: &str, groups: Groups, resolution: Option<&str>, kept: &str) -> Result<LazyRaster> {
     let group_count: usize = groups.values().flat_map(|a| a.values()).map(|g| g.by_crs.len()).sum();
     if group_count == 0 {
         return Err(bad(format!("no compatible asset found in '{source}'")));
     }
     if group_count > 1 {
-        let subs = stacit_subdatasets(source, &groups, false);
+        let subs = stacit_subdatasets(source, &groups, kept);
         let names: Vec<String> = subs.iter().take(8).map(|s| s.name.clone()).collect();
         return Err(Error::InvalidArgument(format!(
             "'{source}' holds {group_count} mosaics (assets or CRSs): choose one, such as {}{}",
@@ -922,7 +976,7 @@ fn open_mosaic(source: &str, groups: Groups, resolution: Option<&str>) -> Result
     let (w, h) = (w as usize, h as usize);
     // The first item tells the band count, data type and nodata value.
     let first_href = items[0].href.clone();
-    let first = LazyRaster::open(&first_href)?;
+    let first = items[0].open()?;
     let (bands, data_type, nodata) = (first.band_count(), first.data_type(), first.nodata());
     // Ascending datetime: later items are drawn over earlier ones.
     items.sort_by(|a, b| a.datetime.cmp(&b.datetime));
@@ -1038,6 +1092,7 @@ pub(crate) fn open_lazy(path: &str) -> Option<Result<LazyRaster>> {
     Some(match parse_name(path)? {
         Name::Asset { item, asset } => asset_href(&item, &asset).and_then(|href| LazyRaster::open(&href)),
         Name::Mosaic { source, filters } => (|| {
+            filters.check()?;
             let request = search_request(&source, &filters);
             let doc = request.fetch()?;
             let mut max = filters.max_items.unwrap_or(DEFAULT_MAX_ITEMS);
@@ -1049,7 +1104,7 @@ pub(crate) fn open_lazy(path: &str) -> Option<Result<LazyRaster>> {
             }
             let items = load_items_from(doc, &request, max)?;
             let groups = group_assets(&items.items, &filters)?;
-            open_mosaic(&source, groups, filters.resolution.as_deref())
+            open_mosaic(&source, groups, filters.resolution.as_deref(), &filters.kept_options())
         })(),
     })
 }
@@ -1063,6 +1118,7 @@ pub(crate) fn info(path: &str, options: &InfoOptions) -> Option<Result<Info>> {
         }
         Some(Name::Mosaic { source, filters }) => {
             let several = (|| -> Result<Option<Info>> {
+                filters.check()?;
                 let request = search_request(&source, &filters);
                 let doc = request.fetch()?;
                 let max = filters.max_items.unwrap_or(DEFAULT_MAX_ITEMS);
@@ -1076,7 +1132,7 @@ pub(crate) fn info(path: &str, options: &InfoOptions) -> Option<Result<Info>> {
                 let layer = footprints(&items.items, &name)?;
                 let ds = crate::dataset::finish_vector(vec![layer], &source, VectorDriver::GeoJSON);
                 let mut v = crate::info::vector_info(&ds);
-                v.subdatasets = stacit_subdatasets(&source, &groups, filters.post);
+                v.subdatasets = stacit_subdatasets(&source, &groups, &filters.kept_options());
                 Ok(Some(Info::Vector(v)))
             })();
             return Some(match several {
@@ -1112,7 +1168,7 @@ pub(crate) fn info(path: &str, options: &InfoOptions) -> Option<Result<Info>> {
                 })
                 .collect()
         } else {
-            stacit_subdatasets(path, &groups, false)
+            stacit_subdatasets(path, &groups, "")
         };
         Info::Vector(v)
     }))
@@ -1224,6 +1280,14 @@ mod tests {
         assert_eq!(sign_href(signed.clone(), &json!({}), pc, SignMode::Auto).ok(), Some(signed));
         assert_eq!(sign_href(href.into(), &json!({}), pc, SignMode::None).ok().as_deref(), Some(href));
         assert_eq!(SignMode::parse("planetary-computer"), Some(SignMode::PlanetaryComputer));
+        assert_eq!(SignMode::parse("planetarycomputer"), Some(SignMode::PlanetaryComputer));
+        let Some(Name::Mosaic { filters, .. }) = parse_name(r#"STACIT:"https://x.org/search":asset=a,sign=nope"#) else { panic!() };
+        assert!(filters.check().is_err());
+        let Some(Name::Mosaic { filters, .. }) = parse_name(r#"STACIT:"https://x.org/search":asset=a,method=POST,sign=none"#) else {
+            panic!()
+        };
+        assert!(filters.check().is_ok());
+        assert_eq!(filters.kept_options(), ",method=POST,sign=none");
     }
 
     #[test]
