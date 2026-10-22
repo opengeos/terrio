@@ -1259,7 +1259,9 @@ fn relation_chunks<'r>(
     member_ways: &HashMap<i64, MemberAt>,
 ) -> impl Iterator<Item = &'r [Relation]> {
     const MAX_RELATIONS: usize = 8192;
-    const MAX_COORDS: usize = 1 << 22;
+    // Each coordinate is held several times while the rings are assembled: about 1 M
+    // coordinates a chunk keeps that under about 150 MB, and parallel work does not need more.
+    const MAX_COORDS: usize = 1 << 20;
     let size = |r: &Relation| -> usize {
         let rtype = r.tags.iter().find(|(k, _)| k == "type").map(|(_, v)| v.as_str());
         if !wanted[relation_layer(rtype)] {
@@ -1323,6 +1325,9 @@ pub(crate) fn is_sorted_pbf(input: &mut dyn PbfInput) -> bool {
 pub(crate) fn layer_schemas() -> Vec<Layer> {
     SPECS.iter().map(Spec::layer).collect()
 }
+
+/// How many ways [`read_sorted_pbf`] resolves between releases of the node store's pages.
+const RELEASE_EVERY: usize = 512;
 
 /// The most blocks of nodes and ways [`read_sorted_pbf`] decodes at once: each batch is held
 /// decoded until its features are written, and more blocks than this barely speed it up.
@@ -1420,7 +1425,18 @@ pub(crate) fn read_sorted_pbf(
             }
             in_ways = true;
             let ways = block.ways;
-            let outs = crate::par::map_range(ways.len(), |w| way_out(&ways[w], &nodes, &wanted, &members, &schemas[1]));
+            // Each node looked up reads a page of the node store's mapping, which stays in the
+            // process's memory until released: released every few hundred ways, by whichever
+            // thread finishes them, rather than once a block, so that the pages of a whole
+            // block's lookups are not held at once.
+            let done = std::sync::atomic::AtomicUsize::new(0);
+            let outs = crate::par::map_range(ways.len(), |w| {
+                let o = way_out(&ways[w], &nodes, &wanted, &members, &schemas[1]);
+                if (done.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1).is_multiple_of(RELEASE_EVERY) {
+                    nodes.bytes.release();
+                }
+                o
+            });
             let mut lines = Vec::new();
             for o in outs {
                 lines.extend(o.line);
