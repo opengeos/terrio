@@ -705,9 +705,8 @@ def suite_crs_grids(ctx):
         "and time-dependent transformations with coordinate epochs "
         "(scripts/compare_crs_grids_with_gdal.py), with the largest difference of each case. "
         "Identical: within 1 mm. Within tolerance: within 1 cm, or 1 m from CRS to CRS. Known "
-        "differences: deprecated CRSs, and CRS-to-CRS pairs PROJ chains through more than two "
-        "transformations (NAD27 through NAD83(HARN), NAD83(FBN) and NAD83(NSRS2007)) or through "
-        "the steps of a concatenation its database registers (#153).",
+        "differences: deprecated CRSs whose own datum PROJ uses, where terrio uses their "
+        "replacement's (#153).",
     )
     if not shutil.which("cargo"):
         s.skipped = "needs cargo"

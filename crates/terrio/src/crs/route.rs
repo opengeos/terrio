@@ -174,8 +174,23 @@ impl Route {
     pub fn new(src: &Def, dst: &Def) -> Self {
         let aoi = area_of_interest(src, dst);
         let keep = |op: &Op| relevant(op, src, dst, aoi.as_ref());
-        let list =
-            |ops: &[Arc<Op>], reverse: bool| -> Kind { Kind::List(legs(ops, reverse).into_iter().filter(|l| keep(&l.op)).collect()) };
+        // Between projected CRSs, PROJ concatenates the transformations with the projections,
+        // which gives a concatenation its database registers the accuracy and area of its
+        // steps (NAD83 to NAD83(NSRS2007) (NADCON5, Alaska) between British Columbia Albers
+        // and UTM).
+        let concatenated = !src.is_geographic() || !dst.is_geographic();
+        let list = |ops: &[Arc<Op>], reverse: bool| -> Kind {
+            Kind::List(
+                legs(ops, reverse)
+                    .into_iter()
+                    .filter(|l| keep(&l.op))
+                    .map(|l| {
+                        let flat = concatenated && (l.op.chain_accuracy != l.op.accuracy || l.op.chain_bounds != l.op.bounds);
+                        if flat { Leg { op: Arc::new(l.op.as_concatenated()), reverse: l.reverse } } else { l }
+                    })
+                    .collect(),
+            )
+        };
         let kind = if src.same_datum(dst) {
             Kind::Same
         } else if dst.is_wgs84() {
@@ -310,11 +325,18 @@ fn chains(a: u32, b: u32, src: &Def, dst: &Def, aoi: Option<&[f64; 4]>) -> Kind 
     // registers between geographic CRSs through NAD83 or WGS 84.
     let name = |code: u32| epsg::get(code).map_or("", |e| e.name.as_str());
     let csrs = name(a).starts_with("NAD83(CSRS)") && name(b).starts_with("NAD83(CSRS)");
-    // The chains, each with what PROJ sorts it by.
-    let mut out: Vec<(SortKey, Chain)> = Vec::new();
+    // Between geographic CRSs, PROJ chains through datums published since the older of the two
+    // datums (or of no date, as WGS 84): not NAD83 between NAD83(NSRS2007) and NAD83(CSRS).
+    // When that leaves no such chain, it looks for chains by datum, whatever their dates
+    // (NAD83(CSRS)v3 to NAD83(2011) through NAD83).
+    let date = |code: u32| epsg::get(code).and_then(|e| epsg::datum_date(e.datum));
+    let oldest = date(a).zip(date(b)).map(|(x, y)| x.min(y));
+    // The chains, each with what PROJ sorts it by and whether it goes through an older datum.
+    let mut out: Vec<(SortKey, Chain, bool)> = Vec::new();
     for (pivot, first) in from_a {
         let Some((_, second)) = from_b.iter().find(|(p, _)| p == pivot) else { continue };
         let excluded = csrs && matches!(name(*pivot), "NAD83" | "WGS 84");
+        let older = oldest.zip(date(*pivot)).is_some_and(|(oldest, d)| d < oldest);
         for l1 in first {
             for l2 in second {
                 let (o1, o2) = (&l1.op, &l2.op);
@@ -328,33 +350,35 @@ fn chains(a: u32, b: u32, src: &Def, dst: &Def, aoi: Option<&[f64; 4]>) -> Kind 
                     continue;
                 }
                 // The common area, with the name (and so the flags) of the leg whose area it is.
-                let Some(bounds) = intersection(&o1.bounds, &o2.bounds) else { continue };
+                let Some(bounds) = intersection(&o1.chain_bounds, &o2.chain_bounds) else { continue };
                 if aoi.is_some_and(|a| !intersects(&bounds, a)) {
                     continue;
                 }
-                let named = if contains(&o1.bounds, &o2.bounds) {
+                let named = if contains(&o1.chain_bounds, &o2.chain_bounds) {
                     Some(o2)
-                } else if contains(&o2.bounds, &o1.bounds) {
+                } else if contains(&o2.chain_bounds, &o1.chain_bounds) {
                     Some(o1)
                 } else {
                     None
                 };
                 let (a1, a2) = (o1.chain_accuracy, o2.chain_accuracy);
                 let accuracy = if a1 >= 0.0 && a2 >= 0.0 { a1 + a2 } else { -1.0 };
+                let name = chain_name(o1, l1.reverse, o2, !l2.reverse);
                 let rank = Op {
                     bounds,
                     accuracy,
                     chain_accuracy: accuracy,
+                    chain_bounds: bounds,
                     offshore: named.is_some_and(|o| o.offshore),
                     unknown_area: named.is_some_and(|o| o.unknown_area),
                     ballpark: false,
                     concatenated: true,
                     between_3d: o1.between_3d,
                     geocentric: o1.geocentric || o2.geocentric,
-                    priority: o1.priority || o2.priority,
+                    priority: o1.priority || o2.priority || datum::is_priority(&name),
                     keeps_height: o1.keeps_height && o2.keeps_height,
                     steps: o1.steps.iter().chain(&o2.steps).cloned().collect(),
-                    name: chain_name(o1, l1.reverse, o2, !l2.reverse),
+                    name,
                 };
                 // The second leg runs from the pivot to `b`: the reverse of `b` to the pivot.
                 let back = Leg { op: o2.clone(), reverse: !l2.reverse };
@@ -366,15 +390,19 @@ fn chains(a: u32, b: u32, src: &Def, dst: &Def, aoi: Option<&[f64; 4]>) -> Kind 
                         && c.legs[0].op.steps == o1.steps
                         && c.legs[1].op.steps == o2.steps
                 };
-                if !out.iter().any(|(_, c)| same(c)) {
+                if !out.iter().any(|(_, c, _)| same(c)) {
                     let key = SortKey::new(&rank, rank.name.clone(), pipeline_steps(&[(o1, l1.reverse), (o2, back.reverse)]), aoi);
-                    out.push((key, Chain { legs: [l1.clone(), back], rank }));
+                    let older = older && !o1.geocentric && !o2.geocentric;
+                    out.push((key, Chain { legs: [l1.clone(), back], rank }, older));
                 }
             }
         }
     }
+    if out.iter().any(|(_, c, older)| !older && !c.legs.iter().any(|l| l.op.geocentric)) {
+        out.retain(|(_, _, older)| !older);
+    }
     out.sort_by(|x, y| x.0.cmp(&y.0));
-    let chains: Vec<Chain> = out.into_iter().map(|(_, c)| c).collect();
+    let chains: Vec<Chain> = out.into_iter().map(|(_, c, _)| c).collect();
     let ballpark = !aoi.is_some_and(|a| chains.iter().any(|c| !c.rank.needs_grids() && contains(&c.rank.bounds, a)));
     Kind::Chains { chains, ballpark }
 }

@@ -96,9 +96,12 @@ pub(crate) struct Op {
     pub bounds: [f64; 4],
     /// The accuracy in metres, negative when unknown.
     pub accuracy: f64,
-    /// The accuracy PROJ gives it in the chains it makes: the sum of its steps', which differs
-    /// for a concatenation registered with its own.
+    /// The accuracy PROJ gives it when it concatenates it with other operations (in chains,
+    /// and with the projections of projected CRSs): the sum of its steps', which differs for a
+    /// concatenation registered with its own.
     pub chain_accuracy: f64,
+    /// Likewise its area: the intersection of its steps'.
+    pub chain_bounds: [f64; 4],
     /// Whether its area is offshore (PROJ only uses those when no other fits).
     pub offshore: bool,
     /// Whether its area is named "unknown".
@@ -122,6 +125,16 @@ pub(crate) struct Op {
     /// PROJ's name for it, the names of its steps joined by ` + ` (empty for ballparks), by which
     /// PROJ breaks the last ties when it sorts the chains it makes.
     pub name: String,
+}
+
+/// Whether PROJ prefers an operation of this name among those of equal accuracy: one that uses
+/// the NADCON5 NAD83 to NAD83(HARN) transformations, GDA94 to WGS 84 (1) or GDA2020 to WGS 84
+/// (2) (PROJ's `isPriorityOp`, on the operation's whole name).
+pub(crate) fn is_priority(name: &str) -> bool {
+    ["NAD83 to NAD83(HARN) (47)", "NAD83 to NAD83(HARN) (48)", "NAD83 to NAD83(HARN) (49)", "NAD83 to NAD83(HARN) (50)"]
+        .iter()
+        .chain(&["GDA94 to WGS 84 (1)", "GDA2020 to WGS 84 (2)"])
+        .any(|p| name.contains(p))
 }
 
 const SEC_TO_RAD: f64 = std::f64::consts::PI / 180.0 / 3600.0;
@@ -481,6 +494,7 @@ impl Op {
             bounds: [-180.0, -90.0, 180.0, 90.0],
             accuracy: -1.0,
             chain_accuracy: -1.0,
+            chain_bounds: [-180.0, -90.0, 180.0, 90.0],
             offshore: false,
             unknown_area: false,
             ballpark: false,
@@ -492,6 +506,13 @@ impl Op {
             steps,
             name: String::new(),
         }
+    }
+
+    /// The transformation as PROJ concatenates it with other operations: with the accuracy and
+    /// area of its steps.
+    pub fn as_concatenated(&self) -> Self {
+        let priority = self.priority || is_priority(&self.name);
+        Self { accuracy: self.chain_accuracy, bounds: self.chain_bounds, priority, ..self.clone() }
     }
 
     /// PROJ's measure of the size of the area, for ranking transformations of equal accuracy.

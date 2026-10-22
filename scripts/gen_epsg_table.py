@@ -2,7 +2,7 @@
 
 Writes ``crates/terrio/data/epsg.tsv.zst``, a zstd-compressed text table with these lines:
 
-- ``O<TAB>id<TAB>west,south,east,north<TAB>accuracy<TAB>flags<TAB>steps<TAB>name<TAB>steps accuracy``: a datum
+- ``O<TAB>id<TAB>west,south,east,north<TAB>accuracy<TAB>flags<TAB>steps<TAB>name<TAB>steps accuracy<TAB>steps area``: a datum
   transformation, as the geodetic steps of the PROJ pipeline GDAL uses (``cart ellps=intl;helmert
   x=-87 y=-98 z=-121;inv cart ellps=WGS84``, ``hgridshift grids=us_noaa_conus.tif``; empty for a
   null transformation), the area where it applies (in degrees), its accuracy in metres (-1 when
@@ -13,8 +13,9 @@ Writes ``crates/terrio/data/epsg.tsv.zst``, a zstd-compressed text table with th
   keeps heights between 2D CRSs) and PROJ's name for it, the names of its steps joined by `` + ``
   (``NTF (Paris) to NTF (1) + NTF to WGS 84 (1)``), by which PROJ breaks the last ties when it
   sorts the chains it makes, and for a concatenation PROJ's database registers with another
-  accuracy than its steps', the sum of theirs, which PROJ gives the chains it makes with it
-  (empty otherwise).
+  accuracy or area than its steps', the sum of their accuracies and the intersection of their
+  areas, which PROJ gives it when it concatenates it with other operations (in chains, and with
+  the projections of projected CRSs; empty when the same).
 - ``C<TAB>code<TAB>name<TAB>datum<TAB>geog<TAB>ops<TAB>grid ops<TAB>flags<TAB>area<TAB>PROJ string<TAB>WKT``:
   an EPSG geographic (2D or 3D) or projected CRS with its official name, EPSG datum code, the
   code of its geographic 2D CRS, its datum transformations to WGS 84 in the order GDAL lists them
@@ -23,15 +24,20 @@ Writes ``crates/terrio/data/epsg.tsv.zst``, a zstd-compressed text table with th
   geographic 3D CRS), its area of use (``west,south,east,north`` in degrees, which PROJ intersects
   with the transformations' areas), the PROJ string of its coordinate conversion and the WKT
   GDAL writes for it.
-- ``P<TAB>geog1<TAB>geog2<TAB>ops<TAB>grid ops``: the transformations GDAL lists between two
-  geographic CRSs whose datums have direct transformations between them in the EPSG dataset,
-  without and with grids, in the direction geog1 to geog2. terrio also chains the single ones
-  through intermediate datums, as PROJ does for other pairs.
+- ``P<TAB>geog1<TAB>geog2<TAB>ops<TAB>grid ops<TAB>ops to geocentric<TAB>ops from geocentric``:
+  the transformations GDAL lists between two geographic CRSs whose datums have direct
+  transformations between them in the EPSG dataset, without and with grids, in the direction
+  geog1 to geog2. terrio also chains the single ones through intermediate datums, as PROJ does
+  for other pairs, and with them those PROJ's database registers from one geographic CRS to the
+  other datum's geocentric CRS that GDAL does not list for the pair: from geog1 (made to end on
+  geog2), and from geog2 (made to end on geog1).
 - ``V<TAB>code<TAB>name<TAB>datum<TAB>unit<TAB>direction<TAB>WKT``: a vertical CRS, with its
   unit in metres and axis direction (``up`` or ``down``).
 - ``K<TAB>code<TAB>name<TAB>horizontal<TAB>vertical<TAB>WKT``: a compound CRS.
 - ``G<TAB>geog3d<TAB>vertical<TAB>ops<TAB>grid ops``: the transformations (geoid models) from a
   geographic 3D CRS to a vertical CRS.
+- ``D<TAB>datum<TAB>date``: the publication date of an EPSG datum (``2007-01-01``), by which PROJ
+  chooses the datums it chains through.
 - ``A<TAB>grid<TAB>old name``: the name a PROJ-data grid had before PROJ 7 (``conus`` for
   ``us_noaa_conus.tif``), which terrio also looks for.
 
@@ -258,7 +264,7 @@ def datum_steps(definition, crs_pm=0.0, target_pm=0.0):
     return ";".join(out)
 
 
-def transformations(source, target, pm=0.0, target_pm=0.0, grids=False):
+def transformations(source, target, pm=0.0, target_pm=0.0, grids=False, keys=False):
     """List the datum transformations GDAL would try between two CRSs.
 
     Runs ``projinfo`` with the options ``proj_create_crs_to_crs`` (which GDAL uses) passes to
@@ -274,8 +280,8 @@ def transformations(source, target, pm=0.0, target_pm=0.0, grids=False):
         grids: Whether to list the operations GDAL uses when grids are available.
 
     Returns:
-        ``[(steps, (west, south, east, north), accuracy, flags, name, steps accuracy)]`` in GDAL's
-        order.
+        ``[(steps, (west, south, east, north), accuracy, flags, name, steps accuracy, steps
+        bounds)]`` in GDAL's order.
     """
     args = ["projinfo", "-s", source, "-t", target, "--spatial-test", "intersects"]
     args += ["--grid-check", "known_available" if grids else "discard_missing", "-o", "PROJ,PROJJSON", "--single-line"]
@@ -324,9 +330,17 @@ def transformations(source, target, pm=0.0, target_pm=0.0, grids=False):
         # PROJ chains a concatenation its database registers by its steps, with their summed
         # accuracy rather than the one registered for it (1.5 m for NAD27 to WGS 84 (52), whose
         # steps add up to 2.15 m): kept when it differs.
-        steps_accuracy = step_accuracy([d for d in flatten(doc) if d.get("type") == "Transformation"])
-        steps_accuracy = "" if steps_accuracy == accuracy else repr(steps_accuracy)
-        out.append((steps, bounds, accuracy, flags, name, steps_accuracy))
+        # (Those PROJ makes already have theirs.)
+        steps_accuracy, steps_bounds = "", ""
+        if "c" not in flags:
+            parts = [d for d in flatten(doc) if d.get("type") == "Transformation"]
+            steps_accuracy = step_accuracy(parts)
+            steps_accuracy = "" if steps_accuracy == accuracy else repr(steps_accuracy)
+            # Likewise the intersection of its steps' areas, rather than the one registered for it.
+            steps_bounds = step_bounds(parts)
+            steps_bounds = "" if steps_bounds in (None, bounds) else ",".join(repr(round(v, 6)) for v in steps_bounds)
+        row = (steps, bounds, accuracy, flags, name, steps_accuracy, steps_bounds)
+        out.append((row, step_key(transfos)) if keys else row)
     return out
 
 
@@ -368,6 +382,91 @@ def source_types():
 SOURCE_TYPES = source_types()
 
 
+def operation_extents():
+    """List the area of every coordinate operation of PROJ's database.
+
+    Returns:
+        ``{(authority, code): (west, south, east, north)}``, from its first usage.
+    """
+    db = sqlite3.connect(os.path.join(pyproj.datadir.get_data_dir(), "proj.db"))
+    query = """
+        SELECT u.object_auth_name, u.object_code, e.west_lon, e.south_lat, e.east_lon, e.north_lat
+        FROM usage u JOIN extent e ON e.auth_name = u.extent_auth_name AND e.code = u.extent_code
+        WHERE u.object_table_name IN ('helmert_transformation', 'grid_transformation',
+            'other_transformation', 'concatenated_operation')
+        ORDER BY u.auth_name, u.code
+    """
+    out = {}
+    for a, c, w, s, e, n in db.execute(query):
+        out.setdefault((a, str(c)), (w, s, e, n))
+    return out
+
+
+OPERATION_EXTENTS = operation_extents()
+
+
+def intersection(a, b):
+    """Intersect two areas as PROJ's ``GeographicBoundingBox::intersection``.
+
+    Args:
+        a: ``(west, south, east, north)`` in degrees, west beyond east across the antimeridian.
+        b: The other area.
+
+    Returns:
+        The intersection, the larger part when it has two across the antimeridian, ``None``
+        when they do not overlap.
+    """
+    w, s, e, n = a
+    ow, os_, oe, on = b
+    if n < os_ or s > on:
+        return None
+    s2, n2 = max(s, os_), min(n, on)
+    if w == -180 and e == 180 and ow > oe:
+        return (ow, s2, oe, n2)
+    if ow == -180 and oe == 180 and w > e:
+        return (w, s2, e, n2)
+    if w <= e:
+        if ow <= oe:
+            rw, re_ = max(w, ow), min(e, oe)
+            return (rw, s2, re_, n2) if rw < re_ else None
+        if ow > 180 or oe < -180:
+            return None
+        x, y = intersection(a, (ow, os_, 180, on)), intersection(a, (-180, os_, oe, on))
+        if x and y:
+            return x if x[2] - x[0] > y[2] - y[0] else y
+        return x or y
+    if ow <= oe:
+        return intersection(b, a)
+    return (max(w, ow), s2, min(e, oe), n2)
+
+
+def step_bounds(transfos):
+    """Intersect the areas of transformations, as PROJ does for the concatenations it makes.
+
+    Args:
+        transfos: The PROJJSON transformations.
+
+    Returns:
+        The intersection of the areas PROJ's database gives them, ``None`` when there is a
+        single one, one has no area or they do not overlap.
+    """
+    if len(transfos) < 2:
+        return None
+    out = None
+    for t in transfos:
+        ident = t.get("id", {})
+        authority = ident.get("authority", "")
+        while m := re.fullmatch(r"(?:INVERSE|DERIVED_FROM)\((.*)\)", authority):
+            authority = m.group(1)
+        extent = OPERATION_EXTENTS.get((authority, str(ident.get("code"))))
+        if extent is None:
+            return None
+        out = extent if out is None else intersection(out, extent)
+        if out is None:
+            return None
+    return tuple(float(v) for v in out)
+
+
 def registered_concatenations():
     """List the steps of the concatenated operations PROJ's database registers.
 
@@ -389,6 +488,33 @@ def registered_concatenations():
 
 
 REGISTERED_CONCATENATIONS = registered_concatenations()
+
+
+def registered_datums():
+    """List the datums between which PROJ's database registers each operation.
+
+    Returns:
+        ``{key: {datum, datum}}`` with the operations keyed as ``step_key`` keys them: a
+        transformation by its own id, a concatenation by its steps'.
+    """
+    db = sqlite3.connect(os.path.join(pyproj.datadir.get_data_dir(), "proj.db"))
+    query = """
+        SELECT v.table_name, v.auth_name, v.code, s.datum_code, t.datum_code FROM coordinate_operation_view v
+        JOIN geodetic_crs s ON s.auth_name = v.source_crs_auth_name AND s.code = v.source_crs_code
+        JOIN geodetic_crs t ON t.auth_name = v.target_crs_auth_name AND t.code = v.target_crs_code
+        WHERE v.deprecated = 0
+    """
+    steps = {}
+    for auth, code, step_auth, step_code in db.execute("SELECT operation_auth_name, operation_code, step_auth_name, step_code FROM concatenated_operation_step"):
+        steps.setdefault((auth, str(code)), []).append((step_auth, str(step_code)))
+    out = {}
+    for table, auth, code, a, b in db.execute(query):
+        key = tuple(sorted(steps.get((auth, str(code)), []))) if table == "concatenated_operation" else ((auth, str(code)),)
+        out[key] = {str(a), str(b)}
+    return out
+
+
+REGISTERED_DATUMS = registered_datums()
 
 
 def step_key(transfos):
@@ -457,6 +583,69 @@ def flatten(doc):
     if doc.get("type") == "ConcatenatedOperation":
         return [d for step in doc.get("steps", []) for d in flatten(step)]
     return [doc]
+
+
+def geocentric_crss():
+    """List the geocentric CRS of each EPSG datum that has one.
+
+    Returns:
+        ``{datum: code}`` as strings, the lowest code when there are several.
+    """
+    db = sqlite3.connect(os.path.join(pyproj.datadir.get_data_dir(), "proj.db"))
+    query = """
+        SELECT datum_code, MIN(CAST(code AS INTEGER)) FROM geodetic_crs
+        WHERE auth_name = 'EPSG' AND datum_auth_name = 'EPSG' AND type = 'geocentric' AND deprecated = 0
+        GROUP BY datum_code
+    """
+    return {str(d): str(c) for d, c in db.execute(query)}
+
+
+def inverse_name(name):
+    """Name the inverse of an operation as PROJ does, from its steps' names.
+
+    Args:
+        name: The steps' names joined by `` + ``.
+
+    Returns:
+        The inverses' names in reverse order: conversions with their CRSs swapped, others with
+        ``Inverse of `` added or taken off.
+    """
+    out = []
+    for step in reversed(name.split(" + ")):
+        m = re.fullmatch(r"(Conversion|Null geographic offset|Null geocentric translation) from (.*?) to (.*)", step)
+        if step.startswith("Inverse of "):
+            out.append(step[len("Inverse of ") :])
+        elif m:
+            out.append(f"{m.group(1)} from {m.group(3)} to {m.group(2)}")
+        else:
+            out.append("Inverse of " + step)
+    return " + ".join(out)
+
+
+def transformation_names(name):
+    """Keep the names of an operation's transformations, without its conversions.
+
+    Args:
+        name: The steps' names joined by `` + ``.
+
+    Returns:
+        The names of the steps that are not conversions, in order.
+    """
+    return tuple(step for step in name.split(" + ") if not step.startswith("Conversion from "))
+
+
+def datum_dates():
+    """List the publication dates of the EPSG datums that have one.
+
+    Returns:
+        ``("D", code, date)`` rows in order of code.
+    """
+    db = sqlite3.connect(os.path.join(pyproj.datadir.get_data_dir(), "proj.db"))
+    query = """
+        SELECT code, publication_date FROM geodetic_datum
+        WHERE auth_name = 'EPSG' AND publication_date IS NOT NULL
+    """
+    return sorted((("D", int(c), d) for c, d in db.execute(query)), key=lambda r: r[1])
 
 
 def datum_pairs():
@@ -620,7 +809,7 @@ def rows():
         """
         actual, is_wgs84, pm, three_d, _ = c
         if is_wgs84:
-            return [("", (-180.0, -90.0, 180.0, 90.0), -1.0, "", "", "")]
+            return [("", (-180.0, -90.0, 180.0, 90.0), -1.0, "", "", "", "")]
         return transformations(f"EPSG:{actual}", "EPSG:4979" if three_d else "EPSG:4326", pm, 0.0, grids)
 
     with ThreadPoolExecutor(os.cpu_count()) as pool:
@@ -639,11 +828,11 @@ def rows():
         """
         ids = []
         new = []
-        for steps, bounds, accuracy, flags, name, steps_accuracy in transfos:
-            key = (steps, bounds, accuracy, flags, name, steps_accuracy)
+        for steps, bounds, accuracy, flags, name, steps_accuracy, steps_bounds in transfos:
+            key = (steps, bounds, accuracy, flags, name, steps_accuracy, steps_bounds)
             if key not in ops:
                 ops[key] = len(ops)
-                new.append(("O", ops[key], ",".join(repr(round(b, 6)) for b in bounds), repr(accuracy), flags, steps, name, steps_accuracy))
+                new.append(("O", ops[key], ",".join(repr(round(b, 6)) for b in bounds), repr(accuracy), flags, steps, name, steps_accuracy, steps_bounds))
             if ops[key] not in ids:
                 ids.append(ops[key])
         return ids, new
@@ -688,14 +877,59 @@ def rows():
         """
         return transformations(f"EPSG:{p[0][0]}", f"EPSG:{p[1][0]}", p[0][1], p[1][1], grids)
 
+    datum_of = {code: datum for datum, codes in geogs.items() for code, _ in codes}
+    geocentric = geocentric_crss()
+
+    def geocentric_ops(p):
+        """List the registered transformations from a geographic CRS to another datum's geocentric CRS.
+
+        PROJ chains the transformations its database registers between any CRSs of two datums
+        (NAD27 to ITRF2014 (2), registered to ITRF2014's geocentric CRS), not only those it lists
+        between their geographic CRSs.
+
+        Args:
+            p: The pair, as ``((code, pm), (code, pm))``.
+
+        Returns:
+            The transformations registered between the two datums (as if every grid were
+            installed), made to end on the target's geographic CRS.
+        """
+        (a, pm), (b, target_pm) = p
+        target = geocentric.get(datum_of[b])
+        if target is None or target_pm != 0.0:
+            return []
+        crs = pyproj.CRS.from_epsg(b)
+        # Back from geocentric coordinates on the target's ellipsoid.
+        ellipsoid = f"inv cart a={crs.ellipsoid.semi_major_metre!r} rf={crs.ellipsoid.inverse_flattening!r}"
+        out = []
+        datums = {datum_of[a], datum_of[b]}
+        for row, key in transformations(f"EPSG:{a}", f"EPSG:{target}", pm, 0.0, True, keys=True):
+            steps, bounds, accuracy, flags, name, steps_accuracy, steps_bounds = row
+            carts = [step for step in steps.split(";") if step.startswith(("cart ", "inv cart "))]
+            # Those registered between the two datums, which end in geocentric coordinates.
+            if REGISTERED_DATUMS.get(key) != datums or not carts or carts[-1].startswith("inv "):
+                continue
+            name += f" + Conversion from {crs.name} (geocentric) to {crs.name} (geog2D)"
+            out.append((f"{steps};{ellipsoid}", bounds, accuracy, flags, name, steps_accuracy, steps_bounds))
+        return out
+
     with ThreadPoolExecutor(os.cpu_count()) as pool:
         found = list(pool.map(lambda p: pair_ops(p, False), pairs))
         found_grids = list(pool.map(lambda p: pair_ops(p, True), pairs))
-    for ((a, _), (b, _)), transfos, transfos_grids in zip(pairs, found, found_grids):
+        to_geocentric = list(pool.map(geocentric_ops, pairs))
+        from_geocentric = list(pool.map(lambda p: geocentric_ops((p[1], p[0])), pairs))
+    for ((a, _), (b, _)), transfos, transfos_grids, forward, backward in zip(pairs, found, found_grids, to_geocentric, from_geocentric):
         ids, gids, new = both(transfos, transfos_grids)
         yield from new
-        if ids or gids:
-            yield ("P", a, b, ",".join(map(str, ids)), ",".join(map(str, gids)))
+        # Without those GDAL lists for the pair already, whatever the conversions around them.
+        listed = {transformation_names(t[4]) for t in transfos + transfos_grids}
+        fids, fnew = op_ids([t for t in forward if transformation_names(t[4]) not in listed])
+        bids, bnew = op_ids([t for t in backward if transformation_names(inverse_name(t[4])) not in listed])
+        yield from fnew + bnew
+        if ids or gids or fids or bids:
+            yield ("P", a, b, ",".join(map(str, ids)), ",".join(map(str, gids)), ",".join(map(str, fids)), ",".join(map(str, bids)))
+
+    yield from datum_dates()
 
     # Vertical and compound CRSs, and the geoid models between geographic 3D and vertical CRSs.
     verticals, compounds = vertical_rows()
@@ -715,7 +949,7 @@ def rows():
             The transformations.
         """
         # Without their names, which only rank chains.
-        return [t[:4] + ("", "") for t in transformations(f"EPSG:{p[0]}", f"EPSG:{p[1]}", 0.0, 0.0, grids) if "b" not in t[3]]
+        return [t[:4] + ("", "", "") for t in transformations(f"EPSG:{p[0]}", f"EPSG:{p[1]}", 0.0, 0.0, grids) if "b" not in t[3]]
 
     with ThreadPoolExecutor(os.cpu_count()) as pool:
         found = list(pool.map(lambda p: geoid_ops(p, False), gpairs))

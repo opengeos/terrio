@@ -70,6 +70,17 @@ pub(crate) struct Compound {
 /// Transformations without and with grids.
 type OpLists = (Vec<Arc<Op>>, Vec<Arc<Op>>);
 
+/// The transformations of a pair of geographic CRSs.
+struct PairLists {
+    /// Those GDAL lists from the first to the second, without and with grids.
+    lists: OpLists,
+    /// Those PROJ's database registers from the first to the second's geocentric CRS, and from
+    /// the second to the first's, that GDAL does not list for the pair (what PROJ also chains),
+    /// made to end on the geographic CRS.
+    forward: Vec<Arc<Op>>,
+    backward: Vec<Arc<Op>>,
+}
+
 /// The table: its text, decompressed once, and an index of its lines. Entries are parsed on
 /// first use.
 struct Table {
@@ -77,13 +88,15 @@ struct Table {
     crs: HashMap<u32, Lazy<Option<Entry>>>,
     ops: HashMap<u32, Lazy<Option<Arc<Op>>>>,
     /// Direct transformations between geographic CRSs, by (source, target) code.
-    pairs: HashMap<(u32, u32), Lazy<OpLists>>,
+    pairs: HashMap<(u32, u32), Lazy<PairLists>>,
     verticals: HashMap<u32, Lazy<Option<Vertical>>>,
     compounds: HashMap<u32, Lazy<Option<Compound>>>,
     /// Geoid models from geographic 3D CRSs to vertical CRSs, by vertical CRS.
     geoids: HashMap<u32, Vec<(u32, Lazy<OpLists>)>>,
     /// Old names of grids.
     alternatives: HashMap<String, Vec<String>>,
+    /// The publication dates of datums (`2007-01-01`), by datum code.
+    dates: HashMap<u32, String>,
 }
 
 /// A line of the table (its fields after the code) and what it parses to.
@@ -133,6 +146,7 @@ fn load(data: &[u8]) -> Table {
     let (mut crs, mut ops, mut pairs) = (HashMap::new(), HashMap::new(), HashMap::new());
     let (mut verticals, mut compounds, mut geoids) = (HashMap::new(), HashMap::new(), HashMap::<u32, Vec<_>>::new());
     let mut alternatives = HashMap::<String, Vec<String>>::new();
+    let mut dates = HashMap::new();
     let mut pos = 0;
     for line in text.split_inclusive('\n') {
         let start = pos;
@@ -180,15 +194,20 @@ fn load(data: &[u8]) -> Table {
             "A" => {
                 alternatives.entry(key.to_string()).or_default().push(line[rest - start..].to_string());
             }
+            "D" => {
+                if let Ok(code) = key.parse::<u32>() {
+                    dates.insert(code, line[rest - start..].to_string());
+                }
+            }
             _ => {}
         }
     }
-    Table { text, crs, ops, pairs, verticals, compounds, geoids, alternatives }
+    Table { text, crs, ops, pairs, verticals, compounds, geoids, alternatives, dates }
 }
 
 impl Table {
     /// The transformation with an id, parsed from its line (`bounds`, `accuracy`, `flags`,
-    /// `steps`, `name`, `chain accuracy`).
+    /// `steps`, `name`, `chain accuracy`, `chain bounds`).
     fn op(&self, id: u32) -> Option<Arc<Op>> {
         self.ops
             .get(&id)?
@@ -199,10 +218,16 @@ impl Table {
                 let (true, Some(steps)) = (b.len() == 4, parse_steps(f.next().unwrap_or(""))) else { return None };
                 let name = f.next().unwrap_or("").to_string();
                 let accuracy = accuracy.parse().unwrap_or(-1.0);
+                let bounds = [b[0], b[1], b[2], b[3]];
                 Some(Arc::new(Op {
-                    bounds: [b[0], b[1], b[2], b[3]],
+                    bounds,
                     accuracy,
                     chain_accuracy: f.next().and_then(|a| a.parse().ok()).unwrap_or(accuracy),
+                    chain_bounds: f
+                        .next()
+                        .map(|v| v.split(',').filter_map(|v| v.parse().ok()).collect::<Vec<f64>>())
+                        .and_then(|v| <[f64; 4]>::try_from(v).ok())
+                        .unwrap_or(bounds),
                     offshore: flags.contains('o'),
                     unknown_area: flags.contains('u'),
                     ballpark: flags.contains('b'),
@@ -251,8 +276,12 @@ impl Table {
         (self.resolve(a), self.resolve(b))
     }
 
-    fn pair(&self, a: u32, b: u32) -> Option<&OpLists> {
-        Some(self.pairs.get(&(a, b))?.get(&self.text, |ids| self.lists(ids)))
+    fn pair(&self, a: u32, b: u32) -> Option<&PairLists> {
+        Some(self.pairs.get(&(a, b))?.get(&self.text, |ids| {
+            let mut f = ids.split('\t');
+            let mut next = || self.resolve(f.next().unwrap_or(""));
+            PairLists { lists: (next(), next()), forward: next(), backward: next() }
+        }))
     }
 }
 
@@ -466,10 +495,17 @@ pub(crate) fn adjacency() -> Arc<Adjacency> {
         let mut pair_keys: Vec<(u32, u32)> = t.pairs.keys().copied().collect();
         pair_keys.sort_unstable();
         for (a, b) in pair_keys {
-            let Some((ops, grid_ops)) = t.pair(a, b) else { continue };
-            let ops = chainable(ops, grid_ops);
-            add(a, b, single(&ops, false));
-            add(b, a, single(&ops, true));
+            let Some(p) = t.pair(a, b) else { continue };
+            let ops = chainable(&p.lists.0, &p.lists.1);
+            let found = |ops: &[Arc<Op>], reverse: bool| -> Vec<Leg> {
+                ops.iter().filter(|o| o.available()).map(|op| Leg { op: op.clone(), reverse }).collect()
+            };
+            let mut there = single(&ops, false);
+            there.extend(found(&p.forward, false).into_iter().chain(found(&p.backward, true)));
+            let mut back = single(&ops, true);
+            back.extend(found(&p.forward, true).into_iter().chain(found(&p.backward, false)));
+            add(a, b, there);
+            add(b, a, back);
         }
         let mut codes: Vec<u32> = t.crs.keys().copied().collect();
         codes.sort_unstable();
@@ -491,8 +527,8 @@ pub(crate) fn adjacency() -> Arc<Adjacency> {
 /// grids available), and whether they run in reverse (the table holds each pair once).
 pub(crate) fn pair(from: u32, to: u32) -> Option<(Vec<Arc<Op>>, bool)> {
     let t = table();
-    let found = t.pair(from, to).map(|o| (o, false)).or_else(|| t.pair(to, from).map(|o| (o, true)))?;
-    Some((usable(&found.0.0, &found.0.1), found.1))
+    let (p, reverse) = t.pair(from, to).map(|o| (o, false)).or_else(|| t.pair(to, from).map(|o| (o, true)))?;
+    Some((usable(&p.lists.0, &p.lists.1), reverse))
 }
 
 /// An EPSG vertical CRS.
@@ -540,6 +576,11 @@ pub(crate) fn geoid_models(vertical: u32) -> Vec<(u32, Vec<Arc<Op>>)> {
         .collect()
 }
 
+/// The publication date of an EPSG datum (`2007-01-01`), when it has one.
+pub(crate) fn datum_date(datum: u32) -> Option<&'static str> {
+    table().dates.get(&datum).map(String::as_str)
+}
+
 /// The names a PROJ-data grid had before PROJ 7.
 pub(crate) fn grid_alternatives(name: &str) -> Vec<String> {
     table().alternatives.get(name).cloned().unwrap_or_default()
@@ -565,6 +606,11 @@ mod tests {
         assert!(get(4979).unwrap().three_d && get(4979).unwrap().geog == 4326);
         assert!(get(9000).unwrap().dynamic);
         assert_eq!(grid_alternatives("us_noaa_conus.tif"), vec!["conus".to_string()]);
+        assert_eq!(datum_date(6759), Some("2007-01-01"));
+        assert_eq!(datum_date(6326), None);
+        // NAD27 to ITRF2014 (2), registered to ITRF2014's geocentric CRS, is chained too.
+        let p = table().pair(9000, 4267).unwrap();
+        assert!(p.backward.iter().any(|o| o.name.starts_with("NAD27 to NAD83 (7) + ") && o.accuracy == 0.2));
     }
 
     #[test]
