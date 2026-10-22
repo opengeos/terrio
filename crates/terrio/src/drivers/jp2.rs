@@ -840,7 +840,31 @@ impl crate::cog::WindowSource for Jp2Window {
         Some(self.block)
     }
 
+    fn streamed(&self) -> Option<&dyn crate::cog::StreamedSource> {
+        Some(self)
+    }
+
     fn read(&mut self, level: usize, window: crate::Window, bands: &[usize]) -> Result<RasterData> {
+        self.read_level(level, window, bands)
+    }
+}
+
+impl crate::cog::StreamedSource for Jp2Window {
+    fn inputs(&self) -> Vec<String> {
+        match &self.source {
+            StreamSource::File(p) => vec![p.to_string_lossy().into_owned()],
+            _ => Vec::new(),
+        }
+    }
+
+    fn read_rows(&self, window: crate::Window, bands: &[usize]) -> Result<RasterData> {
+        self.read_level(0, window, bands)
+    }
+}
+
+impl Jp2Window {
+    /// Reads a window of some bands (numbered from 1) of a resolution level, band after band.
+    fn read_level(&self, level: usize, window: crate::Window, bands: &[usize]) -> Result<RasterData> {
         let [x0, y0, x1, y1] = self.header.area;
         let r = level as u32;
         let edge =
@@ -863,12 +887,8 @@ impl crate::cog::WindowSource for Jp2Window {
             .collect();
         let (w, h) = (window.width, window.height);
         let all = self.header.precisions.len();
-        let decoded: Vec<Result<(usize, usize, RasterData)>> = if parts.len() == 1 {
-            vec![self.decode(area, r)]
-        } else {
-            let this = &*self;
-            crate::par::map_range(parts.len(), |k| this.decode(parts[k], r))
-        };
+        let decoded: Vec<Result<(usize, usize, RasterData)>> =
+            if parts.len() == 1 { vec![self.decode(area, r)] } else { crate::par::map_range(parts.len(), |k| self.decode(parts[k], r)) };
         let (ox, oy) = (ceil_shift(area[0], r), ceil_shift(area[1], r));
         let mut out: Option<RasterData> = None;
         for (part, d) in parts.iter().zip(decoded) {
@@ -1099,6 +1119,43 @@ mod tests {
         assert_eq!(ds.raster.data_i16().unwrap(), &data[..]);
         assert_eq!(ds.crs().epsg, Some(32611));
         assert_eq!(ds.geo_transform(), [500000.0, 10.0, 0.0, 4100000.0, 0.0, -10.0]);
+    }
+
+    /// A tiled JPEG 2000 file written as a COG or a GeoTIFF from a lazy read, a strip of rows at a
+    /// time, is what is written from the file read whole.
+    #[test]
+    fn tiled_files_are_written_in_strips() {
+        use crate::{Dataset, RasterWriteOptions, formats::RasterDriver as D};
+        let dir = tempfile::tempdir().unwrap();
+        let path = |name: &str| dir.path().join(name).to_str().unwrap().to_string();
+        // 3 x 3 tiles of 1024 pixels, in strips of 1024 rows; and 3 bands in strips of 1024 rows.
+        let (w, h) = (2300, 2100);
+        let one = RasterData::U16((0..w * h).map(|i| ((i * 7919) % 4099) as u16).collect());
+        let three = RasterData::U8((0..w * h * 3).map(|i| ((i * 31) % 251) as u8).collect());
+        for (name, bands, data) in [("one", 1, one), ("three", 3, three)] {
+            let gt = [500000.0, 10.0, 0.0, 4100000.0, 0.0, -10.0];
+            let r = common::make_raster(w, h, bands, data, gt, CrsInfo::from_epsg(32611), None).unwrap();
+            let src = path(&format!("{name}.jp2"));
+            write(&r, Some(0.0), Path::new(&src)).unwrap();
+            let Dataset::Raster(whole) = crate::open(&src).unwrap() else { panic!("not a raster") };
+            for driver in [D::Cog, D::GTiff] {
+                let options = RasterWriteOptions { driver: Some(driver), compression: Some("DEFLATE".into()), ..Default::default() };
+                let (a, b) = (path(&format!("{name}_whole.tif")), path(&format!("{name}_strips.tif")));
+                crate::write_raster_dataset(&whole, &a, &options).unwrap();
+                crate::open_raster_lazy(&src).unwrap().write(&b, &options).unwrap();
+                if driver == D::Cog {
+                    assert!(std::fs::read(&a).unwrap() == std::fs::read(&b).unwrap(), "{name}: COGs differ");
+                }
+                let (Dataset::Raster(a), Dataset::Raster(b)) = (crate::open(&a).unwrap(), crate::open(&b).unwrap()) else {
+                    panic!("not rasters")
+                };
+                assert!(a.raster.data.to_f64_vec() == b.raster.data.to_f64_vec(), "{name} {driver:?}: pixels differ");
+                assert_eq!(a.geo_transform(), b.geo_transform());
+                assert_eq!(a.crs().epsg, b.crs().epsg);
+                assert_eq!((a.raster.nodata, a.has_nodata), (b.raster.nodata, b.has_nodata));
+                assert_eq!(a.raster.metadata, b.raster.metadata);
+            }
+        }
     }
 
     #[test]

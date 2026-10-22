@@ -16,9 +16,22 @@ const STRIP_BYTES: usize = 64 << 20;
 /// processed in: about 64 MB of values, a multiple of `block` rows (the input's blocks, read
 /// whole), at least one block.
 pub(crate) fn strip_rows(width: usize, bands: usize, value_size: usize, block: Option<usize>) -> usize {
+    rows_of(STRIP_BYTES, width, bands, value_size, block)
+}
+
+/// About this many bytes of values per strip read by [`read_ahead`], which holds several.
+const SMALL_STRIP_BYTES: usize = 8 << 20;
+
+/// The rows of the strips [`read_ahead`] reads: as [`strip_rows`], for about 8 MB of values (a
+/// row of blocks when a row of blocks is larger).
+pub(crate) fn small_strip_rows(width: usize, bands: usize, value_size: usize, block: Option<usize>) -> usize {
+    rows_of(SMALL_STRIP_BYTES, width, bands, value_size, block)
+}
+
+fn rows_of(bytes: usize, width: usize, bands: usize, value_size: usize, block: Option<usize>) -> usize {
     let row = (width * bands.max(1) * value_size).max(1);
     let block = block.unwrap_or(1).max(1);
-    (STRIP_BYTES / row / block).max(1) * block
+    (bytes / row / block).max(1) * block
 }
 
 /// Whether writing `output` would overwrite one of `inputs` (the same file, under any name):
@@ -254,6 +267,94 @@ pub(crate) fn pipelined<R: Send>(
     })
 }
 
+/// How many strips [`read_ahead`] reads at once, ahead of the one worked on.
+const READ_AHEAD: usize = 4;
+
+/// Runs `work` on `n` strips in order, `read` reading each: up to [`READ_AHEAD`] strips are read
+/// at once on other threads, ahead of the one worked on, so that a strip slow to read does not
+/// hold up the next ones (in turn on WebAssembly).
+pub(crate) fn read_ahead<R: Send>(
+    n: usize,
+    read: impl Fn(usize) -> Result<R> + Sync,
+    mut work: impl FnMut(usize, R) -> Result<()>,
+) -> Result<()> {
+    #[cfg(target_arch = "wasm32")]
+    {
+        for i in 0..n {
+            work(i, read(i)?)?;
+        }
+        Ok(())
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        use std::collections::BTreeMap;
+        use std::sync::{Condvar, Mutex};
+        let ahead = READ_AHEAD;
+        /// The next strip to read, the strips worked on, and whether to stop.
+        struct State {
+            next: usize,
+            done: usize,
+            stop: bool,
+        }
+        let state = Mutex::new(State { next: 0, done: 0, stop: false });
+        let turn = Condvar::new();
+        let stop = || {
+            state.lock().unwrap_or_else(|e| e.into_inner()).stop = true;
+            turn.notify_all();
+        };
+        std::thread::scope(|s| {
+            let (tx, rx) = std::sync::mpsc::channel();
+            for _ in 0..ahead.min(n) {
+                let tx = tx.clone();
+                let (state, turn, read) = (&state, &turn, &read);
+                s.spawn(move || {
+                    loop {
+                        let i = {
+                            let mut st = state.lock().unwrap_or_else(|e| e.into_inner());
+                            // A strip is read only while fewer than `ahead` wait to be worked on.
+                            while !st.stop && st.next < n && st.next >= st.done + ahead {
+                                st = turn.wait(st).unwrap_or_else(|e| e.into_inner());
+                            }
+                            if st.stop || st.next >= n {
+                                return;
+                            }
+                            st.next += 1;
+                            st.next - 1
+                        };
+                        let r = read(i);
+                        let failed = r.is_err();
+                        // The receiver is gone when work failed.
+                        if tx.send((i, r)).is_err() || failed {
+                            return;
+                        }
+                    }
+                });
+            }
+            drop(tx);
+            let mut pending = BTreeMap::new();
+            let result = (|| {
+                for i in 0..n {
+                    let r = loop {
+                        if let Some(r) = pending.remove(&i) {
+                            break r;
+                        }
+                        let (j, r) = rx.recv().map_err(|_| Error::InvalidData("the strip readers stopped".into()))?;
+                        pending.insert(j, r);
+                    };
+                    work(i, r?)?;
+                    state.lock().unwrap_or_else(|e| e.into_inner()).done = i + 1;
+                    turn.notify_all();
+                }
+                Ok(())
+            })();
+            if result.is_err() {
+                stop();
+            }
+            result
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -340,6 +441,44 @@ mod tests {
         let crate::Dataset::Raster(read) = crate::open(&path("src.tif")).unwrap() else { panic!("not a raster") };
         crate::write_raster_dataset(&read, &path("read.tif"), &cog).unwrap();
         assert!(std::fs::read(path("lazy.tif")).unwrap() == std::fs::read(path("read.tif")).unwrap());
+    }
+
+    /// Strips read several at once, finishing in any order, are worked on in order, each once,
+    /// with at most `READ_AHEAD` read and not yet worked on; a failing read or work stops them.
+    #[test]
+    fn strips_read_ahead_are_worked_on_in_order() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let reads = AtomicUsize::new(0);
+        let (mut seen, mut most) = (Vec::new(), 0);
+        read_ahead(
+            40,
+            |i| {
+                // Every third strip is slow to read.
+                std::thread::sleep(std::time::Duration::from_millis(if i % 3 == 0 { 8 } else { 1 }));
+                reads.fetch_add(1, Ordering::SeqCst);
+                Ok(i * 10)
+            },
+            |i, v| {
+                most = most.max(reads.load(Ordering::SeqCst) - i);
+                seen.push((i, v));
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(seen, (0..40).map(|i| (i, i * 10)).collect::<Vec<_>>());
+        assert!(most <= READ_AHEAD, "{most} strips read ahead");
+
+        let failed = |i| if i == 17 { Err(Error::InvalidData("read".into())) } else { Ok(i) };
+        let mut done = Vec::new();
+        let push = |i, _| {
+            done.push(i);
+            Ok(())
+        };
+        assert!(read_ahead(40, failed, push).is_err());
+        assert_eq!(done, (0..17).collect::<Vec<_>>());
+        let work = |i, _| if i == 5 { Err(Error::InvalidData("work".into())) } else { Ok(()) };
+        assert!(read_ahead(1000, Ok, work).is_err());
+        assert!(read_ahead(0, Ok, |_, _: usize| Ok(())).is_ok());
     }
 
     /// Options the GeoTIFF writer refuses fail before any strip is computed.

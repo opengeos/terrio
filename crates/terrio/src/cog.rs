@@ -107,9 +107,23 @@ pub(crate) trait WindowSource: Send + Sync {
     fn block_size(&self) -> Option<(usize, usize)> {
         None
     }
+    /// The source as [`LazyRaster::write`] reads it a strip of rows at a time, several strips at
+    /// once; `None` when it is read whole.
+    fn streamed(&self) -> Option<&dyn StreamedSource> {
+        None
+    }
     /// Reads a window of some bands (numbered from 1) of a level (0 for full resolution, `i + 1`
     /// for overview `i`), band after band.
     fn read(&mut self, level: usize, window: Window, bands: &[usize]) -> Result<RasterData>;
+}
+
+/// A [`WindowSource`] whose full-resolution rows can be read from several threads at once.
+pub(crate) trait StreamedSource: Sync {
+    /// The local files the source reads: an output replacing one of them is written from the
+    /// source read whole.
+    fn inputs(&self) -> Vec<String>;
+    /// Reads a full-resolution window of some bands (numbered from 1), band after band.
+    fn read_rows(&self, window: Window, bands: &[usize]) -> Result<RasterData>;
 }
 
 /// Opens a raster lazily: see [`LazyRaster::open`].
@@ -365,9 +379,10 @@ impl LazyRaster {
     }
 
     /// Writes the full-resolution image to `path`, as [`crate::write_raster_dataset`] writes the
-    /// raster [`LazyRaster::read`] reads. A GeoTIFF read in place and written as a GeoTIFF or a COG
-    /// (in a compression terrio's own writer encodes) is read and written a strip of rows at a
-    /// time, so that it is never held whole; other rasters are read whole, then written.
+    /// raster [`LazyRaster::read`] reads. A GeoTIFF or JPEG 2000 file read in place and written as
+    /// a GeoTIFF or a COG (in a compression terrio's own writer encodes) is read and written a
+    /// strip of rows at a time, so that it is never held whole; other rasters are read whole, then
+    /// written.
     ///
     /// ```no_run
     /// use terrio::RasterWriteOptions;
@@ -378,6 +393,29 @@ impl LazyRaster {
     /// # Ok::<(), terrio::Error>(())
     /// ```
     pub fn write(&mut self, path: &str, options: &crate::RasterWriteOptions) -> Result<()> {
+        let (width, height, bands) = (self.width(), self.height(), self.band_count());
+        let block = self.block_size().map(|(_, h)| h);
+        let value_size = self.data_type().size_bytes();
+        if let Inner::Source(ds, s) = &self.inner
+            && let Some(s) = s.streamed()
+            && !crate::ops::strips::overwrites(path, &s.inputs())
+        {
+            // Strips of a row of blocks, several read at once: blocks slow to decode overlap the
+            // next strips' blocks rather than keep the other threads waiting.
+            let rows = crate::ops::strips::small_strip_rows(width, bands, value_size, block);
+            let all: Vec<usize> = (1..=bands).collect();
+            let mut out = crate::ops::strips::StripWriter::create(ds, path, options)?;
+            crate::ops::strips::read_ahead(
+                height.div_ceil(rows),
+                |i| {
+                    let y = i * rows;
+                    let h = rows.min(height - y);
+                    Ok((s.read_rows(Window::new(0, y, width, h), &all)?, h))
+                },
+                |_, (data, h)| out.write(data, h),
+            )?;
+            return out.finish();
+        }
         let Inner::Tiff(t) = &self.inner else { return crate::write_raster_dataset(&self.read()?, path, options) };
         // An output that replaces the input is written from the input read whole.
         let inputs: Vec<String> = t.file.iter().map(|f| f.to_string_lossy().into_owned()).collect();
@@ -388,9 +426,7 @@ impl LazyRaster {
         let mut header = self.header();
         header.raster.crs = t.tags.crs_info();
         header.raster.metadata = t.tags.metadata.clone();
-        let (width, height, bands) = (self.width(), self.height(), self.band_count());
-        let block = self.block_size().map(|(_, h)| h);
-        let rows = crate::ops::strips::strip_rows(width, bands, self.data_type().size_bytes(), block);
+        let rows = crate::ops::strips::strip_rows(width, bands, value_size, block);
         let mut out = crate::ops::strips::StripWriter::create(&header, path, options)?;
         let read = WindowOptions::default();
         crate::ops::strips::pipelined(

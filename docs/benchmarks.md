@@ -84,7 +84,7 @@ the largest peak memory. Same machine, terrio 0.2.0.
 | Mosaic 16 USGS 3DEP tiles → GeoTIFF | 929 ms | 6.73 s | 7.2× faster | 521 MB | 1.9 GB |
 | Hillshade of the mosaic | 593 ms | 4.55 s | 7.7× faster | 371 MB | 855 MB |
 | Slope of the mosaic | 738 ms | 5.93 s | 8.0× faster | 611 MB | 857 MB |
-| Sentinel-2 band: JPEG 2000 → GeoTIFF | 478 ms | 3.23 s | 6.8× faster | 753 MB | 517 MB |
+| Sentinel-2 band: JPEG 2000 → GeoTIFF | 670 ms | 3.23 s | 4.8× faster | 511 MB | 517 MB |
 | Statistics: Sentinel-2 band (15-bit samples) | 1.01 s | 2.80 s | 2.8× faster | 111 MB | 278 MB |
 
 ### Large vectors
@@ -119,7 +119,8 @@ the largest peak memory. Same machine, terrio 0.2.0.
   held whole. A COG's levels are compressed by rows of tiles as the rows come, each overview
   averaged from pairs of rows of the level above, and the tiles wait in temporary files until
   the file is laid out (the IFDs first, then the smallest overview's tiles). The JPEG 2000 band
-  is decoded whole.
+  is decoded a row of tiles at a time, four rows at once, so that tiles slow to decode overlap
+  the next rows' tiles.
 - **Mosaic of 16 tiles**: terrio copies each tile's pixels into place; `gdalwarp` warps them.
 - **Large vectors** are converted a chunk of features at a time: at most 65,536 features, and
   about 64 MB of them, so that a run of large polygons is not held at once. Shapefile and GeoPackage

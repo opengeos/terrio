@@ -116,7 +116,7 @@ fn stream_options(a: &Args) -> terrio::Result<Option<terrio::stream::ConvertOpti
     Ok(terrio::stream::can_convert_stream(&a.input, &a.output, &options).then_some(options))
 }
 
-/// A GeoTIFF converted to a GeoTIFF or COG with no option that needs the raster whole: the input
+/// A GeoTIFF or JPEG 2000 file converted to a GeoTIFF or COG with no option that needs the raster whole: the input
 /// opened lazily, to be written a strip of rows at a time (see `terrio::LazyRaster::write`), and
 /// the write options. `None` otherwise.
 fn streamed_raster(a: &Args) -> terrio::Result<Option<(terrio::LazyRaster, RasterWriteOptions)>> {
@@ -136,7 +136,8 @@ fn streamed_raster(a: &Args) -> terrio::Result<Option<(terrio::LazyRaster, Raste
         && a.maxzoom.is_none()
         && a.layers.is_empty()
         && a.open_options.is_empty();
-    if !tiff_out || !plain || RasterDriver::for_extension(&a.input) != Some(RasterDriver::GTiff) {
+    let streamed_in = matches!(RasterDriver::for_extension(&a.input), Some(RasterDriver::GTiff | RasterDriver::JP2));
+    if !tiff_out || !plain || !streamed_in {
         return Ok(None);
     }
     let r = super::quiet(|| terrio::open_raster_lazy(&a.input))?;
