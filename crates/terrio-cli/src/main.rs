@@ -15,9 +15,10 @@ fn main() -> ExitCode {
     // (`MALLOC_MMAP_THRESHOLD_`, or `glibc.malloc.mmap_threshold` in `GLIBC_TUNABLES`) is kept.
     #[cfg(all(target_os = "linux", target_env = "gnu"))]
     if std::env::var_os("MALLOC_MMAP_THRESHOLD_").is_none()
-        && !std::env::var("GLIBC_TUNABLES").is_ok_and(|t| t.contains("glibc.malloc.mmap_threshold"))
+        && !std::env::var_os("GLIBC_TUNABLES").is_some_and(|t| t.to_string_lossy().contains("glibc.malloc.mmap_threshold"))
     {
-        // SAFETY: called once, before any other thread is started.
+        // SAFETY: called once, before any other thread is started. A refused value (0 returned)
+        // leaves glibc's default in place, so the result is not checked.
         unsafe {
             libc::mallopt(libc::M_MMAP_THRESHOLD, 4 << 20);
         }
