@@ -12,57 +12,57 @@ including start-up, reading and writing.
     with its default settings, which include multi-threaded GeoTIFF compression where the driver
     supports it. On machines with fewer cores, the parallel cases gain less.
 
-Machine: Intel Xeon w7-3445 (x86_64), 40 threads, Linux. GDAL 3.12.2 "Chicoutimi", released 2026/02/03; terrio 0.0.1. Median of 5 runs after a warm-up run; wall time of the whole command.
+Machine: Intel Xeon w7-3445 (x86_64), 40 threads, Linux. GDAL 3.12.2 "Chicoutimi", released 2026/02/03; terrio 0.4.1. Median of 5 runs after a warm-up run; wall time of the whole command.
 
 
 ### Summaries
 
 | Task | terrio | GDAL | terrio vs GDAL |
 |---|---|---|---|
-| Raster info: USGS 3DEP tile (3612×3612) | 14 ms | 43 ms | 3.1× faster |
-| Raster statistics: SRTM 90 m (4269×2465) | 111 ms | 139 ms | 1.2× faster |
-| Vector info: US counties GeoPackage | 18 ms | 31 ms | 1.8× faster |
+| Raster info: USGS 3DEP tile (3612×3612) | 17 ms | 39 ms | 2.3× faster |
+| Raster statistics: SRTM 90 m (4269×2465) | 108 ms | 149 ms | 1.4× faster |
+| Vector info: US counties GeoPackage | 15 ms | 32 ms | 2.1× faster |
 
 ### Raster conversion
 
 | Task | terrio | GDAL | terrio vs GDAL |
 |---|---|---|---|
-| GeoTIFF → COG (Deflate): USGS 3DEP tile | 224 ms | 1.20 s | 5.3× faster |
-| GeoTIFF → GeoTIFF (LZW, tiled): Landsat (4 bands) | 44 ms | 285 ms | 6.4× faster |
-| GeoTIFF → Zarr: SRTM 90 m | 57 ms | 94 ms | 1.6× faster |
+| GeoTIFF → COG (Deflate): USGS 3DEP tile | 195 ms | 1.31 s | 6.7× faster |
+| GeoTIFF → GeoTIFF (LZW, tiled): Landsat (4 bands) | 59 ms | 295 ms | 5.0× faster |
+| GeoTIFF → Zarr: SRTM 90 m | 61 ms | 97 ms | 1.6× faster |
 
 ### Raster operations
 
 | Task | terrio | GDAL | terrio vs GDAL |
 |---|---|---|---|
-| Translate: window + Int16: USGS 3DEP tile | 41 ms | 114 ms | 2.8× faster |
-| Warp to UTM 13N, nearest: USGS 3DEP tile | 102 ms | 425 ms | 4.2× faster |
-| Warp to UTM 13N, bilinear: USGS 3DEP tile | 142 ms | 1.10 s | 7.7× faster |
-| Mosaic 4 USGS 3DEP tiles → GeoTIFF | 277 ms | 1.51 s | 5.5× faster |
-| Mosaic 4 USGS 3DEP tiles → VRT | 2 ms | 35 ms | 16.5× faster |
+| Translate: window + Int16: USGS 3DEP tile | 48 ms | 119 ms | 2.4× faster |
+| Warp to UTM 13N, nearest: USGS 3DEP tile | 765 ms | 478 ms | 1.6× slower |
+| Warp to UTM 13N, bilinear: USGS 3DEP tile | 642 ms | 1.16 s | 1.8× faster |
+| Mosaic 4 USGS 3DEP tiles → GeoTIFF | 310 ms | 1.51 s | 4.9× faster |
+| Mosaic 4 USGS 3DEP tiles → VRT | 20 ms | 37 ms | 1.8× faster |
 
 ### Vector conversion
 
 | Task | terrio | GDAL | terrio vs GDAL |
 |---|---|---|---|
-| Shapefile → GeoPackage: 7,342 populated places | 39 ms | 82 ms | 2.1× faster |
-| GeoPackage → FlatGeobuf: US counties | 49 ms | 61 ms | 1.2× faster |
-| GeoPackage → GeoParquet: US counties | 73 ms | 105 ms | 1.4× faster |
-| GeoJSON → Shapefile: world cables | 18 ms | 41 ms | 2.3× faster |
-| Filter + reproject: US counties → EPSG:5070 | 39 ms | 54 ms | 1.4× faster |
+| Shapefile → GeoPackage: 7,342 populated places | 89 ms | 83 ms | 1.1× slower |
+| GeoPackage → FlatGeobuf: US counties | 59 ms | 61 ms | 1.0× faster |
+| GeoPackage → GeoParquet: US counties | 79 ms | 106 ms | 1.3× faster |
+| GeoJSON → Shapefile: world cables | 23 ms | 47 ms | 2.1× faster |
+| Filter + reproject: US counties → EPSG:5070 | 47 ms | 55 ms | 1.2× faster |
 
 ### Raster ↔ vector
 
 | Task | terrio | GDAL | terrio vs GDAL |
 |---|---|---|---|
-| Rasterize US counties at 0.01° | 158 ms | 314 ms | 2.0× faster |
-| Polygonize NLCD land cover (966×731) | 431 ms | 570 ms | 1.3× faster |
+| Rasterize US counties at 0.01° | 147 ms | 311 ms | 2.1× faster |
+| Polygonize NLCD land cover (966×731) | 462 ms | 572 ms | 1.2× faster |
 
 ### Remote data
 
 | Task | terrio | GDAL | terrio vs GDAL |
 |---|---|---|---|
-| Info of a remote COG (USGS 3DEP on S3) | 451 ms | 587 ms | 1.3× faster |
+| Info of a remote COG (USGS 3DEP on S3) | 543 ms | 592 ms | 1.1× faster |
 
 ## Large files
 
@@ -71,40 +71,44 @@ The same comparison on gigabyte-sized files, with the peak resident memory of ea
 Deflate GeoTIFF), a Sentinel-2 L1C red band (10980×10980, JPEG 2000), and the OpenStreetMap
 extract of Colorado (a 400 MB PBF, and the 6.2 M-feature GeoPackage `ogr2ogr` makes of it). Each
 command runs once to warm the file cache, then three times; the tables show the median time and
-the largest peak memory. Same machine, terrio 0.2.0.
+the largest peak memory. Same machine, terrio 0.4.1.
 
 ### Large rasters
 
 | Task | terrio | GDAL | terrio vs GDAL | terrio memory | GDAL memory |
 |---|---|---|---|---|---|
-| Statistics: 14412² Float32 mosaic | 1.82 s | 3.80 s | 2.1× faster | 143 MB | 859 MB |
-| GeoTIFF → COG (Deflate): the mosaic | 1.93 s | 20.98 s | 10.9× faster | 698 MB | 1.2 GB |
-| Window 2048² of the mosaic | 34 ms | 102 ms | 3.0× faster | 80 MB | 65 MB |
-| Warp the mosaic to EPSG:3857, bilinear | 2.27 s | 16.44 s | 7.2× faster | 670 MB | 1.6 GB |
-| Mosaic 16 USGS 3DEP tiles → GeoTIFF | 1.20 s | 6.73 s | 5.6× faster | 440 MB | 1.9 GB |
-| Hillshade of the mosaic | 485 ms | 4.55 s | 9.4× faster | 327 MB | 855 MB |
-| Slope of the mosaic | 800 ms | 5.93 s | 7.4× faster | 582 MB | 857 MB |
-| Sentinel-2 band: JPEG 2000 → GeoTIFF | 670 ms | 3.23 s | 4.8× faster | 348 MB | 517 MB |
-| Statistics: Sentinel-2 band (15-bit samples) | 1.01 s | 2.80 s | 2.8× faster | 111 MB | 278 MB |
+| Statistics: 14412² Float32 mosaic | 1.84 s | 3.85 s | 2.1× faster | 144 MB | 859 MB |
+| GeoTIFF → COG (Deflate): the mosaic | 1.88 s | 21.37 s | 11.4× faster | 696 MB | 1.2 GB |
+| Window 2048² of the mosaic | 39 ms | 105 ms | 2.7× faster | 71 MB | 65 MB |
+| Warp the mosaic to EPSG:3857, bilinear | 2.19 s | 16.30 s | 7.4× faster | 667 MB | 1.6 GB |
+| Mosaic 16 USGS 3DEP tiles → GeoTIFF | 1.16 s | 5.98 s | 5.1× faster | 436 MB | 1.9 GB |
+| Hillshade of the mosaic | 504 ms | 4.24 s | 8.4× faster | 312 MB | 858 MB |
+| Slope of the mosaic | 777 ms | 5.56 s | 7.2× faster | 578 MB | 858 MB |
+| Sentinel-2 band: JPEG 2000 → GeoTIFF | 666 ms | 3.16 s | 4.7× faster | 355 MB | 520 MB |
+| Statistics: Sentinel-2 band (15-bit samples) | 1.00 s | 2.67 s | 2.7× faster | 106 MB | 277 MB |
 
 ### Large vectors
 
 | Task | terrio | GDAL | terrio vs GDAL | terrio memory | GDAL memory |
 |---|---|---|---|---|---|
-| Info: Colorado OpenStreetMap GeoPackage (6.2 M features) | 13 ms | 30 ms | 2.3× faster | 26 MB | 45 MB |
-| Lines (2.0 M) → FlatGeobuf | 5.32 s | 6.18 s | 1.2× faster | 288 MB | 556 MB |
-| Polygons (2.3 M) → GeoParquet | 3.00 s | 3.49 s | 1.2× faster | 635 MB | 960 MB |
-| Lines → GeoJSON | 3.69 s | 42.69 s | 11.6× faster | 288 MB | 503 MB |
-| Lines → Shapefile | 5.39 s | 5.38 s | same | 233 MB | 505 MB |
-| Filter + reproject lines → GeoPackage | 3.83 s | 6.16 s | 1.6× faster | 148 MB | 186 MB |
-| Polygons → GeoPackage | 5.38 s | 6.90 s | 1.3× faster | 224 MB | 770 MB |
-| GeoPackage (5 layers) → GeoPackage | 9.00 s | 18.81 s | 2.1× faster | 261 MB | 782 MB |
-| OpenStreetMap PBF (Colorado) → GeoPackage | 18.77 s | 45.21 s | 2.4× faster | 684 MB | 455 MB |
+| Info: Colorado OpenStreetMap GeoPackage (6.2 M features) | 14 ms | 32 ms | 2.3× faster | 28 MB | 46 MB |
+| Lines (2.0 M) → FlatGeobuf | 5.18 s | 5.61 s | 1.1× faster | 286 MB | 561 MB |
+| Polygons (2.3 M) → GeoParquet | 2.97 s | 3.25 s | 1.1× faster | 635 MB | 960 MB |
+| Lines → GeoJSON | 3.57 s | 40.60 s | 11.4× faster | 287 MB | 504 MB |
+| Lines → Shapefile | 5.30 s | 5.01 s | 1.1× slower | 236 MB | 504 MB |
+| Filter + reproject lines → GeoPackage | 3.77 s | 5.99 s | 1.6× faster | 147 MB | 188 MB |
+| Polygons → GeoPackage | 5.28 s | 6.48 s | 1.2× faster | 227 MB | 779 MB |
+| GeoPackage (5 layers) → GeoPackage | 8.84 s | 17.39 s | 2.0× faster | 274 MB | 788 MB |
+| OpenStreetMap PBF (Colorado) → GeoPackage | 18.33 s | 41.58 s | 2.3× faster | 681 MB | 455 MB |
 
 ## Notes
 
 - **Raster info** reads only the GeoTIFF header and the tags it needs.
 - **Mosaic → VRT** reads only the inputs' headers; GDAL opens each input fully.
+- **Warp to UTM 13N**: the tile is in NAD83, so the warp also changes datum to WGS 84, which
+  takes about 500 ms of terrio's time (into NAD83 / UTM 13N, the same warp takes 163 ms). That
+  makes nearest-neighbour warping slower than GDAL's
+  ([#184](https://github.com/opengeos/terrio/issues/184)).
 - **Remote COG info** fetches one 64 KiB range; GDAL runs with
   `GDAL_DISABLE_READDIR_ON_OPEN=EMPTY_DIR`, as recommended for cloud data. Remote timings depend on
   the network.
