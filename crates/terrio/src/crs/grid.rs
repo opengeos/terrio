@@ -800,9 +800,17 @@ fn search_dirs() -> Vec<std::path::PathBuf> {
     // Unit tests do not see the grids installed on the machine (PROJ's directories, terrio's
     // download cache), which change the transformations PROJ and terrio pick: their results are
     // those of a machine without grids. Tests needing grids set the search paths or register them.
-    #[cfg(test)]
-    return std::env::var_os("TERRIO_GRID_DIR").map(|v| std::env::split_paths(&v).collect()).unwrap_or_default();
-    #[allow(unreachable_code)]
+    if cfg!(test) {
+        std::env::var_os("TERRIO_GRID_DIR").map(|v| std::env::split_paths(&v).collect()).unwrap_or_default()
+    } else {
+        machine_search_dirs()
+    }
+}
+
+/// The directories grids are looked up in by default: those of `TERRIO_GRID_DIR`, `PROJ_DATA`
+/// and `PROJ_LIB`, PROJ's user directory and terrio's download cache.
+#[cfg(not(target_arch = "wasm32"))]
+fn machine_search_dirs() -> Vec<std::path::PathBuf> {
     let mut dirs = Vec::new();
     for var in ["TERRIO_GRID_DIR", "PROJ_DATA", "PROJ_LIB"] {
         if let Some(v) = std::env::var_os(var) {
