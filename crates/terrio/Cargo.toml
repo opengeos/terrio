@@ -109,6 +109,9 @@ sqlite = []
 gdal = ["dep:gdal", "dep:gdal-sys"]
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# Zstandard GeoTIFF tiles decoded by the `tiff` crate, with the zstd C library (WebAssembly builds
+# decode them with `ruzstd`, in `tiff_codecs`).
+tiff = { workspace = true, features = ["zstd"] }
 memmap2.workspace = true
 zstd.workspace = true
 tempfile.workspace = true

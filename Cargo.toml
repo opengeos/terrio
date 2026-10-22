@@ -40,7 +40,9 @@ bytes = "1"
 quick-xml = "0.42"
 # OpenStreetMap PBF decoding, the version wbvector uses.
 osmpbfreader = "0.19"
-tiff = { version = "0.11", features = ["zstd", "webp"] }
+# Its Zstandard (a C library) is enabled for native builds only (see `crates/terrio/Cargo.toml`):
+# WebAssembly builds decode Zstandard with `ruzstd`.
+tiff = { version = "0.11", features = ["webp"] }
 half = "2"
 flate2 = "1"
 weezl = "0.2"

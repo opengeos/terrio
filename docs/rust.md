@@ -228,7 +228,9 @@ terrio is heading for a stable 1.0 API. What to rely on, and the decisions behin
 ## WebAssembly
 
 The library builds for `wasm32-unknown-unknown`, with any features; network access and
-temporary files are native only. JPEG 2000 (the `jp2` feature) works there too, with two settings in the program that is built: the global
+temporary files are native only. No C compiler is needed, except for the `parquet` feature, whose
+Zstandard codec is the zstd C library (it needs clang for WebAssembly); Zstandard GeoTIFFs are
+decoded in pure Rust there. JPEG 2000 (the `jp2` feature) works there too, with two settings in the program that is built: the global
 allocator `terrio::NullSafeAllocator` (the OpenJPEG port releases null pointers, which the
 WebAssembly allocator does not tolerate), and the link flag `-C link-arg=--allow-undefined` for
 `wasm32-unknown-unknown`, as in the repository's `.cargo/config.toml` (the port is built as a C

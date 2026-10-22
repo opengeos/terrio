@@ -65,6 +65,24 @@ test("raster from array, to GeoTIFF bytes and back", () => {
   assert.match(asc, /ncols\s+2/);
 });
 
+test("Zstandard GeoTIFFs with predictors, decoded without the C library", () => {
+  // Tiled and in strips, interleaved bands, the horizontal and floating-point predictors.
+  const ints = new Int16Array(3 * 70 * 50).map((_, i) => ((i * 37) % 2001) - 1000);
+  const floats = new Float32Array(70 * 50).map((_, i) => Math.sin(i / 7) * 1000 + i / 3);
+  const cases = [
+    [terrio.rasterFromArray(ints, 70, 50, [0, 1, 0, 50, 0, -1], "EPSG:4326"), "2", { tileSize: 16 }],
+    [terrio.rasterFromArray(ints, 70, 50, [0, 1, 0, 50, 0, -1], "EPSG:4326"), "2", { creationOptions: { INTERLEAVE: "PIXEL" } }],
+    [terrio.rasterFromArray(floats, 70, 50, [0, 1, 0, 50, 0, -1], "EPSG:4326"), "3", { tileSize: 32 }],
+  ];
+  for (const [ds, predictor, extra] of cases) {
+    const options = { ...extra, compress: "ZSTD", creationOptions: { ...extra.creationOptions, PREDICTOR: predictor } };
+    const back = terrio.open(ds.toBytes("z.tif", options), "z.tif");
+    for (let b = 1; b <= ds.count; b++) {
+      assert.deepEqual([...back.readBand(b)], [...ds.readBand(b)], `predictor ${predictor}, band ${b}`);
+    }
+  }
+});
+
 test("JPEG 2000 to bytes and back", () => {
   // Int16 with a nodata value: the JP2 file and its .aux.xml sidecar, zipped, as GDAL keeps it.
   const dem = new Int16Array(40 * 30).map((_, i) => ((i * 37) % 3000) - 1500);

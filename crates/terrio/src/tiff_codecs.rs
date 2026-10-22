@@ -1,5 +1,6 @@
 //! TIFF compressions the `tiff` crate does not decode, read as GDAL (libtiff) reads them: LERC
-//! (alone, or wrapped in Deflate or Zstandard), JPEG XL and LZMA. And JPEG, decoded as libjpeg
+//! (alone, or wrapped in Deflate or Zstandard), JPEG XL and LZMA, and Zstandard in WebAssembly
+//! (where the crate's Zstandard, a C library, is left out). And JPEG, decoded as libjpeg
 //! decodes it for GDAL ([`crate::jpeg`]), YCbCr converted to RGB. And unsigned samples packed in
 //! 9 to 31 bits (GDAL's `NBITS`, as written for Sentinel-2's 15-bit bands), in any of the
 //! lossless compressions, read as UInt16 or UInt32 as GDAL reads them.
@@ -12,6 +13,7 @@ use tiff::{TiffError, TiffResult};
 /// The TIFF compression codes handled here.
 const LERC: u16 = 34887;
 const LZMA: u16 = 34925;
+const ZSTD: u16 = 50000;
 /// JPEG XL, as GDAL first wrote it, then as DNG 1.7 registered it.
 const JXL: u16 = 50002;
 const JXL_DNG: u16 = 52546;
@@ -23,6 +25,8 @@ enum Codec {
     Lerc,
     Jxl,
     Lzma,
+    /// Zstandard, in WebAssembly builds: the `tiff` crate decodes it elsewhere.
+    Zstd,
     /// LZW of 8 to 64-bit samples, decoded whole: the `tiff` crate's reader fails on some chunks
     /// it reads row by row (edge tiles narrower than the tile).
     Lzw,
@@ -113,7 +117,7 @@ fn decompress(compression: u16, raw: Vec<u8>, limit: usize) -> TiffResult<Vec<u8
         LZMA => bounded(&mut lzma_rust2::XzReader::new(&raw[..], true), &mut out).map_err(|e| invalid(format!("LZMA: {e}")))?,
         #[cfg(not(feature = "lzma"))]
         LZMA => return Err(disabled("lzma")),
-        50000 => {
+        ZSTD => {
             let mut src = &raw[..];
             let mut z = ruzstd::decoding::StreamingDecoder::new(&mut src).map_err(|e| invalid(format!("Zstandard: {e}")))?;
             bounded(&mut z, &mut out)?;
@@ -199,6 +203,7 @@ impl ChunkCodec {
             LERC => Codec::Lerc,
             JXL | JXL_DNG => Codec::Jxl,
             LZMA => Codec::Lzma,
+            ZSTD if cfg!(target_arch = "wasm32") => Codec::Zstd,
             5 => Codec::Lzw,
             7 => Codec::Jpeg,
             _ => return Ok(None),
@@ -219,9 +224,9 @@ impl ChunkCodec {
         if codec == Codec::Jpeg && bits != 8 {
             return Ok(None);
         }
-        // LZW: other sample types, and WhiteIsZero images (which the crate inverts), are left to
-        // the `tiff` crate.
-        if codec == Codec::Lzw
+        // LZW and Zstandard: other sample types, and WhiteIsZero images (which the crate
+        // inverts), are left to the `tiff` crate.
+        if matches!(codec, Codec::Lzw | Codec::Zstd)
             && (Sample::new(format, bits).is_none() || dec.find_tag_unsigned::<u16>(Tag::PhotometricInterpretation)? == Some(0))
         {
             return Ok(None);
@@ -289,7 +294,7 @@ impl ChunkCodec {
         // Tiles are coded whole, strips with their own rows.
         let (w, h) = if self.tiled { self.chunk } else { (dw, dh) };
         let bytes = match self.codec {
-            Codec::Lzma | Codec::Lzw => self.lossless(raw, w, h)?,
+            Codec::Lzma | Codec::Lzw | Codec::Zstd => self.lossless(raw, w, h)?,
             Codec::Lerc => self.lerc(raw, w, h)?,
             Codec::Jxl => self.jxl(&raw, w, h)?,
             Codec::Jpeg => self.jpeg(&raw, w, h)?,
@@ -320,7 +325,7 @@ impl ChunkCodec {
             out
         } else {
             // At most the chunk's size, however far the stream would expand.
-            decompress(LZMA, raw, n)?
+            decompress(if self.codec == Codec::Zstd { ZSTD } else { LZMA }, raw, n)?
         };
         out.resize(n, 0);
         // The floating-point predictor's byte planes give native-endian samples whatever the

@@ -173,6 +173,17 @@ jobs:
         run: cargo hack check -p terrio --each-feature --no-dev-deps --exclude-features gdal
       - name: The core for WebAssembly
         run: cargo build -p terrio --no-default-features --features geotiff --target wasm32-unknown-unknown
+      # Every default feature but GeoParquet (whose Zstandard is the zstd C library) builds for
+      # WebAssembly without a C compiler (#180).
+      - name: WebAssembly without a C toolchain
+        env:
+          CC: "false"
+          CXX: "false"
+          AR: "false"
+          CC_wasm32_unknown_unknown: "false"
+        run: >-
+          cargo build -p terrio --target wasm32-unknown-unknown --no-default-features
+          --features geotiff,remote,avif,netcdf-hdf5,osm,lzma,flatgeobuf,jp2,lerc,pointcloud,tiles,zarr,sqlite
       - name: A GeoTIFF build pulls none of the optional codecs
         run: |
           crates=$(cargo tree -p terrio -e normal --no-default-features --features geotiff --prefix none | cut -d' ' -f1 | sort -u)
