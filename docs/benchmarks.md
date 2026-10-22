@@ -107,10 +107,12 @@ the largest peak memory. Same machine, terrio 0.4.1.
 
 - **Raster info** reads only the GeoTIFF header and the tags it needs.
 - **Mosaic → VRT** reads only the inputs' headers; GDAL opens each input fully.
-- **Warp to UTM 13N**: the tile is in NAD83, so the warp also changes datum to WGS 84, which
-  takes about 500 ms of terrio's time (into NAD83 / UTM 13N, the same warp takes 163 ms). That
-  makes nearest-neighbour warping slower than GDAL's
-  ([#184](https://github.com/opengeos/terrio/issues/184)).
+- **Warp to UTM 13N**: the tile is in NAD83, so the warp also changes datum to WGS 84. The
+  machine had PROJ's grids in terrio's download cache, which GDAL does not search, so terrio
+  shifted the points with a grid and GDAL did not. In 0.4.1 the threads reading the grid waited on
+  a lock, which made the warp take 650-770 ms
+  ([#184](https://github.com/opengeos/terrio/issues/184)); without the grids, or since the fix,
+  it takes 163 ms.
 - **Remote COG info** fetches one 64 KiB range; GDAL runs with
   `GDAL_DISABLE_READDIR_ON_OPEN=EMPTY_DIR`, as recommended for cloud data. Remote timings depend on
   the network.

@@ -91,8 +91,9 @@ struct TiffImage {
     blocks: usize,
     planar: bool,
     bottom_up: bool,
-    /// Decoded blocks: their data width and raw values.
-    cache: Mutex<HashMap<u32, Arc<Block>>>,
+    /// Decoded blocks, by block id (planes after one another when planar), each decoded when
+    /// first read: reading one afterwards takes no lock, as many threads read them at once.
+    cache: Vec<OnceLock<Block>>,
 }
 
 /// A decoded block: its data width and raw values.
@@ -176,9 +177,10 @@ impl Source {
 }
 
 impl TiffImage {
-    fn block(&self, id: u32) -> Option<Arc<Block>> {
-        if let Some(b) = self.cache.lock().ok()?.get(&id) {
-            return Some(b.clone());
+    fn block(&self, id: u32) -> Option<&Block> {
+        let slot = self.cache.get(id as usize)?;
+        if let Some(b) = slot.get() {
+            return Some(b);
         }
         let decoded = {
             let mut guard = self.file.decoder.lock().ok()?;
@@ -197,10 +199,10 @@ impl TiffImage {
                 tiff::decoder::DecodingResult::U32(v) => v.into_iter().map(f64::from).collect(),
                 _ => return None,
             };
-            Arc::new((w as usize, values))
+            (w as usize, values)
         };
-        self.cache.lock().ok()?.insert(id, decoded.clone());
-        Some(decoded)
+        // A block decoded by two threads at once keeps the first.
+        Some(slot.get_or_init(|| decoded))
     }
 }
 
@@ -558,6 +560,10 @@ fn read_tiff(bytes: Arc<[u8]>) -> Option<GridFile> {
         }
         let blocks_per_row = width.div_ceil(block_w.max(1));
         let blocks = blocks_per_row * height.div_ceil(block_h.max(1));
+        // The chunks the file has: no more blocks than these can be decoded, whatever its size
+        // tags say.
+        let offsets = if dec.get_chunk_type() == tiff::decoder::ChunkType::Tile { Tag::TileOffsets } else { Tag::StripOffsets };
+        let chunks = dec.find_tag(offsets).ok().flatten().and_then(|v| v.into_u64_vec().ok()).map_or(0, |v| v.len());
         infos.push((
             ext,
             width,
@@ -574,6 +580,7 @@ fn read_tiff(bytes: Arc<[u8]>) -> Option<GridFile> {
             nodata,
             scale_offset,
             ifd,
+            chunks,
         ));
         ifd += 1;
         if !dec.more_images() || dec.next_image().is_err() {
@@ -598,6 +605,7 @@ fn read_tiff(bytes: Arc<[u8]>) -> Option<GridFile> {
         nodata,
         scale_offset,
         ifd,
+        chunks,
     ) in infos
     {
         let grid_name = meta.get(&(-1, "grid_name".to_string())).cloned().unwrap_or_default();
@@ -616,7 +624,7 @@ fn read_tiff(bytes: Arc<[u8]>) -> Option<GridFile> {
                 blocks,
                 planar,
                 bottom_up,
-                cache: Mutex::new(HashMap::new()),
+                cache: (0..(if planar { blocks.saturating_mul(samples) } else { blocks }).min(chunks)).map(|_| OnceLock::new()).collect(),
             }),
             width,
             height,

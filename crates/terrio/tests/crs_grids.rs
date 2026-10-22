@@ -61,6 +61,34 @@ fn grids_match_gdal() {
     check("EPSG:26744", "EPSG:32611", (1840000.0, 640000.0, 0.0), (273402.1191350536, 4107905.0740628922, 0.0), 1e-3);
 }
 
+/// A grid read from many threads at once (its blocks decoded by whichever thread reaches them
+/// first) gives the values it gives read from one.
+#[test]
+fn grids_read_from_many_threads_match_one() {
+    if grids().is_none() {
+        return;
+    }
+    // NAD27 to NAD83 through NADCON (us_noaa_conus.tif), over much of its extent.
+    let t = Transformer::new(&crs("EPSG:4267"), &crs("EPSG:4269")).unwrap();
+    let points: Vec<(f64, f64)> = (0..4000).map(|i| (-124.0 + (i % 80) as f64 * 0.7, 25.0 + (i / 80) as f64 * 0.45)).collect();
+    let fresh = Transformer::new(&crs("EPSG:4267"), &crs("EPSG:4269")).unwrap();
+    let parallel: Vec<Vec<_>> = std::thread::scope(|s| {
+        let handles: Vec<_> = (0..8)
+            .map(|k| {
+                let (fresh, points) = (&fresh, &points);
+                s.spawn(move || points.iter().skip(k).step_by(8).map(|&(x, y)| fresh.transform(x, y).ok()).collect())
+            })
+            .collect();
+        handles.into_iter().map(|h| h.join().unwrap()).collect()
+    });
+    for (k, results) in parallel.iter().enumerate() {
+        for (j, got) in results.iter().enumerate() {
+            let (x, y) = points[k + 8 * j];
+            assert_eq!(*got, t.transform(x, y).ok(), "({x}, {y})");
+        }
+    }
+}
+
 #[test]
 fn legacy_formats_match_gdal() {
     if grids().is_none() {
