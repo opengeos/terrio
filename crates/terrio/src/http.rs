@@ -470,13 +470,6 @@ pub(crate) fn get_with_headers(url: &str, headers: &[(String, String)]) -> Resul
     request("GET", url, None, headers)
 }
 
-/// The scheme and host (with its port) of a URL.
-fn origin(url: &str) -> (String, String) {
-    let (scheme, rest) = url.split_once("://").unwrap_or(("", url));
-    let host = rest.split(['/', '?', '#']).next().unwrap_or(rest);
-    (scheme.to_ascii_lowercase(), host.to_ascii_lowercase())
-}
-
 /// Sends a `GET` or a `POST` (of a JSON `body`) with extra `headers`, and returns the response's
 /// body: redirects followed (for a `POST`, only those keeping the method, 307 and 308), the extra
 /// headers dropped when a redirect leads to another origin (they may hold keys), and transient
@@ -484,7 +477,7 @@ fn origin(url: &str) -> (String, String) {
 fn request(method: &str, url: &str, body: Option<&[u8]>, headers: &[(String, String)]) -> Result<Vec<u8>> {
     let options = HttpOptions::from_env();
     let agent = agent(&options);
-    let first_origin = origin(url);
+    let first_origin = crate::vfs::url_origin(url);
     let mut url = url.to_string();
     let (mut redirects, mut attempt) = (0, 0);
     let backoff = |attempt: &mut u32| {
@@ -492,7 +485,7 @@ fn request(method: &str, url: &str, body: Option<&[u8]>, headers: &[(String, Str
         *attempt += 1;
     };
     loop {
-        let extra: &[(String, String)] = if origin(&url) == first_origin { headers } else { &[] };
+        let extra: &[(String, String)] = if crate::vfs::url_origin(&url) == first_origin { headers } else { &[] };
         let result = match body {
             Some(body) => {
                 let mut req =
@@ -534,6 +527,14 @@ fn request(method: &str, url: &str, body: Option<&[u8]>, headers: &[(String, Str
             }
             url = resolve_redirect(&url, location);
             continue;
+        }
+        if body.is_some() && matches!(status, 301..=303) {
+            let to = response.headers().get("location").and_then(|v| v.to_str().ok()).unwrap_or("?");
+            return Err(Error::Http(format!(
+                "{}: status {status}, a redirect to {} that would turn the POST into a GET: not followed",
+                redact(&url),
+                redact(to)
+            )));
         }
         if matches!(status, 429 | 500 | 502 | 503 | 504) && attempt < options.max_retry {
             backoff(&mut attempt);

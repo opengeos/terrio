@@ -115,10 +115,8 @@ fn next_request(doc: &Value, cur: &Request) -> Option<Request> {
     let headers: Vec<(String, String)> =
         link["headers"].as_object().into_iter().flatten().filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_string()))).collect();
     // The previous page's headers (keys, perhaps) go only to the same origin.
-    let origin = |u: &str| {
-        u.split_once("://").map(|(s, r)| (s.to_ascii_lowercase(), r.split(['/', '?', '#']).next().unwrap_or(r).to_ascii_lowercase()))
-    };
-    let headers = if headers.is_empty() && origin(&url) == origin(&cur.url) { cur.headers.clone() } else { headers };
+    let same_origin = crate::vfs::url_origin(&url).is_some() && crate::vfs::url_origin(&url) == crate::vfs::url_origin(&cur.url);
+    let headers = if headers.is_empty() && same_origin { cur.headers.clone() } else { headers };
     if method(link) == "GET" {
         return Some(Request { url, body: None, headers });
     }
@@ -349,7 +347,7 @@ fn blob_container(href: &str) -> Option<(&str, &str)> {
 
 /// Whether an item comes from Planetary Computer: read from its API, or linking to it.
 fn from_planetary_computer(item: &Value, base: &str) -> bool {
-    let host = |u: &str| u.split_once("://").map(|(_, r)| r.split(['/', '?']).next().unwrap_or(r).to_ascii_lowercase());
+    let host = |u: &str| crate::vfs::url_origin(u).map(|(_, h)| h);
     host(base).is_some_and(|h| h == PC_HOST)
         || item["links"].as_array().into_iter().flatten().any(|l| l["href"].as_str().and_then(host).is_some_and(|h| h == PC_HOST))
 }
@@ -403,11 +401,14 @@ fn pc_token(account: &str, container: &str) -> Result<String> {
     let v: Value = serde_json::from_slice(&crate::http::get_with_headers(&url, &headers)?).map_err(|e| bad(format!("{url}: {e}")))?;
     let token = v["token"].as_str().filter(|t| !t.is_empty()).ok_or_else(|| bad(format!("{url}: no token in the response")))?.to_string();
     // Tokens last about an hour or more ("msft:expiry"); renew well before.
-    let lifetime = v["msft:expiry"]
-        .as_str()
-        .and_then(seconds_until)
-        .map_or(Duration::from_secs(1800), |s| Duration::from_secs(s.saturating_sub(300).max(60)));
-    if let Ok(mut tokens) = TOKENS.lock() {
+    // No expiry given: half an hour. One already past (a clock off) or close: not cached.
+    let lifetime = match v["msft:expiry"].as_str() {
+        None => Some(Duration::from_secs(1800)),
+        Some(t) => seconds_until(t).filter(|s| *s > 300).map(|s| Duration::from_secs(s - 300)),
+    };
+    if let Some(lifetime) = lifetime
+        && let Ok(mut tokens) = TOKENS.lock()
+    {
         tokens.insert(key, (token.clone(), Instant::now() + lifetime));
     }
     Ok(token)

@@ -258,6 +258,14 @@ fn extension_of(name: &str) -> Option<String> {
     Path::new(name).extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase())
 }
 
+/// The scheme and host (with its port) of a URL, lowercased: what decides whether two URLs are
+/// of the same origin. `None` when `url` has no scheme.
+pub(crate) fn url_origin(url: &str) -> Option<(String, String)> {
+    let (scheme, rest) = url.split_once("://")?;
+    let host = rest.split(['/', '?', '#']).next().unwrap_or(rest);
+    Some((scheme.to_ascii_lowercase(), host.to_ascii_lowercase()))
+}
+
 /// Resolves a dataset location to a local path, downloading or extracting it when needed.
 pub fn resolve(input: &str) -> Result<LocalPath> {
     resolve_location(&Location::parse(input))
