@@ -256,11 +256,11 @@ jobs:
           CC_wasm32_unknown_unknown: "false"
         run: >-
           cargo build -p terrio --target wasm32-unknown-unknown --no-default-features
-          --features geotiff,remote,avif,netcdf-hdf5,osm,lzma,flatgeobuf,jp2,lerc,pointcloud,tiles,zarr,sqlite
+          --features geotiff,remote,avif,netcdf-hdf5,osm,lzma,flatgeobuf,jp2,lerc,pointcloud,tiles,zarr,sqlite,grib
       - name: A GeoTIFF build pulls none of the optional codecs
         run: |
           crates=$(cargo tree -p terrio -e normal --no-default-features --features geotiff --prefix none | cut -d' ' -f1 | sort -u)
-          found=$(echo "$crates" | grep -E '^(arrow(-[a-z]+)?|parquet|hdf5(-[a-z]+)?|netcdf(-[a-z]+)?|openjp2|rusty_av1d|lzma-rust2|lerc(-[a-z]+)?|laz|e57|flatgeobuf|osmpbfreader|ureq|hmac|sha2|delaunator)$' || true)
+          found=$(echo "$crates" | grep -E '^(arrow(-[a-z]+)?|parquet|hdf5(-[a-z]+)?|netcdf(-[a-z]+)?|openjp2|rusty_av1d|lzma-rust2|lerc(-[a-z]+)?|laz|e57|flatgeobuf|osmpbfreader|ureq|hmac|sha2|delaunator|gribberish|bitvec)$' || true)
           if [ -n "$found" ]; then echo "unexpected dependencies: $found"; exit 1; fi
           echo "$(echo "$crates" | wc -l) crates"
 
