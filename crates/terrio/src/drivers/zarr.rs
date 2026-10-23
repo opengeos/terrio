@@ -854,6 +854,58 @@ fn read_all_f64(a: &Array) -> Option<Vec<f64>> {
     common::decode(&bytes, &layout).ok().map(|v| v.to_f64_vec())
 }
 
+/// The most arrays listed as subdatasets, and the deepest group looked into.
+const MAX_SUBDATASETS: usize = 10_000;
+const MAX_GROUP_DEPTH: usize = 16;
+
+/// The arrays of two or more dimensions of a group and the groups below it, depth first in name
+/// order, as GDAL's Zarr driver lists them as subdatasets: `SUBDATASET_<n>_NAME`
+/// (`ZARR:"store":/path`) and `SUBDATASET_<n>_DESC` (`[2x3x4x5] /path (Float32)`) items. None
+/// when the group holds one array (of any dimensions), which is the raster.
+fn subdatasets(group: &Node) -> Vec<(String, String)> {
+    fn walk(node: &Node, depth: usize, out: &mut Vec<Array>) {
+        // The children's metadata read in parallel (a request or two each for a remote store),
+        // then visited in name order.
+        let mut names = node.children();
+        // No more children looked at than subdatasets can still be listed.
+        names.truncate(MAX_SUBDATASETS.saturating_sub(out.len()));
+        let kinds = crate::par::map_range(names.len(), |i| {
+            let child = node.join(&names[i]);
+            match read_array_opt(&child) {
+                Ok(Some(a)) => (Some(a), false),
+                _ => (None, depth < MAX_GROUP_DEPTH && is_group(&child)),
+            }
+        });
+        for (name, (array, group)) in names.iter().zip(kinds) {
+            if out.len() >= MAX_SUBDATASETS {
+                return;
+            }
+            match array {
+                Some(a) if a.shape.len() >= 2 => out.push(a),
+                Some(_) => {}
+                None if group => walk(&node.join(name), depth + 1, out),
+                None => {}
+            }
+        }
+    }
+    let mut arrays = Vec::new();
+    walk(group, 0, &mut arrays);
+    if arrays.len() < 2 {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    for (i, a) in arrays.iter().enumerate() {
+        let (store, key) = a.node.store_and_key();
+        let shape: Vec<String> = a.shape.iter().map(usize::to_string).collect();
+        out.push((format!("SUBDATASET_{}_NAME", i + 1), format!("ZARR:\"{store}\":/{key}")));
+        out.push((
+            format!("SUBDATASET_{}_DESC", i + 1),
+            format!("[{}] /{key} ({})", shape.join("x"), crate::info::gdal_type_name(a.data_type)),
+        ));
+    }
+    out
+}
+
 /// The arrays of a group: `(name, metadata)`, sorted by name.
 fn group_arrays(node: &Node) -> Vec<(String, Array)> {
     node.children().into_iter().filter_map(|name| Some((name.clone(), read_array(&node.join(&name)).ok()?))).collect()
@@ -1171,7 +1223,7 @@ impl crate::cog::WindowSource for ZarrSource {
 }
 
 /// Opens the raster of a store, group or array node: its header (without pixels) and reader.
-fn open_node(node: &Node) -> Result<(RasterDataset, ZarrSource)> {
+fn open_node(node: &Node, list_subdatasets: bool) -> Result<(RasterDataset, ZarrSource)> {
     let (array, group, ms) = locate(node)?;
     let nd = array.shape.len();
     if nd < 2 {
@@ -1274,7 +1326,11 @@ fn open_node(node: &Node) -> Result<(RasterDataset, ZarrSource)> {
         metadata: band_dim_metadata(&array, &bds, |d| sibling(array.dims.get(d)?)),
         data: RasterData::new_filled(array.data_type, 0, 0.0),
     };
-    let header = RasterDataset::with_driver(raster, RasterDriver::Zarr, array.fill.is_some());
+    let mut header = RasterDataset::with_driver(raster, RasterDriver::Zarr, array.fill.is_some());
+    // A group opened: its arrays, as GDAL lists them (for its header: not to read its pixels).
+    if list_subdatasets && array.node != *node {
+        header.raster.metadata.extend(subdatasets(node));
+    }
 
     // The lower-resolution levels of the multiscales layout, largest first.
     let mut levels: Vec<Level> = Vec::new();
@@ -1365,7 +1421,7 @@ pub(crate) fn read(path: &Path) -> Result<RasterDataset> {
 }
 
 fn read_node(node: &Node) -> Result<RasterDataset> {
-    let (mut header, mut source) = open_node(node)?;
+    let (mut header, mut source) = open_node(node, false)?;
     let r = &header.raster;
     let bands: Vec<usize> = (1..=r.bands).collect();
     header.raster.data = crate::cog::WindowSource::read(&mut source, 0, crate::Window::full(r.cols, r.rows), &bands)?;
@@ -1411,8 +1467,9 @@ fn open_name(store: &str, array: Option<&str>) -> Result<Node> {
             }
             Node::local(p)
         }
+        // Named as given (`az://`, `s3://`...), so that its subdatasets' names open the same way.
         #[cfg(remote)]
-        crate::vfs::Location::Url(_) | crate::vfs::Location::S3 { .. } => Node::remote(&loc)?,
+        crate::vfs::Location::Url(_) | crate::vfs::Location::S3 { .. } => Node::remote_named(&loc, store)?,
         _ => return Err(Error::Unsupported(format!("Zarr stores at '{store}' are not supported"))),
     };
     Ok(match array {
@@ -1427,7 +1484,7 @@ fn open_name(store: &str, array: Option<&str>) -> Result<Node> {
 pub(crate) fn open_lazy(name: &str) -> Option<Result<crate::LazyRaster>> {
     let (store, array) = parse_name(name)?;
     Some(open_name(&store, array.as_deref()).and_then(|node| {
-        let (header, source) = open_node(&node)?;
+        let (header, source) = open_node(&node, true)?;
         Ok(crate::LazyRaster::from_source(header, Box::new(source)))
     }))
 }

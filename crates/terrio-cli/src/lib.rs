@@ -50,7 +50,8 @@ enum Command {
     /// (like PDAL's writers.gdal), or a TIN or nearest-neighbour interpolation (like gdal_grid).
     Grid(cmd::grid::Args),
     /// Filter a point cloud as PDAL's filters do: ground classification (SMRF, PMF, CSF), noise,
-    /// heights above ground, crops, expressions, assignments, tiles, normals, clusters, sampling.
+    /// heights above ground, crops, expressions, assignments, tiles, normals, clusters, sampling,
+    /// covariance features, outlier factors, raster values and polygon attributes.
     Filter(cmd::filter::Args),
     /// Serve these commands to AI agents (Claude Code, Claude Desktop, Cursor, VS Code…) as a
     /// Model Context Protocol server over standard input and output.

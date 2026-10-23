@@ -77,7 +77,7 @@ OUT = os.path.join(os.path.dirname(__file__), "..", "crates", "terrio", "data", 
 
 # Steps of a PROJ pipeline that belong to the datum transformation; the others convert units,
 # swap axes or (un)project, which terrio does from the CRS's own definition.
-DATUM_STEPS = {"cart", "helmert", "molodensky", "molobadekas", "geogoffset"}
+DATUM_STEPS = {"cart", "helmert", "molodensky", "molobadekas", "geogoffset", "vertoffset"}
 
 # Steps that apply grids.
 GRID_STEPS = {"hgridshift", "vgridshift", "gridshift", "xyzgridshift", "deformation"}
@@ -216,13 +216,15 @@ PRIME_MERIDIANS = {
 }
 
 
-def datum_steps(definition, crs_pm=0.0, target_pm=0.0):
+def datum_steps(definition, crs_pm=0.0, target_pm=0.0, z_flips=False):
     """Extract the datum transformation from a PROJ pipeline.
 
     Args:
         definition: The pipeline from a CRS to WGS 84 (or another geographic CRS).
         crs_pm: The CRS's prime meridian in degrees, which terrio applies itself.
         target_pm: The target CRS's prime meridian in degrees, which terrio also applies.
+        z_flips: Keep the axis swaps that turn heights into depths (``axisswap order=1,2,-3``),
+            which transformations between vertical CRSs apply between their steps.
 
     Returns:
         The geodetic steps, ``;``-separated, or ``None`` when the pipeline holds a step terrio
@@ -254,9 +256,11 @@ def datum_steps(definition, crs_pm=0.0, target_pm=0.0):
                 rotation += target_pm
             if abs(rotation) > 1e-7:
                 out.append(f"geogoffset dlon={rotation * 3600!r} dlat=0")
+        elif name == "axisswap" and z_flips and "order=1,2,-3" in params:
+            out.append("axisswap order=1,2,-3")
         elif name in NEUTRAL_STEPS:
             continue
-        elif name in ("tinshift", "affine", "horner", "vertoffset", "molodensky"):
+        elif name in ("tinshift", "affine", "horner", "molodensky"):
             return None
         else:
             # The CRS's own (inverse) projection.
@@ -264,7 +268,31 @@ def datum_steps(definition, crs_pm=0.0, target_pm=0.0):
     return ";".join(out)
 
 
-def transformations(source, target, pm=0.0, target_pm=0.0, grids=False, keys=False):
+def interpolation_crs(doc):
+    """The geographic CRS a transformation interpolates in, as PROJ chains it into compound CRSs.
+
+    Args:
+        doc: The transformation's PROJJSON.
+
+    Returns:
+        The EPSG code of its last step's interpolation CRS, else of the geographic CRS that
+        step goes from or to, or ``""``: PROJ looks at the last step of a concatenation only.
+    """
+    steps = [d for d in flatten(doc) if d.get("type") == "Transformation"]
+    if not steps:
+        return ""
+    last = steps[-1]
+    crs = last.get("interpolation_crs") or {}
+    if crs.get("id", {}).get("authority") == "EPSG":
+        return crs["id"]["code"]
+    for side in ("source_crs", "target_crs"):
+        crs = last.get(side) or {}
+        if crs.get("type") == "GeographicCRS" and crs.get("id", {}).get("authority") == "EPSG":
+            return crs["id"]["code"]
+    return ""
+
+
+def transformations(source, target, pm=0.0, target_pm=0.0, grids=False, keys=False, vertical=False):
     """List the datum transformations GDAL would try between two CRSs.
 
     Runs ``projinfo`` with the options ``proj_create_crs_to_crs`` (which GDAL uses) passes to
@@ -278,10 +306,13 @@ def transformations(source, target, pm=0.0, target_pm=0.0, grids=False, keys=Fal
         pm: The source's prime meridian in degrees.
         target_pm: The target's prime meridian in degrees.
         grids: Whether to list the operations GDAL uses when grids are available.
+        keys: Whether to return each row with its steps' key.
+        vertical: For transformations between vertical CRSs: keep their axis swaps to depths
+            and add each one's interpolation CRS (see ``interpolation_crs``) to its row.
 
     Returns:
         ``[(steps, (west, south, east, north), accuracy, flags, name, steps accuracy, steps
-        bounds)]`` in GDAL's order.
+        bounds)]`` in GDAL's order (with the interpolation CRS last when ``vertical``).
     """
     args = ["projinfo", "-s", source, "-t", target, "--spatial-test", "intersects"]
     args += ["--grid-check", "known_available" if grids else "discard_missing", "-o", "PROJ,PROJJSON", "--single-line"]
@@ -297,7 +328,7 @@ def transformations(source, target, pm=0.0, target_pm=0.0, grids=False, keys=Fal
         js = next((line for line in lines if line.startswith("{")), None)
         if proj is None or js is None:
             continue
-        steps = datum_steps(proj.replace("+", ""), pm, target_pm)
+        steps = datum_steps(proj.replace("+", ""), pm, target_pm, z_flips=vertical)
         if steps is None:
             continue
         doc = json.loads(js)
@@ -340,6 +371,8 @@ def transformations(source, target, pm=0.0, target_pm=0.0, grids=False, keys=Fal
             steps_bounds = step_bounds(parts)
             steps_bounds = "" if steps_bounds in (None, bounds) else ",".join(repr(round(v, 6)) for v in steps_bounds)
         row = (steps, bounds, accuracy, flags, name, steps_accuracy, steps_bounds)
+        if vertical:
+            row += (interpolation_crs(doc),)
         out.append((row, step_key(transfos)) if keys else row)
     return out
 

@@ -16,6 +16,8 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 static DATA: &[u8] = include_bytes!("../../data/epsg.tsv.zst");
 static ESRI_DATA: &[u8] = include_bytes!("../../data/esri.tsv.zst");
+/// Transformations between EPSG vertical CRSs (`scripts/gen_vertical_table.py`).
+static VERTICAL_DATA: &[u8] = include_bytes!("../../data/epsg_vertical.tsv.zst");
 
 /// The names and aliases of EPSG datums, generated from PROJ by `scripts/gen_datum_names.py`:
 /// `code<TAB>rank<TAB>name` lines.
@@ -51,6 +53,8 @@ pub(crate) struct Entry {
 #[derive(Debug)]
 pub(crate) struct Vertical {
     pub name: String,
+    /// The EPSG vertical datum code.
+    pub datum: u32,
     /// Metres per unit.
     pub to_meter: f64,
     /// Whether heights are depths (positive down).
@@ -69,6 +73,18 @@ pub(crate) struct Compound {
 
 /// Transformations without and with grids.
 type OpLists = (Vec<Arc<Op>>, Vec<Arc<Op>>);
+
+/// A transformation between vertical CRSs, with the geographic CRS it interpolates in.
+#[derive(Debug, Clone)]
+pub(crate) struct VerticalOp {
+    pub op: Arc<Op>,
+    /// The EPSG geographic CRS its grids or offsets are referenced to: PROJ chains the
+    /// horizontal transformation to it when the compound CRSs are on another datum.
+    pub interpolation: Option<u32>,
+}
+
+/// Transformations between vertical CRSs without and with grids.
+type VerticalLists = (Vec<VerticalOp>, Vec<VerticalOp>);
 
 /// The transformations of a pair of geographic CRSs.
 struct PairLists {
@@ -93,6 +109,8 @@ struct Table {
     compounds: HashMap<u32, Lazy<Option<Compound>>>,
     /// Geoid models from geographic 3D CRSs to vertical CRSs, by vertical CRS.
     geoids: HashMap<u32, Vec<(u32, Lazy<OpLists>)>>,
+    /// Transformations between vertical CRSs, by (source, target) code.
+    vertical_ops: HashMap<(u32, u32), Lazy<VerticalLists>>,
     /// Old names of grids.
     alternatives: HashMap<String, Vec<String>>,
     /// The publication dates of datums (`2007-01-01`), by datum code.
@@ -135,6 +153,11 @@ fn table() -> &'static Table {
     TABLE.get_or_init(|| load(DATA))
 }
 
+fn vertical_table() -> &'static Table {
+    static TABLE: OnceLock<Table> = OnceLock::new();
+    TABLE.get_or_init(|| load(VERTICAL_DATA))
+}
+
 fn esri_table() -> &'static Table {
     static TABLE: OnceLock<Table> = OnceLock::new();
     TABLE.get_or_init(|| load(ESRI_DATA))
@@ -145,6 +168,7 @@ fn load(data: &[u8]) -> Table {
     let text = decompress(data);
     let (mut crs, mut ops, mut pairs) = (HashMap::new(), HashMap::new(), HashMap::new());
     let (mut verticals, mut compounds, mut geoids) = (HashMap::new(), HashMap::new(), HashMap::<u32, Vec<_>>::new());
+    let mut vertical_ops = HashMap::new();
     let mut alternatives = HashMap::<String, Vec<String>>::new();
     let mut dates = HashMap::new();
     let mut pos = 0;
@@ -191,6 +215,11 @@ fn load(data: &[u8]) -> Table {
                     geoids.entry(v).or_default().push((g, Lazy::new(after_second(), end)));
                 }
             }
+            "W" => {
+                if let (Ok(a), Some(b)) = (key.parse::<u32>(), second()) {
+                    vertical_ops.insert((a, b), Lazy::new(after_second(), end));
+                }
+            }
             "A" => {
                 alternatives.entry(key.to_string()).or_default().push(line[rest - start..].to_string());
             }
@@ -202,7 +231,7 @@ fn load(data: &[u8]) -> Table {
             _ => {}
         }
     }
-    Table { text, crs, ops, pairs, verticals, compounds, geoids, alternatives, dates }
+    Table { text, crs, ops, pairs, verticals, compounds, geoids, vertical_ops, alternatives, dates }
 }
 
 impl Table {
@@ -241,6 +270,25 @@ impl Table {
                 }))
             })
             .clone()
+    }
+
+    /// The field of a transformation's line after its 8 others (the interpolation CRS of the
+    /// vertical table).
+    fn op_interpolation(&self, id: u32) -> Option<u32> {
+        let lazy = self.ops.get(&id)?;
+        self.text[lazy.line.0 as usize..lazy.line.1 as usize].split('\t').nth(7)?.parse().ok()
+    }
+
+    /// Vertical transformations by `ops<TAB>grid ops` lists of ids.
+    fn vertical_lists(&self, ids: &str) -> VerticalLists {
+        let list = |s: &str| -> Vec<VerticalOp> {
+            s.split(',')
+                .filter_map(|i| i.parse().ok())
+                .filter_map(|i| Some(VerticalOp { op: self.op(i)?, interpolation: self.op_interpolation(i) }))
+                .collect()
+        };
+        let (a, b) = ids.split_once('\t').unwrap_or((ids, ""));
+        (list(a), list(b))
     }
 
     /// Transformations by a comma-separated list of ids.
@@ -538,9 +586,10 @@ pub(crate) fn vertical(code: u32) -> Option<&'static Vertical> {
         .get(&code)?
         .get(&t.text, |line| {
             let f: Vec<&str> = line.split('\t').collect();
-            let [name, _datum, unit, direction, wkt] = f[..] else { return None };
+            let [name, datum, unit, direction, wkt] = f[..] else { return None };
             Some(Vertical {
                 name: name.to_string(),
+                datum: datum.parse().unwrap_or(0),
                 to_meter: unit.parse().unwrap_or(1.0),
                 down: direction == "down",
                 wkt: wkt.to_string(),
@@ -574,6 +623,19 @@ pub(crate) fn geoid_models(vertical: u32) -> Vec<(u32, Vec<Arc<Op>>)> {
         })
         .filter(|(_, ops)| !ops.is_empty())
         .collect()
+}
+
+/// The transformations from a vertical CRS to another that PROJ lists (vertical offsets, offsets
+/// and slopes, VERTCON and other grids, chained through an intermediate vertical CRS), given the
+/// grids that can be found. Empty when the EPSG dataset connects them by none but PROJ's ballpark.
+pub(crate) fn vertical_transformations(source: u32, target: u32) -> Vec<VerticalOp> {
+    let t = vertical_table();
+    let Some(lazy) = t.vertical_ops.get(&(source, target)) else { return Vec::new() };
+    let (ops, grid_ops) = lazy.get(&t.text, |ids| t.vertical_lists(ids));
+    let arcs = |l: &[VerticalOp]| l.iter().map(|v| v.op.clone()).collect::<Vec<_>>();
+    let chosen = usable(&arcs(ops), &arcs(grid_ops));
+    let all: Vec<&VerticalOp> = grid_ops.iter().chain(ops.iter()).collect();
+    chosen.iter().filter_map(|c| all.iter().find(|v| Arc::ptr_eq(&v.op, c)).map(|v| (*v).clone())).collect()
 }
 
 /// The publication date of an EPSG datum (`2007-01-01`), when it has one.

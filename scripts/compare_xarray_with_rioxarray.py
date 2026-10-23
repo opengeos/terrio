@@ -768,6 +768,44 @@ def synthetic_files(out: Path) -> dict[str, str]:
         blockxsize=256,
         blockysize=256,
     )
+
+    # Ground control points (a pixel grid without a transform), and RPCs.
+    from rasterio.control import GroundControlPoint
+    from rasterio.rpc import RPC
+
+    gcps = [
+        GroundControlPoint(row=r, col=c, x=-105.0 + c * 0.001, y=40.0 - r * 0.001, z=1600.0 + r)
+        for r in (0, 150, 299)
+        for c in (0, 200, 399)
+    ]
+    p = str(d / "synth_gcps.tif")
+    with rasterio.open(p, "w", driver="GTiff", width=400, height=300, count=1, dtype="float32",
+                       gcps=gcps, crs="EPSG:4326") as dst:
+        dst.write(base.astype("float32")[np.newaxis])
+    files["synth_gcps.tif"] = p
+    coeffs = [0.0] * 20
+    rpcs = RPC(
+        height_off=1600.0, height_scale=500.0, lat_off=40.0, lat_scale=0.15, long_off=-105.0,
+        long_scale=0.2, line_off=150.0, line_scale=150.0, samp_off=200.0, samp_scale=200.0,
+        line_num_coeff=[0.0, 0.0, -1.0] + coeffs[3:], line_den_coeff=[1.0] + coeffs[1:],
+        samp_num_coeff=[0.0, 1.0] + coeffs[2:], samp_den_coeff=[1.0] + coeffs[1:],
+        err_bias=0.5, err_rand=0.25,
+    )
+    p = str(d / "synth_rpcs.tif")
+    with rasterio.open(p, "w", driver="GTiff", width=400, height=300, count=1, dtype="uint8",
+                       rpcs=rpcs) as dst:
+        dst.write((base % 250).astype("uint8")[np.newaxis])
+    files["synth_rpcs.tif"] = p
+
+    # Subdatasets: a netCDF-4 file of rasters in groups (written by terrio, read by both).
+    import terrio
+
+    p = str(d / "synth_groups.nc")
+    elevation = terrio.Raster.from_array(base.astype("float32"), (480000.0, 30.0, 0.0, 4400000.0, 0.0, -30.0), "EPSG:32613")
+    slope = terrio.Raster.from_array((base / 10).astype("int16"), (480000.0, 30.0, 0.0, 4400000.0, 0.0, -30.0), "EPSG:32613", nodata=-1)
+    small = terrio.Raster.from_array((base[:100, :120] / 7).astype("float32"), (480000.0, 90.0, 0.0, 4400000.0, 0.0, -90.0), "EPSG:32613")
+    terrio.write_netcdf_groups({"/terrain/elevation": elevation, "/terrain/slope": slope, "/coarse": small}, p)
+    files["synth_groups.nc"] = p
     _SYNTH_CACHE[key] = files
     return files
 
@@ -1046,7 +1084,69 @@ def _add_open_checks(names: list[str], needs_data: bool) -> None:
         )
 
 
+def _subdatasets(name: str, **kw: Any) -> Callable[[Flavor, Ctx], Any]:
+    """A check opening a file of subdatasets (a Dataset, or a list of them).
+
+    Args:
+        name: The file.
+        **kw: Options of `open_rasterio` (`group`, `variable`).
+
+    Returns:
+        callable: The check function.
+    """
+
+    def f(fl: Flavor, ctx: Ctx) -> Any:
+        out = fl.open(ctx.path(name), **kw)
+        datasets = out if isinstance(out, list) else [out]
+        # Compared by their variables' names, shapes, values and attributes.
+        return [
+            {v: (ds[v].shape, ds[v].values, dict(ds[v].attrs)) for v in sorted(ds.data_vars)} | {"attrs": dict(ds.attrs)}
+            for ds in datasets
+        ]
+
+    return f
+
+
+def _gcps_rpcs(name: str) -> Callable[[Flavor, Ctx], Any]:
+    """A check opening an image georeferenced by GCPs or RPCs.
+
+    Args:
+        name: The file.
+
+    Returns:
+        callable: The check function.
+    """
+
+    def f(fl: Flavor, ctx: Ctx) -> Any:
+        da = fl.open(ctx.path(name))
+        acc = fl.acc(da)
+        gcps = acc.get_gcps()
+        rpcs = acc.get_rpcs()
+        return {
+            "array": da,
+            "gcps": None if gcps is None else [(g.row, g.col, g.x, g.y, g.z, g.id, g.info) for g in gcps],
+            "rpcs": None if rpcs is None else rpcs.to_dict(),
+            "crs": str(acc.crs),
+        }
+
+    return f
+
+
 _add_open_checks(SYNTH, needs_data=False)
+add("subdatasets", "synth_groups.nc open_rasterio", _subdatasets("synth_groups.nc"))
+add("subdatasets", "synth_groups.nc group=terrain", _subdatasets("synth_groups.nc", group="terrain"))
+add("subdatasets", "synth_groups.nc variable=Band1", _subdatasets("synth_groups.nc", variable="Band1"))
+add("georeferencing", "synth_gcps.tif GCPs", _gcps_rpcs("synth_gcps.tif"))
+add("georeferencing", "synth_rpcs.tif RPCs", _gcps_rpcs("synth_rpcs.tif"))
+add(
+    "georeferencing",
+    "synth_gcps.tif reproject through the GCPs",
+    lambda fl, ctx: fl.acc(fl.open(ctx.path("synth_gcps.tif"))).reproject("EPSG:32613", resolution=100),
+    # The grid GDAL suggests from GCPs, to a few nanometres; the pixels identical.
+    expect="tolerance",
+    coord_rtol=1e-12,
+    reason="the origin of the grid suggested from the GCPs differs by 2e-9 m (floating point)",
+)
 for _n in ("synth_rgb.tif", "synth_scaled.tif"):
     add("open", f"{_n} overview_level=0", _open(_n, overview_level=0))
     add(

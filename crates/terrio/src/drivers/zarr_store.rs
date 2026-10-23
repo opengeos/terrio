@@ -55,6 +55,9 @@ pub(crate) struct Store {
     consolidated: Option<HashMap<String, Value>>,
     /// Metadata documents read so far (`None` for missing ones).
     cache: Mutex<HashMap<String, Option<Value>>>,
+    /// The child names listed so far of remote keys.
+    #[cfg(remote)]
+    listings: Mutex<HashMap<String, Vec<String>>>,
 }
 
 /// A node (group, array or object) of a store: its key, `""` for the store's root.
@@ -97,7 +100,14 @@ fn local_node(p: &Path) -> bool {
 
 impl Store {
     fn new(backend: Backend, name: String) -> Self {
-        Self { backend, name, consolidated: None, cache: Mutex::new(HashMap::new()) }
+        Self {
+            backend,
+            name,
+            consolidated: None,
+            cache: Mutex::new(HashMap::new()),
+            #[cfg(remote)]
+            listings: Mutex::new(HashMap::new()),
+        }
     }
 
     /// Reads a key: `None` when there is no such object.
@@ -158,6 +168,39 @@ impl Store {
                     Range::Suffix(n) => ByteRange::Suffix(n),
                 };
                 fetcher.get(&remote, range)
+            }
+        }
+    }
+
+    /// The "subdirectories" of a key of a remote store, as its object store lists them (cached).
+    #[cfg(remote)]
+    fn list(&self, base: &RemoteBase, key: &str) -> Vec<String> {
+        use crate::http::Directory;
+        if let Some(v) = self.listings.lock().ok().and_then(|l| l.get(key).cloned()) {
+            return v;
+        }
+        let join = |prefix: &str| match (prefix.is_empty(), key.is_empty()) {
+            (_, true) => prefix.to_string(),
+            (true, false) => key.to_string(),
+            (false, false) => format!("{}/{key}", prefix.trim_end_matches('/')),
+        };
+        let dir = match base {
+            RemoteBase::Url { prefix, query } => Directory::Url(format!("{}{query}", join(prefix))),
+            RemoteBase::S3 { bucket, prefix } => Directory::S3 { bucket: bucket.clone(), prefix: join(prefix) },
+        };
+        // A store that cannot be listed has no children found this way. A failed request (a
+        // timeout) is not remembered, so that the next lookup tries again.
+        match crate::http::list_subdirectories(&dir) {
+            Ok(listed) => {
+                let names = listed.unwrap_or_default();
+                if let Ok(mut l) = self.listings.lock() {
+                    l.insert(key.to_string(), names.clone());
+                }
+                names
+            }
+            Err(e) => {
+                crate::warnings::warn(format!("Zarr: listing {}: {e}", self.name));
+                Vec::new()
             }
         }
     }
@@ -259,8 +302,10 @@ impl Node {
 
     /// Opens a remote location. The store is rooted at the last path component ending in
     /// `.zarr` (or at the location itself), and the node is the rest of the path.
+    /// The store is named `given` (the location as the user wrote it, such as
+    /// `az://container/store.zarr`, when it is the store itself) in messages and subdataset names.
     #[cfg(remote)]
-    pub(crate) fn remote(loc: &crate::vfs::Location) -> Result<Node> {
+    pub(crate) fn remote_named(loc: &crate::vfs::Location, given: &str) -> Result<Node> {
         use crate::vfs::Location;
         let split = |path: &str| -> (String, String) {
             let path = path.trim_end_matches('/');
@@ -283,6 +328,9 @@ impl Node {
             }
             _ => return Err(crate::Error::InvalidArgument("not a remote location".into())),
         };
+        // The name as given, when it names the store itself (not a node below it).
+        let given = given.trim_end_matches('/');
+        let name = if key.is_empty() && !given.is_empty() && !given.contains('?') { given.to_string() } else { name };
         let mut store = Store::new(Backend::Remote { base, fetcher: Box::new(crate::http::ObjectFetcher::new()) }, name);
         store.load_consolidated()?;
         let node = Node { store: Arc::new(store), key };
@@ -318,6 +366,11 @@ impl Node {
         k.rsplit(['/', '\\']).next().unwrap_or_default().to_string()
     }
 
+    /// The store's path or URL, and the node's key in it (`""` at the root).
+    pub(crate) fn store_and_key(&self) -> (&str, &str) {
+        (&self.store.name, &self.key)
+    }
+
     /// The node's full path or URL, for messages.
     pub(crate) fn display(&self) -> String {
         if self.key.is_empty() { self.store.name.clone() } else { format!("{}/{}", self.store.name.trim_end_matches('/'), self.key) }
@@ -334,8 +387,9 @@ impl Node {
         self.store.get(&join_key(&self.key, rel), range)
     }
 
-    /// The names of the child nodes: the subdirectories of a local store, else the nodes the
-    /// consolidated metadata lists (none without it).
+    /// The names of the child nodes: the subdirectories of a local store, the nodes the
+    /// consolidated metadata lists, or else the "subdirectories" an object store lists (Amazon
+    /// S3, Google Cloud Storage, Azure Blob Storage; none for a plain HTTP server).
     pub(crate) fn children(&self) -> Vec<String> {
         let mut out: Vec<String> = Vec::new();
         if let Some(c) = &self.store.consolidated {
@@ -348,6 +402,12 @@ impl Node {
                     out.push(child.to_string());
                 }
             }
+        }
+        #[cfg(remote)]
+        if self.store.consolidated.is_none()
+            && let Backend::Remote { base, .. } = &self.store.backend
+        {
+            out.extend(self.store.list(base, &self.key));
         }
         // Irrefutable in WebAssembly builds, which read local stores only.
         #[allow(irrefutable_let_patterns)]

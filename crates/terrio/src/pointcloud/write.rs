@@ -182,9 +182,13 @@ fn check_local(path: &str) -> Result<()> {
 }
 
 fn resolve_format(path: &str, options: &PointWriteOptions) -> Result<PointFormat> {
-    options.format.or_else(|| PointFormat::for_path(path)).ok_or_else(|| {
+    let format = options.format.or_else(|| PointFormat::for_path(path)).ok_or_else(|| {
         Error::InvalidArgument(format!("cannot tell the point cloud format of '{path}': use .las, .laz, .copc.laz, .ply, .e57 or ept.json"))
-    })
+    })?;
+    if options.ept_bounds.is_some() && format != PointFormat::Ept {
+        crate::warnings::warn(format!("'{path}': the EPT bounds apply to EPT datasets only, and are ignored"));
+    }
+    Ok(format)
 }
 
 /// The point format to write a cloud in: `base` when it holds the cloud's GPS times, colours,

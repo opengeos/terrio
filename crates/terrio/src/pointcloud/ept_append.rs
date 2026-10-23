@@ -16,7 +16,7 @@
 //! the root down, the points of each child in memory or in a temporary file of their own: memory
 //! stays bounded whatever the number of points appended (the hierarchy is held whole, and a node
 //! of the deepest level takes all the points that reach it, as the writer's do). A lock file
-//! (`.terrio-ept-append.lock`, with the process id) keeps to one append at a time.
+//! (`.terrio-ept-append.lock`, locked with `flock` on Unix) keeps to one append at a time.
 
 use super::copc::{VoxelKey, gps_offset, scramble};
 use super::ept::{EptDataType, EptDimension};
@@ -310,68 +310,67 @@ pub struct EptAppender {
 /// The lock file of an append: one append at a time.
 const LOCK: &str = ".terrio-ept-append.lock";
 
-/// A dataset locked for an append: its lock file, which holds the process id and is removed
-/// when dropped.
-struct Lock(PathBuf);
+/// A dataset locked for an append. On Unix, an advisory lock (`flock`) on its lock file, held
+/// by the open file: the system releases it when the process ends, so an interrupted append
+/// leaves no lock held, and two appends cannot both take one left over. Elsewhere, the lock file
+/// itself, created only if absent. The file is removed when the lock is dropped.
+struct Lock {
+    path: PathBuf,
+    _file: std::fs::File,
+}
 
 impl Lock {
-    /// Locks a dataset. A lock left by a process that no longer runs (an append interrupted) is
-    /// taken over; one of a running process fails.
+    /// Locks a dataset; fails when another append holds it.
     fn take(dir: &Path) -> Result<Self> {
         let path = dir.join(LOCK);
-        for _ in 0..2 {
+        #[cfg(unix)]
+        {
+            use std::os::fd::AsRawFd;
+            use std::os::unix::fs::MetadataExt;
+            let busy = || {
+                Error::InvalidArgument(format!(
+                    "'{}' is being appended to by another process ('{}'): one append at a time",
+                    dir.display(),
+                    path.display()
+                ))
+            };
+            for _ in 0..16 {
+                let file =
+                    std::fs::OpenOptions::new().write(true).create(true).truncate(false).open(&path).map_err(|e| io_err(&path, e))?;
+                // SAFETY: `flock` on a file descriptor this function owns, which stays open as
+                // long as the returned lock.
+                if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+                    let e = std::io::Error::last_os_error();
+                    return Err(if e.raw_os_error() == Some(libc::EWOULDBLOCK) { busy() } else { io_err(&path, e) });
+                }
+                // The file locked must still be the one at the path: an append finishing removes
+                // its lock file, and a lock on the removed file would lock nothing.
+                let held = file.metadata().map_err(|e| io_err(&path, e))?;
+                if std::fs::metadata(&path).is_ok_and(|m| m.ino() == held.ino() && m.dev() == held.dev()) {
+                    return Ok(Lock { path, _file: file });
+                }
+            }
+            Err(Error::InvalidArgument(format!("'{}': could not lock the dataset ('{}')", dir.display(), path.display())))
+        }
+        #[cfg(not(unix))]
+        {
             match std::fs::OpenOptions::new().write(true).create_new(true).open(&path) {
-                Ok(mut f) => {
-                    let _ = write!(f, "{}", std::process::id());
-                    return Ok(Lock(path));
-                }
-                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                    let pid = std::fs::read_to_string(&path).ok().and_then(|s| s.trim().parse::<u32>().ok());
-                    if pid.is_some_and(running) {
-                        return Err(Error::InvalidArgument(format!(
-                            "'{}' is being appended to by process {}: one append at a time",
-                            dir.display(),
-                            pid.unwrap_or_default()
-                        )));
-                    }
-                    if !cfg!(unix) {
-                        return Err(Error::InvalidArgument(format!(
-                            "'{}' is locked by another append ('{}'): remove the file if no append is running",
-                            dir.display(),
-                            path.display()
-                        )));
-                    }
-                    // Left by an append interrupted.
-                    let _ = std::fs::remove_file(&path);
-                }
-                Err(e) => return Err(io_err(&path, e)),
+                Ok(file) => Ok(Lock { path, _file: file }),
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Err(Error::InvalidArgument(format!(
+                    "'{}' is locked by another append ('{}'): remove the file if no append is running",
+                    dir.display(),
+                    path.display()
+                ))),
+                Err(e) => Err(io_err(&path, e)),
             }
         }
-        Err(Error::InvalidArgument(format!("'{}': could not lock the dataset ('{}')", dir.display(), path.display())))
     }
 }
 
 impl Drop for Lock {
     fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.0);
-    }
-}
-
-/// Whether a process runs (on other systems than Unix: assumed so).
-fn running(pid: u32) -> bool {
-    #[cfg(unix)]
-    {
-        if pid == std::process::id() {
-            return true;
-        }
-        // SAFETY: `kill` with signal 0 sends nothing; it only checks that the process exists.
-        let r = unsafe { libc::kill(pid as libc::pid_t, 0) };
-        r == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = pid;
-        true
+        // Removed while still locked, so that no other append locks it in between.
+        let _ = std::fs::remove_file(&self.path);
     }
 }
 

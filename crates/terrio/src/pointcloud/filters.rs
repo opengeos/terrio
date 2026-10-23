@@ -1,22 +1,36 @@
 //! Point cloud filters, as PDAL's: `filters.range`, `filters.sample`,
 //! `filters.voxelcenternearestneighbor`, `filters.voxeldownsize`, `filters.outlier`,
-//! `filters.smrf`, `filters.pmf` and `filters.csf` (ground classification), `filters.elm` (low noise),
-//! `filters.hag_nn` and `filters.hag_delaunay` (height above ground), `filters.crop`,
-//! `filters.decimation`, `filters.expression`, `filters.assign`, `filters.merge`,
-//! `filters.splitter`, `filters.chipper`, `filters.normal` and `filters.cluster`, with PDAL's
-//! options, defaults and results.
+//! `filters.smrf`, `filters.pmf`, `filters.csf` and `filters.skewnessbalancing` (ground
+//! classification), `filters.elm` (low noise), `filters.hag_nn` and `filters.hag_delaunay`
+//! (height above ground), `filters.crop`, `filters.decimation`, `filters.expression`,
+//! `filters.assign`, `filters.merge`, `filters.head`, `filters.tail`, `filters.sort`,
+//! `filters.locate`, `filters.iqr`, `filters.mad`, `filters.splitter`, `filters.chipper`,
+//! `filters.normal`, `filters.cluster`, `filters.dbscan`, `filters.covariancefeatures`,
+//! `filters.eigenvalues`, `filters.approximatecoplanar`, `filters.estimaterank`,
+//! `filters.lof`, `filters.nndistance`, `filters.radialdensity`, `filters.reciprocity`,
+//! `filters.miniball`, `filters.zsmooth`, `filters.dem`, `filters.colorization` and
+//! `filters.overlay`, with PDAL's options, defaults and results.
 
 mod csf;
 pub mod expr;
 mod features;
 mod ground;
+mod neighbourhood;
+mod overlay;
 mod select;
 mod tiles;
 
 pub use csf::{CsfOptions, csf, csf_classes};
-pub use features::{ClusterOptions, NormalOptions, cluster, normal};
-pub use ground::{HagOptions, PmfOptions, elm, hag_delaunay, hag_nn, pmf, pmf_classes};
-pub use select::{AssignOptions, CropBox, CropOptions, assign, crop, crop_indices, decimation, expression, merge};
+pub use features::{
+    ClusterOptions, CovarianceFeaturesOptions, EigenvaluesOptions, FeatureMode, Neighbourhood, NormalOptions, approximate_coplanar,
+    cluster, covariance_features, eigenvalues, estimate_rank, normal,
+};
+pub use ground::{HagOptions, PmfOptions, elm, hag_delaunay, hag_nn, pmf, pmf_classes, skewness_balancing};
+pub use neighbourhood::{DbscanOptions, NnDistanceMode, dbscan, lof, miniball, nndistance, radial_density, reciprocity, zsmooth};
+pub use overlay::{BandDimension, OverlayOptions, colorization, dem, overlay};
+pub use select::{
+    AssignOptions, CropBox, CropOptions, assign, crop, crop_indices, decimation, expression, head, iqr, locate, mad, merge, sort, tail,
+};
 pub use tiles::{SplitterOptions, chipper, splitter};
 
 use super::kdtree::KdTree;
@@ -164,6 +178,19 @@ pub fn range_mask(cloud: &PointCloud, ranges: &[DimRange]) -> Result<Vec<bool>> 
 /// The points that pass ranges (PDAL's `filters.range` `limits`).
 pub fn range(cloud: &PointCloud, ranges: &[DimRange]) -> Result<PointCloud> {
     Ok(cloud.select(&range_mask(cloud, ranges)?))
+}
+
+/// A dimension of the points, named as PDAL or terrio names it, in any case.
+fn find_dim<'a>(cloud: &'a PointCloud, name: &str) -> Result<&'a super::Dimension> {
+    cloud.dim(&super::names::from_any(name)).or_else(|| cloud.dim(name)).ok_or_else(|| {
+        Error::InvalidArgument(format!("invalid dimension name '{name}' (dimensions: {})", cloud.dimension_names().join(", ")))
+    })
+}
+
+/// The name of the dimension a filter writes: the points' dimension of that name (PDAL's or
+/// terrio's, in any case), or PDAL's name in terrio's convention (snake case) for a new one.
+fn output_name(cloud: &PointCloud, name: &str) -> String {
+    find_dim(cloud, name).map_or_else(|_| super::names::from_pdal(name.trim()), |d| d.name.clone())
 }
 
 fn xyz(cloud: &PointCloud) -> Result<(&[f64], &[f64], &[f64])> {

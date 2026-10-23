@@ -564,6 +564,12 @@ fn ept_appends_outside_the_cube_are_refused() {
     // One append at a time.
     assert!(pointcloud::EptAppender::open(path, &Default::default()).is_err());
     drop(a);
+    // A lock file left behind (by a process that ended) does not lock the dataset on Unix.
+    #[cfg(unix)]
+    {
+        std::fs::write(dir.path().join("set/.terrio-ept-append.lock"), "999999").unwrap();
+        drop(pointcloud::EptAppender::open(path, &Default::default()).unwrap());
+    }
     assert_eq!(std::fs::read(dir.path().join("set/ept.json")).unwrap(), before);
     assert!(!dir.path().join("set/ept-sources").exists());
     // A chunk refused changes nothing: the points written after it are appended alone.
