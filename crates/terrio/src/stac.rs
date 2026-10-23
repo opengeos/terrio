@@ -112,8 +112,16 @@ fn next_request(doc: &Value, cur: &Request) -> Option<Request> {
     let method = |l: &Value| l["method"].as_str().unwrap_or("GET").to_ascii_uppercase();
     let link = links.iter().find(|l| method(l) == "GET").or_else(|| links.iter().find(|l| method(l) == "POST"))?;
     let url = resolve_href(&cur.url, link["href"].as_str()?);
-    let link_headers: Vec<(String, String)> =
-        link["headers"].as_object().into_iter().flatten().filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_string()))).collect();
+    // A header of several values (an array) is sent once per value, as STAC API says.
+    let link_headers: Vec<(String, String)> = link["headers"]
+        .as_object()
+        .into_iter()
+        .flatten()
+        .flat_map(|(k, v)| match v {
+            Value::Array(values) => values.iter().filter_map(|x| Some((k.clone(), x.as_str()?.to_string()))).collect::<Vec<_>>(),
+            other => other.as_str().map(|x| vec![(k.clone(), x.to_string())]).unwrap_or_default(),
+        })
+        .collect();
     // The previous page's headers (keys, perhaps) go only to the same origin: as they are when the
     // link has none, under the link's when it says `merge`.
     let same_origin = crate::vfs::url_origin(&url).is_some() && crate::vfs::url_origin(&url) == crate::vfs::url_origin(&cur.url);
@@ -1286,6 +1294,12 @@ mod tests {
         assert_eq!(next_request(&page, &keyed).map(|r| r.headers), Some(keyed.headers.clone()));
         let page = json!({"links": [{"rel": "next", "href": "https://elsewhere.org/search?page=2"}]});
         assert_eq!(next_request(&page, &keyed).map(|r| r.headers), Some(Vec::new()));
+        // A header of several values: one per value.
+        let page = json!({"links": [{"rel": "next", "href": "/search?page=2", "headers": {"X-Cursor": ["a", "b"]}}]});
+        assert_eq!(
+            next_request(&page, &cur).map(|r| r.headers),
+            Some(vec![("X-Cursor".to_string(), "a".to_string()), ("X-Cursor".to_string(), "b".to_string())])
+        );
         // `merge`: the link's headers over the previous ones.
         let page =
             json!({"links": [{"rel": "next", "method": "POST", "href": "/search", "merge": true, "headers": {"Search-After": "t"}}]});

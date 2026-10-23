@@ -461,6 +461,32 @@ pub(crate) fn post_json(url: &str, body: &[u8], headers: &[(String, String)]) ->
     request("POST", url, Some(body), headers)
 }
 
+/// The seconds a `Retry-After` header asks to wait: a number of seconds, or an HTTP date
+/// (`Sun, 06 Nov 1994 08:49:37 GMT`) from now. `None` for a date past or a value unreadable.
+fn retry_after_seconds(v: &str) -> Option<u64> {
+    let v = v.trim();
+    if let Ok(secs) = v.parse::<u64>() {
+        return Some(secs);
+    }
+    // IMF-fixdate: day name, day, month, year, time, GMT.
+    let f: Vec<&str> = v.split_whitespace().collect();
+    let [_, day, month, year, time, "GMT"] = f[..] else { return None };
+    let months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    let m = months.iter().position(|x| x.eq_ignore_ascii_case(month))? as i64 + 1;
+    let (d, y): (i64, i64) = (day.parse().ok()?, year.parse().ok()?);
+    let t: Vec<i64> = time.split(':').map(|x| x.parse().ok()).collect::<Option<_>>()?;
+    let [h, mi, sec] = t[..] else { return None };
+    // Days from the civil date (Howard Hinnant's days_from_civil).
+    let yy = if m <= 2 { y - 1 } else { y };
+    let era = yy.div_euclid(400);
+    let yoe = yy - era * 400;
+    let doy = (153 * (m + if m > 2 { -3 } else { 9 }) + 2) / 5 + d - 1;
+    let days = era * 146_097 + yoe * 365 + yoe / 4 - yoe / 100 + doy - 719_468;
+    let at = days * 86_400 + h * 3600 + mi * 60 + sec;
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).ok()?.as_secs() as i64;
+    u64::try_from(at - now).ok()
+}
+
 /// Fetches a whole remote file with extra request headers (an API key, for instance), following
 /// redirects and retrying transient errors.
 pub(crate) fn get_with_headers(url: &str, headers: &[(String, String)]) -> Result<Vec<u8>> {
@@ -537,8 +563,8 @@ fn request(method: &str, url: &str, body: Option<&[u8]>, headers: &[(String, Str
             )));
         }
         if matches!(status, 429 | 500 | 502 | 503 | 504) && attempt < options.max_retry {
-            // A rate limit's `Retry-After` (seconds, at most a minute), else the backoff.
-            match response.headers().get("retry-after").and_then(|v| v.to_str().ok()).and_then(|v| v.trim().parse::<u64>().ok()) {
+            // A rate limit's `Retry-After` (seconds or a date, at most a minute), else the backoff.
+            match response.headers().get("retry-after").and_then(|v| v.to_str().ok()).and_then(retry_after_seconds) {
                 Some(secs) => {
                     std::thread::sleep(std::time::Duration::from_secs(secs.min(60)));
                     attempt += 1;
@@ -769,6 +795,15 @@ impl Seek for RangeReader {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reads_retry_after() {
+        assert_eq!(retry_after_seconds(" 120 "), Some(120));
+        assert_eq!(retry_after_seconds("Sun, 06 Nov 1994 08:49:37 GMT"), None);
+        let soon = retry_after_seconds("Fri, 01 Jan 2100 00:00:00 GMT").expect("a date to come");
+        assert!(soon > 2_000_000_000, "{soon}");
+        assert_eq!(retry_after_seconds("soon"), None);
+    }
     use std::io::{BufRead, BufReader, Write};
     use std::net::TcpListener;
 
