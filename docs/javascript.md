@@ -62,8 +62,8 @@ MBTiles, the CRS transformations and the operations, at about half the size:
 
 | Module | `.wasm` | gzip | Brotli |
 |---|---|---|---|
-| `terrio-js` | 16.4 MB | 5.6 MB | 4.1 MB |
-| `terrio-js/core` | 8.9 MB | 3.0 MB | 2.3 MB |
+| `terrio-js` | 16.9 MB | 5.9 MB | 4.3 MB |
+| `terrio-js/core` | 9.2 MB | 3.2 MB | 2.4 MB |
 
 ```js
 import init, { open, features } from "terrio-js/core";
