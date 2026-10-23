@@ -2943,12 +2943,11 @@ def cmd_insp(args: argparse.Namespace, env: Any) -> None:
     """
     import code
     import collections
+    import importlib
 
     import numpy as np
 
     import terrio.rio as rasterio
-
-    import importlib
 
     plt: Any
     try:
