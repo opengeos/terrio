@@ -1288,8 +1288,10 @@ class TerrioArray(XRasterBase):
         gcps = self.get_gcps()
         if gcps:
             kwargs.setdefault("gcps", gcps)
+        # With both (ICEYE images), the GCPs, as GDAL picks them first; rioxarray passes both to
+        # rasterio, which refuses them.
         rpcs = self.get_rpcs()
-        if rpcs:
+        if rpcs and "gcps" not in kwargs:
             kwargs.setdefault("rpcs", rpcs)
         georef = "gcps" in kwargs or "rpcs" in kwargs
         src_affine = self.transform(recalc=True)

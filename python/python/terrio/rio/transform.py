@@ -517,6 +517,7 @@ class RPCTransformer(TransformerBase):
             to_pixel=transform_direction is TransformDirection.reverse,
         )
         if not all(ok):
+            # rasterio warns twice: GDALRPCTransform failed, and one or more points did.
             warnings.warn("Could not transform points using RPCs.", TransformWarning, stacklevel=3)
             warnings.warn(
                 "One or more points could not be transformed using RPCs.",

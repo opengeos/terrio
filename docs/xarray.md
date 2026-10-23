@@ -162,7 +162,9 @@ Images georeferenced by ground control points or RPCs open without `x` and `y` c
 GCPs and RPCs stored in the grid mapping variable as rioxarray stores them (`get_gcps`,
 `write_gcps`, `get_rpcs`, `write_rpcs`); `to_raster` writes them back, rows as they are, and
 `reproject` warps through the GCPs or the RPCs (with GDAL's `RPC_*` options, such as
-`RPC_HEIGHT` or `RPC_DEM`), as rioxarray does.
+`RPC_HEIGHT` or `RPC_DEM`), as rioxarray does. An image with both (ICEYE quicklooks) is warped
+through its GCPs, as GDAL picks them, where rioxarray passes both to rasterio, which refuses
+them.
 
 ```python
 from terrio.xarray import open_rasterio
