@@ -294,6 +294,9 @@ def compare(a: Any, b: Any, c: Check) -> Outcome:
 
     ok = walk(a, b, "")
     if not ok:
+        # The walk stops at the first difference beyond tolerance: name it first, so the detail's
+        # length limit cuts the tolerated ones instead.
+        notes = notes[-1:] + notes[:-1]
         return Outcome("known" if c.expect == "known" else "different", "; ".join(notes)[:600])
     worst.detail = "; ".join(notes)[:600]
     return worst
