@@ -413,7 +413,8 @@ pub(super) fn bands(r: &mut MessageReader, offset: u64, len: u64) -> Result<Vec<
     let mut last_bitmap: Option<usize> = None;
     let mut out = Vec::new();
     loop {
-        if pos + 4 > end {
+        // The end section ("7777"), read only when the message does not end there.
+        if pos + 4 >= end {
             break;
         }
         let h = r.bytes(offset + pos as u64, 5.min(end - pos))?.to_vec();

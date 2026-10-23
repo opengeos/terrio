@@ -57,6 +57,7 @@ const BUILD: &str = if cfg!(feature = "threads") {
 const FEATURES: &[(&str, bool)] = &[
     ("avif", cfg!(feature = "avif")),
     ("flatgeobuf", cfg!(feature = "flatgeobuf")),
+    ("grib", cfg!(feature = "grib")),
     ("jp2", cfg!(feature = "jp2")),
     ("lerc", cfg!(feature = "lerc")),
     ("lzma", cfg!(feature = "lzma")),
@@ -260,11 +261,15 @@ impl Dataset {
 /// `roads.fgb`, `parcels.zip`); its stem names vector layers.
 ///
 /// GeoTIFFs and the image tiles of PMTiles and MBTiles archives are decoded one window at a
-/// time, as they are read; vector tiles are read as layers.
+/// time, as they are read, and GRIB files one band (message) at a time; vector tiles are read as
+/// layers.
 #[wasm_bindgen]
 pub fn open(bytes: Vec<u8>, filename: &str) -> Result<Dataset, JsError> {
     let is_tiff = matches!(bytes.get(..4), Some(b"II*\0" | b"MM\0*" | b"II+\0" | b"MM\0+"));
-    if is_tiff {
+    // GRIB: "GRIB" and an edition of 1 or 2 within the first bytes.
+    let head = &bytes[..bytes.len().min(316)];
+    let is_grib = cfg!(feature = "grib") && (0..head.len().saturating_sub(7)).any(|i| &head[i..i + 4] == b"GRIB" && matches!(head[i + 7], 1 | 2));
+    if is_tiff || is_grib {
         return Ok(Dataset::from_lazy(terrio::memory::open_raster_lazy_bytes(bytes, filename).map_err(js_err)?));
     }
     #[cfg(feature = "tiles")]

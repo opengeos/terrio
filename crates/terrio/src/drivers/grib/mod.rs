@@ -31,11 +31,17 @@ const GRIB_LIMIT: usize = 300;
 /// The decoded bands kept in memory, in bytes (GDAL's `GRIB_CACHEMAX` default, 100 MB).
 const CACHE_BYTES: usize = 100 * 1024 * 1024;
 
-/// Bytes read at once while walking a message's sections.
-const CHUNK: usize = 16 * 1024;
+/// Bytes read at once while walking a remote message's sections (sections 0 to 6 of most
+/// messages, without large bitmaps).
+const CHUNK: usize = 4 * 1024;
 
 /// Where a GRIB file's bytes come from.
 pub(crate) trait Source: Send + Sync {
+    /// Whether the file is remote: its messages' headers are then read in parallel, with small
+    /// range requests.
+    fn is_remote(&self) -> bool {
+        false
+    }
     /// The file's length.
     fn len(&self) -> u64;
     /// The bytes from `offset`, at most `len` of them (fewer at the end of the file).
@@ -89,6 +95,10 @@ struct RemoteSource {
 
 #[cfg(remote)]
 impl Source for RemoteSource {
+    fn is_remote(&self) -> bool {
+        true
+    }
+
     fn len(&self) -> u64 {
         self.len
     }
@@ -132,6 +142,7 @@ impl<'a> MessageReader<'a> {
     }
 
     /// Seeds the reader with bytes already fetched from `offset`.
+    #[cfg_attr(not(remote), allow(dead_code))]
     fn seed(&mut self, offset: u64, bytes: Vec<u8>) {
         self.base = offset;
         self.buf = bytes;
@@ -210,7 +221,13 @@ fn scan(src: &dyn Source) -> Result<Vec<Message>> {
     let mut pos = 0u64;
     let window = 64 * 1024;
     'messages: while pos + 16 <= total {
-        // Look for "GRIB" from `pos`.
+        // A message where the previous one ends, as is usual; else "GRIB" further on.
+        let head = src.read_at(pos, 16)?;
+        if let Some(m) = message_at(&head, pos).filter(|m| m.offset + m.len <= total) {
+            out.push(m);
+            pos = m.offset + m.len;
+            continue;
+        }
         let mut at = pos;
         let start = loop {
             let buf = src.read_at(at, window)?;
@@ -250,29 +267,65 @@ fn message_bands(r: &mut MessageReader, m: Message) -> Result<Vec<Band>> {
     }
 }
 
-/// The bands of all messages: one after another for local files, in parallel for remote ones.
-fn all_bands(src: &dyn Source, messages: &[Message], parallel: bool) -> Result<Vec<Band>> {
-    let per_message: Vec<Result<Vec<Band>>> = if parallel {
-        crate::par::map_range_coarse(messages.len(), |i| {
-            let m = messages[i];
-            let mut r = MessageReader::new(src, CHUNK);
-            // The message's head in one request.
-            let first = src.read_at(m.offset, (m.len as usize).min(CHUNK))?;
-            r.seed(m.offset, first);
-            message_bands(&mut r, m)
-        })
-    } else {
-        let mut r = MessageReader::new(src, 64 * 1024);
-        messages.iter().map(|m| message_bands(&mut r, *m)).collect()
-    };
+/// The bands of all messages, one after another.
+fn all_bands(src: &dyn Source, messages: &[Message]) -> Result<Vec<Band>> {
+    let mut r = MessageReader::new(src, 64 * 1024);
     let mut out = Vec::new();
-    for b in per_message {
-        out.extend(b?);
-    }
-    if out.len() > 65536 {
-        out.truncate(65536);
+    for m in messages {
+        out.extend(message_bands(&mut r, *m)?);
     }
     Ok(out)
+}
+
+/// The bands of the messages at offsets an index lists (sorted), their heads fetched in parallel
+/// (a request each, and one more for messages whose bitmap goes past it). `None` when the index
+/// does not describe the file.
+#[cfg(remote)]
+fn indexed_bands(src: &dyn Source, offsets: &[u64]) -> Result<Option<Vec<Band>>> {
+    let total = src.len();
+    let per_message: Vec<Result<Option<Vec<Band>>>> = fetch_parallel(offsets.len(), |i| {
+        let off = offsets[i];
+        let end = offsets.get(i + 1).copied().unwrap_or(total);
+        let head = src.read_at(off, ((end - off) as usize).min(CHUNK))?;
+        let Some(m) = message_at(&head, off).filter(|m| m.offset + m.len <= end) else { return Ok(None) };
+        let mut r = MessageReader::new(src, CHUNK);
+        r.seed(off, head);
+        message_bands(&mut r, m).map(Some)
+    });
+    let mut out = Vec::new();
+    for b in per_message {
+        match b? {
+            Some(b) => out.extend(b),
+            None => return Ok(None),
+        }
+    }
+    Ok(Some(out))
+}
+
+/// Runs `f` for `0..n` on up to 16 threads (requests waiting on the network rather than the
+/// processor), the results in order.
+#[cfg(remote)]
+fn fetch_parallel<R: Send>(n: usize, f: impl Fn(usize) -> R + Sync) -> Vec<R> {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let next = AtomicUsize::new(0);
+    let results: Mutex<Vec<Option<R>>> = Mutex::new((0..n).map(|_| None).collect());
+    std::thread::scope(|scope| {
+        for _ in 0..n.min(16) {
+            scope.spawn(|| {
+                loop {
+                    let i = next.fetch_add(1, Ordering::Relaxed);
+                    if i >= n {
+                        break;
+                    }
+                    let r = f(i);
+                    if let Ok(mut v) = results.lock() {
+                        v[i] = Some(r);
+                    }
+                }
+            });
+        }
+    });
+    results.into_inner().unwrap_or_default().into_iter().flatten().collect()
 }
 
 /// A GRIB file read band by band: its bands, and the decoded ones kept.
@@ -404,13 +457,28 @@ fn header(bands: &[Band]) -> Result<(RasterDataset, usize)> {
     Ok((ds, geo.split_column))
 }
 
-/// Opens a GRIB source: its messages and bands.
-fn open_source(src: Arc<dyn Source>, messages: Option<Vec<Message>>, parallel: bool) -> Result<(RasterDataset, GribSource)> {
-    let messages = match messages {
-        Some(m) => m,
-        None => scan(src.as_ref())?,
+/// Opens a GRIB source: its messages (at the offsets an index lists, when there is one) and bands.
+fn open_source(src: Arc<dyn Source>, offsets: Option<Vec<u64>>) -> Result<(RasterDataset, GribSource)> {
+    // Remote files: the messages of the index, or found one after another by their lengths,
+    // then their headers in parallel.
+    #[cfg(remote)]
+    let indexed = match offsets {
+        Some(o) => indexed_bands(src.as_ref(), &o)?,
+        None if src.is_remote() => {
+            let offsets: Vec<u64> = scan(src.as_ref())?.iter().map(|m| m.offset).collect();
+            indexed_bands(src.as_ref(), &offsets)?
+        }
+        None => None,
     };
-    let bands = all_bands(src.as_ref(), &messages, parallel)?;
+    #[cfg(not(remote))]
+    let indexed: Option<Vec<Band>> = offsets.and(None);
+    let mut bands = match indexed {
+        Some(b) => b,
+        None => all_bands(src.as_ref(), &scan(src.as_ref())?)?,
+    };
+    // GDAL's limit.
+    bands.truncate(65536);
+
     let (ds, split) = header(&bands)?;
     let (width, height) = (ds.raster.cols, ds.raster.rows);
     let normalize = grib2::normalize_units();
@@ -434,19 +502,19 @@ pub(crate) fn is_grib_file(path: &Path) -> bool {
 
 /// Reads a whole GRIB file, its bands decoded in parallel.
 pub(crate) fn read(path: &Path) -> Result<RasterDataset> {
-    let (ds, src) = open_source(local_source(path)?, None, false).map_err(|e| with_path(path, e))?;
+    let (ds, src) = open_source(local_source(path)?, None).map_err(|e| with_path(path, e))?;
     read_all(ds, src)
 }
 
 /// Reads a GRIB file held in memory.
 pub(crate) fn read_bytes(bytes: Vec<u8>) -> Result<RasterDataset> {
-    let (ds, src) = open_source(Arc::new(BytesSource(bytes.into())), None, false)?;
+    let (ds, src) = open_source(Arc::new(BytesSource(bytes.into())), None)?;
     read_all(ds, src)
 }
 
 /// Opens a GRIB file held in memory to be read band by band.
 pub(crate) fn open_lazy_bytes(bytes: Vec<u8>) -> Result<crate::LazyRaster> {
-    let (ds, src) = open_source(Arc::new(BytesSource(bytes.into())), None, false)?;
+    let (ds, src) = open_source(Arc::new(BytesSource(bytes.into())), None)?;
     Ok(crate::LazyRaster::from_source(ds, Box::new(src)))
 }
 
@@ -467,19 +535,19 @@ fn with_path(path: &Path, e: Error) -> Error {
 /// Opens a GRIB file (a local path, URL or object store path) to be read band by band. `None`
 /// when the file is not GRIB.
 pub(crate) fn open_lazy(path: &str) -> Option<Result<crate::LazyRaster>> {
-    let (src, messages, parallel): Opened = match Location::parse(path) {
+    let (src, offsets): Opened = match Location::parse(path) {
         Location::Local(p) => {
             if !is_grib_file(&p) {
                 return None;
             }
             match local_source(&p) {
-                Ok(s) => (s, None, false),
+                Ok(s) => (s, None),
                 Err(e) => return Some(Err(e)),
             }
         }
         #[cfg(remote)]
         loc @ (Location::Url(_) | Location::S3 { .. }) => {
-            if !has_grib_extension(path) {
+            if !has_grib_name(path) {
                 return None;
             }
             let remote = loc.remote()?;
@@ -490,7 +558,7 @@ pub(crate) fn open_lazy(path: &str) -> Option<Result<crate::LazyRaster>> {
         }
         _ => return None,
     };
-    let opened = open_source(src, messages, parallel).map(|(mut ds, s)| {
+    let opened = open_source(src, offsets).map(|(mut ds, s)| {
         super::nodata::apply_pam(path, &mut ds);
         crate::LazyRaster::from_source(ds, Box::new(s))
     });
@@ -500,15 +568,20 @@ pub(crate) fn open_lazy(path: &str) -> Option<Result<crate::LazyRaster>> {
     }))
 }
 
-/// A source opened, with its messages when an index lists them, and whether to read their
-/// headers in parallel.
-type Opened = (Arc<dyn Source>, Option<Vec<Message>>, bool);
+/// A source opened, with the offsets of its messages when an index lists them.
+type Opened = (Arc<dyn Source>, Option<Vec<u64>>);
 
-/// Whether a path's extension is one of GRIB's.
-fn has_grib_extension(path: &str) -> bool {
+/// Whether a remote file's name is a GRIB file's: a GRIB extension, or `grb` or `grib` in a name
+/// without one of another format, as NOAA names its products (`gfs.t00z.pgrb2.0p25.f000`,
+/// `gep01.t00z.pgrb2a.0p50.f006`).
+fn has_grib_name(path: &str) -> bool {
     let lower = path.to_ascii_lowercase();
     let lower = lower.split(['?', '#']).next().unwrap_or_default();
-    [".grb", ".grb2", ".grib", ".grib2", ".grb1", ".grib1"].iter().any(|e| lower.ends_with(e))
+    let name = lower.rsplit('/').next().unwrap_or_default();
+    if [".grb", ".grb2", ".grib", ".grib2", ".grb1", ".grib1"].iter().any(|e| name.ends_with(e)) {
+        return true;
+    }
+    (name.contains("grb") || name.contains("grib")) && crate::formats::RasterDriver::for_extension(name).is_none() && !name.ends_with(".idx")
 }
 
 /// Opens a remote GRIB file: its messages from a sidecar index when there is one (NOAA's `.idx`
@@ -521,19 +594,7 @@ fn open_remote(remote: crate::http::Remote) -> Result<Opened> {
     let len = reader.len();
     let offsets = index_offsets(&fetcher, &remote, len);
     let src: Arc<dyn Source> = Arc::new(RemoteSource { remote, fetcher, len });
-    let Some(offsets) = offsets else { return Ok((src, None, false)) };
-    // The messages' lengths, from their section 0, fetched in parallel.
-    let heads: Vec<Result<Option<Message>>> =
-        crate::par::map_range_coarse(offsets.len(), |i| Ok(message_at(&src.read_at(offsets[i], 16)?, offsets[i])));
-    let mut messages = Vec::with_capacity(offsets.len());
-    for h in heads {
-        match h? {
-            Some(m) if m.offset + m.len <= len => messages.push(m),
-            // The index does not describe this file: find the messages one after another.
-            _ => return Ok((src, None, false)),
-        }
-    }
-    Ok((src, Some(messages), true))
+    Ok((src, offsets))
 }
 
 /// The message offsets a sidecar index lists, sorted and without duplicates.

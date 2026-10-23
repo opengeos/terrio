@@ -283,15 +283,24 @@ def default_structure(raster: Any) -> Structure:
         s.namespaces["GEOLOCATION"] = dict(geolocation)
     # The driver's metadata: band items (`BAND_<n>#<key>`), and the dataset's (not subdatasets,
     # which are the `SUBDATASETS` domain).
+    per_band_nodata = False
     for key, value in getattr(raster, "metadata", None) or []:
-        # terrio's own items: the bands' exact scales and offsets (`TERRIO#BAND_<n>_SCALE`).
+        # terrio's own items: the bands' exact scales and offsets (`TERRIO#BAND_<n>_SCALE`), and
+        # the descriptions and nodata values of bands that have their own (GRIB's).
         if key.startswith("TERRIO#BAND_"):
             band_no, _, what = key[len("TERRIO#BAND_") :].partition("_")
             if band_no.isdigit() and 1 <= int(band_no) <= n:
+                b = int(band_no) - 1
+                if what == "DESCRIPTION":
+                    s.descriptions[b] = value or None
+                elif what == "NODATA":
+                    per_band_nodata = True
+                    with contextlib.suppress(ValueError):
+                        s.band_nodata[b] = float(value)
                 target = s.scales if what == "SCALE" else s.offsets if what == "OFFSET" else None
                 if target is not None:
                     with contextlib.suppress(ValueError):
-                        target[int(band_no) - 1] = float(value)
+                        target[b] = float(value)
             continue
         band, sep, item = key.partition("#")
         if sep and band.startswith("BAND_") and band[5:].isdigit():
@@ -302,6 +311,10 @@ def default_structure(raster: Any) -> Structure:
             s.namespaces.setdefault("SUBDATASETS", {})[key] = value
         else:
             s.tags[key] = value
+    # Bands without a nodata value of their own have none.
+    if per_band_nodata:
+        for b in range(n):
+            s.band_nodata.setdefault(b, None)
     return s
 
 
