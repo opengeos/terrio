@@ -455,6 +455,141 @@ pub(crate) fn get(remote: &Remote) -> Result<Vec<u8>> {
     Ok(client.fetch(None)?.data)
 }
 
+/// Sends a `POST` of a JSON body (a STAC API search, for instance) and returns the response's
+/// body. Redirects that keep the method (307 and 308) are followed, and transient errors retried.
+pub(crate) fn post_json(url: &str, body: &[u8], headers: &[(String, String)]) -> Result<Vec<u8>> {
+    request("POST", url, Some(body), headers)
+}
+
+/// The seconds a `Retry-After` header asks to wait: a number of seconds, or an HTTP date
+/// (`Sun, 06 Nov 1994 08:49:37 GMT`) from now. `None` for a date past or a value unreadable.
+fn retry_after_seconds(v: &str) -> Option<u64> {
+    let v = v.trim();
+    if let Ok(secs) = v.parse::<u64>() {
+        return Some(secs);
+    }
+    // IMF-fixdate: day name, day, month, year, time, GMT.
+    let f: Vec<&str> = v.split_whitespace().collect();
+    let [_, day, month, year, time, "GMT"] = f[..] else { return None };
+    let months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    let m = months.iter().position(|x| x.eq_ignore_ascii_case(month))? as i64 + 1;
+    let (d, y): (i64, i64) = (day.parse().ok()?, year.parse().ok()?);
+    let t: Vec<i64> = time.split(':').map(|x| x.parse().ok()).collect::<Option<_>>()?;
+    let [h, mi, sec] = t[..] else { return None };
+    seconds_until_utc(y, m, d, h, mi, sec)
+}
+
+/// The seconds from now to a UTC date and time; `None` when it is past.
+pub(crate) fn seconds_until_utc(y: i64, m: i64, d: i64, h: i64, mi: i64, s: i64) -> Option<u64> {
+    // Days from the civil date (Howard Hinnant's days_from_civil).
+    let yy = if m <= 2 { y - 1 } else { y };
+    let era = yy.div_euclid(400);
+    let yoe = yy - era * 400;
+    let doy = (153 * (m + if m > 2 { -3 } else { 9 }) + 2) / 5 + d - 1;
+    let days = era * 146_097 + yoe * 365 + yoe / 4 - yoe / 100 + doy - 719_468;
+    let at = days * 86_400 + h * 3600 + mi * 60 + s;
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).ok()?.as_secs() as i64;
+    u64::try_from(at - now).ok()
+}
+
+/// Fetches a whole remote file with extra request headers (an API key, for instance), following
+/// redirects and retrying transient errors.
+pub(crate) fn get_with_headers(url: &str, headers: &[(String, String)]) -> Result<Vec<u8>> {
+    if headers.is_empty() {
+        return get(&Remote::Url(url.to_string()));
+    }
+    request("GET", url, None, headers)
+}
+
+/// Sends a `GET` or a `POST` (of a JSON `body`) with extra `headers`, and returns the response's
+/// body: redirects followed (for a `POST`, only those keeping the method, 307 and 308), the extra
+/// headers dropped when a redirect leads to another origin (they may hold keys), and transient
+/// errors and statuses (429, 500, 502, 503, 504) retried.
+fn request(method: &str, url: &str, body: Option<&[u8]>, headers: &[(String, String)]) -> Result<Vec<u8>> {
+    let options = HttpOptions::from_env();
+    let agent = agent(&options);
+    let first_origin = crate::vfs::url_origin(url);
+    let mut url = url.to_string();
+    let (mut redirects, mut attempt) = (0, 0);
+    let backoff = |attempt: &mut u32| {
+        std::thread::sleep(options.retry_delay.saturating_mul(1 << (*attempt).min(16)));
+        *attempt += 1;
+    };
+    loop {
+        let extra: &[(String, String)] = if crate::vfs::url_origin(&url) == first_origin { headers } else { &[] };
+        let result = match body {
+            Some(body) => {
+                let mut req =
+                    agent.post(&url).header("Content-Type", "application/json").header("Accept", "application/geo+json, application/json");
+                for (k, v) in extra {
+                    req = req.header(k, v);
+                }
+                req.send(body)
+            }
+            None => {
+                let mut req = agent.get(&url).header("Accept", "application/geo+json, application/json");
+                for (k, v) in extra {
+                    req = req.header(k, v);
+                }
+                req.call()
+            }
+        };
+        if options.log {
+            match &result {
+                Ok(r) => eprintln!("terrio: {method} {} -> {}", redact(&url), r.status().as_u16()),
+                Err(e) => eprintln!("terrio: {method} {} -> {e}", redact(&url)),
+            }
+        }
+        let response = match result {
+            Ok(r) => r,
+            Err(e) if attempt < options.max_retry && transient(&e) => {
+                backoff(&mut attempt);
+                continue;
+            }
+            Err(e) => return Err(Error::Http(format!("{}: {e}", redact(&url)))),
+        };
+        let status = response.status().as_u16();
+        // A POST follows only 307 and 308, which keep the method and body.
+        let follows = if body.is_some() { matches!(status, 307 | 308) } else { matches!(status, 301..=303 | 307 | 308) };
+        if follows && let Some(location) = response.headers().get("location").and_then(|v| v.to_str().ok()) {
+            redirects += 1;
+            if redirects > MAX_REDIRECTS {
+                return Err(Error::Http(format!("{}: too many redirects", redact(&url))));
+            }
+            url = resolve_redirect(&url, location);
+            continue;
+        }
+        if body.is_some() && matches!(status, 301..=303) {
+            let to = response.headers().get("location").and_then(|v| v.to_str().ok()).unwrap_or("?");
+            return Err(Error::Http(format!(
+                "{}: status {status}, a redirect to {} that would turn the POST into a GET: not followed",
+                redact(&url),
+                redact(to)
+            )));
+        }
+        if matches!(status, 429 | 500 | 502 | 503 | 504) && attempt < options.max_retry {
+            // A rate limit's `Retry-After` (seconds or a date, at most a minute), else the backoff.
+            match response.headers().get("retry-after").and_then(|v| v.to_str().ok()).and_then(retry_after_seconds) {
+                Some(secs) => {
+                    std::thread::sleep(std::time::Duration::from_secs(secs.min(60)));
+                    attempt += 1;
+                }
+                None => backoff(&mut attempt),
+            }
+            continue;
+        }
+        let mut data = Vec::new();
+        response.into_body().into_reader().read_to_end(&mut data).map_err(|e| Error::Http(format!("{}: {e}", redact(&url))))?;
+        REQUESTS.fetch_add(1, Ordering::Relaxed);
+        BYTES.fetch_add(data.len() as u64, Ordering::Relaxed);
+        if !(200..300).contains(&status) {
+            let text = String::from_utf8_lossy(&data[..data.len().min(300)]).into_owned();
+            return Err(Error::Http(format!("{}: status {status}: {}", redact(&url), text.trim())));
+        }
+        return Ok(data);
+    }
+}
+
 /// A remote file read in place: `Read` and `Seek` over HTTP range requests, with a block cache.
 ///
 /// Clones share the cache and connection, each with its own position.
@@ -665,6 +800,15 @@ impl Seek for RangeReader {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reads_retry_after() {
+        assert_eq!(retry_after_seconds(" 120 "), Some(120));
+        assert_eq!(retry_after_seconds("Sun, 06 Nov 1994 08:49:37 GMT"), None);
+        let soon = retry_after_seconds("Fri, 01 Jan 2100 00:00:00 GMT").expect("a date to come");
+        assert!(soon > 2_000_000_000, "{soon}");
+        assert_eq!(retry_after_seconds("soon"), None);
+    }
     use std::io::{BufRead, BufReader, Write};
     use std::net::TcpListener;
 

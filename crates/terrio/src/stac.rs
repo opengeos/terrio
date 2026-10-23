@@ -15,6 +15,15 @@
 //!   a grid at the items' average resolution (`resolution=highest|lowest|average`), read by
 //!   window from the items' files.
 //!
+//! - Search pages are followed through their `next` links whether they are `GET` or `POST`
+//!   requests (with the link's `body`, `merge` and `headers`), and `STACIT:"url":method=POST`
+//!   sends a search URL's query parameters as a `POST` body, as pystac-client does.
+//! - Assets on Microsoft Planetary Computer (Azure Blob Storage hrefs of items read from its API
+//!   or linking to it) are signed with its SAS tokens, as `planetary_computer.sign()` does (see
+//!   [`SignMode`]): `STACIT:` names take a `sign=` option, `STAC:` names follow
+//!   `TERRIO_STAC_SIGN`. An item file without links to Planetary Computer is signed only with
+//!   `planetary_computer`.
+//!
 //! [`crate::info::info_path`] lists an item's assets, or a collection's mosaics, as subdatasets.
 
 use crate::cog::{LazyRaster, Window, WindowOptions, WindowSource};
@@ -59,6 +68,199 @@ fn fetch(loc: &str) -> Result<Vec<u8>> {
 
 fn fetch_json(loc: &str) -> Result<Value> {
     serde_json::from_slice(&fetch(loc)?).map_err(|e| bad(format!("{loc}: {e}")))
+}
+
+/// A page of search results to request: a `GET` of a URL, or a `POST` of a JSON body.
+#[derive(Debug, Clone, PartialEq)]
+struct Request {
+    url: String,
+    /// The `POST` body, `None` for a `GET`.
+    body: Option<Value>,
+    headers: Vec<(String, String)>,
+}
+
+impl Request {
+    fn get(url: &str) -> Self {
+        Self { url: url.to_string(), body: None, headers: Vec::new() }
+    }
+
+    fn fetch(&self) -> Result<Value> {
+        let bytes = match &self.body {
+            None if self.headers.is_empty() => fetch(&self.url)?,
+            #[cfg(remote)]
+            None => crate::http::get_with_headers(&self.url, &self.headers)?,
+            #[cfg(remote)]
+            Some(body) => crate::http::post_json(&self.url, &serde_json::to_vec(body).map_err(bad)?, &self.headers)?,
+            #[cfg(not(remote))]
+            _ => return Err(bad(format!("{}: POST requests and request headers need the `remote` feature", self.url))),
+        };
+        serde_json::from_slice(&bytes).map_err(|e| bad(format!("{}: {e}", self.url)))
+    }
+}
+
+/// The request of a page's `next` link: a `GET` link if the page has one, else a `POST` link,
+/// its body merged into the request's when the link says `merge` (STAC API's pagination).
+fn next_request(doc: &Value, cur: &Request) -> Option<Request> {
+    let links: Vec<&Value> = doc["links"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|l| {
+            l["rel"] == "next" && l["type"].as_str().is_none_or(|t| t == "application/geo+json" || t == "application/json" || t.is_empty())
+        })
+        .collect();
+    let method = |l: &Value| l["method"].as_str().unwrap_or("GET").to_ascii_uppercase();
+    let link = links.iter().find(|l| method(l) == "GET").or_else(|| links.iter().find(|l| method(l) == "POST"))?;
+    let url = resolve_href(&cur.url, link["href"].as_str()?);
+    // A header of several values (an array) is sent once per value, as STAC API says.
+    let link_headers: Vec<(String, String)> = link["headers"]
+        .as_object()
+        .into_iter()
+        .flatten()
+        .flat_map(|(k, v)| match v {
+            Value::Array(values) => values.iter().filter_map(|x| Some((k.clone(), x.as_str()?.to_string()))).collect::<Vec<_>>(),
+            other => other.as_str().map(|x| vec![(k.clone(), x.to_string())]).unwrap_or_default(),
+        })
+        .collect();
+    // The previous page's headers (keys, perhaps) go only to the same origin: as they are when the
+    // link has none, under the link's when it says `merge`.
+    let same_origin = crate::vfs::url_origin(&url).is_some() && crate::vfs::url_origin(&url) == crate::vfs::url_origin(&cur.url);
+    let headers = match (same_origin, link_headers.is_empty(), link["merge"] == true) {
+        (true, true, _) => cur.headers.clone(),
+        (true, false, true) => {
+            let mut h: Vec<(String, String)> =
+                cur.headers.iter().filter(|(k, _)| !link_headers.iter().any(|(l, _)| l.eq_ignore_ascii_case(k))).cloned().collect();
+            h.extend(link_headers);
+            h
+        }
+        _ => link_headers,
+    };
+    if method(link) == "GET" {
+        return Some(Request { url, body: None, headers });
+    }
+    let body = match (&cur.body, &link["body"]) {
+        (Some(Value::Object(prev)), Value::Object(b)) if link["merge"] == true && same_origin => {
+            let mut m = prev.clone();
+            m.extend(b.iter().map(|(k, v)| (k.clone(), v.clone())));
+            Value::Object(m)
+        }
+        (_, Value::Object(b)) => Value::Object(b.clone()),
+        // A link without a body repeats the search, to its own origin only.
+        (Some(prev), _) if same_origin => prev.clone(),
+        _ => json!({}),
+    };
+    Some(Request { url, body: Some(body), headers })
+}
+
+/// Percent-decodes a URL query component (`+` is a space).
+fn url_decode(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        let hex = b.get(i + 1..i + 3).and_then(|h| std::str::from_utf8(h).ok()).and_then(|h| u8::from_str_radix(h, 16).ok());
+        match (b[i], hex) {
+            (b'+', _) => out.push(b' '),
+            (b'%', Some(v)) => {
+                out.push(v);
+                i += 2;
+            }
+            (c, _) => out.push(c),
+        }
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// A `datetime` search parameter with its dates and months as RFC 3339 instants, as
+/// pystac-client sends it (`2023-07` is `2023-07-01T00:00:00Z/2023-07-31T23:59:59Z`): servers
+/// reject bare dates in `POST` bodies.
+fn rfc3339_interval(v: &str) -> String {
+    let parts: Vec<&str> = v.split('/').map(str::trim).collect();
+    let days_in = |y: i64, m: i64| match m {
+        2 if (y % 4 == 0 && y % 100 != 0) || y % 400 == 0 => 29,
+        2 => 28,
+        4 | 6 | 9 | 11 => 30,
+        _ => 31,
+    };
+    // The first and last instants of a year, month or day; `None` for anything else.
+    let expand = |p: &str| -> Option<(String, String)> {
+        let n: Vec<i64> = p.split('-').map(|x| x.parse().ok()).collect::<Option<_>>()?;
+        let ok = p.len() == [4, 7, 10][n.len().clamp(1, 3) - 1];
+        match n[..] {
+            [y] if ok => Some((format!("{y:04}-01-01T00:00:00Z"), format!("{y:04}-12-31T23:59:59Z"))),
+            [y, m] if ok && (1..=12).contains(&m) => {
+                Some((format!("{y:04}-{m:02}-01T00:00:00Z"), format!("{y:04}-{m:02}-{:02}T23:59:59Z", days_in(y, m))))
+            }
+            [y, m, d] if ok && (1..=12).contains(&m) && (1..=days_in(y, m)).contains(&d) => {
+                Some((format!("{y:04}-{m:02}-{d:02}T00:00:00Z"), format!("{y:04}-{m:02}-{d:02}T23:59:59Z")))
+            }
+            _ => None,
+        }
+    };
+    match parts[..] {
+        [one] => match expand(one) {
+            Some((a, b)) => format!("{a}/{b}"),
+            None => one.to_string(),
+        },
+        [a, b] => {
+            let a = expand(a).map_or_else(|| a.to_string(), |(s, _)| s);
+            let b = expand(b).map_or_else(|| b.to_string(), |(_, e)| e);
+            format!("{a}/{b}")
+        }
+        _ => v.to_string(),
+    }
+}
+
+/// The `POST` request of a STAC API search URL's query parameters, as pystac-client builds it
+/// (`bbox`, `collections` and `ids` as arrays, `limit` as a number, `intersects`, `query` and
+/// `filter` as JSON, `sortby` and `fields` as their objects).
+fn post_request(source: &str) -> Request {
+    let (url, query) = source.split_once('?').unwrap_or((source, ""));
+    let mut body = serde_json::Map::new();
+    for kv in query.split('&').filter(|kv| !kv.is_empty()) {
+        let (k, v) = kv.split_once('=').unwrap_or((kv, ""));
+        let (k, v) = (url_decode(k), url_decode(v));
+        let list = || Value::Array(v.split(',').map(|s| Value::String(s.trim().to_string())).collect());
+        let value = match k.as_str() {
+            "bbox" => Value::Array(v.split(',').filter_map(|n| n.trim().parse::<f64>().ok()).map(Value::from).collect()),
+            "collections" | "ids" => list(),
+            "limit" => v.parse::<u64>().map(Value::from).unwrap_or(Value::String(v)),
+            "datetime" => Value::String(rfc3339_interval(&v)),
+            "sortby" => Value::Array(
+                v.split(',')
+                    .map(|f| {
+                        let f = f.trim();
+                        let (dir, field) = match f.strip_prefix('-') {
+                            Some(r) => ("desc", r),
+                            None => ("asc", f.strip_prefix('+').unwrap_or(f)),
+                        };
+                        json!({"field": field, "direction": dir})
+                    })
+                    .collect(),
+            ),
+            "fields" => {
+                let (mut include, mut exclude) = (Vec::new(), Vec::new());
+                for f in v.split(',').map(str::trim).filter(|f| !f.is_empty()) {
+                    match f.strip_prefix('-') {
+                        Some(r) => exclude.push(r.to_string()),
+                        None => include.push(f.strip_prefix('+').unwrap_or(f).to_string()),
+                    }
+                }
+                json!({"include": include, "exclude": exclude})
+            }
+            _ => match serde_json::from_str::<Value>(&v) {
+                Ok(j @ (Value::Object(_) | Value::Array(_))) => j,
+                _ => Value::String(v),
+            },
+        };
+        body.insert(k, value);
+    }
+    // A text filter (CQL2 text) needs its language said in a POST body.
+    if body.get("filter").is_some_and(Value::is_string) && !body.contains_key("filter-lang") {
+        body.insert("filter-lang".into(), json!("cql2-text"));
+    }
+    Request { url: url.to_string(), body: Some(Value::Object(body)), headers: Vec::new() }
 }
 
 /// An href resolved against the location of the document holding it.
@@ -115,6 +317,142 @@ fn kind(v: &Value) -> Option<Kind> {
     }
 }
 
+/// How asset hrefs are signed before they are opened.
+///
+/// Set by `TERRIO_STAC_SIGN` (`auto`, the default, `planetary_computer` or `none`) or a
+/// `STACIT:` name's `sign=` option. `auto` signs the Azure Blob Storage hrefs of items read from
+/// Planetary Computer's STAC API (or linking to it); `planetary_computer` signs every Azure Blob
+/// Storage href. Signing appends a SAS token from Planetary Computer's token endpoint (one per
+/// storage account and container, renewed before it expires), sent with
+/// `PC_SDK_SUBSCRIPTION_KEY` as its API key when that is set, as the `planetary-computer` Python
+/// package does.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum SignMode {
+    /// Sign the assets of Planetary Computer items.
+    #[default]
+    Auto,
+    /// Sign every Azure Blob Storage asset with a Planetary Computer token.
+    PlanetaryComputer,
+    /// Never sign.
+    None,
+}
+
+impl SignMode {
+    fn parse(v: &str) -> Option<Self> {
+        match v.trim().to_ascii_lowercase().replace('-', "_").as_str() {
+            "auto" | "" => Some(Self::Auto),
+            "planetary_computer" | "planetarycomputer" | "pc" | "yes" | "on" | "true" => Some(Self::PlanetaryComputer),
+            "none" | "no" | "off" | "false" => Some(Self::None),
+            _ => None,
+        }
+    }
+
+    /// The mode set by `TERRIO_STAC_SIGN`.
+    fn from_env() -> Self {
+        std::env::var("TERRIO_STAC_SIGN").ok().and_then(|v| Self::parse(&v)).unwrap_or_default()
+    }
+}
+
+const PC_HOST: &str = "planetarycomputer.microsoft.com";
+
+/// The storage account and container of an Azure Blob Storage URL.
+fn blob_container(href: &str) -> Option<(&str, &str)> {
+    let rest = href.strip_prefix("https://")?;
+    let (host, path) = rest.split_once('/')?;
+    // An account name is lowercase letters and digits: a host with user information, a port or
+    // a fragment (`https://evil.example#@a.blob.core.windows.net/c`) is not an account's.
+    let account = host
+        .strip_suffix(".blob.core.windows.net")
+        .filter(|a| !a.is_empty() && a.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit()))?;
+    let container = path
+        .split(['/', '?', '#'])
+        .next()
+        .filter(|c| !c.is_empty() && c.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-'))?;
+    Some((account, container))
+}
+
+/// Whether an item comes from Planetary Computer: read from its API, or linking to it.
+fn from_planetary_computer(item: &Value, base: &str) -> bool {
+    let host = |u: &str| crate::vfs::url_origin(u).map(|(_, h)| h);
+    host(base).is_some_and(|h| h == PC_HOST)
+        || item["links"].as_array().into_iter().flatten().any(|l| l["href"].as_str().and_then(host).is_some_and(|h| h == PC_HOST))
+}
+
+/// An asset href of `item` (read from `base`), signed as `mode` says.
+fn sign_href(href: String, item: &Value, base: &str, mode: SignMode) -> Result<String> {
+    if needs_signing(&href, item, base, mode) { signed(href) } else { Ok(href) }
+}
+
+/// Whether an asset href of `item` (read from `base`) is to be signed as `mode` says: an
+/// unsigned Azure Blob Storage href.
+fn needs_signing(href: &str, item: &Value, base: &str, mode: SignMode) -> bool {
+    let sign = match mode {
+        SignMode::None => false,
+        SignMode::PlanetaryComputer => true,
+        SignMode::Auto => from_planetary_computer(item, base),
+    };
+    // Already signed (a SAS token's signature is `sig=`).
+    sign && blob_container(href).is_some() && !href.split_once('?').is_some_and(|(_, q)| q.split('&').any(|kv| kv.starts_with("sig=")))
+}
+
+/// An Azure Blob Storage href with a current Planetary Computer SAS token appended.
+fn signed(href: String) -> Result<String> {
+    let Some((account, container)) = blob_container(&href) else { return Ok(href) };
+    let token = pc_token(account, container)?;
+    Ok(format!("{href}{}{token}", if href.contains('?') { '&' } else { '?' }))
+}
+
+/// A Planetary Computer SAS token for a storage account and container, cached until shortly
+/// before it expires.
+#[cfg(remote)]
+fn pc_token(account: &str, container: &str) -> Result<String> {
+    use std::sync::Mutex;
+    use std::time::{Duration, Instant};
+    static TOKENS: Mutex<BTreeMap<(String, String), (String, Instant)>> = Mutex::new(BTreeMap::new());
+    let key = (account.to_string(), container.to_string());
+    if let Ok(tokens) = TOKENS.lock()
+        && let Some((token, until)) = tokens.get(&key)
+        && Instant::now() < *until
+    {
+        return Ok(token.clone());
+    }
+    let base = std::env::var("TERRIO_PC_SAS_URL").unwrap_or_else(|_| format!("https://{PC_HOST}/api/sas/v1/token"));
+    let url = format!("{}/{account}/{container}", base.trim_end_matches('/'));
+    // The API key goes over https only.
+    let headers: Vec<(String, String)> = std::env::var("PC_SDK_SUBSCRIPTION_KEY")
+        .ok()
+        .filter(|k| !k.trim().is_empty() && url.starts_with("https://"))
+        .map(|k| ("Ocp-Apim-Subscription-Key".to_string(), k.trim().to_string()))
+        .into_iter()
+        .collect();
+    let v: Value = serde_json::from_slice(&crate::http::get_with_headers(&url, &headers)?).map_err(|e| bad(format!("{url}: {e}")))?;
+    let token = v["token"].as_str().filter(|t| !t.is_empty()).ok_or_else(|| bad(format!("{url}: no token in the response")))?.to_string();
+    // Tokens last about an hour or more ("msft:expiry"); renew well before.
+    // No expiry given: half an hour. One already past (a clock off) or close: not cached.
+    let lifetime = match v["msft:expiry"].as_str() {
+        None => Some(Duration::from_secs(1800)),
+        Some(t) => seconds_until(t).filter(|s| *s > 300).map(|s| Duration::from_secs(s - 300)),
+    };
+    if let Some(lifetime) = lifetime
+        && let Ok(mut tokens) = TOKENS.lock()
+    {
+        tokens.insert(key, (token.clone(), Instant::now() + lifetime));
+    }
+    Ok(token)
+}
+
+#[cfg(not(remote))]
+fn pc_token(account: &str, container: &str) -> Result<String> {
+    Err(bad(format!("signing {account}/{container} assets needs the `remote` feature")))
+}
+
+/// The seconds from now to a UTC time `YYYY-MM-DDTHH:MM:SSZ`.
+#[cfg(remote)]
+fn seconds_until(t: &str) -> Option<u64> {
+    let n = |r: std::ops::Range<usize>| t.get(r)?.parse::<i64>().ok();
+    crate::http::seconds_until_utc(n(0..4)?, n(5..7)?, n(8..10)?, n(11..13)?, n(14..16)?, n(17..19)?)
+}
+
 /// Items with the location each was read from (their hrefs are relative to it).
 struct Items {
     items: Vec<(Value, String)>,
@@ -125,11 +463,17 @@ struct Items {
 /// Reads the items of a STAC document at `loc` (already parsed as `doc`), following search
 /// pages and collection links, up to `max_items` items (0: no limit).
 fn load_items(doc: Value, loc: &str, max_items: usize) -> Result<Items> {
+    load_items_from(doc, &Request::get(loc), max_items)
+}
+
+/// [`load_items`] of the response to a request (whose next pages may be `POST` requests too).
+fn load_items_from(doc: Value, request: &Request, max_items: usize) -> Result<Items> {
+    let loc = request.url.as_str();
     let mut out = Items { items: Vec::new(), truncated: false };
     let full = |out: &Items| max_items > 0 && out.items.len() >= max_items;
     match kind(&doc) {
         Some(Kind::Item) => out.items.push((doc, loc.to_string())),
-        Some(Kind::ItemCollection) => read_pages(doc, loc, max_items, &mut out)?,
+        Some(Kind::ItemCollection) => read_pages(doc, request.clone(), max_items, &mut out)?,
         Some(Kind::Collection | Kind::Catalog) => {
             let mut queue = vec![(doc, loc.to_string(), 0usize)];
             while let Some((doc, base, depth)) = queue.pop() {
@@ -147,7 +491,7 @@ fn load_items(doc: Value, loc: &str, max_items: usize) -> Result<Items> {
                                 out.items.push((item, href));
                             }
                         }
-                        Some("items") => read_pages(fetch_json(&href)?, &href, max_items, &mut out)?,
+                        Some("items") => read_pages(fetch_json(&href)?, Request::get(&href), max_items, &mut out)?,
                         Some("child") if depth < 8 => queue.push((fetch_json(&href)?, href, depth + 1)),
                         _ => {}
                     }
@@ -160,8 +504,7 @@ fn load_items(doc: Value, loc: &str, max_items: usize) -> Result<Items> {
 }
 
 /// Reads the items of a page of results and of the pages its `next` links lead to.
-fn read_pages(mut doc: Value, loc: &str, max_items: usize, out: &mut Items) -> Result<()> {
-    let mut cur = loc.to_string();
+fn read_pages(mut doc: Value, mut cur: Request, max_items: usize, out: &mut Items) -> Result<()> {
     let mut pages = 0;
     loop {
         pages += 1;
@@ -170,21 +513,15 @@ fn read_pages(mut doc: Value, loc: &str, max_items: usize, out: &mut Items) -> R
                 out.truncated = true;
                 return Ok(());
             }
-            out.items.push((f.clone(), cur.clone()));
+            out.items.push((f.clone(), cur.url.clone()));
         }
         // https://github.com/radiantearth/stac-api-spec/tree/release/v1.0.0/item-search#pagination
-        let next = doc["links"].as_array().into_iter().flatten().find(|l| {
-            l["rel"] == "next"
-                && l["type"].as_str().is_none_or(|t| t == "application/geo+json" || t.is_empty())
-                && l["method"].as_str().is_none_or(|m| m.eq_ignore_ascii_case("GET"))
-        });
-        let Some(href) = next.and_then(|l| l["href"].as_str()) else { return Ok(()) };
-        let href = resolve_href(&cur, href);
-        if href == cur || pages > 10_000 {
+        let Some(next) = next_request(&doc, &cur) else { return Ok(()) };
+        if next == cur || pages > 10_000 {
             return Ok(());
         }
-        doc = fetch_json(&href)?;
-        cur = href;
+        doc = next.fetch()?;
+        cur = next;
     }
 }
 
@@ -238,6 +575,37 @@ struct Filters {
     crs: Option<String>,
     resolution: Option<String>,
     max_items: Option<usize>,
+    /// `method=POST`: send the search URL's query as a `POST` body.
+    post: bool,
+    sign: Option<SignMode>,
+    /// An option with a value it does not take (`sign=nope`, `method=PUT`).
+    invalid: Option<String>,
+}
+
+impl Filters {
+    /// The options a mosaic's name keeps from these (`method=POST`, `sign=`), for the names of
+    /// the subdatasets it suggests.
+    fn kept_options(&self) -> String {
+        let mut out = String::new();
+        if self.post {
+            out.push_str(",method=POST");
+        }
+        match self.sign {
+            Some(SignMode::Auto) => out.push_str(",sign=auto"),
+            Some(SignMode::PlanetaryComputer) => out.push_str(",sign=planetary_computer"),
+            Some(SignMode::None) => out.push_str(",sign=none"),
+            None => {}
+        }
+        out
+    }
+
+    /// An error for an option with a value it does not take.
+    fn check(&self) -> Result<()> {
+        match &self.invalid {
+            Some(o) => Err(Error::InvalidArgument(format!("STACIT: invalid option '{o}'"))),
+            None => Ok(()),
+        }
+    }
 }
 
 /// Splits `"quoted":rest` or `unquoted:rest` (the rest after the last colon when it looks like
@@ -275,6 +643,11 @@ fn parse_name(path: &str) -> Option<Name> {
                 "crs" => filters.crs = Some(v.to_string()),
                 "resolution" => filters.resolution = Some(v.to_ascii_uppercase()),
                 "max_items" => filters.max_items = v.parse().ok(),
+                "method" if v.eq_ignore_ascii_case("POST") || v.eq_ignore_ascii_case("GET") => {
+                    filters.post = v.eq_ignore_ascii_case("POST")
+                }
+                "sign" if SignMode::parse(v).is_some() => filters.sign = SignMode::parse(v),
+                "method" | "sign" => filters.invalid = Some(kv.to_string()),
                 _ => {}
             }
         }
@@ -310,7 +683,7 @@ fn asset_href(item_loc: &str, asset: &str) -> Result<String> {
         let names: Vec<&str> = names.iter().map(|s| s.as_str()).collect();
         bad(format!("'{item_loc}' has no asset '{asset}' (assets: {})", names.join(", ")))
     })?;
-    Ok(resolve_href(item_loc, href))
+    sign_href(resolve_href(item_loc, href), &item, item_loc, SignMode::from_env())
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -319,11 +692,22 @@ fn asset_href(item_loc: &str, asset: &str) -> Result<String> {
 /// An item's asset in a mosaic.
 #[derive(Debug, Clone)]
 struct AssetItem {
+    /// The href, unsigned: a signed one is made when the file is opened, so that its token is
+    /// current.
     href: String,
+    /// Whether the href is signed before it is opened.
+    sign: bool,
     datetime: String,
     width: usize,
     height: usize,
     bounds: [f64; 4],
+}
+
+impl AssetItem {
+    /// Opens the item's file, its href signed now if it is to be signed.
+    fn open(&self) -> Result<LazyRaster> {
+        if self.sign { LazyRaster::open(&signed(self.href.clone())?) } else { LazyRaster::open(&self.href) }
+    }
 }
 
 /// Assets of one asset name, by CRS.
@@ -360,6 +744,7 @@ fn sanitize_crs(v: &str) -> String {
 /// Groups the assets of items as GDAL's STACIT driver does (`ParseAsset()`).
 fn group_assets(items: &[(Value, String)], f: &Filters) -> Groups {
     let mut groups: Groups = BTreeMap::new();
+    let sign = f.sign.unwrap_or_else(SignMode::from_env);
     let crs_filter = f.crs.as_deref().map(sanitize_crs);
     for (item, base) in items {
         let has_proj = item["stac_extensions"]
@@ -442,8 +827,10 @@ fn group_assets(items: &[(Value, String)], f: &Filters) -> Groups {
                 bands: if asset["bands"].is_array() { asset["bands"].clone() } else { asset["eo:bands"].clone() },
                 by_crs: BTreeMap::new(),
             });
+            let href = resolve_href(base, href);
             entry.by_crs.entry(crs).or_default().push(AssetItem {
-                href: resolve_href(base, href),
+                sign: needs_signing(&href, item, base, sign),
+                href,
                 datetime: props["datetime"].as_str().unwrap_or_default().to_string(),
                 width: width as usize,
                 height: height as usize,
@@ -455,7 +842,7 @@ fn group_assets(items: &[(Value, String)], f: &Filters) -> Groups {
 }
 
 /// The subdatasets of grouped assets, named and described as GDAL's STACIT driver does.
-fn stacit_subdatasets(source: &str, groups: &Groups) -> Vec<Subdataset> {
+fn stacit_subdatasets(source: &str, groups: &Groups, kept: &str) -> Vec<Subdataset> {
     let mut out = Vec::new();
     for (collection, assets) in groups {
         for (asset, group) in assets {
@@ -465,11 +852,11 @@ fn stacit_subdatasets(source: &str, groups: &Groups) -> Vec<Subdataset> {
                 (format!("asset={asset}"), format!("Asset {asset}"))
             };
             if group.by_crs.len() == 1 {
-                out.push(Subdataset { name: format!("STACIT:\"{source}\":{arg}"), description: format!("{text} of {source}") });
+                out.push(Subdataset { name: format!("STACIT:\"{source}\":{arg}{kept}"), description: format!("{text} of {source}") });
             } else {
                 for crs in group.by_crs.keys() {
                     out.push(Subdataset {
-                        name: format!("STACIT:\"{source}\":{arg},crs={}", sanitize_crs(crs)),
+                        name: format!("STACIT:\"{source}\":{arg},crs={}{kept}", sanitize_crs(crs)),
                         description: format!("{text} of {source} in CRS {crs}"),
                     });
                 }
@@ -533,14 +920,23 @@ impl WindowSource for Mosaic {
                 continue;
             }
             if raster.is_none() {
-                *raster = Some(LazyRaster::open(&item.href)?);
+                *raster = Some(item.open()?);
             }
             let r = raster.as_mut().ok_or_else(|| bad("unreachable"))?;
             let (sw, sh) = (sx1 - sx0, sy1 - sy0);
             if sx1 > r.width() || sy1 > r.height() {
                 return Err(bad(format!("{} is {}x{}, smaller than its STAC metadata says", item.href, r.width(), r.height())));
             }
-            let sub = r.read_window(Window::new(sx0, sy0, sw, sh), &WindowOptions { bands: bands.to_vec(), overview: None })?;
+            let (window, options) = (Window::new(sx0, sy0, sw, sh), WindowOptions { bands: bands.to_vec(), overview: None });
+            let sub = match r.read_window(window, &options) {
+                // A signed URL whose token expired since the file was opened: open it again,
+                // signed anew, and read once more.
+                Err(Error::Http(_)) if item.sign => {
+                    *r = item.open()?;
+                    r.read_window(window, &options)?
+                }
+                result => result?,
+            };
             for (bi, buf) in out.iter_mut().enumerate() {
                 let values = crate::ops::BandView::of(&sub.raster, bi);
                 let valid: Option<Vec<bool>> = self.nodata.map(|nd| values.valid(nd));
@@ -564,13 +960,13 @@ impl WindowSource for Mosaic {
 }
 
 /// Opens the one mosaic of grouped assets (GDAL's `STACITDataset::SetupDataset()`).
-fn open_mosaic(source: &str, groups: Groups, resolution: Option<&str>) -> Result<LazyRaster> {
+fn open_mosaic(source: &str, groups: Groups, resolution: Option<&str>, kept: &str) -> Result<LazyRaster> {
     let group_count: usize = groups.values().flat_map(|a| a.values()).map(|g| g.by_crs.len()).sum();
     if group_count == 0 {
         return Err(bad(format!("no compatible asset found in '{source}'")));
     }
     if group_count > 1 {
-        let subs = stacit_subdatasets(source, &groups);
+        let subs = stacit_subdatasets(source, &groups, kept);
         let names: Vec<String> = subs.iter().take(8).map(|s| s.name.clone()).collect();
         return Err(Error::InvalidArgument(format!(
             "'{source}' holds {group_count} mosaics (assets or CRSs): choose one, such as {}{}",
@@ -612,7 +1008,7 @@ fn open_mosaic(source: &str, groups: Groups, resolution: Option<&str>) -> Result
     let (w, h) = (w as usize, h as usize);
     // The first item tells the band count, data type and nodata value.
     let first_href = items[0].href.clone();
-    let first = LazyRaster::open(&first_href)?;
+    let first = items[0].open()?;
     let (bands, data_type, nodata) = (first.band_count(), first.data_type(), first.nodata());
     // Ascending datetime: later items are drawn over earlier ones.
     items.sort_by(|a, b| a.datetime.cmp(&b.datetime));
@@ -699,7 +1095,7 @@ fn probe(path: &str) -> Option<Result<Probe>> {
 fn footprint_dataset(doc: Value, path: &str, max_items: usize) -> Result<(VectorDataset, Groups)> {
     let name = layer_name(&doc, path);
     let items = load_items(doc, path, max_items)?;
-    let groups = group_assets(&items.items, &Filters::default());
+    let groups = group_assets(&items.items, &Filters { sign: Some(SignMode::None), ..Filters::default() });
     let layer = footprints(&items.items, &name)?;
     Ok((crate::dataset::finish_vector(vec![layer], path, VectorDriver::GeoJSON), groups))
 }
@@ -718,12 +1114,19 @@ pub(crate) fn open(path: &str) -> Option<Result<Dataset>> {
     })
 }
 
+/// The first request of a `STACIT:` source: a `GET`, or with `method=POST` a `POST` of its query.
+fn search_request(source: &str, filters: &Filters) -> Request {
+    if filters.post && is_url(source) { post_request(source) } else { Request::get(source) }
+}
+
 /// Opens a `STAC:` asset or `STACIT:` mosaic lazily. `None` when `path` is neither.
 pub(crate) fn open_lazy(path: &str) -> Option<Result<LazyRaster>> {
     Some(match parse_name(path)? {
         Name::Asset { item, asset } => asset_href(&item, &asset).and_then(|href| LazyRaster::open(&href)),
         Name::Mosaic { source, filters } => (|| {
-            let doc = fetch_json(&source)?;
+            filters.check()?;
+            let request = search_request(&source, &filters);
+            let doc = request.fetch()?;
             let mut max = filters.max_items.unwrap_or(DEFAULT_MAX_ITEMS);
             if filters.max_items.is_none()
                 && let Some(i) = source.to_ascii_lowercase().find("&limit=")
@@ -731,9 +1134,9 @@ pub(crate) fn open_lazy(path: &str) -> Option<Result<LazyRaster>> {
                 let digits: String = source[i + 7..].chars().take_while(char::is_ascii_digit).collect();
                 max = max.max(digits.parse().unwrap_or(0));
             }
-            let items = load_items(doc, &source, max)?;
+            let items = load_items_from(doc, &request, max)?;
             let groups = group_assets(&items.items, &filters);
-            open_mosaic(&source, groups, filters.resolution.as_deref())
+            open_mosaic(&source, groups, filters.resolution.as_deref(), &filters.kept_options())
         })(),
     })
 }
@@ -747,11 +1150,13 @@ pub(crate) fn info(path: &str, options: &InfoOptions) -> Option<Result<Info>> {
         }
         Some(Name::Mosaic { source, filters }) => {
             let several = (|| -> Result<Option<Info>> {
-                let doc = fetch_json(&source)?;
+                filters.check()?;
+                let request = search_request(&source, &filters);
+                let doc = request.fetch()?;
                 let max = filters.max_items.unwrap_or(DEFAULT_MAX_ITEMS);
                 let name = layer_name(&doc, &source);
-                let items = load_items(doc, &source, max)?;
-                let groups = group_assets(&items.items, &filters);
+                let items = load_items_from(doc, &request, max)?;
+                let groups = group_assets(&items.items, &Filters { sign: Some(SignMode::None), ..filters.clone() });
                 let count: usize = groups.values().flat_map(|a| a.values()).map(|g| g.by_crs.len()).sum();
                 if count <= 1 {
                     return Ok(None);
@@ -759,7 +1164,7 @@ pub(crate) fn info(path: &str, options: &InfoOptions) -> Option<Result<Info>> {
                 let layer = footprints(&items.items, &name)?;
                 let ds = crate::dataset::finish_vector(vec![layer], &source, VectorDriver::GeoJSON);
                 let mut v = crate::info::vector_info(&ds);
-                v.subdatasets = stacit_subdatasets(&source, &groups);
+                v.subdatasets = stacit_subdatasets(&source, &groups, &filters.kept_options());
                 Ok(Some(Info::Vector(v)))
             })();
             return Some(match several {
@@ -795,7 +1200,7 @@ pub(crate) fn info(path: &str, options: &InfoOptions) -> Option<Result<Info>> {
                 })
                 .collect()
         } else {
-            stacit_subdatasets(path, &groups)
+            stacit_subdatasets(path, &groups, "")
         };
         Info::Vector(v)
     }))
@@ -840,6 +1245,114 @@ mod tests {
         assert_eq!(resolve_href("dir/item.json", "B04.tif"), "dir/B04.tif");
         assert_eq!(resolve_href("item.json", "B04.tif"), "B04.tif");
         assert_eq!(resolve_href("/data/item.json", "s3://b/k.tif"), "s3://b/k.tif");
+    }
+
+    #[test]
+    fn builds_post_searches_as_pystac_client() {
+        let r = post_request(
+            "https://x.org/v1/search?collections=a,b&bbox=-105.3,39.9,-105.1,40.1&limit=2&datetime=2023-07&sortby=-datetime&query=%7B%22eo%3Acloud_cover%22%3A%7B%22lt%22%3A10%7D%7D&filter=cloud%20%3C%2010",
+        );
+        assert_eq!(r.url, "https://x.org/v1/search");
+        assert_eq!(
+            r.body,
+            Some(json!({
+                "collections": ["a", "b"],
+                "bbox": [-105.3, 39.9, -105.1, 40.1],
+                "limit": 2,
+                "datetime": "2023-07-01T00:00:00Z/2023-07-31T23:59:59Z",
+                "sortby": [{"field": "datetime", "direction": "desc"}],
+                "query": {"eo:cloud_cover": {"lt": 10}},
+                "filter": "cloud < 10",
+                "filter-lang": "cql2-text",
+            }))
+        );
+        assert_eq!(rfc3339_interval("2024-02"), "2024-02-01T00:00:00Z/2024-02-29T23:59:59Z");
+        assert_eq!(rfc3339_interval("2023-07-05"), "2023-07-05T00:00:00Z/2023-07-05T23:59:59Z");
+        assert_eq!(rfc3339_interval("2023/.."), "2023-01-01T00:00:00Z/..");
+        assert_eq!(rfc3339_interval("2023-07-05T10:00:00Z"), "2023-07-05T10:00:00Z");
+    }
+
+    #[test]
+    fn follows_post_next_links() {
+        let cur =
+            Request { url: "https://x.org/search".into(), body: Some(json!({"limit": 2, "bbox": [0, 0, 1, 1]})), headers: Vec::new() };
+        // Earth Search: the whole body again.
+        let page = json!({"links": [{"rel": "next", "method": "POST", "href": "https://x.org/search", "merge": false, "body": {"limit": 2, "next": "t"}}]});
+        assert_eq!(next_request(&page, &cur).and_then(|r| r.body), Some(json!({"limit": 2, "next": "t"})));
+        // Merged into the previous body, with headers.
+        let page = json!({"links": [{"rel": "next", "method": "POST", "href": "/search", "merge": true, "body": {"token": "t"}, "headers": {"X-A": "1"}}]});
+        let next = next_request(&page, &cur).expect("a next page");
+        assert_eq!(next.body, Some(json!({"limit": 2, "bbox": [0, 0, 1, 1], "token": "t"})));
+        assert_eq!(next.headers, vec![("X-A".to_string(), "1".to_string())]);
+        // A GET link is preferred.
+        let page = json!({"links": [{"rel": "next", "method": "POST", "href": "/a"}, {"rel": "next", "href": "/b?page=2"}]});
+        assert_eq!(next_request(&page, &cur).map(|r| (r.url, r.body)), Some(("https://x.org/b?page=2".into(), None)));
+        assert_eq!(next_request(&json!({"links": []}), &cur), None);
+        // Headers go on to pages of the same origin only.
+        let keyed = Request { headers: vec![("X-Key".into(), "k".into())], ..cur.clone() };
+        let page = json!({"links": [{"rel": "next", "href": "https://x.org/search?page=2"}]});
+        assert_eq!(next_request(&page, &keyed).map(|r| r.headers), Some(keyed.headers.clone()));
+        let page = json!({"links": [{"rel": "next", "href": "https://elsewhere.org/search?page=2"}]});
+        assert_eq!(next_request(&page, &keyed).map(|r| r.headers), Some(Vec::new()));
+        // A header of several values: one per value.
+        let page = json!({"links": [{"rel": "next", "href": "/search?page=2", "headers": {"X-Cursor": ["a", "b"]}}]});
+        assert_eq!(
+            next_request(&page, &cur).map(|r| r.headers),
+            Some(vec![("X-Cursor".to_string(), "a".to_string()), ("X-Cursor".to_string(), "b".to_string())])
+        );
+        // `merge`: the link's headers over the previous ones.
+        let page =
+            json!({"links": [{"rel": "next", "method": "POST", "href": "/search", "merge": true, "headers": {"Search-After": "t"}}]});
+        assert_eq!(
+            next_request(&page, &keyed).map(|r| r.headers),
+            Some(vec![("X-Key".to_string(), "k".to_string()), ("Search-After".to_string(), "t".to_string())])
+        );
+    }
+
+    #[test]
+    fn signs_planetary_computer_assets_only() {
+        let href = "https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/13/T/B04.tif";
+        assert_eq!(blob_container(href), Some(("sentinel2l2a01", "sentinel2-l2")));
+        assert_eq!(blob_container("https://example.com/a/b.tif"), None);
+        assert_eq!(blob_container("https://evil.example#@a.blob.core.windows.net/c/x.tif"), None);
+        assert_eq!(blob_container("https://u:p@a.blob.core.windows.net/c/x.tif"), None);
+        let pc = "https://planetarycomputer.microsoft.com/api/stac/v1/search?collections=x";
+        assert!(from_planetary_computer(&json!({}), pc));
+        assert!(!from_planetary_computer(&json!({}), "https://earth-search.aws.element84.com/v1/search"));
+        let linked =
+            json!({"links": [{"rel": "self", "href": "https://planetarycomputer.microsoft.com/api/stac/v1/collections/x/items/y"}]});
+        assert!(from_planetary_computer(&linked, "items.json"));
+        // Not signed: not Planetary Computer's, not Azure, already signed, or signing off.
+        let other = "https://earth-search.aws.element84.com/v1/search";
+        assert_eq!(sign_href(href.into(), &json!({}), other, SignMode::Auto).ok().as_deref(), Some(href));
+        assert_eq!(
+            sign_href("https://e.com/a.tif".into(), &json!({}), pc, SignMode::PlanetaryComputer).ok().as_deref(),
+            Some("https://e.com/a.tif")
+        );
+        let signed = format!("{href}?st=1&sig=abc");
+        assert_eq!(sign_href(signed.clone(), &json!({}), pc, SignMode::Auto).ok(), Some(signed));
+        assert_eq!(sign_href(href.into(), &json!({}), pc, SignMode::None).ok().as_deref(), Some(href));
+        assert_eq!(SignMode::parse("planetary-computer"), Some(SignMode::PlanetaryComputer));
+        assert_eq!(SignMode::parse("planetarycomputer"), Some(SignMode::PlanetaryComputer));
+        let Some(Name::Mosaic { filters, .. }) = parse_name(r#"STACIT:"https://x.org/search":asset=a,sign=nope"#) else { panic!() };
+        assert!(filters.check().is_err());
+        let Some(Name::Mosaic { filters, .. }) = parse_name(r#"STACIT:"https://x.org/search":asset=a,method=POST,sign=none"#) else {
+            panic!()
+        };
+        assert!(filters.check().is_ok());
+        assert_eq!(filters.kept_options(), ",method=POST,sign=none");
+    }
+
+    #[cfg(remote)]
+    #[test]
+    fn counts_seconds_to_expiry() {
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+        // 2000-01-01T00:00:00Z is 946684800: long past.
+        assert_eq!(seconds_until("2000-01-01T00:00:00Z"), None);
+        // 2100-03-01T12:30:15Z is 4107587415 (a second of slack for the clock ticking).
+        let s = seconds_until("2100-03-01T12:30:15Z").expect("a future time");
+        assert!((4_107_587_415 - now).abs_diff(s) <= 1, "{s}");
+        assert_eq!(seconds_until("not a time"), None);
     }
 
     #[test]

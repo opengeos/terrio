@@ -148,12 +148,40 @@ With the real files and the remote COG, 257 checks:
   four times (2.8 MB, against 0.64 MB for GDAL, whose block cache is shared); with `lock=True`,
   reads go through one raster and fetch them once (0.66 MB).
 
+## Subdatasets, GCPs and RPCs
+
+A file of subdatasets (netCDF, HDF5, Zarr groups) opens as rioxarray opens it: a Dataset of its
+variables, one per shape (a list of Datasets when their shapes differ), filtered with `group=` and
+`variable=` as rioxarray filters them, the file's global attributes on the Dataset and each
+variable's own on its array, with `time` and other netCDF dimensions as coordinates. The
+netCDF reader gives GDAL's metadata (`NC_GLOBAL#...`, `var#attr`, `NETCDF_DIM_*`, band items),
+values outside a variable's `valid_range` read as nodata, and packed variables' scales and
+offsets, as GDAL reads them.
+
+Images georeferenced by ground control points or RPCs open without `x` and `y` coordinates, their
+GCPs and RPCs stored in the grid mapping variable as rioxarray stores them (`get_gcps`,
+`write_gcps`, `get_rpcs`, `write_rpcs`); `to_raster` writes them back, rows as they are, and
+`reproject` warps through the GCPs.
+
+```python
+from terrio.xarray import open_rasterio
+
+ds = open_rasterio("ESACCI-SOILMOISTURE-L3S-SSMV-COMBINED-20200101000000-fv09.1.nc")  # sm, flag, t0...
+sm = open_rasterio("soil.nc", variable=["sm", "flag"])
+grd = open_rasterio("https://iceye-open-data-catalog.s3.amazonaws.com/.../ICEYE_..._GRD.tif")
+grd.terrio.get_gcps()                     # 100 ground control points
+utm = grd.terrio.reproject("EPSG:32633", resolution=50)
+```
+
+On an ESA CCI soil moisture netCDF (8 variables), ICEYE GRD (GCPs, a 1 GB COG read by window) and
+quicklook (RPCs) images, every variable, coordinate and attribute, the GCPs and RPCs, the files
+`to_raster` writes and a reprojection through the GCPs are identical to rioxarray's.
+
 ## Differences
 
-- Subdatasets (`variable`, `group`) are not supported: `open_rasterio` raises
-  `NotImplementedError`; open the subdataset's name instead.
-- Ground control points and RPCs are not read or written (`get_gcps` and `get_rpcs` return None);
-  `reproject` needs an affine transform.
+- Images georeferenced by RPCs are read and written with their RPCs (`get_rpcs`, `write_rpcs`),
+  but `reproject` cannot warp them yet (terrio has no RPC transformer); those georeferenced by
+  GCPs are reprojected through them, as rioxarray does.
 - Only the CF convention is written (`convention="CF"`); Zarr `proj:` and `spatial:` attributes
   are read. A grid mapping without `crs_wkt` or `spatial_ref` (CF attributes only) gives no CRS.
 - Metadata of formats other than GeoTIFF comes from terrio's readers: tags, band descriptions,
