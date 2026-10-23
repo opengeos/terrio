@@ -13,6 +13,7 @@
 //! ```
 
 mod ops;
+#[cfg(feature = "pointcloud")]
 mod pointcloud;
 mod remote;
 
@@ -37,9 +38,39 @@ pub fn start() {
     console_error_panic_hook::set_once();
 }
 
-/// Converts a terrio error into a JavaScript `Error`.
+/// The name of this build of the module: `terrio-js`, every format, or `terrio-js/core`.
+const BUILD: &str = if cfg!(feature = "full") { "terrio-js" } else { "terrio-js/core" };
+
+/// The cargo features of this build, the formats it reads and writes besides the ones always built.
+const FEATURES: &[(&str, bool)] = &[
+    ("avif", cfg!(feature = "avif")),
+    ("flatgeobuf", cfg!(feature = "flatgeobuf")),
+    ("jp2", cfg!(feature = "jp2")),
+    ("lerc", cfg!(feature = "lerc")),
+    ("lzma", cfg!(feature = "lzma")),
+    ("netcdf-hdf5", cfg!(feature = "netcdf-hdf5")),
+    ("osm", cfg!(feature = "osm")),
+    ("parquet", cfg!(feature = "parquet")),
+    ("pointcloud", cfg!(feature = "pointcloud")),
+    ("sqlite", cfg!(feature = "sqlite")),
+    ("tiles", cfg!(feature = "tiles")),
+    ("zarr", cfg!(feature = "zarr")),
+];
+
+/// Converts a terrio error into a JavaScript `Error`. Formats this build leaves out say which
+/// module has them.
 fn js_err(e: terrio::Error) -> JsError {
-    JsError::new(&e.to_string())
+    let msg = e.to_string();
+    if msg.contains("built without the `") && BUILD != "terrio-js" {
+        return JsError::new(&format!("{msg}: {BUILD} leaves it out, the full module (terrio-js) has it"));
+    }
+    JsError::new(&msg)
+}
+
+/// The error of a format this build leaves out, `feature` being the cargo feature that has it.
+#[allow(dead_code)]
+pub(crate) fn not_built(feature: &str) -> terrio::Error {
+    terrio::Error::Unsupported(format!("built without the `{feature}` feature"))
 }
 
 /// A JSON value as a JavaScript value.
@@ -219,6 +250,7 @@ pub fn open(bytes: Vec<u8>, filename: &str) -> Result<Dataset, JsError> {
     if is_tiff {
         return Ok(Dataset::from_lazy(terrio::memory::open_raster_lazy_bytes(bytes, filename).map_err(js_err)?));
     }
+    #[cfg(feature = "tiles")]
     if terrio::tiles::is_archive(filename) && !terrio::tiles::TileArchive::from_bytes(bytes.clone()).map_err(js_err)?.is_vector() {
         return Ok(Dataset::from_lazy(terrio::memory::open_raster_lazy_bytes(bytes, filename).map_err(js_err)?));
     }
@@ -317,7 +349,14 @@ pub fn from_geojson(geojson: JsValue, name: Option<String>, crs: Option<String>)
 /// native encodings), GeoParquet metadata, or a binary column named `geometry`.
 #[wasm_bindgen(js_name = fromArrowIPC)]
 pub fn from_arrow_ipc(bytes: Vec<u8>, name: Option<String>) -> Result<Dataset, JsError> {
+    #[cfg(not(feature = "parquet"))]
+    {
+        let _ = (bytes, name);
+        Err(js_err(not_built("parquet")))
+    }
+    #[cfg(feature = "parquet")]
     let layer = terrio::arrow::from_ipc(&bytes, name.as_deref().unwrap_or("layer")).map_err(js_err)?;
+    #[cfg(feature = "parquet")]
     Ok(Dataset::from_layers(vec![layer], VectorDriver::GeoJSON))
 }
 
@@ -480,20 +519,28 @@ impl Dataset {
     #[wasm_bindgen(js_name = toArrowIPC)]
     pub fn to_arrow_ipc(&self, layer: JsValue, options: JsValue) -> Result<Vec<u8>, JsError> {
         let l = self.layer(&layer)?;
-        let get = |key: &str| -> Option<String> {
-            if options.is_undefined() || options.is_null() {
-                return None;
+        #[cfg(not(feature = "parquet"))]
+        {
+            let _ = (l, options);
+            Err(js_err(not_built("parquet")))
+        }
+        #[cfg(feature = "parquet")]
+        {
+            let get = |key: &str| -> Option<String> {
+                if options.is_undefined() || options.is_null() {
+                    return None;
+                }
+                js_sys::Reflect::get(&options, &JsValue::from_str(key)).ok()?.as_string()
+            };
+            let mut o = terrio::arrow::ArrowWriteOptions::default();
+            if let Some(e) = get("geometryEncoding") {
+                o.geometry_encoding = terrio::arrow::GeometryEncoding::parse(&e).map_err(js_err)?;
             }
-            js_sys::Reflect::get(&options, &JsValue::from_str(key)).ok()?.as_string()
-        };
-        let mut o = terrio::arrow::ArrowWriteOptions::default();
-        if let Some(e) = get("geometryEncoding") {
-            o.geometry_encoding = terrio::arrow::GeometryEncoding::parse(&e).map_err(js_err)?;
+            if let Some(c) = get("coordinates") {
+                o.coordinates = terrio::arrow::CoordinateLayout::parse(&c).map_err(js_err)?;
+            }
+            terrio::arrow::to_ipc_stream(&l, &o).map_err(js_err)
         }
-        if let Some(c) = get("coordinates") {
-            o.coordinates = terrio::arrow::CoordinateLayout::parse(&c).map_err(js_err)?;
-        }
-        terrio::arrow::to_ipc_stream(&l, &o).map_err(js_err)
     }
 
     /// Writes the dataset in a format, to bytes: the format of `filename`'s extension, or
@@ -719,4 +766,37 @@ pub fn drivers() -> Result<JsValue, JsError> {
 #[wasm_bindgen]
 pub fn version() -> String {
     terrio::VERSION.into()
+}
+
+/// What this module has: `{ build, features }`, `build` being `"terrio-js"` (every format) or
+/// `"terrio-js/core"`, and `features` the optional formats built in (`jp2`, `netcdf-hdf5`,
+/// `pointcloud`, `parquet`...).
+#[wasm_bindgen]
+pub fn features() -> Result<JsValue, JsError> {
+    let built: Vec<&str> = FEATURES.iter().filter(|(_, on)| *on).map(|(f, _)| *f).collect();
+    to_js(&serde_json::json!({ "build": BUILD, "features": built }))
+}
+
+/// Point clouds, which this build leaves out: the functions say so.
+#[cfg(not(feature = "pointcloud"))]
+mod no_pointcloud {
+    use super::*;
+
+    /// Point clouds are in the full module, `terrio-js`.
+    #[wasm_bindgen(js_name = openPoints)]
+    pub fn open_points(_bytes: Vec<u8>, _filename: &str) -> Result<JsValue, JsError> {
+        Err(js_err(not_built("pointcloud")))
+    }
+
+    /// Point clouds are in the full module, `terrio-js`.
+    #[wasm_bindgen(js_name = readPoints)]
+    pub fn read_points(_bytes: Vec<u8>, _filename: &str, _options: JsValue) -> Result<JsValue, JsError> {
+        Err(js_err(not_built("pointcloud")))
+    }
+
+    /// Point clouds are in the full module, `terrio-js`.
+    #[wasm_bindgen(js_name = pointsFromArrays)]
+    pub fn points_from_arrays(_arrays: &js_sys::Object, _crs: Option<String>) -> Result<JsValue, JsError> {
+        Err(js_err(not_built("pointcloud")))
+    }
 }

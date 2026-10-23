@@ -69,10 +69,45 @@ archive of the `.jp2` file and the `.aux.xml` sidecar that holds the value, as G
 `open` reads that archive back.
 
 
+## A smaller download: `terrio-js/core`
+
+The package holds two WebAssembly modules with the same API. `terrio-js` has every format above;
+`terrio-js/core` leaves out the heaviest ones (GeoParquet and Arrow IPC, netCDF and HDF5, point
+clouds, JPEG 2000, Zarr, AVIF tiles and OpenStreetMap) and keeps GeoTIFF/COG with all its
+compressions, GeoJSON and the other text formats, FlatGeobuf, GeoPackage, Shapefile, PMTiles and
+MBTiles, the CRS transformations and the operations, at about half the size:
+
+| Module | `.wasm` | gzip | Brotli |
+|---|---|---|---|
+| `terrio-js` | 16.4 MB | 5.6 MB | 4.1 MB |
+| `terrio-js/core` | 8.9 MB | 3.0 MB | 2.3 MB |
+
+```js
+import init, { open, features } from "terrio-js/core";
+
+await init();
+features(); // { build: "terrio-js/core", features: ["flatgeobuf", "lerc", "lzma", "sqlite", "tiles"] }
+```
+
+A format the module leaves out fails with a message that says so (``built without the `jp2`
+feature: terrio-js/core leaves it out, the full module (terrio-js) has it``). A page that needs those
+formats only now and then can start with the core module and load the full one when it meets them,
+with a dynamic `import("terrio-js")`: datasets belong to the module that opened them, so a dataset
+is passed only to the functions of its own module.
+
+Both modules are built for size: whole-program LTO, the codecs optimized for speed and the rest
+for size, and wasm-opt -Oz. The full module is 21% smaller than before (20.6 MB, 6.7 MB gzipped)
+and decodes and writes as fast.
+
 ## Building
 
 ```sh
-wasm-pack build js --release --target web --out-dir pkg --out-name terrio
+node js/build.mjs                         # the npm package in js/pkg: both modules, built for size
+node --test js/tests/package.test.mjs
 wasm-pack build js --release --target nodejs --out-dir pkg-node --out-name terrio
 node --test js/tests/node.test.mjs        # TERRIO_TEST_DATA=... adds real files checked against GDAL
+# terrio-js/core, and the tests of the formats it has:
+wasm-pack build js --release --target nodejs --out-dir pkg-node/core --out-name terrio --no-pack -- --no-default-features --features core
+TERRIO_JS_PKG=../pkg-node/core/terrio.js node --test js/tests/node.test.mjs
+node js/bench/bench.mjs ../terrio-data    # timings of decoding and writing real files
 ```

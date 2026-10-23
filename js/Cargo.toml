@@ -12,7 +12,8 @@ repository.workspace = true
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-terrio.workspace = true
+# Without terrio's default features: the formats come from this crate's own features below.
+terrio = { path = "../crates/terrio", default-features = false, features = ["geotiff"] }
 wbraster.workspace = true
 wbvector.workspace = true
 wasm-bindgen = "0.2"
@@ -21,3 +22,27 @@ js-sys = "0.3"
 console_error_panic_hook = "0.1"
 serde.workspace = true
 serde_json.workspace = true
+
+# The formats besides GeoTIFF/COG, GeoJSON and the other text vector formats, Shapefile, CSV and
+# Esri ASCII grids, which are always built. `full`, the default, is the npm package `terrio-js`;
+# `core` is its lighter build (`terrio-js/core`), without the heaviest codecs.
+[features]
+default = ["full"]
+full = ["core", "parquet", "avif", "netcdf-hdf5", "osm", "jp2", "pointcloud", "zarr"]
+core = ["flatgeobuf", "sqlite", "tiles", "lzma", "lerc"]
+parquet = ["terrio/parquet"]
+avif = ["tiles", "terrio/avif"]
+netcdf-hdf5 = ["terrio/netcdf-hdf5"]
+osm = ["terrio/osm"]
+lzma = ["terrio/lzma"]
+flatgeobuf = ["terrio/flatgeobuf"]
+jp2 = ["terrio/jp2"]
+lerc = ["terrio/lerc"]
+pointcloud = ["terrio/pointcloud"]
+tiles = ["sqlite", "terrio/tiles"]
+zarr = ["terrio/zarr"]
+sqlite = ["terrio/sqlite"]
+
+# The npm package's build (`node js/build.mjs`, the `wasm-release` profile of the workspace).
+[package.metadata.wasm-pack.profile.custom]
+wasm-opt = ["-Oz"]

@@ -129,7 +129,7 @@ jobs:
       - run: npm install -g npm@latest
       - name: Build the package (browsers, bundlers, and Node.js through init)
         run: |
-          wasm-pack build js --release --target web --out-dir pkg --out-name terrio
+          node js/build.mjs
           node .github/scripts/npm-notices.mjs js/pkg
       - name: Publish unless this version is already on npm
         working-directory: js/pkg

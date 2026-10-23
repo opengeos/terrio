@@ -274,7 +274,14 @@ WebAssembly (the `terrio-js` npm package):
       polygons needs the memory64 item below, or `openUrl` to read it by bounding box (with a
       spatial index; a file without one is still read whole).
 - [ ] Multithreaded decoding and writing with WebAssembly threads, where the page allows them.
-- [ ] A smaller download: optional formats split out or loaded on demand, and size-optimized builds.
+- [x] A smaller download: optional formats split out or loaded on demand, and size-optimized builds.
+      Done: the package holds a second module, `terrio-js/core`, without GeoParquet and Arrow,
+      netCDF/HDF5, point clouds, JPEG 2000, Zarr, AVIF and OSM: 8.9 MB (3.0 MB gzipped, 2.3 MB
+      with Brotli), against 16.4 MB (5.6 MB, 4.1 MB) for the full one, which a page can import when
+      it needs those formats; formats left out say which module has them. Both are built with
+      whole-program LTO, the codecs optimized for speed and the rest for size, and wasm-opt -Oz:
+      the full module went from 20.6 MB (6.7 MB gzipped) to 16.4 MB, and decodes GeoTIFFs and JPEG
+      2000 and writes COGs as fast in Node.js.
 - [ ] Datasets larger than 4 GB, with the 64-bit memory proposal (memory64) where runtimes support
       it.
 

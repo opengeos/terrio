@@ -103,6 +103,46 @@ debug-assertions = false
 overflow-checks = false
 opt-level = 3
 
+# The WebAssembly modules of the npm package (`node js/build.mjs`): one codegen unit and
+# whole-program LTO, optimized for size ("s") but for the codecs, optimized for speed; wasm-opt then
+# runs with -Oz (js/Cargo.toml). The full module is 21% smaller than with the release profile (16.4
+# MB, 5.6 MB gzipped, from 20.6 and 6.7 MB), and decodes and writes as fast. All "s", it is 24%
+# smaller but JPEG 2000 decodes 25% slower; "z" is 1.5 to 2 times slower.
+[profile.wasm-release]
+inherits = "release"
+opt-level = "s"
+lto = "fat"
+codegen-units = 1
+
+# The codecs, decoding and encoding pixels and points.
+[profile.wasm-release.package]
+openjp2 = { opt-level = 3 }
+tiff = { opt-level = 3 }
+weezl = { opt-level = 3 }
+fdeflate = { opt-level = 3 }
+miniz_oxide = { opt-level = 3 }
+zlib-rs = { opt-level = 3 }
+simd-adler32 = { opt-level = 3 }
+crc32fast = { opt-level = 3 }
+jpeg-decoder = { opt-level = 3 }
+zune-jpeg = { opt-level = 3 }
+zune-jpegxl = { opt-level = 3 }
+jxl-vardct = { opt-level = 3 }
+jxl-modular = { opt-level = 3 }
+jxl-render = { opt-level = 3 }
+jxl-frame = { opt-level = 3 }
+jxl-coding = { opt-level = 3 }
+jxl-grid = { opt-level = 3 }
+ruzstd = { opt-level = 3 }
+lerc-core = { opt-level = 3 }
+lerc-reader = { opt-level = 3 }
+lerc-writer = { opt-level = 3 }
+lzma-rust2 = { opt-level = 3 }
+laz = { opt-level = 3 }
+rusty_av1d = { opt-level = 3 }
+image-webp = { opt-level = 3 }
+lz4_flex = { opt-level = 3 }
+
 # HDF5 files written in the earliest format with version 1/2 compound datatypes (every HEC-RAS
 # geometry and plan file, among others) fail in hdf5-reader 0.9.1, and old fill value messages
 # read wrong. Fixed in roteiro-gis/netcdf-rust#95; until a release carries it, build against that

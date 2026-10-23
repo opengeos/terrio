@@ -14,6 +14,15 @@ const require = createRequire(import.meta.url);
 const terrio = require(process.env.TERRIO_JS_PKG ?? "../pkg-node/terrio.js");
 const DATA = process.env.TERRIO_TEST_DATA;
 
+// The lighter build (`terrio-js/core`) leaves formats out: the tests that need them are skipped
+// there (TERRIO_JS_PKG=../pkg-node/core/terrio.js runs the tests on it).
+const { build: BUILD, features: BUILT } = terrio.features();
+/** `false` when the module has these cargo features, otherwise why a test is skipped. */
+function needs(...features) {
+  const missing = features.filter((f) => !BUILT.includes(f));
+  return missing.length > 0 && `${BUILD} is built without ${missing.join(", ")}`;
+}
+
 const SQUARES = {
   type: "FeatureCollection",
   features: [
@@ -32,6 +41,21 @@ const SQUARES = {
 
 test("version", () => {
   assert.match(terrio.version(), /^\d+\.\d+\.\d+/);
+});
+
+test("the module's build and its formats", () => {
+  assert.ok(["flatgeobuf", "sqlite", "tiles", "lzma", "lerc"].every((f) => BUILT.includes(f)), BUILT.join());
+  if (BUILD === "terrio-js") {
+    assert.ok(["jp2", "netcdf-hdf5", "parquet", "pointcloud", "zarr"].every((f) => BUILT.includes(f)), BUILT.join());
+  } else {
+    assert.equal(BUILD, "terrio-js/core");
+    // The formats left out say which module has them.
+    const xyz = { x: new Float64Array(1), y: new Float64Array(1), z: new Float64Array(1) };
+    assert.throws(() => terrio.pointsFromArrays(xyz), /terrio-js\/core leaves it out, the full module \(terrio-js\) has it/);
+    assert.throws(() => terrio.fromGeoJSON(SQUARES).toArrowIPC(), /without the `parquet` feature/);
+    const tif = terrio.rasterFromArray(new Uint8Array(4), 2, 2, [0, 1, 0, 2, 0, -1]);
+    assert.throws(() => tif.toBytes("x.jp2"), /without the `jp2` feature/);
+  }
 });
 
 test("raster from array, to GeoTIFF bytes and back", () => {
@@ -83,7 +107,7 @@ test("Zstandard GeoTIFFs with predictors, decoded without the C library", () => 
   }
 });
 
-test("JPEG 2000 to bytes and back", () => {
+test("JPEG 2000 to bytes and back", { skip: needs("jp2") }, () => {
   // Int16 with a nodata value: the JP2 file and its .aux.xml sidecar, zipped, as GDAL keeps it.
   const dem = new Int16Array(40 * 30).map((_, i) => ((i * 37) % 3000) - 1500);
   const ds = terrio.rasterFromArray(dem, 40, 30, [500000, 10, 0, 4100000, 0, -10], "EPSG:32611", -1500);
@@ -106,7 +130,7 @@ test("JPEG 2000 to bytes and back", () => {
   assert.throws(() => terrio.rasterFromArray(new Float32Array(4), 2, 2, [0, 1, 0, 2, 0, -1]).toBytes("f.jp2"), /8- and 16-bit integers/);
 });
 
-test("vector layers as Arrow IPC streams, and back", () => {
+test("vector layers as Arrow IPC streams, and back", { skip: needs("parquet") }, () => {
   const ds = terrio.fromGeoJSON(SQUARES, "squares");
   for (const options of [undefined, { geometryEncoding: "geoarrow" }, { geometryEncoding: "geoarrow", coordinates: "interleaved" }]) {
     const bytes = ds.toArrowIPC(0, options);
@@ -304,7 +328,7 @@ const JPEG2000 = [
 ];
 
 for (const [name, size, dtype, crs, transform, sums] of JPEG2000) {
-  test(`${name} reads as GDAL reads it`, { skip: !DATA && "TERRIO_TEST_DATA is not set" }, (t) => {
+  test(`${name} reads as GDAL reads it`, { skip: needs("jp2") || (!DATA && "TERRIO_TEST_DATA is not set") }, (t) => {
     const path = join(DATA, name);
     if (!existsSync(path)) return t.skip(`${name} is missing`);
     const ds = terrio.open(readFileSync(path), name);
@@ -397,7 +421,7 @@ test("zipped shapefiles are read from memory", { skip: !DATA && "TERRIO_TEST_DAT
   assert.ok(fc.features.some((f) => f.properties.NAME === "Côte d'Ivoire"));
 });
 
-test("points from arrays, to LAS, LAZ and COPC bytes and back", () => {
+test("points from arrays, to LAS, LAZ and COPC bytes and back", { skip: needs("pointcloud") }, () => {
   const n = 5000;
   const x = Float64Array.from({ length: n }, (_, i) => 500000 + (i % 100) * 1.25);
   const y = Float64Array.from({ length: n }, (_, i) => 4100000 + Math.floor(i / 100) * 1.5);
@@ -434,7 +458,7 @@ test("points from arrays, to LAS, LAZ and COPC bytes and back", () => {
   assert.equal(fgb.toGeoJSON().features.length, n);
 });
 
-test("PLY and E57 bytes, PDAL's filters and TIN gridding", () => {
+test("PLY and E57 bytes, PDAL's filters and TIN gridding", { skip: needs("pointcloud") }, () => {
   const n = 4000;
   const x = Float64Array.from({ length: n }, (_, i) => 500000 + (i % 80) * 0.5);
   const y = Float64Array.from({ length: n }, (_, i) => 4100000 + Math.floor(i / 80) * 0.5);
@@ -512,7 +536,7 @@ test("PLY and E57 bytes, PDAL's filters and TIN gridding", () => {
   assert.ok(band.some((v) => v !== -9999));
 });
 
-test("COPC files read by octree level", { skip: !DATA && "TERRIO_TEST_DATA is not set" }, (t) => {
+test("COPC files read by octree level", { skip: needs("pointcloud") || (!DATA && "TERRIO_TEST_DATA is not set") }, (t) => {
   const path = join(DATA, "pointcloud", "simple.copc.laz");
   if (!existsSync(path)) return t.skip("simple.copc.laz is missing");
   const file = terrio.openPoints(readFileSync(path), "simple.copc.laz");
@@ -772,12 +796,13 @@ test("remote files read with range requests", async () => {
   }
   const layer = terrio.fromGeoJSON(cells, "cells");
   writeFileSync(join(dir, "cells.fgb"), layer.toBytes("cells.fgb"));
-  writeFileSync(join(dir, "cells.parquet"), layer.toBytes("cells.parquet"));
+  const [parquet, points] = [!needs("parquet"), !needs("pointcloud")];
+  if (parquet) writeFileSync(join(dir, "cells.parquet"), layer.toBytes("cells.parquet"));
   writeFileSync(join(dir, "cells.pmtiles"), layer.toBytes("cells.pmtiles", { maxzoom: 4 }));
   const n = 20000;
   const pts = { x: new Float64Array(n), y: new Float64Array(n), z: new Float64Array(n) };
   for (let i = 0; i < n; i++) [pts.x[i], pts.y[i], pts.z[i]] = [(i * 7919) % 1000, (i * 104729) % 1000, i % 50];
-  writeFileSync(join(dir, "pts.copc.laz"), terrio.pointsFromArrays(pts, "EPSG:32610").toBytes("pts.copc.laz"));
+  if (points) writeFileSync(join(dir, "pts.copc.laz"), terrio.pointsFromArrays(pts, "EPSG:32610").toBytes("pts.copc.laz"));
   const server = await serve(dir);
   try {
     const cog = await terrio.openUrl(server.url + "dem.tif", { blockSize: 16384 });
@@ -814,13 +839,15 @@ test("remote files read with range requests", async () => {
     assert.deepEqual(hits.map((f) => f.properties.id).sort((a, b) => a - b), expected);
     assert.ok(fgb.stats().bytes - before < fgb.size / 4);
 
-    const pq = await terrio.openUrl(server.url + "cells.parquet");
-    const groups = pq.info().rowGroups;
-    assert.equal(groups.reduce((s, g) => s + g.rows, 0), 1500);
-    const last = await pq.read({ rowGroups: [groups.length - 1] });
-    assert.equal(last.toGeoJSON().features.length, groups.at(-1).rows);
-    const inBox = (await pq.read({ bbox: [0, 0, 10, 10] })).toGeoJSON().features;
-    assert.deepEqual(inBox.map((f) => f.properties.id).sort((a, b) => a - b), expected);
+    const pq = parquet && (await terrio.openUrl(server.url + "cells.parquet"));
+    if (pq) {
+      const groups = pq.info().rowGroups;
+      assert.equal(groups.reduce((s, g) => s + g.rows, 0), 1500);
+      const last = await pq.read({ rowGroups: [groups.length - 1] });
+      assert.equal(last.toGeoJSON().features.length, groups.at(-1).rows);
+      const inBox = (await pq.read({ bbox: [0, 0, 10, 10] })).toGeoJSON().features;
+      assert.deepEqual(inBox.map((f) => f.properties.id).sort((a, b) => a - b), expected);
+    }
 
     const tiles = await terrio.openUrl(server.url + "cells.pmtiles");
     assert.equal(tiles.kind, "tiles");
@@ -830,17 +857,19 @@ test("remote files read with range requests", async () => {
     const vt = await tiles.read({ zoom: 4, bbox: [0, 0, 1e6, 1e6] });
     assert.ok(vt.toGeoJSON().features.length > 0);
 
-    const copc = await terrio.openUrl(server.url + "pts.copc.laz");
-    assert.deepEqual([copc.kind, copc.format, copc.crs], ["pointcloud", "COPC", "EPSG:32610"]);
-    const box = await copc.read({ bounds: [100, 100, 300, 300] });
-    const all = terrio.readPoints(readFileSync(join(dir, "pts.copc.laz")), "pts.copc.laz", { bounds: [100, 100, 300, 300] });
-    assert.equal(box.length, all.length);
-    const coarse = await copc.read({ maxLevel: 0 });
-    assert.equal(coarse.length, terrio.readPoints(readFileSync(join(dir, "pts.copc.laz")), "pts.copc.laz", { maxLevel: 0 }).length);
+    const copc = points && (await terrio.openUrl(server.url + "pts.copc.laz"));
+    if (copc) {
+      assert.deepEqual([copc.kind, copc.format, copc.crs], ["pointcloud", "COPC", "EPSG:32610"]);
+      const box = await copc.read({ bounds: [100, 100, 300, 300] });
+      const all = terrio.readPoints(readFileSync(join(dir, "pts.copc.laz")), "pts.copc.laz", { bounds: [100, 100, 300, 300] });
+      assert.equal(box.length, all.length);
+      const coarse = await copc.read({ maxLevel: 0 });
+      assert.equal(coarse.length, terrio.readPoints(readFileSync(join(dir, "pts.copc.laz")), "pts.copc.laz", { maxLevel: 0 }).length);
+    }
 
     await assert.rejects(terrio.openUrl(server.url + "missing.tif"), /404/);
     // The requests the server saw are those terrio counted.
-    const counted = [cog, busy, fgb, pq, tiles, copc].reduce((s, d) => s + d.stats().bytes, 0);
+    const counted = [cog, busy, fgb, pq, tiles, copc].filter(Boolean).reduce((s, d) => s + d.stats().bytes, 0);
     assert.equal(counted, server.stats.bytes);
   } finally {
     server.close();
@@ -848,7 +877,7 @@ test("remote files read with range requests", async () => {
   }
 });
 
-test("remote real files read with range requests, as GDAL reads them", { skip: SKIP_DATA }, async (t) => {
+test("remote real files read with range requests, as GDAL reads them", { skip: needs("parquet", "pointcloud") || SKIP_DATA }, async (t) => {
   if (!existsSync(join(DATA, "ne_places_rg.parquet"))) return t.skip("ne_places_rg.parquet is missing");
   const server = await serve(DATA);
   try {
@@ -906,7 +935,7 @@ test("remote public files", { skip: !process.env.TERRIO_NETWORK_TESTS && "TERRIO
 
 // ─── More formats in memory ─────────────────────────────────────────────────────────────────────
 
-test("netCDF, HDF5 and Zarr in memory; LERC, JPEG XL and JPEG GeoTIFFs", () => {
+test("netCDF, HDF5 and Zarr in memory; LERC, JPEG XL and JPEG GeoTIFFs", { skip: needs("netcdf-hdf5", "zarr") }, () => {
   const data = new Int16Array(2 * 30 * 20).map((_, i) => (i * 37) % 2000);
   const ds = terrio.rasterFromArray(data, 30, 20, [500000, 30, 0, 4100000, 0, -30], "EPSG:32610", -9999);
   for (const [name, options] of [
@@ -943,7 +972,7 @@ test("netCDF, HDF5 and Zarr in memory; LERC, JPEG XL and JPEG GeoTIFFs", () => {
   assert.throws(() => floats.toBytes("j.tif", { compress: "JPEG" }), /JPEG is written for/);
 });
 
-test("rasters written into netCDF-4 groups", () => {
+test("rasters written into netCDF-4 groups", { skip: needs("netcdf-hdf5") }, () => {
   const a = terrio.rasterFromArray(new Float32Array(30 * 20).map((_, i) => i / 7), 30, 20, [500000, 30, 0, 4100000, 0, -30], "EPSG:32610");
   const b = terrio.rasterFromArray(new Int16Array(8 * 6).map((_, i) => i - 9), 8, 6, [-105, 0.5, 0, 40, 0, -0.5], "EPSG:4326", -9999);
   const nc = new terrio.NetcdfGroups();
@@ -963,7 +992,7 @@ test("rasters written into netCDF-4 groups", () => {
   assert.throws(() => new terrio.NetcdfGroups().toBytes(), /no rasters/);
 });
 
-test("Zarr stores and netCDF/HDF5 products as GDAL reads them", { skip: SKIP_DATA }, async (t) => {
+test("Zarr stores and netCDF/HDF5 products as GDAL reads them", { skip: needs("netcdf-hdf5", "zarr") || SKIP_DATA }, async (t) => {
   const { readdirSync, statSync } = await import("node:fs");
   const srtm = terrio.open(readFileSync(join(DATA, "srtm_sub.tif")), "srtm_sub.tif");
   const same = (ds, label) => {

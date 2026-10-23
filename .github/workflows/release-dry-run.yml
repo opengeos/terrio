@@ -60,7 +60,7 @@ jobs:
           node-version: 24
       - name: Build the package as the release does
         run: |
-          wasm-pack build js --release --target web --out-dir pkg --out-name terrio
+          node js/build.mjs
           node .github/scripts/npm-notices.mjs js/pkg
       - name: Check its name and version, and pack it
         working-directory: js/pkg

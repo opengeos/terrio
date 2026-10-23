@@ -141,11 +141,54 @@ jobs:
         run: |
           wasm-pack build js --release --target nodejs --out-dir pkg-node --out-name terrio
           node --test js/tests/node.test.mjs
-      - name: Build the npm package (browsers and bundlers)
+      # The lighter module, `terrio-js/core`: the tests of the formats it leaves out are skipped.
+      - name: Build and test terrio-js/core (Node.js)
         run: |
-          wasm-pack build js --release --target web --out-dir pkg --out-name terrio
+          wasm-pack build js --release --target nodejs --out-dir pkg-node/core --out-name terrio --no-pack -- --no-default-features --features core
+          TERRIO_JS_PKG=../pkg-node/core/terrio.js node --test js/tests/node.test.mjs
+
+  # The npm package as the release builds it: both modules, optimized for size.
+  npm:
+    name: npm package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-pack
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - name: Build the npm package (browsers, bundlers, and Node.js through init)
+        run: |
+          node js/build.mjs
           node .github/scripts/npm-notices.mjs js/pkg
+      - name: Test it, and pack it
+        run: |
+          node --test js/tests/package.test.mjs
+          ls -l js/pkg/terrio_bg.wasm js/pkg/core/terrio_bg.wasm
           cd js/pkg && npm pack --dry-run
+      - name: Import both modules by their package names
+        run: |
+          mkdir -p "$RUNNER_TEMP/app" && cd "$RUNNER_TEMP/app"
+          npm init -y > /dev/null
+          npm install "$GITHUB_WORKSPACE/js/pkg"
+          node --input-type=module -e '
+            import { readFileSync } from "node:fs";
+            import { createRequire } from "node:module";
+            const require = createRequire(process.cwd() + "/");
+            for (const name of ["terrio-js", "terrio-js/core"]) {
+              const m = await import(name);
+              const wasm = require.resolve(name === "terrio-js" ? "terrio-js/terrio_bg.wasm" : "terrio-js/core/terrio_bg.wasm");
+              await m.default({ module_or_path: readFileSync(wasm) });
+              console.log(name, m.version(), JSON.stringify(m.features()));
+            }'
       - uses: actions/upload-artifact@v7
         with:
           name: npm-package

@@ -10,11 +10,17 @@ use crate::{Dataset, crs_string, dtype_name, js_err, parse_options, to_js, typed
 use serde::Deserialize;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
+#[cfg(any(feature = "flatgeobuf", feature = "parquet"))]
 use terrio::formats::VectorDriver;
+#[cfg(feature = "pointcloud")]
 use terrio::pointcloud::PointCloudReader;
 use terrio::sparse::SparseFile;
+#[cfg(feature = "tiles")]
 use terrio::tiles::TileArchive;
-use terrio::vector::{FlatGeobufInfo, RowGroupInfo};
+#[cfg(feature = "flatgeobuf")]
+use terrio::vector::FlatGeobufInfo;
+#[cfg(feature = "parquet")]
+use terrio::vector::RowGroupInfo;
 use terrio::{LazyRaster, Window, WindowOptions};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
@@ -185,10 +191,27 @@ impl Fetcher {
 /// What a remote file is read as.
 enum Reader {
     Raster(LazyRaster),
+    #[cfg(feature = "tiles")]
     Tiles(TileArchive, Option<LazyRaster>),
+    #[cfg(feature = "pointcloud")]
     Points(Box<PointCloudReader>),
+    #[cfg(feature = "flatgeobuf")]
     FlatGeobuf(FlatGeobufInfo),
+    #[cfg(feature = "parquet")]
     Parquet(Vec<RowGroupInfo>),
+}
+
+impl Reader {
+    /// The raster read, for rasters and PMTiles of images.
+    fn raster(&mut self) -> Option<&mut LazyRaster> {
+        match self {
+            Reader::Raster(r) => Some(r),
+            #[cfg(feature = "tiles")]
+            Reader::Tiles(_, r) => r.as_mut(),
+            #[allow(unreachable_patterns)]
+            _ => None,
+        }
+    }
 }
 
 struct State {
@@ -349,6 +372,7 @@ pub async fn open_url(url: String, options: JsValue) -> Result<RemoteDataset, Js
                 "GTiff" => Reader::Raster(
                     LazyRaster::from_sparse(file.clone())?.ok_or_else(|| terrio::Error::InvalidData(format!("'{name}' is not a TIFF")))?,
                 ),
+                #[cfg(feature = "tiles")]
                 "PMTiles" => {
                     let archive = TileArchive::from_sparse(file.clone())?;
                     let raster = if archive.is_vector() {
@@ -358,12 +382,24 @@ pub async fn open_url(url: String, options: JsValue) -> Result<RemoteDataset, Js
                     };
                     Reader::Tiles(archive, raster)
                 }
+                #[cfg(feature = "pointcloud")]
                 "COPC" => Reader::Points(Box::new(terrio::pointcloud::open_points_sparse(file.clone(), &name)?)),
+                #[cfg(feature = "flatgeobuf")]
                 "FlatGeobuf" => {
                     let (info, _) = terrio::vector::read_flatgeobuf_header_sparse(&file, &name)?;
                     Reader::FlatGeobuf(info)
                 }
-                _ => Reader::Parquet(terrio::vector::geoparquet_row_groups_sparse(&file)?),
+                #[cfg(feature = "parquet")]
+                "Parquet" => Reader::Parquet(terrio::vector::geoparquet_row_groups_sparse(&file)?),
+                other => {
+                    let feature = match other {
+                        "PMTiles" => "tiles",
+                        "COPC" => "pointcloud",
+                        "FlatGeobuf" => "flatgeobuf",
+                        _ => "parquet",
+                    };
+                    return Err(crate::not_built(feature));
+                }
             });
             Ok(())
         })
@@ -393,6 +429,7 @@ struct ReadArgs {
 }
 
 /// Keeps the features that intersect a rectangle, as `ogr2ogr -spat` does.
+#[cfg_attr(not(any(feature = "tiles", feature = "flatgeobuf", feature = "parquet")), allow(dead_code))]
 fn spatial_filter(layers: &[terrio::Layer], bbox: Option<[f64; 4]>) -> terrio::Result<Vec<terrio::Layer>> {
     match bbox {
         None => Ok(layers.to_vec()),
@@ -405,9 +442,9 @@ fn spatial_filter(layers: &[terrio::Layer], bbox: Option<[f64; 4]>) -> terrio::R
 
 impl RemoteDataset {
     fn with_raster<T>(&self, f: impl FnOnce(&mut LazyRaster) -> T) -> Result<T, JsError> {
-        match self.state.reader.borrow_mut().as_mut() {
-            Some(Reader::Raster(r)) | Some(Reader::Tiles(_, Some(r))) => Ok(f(r)),
-            _ => Err(JsError::new(&format!("'{}' is not a raster", self.state.name))),
+        match self.state.reader.borrow_mut().as_mut().and_then(Reader::raster) {
+            Some(r) => Ok(f(r)),
+            None => Err(JsError::new(&format!("'{}' is not a raster", self.state.name))),
         }
     }
 
@@ -432,8 +469,12 @@ impl RemoteDataset {
     #[wasm_bindgen(getter)]
     pub fn kind(&self) -> String {
         match self.state.reader.borrow().as_ref() {
-            Some(Reader::Raster(_)) | Some(Reader::Tiles(_, Some(_))) => "raster",
+            Some(Reader::Raster(_)) => "raster",
+            #[cfg(feature = "tiles")]
+            Some(Reader::Tiles(_, Some(_))) => "raster",
+            #[cfg(feature = "tiles")]
             Some(Reader::Tiles(_, None)) => "tiles",
+            #[cfg(feature = "pointcloud")]
             Some(Reader::Points(_)) => "pointcloud",
             _ => "vector",
         }
@@ -468,21 +509,25 @@ impl RemoteDataset {
     /// FlatGeobuf, the feature count, extent and index; for GeoParquet, the row groups.
     pub fn info(&self) -> Result<JsValue, JsError> {
         let mut reader = self.state.reader.borrow_mut();
+        if let Some(r) = reader.as_mut().and_then(Reader::raster) {
+            let info = terrio::info::lazy_raster_info(r, &Default::default()).map_err(js_err)?;
+            return to_js(&terrio::info::Info::Raster(Box::new(info)));
+        }
         match reader.as_mut() {
-            Some(Reader::Raster(r)) | Some(Reader::Tiles(_, Some(r))) => {
-                let info = terrio::info::lazy_raster_info(r, &Default::default()).map_err(js_err)?;
-                to_js(&terrio::info::Info::Raster(Box::new(info)))
-            }
-            Some(Reader::Tiles(a, None)) => to_js(&serde_json::json!({
+            #[cfg(feature = "tiles")]
+            Some(Reader::Tiles(a, _)) => to_js(&serde_json::json!({
                 "format": a.format().name(),
                 "zoomRange": a.zoom_range(),
                 "bounds": a.bounds(),
                 "metadata": a.metadata().into_iter().map(|(k, v)| (k, serde_json::Value::String(v))).collect::<serde_json::Map<_, _>>(),
             })),
+            #[cfg(feature = "pointcloud")]
             Some(Reader::Points(p)) => to_js(p.header()),
+            #[cfg(feature = "flatgeobuf")]
             Some(Reader::FlatGeobuf(i)) => to_js(i),
+            #[cfg(feature = "parquet")]
             Some(Reader::Parquet(g)) => to_js(&serde_json::json!({ "rowGroups": g })),
-            None => Err(JsError::new("not open")),
+            _ => Err(JsError::new("not open")),
         }
     }
 
@@ -532,10 +577,15 @@ impl RemoteDataset {
     #[wasm_bindgen(getter)]
     pub fn crs(&self) -> Option<String> {
         match self.state.reader.borrow().as_ref()? {
-            Reader::Raster(r) | Reader::Tiles(_, Some(r)) => crs_string(&r.crs()),
+            Reader::Raster(r) => crs_string(&r.crs()),
+            #[cfg(feature = "tiles")]
+            Reader::Tiles(_, Some(r)) => crs_string(&r.crs()),
+            #[cfg(feature = "tiles")]
             Reader::Tiles(_, None) => Some("EPSG:3857".into()),
+            #[cfg(feature = "pointcloud")]
             Reader::Points(p) => crs_string(p.crs()),
-            Reader::FlatGeobuf(_) | Reader::Parquet(_) => None,
+            #[allow(unreachable_patterns)]
+            _ => None,
         }
     }
 
@@ -553,12 +603,12 @@ impl RemoteDataset {
             let opts = WindowOptions { bands: vec![band], overview };
             let ds = me
                 .state
-                .run(|r| match r.as_mut() {
-                    Some(Reader::Raster(r)) | Some(Reader::Tiles(_, Some(r))) => {
+                .run(|r| match r.as_mut().and_then(Reader::raster) {
+                    Some(r) => {
                         let w = Self::window(r, window, overview)?;
                         r.read_window(w, &opts)
                     }
-                    _ => Err(terrio::Error::InvalidArgument("not a raster".into())),
+                    None => Err(terrio::Error::InvalidArgument("not a raster".into())),
                 })
                 .await?;
             Ok(typed_array(ds.raster.data))
@@ -578,8 +628,8 @@ impl RemoteDataset {
     pub fn read(&self, options: JsValue) -> js_sys::Promise {
         let me = RemoteDataset { state: self.state.clone() };
         wasm_bindgen_futures::future_to_promise(async move {
-            let points = matches!(me.state.reader.borrow().as_ref(), Some(Reader::Points(_)));
-            if points {
+            #[cfg(feature = "pointcloud")]
+            if matches!(me.state.reader.borrow().as_ref(), Some(Reader::Points(_))) {
                 let o = crate::pointcloud::ReadOptions::parse(options)?;
                 let pc = me
                     .state
@@ -591,16 +641,18 @@ impl RemoteDataset {
                 return Ok(crate::pointcloud::JsPointCloud::from_points(pc).into());
             }
             let a: ReadArgs = parse_options(&options)?;
+            #[allow(unused_variables)]
             let (file, name) = (me.state.file.clone(), me.state.name.clone());
             let ds = me
                 .state
                 .run(|r| -> terrio::Result<Dataset> {
+                    if let Some(r) = r.as_mut().and_then(Reader::raster) {
+                        let w = Self::window(r, a.window, a.overview)?;
+                        let o = WindowOptions { bands: a.bands.clone().unwrap_or_default(), overview: a.overview };
+                        return Ok(Dataset::from_raster(r.read_window(w, &o)?));
+                    }
                     match r.as_mut() {
-                        Some(Reader::Raster(r)) | Some(Reader::Tiles(_, Some(r))) => {
-                            let w = Self::window(r, a.window, a.overview)?;
-                            let o = WindowOptions { bands: a.bands.clone().unwrap_or_default(), overview: a.overview };
-                            Ok(Dataset::from_raster(r.read_window(w, &o)?))
-                        }
+                        #[cfg(feature = "tiles")]
                         Some(Reader::Tiles(_, None)) => {
                             let mut o = terrio::VectorOpenOptions::default();
                             o.tiles.zoom_level = a.zoom;
@@ -611,11 +663,13 @@ impl RemoteDataset {
                                 terrio::Dataset::Raster(r) => Ok(Dataset::from_raster(r)),
                             }
                         }
+                        #[cfg(feature = "flatgeobuf")]
                         Some(Reader::FlatGeobuf(_)) => {
                             let bbox = a.bbox.map(|[a, b, c, d]| (a, b, c, d));
                             let (_, layer) = terrio::vector::read_flatgeobuf_sparse(&file, &name, bbox)?;
                             Ok(Dataset::from_layers(spatial_filter(&[layer], a.bbox)?, VectorDriver::FlatGeobuf))
                         }
+                        #[cfg(feature = "parquet")]
                         Some(Reader::Parquet(_)) => {
                             let bbox = a.bbox.map(|[a, b, c, d]| (a, b, c, d));
                             let layer = terrio::vector::read_geoparquet_sparse(&file, &name, a.row_groups.as_deref(), bbox)?;
@@ -632,14 +686,18 @@ impl RemoteDataset {
     /// PMTiles: a tile's bytes (decompressed), or `undefined` when the archive does not have it.
     /// `y` counts rows from the top, as in XYZ tile URLs.
     #[wasm_bindgen(js_name = getTile)]
+    #[cfg_attr(not(feature = "tiles"), allow(unused_variables))]
     pub fn get_tile(&self, z: u8, x: u32, y: u32) -> js_sys::Promise {
         let me = RemoteDataset { state: self.state.clone() };
         wasm_bindgen_futures::future_to_promise(async move {
             let tile = me
                 .state
-                .run(|r| match r.as_mut() {
-                    Some(Reader::Tiles(a, _)) => a.tile(z, x, y),
-                    _ => Err(terrio::Error::InvalidArgument("not a tile archive".into())),
+                .run(|r| -> terrio::Result<Option<Vec<u8>>> {
+                    match r.as_mut() {
+                        #[cfg(feature = "tiles")]
+                        Some(Reader::Tiles(a, _)) => a.tile(z, x, y),
+                        _ => Err(terrio::Error::InvalidArgument("not a tile archive".into())),
+                    }
                 })
                 .await?;
             Ok(tile.map(|t| js_sys::Uint8Array::from(&t[..]).into()).unwrap_or(JsValue::UNDEFINED))
