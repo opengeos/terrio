@@ -134,19 +134,48 @@ appending to existing datasets through GDAL (`--append`), and updating GDAL data
 
 ## Python wheels with GDAL
 
-The Python wheels on PyPI are pure Rust, without the backend. The `gdal` feature of the Python
-package builds it in from source (see [Installation](installation.md#with-the-gdal-backend)).
-Prebuilt wheels with GDAL are planned as a separate distribution, so that `pip install terrio`
-stays free of C dependencies:
+The `terrio` wheels on PyPI are pure Rust, without the backend. `terrio-gdal` is the same `terrio`
+package built with it, GDAL included:
 
-- A `terrio-gdal` package on PyPI, `pip install terrio[gdal]` pulling it in, built from the same
-  sources with `--features gdal` and its own module name (the `terrio` package would use it when
-  it is installed).
-- Linux, macOS and Windows wheels built with `cibuildwheel` against a GDAL compiled with vcpkg,
-  as rasterio's wheels are (GDAL with PROJ, GEOS, curl, SQLite, HDF5, netCDF and OpenJPEG; no
-  GPL-licensed dependency), repaired with `auditwheel`, `delocate` and `delvewheel` so the
-  libraries ship inside, with GDAL's and PROJ's data files and `GDAL_DATA` and `PROJ_DATA` set
-  on import. The GDAL build is cached between releases: built from scratch it takes about an hour
-  per platform.
-- On conda-forge, a `terrio-gdal` recipe linking conda-forge's `libgdal-core`, which avoids
-  bundling GDAL: the simplest route, and the one to start with.
+```sh
+pip install terrio-gdal
+```
+
+```python
+import terrio
+
+terrio.gdal_version()  # "3.12.4"; None for the terrio wheels
+image = terrio.open_raster("image.ntf")  # NITF: GDAL reads it
+terrio.convert("roads.gpkg", "roads.gdb")  # an ESRI File Geodatabase, written by GDAL
+```
+
+Both distributions install the `terrio` package, so they replace each other: install one or the
+other (`pip uninstall terrio` first when switching).
+
+- Wheels for Linux (x86_64 and aarch64, manylinux_2_28: glibc 2.28 or later), macOS (arm64 and
+  x86_64, macOS 12 or later) and Windows (x64), for Python 3.10 and later. They are built by
+  `.github/workflows/gdal-wheels.yml` on each release, tested on machines without GDAL, and
+  published next to `terrio`.
+- GDAL 3.12 is built with vcpkg (`packaging/terrio-gdal`), as pyogrio's and rasterio's wheels
+  are, with PROJ, GEOS, curl (HTTPS for `/vsicurl/`), SQLite, Expat, HDF5, netCDF, KEA, OpenJPEG,
+  libjpeg, libpng, GIF, WebP, LERC, zstd and liblzma, and no GPL-licensed library. On Linux and
+  macOS they are linked into one GDAL library; `auditwheel`, `delocate` and `delvewheel` put it
+  (and on Windows the DLLs) in the wheel. Their licenses are in the wheel's
+  `LICENSE-GDAL.txt`.
+- GDAL's data files and PROJ's database ship in the package (`terrio/gdal_data`,
+  `terrio/proj_data`), and the bundled GDAL is pointed at them on import, unless the
+  `GDAL_DATA`, `PROJ_DATA` or `PROJ_LIB` environment variables are set. PROJ's search paths are
+  set for GDAL's PROJ only, so pyproj, rasterio and other packages bundling PROJ keep theirs.
+  GDAL's HTTPS requests trust the system's certificates (`CURL_CA_BUNDLE` or `SSL_CERT_FILE`
+  choose others).
+- GDAL's drivers that need libraries left out of the build (HDF4, PostgreSQL, PDF, ECW, MrSID,
+  Arrow and Parquet through GDAL...) are not in them: build terrio against a GDAL that has them
+  instead (below).
+
+Building from source against an installed GDAL (3.4 or later) is the other way, for a GDAL
+with other drivers, or a platform without `terrio-gdal` wheels (see
+[Installation](installation.md#with-the-gdal-backend)): the wheel links the GDAL found at build
+time.
+
+On conda-forge, a `terrio-gdal` package linking conda-forge's `libgdal-core` would avoid
+bundling GDAL; there is none yet.

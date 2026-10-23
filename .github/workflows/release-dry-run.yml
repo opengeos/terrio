@@ -2,8 +2,9 @@ name: Release dry run
 
 # Builds and checks everything a release publishes, without publishing: the wheels for every
 # platform, the source distribution, the Pyodide wheel and the command-line binaries
-# (release-build.yml, as the release builds them), the crates as `cargo publish` packages and
-# verifies them, the npm package, and that LICENSE-THIRD-PARTY.md is up to date.
+# (release-build.yml, as the release builds them), the terrio-gdal wheels (gdal-wheels.yml), the
+# crates as `cargo publish` packages and verifies them, the npm package, and that
+# LICENSE-THIRD-PARTY.md is up to date.
 # Run it by hand before tagging a release (Actions > Release dry run > Run workflow).
 on:
   workflow_dispatch:
@@ -18,6 +19,9 @@ concurrency:
 jobs:
   build:
     uses: ./.github/workflows/release-build.yml
+
+  gdal-wheels:
+    uses: ./.github/workflows/gdal-wheels.yml
 
   crates:
     runs-on: ubuntu-latest

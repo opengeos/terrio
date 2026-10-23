@@ -100,8 +100,22 @@ them with `pyodide.http` first.
 
 ### With the GDAL backend
 
-The wheels on PyPI do not include the [GDAL backend](gdal.md). With GDAL 3.4 or later installed
-(where `pkg-config` or `GDAL_HOME` finds it), build terrio with it from source:
+The `terrio` wheels do not include the [GDAL backend](gdal.md). `terrio-gdal` is the same package
+with it and GDAL bundled (with PROJ's database and GDAL's data files), for Linux (x86_64,
+aarch64), macOS (arm64, x86_64) and Windows (x64):
+
+```sh
+pip install terrio-gdal
+```
+
+It installs the `terrio` package too, so it replaces `terrio` rather than adding to it (`pip
+uninstall terrio` first). `terrio.open_raster`, `terrio.open_vector` and `terrio.rio.open` then fall
+back to GDAL for the formats terrio doesn't read itself (NITF, GRIB, ESRI File Geodatabases...),
+and `terrio.gdal_version()` gives GDAL's version (`None` without GDAL). Nothing else is needed: no
+GDAL on the system.
+
+For a GDAL with other drivers, or another platform, build terrio from source against an installed
+GDAL 3.4 or later (where `pkg-config` or `GDAL_HOME` finds it):
 
 ```sh
 git clone https://github.com/opengeos/terrio
@@ -109,9 +123,7 @@ cd terrio/python && pip install maturin numpy affine
 maturin build --release --features gdal && pip install ../target/wheels/terrio-*.whl
 ```
 
-`terrio.open_raster`, `terrio.open_vector` and `terrio.rio.open` then fall back to GDAL for the
-formats terrio doesn't read itself (NITF, HDF4, GRIB...). The wheel links the GDAL found at build
-time, which must stay installed.
+The wheel links the GDAL found at build time, which must stay installed.
 
 ## JavaScript
 

@@ -5,7 +5,9 @@ name: Release
 # wheel and the command-line binaries to the GitHub release. All three use trusted
 # publishing: no API tokens are stored, each registry trusts this workflow and its environment
 # (pypi, crates-io, npm). The artifacts are built by release-build.yml, which
-# release-dry-run.yml also runs for pull requests, without publishing. Then linux-packages.yml
+# release-dry-run.yml also runs for pull requests, without publishing. The terrio-gdal wheels
+# (terrio with GDAL bundled) are built and tested by gdal-wheels.yml and published to PyPI as
+# their own project, terrio-gdal, which trusts this workflow and the pypi environment too. Then linux-packages.yml
 # updates the AUR packages and builds the COPR one, with the two secrets it describes (the AUR
 # and COPR have no trusted publishing).
 on:
@@ -75,6 +77,28 @@ jobs:
         with:
           name: sdist
           path: dist
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist
+
+  gdal-wheels:
+    uses: ./.github/workflows/gdal-wheels.yml
+
+  # The terrio-gdal wheels, once tested on clean machines (gdal-wheels.yml), after terrio's own:
+  # a failure here leaves the terrio release published.
+  publish-gdal:
+    needs: [gdal-wheels, publish]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: gdal-wheels-*
+          path: dist
+          merge-multiple: true
       - uses: pypa/gh-action-pypi-publish@release/v1
         with:
           packages-dir: dist

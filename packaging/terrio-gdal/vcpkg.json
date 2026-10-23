@@ -1,5 +1,5 @@
 {
-    "$comment": "GDAL for the terrio-gdal wheels: no GPL dependency. The baseline pins every port (GDAL 3.12.4, PROJ 9.8.1); GDAL_VERSION in gdal-wheels.yml follows it.",
+    "$comment": "GDAL for the terrio-gdal wheels: no GPL dependency. The baseline pins every port (GDAL 3.12.4, PROJ 9.9.0); GDAL_VERSION in gdal-wheels.yml follows it.",
     "name": "terrio-gdal",
     "version-string": "0",
     "dependencies": [
@@ -27,5 +27,5 @@
             ]
         }
     ],
-    "builtin-baseline": "89dac9685f8d0ebd0a07d8b93ed51215c3a2fb2c"
+    "builtin-baseline": "23b8a8e7409c2d6346114a88e834165bde79a51c"
 }

@@ -135,7 +135,8 @@ already in memory and for WebAssembly, which has no file system.
 An optional GDAL backend (the `gdal` cargo feature, off by default and the only C dependency)
 opens what terrio has no driver for (HDF4, GRIB, NITF and the rest of GDAL's formats)
 into the same data model, and writes rasters with GDAL's drivers: `terrio::open("GDAL:file.hdf")`,
-`terrio info --driver gdal`, or a plain path when terrio's own drivers cannot open it.
+`terrio info --driver gdal`, or a plain path when terrio's own drivers cannot open it. In Python,
+`pip install terrio-gdal` installs terrio with it and GDAL bundled.
 
 Every driver is on by default; each family of them is a cargo feature that can be turned off,
 for a smaller dependency tree and WebAssembly module: `parquet`, `remote` (URLs and object

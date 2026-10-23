@@ -8,6 +8,10 @@ NumPy (and the small `affine` package).
 pip install terrio
 ```
 
+`pip install terrio-gdal` instead installs the same package with the optional
+[GDAL backend](gdal.md#python-wheels-with-gdal) and GDAL bundled, for the formats terrio doesn't
+read itself.
+
 The [quickstart notebook](notebooks.md) runs these functions on real data, in Google Colab or locally.
 
 Coming from rasterio? `import terrio.rio as rasterio` runs typical rasterio scripts unchanged: see
