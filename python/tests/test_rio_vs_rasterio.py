@@ -65,6 +65,14 @@ FMA_SENSITIVE = {
     "rasterize: --res, --dimensions, --bounds, --like, --property, --default-value, --fill, "
     "--all, --nodata, an existing output": 0.03,
 }
+# Fused multiply-adds also round GDAL's RPC polynomials differently, so the RPC
+# transformer's coordinates differ there in the last bits (2.8e-14): the tolerance each check gets
+# on macOS arm64, relative and, for values near zero, absolute.
+FMA_ROUNDING = {
+    "RPCs: RPCTransformer forward (iterative) and inverse, with heights, RPC_HEIGHT(_SCALE), a DEM "
+    "(bilinear, near, cubic, missing value, nodata holes); xy/rowcol(rpcs); dataset xy/index by "
+    "TransformMethod.rpcs": 1e-14,
+}
 MACOS_ARM = sys.platform == "darwin" and platform.machine() == "arm64"
 
 
@@ -72,6 +80,10 @@ MACOS_ARM = sys.platform == "darwin" and platform.machine() == "arm64"
 def test_check(check, scratch):
     if MACOS_ARM and check.name in FMA_SENSITIVE:
         check = dataclasses.replace(check, expect="tolerance", max_frac=FMA_SENSITIVE[check.name])
+    if MACOS_ARM and check.name in FMA_ROUNDING:
+        check = dataclasses.replace(
+            check, expect="tolerance", rtol=FMA_ROUNDING[check.name], atol=1e-12
+        )
     data = _data()
     if check.needs_data and data is None:
         pytest.skip("TERRIO_TEST_DATA is not set")
