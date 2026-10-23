@@ -1,0 +1,61 @@
+//! Run the real commands through vector/raster I/O, including aliases and error handling.
+
+use std::path::Path;
+use std::process::{Command, Output};
+
+fn run(args: &[&str], dir: &Path) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_terrio")).args(args).current_dir(dir).output().unwrap()
+}
+
+fn ok(args: &[&str], dir: &Path) {
+    let result = run(args, dir);
+    assert!(result.status.success(), "{args:?}: {}", String::from_utf8_lossy(&result.stderr));
+}
+
+fn first(path: &Path) -> terrio::Layer {
+    terrio::open_vector(path.to_str().unwrap(), &Default::default()).unwrap().layers.remove(0)
+}
+
+#[test]
+fn geometry_commands_sample_multiple_rasters_and_create_a_footprint() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    std::fs::write(d.join("input.geojson"), r#"{"type":"FeatureCollection","features":[{"type":"Feature","id":9,"properties":{"label":"square"},"geometry":{"type":"MultiPolygon","coordinates":[[[[0,0],[1,0],[1,1],[0,1],[0,0]]],[[[1,1],[2,1],[2,2],[1,2],[1,1]]]]}}]}"#).unwrap();
+    ok(&["multipart-to-singlepart", "input.geojson", "parts.gpkg", "--nln", "parts"], d);
+    assert_eq!(first(&d.join("parts.gpkg")).len(), 2);
+    ok(&["centroids", "parts.gpkg", "points.gpkg", "--layer", "parts"], d);
+    let points = first(&d.join("points.gpkg"));
+    assert_eq!(points.len(), 2);
+    let Some(terrio::Geometry::Point(c)) = &points.features[0].geometry else { panic!() };
+    assert_eq!((c.x, c.y), (0.5, 0.5));
+    ok(&["extract-vertices", "input.geojson", "vertices.gpkg"], d);
+    assert_eq!(first(&d.join("vertices.gpkg")).len(), 10);
+
+    let cfg =
+        terrio::RasterConfig { cols: 2, rows: 2, cell_size: 1.0, data_type: terrio::DataType::F64, nodata: -99.0, ..Default::default() };
+    let mut ds = terrio::RasterDataset::new(terrio::Raster::from_data(cfg, vec![10.0, 20.0, -99.0, 40.0]).unwrap(), true);
+    ds.raster.crs.epsg = Some(4326);
+    for name in ["a.tif", "b.tif"] {
+        terrio::write_raster_dataset(&ds, d.join(name).to_str().unwrap(), &Default::default()).unwrap();
+    }
+    ok(&["sample", "points.gpkg", "samples.gpkg", "--raster", "a.tif", "--raster", "b.tif", "--prefix", "a", "--prefix", "b"], d);
+    let samples = first(&d.join("samples.gpkg"));
+    assert_eq!(samples.features[0].attributes[1..], [terrio::FieldValue::Null, terrio::FieldValue::Null]);
+    assert_eq!(samples.features[1].attributes[1..], [terrio::FieldValue::Float(20.0), terrio::FieldValue::Float(20.0)]);
+    assert_eq!(samples.schema.fields()[1].name, "a_b1");
+    assert_eq!(samples.schema.fields()[2].name, "b_b1");
+    ok(&["footprint", "a.tif", "footprint.gpkg"], d);
+    assert_eq!(first(&d.join("footprint.gpkg")).len(), 1);
+
+    for (args, message) in [
+        (vec!["sample", "points.gpkg", "bad.gpkg", "--raster", "a.tif", "--band", "0"], "band 0"),
+        (vec!["sample", "input.geojson", "bad.gpkg", "--raster", "a.tif"], "not a point"),
+        (vec!["sample", "points.gpkg", "bad.gpkg", "--raster", "a.tif", "--prefix", "x", "--prefix", "y"], "one --prefix"),
+        (vec!["footprint", "a.tif", "bad.gpkg", "--band", "0"], "band 0"),
+    ] {
+        let result = run(&args, d);
+        assert!(!result.status.success());
+        assert!(String::from_utf8_lossy(&result.stderr).contains(message), "{}", String::from_utf8_lossy(&result.stderr));
+        assert!(!d.join("bad.gpkg").exists());
+    }
+}

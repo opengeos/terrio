@@ -11,6 +11,7 @@ pub mod info;
 pub mod mosaic;
 pub mod points;
 pub mod polygonize;
+pub mod processing;
 pub mod proximity;
 pub mod rasterize;
 pub mod rasterout;

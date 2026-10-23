@@ -65,6 +65,11 @@ terrio convert counties.gpkg tn.gpkg --spat -90.3 34.9 -81.6 36.7  # through the
 terrio convert more.shp world.gpkg --append --nln countries          # update an existing GeoPackage
 terrio rasterize counties.gpkg pop.tif -a POPULATION --tr 0.01 0.01 --ot Int32
 terrio polygonize landcover.tif landcover.gpkg --8
+terrio centroid countries.gpkg centroids.gpkg     # planar centroids, keeping attributes and CRS
+terrio singlepart countries.gpkg parts.gpkg       # split multipart geometries and collections
+terrio vertices roads.gpkg nodes.gpkg             # vertices with source/part/ring/vertex indices
+terrio footprint image.tif footprint.gpkg         # exact valid-data boundary, including holes
+terrio sample sites.gpkg sampled.gpkg --raster dem.tif --raster rain.tif  # values at points
 terrio crs EPSG:32610 --to EPSG:4326 699960 3900000
 terrio translate dem.tif sub.tif --projwin -105.7 39.8 -105.3 39.5 --ot Int16   # like gdal_translate
 terrio translate img.tif small.tif --outsize 25% 25% -r average --scale 0 4000 0 255 --ot Byte
@@ -257,6 +262,7 @@ python scripts/compare_windows_with_gdal.py local ../terrio-data  # windowed and
 python scripts/compare_windows_with_gdal.py remote     # the same on public COGs, with bytes fetched
 cargo test -- --ignored                                # tests that read public cloud files
 python scripts/compare_vector_ops_with_gdal.py ../terrio-data  # convert options, rasterize, polygonize
+python scripts/compare_processing_with_gdal.py ../terrio-data  # centroids, singleparts, vertices, footprints, sampling
 python scripts/compare_ops_with_gdal.py ../terrio-data # compare translate, warp and mosaic with GDAL's tools
 python scripts/compare_dem_calc_with_gdal.py ../terrio-data  # dem, calc, proximity and sieve vs GDAL
 python scripts/compare_stac_geozarr.py stac            # STAC footprints and STACIT mosaics vs GDAL (Earth Search)

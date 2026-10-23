@@ -32,6 +32,19 @@ enum Command {
     Rasterize(cmd::rasterize::Args),
     /// Turn a raster band into polygons of connected pixels with the same value.
     Polygonize(cmd::polygonize::Args),
+    /// One planar, two-dimensional centroid per feature, preserving attributes and CRS.
+    #[command(visible_alias = "centroids")]
+    Centroid(cmd::processing::GeometryArgs),
+    /// Split multipart geometries and collections, preserving attributes and Z/M.
+    #[command(visible_alias = "multipart-to-singlepart")]
+    Singlepart(cmd::processing::GeometryArgs),
+    /// Extract vertices as points, with source attributes and part/ring/vertex indices.
+    #[command(visible_alias = "extract-vertices")]
+    Vertices(cmd::processing::GeometryArgs),
+    /// Exact valid-data footprint of a raster, with holes and disconnected regions.
+    Footprint(cmd::processing::FootprintArgs),
+    /// Sample one or more raster bands at points, transforming coordinates for each raster.
+    Sample(cmd::processing::SampleArgs),
     /// Subset, resize, rescale or change the type of a raster (like gdal_translate).
     Translate(cmd::translate::Args),
     /// Reproject and resample rasters (like gdalwarp).
@@ -103,6 +116,11 @@ fn run_on_this_thread(args: Vec<OsString>, terrio: Option<Vec<OsString>>) -> i32
         Command::Crs(a) => cmd::crs::run(a),
         Command::Rasterize(a) => cmd::rasterize::run(a),
         Command::Polygonize(a) => cmd::polygonize::run(a),
+        Command::Centroid(a) => cmd::processing::centroid(a),
+        Command::Singlepart(a) => cmd::processing::singlepart(a),
+        Command::Vertices(a) => cmd::processing::vertices(a),
+        Command::Footprint(a) => cmd::processing::footprint(a),
+        Command::Sample(a) => cmd::processing::sample(a),
         Command::Translate(a) => cmd::translate::run(a),
         Command::Warp(a) => cmd::warp::run(a),
         Command::Mosaic(a) => cmd::mosaic::run(a),

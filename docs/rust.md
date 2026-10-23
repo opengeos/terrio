@@ -131,6 +131,17 @@ rasters; `vector_filter` (with the `sql` parser), `rasterize` and `polygonize`; 
 (with its expression parser and NumPy-typed evaluator), `proximity` and `sieve`. Each takes an
 options struct mirroring the command-line options.
 
+`ops::geometry::{centroids, singleparts, vertices}` transforms vector layers while preserving
+their CRS and attributes. `ops::footprint::footprint` extracts an exact raster valid-data
+footprint with `FootprintOptions` (bands, intersection, optional mask).
+`ops::sample::sample` accepts a point layer and a slice of `SampleInput` values, each naming a
+raster, a band and an output field. It transforms points into each raster's CRS for sampling,
+retains their original geometries, and records missing samples as nulls. These operations are
+available in the core crate, including WebAssembly builds, without additional features.
+
+The commands are also available through the Python package's `terrio` CLI and MCP. Dedicated
+Python and JavaScript operation bindings are not yet provided for these additions.
+
 ```rust,no_run
 use terrio::ops::{Resampling, translate, warp};
 

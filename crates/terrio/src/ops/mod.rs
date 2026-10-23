@@ -2,7 +2,8 @@
 //! [`mosaic`] (`gdalbuildvrt` and `gdal_merge.py`), [`vrt`] (GDAL's virtual raster format),
 //! [`rasterize`] (`gdal_rasterize`), [`polygonize`] (`gdal_polygonize`), [`dem`] (`gdaldem`),
 //! [`calc`] (`gdal_calc.py`), [`proximity`] (`gdal_proximity.py`), [`sieve`] (`gdal_sieve.py`),
-//! and the vector filtering of `ogr2ogr` ([`vector_filter`], [`sql`]).
+//! [`geometry`] (centroids, singleparts and vertices), [`footprint`], [`sample`], and the vector
+//! filtering of `ogr2ogr` ([`vector_filter`], [`sql`]).
 //!
 //! ```no_run
 //! use terrio::ops::{calc, dem};
@@ -22,12 +23,15 @@
 
 pub mod calc;
 pub mod dem;
+pub mod footprint;
 pub mod gcp;
+pub mod geometry;
 pub mod mosaic;
 pub mod polygonize;
 pub mod proximity;
 pub mod rasterize;
 pub mod rpc;
+pub mod sample;
 pub mod sieve;
 pub mod sql;
 pub(crate) mod strips;

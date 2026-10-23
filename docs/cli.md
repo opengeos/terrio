@@ -10,6 +10,11 @@ terrio <COMMAND>
   mosaic      Mosaic rasters into one, or into a virtual raster (like gdalbuildvrt and gdal_merge)
   rasterize   Burn vector geometries into a raster
   polygonize  Turn a raster band into polygons of connected pixels with the same value
+  centroid    One planar centroid per feature
+  singlepart  Split multipart geometries and collections into individual features
+  vertices    Extract vertices as points with source attributes and vertex indices
+  footprint   Exact valid-data footprint of a raster
+  sample      Sample multiple raster bands at vector points
   dem         Terrain analysis: hillshade, slope, aspect, color relief, TRI, TPI, roughness (like gdaldem)
   calc        Raster algebra: band math in NumPy syntax over one or more rasters (like gdal_calc.py)
   proximity   Distance from every pixel to the nearest target pixel (like gdal_proximity.py)
@@ -28,6 +33,74 @@ Install it with `curl -LsSf https://terrio.opengeos.org/install.sh | sh` (on Win
 Every input can be a local path, a URL, a cloud object or a zip archive member; see
 [Remote Data](remote-data.md). Outputs are local. Run `terrio <COMMAND> --help` for the full
 option list.
+
+## Geometry operations
+
+```sh
+terrio centroid countries.gpkg centroids.gpkg
+terrio singlepart countries.gpkg parts.gpkg --layer countries
+terrio vertices roads.gpkg nodes.gpkg
+```
+
+All three preserve the input attributes and CRS. `centroid` (alias `centroids`) computes a 2D,
+planar centroid: area-weighted for polygons with holes subtracted, length-weighted for lines,
+and equally weighted for points. Collections use the highest non-degenerate dimension. Empty
+and null geometries yield null centroids, retaining the feature. The calculation uses the input
+coordinate units; reproject geographic data first when a centroid in linear units is needed.
+
+`singlepart` (alias `multipart-to-singlepart`) recursively splits multipart geometries and
+collections, retaining Z/M and assigning new sequential feature IDs from 1. Null geometries
+and empty single geometries are retained; empty multipart geometries yield no features.
+
+`vertices` (alias `extract-vertices`) retains Z/M and adds `source_fid` (text, preserving all
+64-bit IDs), `part_index`, `ring_index` and `vertex_index`. Indices start at 0; polygon exteriors
+are ring 0, while non-polygons have a null ring index. Parts follow recursive traversal order.
+The repeated closing vertex of each polygon ring is included, including when the format reader
+omits it internally. Null and empty geometries yield no vertices. Field name collisions are
+resolved case-insensitively with `_2`, `_3`, etc.
+
+Vector inputs accept repeated `--layer`/`-l`. These commands, `footprint` and `sample` accept
+`-f FORMAT`, `--nln NAME` (one output layer), `--append` and `--overwrite`. As with `convert`,
+the default writes a new dataset, replacing an existing file; `--overwrite` replaces only
+the named layers of a GeoPackage, preserving its other layers.
+
+## footprint
+
+```sh
+terrio footprint image.tif footprint.gpkg
+terrio footprint image.tif footprint.gpkg --band 1,2 --intersection
+terrio footprint image.tif footprint.gpkg --mask valid.tif
+```
+
+Writes one multipolygon of all finite, non-nodata pixels, preserving holes, disconnected areas,
+the full affine geotransform (including rotated/south-up grids) and the source CRS. Boundaries
+follow exact pixel edges, without overviews or simplification. An entirely invalid raster
+produces an empty layer. By default, any band may be valid; `--intersection` requires all selected
+bands to be valid. `--band` selects bands from 1; omitted, it uses all bands.
+
+`--mask` further restricts the footprint to finite, nonzero, non-nodata pixels of the mask's first
+band; its grid and CRS must match the input. Alpha bands and external mask files are not used as
+implicit masks. Complex bands and geolocation arrays are unsupported.
+
+## sample
+
+```sh
+terrio sample sites.gpkg samples.gpkg --raster dem.tif --raster rain.tif
+terrio sample sites.gpkg samples.gpkg --raster image.tif --band 1,2,3 --prefix image
+```
+
+Samples the pixel containing each point, adding a Float field for each raster/band pair. Repeat
+`--raster` for multiple rasters; `--band` selects the same bands (from 1, default 1) from each.
+Fields are named `FILE_STEM_bN`, or `PREFIX_bN` when one `--prefix` is supplied per raster in the
+same order. Name collisions get `_2`, `_3`, etc.; existing attributes remain intact.
+
+Each raster may have a different resolution, affine grid or CRS. Coordinates are transformed
+for sampling while the output retains the original point geometries, Z/M, IDs, attributes and
+CRS. Nodata, non-finite pixels, out-of-bounds locations and null geometries yield null values.
+Non-point geometries are rejected; use `singlepart` for multipart points first. Missing CRSs
+are accepted only when both the points and the raster lack a CRS, using coordinates directly.
+Complex bands and geolocation arrays are unsupported. Rasters are loaded into memory, and
+sample values are represented as 64-bit floats (integers above 2⁵³ may lose precision).
 
 ## info
 

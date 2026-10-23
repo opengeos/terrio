@@ -237,6 +237,11 @@ pub fn polygonize(ds: &RasterDataset, options: &PolygonizeOptions) -> Result<Lay
                 if let Some(first) = coords.first().cloned() {
                     coords.push(first);
                 }
+                // A positive affine determinant reverses the winding expected below. Normalize
+                // before classifying rings; otherwise a south-up exterior is mistaken for a hole.
+                if gt[1] * gt[5] - gt[2] * gt[4] > 0.0 {
+                    coords.reverse();
+                }
                 rings[label as usize].push(coords);
             }
         }
@@ -310,7 +315,8 @@ fn split_at_repeats(ring: Vec<(usize, usize)>) -> Vec<Vec<(usize, usize)>> {
 
 /// Twice the signed area of a closed ring: positive when counter-clockwise.
 fn signed_area(r: &[Coord]) -> f64 {
-    r.windows(2).map(|w| w[0].x * w[1].y - w[1].x * w[0].y).sum()
+    let Some(origin) = r.first() else { return 0.0 };
+    r.windows(2).map(|w| (w[0].x - origin.x) * (w[1].y - origin.y) - (w[1].x - origin.x) * (w[0].y - origin.y)).sum()
 }
 
 #[cfg(test)]
