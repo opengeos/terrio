@@ -947,10 +947,10 @@ class XRasterBase:
             xarray.DataArray | xarray.Dataset: The object with its GCPs.
         """
         grid_mapping_name = self.grid_mapping if grid_mapping_name is None else grid_mapping_name
-        data_obj = self._get_obj(inplace=True)
+        data_obj = self._get_obj(inplace=inplace)
         if gcp_crs:
             data_obj = data_obj.terrio.write_crs(
-                gcp_crs, grid_mapping_name=grid_mapping_name, inplace=inplace
+                gcp_crs, grid_mapping_name=grid_mapping_name, inplace=True
             )
         if grid_mapping_name not in data_obj.coords:
             data_obj.coords[grid_mapping_name] = xarray.Variable((), 0)
@@ -1003,9 +1003,9 @@ class XRasterBase:
             xarray.DataArray | xarray.Dataset: The object with its RPCs.
         """
         grid_mapping_name = self.grid_mapping if grid_mapping_name is None else grid_mapping_name
-        data_obj = self._get_obj(inplace=True)
+        data_obj = self._get_obj(inplace=inplace)
         data_obj = data_obj.terrio.write_crs(
-            "epsg:4326", grid_mapping_name=grid_mapping_name, inplace=inplace
+            "epsg:4326", grid_mapping_name=grid_mapping_name, inplace=True
         )
         if grid_mapping_name not in data_obj.coords:
             data_obj.coords[grid_mapping_name] = xarray.Variable((), 0)

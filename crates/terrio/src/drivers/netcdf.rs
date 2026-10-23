@@ -295,8 +295,7 @@ pub(crate) fn data_variable_paths(path: &Path) -> Result<Vec<String>> {
     Ok(data_variables(&vars).iter().map(|r| r.full.clone()).collect())
 }
 
-/// The prefix of metadata items for terrio's own use, which `info` and `terrio.rio` do not show.
-pub(crate) const INTERNAL: &str = "TERRIO#";
+use crate::info::INTERNAL;
 
 /// GDAL's metadata of a variable read as a raster: the attributes of the variable and of its
 /// coordinate variables (`var#attr`), its other dimensions (`NETCDF_DIM_EXTRA`, `_DEF`,
@@ -623,8 +622,7 @@ fn read_file(f: &NcFile, path: &Path, hdf5: &dyn Fn() -> Option<hdf5_reader::Hdf
     let container = variable.is_none() && candidates.len() > 1;
     if !container {
         gdal_variable_metadata(f, var_ref, (y_dim, x_dim), interleaved || complex.is_some(), &mut raster.metadata);
-    }
-    if container {
+    } else {
         for (i, (n, d)) in subdatasets(&vars, &path.display().to_string()).into_iter().enumerate() {
             raster.metadata.push((format!("SUBDATASET_{}_NAME", i + 1), n));
             raster.metadata.push((format!("SUBDATASET_{}_DESC", i + 1), d));

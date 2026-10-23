@@ -398,6 +398,9 @@ def test_subdatasets_gcps_and_rpcs(tmp_path):
         for c in (0, 3)
     ]
     da = xr.DataArray(np.zeros((1, 3, 4), "uint8"), dims=("band", "y", "x"))
+    # Without a CRS too, a copy: the caller's array is left as it was.
+    da.terrio.write_gcps(gcps, None)
+    assert "spatial_ref" not in da.coords and da.terrio.get_gcps() is None
     da = da.terrio.write_gcps(gcps, "EPSG:4326")
     assert [(g.row, g.col, g.x, g.y) for g in da.terrio.get_gcps()] == [
         (g.row, g.col, g.x, g.y) for g in gcps
