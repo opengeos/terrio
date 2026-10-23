@@ -661,12 +661,29 @@ def _s_msk_sidecars(rio: Any, ctx: Ctx) -> Any:
         dst.write_mask(mask)
     with rio.open(str(ctx.out / "ext.tif"), "r+") as dst:
         dst.write(data[:1] + 1, 1)
-    for name in ("ext.tif", "m.envi"):
+    # With overviews: the sidecar gets its own, read for lower resolutions.
+    with rio.Env(GDAL_TIFF_INTERNAL_MASK=False):
+        with rio.open(str(ctx.out / "ovr.tif"), "w", **profile) as dst:
+            dst.write(data)
+            dst.write_mask(mask)
+            dst.build_overviews([2, 4], rio.enums.Resampling.nearest)
+    # Written again without a mask: the earlier sidecar goes.
+    with rio.open(str(ctx.out / "gone.tif"), "w", **profile) as dst:
+        dst.write(data)
+        dst.write_mask(mask)
+    with rio.Env(GDAL_TIFF_INTERNAL_MASK=False):
+        with rio.open(str(ctx.out / "gone.tif"), "w", **profile) as dst:
+            dst.write(data)
+            dst.write_mask(mask)
+    with rio.open(str(ctx.out / "gone.tif"), "w", **profile) as dst:
+        dst.write(data)
+    out.append(os.path.exists(str(ctx.out / "gone.tif.msk")))
+    for name in ("ext.tif", "m.envi", "ovr.tif"):
         with rio.open(str(ctx.out / name)) as ds:
-            files = sorted(os.path.basename(f) for f in ds.files if not f.endswith((".aux.xml", ".hdr")))
+            files = sorted(os.path.basename(f) for f in ds.files if not f.endswith(".aux.xml"))
             out.append([files, ds.mask_flag_enums, ds.read_masks(), ds.read_masks(2, window=W(30, 0, 60, 40)), ds.dataset_mask(out_shape=(50, 75))])
         with rio.open(str(ctx.out / name) + ".msk") as m:
-            out.append([m.tags(), m.read(1)])
+            out.append([m.tags(), m.read(1), m.overviews(1)])
     return out
 
 

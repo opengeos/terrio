@@ -2400,6 +2400,8 @@ class DatasetWriter(DatasetReader):
                     os.replace(target, self._path)
                 if sidecar_mask:
                     self._write_mask_sidecar()
+                else:
+                    self._remove_stale_mask_sidecar()
             except Exception as err:
                 if os.path.exists(tmp):
                     os.remove(tmp)
@@ -2422,6 +2424,8 @@ class DatasetWriter(DatasetReader):
                 os.replace(target, self._path)
             if sidecar_mask:
                 self._write_mask_sidecar()
+            else:
+                self._remove_stale_mask_sidecar()
         except Exception as err:
             if os.path.exists(tmp):
                 os.remove(tmp)
@@ -2432,26 +2436,63 @@ class DatasetWriter(DatasetReader):
         """Writes the mask as GDAL's `.msk` sidecar of the dataset.
 
         The sidecar is a tiled, Deflate-compressed GeoTIFF without georeferencing, its band the
-        per-dataset mask (0 or 255) flagged by `INTERNAL_MASK_FLAGS_1=2`, with the dataset's
-        overviews, as GDAL writes it.
+        per-dataset mask (0 or 255) flagged for every band by `INTERNAL_MASK_FLAGS_<n>=2`, with
+        the dataset's overviews, as GDAL writes it. It is written beside its path and renamed
+        into place; a mask held in a file-backed array is written in slabs of rows.
         """
         assert self._mask is not None
-        mask = np.where(np.asarray(self._mask) != 0, np.uint8(255), np.uint8(0))[np.newaxis]
-        m = _terrio.Raster.from_array(
-            mask,
-            (0.0, 1.0, 0.0, 0.0, 0.0, 1.0),
-            None,
-            None,
-            {"INTERNAL_MASK_FLAGS_1": "2"},
-        )
-        m.write(
-            self._path + ".msk",
-            driver="GTiff",
-            compress="DEFLATE",
-            options={"TILED": "YES", "GEOREFERENCED": "NO"},
-            overviews=self._overview_factors or None,
-            overview_resampling="nearest",
-        )
+        target = self._path + ".msk"
+        tmp = target + f".tmp-{uuid.uuid4().hex}"
+        flags = {f"INTERNAL_MASK_FLAGS_{b}": "2" for b in range(1, self._count + 1)}
+        opts = {"TILED": "YES", "GEOREFERENCED": "NO"}
+        gt = (0.0, 1.0, 0.0, 0.0, 0.0, 1.0)
+        try:
+            if isinstance(self._mask, np.memmap) and not self._overview_factors:
+                w = _terrio.GeoTiffWriter(
+                    tmp,
+                    self.width,
+                    self.height,
+                    1,
+                    "uint8",
+                    gt,
+                    None,
+                    None,
+                    flags,
+                    compress="DEFLATE",
+                    options=opts,
+                )
+                try:
+                    n = max(1, (16 << 20) // max(1, self.width))
+                    for y in range(0, self.height, n):
+                        part = np.asarray(self._mask[y : y + n])
+                        w.write(np.where(part != 0, np.uint8(255), np.uint8(0))[np.newaxis])
+                except BaseException:
+                    with contextlib.suppress(Exception):
+                        w.close()
+                    raise
+                w.close()
+            else:
+                mask = np.where(np.asarray(self._mask) != 0, np.uint8(255), np.uint8(0))
+                m = _terrio.Raster.from_array(mask[np.newaxis], gt, None, None, flags)
+                m.write(
+                    tmp,
+                    driver="GTiff",
+                    compress="DEFLATE",
+                    options=opts,
+                    overviews=self._overview_factors or None,
+                    overview_resampling="nearest",
+                )
+            os.replace(tmp, target)
+        except BaseException:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+            raise
+
+    def _remove_stale_mask_sidecar(self) -> None:
+        """Removes a `.msk` sidecar left by an earlier write of a dataset now without one."""
+        stale = self._path + ".msk"
+        if os.path.isfile(stale):
+            os.remove(stale)
 
     def _write_streaming(
         self,

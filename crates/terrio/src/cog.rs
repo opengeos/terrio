@@ -595,8 +595,17 @@ impl From<RasterDataset> for LazyRaster {
 /// overview of that size, else its full-resolution mask sampled by nearest neighbour, as GDAL
 /// does. 255 for valid pixels, 0 for invalid ones.
 fn read_sidecar_mask(m: &mut LazyRaster, window: Window, (lw, lh): (usize, usize)) -> Result<Vec<u8>> {
+    if window.width == 0 || window.height == 0 {
+        return Ok(Vec::new());
+    }
     let opts = |overview| WindowOptions { bands: vec![1], overview };
-    let to_mask = |ds: RasterDataset| ds.raster.data.to_f64_vec().into_iter().map(|v| if v != 0.0 { 255 } else { 0 }).collect::<Vec<u8>>();
+    // A Byte band (as GDAL writes masks); another type read through doubles.
+    let to_mask = |ds: RasterDataset| -> Vec<u8> {
+        match ds.raster.data {
+            RasterData::U8(v) => v.into_iter().map(|b| if b != 0 { 255 } else { 0 }).collect(),
+            other => other.to_f64_vec().into_iter().map(|v| if v != 0.0 { 255 } else { 0 }).collect(),
+        }
+    };
     let (fw, fh) = (m.width(), m.height());
     if (lw, lh) == (fw, fh) {
         return m.read_window(window, &opts(None)).map(to_mask);
