@@ -146,11 +146,18 @@ the operators (`+ - * / & | < <= == != >= >`, `not`, `truth`), `map`, `partial`,
 keyword arguments (`:axis 0`), Python builtins and the methods of NumPy arrays (`(mean (read
 1))`, `(astype (read 1) 'float32')`), and `sieve`. Where terrio has no equivalent the command
 says so and fails: `calc`'s `fillnodata`, `env --gdal-data` and `--proj-data` (terrio uses
-neither GDAL nor PROJ), `--gdal-version`; `env --formats` lists terrio's drivers. Two differences
-remain: `overview` cannot save the resampling method in the `rio_overview` metadata domain
-(terrio writes the default domain only), so `--ls` reports it as `unknown` and `--rebuild` uses
-`--resampling`; and coordinates projected by terrio (bounds, blocks, shapes in WGS 84, `transform`)
-differ from PROJ's in the last digits.
+neither GDAL nor PROJ), `--gdal-version`; `env --formats` lists terrio's drivers. These
+differences remain:
+
+- `overview` cannot save the resampling method in the `rio_overview` metadata domain (terrio
+  writes the default domain only), so `--ls` reports it as `unknown` and `--rebuild` uses
+  `--resampling`.
+- `overview --build` (and any command opening a file for update) on a COG: GDAL refuses to update
+  the COG layout unless `IGNORE_COG_LAYOUT_BREAK` is set; terrio.rio rewrites the file.
+- `merge` and `stack` with `--resampling cubic` (and other kernels) differ next to nodata pixels,
+  as the API's resampled reads do (see below).
+- Coordinates projected by terrio (bounds, blocks, shapes in WGS 84, `transform`) differ from
+  PROJ's in the last digits.
 
 `scripts/compare_rio_with_rasterio.py` runs every command twice, with rasterio's `rio` and with
 `terrio-rio`, with the same arguments, and compares the exit statuses, the outputs (JSON field by

@@ -649,7 +649,7 @@ def cmd_info(args: argparse.Namespace, env: Any) -> None:
             info["gcps"] = {"points": [p.asdict() for p in gcps]}
             if gcps_crs:
                 epsg = gcps_crs.to_epsg()
-                info["gcps"]["crs"] = f"EPSG:{epsg}" if epsg else src.crs.to_string()
+                info["gcps"]["crs"] = f"EPSG:{epsg}" if epsg else gcps_crs.to_string()
             else:
                 info["gcps"]["crs"] = None
             info["gcps"]["transform"] = from_gcps(gcps)
@@ -1015,6 +1015,8 @@ def cmd_shapes(args: argparse.Namespace, env: Any) -> None:
                 Returns:
                     tuple: `(left, bottom, right, top)`.
                 """
+                if not self.bboxes:
+                    raise CommandError("no shapes: the band (or mask) has no valid data")
                 minxs, minys, maxxs, maxys = zip(*self.bboxes, strict=True)
                 return min(minxs), min(minys), max(maxxs), max(maxys)
 

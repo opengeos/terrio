@@ -1554,7 +1554,8 @@ def rio_run(rio: Any, ctx: Ctx, *args: Any, stdin: str | None = None, files: Seq
     Returns:
         dict: The exit status, the output and the files.
     """
-    r = subprocess.run(rio_command(rio) + [str(a) for a in args], input=stdin, capture_output=True, text=True, cwd=str(ctx.out))
+    # A stalled command (a remote read) fails the check rather than blocking the run.
+    r = subprocess.run(rio_command(rio) + [str(a) for a in args], input=stdin, capture_output=True, text=True, cwd=str(ctx.out), timeout=900)
     if r.returncode and os.environ.get("RIO_CLI_DEBUG"):
         print(f"{rio.__name__} {args}: {r.stderr[-500:]}", file=sys.stderr)
     out = cli_output(r.stdout)
@@ -1985,7 +1986,8 @@ def public_file(ctx: Ctx, name: str, url: str, window: Any = None) -> str:
         return str(path)
     tmp = path.with_suffix(".part")
     if window is None:
-        urllib.request.urlretrieve(url, tmp)
+        with urllib.request.urlopen(url, timeout=120) as resp, open(tmp, "wb") as f:
+            shutil.copyfileobj(resp, f)
     else:
         ref = ctx.reference
         with ref.open(url) as src:

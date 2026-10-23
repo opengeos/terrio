@@ -204,5 +204,12 @@ def test_shapes_sampling(raster):
         full = list(rio.features.dataset_features(src, 1, geographic=False))
         half = list(rio.features.dataset_features(src, 1, sampling=2, geographic=False))
     assert full and half and len(half) <= len(full)
+
+    def extent(feats):
+        b = np.array([f["bbox"] for f in feats])
+        return (*b[:, :2].min(axis=0), *b[:, 2:].max(axis=0))
+
+    # Decimated by 2, the shapes still cover the raster's valid region (in map coordinates).
+    assert extent(full) == extent(half) == (500000.0, 4098200.0, 502400.0, 4100000.0)
     with rio.open(raster) as src, pytest.raises(ValueError):
         list(rio.features.dataset_features(src, 3))
