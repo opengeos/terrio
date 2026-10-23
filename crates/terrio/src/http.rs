@@ -513,15 +513,24 @@ pub(crate) fn list_subdirectories(dir: &Directory) -> Result<Option<Vec<String>>
     };
     let mut out: Vec<String> = Vec::new();
     let mut token: Option<String> = None;
-    for _page in 0..1000 {
+    const MAX_PAGES: usize = 1000;
+    for page in 0..MAX_PAGES {
         let (body, prefix) = match &api {
             Api::S3 { remote, prefix } => {
                 let mut client = Client::new(remote, HttpOptions::from_env());
                 client.missing_ok = true;
                 client.query = format!("?{}", s3_list_query(prefix, token.as_deref()));
                 client.url = format!("{}{}", client.url, client.query);
+                let signed = matches!(&client.s3, Some(S3Auth { creds: Some(_), .. }));
                 let fetched = client.fetch(None)?;
                 if matches!(fetched.status, 403 | 404) {
+                    // Refused with credentials: they lack s3:ListBucket, or are wrong.
+                    if signed && fetched.status == 403 {
+                        crate::warnings::warn(format!(
+                            "S3: listing s3://{}/{prefix} was refused (403): the credentials may not allow s3:ListBucket",
+                            remote_bucket(remote)
+                        ));
+                    }
                     return Ok(None);
                 }
                 (fetched.data, prefix)
@@ -570,6 +579,9 @@ pub(crate) fn list_subdirectories(dir: &Directory) -> Result<Option<Vec<String>>
             None
         };
         match next.filter(|t| !t.is_empty()) {
+            Some(_) if page + 1 == MAX_PAGES => {
+                crate::warnings::warn(format!("listing stopped after {MAX_PAGES} pages ({} names)", out.len()));
+            }
             Some(t) => token = Some(t),
             None => break,
         }
@@ -586,6 +598,14 @@ fn s3_list_query(prefix: &str, token: Option<&str>) -> String {
     let mut q: Vec<String> = token.map(|t| format!("continuation-token={}", enc(t))).into_iter().collect();
     q.extend([format!("delimiter={}", enc("/")), "list-type=2".to_string(), format!("prefix={}", enc(prefix))]);
     q.join("&")
+}
+
+/// The bucket of an S3 object, for messages.
+fn remote_bucket(remote: &Remote) -> &str {
+    match remote {
+        Remote::S3(o) => &o.bucket,
+        Remote::Url(u) => u,
+    }
 }
 
 /// A listing page of an unsigned store: `None` when listing is refused or missing (403, 404), or
