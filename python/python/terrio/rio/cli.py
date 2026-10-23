@@ -368,7 +368,10 @@ def write_features(
     """
     if sequence:
         for feat in collection():
-            xs, ys = list(zip(*coords(feat), strict=False))[:2]
+            points = list(coords(feat))
+            if not points:
+                raise CommandError(f"a feature without coordinates: {feat.get('id', feat)}")
+            xs, ys = list(zip(*points, strict=False))[:2]
             bbox = (min(xs), min(ys), max(xs), max(ys))
             if use_rs:
                 fobj.write("\u001e")
@@ -426,6 +429,8 @@ def parse_indexes(item: str, src_indexes: Sequence[int]) -> list[int]:
         start, stop = (int(x) if x else None for x in item.split(".."))
         if start is None:
             start = 1
+        if start < 1 or (stop is not None and stop < 1):
+            raise UsageError(f"Invalid band index range '{item}': bands are numbered from 1")
         return list(src_indexes[slice(start - 1, stop)])
     return [int(x) for x in item.split(",")]
 

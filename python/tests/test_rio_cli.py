@@ -207,6 +207,10 @@ def test_edge_cases(raster, tmp_path):
     r = run("warp", raster, tmp_path / "w.tif", "--dst-crs", "EPSG:4326", "--dry-run")
     assert r.returncode == 0, r.stderr
     assert '"crs": "EPSG:4326"' in r.stdout
+    # Band ranges start at 1.
+    with pytest.raises(cli.UsageError):
+        cli.parse_indexes("0..2", [1, 2, 3])
+    assert cli.parse_indexes("2..", [1, 2, 3]) == [2, 3]
     # No GCPs: a clear error.
     r = run("gcps", raster)
     assert r.returncode != 0 and "no ground control points" in r.stderr
