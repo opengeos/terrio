@@ -2948,9 +2948,11 @@ def cmd_insp(args: argparse.Namespace, env: Any) -> None:
 
     import terrio.rio as rasterio
 
+    import importlib
+
     plt: Any
     try:
-        import matplotlib.pyplot as plt
+        plt = importlib.import_module("matplotlib.pyplot")
     except Exception:
         plt = None
     Stats = collections.namedtuple("Stats", ["min", "max", "mean"])
@@ -2982,10 +2984,9 @@ def cmd_insp(args: argparse.Namespace, env: Any) -> None:
             "plt": plt,
         }
         if args.interpreter == "ipython":
-            import IPython
-
-            IPython.InteractiveShell.banner1 = banner  # type: ignore[assignment]
-            IPython.start_ipython(argv=[], user_ns=local)
+            ipython: Any = importlib.import_module("IPython")
+            ipython.InteractiveShell.banner1 = banner
+            ipython.start_ipython(argv=[], user_ns=local)
         else:
             code.interact(banner, local=local)
 
