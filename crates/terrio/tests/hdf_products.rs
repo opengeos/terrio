@@ -320,4 +320,28 @@ fn netcdf_groups_written() {
         ..Default::default()
     };
     assert!(terrio::write_raster_dataset(&a, &one, &options).is_err());
+    // Appended to an existing file, group by group: the rasters already there are kept.
+    let appended = dir.path().join("appended.nc").to_string_lossy().into_owned();
+    let co = |group: &str, append: bool| terrio::RasterWriteOptions {
+        creation_options: [("GROUP".to_string(), group.to_string())]
+            .into_iter()
+            .chain(append.then(|| ("APPEND_SUBDATASET".to_string(), "YES".to_string())))
+            .collect(),
+        ..Default::default()
+    };
+    terrio::write_raster_dataset(&a, &appended, &co("/first", false)).unwrap();
+    terrio::write_raster_dataset(&b, &appended, &co("/second/b", true)).unwrap();
+    terrio::write_raster_dataset(&a, &appended, &co("/", true)).unwrap();
+    for (group, src) in [("/first", &a), ("/second/b", &b), ("", &a)] {
+        let back = open(&format!("NETCDF:\"{appended}\":{group}/Band1"));
+        assert_eq!(back.raster.data.to_f64_vec(), src.raster.data.to_f64_vec(), "{group}");
+        assert_eq!(back.geo_transform(), src.geo_transform(), "{group}");
+    }
+    // A group already holding a raster.
+    assert!(terrio::write_raster_dataset(&b, &appended, &co("/first", true)).is_err());
+    // In memory too.
+    let bytes = terrio::memory::write_netcdf_groups_bytes(&[("/x", &a), ("/y", &b)], &Default::default()).unwrap();
+    std::fs::write(dir.path().join("mem.nc"), bytes).unwrap();
+    let mem = dir.path().join("mem.nc").to_string_lossy().into_owned();
+    assert_eq!(open(&format!("NETCDF:\"{mem}\":/y/Band1")).raster.data.to_f64_vec(), b.raster.data.to_f64_vec());
 }

@@ -55,8 +55,12 @@ It needs only NumPy and [affine](https://github.com/rasterio/affine) (installed 
   interleaving, compression (`lzw`, `deflate`, `zstd`, `packbits`) with predictors 2 and 3,
   photometric RGB and alpha bands as GDAL defaults to them, tags, band metadata, color tables,
   overviews (`build_overviews` with `nearest`, `average` or `mode`) and GDAL's internal mask
-  (`write_mask`, a 1-bit mask image read back by GDAL as a per-dataset mask). `driver="COG"`
-  writes a Cloud Optimized GeoTIFF.
+  (`write_mask`, a 1-bit mask image read back by GDAL as a per-dataset mask). With
+  `rasterio.Env(GDAL_TIFF_INTERNAL_MASK=False)`, or in formats without internal masks (ENVI...),
+  the mask goes to GDAL's `.msk` sidecar instead (a tiled Deflate GeoTIFF flagged
+  `INTERNAL_MASK_FLAGS_1=2`, with the dataset's overviews), and an `r+` update keeps it there;
+  `.msk` sidecars of local files are read as per-dataset masks, their overviews included.
+  `driver="COG"` writes a Cloud Optimized GeoTIFF.
 - **Nodata.** Each band's nodata value is read, from the file or an `.aux.xml` sidecar (where GDAL
   keeps per-band values); GeoTIFFs hold one value for all bands, so a writer given different
   values writes the last band's, with GDAL's warning.
@@ -114,8 +118,9 @@ python scripts/compare_rio_with_rasterio.py ../terrio-data --remote --output rep
 
 ## Not covered
 
-- External `.msk` mask files (internal masks are read and written), and mask overviews: an
-  overview's mask is the full-resolution mask sampled by nearest neighbour.
+- Per-band masks in `.msk` sidecars (per-dataset ones are read and written), and the overviews
+  of internal masks: an overview's internal mask is the full-resolution mask sampled by nearest
+  neighbour (a `.msk` sidecar's own overviews are read).
 - RPC transformers (`TransformMethod.rpcs`, `reproject` with `rpcs`), the `gauss` resampling,
   PROJJSON and WKT2 output: terrio does not implement them. rasterio's `GCPTransformer` with
   `tps=True` gives coordinates a few centimetres from GDAL's own thin plate splines (which

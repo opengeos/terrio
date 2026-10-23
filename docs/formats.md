@@ -92,10 +92,23 @@ netCDF files are written as GDAL writes rasters, with its creation options:
 | `ZLEVEL` | The deflate level, 1 (the default) to 9 |
 | `CHUNKING` | `YES` (compressed variables chunked by row, GDAL's default) or `NO` (one chunk per band) |
 | `GROUP` | A netCDF-4 group for the variables, such as `/science/grid` (terrio's option; groups are created as needed, `FORMAT` defaults to `NC4`) |
+| `APPEND_SUBDATASET` | `YES`: add the raster to an existing file (in its `GROUP`), as GDAL's option adds a variable. The file is written again with its rasters and the new one (one raster per group; its other variables and attributes, and its rasters' chunking and compression, are not kept: the creation options of this write apply to all) |
 
 Several rasters go into one netCDF-4 file, each in its group with its own dimensions,
-coordinate variables and grid mapping, with `terrio::write_netcdf_groups`; they read back as
-`NETCDF:"file.nc":/group/Band1`, in terrio and GDAL (classic and multidimensional APIs).
+coordinate variables and grid mapping: with `terrio::write_netcdf_groups` in Rust,
+`terrio.write_netcdf_groups` in Python, `NetcdfGroups` in JavaScript, or one `terrio convert`
+at a time with `GROUP` and `APPEND_SUBDATASET=YES`. They read back as
+`NETCDF:"file.nc":/group/Band1`, in terrio, GDAL (classic and multidimensional APIs), netCDF4
+and xarray (`xr.open_dataset("file.nc", group="terrain/dem")`).
+
+```sh
+terrio convert dem.tif terrain.nc --co GROUP=/terrain/dem --co COMPRESS=DEFLATE
+terrio convert slope.tif terrain.nc --co GROUP=/terrain/slope --co APPEND_SUBDATASET=YES
+```
+
+```python
+terrio.write_netcdf_groups({"/terrain/dem": dem, "/terrain/slope": slope}, "terrain.nc", options={"COMPRESS": "DEFLATE"})
+```
 
 netCDF-4 files are HDF5 files written by terrio itself (no HDF5 or netCDF library): the
 coordinate variables as dimension scales, the CF grid mapping, `_FillValue` and the other
@@ -196,11 +209,24 @@ and GeoJSON driver read them:
   and terrio's `resolution=highest|lowest|average` and `max_items=N`) is a mosaic of the asset over
   the items: items drawn in ascending datetime order, at their average resolution, read by window
   from their files.
+- Search pages are followed through `next` links that are `GET` or `POST` requests (with the
+  link's `body`, `merge` and `headers`, as STAC API paginates `POST` searches), and
+  `STACIT:"search-url":asset=red,method=POST` sends the URL's query parameters as a `POST` search
+  body, as pystac-client builds it (`bbox`, `collections`, `ids` and `sortby` as arrays, `query`,
+  `filter` and `intersects` as JSON, dates and months as RFC 3339 intervals).
+- Assets on Microsoft Planetary Computer are signed: the Azure Blob Storage hrefs of items read
+  from its API (or linking to it) get a SAS token from its token endpoint, as
+  `planetary_computer.sign()` adds them, one per storage account and container, renewed before
+  it expires. `PC_SDK_SUBSCRIPTION_KEY` is sent as the API key when set; `TERRIO_STAC_SIGN=none`
+  (or `sign=none` in a `STACIT:` name) turns signing off, and `planetary_computer` signs every
+  Azure Blob Storage href, of items read from files too.
 
 ```sh
 terrio info "https://earth-search.aws.element84.com/v1/search?collections=sentinel-2-l2a&bbox=-105.05,40.5,-104.95,40.6&datetime=2023-07-05"
 terrio convert 'STACIT:"https://earth-search.aws.element84.com/v1/search?collections=sentinel-2-l2a&bbox=-105.05,40.5,-104.95,40.6&datetime=2023-07-05":asset=red' red.tif --srcwin 9980 9980 512 512
 terrio info 'STAC:"https://earth-search.aws.element84.com/v1/collections/sentinel-2-l2a/items/S2B_13TDE_20230705_0_L2A":red'
+# Planetary Computer: a POST search, its pages followed, its assets signed
+terrio convert 'STACIT:"https://planetarycomputer.microsoft.com/api/stac/v1/search?collections=sentinel-2-l2a&bbox=-105.3,39.95,-105.2,40.05&datetime=2024-07-01/2024-07-10":asset=B04,method=POST' b04.tif --srcwin 5000 5000 512 512
 ```
 
 ## Vectors

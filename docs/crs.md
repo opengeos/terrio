@@ -105,14 +105,18 @@ the grid, the next best transformation is used, as PROJ does. Grids are looked u
    (`~/.local/share/proj`, where `projsync` writes) and terrio's download cache;
 3. when network access is on (`TERRIO_NETWORK=ON`, or `PROJ_NETWORK=ON` when the first is not
    set), on the PROJ CDN (`TERRIO_CDN_ENDPOINT`, default `https://cdn.proj.org`): the grid is
-   downloaded once into the cache (`TERRIO_GRID_CACHE`, default `~/.cache/terrio/grids`).
+   read in place with HTTP range requests, as PROJ reads it, fetching only its header and the
+   blocks around the points transformed (four EGM2008 heights fetch 0.85 MB of the 80 MB
+   `us_nga_egm08_25.tif`). With `TERRIO_GRID_DOWNLOAD=YES`, it is downloaded whole into the
+   cache instead (`TERRIO_GRID_CACHE`, default `~/.cache/terrio/grids`), where later runs find
+   it.
 
 The search directories and network access can also be set from code
 (`terrio::crs::set_grid_search_paths`, `set_network_enabled`, and the same functions in Python),
 as PROJ's `proj_context_set_search_paths` and `proj_context_set_enable_network`.
 
 ```sh
-TERRIO_NETWORK=ON terrio crs EPSG:4267 --to EPSG:4269 -100 40   # downloads the NADCON5 grid
+TERRIO_NETWORK=ON terrio crs EPSG:4267 --to EPSG:4269 -100 40   # reads the NADCON5 grid by range
 TERRIO_GRID_DIR=~/grids terrio crs EPSG:27700 --to EPSG:4258 434422 233624   # OSTN15
 ```
 
@@ -130,9 +134,27 @@ heights are kept as GDAL keeps them (or transformed, for the pipelines PROJ runs
 
 `Transformer::transform_3d` in Rust, `transform_points(xs, ys, src, dst, zs)` in Python,
 `transformPoints(xs, ys, src, dst, zs)` in JavaScript and `x y z` lines on `terrio crs`'s
-standard input transform heights. Transformations between vertical CRSs are made through
-ellipsoidal heights; PROJ's direct vertical-to-vertical transformations (VERTCON, offsets) are not
-used.
+standard input transform heights.
+
+Between compound CRSs on two vertical CRSs that the EPSG dataset connects, heights go through the
+transformations PROJ lists between them, as PROJ prefers them to geoid models: vertical offsets,
+offsets and slopes (`vertoffset`), VERTCON's grids from NGVD29 to NAVD88 and other grids, directly
+or chained through an intermediate vertical CRS (DHHN92 to SNN76 through EVRF2000), in the CRSs'
+axis directions (depths included) and units. For each point, the most accurate transformation
+whose area holds it is used, PROJ's way: one interpolating in another datum's geographic CRS
+counts the accuracy of the horizontal transformation to it (both ways), and is evaluated there.
+Where none applies, heights are kept. Vertical CRSs of one datum (NAVD88 height in metres and in
+US survey feet) only convert units.
+
+```sh
+TERRIO_NETWORK=ON terrio crs EPSG:4267+7968 --to EPSG:4267+5703 -105.27 40.01 1700   # VERTCON: 1701.0026
+terrio crs EPSG:4258+5783 --to EPSG:4258+5785 13.4 52.5 100                       # DHHN92 to SNN76: 99.856
+```
+
+These are listed in `crates/terrio/data/epsg_vertical.tsv.zst` (`scripts/gen_vertical_table.py`)
+and compared with PROJ by `scripts/compare_vertical_with_proj.py`: of 732 points over the 604
+pairs, 727 have PROJ's heights to the micrometre; the other 5 (EVRF2000 Austria, where PROJ chains
+the horizontal transformations of some concatenations in its own way) differ by 0.3 mm to 1 cm.
 
 ### Dynamic datums and coordinate epochs
 

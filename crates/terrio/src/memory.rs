@@ -107,6 +107,21 @@ pub fn open_vector_bytes(bytes: Vec<u8>, name: &str, options: &VectorOpenOptions
     }
 }
 
+/// Writes rasters into one netCDF-4 file in memory, each in its group, as
+/// [`crate::write_netcdf_groups`] writes files.
+pub fn write_netcdf_groups_bytes(rasters: &[(&str, &RasterDataset)], options: &RasterWriteOptions) -> Result<Vec<u8>> {
+    if rasters.is_empty() {
+        return Err(Error::InvalidArgument("no rasters to write".into()));
+    }
+    #[cfg(feature = "netcdf-hdf5")]
+    return crate::drivers::netcdf_groups_to_bytes(rasters, options);
+    #[cfg(not(feature = "netcdf-hdf5"))]
+    {
+        let _ = options;
+        Err(Error::disabled("netcdf-hdf5"))
+    }
+}
+
 /// Writes a raster to bytes, declaring its nodata value when it has one. `name` is a file name
 /// whose extension tells the format, unless the options name the driver.
 pub fn write_raster_bytes(ds: &RasterDataset, name: &str, options: &RasterWriteOptions) -> Result<Vec<u8>> {

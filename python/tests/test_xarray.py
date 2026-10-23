@@ -371,9 +371,45 @@ print(da.rio.crs.to_epsg(), da.rio.bounds())
 
 def test_unsupported(files):
     with pytest.raises(NotImplementedError):
-        txr.open_rasterio(files["dem"], variable="x")
-    with pytest.raises(NotImplementedError):
         txr.open_rasterio(files["dem"]).terrio.write_crs("EPSG:4326", convention="ZARR")
+
+
+def test_subdatasets_gcps_and_rpcs(tmp_path):
+    """Subdatasets as a Dataset (filtered by group), and GCPs and RPCs written and read back."""
+    import terrio
+    from terrio.rio.control import GroundControlPoint
+
+    t = (480000.0, 30.0, 0.0, 4400000.0, 0.0, -30.0)
+    a = terrio.Raster.from_array(np.arange(12, dtype="float32").reshape(3, 4), t, "EPSG:32613")
+    b = terrio.Raster.from_array(np.ones((2, 5), dtype="int16"), t, "EPSG:32613")
+    nc = str(tmp_path / "groups.nc")
+    terrio.write_netcdf_groups({"/g/a": a, "/g/b": b, "/c": a}, nc)
+    out = txr.open_rasterio(nc)
+    assert isinstance(out, list) and len(out) == 2  # two shapes
+    # Groups by their full path, as rioxarray matches them.
+    assert list(txr.open_rasterio(nc, group="g/a", variable="Band1").data_vars) == ["Band1"]
+    assert len(txr.open_rasterio(nc, group="g").data_vars) == 0
+    one = txr.open_rasterio(nc, group="c")
+    np.testing.assert_array_equal(one["Band1"].values[0], np.arange(12).reshape(3, 4))
+
+    gcps = [
+        GroundControlPoint(row=r, col=c, x=-105 + c * 0.01, y=40 - r * 0.01)
+        for r in (0, 2)
+        for c in (0, 3)
+    ]
+    da = xr.DataArray(np.zeros((1, 3, 4), "uint8"), dims=("band", "y", "x"))
+    # Without a CRS too, a copy: the caller's array is left as it was.
+    da.terrio.write_gcps(gcps, None)
+    assert "spatial_ref" not in da.coords and da.terrio.get_gcps() is None
+    da = da.terrio.write_gcps(gcps, "EPSG:4326")
+    assert [(g.row, g.col, g.x, g.y) for g in da.terrio.get_gcps()] == [
+        (g.row, g.col, g.x, g.y) for g in gcps
+    ]
+    tif = str(tmp_path / "gcps.tif")
+    da.terrio.to_raster(tif)
+    back = txr.open_rasterio(tif)
+    assert len(back.terrio.get_gcps()) == 4 and "x" not in back.coords
+    assert str(back.terrio.crs) == "EPSG:4326"
 
 
 def test_utm_zones():

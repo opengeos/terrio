@@ -114,6 +114,19 @@ terrio convert "STACIT:\"$Q\":asset=red" red.tif --srcwin 9980 9980 512 512
 The mosaics and windows are those of GDAL's STACIT driver (`gdal_translate -srcwin` on the same
 subdataset returns the same pixels).
 
+Microsoft Planetary Computer's assets are signed with its SAS tokens, as the `planetary-computer`
+Python package signs them, so its searches and items open as they are (`PC_SDK_SUBSCRIPTION_KEY`
+is sent as the API key when set; `TERRIO_STAC_SIGN=none` turns signing off):
+
+```sh
+PC="https://planetarycomputer.microsoft.com/api/stac/v1"
+terrio info "STAC:\"$PC/collections/sentinel-2-l2a/items/S2B_MSIL2A_20240709T174909_R141_T13TDE_20240710T000454\":B04"
+terrio convert "STACIT:\"$PC/search?collections=sentinel-2-l2a&bbox=-105.3,39.95,-105.2,40.05&datetime=2024-07-01/2024-07-10\":asset=B04,method=POST" b04.tif --srcwin 5000 5000 512 512
+```
+
+`method=POST` sends the search as a `POST` request, as pystac-client does, and `POST` pages are
+followed through their `next` links as `GET` pages are.
+
 ## Amazon S3
 
 Requests are signed (AWS Signature Version 4) when credentials are found, and unsigned otherwise:

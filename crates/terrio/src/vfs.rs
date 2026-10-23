@@ -258,6 +258,21 @@ fn extension_of(name: &str) -> Option<String> {
     Path::new(name).extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase())
 }
 
+/// The scheme and host (with its port) of a URL, lowercased: what decides whether two URLs are
+/// of the same origin. `None` when `url` has no scheme.
+pub(crate) fn url_origin(url: &str) -> Option<(String, String)> {
+    let (scheme, rest) = url.split_once("://")?;
+    let scheme = scheme.to_ascii_lowercase();
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or(rest);
+    // Without user information, and without the scheme's default port.
+    let host = authority.rsplit_once('@').map_or(authority, |(_, h)| h).to_ascii_lowercase();
+    let host = match (scheme.as_str(), host.rsplit_once(':')) {
+        ("https", Some((h, "443"))) | ("http", Some((h, "80"))) => h.to_string(),
+        _ => host,
+    };
+    Some((scheme, host))
+}
+
 /// Resolves a dataset location to a local path, downloading or extracting it when needed.
 pub fn resolve(input: &str) -> Result<LocalPath> {
     resolve_location(&Location::parse(input))
@@ -385,6 +400,9 @@ mod tests {
         assert_eq!(Location::parse("a/b.tif"), Location::Local("a/b.tif".into()));
         assert_eq!(Location::parse("/vsicurl/https://x.org/a.tif"), Location::Url("https://x.org/a.tif".into()));
         assert_eq!(Location::parse("gs://bucket/a.tif"), Location::Url("https://storage.googleapis.com/bucket/a.tif".into()));
+        assert_eq!(url_origin("https://user@Example.org:443/a?b"), url_origin("https://example.org/c"));
+        assert_ne!(url_origin("https://example.org:8443/a"), url_origin("https://example.org/a"));
+        assert_ne!(url_origin("http://example.org/a"), url_origin("https://example.org/a"));
         assert_eq!(Location::parse("/vsis3/bucket/dir/a.tif"), Location::S3 { bucket: "bucket".into(), key: "dir/a.tif".into() });
         assert_eq!(Location::parse("s3://bucket/dir/a.tif").file_name(), "a.tif");
         assert_eq!(

@@ -231,6 +231,43 @@ impl Route {
         Self { kind, boxes: OnceLock::new(), hub_boxes: OnceLock::new(), dst_ops: dst.ops().to_vec() }
     }
 
+    /// The accuracy (metres) of the transformation [`Route::apply`] picks for a point, as PROJ
+    /// adds it to the accuracy of a vertical transformation it chains with: 0 between CRSs of one
+    /// datum, negative when unknown (a ballpark, or no transformation for the point).
+    pub fn accuracy_at(&self, src: &Def, x: f64, y: f64, p: Point) -> f64 {
+        let (dlon, dlat) = src.source_degrees(x, y).unwrap_or((p.lon.to_degrees(), p.lat.to_degrees()));
+        let wrapped = if (-180.0..=180.0).contains(&dlon) { dlon } else { (dlon + 180.0).rem_euclid(360.0) - 180.0 };
+        let inside = |op: &Op, boxes: Option<&Vec<[f64; 4]>>| match boxes {
+            Some(b) if !b.is_empty() => b.iter().any(|b| x >= b[0] && x <= b[2] && y >= b[1] && y <= b[3]),
+            _ => op.contains(dlon, dlat) || op.contains(wrapped, dlat),
+        };
+        let first_without_grids = |ops: &[&Op]| ops.iter().find(|o| !o.needs_grids()).map_or(-1.0, |o| o.accuracy);
+        match &self.kind {
+            Kind::Same => 0.0,
+            Kind::List(list) if list.is_empty() => -1.0,
+            Kind::List(list) => {
+                let boxes = self.boxes.get_or_init(|| list.iter().map(|l| src.areas(&l.op)).collect());
+                let ops: Vec<&Op> = list.iter().map(|l| l.op.as_ref()).collect();
+                datum::pick_index(&ops, &[], |op, i| inside(op, boxes.get(i)))
+                    .map_or_else(|| first_without_grids(&ops), |i| ops[i].accuracy)
+            }
+            Kind::Chains { chains, .. } if chains.is_empty() => -1.0,
+            Kind::Chains { chains, ballpark } => {
+                if chains.len() == 1 && !ballpark {
+                    return chains[0].rank.accuracy;
+                }
+                let boxes = self.boxes.get_or_init(|| chains.iter().map(|c| src.areas(&c.rank)).collect());
+                let ranks: Vec<&Op> = chains.iter().map(|c| &c.rank).collect();
+                match datum::pick_index(&ranks, &[], |op, i| inside(op, boxes.get(i))) {
+                    Some(i) => ranks[i].accuracy,
+                    None if *ballpark => -1.0,
+                    None => first_without_grids(&ranks),
+                }
+            }
+            Kind::Hub => -1.0,
+        }
+    }
+
     /// Moves a geodetic point (radians) from the source datum to the target's. `(x, y)` are its
     /// source coordinates, which pick the transformation for a projected source as in PROJ.
     /// Heights go through the transformation when `three_d` (between 3D CRSs). `None` when no

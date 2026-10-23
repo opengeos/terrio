@@ -75,6 +75,19 @@ const PDAL_NAMES: &[&str] = &[
     "Omnivariance",
     "Anisotropy",
     "Eigenentropy",
+    "EigenvalueSum",
+    "SurfaceVariation",
+    "DemantkeVerticality",
+    "OptimalKNN",
+    "OptimalRadius",
+    "Eigenvalue0",
+    "Eigenvalue1",
+    "Eigenvalue2",
+    "LocalReachabilityDistance",
+    "LocalOutlierFactor",
+    "RadialDensity",
+    "Reciprocity",
+    "Miniball",
     "Coplanar",
     "Rank",
     "SphericalRange",
@@ -182,6 +195,11 @@ mod tests {
         assert_eq!(to_pdal("normal_x"), "NormalX");
         assert_eq!(to_pdal("cluster_id"), "ClusterID");
         assert_eq!(to_pdal("my_dim"), "MyDim");
+        assert_eq!(from_pdal("OptimalKNN"), "optimal_knn");
+        assert_eq!(to_pdal("optimal_knn"), "OptimalKNN");
+        assert_eq!(to_pdal("nndistance"), "NNDistance");
+        assert_eq!(to_pdal("eigenvalue0"), "Eigenvalue0");
+        assert_eq!(to_pdal("local_outlier_factor"), "LocalOutlierFactor");
         assert_eq!(from_any("returnnumber"), "return_number");
         assert_eq!(from_any("Red"), "red");
         assert_eq!(from_any("normalx"), "normal_x");

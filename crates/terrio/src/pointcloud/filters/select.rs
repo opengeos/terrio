@@ -1,5 +1,7 @@
-//! Filters that select, combine or change points one at a time: PDAL's `filters.crop`,
-//! `filters.decimation`, `filters.expression`, `filters.assign` and `filters.merge`.
+//! Filters that select, order, combine or change points: PDAL's `filters.crop`,
+//! `filters.decimation`, `filters.expression`, `filters.assign`, `filters.merge`,
+//! `filters.head`, `filters.tail`, `filters.sort`, `filters.locate`, `filters.iqr` and
+//! `filters.mad`.
 
 use super::DimRange;
 use super::expr::{Assignment, Condition};
@@ -79,9 +81,9 @@ pub struct CropOptions {
 }
 
 /// A polygon: its exterior ring and holes.
-struct Poly {
-    exterior: Vec<[f64; 2]>,
-    holes: Vec<Vec<[f64; 2]>>,
+pub(super) struct Poly {
+    pub(super) exterior: Vec<[f64; 2]>,
+    pub(super) holes: Vec<Vec<[f64; 2]>>,
 }
 
 /// Where a point is relative to a ring: on an edge, inside (by the even-odd rule) or outside.
@@ -121,7 +123,7 @@ fn place(ring: &[[f64; 2]], x: f64, y: f64) -> Place {
 
 impl Poly {
     /// Whether a point is inside the polygon, or on its boundary (as PDAL counts them).
-    fn contains(&self, x: f64, y: f64) -> bool {
+    pub(super) fn contains(&self, x: f64, y: f64) -> bool {
         match place(&self.exterior, x, y) {
             Place::On => true,
             Place::Outside => false,
@@ -140,13 +142,20 @@ fn polygons(text: &str) -> Result<Vec<Poly>> {
     } else {
         crate::drivers::vector::wkt::parse(t).ok_or_else(|| Error::InvalidArgument(format!("invalid WKT polygon '{t}'")))?
     };
+    polys_of(&geometry).ok_or_else(|| Error::InvalidArgument(format!("'{t}' is not a polygon")))
+}
+
+/// The polygons of a polygon or multipolygon, `None` for other geometries.
+pub(super) fn polys_of(geometry: &Geometry) -> Option<Vec<Poly>> {
     let ring = |r: &wbvector::Ring| r.coords().iter().map(|c| [c.x, c.y]).collect::<Vec<_>>();
     match geometry {
         Geometry::Polygon { exterior, interiors } => {
-            Ok(vec![Poly { exterior: ring(&exterior), holes: interiors.iter().map(ring).collect() }])
+            Some(vec![Poly { exterior: ring(exterior), holes: interiors.iter().map(ring).collect() }])
         }
-        Geometry::MultiPolygon(ps) => Ok(ps.iter().map(|(e, h)| Poly { exterior: ring(e), holes: h.iter().map(ring).collect() }).collect()),
-        _ => Err(Error::InvalidArgument(format!("'{t}' is not a polygon"))),
+        Geometry::MultiPolygon(ps) => {
+            Some(ps.iter().map(|(e, h)| Poly { exterior: ring(e), holes: h.iter().map(ring).collect() }).collect())
+        }
+        _ => None,
     }
 }
 
@@ -304,7 +313,7 @@ pub struct AssignOptions {
 /// Sets a value, rounded (half away from zero) for integers, as PDAL converts doubles; fails when
 /// it does not fit the dimension's type. Extra-bytes dimensions with a scale and offset store
 /// `(v - offset) / scale`; coordinates hold the scaled value.
-fn set_value(d: &mut Dimension, i: usize, v: f64) -> Result<()> {
+pub(super) fn set_value(d: &mut Dimension, i: usize, v: f64) -> Result<()> {
     let stored = (v - d.offset.unwrap_or(0.0)) / d.scale.unwrap_or(1.0);
     let (lo, hi) = match &d.values {
         Values::U8(_) => (0.0, u8::MAX as f64),
@@ -414,6 +423,99 @@ pub fn merge(clouds: &[PointCloud]) -> Result<PointCloud> {
         dims.push(d.with_values(v));
     }
     Ok(PointCloud { header: first.header.clone(), crs: first.crs.clone(), dimensions: dims })
+}
+
+/// The first `count` points, or all but them with `invert`, as PDAL's `filters.head` (whose
+/// `count` is 10 by default).
+pub fn head(cloud: &PointCloud, count: usize, invert: bool) -> PointCloud {
+    let k = count.min(cloud.len());
+    if invert { cloud.slice(k, cloud.len()) } else { cloud.slice(0, k) }
+}
+
+/// The last `count` points, or all but them with `invert`, as PDAL's `filters.tail` (whose
+/// `count` is 10 by default).
+pub fn tail(cloud: &PointCloud, count: usize, invert: bool) -> PointCloud {
+    let k = cloud.len() - count.min(cloud.len());
+    if invert { cloud.slice(0, k) } else { cloud.slice(k, cloud.len()) }
+}
+
+/// Sorts the points by dimensions, as PDAL's `filters.sort`: by the first, then (stably) by
+/// each of the others in turn, so that the last dimension orders the points and the earlier
+/// ones break its ties; ascending, or descending with `descending`. Points of equal values keep
+/// their order (PDAL's default `NORMAL` algorithm leaves the order of ties to `std::sort`).
+pub fn sort(cloud: &PointCloud, dimensions: &[String], descending: bool) -> Result<PointCloud> {
+    if dimensions.is_empty() {
+        return Err(Error::InvalidArgument("sort: give at least one dimension".into()));
+    }
+    let mut order: Vec<usize> = (0..cloud.len()).collect();
+    for name in dimensions {
+        let v = super::find_dim(cloud, name)?.to_f64();
+        if descending {
+            order.sort_by(|&a, &b| v[b].total_cmp(&v[a]));
+        } else {
+            order.sort_by(|&a, &b| v[a].total_cmp(&v[b]));
+        }
+    }
+    Ok(cloud.take(&order))
+}
+
+/// The point of the largest value of a dimension (the first, when several are as large), or
+/// of the smallest with `min`, as PDAL's `filters.locate`.
+pub fn locate(cloud: &PointCloud, dimension: &str, min: bool) -> Result<PointCloud> {
+    let d = super::find_dim(cloud, dimension)?;
+    if cloud.is_empty() {
+        return Ok(cloud.clone());
+    }
+    let (mut lo, mut hi) = (f64::MAX, f64::MIN);
+    let (mut lo_at, mut hi_at) = (0, 0);
+    for i in 0..cloud.len() {
+        let v = d.get(i);
+        if v > hi {
+            hi = v;
+            hi_at = i;
+        }
+        if v < lo {
+            lo = v;
+            lo_at = i;
+        }
+    }
+    Ok(cloud.take(&[if min { lo_at } else { hi_at }]))
+}
+
+/// The value at a fraction of the sorted values, as PDAL takes it: the value at
+/// `int(n × fraction)`.
+fn order_statistic(mut v: Vec<f64>, fraction: f64) -> f64 {
+    let at = ((v.len() as f64 * fraction) as usize).min(v.len().saturating_sub(1));
+    v.select_nth_unstable_by(at, f64::total_cmp);
+    v[at]
+}
+
+/// The points whose values of a dimension are inside the interquartile fences, as PDAL's
+/// `filters.iqr`: strictly between `Q1 − k × IQR` and `Q3 + k × IQR` (PDAL's `k` is 1.5 by
+/// default), the quartiles the values at `int(n / 4)` and `int(3n / 4)` in order.
+pub fn iqr(cloud: &PointCloud, dimension: &str, k: f64) -> Result<PointCloud> {
+    let v = super::find_dim(cloud, dimension)?.to_f64();
+    if v.is_empty() {
+        return Ok(cloud.clone());
+    }
+    let q1 = order_statistic(v.clone(), 0.25);
+    let q3 = order_statistic(v.clone(), 0.75);
+    let (low, high) = (q1 - k * (q3 - q1), q3 + k * (q3 - q1));
+    Ok(cloud.select(&v.iter().map(|x| *x > low && *x < high).collect::<Vec<_>>()))
+}
+
+/// The points whose values of a dimension are within `k` median absolute deviations of the
+/// median, as PDAL's `filters.mad`: `|v − median| / (MAD × mad_multiplier) < k` (PDAL's `k` is
+/// 2 and `mad_multiplier` 1.4862 by default), the medians the values at `n / 2` in order.
+pub fn mad(cloud: &PointCloud, dimension: &str, k: f64, mad_multiplier: f64) -> Result<PointCloud> {
+    let v = super::find_dim(cloud, dimension)?.to_f64();
+    if v.is_empty() {
+        return Ok(cloud.clone());
+    }
+    let median = order_statistic(v.clone(), 0.5);
+    let dev: Vec<f64> = v.iter().map(|x| (x - median).abs()).collect();
+    let mad = order_statistic(dev.clone(), 0.5) * mad_multiplier;
+    Ok(cloud.select(&dev.iter().map(|d| d / mad < k).collect::<Vec<_>>()))
 }
 
 #[cfg(test)]
