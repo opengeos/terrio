@@ -608,6 +608,8 @@ def dataset_features(
 
     if bidx is not None and bidx > src.count:
         raise ValueError("bidx is out of range for raster")
+    if sampling < 1:
+        raise ValueError("sampling must be 1 or more")
     msk = None
     transform = src.transform
     shape = (src.height, src.width)

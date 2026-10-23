@@ -3116,6 +3116,21 @@ def _higher_funcs() -> dict[str, Callable[..., Any]]:
     }
 
 
+# Builtins that would run code or touch files from an expression: not resolved (they become method
+# calls on the first argument, as other unknown names do).
+_UNSAFE_BUILTINS = {
+    "breakpoint",
+    "compile",
+    "eval",
+    "exec",
+    "exit",
+    "help",
+    "input",
+    "open",
+    "quit",
+}
+
+
 class Snuggs:
     """An evaluator of snuggs s-expressions (rasterio's `rio calc` language), without pyparsing."""
 
@@ -3158,7 +3173,7 @@ class Snuggs:
         """
         if name in self.funcs:
             return self.funcs[name]
-        if hasattr(builtins, name) and not name.startswith("__"):
+        if hasattr(builtins, name) and not name.startswith("__") and name not in _UNSAFE_BUILTINS:
             return getattr(builtins, name)
 
         def method(g: Any, *args: Any, **kwargs: Any) -> Any:
@@ -3308,7 +3323,10 @@ class Snuggs:
         it = iter(values)
         for v in it:
             if isinstance(v, _Kwarg):
-                kwds[v.name] = next(it)
+                try:
+                    kwds[v.name] = next(it)
+                except StopIteration:
+                    raise self.error(f"keyword ':{v.name}' has no value", source, start) from None
             else:
                 positional.append(v)
         try:

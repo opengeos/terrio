@@ -183,6 +183,10 @@ def test_snuggs():
         ev.eval("(+ nope 1)")
     with pytest.raises(cli.ExpressionError):
         ev.eval("(+ 1 2")
+    with pytest.raises(cli.ExpressionError, match="has no value"):
+        ev.eval("(sum (read 1 1) :axis)")
+    with pytest.raises(AttributeError):
+        ev.eval("(open 'x.txt')")
 
 
 def test_from_gcps():
