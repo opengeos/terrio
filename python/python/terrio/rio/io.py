@@ -79,7 +79,7 @@ _EXTENSIONS = {
 _IN_MEMORY_LIMIT = 512 * 1024 * 1024
 
 # The drivers of files that can hold subdatasets (several variables or arrays).
-_SUBDATASET_DRIVERS = frozenset({"netCDF", "HDF5", "HDF4", "Zarr", "STACIT", "GPKG"})
+_SUBDATASET_DRIVERS = frozenset({"netCDF", "HDF5", "HDF4", "Zarr", "STACIT", "STACTA", "GPKG"})
 
 
 def _in_memory_limit() -> int:

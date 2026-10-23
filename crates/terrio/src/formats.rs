@@ -70,7 +70,8 @@ pub enum RasterDriver {
     VRT,
     /// A mosaic of the assets of STAC items (see [`crate::stac`]); read only.
     STACIT,
-    /// STAC items with tiled assets (GDAL's STACTA).
+    /// A STAC item's tiled assets, one raster with its tile matrices as overviews, as GDAL's
+    /// STACTA driver reads it (see [`crate::stac`]); read only.
     STACTA,
     /// MBTiles raster tiles (PNG, JPEG, WebP), see [`crate::tiles`].
     MBTiles,

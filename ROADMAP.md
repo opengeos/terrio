@@ -101,7 +101,14 @@ of GDAL: the long tail of formats stays reachable through an optional GDAL backe
       `POST` searches and pages (`method=POST`, `next` links with `body`, `merge` and `headers`),
       and Planetary Computer's assets signed with its SAS tokens, mosaics identical to GDAL's
       STACIT on the items pystac-client and `planetary_computer` return.
-    - [ ] STACTA (tiled assets).
+    - [x] STACTA (tiled assets). Done: STAC items of the tiled-assets extension read as one raster
+      as GDAL's STACTA driver reads them (`item.json`, `STACTA:"item.json":asset:tms`, local or
+      remote): the most detailed tile matrix over its limits, the others as overviews (cut to its
+      extent as GDAL cuts them), windows reading only the tiles they touch, bands from
+      `raster:bands` or a first tile, properties as metadata, GDAL's subdatasets, missing tiles
+      as nodata with `GDAL_STACTA_SKIP_MISSING_METATILE`; summaries, whole rasters, windows and
+      overviews identical to GDAL's on its STACTA test data and on `gdal raster tile` pyramids,
+      local and over HTTP (`scripts/compare_stac_geozarr.py stacta`).
 
 ## 0.5: Bindings and the GDAL backend
 

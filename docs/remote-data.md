@@ -127,6 +127,16 @@ terrio convert "STACIT:\"$PC/search?collections=sentinel-2-l2a&bbox=-105.3,39.95
 `method=POST` sends the search as a `POST` request, as pystac-client does, and `POST` pages are
 followed through their `next` links as `GET` pages are.
 
+A STAC item of tiled assets (GDAL's STACTA, see [Formats](formats.md#stac)) opens from its URL
+or as `STACTA:"item-url":asset`: the item is fetched, then the headers of the first tile when the
+item does not declare its bands, and a window read fetches only the tiles (and, for COG tiles, the
+blocks of them) it touches, at full resolution or at an overview's tile matrix:
+
+```sh
+terrio info "https://example.com/pyramid/stacta.json"
+terrio convert "STACTA:\"https://example.com/pyramid/stacta.json\":bands" w.tif --srcwin 4000 3000 512 512
+```
+
 ## Amazon S3
 
 Requests are signed (AWS Signature Version 4) when credentials are found, and unsigned otherwise:

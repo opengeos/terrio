@@ -23,6 +23,7 @@ GDAL's drivers (the formats marked * are written that way): see
 | MBTiles | MBTiles raster tiles (PNG, JPEG, WebP; AVIF read) | ✓ | ✓ | mbtiles |
 | VRT | GDAL Virtual Raster | ✓ | ✓ | vrt |
 | STACIT | Mosaics of STAC items' assets (`STACIT:"search or items":asset=name`) | ✓ | | |
+| STACTA | STAC items with tiled assets (`item.json`, `STACTA:"item.json":asset:tile_matrix_set`) | ✓ | | json |
 | ENVI | ENVI labelled raster | ✓ | ✓ | envi, hdr, dat, bsq, bip |
 | EHdr | Esri .hdr labelled (BIL, FLT) | ✓ | ✓ | bil, flt |
 | AAIGrid | Esri ASCII grid | ✓ | ✓ | asc |
@@ -221,12 +222,32 @@ and GeoJSON driver read them:
   (or `sign=none` in a `STACIT:` name) turns signing off, and `planetary_computer` signs every
   Azure Blob Storage href, of items read from files too.
 
+- An item of the [tiled-assets](https://github.com/stac-extensions/tiled-assets) extension
+  (asset templates such as `./{TileMatrixSet}/{TileMatrix}/{TileRow}/{TileCol}.tif` over OGC tile
+  matrix sets) opens as one raster, as GDAL's STACTA driver opens it: its last tile matrix,
+  over the tiles its `tiles:tile_matrix_links` limits allow, is the full resolution, and the
+  others are its overviews (cut to its extent, as `gdal_translate -projwin` cuts them in GDAL's
+  driver, when theirs differs). Windows read only the tiles they touch, local or remote. The band
+  count, data type and nodata value are the asset template's `raster:bands` (or STAC 1.1
+  `bands`), else those of a first tile; the item's properties (but `tiles:` and `proj:`) are its
+  metadata. An item of several asset templates or tile matrix sets lists GDAL's subdatasets,
+  `STACTA:"item.json":asset` or `STACTA:"item.json":asset:tile_matrix_set`, and opens as the first.
+  A tile that cannot be opened is an error unless `GDAL_STACTA_SKIP_MISSING_METATILE=YES`, which
+  reads it as nodata (0 without a nodata value). Bands of different `raster:bands` data types
+  are read as one type, `Float64`, with the first band's nodata value. `gdal raster tile
+  --webviewer stac` writes such items.
+
 ```sh
 terrio info "https://earth-search.aws.element84.com/v1/search?collections=sentinel-2-l2a&bbox=-105.05,40.5,-104.95,40.6&datetime=2023-07-05"
 terrio convert 'STACIT:"https://earth-search.aws.element84.com/v1/search?collections=sentinel-2-l2a&bbox=-105.05,40.5,-104.95,40.6&datetime=2023-07-05":asset=red' red.tif --srcwin 9980 9980 512 512
 terrio info 'STAC:"https://earth-search.aws.element84.com/v1/collections/sentinel-2-l2a/items/S2B_13TDE_20230705_0_L2A":red'
 # Planetary Computer: a POST search, its pages followed, its assets signed
 terrio convert 'STACIT:"https://planetarycomputer.microsoft.com/api/stac/v1/search?collections=sentinel-2-l2a&bbox=-105.3,39.95,-105.2,40.05&datetime=2024-07-01/2024-07-10":asset=B04,method=POST' b04.tif --srcwin 5000 5000 512 512
+# Tiled assets (STACTA): a pyramid written by GDAL, read by window and by overview
+gdal raster tile --format GTiff --webviewer stac --max-zoom 12 landsat.tif pyramid
+terrio info pyramid/stacta.json
+terrio convert pyramid/stacta.json window.tif --srcwin 4000 3000 512 512
+terrio convert 'STACTA:"https://example.com/pyramid/stacta.json":bands' preview.tif --overview 2
 ```
 
 ## Vectors

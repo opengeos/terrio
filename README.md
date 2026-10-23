@@ -260,6 +260,7 @@ python scripts/compare_vector_ops_with_gdal.py ../terrio-data  # convert options
 python scripts/compare_ops_with_gdal.py ../terrio-data # compare translate, warp and mosaic with GDAL's tools
 python scripts/compare_dem_calc_with_gdal.py ../terrio-data  # dem, calc, proximity and sieve vs GDAL
 python scripts/compare_stac_geozarr.py stac            # STAC footprints and STACIT mosaics vs GDAL (Earth Search)
+python scripts/compare_stac_geozarr.py stacta ../terrio-data  # STACTA tiled assets vs GDAL's driver
 python scripts/compare_stac_geozarr.py geozarr ../terrio-data  # GeoZarr stores read by GDAL and rioxarray
 python scripts/compare_remote_zarr.py                  # public cloud Zarr stores read in place vs GDAL and xarray
 python scripts/compare_tiles_with_gdal.py ../terrio-data  # PMTiles, MBTiles and MVT vs GDAL's drivers

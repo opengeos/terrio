@@ -356,6 +356,17 @@ impl SpatialRef {
         }
     }
 
+    /// Metres per unit of the CRS's coordinates, as GDAL reckons them for tile matrix sets: the
+    /// linear unit of a projected CRS, the length of a degree on the semi-major axis of a
+    /// geographic one (1 when unknown).
+    pub(crate) fn metres_per_unit(&self) -> f64 {
+        let wkt = self.to_wkt().unwrap_or_default();
+        if self.is_geographic() {
+            return semi_major_axis(&wkt).unwrap_or(6_378_137.0) * std::f64::consts::PI / 180.0;
+        }
+        wkt1::parse(&wkt).and_then(|root| root.child("UNIT").and_then(|u| u.num(1))).filter(|v| *v > 0.0).unwrap_or(1.0)
+    }
+
     /// Whether this is a geographic (longitude/latitude) CRS.
     pub fn is_geographic(&self) -> bool {
         match Def::new(self) {
