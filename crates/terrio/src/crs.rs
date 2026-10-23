@@ -851,7 +851,8 @@ impl Side {
 /// `crates/terrio/data/point_motion.tsv` (`scripts/gen_point_motion.py`).
 fn point_motion(datum: u32, dt: f64) -> Option<Vec<datum::Step>> {
     static TABLE: &str = include_str!("../data/point_motion.tsv");
-    let line = TABLE.lines().filter(|l| !l.starts_with('#')).find(|l| l.split('\t').next() == Some(&datum.to_string()))?;
+    let line =
+        TABLE.lines().filter(|l| !l.starts_with('#')).find(|l| l.split('\t').next().and_then(|c| c.parse::<u32>().ok()) == Some(datum))?;
     let steps = line.split('\t').nth(2)?.replace("{dt}", &format!("{dt:?}"));
     datum::parse_steps(&steps)
 }
