@@ -77,6 +77,11 @@ pub struct PointWriteArgs {
     /// zstandard.
     #[arg(long = "ept-data-type", value_name = "TYPE", help_heading = "Point cloud options")]
     ept_data_type: Option<String>,
+    /// EPT outputs: build the octree's cube around these bounds rather than the points' (as
+    /// Entwine's --bounds), so that points of other files within them can be appended later
+    /// (--append).
+    #[arg(long = "ept-bounds", num_args = 6, value_names = ["XMIN", "YMIN", "ZMIN", "XMAX", "YMAX", "ZMAX"], allow_negative_numbers = true, help_heading = "Point cloud options")]
+    ept_bounds: Option<Vec<f64>>,
     /// The points read and written at a time: point clouds are converted in chunks, in bounded
     /// memory, whatever their size (about a million points by default).
     #[arg(long = "chunk-points", value_name = "N", default_value_t = 0, help_heading = "Point cloud options")]
@@ -116,6 +121,7 @@ impl PointWriteArgs {
             ply_precision: self.ply_precision,
             dimensions: self.dims.clone(),
             ept_data_type: self.ept_data_type.as_deref().map(pointcloud::EptDataType::parse).transpose()?.unwrap_or_default(),
+            ept_bounds: self.ept_bounds.as_deref().map(|b| [b[0], b[1], b[2], b[3], b[4], b[5]]),
             ..Default::default()
         })
     }
@@ -152,6 +158,7 @@ pub fn convert(
         write: write.to_options(format)?,
         layer: pointcloud::vector::ToLayerOptions { dimensions: write.dims.clone(), ..Default::default() },
         chunk_points: write.chunk_points,
+        append: vector.write_mode() == terrio::ops::vector_filter::WriteMode::Append,
     };
     pointcloud::convert(input, output, &options)
 }

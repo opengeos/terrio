@@ -16,13 +16,20 @@ And:
 - PLY, E57 and EPT: every value of every dimension compared with PDAL's `readers.ply`,
   `readers.e57` and `readers.ept`, EPT queries by bounds and resolution, and PLY and E57 files
   and EPT datasets (LASzip, binary and Zstandard tiles) written by terrio read back by PDAL;
+- EPT appends: points appended to EPT datasets (terrio's, and Entwine's lone-star) read back by
+  PDAL's `readers.ept`, every point once (or twice for a dataset merged with itself), and by
+  bounds as from a dataset written whole;
 - waveforms: the samples of points compared with the bytes of the file at the offsets LASlib
   reads them from, and the waveform data packets kept when the points are written;
 - filters: `smrf`, `pmf`, `csf`, `elm`, `outlier`, `range`, `sample`, `voxeldownsize`,
   `voxelcenternearestneighbor`, `hag_nn`, `hag_delaunay`, `crop`, `decimation`, `expression`,
   `assign`, `merge`, `splitter`, `chipper`, `normal` and `cluster` compared with PDAL's filters
   (classes, heights, normals, cluster ids, or the points kept, in order), on autzen_trim.las and
-  USGS 3DEP lidar over Madison;
+  USGS 3DEP lidar over Madison; `dbscan`, `covariancefeatures`, `eigenvalues`,
+  `approximatecoplanar`, `estimaterank`, `lof`, `nndistance`, `radialdensity`, `reciprocity`,
+  `miniball`, `zsmooth`, `skewnessbalancing`, `head`, `tail`, `sort`, `locate`, `iqr`, `mad`,
+  `dem`, `colorization` and `overlay` (every value, PDAL's doubles read back bit for bit, with
+  rasters and polygons made from the points) on autzen_trim.las;
 - interpolated grids: `linear` and `nearest` compared with `gdal_grid -a linear` and
   `-a nearest`.
 
@@ -583,6 +590,91 @@ def compare_formats(root: Path, tmp: Path) -> None:
         report(f"writefmt autzen_trim.laz -> EPT ({data_type}), read back by terrio", len(back) == len(las) and not bad, f"differ: {bad}")
 
 
+def compare_ept_append(root: Path, tmp: Path) -> None:
+    """Appends to EPT datasets and compares them with PDAL's reading of the source.
+
+    autzen_trim.laz in two halves (by x): an EPT dataset written from the first, with the bounds
+    of both, and the second appended, in each data type. PDAL's `readers.ept` must read every
+    point of the source once (binary tiles: x, y and z as PDAL 2.9 rounds them), and the same
+    points by bounds as from a dataset written from the whole file. Then PDAL's lone-star EPT
+    dataset (written by Entwine, with hierarchy pages of its own) merged with a copy of itself:
+    every point twice.
+
+    Args:
+        root: The point cloud test data directory.
+        tmp: A directory for the outputs.
+    """
+    if not PDAL:
+        return
+    src = root / "autzen_trim.laz"
+    pc = terrio.read_points(str(src))
+    x0, y0, z0, x1, y1, z1 = terrio.open_points(str(src)).bounds
+    mid = (x0 + x1) / 2
+    first, second = pc.range(f"X[:{mid})"), pc.range(f"X[{mid}:]")
+    second.write(str(tmp / "second_half.laz"))
+    keys = ["x", "y", "z", "gps_time", "intensity"]
+    ref = pdal_text([str(src)])
+
+    def rounded(d: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
+        """Points with x, y and z rounded half away from zero, as PDAL 2.9 reads binary tiles.
+
+        Args:
+            d: The points, by dimension.
+
+        Returns:
+            dict[str, numpy.ndarray]: The points rounded.
+        """
+        return {k: (np.where(v > 0, np.floor(v + 0.5), np.ceil(v - 0.5)) if k in ("x", "y", "z") else v) for k, v in d.items()}
+
+    def same_points(a: dict[str, np.ndarray], b: dict[str, np.ndarray]) -> bool:
+        """Whether two sets of points are the same, in any order.
+
+        Args:
+            a: The points checked, by dimension.
+            b: The points expected, by dimension: each of them must be in `a`.
+
+        Returns:
+            bool: Whether every dimension of `b` has the same values in `a`, once both sorted.
+        """
+        if len(a["x"]) != len(b["x"]):
+            return False
+        i, j = np.lexsort([a[k] for k in keys]), np.lexsort([b[k] for k in keys])
+        return all(k in a and np.array_equal(a[k][i], b[k][j]) for k in b)
+
+    for data_type in ["laszip", "binary", "zstandard"]:
+        out = tmp / f"ept_append_{data_type}" / "ept.json"
+        whole = tmp / f"ept_whole_{data_type}" / "ept.json"
+        first.write(str(out), ept_data_type=data_type, ept_bounds=(x0, y0, z0, x1, y1, z1))
+        terrio.append_points(str(out), [str(tmp / "second_half.laz")])
+        pc.write(str(whole), ept_data_type=data_type, ept_bounds=(x0, y0, z0, x1, y1, z1))
+        info = terrio.open_points(str(out)).ept_info
+        back = terrio.read_points(str(out))
+        a, b = np.lexsort([np.asarray(back[k]) for k in keys]), np.lexsort([np.asarray(pc[k]) for k in keys])
+        bad = [k for k in pc.dimensions if k in back and not np.array_equal(np.asarray(back[k]).astype("f8")[a], np.asarray(pc[k]).astype("f8")[b])]
+        report(f"EPT append ({data_type}): {info['points']} points, read back by terrio as the source", info["points"] == len(pc) and len(back) == len(pc) and not bad, f"differ: {bad}")
+        try:
+            got = pdal_text([{"type": "readers.ept", "filename": str(out)}])
+        except subprocess.CalledProcessError:
+            print(f"skip EPT append ({data_type}), read by PDAL: this PDAL cannot read {data_type} tiles")
+            continue
+        exp = rounded(ref) if data_type != "laszip" else ref
+        report(f"EPT append ({data_type}), read by PDAL readers.ept: every point of the source once", same_points(got, exp), "different points")
+        pb = f"([{x0 + 0.2 * (x1 - x0)}, {x0 + 0.7 * (x1 - x0)}], [{y0 + 0.3 * (y1 - y0)}, {y0 + 0.6 * (y1 - y0)}])"
+        p_app = pdal_text([{"type": "readers.ept", "filename": str(out), "bounds": pb}])
+        p_whole = pdal_text([{"type": "readers.ept", "filename": str(whole), "bounds": pb}])
+        report(f"EPT append ({data_type}), PDAL readers.ept by bounds: {len(p_app['x'])} points, as written whole", same_points(p_app, p_whole), "different points")
+    lone = root / "ept" / "lone-star-laszip"
+    copy = tmp / "lone-star-merged"
+    shutil.copytree(lone, copy)
+    terrio.convert_points(str(lone / "ept.json"), str(copy / "ept.json"), append=True)
+    a = pdal_text([{"type": "readers.ept", "filename": str(lone / "ept.json")}])
+    b = pdal_text([{"type": "readers.ept", "filename": str(copy / "ept.json")}])
+    b.pop("origin_id")
+    a.pop("origin_id")
+    doubled = {k: np.repeat(v, 2) for k, v in a.items()}
+    report(f"EPT lone-star-laszip merged with itself, read by PDAL readers.ept: {len(b['x'])} points, each twice", same_points(b, doubled), "different points")
+
+
 def compare_waveforms(root: Path, tmp: Path) -> None:
     """Compares waveform samples with the file's bytes, and checks they are kept on writing.
 
@@ -782,6 +874,177 @@ def compare_more_filters(path: Path, tmp: Path) -> None:
         check(f"cluster {opts or 'defaults'}", ours, {"cluster_id": ref["cluster_id"]}, ["cluster_id"])
 
 
+def pdal_doubles(stages: list, tmp: Path) -> dict[str, np.ndarray]:
+    """Runs a PDAL pipeline that writes LAS 1.4 with every other dimension as extra bytes.
+
+    Unlike `writers.text`, this keeps every bit of the doubles PDAL computes.
+
+    Args:
+        stages: The pipeline's stages, without the writer.
+        tmp: A directory for the output.
+
+    Returns:
+        dict[str, numpy.ndarray]: The points, by terrio's dimension names.
+    """
+    out = tmp / "pdal_doubles.las"
+    writer = {"type": "writers.las", "filename": str(out), "forward": "all", "extra_dims": "all", "minor_version": 4, "dataformat_id": 6}
+    subprocess.run([PDAL, "pipeline", "--stdin"], input=json.dumps(stages + [writer]), text=True, check=True, capture_output=True)
+    las = laspy.read(out)
+    res = {"x": np.asarray(las.x), "y": np.asarray(las.y), "z": np.asarray(las.z)}
+    for name in las.point_format.dimension_names:
+        if name not in ("X", "Y", "Z"):
+            res[snake(name) if name[0].isupper() else name] = np.asarray(las[name]).astype("f8")
+    return res
+
+
+def compare_neighbourhood_filters(path: Path, tmp: Path) -> None:
+    """Compares PDAL's neighbourhood, covariance, ordering and statistics filters with terrio's.
+
+    `dbscan` (cluster ids), `covariancefeatures`, `eigenvalues`, `approximatecoplanar`,
+    `estimaterank`, `lof`, `nndistance`, `radialdensity`, `reciprocity`, `miniball` and `zsmooth`
+    (every value, PDAL's doubles read back bit for bit), `skewnessbalancing` (the points, sorted,
+    and their classes), and `head`, `tail`, `sort`, `locate`, `iqr` and `mad` (the points kept,
+    in order).
+
+    Args:
+        path: A LAS file.
+        tmp: A directory for the outputs.
+    """
+    if not PDAL:
+        return
+    pc = terrio.read_points(str(path))
+    name = path.name
+
+    def check(label: str, ours: "terrio.PointCloud", ref: dict[str, np.ndarray], dims: list[str], rtol: float = 0.0, atol: float = 0.0) -> None:
+        m = len(next(iter(ref.values()))) if ref else 0
+        if len(ours) != m:
+            report(f"filter {label} {name}", False, f"{len(ours)} points vs PDAL {m}")
+            return
+        bad = [d for d in dims if not np.allclose(np.asarray(ours[d]).astype("f8"), ref[d], rtol=rtol, atol=atol, equal_nan=True)]
+        how = "identical" if rtol == 0 and atol == 0 else f"within {rtol:g} (relative)" if rtol else f"within {atol:g}"
+        report(f"filter {label} {name}: {m} points, {', '.join(dims)} {how}, in order", not bad, f"differ: {bad}")
+
+    for opts, kwargs in [
+        ({}, {}),
+        ({"eps": 3.0, "min_points": 10}, {"eps": 3.0, "min_points": 10}),
+        ({"eps": 2.0, "min_points": 4, "dimensions": "X,Y"}, {"eps": 2.0, "min_points": 4, "dimensions": ["X", "Y"]}),
+    ]:
+        check(f"dbscan {opts or 'defaults'}", pc.dbscan(**kwargs), pdal_doubles([str(path), {"type": "filters.dbscan", **opts}], tmp), ["cluster_id"])
+    eigen = ["eigenvalue0", "eigenvalue1", "eigenvalue2"]
+    for opts in [{}, {"knn": 16, "normalize": True}, {"radius": 5.0}, {"knn": 6, "stride": 2}]:
+        check(f"eigenvalues {opts or 'defaults'}", pc.eigenvalues(**opts), pdal_doubles([str(path), {"type": "filters.eigenvalues", **opts}], tmp), eigen)
+    features = ["Linearity", "Planarity", "Scattering", "Verticality", "Omnivariance", "Anisotropy", "Eigenentropy", "EigenvalueSum",
+                "SurfaceVariation", "DemantkeVerticality"]
+    for opts in [{}, {"mode": "raw"}, {"mode": "normalized", "knn": 20}, {"radius": 5.0, "min_k": 4}]:
+        stage = {"type": "filters.covariancefeatures", **opts}
+        if opts:
+            stage["feature_set"] = ",".join(features)
+        ours = pc.covariance_features(**opts, feature_set=features if opts else None)
+        ref = pdal_doubles([str(path), stage], tmp)
+        dims = [snake(f) for f in (features if opts else features[:4])]
+        check(f"covariancefeatures {opts or 'defaults'}", ours, ref, [d for d in dims if d != "omnivariance"])
+        if "omnivariance" in dims:
+            # PDAL's std::cbrt (the C library's) and Rust's differ by an ulp on some values.
+            check(f"covariancefeatures {opts} omnivariance", ours, ref, ["omnivariance"], 1e-15)
+    for opts in [{}, {"knn": 16, "thresh1": 10.0, "thresh2": 3.0}]:
+        check(f"approximatecoplanar {opts or 'defaults'}", pc.approximate_coplanar(**opts), pdal_doubles([str(path), {"type": "filters.approximatecoplanar", **opts}], tmp), ["coplanar"])
+    for opts in [{}, {"knn": 16, "thresh": 0.05}]:
+        check(f"estimaterank {opts or 'defaults'}", pc.estimate_rank(**opts), pdal_doubles([str(path), {"type": "filters.estimaterank", **opts}], tmp), ["rank"])
+    for minpts in [10, 4]:
+        ref = pdal_doubles([str(path), {"type": "filters.lof", "minpts": minpts}], tmp)
+        check(f"lof minpts {minpts}", pc.lof(minpts), ref, ["nndistance", "local_reachability_distance", "local_outlier_factor"])
+    for opts in [{}, {"k": 5, "mode": "avg"}]:
+        check(f"nndistance {opts or 'defaults'}", pc.nndistance(**opts), pdal_doubles([str(path), {"type": "filters.nndistance", **opts}], tmp), ["nndistance"])
+    for r in [1.0, 5.0]:
+        check(f"radialdensity radius {r}", pc.radial_density(r), pdal_doubles([str(path), {"type": "filters.radialdensity", "radius": r}], tmp), ["radial_density"])
+    for knn in [8, 12]:
+        check(f"reciprocity knn {knn}", pc.reciprocity(knn), pdal_doubles([str(path), {"type": "filters.reciprocity", "knn": knn}], tmp), ["reciprocity"])
+    # PDAL's Seb finds the smallest enclosing ball to within its tolerance, terrio's Welzl exactly.
+    check("miniball", pc.miniball(), pdal_doubles([str(path), {"type": "filters.miniball"}], tmp), ["miniball"], atol=1e-9)
+    for opts in [{}, {"radius": 5.0, "medianpercent": 10.0}]:
+        ours = pc.zsmooth("Smoothed", **opts)
+        check(f"zsmooth {opts or 'defaults'}", ours, pdal_doubles([str(path), {"type": "filters.zsmooth", "dim": "Smoothed", **opts}], tmp), ["smoothed"])
+    for opts in [{}, {"only_ground": True, "ground_class": 6}]:
+        ref = pdal_text([str(path), {"type": "filters.skewnessbalancing", **opts}])
+        check(f"skewnessbalancing {opts or 'defaults'}", pc.skewness_balancing(**opts), ref, ["z", "classification"])
+    for label, ours, stage, dims in [
+        ("head 1000", pc.head(1000), {"type": "filters.head", "count": 1000}, ["x", "y", "z", "gps_time"]),
+        ("head invert", pc.head(1000, invert=True), {"type": "filters.head", "count": 1000, "invert": True}, ["x", "y", "z", "gps_time"]),
+        ("tail 777", pc.tail(777), {"type": "filters.tail", "count": 777}, ["x", "y", "z", "gps_time"]),
+        ("tail invert", pc.tail(777, invert=True), {"type": "filters.tail", "count": 777, "invert": True}, ["x", "y", "z", "gps_time"]),
+        ("locate max Z", pc.locate("Z"), {"type": "filters.locate", "dimension": "Z"}, ["x", "y", "z", "gps_time"]),
+        ("locate min Intensity", pc.locate("Intensity", minmax="min"), {"type": "filters.locate", "dimension": "Intensity", "minmax": "min"}, ["x", "y", "z", "gps_time"]),
+        ("iqr Z", pc.iqr("Z"), {"type": "filters.iqr", "dimension": "Z"}, ["x", "y", "z", "gps_time"]),
+        ("iqr Intensity k 0.5", pc.iqr("Intensity", k=0.5), {"type": "filters.iqr", "dimension": "Intensity", "k": 0.5}, ["x", "y", "z", "gps_time"]),
+        ("mad Z", pc.mad("Z"), {"type": "filters.mad", "dimension": "Z"}, ["x", "y", "z", "gps_time"]),
+        ("mad Intensity k 1", pc.mad("Intensity", k=1.0), {"type": "filters.mad", "dimension": "Intensity", "k": 1.0}, ["x", "y", "z", "gps_time"]),
+        # GpsTime has no ties: every point in the same place. With ties, PDAL's std::sort leaves
+        # their order to the implementation: the sorted values are compared.
+        ("sort GpsTime DESC stable", pc.sort("GpsTime", order="DESC"), {"type": "filters.sort", "dimension": "GpsTime", "order": "DESC", "algorithm": "STABLE"}, ["x", "y", "z", "gps_time"]),
+        ("sort Z", pc.sort("Z"), {"type": "filters.sort", "dimension": "Z"}, ["z"]),
+        ("sort Intensity, Classification", pc.sort(["Intensity", "Classification"]), {"type": "filters.sort", "dimensions": ["Intensity", "Classification"]}, ["intensity", "classification"]),
+    ]:
+        check(label, ours, pdal_text([str(path), stage]), dims)
+
+
+def compare_raster_vector_filters(path: Path, tmp: Path) -> None:
+    """Compares PDAL's `filters.dem`, `filters.colorization` and `filters.overlay` with terrio's.
+
+    The rasters are made from the points (a DEM gridded by terrio, its hillshade), the polygons
+    by polygonizing elevation zones of the DEM; the points kept (`dem`) and every value set
+    (`colorization`, `overlay`) are compared.
+
+    Args:
+        path: A LAS file.
+        tmp: A directory for the outputs.
+    """
+    if not PDAL:
+        return
+    try:
+        from osgeo import gdal
+    except ImportError:
+        return
+    pc = terrio.read_points(str(path))
+    name = path.name
+    dem = tmp / "filters_dem.tif"
+    pc.grid(5.0, stat=["idw", "min", "max"], window_size=3).write(str(dem))
+    shade = tmp / "filters_hillshade.tif"
+    terrio.dem(str(dem), "hillshade", str(shade))
+    for limits in ["Z[2:2]", "Z[0.5:10]", "Z[:5]"]:
+        ours = pc.dem(str(dem), limits)
+        ref = pdal_doubles([str(path), {"type": "filters.dem", "raster": str(dem), "limits": limits}], tmp)
+        ok = len(ours) == len(ref["x"]) and all(np.allclose(ours[k], ref[k], rtol=0, atol=0.005) for k in "xyz")
+        ok = ok and np.array_equal(ours["gps_time"], ref["gps_time"])
+        report(f"filter dem {limits} {name}: {len(ours)} points vs PDAL {len(ref['x'])}, the same points in order", ok, "different points")
+    # PDAL 2.9 takes the n-th band for the n-th dimension named, whatever band it names: the
+    # dimensions are named in band order.
+    for raster, dims in [(dem, None), (dem, "Red:1:1.0, Green:2:1.0, Blue:3:1.0"), (shade, "Intensity:1:256"), (shade, "Shade:1:0.5")]:
+        ours = pc.colorization(str(raster), dimensions=dims) if dims else pc.colorization(str(raster))
+        stage = {"type": "filters.colorization", "raster": str(raster), **({"dimensions": dims} if dims else {})}
+        ref = pdal_text([str(path), stage])
+        names = [snake(d.split(":")[0].strip()) for d in (dims or "Red,Green,Blue").split(",")]
+        bad = [d for d in names if not np.array_equal(np.asarray(ours[d]).astype("f8"), ref[d])]
+        report(f"filter colorization {raster.name} {dims or 'defaults'} {name}: {', '.join(names)} identical", not bad, f"differ: {bad}")
+    # Elevation zones of 10 units, polygonized; PDAL reads the points without their CRS, so that
+    # neither reprojects the polygons.
+    zones = tmp / "filters_zones.tif"
+    terrio.calc("floor(A / 10)", str(zones), A=str(dem), type="Int16")
+    one = tmp / "filters_zones1.gpkg"
+    one.unlink(missing_ok=True)
+    terrio.polygonize(str(zones), str(one), field="zone")
+    # A second attribute, which PDAL reads by default (with one attribute, it reads past them).
+    poly = tmp / "filters_zones.gpkg"
+    poly.unlink(missing_ok=True)
+    gdal.VectorTranslate(str(poly), str(one), SQLStatement="SELECT geom, zone, zone * 10 + 3 AS code FROM filters_zones1", layerName="zones")
+    reader = {"type": "readers.las", "filename": str(path), "nosrs": True}
+    # UserData cannot hold the codes (over 255): PDAL and terrio leave the points as they were.
+    for dim, column in [("Classification", "zone"), ("PointSourceId", None), ("UserData", "CODE")]:
+        ours = pc.overlay(str(poly), dim, column=column)
+        ref = pdal_text([reader, {"type": "filters.overlay", "datasource": str(poly), "dimension": dim, **({"column": column} if column else {})}])
+        d = snake(dim)
+        report(f"filter overlay {dim} column {column} {name}: {d} identical", np.array_equal(np.asarray(ours[d]).astype("f8"), ref[d]), "different values")
+
+
 def compare_interpolation(path: Path, tmp: Path) -> None:
     """Compares linear (TIN) and nearest-neighbour grids with `gdal_grid`'s.
 
@@ -851,9 +1114,12 @@ def main() -> None:
         compare_reprojection(root / "las_with_several_extra_byte_bloc.laz", tmp, "EPSG:4326")
         compare_reprojection(root / "synthetic" / "format6.laz", tmp, "EPSG:5070")
         compare_formats(root, tmp)
+        compare_ept_append(root, tmp)
         compare_waveforms(root, tmp)
         compare_filters(root / "autzen_trim.las", tmp, (420, 500))
         compare_more_filters(root / "autzen_trim.las", tmp)
+        compare_neighbourhood_filters(root / "autzen_trim.las", tmp)
+        compare_raster_vector_filters(root / "autzen_trim.las", tmp)
         if PDAL and not args.quick and (root / "madison.copc.laz").exists():
             madison = tmp / "madison.las"
             terrio.convert_points(str(root / "madison.copc.laz"), str(madison))

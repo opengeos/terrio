@@ -81,10 +81,12 @@ of GDAL: the long tail of formats stays reachable through an optional GDAL backe
       the `scale_offset`/`cast_value` codecs, windows fetching only the chunks they touch in parallel,
       GeoZarr multiscales as overviews; identical to GDAL's Zarr driver and xarray on EOPF Sentinel-2
       (v2 and sharded GeoZarr v3), NOAA HRRR on S3, CMIP6 on GCS and Daymet on Azure
-      (`scripts/compare_remote_zarr.py`); arrays of more than three dimensions read with their
+      (`scripts/compare_remote_zarr.py`); remote groups without consolidated metadata listed
+      through the object store's listing (S3 and S3-compatible, Google Cloud Storage, Azure), and
+      a group's arrays listed as GDAL's subdatasets, identical to `gdalinfo` on an OME-Zarr image
+      of EBI's S3 and on CMIP6 on GCS; arrays of more than three dimensions read with their
       other dimensions as bands, as GDAL reads them, identical to GDAL on CMIP6's 4D air
       temperature on GCS (37,620 bands, `DIM_*` metadata included).
-    - [ ] Listing remote groups without consolidated metadata.
 - [x] KML/KMZ, GPX, GML, TopoJSON.
 - [x] PMTiles and MBTiles archives. Done: raster tiles (PNG, JPEG, WebP) read as rasters with their
       zoom levels as overviews, and vector tiles (MVT) as layers, as GDAL's MBTiles, PMTiles and MVT
@@ -95,10 +97,11 @@ of GDAL: the long tail of formats stays reachable through an optional GDAL backe
 - [x] STAC items and collections as datasets. Done: items, item collections, collections and STAC
       API searches (local or remote, following `next` links) as footprint layers read as GDAL reads
       STAC GeoJSON; assets opened as `STAC:"item":asset` (COGs in place); mosaics of an asset over
-      items as GDAL's STACIT driver builds them (`STACIT:"search":asset=red`), read by window.
-    - [ ] POST pagination.
+      items as GDAL's STACIT driver builds them (`STACIT:"search":asset=red`), read by window;
+      `POST` searches and pages (`method=POST`, `next` links with `body`, `merge` and `headers`),
+      and Planetary Computer's assets signed with its SAS tokens, mosaics identical to GDAL's
+      STACIT on the items pystac-client and `planetary_computer` return.
     - [ ] STACTA (tiled assets).
-    - [ ] Signed URLs (Planetary Computer).
 
 ## 0.5: Bindings and the GDAL backend
 
@@ -176,9 +179,26 @@ of GDAL: the long tail of formats stays reachable through an optional GDAL backe
       (PDAL's expression language), `filters.merge`, `filters.splitter`, `filters.chipper`,
       `filters.normal` and `filters.cluster`, identical to PDAL's on autzen and USGS 3DEP lidar
       (`terrio filter`, Python and JavaScript); `filters.reprojection` is `terrio convert --t-srs`.
-- [ ] PDAL's other filters (`filters.dbscan`, `filters.covariancefeatures`, `filters.lof`,
-      `filters.dem`, `filters.colorization`, `filters.overlay` and the long tail).
-- [ ] EPT datasets updated in place (appending points, as Entwine's `--subset` and merge do).
+- [x] PDAL's `filters.dbscan`, `filters.covariancefeatures`, `filters.eigenvalues`,
+      `filters.approximatecoplanar`, `filters.estimaterank`, `filters.lof`, `filters.nndistance`,
+      `filters.radialdensity`, `filters.reciprocity`, `filters.miniball`, `filters.zsmooth`,
+      `filters.skewnessbalancing`, `filters.head`, `filters.tail`, `filters.sort`, `filters.locate`,
+      `filters.iqr`, `filters.mad`, `filters.dem`, `filters.colorization` and `filters.overlay`,
+      identical to PDAL's on autzen (nanoflann's neighbours, libstdc++'s sort and Eigen's
+      eigensolver as PDAL runs them; `terrio filter`, Python and JavaScript).
+- [ ] PDAL's long tail of filters (`filters.optimalneighborhood`, `filters.neighborclassifier`,
+      `filters.radiusassign`, `filters.hag_dem`, `filters.voxelcentroidnearestneighbor`,
+      `filters.farthestpointsampling`, `filters.transformation`, `filters.ferry`, `filters.returns`,
+      `filters.groupby`, `filters.planefit`, `filters.litree`, `filters.delaunay`, `filters.h3` and
+      others).
+- [x] EPT datasets updated in place: points appended (`terrio convert --append`, `append_points`,
+      Python's `append_points`), placed in the dataset's octree within its cube, leaves split as
+      the writer splits them, the hierarchy (its pages kept), `ept.json` and the source list
+      updated, staged beside the dataset and moved in with `ept.json` last, in bounded memory;
+      terrio's datasets (LASzip, binary and Zstandard tiles) and Entwine's; datasets built with the
+      same `--ept-bounds` merged by appending one to the other. Checked on autzen (10.65 million
+      points in three parts): every point once, reads by bounds identical to a build from all the
+      points at once, read by PDAL's `readers.ept` (and its `origin` option).
 
 ## Bindings: Python and WebAssembly
 
@@ -196,10 +216,16 @@ Python:
       GeoTIFF tag, `_RPC.TXT` and `.RPB` sidecars) and written; per-band nodata from `.aux.xml`
       sidecars; `rasterio.shutil` and `rasterio.stack`; writers larger than memory kept in a mapped
       temporary file and written to GeoTIFF in rows of blocks (`terrio.GeoTiffWriter`, Rust's
-      `GeoTiffWriter`).
+      `GeoTiffWriter`); GDAL's `.msk` sidecars read (any local format, overviews included) and
+      written (`GDAL_TIFF_INTERNAL_MASK=NO`, formats without internal masks, kept on `r+`), the
+      same files as rasterio's on Copernicus DEM tiles.
     - [ ] RPC transformers.
-    - [ ] `.msk` sidecars.
-    - [ ] A `rio` command line.
+    - [x] A `rio` command line. Done: `terrio-rio` (and `python -m terrio.rio`), rasterio's
+          `rio` commands (`info`, `bounds`, `blocks`, `shapes`, `clip`, `convert`, `merge`,
+          `overview`, `warp`, `sample`, `transform`, `mask`, `rasterize`, `stack`, `edit-info`,
+          `env`, `gcps`, `calc` with its snuggs expressions, `create`, `rm`, `insp`) with their
+          options, defaults and outputs, run with `terrio.rio` and compared with rasterio's `rio`
+          on synthetic rasters and on Copernicus DEM and Sentinel-2 COGs.
 - [x] xarray integration like rioxarray: a `terrio` backend engine with lazy windowed reads (remote
       COGs read tile by tile, dask chunks), and an accessor with rioxarray's methods (`reproject`,
       `reproject_match`, `clip`, `clip_box`, `pad_box`, `to_raster`, `merge_arrays`). Done:
@@ -210,8 +236,9 @@ Python:
       `.rio` methods (CRS, transform, bounds, nodata, `isel_window`, `clip_box`, `clip`, `pad_box`,
       `reproject`, `reproject_match`, `interpolate_na`, `to_raster` to GeoTIFF, COG and GeoZarr),
       `merge_arrays` and `merge_datasets`, and an opt-in `.rio` alias; compared with rioxarray on
-      synthetic and real files (257 checks, none differing).
-    - [ ] Subdatasets, GCPs and RPCs.
+      synthetic and real files (257 checks, none differing); subdatasets (`group=`,
+      `variable=`), GCPs and RPCs as rioxarray opens, stores, writes and (GCPs) reprojects them,
+      identical to rioxarray on an ESA CCI soil moisture netCDF and ICEYE GCP and RPC images.
 - [x] Wheels with the GDAL backend as an optional extra, for the formats terrio doesn't read itself.
       Done: the Python package's `gdal` feature, built from source against an installed GDAL
       (`maturin build --features gdal`).
@@ -266,10 +293,13 @@ WebAssembly (the `terrio-js` npm package):
       every EPSG CRS's reference points (`scripts/compare_crs_grids_with_gdal.py`,
       `epsg_accuracy_grids`); CDN grids read in place by range requests, as PROJ reads them (four
       EGM2008 heights fetch 0.85 MB of 80 MB), identical to PROJ's values and to `gdalwarp` with
-      `PROJ_NETWORK=ON` (or downloaded whole with `TERRIO_GRID_DOWNLOAD=YES`).
+      `PROJ_NETWORK=ON` (or downloaded whole with `TERRIO_GRID_DOWNLOAD=YES`); transformations
+      between vertical CRSs as PROJ lists them (offsets, offsets and slopes, VERTCON and other
+      grids, chained through an intermediate vertical CRS, depths included), PROJ's heights on
+      727 of 732 points over 604 pairs (`scripts/compare_vertical_with_proj.py`); point motion
+      operations between two epochs of a datum (the Canada velocity grids of NAD83(CSRS),
+      NKG_RF17vel), PROJ's coordinates to 4 nm.
     - [ ] PROJ's chains through several intermediate datums.
-    - [ ] Vertical-to-vertical transformations (VERTCON, offsets).
-    - [ ] Moving coordinates between epochs (point motion operations).
 - [x] NetCDF and HDF5 in pure Rust. Done: classic and netCDF-4 reading, with variables in groups
       below the root (`NETCDF:"file.nc":/group/var`) listed as `gdalinfo` lists them; classic
       (CDF-1/2/5) and netCDF-4 writing (`FORMAT=NC4`/`NC4C`, chunked, deflate and shuffle, CF

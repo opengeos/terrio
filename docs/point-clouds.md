@@ -57,6 +57,54 @@ PDAL's `readers.ept` reads the result as it reads the source, every dimension of
 (binary tiles: x, y and z as PDAL 2.9 rounds them; Zstandard tiles need a PDAL built with
 Zstandard).
 
+### Appending to an EPT dataset
+
+`--append` adds the points of a file to an existing EPT dataset, in place, as Entwine does when
+it builds into an existing output (terrio's datasets, Entwine's and others', in any data type):
+
+```sh
+# A dataset built from the first tile, its cube the bounds of all the tiles
+terrio convert tile-1.laz tiles-ept/ept.json --ept-bounds 635577 848882 406 639004 853538 616
+terrio convert tile-2.laz tiles-ept/ept.json --append
+terrio convert tile-3.laz tiles-ept/ept.json --append --t-srs EPSG:2992   # reprojected first
+terrio convert other-ept/ept.json tiles-ept/ept.json --append            # a merge
+```
+
+The dataset's cube (`bounds` in `ept.json`) does not change: points outside it are refused and
+the dataset is left as it was, which is why a dataset that will take more files is written with
+`--ept-bounds` covering them all (Entwine's `--bounds`; the cube is the cube around those
+bounds). The new points go down the octree as the writer's do: each node keeps the first new
+point to land in each free cell of its `span`³ grid and passes the others to its children; a leaf
+(a node without children) takes all the points that reach it until it holds more than 100 000,
+and is then split, its points placed again as a node and children of their own. Every node keeps
+the points it had, so reads by bounds return the same points as a dataset built from all the
+files at once; reads by resolution return as many points per level, but not the same sample.
+
+The points take the dataset's schema, as when an EPT dataset is written: dimensions the dataset
+has and the points do not are written as zeros, and those the points have and the dataset does
+not are dropped, with a warning. `ept.json`'s `points` and `boundsConforming` are updated, and the
+schema's statistics (`count`, `minimum`, `maximum`, `mean`, `variance`, `stddev`, `counts`) when
+it has them. Each file appended is an entry of the source list, `ept-sources/manifest.json` (or
+Entwine 1's `list.json`), with its own metadata file, and its points' `OriginId` (when the schema
+has one) is its position in the list. A dataset without a source list gets one, starting with an
+entry for the points already there (one per `OriginId` of theirs).
+
+An append writes the tiles it changes or adds, the hierarchy pages it changes, the source list
+and `ept.json` in a directory of their own in the dataset's (`.terrio-ept-append-N`), each synced
+to disk, then a `COMMITTED` marker, then moves them into place: the tiles first, then the source
+metadata and list, the hierarchy pages (the root page last) and `ept.json` last. An append
+interrupted before the marker leaves the dataset as it was; one interrupted while the files are
+moved is completed by the next append, which moves the remaining ones in. Readers that open the
+dataset while the files move may see the new tiles with the previous hierarchy. A lock on the file
+`.terrio-ept-append.lock` keeps to one append at a time; on Unix it is an advisory lock
+(`flock`), which the system releases when the process ends, so an interrupted append leaves
+none held. The options that shape a new dataset (`--ept-bounds`, `--ept-data-type`,
+`--point-format`, `--scale`, `--offset`) are refused with `--append`. The points are spilled to a temporary file (in `TMPDIR`) and placed one node at a time,
+the points of each child in memory or in a temporary file of their own, so memory stays bounded
+whatever the number of points appended (the hierarchy is held whole). In Rust, `append_points`
+and `EptAppender` (chunks of points written as they come); in Python, `terrio.append_points` and
+`convert_points(..., append=True)`.
+
 ## PLY and E57
 
 PLY files are read and written as PDAL's `readers.ply` and `writers.ply` do: `x`, `y` and `z` as
@@ -129,6 +177,25 @@ packets when the points are written to LAS or LAZ (and the `.wdp` file next to a
 | `filter voxelcenternearestneighbor` | `filters.voxelcenternearestneighbor` | the point nearest each voxel's centre |
 | `filter normal` | `filters.normal` | normals and curvature (`NormalX`, `NormalY`, `NormalZ`, `Curvature`) |
 | `filter cluster` | `filters.cluster` | Euclidean clusters (`ClusterID`) |
+| `filter dbscan` | `filters.dbscan` | density-based clusters (`ClusterID`, from 0, -1 for noise), in any dimensions |
+| `filter covariancefeatures` | `filters.covariancefeatures` | features of the neighbours' covariance (`Linearity`, `Planarity`, `Scattering`, `Verticality`, `Omnivariance`, `Anisotropy`, `Eigenentropy`, `EigenvalueSum`, `SurfaceVariation`, `DemantkeVerticality`, `Density`) |
+| `filter eigenvalues` | `filters.eigenvalues` | the neighbours' covariance eigenvalues (`Eigenvalue0` to `Eigenvalue2`) |
+| `filter approximatecoplanar` | `filters.approximatecoplanar` | approximately coplanar points (`Coplanar`) |
+| `filter estimaterank` | `filters.estimaterank` | the rank of the neighbourhood (`Rank`) |
+| `filter lof` | `filters.lof` | local outlier factors (`NNDistance`, `LocalReachabilityDistance`, `LocalOutlierFactor`) |
+| `filter nndistance` | `filters.nndistance` | the distance to the k-th nearest neighbour, or the mean distance (`NNDistance`) |
+| `filter radialdensity` | `filters.radialdensity` | the density of points within a radius (`RadialDensity`) |
+| `filter reciprocity` | `filters.reciprocity` | the share of neighbours that do not have the point as theirs (`Reciprocity`) |
+| `filter miniball` | `filters.miniball` | the distance to the centre of the smallest ball around the neighbours (`Miniball`) |
+| `filter zsmooth` | `filters.zsmooth` | a percentile of the neighbours' Z, in x and y, in a dimension |
+| `filter skewnessbalancing` | `filters.skewnessbalancing` | ground classification by skewness balancing (the points come out sorted by Z) |
+| `filter head`, `filter tail` | `filters.head`, `filters.tail` | the first or last points (or all but them) |
+| `filter sort` | `filters.sort` | the points sorted by dimensions |
+| `filter locate` | `filters.locate` | the point of the largest or smallest value of a dimension |
+| `filter iqr`, `filter mad` | `filters.iqr`, `filters.mad` | the points within the interquartile fences, or median absolute deviations, of a dimension |
+| `filter dem` | `filters.dem` | the points within a range of a raster's values, such as `Z[20:20]` |
+| `filter colorization` | `filters.colorization` | dimensions from raster bands (`Red:1:1.0, Green:2, Blue:3`) |
+| `filter overlay` | `filters.overlay` | a dimension from an attribute of the polygons of a vector layer the points are in |
 
 They give PDAL's results exactly, PDAL's quirks included (`filters.sample` takes the first
 point's `y` as the origin's `z`; SMRF fills empty cells with the mean of the 8 nearest as
@@ -136,6 +203,26 @@ nanoflann orders them; PMF and ELM find a point's cell from the floor of its off
 dividing by the cell size; `filters.decimation` keeps the points it keeps when streaming, as
 `pdal translate` runs it; `filters.normal`'s `refine` changes nothing in PDAL 2.9 and is left
 out). Reprojection (`filters.reprojection`) is `terrio convert --t-srs`.
+
+The neighbourhood filters find neighbours as PDAL does: nanoflann's k-d tree and its order of
+neighbours as far as each other, radius searches sorted as libstdc++'s `std::sort` sorts them,
+covariances with PDAL's running means and offsets rounded to floats, and eigenvalues and
+eigenvectors as Eigen's `SelfAdjointEigenSolver` computes them, operation for operation, so that
+their features are PDAL's to the bit. Two differ by rounding: `Omnivariance` takes the cube root
+of Rust rather than of the C library (within an ulp), and `filters.miniball` finds the smallest
+enclosing ball exactly (Welzl's algorithm), where PDAL's Seb stops within its tolerance (within
+1e-9). PDAL's quirks are kept: `filters.colorization` makes its dimensions doubles (it asks for
+the bands' types before opening the raster); `filters.dem` keeps no point when the range has no
+lower or upper bound; `filters.overlay` takes the second attribute when no column is named;
+`filters.sort` orders by the last dimension, the others breaking its ties (and keeps the order of
+points as large, which PDAL's default algorithm leaves to `std::sort`); `filters.skewnessbalancing`
+returns the points sorted by Z. Two are not: PDAL 2.9's `filters.colorization` reads the n-th
+band for the n-th dimension, whatever band the dimension names (`Infrared:4` alone gets band 1),
+where terrio reads the band named; and `filters.overlay` takes a layer without a CRS to be in the
+points' CRS, where PDAL refuses it. `filters.dem` and `filters.colorization` take the raster to
+be in the points' CRS, as PDAL does; `filters.overlay` reprojects the polygons to it.
+`covariancefeatures`'s `threads` (terrio uses every core) and `overlay`'s `query` and `bounds`
+are left out.
 Every filter takes `--a-srs` to assign a CRS to points that have none or a wrong one, as
 `terrio grid` and `terrio convert` do (PDAL's `readers.las.override_srs`).
 
@@ -151,6 +238,11 @@ terrio filter crop tile.laz part.laz --polygon "POLYGON((0 0, 100 0, 50 80, 0 0)
 terrio filter splitter tile.laz "tiles/tile_#.laz" --length 500
 terrio filter merge a.laz b.laz merged.laz
 terrio filter smrf tile.las.zip ground.laz --a-srs EPSG:2056   # a zipped LAS without a CRS
+terrio filter covariancefeatures tile.laz features.laz --feature-set Dimensionality,Omnivariance --knn 16
+terrio filter dbscan tile.laz clusters.laz --eps 2 --min-cluster-points 10
+terrio filter colorization tile.laz rgb.laz --raster ortho.tif --dimensions "Red:1, Green:2, Blue:3"
+terrio filter overlay tile.laz zoned.laz --datasource zones.gpkg --dimension Classification --column class
+terrio filter dem tile.laz near.laz --raster dem.tif --limits "Z[2:2]"
 ```
 
 ## COPC, local or remote
@@ -255,7 +347,11 @@ hag = points.csf().hag_nn()["height_above_ground"]
 high = points.expression("Classification == 2 && Z > 100")
 tiles = points.splitter(500.0)           # a list of PointClouds
 both = terrio.merge_points([points, other])
+feats = points.covariance_features(feature_set=["Linearity", "Planarity"])  # filters.covariancefeatures
+rgb = points.colorization("ortho.tif")   # filters.colorization: Red, Green, Blue
+zoned = points.overlay("zones.gpkg", "Classification", column="class")
 points.write("tile-ept/ept.json")        # an EPT dataset
+terrio.append_points("tile-ept/ept.json", ["tile-2.laz", "tile-3.laz"])  # added in place
 
 # Larger than memory: chunks in, chunks out.
 f = terrio.open_points("huge.laz")
@@ -274,6 +370,8 @@ pc.toBytes("tile.copc.laz");     // LAS, LAZ or COPC bytes
 pc.grid(1, { stat: ["max"] });   // a raster Dataset
 pc.grid(1, { method: "linear" }); // a TIN
 pc.smrf().range("Classification[2:2]");
+pc.lof(10).get("local_outlier_factor"); // filters.lof, dbscan, covarianceFeatures...
+pc.colorization(rasterDataset, "Red:1, Green:2, Blue:3");
 readPoints(plyBytes, "scan.ply"); // PLY and E57 bytes too
 ```
 
@@ -296,9 +394,12 @@ type) with terrio and compares:
 | EPT reads by bounds and resolution, local and USGS 3DEP (11.5 billion points) | PDAL `readers.ept` | the same points |
 | PLY and E57 written by terrio | PDAL `readers.ply`, `readers.e57` | identical |
 | EPT datasets written by terrio (LASzip and binary tiles; 4.07 million points of USGS 3DEP Madison) | PDAL `readers.ept` | identical |
+| EPT datasets appended to (autzen, 10.65 million points in three parts, LASzip, binary and Zstandard tiles; Entwine's lone-star, 1.2-with-color and ellipsoid datasets merged with themselves) | PDAL `readers.ept`; the source; a dataset built from all the points | every point once (twice when merged), reads by bounds identical |
 | Waveform samples; packets kept through LAS and LAZ | the file's bytes (LASlib's offsets) | identical |
 | SMRF, outliers (statistical, radius), range, sample, voxels, on autzen and USGS 3DEP Madison (4.07 million points) | PDAL's filters | identical classes and points |
 | PMF, CSF, ELM, HAG (nearest, Delaunay), crop, decimation, expression, assign, merge, splitter, chipper, normals, clusters, on autzen and half a million points of USGS 3DEP Madison | PDAL's filters | identical classes, heights, tiles, cluster ids and points; normals within 1e-6 |
+| DBSCAN, covariance features, eigenvalues, approximate coplanarity, rank, LOF, nearest-neighbour distances, radial density, reciprocity, miniball, z smoothing, skewness balancing, head, tail, sort, locate, IQR, MAD, on autzen | PDAL's filters | every value identical to the bit (PDAL's doubles read back from LAS extra bytes) but omnivariance (within 1e-15) and miniball (within 1e-9) |
+| DEM, colorization and overlay, on autzen, with rasters and polygons made from it (and a NAIP orthophoto, a USGS 3DEP DEM) | PDAL's filters | the same points; identical values |
 | TIN (linear) grids | `gdal_grid -a linear` | 99.91% of cells identical (see below) |
 | Nearest-neighbour grids | `gdal_grid -a nearest` | identical but for ties |
 | A grid of 101.7 million points, read in chunks | PDAL `writers.gdal` | identical |

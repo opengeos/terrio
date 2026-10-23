@@ -37,7 +37,7 @@ pub struct EptDimension {
 
 impl EptDimension {
     /// The type of the values read: float64 for scaled values and coordinates.
-    fn value_type(&self) -> Result<ValueType> {
+    pub(crate) fn value_type(&self) -> Result<ValueType> {
         if self.scale.is_some() || matches!(self.name.as_str(), "X" | "Y" | "Z") {
             return Ok(ValueType::F64);
         }
@@ -45,7 +45,7 @@ impl EptDimension {
     }
 
     /// The type of the values stored.
-    fn stored_type(&self) -> Result<ValueType> {
+    pub(crate) fn stored_type(&self) -> Result<ValueType> {
         Ok(match (self.kind.as_str(), self.size) {
             ("signed", 1) => ValueType::I8,
             ("signed", 2) => ValueType::I16,

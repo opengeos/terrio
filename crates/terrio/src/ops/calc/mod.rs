@@ -528,7 +528,7 @@ fn run_chunks(n: usize, f: &(dyn Fn(usize) -> Result<Vec<f64>> + Sync)) -> Resul
     {
         use std::sync::Mutex;
         use std::sync::atomic::{AtomicUsize, Ordering};
-        let threads = std::thread::available_parallelism().map_or(1, |t| t.get()).min(16).min(n.max(1));
+        let threads = crate::par::threads().min(16).min(n.max(1));
         if threads > 1 {
             let next = AtomicUsize::new(0);
             let results: Mutex<Vec<Option<Result<Vec<f64>>>>> = Mutex::new((0..n).map(|_| None).collect());

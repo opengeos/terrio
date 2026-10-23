@@ -6,6 +6,7 @@ directory filled by `scripts/fetch_test_data.sh`; their expected values come fro
 GDAL 3.12 (`gdal_grid`).
 """
 
+import json
 import os
 
 import numpy as np
@@ -127,6 +128,69 @@ def test_more_pdal_filters():
     assert ids.dtype == np.uint64 and ids.min() >= 1
 
 
+def test_neighbourhood_and_ordering_filters():
+    pc = make_points()
+    ids = pc.dbscan(2.0, min_points=4, dimensions=["X", "Y"])["cluster_id"]
+    assert ids.dtype == np.int64 and ids.min() >= -1
+    with pytest.raises(terrio.InvalidArgumentError, match="OptimalKNN"):
+        pc.covariance_features(feature_set="All")
+    features = pc.covariance_features(
+        feature_set=["Linearity", "Planarity", "Scattering"], mode="raw"
+    )
+    lin, plan, scat = (features[d] for d in ("linearity", "planarity", "scattering"))
+    np.testing.assert_allclose(lin + plan + scat, 1.0, rtol=0, atol=1e-9)
+    ev = pc.eigenvalues(normalize=True)
+    np.testing.assert_allclose(
+        ev["eigenvalue0"] + ev["eigenvalue1"] + ev["eigenvalue2"], 1.0, rtol=0, atol=1e-12
+    )
+    assert set(np.unique(pc.approximate_coplanar()["coplanar"])) <= {0, 1}
+    assert pc.estimate_rank()["rank"].max() <= 3
+    lof = pc.lof(10)
+    assert np.all(lof["nndistance"] > 0) and np.all(lof["local_outlier_factor"] > 0)
+    assert np.all(pc.nndistance(4, mode="avg")["nndistance"] > 0)
+    assert np.all(pc.radial_density(5.0)["radial_density"] > 0)
+    assert np.all((pc.reciprocity()["reciprocity"] >= 0) & (pc.reciprocity()["reciprocity"] <= 100))
+    assert np.all((pc.miniball()["miniball"] >= 0) & (pc.miniball()["miniball"] <= 1))
+    smooth = pc.zsmooth("Smoothed", radius=2.0)["smoothed"]
+    assert smooth.dtype == np.float64 and smooth.min() >= 100 and smooth.max() <= 110
+    ground = pc.skewness_balancing()
+    assert np.all(np.diff(ground["z"]) >= 0) and set(np.unique(ground["classification"])) <= {1, 2}
+    np.testing.assert_array_equal(pc.head(5)["x"], pc["x"][:5])
+    np.testing.assert_array_equal(pc.tail(5, invert=True)["x"], pc["x"][:-5])
+    assert np.all(np.diff(pc.sort("Z", order="DESC")["z"]) <= 0)
+    assert pc.locate("Intensity")["intensity"][0] == pc["intensity"].max()
+    assert len(pc.iqr("Z")) == len(pc) and len(pc.mad("Z", k=1.0)) < len(pc)
+
+
+def test_raster_and_vector_filters(tmp_path):
+    pc = make_points()
+    # A plane z = 100 + x / 10 over the points, two bands; and two squares of zones.
+    cols = np.arange(100)
+    plane = np.tile(100 + (cols + 0.5) / 10, (100, 1))
+    raster = terrio.Raster.from_array(
+        np.stack([plane, plane * 2]), (500000.0, 1.0, 0.0, 4000100.0, 0.0, -1.0), crs="EPSG:32617"
+    )
+    near = pc.dem(raster, "Z[0:2]")
+    assert 0 < len(near) < len(pc)
+    path = tmp_path / "plane.tif"
+    raster.write(str(path))
+    assert len(pc.dem(str(path), "Z[0:2]")) == len(near)
+    colored = pc.colorization(raster, dimensions="Red:1:1.0, Green:2:0.5")
+    assert colored["red"].dtype == np.float64
+    np.testing.assert_allclose(colored["red"], colored["green"])
+
+    def square(x0, zone):
+        ring = [[x0, 4e6], [x0 + 50, 4e6], [x0 + 50, 4000100], [x0, 4000100], [x0, 4e6]]
+        geometry = {"type": "Polygon", "coordinates": [ring]}
+        return {"type": "Feature", "properties": {"name": "z", "zone": zone}, "geometry": geometry}
+
+    squares = {"type": "FeatureCollection", "features": [square(500000, 3), square(500050, 4)]}
+    layer = terrio.Layer.from_geojson(squares, crs="EPSG:32617")
+    zoned = pc.overlay(layer, "Classification")
+    expected = np.where(pc["x"] <= 500050, 3, 4)
+    np.testing.assert_array_equal(zoned["classification"], expected)
+
+
 def test_ept_written_and_read(tmp_path):
     pc = make_points()
     for data_type in ["laszip", "binary", "zstandard"]:
@@ -140,6 +204,34 @@ def test_ept_written_and_read(tmp_path):
         str(tmp_path / "laszip" / "ept.json"), str(tmp_path / "points.e57"), chunk_points=3000
     )
     assert len(terrio.read_points(str(tmp_path / "points.e57"))) == len(pc)
+
+
+def test_ept_append(tmp_path):
+    pc = make_points()
+    x0, y0, z0 = (float(np.min(pc[k])) for k in "xyz")
+    x1, y1, z1 = (float(np.max(pc[k])) for k in "xyz")
+    mid = (x0 + x1) / 2
+    first, second = pc.range(f"X[:{mid})"), pc.range(f"X[{mid}:]")
+    second.write(str(tmp_path / "second.laz"))
+    for data_type in ["laszip", "binary", "zstandard"]:
+        path = tmp_path / data_type / "ept.json"
+        first.write(str(path), ept_data_type=data_type, ept_bounds=(x0, y0, z0, x1, y1, z1))
+        terrio.append_points(str(path), [str(tmp_path / "second.laz")], leaf_points=500)
+        f = terrio.open_points(str(path))
+        assert f.ept_info["points"] == len(pc)
+        back = f.read()
+        np.testing.assert_allclose(np.sort(back["x"]), np.sort(pc["x"]), rtol=0, atol=1e-6)
+        manifest = json.loads((tmp_path / data_type / "ept-sources" / "manifest.json").read_text())
+        assert [s["points"] for s in manifest] == [len(first), len(second)]
+    # Through convert_points, and refused outside the cube.
+    terrio.convert_points(
+        str(tmp_path / "second.laz"), str(tmp_path / "laszip" / "ept.json"), append=True
+    )
+    assert terrio.open_points(str(tmp_path / "laszip" / "ept.json")).ept_info["points"] == len(
+        pc
+    ) + len(second)
+    with pytest.raises(terrio.TerrioError):
+        terrio.convert_points(str(tmp_path / "second.laz"), str(tmp_path / "x.laz"), append=True)
 
 
 def test_ept_and_filters_as_pdal(data_dir):
@@ -157,6 +249,12 @@ def test_ept_and_filters_as_pdal(data_dir):
     assert int(np.sum(autzen.elm()["classification"] == 7)) == 202
     assert autzen.smrf().hag_nn()["height_above_ground"].sum() == pytest.approx(625301.02)
     assert len(autzen.chipper()) == 22
+    ids = autzen.dbscan(3.0, min_points=10)["cluster_id"]
+    assert (ids.max(), int(np.sum(ids == -1))) == (359, 95169)
+    assert autzen.covariance_features()["linearity"][0] == 0.6777488111278865
+    assert autzen.lof()["local_outlier_factor"][0] == 1.0315897563238794
+    assert autzen.reciprocity()["reciprocity"].sum() == 1061100.0
+    assert len(autzen.iqr("Z")) == 82454 and len(autzen.mad("Z")) == 80067
     dem = terrio.grid_points(os.path.join(pc, "autzen_trim.las"), 10.0, method="nearest")
     assert dem.read(1).sum() == pytest.approx(2833138.81)
 

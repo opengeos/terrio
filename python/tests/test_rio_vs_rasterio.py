@@ -54,10 +54,16 @@ def _data():
 # boundaries (a line's end at x = 500000 on a grid starting there) can turn into pixel coordinates
 # a hair below the integer: GDAL then burns the neighbouring pixel (the whole line shifts by one
 # column). Linux and Windows wheels agree with terrio exactly.
+# The share of pixels each may differ by there: edges are a larger share of small grids (the
+# rio command line rasterizes a triangle into 40 x 30 pixels).
 FMA_SENSITIVE = {
-    "rasterize: replace, all_touched, add, out, dtypes",
-    "geometry_mask, geometry_window, raster_geometry_mask",
-    "mask: crop, filled, invert, all_touched, pad, indexes, nodata",
+    "rasterize: replace, all_touched, add, out, dtypes": 0.01,
+    "geometry_mask, geometry_window, raster_geometry_mask": 0.01,
+    "mask: crop, filled, invert, all_touched, pad, indexes, nodata": 0.01,
+    # The rio command line's mask and rasterize burn geometries the same way.
+    "mask: --geojson-mask, --crop, --invert, --all, stdin, no features (copy)": 0.01,
+    "rasterize: --res, --dimensions, --bounds, --like, --property, --default-value, --fill, "
+    "--all, --nodata, an existing output": 0.03,
 }
 MACOS_ARM = sys.platform == "darwin" and platform.machine() == "arm64"
 
@@ -65,7 +71,7 @@ MACOS_ARM = sys.platform == "darwin" and platform.machine() == "arm64"
 @pytest.mark.parametrize("check", compare.CHECKS, ids=_id)
 def test_check(check, scratch):
     if MACOS_ARM and check.name in FMA_SENSITIVE:
-        check = dataclasses.replace(check, expect="tolerance", max_frac=0.01)
+        check = dataclasses.replace(check, expect="tolerance", max_frac=FMA_SENSITIVE[check.name])
     data = _data()
     if check.needs_data and data is None:
         pytest.skip("TERRIO_TEST_DATA is not set")

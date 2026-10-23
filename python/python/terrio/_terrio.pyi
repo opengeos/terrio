@@ -49,6 +49,7 @@ __all__ = [
     "read_points_bytes",
     "convert_points",
     "merge_points",
+    "append_points",
     "tiff_tags",
     "crs_info",
     "suggested_grid",
@@ -129,6 +130,8 @@ class Raster:
     def dtype(self) -> str: ...
     @property
     def geolocation(self) -> list[tuple[str, str]] | None: ...
+    @property
+    def metadata(self) -> list[tuple[str, str]]: ...
     @property
     def nodata(self) -> float | None: ...
     @property
@@ -320,6 +323,7 @@ class PointCloud:
         ply_precision: int | None = None,
         dimensions: Sequence[str] | None = None,
         ept_data_type: str | None = None,
+        ept_bounds: tuple[float, float, float, float, float, float] | None = None,
     ) -> None: ...
     def to_bytes(self, format: str = "LAZ", point_format: int | None = None) -> bytes: ...
     def range(self, limits: str) -> PointCloud: ...
@@ -441,6 +445,68 @@ class PointCloud:
         min_points: int = 1,
         max_points: int | None = None,
         is3d: bool = True,
+    ) -> PointCloud: ...
+    def dbscan(
+        self,
+        eps: float = 1.0,
+        *,
+        min_points: int = 6,
+        dimensions: Sequence[str] | None = None,
+    ) -> PointCloud: ...
+    def covariance_features(
+        self,
+        *,
+        knn: int = 10,
+        feature_set: str | Sequence[str] | None = None,
+        mode: str = "sqrt",
+        stride: int = 1,
+        radius: float | None = None,
+        min_k: int = 3,
+        optimized: bool = False,
+    ) -> PointCloud: ...
+    def eigenvalues(
+        self,
+        *,
+        knn: int = 8,
+        normalize: bool = False,
+        stride: int = 1,
+        radius: float | None = None,
+        min_k: int = 3,
+    ) -> PointCloud: ...
+    def approximate_coplanar(
+        self, *, knn: int = 8, thresh1: float = 25.0, thresh2: float = 6.0
+    ) -> PointCloud: ...
+    def estimate_rank(self, *, knn: int = 8, thresh: float = 0.01) -> PointCloud: ...
+    def lof(self, minpts: int = 10) -> PointCloud: ...
+    def nndistance(self, k: int = 10, *, mode: str = "kth") -> PointCloud: ...
+    def radial_density(self, radius: float = 1.0) -> PointCloud: ...
+    def reciprocity(self, knn: int = 8) -> PointCloud: ...
+    def miniball(self, knn: int = 8) -> PointCloud: ...
+    def zsmooth(
+        self, dim: str, *, radius: float = 1.0, medianpercent: float = 50.0
+    ) -> PointCloud: ...
+    def skewness_balancing(
+        self, *, ground_class: int = 2, other_class: int = 1, only_ground: bool = False
+    ) -> PointCloud: ...
+    def head(self, count: int = 10, *, invert: bool = False) -> PointCloud: ...
+    def tail(self, count: int = 10, *, invert: bool = False) -> PointCloud: ...
+    def sort(self, dimensions: str | Sequence[str], *, order: str = "ASC") -> PointCloud: ...
+    def locate(self, dimension: str, *, minmax: str = "max") -> PointCloud: ...
+    def iqr(self, dimension: str, *, k: float = 1.5) -> PointCloud: ...
+    def mad(
+        self, dimension: str, *, k: float = 2.0, mad_multiplier: float = 1.4862
+    ) -> PointCloud: ...
+    def dem(self, raster: str | Raster, limits: str, *, band: int = 1) -> PointCloud: ...
+    def colorization(
+        self, raster: str | Raster, *, dimensions: str | Sequence[str] | None = None
+    ) -> PointCloud: ...
+    def overlay(
+        self,
+        datasource: str | Layer | VectorDataset,
+        dimension: str,
+        *,
+        column: str | None = None,
+        layer: str | None = None,
     ) -> PointCloud: ...
     def grid(
         self,
@@ -884,8 +950,24 @@ def convert_points(
     ply_encoding: str | None = None,
     ply_precision: int | None = None,
     ept_data_type: str | None = None,
+    ept_bounds: tuple[float, float, float, float, float, float] | None = None,
+    append: bool = False,
 ) -> None: ...
 def merge_points(clouds: Sequence[PointCloud]) -> PointCloud: ...
+def append_points(
+    dataset: str,
+    inputs: Sequence[str],
+    *,
+    bounds: _Bounds | None = None,
+    z_range: tuple[float, float] | None = None,
+    classes: Sequence[int] | None = None,
+    returns: Sequence[str] | None = None,
+    a_srs: str | None = None,
+    t_srs: str | None = None,
+    chunk_points: int = 0,
+    leaf_points: int | None = None,
+    memory_points: int | None = None,
+) -> None: ...
 def grid_points(
     path: str,
     resolution: float,

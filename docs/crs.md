@@ -134,9 +134,27 @@ heights are kept as GDAL keeps them (or transformed, for the pipelines PROJ runs
 
 `Transformer::transform_3d` in Rust, `transform_points(xs, ys, src, dst, zs)` in Python,
 `transformPoints(xs, ys, src, dst, zs)` in JavaScript and `x y z` lines on `terrio crs`'s
-standard input transform heights. Transformations between vertical CRSs are made through
-ellipsoidal heights; PROJ's direct vertical-to-vertical transformations (VERTCON, offsets) are not
-used.
+standard input transform heights.
+
+Between compound CRSs on two vertical CRSs that the EPSG dataset connects, heights go through the
+transformations PROJ lists between them, as PROJ prefers them to geoid models: vertical offsets,
+offsets and slopes (`vertoffset`), VERTCON's grids from NGVD29 to NAVD88 and other grids, directly
+or chained through an intermediate vertical CRS (DHHN92 to SNN76 through EVRF2000), in the CRSs'
+axis directions (depths included) and units. For each point, the most accurate transformation
+whose area holds it is used, PROJ's way: one interpolating in another datum's geographic CRS
+counts the accuracy of the horizontal transformation to it (both ways), and is evaluated there.
+Where none applies, heights are kept. Vertical CRSs of one datum (NAVD88 height in metres and in
+US survey feet) only convert units.
+
+```sh
+TERRIO_NETWORK=ON terrio crs EPSG:4267+7968 --to EPSG:4267+5703 -105.27 40.01 1700   # VERTCON: 1701.0026
+terrio crs EPSG:4258+5783 --to EPSG:4258+5785 13.4 52.5 100                       # DHHN92 to SNN76: 99.856
+```
+
+These are listed in `crates/terrio/data/epsg_vertical.tsv.zst` (`scripts/gen_vertical_table.py`)
+and compared with PROJ by `scripts/compare_vertical_with_proj.py`: of 732 points over the 604
+pairs, 727 have PROJ's heights to the micrometre; the other 5 (EVRF2000 Austria, where PROJ chains
+the horizontal transformations of some concatenations in its own way) differ by 0.3 mm to 1 cm.
 
 ### Dynamic datums and coordinate epochs
 
@@ -149,14 +167,27 @@ JavaScript, `--s_coord_epoch` and `--t_coord_epoch` on `terrio crs`):
 
 - from a dynamic CRS to a static one, the source epoch is used;
 - from a static CRS to a dynamic one, the target epoch;
-- between two dynamic CRSs, the source epoch when both are given (PROJ does not move coordinates
-  from one epoch to the other);
+- between two dynamic CRSs, the source epoch when both are given;
+- between two epochs of one datum that has a point motion operation (the Canada velocity grids
+  v6, v7 and v8 of NAD83(CSRS), the NKG_RF17vel land uplift model of the Nordic ETRF2014
+  realization), the coordinates move with its velocity grid over the time between the epochs,
+  as PROJ moves them (`projinfo -s EPSG:8254@2010 -t EPSG:8254@2020`): geographic 2D and 3D
+  CRSs, not projected ones (which PROJ does not move);
 - otherwise the transformations' parameters at their reference epoch are used, as PROJ does
   without an epoch.
 
 `Transformer::transform_4d` takes the time of each point instead (`x y z t` lines on
 `terrio crs`). Time-dependent Helmert transformations (15 parameters) and velocity grids
 (`deformation`) are supported.
+
+```sh
+# NAD83(CSRS)v7 coordinates of 2010 at epoch 2020 (Canada velocity grid v7, from the PROJ CDN)
+echo "-75.7 45.4 100" | TERRIO_NETWORK=ON terrio crs EPSG:8254 --to EPSG:8254 --s_coord_epoch 2010 --t_coord_epoch 2020
+```
+
+On 1,100 points of NAD83(CSRS) v6 and v7 (2D and 3D, both directions) and NKG_RF17vel, the
+coordinates are PROJ's to 4 nanometres. (GDAL 3.12's `osr` applies the forward motion when the
+target epoch is the earlier one; PROJ's own pipeline, which terrio follows, moves them back.)
 
 ```rust
 use terrio::crs::{SpatialRef, TransformOptions, Transformer};

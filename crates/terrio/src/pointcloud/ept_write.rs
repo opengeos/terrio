@@ -313,7 +313,7 @@ fn schema(header: &LasHeader, layout: &Layout) -> Result<Vec<SchemaDim>> {
 }
 
 /// A LAS (or LAZ) file of records.
-fn las_bytes(header: &LasHeader, layout: &Layout, records: &[u8], compressed: bool) -> Result<Vec<u8>> {
+pub(crate) fn las_bytes(header: &LasHeader, layout: &Layout, records: &[u8], compressed: bool) -> Result<Vec<u8>> {
     let mut h = header.clone();
     h.compressed = compressed;
     h.vlrs.retain(|v| !v.is_laszip());

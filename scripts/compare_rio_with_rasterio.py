@@ -37,7 +37,7 @@ import subprocess
 import sys
 import tempfile
 import warnings
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -642,6 +642,49 @@ def _s_masks(rio: Any, ctx: Ctx) -> Any:
     W = rio.windows.Window
     with rio.open(synthetic(rio, ctx)) as ds:
         return [ds.read_masks(), ds.read_masks(2, window=W(30, 0, 60, 40)), ds.dataset_mask(), ds.dataset_mask(out_shape=(50, 75)), ds.mask_flag_enums]
+
+
+@check("synthetic", "masks: .msk sidecars written and read (GDAL_TIFF_INTERNAL_MASK=NO, ENVI), kept on update")
+def _s_msk_sidecars(rio: Any, ctx: Ctx) -> Any:
+    W = rio.windows.Window
+    with rio.open(synthetic(rio, ctx)) as ds:
+        data, profile = ds.read(), ds.profile
+    mask = np.where(data[0] > 0, 255, 0).astype("uint8")
+    out = []
+    with rio.Env(GDAL_TIFF_INTERNAL_MASK=False):
+        with rio.open(str(ctx.out / "ext.tif"), "w", **profile) as dst:
+            dst.write(data)
+            dst.write_mask(mask)
+    plain = {k: v for k, v in profile.items() if k not in ("tiled", "blockxsize", "blockysize", "compress", "interleave")}
+    with rio.open(str(ctx.out / "m.envi"), "w", **{**plain, "driver": "ENVI"}) as dst:
+        dst.write(data)
+        dst.write_mask(mask)
+    with rio.open(str(ctx.out / "ext.tif"), "r+") as dst:
+        dst.write(data[:1] + 1, 1)
+    # With overviews: the sidecar gets its own, read for lower resolutions.
+    with rio.Env(GDAL_TIFF_INTERNAL_MASK=False):
+        with rio.open(str(ctx.out / "ovr.tif"), "w", **profile) as dst:
+            dst.write(data)
+            dst.write_mask(mask)
+            dst.build_overviews([2, 4], rio.enums.Resampling.nearest)
+    # Written again without a mask: the earlier sidecar goes.
+    with rio.open(str(ctx.out / "gone.tif"), "w", **profile) as dst:
+        dst.write(data)
+        dst.write_mask(mask)
+    with rio.Env(GDAL_TIFF_INTERNAL_MASK=False):
+        with rio.open(str(ctx.out / "gone.tif"), "w", **profile) as dst:
+            dst.write(data)
+            dst.write_mask(mask)
+    with rio.open(str(ctx.out / "gone.tif"), "w", **profile) as dst:
+        dst.write(data)
+    out.append(os.path.exists(str(ctx.out / "gone.tif.msk")))
+    for name in ("ext.tif", "m.envi", "ovr.tif"):
+        with rio.open(str(ctx.out / name)) as ds:
+            files = sorted(os.path.basename(f) for f in ds.files if not f.endswith(".aux.xml"))
+            out.append([files, ds.mask_flag_enums, ds.read_masks(), ds.read_masks(2, window=W(30, 0, 60, 40)), ds.dataset_mask(out_shape=(50, 75))])
+        with rio.open(str(ctx.out / name) + ".msk") as m:
+            out.append([m.tags(), m.read(1), m.overviews(1)])
+    return out
 
 
 @check("synthetic", "sample, index, xy, window helpers, block windows")
@@ -1448,6 +1491,681 @@ def _remote(rio: Any, ctx: Ctx) -> Any:
     with rio.open(REMOTE_COG) as ds:
         pts = [(-105.5, 39.5), (-105.2, 39.9), (-104.9, 39.1)]
         return [meta_of(ds), ds.read(1, window=W(1000, 1000, 512, 512)), ds.read(1, out_shape=(400, 400)), ds.read(1, masked=True, out_shape=(150, 150)), list(ds.sample(pts))]
+
+
+# ─── The rio command line ───────────────────────────────────────────────────────────────────────
+
+# The command line checks run rasterio's `rio` and terrio.rio's (`python -m terrio.rio`, the
+# `terrio-rio` script) with the same arguments, and compare their exit status, their output
+# (JSON and GeoJSON parsed, geometries compared as sets), and the files they write, read back by
+# rasterio (metadata, pixels, masks).
+
+# Public COGs: Copernicus GLO-30 DEM tiles and the bands of a Sentinel-2 L2A scene (Earth Search).
+COPERNICUS = "https://copernicus-dem-30m.s3.amazonaws.com/Copernicus_DSM_COG_10_{0}_DEM/Copernicus_DSM_COG_10_{0}_DEM.tif"
+DEM_TILES = ["N40_00_W106_00", "N39_00_W106_00", "N40_00_W107_00"]
+SENTINEL2 = "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/13/T/DE/2026/10/S2C_13TDE_20261019_0_L2A/{0}.tif"
+
+CLI_TOL = dict(expect="tolerance", rtol=1e-9, atol=1e-9, reason="coordinates projected by terrio and PROJ differ in the last digits")
+
+
+def rio_command(rio: Any) -> list[str]:
+    """The `rio` command line of a module.
+
+    Args:
+        rio: `rasterio` or `terrio.rio`.
+
+    Returns:
+        list: The command: rasterio's `rio`, or `python -m terrio.rio`.
+    """
+    if rio.__name__.startswith("terrio"):
+        return [sys.executable, "-m", "terrio.rio"]
+    return [sys.executable, "-c", "import sys; from rasterio.rio.main import main_group; sys.exit(main_group(prog_name='rio'))"]
+
+
+def cli_output(text: str) -> Any:
+    """A command's output, parsed: one JSON text, JSON texts one per line, or lines.
+
+    Args:
+        text: The standard output.
+
+    Returns:
+        The parsed JSON, or a list of the lines (parsed when they are JSON).
+    """
+    text = text.strip()
+    if not text:
+        return []
+    try:
+        return json.loads(text.replace("\x1e", ""))
+    except ValueError:
+        pass
+    head, _, rest = text.partition("\n")
+    try:
+        json.loads(head)
+    except ValueError:
+        try:
+            # A title, then a JSON text (`rio warp --dry-run`).
+            return [head, json.loads(rest)]
+        except ValueError:
+            pass
+    out = []
+    for line in text.splitlines():
+        line = line.strip("\x1e")
+        try:
+            out.append(json.loads(line))
+        except ValueError:
+            # Numbers separated by spaces (`rio info --bounds`, `--stats`) as numbers.
+            try:
+                out.append([float(v) for v in line.split()] or line)
+            except ValueError:
+                out.append(line)
+    return out
+
+
+def raster_result(ref: Any, path: Path) -> Any:
+    """A file a command wrote, read by rasterio: metadata, pixels and masks.
+
+    Args:
+        ref: The rasterio module.
+        path: The file.
+
+    Returns:
+        list | None: The metadata, the bands and the masks, or None if there is no file.
+    """
+    if not path.exists():
+        return None
+    with ref.open(path) as ds:
+        out = [norm(meta_of(ds)), ds.read(), ds.read_masks()]
+        factors = ds.overviews(1)
+        if factors:
+            # The first overview, read at its size.
+            f = factors[0]
+            out.append(ds.read(out_shape=(ds.count, -(-ds.height // f), -(-ds.width // f))))
+        return out
+
+
+def rio_run(rio: Any, ctx: Ctx, *args: Any, stdin: str | None = None, files: Sequence[str] = (), output: Callable[[Any], Any] | None = None) -> dict[str, Any]:
+    """Runs a `rio` command of a module in the check's directory.
+
+    Args:
+        rio: `rasterio` or `terrio.rio`.
+        ctx: The context (outputs go to `ctx.out`).
+        *args: The command's arguments.
+        stdin: Text given on standard input.
+        files: Files the command writes (relative to `ctx.out`), read back by rasterio.
+        output: A function normalizing the parsed output (geometries as sets...).
+
+    Returns:
+        dict: The exit status, the output and the files.
+    """
+    # A stalled command (a remote read) fails the check rather than blocking the run.
+    r = subprocess.run(rio_command(rio) + [str(a) for a in args], input=stdin, capture_output=True, text=True, cwd=str(ctx.out), timeout=900)
+    if r.returncode and os.environ.get("RIO_CLI_DEBUG"):
+        print(f"{rio.__name__} {args}: {r.stderr[-500:]}", file=sys.stderr)
+    out = cli_output(r.stdout)
+    if output is not None and r.returncode == 0:
+        out = output(out)
+    result: dict[str, Any] = {"exit": r.returncode, "stdout": out}
+    for f in files:
+        result[f] = raster_result(ctx.reference, ctx.out / f)
+    if r.returncode not in (0, 1, 2):
+        result["stderr"] = r.stderr[-300:]
+    return result
+
+
+def feature_set(obj: Any) -> Any:
+    """GeoJSON features as an order-independent list: properties and normalized coordinates.
+
+    Args:
+        obj: A feature collection, or a list of features.
+
+    Returns:
+        list: `(value, centroid, coordinates)` per feature, sorted; bboxes separately.
+    """
+    import shapely.geometry
+
+    if isinstance(obj, dict) and obj.get("type") == "Feature":
+        obj = [obj]
+    feats = obj["features"] if isinstance(obj, dict) and "features" in obj else obj
+    out = []
+    for f in feats:
+        if not isinstance(f, dict) or f.get("type") != "Feature":
+            out.append(("bbox", 0.0, 0.0, np.asarray(f, dtype="float64")))
+            continue
+        g = shapely.geometry.shape(f["geometry"]).normalize()
+        c = g.centroid
+        props = {k: v for k, v in f["properties"].items()}
+        coords = np.asarray([xy for part in getattr(g, "geoms", [g]) for ring in [part.exterior, *part.interiors] for xy in ring.coords], dtype="float64")
+        out.append((json.dumps(props, sort_keys=True), round(c.x, 6), round(c.y, 6), coords))
+    out.sort(key=lambda t: t[:3])
+    head = {k: v for k, v in obj.items() if k != "features"} if isinstance(obj, dict) else {}
+    return [head, [[k, x, y, a] for k, x, y, a in out]]
+
+
+def cli_raster(rio: Any, ctx: Ctx) -> str:
+    """The synthetic input of the command line checks: 3 int16 bands with nodata, overviews.
+
+    Args:
+        rio: Unused (rasterio writes the file).
+        ctx: The context.
+
+    Returns:
+        str: The path.
+    """
+    return synthetic(rio, ctx, "cli.tif", width=301, height=203)
+
+
+def cli_classes(rio: Any, ctx: Ctx) -> str:
+    """A synthetic land cover-like raster: uint8 classes in blobs, with nodata, for `shapes`.
+
+    Args:
+        rio: Unused (rasterio writes the file).
+        ctx: The context.
+
+    Returns:
+        str: The path.
+    """
+    ref = ctx.reference
+    path = ctx.out.parent.parent / "input_cli_classes.tif"
+    if not path.exists():
+        yy, xx = np.mgrid[0:90, 0:120]
+        a = ((np.sin(xx / 9.0) + np.cos(yy / 7.0) + 2) * 2).astype("uint8")
+        a[5:15, 10:30] = 255
+        profile = dict(driver="GTiff", width=120, height=90, count=1, dtype="uint8", crs="EPSG:32611", transform=ref.transform.from_origin(500000, 4100000, 30, 30), nodata=255)
+        with ref.open(path, "w", **profile) as dst:
+            dst.write(a, 1)
+    return str(path)
+
+
+def cli_gcps(rio: Any, ctx: Ctx) -> str:
+    """A synthetic raster georeferenced by 16 GCPs.
+
+    Args:
+        rio: Unused (rasterio writes the file).
+        ctx: The context.
+
+    Returns:
+        str: The path.
+    """
+    ref = ctx.reference
+    path = ctx.out.parent.parent / "input_cli_gcps.tif"
+    if not path.exists():
+        with ref.open(path, "w", driver="GTiff", width=150, height=120, count=1, dtype="uint8") as dst:
+            dst.write(np.arange(150 * 120, dtype="uint32").reshape(1, 120, 150).astype("uint8"))
+            dst.gcps = (_gcps(ref, 16), "EPSG:32611")
+    return str(path)
+
+
+def cli_geojson(ctx: Ctx, crs_geoms: str = "utm") -> str:
+    """GeoJSON features over the synthetic rasters, with a `value` property.
+
+    Args:
+        ctx: The context.
+        crs_geoms: `utm` (the rasters' CRS).
+
+    Returns:
+        str: The path.
+    """
+    path = ctx.out.parent.parent / "input_cli_features.geojson"
+    if not path.exists():
+        feats = []
+        for i, g in enumerate(GEOMS):
+            geom, val = (g, 1) if isinstance(g, dict) else g
+            geom = json.loads(json.dumps(geom))
+            feats.append({"type": "Feature", "properties": {"value": val * 10 + i} if i != 1 else {}, "geometry": geom})
+        path.write_text(json.dumps({"type": "FeatureCollection", "features": feats}))
+    return str(path)
+
+
+def copy_input(ctx: Ctx, path: str, name: str) -> str:
+    """Copies an input into the check's directory, for commands that change files in place.
+
+    Args:
+        ctx: The context.
+        path: The input.
+        name: The copy's name.
+
+    Returns:
+        str: The copy's name (commands run in `ctx.out`).
+    """
+    shutil.copyfile(path, ctx.out / name)
+    return name
+
+
+@check("rio cli", "info: JSON, --indent, -v, --tags, --namespace", **CLI_TOL)
+def _c_info(rio: Any, ctx: Ctx) -> Any:
+    p = cli_raster(rio, ctx)
+    out = [rio_run(rio, ctx, "info", p), rio_run(rio, ctx, "info", p, "--indent", "2"), rio_run(rio, ctx, "info", p, "--tags"), rio_run(rio, ctx, "info", p, "--tags", "--namespace", "IMAGE_STRUCTURE")]
+    out.append(rio_run(rio, ctx, "info", copy_input(ctx, p, "copy.tif"), "-v"))
+    return out
+
+
+@check("rio cli", "info: --count, -t, --nodata, -f, --shape, --height, --width, --crs, --bounds, -r, --lnglat, --stats, --checksum, --subdatasets", **CLI_TOL)
+def _c_info_items(rio: Any, ctx: Ctx) -> Any:
+    p = cli_raster(rio, ctx)
+    out = [rio_run(rio, ctx, "info", p, opt) for opt in ("--count", "-t", "--nodata", "-f", "--shape", "--height", "--width", "--crs", "--bounds", "-r", "--lnglat", "--subdatasets", "--meta")]
+    c = copy_input(ctx, p, "copy.tif")
+    out += [rio_run(rio, ctx, "info", c, "--stats", "-b", "2"), rio_run(rio, ctx, "info", c, "--checksum", "--bidx", "3")]
+    return out
+
+
+@check("rio cli", "info and gcps of a raster georeferenced by GCPs (points, CRS, from_gcps transform)", **CLI_TOL)
+def _c_gcps(rio: Any, ctx: Ctx) -> Any:
+    p = cli_gcps(rio, ctx)
+    out = [rio_run(rio, ctx, "info", p), rio_run(rio, ctx, "gcps", p), rio_run(rio, ctx, "gcps", p, "--projected"), rio_run(rio, ctx, "gcps", p, "--collection", "--precision", "3")]
+    out += [rio_run(rio, ctx, "gcps", p, "--projected", "--compact", "--collection"), rio_run(rio, ctx, "gcps", p, "--rs", "--indent", "2", "--projected"), rio_run(rio, ctx, "gcps", p, "--indent", "2")]
+    return out
+
+
+@check("rio cli", "bounds: features, --sequence/--collection, --bbox, --projected, --mercator, --dst-crs, --precision, --rs, --indent, --compact", **CLI_TOL)
+def _c_bounds(rio: Any, ctx: Ctx) -> Any:
+    p, q = cli_raster(rio, ctx), cli_classes(rio, ctx)
+    runs = [[], ["--collection"], ["--bbox"], ["--bbox", "--collection"], ["--projected"], ["--mercator", "--precision", "2"], ["--dst-crs", "EPSG:3857"], ["--rs"], ["--indent", "2", "--collection"], ["--compact"], ["--feature", "--bbox"]]
+    return [rio_run(rio, ctx, "bounds", p, q, *a) for a in runs]
+
+
+@check("rio cli", "blocks: collection, --sequence, --projected, --bidx, --precision, -o", **CLI_TOL)
+def _c_blocks(rio: Any, ctx: Ctx) -> Any:
+    p = cli_raster(rio, ctx)
+    out = [rio_run(rio, ctx, "blocks", p, *a) for a in ([], ["--projected"], ["--sequence", "--bidx", "2"], ["--precision", "3"], ["--bidx", "7"])]
+    out.append([rio_run(rio, ctx, "blocks", p, "--projected", "-o", "blocks.json"), cli_output((ctx.out / "blocks.json").read_text())])
+    return out
+
+
+@check("rio cli", "shapes: band, --mask, --as-mask, --with-nodata, --sampling, --projected, --collection, --bbox, --precision (geometries compared as sets)", **CLI_TOL)
+def _c_shapes(rio: Any, ctx: Ctx) -> Any:
+    p = cli_classes(rio, ctx)
+    runs = [["--projected"], [], ["--mask", "--projected"], ["--as-mask", "--projected"], ["--with-nodata", "--projected"], ["--sampling", "2", "--projected"], ["--collection", "--projected"], ["--precision", "4"], ["--bidx", "2"]]
+    out = [rio_run(rio, ctx, "shapes", p, *a, output=feature_set) for a in runs]
+    out.append(rio_run(rio, ctx, "shapes", p, "--bbox", "--projected", output=lambda o: sorted(map(tuple, o))))
+    return out
+
+
+@check("rio cli", "clip: --bounds, --geographic, --like, --to-data-window, --with-complement, --nodata, --co; errors")
+def _c_clip(rio: Any, ctx: Ctx) -> Any:
+    p, q = cli_raster(rio, ctx), cli_classes(rio, ctx)
+    out = [rio_run(rio, ctx, "clip", p, "a.tif", "--bounds", "501000 4096000 505000 4099000", files=["a.tif"])]
+    out.append(rio_run(rio, ctx, "clip", p, "-o", "b.tif", "--bounds", "[-116.99, 37.0, -116.95, 37.03]", "--geographic", "--co", "compress=lzw", files=["b.tif"]))
+    out.append(rio_run(rio, ctx, "clip", p, "c.tif", "--like", q, "--nodata", "-1", files=["c.tif"]))
+    out.append(rio_run(rio, ctx, "clip", p, "d.tif", "--bounds", "499000 4096000 502000 4101000", "--with-complement", files=["d.tif"]))
+    out.append(rio_run(rio, ctx, "clip", copy_input(ctx, q, "classes.tif"), "e.tif", "--to-data-window", files=["e.tif"]))
+    out.append(rio_run(rio, ctx, "clip", p, "a.tif", "--bounds", "501000 4096000 505000 4099000"))
+    out.append(rio_run(rio, ctx, "clip", p, "f.tif", "--bounds", "0 0 10 10"))
+    out.append(rio_run(rio, ctx, "clip", p, "f.tif"))
+    return out
+
+
+@check("rio cli", "convert: --dtype, --scale-ratio, --scale-offset, --format, --co, --rgb, -o, --overwrite")
+def _c_convert(rio: Any, ctx: Ctx) -> Any:
+    p = cli_raster(rio, ctx)
+    out = [rio_run(rio, ctx, "convert", p, "a.tif", files=["a.tif"])]
+    # A nodata value out of range of the new data type fails in both (rasterio leaves a broken file).
+    out.append(rio_run(rio, ctx, "convert", p, "b.tif", "--dtype", "uint8", "--scale-ratio", "0.1", "--scale-offset", "5"))
+    out.append(rio_run(rio, ctx, "convert", p, "b2.tif", "--dtype", "uint8", "--scale-ratio", "0.1", "--scale-offset", "5", "--co", "nodata=none", files=["b2.tif"]))
+    out.append(rio_run(rio, ctx, "convert", p, "-o", "c.tif", "-t", "float32", "--scale-ratio", "0.5", "--co", "tiled=true", "--co", "blockxsize=128", "--co", "blockysize=128", "--co", "compress=zstd", files=["c.tif"]))
+    out.append(rio_run(rio, ctx, "convert", p, "d.tif", "-t", "uint8", "--rgb", "--co", "nodata=null", "--scale-ratio", "0.12", files=["d.tif"]))
+    out.append(rio_run(rio, ctx, "convert", p, "e.tif", "-f", "GTiff", "--co", "compress=deflate", "--co", "predictor=2", files=["e.tif"]))
+    out.append(rio_run(rio, ctx, "convert", p, "a.tif"))
+    out.append(rio_run(rio, ctx, "convert", p, "a.tif", "--overwrite", "--scale-offset", "3", files=["a.tif"]))
+    return out
+
+
+def cli_tiles(rio: Any, ctx: Ctx) -> list[str]:
+    """Two overlapping synthetic tiles for `merge` and `stack`.
+
+    Args:
+        rio: The module (unused: rasterio writes the files).
+        ctx: The context.
+
+    Returns:
+        list: The paths.
+    """
+    t = ctx.reference.transform.from_origin
+    a = synthetic(rio, ctx, "cli_tile_a.tif", overviews=False, width=160, height=120, count=2)
+    b = synthetic(rio, ctx, "cli_tile_b.tif", overviews=False, width=150, height=130, count=2, transform=t(503000, 4098500, 30, 30))
+    return [a, b]
+
+
+@check("rio cli", "merge: --res, --bounds, --method, --nodata, --dtype, -b, --target-aligned-pixels, --use-highest-res, --co")
+def _c_merge(rio: Any, ctx: Ctx) -> Any:
+    a, b = cli_tiles(rio, ctx)
+    out = [rio_run(rio, ctx, "merge", a, b, "m1.tif", files=["m1.tif"])]
+    out.append(rio_run(rio, ctx, "merge", b, a, "-o", "m2.tif", "--res", "45", "--method", "max", files=["m2.tif"]))
+    out.append(rio_run(rio, ctx, "merge", a, b, "m3.tif", "--bounds", "502000 4095000 506000 4098000", "--method", "last", "--nodata", "0", files=["m3.tif"]))
+    out.append(rio_run(rio, ctx, "merge", a, b, "m4.tif", "-b", "2", "--method", "sum", "-t", "int32", "--res", "40", "--res", "35", "--target-aligned-pixels", files=["m4.tif"]))
+    out.append(rio_run(rio, ctx, "merge", a, b, "m5.tif", "--method", "count", "--co", "compress=lzw", "--use-highest-res", files=["m5.tif"]))
+    out.append(rio_run(rio, ctx, "merge", a, b, "m6.tif", "--method", "min", "--res", "60", files=["m6.tif"]))
+    return out
+
+
+@check("rio cli", "merge: --resampling bilinear", expect="tolerance", atol=4, max_frac=0.001, reason="reads resampled with bilinear kernels differ next to nodata pixels (GDAL's masked convolution)")
+def _c_merge_bilinear(rio: Any, ctx: Ctx) -> Any:
+    a, b = cli_tiles(rio, ctx)
+    return rio_run(rio, ctx, "merge", a, b, "bilinear.tif", "--resampling", "bilinear", "--res", "60", files=["bilinear.tif"])
+
+
+@check("rio cli", "merge: --resampling cubic", expect="known", reason="reads resampled with cubic kernels differ next to nodata pixels: GDAL 3.12's masked convolution is not terrio's (0.7% of pixels, valid or not)")
+def _c_merge_cubic(rio: Any, ctx: Ctx) -> Any:
+    a, b = cli_tiles(rio, ctx)
+    return rio_run(rio, ctx, "merge", a, b, "cubic.tif", "--resampling", "cubic", "--res", "60", files=["cubic.tif"])
+
+
+@check("rio cli", "overview: --build (list, powers, auto), --resampling, --ls, --rebuild")
+def _c_overview(rio: Any, ctx: Ctx) -> Any:
+    p = cli_raster(rio, ctx)
+    out = [rio_run(rio, ctx, "overview", p, "--ls")]
+    a = copy_input(ctx, synthetic(rio, ctx, "cli_noovr.tif", overviews=False), "a.tif")
+    out.append(rio_run(rio, ctx, "overview", a, "--build", "2,4,8", "--resampling", "average", files=["a.tif"]))
+    # rasterio takes the method of --rebuild from the rio_overview domain, which terrio does not write.
+    out.append(rio_run(rio, ctx, "overview", a, "--rebuild", "--resampling", "average", files=["a.tif"]))
+    b = copy_input(ctx, synthetic(rio, ctx, "cli_noovr.tif", overviews=False), "b.tif")
+    out.append(rio_run(rio, ctx, "overview", b, "--build", "2^1..3", files=["b.tif"]))
+    c = copy_input(ctx, synthetic(rio, ctx, "cli_noovr.tif", overviews=False), "c.tif")
+    out.append(rio_run(rio, ctx, "overview", c, "--build", "auto", "--resampling", "mode", files=["c.tif"]))
+    out.append(rio_run(rio, ctx, "overview", b, "--build", "2,x"))
+    out.append(rio_run(rio, ctx, "overview", b, "--build", "2", "--resampling", "cubic"))
+    out.append(rio_run(rio, ctx, "overview", b))
+    return out
+
+
+@check("rio cli", "overview --ls after --build: the method", expect="known", reason="terrio writes metadata of the default domain only, so the rio_overview domain holding the method is not saved: --ls says 'unknown'")
+def _c_overview_ls(rio: Any, ctx: Ctx) -> Any:
+    a = copy_input(ctx, synthetic(rio, ctx, "cli_noovr.tif", overviews=False), "a.tif")
+    return [rio_run(rio, ctx, "overview", a, "--build", "2,4", "--resampling", "average"), rio_run(rio, ctx, "overview", a, "--ls")]
+
+
+@check("rio cli", "warp: --dst-crs, --res, --dimensions, --bounds, --src-bounds, --like, --resampling, nodata, --target-aligned-pixels, --dry-run", expect="tolerance", rtol=1e-9, atol=2, max_frac=0.01, reason="the output grids differ in the last digits; GDAL's warp kernels next to nodata pixels")
+def _c_warp(rio: Any, ctx: Ctx) -> Any:
+    p, q = cli_raster(rio, ctx), cli_classes(rio, ctx)
+    out = [rio_run(rio, ctx, "warp", p, "a.tif", "--dst-crs", "EPSG:4326", files=["a.tif"])]
+    out.append(rio_run(rio, ctx, "warp", p, "b.tif", "--res", "45", files=["b.tif"]))
+    out.append(rio_run(rio, ctx, "warp", p, "c.tif", "--dimensions", "100", "80", "--dst-crs", "EPSG:32610", "--resampling", "bilinear", files=["c.tif"]))
+    out.append(rio_run(rio, ctx, "warp", p, "d.tif", "--bounds", "-116.99", "37.0", "-116.93", "37.04", "--res", "0.0005", "--dst-crs", "EPSG:4326", files=["d.tif"]))
+    out.append(rio_run(rio, ctx, "warp", p, "e.tif", "--like", q, files=["e.tif"]))
+    out.append(rio_run(rio, ctx, "warp", p, "f.tif", "--src-bounds", "501000", "4096000", "505000", "4099000", "--res", "25", "--src-nodata", "-9999", "--dst-nodata", "-1", files=["f.tif"]))
+    out.append(rio_run(rio, ctx, "warp", p, "g.tif", "--dst-crs", "EPSG:3857", "--res", "50", "--target-aligned-pixels", "--resampling", "average", files=["g.tif"]))
+    out.append(rio_run(rio, ctx, "warp", p, "h.tif", "--res", "45", "--dry-run"))
+    out.append(rio_run(rio, ctx, "warp", p, "i.tif", "--like", q, "--res", "10"))
+    out.append(rio_run(rio, ctx, "warp", p, "j.tif", "--dst-crs", "EPSG:4326", "--resampling", "cubic", "--co", "compress=lzw", files=["j.tif"]))
+    return out
+
+
+@check("rio cli", "warp --dry-run with --dst-crs: the profile's CRS", expect="known", reason="rasterio's --dry-run prints the source's CRS as the output's; terrio.rio prints the output CRS")
+def _c_warp_dry_run(rio: Any, ctx: Ctx) -> Any:
+    return [rio_run(rio, ctx, "warp", cli_raster(rio, ctx), "h.tif", "--dst-crs", "EPSG:4326", "--dry-run")]
+
+
+@check("rio cli", "sample: points from stdin and argument, --bidx forms")
+def _c_sample(rio: Any, ctx: Ctx) -> Any:
+    p = cli_raster(rio, ctx)
+    pts = "[501000, 4099000]\n[500015.5, 4099985]\n[508000, 4094000]\n[501500, 4099500]\n"
+    out = [rio_run(rio, ctx, "sample", p, stdin=pts), rio_run(rio, ctx, "sample", p, "[503333.3, 4096666.6]")]
+    out += [rio_run(rio, ctx, "sample", p, "-b", b, stdin=pts) for b in ("2", "..2", "2..", "1,3")]
+    (ctx.out / "pts.txt").write_text(pts)
+    out.append(rio_run(rio, ctx, "sample", p, "pts.txt", "--bidx", "3"))
+    return out
+
+
+@check("rio cli", "transform: stdin, --src-crs, --dst-crs (codes, PROJ strings, a dataset's CRS), --precision", **CLI_TOL)
+def _c_transform(rio: Any, ctx: Ctx) -> Any:
+    p = cli_raster(rio, ctx)
+    pts = "[-117.9, 37.02]\n[-117.5, 37.5, -118.0, 36.9]\n"
+    out = [rio_run(rio, ctx, "transform", "--dst-crs", "EPSG:32611", stdin=pts), rio_run(rio, ctx, "transform", "--dst-crs", "EPSG:32611", "--precision", "2", stdin=pts)]
+    out.append(rio_run(rio, ctx, "transform", "[500000, 4100000]", "--src-crs", p, "--dst_crs", "EPSG:4326"))
+    out.append(rio_run(rio, ctx, "transform", "--src_crs", "+proj=utm +zone=11 +datum=WGS84", "--dst-crs", "EPSG:3857", stdin="[500000, 4100000]\n"))
+    return out
+
+
+@check("rio cli", "mask: --geojson-mask, --crop, --invert, --all, stdin, no features (copy)")
+def _c_mask(rio: Any, ctx: Ctx) -> Any:
+    p, g = cli_raster(rio, ctx), cli_geojson(ctx)
+    out = [rio_run(rio, ctx, "mask", p, "a.tif", "-j", g, files=["a.tif"])]
+    out.append(rio_run(rio, ctx, "mask", p, "b.tif", "--geojson-mask", g, "--crop", files=["b.tif"]))
+    out.append(rio_run(rio, ctx, "mask", p, "c.tif", "-j", g, "--invert", "--all", files=["c.tif"]))
+    out.append(rio_run(rio, ctx, "mask", p, "d.tif", "-j", "-", "--crop", "--invert", stdin=Path(g).read_text(), files=["d.tif"]))
+    out.append(rio_run(rio, ctx, "mask", p, "e.tif", files=["e.tif"]))
+    out.append(rio_run(rio, ctx, "mask", p, "f.tif", "-j", "-", "--crop", stdin='{"type": "Polygon", "coordinates": [[[0, 0], [1, 0], [1, 1], [0, 0]]]}'))
+    return out
+
+
+@check("rio cli", "rasterize: --res, --dimensions, --bounds, --like, --property, --default-value, --fill, --all, --nodata, an existing output")
+def _c_rasterize(rio: Any, ctx: Ctx) -> Any:
+    g, q = cli_geojson(ctx), cli_classes(rio, ctx)
+    out = [rio_run(rio, ctx, "rasterize", g, "a.tif", "--res", "30", "--src-crs", "EPSG:32611", files=["a.tif"])]
+    out.append(rio_run(rio, ctx, "rasterize", g, "b.tif", "--dimensions", "150", "120", "--bounds", "500000 4096000 504500 4100000", "--src-crs", "EPSG:32611", "--property", "value", "--all", files=["b.tif"]))
+    out.append(rio_run(rio, ctx, "rasterize", g, "c.tif", "--like", q, "--default-value", "7", "--fill", "3", files=["c.tif"]))
+    out.append(rio_run(rio, ctx, "rasterize", g, "d.tif", "--res", "40", "--res", "20", "--src-crs", "EPSG:32611", "--nodata", "0", "--co", "compress=lzw", files=["d.tif"]))
+    e = copy_input(ctx, q, "e.tif")
+    out.append(rio_run(rio, ctx, "rasterize", g, e, "--property", "value", files=["e.tif"]))
+    out.append(rio_run(rio, ctx, "rasterize", "-o", "f.tif", "--dimensions", "40", "30", "--bounds", "-118 37 -117.5 37.4", stdin='{"type": "Feature", "properties": {}, "geometry": {"type": "Polygon", "coordinates": [[[-117.9, 37.1], [-117.6, 37.1], [-117.7, 37.3], [-117.9, 37.1]]]}}', files=["f.tif"]))
+    out.append(rio_run(rio, ctx, "rasterize", g, "h.tif", "--src-crs", "EPSG:32611"))
+    return out
+
+
+@check("rio cli", "stack: all bands, --bidx forms per input, --rgb, --res, --bounds, --dtype, --nodata", min_rasterio=(1, 5, 2))
+def _c_stack(rio: Any, ctx: Ctx) -> Any:
+    p = cli_raster(rio, ctx)
+    a, b = cli_tiles(rio, ctx)
+    out = [rio_run(rio, ctx, "stack", p, "s1.tif", files=["s1.tif"])]
+    out.append(rio_run(rio, ctx, "stack", p, "--bidx", "..2", p, "--bidx", "3..", "-o", "s2.tif", files=["s2.tif"]))
+    out.append(rio_run(rio, ctx, "stack", p, "-b", "1,3", p, "-b", "2", "s3.tif", "--rgb", "-t", "int32", files=["s3.tif"]))
+    out.append(rio_run(rio, ctx, "stack", a, b, "s4.tif", "--res", "45", "--nodata", "-1", files=["s4.tif"]))
+    out.append(rio_run(rio, ctx, "stack", a, b, "s5.tif", "--bounds", "502000 4095000 506000 4098000", "-b", "1", "-b", "2", files=["s5.tif"]))
+    return out
+
+
+@check("rio cli", "edit-info: --nodata, --unset-nodata, --crs, --transform, --tag, --units, --description, --colorinterp, --like (--all, like), errors")
+def _c_edit_info(rio: Any, ctx: Ctx) -> Any:
+    p, q = cli_raster(rio, ctx), cli_classes(rio, ctx)
+    out = []
+    a = copy_input(ctx, p, "a.tif")
+    out.append(rio_run(rio, ctx, "edit-info", a, "--nodata", "-1", "--tag", "author=me", "--tag", "year=2026", "--units", "metres", "--description", "elevation", "-b", "2", files=["a.tif"]))
+    out.append(rio_run(rio, ctx, "edit-info", a, "--crs", "EPSG:32610", "--transform", "[20.0, 0.0, 400000.0, 0.0, -20.0, 4000000.0]", files=["a.tif"]))
+    out.append(rio_run(rio, ctx, "edit-info", a, "--colorinterp", "RGB", files=["a.tif"]))
+    out.append(rio_run(rio, ctx, "edit-info", a, "--unset-nodata", files=["a.tif"]))
+    b = copy_input(ctx, p, "b.tif")
+    out.append(rio_run(rio, ctx, "edit-info", b, "--like", q, "--crs", "like", "--nodata", "like", "--transform", "like", files=["b.tif"]))
+    c = copy_input(ctx, q, "c.tif")
+    out.append(rio_run(rio, ctx, "edit-info", c, "--like", p, "--all", files=["c.tif"]))
+    out.append(rio_run(rio, ctx, "edit-info", c, "--crs", '{"proj": "utm", "zone": 12, "datum": "WGS84"}', "--colorinterp", "red", files=["c.tif"]))
+    d = copy_input(ctx, q, "d.tif")
+    out += [rio_run(rio, ctx, "edit-info", d, *bad) for bad in (["--nodata", "300"], ["--crs", "EPSG:0"], ["--unset-nodata", "--nodata", "1"], ["--colorinterp", "red,green"], ["--colorinterp", "purple"])]
+    return out
+
+
+@check("rio cli", "calc: arithmetic, read with band and dtype, asarray, --name and take, comparisons, masked and not, --dtype, --co")
+def _c_calc(rio: Any, ctx: Ctx) -> Any:
+    p, q = cli_raster(rio, ctx), cli_classes(rio, ctx)
+    out = [rio_run(rio, ctx, "calc", "(+ 2 (* 0.95 (read 1)))", p, "a.tif", files=["a.tif"])]
+    out.append(rio_run(rio, ctx, "calc", "(asarray (+ 125 (read 1 1)) (read 1 2) (- (read 1 3) 1000))", p, "b.tif", files=["b.tif"]))
+    out.append(rio_run(rio, ctx, "calc", "(/ (- (take a 2) (take a 1)) (+ (take a 2) (take a 1) 1.0))", "--name", f"a={p}", "c.tif", "-t", "float32", files=["c.tif"]))
+    out.append(rio_run(rio, ctx, "calc", "(* (read 1 1 'float64') 1.5e-1)", p, "d.tif", "--dtype", "float64", "--not-masked", "--co", "compress=lzw", files=["d.tif"]))
+    out.append(rio_run(rio, ctx, "calc", "(asarray (> (read 1 1) 500) (& (>= (read 1 2) 100) (<= (read 1 2) 900)))", p, "e.tif", "-t", "uint8", "--not-masked", "--co", "nodata=none", files=["e.tif"]))
+    out.append(rio_run(rio, ctx, "calc", "(> (read 1 1) 500)", p, "e2.tif", "-t", "uint8"))
+    out.append(rio_run(rio, ctx, "calc", "(+ (read 1) 1)", q, "f.tif", "--mem-limit", "1", files=["f.tif"]))
+    out.append(rio_run(rio, ctx, "calc", "(+ (read 1) foo)", q, "g.tif"))
+    return out
+
+
+@check("rio cli", "create, rm, env --credentials, insp, global options, errors")
+def _c_misc(rio: Any, ctx: Ctx) -> Any:
+    p = cli_raster(rio, ctx)
+    out = [rio_run(rio, ctx, "create", "a.tif", "-f", "GTiff", "-t", "uint8", "-n", "3", "-h", "64", "-w", "80", "--crs", "EPSG:32611", "--bounds", "500000 4098080 502400 4100000", "--nodata", "0", "--co", "tiled=true", "--co", "blockxsize=32", "--co", "blockysize=32", files=["a.tif"])]
+    out.append(rio_run(rio, ctx, "create", "b.tif", "-t", "float32", "-n", "1", "--height", "10", "--width", "20", "--transform", "[1.0, 0.0, 0.0, 0.0, -1.0, 10.0]", files=["b.tif"]))
+    out.append(rio_run(rio, ctx, "create", "a.tif", "-t", "uint8", "-n", "1", "-h", "8", "-w", "8"))
+    c = copy_input(ctx, p, "c.tif")
+    out.append(rio_run(rio, ctx, "rm", c, "--yes"))
+    out.append(sorted(f.name for f in ctx.out.iterdir() if f.name.startswith("c.")))
+    out.append(rio_run(rio, ctx, "rm", "missing.tif", "--yes"))
+    out.append(rio_run(rio, ctx, "env", "--credentials"))
+    out.append(rio_run(rio, ctx, "env", output=lambda o: "GTiff" in [line.split(":")[0] for line in o]))
+    out.append(rio_run(rio, ctx, "insp", p, stdin="print(src.count, src.shape, src.crs.to_epsg())\nprint(stats((src, 2)))\n"))
+    out.append(rio_run(rio, ctx, "--aws-no-sign-requests", "info", p, "--count"))
+    out.append(rio_run(rio, ctx, "-q", "info", p, "--width"))
+    out.append(rio_run(rio, ctx, "info", "missing.tif"))
+    out.append(rio_run(rio, ctx, "info", p, "--unknown-option"))
+    out.append(rio_run(rio, ctx, "bounds"))
+    return out
+
+
+# Real data: public COGs, read over HTTP and downloaded (once) into a cache directory.
+
+
+def public_file(ctx: Ctx, name: str, url: str, window: Any = None) -> str:
+    """A public raster, downloaded (or a window of it, read over HTTP by rasterio) and cached.
+
+    The cache is `TERRIO_RIO_CLI_DATA` when it is set, else the run's scratch directory.
+
+    Args:
+        ctx: The context.
+        name: The cached file's name.
+        url: The COG's URL.
+        window: `((row_start, row_stop), (col_start, col_stop))`: keep this window only, with the
+            file's profile.
+
+    Returns:
+        str: The local path.
+    """
+    import urllib.request
+
+    cache = Path(os.environ.get("TERRIO_RIO_CLI_DATA") or ctx.out.parent.parent / "cli-data")
+    cache.mkdir(parents=True, exist_ok=True)
+    path = cache / name
+    if path.exists():
+        return str(path)
+    tmp = path.with_suffix(".part")
+    if window is None:
+        with urllib.request.urlopen(url, timeout=120) as resp, open(tmp, "wb") as f:
+            shutil.copyfileobj(resp, f)
+    else:
+        ref = ctx.reference
+        with ref.open(url) as src:
+            w = ref.windows.Window.from_slices(*window)
+            profile = src.profile
+            profile.update(width=int(w.width), height=int(w.height), transform=src.window_transform(w), driver="GTiff")
+            with ref.open(tmp, "w", **profile) as dst:
+                dst.write(src.read(window=w))
+    tmp.rename(path)
+    return str(path)
+
+
+def dem(ctx: Ctx, tile: str = DEM_TILES[0]) -> str:
+    """A Copernicus GLO-30 DEM tile (3600 x 3600 float32), downloaded.
+
+    Args:
+        ctx: The context.
+        tile: The tile, such as `N40_00_W106_00`.
+
+    Returns:
+        str: The path.
+    """
+    return public_file(ctx, f"Copernicus_DSM_COG_10_{tile}_DEM.tif", COPERNICUS.format(tile))
+
+
+def s2(ctx: Ctx, band: str) -> str:
+    """A 2048 x 2048 window of a Sentinel-2 L2A band (B04, B08 at 10 m; SCL at 20 m: 1024 x 1024).
+
+    Args:
+        ctx: The context.
+        band: `B04`, `B08`, `TCI` or `SCL`.
+
+    Returns:
+        str: The path.
+    """
+    # The east of the tile, with the edge of the swath (nodata, 0) in the west of the windows.
+    w = ((3000, 4024), (4250, 5274)) if band == "SCL" else ((6000, 8048), (8500, 10548))
+    return public_file(ctx, f"S2_{band}_window.tif", SENTINEL2.format(band), w)
+
+
+REMOTE_TOL = dict(needs_remote=True, **CLI_TOL)
+
+
+@check("rio cli, public COGs", "info of COGs over HTTP: Copernicus DEM, Sentinel-2 B04, TCI and SCL (JSON, --crs, --bounds, --res, --lnglat)", **REMOTE_TOL)
+def _cr_info(rio: Any, ctx: Ctx) -> Any:
+    urls = [COPERNICUS.format(DEM_TILES[0]), SENTINEL2.format("B04"), SENTINEL2.format("TCI"), SENTINEL2.format("SCL")]
+    out = []
+    for u in urls:
+        out.append(rio_run(rio, ctx, "info", u))
+        out += [rio_run(rio, ctx, "info", u, opt) for opt in ("--crs", "--bounds", "-r", "--lnglat", "--shape")]
+    return out
+
+
+@check("rio cli, public COGs", "bounds of the COGs over HTTP (geographic, --projected, --mercator, --bbox, --collection)", **REMOTE_TOL)
+def _cr_bounds(rio: Any, ctx: Ctx) -> Any:
+    urls = [COPERNICUS.format(t) for t in DEM_TILES] + [SENTINEL2.format("B04"), SENTINEL2.format("SCL")]
+    return [rio_run(rio, ctx, "bounds", *urls, *a) for a in ([], ["--projected"], ["--mercator", "--collection"], ["--bbox", "--precision", "5"])]
+
+
+@check("rio cli, public COGs", "blocks of the Sentinel-2 SCL COG over HTTP; sample of the DEM and TCI over HTTP", **REMOTE_TOL)
+def _cr_blocks(rio: Any, ctx: Ctx) -> Any:
+    out = [rio_run(rio, ctx, "blocks", SENTINEL2.format("SCL")), rio_run(rio, ctx, "blocks", SENTINEL2.format("SCL"), "--projected", "--sequence")]
+    out.append(rio_run(rio, ctx, "sample", COPERNICUS.format(DEM_TILES[0]), stdin="[-105.5, 40.5]\n[-105.27, 40.01]\n[-105.99, 40.99]\n[-104.0, 40.0]\n"))
+    out.append(rio_run(rio, ctx, "sample", SENTINEL2.format("TCI"), stdin="[505000, 4440000]\n[500000, 4499000]\n[509000, 4391000]\n[400000, 4499000]\n"))
+    return out
+
+
+@check("rio cli, public COGs", "clip the Sentinel-2 TCI COG over HTTP (--geographic bounds), and the DEM by --like and --bounds", needs_remote=True)
+def _cr_clip(rio: Any, ctx: Ctx) -> Any:
+    out = [rio_run(rio, ctx, "clip", SENTINEL2.format("TCI"), "tci.tif", "--bounds", "-104.98 40.0 -104.94 40.04", "--geographic", files=["tci.tif"])]
+    out.append(rio_run(rio, ctx, "clip", dem(ctx), "dem_like.tif", "--like", s2(ctx, "SCL"), files=["dem_like.tif"]))
+    out.append(rio_run(rio, ctx, "clip", dem(ctx), "dem_box.tif", "--bounds", "-105.6 40.2 -105.4 40.4", "--co", "compress=lzw", files=["dem_box.tif"]))
+    return out
+
+
+@check("rio cli, public COGs", "merge three Copernicus DEM tiles (--res, --bounds, --method)", needs_remote=True)
+def _cr_merge(rio: Any, ctx: Ctx) -> Any:
+    tiles = [dem(ctx, t) for t in DEM_TILES]
+    out = [rio_run(rio, ctx, "merge", *tiles, "m1.tif", "--res", "0.002", files=["m1.tif"])]
+    out.append(rio_run(rio, ctx, "merge", *tiles, "m2.tif", "--bounds", "-106.2 39.8 -105.8 40.2", "--method", "max", files=["m2.tif"]))
+    out.append(rio_run(rio, ctx, "merge", *tiles[:2], "m3.tif", "--bounds", "-106 39.9 -105.5 40.1", "--res", "0.0005", "--method", "last", files=["m3.tif"]))
+    return out
+
+
+@check("rio cli, public COGs", "warp the DEM to UTM (--dst-crs, --res, bilinear) and Sentinel-2 to WGS 84 (nearest, --dimensions)", needs_remote=True, expect="tolerance", rtol=1e-9, atol=0.5, max_frac=0.01, reason="the output grids differ in the last digits; bilinear weights computed by terrio and GDAL differ in rounding")
+def _cr_warp(rio: Any, ctx: Ctx) -> Any:
+    box = public_file(ctx, "dem_box_window.tif", COPERNICUS.format(DEM_TILES[0]), ((1800, 2600), (1000, 1800)))
+    out = [rio_run(rio, ctx, "warp", box, "a.tif", "--dst-crs", "EPSG:32613", files=["a.tif"])]
+    out.append(rio_run(rio, ctx, "warp", box, "b.tif", "--dst-crs", "EPSG:32613", "--res", "50", "--resampling", "bilinear", files=["b.tif"]))
+    out.append(rio_run(rio, ctx, "warp", s2(ctx, "B04"), "c.tif", "--dst-crs", "EPSG:4326", files=["c.tif"]))
+    out.append(rio_run(rio, ctx, "warp", s2(ctx, "SCL"), "d.tif", "--dst-crs", "EPSG:4326", "--dimensions", "600", "500", files=["d.tif"]))
+    out.append(rio_run(rio, ctx, "warp", s2(ctx, "B08"), "e.tif", "--like", s2(ctx, "SCL"), "--resampling", "average", files=["e.tif"]))
+    return out
+
+
+@check("rio cli, public COGs", "calc NDVI from Sentinel-2 B04 and B08, convert scaled to uint8, stack, overviews", needs_remote=True, expect="tolerance", atol=1e-6, rtol=1e-6, max_frac=0.0, reason="float32 division")
+def _cr_calc(rio: Any, ctx: Ctx) -> Any:
+    red, nir = s2(ctx, "B04"), s2(ctx, "B08")
+    ndvi = "(/ (- (read 2 1 'float32') (read 1 1 'float32')) (+ (read 2 1 'float32') (read 1 1 'float32')))"
+    out = [rio_run(rio, ctx, "calc", ndvi, red, nir, "ndvi.tif", "-t", "float32", files=["ndvi.tif"])]
+    out.append(rio_run(rio, ctx, "calc", "(/ (- (take n 1) (take r 1)) (+ (take n 1) (take r 1) 0.0))", "--name", f"r={red}", "--name", f"n={nir}", "ndvi2.tif", "-t", "float32", "--co", "compress=deflate", files=["ndvi2.tif"]))
+    out.append(rio_run(rio, ctx, "convert", red, "red8.tif", "--dtype", "uint8", "--scale-ratio", "0.0625", files=["red8.tif"]))
+    out.append(rio_run(rio, ctx, "stack", red, nir, s2(ctx, "B04"), "--bidx", "1", "rgb.tif", "--rgb", files=["rgb.tif"]))
+    box = public_file(ctx, "dem_box_window.tif", COPERNICUS.format(DEM_TILES[0]), ((1800, 2600), (1000, 1800)))
+    a = copy_input(ctx, box, "dem.tif")
+    out.append(rio_run(rio, ctx, "overview", a, "--build", "2,4,8", "--resampling", "average", files=["dem.tif"]))
+    return out
+
+
+@check("rio cli, public COGs", "overview --build on a downloaded COG (Copernicus DEM)", needs_remote=True, expect="known", reason="GDAL refuses to update a file with the COG layout (IGNORE_COG_LAYOUT_BREAK); terrio.rio rewrites it")
+def _cr_overview_cog(rio: Any, ctx: Ctx) -> Any:
+    a = copy_input(ctx, dem(ctx), "dem.tif")
+    return rio_run(rio, ctx, "overview", a, "--build", "2,4,8,16", "--resampling", "average")
+
+
+@check("rio cli, public COGs", "shapes of the Sentinel-2 scene classification (SCL), as sets; mask and rasterize on the DEM", needs_remote=True, **CLI_TOL)
+def _cr_shapes(rio: Any, ctx: Ctx) -> Any:
+    scl = s2(ctx, "SCL")
+    small = public_file(ctx, "S2_SCL_small.tif", SENTINEL2.format("SCL"), ((3000, 3200), (4500, 4750)))
+    out = [rio_run(rio, ctx, "shapes", small, "--projected", output=feature_set), rio_run(rio, ctx, "shapes", small, "--collection", "--precision", "6", output=feature_set)]
+    out.append(rio_run(rio, ctx, "shapes", scl, "--as-mask", "--projected", "--sampling", "4", output=feature_set))
+    box = public_file(ctx, "dem_box_window.tif", COPERNICUS.format(DEM_TILES[0]), ((1800, 2600), (1000, 1800)))
+    poly = {"type": "FeatureCollection", "features": [{"type": "Feature", "properties": {"h": 2000}, "geometry": {"type": "Polygon", "coordinates": [[[-105.68, 40.42], [-105.55, 40.45], [-105.6, 40.33], [-105.68, 40.42]]]}}, {"type": "Feature", "properties": {"h": 3000}, "geometry": {"type": "LineString", "coordinates": [[-105.7, 40.3], [-105.5, 40.47]]}}]}
+    g = ctx.out / "poly.geojson"
+    g.write_text(json.dumps(poly))
+    out.append(rio_run(rio, ctx, "mask", box, "masked.tif", "-j", g.name, "--crop", files=["masked.tif"]))
+    out.append(rio_run(rio, ctx, "mask", box, "masked2.tif", "-j", g.name, "--invert", "--all", files=["masked2.tif"]))
+    out.append(rio_run(rio, ctx, "rasterize", g.name, "burn.tif", "--like", box, "--property", "h", "--all", files=["burn.tif"]))
+    out.append(rio_run(rio, ctx, "edit-info", copy_input(ctx, box, "edited.tif"), "--nodata", "-9999", "--tag", "source=Copernicus GLO-30", "--description", "elevation", "--units", "m", files=["edited.tif"]))
+    return out
 
 
 # ─── Examples ───────────────────────────────────────────────────────────────────────────────────

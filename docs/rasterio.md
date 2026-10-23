@@ -55,8 +55,12 @@ It needs only NumPy and [affine](https://github.com/rasterio/affine) (installed 
   interleaving, compression (`lzw`, `deflate`, `zstd`, `packbits`) with predictors 2 and 3,
   photometric RGB and alpha bands as GDAL defaults to them, tags, band metadata, color tables,
   overviews (`build_overviews` with `nearest`, `average` or `mode`) and GDAL's internal mask
-  (`write_mask`, a 1-bit mask image read back by GDAL as a per-dataset mask). `driver="COG"`
-  writes a Cloud Optimized GeoTIFF.
+  (`write_mask`, a 1-bit mask image read back by GDAL as a per-dataset mask). With
+  `rasterio.Env(GDAL_TIFF_INTERNAL_MASK=False)`, or in formats without internal masks (ENVI...),
+  the mask goes to GDAL's `.msk` sidecar instead (a tiled Deflate GeoTIFF flagged
+  `INTERNAL_MASK_FLAGS_1=2`, with the dataset's overviews), and an `r+` update keeps it there;
+  `.msk` sidecars of local files are read as per-dataset masks, their overviews included.
+  `driver="COG"` writes a Cloud Optimized GeoTIFF.
 - **Nodata.** Each band's nodata value is read, from the file or an `.aux.xml` sidecar (where GDAL
   keeps per-band values); GeoTIFFs hold one value for all bands, so a writer given different
   values writes the last band's, with GDAL's warning.
@@ -71,7 +75,7 @@ It needs only NumPy and [affine](https://github.com/rasterio/affine) (installed 
 | `rio.open` | modes `r`, `r+`, `w`, `w+`; paths, `pathlib.Path`, URLs, file objects, `MemoryFile`; creation options as keywords |
 | datasets | `name`, `mode`, `closed`, `driver`, `width`, `height`, `count`, `shape`, `dtypes`, `nodata`, `nodatavals`, `crs`, `transform`, `bounds`, `res`, `profile`, `meta`, `indexes`, `block_shapes`, `block_windows`, `block_window`, `overviews()`, `tags()`, `update_tags`, `descriptions`, `set_band_description`, `colorinterp`, `colormap`, `write_colormap`, `scales`, `offsets`, `units`, `set_band_unit`, `mask_flag_enums`, `compression`, `interleaving`, `photometric`, `read` (`indexes`, `window`, `out`, `out_shape`, `resampling`, `masked`, `boundless`, `fill_value`, `out_dtype`), `read_masks`, `dataset_mask`, `write` (`indexes`, `window`, masked arrays), `write_mask`, `sample`, `index`, `xy`, `window`, `window_transform`, `window_bounds`, `build_overviews`, `statistics`, `stats`, `checksum`, `lnglat`, `close` |
 | `rio.crs` | `CRS.from_epsg`, `from_string`, `from_wkt`, `from_proj4`, `from_dict`, `from_user_input`, `from_authority`; `to_epsg`, `to_authority`, `to_wkt`, `to_string`, `to_proj4`, `to_dict`; `is_geographic`, `is_projected`, `is_valid`, `linear_units`, `linear_units_factor`, `units_factor`; equality with CRSs, strings and codes |
-| `rio.transform` | `Affine`, `from_origin`, `from_bounds`, `array_bounds`, `rowcol`, `xy` (affine transforms or GCPs), `AffineTransformer`, `GCPTransformer`, `guard_transform`, `IDENTITY` |
+| `rio.transform` | `Affine`, `from_origin`, `from_bounds`, `from_gcps`, `array_bounds`, `rowcol`, `xy` (affine transforms or GCPs), `AffineTransformer`, `GCPTransformer`, `guard_transform`, `IDENTITY` |
 | `rio.windows` | `Window` (`from_slices`, `round_offsets`, `round_lengths`, `round`, `crop`, `toslices`, `toranges`, `intersection`), `from_bounds`, `bounds`, `transform`, `intersection`, `union`, `intersect`, `crop`, `evaluate`, `subdivide`, `get_data_window`, `round_window_to_full_blocks` |
 | `rio.features` | `rasterize` (`replace` and `add`, `all_touched`, `out`, `dst_path`), `shapes` (mask, 4/8 connectivity), `geometry_mask`, `geometry_window`, `bounds`, `is_valid_geom`, `sieve`, `dataset_features` |
 | `rio.warp` | `reproject` (arrays, bands, datasets; rotated, south-up and GCP sources; every resampling but `gauss`), `calculate_default_transform` (bounds or GCPs), `aligned_target`, `transform`, `transform_bounds`, `transform_geom` |
@@ -112,10 +116,66 @@ pip install rasterio shapely
 python scripts/compare_rio_with_rasterio.py ../terrio-data --remote --output report.md
 ```
 
+## The `rio` command line
+
+`terrio-rio` (also `python -m terrio.rio`, installed with terrio) is rasterio's `rio` command line
+run with `terrio.rio`: the same commands, options, defaults and outputs, without GDAL. It is not
+named `rio`, so that it does not shadow rasterio's when both are installed.
+
+```sh
+terrio-rio info dem.tif --indent 2                 # metadata as JSON, as rio info prints it
+terrio-rio info dem.tif --crs                      # one item: --count, --shape, --bounds, --res...
+terrio-rio bounds *.tif --collection               # GeoJSON bounding boxes, in WGS 84 by default
+terrio-rio clip dem.tif part.tif --bounds "-105.6 40.2 -105.4 40.4" --geographic
+terrio-rio convert b04.tif b04_8bit.tif --dtype uint8 --scale-ratio 0.0625 --co compress=deflate
+terrio-rio merge n40w106.tif n39w106.tif n40w107.tif merged.tif --res 0.001 --method max
+terrio-rio warp dem.tif utm.tif --dst-crs EPSG:32613 --res 30 --resampling bilinear
+terrio-rio calc "(/ (- (read 2 1 'float32') (read 1 1 'float32')) (+ (read 2 1 'float32') (read 1 1 'float32')))" b04.tif b08.tif ndvi.tif -t float32
+echo "[-105.5, 40.5]" | terrio-rio sample dem.tif
+terrio-rio overview dem.tif --build 2,4,8 --resampling average
+terrio-rio edit-info dem.tif --nodata -9999 --tag source=Copernicus --description elevation
+```
+
+The commands are `blocks`, `bounds`, `calc`, `clip`, `convert`, `create`, `edit-info`, `env`,
+`gcps`, `info`, `insp`, `mask`, `merge`, `overview`, `rasterize`, `rm`, `sample`, `shapes`,
+`stack`, `transform` and `warp`, with rasterio's options (`terrio-rio COMMAND --help` lists them),
+and the global options `-v`, `-q`, `--aws-profile`, `--aws-no-sign-requests` and
+`--aws-requester-pays`. Inputs may be local files or URLs (remote COGs are read by window). The
+arguments are parsed with the standard library's `argparse` rather than click, so the error
+messages are worded differently; the exit statuses are click's (2 for a usage error, 1 when a
+command fails).
+
+`calc` evaluates rasterio's snuggs expressions with its own parser: `read`, `take`, `asarray`,
+the operators (`+ - * / & | < <= == != >= >`, `not`, `truth`), `map`, `partial`, `reduce`,
+keyword arguments (`:axis 0`), Python builtins and the methods of NumPy arrays (`(mean (read
+1))`, `(astype (read 1) 'float32')`), and `sieve`. Where terrio has no equivalent the command
+says so and fails: `calc`'s `fillnodata`, `env --gdal-data` and `--proj-data` (terrio uses
+neither GDAL nor PROJ), `--gdal-version`; `env --formats` lists terrio's drivers. These
+differences remain:
+
+- `overview` cannot save the resampling method in the `rio_overview` metadata domain (terrio
+  writes the default domain only), so `--ls` reports it as `unknown` and `--rebuild` uses
+  `--resampling`.
+- `overview --build` (and any command opening a file for update) on a COG: GDAL refuses to update
+  the COG layout unless `IGNORE_COG_LAYOUT_BREAK` is set; terrio.rio rewrites the file.
+- `merge` and `stack` with `--resampling cubic` (and other kernels) differ next to nodata pixels,
+  as the API's resampled reads do (see below).
+- Coordinates projected by terrio (bounds, blocks, shapes in WGS 84, `transform`) differ from
+  PROJ's in the last digits.
+
+`scripts/compare_rio_with_rasterio.py` runs every command twice, with rasterio's `rio` and with
+`terrio-rio`, with the same arguments, and compares the exit statuses, the outputs (JSON field by
+field, GeoJSON geometries as sets) and the files written, read back by rasterio pixel by pixel
+(metadata, bands, masks, overviews): on synthetic rasters (sections `rio cli`), and with
+`--remote` on public COGs, Copernicus GLO-30 DEM tiles and the bands of a Sentinel-2 L2A scene,
+read over HTTP or downloaded (sections `rio cli, public COGs`; set `TERRIO_RIO_CLI_DATA` to a
+directory to keep the downloads).
+
 ## Not covered
 
-- External `.msk` mask files (internal masks are read and written), and mask overviews: an
-  overview's mask is the full-resolution mask sampled by nearest neighbour.
+- Per-band masks in `.msk` sidecars (per-dataset ones are read and written), and the overviews
+  of internal masks: an overview's internal mask is the full-resolution mask sampled by nearest
+  neighbour (a `.msk` sidecar's own overviews are read).
 - RPC transformers (`TransformMethod.rpcs`, `reproject` with `rpcs`), the `gauss` resampling,
   PROJJSON and WKT2 output: terrio does not implement them. rasterio's `GCPTransformer` with
   `tps=True` gives coordinates a few centimetres from GDAL's own thin plate splines (which
@@ -125,4 +185,4 @@ python scripts/compare_rio_with_rasterio.py ../terrio-data --remote --output rep
 - `r+` rewrites the file (overviews are rebuilt from the updated pixels, where GDAL keeps the old
   ones); large COGs and GeoTIFFs with overviews are written from the whole raster.
 - Band-level color tables only on band 1, as terrio's raster model holds them.
-- Custom openers (`opener=`) and `rasterio.rio` (the command line).
+- Custom openers (`opener=`).

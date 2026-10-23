@@ -126,6 +126,11 @@ pub struct PointWriteOptions {
     pub dimensions: Vec<String>,
     /// EPT: how the nodes' points are stored. LASzip by default, as Entwine writes them.
     pub ept_data_type: super::EptDataType,
+    /// EPT: the octree's cube is the cube around these bounds, `[min_x, min_y, min_z, max_x,
+    /// max_y, max_z]`, rather than around the points (as Entwine's `--bounds`): points outside
+    /// them are refused. Datasets that will take more points ([`super::append_points`]), such
+    /// as one built from the first of several tiles, are given the bounds of all.
+    pub ept_bounds: Option<[f64; 6]>,
 }
 
 /// Writes a point cloud to a file.
@@ -177,9 +182,13 @@ fn check_local(path: &str) -> Result<()> {
 }
 
 fn resolve_format(path: &str, options: &PointWriteOptions) -> Result<PointFormat> {
-    options.format.or_else(|| PointFormat::for_path(path)).ok_or_else(|| {
+    let format = options.format.or_else(|| PointFormat::for_path(path)).ok_or_else(|| {
         Error::InvalidArgument(format!("cannot tell the point cloud format of '{path}': use .las, .laz, .copc.laz, .ply, .e57 or ept.json"))
-    })
+    })?;
+    if options.ept_bounds.is_some() && format != PointFormat::Ept {
+        crate::warnings::warn(format!("'{path}': the EPT bounds apply to EPT datasets only, and are ignored"));
+    }
+    Ok(format)
 }
 
 /// The point format to write a cloud in: `base` when it holds the cloud's GPS times, colours,
@@ -347,7 +356,7 @@ fn write_to<W: Write + Seek + Send + Sync>(cloud: &PointCloud, w: &mut W, format
             header,
             &layout,
             &records,
-            super::copc::CopcBuild { max_depth: options.copc_max_depth, leaf_points: options.copc_leaf_points },
+            super::copc::CopcBuild { max_depth: options.copc_max_depth, leaf_points: options.copc_leaf_points, bounds: None },
         );
     }
     let mut lw = LasStreamWriter::new(w, header, layout)?;
@@ -584,7 +593,8 @@ impl PointWriter {
             #[cfg(not(target_arch = "wasm32"))]
             PointFormat::Copc => {
                 let (header, layout) = prepare(template, format, options)?;
-                let build = super::copc::CopcBuild { max_depth: options.copc_max_depth, leaf_points: options.copc_leaf_points };
+                let build =
+                    super::copc::CopcBuild { max_depth: options.copc_max_depth, leaf_points: options.copc_leaf_points, bounds: None };
                 WriterKind::Copc(Box::new(super::copc::CopcStreamWriter::new(
                     super::copc::OctreeTarget::Copc(open()?),
                     header,
@@ -630,7 +640,11 @@ impl PointWriter {
                 header.waveform_data_size = 0;
                 let dir = super::ept_write::dataset_dir(path);
                 let target = super::ept_write::EptTarget::new(dir, options.ept_data_type, template.crs.clone())?;
-                let build = super::copc::CopcBuild { max_depth: options.copc_max_depth, leaf_points: options.copc_leaf_points };
+                let build = super::copc::CopcBuild {
+                    max_depth: options.copc_max_depth,
+                    leaf_points: options.copc_leaf_points,
+                    bounds: options.ept_bounds,
+                };
                 WriterKind::Copc(Box::new(super::copc::CopcStreamWriter::new(
                     super::copc::OctreeTarget::Ept(target),
                     header,
