@@ -231,10 +231,6 @@ impl Route {
         Self { kind, boxes: OnceLock::new(), hub_boxes: OnceLock::new(), dst_ops: dst.ops().to_vec() }
     }
 
-    /// Moves a geodetic point (radians) from the source datum to the target's. `(x, y)` are its
-    /// source coordinates, which pick the transformation for a projected source as in PROJ.
-    /// Heights go through the transformation when `three_d` (between 3D CRSs). `None` when no
-    /// transformation succeeds.
     /// The accuracy (metres) of the transformation [`Route::apply`] picks for a point, as PROJ
     /// adds it to the accuracy of a vertical transformation it chains with: 0 between CRSs of one
     /// datum, negative when unknown (a ballpark, or no transformation for the point).
@@ -272,6 +268,10 @@ impl Route {
         }
     }
 
+    /// Moves a geodetic point (radians) from the source datum to the target's. `(x, y)` are its
+    /// source coordinates, which pick the transformation for a projected source as in PROJ.
+    /// Heights go through the transformation when `three_d` (between 3D CRSs). `None` when no
+    /// transformation succeeds.
     pub fn apply(&self, src: &Def, x: f64, y: f64, p: Point, three_d: bool) -> Option<Point> {
         // PROJ compares the source coordinates with the areas: for a geographic source, its
         // longitude and latitude as given, in degrees.
