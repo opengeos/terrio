@@ -97,6 +97,9 @@ pub fn run(a: Args) -> terrio::Result<()> {
     let option = |list: &[(String, String)], k: &str| list.iter().rev().find(|(key, _)| key == k).map(|(_, v)| v.clone());
     let method = option(&to, "SRC_METHOD").or_else(|| option(&to, "METHOD")).map(|m| m.to_ascii_uppercase());
     let force_rpc = a.rpc || method.as_deref() == Some("RPC");
+    if force_rpc && a.tps {
+        return Err(terrio::Error::InvalidArgument("--tps and the RPC method exclude each other".into()));
+    }
     let rpc_options = RpcOptions::from_options(&to)?;
     let has_dem = rpc_options.dem.is_some();
     let mut o = WarpOptions {
@@ -160,7 +163,9 @@ pub fn run(a: Args) -> terrio::Result<()> {
             }
             "SAMPLE_STEPS" => o.sample_steps_all = v.eq_ignore_ascii_case("ALL"),
             "SKIP_NOSOURCE" => o.rpc_output_window &= !matches!(v.to_ascii_uppercase().as_str(), "NO" | "FALSE" | "OFF" | "0"),
-            _ => return Err(terrio::Error::Unsupported(format!("the warp option {k} is not supported"))),
+            // Options that tune GDAL's warper without changing the result (NUM_THREADS,
+            // INIT_DEST...) are ignored.
+            _ => eprintln!("terrio: warning: the warp option {k} is ignored"),
         }
     }
     super::quiet(|| warp_to_path(inputs, &o, output, &a.out.options()?))

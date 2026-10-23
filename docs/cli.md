@@ -140,7 +140,7 @@ RPC transformer when they have neither a geotransform nor GCPs, or with `--rpc` 
 for a source with RPCs, 5 more source pixels are read around each chunk, an RPC DEM makes the
 transformations exact (`--et 0`) and samples every edge point, and a GeoTIFF output is warped only
 where the source's footprint falls. `--wo SOURCE_EXTRA=n`, `--wo SAMPLE_STEPS=ALL` and
-`--wo SKIP_NOSOURCE=NO` set those warp options. On ICEYE images with a Copernicus DEM, the output
+`--wo SKIP_NOSOURCE=NO` set those warp options (other warp options are ignored, with a warning). On ICEYE images with a Copernicus DEM, the output
 grids and pixels are `gdalwarp`'s (with `-ovr NONE`: terrio does not warp from overviews).
 
 ```sh

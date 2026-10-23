@@ -531,9 +531,12 @@ impl Dem {
 /// The horizontal CRS of a compound CRS (its first component).
 fn horizontal(srs: &SpatialRef) -> Result<SpatialRef> {
     let wkt = srs.to_wkt().unwrap_or_default();
-    // The first bracketed component after the compound CRS's name.
+    // The first bracketed component after the compound CRS's (quoted) name.
     let start = wkt.find('[').map(|i| i + 1).unwrap_or(0);
-    let rest = &wkt[start..];
+    let mut rest = wkt[start..].trim_start();
+    if let Some(name) = rest.strip_prefix('"') {
+        rest = name.find('"').map_or("", |i| &name[i + 1..]);
+    }
     let comma = rest.find(',').map(|i| i + 1).unwrap_or(0);
     let rest = rest[comma..].trim_start();
     let mut depth = 0i32;
