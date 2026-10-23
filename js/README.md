@@ -138,7 +138,8 @@ lock for all threads, and ran several times slower on more threads.
 WebAssembly modules have 32-bit memories, at most 4 GB. The `terrio-js/memory64` module (every
 format, single-threaded) is built for WebAssembly's 64-bit memories (memory64), up to 16 GB, the
 limit of V8. `load({ memory64: true })` loads it where the runtime has memory64 (Node.js 24 and
-later, Chrome and Edge 133, Firefox 134), and the usual module elsewhere (Safari):
+later, Chrome and Edge 133, Firefox 134), and the usual 32-bit module elsewhere (Safari), which
+`onFallback` reports and `features().build` tells:
 
 ```js
 import { load, memory64Supported } from "terrio-js/load";

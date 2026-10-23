@@ -50,18 +50,21 @@ export function threadsSupported() {
 }
 
 /**
- * Loads and initializes a module. Options: `threads` (`true` by default: as many threads as
- * processors, up to 16; a number of threads; or `false` for the single-threaded module), `core`
- * (the lighter module, single-threaded), `memory64` (the module with 64-bit memory, for datasets
- * larger than 4 GB, where the runtime supports it; single-threaded, so `threads` is then not
- * used; not with `core`), and `onFallback`, called
- * with the error when the threaded or memory64 module was tried and another is used instead.
+ * Loads and initializes a module. Options:
+ * - `threads`: `true` by default (as many threads as processors, up to 16), a number of threads,
+ *   or `false` for the single-threaded module;
+ * - `core`: the lighter module, single-threaded;
+ * - `memory64`: the module with 64-bit memory, for datasets larger than 4 GB, where the runtime
+ *   supports it (single-threaded, so `threads` is not used; not with `core`). Elsewhere the
+ *   32-bit module loads, limited to 4 GB: check `features().build`, or pass `onFallback`;
+ * - `onFallback`: called with the error when the threaded or memory64 module was asked for and
+ *   another one is loaded instead.
  */
 export async function load(options = {}) {
   const { threads = true, core = false, memory64 = false, onFallback } = options;
-  if (memory64 && core) onFallback?.(new Error("terrio-js/core has no memory64 module: the core module is loaded"));
+  if (memory64 && core) throw new TypeError("load: terrio-js/core has no memory64 module (memory64 and core together)");
   // The memory64 module is single-threaded: `threads` is not used with it.
-  if (memory64 && !core) {
+  if (memory64) {
     if (memory64Supported()) {
       try {
         const mod = await import("./memory64/terrio.js");

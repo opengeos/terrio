@@ -127,6 +127,8 @@ function wasmPackTool(prefix, file) {
  * `clang`, `clang-20`... on PATH.
  */
 function wasm64Clang() {
+  // The versioned names tried, newest first: clang-29 down to clang-20.
+  const versions = Array.from({ length: 10 }, (_, i) => 29 - i);
   const major = (cc) => {
     try {
       return Number(/clang version (\d+)/.exec(execFileSync(cc, ["--version"]).toString())?.[1] ?? 0);
@@ -135,9 +137,13 @@ function wasm64Clang() {
     }
   };
   const given = process.env.CC_wasm64_unknown_unknown;
-  const candidates = given ? [given] : ["clang", ...Array.from({ length: 10 }, (_, i) => `clang-${29 - i}`)];
-  const cc = candidates.find((c) => major(c) >= 20);
-  if (!cc) throw new Error("the memory64 module needs clang 20 or later (CC_wasm64_unknown_unknown, or clang-20 on PATH)");
+  const candidates = given ? [given] : ["clang", ...versions.map((v) => `clang-${v}`)];
+  const seen = candidates.map((c) => [c, major(c)]);
+  const cc = seen.find(([, v]) => v >= 20)?.[0];
+  if (!cc) {
+    const found = seen.filter(([, v]) => v > 0).map(([c, v]) => `${c} (${v})`);
+    throw new Error(`the memory64 module needs clang 20 or later (CC_wasm64_unknown_unknown, or clang-20 on PATH); found: ${found.join(", ") || "none"}`);
+  }
   return cc;
 }
 
@@ -155,34 +161,34 @@ function buildMemory64(outDir) {
   );
   const patches = [];
   for (const [name, edits] of Object.entries(wasm64Patches())) {
-    const p = meta.packages.find((p) => p.name === name && p.source?.startsWith("registry+"));
-    if (!p) continue;
+    // One version of each, from crates.io: a patch replaces every version of a crate.
+    const found = meta.packages.filter((p) => p.name === name && p.source?.startsWith("registry+"));
+    if (found.length !== 1) throw new Error(`memory64 patch of ${name}: ${found.length} versions from crates.io in the build, not 1`);
     const dir = join(targetDir, "patched", name);
     rmSync(dir, { recursive: true, force: true });
-    cpSync(dirname(p.manifest_path), dir, { recursive: true });
+    cpSync(dirname(found[0].manifest_path), dir, { recursive: true });
+    let changed = 0;
     for (const [file, from, to] of edits(dir)) {
       const path = join(dir, file);
       const source = readFileSync(path, "utf8");
       const patched = source.replace(from, to);
-      // `tar`'s edit is over all its files; the others' must match.
+      // `tar`'s edit runs over all its files, some without a wasm32 cfg; the others' must match.
       if (patched === source && name !== "tar") throw new Error(`memory64 patch of ${name}: ${file} has no match for ${from}`);
+      changed += patched !== source;
       writeFileSync(path, patched);
     }
-    if (name === "tar" && !readFileSync(join(dir, "src", "header.rs"), "utf8").includes('target_family = "wasm"')) {
-      throw new Error("memory64 patch of tar: no wasm32 cfg left to edit");
-    }
+    if (changed === 0) throw new Error(`memory64 patch of ${name}: nothing to edit (has it gained wasm64 support?)`);
     patches.push("--config", `patch.crates-io.${name}.path=${JSON.stringify(dir)}`);
   }
   const link = ["--allow-undefined", "--max-memory=17179869184"].flatMap((a) => ["-C", `link-arg=${a}`]);
   // zlib-rs's SIMD for wasm64 (core::arch::wasm64) is unstable; ahash seeds with getrandom, whose
   // wasm64 backend js/src/lib.rs defines.
   const rustflags = ["-Zcrate-attr=feature(simd_wasm64)", "--cfg", 'getrandom_backend="custom"', ...link];
-  const cargoProfile = values.profile === "release" ? ["--release"] : ["--profile", values.profile];
   // The patches would rewrite Cargo.lock: it is put back.
   const lockPath = join(crate, "..", "Cargo.lock");
   const lock = readFileSync(lockPath);
   try {
-    execFileSync("rustup", ["run", NIGHTLY, "cargo", "build", "-p", "terrio-js", "--target", target, ...cargoProfile, "-Z", "build-std=panic_abort,std", ...patches], {
+    execFileSync("rustup", ["run", NIGHTLY, "cargo", "build", "-p", "terrio-js", "--target", target, ...profile, "-Z", "build-std=panic_abort,std", ...patches], {
       cwd: crate,
       stdio: "inherit",
       env: { ...process.env, RUSTFLAGS: rustflags.join(" "), CARGO_TARGET_DIR: targetDir, CC_wasm64_unknown_unknown: wasm64Clang() },
