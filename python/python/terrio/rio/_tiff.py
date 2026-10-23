@@ -278,6 +278,18 @@ def default_structure(raster: Any) -> Structure:
     geolocation = getattr(raster, "geolocation", None)
     if geolocation:
         s.namespaces["GEOLOCATION"] = dict(geolocation)
+    # The driver's metadata: band items (`BAND_<n>#<key>`), and the dataset's (not subdatasets,
+    # which are the `SUBDATASETS` domain).
+    for key, value in getattr(raster, "metadata", None) or []:
+        band, sep, item = key.partition("#")
+        if sep and band.startswith("BAND_") and band[5:].isdigit():
+            b = int(band[5:])
+            if 1 <= b <= n:
+                s.band_tags[b - 1][item] = value
+        elif key.startswith("SUBDATASET_"):
+            s.namespaces.setdefault("SUBDATASETS", {})[key] = value
+        else:
+            s.tags[key] = value
     return s
 
 

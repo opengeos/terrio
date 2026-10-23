@@ -78,6 +78,9 @@ _EXTENSIONS = {
 # rows of blocks, without holding the raster in RAM.
 _IN_MEMORY_LIMIT = 512 * 1024 * 1024
 
+# The drivers of files that can hold subdatasets (several variables or arrays).
+_SUBDATASET_DRIVERS = frozenset({"netCDF", "HDF5", "HDF4", "Zarr", "STACIT", "GPKG"})
+
 
 def _in_memory_limit() -> int:
     """The size above which writers keep their pixels on disk.
@@ -200,6 +203,7 @@ class DatasetBase(WindowMethodsMixin, TransformMethodsMixin):
         self._crs: CRS | None = None
         self._transform: Affine = Affine.identity()
         self._structure: _tiff.Structure | None = None
+        self._subdatasets: list[str] | None = None
         self._overview_sizes: list[tuple[int, int]] = []
         self._closed = False
         self._env = ExitStack()
@@ -947,12 +951,23 @@ class DatasetBase(WindowMethodsMixin, TransformMethodsMixin):
 
     @property
     def subdatasets(self) -> list[str]:
-        """Subdatasets (terrio exposes none through this interface).
+        """The names of the dataset's subdatasets, as GDAL lists them.
+
+        Files of several variables or arrays (netCDF, HDF5, Zarr, STAC collections) have some,
+        such as `NETCDF:"file.nc":/group/var`; a subdataset itself and other rasters have none.
 
         Returns:
-            list: Empty.
+            list: The subdatasets' names.
         """
-        return []
+        if self.driver not in _SUBDATASET_DRIVERS or not self.name:
+            return []
+        if self._subdatasets is None:
+            try:
+                info = _terrio.info(_terrio_path(self.name))
+            except Exception:
+                info = {}
+            self._subdatasets = [s["name"] for s in info.get("subdatasets") or []]
+        return list(self._subdatasets)
 
     def checksum(self, bidx: int, window: Any = None) -> int:
         """GDAL's checksum of a band (`GDALChecksumImage`).

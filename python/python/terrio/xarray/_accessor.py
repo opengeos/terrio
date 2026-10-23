@@ -8,6 +8,7 @@ writing go through terrio's rasterio-compatible API (`terrio.rio`).
 from __future__ import annotations
 
 import copy
+import json
 import math
 import os
 import warnings
@@ -920,21 +921,133 @@ class XRasterBase:
         )
         return left, bottom, right, top
 
-    def get_gcps(self) -> None:
-        """Ground control points (terrio does not georeference with GCPs).
+    def write_gcps(
+        self,
+        gcps: Iterable[Any],
+        gcp_crs: Any,
+        *,
+        grid_mapping_name: str | None = None,
+        inplace: bool = False,
+    ) -> Any:
+        """Writes ground control points to the grid mapping variable, as rioxarray does.
+
+        The points go to its `gcps` attribute as a GeoJSON FeatureCollection, and their CRS is
+        written as the array's.
+
+        Args:
+            gcps: `terrio.rio.control.GroundControlPoint` objects (or rasterio's).
+            gcp_crs: The CRS of the points' coordinates.
+            grid_mapping_name: The grid mapping variable (by default the array's).
+            inplace: Modify the object rather than a copy.
 
         Returns:
-            None: Always.
+            xarray.DataArray | xarray.Dataset: The object with its GCPs.
         """
-        return None
+        grid_mapping_name = self.grid_mapping if grid_mapping_name is None else grid_mapping_name
+        data_obj = self._get_obj(inplace=True)
+        if gcp_crs:
+            data_obj = data_obj.terrio.write_crs(
+                gcp_crs, grid_mapping_name=grid_mapping_name, inplace=inplace
+            )
+        if grid_mapping_name not in data_obj.coords:
+            data_obj.coords[grid_mapping_name] = xarray.Variable((), 0)
+        attrs = data_obj.coords[grid_mapping_name].attrs.copy()
+        gcps = list(gcps)
+        attrs["gcps"] = json.dumps(_gcps_to_geojson(gcps))
+        data_obj.coords[grid_mapping_name].terrio.set_attrs(attrs, inplace=True)
+        # Kept by the accessor too, as rioxarray keeps them: writing the CRS again (as
+        # `write_rpcs` does) rebuilds the grid mapping variable.
+        data_obj.terrio._gcps = gcps
+        return data_obj
 
-    def get_rpcs(self) -> None:
-        """Rational polynomial coefficients (terrio does not georeference with RPCs).
+    def get_gcps(self) -> list[Any] | None:
+        """The ground control points written with `write_gcps` (or read from the file).
 
         Returns:
-            None: Always.
+            list | None: `terrio.rio.control.GroundControlPoint` objects, or None.
         """
-        return None
+        from terrio.rio.control import GroundControlPoint
+
+        if getattr(self, "_gcps", None) is not None:
+            return list(self._gcps)
+        try:
+            geojson = json.loads(self._obj.coords[self.grid_mapping].attrs["gcps"])
+        except (KeyError, AttributeError):
+            return None
+        out = []
+        for f in geojson["features"]:
+            x, y, *z = f["geometry"]["coordinates"]
+            p = f["properties"]
+            gcp = GroundControlPoint(row=p["row"], col=p["col"], x=x, y=y, z=z[0] if z else None)
+            gcp.id, gcp.info = p["id"], p["info"]
+            out.append(gcp)
+        return out
+
+    def write_rpcs(
+        self, rpcs: Any, *, grid_mapping_name: str | None = None, inplace: bool = False
+    ) -> Any:
+        """Writes rational polynomial coefficients to the grid mapping variable, as rioxarray does.
+
+        The coefficients go to its `rpcs` attribute as JSON, and the CRS written is EPSG:4326, the
+        CRS of RPCs.
+
+        Args:
+            rpcs: A `terrio.rio.rpc.RPC` (or rasterio's).
+            grid_mapping_name: The grid mapping variable (by default the array's).
+            inplace: Modify the object rather than a copy.
+
+        Returns:
+            xarray.DataArray | xarray.Dataset: The object with its RPCs.
+        """
+        grid_mapping_name = self.grid_mapping if grid_mapping_name is None else grid_mapping_name
+        data_obj = self._get_obj(inplace=True)
+        data_obj = data_obj.terrio.write_crs(
+            "epsg:4326", grid_mapping_name=grid_mapping_name, inplace=inplace
+        )
+        if grid_mapping_name not in data_obj.coords:
+            data_obj.coords[grid_mapping_name] = xarray.Variable((), 0)
+        attrs = data_obj.coords[grid_mapping_name].attrs.copy()
+        attrs["rpcs"] = json.dumps(rpcs.to_dict())
+        data_obj.coords[grid_mapping_name].terrio.set_attrs(attrs, inplace=True)
+        data_obj.terrio._rpcs = rpcs
+        return data_obj
+
+    def get_rpcs(self) -> Any:
+        """The rational polynomial coefficients written with `write_rpcs` (or read from the file).
+
+        Returns:
+            terrio.rio.rpc.RPC | None: The coefficients, or None.
+        """
+        from terrio.rio.rpc import RPC
+
+        if getattr(self, "_rpcs", None) is not None:
+            return self._rpcs
+        try:
+            return RPC(**json.loads(self._obj.coords[self.grid_mapping].attrs["rpcs"]))
+        except (KeyError, AttributeError):
+            return None
+
+
+def _gcps_to_geojson(gcps: Iterable[Any]) -> dict[str, Any]:
+    """Ground control points as rioxarray stores them: a GeoJSON FeatureCollection.
+
+    Args:
+        gcps: The points.
+
+    Returns:
+        dict: The FeatureCollection, each point's id, info, row and col as properties.
+    """
+    features = []
+    for gcp in gcps:
+        coords = [gcp.x, gcp.y] if gcp.z is None else [gcp.x, gcp.y, gcp.z]
+        features.append(
+            {
+                "type": "Feature",
+                "properties": {"id": gcp.id, "info": gcp.info, "row": gcp.row, "col": gcp.col},
+                "geometry": {"type": "Point", "coordinates": coords},
+            }
+        )
+    return {"type": "FeatureCollection", "features": features}
 
 
 def _check_convention(convention: Any) -> None:
@@ -1717,6 +1830,8 @@ class TerrioArray(XRasterBase):
             dtype=dtype,
             crs=self.crs,
             transform=self.transform(recalc=recalc_transform),
+            gcps=self.get_gcps(),
+            rpcs=self.get_rpcs(),
             nodata=rio_nodata,
             windowed=windowed,
             compute=compute,

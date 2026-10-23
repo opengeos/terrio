@@ -56,16 +56,97 @@ fn attr_f64(v: &NcVariable, name: &str) -> Option<f64> {
     attr(v, name).and_then(NcAttrValue::as_f64)
 }
 
+/// An attribute's value as GDAL's netCDF driver writes it in metadata: text as it is, numbers
+/// as C formats them (`%.8g` for floats, `%.16g` for doubles), several in braces (`{0,255}`).
 fn attr_text(a: &NcAttribute) -> String {
+    let list = |parts: Vec<String>| if parts.len() == 1 { parts[0].clone() } else { format!("{{{}}}", parts.join(",")) };
+    let ints = |v: Vec<String>| list(v);
     match &a.value {
         NcAttrValue::Chars(s) => s.clone(),
         NcAttrValue::Strings(v) => v.join(","),
-        other => {
-            let v = other.as_f64_vec().unwrap_or_default();
-            let parts: Vec<String> = v.iter().map(|x| if x.is_nan() { "nan".into() } else { format!("{x}") }).collect();
-            if parts.len() == 1 { parts[0].clone() } else { format!("{{{}}}", parts.join(",")) }
-        }
+        NcAttrValue::Bytes(v) => ints(v.iter().map(i8::to_string).collect()),
+        NcAttrValue::UBytes(v) => ints(v.iter().map(u8::to_string).collect()),
+        NcAttrValue::Shorts(v) => ints(v.iter().map(i16::to_string).collect()),
+        NcAttrValue::UShorts(v) => ints(v.iter().map(u16::to_string).collect()),
+        NcAttrValue::Ints(v) => ints(v.iter().map(i32::to_string).collect()),
+        NcAttrValue::UInts(v) => ints(v.iter().map(u32::to_string).collect()),
+        NcAttrValue::Int64s(v) => ints(v.iter().map(i64::to_string).collect()),
+        NcAttrValue::UInt64s(v) => ints(v.iter().map(u64::to_string).collect()),
+        NcAttrValue::Floats(v) => list(v.iter().map(|x| format_g(f64::from(*x), 8)).collect()),
+        NcAttrValue::Doubles(v) => list(v.iter().map(|x| format_g(*x, 16)).collect()),
     }
+}
+
+/// A number as C's `printf("%.{precision}g")` writes it.
+fn format_g(x: f64, precision: usize) -> String {
+    if x.is_nan() {
+        return "nan".into();
+    }
+    if x.is_infinite() {
+        return if x > 0.0 { "inf".into() } else { "-inf".into() };
+    }
+    if x == 0.0 {
+        return if x.is_sign_negative() { "-0".into() } else { "0".into() };
+    }
+    let p = precision.max(1);
+    let sci = format!("{:.*e}", p - 1, x);
+    let (mantissa, exponent) = sci.split_once('e').unwrap_or((&sci, "0"));
+    let exp: i32 = exponent.parse().unwrap_or(0);
+    let trim = |s: &str| -> String {
+        if s.contains('.') { s.trim_end_matches('0').trim_end_matches('.').to_string() } else { s.to_string() }
+    };
+    if exp < -4 || exp >= p as i32 {
+        format!("{}e{}{:02}", trim(mantissa), if exp < 0 { '-' } else { '+' }, exp.abs())
+    } else {
+        trim(&format!("{:.*}", (p as i32 - 1 - exp).max(0) as usize, x))
+    }
+}
+
+/// A coordinate value as GDAL writes it in `NETCDF_DIM_*` metadata: by the variable's type.
+fn coordinate_text(v: f64, t: &NcType) -> String {
+    match t {
+        NcType::Float => format_g(v, 8),
+        NcType::Double => format_g(v, 16),
+        _ => format!("{}", v as i64),
+    }
+}
+
+/// The netCDF type code of a type (`NC_SHORT` is 3), as GDAL's `NETCDF_DIM_<dim>_DEF` gives it.
+fn type_code(t: &NcType) -> u8 {
+    match t {
+        NcType::Byte => 1,
+        NcType::Char => 2,
+        NcType::Short => 3,
+        NcType::Int => 4,
+        NcType::Float => 5,
+        NcType::Double => 6,
+        NcType::UByte => 7,
+        NcType::UShort => 8,
+        NcType::UInt => 9,
+        NcType::Int64 => 10,
+        NcType::UInt64 => 11,
+        _ => 0,
+    }
+}
+
+/// Replaces the values outside `[lo, hi]` with the nodata value, as GDAL's netCDF driver applies
+/// a variable's `valid_range` (or `valid_min` and `valid_max`).
+fn mask_outside(data: &mut RasterData, lo: f64, hi: f64, nodata: f64) {
+    macro_rules! mask {
+        ($($variant:ident),*) => {
+            match data {
+                $(RasterData::$variant(values) => {
+                    for x in values.iter_mut() {
+                        let f = *x as f64;
+                        if f < lo || f > hi {
+                            *x = nodata as _;
+                        }
+                    }
+                })*
+            }
+        };
+    }
+    mask!(U8, I8, U16, I16, U32, I32, U64, I64, F32, F64)
 }
 
 /// A variable and the groups it is in (the root first).
@@ -212,6 +293,60 @@ pub(crate) fn data_variable_paths(path: &Path) -> Result<Vec<String>> {
     let f = NcFile::open(path).map_err(|e| err(path, e))?;
     let vars = all_variables(&f, path, &|| super::hdf5::open_file(path).ok())?;
     Ok(data_variables(&vars).iter().map(|r| r.full.clone()).collect())
+}
+
+/// GDAL's metadata of a variable read as a raster: the attributes of the variable and of its
+/// coordinate variables (`var#attr`), its other dimensions (`NETCDF_DIM_EXTRA`, `_DEF`,
+/// `_VALUES`), and each band's (`BAND_<n>#NETCDF_VARNAME`, the variable's attributes, and the
+/// band's value along each other dimension, `BAND_<n>#NETCDF_DIM_<dim>`), the bands numbered with
+/// the last dimension varying fastest. Bands interleaved or complex get the attributes only.
+fn gdal_variable_metadata(f: &NcFile, var_ref: &VarRef, (y_dim, x_dim): (usize, usize), plain: bool, out: &mut Vec<(String, String)>) {
+    let var = var_ref.v;
+    let dims = var.dimensions();
+    for d in dims {
+        if let Some((_, c)) = var_ref.lookup(&d.name).filter(|(_, c)| c.ndim() == 1) {
+            out.extend(c.attributes().iter().map(|a| (format!("{}#{}", d.name, a.name), attr_text(a))));
+        }
+    }
+    out.extend(var.attributes().iter().map(|a| (format!("{}#{}", var.name, a.name), attr_text(a))));
+    let extra: Vec<usize> = (0..dims.len()).filter(|&i| i != x_dim && i != y_dim).collect();
+    // Each other dimension's coordinate values, as text.
+    let mut values: Vec<Vec<String>> = Vec::new();
+    if !plain && !extra.is_empty() {
+        let names: Vec<&str> = extra.iter().map(|&i| dims[i].name.as_str()).collect();
+        out.push(("NETCDF_DIM_EXTRA".into(), format!("{{{}}}", names.join(","))));
+        for &i in &extra {
+            let d = &dims[i];
+            let coord = var_ref.lookup(&d.name).filter(|(_, c)| c.ndim() == 1);
+            let t = coord.as_ref().map_or(NcType::Int, |(_, c)| c.dtype().clone());
+            let vals: Vec<String> = match coord.and_then(|(p, _)| f.read_variable_as_f64(&p).ok()) {
+                Some(a) => a.iter().map(|v| coordinate_text(*v, &t)).collect(),
+                None => (0..d.size).map(|k| k.to_string()).collect(),
+            };
+            out.push((format!("NETCDF_DIM_{}_DEF", d.name), format!("{{{},{}}}", d.size, type_code(&t))));
+            let joined = if vals.len() == 1 { vals[0].clone() } else { format!("{{{}}}", vals.join(",")) };
+            out.push((format!("NETCDF_DIM_{}_VALUES", d.name), joined));
+            values.push(vals);
+        }
+    }
+    let sizes: Vec<usize> = if plain { Vec::new() } else { extra.iter().map(|&i| dims[i].size as usize).collect() };
+    let bands: usize = sizes.iter().product::<usize>().max(1);
+    for b in 0..bands {
+        let n = b + 1;
+        out.push((format!("BAND_{n}#NETCDF_VARNAME"), var.name.clone()));
+        out.extend(var.attributes().iter().map(|a| (format!("BAND_{n}#{}", a.name), attr_text(a))));
+        let mut rest = b;
+        let mut index = vec![0; sizes.len()];
+        for k in (0..sizes.len()).rev() {
+            index[k] = rest % sizes[k].max(1);
+            rest /= sizes[k].max(1);
+        }
+        for (k, &i) in extra.iter().enumerate().take(sizes.len()) {
+            if let Some(v) = values.get(k).and_then(|v| v.get(index[k])) {
+                out.push((format!("BAND_{n}#NETCDF_DIM_{}", dims[i].name), v.clone()));
+            }
+        }
+    }
 }
 
 /// Reads a NetCDF variable (by default the first data variable) as a raster. Variables below the
@@ -440,6 +575,20 @@ fn read_file(f: &NcFile, path: &Path, hdf5: &dyn Fn() -> Option<hdf5_reader::Hdf
     if complex.is_some() {
         nodata = None;
     }
+    // Values outside the variable's valid range are nodata, as GDAL reads them.
+    let mut data = data;
+    if let (Some(nd), None) = (nodata, complex) {
+        let range = match attr(var, "valid_range").and_then(|v| v.as_f64_vec()) {
+            Some(r) if r.len() == 2 => Some((r[0], r[1])),
+            _ => match (attr_f64(var, "valid_min"), attr_f64(var, "valid_max")) {
+                (None, None) => None,
+                (lo, hi) => Some((lo.unwrap_or(f64::NEG_INFINITY), hi.unwrap_or(f64::INFINITY))),
+            },
+        };
+        if let Some((lo, hi)) = range {
+            mask_outside(&mut data, lo, hi, nd);
+        }
+    }
     let raster_bands = if complex.is_some() { bands * 2 } else { bands };
     let mut raster =
         common::make_raster(cols, rows, raster_bands, data, gt.unwrap_or(common::NO_GEOTRANSFORM), crs.unwrap_or_default(), nodata)?;
@@ -453,6 +602,12 @@ fn read_file(f: &NcFile, path: &Path, hdf5: &dyn Fn() -> Option<hdf5_reader::Hdf
     }
     for a in f.global_attributes().map_err(|e| err(path, e))? {
         raster.metadata.push((format!("NC_GLOBAL#{}", a.name), attr_text(a)));
+    }
+    // A file of several variables opened without naming one is GDAL's container: its own
+    // metadata only (the global attributes and the subdatasets), not the variable's.
+    let container = variable.is_none() && candidates.len() > 1;
+    if !container {
+        gdal_variable_metadata(f, var_ref, (y_dim, x_dim), interleaved || complex.is_some(), &mut raster.metadata);
     }
     if variable.is_none() && candidates.len() > 1 {
         for (i, (n, d)) in subdatasets(&vars, &path.display().to_string()).into_iter().enumerate() {

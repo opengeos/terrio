@@ -240,8 +240,11 @@ def _write(
         kwargs: Options of `terrio.rio.open` in `w` mode.
     """
     transform = kwargs["transform"]
-    flip_y = transform.e > 0
-    flip_x = transform.a < 0
+    # Rows and columns of an image georeferenced by GCPs or RPCs (its transform the identity)
+    # are written as they are; a south-up or east-left grid is written north-up.
+    georeferenced_otherwise = bool(kwargs.get("gcps") or kwargs.get("rpcs"))
+    flip_y = transform.e > 0 and not georeferenced_otherwise
+    flip_x = transform.a < 0 and not georeferenced_otherwise
     if flip_y or flip_x:
         h, w = kwargs["height"], kwargs["width"]
         a, b, c, d, e, f = transform[:6]
@@ -317,6 +320,10 @@ def write_raster(
         kwargs["nodata"] = _ensure_nodata_dtype(kwargs["nodata"], numpy_dtype)
     if kwargs.get("crs") is None:
         kwargs.pop("crs", None)
+    # Ground control points and RPCs, written as the file's georeferencing.
+    for key in ("gcps", "rpcs"):
+        if not kwargs.get(key):
+            kwargs.pop(key, None)
     if not kwargs.get("driver"):
         kwargs["driver"] = driver_from_extension(raster_path)
     if not compute and is_dask_collection(da.data):

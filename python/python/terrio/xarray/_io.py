@@ -12,8 +12,10 @@ from __future__ import annotations
 import contextlib
 import copy
 import os
+import re
 import threading
 import warnings
+from collections import defaultdict
 from collections.abc import Hashable, Iterable, Iterator, Sequence
 from dataclasses import dataclass, field
 from typing import Any
@@ -226,6 +228,9 @@ class _Source:
     profile: dict[str, Any]
     overview: int | None
     pool: _RasterPool = field(repr=False)
+    subdatasets: list[str] = field(default_factory=list)
+    gcps: tuple[list[Any], CRS | None] = field(default_factory=lambda: ([], None))
+    rpcs: Any = None
 
     @property
     def nodata(self) -> float | None:
@@ -421,6 +426,9 @@ def _open_source(
             profile=dict(riods.profile),
             overview=overview_level,
             pool=_RasterPool(_terrio_path(riods.name), first, max_rasters),
+            subdatasets=list(riods.subdatasets),
+            gcps=riods.gcps,
+            rpcs=riods.rpcs,
         )
     return src
 
@@ -1010,6 +1018,9 @@ def _build(
             break
     else:
         coords[coord_name] = np.asarray(list(bands))
+    # Georeferenced by ground control points or RPCs: no coordinates from the transform.
+    if src.gcps[0] or src.rpcs:
+        parse_coordinates = False
     if parse_coordinates:
         coords.update(
             generate_spatial_coords(affine=src.transform, width=src.width, height=src.height)
@@ -1057,6 +1068,10 @@ def _build(
     acc.write_transform(src.transform, inplace=True)
     if src.crs:
         acc.write_crs(src.crs, inplace=True)
+    if src.gcps[0]:
+        acc.write_gcps(*src.gcps, inplace=True)
+    if src.rpcs:
+        acc.write_rpcs(src.rpcs, inplace=True)
     if chunks is not None:
         result = _prepare_dask(
             result=result, src=src, chunks=chunks, bidx=bands[0] if band_only else None
@@ -1084,6 +1099,90 @@ def _build(
     result.set_close(src.pool.close)
     result.terrio._source = src
     return result
+
+
+def _subdataset_filter(
+    group: str | Sequence[str] | None, variable: str | Sequence[str] | None
+) -> re.Pattern[str]:
+    """The pattern of the subdataset names of groups and variables, as rioxarray matches them.
+
+    Args:
+        group: A group name or names (None: any).
+        variable: A variable name or names (None: any).
+
+    Returns:
+        re.Pattern: The pattern.
+    """
+    def alternatives(names: str | Sequence[str]) -> str:
+        names = [names] if isinstance(names, str) else list(names)
+        return rf"(?:{'|'.join(re.escape(n) for n in names)})"
+
+    var = r"\w+" if variable is None else alternatives(variable)
+    if group is None:
+        return re.compile(rf".*(?:\:/|\:)(/+)?{var}$")
+    return re.compile(rf".*(?:\:/|\:)(/+)?{alternatives(group)}[:/](/+)?{var}$")
+
+
+def _load_subdatasets(
+    src: _Source,
+    *,
+    group: str | Sequence[str] | None,
+    variable: str | Sequence[str] | None,
+    parse_coordinates: bool,
+    **kwargs: Any,
+) -> xarray.Dataset | list[xarray.Dataset]:
+    """Opens the subdatasets of a file, as rioxarray does.
+
+    Each subdataset (filtered by `group` and `variable`) opens as a DataArray named after its
+    variable; those of one shape make a Dataset, with the file's tags as its attributes.
+
+    Args:
+        src: The file.
+        group: Groups to keep.
+        variable: Variables to keep.
+        parse_coordinates: Generate x and y coordinates.
+        **kwargs: Other options of `open_rasterio`.
+
+    Returns:
+        xarray.Dataset | list[xarray.Dataset]: A Dataset, or one per shape.
+    """
+    pattern = _subdataset_filter(group, variable) if group is not None or variable is not None else None
+    groups: dict[tuple[int, int], dict[Hashable, xarray.DataArray]] = defaultdict(dict)
+    for name in src.subdatasets:
+        if pattern is not None and not pattern.match(name):
+            continue
+        with rio_open(name) as sub:
+            shape = (sub.height, sub.width)
+        da = open_rasterio(
+            name,
+            parse_coordinates=shape not in groups and parse_coordinates,
+            default_name=name.split(":")[-1].lstrip("/").replace("/", "_").strip('"'),
+            **kwargs,
+        )
+        assert isinstance(da, xarray.DataArray)
+        groups[shape][da.name] = da
+    attrs = _parse_tags(src.tags)
+    datasets = []
+    for arrays in groups.values():
+        ds = xarray.Dataset(arrays, attrs=attrs)
+        # Global attributes are the Dataset's, not each variable's.
+        for var in ds.variables:
+            ds[var].attrs = {
+                k: v
+                for k, v in ds[var].attrs.items()
+                if k not in ds.attrs and not any(str(k).startswith(f"{c}#") for c in ds.coords)
+            }
+
+        def close(arrays: dict[Hashable, xarray.DataArray] = arrays) -> None:
+            """Closes the subdatasets' rasters."""
+            for da in arrays.values():
+                da.close()
+
+        ds.set_close(close)
+        datasets.append(ds)
+    if not datasets:
+        return xarray.Dataset(attrs=attrs)
+    return datasets[0] if len(datasets) == 1 else datasets
 
 
 def open_rasterio(
@@ -1123,8 +1222,9 @@ def open_rasterio(
             object is held while reading.
         masked: Mask nodata (and alpha) pixels with NaN; the nodata value goes to the encoding.
         mask_and_scale: Mask, and apply the bands' scales and offsets.
-        variable: Unsupported: terrio does not open subdatasets through this API.
-        group: Unsupported: terrio does not open subdatasets through this API.
+        variable: For a file of subdatasets (netCDF, HDF5, Zarr...), the variable or variables to
+            open (by default all).
+        group: For a file of subdatasets, the group or groups to open them from.
         default_name: The array's name.
         decode_times: Decode CF times of netCDF coordinates.
         decode_timedelta: Decode CF time deltas of coordinates (default: decode_times).
@@ -1133,17 +1233,13 @@ def open_rasterio(
         **open_kwargs: Ignored GDAL open options (`sharing`...).
 
     Returns:
-        xarray.DataArray | xarray.Dataset: The raster.
+        xarray.DataArray | xarray.Dataset | list[xarray.Dataset]: The raster; for a file of
+        subdatasets, as rioxarray opens it, a Dataset of them (a list of Datasets, one per shape,
+        when they differ in shape).
 
     Raises:
-        NotImplementedError: If `variable` or `group` is given.
         ValueError: If the raster has no bands or the overview does not exist.
     """
-    if variable is not None or group is not None:
-        raise NotImplementedError(
-            "terrio does not open subdatasets through open_rasterio: open the subdataset's "
-            "name (such as 'NETCDF:\"file.nc\":variable') instead"
-        )
     open_kwargs.pop("sharing", None)
     if "overview_level" in open_kwargs:  # pragma: no cover
         overview_level = open_kwargs.pop("overview_level")
@@ -1153,6 +1249,21 @@ def open_rasterio(
     if lock is True or lock is False:
         lock = None
     src = _open_source(filename, overview_level, max_rasters)
+    if src.subdatasets:
+        src.pool.close()
+        return _load_subdatasets(
+            src,
+            group=group,
+            variable=variable,
+            parse_coordinates=parse_coordinates,
+            chunks=chunks,
+            cache=cache,
+            lock=lock,
+            masked=masked,
+            mask_and_scale=mask_and_scale,
+            decode_times=decode_times,
+            decode_timedelta=decode_timedelta,
+        )
     if src.count < 1:
         raise ValueError("Unknown dims")
     common = {
