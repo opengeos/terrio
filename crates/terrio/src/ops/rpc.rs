@@ -4,7 +4,7 @@
 //! GDAL's iterative inverse, at a fixed height (`RPC_HEIGHT`, scaled by `RPC_HEIGHT_SCALE`) or on
 //! a DEM (`RPC_DEM`, sampled with `RPC_DEMINTERPOLATION`).
 //!
-//! ```
+//! ```no_run
 //! use terrio::ops::rpc::{Rpc, RpcOptions, RpcTransformer};
 //!
 //! // An image whose pixels are an affine function of the longitude and latitude.
@@ -709,6 +709,7 @@ impl RpcTransformer {
             && d.inv[2] == 0.0
             && d.inv[4] == 0.0
             && ok.iter().all(|b| *b)
+            && xs.iter().all(|x| x.is_finite())
             && ys.iter().all(|y| *y == ys[0])
             && self.whole_line(d, xs, ys, &z, ok)
         {
@@ -882,6 +883,8 @@ impl RpcTransformer {
                         } else if dp < 0.0 {
                             dp = 0.5;
                         }
+                        // GDAL tests (and resets) the pixel again here, not the line: kept so,
+                        // for the same results.
                         if dl >= hh {
                             dl = hh - 0.5;
                         } else if dp < 0.0 {

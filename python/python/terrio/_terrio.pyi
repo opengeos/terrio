@@ -54,6 +54,7 @@ __all__ = [
     "crs_info",
     "suggested_grid",
     "gcp_transform",
+    "RpcTransformer",
     "FeatureStream",
     "open_stream",
     "cli_main",
