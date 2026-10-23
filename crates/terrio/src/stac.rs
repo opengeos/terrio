@@ -139,7 +139,7 @@ fn next_request(doc: &Value, cur: &Request) -> Option<Request> {
         return Some(Request { url, body: None, headers });
     }
     let body = match (&cur.body, &link["body"]) {
-        (Some(Value::Object(prev)), Value::Object(b)) if link["merge"] == true => {
+        (Some(Value::Object(prev)), Value::Object(b)) if link["merge"] == true && same_origin => {
             let mut m = prev.clone();
             m.extend(b.iter().map(|(k, v)| (k.clone(), v.clone())));
             Value::Object(m)
