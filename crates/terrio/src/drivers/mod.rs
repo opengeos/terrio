@@ -16,6 +16,8 @@ mod ers;
 pub(crate) mod geokeys;
 #[cfg(feature = "sqlite")]
 pub(crate) mod gpkg;
+#[cfg(feature = "grib")]
+pub(crate) mod grib;
 mod gsbg;
 pub(crate) mod gtiff_write;
 #[cfg(feature = "netcdf-hdf5")]
@@ -82,6 +84,10 @@ fn read_own(path: &str) -> Option<Result<RasterDataset>> {
     if gsbg::is_gsbg(p) {
         return Some(gsbg::read(p));
     }
+    #[cfg(feature = "grib")]
+    if matches!(by_extension, None | Some(RasterDriver::GRIB)) && grib::is_grib_file(p) {
+        return Some(grib::read(p));
+    }
     let driver = by_extension?;
     if let Err(e) = driver.ensure_built() {
         return Some(Err(e));
@@ -108,9 +114,9 @@ fn read_own(path: &str) -> Option<Result<RasterDataset>> {
 }
 
 /// Opens a raster read by window with one of terrio's own drivers (Zarr stores, local or remote,
-/// read chunk by chunk; JPEG 2000 by tile and resolution level). `None` when none of them reads
+/// read chunk by chunk; JPEG 2000 by tile and resolution level; GRIB by message). `None` when none of them reads
 /// the file so.
-#[cfg_attr(not(any(feature = "zarr", feature = "jp2")), allow(unused_variables))]
+#[cfg_attr(not(any(feature = "zarr", feature = "jp2", feature = "grib")), allow(unused_variables))]
 pub(crate) fn open_lazy(path: &str) -> Option<Result<crate::LazyRaster>> {
     #[cfg(feature = "zarr")]
     if let Some(result) = zarr::open_lazy(path) {
@@ -118,6 +124,10 @@ pub(crate) fn open_lazy(path: &str) -> Option<Result<crate::LazyRaster>> {
     }
     #[cfg(feature = "jp2")]
     if let Some(result) = jp2::open_lazy(path) {
+        return Some(result);
+    }
+    #[cfg(feature = "grib")]
+    if let Some(result) = grib::open_lazy(path) {
         return Some(result);
     }
     None

@@ -58,6 +58,11 @@ jpeg-encoder = "0.7"
 # WebP tiles of PMTiles and MBTiles archives; the version tiff already uses.
 image-webp = "0.2"
 openjp2 = { version = "0.6", default-features = false, features = ["std"] }
+# GRIB2 CCSDS packing (its pure-Rust decoder); without its C features (OpenJPEG, libaec): terrio
+# decodes the other packings itself (JPEG 2000 with openjp2).
+gribberish = { version = "1.9", default-features = false }
+# The bit slices gribberish's decoders take.
+bitvec = "1"
 # GeoTIFF compressions GDAL writes and the tiff crate does not read: LERC, JPEG XL and LZMA (XZ).
 lerc-reader = { version = "0.5", default-features = false }
 lerc-core = "0.5"

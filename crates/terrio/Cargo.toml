@@ -55,6 +55,8 @@ jpeg-encoder.workspace = true
 image-webp.workspace = true
 # JPEG 2000, in WebAssembly builds too (see `drivers::jp2` for the allocator it links against).
 openjp2 = { workspace = true, optional = true }
+gribberish = { workspace = true, optional = true }
+bitvec = { workspace = true, optional = true }
 lerc-reader = { workspace = true, optional = true }
 lerc-core = { workspace = true, optional = true }
 lerc-writer = { workspace = true, optional = true }
@@ -78,7 +80,7 @@ gdal-sys = { workspace = true, optional = true }
 # GML, GPX, CSV, MapInfo, the CRS engine and the operations. Disabled drivers stay in the API
 # (`RasterDriver`, `VectorDriver`) and fail with "built without the `...` feature".
 [features]
-default = ["geotiff", "parquet", "remote", "avif", "netcdf-hdf5", "osm", "lzma", "flatgeobuf", "jp2", "lerc", "pointcloud", "tiles", "zarr", "sqlite"]
+default = ["geotiff", "parquet", "remote", "avif", "netcdf-hdf5", "osm", "lzma", "flatgeobuf", "jp2", "lerc", "pointcloud", "tiles", "zarr", "sqlite", "grib"]
 ## GeoTIFF and COG reading and writing. Always built (it is the core): the feature exists so that
 ## `features = ["geotiff"]` states what a build needs.
 geotiff = []
@@ -98,6 +100,8 @@ lzma = ["dep:lzma-rust2"]
 flatgeobuf = ["dep:flatgeobuf", "dep:flatbuffers"]
 ## JPEG 2000.
 jp2 = ["dep:openjp2"]
+## GRIB editions 1 and 2 (read only). JPEG 2000 packed GRIB2 messages need `jp2` too.
+grib = ["dep:gribberish", "dep:bitvec"]
 ## LERC-compressed GeoTIFFs (read and written).
 lerc = ["dep:lerc-reader", "dep:lerc-core", "dep:lerc-writer"]
 ## Point clouds: LAS, LAZ, COPC, EPT, E57, PLY (the `pointcloud` module).

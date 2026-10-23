@@ -66,6 +66,8 @@ pub enum RasterDriver {
     NetCDF,
     /// HDF5 (read only): its datasets as subdatasets, as GDAL's HDF5 driver reads them.
     HDF5,
+    /// GRIB editions 1 and 2 (read only), as GDAL's GRIB driver reads them: a band per message.
+    GRIB,
     /// GDAL virtual raster (read by [`crate::ops::vrt`]; written by mosaics).
     VRT,
     /// A mosaic of the assets of STAC items (see [`crate::stac`]); read only.
@@ -168,6 +170,7 @@ impl RasterDriver {
         Self::DTED,
         Self::NetCDF,
         Self::HDF5,
+        Self::GRIB,
         Self::VRT,
         Self::STACIT,
         Self::STACTA,
@@ -203,6 +206,7 @@ impl RasterDriver {
             Self::DTED => ("DTED", "DTED Elevation", &["dt0", "dt1", "dt2"], true, true),
             Self::NetCDF => ("netCDF", "Network Common Data Format", &["nc", "nc4", "cdf"], true, true),
             Self::HDF5 => ("HDF5", "Hierarchical Data Format Release 5", &["h5", "hdf5", "he5"], true, false),
+            Self::GRIB => ("GRIB", "GRIdded Binary (.grb, .grb2)", &["grb", "grb2", "grib", "grib2"], true, false),
             Self::VRT => ("VRT", "Virtual Raster", &["vrt"], true, true),
             Self::STACIT => ("STACIT", "Spatio-Temporal Asset Catalog Items", &[], true, false),
             Self::STACTA => ("STACTA", "Spatio-Temporal Asset Catalog Tiled Assets", &[], true, false),
@@ -222,6 +226,7 @@ impl RasterDriver {
             Self::Zarr => ("zarr", cfg!(feature = "zarr")),
             Self::NetCDF | Self::HDF5 => ("netcdf-hdf5", cfg!(feature = "netcdf-hdf5")),
             Self::MBTiles | Self::PMTiles => ("tiles", cfg!(feature = "tiles")),
+            Self::GRIB => ("grib", cfg!(feature = "grib")),
             _ => return None,
         };
         (!built).then_some(feature)
@@ -249,6 +254,7 @@ impl RasterDriver {
             "geopackage" => Some(Self::GPKG),
             "nc" | "netcdf4" => Some(Self::NetCDF),
             "hdf5image" => Some(Self::HDF5),
+            "grib2" | "grb" | "grb2" => Some(Self::GRIB),
             _ => None,
         };
         alias.or_else(|| Self::ALL.iter().copied().find(|d| d.name().eq_ignore_ascii_case(name)))
@@ -287,8 +293,8 @@ impl RasterDriver {
             Self::XYZ => F::Xyz,
             Self::Zarr => F::Zarr,
             Self::DTED => F::Dted,
-            // Never used: terrio reads and writes NetCDF and reads HDF5 itself.
-            Self::NetCDF | Self::HDF5 => F::Zarr,
+            // Never used: terrio reads and writes NetCDF and reads HDF5 and GRIB itself.
+            Self::NetCDF | Self::HDF5 | Self::GRIB => F::Zarr,
             // Never used: terrio reads and writes VRTs and tile archives, and reads STAC mosaics
             // itself; GDAL reads its formats.
             Self::VRT | Self::STACIT | Self::STACTA | Self::MBTiles | Self::PMTiles | Self::Gdal => F::GeoTiff,

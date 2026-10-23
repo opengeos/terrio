@@ -72,6 +72,10 @@ pub fn open_raster_lazy_bytes(bytes: Vec<u8>, name: &str) -> Result<LazyRaster> 
     if crate::drivers::jp2::is_jpeg2000(&bytes) {
         return crate::drivers::jp2::open_lazy_bytes(bytes);
     }
+    #[cfg(feature = "grib")]
+    if crate::drivers::grib::is_grib(&bytes) {
+        return crate::drivers::grib::open_lazy_bytes(bytes);
+    }
     if codec::is_tiff(&bytes) {
         if let Some(r) = LazyRaster::from_tiff_bytes(bytes)? {
             return Ok(r);
@@ -341,6 +345,10 @@ pub(crate) mod codec {
         if crate::drivers::jp2::is_jpeg2000(&bytes) {
             return crate::drivers::jp2::read_bytes(&bytes).map(Dataset::Raster);
         }
+        #[cfg(feature = "grib")]
+        if crate::drivers::grib::is_grib(&bytes) {
+            return crate::drivers::grib::read_bytes(bytes).map(Dataset::Raster);
+        }
         if is_zip(&bytes) && ext != "kmz" {
             return open_zip(&bytes, name, options);
         }
@@ -351,7 +359,7 @@ pub(crate) mod codec {
         let driver = vector_driver(&bytes, name).ok_or_else(|| Error::Unsupported(format!("'{name}': format not recognized")))?;
         let Some(layers) = crate::drivers::vector::read_bytes(bytes, name, driver, options)? else {
             return Err(Error::Unsupported(format!(
-                "the {} format cannot be read from memory in this build (in memory: GeoTIFF, AAIGrid, GeoPackage, JPEG 2000, netCDF, \
+                "the {} format cannot be read from memory in this build (in memory: GeoTIFF, AAIGrid, GeoPackage, JPEG 2000, GRIB, netCDF, \
                  HDF5, Zarr in zip archives, GeoJSON, TopoJSON, FlatGeobuf, CSV, GeoParquet, KML, KMZ, GML, GPX, OSM PBF, and \
                  Shapefile and MapInfo in zip archives)",
                 driver.name()

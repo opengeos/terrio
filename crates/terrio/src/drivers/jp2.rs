@@ -1018,6 +1018,21 @@ fn read_source(source: StreamSource) -> Result<RasterDataset> {
     Ok(ds)
 }
 
+/// The samples of the first component of a JP2 file or J2K codestream held in memory, as
+/// integers (the values GRIB2's JPEG 2000 packing stores).
+pub(crate) fn decode_ints(bytes: &[u8]) -> Result<Vec<i32>> {
+    let ds = read_bytes(bytes)?;
+    let n = ds.raster.cols * ds.raster.rows;
+    macro_rules! ints {
+        ($($v:ident),*) => {
+            match &ds.raster.data {
+                $(RasterData::$v(v) => v[..n.min(v.len())].iter().map(|x| *x as i32).collect(),)*
+            }
+        };
+    }
+    Ok(ints!(U8, I8, U16, I16, U32, I32, U64, I64, F32, F64))
+}
+
 /// Writes a lossless JP2 with a GeoJP2 box; nodata goes to a `.aux.xml` sidecar.
 pub(crate) fn write(r: &Raster, nodata: Option<f64>, path: &Path) -> Result<()> {
     std::fs::write(path, to_bytes(r)?)?;
