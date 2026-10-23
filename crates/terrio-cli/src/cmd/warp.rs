@@ -133,7 +133,8 @@ pub fn run(a: Args) -> terrio::Result<()> {
         o.rpc = Some(file_rpc.clone().ok_or_else(|| terrio::Error::InvalidArgument(format!("{} has no RPCs", inputs[0])))?);
     }
     if file_rpc.is_some() {
-        // As gdalwarp for a source with RPCs: a few more source pixels around each chunk, every
+        // As gdalwarp for a source with RPC metadata (whatever georeferences it, unless a GCP
+        // method is forced): a few more source pixels around each chunk, every
         // edge point sampled with a DEM, and only the output window the source covers warped
         // (into a new GeoTIFF).
         o.source_extra = Some(5);

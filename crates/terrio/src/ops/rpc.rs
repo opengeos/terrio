@@ -254,16 +254,14 @@ fn tokens(s: &str) -> Vec<&str> {
 /// The number at the start of a string, 0 when none (C's `atof`, which `CPLAtof` is).
 fn atof(s: &str) -> f64 {
     let s = s.trim_start();
-    let b = s.as_bytes();
-    let mut end = 0;
     let mut best = 0.0;
-    // The longest prefix that parses.
-    while end < b.len() {
-        end += 1;
-        if let Ok(v) = s[..end].parse::<f64>() {
-            best = v;
-        } else if !matches!(b[end - 1], b'+' | b'-' | b'.' | b'e' | b'E' | b'0'..=b'9') {
+    // The longest prefix of number characters that parses.
+    for (i, c) in s.char_indices() {
+        if !matches!(c, '+' | '-' | '.' | 'e' | 'E' | '0'..='9') {
             break;
+        }
+        if let Ok(v) = s[..i + 1].parse::<f64>() {
+            best = v;
         }
     }
     best
@@ -730,7 +728,9 @@ impl RpcTransformer {
     }
 
     /// GDAL's `GDALRPCTransformWholeLineWithDEM`, when the row of the DEM the points need is
-    /// inside it; false otherwise (nothing done).
+    /// inside it; false otherwise (nothing done). Its height is GDAL's for this path,
+    /// `(RPC_HEIGHT + dem) * RPC_HEIGHT_SCALE`, where a point alone gets
+    /// `RPC_HEIGHT + dem * RPC_HEIGHT_SCALE` (`height_at`): both kept as GDAL computes them.
     fn whole_line(&self, d: &Dem, xs: &mut [f64], ys: &mut [f64], z: &dyn Fn(usize) -> f64, ok: &mut [bool]) -> bool {
         let n = xs.len();
         let (min_x, max_x) = xs.iter().fold((xs[0], xs[0]), |(a, b), x| (a.min(*x), b.max(*x)));
@@ -1139,6 +1139,7 @@ mod tests {
         assert!(RpcOptions::from_options(&[("RPC_FOOTPRINT".into(), "POLYGON EMPTY".into())]).is_err());
         assert_eq!(atof("1.5e3abc"), 1500.0);
         assert_eq!(atof("x"), 0.0);
+        assert_eq!(atof("1.5\u{b1}2"), 1.5);
     }
 
     #[test]
