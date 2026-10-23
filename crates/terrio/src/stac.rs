@@ -114,7 +114,11 @@ fn next_request(doc: &Value, cur: &Request) -> Option<Request> {
     let url = resolve_href(&cur.url, link["href"].as_str()?);
     let headers: Vec<(String, String)> =
         link["headers"].as_object().into_iter().flatten().filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_string()))).collect();
-    let headers = if headers.is_empty() { cur.headers.clone() } else { headers };
+    // The previous page's headers (keys, perhaps) go only to the same origin.
+    let origin = |u: &str| {
+        u.split_once("://").map(|(s, r)| (s.to_ascii_lowercase(), r.split(['/', '?', '#']).next().unwrap_or(r).to_ascii_lowercase()))
+    };
+    let headers = if headers.is_empty() && origin(&url) == origin(&cur.url) { cur.headers.clone() } else { headers };
     if method(link) == "GET" {
         return Some(Request { url, body: None, headers });
     }
@@ -904,7 +908,16 @@ impl WindowSource for Mosaic {
             if sx1 > r.width() || sy1 > r.height() {
                 return Err(bad(format!("{} is {}x{}, smaller than its STAC metadata says", item.href, r.width(), r.height())));
             }
-            let sub = r.read_window(Window::new(sx0, sy0, sw, sh), &WindowOptions { bands: bands.to_vec(), overview: None })?;
+            let (window, options) = (Window::new(sx0, sy0, sw, sh), WindowOptions { bands: bands.to_vec(), overview: None });
+            let sub = match r.read_window(window, &options) {
+                // A signed URL whose token expired since the file was opened: open it again,
+                // signed anew, and read once more.
+                Err(Error::Http(_)) if item.sign => {
+                    *r = item.open()?;
+                    r.read_window(window, &options)?
+                }
+                result => result?,
+            };
             for (bi, buf) in out.iter_mut().enumerate() {
                 let values = crate::ops::BandView::of(&sub.raster, bi);
                 let valid: Option<Vec<bool>> = self.nodata.map(|nd| values.valid(nd));
@@ -1256,6 +1269,12 @@ mod tests {
         let page = json!({"links": [{"rel": "next", "method": "POST", "href": "/a"}, {"rel": "next", "href": "/b?page=2"}]});
         assert_eq!(next_request(&page, &cur).map(|r| (r.url, r.body)), Some(("https://x.org/b?page=2".into(), None)));
         assert_eq!(next_request(&json!({"links": []}), &cur), None);
+        // Headers go on to pages of the same origin only.
+        let keyed = Request { headers: vec![("X-Key".into(), "k".into())], ..cur.clone() };
+        let page = json!({"links": [{"rel": "next", "href": "https://x.org/search?page=2"}]});
+        assert_eq!(next_request(&page, &keyed).map(|r| r.headers), Some(keyed.headers.clone()));
+        let page = json!({"links": [{"rel": "next", "href": "https://elsewhere.org/search?page=2"}]});
+        assert_eq!(next_request(&page, &keyed).map(|r| r.headers), Some(Vec::new()));
     }
 
     #[test]
