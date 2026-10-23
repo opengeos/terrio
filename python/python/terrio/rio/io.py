@@ -2383,11 +2383,15 @@ class DatasetWriter(DatasetReader):
             extra["rpc"] = self._rpcs.to_tiff_tag()
         # GDAL writes a mask into the GeoTIFF, unless GDAL_TIFF_INTERNAL_MASK says no or the
         # format has no internal masks: then into a `.msk` sidecar.
+        # On update, a mask stays where it was (GDAL keeps an internal mask internal).
         sidecar_mask = self._mask is not None and (
             self._mask_in_sidecar
             or driver not in ("GTiff", "COG")
-            or os.environ.get("GDAL_TIFF_INTERNAL_MASK", "YES").strip().upper()
-            in ("NO", "FALSE", "OFF", "0")
+            or (
+                self.mode == "w"
+                and os.environ.get("GDAL_TIFF_INTERNAL_MASK", "YES").strip().upper()
+                in ("NO", "FALSE", "OFF", "0")
+            )
         )
         if self._mask is not None and not streaming and not sidecar_mask:
             extra["mask"] = np.ascontiguousarray(self._mask, dtype=np.uint8)
