@@ -57,8 +57,19 @@ GDAL names it: `ZARR:"store"` or `ZARR:"store":/group/array`, the store a URL, a
 or `az://` object or a `/vsicurl/`, `/vsis3/`, `/vsigs/` or `/vsiaz/` name. A path may also name
 an array or a group inside the store (`.../S2A_....zarr/measurements/reflectance/r10m/b02`); the
 coordinate arrays and the GeoZarr attributes of the groups above it are found as GDAL finds them.
-Without consolidated metadata, a remote group cannot be listed: name its array, unless the store
-holds one named after it, as GDAL writes stores.
+Without consolidated metadata, a remote group is listed as GDAL lists it on `/vsis3/`,
+`/vsigs/` and `/vsiaz/`: by the object store's listing of its "subdirectories" (Amazon S3 and
+S3-compatible services, signed when credentials are set; Google Cloud Storage; Azure Blob
+Storage, with a SAS token that allows listing). A plain HTTP server cannot be listed: there,
+name the array, unless the store holds one named after it, as GDAL writes stores. `terrio info`
+on a group lists its arrays of two or more dimensions as GDAL's subdatasets
+(`ZARR:"store":/path`), unless it holds a single 2D array.
+
+```sh
+# An OME-Zarr image on EBI's S3-compatible store, without consolidated metadata
+AWS_S3_ENDPOINT=https://uk1s3.embassy.ebi.ac.uk AWS_NO_SIGN_REQUEST=YES AWS_VIRTUAL_HOSTING=FALSE \
+  terrio info s3://idr/zarr/v0.4/idr0062A/6001240.zarr    # subdatasets /0, /1, /2, /labels/0/0...
+```
 
 ```sh
 # Sentinel-2 L2A from the EOPF sample service (Zarr v2): a window fetches 1 chunk of 2048 x 2048.

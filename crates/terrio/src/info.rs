@@ -359,8 +359,8 @@ fn lazy_raster_info_at(r: &mut LazyRaster, options: &InfoOptions, path: Option<&
         extent,
         bands,
         overviews,
-        metadata: r.metadata(),
-        subdatasets: Vec::new(),
+        metadata: r.metadata().into_iter().filter(|(k, _)| subdataset_index(k).is_none()).collect(),
+        subdatasets: subdatasets_from_metadata(&r.metadata()),
         geolocation: Vec::new(),
     })
 }

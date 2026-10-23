@@ -541,7 +541,12 @@ pub(crate) fn list_subdirectories(dir: &Directory) -> Result<Option<Vec<String>>
                 }
             }
             Api::Azure { base, prefix, sas } => {
-                let mut q = vec!["restype=container".to_string(), "comp=list".to_string(), format!("prefix={}", enc(prefix)), format!("delimiter={}", enc("/"))];
+                let mut q = vec![
+                    "restype=container".to_string(),
+                    "comp=list".to_string(),
+                    format!("prefix={}", enc(prefix)),
+                    format!("delimiter={}", enc("/")),
+                ];
                 if let Some(t) = &token {
                     q.push(format!("marker={}", enc(t)));
                 }
@@ -589,10 +594,12 @@ fn list_get(url: &str) -> Result<Option<Vec<u8>>> {
     let mut client = Client::new(&Remote::Url(url.to_string()), HttpOptions::from_env());
     client.missing_ok = true;
     let fetched = client.fetch(None)?;
-    if matches!(fetched.status, 403 | 404) || !fetched.data.trim_ascii_start().starts_with(b"<") {
+    // Azure starts its XML with a byte order mark.
+    let data = fetched.data.strip_prefix(b"\xEF\xBB\xBF").map(<[u8]>::to_vec).unwrap_or(fetched.data);
+    if matches!(fetched.status, 403 | 404) || !data.trim_ascii_start().starts_with(b"<") {
         return Ok(None);
     }
-    Ok(Some(fetched.data))
+    Ok(Some(data))
 }
 
 /// The contents of the elements named `name` in an XML document (no nesting of the same name).
@@ -825,6 +832,50 @@ impl Seek for RangeReader {
 mod tests {
     use super::*;
     use std::io::{BufRead, BufReader, Write};
+
+    #[test]
+    fn reads_listing_xml() {
+        let xml = "<ListBucketResult><IsTruncated>true</IsTruncated><CommonPrefixes><Prefix>a/b&amp;c/</Prefix></CommonPrefixes>\
+                   <CommonPrefixes><Prefix>a/d/</Prefix></CommonPrefixes><NextContinuationToken>t1</NextContinuationToken></ListBucketResult>";
+        let prefixes: Vec<String> =
+            xml_elements(xml, "CommonPrefixes").iter().flat_map(|b| xml_elements(b, "Prefix")).map(xml_unescape).collect();
+        assert_eq!(prefixes, ["a/b&c/", "a/d/"]);
+        assert_eq!(xml_elements(xml, "NextContinuationToken"), ["t1"]);
+        assert!(xml_elements("<a>", "a").is_empty());
+    }
+
+    /// Lists real public directories of Amazon S3, Google Cloud Storage and Azure Blob Storage
+    /// (with a Planetary Computer SAS token): `cargo test -p terrio --lib lists_object_stores -- --ignored`.
+    #[test]
+    #[ignore = "network"]
+    fn lists_object_stores() {
+        let s3 = list_subdirectories(&Directory::S3 {
+            bucket: "hrrrzarr".into(),
+            prefix: "sfc/20240101/20240101_00z_anl.zarr/2m_above_ground".into(),
+        })
+        .expect("S3 listing")
+        .expect("listable");
+        assert!(s3.contains(&"TMP".to_string()), "{s3:?}");
+        let url = "https://hrrrzarr.s3.amazonaws.com/sfc/20240101/20240101_00z_anl.zarr/2m_above_ground";
+        assert_eq!(list_subdirectories(&Directory::Url(url.into())).expect("S3 URL listing"), Some(s3));
+        let gcs = list_subdirectories(&Directory::Url(
+            "https://storage.googleapis.com/cmip6/CMIP6/CMIP/NCAR/CESM2/historical/r1i1p1f1/Amon/ta/gn/v20190308".into(),
+        ))
+        .expect("GCS listing")
+        .expect("listable");
+        assert!(gcs.contains(&"ta".to_string()) && gcs.contains(&"lat_bnds".to_string()), "{gcs:?}");
+        let token: serde_json::Value = serde_json::from_slice(
+            &get(&Remote::Url("https://planetarycomputer.microsoft.com/api/sas/v1/token/daymeteuwest/daymet-zarr".into())).expect("token"),
+        )
+        .expect("JSON");
+        let sas = token["token"].as_str().expect("a token");
+        let az = list_subdirectories(&Directory::Url(format!("https://daymeteuwest.blob.core.windows.net/daymet-zarr/daily?{sas}")))
+            .expect("Azure listing")
+            .expect("listable");
+        assert!(az.iter().any(|d| d.ends_with(".zarr")), "{az:?}");
+        // A plain HTTP server does not list.
+        assert_eq!(list_subdirectories(&Directory::Url("https://example.com/a.zarr".into())).expect("no listing"), None);
+    }
     use std::net::TcpListener;
 
     #[derive(Clone, Copy)]
