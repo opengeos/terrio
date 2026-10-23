@@ -116,7 +116,7 @@ jobs:
             autoconf-archive automake libtool &&
             (dnf -y install nasm || true) &&
             curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal &&
-            bash packaging/terrio-gdal/build-gdal.sh
+            PATH="/opt/python/cp312-cp312/bin:$PATH" bash packaging/terrio-gdal/build-gdal.sh
           CIBW_REPAIR_WHEEL_COMMAND_LINUX: >-
             LD_LIBRARY_PATH="$GDAL_HOME/lib:$LD_LIBRARY_PATH" auditwheel repair -w {dest_dir} {wheel}
           CIBW_ENVIRONMENT_MACOS: >-
