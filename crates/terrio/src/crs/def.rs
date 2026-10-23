@@ -558,6 +558,12 @@ impl Def {
         }
     }
 
+    /// Whether PROJ's ballpark transformation to `other` is a longitude rotation alone (both on
+    /// one ellipsoid, with different prime meridians), which PROJ gives an accuracy of 0 m.
+    pub fn rotation_only_to(&self, other: &Def) -> bool {
+        self.ell.a == other.ell.a && self.ell.es == other.ell.es && self.pm != other.pm
+    }
+
     /// The datum transformations to WGS 84, in the order they are tried.
     pub fn ops(&self) -> &[Arc<Op>] {
         &self.ops

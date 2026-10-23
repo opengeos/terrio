@@ -69,10 +69,15 @@ echo "135 -25 0" | terrio crs EPSG:7912 --to EPSG:7843 --s_coord_epoch 2010.5
 ```
 
 Between two CRSs on different datums, terrio picks the datum transformation GDAL (PROJ) picks for
-each point: the most accurate of those GDAL lists for the pair whose area of use holds the point,
-else a chain through an intermediate datum such as WGS 84; when none applies, no shift (PROJ's
-"ballpark" transformation). NAD83 and WGS 84 are treated as equivalent, as GDAL's default
-operations do. Bounds are transformed with densified edges, so curved edges in the target CRS are
+each point: the most accurate of those GDAL lists for the pair whose area of use holds the point;
+when PROJ's database has no transformation between the two datums, a chain of two of the
+transformations it registers (each possibly a concatenation of several) through intermediate CRSs
+and datums, found and sorted as PROJ's `proj_create_operations` does (through an intermediate CRS
+first, between the geographic and geocentric CRSs of the datums, then through an intermediate datum,
+whatever its CRSs; without the transformations replaced by another it finds); when none applies, no
+shift (PROJ's "ballpark" transformation, of 0 m accuracy between CRSs that differ only by their
+prime meridian). NAD27 to ITRF92, for instance, goes through NAD83(2011) (PROJ's concatenation of
+the NADCON5 grids), ITRF2008 and ITRF2014. NAD83 and WGS 84 are treated as equivalent, as GDAL's default operations do. Bounds are transformed with densified edges, so curved edges in the target CRS are
 covered. `scripts/gen_epsg_points.py` writes GDAL's results for every EPSG CRS, which
 `crates/terrio/tests/epsg_accuracy.rs` checks terrio against (see the
 [conformance report](conformance.md)).
@@ -205,11 +210,19 @@ geoid models, compound CRSs and epochs: 250 cases, 50,000 points, the largest di
 For every EPSG CRS, GDAL's reference points computed with those grids
 (`gen_epsg_points.py --grids`, 50 points of each kind per CRS spread over its area of use,
 checked by `crates/terrio/tests/epsg_accuracy_grids.rs`) are matched within 1 cm forward and
-inverse; from CRS to CRS, every point of 97.5 % of the pairs is within 1 cm and of 98.8 % within
-1 m: PROJ chains some pairs through several intermediate datums (NAD27 to ITRF92 through
-NAD83(HARN), NAD83(2011) and ITRF2008, for instance) where terrio tries a single intermediate
-datum, and picks another transformation than terrio at some points outside the areas of use of
-the pair's transformations.
+inverse; from CRS to CRS, every point of 6,291 of the 6,295 pairs is within 1 cm and of 6,294
+within 1 m: the other is a deprecated CRS whose own datum PROJ uses (#153).
+
+The chains through intermediate datums are checked by `scripts/compare_chains_with_proj.py`, on
+every pair of EPSG geographic 2D CRSs on two datums no transformation links directly whose areas of
+use overlap (31,127 pairs, 5 points each), and on a projected CRS of each datum (1,204 pairs):
+without grids, every point of every geographic pair is GDAL's within 1 cm (31,126 pairs within
+1 mm), as are 1,202 projected pairs; with the grids of `scripts/proj_grids.txt`, 31,126 geographic
+pairs and 1,200 projected ones are within 1 cm, and every geographic pair within 1 m. The others
+go through transformations PROJ's database
+registers between projected CRSs (IGN Astro 1960 / UTM zone 28N to Mauritania 1999 / UTM zone 28N,
+S-JTSK / Krovak East North to S-JTSK/05 / Modified Krovak East North), which terrio does not
+apply.
 
 ## Attribution
 

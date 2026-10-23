@@ -299,7 +299,22 @@ WebAssembly (the `terrio-js` npm package):
       727 of 732 points over 604 pairs (`scripts/compare_vertical_with_proj.py`); point motion
       operations between two epochs of a datum (the Canada velocity grids of NAD83(CSRS),
       NKG_RF17vel), PROJ's coordinates to 4 nm.
-    - [ ] PROJ's chains through several intermediate datums.
+    - [x] PROJ's chains through several intermediate datums. Done: between CRSs whose datums
+          no transformation links directly, the transformations PROJ's database registers
+          (concatenations of several among them included, NKG's too) chained through
+          intermediate CRSs and datums as `proj_create_operations` finds them: through an
+          intermediate CRS between the geographic and geocentric CRSs of the two datums in PROJ's
+          order, then through an intermediate datum whatever its CRSs (when none is found, or
+          only through PROJ's WGS 84 null transformations, over too small an area or time-dependent
+          ones), without those another found replaces or whose grids are missing; sorted, pruned
+          and picked per point as PROJ does (0 m ballparks between prime meridians, unknown
+          areas, merged translations, heights through the chain, reversed for projected
+          targets). The EPSG table carries the registered transformations and geodetic CRSs
+          (`E` and `R` rows, 320 to 352 KB). Over 31,127 pairs of EPSG geographic CRSs and 1,204
+          projected ones (`scripts/compare_chains_with_proj.py`), GDAL's coordinates within 1 cm
+          for 31,037 and 1,179 of them before, for all but the 2 projected pairs PROJ links by
+          transformations between projected CRSs after; with grids, 30,993 and 1,173 before,
+          31,126 and 1,200 after.
 - [x] NetCDF and HDF5 in pure Rust. Done: classic and netCDF-4 reading, with variables in groups
       below the root (`NETCDF:"file.nc":/group/var`) listed as `gdalinfo` lists them; classic
       (CDF-1/2/5) and netCDF-4 writing (`FORMAT=NC4`/`NC4C`, chunked, deflate and shuffle, CF

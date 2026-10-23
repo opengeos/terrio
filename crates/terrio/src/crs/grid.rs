@@ -719,13 +719,6 @@ fn config() -> &'static Mutex<Config> {
     C.get_or_init(|| Mutex::new(Config::default()))
 }
 
-static GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-
-/// A counter that changes whenever the grids that can be found may have changed.
-pub(crate) fn generation() -> u64 {
-    GENERATION.load(std::sync::atomic::Ordering::Relaxed)
-}
-
 /// Sets the directories datum shift and geoid grids are looked up in, in order, instead of those
 /// of the environment (`TERRIO_GRID_DIR`, `PROJ_DATA`, `PROJ_LIB`, PROJ's user directory and
 /// terrio's download cache); `None` goes back to the environment's. As PROJ's
@@ -771,7 +764,6 @@ pub fn register_grid(name: &str, bytes: Vec<u8>) {
     if let Ok(mut a) = availability().lock() {
         a.clear();
     }
-    GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 }
 
 /// Old names of PROJ-data grids (before PROJ 7), by current name, from the EPSG table.
@@ -1018,7 +1010,6 @@ pub fn reset_grid_cache() {
         f.clear();
     }
     sets_cache().lock().unwrap_or_else(|e| e.into_inner()).clear();
-    GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 }
 
 /// The names of a step's `grids=` list, with whether each is optional (`@` prefix).

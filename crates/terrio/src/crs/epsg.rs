@@ -9,10 +9,9 @@
 //! names from Esri's projection engine data (Apache-2.0). See `NOTICE`.
 
 use super::datum::{Op, parse_steps};
-use super::route::Leg;
 use std::collections::HashMap;
 use std::io::Read;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, OnceLock};
 
 static DATA: &[u8] = include_bytes!("../../data/epsg.tsv.zst");
 static ESRI_DATA: &[u8] = include_bytes!("../../data/esri.tsv.zst");
@@ -86,15 +85,9 @@ pub(crate) struct VerticalOp {
 /// Transformations between vertical CRSs without and with grids.
 type VerticalLists = (Vec<VerticalOp>, Vec<VerticalOp>);
 
-/// The transformations of a pair of geographic CRSs.
+/// The transformations GDAL lists from one geographic CRS to another, without and with grids.
 struct PairLists {
-    /// Those GDAL lists from the first to the second, without and with grids.
     lists: OpLists,
-    /// Those PROJ's database registers from the first to the second's geocentric CRS, and from
-    /// the second to the first's, that GDAL does not list for the pair (what PROJ also chains),
-    /// made to end on the geographic CRS.
-    forward: Vec<Arc<Op>>,
-    backward: Vec<Arc<Op>>,
 }
 
 /// The table: its text, decompressed once, and an index of its lines. Entries are parsed on
@@ -115,6 +108,9 @@ struct Table {
     alternatives: HashMap<String, Vec<String>>,
     /// The publication dates of datums (`2007-01-01`), by datum code.
     dates: HashMap<u32, String>,
+    /// The lines of the geodetic CRSs (`E`) and registered operations (`R`), after their kind.
+    geodetic: Vec<(usize, usize)>,
+    registered: Vec<(usize, usize)>,
 }
 
 /// A line of the table (its fields after the code) and what it parses to.
@@ -171,6 +167,7 @@ fn load(data: &[u8]) -> Table {
     let mut vertical_ops = HashMap::new();
     let mut alternatives = HashMap::<String, Vec<String>>::new();
     let mut dates = HashMap::new();
+    let (mut geodetic, mut registered) = (Vec::new(), Vec::new());
     let mut pos = 0;
     for line in text.split_inclusive('\n') {
         let start = pos;
@@ -228,10 +225,12 @@ fn load(data: &[u8]) -> Table {
                     dates.insert(code, line[rest - start..].to_string());
                 }
             }
+            "E" => geodetic.push((start + 2, end)),
+            "R" => registered.push((start + 2, end)),
             _ => {}
         }
     }
-    Table { text, crs, ops, pairs, verticals, compounds, geoids, vertical_ops, alternatives, dates }
+    Table { text, crs, ops, pairs, verticals, compounds, geoids, vertical_ops, alternatives, dates, geodetic, registered }
 }
 
 impl Table {
@@ -328,7 +327,7 @@ impl Table {
         Some(self.pairs.get(&(a, b))?.get(&self.text, |ids| {
             let mut f = ids.split('\t');
             let mut next = || self.resolve(f.next().unwrap_or(""));
-            PairLists { lists: (next(), next()), forward: next(), backward: next() }
+            PairLists { lists: (next(), next()) }
         }))
     }
 }
@@ -342,20 +341,6 @@ pub(crate) fn usable(ops: &[Arc<Op>], grid_ops: &[Arc<Op>]) -> Vec<Arc<Op>> {
     }
     let kept: Vec<Arc<Op>> = grid_ops.iter().filter(|o| o.available()).cloned().collect();
     if kept.iter().any(|o| o.needs_grids() && !o.ballpark) { kept } else { ops.to_vec() }
-}
-
-/// The operations PROJ chains through other datums given the grids that can be found: those
-/// listed with grids whose grids can be found, and those listed without grids. PROJ chains the
-/// transformations its database registers, not only those it lists for the pair: GDA94 to
-/// WGS 84 (G1762) between geocentric CRSs, though GDAL lists a grid between the geographic CRSs.
-fn chainable(ops: &[Arc<Op>], grid_ops: &[Arc<Op>]) -> Vec<Arc<Op>> {
-    let mut out: Vec<Arc<Op>> = grid_ops.iter().filter(|o| o.available()).cloned().collect();
-    for op in ops {
-        if !out.iter().any(|o| Arc::ptr_eq(o, op)) {
-            out.push(op.clone());
-        }
-    }
-    out
 }
 
 /// Starts loading the table in the background, for work that will need it after reading its
@@ -513,62 +498,100 @@ pub(crate) fn esri_named(name: &str) -> Vec<u32> {
     names.get(&key(name)).cloned().unwrap_or_default()
 }
 
-/// The transformations PROJ chains from each geographic CRS, by the CRS they lead to.
-pub(crate) type Adjacency = HashMap<u32, Vec<(u32, Vec<Leg>)>>;
+/// The kind of a geodetic CRS.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GeodeticKind {
+    Geographic2D,
+    Geographic3D,
+    Geocentric,
+}
 
-/// For each geographic CRS, the geographic CRSs it has single transformations (or
-/// concatenations PROJ's database registers) to, WGS 84 among them, with those transformations:
-/// what PROJ chains through intermediate datums. Rebuilt when the grids that can be found change.
-pub(crate) fn adjacency() -> Arc<Adjacency> {
-    static ADJ: Mutex<Option<(u64, Arc<Adjacency>)>> = Mutex::new(None);
-    let generation = super::grid::generation();
-    let mut cached = ADJ.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some((g, adj)) = cached.as_ref()
-        && *g == generation
-    {
-        return adj.clone();
-    }
-    let adj = Arc::new({
+/// An EPSG geodetic CRS (geographic 2D or 3D, or geocentric), as PROJ chains transformations
+/// through them.
+#[derive(Debug)]
+pub(crate) struct Geodetic {
+    pub code: u32,
+    pub datum: u32,
+    pub kind: GeodeticKind,
+    pub name: String,
+}
+
+/// A transformation PROJ's database registers between two geodetic CRSs of different datums.
+#[derive(Debug)]
+pub(crate) struct Registered {
+    /// Its authority and code (`EPSG:1321`).
+    pub key: String,
+    /// The CRSs PROJ's database registers it from and to.
+    pub source: u32,
+    pub target: u32,
+    /// The transformation, run between the geographic coordinates of the two datums.
+    pub op: Arc<Op>,
+    /// The keys of the transformations that replace it between the same CRSs.
+    pub replaced_by: Vec<String>,
+    /// Whether it needs the coordinates' epochs (a time-dependent transformation).
+    pub time_dependent: bool,
+    /// Whether it is PROJ's null transformation between a datum ensemble and one of its members
+    /// (WGS 84 to WGS 84 (G1762)).
+    pub ensemble: bool,
+    /// The CRSs a concatenation goes through.
+    pub via: Vec<u32>,
+}
+
+/// The geodetic CRSs and registered transformations PROJ chains transformations with.
+#[derive(Debug, Default)]
+pub(crate) struct Registry {
+    pub geodetic: HashMap<u32, Geodetic>,
+    /// The codes of the geodetic CRSs of each datum, in order.
+    pub by_datum: HashMap<u32, Vec<u32>>,
+    pub ops: Vec<Registered>,
+    /// The indices in `ops` of the transformations registered from or to each CRS.
+    pub at: HashMap<u32, Vec<usize>>,
+}
+
+/// The geodetic CRSs and the transformations PROJ's database registers between them, which
+/// terrio chains through intermediate datums as PROJ does.
+pub(crate) fn registry() -> &'static Registry {
+    static REGISTRY: OnceLock<Registry> = OnceLock::new();
+    REGISTRY.get_or_init(|| {
         let t = table();
-        let single = |ops: &[Arc<Op>], reverse: bool| -> Vec<Leg> {
-            ops.iter().filter(|o| !o.ballpark && !o.concatenated).map(|op| Leg { op: op.clone(), reverse }).collect()
-        };
-        let mut adj = Adjacency::new();
-        let mut add = |a: u32, b: u32, legs: Vec<Leg>| {
-            if !legs.is_empty() {
-                adj.entry(a).or_default().push((b, legs));
-            }
-        };
-        // In code order, so that the result does not depend on the hash maps' order.
-        let mut pair_keys: Vec<(u32, u32)> = t.pairs.keys().copied().collect();
-        pair_keys.sort_unstable();
-        for (a, b) in pair_keys {
-            let Some(p) = t.pair(a, b) else { continue };
-            let ops = chainable(&p.lists.0, &p.lists.1);
-            let found = |ops: &[Arc<Op>], reverse: bool| -> Vec<Leg> {
-                ops.iter().filter(|o| o.available()).map(|op| Leg { op: op.clone(), reverse }).collect()
+        let mut r = Registry::default();
+        for &(start, end) in &t.geodetic {
+            let f: Vec<&str> = t.text[start..end].splitn(4, '\t').collect();
+            let [code, datum, kind, name] = f[..] else { continue };
+            let kind = match kind {
+                "2" => GeodeticKind::Geographic2D,
+                "3" => GeodeticKind::Geographic3D,
+                "g" => GeodeticKind::Geocentric,
+                _ => continue,
             };
-            let mut there = single(&ops, false);
-            there.extend(found(&p.forward, false).into_iter().chain(found(&p.backward, true)));
-            let mut back = single(&ops, true);
-            back.extend(found(&p.forward, true).into_iter().chain(found(&p.backward, false)));
-            add(a, b, there);
-            add(b, a, back);
+            let (Ok(code), Ok(datum)) = (code.parse(), datum.parse()) else { continue };
+            r.by_datum.entry(datum).or_default().push(code);
+            r.geodetic.insert(code, Geodetic { code, datum, kind, name: name.to_string() });
         }
-        let mut codes: Vec<u32> = t.crs.keys().copied().collect();
-        codes.sort_unstable();
-        for code in codes {
-            let Some(e) = t.entry(code) else { continue };
-            if e.geog == code && code != 4326 && e.datum != 6326 && !e.three_d {
-                let ops = chainable(&e.ops, &e.grid_ops);
-                add(code, 4326, single(&ops, false));
-                add(4326, code, single(&ops, true));
-            }
+        r.by_datum.values_mut().for_each(|c| c.sort_unstable());
+        let codes = |s: &str| s.split(',').filter_map(|v| v.parse().ok()).collect::<Vec<u32>>();
+        for &(start, end) in &t.registered {
+            let f: Vec<&str> = t.text[start..end].split('\t').collect();
+            let [key, source, target, id, replaced_by, flags, via] = f[..] else { continue };
+            let (Ok(source), Ok(target), Some(op)) = (source.parse(), target.parse(), id.parse().ok().and_then(|i| t.op(i))) else {
+                continue;
+            };
+            let i = r.ops.len();
+            r.at.entry(source).or_default().push(i);
+            r.at.entry(target).or_default().push(i);
+            r.ops.push(Registered {
+                key: key.to_string(),
+                source,
+                target,
+                op,
+                replaced_by: replaced_by.split(',').filter(|v| !v.is_empty()).map(str::to_string).collect(),
+                time_dependent: flags.contains('t'),
+                ensemble: flags.contains('e'),
+                via: codes(via),
+            });
         }
-        adj
-    });
-    *cached = Some((generation, adj.clone()));
-    adj
+        r
+    })
 }
 
 /// The direct transformations from one geographic CRS to another (those GDAL uses given the
@@ -670,9 +693,6 @@ mod tests {
         assert_eq!(grid_alternatives("us_noaa_conus.tif"), vec!["conus".to_string()]);
         assert_eq!(datum_date(6759), Some("2007-01-01"));
         assert_eq!(datum_date(6326), None);
-        // NAD27 to ITRF2014 (2), registered to ITRF2014's geocentric CRS, is chained too.
-        let p = table().pair(9000, 4267).unwrap();
-        assert!(p.backward.iter().any(|o| o.name.starts_with("NAD27 to NAD83 (7) + ") && o.accuracy == 0.2));
     }
 
     #[test]

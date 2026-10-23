@@ -24,19 +24,27 @@ Writes ``crates/terrio/data/epsg.tsv.zst``, a zstd-compressed text table with th
   geographic 3D CRS), its area of use (``west,south,east,north`` in degrees, which PROJ intersects
   with the transformations' areas), the PROJ string of its coordinate conversion and the WKT
   GDAL writes for it.
-- ``P<TAB>geog1<TAB>geog2<TAB>ops<TAB>grid ops<TAB>ops to geocentric<TAB>ops from geocentric``:
-  the transformations GDAL lists between two geographic CRSs whose datums have direct
-  transformations between them in the EPSG dataset, without and with grids, in the direction
-  geog1 to geog2. terrio also chains the single ones through intermediate datums, as PROJ does
-  for other pairs, and with them those PROJ's database registers from one geographic CRS to the
-  other datum's geocentric CRS that GDAL does not list for the pair: from geog1 (made to end on
-  geog2), and from geog2 (made to end on geog1).
+- ``P<TAB>geog1<TAB>geog2<TAB>ops<TAB>grid ops``: the transformations GDAL lists between two
+  geographic CRSs whose datums have direct transformations between them in the EPSG dataset,
+  without and with grids, in the direction geog1 to geog2.
+- ``E<TAB>code<TAB>datum<TAB>type<TAB>name``: a geodetic CRS (``2`` or ``3`` for geographic 2D
+  or 3D, ``g`` for geocentric) of the EPSG dataset or of NKG's (numbered from 2,000,000,000,
+  as their datums are), which PROJ chains transformations through.
+- ``R<TAB>key<TAB>source<TAB>target<TAB>op<TAB>replaced by<TAB>flags<TAB>via``: a transformation
+  PROJ's database registers between geodetic CRSs of two datums (``EPSG:1321``), from and to the
+  CRSs it registers it for, with the ``O`` row that runs it between the geographic coordinates of
+  the two datums (framed by the conversions to and from geocentric coordinates for geocentric
+  CRSs; its area is its first in PROJ's database), the keys of the transformations that replace
+  it between the same CRSs, flags (``t``: time-dependent, ``e``: PROJ's null transformation
+  between a datum ensemble and one of its members) and the CRSs a concatenation goes through.
+  terrio chains them through intermediate CRSs and datums as PROJ does between CRSs whose datums
+  have no direct transformation.
 - ``V<TAB>code<TAB>name<TAB>datum<TAB>unit<TAB>direction<TAB>WKT``: a vertical CRS, with its
   unit in metres and axis direction (``up`` or ``down``).
 - ``K<TAB>code<TAB>name<TAB>horizontal<TAB>vertical<TAB>WKT``: a compound CRS.
 - ``G<TAB>geog3d<TAB>vertical<TAB>ops<TAB>grid ops``: the transformations (geoid models) from a
   geographic 3D CRS to a vertical CRS.
-- ``D<TAB>datum<TAB>date``: the publication date of an EPSG datum (``2007-01-01``), by which PROJ
+- ``D<TAB>datum<TAB>date``: the publication date of a datum (``2007-01-01``), by which PROJ
   chooses the datums it chains through.
 - ``A<TAB>grid<TAB>old name``: the name a PROJ-data grid had before PROJ 7 (``conus`` for
   ``us_noaa_conus.tif``), which terrio also looks for.
@@ -292,7 +300,7 @@ def interpolation_crs(doc):
     return ""
 
 
-def transformations(source, target, pm=0.0, target_pm=0.0, grids=False, keys=False, vertical=False):
+def transformations(source, target, pm=0.0, target_pm=0.0, grids=False, vertical=False):
     """List the datum transformations GDAL would try between two CRSs.
 
     Runs ``projinfo`` with the options ``proj_create_crs_to_crs`` (which GDAL uses) passes to
@@ -306,7 +314,6 @@ def transformations(source, target, pm=0.0, target_pm=0.0, grids=False, keys=Fal
         pm: The source's prime meridian in degrees.
         target_pm: The target's prime meridian in degrees.
         grids: Whether to list the operations GDAL uses when grids are available.
-        keys: Whether to return each row with its steps' key.
         vertical: For transformations between vertical CRSs: keep their axis swaps to depths
             and add each one's interpolation CRS (see ``interpolation_crs``) to its row.
 
@@ -345,8 +352,12 @@ def transformations(source, target, pm=0.0, target_pm=0.0, grids=False, keys=Fal
         ballparks = [d for d in flatten(doc) if d.get("type") == "Transformation" and d.get("name", "").startswith("Ballpark")]
         flags += "b" if ballparks else ""
         # Concatenations PROJ makes (not those its database registers, which PROJ chains further
-        # like single transformations; PROJJSON writes their steps without their id).
-        flags += "c" if len(transfos) > 1 and "id" not in doc and step_key(transfos) not in REGISTERED_CONCATENATIONS else ""
+        # like single transformations; PROJJSON writes their steps without their id), counting
+        # the longitude rotations the EPSG dataset registers (CH1903 (Bern) to CH1903 (1)) but
+        # not those PROJ makes: PROJ chains CH1903 (Bern) through CH1903 to WGS 84 by itself, but
+        # does not chain that further through WGS 84.
+        registered = [d for d in flatten(doc) if d.get("type") == "Transformation" and (not pm_change(d) or "id" in d)]
+        flags += "c" if len(registered) > 1 and "id" not in doc and step_key(registered) not in REGISTERED_CONCATENATIONS else ""
         # Transformations PROJ's database registers between geographic 3D CRSs, which PROJ does
         # not chain with others between 2D ones, or between geocentric CRSs.
         kinds = {registered_kind(t) for t in transfos}
@@ -373,7 +384,7 @@ def transformations(source, target, pm=0.0, target_pm=0.0, grids=False, keys=Fal
         row = (steps, bounds, accuracy, flags, name, steps_accuracy, steps_bounds)
         if vertical:
             row += (interpolation_crs(doc),)
-        out.append((row, step_key(transfos)) if keys else row)
+        out.append(row)
     return out
 
 
@@ -523,33 +534,6 @@ def registered_concatenations():
 REGISTERED_CONCATENATIONS = registered_concatenations()
 
 
-def registered_datums():
-    """List the datums between which PROJ's database registers each operation.
-
-    Returns:
-        ``{key: {datum, datum}}`` with the operations keyed as ``step_key`` keys them: a
-        transformation by its own id, a concatenation by its steps'.
-    """
-    db = sqlite3.connect(os.path.join(pyproj.datadir.get_data_dir(), "proj.db"))
-    query = """
-        SELECT v.table_name, v.auth_name, v.code, s.datum_code, t.datum_code FROM coordinate_operation_view v
-        JOIN geodetic_crs s ON s.auth_name = v.source_crs_auth_name AND s.code = v.source_crs_code
-        JOIN geodetic_crs t ON t.auth_name = v.target_crs_auth_name AND t.code = v.target_crs_code
-        WHERE v.deprecated = 0
-    """
-    steps = {}
-    for auth, code, step_auth, step_code in db.execute("SELECT operation_auth_name, operation_code, step_auth_name, step_code FROM concatenated_operation_step"):
-        steps.setdefault((auth, str(code)), []).append((step_auth, str(step_code)))
-    out = {}
-    for table, auth, code, a, b in db.execute(query):
-        key = tuple(sorted(steps.get((auth, str(code)), []))) if table == "concatenated_operation" else ((auth, str(code)),)
-        out[key] = {str(a), str(b)}
-    return out
-
-
-REGISTERED_DATUMS = registered_datums()
-
-
 def step_key(transfos):
     """Key the transformations of an operation as ``registered_concatenations`` does.
 
@@ -618,55 +602,6 @@ def flatten(doc):
     return [doc]
 
 
-def geocentric_crss():
-    """List the geocentric CRS of each EPSG datum that has one.
-
-    Returns:
-        ``{datum: code}`` as strings, the lowest code when there are several.
-    """
-    db = sqlite3.connect(os.path.join(pyproj.datadir.get_data_dir(), "proj.db"))
-    query = """
-        SELECT datum_code, MIN(CAST(code AS INTEGER)) FROM geodetic_crs
-        WHERE auth_name = 'EPSG' AND datum_auth_name = 'EPSG' AND type = 'geocentric' AND deprecated = 0
-        GROUP BY datum_code
-    """
-    return {str(d): str(c) for d, c in db.execute(query)}
-
-
-def inverse_name(name):
-    """Name the inverse of an operation as PROJ does, from its steps' names.
-
-    Args:
-        name: The steps' names joined by `` + ``.
-
-    Returns:
-        The inverses' names in reverse order: conversions with their CRSs swapped, others with
-        ``Inverse of `` added or taken off.
-    """
-    out = []
-    for step in reversed(name.split(" + ")):
-        m = re.fullmatch(r"(Conversion|Null geographic offset|Null geocentric translation) from (.*?) to (.*)", step)
-        if step.startswith("Inverse of "):
-            out.append(step[len("Inverse of ") :])
-        elif m:
-            out.append(f"{m.group(1)} from {m.group(3)} to {m.group(2)}")
-        else:
-            out.append("Inverse of " + step)
-    return " + ".join(out)
-
-
-def transformation_names(name):
-    """Keep the names of an operation's transformations, without its conversions.
-
-    Args:
-        name: The steps' names joined by `` + ``.
-
-    Returns:
-        The names of the steps that are not conversions, in order.
-    """
-    return tuple(step for step in name.split(" + ") if not step.startswith("Conversion from "))
-
-
 def datum_dates():
     """List the publication dates of the EPSG datums that have one.
 
@@ -709,6 +644,254 @@ def datum_pairs():
         if a != b and a not in wgs84 and b not in wgs84:
             pairs.add((min(a, b, key=int), max(a, b, key=int)))
     return sorted(pairs)
+
+
+# The authorities whose operations PROJ chains between two EPSG CRSs (its database's
+# ``authority_to_authority_preference`` for EPSG to EPSG).
+CHAIN_AUTHORITIES = ("EPSG", "PROJ", "NKG")
+
+
+# The authorities of the geodetic CRSs PROJ chains through between EPSG CRSs.
+CHAIN_CRS_AUTHORITIES = ("EPSG", "NKG")
+
+# Codes for the CRSs and datums of other authorities than EPSG (NKG:ETRF14): from this number on.
+OTHER_CODES = 2_000_000_000
+
+
+def other_codes():
+    """Number the geodetic CRSs and datums of other chained authorities than EPSG.
+
+    Returns:
+        ``{(authority, code): number}`` for the CRSs and the datums, in order of authority and
+        code: EPSG codes stand for themselves.
+    """
+    db = sqlite3.connect(os.path.join(pyproj.datadir.get_data_dir(), "proj.db"))
+    keys = set()
+    for auth, code, dauth, dcode in db.execute("SELECT auth_name, code, datum_auth_name, datum_code FROM geodetic_crs"):
+        if auth in CHAIN_CRS_AUTHORITIES:
+            keys.update(k for k in ((auth, str(code)), (dauth, str(dcode))) if k[0] != "EPSG")
+    return {k: OTHER_CODES + i for i, k in enumerate(sorted(keys))}
+
+
+OTHER = other_codes()
+
+
+def code_of(auth, code):
+    """The number terrio's table gives a CRS or datum.
+
+    Args:
+        auth: The authority.
+        code: The code.
+
+    Returns:
+        The EPSG code, or the number ``other_codes`` gives another authority's, ``None`` for
+        one of no chained authority.
+    """
+    return int(code) if auth == "EPSG" else OTHER.get((auth, str(code)))
+
+
+def geodetic_rows():
+    """List the geodetic CRSs PROJ may chain transformations through.
+
+    Returns:
+        ``("E", code, datum, type, name)`` rows in order of code, ``type`` being ``2`` or ``3``
+        for geographic 2D or 3D CRSs and ``g`` for geocentric ones; with the ``D`` rows of the
+        publication dates of other authorities' datums.
+    """
+    db = sqlite3.connect(os.path.join(pyproj.datadir.get_data_dir(), "proj.db"))
+    query = "SELECT auth_name, code, datum_auth_name, datum_code, type, name FROM geodetic_crs WHERE deprecated = 0"
+    kinds = {"geographic 2D": "2", "geographic 3D": "3", "geocentric": "g"}
+    rows = []
+    for auth, code, dauth, dcode, kind, name in db.execute(query):
+        c, d = code_of(auth, code), code_of(dauth, dcode)
+        if auth in CHAIN_CRS_AUTHORITIES and kind in kinds and c is not None and d is not None:
+            rows.append(("E", c, d, kinds[kind], name.replace("\t", " ")))
+    dates = [
+        ("D", OTHER[(a, str(c))], date)
+        for a, c, date in db.execute("SELECT auth_name, code, publication_date FROM geodetic_datum WHERE publication_date IS NOT NULL")
+        if (a, str(c)) in OTHER
+    ]
+    return sorted(rows, key=lambda r: r[1]) + sorted(dates, key=lambda r: r[1])
+
+
+def registered_operation(op):
+    """Describe an operation PROJ's database registers, as terrio chains it.
+
+    Args:
+        op: ``(auth, code, table, name, method, source, target, accuracy, source type, target
+            type)`` from the database.
+
+    Returns:
+        ``(row, via)``: the transformation as ``transformations`` lists them, run from the
+        geographic coordinates of its source CRS's datum to those of its target's (geocentric
+        CRSs' operations framed by the conversions to and from geocentric coordinates), and the
+        codes of the CRSs a concatenation goes through; ``None`` when PROJ cannot run it.
+    """
+    auth, code, _, name, _, source, target, accuracy, source_type, target_type = op
+    text = subprocess.run(
+        ["projinfo", f"{auth}:{code}", "-k", "operation", "-o", "PROJ,PROJJSON", "--single-line"],
+        capture_output=True,
+        text=True,
+        env=dict(os.environ, PROJ_NETWORK="OFF"),
+    ).stdout
+    lines = text.splitlines()
+    proj = next((line for line in lines if line.startswith("+proj=")), None)
+    js = next((line for line in lines if line.startswith("{")), None)
+    if proj is None or js is None:
+        return None
+    src_crs, dst_crs = pyproj.CRS.from_user_input(source), pyproj.CRS.from_user_input(target)
+
+    def pm_of(crs):
+        """The prime meridian of a CRS in degrees."""
+        pm = crs.prime_meridian
+        return pm.longitude * pm.unit_conversion_factor * 180 / 3.141592653589793
+
+    # Steps terrio cannot run (deformation models, ``defmodel``) make the operation one it
+    # leaves out, as PROJ does when their grids are missing.
+    known = DATUM_STEPS | GRID_STEPS | NEUTRAL_STEPS | {"longlat", "latlong"}
+    if any(name not in known for _, name, _ in parse_steps(proj.replace("+", ""))):
+        return None
+    steps = datum_steps(proj.replace("+", ""), pm_of(src_crs), pm_of(dst_crs))
+    if steps is None:
+        return None
+
+    def ellipsoid(crs):
+        """The ellipsoid of a CRS as a ``cart`` step spells it."""
+        e = crs.ellipsoid
+        return f"a={e.semi_major_metre!r} rf={e.inverse_flattening!r}" if e.inverse_flattening else f"a={e.semi_major_metre!r} b={e.semi_major_metre!r}"
+
+    parts = [p for p in steps.split(";") if p]
+    if source_type == "geocentric":
+        parts.insert(0, f"cart {ellipsoid(src_crs)}")
+    if target_type == "geocentric":
+        parts.append(f"inv cart {ellipsoid(dst_crs)}")
+    doc = json.loads(js)
+    # The first of its areas as PROJ's database lists them (PROJJSON leaves out some).
+    usage = USAGES.get((auth, code))
+    bounds, area = usage if usage else ((-180.0, -90.0, 180.0, 90.0), "")
+    flags = ("o" if "- offshore" in area else "") + ("u" if area in ("", "unknown") else "")
+    flags += ("h" if "geographic 3D" in (source_type, target_type) else "") + ("g" if source_type == "geocentric" else "")
+    flags += "p" if any(p in name for p in PRIORITY_OPS) else ""
+    # Between geographic 2D CRSs PROJ keeps heights (push v_3 and pop v_3), and around
+    # operations between geocentric CRSs.
+    flags += "z" if re.search(r"\bproj=push v_3\b", proj.replace("+", "")) or source_type == "geocentric" else ""
+    flat = [d for d in flatten(doc) if d.get("type") != "Conversion"]
+    full_name = " + ".join(d.get("name", "") for d in flat).replace("\t", " ") or name
+    # PROJ's accuracy: the database's, 999 m standing for an unknown one.
+    accuracy = -1.0 if accuracy is None or float(accuracy) == 999.0 else float(accuracy)
+    steps_accuracy, steps_bounds = "", ""
+    if len(flat) > 1:
+        # The sum of its steps' accuracies, from the database as PROJ reads them (PROJJSON leaves
+        # out some).
+        known = [ACCURACIES.get(k) for k in CONCAT_STEPS.get((auth, code), [])]
+        steps_accuracy = sum(known) if known and None not in known else -1.0
+        steps_accuracy = "" if steps_accuracy == accuracy else repr(steps_accuracy)
+        steps_bounds = step_bounds(flat)
+        steps_bounds = "" if steps_bounds in (None, bounds) else ",".join(repr(round(v, 6)) for v in steps_bounds)
+    ids = [d.get("target_crs", {}).get("id", {}) for d in flatten(doc)[:-1]]
+    via = [code_of(i.get("authority", ""), i.get("code", "")) for i in ids if i.get("code") is not None]
+    row = (";".join(parts), bounds, accuracy, flags, full_name, steps_accuracy, steps_bounds)
+    return row, [str(v) for v in via if v is not None]
+
+
+def operation_usages():
+    """List the first area of use of each operation, as PROJ reads them from its database.
+
+    Returns:
+        ``{(authority, code): ((west, south, east, north), description)}``, PROJ taking the
+        usages of a large-scale scope first, then in order of usage.
+    """
+    db = sqlite3.connect(os.path.join(pyproj.datadir.get_data_dir(), "proj.db"))
+    query = """
+        SELECT u.object_auth_name, u.object_code, e.west_lon, e.south_lat, e.east_lon, e.north_lat, e.description
+        FROM usage u
+        JOIN extent e ON u.extent_auth_name = e.auth_name AND u.extent_code = e.code
+        JOIN scope s ON u.scope_auth_name = s.auth_name AND u.scope_code = s.code
+        WHERE u.object_table_name IN ('helmert_transformation', 'grid_transformation', 'other_transformation',
+            'concatenated_operation')
+            AND NOT (u.extent_auth_name = 'PROJ' AND u.extent_code = 'EXTENT_UNKNOWN')
+            AND NOT (u.scope_auth_name = 'PROJ' AND u.scope_code = 'SCOPE_UNKNOWN')
+        ORDER BY (CASE WHEN s.scope LIKE '%large scale%' THEN 0 ELSE 1 END), u.auth_name, u.code
+    """
+    out = {}
+    for auth, code, w, so, e, n, description in db.execute(query):
+        out.setdefault((auth, str(code)), ((w, so, e, n), description or ""))
+    return out
+
+
+USAGES = operation_usages()
+
+
+def operation_accuracies():
+    """Read the accuracies of the operations and the steps of the concatenated ones.
+
+    Returns:
+        ``(accuracies, steps)``: ``{(authority, code): metres}`` (``None`` when unknown, as
+        999 m stands for in PROJ's database) and ``{(authority, code): [(authority, code)]}``
+        in order of step.
+    """
+    db = sqlite3.connect(os.path.join(pyproj.datadir.get_data_dir(), "proj.db"))
+    accuracies = {
+        (a, str(c)): (None if acc is None or float(acc) == 999.0 else float(acc))
+        for a, c, acc in db.execute("SELECT auth_name, code, accuracy FROM coordinate_operation_view")
+    }
+    steps = {}
+    query = "SELECT operation_auth_name, operation_code, step_auth_name, step_code FROM concatenated_operation_step ORDER BY step_number"
+    for a, c, sa, sc in db.execute(query):
+        steps.setdefault((a, str(c)), []).append((sa, str(sc)))
+    return accuracies, steps
+
+
+ACCURACIES, CONCAT_STEPS = operation_accuracies()
+
+
+def registered_operations():
+    """List the operations PROJ's database registers between EPSG geodetic CRSs of two datums.
+
+    Returns:
+        ``(op, replacements, time_dependent, ensemble)`` tuples in order of authority and code:
+        the database row (see ``registered_operation``), the keys (``EPSG:1234``) of the
+        operations that replace it between the same CRSs, whether it needs the coordinates'
+        epochs, and whether it is PROJ's null transformation between a datum ensemble and one
+        of its members (WGS 84 to WGS 84 (G1762)).
+    """
+    db = sqlite3.connect(os.path.join(pyproj.datadir.get_data_dir(), "proj.db"))
+    authorities = ",".join(f"'{a}'" for a in CHAIN_AUTHORITIES)
+    crs_authorities = ",".join(f"'{a}'" for a in CHAIN_CRS_AUTHORITIES)
+    query = f"""
+        SELECT v.auth_name, v.code, v.table_name, v.name, v.method_name, v.source_crs_auth_name, v.source_crs_code,
+            v.target_crs_auth_name, v.target_crs_code, v.accuracy, s.type, t.type, s.datum_auth_name, s.datum_code,
+            t.datum_auth_name, t.datum_code
+        FROM coordinate_operation_view v
+        JOIN geodetic_crs s ON s.auth_name = v.source_crs_auth_name AND s.code = v.source_crs_code
+        JOIN geodetic_crs t ON t.auth_name = v.target_crs_auth_name AND t.code = v.target_crs_code
+        WHERE v.deprecated = 0 AND v.auth_name IN ({authorities})
+            AND v.source_crs_auth_name IN ({crs_authorities}) AND v.target_crs_auth_name IN ({crs_authorities})
+            AND NOT (s.datum_auth_name = t.datum_auth_name AND s.datum_code = t.datum_code)
+        ORDER BY v.auth_name, v.code
+    """
+    replacements = {}
+    for table, auth, code, rtable, rauth, rcode in db.execute(
+        "SELECT superseded_table_name, superseded_auth_name, superseded_code, replacement_table_name, "
+        "replacement_auth_name, replacement_code FROM supersession WHERE same_source_target_crs = 1"
+    ):
+        if table == rtable:
+            replacements.setdefault((auth, str(code)), []).append(f"{rauth}:{rcode}")
+    ensembles = {(str(e), str(m)) for e, m in db.execute("SELECT ensemble_code, member_code FROM geodetic_datum_ensemble_member")}
+    steps = {}
+    for auth, code, sauth, scode in db.execute("SELECT operation_auth_name, operation_code, step_auth_name, step_code FROM concatenated_operation_step"):
+        steps.setdefault((auth, str(code)), []).append((sauth, str(scode)))
+    methods = {(a, str(c)): m or "" for a, c, m in db.execute("SELECT auth_name, code, method_name FROM coordinate_operation_view")}
+    out = []
+    for row in db.execute(query):
+        auth, code, table, name, method, sauth, source, tauth, target, accuracy, stype, ttype, _, sdatum, _, tdatum = row
+        key = (auth, str(code))
+        used = [methods.get(s, "") for s in steps.get(key, [])] or [method or ""]
+        time_dependent = any("time-dependent" in m.lower() or "point motion" in m.lower() for m in used)
+        ensemble = auth == "PROJ" and ((str(sdatum), str(tdatum)) in ensembles or (str(tdatum), str(sdatum)) in ensembles)
+        op = (auth, str(code), table, name, method, f"{sauth}:{source}", f"{tauth}:{target}", accuracy, stype, ttype)
+        out.append((op, replacements.get(key, []), time_dependent, ensemble))
+    return out
 
 
 def vertical_rows():
@@ -910,59 +1093,32 @@ def rows():
         """
         return transformations(f"EPSG:{p[0][0]}", f"EPSG:{p[1][0]}", p[0][1], p[1][1], grids)
 
-    datum_of = {code: datum for datum, codes in geogs.items() for code, _ in codes}
-    geocentric = geocentric_crss()
-
-    def geocentric_ops(p):
-        """List the registered transformations from a geographic CRS to another datum's geocentric CRS.
-
-        PROJ chains the transformations its database registers between any CRSs of two datums
-        (NAD27 to ITRF2014 (2), registered to ITRF2014's geocentric CRS), not only those it lists
-        between their geographic CRSs.
-
-        Args:
-            p: The pair, as ``((code, pm), (code, pm))``.
-
-        Returns:
-            The transformations registered between the two datums (as if every grid were
-            installed), made to end on the target's geographic CRS.
-        """
-        (a, pm), (b, target_pm) = p
-        target = geocentric.get(datum_of[b])
-        if target is None or target_pm != 0.0:
-            return []
-        crs = pyproj.CRS.from_epsg(b)
-        # Back from geocentric coordinates on the target's ellipsoid.
-        ellipsoid = f"inv cart a={crs.ellipsoid.semi_major_metre!r} rf={crs.ellipsoid.inverse_flattening!r}"
-        out = []
-        datums = {datum_of[a], datum_of[b]}
-        for row, key in transformations(f"EPSG:{a}", f"EPSG:{target}", pm, 0.0, True, keys=True):
-            steps, bounds, accuracy, flags, name, steps_accuracy, steps_bounds = row
-            carts = [step for step in steps.split(";") if step.startswith(("cart ", "inv cart "))]
-            # Those registered between the two datums, which end in geocentric coordinates.
-            if REGISTERED_DATUMS.get(key) != datums or not carts or carts[-1].startswith("inv "):
-                continue
-            name += f" + Conversion from {crs.name} (geocentric) to {crs.name} (geog2D)"
-            out.append((f"{steps};{ellipsoid}", bounds, accuracy, flags, name, steps_accuracy, steps_bounds))
-        return out
-
     with ThreadPoolExecutor(os.cpu_count()) as pool:
         found = list(pool.map(lambda p: pair_ops(p, False), pairs))
         found_grids = list(pool.map(lambda p: pair_ops(p, True), pairs))
-        to_geocentric = list(pool.map(geocentric_ops, pairs))
-        from_geocentric = list(pool.map(lambda p: geocentric_ops((p[1], p[0])), pairs))
-    for ((a, _), (b, _)), transfos, transfos_grids, forward, backward in zip(pairs, found, found_grids, to_geocentric, from_geocentric):
+    for ((a, _), (b, _)), transfos, transfos_grids in zip(pairs, found, found_grids):
         ids, gids, new = both(transfos, transfos_grids)
         yield from new
-        # Without those GDAL lists for the pair already, whatever the conversions around them.
-        listed = {transformation_names(t[4]) for t in transfos + transfos_grids}
-        fids, fnew = op_ids([t for t in forward if transformation_names(t[4]) not in listed])
-        bids, bnew = op_ids([t for t in backward if transformation_names(inverse_name(t[4])) not in listed])
-        yield from fnew + bnew
-        if ids or gids or fids or bids:
-            yield ("P", a, b, ",".join(map(str, ids)), ",".join(map(str, gids)), ",".join(map(str, fids)), ",".join(map(str, bids)))
+        if ids or gids:
+            yield ("P", a, b, ",".join(map(str, ids)), ",".join(map(str, gids)))
 
     yield from datum_dates()
+
+    # The operations PROJ's database registers between geodetic CRSs, which terrio chains
+    # through intermediate datums as PROJ does, and the CRSs they go between.
+    yield from geodetic_rows()
+    registered = registered_operations()
+    with ThreadPoolExecutor(os.cpu_count()) as pool:
+        described = list(pool.map(lambda r: registered_operation(r[0]), registered))
+    for (op, replaced_by, time_dependent, ensemble), found in zip(registered, described):
+        if found is None:
+            continue
+        row, via = found
+        (oid,), new = op_ids([row])
+        yield from new
+        flags = ("t" if time_dependent else "") + ("e" if ensemble else "")
+        source, target = (code_of(*c.split(":", 1)) for c in (op[5], op[6]))
+        yield ("R", f"{op[0]}:{op[1]}", source, target, oid, ",".join(replaced_by), flags, ",".join(via))
 
     # Vertical and compound CRSs, and the geoid models between geographic 3D and vertical CRSs.
     verticals, compounds = vertical_rows()
@@ -1001,6 +1157,11 @@ def rows():
 
 def main():
     """Write the compressed table."""
+    # conda's PROJ activation turns PROJ's network access on, with which GDAL fails to import
+    # CRSs whose transformations use grids the PROJ CDN no longer has: off, but for the lists
+    # "with grids" (see ``transformations``).
+    os.environ["PROJ_NETWORK"] = "OFF"
+    osr.SetPROJEnableNetwork(False)
     lines = ["\t".join(map(str, r)) + "\n" for r in rows()]
     header = (
         f"# EPSG Geodetic Parameter Dataset (https://epsg.org), via PROJ {pyproj.proj_version_str} "
