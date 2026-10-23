@@ -866,7 +866,9 @@ fn subdatasets(group: &Node) -> Vec<(String, String)> {
     fn walk(node: &Node, depth: usize, out: &mut Vec<Array>) {
         // The children's metadata read in parallel (a request or two each for a remote store),
         // then visited in name order.
-        let names = node.children();
+        let mut names = node.children();
+        // No more children looked at than subdatasets can still be listed.
+        names.truncate(MAX_SUBDATASETS.saturating_sub(out.len()));
         let kinds = crate::par::map_range(names.len(), |i| {
             let child = node.join(&names[i]);
             match read_array_opt(&child) {
