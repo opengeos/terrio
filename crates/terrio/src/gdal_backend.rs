@@ -59,6 +59,29 @@ pub fn gdal_version() -> String {
     gdal::version_info("RELEASE_NAME")
 }
 
+/// Points GDAL at its data files and PROJ at its database, for a GDAL shipped without them in
+/// their install locations (the `terrio-gdal` Python wheels bundle both).
+///
+/// `gdal_data` sets GDAL's `GDAL_DATA` configuration option, `proj_data` the search paths of the
+/// PROJ that GDAL uses (with `OSRSetPROJSearchPaths`, not the `PROJ_DATA` environment variable,
+/// which another PROJ in the same process would read too), and `ca_bundle` the `CURL_CA_BUNDLE`
+/// option, the certificates GDAL's HTTPS requests trust. `None` leaves a setting as it is.
+pub fn set_data_paths(gdal_data: Option<&str>, proj_data: Option<&str>, ca_bundle: Option<&str>) -> Result<()> {
+    if let Some(dir) = gdal_data {
+        gdal::config::set_config_option("GDAL_DATA", dir).map_err(gdal_err)?;
+    }
+    if let Some(dir) = proj_data {
+        let dir = std::ffi::CString::new(dir).map_err(|_| Error::InvalidArgument("a NUL byte in the PROJ data path".into()))?;
+        let paths = [dir.as_ptr(), std::ptr::null()];
+        // SAFETY: a NULL-terminated list of NUL-terminated strings, which PROJ copies.
+        unsafe { gdal_sys::OSRSetPROJSearchPaths(paths.as_ptr()) };
+    }
+    if let Some(file) = ca_bundle {
+        gdal::config::set_config_option("CURL_CA_BUNDLE", file).map_err(gdal_err)?;
+    }
+    Ok(())
+}
+
 /// Whether the linked GDAL has a driver with this short name (`HFA`, `NITF`, `GRIB`).
 pub fn has_driver(name: &str) -> bool {
     DriverManager::get_driver_by_name(name).is_ok()

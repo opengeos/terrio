@@ -1,0 +1,223 @@
+name: GDAL wheels
+
+# The terrio-gdal wheels: the `terrio` package built with the optional GDAL backend (the `gdal`
+# cargo feature), with GDAL bundled. GDAL and the libraries it uses (PROJ, GEOS, curl, SQLite,
+# HDF5, netCDF, OpenJPEG...; no GPL-licensed one) are built with vcpkg
+# (packaging/terrio-gdal/vcpkg.json), the wheels with cibuildwheel, and repaired by auditwheel,
+# delocate and delvewheel so that the libraries ship inside them, with GDAL's data files and
+# PROJ's database. Each wheel is then installed on a clean runner, without GDAL, and tested
+# (python/tests/gdal_wheel/smoke.py).
+#
+# release.yml calls this on version tags and publishes the wheels to PyPI as terrio-gdal, and
+# release-dry-run.yml builds them without publishing. It also runs on pull requests that change
+# the packaging and on pushes to main (which keep vcpkg's binary cache warm for releases: a tag
+# can only restore caches saved on main), and by hand (Actions > GDAL wheels > Run workflow).
+# Built from scratch, GDAL takes about an hour per platform; from vcpkg's cache, minutes.
+on:
+  workflow_call:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/gdal-wheels.yml
+      - packaging/terrio-gdal/**
+      - python/tests/gdal_wheel/**
+      - python/python/terrio/_gdal_env.py
+      - python/src/gdal.rs
+  pull_request:
+    paths:
+      - .github/workflows/gdal-wheels.yml
+      - packaging/terrio-gdal/**
+      - python/tests/gdal_wheel/**
+      - python/python/terrio/_gdal_env.py
+      - python/src/gdal.rs
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gdal-wheels-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  # The GDAL that packaging/terrio-gdal/vcpkg.json's baseline builds, for gdal-sys's bindings.
+  GDAL_VERSION: "3.12.4"
+
+jobs:
+  build:
+    name: build (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: linux-x86_64, os: ubuntu-24.04, arch: x86_64, triplet: x64-linux-terrio }
+          - { name: linux-aarch64, os: ubuntu-24.04-arm, arch: aarch64, triplet: arm64-linux-terrio }
+          - { name: macos-arm64, os: macos-15, arch: arm64, triplet: arm64-osx-terrio }
+          - { name: macos-x86_64, os: macos-15-intel, arch: x86_64, triplet: x64-osx-terrio }
+          - { name: windows-x64, os: windows-2025, arch: AMD64, triplet: x64-windows-terrio }
+    env:
+      TRIPLET: ${{ matrix.triplet }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      # The notices, which maturin finds in python/ with python/LICENSE (as in release-build.yml).
+      - name: Add the notices
+        shell: bash
+        run: |
+          cp NOTICE LICENSE-THIRD-PARTY.md python/
+          echo "VCPKG_DEFAULT_BINARY_CACHE=$RUNNER_TEMP/vcpkg-archives" >> "$GITHUB_ENV"
+      # vcpkg's binary cache: the packages it built, keyed by what decides them. A cache saved
+      # for an older key is restored too, and vcpkg rebuilds only what changed.
+      - uses: actions/cache/restore@v6
+        id: vcpkg-cache
+        with:
+          path: ${{ runner.temp }}/vcpkg-archives
+          key: vcpkg-${{ matrix.triplet }}-${{ hashFiles('packaging/terrio-gdal/vcpkg.json', 'packaging/terrio-gdal/triplets/**') }}
+          restore-keys: vcpkg-${{ matrix.triplet }}-
+
+      - name: Install the build tools (macOS)
+        if: runner.os == 'macOS'
+        run: brew install autoconf automake libtool nasm
+      # On Linux, GDAL is built in cibuildwheel's manylinux container (before-all, below).
+      - name: Build GDAL with vcpkg (macOS, Windows)
+        if: runner.os != 'Linux'
+        shell: bash
+        env:
+          VCPKG_ROOT: ${{ runner.os == 'Windows' && 'C:/vcpkg' || format('{0}/vcpkg', runner.temp) }}
+          PYTHON: python
+        run: bash packaging/terrio-gdal/build-gdal.sh
+
+      - name: Build the wheel
+        uses: pypa/cibuildwheel@v4.3.1
+        with:
+          package-dir: python
+          output-dir: wheelhouse
+        env:
+          # The extension module is abi3 (Python 3.10 and later): one wheel per platform.
+          CIBW_BUILD: cp312-*
+          CIBW_SKIP: "*-musllinux_*"
+          CIBW_ARCHS: ${{ matrix.arch }}
+          CIBW_BUILD_VERBOSITY: 1
+          # vcpkg is cloned on the host (/host in the container) so that its logs outlive it.
+          CIBW_ENVIRONMENT_LINUX: >-
+            PATH="$HOME/.cargo/bin:$PATH"
+            TRIPLET=${{ matrix.triplet }}
+            VCPKG_ROOT=/host${{ runner.temp }}/vcpkg
+            VCPKG_DEFAULT_BINARY_CACHE=/host${{ runner.temp }}/vcpkg-archives
+            ${{ matrix.arch == 'aarch64' && 'VCPKG_FORCE_SYSTEM_BINARIES=1' || '' }}
+            PYTHON=/opt/python/cp312-cp312/bin/python
+            GDAL_HOME=/host${{ runner.temp }}/vcpkg/installed/${{ matrix.triplet }}
+            GDAL_VERSION=${{ env.GDAL_VERSION }}
+          CIBW_BEFORE_ALL_LINUX: >-
+            dnf -y install curl zip unzip tar ninja-build perl-core perl-IPC-Cmd autoconf
+            autoconf-archive automake libtool &&
+            (dnf -y install nasm || true) &&
+            curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal &&
+            bash packaging/terrio-gdal/build-gdal.sh
+          CIBW_REPAIR_WHEEL_COMMAND_LINUX: >-
+            LD_LIBRARY_PATH="$GDAL_HOME/lib:$LD_LIBRARY_PATH" auditwheel repair -w {dest_dir} {wheel}
+          CIBW_ENVIRONMENT_MACOS: >-
+            GDAL_HOME=${{ runner.temp }}/vcpkg/installed/${{ matrix.triplet }}
+            GDAL_VERSION=${{ env.GDAL_VERSION }}
+            MACOSX_DEPLOYMENT_TARGET=12.0
+            RUSTFLAGS="-C link-arg=-Wl,-rpath,${{ runner.temp }}/vcpkg/installed/${{ matrix.triplet }}/lib"
+          CIBW_REPAIR_WHEEL_COMMAND_MACOS: >-
+            DYLD_LIBRARY_PATH="$GDAL_HOME/lib" delocate-wheel --require-archs {delocate_archs}
+            -w {dest_dir} -v {wheel}
+          CIBW_ENVIRONMENT_WINDOWS: >-
+            GDAL_HOME=C:/vcpkg/installed/${{ matrix.triplet }}
+            GDAL_VERSION=${{ env.GDAL_VERSION }}
+          CIBW_BEFORE_BUILD_WINDOWS: pip install delvewheel
+          CIBW_REPAIR_WHEEL_COMMAND_WINDOWS: >-
+            delvewheel repair --add-path C:/vcpkg/installed/${{ matrix.triplet }}/bin
+            -w {dest_dir} {wheel}
+          CIBW_TEST_COMMAND: python -I {project}/python/tests/gdal_wheel/smoke.py
+
+      - name: Save vcpkg's binary cache
+        if: always() && steps.vcpkg-cache.outputs.cache-matched-key != steps.vcpkg-cache.outputs.cache-primary-key
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ runner.temp }}/vcpkg-archives
+          key: ${{ steps.vcpkg-cache.outputs.cache-primary-key }}
+      - name: Upload vcpkg's logs
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: vcpkg-logs-${{ matrix.name }}
+          path: |
+            ${{ runner.temp }}/vcpkg/buildtrees/**/*.log
+            C:/vcpkg/buildtrees/**/*.log
+          if-no-files-found: ignore
+      - name: Check the wheel
+        shell: bash
+        run: |
+          python .github/scripts/check-license-files.py wheelhouse/*.whl
+          python -m zipfile -l wheelhouse/*.whl | grep -E "LICENSE-GDAL|proj\.db|header\.dxf|\.(so|dylib|dll|pyd)" || true
+          ls -l wheelhouse
+      - uses: actions/upload-artifact@v7
+        with:
+          name: gdal-wheels-${{ matrix.name }}
+          path: wheelhouse/*.whl
+
+  # Each wheel on a clean runner, where no GDAL is installed: from a new virtual environment, run
+  # outside the source tree.
+  test:
+    name: test (${{ matrix.os }}, Python ${{ matrix.python }})
+    needs: [build]
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-24.04, wheel: linux-x86_64, python: "3.10" }
+          - { os: ubuntu-24.04, wheel: linux-x86_64, python: "3.13" }
+          - { os: ubuntu-22.04, wheel: linux-x86_64, python: "3.12" }
+          - { os: ubuntu-24.04-arm, wheel: linux-aarch64, python: "3.12" }
+          - { os: macos-15, wheel: macos-arm64, python: "3.12" }
+          - { os: macos-15-intel, wheel: macos-x86_64, python: "3.12" }
+          - { os: windows-2025, wheel: windows-x64, python: "3.12" }
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: python/tests/gdal_wheel
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python }}
+      - uses: actions/download-artifact@v8
+        with:
+          name: gdal-wheels-${{ matrix.wheel }}
+          path: wheelhouse
+      - name: Check that no GDAL is installed
+        shell: bash
+        run: |
+          if command -v gdalinfo; then echo "gdalinfo is installed"; exit 1; fi
+          if [ "$RUNNER_OS" = Linux ] && ldconfig -p | grep -i libgdal; then echo "libgdal is installed"; exit 1; fi
+          if [ "$RUNNER_OS" = macOS ] && ls /opt/homebrew/lib/libgdal* /usr/local/lib/libgdal* 2> /dev/null; then echo "libgdal is installed"; exit 1; fi
+          ls -l wheelhouse
+      - name: Install the wheel into a new virtual environment
+        shell: bash
+        run: |
+          python -m venv "$RUNNER_TEMP/venv"
+          if [ "$RUNNER_OS" = Windows ]; then bin="$RUNNER_TEMP/venv/Scripts"; else bin="$RUNNER_TEMP/venv/bin"; fi
+          echo "$bin" >> "$GITHUB_PATH"
+          "$bin/python" -m pip install wheelhouse/*.whl
+          cp python/tests/gdal_wheel/smoke.py "$RUNNER_TEMP/"
+      - name: Smoke test (GDAL's formats, data files and HTTPS)
+        shell: bash
+        working-directory: ${{ runner.temp }}
+        run: |
+          python -I smoke.py --network
+          terrio formats | grep -i gdal
+      # Beside rasterio and pyproj, whose wheels bundle their own GDAL and PROJ.
+      - name: Smoke test beside rasterio and pyproj
+        if: matrix.os == 'ubuntu-24.04' && matrix.python == '3.13'
+        shell: bash
+        working-directory: ${{ runner.temp }}
+        run: |
+          python -m pip install rasterio pyproj
+          python -I -c "import rasterio, pyproj, terrio; print(rasterio.__gdal_version__, pyproj.proj_version_str, terrio.gdal_version())"
+          python -I smoke.py
+          python -I -c "import pyproj, terrio; print(pyproj.CRS.from_epsg(32618).name)"

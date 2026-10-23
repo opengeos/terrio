@@ -24,6 +24,7 @@ formats, local or remote, without GDAL::
 from collections.abc import Iterator as _Iterator
 from typing import Any as _Any
 
+from terrio._gdal_env import configure as _configure_gdal
 from terrio._terrio import (
     ArrowTable,
     FeatureStream,
@@ -43,6 +44,7 @@ from terrio._terrio import (
     dem,
     drivers,
     from_arrow,
+    gdal_version,
     grid_points,
     info,
     list_layers,
@@ -79,6 +81,9 @@ from terrio.errors import (
     UnsupportedError,
 )
 
+# The terrio-gdal wheels: GDAL's and PROJ's data files, bundled in the package.
+_configure_gdal()
+
 __all__ = [
     "ArrowTable",
     "CRSError",
@@ -106,6 +111,7 @@ __all__ = [
     "dem",
     "drivers",
     "from_arrow",
+    "gdal_version",
     "info",
     "iter_features",
     "list_layers",

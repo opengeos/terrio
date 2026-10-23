@@ -1,0 +1,31 @@
+{
+    "$comment": "GDAL for the terrio-gdal wheels: no GPL dependency. The baseline pins every port (GDAL 3.12.4, PROJ 9.8.1); GDAL_VERSION in gdal-wheels.yml follows it.",
+    "name": "terrio-gdal",
+    "version-string": "0",
+    "dependencies": [
+        {
+            "$comment": "HTTPS for GDAL's /vsicurl/: OpenSSL on Linux and macOS, Schannel on Windows.",
+            "name": "curl",
+            "default-features": false,
+            "features": ["ssl"]
+        },
+        {
+            "name": "gdal",
+            "default-features": false,
+            "features": [
+                "recommended-features",
+                "curl",
+                "gif",
+                "hdf5",
+                "iconv",
+                "kea",
+                "lzma",
+                "netcdf",
+                "openjpeg",
+                "webp",
+                "zstd"
+            ]
+        }
+    ],
+    "builtin-baseline": "89dac9685f8d0ebd0a07d8b93ed51215c3a2fb2c"
+}
