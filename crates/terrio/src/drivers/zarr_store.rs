@@ -56,6 +56,7 @@ pub(crate) struct Store {
     /// Metadata documents read so far (`None` for missing ones).
     cache: Mutex<HashMap<String, Option<Value>>>,
     /// The child names listed so far of remote keys.
+    #[cfg(remote)]
     listings: Mutex<HashMap<String, Vec<String>>>,
 }
 
@@ -99,7 +100,14 @@ fn local_node(p: &Path) -> bool {
 
 impl Store {
     fn new(backend: Backend, name: String) -> Self {
-        Self { backend, name, consolidated: None, cache: Mutex::new(HashMap::new()), listings: Mutex::new(HashMap::new()) }
+        Self {
+            backend,
+            name,
+            consolidated: None,
+            cache: Mutex::new(HashMap::new()),
+            #[cfg(remote)]
+            listings: Mutex::new(HashMap::new()),
+        }
     }
 
     /// Reads a key: `None` when there is no such object.
