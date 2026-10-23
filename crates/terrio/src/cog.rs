@@ -78,6 +78,9 @@ pub struct WindowOptions {
 /// A raster opened for its metadata, whose pixels are read on demand.
 pub struct LazyRaster {
     inner: Inner,
+    /// GDAL's external mask, the `.msk` sidecar of a local file without an internal mask: a TIFF
+    /// whose first band is the per-dataset mask, with overviews of its own.
+    sidecar_mask: Option<Box<LazyRaster>>,
 }
 
 impl std::fmt::Debug for LazyRaster {
@@ -136,6 +139,38 @@ impl LazyRaster {
     ///
     /// GeoTIFFs are read in place: only their headers are read now. Other formats are read whole.
     pub fn open(path: &str) -> Result<Self> {
+        let mut r = Self::open_without_sidecars(path)?;
+        r.find_sidecar_mask(path);
+        Ok(r)
+    }
+
+    /// Attaches the `.msk` sidecar of a local file (`dem.tif.msk`, as GDAL writes it when
+    /// `GDAL_TIFF_INTERNAL_MASK=NO` or for formats without internal masks) when the raster has
+    /// no internal mask and the sidecar is a per-dataset mask of its size.
+    fn find_sidecar_mask(&mut self, path: &str) {
+        if self.has_mask() || !Location::parse(path).is_local() {
+            return;
+        }
+        let msk = format!("{path}.msk");
+        if !std::path::Path::new(&msk).is_file() {
+            return;
+        }
+        // Per-dataset (INTERNAL_MASK_FLAGS_1=2, GMF_PER_DATASET): one mask for every band.
+        let per_dataset = crate::geotiff::read_geo_tags(std::path::Path::new(&msk)).is_none_or(|t| {
+            t.metadata
+                .iter()
+                .find(|(k, _)| k == "INTERNAL_MASK_FLAGS_1")
+                .is_none_or(|(_, v)| v.trim().parse::<u32>().is_ok_and(|f| f & 2 != 0))
+        });
+        if let Ok(Some(m)) = Self::open_tiff(&msk)
+            && per_dataset
+            && (m.width(), m.height()) == (self.width(), self.height())
+        {
+            self.sidecar_mask = Some(Box::new(m));
+        }
+    }
+
+    fn open_without_sidecars(path: &str) -> Result<Self> {
         if let Some(result) = crate::stac::open_lazy(path) {
             return result;
         }
@@ -148,7 +183,7 @@ impl LazyRaster {
         }
         match Self::open_tiff(path)? {
             Some(r) => Ok(r),
-            None => crate::open_raster(path).map(|ds| Self { inner: Inner::Memory(ds) }),
+            None => crate::open_raster(path).map(|ds| Self { inner: Inner::Memory(ds), sidecar_mask: None }),
         }
     }
 
@@ -179,7 +214,7 @@ impl LazyRaster {
         }
         t.tags.warn_unreadable(path);
         t.file = file;
-        Ok(Some(Self { inner: Inner::Tiff(Box::new(t)) }))
+        Ok(Some(Self { inner: Inner::Tiff(Box::new(t)), sidecar_mask: None }))
     }
 
     /// Opens a GeoTIFF held in memory, reading only its headers now. Returns `None` when the bytes
@@ -191,7 +226,7 @@ impl LazyRaster {
         }
         let t = TiffRaster::new(source, None)?;
         t.tags.warn_unreadable("a GeoTIFF in memory");
-        Ok(Some(Self { inner: Inner::Tiff(Box::new(t)) }))
+        Ok(Some(Self { inner: Inner::Tiff(Box::new(t)), sidecar_mask: None }))
     }
 
     /// Opens a remote GeoTIFF whose bytes the caller fetches (see [`crate::sparse`]), reading
@@ -208,7 +243,7 @@ impl LazyRaster {
         source.seek(SeekFrom::Start(0))?;
         let t = TiffRaster::new(source, None)?;
         t.tags.warn_unreadable("a remote GeoTIFF");
-        Ok(Some(Self { inner: Inner::Tiff(Box::new(t)) }))
+        Ok(Some(Self { inner: Inner::Tiff(Box::new(t)), sidecar_mask: None }))
     }
 
     /// Opens an archive of image tiles (PMTiles or MBTiles) for reading by window, zoom levels
@@ -486,13 +521,14 @@ impl LazyRaster {
 }
 
 impl LazyRaster {
-    /// Whether the raster has a per-dataset mask: a GeoTIFF's internal mask (GDAL's
-    /// `GMF_PER_DATASET`).
+    /// Whether the raster has a per-dataset mask (GDAL's `GMF_PER_DATASET`): a GeoTIFF's
+    /// internal mask, or a `.msk` sidecar.
     pub fn has_mask(&self) -> bool {
-        match &self.inner {
-            Inner::Tiff(t) => t.masks.iter().any(|m| !m.overview && (m.width, m.height) == (t.levels[0].width, t.levels[0].height)),
-            _ => false,
-        }
+        self.sidecar_mask.is_some()
+            || match &self.inner {
+                Inner::Tiff(t) => t.masks.iter().any(|m| !m.overview && (m.width, m.height) == (t.levels[0].width, t.levels[0].height)),
+                _ => false,
+            }
     }
 
     /// Reads a window of the per-dataset mask, at full resolution or of an overview: 255 for
@@ -508,6 +544,9 @@ impl LazyRaster {
             )));
         }
         let (fw, fh) = (self.width(), self.height());
+        if let Some(m) = self.sidecar_mask.as_mut() {
+            return read_sidecar_mask(m, window, (lw, lh)).map(Some);
+        }
         let Inner::Tiff(t) = &mut self.inner else { return Ok(None) };
         let w = (window.x, window.y, window.width, window.height);
         let own = t.masks.iter().find(|m| m.overview == overview.is_some() && (m.width, m.height) == (lw, lh)).cloned();
@@ -535,7 +574,7 @@ impl LazyRaster {
 
     /// A raster read by window by `source`, described by `header` (a dataset without pixels).
     pub(crate) fn from_source(header: RasterDataset, source: Box<dyn WindowSource>) -> Self {
-        Self { inner: Inner::Source(header, source) }
+        Self { inner: Inner::Source(header, source), sidecar_mask: None }
     }
 
     /// Wraps an archive of image tiles (PMTiles, MBTiles), its zoom levels as overviews.
@@ -548,8 +587,37 @@ impl LazyRaster {
 impl From<RasterDataset> for LazyRaster {
     /// Wraps a raster in memory, so that it is read by window like a lazy one.
     fn from(ds: RasterDataset) -> Self {
-        Self { inner: Inner::Memory(ds) }
+        Self { inner: Inner::Memory(ds), sidecar_mask: None }
     }
+}
+
+/// Reads a window of a `.msk` sidecar's mask at a level of size `(lw, lh)`: the sidecar's own
+/// overview of that size, else its full-resolution mask sampled by nearest neighbour, as GDAL
+/// does. 255 for valid pixels, 0 for invalid ones.
+fn read_sidecar_mask(m: &mut LazyRaster, window: Window, (lw, lh): (usize, usize)) -> Result<Vec<u8>> {
+    let opts = |overview| WindowOptions { bands: vec![1], overview };
+    let to_mask = |ds: RasterDataset| ds.raster.data.to_f64_vec().into_iter().map(|v| if v != 0.0 { 255 } else { 0 }).collect::<Vec<u8>>();
+    let (fw, fh) = (m.width(), m.height());
+    if (lw, lh) == (fw, fh) {
+        return m.read_window(window, &opts(None)).map(to_mask);
+    }
+    if let Some(i) = m.overviews().iter().position(|s| *s == (lw, lh)) {
+        return m.read_window(window, &opts(Some(i))).map(to_mask);
+    }
+    let (sx, sy) = (fw as f64 / lw as f64, fh as f64 / lh as f64);
+    let col = |c: usize| (((c as f64 + 0.5) * sx) as usize).min(fw - 1);
+    let row = |r: usize| (((r as f64 + 0.5) * sy) as usize).min(fh - 1);
+    let (c0, c1) = (col(window.x), col(window.x + window.width - 1));
+    let (r0, r1) = (row(window.y), row(window.y + window.height - 1));
+    let sw = c1 - c0 + 1;
+    let src = to_mask(m.read_window(Window::new(c0, r0, sw, r1 - r0 + 1), &opts(None))?);
+    let mut out = Vec::with_capacity(window.width * window.height);
+    for r in window.y..window.y + window.height {
+        for c in window.x..window.x + window.width {
+            out.push(src[(row(r) - r0) * sw + col(c) - c0]);
+        }
+    }
+    Ok(out)
 }
 
 /// Whether a stream starts with a TIFF or BigTIFF signature. Rewinds it.

@@ -939,6 +939,7 @@ class DatasetBase(WindowMethodsMixin, TransformMethodsMixin):
             stem + "_RPC.TXT",
             stem + ".RPB",
             stem + ".rpb",
+            stem + ".hdr",
         ]
         for f in sidecars:
             if f not in out and os.path.isfile(f):
@@ -1035,6 +1036,8 @@ class DatasetReader(DatasetBase):
             structure = _tiff.default_structure(raster)
         if not _is_remote(self._path):
             _tiff.apply_pam(structure, self._path)
+        # A per-dataset mask, internal or in a `.msk` sidecar (read by the raster).
+        structure.has_mask = structure.has_mask or bool(raster.has_mask)
         # Bands a PAM sidecar doesn't list keep the file's own nodata, not band 1's PAM value.
         file_nodata = self._nodata
         if structure.nodata_override is not None:
@@ -1662,6 +1665,7 @@ class DatasetWriter(DatasetReader):
         self._overview_factors: list[int] = []
         self._overview_resampling = "nearest"
         self._mask: np.ndarray | None = None
+        self._mask_in_sidecar = False
         self._spill: list[str] = []
         kwargs = {k.lower(): v for k, v in kwargs.items()}
         kwargs.pop("sharing", None)
@@ -1925,6 +1929,8 @@ class DatasetWriter(DatasetReader):
             m = raster.read_mask()
             if m is not None:
                 self._mask = np.asarray(m)
+                # A mask in a `.msk` sidecar stays there, as GDAL keeps it.
+                self._mask_in_sidecar = os.path.isfile(self._path + ".msk")
         self._raster = None
         self._overview_sizes = []
 
@@ -2373,17 +2379,27 @@ class DatasetWriter(DatasetReader):
             ]
         if self._rpcs is not None:
             extra["rpc"] = self._rpcs.to_tiff_tag()
-        if self._mask is not None and not streaming:
+        # GDAL writes a mask into the GeoTIFF, unless GDAL_TIFF_INTERNAL_MASK says no or the
+        # format has no internal masks: then into a `.msk` sidecar.
+        sidecar_mask = self._mask is not None and (
+            self._mask_in_sidecar
+            or driver not in ("GTiff", "COG")
+            or os.environ.get("GDAL_TIFF_INTERNAL_MASK", "YES").strip().upper()
+            in ("NO", "FALSE", "OFF", "0")
+        )
+        if self._mask is not None and not streaming and not sidecar_mask:
             extra["mask"] = np.ascontiguousarray(self._mask, dtype=np.uint8)
         tmp = self._path + f".tmp-{uuid.uuid4().hex}"
         target = tmp if self.mode == "r+" else self._path
         if streaming:
             try:
                 self._write_streaming(
-                    target, gt, crs, tags, compress, opts, band_md, colormap, extra
+                    target, gt, crs, tags, compress, opts, band_md, colormap, extra, sidecar_mask
                 )
                 if target != self._path:
                     os.replace(target, self._path)
+                if sidecar_mask:
+                    self._write_mask_sidecar()
             except Exception as err:
                 if os.path.exists(tmp):
                     os.remove(tmp)
@@ -2404,11 +2420,38 @@ class DatasetWriter(DatasetReader):
             )
             if target != self._path:
                 os.replace(target, self._path)
+            if sidecar_mask:
+                self._write_mask_sidecar()
         except Exception as err:
             if os.path.exists(tmp):
                 os.remove(tmp)
             raise RasterioIOError(f"Write failed: {err}") from err
         self._dirty = False
+
+    def _write_mask_sidecar(self) -> None:
+        """Writes the mask as GDAL's `.msk` sidecar of the dataset.
+
+        The sidecar is a tiled, Deflate-compressed GeoTIFF without georeferencing, its band the
+        per-dataset mask (0 or 255) flagged by `INTERNAL_MASK_FLAGS_1=2`, with the dataset's
+        overviews, as GDAL writes it.
+        """
+        assert self._mask is not None
+        mask = np.where(np.asarray(self._mask) != 0, np.uint8(255), np.uint8(0))[np.newaxis]
+        m = _terrio.Raster.from_array(
+            mask,
+            (0.0, 1.0, 0.0, 0.0, 0.0, 1.0),
+            None,
+            None,
+            {"INTERNAL_MASK_FLAGS_1": "2"},
+        )
+        m.write(
+            self._path + ".msk",
+            driver="GTiff",
+            compress="DEFLATE",
+            options={"TILED": "YES", "GEOREFERENCED": "NO"},
+            overviews=self._overview_factors or None,
+            overview_resampling="nearest",
+        )
 
     def _write_streaming(
         self,
@@ -2421,6 +2464,7 @@ class DatasetWriter(DatasetReader):
         band_md: list[dict[str, Any]],
         colormap: list[tuple[int, int, int, int]] | None,
         extra: dict[str, Any],
+        sidecar_mask: bool = False,
     ) -> None:
         """Writes a GeoTIFF in rows of blocks from the file-backed pixels.
 
@@ -2434,6 +2478,7 @@ class DatasetWriter(DatasetReader):
             band_md: Band metadata.
             colormap: The color table.
             extra: GCPs and RPCs (the mask is taken from the dataset).
+            sidecar_mask: Whether the mask goes to a `.msk` sidecar rather than the file.
         """
         w = _terrio.GeoTiffWriter(
             target,
@@ -2451,12 +2496,16 @@ class DatasetWriter(DatasetReader):
             colormap=colormap,
             gcps=extra.get("gcps"),
             rpc=extra.get("rpc"),
-            mask=self._mask is not None,
+            mask=self._mask is not None and not sidecar_mask,
         )
         try:
             for y, n in self._slabs():
                 rows = np.ascontiguousarray(self._data[:, y : y + n, :])
-                m = None if self._mask is None else np.ascontiguousarray(self._mask[y : y + n])
+                m = (
+                    None
+                    if self._mask is None or sidecar_mask
+                    else np.ascontiguousarray(self._mask[y : y + n])
+                )
                 w.write(rows, m)
         except BaseException:
             # Closing an incomplete writer fails too ("N rows written of M"): keep the first

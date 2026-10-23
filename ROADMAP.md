@@ -196,9 +196,10 @@ Python:
       GeoTIFF tag, `_RPC.TXT` and `.RPB` sidecars) and written; per-band nodata from `.aux.xml`
       sidecars; `rasterio.shutil` and `rasterio.stack`; writers larger than memory kept in a mapped
       temporary file and written to GeoTIFF in rows of blocks (`terrio.GeoTiffWriter`, Rust's
-      `GeoTiffWriter`).
+      `GeoTiffWriter`); GDAL's `.msk` sidecars read (any local format, overviews included) and
+      written (`GDAL_TIFF_INTERNAL_MASK=NO`, formats without internal masks, kept on `r+`), the
+      same files as rasterio's on Copernicus DEM tiles.
     - [ ] RPC transformers.
-    - [ ] `.msk` sidecars.
     - [ ] A `rio` command line.
 - [x] xarray integration like rioxarray: a `terrio` backend engine with lazy windowed reads (remote
       COGs read tile by tile, dask chunks), and an accessor with rioxarray's methods (`reproject`,
