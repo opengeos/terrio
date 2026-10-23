@@ -92,7 +92,7 @@ netCDF files are written as GDAL writes rasters, with its creation options:
 | `ZLEVEL` | The deflate level, 1 (the default) to 9 |
 | `CHUNKING` | `YES` (compressed variables chunked by row, GDAL's default) or `NO` (one chunk per band) |
 | `GROUP` | A netCDF-4 group for the variables, such as `/science/grid` (terrio's option; groups are created as needed, `FORMAT` defaults to `NC4`) |
-| `APPEND_SUBDATASET` | `YES`: add the raster to an existing file (in its `GROUP`), keeping the file's rasters, as GDAL's option adds a variable (the file is written again; one raster per group) |
+| `APPEND_SUBDATASET` | `YES`: add the raster to an existing file (in its `GROUP`), as GDAL's option adds a variable. The file is written again with its rasters and the new one (one raster per group; its other variables and attributes, and its rasters' chunking and compression, are not kept: the creation options of this write apply to all) |
 
 Several rasters go into one netCDF-4 file, each in its group with its own dimensions,
 coordinate variables and grid mapping: with `terrio::write_netcdf_groups` in Rust,

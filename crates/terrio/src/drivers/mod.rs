@@ -188,7 +188,8 @@ pub(crate) fn write_netcdf_groups(rasters: &[(&str, &RasterDataset)], path: &str
 /// `options` (`FORMAT`, `COMPRESS`, `ZLEVEL`, `CHUNKING`).
 #[cfg(feature = "netcdf-hdf5")]
 pub(crate) fn netcdf_groups_to_bytes(rasters: &[(&str, &RasterDataset)], options: &crate::RasterWriteOptions) -> Result<Vec<u8>> {
-    let co = |key: &str| options.creation_options.iter().rev().find(|(k, _)| k.eq_ignore_ascii_case(key)).map(|(_, v)| v.as_str());
+    // The first of an option given twice, as in `write`.
+    let co = |key: &str| options.creation_options.iter().find(|(k, _)| k.eq_ignore_ascii_case(key)).map(|(_, v)| v.as_str());
     let o = netcdf_write::Options {
         format: co("FORMAT"),
         compress: co("COMPRESS").or(options.compression.as_deref()),
@@ -201,7 +202,9 @@ pub(crate) fn netcdf_groups_to_bytes(rasters: &[(&str, &RasterDataset)], options
 }
 
 /// The rasters of an existing netCDF file with the group each is in, to append another one to
-/// it (`APPEND_SUBDATASET=YES`): each of its raster variables. Files with several variables in
+/// it (`APPEND_SUBDATASET=YES`): each of its raster variables, read as rasters and written again
+/// with the new one (so what terrio's raster model does not hold, such as other variables and
+/// attributes or the original chunking, is not carried over). Files with several variables in
 /// one group cannot be carried over, since terrio writes one raster per group.
 #[cfg(feature = "netcdf-hdf5")]
 fn netcdf_rasters_of(path: &str) -> Result<Vec<(String, RasterDataset)>> {
@@ -267,7 +270,13 @@ pub(crate) fn write(
                     let mut all: Vec<(&str, &RasterDataset)> = existing.iter().map(|(g, ds)| (g.as_str(), ds)).collect();
                     all.push((o.group.unwrap_or(""), &new));
                     let bytes = netcdf_groups_to_bytes(&all, options)?;
-                    Ok(std::fs::write(p, bytes)?)
+                    // Written beside the file, then renamed over it: an interrupted write leaves the
+                    // original as it was.
+                    let tmp = p.with_extension(format!("nc.tmp-{}", std::process::id()));
+                    std::fs::write(&tmp, bytes).and_then(|_| std::fs::rename(&tmp, p)).inspect_err(|_| {
+                        let _ = std::fs::remove_file(&tmp);
+                    })?;
+                    Ok(())
                 })()
             } else {
                 netcdf_write::write(r, nodata, p, &o)
