@@ -5,10 +5,17 @@ once to warm the file cache and then ``--runs`` times; the median wall time is r
 the large-data cases the peak memory (resident set size) too. Results print as a Markdown table
 per group.
 
-Usage: python scripts/benchmark.py [DATA_DIR] [--runs N] [--remote] [--large DIR] [--large-runs N] [--out FILE]
+Usage: python scripts/benchmark.py [DATA_DIR] [--runs N] [--remote] [--large DIR] [--large-runs N] [--threads N] [--out FILE]
 
 ``--large`` adds cases on gigabyte-sized files, which ``scripts/fetch_large_data.sh`` downloads;
 without ``DATA_DIR``, only those run.
+
+Both tools get the same number of threads (``--threads``, all of the machine's by default):
+terrio through ``RAYON_NUM_THREADS``, and GDAL through ``GDAL_NUM_THREADS`` (GeoTIFF and COG
+compression and decompression, JPEG 2000 decoding) and ``gdalwarp -multi -wo NUM_THREADS``, since
+most of GDAL's multithreading is off by default. Mosaics to GeoTIFF run ``gdalbuildvrt`` then
+``gdal_translate``, which copy the tiles' pixels as terrio does, rather than ``gdalwarp``, which
+resamples them.
 
 Needs the GDAL command-line tools on PATH and a release build of terrio
 (``target/release/terrio``, or the path in ``TERRIO_BIN``).
@@ -17,6 +24,7 @@ Needs the GDAL command-line tools on PATH and a release build of terrio
 import argparse
 import os
 import platform
+import shlex
 import shutil
 import statistics
 import subprocess
@@ -28,12 +36,40 @@ TERRIO = os.environ.get("TERRIO_BIN", os.path.join(os.path.dirname(__file__), ".
 USGS = "https://prd-tnm.s3.amazonaws.com/StagedProducts/Elevation/1/TIFF/current/n40w106/USGS_1_n40w106.tif"
 
 
-def cases(d, out):
+def warp(threads):
+    """Return ``gdalwarp`` with its multithreading on.
+
+    Args:
+        threads: The number of threads.
+
+    Returns:
+        The start of the command.
+    """
+    return ["gdalwarp", "-q", "-multi", "-wo", f"NUM_THREADS={threads}"]
+
+
+def mosaic(tiles, vrt, tif):
+    """Return a GDAL mosaic to GeoTIFF that copies pixels: ``gdalbuildvrt`` then ``gdal_translate``.
+
+    Args:
+        tiles: The input tiles.
+        vrt: The intermediate VRT.
+        tif: The output GeoTIFF.
+
+    Returns:
+        A shell command running both, timed as one.
+    """
+    q = shlex.quote
+    return ["sh", "-c", f"gdalbuildvrt -q {q(vrt)} {' '.join(map(q, tiles))} && gdal_translate -q {q(vrt)} {q(tif)}"]
+
+
+def cases(d, out, threads):
     """Return the benchmark cases.
 
     Args:
         d: The test data directory.
         out: A scratch directory for outputs.
+        threads: The number of threads each tool uses.
 
     Returns:
         A list of ``(group, description, terrio_command, gdal_command)`` tuples.
@@ -85,19 +121,19 @@ def cases(d, out):
             "Raster operations",
             "Warp to UTM 13N, nearest: USGS 3DEP tile",
             [t, "warp", p("usgs_dem.tif"), o("e.tif"), "--t-srs", "EPSG:32613"],
-            ["gdalwarp", "-q", "-t_srs", "EPSG:32613", p("usgs_dem.tif"), o("e.tif")],
+            [*warp(threads), "-t_srs", "EPSG:32613", p("usgs_dem.tif"), o("e.tif")],
         ),
         (
             "Raster operations",
             "Warp to UTM 13N, bilinear: USGS 3DEP tile",
             [t, "warp", p("usgs_dem.tif"), o("f.tif"), "--t-srs", "EPSG:32613", "-r", "bilinear"],
-            ["gdalwarp", "-q", "-t_srs", "EPSG:32613", "-r", "bilinear", p("usgs_dem.tif"), o("f.tif")],
+            [*warp(threads), "-t_srs", "EPSG:32613", "-r", "bilinear", p("usgs_dem.tif"), o("f.tif")],
         ),
         (
             "Raster operations",
             "Mosaic 4 USGS 3DEP tiles → GeoTIFF",
             [t, "mosaic", *tiles, o("g.tif")],
-            ["gdalwarp", "-q", *tiles, o("g.tif")],
+            mosaic(tiles, o("g.vrt"), o("g.tif")),
         ),
         (
             "Raster operations",
@@ -150,12 +186,13 @@ def cases(d, out):
     ]
 
 
-def large_cases(d, out):
+def large_cases(d, out, threads):
     """Return the cases on large files (see ``scripts/fetch_large_data.sh``).
 
     Args:
         d: The large data directory.
         out: A scratch directory for outputs.
+        threads: The number of threads each tool uses.
 
     Returns:
         A list of ``(group, description, terrio_command, gdal_command)`` tuples.
@@ -188,9 +225,9 @@ def large_cases(d, out):
             r,
             "Warp the mosaic to EPSG:3857, bilinear",
             [t, "warp", "--t-srs", "EPSG:3857", "-r", "bilinear", dem, o("c.tif")],
-            ["gdalwarp", "-q", "-t_srs", "EPSG:3857", "-r", "bilinear", dem, o("c.tif")],
+            [*warp(threads), "-t_srs", "EPSG:3857", "-r", "bilinear", dem, o("c.tif")],
         ),
-        (r, "Mosaic 16 USGS 3DEP tiles → GeoTIFF", [t, "mosaic", *tiles, o("d.tif")], ["gdalwarp", "-q", *tiles, o("d.tif")]),
+        (r, "Mosaic 16 USGS 3DEP tiles → GeoTIFF", [t, "mosaic", *tiles, o("d.tif")], mosaic(tiles, o("d.vrt"), o("d.tif"))),
         (r, "Hillshade of the mosaic", [t, "dem", "hillshade", dem, o("e.tif")], ["gdaldem", "hillshade", "-q", dem, o("e.tif")]),
         (r, "Slope of the mosaic", [t, "dem", "slope", dem, o("f.tif")], ["gdaldem", "slope", "-q", dem, o("f.tif")]),
         (
@@ -357,19 +394,29 @@ def main():
     ap.add_argument("--remote", action="store_true", help="include remote reads")
     ap.add_argument("--large", help="include the cases on large files in this directory (see scripts/fetch_large_data.sh)")
     ap.add_argument("--large-runs", type=int, default=1, help="timed runs of the large cases")
+    ap.add_argument("--threads", type=int, default=os.cpu_count(), help="threads for each tool (default: all)")
     ap.add_argument("--out", help="also write the tables to this file")
     args = ap.parse_args()
+    threads = args.threads
     # No .aux.xml statistics caches: every run computes from the pixels. No directory listing when
-    # opening remote files, as recommended for cloud data.
-    env = dict(os.environ, GDAL_PAM_ENABLED="NO", GDAL_DISABLE_READDIR_ON_OPEN="EMPTY_DIR")
+    # opening remote files, as recommended for cloud data. The same number of threads for both
+    # tools: GDAL's multithreading is mostly off unless GDAL_NUM_THREADS is set.
+    env = dict(
+        os.environ,
+        GDAL_PAM_ENABLED="NO",
+        GDAL_DISABLE_READDIR_ON_OPEN="EMPTY_DIR",
+        GDAL_NUM_THREADS=str(threads),
+        RAYON_NUM_THREADS=str(threads),
+    )
     out = tempfile.mkdtemp(prefix="terrio-bench-")
     if not args.data and not args.large:
         ap.error("give DATA_DIR, --large DIR or both")
-    all_cases = [(c, args.runs, False) for c in (cases(os.path.abspath(args.data), out) if args.data else [])]
+    all_cases = [(c, args.runs, False) for c in (cases(os.path.abspath(args.data), out, threads) if args.data else [])]
     all_cases += [(c, args.runs, False) for c in (remote_cases() if args.remote else [])]
-    all_cases += [(c, args.large_runs, True) for c in (large_cases(os.path.abspath(args.large), out) if args.large else [])]
+    all_cases += [(c, args.large_runs, True) for c in (large_cases(os.path.abspath(args.large), out, threads) if args.large else [])]
     lines = [
-        f"Machine: {platform.processor() or platform.machine()}, {os.cpu_count()} threads, {platform.system()}. "
+        f"Machine: {platform.processor() or platform.machine()}, {os.cpu_count()} threads, {platform.system()}; "
+        f"{threads} threads for each tool. "
         f"{gdal_version(env)}; terrio {subprocess.run([TERRIO, '--version'], capture_output=True, text=True).stdout.split()[-1]}. "
         f"Median of {args.runs} runs after a warm-up run; wall time of the whole command.",
         "",

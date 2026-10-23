@@ -715,7 +715,7 @@ fn process<T: Px>(rows: Rows<T>, nodata: Option<T>, dst_nodata: f32, edges: bool
         let body = &mut out[(i0 - o0) * w..(i1 - o0) * w];
         #[cfg(not(target_arch = "wasm32"))]
         {
-            let threads = std::thread::available_parallelism().map_or(1, |n| n.get()).min(16);
+            let threads = crate::par::threads().min(16);
             let rows_per = (i1 - i0).div_ceil(threads).max(1);
             std::thread::scope(|s| {
                 for (c, chunk) in body.chunks_mut(rows_per * w).enumerate() {
