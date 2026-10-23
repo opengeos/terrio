@@ -1281,6 +1281,15 @@ class TerrioArray(XRasterBase):
             )
         if isinstance(resampling, str):
             resampling = convert_str_to_resampling(resampling)
+        # An image georeferenced by GCPs is warped through them, as rioxarray does.
+        gcps = self.get_gcps()
+        if gcps:
+            kwargs.setdefault("gcps", gcps)
+        elif self.get_rpcs() is not None:
+            raise NotImplementedError(
+                "terrio does not warp with RPCs yet: reproject an image georeferenced by GCPs "
+                "or a transform"
+            )
         src_affine = self.transform(recalc=True)
         if transform is None:
             dst_affine, dst_width, dst_height = make_dst_affine(
@@ -1304,7 +1313,10 @@ class TerrioArray(XRasterBase):
             NODATA_DTYPE_MAP.get(self._obj.dtype.name) if self.nodata is None else self.nodata
         )
         dst_nodata = default_nodata if nodata is None else nodata
-        src_values, src_t = _flip_north_up(np.asarray(self._obj.values), src_affine)
+        if gcps:
+            src_values, src_t = np.asarray(self._obj.values), None
+        else:
+            src_values, src_t = _flip_north_up(np.asarray(self._obj.values), src_affine)
         dst_t = _north_up(dst_affine, dst_width, dst_height)
         warp.reproject(
             source=np.ascontiguousarray(src_values),
@@ -1341,7 +1353,8 @@ class TerrioArray(XRasterBase):
                 dst_affine=dst_affine,
                 dst_width=dst_width,
                 dst_height=dst_height,
-                force_generate=False,
+                # An image without coordinates (GCPs) gets the target grid's.
+                force_generate=bool(gcps),
             ),
             dims=tuple(dst_dims),
             attrs=new_attrs,

@@ -92,9 +92,8 @@ fn format_g(x: f64, precision: usize) -> String {
     let sci = format!("{:.*e}", p - 1, x);
     let (mantissa, exponent) = sci.split_once('e').unwrap_or((&sci, "0"));
     let exp: i32 = exponent.parse().unwrap_or(0);
-    let trim = |s: &str| -> String {
-        if s.contains('.') { s.trim_end_matches('0').trim_end_matches('.').to_string() } else { s.to_string() }
-    };
+    let trim =
+        |s: &str| -> String { if s.contains('.') { s.trim_end_matches('0').trim_end_matches('.').to_string() } else { s.to_string() } };
     if exp < -4 || exp >= p as i32 {
         format!("{}e{}{:02}", trim(mantissa), if exp < 0 { '-' } else { '+' }, exp.abs())
     } else {
@@ -295,6 +294,9 @@ pub(crate) fn data_variable_paths(path: &Path) -> Result<Vec<String>> {
     Ok(data_variables(&vars).iter().map(|r| r.full.clone()).collect())
 }
 
+/// The prefix of metadata items for terrio's own use, which `info` and `terrio.rio` do not show.
+pub(crate) const INTERNAL: &str = "TERRIO#";
+
 /// GDAL's metadata of a variable read as a raster: the attributes of the variable and of its
 /// coordinate variables (`var#attr`), its other dimensions (`NETCDF_DIM_EXTRA`, `_DEF`,
 /// `_VALUES`), and each band's (`BAND_<n>#NETCDF_VARNAME`, the variable's attributes, and the
@@ -303,12 +305,21 @@ pub(crate) fn data_variable_paths(path: &Path) -> Result<Vec<String>> {
 fn gdal_variable_metadata(f: &NcFile, var_ref: &VarRef, (y_dim, x_dim): (usize, usize), plain: bool, out: &mut Vec<(String, String)>) {
     let var = var_ref.v;
     let dims = var.dimensions();
+    // Variables are named by their full names (`/group/var` below the root), as GDAL names them.
     for d in dims {
         if let Some((_, c)) = var_ref.lookup(&d.name).filter(|(_, c)| c.ndim() == 1) {
-            out.extend(c.attributes().iter().map(|a| (format!("{}#{}", d.name, a.name), attr_text(a))));
+            let name = var_ref.full_name(&d.name).unwrap_or_else(|| d.name.clone());
+            out.extend(c.attributes().iter().map(|a| (format!("{name}#{}", a.name), attr_text(a))));
         }
     }
-    out.extend(var.attributes().iter().map(|a| (format!("{}#{}", var.name, a.name), attr_text(a))));
+    out.extend(var.attributes().iter().map(|a| (format!("{}#{}", var_ref.full, a.name), attr_text(a))));
+    // The grid mapping variable's too.
+    if let Some(gm) = attr_str(var, "grid_mapping").and_then(|g| g.split_whitespace().next().map(str::to_string))
+        && let Some((_, g)) = var_ref.lookup(&gm)
+    {
+        let name = var_ref.full_name(&gm).unwrap_or(gm);
+        out.extend(g.attributes().iter().map(|a| (format!("{name}#{}", a.name), attr_text(a))));
+    }
     let extra: Vec<usize> = (0..dims.len()).filter(|&i| i != x_dim && i != y_dim).collect();
     // Each other dimension's coordinate values, as text.
     let mut values: Vec<Vec<String>> = Vec::new();
@@ -331,8 +342,16 @@ fn gdal_variable_metadata(f: &NcFile, var_ref: &VarRef, (y_dim, x_dim): (usize, 
     }
     let sizes: Vec<usize> = if plain { Vec::new() } else { extra.iter().map(|&i| dims[i].size as usize).collect() };
     let bands: usize = sizes.iter().product::<usize>().max(1);
+    // The packing's exact values, for the bands' scales and offsets (GDAL's band scale and
+    // offset), as internal items: `TERRIO#BAND_<n>_SCALE`, `TERRIO#BAND_<n>_OFFSET`.
+    let packing = [("SCALE", attr_f64(var, "scale_factor")), ("OFFSET", attr_f64(var, "add_offset"))];
     for b in 0..bands {
         let n = b + 1;
+        for (what, value) in packing {
+            if let Some(v) = value {
+                out.push((format!("{INTERNAL}BAND_{n}_{what}"), format!("{v:?}")));
+            }
+        }
         out.push((format!("BAND_{n}#NETCDF_VARNAME"), var.name.clone()));
         out.extend(var.attributes().iter().map(|a| (format!("BAND_{n}#{}", a.name), attr_text(a))));
         let mut rest = b;
@@ -594,11 +613,6 @@ fn read_file(f: &NcFile, path: &Path, hdf5: &dyn Fn() -> Option<hdf5_reader::Hdf
         common::make_raster(cols, rows, raster_bands, data, gt.unwrap_or(common::NO_GEOTRANSFORM), crs.unwrap_or_default(), nodata)?;
     if south_up {
         flip(&mut raster);
-    }
-    for key in ["scale_factor", "add_offset"] {
-        if let Some(v) = attr_f64(var, key) {
-            raster.metadata.push((key.to_string(), format!("{v}")));
-        }
     }
     for a in f.global_attributes().map_err(|e| err(path, e))? {
         raster.metadata.push((format!("NC_GLOBAL#{}", a.name), attr_text(a)));
@@ -868,6 +882,25 @@ fn grid_mapping_crs(g: &NcVariable) -> Option<CrsInfo> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn formats_numbers_as_c_does() {
+        assert_eq!(format_g(f64::from(0.01f32), 8), "0.0099999998");
+        assert_eq!(format_g(0.01, 16), "0.01");
+        assert_eq!(format_g(-9999.0, 8), "-9999");
+        assert_eq!(format_g(1e20, 8), "1e+20");
+        assert_eq!(format_g(1.5e-5, 8), "1.5e-05");
+        assert_eq!(format_g(123456789.0, 8), "1.2345679e+08");
+        assert_eq!(format_g(f64::NAN, 8), "nan");
+        assert_eq!(format_g(0.0, 8), "0");
+    }
+
+    #[test]
+    fn masks_values_outside_the_valid_range() {
+        let mut d = RasterData::I16(vec![-9997, 0, 255, 300, -9999]);
+        mask_outside(&mut d, 0.0, 255.0, -9999.0);
+        assert_eq!(d.to_f64_vec(), vec![-9999.0, 0.0, 255.0, -9999.0, -9999.0]);
+    }
 
     #[test]
     fn parses_subdataset_names() {

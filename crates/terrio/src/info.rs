@@ -241,7 +241,7 @@ fn raster_info_at(ds: &RasterDataset, options: &InfoOptions, path: Option<&str>,
         extent,
         bands,
         overviews: Vec::new(),
-        metadata: r.metadata.iter().filter(|(k, _)| subdataset_index(k).is_none()).cloned().collect(),
+        metadata: r.metadata.iter().filter(|(k, _)| subdataset_index(k).is_none() && !k.starts_with("TERRIO#")).cloned().collect(),
         subdatasets: subdatasets_from_metadata(&r.metadata),
         geolocation: ds.geolocation.as_ref().map(|g| g.items()).unwrap_or_default(),
     }
@@ -359,7 +359,7 @@ fn lazy_raster_info_at(r: &mut LazyRaster, options: &InfoOptions, path: Option<&
         extent,
         bands,
         overviews,
-        metadata: r.metadata(),
+        metadata: r.metadata().into_iter().filter(|(k, _)| !k.starts_with("TERRIO#")).collect(),
         subdatasets: Vec::new(),
         geolocation: Vec::new(),
     })

@@ -1113,6 +1113,7 @@ def _subdataset_filter(
     Returns:
         re.Pattern: The pattern.
     """
+
     def alternatives(names: str | Sequence[str]) -> str:
         names = [names] if isinstance(names, str) else list(names)
         return rf"(?:{'|'.join(re.escape(n) for n in names)})"
@@ -1146,7 +1147,9 @@ def _load_subdatasets(
     Returns:
         xarray.Dataset | list[xarray.Dataset]: A Dataset, or one per shape.
     """
-    pattern = _subdataset_filter(group, variable) if group is not None or variable is not None else None
+    pattern = (
+        _subdataset_filter(group, variable) if group is not None or variable is not None else None
+    )
     groups: dict[tuple[int, int], dict[Hashable, xarray.DataArray]] = defaultdict(dict)
     for name in src.subdatasets:
         if pattern is not None and not pattern.match(name):

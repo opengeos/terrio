@@ -210,8 +210,9 @@ Python:
       `.rio` methods (CRS, transform, bounds, nodata, `isel_window`, `clip_box`, `clip`, `pad_box`,
       `reproject`, `reproject_match`, `interpolate_na`, `to_raster` to GeoTIFF, COG and GeoZarr),
       `merge_arrays` and `merge_datasets`, and an opt-in `.rio` alias; compared with rioxarray on
-      synthetic and real files (257 checks, none differing).
-    - [ ] Subdatasets, GCPs and RPCs.
+      synthetic and real files (257 checks, none differing); subdatasets (`group=`,
+      `variable=`), GCPs and RPCs as rioxarray opens, stores, writes and (GCPs) reprojects them,
+      identical to rioxarray on an ESA CCI soil moisture netCDF and ICEYE GCP and RPC images.
 - [x] Wheels with the GDAL backend as an optional extra, for the formats terrio doesn't read itself.
       Done: the Python package's `gdal` feature, built from source against an installed GDAL
       (`maturin build --features gdal`).

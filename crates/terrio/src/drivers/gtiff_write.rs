@@ -625,7 +625,9 @@ fn plan(raster: &Raster, opts: &TiffOptions) -> Result<Plan> {
     let samples = raster.bands / parts;
     let jpeg = opts.compression == Compression::Jpeg;
     // One band is laid out the same, band- or pixel-interleaved.
-    if jpeg && (raster.data_type != DataType::U8 || !matches!(samples, 1 | 3) || (opts.planar && samples > 1) || !opts.color_table.is_empty()) {
+    if jpeg
+        && (raster.data_type != DataType::U8 || !matches!(samples, 1 | 3) || (opts.planar && samples > 1) || !opts.color_table.is_empty())
+    {
         return Err(Error::Unsupported("JPEG is written for 1 or 3 Byte bands, pixel-interleaved".into()));
     }
     // Two or four interleaved bands would be gray and alpha or RGBA in JPEG XL, which GDAL reads

@@ -7,6 +7,7 @@ GDAL reads it).
 
 from __future__ import annotations
 
+import contextlib
 import os
 import re
 import xml.etree.ElementTree as ET
@@ -281,6 +282,15 @@ def default_structure(raster: Any) -> Structure:
     # The driver's metadata: band items (`BAND_<n>#<key>`), and the dataset's (not subdatasets,
     # which are the `SUBDATASETS` domain).
     for key, value in getattr(raster, "metadata", None) or []:
+        # terrio's own items: the bands' exact scales and offsets (`TERRIO#BAND_<n>_SCALE`).
+        if key.startswith("TERRIO#BAND_"):
+            band_no, _, what = key[len("TERRIO#BAND_") :].partition("_")
+            if band_no.isdigit() and 1 <= int(band_no) <= n:
+                target = s.scales if what == "SCALE" else s.offsets if what == "OFFSET" else None
+                if target is not None:
+                    with contextlib.suppress(ValueError):
+                        target[int(band_no) - 1] = float(value)
+            continue
         band, sep, item = key.partition("#")
         if sep and band.startswith("BAND_") and band[5:].isdigit():
             b = int(band[5:])
