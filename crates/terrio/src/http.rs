@@ -537,7 +537,14 @@ fn request(method: &str, url: &str, body: Option<&[u8]>, headers: &[(String, Str
             )));
         }
         if matches!(status, 429 | 500 | 502 | 503 | 504) && attempt < options.max_retry {
-            backoff(&mut attempt);
+            // A rate limit's `Retry-After` (seconds, at most a minute), else the backoff.
+            match response.headers().get("retry-after").and_then(|v| v.to_str().ok()).and_then(|v| v.trim().parse::<u64>().ok()) {
+                Some(secs) => {
+                    std::thread::sleep(std::time::Duration::from_secs(secs.min(60)));
+                    attempt += 1;
+                }
+                None => backoff(&mut attempt),
+            }
             continue;
         }
         let mut data = Vec::new();

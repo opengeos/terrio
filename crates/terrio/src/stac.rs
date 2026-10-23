@@ -112,11 +112,21 @@ fn next_request(doc: &Value, cur: &Request) -> Option<Request> {
     let method = |l: &Value| l["method"].as_str().unwrap_or("GET").to_ascii_uppercase();
     let link = links.iter().find(|l| method(l) == "GET").or_else(|| links.iter().find(|l| method(l) == "POST"))?;
     let url = resolve_href(&cur.url, link["href"].as_str()?);
-    let headers: Vec<(String, String)> =
+    let link_headers: Vec<(String, String)> =
         link["headers"].as_object().into_iter().flatten().filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_string()))).collect();
-    // The previous page's headers (keys, perhaps) go only to the same origin.
+    // The previous page's headers (keys, perhaps) go only to the same origin: as they are when the
+    // link has none, under the link's when it says `merge`.
     let same_origin = crate::vfs::url_origin(&url).is_some() && crate::vfs::url_origin(&url) == crate::vfs::url_origin(&cur.url);
-    let headers = if headers.is_empty() && same_origin { cur.headers.clone() } else { headers };
+    let headers = match (same_origin, link_headers.is_empty(), link["merge"] == true) {
+        (true, true, _) => cur.headers.clone(),
+        (true, false, true) => {
+            let mut h: Vec<(String, String)> =
+                cur.headers.iter().filter(|(k, _)| !link_headers.iter().any(|(l, _)| l.eq_ignore_ascii_case(k))).cloned().collect();
+            h.extend(link_headers);
+            h
+        }
+        _ => link_headers,
+    };
     if method(link) == "GET" {
         return Some(Request { url, body: None, headers });
     }
@@ -724,7 +734,7 @@ fn sanitize_crs(v: &str) -> String {
 }
 
 /// Groups the assets of items as GDAL's STACIT driver does (`ParseAsset()`).
-fn group_assets(items: &[(Value, String)], f: &Filters) -> Result<Groups> {
+fn group_assets(items: &[(Value, String)], f: &Filters) -> Groups {
     let mut groups: Groups = BTreeMap::new();
     let sign = f.sign.unwrap_or_else(SignMode::from_env);
     let crs_filter = f.crs.as_deref().map(sanitize_crs);
@@ -820,7 +830,7 @@ fn group_assets(items: &[(Value, String)], f: &Filters) -> Result<Groups> {
             });
         }
     }
-    Ok(groups)
+    groups
 }
 
 /// The subdatasets of grouped assets, named and described as GDAL's STACIT driver does.
@@ -1077,7 +1087,7 @@ fn probe(path: &str) -> Option<Result<Probe>> {
 fn footprint_dataset(doc: Value, path: &str, max_items: usize) -> Result<(VectorDataset, Groups)> {
     let name = layer_name(&doc, path);
     let items = load_items(doc, path, max_items)?;
-    let groups = group_assets(&items.items, &Filters { sign: Some(SignMode::None), ..Filters::default() })?;
+    let groups = group_assets(&items.items, &Filters { sign: Some(SignMode::None), ..Filters::default() });
     let layer = footprints(&items.items, &name)?;
     Ok((crate::dataset::finish_vector(vec![layer], path, VectorDriver::GeoJSON), groups))
 }
@@ -1117,7 +1127,7 @@ pub(crate) fn open_lazy(path: &str) -> Option<Result<LazyRaster>> {
                 max = max.max(digits.parse().unwrap_or(0));
             }
             let items = load_items_from(doc, &request, max)?;
-            let groups = group_assets(&items.items, &filters)?;
+            let groups = group_assets(&items.items, &filters);
             open_mosaic(&source, groups, filters.resolution.as_deref(), &filters.kept_options())
         })(),
     })
@@ -1138,7 +1148,7 @@ pub(crate) fn info(path: &str, options: &InfoOptions) -> Option<Result<Info>> {
                 let max = filters.max_items.unwrap_or(DEFAULT_MAX_ITEMS);
                 let name = layer_name(&doc, &source);
                 let items = load_items_from(doc, &request, max)?;
-                let groups = group_assets(&items.items, &Filters { sign: Some(SignMode::None), ..filters.clone() })?;
+                let groups = group_assets(&items.items, &Filters { sign: Some(SignMode::None), ..filters.clone() });
                 let count: usize = groups.values().flat_map(|a| a.values()).map(|g| g.by_crs.len()).sum();
                 if count <= 1 {
                     return Ok(None);
@@ -1276,6 +1286,13 @@ mod tests {
         assert_eq!(next_request(&page, &keyed).map(|r| r.headers), Some(keyed.headers.clone()));
         let page = json!({"links": [{"rel": "next", "href": "https://elsewhere.org/search?page=2"}]});
         assert_eq!(next_request(&page, &keyed).map(|r| r.headers), Some(Vec::new()));
+        // `merge`: the link's headers over the previous ones.
+        let page =
+            json!({"links": [{"rel": "next", "method": "POST", "href": "/search", "merge": true, "headers": {"Search-After": "t"}}]});
+        assert_eq!(
+            next_request(&page, &keyed).map(|r| r.headers),
+            Some(vec![("X-Key".to_string(), "k".to_string()), ("Search-After".to_string(), "t".to_string())])
+        );
     }
 
     #[test]
@@ -1308,6 +1325,18 @@ mod tests {
         };
         assert!(filters.check().is_ok());
         assert_eq!(filters.kept_options(), ",method=POST,sign=none");
+    }
+
+    #[cfg(remote)]
+    #[test]
+    fn counts_seconds_to_expiry() {
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+        // 2000-01-01T00:00:00Z is 946684800: long past.
+        assert_eq!(seconds_until("2000-01-01T00:00:00Z"), None);
+        // 2100-03-01T12:30:15Z is 4107587415 (a second of slack for the clock ticking).
+        let s = seconds_until("2100-03-01T12:30:15Z").expect("a future time");
+        assert!((4_107_587_415 - now).abs_diff(s) <= 1, "{s}");
+        assert_eq!(seconds_until("not a time"), None);
     }
 
     #[test]
