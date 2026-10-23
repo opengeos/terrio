@@ -145,13 +145,15 @@ wasm-opt wasm-pack downloads (binaryen 117) cannot read 64-bit tables, so the mo
 passed through it. Three crates treat WebAssembly as wasm32 only, and the build patches copies of
 them (`target_arch = "wasm32"` read as `target_family = "wasm"`): `tar`, which wbraster depends
 on, `zstd-sys` (its libc shim, for GeoParquet's Zstandard) and `arrow-buffer`; getrandom, which
-seeds ahash's hash maps, has no wasm64 backend and is given one (`crypto.getRandomValues`).
+seeds ahash's hash maps, has no wasm64 backend and is given one (`crypto.getRandomValues`). The C
+code (Zstandard) needs clang 20 or later: older ones call through a 32-bit function table, which
+Rust's 64-bit one rejects at link time, leaving a module that does not validate.
 
 ## Building
 
 ```sh
 node js/build.mjs                         # the npm package in js/pkg: all modules, built for size
-node --test js/tests/package.test.mjs     # (the threaded module needs the nightly js/build.mjs names)
+node --test js/tests/package.test.mjs     # (threads and memory64 need the nightly js/build.mjs names; memory64, clang 20+)
 TERRIO_JS_LOAD=../pkg/load.js node --test js/tests/node.test.mjs   # the suite on the threaded module
 TERRIO_JS_LOAD=../pkg/load.js TERRIO_MEMORY64=1 TERRIO_LARGE_TESTS=1 node --test js/tests/node.test.mjs  # memory64, > 4 GB
 node js/tests/browser.mjs ../terrio-data  # in headless browsers (Playwright), timings included

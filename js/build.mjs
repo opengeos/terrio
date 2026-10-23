@@ -121,6 +121,27 @@ function wasmPackTool(prefix, file) {
 }
 
 /**
+ * The C compiler for wasm64 (Zstandard's C sources): a clang of LLVM 20 or later, whose indirect
+ * calls index a 64-bit table as Rust's do (an older clang wraps the index to 32 bits, and the
+ * module it links fails to validate). CC_wasm64_unknown_unknown, else the first suitable of
+ * `clang`, `clang-20`... on PATH.
+ */
+function wasm64Clang() {
+  const major = (cc) => {
+    try {
+      return Number(/clang version (\d+)/.exec(execFileSync(cc, ["--version"]).toString())?.[1] ?? 0);
+    } catch {
+      return 0;
+    }
+  };
+  const given = process.env.CC_wasm64_unknown_unknown;
+  const candidates = given ? [given] : ["clang", ...Array.from({ length: 10 }, (_, i) => `clang-${29 - i}`)];
+  const cc = candidates.find((c) => major(c) >= 20);
+  if (!cc) throw new Error("the memory64 module needs clang 20 or later (CC_wasm64_unknown_unknown, or clang-20 on PATH)");
+  return cc;
+}
+
+/**
  * Builds the memory64 module (wasm64-unknown-unknown): cargo, then wasm-bindgen, which wasm-pack
  * does not run for that target. Up to 16 GB of memory, V8's limit for 64-bit memories.
  */
@@ -164,7 +185,7 @@ function buildMemory64(outDir) {
     execFileSync("rustup", ["run", NIGHTLY, "cargo", "build", "-p", "terrio-js", "--target", target, ...cargoProfile, "-Z", "build-std=panic_abort,std", ...patches], {
       cwd: crate,
       stdio: "inherit",
-      env: { ...process.env, RUSTFLAGS: rustflags.join(" "), CARGO_TARGET_DIR: targetDir },
+      env: { ...process.env, RUSTFLAGS: rustflags.join(" "), CARGO_TARGET_DIR: targetDir, CC_wasm64_unknown_unknown: wasm64Clang() },
     });
   } finally {
     writeFileSync(lockPath, lock);
