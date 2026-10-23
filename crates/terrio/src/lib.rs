@@ -51,7 +51,8 @@
 //! after the GDAL utility's options: [`ops::warp`], [`ops::translate`], [`ops::mosaic`],
 //! [`ops::rasterize`], [`ops::polygonize`], [`ops::dem`], [`ops::calc`], [`ops::proximity`],
 //! [`ops::sieve`], [`ops::geometry`] (centroids, singleparts and vertices), [`ops::footprint`],
-//! [`ops::sample`] and the vector filters of `ogr2ogr` ([`ops::vector_filter`]).
+//! [`ops::sample`], [`ops::contour`], [`ops::zonal`] and the vector filters of `ogr2ogr`
+//! ([`ops::vector_filter`], [`ops::sql::query`]).
 //!
 //! ```no_run
 //! use terrio::crs::SpatialRef;

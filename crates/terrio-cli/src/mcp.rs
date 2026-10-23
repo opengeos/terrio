@@ -407,7 +407,7 @@ mod tests {
         let tools = r["result"]["tools"].as_array().unwrap();
         let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
         assert!(names.contains(&"info") && names.contains(&"convert") && names.contains(&"filter"));
-        for name in ["centroid", "singlepart", "vertices", "footprint", "sample"] {
+        for name in ["centroid", "singlepart", "vertices", "footprint", "sample", "contour", "zonal-stats", "sql"] {
             assert!(names.contains(&name), "missing processing command {name}");
         }
         assert!(!names.contains(&"mcp") && !names.contains(&"help"));

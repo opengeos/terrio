@@ -119,34 +119,133 @@ pub struct SampleArgs {
     input: VectorInput,
     #[command(flatten)]
     output: VectorOutput,
-    /// A raster to sample (repeat for multiple rasters). Each raster is loaded into memory.
+    /// An input raster (repeat for multiple rasters). Each raster is loaded into memory.
     #[arg(long = "raster", required = true, value_name = "PATH")]
     rasters: Vec<String>,
-    /// Bands to sample from every raster, from 1, comma-separated. By default, band 1.
+    /// Bands from every raster, from 1, comma-separated. By default, band 1.
     #[arg(short = 'b', long = "band", value_delimiter = ',', default_value = "1")]
     bands: Vec<usize>,
     /// Output field prefix, one per --raster in the same order. By default, its file stem.
-    /// Fields are PREFIX_bN; name collisions get _2, _3, etc.
+    /// Base field names are PREFIX_bN; zonal statistics append the statistic name.
     #[arg(long = "prefix", value_name = "NAME")]
     prefixes: Vec<String>,
 }
 
 pub fn sample(a: SampleArgs) -> Result<()> {
-    if !a.prefixes.is_empty() && a.prefixes.len() != a.rasters.len() {
-        return Err(Error::InvalidArgument("give one --prefix per --raster, or omit all prefixes".into()));
-    }
-    if a.prefixes.iter().any(|p| p.trim().is_empty()) {
-        return Err(Error::InvalidArgument("sample prefixes cannot be empty".into()));
-    }
-    let rasters = a.rasters.iter().map(|p| super::quiet(|| terrio::open_raster(p))).collect::<Result<Vec<_>>>()?;
+    let (rasters, prefixes) = sample_sources(&a)?;
     let mut inputs = Vec::new();
     for (i, raster) in rasters.iter().enumerate() {
-        let stem = std::path::Path::new(&a.rasters[i]).file_stem().and_then(|s| s.to_str()).unwrap_or("raster");
-        let prefix = a.prefixes.get(i).map_or(stem, String::as_str);
         for &band in &a.bands {
-            inputs.push(SampleInput { field_name: format!("{prefix}_b{band}"), raster, band });
+            inputs.push(SampleInput { field_name: format!("{}_b{band}", prefixes[i]), raster, band });
         }
     }
     let layers = a.input.open()?.iter().map(|l| terrio::ops::sample::sample(l, &inputs)).collect::<Result<Vec<_>>>()?;
     a.output.write(layers)
+}
+
+fn sample_sources(a: &SampleArgs) -> Result<(Vec<terrio::RasterDataset>, Vec<String>)> {
+    if !a.prefixes.is_empty() && a.prefixes.len() != a.rasters.len() {
+        return Err(Error::InvalidArgument("give one --prefix per --raster, or omit all prefixes".into()));
+    }
+    if a.prefixes.iter().any(|p| p.trim().is_empty()) {
+        return Err(Error::InvalidArgument("raster field prefixes cannot be empty".into()));
+    }
+    let rasters = a.rasters.iter().map(|p| super::quiet(|| terrio::open_raster(p))).collect::<Result<Vec<_>>>()?;
+    let mut prefixes = Vec::new();
+    for (i, path) in a.rasters.iter().enumerate() {
+        let stem = std::path::Path::new(path).file_stem().and_then(|s| s.to_str()).unwrap_or("raster");
+        let prefix = a.prefixes.get(i).map_or(stem, String::as_str);
+        prefixes.push(prefix.to_string());
+    }
+    Ok((rasters, prefixes))
+}
+
+#[derive(clap::Args)]
+pub struct ZonalArgs {
+    #[command(flatten)]
+    sources: SampleArgs,
+    /// Statistics, comma-separated: count,min,max,mean,sum,stddev,median. Uses population standard deviation.
+    #[arg(long, value_delimiter = ',', default_value = "count,min,max,mean,sum,stddev")]
+    stats: Vec<String>,
+    /// Include every pixel touched by each polygon, instead of pixels whose centres are inside.
+    #[arg(long)]
+    all_touched: bool,
+}
+
+pub fn zonal(a: ZonalArgs) -> Result<()> {
+    use terrio::ops::zonal::{Statistic, ZonalInput, ZonalOptions, zonal_stats};
+    let options = ZonalOptions { stats: a.stats.iter().map(|s| Statistic::parse(s)).collect::<Result<_>>()?, all_touched: a.all_touched };
+    let (rasters, prefixes) = sample_sources(&a.sources)?;
+    let mut inputs = Vec::new();
+    for (i, raster) in rasters.iter().enumerate() {
+        for &band in &a.sources.bands {
+            inputs.push(ZonalInput { prefix: format!("{}_b{band}", prefixes[i]), raster, band });
+        }
+    }
+    let layers = a.sources.input.open()?.iter().map(|l| zonal_stats(l, &inputs, &options)).collect::<Result<Vec<_>>>()?;
+    a.sources.output.write(layers)
+}
+
+#[derive(clap::Args)]
+pub struct SqlArgs {
+    #[command(flatten)]
+    input: VectorInput,
+    #[command(flatten)]
+    output: VectorOutput,
+    /// Read-only SELECT: fields/aliases, FROM layer, optional WHERE, ORDER BY field and LIMIT.
+    #[arg(short = 'q', long = "query", alias = "sql")]
+    query: String,
+}
+
+pub fn sql(a: SqlArgs) -> Result<()> {
+    let result = terrio::ops::sql::query(&a.input.open()?, &a.query)?;
+    a.output.write(vec![result])
+}
+
+#[derive(clap::Args)]
+pub struct ContourArgs {
+    /// The input elevation raster.
+    input: String,
+    #[command(flatten)]
+    output: VectorOutput,
+    /// Band to contour, from 1.
+    #[arg(short = 'b', long, default_value_t = 1)]
+    band: usize,
+    /// Positive elevation interval. Supply an interval or fixed levels.
+    #[arg(short = 'i', long)]
+    interval: Option<f64>,
+    /// Offset for interval levels.
+    #[arg(long, default_value_t = 0.0, allow_negative_numbers = true)]
+    offset: f64,
+    /// Fixed elevation levels, comma-separated. Can be combined with an interval.
+    #[arg(long, value_delimiter = ',', allow_negative_numbers = true)]
+    levels: Vec<f64>,
+    /// Elevation field name.
+    #[arg(short = 'a', long = "field", default_value = "ELEV")]
+    field: String,
+    /// Include elevation in each vertex's Z coordinate.
+    #[arg(long = "3d")]
+    with_z: bool,
+    /// Override the input nodata value.
+    #[arg(long, allow_negative_numbers = true)]
+    nodata: Option<f64>,
+    /// Include declared nodata pixels as data. Non-finite values are always excluded.
+    #[arg(long, conflicts_with = "nodata")]
+    ignore_nodata: bool,
+}
+
+pub fn contour(a: ContourArgs) -> Result<()> {
+    let ds = super::quiet(|| terrio::open_raster(&a.input))?;
+    let options = terrio::ops::contour::ContourOptions {
+        band: a.band,
+        interval: a.interval,
+        offset: a.offset,
+        levels: a.levels,
+        field_name: a.field,
+        with_z: a.with_z,
+        nodata: a.nodata,
+        ignore_nodata: a.ignore_nodata,
+        ..Default::default()
+    };
+    a.output.write(vec![terrio::ops::contour::contour(&ds, &options)?])
 }

@@ -45,6 +45,14 @@ enum Command {
     Footprint(cmd::processing::FootprintArgs),
     /// Sample one or more raster bands at points, transforming coordinates for each raster.
     Sample(cmd::processing::SampleArgs),
+    /// Contour lines from a raster band, with interval or fixed elevation levels.
+    #[command(visible_alias = "contours")]
+    Contour(cmd::processing::ContourArgs),
+    /// Per-polygon statistics across multiple raster bands, with CRS transformations.
+    #[command(visible_alias = "zonal")]
+    ZonalStats(cmd::processing::ZonalArgs),
+    /// Query vector layers with read-only SELECT, WHERE, ORDER BY and LIMIT.
+    Sql(cmd::processing::SqlArgs),
     /// Subset, resize, rescale or change the type of a raster (like gdal_translate).
     Translate(cmd::translate::Args),
     /// Reproject and resample rasters (like gdalwarp).
@@ -121,6 +129,9 @@ fn run_on_this_thread(args: Vec<OsString>, terrio: Option<Vec<OsString>>) -> i32
         Command::Vertices(a) => cmd::processing::vertices(a),
         Command::Footprint(a) => cmd::processing::footprint(a),
         Command::Sample(a) => cmd::processing::sample(a),
+        Command::Contour(a) => cmd::processing::contour(a),
+        Command::ZonalStats(a) => cmd::processing::zonal(a),
+        Command::Sql(a) => cmd::processing::sql(a),
         Command::Translate(a) => cmd::translate::run(a),
         Command::Warp(a) => cmd::warp::run(a),
         Command::Mosaic(a) => cmd::mosaic::run(a),

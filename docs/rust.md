@@ -139,6 +139,14 @@ raster, a band and an output field. It transforms points into each raster's CRS 
 retains their original geometries, and records missing samples as nulls. These operations are
 available in the core crate, including WebAssembly builds, without additional features.
 
+`ops::contour::contour` accepts a raster and `ContourOptions` (interval/fixed levels, band,
+nodata override and optional Z coordinates), returning a line layer with IDs and elevations.
+`ops::zonal::zonal_stats` accepts a polygon layer, `ZonalInput` raster bands and `ZonalOptions`
+(statistics and pixel inclusion); the result retains the source features and adds statistic
+fields. It reuses a cropped membership mask across bands of the same raster.
+`ops::sql::query` runs the existing SQL subset with strict input-layer lookup. These operations
+are also available in the core crate without extra features.
+
 The commands are also available through the Python package's `terrio` CLI and MCP. Dedicated
 Python and JavaScript operation bindings are not yet provided for these additions.
 

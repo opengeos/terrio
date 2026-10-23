@@ -4,6 +4,7 @@
 //! [`calc`] (`gdal_calc.py`), [`proximity`] (`gdal_proximity.py`), [`sieve`] (`gdal_sieve.py`),
 //! [`geometry`] (centroids, singleparts and vertices), [`footprint`], [`sample`], and the vector
 //! filtering of `ogr2ogr` ([`vector_filter`], [`sql`]).
+//! [`contour`] generates elevation lines and [`zonal`] summarizes raster bands within polygons.
 //!
 //! ```no_run
 //! use terrio::ops::{calc, dem};
@@ -22,6 +23,7 @@
 //! `[x_origin, pixel_width, 0, y_origin, 0, -pixel_height]`.
 
 pub mod calc;
+pub mod contour;
 pub mod dem;
 pub mod footprint;
 pub mod gcp;
@@ -39,6 +41,7 @@ pub mod translate;
 pub mod vector_filter;
 pub mod vrt;
 pub mod warp;
+pub mod zonal;
 
 use crate::crs::SpatialRef;
 use crate::{Error, RasterDataset, Result};

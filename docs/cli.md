@@ -15,6 +15,9 @@ terrio <COMMAND>
   vertices    Extract vertices as points with source attributes and vertex indices
   footprint   Exact valid-data footprint of a raster
   sample      Sample multiple raster bands at vector points
+  contour     Contour lines at interval or fixed elevation levels
+  zonal-stats Per-polygon statistics across multiple raster bands
+  sql         Read-only SELECT queries over vector layers
   dem         Terrain analysis: hillshade, slope, aspect, color relief, TRI, TPI, roughness (like gdaldem)
   calc        Raster algebra: band math in NumPy syntax over one or more rasters (like gdal_calc.py)
   proximity   Distance from every pixel to the nearest target pixel (like gdal_proximity.py)
@@ -64,6 +67,8 @@ Vector inputs accept repeated `--layer`/`-l`. These commands, `footprint` and `s
 `-f FORMAT`, `--nln NAME` (one output layer), `--append` and `--overwrite`. As with `convert`,
 the default writes a new dataset, replacing an existing file; `--overwrite` replaces only
 the named layers of a GeoPackage, preserving its other layers.
+Rust operations retain source feature IDs except when generating new features. Output formats
+can assign new dataset-specific IDs when writing; GeoPackage outputs normally number them from 1.
 
 ## footprint
 
@@ -98,7 +103,7 @@ Fields are named `FILE_STEM_bN`, or `PREFIX_bN` when one `--prefix` is supplied 
 same order. Name collisions get `_2`, `_3`, etc.; existing attributes remain intact.
 
 Each raster may have a different resolution, affine grid or CRS. Coordinates are transformed
-for sampling while the output retains the original point geometries, Z/M, IDs, attributes and
+for sampling while the output retains the original point geometries, Z/M, attributes and
 CRS. Nodata, non-finite pixels, out-of-bounds locations and null geometries yield null values.
 Points that cannot be projected into a raster's CRS yield null samples for that raster too;
 the CLI prints one warning per affected output field with the failure count. Errors constructing
@@ -107,6 +112,79 @@ Non-point geometries are rejected; use `singlepart` for multipart points first. 
 are accepted only when both the points and the raster lack a CRS, using coordinates directly.
 Complex bands and geolocation arrays are unsupported. Rasters are loaded into memory, and
 sample values are represented as 64-bit floats (integers above 2⁵³ may lose precision).
+
+## contour
+
+```sh
+terrio contour dem.tif contours.gpkg --interval 10
+terrio contour dem.tif contours.gpkg --levels 100,150,200 --3d
+terrio contour dem.tif contours.gpkg --interval 20 --offset 5 --levels 64.5
+```
+
+`contour` (alias `contours`) extracts line strings with `ID` and `ELEV` attributes; `--field`/`-a`
+renames `ELEV`. Supply a positive `--interval`/`-i`, fixed `--levels`, or both. Interval levels
+are `offset + k * interval`; explicit levels are sorted and deduplicated. The elevation field
+must be nonempty and different from `ID`. `--band`/`-b` selects a band from 1 (default 1).
+`--3d` puts the elevation in every vertex's Z coordinate.
+
+Interpolation follows GDAL's marching squares, including its exact-level perturbation, fixed
+saddle connectivity and nodata-boundary subdivision. Boundaries extend from pixel centres to
+pixel edges. The source CRS and full affine geotransform are retained; feature ordering and
+line direction can differ from GDAL. Declared nodata values and non-finite pixels are excluded.
+`--nodata VALUE` overrides the nodata value; `--ignore-nodata` includes declared nodata as data.
+These two options cannot be combined. Non-finite pixels are always excluded.
+
+The raster and generated segments are held in memory. At most 100,000 levels are allowed.
+This command creates contour lines; contour polygons are not provided. Complex bands and
+geolocation arrays are unsupported. Standard vector output options apply.
+
+## zonal-stats
+
+```sh
+terrio zonal-stats counties.gpkg stats.gpkg --raster elevation.tif --raster rain.tif
+terrio zonal-stats counties.gpkg stats.gpkg --raster image.tif --band 1,2 --prefix image \
+  --stats count,min,max,mean,sum,stddev,median --all-touched
+```
+
+`zonal-stats` (alias `zonal`) adds statistics independently for each polygon or multipolygon.
+Repeat `--raster` for multiple rasters and use `--band` for comma-separated bands from each.
+Default statistics are `count,min,max,mean,sum,stddev`; `median` is available explicitly.
+Standard deviation uses the population definition. Fields are `FILE_STEM_bN_STATISTIC`, or
+`PREFIX_bN_STATISTIC` when one `--prefix` is supplied per raster. Name collisions get `_2`,
+`_3`, etc. `count` is an integer; the other statistics use 64-bit floats.
+
+By default, a pixel contributes when its centre lies in the zone, following GDAL's rasterization
+boundary rules. `--all-touched` includes every touched pixel. Holes are excluded. Overlapping
+zones are evaluated independently, so a pixel can contribute to multiple zones. Declared nodata
+and non-finite values are excluded; alpha bands and external masks are not applied implicitly.
+With no valid contributing pixels, including null/empty geometries and zones outside the raster,
+`count` is 0 and every other statistic is null. Source geometry, Z/M, attributes and CRS remain
+unchanged. All non-null geometries must be polygons or multipolygons.
+
+Rasters may use different resolutions, CRSs, rotated grids or south-up grids. Boundaries are
+transformed for each raster; a boundary transformation failure is an error. Missing CRSs are
+accepted only when both the zones and the raster have no CRS. Reprojection transforms stored
+vertices without densifying curved edges. The rasters are loaded into memory; masks cover only
+each zone's intersecting window and are shared by requested bands of the same raster. Median
+needs extra memory for a zone's contributing values. Integers above 2⁵³ can lose precision.
+Complex bands and geolocation arrays are unsupported. Standard vector input/output options apply.
+
+## sql
+
+```sh
+terrio sql countries.gpkg selected.gpkg --query \
+  "SELECT ADMIN, POP_EST AS population FROM countries WHERE POP_EST > 10000000 ORDER BY POP_EST DESC LIMIT 10"
+```
+
+Runs the existing read-only OGR SQL subset as a standalone command. `FROM` must name an input
+layer, matched case-insensitively; `--layer` can restrict the available layers. Supports selected
+fields and aliases, `WHERE`, one `ORDER BY` input field, and `LIMIT`. `WHERE` supports arithmetic,
+comparisons, `AND`/`OR`/`NOT`, parentheses, `IN`, `BETWEEN`, `IS NULL`, `LIKE` and `ILIKE`.
+Output field names must be unique, ignoring case. `FID` can be used in `WHERE` to filter IDs.
+
+Joins, aggregates, computed `SELECT` columns and spatial functions are unsupported. Geometries,
+CRS and attribute types are retained. The Rust `ops::sql::query` API retains source feature IDs;
+output drivers apply their normal file-ID conventions. Standard vector output options apply.
 
 ## info
 

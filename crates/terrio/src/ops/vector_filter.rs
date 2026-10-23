@@ -293,7 +293,7 @@ impl Translator {
 }
 
 /// Runs a `SELECT` on the layer it names. Returns the result and its `LIMIT`.
-fn run_select(layers: &[Layer], s: &Select) -> Result<(Layer, Option<usize>)> {
+pub(crate) fn run_select(layers: &[Layer], s: &Select) -> Result<(Layer, Option<usize>)> {
     let layer = layers
         .iter()
         .find(|l| l.name.eq_ignore_ascii_case(&s.from))
@@ -304,7 +304,7 @@ fn run_select(layers: &[Layer], s: &Select) -> Result<(Layer, Option<usize>)> {
     if let Some((field, desc)) = &s.order_by {
         let i = field_index(&layer.schema, field).ok_or_else(|| Error::InvalidArgument(format!("SQL: no field named '{field}'")))?;
         features.sort_by(|a, b| {
-            let o = compare_values(&a.attributes[i], &b.attributes[i]);
+            let o = compare_values(a.attributes.get(i).unwrap_or(&FieldValue::Null), b.attributes.get(i).unwrap_or(&FieldValue::Null));
             if *desc { o.reverse() } else { o }
         });
     }
@@ -312,6 +312,11 @@ fn run_select(layers: &[Layer], s: &Select) -> Result<(Layer, Option<usize>)> {
     out.geom_type = layer.geom_type;
     out.crs = layer.crs.clone();
     let idx: Vec<usize> = if s.columns.is_empty() {
+        for (i, field) in layer.schema.fields().iter().enumerate() {
+            if layer.schema.fields()[..i].iter().any(|f| f.name.eq_ignore_ascii_case(&field.name)) {
+                return Err(Error::InvalidArgument(format!("SQL: duplicate output field '{}'", field.name)));
+            }
+        }
         out.schema = layer.schema.clone();
         (0..layer.schema.len()).collect()
     } else {
@@ -321,6 +326,9 @@ fn run_select(layers: &[Layer], s: &Select) -> Result<(Layer, Option<usize>)> {
             let mut def = layer.schema.fields()[i].clone();
             if let Some(a) = alias {
                 def.name = a.clone();
+            }
+            if out.schema.fields().iter().any(|f| f.name.eq_ignore_ascii_case(&def.name)) {
+                return Err(Error::InvalidArgument(format!("SQL: duplicate output field '{}'", def.name)));
             }
             out.schema.add_field(def);
             idx.push(i);
@@ -340,6 +348,8 @@ fn compare_values(a: &FieldValue, b: &FieldValue) -> Ordering {
         (FieldValue::Null, FieldValue::Null) => Ordering::Equal,
         (FieldValue::Null, _) => Ordering::Less,
         (_, FieldValue::Null) => Ordering::Greater,
+        (FieldValue::Integer(x), FieldValue::Integer(y)) => x.cmp(y),
+        (FieldValue::Boolean(x), FieldValue::Boolean(y)) => x.cmp(y),
         _ => match (a.as_f64(), b.as_f64()) {
             (Some(x), Some(y)) => x.partial_cmp(&y).unwrap_or(Ordering::Equal),
             _ => a.as_str().unwrap_or_default().cmp(b.as_str().unwrap_or_default()),

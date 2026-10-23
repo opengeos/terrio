@@ -15,7 +15,31 @@
 
 use crate::{Error, Result};
 use std::cmp::Ordering;
-use wbvector::{Feature, FieldValue, Schema};
+use wbvector::{Feature, FieldValue, Layer, Schema};
+
+/// Runs a read-only `SELECT` using terrio's OGR SQL subset, preserving source geometry, CRS
+/// and feature IDs. Supports field selection/aliases, WHERE, one ORDER BY field, and LIMIT.
+/// FROM must name an input layer (case-insensitively). Joins, aggregates, spatial functions and
+/// computed SELECT columns are unsupported. Output field names must be unique.
+///
+/// ```no_run
+/// let ds = terrio::open_vector("countries.gpkg", &Default::default())?;
+/// let result = terrio::ops::sql::query(&ds.layers,
+///     "SELECT ADMIN, POP_EST AS population FROM countries WHERE POP_EST > 1e7 ORDER BY POP_EST DESC LIMIT 10")?;
+/// terrio::write_vector(&[result], "largest.gpkg", &Default::default())?;
+/// # Ok::<(), terrio::Error>(())
+/// ```
+pub fn query(layers: &[Layer], statement: &str) -> Result<Layer> {
+    let select = Select::parse(statement)?;
+    if !layers.iter().any(|l| l.name.eq_ignore_ascii_case(&select.from)) {
+        return Err(Error::InvalidArgument(format!("SQL: no layer named '{}'", select.from)));
+    }
+    let (mut layer, limit) = super::vector_filter::run_select(layers, &select)?;
+    if let Some(n) = limit {
+        layer.features.truncate(n);
+    }
+    Ok(layer)
+}
 
 /// A parsed expression, not yet bound to a layer's fields.
 #[derive(Debug, Clone, PartialEq)]
