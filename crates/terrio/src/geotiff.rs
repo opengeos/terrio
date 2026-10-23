@@ -384,8 +384,7 @@ fn parse_nodata(s: &str) -> Option<f64> {
 fn user_defined_projected(projection: Option<u16>, geographic: Option<u16>, datum: Option<u16>, citation: Option<String>) -> Option<u32> {
     let citation = citation.unwrap_or_default();
     let defined = |c: &u16| *c != 0 && *c != 32767;
-    // GCS 4326 -> datum 6326.
-    let datum = geographic.filter(defined).map(|c| c as u32 + 2000).or(datum.filter(defined).map(u32::from));
+    let datum = geographic.filter(defined).map(|c| crate::crs::geographic_datum(c as u32)).or(datum.filter(defined).map(u32::from));
     // Datum: WGS 84 unless the datum is NAD83 or NAD27, or the citation says so when the GeoKeys
     // name no datum.
     let (nad83, nad27, other) = match datum {
@@ -700,6 +699,9 @@ mod tests {
         assert_eq!(user_defined_projected(None, Some(4269), None, Some("NAD83 / UTM zone 15N".into())), Some(26915));
         assert_eq!(user_defined_projected(Some(16133), None, None, None), Some(32733));
         assert_eq!(user_defined_projected(Some(16015), Some(32767), Some(6269), None), Some(26915));
+        // The geographic CRS's datum wins over the citation, as its code does for GDAL.
+        assert_eq!(user_defined_projected(Some(16015), Some(4326), None, Some("NAD83 / UTM zone 15N".into())), Some(32615));
+        assert_eq!(user_defined_projected(Some(16015), Some(4269), Some(6326), None), Some(26915));
         // A UTM zone on NAD83(HARN), by its geographic CRS or its datum, is no WGS 84 (or NAD83)
         // UTM zone (#209).
         assert_eq!(user_defined_projected(Some(16033), Some(32767), Some(6152), None), None);

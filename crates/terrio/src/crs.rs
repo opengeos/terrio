@@ -78,6 +78,12 @@ pub(crate) fn geographic_on_datum(datum: u32, ellipsoid: &str) -> Option<u32> {
     })
 }
 
+/// The EPSG datum of an EPSG geographic CRS: its datum in terrio's table, else GeoTIFF's
+/// convention of the code plus 2000 (4326 for 6326).
+pub(crate) fn geographic_datum(geog: u32) -> u32 {
+    epsg::get(geog).map(|e| e.datum).filter(|d| *d != 0).unwrap_or(geog + 2000)
+}
+
 /// The WKT GDAL writes for an EPSG code, from terrio's EPSG table.
 pub(crate) fn epsg_wkt(code: u32) -> Option<&'static str> {
     epsg::get(code).map(|e| e.wkt.as_str())
