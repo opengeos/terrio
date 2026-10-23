@@ -274,7 +274,9 @@ fn apply_geokeys(out: &mut GeoTags, keys: &[u16], doubles: Option<&[f64]>, ascii
     out.epsg = match (short_key(1024), projected, geographic) {
         (_, Some(code), _) if code != 0 && code != 32767 => Some(code as u32),
         (Some(2), _, Some(code)) if code != 0 && code != 32767 => Some(code as u32),
-        (Some(1), _, _) => user_defined_projected(short_key(3074), geographic, ascii_key(1026).or_else(|| ascii_key(3073))),
+        (Some(1), _, _) => {
+            user_defined_projected(short_key(3074), geographic, short_key(2050), ascii_key(1026).or_else(|| ascii_key(3073)))
+        }
         _ => None,
     };
     if out.epsg.is_none() {
@@ -376,18 +378,29 @@ fn parse_nodata(s: &str) -> Option<f64> {
 }
 
 /// The EPSG code of a user-defined projected CRS, from its projection code (UTM zones) or its
-/// citation (such as `WGS 84 / UTM zone 10N`).
-fn user_defined_projected(projection: Option<u16>, geographic: Option<u16>, citation: Option<String>) -> Option<u32> {
-    // Datum: WGS 84 unless the geographic CRS says NAD83 or the citation does.
+/// citation (such as `WGS 84 / UTM zone 10N`). The datum is the geographic CRS's, else the
+/// GeogGeodeticDatumGeoKey's `datum`: a UTM zone on another datum than WGS 84, NAD83 or NAD27
+/// (NAD83(HARN), ETRS89...) is no WGS 84 UTM zone, and is left to the citation's name.
+fn user_defined_projected(projection: Option<u16>, geographic: Option<u16>, datum: Option<u16>, citation: Option<String>) -> Option<u32> {
     let citation = citation.unwrap_or_default();
-    let nad83 = geographic == Some(4269) || citation.contains("NAD83");
-    let nad27 = geographic == Some(4267) || citation.contains("NAD27");
+    let defined = |c: &u16| *c != 0 && *c != 32767;
+    // GCS 4326 -> datum 6326.
+    let datum = geographic.filter(defined).map(|c| c as u32 + 2000).or(datum.filter(defined).map(u32::from));
+    // Datum: WGS 84 unless the datum is NAD83 or NAD27, or the citation says so when the GeoKeys
+    // name no datum.
+    let (nad83, nad27, other) = match datum {
+        Some(6269) => (true, false, false),
+        Some(6267) => (false, true, false),
+        Some(6326) => (false, false, false),
+        Some(_) => (false, false, true),
+        None => (citation.contains("NAD83"), citation.contains("NAD27"), false),
+    };
     let utm = match projection {
         Some(p @ 16001..=16060) => Some(((p - 16000) as u32, true)),
         Some(p @ 16101..=16160) => Some(((p - 16100) as u32, false)),
         _ => parse_utm_citation(&citation),
     };
-    if let Some((zone, north)) = utm {
+    if let Some((zone, north)) = utm.filter(|_| !other) {
         return match (nad83, nad27, north) {
             (true, _, true) if (1..=23).contains(&zone) => Some(26900 + zone),
             (_, true, true) if (1..=22).contains(&zone) => Some(26700 + zone),
@@ -683,9 +696,14 @@ mod tests {
 
     #[test]
     fn identifies_user_defined_utm() {
-        assert_eq!(user_defined_projected(Some(16010), None, Some("WGS 84 / UTM zone 10N".into())), Some(32610));
-        assert_eq!(user_defined_projected(None, Some(4269), Some("NAD83 / UTM zone 15N".into())), Some(26915));
-        assert_eq!(user_defined_projected(Some(16133), None, None), Some(32733));
+        assert_eq!(user_defined_projected(Some(16010), None, None, Some("WGS 84 / UTM zone 10N".into())), Some(32610));
+        assert_eq!(user_defined_projected(None, Some(4269), None, Some("NAD83 / UTM zone 15N".into())), Some(26915));
+        assert_eq!(user_defined_projected(Some(16133), None, None, None), Some(32733));
+        assert_eq!(user_defined_projected(Some(16015), Some(32767), Some(6269), None), Some(26915));
+        // A UTM zone on NAD83(HARN), by its geographic CRS or its datum, is no WGS 84 (or NAD83)
+        // UTM zone (#209).
+        assert_eq!(user_defined_projected(Some(16033), Some(32767), Some(6152), None), None);
+        assert_eq!(user_defined_projected(Some(16010), Some(4152), None, Some("NAD83 / UTM zone 10N".into())), None);
     }
 
     /// The GeoKeys GDAL 3.12 writes for a WGS 84 CRS with no EPSG code and the projection method
@@ -752,6 +770,52 @@ mod tests {
                 assert!((tx - x).abs() < 1e-3 && (ty - y).abs() < 1e-3, "{c:?}: ({tx}, {ty}) vs ({x}, {y})");
             }
         }
+    }
+
+    /// The GeoKeys of PDAL's `autzen_trim.las`: a user-defined geographic CRS on NAD83(HARN)
+    /// (GeogGeodeticDatumGeoKey 6152) under a user-defined Lambert conformal conic in feet.
+    fn autzen_keys() -> (Vec<u16>, Vec<f64>, &'static str) {
+        let keys = vec![
+            1, 1, 0, 21, 1024, 0, 1, 1, 1025, 0, 1, 1, 1026, 34737, 38, 0, 2048, 0, 1, 32767, 2049, 34737, 60, 38, 2050, 0, 1, 6152, 2054,
+            0, 1, 9102, 2057, 34736, 1, 7, 2059, 34736, 1, 6, 2061, 34736, 1, 8, 3059, 0, 1, 1, 3072, 0, 1, 32767, 3074, 0, 1, 32767, 3075,
+            0, 1, 8, 3076, 0, 1, 9002, 3078, 34736, 1, 2, 3079, 34736, 1, 3, 3084, 34736, 1, 1, 3085, 34736, 1, 0, 3086, 34736, 1, 4, 3087,
+            34736, 1, 5,
+        ];
+        let doubles = vec![41.75, -120.5, 43.0, 45.5, 1312335.958005249, 0.0, 298.257222101, 6378137.0, 0.0];
+        (keys, doubles, "NAD_1983_HARN_Lambert_Conformal_Conic|GCS Name = GCS_North_American_1983_HARN|Primem = Greenwich||")
+    }
+
+    #[test]
+    fn keeps_the_datum_of_a_user_defined_geographic_crs() {
+        // autzen_trim.las: NAD83(HARN) / Oregon GIC Lambert (ft), as GDAL and PDAL read it, not
+        // the same projection on plain NAD83 (#209).
+        let (keys, doubles, ascii) = autzen_keys();
+        let crs = crate::crs::SpatialRef::from_raster_crs(&crs_from_geokeys(&keys, Some(&doubles), Some(ascii)));
+        assert_eq!(crs.epsg, Some(2994), "{crs:?}");
+        let harn = crate::crs::SpatialRef::parse("EPSG:2994").unwrap();
+        let (x, y) = crate::crs::Transformer::new(&crs, &harn).unwrap().transform(636001.76, 848935.2).unwrap();
+        assert!((x - 636001.76).abs() < 1e-6 && (y - 848935.2).abs() < 1e-6, "({x}, {y})");
+
+        // The same datum under a geographic CRS: NAD83(HARN), EPSG:4152.
+        let geographic = [1, 1, 0, 5, 1024, 0, 1, 2, 2048, 0, 1, 32767, 2050, 0, 1, 6152, 2057, 34736, 1, 0, 2059, 34736, 1, 1];
+        let info = crs_from_geokeys(&geographic, Some(&[6378137.0, 298.257222101]), None);
+        assert_eq!(crate::crs::SpatialRef::from_raster_crs(&info).epsg, Some(4152), "{info:?}");
+        // Not with another ellipsoid than the datum's.
+        assert_eq!(crate::crs::geographic_on_datum(6152, "+ellps=clrk66"), None);
+
+        // A UTM zone on it, by its ProjectionGeoKey alone as GDAL writes it: NAD83(HARN) / UTM
+        // zone 10N (EPSG:3740), not WGS 84 / UTM zone 10N.
+        let utm = [
+            1, 1, 0, 8, 1024, 0, 1, 1, 2048, 0, 1, 32767, 2050, 0, 1, 6152, 2057, 34736, 1, 0, 2059, 34736, 1, 1, 3072, 0, 1, 32767, 3074,
+            0, 1, 16010, 3076, 0, 1, 9001,
+        ];
+        let info = crs_from_geokeys(&utm, Some(&[6378137.0, 298.257222101]), None);
+        assert_eq!(crate::crs::SpatialRef::from_raster_crs(&info).epsg, Some(3740), "{info:?}");
+        // And by the geographic CRS's code, whatever the citation says.
+        let mut on_4152 = utm;
+        on_4152[8..16].copy_from_slice(&[2048, 0, 1, 4152, 3073, 34737, 21, 0]);
+        let info = crs_from_geokeys(&on_4152, Some(&[6378137.0, 298.257222101]), Some("NAD83 / UTM zone 10N|"));
+        assert_eq!(crate::crs::SpatialRef::from_raster_crs(&info).epsg, Some(3740), "{info:?}");
     }
 
     #[test]

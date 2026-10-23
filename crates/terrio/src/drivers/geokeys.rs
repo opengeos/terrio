@@ -85,6 +85,10 @@ pub(crate) fn user_defined_crs(k: &GeoKeys) -> Option<wbraster::CrsInfo> {
         return Some(crs);
     }
     let proj = match k.short(1024)? {
+        // On an EPSG datum PROJ strings do not name (NAD83(HARN)): its EPSG geographic CRS.
+        2 if let Some(code) = epsg_geographic(k) => {
+            return Some(wbraster::CrsInfo { epsg: Some(code), wkt: crate::crs::epsg_wkt(code).map(str::to_string), proj4: None });
+        }
         2 => format!("+proj=longlat {}", geographic_proj(k)?),
         1 => user_defined_proj4(k)?,
         _ => return None,
@@ -106,10 +110,30 @@ pub(crate) fn projected_on_epsg_geographic(k: &GeoKeys) -> Option<wbraster::CrsI
     if k.short(1024) != Some(1) || esri_pe_crs(k).is_some() {
         return None;
     }
-    // WGS 84, NAD83 and NAD27 are PROJ's `+datum=` names.
-    let code = k.short(2048).filter(|c| !matches!(*c, USER_DEFINED | 4326 | 4269 | 4267))?;
-    let wkt = crate::crs::from_proj_on(&user_defined_proj4(k)?, code as u32)?;
+    let code = epsg_geographic(k)?;
+    let wkt = crate::crs::from_proj_on(&user_defined_proj4(k)?, code)?;
     Some(wbraster::CrsInfo { epsg: None, wkt: Some(wkt), proj4: None })
+}
+
+/// The EPSG geographic CRS of GeoKeys whose datum a PROJ string does not name exactly (OSGB36,
+/// ED50, NAD83(HARN), ETRS89...): their GeographicTypeGeoKey, else, for a user-defined geographic
+/// CRS, the EPSG geographic CRS on their GeogGeodeticDatumGeoKey's datum with their ellipsoid and
+/// the Greenwich meridian, as GDAL reads them (the GeoKeys of PDAL's `autzen_trim.las` give
+/// NAD83(HARN), 6152, as the datum of a user-defined geographic CRS). `None` for WGS 84, NAD83
+/// and NAD27, PROJ's `+datum=` names, and for GeoKeys without EPSG datum.
+fn epsg_geographic(k: &GeoKeys) -> Option<u32> {
+    let code = match k.short(2048) {
+        Some(USER_DEFINED) | None => {
+            let datum = k.short(2050).filter(|d| !matches!(*d, 0 | USER_DEFINED | 6326 | 6269 | 6267))?;
+            let greenwich = k.short(2051).is_none_or(|pm| pm == 8901) && k.double(2061).is_none_or(|pm| pm == 0.0);
+            if !greenwich || k.doubles(2062).is_some() {
+                return None;
+            }
+            crate::crs::geographic_on_datum(datum as u32, &ellipsoid_proj(k)?)?
+        }
+        Some(code) => code as u32,
+    };
+    (!matches!(code, 0 | 4326 | 4269 | 4267)).then_some(code)
 }
 
 /// The PROJ datum (or ellipsoid and shift) of the EPSG datums PROJ strings name.
@@ -134,6 +158,20 @@ fn geographic_proj(k: &GeoKeys) -> Option<String> {
     if let Some(n) = named_datum(datum) {
         return Some(n.to_string());
     }
+    let mut out = ellipsoid_proj(k)?;
+    // GeogPrimeMeridianLongGeoKey and GeogTOWGS84GeoKey.
+    if let Some(pm) = k.double(2061).filter(|pm| *pm != 0.0) {
+        out.push_str(&format!(" +pm={pm}"));
+    }
+    if let Some(t) = k.doubles(2062).filter(|t| t.len() == 3 || t.len() == 7) {
+        out.push_str(&format!(" +towgs84={}", t.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(",")));
+    }
+    Some(out)
+}
+
+/// The ellipsoid of GeoKeys, as PROJ parameters: their EPSG geographic CRS's, else their
+/// ellipsoid code's, else their semi-major axis and inverse flattening (or semi-minor axis).
+fn ellipsoid_proj(k: &GeoKeys) -> Option<String> {
     // The ellipsoid of another EPSG geographic CRS, when its datum cannot be named.
     if let Some(e) = k.short(2048).filter(|c| *c != USER_DEFINED).and_then(|c| crate::crs::epsg_ellipsoid(c as u32)) {
         return Some(e);
@@ -147,7 +185,7 @@ fn geographic_proj(k: &GeoKeys) -> Option<String> {
         Some(7035) | Some(7047) => Some("+R=6371007.181"),
         _ => None,
     };
-    let mut out = match ellipsoid {
+    Some(match ellipsoid {
         Some(e) => e.to_string(),
         None => {
             let a = k.double(2057)?;
@@ -157,15 +195,7 @@ fn geographic_proj(k: &GeoKeys) -> Option<String> {
                 _ => format!("+R={a}"),
             }
         }
-    };
-    // GeogPrimeMeridianLongGeoKey and GeogTOWGS84GeoKey.
-    if let Some(pm) = k.double(2061).filter(|pm| *pm != 0.0) {
-        out.push_str(&format!(" +pm={pm}"));
-    }
-    if let Some(t) = k.doubles(2062).filter(|t| t.len() == 3 || t.len() == 7) {
-        out.push_str(&format!(" +towgs84={}", t.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(",")));
-    }
-    Some(out)
+    })
 }
 
 /// The projection method and parameters of a PROJ definition. GeoTIFF gives false eastings and
@@ -202,6 +232,15 @@ fn projection(k: &GeoKeys, to_meter: f64) -> Option<String> {
         let gamma = k.double(RECTIFIED_GRID_ANGLE).map(|g| format!(" +gamma={g}")).unwrap_or_default();
         Some(format!("omerc{variant} +lat_0={lat0} +lonc={lon0} +alpha={}{gamma} +k={scale} {false_xy}", k.double(AZIMUTH)?))
     };
+    // A UTM zone by its ProjectionGeoKey (16001-16060 north, 16101-16160 south) alone, as GDAL
+    // writes a UTM zone on a user-defined geographic CRS.
+    if k.short(3075).is_none() {
+        return match k.short(3074)? {
+            p @ 16001..=16060 => Some(format!("utm +zone={}", p - 16000)),
+            p @ 16101..=16160 => Some(format!("utm +zone={} +south", p - 16100)),
+            _ => None,
+        };
+    }
     Some(match k.short(3075)? {
         1 => format!("tmerc +lat_0={lat0} +lon_0={lon0} +k={scale} {false_xy}"),
         // Hotine oblique Mercator: variant A (natural origin) and B (centre of projection).

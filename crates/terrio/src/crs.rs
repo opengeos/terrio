@@ -63,6 +63,21 @@ pub(crate) fn prefetch() {
     epsg::prefetch();
 }
 
+/// The EPSG geographic 2D CRS on an EPSG geodetic datum with an ellipsoid (PROJ parameters such
+/// as `+ellps=GRS80` or `+a=6378137 +rf=298.257222101`) and the Greenwich prime meridian, the
+/// lowest current code: the geographic CRS of GeoKeys that give the datum (NAD83(HARN), 6152)
+/// but not the geographic CRS, as GDAL identifies it (EPSG:4152). `None` when the datum has none.
+pub(crate) fn geographic_on_datum(datum: u32, ellipsoid: &str) -> Option<u32> {
+    let own = Def::from_proj(&format!("+proj=longlat {ellipsoid} +no_defs")).ok()?;
+    epsg::geographic_on(datum).iter().copied().find(|code| {
+        epsg::get(*code).is_some_and(|e| {
+            !e.three_d
+                && !e.proj.contains("+pm=")
+                && Def::from_proj(&e.proj).is_ok_and(|d| (own.ell.a - d.ell.a).abs() < 1e-3 && (own.ell.es - d.ell.es).abs() < 1e-9)
+        })
+    })
+}
+
 /// The WKT GDAL writes for an EPSG code, from terrio's EPSG table.
 pub(crate) fn epsg_wkt(code: u32) -> Option<&'static str> {
     epsg::get(code).map(|e| e.wkt.as_str())

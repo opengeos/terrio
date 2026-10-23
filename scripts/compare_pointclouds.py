@@ -1025,8 +1025,8 @@ def compare_raster_vector_filters(path: Path, tmp: Path) -> None:
         names = [snake(d.split(":")[0].strip()) for d in (dims or "Red,Green,Blue").split(",")]
         bad = [d for d in names if not np.array_equal(np.asarray(ours[d]).astype("f8"), ref[d])]
         report(f"filter colorization {raster.name} {dims or 'defaults'} {name}: {', '.join(names)} identical", not bad, f"differ: {bad}")
-    # Elevation zones of 10 units, polygonized; PDAL reads the points without their CRS, so that
-    # neither reprojects the polygons.
+    # Elevation zones of 10 units, polygonized: the polygons are in the points' CRS, which PDAL
+    # and terrio both read as NAD83(HARN) (EPSG:2994), so that neither reprojects them (#209).
     zones = tmp / "filters_zones.tif"
     terrio.calc("floor(A / 10)", str(zones), A=str(dem), type="Int16")
     one = tmp / "filters_zones1.gpkg"
@@ -1036,11 +1036,10 @@ def compare_raster_vector_filters(path: Path, tmp: Path) -> None:
     poly = tmp / "filters_zones.gpkg"
     poly.unlink(missing_ok=True)
     gdal.VectorTranslate(str(poly), str(one), SQLStatement="SELECT geom, zone, zone * 10 + 3 AS code FROM filters_zones1", layerName="zones")
-    reader = {"type": "readers.las", "filename": str(path), "nosrs": True}
     # UserData cannot hold the codes (over 255): PDAL and terrio leave the points as they were.
     for dim, column in [("Classification", "zone"), ("PointSourceId", None), ("UserData", "CODE")]:
         ours = pc.overlay(str(poly), dim, column=column)
-        ref = pdal_text([reader, {"type": "filters.overlay", "datasource": str(poly), "dimension": dim, **({"column": column} if column else {})}])
+        ref = pdal_text([str(path), {"type": "filters.overlay", "datasource": str(poly), "dimension": dim, **({"column": column} if column else {})}])
         d = snake(dim)
         report(f"filter overlay {dim} column {column} {name}: {d} identical", np.array_equal(np.asarray(ours[d]).astype("f8"), ref[d]), "different values")
 

@@ -58,7 +58,11 @@ the ESRI CRS of the same name and definition), never an EPSG code.
 
 GeoTIFFs with user-defined projected CRSs, common in NASA products, are read from their GeoKeys:
 UTM zones become their EPSG codes, and other projections (Albers, Lambert conformal conic,
-transverse Mercator, polar stereographic and more) become PROJ definitions.
+transverse Mercator, polar stereographic and more) become PROJ definitions. A user-defined
+geographic CRS on an EPSG datum (GeogGeodeticDatumGeoKey) keeps that datum, as GDAL reads it: the
+GeoKeys of PDAL's `autzen_trim.las`, on NAD83(HARN), give NAD83(HARN) / Oregon GIC Lambert (ft)
+(EPSG:2994), not the same projection on NAD83, and a UTM zone on such a datum is that datum's.
+The same GeoKeys are read in LAS files.
 
 ## Transformations
 
