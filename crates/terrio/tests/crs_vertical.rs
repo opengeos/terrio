@@ -9,8 +9,12 @@ fn height(src: &str, dst: &str, x: f64, y: f64, z: f64) -> f64 {
     t.transform_3d(x, y, z).unwrap().2
 }
 
+/// Held by each test while it sets the process-wide network and grid search settings.
+static SETTINGS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[test]
 fn offsets_slopes_depths_and_units_as_proj() {
+    let _settings = SETTINGS.lock().unwrap_or_else(|e| e.into_inner());
     terrio::crs::set_network_enabled(Some(false));
     terrio::crs::set_grid_search_paths(Some(Vec::new()));
     let close = |a: f64, b: f64| (a - b).abs() < 1e-9;
@@ -36,6 +40,7 @@ fn offsets_slopes_depths_and_units_as_proj() {
 #[test]
 #[ignore = "network"]
 fn grids_as_proj() {
+    let _settings = SETTINGS.lock().unwrap_or_else(|e| e.into_inner());
     terrio::crs::set_network_enabled(Some(true));
     terrio::crs::set_grid_search_paths(Some(Vec::new()));
     let h = height("EPSG:4267+7968", "EPSG:4267+5703", -105.27, 40.01, 1700.0);

@@ -589,6 +589,56 @@ struct TransformPointsOptions {
     t_coord_epoch: Option<f64>,
 }
 
+/// Rasters gathered into one netCDF-4 file, each in its group: `add` them, then `toBytes`.
+///
+/// ```js
+/// const nc = new NetcdfGroups();
+/// nc.add("/terrain/dem", dem);
+/// nc.add("/terrain/slope", slope);
+/// const bytes = nc.toBytes({ COMPRESS: "DEFLATE" }); // read back as NETCDF:"x.nc":/terrain/slope/Band1
+/// ```
+#[wasm_bindgen]
+#[derive(Default)]
+pub struct NetcdfGroups {
+    rasters: Vec<(String, RasterDataset)>,
+}
+
+#[wasm_bindgen]
+impl NetcdfGroups {
+    /// An empty set of groups.
+    #[wasm_bindgen(constructor)]
+    pub fn new() -> NetcdfGroups {
+        NetcdfGroups::default()
+    }
+
+    /// Adds a raster in a group: a path such as `/terrain/dem` (groups are created as needed), or
+    /// `/` for the root group. The raster is read whole.
+    pub fn add(&mut self, group: &str, dataset: &Dataset) -> Result<(), JsError> {
+        let ds = dataset.raster()?.read().map_err(js_err)?;
+        self.rasters.push((group.to_string(), ds));
+        Ok(())
+    }
+
+    /// The number of rasters added.
+    #[wasm_bindgen(getter)]
+    pub fn length(&self) -> usize {
+        self.rasters.len()
+    }
+
+    /// Encodes the rasters as one netCDF-4 file, with netCDF creation options as GDAL names them
+    /// (`FORMAT`, `COMPRESS`, `ZLEVEL`, `CHUNKING`).
+    #[wasm_bindgen(js_name = toBytes)]
+    pub fn to_bytes(&self, creation_options: JsValue) -> Result<Vec<u8>, JsError> {
+        let co: HashMap<String, serde_json::Value> = parse_options(&creation_options)?;
+        let options = RasterWriteOptions {
+            creation_options: co.into_iter().map(|(k, v)| (k, v.as_str().map(str::to_string).unwrap_or_else(|| v.to_string()))).collect(),
+            ..Default::default()
+        };
+        let refs: Vec<(&str, &RasterDataset)> = self.rasters.iter().map(|(g, ds)| (g.as_str(), ds)).collect();
+        terrio::memory::write_netcdf_groups_bytes(&refs, &options).map_err(js_err)
+    }
+}
+
 /// Transforms coordinates between two CRSs (`EPSG:4326`, `EPSG:4326+5773`, WKT or PROJ
 /// strings), x (longitude) first. Returns `[xs, ys]` as two `Float64Array`s, or `[xs, ys, zs]`
 /// when heights `zs` are given (they go through geoid models between CRSs with heights).

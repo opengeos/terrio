@@ -196,9 +196,10 @@ Python:
       GeoTIFF tag, `_RPC.TXT` and `.RPB` sidecars) and written; per-band nodata from `.aux.xml`
       sidecars; `rasterio.shutil` and `rasterio.stack`; writers larger than memory kept in a mapped
       temporary file and written to GeoTIFF in rows of blocks (`terrio.GeoTiffWriter`, Rust's
-      `GeoTiffWriter`).
+      `GeoTiffWriter`); GDAL's `.msk` sidecars read (any local format, overviews included) and
+      written (`GDAL_TIFF_INTERNAL_MASK=NO`, formats without internal masks, kept on `r+`), the
+      same files as rasterio's on Copernicus DEM tiles.
     - [ ] RPC transformers.
-    - [ ] `.msk` sidecars.
     - [ ] A `rio` command line.
 - [x] xarray integration like rioxarray: a `terrio` backend engine with lazy windowed reads (remote
       COGs read tile by tile, dask chunks), and an accessor with rioxarray's methods (`reproject`,
@@ -264,21 +265,24 @@ WebAssembly (the `terrio-js` npm package):
       them (`--s_coord_epoch`, `--t_coord_epoch`, `TransformOptions`, Python and JavaScript). Checked
       against GDAL with the same grids: every grid of `scripts/proj_grids.txt` to the micrometre, and
       every EPSG CRS's reference points (`scripts/compare_crs_grids_with_gdal.py`,
-      `epsg_accuracy_grids`); transformations between vertical CRSs as PROJ lists them (offsets,
-      offsets and slopes, VERTCON and other grids, chained through an intermediate vertical CRS,
-      depths included), PROJ's heights on 727 of 732 points over 604 pairs
-      (`scripts/compare_vertical_with_proj.py`).
+      `epsg_accuracy_grids`); CDN grids read in place by range requests, as PROJ reads them (four
+      EGM2008 heights fetch 0.85 MB of 80 MB), identical to PROJ's values and to `gdalwarp` with
+      `PROJ_NETWORK=ON` (or downloaded whole with `TERRIO_GRID_DOWNLOAD=YES`); transformations
+      between vertical CRSs as PROJ lists them (offsets, offsets and slopes, VERTCON and other
+      grids, chained through an intermediate vertical CRS, depths included), PROJ's heights on
+      727 of 732 points over 604 pairs (`scripts/compare_vertical_with_proj.py`).
     - [ ] PROJ's chains through several intermediate datums.
     - [ ] Moving coordinates between epochs (point motion operations).
-    - [ ] Reading remote grids by range requests rather than whole.
 - [x] NetCDF and HDF5 in pure Rust. Done: classic and netCDF-4 reading, with variables in groups
       below the root (`NETCDF:"file.nc":/group/var`) listed as `gdalinfo` lists them; classic
       (CDF-1/2/5) and netCDF-4 writing (`FORMAT=NC4`/`NC4C`, chunked, deflate and shuffle, CF
       georeferencing, as GDAL writes them; terrio's own HDF5 writer); HDF5 rasters as GDAL's HDF5
       driver reads them (`HDF5:"file.h5"://group/dataset`, metadata, user blocks), checked on JPSS
       and Sentinel-5P products; HDF-EOS5 grids and swaths, COSMO-SkyMed and ODIM georeferencing,
-      netCDF geolocation arrays and complex (compound) datasets, as GDAL 3.12 reads them.
-    - [ ] Writing groups.
+      netCDF geolocation arrays and complex (compound) datasets, as GDAL 3.12 reads them;
+      rasters written into netCDF-4 groups (Rust, Python, JavaScript, and `terrio convert` with
+      `GROUP` and `APPEND_SUBDATASET=YES`), read back identically by GDAL's classic and
+      multidimensional APIs, netCDF4 and xarray on Copernicus DEM tiles and their terrain.
 - [x] JPEG 2000 and other compressed raster formats. Done: JPEG 2000 (JP2 and J2K, GeoJP2 and
       GMLJP2 georeferencing) is read and written in WebAssembly too, with the same OpenJPEG port as
       native builds, and the npm package reads and writes it; GeoTIFFs compressed with LERC (alone,

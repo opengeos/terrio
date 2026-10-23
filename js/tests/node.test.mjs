@@ -907,6 +907,26 @@ test("netCDF, HDF5 and Zarr in memory; LERC, JPEG XL and JPEG GeoTIFFs", () => {
   assert.throws(() => floats.toBytes("j.tif", { compress: "JPEG" }), /JPEG is written for/);
 });
 
+test("rasters written into netCDF-4 groups", () => {
+  const a = terrio.rasterFromArray(new Float32Array(30 * 20).map((_, i) => i / 7), 30, 20, [500000, 30, 0, 4100000, 0, -30], "EPSG:32610");
+  const b = terrio.rasterFromArray(new Int16Array(8 * 6).map((_, i) => i - 9), 8, 6, [-105, 0.5, 0, 40, 0, -0.5], "EPSG:4326", -9999);
+  const nc = new terrio.NetcdfGroups();
+  nc.add("/terrain/a", a);
+  nc.add("/b", b);
+  assert.equal(nc.length, 2);
+  const bytes = nc.toBytes({ COMPRESS: "DEFLATE" });
+  for (const [path, src] of [["/terrain/a/Band1", a], ["/b/Band1", b]]) {
+    const back = terrio.open(bytes, `NETCDF:"x.nc":${path}`);
+    assert.deepEqual([back.width, back.height, back.crs], [src.width, src.height, src.crs], path);
+    assert.deepEqual([...back.readBand(1)], [...src.readBand(1)], path);
+  }
+  const twice = new terrio.NetcdfGroups();
+  twice.add("/g", a);
+  twice.add("g", b);
+  assert.throws(() => twice.toBytes(), /two rasters in the netCDF group/);
+  assert.throws(() => new terrio.NetcdfGroups().toBytes(), /no rasters/);
+});
+
 test("Zarr stores and netCDF/HDF5 products as GDAL reads them", { skip: SKIP_DATA }, async (t) => {
   const { readdirSync, statSync } = await import("node:fs");
   const srtm = terrio.open(readFileSync(join(DATA, "srtm_sub.tif")), "srtm_sub.tif");

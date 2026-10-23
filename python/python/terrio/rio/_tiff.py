@@ -152,6 +152,8 @@ class Structure:
     # Per-band nodata values from a sidecar (band index from 0 to value).
     band_nodata: dict[int, float | None] = field(default_factory=dict)
     has_mask: bool = False
+    # Whether the per-dataset mask is the `.msk` sidecar's (the file having no internal mask).
+    mask_in_sidecar: bool = False
     # Ground control points `(pixel, line, x, y, z)`, as GDAL reads them from tie points.
     gcps: list[tuple[float, float, float, float, float]] = field(default_factory=list)
     # The 92 values of the RPCCoefficientTag, or GDAL's RPC items of a sidecar.

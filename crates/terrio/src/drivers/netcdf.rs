@@ -207,6 +207,13 @@ fn subdatasets(vars: &[VarRef], file: &str) -> Vec<(String, String)> {
         .collect()
 }
 
+/// The paths of a file's raster variables (`Band1`, `/group/Band1`), as [`read`] names them.
+pub(crate) fn data_variable_paths(path: &Path) -> Result<Vec<String>> {
+    let f = NcFile::open(path).map_err(|e| err(path, e))?;
+    let vars = all_variables(&f, path, &|| super::hdf5::open_file(path).ok())?;
+    Ok(data_variables(&vars).iter().map(|r| r.full.clone()).collect())
+}
+
 /// Reads a NetCDF variable (by default the first data variable) as a raster. Variables below the
 /// root group are named by their path, `/group/var`.
 pub(crate) fn read(path: &Path, variable: Option<&str>) -> Result<RasterDataset> {

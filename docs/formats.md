@@ -92,10 +92,23 @@ netCDF files are written as GDAL writes rasters, with its creation options:
 | `ZLEVEL` | The deflate level, 1 (the default) to 9 |
 | `CHUNKING` | `YES` (compressed variables chunked by row, GDAL's default) or `NO` (one chunk per band) |
 | `GROUP` | A netCDF-4 group for the variables, such as `/science/grid` (terrio's option; groups are created as needed, `FORMAT` defaults to `NC4`) |
+| `APPEND_SUBDATASET` | `YES`: add the raster to an existing file (in its `GROUP`), as GDAL's option adds a variable. The file is written again with its rasters and the new one (one raster per group; its other variables and attributes, and its rasters' chunking and compression, are not kept: the creation options of this write apply to all) |
 
 Several rasters go into one netCDF-4 file, each in its group with its own dimensions,
-coordinate variables and grid mapping, with `terrio::write_netcdf_groups`; they read back as
-`NETCDF:"file.nc":/group/Band1`, in terrio and GDAL (classic and multidimensional APIs).
+coordinate variables and grid mapping: with `terrio::write_netcdf_groups` in Rust,
+`terrio.write_netcdf_groups` in Python, `NetcdfGroups` in JavaScript, or one `terrio convert`
+at a time with `GROUP` and `APPEND_SUBDATASET=YES`. They read back as
+`NETCDF:"file.nc":/group/Band1`, in terrio, GDAL (classic and multidimensional APIs), netCDF4
+and xarray (`xr.open_dataset("file.nc", group="terrain/dem")`).
+
+```sh
+terrio convert dem.tif terrain.nc --co GROUP=/terrain/dem --co COMPRESS=DEFLATE
+terrio convert slope.tif terrain.nc --co GROUP=/terrain/slope --co APPEND_SUBDATASET=YES
+```
+
+```python
+terrio.write_netcdf_groups({"/terrain/dem": dem, "/terrain/slope": slope}, "terrain.nc", options={"COMPRESS": "DEFLATE"})
+```
 
 netCDF-4 files are HDF5 files written by terrio itself (no HDF5 or netCDF library): the
 coordinate variables as dimension scales, the CF grid mapping, `_FillValue` and the other

@@ -105,14 +105,18 @@ the grid, the next best transformation is used, as PROJ does. Grids are looked u
    (`~/.local/share/proj`, where `projsync` writes) and terrio's download cache;
 3. when network access is on (`TERRIO_NETWORK=ON`, or `PROJ_NETWORK=ON` when the first is not
    set), on the PROJ CDN (`TERRIO_CDN_ENDPOINT`, default `https://cdn.proj.org`): the grid is
-   downloaded once into the cache (`TERRIO_GRID_CACHE`, default `~/.cache/terrio/grids`).
+   read in place with HTTP range requests, as PROJ reads it, fetching only its header and the
+   blocks around the points transformed (four EGM2008 heights fetch 0.85 MB of the 80 MB
+   `us_nga_egm08_25.tif`). With `TERRIO_GRID_DOWNLOAD=YES`, it is downloaded whole into the
+   cache instead (`TERRIO_GRID_CACHE`, default `~/.cache/terrio/grids`), where later runs find
+   it.
 
 The search directories and network access can also be set from code
 (`terrio::crs::set_grid_search_paths`, `set_network_enabled`, and the same functions in Python),
 as PROJ's `proj_context_set_search_paths` and `proj_context_set_enable_network`.
 
 ```sh
-TERRIO_NETWORK=ON terrio crs EPSG:4267 --to EPSG:4269 -100 40   # downloads the NADCON5 grid
+TERRIO_NETWORK=ON terrio crs EPSG:4267 --to EPSG:4269 -100 40   # reads the NADCON5 grid by range
 TERRIO_GRID_DIR=~/grids terrio crs EPSG:27700 --to EPSG:4258 434422 233624   # OSTN15
 ```
 

@@ -177,9 +177,18 @@ pub(crate) fn open_subdataset(path: &str) -> Option<Result<RasterDataset>> {
     None
 }
 
-/// Writes rasters into one netCDF-4 file, each in its group (see `netcdf_write::write_groups`).
+/// Writes rasters into one netCDF-4 file, each in its group (see `netcdf_write::groups_to_bytes`).
 #[cfg(feature = "netcdf-hdf5")]
 pub(crate) fn write_netcdf_groups(rasters: &[(&str, &RasterDataset)], path: &str, options: &crate::RasterWriteOptions) -> Result<()> {
+    std::fs::write(path, netcdf_groups_to_bytes(rasters, options)?)?;
+    Ok(())
+}
+
+/// Encodes rasters as one netCDF-4 file, each in its group, with the netCDF creation options of
+/// `options` (`FORMAT`, `COMPRESS`, `ZLEVEL`, `CHUNKING`).
+#[cfg(feature = "netcdf-hdf5")]
+pub(crate) fn netcdf_groups_to_bytes(rasters: &[(&str, &RasterDataset)], options: &crate::RasterWriteOptions) -> Result<Vec<u8>> {
+    // The first of an option given twice, as in `write`.
     let co = |key: &str| options.creation_options.iter().find(|(k, _)| k.eq_ignore_ascii_case(key)).map(|(_, v)| v.as_str());
     let o = netcdf_write::Options {
         format: co("FORMAT"),
@@ -189,7 +198,27 @@ pub(crate) fn write_netcdf_groups(rasters: &[(&str, &RasterDataset)], path: &str
         group: None,
     };
     let entries: Vec<(&str, &Raster, Option<f64>)> = rasters.iter().map(|(g, ds)| (*g, &ds.raster, ds.nodata())).collect();
-    netcdf_write::write_groups(&entries, Path::new(path), &o)
+    netcdf_write::groups_to_bytes(&entries, &o)
+}
+
+/// The rasters of an existing netCDF file with the group each is in, to append another one to
+/// it (`APPEND_SUBDATASET=YES`): each of its raster variables, read as rasters and written again
+/// with the new one (so what terrio's raster model does not hold, such as other variables and
+/// attributes or the original chunking, is not carried over). Files with several variables in
+/// one group cannot be carried over, since terrio writes one raster per group.
+#[cfg(feature = "netcdf-hdf5")]
+fn netcdf_rasters_of(path: &str) -> Result<Vec<(String, RasterDataset)>> {
+    let mut out: Vec<(String, RasterDataset)> = Vec::new();
+    for var in netcdf::data_variable_paths(Path::new(path))? {
+        let group = var.trim_start_matches('/').rsplit_once('/').map_or("", |(g, _)| g).to_string();
+        if out.iter().any(|(g, _)| *g == group) {
+            return Err(crate::Error::Unsupported(format!(
+                "{path} has several variables in the group '/{group}': terrio appends only to files with one raster per group"
+            )));
+        }
+        out.push((group, crate::open_raster(&format!("NETCDF:\"{path}\":{var}"))?));
+    }
+    Ok(out)
 }
 
 /// Writes a raster with one of terrio's own drivers, declaring `nodata`, with the format's
@@ -232,7 +261,26 @@ pub(crate) fn write(
                 chunking: co("CHUNKING"),
                 group: co("GROUP"),
             };
-            netcdf_write::write(r, nodata, p, &o)
+            let append = co("APPEND_SUBDATASET").is_some_and(|v| matches!(v.to_ascii_uppercase().as_str(), "YES" | "TRUE" | "ON" | "1"));
+            if append && p.exists() {
+                // The file's rasters, then this one in its group: the file written again.
+                (|| {
+                    let existing = netcdf_rasters_of(path)?;
+                    let new = RasterDataset::with_driver(r.clone(), RasterDriver::NetCDF, nodata.is_some());
+                    let mut all: Vec<(&str, &RasterDataset)> = existing.iter().map(|(g, ds)| (g.as_str(), ds)).collect();
+                    all.push((o.group.unwrap_or(""), &new));
+                    let bytes = netcdf_groups_to_bytes(&all, options)?;
+                    // Written beside the file, then renamed over it: an interrupted write leaves the
+                    // original as it was.
+                    let tmp = p.with_extension(format!("nc.tmp-{}", std::process::id()));
+                    std::fs::write(&tmp, bytes).and_then(|_| std::fs::rename(&tmp, p)).inspect_err(|_| {
+                        let _ = std::fs::remove_file(&tmp);
+                    })?;
+                    Ok(())
+                })()
+            } else {
+                netcdf_write::write(r, nodata, p, &o)
+            }
         }
         #[cfg(feature = "sqlite")]
         RasterDriver::GPKG => gpkg::write(r, nodata, p, compression.or(co("TILE_FORMAT")), co("RASTER_TABLE")),
