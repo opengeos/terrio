@@ -1155,18 +1155,20 @@ impl Level {
         // Rearranged band-major, north-up.
         let strides: Vec<usize> = (0..nd).map(|d| shape[d + 1..].iter().product()).collect();
         let (xs, ys) = (strides[self.xd], strides[self.yd]);
-        let index = |b: usize, r: usize, c: usize| {
+        // The offset of each band's values in the region read.
+        let band_offsets: Vec<usize> =
+            indices.iter().map(|i| self.bds.iter().enumerate().map(|(k, &d)| (i[k] - start[d]) * strides[d]).sum()).collect();
+        let index = |offset: usize, r: usize, c: usize| {
             let rr = if self.south_up { w.height - 1 - r } else { r };
-            let band_offset: usize = self.bds.iter().enumerate().map(|(k, &d)| (indices[b][k] - start[d]) * strides[d]).sum();
-            c * xs + rr * ys + band_offset
+            c * xs + rr * ys + offset
         };
         macro_rules! reorder {
             ($v:expr, $variant:ident) => {{
                 let mut out = Vec::with_capacity(bands.len() * w.width * w.height);
-                for b in 0..bands.len() {
+                for &offset in &band_offsets {
                     for r in 0..w.height {
                         for c in 0..w.width {
-                            out.push($v[index(b, r, c)]);
+                            out.push($v[index(offset, r, c)]);
                         }
                     }
                 }
