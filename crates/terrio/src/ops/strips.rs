@@ -54,9 +54,9 @@ pub(crate) struct StripWriter {
 
 enum Inner {
     /// Strips compressed and written on another thread, while the next are computed.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(not(target_family = "wasm"))]
     Thread { tx: std::sync::mpsc::SyncSender<(RasterData, usize)>, handle: Option<std::thread::JoinHandle<Result<()>>> },
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(target_family = "wasm")]
     Tiff(Tiff),
     /// The output gathered whole, written at the end.
     Whole { ds: Box<RasterDataset>, options: Box<RasterWriteOptions>, done: usize },
@@ -69,7 +69,7 @@ impl StripWriter {
         let (rows, bands, width) = (r.rows, r.bands, r.cols);
         if let Some(tiff) = Tiff::create(header, path, options)? {
             let inner = {
-                #[cfg(not(target_arch = "wasm32"))]
+                #[cfg(not(target_family = "wasm"))]
                 {
                     let mut w = tiff;
                     let (tx, rx) = std::sync::mpsc::sync_channel::<(RasterData, usize)>(1);
@@ -81,7 +81,7 @@ impl StripWriter {
                     });
                     Inner::Thread { tx, handle: Some(handle) }
                 }
-                #[cfg(target_arch = "wasm32")]
+                #[cfg(target_family = "wasm")]
                 Inner::Tiff(tiff)
             };
             return Ok(Self { inner: Some(inner), path: path.to_string(), rows, bands, width });
@@ -101,7 +101,7 @@ impl StripWriter {
     pub fn write(&mut self, data: RasterData, rows: usize) -> Result<()> {
         let Some(inner) = &mut self.inner else { return Err(Error::InvalidArgument("the raster is written".into())) };
         match inner {
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(not(target_family = "wasm"))]
             Inner::Thread { tx, handle } => {
                 if tx.send((data, rows)).is_ok() {
                     return Ok(());
@@ -112,7 +112,7 @@ impl StripWriter {
                     _ => Err(Error::InvalidData("the GeoTIFF writer stopped".into())),
                 }
             }
-            #[cfg(target_arch = "wasm32")]
+            #[cfg(target_family = "wasm")]
             Inner::Tiff(w) => w.write_rows(data, rows),
             Inner::Whole { ds, done, .. } => {
                 let (w, n) = (self.width, self.width * self.rows);
@@ -142,7 +142,7 @@ impl StripWriter {
     pub fn finish(mut self) -> Result<()> {
         let Some(inner) = self.inner.take() else { return Ok(()) };
         let result = match inner {
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(not(target_family = "wasm"))]
             Inner::Thread { tx, handle } => {
                 drop(tx);
                 match handle.map(|h| h.join()) {
@@ -150,7 +150,7 @@ impl StripWriter {
                     _ => Err(Error::InvalidData("the GeoTIFF writer stopped".into())),
                 }
             }
-            #[cfg(target_arch = "wasm32")]
+            #[cfg(target_family = "wasm")]
             Inner::Tiff(w) => w.finish(),
             Inner::Whole { ds, options, done } => {
                 if done != self.rows {
@@ -173,14 +173,14 @@ impl Drop for StripWriter {
             // Nothing written yet.
             Inner::Whole { .. } => return,
             // The writer thread stops (its channel closed) before the file is removed.
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(not(target_family = "wasm"))]
             Inner::Thread { tx, handle } => {
                 drop(tx);
                 if let Some(h) = handle {
                     let _ = h.join();
                 }
             }
-            #[cfg(target_arch = "wasm32")]
+            #[cfg(target_family = "wasm")]
             Inner::Tiff(w) => drop(w),
         }
         let _ = std::fs::remove_file(&self.path);
@@ -239,14 +239,14 @@ pub(crate) fn pipelined<R: Send>(
     mut read: impl FnMut(usize) -> Result<R> + Send,
     mut work: impl FnMut(usize, R) -> Result<()>,
 ) -> Result<()> {
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(target_family = "wasm")]
     {
         for i in 0..n {
             work(i, read(i)?)?;
         }
         Ok(())
     }
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(not(target_family = "wasm"))]
     std::thread::scope(|s| {
         let (tx, rx) = std::sync::mpsc::sync_channel(1);
         s.spawn(move || {
@@ -268,7 +268,7 @@ pub(crate) fn pipelined<R: Send>(
 }
 
 /// How many strips [`read_ahead`] reads at once, ahead of the one worked on.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(target_family = "wasm"))]
 const READ_AHEAD: usize = 4;
 
 /// Runs `work` on `n` strips in order, `read` reading each: up to [`READ_AHEAD`] strips are read
@@ -279,14 +279,14 @@ pub(crate) fn read_ahead<R: Send>(
     read: impl Fn(usize) -> Result<R> + Sync,
     mut work: impl FnMut(usize, R) -> Result<()>,
 ) -> Result<()> {
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(target_family = "wasm")]
     {
         for i in 0..n {
             work(i, read(i)?)?;
         }
         Ok(())
     }
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(not(target_family = "wasm"))]
     {
         use std::collections::BTreeMap;
         use std::sync::{Condvar, Mutex};

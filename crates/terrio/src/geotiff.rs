@@ -504,7 +504,7 @@ pub(crate) fn decode_chunks<R: Read + Seek, D: Read + Seek>(
 /// Decodes chunks on several threads, each with its own decoder over the file, handing them to
 /// `place` on the calling thread. Returns how many of the first chunks were decoded: a thread that
 /// cannot open the file leaves its share to the caller.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(target_family = "wasm"))]
 fn decode_in_threads<D: Read + Seek>(
     reopen: Reopen<D>,
     ifd: usize,
@@ -564,7 +564,7 @@ fn decode_in_threads<D: Read + Seek>(
 /// Decodes chunks on the thread pool of WebAssembly built with threads, a few per thread at a
 /// time, each thread with its own decoder over the TIFF's bytes, and hands them to `place` on the
 /// calling thread. Returns how many of the first chunks were decoded (none without a pool).
-#[cfg(all(threads, target_arch = "wasm32"))]
+#[cfg(all(threads, target_family = "wasm"))]
 fn decode_in_threads<D: Read + Seek>(
     reopen: Reopen<D>,
     ifd: usize,

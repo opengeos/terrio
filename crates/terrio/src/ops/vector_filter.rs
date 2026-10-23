@@ -638,7 +638,7 @@ pub fn write_vector_with_mode(layers: &[Layer], path: &str, options: &VectorWrit
         return update(path, layers, mode);
     }
     // Tile archives get the layers' features added to their tiles.
-    #[cfg(all(feature = "tiles", not(target_arch = "wasm32")))]
+    #[cfg(all(feature = "tiles", not(target_family = "wasm")))]
     if matches!(driver, Some(crate::formats::VectorDriver::MBTiles | crate::formats::VectorDriver::PMTiles)) {
         return crate::tiles::update_vector(path, layers, &options.tiles, mode == WriteMode::Overwrite);
     }

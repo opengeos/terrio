@@ -427,7 +427,7 @@ mod codec {
 /// supply: the allocator (`malloc`, `calloc`, `realloc`, `free`), served by Rust's allocator with
 /// each block led by a header holding its size, and `strcpy`. (The compiler's builtins supply
 /// `memcpy`, `memset` and the maths functions.)
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+#[cfg(all(target_family = "wasm", target_os = "unknown"))]
 mod wasm_libc {
     use core::ffi::c_void;
     use std::alloc::{Layout, alloc, alloc_zeroed, dealloc, realloc as re_alloc};

@@ -153,8 +153,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      # The threaded module rebuilds the standard library with atomics: the nightly js/build.mjs
-      # pins, with its sources.
+      # The threaded and memory64 modules rebuild the standard library (with atomics; for wasm64):
+      # the nightly js/build.mjs pins, with its sources.
       # Installed first: the last toolchain installed is the default (stable).
       - uses: dtolnay/rust-toolchain@master
         with:
@@ -182,7 +182,9 @@ jobs:
           node --test js/tests/package.test.mjs
           # The whole Node.js suite on the threaded module, as terrio-js/load starts it.
           TERRIO_JS_LOAD=../pkg/load.js node --test js/tests/node.test.mjs
-          ls -l js/pkg/terrio_bg.wasm js/pkg/core/terrio_bg.wasm js/pkg/threads/terrio_bg.wasm
+          # And on the memory64 module.
+          TERRIO_JS_LOAD=../pkg/load.js TERRIO_MEMORY64=1 node --test js/tests/node.test.mjs
+          ls -l js/pkg/terrio_bg.wasm js/pkg/core/terrio_bg.wasm js/pkg/threads/terrio_bg.wasm js/pkg/memory64/terrio_bg.wasm
           cd js/pkg && npm pack --dry-run
       - name: In headless Chromium and Firefox, threaded on a cross-origin isolated page
         run: |
@@ -210,7 +212,10 @@ jobs:
             const { load } = await import("terrio-js/load");
             const threaded = await load();
             if (threaded.features().build !== "terrio-js/threads") throw new Error("not threaded");
-            console.log("terrio-js/load", JSON.stringify(threaded.features()));'
+            console.log("terrio-js/load", JSON.stringify(threaded.features()));
+            const wide = await load({ memory64: true });
+            if (wide.features().build !== "terrio-js/memory64") throw new Error("not memory64");
+            console.log("terrio-js/load memory64", JSON.stringify(wide.features()));'
       - uses: actions/upload-artifact@v7
         with:
           name: npm-package

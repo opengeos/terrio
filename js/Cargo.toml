@@ -50,6 +50,11 @@ sqlite = ["terrio/sqlite"]
 # js/build.mjs.
 threads = ["full", "dep:rayon"]
 
+# The memory64 module (wasm64): ahash seeds its hash maps with getrandom, which has no backend
+# there but a custom one (`--cfg getrandom_backend="custom"`, see js/build.mjs), defined in lib.rs.
+[target.'cfg(target_arch = "wasm64")'.dependencies]
+getrandom = "0.3"
+
 # The npm package's build (`node js/build.mjs`, the `wasm-release` profile of the workspace).
 [package.metadata.wasm-pack.profile.custom]
 wasm-opt = ["-Oz"]

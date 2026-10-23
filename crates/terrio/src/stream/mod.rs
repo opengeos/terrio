@@ -1399,19 +1399,19 @@ impl Drop for FgbSink {
 #[cfg(feature = "parquet")]
 struct ParquetSink {
     enc: geoparquet::ParquetEncoder,
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(not(target_family = "wasm"))]
     encoder: Option<(std::sync::mpsc::SyncSender<geoparquet::EncodedBatch>, std::thread::JoinHandle<Result<()>>)>,
     /// Set when the sink is dropped unfinished: the file is left without its footer.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(not(target_family = "wasm"))]
     abort: std::sync::Arc<std::sync::atomic::AtomicBool>,
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(target_family = "wasm")]
     writer: geoparquet::ParquetFileWriter<BufWriter<File>>,
 }
 
 #[cfg(feature = "parquet")]
 impl ParquetSink {
     fn new(mut writer: geoparquet::ParquetFileWriter<BufWriter<File>>, enc: geoparquet::ParquetEncoder) -> Self {
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(not(target_family = "wasm"))]
         {
             // Two batches in flight at most.
             let (tx, rx) = std::sync::mpsc::sync_channel::<geoparquet::EncodedBatch>(2);
@@ -1432,7 +1432,7 @@ impl ParquetSink {
             });
             Self { enc, encoder: Some((tx, handle)), abort }
         }
-        #[cfg(target_arch = "wasm32")]
+        #[cfg(target_family = "wasm")]
         {
             let _ = &mut writer;
             Self { enc, writer }
@@ -1443,7 +1443,7 @@ impl ParquetSink {
 #[cfg(feature = "parquet")]
 impl FeatureSink for ParquetSink {
     fn write(&mut self, chunk: &Layer) -> Result<()> {
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(not(target_family = "wasm"))]
         {
             let Some((tx, _)) = &self.encoder else { return Ok(()) };
             for batch in self.enc.batches(&chunk.features)? {
@@ -1454,19 +1454,19 @@ impl FeatureSink for ParquetSink {
             }
             Ok(())
         }
-        #[cfg(target_arch = "wasm32")]
+        #[cfg(target_family = "wasm")]
         {
             self.enc.write(&mut self.writer, &chunk.features)
         }
     }
 
     fn finish(self: Box<Self>) -> Result<()> {
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(not(target_family = "wasm"))]
         {
             let mut s = self;
             s.stop()
         }
-        #[cfg(target_arch = "wasm32")]
+        #[cfg(target_family = "wasm")]
         {
             self.writer.close()?.flush()?;
             Ok(())
@@ -1474,7 +1474,7 @@ impl FeatureSink for ParquetSink {
     }
 }
 
-#[cfg(all(feature = "parquet", not(target_arch = "wasm32")))]
+#[cfg(all(feature = "parquet", not(target_family = "wasm")))]
 impl ParquetSink {
     /// Ends the encoder thread: the file is complete, or its error.
     fn stop(&mut self) -> Result<()> {
@@ -1484,7 +1484,7 @@ impl ParquetSink {
     }
 }
 
-#[cfg(all(feature = "parquet", not(target_arch = "wasm32")))]
+#[cfg(all(feature = "parquet", not(target_family = "wasm")))]
 impl Drop for ParquetSink {
     /// An unfinished sink waits for its encoder, which leaves the file without a footer.
     fn drop(&mut self) {
@@ -1633,9 +1633,9 @@ pub fn can_convert_stream(src: &str, dst: &str, options: &ConvertOptions) -> boo
 
 /// Whether `src` is an OpenStreetMap PBF file sorted by type then id.
 fn osm_sorted(src: &str) -> bool {
-    #[cfg(all(feature = "osm", not(target_arch = "wasm32")))]
+    #[cfg(all(feature = "osm", not(target_family = "wasm")))]
     return File::open(src).is_ok_and(|mut f| crate::drivers::vector::osm::is_sorted_pbf(&mut f));
-    #[cfg(not(all(feature = "osm", not(target_arch = "wasm32"))))]
+    #[cfg(not(all(feature = "osm", not(target_family = "wasm"))))]
     {
         let _ = src;
         false
@@ -1743,14 +1743,14 @@ pub fn convert(src: &str, dst: &str, options: &ConvertOptions) -> Result<()> {
 /// on another thread while one is written (in turn on WebAssembly), so that writing, often
 /// serial, does not keep the threads reading idle. At most one chunk waits to be written.
 fn write_ahead(mut next: impl FnMut() -> Result<Option<Layer>> + Send, mut write: impl FnMut(Layer) -> Result<()>) -> Result<()> {
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(target_family = "wasm")]
     {
         while let Some(c) = next()? {
             write(c)?;
         }
         Ok(())
     }
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(not(target_family = "wasm"))]
     std::thread::scope(|s| {
         let (tx, rx) = std::sync::mpsc::sync_channel(0);
         s.spawn(move || {
@@ -1805,12 +1805,12 @@ fn remove_on_error(dst: &str, driver: VectorDriver, written: Result<()>) -> Resu
 /// [`read_sorted_pbf`](crate::drivers::vector::osm::read_sorted_pbf)). `None` for other inputs
 /// and outputs, which are converted whole.
 fn convert_osm(src: &str, dst: &str, options: &ConvertOptions) -> Option<Result<()>> {
-    #[cfg(not(all(feature = "osm", not(target_arch = "wasm32"))))]
+    #[cfg(not(all(feature = "osm", not(target_family = "wasm"))))]
     {
         let _ = (src, dst, options);
         None
     }
-    #[cfg(all(feature = "osm", not(target_arch = "wasm32")))]
+    #[cfg(all(feature = "osm", not(target_family = "wasm")))]
     {
         let local = crate::vfs::Location::parse(src).is_local();
         if options.translate.sql.is_some()
@@ -1838,7 +1838,7 @@ fn convert_osm(src: &str, dst: &str, options: &ConvertOptions) -> Option<Result<
     }
 }
 
-#[cfg(all(feature = "osm", not(target_arch = "wasm32")))]
+#[cfg(all(feature = "osm", not(target_family = "wasm")))]
 #[cfg_attr(not(feature = "sqlite"), allow(unused_variables))]
 fn convert_sorted_osm(data: &mut File, src: &str, dst: &str, options: &ConvertOptions) -> Result<()> {
     use crate::drivers::vector::osm;

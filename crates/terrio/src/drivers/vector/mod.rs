@@ -44,11 +44,11 @@ impl<T: std::io::Read + std::io::Write + std::io::Seek + Send> Spill for T {}
 
 /// A new, empty [`Spill`], deleted when dropped.
 pub(crate) fn spill() -> Result<Box<dyn Spill>> {
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(not(target_family = "wasm"))]
     {
         Ok(Box::new(tempfile::tempfile()?))
     }
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(target_family = "wasm")]
     {
         Ok(Box::new(std::io::Cursor::new(Vec::new())))
     }

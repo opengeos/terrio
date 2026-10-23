@@ -239,7 +239,7 @@ impl ChunkCodec {
             LERC => Codec::Lerc,
             JXL | JXL_DNG => Codec::Jxl,
             LZMA => Codec::Lzma,
-            ZSTD if cfg!(target_arch = "wasm32") => Codec::Zstd,
+            ZSTD if cfg!(target_family = "wasm") => Codec::Zstd,
             5 => Codec::Lzw,
             7 => Codec::Jpeg,
             1 | 8 | 32946 | 32773 | ZSTD if misread => Codec::Chunky(compression),

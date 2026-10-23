@@ -237,7 +237,7 @@ pub(crate) fn source_path(path: &str, vrt_dir: Option<&Path>) -> (String, bool) 
 }
 
 fn absolute(path: &str) -> String {
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(not(target_family = "wasm"))]
     if let Ok(p) = std::path::absolute(if path.is_empty() { "." } else { path }) {
         return p.to_string_lossy().into_owned();
     }

@@ -106,7 +106,7 @@ impl EptDataType {
     }
 
     /// EPT's name of the data type.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(not(target_family = "wasm"))]
     pub(crate) fn name(self) -> &'static str {
         match self {
             EptDataType::Laszip => "laszip",
@@ -116,7 +116,7 @@ impl EptDataType {
     }
 
     /// The extension of the node files.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(not(target_family = "wasm"))]
     pub(crate) fn extension(self) -> &'static str {
         match self {
             EptDataType::Laszip => "laz",
@@ -508,12 +508,12 @@ impl FormatReader for EptReader {
         let files: Vec<String> = keys.iter().map(|k| self.data_file(*k)).collect();
         // Fetch (in parallel, on native builds) and decode the nodes.
         let base = &self.base;
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(not(target_family = "wasm"))]
         let parts: Vec<Result<Vec<Dimension>>> = {
             use rayon::prelude::*;
             keys.par_iter().zip(files.par_iter()).map(|(k, f)| self.decode(*k, fetch(base, f)?)).collect()
         };
-        #[cfg(target_arch = "wasm32")]
+        #[cfg(target_family = "wasm")]
         let parts: Vec<Result<Vec<Dimension>>> = keys.iter().zip(&files).map(|(k, f)| self.decode(*k, fetch(base, f)?)).collect();
         let parts = parts.into_iter().collect::<Result<Vec<_>>>()?;
         let dims = super::read::concat(parts, &self.dims);

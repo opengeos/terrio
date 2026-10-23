@@ -722,12 +722,12 @@ fn par_map<T: Sync, R: Send, S: Send>(
     init: impl Fn() -> S + Sync + Send,
     f: impl Fn(&mut S, &T) -> R + Sync + Send,
 ) -> Vec<R> {
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(not(target_family = "wasm"))]
     {
         use rayon::prelude::*;
         items.par_iter().map_init(init, f).collect()
     }
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(target_family = "wasm")]
     {
         let mut s = init();
         items.iter().map(|t| f(&mut s, t)).collect()

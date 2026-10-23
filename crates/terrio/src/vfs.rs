@@ -57,7 +57,7 @@ pub(crate) const MAIN_DATASET_EXTENSIONS: &[&str] = &[
 #[derive(Debug)]
 pub struct LocalPath {
     path: PathBuf,
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(not(target_family = "wasm"))]
     _temp: Option<tempfile::TempDir>,
 }
 
@@ -75,7 +75,7 @@ impl LocalPath {
     fn local(path: PathBuf) -> Self {
         Self {
             path,
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(not(target_family = "wasm"))]
             _temp: None,
         }
     }
@@ -210,7 +210,7 @@ impl Location {
         let Location::Zip { archive, inner: None } = self else {
             return self.file_name();
         };
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(not(target_family = "wasm"))]
         if let Location::Local(p) = archive.as_ref()
             && let Some(name) = archive_main_member(p)
         {
@@ -226,7 +226,7 @@ impl Location {
 
 /// The main dataset of a local zip archive, from its listing: the first member (by name) with
 /// the highest-priority extension.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(target_family = "wasm"))]
 fn archive_main_member(path: &Path) -> Option<String> {
     let file = std::fs::File::open(path).ok()?;
     let zip = zip::ZipArchive::new(std::io::BufReader::new(file)).ok()?;
@@ -283,11 +283,11 @@ fn resolve_location(loc: &Location) -> Result<LocalPath> {
         Location::Local(p) => Ok(LocalPath::local(p.clone())),
         #[cfg(remote)]
         Location::Url(_) | Location::S3 { .. } => download(loc),
-        #[cfg(all(not(remote), not(target_arch = "wasm32")))]
+        #[cfg(all(not(remote), not(target_family = "wasm")))]
         Location::Url(_) | Location::S3 { .. } => Err(Error::disabled("remote")),
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(not(target_family = "wasm"))]
         Location::Zip { archive, inner } => extract(archive, inner.as_deref()),
-        #[cfg(target_arch = "wasm32")]
+        #[cfg(target_family = "wasm")]
         _ => Err(Error::Unsupported("remote files and archives are not supported in WebAssembly builds".into())),
     }
 }
@@ -340,7 +340,7 @@ fn download(loc: &Location) -> Result<LocalPath> {
     Ok(LocalPath { path, _temp: Some(temp) })
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(target_family = "wasm"))]
 fn extract(archive: &Location, inner: Option<&str>) -> Result<LocalPath> {
     let archive_local = resolve_location(archive)?;
     let temp = tempfile::Builder::new().prefix("terrio-").tempdir()?;
@@ -364,7 +364,7 @@ fn extract(archive: &Location, inner: Option<&str>) -> Result<LocalPath> {
 
 /// Finds the main dataset in an extracted archive: the first file (by name) with the
 /// highest-priority extension, searching subdirectories too.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(target_family = "wasm"))]
 fn find_main_dataset(dir: &Path) -> Result<Option<PathBuf>> {
     let mut files = Vec::new();
     collect_files(dir, &mut files)?;
@@ -377,7 +377,7 @@ fn find_main_dataset(dir: &Path) -> Result<Option<PathBuf>> {
     Ok(None)
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(target_family = "wasm"))]
 fn collect_files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
     for entry in std::fs::read_dir(dir)? {
         let path = entry?.path();

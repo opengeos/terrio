@@ -271,7 +271,7 @@ impl SpatialRef {
         if let Some(code) = wbp::epsg_from_srs_reference(s) {
             return Self::from_epsg(code);
         }
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(not(target_family = "wasm"))]
         if let Ok(text) = std::fs::read_to_string(s) {
             return Self::parse(&text);
         }

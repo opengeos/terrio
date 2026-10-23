@@ -895,7 +895,7 @@ pub(crate) fn update_tiles(archive: TileArchive, ds: &RasterDataset, o: &TileWri
     let (cx1, cy1) = (nx.saturating_add(nw).max(w as i64), ny.saturating_add(nh).max(h as i64));
     // The archive and the raster are held whole at full resolution (bands, alpha and a copy of
     // the archive's pixels): 2^28 pixels at most (2^26 in WebAssembly).
-    const MAX_PIXELS: u64 = if cfg!(target_arch = "wasm32") { 1 << 26 } else { 1 << 28 };
+    const MAX_PIXELS: u64 = if cfg!(target_family = "wasm") { 1 << 26 } else { 1 << 28 };
     let (sw, sh) = (cx1.saturating_sub(cx0), cy1.saturating_sub(cy0));
     let fits = u64::try_from(sw).ok().zip(u64::try_from(sh).ok()).and_then(|(a, b)| a.checked_mul(b)).is_some_and(|n| n <= MAX_PIXELS);
     if !fits {

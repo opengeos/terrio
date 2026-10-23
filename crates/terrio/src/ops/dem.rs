@@ -713,7 +713,7 @@ fn process<T: Px>(rows: Rows<T>, nodata: Option<T>, dst_nodata: f32, edges: bool
     let (i0, i1) = (o0.max(1), o1.min(h.saturating_sub(1)));
     if i1 > i0 {
         let body = &mut out[(i0 - o0) * w..(i1 - o0) * w];
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(not(target_family = "wasm"))]
         {
             let threads = crate::par::threads().min(16);
             let rows_per = (i1 - i0).div_ceil(threads).max(1);
@@ -728,7 +728,7 @@ fn process<T: Px>(rows: Rows<T>, nodata: Option<T>, dst_nodata: f32, edges: bool
                 }
             });
         }
-        #[cfg(target_arch = "wasm32")]
+        #[cfg(target_family = "wasm")]
         for (k, o) in body.chunks_mut(w).enumerate() {
             inner(i0 + k, o);
         }

@@ -111,7 +111,7 @@ sqlite = []
 ## Open any format GDAL reads, through the same data model, when terrio has no driver for it.
 gdal = ["dep:gdal", "dep:gdal-sys"]
 
-[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
 # Zstandard GeoTIFF tiles decoded by the `tiff` crate, with the zstd C library (WebAssembly builds
 # decode them with `ruzstd`, in `tiff_codecs`).
 tiff = { workspace = true, features = ["zstd"] }

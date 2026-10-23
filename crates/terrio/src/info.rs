@@ -589,7 +589,7 @@ fn gpkg_vector_info(path: &str) -> crate::Result<Option<VectorInfo>> {
 
 /// Summarizes the layers of a local OpenStreetMap PBF file sorted by type then id a block at a
 /// time, as [`vector_info`] summarizes them read whole. `None` for other files.
-#[cfg(all(feature = "osm", not(target_arch = "wasm32")))]
+#[cfg(all(feature = "osm", not(target_family = "wasm")))]
 fn osm_vector_info(path: &str) -> crate::Result<Option<VectorInfo>> {
     use crate::drivers::vector::osm;
     if crate::formats::extension(path).as_deref() != Some("pbf")
@@ -643,7 +643,7 @@ fn osm_vector_info(path: &str) -> crate::Result<Option<VectorInfo>> {
     Ok(Some(VectorInfo { driver: crate::formats::VectorDriver::OSM.name().to_string(), layers, subdatasets: Vec::new() }))
 }
 
-#[cfg(any(not(feature = "osm"), target_arch = "wasm32"))]
+#[cfg(any(not(feature = "osm"), target_family = "wasm"))]
 fn osm_vector_info(_path: &str) -> crate::Result<Option<VectorInfo>> {
     Ok(None)
 }

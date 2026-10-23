@@ -87,3 +87,21 @@ test("terrio-js/load falls back to the single-threaded module", async () => {
   assert.equal((await load({ threads: false })).features().build, "terrio-js");
   assert.equal((await load({ core: true })).features().build, "terrio-js/core");
 });
+
+// The memory64 module, as `terrio-js/load` loads it on request: every format, single-threaded.
+const wide = existsSync(join(dir, "memory64", "terrio_bg.wasm"));
+
+test("terrio-js/load loads the memory64 module on request", { skip: !wide && "no memory64/ module" }, async () => {
+  const { load, memory64Supported } = await import(pathToFileURL(join(dir, "load.js")).href);
+  assert.ok(memory64Supported());
+  const m = await load({ memory64: true });
+  assert.equal(m.features().build, "terrio-js/memory64");
+  assert.ok(m.features().features.includes("parquet"));
+  const st = await load({ threads: false });
+  const pixels = new Float32Array(700 * 500).map((_, i) => ((i * 7919) % 104729) / 7);
+  const cog = (t) => t.rasterFromArray(pixels, 700, 500, [0, 1, 0, 500, 0, -1], "EPSG:3857").toBytes("x.tif", { format: "COG", compress: "ZSTD" });
+  assert.deepEqual(Buffer.from(cog(m)), Buffer.from(cog(st)));
+  const pt = { type: "Feature", properties: { a: 1 }, geometry: { type: "Point", coordinates: [1, 2] } };
+  const pq = m.fromGeoJSON({ type: "FeatureCollection", features: [pt] }, "pts").toBytes("pts.parquet");
+  assert.equal(m.open(pq, "pts.parquet").toGeoJSON().features[0].properties.a, 1);
+});

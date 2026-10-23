@@ -610,12 +610,12 @@ impl RemoteDataset {
     /// Rasters: reads a band (from 1) as a typed array, fetching only the tiles of the window
     /// (`[colOff, rowOff, width, height]`, in the overview's pixels with `overview`).
     #[wasm_bindgen(js_name = readBand)]
-    pub fn read_band(&self, band: usize, window: Option<Vec<usize>>, overview: Option<usize>) -> js_sys::Promise {
+    pub fn read_band(&self, band: usize, window: Option<Vec<u32>>, overview: Option<usize>) -> js_sys::Promise {
         let me = RemoteDataset { state: self.state.clone() };
         wasm_bindgen_futures::future_to_promise(async move {
             let window = match window.as_deref() {
                 None => None,
-                Some(&[x, y, w, h]) => Some([x, y, w, h]),
+                Some(&[x, y, w, h]) => Some([x as usize, y as usize, w as usize, h as usize]),
                 Some(_) => return Err(JsError::new("window is [col_off, row_off, width, height]").into()),
             };
             let opts = WindowOptions { bands: vec![band], overview };

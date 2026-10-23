@@ -38,7 +38,7 @@ use wbvector::Layer;
 /// Opens a dataset, raster or vector, from its bytes. `name` is a file name whose extension tells
 /// the format (`dem.tif`, `roads.fgb`, `parcels.zip`).
 pub fn open_bytes(bytes: Vec<u8>, name: &str) -> Result<Dataset> {
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(not(target_family = "wasm"))]
     {
         let (_dir, path) = native::spill(&bytes, name)?;
         let result = crate::dataset::open_native(&path);
@@ -47,7 +47,7 @@ pub fn open_bytes(bytes: Vec<u8>, name: &str) -> Result<Dataset> {
         let result = crate::dataset::gdal_fallback(&path, result, |_| crate::gdal_backend::open_bytes(bytes, name));
         result
     }
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(target_family = "wasm")]
     codec::open(bytes, name, &VectorOpenOptions::default())
 }
 
@@ -92,7 +92,7 @@ pub fn open_zarr_store(files: Vec<(String, Vec<u8>)>) -> Result<RasterDataset> {
 
 /// Opens a vector dataset from its bytes.
 pub fn open_vector_bytes(bytes: Vec<u8>, name: &str, options: &VectorOpenOptions) -> Result<VectorDataset> {
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(not(target_family = "wasm"))]
     {
         let (_dir, path) = native::spill(&bytes, name)?;
         let result = crate::dataset::open_vector_native(&path, options);
@@ -100,7 +100,7 @@ pub fn open_vector_bytes(bytes: Vec<u8>, name: &str, options: &VectorOpenOptions
         let result = crate::dataset::gdal_fallback(&path, result, |_| crate::gdal_backend::open_vector_bytes(bytes, name, options));
         result
     }
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(target_family = "wasm")]
     match codec::open(bytes, name, options)? {
         Dataset::Vector(v) => Ok(v),
         Dataset::Raster(_) => Err(Error::Unsupported(format!("'{name}' is a raster, not a vector dataset"))),
@@ -141,7 +141,7 @@ pub fn write_raster_bytes(ds: &RasterDataset, name: &str, options: &RasterWriteO
         let stem = std::path::Path::new(name).file_stem().and_then(|s| s.to_str()).unwrap_or("raster");
         return codec::write_raster(ds, driver, options, stem.trim_end_matches(".zarr"));
     }
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(not(target_family = "wasm"))]
     {
         let dir = native::temp_dir()?;
         let path = dir.path().join(native::file_name(name, driver.info().extensions.first().copied().unwrap_or("tif")));
@@ -149,7 +149,7 @@ pub fn write_raster_bytes(ds: &RasterDataset, name: &str, options: &RasterWriteO
         crate::write_raster_dataset(ds, path, &RasterWriteOptions { driver: Some(driver), ..options.clone() })?;
         native::collect(dir.path(), path)
     }
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(target_family = "wasm")]
     codec::write_raster(ds, driver, options, std::path::Path::new(name).file_stem().and_then(|s| s.to_str()).unwrap_or("raster"))
 }
 
@@ -166,7 +166,7 @@ pub fn write_vector_bytes(layers: &[Layer], name: &str, options: &VectorWriteOpt
             return Err(Error::InvalidArgument(format!("cannot tell the output format of '{name}': give it explicitly")));
         }
     };
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(not(target_family = "wasm"))]
     {
         let dir = native::temp_dir()?;
         let path = dir.path().join(native::file_name(name, driver.info().extensions.first().copied().unwrap_or("dat")));
@@ -174,12 +174,12 @@ pub fn write_vector_bytes(layers: &[Layer], name: &str, options: &VectorWriteOpt
         crate::write_vector(layers, path, &VectorWriteOptions { driver: Some(driver), ..options.clone() })?;
         native::collect(dir.path(), path)
     }
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(target_family = "wasm")]
     codec::write_vector(layers, driver, options)
 }
 
 /// Native builds: bytes go through a temporary directory and the file drivers.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(target_family = "wasm"))]
 mod native {
     use crate::{Error, Result};
     use std::io::Write;
@@ -235,7 +235,7 @@ mod native {
 }
 
 /// In-memory codecs, used by WebAssembly builds (and tested in all builds).
-#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+#[cfg_attr(not(target_family = "wasm"), allow(dead_code))]
 pub(crate) mod codec {
     use super::*;
     use std::io::{Cursor, Read};
@@ -774,7 +774,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(not(target_family = "wasm"))]
     fn native_bytes_round_trip() {
         let ds = raster(2, DataType::I32);
         let bytes = write_raster_bytes(&ds, "a.tif", &Default::default()).unwrap();
@@ -791,7 +791,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(not(target_family = "wasm"))]
     fn multi_file_formats_from_zip_bytes() {
         let gj = r#"{"type":"FeatureCollection","features":[
             {"type":"Feature","properties":{"id":7,"name":"Zürich"},"geometry":{"type":"Point","coordinates":[8.5,47.4]}},

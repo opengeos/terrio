@@ -414,7 +414,7 @@ pub fn update_vector_bytes(bytes: Vec<u8>, layers: &[wbvector::Layer], o: &TileW
 }
 
 /// Writes bytes over a file, through a temporary file renamed over it once complete.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(target_family = "wasm"))]
 fn replace_file(path: &str, bytes: &[u8]) -> Result<()> {
     let tmp = format!("{path}.terrio-update");
     std::fs::write(&tmp, bytes)?;
@@ -426,7 +426,7 @@ fn replace_file(path: &str, bytes: &[u8]) -> Result<()> {
 
 /// Adds a raster to a local PMTiles or MBTiles archive of image tiles: see
 /// [`update_raster_bytes`]. The archive is rewritten, and replaced once complete.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(target_family = "wasm"))]
 pub fn update_raster(path: &str, ds: &crate::RasterDataset, o: &TileWriteOptions) -> Result<()> {
     let bytes = update_raster_bytes(std::fs::read(path)?, ds, o)?;
     replace_file(path, &bytes)
@@ -434,7 +434,7 @@ pub fn update_raster(path: &str, ds: &crate::RasterDataset, o: &TileWriteOptions
 
 /// Adds vector layers to a local PMTiles or MBTiles archive of vector tiles: see
 /// [`update_vector_bytes`]. The archive is rewritten, and replaced once complete.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(target_family = "wasm"))]
 pub fn update_vector(path: &str, layers: &[wbvector::Layer], o: &TileWriteOptions, overwrite: bool) -> Result<()> {
     let bytes = update_vector_bytes(std::fs::read(path)?, layers, o, overwrite)?;
     replace_file(path, &bytes)
@@ -454,7 +454,7 @@ pub(crate) fn vector_to_bytes(layers: &[wbvector::Layer], o: &TileWriteOptions, 
 
 /// Writes vector layers as a directory of MVT tiles (`z/x/y.pbf`, gzipped) with a
 /// `metadata.json`, as GDAL's MVT driver does.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(target_family = "wasm"))]
 pub(crate) fn write_mvt_dir(layers: &[wbvector::Layer], o: &TileWriteOptions, path: &std::path::Path) -> Result<()> {
     let vt = vector::make_tiles(layers, o)?;
     let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("tiles");
@@ -476,7 +476,7 @@ pub(crate) fn write_mvt_dir(layers: &[wbvector::Layer], o: &TileWriteOptions, pa
 
 /// Reads a directory of MVT tiles (`z/x/y.pbf` with a `metadata.json`), as GDAL's MVT driver
 /// does: the tiles of one zoom level (the highest by default).
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(target_family = "wasm"))]
 pub(crate) fn read_mvt_dir(path: &std::path::Path, options: &crate::VectorOpenOptions) -> Result<Vec<wbvector::Layer>> {
     let text = std::fs::read_to_string(path.join("metadata.json"))?;
     let mut md: serde_json::Value = serde_json::from_str(&text).map_err(|e| Error::InvalidData(format!("metadata.json: {e}")))?;
@@ -557,9 +557,9 @@ pub(crate) fn write_vector(
         V::MBTiles => ArchiveKind::MBTiles,
         V::PMTiles => ArchiveKind::PMTiles,
         _ => {
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(not(target_family = "wasm"))]
             return write_mvt_dir(layers, o, std::path::Path::new(path));
-            #[cfg(target_arch = "wasm32")]
+            #[cfg(target_family = "wasm")]
             return Err(Error::Unsupported("directories of MVT tiles cannot be written in WebAssembly builds".into()));
         }
     };
@@ -576,7 +576,7 @@ pub(crate) fn is_mvt(b: &[u8]) -> bool {
 /// directory of tiles with a `metadata.json`. `None` when the path is neither.
 pub(crate) fn open_mvt_local(path: &str, options: &crate::VectorOpenOptions) -> Option<Result<Vec<wbvector::Layer>>> {
     let p = std::path::Path::new(path);
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(not(target_family = "wasm"))]
     if p.is_dir() {
         if p.join("metadata.json").is_file() {
             return Some(read_mvt_dir(p, options));

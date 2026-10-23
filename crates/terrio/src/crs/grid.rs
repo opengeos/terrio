@@ -777,7 +777,7 @@ pub(crate) fn network_enabled() -> bool {
         return n;
     }
     let on = |v: String| matches!(v.trim().to_ascii_uppercase().as_str(), "ON" | "YES" | "TRUE" | "1");
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(not(target_family = "wasm"))]
     {
         if let Ok(v) = std::env::var("TERRIO_NETWORK") {
             return on(v);
@@ -790,13 +790,13 @@ pub(crate) fn network_enabled() -> bool {
     false
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(target_family = "wasm"))]
 fn home() -> Option<std::path::PathBuf> {
     std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).map(Into::into)
 }
 
 /// The directory downloaded grids are kept in.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(target_family = "wasm"))]
 pub(crate) fn cache_dir() -> Option<std::path::PathBuf> {
     if let Some(d) = std::env::var_os("TERRIO_GRID_CACHE") {
         return Some(d.into());
@@ -813,7 +813,7 @@ pub(crate) fn cache_dir() -> Option<std::path::PathBuf> {
 }
 
 /// The directories grids are looked up in.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(target_family = "wasm"))]
 fn search_dirs() -> Vec<std::path::PathBuf> {
     if let Some(p) = config().lock().ok().and_then(|c| c.paths.clone()) {
         return p;
@@ -830,7 +830,7 @@ fn search_dirs() -> Vec<std::path::PathBuf> {
 
 /// The directories grids are looked up in by default: those of `TERRIO_GRID_DIR`, `PROJ_DATA`
 /// and `PROJ_LIB`, PROJ's user directory and terrio's download cache.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(target_family = "wasm"))]
 fn machine_search_dirs() -> Vec<std::path::PathBuf> {
     let mut dirs = Vec::new();
     for var in ["TERRIO_GRID_DIR", "PROJ_DATA", "PROJ_LIB"] {
@@ -857,7 +857,7 @@ fn find_local(name: &str) -> Option<Arc<[u8]>> {
     if let Some(b) = registered().lock().ok()?.get(name) {
         return Some(b.clone());
     }
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(not(target_family = "wasm"))]
     {
         let p = std::path::Path::new(name);
         if p.is_absolute() || name.starts_with("./") || name.starts_with("../") {
@@ -878,7 +878,7 @@ fn present_locally(name: &str) -> bool {
     if registered().lock().is_ok_and(|r| r.contains_key(name)) {
         return true;
     }
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(not(target_family = "wasm"))]
     {
         let p = std::path::Path::new(name);
         if p.is_absolute() {

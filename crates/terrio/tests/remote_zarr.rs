@@ -6,7 +6,7 @@
 //! `cargo test --test remote_zarr -- --ignored`. Their expected values come from GDAL 3.12's Zarr
 //! driver (`gdallocationinfo` through `/vsis3/` and `/vsigs/`).
 
-#![cfg(not(target_arch = "wasm32"))]
+#![cfg(not(target_family = "wasm"))]
 
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpListener;

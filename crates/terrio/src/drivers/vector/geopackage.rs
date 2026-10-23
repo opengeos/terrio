@@ -35,9 +35,9 @@ fn quote(name: &str) -> String {
 
 /// The current time in ISO 8601, or the Unix epoch where there is no clock.
 pub(super) fn now() -> String {
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(not(target_family = "wasm"))]
     let ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64);
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(target_family = "wasm")]
     let ms = 0;
     let s = super::datetime::format_datetime(ms - ms % 1000, true);
     s.replace('Z', ".000Z")

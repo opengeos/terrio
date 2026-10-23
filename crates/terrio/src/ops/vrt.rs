@@ -76,7 +76,7 @@ pub struct VrtSource {
 
 impl VrtDataset {
     /// Reads a VRT file's description.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(not(target_family = "wasm"))]
     pub fn open(path: &str) -> Result<Self> {
         Self::from_xml(&std::fs::read_to_string(path)?)
     }
@@ -258,7 +258,7 @@ impl VrtDataset {
     }
 
     /// Writes the VRT file.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(not(target_family = "wasm"))]
     pub fn write(&self, path: &str) -> Result<()> {
         Ok(std::fs::write(path, self.to_xml())?)
     }
@@ -359,7 +359,7 @@ fn is_float_working(dt: DataType) -> bool {
 }
 
 /// Opens a VRT file and reads its pixels.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(target_family = "wasm"))]
 pub fn read_vrt(path: &str) -> Result<RasterDataset> {
     let vrt = VrtDataset::open(path)?;
     let base = Path::new(path).parent().map(Path::to_path_buf).unwrap_or_default();
@@ -367,7 +367,7 @@ pub fn read_vrt(path: &str) -> Result<RasterDataset> {
 }
 
 /// Opens a VRT file and reads its pixels.
-#[cfg(target_arch = "wasm32")]
+#[cfg(target_family = "wasm")]
 pub fn read_vrt(_path: &str) -> Result<RasterDataset> {
     Err(Error::Unsupported("VRT files are not supported in WebAssembly".into()))
 }

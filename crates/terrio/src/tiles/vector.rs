@@ -424,7 +424,7 @@ pub(crate) fn zxy_of_path(path: &str) -> Option<(u8, u32, u32)> {
 
 /// The `json` of a `metadata.json` next to a tile's zoom level directory.
 fn metadata_json_near(path: &str) -> Option<Json> {
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(not(target_family = "wasm"))]
     {
         let p = std::path::Path::new(path);
         let dir = p.parent()?.parent()?.parent()?;
@@ -435,7 +435,7 @@ fn metadata_json_near(path: &str) -> Option<Json> {
             None => Some(v),
         }
     }
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(target_family = "wasm")]
     {
         let _ = path;
         None

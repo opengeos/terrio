@@ -9,9 +9,14 @@ export interface LoadOptions {
   threads?: boolean | number;
   /** The lighter module, `terrio-js/core` (single-threaded). */
   core?: boolean;
-  /** Called with the error when the threaded module could not be used. */
+  /** The module with 64-bit memory, `terrio-js/memory64`, for datasets larger than 4 GB, where the runtime supports it. */
+  memory64?: boolean;
+  /** Called with the error when the threaded or memory64 module could not be used. */
   onFallback?: (error: unknown) => void;
 }
+
+/** Whether WebAssembly's 64-bit memories work here (Node.js 24+, Chrome 133+, Firefox 134+). */
+export function memory64Supported(): boolean;
 
 /** Whether WebAssembly threads can run here (Node.js, or a cross-origin isolated page). */
 export function threadsSupported(): boolean;

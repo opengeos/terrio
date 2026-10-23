@@ -6,7 +6,7 @@
 fn main() {
     println!("cargo::rustc-check-cfg=cfg(remote)");
     println!("cargo::rustc-check-cfg=cfg(threads)");
-    let wasm = std::env::var("CARGO_CFG_TARGET_ARCH").is_ok_and(|arch| arch == "wasm32");
+    let wasm = std::env::var("CARGO_CFG_TARGET_FAMILY").is_ok_and(|f| f.split(',').any(|f| f == "wasm"));
     let atomics = std::env::var("CARGO_CFG_TARGET_FEATURE").is_ok_and(|f| f.split(',').any(|f| f == "atomics"));
     if !wasm || atomics {
         println!("cargo::rustc-cfg=threads");

@@ -524,7 +524,7 @@ pub fn calc(inputs: &[CalcInput], o: &CalcOptions) -> Result<RasterDataset> {
 
 /// Runs `f` on chunks `0..n`, in parallel where threads are available.
 fn run_chunks(n: usize, f: &(dyn Fn(usize) -> Result<Vec<f64>> + Sync)) -> Result<Vec<Vec<f64>>> {
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(not(target_family = "wasm"))]
     {
         use std::sync::Mutex;
         use std::sync::atomic::{AtomicUsize, Ordering};

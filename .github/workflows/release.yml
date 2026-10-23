@@ -115,7 +115,8 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@v7
-      # The threaded module (js/build.mjs): the nightly it pins, with the standard library's sources.
+      # The threaded and memory64 modules (js/build.mjs): the nightly it pins, with the standard
+      # library's sources.
       # Installed first: the last toolchain installed is the default (stable).
       - uses: dtolnay/rust-toolchain@master
         with:

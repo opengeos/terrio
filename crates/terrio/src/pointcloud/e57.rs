@@ -366,9 +366,9 @@ fn guid() -> String {
     use std::sync::atomic::{AtomicU64, Ordering};
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     // The clock is not available in WebAssembly builds without a host.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(not(target_family = "wasm"))]
     let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0) as u64;
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(target_family = "wasm")]
     let t = 0x5eed_u64;
     let c = COUNTER.fetch_add(1, Ordering::Relaxed);
     let a = super::copc::scramble(t ^ c.rotate_left(32));
@@ -497,7 +497,7 @@ pub(crate) fn write_e57<T: Read + Write + Seek>(cloud: &PointCloud, out: T, opti
 
 /// Writes an E57 file of points that come in chunks, in bounded memory: a thread writes the
 /// packets of each chunk as it comes (the E57 writer holds no more than a packet).
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(target_family = "wasm"))]
 pub(crate) struct E57StreamWriter {
     tx: Option<std::sync::mpsc::SyncSender<PointCloud>>,
     handle: Option<std::thread::JoinHandle<Result<()>>>,
@@ -506,7 +506,7 @@ pub(crate) struct E57StreamWriter {
     aborted: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(target_family = "wasm"))]
 impl E57StreamWriter {
     /// Creates the file for points like `template`'s.
     pub fn new(file: std::fs::File, template: &PointCloud, options: &PointWriteOptions) -> Result<Self> {
@@ -554,7 +554,7 @@ impl E57StreamWriter {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(target_family = "wasm"))]
 impl Drop for E57StreamWriter {
     fn drop(&mut self) {
         self.aborted.store(true, std::sync::atomic::Ordering::SeqCst);

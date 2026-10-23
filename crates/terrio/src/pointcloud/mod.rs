@@ -29,9 +29,9 @@ pub mod copc;
 pub(crate) mod crs;
 mod e57;
 pub mod ept;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(target_family = "wasm"))]
 mod ept_append;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(target_family = "wasm"))]
 mod ept_write;
 pub mod filters;
 pub mod grid;
@@ -48,7 +48,7 @@ mod write;
 
 pub use copc::{CopcInfo, CopcNode, VoxelKey};
 pub use ept::{EptDataType, EptDimension, EptInfo};
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(target_family = "wasm"))]
 pub use ept_append::{EptAppender, append_points};
 pub use las::{ExtraBytes, LasHeader, Vlr, standard_value_type};
 pub use read::{DEFAULT_CHUNK_POINTS, PointChunks, PointCloudReader, open_points, open_points_bytes, open_points_sparse};
@@ -427,7 +427,7 @@ pub fn convert(src: &str, dst: &str, options: &ConvertOptions) -> Result<()> {
                     .into(),
             ));
         }
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(not(target_family = "wasm"))]
         if format == Some(PointFormat::Ept) {
             return append_points(dst, &[src], options);
         }
@@ -437,7 +437,7 @@ pub fn convert(src: &str, dst: &str, options: &ConvertOptions) -> Result<()> {
     }
     match format {
         // WebAssembly builds write E57 files whole.
-        Some(PointFormat::E57) if cfg!(target_arch = "wasm32") => {}
+        Some(PointFormat::E57) if cfg!(target_family = "wasm") => {}
         Some(_) => return convert_streaming(src, dst, options),
         None => {
             if crate::formats::VectorDriver::for_extension(dst).is_none() {

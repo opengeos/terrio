@@ -12,9 +12,13 @@ import { test } from "node:test";
 
 const require = createRequire(import.meta.url);
 // TERRIO_JS_LOAD: the npm package's `load.js` (js/pkg, built by js/build.mjs), whose module the
-// tests run on instead, the threaded one in Node.js (TERRIO_THREADS threads, 4 by default).
+// tests run on instead, the threaded one in Node.js (TERRIO_THREADS threads, 4 by default), or
+// with TERRIO_MEMORY64=1 the memory64 one.
 const terrio = process.env.TERRIO_JS_LOAD
-  ? await (await import(new URL(process.env.TERRIO_JS_LOAD, import.meta.url).href)).load({ threads: Number(process.env.TERRIO_THREADS ?? 4) })
+  ? await (await import(new URL(process.env.TERRIO_JS_LOAD, import.meta.url).href)).load({
+      threads: Number(process.env.TERRIO_THREADS ?? 4),
+      memory64: process.env.TERRIO_MEMORY64 === "1",
+    })
   : require(process.env.TERRIO_JS_PKG ?? "../pkg-node/terrio.js");
 const DATA = process.env.TERRIO_TEST_DATA;
 
@@ -50,6 +54,7 @@ test("version", () => {
 test("the module's build and its formats", () => {
   assert.ok(["flatgeobuf", "sqlite", "tiles", "lzma", "lerc"].every((f) => BUILT.includes(f)), BUILT.join());
   if (BUILD === "terrio-js/threads") assert.ok(terrio.features().threads > 1, "the thread pool is started");
+  assert.ok(terrio.features().memory > 0);
   if (BUILD !== "terrio-js/core") {
     assert.ok(["jp2", "netcdf-hdf5", "parquet", "pointcloud", "zarr"].every((f) => BUILT.includes(f)), BUILT.join());
   } else {
@@ -709,6 +714,27 @@ test("a FlatGeobuf larger than 100 MB", { skip: SKIP_DATA }, (t) => {
   assert.equal(info.layers[0].feature_count, 9 * 3221);
   const sub = terrio.open(ds.toBytes("sub.fgb", { limit: 5 }), "sub.fgb");
   assert.equal(sub.toGeoJSON().features.length, 5);
+});
+
+// A working set larger than 4 GB, which only the memory64 module holds: a 2 GB raster, copied in,
+// written as a GeoTIFF of as many bytes (the raster, a copy of it and the tiles in memory at
+// once), and read back by window. Opt in with TERRIO_LARGE_TESTS=1 (about 16 GB of memory).
+test("a raster of 2 GB, written and read back (memory64)", {
+  skip: (BUILD !== "terrio-js/memory64" && "not the memory64 module") || (!process.env.TERRIO_LARGE_TESTS && "TERRIO_LARGE_TESTS is not set"),
+}, () => {
+  const [w, h] = [45000, 45000];
+  const pixels = new Uint8Array(w * h);
+  for (let r = 0; r < h; r++) pixels.fill(r % 251, r * w, (r + 1) * w);
+  const ds = terrio.rasterFromArray(pixels, w, h, [0, 1, 0, h, 0, -1], "EPSG:3857");
+  const tif = ds.toBytes("big.tif", { tileSize: 1024 });
+  assert.ok(tif.length > w * h);
+  assert.ok(terrio.features().memory > 2 ** 32, `${terrio.features().memory} bytes of memory`);
+  // Its memory goes back to the module (which keeps it, as WebAssembly memories do not shrink).
+  ds.free();
+  const back = terrio.open(tif, "big.tif");
+  assert.deepEqual([back.width, back.height], [w, h]);
+  assert.deepEqual([...back.readBand(1, [w - 2, h - 3, 2, 3])], [(h - 3) % 251, (h - 3) % 251, (h - 2) % 251, (h - 2) % 251, (h - 1) % 251, (h - 1) % 251]);
+  back.free();
 });
 
 // ─── Remote files ───────────────────────────────────────────────────────────────────────────────

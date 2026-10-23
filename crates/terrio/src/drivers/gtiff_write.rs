@@ -248,13 +248,13 @@ fn jpeg_encode(data: &[u8], c: &ChunkInfo, quality: u8, ycbcr: bool) -> Result<V
     Ok(out)
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(target_family = "wasm"))]
 fn zstd_compress(data: &[u8]) -> Result<Vec<u8>> {
     Ok(zstd::bulk::compress(data, 9)?)
 }
 
 /// WebAssembly builds compress with the pure-Rust encoder (its fastest level).
-#[cfg(target_arch = "wasm32")]
+#[cfg(target_family = "wasm")]
 fn zstd_compress(data: &[u8]) -> Result<Vec<u8>> {
     Ok(ruzstd::encoding::compress_to_vec(data, ruzstd::encoding::CompressionLevel::Fastest))
 }
@@ -2022,15 +2022,15 @@ fn append_rows(a: &RasterData, a_rows: usize, b: &RasterData, b_rows: usize, col
 
 /// Where a COG level's compressed chunks (with their leaders and trailers) wait until the file is
 /// laid out: an unnamed temporary file, or memory on WebAssembly.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(target_family = "wasm"))]
 type ChunkSpool = std::fs::File;
-#[cfg(target_arch = "wasm32")]
+#[cfg(target_family = "wasm")]
 type ChunkSpool = std::io::Cursor<Vec<u8>>;
 
 fn chunk_spool() -> Result<ChunkSpool> {
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(not(target_family = "wasm"))]
     return Ok(tempfile::tempfile()?);
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(target_family = "wasm")]
     Ok(Default::default())
 }
 
@@ -2070,13 +2070,13 @@ pub(crate) struct CogWriter {
     levels: Vec<CogLevel>,
     /// Rows of tiles being compressed, in the order they were given: their level, number of
     /// rows, and the compressed image to come.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(not(target_family = "wasm"))]
     in_flight: std::collections::VecDeque<(usize, usize, std::sync::mpsc::Receiver<Result<Image>>)>,
 }
 
 /// The most rows of tiles a [`CogWriter`] compresses at once, so that the tiles of the next rows
 /// keep the threads busy while the last tiles of the first are compressed.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(target_family = "wasm"))]
 const COG_IN_FLIGHT: usize = 3;
 
 impl CogWriter {
@@ -2131,7 +2131,7 @@ impl CogWriter {
             geo,
             color_map,
             levels,
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(not(target_family = "wasm"))]
             in_flight: Default::default(),
         })
     }
@@ -2213,9 +2213,9 @@ impl CogWriter {
             let (compression, codec, layout) = &*encoding;
             level.image(data_type, *compression, codec, layout)
         };
-        #[cfg(target_arch = "wasm32")]
+        #[cfg(target_family = "wasm")]
         return self.add(i, rows, encode()?);
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(not(target_family = "wasm"))]
         {
             let (tx, rx) = std::sync::mpsc::sync_channel(1);
             rayon::spawn(move || {
@@ -2230,7 +2230,7 @@ impl CogWriter {
     }
 
     /// Adds the oldest rows of tiles being compressed to their level's spools.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(not(target_family = "wasm"))]
     fn land(&mut self) -> Result<()> {
         let Some((i, rows, rx)) = self.in_flight.pop_front() else { return Ok(()) };
         let img = rx.recv().map_err(|_| Error::InvalidData("a COG tile compression stopped".into()))??;
@@ -2267,7 +2267,7 @@ impl CogWriter {
         if got != rows {
             return Err(Error::InvalidArgument(format!("{got} rows written of {rows}")));
         }
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(not(target_family = "wasm"))]
         while !self.in_flight.is_empty() {
             self.land()?;
         }

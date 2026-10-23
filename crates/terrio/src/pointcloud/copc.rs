@@ -376,7 +376,7 @@ pub(crate) struct CopcBuild {
 
 /// The most points a [`CopcStreamWriter`] holds in memory at a time, by default: more are built
 /// out of core, one octree node of a coarse level at a time.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(target_family = "wasm"))]
 const MEMORY_POINTS: u64 = 4_000_000;
 
 /// The octree's cube and parameters.
@@ -406,7 +406,7 @@ impl Cube {
     }
 
     /// The cube: `[min_x, min_y, min_z, max_x, max_y, max_z]`.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(not(target_family = "wasm"))]
     fn bounds(&self) -> [f64; 6] {
         let (c, h) = (self.center, self.half);
         [c[0] - h, c[1] - h, c[2] - h, c[0] + h, c[1] + h, c[2] + h]
@@ -753,13 +753,13 @@ pub(crate) fn write_copc<W: Write + Seek>(w: &mut W, header: LasHeader, layout: 
 }
 
 /// A function called with each spilled point: its index, record and position in the cube.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(target_family = "wasm"))]
 type EachPoint<'a> = dyn FnMut(u64, &[u8], [f64; 3]) -> Result<()> + 'a;
 
 /// Writes a COPC file of points that come in chunks, larger than memory: the records are spilled
 /// to a temporary file, then the octree is built one node of a coarse level (a bucket) at a time,
 /// giving the same nodes as building it in memory.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(target_family = "wasm"))]
 pub(crate) struct CopcStreamWriter {
     target: OctreeTarget,
     header: LasHeader,
@@ -773,7 +773,7 @@ pub(crate) struct CopcStreamWriter {
     memory_points: u64,
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(target_family = "wasm"))]
 impl CopcStreamWriter {
     pub fn new(target: OctreeTarget, header: LasHeader, layout: Layout, build: CopcBuild, memory_points: Option<u64>) -> Result<Self> {
         if let Some(b) = build.bounds
@@ -960,7 +960,7 @@ impl CopcStreamWriter {
 }
 
 /// Where a [`CopcStreamWriter`] writes its octree: a COPC file, or an EPT dataset.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(target_family = "wasm"))]
 pub(crate) enum OctreeTarget {
     /// A COPC file.
     Copc(std::io::BufWriter<std::fs::File>),
@@ -968,7 +968,7 @@ pub(crate) enum OctreeTarget {
     Ept(super::ept_write::EptTarget),
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(target_family = "wasm"))]
 impl OctreeTarget {
     /// Writes the nodes `build` makes, and the structures around them.
     fn emit(

@@ -307,8 +307,15 @@ WebAssembly (the `terrio-js` npm package):
       whole-program LTO, the codecs optimized for speed and the rest for size, and wasm-opt -Oz:
       the full module went from 20.6 MB (6.7 MB gzipped) to 16.4 MB, and decodes GeoTIFFs and JPEG
       2000 and writes COGs as fast in Node.js.
-- [ ] Datasets larger than 4 GB, with the 64-bit memory proposal (memory64) where runtimes support
-      it.
+- [x] Datasets larger than 4 GB, with the 64-bit memory proposal (memory64) where runtimes support
+      it. Done: a memory64 module, `terrio-js/memory64` (every format, up to 16 GB), which
+      `load({ memory64: true })` picks where the runtime has 64-bit memories (Node.js 24+, Chrome
+      133+, Firefox 134+; Safari falls back): a 1.27 GB FlatGeobuf of 289,890 polygons, which
+      runs the 32-bit modules out of memory, opens in 4 s in Node.js with 7.5 GB of memory, and a
+      2 GB raster is written and read back. Built on nightly Rust (`wasm64-unknown-unknown`,
+      tier 3, `-Z build-std`) with cargo and wasm-bindgen, wasm-pack and its wasm-opt not
+      supporting it yet, and with build-time patches of three crates that treat WebAssembly as
+      wasm32 only (`tar`, `zstd-sys`, `arrow-buffer`); single-threaded.
 
 ## Later
 

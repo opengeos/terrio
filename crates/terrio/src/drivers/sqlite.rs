@@ -71,7 +71,7 @@ pub(crate) struct Db {
 /// the pages used and keeps them out of the process's own memory.
 enum Bytes {
     Owned(Vec<u8>),
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(not(target_family = "wasm"))]
     Mapped(memmap2::Mmap),
 }
 
@@ -81,7 +81,7 @@ impl std::ops::Deref for Bytes {
     fn deref(&self) -> &[u8] {
         match self {
             Self::Owned(v) => v,
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(not(target_family = "wasm"))]
             Self::Mapped(m) => m,
         }
     }
@@ -119,7 +119,7 @@ impl Db {
     /// reads only its metadata. The file must not be changed while it is open, as with any
     /// SQLite reader that does not lock it.
     pub(crate) fn open(path: &std::path::Path) -> Result<Self> {
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(not(target_family = "wasm"))]
         {
             let file = std::fs::File::open(path)?;
             // SAFETY: the map is read-only, and lives as long as `Db`; a file changed or

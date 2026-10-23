@@ -13,10 +13,10 @@
 use rayon::prelude::*;
 
 /// The thread pool parallel work runs on: rayon's global pool natively.
-#[cfg(all(threads, not(target_arch = "wasm32")))]
+#[cfg(all(threads, not(target_family = "wasm")))]
 struct Pool;
 
-#[cfg(all(threads, not(target_arch = "wasm32")))]
+#[cfg(all(threads, not(target_family = "wasm")))]
 impl Pool {
     fn install<R: Send>(&self, f: impl FnOnce() -> R + Send) -> R {
         f()
@@ -30,10 +30,10 @@ impl Pool {
 /// The thread pool parallel work runs on in WebAssembly: the one the host started (see
 /// [`set_thread_pool`]), never rayon's global pool, which would fall back to the calling thread
 /// for good when used before the host's workers exist.
-#[cfg(all(threads, target_arch = "wasm32"))]
+#[cfg(all(threads, target_family = "wasm"))]
 struct Pool(&'static rayon::ThreadPool);
 
-#[cfg(all(threads, target_arch = "wasm32"))]
+#[cfg(all(threads, target_family = "wasm"))]
 impl Pool {
     fn install<R: Send>(&self, f: impl FnOnce() -> R + Send) -> R {
         self.0.install(f)
@@ -44,13 +44,13 @@ impl Pool {
     }
 }
 
-#[cfg(all(threads, target_arch = "wasm32"))]
+#[cfg(all(threads, target_family = "wasm"))]
 static POOL: std::sync::OnceLock<rayon::ThreadPool> = std::sync::OnceLock::new();
 
 /// Makes `pool` the thread pool of terrio's parallel work, in WebAssembly built with threads
 /// (whose workers the host starts, as Web Workers or Node.js worker threads). Until it is set,
 /// the work runs on the calling thread. Fails, giving the pool back, when one was set already.
-#[cfg(all(threads, target_arch = "wasm32"))]
+#[cfg(all(threads, target_family = "wasm"))]
 pub fn set_thread_pool(pool: rayon::ThreadPool) -> Result<(), rayon::ThreadPool> {
     POOL.set(pool)
 }
@@ -58,12 +58,12 @@ pub fn set_thread_pool(pool: rayon::ThreadPool) -> Result<(), rayon::ThreadPool>
 /// The pool to run parallel work on, if any: for `coarse` work, or any work natively.
 #[cfg(threads)]
 fn pool_for(coarse: bool) -> Option<Pool> {
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(not(target_family = "wasm"))]
     {
         let _ = coarse;
         Some(Pool)
     }
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(target_family = "wasm")]
     POOL.get().filter(|_| coarse).map(Pool)
 }
 
@@ -87,7 +87,7 @@ fn map_range_on<const COARSE: bool, R: Send>(n: usize, f: impl Fn(usize) -> R + 
 
 /// Maps `f` over items in parallel, keeping the order, with a scratch value from `init` that
 /// each piece of work (several items in a row) starts with.
-#[cfg_attr(not(all(threads, target_arch = "wasm32")), allow(dead_code))]
+#[cfg_attr(not(all(threads, target_family = "wasm")), allow(dead_code))]
 pub(crate) fn map_init<T: Sync, S, R: Send>(
     items: &[T],
     init: impl Fn() -> S + Sync + Send,
@@ -181,7 +181,7 @@ pub(crate) fn chunk_len(n: usize, min: usize) -> usize {
 /// Reads a whole file, as `std::fs::read` does. Large files are read in parts in parallel (on
 /// Unix), which mostly spreads the cost of mapping the buffer's fresh memory over the threads.
 pub(crate) fn read_file(path: &std::path::Path) -> std::io::Result<Vec<u8>> {
-    #[cfg(all(unix, not(target_arch = "wasm32")))]
+    #[cfg(all(unix, not(target_family = "wasm")))]
     {
         use std::os::unix::fs::FileExt;
         const PART: usize = 1 << 21;

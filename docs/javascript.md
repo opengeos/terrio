@@ -42,8 +42,9 @@ In WebAssembly, these formats are read from and written to memory:
 whole, within WebAssembly's 4 GB of memory; with the file's bytes, that takes about four times the
 file's size for lines and five for polygons (3.2 GB and 5.4 GB in native builds): an 867 MB file of
 2 million OpenStreetMap lines opens in about 3 seconds in Node.js, and a 1 GB file of 2.3 million
-polygons runs out of memory. `openUrl` reads files with a spatial index by bounding box, decoding
-only the features found; a file without one is still read whole.
+polygons runs out of memory, but in the memory64 module (see below). `openUrl` reads files with a
+spatial index by bounding box, decoding only the features found; a file without one is still read
+whole.
 
 JPEG 2000 files decode with the codec of GDAL's JP2OpenJPEG driver (a Rust port of OpenJPEG), with
 their GeoJP2 or GMLJP2 georeferencing: a Sentinel-2 band (`T10SEG_..._B04.jp2`, 10980 x 10980)
@@ -114,12 +115,44 @@ Work on vector features (parsing and writing GeoJSON, FlatGeobuf, GeoPackage...)
 calling thread in WebAssembly: its many small allocations contend on WebAssembly's allocator, one
 lock for all threads, and ran several times slower on more threads.
 
+## Datasets larger than 4 GB: `terrio-js/memory64`
+
+WebAssembly modules have 32-bit memories, at most 4 GB. The `terrio-js/memory64` module (every
+format, single-threaded) is built for WebAssembly's 64-bit memories (memory64), up to 16 GB, the
+limit of V8. `load({ memory64: true })` loads it where the runtime has memory64 (Node.js 24 and
+later, Chrome and Edge 133, Firefox 134), and the usual module elsewhere (Safari):
+
+```js
+import { load, memory64Supported } from "terrio-js/load";
+
+const terrio = await load({ memory64: true });
+const ds = terrio.open(bytes, "polygons.fgb");   // a 1.27 GB FlatGeobuf of 289,890 polygons
+terrio.features().memory;                        // 8 GB of memory: beyond a 32-bit module's reach
+```
+
+That FlatGeobuf, 290 thousand US county polygons, opens in 4 seconds in Node.js with 7.5 GB of
+module memory, where the 32-bit modules run out of memory. It is 7 to 17% slower than the 32-bit
+module (64-bit addresses and bounds checks), and larger: 25.4 MB, 6.4 MB gzipped (4.4 MB Brotli).
+Use it for the datasets that need it.
+
+It is built with the parts of the toolchain still in progress: `wasm64-unknown-unknown` is a
+tier 3 Rust target without a prebuilt standard library ([platform support](https://doc.rust-lang.org/rustc/platform-support/wasm64-unknown-unknown.html)),
+built on nightly with `-Z build-std`; its SIMD intrinsics, which zlib-rs uses, are unstable
+([rust-lang/rust#90599](https://github.com/rust-lang/rust/issues/90599)); wasm-pack builds for
+wasm32 only, so `js/build.mjs` runs cargo and wasm-bindgen (which supports wasm64) itself; and the
+wasm-opt wasm-pack downloads (binaryen 117) cannot read 64-bit tables, so the module is not
+passed through it. Three crates treat WebAssembly as wasm32 only, and the build patches copies of
+them (`target_arch = "wasm32"` read as `target_family = "wasm"`): `tar`, which wbraster depends
+on, `zstd-sys` (its libc shim, for GeoParquet's Zstandard) and `arrow-buffer`; getrandom, which
+seeds ahash's hash maps, has no wasm64 backend and is given one (`crypto.getRandomValues`).
+
 ## Building
 
 ```sh
 node js/build.mjs                         # the npm package in js/pkg: all modules, built for size
 node --test js/tests/package.test.mjs     # (the threaded module needs the nightly js/build.mjs names)
 TERRIO_JS_LOAD=../pkg/load.js node --test js/tests/node.test.mjs   # the suite on the threaded module
+TERRIO_JS_LOAD=../pkg/load.js TERRIO_MEMORY64=1 TERRIO_LARGE_TESTS=1 node --test js/tests/node.test.mjs  # memory64, > 4 GB
 node js/tests/browser.mjs ../terrio-data  # in headless browsers (Playwright), timings included
 wasm-pack build js --release --target nodejs --out-dir pkg-node --out-name terrio
 node --test js/tests/node.test.mjs        # TERRIO_TEST_DATA=... adds real files checked against GDAL

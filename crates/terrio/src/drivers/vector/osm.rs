@@ -891,13 +891,13 @@ fn node_coords(lon: i32, lat: i32) -> (Coord, Coord) {
 struct Spool {
     buf: Vec<u8>,
     written: u64,
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(not(target_family = "wasm"))]
     file: Option<std::fs::File>,
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(not(target_family = "wasm"))]
     map: Option<memmap2::Mmap>,
 }
 
-#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+#[cfg_attr(target_family = "wasm", allow(dead_code))]
 const SPOOL_PAGE: usize = 1 << 24;
 
 impl Spool {
@@ -908,7 +908,7 @@ impl Spool {
 
     /// Writes the bytes appended to the file when they reach a page.
     fn flush_full(&mut self) -> Result<()> {
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(not(target_family = "wasm"))]
         if self.buf.len() >= SPOOL_PAGE {
             let file = match &mut self.file {
                 Some(f) => f,
@@ -923,7 +923,7 @@ impl Spool {
 
     /// Ends the appending: what went to the file is mapped, with the rest written after it.
     fn seal(&mut self) -> Result<()> {
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(not(target_family = "wasm"))]
         if let Some(file) = &mut self.file
             && self.map.is_none()
         {
@@ -941,7 +941,7 @@ impl Spool {
 
     /// The bytes appended: all of them once sealed, else those not yet written to the file.
     fn bytes(&self) -> &[u8] {
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(not(target_family = "wasm"))]
         {
             debug_assert!(self.file.is_none() || self.map.is_some(), "a spool past a page is read once sealed");
             if let Some(map) = &self.map {
@@ -953,7 +953,7 @@ impl Spool {
 
     /// Drops the mapped pages read so far from the process's memory; they stay in the page cache.
     fn release(&self) {
-        #[cfg(all(unix, not(target_arch = "wasm32")))]
+        #[cfg(all(unix, not(target_family = "wasm")))]
         if let Some(map) = &self.map {
             // SAFETY: the mapping is read only and backed by our own unlinked temporary file,
             // which nothing writes once it is mapped, so its pages read back unchanged. That holds
@@ -1324,7 +1324,7 @@ pub(crate) fn is_sorted_pbf(input: &mut dyn PbfInput) -> bool {
 }
 
 /// The schemas of GDAL's five layers (no features).
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(target_family = "wasm"))]
 pub(crate) fn layer_schemas() -> Vec<Layer> {
     SPECS.iter().map(Spec::layer).collect()
 }
@@ -1820,7 +1820,7 @@ mod tests {
         }
         assert!(store.bytes.len() > SPOOL_PAGE as u64);
         store.bytes.seal().unwrap();
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(not(target_family = "wasm"))]
         assert!(store.bytes.map.is_some());
         for k in [0, 1, n / 2, n - 1].into_iter().chain((0..n).step_by(9973)) {
             let (id, lon, lat) = node(k);

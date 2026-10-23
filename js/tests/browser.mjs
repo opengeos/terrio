@@ -1,6 +1,6 @@
 // The npm package in headless browsers (Playwright): `terrio-js/load` picks the threaded module
 // on a cross-origin isolated page and starts its thread pool, and the single-threaded module on a
-// page that is not; both decode and write the same bytes. With a data directory (the one
+// page that is not, and the memory64 module when asked for; all decode and write the same bytes. With a data directory (the one
 // scripts/fetch_test_data.sh fills), it also times real files on both.
 //
 // Usage: node js/tests/browser.mjs [data dir]   (js/pkg built by `node js/build.mjs`; Playwright
@@ -27,7 +27,8 @@ const params = new URLSearchParams(location.search);
 const { load } = await import("/pkg/load.js");
 const threads = params.get("threads") === "0" ? false : true;
 const fallbacks = [];
-const terrio = await load({ threads, onFallback: (e) => fallbacks.push(String(e)) });
+const memory64 = params.get("memory64") === "1";
+const terrio = await load({ threads, memory64, onFallback: (e) => fallbacks.push(String(e)) });
 const time = (f, runs = 3) => { let best = Infinity, out; for (let i = 0; i < runs; i++) { const t = performance.now(); out = f(); best = Math.min(best, performance.now() - t); } return [Math.round(best), out]; };
 const digest = async (bytes) => Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", bytes))).map((b) => b.toString(16).padStart(2, "0")).join("");
 const result = { isolated: crossOriginIsolated, features: terrio.features(), fallbacks, times: {} };
@@ -89,16 +90,20 @@ try {
       const mt = await run(isolated, q);
       const st = await run(isolated, `${q}&threads=0`);
       const fallback = await run(plain, "");
-      results[name] = { threaded: mt, singleThreaded: st, notIsolated: fallback };
+      // The memory64 module, where the browser has 64-bit memories (Chromium, Firefox).
+      const wide = await run(plain, "memory64=1");
+      results[name] = { threaded: mt, singleThreaded: st, notIsolated: fallback, memory64: wide };
       assert.equal(mt.isolated, true);
       assert.equal(mt.features.build, "terrio-js/threads", JSON.stringify(mt));
       assert.ok(mt.features.threads > 1, JSON.stringify(mt.features));
       assert.equal(st.features.build, "terrio-js");
       assert.equal(fallback.isolated, false);
       assert.equal(fallback.features.build, "terrio-js");
-      for (const r of [mt, st, fallback]) assert.ok(r.roundTrip);
+      if (name !== "webkit") assert.equal(wide.features.build, "terrio-js/memory64", JSON.stringify(wide));
+      for (const r of [mt, st, fallback, wide]) assert.ok(r.roundTrip);
       assert.equal(mt.cogSha256, st.cogSha256);
       assert.equal(fallback.cogSha256, st.cogSha256);
+      assert.equal(wide.cogSha256, st.cogSha256);
     } finally {
       await browser.close();
     }

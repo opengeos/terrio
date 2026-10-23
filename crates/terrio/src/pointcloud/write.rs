@@ -558,10 +558,10 @@ pub struct PointWriter {
 
 enum WriterKind {
     Las(Box<LasStreamWriter<'static, std::io::BufWriter<std::fs::File>>>),
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(not(target_family = "wasm"))]
     Copc(Box<super::copc::CopcStreamWriter>),
     Ply(Box<super::ply::PlyStreamWriter<std::io::BufWriter<std::fs::File>>>),
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(not(target_family = "wasm"))]
     E57(Box<super::e57::E57StreamWriter>),
 }
 
@@ -590,7 +590,7 @@ impl PointWriter {
                 let (header, layout) = prepare(template, format, options)?;
                 WriterKind::Las(Box::new(LasStreamWriter::new(open()?, header, layout)?))
             }
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(not(target_family = "wasm"))]
             PointFormat::Copc => {
                 let (header, layout) = prepare(template, format, options)?;
                 let build =
@@ -603,10 +603,10 @@ impl PointWriter {
                     options.copc_memory_points,
                 )?))
             }
-            #[cfg(target_arch = "wasm32")]
+            #[cfg(target_family = "wasm")]
             PointFormat::Copc => return Err(Error::Unsupported("COPC files cannot be written in chunks in WebAssembly".into())),
             PointFormat::Ply => WriterKind::Ply(Box::new(super::ply::PlyStreamWriter::new(open()?, template, options)?)),
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(not(target_family = "wasm"))]
             PointFormat::E57 => {
                 // The dimensions checked before the file is created (and an existing one emptied).
                 super::e57::plan_e57(template, &options.dimensions)?;
@@ -619,7 +619,7 @@ impl PointWriter {
                     .map_err(|e| Error::Io(std::io::Error::new(e.kind(), format!("'{path}': {e}"))))?;
                 WriterKind::E57(Box::new(super::e57::E57StreamWriter::new(file, template, options)?))
             }
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(not(target_family = "wasm"))]
             PointFormat::Ept => {
                 // The octree's records: LAS ones of the source's point format (without waveforms,
                 // which refer to the source file).
@@ -653,7 +653,7 @@ impl PointWriter {
                     options.copc_memory_points,
                 )?))
             }
-            #[cfg(target_arch = "wasm32")]
+            #[cfg(target_family = "wasm")]
             PointFormat::E57 | PointFormat::Ept => {
                 return Err(Error::Unsupported("E57 files and EPT datasets cannot be written in chunks in WebAssembly".into()));
             }
@@ -665,10 +665,10 @@ impl PointWriter {
     pub fn write(&mut self, cloud: &PointCloud) -> Result<()> {
         match &mut self.inner {
             WriterKind::Las(w) => w.write_cloud(cloud),
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(not(target_family = "wasm"))]
             WriterKind::Copc(w) => w.write_cloud(cloud),
             WriterKind::Ply(w) => w.write_cloud(cloud),
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(not(target_family = "wasm"))]
             WriterKind::E57(w) => w.write_cloud(cloud),
         }
     }
@@ -677,10 +677,10 @@ impl PointWriter {
     pub fn finish(self) -> Result<()> {
         match self.inner {
             WriterKind::Las(w) => w.finish(None),
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(not(target_family = "wasm"))]
             WriterKind::Copc(w) => w.finish(),
             WriterKind::Ply(w) => w.finish(),
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(not(target_family = "wasm"))]
             WriterKind::E57(w) => w.finish(),
         }
     }

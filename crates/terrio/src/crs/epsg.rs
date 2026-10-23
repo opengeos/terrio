@@ -131,7 +131,7 @@ impl<T> Lazy<T> {
 
 /// A table's decompressed text.
 fn decompress(data: &[u8]) -> String {
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(not(target_family = "wasm"))]
     if let Ok(bytes) = zstd::stream::decode_all(data)
         && let Ok(text) = String::from_utf8(bytes)
     {
@@ -346,7 +346,7 @@ pub(crate) fn usable(ops: &[Arc<Op>], grid_ops: &[Arc<Op>]) -> Vec<Arc<Op>> {
 /// Starts loading the table in the background, for work that will need it after reading its
 /// input (native builds; a no-op in WebAssembly).
 pub(crate) fn prefetch() {
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(not(target_family = "wasm"))]
     rayon::spawn(|| {
         table();
     });

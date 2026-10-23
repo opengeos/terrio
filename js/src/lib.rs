@@ -41,9 +41,12 @@ pub fn start() {
 }
 
 /// The name of this build of the module: `terrio-js`, every format, `terrio-js/threads`, every
-/// format with a thread pool, or `terrio-js/core`.
+/// format with a thread pool, `terrio-js/memory64`, every format with 64-bit memory, or
+/// `terrio-js/core`.
 const BUILD: &str = if cfg!(feature = "threads") {
     "terrio-js/threads"
+} else if cfg!(target_arch = "wasm64") {
+    "terrio-js/memory64"
 } else if cfg!(feature = "full") {
     "terrio-js"
 } else {
@@ -478,10 +481,10 @@ impl Dataset {
     /// `Uint8Array`...), row after row. `window` is `[col_off, row_off, width, height]` (in the
     /// overview's pixels with `overview`, numbered from 0); by default, the whole image.
     #[wasm_bindgen(js_name = readBand)]
-    pub fn read_band(&self, band: usize, window: Option<Vec<usize>>, overview: Option<usize>) -> Result<JsValue, JsError> {
+    pub fn read_band(&self, band: usize, window: Option<Vec<u32>>, overview: Option<usize>) -> Result<JsValue, JsError> {
         let mut r = self.raster()?;
         let window = match window.as_deref() {
-            Some(&[x, y, w, h]) => Window::new(x, y, w, h),
+            Some(&[x, y, w, h]) => Window::new(x as usize, y as usize, w as usize, h as usize),
             Some(_) => return Err(JsError::new("window is [col_off, row_off, width, height]")),
             None => {
                 let (w, h) = match overview {
@@ -783,9 +786,11 @@ pub fn version() -> String {
 }
 
 /// What this module has: `{ build, features, threads }`, `build` being `"terrio-js"` (every
-/// format), `"terrio-js/threads"` (every format, with `initThreadPool`) or `"terrio-js/core"`,
+/// format), `"terrio-js/threads"` (every format, with `initThreadPool`), `"terrio-js/memory64"`
+/// (every format, with 64-bit memory, up to 16 GB) or `"terrio-js/core"`,
 /// `features` the optional formats built in (`jp2`, `netcdf-hdf5`, `pointcloud`, `parquet`...),
-/// and `threads` the threads work runs on (1 until `initThreadPool` has started more).
+/// `threads` the threads work runs on (1 until `initThreadPool` has started more), and `memory`
+/// the bytes of the module's memory now.
 #[wasm_bindgen]
 pub fn features() -> Result<JsValue, JsError> {
     let built: Vec<&str> = FEATURES.iter().filter(|(_, on)| *on).map(|(f, _)| *f).collect();
@@ -793,7 +798,12 @@ pub fn features() -> Result<JsValue, JsError> {
     let threads = threads::pool_size().max(1);
     #[cfg(not(feature = "threads"))]
     let threads = 1;
-    to_js(&serde_json::json!({ "build": BUILD, "features": built, "threads": threads }))
+    let memory = js_sys::Reflect::get(&wasm_bindgen::memory(), &JsValue::from_str("buffer"))
+        .and_then(|b| js_sys::Reflect::get(&b, &JsValue::from_str("byteLength")))
+        .ok()
+        .and_then(|n| n.as_f64())
+        .unwrap_or(0.0);
+    to_js(&serde_json::json!({ "build": BUILD, "features": built, "threads": threads, "memory": memory }))
 }
 
 /// Point clouds, which this build leaves out: the functions say so.
@@ -817,5 +827,33 @@ mod no_pointcloud {
     #[wasm_bindgen(js_name = pointsFromArrays)]
     pub fn points_from_arrays(_arrays: &js_sys::Object, _crs: Option<String>) -> Result<JsValue, JsError> {
         Err(js_err(not_built("pointcloud")))
+    }
+}
+
+/// The random bytes `getrandom` is asked for in the memory64 module, where it has no backend of
+/// its own (it seeds `ahash`'s hash maps): `crypto.getRandomValues`, 64 KiB at a time.
+#[cfg(target_arch = "wasm64")]
+mod getrandom_custom {
+    use wasm_bindgen::{JsCast, JsValue};
+
+    /// # Safety
+    /// `dest` is valid for writes of `len` bytes, as getrandom guarantees.
+    #[unsafe(no_mangle)]
+    unsafe extern "Rust" fn __getrandom_v03_custom(dest: *mut u8, len: usize) -> Result<(), getrandom::Error> {
+        let crypto = js_sys::Reflect::get(&js_sys::global(), &JsValue::from_str("crypto")).map_err(|_| getrandom::Error::UNSUPPORTED)?;
+        let fill: js_sys::Function = js_sys::Reflect::get(&crypto, &JsValue::from_str("getRandomValues"))
+            .ok()
+            .and_then(|f| f.dyn_into().ok())
+            .ok_or(getrandom::Error::UNSUPPORTED)?;
+        let mut done = 0;
+        while done < len {
+            let n = (len - done).min(65536);
+            let buf = js_sys::Uint8Array::new_with_length(n as u32);
+            fill.call1(&crypto, &buf).map_err(|_| getrandom::Error::UNSUPPORTED)?;
+            // SAFETY: `done + n <= len` bytes of `dest` are writable.
+            buf.copy_to(unsafe { std::slice::from_raw_parts_mut(dest.add(done), n) });
+            done += n;
+        }
+        Ok(())
     }
 }
