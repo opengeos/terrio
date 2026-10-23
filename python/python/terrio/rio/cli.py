@@ -197,8 +197,8 @@ def resolve_inout(
         raise CommandError(
             "file exists and won't be overwritten without use of the `--overwrite` option."
         )
-    resolved_inputs = (
-        [input] if input else [] + list(files[: -1 if not output else None]) if files else []
+    resolved_inputs = ([input] if input else []) + (
+        list(files[: -1 if not output else None]) if files else []
     )
     if num_inputs is not None:
         if len(resolved_inputs) < num_inputs:
@@ -1779,8 +1779,9 @@ def cmd_warp(args: argparse.Namespace, env: Any) -> None:
             out_kwargs.update(**creation_options)
             if args.dry_run:
                 if out_kwargs.get("crs", None):
-                    epsg = src.crs.to_epsg()
-                    out_kwargs["crs"] = f"EPSG:{epsg}" if epsg else src.crs.to_string()
+                    out_crs = CRS.from_user_input(out_kwargs["crs"])
+                    epsg = out_crs.to_epsg()
+                    out_kwargs["crs"] = f"EPSG:{epsg}" if epsg else out_crs.to_string()
                 echo("Output dataset profile:")
                 echo(json.dumps(dict(**out_kwargs), indent=2, default=to_json))
             else:
@@ -2185,6 +2186,8 @@ def cmd_rasterize(args: argparse.Namespace, env: Any) -> None:
         else:
             raise UsageError("Invalid value for 'input': Invalid GeoJSON")
         geojson_bounds = geojson.get("bbox", calculate_bounds(geojson))
+        if not output:
+            raise UsageError("an output path is required")
         if rio_shutil.exists(output):
             with rasterio.open(output, "r+") as out:
                 if has_src_crs and src_crs != out.crs:
@@ -2749,6 +2752,8 @@ def cmd_gcps(args: argparse.Namespace, env: Any) -> None:
     separators = (",", ":") if args.compact else None
     with env, rasterio.open(file_in(args.input)) as src:
         gcps, crs = src.gcps
+        if not gcps or crs is None:
+            raise CommandError(f"{args.input} has no ground control points with a CRS")
         proj = crs.to_string()
         proj = proj.split("=")[1].upper() if proj.startswith("+init=epsg") else proj
 
@@ -3113,34 +3118,42 @@ def _higher_funcs() -> dict[str, Callable[..., Any]]:
         "map": map,
         "partial": functools.partial,
         "reduce": functools.reduce,
-        "attrgetter": operator.attrgetter,
-        "methodcaller": operator.methodcaller,
         "itemgetter": operator.itemgetter,
     }
 
 
-# Builtins that would run code or touch files from an expression: not resolved (they become method
-# calls on the first argument, as other unknown names do).
-_UNSAFE_BUILTINS = {
-    "breakpoint",
-    "compile",
-    "delattr",
-    "eval",
-    "exec",
-    "exit",
-    "getattr",
-    "globals",
-    "help",
-    "input",
-    "locals",
-    "memoryview",
-    "open",
-    "print",
-    "quit",
-    "setattr",
-    "type",
-    "vars",
+# The builtins an expression may call: those computing on values. Other names become method calls
+# on the first argument, as in snuggs, except private ones and those writing files.
+_SAFE_BUILTINS = {
+    "abs",
+    "all",
+    "any",
+    "bool",
+    "complex",
+    "dict",
+    "divmod",
+    "enumerate",
+    "filter",
+    "float",
+    "frozenset",
+    "int",
+    "len",
+    "list",
+    "max",
+    "min",
+    "pow",
+    "range",
+    "reversed",
+    "round",
+    "set",
+    "slice",
+    "sorted",
+    "str",
+    "sum",
+    "tuple",
+    "zip",
 }
+_UNSAFE_METHODS = {"dump", "dumps", "tofile"}
 
 
 class Snuggs:
@@ -3170,6 +3183,8 @@ class Snuggs:
         Returns:
             The array.
         """
+        if int(index) < 1 or (subindex is not None and int(subindex) < 1):
+            raise ValueError(f"inputs and bands are numbered from 1: ({index} {subindex})")
         s = list(self.context.values())[int(index) - 1]
         return s[int(subindex) - 1] if subindex else s
 
@@ -3185,12 +3200,12 @@ class Snuggs:
         """
         if name in self.funcs:
             return self.funcs[name]
-        if hasattr(builtins, name) and not name.startswith("__") and name not in _UNSAFE_BUILTINS:
+        if name in _SAFE_BUILTINS:
             return getattr(builtins, name)
 
         def method(g: Any, *args: Any, **kwargs: Any) -> Any:
-            if name.startswith("_"):
-                raise AttributeError(f"private attributes are not available: {name}")
+            if name.startswith("_") or name in _UNSAFE_METHODS:
+                raise AttributeError(f"'{name}' is not available in expressions")
             attr = getattr(g, name)
             return attr(*args, **kwargs) if callable(attr) else attr
 
@@ -3441,7 +3456,9 @@ def cmd_calc(args: argparse.Namespace, env: Any) -> None:
                 raise CommandError("Aborted!") from None
             results = res.astype(dtype)
             if isinstance(results, numpy.ma.MaskedArray):
-                results = results.filled(float(kwargs["nodata"]))
+                # Masked pixels take the nodata value, or 0 when the first input has none.
+                nodata = kwargs.get("nodata")
+                results = results.filled(0 if nodata is None else float(nodata))
                 if len(results.shape) == 2:
                     results = numpy.ma.asanyarray([results])
             elif len(results.shape) == 2:

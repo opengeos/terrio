@@ -6,8 +6,10 @@
 //! directories of `TERRIO_GRID_DIR`, `PROJ_DATA` and `PROJ_LIB`, PROJ's user directory (where
 //! `projsync` writes), and terrio's download cache. When `TERRIO_NETWORK` (or, when it is not set,
 //! `PROJ_NETWORK`) is `ON`, a grid found nowhere is downloaded from the PROJ CDN
-//! (`TERRIO_CDN_ENDPOINT`, `PROJ_NETWORK_ENDPOINT`, default `https://cdn.proj.org`) into the cache
-//! (`TERRIO_GRID_CACHE`, default `~/.cache/terrio/grids`).
+//! (`TERRIO_CDN_ENDPOINT`, `PROJ_NETWORK_ENDPOINT`, default `https://cdn.proj.org`): read in place
+//! with HTTP range requests, as PROJ reads it, fetching only the header and the blocks of the
+//! points transformed; or, with `TERRIO_GRID_DOWNLOAD=YES`, downloaded whole into the cache
+//! (`TERRIO_GRID_CACHE`, default `~/.cache/terrio/grids`), where later runs find it.
 
 use std::collections::HashMap;
 use std::io::Cursor;
@@ -99,8 +101,35 @@ struct TiffImage {
 /// A decoded block: its data width and raw values.
 type Block = (usize, Vec<f64>);
 
-/// A TIFF decoder over a file's bytes.
-type TiffDecoder = tiff::decoder::Decoder<Cursor<Arc<[u8]>>>;
+/// Where a GeoTIFF grid's bytes are read from: memory, or a remote file read by range.
+enum GridReader {
+    Bytes(Cursor<Arc<[u8]>>),
+    #[cfg(remote)]
+    Remote(crate::http::RangeReader),
+}
+
+impl std::io::Read for GridReader {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        match self {
+            GridReader::Bytes(c) => c.read(buf),
+            #[cfg(remote)]
+            GridReader::Remote(r) => r.read(buf),
+        }
+    }
+}
+
+impl std::io::Seek for GridReader {
+    fn seek(&mut self, pos: std::io::SeekFrom) -> std::io::Result<u64> {
+        match self {
+            GridReader::Bytes(c) => c.seek(pos),
+            #[cfg(remote)]
+            GridReader::Remote(r) => r.seek(pos),
+        }
+    }
+}
+
+/// A TIFF decoder over a grid file.
+type TiffDecoder = tiff::decoder::Decoder<GridReader>;
 
 struct TiffFile {
     /// The decoder and the image it is on.
@@ -476,10 +505,10 @@ fn parse_gdal_metadata(text: &str) -> HashMap<(i32, String), String> {
 }
 
 /// Reads the images of a PROJ GeoTIFF grid, as PROJ's `GTiffDataset::nextGrid`.
-fn read_tiff(bytes: Arc<[u8]>) -> Option<GridFile> {
+fn read_tiff(reader: GridReader) -> Option<GridFile> {
     use tiff::decoder::{Decoder, Limits};
     use tiff::tags::Tag;
-    let mut dec = Decoder::new(Cursor::new(bytes)).ok()?.with_limits(Limits::unlimited());
+    let mut dec = Decoder::new(reader).ok()?.with_limits(Limits::unlimited());
     let mut out = Vec::new();
     let mut infos = Vec::new();
     let mut ifd = 0usize;
@@ -670,7 +699,7 @@ fn read_file(name: &str, bytes: Arc<[u8]>) -> Option<GridFile> {
         return read_ntv2(b);
     }
     if b.len() >= 4 && (&b[..4] == b"II*\0" || &b[..4] == b"MM\0*" || &b[..4] == b"II+\0" || &b[..4] == b"MM\0+") {
-        return read_tiff(bytes);
+        return read_tiff(GridReader::Bytes(Cursor::new(bytes)));
     }
     None
 }
@@ -872,17 +901,39 @@ fn present_locally(name: &str) -> bool {
     false
 }
 
+/// The URL of a grid on the PROJ CDN.
 #[cfg(remote)]
-fn download(name: &str) -> Option<Arc<[u8]>> {
+fn cdn_url(name: &str) -> Option<String> {
     if name.contains(['/', '\\']) || !name.ends_with(".tif") {
         return None;
     }
-    let dir = cache_dir()?;
-    std::fs::create_dir_all(&dir).ok()?;
     let endpoint = std::env::var("TERRIO_CDN_ENDPOINT")
         .or_else(|_| std::env::var("PROJ_NETWORK_ENDPOINT"))
         .unwrap_or_else(|_| "https://cdn.proj.org".into());
-    let url = format!("{}/{name}", endpoint.trim_end_matches('/'));
+    Some(format!("{}/{name}", endpoint.trim_end_matches('/')))
+}
+
+/// Whether grids from the CDN are downloaded whole (`TERRIO_GRID_DOWNLOAD=YES`) rather than read
+/// by range.
+#[cfg(remote)]
+fn download_whole() -> bool {
+    std::env::var("TERRIO_GRID_DOWNLOAD").is_ok_and(|v| matches!(v.trim().to_ascii_uppercase().as_str(), "YES" | "ON" | "TRUE" | "1"))
+}
+
+/// A GeoTIFF grid on the PROJ CDN, read in place by HTTP range requests. `Err(true)` when the
+/// CDN does not have it (status 404), `Err(false)` when it could not be read in place.
+#[cfg(remote)]
+fn open_remote(name: &str) -> Result<GridFile, bool> {
+    let url = cdn_url(name).ok_or(true)?;
+    let reader = crate::http::RangeReader::open(&crate::http::Remote::Url(url)).map_err(|e| e.to_string().contains("status 404"))?;
+    read_tiff(GridReader::Remote(reader)).ok_or(false)
+}
+
+#[cfg(remote)]
+fn download(name: &str) -> Option<Arc<[u8]>> {
+    let url = cdn_url(name)?;
+    let dir = cache_dir()?;
+    std::fs::create_dir_all(&dir).ok()?;
     let tmp = dir.join(format!("{name}.part{}", std::process::id()));
     if crate::http::download(&crate::http::Remote::Url(url), &tmp).is_err() {
         let _ = std::fs::remove_file(&tmp);
@@ -910,6 +961,23 @@ fn load(name: &str) -> Option<Arc<GridFile>> {
                 files().lock().ok()?.insert(name.to_string(), file.clone());
                 return file;
             }
+        }
+    }
+    // Read in place; a grid that cannot be read so (a server without range requests, a failed
+    // request) is downloaded instead, unless the CDN does not have it.
+    #[cfg(remote)]
+    if bytes.is_none() && network_enabled() && !download_whole() {
+        match open_remote(name) {
+            Ok(file) => {
+                let file = Arc::new(file);
+                files().lock().ok()?.insert(name.to_string(), Some(file.clone()));
+                return Some(file);
+            }
+            Err(true) => {
+                files().lock().ok()?.insert(name.to_string(), None);
+                return None;
+            }
+            Err(false) => {}
         }
     }
     #[cfg(remote)]

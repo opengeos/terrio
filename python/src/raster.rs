@@ -169,6 +169,15 @@ impl PyRaster {
         self.inner.dataset().and_then(|d| d.geolocation.as_ref()).map(|g| g.items())
     }
 
+    /// The metadata items a driver other than the GeoTIFF one read, as `(key, value)` pairs:
+    /// dataset items (netCDF's `NC_GLOBAL#title`, `NETCDF_DIM_time_VALUES`...), band items as
+    /// `BAND_<n>#<key>`, and subdatasets as `SUBDATASET_<n>_NAME`. Empty for GeoTIFFs, whose
+    /// metadata is in their `GDAL_METADATA` tag.
+    #[getter]
+    fn metadata(&self) -> Vec<(String, String)> {
+        self.inner.metadata()
+    }
+
     /// The nodata value, or `None` when the raster declares none.
     #[getter]
     fn nodata(&self) -> Option<f64> {

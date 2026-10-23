@@ -470,6 +470,42 @@ test("PLY and E57 bytes, PDAL's filters and TIN gridding", () => {
   const normals = pc.normal().get("normal_z");
   assert.ok(normals.every((v) => Math.abs(v - 1 / Math.sqrt(1.04)) < 1e-6));
   assert.ok(pc.cluster(0.6).get("cluster_id").every((c) => c === 1n));
+  // PDAL's other neighbourhood filters: one dense cluster; features of a plane.
+  assert.ok(pc.dbscan(0.6, 3).get("cluster_id").every((c) => c === 0n));
+  const feats = pc.covarianceFeatures({ featureSet: ["Linearity", "Planarity", "Scattering"], mode: "raw" });
+  const [lin, plan, scat] = ["linearity", "planarity", "scattering"].map((d) => feats.get(d));
+  assert.ok(lin.every((v, i) => Math.abs(v + plan[i] + scat[i] - 1) < 1e-9));
+  const ev = pc.eigenvalues(8, true);
+  assert.ok(ev.get("eigenvalue0").every((v, i) => Math.abs(v + ev.get("eigenvalue1")[i] + ev.get("eigenvalue2")[i] - 1) < 1e-12));
+  assert.ok(pc.approximateCoplanar().get("coplanar").some((v) => v === 1));
+  assert.ok(pc.estimateRank().get("rank").every((v) => v === 2));
+  assert.ok(pc.lof().get("local_outlier_factor").every((v) => v > 0));
+  assert.ok(pc.nndistance(4).get("nndistance").every((v) => v >= 0.5 - 1e-12));
+  assert.ok(pc.radialDensity(1).get("radial_density").every((v) => v > 0));
+  assert.ok(pc.reciprocity().get("reciprocity").every((v) => v >= 0 && v <= 100));
+  assert.ok(pc.miniball().get("miniball").every((v) => v >= 0 && v <= 1));
+  assert.ok(pc.zsmooth("Smoothed", 1).get("smoothed").every((v) => v >= 100 && v < 108));
+  const ground2 = pc.skewnessBalancing().get("z");
+  assert.ok(ground2.every((v, i) => i === 0 || v >= ground2[i - 1]));
+  assert.equal(pc.head(5).length, 5);
+  assert.equal(pc.tail(5, true).length, n - 5);
+  assert.equal(pc.sort(["Z"], "DESC").get("z")[0], 107.9);
+  assert.equal(pc.locate("Z", "min").get("z")[0], 100);
+  assert.equal(pc.iqr("Z").length, n);
+  assert.ok(pc.mad("Z", 1).length < n);
+  // A raster of the plane (a row below the points: the bottom edge is outside) and squares of zones.
+  const surface = Float64Array.from({ length: 40 * 26 }, (_, i) => 100 + ((i % 40) + 0.5) * 0.2);
+  const plane = terrio.rasterFromArray(surface, 40, 26, [500000, 1, 0, 4100025, 0, -1], "EPSG:32610");
+  assert.equal(pc.dem(plane, "Z[0.2:0.2]").length, n);
+  assert.ok(pc.colorization(plane, "Red:1:10").get("red").every((v) => v >= 1000));
+  const square = (x0, zone) => ({
+    type: "Feature",
+    properties: { name: "z", zone },
+    geometry: { type: "Polygon", coordinates: [[[x0, 4100000], [x0 + 20, 4100000], [x0 + 20, 4100030], [x0, 4100030], [x0, 4100000]]] },
+  });
+  const zones = terrio.fromGeoJSON({ type: "FeatureCollection", features: [square(500000, 3), square(500020, 4)] }, "zones", "EPSG:32610");
+  const zoned = ground.overlay(zones, "Classification").get("classification");
+  assert.ok(zoned.every((c, i) => c === (x[i] <= 500020 ? 3 : 4)));
   // Linear interpolation of a plane is exact.
   const tin = pc.grid(1, { method: "linear", radius: 0 });
   const band = tin.readBand(1);

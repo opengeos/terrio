@@ -644,6 +644,49 @@ def _s_masks(rio: Any, ctx: Ctx) -> Any:
         return [ds.read_masks(), ds.read_masks(2, window=W(30, 0, 60, 40)), ds.dataset_mask(), ds.dataset_mask(out_shape=(50, 75)), ds.mask_flag_enums]
 
 
+@check("synthetic", "masks: .msk sidecars written and read (GDAL_TIFF_INTERNAL_MASK=NO, ENVI), kept on update")
+def _s_msk_sidecars(rio: Any, ctx: Ctx) -> Any:
+    W = rio.windows.Window
+    with rio.open(synthetic(rio, ctx)) as ds:
+        data, profile = ds.read(), ds.profile
+    mask = np.where(data[0] > 0, 255, 0).astype("uint8")
+    out = []
+    with rio.Env(GDAL_TIFF_INTERNAL_MASK=False):
+        with rio.open(str(ctx.out / "ext.tif"), "w", **profile) as dst:
+            dst.write(data)
+            dst.write_mask(mask)
+    plain = {k: v for k, v in profile.items() if k not in ("tiled", "blockxsize", "blockysize", "compress", "interleave")}
+    with rio.open(str(ctx.out / "m.envi"), "w", **{**plain, "driver": "ENVI"}) as dst:
+        dst.write(data)
+        dst.write_mask(mask)
+    with rio.open(str(ctx.out / "ext.tif"), "r+") as dst:
+        dst.write(data[:1] + 1, 1)
+    # With overviews: the sidecar gets its own, read for lower resolutions.
+    with rio.Env(GDAL_TIFF_INTERNAL_MASK=False):
+        with rio.open(str(ctx.out / "ovr.tif"), "w", **profile) as dst:
+            dst.write(data)
+            dst.write_mask(mask)
+            dst.build_overviews([2, 4], rio.enums.Resampling.nearest)
+    # Written again without a mask: the earlier sidecar goes.
+    with rio.open(str(ctx.out / "gone.tif"), "w", **profile) as dst:
+        dst.write(data)
+        dst.write_mask(mask)
+    with rio.Env(GDAL_TIFF_INTERNAL_MASK=False):
+        with rio.open(str(ctx.out / "gone.tif"), "w", **profile) as dst:
+            dst.write(data)
+            dst.write_mask(mask)
+    with rio.open(str(ctx.out / "gone.tif"), "w", **profile) as dst:
+        dst.write(data)
+    out.append(os.path.exists(str(ctx.out / "gone.tif.msk")))
+    for name in ("ext.tif", "m.envi", "ovr.tif"):
+        with rio.open(str(ctx.out / name)) as ds:
+            files = sorted(os.path.basename(f) for f in ds.files if not f.endswith(".aux.xml"))
+            out.append([files, ds.mask_flag_enums, ds.read_masks(), ds.read_masks(2, window=W(30, 0, 60, 40)), ds.dataset_mask(out_shape=(50, 75))])
+        with rio.open(str(ctx.out / name) + ".msk") as m:
+            out.append([m.tags(), m.read(1), m.overviews(1)])
+    return out
+
+
 @check("synthetic", "sample, index, xy, window helpers, block windows")
 def _s_sample(rio: Any, ctx: Ctx) -> Any:
     with rio.open(synthetic(rio, ctx)) as ds:
@@ -1840,10 +1883,15 @@ def _c_warp(rio: Any, ctx: Ctx) -> Any:
     out.append(rio_run(rio, ctx, "warp", p, "e.tif", "--like", q, files=["e.tif"]))
     out.append(rio_run(rio, ctx, "warp", p, "f.tif", "--src-bounds", "501000", "4096000", "505000", "4099000", "--res", "25", "--src-nodata", "-9999", "--dst-nodata", "-1", files=["f.tif"]))
     out.append(rio_run(rio, ctx, "warp", p, "g.tif", "--dst-crs", "EPSG:3857", "--res", "50", "--target-aligned-pixels", "--resampling", "average", files=["g.tif"]))
-    out.append(rio_run(rio, ctx, "warp", p, "h.tif", "--dst-crs", "EPSG:4326", "--dry-run"))
+    out.append(rio_run(rio, ctx, "warp", p, "h.tif", "--res", "45", "--dry-run"))
     out.append(rio_run(rio, ctx, "warp", p, "i.tif", "--like", q, "--res", "10"))
     out.append(rio_run(rio, ctx, "warp", p, "j.tif", "--dst-crs", "EPSG:4326", "--resampling", "cubic", "--co", "compress=lzw", files=["j.tif"]))
     return out
+
+
+@check("rio cli", "warp --dry-run with --dst-crs: the profile's CRS", expect="known", reason="rasterio's --dry-run prints the source's CRS as the output's; terrio.rio prints the output CRS")
+def _c_warp_dry_run(rio: Any, ctx: Ctx) -> Any:
+    return [rio_run(rio, ctx, "warp", cli_raster(rio, ctx), "h.tif", "--dst-crs", "EPSG:4326", "--dry-run")]
 
 
 @check("rio cli", "sample: points from stdin and argument, --bidx forms")

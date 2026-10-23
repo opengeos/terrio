@@ -117,6 +117,10 @@ class TerrioBackendEntrypoint(BackendEntrypoint):
             overview_level=overview_level,
             **(open_kwargs or {}),
         )
+        if isinstance(rds, list):
+            raise RioXarrayError(
+                "Multiple resolution sets found. Use 'variable' or 'group' to filter."
+            )
         if isinstance(rds, xarray.DataArray):
             dataset = rds.to_dataset()
             dataset.set_close(rds._close)

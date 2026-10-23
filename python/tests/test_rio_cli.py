@@ -187,9 +187,37 @@ def test_snuggs():
         ev.eval("(sum (read 1 1) :axis)")
     with pytest.raises(AttributeError):
         ev.eval("(open 'x.txt')")
-    with pytest.raises(AttributeError, match="private"):
+    with pytest.raises(AttributeError, match="not available"):
         ev.eval("(__class__ (read 1))")
+    # Only builtins computing on values; no attribute getters, no methods writing files.
+    for unsafe in (
+        "(getattr (read 1) 'shape')",
+        "(attrgetter '__class__')",
+        "(tofile (read 1) 'x')",
+    ):
+        with pytest.raises(AttributeError):
+            ev.eval(unsafe)
+    with pytest.raises(ValueError, match="numbered from 1"):
+        ev.eval("(read 0)")
     assert ev.eval("(list 1 2)") == [1, 2]
+
+
+def test_edge_cases(raster, tmp_path):
+    # --dry-run reports the output CRS, not the source's.
+    r = run("warp", raster, tmp_path / "w.tif", "--dst-crs", "EPSG:4326", "--dry-run")
+    assert r.returncode == 0, r.stderr
+    assert '"crs": "EPSG:4326"' in r.stdout
+    # No GCPs: a clear error.
+    r = run("gcps", raster)
+    assert r.returncode != 0 and "no ground control points" in r.stderr
+    # calc on masked inputs without nodata.
+    plain = tmp_path / "plain.tif"
+    with rio.open(plain, "w", driver="GTiff", width=4, height=3, count=1, dtype="uint8") as dst:
+        dst.write(np.arange(12, dtype="uint8").reshape(1, 3, 4))
+    r = run("calc", "(+ (read 1) 1)", plain, tmp_path / "c.tif", "--masked")
+    assert r.returncode == 0, r.stderr
+    with rio.open(tmp_path / "c.tif") as src:
+        assert src.read(1).tolist() == (np.arange(12).reshape(3, 4) + 1).tolist()
 
 
 def test_from_gcps():
