@@ -755,6 +755,7 @@ class DatasetBase(WindowMethodsMixin, TransformMethodsMixin):
             )
         self.structure.colorinterp = [ColorInterp(v) for v in value]
         self._colorinterp_set = True
+        self._dirty = True
 
     def colormap(self, bidx: int) -> dict[int, tuple[int, int, int, int]]:
         """The color table of a band.

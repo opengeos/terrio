@@ -424,6 +424,135 @@ class GCPTransformer(TransformerBase):
         return "<open GCPTransformer>"
 
 
+def from_gcps(gcps: Sequence[Any]) -> Affine:
+    """The affine transform best fitting ground control points, as GDAL computes it.
+
+    This is `GDALGCPsToGeoTransform`, as `rasterio.transform.from_gcps` calls it.
+
+    Two GCPs give a north-up transform; four GCPs at the corners of a north-up grid give it
+    exactly; otherwise the transform is the least squares fit, computed on coordinates
+    normalized to [0, 1].
+
+    Args:
+        gcps: `GroundControlPoint`s (with `row`, `col`, `x` and `y`).
+
+    Returns:
+        Affine: The transform.
+
+    Raises:
+        ValueError: If the GCPs do not determine a transform.
+    """
+    pts = [(float(g.col), float(g.row), float(g.x), float(g.y)) for g in gcps]
+    n = len(pts)
+    if n < 2:
+        raise ValueError("At least two GCPs are required")
+    if n == 2:
+        (p0, l0, x0, y0), (p1, l1, x1, y1) = pts
+        if p0 == p1 or l0 == l1:
+            raise ValueError("The GCPs do not determine a transform")
+        a = (x1 - x0) / (p1 - p0)
+        e = (y1 - y0) / (l1 - l0)
+        return Affine(a, 0.0, x0 - p0 * a, 0.0, e, y0 - l0 * e)
+    if (
+        n == 4
+        and pts[0][1] == pts[1][1]
+        and pts[2][1] == pts[3][1]
+        and pts[0][0] == pts[3][0]
+        and pts[1][0] == pts[2][0]
+        and pts[0][1] != pts[2][1]
+        and pts[0][0] != pts[1][0]
+        and pts[0][3] == pts[1][3]
+        and pts[2][3] == pts[3][3]
+        and pts[0][2] == pts[3][2]
+        and pts[1][2] == pts[2][2]
+        and pts[0][3] != pts[2][3]
+        and pts[0][2] != pts[1][2]
+    ):
+        a = (pts[1][2] - pts[0][2]) / (pts[1][0] - pts[0][0])
+        e = (pts[2][3] - pts[1][3]) / (pts[2][1] - pts[1][1])
+        return Affine(a, 0.0, pts[0][2] - pts[0][0] * a, 0.0, e, pts[0][3] - pts[0][1] * e)
+
+    def normalize(vals: list[float]) -> tuple[float, float]:
+        """The offset and scale mapping values to [0, 1].
+
+        Args:
+            vals: The values.
+
+        Returns:
+            tuple: The offset and the scale.
+
+        Raises:
+            ValueError: If the values are all equal.
+        """
+        lo, hi = min(vals), max(vals)
+        if hi == lo:
+            raise ValueError("The GCPs do not determine a transform")
+        return -lo / (hi - lo), 1.0 / (hi - lo)
+
+    pl_x = normalize([p[0] for p in pts])
+    pl_y = normalize([p[1] for p in pts])
+    geo_x = normalize([p[2] for p in pts])
+    geo_y = normalize([p[3] for p in pts])
+    sum_x = sum_y = sum_xy = sum_xx = sum_yy = 0.0
+    sum_lon = sum_lonx = sum_lony = sum_lat = sum_latx = sum_laty = 0.0
+    for p, line, gx, gy in pts:
+        x = pl_x[0] + p * pl_x[1]
+        y = pl_y[0] + line * pl_y[1]
+        lon = geo_x[0] + gx * geo_x[1]
+        lat = geo_y[0] + gy * geo_y[1]
+        sum_x += x
+        sum_y += y
+        sum_xy += x * y
+        sum_xx += x * x
+        sum_yy += y * y
+        sum_lon += lon
+        sum_lonx += lon * x
+        sum_lony += lon * y
+        sum_lat += lat
+        sum_latx += lat * x
+        sum_laty += lat * y
+    divisor = (
+        n * (sum_xx * sum_yy - sum_xy * sum_xy)
+        + 2 * sum_x * sum_y * sum_xy
+        - sum_y * sum_y * sum_xx
+        - sum_x * sum_x * sum_yy
+    )
+    if divisor == 0.0:
+        raise ValueError("The GCPs do not determine a transform")
+    c0 = sum_xx * sum_yy - sum_xy * sum_xy
+    c1 = sum_y * sum_xy - sum_x * sum_yy
+    c2 = sum_x * sum_xy - sum_y * sum_xx
+    g0 = (sum_lon * c0 + sum_lonx * c1 + sum_lony * c2) / divisor
+    g3 = (sum_lat * c0 + sum_latx * c1 + sum_laty * c2) / divisor
+    g1 = (
+        sum_lon * c1
+        + sum_lonx * (n * sum_yy - sum_y * sum_y)
+        + sum_lony * (sum_x * sum_y - sum_xy * n)
+    ) / divisor
+    g2 = (
+        sum_lon * c2
+        + sum_lonx * (sum_x * sum_y - n * sum_xy)
+        + sum_lony * (n * sum_xx - sum_x * sum_x)
+    ) / divisor
+    g4 = (
+        sum_lat * c1
+        + sum_latx * (n * sum_yy - sum_y * sum_y)
+        + sum_laty * (sum_x * sum_y - sum_xy * n)
+    ) / divisor
+    g5 = (
+        sum_lat * c2
+        + sum_latx * (sum_x * sum_y - n * sum_xy)
+        + sum_laty * (n * sum_xx - sum_x * sum_x)
+    ) / divisor
+    # Pixel/line normalized, then the fit, then the inverse of the geographic normalization.
+    pl = Affine(pl_x[1], 0.0, pl_x[0], 0.0, pl_y[1], pl_y[0])
+    fit = Affine(g1, g2, g0, g4, g5, g3)
+    geo_inv = Affine(
+        1.0 / geo_x[1], 0.0, -geo_x[0] / geo_x[1], 0.0, 1.0 / geo_y[1], -geo_y[0] / geo_y[1]
+    )
+    return compose(compose(geo_inv, fit), pl)
+
+
 def get_transformer(transform: Any, **rpc_options: Any) -> Callable[[], TransformerBase]:
     """A transformer factory for a transform.
 
@@ -600,6 +729,7 @@ __all__ = [
     "TransformMethodsMixin",
     "array_bounds",
     "from_bounds",
+    "from_gcps",
     "from_origin",
     "get_transformer",
     "guard_transform",

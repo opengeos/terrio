@@ -29,7 +29,7 @@ from terrio.rio.dtypes import (
 )
 from terrio.rio.enums import MergeAlg
 from terrio.rio.errors import RasterioDeprecationWarning, ShapeSkipWarning, WindowError
-from terrio.rio.transform import IDENTITY, guard_transform
+from terrio.rio.transform import IDENTITY, compose, guard_transform
 
 _VALID_DTYPES = (int8, int16, int32, int64, uint8, uint16, uint32, uint64, float32, float64)
 _PIXELS = (0.0, 1.0, 0.0, 0.0, 0.0, -1.0)
@@ -592,7 +592,7 @@ def dataset_features(
     Args:
         src: The dataset.
         bidx: The band.
-        sampling: Unused (1).
+        sampling: The inverse of the sampling fraction: 10 decimates by 10.
         band: Polygonize band values (else the mask).
         as_mask: Polygonize non-zero values as one value.
         with_nodata: Include nodata regions.
@@ -606,21 +606,41 @@ def dataset_features(
 
     from terrio.rio.warp import transform_geom
 
+    if bidx is not None and bidx > src.count:
+        raise ValueError("bidx is out of range for raster")
     msk = None
+    transform = src.transform
+    shape = (src.height, src.width)
+    if sampling > 1:
+        # Decimate, and correct the georeferencing shift of the decimation, as rasterio does.
+        shape = (int(math.ceil(src.height / sampling)), int(math.ceil(src.width / sampling)))
+        x_sampling = src.width / shape[1]
+        y_sampling = src.height / shape[0]
+        transform = compose(
+            transform, Affine.translation(src.width % x_sampling, src.height % y_sampling)
+        )
+        transform = compose(transform, Affine.scale(x_sampling, y_sampling))
     if not band or (band and not as_mask and not with_nodata):
-        msk = src.read_masks(bidx)
+        if sampling == 1:
+            msk = src.read_masks(bidx)
+        else:
+            msk_shape = shape if bidx is not None else (src.count, *shape)
+            msk = src.read_masks(bidx, out_shape=msk_shape)
         if bidx is None:
             msk = np.logical_or.reduce(msk).astype(np.uint8)
         img = msk
     if band:
-        img = src.read(bidx, masked=False)
+        if sampling == 1:
+            img = src.read(bidx, masked=False)
+        else:
+            img = src.read(bidx, out_shape=shape, masked=False)
     if as_mask:
         tmp = np.ones_like(img, np.uint8) * 255
         tmp[img == 0] = 0
         img = tmp
         if not with_nodata:
             msk = tmp
-    kwargs: dict[str, Any] = {"transform": src.transform}
+    kwargs: dict[str, Any] = {"transform": transform}
     if not with_nodata:
         kwargs["mask"] = msk
     base = os.path.basename(src.name)

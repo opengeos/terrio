@@ -30,6 +30,7 @@ xarray = ["xarray>=2024.1", "dask[array]>=2024.1"]
 
 [project.scripts]
 terrio = "terrio.__main__:main"
+terrio-rio = "terrio.rio.cli:main"
 
 [project.entry-points."xarray.backends"]
 terrio = "terrio.xarray._backend:TerrioBackendEntrypoint"
