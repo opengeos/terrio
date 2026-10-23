@@ -359,8 +359,15 @@ const PC_HOST: &str = "planetarycomputer.microsoft.com";
 fn blob_container(href: &str) -> Option<(&str, &str)> {
     let rest = href.strip_prefix("https://")?;
     let (host, path) = rest.split_once('/')?;
-    let account = host.strip_suffix(".blob.core.windows.net")?;
-    let container = path.split(['/', '?']).next().filter(|c| !c.is_empty())?;
+    // An account name is lowercase letters and digits: a host with user information, a port or
+    // a fragment (`https://evil.example#@a.blob.core.windows.net/c`) is not an account's.
+    let account = host
+        .strip_suffix(".blob.core.windows.net")
+        .filter(|a| !a.is_empty() && a.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit()))?;
+    let container = path
+        .split(['/', '?', '#'])
+        .next()
+        .filter(|c| !c.is_empty() && c.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-'))?;
     Some((account, container))
 }
 
@@ -443,16 +450,7 @@ fn pc_token(account: &str, container: &str) -> Result<String> {
 #[cfg(remote)]
 fn seconds_until(t: &str) -> Option<u64> {
     let n = |r: std::ops::Range<usize>| t.get(r)?.parse::<i64>().ok();
-    let (y, mo, d, h, mi, s) = (n(0..4)?, n(5..7)?, n(8..10)?, n(11..13)?, n(14..16)?, n(17..19)?);
-    // Days from the civil date (Howard Hinnant's days_from_civil).
-    let y = if mo <= 2 { y - 1 } else { y };
-    let era = y.div_euclid(400);
-    let yoe = y - era * 400;
-    let doy = (153 * (mo + if mo > 2 { -3 } else { 9 }) + 2) / 5 + d - 1;
-    let days = era * 146_097 + yoe * 365 + yoe / 4 - yoe / 100 + doy - 719_468;
-    let at = days * 86_400 + h * 3600 + mi * 60 + s;
-    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).ok()?.as_secs() as i64;
-    u64::try_from(at - now).ok()
+    crate::http::seconds_until_utc(n(0..4)?, n(5..7)?, n(8..10)?, n(11..13)?, n(14..16)?, n(17..19)?)
 }
 
 /// Items with the location each was read from (their hrefs are relative to it).
@@ -1316,6 +1314,8 @@ mod tests {
         let href = "https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/13/T/B04.tif";
         assert_eq!(blob_container(href), Some(("sentinel2l2a01", "sentinel2-l2")));
         assert_eq!(blob_container("https://example.com/a/b.tif"), None);
+        assert_eq!(blob_container("https://evil.example#@a.blob.core.windows.net/c/x.tif"), None);
+        assert_eq!(blob_container("https://u:p@a.blob.core.windows.net/c/x.tif"), None);
         let pc = "https://planetarycomputer.microsoft.com/api/stac/v1/search?collections=x";
         assert!(from_planetary_computer(&json!({}), pc));
         assert!(!from_planetary_computer(&json!({}), "https://earth-search.aws.element84.com/v1/search"));

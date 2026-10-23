@@ -476,13 +476,18 @@ fn retry_after_seconds(v: &str) -> Option<u64> {
     let (d, y): (i64, i64) = (day.parse().ok()?, year.parse().ok()?);
     let t: Vec<i64> = time.split(':').map(|x| x.parse().ok()).collect::<Option<_>>()?;
     let [h, mi, sec] = t[..] else { return None };
+    seconds_until_utc(y, m, d, h, mi, sec)
+}
+
+/// The seconds from now to a UTC date and time; `None` when it is past.
+pub(crate) fn seconds_until_utc(y: i64, m: i64, d: i64, h: i64, mi: i64, s: i64) -> Option<u64> {
     // Days from the civil date (Howard Hinnant's days_from_civil).
     let yy = if m <= 2 { y - 1 } else { y };
     let era = yy.div_euclid(400);
     let yoe = yy - era * 400;
     let doy = (153 * (m + if m > 2 { -3 } else { 9 }) + 2) / 5 + d - 1;
     let days = era * 146_097 + yoe * 365 + yoe / 4 - yoe / 100 + doy - 719_468;
-    let at = days * 86_400 + h * 3600 + mi * 60 + sec;
+    let at = days * 86_400 + h * 3600 + mi * 60 + s;
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).ok()?.as_secs() as i64;
     u64::try_from(at - now).ok()
 }
