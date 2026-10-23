@@ -60,7 +60,8 @@ FMA_SENSITIVE = {
     "mask: crop, filled, invert, all_touched, pad, indexes, nodata",
     # The rio command line's mask and rasterize burn geometries the same way.
     "mask: --geojson-mask, --crop, --invert, --all, stdin, no features (copy)",
-    "rasterize: --res, --dimensions, --bounds, --like, --property, --default-value, --fill, --all, --nodata, an existing output",
+    "rasterize: --res, --dimensions, --bounds, --like, --property, --default-value, --fill, "
+    "--all, --nodata, an existing output",
 }
 MACOS_ARM = sys.platform == "darwin" and platform.machine() == "arm64"
 
