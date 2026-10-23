@@ -1,6 +1,6 @@
 //! Ground and terrain filters: PDAL's `filters.pmf` (progressive morphological filter),
 //! `filters.elm` (extended local minimum), `filters.hag_nn` and `filters.hag_delaunay` (height
-//! above ground).
+//! above ground) and `filters.skewnessbalancing`.
 
 use super::super::kdtree::NanoKdTree;
 use super::{DimRange, dilate_diamond, erode_diamond, par_map, range_mask, set_classes, xyz};
@@ -417,4 +417,50 @@ pub fn hag_delaunay(cloud: &PointCloud, o: &HagOptions) -> Result<PointCloud> {
         z0 - z1
     });
     Ok(with_hag(cloud, hag))
+}
+
+/// Classifies ground points by skewness balancing (Bartels and Wei 2010), as PDAL's
+/// `filters.skewnessbalancing`: the points are sorted by `z` (and returned so, as PDAL returns
+/// them), and those below the last height at which the skewness of the heights so far turns
+/// positive become `ground_class`, the others `other_class` (left as they were with
+/// `only_ground`). PDAL's defaults: classes 2 and 1.
+pub fn skewness_balancing(cloud: &PointCloud, ground_class: u8, other_class: u8, only_ground: bool) -> Result<PointCloud> {
+    if ground_class == other_class && !only_ground {
+        return Err(Error::InvalidArgument("the ground and other classes cannot be equal unless only_ground is set".into()));
+    }
+    let (_, _, zs) = xyz(cloud)?;
+    let mut order: Vec<usize> = (0..cloud.len()).collect();
+    order.sort_by(|&a, &b| zs[a].total_cmp(&zs[b]));
+    let mut out = cloud.take(&order);
+    let n = order.len();
+    let mut classes: Vec<Option<u8>> = vec![None; n];
+    // PDAL's running moments, in its order of operations.
+    let (mut m1, mut m2, mut m3) = (0.0f64, 0.0f64, 0.0f64);
+    let mut last_positive = 0usize;
+    let mut skewness = 0.0;
+    let mut last_skewness = f64::NAN;
+    for (i, &p) in order.iter().enumerate() {
+        let (n1, nn) = (i as f64, (i + 1) as f64);
+        let delta = zs[p] - m1;
+        let delta_n = delta / nn;
+        let term1 = delta * delta_n * n1;
+        m1 += delta_n;
+        m3 += term1 * delta_n * (nn - 2.0) - 3.0 * delta_n * m2;
+        m2 += term1;
+        skewness = nn.sqrt() * m3 / m2.powf(1.5);
+        if skewness > 0.0 && last_skewness <= 0.0 {
+            classes[last_positive..i].fill(Some(ground_class));
+            last_positive = i;
+        }
+        last_skewness = skewness;
+    }
+    if n > 0 {
+        if last_positive == 0 && skewness <= 0.0 {
+            classes.fill(Some(ground_class));
+        } else if !only_ground {
+            classes[last_positive..].fill(Some(other_class));
+        }
+    }
+    set_classes(&mut out, |i| classes[i]);
+    Ok(out)
 }

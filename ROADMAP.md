@@ -176,8 +176,18 @@ of GDAL: the long tail of formats stays reachable through an optional GDAL backe
       (PDAL's expression language), `filters.merge`, `filters.splitter`, `filters.chipper`,
       `filters.normal` and `filters.cluster`, identical to PDAL's on autzen and USGS 3DEP lidar
       (`terrio filter`, Python and JavaScript); `filters.reprojection` is `terrio convert --t-srs`.
-- [ ] PDAL's other filters (`filters.dbscan`, `filters.covariancefeatures`, `filters.lof`,
-      `filters.dem`, `filters.colorization`, `filters.overlay` and the long tail).
+- [x] PDAL's `filters.dbscan`, `filters.covariancefeatures`, `filters.eigenvalues`,
+      `filters.approximatecoplanar`, `filters.estimaterank`, `filters.lof`, `filters.nndistance`,
+      `filters.radialdensity`, `filters.reciprocity`, `filters.miniball`, `filters.zsmooth`,
+      `filters.skewnessbalancing`, `filters.head`, `filters.tail`, `filters.sort`, `filters.locate`,
+      `filters.iqr`, `filters.mad`, `filters.dem`, `filters.colorization` and `filters.overlay`,
+      identical to PDAL's on autzen (nanoflann's neighbours, libstdc++'s sort and Eigen's
+      eigensolver as PDAL runs them; `terrio filter`, Python and JavaScript).
+- [ ] PDAL's long tail of filters (`filters.optimalneighborhood`, `filters.neighborclassifier`,
+      `filters.radiusassign`, `filters.hag_dem`, `filters.voxelcentroidnearestneighbor`,
+      `filters.farthestpointsampling`, `filters.transformation`, `filters.ferry`, `filters.returns`,
+      `filters.groupby`, `filters.planefit`, `filters.litree`, `filters.delaunay`, `filters.h3` and
+      others).
 - [ ] EPT datasets updated in place (appending points, as Entwine's `--subset` and merge do).
 
 ## Bindings: Python and WebAssembly

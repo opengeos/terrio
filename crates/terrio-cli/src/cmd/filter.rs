@@ -1,8 +1,9 @@
 //! `terrio filter`: PDAL's point cloud filters.
 
 use terrio::pointcloud::filters::{
-    self, AssignOptions, ClusterOptions, CropBox, CropOptions, CsfOptions, DimRange, HagOptions, NormalOptions, OutlierMethod,
-    OutlierOptions, PmfOptions, SampleOptions, SmrfOptions, SplitterOptions, VoxelMode,
+    self, AssignOptions, BandDimension, ClusterOptions, CovarianceFeaturesOptions, CropBox, CropOptions, CsfOptions, DbscanOptions,
+    DimRange, EigenvaluesOptions, FeatureMode, HagOptions, Neighbourhood, NnDistanceMode, NormalOptions, OutlierMethod, OutlierOptions,
+    OverlayOptions, PmfOptions, SampleOptions, SmrfOptions, SplitterOptions, VoxelMode,
 };
 use terrio::pointcloud::{self, PointCloud, PointWriter, ReturnKind};
 
@@ -391,6 +392,301 @@ enum Filter {
         #[arg(long = "2d")]
         two_d: bool,
     },
+    /// Label density-based clusters (PDAL's filters.dbscan), in ClusterID: from 0, -1 for noise.
+    Dbscan {
+        #[command(flatten)]
+        io: Io,
+        /// The fewest points (itself included) within eps of a core point.
+        #[arg(long = "min-cluster-points", default_value_t = 6)]
+        min_cluster_points: u64,
+        /// The distance within which points are neighbours.
+        #[arg(long, default_value_t = 1.0)]
+        eps: f64,
+        /// The dimensions distances are measured in (comma-separated).
+        #[arg(long, value_delimiter = ',', default_value = "X,Y,Z")]
+        dimensions: Vec<String>,
+    },
+    /// Compute features of the covariance of each point's neighbours (PDAL's
+    /// filters.covariancefeatures): Linearity, Planarity, Scattering, Verticality and others.
+    #[command(name = "covariancefeatures")]
+    CovarianceFeatures {
+        #[command(flatten)]
+        io: Io,
+        #[command(flatten)]
+        nb: NeighbourArgs,
+        /// The neighbours of each point.
+        #[arg(long, default_value_t = 10)]
+        knn: usize,
+        /// The features (comma-separated): Dimensionality (Linearity, Planarity, Scattering and
+        /// Verticality), All, or Linearity, Planarity, Scattering, Verticality, Omnivariance,
+        /// Anisotropy, Eigenentropy, EigenvalueSum, SurfaceVariation, DemantkeVerticality, Density.
+        #[arg(long = "feature-set", value_delimiter = ',', default_value = "Dimensionality")]
+        feature_set: Vec<String>,
+        /// How the eigenvalues are scaled: raw, sqrt or normalized.
+        #[arg(long, default_value = "sqrt")]
+        mode: String,
+        /// Use each point's OptimalKNN nearest points.
+        #[arg(long)]
+        optimized: bool,
+    },
+    /// Compute the eigenvalues of the covariance of each point's neighbours (PDAL's
+    /// filters.eigenvalues): Eigenvalue0, Eigenvalue1 and Eigenvalue2, ascending.
+    Eigenvalues {
+        #[command(flatten)]
+        io: Io,
+        #[command(flatten)]
+        nb: NeighbourArgs,
+        /// The neighbours of each point.
+        #[arg(long, default_value_t = 8)]
+        knn: usize,
+        /// Divide the eigenvalues by their sum.
+        #[arg(long)]
+        normalize: bool,
+    },
+    /// Label approximately coplanar points (PDAL's filters.approximatecoplanar), in Coplanar.
+    #[command(name = "approximatecoplanar")]
+    ApproximateCoplanar {
+        #[command(flatten)]
+        io: Io,
+        /// The nearest points (itself included) of each point.
+        #[arg(long, default_value_t = 8)]
+        knn: usize,
+        /// The least ratio of the middle eigenvalue to the smallest.
+        #[arg(long, default_value_t = 25.0)]
+        thresh1: f64,
+        /// The most ratio of the largest eigenvalue to the middle one.
+        #[arg(long, default_value_t = 6.0)]
+        thresh2: f64,
+    },
+    /// Estimate the rank of each point's neighbourhood (PDAL's filters.estimaterank), in Rank.
+    #[command(name = "estimaterank")]
+    EstimateRank {
+        #[command(flatten)]
+        io: Io,
+        /// The nearest points (itself included) of each point.
+        #[arg(long, default_value_t = 8)]
+        knn: usize,
+        /// The smallest singular value counted, relative to the largest.
+        #[arg(long, default_value_t = 0.01)]
+        thresh: f64,
+    },
+    /// Compute local outlier factors (PDAL's filters.lof): NNDistance,
+    /// LocalReachabilityDistance and LocalOutlierFactor.
+    Lof {
+        #[command(flatten)]
+        io: Io,
+        /// The neighbours of each point.
+        #[arg(long, default_value_t = 10)]
+        minpts: usize,
+    },
+    /// Compute the distance to each point's nearest neighbours (PDAL's filters.nndistance), in
+    /// NNDistance.
+    #[command(name = "nndistance")]
+    NnDistance {
+        #[command(flatten)]
+        io: Io,
+        /// The neighbours of each point.
+        #[arg(short, long, default_value_t = 10)]
+        k: usize,
+        /// kth (the distance to the k-th) or avg (the mean distance).
+        #[arg(long, default_value = "kth")]
+        mode: String,
+    },
+    /// Compute the density of points around each point (PDAL's filters.radialdensity), in
+    /// RadialDensity.
+    #[command(name = "radialdensity")]
+    RadialDensity {
+        #[command(flatten)]
+        io: Io,
+        /// The radius of the sphere counted.
+        #[arg(long, default_value_t = 1.0)]
+        radius: f64,
+    },
+    /// Compute the share of each point's neighbours that do not have it as theirs, in percent
+    /// (PDAL's filters.reciprocity), in Reciprocity.
+    Reciprocity {
+        #[command(flatten)]
+        io: Io,
+        /// The neighbours of each point.
+        #[arg(long, default_value_t = 8)]
+        knn: usize,
+    },
+    /// Compute how far each point is from the centre of the smallest ball around its neighbours
+    /// (PDAL's filters.miniball), in Miniball.
+    Miniball {
+        #[command(flatten)]
+        io: Io,
+        /// The neighbours of each point.
+        #[arg(long, default_value_t = 8)]
+        knn: usize,
+    },
+    /// Smooth elevations (PDAL's filters.zsmooth): a percentile of the Z of the neighbours in x
+    /// and y, in a dimension.
+    Zsmooth {
+        #[command(flatten)]
+        io: Io,
+        /// The dimension of the statistic (doubles).
+        #[arg(long)]
+        dim: String,
+        /// The radius in x and y of the neighbours.
+        #[arg(long, default_value_t = 1.0)]
+        radius: f64,
+        /// The percentile: 0 the lowest, 50 the median, 100 the highest.
+        #[arg(long = "medianpercent", default_value_t = 50.0)]
+        median_percent: f64,
+    },
+    /// Classify ground points by skewness balancing (PDAL's filters.skewnessbalancing); the points
+    /// come out sorted by Z, as PDAL writes them.
+    #[command(name = "skewnessbalancing")]
+    SkewnessBalancing {
+        #[command(flatten)]
+        io: Io,
+        /// The class of ground points.
+        #[arg(long = "ground-class", default_value_t = 2)]
+        ground_class: u8,
+        /// The class of other points.
+        #[arg(long = "other-class", default_value_t = 1)]
+        other_class: u8,
+        /// Change the class of ground points only.
+        #[arg(long = "only-ground")]
+        only_ground: bool,
+    },
+    /// Keep the first points (PDAL's filters.head).
+    Head {
+        #[command(flatten)]
+        io: Io,
+        /// The points kept.
+        #[arg(long, default_value_t = 10)]
+        count: usize,
+        /// Drop them instead.
+        #[arg(long)]
+        invert: bool,
+    },
+    /// Keep the last points (PDAL's filters.tail).
+    Tail {
+        #[command(flatten)]
+        io: Io,
+        /// The points kept.
+        #[arg(long, default_value_t = 10)]
+        count: usize,
+        /// Drop them instead.
+        #[arg(long)]
+        invert: bool,
+    },
+    /// Sort the points (PDAL's filters.sort): by the first dimension, then stably by each of the
+    /// others in turn.
+    Sort {
+        #[command(flatten)]
+        io: Io,
+        /// The dimensions (comma-separated).
+        #[arg(long, value_delimiter = ',', required = true)]
+        dimensions: Vec<String>,
+        /// asc or desc.
+        #[arg(long, default_value = "asc")]
+        order: String,
+    },
+    /// Keep the point of the largest (or smallest) value of a dimension (PDAL's filters.locate).
+    Locate {
+        #[command(flatten)]
+        io: Io,
+        /// The dimension.
+        #[arg(long)]
+        dimension: String,
+        /// max or min.
+        #[arg(long, default_value = "max")]
+        minmax: String,
+    },
+    /// Keep the points within the interquartile fences of a dimension (PDAL's filters.iqr).
+    Iqr {
+        #[command(flatten)]
+        io: Io,
+        /// The dimension.
+        #[arg(long)]
+        dimension: String,
+        /// The fences are this many interquartile ranges outside the quartiles.
+        #[arg(short, long, default_value_t = 1.5)]
+        k: f64,
+    },
+    /// Keep the points within median absolute deviations of the median of a dimension (PDAL's
+    /// filters.mad).
+    Mad {
+        #[command(flatten)]
+        io: Io,
+        /// The dimension.
+        #[arg(long)]
+        dimension: String,
+        /// The number of deviations.
+        #[arg(short, long, default_value_t = 2.0)]
+        k: f64,
+        /// The factor of the median absolute deviation.
+        #[arg(long = "mad-multiplier", default_value_t = 1.4862)]
+        mad_multiplier: f64,
+    },
+    /// Keep the points within a range of a raster's values (PDAL's filters.dem); the raster is
+    /// taken to be in the points' CRS.
+    Dem {
+        #[command(flatten)]
+        io: Io,
+        /// The raster.
+        #[arg(long)]
+        raster: String,
+        /// The dimension and how far below and above the raster's value: "Z[20:20]".
+        #[arg(long)]
+        limits: String,
+        /// The band, from 1.
+        #[arg(long, default_value_t = 1)]
+        band: usize,
+    },
+    /// Set dimensions from raster bands (PDAL's filters.colorization): Red, Green and Blue from
+    /// bands 1, 2 and 3 by default; the raster is taken to be in the points' CRS.
+    Colorization {
+        #[command(flatten)]
+        io: Io,
+        /// The raster.
+        #[arg(long)]
+        raster: String,
+        /// The dimensions, as Name:band:scale, comma-separated: "Red:1:1.0, Green:2, Blue:3".
+        #[arg(long, default_value = "Red,Green,Blue")]
+        dimensions: String,
+    },
+    /// Set a dimension from an attribute of the polygons the points are in (PDAL's
+    /// filters.overlay).
+    Overlay {
+        #[command(flatten)]
+        io: Io,
+        /// The vector dataset.
+        #[arg(long)]
+        datasource: String,
+        /// The dimension set (the points must have it).
+        #[arg(long)]
+        dimension: String,
+        /// The attribute (by default, the second, as PDAL takes it).
+        #[arg(long)]
+        column: Option<String>,
+        /// The layer (by default, the first).
+        #[arg(long)]
+        layer: Option<String>,
+    },
+}
+
+/// How the covariance filters find neighbours, besides their `knn`.
+#[derive(clap::Args)]
+struct NeighbourArgs {
+    /// Take every n-th of the nearest points.
+    #[arg(long, default_value_t = 1)]
+    stride: usize,
+    /// Take the points within this radius instead of the nearest.
+    #[arg(long)]
+    radius: Option<f64>,
+    /// With a radius, the fewest points (itself included) of a neighbourhood computed.
+    #[arg(long = "min-k", default_value_t = 3)]
+    min_k: usize,
+}
+
+impl NeighbourArgs {
+    fn to_neighbourhood(&self, knn: usize) -> Neighbourhood {
+        Neighbourhood { knn, stride: self.stride, radius: self.radius, min_k: self.min_k }
+    }
 }
 
 /// The options of the height above ground filters.
@@ -686,6 +982,116 @@ pub fn run(a: Args) -> terrio::Result<()> {
             let cloud = read(&io)?;
             write(&io, &filters::cluster(&cloud, &options)?)
         }
+        Filter::Dbscan { io, min_cluster_points, eps, dimensions } => {
+            let options = DbscanOptions { min_points: min_cluster_points, eps, dimensions };
+            let cloud = read(&io)?;
+            write(&io, &filters::dbscan(&cloud, &options)?)
+        }
+        Filter::CovarianceFeatures { io, nb, knn, feature_set, mode, optimized } => {
+            let options = CovarianceFeaturesOptions {
+                neighbours: nb.to_neighbourhood(knn),
+                feature_set,
+                mode: FeatureMode::parse(&mode)?,
+                optimized,
+            };
+            let cloud = read(&io)?;
+            write(&io, &filters::covariance_features(&cloud, &options)?)
+        }
+        Filter::Eigenvalues { io, nb, knn, normalize } => {
+            let options = EigenvaluesOptions { neighbours: nb.to_neighbourhood(knn), normalize };
+            let cloud = read(&io)?;
+            write(&io, &filters::eigenvalues(&cloud, &options)?)
+        }
+        Filter::ApproximateCoplanar { io, knn, thresh1, thresh2 } => {
+            let cloud = read(&io)?;
+            write(&io, &filters::approximate_coplanar(&cloud, knn, thresh1, thresh2)?)
+        }
+        Filter::EstimateRank { io, knn, thresh } => {
+            let cloud = read(&io)?;
+            write(&io, &filters::estimate_rank(&cloud, knn, thresh)?)
+        }
+        Filter::Lof { io, minpts } => {
+            let cloud = read(&io)?;
+            write(&io, &filters::lof(&cloud, minpts)?)
+        }
+        Filter::NnDistance { io, k, mode } => {
+            let mode = NnDistanceMode::parse(&mode)?;
+            let cloud = read(&io)?;
+            write(&io, &filters::nndistance(&cloud, k, mode)?)
+        }
+        Filter::RadialDensity { io, radius } => {
+            let cloud = read(&io)?;
+            write(&io, &filters::radial_density(&cloud, radius)?)
+        }
+        Filter::Reciprocity { io, knn } => {
+            let cloud = read(&io)?;
+            write(&io, &filters::reciprocity(&cloud, knn)?)
+        }
+        Filter::Miniball { io, knn } => {
+            let cloud = read(&io)?;
+            write(&io, &filters::miniball(&cloud, knn)?)
+        }
+        Filter::Zsmooth { io, dim, radius, median_percent } => {
+            let cloud = read(&io)?;
+            write(&io, &filters::zsmooth(&cloud, &dim, radius, median_percent)?)
+        }
+        Filter::SkewnessBalancing { io, ground_class, other_class, only_ground } => {
+            let cloud = read(&io)?;
+            write(&io, &filters::skewness_balancing(&cloud, ground_class, other_class, only_ground)?)
+        }
+        Filter::Head { io, count, invert } => {
+            let cloud = read(&io)?;
+            write(&io, &filters::head(&cloud, count, invert))
+        }
+        Filter::Tail { io, count, invert } => {
+            let cloud = read(&io)?;
+            write(&io, &filters::tail(&cloud, count, invert))
+        }
+        Filter::Sort { io, dimensions, order } => {
+            let descending = match order.to_ascii_lowercase().as_str() {
+                "asc" => false,
+                "desc" => true,
+                _ => return Err(terrio::Error::InvalidArgument(format!("invalid order '{order}': use asc or desc"))),
+            };
+            let cloud = read(&io)?;
+            write(&io, &filters::sort(&cloud, &dimensions, descending)?)
+        }
+        Filter::Locate { io, dimension, minmax } => {
+            let min = match minmax.to_ascii_lowercase().as_str() {
+                "min" => true,
+                "max" => false,
+                _ => return Err(terrio::Error::InvalidArgument(format!("invalid minmax '{minmax}': use min or max"))),
+            };
+            let cloud = read(&io)?;
+            write(&io, &filters::locate(&cloud, &dimension, min)?)
+        }
+        Filter::Iqr { io, dimension, k } => {
+            let cloud = read(&io)?;
+            write(&io, &filters::iqr(&cloud, &dimension, k)?)
+        }
+        Filter::Mad { io, dimension, k, mad_multiplier } => {
+            let cloud = read(&io)?;
+            write(&io, &filters::mad(&cloud, &dimension, k, mad_multiplier)?)
+        }
+        Filter::Dem { io, raster, limits, band } => {
+            let limits = DimRange::parse(&limits)?;
+            let raster = super::quiet(|| terrio::open_raster(&raster))?;
+            let cloud = read(&io)?;
+            write(&io, &filters::dem(&cloud, &raster, &limits, band)?)
+        }
+        Filter::Colorization { io, raster, dimensions } => {
+            let dimensions = BandDimension::parse_list(&dimensions)?;
+            let raster = super::quiet(|| terrio::open_raster(&raster))?;
+            let cloud = read(&io)?;
+            write(&io, &filters::colorization(&cloud, &raster, &dimensions)?)
+        }
+        Filter::Overlay { io, datasource, dimension, column, layer } => {
+            let options = terrio::VectorOpenOptions { layers: layer.into_iter().collect(), ..Default::default() };
+            let ds = terrio::open_vector(&datasource, &options)?;
+            let layer = ds.layers.first().ok_or_else(|| terrio::Error::InvalidArgument(format!("'{datasource}' has no layer")))?;
+            let cloud = read(&io)?;
+            write(&io, &filters::overlay(&cloud, layer, &OverlayOptions { dimension, column })?)
+        }
     }
 }
 
@@ -709,6 +1115,79 @@ mod tests {
         assert_eq!(numbered("a#b#.laz", 4).as_deref(), Some("a#b4.laz"));
         assert_eq!(numbered("out#1/tile.laz", 1), None);
         assert_eq!(numbered("tile.laz", 1), None);
+    }
+
+    #[test]
+    fn runs_the_neighbourhood_raster_and_vector_filters() {
+        let dir = std::env::temp_dir().join(format!("terrio-filter-more-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = |name: &str| dir.join(name).to_string_lossy().into_owned();
+        // A 20 x 20 grid of points 1 m apart on a tilted plane, without a CRS (the GeoJSON polygon is
+        // then taken to be in the points' CRS).
+        let n = 400;
+        let xs: Vec<f64> = (0..n).map(|i| 1000.0 + (i % 20) as f64).collect();
+        let ys: Vec<f64> = (0..n).map(|i| 2000.0 + (i / 20) as f64).collect();
+        let zs: Vec<f64> = (0..n).map(|i| 10.0 + 0.1 * (i % 20) as f64).collect();
+        let dims = vec![
+            Dimension::new("x", Values::F64(xs)),
+            Dimension::new("y", Values::F64(ys)),
+            Dimension::new("z", Values::F64(zs)),
+            Dimension::new("classification", Values::U8(vec![1; n])),
+        ];
+        let input = path("in.las");
+        pointcloud::write_points(&PointCloud::new(dims, SpatialRef::default()), &input, &Default::default()).unwrap();
+        // A raster of the plane (a row below the points: the bottom edge is outside), and a polygon
+        // over half the points.
+        let cfg = terrio::RasterConfig { cols: 20, rows: 21, x_min: 1000.0, y_min: 1999.0, cell_size: 1.0, ..Default::default() };
+        let surface: Vec<f64> = (0..n + 20).map(|i| 10.05 + 0.1 * (i % 20) as f64).collect();
+        let raster = path("plane.tif");
+        terrio::write_raster(&terrio::Raster::from_data(cfg, surface).unwrap(), &raster, &Default::default()).unwrap();
+        let geojson = path("zone.geojson");
+        std::fs::write(
+            &geojson,
+            r#"{"type":"FeatureCollection","features":[{"type":"Feature","properties":{"name":"a","zone":5},
+               "geometry":{"type":"Polygon","coordinates":[[[999,1999],[1009.5,1999],[1009.5,2030],[999,2030],[999,1999]]]}}]}"#,
+        )
+        .unwrap();
+        let run_filter = |filter: &str, extra: &[&str]| {
+            let output = path(&format!("{filter}.las"));
+            let mut argv = vec!["terrio", filter, input.as_str(), output.as_str()];
+            argv.extend(extra);
+            run(Cli::try_parse_from(argv).unwrap().args).unwrap();
+            pointcloud::read_points(&output, &Default::default()).unwrap()
+        };
+        let c = run_filter("dbscan", &["--eps", "1.5", "--min-cluster-points", "3"]);
+        assert!(c.dim("cluster_id").unwrap().to_f64().iter().all(|v| *v == 0.0));
+        let c = run_filter("covariancefeatures", &["--feature-set", "Linearity,Planarity", "--mode", "raw"]);
+        assert!(c.dim("planarity").is_some() && c.dim("scattering").is_none());
+        for (filter, extra, dim) in [
+            ("eigenvalues", vec!["--knn", "6"], "eigenvalue2"),
+            ("approximatecoplanar", vec![], "coplanar"),
+            ("estimaterank", vec![], "rank"),
+            ("lof", vec!["--minpts", "5"], "local_outlier_factor"),
+            ("nndistance", vec!["-k", "3", "--mode", "avg"], "nndistance"),
+            ("radialdensity", vec!["--radius", "2"], "radial_density"),
+            ("reciprocity", vec![], "reciprocity"),
+            ("miniball", vec![], "miniball"),
+            ("zsmooth", vec!["--dim", "Smoothed", "--radius", "1.5"], "smoothed"),
+        ] {
+            assert!(run_filter(filter, &extra).dim(dim).is_some(), "{filter}");
+        }
+        assert_eq!(run_filter("head", &["--count", "7"]).len(), 7);
+        assert_eq!(run_filter("tail", &["--count", "7", "--invert"]).len(), n - 7);
+        assert_eq!(run_filter("locate", &["--dimension", "Z", "--minmax", "min"]).len(), 1);
+        assert_eq!(run_filter("iqr", &["--dimension", "Z"]).len(), n);
+        assert!(run_filter("mad", &["--dimension", "Z", "-k", "1"]).len() < n);
+        let sorted = run_filter("sort", &["--dimensions", "Z", "--order", "desc"]).dim("z").unwrap().to_f64();
+        assert!(sorted.windows(2).all(|w| w[0] >= w[1]));
+        assert_eq!(run_filter("skewnessbalancing", &[]).len(), n);
+        assert_eq!(run_filter("dem", &["--raster", &raster, "--limits", "Z[0.1:0.1]"]).len(), n);
+        let c = run_filter("colorization", &["--raster", &raster, "--dimensions", "Intensity:1:10"]);
+        assert!(c.dim("intensity").unwrap().to_f64().iter().all(|v| *v >= 100.0));
+        let c = run_filter("overlay", &["--datasource", &geojson, "--dimension", "Classification", "--column", "zone"]);
+        let classes = c.dim("classification").unwrap().to_f64();
+        assert_eq!(classes.iter().filter(|v| **v == 5.0).count(), 200);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

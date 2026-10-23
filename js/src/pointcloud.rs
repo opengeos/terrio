@@ -154,6 +154,35 @@ impl Default for JsOutlierOptions {
     }
 }
 
+/// Options of `PointCloud.covarianceFeatures`, as a JavaScript object (PDAL's
+/// `filters.covariancefeatures` options).
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", default, deny_unknown_fields)]
+struct JsCovarianceFeaturesOptions {
+    knn: usize,
+    feature_set: Vec<String>,
+    mode: String,
+    stride: usize,
+    radius: Option<f64>,
+    min_k: usize,
+    optimized: bool,
+}
+
+impl Default for JsCovarianceFeaturesOptions {
+    fn default() -> Self {
+        let d = filters::CovarianceFeaturesOptions::default();
+        Self {
+            knn: d.neighbours.knn,
+            feature_set: d.feature_set,
+            mode: "sqrt".into(),
+            stride: d.neighbours.stride,
+            radius: None,
+            min_k: d.neighbours.min_k,
+            optimized: false,
+        }
+    }
+}
+
 /// An open LAS, LAZ, COPC, PLY or E57 file: its header is read, its points on demand.
 #[wasm_bindgen]
 pub struct PointCloudFile {
@@ -505,5 +534,177 @@ impl JsPointCloud {
     pub fn cluster(&self, tolerance: Option<f64>) -> Result<JsPointCloud, JsError> {
         let o = filters::ClusterOptions { tolerance: tolerance.unwrap_or(1.0), ..Default::default() };
         Ok(JsPointCloud { inner: filters::cluster(&self.inner, &o).map_err(js_err)? })
+    }
+
+    /// Density-based clusters (`cluster_id`, from 0, -1 for noise), as PDAL's `filters.dbscan`
+    /// (`eps` 1 and `minPoints` 6 by default), in x, y and z.
+    pub fn dbscan(&self, eps: Option<f64>, min_points: Option<u32>) -> Result<JsPointCloud, JsError> {
+        let d = filters::DbscanOptions::default();
+        let o = filters::DbscanOptions { eps: eps.unwrap_or(d.eps), min_points: min_points.map_or(d.min_points, u64::from), ..d };
+        Ok(JsPointCloud { inner: filters::dbscan(&self.inner, &o).map_err(js_err)? })
+    }
+
+    /// Features of the covariance of each point's neighbours (`linearity`, `planarity`,
+    /// `scattering`, `verticality`...), as PDAL's `filters.covariancefeatures`. `options`:
+    /// `knn`, `featureSet` (such as `["All"]`), `mode`, `stride`, `radius`, `minK`, `optimized`.
+    #[wasm_bindgen(js_name = covarianceFeatures)]
+    pub fn covariance_features(&self, options: JsValue) -> Result<JsPointCloud, JsError> {
+        let o: JsCovarianceFeaturesOptions = parse(options)?;
+        let o = filters::CovarianceFeaturesOptions {
+            neighbours: filters::Neighbourhood { knn: o.knn, stride: o.stride, radius: o.radius, min_k: o.min_k },
+            feature_set: o.feature_set,
+            mode: filters::FeatureMode::parse(&o.mode).map_err(js_err)?,
+            optimized: o.optimized,
+        };
+        Ok(JsPointCloud { inner: filters::covariance_features(&self.inner, &o).map_err(js_err)? })
+    }
+
+    /// The eigenvalues of the covariance of each point's `knn` nearest neighbours (8 by
+    /// default), ascending (`eigenvalue0`, `eigenvalue1`, `eigenvalue2`), as PDAL's
+    /// `filters.eigenvalues`.
+    pub fn eigenvalues(&self, knn: Option<usize>, normalize: Option<bool>) -> Result<JsPointCloud, JsError> {
+        let d = filters::EigenvaluesOptions::default();
+        let o = filters::EigenvaluesOptions {
+            neighbours: filters::Neighbourhood { knn: knn.unwrap_or(d.neighbours.knn), ..d.neighbours },
+            normalize: normalize.unwrap_or(false),
+        };
+        Ok(JsPointCloud { inner: filters::eigenvalues(&self.inner, &o).map_err(js_err)? })
+    }
+
+    /// Approximately coplanar points (`coplanar`), as PDAL's `filters.approximatecoplanar`
+    /// (`knn` 8, `thresh1` 25 and `thresh2` 6 by default).
+    #[wasm_bindgen(js_name = approximateCoplanar)]
+    pub fn approximate_coplanar(&self, knn: Option<usize>, thresh1: Option<f64>, thresh2: Option<f64>) -> Result<JsPointCloud, JsError> {
+        let c = filters::approximate_coplanar(&self.inner, knn.unwrap_or(8), thresh1.unwrap_or(25.0), thresh2.unwrap_or(6.0));
+        Ok(JsPointCloud { inner: c.map_err(js_err)? })
+    }
+
+    /// The rank of each point's neighbourhood (`rank`), as PDAL's `filters.estimaterank` (`knn`
+    /// 8 and `thresh` 0.01 by default).
+    #[wasm_bindgen(js_name = estimateRank)]
+    pub fn estimate_rank(&self, knn: Option<usize>, thresh: Option<f64>) -> Result<JsPointCloud, JsError> {
+        Ok(JsPointCloud { inner: filters::estimate_rank(&self.inner, knn.unwrap_or(8), thresh.unwrap_or(0.01)).map_err(js_err)? })
+    }
+
+    /// Local outlier factors (`nndistance`, `local_reachability_distance`,
+    /// `local_outlier_factor`), as PDAL's `filters.lof` (`minpts` 10 by default).
+    pub fn lof(&self, minpts: Option<usize>) -> Result<JsPointCloud, JsError> {
+        Ok(JsPointCloud { inner: filters::lof(&self.inner, minpts.unwrap_or(10)).map_err(js_err)? })
+    }
+
+    /// The distance to the nearest neighbours (`nndistance`), as PDAL's `filters.nndistance`
+    /// (`k` 10 by default; `mode` `kth`, the default, or `avg`).
+    pub fn nndistance(&self, k: Option<usize>, mode: Option<String>) -> Result<JsPointCloud, JsError> {
+        let mode = filters::NnDistanceMode::parse(mode.as_deref().unwrap_or("kth")).map_err(js_err)?;
+        Ok(JsPointCloud { inner: filters::nndistance(&self.inner, k.unwrap_or(10), mode).map_err(js_err)? })
+    }
+
+    /// The density of the points within a radius (`radial_density`), as PDAL's
+    /// `filters.radialdensity` (`radius` 1 by default).
+    #[wasm_bindgen(js_name = radialDensity)]
+    pub fn radial_density(&self, radius: Option<f64>) -> Result<JsPointCloud, JsError> {
+        Ok(JsPointCloud { inner: filters::radial_density(&self.inner, radius.unwrap_or(1.0)).map_err(js_err)? })
+    }
+
+    /// The share of the nearest neighbours that do not have each point as theirs
+    /// (`reciprocity`), as PDAL's `filters.reciprocity` (`knn` 8 by default).
+    pub fn reciprocity(&self, knn: Option<usize>) -> Result<JsPointCloud, JsError> {
+        Ok(JsPointCloud { inner: filters::reciprocity(&self.inner, knn.unwrap_or(8)).map_err(js_err)? })
+    }
+
+    /// How far each point is from the centre of the smallest ball around its nearest
+    /// neighbours (`miniball`), as PDAL's `filters.miniball` (`knn` 8 by default).
+    pub fn miniball(&self, knn: Option<usize>) -> Result<JsPointCloud, JsError> {
+        Ok(JsPointCloud { inner: filters::miniball(&self.inner, knn.unwrap_or(8)).map_err(js_err)? })
+    }
+
+    /// Smoothed elevations in a dimension, as PDAL's `filters.zsmooth` (`radius` 1 and
+    /// `medianPercent` 50 by default).
+    pub fn zsmooth(&self, dim: &str, radius: Option<f64>, median_percent: Option<f64>) -> Result<JsPointCloud, JsError> {
+        let c = filters::zsmooth(&self.inner, dim, radius.unwrap_or(1.0), median_percent.unwrap_or(50.0));
+        Ok(JsPointCloud { inner: c.map_err(js_err)? })
+    }
+
+    /// Classifies ground points by skewness balancing (classes 2 and 1), as PDAL's
+    /// `filters.skewnessbalancing`; the points come back sorted by z.
+    #[wasm_bindgen(js_name = skewnessBalancing)]
+    pub fn skewness_balancing(&self) -> Result<JsPointCloud, JsError> {
+        Ok(JsPointCloud { inner: filters::skewness_balancing(&self.inner, 2, 1, false).map_err(js_err)? })
+    }
+
+    /// The first `count` points (10 by default), or all but them with `invert`, as PDAL's
+    /// `filters.head`.
+    pub fn head(&self, count: Option<usize>, invert: Option<bool>) -> JsPointCloud {
+        JsPointCloud { inner: filters::head(&self.inner, count.unwrap_or(10), invert.unwrap_or(false)) }
+    }
+
+    /// The last `count` points (10 by default), or all but them with `invert`, as PDAL's
+    /// `filters.tail`.
+    pub fn tail(&self, count: Option<usize>, invert: Option<bool>) -> JsPointCloud {
+        JsPointCloud { inner: filters::tail(&self.inner, count.unwrap_or(10), invert.unwrap_or(false)) }
+    }
+
+    /// The points sorted by dimensions, as PDAL's `filters.sort`; `order` is `ASC` (the
+    /// default) or `DESC`.
+    pub fn sort(&self, dimensions: Vec<String>, order: Option<String>) -> Result<JsPointCloud, JsError> {
+        let descending = match order.as_deref().unwrap_or("ASC").to_ascii_uppercase().as_str() {
+            "ASC" => false,
+            "DESC" => true,
+            o => return Err(JsError::new(&format!("invalid order '{o}': use ASC or DESC"))),
+        };
+        Ok(JsPointCloud { inner: filters::sort(&self.inner, &dimensions, descending).map_err(js_err)? })
+    }
+
+    /// The point of the largest value of a dimension (`minmax` `max`, the default) or the
+    /// smallest (`min`), as PDAL's `filters.locate`.
+    pub fn locate(&self, dimension: &str, minmax: Option<String>) -> Result<JsPointCloud, JsError> {
+        let min = match minmax.as_deref().unwrap_or("max").to_ascii_lowercase().as_str() {
+            "min" => true,
+            "max" => false,
+            m => return Err(JsError::new(&format!("invalid minmax '{m}': use min or max"))),
+        };
+        Ok(JsPointCloud { inner: filters::locate(&self.inner, dimension, min).map_err(js_err)? })
+    }
+
+    /// The points within the interquartile fences of a dimension, as PDAL's `filters.iqr` (`k`
+    /// 1.5 by default).
+    pub fn iqr(&self, dimension: &str, k: Option<f64>) -> Result<JsPointCloud, JsError> {
+        Ok(JsPointCloud { inner: filters::iqr(&self.inner, dimension, k.unwrap_or(1.5)).map_err(js_err)? })
+    }
+
+    /// The points within `k` median absolute deviations of the median of a dimension, as
+    /// PDAL's `filters.mad` (`k` 2 and `madMultiplier` 1.4862 by default).
+    pub fn mad(&self, dimension: &str, k: Option<f64>, mad_multiplier: Option<f64>) -> Result<JsPointCloud, JsError> {
+        Ok(JsPointCloud {
+            inner: filters::mad(&self.inner, dimension, k.unwrap_or(2.0), mad_multiplier.unwrap_or(1.4862)).map_err(js_err)?,
+        })
+    }
+
+    /// The points within a range of a raster's values, such as `"Z[20:20]"`, as PDAL's
+    /// `filters.dem` (`band` 1 by default); the raster is taken to be in the points' CRS.
+    pub fn dem(&self, raster: &Dataset, limits: &str, band: Option<usize>) -> Result<JsPointCloud, JsError> {
+        let ds = raster.raster()?.read().map_err(js_err)?;
+        let limits = DimRange::parse(limits).map_err(js_err)?;
+        Ok(JsPointCloud { inner: filters::dem(&self.inner, &ds, &limits, band.unwrap_or(1)).map_err(js_err)? })
+    }
+
+    /// Dimensions set from raster bands, as PDAL's `filters.colorization`: `dimensions` as PDAL
+    /// writes them (`"Red:1:1.0, Green:2, Blue:3"`, the default `Red`, `Green` and `Blue`).
+    pub fn colorization(&self, raster: &Dataset, dimensions: Option<String>) -> Result<JsPointCloud, JsError> {
+        let ds = raster.raster()?.read().map_err(js_err)?;
+        let dims = match dimensions {
+            Some(d) => filters::BandDimension::parse_list(&d).map_err(js_err)?,
+            None => filters::BandDimension::rgb(),
+        };
+        Ok(JsPointCloud { inner: filters::colorization(&self.inner, &ds, &dims).map_err(js_err)? })
+    }
+
+    /// A dimension set from an attribute (`column`, by default the second) of the polygons of a
+    /// vector dataset's first layer the points are in, as PDAL's `filters.overlay`.
+    pub fn overlay(&self, vector: &Dataset, dimension: &str, column: Option<String>) -> Result<JsPointCloud, JsError> {
+        let layers = vector.layers()?;
+        let layer = layers.first().ok_or_else(|| JsError::new("the dataset has no layer"))?;
+        let o = filters::OverlayOptions { dimension: dimension.to_string(), column };
+        Ok(JsPointCloud { inner: filters::overlay(&self.inner, layer, &o).map_err(js_err)? })
     }
 }
