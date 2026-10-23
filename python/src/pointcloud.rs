@@ -317,7 +317,15 @@ pub(crate) fn append_points(
         ..Default::default()
     };
     let inputs: Vec<&str> = inputs.iter().map(String::as_str).collect();
-    py.detach(|| pointcloud::append_points(dataset, &inputs, &options)).py()
+    #[cfg(not(target_family = "wasm"))]
+    return py.detach(|| pointcloud::append_points(dataset, &inputs, &options)).py();
+    // Appending updates an EPT dataset's files in place, which WebAssembly builds (Pyodide) do
+    // not do.
+    #[cfg(target_family = "wasm")]
+    {
+        let _ = (py, dataset, inputs, options);
+        Err(pyo3::exceptions::PyNotImplementedError::new_err("append_points is not available in WebAssembly (Pyodide)"))
+    }
 }
 
 #[pymethods]
