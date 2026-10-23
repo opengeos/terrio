@@ -264,9 +264,11 @@ WebAssembly (the `terrio-js` npm package):
       them (`--s_coord_epoch`, `--t_coord_epoch`, `TransformOptions`, Python and JavaScript). Checked
       against GDAL with the same grids: every grid of `scripts/proj_grids.txt` to the micrometre, and
       every EPSG CRS's reference points (`scripts/compare_crs_grids_with_gdal.py`,
-      `epsg_accuracy_grids`).
+      `epsg_accuracy_grids`); transformations between vertical CRSs as PROJ lists them (offsets,
+      offsets and slopes, VERTCON and other grids, chained through an intermediate vertical CRS,
+      depths included), PROJ's heights on 727 of 732 points over 604 pairs
+      (`scripts/compare_vertical_with_proj.py`).
     - [ ] PROJ's chains through several intermediate datums.
-    - [ ] Vertical-to-vertical transformations (VERTCON, offsets).
     - [ ] Moving coordinates between epochs (point motion operations).
     - [ ] Reading remote grids by range requests rather than whole.
 - [x] NetCDF and HDF5 in pure Rust. Done: classic and netCDF-4 reading, with variables in groups

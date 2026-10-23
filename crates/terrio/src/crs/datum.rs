@@ -75,8 +75,13 @@ pub(crate) enum Step {
     /// A Helmert transformation of geocentric coordinates, about a pivot point for
     /// Molodensky-Badekas, and with rates of change for a time-dependent one.
     Helmert { t: [f64; 3], r: [[f64; 3]; 3], scale: f64, pivot: [f64; 3], inv: bool, rates: Option<Box<Rates>> },
-    /// Offsets in radians added to the longitude and latitude.
-    GeogOffset { dlon: f64, dlat: f64, inv: bool },
+    /// Offsets in radians added to the longitude and latitude, and in metres to the height.
+    GeogOffset { dlon: f64, dlat: f64, dh: f64, inv: bool },
+    /// EPSG's Vertical Offset and Slope (PROJ's `vertoffset`): heights plus an offset varying
+    /// linearly with the distance from an origin, along the meridian and the parallel.
+    VertOffset { lat0: f64, lon0: f64, dh: f64, slope_lat: f64, slope_lon: f64, rho0: f64, nu0: f64, inv: bool },
+    /// Heights to depths (PROJ's `axisswap order=1,2,-3`), its own inverse.
+    ZFlip,
     /// Horizontal shift grids (NTv2, GeoTIFF), applied between `t_epoch` and `t_final` when set.
     HGridShift { grids: Grids, inv: bool, epoch: f64, final_epoch: f64 },
     /// Vertical shift grids (geoid models): heights plus `multiplier` times the grid value.
@@ -255,7 +260,26 @@ pub(crate) fn parse_steps(s: &str) -> Option<Vec<Step>> {
             }
             "geogoffset" => {
                 let g = |k: &str| p.f64(k).unwrap_or(0.0) * SEC_TO_RAD;
-                Step::GeogOffset { dlon: g("dlon"), dlat: g("dlat"), inv }
+                Step::GeogOffset { dlon: g("dlon"), dlat: g("dlat"), dh: p.f64("dh").unwrap_or(0.0), inv }
+            }
+            "axisswap" if p.str("order").is_some_and(|o| o.replace(' ', "") == "1,2,-3") => Step::ZFlip,
+            "vertoffset" => {
+                // As PROJ sets it up: slopes in arc-seconds, the radii of curvature at the origin
+                // on the step's ellipsoid (GRS80 by default).
+                let ell = ellipsoid(&p).unwrap_or_else(|| Ell::from_a_rf(6_378_137.0, 298.257_222_101));
+                let lat0 = p.f64("lat_0").unwrap_or(0.0).to_radians();
+                let s = lat0.sin();
+                let w = 1.0 - ell.es * s * s;
+                Step::VertOffset {
+                    lat0,
+                    lon0: p.f64("lon_0").unwrap_or(0.0).to_radians(),
+                    dh: p.f64("dh").unwrap_or(0.0),
+                    slope_lat: p.f64("slope_lat").unwrap_or(0.0) * SEC_TO_RAD,
+                    slope_lon: p.f64("slope_lon").unwrap_or(0.0) * SEC_TO_RAD,
+                    rho0: ell.a * (1.0 - ell.es) / (w * w.sqrt()),
+                    nu0: ell.a / w.sqrt(),
+                    inv,
+                }
             }
             "hgridshift" => {
                 let (epoch, final_epoch) = epochs();
@@ -391,9 +415,15 @@ impl Step {
                     _ => Some(apply_helmert(v, tr, r, *scale, pivot, inverse)),
                 }
             }
-            Step::GeogOffset { dlon, dlat, inv } => {
+            Step::GeogOffset { dlon, dlat, dh, inv } => {
                 let sign = if *inv != reverse { -1.0 } else { 1.0 };
-                Some([v[0] + sign * dlon, v[1] + sign * dlat, v[2]])
+                Some([v[0] + sign * dlon, v[1] + sign * dlat, v[2] + sign * dh])
+            }
+            Step::ZFlip => Some([v[0], v[1], -v[2]]),
+            Step::VertOffset { lat0, lon0, dh, slope_lat, slope_lon, rho0, nu0, inv } => {
+                let sign = if *inv != reverse { -1.0 } else { 1.0 };
+                let off = dh + slope_lat * rho0 * (v[1] - lat0) + slope_lon * nu0 * (v[0] - lon0) * v[1].cos();
+                Some([v[0], v[1], v[2] + sign * off])
             }
             Step::HGridShift { grids, inv, epoch, final_epoch } => {
                 if !in_time(*epoch, *final_epoch, t) {
@@ -587,8 +617,14 @@ pub(crate) fn run_op(op: &Op, p: Point, reverse: bool, three_d: bool) -> Option<
 /// Whether `op` ranks before `best` for a point both hold, as PROJ's
 /// `pj_get_suggested_operation` compares them.
 fn better(op: &Op, best: &Op) -> bool {
-    ((op.accuracy >= 0.0 && op.accuracy < best.accuracy)
-        || (op.accuracy == best.accuracy
+    better_by(op, op.accuracy, best, best.accuracy)
+}
+
+/// [`better`] with the accuracies given apart: those of the operations as PROJ chains them with
+/// others (a vertical transformation and the horizontal one to its interpolation CRS).
+pub(crate) fn better_by(op: &Op, accuracy: f64, best: &Op, best_accuracy: f64) -> bool {
+    ((accuracy >= 0.0 && accuracy < best_accuracy)
+        || (accuracy == best_accuracy
             && op.pseudo_area() < best.pseudo_area()
             && !(op.unknown_area && !best.unknown_area)
             && !best.priority))

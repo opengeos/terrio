@@ -795,6 +795,13 @@ pub struct Transformer {
     time: Option<f64>,
     /// The height transformation, between CRSs that both have heights.
     heights: Option<Box<Heights>>,
+    /// The transformations PROJ lists between the vertical CRSs of compound CRSs (offsets,
+    /// VERTCON grids...), used instead of going through ellipsoidal heights when there are some,
+    /// each with the horizontal route from the source to the geographic CRS it interpolates in,
+    /// when that is on another datum.
+    vertical_ops: Vec<(std::sync::Arc<datum::Op>, Option<route::Route>)>,
+    /// Whether the vertical CRSs share their datum (heights only change unit).
+    same_vertical_datum: bool,
 }
 
 /// A side of a height transformation: the CRS and the geographic 3D CRSs of its geoid models.
@@ -891,7 +898,31 @@ impl Transformer {
                 middle: std::sync::Mutex::new(std::collections::HashMap::new()),
             })
         });
-        Ok(Self { identity: src.same_as(dst), src: s, dst: d, route, time, heights })
+        let codes = (s.vertical().and_then(|v| v.code), d.vertical().and_then(|v| v.code));
+        let (vertical_ops, same_vertical_datum) = match codes {
+            (Some(a), Some(b)) if a != b => {
+                let datum = |c: u32| epsg::vertical(c).map(|v| v.datum).filter(|d| *d != 0);
+                let same = datum(a).is_some() && datum(a) == datum(b);
+                let ops = if same { Vec::new() } else { epsg::vertical_transformations(a, b) };
+                let horizontal = s.horizontal();
+                let ops = ops
+                    .into_iter()
+                    .map(|v| {
+                        // On the geographic 2D CRS of a 3D one (ETRS89 for EPSG:4937).
+                        let route = v
+                            .interpolation
+                            .map(|g| epsg::get(g).map_or(g, |e| e.geog))
+                            .and_then(def_of)
+                            .filter(|g| g.datum_code().is_none() || g.datum_code() != horizontal.datum_code())
+                            .map(|g| route::Route::new(&horizontal, &g));
+                        (v.op, route)
+                    })
+                    .collect();
+                (ops, same)
+            }
+            _ => (Vec::new(), false),
+        };
+        Ok(Self { identity: src.same_as(dst), src: s, dst: d, route, time, heights, vertical_ops, same_vertical_datum })
     }
 
     /// Transforms one point.
@@ -932,13 +963,30 @@ impl Transformer {
             return Ok((x, y, z));
         }
         let Some(h) = &self.heights else { return self.transform_2d(x, y, z, t) };
-        // Compound CRSs with the same vertical CRS: heights only change unit.
+        // Compound CRSs with the same vertical CRS, or vertical CRSs of one datum: heights only
+        // change unit.
         if let (Some(a), Some(b)) = (self.src.vertical(), self.dst.vertical())
             && a.code.is_some()
-            && a.code == b.code
+            && (a.code == b.code || self.same_vertical_datum)
         {
             let (tx, ty, _) = self.transform_2d(x, y, 0.0, t)?;
             return Ok((tx, ty, b.height_of(a.to_metres(z))));
+        }
+        // A transformation between the vertical CRSs (as PROJ prefers it to geoid models).
+        if let (Some(a), Some(b), false) = (self.src.vertical(), self.dst.vertical(), self.vertical_ops.is_empty()) {
+            let (tx, ty, _) = self.transform_2d(x, y, 0.0, t)?;
+            let (lon, lat) = self.src.unproject(x, y).ok_or_else(|| Error::Crs(format!("cannot transform ({x}, {y}, {z})")))?;
+            // In metres, in the source's axis direction: the steps turn heights into depths.
+            let p = datum::Point { lon, lat, h: z * a.to_meter, t };
+            return Ok((
+                tx,
+                ty,
+                match self.vertical_height(x, y, p) {
+                    Some(h) => h / b.to_meter,
+                    // None applies: heights are kept, as by PROJ's ballpark.
+                    None => b.height_of(a.to_metres(z)),
+                },
+            ));
         }
         let fail = || Error::Crs(format!("cannot transform ({x}, {y}, {z})"));
         let (lon, lat) = self.src.unproject(x, y).ok_or_else(fail)?;
@@ -978,6 +1026,58 @@ impl Transformer {
         let q = h.middle(i, 0).apply(&h.src.defs[i], sx, sy, p, true).ok_or_else(fail)?;
         let (tx, ty) = self.dst.project(q.lon, q.lat).ok_or_else(fail)?;
         Ok((tx, ty, self.dst.vertical().map_or(q.h, |v| v.height_of(q.h))))
+    }
+
+    /// The height of a point (metres, in the source's axis direction) after the transformation
+    /// between the vertical CRSs PROJ picks for it: the most accurate whose area holds the point,
+    /// a transformation interpolating in another datum's geographic CRS counting the accuracy of
+    /// the horizontal transformation to it both ways (as PROJ chains it); the next when it fails
+    /// (outside its grid), up to three. `None` when none applies.
+    fn vertical_height(&self, x: f64, y: f64, p: datum::Point) -> Option<f64> {
+        let horizontal = self.src.horizontal();
+        let (dlon, dlat) = (p.lon.to_degrees(), p.lat.to_degrees());
+        let mut candidates: Vec<(usize, f64)> = self
+            .vertical_ops
+            .iter()
+            .enumerate()
+            .filter(|(_, (op, _))| op.contains(dlon, dlat))
+            .map(|(i, (op, route))| {
+                let accuracy = match route {
+                    None => op.accuracy,
+                    Some(r) => match r.accuracy_at(&horizontal, x, y, p) {
+                        h if h >= 0.0 && op.accuracy >= 0.0 => op.accuracy + 2.0 * h,
+                        _ => -1.0,
+                    },
+                };
+                (i, accuracy)
+            })
+            .collect();
+        // PROJ sorts the chained transformations by their accuracies (known ones first), then picks
+        // among them in that order (`pj_get_suggested_operation`), then the next best when one
+        // fails.
+        candidates.sort_by(|a, b| (a.1 < 0.0).cmp(&(b.1 < 0.0)).then(a.1.max(0.0).total_cmp(&b.1.max(0.0))));
+        let mut excluded: Vec<usize> = Vec::new();
+        for _ in 0..3 {
+            let mut best: Option<(usize, f64)> = None;
+            for &(i, accuracy) in candidates.iter().filter(|(i, _)| !excluded.contains(i)) {
+                let op = &self.vertical_ops[i].0;
+                if best.is_none_or(|(b, ba)| datum::better_by(op, accuracy, &self.vertical_ops[b].0, ba)) {
+                    best = Some((i, accuracy));
+                }
+            }
+            let (i, _) = best?;
+            let (op, route) = &self.vertical_ops[i];
+            // The point's position in the interpolation CRS; its height stays as it is.
+            let q = match route {
+                Some(r) => r.apply(&horizontal, x, y, p, false).map(|q| datum::Point { h: p.h, ..q }),
+                None => Some(p),
+            };
+            if let Some(h) = q.and_then(|q| datum::run_op(op, q, false, true)).map(|r| r.h) {
+                return Some(h);
+            }
+            excluded.push(i);
+        }
+        None
     }
 
     /// Transforms a bounding box `(min_x, min_y, max_x, max_y)`, densifying its edges so that
