@@ -181,6 +181,8 @@ layer, matched case-insensitively; `--layer` can restrict the available layers. 
 fields and aliases, `WHERE`, one `ORDER BY` input field, and `LIMIT`. `WHERE` supports arithmetic,
 comparisons, `AND`/`OR`/`NOT`, parentheses, `IN`, `BETWEEN`, `IS NULL`, `LIKE` and `ILIKE`.
 Output field names must be unique, ignoring case. `FID` can be used in `WHERE` to filter IDs.
+The `convert --sql` path keeps its existing fallback to the sole input layer when `FROM` does
+not match a layer name.
 
 Joins, aggregates, computed `SELECT` columns and spatial functions are unsupported. Geometries,
 CRS and attribute types are retained. The Rust `ops::sql::query` API retains source feature IDs;

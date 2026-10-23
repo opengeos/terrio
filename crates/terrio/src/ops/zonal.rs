@@ -163,11 +163,12 @@ pub fn zonal_stats(zones: &Layer, inputs: &[ZonalInput<'_>], options: &ZonalOpti
                 }
                 _ => None,
             };
+            let r = &group.raster.raster;
+            let nodata = group.raster.nodata();
             for &(input, band) in &group.entries {
                 let mut values = Summary::default();
                 let mut ordered = Vec::new();
                 if let Some(mask) = &mask {
-                    let r = &group.raster.raster;
                     for row in 0..mask.rows {
                         for col in 0..mask.cols {
                             if mask.pixels[row * mask.cols + col] == 0 {
@@ -175,7 +176,7 @@ pub fn zonal_stats(zones: &Layer, inputs: &[ZonalInput<'_>], options: &ZonalOpti
                             }
                             let index = band * r.cols * r.rows + (row + mask.row) * r.cols + col + mask.col;
                             let v = r.data.get_f64(index);
-                            if v.is_finite() && crate::histogram::is_valid(v, group.raster.nodata(), r.data_type) {
+                            if v.is_finite() && crate::histogram::is_valid(v, nodata, r.data_type) {
                                 values.add(v);
                                 if median {
                                     ordered.push(v);

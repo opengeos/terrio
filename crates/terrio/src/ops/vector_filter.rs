@@ -317,11 +317,6 @@ pub(crate) fn run_select(layers: &[Layer], s: &Select, copy_limit: Option<usize>
     out.geom_type = layer.geom_type;
     out.crs = layer.crs.clone();
     let idx: Vec<usize> = if s.columns.is_empty() {
-        for (i, field) in layer.schema.fields().iter().enumerate() {
-            if layer.schema.fields()[..i].iter().any(|f| f.name.eq_ignore_ascii_case(&field.name)) {
-                return Err(Error::InvalidArgument(format!("SQL: duplicate output field '{}'", field.name)));
-            }
-        }
         out.schema = layer.schema.clone();
         (0..layer.schema.len()).collect()
     } else {
@@ -331,9 +326,6 @@ pub(crate) fn run_select(layers: &[Layer], s: &Select, copy_limit: Option<usize>
             let mut def = layer.schema.fields()[i].clone();
             if let Some(a) = alias {
                 def.name = a.clone();
-            }
-            if out.schema.fields().iter().any(|f| f.name.eq_ignore_ascii_case(&def.name)) {
-                return Err(Error::InvalidArgument(format!("SQL: duplicate output field '{}'", def.name)));
             }
             out.schema.add_field(def);
             idx.push(i);

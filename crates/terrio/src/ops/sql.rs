@@ -35,6 +35,11 @@ pub fn query(layers: &[Layer], statement: &str) -> Result<Layer> {
         return Err(Error::InvalidArgument(format!("SQL: no layer named '{}'", select.from)));
     }
     let (layer, _) = super::vector_filter::run_select(layers, &select, select.limit)?;
+    for (i, field) in layer.schema.fields().iter().enumerate() {
+        if layer.schema.fields()[..i].iter().any(|f| f.name.eq_ignore_ascii_case(&field.name)) {
+            return Err(Error::InvalidArgument(format!("SQL: duplicate output field '{}'", field.name)));
+        }
+    }
     Ok(layer)
 }
 

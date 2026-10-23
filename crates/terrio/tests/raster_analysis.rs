@@ -296,6 +296,24 @@ fn standalone_sql_limits_after_ordering_without_changing_translate_filters() {
 }
 
 #[test]
+fn translate_sql_preserves_legacy_duplicate_fields_and_single_layer_fallback() {
+    let mut l = zones(vec![Some(G::point(0., 0.))]);
+    l.schema.add_field(FieldDef::new("NAME", FieldType::Text));
+    l.features[0].attributes.push(V::Text("other name".into()));
+    for (sql, fields) in [("SELECT * FROM legacy_layer_name", ["name", "NAME"]), ("SELECT name AS x, name AS X FROM zones", ["x", "X"])] {
+        let options = terrio::ops::vector_filter::VectorTranslateOptions { sql: Some(sql.into()), ..Default::default() };
+        let out = terrio::ops::vector_filter::translate(std::slice::from_ref(&l), &options).unwrap();
+        assert_eq!(out[0].len(), 1);
+        assert_eq!(out[0].features[0].fid, l.features[0].fid);
+        assert_eq!(out[0].features[0].geometry, l.features[0].geometry);
+        assert_eq!(out[0].schema.fields().iter().map(|f| f.name.as_str()).collect::<Vec<_>>(), fields);
+    }
+    for sql in ["SELECT * FROM zones", "SELECT name AS x, name AS X FROM zones", "SELECT * FROM legacy_layer_name"] {
+        assert!(terrio::ops::sql::query(std::slice::from_ref(&l), sql).is_err(), "{sql}");
+    }
+}
+
+#[test]
 fn real_world_contours_and_zonal_values_from_gdal() {
     // GDAL 3.12.2 reference values; the independent comparison script also checks every
     // contour's geometry and every county's statistics with GDAL, Shapely and NumPy.
