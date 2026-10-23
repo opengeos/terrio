@@ -41,7 +41,7 @@ fn is_url(s: &str) -> bool {
 }
 
 /// A location's bytes: a local file, a URL or object storage, or a zip archive member.
-fn fetch(loc: &str) -> Result<Vec<u8>> {
+pub(crate) fn fetch(loc: &str) -> Result<Vec<u8>> {
     use crate::vfs::Location;
     match Location::parse(loc) {
         Location::Local(p) => Ok(std::fs::read(p)?),
@@ -706,6 +706,9 @@ fn footprint_dataset(doc: Value, path: &str, max_items: usize) -> Result<(Vector
 
 /// Opens a STAC dataset name or document. `None` when `path` is neither.
 pub(crate) fn open(path: &str) -> Option<Result<Dataset>> {
+    if let Some(r) = crate::stacta::open_lazy(path) {
+        return Some(r.and_then(|mut r| r.read()).map(Dataset::Raster));
+    }
     match parse_name(path) {
         Some(Name::Asset { item, asset }) => return Some(asset_href(&item, &asset).and_then(|href| crate::open(&href))),
         Some(Name::Mosaic { .. }) => return Some(open_lazy(path)?.and_then(|mut r| r.read()).map(Dataset::Raster)),
@@ -720,6 +723,9 @@ pub(crate) fn open(path: &str) -> Option<Result<Dataset>> {
 
 /// Opens a `STAC:` asset or `STACIT:` mosaic lazily. `None` when `path` is neither.
 pub(crate) fn open_lazy(path: &str) -> Option<Result<LazyRaster>> {
+    if let Some(r) = crate::stacta::open_lazy(path) {
+        return Some(r);
+    }
     Some(match parse_name(path)? {
         Name::Asset { item, asset } => asset_href(&item, &asset).and_then(|href| LazyRaster::open(&href)),
         Name::Mosaic { source, filters } => (|| {
@@ -741,6 +747,9 @@ pub(crate) fn open_lazy(path: &str) -> Option<Result<LazyRaster>> {
 /// Summarizes a STAC dataset: the footprints of a document with its assets (an item's) or
 /// mosaics (a collection's) as subdatasets, an asset, or a mosaic. `None` when `path` is not one.
 pub(crate) fn info(path: &str, options: &InfoOptions) -> Option<Result<Info>> {
+    if let Some(r) = crate::stacta::open_lazy(path) {
+        return Some(r.and_then(|mut r| crate::info::lazy_raster_info(&mut r, options)).map(|r| Info::Raster(Box::new(r))));
+    }
     match parse_name(path) {
         Some(Name::Asset { item, asset }) => {
             return Some(asset_href(&item, &asset).and_then(|href| crate::info::info_path(&href, options)));

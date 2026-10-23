@@ -70,6 +70,8 @@ pub enum RasterDriver {
     VRT,
     /// A mosaic of the assets of STAC items (see [`crate::stac`]); read only.
     STACIT,
+    /// STAC items with tiled assets (GDAL's STACTA).
+    STACTA,
     /// MBTiles raster tiles (PNG, JPEG, WebP), see [`crate::tiles`].
     MBTiles,
     /// PMTiles raster tiles (PNG, JPEG, WebP), see [`crate::tiles`].
@@ -167,6 +169,7 @@ impl RasterDriver {
         Self::HDF5,
         Self::VRT,
         Self::STACIT,
+        Self::STACTA,
         Self::MBTiles,
         Self::PMTiles,
         #[cfg(feature = "gdal")]
@@ -201,6 +204,7 @@ impl RasterDriver {
             Self::HDF5 => ("HDF5", "Hierarchical Data Format Release 5", &["h5", "hdf5", "he5"], true, false),
             Self::VRT => ("VRT", "Virtual Raster", &["vrt"], true, true),
             Self::STACIT => ("STACIT", "Spatio-Temporal Asset Catalog Items", &[], true, false),
+            Self::STACTA => ("STACTA", "Spatio-Temporal Asset Catalog Tiled Assets", &[], true, false),
             Self::MBTiles => ("MBTiles", "MBTiles", &["mbtiles"], true, true),
             Self::PMTiles => ("PMTiles", "ProtoMap Tiles", &["pmtiles"], true, true),
             Self::Gdal => ("GDAL", "Any raster GDAL reads (optional backend)", &[], cfg!(feature = "gdal"), false),
@@ -286,7 +290,7 @@ impl RasterDriver {
             Self::NetCDF | Self::HDF5 => F::Zarr,
             // Never used: terrio reads and writes VRTs and tile archives, and reads STAC mosaics
             // itself; GDAL reads its formats.
-            Self::VRT | Self::STACIT | Self::MBTiles | Self::PMTiles | Self::Gdal => F::GeoTiff,
+            Self::VRT | Self::STACIT | Self::STACTA | Self::MBTiles | Self::PMTiles | Self::Gdal => F::GeoTiff,
         }
     }
 
