@@ -1151,9 +1151,15 @@ def _rpc_points(rio: Any, ctx: Ctx, options: list[dict[str, Any]]) -> Any:
     return out
 
 
-@check("georeferencing", "RPCs: RPCTransformer forward (iterative) and inverse, with heights, RPC_HEIGHT(_SCALE), a DEM (bilinear, near, cubic, missing value, nodata holes); xy/rowcol(rpcs); dataset xy/index by TransformMethod.rpcs")
+@check("georeferencing", "RPCs: RPCTransformer forward (iterative) and inverse, with heights, RPC_HEIGHT(_SCALE), a DEM (bilinear, cubic, missing value, nodata holes); xy/rowcol(rpcs); dataset xy/index by TransformMethod.rpcs")
 def _g_rpc_transformer(rio: Any, ctx: Ctx) -> Any:
-    return _rpc_points(rio, ctx, _rpc_options(rpc_files(ctx)))
+    options = [o for o in _rpc_options(rpc_files(ctx)) if o.get("RPC_DEMINTERPOLATION") != "near"]
+    return _rpc_points(rio, ctx, options)
+
+
+@check("georeferencing", "RPCs: RPCTransformer with a DEM sampled by nearest neighbour (forward and inverse)")
+def _g_rpc_transformer_near(rio: Any, ctx: Ctx) -> Any:
+    return _rpc_points(rio, ctx, [o for o in _rpc_options(rpc_files(ctx)) if o.get("RPC_DEMINTERPOLATION") == "near"])
 
 
 @check("georeferencing", "RPCs: RPCTransformer with a DEM in UTM 11N (sampled through a coordinate transformation)", expect="tolerance", rtol=1e-12, atol=1e-9, reason="the DEM is sampled at positions projected by terrio's UTM, which differs from PROJ's in the last digits")
