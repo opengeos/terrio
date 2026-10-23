@@ -561,9 +561,25 @@ fn ept_appends_outside_the_cube_are_refused() {
     a.start_source("far.laz", &far).unwrap();
     let e = a.write(&far).unwrap_err().to_string();
     assert!(e.contains("outside the EPT dataset's cube"), "{e}");
+    // One append at a time.
+    assert!(pointcloud::EptAppender::open(path, &Default::default()).is_err());
     drop(a);
     assert_eq!(std::fs::read(dir.path().join("set/ept.json")).unwrap(), before);
     assert!(!dir.path().join("set/ept-sources").exists());
+    // A chunk refused changes nothing: the points written after it are appended alone.
+    let mut a = pointcloud::EptAppender::open(path, &Default::default()).unwrap();
+    a.start_source("far.laz", &far).unwrap();
+    assert!(a.write(&far).is_err());
+    a.write(&c.slice(0, 500)).unwrap();
+    a.finish().unwrap();
+    assert_eq!(pointcloud::read_points(path, &Default::default()).unwrap().len(), 10_500);
+    // Options that only apply to new datasets are refused with --append.
+    let options = pointcloud::ConvertOptions {
+        append: true,
+        write: PointWriteOptions { ept_bounds: Some([0.0; 6]), ..Default::default() },
+        ..Default::default()
+    };
+    assert!(pointcloud::convert(path, path, &options).is_err());
     let mut other = cloud(100, 24);
     other.crs = SpatialRef::from_epsg(4326).unwrap();
     let mut a = pointcloud::EptAppender::open(path, &Default::default()).unwrap();

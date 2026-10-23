@@ -95,8 +95,10 @@ to disk, then a `COMMITTED` marker, then moves them into place: the tiles first,
 metadata and list, the hierarchy pages (the root page last) and `ept.json` last. An append
 interrupted before the marker leaves the dataset as it was; one interrupted while the files are
 moved is completed by the next append, which moves the remaining ones in. Readers that open the
-dataset while the files move may see the new tiles with the previous hierarchy; one append at a
-time. The points are spilled to a temporary file (in `TMPDIR`) and placed one node at a time,
+dataset while the files move may see the new tiles with the previous hierarchy. A lock file
+(`.terrio-ept-append.lock`) keeps to one append at a time; one left by an interrupted append is
+taken over. The options that shape a new dataset (`--ept-bounds`, `--ept-data-type`,
+`--point-format`, `--scale`, `--offset`) are refused with `--append`. The points are spilled to a temporary file (in `TMPDIR`) and placed one node at a time,
 the points of each child in memory or in a temporary file of their own, so memory stays bounded
 whatever the number of points appended (the hierarchy is held whole). In Rust, `append_points`
 and `EptAppender` (chunks of points written as they come); in Python, `terrio.append_points` and

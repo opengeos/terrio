@@ -414,6 +414,19 @@ pub struct ConvertOptions {
 pub fn convert(src: &str, dst: &str, options: &ConvertOptions) -> Result<()> {
     let format = options.write.format.or_else(|| PointFormat::for_path(dst));
     if options.append {
+        let w = &options.write;
+        if w.ept_bounds.is_some()
+            || w.ept_data_type != EptDataType::default()
+            || w.point_format.is_some()
+            || w.scale.is_some()
+            || w.offset.is_some()
+        {
+            return Err(crate::Error::InvalidArgument(
+                "an append keeps the EPT dataset's cube, data type, point format, scale and offset: \
+                 --ept-bounds, --ept-data-type, --point-format, --scale and --offset apply to new datasets"
+                    .into(),
+            ));
+        }
         #[cfg(not(target_arch = "wasm32"))]
         if format == Some(PointFormat::Ept) {
             return append_points(dst, &[src], options);

@@ -776,16 +776,33 @@ pub(crate) struct CopcStreamWriter {
 #[cfg(not(target_arch = "wasm32"))]
 impl CopcStreamWriter {
     pub fn new(target: OctreeTarget, header: LasHeader, layout: Layout, build: CopcBuild, memory_points: Option<u64>) -> Result<Self> {
+        if let Some(b) = build.bounds
+            && !(0..3).all(|k| b[k].is_finite() && b[k + 3].is_finite() && b[k] <= b[k + 3])
+        {
+            return Err(Error::InvalidArgument(format!("invalid octree bounds {b:?}")));
+        }
         let spill = std::io::BufWriter::with_capacity(1 << 20, tempfile::NamedTempFile::new()?);
         let gps = gps_offset(layout.format);
         let memory_points = memory_points.unwrap_or(MEMORY_POINTS).max(1);
         Ok(Self { target, header, layout, build, gps, stats: Stats::new(), spill, memory_points })
     }
 
+    /// Fails when the points written so far are not all within the octree bounds asked for.
+    fn check_bounds(&self) -> Result<()> {
+        if let Some(b) = self.build.bounds {
+            let (lo, hi) = (self.stats.lo, self.stats.hi);
+            if self.stats.n > 0 && (0..3).any(|k| lo[k] < b[k] || hi[k] > b[k + 3]) {
+                return Err(Error::InvalidArgument(format!("the points ({lo:?} to {hi:?}) are not all within the octree bounds {b:?}")));
+            }
+        }
+        Ok(())
+    }
+
     pub fn write_cloud(&mut self, cloud: &super::PointCloud) -> Result<()> {
         let records = super::write::encode(cloud, &self.layout, self.header.scale, self.header.offset)?;
         let rl = self.layout.record_len;
         self.stats.add(&records, rl, &self.header, self.gps);
+        self.check_bounds()?;
         let first = self.stats.n - (records.len() / rl) as u64;
         for (i, rec) in records.chunks_exact(rl).enumerate() {
             self.spill.write_all(&(first + i as u64).to_le_bytes())?;
@@ -797,16 +814,7 @@ impl CopcStreamWriter {
     pub fn finish(mut self) -> Result<()> {
         use std::io::{BufRead, Read};
         self.stats.finish();
-        if let Some(b) = self.build.bounds {
-            let (lo, hi) = (self.stats.lo, self.stats.hi);
-            let valid = (0..3).all(|k| b[k].is_finite() && b[k + 3].is_finite() && b[k] <= b[k + 3]);
-            if !valid {
-                return Err(Error::InvalidArgument(format!("invalid octree bounds {b:?}")));
-            }
-            if self.stats.n > 0 && (0..3).any(|k| lo[k] < b[k] || hi[k] > b[k + 3]) {
-                return Err(Error::InvalidArgument(format!("the points ({lo:?} to {hi:?}) are not all within the octree bounds {b:?}")));
-            }
-        }
+        self.check_bounds()?;
         let rl = self.layout.record_len;
         let entry = rl + 8;
         let spill = self.spill.into_inner().map_err(|e| Error::Io(e.into_error()))?;

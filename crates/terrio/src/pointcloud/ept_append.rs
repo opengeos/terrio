@@ -14,7 +14,9 @@
 //!
 //! The points are spilled to a temporary file as they come, then placed one node at a time from
 //! the root down, the points of each child in memory or in a temporary file of their own: memory
-//! stays bounded whatever the number of points appended (the hierarchy is held whole).
+//! stays bounded whatever the number of points appended (the hierarchy is held whole, and a node
+//! of the deepest level takes all the points that reach it, as the writer's do). A lock file
+//! (`.terrio-ept-append.lock`, with the process id) keeps to one append at a time.
 
 use super::copc::{VoxelKey, gps_offset, scramble};
 use super::ept::{EptDataType, EptDimension};
@@ -301,6 +303,76 @@ pub struct EptAppender {
     stats: Vec<Option<DimStats>>,
     /// Whether the source being written is of a LAS point format of 0 to 5.
     legacy: bool,
+    /// The dataset's lock, held until the appender is dropped.
+    _lock: Lock,
+}
+
+/// The lock file of an append: one append at a time.
+const LOCK: &str = ".terrio-ept-append.lock";
+
+/// A dataset locked for an append: its lock file, which holds the process id and is removed
+/// when dropped.
+struct Lock(PathBuf);
+
+impl Lock {
+    /// Locks a dataset. A lock left by a process that no longer runs (an append interrupted) is
+    /// taken over; one of a running process fails.
+    fn take(dir: &Path) -> Result<Self> {
+        let path = dir.join(LOCK);
+        for _ in 0..2 {
+            match std::fs::OpenOptions::new().write(true).create_new(true).open(&path) {
+                Ok(mut f) => {
+                    let _ = write!(f, "{}", std::process::id());
+                    return Ok(Lock(path));
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                    let pid = std::fs::read_to_string(&path).ok().and_then(|s| s.trim().parse::<u32>().ok());
+                    if pid.is_some_and(running) {
+                        return Err(Error::InvalidArgument(format!(
+                            "'{}' is being appended to by process {}: one append at a time",
+                            dir.display(),
+                            pid.unwrap_or_default()
+                        )));
+                    }
+                    if !cfg!(unix) {
+                        return Err(Error::InvalidArgument(format!(
+                            "'{}' is locked by another append ('{}'): remove the file if no append is running",
+                            dir.display(),
+                            path.display()
+                        )));
+                    }
+                    // Left by an append interrupted.
+                    let _ = std::fs::remove_file(&path);
+                }
+                Err(e) => return Err(io_err(&path, e)),
+            }
+        }
+        Err(Error::InvalidArgument(format!("'{}': could not lock the dataset ('{}')", dir.display(), path.display())))
+    }
+}
+
+impl Drop for Lock {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+/// Whether a process runs (on other systems than Unix: assumed so).
+fn running(pid: u32) -> bool {
+    #[cfg(unix)]
+    {
+        if pid == std::process::id() {
+            return true;
+        }
+        // SAFETY: `kill` with signal 0 sends nothing; it only checks that the process exists.
+        let r = unsafe { libc::kill(pid as libc::pid_t, 0) };
+        r == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = pid;
+        true
+    }
 }
 
 impl std::fmt::Debug for EptAppender {
@@ -371,6 +443,13 @@ fn move_in(dir: &Path, stage: &Path) -> Result<()> {
         mv(&Path::new("ept-hierarchy").join(name))?;
     }
     mv(Path::new("ept.json"))?;
+    // The renames on disk (Unix: by syncing the directories).
+    #[cfg(unix)]
+    for d in [dir.join("ept-data"), dir.join("ept-sources"), dir.join("ept-hierarchy"), dir.to_path_buf()] {
+        if let Ok(f) = std::fs::File::open(&d) {
+            let _ = f.sync_all();
+        }
+    }
     std::fs::remove_dir_all(stage).map_err(|e| io_err(stage, e))
 }
 
@@ -416,6 +495,7 @@ impl EptAppender {
         if !dir.join("ept.json").exists() {
             return Err(Error::InvalidArgument(format!("'{}' is not an EPT dataset: it has no ept.json", dir.display())));
         }
+        let lock = Lock::take(&dir)?;
         recover(&dir)?;
         let json = read_json(&dir.join("ept.json"))?;
         // The dataset as the reader sees it: its schema, data type and CRS.
@@ -521,6 +601,7 @@ impl EptAppender {
             new_sources: Vec::new(),
             stats,
             legacy: false,
+            _lock: lock,
         }
         .with_source_list()
     }
@@ -618,6 +699,25 @@ impl EptAppender {
             points: 0,
             srs: Value::Object(srs),
         });
+        // The source's OriginId must fit in the schema's type.
+        if let Some((_, t)) = self.origin {
+            let max = match t {
+                ValueType::U8 => u8::MAX as f64,
+                ValueType::I8 => i8::MAX as f64,
+                ValueType::U16 => u16::MAX as f64,
+                ValueType::I16 => i16::MAX as f64,
+                ValueType::U32 => u32::MAX as f64,
+                ValueType::I32 => i32::MAX as f64,
+                _ => f64::MAX,
+            };
+            if self.origin_id() as f64 > max {
+                self.new_sources.pop();
+                return Err(Error::InvalidArgument(format!(
+                    "'{name}' would be source {} of the EPT dataset, beyond what its OriginId ({t:?}) holds",
+                    self.sources.len() + self.new_sources.len()
+                )));
+            }
+        }
         Ok(())
     }
 
@@ -693,7 +793,28 @@ impl EptAppender {
         let need_values = matches!(self.codec, Codec::Schema) || self.stats.iter().any(Option::is_some);
         let cols = if need_values { self.schema_values(cloud) } else { Vec::new() };
         let mut records = match &self.codec {
-            Codec::Las { header, layout } => super::write::encode(cloud, layout, header.scale, header.offset)?,
+            Codec::Las { header, layout } => {
+                // Dimensions under terrio's name of a field the tiles name as PDAL does (an
+                // extra-bytes `HeightAboveGround` for `height_above_ground`): renamed to it.
+                let renames: Vec<(usize, &str)> = layout
+                    .fields
+                    .iter()
+                    .filter(|f| cloud.dim(&f.name).is_none())
+                    .filter_map(|f| {
+                        let terrio_name = super::names::from_pdal(&f.name);
+                        cloud.dimensions.iter().position(|d| d.name == terrio_name).map(|i| (i, f.name.as_str()))
+                    })
+                    .collect();
+                if renames.is_empty() {
+                    super::write::encode(cloud, layout, header.scale, header.offset)?
+                } else {
+                    let mut renamed = cloud.clone();
+                    for (i, name) in renames {
+                        renamed.dimensions[i].name = name.to_string();
+                    }
+                    super::write::encode(&renamed, layout, header.scale, header.offset)?
+                }
+            }
             Codec::Schema => {
                 let mut out = vec![0u8; n * rl];
                 for (rec, i) in out.chunks_exact_mut(rl).zip(0..) {
@@ -712,6 +833,24 @@ impl EptAppender {
                 if overlap.values.get_f64(i) != 0.0 {
                     rec[15] = (rec[15] & !31) | 12;
                 }
+            }
+        }
+        // Inside the cube: checked before anything changes, so that a chunk refused changes
+        // nothing.
+        let (c0, c1) = ([self.cube[0], self.cube[1], self.cube[2]], [self.cube[3], self.cube[4], self.cube[5]]);
+        let tolerance = [0, 1, 2].map(|k| (c1[k] - c0[k]).abs() * 1e-9);
+        for rec in records.chunks_exact(rl) {
+            let p = xyz_of(&self.codec, &self.xyz, rec);
+            if (0..3).any(|k| !(p[k] >= c0[k] - tolerance[k] && p[k] <= c1[k] + tolerance[k])) {
+                return Err(Error::InvalidArgument(format!(
+                    "'{}': the point ({}, {}, {}) is outside the EPT dataset's cube {:?}: EPT datasets keep their bounds, \
+                     and points outside them cannot be appended (write the dataset with --ept-bounds covering all the points)",
+                    self.new_sources.last().map_or("", |s| s.path.as_str()),
+                    p[0],
+                    p[1],
+                    p[2],
+                    self.cube
+                )));
             }
         }
         let origin = self.origin_id();
@@ -735,19 +874,10 @@ impl EptAppender {
                 s.add(v, counts);
             }
         }
-        // Inside the cube, the bounds, and spilled.
-        let (c0, c1) = ([self.cube[0], self.cube[1], self.cube[2]], [self.cube[3], self.cube[4], self.cube[5]]);
-        let tolerance = [0, 1, 2].map(|k| (c1[k] - c0[k]).abs() * 1e-9);
+        // The bounds, and spilled.
         let source = self.new_sources.last_mut().expect("a source");
         for (i, rec) in records.chunks_exact(rl).enumerate() {
             let p = xyz_of(&self.codec, &self.xyz, rec);
-            if (0..3).any(|k| !(p[k] >= c0[k] - tolerance[k] && p[k] <= c1[k] + tolerance[k])) {
-                return Err(Error::InvalidArgument(format!(
-                    "'{}': the point ({}, {}, {}) is outside the EPT dataset's cube {:?}: EPT datasets keep their bounds, \
-                     and points outside them cannot be appended (write the dataset with --ept-bounds covering all the points)",
-                    source.path, p[0], p[1], p[2], self.cube
-                )));
-            }
             for (k, v) in p.into_iter().enumerate() {
                 self.lo[k] = self.lo[k].min(v);
                 self.hi[k] = self.hi[k].max(v);
