@@ -498,7 +498,7 @@ pub(crate) fn list_subdirectories(dir: &Directory) -> Result<Option<Vec<String>>
             } else if lower.ends_with(".blob.core.windows.net") {
                 let (container, prefix) = key.split_once('/').unwrap_or((key, ""));
                 Api::Azure { base: format!("{scheme}://{host}/{container}"), prefix: with_slash(prefix), sas: query.to_string() }
-            } else if lower.ends_with(".amazonaws.com") && lower.contains(".s3") {
+            } else if lower.ends_with(".amazonaws.com") && (lower.contains(".s3") || lower.starts_with("s3.") || lower.starts_with("s3-")) {
                 // Virtual-hosted S3 URLs; path-style ones (`s3.amazonaws.com/bucket/...`) too.
                 if lower.starts_with("s3.") || lower.starts_with("s3-") {
                     let (bucket, prefix) = key.split_once('/').unwrap_or((key, ""));
@@ -857,7 +857,10 @@ mod tests {
         .expect("listable");
         assert!(s3.contains(&"TMP".to_string()), "{s3:?}");
         let url = "https://hrrrzarr.s3.amazonaws.com/sfc/20240101/20240101_00z_anl.zarr/2m_above_ground";
-        assert_eq!(list_subdirectories(&Directory::Url(url.into())).expect("S3 URL listing"), Some(s3));
+        assert_eq!(list_subdirectories(&Directory::Url(url.into())).expect("S3 URL listing"), Some(s3.clone()));
+        // Path-style S3 URLs.
+        let path_style = "https://s3.us-west-1.amazonaws.com/hrrrzarr/sfc/20240101/20240101_00z_anl.zarr/2m_above_ground";
+        assert_eq!(list_subdirectories(&Directory::Url(path_style.into())).expect("path-style listing"), Some(s3));
         let gcs = list_subdirectories(&Directory::Url(
             "https://storage.googleapis.com/cmip6/CMIP6/CMIP/NCAR/CESM2/historical/r1i1p1f1/Amon/ta/gn/v20190308".into(),
         ))
