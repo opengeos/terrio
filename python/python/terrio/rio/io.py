@@ -962,10 +962,11 @@ class DatasetBase(WindowMethodsMixin, TransformMethodsMixin):
         if self.driver not in _SUBDATASET_DRIVERS or not self.name:
             return []
         if self._subdatasets is None:
+            # A failure (a remote file unreachable) is not remembered: the next call tries again.
             try:
                 info = _terrio.info(_terrio_path(self.name))
             except Exception:
-                info = {}
+                return []
             self._subdatasets = [s["name"] for s in info.get("subdatasets") or []]
         return list(self._subdatasets)
 

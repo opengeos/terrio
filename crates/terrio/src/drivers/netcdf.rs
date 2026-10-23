@@ -60,18 +60,17 @@ fn attr_f64(v: &NcVariable, name: &str) -> Option<f64> {
 /// as C formats them (`%.8g` for floats, `%.16g` for doubles), several in braces (`{0,255}`).
 fn attr_text(a: &NcAttribute) -> String {
     let list = |parts: Vec<String>| if parts.len() == 1 { parts[0].clone() } else { format!("{{{}}}", parts.join(",")) };
-    let ints = |v: Vec<String>| list(v);
     match &a.value {
         NcAttrValue::Chars(s) => s.clone(),
         NcAttrValue::Strings(v) => v.join(","),
-        NcAttrValue::Bytes(v) => ints(v.iter().map(i8::to_string).collect()),
-        NcAttrValue::UBytes(v) => ints(v.iter().map(u8::to_string).collect()),
-        NcAttrValue::Shorts(v) => ints(v.iter().map(i16::to_string).collect()),
-        NcAttrValue::UShorts(v) => ints(v.iter().map(u16::to_string).collect()),
-        NcAttrValue::Ints(v) => ints(v.iter().map(i32::to_string).collect()),
-        NcAttrValue::UInts(v) => ints(v.iter().map(u32::to_string).collect()),
-        NcAttrValue::Int64s(v) => ints(v.iter().map(i64::to_string).collect()),
-        NcAttrValue::UInt64s(v) => ints(v.iter().map(u64::to_string).collect()),
+        NcAttrValue::Bytes(v) => list(v.iter().map(i8::to_string).collect()),
+        NcAttrValue::UBytes(v) => list(v.iter().map(u8::to_string).collect()),
+        NcAttrValue::Shorts(v) => list(v.iter().map(i16::to_string).collect()),
+        NcAttrValue::UShorts(v) => list(v.iter().map(u16::to_string).collect()),
+        NcAttrValue::Ints(v) => list(v.iter().map(i32::to_string).collect()),
+        NcAttrValue::UInts(v) => list(v.iter().map(u32::to_string).collect()),
+        NcAttrValue::Int64s(v) => list(v.iter().map(i64::to_string).collect()),
+        NcAttrValue::UInt64s(v) => list(v.iter().map(u64::to_string).collect()),
         NcAttrValue::Floats(v) => list(v.iter().map(|x| format_g(f64::from(*x), 8)).collect()),
         NcAttrValue::Doubles(v) => list(v.iter().map(|x| format_g(*x, 16)).collect()),
     }
@@ -106,7 +105,9 @@ fn coordinate_text(v: f64, t: &NcType) -> String {
     match t {
         NcType::Float => format_g(v, 8),
         NcType::Double => format_g(v, 16),
-        _ => format!("{}", v as i64),
+        // Integers, as integers when they are (values were read as doubles).
+        _ if v.fract() == 0.0 && v.abs() < 9.007_199_254_740_992e15 => format!("{}", v as i64),
+        _ => format_g(v, 16),
     }
 }
 
@@ -623,7 +624,7 @@ fn read_file(f: &NcFile, path: &Path, hdf5: &dyn Fn() -> Option<hdf5_reader::Hdf
     if !container {
         gdal_variable_metadata(f, var_ref, (y_dim, x_dim), interleaved || complex.is_some(), &mut raster.metadata);
     }
-    if variable.is_none() && candidates.len() > 1 {
+    if container {
         for (i, (n, d)) in subdatasets(&vars, &path.display().to_string()).into_iter().enumerate() {
             raster.metadata.push((format!("SUBDATASET_{}_NAME", i + 1), n));
             raster.metadata.push((format!("SUBDATASET_{}_DESC", i + 1), d));
