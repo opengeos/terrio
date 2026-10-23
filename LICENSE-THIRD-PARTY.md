@@ -9,7 +9,7 @@ LICENSE-THIRD-PARTY.md`, from `about.toml`.
 
 ## Overview
 
-- Apache License 2.0 (235)
+- Apache License 2.0 (237)
 - MIT License (55)
 - ISC License (19)
 - BSD 3-Clause "New" or "Revised" License (12)
@@ -4274,6 +4274,7 @@ Used by:
 - [wasm-bindgen-macro 0.2.129](https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/macro)
 - [wasm-bindgen-shared 0.2.129](https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/shared)
 - [wasm-bindgen 0.2.129](https://github.com/wasm-bindgen/wasm-bindgen)
+- [web-sys 0.3.106](https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/web-sys)
 - [wit-bindgen 0.57.1](https://github.com/bytecodealliance/wit-bindgen)
 - [xattr 1.6.1](https://github.com/Stebalien/xattr)
 
@@ -5688,6 +5689,7 @@ Used by:
 - [unicode-ident 1.0.27](https://github.com/dtolnay/unicode-ident)
 - [utf8-zero 0.8.1](https://github.com/algesten/utf8-zero)
 - [utf8parse 0.2.2](https://github.com/alacritty/vte)
+- [wasm_sync 0.1.2](https://github.com/DouglasDwyer/wasm_sync)
 - [wbgeotiff 0.1.2](https://github.com/jblindsay/whitebox_next_gen)
 - [wbhdf 0.1.0](https://github.com/jblindsay/whitebox_next_gen)
 - [wbprojection 0.3.3](https://github.com/jblindsay/whitebox_next_gen)
