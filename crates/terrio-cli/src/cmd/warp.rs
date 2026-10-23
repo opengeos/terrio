@@ -130,7 +130,14 @@ pub fn run(a: Args) -> terrio::Result<()> {
     let local = !inputs[0].contains("://") && !inputs[0].starts_with("/vsi");
     let rpc_allowed = !a.tps && method.as_deref().is_none_or(|m| m == "RPC");
     // Remote files are fetched for their RPCs only when asked to use them.
-    let file_rpc = if rpc_allowed && (local || force_rpc) { super::quiet(|| read_rpc(&inputs[0]))? } else { None };
+    // A file whose RPCs cannot be read has none, unless asked to use them.
+    let file_rpc = if force_rpc {
+        super::quiet(|| read_rpc(&inputs[0]))?
+    } else if rpc_allowed && local {
+        super::quiet(|| read_rpc(&inputs[0])).ok().flatten()
+    } else {
+        None
+    };
     if force_rpc {
         o.rpc = Some(file_rpc.clone().ok_or_else(|| terrio::Error::InvalidArgument(format!("{} has no RPCs", inputs[0])))?);
     }

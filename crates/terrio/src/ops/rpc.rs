@@ -360,7 +360,11 @@ impl RpcOptions {
                     o.dem_apply_vdatum_shift = !matches!(v.to_ascii_uppercase().as_str(), "NO" | "FALSE" | "OFF" | "0")
                 }
                 "RPC_PIXEL_ERROR_THRESHOLD" => o.pixel_error_threshold = Some(num(k, v)?),
-                "RPC_MAX_ITERATIONS" => o.max_iterations = v.trim().parse::<i64>().unwrap_or(0).max(0) as u32,
+                "RPC_MAX_ITERATIONS" => {
+                    o.max_iterations =
+                        v.trim().parse::<i64>().map_err(|_| Error::InvalidArgument(format!("{k} must be an integer, not '{v}'")))?.max(0)
+                            as u32
+                }
                 "RPC_FOOTPRINT" => return Err(Error::Unsupported("RPC_FOOTPRINT is not supported".into())),
                 _ => {}
             }
@@ -766,10 +770,6 @@ impl RpcTransformer {
         let iy = fy as i64;
         let dy = fy - iy as f64;
         for i in 0..n {
-            if xs[i] == f64::INFINITY {
-                ok[i] = false;
-                continue;
-            }
             let dem_h;
             match d.interpolation {
                 DemInterpolation::Cubic => {
