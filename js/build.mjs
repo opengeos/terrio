@@ -9,6 +9,7 @@
 import { execFileSync } from "node:child_process";
 import { readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 
 const { values } = parseArgs({
@@ -18,7 +19,7 @@ const { values } = parseArgs({
     profile: { type: "string", default: "wasm-release" },
   },
 });
-const crate = new URL(".", import.meta.url).pathname;
+const crate = fileURLToPath(new URL(".", import.meta.url));
 const out = join(crate, values["out-dir"]);
 const profile = values.profile === "release" ? ["--release"] : ["--profile", values.profile];
 

@@ -300,6 +300,25 @@ fn detect(name: &str, head: &[u8], forced: Option<&str>) -> Result<&'static str,
     Err(JsError::new(&format!("'{name}': not a format read remotely (COG/GeoTIFF, PMTiles, COPC, FlatGeobuf, GeoParquet)")))
 }
 
+/// The cargo feature that reads a remote format, for those not always built.
+fn feature_of(format: &str) -> Option<&'static str> {
+    match format {
+        "PMTiles" => Some("tiles"),
+        "COPC" => Some("pointcloud"),
+        "FlatGeobuf" => Some("flatgeobuf"),
+        "Parquet" => Some("parquet"),
+        _ => None,
+    }
+}
+
+/// Fails when this build leaves out the format.
+fn check_built(format: &str) -> Result<(), JsError> {
+    match feature_of(format) {
+        Some(f) if !crate::FEATURES.iter().any(|&(name, on)| name == f && on) => Err(js_err(crate::not_built(f))),
+        _ => Ok(()),
+    }
+}
+
 /// Opens a remote file for reading lazily with HTTP range requests (`fetch`): a COG or other
 /// GeoTIFF, a PMTiles archive, a COPC point cloud, a FlatGeobuf file or a GeoParquet file. Only
 /// its header is read now, in a request or two; reads fetch only the bytes they need.
@@ -333,6 +352,11 @@ pub async fn open_url(url: String, options: JsValue) -> Result<RemoteDataset, Js
         get(&js_sys::global(), "fetch").dyn_into().map_err(|_| JsError::new("no fetch function: pass one as options.fetch"))?
     };
     let fetcher = Fetcher { url: url.clone(), fetch, headers, requests: Cell::new(0), bytes: Cell::new(0) };
+    // A format this build leaves out fails before any request, when the URL or the options tell it.
+    let path = url.split(['?', '#']).next().unwrap_or(&url);
+    if let Ok(format) = detect(path, &[], o.format.as_deref()) {
+        check_built(format)?;
+    }
     // Blocks of 512 bytes to 16 MiB: the first request is one block.
     let block = o.block_size.clamp(512, 16 << 20);
     // The first block: the file's length, and its first bytes.
@@ -356,6 +380,7 @@ pub async fn open_url(url: String, options: JsValue) -> Result<RemoteDataset, Js
     let path = url.split(['?', '#']).next().unwrap_or(&url);
     let name = path.rsplit('/').next().filter(|n| !n.is_empty()).unwrap_or("remote").to_string();
     let format = detect(&name, &first.data, o.format.as_deref())?;
+    check_built(format)?;
     let state = Rc::new(State {
         file,
         fetcher,
@@ -391,15 +416,8 @@ pub async fn open_url(url: String, options: JsValue) -> Result<RemoteDataset, Js
                 }
                 #[cfg(feature = "parquet")]
                 "Parquet" => Reader::Parquet(terrio::vector::geoparquet_row_groups_sparse(&file)?),
-                other => {
-                    let feature = match other {
-                        "PMTiles" => "tiles",
-                        "COPC" => "pointcloud",
-                        "FlatGeobuf" => "flatgeobuf",
-                        _ => "parquet",
-                    };
-                    return Err(crate::not_built(feature));
-                }
+                // Checked before: see `check_built`.
+                other => return Err(crate::not_built(feature_of(other).unwrap_or(other))),
             });
             Ok(())
         })

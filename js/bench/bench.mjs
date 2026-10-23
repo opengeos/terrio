@@ -7,8 +7,9 @@
 import { existsSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
-const [data, pkg = new URL("../pkg-node", import.meta.url).pathname] = process.argv.slice(2);
+const [data, pkg = fileURLToPath(new URL("../pkg-node", import.meta.url))] = process.argv.slice(2);
 if (!data) {
   console.error("usage: node js/bench/bench.mjs <data dir> [package dir]");
   process.exit(2);

@@ -60,17 +60,22 @@ const FEATURES: &[(&str, bool)] = &[
 /// Converts a terrio error into a JavaScript `Error`. Formats this build leaves out say which
 /// module has them.
 fn js_err(e: terrio::Error) -> JsError {
-    let msg = e.to_string();
-    if msg.contains("built without the `") && BUILD != "terrio-js" {
-        return JsError::new(&format!("{msg}: {BUILD} leaves it out, the full module (terrio-js) has it"));
+    match e {
+        // terrio's (and `not_built`'s) error for a driver the build leaves out.
+        terrio::Error::Unsupported(msg) if !cfg!(feature = "full") && msg.starts_with(NOT_BUILT) => {
+            JsError::new(&format!("{msg}: {BUILD} leaves it out, the full module (terrio-js) has it"))
+        }
+        e => JsError::new(&e.to_string()),
     }
-    JsError::new(&msg)
 }
+
+/// How terrio's errors for a driver the build leaves out begin.
+const NOT_BUILT: &str = "built without the `";
 
 /// The error of a format this build leaves out, `feature` being the cargo feature that has it.
 #[allow(dead_code)]
 pub(crate) fn not_built(feature: &str) -> terrio::Error {
-    terrio::Error::Unsupported(format!("built without the `{feature}` feature"))
+    terrio::Error::Unsupported(format!("{NOT_BUILT}{feature}` feature"))
 }
 
 /// A JSON value as a JavaScript value.
