@@ -9,6 +9,8 @@ identified as EPSG codes), and with ``--network``, that GDAL's HTTPS requests tr
 certificates.
 """
 
+import os
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -100,6 +102,36 @@ def check_vector(tmp: Path) -> None:
     check(len(dxf.layers[0]) == 2, "the DXF drawing does not have 2 features")
 
 
+def check_proj() -> None:
+    """Checks that GDAL's PROJ opens the bundled ``proj.db`` (PROJ_DEBUG logs the files it opens).
+
+    terrio hands GDAL a CRS as an EPSG code when it writes, which PROJ looks up in its database;
+    a child process writes a NITF file with PROJ's logging on.
+    """
+    code = (
+        "import sys, numpy as np, terrio\n"
+        "r = terrio.Raster.from_array(np.zeros((1, 2, 2), 'uint8'), (0, 1, 0, 0, 0, -1),"
+        " crs='EPSG:2193')\n"
+        "r.write(sys.argv[1] + '/a.tif')\n"
+        "terrio.convert(sys.argv[1] + '/a.tif', sys.argv[1] + '/a.ntf')\n"
+    )
+    env = {k: v for k, v in os.environ.items() if k not in ("PROJ_DATA", "PROJ_LIB")}
+    # PROJ logs through GDAL, as debug messages.
+    env.update(PROJ_DEBUG="3", CPL_DEBUG="ON")
+    with tempfile.TemporaryDirectory() as tmp:
+        run = subprocess.run(
+            [sys.executable, "-I", "-c", code, tmp], env=env, capture_output=True, text=True
+        )
+    check(run.returncode == 0, f"writing with PROJ's logging on failed: {run.stderr[-2000:]}")
+    opened = [
+        line
+        for line in run.stderr.splitlines()
+        if "proj.db" in line and "proj_data" in line and "succeeded" in line
+    ]
+    print(opened[0] if opened else "proj.db not opened")
+    check(bool(opened), "GDAL's PROJ did not open the bundled proj.db")
+
+
 def check_network() -> None:
     """Reads a remote NITF sample from GDAL's autotest data over HTTPS, through GDAL."""
     url = (
@@ -114,6 +146,7 @@ def check_network() -> None:
 def main() -> None:
     """Runs the checks."""
     check_bundle()
+    check_proj()
     with tempfile.TemporaryDirectory() as tmp:
         check_raster(Path(tmp))
         check_vector(Path(tmp))
