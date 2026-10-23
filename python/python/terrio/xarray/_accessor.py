@@ -232,6 +232,9 @@ class XRasterBase:
         self._width: int | None = None
         self._crs: CRS | None | Literal[False] = None
         self._source: _Source | None = None
+        # GCPs and RPCs written with `write_gcps` and `write_rpcs`, as rioxarray keeps them.
+        self._gcps: list[Any] | None = None
+        self._rpcs: Any = None
 
     # CRS.
 
@@ -968,7 +971,7 @@ class XRasterBase:
         """
         from terrio.rio.control import GroundControlPoint
 
-        if getattr(self, "_gcps", None) is not None:
+        if self._gcps is not None:
             return list(self._gcps)
         try:
             geojson = json.loads(self._obj.coords[self.grid_mapping].attrs["gcps"])
@@ -1020,7 +1023,7 @@ class XRasterBase:
         """
         from terrio.rio.rpc import RPC
 
-        if getattr(self, "_rpcs", None) is not None:
+        if self._rpcs is not None:
             return self._rpcs
         try:
             return RPC(**json.loads(self._obj.coords[self.grid_mapping].attrs["rpcs"]))

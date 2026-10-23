@@ -1205,7 +1205,7 @@ def open_rasterio(
     band_as_variable: bool = False,
     overview_level: int | None = None,
     **open_kwargs: Any,
-) -> xarray.Dataset | xarray.DataArray:
+) -> xarray.Dataset | xarray.DataArray | list[xarray.Dataset]:
     """Opens a raster as an xarray DataArray, as `rioxarray.open_rasterio` does.
 
     The pixels are read lazily, by window, when they are indexed or computed: GeoTIFFs and COGs
