@@ -1036,7 +1036,9 @@ class DatasetReader(DatasetBase):
             structure = _tiff.default_structure(raster)
         if not _is_remote(self._path):
             _tiff.apply_pam(structure, self._path)
-        # A per-dataset mask, internal or in a `.msk` sidecar (read by the raster).
+        # A per-dataset mask, internal or in a `.msk` sidecar (read by the raster, when the file
+        # has no internal one).
+        structure.mask_in_sidecar = bool(raster.has_mask) and not structure.has_mask
         structure.has_mask = structure.has_mask or bool(raster.has_mask)
         # Bands a PAM sidecar doesn't list keep the file's own nodata, not band 1's PAM value.
         file_nodata = self._nodata
@@ -1929,8 +1931,8 @@ class DatasetWriter(DatasetReader):
             m = raster.read_mask()
             if m is not None:
                 self._mask = np.asarray(m)
-                # A mask in a `.msk` sidecar stays there, as GDAL keeps it.
-                self._mask_in_sidecar = os.path.isfile(self._path + ".msk")
+                # A mask read from a `.msk` sidecar stays there, as GDAL keeps it.
+                self._mask_in_sidecar = s.mask_in_sidecar
         self._raster = None
         self._overview_sizes = []
 
@@ -2392,7 +2394,8 @@ class DatasetWriter(DatasetReader):
         tmp = self._path + f".tmp-{uuid.uuid4().hex}"
         target = tmp if self.mode == "r+" else self._path
         # The sidecar mask is written first beside its place, then both files are put in place
-        # once the dataset is written: a failure leaves the dataset and its mask as they were.
+        # once the dataset is written: a failure while writing leaves the dataset and its mask as
+        # they were (only between the two renames could the dataset be new and its mask old).
         msk_tmp: str | None = None
         if streaming:
             try:
