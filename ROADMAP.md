@@ -249,7 +249,6 @@ Python:
 - [x] Wheels with the GDAL backend as an optional extra, for the formats terrio doesn't read itself.
       Done: the Python package's `gdal` feature, built from source against an installed GDAL
       (`maturin build --features gdal`).
-    - [ ] Prebuilt `terrio-gdal` wheels bundling GDAL (vcpkg and cibuildwheel, as rasterio's), or a conda-forge package linking `libgdal-core` (see docs/gdal.md).
 - [x] Streaming vector reads and writes, so layers larger than memory can be converted and filtered.
 - [x] GeoPackage updates in place (appends without rewriting the file). Done: `write_vector(...,
       append=True)` and `convert(..., overwrite=True)` change the file in place, as GDAL does

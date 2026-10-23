@@ -26,12 +26,14 @@ def write_pyramid(tmp_path, templates=None):
     for m, n, res in ((0, 1, 180 / 16), (1, 2, 90 / 16)):
         for r in range(n):
             for c in range(n):
-                data = full[::2, ::2] if m == 0 else full[r * 16 : (r + 1) * 16, c * 16 : (c + 1) * 16]
+                data = (
+                    full[::2, ::2] if m == 0 else full[r * 16 : (r + 1) * 16, c * 16 : (c + 1) * 16]
+                )
                 transform = (-180 + c * 16 * res, res, 0.0, 90 - r * 16 * res, 0.0, -res)
                 (tmp_path / str(m) / str(r)).mkdir(parents=True, exist_ok=True)
-                terrio.Raster.from_array(np.ascontiguousarray(data), transform, crs="EPSG:4326", nodata=-1).write(
-                    str(tmp_path / str(m) / str(r) / f"{c}.tif")
-                )
+                terrio.Raster.from_array(
+                    np.ascontiguousarray(data), transform, crs="EPSG:4326", nodata=-1
+                ).write(str(tmp_path / str(m) / str(r) / f"{c}.tif"))
     deg = 2 * math.pi * 6378137 / 360
 
     def matrix(ident, res, n):
@@ -62,7 +64,8 @@ def write_pyramid(tmp_path, templates=None):
                 }
             },
         },
-        "asset_templates": templates or {"data": {"href": "./{TileMatrix}/{TileRow}/{TileCol}.tif"}},
+        "asset_templates": templates
+        or {"data": {"href": "./{TileMatrix}/{TileRow}/{TileCol}.tif"}},
     }
     path = tmp_path / "item.json"
     path.write_text(json.dumps(item))

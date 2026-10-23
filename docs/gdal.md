@@ -136,17 +136,7 @@ appending to existing datasets through GDAL (`--append`), and updating GDAL data
 
 The Python wheels on PyPI are pure Rust, without the backend. The `gdal` feature of the Python
 package builds it in from source (see [Installation](installation.md#with-the-gdal-backend)).
-Prebuilt wheels with GDAL are planned as a separate distribution, so that `pip install terrio`
-stays free of C dependencies:
-
-- A `terrio-gdal` package on PyPI, `pip install terrio[gdal]` pulling it in, built from the same
-  sources with `--features gdal` and its own module name (the `terrio` package would use it when
-  it is installed).
-- Linux, macOS and Windows wheels built with `cibuildwheel` against a GDAL compiled with vcpkg,
-  as rasterio's wheels are (GDAL with PROJ, GEOS, curl, SQLite, HDF5, netCDF and OpenJPEG; no
-  GPL-licensed dependency), repaired with `auditwheel`, `delocate` and `delvewheel` so the
-  libraries ship inside, with GDAL's and PROJ's data files and `GDAL_DATA` and `PROJ_DATA` set
-  on import. The GDAL build is cached between releases: built from scratch it takes about an hour
-  per platform.
-- On conda-forge, a `terrio-gdal` recipe linking conda-forge's `libgdal-core`, which avoids
-  bundling GDAL: the simplest route, and the one to start with.
+No prebuilt wheels bundle GDAL: they would ship GDAL's whole native stack (PROJ, GEOS, curl,
+SQLite, HDF5 and the rest) under terrio's name, which works against terrio's purpose of reading
+and writing geospatial data without C dependencies. Where GDAL is needed, build the `gdal`
+feature against the GDAL you already have.
