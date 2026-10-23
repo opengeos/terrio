@@ -516,13 +516,9 @@ pub(crate) fn list_subdirectories(dir: &Directory) -> Result<Option<Vec<String>>
     for _page in 0..1000 {
         let (body, prefix) = match &api {
             Api::S3 { remote, prefix } => {
-                let mut q = vec![format!("delimiter={}", enc("/")), "list-type=2".to_string(), format!("prefix={}", enc(prefix))];
-                if let Some(t) = &token {
-                    q.insert(0, format!("continuation-token={}", enc(t)));
-                }
                 let mut client = Client::new(remote, HttpOptions::from_env());
                 client.missing_ok = true;
-                client.query = format!("?{}", q.join("&"));
+                client.query = format!("?{}", s3_list_query(prefix, token.as_deref()));
                 client.url = format!("{}{}", client.url, client.query);
                 let fetched = client.fetch(None)?;
                 if matches!(fetched.status, 403 | 404) {
@@ -530,16 +526,10 @@ pub(crate) fn list_subdirectories(dir: &Directory) -> Result<Option<Vec<String>>
                 }
                 (fetched.data, prefix)
             }
-            Api::Url { base, prefix } => {
-                let mut q = vec![format!("delimiter={}", enc("/")), "list-type=2".to_string(), format!("prefix={}", enc(prefix))];
-                if let Some(t) = &token {
-                    q.insert(0, format!("continuation-token={}", enc(t)));
-                }
-                match list_get(&format!("{base}/?{}", q.join("&")))? {
-                    Some(b) => (b, prefix),
-                    None => return Ok(None),
-                }
-            }
+            Api::Url { base, prefix } => match list_get(&format!("{base}/?{}", s3_list_query(prefix, token.as_deref())))? {
+                Some(b) => (b, prefix),
+                None => return Ok(None),
+            },
             Api::Azure { base, prefix, sas } => {
                 let mut q = vec![
                     "restype=container".to_string(),
@@ -586,6 +576,16 @@ pub(crate) fn list_subdirectories(dir: &Directory) -> Result<Option<Vec<String>>
     }
     out.sort();
     Ok(Some(out))
+}
+
+/// The query of an S3 `ListObjectsV2` request (Google Cloud Storage's XML API takes it too): the
+/// keys below `prefix` grouped by `/`, from a continuation token. Its parameters are in sorted
+/// order, as SigV4's canonical query has them.
+fn s3_list_query(prefix: &str, token: Option<&str>) -> String {
+    let enc = |s: &str| s3::uri_encode(s, true);
+    let mut q: Vec<String> = token.map(|t| format!("continuation-token={}", enc(t))).into_iter().collect();
+    q.extend([format!("delimiter={}", enc("/")), "list-type=2".to_string(), format!("prefix={}", enc(prefix))]);
+    q.join("&")
 }
 
 /// A listing page of an unsigned store: `None` when listing is refused or missing (403, 404), or

@@ -864,16 +864,25 @@ const MAX_GROUP_DEPTH: usize = 16;
 /// when the group holds one array of two dimensions, which is the raster.
 fn subdatasets(group: &Node) -> Vec<(String, String)> {
     fn walk(node: &Node, depth: usize, out: &mut Vec<Array>) {
-        for name in node.children() {
+        // The children's metadata read in parallel (a request or two each for a remote store),
+        // then visited in name order.
+        let names = node.children();
+        let kinds = crate::par::map_range(names.len(), |i| {
+            let child = node.join(&names[i]);
+            match read_array_opt(&child) {
+                Ok(Some(a)) => (Some(a), false),
+                _ => (None, depth < MAX_GROUP_DEPTH && is_group(&child)),
+            }
+        });
+        for (name, (array, group)) in names.iter().zip(kinds) {
             if out.len() >= MAX_SUBDATASETS {
                 return;
             }
-            let child = node.join(&name);
-            match read_array_opt(&child) {
-                Ok(Some(a)) if a.shape.len() >= 2 => out.push(a),
-                Ok(Some(_)) => {}
-                _ if depth < MAX_GROUP_DEPTH && is_group(&child) => walk(&child, depth + 1, out),
-                _ => {}
+            match array {
+                Some(a) if a.shape.len() >= 2 => out.push(a),
+                Some(_) => {}
+                None if group => walk(&node.join(name), depth + 1, out),
+                None => {}
             }
         }
     }

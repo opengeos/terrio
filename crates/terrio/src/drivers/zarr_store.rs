@@ -188,12 +188,21 @@ impl Store {
             RemoteBase::Url { prefix, query } => Directory::Url(format!("{}{query}", join(prefix))),
             RemoteBase::S3 { bucket, prefix } => Directory::S3 { bucket: bucket.clone(), prefix: join(prefix) },
         };
-        // A store that cannot be listed has no children found this way.
-        let names = crate::http::list_subdirectories(&dir).ok().flatten().unwrap_or_default();
-        if let Ok(mut l) = self.listings.lock() {
-            l.insert(key.to_string(), names.clone());
+        // A store that cannot be listed has no children found this way. A failed request (a
+        // timeout) is not remembered, so that the next lookup tries again.
+        match crate::http::list_subdirectories(&dir) {
+            Ok(listed) => {
+                let names = listed.unwrap_or_default();
+                if let Ok(mut l) = self.listings.lock() {
+                    l.insert(key.to_string(), names.clone());
+                }
+                names
+            }
+            Err(e) => {
+                crate::warnings::warn(format!("Zarr: listing {}: {e}", self.name));
+                Vec::new()
+            }
         }
-        names
     }
 
     fn is_local(&self) -> bool {
