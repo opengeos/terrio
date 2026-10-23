@@ -30,6 +30,8 @@ pub(crate) mod crs;
 mod e57;
 pub mod ept;
 #[cfg(not(target_arch = "wasm32"))]
+mod ept_append;
+#[cfg(not(target_arch = "wasm32"))]
 mod ept_write;
 pub mod filters;
 pub mod grid;
@@ -46,6 +48,8 @@ mod write;
 
 pub use copc::{CopcInfo, CopcNode, VoxelKey};
 pub use ept::{EptDataType, EptDimension, EptInfo};
+#[cfg(not(target_arch = "wasm32"))]
+pub use ept_append::{EptAppender, append_points};
 pub use las::{ExtraBytes, LasHeader, Vlr, standard_value_type};
 pub use read::{DEFAULT_CHUNK_POINTS, PointChunks, PointCloudReader, open_points, open_points_bytes, open_points_sparse};
 pub use values::{Dimension, ValueType, Values};
@@ -395,6 +399,9 @@ pub struct ConvertOptions {
     /// The points read and written at a time, for outputs written as the points are read
     /// ([`DEFAULT_CHUNK_POINTS`] when 0).
     pub chunk_points: usize,
+    /// Add the points to the existing EPT dataset of the output ([`append_points`]) rather than
+    /// write a new one.
+    pub append: bool,
 }
 
 /// Converts a point cloud to another point cloud format (LAS, LAZ, COPC, PLY, E57, EPT) or to a
@@ -406,6 +413,15 @@ pub struct ConvertOptions {
 /// (vector layers are written whole).
 pub fn convert(src: &str, dst: &str, options: &ConvertOptions) -> Result<()> {
     let format = options.write.format.or_else(|| PointFormat::for_path(dst));
+    if options.append {
+        #[cfg(not(target_arch = "wasm32"))]
+        if format == Some(PointFormat::Ept) {
+            return append_points(dst, &[src], options);
+        }
+        return Err(crate::Error::InvalidArgument(format!(
+            "cannot append to '{dst}': points are appended to EPT datasets only (an ept.json or ept:// output)"
+        )));
+    }
     match format {
         // WebAssembly builds write E57 files whole.
         Some(PointFormat::E57) if cfg!(target_arch = "wasm32") => {}
@@ -447,9 +463,12 @@ fn same_file(_: &std::path::Path, _: &std::path::Path) -> bool {
     false
 }
 
-/// Converts chunk by chunk.
-fn convert_streaming(src: &str, dst: &str, options: &ConvertOptions) -> Result<()> {
-    let mut reader = open_points(src)?;
+/// The template of a reader's points, as converted (the CRS assigned or reprojected into), and
+/// the transformer that reprojects them.
+pub(crate) fn source_template(
+    reader: &mut PointCloudReader,
+    options: &ConvertOptions,
+) -> Result<(PointCloud, Option<crate::crs::Transformer>)> {
     let mut template = reader.template()?;
     if let Some(crs) = &options.assign_srs {
         template.crs = crs.clone();
@@ -469,6 +488,13 @@ fn convert_streaming(src: &str, dst: &str, options: &ConvertOptions) -> Result<(
         }
         None => None,
     };
+    Ok((template, transformer))
+}
+
+/// Converts chunk by chunk.
+fn convert_streaming(src: &str, dst: &str, options: &ConvertOptions) -> Result<()> {
+    let mut reader = open_points(src)?;
+    let (template, transformer) = source_template(&mut reader, options)?;
     let mut writer = PointWriter::create(dst, &template, &options.write)?;
     reader.start_chunks(&options.read, options.chunk_points)?;
     while let Some(mut chunk) = reader.next_chunk()? {

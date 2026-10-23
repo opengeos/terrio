@@ -49,6 +49,7 @@ __all__ = [
     "read_points_bytes",
     "convert_points",
     "merge_points",
+    "append_points",
     "tiff_tags",
     "crs_info",
     "suggested_grid",
@@ -320,6 +321,7 @@ class PointCloud:
         ply_precision: int | None = None,
         dimensions: Sequence[str] | None = None,
         ept_data_type: str | None = None,
+        ept_bounds: tuple[float, float, float, float, float, float] | None = None,
     ) -> None: ...
     def to_bytes(self, format: str = "LAZ", point_format: int | None = None) -> bytes: ...
     def range(self, limits: str) -> PointCloud: ...
@@ -884,8 +886,24 @@ def convert_points(
     ply_encoding: str | None = None,
     ply_precision: int | None = None,
     ept_data_type: str | None = None,
+    ept_bounds: tuple[float, float, float, float, float, float] | None = None,
+    append: bool = False,
 ) -> None: ...
 def merge_points(clouds: Sequence[PointCloud]) -> PointCloud: ...
+def append_points(
+    dataset: str,
+    inputs: Sequence[str],
+    *,
+    bounds: _Bounds | None = None,
+    z_range: tuple[float, float] | None = None,
+    classes: Sequence[int] | None = None,
+    returns: Sequence[str] | None = None,
+    a_srs: str | None = None,
+    t_srs: str | None = None,
+    chunk_points: int = 0,
+    leaf_points: int | None = None,
+    memory_points: int | None = None,
+) -> None: ...
 def grid_points(
     path: str,
     resolution: float,

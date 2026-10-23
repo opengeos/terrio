@@ -40,7 +40,8 @@ pub struct VectorArgs {
     #[arg(long = "a-srs", value_name = "CRS", help_heading = "Vector options")]
     a_srs: Option<String>,
     /// Add the features to the layers of an existing output (a GeoPackage, or the tiles of a
-    /// PMTiles or MBTiles archive); for a raster, add it to an existing archive of image tiles.
+    /// PMTiles or MBTiles archive); for a raster, add it to an existing archive of image tiles;
+    /// for a point cloud, add its points to an existing EPT dataset (an ept.json output).
     #[arg(long, conflicts_with = "overwrite", help_heading = "Vector options")]
     append: bool,
     /// Replace the layers of the same name in an existing output (other GeoPackage layers stay).

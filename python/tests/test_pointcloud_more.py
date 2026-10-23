@@ -6,6 +6,7 @@ directory filled by `scripts/fetch_test_data.sh`; their expected values come fro
 GDAL 3.12 (`gdal_grid`).
 """
 
+import json
 import os
 
 import numpy as np
@@ -140,6 +141,34 @@ def test_ept_written_and_read(tmp_path):
         str(tmp_path / "laszip" / "ept.json"), str(tmp_path / "points.e57"), chunk_points=3000
     )
     assert len(terrio.read_points(str(tmp_path / "points.e57"))) == len(pc)
+
+
+def test_ept_append(tmp_path):
+    pc = make_points()
+    x0, y0, z0 = (float(np.min(pc[k])) for k in "xyz")
+    x1, y1, z1 = (float(np.max(pc[k])) for k in "xyz")
+    mid = (x0 + x1) / 2
+    first, second = pc.range(f"X[:{mid})"), pc.range(f"X[{mid}:]")
+    second.write(str(tmp_path / "second.laz"))
+    for data_type in ["laszip", "binary", "zstandard"]:
+        path = tmp_path / data_type / "ept.json"
+        first.write(str(path), ept_data_type=data_type, ept_bounds=(x0, y0, z0, x1, y1, z1))
+        terrio.append_points(str(path), [str(tmp_path / "second.laz")], leaf_points=500)
+        f = terrio.open_points(str(path))
+        assert f.ept_info["points"] == len(pc)
+        back = f.read()
+        np.testing.assert_allclose(np.sort(back["x"]), np.sort(pc["x"]), rtol=0, atol=1e-6)
+        manifest = json.loads((tmp_path / data_type / "ept-sources" / "manifest.json").read_text())
+        assert [s["points"] for s in manifest] == [len(first), len(second)]
+    # Through convert_points, and refused outside the cube.
+    terrio.convert_points(
+        str(tmp_path / "second.laz"), str(tmp_path / "laszip" / "ept.json"), append=True
+    )
+    assert terrio.open_points(str(tmp_path / "laszip" / "ept.json")).ept_info["points"] == len(
+        pc
+    ) + len(second)
+    with pytest.raises(terrio.TerrioError):
+        terrio.convert_points(str(tmp_path / "second.laz"), str(tmp_path / "x.laz"), append=True)
 
 
 def test_ept_and_filters_as_pdal(data_dir):

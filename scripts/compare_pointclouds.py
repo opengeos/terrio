@@ -16,6 +16,9 @@ And:
 - PLY, E57 and EPT: every value of every dimension compared with PDAL's `readers.ply`,
   `readers.e57` and `readers.ept`, EPT queries by bounds and resolution, and PLY and E57 files
   and EPT datasets (LASzip, binary and Zstandard tiles) written by terrio read back by PDAL;
+- EPT appends: points appended to EPT datasets (terrio's, and Entwine's lone-star) read back by
+  PDAL's `readers.ept`, every point once (or twice for a dataset merged with itself), and by
+  bounds as from a dataset written whole;
 - waveforms: the samples of points compared with the bytes of the file at the offsets LASlib
   reads them from, and the waveform data packets kept when the points are written;
 - filters: `smrf`, `pmf`, `csf`, `elm`, `outlier`, `range`, `sample`, `voxeldownsize`,
@@ -583,6 +586,91 @@ def compare_formats(root: Path, tmp: Path) -> None:
         report(f"writefmt autzen_trim.laz -> EPT ({data_type}), read back by terrio", len(back) == len(las) and not bad, f"differ: {bad}")
 
 
+def compare_ept_append(root: Path, tmp: Path) -> None:
+    """Appends to EPT datasets and compares them with PDAL's reading of the source.
+
+    autzen_trim.laz in two halves (by x): an EPT dataset written from the first, with the bounds
+    of both, and the second appended, in each data type. PDAL's `readers.ept` must read every
+    point of the source once (binary tiles: x, y and z as PDAL 2.9 rounds them), and the same
+    points by bounds as from a dataset written from the whole file. Then PDAL's lone-star EPT
+    dataset (written by Entwine, with hierarchy pages of its own) merged with a copy of itself:
+    every point twice.
+
+    Args:
+        root: The point cloud test data directory.
+        tmp: A directory for the outputs.
+    """
+    if not PDAL:
+        return
+    src = root / "autzen_trim.laz"
+    pc = terrio.read_points(str(src))
+    x0, y0, z0, x1, y1, z1 = terrio.open_points(str(src)).bounds
+    mid = (x0 + x1) / 2
+    first, second = pc.range(f"X[:{mid})"), pc.range(f"X[{mid}:]")
+    second.write(str(tmp / "second_half.laz"))
+    keys = ["x", "y", "z", "gps_time", "intensity"]
+    ref = pdal_text([str(src)])
+
+    def rounded(d: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
+        """Points with x, y and z rounded half away from zero, as PDAL 2.9 reads binary tiles.
+
+        Args:
+            d: The points, by dimension.
+
+        Returns:
+            dict[str, numpy.ndarray]: The points rounded.
+        """
+        return {k: (np.where(v > 0, np.floor(v + 0.5), np.ceil(v - 0.5)) if k in ("x", "y", "z") else v) for k, v in d.items()}
+
+    def same_points(a: dict[str, np.ndarray], b: dict[str, np.ndarray]) -> bool:
+        """Whether two sets of points are the same, in any order.
+
+        Args:
+            a: The points checked, by dimension.
+            b: The points expected, by dimension: each of them must be in `a`.
+
+        Returns:
+            bool: Whether every dimension of `b` has the same values in `a`, once both sorted.
+        """
+        if len(a["x"]) != len(b["x"]):
+            return False
+        i, j = np.lexsort([a[k] for k in keys]), np.lexsort([b[k] for k in keys])
+        return all(k in a and np.array_equal(a[k][i], b[k][j]) for k in b)
+
+    for data_type in ["laszip", "binary", "zstandard"]:
+        out = tmp / f"ept_append_{data_type}" / "ept.json"
+        whole = tmp / f"ept_whole_{data_type}" / "ept.json"
+        first.write(str(out), ept_data_type=data_type, ept_bounds=(x0, y0, z0, x1, y1, z1))
+        terrio.append_points(str(out), [str(tmp / "second_half.laz")])
+        pc.write(str(whole), ept_data_type=data_type, ept_bounds=(x0, y0, z0, x1, y1, z1))
+        info = terrio.open_points(str(out)).ept_info
+        back = terrio.read_points(str(out))
+        a, b = np.lexsort([np.asarray(back[k]) for k in keys]), np.lexsort([np.asarray(pc[k]) for k in keys])
+        bad = [k for k in pc.dimensions if k in back and not np.array_equal(np.asarray(back[k]).astype("f8")[a], np.asarray(pc[k]).astype("f8")[b])]
+        report(f"EPT append ({data_type}): {info['points']} points, read back by terrio as the source", info["points"] == len(pc) and len(back) == len(pc) and not bad, f"differ: {bad}")
+        try:
+            got = pdal_text([{"type": "readers.ept", "filename": str(out)}])
+        except subprocess.CalledProcessError:
+            print(f"skip EPT append ({data_type}), read by PDAL: this PDAL cannot read {data_type} tiles")
+            continue
+        exp = rounded(ref) if data_type != "laszip" else ref
+        report(f"EPT append ({data_type}), read by PDAL readers.ept: every point of the source once", same_points(got, exp), "different points")
+        pb = f"([{x0 + 0.2 * (x1 - x0)}, {x0 + 0.7 * (x1 - x0)}], [{y0 + 0.3 * (y1 - y0)}, {y0 + 0.6 * (y1 - y0)}])"
+        p_app = pdal_text([{"type": "readers.ept", "filename": str(out), "bounds": pb}])
+        p_whole = pdal_text([{"type": "readers.ept", "filename": str(whole), "bounds": pb}])
+        report(f"EPT append ({data_type}), PDAL readers.ept by bounds: {len(p_app['x'])} points, as written whole", same_points(p_app, p_whole), "different points")
+    lone = root / "ept" / "lone-star-laszip"
+    copy = tmp / "lone-star-merged"
+    shutil.copytree(lone, copy)
+    terrio.convert_points(str(lone / "ept.json"), str(copy / "ept.json"), append=True)
+    a = pdal_text([{"type": "readers.ept", "filename": str(lone / "ept.json")}])
+    b = pdal_text([{"type": "readers.ept", "filename": str(copy / "ept.json")}])
+    b.pop("origin_id")
+    a.pop("origin_id")
+    doubled = {k: np.repeat(v, 2) for k, v in a.items()}
+    report(f"EPT lone-star-laszip merged with itself, read by PDAL readers.ept: {len(b['x'])} points, each twice", same_points(b, doubled), "different points")
+
+
 def compare_waveforms(root: Path, tmp: Path) -> None:
     """Compares waveform samples with the file's bytes, and checks they are kept on writing.
 
@@ -851,6 +939,7 @@ def main() -> None:
         compare_reprojection(root / "las_with_several_extra_byte_bloc.laz", tmp, "EPSG:4326")
         compare_reprojection(root / "synthetic" / "format6.laz", tmp, "EPSG:5070")
         compare_formats(root, tmp)
+        compare_ept_append(root, tmp)
         compare_waveforms(root, tmp)
         compare_filters(root / "autzen_trim.las", tmp, (420, 500))
         compare_more_filters(root / "autzen_trim.las", tmp)

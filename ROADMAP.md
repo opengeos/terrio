@@ -178,7 +178,14 @@ of GDAL: the long tail of formats stays reachable through an optional GDAL backe
       (`terrio filter`, Python and JavaScript); `filters.reprojection` is `terrio convert --t-srs`.
 - [ ] PDAL's other filters (`filters.dbscan`, `filters.covariancefeatures`, `filters.lof`,
       `filters.dem`, `filters.colorization`, `filters.overlay` and the long tail).
-- [ ] EPT datasets updated in place (appending points, as Entwine's `--subset` and merge do).
+- [x] EPT datasets updated in place: points appended (`terrio convert --append`, `append_points`,
+      Python's `append_points`), placed in the dataset's octree within its cube, leaves split as
+      the writer splits them, the hierarchy (its pages kept), `ept.json` and the source list
+      updated, staged beside the dataset and moved in with `ept.json` last, in bounded memory;
+      terrio's datasets (LASzip, binary and Zstandard tiles) and Entwine's; datasets built with the
+      same `--ept-bounds` merged by appending one to the other. Checked on autzen (10.65 million
+      points in three parts): every point once, reads by bounds identical to a build from all the
+      points at once, read by PDAL's `readers.ept` (and its `origin` option).
 
 ## Bindings: Python and WebAssembly
 

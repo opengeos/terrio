@@ -444,3 +444,201 @@ fn e57_writers_refused_leave_files_alone() {
     assert!(PointWriter::create(path, &c, &options).is_err());
     assert_eq!(std::fs::read(path).unwrap(), before);
 }
+
+/// Every node of an EPT dataset's hierarchy (all its pages): its count, which must be its tile's
+/// number of points, and its parent, which must be in the hierarchy.
+fn check_hierarchy(dir: &std::path::Path) -> std::collections::BTreeMap<String, u64> {
+    let ept: serde_json::Value = serde_json::from_slice(&std::fs::read(dir.join("ept.json")).unwrap()).unwrap();
+    let rl: u64 = ept["schema"].as_array().unwrap().iter().map(|d| d["size"].as_u64().unwrap()).sum();
+    let kind = ept["dataType"].as_str().unwrap().to_string();
+    let mut counts = std::collections::BTreeMap::new();
+    let mut pages = vec!["0-0-0-0".to_string()];
+    while let Some(p) = pages.pop() {
+        let page: serde_json::Map<String, serde_json::Value> =
+            serde_json::from_slice(&std::fs::read(dir.join(format!("ept-hierarchy/{p}.json"))).unwrap()).unwrap();
+        for (k, n) in page {
+            match n.as_i64().unwrap() {
+                -1 if k != p => pages.push(k),
+                n => {
+                    assert!(n > 0, "node {k} of {n} points");
+                    counts.insert(k, n as u64);
+                }
+            }
+        }
+    }
+    for (k, n) in &counts {
+        let tile = |ext: &str| dir.join(format!("ept-data/{k}.{ext}"));
+        let points = match kind.as_str() {
+            "laszip" => pointcloud::open_points(tile("laz").to_str().unwrap()).unwrap().header().point_count,
+            "binary" => std::fs::metadata(tile("bin")).unwrap().len() / rl,
+            _ => zstd::decode_all(&std::fs::read(tile("zst")).unwrap()[..]).unwrap().len() as u64 / rl,
+        };
+        assert_eq!(points, *n, "node {k}");
+        let p: Vec<i64> = k.split('-').map(|v| v.parse().unwrap()).collect();
+        if p[0] > 0 {
+            let parent = format!("{}-{}-{}-{}", p[0] - 1, p[1] >> 1, p[2] >> 1, p[3] >> 1);
+            assert!(counts.contains_key(&parent), "node {k} without its parent");
+        }
+    }
+    assert_eq!(counts.values().sum::<u64>(), ept["points"].as_u64().unwrap());
+    counts
+}
+
+/// Points appended to an EPT dataset, in every data type, in memory and out of core: every point
+/// once, the hierarchy valid, `ept.json` and the source list updated.
+#[test]
+fn ept_datasets_take_points_appended() {
+    let c = cloud(60_000, 21);
+    let names = ["x", "y", "z", "intensity", "return_number", "number_of_returns", "classification", "gps_time"];
+    let b = c.bounds().unwrap();
+    let cube = [b[0], b[1], b[2], b[3], b[4], b[5]];
+    // An octree deeper than the points' own (a cube 30 times wider), with leaves to split.
+    let wide = [b[0] - 1_500.0, b[1] - 1_500.0, b[2] - 1_500.0, b[3] + 1_500.0, b[4] + 1_500.0, b[5] + 1_500.0];
+    let las = pointcloud::open_points_bytes(pointcloud::write_points_bytes(&c, "a.las", &Default::default()).unwrap(), "a.las")
+        .unwrap()
+        .read(&Default::default())
+        .unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    for (data_type, memory) in [(EptDataType::Laszip, None), (EptDataType::Binary, Some(3_000)), (EptDataType::Zstandard, None)] {
+        let path = dir.path().join(format!("{data_type:?}")).join("ept.json");
+        let path_s = path.to_str().unwrap();
+        let options = PointWriteOptions {
+            ept_data_type: data_type,
+            ept_bounds: Some(wide),
+            copc_leaf_points: Some(4_000),
+            copc_memory_points: memory,
+            ..Default::default()
+        };
+        pointcloud::write_points(&c.slice(0, 20_000), path_s, &options).unwrap();
+        let before = check_hierarchy(path.parent().unwrap());
+        // Two sources: the second in chunks.
+        let mut a = pointcloud::EptAppender::open(path_s, &options).unwrap();
+        a.start_source("second.laz", &c).unwrap();
+        a.write(&c.slice(20_000, 30_000)).unwrap();
+        a.start_source("third.laz", &c).unwrap();
+        for k in 0..3 {
+            a.write(&c.slice(30_000 + k * 10_000, 40_000 + k * 10_000)).unwrap();
+        }
+        a.finish().unwrap();
+        let after = check_hierarchy(path.parent().unwrap());
+        assert!(after.len() > before.len(), "{data_type:?}: leaves split");
+        let mut r = pointcloud::open_points(path_s).unwrap();
+        let info = r.ept_info().unwrap().clone();
+        assert_eq!(info.points, 60_000, "{data_type:?}");
+        let near = |a: &[f64; 6], b: &[f64; 6]| a.iter().zip(b).all(|(x, y)| (x - y).abs() < 1e-6);
+        assert!(near(&info.bounds_conforming, &cube), "{data_type:?}: {:?}", info.bounds_conforming);
+        let back = r.read(&Default::default()).unwrap();
+        assert_eq!(sorted_rows(&back, &names), sorted_rows(&las, &names), "{data_type:?}");
+        // The root's resolution still reads a sample.
+        let root = r.read(&pointcloud::PointReadOptions { max_level: Some(0), ..Default::default() }).unwrap();
+        assert!(root.len() < 60_000 && root.len() >= before["0-0-0-0"] as usize, "{data_type:?}: {} root points", root.len());
+        let sources: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(path.with_file_name("ept-sources").join("manifest.json")).unwrap()).unwrap();
+        let points: Vec<u64> = sources.as_array().unwrap().iter().map(|s| s["points"].as_u64().unwrap()).collect();
+        assert_eq!(points, [20_000, 10_000, 30_000], "{data_type:?}: {sources}");
+        assert_eq!(sources[2]["path"], "third.laz");
+        assert!(path.with_file_name("ept-sources").join("2.json").exists());
+        let left: Vec<String> =
+            std::fs::read_dir(path.parent().unwrap()).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+        assert!(!left.iter().any(|n| n.starts_with(".terrio")), "{left:?}");
+    }
+}
+
+/// Points outside an EPT dataset's cube are refused, and the dataset is left as it was; so are
+/// points in another CRS.
+#[test]
+fn ept_appends_outside_the_cube_are_refused() {
+    let c = cloud(10_000, 22);
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("set/ept.json");
+    let path = path.to_str().unwrap();
+    pointcloud::write_points(&c, path, &Default::default()).unwrap();
+    let before = std::fs::read(dir.path().join("set/ept.json")).unwrap();
+    let mut far = cloud(100, 23);
+    let x: Vec<f64> = far.dim("x").unwrap().to_f64().iter().map(|v| v + 1_000.0).collect();
+    far.dimensions[0] = Dimension::new("x", Values::F64(x));
+    let mut a = pointcloud::EptAppender::open(path, &Default::default()).unwrap();
+    a.start_source("far.laz", &far).unwrap();
+    let e = a.write(&far).unwrap_err().to_string();
+    assert!(e.contains("outside the EPT dataset's cube"), "{e}");
+    drop(a);
+    assert_eq!(std::fs::read(dir.path().join("set/ept.json")).unwrap(), before);
+    assert!(!dir.path().join("set/ept-sources").exists());
+    let mut other = cloud(100, 24);
+    other.crs = SpatialRef::from_epsg(4326).unwrap();
+    let mut a = pointcloud::EptAppender::open(path, &Default::default()).unwrap();
+    assert!(a.start_source("other.laz", &other).is_err());
+    // Writing points outside the bounds given to the writer fails too.
+    let options = PointWriteOptions { ept_bounds: Some([0.0, 0.0, 0.0, 1.0, 1.0, 1.0]), ..Default::default() };
+    assert!(pointcloud::write_points(&c, dir.path().join("small/ept.json").to_str().unwrap(), &options).is_err());
+}
+
+/// An EPT dataset written by Entwine, with hierarchy pages of its own (PDAL's lone-star test
+/// data), merged with itself: every point twice, the pages kept, the copies' `OriginId` their
+/// source's position in the source list.
+#[test]
+fn ept_datasets_written_by_entwine_take_points_appended() {
+    let Some(src) = data("ept/lone-star-laszip/ept.json") else { return };
+    let src_dir = std::path::Path::new(&src).parent().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let dst = dir.path().join("lone-star");
+    std::fs::create_dir_all(&dst).unwrap();
+    for sub in ["ept-data", "ept-hierarchy"] {
+        std::fs::create_dir_all(dst.join(sub)).unwrap();
+        for e in std::fs::read_dir(src_dir.join(sub)).unwrap() {
+            let e = e.unwrap();
+            std::fs::copy(e.path(), dst.join(sub).join(e.file_name())).unwrap();
+        }
+    }
+    std::fs::copy(&src, dst.join("ept.json")).unwrap();
+    let dst_json = dst.join("ept.json");
+    let options = pointcloud::ConvertOptions { append: true, ..Default::default() };
+    pointcloud::convert(&src, dst_json.to_str().unwrap(), &options).unwrap();
+    let counts = check_hierarchy(&dst);
+    assert_eq!(counts.values().sum::<u64>(), 2 * 518_862);
+    assert_eq!(std::fs::read_dir(dst.join("ept-hierarchy")).unwrap().count(), 6, "the pages kept");
+    let a = pointcloud::read_points(&src, &Default::default()).unwrap();
+    let b = pointcloud::read_points(dst_json.to_str().unwrap(), &Default::default()).unwrap();
+    let names = ["x", "y", "z", "intensity", "classification", "gps_time"];
+    let doubled: Vec<Vec<f64>> = sorted_rows(&a, &names).into_iter().flat_map(|r| [r.clone(), r]).collect();
+    let mut got = sorted_rows(&b, &names);
+    got.sort_by(|p, q| p.iter().zip(q).map(|(x, y)| x.total_cmp(y)).find(|o| o.is_ne()).unwrap_or(std::cmp::Ordering::Equal));
+    let mut want = doubled;
+    want.sort_by(|p, q| p.iter().zip(q).map(|(x, y)| x.total_cmp(y)).find(|o| o.is_ne()).unwrap_or(std::cmp::Ordering::Equal));
+    assert_eq!(got, want);
+    // The dataset has no source list: one is made, an entry for each origin of its points, and
+    // the copies' OriginId follows theirs.
+    let last = a.dim("origin_id").unwrap().to_f64().into_iter().fold(0.0, f64::max);
+    let origin = b.dim("origin_id").unwrap().to_f64();
+    assert_eq!(origin.iter().filter(|o| **o == last + 1.0).count(), 518_862);
+    let list: serde_json::Value = serde_json::from_slice(&std::fs::read(dst.join("ept-sources/manifest.json")).unwrap()).unwrap();
+    let list = list.as_array().unwrap();
+    assert_eq!(list.len(), last as usize + 2);
+    assert_eq!(list.iter().map(|s| s["points"].as_u64().unwrap()).sum::<u64>(), 2 * 518_862);
+}
+
+/// An update interrupted once complete (its `COMMITTED` marker written) is completed by the next
+/// append; one interrupted before is discarded.
+#[test]
+fn ept_appends_interrupted_are_completed_or_discarded() {
+    let c = cloud(10_000, 25);
+    let dir = tempfile::tempdir().unwrap();
+    let set = dir.path().join("set");
+    let path = set.join("ept.json");
+    pointcloud::write_points(&c, path.to_str().unwrap(), &Default::default()).unwrap();
+    let mut ept: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    ept["marker"] = serde_json::json!("recovered");
+    let done = set.join(".terrio-ept-append-0");
+    std::fs::create_dir_all(done.join("ept-data")).unwrap();
+    std::fs::write(done.join("ept.json"), serde_json::to_string(&ept).unwrap()).unwrap();
+    std::fs::write(done.join("COMMITTED"), "").unwrap();
+    let partial = set.join(".terrio-ept-append-1");
+    std::fs::create_dir_all(partial.join("ept-data")).unwrap();
+    std::fs::write(partial.join("ept.json"), "{}").unwrap();
+    let a = pointcloud::EptAppender::open(path.to_str().unwrap(), &Default::default()).unwrap();
+    a.finish().unwrap();
+    let ept: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    assert_eq!(ept["marker"], "recovered");
+    assert!(!done.exists() && !partial.exists());
+    assert_eq!(pointcloud::read_points(path.to_str().unwrap(), &Default::default()).unwrap().len(), 10_000);
+}

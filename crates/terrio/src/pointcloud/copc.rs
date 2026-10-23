@@ -369,6 +369,9 @@ pub(crate) struct CopcBuild {
     pub max_depth: Option<u32>,
     /// The most points of a leaf node; 100 000 by default.
     pub leaf_points: Option<u64>,
+    /// The bounds the cube is made around, rather than the points' (`[min_x, min_y, min_z,
+    /// max_x, max_y, max_z]`): points outside them are refused.
+    pub bounds: Option<[f64; 6]>,
 }
 
 /// The most points a [`CopcStreamWriter`] holds in memory at a time, by default: more are built
@@ -388,6 +391,10 @@ struct Cube {
 impl Cube {
     /// The cube of points within bounds: the bounds' center and their largest half extent.
     fn new(lo: [f64; 3], hi: [f64; 3], scale: f64, build: CopcBuild) -> Self {
+        let (lo, hi) = match build.bounds {
+            Some(b) => ([b[0], b[1], b[2]], [b[3], b[4], b[5]]),
+            None => (lo, hi),
+        };
         let center = [(lo[0] + hi[0]) / 2.0, (lo[1] + hi[1]) / 2.0, (lo[2] + hi[2]) / 2.0];
         let half = ((hi[0] - lo[0]).max(hi[1] - lo[1]).max(hi[2] - lo[2]) / 2.0).max(scale) * (1.0 + 1e-9);
         Self {
@@ -722,7 +729,7 @@ fn write_copc_with<W: Write + Seek>(
 }
 
 /// Where the GPS time of a format's records is.
-fn gps_offset(format: u8) -> Option<usize> {
+pub(crate) fn gps_offset(format: u8) -> Option<usize> {
     super::las::standard_fields(format).iter().find(|f| f.name == "gps_time").and_then(|f| match f.field {
         super::las::Field::Plain(o) => Some(o),
         _ => None,
@@ -790,6 +797,16 @@ impl CopcStreamWriter {
     pub fn finish(mut self) -> Result<()> {
         use std::io::{BufRead, Read};
         self.stats.finish();
+        if let Some(b) = self.build.bounds {
+            let (lo, hi) = (self.stats.lo, self.stats.hi);
+            let valid = (0..3).all(|k| b[k].is_finite() && b[k + 3].is_finite() && b[k] <= b[k + 3]);
+            if !valid {
+                return Err(Error::InvalidArgument(format!("invalid octree bounds {b:?}")));
+            }
+            if self.stats.n > 0 && (0..3).any(|k| lo[k] < b[k] || hi[k] > b[k + 3]) {
+                return Err(Error::InvalidArgument(format!("the points ({lo:?} to {hi:?}) are not all within the octree bounds {b:?}")));
+            }
+        }
         let rl = self.layout.record_len;
         let entry = rl + 8;
         let spill = self.spill.into_inner().map_err(|e| Error::Io(e.into_error()))?;

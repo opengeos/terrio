@@ -57,6 +57,51 @@ PDAL's `readers.ept` reads the result as it reads the source, every dimension of
 (binary tiles: x, y and z as PDAL 2.9 rounds them; Zstandard tiles need a PDAL built with
 Zstandard).
 
+### Appending to an EPT dataset
+
+`--append` adds the points of a file to an existing EPT dataset, in place, as Entwine does when
+it builds into an existing output (terrio's datasets, Entwine's and others', in any data type):
+
+```sh
+# A dataset built from the first tile, its cube the bounds of all the tiles
+terrio convert tile-1.laz tiles-ept/ept.json --ept-bounds 635577 848882 406 639004 853538 616
+terrio convert tile-2.laz tiles-ept/ept.json --append
+terrio convert tile-3.laz tiles-ept/ept.json --append --t-srs EPSG:2992   # reprojected first
+terrio convert other-ept/ept.json tiles-ept/ept.json --append            # a merge
+```
+
+The dataset's cube (`bounds` in `ept.json`) does not change: points outside it are refused and
+the dataset is left as it was, which is why a dataset that will take more files is written with
+`--ept-bounds` covering them all (Entwine's `--bounds`; the cube is the cube around those
+bounds). The new points go down the octree as the writer's do: each node keeps the first new
+point to land in each free cell of its `span`³ grid and passes the others to its children; a leaf
+(a node without children) takes all the points that reach it until it holds more than 100 000,
+and is then split, its points placed again as a node and children of their own. Every node keeps
+the points it had, so reads by bounds return the same points as a dataset built from all the
+files at once; reads by resolution return as many points per level, but not the same sample.
+
+The points take the dataset's schema, as when an EPT dataset is written: dimensions the dataset
+has and the points do not are written as zeros, and those the points have and the dataset does
+not are dropped, with a warning. `ept.json`'s `points` and `boundsConforming` are updated, and the
+schema's statistics (`count`, `minimum`, `maximum`, `mean`, `variance`, `stddev`, `counts`) when
+it has them. Each file appended is an entry of the source list, `ept-sources/manifest.json` (or
+Entwine 1's `list.json`), with its own metadata file, and its points' `OriginId` (when the schema
+has one) is its position in the list. A dataset without a source list gets one, starting with an
+entry for the points already there (one per `OriginId` of theirs).
+
+An append writes the tiles it changes or adds, the hierarchy pages it changes, the source list
+and `ept.json` in a directory of their own in the dataset's (`.terrio-ept-append-N`), each synced
+to disk, then a `COMMITTED` marker, then moves them into place: the tiles first, then the source
+metadata and list, the hierarchy pages (the root page last) and `ept.json` last. An append
+interrupted before the marker leaves the dataset as it was; one interrupted while the files are
+moved is completed by the next append, which moves the remaining ones in. Readers that open the
+dataset while the files move may see the new tiles with the previous hierarchy; one append at a
+time. The points are spilled to a temporary file (in `TMPDIR`) and placed one node at a time,
+the points of each child in memory or in a temporary file of their own, so memory stays bounded
+whatever the number of points appended (the hierarchy is held whole). In Rust, `append_points`
+and `EptAppender` (chunks of points written as they come); in Python, `terrio.append_points` and
+`convert_points(..., append=True)`.
+
 ## PLY and E57
 
 PLY files are read and written as PDAL's `readers.ply` and `writers.ply` do: `x`, `y` and `z` as
@@ -256,6 +301,7 @@ high = points.expression("Classification == 2 && Z > 100")
 tiles = points.splitter(500.0)           # a list of PointClouds
 both = terrio.merge_points([points, other])
 points.write("tile-ept/ept.json")        # an EPT dataset
+terrio.append_points("tile-ept/ept.json", ["tile-2.laz", "tile-3.laz"])  # added in place
 
 # Larger than memory: chunks in, chunks out.
 f = terrio.open_points("huge.laz")
@@ -296,6 +342,7 @@ type) with terrio and compares:
 | EPT reads by bounds and resolution, local and USGS 3DEP (11.5 billion points) | PDAL `readers.ept` | the same points |
 | PLY and E57 written by terrio | PDAL `readers.ply`, `readers.e57` | identical |
 | EPT datasets written by terrio (LASzip and binary tiles; 4.07 million points of USGS 3DEP Madison) | PDAL `readers.ept` | identical |
+| EPT datasets appended to (autzen, 10.65 million points in three parts, LASzip, binary and Zstandard tiles; Entwine's lone-star, 1.2-with-color and ellipsoid datasets merged with themselves) | PDAL `readers.ept`; the source; a dataset built from all the points | every point once (twice when merged), reads by bounds identical |
 | Waveform samples; packets kept through LAS and LAZ | the file's bytes (LASlib's offsets) | identical |
 | SMRF, outliers (statistical, radius), range, sample, voxels, on autzen and USGS 3DEP Madison (4.07 million points) | PDAL's filters | identical classes and points |
 | PMF, CSF, ELM, HAG (nearest, Delaunay), crop, decimation, expression, assign, merge, splitter, chipper, normals, clusters, on autzen and half a million points of USGS 3DEP Madison | PDAL's filters | identical classes, heights, tiles, cluster ids and points; normals within 1e-6 |

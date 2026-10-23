@@ -202,11 +202,16 @@ pub(crate) fn read_points_bytes(py: Python<'_>, data: Vec<u8>) -> PyResult<PyPoi
 ///     ply_precision: PLY ASCII outputs: the digits after the decimal point of floats.
 ///     ept_data_type: EPT outputs: how the nodes' points are stored, `"laszip"` (the default),
 ///         `"binary"` or `"zstandard"`.
+///     ept_bounds: EPT outputs: build the octree's cube around these bounds,
+///         `(min_x, min_y, min_z, max_x, max_y, max_z)`, rather than the points' (as Entwine's
+///         `--bounds`), so that points of other files within them can be appended later.
+///     append: Add the points to the existing EPT dataset `dst` rather than write a new one
+///         (see `append_points`).
 #[pyfunction]
 #[pyo3(signature = (
     src, dst, *, bounds=None, z_range=None, classes=None, returns=None, max_level=None, resolution=None, max_points=None,
     a_srs=None, t_srs=None, point_format=None, minor_version=None, scale=None, offset=None, dimensions=None,
-    chunk_points=0, ply_encoding=None, ply_precision=None, ept_data_type=None
+    chunk_points=0, ply_encoding=None, ply_precision=None, ept_data_type=None, ept_bounds=None, append=false
 ))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn convert_points(
@@ -231,6 +236,8 @@ pub(crate) fn convert_points(
     ply_encoding: Option<&str>,
     ply_precision: Option<usize>,
     ept_data_type: Option<&str>,
+    ept_bounds: Option<[f64; 6]>,
+    append: bool,
 ) -> PyResult<()> {
     let options = pointcloud::ConvertOptions {
         read: read_options(bounds, z_range, classes, returns, max_level, resolution, max_points)?,
@@ -245,12 +252,71 @@ pub(crate) fn convert_points(
             ply_precision,
             dimensions: dimensions.clone().unwrap_or_default(),
             ept_data_type: ept_data_type.map(EptDataType::parse).transpose().py()?.unwrap_or_default(),
+            ept_bounds,
             ..Default::default()
         },
         layer: pointcloud::vector::ToLayerOptions { dimensions: dimensions.unwrap_or_default(), ..Default::default() },
         chunk_points,
+        append,
     };
     py.detach(|| pointcloud::convert(src, dst, &options)).py()
+}
+
+/// Appends the points of point clouds to an existing EPT dataset, in place, as Entwine does
+/// when it builds into an existing output.
+///
+/// The points go into the dataset's octree, whose cube stays: points outside it are refused
+/// (and the dataset left as it was). Each input becomes an entry of the dataset's source list
+/// (`ept-sources/manifest.json`). The points take the dataset's schema: dimensions it has and
+/// the points do not are written as zeros, those it does not have are dropped (with a
+/// warning). The update is written beside the dataset and moved into place once complete,
+/// `ept.json` last; an append interrupted while the files are moved in is completed by the next
+/// one.
+///
+/// Args:
+///     dataset: The EPT dataset: its `ept.json`, or its directory.
+///     inputs: The point clouds to add (LAS, LAZ, COPC, EPT, PLY, E57; paths or URLs), read in
+///         chunks.
+///     bounds: Add the points in `(min_x, min_y, max_x, max_y)` only, in the inputs' CRS.
+///     z_range: Add the points with `z` in `(min, max)` only.
+///     classes: Add the points of these classifications only.
+///     returns: Add these returns only: `"first"`, `"last"`, `"intermediate"`, `"only"`.
+///     a_srs: Assign this CRS to the inputs, without reprojecting.
+///     t_srs: Reproject the inputs' `x` and `y` into this CRS (the dataset's).
+///     chunk_points: The points read at a time (about a million by default).
+///     leaf_points: The most points of a leaf node before it is split (100 000 by default).
+///     memory_points: The most points held in memory at a time (4 000 000 by default).
+#[pyfunction]
+#[pyo3(signature = (
+    dataset, inputs, *, bounds=None, z_range=None, classes=None, returns=None, a_srs=None, t_srs=None, chunk_points=0,
+    leaf_points=None, memory_points=None
+))]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn append_points(
+    py: Python<'_>,
+    dataset: &str,
+    inputs: Vec<String>,
+    bounds: Option<(f64, f64, f64, f64)>,
+    z_range: Option<(f64, f64)>,
+    classes: Option<Vec<u8>>,
+    returns: Option<Vec<String>>,
+    a_srs: Option<&str>,
+    t_srs: Option<&str>,
+    chunk_points: usize,
+    leaf_points: Option<u64>,
+    memory_points: Option<u64>,
+) -> PyResult<()> {
+    let options = pointcloud::ConvertOptions {
+        read: read_options(bounds, z_range, classes, returns, None, None, None)?,
+        assign_srs: a_srs.map(SpatialRef::parse).transpose().py()?,
+        target_srs: t_srs.map(SpatialRef::parse).transpose().py()?,
+        write: PointWriteOptions { copc_leaf_points: leaf_points, copc_memory_points: memory_points, ..Default::default() },
+        chunk_points,
+        append: true,
+        ..Default::default()
+    };
+    let inputs: Vec<&str> = inputs.iter().map(String::as_str).collect();
+    py.detach(|| pointcloud::append_points(dataset, &inputs, &options)).py()
 }
 
 #[pymethods]
@@ -786,7 +852,10 @@ impl PyPointCloud {
     ///     dimensions: PLY and E57: the dimensions written (all by default).
     ///     ept_data_type: EPT (a path ending with `ept.json`): how the nodes' points are stored,
     ///         `"laszip"` (the default), `"binary"` or `"zstandard"`.
-    #[pyo3(signature = (path, *, format=None, point_format=None, minor_version=None, scale=None, offset=None, ply_encoding=None, ply_precision=None, dimensions=None, ept_data_type=None))]
+    ///     ept_bounds: EPT: build the octree's cube around these bounds,
+    ///         `(min_x, min_y, min_z, max_x, max_y, max_z)`, rather than the points', so that
+    ///         points of other files within them can be appended later (`append_points`).
+    #[pyo3(signature = (path, *, format=None, point_format=None, minor_version=None, scale=None, offset=None, ply_encoding=None, ply_precision=None, dimensions=None, ept_data_type=None, ept_bounds=None))]
     #[allow(clippy::too_many_arguments)]
     fn write(
         &self,
@@ -801,9 +870,11 @@ impl PyPointCloud {
         ply_precision: Option<usize>,
         dimensions: Option<Vec<String>>,
         ept_data_type: Option<&str>,
+        ept_bounds: Option<[f64; 6]>,
     ) -> PyResult<()> {
         let mut options = write_options(format, point_format, minor_version, scale, offset)?;
         options.ept_data_type = ept_data_type.map(EptDataType::parse).transpose().py()?.unwrap_or_default();
+        options.ept_bounds = ept_bounds;
         options.ply_encoding = ply_encoding.map(PlyEncoding::parse).transpose().py()?.unwrap_or_default();
         options.ply_precision = ply_precision;
         options.dimensions = dimensions.unwrap_or_default();
@@ -1409,5 +1480,6 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(read_points_bytes, m)?)?;
     m.add_function(wrap_pyfunction!(convert_points, m)?)?;
     m.add_function(wrap_pyfunction!(merge_points, m)?)?;
+    m.add_function(wrap_pyfunction!(append_points, m)?)?;
     Ok(())
 }
