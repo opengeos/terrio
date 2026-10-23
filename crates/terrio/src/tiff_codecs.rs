@@ -317,10 +317,14 @@ impl ChunkCodec {
         let (Some(&offset), Some(&count)) = (self.offsets.get(i), self.counts.get(i)) else {
             return Err(invalid(format!("no TIFF chunk {idx}")));
         };
-        let mut raw = vec![0u8; usize::try_from(count).map_err(|_| invalid("TIFF chunk too large"))?];
         let r = dec.inner();
         r.seek(SeekFrom::Start(offset))?;
-        r.read_exact(&mut raw)?;
+        // The buffer grows as bytes arrive: a corrupt byte count allocates no more than the file holds.
+        let mut raw = Vec::new();
+        r.take(count).read_to_end(&mut raw)?;
+        if raw.len() as u64 != count {
+            return Err(invalid(format!("TIFF chunk {idx}: {} bytes, {count} expected", raw.len())));
+        }
         let (dw, dh) = dec.chunk_data_dimensions(idx);
         let (dw, dh) = (dw as usize, dh as usize);
         // Tiles are coded whole, strips with their own rows.
