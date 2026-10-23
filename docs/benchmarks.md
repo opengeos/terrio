@@ -13,9 +13,11 @@ including start-up, reading and writing.
     compression and decompression, JPEG 2000 decoding) and `gdalwarp -multi -wo NUM_THREADS`, as
     most of GDAL's multithreading is off by default; the other GDAL commands use whatever
     `GDAL_NUM_THREADS` turns on for them. On machines with fewer cores, the parallel cases gain
-    less. Thanks to [#212](https://github.com/opengeos/terrio/issues/212) for pointing out that
-    earlier runs left GDAL's multithreading off. While these ran, another process used about 6 of the machine's
-    40 threads, which slows the parallel cases of both tools.
+    less. Some operations use fewer threads than they are given: terrio's terrain products
+    (hillshade, slope) and `calc` at most 16. Thanks to
+    [#212](https://github.com/opengeos/terrio/issues/212) for pointing out that earlier runs left
+    GDAL's multithreading off. While these ran, another process used about 6 of the machine's 40
+    threads, which slows the parallel cases of both tools.
 
 ## Small files
 

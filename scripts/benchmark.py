@@ -394,9 +394,11 @@ def main():
     ap.add_argument("--remote", action="store_true", help="include remote reads")
     ap.add_argument("--large", help="include the cases on large files in this directory (see scripts/fetch_large_data.sh)")
     ap.add_argument("--large-runs", type=int, default=1, help="timed runs of the large cases")
-    ap.add_argument("--threads", type=int, default=os.cpu_count(), help="threads for each tool (default: all)")
+    ap.add_argument("--threads", type=int, default=os.cpu_count() or 1, help="threads for each tool (default: all)")
     ap.add_argument("--out", help="also write the tables to this file")
     args = ap.parse_args()
+    if args.threads < 1:
+        ap.error("--threads must be 1 or more")
     threads = args.threads
     # No .aux.xml statistics caches: every run computes from the pixels. No directory listing when
     # opening remote files, as recommended for cloud data. The same number of threads for both
