@@ -519,7 +519,7 @@ fn request(method: &str, url: &str, body: Option<&[u8]>, headers: &[(String, Str
         };
         let status = response.status().as_u16();
         // A POST follows only 307 and 308, which keep the method and body.
-        let follows = if body.is_some() { matches!(status, 307 | 308) } else { (300..400).contains(&status) };
+        let follows = if body.is_some() { matches!(status, 307 | 308) } else { matches!(status, 301..=303 | 307 | 308) };
         if follows && let Some(location) = response.headers().get("location").and_then(|v| v.to_str().ok()) {
             redirects += 1;
             if redirects > MAX_REDIRECTS {
