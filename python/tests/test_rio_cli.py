@@ -187,6 +187,9 @@ def test_snuggs():
         ev.eval("(sum (read 1 1) :axis)")
     with pytest.raises(AttributeError):
         ev.eval("(open 'x.txt')")
+    with pytest.raises(AttributeError, match="private"):
+        ev.eval("(__class__ (read 1))")
+    assert ev.eval("(list 1 2)") == [1, 2]
 
 
 def test_from_gcps():

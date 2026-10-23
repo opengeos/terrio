@@ -128,7 +128,8 @@ def parse_bounds(value: str | None) -> tuple[float, ...] | None:
     try:
         text = value.strip(", []")
         out = tuple(float(x) for x in re.split(r"[,\s]+", text))
-        assert len(out) == 4
+        if len(out) != 4:
+            raise ValueError(out)
         return out
     except Exception:
         raise UsageError(
@@ -713,6 +714,8 @@ def cmd_info(args: argparse.Namespace, env: Any) -> None:
             elif member == "checksum":
                 echo(str(src.checksum(args.bidx)))
             elif member:
+                if member not in info:
+                    raise CommandError(f"no {member}: the dataset has no CRS")
                 if isinstance(info[member], (list, tuple)):
                     echo(" ".join(map(str, info[member])))
                 else:
@@ -3121,13 +3124,22 @@ def _higher_funcs() -> dict[str, Callable[..., Any]]:
 _UNSAFE_BUILTINS = {
     "breakpoint",
     "compile",
+    "delattr",
     "eval",
     "exec",
     "exit",
+    "getattr",
+    "globals",
     "help",
     "input",
+    "locals",
+    "memoryview",
     "open",
+    "print",
     "quit",
+    "setattr",
+    "type",
+    "vars",
 }
 
 
@@ -3177,6 +3189,8 @@ class Snuggs:
             return getattr(builtins, name)
 
         def method(g: Any, *args: Any, **kwargs: Any) -> Any:
+            if name.startswith("_"):
+                raise AttributeError(f"private attributes are not available: {name}")
             attr = getattr(g, name)
             return attr(*args, **kwargs) if callable(attr) else attr
 
@@ -3332,6 +3346,10 @@ class Snuggs:
         try:
             return func(*positional, **kwds)
         except TypeError:
+            # snuggs retries builtins taking one iterable (`(list 1 2)`) with the arguments as a
+            # list; other functions' errors are reported as they are.
+            if getattr(builtins, getattr(func, "__name__", ""), None) is not func:
+                raise
             return func(positional, **kwds)
 
     def eval(self, source: str) -> Any:
