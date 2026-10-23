@@ -962,11 +962,16 @@ fn load(name: &str) -> Option<Arc<GridFile>> {
             }
         }
     }
+    // Read in place; a server that cannot be read so (no range requests) falls back to the
+    // download.
     #[cfg(remote)]
-    if bytes.is_none() && network_enabled() && !download_whole() {
-        let file = open_remote(name).map(Arc::new);
-        files().lock().ok()?.insert(name.to_string(), file.clone());
-        return file;
+    if bytes.is_none()
+        && network_enabled()
+        && !download_whole()
+        && let Some(file) = open_remote(name).map(Arc::new)
+    {
+        files().lock().ok()?.insert(name.to_string(), Some(file.clone()));
+        return Some(file);
     }
     #[cfg(remote)]
     let bytes = if bytes.is_none() && network_enabled() { download(name) } else { bytes };
