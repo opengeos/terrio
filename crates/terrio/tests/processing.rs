@@ -99,6 +99,15 @@ fn splitting_and_vertices_preserve_dimensions_attributes_and_provenance() {
     assert_eq!(&nodes.features[0].attributes[2..], &[V::Text(u64::MAX.to_string()), V::Integer(0), V::Null, V::Integer(0)]);
     assert_eq!(&nodes.features[5].attributes[3..], &[V::Integer(2), V::Integer(0), V::Integer(3)]);
     assert_eq!(nodes.crs_epsg(), Some(4326));
+    l.schema.add_field(FieldDef::new("missing", FieldType::Text));
+    let padded = vertices(&l);
+    assert_eq!(padded.len(), 6);
+    for (a, b) in padded.features.iter().zip(&nodes.features) {
+        assert_eq!(a.geometry, b.geometry);
+        assert_eq!(a.attributes[2], V::Null);
+        assert_eq!(&a.attributes[..2], &b.attributes[..2]);
+        assert_eq!(&a.attributes[3..], &b.attributes[2..]);
+    }
 }
 
 fn sample_inputs(ds: &RasterDataset) -> [SampleInput<'_>; 1] {
@@ -159,6 +168,7 @@ fn sampling_reprojects_and_inverts_rotated_grids() {
 
 #[test]
 fn sampling_projection_failures_are_null_for_only_the_affected_raster() {
+    let _ = terrio::warnings::take();
     let mut projected = raster(1, 1, 1, &[42.0], None);
     let ortho = terrio::crs::SpatialRef::parse("+proj=ortho +lat_0=0 +lon_0=0 +datum=WGS84 +units=m").unwrap();
     projected.raster.crs = ortho.to_crs_info();
@@ -174,6 +184,9 @@ fn sampling_projection_failures_are_null_for_only_the_affected_raster() {
         SampleInput { field_name: "geographic".into(), raster: &geographic, band: 1 },
     ];
     let out = sample(&l, &inputs).unwrap();
+    let warnings = terrio::warnings::take();
+    assert_eq!(warnings.len(), 1);
+    assert!(warnings[0].contains("field 'projected'") && warnings[0].contains("1 point into"));
     assert_eq!(out.features[0].attributes[1..], [V::Float(42.0), V::Null]);
     assert_eq!(out.features[1].attributes[1..], [V::Null, V::Float(7.0)]);
     assert_eq!(out.features[2].attributes[1..], [V::Float(42.0), V::Null]);
@@ -182,6 +195,12 @@ fn sampling_projection_failures_are_null_for_only_the_affected_raster() {
         assert_eq!(a.geometry, b.geometry);
         assert_eq!(a.attributes[0], b.attributes[0]);
     }
+    let all_failed = layer(vec![Some(G::point(180.0, 0.0)), Some(G::point(180.0, 0.0))]);
+    let out = sample(&all_failed, &sample_inputs(&projected)).unwrap();
+    assert!(out.features.iter().all(|f| f.attributes[1] == V::Null));
+    let warnings = terrio::warnings::take();
+    assert_eq!(warnings.len(), 1);
+    assert!(warnings[0].contains("2 points into"));
     projected.raster.crs = Default::default();
     projected.raster.crs.epsg = Some(999_999);
     assert!(sample(&l, &sample_inputs(&projected)).is_err(), "CRS setup errors still fail the operation");

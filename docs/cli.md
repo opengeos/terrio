@@ -58,6 +58,7 @@ are ring 0, while non-polygons have a null ring index. Parts follow recursive tr
 The repeated closing vertex of each polygon ring is included, including when the format reader
 omits it internally. Null and empty geometries yield no vertices. Field name collisions are
 resolved case-insensitively with `_2`, `_3`, etc.
+The result is held in memory, with a separate copy of the source attributes for each vertex.
 
 Vector inputs accept repeated `--layer`/`-l`. These commands, `footprint` and `sample` accept
 `-f FORMAT`, `--nln NAME` (one output layer), `--append` and `--overwrite`. As with `convert`,
@@ -100,7 +101,8 @@ Each raster may have a different resolution, affine grid or CRS. Coordinates are
 for sampling while the output retains the original point geometries, Z/M, IDs, attributes and
 CRS. Nodata, non-finite pixels, out-of-bounds locations and null geometries yield null values.
 Points that cannot be projected into a raster's CRS yield null samples for that raster too;
-errors constructing the CRS transformation still fail the command.
+the CLI prints one warning per affected output field with the failure count. Errors constructing
+the CRS transformation still fail the command.
 Non-point geometries are rejected; use `singlepart` for multipart points first. Missing CRSs
 are accepted only when both the points and the raster lack a CRS, using coordinates directly.
 Complex bands and geolocation arrays are unsupported. Rasters are loaded into memory, and

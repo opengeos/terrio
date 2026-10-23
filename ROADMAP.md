@@ -60,6 +60,8 @@ of GDAL: the long tail of formats stays reachable through an optional GDAL backe
       (`gdal_sieve.py`).
 - [x] Centroids, multipart splitting, vertex extraction, exact valid-data raster footprints and
       point sampling across multiple rasters, through the Rust API, CLI and MCP.
+- [x] Polygonization preserves exterior rings and holes on south-up and rotated grids, and
+      classifies rings correctly for small pixels at large coordinate origins.
 - [ ] More vector and raster processing commands from [#211](https://github.com/opengeos/terrio/issues/211):
       contours, buffer, overlay, dissolve, geometry validity/repair, cleanup, a dedicated SQL command
       and multi-raster zonal statistics; tracked in [#227](https://github.com/opengeos/terrio/issues/227).

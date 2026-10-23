@@ -19,6 +19,8 @@ pub struct SampleInput<'a> {
 /// yield null fields. A point that cannot be transformed into a raster's CRS also yields a null
 /// sample for that raster. Failures to construct a CRS transformation remain errors, as do
 /// non-point geometries and non-finite point XY coordinates.
+/// Per-point failures record one warning per output field with their count (see
+/// [`crate::warnings::take`]); the CLI prints it to standard error.
 ///
 /// Rasters may have different affine grids and CRSs; points are transformed for each raster,
 /// leaving their output geometries unchanged. Missing CRSs are allowed only when both point
@@ -73,7 +75,8 @@ pub fn sample(points: &Layer, inputs: &[SampleInput<'_>]) -> Result<Layer> {
         let det = gt[1] * gt[5] - gt[2] * gt[4];
         let name = super::geometry::unique_field(&out, &input.field_name);
         let index = out.schema.len();
-        out.schema.add_field(FieldDef::new(name, FieldType::Float));
+        out.schema.add_field(FieldDef::new(name.clone(), FieldType::Float));
+        let mut projection_failures = 0usize;
         for f in &mut out.features {
             let value = match &f.geometry {
                 Some(Geometry::Point(c)) => {
@@ -84,6 +87,7 @@ pub fn sample(points: &Layer, inputs: &[SampleInput<'_>]) -> Result<Layer> {
                     let (x, y) = match coords {
                         Ok(xy) => xy,
                         Err(_) => {
+                            projection_failures += 1;
                             f.set_by_index(index, FieldValue::Null);
                             continue;
                         }
@@ -109,6 +113,13 @@ pub fn sample(points: &Layer, inputs: &[SampleInput<'_>]) -> Result<Layer> {
             };
             f.attributes.resize(index, FieldValue::Null);
             f.attributes.push(value);
+        }
+        if projection_failures > 0 {
+            let point_label = if projection_failures == 1 { "point" } else { "points" };
+            crate::warnings::warn(format!(
+                "sample field '{name}' in layer '{}': could not transform {projection_failures} {point_label} into the raster CRS; samples set to null",
+                points.name
+            ));
         }
     }
     Ok(out)

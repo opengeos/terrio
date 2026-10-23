@@ -77,7 +77,11 @@ fn sample_keeps_valid_points_after_a_projection_failure() {
     let mut ds = terrio::RasterDataset::new(terrio::Raster::from_data(cfg, vec![42.0]).unwrap(), false);
     ds.raster.crs = terrio::crs::SpatialRef::parse("+proj=ortho +lat_0=0 +lon_0=0 +datum=WGS84 +units=m").unwrap().to_crs_info();
     terrio::write_raster_dataset(&ds, d.join("ortho.tif").to_str().unwrap(), &Default::default()).unwrap();
-    ok(&["sample", "sites.geojson", "samples.gpkg", "--raster", "ortho.tif"], d);
+    let result = run(&["sample", "sites.geojson", "samples.gpkg", "--raster", "ortho.tif"], d);
+    assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
+    let stderr = String::from_utf8_lossy(&result.stderr);
+    assert_eq!(stderr.lines().filter(|l| l.contains("could not transform")).count(), 1);
+    assert!(stderr.contains("warning") && stderr.contains("ortho_b1") && stderr.contains("1 point into"));
     let samples = first(&d.join("samples.gpkg"));
     assert_eq!(samples.len(), 3);
     for (i, value) in [terrio::FieldValue::Float(42.0), terrio::FieldValue::Null, terrio::FieldValue::Float(42.0)].into_iter().enumerate() {

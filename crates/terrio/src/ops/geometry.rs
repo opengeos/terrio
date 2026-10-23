@@ -2,6 +2,7 @@
 //! CRS; reproject geographic data first when a centroid in linear units is needed.
 
 use crate::{Error, Feature, FieldDef, FieldType, FieldValue, Geometry, GeometryType, Layer, Result};
+use std::borrow::Cow;
 use wbvector::{Coord, Ring};
 
 /// One planar, two-dimensional centroid per input feature. Polygon centroids are weighted by
@@ -71,6 +72,8 @@ pub fn singleparts(layer: &Layer) -> Layer {
 /// all u64 IDs), `part_index`, `ring_index` (null outside polygons) and `vertex_index`, all indices
 /// starting at 0. Parts are numbered in recursive traversal order; polygon exteriors are ring 0.
 /// Field name collisions are resolved with `_2`, `_3`, etc. Empty/null geometries yield no points.
+/// Each output point owns its source attributes; the returned layer's memory use therefore
+/// grows with the number of vertices and the size of those attributes.
 ///
 /// ```no_run
 /// let ds = terrio::open_vector("roads.gpkg", &Default::default())?;
@@ -91,14 +94,21 @@ pub fn vertices(layer: &Layer) -> Layer {
     }
     for f in &layer.features {
         let Some(g) = &f.geometry else { continue };
+        let base_attributes = if f.attributes.len() == layer.schema.len() {
+            Cow::Borrowed(f.attributes.as_slice())
+        } else {
+            let mut attributes = f.attributes.clone();
+            attributes.resize(layer.schema.len(), FieldValue::Null);
+            Cow::Owned(attributes)
+        };
         for (part, g) in super::vector_filter::explode(g).iter().enumerate() {
             let mut emit = |coords: &[Coord], ring: Option<usize>| {
                 // Drivers may omit a ring's closing coordinate in the data model. Include it
                 // consistently, whether or not the source format stored it explicitly.
                 let close = ring.is_some() && coords.first().zip(coords.last()).is_some_and(|(a, b)| a.x != b.x || a.y != b.y);
                 for (vertex, c) in coords.iter().chain(coords.first().filter(|_| close)).enumerate() {
-                    let mut attributes = f.attributes.clone();
-                    attributes.resize(layer.schema.len(), FieldValue::Null);
+                    let mut attributes = Vec::with_capacity(out.schema.len());
+                    attributes.extend_from_slice(base_attributes.as_ref());
                     attributes.extend([
                         FieldValue::Text(f.fid.to_string()),
                         FieldValue::Integer(part as i64),
