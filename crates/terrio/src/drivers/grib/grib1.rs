@@ -3,7 +3,7 @@
 //! grid (lat/lon, Gaussian, rotated lat/lon, polar stereographic, Lambert conformal, Mercator),
 //! the bitmap and simple packing, in double precision.
 
-use super::grid::{self, Georef, Gds};
+use super::grid::{self, Gds, Georef};
 use super::tables::{self, UnitConvert};
 use super::{Band, Decoded, MessageReader};
 use crate::{Error, Result};
@@ -104,7 +104,8 @@ fn pds(p: &[u8]) -> Result<Pds> {
     if mon > 12 || day == 0 || day > 31 || hour > 24 || min > 60 {
         return Err(Error::InvalidData(format!("GRIB1: invalid reference time {mon}/{day} {hour}:{min}")));
     }
-    let ref_time = days_from_civil(year, i64::from(mon), i64::from(day)) as f64 * 86400.0 + f64::from(hour) * 3600.0 + f64::from(min) * 60.0;
+    let ref_time =
+        days_from_civil(year, i64::from(mon), i64::from(day)) as f64 * 86400.0 + f64::from(hour) * 3600.0 + f64::from(min) * 60.0;
     let unit = p[17];
     let time_range = p[20];
     let p1 = ref_time + time_v1(i64::from(p[18]), unit).unwrap_or(0.0);
@@ -438,16 +439,7 @@ pub(super) fn bands(r: &mut MessageReader, offset: u64, len: u64) -> Result<Vec<
     } else {
         None
     };
-    Ok(vec![Band {
-        offset,
-        len,
-        items,
-        description: long_level,
-        nodata,
-        size: (g.nx, g.ny),
-        gds2: None,
-        grib1: Some(field),
-    }])
+    Ok(vec![Band { offset, len, items, description: long_level, nodata, size: (g.nx, g.ny), gds2: None, grib1: Some(field) }])
 }
 
 /// Decodes a GRIB1 message (`msg`, the whole message) as degrib does: values from the south-west

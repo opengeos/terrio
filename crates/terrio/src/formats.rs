@@ -66,7 +66,8 @@ pub enum RasterDriver {
     NetCDF,
     /// HDF5 (read only): its datasets as subdatasets, as GDAL's HDF5 driver reads them.
     HDF5,
-    /// GRIB editions 1 and 2 (read only), as GDAL's GRIB driver reads them: a band per message.
+    /// GRIB editions 1 and 2, as GDAL's GRIB driver reads them: a band per message. Written
+    /// through GDAL when the `gdal` feature is enabled.
     GRIB,
     /// GDAL virtual raster (read by [`crate::ops::vrt`]; written by mosaics).
     VRT,
@@ -206,7 +207,8 @@ impl RasterDriver {
             Self::DTED => ("DTED", "DTED Elevation", &["dt0", "dt1", "dt2"], true, true),
             Self::NetCDF => ("netCDF", "Network Common Data Format", &["nc", "nc4", "cdf"], true, true),
             Self::HDF5 => ("HDF5", "Hierarchical Data Format Release 5", &["h5", "hdf5", "he5"], true, false),
-            Self::GRIB => ("GRIB", "GRIdded Binary (.grb, .grb2)", &["grb", "grb2", "grib", "grib2"], true, false),
+            // Written through GDAL when the `gdal` feature is enabled.
+            Self::GRIB => ("GRIB", "GRIdded Binary (.grb, .grb2)", &["grb", "grb2", "grib", "grib2"], true, cfg!(feature = "gdal")),
             Self::VRT => ("VRT", "Virtual Raster", &["vrt"], true, true),
             Self::STACIT => ("STACIT", "Spatio-Temporal Asset Catalog Items", &[], true, false),
             Self::STACTA => ("STACTA", "Spatio-Temporal Asset Catalog Tiled Assets", &[], true, false),

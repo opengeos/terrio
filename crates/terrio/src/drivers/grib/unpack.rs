@@ -58,11 +58,7 @@ fn clamp_f32(v: f64) -> f32 {
 
 /// g2clib's `rdieee`: an IEEE single, infinities and NaNs read as +/-1e37.
 fn rdieee(bits: u32) -> f32 {
-    if (bits >> 23) & 0xff == 255 {
-        if bits >> 31 == 1 { -1e37 } else { 1e37 }
-    } else {
-        f32::from_bits(bits)
-    }
+    if (bits >> 23) & 0xff == 255 { if bits >> 31 == 1 { -1e37 } else { 1e37 } } else { f32::from_bits(bits) }
 }
 
 fn u16_at(b: &[u8], i: usize) -> u16 {
@@ -219,14 +215,16 @@ fn complex(sec5: &[u8], data: &[u8], ndpts: usize, template: u16) -> Result<Vec<
     if nbitsgref != 0 {
         pos += (nbitsgref as usize * ng).div_ceil(8) * 8;
     }
-    let mut gwidth: Vec<i64> = if nbitsgwidth != 0 { gbits(data, pos, nbitsgwidth, ng).into_iter().map(i64::from).collect() } else { vec![0; ng] };
+    let mut gwidth: Vec<i64> =
+        if nbitsgwidth != 0 { gbits(data, pos, nbitsgwidth, ng).into_iter().map(i64::from).collect() } else { vec![0; ng] };
     if nbitsgwidth != 0 {
         pos += (nbitsgwidth as usize * ng).div_ceil(8) * 8;
     }
     for w in &mut gwidth {
         *w += width_ref;
     }
-    let mut glen: Vec<i64> = if nbitsglen != 0 { gbits(data, pos, nbitsglen, ng).into_iter().map(i64::from).collect() } else { vec![0; ng] };
+    let mut glen: Vec<i64> =
+        if nbitsglen != 0 { gbits(data, pos, nbitsglen, ng).into_iter().map(i64::from).collect() } else { vec![0; ng] };
     if nbitsglen != 0 {
         pos += (nbitsglen as usize * ng).div_ceil(8) * 8;
     }
@@ -398,9 +396,8 @@ fn ccsds(sec5: &[u8], p: &Packing, data: &[u8], ndpts: usize) -> Result<Vec<f32>
         return Ok(vec![p.ref_d_png(); ndpts]);
     }
     let template = CCSDSDataRepresentationTemplate::new(sec5.to_vec());
-    let values = template
-        .unpack(data.view_bits::<bitvec::order::Msb0>())
-        .map_err(|e| Error::InvalidData(format!("GRIB2 CCSDS data: {e}")))?;
+    let values =
+        template.unpack(data.view_bits::<bitvec::order::Msb0>()).map_err(|e| Error::InvalidData(format!("GRIB2 CCSDS data: {e}")))?;
     if values.len() < ndpts {
         return Err(Error::InvalidData(format!("GRIB2 CCSDS data of {} values, not {ndpts}", values.len())));
     }

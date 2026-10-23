@@ -48,12 +48,7 @@ const FILES: &[Expected] = &[
         ],
     },
     // Complex packing with missing values, without and with spatial differencing (GDAL wrote both).
-    Expected {
-        file: "complex_missing.grib2",
-        size: (48, 40),
-        gt: LCC_WINDOW,
-        bands: &[(Some(-10.0), 34692.5, "REFC", "0-EATM", EATM)],
-    },
+    Expected { file: "complex_missing.grib2", size: (48, 40), gt: LCC_WINDOW, bands: &[(Some(-10.0), 34692.5, "REFC", "0-EATM", EATM)] },
     Expected {
         file: "complex_sd2_missing.grib2",
         size: (48, 40),
@@ -74,15 +69,20 @@ const FILES: &[Expected] = &[
         bands: &[(None, 50114.0, "unknown", "0-RESERVED", RESERVED)],
     },
     // JPEG 2000 packing (GDAL wrote it), on HRRR's Lambert conformal grid.
-    Expected {
-        file: "jpeg2000_lcc.grib2",
-        size: (48, 40),
-        gt: LCC_WINDOW,
-        bands: &[(None, 34692.5, "REFC", "0-EATM", EATM)],
-    },
+    Expected { file: "jpeg2000_lcc.grib2", size: (48, 40), gt: LCC_WINDOW, bands: &[(None, 34692.5, "REFC", "0-EATM", EATM)] },
     // Constant fields scaled by a decimal factor, in three packings.
-    Expected { file: "jpeg2000_nbits_zero_decimal_scaled.grb2", size: (1, 1), gt: POINT, bands: &[(None, 250.0, "unknown", "0-RESERVED", RESERVED)] },
-    Expected { file: "png_nbits_zero_decimal_scaled.grb2", size: (1, 1), gt: POINT, bands: &[(None, 250.0, "unknown", "0-RESERVED", RESERVED)] },
+    Expected {
+        file: "jpeg2000_nbits_zero_decimal_scaled.grb2",
+        size: (1, 1),
+        gt: POINT,
+        bands: &[(None, 250.0, "unknown", "0-RESERVED", RESERVED)],
+    },
+    Expected {
+        file: "png_nbits_zero_decimal_scaled.grb2",
+        size: (1, 1),
+        gt: POINT,
+        bands: &[(None, 250.0, "unknown", "0-RESERVED", RESERVED)],
+    },
     Expected {
         file: "simple_packing_nbits_zero_decimal_scaled.grb2",
         size: (1, 1),
@@ -95,12 +95,7 @@ const FILES: &[Expected] = &[
         gt: [8974734.73768588, 60.021, 0.0, 6235918.969800107, 0.0, -60.021],
         bands: &[(None, 50879.0, "unknown", "0-RESERVED", RESERVED)],
     },
-    Expected {
-        file: "png_vis.grib2",
-        size: (48, 40),
-        gt: LCC_WINDOW,
-        bands: &[(None, 16424200.0, "VIS", "0-SFC", SFC)],
-    },
+    Expected { file: "png_vis.grib2", size: (48, 40), gt: LCC_WINDOW, bands: &[(None, 16424200.0, "VIS", "0-SFC", SFC)] },
     Expected {
         file: "polar_stereographic.grb2",
         size: (27, 27),
@@ -227,7 +222,12 @@ fn grib_metadata_items_as_gdal() {
         assert_eq!(item(meta, &format!("BAND_1#{k}")).as_deref(), Some(v), "{k}");
     }
     let ids = item(meta, "BAND_1#GRIB_IDS").unwrap();
-    assert!(ids.starts_with("CENTER=7(US-NCEP) SUBCENTER=0 MASTER_TABLE=2 LOCAL_TABLE=0 SIGNF_REF_TIME=1(Start_of_Forecast) REF_TIME=2021-09-19T06:00:00Z"), "{ids}");
+    assert!(
+        ids.starts_with(
+            "CENTER=7(US-NCEP) SUBCENTER=0 MASTER_TABLE=2 LOCAL_TABLE=0 SIGNF_REF_TIME=1(Start_of_Forecast) REF_TIME=2021-09-19T06:00:00Z"
+        ),
+        "{ids}"
+    );
     // Kelvin as Celsius.
     let t = terrio::open_raster(&format!("{DIR}/spatial_differencing_order_1.grb2")).unwrap();
     assert_eq!(item(&t.raster.metadata, "BAND_1#GRIB_UNIT").as_deref(), Some("[C]"));

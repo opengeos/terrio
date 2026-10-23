@@ -116,6 +116,16 @@ of GDAL: the long tail of formats stays reachable through an optional GDAL backe
       as nodata with `GDAL_STACTA_SKIP_MISSING_METATILE`; summaries, whole rasters, windows and
       overviews identical to GDAL's on its STACTA test data and on `gdal raster tile` pyramids,
       local and over HTTP (`scripts/compare_stac_geozarr.py stacta`).
+- [x] GRIB 1 and 2, read only. Done: a pure-Rust driver read as GDAL's GRIB driver reads files (a
+      Float64 band per message or field, GDAL's `GRIB_*` band metadata and descriptions from its
+      tables and degrib's naming rules, its grids, earth shapes and 0-360 rewrapping, units
+      normalized, nodata where bitmaps mask points), GRIB2 packings decoded as g2clib decodes them
+      (simple, complex, spatial differencing, IEEE, JPEG 2000 with the OpenJPEG port, PNG, and CCSDS
+      with gribberish's pure-Rust decoder), GRIB1 simple packing; local files, bytes, and remote
+      files read message by message (NOAA `.idx` and ECMWF `.index` sidecars for the offsets, the
+      headers fetched in parallel); in WebAssembly too. Identical to GDAL, metadata and pixels, on
+      GDAL's GRIB test files, ecCodes', every field of a GFS file, HRRR's and ECMWF's open data
+      (`scripts/compare_grib_with_gdal.py`, the conformance suite's `grib`).
 
 ## 0.5: Bindings and the GDAL backend
 

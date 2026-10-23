@@ -17,6 +17,7 @@ GDAL's drivers (the formats marked * are written that way): see
 | Zarr | Zarr v2 and v3, GeoZarr (`spatial:`, `proj:`, `multiscales`) | ✓ | ✓ | zarr |
 | netCDF | netCDF classic and netCDF-4 (groups included); writes CDF-1/2/5 and netCDF-4 | ✓ | ✓ | nc, nc4, cdf |
 | HDF5 | HDF5 datasets, as GDAL's HDF5 driver reads them | ✓ | | h5, hdf5, he5 |
+| GRIB | GRIB editions 1 and 2, as GDAL's GRIB driver reads them | ✓ | | grb, grb2, grib, grib2 |
 | HFA | ERDAS Imagine (written with the `gdal` feature) | ✓ | ✓* | img |
 | GPKG | GeoPackage tiles and gridded coverages | ✓ | ✓ | gpkg |
 | PMTiles | PMTiles v3 raster tiles (PNG, JPEG, WebP; AVIF read) | ✓ | ✓ | pmtiles |
@@ -152,6 +153,48 @@ reports the complex type and GDAL's band count in `terrio info` (statistics of t
 GDAL computes them), and writes complex GeoTIFFs (`SampleFormat` 5 and 6) that GDAL reads as
 `CInt16`... `CFloat64`. Python's `read()` returns complex arrays. Other formats write the parts as
 bands. Groups that contain themselves (hard links to an ancestor) are walked once.
+
+GRIB files (editions 1 and 2, local, remote or in memory) are read as GDAL's GRIB driver reads
+them, with GDAL's `GRIB_NORMALIZE_UNITS=YES` default and as with `-oo USE_IDX=NO`: a Float64
+band per message (per field of GRIB2 messages that repeat their sections, sub-fields reusing a
+bitmap included), the size and georeferencing of the first, rasters north-up whatever the scanning
+mode, and global grids from 0 to 360 degrees rewrapped to start at -180. Each band has GDAL's
+metadata, `GRIB_ELEMENT`, `GRIB_COMMENT`, `GRIB_UNIT`, `GRIB_SHORT_NAME`, `GRIB_REF_TIME`,
+`GRIB_VALID_TIME`, `GRIB_FORECAST_SECONDS` and, for GRIB2, `GRIB_DISCIPLINE`, `GRIB_IDS`,
+`GRIB_PDS_PDTN`, `GRIB_PDS_TEMPLATE_NUMBERS` and `GRIB_PDS_TEMPLATE_ASSEMBLED_VALUES`
+(`BAND_<n>#GRIB_...` items), and GDAL's description (`2[m] HTGL="Specified height level above
+ground"`): terrio names fields with GDAL's tables (the WMO's, NCEP's, NDFD's, MRMS's and the
+Canadian ones for GRIB2; NCEP's, ECMWF's, DWD's and the others of degrib for GRIB1) and degrib's
+rules (probabilities, percentiles, accumulations, ensemble spreads). Kelvin values are converted to
+Celsius (`[C]` units) unless `GRIB_NORMALIZE_UNITS=NO` is set in the environment. Points a bitmap
+masks are 9999, and the missing values of complex packing its primary missing value, the band's
+nodata value, as GDAL gives them. terrio's raster model holds one nodata value: bands without one
+(GDAL reports none) are listed as such in the `TERRIO#BAND_<n>_NODATA` items, which `terrio.rio`
+reads as its `nodatavals`.
+
+The grids are those GDAL georeferences: GRIB2 regular and rotated latitude/longitude (3.0, 3.1),
+Mercator (3.10), transverse Mercator (3.12), polar stereographic (3.20), Lambert conformal and
+Albers (3.30, 3.31), regular Gaussian (3.40), GDAL's full-disk geostationary view (3.90) and
+Lambert azimuthal equal area (3.140); GRIB1 latitude/longitude, Gaussian, rotated, polar
+stereographic, Lambert conformal and Mercator, with GDAL's earth shapes (NCEP's 6371.2 km sphere
+for GRIB1). GRIB2 values are decoded as GDAL's copy of NCEP's g2clib decodes them, in single
+precision, so that they are GDAL's to the bit: simple packing (5.0), complex packing with and
+without spatial differencing (5.2, 5.3), IEEE floats (5.4), JPEG 2000 (5.40, with the OpenJPEG
+port of the `jp2` feature), PNG (5.41) and CCSDS (5.42, with the pure-Rust decoder of
+[gribberish](https://github.com/mpiannucci/gribberish)); GRIB1 simple packing in double precision,
+as degrib does. Like GDAL, terrio does not read GRIB1 complex (second-order) packing, spherical
+harmonics, reduced (quasi-regular) Gaussian grids, or the unstructured and other GRIB2 grids
+(GDAL reads GRIB1 complex packing as zeros; terrio fails), and the data of a message is decoded when
+its band is read, the decoded bands kept up to 100 MB (GDAL's `GRIB_CACHEMAX`). On GDAL's GRIB
+test files, ecCodes' and real forecasts (every field of a GFS file, HRRR's and ECMWF's open data),
+every band is identical to GDAL's, metadata and pixels (`scripts/compare_grib_with_gdal.py`); a
+1-degree GFS file (696 bands) reads in 0.12 s, GDAL's in 1.0 s.
+
+```sh
+terrio info gfs.t00z.pgrb2.0p25.f000                 # bands, GRIB_* metadata
+terrio translate hrrr.t00z.wrfsfcf00.grib2 t2m.tif -b 71
+GRIB_NORMALIZE_UNITS=NO terrio convert era.grib1 era.tif
+```
 
 GeoPackage rasters are written as GDAL writes them: Byte rasters (1 to 4 bands) as PNG tiles, or
 JPEG with `--compress JPEG`; one-band Int16, UInt16 and Float32 rasters as gridded coverages
@@ -423,7 +466,8 @@ See [Point Clouds](point-clouds.md).
 
 ## In WebAssembly
 
-The browser and Node.js package reads from bytes. JPEG 2000 is read and written there with the same
+The browser and Node.js package reads from bytes. GRIB files are read there too, band by band
+(the full module). JPEG 2000 is read and written there with the same
 codec as natively (written with a nodata value, it comes back as a zip archive of the JP2 file and
 its `.aux.xml` sidecar), and GeoTIFFs in every compression above are read. Formats made
 of several files (Shapefile, MapInfo MIF and TAB) are read from zip archives of their files;

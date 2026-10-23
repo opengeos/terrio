@@ -60,7 +60,7 @@ are not supported.
 
 ## The optional GDAL backend
 
-For the long tail of formats (HDF4, GRIB, NITF, KEA, PCIDSK, SQLite, DXF, spreadsheets...),
+For the long tail of formats (HDF4, NITF, KEA, PCIDSK, SQLite, DXF, spreadsheets...),
 terrio can hand files to GDAL. The backend is a cargo feature, `gdal`, off by default: it is
 terrio's only C dependency, and builds need GDAL 3.4 or later installed where `pkg-config` (or
 `GDAL_HOME`) finds it.

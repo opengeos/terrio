@@ -101,6 +101,55 @@ gdal_jp2=https://raw.githubusercontent.com/OSGeo/gdal/v3.12.2/autotest/gdrivers/
 for f in gmljp2_dtedsm_epsg_4326_axes.jp2 stefan_full_rgba_alpha_1bit.jp2 3_13bit_and_1bit.jp2; do
   [ -e "$f" ] || curl -sSfL -o "$f" "$gdal_jp2/$f"
 done
+# GRIB (scripts/compare_grib_with_gdal.py): GDAL's test files, ecCodes' (GRIB1 and GRIB2, ECMWF's
+# and Meteo-France's), and real forecasts of 2024-10-22 00z from NOAA's buckets on AWS and ECMWF's on Google Cloud:
+# GFS at 1 degree (every field, 41 MB), HRRR's first fields (the file's first 6 messages) and
+# fields of ECMWF's open data (CCSDS packing, bitmaps), cut by their .idx and .index sidecars.
+mkdir -p grib/gdal grib/eccodes grib/real
+for f in CMC_rdwps_lake-erie_ICEC_SFC_0_latlon0.05x0.05_2017111800_P000.grib2 MANAL_2023030103_fake_wrong_grid_origin_latitude.grb2 \
+  MRMS_EchoTop_18_00.50_20161015-133230.grib2 Sample_QuikSCAT.grb albers_equal_area.grb2 broken_combined_grib2_grib1.grb2 \
+  bug3246.grb byte_wrong_earth_shape.grib2 ds.mint.bin gfs.t06z.pgrb2.10p0.f010.grib2 gfs.t06z.pgrb2.1p0.grib2 \
+  gfs.t06z.pgrb2.1p0.partial_across_am.grib2 gfs.t06z.pgrb2.1p0.partial_east_of_am.grib2 \
+  gfs.t06z.pgrb2.1p0.partial_west_of_am.grib2 gfswave-11.t00z.global.0p25.f000.grib2 ieee754_double.grb2 ieee754_single.grb2 \
+  jpeg2000_nbits_zero_decimal_scaled.grb2 laea_with_negative_longitudes_issue_7456.grib2 lambert_azimuthal_equal_area.grb2 \
+  lambert_conformal_conic.grb2 mercator.grb2 mercator_2sp.grb2 minx_180.grib2 one_one.grib2 one_value_and_nodata_points.grb2 \
+  parameter_in_wmo_tables_only.grb2 png_nbits_zero_decimal_scaled.grb2 polar_stereographic.grb2 \
+  simple_packing_nbits_zero_decimal_scaled.grb2 spatial_differencing_order_1.grb2 subgrids.grib2 subgrids_reuse_bitmap.grib2 \
+  template_4_12_spread.grb2 template_4_15.grb2 template_4_40.grb2 template_4_48.grb2 template_4_65535.grb2 \
+  template_5_42_ccsds_aec.grb2 transverse_mercator.grb2 twenty-se27w.2017102006.hwrfsat.core.0p02.f000_truncated.grb2 \
+  two_bands_with_bitmap.grib2; do
+  [ -e "grib/gdal/$f" ] || curl -sSfL -o "grib/gdal/$f" "$gdal_data/grib/$f"
+done
+eccodes=https://get.ecmwf.int/repository/test-data/eccodes/data
+for f in regular_latlon_surface.grib1 regular_latlon_surface.grib2 regular_latlon_surface_constant.grib1 \
+  regular_latlon_surface_constant.grib2 regular_gaussian_surface.grib1 regular_gaussian_surface.grib2 \
+  regular_gaussian_model_level.grib2 regular_gaussian_pressure_level.grib1 regular_gaussian_pressure_level_constant.grib2 \
+  constant_field.grib1 constant_field.grib2 jpeg.grib2 ccsds.grib2 mercator.grib2 tigge_pf_ecmwf.grib2 tigge_cf_ecmwf.grib2 \
+  tigge_af_ecmwf.grib2 gfs.complex.mvmu.grib2 gfs.c255.grib2 grid_complex_spatial_differencing.grib2 lfpw.grib2 \
+  missing.grib2 multi_created.grib2 sample.grib2 spherical_pressure_level.grib1 msl.octa.glob.grib1 missing_field.grib1 \
+  reference_stdev.grib1 small_ensemble.grib1 tp_ecmwf.grib simple_bitmap.grib constant_width_bitmap.grib \
+  gen_ext_boust_bitmap.grib grid_ieee.grib latlon.grib timeRangeIndicator_10.grib gep10.t12z.pgrb2af78.grib2; do
+  [ -e "grib/eccodes/$f" ] || curl -sSfL -o "grib/eccodes/$f" "$eccodes/$f"
+done
+gfs=https://noaa-gfs-bdp-pds.s3.amazonaws.com/gfs.20241022/00/atmos/gfs.t00z.pgrb2.1p00.f000
+[ -e grib/real/gfs.t00z.pgrb2.1p00.f000.grib2 ] || curl -sSfL -o grib/real/gfs.t00z.pgrb2.1p00.f000.grib2 "$gfs"
+hrrr=https://noaa-hrrr-bdp-pds.s3.amazonaws.com/hrrr.20241022/conus/hrrr.t00z.wrfsfcf00.grib2
+if [ ! -e grib/real/hrrr.t00z.wrfsfcf00.head.grib2 ]; then
+  end=$(curl -sSfL "$hrrr.idx" | awk -F: '$1 == 7 { print $2 - 1 }')
+  curl -sSfL -r "0-$end" -o grib/real/hrrr.t00z.wrfsfcf00.head.grib2 "$hrrr"
+fi
+ecmwf=https://storage.googleapis.com/ecmwf-open-data/20241022/00z/ifs/0p25/oper/20241022000000-0h-oper-fc
+# Retried when the bucket asks to slow down (503), and skipped when it still refuses.
+if [ ! -e grib/real/ecmwf.20241022000000-0h-oper-fc.fields.grib2 ] &&
+  curl -sSfL --retry 5 --retry-delay 5 -o grib/real/ecmwf.index "$ecmwf.index"; then
+  ok=1
+  for param in 2t msl 10u sst tcwv sp; do
+    grep "\"param\": \"$param\"" grib/real/ecmwf.index | head -1 | sed -E 's/.*"_offset": ([0-9]+), "_length": ([0-9]+).*/\1 \2/' |
+      while read -r off len; do curl -sSfL --retry 5 --retry-delay 5 -r "$off-$((off + len - 1))" "$ecmwf.grib2"; done || ok=0
+  done > grib/real/ecmwf.part
+  if [ "$ok" = 1 ]; then mv grib/real/ecmwf.part grib/real/ecmwf.20241022000000-0h-oper-fc.fields.grib2; fi
+  rm -f grib/real/ecmwf.index grib/real/ecmwf.part
+fi
 for z in ne_countries ne_places nybb; do [ -d "$z" ] || unzip -q -o "$z.zip" -d "$z"; done
 # OSM XML, when osmium is installed.
 if [ ! -e liechtenstein.osm ] && command -v osmium >/dev/null; then

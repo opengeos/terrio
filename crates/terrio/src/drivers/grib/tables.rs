@@ -165,9 +165,7 @@ impl Tables {
     /// The subcenter's name (`grib2_subcenter.csv`).
     pub(super) fn subcenter(&self, center: u16, subcenter: u16) -> Option<&str> {
         let (i, rows) = self.rows("grib2_subcenter.csv", &["center_code", "subcenter_code", "name"])?;
-        rows.iter()
-            .find(|r| atoi(&r[i[0]]) == i64::from(center) && atoi(&r[i[1]]) == i64::from(subcenter))
-            .map(|r| r[i[2]].as_str())
+        rows.iter().find(|r| atoi(&r[i[0]]) == i64::from(center) && atoi(&r[i[1]]) == i64::from(subcenter)).map(|r| r[i[2]].as_str())
     }
 
     /// degrib's `GetGrib2Table4_2_Record`: the parameter in the WMO tables (merged with degrib's).
@@ -188,9 +186,9 @@ impl Tables {
             .find(|r| atoi(&r[i[0]]) == i64::from(center) && (r[i[1]].is_empty() || atoi(&r[i[1]]) == i64::from(subcenter)))
             .map(|r| r[i[2]].clone())?;
         let (i, rows) = self.rows(&file, &["prod", "cat", "subcat", "short_name", "name", "unit", "unit_conv"])?;
-        let r = rows.iter().find(|r| {
-            atoi(&r[i[0]]) == i64::from(prod) && atoi(&r[i[1]]) == i64::from(cat) && atoi(&r[i[2]]) == i64::from(subcat)
-        })?;
+        let r = rows
+            .iter()
+            .find(|r| atoi(&r[i[0]]) == i64::from(prod) && atoi(&r[i[1]]) == i64::from(cat) && atoi(&r[i[2]]) == i64::from(subcat))?;
         Some(Param { short: &r[i[3]], name: &r[i[4]], unit: &r[i[5]], convert: UnitConvert::parse(&r[i[6]]) })
     }
 
@@ -240,14 +238,19 @@ pub(super) fn fmt_g(v: f64) -> String {
         return if v.is_sign_negative() { "-0".into() } else { "0".into() };
     }
     if !v.is_finite() {
-        return if v.is_nan() { "nan".into() } else if v > 0.0 { "inf".into() } else { "-inf".into() };
+        return if v.is_nan() {
+            "nan".into()
+        } else if v > 0.0 {
+            "inf".into()
+        } else {
+            "-inf".into()
+        };
     }
     let sci = format!("{v:.5e}");
     let (mantissa, exp) = sci.split_once('e').unwrap_or((&sci, "0"));
     let exp: i32 = exp.parse().unwrap_or(0);
-    let strip = |s: &str| -> String {
-        if s.contains('.') { s.trim_end_matches('0').trim_end_matches('.').to_string() } else { s.to_string() }
-    };
+    let strip =
+        |s: &str| -> String { if s.contains('.') { s.trim_end_matches('0').trim_end_matches('.').to_string() } else { s.to_string() } };
     if !(-4..6).contains(&exp) {
         let sign = if exp < 0 { '-' } else { '+' };
         format!("{}e{sign}{:02}", strip(mantissa), exp.abs())
@@ -399,8 +402,7 @@ fn elem_prob(e: &ElemInput) -> ElemName {
                     let name = if upper != 0.254 { format!("PoP{len:02}{suf}-{code:03}") } else { format!("PoP{len:02}{suf}") };
                     (name, format!("{sp} Prob of Precip > {} In.", fmt_g(upper / 25.4)))
                 } else {
-                    let name =
-                        if upper != 0.254 && upper != 300.0 { format!("PoP{len:02}-{code:03}") } else { format!("PoP{len:02}") };
+                    let name = if upper != 0.254 && upper != 300.0 { format!("PoP{len:02}-{code:03}") } else { format!("PoP{len:02}") };
                     let comment = if upper != 300.0 {
                         format!("{sp} Prob of Precip > {} In.", fmt_g(upper / 25.4))
                     } else {
@@ -425,12 +427,15 @@ fn elem_prob(e: &ElemInput) -> ElemName {
         let name = if e.time_incr_type == 2 { format!("ProbWindSpd{k:02}i") } else { format!("ProbWindSpd{k:02}c") };
         return done(name, format!("{sp} Prob of Wind speed > {} m/s", fmt_g(upper)));
     }
-    let generic =
-        if e.master_version != 255 { t.table_4_2(e.prod_type, e.cat, e.subcat) } else { None }.filter(|p| p.name != "Reserved for local use");
+    let generic = if e.master_version != 255 { t.table_4_2(e.prod_type, e.cat, e.subcat) } else { None }
+        .filter(|p| p.name != "Reserved for local use");
     let (lower, upper) = (e.lower_prob, upper);
     if let Some(p) = generic {
-        let (mut name, mut comment) =
-            if len > 0 { (format!("Prob{}{len:02}{suf}", p.short), format!("{sp} Prob of {} ", p.name)) } else { (format!("Prob{}", p.short), format!("Prob of {} ", p.name)) };
+        let (mut name, mut comment) = if len > 0 {
+            (format!("Prob{}{len:02}{suf}", p.short), format!("{sp} Prob of {} ", p.name))
+        } else {
+            (format!("Prob{}", p.short), format!("Prob of {} ", p.name))
+        };
         let tmp_ndfd = (ndfd || mos) && p.short == "TMP";
         let rename = |kind: &str| if len > 0 { format!("Prob{}{kind}{len:02}{suf}", p.short) } else { format!("Prob{}{kind}", p.short) };
         match e.prob_type {
@@ -460,8 +465,11 @@ fn elem_prob(e: &ElemInput) -> ElemName {
         return done(name, comment);
     }
     if let Some(p) = t.local_4_2(e.center, e.subcenter, e.prod_type, e.cat, e.subcat) {
-        let (name, mut comment) =
-            if len > 0 { (format!("Prob{}{len:02}{suf}", p.short), format!("{sp} Prob of {} ", p.name)) } else { (format!("Prob{}", p.short), format!("Prob of {} ", p.name)) };
+        let (name, mut comment) = if len > 0 {
+            (format!("Prob{}{len:02}{suf}", p.short), format!("{sp} Prob of {} ", p.name))
+        } else {
+            (format!("Prob{}", p.short), format!("Prob of {} ", p.name))
+        };
         match e.prob_type {
             0 => comment.push_str(&format!("< {} {}", fmt_g(lower), p.unit)),
             1 => comment.push_str(&format!("> {} {}", fmt_g(upper), p.unit)),
@@ -484,8 +492,8 @@ fn elem_perc(e: &ElemInput) -> ElemName {
     let comment_of = |name: &str| {
         if len > 0 { format!("{sp} {name} Percentile({pct})") } else { format!("{name} Percentile({pct})") }
     };
-    let generic =
-        if e.master_version != 255 { t.table_4_2(e.prod_type, e.cat, e.subcat) } else { None }.filter(|p| p.name != "Reserved for local use");
+    let generic = if e.master_version != 255 { t.table_4_2(e.prod_type, e.cat, e.subcat) } else { None }
+        .filter(|p| p.name != "Reserved for local use");
     if let Some(p) = generic {
         let unit = format!("[{}]", p.unit);
         if is_ndfd(e.center, e.subcenter) || is_mos(e.center, e.subcenter) {
@@ -563,8 +571,8 @@ fn elem_norm(e: &ElemInput) -> ElemName {
             return ElemName { element: n.to_string(), comment: c.to_string(), unit, convert: UnitConvert::Log10 };
         }
     }
-    let generic =
-        if e.master_version != 255 { t.table_4_2(e.prod_type, e.cat, e.subcat) } else { None }.filter(|p| p.name != "Reserved for local use");
+    let generic = if e.master_version != 255 { t.table_4_2(e.prod_type, e.cat, e.subcat) } else { None }
+        .filter(|p| p.name != "Reserved for local use");
     if let Some(p) = generic {
         let unit = format!("[{}]", p.unit);
         let named = |element: String, comment: String| ElemName { element, comment, unit: unit.clone(), convert: p.convert };

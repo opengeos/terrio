@@ -268,7 +268,8 @@ pub fn open(bytes: Vec<u8>, filename: &str) -> Result<Dataset, JsError> {
     let is_tiff = matches!(bytes.get(..4), Some(b"II*\0" | b"MM\0*" | b"II+\0" | b"MM\0+"));
     // GRIB: "GRIB" and an edition of 1 or 2 within the first bytes.
     let head = &bytes[..bytes.len().min(316)];
-    let is_grib = cfg!(feature = "grib") && (0..head.len().saturating_sub(7)).any(|i| &head[i..i + 4] == b"GRIB" && matches!(head[i + 7], 1 | 2));
+    let is_grib =
+        cfg!(feature = "grib") && (0..head.len().saturating_sub(7)).any(|i| &head[i..i + 4] == b"GRIB" && matches!(head[i + 7], 1 | 2));
     if is_tiff || is_grib {
         return Ok(Dataset::from_lazy(terrio::memory::open_raster_lazy_bytes(bytes, filename).map_err(js_err)?));
     }

@@ -23,6 +23,7 @@ Suites:
     streams           streamed vector conversions vs whole ones and ogr2ogr
                       (compare_streams_with_gdal.py)
     tiles             PMTiles, MBTiles and MVT read and written vs GDAL (compare_tiles_with_gdal.py)
+    grib              GRIB1 and GRIB2 files band by band vs GDAL's GRIB driver (compare_grib_with_gdal.py)
     pointclouds       LAS, LAZ and COPC vs laspy and PDAL (compare_pointclouds.py)
     crs               every EPSG CRS's transformations vs GDAL's (tests/epsg_accuracy.rs)
     crs-grids         the same with datum shift grids, then grids, geoid models and coordinate
@@ -875,6 +876,38 @@ def suite_tiles(ctx):
     return s
 
 
+def suite_grib(ctx):
+    """GRIB files, band by band, against GDAL's GRIB driver."""
+    s = Suite(
+        "grib",
+        "GRIB",
+        "GDAL's GRIB driver (degrib and g2clib)",
+        "GDAL's GRIB test files, ecCodes' and real forecasts (NOAA's GFS and HRRR, ECMWF's open data): "
+        "sizes, geotransforms (1e-9 relative) and CRSs, every band's description, `GRIB_*` metadata "
+        "and nodata value exactly, and its pixels (identical, or within one Float32 unit in the last "
+        "place), with units normalized (GDAL's default) and as stored.",
+    )
+    dirs = [os.path.abspath(os.path.join(ctx.data, "grib", d)) for d in ("real", "gdal", "eccodes")]
+    dirs = [d for d in dirs if os.path.isdir(d)]
+    if not dirs:
+        s.skipped = "no GRIB data (scripts/fetch_test_data.sh)"
+        return s
+    missing = missing_modules("numpy", "osgeo", "terrio")
+    if missing:
+        s.skipped = f"needs {', '.join(missing)}"
+        return s
+    _code, out, err = run([sys.executable, str(SCRIPTS / "compare_grib_with_gdal.py"), *dirs, "--raw"])
+    for line in out.splitlines():
+        m = re.match(r"^(OK|TOL|DIFF)\s+(\S+?)/(\S+?)( \(units as stored\))?: (.*)$", line)
+        if m:
+            status = {"OK": IDENTICAL, "TOL": TOLERANCE}.get(m[1], DIFFERS)
+            group = {"real": "real forecasts", "gdal": "GDAL's test files", "eccodes": "ecCodes' test files"}.get(m[2], m[2])
+            s.cases.append(Case(group, m[3] + (m[4] or ""), status, "" if status == IDENTICAL else m[5]))
+    if not s.cases:
+        s.error = tail(err or out)
+    return s
+
+
 SUITES = OrderedDict(
     [
         ("summaries", suite_summaries),
@@ -890,6 +923,7 @@ SUITES = OrderedDict(
         ("gpkg", suite_gpkg),
         ("streams", suite_streams),
         ("tiles", suite_tiles),
+        ("grib", suite_grib),
         ("pointclouds", suite_pointclouds),
         ("crs", suite_crs),
         ("crs-grids", suite_crs_grids),

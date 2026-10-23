@@ -310,6 +310,19 @@ for (const name of RASTERS) {
 /** A band's sum of pixels weighted by their position, `value * (index % 251)`. */
 const weightedSum = (band) => band.reduce((s, v, i) => s + v * (i % 251), 0);
 
+test("GRIB read band by band", { skip: needs("grib") }, () => {
+  // Two fields of one message, the second reusing the first's bitmap (GDAL's test file).
+  const name = "subgrids_reuse_bitmap.grib2";
+  const ds = terrio.open(readFileSync(new URL(`../../crates/terrio/tests/data/grib/${name}`, import.meta.url)), name);
+  assert.deepEqual([ds.kind, ds.width, ds.height, ds.count, ds.dtype, ds.nodata], ["raster", 20, 20, 2, "float64", 9999]);
+  // The sums of GDAL 3.12.2's values (crates/terrio/tests/grib.rs).
+  const sum = (band) => band.reduce((s, v) => s + v, 0);
+  assert.deepEqual([sum(ds.readBand(1)), sum(ds.readBand(2))], [50706, 51294]);
+  const metadata = Object.fromEntries(ds.info().metadata);
+  assert.equal(metadata["BAND_1#GRIB_ELEMENT"], "UGRD");
+  assert.equal(metadata["BAND_2#GRIB_ELEMENT"], "VGRD");
+});
+
 // JPEG 2000 files as GDAL 3.12.2 (JP2OpenJPEG) reads them: size, type, CRS, geotransform and each
 // band's weighted sum (computed with NumPy).
 const JPEG2000 = [

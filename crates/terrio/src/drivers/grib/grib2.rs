@@ -469,15 +469,7 @@ fn section(r: &mut MessageReader, offset: u64, pos: usize) -> Result<Vec<u8>> {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn band(
-    r: &mut MessageReader,
-    offset: u64,
-    len: u64,
-    discipline: u8,
-    sec1: &[u8],
-    s: FieldSections,
-    normalize: bool,
-) -> Result<Band> {
+fn band(r: &mut MessageReader, offset: u64, len: u64, discipline: u8, sec1: &[u8], s: FieldSections, normalize: bool) -> Result<Band> {
     let sec3 = section(r, offset, s.sec3)?;
     let sec4 = section(r, offset, s.sec4)?;
     let sec5 = section(r, offset, s.sec5)?;

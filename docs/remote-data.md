@@ -96,6 +96,19 @@ terrio convert $B04 window.tif --srcwin 2000 6000 1024 1024
 terrio convert $B04 small.tif --overview 3
 ```
 
+GRIB files (`.grib2`, `.grb`, and NOAA's names such as `gfs.t00z.pgrb2.0p25.f000`) are read in
+place too: opening reads each message's first sections with a small range request, the requests
+sent in parallel at the offsets of the file's NOAA `.idx` or ECMWF `.index` sidecar when it has one
+(otherwise the messages are found one after another by their lengths first), and reading a band
+fetches its message alone. Opening a 1-degree GFS file (696 messages) fetches 3 MB of its 42 MB;
+HRRR's surface file (170 messages), 0.7 MB.
+
+```sh
+GFS=https://noaa-gfs-bdp-pds.s3.amazonaws.com/gfs.20241022/00/atmos/gfs.t00z.pgrb2.1p00.f000
+terrio info $GFS                                         # 696 bands with GDAL's GRIB metadata
+terrio translate $GFS q.tif -b 581                       # one message fetched and decoded
+```
+
 ## STAC
 
 STAC items, item collections, collections and STAC API searches are read from their URLs (see

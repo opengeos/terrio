@@ -85,14 +85,13 @@ archived inputs, lazy COG reads, GDAL-style operations and the command line.
 ### Other pure-Rust GDAL alternatives
 
 [OxiGeo](https://github.com/cool-japan/oxigeo) (formerly OxiGDAL) shares the goal of a pure-Rust
-GDAL alternative and lists formats terrio doesn't read, such as GRIB. We haven't
-compared the two. terrio's emphasis is narrower: a smaller set of formats, each checked against
+GDAL alternative and lists formats terrio doesn't read. We haven't compared the two. terrio's emphasis is narrower: a smaller set of formats, each checked against
 GDAL file by file in CI, and a command line that mirrors GDAL's. If a format you need is in
 another library and not in terrio, use it.
 
 ## When to use something else
 
-- **You need many formats terrio doesn't have** (File Geodatabase, MrSID, GRIB, HDF, databases):
+- **You need many formats terrio doesn't have** (File Geodatabase, MrSID, HDF4, databases):
   use GDAL, directly, through the `gdal` crate, or through terrio's `gdal` feature.
 - **You need the fastest conversion or warping today:** GDAL. terrio is faster for some tasks and
   slower for others; see [Benchmarks](benchmarks.md).

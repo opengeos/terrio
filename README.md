@@ -138,14 +138,14 @@ Datasets can also be opened from bytes and written to bytes (`terrio::memory`), 
 already in memory and for WebAssembly, which has no file system.
 
 An optional GDAL backend (the `gdal` cargo feature, off by default and the only C dependency)
-opens what terrio has no driver for (HDF4, GRIB, NITF and the rest of GDAL's formats)
+opens what terrio has no driver for (HDF4, NITF and the rest of GDAL's formats)
 into the same data model, and writes rasters with GDAL's drivers: `terrio::open("GDAL:file.hdf")`,
 `terrio info --driver gdal`, or a plain path when terrio's own drivers cannot open it.
 
 Every driver is on by default; each family of them is a cargo feature that can be turned off,
 for a smaller dependency tree and WebAssembly module: `parquet`, `remote` (URLs and object
 storage), `netcdf-hdf5`, `sqlite` (GeoPackage), `tiles` (MBTiles, PMTiles, MVT), `avif`, `zarr`,
-`jp2`, `flatgeobuf`, `osm`, `pointcloud`, `lerc` and `lzma`. GeoTIFF and COG, the plain raster
+`jp2`, `grib`, `flatgeobuf`, `osm`, `pointcloud`, `lerc` and `lzma`. GeoTIFF and COG, the plain raster
 and vector formats, the CRS engine and the operations are always built. A COG writer, say,
 needs only:
 

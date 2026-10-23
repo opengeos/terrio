@@ -110,7 +110,7 @@ maturin build --release --features gdal && pip install ../target/wheels/terrio-*
 ```
 
 `terrio.open_raster`, `terrio.open_vector` and `terrio.rio.open` then fall back to GDAL for the
-formats terrio doesn't read itself (NITF, HDF4, GRIB...). The wheel links the GDAL found at build
+formats terrio doesn't read itself (NITF, HDF4...). The wheel links the GDAL found at build
 time, which must stay installed.
 
 ## JavaScript

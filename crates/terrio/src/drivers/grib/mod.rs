@@ -581,7 +581,9 @@ fn has_grib_name(path: &str) -> bool {
     if [".grb", ".grb2", ".grib", ".grib2", ".grb1", ".grib1"].iter().any(|e| name.ends_with(e)) {
         return true;
     }
-    (name.contains("grb") || name.contains("grib")) && crate::formats::RasterDriver::for_extension(name).is_none() && !name.ends_with(".idx")
+    (name.contains("grb") || name.contains("grib"))
+        && crate::formats::RasterDriver::for_extension(name).is_none()
+        && !name.ends_with(".idx")
 }
 
 /// Opens a remote GRIB file: its messages from a sidecar index when there is one (NOAA's `.idx`
@@ -590,7 +592,10 @@ fn has_grib_name(path: &str) -> bool {
 #[cfg(remote)]
 fn open_remote(remote: crate::http::Remote) -> Result<Opened> {
     let fetcher = crate::http::ObjectFetcher::new();
-    let reader = crate::http::RangeReader::open_with(&remote, crate::http::HttpOptions { block_size: CHUNK as u64, ..crate::http::HttpOptions::from_env() })?;
+    let reader = crate::http::RangeReader::open_with(
+        &remote,
+        crate::http::HttpOptions { block_size: CHUNK as u64, ..crate::http::HttpOptions::from_env() },
+    )?;
     let len = reader.len();
     let offsets = index_offsets(&fetcher, &remote, len);
     let src: Arc<dyn Source> = Arc::new(RemoteSource { remote, fetcher, len });

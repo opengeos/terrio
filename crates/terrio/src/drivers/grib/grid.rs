@@ -411,7 +411,10 @@ pub(super) fn georef(g: &Gds) -> Georef {
     };
     let invalid_earth = g.maj_earth < 0.0 || g.min_earth < 0.0;
     let geogcs = if g.sphere || a == b {
-        format!("GEOGCS[\"Coordinate System imported from GRIB file\",DATUM[\"unnamed\",SPHEROID[\"Sphere\",{},0]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]]", n(a))
+        format!(
+            "GEOGCS[\"Coordinate System imported from GRIB file\",DATUM[\"unnamed\",SPHEROID[\"Sphere\",{},0]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]]",
+            n(a)
+        )
     } else {
         let finv = a / (a - b);
         if (a - 6378137.0).abs() < 0.01 && (finv - 298.257223563).abs() < 1e-9 {
@@ -474,7 +477,11 @@ pub(super) fn georef(g: &Gds) -> Georef {
         // The first grid point, from longitude and latitude to the projection.
         let lon = lon_360_to_180(g.lon1);
         let projected = crs.as_deref().and_then(|wkt| {
-            let geog_wkt = if geogcs == "EPSG:4326" { wkt.split_once(",PROJECTION").map(|(a, _)| a.trim_start_matches("PROJCS[\"unnamed\",").to_string()) } else { Some(geogcs.clone()) }?;
+            let geog_wkt = if geogcs == "EPSG:4326" {
+                wkt.split_once(",PROJECTION").map(|(a, _)| a.trim_start_matches("PROJCS[\"unnamed\",").to_string())
+            } else {
+                Some(geogcs.clone())
+            }?;
             let src = crate::crs::SpatialRef::from_wkt(&geog_wkt);
             let dst = crate::crs::SpatialRef::from_wkt(wkt);
             crate::crs::Transformer::new(&src, &dst).ok()?.transform(lon, g.lat1).ok()

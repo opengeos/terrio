@@ -749,6 +749,10 @@ fn write_raster_with_nodata(raster: &Raster, nodata: Option<f64>, complex: bool,
         }
         return crate::gdal_backend::write_raster_with(raster, nodata, complex, path, "HFA", &co);
     }
+    #[cfg(feature = "gdal")]
+    if driver == RasterDriver::GRIB {
+        return crate::gdal_backend::write_raster_with(raster, nodata, complex, path, "GRIB", &options.creation_options);
+    }
     let compression = options.compression.as_deref().map(parse_compression).transpose()?;
     match driver {
         RasterDriver::Cog => {
