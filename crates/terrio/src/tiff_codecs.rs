@@ -3,7 +3,10 @@
 //! (where the crate's Zstandard, a C library, is left out). And JPEG, decoded as libjpeg
 //! decodes it for GDAL ([`crate::jpeg`]), YCbCr converted to RGB. And unsigned samples packed in
 //! 9 to 31 bits (GDAL's `NBITS`, as written for Sentinel-2's 15-bit bands), in any of the
-//! lossless compressions, read as UInt16 or UInt32 as GDAL reads them.
+//! lossless compressions, read as UInt16 or UInt32 as GDAL reads them. And pixel-interleaved RGB
+//! or CMYK with samples besides the color ones and an alpha (NAIP's near-infrared band, as
+//! `gdalwarp` and the Planetary Computer's COGs store it), which the crate reads with too few
+//! samples per pixel.
 
 use std::io::{Read, Seek, SeekFrom};
 use tiff::decoder::{ChunkType, Decoder, DecodingResult};
@@ -34,6 +37,11 @@ enum Codec {
     /// Unsigned samples of 9 to 31 bits (not 16), packed MSB first with each row starting on a
     /// byte, under compression `.0`.
     Packed(u16),
+    /// Pixel-interleaved RGB or CMYK with more samples than the `tiff` crate's color type holds
+    /// (unspecified extra samples, as `gdalwarp` writes NAIP's near-infrared band), under the
+    /// lossless compression `.0`: the crate reads such chunks with the color type's samples, which
+    /// scrambles every band.
+    Chunky(u16),
 }
 
 /// A sample type of the TIFF image.
@@ -150,6 +158,29 @@ fn decompress(compression: u16, raw: Vec<u8>, limit: usize) -> TiffResult<Vec<u8
     Ok(out)
 }
 
+/// Whether the `tiff` crate reads the pixel-interleaved chunks of an image of `samples` samples
+/// with fewer (or more) samples per pixel than the file holds: RGB and CMYK images whose
+/// `ExtraSamples` leave samples beyond the color ones and an alpha, or that have more samples than
+/// `ExtraSamples` accounts for. The crate's color type counts the color samples and one alpha
+/// only, and its reader lays the chunk out with that count (#208).
+fn crate_misreads_samples(photometric: Option<u16>, samples: usize, extra: &[u16]) -> bool {
+    let colors = match photometric {
+        Some(2) => 3,
+        Some(5) => 4,
+        _ => return false,
+    };
+    let alpha = matches!(extra.first(), Some(1 | 2));
+    let read = match samples.checked_sub(extra.len()) {
+        // The crate rejects these images when it opens them.
+        None => return false,
+        Some(n) if n == colors => colors + usize::from(alpha),
+        Some(n) if n == colors + 1 => colors + 1,
+        // The crate reports an unsupported color type.
+        Some(_) => 0,
+    };
+    read != samples
+}
+
 /// An error with a message, as the `tiff` crate reports I/O errors.
 fn invalid(msg: impl Into<String>) -> TiffError {
     TiffError::IoError(std::io::Error::new(std::io::ErrorKind::InvalidData, msg.into()))
@@ -198,6 +229,11 @@ impl ChunkCodec {
         let compression = dec.find_tag_unsigned::<u16>(Tag::Compression)?.unwrap_or(1);
         let first = |v: Option<Vec<u16>>, default: u16| v.and_then(|v| v.first().copied()).unwrap_or(default);
         let packed_bits = first(dec.find_tag_unsigned_vec::<u16>(Tag::BitsPerSample)?, 1);
+        let samples = dec.find_tag_unsigned::<u16>(Tag::SamplesPerPixel)?.unwrap_or(1).max(1) as usize;
+        let planar = dec.find_tag_unsigned::<u16>(Tag::PlanarConfiguration)? == Some(2);
+        let extra = dec.find_tag_unsigned_vec::<u16>(Tag::ExtraSamples)?.unwrap_or_default();
+        let photometric = dec.find_tag_unsigned::<u16>(Tag::PhotometricInterpretation)?;
+        let misread = !planar && crate_misreads_samples(photometric, samples, &extra);
         let codec = match compression {
             _ if (9..32).contains(&packed_bits) && packed_bits != 16 => Codec::Packed(compression),
             LERC => Codec::Lerc,
@@ -206,6 +242,7 @@ impl ChunkCodec {
             ZSTD if cfg!(target_arch = "wasm32") => Codec::Zstd,
             5 => Codec::Lzw,
             7 => Codec::Jpeg,
+            1 | 8 | 32946 | 32773 | ZSTD if misread => Codec::Chunky(compression),
             _ => return Ok(None),
         };
         let tiled = dec.get_chunk_type() == ChunkType::Tile;
@@ -215,8 +252,6 @@ impl ChunkCodec {
             (dec.get_tag_u64_vec(Tag::StripOffsets)?, dec.get_tag_u64_vec(Tag::StripByteCounts)?)
         };
         let (cw, ch) = dec.chunk_dimensions();
-        let samples = dec.find_tag_unsigned::<u16>(Tag::SamplesPerPixel)?.unwrap_or(1).max(1) as usize;
-        let planar = dec.find_tag_unsigned::<u16>(Tag::PlanarConfiguration)? == Some(2);
         let bits = packed_bits;
         let format = first(dec.find_tag_unsigned_vec::<u16>(Tag::SampleFormat)?, 1);
         let spp = if planar { 1 } else { samples };
@@ -226,9 +261,7 @@ impl ChunkCodec {
         }
         // LZW and Zstandard: other sample types, and WhiteIsZero images (which the crate
         // inverts), are left to the `tiff` crate.
-        if matches!(codec, Codec::Lzw | Codec::Zstd)
-            && (Sample::new(format, bits).is_none() || dec.find_tag_unsigned::<u16>(Tag::PhotometricInterpretation)? == Some(0))
-        {
+        if matches!(codec, Codec::Lzw | Codec::Zstd | Codec::Chunky(_)) && (Sample::new(format, bits).is_none() || photometric == Some(0)) {
             return Ok(None);
         }
         let sample = match codec {
@@ -251,7 +284,6 @@ impl ChunkCodec {
         if matches!(codec, Codec::Packed(_)) && predictor != 1 {
             return Err(invalid(format!("TIFF predictor {predictor} with {bits}-bit samples is not supported")));
         }
-        let extra = dec.find_tag_unsigned_vec::<u16>(Tag::ExtraSamples)?.unwrap_or_default();
         let lerc_wrapper = match codec {
             Codec::Lerc => dec.find_tag_unsigned_vec::<u32>(Tag::Unknown(LERC_PARAMETERS))?.and_then(|p| p.get(1).copied()).unwrap_or(0),
             _ => 0,
@@ -274,7 +306,7 @@ impl ChunkCodec {
                 Codec::Jpeg => dec.find_tag(Tag::JPEGTables)?.map(|v| v.into_u8_vec()).transpose()?.unwrap_or_default(),
                 _ => Vec::new(),
             },
-            ycbcr: codec == Codec::Jpeg && dec.find_tag_unsigned::<u16>(Tag::PhotometricInterpretation)? == Some(6),
+            ycbcr: codec == Codec::Jpeg && photometric == Some(6),
         }))
     }
 
@@ -294,7 +326,7 @@ impl ChunkCodec {
         // Tiles are coded whole, strips with their own rows.
         let (w, h) = if self.tiled { self.chunk } else { (dw, dh) };
         let bytes = match self.codec {
-            Codec::Lzma | Codec::Lzw | Codec::Zstd => self.lossless(raw, w, h)?,
+            Codec::Lzma | Codec::Lzw | Codec::Zstd | Codec::Chunky(_) => self.lossless(raw, w, h)?,
             Codec::Lerc => self.lerc(raw, w, h)?,
             Codec::Jxl => self.jxl(&raw, w, h)?,
             Codec::Jpeg => self.jpeg(&raw, w, h)?,
@@ -325,7 +357,12 @@ impl ChunkCodec {
             out
         } else {
             // At most the chunk's size, however far the stream would expand.
-            decompress(if self.codec == Codec::Zstd { ZSTD } else { LZMA }, raw, n)?
+            let compression = match self.codec {
+                Codec::Zstd => ZSTD,
+                Codec::Chunky(c) => c,
+                _ => LZMA,
+            };
+            decompress(compression, raw, n)?
         };
         out.resize(n, 0);
         // The floating-point predictor's byte planes give native-endian samples whatever the
@@ -623,6 +660,29 @@ mod tests {
 
     fn lzw(sample: Sample, spp: usize, predictor: u16, big_endian: bool) -> ChunkCodec {
         ChunkCodec { codec: Codec::Lzw, sample, spp, predictor, big_endian, ..packed(8, spp) }
+    }
+
+    /// The images whose chunks the `tiff` crate lays out with the wrong number of samples (#208).
+    #[test]
+    fn rgb_and_cmyk_with_samples_besides_color_and_alpha() {
+        // RGB, RGBA (with and without ExtraSamples) and CMYK the crate reads as they are.
+        assert!(!crate_misreads_samples(Some(2), 3, &[]));
+        assert!(!crate_misreads_samples(Some(2), 4, &[2]));
+        assert!(!crate_misreads_samples(Some(2), 4, &[1]));
+        assert!(!crate_misreads_samples(Some(2), 4, &[]));
+        assert!(!crate_misreads_samples(Some(5), 4, &[]));
+        assert!(!crate_misreads_samples(Some(5), 5, &[2]));
+        // Gray and multiband images are read with all their samples.
+        assert!(!crate_misreads_samples(Some(1), 4, &[0, 0, 0]));
+        assert!(!crate_misreads_samples(None, 6, &[]));
+        // NAIP as gdalwarp writes it, RGB with several extra samples, alpha after other samples.
+        assert!(crate_misreads_samples(Some(2), 4, &[0]));
+        assert!(crate_misreads_samples(Some(2), 5, &[0, 0]));
+        assert!(crate_misreads_samples(Some(2), 5, &[0, 2]));
+        assert!(crate_misreads_samples(Some(2), 5, &[2, 0]));
+        assert!(crate_misreads_samples(Some(2), 6, &[0]));
+        assert!(crate_misreads_samples(Some(2), 5, &[]));
+        assert!(crate_misreads_samples(Some(5), 5, &[0]));
     }
 
     fn lzw_encode(bytes: &[u8]) -> Vec<u8> {
