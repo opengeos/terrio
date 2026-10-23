@@ -854,6 +854,47 @@ fn read_all_f64(a: &Array) -> Option<Vec<f64>> {
     common::decode(&bytes, &layout).ok().map(|v| v.to_f64_vec())
 }
 
+/// The most arrays listed as subdatasets, and the deepest group looked into.
+const MAX_SUBDATASETS: usize = 10_000;
+const MAX_GROUP_DEPTH: usize = 16;
+
+/// The arrays of two or more dimensions of a group and the groups below it, depth first in name
+/// order, as GDAL's Zarr driver lists them as subdatasets: `SUBDATASET_<n>_NAME`
+/// (`ZARR:"store":/path`) and `SUBDATASET_<n>_DESC` (`[2x3x4x5] /path (Float32)`) items. None
+/// when the group holds one array of two dimensions, which is the raster.
+fn subdatasets(group: &Node) -> Vec<(String, String)> {
+    fn walk(node: &Node, depth: usize, out: &mut Vec<Array>) {
+        for name in node.children() {
+            if out.len() >= MAX_SUBDATASETS {
+                return;
+            }
+            let child = node.join(&name);
+            match read_array_opt(&child) {
+                Ok(Some(a)) if a.shape.len() >= 2 => out.push(a),
+                Ok(Some(_)) => {}
+                _ if depth < MAX_GROUP_DEPTH && is_group(&child) => walk(&child, depth + 1, out),
+                _ => {}
+            }
+        }
+    }
+    let mut arrays = Vec::new();
+    walk(group, 0, &mut arrays);
+    if arrays.len() < 2 && arrays.iter().all(|a| a.shape.len() == 2) {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    for (i, a) in arrays.iter().enumerate() {
+        let (store, key) = a.node.store_and_key();
+        let shape: Vec<String> = a.shape.iter().map(usize::to_string).collect();
+        out.push((format!("SUBDATASET_{}_NAME", i + 1), format!("ZARR:\"{store}\":/{key}")));
+        out.push((
+            format!("SUBDATASET_{}_DESC", i + 1),
+            format!("[{}] /{key} ({})", shape.join("x"), crate::info::gdal_type_name(a.data_type)),
+        ));
+    }
+    out
+}
+
 /// The arrays of a group: `(name, metadata)`, sorted by name.
 fn group_arrays(node: &Node) -> Vec<(String, Array)> {
     node.children().into_iter().filter_map(|name| Some((name.clone(), read_array(&node.join(&name)).ok()?))).collect()
@@ -1249,7 +1290,11 @@ fn open_node(node: &Node) -> Result<(RasterDataset, ZarrSource)> {
         metadata: Vec::new(),
         data: RasterData::new_filled(array.data_type, 0, 0.0),
     };
-    let header = RasterDataset::with_driver(raster, RasterDriver::Zarr, array.fill.is_some());
+    let mut header = RasterDataset::with_driver(raster, RasterDriver::Zarr, array.fill.is_some());
+    // A group opened: its arrays, as GDAL lists them.
+    if array.node != *node {
+        header.raster.metadata.extend(subdatasets(node));
+    }
 
     // The lower-resolution levels of the multiscales layout, largest first.
     let mut levels: Vec<Level> = Vec::new();
