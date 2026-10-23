@@ -376,8 +376,8 @@ def make_dst_affine(
         tuple: `(transform, width, height)`.
     """
     acc = src_data_array.terrio
-    # Georeferenced by GCPs: the grid suggested from them, not from bounds.
-    src_bounds = () if "gcps" in kwargs else acc.bounds()
+    # Georeferenced by GCPs or RPCs: the grid suggested from them, not from bounds.
+    src_bounds = () if "gcps" in kwargs or "rpcs" in kwargs else acc.bounds()
     src_height, src_width = acc.shape
     dst_height, dst_width = dst_shape if dst_shape is not None else (None, None)
     resolution: Any = dst_resolution

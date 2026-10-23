@@ -13,6 +13,7 @@ const GEO_ASCII_PARAMS: u16 = 34737;
 const GDAL_METADATA: u16 = 42112;
 const GDAL_NODATA: u16 = 42113;
 const PHOTOMETRIC: u16 = 262;
+const RPC_COEFFICIENTS: u16 = 50844;
 
 /// The georeferencing read from a GeoTIFF's first image.
 #[derive(Debug, Default, Clone, PartialEq)]
@@ -45,6 +46,8 @@ pub(crate) struct GeoTags {
     /// A GeoKeys projection method terrio cannot read (or whose parameters are incomplete),
     /// which left the raster without CRS: warned of by [`GeoTags::warn_unreadable`].
     pub unreadable_method: Option<u16>,
+    /// The 92 values of the `RPCCoefficientTag`.
+    pub rpc: Option<Vec<f64>>,
 }
 
 impl GeoTags {
@@ -143,6 +146,7 @@ pub(crate) fn read_geo_tags_from<R: Read + Seek>(mut f: R) -> Option<GeoTags> {
                 | GEO_ASCII_PARAMS
                 | GDAL_METADATA
                 | GDAL_NODATA
+                | RPC_COEFFICIENTS
         ) {
             continue;
         }
@@ -228,6 +232,7 @@ pub(crate) fn read_geo_tags_from<R: Read + Seek>(mut f: R) -> Option<GeoTags> {
         let sy = scale[1].abs();
         out.geo_transform = Some([x - i * scale[0], scale[0], 0.0, y + j * sy, 0.0, -sy]);
     }
+    out.rpc = doubles(RPC_COEFFICIENTS).filter(|v| v.len() == 92).map(<[f64]>::to_vec);
     out.nodata = ascii(GDAL_NODATA).and_then(|s| parse_nodata(s.trim()));
     out.metadata = ascii(GDAL_METADATA).map(crate::drivers::gtiff_write::parse_gdal_metadata).unwrap_or_default();
     out.band_metadata = ascii(GDAL_METADATA).map(crate::drivers::gtiff_write::parse_gdal_band_metadata).unwrap_or_default();

@@ -16,7 +16,7 @@ from terrio import _terrio
 from terrio.rio.crs import CRS
 from terrio.rio.dtypes import _gdal_typename
 from terrio.rio.enums import Resampling
-from terrio.rio.errors import CRSError, TransformError
+from terrio.rio.errors import CRSError, RPCError, TransformError
 from terrio.rio.transform import array_bounds, from_bounds
 
 SUPPORTED_RESAMPLING = [
@@ -267,6 +267,40 @@ def _gcp_args(gcps: Any, kwargs: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _rpc_args(rpcs: Any, kwargs: dict[str, Any]) -> dict[str, Any]:
+    """The RPC arguments of terrio's warp: GDAL's RPC items and the RPC transformer options.
+
+    Args:
+        rpcs: A `terrio.rio.rpc.RPC` (or rasterio's), or a dict of GDAL's RPC items.
+        kwargs: GDAL transformer (and warp) options; the `RPC_*` ones are kept, upper-cased as
+            rasterio passes them (but the `RPC_DEM` path).
+
+    Returns:
+        dict: `rpc` and `to` keyword arguments.
+    """
+    from terrio.rio.transform import _rpc_items, _rpc_options
+
+    opts = {k: v for k, v in kwargs.items() if str(k).upper().startswith("RPC_")}
+    return {"rpc": _rpc_items(rpcs), "to": _rpc_options(opts)}
+
+
+def _warp_extras(kwargs: dict[str, Any]) -> dict[str, str]:
+    """The GDAL warp options terrio's warp takes (`SOURCE_EXTRA`, `SAMPLE_STEPS`).
+
+    Args:
+        kwargs: GDAL transformer and warp options.
+
+    Returns:
+        dict: The warp options terrio uses.
+    """
+    out = {}
+    for k, v in kwargs.items():
+        key = str(k).upper()
+        if key in ("SOURCE_EXTRA", "SAMPLE_STEPS"):
+            out[key] = str(v).upper()
+    return out
+
+
 def calculate_default_transform(
     src_crs: Any,
     dst_crs: Any,
@@ -296,13 +330,15 @@ def calculate_default_transform(
         right: The source's right bound.
         top: The source's top bound.
         gcps: Ground control points georeferencing the source instead of bounds.
-        rpcs: Unsupported.
+        rpcs: Rational polynomial coefficients georeferencing the source instead of bounds (an
+            `RPC` or GDAL's RPC items); the source CRS is then WGS 84.
         resolution: The output resolution (a number or `(x, y)`).
         dst_width: The output width (with `dst_height`).
         dst_height: The output height.
         src_geoloc_array: Unsupported.
         **kwargs: Transformer options: `MAX_GCP_ORDER`, `SRC_METHOD` (`GCP_POLYNOMIAL`, `GCP_TPS` or
-            `GCP_HOMOGRAPHY`) with GCPs.
+            `GCP_HOMOGRAPHY`) with GCPs; GDAL's `RPC_*` options (`RPC_HEIGHT`, `RPC_DEM`...)
+            with RPCs.
 
     Returns:
         tuple: `(transform, width, height)`.
@@ -310,8 +346,15 @@ def calculate_default_transform(
     Raises:
         ValueError: If the bounds are missing or the options conflict.
     """
-    if rpcs is not None or src_geoloc_array is not None:
-        raise ValueError("terrio.rio supports bounds and GCPs, not RPCs or geolocation arrays")
+    if src_geoloc_array is not None:
+        raise ValueError("terrio.rio supports bounds, GCPs and RPCs, not geolocation arrays")
+    if sum(p is not None for p in (left, gcps, rpcs)) > 1:
+        raise ValueError(
+            "Bounds, gcps, rpcs, and src_geoloc_array are mutually exclusive parameters and may "
+            "not be used together."
+        )
+    if rpcs is not None:
+        left, bottom, right, top = 0.0, -float(height), float(width), 0.0
     if gcps is not None:
         if any(v is not None for v in (left, bottom, right, top)):
             raise ValueError("Bounding box parameters and gcps are mutually exclusive.")
@@ -327,9 +370,21 @@ def calculate_default_transform(
         raise ValueError("Resolution cannot be used with dst_width and dst_height.")
     t = from_bounds(left, bottom, right, top, width, height)
     gcp_kw = _gcp_args(gcps, kwargs) if gcps is not None else {}
-    gt, w, h = _terrio.suggested_grid(
-        int(width), int(height), t.to_gdal(), _crs_text(src_crs), _crs_text(dst_crs), **gcp_kw
-    )
+    if rpcs is not None:
+        rpc_kw = _rpc_args(rpcs, kwargs)
+        gt, w, h = _terrio.suggested_grid(
+            int(width),
+            int(height),
+            t.to_gdal(),
+            "EPSG:4326",
+            _crs_text(dst_crs),
+            rpc=rpc_kw["rpc"],
+            rpc_options=rpc_kw["to"],
+        )
+    else:
+        gt, w, h = _terrio.suggested_grid(
+            int(width), int(height), t.to_gdal(), _crs_text(src_crs), _crs_text(dst_crs), **gcp_kw
+        )
     aff = Affine.from_gdal(*gt)
     out_w, out_h = int(w), int(h)
     if resolution:
@@ -426,7 +481,9 @@ def reproject(
         src_transform: The source's transform (arrays only).
         gcps: Ground control points georeferencing the source (arrays; datasets with GCPs give
             theirs), warped with a GCP polynomial or thin plate splines (see `**kwargs`).
-        rpcs: Unsupported.
+        rpcs: Rational polynomial coefficients georeferencing the source (an `RPC` or GDAL's RPC
+            items; a dataset source is warped by its own RPCs), warped with GDAL's RPC
+            transformer, in WGS 84 (see `**kwargs`).
         src_crs: The source CRS (arrays only; datasets give theirs).
         src_nodata: The source nodata value (by default, the dataset's).
         dst_transform: The destination's transform; computed when None.
@@ -444,7 +501,10 @@ def reproject(
         warp_mem_limit: Unused.
         src_geoloc_array: Unsupported.
         **kwargs: GDAL transformer options: `MAX_GCP_ORDER` and `SRC_METHOD` (`GCP_POLYNOMIAL`,
-            `GCP_TPS` or `GCP_HOMOGRAPHY`) with GCPs; other warp options are unused.
+            `GCP_TPS` or `GCP_HOMOGRAPHY`) with GCPs; `RPC_HEIGHT`, `RPC_HEIGHT_SCALE`, `RPC_DEM`
+            (warped with exact transformations, as rasterio), `RPC_DEMINTERPOLATION`,
+            `RPC_DEM_MISSING_VALUE` and the other `RPC_*` options with RPCs; the warp options
+            `SOURCE_EXTRA` and `SAMPLE_STEPS`. Other options are unused.
 
     Returns:
         tuple: `(destination, dst_transform)`.
@@ -460,8 +520,8 @@ def reproject(
             "src_transform, gcps, rpcs, and src_geoloc_array are mutually exclusive parameters "
             "and may not be used together."
         )
-    if rpcs is not None or src_geoloc_array is not None:
-        raise ValueError("terrio.rio reprojects with affine transforms and GCPs only")
+    if src_geoloc_array is not None:
+        raise ValueError("terrio.rio reprojects with affine transforms, GCPs and RPCs only")
     try:
         if resampling == 7:
             raise ValueError("Gauss resampling is not supported")
@@ -484,16 +544,32 @@ def reproject(
         ds, bidx = source.ds, source.bidx
         arr = ds.read(bidx)
         src_transform = ds.transform
-        ds_gcps, ds_gcp_crs = ds.gcps
-        if ds_gcps and not ds._georeferenced:
-            gcps = ds_gcps
-            src_crs = src_crs or ds_gcp_crs
         src_crs = src_crs or ds.crs
+        if rpcs:
+            # The dataset's own RPCs, as GDAL warps a dataset with SRC_METHOD=RPC.
+            rpcs = ds.rpcs or rpcs
+            # As rasterio, which checks the CRS where it computes the destination grid.
+            computes_grid = dst_transform is None and not isinstance(destination, Band)
+            if (
+                computes_grid
+                and src_crs is not None
+                and CRS.from_user_input(src_crs).to_epsg() != 4326
+            ):
+                raise RPCError(
+                    "Reprojecting with rational polynomial coefficients using source CRS other "
+                    "than EPSG:4326"
+                )
+        else:
+            rpcs = None
+            ds_gcps, ds_gcp_crs = ds.gcps
+            if ds_gcps and not ds._georeferenced:
+                gcps = ds_gcps
+                src_crs = src_crs or ds_gcp_crs
         if src_nodata is None:
             src_nodata = ds.nodata
     else:
         arr = source
-        if src_transform is None and gcps is None:
+        if src_transform is None and gcps is None and rpcs is None:
             raise ValueError("src_transform is required for arrays")
     if isinstance(arr, np.ma.MaskedArray):
         if src_nodata is None:
@@ -504,6 +580,8 @@ def reproject(
     src_2d = arr.ndim == 2
     src3 = arr[np.newaxis] if src_2d else arr
     src_count, src_h, src_w = src3.shape
+    if src_crs is None and rpcs is not None:
+        src_crs = "EPSG:4326"
     if src_crs is None:
         raise CRSError("A source CRS is required")
     if dst_crs is None:
@@ -527,14 +605,20 @@ def reproject(
     else:
         dest_arr = None
     gcp_kw = _gcp_args(gcps, kwargs) if gcps is not None else {}
-    if gcps is not None:
+    rpc_kw = _rpc_args(rpcs, kwargs) if rpcs is not None else {}
+    if gcps is not None or rpcs is not None:
         src_transform = Affine.identity()
     assert src_transform is not None
     if dst_transform is None:
         kw: dict[str, Any] = {"resolution": dst_resolution}
         if dest_arr is not None:
             kw = {"dst_width": dst_w, "dst_height": dst_h}
-        if gcps is not None:
+        if rpcs is not None:
+            # As rasterio: without the transformer options.
+            dst_transform, dst_w, dst_h = calculate_default_transform(
+                src_crs, dst_crs, src_w, src_h, rpcs=rpcs, **kw
+            )
+        elif gcps is not None:
             dst_transform, dst_w, dst_h = calculate_default_transform(
                 src_crs, dst_crs, src_w, src_h, gcps=gcps, **kw, **kwargs
             )
@@ -571,8 +655,11 @@ def reproject(
         srcnodata=_nodata_arg(src_nodata) if src_nodata is not None else "none",
         dstnodata=dstnd,
         ot=ot,
-        et=tolerance,
+        # As rasterio: exact transformations with an RPC DEM.
+        et=0.0 if "to" in rpc_kw and "RPC_DEM" in rpc_kw["to"] else tolerance,
+        wo=_warp_extras(kwargs),
         **gcp_kw,
+        **rpc_kw,
     )
     res = np.asarray(out.read())
     if keep:

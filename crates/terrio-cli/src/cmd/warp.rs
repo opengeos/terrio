@@ -1,7 +1,9 @@
 //! `terrio warp`.
 
 use super::rasterout::{OutputArgs, srs};
+use terrio::formats::RasterDriver;
 use terrio::ops::gcp::GcpMethod;
+use terrio::ops::rpc::{RpcOptions, read_rpc};
 use terrio::ops::warp::{Cutline, Nodata, WarpOptions, warp_to_path};
 use terrio::ops::{Resampling, parse_data_type};
 
@@ -55,9 +57,10 @@ pub struct Args {
     /// Set the output extent to the cutline's.
     #[arg(long)]
     crop_to_cutline: bool,
-    /// Maximum error of the approximate transformer, in pixels (0: exact).
-    #[arg(long, default_value_t = 0.125)]
-    et: f64,
+    /// Maximum error of the approximate transformer, in pixels (0: exact). By default 0.125, or 0
+    /// with an RPC DEM (`--to RPC_DEM=...`), as gdalwarp.
+    #[arg(long)]
+    et: Option<f64>,
     /// The order of the polynomial fitted to the first source's GCPs (1, 2 or 3), as
     /// `gdalwarp -order`. By default, GDAL's choice.
     #[arg(long)]
@@ -65,6 +68,20 @@ pub struct Args {
     /// Fit thin plate splines to the first source's GCPs, as `gdalwarp -tps`.
     #[arg(long)]
     tps: bool,
+    /// Georeference the first source by its RPCs (the GeoTIFF RPC tag, or a `_RPC.TXT` or `.RPB`
+    /// sidecar), as `gdalwarp -rpc`.
+    #[arg(long, conflicts_with = "tps")]
+    rpc: bool,
+    /// A transformer option, as `gdalwarp -to` takes it: `RPC_HEIGHT=`, `RPC_HEIGHT_SCALE=`,
+    /// `RPC_DEM=`, `RPC_DEMINTERPOLATION=near|bilinear|cubic`, `RPC_DEM_MISSING_VALUE=`,
+    /// `RPC_DEM_SRS=`, `RPC_DEM_APPLY_VDATUM_SHIFT=`, `RPC_PIXEL_ERROR_THRESHOLD=`,
+    /// `RPC_MAX_ITERATIONS=`, or `METHOD=RPC` (as `--rpc`).
+    #[arg(long = "to", value_name = "KEY=VALUE")]
+    transformer_options: Vec<String>,
+    /// A warp option, as `gdalwarp -wo` takes it: `SOURCE_EXTRA=n`, `SAMPLE_STEPS=ALL`,
+    /// `SKIP_NOSOURCE=YES|NO`.
+    #[arg(long = "wo", value_name = "KEY=VALUE")]
+    warp_options: Vec<String>,
     #[command(flatten)]
     out: OutputArgs,
 }
@@ -72,7 +89,16 @@ pub struct Args {
 pub fn run(a: Args) -> terrio::Result<()> {
     let (output, inputs) = a.paths.split_last().expect("clap requires two paths");
     let pair = |v: &Option<Vec<f64>>| v.as_ref().map(|v| (v[0], v[1]));
-    let o = WarpOptions {
+    let to: Vec<(String, String)> =
+        super::convert::key_values(&a.transformer_options)?.into_iter().map(|(k, v)| (k.to_ascii_uppercase(), v.to_string())).collect();
+    let wo: Vec<(String, String)> =
+        super::convert::key_values(&a.warp_options)?.into_iter().map(|(k, v)| (k.to_ascii_uppercase(), v.to_string())).collect();
+    let option = |list: &[(String, String)], k: &str| list.iter().rev().find(|(key, _)| key == k).map(|(_, v)| v.clone());
+    let method = option(&to, "SRC_METHOD").or_else(|| option(&to, "METHOD")).map(|m| m.to_ascii_uppercase());
+    let force_rpc = a.rpc || method.as_deref() == Some("RPC");
+    let rpc_options = RpcOptions::from_options(&to)?;
+    let has_dem = rpc_options.dem.is_some();
+    let mut o = WarpOptions {
         src_srs: srs(&a.s_srs)?,
         dst_srs: srs(&a.t_srs)?,
         resolution: pair(&a.tr),
@@ -87,15 +113,45 @@ pub fn run(a: Args) -> terrio::Result<()> {
         output_type: a.ot.as_deref().map(parse_data_type).transpose()?,
         cutline: a.cutline.as_deref().map(|p| super::quiet(|| Cutline::open(p))).transpose()?,
         crop_to_cutline: a.crop_to_cutline,
-        error_threshold: a.et,
+        // As gdalwarp: exact transformations with an RPC DEM.
+        error_threshold: a.et.unwrap_or(if has_dem { 0.0 } else { 0.125 }),
         // The first input's GCPs are read by `warp_to_path`. As gdalwarp: `-order` sets the
         // polynomial's order, but 4 or 5 GCPs still make a homography.
         gcp_method: if a.tps { GcpMethod::Tps } else { GcpMethod::Auto },
         order: a.order.unwrap_or(0),
+        rpc_options,
         ..Default::default()
     };
     if o.target_aligned_pixels && o.resolution.is_none() {
         return Err(terrio::Error::InvalidArgument("--tap needs --tr".into()));
+    }
+    // A first source with RPCs, which the transformer may use (gdalwarp's FetchSrcMethod).
+    let local = !inputs[0].contains("://") && !inputs[0].starts_with("/vsi");
+    let rpc_allowed = !a.tps && method.as_deref().is_none_or(|m| m == "RPC");
+    let file_rpc = if rpc_allowed && local { super::quiet(|| read_rpc(&inputs[0]))? } else { None };
+    if force_rpc {
+        o.rpc = Some(file_rpc.clone().ok_or_else(|| terrio::Error::InvalidArgument(format!("{} has no RPCs", inputs[0])))?);
+    }
+    if file_rpc.is_some() {
+        // As gdalwarp for a source with RPCs: a few more source pixels around each chunk, every
+        // edge point sampled with a DEM, and only the output window the source covers warped
+        // (into a new GeoTIFF).
+        o.source_extra = Some(5);
+        o.sample_steps_all = has_dem;
+        let driver = a.out.options()?.driver.or_else(|| RasterDriver::for_extension(output));
+        o.rpc_output_window = matches!(driver, Some(RasterDriver::GTiff) | Some(RasterDriver::GPKG));
+    }
+    for (k, v) in &wo {
+        match k.as_str() {
+            "SOURCE_EXTRA" => {
+                o.source_extra = Some(
+                    v.trim().parse().map_err(|_| terrio::Error::InvalidArgument(format!("SOURCE_EXTRA must be a number, not '{v}'")))?,
+                )
+            }
+            "SAMPLE_STEPS" => o.sample_steps_all = v.eq_ignore_ascii_case("ALL"),
+            "SKIP_NOSOURCE" => o.rpc_output_window &= !matches!(v.to_ascii_uppercase().as_str(), "NO" | "FALSE" | "OFF" | "0"),
+            _ => return Err(terrio::Error::Unsupported(format!("the warp option {k} is not supported"))),
+        }
     }
     super::quiet(|| warp_to_path(inputs, &o, output, &a.out.options()?))
 }

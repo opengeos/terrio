@@ -1147,6 +1147,22 @@ add(
     coord_rtol=1e-12,
     reason="the origin of the grid suggested from the GCPs differs by 2e-9 m (floating point)",
 )
+add(
+    "georeferencing",
+    "synth_rpcs.tif reproject through the RPCs",
+    lambda fl, ctx: fl.acc(fl.open(ctx.path("synth_rpcs.tif"))).reproject("EPSG:4326"),
+)
+add(
+    "georeferencing",
+    "synth_rpcs.tif reproject through the RPCs to UTM (bilinear, RPC_HEIGHT)",
+    lambda fl, ctx: fl.acc(fl.open(ctx.path("synth_rpcs.tif"))).reproject(
+        "EPSG:32613", resolution=60, resampling="bilinear", RPC_HEIGHT=2000
+    ),
+    # The grid GDAL suggests, to a few nanometres; the pixels identical.
+    expect="tolerance",
+    coord_rtol=1e-12,
+    reason="the origin of the suggested UTM grid differs by 1e-9 m (terrio's UTM, not PROJ's)",
+)
 for _n in ("synth_rgb.tif", "synth_scaled.tif"):
     add("open", f"{_n} overview_level=0", _open(_n, overview_level=0))
     add(

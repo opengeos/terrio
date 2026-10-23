@@ -15,7 +15,7 @@ import numpy as np
 from affine import Affine
 
 from terrio.rio.enums import TransformDirection, TransformMethod
-from terrio.rio.errors import RasterioDeprecationWarning, TransformError
+from terrio.rio.errors import RasterioDeprecationWarning, TransformError, TransformWarning
 
 IDENTITY = Affine.identity()
 GDAL_IDENTITY = IDENTITY.to_gdal()
@@ -424,6 +424,137 @@ class GCPTransformer(TransformerBase):
         return "<open GCPTransformer>"
 
 
+def _rpc_items(rpcs: Any) -> dict[str, str]:
+    """GDAL's `RPC` metadata items of RPCs.
+
+    Args:
+        rpcs: A `terrio.rio.rpc.RPC` (or rasterio's), or a dict of GDAL's items.
+
+    Returns:
+        dict: The items, as strings.
+    """
+    items = rpcs.to_gdal() if hasattr(rpcs, "to_gdal") else dict(rpcs)
+    return {str(k).upper(): str(v) for k, v in items.items()}
+
+
+def _rpc_options(options: dict[str, Any]) -> dict[str, str]:
+    """GDAL's RPC transformer options, as rasterio passes them.
+
+    Names and values are upper-cased, except the path of `RPC_DEM`.
+
+    Args:
+        options: The options, such as `{"rpc_height": 100}`.
+
+    Returns:
+        dict: The options, as strings.
+    """
+    out = {}
+    for k, v in options.items():
+        key = str(k).upper()
+        out[key] = str(v) if key == "RPC_DEM" else str(v).upper()
+    return out
+
+
+class RPCTransformer(TransformerBase):
+    """A transformer by rational polynomial coefficients, as GDAL's RPC transformer.
+
+    Pixel/line to WGS 84 longitude and latitude by GDAL's iterative solution, and back by
+    evaluating the polynomials, at the heights given (`zs`) above `RPC_HEIGHT` or a DEM's
+    (`RPC_DEM`). Options are GDAL's `GDALCreateRPCTransformerV2` options, passed as keyword
+    arguments (`rpc_height=100`, `RPC_DEM="dem.tif"`, ...). Points that fail to transform are
+    infinite, with a `TransformWarning`.
+    """
+
+    def __init__(self, rpcs: Any, **rpc_options: Any) -> None:
+        """Creates the transformer.
+
+        Args:
+            rpcs: A `terrio.rio.rpc.RPC` (or rasterio's), or a dict of GDAL's RPC items.
+            **rpc_options: GDAL's RPC transformer options (`RPC_HEIGHT`, `RPC_HEIGHT_SCALE`,
+                `RPC_DEM`, `RPC_DEMINTERPOLATION`, `RPC_DEM_MISSING_VALUE`, `RPC_DEM_SRS`,
+                `RPC_DEM_APPLY_VDATUM_SHIFT`, `RPC_PIXEL_ERROR_THRESHOLD`,
+                `RPC_MAX_ITERATIONS`).
+
+        Raises:
+            ValueError: If `rpcs` are not RPCs.
+            TransformError: If the transformer cannot be created.
+        """
+        from terrio import _terrio
+
+        super().__init__()
+        if not (isinstance(rpcs, dict) or hasattr(rpcs, "to_gdal")):
+            raise ValueError("RPCTransformer requires RPC")
+        try:
+            self._transformer = _terrio.RpcTransformer(_rpc_items(rpcs), _rpc_options(rpc_options))
+        except Exception as err:
+            raise TransformError(str(err)) from err
+
+    def _transform(
+        self, xs: Any, ys: Any, zs: Any, transform_direction: TransformDirection
+    ) -> tuple[Any, Any]:
+        """Transforms coordinates through the RPCs.
+
+        Args:
+            xs: Columns (or longitudes, in reverse).
+            ys: Rows (or latitudes).
+            zs: Heights above `RPC_HEIGHT` or the DEM.
+            transform_direction: Forward (pixel/line to longitude/latitude) or reverse.
+
+        Returns:
+            tuple: The transformed coordinates (infinite where they failed).
+
+        Raises:
+            ValueError: If the transformer is closed.
+        """
+        if self._transformer is None:
+            raise ValueError("Unexpected NULL transformer")
+        bi = np.broadcast(xs, ys, zs)
+        pts = np.array([tuple(v) for v in bi], dtype="float64").reshape(-1, 3)
+        ox, oy, ok = self._transformer.transform(
+            pts[:, 0].tolist(),
+            pts[:, 1].tolist(),
+            pts[:, 2].tolist(),
+            to_pixel=transform_direction is TransformDirection.reverse,
+        )
+        if not all(ok):
+            warnings.warn("Could not transform points using RPCs.", TransformWarning, stacklevel=3)
+            warnings.warn(
+                "One or more points could not be transformed using RPCs.",
+                TransformWarning,
+                stacklevel=3,
+            )
+        return np.asarray(ox, dtype="float64"), np.asarray(oy, dtype="float64")
+
+    def close(self) -> None:
+        """Releases the transformer (and its DEM)."""
+        self._transformer = None
+
+    @property
+    def closed(self) -> bool:
+        """Whether the transformer is closed.
+
+        Returns:
+            bool: True once closed.
+        """
+        return self._transformer is None
+
+    def __exit__(self, *args: object) -> None:
+        """Leaves the context, closing the transformer.
+
+        Args:
+            *args: Exception details.
+        """
+        self.close()
+
+    def __repr__(self) -> str:
+        """The representation.
+
+        Returns:
+            str: `<open RPCTransformer>` or `<closed RPCTransformer>`.
+        """
+        return f"<{'closed' if self.closed else 'open'} RPCTransformer>"
+
+
 def from_gcps(gcps: Sequence[Any]) -> Affine:
     """The affine transform best fitting ground control points, as GDAL computes it.
 
@@ -557,24 +688,21 @@ def get_transformer(transform: Any, **rpc_options: Any) -> Callable[[], Transfor
     """A transformer factory for a transform.
 
     Args:
-        transform: An `Affine`, or a sequence of `GroundControlPoint`s.
-        **rpc_options: Unused: RPC transformers are not supported.
+        transform: An `Affine`, a sequence of `GroundControlPoint`s, or an `RPC`.
+        **rpc_options: GDAL's RPC transformer options, for RPCs.
 
     Returns:
         callable: A function creating the transformer.
 
     Raises:
         ValueError: If the transform is missing.
-        TransformError: If the transform is RPCs.
     """
-    from terrio.rio.rpc import RPC
-
     if transform is None:
         raise ValueError("Invalid transform")
     if isinstance(transform, Affine):
         return lambda: AffineTransformer(transform)
-    if isinstance(transform, RPC):
-        raise TransformError("RPC transformers are not supported by terrio.rio")
+    if hasattr(transform, "to_gdal"):
+        return lambda: RPCTransformer(transform, **rpc_options)
     return lambda: GCPTransformer(transform)
 
 
@@ -589,17 +717,17 @@ def xy(
     """The map coordinates of pixels.
 
     Args:
-        transform: The transform (an `Affine`), or GCPs.
+        transform: The transform (an `Affine`), GCPs, or RPCs.
         rows: Row indices.
         cols: Column indices.
-        zs: Heights (unused).
+        zs: Heights, for RPCs (0 by default).
         offset: Which point of the pixels: `center`, `ul`, `ur`, `ll` or `lr`.
-        **rpc_options: Unused.
+        **rpc_options: GDAL's RPC transformer options, for RPCs.
 
     Returns:
         tuple: `(xs, ys)`.
     """
-    with get_transformer(transform)() as t:
+    with get_transformer(transform, **rpc_options)() as t:
         return t.xy(rows, cols, zs=zs, offset=offset)
 
 
@@ -615,18 +743,18 @@ def rowcol(
     """The rows and columns of map coordinates.
 
     Args:
-        transform: The transform (an `Affine`), or GCPs.
+        transform: The transform (an `Affine`), GCPs, or RPCs.
         xs: The x coordinates.
         ys: The y coordinates.
-        zs: Heights (unused).
+        zs: Heights, for RPCs (0 by default).
         op: The rounding function, `numpy.floor` by default.
         precision: Unused, deprecated.
-        **rpc_options: Unused.
+        **rpc_options: GDAL's RPC transformer options, for RPCs.
 
     Returns:
         tuple: `(rows, cols)`.
     """
-    with get_transformer(transform)() as t:
+    with get_transformer(transform, **rpc_options)() as t:
         return t.rowcol(xs, ys, zs=zs, op=op, precision=precision)
 
 
@@ -649,11 +777,11 @@ class TransformMethodsMixin:
         Args:
             row: The row index.
             col: The column index.
-            z: Height (unused).
+            z: Height, for RPCs.
             offset: Which point of the pixel: `center`, `ul`, `ur`, `ll` or `lr`.
-            transform_method: `TransformMethod.affine`, or `TransformMethod.gcps` for the
-                dataset's GCPs.
-            **rpc_options: Unused.
+            transform_method: `TransformMethod.affine`, `TransformMethod.gcps` for the dataset's
+                GCPs, or `TransformMethod.rpcs` for its RPCs.
+            **rpc_options: GDAL's RPC transformer options, for RPCs.
 
         Returns:
             tuple: `(x, y)`.
@@ -661,16 +789,17 @@ class TransformMethodsMixin:
         Raises:
             AttributeError: If the dataset has no such transform.
         """
-        return xy(self._transform_for(transform_method), row, col, zs=z, offset=offset)
+        t = self._transform_for(transform_method)
+        return xy(t, row, col, zs=z, offset=offset, **rpc_options)
 
     def _transform_for(self, method: TransformMethod) -> Any:
-        """The transform of a transform method: the affine transform, or the GCPs.
+        """The transform of a transform method: the affine transform, the GCPs or the RPCs.
 
         Args:
             method: The method.
 
         Returns:
-            Any: An `Affine` or GCPs.
+            Any: An `Affine`, GCPs or RPCs.
 
         Raises:
             AttributeError: If the dataset has none.
@@ -681,6 +810,10 @@ class TransformMethodsMixin:
             gcps: Any = getattr(self, "gcps", ([], None))[0]
             if gcps:
                 return gcps
+        if method is TransformMethod.rpcs:
+            rpcs = getattr(self, "rpcs", None)
+            if rpcs:
+                return rpcs
         raise AttributeError(f"Dataset has no {method}")
 
     def index(
@@ -698,12 +831,12 @@ class TransformMethodsMixin:
         Args:
             x: The x coordinate.
             y: The y coordinate.
-            z: Height (unused).
+            z: Height, for RPCs.
             op: The rounding function, `numpy.floor` by default.
             precision: Unused, deprecated.
-            transform_method: `TransformMethod.affine`, or `TransformMethod.gcps` for the
-                dataset's GCPs.
-            **rpc_options: Unused.
+            transform_method: `TransformMethod.affine`, `TransformMethod.gcps` for the dataset's
+                GCPs, or `TransformMethod.rpcs` for its RPCs.
+            **rpc_options: GDAL's RPC transformer options, for RPCs.
 
         Returns:
             tuple: `(row, col)`, as ints.
@@ -718,7 +851,7 @@ class TransformMethodsMixin:
                 stacklevel=2,
             )
         t = self._transform_for(transform_method)
-        return tuple(int(v) for v in rowcol(t, x, y, zs=z, op=op))
+        return tuple(int(v) for v in rowcol(t, x, y, zs=z, op=op, **rpc_options))
 
 
 __all__ = [
@@ -726,6 +859,7 @@ __all__ = [
     "Affine",
     "AffineTransformer",
     "GCPTransformer",
+    "RPCTransformer",
     "TransformMethodsMixin",
     "array_bounds",
     "from_bounds",

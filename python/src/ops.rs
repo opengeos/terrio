@@ -1012,6 +1012,14 @@ fn translate(
 ///     gcp_method: How the GCPs georeference the source: `"auto"` (GDAL's choice: a homography
 ///         from 4 or 5 GCPs, else a polynomial), `"polynomial"`, `"tps"` (as `-tps`) or
 ///         `"homography"`.
+///     rpc: GDAL's `RPC` metadata items georeferencing the (first) source instead, as
+///         `gdalwarp -rpc` (its CRS then WGS 84, unless `s_srs`).
+///     to: Transformer options, as `gdalwarp -to`: the RPC transformer's `RPC_HEIGHT`,
+///         `RPC_HEIGHT_SCALE`, `RPC_DEM`, `RPC_DEMINTERPOLATION`, `RPC_DEM_MISSING_VALUE`,
+///         `RPC_DEM_SRS`, `RPC_DEM_APPLY_VDATUM_SHIFT`, `RPC_PIXEL_ERROR_THRESHOLD` and
+///         `RPC_MAX_ITERATIONS`.
+///     wo: Warp options, as `gdalwarp -wo`: `SOURCE_EXTRA` and `SAMPLE_STEPS` (`ALL`); others
+///         are ignored.
 ///
 /// Returns:
 ///     Raster: The result, in memory.
@@ -1019,7 +1027,8 @@ fn translate(
 #[pyo3(signature = (
     src, dst=None, *, s_srs=None, t_srs=None, tr=None, te=None, te_srs=None, ts=None, dst_transform=None, tap=false,
     resampling="near", srcnodata=None, dstnodata=None, ot=None, cutline=None, crop_to_cutline=false, et=0.125,
-    format=None, compress=None, tile_size=None, bigtiff=false, gcps=None, order=0, gcp_method="auto"
+    format=None, compress=None, tile_size=None, bigtiff=false, gcps=None, order=0, gcp_method="auto",
+    rpc=None, to=None, wo=None
 ))]
 #[allow(clippy::too_many_arguments)]
 fn warp(
@@ -1048,6 +1057,9 @@ fn warp(
     gcps: Option<Vec<GcpTuple>>,
     order: u32,
     gcp_method: &str,
+    rpc: Option<std::collections::HashMap<String, String>>,
+    to: Option<std::collections::HashMap<String, String>>,
+    wo: Option<std::collections::HashMap<String, String>>,
 ) -> PyResult<PyRaster> {
     if tap && tr.is_none() {
         return Err(invalid("tap needs tr"));
@@ -1060,7 +1072,7 @@ fn warp(
             Some(Cutline::from_vector(&ds).py()?)
         }
     };
-    let o = WarpOptions {
+    let mut o = WarpOptions {
         src_srs: srs(s_srs)?,
         dst_srs: srs(t_srs)?,
         resolution: tr,
@@ -1079,8 +1091,17 @@ fn warp(
         gcps: crate::raster::parse_gcps(gcps),
         order,
         gcp_method: terrio::ops::gcp::GcpMethod::parse(gcp_method).py()?,
+        rpc: rpc.map(crate::rio::parse_rpc).transpose()?,
+        rpc_options: crate::rio::parse_rpc_options(to)?,
         ..Default::default()
     };
+    for (k, v) in wo.unwrap_or_default() {
+        match k.to_ascii_uppercase().as_str() {
+            "SOURCE_EXTRA" => o.source_extra = Some(v.trim().parse().map_err(|_| invalid("SOURCE_EXTRA must be an integer"))?),
+            "SAMPLE_STEPS" => o.sample_steps_all = v.eq_ignore_ascii_case("ALL"),
+            _ => {}
+        }
+    }
     // A lazy raster is read a chunk's source window at a time, not whole.
     // Borrowing raises (rather than panics) when the raster is in use elsewhere.
     if o.cutline.is_none()

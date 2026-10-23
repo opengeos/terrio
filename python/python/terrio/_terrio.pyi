@@ -812,6 +812,9 @@ def warp(
     gcps: Sequence[tuple[float, float, float, float, float]] | None = None,
     order: int = 0,
     gcp_method: str = "auto",
+    rpc: Mapping[str, str] | None = None,
+    to: Mapping[str, str] | None = None,
+    wo: Mapping[str, str] | None = None,
 ) -> Raster: ...
 def mosaic(
     srcs: _RasterSource | Sequence[_RasterSource],
@@ -1008,5 +1011,20 @@ def suggested_grid(
     gcps: Sequence[tuple[float, float, float, float, float]] | None = None,
     order: int = 0,
     gcp_method: str = "auto",
+    rpc: Mapping[str, str] | None = None,
+    rpc_options: Mapping[str, str] | None = None,
 ) -> tuple[tuple[float, float, float, float, float, float], int, int]: ...
+@final
+class RpcTransformer:
+    def __new__(
+        cls, rpc: Mapping[str, str], options: Mapping[str, str] | None = None
+    ) -> RpcTransformer: ...
+    def transform(
+        self,
+        xs: Sequence[float],
+        ys: Sequence[float],
+        zs: Sequence[float],
+        to_pixel: bool = False,
+    ) -> tuple[list[float], list[float], list[bool]]: ...
+
 def cli_main(args: Sequence[str], terrio: Sequence[str] | None = None) -> int: ...

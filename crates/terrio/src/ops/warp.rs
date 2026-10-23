@@ -167,6 +167,24 @@ pub struct WarpOptions {
     pub gcp_method: super::gcp::GcpMethod,
     /// The order of the GCP polynomial (`-order`: 1, 2 or 3; 0 picks GDAL's default).
     pub order: u32,
+    /// Rational polynomial coefficients georeferencing the (first) source in place of its
+    /// geotransform (and of [`WarpOptions::gcps`]): warped with GDAL's RPC transformer, as
+    /// `gdalwarp -rpc` warps. The source CRS is then WGS 84 unless [`WarpOptions::src_srs`] says
+    /// otherwise.
+    pub rpc: Option<super::rpc::Rpc>,
+    /// The options of the RPC transformer (`-to RPC_HEIGHT=...`, `-to RPC_DEM=...`).
+    pub rpc_options: super::rpc::RpcOptions,
+    /// Extra source pixels read around each chunk's source window (GDAL's `SOURCE_EXTRA` warp
+    /// option, which `gdalwarp` sets to 5 for RPCs).
+    pub source_extra: Option<usize>,
+    /// Find each chunk's source window from every point of its edges (GDAL's
+    /// `SAMPLE_STEPS=ALL`, which `gdalwarp` sets with an RPC DEM).
+    pub sample_steps_all: bool,
+    /// Warp only the window of the output that GDAL's suggested output for the (first) source
+    /// covers, and 5 pixels around it: what `gdalwarp` does for a source with RPCs written to a
+    /// new GeoTIFF (`SKIP_NOSOURCE=YES`, `AdjustOutputExtentForRPC`), so that pixels the RPCs
+    /// map back into the image from beyond its footprint stay empty.
+    pub rpc_output_window: bool,
 }
 
 impl Default for WarpOptions {
@@ -191,19 +209,33 @@ impl Default for WarpOptions {
             gcps: Vec::new(),
             gcp_method: super::gcp::GcpMethod::Auto,
             order: 0,
+            rpc: None,
+            rpc_options: super::rpc::RpcOptions::default(),
+            source_extra: None,
+            sample_steps_all: false,
+            rpc_output_window: false,
         }
     }
 }
 
 // ─── Coordinate transformation between pixel spaces ─────────────────────────────────────────────
 
+/// How a source's pixels are georeferenced in place of its geotransform.
+#[derive(Clone)]
+enum Georef {
+    /// By GCPs.
+    Gcp(super::gcp::GcpTransformer),
+    /// By RPCs, to WGS 84 longitudes and latitudes.
+    Rpc(std::sync::Arc<super::rpc::RpcTransformer>),
+}
+
 /// Maps source pixel/line coordinates to destination pixel/line coordinates and back, through
 /// the CRS transformation: GDAL's `GDALGenImgProjTransform`.
 struct GenImgProj {
     src_gt: [f64; 6],
     src_inv: [f64; 6],
-    /// Source pixels to georeferenced coordinates by GCPs, in place of the geotransform.
-    src_gcp: Option<super::gcp::GcpTransformer>,
+    /// Source pixels to georeferenced coordinates by GCPs or RPCs, in place of the geotransform.
+    src_gcp: Option<Georef>,
     dst_gt: [f64; 6],
     dst_inv: [f64; 6],
     /// Source CRS to destination CRS, and back; `None` when both are the same.
@@ -223,26 +255,33 @@ impl GenImgProj {
         Ok(Self { src_gt, src_inv, src_gcp: None, dst_gt: IDENTITY, dst_inv: IDENTITY, ct })
     }
 
-    /// A transformer whose source is georeferenced by GCPs.
-    fn with_gcps(src_srs: &SpatialRef, dst_srs: &SpatialRef, gcps: super::gcp::GcpTransformer) -> Result<Self> {
+    /// A transformer whose source is georeferenced by GCPs or RPCs.
+    fn with_georef(src_srs: &SpatialRef, dst_srs: &SpatialRef, g: Georef) -> Result<Self> {
         let mut t = Self::new(IDENTITY, src_srs, dst_srs)?;
-        t.src_gcp = Some(gcps);
+        t.src_gcp = Some(g);
         Ok(t)
     }
 
+    /// A transformer whose source is georeferenced by GCPs.
+    fn with_gcps(src_srs: &SpatialRef, dst_srs: &SpatialRef, gcps: super::gcp::GcpTransformer) -> Result<Self> {
+        Self::with_georef(src_srs, dst_srs, Georef::Gcp(gcps))
+    }
+
     /// Source pixel/line to source georeferenced coordinates.
-    fn src_to_geo(&self, c: f64, r: f64) -> (f64, f64) {
+    fn src_to_geo(&self, c: f64, r: f64) -> Option<(f64, f64)> {
         match &self.src_gcp {
-            Some(g) => g.to_geo(c, r),
-            None => apply_gt(&self.src_gt, c, r),
+            Some(Georef::Gcp(g)) => Some(g.to_geo(c, r)),
+            Some(Georef::Rpc(t)) => t.to_geo(c, r, 0.0),
+            None => Some(apply_gt(&self.src_gt, c, r)),
         }
     }
 
     /// Source georeferenced coordinates to source pixel/line.
-    fn geo_to_src(&self, x: f64, y: f64) -> (f64, f64) {
+    fn geo_to_src(&self, x: f64, y: f64) -> Option<(f64, f64)> {
         match &self.src_gcp {
-            Some(g) => g.to_pixel(x, y),
-            None => apply_gt(&self.src_inv, x, y),
+            Some(Georef::Gcp(g)) => Some(g.to_pixel(x, y)),
+            Some(Georef::Rpc(t)) => t.to_pixel(x, y, 0.0),
+            None => Some(apply_gt(&self.src_inv, x, y)),
         }
     }
 
@@ -263,15 +302,36 @@ impl GenImgProj {
         if dst_to_src {
             let (gx, gy) = apply_gt(&self.dst_gt, x, y);
             let (sx, sy) = self.reproject(true, gx, gy)?;
-            Some(self.geo_to_src(sx, sy))
+            self.geo_to_src(sx, sy)
         } else {
-            let (gx, gy) = self.src_to_geo(x, y);
+            let (gx, gy) = self.src_to_geo(x, y)?;
             let (dx, dy) = self.reproject(false, gx, gy)?;
             Some(apply_gt(&self.dst_inv, dx, dy))
         }
     }
 
     fn transform(&self, dst_to_src: bool, x: &mut [f64], y: &mut [f64], ok: &mut [bool]) -> bool {
+        if dst_to_src && let Some(Georef::Rpc(rpc)) = &self.src_gcp {
+            // All the points to longitude and latitude, then through the RPCs at once, as GDAL
+            // transforms them (a row of points at one latitude samples one row of a DEM).
+            for i in 0..x.len() {
+                let (gx, gy) = apply_gt(&self.dst_gt, x[i], y[i]);
+                match self.reproject(true, gx, gy) {
+                    Some((a, b)) => {
+                        x[i] = a;
+                        y[i] = b;
+                        ok[i] = true;
+                    }
+                    None => {
+                        x[i] = f64::INFINITY;
+                        y[i] = f64::INFINITY;
+                        ok[i] = false;
+                    }
+                }
+            }
+            rpc.to_pixel_many(x, y, None, ok);
+            return true;
+        }
         for i in 0..x.len() {
             match self.point(dst_to_src, x[i], y[i]) {
                 Some((a, b)) => {
@@ -434,6 +494,29 @@ pub fn suggested_grid_gcps(
     Ok((gt, w, h))
 }
 
+/// The output grid GDAL suggests for a raster of `width` x `height` pixels georeferenced by RPCs
+/// reprojected to `dst` (its source CRS is WGS 84), with the RPC transformer's options: what
+/// `rasterio.warp.calculate_default_transform(..., rpcs=...)` computes.
+///
+/// # Errors
+/// When the RPC transformer cannot be created or too many points fail to transform.
+pub fn suggested_grid_rpc(
+    width: usize,
+    height: usize,
+    rpc: &super::rpc::Rpc,
+    options: &super::rpc::RpcOptions,
+    dst: &SpatialRef,
+) -> Result<([f64; 6], usize, usize)> {
+    if width == 0 || height == 0 {
+        return Err(Error::InvalidArgument("the source raster is empty".into()));
+    }
+    let r = super::rpc::RpcTransformer::new(rpc, options)?;
+    let src = SpatialRef::from_epsg(4326)?;
+    let t = GenImgProj::with_georef(&src, dst, Georef::Rpc(std::sync::Arc::new(r)))?;
+    let (gt, w, h, _) = suggested_warp_output(&t, width, height, &src, dst)?;
+    Ok((gt, w, h))
+}
+
 /// GDAL's `GDALSuggestedWarpOutput2()`: the extent of the transformed source and a square pixel
 /// size that keeps the number of pixels along the diagonal. Returns the geotransform, the size and
 /// the extent `[min_x, min_y, max_x, max_y]`.
@@ -577,7 +660,7 @@ fn suggested_warp_output(
                     && px.is_finite()
                     && py.is_finite()
                 {
-                    let (c, r) = t.geo_to_src(px, py);
+                    let (c, r) = t.geo_to_src(px, py).unwrap_or((f64::NAN, f64::NAN));
                     if (-1e-5..=wf + 1e-5).contains(&c)
                         && (-1e-5..=hf + 1e-5).contains(&r)
                         && let Ok((_, y2)) = fwd.transform(px, py)
@@ -675,15 +758,15 @@ struct Source<'a> {
     ds: &'a RasterDataset,
     grid: Grid,
     srs: SpatialRef,
-    /// GCPs georeferencing the source in place of its geotransform.
-    gcp: Option<super::gcp::GcpTransformer>,
+    /// GCPs or RPCs georeferencing the source in place of its geotransform.
+    gcp: Option<Georef>,
 }
 
 impl Source<'_> {
     /// The transformer from this source's pixels to the output CRS.
     fn transformer(&self, dst_srs: &SpatialRef) -> Result<GenImgProj> {
         match &self.gcp {
-            Some(g) => GenImgProj::with_gcps(&self.srs, dst_srs, g.clone()),
+            Some(g) => GenImgProj::with_georef(&self.srs, dst_srs, g.clone()),
             None => GenImgProj::new(self.grid.geo_transform, &self.srs, dst_srs),
         }
     }
@@ -997,7 +1080,17 @@ impl<'a> Plan<'a> {
             if o.cutline.is_some() {
                 return Err(Error::Unsupported("cutlines are not supported with GCPs".into()));
             }
-            srcs[0].gcp = Some(super::gcp::GcpTransformer::new(&o.gcps, o.gcp_method, o.order)?);
+            srcs[0].gcp = Some(Georef::Gcp(super::gcp::GcpTransformer::new(&o.gcps, o.gcp_method, o.order)?));
+        }
+        if let Some(rpc) = &o.rpc {
+            if o.cutline.is_some() {
+                return Err(Error::Unsupported("cutlines are not supported with RPCs".into()));
+            }
+            srcs[0].gcp = Some(Georef::Rpc(std::sync::Arc::new(super::rpc::RpcTransformer::new(rpc, &o.rpc_options)?)));
+            // RPCs give WGS 84 longitudes and latitudes.
+            if o.src_srs.is_none() {
+                srcs[0].srs = SpatialRef::from_epsg(4326)?;
+            }
         }
         let dst_srs = o.dst_srs.clone().unwrap_or_else(|| srcs[0].srs.clone());
         let bands = first.raster.bands;
@@ -1049,6 +1142,31 @@ impl<'a> Plan<'a> {
         (0..self.bands).map(|b| src_nodata(&self.srcs[k], o, b)).collect()
     }
 
+    /// The window of the output source `k` is warped into: the whole output, or with
+    /// [`WarpOptions::rpc_output_window`], the window GDAL's suggested output for the first source
+    /// covers and 5 pixels around it, as `gdalwarp` restricts it (`AdjustOutputExtentForRPC`);
+    /// `None` when they don't intersect.
+    fn rpc_window(&self, k: usize, t: &GenImgProj, o: &WarpOptions) -> Option<(usize, usize, usize, usize)> {
+        let (w, h) = (self.grid.width as i64, self.grid.height as i64);
+        let s = &self.srcs[k];
+        if !o.rpc_output_window || k != 0 {
+            return Some((0, 0, w as usize, h as usize));
+        }
+        let Ok((_, _, _, e)) = suggested_warp_output(t, s.grid.width, s.grid.height, &s.srs, &self.dst_srs) else {
+            return Some((0, 0, w as usize, h as usize));
+        };
+        let limit = i32::MAX as f64 / 2.0;
+        if e.iter().any(|v| v.abs() >= limit) {
+            return Some((0, 0, w as usize, h as usize));
+        }
+        let pad = 5;
+        let x = (e[0].floor() as i64 - pad).max(0);
+        let y = (e[1].floor() as i64 - pad).max(0);
+        let xs = (w - x).min(e[2].ceil() as i64 + pad - x);
+        let ys = (h - y).min(e[3].ceil() as i64 + pad - y);
+        (xs > 0 && ys > 0).then_some((x as usize, y as usize, xs as usize, ys as usize))
+    }
+
     /// The warp of source `k`, through `t` ([`Plan::transformer`]), and the chunks of the output
     /// it is warped in, in order.
     fn context<'t>(&self, k: usize, t: &'t GenImgProj, o: &WarpOptions) -> (WarpContext<'t>, Vec<Chunk>, Sink) {
@@ -1069,9 +1187,14 @@ impl<'a> Plan<'a> {
             src_has_nodata: nodata.iter().any(Option::is_some),
             dst_has_nodata: self.dst_nodata.is_some(),
             cutline: o.cutline.is_some(),
+            source_extra: o.source_extra,
+            sample_all: o.sample_steps_all,
+            src_grid: std::sync::OnceLock::new(),
         };
         let mut chunks = Vec::new();
-        ctx.collect_chunks(0, 0, self.grid.width, self.grid.height, &mut chunks);
+        if let Some((x, y, w, h)) = self.rpc_window(k, t, o) {
+            ctx.collect_chunks(x, y, w, h, &mut chunks);
+        }
         chunks.sort_by_key(|c| (c.dy, c.dx));
         // As GDAL's warp kernel: valid pixels equal to the output nodata are nudged off it,
         // except with a nodata value unified across several bands. Pixels are masked by nodata
@@ -1188,8 +1311,8 @@ fn stored_grid(grid: Grid) -> (Grid, Option<[f64; 6]>) {
 /// Warps rasters as [`warp`] does and writes the output to `path`. A single source without a
 /// cutline is read a chunk at a time (the source window each chunk of the output needs), and a
 /// GeoTIFF output written as its rows are done: neither is held whole. Otherwise (and when
-/// `path` is the source) the sources are read whole. Without `o.gcps`, a first source with no
-/// geotransform is georeferenced by its GCPs, as `gdalwarp` does.
+/// `path` is the source) the sources are read whole. Without `o.gcps` and `o.rpc`, a first source
+/// with no geotransform is georeferenced by its GCPs (else its RPCs), as `gdalwarp` does.
 ///
 /// ```no_run
 /// use terrio::ops::warp::{WarpOptions, warp_to_path};
@@ -1307,15 +1430,19 @@ pub fn warp_to_path(paths: &[String], o: &WarpOptions, path: &str, options: &cra
     out.finish()
 }
 
-/// `o`, with the GCPs of the raster at `path` (opened as `ds`) when `o` has none and the raster
-/// has no geotransform.
+/// `o`, with the GCPs of the raster at `path` (opened as `ds`) when `o` has neither GCPs nor RPCs
+/// and the raster has no geotransform; else with its RPCs, as GDAL picks a geotransform, then
+/// GCPs, then RPCs.
 fn with_file_gcps<'a>(o: &'a WarpOptions, path: &str, ds: &RasterDataset) -> Result<std::borrow::Cow<'a, WarpOptions>> {
     let default_gt = [0.0, 1.0, 0.0, ds.raster.rows as f64, 0.0, -1.0];
-    if !o.gcps.is_empty() || ds.affine.is_some() || ds.geo_transform() != default_gt {
+    if !o.gcps.is_empty() || o.rpc.is_some() || ds.affine.is_some() || ds.geo_transform() != default_gt {
         return Ok(std::borrow::Cow::Borrowed(o));
     }
     let gcps = crate::read_gcps(path)?;
     if gcps.is_empty() {
+        if let Some(rpc) = super::rpc::read_rpc(path)? {
+            return Ok(std::borrow::Cow::Owned(WarpOptions { rpc: Some(rpc), ..o.clone() }));
+        }
         return Ok(std::borrow::Cow::Borrowed(o));
     }
     Ok(std::borrow::Cow::Owned(WarpOptions { gcps, ..o.clone() }))
@@ -1493,6 +1620,13 @@ struct WarpContext<'a> {
     src_has_nodata: bool,
     dst_has_nodata: bool,
     cutline: bool,
+    /// GDAL's `SOURCE_EXTRA` warp option.
+    source_extra: Option<usize>,
+    /// GDAL's `SAMPLE_STEPS=ALL` warp option.
+    sample_all: bool,
+    /// A grid of source points and where they land in the output (computed once).
+    #[allow(clippy::type_complexity)]
+    src_grid: std::sync::OnceLock<(Vec<(f64, f64)>, Vec<(f64, f64)>, Vec<bool>)>,
 }
 
 /// A source's pixels, or a window of them: `width` columns from the source's pixel `origin`.
@@ -1658,11 +1792,13 @@ impl WarpContext<'_> {
     #[allow(clippy::type_complexity)]
     fn source_window(&self, dx: usize, dy: usize, dw: usize, dh: usize) -> Option<(usize, usize, usize, usize, f64, f64, f64)> {
         let (dxf, dyf, dwf, dhf) = (dx as f64, dy as f64, dw as f64, dh as f64);
-        let mut cx = [dxf, dxf + dwf, dxf, dxf + dwf];
-        let mut cy = [dyf, dyf, dyf + dhf, dyf + dhf];
-        let mut cok = [false; 4];
-        self.approx.transform(true, &mut cx, &mut cy, &mut cok);
-        let all = !cok.iter().all(|b| *b);
+        let all = self.sample_all || {
+            let mut cx = [dxf, dxf + dwf, dxf, dxf + dwf];
+            let mut cy = [dyf, dyf, dyf + dhf, dyf + dhf];
+            let mut cok = [false; 4];
+            self.approx.transform(true, &mut cx, &mut cy, &mut cok);
+            !cok.iter().all(|b| *b)
+        };
         let sample = |grid: bool| -> (Vec<f64>, Vec<f64>) {
             let (mut xs, mut ys) = (Vec::new(), Vec::new());
             if grid {
@@ -1727,14 +1863,59 @@ impl WarpContext<'_> {
             (x0, y0, x1, y1, failed, xs.len())
         };
         let mut r = run(false);
-        if r.4 > 0 {
-            r = run(true);
+        let grid = r.4 > 0;
+        if grid {
+            // GDAL keeps the bounds of the edge points (its ComputeSourceWindowTransformPoints()
+            // only grows them), and counts the grid's failures.
+            let g = run(true);
+            r = (r.0.min(g.0), r.1.min(g.1), r.2.max(g.2), r.3.max(g.3), g.4, g.5);
         }
         let (mut x0, mut y0, mut x1, mut y1, failed, total) = r;
         if failed + 5 > total {
             return None;
         }
         let (sw, sh) = (self.src_w as f64, self.src_h as f64);
+        if grid {
+            // GDAL's ComputeSourceWindowStartingFromSource(): the points of a grid over the
+            // source that land in the window extend it (where the reverse transformation fails).
+            let (gx, gy, gok) = self.src_grid.get_or_init(|| {
+                let steps = 21usize;
+                let step = 1.0 / (steps - 1) as f64;
+                let ratio = |i: usize, n: f64| {
+                    if i == 0 {
+                        0.5 / n
+                    } else if i <= steps {
+                        (i - 1) as f64 * step
+                    } else {
+                        1.0 - 0.5 / n
+                    }
+                };
+                let (mut xs, mut ys) = (Vec::new(), Vec::new());
+                for iy in 0..steps + 2 {
+                    for ix in 0..steps + 2 {
+                        xs.push(ratio(ix, sw) * sw);
+                        ys.push(ratio(iy, sh) * sh);
+                    }
+                }
+                let (src_x, src_y) = (xs.clone(), ys.clone());
+                let mut ok = vec![false; xs.len()];
+                self.approx.transform(false, &mut xs, &mut ys, &mut ok);
+                let inside: Vec<bool> = (0..xs.len()).map(|i| ok[i]).collect();
+                // Keep the destination positions, and the source ones to extend by.
+                let dst: Vec<(f64, f64)> = xs.into_iter().zip(ys).collect();
+                (dst, src_x.into_iter().zip(src_y).collect(), inside)
+            });
+            for i in 0..gx.len() {
+                let (dx, dy) = gx[i];
+                if gok[i] && dx >= dxf && dx <= dxf + dwf && dy >= dyf && dy <= dyf + dhf {
+                    let (sx, sy) = gy[i];
+                    x0 = x0.min(sx);
+                    y0 = y0.min(sy);
+                    x1 = x1.max(sx);
+                    y1 = y1.max(sy);
+                }
+            }
+        }
         if x0 > sw || x1 < 0.0 || y0 > sh || y1 < 0.0 {
             return Some((0, 0, 0, 0, 0.0, 0.0, 0.0));
         }
@@ -1745,7 +1926,10 @@ impl WarpContext<'_> {
         let yscale = (dhf / (y1 - y0)).max(1e-3);
         let mut xr = if xscale < 0.95 { (res_win as f64 / xscale).ceil() as i64 } else { res_win as i64 };
         let mut yr = if yscale < 0.95 { (res_win as f64 / yscale).ceil() as i64 } else { res_win as i64 };
-        if failed > 0 {
+        if let Some(extra) = self.source_extra {
+            xr += extra as i64;
+            yr += extra as i64;
+        } else if failed > 0 {
             xr += 10;
             yr += 10;
         }
@@ -2265,6 +2449,90 @@ impl<T: crate::pixel::Pixel> Kernel<'_, T> {
 mod tests {
     use super::*;
     use wbraster::{Raster, RasterConfig};
+
+    /// RPCs of a 120 x 100 image near (10.0 E, 45.0 N), whose columns move with the height.
+    fn test_rpc() -> super::super::rpc::Rpc {
+        let mut items: Vec<(String, String)> = [
+            ("LINE_OFF", "50"),
+            ("SAMP_OFF", "60"),
+            ("LAT_OFF", "45"),
+            ("LONG_OFF", "10"),
+            ("HEIGHT_OFF", "500"),
+            ("LINE_SCALE", "50"),
+            ("SAMP_SCALE", "60"),
+            ("LAT_SCALE", "0.05"),
+            ("LONG_SCALE", "0.06"),
+            ("HEIGHT_SCALE", "1000"),
+            ("LINE_NUM_COEFF", "0 0.004 -1 0.05 0.002 0 0 0 -0.01 0 0 0 0 0 0 0 0 0 0 0"),
+            ("SAMP_NUM_COEFF", "0 1 0.02 0.08 0.01 0 0 0.005 0 0 0 0 0 0 0 0 0 0 0 0"),
+        ]
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+        for k in ["LINE_DEN_COEFF", "SAMP_DEN_COEFF"] {
+            items.push((k.into(), "1 0.001 -0.002 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0".into()));
+        }
+        super::super::rpc::Rpc::from_metadata(&items).unwrap()
+    }
+
+    /// Warped by RPCs (nearest), each output pixel holds the source pixel its centre maps to
+    /// through the RPCs; a file with RPCs and no geotransform is warped by them as `gdalwarp`
+    /// does; the RPC output window keeps pixels beyond the footprint empty.
+    #[test]
+    fn warps_by_rpcs() {
+        let rpc = test_rpc();
+        let mut src = raster(120, 100, [0.0, 1.0, 0.0, 100.0, 0.0, -1.0], 4326, |c, r| (c + 1000 * r) as f64 + 1.0);
+        src.has_nodata = false;
+        let ro = super::super::rpc::RpcOptions { height: Some(800.0), ..Default::default() };
+        let o = WarpOptions {
+            rpc: Some(rpc.clone()),
+            rpc_options: ro.clone(),
+            error_threshold: 0.0,
+            dst_nodata: Nodata::Values(vec![0.0]),
+            ..Default::default()
+        };
+        let out = warp(&[&src], &o).unwrap();
+        let t = super::super::rpc::RpcTransformer::new(&rpc, &ro).unwrap();
+        let gt = out.geo_transform();
+        let (w, h) = (out.raster.cols, out.raster.rows);
+        assert!((100..160).contains(&w) && (80..130).contains(&h), "{w} x {h}");
+        let mut checked = 0;
+        for r in (0..h).step_by(7) {
+            for c in (0..w).step_by(5) {
+                let (x, y) = apply_gt(&gt, c as f64 + 0.5, r as f64 + 0.5);
+                let (p, l) = t.to_pixel(x, y, 0.0).unwrap();
+                let v = out.raster.get(0, r as isize, c as isize);
+                if p >= 0.0 && l >= 0.0 && p < 120.0 && l < 100.0 {
+                    assert_eq!(v, (p.floor() + 1000.0 * l.floor()) + 1.0, "{c} {r}");
+                    checked += 1;
+                } else {
+                    assert_eq!(v, 0.0);
+                }
+            }
+        }
+        assert!(checked > 100);
+
+        // A GeoTIFF carrying the RPCs, without a geotransform.
+        let dir = tempfile::tempdir().unwrap();
+        let input = dir.path().join("rpc.tif");
+        let wo = crate::RasterWriteOptions { rpc: rpc.to_tiff_tag(), ..Default::default() };
+        crate::write_raster_dataset(&src, input.to_str().unwrap(), &wo).unwrap();
+        let back = super::super::rpc::read_rpc(input.to_str().unwrap()).unwrap().unwrap();
+        assert_eq!(back.samp_num_coeff, rpc.samp_num_coeff);
+        let file_o = WarpOptions { rpc: None, ..o.clone() };
+        let path = dir.path().join("out.tif");
+        warp_to_path(&[input.to_str().unwrap().to_string()], &file_o, path.to_str().unwrap(), &Default::default()).unwrap();
+        let written = crate::open_raster(path.to_str().unwrap()).unwrap();
+        assert_eq!(written.raster.data.to_f64_vec(), out.raster.data.to_f64_vec());
+
+        // A larger output: only the window around the footprint is warped with the RPC window.
+        let big = WarpOptions { extent: Some((9.8, 44.8, 10.2, 45.2)), resolution: Some((0.001, 0.001)), ..o.clone() };
+        let all = warp(&[&src], &big).unwrap();
+        let windowed = warp(&[&src], &WarpOptions { rpc_output_window: true, ..big }).unwrap();
+        let (a, b) = (all.raster.data.to_f64_vec(), windowed.raster.data.to_f64_vec());
+        assert!(b.iter().filter(|v| **v != 0.0).count() > 1000);
+        assert!(a.iter().zip(&b).all(|(x, y)| y == x || *y == 0.0));
+    }
 
     fn raster(cols: usize, rows: usize, gt: [f64; 6], epsg: u32, f: impl Fn(usize, usize) -> f64) -> RasterDataset {
         let cfg = RasterConfig {

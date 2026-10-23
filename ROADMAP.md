@@ -219,7 +219,17 @@ Python:
       `GeoTiffWriter`); GDAL's `.msk` sidecars read (any local format, overviews included) and
       written (`GDAL_TIFF_INTERNAL_MASK=NO`, formats without internal masks, kept on `r+`), the
       same files as rasterio's on Copernicus DEM tiles.
-    - [ ] RPC transformers.
+    - [x] RPC transformers. Done: GDAL's RPC transformer (`terrio::ops::rpc`): the polynomials,
+          the iterative inverse, `RPC_HEIGHT`, `RPC_HEIGHT_SCALE`, `RPC_DEM` with its
+          interpolations, missing value and DEM CRS, `RPC_PIXEL_ERROR_THRESHOLD`,
+          `RPC_MAX_ITERATIONS`, and its rows sampled whole from a WGS 84 DEM; in the warper, as
+          `gdalwarp -rpc -to ...` (`terrio warp --rpc --to`, with gdalwarp's `SOURCE_EXTRA`,
+          `SAMPLE_STEPS=ALL` and output window for RPCs) and Python's `warp(rpc=, to=)`;
+          rasterio's `RPCTransformer`, `xy`/`rowcol` and `TransformMethod.rpcs` with
+          `rpc_options`, `reproject(rpcs=)`, `calculate_default_transform(rpcs=)` and
+          `WarpedVRT` by GCPs or RPCs; rioxarray's `reproject` through RPCs. Coordinates
+          identical to rasterio's and pixels to rasterio's and gdalwarp's on ICEYE images with a
+          Copernicus DEM and on synthetic RPCs with DEMs (WGS 84 and UTM, nodata holes).
     - [x] A `rio` command line. Done: `terrio-rio` (and `python -m terrio.rio`), rasterio's
           `rio` commands (`info`, `bounds`, `blocks`, `shapes`, `clip`, `convert`, `merge`,
           `overview`, `warp`, `sample`, `transform`, `mask`, `rasterize`, `stack`, `edit-info`,

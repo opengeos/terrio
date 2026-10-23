@@ -123,13 +123,30 @@ terrio warp INPUT... OUTPUT [options]
 `--t-srs`, `--s-srs`, `--tr`, `--te` (+ `--te-srs`), `--ts`, `--tap`, `-r` (`near`, `bilinear`,
 `cubic`, `cubicspline`, `lanczos`, `average`, `rms`, `mode`, `min`, `max`, `med`, `q1`, `q3`,
 `sum`), `--srcnodata`, `--dstnodata`, `--ot`, `--cutline` (+ `--crop-to-cutline`), `--et`,
-`--order` and `--tps`. Several inputs are mosaicked into one output. The default output grid
+`--order`, `--tps`, `--rpc`, `--to` and `--wo`. Several inputs are mosaicked into one output. The default output grid
 follows GDAL's `GDALSuggestedWarpOutput2`; `--dst-transform X0 A B Y0 D E` with `--ts` sets any
 affine output grid instead, rotated ones included (GDAL's warper API, which `gdalwarp` does not
 expose). Rotated and south-up inputs are warped through their
 geotransform; a GeoTIFF georeferenced by GCPs is warped with GDAL's GCP transformers: a
 homography from 4 or 5 GCPs, otherwise a polynomial (of order 2 from 6 GCPs, else 1, or
 `--order 1|2|3`), or thin plate splines (`--tps`), giving `gdalwarp`'s pixels.
+
+Images with RPCs (the GeoTIFF RPC tag, or a `_RPC.TXT` or `.RPB` sidecar) are warped with GDAL's
+RPC transformer when they have neither a geotransform nor GCPs, or with `--rpc` (`gdalwarp
+-rpc`). `--to KEY=VALUE` passes its options as `gdalwarp -to` does: `RPC_HEIGHT`,
+`RPC_HEIGHT_SCALE`, `RPC_DEM` (a DEM giving the ground height, read whole), `RPC_DEMINTERPOLATION`
+(`near`, `bilinear`, `cubic`), `RPC_DEM_MISSING_VALUE`, `RPC_DEM_SRS`,
+`RPC_DEM_APPLY_VDATUM_SHIFT`, `RPC_PIXEL_ERROR_THRESHOLD` and `RPC_MAX_ITERATIONS`. As `gdalwarp`
+for a source with RPCs, 5 more source pixels are read around each chunk, an RPC DEM makes the
+transformations exact (`--et 0`) and samples every edge point, and a GeoTIFF output is warped only
+where the source's footprint falls. `--wo SOURCE_EXTRA=n`, `--wo SAMPLE_STEPS=ALL` and
+`--wo SKIP_NOSOURCE=NO` set those warp options. On ICEYE images with a Copernicus DEM, the output
+grids and pixels are `gdalwarp`'s (with `-ovr NONE`: terrio does not warp from overviews).
+
+```sh
+terrio warp scene.tif scene_4326.tif --rpc --to RPC_HEIGHT=120
+terrio warp scene.tif scene_utm.tif --rpc --to RPC_DEM=dem.tif --t-srs EPSG:32720 -r bilinear
+```
 
 ## mosaic
 

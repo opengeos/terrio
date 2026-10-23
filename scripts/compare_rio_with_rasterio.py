@@ -1019,6 +1019,183 @@ def _g_rpcs(rio: Any, ctx: Ctx) -> Any:
     return out
 
 
+# RPCs of a 240 x 200 image of a mountain range: rows and columns move with the height (a
+# parallax of a few pixels per 100 m) and with second-order terms, over a non-constant denominator.
+SYNTH_RPC = {
+    "LINE_OFF": "100", "SAMP_OFF": "120", "LAT_OFF": "35.6", "LONG_OFF": "-115.2", "HEIGHT_OFF": "800",
+    "LINE_SCALE": "100", "SAMP_SCALE": "120", "LAT_SCALE": "0.05", "LONG_SCALE": "0.06", "HEIGHT_SCALE": "1000",
+    "LINE_NUM_COEFF": "0.002 0.005 -1 0.06 0.004 0.001 -0.002 0.001 -0.01 0 0.0005 0 0.0002 0 0.0001 0 0 0 0 0",
+    "LINE_DEN_COEFF": "1 0.001 -0.002 0.0005 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0",
+    "SAMP_NUM_COEFF": "-0.001 1 0.02 0.09 0.02 0.003 0 0.01 0.002 0 0 0.0003 0 0 0 0 0 0 0 0",
+    "SAMP_DEN_COEFF": "1 0.001 -0.002 0.0005 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0",
+}
+
+
+def rpc_files(ctx: Ctx) -> dict[str, str]:
+    """An image georeferenced by RPCs and DEMs for it, written once by the reference module.
+
+    The image (240 x 200, uint8) carries `SYNTH_RPC` in the GeoTIFF RPC tag and no transform. The
+    DEMs cover most of its footprint, with holes of nodata: one in WGS 84 (the rows GDAL samples
+    whole), one in UTM 11N (sampled through a coordinate transformation).
+
+    Args:
+        ctx: The context.
+
+    Returns:
+        dict: The paths, under `image`, `dem` and `dem_utm`.
+    """
+    ref = ctx.reference
+    out = {k: str(ctx.out / f"rpc_{k}.tif") for k in ("image", "dem", "dem_utm")}
+    if Path(out["image"]).exists():
+        return out
+    yy, xx = np.mgrid[0:200, 0:240]
+    img = ((np.sin(xx / 7.0) + np.cos(yy / 5.0)) * 60 + 128 + (xx * yy) % 17).astype("uint8")
+    with ref.open(out["image"], "w", driver="GTiff", width=240, height=200, count=1, dtype="uint8") as dst:
+        dst.write(img[None])
+        dst.rpcs = ref.rpc.RPC.from_gdal(SYNTH_RPC)
+
+    def relief(lon: Any, lat: Any) -> Any:
+        """Heights of a synthetic range of hills.
+
+        Args:
+            lon: Longitudes.
+            lat: Latitudes.
+
+        Returns:
+            numpy.ndarray: Heights, in metres.
+        """
+        return 800 + 600 * np.sin((lon + 115.2) * 60) * np.cos((lat - 35.6) * 45) + 200 * (lat - 35.55) / 0.1
+
+    # WGS 84, 0.001 degree cells, covering all but the northern and eastern edges.
+    t = ref.transform.from_origin(-115.275, 35.645, 0.001, 0.001)
+    rows, cols = np.mgrid[0:100, 0:130]
+    lon, lat = t.c + (cols + 0.5) * t.a, t.f + (rows + 0.5) * t.e
+    z = relief(lon, lat).astype("float32")
+    z[40:44, 60:70] = -9999
+    z[70:73, 20:21] = -9999
+    with ref.open(out["dem"], "w", driver="GTiff", width=130, height=100, count=1, dtype="float32", crs="EPSG:4326", transform=t, nodata=-9999) as dst:
+        dst.write(z[None])
+    # UTM 11N, 90 m cells, short of the eastern edge.
+    t = ref.transform.from_origin(655000, 3950000, 90, 90)
+    rows, cols = np.mgrid[0:130, 0:140]
+    x, y = t.c + (cols + 0.5) * t.a, t.f + (rows + 0.5) * t.e
+    lon, lat = ref.warp.transform("EPSG:32611", "EPSG:4326", x.ravel(), y.ravel())
+    z = relief(np.array(lon), np.array(lat)).reshape(130, 140).astype("float32")
+    z[60:64, 70:75] = -9999
+    with ref.open(out["dem_utm"], "w", driver="GTiff", width=140, height=130, count=1, dtype="float32", crs="EPSG:32611", transform=t, nodata=-9999) as dst:
+        dst.write(z[None])
+    return out
+
+
+def _rpc_options(files: dict[str, str]) -> list[dict[str, Any]]:
+    """The RPC transformer options the checks run with.
+
+    Args:
+        files: The paths of `rpc_files`.
+
+    Returns:
+        list: Option sets: none, heights, a WGS 84 DEM with each interpolation, a missing value.
+    """
+    return [
+        {},
+        {"RPC_HEIGHT": 1500},
+        {"RPC_HEIGHT": 300, "RPC_HEIGHT_SCALE": 2},
+        {"RPC_DEM": files["dem"]},
+        {"RPC_DEM": files["dem"], "RPC_DEMINTERPOLATION": "near"},
+        {"RPC_DEM": files["dem"], "RPC_DEMINTERPOLATION": "cubic", "RPC_HEIGHT": 20},
+        {"RPC_DEM": files["dem"], "RPC_DEM_MISSING_VALUE": 500, "RPC_HEIGHT_SCALE": 0.5},
+        {"RPC_PIXEL_ERROR_THRESHOLD": 0.001, "RPC_MAX_ITERATIONS": 30},
+    ]
+
+
+def _rpc_points(rio: Any, ctx: Ctx, options: list[dict[str, Any]]) -> Any:
+    """Points transformed by the RPCs of `rpc_files` with each set of options.
+
+    Args:
+        rio: The module.
+        ctx: The context.
+        options: Sets of RPC transformer options.
+
+    Returns:
+        list: The results.
+    """
+    files = rpc_files(ctx)
+    T = rio.transform
+    with rio.open(files["image"]) as ds:
+        rpcs = ds.rpcs
+        rng = np.random.default_rng(7)
+        rows, cols = rng.uniform(-40, 240, 300), rng.uniform(-40, 280, 300)
+        zs = rng.uniform(-100, 400, 300)
+        out = []
+        for opts in options:
+            with T.RPCTransformer(rpcs, **opts) as t:
+                xs, ys = t.xy(rows, cols)
+                out.append([xs, ys, t.xy(rows, cols, zs=zs), t.xy(5, 7, offset="ul")])
+                ok = np.isfinite(xs)
+                # Back to rows and columns: scattered points, and a row of points at one latitude
+                # (sampled from one row of a WGS 84 DEM).
+                out.append(t.rowcol(xs[ok], ys[ok], op=float))
+                lons = np.linspace(-115.24, -115.16, 40)
+                out.append(t.rowcol(lons, np.full(40, 35.61), zs=10.0, op=float))
+            out.append(T.xy(rpcs, [10, 150], [20, 200], **opts))
+            out.append(T.rowcol(rpcs, -115.21, 35.59, **opts))
+            m = rio.enums.TransformMethod.rpcs
+            out.append([ds.xy(50, 60, transform_method=m, **opts), ds.index(-115.2, 35.6, transform_method=m, **opts)])
+        out.append(repr(T.RPCTransformer(rpcs)))
+        t = T.RPCTransformer(rpcs.to_gdal())
+        t.close()
+        out.append([repr(t), t.closed])
+    return out
+
+
+@check("georeferencing", "RPCs: RPCTransformer forward (iterative) and inverse, with heights, RPC_HEIGHT(_SCALE), a DEM (bilinear, near, cubic, missing value, nodata holes); xy/rowcol(rpcs); dataset xy/index by TransformMethod.rpcs")
+def _g_rpc_transformer(rio: Any, ctx: Ctx) -> Any:
+    return _rpc_points(rio, ctx, _rpc_options(rpc_files(ctx)))
+
+
+@check("georeferencing", "RPCs: RPCTransformer with a DEM in UTM 11N (sampled through a coordinate transformation)", expect="tolerance", rtol=1e-12, atol=1e-9, reason="the DEM is sampled at positions projected by terrio's UTM, which differs from PROJ's in the last digits")
+def _g_rpc_transformer_utm(rio: Any, ctx: Ctx) -> Any:
+    files = rpc_files(ctx)
+    return _rpc_points(rio, ctx, [{"RPC_DEM": files["dem_utm"]}, {"RPC_DEM": files["dem_utm"], "RPC_DEMINTERPOLATION": "cubic"}])
+
+
+@check("warp", "RPCs: reproject (arrays and a dataset's band; to WGS 84, UTM and polar stereographic; nearest, bilinear, cubic), calculate_default_transform with RPC_HEIGHT and DEMs, WarpedVRT by RPCs", expect="tolerance", rtol=1e-9, atol=1, max_frac=0.0005, reason="the polar stereographic grid differs in the last digits (terrio's projection, not PROJ's); bilinear weights rounded differently on a few pixels")
+def _wp_rpc(rio: Any, ctx: Ctx) -> Any:
+    files = rpc_files(ctx)
+    W = rio.warp
+    out = []
+    with rio.open(files["image"]) as ds:
+        rpcs = ds.rpcs
+        arr = ds.read(1)
+        for opts in _rpc_options(files)[:-1] + [{"RPC_DEM": files["dem_utm"]}]:
+            # GDAL 3.12 aborts (std::length_error) suggesting a projected grid with a DEM sampled
+            # by nearest neighbour; the polar grid is far from these RPCs' area.
+            crss = ["EPSG:4326"]
+            if opts.get("RPC_DEMINTERPOLATION") != "near":
+                crss.append("EPSG:32611")
+            if "RPC_DEM" not in opts:
+                crss.append("EPSG:3031")
+            crss = crss if "RPC_DEM" not in opts else crss[:2]
+            for crs in crss:
+                out.append(W.calculate_default_transform("EPSG:4326", crs, 240, 200, rpcs=rpcs, **opts))
+            for crs, r in (("EPSG:4326", "nearest"), ("EPSG:32611", "bilinear"), ("EPSG:4326", "cubic")):
+                dst, t = W.reproject(arr, rpcs=rpcs, src_crs="EPSG:4326", dst_crs=crs, resampling=rio.enums.Resampling[r], **opts)
+                out += [dst, t]
+        # A dataset's band: warped by its own RPCs, onto a given grid.
+        t = rio.transform.from_origin(-115.27, 35.65, 0.0004, 0.0004)
+        dst = np.zeros((300, 340), "uint8")
+        W.reproject(rio.band(ds, 1), dst, rpcs=rpcs, dst_transform=t, dst_crs="EPSG:4326", RPC_HEIGHT=900)
+        out.append(dst)
+        for kw in (dict(crs="EPSG:4326"), dict(crs="EPSG:32611", RPC_HEIGHT=700, resampling=rio.enums.Resampling.bilinear)):
+            with rio.vrt.WarpedVRT(ds, **kw) as v:
+                out += [v.crs, v.transform, v.width, v.height, v.read()]
+        try:
+            W.reproject(rio.band(ds, 1), np.zeros((10, 10), "uint8"), rpcs=rpcs, src_crs="EPSG:32611", dst_transform=t, dst_crs="EPSG:4326")
+        except Exception as e:
+            out.append(type(e).__name__)
+    return out
+
+
 @check("masks", "internal masks: write_mask saved to the file (tiled, striped, r+), read back by both")
 def _m_internal(rio: Any, ctx: Ctx) -> Any:
     m = np.full((40, 50), 255, np.uint8)

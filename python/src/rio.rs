@@ -15,6 +15,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(crs_info, m)?)?;
     m.add_function(wrap_pyfunction!(suggested_grid, m)?)?;
     m.add_function(wrap_pyfunction!(gcp_transform, m)?)?;
+    m.add_class::<PyRpcTransformer>()?;
     Ok(())
 }
 
@@ -271,6 +272,8 @@ fn crs_info<'py>(py: Python<'py>, crs: &str) -> PyResult<Bound<'py, PyDict>> {
 ///         `(pixel, line, x, y, z)` tuples.
 ///     order: The GCP polynomial order (0 picks GDAL's default).
 ///     gcp_method: `"auto"`, `"polynomial"`, `"tps"` or `"homography"`.
+///     rpc: GDAL's `RPC` metadata items georeferencing the source instead (its CRS then WGS 84).
+///     rpc_options: The RPC transformer's options, GDAL's `RPC_*` transformer options.
 ///
 /// Returns:
 ///     tuple: The output geotransform (6 floats), width and height.
@@ -278,7 +281,7 @@ fn crs_info<'py>(py: Python<'py>, crs: &str) -> PyResult<Bound<'py, PyDict>> {
 /// Raises:
 ///     CRSError: If a CRS cannot be parsed or the transformation fails.
 #[pyfunction]
-#[pyo3(signature = (width, height, transform, src_crs, dst_crs, gcps=None, order=0, gcp_method="auto"))]
+#[pyo3(signature = (width, height, transform, src_crs, dst_crs, gcps=None, order=0, gcp_method="auto", rpc=None, rpc_options=None))]
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
 fn suggested_grid(
     py: Python<'_>,
@@ -290,8 +293,17 @@ fn suggested_grid(
     gcps: Option<Vec<GcpTuple>>,
     order: u32,
     gcp_method: &str,
+    rpc: Option<std::collections::HashMap<String, String>>,
+    rpc_options: Option<std::collections::HashMap<String, String>>,
 ) -> PyResult<((f64, f64, f64, f64, f64, f64), usize, usize)> {
-    let (src, dst) = (SpatialRef::parse(src_crs).py()?, SpatialRef::parse(dst_crs).py()?);
+    let dst = SpatialRef::parse(dst_crs).py()?;
+    if let Some(items) = rpc {
+        let rpc = parse_rpc(items)?;
+        let opts = parse_rpc_options(rpc_options)?;
+        let (g, w, h) = py.detach(|| terrio::ops::warp::suggested_grid_rpc(width, height, &rpc, &opts, &dst)).py()?;
+        return Ok(((g[0], g[1], g[2], g[3], g[4], g[5]), w, h));
+    }
+    let src = SpatialRef::parse(src_crs).py()?;
     let gcps = crate::raster::parse_gcps(gcps);
     let method = terrio::ops::gcp::GcpMethod::parse(gcp_method).py()?;
     if gcps.is_empty() && transform[1] * transform[5] - transform[2] * transform[4] == 0.0 {
@@ -342,4 +354,95 @@ fn gcp_transform(
     let method = terrio::ops::gcp::GcpMethod::parse(method).py()?;
     let t = terrio::ops::gcp::GcpTransformer::new(&gcps, method, order).py()?;
     Ok(xs.iter().zip(&ys).map(|(&x, &y)| if inverse { t.to_pixel(x, y) } else { t.to_geo(x, y) }).unzip())
+}
+
+/// GDAL's `RPC` metadata items as RPCs.
+pub(crate) fn parse_rpc(items: std::collections::HashMap<String, String>) -> PyResult<terrio::ops::rpc::Rpc> {
+    let items: Vec<(String, String)> = items.into_iter().collect();
+    terrio::ops::rpc::Rpc::from_metadata(&items).py()
+}
+
+/// GDAL's `RPC_*` transformer options as the RPC transformer's options.
+pub(crate) fn parse_rpc_options(options: Option<std::collections::HashMap<String, String>>) -> PyResult<terrio::ops::rpc::RpcOptions> {
+    let items: Vec<(String, String)> = options.unwrap_or_default().into_iter().collect();
+    terrio::ops::rpc::RpcOptions::from_options(&items).py()
+}
+
+/// GDAL's RPC transformer (`GDALCreateRPCTransformerV2`): pixel/line to WGS 84 longitude and
+/// latitude by GDAL's iterative solution, and back by evaluating the polynomials, at the heights
+/// given plus `RPC_HEIGHT` or a DEM's (`RPC_DEM`).
+///
+/// Args:
+///     rpc: GDAL's `RPC` metadata items (`{"LINE_OFF": "...", ...}`).
+///     options: GDAL's RPC transformer options (`RPC_HEIGHT`, `RPC_HEIGHT_SCALE`, `RPC_DEM`,
+///         `RPC_DEMINTERPOLATION`, `RPC_DEM_MISSING_VALUE`, `RPC_DEM_SRS`,
+///         `RPC_DEM_APPLY_VDATUM_SHIFT`, `RPC_PIXEL_ERROR_THRESHOLD`, `RPC_MAX_ITERATIONS`).
+///
+/// Raises:
+///     InvalidArgumentError: If the RPCs or the options are invalid.
+#[pyclass(module = "terrio", name = "RpcTransformer", frozen)]
+pub(crate) struct PyRpcTransformer {
+    inner: terrio::ops::rpc::RpcTransformer,
+}
+
+#[pymethods]
+impl PyRpcTransformer {
+    #[new]
+    #[pyo3(signature = (rpc, options=None))]
+    fn new(
+        py: Python<'_>,
+        rpc: std::collections::HashMap<String, String>,
+        options: Option<std::collections::HashMap<String, String>>,
+    ) -> PyResult<Self> {
+        let rpc = parse_rpc(rpc)?;
+        let opts = parse_rpc_options(options)?;
+        let inner = py.detach(|| terrio::ops::rpc::RpcTransformer::new(&rpc, &opts)).py()?;
+        Ok(Self { inner })
+    }
+
+    /// Transforms points: pixel/line to longitude/latitude, or back with `to_pixel`.
+    ///
+    /// Args:
+    ///     xs: Columns (or longitudes).
+    ///     ys: Rows (or latitudes).
+    ///     zs: Heights above `RPC_HEIGHT` or the DEM, one per point.
+    ///     to_pixel: Longitude/latitude to pixel/line.
+    ///
+    /// Returns:
+    ///     tuple: The transformed `(xs, ys)` and whether each point succeeded (failed points
+    ///     are infinite, as GDAL leaves them).
+    #[pyo3(signature = (xs, ys, zs, to_pixel=false))]
+    fn transform(
+        &self,
+        py: Python<'_>,
+        mut xs: Vec<f64>,
+        mut ys: Vec<f64>,
+        zs: Vec<f64>,
+        to_pixel: bool,
+    ) -> PyResult<(Vec<f64>, Vec<f64>, Vec<bool>)> {
+        if xs.len() != ys.len() || xs.len() != zs.len() {
+            return Err(invalid("xs, ys and zs differ in length"));
+        }
+        let t = &self.inner;
+        let ok = py.detach(|| {
+            let mut ok = vec![true; xs.len()];
+            if to_pixel {
+                t.to_pixel_many(&mut xs, &mut ys, Some(&zs), &mut ok);
+            } else {
+                for i in 0..xs.len() {
+                    match t.to_geo(xs[i], ys[i], zs[i]) {
+                        Some((a, b)) => (xs[i], ys[i]) = (a, b),
+                        None => ok[i] = false,
+                    }
+                }
+            }
+            for i in 0..xs.len() {
+                if !ok[i] {
+                    (xs[i], ys[i]) = (f64::INFINITY, f64::INFINITY);
+                }
+            }
+            ok
+        });
+        Ok((xs, ys, ok))
+    }
 }

@@ -161,7 +161,8 @@ offsets, as GDAL reads them.
 Images georeferenced by ground control points or RPCs open without `x` and `y` coordinates, their
 GCPs and RPCs stored in the grid mapping variable as rioxarray stores them (`get_gcps`,
 `write_gcps`, `get_rpcs`, `write_rpcs`); `to_raster` writes them back, rows as they are, and
-`reproject` warps through the GCPs.
+`reproject` warps through the GCPs or the RPCs (with GDAL's `RPC_*` options, such as
+`RPC_HEIGHT` or `RPC_DEM`), as rioxarray does.
 
 ```python
 from terrio.xarray import open_rasterio
@@ -179,9 +180,6 @@ quicklook (RPCs) images, every variable, coordinate and attribute, the GCPs and 
 
 ## Differences
 
-- Images georeferenced by RPCs are read and written with their RPCs (`get_rpcs`, `write_rpcs`),
-  but `reproject` cannot warp them yet (terrio has no RPC transformer); those georeferenced by
-  GCPs are reprojected through them, as rioxarray does.
 - Only the CF convention is written (`convention="CF"`); Zarr `proj:` and `spatial:` attributes
   are read. A grid mapping without `crs_wkt` or `spatial_ref` (CF attributes only) gives no CRS.
 - Metadata of formats other than GeoTIFF comes from terrio's readers: tags, band descriptions,

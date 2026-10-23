@@ -13,7 +13,13 @@ from terrio.rio.crs import CRS
 from terrio.rio.enums import ColorInterp, Resampling
 from terrio.rio.errors import WarpedVRTError
 from terrio.rio.io import DatasetReader
-from terrio.rio.warp import _WARP_NAMES, _crs_text, calculate_default_transform
+from terrio.rio.warp import (
+    _WARP_NAMES,
+    _crs_text,
+    _gcp_args,
+    _rpc_args,
+    calculate_default_transform,
+)
 
 # Warped grids up to this many pixels (all bands) are warped whole and cached.
 _CACHE_PIXELS = 100_000_000
@@ -64,7 +70,10 @@ class WarpedVRT(DatasetReader):
             add_alpha: Unsupported (False).
             warp_mem_limit: Unused.
             dtype: The output data type; by default, the source's.
-            **warp_extras: Unused GDAL warp options.
+            **warp_extras: GDAL warp and transformer options: a dataset without a transform is
+                warped by its GCPs, else by its RPCs, as GDAL picks them (`SRC_METHOD="RPC"`
+                forces the RPCs), with the `RPC_*` options (`RPC_HEIGHT`, `RPC_DEM`...) and
+                `MAX_GCP_ORDER`; `SOURCE_EXTRA` and `SAMPLE_STEPS`. Others are unused.
 
         Raises:
             WarpedVRTError: If the options are not supported.
@@ -81,8 +90,24 @@ class WarpedVRT(DatasetReader):
         self.resampling = Resampling(resampling)
         self.tolerance = tolerance
         self.src_crs = CRS.from_user_input(src_crs) if src_crs is not None else src_dataset.crs
-        self.dst_crs = CRS.from_user_input(crs) if crs is not None else self.src_crs
         self.src_transform = src_transform or src_dataset.transform
+        # A dataset without a transform: warped by its GCPs, else its RPCs, as GDAL picks them.
+        opts = {str(k).upper(): v for k, v in warp_extras.items()}
+        method = str(opts.get("SRC_METHOD", opts.get("METHOD", ""))).upper()
+        self._georef: dict[str, Any] = {}
+        if src_transform is None and not getattr(src_dataset, "_georeferenced", True):
+            gcps, gcp_crs = src_dataset.gcps
+            rpcs = src_dataset.rpcs
+            if gcps and method in ("", "GCP_POLYNOMIAL", "GCP_TPS", "GCP_HOMOGRAPHY"):
+                self.src_crs = self.src_crs or gcp_crs
+                self._georef = _gcp_args(gcps, warp_extras)
+            elif rpcs and method in ("", "RPC"):
+                self._georef = _rpc_args(rpcs, warp_extras)
+                if self.src_crs is None and gcps:
+                    self.src_crs = gcp_crs
+        self.dst_crs = CRS.from_user_input(crs) if crs is not None else self.src_crs
+        if self.dst_crs is None and "rpc" in self._georef:
+            self.dst_crs = CRS.from_epsg(4326)
         self.src_nodata = src_nodata if src_nodata is not None else src_dataset.nodata
         self.dst_nodata = nodata if nodata is not None else self.src_nodata
         self.working_dtype = src_dataset.dtypes[0]
@@ -90,21 +115,42 @@ class WarpedVRT(DatasetReader):
         if transform is not None and width is not None:
             t, w, h = transform, int(width), int(height)  # type: ignore[arg-type]
         else:
-            left, bottom, right, top = src_dataset.bounds
             kw: dict[str, Any] = {}
             if width is not None:
                 kw = {"dst_width": width, "dst_height": height}
-            t, w, h = calculate_default_transform(
-                self.src_crs,
-                self.dst_crs,
-                src_dataset.width,
-                src_dataset.height,
-                left,
-                bottom,
-                right,
-                top,
-                **kw,
-            )
+            if "rpc" in self._georef:
+                t, w, h = calculate_default_transform(
+                    self.src_crs,
+                    self.dst_crs,
+                    src_dataset.width,
+                    src_dataset.height,
+                    rpcs=src_dataset.rpcs,
+                    **kw,
+                    **{k: v for k, v in warp_extras.items() if str(k).upper().startswith("RPC_")},
+                )
+            elif "gcps" in self._georef:
+                t, w, h = calculate_default_transform(
+                    self.src_crs,
+                    self.dst_crs,
+                    src_dataset.width,
+                    src_dataset.height,
+                    gcps=src_dataset.gcps[0],
+                    **kw,
+                    **warp_extras,
+                )
+            else:
+                left, bottom, right, top = src_dataset.bounds
+                t, w, h = calculate_default_transform(
+                    self.src_crs,
+                    self.dst_crs,
+                    src_dataset.width,
+                    src_dataset.height,
+                    left,
+                    bottom,
+                    right,
+                    top,
+                    **kw,
+                )
             if transform is not None:
                 t = transform
         self._transform = t
@@ -147,7 +193,7 @@ class WarpedVRT(DatasetReader):
             self._source = _terrio.Raster.from_array(
                 arr,
                 self.src_transform.to_gdal(),
-                _crs_text(self.src_crs),
+                _crs_text(self.src_crs if self.src_crs is not None else "EPSG:4326"),
                 None if self.src_nodata is None else float(self.src_nodata),
             )
         return self._source
@@ -213,9 +259,13 @@ class WarpedVRT(DatasetReader):
             if self.dst_nodata is None
             else ("nan" if np.isnan(self.dst_nodata) else float(self.dst_nodata))
         )
+        from terrio.rio.warp import _warp_extras
+
+        georef: dict[str, Any] = dict(self._georef)
+        if "rpc" not in georef:
+            georef["s_srs"] = _crs_text(self.src_crs)
         out = _terrio.warp(
             self._src(),
-            s_srs=_crs_text(self.src_crs),
             t_srs=_crs_text(self.dst_crs),
             dst_transform=t.to_gdal(),
             ts=(w, h),
@@ -224,6 +274,8 @@ class WarpedVRT(DatasetReader):
             dstnodata=nd,
             ot=_gdal(self._dtype),
             et=self.tolerance,
+            wo=_warp_extras(self.warp_extras),
+            **georef,
         )
         return np.asarray(out.read())
 

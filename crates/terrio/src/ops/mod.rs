@@ -27,6 +27,7 @@ pub mod mosaic;
 pub mod polygonize;
 pub mod proximity;
 pub mod rasterize;
+pub mod rpc;
 pub mod sieve;
 pub mod sql;
 pub(crate) mod strips;
