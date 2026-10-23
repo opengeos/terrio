@@ -364,7 +364,15 @@ impl SpatialRef {
         if self.is_geographic() {
             return semi_major_axis(&wkt).unwrap_or(6_378_137.0) * std::f64::consts::PI / 180.0;
         }
-        wkt1::parse(&wkt).and_then(|root| root.child("UNIT").and_then(|u| u.num(1))).filter(|v| *v > 0.0).unwrap_or(1.0)
+        // WKT 1's UNIT, or WKT 2's LENGTHUNIT (of the CRS, else of its first axis).
+        wkt1::parse(&wkt)
+            .and_then(|root| {
+                let unit = root.child("UNIT").or_else(|| root.child("LENGTHUNIT"));
+                let unit = unit.or_else(|| root.children("AXIS").find_map(|a| a.child("LENGTHUNIT")));
+                unit.and_then(|u| u.num(1))
+            })
+            .filter(|v| *v > 0.0)
+            .unwrap_or(1.0)
     }
 
     /// Whether this is a geographic (longitude/latitude) CRS.
@@ -1162,6 +1170,17 @@ impl Transformer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn metres_per_unit_of_tile_matrix_sets() {
+        assert!((SpatialRef::from_epsg(3857).unwrap().metres_per_unit() - 1.0).abs() < 1e-12);
+        assert!((SpatialRef::from_epsg(2263).unwrap().metres_per_unit() - 0.3048006096012192).abs() < 1e-12);
+        let deg = 6_378_137.0 * std::f64::consts::PI / 180.0;
+        assert!((SpatialRef::parse("OGC:CRS84").unwrap().metres_per_unit() - deg).abs() < 1e-6);
+        // WKT 2: the LENGTHUNIT of the coordinate system's axes.
+        let wkt2 = r#"PROJCRS["x",BASEGEOGCRS["WGS 84",DATUM["World Geodetic System 1984",ELLIPSOID["WGS 84",6378137,298.257223563]]],CONVERSION["c",METHOD["Transverse Mercator"],PARAMETER["False easting",500000,LENGTHUNIT["metre",1]]],CS[Cartesian,2],AXIS["easting",east,ORDER[1],LENGTHUNIT["foot",0.3048]],AXIS["northing",north,ORDER[2],LENGTHUNIT["foot",0.3048]]]"#;
+        assert!((SpatialRef::from_wkt(wkt2).metres_per_unit() - 0.3048).abs() < 1e-12);
+    }
 
     #[test]
     fn mercator_standard_parallel_survives_wkt() {

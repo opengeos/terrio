@@ -159,6 +159,11 @@ pub(crate) fn open_named_or_local(path: &str) -> Option<Result<LazyRaster>> {
 
 /// Opens a STACTA dataset lazily: a `STACTA:` name, a local item, or a remote `.json` one.
 /// `None` when `path` is none of these.
+///
+/// A remote `.json` document is fetched to see whether it is an item of tiled assets (only on
+/// this lazy path: `open` and `info` route remote items through the STAC module's single
+/// fetch); one that cannot be fetched is that error, and one that is not JSON or not tiled
+/// assets is left to the other drivers.
 pub(crate) fn open_lazy(path: &str) -> Option<Result<LazyRaster>> {
     if let Some(r) = open_named_or_local(path) {
         return Some(r);
@@ -168,7 +173,11 @@ pub(crate) fn open_lazy(path: &str) -> Option<Result<LazyRaster>> {
     if !base.ends_with(".json") || loc.is_local() || matches!(loc, crate::vfs::Location::Zip { .. }) {
         return None;
     }
-    let item = Item::load(path).ok()?;
+    let bytes = match crate::stac::fetch(path) {
+        Ok(b) => b,
+        Err(e) => return Some(Err(e)),
+    };
+    let item = Item::parse(&bytes, path)?;
     item.is_stacta().then(|| open_first(item, None, None))
 }
 
@@ -383,17 +392,22 @@ fn stac_data_type(name: &str) -> Option<Result<DataType>> {
     }))
 }
 
-/// The resolved href template of an asset template, with `{TileMatrixSet}` replaced.
-fn href_template(item_loc: &str, href: &str, tms: &str) -> String {
+/// The resolved href template of an asset template, with `{TileMatrixSet}` replaced. A
+/// `file://` href is taken only from an item read from a local file: a remote item does not
+/// name local files.
+fn href_template(item_loc: &str, href: &str, tms: &str) -> Result<String> {
     let href = href.replace("{TileMatrixSet}", tms);
     if let Some(rest) = href.strip_prefix("file://") {
-        return rest.to_string();
+        if !crate::vfs::Location::parse(item_loc).is_local() {
+            return Err(bad(format!("the remote item '{item_loc}' names local files ({href})")));
+        }
+        return Ok(rest.to_string());
     }
     let href = match href.strip_prefix("azure://") {
         Some(rest) => format!("az://{rest}"),
         None => href,
     };
-    crate::stac::resolve_href(item_loc, href.strip_prefix("./").unwrap_or(&href))
+    Ok(crate::stac::resolve_href(item_loc, href.strip_prefix("./").unwrap_or(&href)))
 }
 
 /// Whether a configuration option is true, as GDAL's `CPLTestBool`.
@@ -443,7 +457,7 @@ fn open_item(item: &Item, asset: Option<&str>, tms: Option<&str>, extra: Vec<(St
     if href.is_empty() {
         return Err(bad(format!("Cannot find asset_templates[\"{asset}\"][\"href\"]")));
     }
-    let url_template = href_template(&item.loc, href, &tms);
+    let url_template = href_template(&item.loc, href, &tms)?;
 
     // The limits of the tile matrices, by identifier.
     let mut limits: HashMap<String, Limits> = HashMap::new();
@@ -534,6 +548,11 @@ fn open_item(item: &Item, asset: Option<&str>, tms: Option<&str>, extra: Vec<(St
     for m in matrices.iter().rev() {
         let lim = limits.get(&m.id);
         let (min_col, min_row) = lim.map_or((0, 0), |l| (l.min_col, l.min_row));
+        // Limits outside GDAL's 32-bit integers are as invalid as empty ones: the level is skipped.
+        let int32 = |v: i64| (0..=i32::MAX as i64).contains(&v);
+        if lim.is_some_and(|l| ![l.min_col, l.max_col, l.min_row, l.max_row].into_iter().all(int32)) {
+            continue;
+        }
         let (mw, mh) = lim.map_or((m.matrix_w, m.matrix_h), |l| (l.max_col - l.min_col + 1, l.max_row - l.min_row + 1));
         if mw <= 0 || mh <= 0 || m.tile_w as i64 > i32::MAX as i64 / mw || m.tile_h as i64 > i32::MAX as i64 / mh {
             continue;
@@ -867,15 +886,16 @@ mod tests {
     #[test]
     fn resolves_templates() {
         assert_eq!(
-            href_template("https://x.org/c/item.json", "./{TileMatrixSet}/{TileMatrix}/{TileRow}/{TileCol}.tif", "WGS"),
+            href_template("https://x.org/c/item.json", "./{TileMatrixSet}/{TileMatrix}/{TileRow}/{TileCol}.tif", "WGS").unwrap(),
             "https://x.org/c/WGS/{TileMatrix}/{TileRow}/{TileCol}.tif"
         );
         assert_eq!(
-            href_template("/data/item.json", "{TileMatrix}/{TileCol}/{TileRow}.tif", "Q"),
+            href_template("/data/item.json", "{TileMatrix}/{TileCol}/{TileRow}.tif", "Q").unwrap(),
             "/data/{TileMatrix}/{TileCol}/{TileRow}.tif"
         );
-        assert_eq!(href_template("/data/item.json", "file:///tiles/{TileMatrix}.tif", "Q"), "/tiles/{TileMatrix}.tif");
-        assert_eq!(href_template("/data/item.json", "s3://b/{TileMatrix}.tif", "Q"), "s3://b/{TileMatrix}.tif");
+        assert_eq!(href_template("/data/item.json", "file:///tiles/{TileMatrix}.tif", "Q").unwrap(), "/tiles/{TileMatrix}.tif");
+        assert!(href_template("https://x.org/item.json", "file:///etc/{TileMatrix}.tif", "Q").is_err());
+        assert_eq!(href_template("/data/item.json", "s3://b/{TileMatrix}.tif", "Q").unwrap(), "s3://b/{TileMatrix}.tif");
     }
 
     #[test]
