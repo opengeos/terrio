@@ -142,6 +142,7 @@ struct Client {
     /// Whether a missing object (status 404, or 403 as anonymous S3 requests get for missing
     /// keys) is an answer rather than an error.
     missing_ok: bool,
+    refused_ok: bool,
 }
 
 struct S3Auth {
@@ -172,7 +173,7 @@ impl Client {
                 (o.url(region.as_deref()), Some(S3Auth { creds, region, discovered: false }))
             }
         };
-        Self { agent, options, remote: remote.clone(), url, query: String::new(), s3, missing_ok: false }
+        Self { agent, options, remote: remote.clone(), url, query: String::new(), s3, missing_ok: false, refused_ok: false }
     }
 
     /// Sends a `GET` (of the inclusive byte range `range`, if any) and returns the response once it
@@ -183,7 +184,7 @@ impl Client {
 
     /// Sends a `GET` with a `Range` header value (`bytes=0-99`, `bytes=-16`), if any. With
     /// `missing_ok`, a missing object's response (404, or 403 to an unsigned request) is returned
-    /// too.
+    /// too; with `refused_ok`, any 403.
     fn send_range(&mut self, range_header: Option<String>) -> Result<ureq::http::Response<ureq::Body>> {
         let started = Instant::now();
         let mut url = self.url.clone();
@@ -262,6 +263,8 @@ impl Client {
                 // S3 (and GCS) answer anonymous requests for missing keys with 403; a signed
                 // request's 403 is a denied one (expired or insufficient credentials).
                 403 if self.missing_ok && !signed => return Ok(response),
+                // A refused signed request, returned to a caller that handles it.
+                403 if self.refused_ok => return Ok(response),
                 429 | 500 | 502 | 503 | 504 if attempt < self.options.max_retry => self.backoff(&mut attempt),
                 _ => {
                     let hint = match (&self.s3, status) {
@@ -519,21 +522,18 @@ pub(crate) fn list_subdirectories(dir: &Directory) -> Result<Option<Vec<String>>
             Api::S3 { remote, prefix } => {
                 let mut client = Client::new(remote, HttpOptions::from_env());
                 client.missing_ok = true;
+                client.refused_ok = true;
                 client.query = format!("?{}", s3_list_query(prefix, token.as_deref()));
                 client.url = format!("{}{}", client.url, client.query);
-                let fetched = match client.fetch(None) {
-                    Ok(f) => f,
-                    // A signed request refused (a 403 is an error for those): the credentials
-                    // may not allow s3:ListBucket. Not listable, rather than failing again.
-                    Err(Error::Http(m)) if m.contains("status 403") => {
-                        crate::warnings::warn(format!(
-                            "S3: listing s3://{}/{prefix} was refused (403): the credentials may not allow s3:ListBucket",
-                            remote_bucket(remote)
-                        ));
-                        return Ok(None);
-                    }
-                    Err(e) => return Err(e),
-                };
+                let fetched = client.fetch(None)?;
+                // A signed request refused: the credentials may not allow s3:ListBucket. Not
+                // listable, rather than failing again.
+                if fetched.status == 403 && client.s3.as_ref().is_some_and(|a| a.creds.is_some()) {
+                    crate::warnings::warn(format!(
+                        "S3: listing s3://{}/{prefix} was refused (403): the credentials may not allow s3:ListBucket",
+                        remote_bucket(remote)
+                    ));
+                }
                 if matches!(fetched.status, 403 | 404) {
                     return Ok(None);
                 }
