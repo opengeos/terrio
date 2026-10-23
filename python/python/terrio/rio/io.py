@@ -2391,24 +2391,25 @@ class DatasetWriter(DatasetReader):
             extra["mask"] = np.ascontiguousarray(self._mask, dtype=np.uint8)
         tmp = self._path + f".tmp-{uuid.uuid4().hex}"
         target = tmp if self.mode == "r+" else self._path
+        # The sidecar mask is written first beside its place, then both files are put in place
+        # once the dataset is written: a failure leaves the dataset and its mask as they were.
+        msk_tmp: str | None = None
         if streaming:
             try:
+                msk_tmp = self._write_mask_sidecar() if sidecar_mask else None
                 self._write_streaming(
                     target, gt, crs, tags, compress, opts, band_md, colormap, extra, sidecar_mask
                 )
-                if target != self._path:
-                    os.replace(target, self._path)
-                if sidecar_mask:
-                    self._write_mask_sidecar()
-                else:
-                    self._remove_stale_mask_sidecar()
+                self._put_in_place(target, msk_tmp)
             except Exception as err:
-                if os.path.exists(tmp):
-                    os.remove(tmp)
+                for leftover in (tmp, msk_tmp):
+                    if leftover and os.path.exists(leftover):
+                        os.remove(leftover)
                 raise RasterioIOError(f"Write failed: {err}") from err
             self._dirty = False
             return
         try:
+            msk_tmp = self._write_mask_sidecar() if sidecar_mask else None
             raster.write(
                 target,
                 driver=driver,
@@ -2420,25 +2421,39 @@ class DatasetWriter(DatasetReader):
                 overview_resampling=self._overview_resampling,
                 **extra,
             )
-            if target != self._path:
-                os.replace(target, self._path)
-            if sidecar_mask:
-                self._write_mask_sidecar()
-            else:
-                self._remove_stale_mask_sidecar()
+            self._put_in_place(target, msk_tmp)
         except Exception as err:
-            if os.path.exists(tmp):
-                os.remove(tmp)
+            for leftover in (tmp, msk_tmp):
+                if leftover and os.path.exists(leftover):
+                    os.remove(leftover)
             raise RasterioIOError(f"Write failed: {err}") from err
         self._dirty = False
 
-    def _write_mask_sidecar(self) -> None:
-        """Writes the mask as GDAL's `.msk` sidecar of the dataset.
+    def _put_in_place(self, target: str, msk_tmp: str | None) -> None:
+        """Moves a written dataset, and its sidecar mask, to their paths.
+
+        Args:
+            target: Where the dataset was written (its path, or a temporary file beside it).
+            msk_tmp: The sidecar mask written beside its path, or None (a sidecar left by an
+                earlier dataset is then removed, when one is created).
+        """
+        if target != self._path:
+            os.replace(target, self._path)
+        if msk_tmp is not None:
+            os.replace(msk_tmp, self._path + ".msk")
+        else:
+            self._remove_stale_mask_sidecar()
+
+    def _write_mask_sidecar(self) -> str:
+        """Writes the mask as GDAL's `.msk` sidecar of the dataset, beside its path.
 
         The sidecar is a tiled, Deflate-compressed GeoTIFF without georeferencing, its band the
         per-dataset mask (0 or 255) flagged for every band by `INTERNAL_MASK_FLAGS_<n>=2`, with
-        the dataset's overviews, as GDAL writes it. It is written beside its path and renamed
-        into place; a mask held in a file-backed array is written in slabs of rows.
+        the dataset's overviews, as GDAL writes it; a mask held in a file-backed array is written
+        in slabs of rows. The caller moves it into place.
+
+        Returns:
+            str: The temporary file written.
         """
         assert self._mask is not None
         target = self._path + ".msk"
@@ -2482,11 +2497,11 @@ class DatasetWriter(DatasetReader):
                     overviews=self._overview_factors or None,
                     overview_resampling="nearest",
                 )
-            os.replace(tmp, target)
         except BaseException:
             if os.path.exists(tmp):
                 os.remove(tmp)
             raise
+        return tmp
 
     def _remove_stale_mask_sidecar(self) -> None:
         """Removes the `.msk` sidecar of an earlier dataset at the path, when one is created.
