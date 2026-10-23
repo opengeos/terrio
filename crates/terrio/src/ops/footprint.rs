@@ -18,6 +18,8 @@ pub struct FootprintOptions {
 }
 
 /// A single multipolygon containing every valid pixel, including holes and disconnected areas.
+/// Pixels connect through their sides (4-connectedness); regions touching only at a corner
+/// remain separate polygon members, as in GDAL's default footprint.
 /// No simplification or overview is applied. An entirely invalid raster gives an empty layer.
 /// Rotated/south-up affine grids and the source CRS are preserved. Complex rasters and rasters
 /// georeferenced by geolocation arrays are rejected.

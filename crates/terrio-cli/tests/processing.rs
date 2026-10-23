@@ -59,3 +59,29 @@ fn geometry_commands_sample_multiple_rasters_and_create_a_footprint() {
         assert!(!d.join("bad.gpkg").exists());
     }
 }
+
+#[test]
+fn sample_keeps_valid_points_after_a_projection_failure() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    std::fs::write(d.join("sites.geojson"), r#"{"type":"FeatureCollection","features":[{"type":"Feature","properties":{"site":0},"geometry":{"type":"Point","coordinates":[0,0]}},{"type":"Feature","properties":{"site":1},"geometry":{"type":"Point","coordinates":[180,0]}},{"type":"Feature","properties":{"site":2},"geometry":{"type":"Point","coordinates":[0,0]}}]}"#).unwrap();
+    let cfg = terrio::RasterConfig {
+        cols: 1,
+        rows: 1,
+        x_min: -1.0,
+        y_min: -1.0,
+        cell_size: 2.0,
+        data_type: terrio::DataType::F64,
+        ..Default::default()
+    };
+    let mut ds = terrio::RasterDataset::new(terrio::Raster::from_data(cfg, vec![42.0]).unwrap(), false);
+    ds.raster.crs = terrio::crs::SpatialRef::parse("+proj=ortho +lat_0=0 +lon_0=0 +datum=WGS84 +units=m").unwrap().to_crs_info();
+    terrio::write_raster_dataset(&ds, d.join("ortho.tif").to_str().unwrap(), &Default::default()).unwrap();
+    ok(&["sample", "sites.geojson", "samples.gpkg", "--raster", "ortho.tif"], d);
+    let samples = first(&d.join("samples.gpkg"));
+    assert_eq!(samples.len(), 3);
+    for (i, value) in [terrio::FieldValue::Float(42.0), terrio::FieldValue::Null, terrio::FieldValue::Float(42.0)].into_iter().enumerate() {
+        assert_eq!(samples.features[i].attributes[0], terrio::FieldValue::Integer(i as i64));
+        assert_eq!(samples.features[i].attributes[1], value);
+    }
+}

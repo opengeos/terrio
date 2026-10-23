@@ -157,6 +157,36 @@ fn sampling_reprojects_and_inverts_rotated_grids() {
     assert!(sample(&bad, &sample_inputs(&r)).is_err());
 }
 
+#[test]
+fn sampling_projection_failures_are_null_for_only_the_affected_raster() {
+    let mut projected = raster(1, 1, 1, &[42.0], None);
+    let ortho = terrio::crs::SpatialRef::parse("+proj=ortho +lat_0=0 +lon_0=0 +datum=WGS84 +units=m").unwrap();
+    projected.raster.crs = ortho.to_crs_info();
+    projected.set_geo_transform([-1.0, 2.0, 0.0, 1.0, 0.0, -2.0]);
+    let mut geographic = raster(1, 1, 1, &[7.0], None);
+    geographic.raster.crs.epsg = Some(4326);
+    geographic.set_geo_transform([179.0, 2.0, 0.0, 1.0, 0.0, -2.0]);
+    let l = layer(vec![Some(G::point(0.0, 0.0)), Some(G::point(180.0, 0.0)), Some(G::point(0.0, 0.0))]);
+    let t = terrio::crs::Transformer::new(&terrio::crs::SpatialRef::from_epsg(4326).unwrap(), &ortho).unwrap();
+    assert!(t.transform(180.0, 0.0).is_err(), "the far hemisphere is outside this projection");
+    let inputs = [
+        SampleInput { field_name: "projected".into(), raster: &projected, band: 1 },
+        SampleInput { field_name: "geographic".into(), raster: &geographic, band: 1 },
+    ];
+    let out = sample(&l, &inputs).unwrap();
+    assert_eq!(out.features[0].attributes[1..], [V::Float(42.0), V::Null]);
+    assert_eq!(out.features[1].attributes[1..], [V::Null, V::Float(7.0)]);
+    assert_eq!(out.features[2].attributes[1..], [V::Float(42.0), V::Null]);
+    for (a, b) in out.features.iter().zip(&l.features) {
+        assert_eq!(a.fid, b.fid);
+        assert_eq!(a.geometry, b.geometry);
+        assert_eq!(a.attributes[0], b.attributes[0]);
+    }
+    projected.raster.crs = Default::default();
+    projected.raster.crs.epsg = Some(999_999);
+    assert!(sample(&l, &sample_inputs(&projected)).is_err(), "CRS setup errors still fail the operation");
+}
+
 fn area(layer: &Layer) -> f64 {
     let ring_area = |r: &Ring| r.0.windows(2).map(|w| w[0].x * w[1].y - w[1].x * w[0].y).sum::<f64>().abs() / 2.0;
     layer
@@ -188,6 +218,21 @@ fn footprints_preserve_holes_and_band_union_intersection() {
     assert_eq!(area(&footprint(&r, &FootprintOptions { bands: vec![1], ..Default::default() }).unwrap()), 2.0);
     let empty = raster(1, 1, 1, &[0.0], Some(0.0));
     assert!(footprint(&empty, &Default::default()).unwrap().features.is_empty());
+}
+
+#[test]
+fn footprint_regions_touching_only_at_a_corner_are_separate_polygons() {
+    // GDAL 3.12.2 returns this valid two-member MultiPolygon, with shared corner (1, 1).
+    let r = raster(2, 2, 1, &[1.0, 0.0, 0.0, 1.0], Some(0.0));
+    let out = footprint(&r, &Default::default()).unwrap();
+    let Some(G::MultiPolygon(parts)) = &out.features[0].geometry else { panic!() };
+    assert_eq!(parts.len(), 2);
+    assert_eq!(area(&out), 2.0);
+    for (exterior, holes) in parts {
+        assert!(holes.is_empty());
+        assert_eq!(exterior.0.len(), 5);
+        assert!(exterior.0.iter().any(|c| (c.x, c.y) == (1.0, 1.0)));
+    }
 }
 
 #[test]

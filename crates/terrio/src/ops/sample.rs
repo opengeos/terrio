@@ -16,7 +16,9 @@ pub struct SampleInput<'a> {
 
 /// Adds a Float field per input raster band, retaining the points' geometry (including Z/M),
 /// attributes, IDs and CRS. Null geometries, nodata, non-finite pixels and out-of-bounds samples
-/// yield null fields. Non-point geometries and non-finite point XY coordinates are errors.
+/// yield null fields. A point that cannot be transformed into a raster's CRS also yields a null
+/// sample for that raster. Failures to construct a CRS transformation remain errors, as do
+/// non-point geometries and non-finite point XY coordinates.
 ///
 /// Rasters may have different affine grids and CRSs; points are transformed for each raster,
 /// leaving their output geometries unchanged. Missing CRSs are allowed only when both point
@@ -75,9 +77,16 @@ pub fn sample(points: &Layer, inputs: &[SampleInput<'_>]) -> Result<Layer> {
         for f in &mut out.features {
             let value = match &f.geometry {
                 Some(Geometry::Point(c)) => {
-                    let (x, y) = match &ct {
-                        Some(t) => t.transform(c.x, c.y)?,
-                        None => (c.x, c.y),
+                    let coords = match &ct {
+                        Some(t) => t.transform(c.x, c.y),
+                        None => Ok((c.x, c.y)),
+                    };
+                    let (x, y) = match coords {
+                        Ok(xy) => xy,
+                        Err(_) => {
+                            f.set_by_index(index, FieldValue::Null);
+                            continue;
+                        }
                     };
                     let (dx, dy) = (x - gt[0], y - gt[3]);
                     let col = ((gt[5] * dx - gt[2] * dy) / det).floor();

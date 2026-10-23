@@ -74,7 +74,9 @@ terrio footprint image.tif footprint.gpkg --mask valid.tif
 
 Writes one multipolygon of all finite, non-nodata pixels, preserving holes, disconnected areas,
 the full affine geotransform (including rotated/south-up grids) and the source CRS. Boundaries
-follow exact pixel edges, without overviews or simplification. An entirely invalid raster
+follow exact pixel edges, without overviews or simplification. Pixels connect through their sides
+(4-connectedness); regions touching only at a corner stay separate polygon members, as in GDAL's
+default footprint. An entirely invalid raster
 produces an empty layer. By default, any band may be valid; `--intersection` requires all selected
 bands to be valid. `--band` selects bands from 1; omitted, it uses all bands.
 
@@ -97,6 +99,8 @@ same order. Name collisions get `_2`, `_3`, etc.; existing attributes remain int
 Each raster may have a different resolution, affine grid or CRS. Coordinates are transformed
 for sampling while the output retains the original point geometries, Z/M, IDs, attributes and
 CRS. Nodata, non-finite pixels, out-of-bounds locations and null geometries yield null values.
+Points that cannot be projected into a raster's CRS yield null samples for that raster too;
+errors constructing the CRS transformation still fail the command.
 Non-point geometries are rejected; use `singlepart` for multipart points first. Missing CRSs
 are accepted only when both the points and the raster lack a CRS, using coordinates directly.
 Complex bands and geolocation arrays are unsupported. Rasters are loaded into memory, and

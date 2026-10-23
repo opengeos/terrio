@@ -374,6 +374,21 @@ mod tests {
     }
 
     #[test]
+    fn south_up_and_large_origin_grids_keep_exteriors_and_holes() {
+        let data = [1.0, 1.0, 1.0, 1.0, 0.0, 1.0, 1.0, 1.0, 1.0];
+        for gt in [[100.0, 10.0, 0.0, 200.0, 0.0, 10.0], [100.0, 10.0, 2.0, 200.0, 1.0, 10.0], [1e9, 1.0, 0.0, 1e9, 0.0, -1.0]] {
+            let mut ds = raster(3, 3, &data, Some(0.0));
+            ds.set_geo_transform(gt);
+            let out = polygonize(&ds, &Default::default()).unwrap();
+            let pixel_area = (gt[1] * gt[5] - gt[2] * gt[4]).abs();
+            assert_eq!(polygons(&out), vec![(1, 8.0 * pixel_area, 1)], "{gt:?}");
+            let Some(Geometry::Polygon { exterior, interiors }) = &out.features[0].geometry else { panic!() };
+            assert!(signed_area(&exterior.0) > 0.0);
+            assert!(signed_area(&interiors[0].0) < 0.0);
+        }
+    }
+
+    #[test]
     fn connectedness() {
         #[rustfmt::skip]
         let data = [
