@@ -411,9 +411,10 @@ fn pc_token(account: &str, container: &str) -> Result<String> {
     }
     let base = std::env::var("TERRIO_PC_SAS_URL").unwrap_or_else(|_| format!("https://{PC_HOST}/api/sas/v1/token"));
     let url = format!("{}/{account}/{container}", base.trim_end_matches('/'));
+    // The API key goes over https only.
     let headers: Vec<(String, String)> = std::env::var("PC_SDK_SUBSCRIPTION_KEY")
         .ok()
-        .filter(|k| !k.trim().is_empty())
+        .filter(|k| !k.trim().is_empty() && url.starts_with("https://"))
         .map(|k| ("Ocp-Apim-Subscription-Key".to_string(), k.trim().to_string()))
         .into_iter()
         .collect();
