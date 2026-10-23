@@ -861,7 +861,7 @@ const MAX_GROUP_DEPTH: usize = 16;
 /// The arrays of two or more dimensions of a group and the groups below it, depth first in name
 /// order, as GDAL's Zarr driver lists them as subdatasets: `SUBDATASET_<n>_NAME`
 /// (`ZARR:"store":/path`) and `SUBDATASET_<n>_DESC` (`[2x3x4x5] /path (Float32)`) items. None
-/// when the group holds one array of two dimensions, which is the raster.
+/// when the group holds one array (of any dimensions), which is the raster.
 fn subdatasets(group: &Node) -> Vec<(String, String)> {
     fn walk(node: &Node, depth: usize, out: &mut Vec<Array>) {
         // The children's metadata read in parallel (a request or two each for a remote store),
@@ -890,7 +890,7 @@ fn subdatasets(group: &Node) -> Vec<(String, String)> {
     }
     let mut arrays = Vec::new();
     walk(group, 0, &mut arrays);
-    if arrays.len() < 2 && arrays.iter().all(|a| a.shape.len() == 2) {
+    if arrays.len() < 2 {
         return Vec::new();
     }
     let mut out = Vec::new();
