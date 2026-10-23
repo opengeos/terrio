@@ -23,7 +23,9 @@
 //!   several rasters.
 //!
 //! terrio keeps one data type and nodata value per raster: bands of different `raster:bands`
-//! data types are read as `Float64`, and the first band's nodata value is the raster's.
+//! data types are read as `Float64`, and the first band's nodata value is the raster's. Tiles
+//! are assembled through 64-bit floats, so `Int64` and `UInt64` values beyond 2^53 lose
+//! precision. A remote item does not name local files.
 //!
 //! Names: a local `.json` item, the URL of one, or `STACTA:"item.json"`,
 //! `STACTA:"item.json":asset` and `STACTA:"item.json":asset:tile_matrix_set` (local or remote).
@@ -392,22 +394,35 @@ fn stac_data_type(name: &str) -> Option<Result<DataType>> {
     }))
 }
 
-/// The resolved href template of an asset template, with `{TileMatrixSet}` replaced. A
-/// `file://` href is taken only from an item read from a local file: a remote item does not
-/// name local files.
+/// Whether a location is on the local file system (a local zip archive's members included).
+fn local_backed(loc: &crate::vfs::Location) -> bool {
+    match loc {
+        crate::vfs::Location::Local(_) => true,
+        crate::vfs::Location::Zip { archive, .. } => local_backed(archive),
+        _ => false,
+    }
+}
+
+/// The resolved href template of an asset template, with `{TileMatrixSet}` replaced. An item
+/// that is not on the local file system does not name local files (`file://`, local paths,
+/// `/vsizip/` of local archives): an error.
 fn href_template(item_loc: &str, href: &str, tms: &str) -> Result<String> {
     let href = href.replace("{TileMatrixSet}", tms);
-    if let Some(rest) = href.strip_prefix("file://") {
-        if !crate::vfs::Location::parse(item_loc).is_local() {
-            return Err(bad(format!("the remote item '{item_loc}' names local files ({href})")));
+    let resolved = match href.strip_prefix("file://") {
+        Some(rest) => rest.to_string(),
+        None => {
+            let href = match href.strip_prefix("azure://") {
+                Some(rest) => format!("az://{rest}"),
+                None => href.clone(),
+            };
+            crate::stac::resolve_href(item_loc, href.strip_prefix("./").unwrap_or(&href))
         }
-        return Ok(rest.to_string());
-    }
-    let href = match href.strip_prefix("azure://") {
-        Some(rest) => format!("az://{rest}"),
-        None => href,
     };
-    Ok(crate::stac::resolve_href(item_loc, href.strip_prefix("./").unwrap_or(&href)))
+    let parse = crate::vfs::Location::parse;
+    if !local_backed(&parse(item_loc)) && local_backed(&parse(&resolved)) {
+        return Err(bad(format!("the remote item '{item_loc}' names local files ({href})")));
+    }
+    Ok(resolved)
 }
 
 /// Whether a configuration option is true, as GDAL's `CPLTestBool`.
@@ -895,6 +910,8 @@ mod tests {
         );
         assert_eq!(href_template("/data/item.json", "file:///tiles/{TileMatrix}.tif", "Q").unwrap(), "/tiles/{TileMatrix}.tif");
         assert!(href_template("https://x.org/item.json", "file:///etc/{TileMatrix}.tif", "Q").is_err());
+        assert!(href_template("https://x.org/item.json", "/vsizip//home/a.zip/{TileMatrix}.tif", "Q").is_err());
+        assert_eq!(href_template("https://x.org/c/item.json", "/t/{TileMatrix}.tif", "Q").unwrap(), "https://x.org/t/{TileMatrix}.tif");
         assert_eq!(href_template("/data/item.json", "s3://b/{TileMatrix}.tif", "Q").unwrap(), "s3://b/{TileMatrix}.tif");
     }
 
