@@ -795,6 +795,9 @@ pub struct Transformer {
     time: Option<f64>,
     /// The height transformation, between CRSs that both have heights.
     heights: Option<Box<Heights>>,
+    /// A point motion operation moving coordinates of one datum between two coordinate epochs
+    /// (the Canada velocity grids of NAD83(CSRS), NKG_RF17vel), as PROJ applies it.
+    motion: Option<Vec<datum::Step>>,
 }
 
 /// A side of a height transformation: the CRS and the geographic 3D CRSs of its geoid models.
@@ -844,6 +847,15 @@ impl Side {
     }
 }
 
+/// The point motion operation of a datum over a time span (years), from
+/// `crates/terrio/data/point_motion.tsv` (`scripts/gen_point_motion.py`).
+fn point_motion(datum: u32, dt: f64) -> Option<Vec<datum::Step>> {
+    static TABLE: &str = include_str!("../data/point_motion.tsv");
+    let line = TABLE.lines().filter(|l| !l.starts_with('#')).find(|l| l.split('\t').next() == Some(&datum.to_string()))?;
+    let steps = line.split('\t').nth(2)?.replace("{dt}", &format!("{dt:?}"));
+    datum::parse_steps(&steps)
+}
+
 /// The definition of an EPSG geographic 3D CRS.
 fn def_of(code: u32) -> Option<Def> {
     Def::new(&SpatialRef { epsg: Some(code), ..Default::default() }).ok()
@@ -884,6 +896,15 @@ impl Transformer {
             _ => None,
         };
         let route = route::Route::new(&s, &d);
+        let motion = match (s.datum_code(), opts.source_coordinate_epoch, opts.target_coordinate_epoch) {
+            // Between geographic CRSs of the datum, as PROJ applies it (not to projected ones).
+            (Some(datum), Some(from), Some(to))
+                if s.datum_code() == d.datum_code() && from != to && s.is_geographic() && d.is_geographic() =>
+            {
+                point_motion(datum, to - from)
+            }
+            _ => None,
+        };
         let heights = (s.has_height() && d.has_height()).then(|| {
             Box::new(Heights {
                 src: Side::new(&s, true),
@@ -891,7 +912,8 @@ impl Transformer {
                 middle: std::sync::Mutex::new(std::collections::HashMap::new()),
             })
         });
-        Ok(Self { identity: src.same_as(dst), src: s, dst: d, route, time, heights })
+        let identity = src.same_as(dst) && motion.is_none();
+        Ok(Self { identity, src: s, dst: d, route, time, heights, motion })
     }
 
     /// Transforms one point.
@@ -909,6 +931,10 @@ impl Transformer {
         let fail = || Error::Crs(format!("cannot transform ({x}, {y})"));
         let (lon, lat) = self.src.unproject(x, y).ok_or_else(fail)?;
         let p = datum::Point { lon, lat, h: z, t };
+        let p = match &self.motion {
+            Some(steps) => datum::run(steps, p, false, true).ok_or_else(fail)?,
+            None => p,
+        };
         let q = self.route.apply(&self.src, x, y, p, false).ok_or_else(fail)?;
         let (tx, ty) = self.dst.project(q.lon, q.lat).ok_or_else(fail)?;
         Ok((tx, ty, q.h))
@@ -932,6 +958,10 @@ impl Transformer {
             return Ok((x, y, z));
         }
         let Some(h) = &self.heights else { return self.transform_2d(x, y, z, t) };
+        // A point motion between epochs moves ellipsoidal heights with the position.
+        if self.motion.is_some() && self.src.vertical().is_none() && self.dst.vertical().is_none() {
+            return self.transform_2d(x, y, z, t);
+        }
         // Compound CRSs with the same vertical CRS: heights only change unit.
         if let (Some(a), Some(b)) = (self.src.vertical(), self.dst.vertical())
             && a.code.is_some()

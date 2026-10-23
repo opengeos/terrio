@@ -149,14 +149,27 @@ JavaScript, `--s_coord_epoch` and `--t_coord_epoch` on `terrio crs`):
 
 - from a dynamic CRS to a static one, the source epoch is used;
 - from a static CRS to a dynamic one, the target epoch;
-- between two dynamic CRSs, the source epoch when both are given (PROJ does not move coordinates
-  from one epoch to the other);
+- between two dynamic CRSs, the source epoch when both are given;
+- between two epochs of one datum that has a point motion operation (the Canada velocity grids
+  v6, v7 and v8 of NAD83(CSRS), the NKG_RF17vel land uplift model of the Nordic ETRF2014
+  realization), the coordinates move with its velocity grid over the time between the epochs,
+  as PROJ moves them (`projinfo -s EPSG:8254@2010 -t EPSG:8254@2020`): geographic 2D and 3D
+  CRSs, not projected ones (which PROJ does not move);
 - otherwise the transformations' parameters at their reference epoch are used, as PROJ does
   without an epoch.
 
 `Transformer::transform_4d` takes the time of each point instead (`x y z t` lines on
 `terrio crs`). Time-dependent Helmert transformations (15 parameters) and velocity grids
 (`deformation`) are supported.
+
+```sh
+# NAD83(CSRS)v7 coordinates of 2010 at epoch 2020 (Canada velocity grid v7, from the PROJ CDN)
+echo "-75.7 45.4 100" | TERRIO_NETWORK=ON terrio crs EPSG:8254 --to EPSG:8254 --s_coord_epoch 2010 --t_coord_epoch 2020
+```
+
+On 1,100 points of NAD83(CSRS) v6 and v7 (2D and 3D, both directions) and NKG_RF17vel, the
+coordinates are PROJ's to 4 nanometres. (GDAL 3.12's `osr` applies the forward motion when the
+target epoch is the earlier one; PROJ's own pipeline, which terrio follows, moves them back.)
 
 ```rust
 use terrio::crs::{SpatialRef, TransformOptions, Transformer};
