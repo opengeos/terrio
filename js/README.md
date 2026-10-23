@@ -164,8 +164,8 @@ passed through it. Three crates treat WebAssembly as wasm32 only, and the build 
 them (`target_arch = "wasm32"` read as `target_family = "wasm"`): `tar`, which wbraster depends
 on, `zstd-sys` (its libc shim, for GeoParquet's Zstandard) and `arrow-buffer`; getrandom, which
 seeds ahash's hash maps, has no wasm64 backend and is given one (`crypto.getRandomValues`). The C
-code (Zstandard) needs clang 20 or later: older ones call through a 32-bit function table, which
-Rust's 64-bit one rejects at link time, leaving a module that does not validate.
+code (Zstandard) needs clang 20 or later: older ones index the function table with 32 bits,
+where Rust's code uses a 64-bit table, and the module they link together does not validate.
 
 ## Building
 
