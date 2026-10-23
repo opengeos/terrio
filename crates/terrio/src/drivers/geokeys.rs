@@ -87,8 +87,8 @@ pub(crate) fn user_defined_crs(k: &GeoKeys) -> Option<wbraster::CrsInfo> {
     let proj = match k.short(1024)? {
         2 => {
             // On an EPSG datum PROJ strings do not name (NAD83(HARN)): its EPSG geographic CRS.
-            if let Some(code) = epsg_geographic(k) {
-                return Some(wbraster::CrsInfo { epsg: Some(code), wkt: crate::crs::epsg_wkt(code).map(str::to_string), proj4: None });
+            if let Some((code, wkt)) = epsg_geographic(k).and_then(|c| Some((c, crate::crs::epsg_wkt(c)?))) {
+                return Some(wbraster::CrsInfo { epsg: Some(code), wkt: Some(wkt.to_string()), proj4: None });
             }
             format!("+proj=longlat {}", geographic_proj(k)?)
         }

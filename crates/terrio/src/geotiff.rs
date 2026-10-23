@@ -384,7 +384,8 @@ fn parse_nodata(s: &str) -> Option<f64> {
 fn user_defined_projected(projection: Option<u16>, geographic: Option<u16>, datum: Option<u16>, citation: Option<String>) -> Option<u32> {
     let citation = citation.unwrap_or_default();
     let defined = |c: &u16| *c != 0 && *c != 32767;
-    let datum = geographic.filter(defined).map(|c| crate::crs::geographic_datum(c as u32)).or(datum.filter(defined).map(u32::from));
+    // A geographic CRS terrio does not know leaves the datum to the datum key, else the citation.
+    let datum = geographic.filter(defined).and_then(|c| crate::crs::geographic_datum(c as u32)).or(datum.filter(defined).map(u32::from));
     // Datum: WGS 84 unless the datum is NAD83 or NAD27, or the citation says so when the GeoKeys
     // name no datum.
     let (nad83, nad27, other) = match datum {
