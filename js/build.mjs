@@ -154,6 +154,9 @@ function wasm64Clang() {
 function buildMemory64(outDir) {
   const target = "wasm64-unknown-unknown";
   const targetDir = join(crate, "..", "target", "wasm-memory64");
+  // The patches make cargo rewrite Cargo.lock: it is put back as it is now, before anything runs.
+  const lockPath = join(crate, "..", "Cargo.lock");
+  const lock = readFileSync(lockPath);
   const meta = JSON.parse(
     execFileSync("cargo", ["metadata", "--format-version", "1", "--filter-platform", target, "--manifest-path", join(crate, "Cargo.toml")], {
       maxBuffer: 1 << 28,
@@ -184,9 +187,6 @@ function buildMemory64(outDir) {
   // zlib-rs's SIMD for wasm64 (core::arch::wasm64) is unstable; ahash seeds with getrandom, whose
   // wasm64 backend js/src/lib.rs defines.
   const rustflags = ["-Zcrate-attr=feature(simd_wasm64)", "--cfg", 'getrandom_backend="custom"', ...link];
-  // The patches would rewrite Cargo.lock: it is put back.
-  const lockPath = join(crate, "..", "Cargo.lock");
-  const lock = readFileSync(lockPath);
   try {
     execFileSync("rustup", ["run", NIGHTLY, "cargo", "build", "-p", "terrio-js", "--target", target, ...profile, "-Z", "build-std=panic_abort,std", ...patches], {
       cwd: crate,

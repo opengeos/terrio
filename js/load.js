@@ -55,10 +55,11 @@ export function threadsSupported() {
  *   or `false` for the single-threaded module;
  * - `core`: the lighter module, single-threaded;
  * - `memory64`: the module with 64-bit memory, for datasets larger than 4 GB, where the runtime
- *   supports it (single-threaded, so `threads` is not used; not with `core`). Elsewhere the
- *   32-bit module loads, limited to 4 GB: check `features().build`, or pass `onFallback`;
- * - `onFallback`: called with the error when the threaded or memory64 module was asked for and
- *   another one is loaded instead.
+ *   supports it (single-threaded, so `threads` is not used; not with `core`). Elsewhere a 32-bit
+ *   module loads as without `memory64` (the threaded one where threads run), limited to 4 GB:
+ *   check `features().build`, or pass `onFallback`;
+ * - `onFallback`: called with the error each time a module asked for (memory64, then threaded)
+ *   is not loaded and another is tried.
  */
 export async function load(options = {}) {
   const { threads = true, core = false, memory64 = false, onFallback } = options;

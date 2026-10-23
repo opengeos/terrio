@@ -11,7 +11,7 @@ export interface LoadOptions {
   core?: boolean;
   /**
    * The module with 64-bit memory, `terrio-js/memory64`, for datasets larger than 4 GB, where the
-   * runtime supports it; elsewhere the 32-bit module loads (see `onFallback`). It is
+   * runtime supports it; elsewhere a 32-bit module loads, as without it (see `onFallback`). It is
    * single-threaded (`threads` is not used), and cannot be combined with `core`.
    */
   memory64?: boolean;
