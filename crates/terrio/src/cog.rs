@@ -220,7 +220,7 @@ impl LazyRaster {
     /// Opens a GeoTIFF held in memory, reading only its headers now. Returns `None` when the bytes
     /// are not a TIFF.
     pub fn from_tiff_bytes(bytes: Vec<u8>) -> Result<Option<Self>> {
-        let mut source = Source::Memory(std::io::Cursor::new(bytes));
+        let mut source = Source::Memory(std::io::Cursor::new(SharedBytes(std::sync::Arc::new(bytes))));
         if !is_tiff(&mut source) {
             return Ok(None);
         }
@@ -658,10 +658,20 @@ pub(crate) fn cut(r: &wbraster::Raster, w: Window, bands: &[usize]) -> RasterDat
     cut!(U8, I8, U16, I16, U32, I32, U64, I64, F32, F64)
 }
 
+/// A TIFF's bytes in memory, which more decoders can read at once to decode chunks in parallel.
+#[derive(Clone)]
+struct SharedBytes(std::sync::Arc<Vec<u8>>);
+
+impl AsRef<[u8]> for SharedBytes {
+    fn as_ref(&self) -> &[u8] {
+        &self.0
+    }
+}
+
 /// Where a TIFF's bytes come from.
 enum Source {
     File(BufReader<std::fs::File>),
-    Memory(std::io::Cursor<Vec<u8>>),
+    Memory(std::io::Cursor<SharedBytes>),
     #[cfg(remote)]
     Http(crate::http::RangeReader),
     /// A remote file whose bytes the caller fetches (see [`crate::sparse`]).
@@ -732,6 +742,12 @@ struct TiffRaster {
     /// The local file the TIFF is read from, which more decoders can open to decode chunks in
     /// parallel.
     file: Option<std::path::PathBuf>,
+}
+
+/// What more decoders of a TIFF read: its local file, or its bytes in memory.
+enum Reopened<'a> {
+    File(&'a std::path::Path),
+    Memory(SharedBytes),
 }
 
 fn tiff_err(e: tiff::TiffError) -> Error {
@@ -832,10 +848,23 @@ impl TiffRaster {
             }
             t.push((x0, y0, map));
         }
-        let (file, tags) = (self.file.as_deref(), &self.tags);
-        let reopen = |path: &std::path::Path| crate::geotiff::open_decoder(path, tags);
-        let reopen = file.map(|p| move || reopen(p));
-        let reopen = reopen.as_ref().map(|f| f as crate::geotiff::Reopen);
+        // More decoders over the local file, or over the bytes in memory.
+        let tags = &self.tags;
+        let source = match (self.file.as_deref(), dec.inner().get_ref()) {
+            (Some(path), _) => Some(Reopened::File(path)),
+            (None, Source::Memory(m)) => Some(Reopened::Memory(m.get_ref().clone())),
+            _ => None,
+        };
+        let reopen = source.map(|source| {
+            move || -> Result<Decoder<PatchedReader<Source>>> {
+                let s = match &source {
+                    Reopened::File(path) => Source::File(BufReader::new(std::fs::File::open(path)?)),
+                    Reopened::Memory(bytes) => Source::Memory(std::io::Cursor::new(bytes.clone())),
+                };
+                Ok(Decoder::new(PatchedReader::new(s, tags)).map_err(tiff_err)?.with_limits(Limits::unlimited()))
+            }
+        });
+        let reopen = reopen.as_ref().map(|f| f as crate::geotiff::Reopen<PatchedReader<Source>>);
         crate::geotiff::decode_chunks(dec, reopen, ifd, &wanted, &tiff_err, |(idx, chunk, (dw, dh))| {
             let targets = &targets[&idx];
             macro_rules! place {

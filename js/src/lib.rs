@@ -16,6 +16,8 @@ mod ops;
 #[cfg(feature = "pointcloud")]
 mod pointcloud;
 mod remote;
+#[cfg(feature = "threads")]
+mod threads;
 
 use serde::Deserialize;
 use std::cell::{Cell, RefCell};
@@ -38,8 +40,15 @@ pub fn start() {
     console_error_panic_hook::set_once();
 }
 
-/// The name of this build of the module: `terrio-js`, every format, or `terrio-js/core`.
-const BUILD: &str = if cfg!(feature = "full") { "terrio-js" } else { "terrio-js/core" };
+/// The name of this build of the module: `terrio-js`, every format, `terrio-js/threads`, every
+/// format with a thread pool, or `terrio-js/core`.
+const BUILD: &str = if cfg!(feature = "threads") {
+    "terrio-js/threads"
+} else if cfg!(feature = "full") {
+    "terrio-js"
+} else {
+    "terrio-js/core"
+};
 
 /// The cargo features of this build, the formats it reads and writes besides the ones always built.
 const FEATURES: &[(&str, bool)] = &[
@@ -773,13 +782,18 @@ pub fn version() -> String {
     terrio::VERSION.into()
 }
 
-/// What this module has: `{ build, features }`, `build` being `"terrio-js"` (every format) or
-/// `"terrio-js/core"`, and `features` the optional formats built in (`jp2`, `netcdf-hdf5`,
-/// `pointcloud`, `parquet`...).
+/// What this module has: `{ build, features, threads }`, `build` being `"terrio-js"` (every
+/// format), `"terrio-js/threads"` (every format, with `initThreadPool`) or `"terrio-js/core"`,
+/// `features` the optional formats built in (`jp2`, `netcdf-hdf5`, `pointcloud`, `parquet`...),
+/// and `threads` the threads work runs on (1 until `initThreadPool` has started more).
 #[wasm_bindgen]
 pub fn features() -> Result<JsValue, JsError> {
     let built: Vec<&str> = FEATURES.iter().filter(|(_, on)| *on).map(|(f, _)| *f).collect();
-    to_js(&serde_json::json!({ "build": BUILD, "features": built }))
+    #[cfg(feature = "threads")]
+    let threads = threads::pool_size().max(1);
+    #[cfg(not(feature = "threads"))]
+    let threads = 1;
+    to_js(&serde_json::json!({ "build": BUILD, "features": built, "threads": threads }))
 }
 
 /// Point clouds, which this build leaves out: the functions say so.

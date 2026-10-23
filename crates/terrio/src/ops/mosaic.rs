@@ -363,7 +363,7 @@ fn copy_in_strips(
                 crate::pixel::with_data!(&mut data, v => {
                     let band = &mut v[c.out_band * n..(c.out_band + 1) * n];
                     let rows = &mut band[(r0 - y0) * w..(r0 - y0 + ds.raster.rows) * w];
-                    crate::par::chunks_mut(rows, w, |r, line| {
+                    crate::par::chunks_mut_coarse(rows, w, |r, line| {
                         for (x, o) in line[c.copy.dst_x..c.copy.dst_x + cols].iter_mut().enumerate() {
                             let value = values.get(r * cols + x);
                             if c.nodata.is_none_or(|nd| !super::is_nodata(value, nd)) {

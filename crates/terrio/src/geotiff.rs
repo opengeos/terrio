@@ -429,8 +429,9 @@ pub(crate) fn open_decoder(path: &std::path::Path, tags: &GeoTags) -> crate::Res
     Ok(dec.with_limits(tiff::decoder::Limits::unlimited()))
 }
 
-/// Opens another decoder over the same file, for decoding chunks in parallel.
-pub(crate) type Reopen<'a> = &'a (dyn Fn() -> crate::Result<FileDecoder> + Sync);
+/// Opens another decoder over the same TIFF (a local file, or bytes in memory), for decoding
+/// chunks in parallel.
+pub(crate) type Reopen<'a, D> = &'a (dyn Fn() -> crate::Result<tiff::decoder::Decoder<D>> + Sync);
 
 /// A decoded chunk: its index, its samples and the size `(width, height)` of the image data it
 /// holds.
@@ -452,9 +453,9 @@ fn read_chunk<R: Read + Seek>(
 /// order. With `reopen`, several threads decode, each with its own decoder over the file, while
 /// the calling thread places the chunks; `dec`, positioned on the image, decodes the chunks no
 /// thread did (all of them without `reopen`).
-pub(crate) fn decode_chunks<R: Read + Seek>(
+pub(crate) fn decode_chunks<R: Read + Seek, D: Read + Seek>(
     dec: &mut tiff::decoder::Decoder<R>,
-    reopen: Option<Reopen>,
+    reopen: Option<Reopen<D>>,
     ifd: usize,
     chunks: &[u32],
     err: &(dyn Fn(tiff::TiffError) -> crate::Error + Sync),
@@ -464,12 +465,12 @@ pub(crate) fn decode_chunks<R: Read + Seek>(
     let codec = crate::tiff_codecs::ChunkCodec::new(dec).map_err(err)?;
     let codec = codec.as_ref();
     // Chunks `..first` were decoded by other threads.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(threads)]
     let first = match reopen {
         Some(reopen) => decode_in_threads(reopen, ifd, chunks, codec, err, &mut place)?,
         None => 0,
     };
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(not(threads))]
     let first = {
         let _ = (reopen, ifd);
         0
@@ -486,8 +487,8 @@ pub(crate) fn decode_chunks<R: Read + Seek>(
 /// `place` on the calling thread. Returns how many of the first chunks were decoded: a thread that
 /// cannot open the file leaves its share to the caller.
 #[cfg(not(target_arch = "wasm32"))]
-fn decode_in_threads(
-    reopen: Reopen,
+fn decode_in_threads<D: Read + Seek>(
+    reopen: Reopen<D>,
     ifd: usize,
     chunks: &[u32],
     codec: Option<&crate::tiff_codecs::ChunkCodec>,
@@ -540,6 +541,44 @@ fn decode_in_threads(
         return Ok(next.into_inner().min(chunks.len()));
     }
     Ok(0)
+}
+
+/// Decodes chunks on the thread pool of WebAssembly built with threads, a few per thread at a
+/// time, each thread with its own decoder over the TIFF's bytes, and hands them to `place` on the
+/// calling thread. Returns how many of the first chunks were decoded (none without a pool).
+#[cfg(all(threads, target_arch = "wasm32"))]
+fn decode_in_threads<D: Read + Seek>(
+    reopen: Reopen<D>,
+    ifd: usize,
+    chunks: &[u32],
+    codec: Option<&crate::tiff_codecs::ChunkCodec>,
+    err: &(dyn Fn(tiff::TiffError) -> crate::Error + Sync),
+    place: &mut impl FnMut(DecodedChunk) -> crate::Result<()>,
+) -> crate::Result<usize> {
+    let workers = crate::par::threads().min(chunks.len());
+    if workers <= 1 {
+        return Ok(0);
+    }
+    let open = || -> crate::Result<tiff::decoder::Decoder<D>> {
+        let mut d = reopen()?;
+        if ifd != 0 {
+            d.seek_to_image(ifd).map_err(err)?;
+        }
+        Ok(d)
+    };
+    // A batch at a time: decoding never runs far ahead of placing.
+    for batch in chunks.chunks(workers * 4) {
+        let decoded = crate::par::map_init(batch, open, |d, &idx| -> crate::Result<DecodedChunk> {
+            let d = d.as_mut().map_err(|e| crate::Error::InvalidData(e.to_string()))?;
+            let c = read_chunk(d, codec, idx).map_err(err)?;
+            let (w, h) = d.chunk_data_dimensions(idx);
+            Ok((idx, c, (w as usize, h as usize)))
+        });
+        for c in decoded {
+            place(c?)?;
+        }
+    }
+    Ok(chunks.len())
 }
 
 /// Reads a GeoTIFF (or BigTIFF, or COG) into memory: the full-resolution image of the first IFD.

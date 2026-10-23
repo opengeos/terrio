@@ -81,11 +81,46 @@ Both modules are built for size: whole-program LTO, the codecs optimized for spe
 for size, and wasm-opt -Oz. The full module is 21% smaller than before (20.6 MB, 6.7 MB gzipped)
 and decodes and writes as fast.
 
+## Threads: `terrio-js/load` and `terrio-js/threads`
+
+A third module, `terrio-js/threads`, has every format and a thread pool of Web Workers (or
+Node.js worker threads) over shared memory: GeoTIFF tiles and strips, JPEG 2000 tiles and Zarr
+chunks decode in parallel, and GeoTIFF/COG tiles, overviews and Zarr chunks are compressed in
+parallel, as natively. `terrio-js/load` picks it where WebAssembly threads run (Node.js 22 or
+later, and pages that are cross-origin isolated, served with `Cross-Origin-Opener-Policy:
+same-origin` and `Cross-Origin-Embedder-Policy: require-corp`), starts its pool, and loads the
+single-threaded module everywhere else:
+
+```js
+import { load } from "terrio-js/load";
+
+const terrio = await load();      // or load({ threads: 4 }), load({ threads: false }), load({ core: true })
+terrio.features();                // { build: "terrio-js/threads", threads: 8, ... } or { build: "terrio-js", threads: 1, ... }
+const dem = terrio.open(bytes, "dem.tif");
+```
+
+The threaded module can also be imported and started by hand: `import init, { initThreadPool }
+from "terrio-js/threads"`, then `await init()` and `await initThreadPool(navigator.hardwareConcurrency)`.
+Its results are those of the single-threaded module, byte for byte. With 16 threads, against one
+(a Xeon w7-3445, best of three):
+
+| | Node.js 26 | Chromium | Firefox |
+|---|---|---|---|
+| 3612 x 3612 Float32 LZW GeoTIFF, decoded | 542 → 92 ms | 580 → 91 ms | 622 → 113 ms |
+| The same, written as a DEFLATE COG with overviews | 2467 → 302 ms | 2460 → 306 ms | 2680 → 340 ms |
+| 10980 x 10980 Sentinel-2 JPEG 2000 band, decoded | 6.8 → 0.9 s | 6.6 → 0.9 s | 6.7 → 0.9 s |
+
+Work on vector features (parsing and writing GeoJSON, FlatGeobuf, GeoPackage...) stays on the
+calling thread in WebAssembly: its many small allocations contend on WebAssembly's allocator, one
+lock for all threads, and ran several times slower on more threads.
+
 ## Building
 
 ```sh
-node js/build.mjs                         # the npm package in js/pkg: both modules, built for size
-node --test js/tests/package.test.mjs
+node js/build.mjs                         # the npm package in js/pkg: all modules, built for size
+node --test js/tests/package.test.mjs     # (the threaded module needs the nightly js/build.mjs names)
+TERRIO_JS_LOAD=../pkg/load.js node --test js/tests/node.test.mjs   # the suite on the threaded module
+node js/tests/browser.mjs ../terrio-data  # in headless browsers (Playwright), timings included
 wasm-pack build js --release --target nodejs --out-dir pkg-node --out-name terrio
 node --test js/tests/node.test.mjs        # TERRIO_TEST_DATA=... adds real files checked against GDAL
 # terrio-js/core, and the tests of the formats it has:

@@ -716,7 +716,7 @@ fn prepare(raster: &Raster, opts: &TiffOptions) -> Result<Prepared> {
             rows = rows.div_ceil(2);
             count += 1;
         }
-        levels.extend(crate::par::map_range(count, |i| {
+        levels.extend(crate::par::map_range_coarse(count, |i| {
             let factor = 1usize << (i + 1);
             let mut reducer =
                 CogOverview::new(raster.cols, raster.rows, raster.bands, factor, opts.overview_resampling, opts.nodata, opts.alpha);
@@ -788,7 +788,7 @@ fn mask_image(mask: &[u8], cols: usize, rows: usize, block: (usize, usize, bool)
     let (chunk_w, chunk_h, tiled) = block;
     let (across, down) = (cols.div_ceil(chunk_w), rows.div_ceil(chunk_h));
     let row_bytes = chunk_w.div_ceil(8);
-    let chunks = crate::par::map_range(across * down, |j| {
+    let chunks = crate::par::map_range_coarse(across * down, |j| {
         let (x0, y0) = ((j % across) * chunk_w, (j / across) * chunk_h);
         let h = if tiled { chunk_h } else { chunk_h.min(rows - y0) };
         let mut buf = vec![0u8; row_bytes * h];
@@ -902,7 +902,7 @@ impl<'a> Level<'a> {
         };
         let per_plane = across * down;
         let band_len = self.cols * self.rows;
-        let chunks = crate::par::map_range(planes * per_plane, |i| {
+        let chunks = crate::par::map_range_coarse(planes * per_plane, |i| {
             let (plane, j) = (i / per_plane, i % per_plane);
             let (x0, y0) = ((j % across) * chunk_w, (j / across) * chunk_h);
             // Strips stop at the last row; tiles are padded to full size.
@@ -1028,7 +1028,7 @@ fn resample<T: Pixel>(
     };
     let xs: Vec<_> = (0..out_cols).map(|i| window(i, rx, cols)).collect();
     let mut out = vec![T::default(); out_cols * out_rows * bands];
-    crate::par::chunks_mut(&mut out, out_cols, |k, line| {
+    crate::par::chunks_mut_coarse(&mut out, out_cols, |k, line| {
         let (b, r) = (k / out_rows, k % out_rows);
         let band = &src[b * cols * rows..(b + 1) * cols * rows];
         if method == OverviewResampling::Nearest {
@@ -1284,7 +1284,7 @@ impl CogOverview {
         let alpha = self.alpha.then(|| &src[(bands - 1) * band_len..]);
         let (sums, weights) = (&self.sums, &self.weights);
         let mut out = vec![T::default(); out_cols * out_rows * bands];
-        crate::par::chunks_mut(&mut out, out_cols, |i, line| {
+        crate::par::chunks_mut_coarse(&mut out, out_cols, |i, line| {
             let (b, r) = (i / out_rows, i % out_rows);
             let band = &src[b * band_len..(b + 1) * band_len];
             let alpha = alpha.filter(|_| b + 1 < bands);
@@ -2160,7 +2160,7 @@ impl CogWriter {
         if rows == 0 {
             return Ok(());
         }
-        let overviews = crate::par::map_mut(&mut self.levels[1..], |level| level.overview.as_mut().unwrap().write_rows(&data, rows));
+        let overviews = crate::par::map_mut_coarse(&mut self.levels[1..], |level| level.overview.as_mut().unwrap().write_rows(&data, rows));
         for (i, overview) in overviews.into_iter().enumerate() {
             let i = i + 1;
             let overview_rows = overview.len() / (self.levels[i].cols * self.bands);

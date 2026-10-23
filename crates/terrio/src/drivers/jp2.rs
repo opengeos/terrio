@@ -887,8 +887,11 @@ impl Jp2Window {
             .collect();
         let (w, h) = (window.width, window.height);
         let all = self.header.precisions.len();
-        let decoded: Vec<Result<(usize, usize, RasterData)>> =
-            if parts.len() == 1 { vec![self.decode(area, r)] } else { crate::par::map_range(parts.len(), |k| self.decode(parts[k], r)) };
+        let decoded: Vec<Result<(usize, usize, RasterData)>> = if parts.len() == 1 {
+            vec![self.decode(area, r)]
+        } else {
+            crate::par::map_range_coarse(parts.len(), |k| self.decode(parts[k], r))
+        };
         let (ox, oy) = (ceil_shift(area[0], r), ceil_shift(area[1], r));
         let mut out: Option<RasterData> = None;
         for (part, d) in parts.iter().zip(decoded) {

@@ -3,7 +3,7 @@
 // `node --test js/tests/package.test.mjs` (TERRIO_JS_PKG_DIR: another package directory).
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -22,8 +22,14 @@ test("the package names both modules and ships their files", () => {
   assert.equal(pkg.name, "terrio-js");
   assert.deepEqual(pkg.exports["."], { types: "./terrio.d.ts", default: "./terrio.js" });
   assert.deepEqual(pkg.exports["./core"], { types: "./core/terrio.d.ts", default: "./core/terrio.js" });
-  for (const f of ["terrio_bg.wasm", "terrio.js", "terrio.d.ts", "core/terrio_bg.wasm", "core/terrio.js", "core/terrio.d.ts"]) {
+  assert.deepEqual(pkg.exports["./load"], { types: "./load.d.ts", default: "./load.js" });
+  for (const f of ["terrio_bg.wasm", "terrio.js", "terrio.d.ts", "core/terrio_bg.wasm", "core/terrio.js", "core/terrio.d.ts", "load.js", "load.d.ts"]) {
     assert.ok(pkg.files.includes(f), f);
+  }
+  if (existsSync(join(dir, "threads"))) {
+    assert.deepEqual(pkg.exports["./threads"], { types: "./threads/terrio.d.ts", default: "./threads/terrio.js" });
+    assert.ok(pkg.files.includes("threads/"));
+    assert.ok(pkg.sideEffects.includes("./threads/snippets/*"));
   }
 });
 
@@ -43,4 +49,41 @@ for (const [sub, build] of [["", "terrio-js"], ["core", "terrio-js/core"]]) {
 test("terrio-js/core is the smaller download", () => {
   const size = (sub) => readFileSync(join(dir, sub, "terrio_bg.wasm")).length;
   assert.ok(size("core") < size("") * 0.6, `${size("core")} and ${size("")} bytes`);
+});
+
+// The threaded module, as `terrio-js/load` starts it in Node.js: the same results as the
+// single-threaded module, from work split over its threads.
+const threaded = existsSync(join(dir, "threads", "terrio_bg.wasm"));
+
+test("terrio-js/load starts the threaded module, which matches the single-threaded one", { skip: !threaded && "no threads/ module" }, async () => {
+  const { load, threadsSupported } = await import(pathToFileURL(join(dir, "load.js")).href);
+  assert.ok(threadsSupported());
+  const mt = await load({ threads: 4 });
+  assert.equal(mt.features().build, "terrio-js/threads");
+  assert.equal(mt.features().threads, 4);
+  await assert.rejects(mt.initThreadPool(2), /already started/);
+  const st = await load({ threads: false });
+  assert.equal(st.features().build, "terrio-js");
+  assert.equal(st.features().threads, 1);
+
+  // A 1500 x 1200 Float32 raster as a DEFLATE COG in 64 x 64 tiles, and a 2500 x 2100 UInt16 one
+  // as a JPEG 2000 (in 1024 x 1024 tiles), written and decoded by both modules.
+  const pixels = new Float32Array(1500 * 1200).map((_, i) => ((i * 7919) % 104729) / 7);
+  const geo = [500000, 10, 0, 4100000, 0, -10];
+  const cog = (m) => m.rasterFromArray(pixels, 1500, 1200, geo, "EPSG:32610").toBytes("x.tif", { format: "COG", compress: "DEFLATE", tileSize: 64 });
+  const [a, b] = [cog(mt), cog(st)];
+  assert.deepEqual(Buffer.from(a), Buffer.from(b));
+  const band = (m, bytes, name) => m.open(bytes, name).readBand(1);
+  assert.deepEqual(Buffer.from(band(mt, a, "x.tif").buffer), Buffer.from(pixels.buffer));
+  const ints = new Uint16Array(2500 * 2100).map((_, i) => (i * 31) % 4096);
+  const jp2 = (m) => m.rasterFromArray(ints, 2500, 2100, geo, "EPSG:32610").toBytes("x.jp2");
+  const [j1, j2] = [jp2(mt), jp2(st)];
+  assert.deepEqual(Buffer.from(j1), Buffer.from(j2));
+  assert.deepEqual(Buffer.from(band(mt, j1, "x.jp2").buffer), Buffer.from(ints.buffer));
+});
+
+test("terrio-js/load falls back to the single-threaded module", async () => {
+  const { load } = await import(pathToFileURL(join(dir, "load.js")).href);
+  assert.equal((await load({ threads: false })).features().build, "terrio-js");
+  assert.equal((await load({ core: true })).features().build, "terrio-js/core");
 });

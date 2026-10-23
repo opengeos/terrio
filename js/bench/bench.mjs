@@ -7,17 +7,20 @@
 import { existsSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const [data, pkg = fileURLToPath(new URL("../pkg-node", import.meta.url))] = process.argv.slice(2);
 if (!data) {
   console.error("usage: node js/bench/bench.mjs <data dir> [package dir]");
   process.exit(2);
 }
-const terrio = createRequire(import.meta.url)(join(resolve(pkg), "terrio.js"));
-if (process.env.TERRIO_THREADS && terrio.initThreadPool) {
-  await terrio.initThreadPool(Number(process.env.TERRIO_THREADS));
-}
+// A Node.js build (pkg-node), or the npm package (pkg), loaded with `terrio-js/load`: threaded,
+// with TERRIO_THREADS threads (as many as processors, up to 16, by default; 0: single-threaded).
+const threads = process.env.TERRIO_THREADS === undefined ? true : Number(process.env.TERRIO_THREADS) || false;
+const terrio = existsSync(join(resolve(pkg), "load.js"))
+  ? await (await import(pathToFileURL(join(resolve(pkg), "load.js")).href)).load({ threads })
+  : createRequire(import.meta.url)(join(resolve(pkg), "terrio.js"));
+console.error(JSON.stringify({ build: terrio.features().build, threads: terrio.features().threads }));
 
 /** The best time of `runs` calls of `f`, in milliseconds. */
 function best(f, runs = 3) {

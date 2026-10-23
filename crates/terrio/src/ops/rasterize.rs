@@ -189,7 +189,7 @@ fn burn<T: Pixel>(layers: &[Layer], options: &RasterizeOptions, grid: &Grid, ban
         }
     }
     let (values, shapes) = (&values, &shapes);
-    crate::par::for_each_owned(stripes, |i, parts| {
+    crate::par::for_each_owned_coarse(stripes, |i, parts| {
         let row0 = i * stripe_rows;
         let nrows = parts.first().map_or(0, |p| p.len() / cols.max(1));
         let mut b =

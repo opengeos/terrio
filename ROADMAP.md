@@ -279,7 +279,16 @@ WebAssembly (the `terrio-js` npm package):
       bytes, about four times the file's size for lines and five for polygons, so a 1 GB file of
       polygons needs the memory64 item below, or `openUrl` to read it by bounding box (with a
       spatial index; a file without one is still read whole).
-- [ ] Multithreaded decoding and writing with WebAssembly threads, where the page allows them.
+- [x] Multithreaded decoding and writing with WebAssembly threads, where the page allows them.
+      Done: a threaded module, `terrio-js/threads` (WebAssembly atomics, a rayon pool of Web
+      Workers or Node.js worker threads, `initThreadPool(n)`), which `terrio-js/load` picks in
+      Node.js and on cross-origin isolated pages, the single-threaded module elsewhere. GeoTIFF
+      tiles, JPEG 2000 tiles and Zarr chunks decode in parallel, and GeoTIFF/COG and Zarr writes
+      compress in parallel, to the same bytes; with 16 threads, a 3612 x 3612 DEM decodes in 92 ms
+      instead of 542 and writes as a DEFLATE COG in 302 ms instead of 2.5 s, and a Sentinel-2
+      JPEG 2000 band decodes in 0.9 s instead of 6.8, in Node.js, Chromium and Firefox alike
+      (tested in CI in all three). Vector work stays on one thread, as WebAssembly's allocator
+      makes small parallel allocations slower.
 - [x] A smaller download: optional formats split out or loaded on demand, and size-optimized builds.
       Done: the package holds a second module, `terrio-js/core`, without GeoParquet and Arrow,
       netCDF/HDF5, point clouds, JPEG 2000, Zarr, AVIF and OSM: 8.9 MB (3.0 MB gzipped, 2.3 MB

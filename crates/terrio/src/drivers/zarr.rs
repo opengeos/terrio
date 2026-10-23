@@ -769,7 +769,7 @@ fn read_region(a: &Array, start: &[usize], shape: &[usize]) -> Result<Vec<u8>> {
         }
     };
     let p = &a.pipeline;
-    let results = crate::par::map_range(total, |i| -> Result<()> {
+    let results = crate::par::map_range_coarse(total, |i| -> Result<()> {
         let idx: Vec<usize> = unravel(i, &counts).iter().zip(&first).map(|(k, f)| k + f).collect();
         let origin: Vec<usize> = idx.iter().zip(&a.chunks).map(|(i, c)| i * c).collect();
         let key = a.chunk_key(&idx);
@@ -1656,7 +1656,7 @@ fn write_array(dir: &Path, a: &NewArray, compression: Option<&str>, version: Ver
         fill = one;
     }
     // Chunks are built, compressed and written in parallel.
-    let results = crate::par::map_range(grid.iter().product::<usize>(), |k| -> Result<()> {
+    let results = crate::par::map_range_coarse(grid.iter().product::<usize>(), |k| -> Result<()> {
         // The chunk's index along each dimension (C order).
         let mut idx = vec![0usize; nd];
         let mut rest = k;

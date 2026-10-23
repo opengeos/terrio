@@ -11,7 +11,11 @@ import { join } from "node:path";
 import { test } from "node:test";
 
 const require = createRequire(import.meta.url);
-const terrio = require(process.env.TERRIO_JS_PKG ?? "../pkg-node/terrio.js");
+// TERRIO_JS_LOAD: the npm package's `load.js` (js/pkg, built by js/build.mjs), whose module the
+// tests run on instead, the threaded one in Node.js (TERRIO_THREADS threads, 4 by default).
+const terrio = process.env.TERRIO_JS_LOAD
+  ? await (await import(new URL(process.env.TERRIO_JS_LOAD, import.meta.url).href)).load({ threads: Number(process.env.TERRIO_THREADS ?? 4) })
+  : require(process.env.TERRIO_JS_PKG ?? "../pkg-node/terrio.js");
 const DATA = process.env.TERRIO_TEST_DATA;
 
 // The lighter build (`terrio-js/core`) leaves formats out: the tests that need them are skipped
@@ -45,7 +49,8 @@ test("version", () => {
 
 test("the module's build and its formats", () => {
   assert.ok(["flatgeobuf", "sqlite", "tiles", "lzma", "lerc"].every((f) => BUILT.includes(f)), BUILT.join());
-  if (BUILD === "terrio-js") {
+  if (BUILD === "terrio-js/threads") assert.ok(terrio.features().threads > 1, "the thread pool is started");
+  if (BUILD !== "terrio-js/core") {
     assert.ok(["jp2", "netcdf-hdf5", "parquet", "pointcloud", "zarr"].every((f) => BUILT.includes(f)), BUILT.join());
   } else {
     assert.equal(BUILD, "terrio-js/core");

@@ -61,6 +61,9 @@ lerc-writer = { workspace = true, optional = true }
 zune-jpegxl.workspace = true
 zune-core.workspace = true
 jxl-oxide.workspace = true
+# Data parallelism: natively, and in WebAssembly built with threads (`atomics`), where the host
+# starts the pool; WebAssembly without threads runs the same loops in sequence (see `par`).
+rayon.workspace = true
 rusty_av1d = { workspace = true, optional = true }
 lzma-rust2 = { workspace = true, optional = true }
 
@@ -118,7 +121,6 @@ tempfile.workspace = true
 ureq = { workspace = true, optional = true }
 hmac = { workspace = true, optional = true }
 sha2 = { workspace = true, optional = true }
-rayon.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true

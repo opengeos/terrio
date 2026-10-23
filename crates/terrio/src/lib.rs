@@ -286,3 +286,7 @@ unsafe impl std::alloc::GlobalAlloc for NullSafeAllocator {
 
 /// The version of this crate.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// The thread pool of WebAssembly builds with threads: see [`par::set_thread_pool`].
+#[cfg(all(threads, target_arch = "wasm32"))]
+pub use par::set_thread_pool;
