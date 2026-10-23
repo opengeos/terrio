@@ -521,16 +521,20 @@ pub(crate) fn list_subdirectories(dir: &Directory) -> Result<Option<Vec<String>>
                 client.missing_ok = true;
                 client.query = format!("?{}", s3_list_query(prefix, token.as_deref()));
                 client.url = format!("{}{}", client.url, client.query);
-                let signed = matches!(&client.s3, Some(S3Auth { creds: Some(_), .. }));
-                let fetched = client.fetch(None)?;
-                if matches!(fetched.status, 403 | 404) {
-                    // Refused with credentials: they lack s3:ListBucket, or are wrong.
-                    if signed && fetched.status == 403 {
+                let fetched = match client.fetch(None) {
+                    Ok(f) => f,
+                    // A signed request refused (a 403 is an error for those): the credentials
+                    // may not allow s3:ListBucket. Not listable, rather than failing again.
+                    Err(Error::Http(m)) if m.contains("status 403") => {
                         crate::warnings::warn(format!(
                             "S3: listing s3://{}/{prefix} was refused (403): the credentials may not allow s3:ListBucket",
                             remote_bucket(remote)
                         ));
+                        return Ok(None);
                     }
+                    Err(e) => return Err(e),
+                };
+                if matches!(fetched.status, 403 | 404) {
                     return Ok(None);
                 }
                 (fetched.data, prefix)

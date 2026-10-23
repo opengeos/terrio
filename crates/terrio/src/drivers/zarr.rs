@@ -1221,7 +1221,7 @@ impl crate::cog::WindowSource for ZarrSource {
 }
 
 /// Opens the raster of a store, group or array node: its header (without pixels) and reader.
-fn open_node(node: &Node) -> Result<(RasterDataset, ZarrSource)> {
+fn open_node(node: &Node, list_subdatasets: bool) -> Result<(RasterDataset, ZarrSource)> {
     let (array, group, ms) = locate(node)?;
     let nd = array.shape.len();
     if nd < 2 {
@@ -1325,8 +1325,8 @@ fn open_node(node: &Node) -> Result<(RasterDataset, ZarrSource)> {
         data: RasterData::new_filled(array.data_type, 0, 0.0),
     };
     let mut header = RasterDataset::with_driver(raster, RasterDriver::Zarr, array.fill.is_some());
-    // A group opened: its arrays, as GDAL lists them.
-    if array.node != *node {
+    // A group opened: its arrays, as GDAL lists them (for its header: not to read its pixels).
+    if list_subdatasets && array.node != *node {
         header.raster.metadata.extend(subdatasets(node));
     }
 
@@ -1419,7 +1419,7 @@ pub(crate) fn read(path: &Path) -> Result<RasterDataset> {
 }
 
 fn read_node(node: &Node) -> Result<RasterDataset> {
-    let (mut header, mut source) = open_node(node)?;
+    let (mut header, mut source) = open_node(node, false)?;
     let r = &header.raster;
     let bands: Vec<usize> = (1..=r.bands).collect();
     header.raster.data = crate::cog::WindowSource::read(&mut source, 0, crate::Window::full(r.cols, r.rows), &bands)?;
@@ -1465,8 +1465,9 @@ fn open_name(store: &str, array: Option<&str>) -> Result<Node> {
             }
             Node::local(p)
         }
+        // Named as given (`az://`, `s3://`...), so that its subdatasets' names open the same way.
         #[cfg(remote)]
-        crate::vfs::Location::Url(_) | crate::vfs::Location::S3 { .. } => Node::remote(&loc)?,
+        crate::vfs::Location::Url(_) | crate::vfs::Location::S3 { .. } => Node::remote_named(&loc, store)?,
         _ => return Err(Error::Unsupported(format!("Zarr stores at '{store}' are not supported"))),
     };
     Ok(match array {
@@ -1481,7 +1482,7 @@ fn open_name(store: &str, array: Option<&str>) -> Result<Node> {
 pub(crate) fn open_lazy(name: &str) -> Option<Result<crate::LazyRaster>> {
     let (store, array) = parse_name(name)?;
     Some(open_name(&store, array.as_deref()).and_then(|node| {
-        let (header, source) = open_node(&node)?;
+        let (header, source) = open_node(&node, true)?;
         Ok(crate::LazyRaster::from_source(header, Box::new(source)))
     }))
 }

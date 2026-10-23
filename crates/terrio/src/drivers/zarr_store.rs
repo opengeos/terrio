@@ -302,8 +302,10 @@ impl Node {
 
     /// Opens a remote location. The store is rooted at the last path component ending in
     /// `.zarr` (or at the location itself), and the node is the rest of the path.
+    /// The store is named `given` (the location as the user wrote it, such as
+    /// `az://container/store.zarr`, when it is the store itself) in messages and subdataset names.
     #[cfg(remote)]
-    pub(crate) fn remote(loc: &crate::vfs::Location) -> Result<Node> {
+    pub(crate) fn remote_named(loc: &crate::vfs::Location, given: &str) -> Result<Node> {
         use crate::vfs::Location;
         let split = |path: &str| -> (String, String) {
             let path = path.trim_end_matches('/');
@@ -326,6 +328,9 @@ impl Node {
             }
             _ => return Err(crate::Error::InvalidArgument("not a remote location".into())),
         };
+        // The name as given, when it names the store itself (not a node below it).
+        let given = given.trim_end_matches('/');
+        let name = if key.is_empty() && !given.is_empty() && !given.contains('?') { given.to_string() } else { name };
         let mut store = Store::new(Backend::Remote { base, fetcher: Box::new(crate::http::ObjectFetcher::new()) }, name);
         store.load_consolidated()?;
         let node = Node { store: Arc::new(store), key };
