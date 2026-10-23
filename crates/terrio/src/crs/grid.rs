@@ -920,12 +920,13 @@ fn download_whole() -> bool {
     std::env::var("TERRIO_GRID_DOWNLOAD").is_ok_and(|v| matches!(v.trim().to_ascii_uppercase().as_str(), "YES" | "ON" | "TRUE" | "1"))
 }
 
-/// A GeoTIFF grid on the PROJ CDN, read in place by HTTP range requests.
+/// A GeoTIFF grid on the PROJ CDN, read in place by HTTP range requests. `Err(true)` when the
+/// CDN does not have it (status 404), `Err(false)` when it could not be read in place.
 #[cfg(remote)]
-fn open_remote(name: &str) -> Option<GridFile> {
-    let url = cdn_url(name)?;
-    let reader = crate::http::RangeReader::open(&crate::http::Remote::Url(url)).ok()?;
-    read_tiff(GridReader::Remote(reader))
+fn open_remote(name: &str) -> Result<GridFile, bool> {
+    let url = cdn_url(name).ok_or(true)?;
+    let reader = crate::http::RangeReader::open(&crate::http::Remote::Url(url)).map_err(|e| e.to_string().contains("status 404"))?;
+    read_tiff(GridReader::Remote(reader)).ok_or(false)
 }
 
 #[cfg(remote)]
@@ -962,16 +963,22 @@ fn load(name: &str) -> Option<Arc<GridFile>> {
             }
         }
     }
-    // Read in place; a server that cannot be read so (no range requests) falls back to the
-    // download.
+    // Read in place; a grid that cannot be read so (a server without range requests, a failed
+    // request) is downloaded instead, unless the CDN does not have it.
     #[cfg(remote)]
-    if bytes.is_none()
-        && network_enabled()
-        && !download_whole()
-        && let Some(file) = open_remote(name).map(Arc::new)
-    {
-        files().lock().ok()?.insert(name.to_string(), Some(file.clone()));
-        return Some(file);
+    if bytes.is_none() && network_enabled() && !download_whole() {
+        match open_remote(name) {
+            Ok(file) => {
+                let file = Arc::new(file);
+                files().lock().ok()?.insert(name.to_string(), Some(file.clone()));
+                return Some(file);
+            }
+            Err(true) => {
+                files().lock().ok()?.insert(name.to_string(), None);
+                return None;
+            }
+            Err(false) => {}
+        }
     }
     #[cfg(remote)]
     let bytes = if bytes.is_none() && network_enabled() { download(name) } else { bytes };
