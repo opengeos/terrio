@@ -145,8 +145,9 @@ fn next_request(doc: &Value, cur: &Request) -> Option<Request> {
             Value::Object(m)
         }
         (_, Value::Object(b)) => Value::Object(b.clone()),
-        (Some(prev), _) => prev.clone(),
-        (None, _) => json!({}),
+        // A link without a body repeats the search, to its own origin only.
+        (Some(prev), _) if same_origin => prev.clone(),
+        _ => json!({}),
     };
     Some(Request { url, body: Some(body), headers })
 }
