@@ -50,21 +50,22 @@ pub async fn init_thread_pool(threads: usize) -> Result<(), JsError> {
     if STARTED.with(|s| s.replace(true)) {
         return Err(JsError::new("initThreadPool: the thread pool is already started"));
     }
-    let started = start(threads).await;
-    if started.is_err() {
-        STARTED.with(|s| s.set(false));
-    }
-    started
-}
-
-/// Starts the workers, then the pool over them.
-async fn start(threads: usize) -> Result<(), JsError> {
     let (tx, rx) = mpsc::channel();
     // The workers take their threads from the channel for as long as the module lives.
     let rx: &'static Threads = Box::leak(Box::new(Mutex::new(rx)));
     let main_js = MAIN_JS.with(|url| JsValue::from(url.clone()));
     let started = start_workers(wasm_bindgen::module(), wasm_bindgen::memory(), main_js, threads, rx as *const Threads as usize);
-    JsFuture::from(started).await.map_err(|e| JsError::new(&format!("initThreadPool: {}", js_message(&e))))?;
+    if let Err(e) = JsFuture::from(started).await {
+        // No worker runs (those that started end with the channel): it may be tried again.
+        STARTED.with(|s| s.set(false));
+        return Err(JsError::new(&format!("initThreadPool: {}", js_message(&e))));
+    }
+    // Past this point the workers exist, and a failure is final, rather than starting more.
+    start(threads, tx)
+}
+
+/// Builds the pool over the workers, which wait for their threads on `tx`'s channel.
+fn start(threads: usize, tx: mpsc::Sender<rayon::ThreadBuilder>) -> Result<(), JsError> {
     let pool = rayon::ThreadPoolBuilder::new()
         .num_threads(threads)
         .spawn_handler(move |thread| tx.send(thread).map_err(|_| std::io::Error::other("the workers are gone")))
