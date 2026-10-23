@@ -274,8 +274,10 @@ WebAssembly (the `terrio-js` npm package):
       georeferencing, as GDAL writes them; terrio's own HDF5 writer); HDF5 rasters as GDAL's HDF5
       driver reads them (`HDF5:"file.h5"://group/dataset`, metadata, user blocks), checked on JPSS
       and Sentinel-5P products; HDF-EOS5 grids and swaths, COSMO-SkyMed and ODIM georeferencing,
-      netCDF geolocation arrays and complex (compound) datasets, as GDAL 3.12 reads them.
-    - [ ] Writing groups.
+      netCDF geolocation arrays and complex (compound) datasets, as GDAL 3.12 reads them;
+      rasters written into netCDF-4 groups (Rust, Python, JavaScript, and `terrio convert` with
+      `GROUP` and `APPEND_SUBDATASET=YES`), read back identically by GDAL's classic and
+      multidimensional APIs, netCDF4 and xarray on Copernicus DEM tiles and their terrain.
 - [x] JPEG 2000 and other compressed raster formats. Done: JPEG 2000 (JP2 and J2K, GeoJP2 and
       GMLJP2 georeferencing) is read and written in WebAssembly too, with the same OpenJPEG port as
       native builds, and the npm package reads and writes it; GeoTIFFs compressed with LERC (alone,

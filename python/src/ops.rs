@@ -29,6 +29,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(info, m)?)?;
     m.add_function(wrap_pyfunction!(drivers, m)?)?;
     m.add_function(wrap_pyfunction!(write_raster, m)?)?;
+    m.add_function(wrap_pyfunction!(write_netcdf_groups, m)?)?;
     m.add_function(wrap_pyfunction!(write_vector, m)?)?;
     m.add_function(wrap_pyfunction!(convert, m)?)?;
     m.add_function(wrap_pyfunction!(rasterize, m)?)?;
@@ -257,6 +258,44 @@ fn write_raster(
 ) -> PyResult<()> {
     let options = write_options(driver, compress, tile_size, bigtiff)?;
     py.detach(|| raster.with_dataset(|ds| terrio::write_raster_dataset(ds, path, &options))).py()
+}
+
+/// Writes rasters into one netCDF-4 file, each in its group.
+///
+/// Each raster goes in its group, with its own dimensions, coordinate variables and grid mapping,
+/// as the netCDF library lays out groups. The rasters read back as
+/// `NETCDF:"file.nc":/group/Band1`, in terrio and in GDAL.
+///
+/// Args:
+///     rasters: `(group, raster)` pairs, or a dict from group to raster. A group is a path such as
+///         `"/terrain/dem"` (groups are created as needed), or `"/"` for the root group.
+///     path: The output netCDF file.
+///     options: netCDF creation options, as GDAL names them: `FORMAT` (`NC4`, the default, which
+///         groups need), `COMPRESS` (`DEFLATE`), `ZLEVEL` and `CHUNKING`.
+///
+/// Raises:
+///     InvalidArgumentError: If there are no rasters, or two of them are in the same group.
+#[pyfunction]
+#[pyo3(signature = (rasters, path, options=None))]
+fn write_netcdf_groups(
+    py: Python<'_>,
+    rasters: &Bound<'_, PyAny>,
+    path: &str,
+    options: Option<std::collections::BTreeMap<String, String>>,
+) -> PyResult<()> {
+    let pairs: Vec<(String, Bound<'_, PyAny>)> = match rasters.cast::<pyo3::types::PyDict>() {
+        Ok(d) => d.iter().map(|(k, v)| Ok((k.extract::<String>()?, v))).collect::<PyResult<_>>()?,
+        Err(_) => rasters.try_iter()?.map(|item| item?.extract::<(String, Bound<'_, PyAny>)>()).collect::<PyResult<_>>()?,
+    };
+    let mut datasets: Vec<(String, terrio::RasterDataset)> = Vec::with_capacity(pairs.len());
+    for (group, r) in pairs {
+        let mut raster = r.extract::<PyRefMut<'_, PyRaster>>()?;
+        let ds = raster.with_dataset(|ds| Ok(ds.clone())).py()?;
+        datasets.push((group, ds));
+    }
+    let o = terrio::RasterWriteOptions { creation_options: options.unwrap_or_default().into_iter().collect(), ..Default::default() };
+    let refs: Vec<(&str, &terrio::RasterDataset)> = datasets.iter().map(|(g, ds)| (g.as_str(), ds)).collect();
+    py.detach(|| terrio::write_netcdf_groups(&refs, path, &o)).py()
 }
 
 /// Writes vector data to a file.

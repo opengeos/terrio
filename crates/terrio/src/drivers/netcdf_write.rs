@@ -445,17 +445,11 @@ fn version_of(options: &Options, groups: bool) -> Result<(Version, Option<u32>)>
     Ok((version, deflate))
 }
 
-/// Writes rasters into one netCDF file, each in its group (`""` or `/` for the root group;
+/// Encodes rasters as one netCDF file, each in its group (`""` or `/` for the root group;
 /// `/science/grid` creates the groups as needed), with its own dimensions, coordinate variables
 /// and grid mapping there, as the netCDF library writes groups. Groups need netCDF-4: `FORMAT`
 /// defaults to `NC4` when any raster is below the root.
-pub(crate) fn write_groups(rasters: &[(&str, &Raster, Option<f64>)], path: &Path, options: &Options) -> Result<()> {
-    std::fs::write(path, groups_to_bytes(rasters, options)?)?;
-    Ok(())
-}
-
-/// Encodes rasters as one netCDF file, each in its group: see [`write_groups`].
-fn groups_to_bytes(rasters: &[(&str, &Raster, Option<f64>)], options: &Options) -> Result<Vec<u8>> {
+pub(crate) fn groups_to_bytes(rasters: &[(&str, &Raster, Option<f64>)], options: &Options) -> Result<Vec<u8>> {
     let group_of = |g: &str| g.trim_matches('/').to_string();
     let any_group = rasters.iter().any(|(g, ..)| !group_of(g).is_empty());
     for (i, (g, ..)) in rasters.iter().enumerate() {

@@ -64,6 +64,7 @@ from terrio._terrio import (
     transform_points,
     translate,
     warp,
+    write_netcdf_groups,
     write_raster,
     write_vector,
 )
@@ -125,6 +126,7 @@ __all__ = [
     "set_network_enabled",
     "translate",
     "warp",
+    "write_netcdf_groups",
     "write_raster",
     "write_vector",
 ]

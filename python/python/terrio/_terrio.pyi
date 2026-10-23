@@ -567,6 +567,11 @@ def write_raster(
     tile_size: int | None = None,
     bigtiff: bool = False,
 ) -> None: ...
+def write_netcdf_groups(
+    rasters: Sequence[tuple[str, Raster]] | Mapping[str, Raster],
+    path: str,
+    options: Mapping[str, str] | None = None,
+) -> None: ...
 def write_vector(
     data: _VectorData,
     path: str,
