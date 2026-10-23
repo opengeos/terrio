@@ -16,6 +16,7 @@ its own parser.
 from __future__ import annotations
 
 import argparse
+import builtins
 import json
 import logging
 import math
@@ -26,7 +27,7 @@ from collections import OrderedDict
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import ExitStack
 from itertools import zip_longest
-from typing import IO, Any
+from typing import IO, Any, NamedTuple
 
 logger = logging.getLogger("terrio.rio.cli")
 
@@ -47,6 +48,14 @@ DTYPES = [
     "float32",
     "float64",
 ]
+
+
+class Stats(NamedTuple):
+    """The minimum, maximum and mean of `rio insp`'s `stats`."""
+
+    min: Any
+    max: Any
+    mean: Any
 
 
 class UsageError(Exception):
@@ -301,6 +310,41 @@ def coords(obj: Any) -> Iterator[tuple[float, ...]]:
             yield tuple(coordinates)
             break
         yield from coords(e)
+
+
+class FeatureSource:
+    """Features made on demand, with the bounding box `write_features` writes for them all."""
+
+    def __init__(
+        self,
+        features: Callable[[], Iterator[dict[str, Any]]],
+        bbox: Callable[[], Sequence[float]],
+    ) -> None:
+        """Creates the source.
+
+        Args:
+            features: A function yielding the features.
+            bbox: A function giving the bounding box (once the features are made).
+        """
+        self._features = features
+        self._bbox = bbox
+
+    def __call__(self) -> Iterator[dict[str, Any]]:
+        """The features.
+
+        Returns:
+            iterator: The features.
+        """
+        return self._features()
+
+    @property
+    def bbox(self) -> Sequence[float]:
+        """The bounding box of the features.
+
+        Returns:
+            sequence: `(left, bottom, right, top)`.
+        """
+        return self._bbox()
 
 
 def write_features(
@@ -763,66 +807,52 @@ def cmd_bounds(args: argparse.Namespace, env: Any) -> None:
     precision = args.precision
     projection = args.projection
 
-    class Collection:
-        """The features of the bounds, and the box of them all."""
+    xs: list[float] = []
+    ys: list[float] = []
 
-        def __init__(self) -> None:
-            """Creates the collection."""
-            self._xs: list[float] = []
-            self._ys: list[float] = []
+    def features() -> Iterator[dict[str, Any]]:
+        """The features.
 
-        @property
-        def bbox(self) -> tuple[float, float, float, float]:
-            """The bounds of every feature.
-
-            Returns:
-                tuple: `(left, bottom, right, top)`.
-            """
-            return min(self._xs), min(self._ys), max(self._xs), max(self._ys)
-
-        def __call__(self) -> Iterator[dict[str, Any]]:
-            """The features.
-
-            Yields:
-                dict: A feature per dataset.
-            """
-            for i, path in enumerate(paths):
-                with rasterio.open(path) as src:
-                    b = src.bounds
-                    if dst_crs:
-                        bbox = transform_bounds(src.crs, dst_crs, *b)
-                    elif projection == "mercator":
-                        bbox = transform_bounds(src.crs, "EPSG:3857", *b)
-                    elif projection == "geographic":
-                        bbox = transform_bounds(src.crs, "EPSG:4326", *b)
-                    else:
-                        bbox = b
-                if precision >= 0:
-                    bbox = tuple(round(v, precision) for v in bbox)
-                yield {
-                    "type": "Feature",
-                    "bbox": bbox,
-                    "geometry": {
-                        "type": "Polygon",
-                        "coordinates": [
-                            [
-                                [bbox[0], bbox[1]],
-                                [bbox[2], bbox[1]],
-                                [bbox[2], bbox[3]],
-                                [bbox[0], bbox[3]],
-                                [bbox[0], bbox[1]],
-                            ]
-                        ],
-                    },
-                    "properties": {"id": str(i), "title": path, "filename": os.path.basename(path)},
-                }
-                self._xs.extend(bbox[::2])
-                self._ys.extend(bbox[1::2])
+        Yields:
+            dict: A feature per dataset.
+        """
+        for i, path in enumerate(paths):
+            with rasterio.open(path) as src:
+                b = src.bounds
+                if dst_crs:
+                    bbox = transform_bounds(src.crs, dst_crs, *b)
+                elif projection == "mercator":
+                    bbox = transform_bounds(src.crs, "EPSG:3857", *b)
+                elif projection == "geographic":
+                    bbox = transform_bounds(src.crs, "EPSG:4326", *b)
+                else:
+                    bbox = b
+            if precision >= 0:
+                bbox = tuple(round(v, precision) for v in bbox)
+            yield {
+                "type": "Feature",
+                "bbox": bbox,
+                "geometry": {
+                    "type": "Polygon",
+                    "coordinates": [
+                        [
+                            [bbox[0], bbox[1]],
+                            [bbox[2], bbox[1]],
+                            [bbox[2], bbox[3]],
+                            [bbox[0], bbox[3]],
+                            [bbox[0], bbox[1]],
+                        ]
+                    ],
+                },
+                "properties": {"id": str(i), "title": path, "filename": os.path.basename(path)},
+            }
+            xs.extend(bbox[::2])
+            ys.extend(bbox[1::2])
 
     with env:
         write_features(
             sys.stdout,
-            Collection(),
+            FeatureSource(features, lambda: (min(xs), min(ys), max(xs), max(ys))),
             sequence=args.sequence,
             geojson_type=gtype,
             use_rs=args.use_rs,
@@ -901,41 +931,27 @@ def cmd_blocks(args: argparse.Namespace, env: Any) -> None:
                 bounds = [round(v, precision) for v in bounds]
             return tuple(bounds)
 
-        class Collection:
-            """The features of the blocks."""
+        def features() -> Iterator[dict[str, Any]]:
+            """The features.
 
-            @property
-            def bbox(self) -> tuple[float, ...]:
-                """The dataset's bounds.
-
-                Returns:
-                    tuple: `(left, bottom, right, top)`.
-                """
-                return normalize(src.bounds)
-
-            def __call__(self) -> Iterator[dict[str, Any]]:
-                """The features.
-
-                Yields:
-                    dict: A feature per block.
-                """
-                for idx, (block, window) in enumerate(src.block_windows(bidx=args.bidx)):
-                    xmin, ymin, xmax, ymax = normalize(src.window_bounds(window))
-                    yield {
-                        "type": "Feature",
-                        "id": f"{os.path.basename(src.name)}:{idx}",
-                        "properties": {"block": json.dumps(block), "window": window.todict()},
-                        "geometry": {
-                            "type": "Polygon",
-                            "coordinates": [
-                                [(xmin, ymin), (xmin, ymax), (xmax, ymax), (xmax, ymin)]
-                            ],
-                        },
-                    }
+            Yields:
+                dict: A feature per block.
+            """
+            for idx, (block, window) in enumerate(src.block_windows(bidx=args.bidx)):
+                xmin, ymin, xmax, ymax = normalize(src.window_bounds(window))
+                yield {
+                    "type": "Feature",
+                    "id": f"{os.path.basename(src.name)}:{idx}",
+                    "properties": {"block": json.dumps(block), "window": window.todict()},
+                    "geometry": {
+                        "type": "Polygon",
+                        "coordinates": [[(xmin, ymin), (xmin, ymax), (xmax, ymax), (xmax, ymin)]],
+                    },
+                }
 
         write_features(
             out,
-            Collection(),
+            FeatureSource(features, lambda: normalize(src.bounds)),
             sequence=args.sequence,
             geojson_type="feature" if args.sequence else "collection",
             use_rs=args.use_rs,
@@ -1001,46 +1017,48 @@ def cmd_shapes(args: argparse.Namespace, env: Any) -> None:
         stack.enter_context(env)
         src = stack.enter_context(rasterio.open(file_in(args.input)))
 
-        class Collection:
-            """The features of the shapes."""
+        bboxes: list[Sequence[float]] = []
 
-            def __init__(self) -> None:
-                """Creates the collection."""
-                self.bboxes: list[Sequence[float]] = []
+        def bbox() -> tuple[float, float, float, float]:
+            """The bounds of every shape.
 
-            @property
-            def bbox(self) -> tuple[float, float, float, float]:
-                """The bounds of every shape.
+            Returns:
+                tuple: `(left, bottom, right, top)`.
 
-                Returns:
-                    tuple: `(left, bottom, right, top)`.
-                """
-                if not self.bboxes:
-                    raise CommandError("no shapes: the band (or mask) has no valid data")
-                minxs, minys, maxxs, maxys = zip(*self.bboxes, strict=True)
-                return min(minxs), min(minys), max(maxxs), max(maxys)
+            Raises:
+                CommandError: If there is no shape.
+            """
+            if not bboxes:
+                raise CommandError("no shapes: the band (or mask) has no valid data")
+            minxs, minys, maxxs, maxys = zip(*bboxes, strict=True)
+            return min(minxs), min(minys), max(maxxs), max(maxys)
 
-            def __call__(self) -> Iterator[dict[str, Any]]:
-                """The features.
+        def features() -> Iterator[dict[str, Any]]:
+            """The features.
 
-                Yields:
-                    dict: A feature per shape.
-                """
-                for f in dataset_features(
-                    src,
-                    bidx,
-                    sampling=args.sampling,
-                    band=args.band,
-                    as_mask=args.as_mask,
-                    with_nodata=args.with_nodata,
-                    geographic=geographic,
-                    precision=args.precision,
-                ):
-                    self.bboxes.append(f["bbox"])
-                    yield f
+            Yields:
+                dict: A feature per shape.
+            """
+            for f in dataset_features(
+                src,
+                bidx,
+                sampling=args.sampling,
+                band=args.band,
+                as_mask=args.as_mask,
+                with_nodata=args.with_nodata,
+                geographic=geographic,
+                precision=args.precision,
+            ):
+                bboxes.append(f["bbox"])
+                yield f
 
         write_features(
-            out, Collection(), sequence=args.sequence, geojson_type=gtype, use_rs=args.use_rs, **kw
+            out,
+            FeatureSource(features, bbox),
+            sequence=args.sequence,
+            geojson_type=gtype,
+            use_rs=args.use_rs,
+            **kw,
         )
 
 
@@ -2944,7 +2962,6 @@ def cmd_insp(args: argparse.Namespace, env: Any) -> None:
         env: The environment.
     """
     import code
-    import collections
     import importlib
 
     import numpy as np
@@ -2956,7 +2973,6 @@ def cmd_insp(args: argparse.Namespace, env: Any) -> None:
         plt = importlib.import_module("matplotlib.pyplot")
     except Exception:
         plt = None
-    Stats = collections.namedtuple("Stats", ["min", "max", "mean"])
 
     def stats(dataset: Any) -> Any:
         """The minimum, maximum and mean of an array or a `(dataset, band)` pair.
@@ -3112,13 +3128,10 @@ class Snuggs:
             funcs: The functions (`read`, `take`, `asarray`...).
             context: The named inputs, in order.
         """
-        import builtins
-
         self.funcs = funcs
         self.context = context
         self.ops = _ops()
         self.higher = _higher_funcs()
-        self.builtins = builtins
 
     def lookup(self, index: Any, subindex: Any = None) -> Any:
         """The `index`-th input (from 1), or one of its bands.
@@ -3145,8 +3158,8 @@ class Snuggs:
         """
         if name in self.funcs:
             return self.funcs[name]
-        if hasattr(self.builtins, name) and not name.startswith("__"):
-            return getattr(self.builtins, name)
+        if hasattr(builtins, name) and not name.startswith("__"):
+            return getattr(builtins, name)
 
         def method(g: Any, *args: Any, **kwargs: Any) -> Any:
             attr = getattr(g, name)
