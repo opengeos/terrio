@@ -182,7 +182,7 @@ impl Store {
         let join = |prefix: &str| match (prefix.is_empty(), key.is_empty()) {
             (_, true) => prefix.to_string(),
             (true, false) => key.to_string(),
-            (false, false) => format!("{prefix}/{key}"),
+            (false, false) => format!("{}/{key}", prefix.trim_end_matches('/')),
         };
         let dir = match base {
             RemoteBase::Url { prefix, query } => Directory::Url(format!("{}{query}", join(prefix))),
