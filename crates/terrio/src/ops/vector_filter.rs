@@ -96,7 +96,7 @@ pub fn translate(layers: &[Layer], options: &VectorTranslateOptions) -> Result<V
     let selected: Vec<Layer>;
     let (inputs, sql_limit): (&[Layer], Option<usize>) = match &options.sql {
         Some(sql) => {
-            let (layer, limit) = run_select(layers, &Select::parse(sql)?)?;
+            let (layer, limit) = run_select(layers, &Select::parse(sql)?, None)?;
             selected = vec![layer];
             (&selected, limit)
         }
@@ -293,7 +293,9 @@ impl Translator {
 }
 
 /// Runs a `SELECT` on the layer it names. Returns the result and its `LIMIT`.
-pub(crate) fn run_select(layers: &[Layer], s: &Select) -> Result<(Layer, Option<usize>)> {
+/// `copy_limit` caps ordered feature references before cloning; translate leaves this unset
+/// so its filters run before the returned SQL limit is applied.
+pub(crate) fn run_select(layers: &[Layer], s: &Select, copy_limit: Option<usize>) -> Result<(Layer, Option<usize>)> {
     let layer = layers
         .iter()
         .find(|l| l.name.eq_ignore_ascii_case(&s.from))
@@ -307,6 +309,9 @@ pub(crate) fn run_select(layers: &[Layer], s: &Select) -> Result<(Layer, Option<
             let o = compare_values(a.attributes.get(i).unwrap_or(&FieldValue::Null), b.attributes.get(i).unwrap_or(&FieldValue::Null));
             if *desc { o.reverse() } else { o }
         });
+    }
+    if let Some(n) = copy_limit {
+        features.truncate(n);
     }
     let mut out = Layer::new(layer.name.clone());
     out.geom_type = layer.geom_type;

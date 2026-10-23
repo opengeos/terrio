@@ -156,6 +156,25 @@ fn zonal_holes_overlap_multiple_bands_nulls_and_field_collisions() {
 }
 
 #[test]
+fn zonal_median_preserves_subnormals_and_avoids_overflow() {
+    let tiny = f64::from_bits(1);
+    let l = zones(vec![Some(rectangle(0., 0., 2., 1.))]);
+    let options = ZonalOptions { stats: vec![S::Median], ..Default::default() };
+    for (values, expected) in [
+        ([tiny, tiny], tiny),
+        ([tiny, 5. * tiny], 3. * tiny),
+        ([-tiny, -tiny], -tiny),
+        ([f64::MAX, f64::MAX], f64::MAX),
+        ([-f64::MAX, -f64::MAX], -f64::MAX),
+        ([-f64::MAX, f64::MAX], 0.),
+    ] {
+        let r = raster(2, 1, 1, &values, None);
+        let out = zonal_stats(&l, &[ZonalInput { prefix: "x".into(), raster: &r, band: 1 }], &options).unwrap();
+        assert_eq!(field(&out, 0, "x_median"), &V::Float(expected), "{values:?}");
+    }
+}
+
+#[test]
 fn zonal_all_touched_rotated_grids_and_crs_transformations() {
     let mut r = raster(3, 3, 1, &[1.; 9], None);
     let l = zones(vec![Some(rectangle(0.9, 0.9, 1.1, 1.1))]);
@@ -248,6 +267,32 @@ fn standalone_sql_preserves_features_and_checks_layer_names_and_schema() {
     assert_eq!(sorted.features.iter().map(|f| f.fid).collect::<Vec<_>>(), [102, 101, 100]);
     l.schema.add_field(FieldDef::new("NAME", FieldType::Text));
     assert!(terrio::ops::sql::query(&[l], "SELECT * FROM zones").is_err());
+}
+
+#[test]
+fn standalone_sql_limits_after_ordering_without_changing_translate_filters() {
+    let mut l = zones(vec![Some(G::point(0., 0.)), Some(G::point(1., 1.)), Some(G::point(2., 2.))]);
+    l.schema.add_field(FieldDef::new("population", FieldType::Integer));
+    for (i, feature) in l.features.iter_mut().enumerate() {
+        feature.attributes.push(V::Integer(i as i64 + 1));
+    }
+    let query = "SELECT * FROM zones WHERE population >= 2 ORDER BY population DESC LIMIT 1";
+    let out = terrio::ops::sql::query(std::slice::from_ref(&l), query).unwrap();
+    assert_eq!(out.features.iter().map(|f| f.fid).collect::<Vec<_>>(), [102]);
+    let empty = terrio::ops::sql::query(std::slice::from_ref(&l), "SELECT name AS label FROM zones LIMIT 0").unwrap();
+    assert!(empty.is_empty());
+    assert_eq!(empty.schema.fields()[0].name, "label");
+    assert!(terrio::ops::sql::query(std::slice::from_ref(&l), "SELECT missing FROM zones LIMIT 0").is_err());
+
+    // Convert applies its attribute and spatial filters before the SQL limit.
+    let options = terrio::ops::vector_filter::VectorTranslateOptions {
+        sql: Some("SELECT * FROM zones ORDER BY population DESC LIMIT 1".into()),
+        where_clause: Some("population <= 2".into()),
+        spatial_filter: Some((0.75, 0.75, 1.25, 1.25)),
+        ..Default::default()
+    };
+    let out = terrio::ops::vector_filter::translate(&[l], &options).unwrap();
+    assert_eq!(out[0].features.iter().map(|f| f.fid).collect::<Vec<_>>(), [101]);
 }
 
 #[test]

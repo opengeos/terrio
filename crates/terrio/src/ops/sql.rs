@@ -34,10 +34,7 @@ pub fn query(layers: &[Layer], statement: &str) -> Result<Layer> {
     if !layers.iter().any(|l| l.name.eq_ignore_ascii_case(&select.from)) {
         return Err(Error::InvalidArgument(format!("SQL: no layer named '{}'", select.from)));
     }
-    let (mut layer, limit) = super::vector_filter::run_select(layers, &select)?;
-    if let Some(n) = limit {
-        layer.features.truncate(n);
-    }
+    let (layer, _) = super::vector_filter::run_select(layers, &select, select.limit)?;
     Ok(layer)
 }
 

@@ -225,6 +225,7 @@ fn process_square(p: [Point; 4], split: bool, levels: &[f64], segments: &mut [Ve
     let end = levels.partition_point(|&l| l <= fudge(high, l));
     for i in first..end {
         let level = levels[i];
+        // Case bits use GDAL's NW, SW, SE, NE order; p is stored as NW, NE, SW, SE.
         let bits = u8::from(level < fudge(p[0].v, level))
             | (u8::from(level < fudge(p[2].v, level)) << 1)
             | (u8::from(level < fudge(p[3].v, level)) << 2)

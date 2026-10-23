@@ -291,7 +291,7 @@ impl Summary {
             Statistic::StdDev => (self.m2 / self.count as f64).max(0.0).sqrt(),
             Statistic::Median => {
                 let mid = sorted.len() / 2;
-                if sorted.len() % 2 == 1 { sorted[mid] } else { sorted[mid - 1] / 2.0 + sorted[mid] / 2.0 }
+                if sorted.len() % 2 == 1 { sorted[mid] } else { sorted[mid - 1].midpoint(sorted[mid]) }
             }
             Statistic::Count => unreachable!(),
         })
