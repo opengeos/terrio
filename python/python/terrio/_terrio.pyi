@@ -24,6 +24,7 @@ __all__ = [
     "info",
     "drivers",
     "write_raster",
+    "write_netcdf_groups",
     "write_vector",
     "convert",
     "rasterize",
