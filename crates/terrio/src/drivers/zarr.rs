@@ -1048,7 +1048,10 @@ struct Level {
     array: Array,
     xd: usize,
     yd: usize,
-    bd: Option<usize>,
+    /// The other dimensions, in the array's order: their every combination is a band, the last
+    /// dimension varying fastest (as GDAL numbers the bands of arrays of three or more
+    /// dimensions).
+    bds: Vec<usize>,
     /// Rows stored south first (latitudes increasing), read north-up.
     south_up: bool,
 }
@@ -1058,19 +1061,34 @@ impl Level {
         (self.array.shape[self.xd], self.array.shape[self.yd])
     }
 
+    /// The index along each band dimension of a band (numbered from 1).
+    fn band_index(&self, band: usize) -> Vec<usize> {
+        band_index(&self.bds.iter().map(|&d| self.array.shape[d]).collect::<Vec<_>>(), band)
+    }
+
     /// Reads a window (in north-up rows) of some bands (numbered from 1), band after band. Bands
     /// whose chunks lie apart are read apart, so that the chunks between them are not read.
     fn read(&self, w: crate::Window, bands: &[usize]) -> Result<RasterData> {
-        let Some(bd) = self.bd else { return self.read_group(w, bands) };
-        let step = self.array.chunks[bd].max(1);
+        let Some(&last) = self.bds.last() else { return self.read_group(w, bands) };
+        let step = self.array.chunks[last].max(1);
         let mut unique: Vec<usize> = bands.to_vec();
         unique.sort_unstable();
         unique.dedup();
+        // Bands read together: the same index along the outer band dimensions, and near along
+        // the last.
         let mut groups: Vec<Vec<usize>> = Vec::new();
         for b in unique {
+            let i = self.band_index(b);
             match groups.last_mut() {
-                Some(g) if b - g[g.len() - 1] < step => g.push(b),
-                _ => groups.push(vec![b]),
+                Some(g) => {
+                    let j = self.band_index(g[g.len() - 1]);
+                    if i[..i.len() - 1] == j[..j.len() - 1] && i[i.len() - 1] - j[j.len() - 1] < step {
+                        g.push(b);
+                    } else {
+                        groups.push(vec![b]);
+                    }
+                }
+                None => groups.push(vec![b]),
             }
         }
         if groups.len() == 1 && groups[0] == bands {
@@ -1113,11 +1131,13 @@ impl Level {
         shape[self.xd] = w.width;
         start[self.yd] = if self.south_up { rows - w.y - w.height } else { w.y };
         shape[self.yd] = w.height;
-        let bmin = bands.iter().min().copied().unwrap_or(1).max(1);
-        if let Some(bd) = self.bd {
-            let bmax = bands.iter().max().copied().unwrap_or(1).max(1);
-            start[bd] = bmin - 1;
-            shape[bd] = bmax - bmin + 1;
+        // The box of band indices the bands span.
+        let indices: Vec<Vec<usize>> = bands.iter().map(|&b| self.band_index(b.max(1))).collect();
+        for (k, &d) in self.bds.iter().enumerate() {
+            let lo = indices.iter().map(|i| i[k]).min().unwrap_or(0);
+            let hi = indices.iter().map(|i| i[k]).max().unwrap_or(0);
+            start[d] = lo;
+            shape[d] = hi - lo + 1;
         }
         let bytes = read_region(a, &start, &shape)?;
         let n: usize = shape.iter().product();
@@ -1135,15 +1155,15 @@ impl Level {
         // Rearranged band-major, north-up.
         let strides: Vec<usize> = (0..nd).map(|d| shape[d + 1..].iter().product()).collect();
         let (xs, ys) = (strides[self.xd], strides[self.yd]);
-        let bs = self.bd.map(|d| strides[d]).unwrap_or(0);
         let index = |b: usize, r: usize, c: usize| {
             let rr = if self.south_up { w.height - 1 - r } else { r };
-            c * xs + rr * ys + (b - bmin) * bs
+            let band_offset: usize = self.bds.iter().enumerate().map(|(k, &d)| (indices[b][k] - start[d]) * strides[d]).sum();
+            c * xs + rr * ys + band_offset
         };
         macro_rules! reorder {
             ($v:expr, $variant:ident) => {{
                 let mut out = Vec::with_capacity(bands.len() * w.width * w.height);
-                for &b in bands {
+                for b in 0..bands.len() {
                     for r in 0..w.height {
                         for c in 0..w.width {
                             out.push($v[index(b, r, c)]);
@@ -1193,7 +1213,7 @@ impl crate::cog::WindowSource for ZarrSource {
 fn open_node(node: &Node) -> Result<(RasterDataset, ZarrSource)> {
     let (array, group, ms) = locate(node)?;
     let nd = array.shape.len();
-    if !(2..=3).contains(&nd) {
+    if nd < 2 {
         return Err(Error::Unsupported(format!("Zarr arrays of {nd} dimensions are not supported as rasters")));
     }
     // GeoZarr attributes: the array's, its group's, its multiscales level's and the multiscales
@@ -1207,9 +1227,12 @@ fn open_node(node: &Node) -> Result<(RasterDataset, ZarrSource)> {
     let dim_size = |name: &str| array.dims.iter().position(|d| d == name).map(|i| array.shape[i]);
     let geo = geozarr(&attr_sets, |y, x| Some((dim_size(y)?, dim_size(x)?)));
     let (xd, yd) = axes(&array, &attr_sets);
-    let bd = (0..nd).find(|d| *d != xd && *d != yd);
+    let bds: Vec<usize> = (0..nd).filter(|d| *d != xd && *d != yd).collect();
     let (cols, rows) = (array.shape[xd], array.shape[yd]);
-    let bands = bd.map(|d| array.shape[d]).unwrap_or(1);
+    let bands: usize = bds.iter().map(|&d| array.shape[d]).product();
+    if bands == 0 {
+        return Err(bad(format!("{}: an empty dimension", array.node.display())));
+    }
 
     // Georeferencing: a grid mapping variable (xarray), or X/Y coordinate arrays (GDAL).
     let mut gt = geo.gt;
@@ -1287,7 +1310,7 @@ fn open_node(node: &Node) -> Result<(RasterDataset, ZarrSource)> {
         nodata: array.fill.unwrap_or(-9999.0),
         data_type: array.data_type,
         crs: crs.unwrap_or_default(),
-        metadata: Vec::new(),
+        metadata: band_dim_metadata(&array, &bds, |d| sibling(array.dims.get(d)?)),
         data: RasterData::new_filled(array.data_type, 0, 0.0),
     };
     let mut header = RasterDataset::with_driver(raster, RasterDriver::Zarr, array.fill.is_some());
@@ -1309,14 +1332,60 @@ fn open_node(node: &Node) -> Result<(RasterDataset, ZarrSource)> {
                 continue;
             }
             let (w, h) = (a.shape[xd], a.shape[yd]);
-            if w <= cols && h <= rows && (w, h) != (cols, rows) && w > 0 && h > 0 && bd.is_none_or(|d| a.shape[d] == bands) {
-                levels.push(Level { array: a, xd, yd, bd, south_up });
+            if w <= cols && h <= rows && (w, h) != (cols, rows) && w > 0 && h > 0 && bds.iter().all(|&d| a.shape[d] == array.shape[d]) {
+                levels.push(Level { array: a, xd, yd, bds: bds.clone(), south_up });
             }
         }
     }
     levels.sort_by_key(|l| std::cmp::Reverse(l.size().0 * l.size().1));
-    levels.insert(0, Level { array, xd, yd, bd, south_up });
+    levels.insert(0, Level { array, xd, yd, bds, south_up });
     Ok((header, ZarrSource { levels }))
+}
+
+/// The index along each of dimensions of sizes `sizes` of a band (numbered from 1), the last
+/// dimension varying fastest.
+fn band_index(sizes: &[usize], band: usize) -> Vec<usize> {
+    let mut rest = band.saturating_sub(1);
+    let mut out = vec![0; sizes.len()];
+    for (k, &n) in sizes.iter().enumerate().rev() {
+        out[k] = rest % n.max(1);
+        rest /= n.max(1);
+    }
+    out
+}
+
+/// The most bands whose dimension indices and values are listed.
+const MAX_BAND_DIM_METADATA: usize = 65536;
+
+/// The position of each band in the dimensions of an array of more than three dimensions, as
+/// GDAL's band metadata `DIM_<name>_INDEX`, `DIM_<name>_VALUE` and `DIM_<name>_UNIT` (the
+/// coordinate and its unit, when the dimension has a coordinate array, found by `coord`), as
+/// `BAND_<n>_DIM_<name>_...` items, and the dimensions as `DIM_EXTRA`.
+fn band_dim_metadata(array: &Array, bds: &[usize], coord: impl Fn(usize) -> Option<Array>) -> Vec<(String, String)> {
+    let sizes: Vec<usize> = bds.iter().map(|&d| array.shape[d]).collect();
+    let bands: usize = sizes.iter().product();
+    if bds.len() < 2 || bands > MAX_BAND_DIM_METADATA {
+        return Vec::new();
+    }
+    let names: Vec<String> =
+        bds.iter().map(|&d| array.dims.get(d).filter(|n| !n.is_empty()).cloned().unwrap_or_else(|| format!("dim{d}"))).collect();
+    let coords: Vec<Option<Array>> = bds.iter().map(|&d| coord(d).filter(|a| a.shape == [array.shape[d]])).collect();
+    let values: Vec<Option<Vec<f64>>> = coords.iter().map(|a| a.as_ref().and_then(read_all_f64)).collect();
+    let units: Vec<Option<String>> =
+        coords.iter().map(|a| a.as_ref().and_then(|a| a.attrs["units"].as_str().map(str::to_string))).collect();
+    let mut out = vec![("DIM_EXTRA".to_string(), format!("{{{}}}", names.join(",")))];
+    for b in 1..=bands {
+        for (k, i) in band_index(&sizes, b).into_iter().enumerate() {
+            out.push((format!("BAND_{b}_DIM_{}_INDEX", names[k]), i.to_string()));
+            if let Some(v) = values[k].as_ref().and_then(|v| v.get(i)) {
+                out.push((format!("BAND_{b}_DIM_{}_VALUE", names[k]), v.to_string()));
+                if let Some(u) = &units[k] {
+                    out.push((format!("BAND_{b}_DIM_{}_UNIT", names[k]), u.clone()));
+                }
+            }
+        }
+    }
+    out
 }
 
 /// The spatial axes `(x, y)` of an array: from `spatial:dimensions` in `attrs`, or from the
@@ -2022,6 +2091,18 @@ pub(crate) fn write_with(r: &Raster, nodata: Option<f64>, path: &Path, compressi
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn numbers_bands_of_many_dimensions_as_gdal() {
+        // (time 2, level 3): band 1 is (0, 0), band 2 (0, 1), band 4 (1, 0).
+        assert_eq!(band_index(&[2, 3], 1), vec![0, 0]);
+        assert_eq!(band_index(&[2, 3], 2), vec![0, 1]);
+        assert_eq!(band_index(&[2, 3], 4), vec![1, 0]);
+        assert_eq!(band_index(&[2, 3], 6), vec![1, 2]);
+        assert_eq!(band_index(&[2, 3, 4], 24), vec![1, 2, 3]);
+        assert_eq!(band_index(&[5], 3), vec![2]);
+        assert!(band_index(&[], 1).is_empty());
+    }
 
     #[test]
     fn blosclz_literals_and_matches() {

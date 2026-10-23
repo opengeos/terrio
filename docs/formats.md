@@ -158,7 +158,12 @@ and coordinate arrays and grid mappings are looked for in the groups above the a
 are read chunk by chunk, local or remote (see [Remote data](remote-data.md)), with the codecs
 none, zlib, gzip, Zstandard, LZ4 and Blosc, transposition, CRC32C checksums, v3 sharding
 (`sharding_indexed`, inner chunks read by range), and the `scale_offset` and `cast_value` codecs
-of the EOPF GeoZarr samples; `float16` arrays (NOAA's HRRR) are read as Float32. The creation
+of the EOPF GeoZarr samples; `float16` arrays (NOAA's HRRR) are read as Float32. Arrays of more
+than three dimensions (`time, level, y, x`) are rasters whose bands are every combination of the
+other dimensions, the last varying fastest, as GDAL numbers them, each band's position given as
+GDAL's `DIM_<name>_INDEX`, `DIM_<name>_VALUE` and `DIM_<name>_UNIT` band metadata (terrio's
+`BAND_<n>_DIM_<name>_...` items); only the chunks of the bands read are fetched
+(`terrio translate -b`). The creation
 options say how a written store is georeferenced and whether it holds overviews:
 
 | Creation option | Values |

@@ -81,9 +81,10 @@ of GDAL: the long tail of formats stays reachable through an optional GDAL backe
       the `scale_offset`/`cast_value` codecs, windows fetching only the chunks they touch in parallel,
       GeoZarr multiscales as overviews; identical to GDAL's Zarr driver and xarray on EOPF Sentinel-2
       (v2 and sharded GeoZarr v3), NOAA HRRR on S3, CMIP6 on GCS and Daymet on Azure
-      (`scripts/compare_remote_zarr.py`).
+      (`scripts/compare_remote_zarr.py`); arrays of more than three dimensions read with their
+      other dimensions as bands, as GDAL reads them, identical to GDAL on CMIP6's 4D air
+      temperature on GCS (37,620 bands, `DIM_*` metadata included).
     - [ ] Listing remote groups without consolidated metadata.
-    - [ ] Arrays of more than three dimensions.
 - [x] KML/KMZ, GPX, GML, TopoJSON.
 - [x] PMTiles and MBTiles archives. Done: raster tiles (PNG, JPEG, WebP) read as rasters with their
       zoom levels as overviews, and vector tiles (MVT) as layers, as GDAL's MBTiles, PMTiles and MVT
