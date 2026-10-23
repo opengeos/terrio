@@ -233,16 +233,18 @@ def compare(a: Any, b: Any, c: Check) -> Outcome:
                 return True
             failures.append(f"{path}: {x!r} != {y!r}")
             return False
+        # Structures that differ still have their shared values compared, so every difference
+        # is listed.
         if isinstance(x, dict) and isinstance(y, dict):
-            if set(x) != set(y):
-                failures.append(f"{path}: keys {sorted(set(x) ^ set(y))}")
-                return False
-            return all([walk(x[k], y[k], f"{path}.{k}") for k in x])
+            same = set(x) == set(y)
+            if not same:
+                failures.append(f"{path}: keys {sorted(set(x) ^ set(y), key=str)}")
+            return all([walk(x[k], y[k], f"{path}.{k}") for k in x if k in y]) and same
         if isinstance(x, (list, tuple)) and isinstance(y, (list, tuple)):
-            if len(x) != len(y):
+            same = len(x) == len(y)
+            if not same:
                 failures.append(f"{path}: length {len(x)} != {len(y)}")
-                return False
-            return all([walk(p, q, f"{path}[{i}]") for i, (p, q) in enumerate(zip(x, y))])
+            return all([walk(p, q, f"{path}[{i}]") for i, (p, q) in enumerate(zip(x, y))]) and same
         if x != y:
             failures.append(f"{path}: {str(x)[:120]} != {str(y)[:120]}")
             return False
