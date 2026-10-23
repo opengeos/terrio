@@ -800,6 +800,8 @@ pub struct Transformer {
     /// each with the horizontal route from the source to the geographic CRS it interpolates in,
     /// when that is on another datum.
     vertical_ops: Vec<(std::sync::Arc<datum::Op>, Option<route::Route>)>,
+    /// The source's horizontal CRS, which the routes of `vertical_ops` start from.
+    src_horizontal: Def,
     /// Whether the vertical CRSs share their datum (heights only change unit).
     same_vertical_datum: bool,
 }
@@ -922,7 +924,8 @@ impl Transformer {
             }
             _ => (Vec::new(), false),
         };
-        Ok(Self { identity: src.same_as(dst), src: s, dst: d, route, time, heights, vertical_ops, same_vertical_datum })
+        let src_horizontal = s.horizontal();
+        Ok(Self { identity: src.same_as(dst), src: s, dst: d, route, time, heights, vertical_ops, same_vertical_datum, src_horizontal })
     }
 
     /// Transforms one point.
@@ -1034,7 +1037,7 @@ impl Transformer {
     /// the horizontal transformation to it both ways (as PROJ chains it); the next when it fails
     /// (outside its grid), up to three. `None` when none applies.
     fn vertical_height(&self, x: f64, y: f64, p: datum::Point) -> Option<f64> {
-        let horizontal = self.src.horizontal();
+        let horizontal = &self.src_horizontal;
         let (dlon, dlat) = (p.lon.to_degrees(), p.lat.to_degrees());
         let mut candidates: Vec<(usize, f64)> = self
             .vertical_ops
@@ -1044,7 +1047,7 @@ impl Transformer {
             .map(|(i, (op, route))| {
                 let accuracy = match route {
                     None => op.accuracy,
-                    Some(r) => match r.accuracy_at(&horizontal, x, y, p) {
+                    Some(r) => match r.accuracy_at(horizontal, x, y, p) {
                         h if h >= 0.0 && op.accuracy >= 0.0 => op.accuracy + 2.0 * h,
                         _ => -1.0,
                     },
@@ -1069,7 +1072,7 @@ impl Transformer {
             let (op, route) = &self.vertical_ops[i];
             // The point's position in the interpolation CRS; its height stays as it is.
             let q = match route {
-                Some(r) => r.apply(&horizontal, x, y, p, false).map(|q| datum::Point { h: p.h, ..q }),
+                Some(r) => r.apply(horizontal, x, y, p, false).map(|q| datum::Point { h: p.h, ..q }),
                 None => Some(p),
             };
             if let Some(h) = q.and_then(|q| datum::run_op(op, q, false, true)).map(|r| r.h) {
