@@ -967,7 +967,13 @@ impl Transformer {
         let (lon, lat) = self.src.unproject(x, y).ok_or_else(fail)?;
         let p = datum::Point { lon, lat, h: z, t };
         let p = match &self.motion {
-            Some(steps) => datum::run(steps, p, false, true).ok_or_else(fail)?,
+            Some(steps) => datum::run(steps, p, false, true).ok_or_else(|| {
+                let grids: Vec<String> = steps.iter().flat_map(|s| s.grid_names()).map(|(g, _)| g).collect();
+                Error::Crs(format!(
+                    "cannot move ({x}, {y}) between coordinate epochs: outside the velocity grid, or the grid ({}) is not available",
+                    grids.join(", ")
+                ))
+            })?,
             None => p,
         };
         let q = self.route.apply(&self.src, x, y, p, false).ok_or_else(fail)?;

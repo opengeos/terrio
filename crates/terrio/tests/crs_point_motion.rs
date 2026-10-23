@@ -27,4 +27,9 @@ fn velocity_grids_as_proj() {
     // Projected CRSs are not moved, as PROJ does not move them.
     let p = moved("EPSG:22718", 2010.0, 2020.0, (450000.0, 5030000.0, 100.0));
     assert_eq!(p, (450000.0, 5030000.0, 100.0));
+    // Canada's v8 grid is not on the CDN: the transformation fails, as PROJ's does, naming it.
+    let crs = SpatialRef::parse("EPSG:10413").unwrap();
+    let opts = TransformOptions { source_coordinate_epoch: Some(2010.0), target_coordinate_epoch: Some(2020.0) };
+    let e = Transformer::with_options(&crs, &crs, &opts).unwrap().transform_3d(-100.0, 50.0, 0.0).unwrap_err();
+    assert!(e.to_string().contains("NAD83v80VG.gvb"), "{e}");
 }

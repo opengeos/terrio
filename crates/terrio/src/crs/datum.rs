@@ -505,7 +505,7 @@ impl Step {
     }
 
     /// The grids the step needs, with whether each is optional.
-    fn grid_names(&self) -> Vec<(String, bool)> {
+    pub(crate) fn grid_names(&self) -> Vec<(String, bool)> {
         match self {
             Step::HGridShift { grids, .. }
             | Step::VGridShift { grids, .. }
