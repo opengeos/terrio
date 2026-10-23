@@ -77,8 +77,9 @@ first, between the geographic and geocentric CRSs of the datums, then through an
 whatever its CRSs; without the transformations replaced by another it finds); when none applies, no
 shift (PROJ's "ballpark" transformation, of 0 m accuracy between CRSs that differ only by their
 prime meridian). NAD27 to ITRF92, for instance, goes through NAD83(2011) (PROJ's concatenation of
-the NADCON5 grids), ITRF2008 and ITRF2014. NAD83 and WGS 84 are treated as equivalent, as GDAL's default operations do. Bounds are transformed with densified edges, so curved edges in the target CRS are
-covered. `scripts/gen_epsg_points.py` writes GDAL's results for every EPSG CRS, which
+the NADCON5 grids), ITRF2008 and ITRF2014. NAD83 and WGS 84 are treated as equivalent, as GDAL's
+default operations do. Bounds are transformed with densified edges, so curved edges in the target
+CRS are covered. `scripts/gen_epsg_points.py` writes GDAL's results for every EPSG CRS, which
 `crates/terrio/tests/epsg_accuracy.rs` checks terrio against (see the
 [conformance report](conformance.md)).
 

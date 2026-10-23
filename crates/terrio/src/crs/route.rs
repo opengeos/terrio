@@ -10,7 +10,7 @@ use super::datum::{self, Op, Point, Step};
 use super::def::Def;
 use super::epsg;
 use std::cmp::Ordering;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, OnceLock};
 
 /// A transformation and the direction it runs in.
@@ -619,9 +619,9 @@ fn irrelevant(reg: &epsg::Registry, i: usize, a: u32, b: u32) -> bool {
 /// replacement is in the list when `any`, else those of which every replacement is (PROJ
 /// queries a transformation once per replacement, and drops the rows whose replacement it
 /// finds).
-fn superseded(reg: &epsg::Registry, ids: impl Iterator<Item = usize> + Clone, any: bool) -> Vec<usize> {
-    let keys: Vec<&str> = ids.clone().map(|i| reg.ops[i].key.as_str()).collect();
-    let found = |r: &String| keys.contains(&r.as_str());
+fn superseded(reg: &epsg::Registry, ids: impl Iterator<Item = usize> + Clone, any: bool) -> HashSet<usize> {
+    let keys: HashSet<&str> = ids.clone().map(|i| reg.ops[i].key.as_str()).collect();
+    let found = |r: &String| keys.contains(r.as_str());
     ids.filter(|&i| {
         let r = &reg.ops[i].replaced_by;
         !r.is_empty() && if any { r.iter().any(found) } else { r.iter().all(found) }

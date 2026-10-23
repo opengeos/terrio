@@ -11,8 +11,8 @@ use terrio::crs::{SpatialRef, Transformer};
 fn moved(src: u32, dst: u32, x: f64, y: f64) -> (f64, f64) {
     static NO_GRIDS: std::sync::Once = std::sync::Once::new();
     NO_GRIDS.call_once(|| {
-        let empty = std::env::temp_dir().join("terrio-crs-chains-no-grids");
-        std::fs::create_dir_all(&empty).unwrap();
+        // An empty directory of this process, kept for its tests.
+        let empty = tempfile::tempdir().unwrap().keep();
         terrio::crs::set_grid_search_paths(Some(vec![empty]));
         terrio::crs::set_network_enabled(Some(false));
     });
