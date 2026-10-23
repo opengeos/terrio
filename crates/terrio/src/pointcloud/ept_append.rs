@@ -54,7 +54,10 @@ fn key_name(k: VoxelKey) -> String {
 fn parse_key(s: &str) -> Result<VoxelKey> {
     let p: Vec<i32> = s.split('-').map(|v| v.parse::<i32>()).collect::<std::result::Result<_, _>>().map_err(|_| bad_key(s))?;
     match p[..] {
-        [level, x, y, z] if level >= 0 => Ok(VoxelKey { level, x, y, z }),
+        // Within the octree: a level that shifts fit (30 at most, as Entwine's), and cells of it.
+        [level, x, y, z] if (0..=30).contains(&level) && [x, y, z].iter().all(|c| (0..1i32 << level).contains(c)) => {
+            Ok(VoxelKey { level, x, y, z })
+        }
         _ => Err(bad_key(s)),
     }
 }
@@ -390,7 +393,9 @@ fn recover(dir: &Path) -> Result<()> {
         .map(|e| e.path())
         .filter(|p| p.is_dir())
         .collect();
-    staged.sort();
+    // In the order they were made: by their number, not their name (`-10` after `-9`).
+    let number = |p: &PathBuf| p.file_name().and_then(|n| n.to_str()?.rsplit('-').next()?.parse::<u64>().ok()).unwrap_or(u64::MAX);
+    staged.sort_by_key(number);
     for s in staged {
         if s.join(COMMITTED).exists() {
             move_in(dir, &s)?;
@@ -1298,4 +1303,19 @@ pub fn append_points(dataset: &str, inputs: &[&str], options: &super::ConvertOpt
         }
     }
     appender.finish()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_key;
+
+    #[test]
+    fn hierarchy_keys_within_the_octree() {
+        assert!(parse_key("0-0-0-0").is_ok());
+        assert!(parse_key("3-7-0-5").is_ok());
+        // A cell past its level, a negative one, a level too deep to shift by.
+        for bad in ["3-8-0-0", "2-0--1-0", "64-0-0-0", "1-0-0", "a-0-0-0"] {
+            assert!(parse_key(bad).is_err(), "{bad}");
+        }
+    }
 }
