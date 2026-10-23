@@ -90,8 +90,9 @@ test("terrio-js/load falls back to the single-threaded module", async () => {
 
 // The memory64 module, as `terrio-js/load` loads it on request: every format, single-threaded.
 const wide = existsSync(join(dir, "memory64", "terrio_bg.wasm"));
+const supported = (await import(pathToFileURL(join(dir, "load.js")).href)).memory64Supported();
 
-test("terrio-js/load loads the memory64 module on request", { skip: !wide && "no memory64/ module" }, async () => {
+test("terrio-js/load loads the memory64 module on request", { skip: (!wide && "no memory64/ module") || (!supported && "no memory64 here") }, async () => {
   const { load, memory64Supported } = await import(pathToFileURL(join(dir, "load.js")).href);
   assert.ok(memory64Supported());
   const m = await load({ memory64: true });

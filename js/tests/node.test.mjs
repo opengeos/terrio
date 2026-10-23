@@ -18,6 +18,10 @@ const terrio = process.env.TERRIO_JS_LOAD
   ? await (await import(new URL(process.env.TERRIO_JS_LOAD, import.meta.url).href)).load({
       threads: Number(process.env.TERRIO_THREADS ?? 4),
       memory64: process.env.TERRIO_MEMORY64 === "1",
+      // The memory64 module was asked for: no other module stands in for it.
+      onFallback: (e) => {
+        if (process.env.TERRIO_MEMORY64 === "1") throw new Error(`memory64 was requested: ${e}`);
+      },
     })
   : require(process.env.TERRIO_JS_PKG ?? "../pkg-node/terrio.js");
 const DATA = process.env.TERRIO_TEST_DATA;

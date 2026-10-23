@@ -9,7 +9,10 @@ export interface LoadOptions {
   threads?: boolean | number;
   /** The lighter module, `terrio-js/core` (single-threaded). */
   core?: boolean;
-  /** The module with 64-bit memory, `terrio-js/memory64`, for datasets larger than 4 GB, where the runtime supports it. */
+  /**
+   * The module with 64-bit memory, `terrio-js/memory64`, for datasets larger than 4 GB, where the
+   * runtime supports it. It is single-threaded (`threads` is not used), and has no `core` variant.
+   */
   memory64?: boolean;
   /** Called with the error when the threaded or memory64 module could not be used. */
   onFallback?: (error: unknown) => void;

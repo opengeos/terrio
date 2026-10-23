@@ -133,7 +133,8 @@ terrio.features().memory;                        // 8 GB of memory: beyond a 32-
 That FlatGeobuf, 290 thousand US county polygons, opens in 4 seconds in Node.js with 7.5 GB of
 module memory, where the 32-bit modules run out of memory. It is 7 to 17% slower than the 32-bit
 module (64-bit addresses and bounds checks), and larger: 25.4 MB, 6.4 MB gzipped (4.4 MB Brotli).
-Use it for the datasets that need it.
+Use it for the datasets that need it. It is single-threaded, and `readBand` windows are numbers of
+pixels below 2^32, as in the other modules.
 
 It is built with the parts of the toolchain still in progress: `wasm64-unknown-unknown` is a
 tier 3 Rust target without a prebuilt standard library ([platform support](https://doc.rust-lang.org/rustc/platform-support/wasm64-unknown-unknown.html)),

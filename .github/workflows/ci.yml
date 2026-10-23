@@ -170,9 +170,10 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: wasm-pack
+      # Node.js 24 or later: memory64.
       - uses: actions/setup-node@v7
         with:
-          node-version: 22
+          node-version: 24
       - name: Build the npm package (browsers, bundlers, and Node.js through init)
         run: |
           node js/build.mjs

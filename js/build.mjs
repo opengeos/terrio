@@ -141,7 +141,14 @@ function buildMemory64(outDir) {
     cpSync(dirname(p.manifest_path), dir, { recursive: true });
     for (const [file, from, to] of edits(dir)) {
       const path = join(dir, file);
-      writeFileSync(path, readFileSync(path, "utf8").replace(from, to));
+      const source = readFileSync(path, "utf8");
+      const patched = source.replace(from, to);
+      // `tar`'s edit is over all its files; the others' must match.
+      if (patched === source && name !== "tar") throw new Error(`memory64 patch of ${name}: ${file} has no match for ${from}`);
+      writeFileSync(path, patched);
+    }
+    if (name === "tar" && !readFileSync(join(dir, "src", "header.rs"), "utf8").includes('target_family = "wasm"')) {
+      throw new Error("memory64 patch of tar: no wasm32 cfg left to edit");
     }
     patches.push("--config", `patch.crates-io.${name}.path=${JSON.stringify(dir)}`);
   }
@@ -165,7 +172,8 @@ function buildMemory64(outDir) {
   const profileDir = values.profile === "release" ? "release" : values.profile;
   const wasm = join(targetDir, target, profileDir, "terrio_js.wasm");
   // The wasm-bindgen of the crate's version, as wasm-pack installed it for the other modules.
-  const version = /name = "wasm-bindgen"\nversion = "([^"]+)"/.exec(lock.toString())[1];
+  const version = /name = "wasm-bindgen"\r?\nversion = "([^"]+)"/.exec(lock.toString())?.[1];
+  if (!version) throw new Error("wasm-bindgen is not in Cargo.lock");
   const bindgen = ["wasm-bindgen", ...wasmPackTool("wasm-bindgen-", "wasm-bindgen")].find((b) => {
     try {
       return execFileSync(b, ["--version"]).toString().trim() === `wasm-bindgen ${version}`;
