@@ -2489,9 +2489,13 @@ class DatasetWriter(DatasetReader):
             raise
 
     def _remove_stale_mask_sidecar(self) -> None:
-        """Removes a `.msk` sidecar left by an earlier write of a dataset now without one."""
+        """Removes the `.msk` sidecar of an earlier dataset at the path, when one is created.
+
+        Only a dataset created (mode `w`) replaces what was there; an `r+` update leaves a sidecar
+        it did not load (per-band masks, another size) as it is.
+        """
         stale = self._path + ".msk"
-        if os.path.isfile(stale):
+        if self.mode == "w" and os.path.isfile(stale):
             os.remove(stale)
 
     def _write_streaming(
