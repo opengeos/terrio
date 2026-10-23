@@ -18,7 +18,7 @@ pub(super) struct FieldSections {
     /// The section 6 holding the field's bitmap (an earlier one when the field reuses it).
     pub(super) sec6: Option<usize>,
     /// The field's own section 6.
-    pub(super) own_sec6: usize,
+    pub(super) own_sec6: Option<usize>,
     pub(super) sec7: usize,
 }
 
@@ -130,7 +130,8 @@ fn time_to_sec(ref_time: f64, delt: i32, unit: u8) -> Option<f64> {
 /// The product definition templates degrib's inventory names.
 const NAMED_TEMPLATES: &[u16] = &[0, 1, 2, 5, 6, 7, 8, 9, 10, 11, 12, 15, 20, 30, 32, 40, 48];
 
-/// The product definition templates degrib parses when decoding.
+/// The product definition templates degrib parses when decoding (its `ParseSect4`): those of its
+/// inventory but the radar product (4.20).
 const PARSED_TEMPLATES: &[u16] = &[0, 1, 2, 5, 6, 7, 8, 9, 10, 11, 12, 15, 30, 32, 40, 48];
 
 /// What degrib's inventory gives a field.
@@ -407,7 +408,7 @@ pub(super) fn bands(r: &mut MessageReader, offset: u64, len: u64) -> Result<Vec<
     let head = r.bytes(offset, 16)?.to_vec();
     let discipline = head[6];
     let mut pos = 16usize;
-    let end = len as usize;
+    let end = usize::try_from(len).map_err(|_| Error::Unsupported("a GRIB message larger than this platform's memory".into()))?;
     let mut sec1: Vec<u8> = Vec::new();
     let mut current = FieldSections::default();
     let mut last_bitmap: Option<usize> = None;
@@ -426,7 +427,8 @@ pub(super) fn bands(r: &mut MessageReader, offset: u64, len: u64) -> Result<Vec<
         }
         let slen = be_u32(&h, 0) as usize;
         let num = h[4];
-        if slen < 5 || pos + slen > end {
+        // Section 6 holds its bitmap indicator at octet 6.
+        if slen < 5 || (num == 6 && slen < 6) || slen > end - pos {
             return Err(Error::InvalidData(format!("GRIB2 message at {offset}: invalid section {num}")));
         }
         match num {
@@ -436,7 +438,7 @@ pub(super) fn bands(r: &mut MessageReader, offset: u64, len: u64) -> Result<Vec<
             4 => current.sec4 = pos,
             5 => current.sec5 = pos,
             6 => {
-                current.own_sec6 = pos;
+                current.own_sec6 = Some(pos);
                 let indicator = r.bytes(offset + pos as u64 + 5, 1)?[0];
                 current.sec6 = match indicator {
                     0 => {
@@ -448,6 +450,9 @@ pub(super) fn bands(r: &mut MessageReader, offset: u64, len: u64) -> Result<Vec<
                 };
             }
             7 => {
+                if current.sec3 == 0 || current.sec4 == 0 || current.sec5 == 0 {
+                    return Err(Error::InvalidData(format!("GRIB2 message at {offset}: data without sections 3, 4 and 5")));
+                }
                 current.sec7 = pos;
                 out.push(band(r, offset, len, discipline, &sec1, current, normalize)?);
             }
@@ -473,7 +478,11 @@ fn band(r: &mut MessageReader, offset: u64, len: u64, discipline: u8, sec1: &[u8
     let sec3 = section(r, offset, s.sec3)?;
     let sec4 = section(r, offset, s.sec4)?;
     let sec5 = section(r, offset, s.sec5)?;
-    let indicator = r.bytes(offset + s.own_sec6 as u64 + 5, 1)?[0];
+    // Without a section 6, no bitmap.
+    let indicator = match s.own_sec6 {
+        Some(p) => r.bytes(offset + p as u64 + 5, 1)?[0],
+        None => 255,
+    };
     let gds = grid::parse(&sec3)?;
     let inv = inventory(discipline, sec1, &sec4)?;
     let mut items: Vec<(String, String)> = vec![
@@ -551,19 +560,26 @@ fn band(r: &mut MessageReader, offset: u64, len: u64, discipline: u8, sec1: &[u8
 pub(super) fn decode(msg: &[u8], gds: &Gds, s: &FieldSections, convert: UnitConvert, normalize: bool) -> Result<Decoded> {
     let sect = |pos: usize| -> Result<&[u8]> {
         let n = be_u32(msg, pos) as usize;
-        msg.get(pos..pos + n).ok_or_else(|| Error::InvalidData("GRIB2 message truncated".into()))
+        msg.get(pos..pos.saturating_add(n)).filter(|s| s.len() >= 5).ok_or_else(|| Error::InvalidData("GRIB2 message truncated".into()))
     };
     let sec5 = sect(s.sec5)?;
     let sec7 = sect(s.sec7)?;
     let ndpts = be_u32(sec5, 5) as usize;
     let npts = gds.nx * gds.ny;
     let drs = be_u16(sec5, 9);
+    if ndpts > npts {
+        return Err(Error::InvalidData(format!("GRIB2 field of {ndpts} values on a grid of {npts} points")));
+    }
+    // degrib's check on large grids: at most 1000 points per byte of the message.
+    if npts > 100 * 1024 * 1024 && npts / 1000 > msg.len() {
+        return Err(Error::InvalidData(format!("GRIB2 grid of {npts} points too large for its {}-byte message", msg.len())));
+    }
     let packed = unpack::unpack(sec5, &sec7[5..], ndpts)?;
     // The bitmap (1 where a value is packed).
     let bitmap: Option<Vec<bool>> = match s.sec6 {
         Some(p) => {
             let sec6 = sect(p)?;
-            let bits = &sec6[6..];
+            let bits = sec6.get(6..).unwrap_or_default();
             Some((0..npts).map(|i| bits.get(i / 8).is_some_and(|b| b & (0x80 >> (i % 8)) != 0)).collect())
         }
         None => None,
@@ -593,7 +609,7 @@ pub(super) fn decode(msg: &[u8], gds: &Gds, s: &FieldSections, convert: UnitConv
     };
     // degrib's missing values: complex packing's (f_miss 1 or 2), primary and secondary.
     let field_type = sec5.get(20).copied().unwrap_or(0);
-    let (f_miss, mut miss_pri, mut miss_sec) = if (drs == 2 || drs == 3) && sec5.len() >= 31 && sec5[22] <= 2 {
+    let (f_miss, miss_pri, miss_sec) = if (drs == 2 || drs == 3) && sec5.len() >= 31 && sec5[22] <= 2 {
         let read = |i: usize| -> f64 {
             if field_type == 0 { f64::from(f32::from_bits(be_u32(sec5, i))) } else { f64::from(be_u32(sec5, i) as i32 as f32) }
         };
@@ -665,10 +681,8 @@ pub(super) fn decode(msg: &[u8], gds: &Gds, s: &FieldSections, convert: UnitConv
                     out[index(i)] = xs;
                 }
             }
-            (miss_pri, miss_sec) = (xp, xs);
         }
     }
-    let _ = (miss_pri, miss_sec);
     // Points the bitmap masks: 9999, without missing values of complex packing.
     if let Some(bm) = &bitmap
         && f_miss != 1

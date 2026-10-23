@@ -228,7 +228,8 @@ impl RasterDriver {
             Self::Zarr => ("zarr", cfg!(feature = "zarr")),
             Self::NetCDF | Self::HDF5 => ("netcdf-hdf5", cfg!(feature = "netcdf-hdf5")),
             Self::MBTiles | Self::PMTiles => ("tiles", cfg!(feature = "tiles")),
-            Self::GRIB => ("grib", cfg!(feature = "grib")),
+            // Read and written by GDAL in builds with the GDAL backend without terrio's driver.
+            Self::GRIB => ("grib", cfg!(feature = "grib") || cfg!(feature = "gdal")),
             _ => return None,
         };
         (!built).then_some(feature)

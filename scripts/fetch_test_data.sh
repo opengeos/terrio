@@ -102,9 +102,10 @@ for f in gmljp2_dtedsm_epsg_4326_axes.jp2 stefan_full_rgba_alpha_1bit.jp2 3_13bi
   [ -e "$f" ] || curl -sSfL -o "$f" "$gdal_jp2/$f"
 done
 # GRIB (scripts/compare_grib_with_gdal.py): GDAL's test files, ecCodes' (GRIB1 and GRIB2, ECMWF's
-# and Meteo-France's), and real forecasts of 2024-10-22 00z from NOAA's buckets on AWS and ECMWF's on Google Cloud:
-# GFS at 1 degree (every field, 41 MB), HRRR's first fields (the file's first 6 messages) and
-# fields of ECMWF's open data (CCSDS packing, bitmaps), cut by their .idx and .index sidecars.
+# and Meteo-France's), and real forecasts of 2024-10-22 00z from NOAA's buckets on AWS and
+# ECMWF's on Google Cloud: GFS at 1 degree (every field, 41 MB), HRRR's first fields (the file's
+# first 6 messages) and fields of ECMWF's open data (CCSDS packing), cut by their .idx and .index
+# sidecars.
 mkdir -p grib/gdal grib/eccodes grib/real
 for f in CMC_rdwps_lake-erie_ICEC_SFC_0_latlon0.05x0.05_2017111800_P000.grib2 MANAL_2023030103_fake_wrong_grid_origin_latitude.grb2 \
   MRMS_EchoTop_18_00.50_20161015-133230.grib2 Sample_QuikSCAT.grb albers_equal_area.grb2 broken_combined_grib2_grib1.grb2 \
@@ -143,7 +144,7 @@ ecmwf=https://storage.googleapis.com/ecmwf-open-data/20241022/00z/ifs/0p25/oper/
 if [ ! -e grib/real/ecmwf.20241022000000-0h-oper-fc.fields.grib2 ] &&
   curl -sSfL --retry 5 --retry-delay 5 -o grib/real/ecmwf.index "$ecmwf.index"; then
   ok=1
-  for param in 2t msl 10u sst tcwv sp; do
+  for param in 2t msl 10u swvl1 tcwv sp; do
     grep "\"param\": \"$param\"" grib/real/ecmwf.index | head -1 | sed -E 's/.*"_offset": ([0-9]+), "_length": ([0-9]+).*/\1 \2/' |
       while read -r off len; do curl -sSfL --retry 5 --retry-delay 5 -r "$off-$((off + len - 1))" "$ecmwf.grib2"; done || ok=0
   done > grib/real/ecmwf.part

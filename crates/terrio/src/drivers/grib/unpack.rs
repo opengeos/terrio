@@ -139,13 +139,13 @@ pub(super) fn unpack(sec5: &[u8], data: &[u8], ndpts: usize) -> Result<Vec<f32>>
         2 | 3 => complex(sec5, data, ndpts, template),
         4 => match sec5.get(11).copied().unwrap_or(0) {
             1 => {
-                if data.len() < 4 * ndpts {
+                if data.len() / 4 < ndpts {
                     return Err(Error::InvalidData("GRIB2 IEEE data section too short".into()));
                 }
                 Ok(data.as_chunks::<4>().0.iter().take(ndpts).map(|c| f32::from_be_bytes(*c)).collect())
             }
             2 => {
-                if data.len() < 8 * ndpts {
+                if data.len() / 8 < ndpts {
                     return Err(Error::InvalidData("GRIB2 IEEE data section too short".into()));
                 }
                 Ok(data.as_chunks::<8>().0.iter().take(ndpts).map(|c| clamp_f32(f64::from_be_bytes(*c))).collect())
@@ -364,6 +364,11 @@ fn png(p: &Packing, data: &[u8], ndpts: usize) -> Result<Vec<f32>> {
     let mut d = png::Decoder::new(std::io::Cursor::new(data));
     d.set_transformations(png::Transformations::IDENTITY);
     let mut reader = d.read_info().map_err(|e| Error::InvalidData(format!("GRIB2 PNG data: {e}")))?;
+    // The size first: the image is allocated from its header.
+    let (w, h) = (reader.info().width as usize, reader.info().height as usize);
+    if w.checked_mul(h) != Some(ndpts) {
+        return Err(Error::InvalidData("GRIB2 PNG data of the wrong size".into()));
+    }
     let mut buf = vec![0; reader.output_buffer_size().unwrap_or(0)];
     let info = reader.next_frame(&mut buf).map_err(|e| Error::InvalidData(format!("GRIB2 PNG data: {e}")))?;
     if info.width as usize * info.height as usize != ndpts {

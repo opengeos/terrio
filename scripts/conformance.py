@@ -896,8 +896,12 @@ def suite_grib(ctx):
     if missing:
         s.skipped = f"needs {', '.join(missing)}"
         return s
-    _code, out, err = run([sys.executable, str(SCRIPTS / "compare_grib_with_gdal.py"), *dirs, "--raw"])
+    code, out, err = run([sys.executable, str(SCRIPTS / "compare_grib_with_gdal.py"), *dirs, "--raw"])
+    # Exit code 1 means a file differs; anything else, or a traceback, that the script failed.
+    if code not in (0, 1) or "Traceback" in err:
+        s.error = tail(err or out)
     for line in out.splitlines():
+        # Files neither tool opens (SKIP) are not cases.
         m = re.match(r"^(OK|TOL|DIFF)\s+(\S+?)/(\S+?)( \(units as stored\))?: (.*)$", line)
         if m:
             status = {"OK": IDENTICAL, "TOL": TOLERANCE}.get(m[1], DIFFERS)

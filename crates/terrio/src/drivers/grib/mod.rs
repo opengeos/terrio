@@ -223,7 +223,7 @@ fn scan(src: &dyn Source) -> Result<Vec<Message>> {
     'messages: while pos + 16 <= total {
         // A message where the previous one ends, as is usual; else "GRIB" further on.
         let head = src.read_at(pos, 16)?;
-        if let Some(m) = message_at(&head, pos).filter(|m| m.offset + m.len <= total) {
+        if let Some(m) = message_at(&head, pos).filter(|m| m.len <= total - m.offset) {
             out.push(m);
             pos = m.offset + m.len;
             continue;
@@ -244,7 +244,7 @@ fn scan(src: &dyn Source) -> Result<Vec<Message>> {
         }
         let head = src.read_at(start, 16)?;
         let Some(m) = message_at(&head, start) else { break };
-        if m.offset + m.len > total {
+        if m.len > total - m.offset {
             if out.is_empty() {
                 return Err(Error::InvalidData("truncated GRIB message".into()));
             }
@@ -287,7 +287,7 @@ fn indexed_bands(src: &dyn Source, offsets: &[u64]) -> Result<Option<Vec<Band>>>
         let off = offsets[i];
         let end = offsets.get(i + 1).copied().unwrap_or(total);
         let head = src.read_at(off, ((end - off) as usize).min(CHUNK))?;
-        let Some(m) = message_at(&head, off).filter(|m| m.offset + m.len <= end) else { return Ok(None) };
+        let Some(m) = message_at(&head, off).filter(|m| m.len <= end - off) else { return Ok(None) };
         let mut r = MessageReader::new(src, CHUNK);
         r.seed(off, head);
         message_bands(&mut r, m).map(Some)
@@ -348,7 +348,8 @@ impl GribSource {
             return Ok(v.clone());
         }
         let band = &self.bands[b];
-        let msg = self.src.read_at(band.offset, band.len as usize)?;
+        let len = usize::try_from(band.len).map_err(|_| Error::Unsupported("a GRIB message larger than this platform's memory".into()))?;
+        let msg = self.src.read_at(band.offset, len)?;
         let d = match (&band.gds2, &band.grib1) {
             (Some((gds, s, convert)), _) => grib2::decode(&msg, gds, s, *convert, self.normalize)?,
             (None, Some(f)) => grib1::decode(&msg, f, self.normalize)?,
@@ -627,18 +628,19 @@ fn index_offsets(fetcher: &crate::http::ObjectFetcher, remote: &crate::http::Rem
         let (a, q) = split_query(u);
         format!("{a}.idx{q}")
     });
-    if let Ok(Some(text)) = fetcher.get(&idx, ByteRange::Whole) {
-        let text = String::from_utf8_lossy(&text);
-        let mut offsets: Vec<u64> = Vec::new();
-        for line in text.lines().filter(|l| !l.trim().is_empty()) {
-            let off = line.split(':').nth(1)?.trim().parse::<u64>().ok()?;
-            offsets.push(off);
-        }
+    // Sidecars of at most 4 MB, as GDAL reads them; one with a line not of its form is not used.
+    let parse = |text: &[u8], offset_of: &dyn Fn(&str) -> Option<u64>| -> Option<Vec<u64>> {
+        let text = String::from_utf8_lossy(text);
+        let mut offsets: Vec<u64> = text.lines().filter(|l| !l.trim().is_empty()).map(offset_of).collect::<Option<_>>()?;
         offsets.sort_unstable();
         offsets.dedup();
-        if !offsets.is_empty() && offsets.iter().all(|o| *o < len) {
-            return Some(offsets);
-        }
+        (!offsets.is_empty() && offsets.iter().all(|o| *o < len)).then_some(offsets)
+    };
+    let range = ByteRange::At(0, 4 * 1024 * 1024);
+    if let Ok(Some(text)) = fetcher.get(&idx, range)
+        && let Some(offsets) = parse(&text, &|line| line.split(':').nth(1)?.trim().parse::<u64>().ok())
+    {
+        return Some(offsets);
     }
     // ECMWF's `.index`: JSON lines with `_offset` and `_length`.
     let index = with_url(&|u| {
@@ -646,18 +648,10 @@ fn index_offsets(fetcher: &crate::http::ObjectFetcher, remote: &crate::http::Rem
         let base = a.rsplit_once('.').map_or(a.as_str(), |(b, _)| b).to_string();
         format!("{base}.index{q}")
     });
-    if let Ok(Some(text)) = fetcher.get(&index, ByteRange::Whole) {
-        let text = String::from_utf8_lossy(&text);
-        let mut offsets: Vec<u64> = Vec::new();
-        for line in text.lines().filter(|l| !l.trim().is_empty()) {
-            let v: serde_json::Value = serde_json::from_str(line).ok()?;
-            offsets.push(v.get("_offset")?.as_u64()?);
-        }
-        offsets.sort_unstable();
-        offsets.dedup();
-        if !offsets.is_empty() && offsets.iter().all(|o| *o < len) {
-            return Some(offsets);
-        }
+    if let Ok(Some(text)) = fetcher.get(&index, range)
+        && let Some(offsets) = parse(&text, &|line| serde_json::from_str::<serde_json::Value>(line).ok()?.get("_offset")?.as_u64())
+    {
+        return Some(offsets);
     }
     None
 }

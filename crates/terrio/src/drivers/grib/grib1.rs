@@ -455,6 +455,10 @@ fn decode_values(msg: &[u8], f: &Field, normalize: bool, values: bool) -> Result
     let bad = |m: &str| Error::InvalidData(format!("GRIB1 data: {m}"));
     let (nx, ny) = (f.gds.nx, f.gds.ny);
     let npts = nx * ny;
+    // degrib's check on large grids: at most 1000 points per byte of the message.
+    if npts > 100 * 1024 * 1024 && npts / 1000 > msg.len() {
+        return Err(bad("grid too large for its message"));
+    }
     // The bitmap.
     let bitmap: Option<Vec<bool>> = match f.bms {
         Some(at) => {

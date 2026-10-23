@@ -11,9 +11,9 @@ directories given, opens it with GDAL (without ``.idx`` sidecars, ``USE_IDX=NO``
   single precision on platforms whose compiler fuses multiplications and additions, as on macOS
   arm64), else they differ.
 
-Prints a line per file, ``OK``, ``TOL`` or ``DIFF``, the file, and what differs, with ``--all``
-also files whose units are left as stored (``GRIB_NORMALIZE_UNITS=NO``). Exits non-zero when a
-file differs.
+Prints a line per file, ``OK``, ``TOL``, ``DIFF`` or ``SKIP`` (neither GDAL nor terrio opens
+it), the file (as ``<directory name>/<path in it>``), and what differs; with ``--raw`` also with
+units left as stored (``GRIB_NORMALIZE_UNITS=NO``). Exits non-zero when a file differs.
 
 Usage:
     python scripts/compare_grib_with_gdal.py DIR [DIR ...] [--raw] [--files NAME ...]
@@ -49,7 +49,7 @@ def grib_files(dirs, names):
         names: File names to keep, or None for all.
 
     Returns:
-        The sorted paths.
+        ``(label, path)`` pairs, sorted: the label is the directory's name and the file's path in it.
     """
     out = []
     for d in dirs:
@@ -62,7 +62,7 @@ def grib_files(dirs, names):
             if name.lower().endswith(EXTENSIONS):
                 with open(path, "rb") as f:
                     if b"GRIB" in f.read(300 + 16):
-                        out.append(path)
+                        out.append((os.path.join(os.path.basename(os.path.normpath(d)), name), path))
     return out
 
 
@@ -162,7 +162,7 @@ def compare(path):
         t = terrio.open_raster(path, lazy=True)
     except Exception as e:  # noqa: BLE001 (any terrio error is a difference)
         if g is None:
-            return "OK", "neither opens it"
+            return "SKIP", "neither GDAL nor terrio opens it"
         return "DIFF", f"terrio cannot open it: {e}"
     if g is None:
         return "DIFF", f"GDAL cannot open it ({gdal_error}), terrio does"
@@ -212,8 +212,10 @@ def compare(path):
             continue
         same = np.array_equal(ga, ta, equal_nan=True)
         if not same:
-            if not np.array_equal(np.isnan(ga), np.isnan(ta)):
-                diffs.append(f"band {b}: NaN at other pixels")
+            # Non-finite values (NaN, infinities) must be the same, at the same pixels.
+            odd = ~np.isfinite(ga) | ~np.isfinite(ta)
+            if not np.array_equal(ga[odd], ta[odd], equal_nan=True):
+                diffs.append(f"band {b}: non-finite values at other pixels")
                 continue
             u = ulps(ga, ta)
             worst = max(worst, u)
@@ -243,10 +245,9 @@ def main():
     for value, label in modes:
         os.environ["GRIB_NORMALIZE_UNITS"] = value
         gdal.SetConfigOption("GRIB_NORMALIZE_UNITS", value)
-        for path in files:
+        for name, path in files:
             status, details = compare(path)
             failed |= status == "DIFF"
-            name = os.path.relpath(path, os.path.commonpath(args.dirs) if len(args.dirs) > 1 else args.dirs[0])
             print(f"{status:4} {name}{label}: {details}", flush=True)
     return 1 if failed else 0
 
