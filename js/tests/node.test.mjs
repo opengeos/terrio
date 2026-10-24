@@ -1180,12 +1180,13 @@ test("native multidimensional views retain integer precision and store lifetimes
   const ds = terrio.openMultidim(files);
   assert.ok(ds.arrayPaths.includes("/cube"));
   const array = ds.array("cube");
-  assert.deepEqual([...array.shape], [2, 2, 3]);
+  // Vec<usize> shapes use BigUint64Array in memory64; these fixture sizes are exact Numbers.
+  assert.deepEqual(Array.from(array.shape, Number), [2, 2, 3]);
   const positional = array.iselAxis(0, 1).sliceAxis(1, 1, 1);
   assert.deepEqual([...positional.read()], [7n, 10n].map((n) => base + n));
   positional.free();
   const view = array.isel("time", 1).transpose(["x", "y"]);
-  assert.deepEqual([...view.shape], [3, 2]);
+  assert.deepEqual(Array.from(view.shape, Number), [3, 2]);
   assert.ok(view.read() instanceof BigInt64Array);
   assert.deepEqual([...view.read()], [6n, 9n, 7n, 10n, 8n, 11n].map((n) => base + n));
   const nc = terrio.openMultidim(ds.toBytes());
