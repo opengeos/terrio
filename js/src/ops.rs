@@ -856,6 +856,47 @@ pub fn sieve(src: JsValue, options: JsValue) -> Result<Dataset, JsError> {
     Ok(Dataset::from_raster(terrio::ops::sieve::sieve(&ds, &o).map_err(js_err)?))
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", default, deny_unknown_fields)]
+struct ViewshedArgs {
+    band: usize,
+    oz: f64,
+    tz: f64,
+    md: f64,
+    cc: Option<f64>,
+    om: String,
+    ov: u8,
+}
+impl Default for ViewshedArgs {
+    fn default() -> Self {
+        Self { band: 1, oz: 2.0, tz: 0.0, md: 0.0, cc: None, om: "NORMAL".into(), ov: 0 }
+    }
+}
+
+/// Single-observer visibility or minimum visible height on a projected DEM.
+/// `ox`, `oy` are coordinates in the DEM CRS. Options: `band`, `oz` (observer height),
+/// `tz` (target height), `md` (maximum distance, 0 unlimited), `cc` (curvature coefficient,
+/// 1 minus refraction), `om` (NORMAL/DEM/GROUND), `ov` (out-of-range value).
+/// Numeric nodata is treated as elevation, as in GDAL; nonfinite elevations are rejected.
+#[wasm_bindgen]
+pub fn viewshed(src: JsValue, ox: f64, oy: f64, options: JsValue) -> Result<Dataset, JsError> {
+    use terrio::ops::viewshed::{ViewshedMode, ViewshedOptions};
+    let a: ViewshedArgs = parse_options(&options)?;
+    let o = ViewshedOptions {
+        band: a.band,
+        observer_x: ox,
+        observer_y: oy,
+        observer_height: a.oz,
+        target_height: a.tz,
+        max_distance: a.md,
+        curvature_coefficient: a.cc,
+        mode: ViewshedMode::parse(&a.om).map_err(js_err)?,
+        out_of_range: a.ov,
+    };
+    let ds = input_raster(&src)?;
+    Ok(Dataset::from_raster(terrio::ops::viewshed::viewshed(&ds, &o).map_err(js_err)?))
+}
+
 /// Options of [`fill_nodata`].
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", default, deny_unknown_fields)]
