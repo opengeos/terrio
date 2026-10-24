@@ -187,6 +187,24 @@ let corner = translate::translate(&utm, &o)?;
 # Ok::<(), terrio::Error>(())
 ```
 
+### Pansharpening
+
+```rust
+use terrio::ops::pansharpen::{pansharpen, PansharpenOptions, SpectralBand};
+let pan = terrio::open_raster("pan.tif")?;
+let rgb = terrio::open_raster("rgb.tif")?;
+let spectral: Vec<_> = (1..=3).map(|band| SpectralBand { dataset: &rgb, band }).collect();
+let sharp = pansharpen(&pan, &spectral, &PansharpenOptions::default())?;
+# Ok::<(), terrio::Error>(())
+use terrio::ops::pansharpen::vrt::PansharpenVrt;
+let description = PansharpenVrt::from_paths("pan.tif", &[("rgb.tif".into(), 1)], &Default::default())?;
+description.write("sharp.vrt")?; // source headers only
+let mut virtual_raster = terrio::open_raster_lazy("sharp.vrt")?;
+```
+
+Each `SpectralBand` can reference a separate raster. See [pansharpen](cli.md#pansharpen)
+for working types, interpolation, nodata, bit depth and extent handling.
+
 ### Viewshed
 
 ```rust

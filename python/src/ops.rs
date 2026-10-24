@@ -874,7 +874,7 @@ fn nodata_arg(v: Option<&Bound<'_, PyAny>>) -> PyResult<Nodata> {
 
 /// The rasters given to an operation: one path or `Raster`, or a sequence of them, with the
 /// paths (or made-up names for rasters in memory).
-fn input_rasters(py: Python<'_>, src: &Bound<'_, PyAny>) -> PyResult<Vec<(String, RasterDataset)>> {
+pub(crate) fn input_rasters(py: Python<'_>, src: &Bound<'_, PyAny>) -> PyResult<Vec<(String, RasterDataset)>> {
     let items: Vec<Bound<'_, PyAny>> = if src.extract::<String>().is_ok() || src.cast::<PyRaster>().is_ok() {
         vec![src.clone()]
     } else {

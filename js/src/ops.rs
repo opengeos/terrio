@@ -950,3 +950,88 @@ pub fn fill_nodata(src: JsValue, options: JsValue) -> Result<Dataset, JsError> {
     };
     Ok(Dataset::from_raster(terrio::ops::fill_nodata::fill_nodata(&ds, &o).map_err(js_err)?))
 }
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", default, deny_unknown_fields)]
+struct PansharpenArgs {
+    weights: Vec<f64>,
+    bands: Vec<usize>,
+    pan_band: usize,
+    resampling: String,
+    bitdepth: Option<u8>,
+    nodata: Option<serde_json::Value>,
+    spat_adjust: String,
+    ot: Option<String>,
+}
+impl Default for PansharpenArgs {
+    fn default() -> Self {
+        Self {
+            weights: vec![],
+            bands: vec![],
+            pan_band: 1,
+            resampling: "cubic".into(),
+            bitdepth: None,
+            nodata: None,
+            spat_adjust: "union".into(),
+            ot: None,
+        }
+    }
+}
+
+/// Weighted Brovey pansharpening. `spectral` is a raster/bytes or an array of them;
+/// all bands contribute intensity. Options: `weights`, output `bands` (from 1),
+/// `panBand`, `resampling` (default cubic), `bitdepth`, `nodata` (number or "none"),
+/// `spatAdjust` (union/intersection/none), `ot` (output type).
+#[wasm_bindgen]
+pub fn pansharpen(pan: JsValue, spectral: JsValue, options: JsValue) -> Result<Dataset, JsError> {
+    use terrio::ops::pansharpen::SpectralBand;
+    let o = pansharpen_options(options)?;
+    let pan = input_raster(&pan)?;
+    let datasets = input_rasters(&spectral)?;
+    let inputs =
+        datasets.iter().flat_map(|ds| (1..=ds.raster.bands).map(move |band| SpectralBand { dataset: ds, band })).collect::<Vec<_>>();
+    Ok(Dataset::from_raster(terrio::ops::pansharpen::pansharpen(&pan, &inputs, &o).map_err(js_err)?))
+}
+
+fn pansharpen_options(options: JsValue) -> Result<terrio::ops::pansharpen::PansharpenOptions, JsError> {
+    use terrio::ops::pansharpen::{PansharpenExtent, PansharpenNodata, PansharpenOptions};
+    let a: PansharpenArgs = parse_options(&options)?;
+    let nodata = match a.nodata {
+        None | Some(serde_json::Value::Null) => PansharpenNodata::Auto,
+        Some(serde_json::Value::String(s)) if s.eq_ignore_ascii_case("none") => PansharpenNodata::None,
+        Some(serde_json::Value::Number(n)) => PansharpenNodata::Value(n.as_f64().ok_or_else(|| invalid("nodata must be a finite number"))?),
+        _ => return Err(invalid("nodata must be a number or 'none'")),
+    };
+    Ok(PansharpenOptions {
+        pan_band: a.pan_band,
+        weights: a.weights,
+        output_bands: a.bands,
+        resampling: Resampling::parse(&a.resampling).map_err(js_err)?,
+        bit_depth: a.bitdepth,
+        nodata,
+        extent: PansharpenExtent::parse(&a.spat_adjust).map_err(js_err)?,
+        output_type: a.ot.as_deref().map(parse_data_type).transpose().map_err(js_err)?,
+    })
+}
+
+/// Create GDAL pansharpened VRT XML from named uploaded sources without decoding pixels.
+/// Pass the returned XML and the same source byte map to `openVrt` for lazy window reads.
+#[wasm_bindgen(js_name = pansharpenVrt)]
+pub fn pansharpen_vrt(pan: &str, spectral: Vec<String>, sources: JsValue, options: JsValue) -> Result<String, JsError> {
+    let o = pansharpen_options(options)?;
+    let header = |name: &str| -> Result<terrio::RasterDataset, JsError> {
+        let bytes = js_sys::Reflect::get(&sources, &JsValue::from_str(name))
+            .map_err(|_| invalid("cannot read source map"))?
+            .dyn_into::<js_sys::Uint8Array>()
+            .map_err(|_| invalid("sources must map names to Uint8Array bytes"))?;
+        Ok(terrio::memory::open_raster_lazy_bytes(bytes.to_vec(), name).map_err(js_err)?.header())
+    };
+    let pan_header = header(pan)?;
+    let headers = spectral.iter().map(|name| header(name)).collect::<Result<Vec<_>, _>>()?;
+    let inputs = spectral
+        .iter()
+        .zip(&headers)
+        .flat_map(|(name, header)| (1..=header.raster.bands).map(move |band| (name.as_str(), header, band)))
+        .collect::<Vec<_>>();
+    Ok(terrio::ops::pansharpen::vrt::PansharpenVrt::from_rasters(pan, &pan_header, &inputs, &o).map_err(js_err)?.to_xml())
+}

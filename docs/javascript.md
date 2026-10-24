@@ -166,6 +166,21 @@ TERRIO_JS_PKG=../pkg-node/core/terrio.js node --test js/tests/node.test.mjs
 node js/bench/bench.mjs ../terrio-data    # timings of decoding and writing real files
 ```
 
+## Pansharpening
+
+```javascript
+const sharp = terrio.pansharpen(pan, rgbnir, { bands: [1, 2, 3], bitdepth: 12, nodata: 0 });
+const rgb = terrio.pansharpen(pan, [red, green, blue], { weights: [0.6, 0.3, 0.1] });
+const sources = { "pan.tif": panBytes, "rgb.tif": spectralBytes };
+const xml = terrio.pansharpenVrt("pan.tif", ["rgb.tif"], sources, { bands: [1, 2, 3] });
+const virtual = terrio.openVrt(xml, sources);
+const window = virtual.readBand(1, [100, 200, 64, 64]);
+```
+
+Inputs can be datasets or raster bytes. All spectral inputs contribute to intensity;
+`bands` selects/reorders output bands. See [pansharpen](cli.md#pansharpen) for working
+types, interpolation, nodata, bit depth and extent handling.
+
 ## Viewshed
 
 ```javascript

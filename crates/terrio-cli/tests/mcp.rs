@@ -111,6 +111,31 @@ fn fill_nodata_is_discoverable_and_executes() {
 }
 
 #[test]
+fn pansharpen_tool_uses_all_spectral_bands() {
+    let dir = tempfile::tempdir().unwrap();
+    let pan_path = dir.path().join("pan.tif");
+    let spectral_path = dir.path().join("spectral.tif");
+    let output = dir.path().join("sharp.tif");
+    for (path, bands, values) in [(&pan_path, 1, vec![80.0; 4]), (&spectral_path, 2, vec![20.0, 20.0, 20.0, 20.0, 40.0, 40.0, 40.0, 40.0])]
+    {
+        let cfg = terrio::RasterConfig { cols: 2, rows: 2, bands, cell_size: 1.0, data_type: terrio::DataType::U16, ..Default::default() };
+        let mut ds = terrio::RasterDataset::new(terrio::Raster::from_data(cfg, values).unwrap(), false);
+        ds.raster.crs.epsg = Some(32611);
+        ds.set_geo_transform([0.0, 1.0, 0.0, 2.0, 0.0, -1.0]);
+        terrio::write_raster_dataset(&ds, path.to_str().unwrap(), &Default::default()).unwrap();
+    }
+    let replies = session(&[
+        json!({"jsonrpc":"2.0","id":1,"method":"tools/list"}),
+        call(2, "pansharpen", &[pan_path.to_str().unwrap(), spectral_path.to_str().unwrap(), output.to_str().unwrap()]),
+    ]);
+    assert!(replies[&1]["result"]["tools"].as_array().unwrap().iter().any(|t| t["name"] == "pansharpen"));
+    assert_eq!(replies[&2]["result"]["isError"], false);
+    let out = terrio::open_raster(output.to_str().unwrap()).unwrap();
+    assert_eq!(out.raster.get(0, 0, 0), 53.0);
+    assert_eq!(out.raster.get(1, 0, 0), 107.0);
+}
+
+#[test]
 fn warp_serializes_and_reads_vrt_without_materializing_output() {
     let dir = tempfile::tempdir().unwrap();
     let input = dir.path().join("source.asc");
