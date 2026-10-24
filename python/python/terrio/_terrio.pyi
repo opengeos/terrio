@@ -27,6 +27,7 @@ __all__ = [
     "write_netcdf_groups",
     "write_vector",
     "convert",
+    "sql",
     "rasterize",
     "polygonize",
     "transform_points",
@@ -1105,3 +1106,6 @@ class MultidimArray:
     def read(self) -> NDArray[Any]: ...
 
 def open_multidim(src: str | os.PathLike[str] | bytes | dict[str, bytes]) -> MultidimDataset: ...
+def sql(src: Any, query: str, *, layers: list[str] | None = None) -> Layer:
+    """Run the documented OGR SQL subset; DISTINCT and summaries discard geometry."""
+    ...

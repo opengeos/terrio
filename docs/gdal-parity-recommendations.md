@@ -97,11 +97,10 @@ built-in operations before considering arbitrary user-supplied pixel functions.
 
 ### 5. Richer vector SQL
 
-[`ops/sql.rs`](../crates/terrio/src/ops/sql.rs) explicitly excludes joins,
-aggregates, spatial functions and computed SELECT columns. Add computed columns,
-DISTINCT and summary aggregates before limited attribute joins. Specify the
-supported OGR SQL subset; GROUP BY or a spatial SQL dialect would be separate
-extensions rather than implied OGR SQL parity.
+Implemented by the [documented SQL subset](sql.md): computed columns, single-field DISTINCT,
+COUNT/SUM/AVG/MIN/MAX summaries and same-dataset attribute LEFT JOINs. Queries retain primary
+geometry except DISTINCT and summaries; duplicate join keys use the first matching secondary
+feature. GROUP BY and spatial SQL remain separate extensions.
 [GDAL OGR SQL](https://gdal.org/en/stable/user/ogr_sql_dialect.html).
 
 Acceptance: compare values, nulls, field types and geometry retention with OGR SQL,

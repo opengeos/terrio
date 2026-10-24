@@ -17,6 +17,7 @@ nav = [
   { "Playground" = "playground.md" },
   { "Notebooks" = "notebooks.md" },
   { "Command Line" = "cli.md" },
+  { "Vector SQL" = "sql.md" },
   { "AI Agents (MCP)" = "mcp.md" },
   { "Formats" = "formats.md" },
   { "Multidimensional Arrays" = "multidim.md" },
