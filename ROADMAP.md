@@ -22,12 +22,12 @@ of GDAL: the long tail of formats stays reachable through an optional GDAL backe
 - Proprietary formats that need vendor SDKs (MrSID, ECW, FileGDB raster).
 - Database drivers (PostGIS, Oracle, SQL Server) in the core crate.
 
-## Next: Practical GDAL feature parity
+## Completed: Practical GDAL feature parity
 
-Tracked in [#238](https://github.com/opengeos/terrio/issues/238), in priority order.
-The [gap analysis](docs/gdal-parity-recommendations.md) records the existing support,
-implementation scope and validation criteria. These additions build on the completed
-operations and drivers below; no release deadline is assigned yet.
+All nine items in [#238](https://github.com/opengeos/terrio/issues/238) are complete
+as of 2026-10-24. The [gap analysis](docs/gdal-parity-recommendations.md) records the
+supported scope and validation criteria. These additions build on the operations
+and drivers below.
 
 - [x] Fill nodata: inverse-distance and nearest interpolation, validity masks, maximum
       pixel distance and smoothing, preserving valid source pixels. Done in
@@ -49,19 +49,23 @@ operations and drivers below; no release deadline is assigned yet.
       maximum distance and curvature/refraction controls, with explicit input nodata behavior.
       Done in [#240](https://github.com/opengeos/terrio/pull/240), through Rust, CLI/MCP, Python
       and JavaScript; projected DEM comparisons are registered in conformance.
-- [ ] Indexed raster catalogs: GTI-compatible GeoPackage/FlatGeobuf tile indexes, spatial source
-      selection, compositing order, mixed-CRS sources and a bounded source cache.
-- [ ] Pansharpening: weighted Brovey processing, spectral weights, resampling, nodata, bit depth
-      and extent handling; virtual output after the VRT extensions.
-- [ ] Native multidimensional API: groups, named dimensions, coordinate arrays, lazy time/depth
+- [x] Indexed raster catalogs: GTI-compatible GeoPackage/FlatGeobuf tile indexes, spatial source
+      selection, compositing order, mixed-CRS sources and a bounded source cache. Done in
+      [#249](https://github.com/opengeos/terrio/pull/249), with nested VRT export protection
+      and conformance reporting completed in [#255](https://github.com/opengeos/terrio/pull/255).
+- [x] Pansharpening: weighted Brovey processing, spectral weights, resampling, nodata, bit depth
+      and extent handling. Materialized output shipped in
+      [#247](https://github.com/opengeos/terrio/pull/247), with lazy GDAL-compatible VRT output
+      and window reads in [#250](https://github.com/opengeos/terrio/pull/250).
+- [x] Native multidimensional API: groups, named dimensions, coordinate arrays, lazy time/depth
       slicing and transposition across netCDF/HDF5/Zarr, retaining the existing raster views.
+      Done in [#252](https://github.com/opengeos/terrio/pull/252); the supported numeric/raw-CF
+      subset is documented in the [multidimensional guide](docs/multidim.md).
 
-Continue the remaining independent features.
-SQL, viewshed and pansharpening can ship independently; schedule indexed catalogs and the
-multidimensional API according to demand for large mosaics and scientific data cubes. Each item
-must preserve pure-Rust/default WebAssembly builds, add real-data comparisons to the GDAL
-conformance workflow, and expose applicable functionality through Rust, CLI, Python, JavaScript
-and MCP. Record implementation PRs in the tracking issue before marking items complete.
+The completed scope preserves pure-Rust/default WebAssembly builds, registers real-data
+comparisons in the GDAL conformance workflow, and exposes applicable functionality through
+Rust, CLI, Python, JavaScript and MCP. Supported subsets and numerical tolerances remain
+documented; additional feature scope belongs in separate tracking issues.
 
 ## 0.1: Foundations
 
