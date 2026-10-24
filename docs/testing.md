@@ -125,6 +125,14 @@ python scripts/compare_pansharpen_with_gdal.py ../terrio-data
 python scripts/conformance.py ../terrio-data --only pansharpen
 ```
 
+The `vrt` conformance suite cross-reads GDAL/Terrio virtual rasters on USGS terrain,
+including whole and cropped requests, derived bands, nodata, masks, full and
+separable kernels, and affine/reprojection/GCP/TPS/homography/RPC transforms:
+
+```sh
+python scripts/conformance.py ../terrio-data --only vrt --strict
+```
+
 ## Build size and iteration speed
 
 Development and test builds omit debug symbols by default. Enable full debugger

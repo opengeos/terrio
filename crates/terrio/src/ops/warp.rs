@@ -131,6 +131,10 @@ pub struct WarpOptions {
     pub geolocation: Option<super::geolocation::GeolocationTransformer>,
     /// The sources' CRS, overriding what they declare (`-s_srs`).
     pub src_srs: Option<SpatialRef>,
+    /// An explicit source affine transform, for serialized VRT transformers.
+    pub src_transform: Option<[f64; 6]>,
+    /// An explicit GDAL-order homography, for serialized VRT transformers.
+    pub homography: Option<[f64; 9]>,
     /// The output CRS (`-t_srs`). By default, the first source's.
     pub dst_srs: Option<SpatialRef>,
     /// The output resolution `(x, y)`, both positive (`-tr`).
@@ -198,6 +202,8 @@ impl Default for WarpOptions {
             geoloc: false,
             geolocation: None,
             src_srs: None,
+            src_transform: None,
+            homography: None,
             dst_srs: None,
             resolution: None,
             extent: None,
@@ -1082,15 +1088,21 @@ impl<'a> Plan<'a> {
             .iter()
             .map(|ds| Source {
                 ds,
-                grid: Grid { width: ds.raster.cols, height: ds.raster.rows, geo_transform: ds.geo_transform() },
+                grid: Grid {
+                    width: ds.raster.cols,
+                    height: ds.raster.rows,
+                    geo_transform: o.src_transform.unwrap_or_else(|| ds.geo_transform()),
+                },
                 srs: o.src_srs.clone().unwrap_or_else(|| ds.crs()),
                 gcp: None,
             })
             .collect();
-        if (o.geoloc || o.geolocation.is_some()) && (!o.gcps.is_empty() || o.rpc.is_some()) {
+        if (o.geoloc || o.geolocation.is_some())
+            && (!o.gcps.is_empty() || o.rpc.is_some() || o.homography.is_some() || o.src_transform.is_some())
+        {
             return Err(Error::InvalidArgument("geolocation arrays exclude GCP and RPC georeferencing".into()));
         }
-        if o.gcps.is_empty() && o.rpc.is_none() {
+        if o.gcps.is_empty() && o.rpc.is_none() && o.homography.is_none() && o.src_transform.is_none() {
             for (index, source) in srcs.iter_mut().enumerate() {
                 if index == 0
                     && let Some(g) = &o.geolocation
@@ -1132,6 +1144,12 @@ impl<'a> Plan<'a> {
                 return Err(Error::Unsupported("cutlines are not supported with GCPs".into()));
             }
             srcs[0].gcp = Some(Georef::Gcp(super::gcp::GcpTransformer::new(&o.gcps, o.gcp_method, o.order)?));
+        }
+        if let Some(homography) = o.homography {
+            if o.cutline.is_some() {
+                return Err(Error::Unsupported("cutlines are not supported with homographies".into()));
+            }
+            srcs[0].gcp = Some(Georef::Gcp(super::gcp::GcpTransformer::from_homography(homography)?));
         }
         if let Some(rpc) = &o.rpc {
             if o.cutline.is_some() {
@@ -1373,6 +1391,18 @@ fn stored_grid(grid: Grid) -> (Grid, Option<[f64; 6]>) {
 /// # Ok::<(), terrio::Error>(())
 /// ```
 pub fn warp_to_path(paths: &[String], o: &WarpOptions, path: &str, options: &crate::RasterWriteOptions) -> Result<()> {
+    if options.driver == Some(crate::formats::RasterDriver::VRT)
+        || (options.driver.is_none() && crate::formats::extension(path).as_deref() == Some("vrt"))
+    {
+        if paths.len() != 1 {
+            return Err(Error::Unsupported("a warped VRT requires one source; mosaic it first".into()));
+        }
+        if super::strips::overwrites(path, paths) {
+            return Err(Error::InvalidArgument("a VRT cannot replace its source".into()));
+        }
+        let document = super::vrt::VirtualRaster::warped(&paths[0], o)?;
+        return Ok(std::fs::write(path, document.to_xml())?);
+    }
     if paths.is_empty() {
         return Err(Error::InvalidArgument("no source rasters".into()));
     }
@@ -1481,16 +1511,24 @@ pub fn warp_to_path(paths: &[String], o: &WarpOptions, path: &str, options: &cra
     out.finish()
 }
 
+/// Plan a virtual warp without reading source pixels.
+pub(crate) fn virtual_header(source: &RasterDataset, o: &WarpOptions) -> Result<RasterDataset> {
+    let p = Plan::new(&[source], o)?;
+    super::raster_header(p.grid, p.out_type, p.bands, p.dst_nodata, &p.dst_srs)
+}
+
 /// `o`, with the GCPs of the raster at `path` (opened as `ds`) when `o` has neither GCPs nor RPCs
 /// and the raster has no geotransform; else with its RPCs, as GDAL picks a geotransform, then
 /// GCPs, then RPCs.
-fn with_file_gcps<'a>(o: &'a WarpOptions, path: &str, ds: &RasterDataset) -> Result<std::borrow::Cow<'a, WarpOptions>> {
+pub(crate) fn with_file_gcps<'a>(o: &'a WarpOptions, path: &str, ds: &RasterDataset) -> Result<std::borrow::Cow<'a, WarpOptions>> {
     let default_gt = [0.0, 1.0, 0.0, ds.raster.rows as f64, 0.0, -1.0];
     if o.geoloc
         || o.geolocation.is_some()
         || ds.geolocation.is_some()
         || !o.gcps.is_empty()
         || o.rpc.is_some()
+        || o.homography.is_some()
+        || o.src_transform.is_some()
         || ds.affine.is_some()
         || ds.geo_transform() != default_gt
     {
