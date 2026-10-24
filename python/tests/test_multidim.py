@@ -110,3 +110,15 @@ def test_unsupported_payloads_are_listed_without_hiding_numeric_arrays():
     np.testing.assert_array_equal(ds["cube"].read(), expected)
     with pytest.raises(terrio.UnsupportedError, match="/text"):
         ds.to_bytes()
+
+
+def test_snapshot_rejects_malformed_fill_metadata():
+    files, expected = cube_store()
+    attributes = json.loads(files["cube/.zattrs"])
+    attributes["_FillValue"] = "missing"
+    files["cube/.zattrs"] = json.dumps(attributes).encode()
+    ds = terrio.open_multidim(files)
+    np.testing.assert_array_equal(ds["cube"].read(), expected)
+    for write in (ds.to_bytes, ds.to_zarr_store):
+        with pytest.raises(terrio.errors.InvalidArgumentError, match="_FillValue"):
+            write()

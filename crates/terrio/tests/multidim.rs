@@ -230,3 +230,17 @@ fn repeated_dimension_axes_have_positional_selections() {
         );
     }
 }
+
+#[test]
+fn snapshots_reject_invalid_fill_values_and_coordinate_links() {
+    for fill in [json!("missing"), json!(null), json!([]), json!({})] {
+        let mut ds = dataset();
+        ds.root.arrays[0].info.attributes["_FillValue"] = fill;
+        assert!(ds.to_netcdf_bytes().unwrap_err().to_string().contains("_FillValue"));
+        #[cfg(feature = "zarr")]
+        assert!(ds.to_zarr_store().unwrap_err().to_string().contains("_FillValue"));
+    }
+    let mut ds = dataset();
+    ds.root.dimensions[0].indexing_variable = Some("/x".into());
+    assert!(ds.to_netcdf_bytes().unwrap_err().to_string().contains("indexing variable"));
+}

@@ -60,7 +60,8 @@ support browser and Python callers. Remote Zarr stores retain their existing ran
 ## Snapshots
 
 `Dataset.write(destination)` chooses netCDF-4 for `.nc` and Zarr v2 for `.zarr`. The destination
-must be new. Snapshots preserve groups, numeric values/types, coordinate variables, attribute
+must be new. `_FillValue` must be numeric (or a floating nonfinite marker) and
+representable in the array's numeric type. Snapshots preserve groups, numeric values/types, coordinate variables, attribute
 values and source chunk shapes where the destination permits them. netCDF output clamps chunks
 to fixed-axis lengths, while retaining chunk sizes on unlimited axes and the unlimited flags.
 Zarr output uses

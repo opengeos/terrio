@@ -1,6 +1,34 @@
 //! Numeric snapshots through the existing format writers.
 use super::*;
 
+fn valid_fill(value: &Value, dtype: DataType) -> bool {
+    if matches!(dtype, DataType::F32 | DataType::F64) {
+        if matches!(value.as_str(), Some("NaN" | "Infinity" | "-Infinity")) {
+            return true;
+        }
+        return value.as_f64().is_some_and(|v| dtype == DataType::F64 || v.abs() <= f32::MAX as f64);
+    }
+    if dtype == DataType::I64 && value.as_i64().is_some() {
+        return true;
+    }
+    if dtype == DataType::U64 && value.as_u64().is_some() {
+        return true;
+    }
+    value.as_f64().is_some_and(|v| {
+        if !v.is_finite() || v.fract() != 0. {
+            return false;
+        }
+        match dtype {
+            DataType::I64 => (i64::MIN as f64..9223372036854775808.).contains(&v),
+            DataType::U64 => (0. ..18446744073709551616.).contains(&v),
+            _ => {
+                let (lo, hi) = crate::ops::type_range(dtype);
+                (lo..=hi).contains(&v)
+            }
+        }
+    })
+}
+
 pub(super) fn validate(dataset: &Dataset) -> Result<()> {
     fn valid(path: &str) -> bool {
         path == "/"
@@ -16,6 +44,11 @@ pub(super) fn validate(dataset: &Dataset) -> Result<()> {
             return Err(bad("group paths must be unique absolute names without empty, . or .. components"));
         }
         for a in &g.arrays {
+            if let Some(fill) = a.info.attributes.get("_FillValue")
+                && !valid_fill(fill, a.info.data_type)
+            {
+                return Err(bad(format!("array '{}' _FillValue must be numeric and representable in its data type", a.info.path)));
+            }
             if !valid(&a.info.path)
                 || a.info.path == "/"
                 || !arrays.insert(a.info.path.clone())
@@ -273,6 +306,15 @@ pub(super) fn netcdf_bytes(dataset: &Dataset) -> Result<Vec<u8>> {
     }
     let mut scales = HashMap::new();
     for (id, d) in dimensions.iter().enumerate() {
+        if let Some(name) = &d.indexing_variable {
+            let coordinate = arrays
+                .iter()
+                .find(|a| &a.info.path == name)
+                .ok_or_else(|| bad(format!("dimension '{}' has a missing indexing variable '{name}'", d.path)))?;
+            if coordinate.info.dimensions.len() != 1 || coordinate.info.dimensions[0].path != d.path || coordinate.shape() != [d.size] {
+                return Err(bad(format!("indexing variable '{name}' must use its own dimension '{}'", d.path)));
+            }
+        }
         let scale = match d.indexing_variable.as_ref().and_then(|p| arrays.iter().position(|a| &a.info.path == p && a.shape() == [d.size]))
         {
             Some(index) => index,
@@ -330,7 +372,7 @@ pub(super) fn netcdf_bytes(dataset: &Dataset) -> Result<Vec<u8>> {
         let references: Vec<_> = arrays
             .iter()
             .enumerate()
-            .filter(|(i, _)| *i != scale)
+            .filter(|(i, _)| !scales.values().any(|s| s == i))
             .flat_map(|(i, a)| {
                 a.info.dimensions.iter().enumerate().filter(|(_, d)| d.path == *dimension).map(move |(axis, _)| (i, axis as u32))
             })
