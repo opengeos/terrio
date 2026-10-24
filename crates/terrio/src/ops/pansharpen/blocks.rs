@@ -67,6 +67,7 @@ struct Sampling {
     ry: f64,
     right: usize,
     bottom: usize,
+    extracted: bool,
 }
 
 /// Keep GDAL's fractional sampling rectangle fixed over a request while splitting its
@@ -105,10 +106,11 @@ pub(crate) fn request(
             // Average has radius zero: a fractional last pixel may lie outside
             // that buffer, and the averaging kernel clips its coverage there.
             let radius = options.resampling.radius();
-            let limited = options.resampling == crate::ops::Resampling::Average
-                && width < window.width as f64
-                && height < window.height as f64
-                && window.height > 1;
+            let extracted = ((width + 0.49999) as usize).max(1) < window.width
+                && ((height + 0.49999) as usize).max(1) < window.height
+                && window.height > 1
+                && options.resampling != crate::ops::Resampling::Nearest;
+            let limited = options.resampling == crate::ops::Resampling::Average && extracted;
             let right = if limited {
                 ((x as isize + (width + 0.49999).max(1.0) as isize + 1 + 2 * radius as isize).max(0) as usize).min(layout.grid.width)
             } else {
@@ -119,7 +121,7 @@ pub(crate) fn request(
             } else {
                 layout.grid.height
             };
-            Ok(Sampling { x, y, rx: width / window.width as f64, ry: height / window.height as f64, right, bottom })
+            Ok(Sampling { x, y, rx: width / window.width as f64, ry: height / window.height as f64, right, bottom, extracted })
         })
         .collect::<Result<Vec<_>>>()?;
     let count = window
@@ -155,11 +157,18 @@ pub(crate) fn request(
                     return Err(bad("pansharpen block has no spectral coverage"));
                 }
                 let mut src = read(i + 1, layout, Window::new(left, top, right - left, bottom - top))?;
-                let extracted = ((window.width as f64 * sampling.rx + 0.49999) as usize).max(1) < window.width
-                    && ((window.height as f64 * sampling.ry + 0.49999) as usize).max(1) < window.height
-                    && window.height > 1
-                    && options.resampling != crate::ops::Resampling::Nearest;
-                if extracted {
+                if sampling.extracted {
+                    // RasterIO fills GDAL's MEM buffer in the pan working type
+                    // before resampling, including rounding/clipping mixed inputs.
+                    if src.raster.data_type != plan.work {
+                        let count = src.raster.data.len();
+                        let mut converted = allocate(plan.work, count)?;
+                        for i in 0..count {
+                            converted.set_f64(i, super::convert_value(src.raster.data.get_f64(i), plan.work));
+                        }
+                        src.raster.data = converted;
+                        src.raster.data_type = plan.work;
+                    }
                     // GDAL's temporary MEM upsampling bands receive only the
                     // operation's common nodata; original per-source nodata is dropped.
                     src.band_nodata = vec![plan.nodata];

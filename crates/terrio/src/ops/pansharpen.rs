@@ -535,6 +535,21 @@ mod tests {
         assert_eq!(out.raster.get(1, 0, 0), 0.0);
     }
     #[test]
+    fn mixed_input_types_convert_before_temporary_upsampling() {
+        for (pan_type, source_type, red, green, expected) in [
+            (DataType::U8, DataType::U16, vec![0., 1000., 0., 1000.], 100., (62., 98.)),
+            (DataType::F64, DataType::U16, vec![0., 1., 0., 1.], 1., (32., 128.)),
+            (DataType::U16, DataType::F32, vec![0.4, 1.4, 0.4, 1.4], 1., (0., 160.)),
+        ] {
+            let pan = raster(vec![vec![80.; 16]], 4, 4, 1., pan_type, None);
+            let spectral = raster(vec![red, vec![green; 4]], 2, 2, 2., source_type, None);
+            let inputs = [SpectralBand { dataset: &spectral, band: 1 }, SpectralBand { dataset: &spectral, band: 2 }];
+            let out = pansharpen(&pan, &inputs, &PansharpenOptions { resampling: Resampling::Bilinear, ..Default::default() }).unwrap();
+            assert_eq!((out.raster.get(0, 0, 1), out.raster.get(1, 0, 1)), expected);
+        }
+    }
+
+    #[test]
     fn common_nodata_follows_selected_pan_and_disabled_interpolation_keeps_numbers() {
         let pan = raster(vec![vec![80.; 16]], 4, 4, 1., DataType::U16, Some(0.));
         let mut ms = raster(vec![vec![0., 20., 20., 20.], vec![40.; 4]], 2, 2, 2., DataType::U16, Some(1.));

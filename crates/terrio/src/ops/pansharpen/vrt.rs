@@ -577,7 +577,7 @@ mod tests {
         .unwrap();
         let spectral = crate::ops::build_raster(
             Grid { width: 4, height: 4, geo_transform: [-0.5, 2., 0., 8.5, 0., -2.] },
-            vec![(0..16).map(|v| (v % 4 + 1) as f64 * 10.).collect(), vec![30.; 16]],
+            vec![(0..16).map(|v| (v % 4 + v / 4 + 2) as f64 * 10.).collect(), vec![30.; 16]],
             DataType::U16,
             None,
             &Default::default(),
@@ -589,9 +589,12 @@ mod tests {
         let sources = HashMap::from([("pan".into(), LazyRaster::from(pan)), ("spectral".into(), LazyRaster::from(spectral))]);
         let mut lazy = description.into_lazy(Path::new(""), sources).unwrap();
         let out = lazy.read_window(Window::new(1, 1, 5, 5), &Default::default()).unwrap().raster.data.to_f64_vec();
-        assert_eq!(out[0], 80.);
-        assert_eq!(out[4], 120.);
-        assert_eq!(out[24], 120.);
+        assert_eq!(out[0], 120.);
+        assert_eq!(out[4], 144.);
+        assert_eq!(out[24], 160.);
+        // A one-column request does not use GDAL's MEM extraction path.
+        let column = lazy.read_window(Window::new(1, 1, 1, 5), &Default::default()).unwrap();
+        assert_eq!(column.raster.data.get_f64(4), 150.);
     }
 
     #[test]

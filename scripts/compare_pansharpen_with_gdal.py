@@ -170,6 +170,18 @@ def cases(data, work):
         target = str(work / f"float{i}.tif")
         gdal.Translate(target, path, outputType=gdal.GDT_Float32)
         float_spectral.append(target)
+    add("byte pan uint16 spectral", p=byte_pan, s=spectral)
+    double_pan = str(work / "double_pan.tif")
+    gdal.Translate(double_pan, pan, outputType=gdal.GDT_Float64)
+    add("float64 pan uint16 spectral", p=double_pan, s=spectral)
+    fractional_float = []
+    for i, path in enumerate(float_spectral):
+        target = str(work / f"fractional_float{i}.tif")
+        ds = gdal.Translate(target, path)
+        ds.GetRasterBand(1).WriteArray(ds.ReadAsArray() + np.float32(0.375))
+        ds = None
+        fractional_float.append(target)
+    add("uint16 pan fractional float spectral", s=fractional_float)
     # One Float32 ULP at this scene's radiometric scale; integer cases remain exact.
     add("float32", p=float_pan, s=float_spectral, tol=0.002)
     large_pan = str(work / "large_pan.tif")
