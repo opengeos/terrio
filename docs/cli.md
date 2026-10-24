@@ -242,17 +242,22 @@ terrio sql countries.gpkg selected.gpkg --query \
   "SELECT ADMIN, POP_EST AS population FROM countries WHERE POP_EST > 10000000 ORDER BY POP_EST DESC LIMIT 10"
 ```
 
-Runs the existing read-only OGR SQL subset as a standalone command. `FROM` must name an input
-layer, matched case-insensitively; `--layer` can restrict the available layers. Supports selected
-fields and aliases, `WHERE`, one `ORDER BY` input field, and `LIMIT`. `WHERE` supports arithmetic,
-comparisons, `AND`/`OR`/`NOT`, parentheses, `IN`, `BETWEEN`, `IS NULL`, `LIKE` and `ILIKE`.
-Output field names must be unique, ignoring case. `FID` can be used in `WHERE` to filter IDs.
-The `convert --sql` path keeps its existing fallback to the sole input layer when `FROM` does
-not match a layer name.
+Runs the read-only [OGR SQL subset](sql.md). `FROM` must name an input layer,
+matched case-insensitively; `--layer` can restrict the available layers. Supports computed
+columns, aliases, single-field `DISTINCT`, `COUNT`/`SUM`/`AVG`/`MIN`/`MAX`, and attribute
+`LEFT JOIN` within the input dataset, plus `WHERE`, one primary `ORDER BY` field and `LIMIT`.
 
-Joins, aggregates, computed `SELECT` columns and spatial functions are unsupported. Geometries,
-CRS and attribute types are retained. The Rust `ops::sql::query` API retains source feature IDs;
-output drivers apply their normal file-ID conventions. Standard vector output options apply.
+```sh
+terrio sql countries.gpkg population.gpkg --query \
+  "SELECT ADMIN, POP_EST/1000000.0 AS millions FROM countries"
+terrio sql countries.gpkg summary.gpkg --query \
+  "SELECT COUNT(*) AS countries, SUM(POP_EST) AS population FROM countries"
+```
+
+Computed columns and joins retain primary geometries, CRS and feature IDs. `DISTINCT` and
+summaries produce attribute-only results. Output drivers apply their normal file-ID conventions.
+Output field names must be unique, ignoring case. The `convert --sql` path retains its legacy
+single-layer fallback for `FROM` and allows duplicate output field names.
 
 ## info
 

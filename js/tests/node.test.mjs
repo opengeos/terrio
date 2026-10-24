@@ -1084,3 +1084,15 @@ test("Zarr stores and netCDF/HDF5 products as GDAL reads them", { skip: needs("n
     }
   }
 });
+
+test("SQL computed columns, DISTINCT and summary aggregates", () => {
+  const src = { type: "FeatureCollection", features: [2, 2, null].map((v) => ({
+    type: "Feature", geometry: { type: "Point", coordinates: [0, 0] }, properties: { v },
+  })) };
+  const computed = terrio.sql(src, "SELECT v*2 AS doubled FROM layer").toGeoJSON();
+  assert.equal(computed.features[0].properties.doubled, 4);
+  const summary = terrio.sql(src, "SELECT COUNT(*) AS n, SUM(v) AS total FROM layer").toGeoJSON();
+  assert.deepEqual(summary.features[0].properties, { n: 3, total: 4 });
+  assert.equal(summary.features[0].geometry, null);
+  assert.equal(terrio.sql(src, "SELECT DISTINCT v FROM layer").toGeoJSON().features.length, 2);
+});

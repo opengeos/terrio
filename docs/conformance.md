@@ -192,12 +192,13 @@ Cases that are not identical:
 
 ## Vector operations
 
-Conversions with `ogr2ogr`'s options (where, spat, select, sql, nlt...) compared feature by feature; rasterized pixels compared exactly; polygons compared by count, holes and validity, and by rasterizing them back.
+Conversions with `ogr2ogr`'s options (where, spat, select, sql, nlt...) compared feature by feature; SQL expressions, DISTINCT, summaries and attribute joins against OGRSQL compare values, nulls, logical field types, geometry WKB and CRS, including duplicate and null join keys. Integer widths normalize to Terrio's Integer model. Rasterized pixels compare exactly; polygons compare by count, holes and validity, and by rasterizing them back.
 
 | Format or operation | Cases | Identical | Within tolerance | Differs |
 |---|---:|---:|---:|---:|
 | convert (ogr2ogr options) | 28 | 28 | 0 | 0 |
 | convert --append/--overwrite | 1 | 1 | 0 | 0 |
+| sql | 15 | 15 | 0 | 0 |
 | rasterize | 18 | 18 | 0 | 0 |
 | polygonize | 4 | 4 | 0 | 0 |
 

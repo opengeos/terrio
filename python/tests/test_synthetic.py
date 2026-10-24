@@ -402,3 +402,24 @@ def test_proximity_and_sieve():
     sieved = terrio.sieve(r, threshold=2).read(1)
     assert sieved[2, 2] == 0
     assert terrio.sieve(r, threshold=1).read(1)[2, 2] == 1
+
+
+def test_sql_expressions_distinct_summary():
+    src = {
+        "type": "FeatureCollection",
+        "features": [
+            {
+                "type": "Feature",
+                "geometry": {"type": "Point", "coordinates": [0, 0]},
+                "properties": {"v": value},
+            }
+            for value in [2, 2, None]
+        ],
+    }
+    result = terrio.sql(src, "SELECT v*2 AS doubled FROM layer")
+    assert result.to_geojson()["features"][0]["properties"]["doubled"] == 4
+    summary = terrio.sql(src, "SELECT COUNT(*) AS n, SUM(v) AS total FROM layer")
+    feature = summary.to_geojson()["features"][0]
+    assert feature["properties"] == {"n": 3, "total": 4}
+    assert feature["geometry"] is None
+    assert len(terrio.sql(src, "SELECT DISTINCT v FROM layer")) == 2

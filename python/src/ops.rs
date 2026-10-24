@@ -32,6 +32,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(write_netcdf_groups, m)?)?;
     m.add_function(wrap_pyfunction!(write_vector, m)?)?;
     m.add_function(wrap_pyfunction!(convert, m)?)?;
+    m.add_function(wrap_pyfunction!(sql, m)?)?;
     m.add_function(wrap_pyfunction!(rasterize, m)?)?;
     m.add_function(wrap_pyfunction!(polygonize, m)?)?;
     m.add_function(wrap_pyfunction!(transform_points, m)?)?;
@@ -519,6 +520,23 @@ fn input_layers(py: Python<'_>, src: &Bound<'_, PyAny>, layers: Option<Vec<Strin
             })
         }
     }
+}
+
+/// Runs a read-only OGR SQL subset query on vector layers.
+///
+/// Args:
+///     src: A vector path, VectorDataset, Layer, list of layers or GeoJSON.
+///     query: SELECT statement, including computed columns, DISTINCT, summaries or LEFT JOIN.
+///     layers: Restrict the available input layers.
+///
+/// Returns:
+///     Layer: The query result. DISTINCT and summaries discard geometry.
+#[pyfunction]
+#[pyo3(signature = (src, query, *, layers=None))]
+fn sql(py: Python<'_>, src: &Bound<'_, PyAny>, query: &str, layers: Option<Vec<String>>) -> PyResult<PyLayer> {
+    let inputs = input_layers(py, src, layers)?;
+    let inner = py.detach(|| terrio::ops::sql::query(&inputs, query)).py()?;
+    Ok(PyLayer { inner })
 }
 
 /// Opens the raster given to an operation: a path, or a `Raster`.
