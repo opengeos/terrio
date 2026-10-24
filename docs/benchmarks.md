@@ -32,7 +32,9 @@ They are machine-specific snapshots, not guarantees of performance on other data
 - The Linux runner estimates competing CPU use from machine CPU time minus the measured child's
   CPU time. Estimates are averaged by elapsed time across each paired tuning or measurement
   series, reducing clock-tick noise in short commands. If a series exceeds one CPU, the row
-  receives no ratio. Raw background estimates are retained. This detects contention; it does not
+  receives no ratio. The check is intentionally machine-wide: work outside the pinned CPU set can
+  still contend for shared caches, memory bandwidth and package power. Raw background estimates
+  are retained. This detects contention; it does not
   provide hardware isolation or remove filesystem and network noise. On other platforms,
   background CPU use is unmeasured and ratios carry no background-load guarantee.
 - Every invocation starts with an empty, separate output directory. PAM statistics caches are
@@ -73,6 +75,14 @@ checked against an independent NumPy reduction of valid source pixels, using rel
 `1e-6` and absolute tolerance `1e-8`. This matters for GDAL 3.13.3: the SRTM case returned incorrect
 statistics in our check, even though `gdalinfo` exited successfully. It must not receive a speed
 ratio for that result.
+
+A controlled check used the same `gdalinfo -json -stats srtm90.tif` command with
+`GDAL_PAM_ENABLED=NO`. The source had no stored `STATISTICS_*` keys and no nodata value.
+GDAL 3.13.3 with `GDAL_NUM_THREADS=1` matched the full-resolution NumPy reduction (minimum 15,
+maximum 4338); with eight threads it returned minimum 26 and maximum 4148. GDAL 3.12.2 matched
+NumPy at both thread counts. This identifies a thread-dependent discrepancy in the tested GDAL
+3.13.3 build, not a requested approximate-statistics mode or a stored-statistics cache. Its internal
+cause remains unisolated; the invalid eight-thread result is excluded from speed comparisons.
 
 ## Rerun on 24 October 2026
 

@@ -593,6 +593,9 @@ def main():
             ratio = result["ratio"]
             score = "—" if ratio is None else (f"{ratio:.2f}× faster" if ratio >= 1 else f"{1 / ratio:.2f}× slower")
             durations = [f"{fmt(statistics.median(s))} [{fmt(min(s))}–{fmt(max(s))}]" for s in result["samples"]]
+            for tool, name in enumerate(("terrio", "GDAL")):
+                if any(difference.startswith(name + " exit") for difference in result["validation"]):
+                    durations[tool] = "failed"
             status = "; ".join(result["validation"] + result["measurement_issues"]) or "pass"
             if result["timing_notes"]:
                 status += "; " + "; ".join(result["timing_notes"])

@@ -155,11 +155,16 @@ class BenchmarkTests(unittest.TestCase):
                 self.assertEqual(error.exception.code, 2)
                 self.assertIn(message, stderr.getvalue())
 
-    def test_case_lists_are_cached_across_repeated_commands(self):
+    def test_main_caches_cases_and_marks_failed_duration(self):
         from osgeo import gdal
 
         def large_cases(data, out, budget):
             return [("test", "cached case", ["terrio", str(Path(out) / "out.tif")], ["gdal", str(Path(out) / "out.tif")])]
+
+        output = io.StringIO()
+
+        def fake_run(command, env, stdout, metrics):
+            return 1.0, None, 2 if command[0] == "gdal" else 0, "test failure"
 
         actual_output = subprocess.check_output
 
@@ -172,9 +177,9 @@ class BenchmarkTests(unittest.TestCase):
             patch.object(benchmark, "large_cases", side_effect=large_cases) as factory,
             patch.object(benchmark, "gdal_version", return_value="GDAL " + gdal.VersionInfo("RELEASE_NAME")),
             patch.object(benchmark.subprocess, "check_output", side_effect=version_or_git),
-            patch.object(benchmark, "run_once", return_value=(1.0, None, 0, "")),
+            patch.object(benchmark, "run_once", side_effect=fake_run),
             patch("benchmark_validation.validate_case", return_value=[]),
-            contextlib.redirect_stdout(io.StringIO()),
+            contextlib.redirect_stdout(output),
         ):
             original_cwd = os.getcwd()
             try:
@@ -184,6 +189,7 @@ class BenchmarkTests(unittest.TestCase):
                 os.chdir(original_cwd)
         # One metadata list, then one list for each tool's output directory.
         self.assertEqual(factory.call_count, 3)
+        self.assertIn("| failed |", output.getvalue())
 
     def test_rejects_nonpositive_counts(self):
         self.assertRaises(ValueError, benchmark.positive_int, "0")
