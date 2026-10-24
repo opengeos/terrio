@@ -154,11 +154,13 @@ pub fn build_vrt(sources: &[MosaicSource], o: &MosaicOptions, vrt_dir: Option<&P
         Nodata::Auto => s.ds.nodata(),
         Nodata::None => None,
         Nodata::Values(v) => v.get(b).or(v.last()).copied(),
+        Nodata::PerBand(v) => v.get(b).or(v.last()).copied().flatten(),
     };
     let vrt_nodata = |b: usize| match &o.dst_nodata {
         Nodata::Auto => sources.iter().find_map(|s| src_nodata(s, b)),
         Nodata::None => None,
         Nodata::Values(v) => v.get(b).or(v.last()).copied(),
+        Nodata::PerBand(v) => v.get(b).or(v.last()).copied().flatten(),
     };
     let mut bands: Vec<VrtBand> = Vec::new();
     if !o.separate {
