@@ -30,6 +30,7 @@ pub mod footprint;
 pub mod gcp;
 pub mod geometry;
 pub mod mosaic;
+pub mod overview;
 pub mod polygonize;
 pub mod proximity;
 pub mod rasterize;

@@ -995,6 +995,8 @@ fn translate(
 ///     tap: Align the extent on multiples of `tr`.
 ///     resampling: `"near"`, `"bilinear"`, `"cubic"`, `"cubicspline"`, `"lanczos"`,
 ///         `"average"`, `"rms"`, `"mode"`, `"min"`, `"max"`, `"med"`, `"q1"`, `"q3"` or `"sum"`.
+///     overview: Source pyramid selection: `"AUTO"` (default), `"AUTO-n"`, `"NONE"` or
+///         a zero-based stored level. The output grid still uses full-resolution metadata.
 ///     srcnodata: The sources' nodata: a number, one per band, or `"none"` to ignore theirs.
 ///     dstnodata: The output nodata, or `"none"`. By default, the sources'.
 ///     ot: The output data type.
@@ -1026,7 +1028,7 @@ fn translate(
 #[pyfunction]
 #[pyo3(signature = (
     src, dst=None, *, s_srs=None, t_srs=None, tr=None, te=None, te_srs=None, ts=None, dst_transform=None, tap=false,
-    resampling="near", srcnodata=None, dstnodata=None, ot=None, cutline=None, crop_to_cutline=false, et=0.125,
+    resampling="near", overview=None, srcnodata=None, dstnodata=None, ot=None, cutline=None, crop_to_cutline=false, et=0.125,
     format=None, compress=None, tile_size=None, bigtiff=false, gcps=None, order=0, gcp_method="auto",
     rpc=None, to=None, wo=None
 ))]
@@ -1044,6 +1046,7 @@ fn warp(
     dst_transform: Option<[f64; 6]>,
     tap: bool,
     resampling: &str,
+    overview: Option<&Bound<'_, PyAny>>,
     srcnodata: Option<&Bound<'_, PyAny>>,
     dstnodata: Option<&Bound<'_, PyAny>>,
     ot: Option<&str>,
@@ -1082,6 +1085,16 @@ fn warp(
         dst_transform,
         target_aligned_pixels: tap,
         resampling: Resampling::parse(resampling).py()?,
+        overview: match overview {
+            None => terrio::ops::overview::OverviewSelection::Auto,
+            Some(v) => match v.extract::<usize>() {
+                Ok(level) => terrio::ops::overview::OverviewSelection::Level(level),
+                Err(_) => terrio::ops::overview::OverviewSelection::parse(
+                    &v.extract::<String>().map_err(|_| invalid("overview is AUTO, AUTO-n, NONE or a level from 0"))?,
+                )
+                .py()?,
+            },
+        },
         src_nodata: nodata_arg(srcnodata)?,
         dst_nodata: nodata_arg(dstnodata)?,
         output_type: ot.map(terrio::ops::parse_data_type).transpose().py()?,
@@ -1102,25 +1115,71 @@ fn warp(
             _ => {}
         }
     }
-    // A lazy raster is read a chunk's source window at a time, not whole.
-    // Borrowing raises (rather than panics) when the raster is in use elsewhere.
-    if o.cutline.is_none()
-        && let Ok(r) = src.cast::<PyRaster>()
-        && r.try_borrow()?.inner.is_lazy()
-    {
-        let mut r = r.try_borrow_mut()?;
-        let lazy = &mut r.inner;
-        let out = py.detach(|| terrio::ops::warp::warp_lazy(lazy, &o)).py()?;
-        drop(r);
-        return finish_raster(py, out, dst, format, compress, tile_size, bigtiff);
+    enum Input {
+        File(Box<terrio::LazyRaster>),
+        Python(Py<PyRaster>),
     }
-    let sources = input_rasters(py, src)?;
-    let out = py
-        .detach(|| {
-            let refs: Vec<&RasterDataset> = sources.iter().map(|(_, ds)| ds).collect();
-            terrio::ops::warp::warp(&refs, &o)
+    impl terrio::ops::warp::WarpSource for Input {
+        fn info(&mut self) -> terrio::Result<terrio::ops::warp::WarpSourceInfo> {
+            match self {
+                Self::File(r) => terrio::ops::warp::WarpSource::info(r.as_mut()),
+                Self::Python(obj) => Python::attach(|py| {
+                    let mut r = obj.bind(py).try_borrow_mut().map_err(|e| terrio::Error::InvalidArgument(e.to_string()))?;
+                    terrio::ops::warp::WarpSource::info(&mut r.inner)
+                }),
+            }
+        }
+        fn read_window(&mut self, window: Window, options: &WindowOptions) -> terrio::Result<RasterDataset> {
+            match self {
+                Self::File(r) => r.read_window(window, options),
+                Self::Python(obj) => Python::attach(|py| {
+                    let mut r = obj.bind(py).try_borrow_mut().map_err(|e| terrio::Error::InvalidArgument(e.to_string()))?;
+                    let lazy = &mut r.inner;
+                    py.detach(|| lazy.read_window(window, options))
+                }),
+            }
+        }
+    }
+    enum Arg {
+        Path(String),
+        Raster(Py<PyRaster>),
+    }
+    let items: Vec<Bound<'_, PyAny>> = if src.cast::<PyRaster>().is_ok() || src.extract::<std::path::PathBuf>().is_ok() {
+        vec![src.clone()]
+    } else {
+        src.extract().map_err(|_| invalid("expected a raster path, Raster, or sequence of them"))?
+    };
+    let args = items
+        .iter()
+        .map(|v| {
+            if let Ok(r) = v.extract::<Py<PyRaster>>() {
+                return Ok(Arg::Raster(r));
+            }
+            let p = v.extract::<std::path::PathBuf>().map_err(|_| invalid("expected a raster path or Raster"))?;
+            Ok(Arg::Path(p.into_os_string().into_string().map_err(|_| invalid("raster paths must be UTF-8"))?))
         })
-        .py()?;
+        .collect::<PyResult<Vec<_>>>()?;
+    let out = crate::with_warnings(py, || {
+        if args.iter().all(|a| matches!(a, Arg::Path(_))) {
+            let paths = args
+                .iter()
+                .map(|a| match a {
+                    Arg::Path(p) => p.clone(),
+                    _ => unreachable!(),
+                })
+                .collect::<Vec<_>>();
+            return terrio::ops::warp::warp_paths(&paths, &o);
+        }
+        let mut inputs = args
+            .into_iter()
+            .map(|arg| match arg {
+                Arg::Path(p) => terrio::open_raster_lazy(&p).map(Box::new).map(Input::File),
+                Arg::Raster(r) => Ok(Input::Python(r)),
+            })
+            .collect::<terrio::Result<Vec<_>>>()?;
+        let mut refs = inputs.iter_mut().map(|r| r as &mut dyn terrio::ops::warp::WarpSource).collect::<Vec<_>>();
+        terrio::ops::warp::warp_sources(&mut refs, &o)
+    })?;
     finish_raster(py, out, dst, format, compress, tile_size, bigtiff)
 }
 

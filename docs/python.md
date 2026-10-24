@@ -198,3 +198,17 @@ uv venv && uv pip install maturin numpy pytest
 uv run maturin develop --release
 uv run pytest
 ```
+
+## Warp source overviews
+
+```python
+lazy = terrio.open_raster("large-cog.tif", lazy=True)
+preview = terrio.warp(lazy, ts=(256, 256))  # AUTO by default
+finer = terrio.warp(lazy, ts=(256, 256), overview="AUTO-1")
+full = terrio.warp(lazy, ts=(256, 256), overview="NONE")
+level = terrio.warp(lazy, overview=1)       # levels start at 0
+```
+
+Paths, lazy `Raster` objects, and mixed/repeated inputs in mosaics retain their
+stored overviews. Selection precedes pixel reads and does not alter the output grid
+computed from the original metadata. Only the source resolution changes.

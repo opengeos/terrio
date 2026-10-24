@@ -183,3 +183,17 @@ wasm-pack build js --release --target nodejs --out-dir pkg-node/core --out-name 
 TERRIO_JS_PKG=../pkg-node/core/terrio.js node --test js/tests/node.test.mjs
 node js/bench/bench.mjs ../terrio-data    # timings of decoding and writing real files
 ```
+
+### Warp source overviews
+
+```js
+const preview = warp(dataset, { ts: [256, 256], overview: "AUTO" });
+const finer = warp(dataset, { ts: [256, 256], overview: "AUTO-1" });
+const full = warp(dataset, { ts: [256, 256], overview: "NONE" });
+const level = warp(dataset, { overview: 1 });
+```
+
+`AUTO` is the default. Datasets, file bytes and mixed or repeated datasets in
+mosaics preserve their stored pyramids. The output grid is planned at full
+resolution before source levels are selected. `toBytes` also accepts `overviews`
+(decimation factors) and `overviewResampling` when writing GeoTIFF pyramids.
