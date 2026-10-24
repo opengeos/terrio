@@ -43,8 +43,10 @@ operations and drivers below; no release deadline is assigned yet.
       Rust, CLI/MCP, Python and WebAssembly; supported subsets are documented in the CLI guide.
 - [ ] Richer vector SQL: computed SELECT columns, DISTINCT, summary aggregates and limited
       attribute joins, with the supported OGR SQL subset documented explicitly.
-- [ ] Viewshed: single-observer visibility and minimum visible height, observer/target heights,
+- [x] Viewshed: single-observer visibility and minimum visible height, observer/target heights,
       maximum distance and curvature/refraction controls, with explicit input nodata behavior.
+      Done in [#240](https://github.com/opengeos/terrio/pull/240), through Rust, CLI/MCP, Python
+      and JavaScript; projected DEM comparisons are registered in conformance.
 - [ ] Indexed raster catalogs: GTI-compatible GeoPackage/FlatGeobuf tile indexes, spatial source
       selection, compositing order, mixed-CRS sources and a bounded source cache.
 - [ ] Pansharpening: weighted Brovey processing, spectral weights, resampling, nodata, bit depth

@@ -20,6 +20,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(proximity, m)?)?;
     m.add_function(wrap_pyfunction!(sieve, m)?)?;
     m.add_function(wrap_pyfunction!(fill_nodata, m)?)?;
+    m.add_function(wrap_pyfunction!(viewshed, m)?)?;
     Ok(())
 }
 
@@ -433,6 +434,51 @@ fn sieve(
             terrio::ops::sieve::sieve(&ds, &SieveOptions { band, threshold, eight_connected: connectedness == 8, mask })
         })
         .py()?;
+    finish_raster(py, out, dst, format, compress, tile_size, bigtiff)
+}
+
+/// Single-observer viewshed on a projected DEM.
+///
+/// `ox`, `oy` are observer coordinates in the DEM CRS; `oz` and `tz` are heights above
+/// the DEM. `md` is maximum distance (0 unlimited); `cc` is curvature coefficient
+/// (1 minus refraction, 0 flat Earth). `om` is NORMAL, DEM or GROUND. Numeric nodata
+/// is treated as elevation, as in GDAL; nonfinite elevations are rejected.
+#[pyfunction]
+#[pyo3(signature = (src, ox, oy, dst=None, *, oz=2.0, tz=0.0, md=0.0, cc=None, om="NORMAL", ov=0, band=1,
+    format=None, compress=None, tile_size=None, bigtiff=false))]
+#[allow(clippy::too_many_arguments)]
+fn viewshed(
+    py: Python<'_>,
+    src: &Bound<'_, PyAny>,
+    ox: f64,
+    oy: f64,
+    dst: Option<&str>,
+    oz: f64,
+    tz: f64,
+    md: f64,
+    cc: Option<f64>,
+    om: &str,
+    ov: u8,
+    band: usize,
+    format: Option<&str>,
+    compress: Option<String>,
+    tile_size: Option<u32>,
+    bigtiff: bool,
+) -> PyResult<PyRaster> {
+    use terrio::ops::viewshed::{ViewshedMode, ViewshedOptions};
+    let o = ViewshedOptions {
+        band,
+        observer_x: ox,
+        observer_y: oy,
+        observer_height: oz,
+        target_height: tz,
+        max_distance: md,
+        curvature_coefficient: cc,
+        mode: ViewshedMode::parse(om).py()?,
+        out_of_range: ov,
+    };
+    let ds = input_raster(py, src)?;
+    let out = py.detach(|| terrio::ops::viewshed::viewshed(&ds, &o)).py()?;
     finish_raster(py, out, dst, format, compress, tile_size, bigtiff)
 }
 

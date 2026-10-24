@@ -114,11 +114,13 @@ operations that do not require materialization.
 
 ### 6. Viewshed
 
-No viewshed operation appears in the core or CLI inventory. Extend the terrain
-suite with a single-observer operation; defer cumulative visibility until the
-first algorithm is validated. GDAL supports binary visibility and minimum visible
-height outputs, with observer/target heights and curvature/refraction controls;
-its documented algorithm requires projected georeferencing for meaningful results.
+Implemented in [PR #240](https://github.com/opengeos/terrio/pull/240): shared Rust
+single-observer binary visibility and minimum visible height, with observer/target
+heights, maximum distance, curvature/refraction and projected-unit handling.
+CLI/MCP, Python and JavaScript expose the operation. Real projected DEM comparisons
+are registered in conformance; numeric input nodata is treated as elevation, as in
+GDAL, and nonfinite elevations must be filled or cropped first. Cumulative
+visibility remains outside this subset.
 [GDAL viewshed](https://gdal.org/en/stable/programs/gdal_viewshed.html).
 
 Acceptance: compare with GDAL on projected DEMs, hills/ridges, maximum distances

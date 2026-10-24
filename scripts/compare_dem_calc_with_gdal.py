@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Compare terrio's terrain and raster algebra tools with GDAL's on real files.
 
-Runs ``terrio dem``, ``terrio calc``, ``terrio proximity`` and ``terrio sieve`` and the
-equivalent ``gdaldem``, ``gdal_calc.py``, ``gdal_proximity.py`` and ``gdal_sieve.py`` commands
+Runs ``terrio dem``, ``terrio viewshed``, ``terrio calc``, ``terrio proximity`` and
+``terrio sieve`` and the equivalent ``gdaldem``, ``gdal_viewshed``, ``gdal_calc.py``, ``gdal_proximity.py`` and ``gdal_sieve.py`` commands
 on the files fetched by ``scripts/fetch_test_data.sh``, then reports for each case whether the
 outputs have the same size, type, geotransform and nodata value, and how many pixels agree.
 
@@ -93,13 +93,14 @@ def same_value(a, b):
     return a == b or (np.isnan(a) and np.isnan(b))
 
 
-def compare(gdal_path, terrio_path, tol):
+def compare(gdal_path, terrio_path, tol, radius=None):
     """Compares two rasters pixel by pixel, nodata pixels included.
 
     Args:
         gdal_path: GDAL's output.
         terrio_path: terrio's output.
         tol: The tolerance of the "within tolerance" count.
+        radius: Optional (observer_x, observer_y, maximum_distance, out_of_range).
 
     Returns:
         A dict of comparison results.
@@ -123,6 +124,18 @@ def compare(gdal_path, terrio_path, tol):
     diff[gd == td] = 0
     diff[both_nan] = 0
     diff[np.isnan(diff)] = np.inf
+    if radius is not None:
+        # GDAL 3.12 races its two half-row jobs on an outside observer's boundary
+        # column. Assert Terrio's radius mask independently, then compare in-range
+        # pixels against GDAL. Repeated GDAL calls can disagree outside the radius.
+        ox, oy, distance, out_of_range = radius
+        rows, cols = np.indices(gd.shape[1:])
+        outside = ((g["gt"][0] + cols * g["gt"][1] - ox) ** 2
+                   + (g["gt"][3] + rows * g["gt"][5] - oy) ** 2) > distance ** 2
+        if np.any(td[0][outside] != out_of_range):
+            raise AssertionError("Terrio failed the independent maximum-distance mask check")
+        diff[:, outside] = 0
+        res["excluded_reference_pixels"] = int(outside.sum())
     n = diff.size
     res["differing"] = int((diff != 0).sum())
     res["exact"] = float((diff == 0).sum() / n)
@@ -168,7 +181,9 @@ def cases(d, tmp):
     out = []
 
     def add(name, gdal_cmd, terrio_cmd, tol=0.0, ext="tif"):
-        out.append({"name": name, "gdal": gdal_cmd, "terrio": terrio_cmd, "tol": tol, "ext": ext})
+        case = {"name": name, "gdal": gdal_cmd, "terrio": terrio_cmd, "tol": tol, "ext": ext}
+        out.append(case)
+        return case
 
     def dem(name, mode, path, gdal_opts=(), terrio_opts=(), tol=0.0):
         add(
@@ -318,6 +333,49 @@ def cases(d, tmp):
     sieve("usgs classes st 100 (nodata 0)", classes, ["-st", "100"], ["--st", "100"])
     sieve("usgs classes st 30 8-connected mask", classes, ["-st", "30", "-8", "-mask", high], ["--st", "30", "-8", "--mask", high])
     sieve("landsat st 4", landsat, ["-st", "4"], ["--st", "4"])
+    # A projected real USGS DEM, resampled to a small window for fast viewshed checks.
+    projected = os.path.join(tmp, "viewshed_usgs.tif")
+    gdal.Warp(projected, usgs, dstSRS="EPSG:32613", width=151, height=141).FlushCache()
+    ds = gdal.Open(projected)
+    gt = ds.GetGeoTransform()
+    for label, col, row, opts in [
+        ("center default", 75, 70, []),
+        ("edge flat", 0, 0, ["-cc", "0"]),
+        ("outside west", -10, 70, []),
+        ("outside north", 75, -10, []),
+        ("outside southeast height", 160, 150, ["-om", "GROUND"]),
+        ("outside radius", -5, 70, ["-md", "10000", "-ov", "7"]),
+        ("boundary truncation", -1, 70, []),
+        ("target height", 75, 70, ["-oz", "8", "-tz", "10"]),
+        ("radius", 75, 70, ["-md", "5000", "-ov", "7"]),
+        ("DEM height", 75, 70, ["-om", "DEM"]),
+        ("GROUND curvature", 75, 70, ["-om", "GROUND", "-cc", "1"]),
+        ("GROUND radius", 75, 70, ["-om", "GROUND", "-md", "3000"]),
+    ]:
+        ox, oy = str(gt[0] + (col + 0.5) * gt[1]), str(gt[3] + (row + 0.5) * gt[5])
+        shared = ["-ox", ox, "-oy", oy, *opts]
+        case = add(f"viewshed {label}", ["gdal_viewshed", "-q", *shared, projected, "{out}"],
+            ["viewshed", projected, "{out}", *[{"-ox": "--ox", "-oy": "--oy", "-cc": "--cc", "-oz": "--oz", "-tz": "--tz", "-md": "--md", "-ov": "--ov", "-om": "--om"}.get(v, v) for v in shared]], 1e-9)
+        if label == "outside radius":
+            case["radius"] = (gt[0] + int(col + 0.5) * gt[1], gt[3] + int(row + 0.5) * gt[5], 10000, 7)
+    feet = os.path.join(tmp, "viewshed_feet.tif")
+    feet_ds = gdal.Warp(feet, usgs, dstSRS="EPSG:2232", width=103, height=97)
+    feet_gt = feet_ds.GetGeoTransform()
+    fx, fy = str(feet_gt[0] + 50.5 * feet_gt[1]), str(feet_gt[3] + 45.5 * feet_gt[5])
+    feet_ds = None
+    add("viewshed projected feet", ["gdal_viewshed", "-q", "-ox", fx, "-oy", fy, feet, "{out}"],
+        ["viewshed", feet, "{out}", "--ox", fx, "--oy", fy])
+    # GDAL deliberately treats numeric nodata as elevation; verify that same behavior.
+    ndpath = os.path.join(tmp, "viewshed_nodata.tif")
+    nd = gdal.Translate(ndpath, ds)
+    a = nd.ReadAsArray()
+    a[65:75, 90] = -9999
+    nd.GetRasterBand(1).WriteArray(a)
+    nd.GetRasterBand(1).SetNoDataValue(-9999)
+    nd = None
+    ox, oy = str(gt[0] + 75.5 * gt[1]), str(gt[3] + 70.5 * gt[5])
+    add("viewshed numeric nodata", ["gdal_viewshed", "-q", "-ox", ox, "-oy", oy, ndpath, "{out}"],
+        ["viewshed", ndpath, "{out}", "--ox", ox, "--oy", oy])
     # Real USGS terrain with controlled holes: edges, interior blocks and an
     # isolated donor. Keep Float32 so valid-pixel preservation is exact in both.
     hole_path = os.path.join(tmp, "fill_holes.tif")
@@ -379,7 +437,7 @@ def main():
         try:
             run([x.replace("{out}", gout) for x in c["gdal"]])
             run([a.terrio] + [x.replace("{out}", tout).replace("{gout}", gout) for x in c["terrio"]])
-            r = compare(gout, tout, c["tol"])
+            r = compare(gout, tout, c["tol"], c.get("radius"))
         except Exception as e:  # noqa: BLE001 - report and continue
             r = {"error": str(e).strip().splitlines()[-1][:200]}
         r["name"] = c["name"]
@@ -414,6 +472,7 @@ def format_row(r):
         f"nodata={'ok' if r['same_nodata'] else 'DIFF'} gt={r['gt_diff_px']:.0e}px "
         f"exact={100 * r['exact']:.4f}% ({r['differing']} differ) max={r['max_diff']:.3g}"
         + (f" within_tol={100 * r['within_tol']:.4f}%" if r["exact"] < 1 else "")
+        + (f" ({r['excluded_reference_pixels']} GDAL pixels excluded; radius mask independently verified)" if r.get("excluded_reference_pixels") else "")
     )
 
 
