@@ -27,6 +27,8 @@ terrio <COMMAND>
   dem         Terrain analysis: hillshade, slope, aspect, color relief, TRI, TPI, roughness (like gdaldem)
   calc        Raster algebra: band math in NumPy syntax over one or more rasters (like gdal_calc.py)
   proximity   Distance from every pixel to the nearest target pixel (like gdal_proximity.py)
+  pansharpen  Weighted Brovey pansharpening of panchromatic and spectral bands
+
   viewshed    Single-observer visibility or minimum visible height (like gdal_viewshed)
   sieve       Merge raster areas smaller than a threshold into their largest neighbour (like gdal_sieve.py)
   crs         Describe a coordinate reference system, or transform coordinates between two
@@ -449,6 +451,37 @@ with `--alpha`), each a `ComplexSource` of the DEM's band with a `LUT` built fro
 (the midpoints between entries with `--nearest-color-entry`, zero around them with
 `--exact-color-entry`). The lookup tables are those `gdaldem` writes, so GDAL reads the same
 pixels from both, and terrio reads such VRTs (`gdaldem`'s too) as GDAL reads them.
+
+## pansharpen
+
+```sh
+terrio pansharpen pan.tif rgb.tif sharpened.tif
+terrio pansharpen pan.tif red.tif green.tif blue.tif sharpened.tif --weight 0.6 --weight 0.3 --weight 0.1
+terrio pansharpen pan.tif rgbnir.tif rgb.tif --band 1 --band 2 --band 3 --bitdepth 12 --nodata 0
+```
+
+GDAL-compatible weighted Brovey: `spectral * pan / sum(weight * spectral)` at the pan
+resolution. Inputs must have the same CRS (or all omit it) and north-up geotransforms. Spectral inputs may
+be multiband files or `PATH,band=N`; `--band` selects/reorders outputs in their flattened
+input order. Every spectral input contributes intensity, including unselected output bands.
+Weights default to equal weights and are used as provided, without normalization.
+
+`--resampling` selects nearest, bilinear, cubic (default), cubicspline, lanczos or average.
+Resampling uses the spectral native type; Brovey works in the pan type for Byte/UInt16 and
+Float64 otherwise. Intermediate integer results are rounded/clipped even with `--ot Float64`.
+`--bitdepth` explicitly clamps unsigned samples/results to `2^N-1`; NBITS metadata is not inferred.
+
+`--spat-adjust union` (default) pads unequal footprints with zero at their native resolutions,
+`intersection` crops them, and `none` preserves the pan footprint. Extents align to the pan
+pixel grid with GDAL's one-spectral-pixel tolerance. `--nodata VALUE` sets common nodata for
+resampling and sharpening; `none` disables common nodata processing. By default a common
+value is inferred when all inputs agree. Like GDAL, footprint padding/cropping drops the
+source nodata declaration; use an explicit `--nodata` to preserve common nodata processing
+with adjusted extents. A nodata contributor or zero weighted intensity
+produces nodata in every output band when enabled; otherwise zero intensity produces zero.
+Explicit dataset masks are not used. Zero padding and nodata are separate: use `--nodata 0`
+when padded margins should be missing. Output is materialized; pansharpened VRT output is deferred.
+The command is also an MCP tool.
 
 ## viewshed
 

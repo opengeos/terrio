@@ -78,6 +78,8 @@ enum Command {
     Calc(cmd::calc::Args),
     /// Distance from every pixel to the nearest target pixel (like gdal_proximity.py).
     Proximity(cmd::proximity::Args),
+    /// Weighted Brovey pansharpening of panchromatic and spectral bands.
+    Pansharpen(cmd::pansharpen::Args),
     /// Single-observer visibility or minimum visible height (like gdal_viewshed).
     Viewshed(cmd::viewshed::Args),
     /// Merge raster areas smaller than a threshold into their largest neighbour (like gdal_sieve.py).
@@ -161,6 +163,7 @@ fn run_on_this_thread(args: Vec<OsString>, terrio: Option<Vec<OsString>>) -> i32
         Command::Dem(a) => cmd::dem::run(a),
         Command::Calc(a) => cmd::calc::run(a),
         Command::Proximity(a) => cmd::proximity::run(a),
+        Command::Pansharpen(a) => cmd::pansharpen::run(a),
         Command::Viewshed(a) => cmd::viewshed::run(a),
         Command::Sieve(a) => cmd::sieve::run(a),
         Command::FillNodata(a) => cmd::fill_nodata::run(a),

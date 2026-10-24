@@ -21,6 +21,14 @@ files=(
 for f in "${files[@]}"; do
   [ -e "$(basename "$f")" ] || curl -sSfL -o "$(basename "$f")" "$base/$f"
 done
+# Real Landsat 8 panchromatic and spectral pairs, from rio-pansharpen's public fixtures.
+mkdir -p pansharpen
+for band in 8 4 3 2; do
+  scene=LC81070352015122LGN00
+  name="${scene}_B${band}.tif"
+  [ -e "pansharpen/$name" ] || curl -sSfL -o "pansharpen/$name" \
+    "https://raw.githubusercontent.com/mapbox/rio-pansharpen/f23d1edbedddf157ca5014ec805918cdf713bb7f/tests/fixtures/tiny_20_tiffs/$scene/$name"
+done
 [ -e ne_countries.zip ] || curl -sSfL -o ne_countries.zip https://naciscdn.org/naturalearth/110m/cultural/ne_110m_admin_0_countries.zip
 [ -e ne_places.zip ] || curl -sSfL -o ne_places.zip https://naciscdn.org/naturalearth/10m/cultural/ne_10m_populated_places_simple.zip
 [ -e UScounties.fgb ] || curl -sSfL -o UScounties.fgb https://flatgeobuf.org/test/data/UScounties.fgb

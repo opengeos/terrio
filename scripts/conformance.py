@@ -480,6 +480,17 @@ def suite_dem_calc(ctx):
     )
 
 
+def suite_pansharpen(ctx):
+    """Real Landsat panchromatic/spectral pairs against GDAL's weighted Brovey."""
+    return suite_json_ops(
+        ctx, "pansharpen", "compare_pansharpen_with_gdal.py", "Pansharpening", "`gdal_pansharpen`",
+        "Real Landsat 8 B8/B4/B3/B2 images at unequal resolutions, including all six resamplers, "
+        "weights, selected outputs, bit depth, nodata borders, integer clipping and union/intersection "
+        "extents. Compare every pixel, dimensions, type, nodata and geotransform; integer cases "
+        "are exact, and Float32 allows 0.002 (one ULP at the scene's radiometric scale).", 1,
+    )
+
+
 def suite_vector_ops(ctx):
     """ogr2ogr's options, gdal_rasterize and gdal_polygonize."""
     s = Suite(
@@ -995,6 +1006,7 @@ SUITES = OrderedDict(
         ("ops", suite_ops),
         ("geolocation", suite_geolocation),
         ("dem-calc", suite_dem_calc),
+        ("pansharpen", suite_pansharpen),
         ("vector-ops", suite_vector_ops),
         ("topology", suite_topology),
         ("arrow", suite_arrow),

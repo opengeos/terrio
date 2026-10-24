@@ -28,6 +28,7 @@ __all__ = [
     "write_vector",
     "convert",
     "rasterize",
+    "pansharpen",
     "polygonize",
     "transform_points",
     "set_grid_search_paths",
@@ -1068,3 +1069,23 @@ class RpcTransformer:
     ) -> tuple[list[float], list[float], list[bool]]: ...
 
 def cli_main(args: Sequence[str], terrio: Sequence[str] | None = None) -> int: ...
+def pansharpen(
+    pan: str | Raster,
+    spectral: str | Raster | Sequence[str | Raster],
+    dst: str | None = None,
+    *,
+    weights: Sequence[float] | None = None,
+    bands: Sequence[int] | None = None,
+    pan_band: int = 1,
+    resampling: str = "cubic",
+    bitdepth: int | None = None,
+    nodata: float | str | None = None,
+    spat_adjust: str = "union",
+    ot: str | None = None,
+    format: str | None = None,
+    compress: str | None = None,
+    tile_size: int | None = None,
+    bigtiff: bool = False,
+) -> Raster:
+    """Weighted Brovey pansharpening on one or several spectral rasters."""
+    ...
