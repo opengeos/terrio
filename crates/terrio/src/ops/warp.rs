@@ -1105,6 +1105,12 @@ impl<'a> Plan<'a> {
                     continue;
                 }
                 if let Some(g) = &source.ds.geolocation {
+                    // Preserve affine cutline workflows on datasets that also happen to
+                    // carry array metadata. A plain swath has no usable affine fallback.
+                    let default_gt = [0.0, 1.0, 0.0, source.grid.height as f64, 0.0, -1.0];
+                    if !o.geoloc && o.cutline.is_some() && (source.ds.affine.is_some() || source.ds.geo_transform() != default_gt) {
+                        continue;
+                    }
                     if o.cutline.is_some() {
                         return Err(Error::Unsupported("cutlines are not supported with geolocation arrays".into()));
                     }

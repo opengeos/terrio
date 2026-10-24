@@ -199,6 +199,19 @@ impl GeolocationTransformer {
                         *x = unwrap(*x, base);
                     }
                 }
+                // Normalize each axis to this cell's coordinate range before solving. This
+                // keeps the Jacobian and residual tolerances independent of CRS units.
+                let ox = cx[0];
+                let oy = cy[0];
+                let scale_x = cx.iter().map(|v| (v - ox).abs()).fold(0.0, f64::max);
+                let scale_y = cy.iter().map(|v| (v - oy).abs()).fold(0.0, f64::max);
+                if scale_x == 0.0 || scale_y == 0.0 {
+                    continue;
+                }
+                let cx = cx.map(|v| (v - ox) / scale_x);
+                let cy = cy.map(|v| (v - oy) / scale_y);
+                let x = (x - ox) / scale_x;
+                let y = (y - oy) / scale_y;
                 let m = &self.metadata;
                 let (u0, u1) = bounds(c.col, self.width, m.pixel_offset, m.pixel_step, self.source_size.0, m.pixel_center);
                 let (v0, v1) = bounds(c.row, self.height, m.line_offset, m.line_step, self.source_size.1, m.pixel_center);
@@ -210,7 +223,7 @@ impl GeolocationTransformer {
                     let dydu = (cy[1] - cy[0]) * (1.0 - v) + (cy[3] - cy[2]) * v;
                     let dydv = (cy[2] - cy[0]) * (1.0 - u) + (cy[3] - cy[1]) * u;
                     let det = dxdu * dydv - dxdv * dydu;
-                    if !det.is_finite() || det.abs() < 1e-20 {
+                    if !det.is_finite() || det.abs() <= 16.0 * f64::EPSILON * (dxdu.abs() + dydu.abs()) * (dxdv.abs() + dydv.abs()) {
                         break;
                     }
                     let du = (ex * dydv - ey * dxdv) / det;
@@ -225,7 +238,7 @@ impl GeolocationTransformer {
                     && u <= u1 + 1e-8
                     && v >= v0 - 1e-8
                     && v <= v1 + 1e-8
-                    && (interpolate(&cx, u, v) - x).abs() + (interpolate(&cy, u, v) - y).abs() < 1e-7
+                    && (interpolate(&cx, u, v) - x).abs() + (interpolate(&cy, u, v) - y).abs() < 1e-9
                 {
                     let m = &self.metadata;
                     let center = if m.pixel_center { 0.5 } else { 0.0 };

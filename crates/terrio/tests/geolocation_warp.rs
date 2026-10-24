@@ -84,3 +84,31 @@ fn invalid_first_node_does_not_shift_valid_longitudes() {
         assert!(t.to_geo(0.5, 0.5).is_none());
     }
 }
+
+#[test]
+fn inverse_tolerance_tracks_coordinate_scale() {
+    for scale in [1e-12, 1.0, 1e12] {
+        let x = array(3, 2, vec![0.0, scale, 2.0 * scale, 0.0, scale, 2.0 * scale]);
+        let y = array(3, 2, vec![scale, scale, scale, 0.0, 0.0, 0.0]);
+        let mut metadata = metadata(false, 1.0);
+        metadata.srs = "EPSG:3857".into();
+        let t = GeolocationTransformer::new(&metadata, &x, &y, 3, 2).unwrap();
+        let (col, row) = t.to_pixel(1.4 * scale, 0.3 * scale).unwrap();
+        assert!((col - 1.4).abs() < 1e-8 && (row - 0.7).abs() < 1e-8);
+    }
+}
+#[test]
+fn automatic_arrays_preserve_affine_cutlines() {
+    let mut source = array(4, 3, (1..=12).map(f64::from).collect());
+    source.set_geo_transform([10.0, 1.0, 0.0, 50.0, 0.0, -1.0]);
+    let cutline = terrio::ops::warp::Cutline {
+        polygons: vec![vec![vec![(10.0, 47.0), (12.0, 47.0), (12.0, 50.0), (10.0, 50.0), (10.0, 47.0)]]],
+        srs: None,
+    };
+    let opts = WarpOptions { cutline: Some(cutline), dst_nodata: terrio::ops::warp::Nodata::Values(vec![-9999.0]), ..Default::default() };
+    let expected = warp(&[&source], &opts).unwrap();
+    source.geolocation = Some(metadata(true, 1.0));
+    let actual = warp(&[&source], &opts).unwrap();
+    assert_eq!(actual.raster.band_view(0).as_slice(), expected.raster.band_view(0).as_slice());
+    assert!(warp(&[&source], &WarpOptions { geoloc: true, ..opts }).is_err());
+}

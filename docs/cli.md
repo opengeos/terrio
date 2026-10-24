@@ -388,7 +388,9 @@ Coordinate nodata, NaNs, infinities and invalid geographic latitudes invalidate 
 cells; no interpolation bridges those holes. Adjacent geographic longitudes are unwrapped
 across the antimeridian; use canonical longitude extents on either side for GDAL comparisons.
 Arrays must have matching dimensions of at least 2 by 2 and positive steps. Cutlines with
-geolocation arrays are currently unsupported. Coordinate arrays and their cell index are held
+geolocation arrays are currently unsupported. Automatic selection preserves an existing affine
+cutline workflow when the dataset also has a usable affine transform; explicitly selecting
+geolocation arrays still rejects cutlines. Coordinate arrays and their cell index are held
 in memory. The index stores only cell envelopes and array positions; its size is linear
 in the number of valid cells, in addition to the two coordinate arrays. The inverse solves bilinear cells directly; GDAL's inverse backmap can differ by a
 few boundary pixels, particularly with sparse arrays or invalid nodes. The conformance suite
