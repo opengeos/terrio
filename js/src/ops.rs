@@ -912,6 +912,15 @@ pub fn sieve(src: JsValue, options: JsValue) -> Result<Dataset, JsError> {
     Ok(Dataset::from_raster(terrio::ops::sieve::sieve(&ds, &o).map_err(js_err)?))
 }
 
+/// Runs the documented read-only OGR SQL subset on vector inputs, returning a Dataset.
+/// SELECT expressions and LEFT JOIN retain primary geometry; DISTINCT and summaries discard it.
+#[wasm_bindgen]
+pub fn sql(src: JsValue, query: &str) -> Result<Dataset, JsError> {
+    let layers = input_layers(&src)?;
+    let result = terrio::ops::sql::query(&layers, query).map_err(js_err)?;
+    Ok(Dataset::from_layers(vec![result], VectorDriver::GeoJSON))
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", default, deny_unknown_fields)]
 struct ViewshedArgs {
