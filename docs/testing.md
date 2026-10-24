@@ -104,6 +104,17 @@ python scripts/compare_with_gdal.py ../terrio-data
 The Rust tests hold expected values taken from GDAL, so they run without GDAL installed; the
 comparison scripts need GDAL's Python bindings.
 
+The `overviews` conformance suite compares `gdalwarp -ovr` with Terrio's automatic,
+finer, full-resolution and explicit overview choices on synthetic level markers
+and real USGS terrain, including forced levels with GCP, RPC and geolocation-array
+georeferencing (the geolocation cases use the installed Python bindings with explicit arrays).
+It also measures response bytes while downsampling a USGS
+COG over HTTP; AUTO must fetch fewer than half the raster bytes of NONE.
+
+```sh
+python scripts/conformance.py ../terrio-data --only overviews --strict
+```
+
 Fill-nodata comparisons are part of the `dem-calc` conformance suite. To run just
 these cases on the real USGS terrain, with holes and explicit validity masks:
 
@@ -146,6 +157,20 @@ separable kernels, and affine/reprojection/GCP/TPS/homography/RPC transforms:
 python scripts/conformance.py ../terrio-data --only vrt --strict
 ```
 
+### Pansharpening against GDAL
+
+The fetch script downloads Landsat 8 B8/B4/B3/B2 real image pairs from the public
+[rio-pansharpen test fixtures](https://github.com/mapbox/rio-pansharpen/tree/f23d1edbedddf157ca5014ec805918cdf713bb7f/tests/fixtures/tiny_20_tiffs/LC81070352015122LGN00).
+The comparison retains unequal pan/spectral resolutions and checks all six interpolation
+methods, weights, output selection, bit depth, nodata borders, internal masks, integer
+clipping and union/intersection extents against `gdal_pansharpen`. No tolerance is allowed
+for integer cases; the Float32 comparison allows 0.002, one ULP at the scene's radiometric scale.
+
+```sh
+python scripts/compare_pansharpen_with_gdal.py ../terrio-data
+python scripts/conformance.py ../terrio-data --only pansharpen
+```
+
 ## Build size and iteration speed
 
 Development and test builds omit debug symbols by default. Enable full debugger
@@ -164,3 +189,17 @@ package builds for final validation.
 CI saves dependency caches for PR updates as well as main, disables incremental
 compilation, and cancels obsolete runs when a PR receives a newer push. Release
 profiles and the full validation matrix are unchanged.
+
+## Benchmark harness regressions
+
+With GDAL's Python bindings and NumPy available, run:
+
+```sh
+python -m unittest discover -s scripts/tests -v
+```
+
+These tests exercise benchmark correctness gates, independent CPU-budget selection,
+interleaved measurements and Linux affinity/background-load handling. They run in
+CI's conformance job without downloading benchmark datasets or asserting timing
+thresholds. Performance measurements remain an explicit local task; see
+[Benchmarks](benchmarks.md) for the methodology and latest GDAL version used.

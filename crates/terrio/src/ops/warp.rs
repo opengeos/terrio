@@ -12,6 +12,7 @@
 //!   reproduce GDAL's warp kernel, including its treatment of nodata and of image edges.
 
 use super::Ct as Transformer;
+use super::overview::OverviewSelection;
 use super::{Grid, Resampling, apply_gt, invert_gt, is_nodata, warp_round};
 use crate::crs::SpatialRef;
 use crate::{Error, RasterDataset, Result};
@@ -156,6 +157,8 @@ pub struct WarpOptions {
     pub target_aligned_pixels: bool,
     /// The resampling method (`-r`).
     pub resampling: Resampling,
+    /// Which stored source resolution to read (`-ovr`), automatic by default.
+    pub overview: OverviewSelection,
     /// Source nodata (`-srcnodata`).
     pub src_nodata: Nodata,
     /// Override unified source validity. By default explicit `Values` unify bands;
@@ -219,6 +222,7 @@ impl Default for WarpOptions {
             dst_transform: None,
             target_aligned_pixels: false,
             resampling: Resampling::Nearest,
+            overview: OverviewSelection::Auto,
             src_nodata: Nodata::Auto,
             unified_src_nodata: None,
             dst_nodata: Nodata::Auto,
@@ -259,6 +263,8 @@ struct GenImgProj {
     src_inv: [f64; 6],
     /// Source pixels to georeferenced coordinates by GCPs or RPCs, in place of the geotransform.
     src_gcp: Option<Georef>,
+    /// Full-resolution source pixels per selected overview pixel, for GCP/RPC transforms.
+    src_scale: (f64, f64),
     dst_gt: [f64; 6],
     dst_inv: [f64; 6],
     /// Source CRS to destination CRS, and back; `None` when both are the same.
@@ -275,7 +281,7 @@ impl GenImgProj {
         } else {
             Some((Transformer::new(src_srs, dst_srs)?, Transformer::new(dst_srs, src_srs)?))
         };
-        Ok(Self { src_gt, src_inv, src_gcp: None, dst_gt: IDENTITY, dst_inv: IDENTITY, ct })
+        Ok(Self { src_gt, src_inv, src_gcp: None, src_scale: (1.0, 1.0), dst_gt: IDENTITY, dst_inv: IDENTITY, ct })
     }
 
     /// A transformer whose source is georeferenced by GCPs or RPCs.
@@ -292,6 +298,7 @@ impl GenImgProj {
 
     /// Source pixel/line to source georeferenced coordinates.
     fn src_to_geo(&self, c: f64, r: f64) -> Option<(f64, f64)> {
+        let (c, r) = if self.src_gcp.is_some() { (c * self.src_scale.0, r * self.src_scale.1) } else { (c, r) };
         match &self.src_gcp {
             Some(Georef::Geolocation(g)) => g.to_geo(c, r),
             Some(Georef::Gcp(g)) => Some(g.to_geo(c, r)),
@@ -306,8 +313,9 @@ impl GenImgProj {
             Some(Georef::Geolocation(g)) => g.to_pixel(x, y),
             Some(Georef::Gcp(g)) => Some(g.to_pixel(x, y)),
             Some(Georef::Rpc(t)) => t.to_pixel(x, y, 0.0),
-            None => Some(apply_gt(&self.src_inv, x, y)),
+            None => return Some(apply_gt(&self.src_inv, x, y)),
         }
+        .map(|(c, r)| (c / self.src_scale.0, r / self.src_scale.1))
     }
 
     fn set_dst_gt(&mut self, gt: [f64; 6]) {
@@ -355,6 +363,10 @@ impl GenImgProj {
                 }
             }
             rpc.to_pixel_many(x, y, None, ok);
+            for i in 0..x.len() {
+                x[i] /= self.src_scale.0;
+                y[i] /= self.src_scale.1;
+            }
             return true;
         }
         for i in 0..x.len() {
@@ -553,7 +565,7 @@ fn suggested_warp_output(
     dst_srs: &SpatialRef,
 ) -> Result<([f64; 6], usize, usize, [f64; 4])> {
     let (wf, hf) = (w as f64, h as f64);
-    if t.ct.is_none() && t.src_gt[2] == 0.0 && t.src_gt[4] == 0.0 && t.src_gcp.is_none() {
+    if t.ct.is_none() && t.src_gt[2] == 0.0 && t.src_gt[4] == 0.0 && t.src_gcp.is_none() && t.dst_gt == IDENTITY {
         let mut gt = t.src_gt;
         let mut ext = [gt[0], gt[3] + hf * gt[5], gt[0] + wf * gt[1], gt[3]];
         // South-up: the output is north-up, over the same extent.
@@ -674,7 +686,7 @@ fn suggested_warp_output(
     }
 
     // Geographic output: the poles, and GDAL's TransformBounds() of the source extent.
-    let dst_geographic = dst_srs.is_geographic();
+    let dst_geographic = dst_srs.is_geographic() && t.dst_gt == IDENTITY;
     let mut geographic_deg = false;
     if let Some((fwd, inv)) = &t.ct {
         if dst_geographic && !src_srs.is_geographic() {
@@ -785,13 +797,18 @@ struct Source<'a> {
     srs: SpatialRef,
     /// GCPs or RPCs georeferencing the source in place of its geotransform.
     gcp: Option<Georef>,
+    pixel_scale: (f64, f64),
 }
 
 impl Source<'_> {
     /// The transformer from this source's pixels to the output CRS.
     fn transformer(&self, dst_srs: &SpatialRef) -> Result<GenImgProj> {
         match &self.gcp {
-            Some(g) => GenImgProj::with_georef(&self.srs, dst_srs, g.clone()),
+            Some(g) => {
+                let mut t = GenImgProj::with_georef(&self.srs, dst_srs, g.clone())?;
+                t.src_scale = self.pixel_scale;
+                Ok(t)
+            }
             None => GenImgProj::new(self.grid.geo_transform, &self.srs, dst_srs),
         }
     }
@@ -1104,6 +1121,7 @@ impl<'a> Plan<'a> {
                 },
                 srs: o.src_srs.clone().unwrap_or_else(|| ds.crs()),
                 gcp: None,
+                pixel_scale: (1.0, 1.0),
             })
             .collect();
         if (o.geoloc || o.geolocation.is_some())
@@ -1206,6 +1224,51 @@ impl<'a> Plan<'a> {
         Ok(Self { srcs, dst_srs, grid, bands, out_type, dst_nodata, dst_nodata_all })
     }
 
+    /// Select the input resolution after computing the target grid at full resolution.
+    fn select_overview(&mut self, k: usize, levels: &[(usize, usize)], o: &WarpOptions) -> Result<Option<usize>> {
+        let full = self.srcs[k].grid;
+        if levels.is_empty() && !matches!(o.overview, OverviewSelection::Level(_)) {
+            return Ok(None);
+        }
+        let ratio = if matches!(o.overview, OverviewSelection::Auto | OverviewSelection::AutoOffset(_)) {
+            let t = self.transformer(k)?;
+            let explicit_grid = o.dst_transform.is_some()
+                || (o.extent.is_some() && (o.resolution.is_some() || o.size.is_some_and(|(w, h)| w != 0 && h != 0)));
+            if explicit_grid {
+                let (mut minx, mut miny, mut maxx, mut maxy) = (f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY);
+                for x in 0..10 {
+                    for y in 0..10 {
+                        if let Some((c, r)) =
+                            t.point(true, self.grid.width as f64 * x as f64 / 9.0, self.grid.height as f64 * y as f64 / 9.0)
+                        {
+                            minx = minx.min(c);
+                            maxx = maxx.max(c);
+                            miny = miny.min(r);
+                            maxy = maxy.max(r);
+                        }
+                    }
+                }
+                ((maxx - minx) / self.grid.width as f64).min((maxy - miny) / self.grid.height as f64)
+            } else {
+                let source = &self.srcs[k];
+                let (natural, _, _, _) = suggested_warp_output(&t, source.grid.width, source.grid.height, &source.srs, &self.dst_srs)?;
+                1.0 / natural[1].abs()
+            }
+        } else {
+            1.0
+        };
+        let level = o.overview.select(full.width, levels, ratio);
+        if let Some(index) = level {
+            let (width, height) = levels[index];
+            let source = &mut self.srcs[k];
+            source.pixel_scale = (full.width as f64 / width as f64, full.height as f64 / height as f64);
+            let (sx, sy) = source.pixel_scale;
+            let gt = full.geo_transform;
+            source.grid = Grid { width, height, geo_transform: [gt[0], gt[1] * sx, gt[2] * sy, gt[3], gt[4] * sx, gt[5] * sy] };
+        }
+        Ok(level)
+    }
+
     /// The output's initial values, rounded to its type, one per band.
     fn fill(&self) -> Vec<f64> {
         self.dst_nodata_all.iter().map(|v| warp_round(v.unwrap_or(0.), self.out_type)).collect()
@@ -1286,6 +1349,7 @@ impl<'a> Plan<'a> {
             out_type: self.out_type,
             dst_nodata: self.dst_nodata_all.clone(),
             avoid_nodata: masked && (self.bands == 1 || !unified),
+            avoid_all_nodata: false,
         };
         (ctx, chunks, sink)
     }
@@ -1304,6 +1368,11 @@ fn src_nodata(s: &Source, o: &WarpOptions, band: usize) -> Option<f64> {
 /// sources are drawn over earlier ones where they have valid pixels.
 pub fn warp(sources: &[&RasterDataset], o: &WarpOptions) -> Result<RasterDataset> {
     let p = Plan::new(sources, o)?;
+    warp_data(&p, sources, o)
+}
+
+/// Render pixels from `sources` with a plan already built from their metadata.
+fn warp_data(p: &Plan<'_>, sources: &[&RasterDataset], o: &WarpOptions) -> Result<RasterDataset> {
     let (grid, bands, out_type) = (p.grid, p.bands, p.out_type);
     let n = grid.width * grid.height;
     // The output, in its type: chunks are warped into `f64` rows, then stored (the values are
@@ -1317,7 +1386,7 @@ pub fn warp(sources: &[&RasterDataset], o: &WarpOptions) -> Result<RasterDataset
         let (ctx, chunks, sink) = p.context(k, &t, o);
         let nodata = p.src_nodata(k, o);
         let unified = o.unified_src_nodata.unwrap_or(matches!(o.src_nodata, Nodata::Values(_))) && bands > 1;
-        let src_bands: Vec<super::BandView> = (0..bands).map(|b| super::BandView::of(&s.ds.raster, b)).collect();
+        let src_bands: Vec<super::BandView> = (0..bands).map(|b| super::BandView::of(&sources[k].raster, b)).collect();
         let cut_mask = match &o.cutline {
             Some(c) => Some(cutline_mask(c, s)?),
             None => None,
@@ -1327,7 +1396,7 @@ pub fn warp(sources: &[&RasterDataset], o: &WarpOptions) -> Result<RasterDataset
         // the bands, and no dispatch on the type per pixel).
         let sn = s.grid.width * s.grid.height;
         let target = Target { out: &mut out, width: grid.width, n, fill: &fill, out_type, first: k == 0 };
-        crate::pixel::with_data!(&s.ds.raster.data, v => {
+        crate::pixel::with_data!(&sources[k].raster.data, v => {
             let typed: Vec<&[_]> = (0..bands).map(|b| &v[b * sn..(b + 1) * sn]).collect();
             let data = SrcData { bands: &typed, valid: &valid, width: s.grid.width, origin: (0, 0) };
             warp_source(&ctx, &chunks, &data, &sink, target);
@@ -1338,52 +1407,138 @@ pub fn warp(sources: &[&RasterDataset], o: &WarpOptions) -> Result<RasterDataset
     Ok(ds)
 }
 
+/// Metadata for a window-readable warp source. Pixels may remain unloaded.
+pub struct WarpSourceInfo {
+    /// Full-resolution raster metadata, including its georeferencing and shared nodata.
+    pub raster: RasterDataset,
+    /// Overview dimensions, in the reader's level order (level 0 is the first entry).
+    pub overviews: Vec<(usize, usize)>,
+}
+
+/// A source whose metadata and selected-resolution windows can be read independently.
+/// Readers are called on the caller's thread; rendering their returned pixels may
+/// run in parallel. This permits bindings to borrow a shared dataset only during
+/// each read, including when it occurs more than once in a mosaic.
+pub trait WarpSource {
+    /// Visits already-loaded pixels without copying them. Returns false for lazy sources.
+    /// The callback runs while any shared-reader borrow remains alive; implementations
+    /// must invoke it exactly once when returning true and must not load pixels here.
+    fn with_dataset(&self, _visit: &mut dyn FnMut(&RasterDataset)) -> Result<bool> {
+        Ok(false)
+    }
+    /// Returns full-resolution metadata and the available overview dimensions.
+    fn info(&mut self) -> Result<WarpSourceInfo>;
+    /// Reads valid raster data for this window and overview, with the requested bands.
+    fn read_window(&mut self, window: crate::Window, options: &crate::WindowOptions) -> Result<RasterDataset>;
+}
+
+impl WarpSource for crate::LazyRaster {
+    fn with_dataset(&self, visit: &mut dyn FnMut(&RasterDataset)) -> Result<bool> {
+        if let Some(dataset) = self.dataset() {
+            visit(dataset);
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+    fn info(&mut self) -> Result<WarpSourceInfo> {
+        Ok(WarpSourceInfo { raster: self.header(), overviews: self.overviews() })
+    }
+    fn read_window(&mut self, window: crate::Window, options: &crate::WindowOptions) -> Result<RasterDataset> {
+        crate::LazyRaster::read_window(self, window, options)
+    }
+}
+
 /// Warps one raster as [`warp`] does, reading from it only the source window each chunk of the
 /// output needs: for a lazy raster (a GeoTIFF or COG read on demand), a small output costs the
 /// pixels it reads, not the whole source. The result is [`warp`]'s, bit for bit. Without a
 /// cutline, which masks the whole source.
 pub fn warp_lazy(src: &mut crate::LazyRaster, o: &WarpOptions) -> Result<RasterDataset> {
-    warp_lazy_selected(src, o, None)
+    warp_sources(&mut [src], o)
 }
 
-/// Warp selected/repeated source bands in output order for a serialized VRT mapping.
-pub(crate) fn warp_lazy_bands(src: &mut crate::LazyRaster, bands: &[usize], o: &WarpOptions) -> Result<RasterDataset> {
+fn warp_reader(src: &mut dyn WarpSource, o: &WarpOptions) -> Result<RasterDataset> {
+    warp_reader_selected(src, o, None, None, false, None)
+}
+
+/// Serialized VRT working type: source conversion happens before validity and resampling.
+pub(crate) fn warp_lazy_bands_working(
+    src: &mut crate::LazyRaster,
+    bands: &[usize],
+    o: &WarpOptions,
+    working: Option<DataType>,
+    unified_sink: bool,
+    source_overview: Option<usize>,
+) -> Result<RasterDataset> {
     if bands.is_empty() || bands.iter().any(|b| *b == 0 || *b > src.band_count()) {
         return Err(Error::InvalidArgument("invalid source band selection".into()));
     }
-    warp_lazy_selected(src, o, Some(bands))
+    warp_reader_selected(src, o, Some(bands), working, unified_sink, source_overview)
 }
 
-fn warp_lazy_selected(src: &mut crate::LazyRaster, o: &WarpOptions, selection: Option<&[usize]>) -> Result<RasterDataset> {
-    if selection.is_none()
-        && let Some(ds) = src.dataset()
-    {
-        return warp(&[ds], o);
-    }
+fn warp_reader_selected(
+    src: &mut dyn WarpSource,
+    o: &WarpOptions,
+    selection: Option<&[usize]>,
+    working: Option<DataType>,
+    unified_sink: bool,
+    source_overview: Option<usize>,
+) -> Result<RasterDataset> {
     if o.cutline.is_some() {
-        return Err(Error::Unsupported("a cutline needs the source in memory".into()));
+        if selection.is_some() || working.is_some() {
+            return Err(Error::Unsupported("a serialized working warp cannot use a cutline".into()));
+        }
+        return warp_sources(&mut [src], o);
     }
-    let mut header = src.header();
+    let info = src.info()?;
+    let mut header = info.raster;
+    if let Some(level) = source_overview {
+        let &(width, height) = info
+            .overviews
+            .get(level)
+            .ok_or_else(|| Error::InvalidArgument(format!("serialized source overview {level} is unavailable")))?;
+        let (sx, sy) = (header.raster.cols as f64 / width as f64, header.raster.rows as f64 / height as f64);
+        let gt = header.geo_transform();
+        header.raster.cols = width;
+        header.raster.rows = height;
+        header.set_geo_transform([gt[0], gt[1] * sx, gt[2] * sy, gt[3], gt[4] * sx, gt[5] * sy]);
+    }
     if let Some(bands) = selection {
-        header.band_nodata = bands.iter().map(|b| src.band_nodata(*b)).collect();
+        header.band_nodata = bands.iter().map(|b| header.band_nodata(*b)).collect();
         header.has_nodata = header.band_nodata[0].is_some();
         header.raster.nodata = header.band_nodata[0].unwrap_or(-9999.);
         header.raster.bands = bands.len();
         header.raster.data = RasterData::new_filled(header.raster.data_type, 0, 0.);
     }
-    let read_options = crate::WindowOptions { bands: selection.map_or_else(Vec::new, |v| v.to_vec()), overview: None };
-    let p = Plan::new(&[&header], o)?;
+    if let Some(dtype) = working {
+        header.raster.data_type = dtype;
+        header.raster.data = RasterData::new_filled(dtype, 0, 0.);
+    }
+    let mut p = Plan::new(&[&header], o)?;
+    // A serialized VRT's source view is already selected in OpenOptions and its
+    // transformer. Selecting again would double-scale its source coordinates.
+    let overview = if working.is_some() { source_overview } else { p.select_overview(0, &info.overviews, o)? };
+    let read_options = crate::WindowOptions { bands: selection.map_or_else(Vec::new, |v| v.to_vec()), overview };
     let (grid, bands, out_type) = (p.grid, p.bands, p.out_type);
     let n = grid.width * grid.height;
     let t = p.transformer(0)?;
-    let (ctx, chunks, sink) = p.context(0, &t, o);
+    let (ctx, chunks, mut sink) = p.context(0, &t, o);
     let nodata = p.src_nodata(0, o);
+    if working.is_some() && nodata.iter().any(Option::is_some) {
+        sink.avoid_nodata = bands == 1 || !unified_sink;
+        sink.avoid_all_nodata = bands > 1 && unified_sink;
+    }
     let unified = o.unified_src_nodata.unwrap_or(matches!(o.src_nodata, Nodata::Values(_))) && bands > 1;
     let fill = p.fill();
     let mut out = RasterData::new_filled(out_type, n * bands, 0.0);
     crate::pixel::with_data!(&mut out, v => v.chunks_mut(n).zip(&fill).for_each(|(band,fill)|band.iter_mut().for_each(|x|*x=*fill as _)));
     for c in &chunks {
-        let window = src.read_window(crate::Window::new(c.sx, c.sy, c.sw, c.sh), &read_options)?;
+        let mut window = src.read_window(crate::Window::new(c.sx, c.sy, c.sw, c.sh), &read_options)?;
+        if let Some(dtype) = working {
+            let values = window.raster.data.to_f64_vec().into_iter().map(|v| super::convert_value(v, dtype)).collect();
+            window.raster.data = RasterData::from_f64_vec(dtype, values);
+            window.raster.data_type = dtype;
+        }
         let src_bands: Vec<super::BandView> = (0..bands).map(|b| super::BandView::of(&window.raster, b)).collect();
         let valid = validity(&src_bands, &nodata, unified, None);
         let sn = c.sw * c.sh;
@@ -1398,6 +1553,91 @@ fn warp_lazy_selected(src: &mut crate::LazyRaster, o: &WarpOptions, selection: O
     let mut ds = output_dataset(grid, out, bands, p.dst_nodata, &p.dst_srs)?;
     ds.band_nodata = p.dst_nodata_all.clone();
     Ok(ds)
+}
+
+/// The warped raster of `grid`, holding `out`, whatever its geotransform.
+/// Warps multiple lazy rasters, selecting a stored source resolution for each one.
+/// The target grid is computed from full-resolution headers before selection.
+/// Single sources without cutlines use windowed reads; mosaics and cutlines load
+/// only the selected source levels into memory before rendering.
+///
+/// ```no_run
+/// let mut a = terrio::open_raster_lazy("a.tif")?;
+/// let mut b = terrio::open_raster_lazy("b.tif")?;
+/// let out = terrio::ops::warp::warp_lazy_many(&mut [&mut a, &mut b], &Default::default())?;
+/// # Ok::<(), terrio::Error>(())
+/// ```
+pub fn warp_lazy_many(sources: &mut [&mut crate::LazyRaster], o: &WarpOptions) -> Result<RasterDataset> {
+    let mut readers: Vec<&mut dyn WarpSource> = sources.iter_mut().map(|s| &mut **s as &mut dyn WarpSource).collect();
+    warp_sources(&mut readers, o)
+}
+
+/// Warps window-readable sources, retaining stored overviews across language bindings.
+/// A single source without a cutline is read by chunk. Multiple sources and cutlines
+/// currently load the selected source levels before compositing; the target grid is
+/// always computed from full-resolution metadata.
+///
+/// ```no_run
+/// use terrio::ops::warp::{warp_sources, WarpSource};
+/// let mut dem = terrio::open_raster_lazy("dem.tif")?;
+/// let sources: &mut [&mut dyn WarpSource] = &mut [&mut dem];
+/// let out = warp_sources(sources, &Default::default())?;
+/// # Ok::<(), terrio::Error>(())
+/// ```
+pub fn warp_sources(sources: &mut [&mut dyn WarpSource], o: &WarpOptions) -> Result<RasterDataset> {
+    // Scoped visits retain binding borrow guards until rendering has finished, including
+    // repeated references to one shared raster. No full or per-chunk pixel copies.
+    fn memory(sources: &[&mut dyn WarpSource], datasets: &[&RasterDataset], o: &WarpOptions) -> Result<Option<RasterDataset>> {
+        let Some((first, rest)) = sources.split_first() else {
+            if let Some(first) = datasets.first() {
+                o.overview.select(first.raster.cols, &[], 1.0);
+            }
+            return warp(datasets, o).map(Some);
+        };
+        let mut result = Ok(None);
+        first.with_dataset(&mut |dataset| {
+            let mut datasets = datasets.to_vec();
+            datasets.push(dataset);
+            result = memory(rest, &datasets, o);
+        })?;
+        result
+    }
+    // Bound nested shared-reader guards for very large in-memory mosaics.
+    if sources.len() <= 128
+        && let Some(output) = memory(sources, &[], o)?
+    {
+        return Ok(output);
+    }
+    if sources.len() == 1 && o.cutline.is_none() {
+        return warp_reader(sources[0], o);
+    }
+    let info = sources.iter_mut().map(|s| s.info()).collect::<Result<Vec<_>>>()?;
+    let refs: Vec<_> = info.iter().map(|s| &s.raster).collect();
+    let mut p = Plan::new(&refs, o)?;
+    let mut data = Vec::with_capacity(sources.len());
+    for (k, source) in sources.iter_mut().enumerate() {
+        let overview = p.select_overview(k, &info[k].overviews, o)?;
+        let grid = p.srcs[k].grid;
+        data.push(source.read_window(crate::Window::full(grid.width, grid.height), &crate::WindowOptions { overview, bands: Vec::new() })?);
+    }
+    let refs: Vec<_> = data.iter().collect();
+    warp_data(&p, &refs, o)
+}
+
+/// Opens and warps paths with lazy source reads and stored overview selection.
+/// The first source's file GCPs or RPCs are used when needed, as in [`warp_to_path`].
+///
+/// ```no_run
+/// let out = terrio::ops::warp::warp_paths(&["dem.tif".into()], &Default::default())?;
+/// # Ok::<(), terrio::Error>(())
+/// ```
+pub fn warp_paths(paths: &[String], o: &WarpOptions) -> Result<RasterDataset> {
+    let mut sources = paths.iter().map(|path| crate::open_raster_lazy(path)).collect::<Result<Vec<_>>>()?;
+    let first = sources.first().ok_or_else(|| Error::InvalidArgument("no source rasters".into()))?;
+    let header = first.header();
+    let o = with_file_gcps(o, &paths[0], &header)?;
+    let mut refs: Vec<_> = sources.iter_mut().collect();
+    warp_lazy_many(&mut refs, &o)
 }
 
 /// The warped raster of `grid`, holding `out`, whatever its geotransform.
@@ -1466,15 +1706,13 @@ pub fn warp_to_path(paths: &[String], o: &WarpOptions, path: &str, options: &cra
         return Err(Error::InvalidArgument("no source rasters".into()));
     }
     if paths.len() != 1 || o.cutline.is_some() || super::strips::overwrites(path, paths) {
-        let sources = paths.iter().map(|p| crate::open_raster(p)).collect::<Result<Vec<_>>>()?;
-        let refs: Vec<&RasterDataset> = sources.iter().collect();
-        let o = with_file_gcps(o, &paths[0], &sources[0])?;
-        return crate::write_raster_dataset(&warp(&refs, &o)?, path, options);
+        return crate::write_raster_dataset(&warp_paths(paths, o)?, path, options);
     }
     let mut src = crate::open_raster_lazy(&paths[0])?;
     let header = src.header();
     let o = &*with_file_gcps(o, &paths[0], &header)?;
-    let p = Plan::new(&[&header], o)?;
+    let mut p = Plan::new(&[&header], o)?;
+    let overview = p.select_overview(0, &src.overviews(), o)?;
     let (grid, bands, out_type) = (p.grid, p.bands, p.out_type);
     let w = grid.width;
     let t = p.transformer(0)?;
@@ -1484,6 +1722,7 @@ pub fn warp_to_path(paths: &[String], o: &WarpOptions, path: &str, options: &cra
     let fill = p.fill();
     let (stored, gt) = stored_grid(grid);
     let mut header = super::raster_header(stored, out_type, bands, p.dst_nodata, &p.dst_srs)?;
+    header.band_nodata = p.dst_nodata_all.clone();
     if let Some(gt) = gt {
         header.set_geo_transform(gt);
     }
@@ -1533,7 +1772,7 @@ pub fn warp_to_path(paths: &[String], o: &WarpOptions, path: &str, options: &cra
         chunks.len(),
         |i| {
             let c = &chunks[i];
-            src.read_window(crate::Window::new(c.sx, c.sy, c.sw, c.sh), &crate::WindowOptions::default())
+            src.read_window(crate::Window::new(c.sx, c.sy, c.sw, c.sh), &crate::WindowOptions { overview, bands: Vec::new() })
         },
         |i, window| {
             let c = &chunks[i];
@@ -1573,13 +1812,28 @@ pub fn warp_to_path(paths: &[String], o: &WarpOptions, path: &str, options: &cra
 /// Plan a virtual warp without reading source pixels.
 pub(crate) fn virtual_header(source: &RasterDataset, o: &WarpOptions) -> Result<RasterDataset> {
     let p = Plan::new(&[source], o)?;
-    super::raster_header(p.grid, p.out_type, p.bands, p.dst_nodata, &p.dst_srs)
+    // As GDAL's VRT authoring path: explicit destination nodata is adjusted to
+    // the band type, while inherited nodata and parsed XML retain raw values.
+    let nodata: Vec<_> = p
+        .dst_nodata_all
+        .iter()
+        .map(|value| value.map(|value| if matches!(o.dst_nodata, Nodata::Auto) { value } else { super::convert_value(value, p.out_type) }))
+        .collect();
+    let mut header = super::raster_header(p.grid, p.out_type, p.bands, nodata[0], &p.dst_srs)?;
+    header.band_nodata = nodata;
+    Ok(header)
+}
+
+/// Selects the source view for a serialized warp after computing its full-resolution target grid.
+pub(crate) fn virtual_source_overview(source: &RasterDataset, levels: &[(usize, usize)], o: &WarpOptions) -> Result<Option<usize>> {
+    let mut plan = Plan::new(&[source], o)?;
+    plan.select_overview(0, levels, o)
 }
 
 /// `o`, with the GCPs of the raster at `path` (opened as `ds`) when `o` has neither GCPs nor RPCs
 /// and the raster has no geotransform; else with its RPCs, as GDAL picks a geotransform, then
 /// GCPs, then RPCs.
-pub(crate) fn with_file_gcps<'a>(o: &'a WarpOptions, path: &str, ds: &RasterDataset) -> Result<std::borrow::Cow<'a, WarpOptions>> {
+pub fn with_file_gcps<'a>(o: &'a WarpOptions, path: &str, ds: &RasterDataset) -> Result<std::borrow::Cow<'a, WarpOptions>> {
     let default_gt = [0.0, 1.0, 0.0, ds.raster.rows as f64, 0.0, -1.0];
     if o.geoloc
         || o.geolocation.is_some()
@@ -1848,6 +2102,7 @@ struct Sink {
     out_type: DataType,
     dst_nodata: Vec<Option<f64>>,
     avoid_nodata: bool,
+    avoid_all_nodata: bool,
 }
 
 /// One output row of a chunk: the chunk's part of the row in each band.
@@ -1865,26 +2120,30 @@ fn chunk_rows<'a>(out: &'a mut [Vec<f64>], width: usize, c: &Chunk) -> Vec<RowOu
 }
 
 impl Sink {
+    fn nudge(&self, v: f64) -> f64 {
+        if super::is_integer(self.out_type) {
+            let (lo, _) = super::type_range(self.out_type);
+            if v == lo { lo + 1. } else { v - 1. }
+        } else if self.out_type == DataType::F32 {
+            let f = v as f32;
+            (if f == f32::MAX { f32::from_bits(f.to_bits() - 1) } else { next_up_f32(f) }) as f64
+        } else if v == f64::MAX {
+            f64::from_bits(v.to_bits() - 1)
+        } else {
+            next_up_f64(v)
+        }
+    }
     /// The value to store for a warped value `v`.
     fn value(&self, v: f64, band: usize) -> f64 {
-        let mut v = warp_round(v, self.out_type);
-        if self.avoid_nodata
-            && let Some(nd) = self.dst_nodata[band]
-            && v == nd
-        {
-            v = if super::is_integer(self.out_type) {
-                let (lo, _) = super::type_range(self.out_type);
-                if v == lo { lo + 1.0 } else { v - 1.0 }
-            } else if self.out_type == DataType::F32 {
-                let f = v as f32;
-                (if f == f32::MAX { f32::from_bits(f.to_bits() - 1) } else { next_up_f32(f) }) as f64
-            } else if v == f64::MAX {
-                f64::from_bits(v.to_bits() - 1)
-            } else {
-                next_up_f64(v)
-            };
+        let v = warp_round(v, self.out_type);
+        if self.avoid_nodata && self.dst_nodata[band].is_some_and(|nd| v == nd) { self.nudge(v) } else { v }
+    }
+    fn avoid_all(&self, out: &mut [&mut [f64]], index: usize) {
+        if self.avoid_all_nodata && out.iter().zip(&self.dst_nodata).all(|(v, nd)| nd.is_some_and(|nd| v[index] == nd)) {
+            for band in out {
+                band[index] = self.nudge(band[index]);
+            }
         }
-        v
     }
 }
 
@@ -2253,6 +2512,7 @@ impl WarpContext<'_> {
                     continue;
                 }
                 let (fx, fy) = (xs[i] - sxo, ys[i] - syo);
+                let mut found = false;
                 for (b, o) in out.iter_mut().enumerate() {
                     let v = if self.resampling == Resampling::Nearest || c.sw == 1 || c.sh == 1 {
                         k.valid(b, ix, iy).then(|| k.value(b, ix, iy))
@@ -2265,7 +2525,11 @@ impl WarpContext<'_> {
                     };
                     if let Some(v) = v {
                         o[i] = sink.value(v, b);
+                        found = true;
                     }
+                }
+                if found {
+                    sink.avoid_all(out, i);
                 }
             }
         }
@@ -2341,6 +2605,7 @@ impl WarpContext<'_> {
                         w
                     }
                 };
+                let mut found = false;
                 for (b, o) in out.iter_mut().enumerate() {
                     values.clear();
                     for y in iy0..iy1 {
@@ -2357,7 +2622,11 @@ impl WarpContext<'_> {
                         matches!(sink.out_type, DataType::U8 | DataType::I8 | DataType::U16 | DataType::I16),
                     ) {
                         o[i] = sink.value(v, b);
+                        found = true;
                     }
+                }
+                if found {
+                    sink.avoid_all(out, i);
                 }
             }
         }
@@ -2925,5 +3194,88 @@ mod tests {
             assert_eq!(one.raster.data_type, out_type);
             assert_eq!((sum(&one), sum(&many)), (one_chunk, many_chunks), "{resampling:?}");
         }
+    }
+}
+
+#[cfg(test)]
+mod overview_tests {
+    use super::*;
+
+    #[test]
+    fn loaded_shared_sources_do_not_read_or_clone_windows() {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+        struct Shared(Rc<RefCell<crate::LazyRaster>>);
+        impl WarpSource for Shared {
+            fn with_dataset(&self, visit: &mut dyn FnMut(&RasterDataset)) -> Result<bool> {
+                self.0.borrow().with_dataset(visit)
+            }
+            fn info(&mut self) -> Result<WarpSourceInfo> {
+                panic!("loaded source must not request metadata")
+            }
+            fn read_window(&mut self, _: crate::Window, _: &crate::WindowOptions) -> Result<RasterDataset> {
+                panic!("loaded source must not copy windows")
+            }
+        }
+        let grid = Grid { width: 4, height: 4, geo_transform: [0., 1., 0., 4., 0., -1.] };
+        let ds = super::super::build_raster(
+            grid,
+            vec![(0..16).map(|i| i as f64).collect()],
+            DataType::F64,
+            None,
+            &SpatialRef::from_epsg(3857).unwrap(),
+            super::super::convert_value,
+        )
+        .unwrap();
+        let lazy = Rc::new(RefCell::new(crate::LazyRaster::from(ds.clone())));
+        let mut a = Shared(lazy.clone());
+        let mut b = Shared(lazy);
+        for overview in [OverviewSelection::Auto, OverviewSelection::None, OverviewSelection::Level(2)] {
+            let options = WarpOptions { overview, size: Some((2, 2)), ..Default::default() };
+            let expected = warp(&[&ds, &ds], &options).unwrap();
+            let got = warp_sources(&mut [&mut a, &mut b], &options).unwrap();
+            assert_eq!(got.geo_transform(), expected.geo_transform());
+            assert_eq!(super::super::band_f64(&got.raster, 0), super::super::band_f64(&expected.raster, 0));
+        }
+    }
+
+    #[test]
+    fn selects_stored_pixels_without_changing_the_target_grid() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("overviews.tif");
+        let grid = Grid { width: 32, height: 32, geo_transform: [0., 1., 0., 32., 0., -1.] };
+        let values = (0..1024).map(|i| (i / 32 * (i / 32) + i % 32) as f64).collect();
+        let ds = super::super::build_raster(
+            grid,
+            vec![values],
+            DataType::F32,
+            None,
+            &SpatialRef::from_epsg(3857).unwrap(),
+            super::super::convert_value,
+        )
+        .unwrap();
+        crate::write_raster_dataset(
+            &ds,
+            path.to_str().unwrap(),
+            &crate::RasterWriteOptions { overviews: vec![2, 4, 8], overview_resampling: Some("average".into()), ..Default::default() },
+        )
+        .unwrap();
+        let mut lazy = crate::open_raster_lazy(path.to_str().unwrap()).unwrap();
+        let options = WarpOptions { size: Some((8, 8)), ..Default::default() };
+        let full = warp_lazy(&mut lazy, &WarpOptions { overview: OverviewSelection::None, ..options.clone() }).unwrap();
+        for (choice, level) in [(OverviewSelection::Auto, 1), (OverviewSelection::Level(1), 1), (OverviewSelection::AutoOffset(1), 0)] {
+            let got = warp_lazy(&mut lazy, &WarpOptions { overview: choice, ..options.clone() }).unwrap();
+            let (w, h) = lazy.overviews()[level];
+            let selected =
+                lazy.read_window(crate::Window::full(w, h), &crate::WindowOptions { overview: Some(level), bands: Vec::new() }).unwrap();
+            let expected = warp(&[&selected], &options).unwrap();
+            assert_eq!(got.geo_transform(), full.geo_transform());
+            assert_eq!(super::super::band_f64(&got.raster, 0), super::super::band_f64(&expected.raster, 0));
+            assert_ne!(super::super::band_f64(&got.raster, 0), super::super::band_f64(&full.raster, 0));
+        }
+        let paths = vec![path.to_str().unwrap().to_string(); 2];
+        let many = warp_paths(&paths, &options).unwrap();
+        let single = warp_lazy(&mut lazy, &options).unwrap();
+        assert_eq!(super::super::band_f64(&many.raster, 0), super::super::band_f64(&single.raster, 0));
     }
 }

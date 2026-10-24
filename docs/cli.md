@@ -376,12 +376,34 @@ for a source with RPCs, 5 more source pixels are read around each chunk, an RPC 
 transformations exact (`--et 0`) and samples every edge point, and a GeoTIFF output is warped only
 where the source's footprint falls. `--wo SOURCE_EXTRA=n`, `--wo SAMPLE_STEPS=ALL` and
 `--wo SKIP_NOSOURCE=NO` set those warp options (other warp options are ignored, with a warning). On ICEYE images with a Copernicus DEM, the output
-grids and pixels are `gdalwarp`'s (with `-ovr NONE`: terrio does not warp from overviews).
+grids and pixels follow `gdalwarp`. `--overview` (`--ovr`) selects `AUTO` (the default),
+`AUTO-n` (n levels finer), `NONE` (full resolution), or a stored level numbered from 0.
+The target grid is always planned from full-resolution metadata before choosing source
+overviews. Downsampling remote COGs therefore fetches coarse tiles instead of full-resolution
+pixels. An unavailable explicit level falls back to the last available level, as GDAL does.
 
 ```sh
 terrio warp scene.tif scene_4326.tif --rpc --to RPC_HEIGHT=120
 terrio warp scene.tif scene_utm.tif --rpc --to RPC_DEM=dem.tif --t-srs EPSG:32720 -r bilinear
 ```
+
+### Warp source overviews
+
+```sh
+terrio warp large-cog.tif preview.tif --ts 256 256 --overview AUTO
+terrio warp large-cog.tif finer.tif --ts 256 256 --overview AUTO-1
+terrio warp large-cog.tif full.tif --ts 256 256 --overview NONE
+terrio warp large-cog.tif level.tif --overview 1
+```
+
+Overview selection changes which stored pixels are resampled; the final grid remains
+based on the full-resolution source. Use `NONE` when the source pyramids were built
+with a filter unsuitable for the analysis. Mosaics select a level independently for
+each source. GCP/RPC transformations retain their full-resolution coordinate meaning.
+
+Forced GCP overviews can give slightly different automatically suggested bounds than GDAL,
+which refits GCPs at the selected resolution. Specify `--te` and `--ts` for an identical
+target grid; Terrio keeps its full-resolution grid while selecting source pixels.
 
 Swaths from netCDF and HDF-EOS use their longitude/latitude geolocation arrays automatically
 when no GCP/RPC method is supplied. `--geoloc` (or `--to METHOD=GEOLOC_ARRAY`) requires arrays
@@ -654,8 +676,8 @@ transformers are supported. Warped reads use the declared VRT block boundaries,
 preserving GDAL's approximation and resampling behavior for cropped requests.
 Band mappings may reorder or repeat source bands; nodata is retained per band,
 including `UNIFIED_SRC_NODATA=YES`, `NO` and `PARTIAL`. GeoTIFF file output uses
-a `.aux.xml` sidecar when nodata differs between bands; keep that sidecar with
-the TIFF. A standalone TIFF byte buffer has only the shared embedded nodata tag.
+a `.aux.xml` sidecar when nodata differs between bands or a Float32 nodata
+value needs its original double precision; keep that sidecar with the TIFF. A standalone TIFF byte buffer has only the shared embedded nodata tag.
 Raster creation options (compression, tiles, masks, overviews and metadata overrides)
 are rejected for a serialized warp; set the warp grid through the warp options.
 GDAL 3.12's generic `sum` polygon path can lose overlap area on pixel boundaries,
@@ -676,8 +698,23 @@ buffers, external pixel functions and expression languages are unsupported.
 replicate source edges as GDAL does. Explicit dataset masks, `SourceBand mask,N`
 and `ComplexSource` with `UseMaskBand` are read lazily.
 
+Mixed native band types use a common numeric buffer selected with GDAL-style
+`DataTypeUnion` promotion, preserving Float64 precision. Plain and derived bands
+round to their declared type before entering that buffer. A selected lazy band
+retains its native type. Warped VRTs convert source windows and compute shared
+blocks in the XML `WorkingDataType`; if omitted, it is inferred from source,
+destination and nodata types. The working block converts directly to the requested
+common buffer, as GDAL's warped dataset RasterIO does. This can retain fractional
+working values for an integer-declared band in a multiband read; reading that band
+alone converts to its native integer type. Python GDAL's default `ReadAsArray`
+chooses Float32 for any mixed dataset; use its explicit `buf_type` argument to
+compare a promoted Float64 buffer.
+
 VRT references use the caller’s normal file and network access. Supplied source maps
 override matching names; unresolved names are opened by the usual drivers.
+For heterogeneous plain/derived bands, a shared buffer uses the common numeric
+type needed by its requested bands. Each band's declared rounding is retained;
+a leading Byte band does not truncate later floating-point bands.
 
 The Rust `VirtualRaster` API parses and serializes these descriptions. Its
 `into_lazy` source map also permits filesystem-free reads in WebAssembly.

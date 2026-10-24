@@ -36,6 +36,47 @@ pub struct VrtDataset {
     pub bands: Vec<VrtBand>,
 }
 
+/// GDALDataTypeUnion-style common buffer type for bands with different native types.
+/// Float64 is required when Float32 cannot cover an integer type's precision/range.
+fn common_type(types: impl IntoIterator<Item = DataType>) -> DataType {
+    fn union(a: DataType, b: DataType) -> DataType {
+        use DataType::*;
+        if a == b {
+            return a;
+        }
+        if a == F64 || b == F64 {
+            return F64;
+        }
+        if a == F32 || b == F32 {
+            let integer = if a == F32 { b } else { a };
+            return if integer.size_bytes() > 2 { F64 } else { F32 };
+        }
+        fn range(t: DataType) -> (i128, i128) {
+            match t {
+                U8 => (0, u8::MAX as i128),
+                I8 => (i8::MIN as i128, i8::MAX as i128),
+                U16 => (0, u16::MAX as i128),
+                I16 => (i16::MIN as i128, i16::MAX as i128),
+                U32 => (0, u32::MAX as i128),
+                I32 => (i32::MIN as i128, i32::MAX as i128),
+                U64 => (0, u64::MAX as i128),
+                I64 => (i64::MIN as i128, i64::MAX as i128),
+                F32 | F64 => unreachable!("integer types only"),
+            }
+        }
+        let (amin, amax) = range(a);
+        let (bmin, bmax) = range(b);
+        [U8, I8, U16, I16, U32, I32, U64, I64]
+            .into_iter()
+            .find(|&t| {
+                let (min, max) = range(t);
+                min <= amin.min(bmin) && max >= amax.max(bmax)
+            })
+            .unwrap_or(F64)
+    }
+    types.into_iter().reduce(union).unwrap_or(DataType::U8)
+}
+
 /// A band of a virtual raster.
 #[derive(Debug, Clone, PartialEq)]
 pub struct VrtBand {
@@ -272,14 +313,14 @@ impl VrtDataset {
     pub fn materialize(&self, base: &Path) -> Result<RasterDataset> {
         let mut cache: HashMap<PathBuf, RasterDataset> = HashMap::new();
         let n = self.width * self.height;
-        let data_type = self.bands[0].data_type;
+        let data_type = common_type(self.bands.iter().map(|b| b.data_type));
         let nodata = self.bands[0].nodata;
         // The output in its type, values converted as they are stored.
         let mut out = RasterData::new_filled(data_type, n * self.bands.len(), 0.0);
         let mut srs = self.srs.clone();
         for (bi, band) in self.bands.iter().enumerate() {
             crate::pixel::with_data!(&mut out, v => {
-                let fill = convert_value(band.nodata.unwrap_or(0.0), data_type);
+                let fill = convert_value(band.nodata.unwrap_or(0.0), band.data_type);
                 v[bi * n..(bi + 1) * n].iter_mut().for_each(|x| *x = fill as _);
             });
             for src in &band.sources {
@@ -345,7 +386,7 @@ impl VrtDataset {
                     }
                 };
                 crate::pixel::with_data!(&mut out, v => {
-                    req.read(self.width, self.height, &mut v[bi * n..(bi + 1) * n], |x| convert_value(value(x), data_type) as _);
+                    req.read(self.width, self.height, &mut v[bi * n..(bi + 1) * n], |x| convert_value(value(x), band.data_type) as _);
                 });
             }
         }

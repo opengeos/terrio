@@ -11,7 +11,7 @@ import xml.etree.ElementTree as ET
 import numpy as np
 from osgeo import gdal
 
-from compare_dem_calc_with_gdal import compare
+from compare_dem_calc_with_gdal import compare, same_value
 
 gdal.UseExceptions()
 
@@ -40,8 +40,8 @@ def main():
         ds.GetRasterBand(1).WriteArray(values * np.float32(0.3))
         ds = None
 
-        def run(name, path, authored=False, reference_path=None, tolerance=1e-5):
-            for window in [None, [17, 13, 31, 27], [0, 0, 11, 9]]:
+        def run(name, path, authored=False, reference_path=None, tolerance=1e-5, windows=None):
+            for window in windows or [None, [17, 13, 31, 27], [0, 0, 11, 9]]:
                 label = name + (" whole" if window is None else f" window {window[0]},{window[1]}")
                 reference, actual = tmp / "reference.vrt", tmp / "actual.tif"
                 try:
@@ -66,6 +66,22 @@ def main():
                         record["max_float32_ulp"] = float(np.max(np.abs(expected - observed) / ulp))
                 records.append(record)
 
+        pyramid = tmp / "pyramid.tif"
+        ds = gdal.Translate(str(pyramid), str(source))
+        ds.BuildOverviews("AVERAGE", [2, 4, 8])
+        ds = None
+        for overview in ["AUTO", "AUTO-1", "NONE", "0", "1", "2"]:
+            reference = tmp / f"overview-gdal-{overview}.vrt"
+            gdal.Warp(str(reference), str(pyramid), format="VRT", width=24, height=20,
+                      overviewLevel=overview, errorThreshold=0)
+            windows = [None, [3, 2, 5, 4], [0, 0, 3, 2]]
+            run(f"VRT GDAL source overview {overview}", reference, windows=windows)
+            authored = tmp / f"overview-terrio-{overview}.vrt"
+            subprocess.run([args.terrio, "warp", str(pyramid), str(authored),
+                            "--ts", "24", "20", "--overview", overview],
+                           check=True, capture_output=True, text=True, env=env)
+            run(f"VRT Terrio source overview {overview}", authored, authored=True, windows=windows)
+
         def source_xml(tag="SimpleSource", filename="source.tif", extra=""):
             return f'<{tag}><SourceFilename relativeToVRT="1">{filename}</SourceFilename><SourceBand>1</SourceBand>{extra}</{tag}>'
 
@@ -73,6 +89,10 @@ def main():
             path = tmp / f"{name}.vrt"
             path.write_text(f'<VRTDataset rasterXSize="96" rasterYSize="80"><SRS>{projection}</SRS><GeoTransform>{",".join(map(str, transform))}</GeoTransform>{band}</VRTDataset>')
             return path
+
+        for label, nodata in [("long-decimal", 1.23456789), ("decimal-tenth", 0.1)]:
+            path = write(f"nodata-{label}", f'<VRTRasterBand dataType="Float32"><NoDataValue>{nodata}</NoDataValue>{source_xml()}</VRTRasterBand>')
+            run(f"VRT raw decimal nodata {label}", path)
 
         for function, arguments in [
             ("sum", 'k="3"'), ("diff", ""), ("mul", 'k="0.5"'), ("div", ""),
@@ -226,6 +246,62 @@ def main():
             path = tmp / f"multiband-{label}.vrt"
             ET.ElementTree(root).write(path, encoding="unicode")
             run(f"VRT multiband mapping {label}", path)
+        # Mixed-band buffers use GDALDataTypeUnion; Python's default ReadAsArray
+        # chooses Float32 for every mixed dataset, which can discard Float64 precision.
+        mixed_source = tmp / "mixed-source.tif"
+        mixed = gdal.GetDriverByName("GTiff").Create(str(mixed_source), 96, 80, 2, gdal.GDT_Float64)
+        mixed.SetGeoTransform(transform)
+        mixed.SetProjection(projection)
+        samples = values.astype(np.float64) / 1000.0
+        samples[0, :3] = [0., 0.25, -9999.]
+        for band in [1, 2]:
+            mixed.GetRasterBand(band).WriteArray(samples + (1.250000000001 if band == 2 else 0.))
+            mixed.GetRasterBand(band).SetNoDataValue(-9999.)
+        mixed = None
+
+        def mixed_compare(name, path):
+            record = {"name": name}
+            try:
+                reference = gdal.Open(str(path))
+                dtype = reference.GetRasterBand(1).DataType
+                for band in range(2, reference.RasterCount + 1):
+                    dtype = gdal.DataTypeUnion(dtype, reference.GetRasterBand(band).DataType)
+                expected = reference.ReadAsArray(buf_type=dtype)
+                actual_path = tmp / "mixed-actual.tif"
+                result = subprocess.run([args.terrio, "convert", str(path), str(actual_path)], capture_output=True, text=True, env=env)
+                if result.returncode:
+                    raise RuntimeError(result.stderr)
+                actual = gdal.Open(str(actual_path))
+                observed = actual.ReadAsArray()
+                np.testing.assert_array_equal(observed, expected)
+                assert all(actual.GetRasterBand(band).DataType == dtype for band in range(1, actual.RasterCount + 1))
+                assert actual.GetGeoTransform() == reference.GetGeoTransform()
+                assert actual.GetSpatialRef().IsSame(reference.GetSpatialRef())
+                assert all(same_value(actual.GetRasterBand(band).GetNoDataValue(), reference.GetRasterBand(band).GetNoDataValue())
+                    for band in range(1, reference.RasterCount + 1))
+                record.update(exact=1., within_tol=1., same_type=True, same_nodata=True, gt_diff_px=0.)
+            except Exception as error:
+                record["error"] = str(error)
+            records.append(record)
+
+        for native in ["Float32", "Float64"]:
+            path = write("mixed-plain-" + native,
+                f'<VRTRasterBand dataType="Byte" band="1">{source_xml(filename="mixed-source.tif")}</VRTRasterBand>'
+                f'<VRTRasterBand dataType="{native}" band="2">{source_xml(filename="mixed-source.tif")}</VRTRasterBand>')
+            mixed_compare("VRT mixed Byte+" + native, path)
+        for working in ["Float32", "Float64"]:
+            path = tmp / f"mixed-warp-{working}.vrt"
+            warped = gdal.Warp(str(path), str(mixed_source), format="VRT", width=96, height=80,
+                srcNodata=-9999., dstNodata=0., warpOptions=["UNIFIED_SRC_NODATA=PARTIAL"])
+            warped = None
+            root = ET.parse(path)
+            native = root.getroot().findall("VRTRasterBand")
+            native[0].set("dataType", "Byte")
+            native[1].set("dataType", "Float64")
+            root.find(".//WorkingDataType").text = working
+            root.write(path)
+            mixed_compare("VRT mixed warped working " + working, path)
+
         for resampling in ["near", "bilinear", "cubic", "average"]:
             path = tmp / f"warped-{resampling}.vrt"
             gdal.Warp(str(path), str(source), format="VRT", dstSRS="EPSG:3857", width=64, height=56, resampleAlg=resampling)

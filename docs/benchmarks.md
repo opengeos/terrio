@@ -1,183 +1,208 @@
 # Benchmarks
 
-How long terrio's commands take compared with the GDAL utilities doing the same work, on the
-real-world files used for [testing](testing.md). Each command runs in a fresh process, once to warm
-the file cache and then five times; the tables show the median wall time of the whole command,
-including start-up, reading and writing.
+The previous tables have been withdrawn following [#246](https://github.com/opengeos/terrio/issues/246).
+They used a GDAL thread setting known to be slower for some tasks, did not validate outputs before
+scoring them, and included runs made while other work was using the machine. Those speed-up ratios
+are not supported as comparisons of equivalent work at each tool's best observed settings.
 
-!!! note "Read these numbers as a snapshot"
-    terrio is young, and correctness against GDAL came first. Both tools run with the same number
-    of threads, all of the machine's: terrio decodes and encodes GeoTIFF tiles, warps, rasterizes
-    and reads and writes vector features in parallel (`RAYON_NUM_THREADS`), with outputs identical
-    to those of a single-threaded run, and GDAL runs with `GDAL_NUM_THREADS` set (GeoTIFF and COG
-    compression and decompression, JPEG 2000 decoding) and `gdalwarp -multi -wo NUM_THREADS`, as
-    most of GDAL's multithreading is off by default; the other GDAL commands use whatever
-    `GDAL_NUM_THREADS` turns on for them. On machines with fewer cores, the parallel cases gain
-    less. Some operations use fewer threads than they are given: terrio's terrain products
-    (hillshade, slope) and `calc` at most 16. Thanks to
-    [#212](https://github.com/opengeos/terrio/issues/212) for pointing out that earlier runs left
-    GDAL's multithreading off. While these ran, another process used about 6 of the machine's 40
-    threads, which slows the parallel cases of both tools.
+The replacement harness uses GDAL **3.13.3**, the current release listed on GDAL's
+[download page](https://gdal.org/en/stable/download.html), and a release build of Terrio. Results
+are measurements of complete command invocations, including startup, reading, and writing.
+They are machine-specific snapshots, not guarantees of performance on other data or hardware.
 
-## Small files
+## Method
 
-Machine: Intel Xeon w7-3445 (x86_64), 40 threads, Linux; 40 threads for each tool. GDAL 3.12.2 "Chicoutimi", released 2026/02/03; terrio 0.4.2. Median of 5 runs after a warm-up run; wall time of the whole command.
+- Each tool is tuned independently at CPU budgets of 1, 2, 4, 8, 16, and the available maximum.
+  Every setting receives a warm-up and three timed samples. Each tool selects its own lowest
+  median, then receives an independent warm-up and fresh measurement samples. These are the best
+  observed settings among the tested budgets, not a claim of globally optimal configuration.
+- Measurement runs alternate Terrio/GDAL and GDAL/Terrio order. Tables show the median and full
+  minimum–maximum range of seven samples, or five for large files. Raw samples and tuning results
+  accompany the tables in JSON. Ratios describe observed medians, not statistical significance.
+  The Checks column marks a **wide timing range** when either tool's maximum sample exceeds twice
+  its median; this annotation does not alter the samples or their median ratio.
+- On Linux, `taskset` restricts each process and all its child threads to its selected CPU budget.
+  `RAYON_NUM_THREADS`, `GDAL_NUM_THREADS`, and `gdalwarp`'s `NUM_THREADS` also configure the pools.
+  A budget of one therefore bounds Terrio's workers outside Rayon as well. On other platforms,
+  these variables are hints; the script does not claim a hard CPU limit.
+  The Linux runner uses the lowest-numbered available CPU IDs for both tools.
+  Budgets count logical CPUs; the selection does not distinguish physical cores from SMT siblings.
+  Hardware topology and OS placement can
+  therefore affect these machine-specific results. Budgets above the available affinity are rejected.
+- The Linux runner estimates competing CPU use from machine CPU time minus the measured child's
+  CPU time. Estimates are averaged by elapsed time across each paired tuning or measurement
+  series, reducing clock-tick noise in short commands. If a series exceeds one CPU, the row
+  receives no ratio. The check is intentionally machine-wide: work outside the pinned CPU set can
+  still contend for shared caches, memory bandwidth and package power. Raw background estimates
+  are retained. This detects contention; it does not
+  provide hardware isolation or remove filesystem and network noise. On other platforms,
+  background CPU use is unmeasured and ratios carry no background-load guarantee.
+- Every invocation starts with an empty, separate output directory. PAM statistics caches are
+  disabled. Validation runs after timing, against the final output of each selected setting.
+  The benchmark does not prove that every earlier invocation produced the same output.
+- GDAL uses its single-process `gdal raster mosaic` and `gdal raster polygonize` commands.
+  Mosaic resolution is explicitly averaged, as in the former `gdalbuildvrt` command, to accept
+  tiles whose resolutions differ at floating-point precision. Both COG writers build fresh average
+  overviews; GDAL is explicitly told to ignore source overviews. Warp benchmarks retain NAD83 (`EPSG:4269` → `EPSG:26913`) to avoid measuring different
+  datum transformations or grid availability. Networking for datum grids is disabled.
+- GDAL Shapefile output explicitly uses UTF-8 encoding to match Terrio. The countries GeoJSON
+  fixture has scalar attributes supported by Shapefile.
+- Memory ratios are omitted: launching commands from a Python process that also validates large
+  datasets can contaminate child peak-RSS accounting with inherited parent memory.
+
+## Correctness gates
+
+A zero exit status is insufficient. Failed commands, validation errors, differing outputs, and
+excessive background CPU use are visible in the table and receive **no speed ratio**.
+
+Raster outputs are read through GDAL and compared at every base and overview pixel, including
+validity masks, data types, nodata, scale/offset, units, color interpretation and color tables.
+CRSs must be semantically equal; affine transforms use absolute tolerance `1e-8` and relative
+tolerance `1e-12`. Pixels are compared exactly (with NaNs equal). Approximate pixel agreement
+is deliberately not scored as equivalence; a rounding difference may therefore exclude an
+otherwise useful result. Metadata outside these checks, compression ratios, and physical file
+layouts are not asserted to be identical.
+
+Vector outputs compare field names/types, CRS, and every feature's attribute values and normalized
+geometry WKB. Disk-sorted hashes allow different feature order without keeping whole datasets in
+memory. Generated feature IDs and layer names are ignored. Coordinates are compared exactly after
+normalizing ring starts, orientations and multipart order. Topologically equal geometries with
+different vertices can consequently be excluded. The check is conservative rather than a test of
+all possible notions of vector equivalence.
+
+Summary cases check the captured JSON against the source. Statistics from **both** commands are
+checked against an independent NumPy reduction of valid source pixels, using relative tolerance
+`1e-6` and absolute tolerance `1e-8`. This matters for GDAL 3.13.3: the SRTM case returned incorrect
+statistics in our check, even though `gdalinfo` exited successfully. It must not receive a speed
+ratio for that result.
+
+A controlled check used the same `gdalinfo -json -stats srtm90.tif` command with
+`GDAL_PAM_ENABLED=NO`. The source had no stored `STATISTICS_*` keys and no nodata value.
+GDAL 3.13.3 with `GDAL_NUM_THREADS=1` matched the full-resolution NumPy reduction (minimum 15,
+maximum 4338); with eight threads it returned minimum 26 and maximum 4148. GDAL 3.12.2 matched
+NumPy at both thread counts. This identifies a thread-dependent discrepancy in the tested GDAL
+3.13.3 build, not a requested approximate-statistics mode or a stored-statistics cache. Its internal
+cause remains unisolated; the invalid eight-thread result is excluded from speed comparisons.
+
+## Rerun on 24 October 2026
+
+The rerun covers all 19 small-file/remote cases plus the large-mosaic window, hillshade and slope
+cases. The other historical large-file timings remain withdrawn. The full case list is still
+available in the script.
+
+22 distinct cases were measured; 13 passed the output checks and 8 also passed the background-load
+gate. Other computation jobs were temporarily paused for these measurements. Any rows still marked
+**background load** are diagnostic timings, not supported performance comparisons.
+
+Hardware: Intel Xeon w7-3445, 40 available logical CPUs, Linux. GDAL 3.13.3; Terrio 0.5.0, optimized
+release build. All runs tested CPU budgets 1, 2, 4, 8, 16 and 40, with three tuning samples per
+budget. Small-file measurements use seven fresh samples and large-file measurements use five. Times
+below are median [min–max].
+
+[Raw tuning and measurement samples, commands, background CPU estimates and complete validation
+details](benchmark-results.json) are retained for every row. The nearest warp was repeated after an
+earlier load rejection; the table uses the latest run for that task and retains both runs in JSON.
+Machine-specific paths are replaced with documented placeholders. A dash means the row was excluded
+from speed comparisons.
 
 
 ### Summaries
 
-| Task | terrio | GDAL | terrio vs GDAL |
-|---|---|---|---|
-| Raster info: USGS 3DEP tile (3612×3612) | 16 ms | 38 ms | 2.3× faster |
-| Raster statistics: SRTM 90 m (4269×2465) | 107 ms | 153 ms | 1.4× faster |
-| Vector info: US counties GeoPackage | 15 ms | 30 ms | 2.0× faster |
+| Task | terrio median [range] | GDAL median [range] | CPUs T / G | terrio vs GDAL | Checks |
+|---|---|---|---|---|---|
+| Raster info: USGS 3DEP tile (3612×3612) | 14 ms [13 ms–15 ms] | 55 ms [53 ms–57 ms] | 1 / 1 | — | background load |
+| Raster statistics: SRTM 90 m (4269×2465) | 105 ms [99 ms–108 ms] | 47 ms [44 ms–51 ms] | 8 / 8 | — | GDAL statistics differ from NumPy |
+| Vector info: US counties GeoPackage | 18 ms [14 ms–20 ms] | 28 ms [26 ms–30 ms] | 4 / 1 | 1.56× faster | pass |
 
 ### Raster conversion
 
-| Task | terrio | GDAL | terrio vs GDAL |
-|---|---|---|---|
-| GeoTIFF → COG (Deflate): USGS 3DEP tile | 207 ms | 357 ms | 1.7× faster |
-| GeoTIFF → GeoTIFF (LZW, tiled): Landsat (4 bands) | 58 ms | 88 ms | 1.5× faster |
-| GeoTIFF → Zarr: SRTM 90 m | 62 ms | 66 ms | 1.1× faster |
+| Task | terrio median [range] | GDAL median [range] | CPUs T / G | terrio vs GDAL | Checks |
+|---|---|---|---|---|---|
+| GeoTIFF → COG (Deflate): USGS 3DEP tile | 195 ms [189 ms–200 ms] | 296 ms [286 ms–309 ms] | 40 / 40 | — | pixels differ (exact check) |
+| GeoTIFF → GeoTIFF (LZW, tiled): Landsat (4 bands) | 56 ms [55 ms–59 ms] | 80 ms [77 ms–84 ms] | 40 / 16 | — | background load |
+| GeoTIFF → Zarr: SRTM 90 m | 64 ms [61 ms–66 ms] | 51 ms [50 ms–55 ms] | 16 / 8 | — | band 1: color interpretation differs |
 
 ### Raster operations
 
-| Task | terrio | GDAL | terrio vs GDAL |
-|---|---|---|---|
-| Translate: window + Int16: USGS 3DEP tile | 49 ms | 54 ms | 1.1× faster |
-| Warp to UTM 13N, nearest: USGS 3DEP tile | 158 ms | 2.01 s | 12.7× faster |
-| Warp to UTM 13N, bilinear: USGS 3DEP tile | 203 ms | 2.00 s | 9.8× faster |
-| Mosaic 4 USGS 3DEP tiles → GeoTIFF | 310 ms | 619 ms | 2.0× faster |
-| Mosaic 4 USGS 3DEP tiles → VRT | 19 ms | 37 ms | 2.0× faster |
+| Task | terrio median [range] | GDAL median [range] | CPUs T / G | terrio vs GDAL | Checks |
+|---|---|---|---|---|---|
+| Translate: window + Int16: USGS 3DEP tile | 46 ms [44 ms–49 ms] | 56 ms [54 ms–57 ms] | 40 / 40 | 1.21× faster | pass |
+| Warp to NAD83 / UTM 13N, nearest: USGS 3DEP tile | 155 ms [149 ms–589 ms] | 229 ms [214 ms–482 ms] | 40 / 8 | 1.48× faster | pass; wide timing range |
+| Warp to NAD83 / UTM 13N, bilinear: USGS 3DEP tile | 197 ms [194 ms–202 ms] | 261 ms [257 ms–271 ms] | 40 / 8 | — | pixels differ (exact check); background load |
+| Mosaic 4 USGS 3DEP tiles → GeoTIFF | 373 ms [285 ms–769 ms] | 541 ms [513 ms–1.02 s] | 40 / 8 | 1.45× faster | pass; wide timing range |
+| Mosaic 4 USGS 3DEP tiles → VRT | 14 ms [13 ms–14 ms] | 33 ms [31 ms–33 ms] | 1 / 1 | — | band 1: color interpretation differs; background load |
 
 ### Vector conversion
 
-| Task | terrio | GDAL | terrio vs GDAL |
-|---|---|---|---|
-| Shapefile → GeoPackage: 7,342 populated places | 58 ms | 89 ms | 1.6× faster |
-| GeoPackage → FlatGeobuf: US counties | 54 ms | 61 ms | 1.1× faster |
-| GeoPackage → GeoParquet: US counties | 80 ms | 109 ms | 1.4× faster |
-| GeoJSON → Shapefile: world cables | 24 ms | 46 ms | 1.9× faster |
-| Filter + reproject: US counties → EPSG:5070 | 49 ms | 58 ms | 1.2× faster |
+| Task | terrio median [range] | GDAL median [range] | CPUs T / G | terrio vs GDAL | Checks |
+|---|---|---|---|---|---|
+| Shapefile → GeoPackage: 7,342 populated places | 57 ms [54 ms–61 ms] | 80 ms [74 ms–82 ms] | 8 / 1 | — | field names/types differ |
+| GeoPackage → FlatGeobuf: US counties | 51 ms [49 ms–56 ms] | 64 ms [62 ms–67 ms] | 4 / 8 | — | background load |
+| GeoPackage → GeoParquet: US counties | 70 ms [68 ms–76 ms] | 104 ms [100 ms–107 ms] | 4 / 1 | 1.48× faster | pass |
+| GeoJSON → Shapefile: world countries (176 features) | 31 ms [27 ms–33 ms] | 49 ms [47 ms–51 ms] | 8 / 1 | 1.60× faster | pass |
+| Filter + reproject: US counties → EPSG:5070 | 45 ms [42 ms–48 ms] | 50 ms [47 ms–52 ms] | 4 / 1 | — | features differ (exact check); background load |
 
 ### Raster ↔ vector
 
-| Task | terrio | GDAL | terrio vs GDAL |
-|---|---|---|---|
-| Rasterize US counties at 0.01° | 143 ms | 356 ms | 2.5× faster |
-| Polygonize NLCD land cover (966×731) | 470 ms | 600 ms | 1.3× faster |
+| Task | terrio median [range] | GDAL median [range] | CPUs T / G | terrio vs GDAL | Checks |
+|---|---|---|---|---|---|
+| Rasterize US counties at 0.01° | 137 ms [133 ms–160 ms] | 317 ms [315 ms–327 ms] | 40 / 4 | — | background load |
+| Polygonize NLCD land cover (966×731) | 585 ms [582 ms–618 ms] | 432 ms [413 ms–442 ms] | 16 / 16 | — | background load |
 
 ### Remote data
 
-| Task | terrio | GDAL | terrio vs GDAL |
-|---|---|---|---|
-| Info of a remote COG (USGS 3DEP on S3) | 557 ms | 613 ms | 1.1× faster |
-
-## Large files
-
-The same comparison on gigabyte-sized files, with the peak resident memory of each command
-(measured with `wait4`): a 14412×14412 Float32 mosaic of 16 USGS 3DEP tiles (an 800 MB tiled
-Deflate GeoTIFF), a Sentinel-2 L1C red band (10980×10980, JPEG 2000), and the OpenStreetMap
-extract of Colorado (a 400 MB PBF, and the 6.2 M-feature GeoPackage `ogr2ogr` makes of it). Each
-command runs once to warm the file cache, then three times; the tables show the median time and
-the largest peak memory. Same machine and threads, terrio 0.4.2.
+| Task | terrio median [range] | GDAL median [range] | CPUs T / G | terrio vs GDAL | Checks |
+|---|---|---|---|---|---|
+| Info of a remote COG (USGS 3DEP on S3) | 471 ms [334 ms–540 ms] | 623 ms [619 ms–636 ms] | 1 / 1 | 1.32× faster | pass |
 
 ### Large rasters
 
-| Task | terrio | GDAL | terrio vs GDAL | terrio memory | GDAL memory |
+| Task | terrio median [range] | GDAL median [range] | CPUs T / G | terrio vs GDAL | Checks |
 |---|---|---|---|---|---|
-| Statistics: 14412² Float32 mosaic | 1.84 s | 4.07 s | 2.2× faster | 145 MB | 859 MB |
-| GeoTIFF → COG (Deflate): the mosaic | 2.45 s | 2.35 s | 1.0× slower | 695 MB | 1.7 GB |
-| Window 2048² of the mosaic | 37 ms | 71 ms | 1.9× faster | 71 MB | 70 MB |
-| Warp the mosaic to EPSG:3857, bilinear | 2.11 s | 4.27 s | 2.0× faster | 670 MB | 2.2 GB |
-| Mosaic 16 USGS 3DEP tiles → GeoTIFF | 1.21 s | 2.20 s | 1.8× faster | 441 MB | 987 MB |
-| Hillshade of the mosaic | 503 ms | 5.35 s | 10.6× faster | 316 MB | 855 MB |
-| Slope of the mosaic | 739 ms | 7.00 s | 9.5× faster | 578 MB | 855 MB |
-| Sentinel-2 band: JPEG 2000 → GeoTIFF | 666 ms | 3.22 s | 4.8× faster | 363 MB | 510 MB |
-| Statistics: Sentinel-2 band (15-bit samples) | 1.02 s | 2.75 s | 2.7× faster | 105 MB | 277 MB |
-
-### Large vectors
-
-| Task | terrio | GDAL | terrio vs GDAL | terrio memory | GDAL memory |
-|---|---|---|---|---|---|
-| Info: Colorado OpenStreetMap GeoPackage (6.2 M features) | 14 ms | 32 ms | 2.3× faster | 28 MB | 45 MB |
-| Lines (2.0 M) → FlatGeobuf | 5.11 s | 5.93 s | 1.2× faster | 287 MB | 563 MB |
-| Polygons (2.3 M) → GeoParquet | 3.01 s | 3.33 s | 1.1× faster | 642 MB | 965 MB |
-| Lines → GeoJSON | 3.49 s | 42.95 s | 12.3× faster | 277 MB | 502 MB |
-| Lines → Shapefile | 5.21 s | 7.90 s | 1.5× faster | 222 MB | 490 MB |
-| Filter + reproject lines → GeoPackage | 3.86 s | 6.52 s | 1.7× faster | 149 MB | 187 MB |
-| Polygons → GeoPackage | 5.54 s | 7.06 s | 1.3× faster | 230 MB | 771 MB |
-| GeoPackage (5 layers) → GeoPackage | 9.74 s | 18.73 s | 1.9× faster | 269 MB | 791 MB |
-| OpenStreetMap PBF (Colorado) → GeoPackage | 20.11 s | 42.95 s | 2.1× faster | 533 MB | 457 MB |
-
-## Notes
-
-- **Raster info** reads only the GeoTIFF header and the tags it needs.
-- **Mosaic → VRT** reads only the inputs' headers; GDAL opens each input fully.
-- **Warp to UTM 13N**: the tile is in NAD83, so the warp also changes datum to WGS 84. The
-  machine had PROJ's grids in terrio's download cache, which GDAL does not search, so terrio
-  shifted the points with a grid and GDAL did not.
-- **Warps and GDAL's thread count**: `gdalwarp` gets slower past a few threads on these files. The
-  small tile warps fastest with 4 threads (330 ms nearest, 516 ms bilinear, against 158 ms and
-  203 ms for terrio with 40), and the large mosaic with 16 (2.93 s, against 2.11 s); the tables
-  show both tools at 40 threads. terrio's warp of the tile takes 166 ms from 16 threads up, and
-  303 ms with 4.
-- **Remote COG info** fetches one 64 KiB range; GDAL runs with
-  `GDAL_DISABLE_READDIR_ON_OPEN=EMPTY_DIR`, as recommended for cloud data. Remote timings depend on
-  the network.
-- **Vector info** decodes every geometry of the GeoPackage (in parallel, without reading the
-  attributes) to compute the extent; `ogrinfo` reports the extent stored in `gpkg_contents`.
-- **Rasterize** burns US counties, whose extent crosses the antimeridian, into a 35894×5348 grid
-  and writes it as an uncompressed 192 MB GeoTIFF.
-- `.aux.xml` statistics caches are disabled (`GDAL_PAM_ENABLED=NO`), and the statistics case uses a
-  file without statistics stored in its metadata, so both tools compute them from the pixels.
-- **Large rasters**: statistics, translation, terrain products, warping and mosaicking read their
-  inputs by windows, and write GeoTIFF and COG outputs a strip of rows at a time, so neither is
-  held whole. A COG's levels are compressed by rows of tiles as the rows come, each overview
-  averaged from pairs of rows of the level above, and the tiles wait in temporary files until
-  the file is laid out (the IFDs first, then the smallest overview's tiles). The JPEG 2000 band
-  is decoded a row of tiles at a time, four rows at once, so that tiles slow to decode overlap
-  the next rows' tiles.
-- **Memory**: on Linux with glibc, the `terrio` command fixes the allocator's mmap threshold at
-  4 MiB (`mallopt`), so that blocks that large go back to the system when they are freed rather
-  than stay in the per-thread arenas, where glibc's adaptive threshold puts them once large blocks
-  have been freed. That lowers peak memory by 12-60% on these files, for a few percent of time
-  (about 20% for the mosaic and GeoParquet); for the OpenStreetMap PBF, the threshold accounts
-  for about 200 MB of its 290 MB drop, and decoding at most 20 blocks at once for the rest. A
-  threshold set in the environment (`MALLOC_MMAP_THRESHOLD_`, or `glibc.malloc.mmap_threshold` in
-  `GLIBC_TUNABLES`) is kept; the Python and JavaScript packages leave the allocator to their host.
-- **Mosaics to GeoTIFF**: terrio copies each tile's pixels into place, and so does GDAL here,
-  with `gdalbuildvrt` then `gdal_translate` (timed together); the outputs are identical. Earlier
-  versions of this page timed `gdalwarp`, which resamples the tiles.
-- **Large vectors** are converted a chunk of features at a time: at most 65,536 features, and
-  about 64 MB of them, so that a run of large polygons is not held at once. GeoPackage and
-  FlatGeobuf outputs take chunks of about 16 MB, the next one read while one is written, as
-  their rows are written one after another. Shapefile and GeoPackage
-  outputs first read the input once to settle the column types and the header (see
-  [#88](https://github.com/opengeos/terrio/issues/88)); GeoParquet outputs do so only for integer,
-  date and date-time fields, and gather the geometry types and extent as they write. FlatGeobuf
-  outputs read the input once, deciding the types as the features come.
-  GeoPackage outputs keep only each geometry's box (24 bytes) for the R-tree, whose tables are
-  written a row at a time once the boxes are packed (with each feature's leaf, 16 bytes, while
-  its `_rowid` table is written).
-- **OpenStreetMap PBF** files sorted by type then id are read a batch of blocks at a time. The
-  nodes, packed to about 6 bytes each, and the ways relations use go to temporary files read back
-  through memory maps, so the operating system's page cache rather than the process holds them.
+| Window 2048² of the mosaic | 38 ms [38 ms–39 ms] | 62 ms [56 ms–67 ms] | 16 / 16 | 1.65× faster | pass |
+| Hillshade of the mosaic | 498 ms [495 ms–511 ms] | 3.96 s [3.91 s–4.03 s] | 40 / 4 | — | pixels differ (exact check) |
+| Slope of the mosaic | 788 ms [718 ms–1.61 s] | 4.67 s [4.61 s–4.84 s] | 40 / 4 | — | pixels differ (exact check); wide timing range |
 
 ## Running the benchmarks
 
+Use the latest GDAL release and matching Python bindings. The commands below pin the version
+used for this update; check GDAL's download page before a future rerun.
+
+Linux CPU affinity requires `taskset` from util-linux. Vector validation requires an external
+`sort` supporting `-S 64M` and `-T DIR`, as provided by GNU coreutils or compatible BSD versions.
+`gsort` is preferred when available (for example, GNU coreutils installed on macOS). Missing or
+incompatible sort commands are reported as validation failures and receive no ratio. Windows
+users need these Unix tools through WSL or another compatible environment.
+Vector geometry normalization also requires GDAL built with GEOS. Missing GEOS or a failed
+normalization produces a validation failure and receives no ratio.
+
 ```sh
+conda create -n terrio-benchmark -c conda-forge gdal=3.13.3 libgdal-arrow-parquet=3.13.3 numpy
+conda activate terrio-benchmark
+export PROJ_DATA="$CONDA_PREFIX/share/proj"
 scripts/fetch_test_data.sh ../terrio-data
-cargo build --release
-python scripts/benchmark.py ../terrio-data --runs 5 --remote --out benchmarks.md
+scripts/fetch_large_data.sh ../terrio-large-data
+CARGO_BUILD_JOBS=2 CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0 cargo build --release -p terrio-cli
+
+# Keep large temporary outputs on disk, and stop competing workloads before timing.
+mkdir -p ../terrio-benchmark-scratch
+TMPDIR="$PWD/../terrio-benchmark-scratch" python scripts/benchmark.py ../terrio-data \
+  --large ../terrio-large-data --remote --out benchmarks.md
 ```
 
-The large-file cases download about 3.5 GB, and run alone when no test data directory is given:
+`--threads N` sets the **maximum** candidate CPU budget, rather than claiming that both tools
+use exactly N threads. `--thread-counts 1,4,16` supplies an explicit candidate set. `--runs`,
+`--large-runs`, and `--tune-runs` control the respective sample counts; all must be positive.
+`--only hillshade` selects a description substring for a focused rerun. `--max-background-cpus`
+controls the competing-load threshold; increasing it weakens that protection and is recorded in
+JSON. `--out FILE` writes Markdown and `FILE.json`, checkpointing completed rows. The recorded
+`source_commit` identifies the harness checkout; the selected `TERRIO_BIN` and its reported version
+are recorded separately.
+
+The regression tests cover wrong-but-successful commands, independent tuning, alternating order,
+fresh outputs, inherited CPU affinity, noisy measurements, pixel/mask/metadata differences,
+vector feature differences, and a deliberately corrupted GDAL statistics summary:
 
 ```sh
-scripts/fetch_large_data.sh ../terrio-large-data
-python scripts/benchmark.py --large ../terrio-large-data --large-runs 3
+python -m unittest discover -s scripts/tests -v
 ```
-
-The script needs the GDAL command-line tools on `PATH`. `--threads N` runs both tools on `N`
-threads (all of the machine's by default).
