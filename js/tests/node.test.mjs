@@ -1182,3 +1182,16 @@ test("openVrt resolves uploaded sources and reads derived windows lazily", () =>
   mixed.free(); fractional.free();
   src.free(); out.free();
 });
+
+test("pansharpen weights, selected bands and unequal resolutions", () => {
+  const pan = terrio.rasterFromArray(new Uint16Array(16).fill(80), 4, 4, [0, 1, 0, 4, 0, -1], "EPSG:32611");
+  const spectral = terrio.rasterFromArray(new Uint16Array([20, 20, 20, 20, 40, 40, 40, 40]), 2, 2, [0, 2, 0, 4, 0, -2], "EPSG:32611");
+  const out = terrio.pansharpen(pan, spectral, { ot: "Float64" });
+  assert.equal(out.dtype, "float64");
+  assert.deepEqual([...out.readBand(1)], new Array(16).fill(53));
+  assert.deepEqual([...out.readBand(2)], new Array(16).fill(107));
+  const selected = terrio.pansharpen(pan.toBytes("pan.tif"), [spectral], { weights: [0.75, 0.25], bands: [2] });
+  assert.deepEqual([...selected.readBand(1)], new Array(16).fill(128));
+  assert.throws(() => terrio.pansharpen(pan, spectral, { weights: [1] }), /weight/);
+  pan.free(); spectral.free(); out.free(); selected.free();
+});

@@ -870,7 +870,7 @@ fn gdal_chunks(
 /// chunk, a weighted sum scaled by the pixel count where the chunk has no nodata pixel (and, at a
 /// factor of two, GDAL's sum of quarters in the work type), a sum over the valid pixels otherwise,
 /// in the work type of the source's data type; `None` where no pixel is valid.
-fn gdal_average(s: &SourceRead, req_off: (usize, usize), win: (f64, f64, f64, f64), out: (usize, usize)) -> Vec<Option<f64>> {
+pub(crate) fn gdal_average(s: &SourceRead, req_off: (usize, usize), win: (f64, f64, f64, f64), out: (usize, usize)) -> Vec<Option<f64>> {
     let (fx, fy, fw, fh) = win;
     let (ow, oh) = out;
     let mut res = vec![None; ow * oh];
