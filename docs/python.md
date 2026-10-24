@@ -182,6 +182,8 @@ raster = terrio.open_bytes(data, "dem.tif")  # from bytes; to bytes with raster.
 ```python
 sharp = terrio.pansharpen("pan.tif", "rgbnir.tif", bands=[1, 2, 3], bitdepth=12, nodata=0)
 sharp = terrio.pansharpen("pan.tif", ["red.tif", "green.tif", "blue.tif"], weights=[0.6, 0.3, 0.1])
+virtual = terrio.pansharpen("pan.tif", ["red.tif", "green.tif", "blue.tif"], "sharp.vrt")
+window = virtual.read(window=(100, 200, 64, 64))  # pixel windows read on demand
 ```
 
 All spectral inputs contribute to intensity; `bands` selects/reorders output bands from

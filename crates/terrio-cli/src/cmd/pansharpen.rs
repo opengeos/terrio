@@ -1,7 +1,7 @@
 //! `terrio pansharpen`.
-use super::rasterout::{OutputArgs, open};
+use super::rasterout::{OutputArgs, open_lazy};
 use terrio::Error;
-use terrio::ops::pansharpen::{PansharpenExtent, PansharpenNodata, PansharpenOptions, SpectralBand, pansharpen};
+use terrio::ops::pansharpen::{PansharpenExtent, PansharpenNodata, PansharpenOptions};
 use terrio::ops::{Resampling, parse_data_type};
 
 #[derive(clap::Args)]
@@ -40,23 +40,17 @@ pub struct Args {
 pub fn run(a: Args) -> terrio::Result<()> {
     let input = &a.paths[0];
     let output = a.paths.last().unwrap();
-    let pan = open(input)?;
-    let mut datasets = Vec::new();
-    let mut selections = Vec::new();
+    let mut spectral = Vec::new();
     for path in &a.paths[1..a.paths.len() - 1] {
         let (path, band) = match path.rsplit_once(",band=") {
             Some((p, b)) => (p, Some(b.parse::<usize>().map_err(|_| Error::InvalidArgument("spectral band must be an integer".into()))?)),
             None => (path.as_str(), None),
         };
-        let ds = open(path)?;
-        selections.push(band.map(|b| vec![b]).unwrap_or_else(|| (1..=ds.raster.bands).collect()));
-        datasets.push(ds);
+        let ds = open_lazy(path)?;
+        for band in band.map(|b| vec![b]).unwrap_or_else(|| (1..=ds.band_count()).collect()) {
+            spectral.push((path.to_string(), band));
+        }
     }
-    let spectral = datasets
-        .iter()
-        .zip(selections)
-        .flat_map(|(ds, bands)| bands.into_iter().map(move |band| SpectralBand { dataset: ds, band }))
-        .collect::<Vec<_>>();
     let nodata = match a.nodata.as_deref() {
         None => PansharpenNodata::Auto,
         Some(s) if s.eq_ignore_ascii_case("none") => PansharpenNodata::None,
@@ -72,5 +66,10 @@ pub fn run(a: Args) -> terrio::Result<()> {
         extent: PansharpenExtent::parse(&a.spat_adjust)?,
         output_type: a.ot.as_deref().map(parse_data_type).transpose()?,
     };
-    a.out.write(&pansharpen(&pan, &spectral, &o)?, output)
+    if a.out.format.as_deref().is_some_and(|v| v.eq_ignore_ascii_case("VRT"))
+        || (a.out.format.is_none() && std::path::Path::new(output).extension().is_some_and(|v| v.eq_ignore_ascii_case("vrt")))
+    {
+        return terrio::ops::pansharpen::vrt::PansharpenVrt::from_paths(input, &spectral, &o)?.write(output);
+    }
+    terrio::ops::pansharpen::vrt::pansharpen_to_path(input, &spectral, &o, output, &a.out.options()?)
 }

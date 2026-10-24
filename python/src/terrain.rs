@@ -528,10 +528,6 @@ fn pansharpen(
     bigtiff: bool,
 ) -> PyResult<PyRaster> {
     use terrio::ops::pansharpen::{PansharpenExtent, PansharpenNodata, PansharpenOptions, SpectralBand};
-    let pan = input_raster(py, pan)?;
-    let datasets = crate::ops::input_rasters(py, spectral)?;
-    let inputs =
-        datasets.iter().flat_map(|(_, ds)| (1..=ds.raster.bands).map(move |band| SpectralBand { dataset: ds, band })).collect::<Vec<_>>();
     let nodata = match nodata {
         None => PansharpenNodata::Auto,
         Some(v) if v.extract::<String>().is_ok_and(|s| s.eq_ignore_ascii_case("none")) => PansharpenNodata::None,
@@ -547,6 +543,35 @@ fn pansharpen(
         extent: PansharpenExtent::parse(spat_adjust).py()?,
         output_type: ot.map(parse_data_type).transpose().py()?,
     };
+    let virtual_output = format.is_some_and(|v| v.eq_ignore_ascii_case("VRT"))
+        || (format.is_none() && dst.is_some_and(|v| std::path::Path::new(v).extension().is_some_and(|e| e.eq_ignore_ascii_case("vrt"))));
+    if virtual_output {
+        let dst = dst.ok_or_else(|| invalid("VRT output requires dst"))?;
+        let pan = crate::ops::raster_path(pan)?.ok_or_else(|| invalid("VRT output requires persistent input paths"))?;
+        let items = if spectral.extract::<std::path::PathBuf>().is_ok() {
+            vec![spectral.clone()]
+        } else {
+            spectral.extract::<Vec<Bound<'_, PyAny>>>()?
+        };
+        let mut sources = Vec::new();
+        for item in items {
+            let path = crate::ops::raster_path(&item)?.ok_or_else(|| invalid("VRT output requires persistent input paths"))?;
+            let count = py.detach(|| terrio::open_raster_lazy(&path)).py()?.band_count();
+            sources.extend((1..=count).map(|band| (path.clone(), band)));
+        }
+        let inner = py
+            .detach(|| {
+                let description = terrio::ops::pansharpen::vrt::PansharpenVrt::from_paths(&pan, &sources, &o)?;
+                description.write(dst)?;
+                description.into_lazy(std::path::Path::new(""), Default::default())
+            })
+            .py()?;
+        return Ok(PyRaster { inner });
+    }
+    let pan = input_raster(py, pan)?;
+    let datasets = crate::ops::input_rasters(py, spectral)?;
+    let inputs =
+        datasets.iter().flat_map(|(_, ds)| (1..=ds.raster.bands).map(move |band| SpectralBand { dataset: ds, band })).collect::<Vec<_>>();
     let out = py.detach(|| terrio::ops::pansharpen::pansharpen(&pan, &inputs, &o)).py()?;
     finish_raster(py, out, dst, format, compress, tile_size, bigtiff)
 }

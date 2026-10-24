@@ -117,13 +117,26 @@ The fetch script downloads Landsat 8 B8/B4/B3/B2 real image pairs from the publi
 [rio-pansharpen test fixtures](https://github.com/mapbox/rio-pansharpen/tree/f23d1edbedddf157ca5014ec805918cdf713bb7f/tests/fixtures/tiny_20_tiffs/LC81070352015122LGN00).
 The comparison retains unequal pan/spectral resolutions and checks all six interpolation
 methods, weights, output selection, bit depth, nodata borders, internal masks, integer
-clipping and union/intersection extents against `gdal_pansharpen`. No tolerance is allowed
+clipping and union/intersection extents against `gdal_pansharpen`. It also cross-reads
+GDAL/Terrio pansharpened VRTs as full images and cropped requests, and exercises all six
+resamplers on images spanning multiple 512-pixel interpolation blocks. No tolerance is allowed
 for integer cases; the Float32 comparison allows 0.002, one ULP at the scene's radiometric scale.
 
 ```sh
 python scripts/compare_pansharpen_with_gdal.py ../terrio-data
 python scripts/conformance.py ../terrio-data --only pansharpen
 ```
+
+A local HTTP range-server measurement on a 1024×1024 UInt16 Landsat pan and three
+512×512 spectral TIFFs fetched 853,965 bytes for a 64×64 output window, versus
+3,676,141 bytes for the whole VRT. Both touched four source TIFFs; the window made
+eight source GETs and the whole image twelve (plus the VRT description). Source
+headers are read at open; the Rust counting-reader regression verifies no pixel
+reads at open and bounded interpolation margins for small windows. On that scene,
+the development CLI's peak RSS fell from 125,544 KiB to 100,284 KiB with the shared
+block implementation and streamed TIFF output, measured with two Rayon threads.
+These are fixture measurements, not memory or transfer guarantees for every codec.
+
 
 The `vrt` conformance suite cross-reads GDAL/Terrio virtual rasters on USGS terrain,
 including whole and cropped requests, derived bands, nodata, masks, full and

@@ -1067,5 +1067,5 @@ def pansharpen(
     tile_size: int | None = None,
     bigtiff: bool = False,
 ) -> Raster:
-    """Weighted Brovey pansharpening on one or several spectral rasters."""
+    """Weighted Brovey pansharpening; persistent inputs and a .vrt destination create a lazy VRT."""
     ...

@@ -1139,3 +1139,15 @@ test("openVrt resolves uploaded sources and reads derived windows lazily", () =>
   assert.throws(() => terrio.openVrt(xml.replace("sum", "external_custom_function"), { "upload.tif": bytes }), /external_custom_function/);
   src.free(); out.free();
 });
+
+test("pansharpenVrt creates a lazy uploaded-source virtual raster", () => {
+  const pan = terrio.rasterFromArray(new Uint16Array(64).fill(80), 8, 8, [0, 1, 0, 8, 0, -1], "EPSG:32611");
+  const spectral = terrio.rasterFromArray(new Uint16Array([...new Array(16).fill(20), ...new Array(16).fill(40)]), 4, 4, [0, 2, 0, 8, 0, -2], "EPSG:32611");
+  const sources = { "pan.tif": pan.toBytes("pan.tif"), "spectral.tif": spectral.toBytes("spectral.tif") };
+  const xml = terrio.pansharpenVrt("pan.tif", ["spectral.tif"], sources, { bands: [2, 1, 2] });
+  assert.match(xml, /VRTPansharpenedDataset/);
+  const sharp = terrio.openVrt(xml, sources);
+  assert.deepEqual([...sharp.readBand(1, [2, 3, 3, 2])], new Array(6).fill(107));
+  assert.equal(sharp.count, 3);
+  pan.free(); spectral.free(); sharp.free();
+});

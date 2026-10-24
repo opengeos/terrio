@@ -17,12 +17,19 @@ pub struct VirtualRaster {
     root: xml::Element,
     layout: VrtDataset,
     warped: bool,
+    pansharpen: Option<crate::ops::pansharpen::vrt::PansharpenVrt>,
 }
 
 impl VirtualRaster {
     /// Parse a serialized VRT without opening its sources or executing embedded code.
     pub fn from_xml(text: &str) -> Result<Self> {
         let root = xml::parse(text)?;
+        if root.attr("subClass") == Some("VRTPansharpenedDataset") {
+            let pansharpen = crate::ops::pansharpen::vrt::PansharpenVrt::from_xml(text)?;
+            // Pansharpen dimensions may be inferred from source headers at lazy open.
+            let layout = VrtDataset { width: 0, height: 0, geo_transform: None, srs: None, bands: Vec::new() };
+            return Ok(Self { root, layout, warped: false, pansharpen: Some(pansharpen) });
+        }
         let mut plain = root.clone();
         let warped = match root.attr("subClass") {
             None => false,
@@ -69,7 +76,7 @@ impl VirtualRaster {
                 }
             }
         }
-        Ok(Self { root, layout, warped })
+        Ok(Self { root, layout, warped, pansharpen: None })
     }
 
     /// Create a serialized warp without reading the source pixels.
@@ -194,6 +201,9 @@ impl VirtualRaster {
     }
 
     fn into_lazy_reference(self, base: &str, sources: HashMap<String, LazyRaster>) -> Result<LazyRaster> {
+        if let Some(description) = self.pansharpen {
+            return description.into_lazy_reference(base, sources);
+        }
         let grid = Grid {
             width: self.layout.width,
             height: self.layout.height,

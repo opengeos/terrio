@@ -478,7 +478,13 @@ source nodata declaration; use an explicit `--nodata` to preserve common nodata 
 with adjusted extents. A nodata contributor or zero weighted intensity
 produces nodata in every output band when enabled; otherwise zero intensity produces zero.
 Explicit dataset masks are not used. Zero padding and nodata are separate: use `--nodata 0`
-when padded margins should be missing. Output is materialized; pansharpened VRT output is deferred.
+when padded margins should be missing. An output ending in `.vrt` (or `-f VRT`) writes a GDAL-compatible
+`VRTPansharpenedDataset`, opening only source headers. Sources are stored as absolute paths
+or URLs. Opening the description and reading a window fetches the matching pan pixels and
+spectral pixels with interpolation margins. GeoTIFF/COG outputs stream row strips with
+bounded interpolation buffers; other output formats may gather the output in memory.
+Inputs remain separate files needed by the VRT. Rotated grids, cross-CRS alignment and
+mixed output data types within a VRT are unsupported.
 The command is also an MCP tool.
 
 ## calc

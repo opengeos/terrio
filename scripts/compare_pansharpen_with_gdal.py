@@ -158,7 +158,41 @@ def cases(data, work):
         float_spectral.append(target)
     # One Float32 ULP at this scene's radiometric scale; integer cases remain exact.
     add("float32", p=float_pan, s=float_spectral, tol=0.002)
+    large_pan = str(work / "large_pan.tif")
+    gdal.Translate(large_pan, str(root / f"{scene}_B8.tif"), srcWin=[1400, 1000, 1024, 1040])
+    large_spectral = []
+    for band in (4, 3, 2):
+        path = str(work / f"large_spectral{band}.tif")
+        gdal.Translate(path, str(root / f"{scene}_B{band}.tif"), srcWin=[700, 500, 512, 520])
+        large_spectral.append(path)
+    for method in ("nearest", "bilinear", "cubic", "cubicspline", "lanczos", "average"):
+        add(f"multiple blocks {method}", p=large_pan, s=large_spectral, opts=["-r", method])
     return result
+
+
+def virtual_comparisons(case, terrio, work, index):
+    """Cross-read GDAL/Terrio VRT descriptions as whole images and cropped requests."""
+    gvrt, tvrt = (str(work / f"{prefix}_{index}.vrt") for prefix in ("gdal", "terrio"))
+    run([v.replace("{out}", gvrt) for v in [*case["gdal"][:1], "-of", "VRT", *case["gdal"][1:]]])
+    run([terrio, *[v.replace("{out}", tvrt) for v in case["terrio"]]])
+    for label, path, window in (("GDAL VRT full", gvrt, None), ("Terrio VRT full", tvrt, None),
+                                ("GDAL VRT window", gvrt, [17, 23, 53, 47]),
+                                ("Terrio VRT window", tvrt, [17, 23, 53, 47])):
+        gout = str(work / f"virtual_gdal_{index}.tif")
+        tout = str(work / f"virtual_terrio_{index}.tif")
+        for output in (gout, tout):
+            if os.path.exists(output):
+                os.remove(output)
+        gdal.Translate(gout, path, srcWin=window)
+        command = [terrio, "convert", path, tout]
+        if window:
+            command += ["--srcwin", *map(str, window)]
+        run(command)
+        result = compare(gout, tout, case["tol"])
+        expected, actual = gdal.Open(gout), gdal.Open(tout)
+        result["same_crs"] = bool(osr.SpatialReference(expected.GetProjection()).IsSame(osr.SpatialReference(actual.GetProjection())))
+        result["name"] = f"{case['name']} {label}"
+        yield result
 
 
 def main():
@@ -196,6 +230,16 @@ def main():
         results.append(result)
         if not args.json:
             print(format_row(result), flush=True)
+        try:
+            for virtual in virtual_comparisons(case, args.terrio, work, i):
+                results.append(virtual)
+                if not args.json:
+                    print(format_row(virtual), flush=True)
+        except Exception as exc:
+            results.append({"name": case["name"] + " virtual", "error": str(exc)})
+            if not args.json:
+                print(format_row(results[-1]), flush=True)
+
     if args.json:
         print(json.dumps(results, indent=2))
     if not args.keep:
