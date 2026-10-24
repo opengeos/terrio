@@ -112,9 +112,25 @@ pub fn fill_nodata(ds: &RasterDataset, o: &FillNodataOptions<'_>) -> Result<Rast
             None => vec![true; w * h],
         },
     };
-    let mut out = ds.clone();
-    out.raster.data = crate::pixel::map_data!(&r.data, v => v[start..start + n].to_vec());
-    out.raster.bands = 1;
+    // Copy only the selected band, rather than cloning every input band and
+    // immediately discarding the others (important for large multispectral inputs).
+    let raster = wbraster::Raster {
+        cols: w,
+        rows: h,
+        bands: 1,
+        x_min: r.x_min,
+        y_min: r.y_min,
+        cell_size_x: r.cell_size_x,
+        cell_size_y: r.cell_size_y,
+        nodata: r.nodata,
+        data_type: r.data_type,
+        crs: r.crs.clone(),
+        metadata: r.metadata.clone(),
+        data: crate::pixel::map_data!(&r.data, v => v[start..start + n].to_vec()),
+    };
+    let mut out = RasterDataset::with_driver(raster, ds.driver, ds.has_nodata);
+    out.affine = ds.affine;
+    out.geolocation = ds.geolocation.clone();
     if valid.iter().all(|v| *v) || valid.iter().all(|v| !*v) {
         return Ok(out);
     }
