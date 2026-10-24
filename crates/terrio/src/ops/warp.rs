@@ -14,7 +14,7 @@
 use super::Ct as Transformer;
 use super::overview::OverviewSelection;
 use super::{Grid, Resampling, apply_gt, invert_gt, is_nodata, warp_round};
-use crate::crs::SpatialRef;
+use crate::crs::{SpatialRef, TransformOptions};
 use crate::{Error, RasterDataset, Result};
 use wbraster::DataType;
 use wbraster::raster::RasterData;
@@ -302,11 +302,15 @@ const IDENTITY: [f64; 6] = [0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
 
 impl GenImgProj {
     fn new(src_gt: [f64; 6], src_srs: &SpatialRef, dst_srs: &SpatialRef) -> Result<Self> {
+        Self::with_options(src_gt, src_srs, dst_srs, &Default::default())
+    }
+
+    fn with_options(src_gt: [f64; 6], src_srs: &SpatialRef, dst_srs: &SpatialRef, options: &TransformOptions) -> Result<Self> {
         let src_inv = invert_gt(&src_gt).ok_or_else(|| Error::InvalidData("the source geotransform is not invertible".into()))?;
         let ct = if same_crs(src_srs, dst_srs) {
             None
         } else {
-            Some((Transformer::new(src_srs, dst_srs)?, Transformer::new(dst_srs, src_srs)?))
+            Some((Transformer::with_options(src_srs, dst_srs, options)?, Transformer::with_options(dst_srs, src_srs, options)?))
         };
         Ok(Self { src_gt, src_inv, src_gcp: None, src_scale: (1.0, 1.0), dst_gt: IDENTITY, dst_inv: IDENTITY, ct })
     }
@@ -839,21 +843,15 @@ struct Source<'a> {
 impl Source<'_> {
     /// The transformer from this source's pixels to the output CRS.
     fn transformer(&self, dst_srs: &SpatialRef) -> Result<GenImgProj> {
-        let mut result = match &self.gcp {
-            Some(g) => {
-                let mut t = GenImgProj::with_georef(&self.srs, dst_srs, g.clone())?;
-                t.src_scale = self.pixel_scale;
-                Ok(t)
-            }
-            None => GenImgProj::new(self.grid.geo_transform, &self.srs, dst_srs),
-        }?;
-        if !same_crs(&self.srs, dst_srs) {
-            result.ct = Some((
-                Transformer::with_options(&self.srs, dst_srs, &self.transform_options)?,
-                Transformer::with_options(dst_srs, &self.srs, &self.transform_options)?,
-            ));
-        }
-        Ok(result)
+        let mut t = GenImgProj::with_options(
+            if self.gcp.is_some() { IDENTITY } else { self.grid.geo_transform },
+            &self.srs,
+            dst_srs,
+            &self.transform_options,
+        )?;
+        t.src_gcp = self.gcp.clone();
+        t.src_scale = self.pixel_scale;
+        Ok(t)
     }
 }
 
@@ -1243,7 +1241,10 @@ impl<'a> Plan<'a> {
         if let (Some(b), Some(srs)) = (te, &o.extent_srs)
             && !same_crs(srs, &dst_srs)
         {
-            te = Some(super::transform_bounds(&Transformer::new(srs, &dst_srs)?, b, 21)?);
+            let t = Transformer::with_options(srs, &dst_srs, &o.transform_options)?;
+            let bounds = super::transform_bounds(&t, b, 21);
+            t.check_policy()?;
+            te = Some(bounds?);
         }
         // The cutline, in each source's pixel space, and its extent.
         if o.crop_to_cutline {
@@ -1452,7 +1453,7 @@ fn warp_data(p: &Plan<'_>, sources: &[&RasterDataset], o: &WarpOptions) -> Resul
         t.check_policy()?;
     }
     let mut ds = output_dataset(grid, out, bands, p.dst_nodata, &p.dst_srs)?;
-    ds.raster.metadata = p.srcs[0].ds.raster.metadata.clone();
+    ds.raster.metadata = p.srcs[0].ds.raster.metadata.iter().filter(|(k, _)| k == "AREA_OR_POINT").cloned().collect();
     ds.band_nodata = p.dst_nodata_all.clone();
     Ok(ds)
 }
@@ -1606,7 +1607,7 @@ fn warp_reader_selected(
     }
     t.check_policy()?;
     let mut ds = output_dataset(grid, out, bands, p.dst_nodata, &p.dst_srs)?;
-    ds.raster.metadata = p.srcs[0].ds.raster.metadata.clone();
+    ds.raster.metadata = p.srcs[0].ds.raster.metadata.iter().filter(|(k, _)| k == "AREA_OR_POINT").cloned().collect();
     ds.band_nodata = p.dst_nodata_all.clone();
     Ok(ds)
 }
@@ -1778,7 +1779,7 @@ pub fn warp_to_path(paths: &[String], o: &WarpOptions, path: &str, options: &cra
     let fill = p.fill();
     let (stored, gt) = stored_grid(grid);
     let mut header = super::raster_header(stored, out_type, bands, p.dst_nodata, &p.dst_srs)?;
-    header.raster.metadata = p.srcs[0].ds.raster.metadata.clone();
+    header.raster.metadata = p.srcs[0].ds.raster.metadata.iter().filter(|(k, _)| k == "AREA_OR_POINT").cloned().collect();
     header.band_nodata = p.dst_nodata_all.clone();
     if let Some(gt) = gt {
         header.set_geo_transform(gt);
@@ -1951,10 +1952,10 @@ fn validity(bands: &[super::BandView], nodata: &[Option<f64>], unified: bool, cu
 /// The transformed extent of a cutline, as `gdalwarp -crop_to_cutline` computes it.
 fn cutline_extent(c: &Cutline, s: &Source, dst_srs: &SpatialRef, has_res: bool) -> Result<(f64, f64, f64, f64)> {
     let to_src: Option<Transformer> = match &c.srs {
-        Some(cs) if !same_crs(cs, &s.srs) => Some(Transformer::new(cs, &s.srs)?),
+        Some(cs) if !same_crs(cs, &s.srs) => Some(Transformer::with_options(cs, &s.srs, &s.transform_options)?),
         _ => None,
     };
-    let to_dst = (!same_crs(&s.srs, dst_srs)).then(|| Transformer::new(&s.srs, dst_srs)).transpose()?;
+    let to_dst = (!same_crs(&s.srs, dst_srs)).then(|| Transformer::with_options(&s.srs, dst_srs, &s.transform_options)).transpose()?;
     let (mut x0, mut y0, mut x1, mut y1) = (f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY);
     for poly in &c.polygons {
         for ring in poly {
@@ -1989,13 +1990,16 @@ fn cutline_extent(c: &Cutline, s: &Source, dst_srs: &SpatialRef, has_res: bool) 
         x1 = gt[0] + ((x1 - gt[0]) / gt[1] + REL).floor() * gt[1];
         y1 = gt[3] + ((y1 - gt[3]) / gt[5] - REL).ceil() * gt[5];
     }
+    for t in [&to_src, &to_dst].into_iter().flatten() {
+        t.check_policy()?;
+    }
     Ok((x0, y0, x1, y1))
 }
 
 /// Rasterizes the cutline in a source's pixel space: pixels whose centre is inside are valid.
 fn cutline_mask(c: &Cutline, s: &Source) -> Result<Vec<bool>> {
     let to_src: Option<Transformer> = match &c.srs {
-        Some(cs) if !same_crs(cs, &s.srs) => Some(Transformer::new(cs, &s.srs)?),
+        Some(cs) if !same_crs(cs, &s.srs) => Some(Transformer::with_options(cs, &s.srs, &s.transform_options)?),
         _ => None,
     };
     let inv = invert_gt(&s.grid.geo_transform).ok_or_else(|| Error::InvalidData("invalid geotransform".into()))?;
@@ -2006,6 +2010,9 @@ fn cutline_mask(c: &Cutline, s: &Source) -> Result<Vec<bool>> {
         };
         Some(apply_gt(&inv, x, y))
     })?;
+    if let Some(t) = &to_src {
+        t.check_policy()?;
+    }
     Ok(rasterize_polygons(&polys, s.grid.width, s.grid.height))
 }
 
@@ -3117,12 +3124,31 @@ mod tests {
     }
 
     #[test]
+    fn strict_warp_keeps_projection_domain_failures_as_nodata() {
+        let source = raster(36, 36, [-20_000_000.0, 40_000_000.0 / 36.0, 0.0, 20_000_000.0, 0.0, -40_000_000.0 / 36.0], 3857, |_, _| 7.0);
+        let options = WarpOptions {
+            dst_srs: Some(SpatialRef::parse("EPSG:4326").unwrap()),
+            extent: Some((-10.0, 80.0, 10.0, 100.0)),
+            size: Some((32, 32)),
+            transform_options: TransformOptions { allow_ballpark: Some(false), only_best: true, ..Default::default() },
+            error_threshold: 0.0,
+            ..Default::default()
+        };
+        let out = warp(&[&source], &options).unwrap();
+        let values = super::super::band_f64(&out.raster, 0);
+        assert_eq!(values.iter().filter(|v| **v == 7.0).count(), 256);
+        assert_eq!(values.iter().filter(|v| **v != 7.0).count(), 768);
+    }
+
+    #[test]
     fn point_metadata_survives_memory_and_lazy_warp() {
         let mut source = raster(8, 8, [10.0, 0.01, 0.0, 47.0, 0.0, -0.01], 4326, |x, y| (x + y) as f64);
         source.raster.metadata.push(("AREA_OR_POINT".into(), "Point".into()));
+        source.raster.metadata.push(("STATISTICS_MINIMUM".into(), "-999".into()));
         let options = WarpOptions { dst_srs: Some(SpatialRef::parse("EPSG:3857").unwrap()), ..Default::default() };
         let out = warp(&[&source], &options).unwrap();
         assert!(out.raster.metadata.iter().any(|(k, v)| k == "AREA_OR_POINT" && v == "Point"));
+        assert!(!out.raster.metadata.iter().any(|(k, _)| k == "STATISTICS_MINIMUM"));
         let dir = tempfile::tempdir().unwrap();
         let input = dir.path().join("in.tif");
         let output = dir.path().join("out.tif");
@@ -3130,6 +3156,7 @@ mod tests {
         warp_to_path(&[input.to_str().unwrap().into()], &options, output.to_str().unwrap(), &Default::default()).unwrap();
         let out = crate::open_raster(output.to_str().unwrap()).unwrap();
         assert!(out.raster.metadata.iter().any(|(k, v)| k == "AREA_OR_POINT" && v == "Point"));
+        assert!(!out.raster.metadata.iter().any(|(k, _)| k == "STATISTICS_MINIMUM"));
     }
 
     fn raster(cols: usize, rows: usize, gt: [f64; 6], epsg: u32, f: impl Fn(usize, usize) -> f64) -> RasterDataset {

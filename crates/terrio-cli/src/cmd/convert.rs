@@ -154,6 +154,7 @@ fn streamed_raster(a: &Args) -> terrio::Result<Option<(terrio::LazyRaster, Raste
 }
 
 pub fn run(mut a: Args) -> terrio::Result<()> {
+    let coordinate_options = a.vector.coordinate_options()?;
     a.input = super::with_driver(&a.input, a.driver.as_deref())?;
     if terrio::pointcloud::is_point_cloud_path(&a.input) {
         let t_srs = a.t_srs.as_deref().map(SpatialRef::parse).transpose()?;
@@ -206,11 +207,7 @@ pub fn run(mut a: Args) -> terrio::Result<()> {
                 return Err(terrio::Error::InvalidArgument("the vector options apply to vector inputs only".into()));
             }
             if let Some(dst) = t_srs {
-                let o = terrio::ops::warp::WarpOptions {
-                    dst_srs: Some(dst),
-                    transform_options: a.vector.to_options(None)?.transform_options,
-                    ..Default::default()
-                };
+                let o = terrio::ops::warp::WarpOptions { dst_srs: Some(dst), transform_options: coordinate_options, ..Default::default() };
                 r = terrio::ops::warp::warp(&[&r], &o)?;
             }
             let mut creation_options: Vec<(String, String)> =

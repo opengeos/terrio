@@ -7,7 +7,7 @@ from pathlib import Path
 import subprocess
 import tempfile
 
-from osgeo import gdal
+from osgeo import gdal, osr
 
 from compare_ops_with_gdal import compare, format_row
 
@@ -65,7 +65,7 @@ def main():
                 result = None
                 run(f"kernel {version} {method} {resolution}m", reference,
                     ["warp", source, tmp / "actual.tif", "--t-srs", "EPSG:32613", "--te", *bounds,
-                     "--ts", width, height, "-r", method, "--et", 0, "--overview", "NONE", "--kernel-version", version], 0.002)
+                     "--ts", width, height, "-r", method, "--et", 0, "--overview", "NONE", "--kernel-version", version], 0 if method == "near" else 0.002)
         # A rotated target square cannot be represented accurately by source-window ratios.
         for method in ["bilinear", "cubic", "lanczos"]:
             reference = tmp / "rotated.tif"
@@ -82,6 +82,30 @@ def main():
             run(f"kernel {version} rotated {method}", reference,
                 ["warp", source, tmp / "actual.tif", "--dst-transform", *target_gt, "--ts", 40, 30,
                  "-r", method, "--et", 0, "--overview", "NONE", "--kernel-version", version], 0.002)
+        # Strict policies must leave ordinary projection-domain failures as invalid pixels.
+        domain_source = tmp / "domain-source.tif"
+        dataset = gdal.GetDriverByName("GTiff").Create(str(domain_source), 36, 36, 1, gdal.GDT_Float32)
+        srs = osr.SpatialReference()
+        srs.ImportFromEPSG(3857)
+        dataset.SetProjection(srs.ExportToWkt())
+        dataset.SetMetadataItem("AREA_OR_POINT", "Point")
+        dataset.SetGeoTransform([-20e6, 40e6 / 36, 0, 20e6, 0, -40e6 / 36])
+        dataset.GetRasterBand(1).Fill(7)
+        dataset = None
+        reference = tmp / "domain-reference.tif"
+        gdal.PushErrorHandler("CPLQuietErrorHandler")
+        try:
+            dataset = gdal.Warp(str(reference), str(domain_source), dstSRS="EPSG:4326",
+                                outputBounds=[-10, 80, 10, 100], width=32, height=32,
+                                dstNodata=-9999, errorThreshold=0,
+                                transformerOptions=["ONLY_BEST=YES", "ALLOW_BALLPARK=NO"])
+            dataset = None
+        finally:
+            gdal.PopErrorHandler()
+        run("strict partial projection domain", reference,
+            ["warp", domain_source, tmp / "actual.tif", "--t-srs", "EPSG:4326",
+             "--te", -10, 80, 10, 100, "--ts", 32, 32, "--dstnodata", -9999,
+             "--et", 0, "--to", "ONLY_BEST=YES", "--to", "ALLOW_BALLPARK=NO"], 0)
     print(json.dumps(records, indent=2) if args.json else "\n".join(format_row(r) for r in records))
     return int(any("error" in r or not r.get("same_metadata", False) or not r.get("same_nodata", False) or r.get("within_tol", 0) < 1 or r.get("valid_mismatch", 1) for r in records))
 

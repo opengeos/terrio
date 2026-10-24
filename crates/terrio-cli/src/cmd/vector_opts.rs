@@ -6,7 +6,7 @@ use terrio::ops::vector_filter::{GeometryConversion, VectorTranslateOptions, Wri
 #[derive(clap::Args, Default)]
 pub struct VectorArgs {
     /// Coordinate operation options: ALLOW_BALLPARK=YES|NO, ONLY_BEST=YES|NO.
-    #[arg(long = "ct-opt", visible_alias = "ct_opt", value_name = "KEY=VALUE", help_heading = "Vector options")]
+    #[arg(long = "ct-opt", visible_aliases = ["ct_opt", "to-option"], value_name = "KEY=VALUE", help_heading = "Vector options")]
     transform_options: Vec<String>,
     /// Keep the features matching this OGR SQL expression, such as "pop > 1e6 AND name LIKE 'A%'".
     #[arg(long = "where", value_name = "EXPR", help_heading = "Vector options")]
@@ -53,7 +53,11 @@ pub struct VectorArgs {
 }
 
 impl VectorArgs {
-    /// Whether any option is given.
+    pub fn coordinate_options(&self) -> terrio::Result<terrio::crs::TransformOptions> {
+        coordinate_options(&self.transform_options)
+    }
+
+    /// Whether any vector-only option is given (coordinate controls also apply to rasters).
     pub fn is_set(&self) -> bool {
         self.where_clause.is_some()
             || self.spat.is_some()
@@ -91,7 +95,7 @@ impl VectorArgs {
             src_srs: srs(&self.s_srs)?,
             dst_srs: t_srs,
             assign_srs: srs(&self.a_srs)?,
-            transform_options: terrio::crs::TransformOptions::from_options(&super::convert::key_values(&self.transform_options)?)?,
+            transform_options: self.coordinate_options()?,
         })
     }
 
@@ -121,5 +125,29 @@ impl VectorArgs {
         } else {
             WriteMode::Create
         }
+    }
+}
+
+/// Dedicated coordinate-operation flags reject typos; warp's mixed --to list remains permissive.
+pub(super) fn coordinate_options(items: &[String]) -> terrio::Result<terrio::crs::TransformOptions> {
+    let pairs = super::convert::key_values(items)?;
+    for (key, _) in &pairs {
+        if !key.eq_ignore_ascii_case("ALLOW_BALLPARK") && !key.eq_ignore_ascii_case("ONLY_BEST") {
+            return Err(terrio::Error::InvalidArgument(format!("unknown coordinate operation option: {key}")));
+        }
+    }
+    terrio::crs::TransformOptions::from_options(&pairs)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dedicated_coordinate_options_reject_unknown_keys() {
+        assert!(coordinate_options(&["ALLOW_BALPARK=NO".into()]).is_err());
+        let args = VectorArgs { transform_options: vec!["ONLY_BEST=YES".into()], ..Default::default() };
+        assert!(!args.is_set(), "coordinate controls also apply to raster inputs");
+        assert!(args.coordinate_options().unwrap().only_best);
     }
 }

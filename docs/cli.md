@@ -823,10 +823,11 @@ terrio warp input.tif output.tif --t-srs EPSG:2056 --to ONLY_BEST=YES
 `ALLOW_BALLPARK=NO` excludes approximate datum operations; a CRS pair with no
 remaining operation fails. `ONLY_BEST=YES` requires the best registered operation
 for each point assuming all datum grids were available; it fails if that operation
-needs a missing grid or cannot evaluate the point. `ONLY_BEST` alone still permits
+needs a missing grid. Ordinary out-of-domain coordinates remain invalid pixels in a warp. `ONLY_BEST` alone still permits
 a ballpark when no better operation exists. Defaults preserve fallback behavior.
 Warnings report ballparks between different ellipsoids, missing best-operation
-grids (with `TERRIO_NETWORK=ON` / `TERRIO_GRID_DIR` guidance), and operations used
+grids (sampled at the first coordinate with default options, with
+`TERRIO_NETWORK=ON` / `TERRIO_GRID_DIR` guidance), and operations used
 outside their area of use. Parallel work aggregates warnings, which appear once
 on stderr and in MCP tool result text. These controls govern horizontal datum
 operation selection; vertical/geoid selection retains its existing behavior.
@@ -840,3 +841,7 @@ serialized warped VRTs.
 
 GeoTIFF and COG translation and warping preserve `AREA_OR_POINT=Point`, including
 point tie points and rotated affine transforms, without moving pixel corners.
+
+Writing a PixelIsPoint GeoTIFF requires a CRS. A write with an unknown CRS is
+rejected before creating the file, avoiding a half-pixel origin shift without
+a corresponding raster-type GeoKey.

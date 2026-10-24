@@ -26,7 +26,7 @@ pub struct Args {
     #[arg(long = "t_coord_epoch", visible_alias = "t-coord-epoch", value_name = "YEAR")]
     t_coord_epoch: Option<f64>,
     /// Coordinate operation options: ALLOW_BALLPARK=YES|NO, ONLY_BEST=YES|NO.
-    #[arg(long = "ct-opt", visible_alias = "to-option", value_name = "KEY=VALUE")]
+    #[arg(long = "ct-opt", visible_aliases = ["to-option", "ct_opt"], value_name = "KEY=VALUE")]
     transform_options: Vec<String>,
     /// Coordinates to transform: x y [x y ...].
     #[arg(allow_negative_numbers = true)]
@@ -52,7 +52,7 @@ pub fn run(a: Args) -> terrio::Result<()> {
     let opts = TransformOptions {
         source_coordinate_epoch: a.s_coord_epoch,
         target_coordinate_epoch: a.t_coord_epoch,
-        ..TransformOptions::from_options(&super::convert::key_values(&a.transform_options)?)?
+        ..super::vector_opts::coordinate_options(&a.transform_options)?
     };
     let t = Transformer::with_options(&src, &dst, &opts)?;
     let print = |nums: &[f64]| -> terrio::Result<()> {

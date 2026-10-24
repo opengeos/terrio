@@ -164,6 +164,7 @@ pub fn reproject_layer_with_options(
             }
         }
     });
+    t.flush_warnings();
     // The first feature that fails, as a sequential pass would report it.
     if let Some((i, e)) = errors.into_inner().unwrap_or_default().into_iter().min_by_key(|(i, _)| *i) {
         return Err(crate::Error::Crs(format!("failed to reproject feature {i} of layer '{}': {e}", layer.name)));

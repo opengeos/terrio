@@ -427,8 +427,8 @@ impl Route {
                 // A single operation is used for every point, whatever its area, as PROJ does.
                 if chains.len() == 1 && ballpark.is_none() {
                     let chain = &chains[0];
-                    let bounds = src.areas(&chain.rank);
-                    return report(run(chain), Some(&chain.rank), !inside(&chain.rank, Some(&bounds)));
+                    let boxes = self.boxes.get_or_init(|| chains.iter().map(|c| src.areas(&c.rank)).collect());
+                    return report(run(chain), Some(&chain.rank), !inside(&chain.rank, boxes.first()));
                 }
                 let boxes = self.boxes.get_or_init(|| chains.iter().map(|c| src.areas(&c.rank)).collect());
                 let ranks: Vec<&Op> = chains.iter().map(|c| &c.rank).chain(ballpark.as_ref()).collect();
@@ -449,9 +449,8 @@ impl Route {
                 }
                 // No transformation for the point: the first that needs no grid, as PROJ's
                 // `proj_trans`.
-                let first = chains.iter().find(|c| !c.rank.needs_grids())?;
-                let bounds = src.areas(&first.rank);
-                report(run(first), Some(&first.rank), !inside(&first.rank, Some(&bounds)))
+                let (i, first) = chains.iter().enumerate().find(|(_, c)| !c.rank.needs_grids())?;
+                report(run(first), Some(&first.rank), !inside(&first.rank, boxes.get(i)))
             }
             Kind::Hub => {
                 let (sb, db) = self.hub_boxes.get_or_init(|| {
@@ -466,7 +465,9 @@ impl Route {
                     (Some(s), Some(d)) => {
                         // Heights go through both, as in PROJ's pipeline (see the chains).
                         let r = datum::run(&s.steps, p, false, true).and_then(|q| datum::run(&d.steps, q, true, true))?;
-                        Some(if three_d || !(s.keeps_height && d.keeps_height) { r } else { Point { h: p.h, ..r } })
+                        let result = Some(if three_d || !(s.keeps_height && d.keeps_height) { r } else { Point { h: p.h, ..r } });
+                        record(Some(s), false);
+                        report(result, Some(d), false)
                     }
                     // No transformation (or an unknown datum): no shift, as PROJ's ballpark.
                     _ => report(Some(p), None, false),

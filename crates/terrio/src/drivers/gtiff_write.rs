@@ -1474,11 +1474,12 @@ pub(crate) fn encode_sample_le(t: DataType, v: f64, out: &mut Vec<u8>) {
     }
 }
 
-/// The georeferencing tags: pixel scale and tie point, GeoKeys, nodata and metadata.
+/// Whether the raster declares point samples.
 fn pixel_is_point(r: &Raster) -> bool {
     r.metadata.iter().any(|(k, v)| k == "AREA_OR_POINT" && v.eq_ignore_ascii_case("Point"))
 }
 
+/// The georeferencing tags: pixel scale and tie point, GeoKeys, nodata and metadata.
 fn geo_tags(r: &Raster, nodata: Option<f64>, bands: &[crate::BandMetadata]) -> Result<Vec<(u16, Value)>> {
     let mut tags = vec![
         (33550, Value::Doubles(vec![r.cell_size_x, r.cell_size_y, 0.0])),
@@ -1487,6 +1488,11 @@ fn geo_tags(r: &Raster, nodata: Option<f64>, bands: &[crate::BandMetadata]) -> R
     let crs = super::common::spatial_ref(&r.crs);
     let mut v = crate::drivers::geokeys::GeoKeyValues::default();
     v.shorts.push((1025, if pixel_is_point(r) { 2 } else { 1 }));
+    if crs.is_unknown() && pixel_is_point(r) {
+        return Err(Error::Unsupported(
+            "PixelIsPoint GeoTIFF writing requires a CRS; a lone raster-type GeoKey would imply a local CRS".into(),
+        ));
+    }
     let local = crs.wkt.as_deref().and_then(local_cs);
     if let Some((name, unit)) = &local {
         // A local CRS, as GDAL writes one: a citation and the linear unit, no model type.
@@ -1564,6 +1570,9 @@ fn gdal_metadata_xml(dataset: &[(String, String)], bands: &[crate::BandMetadata]
         any = true;
     };
     for (k, v) in dataset {
+        if k == "AREA_OR_POINT" {
+            continue;
+        }
         item(k, v, None, None);
     }
     for (i, b) in bands.iter().enumerate() {
@@ -2548,6 +2557,13 @@ mod tests {
         )
         .unwrap();
         let dir = tempfile::tempdir().unwrap();
+        assert!(gdal_metadata_xml(&r.metadata, &[]).is_none());
+        let mut unknown = r.clone();
+        unknown.crs = Default::default();
+        let path = dir.path().join("unknown.tif");
+        let error = write(&unknown, path.to_str().unwrap(), &Default::default()).unwrap_err();
+        assert!(error.to_string().contains("requires a CRS"));
+        assert!(!path.exists());
         for gt in [None, Some([100.0, 10.0, 2.0, 230.0, 1.0, -10.0]), Some([100.0, 10.0, 0.0, 200.0, 0.0, 10.0])] {
             for cog in [false, true] {
                 let path = dir.path().join("point.tif");

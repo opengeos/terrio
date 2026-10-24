@@ -7,8 +7,10 @@ fn ballpark_can_be_refused() {
     let dst = SpatialRef::parse("EPSG:4326").unwrap();
     let t = Transformer::new(&src, &dst).unwrap();
     assert_eq!(t.transform(110.0, 35.0).unwrap(), (110.0, 35.0));
-    drop(t);
+    t.flush_warnings();
     assert!(terrio::warnings::take().iter().any(|w| w.contains("ballpark")));
+    drop(t);
+    assert!(terrio::warnings::take().is_empty());
     let opts = TransformOptions { allow_ballpark: Some(false), ..Default::default() };
     assert!(Transformer::with_options(&src, &dst, &opts).is_err());
     // ONLY_BEST by itself permits a ballpark when there is no better operation.
@@ -22,6 +24,11 @@ fn same_datum_is_not_a_ballpark() {
     let dst = SpatialRef::parse("EPSG:3857").unwrap();
     let opts = TransformOptions { allow_ballpark: Some(false), only_best: true, ..Default::default() };
     assert!(Transformer::with_options(&src, &dst, &opts).unwrap().transform(10.0, 45.0).is_ok());
+    // A custom WGS84 side uses the direct WGS84 route, not an empty hub leg.
+    let custom = SpatialRef::parse("+proj=longlat +datum=WGS84").unwrap();
+    let osgb = SpatialRef::parse("EPSG:4277").unwrap();
+    let options = TransformOptions { allow_ballpark: Some(false), ..Default::default() };
+    assert!(Transformer::with_options(&custom, &osgb, &options).unwrap().transform(-2.0, 52.0).is_ok());
 }
 
 #[test]
@@ -81,10 +88,42 @@ fn missing_best_grid_can_be_refused_and_outside_area_is_reported() {
     );
     assert!(!output.exists());
 
+    // The source and target share a CRS; only the extent/cutline need a datum shift.
+    // Their transforms must still enforce ONLY_BEST.
+    let mut target_source = source.clone();
+    target_source.raster.crs = wbraster::CrsInfo::from_epsg(2056);
+    let extent_options = terrio::ops::warp::WarpOptions {
+        dst_srs: Some(dst.clone()),
+        transform_options: options.transform_options.clone(),
+        extent_srs: Some(src.clone()),
+        extent: Some((600000.0, 200000.0, 600040.0, 200040.0)),
+        size: Some((4, 4)),
+        ..Default::default()
+    };
+    assert!(terrio::ops::warp::warp(&[&target_source], &extent_options).unwrap_err().to_string().contains("ONLY_BEST"));
+    let cutline = terrio::ops::warp::Cutline {
+        polygons: vec![vec![vec![(600000.0, 200000.0), (600040.0, 200000.0), (600040.0, 200040.0), (600000.0, 200000.0)]]],
+        srs: Some(src.clone()),
+    };
+    let cut_options =
+        terrio::ops::warp::WarpOptions { cutline: Some(cutline), crop_to_cutline: true, extent_srs: None, extent: None, ..extent_options };
+    assert!(terrio::ops::warp::warp(&[&target_source], &cut_options).unwrap_err().to_string().contains("ONLY_BEST"));
+
     drop(t);
     terrio::warnings::take();
     let t = Transformer::new(&SpatialRef::parse("EPSG:4326").unwrap(), &dst).unwrap();
     assert!(t.transform(11.0, 46.5).is_ok());
     drop(t);
     assert!(terrio::warnings::take().iter().any(|w| w.contains("outside its area")));
+}
+
+#[test]
+fn out_of_domain_points_do_not_poison_strict_transformers() {
+    let src = SpatialRef::parse("EPSG:4326").unwrap();
+    let dst = SpatialRef::parse("EPSG:3857").unwrap();
+    let opts = TransformOptions { only_best: true, allow_ballpark: Some(false), ..Default::default() };
+    let t = Transformer::with_options(&src, &dst, &opts).unwrap();
+    assert!(t.transform(0.0, 100.0).is_err());
+    assert!(t.transform(0.0, 45.0).is_ok());
+    assert!(t.check_policy().is_ok());
 }
