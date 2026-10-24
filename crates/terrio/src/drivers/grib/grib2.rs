@@ -704,7 +704,7 @@ mod tests {
         msg[5..9].copy_from_slice(&1u32.to_be_bytes());
         msg[21..25].copy_from_slice(&6u32.to_be_bytes());
         msg[27..31].copy_from_slice(&5u32.to_be_bytes());
-        let gds = Gds { nx: 10_000, ny: 10_000, ..Default::default() };
+        let gds = Gds { nx: 1000, ny: 1000, ..Default::default() };
         let s = FieldSections { sec5: 0, sec6: Some(21), sec7: 27, ..Default::default() };
         assert!(
             matches!(decode(&msg, &gds, &s, UnitConvert::None, false), Err(Error::InvalidData(e)) if e.contains("bitmap section too short"))

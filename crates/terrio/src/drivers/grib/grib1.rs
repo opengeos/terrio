@@ -635,7 +635,7 @@ mod tests {
         let mut msg = vec![0u8; 11];
         msg[2] = 11;
         msg[10] = 1;
-        let f = Field { gds: Gds { nx: 10_000, ny: 10_000, ..Default::default() }, bms: None, bds: 0, dsf: 0, convert: UnitConvert::None };
+        let f = Field { gds: Gds { nx: 1000, ny: 1000, ..Default::default() }, bms: None, bds: 0, dsf: 0, convert: UnitConvert::None };
         assert!(matches!(decode(&msg, &f, false), Err(Error::InvalidData(e)) if e.contains("data section truncated")));
     }
 

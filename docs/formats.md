@@ -190,6 +190,12 @@ test files, ecCodes' and real forecasts (every field of a GFS file, HRRR's and E
 every band is identical to GDAL's, metadata and pixels (`scripts/compare_grib_with_gdal.py`); a
 1-degree GFS file (696 bands) reads in 0.12 s, GDAL's in 1.0 s.
 
+Each GRIB field is limited to 16,777,216 points by default, including constant and compressed
+fields. This is 128 MiB of decoded Float64 values; decoder buffers and multi-band reads use
+additional memory. To allow larger fields, set `TERRIO_GRIB_MAX_POINTS` to a larger positive
+integer. The limit is checked when opening the grid and before decoding it, for local, remote
+and in-memory files.
+
 ```sh
 terrio info gfs.t00z.pgrb2.0p25.f000                 # bands, GRIB_* metadata
 terrio translate hrrr.t00z.wrfsfcf00.grib2 t2m.tif -b 71

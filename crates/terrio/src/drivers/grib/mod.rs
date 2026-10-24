@@ -31,6 +31,9 @@ const GRIB_LIMIT: usize = 300;
 /// The decoded bands kept in memory, in bytes (GDAL's `GRIB_CACHEMAX` default, 100 MB).
 const CACHE_BYTES: usize = 100 * 1024 * 1024;
 
+/// The default maximum points in a field: 128 MiB of Float64 values, before decoder buffers.
+const DEFAULT_MAX_POINTS: usize = 16 * 1024 * 1024;
+
 /// Bytes read at once while walking a remote message's sections (sections 0 to 6 of most
 /// messages, without large bitmaps).
 const CHUNK: usize = 4 * 1024;
@@ -177,10 +180,24 @@ struct Decoded {
 
 /// Validates a grid before allocating its decoded Float64 values.
 fn point_count(nx: usize, ny: usize, message_len: u64) -> Result<usize> {
+    let limit = match std::env::var("TERRIO_GRIB_MAX_POINTS") {
+        Ok(v) => v.trim().parse::<usize>().ok().filter(|n| *n > 0),
+        Err(std::env::VarError::NotPresent) => Some(DEFAULT_MAX_POINTS),
+        Err(_) => None,
+    }
+    .ok_or_else(|| Error::InvalidArgument("TERRIO_GRIB_MAX_POINTS must be a positive integer".into()))?;
+    checked_point_count(nx, ny, message_len, limit)
+}
+
+/// Validates the grid against the configured limit as well as platform and message sizes.
+fn checked_point_count(nx: usize, ny: usize, message_len: u64, limit: usize) -> Result<usize> {
     let n = nx
         .checked_mul(ny)
         .filter(|n| n.checked_mul(8).is_some_and(|bytes| bytes <= isize::MAX as usize))
         .ok_or_else(|| Error::InvalidData("GRIB grid larger than this platform's memory".into()))?;
+    if n > limit {
+        return Err(Error::InvalidData(format!("GRIB grid of {n} points exceeds TERRIO_GRIB_MAX_POINTS={limit}")));
+    }
     // degrib's check on large grids: at most 1000 points per byte of the message.
     if n > 100 * 1024 * 1024 && n as u64 / 1000 > message_len {
         return Err(Error::InvalidData("GRIB grid too large for its message".into()));
@@ -711,10 +728,50 @@ mod tests {
 
     #[test]
     fn rejects_grids_that_cannot_be_allocated() {
-        assert!(point_count(usize::MAX, 2, u64::MAX).is_err());
-        assert!(point_count(isize::MAX as usize / 8 + 1, 1, u64::MAX).is_err());
-        assert!(point_count(200_000_000, 1, 100).is_err());
-        assert_eq!(point_count(360, 181, 100_000).unwrap(), 65_160);
+        assert!(checked_point_count(usize::MAX, 2, u64::MAX, usize::MAX).is_err());
+        assert!(checked_point_count(isize::MAX as usize / 8 + 1, 1, u64::MAX, usize::MAX).is_err());
+        assert!(checked_point_count(200_000_000, 1, 100, usize::MAX).is_err());
+        assert_eq!(checked_point_count(360, 181, 100_000, DEFAULT_MAX_POINTS).unwrap(), 65_160);
+    }
+
+    #[test]
+    fn caps_even_constant_fields_and_allows_an_explicit_larger_limit() {
+        assert!(matches!(checked_point_count(10_000, 10_000, 200, DEFAULT_MAX_POINTS),
+            Err(Error::InvalidData(e)) if e.contains("TERRIO_GRIB_MAX_POINTS")));
+        assert_eq!(checked_point_count(DEFAULT_MAX_POINTS, 1, 200, DEFAULT_MAX_POINTS).unwrap(), DEFAULT_MAX_POINTS);
+        assert!(checked_point_count(DEFAULT_MAX_POINTS + 1, 1, 200, DEFAULT_MAX_POINTS).is_err());
+        assert_eq!(checked_point_count(10_000, 10_000, 200, 100_000_000).unwrap(), 100_000_000);
+    }
+
+    #[test]
+    fn rejects_oversized_constant_fields_while_opening_both_editions() {
+        let valid = include_bytes!("../../../tests/data/grib/Sample_QuikSCAT.grb");
+        let mut grib1 = valid[..68].to_vec();
+        grib1[4..7].copy_from_slice(&[0, 0, 83]);
+        grib1[15] = 0x80; // Grid definition, without a bitmap.
+        grib1[42..44].copy_from_slice(&10_000u16.to_be_bytes());
+        grib1[44..46].copy_from_slice(&10_000u16.to_be_bytes());
+        grib1.extend_from_slice(&[0, 0, 11, 0, 0, 0, 0, 0, 0, 0, 0]);
+        grib1.extend_from_slice(b"7777");
+        let mut grib2 = include_bytes!("../../../tests/data/grib/simple_packing_nbits_zero_decimal_scaled.grb2").to_vec();
+        let mut pos = 16;
+        while pos + 5 < grib2.len() - 4 {
+            let len = u32::from_be_bytes(grib2[pos..pos + 4].try_into().unwrap()) as usize;
+            match grib2[pos + 4] {
+                3 => {
+                    grib2[pos + 6..pos + 10].copy_from_slice(&100_000_000u32.to_be_bytes());
+                    grib2[pos + 30..pos + 34].copy_from_slice(&10_000u32.to_be_bytes());
+                    grib2[pos + 34..pos + 38].copy_from_slice(&10_000u32.to_be_bytes());
+                }
+                5 => grib2[pos + 5..pos + 9].copy_from_slice(&100_000_000u32.to_be_bytes()),
+                _ => {}
+            }
+            pos += len;
+        }
+        for (bytes, name) in [(grib1, "large.grb"), (grib2, "large.grb2")] {
+            assert!(matches!(crate::memory::open_raster_lazy_bytes(bytes, name),
+                Err(Error::InvalidData(e)) if e.contains("TERRIO_GRIB_MAX_POINTS")));
+        }
     }
 
     #[test]
