@@ -54,3 +54,22 @@ def test_finer_auto_and_explicit_bounds(pyramid):
 def test_rejects_boolean_overview(pyramid, mode):
     with pytest.raises(terrio.InvalidArgumentError, match="boolean"):
         terrio.warp(pyramid, overview=mode)
+
+
+def test_geolocation_coordinates_keep_full_resolution_pixel_scale(pyramid):
+    lazy = terrio.open_raster(str(pyramid), lazy=True)
+    x = terrio.Raster.from_array(
+        np.array([[10, 42], [10, 42]], dtype="float64"), (0, 1, 0, 2, 0, -1)
+    )
+    y = terrio.Raster.from_array(
+        np.array([[50, 50], [18, 18]], dtype="float64"), (0, 1, 0, 2, 0, -1)
+    )
+    result = terrio.warp(
+        lazy,
+        t_srs="EPSG:4326",
+        te=(10, 18, 42, 50),
+        ts=(8, 8),
+        overview=1,
+        geolocation={"x": x, "y": y, "pixel_step": 32, "line_step": 32},
+    )
+    np.testing.assert_array_equal(result.read(1), lazy.read(1, overview=1))

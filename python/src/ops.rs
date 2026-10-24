@@ -1030,6 +1030,9 @@ fn translate(
 ///         `RPC_HEIGHT_SCALE`, `RPC_DEM`, `RPC_DEMINTERPOLATION`, `RPC_DEM_MISSING_VALUE`,
 ///         `RPC_DEM_SRS`, `RPC_DEM_APPLY_VDATUM_SHIFT`, `RPC_PIXEL_ERROR_THRESHOLD` and
 ///         `RPC_MAX_ITERATIONS`.
+///     geoloc: Require geolocation-array metadata on each source.
+///     geolocation: First source coordinate rasters: `x`, `y`, optional `srs`,
+///         `pixel_offset`, `line_offset`, `pixel_step`, `line_step`, `pixel_center`.
 ///     wo: Warp options, as `gdalwarp -wo`: `SOURCE_EXTRA` and `SAMPLE_STEPS` (`ALL`); others
 ///         are ignored.
 ///
@@ -1040,7 +1043,7 @@ fn translate(
     src, dst=None, *, s_srs=None, t_srs=None, tr=None, te=None, te_srs=None, ts=None, dst_transform=None, tap=false,
     resampling="near", overview=None, srcnodata=None, dstnodata=None, ot=None, cutline=None, crop_to_cutline=false, et=0.125,
     format=None, compress=None, tile_size=None, bigtiff=false, gcps=None, order=0, gcp_method="auto",
-    rpc=None, to=None, wo=None
+    rpc=None, to=None, wo=None, geoloc=false, geolocation=None
 ))]
 #[allow(clippy::too_many_arguments)]
 fn warp(
@@ -1073,6 +1076,8 @@ fn warp(
     rpc: Option<std::collections::HashMap<String, String>>,
     to: Option<std::collections::HashMap<String, String>>,
     wo: Option<std::collections::HashMap<String, String>>,
+    geoloc: bool,
+    geolocation: Option<&Bound<'_, pyo3::types::PyDict>>,
 ) -> PyResult<PyRaster> {
     if tap && tr.is_none() {
         return Err(invalid("tap needs tr"));
@@ -1117,6 +1122,7 @@ fn warp(
         gcp_method: terrio::ops::gcp::GcpMethod::parse(gcp_method).py()?,
         rpc: rpc.map(crate::rio::parse_rpc).transpose()?,
         rpc_options: crate::rio::parse_rpc_options(to)?,
+        geoloc,
         ..Default::default()
     };
     for (k, v) in wo.unwrap_or_default() {
@@ -1170,6 +1176,52 @@ fn warp(
             Ok(Arg::Path(p.into_os_string().into_string().map_err(|_| invalid("raster paths must be UTF-8"))?))
         })
         .collect::<PyResult<Vec<_>>>()?;
+    if args.is_empty() {
+        return Err(invalid("no input rasters"));
+    }
+    if let Some(g) = geolocation {
+        let (width, height) = match &args[0] {
+            Arg::Path(path) => {
+                let reader = py.detach(|| terrio::open_raster_lazy(path)).py()?;
+                (reader.width(), reader.height())
+            }
+            Arg::Raster(obj) => {
+                let raster = obj.bind(py).try_borrow()?;
+                (raster.inner.width(), raster.inner.height())
+            }
+        };
+        for (key, _) in g.iter() {
+            let key = key.extract::<String>()?;
+            if !["x", "y", "srs", "x_band", "y_band", "pixel_offset", "line_offset", "pixel_step", "line_step", "pixel_center"]
+                .contains(&key.as_str())
+            {
+                return Err(invalid(format!("unknown geolocation option '{key}'")));
+            }
+        }
+        let x = g.get_item("x")?.ok_or_else(|| invalid("geolocation needs x and y rasters"))?;
+        let y = g.get_item("y")?.ok_or_else(|| invalid("geolocation needs x and y rasters"))?;
+        let xs = input_rasters(py, &x)?;
+        let ys = input_rasters(py, &y)?;
+        if xs.len() != 1 || ys.len() != 1 {
+            return Err(invalid("geolocation needs one x and one y raster"));
+        }
+        let number = |key: &str, default: f64| -> PyResult<f64> {
+            g.get_item(key)?.map(|v| v.extract::<f64>()).transpose().map(|v| v.unwrap_or(default))
+        };
+        let metadata = terrio::Geolocation {
+            srs: g.get_item("srs")?.map(|v| v.extract::<String>()).transpose()?.unwrap_or_else(|| "EPSG:4326".into()),
+            x_dataset: String::new(),
+            y_dataset: String::new(),
+            x_band: g.get_item("x_band")?.map(|v| v.extract::<usize>()).transpose()?.unwrap_or(1),
+            y_band: g.get_item("y_band")?.map(|v| v.extract::<usize>()).transpose()?.unwrap_or(1),
+            pixel_offset: number("pixel_offset", 0.0)?,
+            line_offset: number("line_offset", 0.0)?,
+            pixel_step: number("pixel_step", 1.0)?,
+            line_step: number("line_step", 1.0)?,
+            pixel_center: g.get_item("pixel_center")?.map(|v| v.extract::<bool>()).transpose()?.unwrap_or(false),
+        };
+        o.geolocation = Some(terrio::ops::geolocation::GeolocationTransformer::new(&metadata, &xs[0].1, &ys[0].1, width, height).py()?);
+    }
     let out = crate::with_warnings(py, || {
         if args.iter().all(|a| matches!(a, Arg::Path(_))) {
             let paths = args

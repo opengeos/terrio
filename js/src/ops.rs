@@ -188,6 +188,7 @@ impl terrio::ops::warp::WarpSource for WarpInput {
 #[derive(Deserialize, Default)]
 #[serde(rename_all = "camelCase", default, deny_unknown_fields)]
 struct WarpArgs {
+    geoloc: bool,
     s_srs: Option<String>,
     t_srs: Option<String>,
     tr: Option<[f64; 2]>,
@@ -213,10 +214,11 @@ struct WarpArgs {
 /// `max`, `med`, `q1`, `q3`, `sum`), `srcNodata` and `dstNodata` (a number, one per band, or
 /// `"none"`), `ot`, `cutline` (polygons: a `Dataset`, bytes or GeoJSON), `cropToCutline`, `et`
 /// (the approximate transformer's error in pixels, 0.125 by default) and `wm` (working memory in
-/// bytes).
+/// bytes). `geoloc` requires array metadata; `geolocation: { x, y, pixelStep, lineStep,
+/// pixelOffset, lineOffset, pixelCenter, xBand, yBand, srs }` supplies coordinate rasters for the first source.
 #[wasm_bindgen]
 pub fn warp(src: JsValue, options: JsValue) -> Result<Dataset, JsError> {
-    let (rest, taken) = split_options(&options, &["cutline"])?;
+    let (rest, taken) = split_options(&options, &["cutline", "geolocation"])?;
     let a: WarpArgs = parse_options(&rest)?;
     if a.tap && a.tr.is_none() {
         return Err(invalid("tap needs tr"));
@@ -229,6 +231,7 @@ pub fn warp(src: JsValue, options: JsValue) -> Result<Dataset, JsError> {
         None => None,
     };
     let mut o = WarpOptions {
+        geoloc: a.geoloc,
         src_srs: srs(a.s_srs.as_deref())?,
         dst_srs: srs(a.t_srs.as_deref())?,
         resolution: tuple2(a.tr),
@@ -266,6 +269,61 @@ pub fn warp(src: JsValue, options: JsValue) -> Result<Dataset, JsError> {
             Err(invalid("expected a raster: a Dataset, a Uint8Array or { bytes, filename }"))
         })
         .collect::<Result<Vec<_>, JsError>>()?;
+    if sources.is_empty() {
+        return Err(invalid("no input rasters"));
+    }
+    if let Some(g) = &taken[1] {
+        let info = terrio::ops::warp::WarpSource::info(&mut sources[0]).map_err(js_err)?;
+        let (params, arrays) = split_options(g, &["x", "y"])?;
+        #[derive(Deserialize, Default)]
+        #[serde(rename_all = "camelCase", deny_unknown_fields)]
+        struct GeoArgs {
+            #[serde(default = "default_geo_srs")]
+            srs: String,
+            #[serde(default = "default_geo_band")]
+            x_band: usize,
+            #[serde(default = "default_geo_band")]
+            y_band: usize,
+            #[serde(default)]
+            pixel_offset: f64,
+            #[serde(default)]
+            line_offset: f64,
+            #[serde(default = "default_geo_step")]
+            pixel_step: f64,
+            #[serde(default = "default_geo_step")]
+            line_step: f64,
+            #[serde(default)]
+            pixel_center: bool,
+        }
+        fn default_geo_srs() -> String {
+            "EPSG:4326".into()
+        }
+        fn default_geo_band() -> usize {
+            1
+        }
+        fn default_geo_step() -> f64 {
+            1.0
+        }
+        let a: GeoArgs = parse_options(&params)?;
+        let x = input_raster(arrays[0].as_ref().ok_or_else(|| invalid("geolocation needs x and y rasters"))?)?;
+        let y = input_raster(arrays[1].as_ref().ok_or_else(|| invalid("geolocation needs x and y rasters"))?)?;
+        let metadata = terrio::Geolocation {
+            srs: a.srs,
+            x_dataset: String::new(),
+            y_dataset: String::new(),
+            x_band: a.x_band,
+            y_band: a.y_band,
+            pixel_offset: a.pixel_offset,
+            line_offset: a.line_offset,
+            pixel_step: a.pixel_step,
+            line_step: a.line_step,
+            pixel_center: a.pixel_center,
+        };
+        o.geolocation = Some(
+            terrio::ops::geolocation::GeolocationTransformer::new(&metadata, &x, &y, info.raster.raster.cols, info.raster.raster.rows)
+                .map_err(js_err)?,
+        );
+    }
     let mut refs: Vec<&mut dyn terrio::ops::warp::WarpSource> =
         sources.iter_mut().map(|r| r as &mut dyn terrio::ops::warp::WarpSource).collect();
     Ok(Dataset::from_raster(terrio::ops::warp::warp_sources(&mut refs, &o).map_err(js_err)?))
