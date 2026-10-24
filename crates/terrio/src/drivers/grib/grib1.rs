@@ -265,6 +265,9 @@ fn gds(g: &[u8], center: u16) -> Result<Gds> {
         return Err(bad("section too short"));
     }
     let len = u3(g, 0) as usize;
+    if len < 6 || len > g.len() {
+        return Err(bad("invalid section length"));
+    }
     let grid_type = g[5];
     let unit = 1e-3;
     let mut d = Gds::default();
@@ -405,7 +408,10 @@ pub(super) fn bands(r: &mut MessageReader, offset: u64, len: u64) -> Result<Vec<
         return Err(Error::Unsupported(format!("GRIB1 message at {offset} without a grid definition (predefined grids)")));
     }
     let gl = u3(r.bytes(offset + pos as u64, 3)?, 0) as usize;
-    let g = gds(r.bytes(offset + pos as u64, gl.min(len as usize - pos))?, p.center)?;
+    if gl < 6 || gl > len as usize - pos {
+        return Err(Error::InvalidData(format!("GRIB1 message at {offset}: invalid grid definition section")));
+    }
+    let g = gds(r.bytes(offset + pos as u64, gl)?, p.center)?;
     super::point_count(g.nx, g.ny, len)?;
     pos += gl;
     let bms = if p.has_bms {
@@ -599,6 +605,29 @@ mod tests {
         assert_eq!(fval_360(0x4110_0000), 1.0);
         assert_eq!(fval_360(0xc276_a000), -118.625);
         assert_eq!(fval_360(0), 0.0);
+    }
+
+    #[test]
+    fn rejects_truncated_grid_sections() {
+        for grid_type in [0, 1, 3, 4, 5, 10] {
+            let mut section = [0; 16];
+            section[2] = 42;
+            section[5] = grid_type;
+            assert!(matches!(gds(&section, 7), Err(Error::InvalidData(_))));
+        }
+    }
+
+    #[test]
+    fn rejects_a_grid_longer_than_its_message() {
+        let valid = include_bytes!("../../../tests/data/grib/Sample_QuikSCAT.grb");
+        let mut msg = [0; 52];
+        msg[..36].copy_from_slice(&valid[..36]);
+        msg[4..7].copy_from_slice(&[0, 0, 52]);
+        msg[15] = 0x80;
+        msg[38] = 32;
+        msg[48..].copy_from_slice(b"7777");
+        assert!(matches!(crate::memory::open_raster_lazy_bytes(msg.to_vec(), "truncated.grb"),
+            Err(Error::InvalidData(e)) if e.contains("invalid grid definition section")));
     }
 
     #[test]

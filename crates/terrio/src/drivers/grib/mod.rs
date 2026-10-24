@@ -331,14 +331,17 @@ fn fetch_parallel<R: Send>(n: usize, f: impl Fn(usize) -> R + Sync) -> Vec<R> {
                         break;
                     }
                     let r = f(i);
-                    if let Ok(mut v) = results.lock() {
-                        v[i] = Some(r);
-                    }
+                    results.lock().expect("GRIB parallel results lock poisoned")[i] = Some(r);
                 }
             });
         }
     });
-    results.into_inner().unwrap_or_default().into_iter().flatten().collect()
+    results
+        .into_inner()
+        .expect("GRIB parallel results lock poisoned")
+        .into_iter()
+        .map(|r| r.expect("GRIB parallel result missing"))
+        .collect()
 }
 
 /// A GRIB file read band by band: its bands, and the decoded ones kept.
@@ -673,6 +676,31 @@ fn index_offsets(fetcher: &crate::http::ObjectFetcher, remote: &crate::http::Rem
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(remote)]
+    #[test]
+    fn parallel_fetches_keep_every_result_in_order() {
+        assert!(fetch_parallel(0, |_| 0).is_empty());
+        assert_eq!(
+            fetch_parallel(64, |i| {
+                std::thread::yield_now();
+                i * i
+            }),
+            (0..64).map(|i| i * i).collect::<Vec<_>>()
+        );
+    }
+
+    #[cfg(remote)]
+    #[test]
+    fn parallel_fetches_propagate_worker_panics() {
+        assert!(
+            std::panic::catch_unwind(|| fetch_parallel(32, |i| {
+                assert_ne!(i, 7, "failed fetch");
+                i
+            }))
+            .is_err()
+        );
+    }
 
     #[test]
     fn caps_wrap_at_the_row_width() {
