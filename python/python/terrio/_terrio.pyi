@@ -710,6 +710,7 @@ def convert(
     a_srs: str | None = None,
     append: bool = False,
     overwrite: bool = False,
+    ct_opt: Mapping[str, str] | None = None,
 ) -> None: ...
 
 # Operations.
@@ -761,6 +762,8 @@ def transform_points(
     *,
     s_coord_epoch: float | None = None,
     t_coord_epoch: float | None = None,
+    allow_ballpark: bool | None = None,
+    only_best: bool = False,
 ) -> tuple[NDArray[np.float64], NDArray[np.float64]]: ...
 @overload
 def transform_points(
@@ -772,6 +775,8 @@ def transform_points(
     *,
     s_coord_epoch: float | None = None,
     t_coord_epoch: float | None = None,
+    allow_ballpark: bool | None = None,
+    only_best: bool = False,
 ) -> tuple[NDArray[np.float64], NDArray[np.float64], NDArray[np.float64]]: ...
 def set_grid_search_paths(paths: Sequence[str | os.PathLike[str]] | None) -> None: ...
 def set_network_enabled(enabled: bool | None) -> None: ...
@@ -829,6 +834,7 @@ def warp(
     wo: Mapping[str, str] | None = None,
     geoloc: bool = False,
     geolocation: Mapping[str, Any] | None = None,
+    kernel_version: str = "3.12",
 ) -> Raster: ...
 def mosaic(
     srcs: _RasterSource | Sequence[_RasterSource],
