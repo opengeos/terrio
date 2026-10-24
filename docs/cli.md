@@ -7,6 +7,7 @@ terrio <COMMAND>
   convert     Convert a dataset to another format, optionally reprojecting it
   translate   Subset, resize, rescale or change the type of a raster (like gdal_translate)
   warp        Reproject and resample rasters (like gdalwarp)
+  catalog     Read an indexed raster mosaic from GeoPackage or FlatGeobuf footprints
   mosaic      Mosaic rasters into one, or into a virtual raster (like gdalbuildvrt and gdal_merge)
   rasterize   Burn vector geometries into a raster
   polygonize  Turn a raster band into polygons of connected pixels with the same value
@@ -547,3 +548,40 @@ For nearest interpolation, GDAL's search fringe can write zero where the closest
 quadrant candidate is less than one pixel beyond the distance limit; Terrio follows
 that behavior. Complex bands are unsupported. Standard raster output
 options (`--format`, `--compress`, `--co`, etc.) apply.
+
+## catalog
+
+```sh
+terrio catalog tiles.gti.gpkg mosaic.tif --cache-size 32
+terrio catalog tiles.fgb window.tif --window 100 200 256 256 --stats
+terrio info GTI:tiles.gpkg --json
+```
+
+GTI-compatible GeoPackage/FlatGeobuf indexes contain polygon footprints and a string
+`location` field naming each source. Relative tile paths resolve against the index directory.
+`GTI:` forces catalog interpretation; `.gti.gpkg`, `.gti.fgb` and GTI XML `.gti` files open
+through ordinary raster APIs too. Indexes are local files; referenced tiles may be remote COGs.
+
+The catalog queries the index spatially for each window, opens only selected sources and
+keeps a bounded LRU cache (default 32 datasets). Later feature IDs overwrite earlier ones;
+`--sort-field FIELD` sorts ascending before composition, and `--sort-descending` reverses it.
+Source nodata, dataset masks and zero alpha are transparent; TIFF/PNG alpha is detected from
+the source, and `--alpha-band` or catalog color-interpretation metadata identifies it otherwise.
+Nonzero alpha copies source values without blending. Mixed source CRSs are reprojected into the index CRS.
+
+`--layer`, `--location-field`, `--sort-field`, `--tr X Y`, `--te XMIN YMIN XMAX YMAX`,
+`--srs`, `--band-count`, `--ot`, `--nodata`, `--alpha-band`, `--cache-size` and `-r`
+override catalog characteristics. GTI layer metadata and XML supply their equivalents;
+missing resolution, band count and type are inferred from one tile. GeoTIFF/COG pixels stay
+lazy; other formats follow their existing readers. Complete metadata opens zero tiles at startup.
+`--stats` with `--window` reports logical source opens, cache hits,
+selected features, source pixels and peak cached datasets. Whole mosaics write in strips.
+
+The supported GTI subset includes `IndexDataset`, `IndexLayer`, `LocationField`, sort order,
+SRS, resolution, extent, band count/type/nodata and alpha color interpretation. Tile sources
+must provide affine geotransforms; pre-warp GCP/RPC or swath sources, or wrap them in warped
+VRTs. Index and output CRSs must match; use `warp` on the catalog to change the output CRS.
+Mosaic bands share one data type and nodata value; per-band nodata/type differences, nested GTI catalogs,
+GTI SQL/filters, explicit GTI overviews, color-table expansion and rotated GTI output grids are
+not implemented. Compositing uses f64; Int64/UInt64 values beyond 2^53 may lose precision.
+Mark a TIFF alpha band on export with `--co ALPHA=YES` when needed.

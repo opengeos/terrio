@@ -166,6 +166,24 @@ TERRIO_JS_PKG=../pkg-node/core/terrio.js node --test js/tests/node.test.mjs
 node js/bench/bench.mjs ../terrio-data    # timings of decoding and writing real files
 ```
 
+## Indexed raster catalogs
+
+`openCatalog(index, sources, options)` opens an index `Dataset`, vector file bytes or GeoJSON,
+with a map of location strings to raster datasets or file bytes:
+
+```javascript
+const catalog = terrio.openCatalog(tileIndex, { "left.tif": left, "right.tif": right }, {
+  tr: [30, 30], sortField: "priority", cacheSize: 16,
+});
+const pixels = catalog.readBand(1, [100, 200, 256, 256]);
+```
+
+The index uses an in-memory R-tree in WASM; only selected sources enter the bounded cache.
+Options are `locationField`, `sortField`, `sortDescending`, `tr`, `te`, `srs`, `bands`, `ot`,
+`nodata`, `alphaBand`, `cacheSize` and `resampling`. Source masks/nodata and zero alpha are
+transparent; tiles in other CRSs are reprojected into the index CRS. See
+[CLI catalogs](cli.md#catalog) for the supported GTI subset.
+
 ## Geolocation-array warping
 
 Pass longitude and latitude rasters explicitly when array datasets cannot be reopened from

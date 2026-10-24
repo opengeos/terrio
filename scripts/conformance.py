@@ -16,6 +16,8 @@ Suites:
     raster-roundtrip  raster drivers, GDAL writing and terrio reading and back (raster_roundtrip.py)
     windows           windowed and overview reads of GeoTIFFs and JPEG 2000 (compare_windows_with_gdal.py)
     ops               translate, warp, mosaic vs GDAL's tools (compare_ops_with_gdal.py)
+    catalogs          indexed real DEM mosaics and HTTP window I/O vs GDAL GTI
+                      (compare_catalogs_with_gdal.py)
     dem-calc          dem, calc, proximity, sieve vs GDAL's tools (compare_dem_calc_with_gdal.py)
     vector-ops        ogr2ogr options, rasterize, polygonize (compare_vector_ops_with_gdal.py)
     topology          buffer, polygon overlay/dissolve, validity, repair and cleanup vs GEOS
@@ -448,6 +450,18 @@ def suite_ops(ctx):
         "match, then pixels are compared. Identical: every pixel equal. Within tolerance: every "
         "pixel within the case's tolerance (1e-2 for interpolating resamplings).",
         1,
+    )
+
+
+def suite_catalogs(ctx):
+    """Indexed GeoPackage/FlatGeobuf real DEM mosaics against GDAL GTI."""
+    return suite_json_ops(
+        ctx, "catalogs", "compare_catalogs_with_gdal.py", "Indexed raster catalogs",
+        "GDAL GTI (GDAL 3.12.2)",
+        "Real DEM windows indexed by GeoPackage/FlatGeobuf, z-order, nodata, masks, alpha, "
+        "mixed CRS and Terrio-written indexes cross-read by GDAL. Grids, masks and pixels "
+        "are compared (1e-4 numerical tolerance). A small HTTP window verifies one source "
+        "opened from a 1,002-feature index and records actual bytes for both implementations.", 2,
     )
 
 
@@ -991,6 +1005,7 @@ SUITES = OrderedDict(
         ("raster-roundtrip", suite_raster_roundtrip),
         ("windows", suite_windows),
         ("ops", suite_ops),
+        ("catalogs", suite_catalogs),
         ("geolocation", suite_geolocation),
         ("dem-calc", suite_dem_calc),
         ("vector-ops", suite_vector_ops),

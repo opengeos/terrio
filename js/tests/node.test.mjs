@@ -1116,3 +1116,17 @@ test("fillNodata: holes, nearest ties, explicit masks and invalid options", () =
   assert.throws(() => terrio.fillNodata(src, { maxDistance: -1 }), /nonnegative/);
   src.free(); out.free(); mask.free();
 });
+
+test("openCatalog: lazy windows and z-order with named in-memory sources", () => {
+  const index = { type: "FeatureCollection", features: [["left", 0, 2], ["right", 2, 1], ["missing", 100, 3]].map(([location, x, z]) => ({
+    type: "Feature", properties: { location, z }, geometry: { type: "Polygon", coordinates: [[[x, 0], [x + 4, 0], [x + 4, 4], [x, 4], [x, 0]]] },
+  })) };
+  const left = terrio.rasterFromArray(new Float32Array(16).fill(10), 4, 4, [0, 1, 0, 4, 0, -1], "EPSG:4326");
+  const right = terrio.rasterFromArray(new Float32Array(16).fill(20), 4, 4, [2, 1, 0, 4, 0, -1], "EPSG:4326");
+  const catalog = terrio.openCatalog(index, { left, right }, { tr: [1, 1], te: [0, 0, 6, 4], sortField: "z", cacheSize: 1 });
+  assert.deepEqual([catalog.width, catalog.height, catalog.count], [6, 4, 1]);
+  assert.deepEqual([...catalog.readBand(1)].slice(0, 6), [10, 10, 10, 10, 20, 20]);
+  assert.deepEqual([...catalog.readBand(1, [4, 0, 2, 2])], [20, 20, 20, 20]);
+  assert.throws(() => terrio.openCatalog(index, { left }, { cacheSize: 0 }), /positive/);
+  catalog.free(); left.free(); right.free();
+});

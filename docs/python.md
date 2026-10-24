@@ -232,3 +232,24 @@ raster, retaining the selected band's type, nodata and georeferencing. The mask 
 at holes and nonzero at donors; without it, the source mask or nodata defines holes.
 Distances are in pixels; zero searches the whole image. Smoothing affects only filled
 pixels and preserves the first/last rows. Valid source samples remain unchanged.
+
+## Indexed raster catalogs
+
+```python
+catalog = terrio.open_catalog("tiles.gti.gpkg", cache_size=16, sort_field="priority")
+window = catalog.read(1, window=(100, 200, 256, 256))
+```
+
+Catalogs select features through the GeoPackage/FlatGeobuf spatial index and cache a bounded
+number of source datasets. `terrio.open_raster("GTI:tiles.gpkg", lazy=True)` also works with
+catalog defaults. For in-memory indexes and named source rasters:
+
+```python
+catalog = terrio.open_catalog(index_layer, {"left.tif": left, "right.tif": right},
+                             tr=(30, 30), sort_field="priority", cache_size=16)
+```
+
+Options include `layer`, `location_field`, `sort_field`, `sort_descending`, `tr`, `te`, `srs`,
+`bands`, `ot`, `nodata`, `alpha_band`, `cache_size` and `resampling`. Missing grid characteristics
+come from index metadata or one tile header. Dataset masks, source nodata and zero alpha are
+transparent. See [CLI catalogs](cli.md#catalog) for the supported GTI subset.
