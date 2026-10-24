@@ -718,3 +718,8 @@ a leading Byte band does not truncate later floating-point bands.
 
 The Rust `VirtualRaster` API parses and serializes these descriptions. Its
 `into_lazy` source map also permits filesystem-free reads in WebAssembly.
+
+
+Warped VRT block evaluation is limited to 8,388,608 samples across all bands per
+declared block. Larger blocks return an unsupported error, including for small
+subwindow reads, to keep temporary memory bounded while preserving GDAL block semantics.

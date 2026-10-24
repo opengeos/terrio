@@ -50,8 +50,9 @@ pub(crate) fn apply_pam(path: &str, ds: &mut RasterDataset) {
 /// Fills in what a sidecar holds and the dataset does not.
 pub(crate) fn apply(pam: common::Pam, ds: &mut RasterDataset) {
     if !ds.has_nodata && !pam.band_nodata.is_empty() {
-        ds.band_nodata =
-            (1..=ds.raster.bands).map(|b| pam.band_nodata.iter().find(|(i, _)| *i == b).map(|(_, v)| *v).or(ds.nodata())).collect();
+        ds.band_nodata = (1..=ds.raster.bands)
+            .map(|b| pam.band_nodata.iter().find(|(i, _)| *i == b).map(|(_, v)| *v).or(pam.dataset_nodata).or(ds.nodata()))
+            .collect();
         ds.has_nodata = ds.band_nodata[0].is_some();
         ds.raster.nodata = ds.band_nodata[0].unwrap_or(-9999.);
     }
