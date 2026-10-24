@@ -320,7 +320,7 @@ jobs:
           # The reference: the EPSG table and test points come from GDAL 3.12.2 and PROJ 9.8.1, and
           # newer EPSG databases change some transformations. rasterio comes from pip (with its
           # bundled GDAL), as conda-forge has none for GDAL 3.12.2 with PROJ 9.8.
-          create-args: gdal=3.12.2 libgdal-core=3.12.2 proj=9.8.1 libgdal-arrow-parquet libgdal-jp2openjpeg libgdal-netcdf libgdal-hdf5 numpy pip pytest maturin pyproj pdal laspy lazrs-python pyarrow geopandas shapely
+          create-args: gdal=3.12.2 libgdal-core=3.12.2 proj=9.8.1 libgdal-arrow-parquet libgdal-jp2openjpeg libgdal-netcdf libgdal-hdf5 libgdal-grib numpy pip pytest maturin pyproj pdal laspy lazrs-python pyarrow geopandas shapely
           cache-environment: true
       - uses: actions/cache@v6
         with:
@@ -366,7 +366,7 @@ jobs:
         with:
           environment-name: gdal
           # As in the real-data job: the two share the cached environment.
-          create-args: gdal=3.12.2 libgdal-core=3.12.2 proj=9.8.1 libgdal-arrow-parquet libgdal-jp2openjpeg libgdal-netcdf libgdal-hdf5 numpy pip pytest maturin pyproj pdal laspy lazrs-python pyarrow geopandas shapely
+          create-args: gdal=3.12.2 libgdal-core=3.12.2 proj=9.8.1 libgdal-arrow-parquet libgdal-jp2openjpeg libgdal-netcdf libgdal-hdf5 libgdal-grib numpy pip pytest maturin pyproj pdal laspy lazrs-python pyarrow geopandas shapely
           cache-environment: true
       # Restores the real-data job's data; only that job saves it.
       - uses: actions/cache/restore@v6
