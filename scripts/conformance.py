@@ -451,6 +451,18 @@ def suite_ops(ctx):
     )
 
 
+def suite_geolocation(ctx):
+    """Scientific swaths and subsampled geolocation arrays against GDAL -geoloc."""
+    return suite_json_ops(
+        ctx, "geolocation", "compare_geolocation_with_gdal.py", "Geolocation-array warping",
+        "`gdalwarp -geoloc` (GDAL 3.12.2)",
+        "Real Sentinel-5P swaths, both sides of the antimeridian, and extracted real data in "
+        "HDF-EOS full/subsampled dimension maps, with and without invalid coordinate holes. "
+        "Fixed output grids and exact transforms; every pixel and nodata mask is compared. "
+        "Boundary differences from GDAL's inverse backmap are reported, not hidden.", 1,
+    )
+
+
 def suite_dem_calc(ctx):
     """dem, calc, proximity and sieve against gdaldem, gdal_calc.py, gdal_proximity.py, gdal_sieve.py."""
     return suite_json_ops(
@@ -990,6 +1002,7 @@ SUITES = OrderedDict(
         ("raster-roundtrip", suite_raster_roundtrip),
         ("windows", suite_windows),
         ("ops", suite_ops),
+        ("geolocation", suite_geolocation),
         ("dem-calc", suite_dem_calc),
         ("pansharpen", suite_pansharpen),
         ("vector-ops", suite_vector_ops),

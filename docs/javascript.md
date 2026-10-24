@@ -176,3 +176,22 @@ const rgb = terrio.pansharpen(pan, [red, green, blue], { weights: [0.6, 0.3, 0.1
 Inputs can be datasets or raster bytes. All spectral inputs contribute to intensity;
 `bands` selects/reorders output bands. See [pansharpen](cli.md#pansharpen) for working
 types, interpolation, nodata, bit depth and extent handling.
+
+## Geolocation-array warping
+
+Pass longitude and latitude rasters explicitly when array datasets cannot be reopened from
+paths in WebAssembly. `x` and `y` accept a `Dataset`, file bytes, or `{ bytes, filename }`:
+
+```javascript
+const output = terrio.warp(swath, {
+  tSrs: "EPSG:4326",
+  geolocation: { x: longitude, y: latitude, pixelStep: 2, lineStep: 2, pixelCenter: true },
+});
+```
+
+`xBand` and `yBand` select the 1-based coordinate bands (default 1).
+Optional `srs` defaults to EPSG:4326, `pixelOffset`/`lineOffset` to 0, and steps to 1.
+`pixelCenter` shifts by half an array step. `geoloc: true` requires geolocation metadata;
+the explicit `geolocation` option supplies arrays for the first source. The operation remains
+pure Rust in full and core WASM builds. See [CLI warping](cli.md#warp) for invalid coordinates,
+antimeridian handling and boundary differences from GDAL.
