@@ -1155,6 +1155,15 @@ fn warp(
         Python(Py<PyRaster>),
     }
     impl terrio::ops::warp::WarpSource for Input {
+        fn with_dataset(&self, visit: &mut dyn FnMut(&RasterDataset)) -> terrio::Result<bool> {
+            match self {
+                Self::File(r) => terrio::ops::warp::WarpSource::with_dataset(r.as_ref(), visit),
+                Self::Python(obj) => Python::attach(|py| {
+                    let r = obj.bind(py).try_borrow().map_err(|e| terrio::Error::InvalidArgument(e.to_string()))?;
+                    terrio::ops::warp::WarpSource::with_dataset(&r.inner, visit)
+                }),
+            }
+        }
         fn info(&mut self) -> terrio::Result<terrio::ops::warp::WarpSourceInfo> {
             match self {
                 Self::File(r) => terrio::ops::warp::WarpSource::info(r.as_mut()),
@@ -1197,13 +1206,21 @@ fn warp(
     if args.is_empty() {
         return Err(invalid("no input rasters"));
     }
+    let first_path = match &args[0] {
+        Arg::Path(path) => Some(path.clone()),
+        Arg::Raster(_) => None,
+    };
+    let mut inputs = args
+        .into_iter()
+        .map(|arg| match arg {
+            Arg::Path(path) => py.detach(|| terrio::open_raster_lazy(&path)).py().map(Box::new).map(Input::File),
+            Arg::Raster(raster) => Ok(Input::Python(raster)),
+        })
+        .collect::<PyResult<Vec<_>>>()?;
     if let Some(g) = geolocation {
-        let (width, height) = match &args[0] {
-            Arg::Path(path) => {
-                let reader = py.detach(|| terrio::open_raster_lazy(path)).py()?;
-                (reader.width(), reader.height())
-            }
-            Arg::Raster(obj) => {
+        let (width, height) = match &inputs[0] {
+            Input::File(reader) => (reader.width(), reader.height()),
+            Input::Python(obj) => {
                 let raster = obj.bind(py).try_borrow()?;
                 (raster.inner.width(), raster.inner.height())
             }
@@ -1241,25 +1258,14 @@ fn warp(
         o.geolocation = Some(terrio::ops::geolocation::GeolocationTransformer::new(&metadata, &xs[0].1, &ys[0].1, width, height).py()?);
     }
     let out = crate::with_warnings(py, || {
-        if args.iter().all(|a| matches!(a, Arg::Path(_))) {
-            let paths = args
-                .iter()
-                .map(|a| match a {
-                    Arg::Path(p) => p.clone(),
-                    _ => unreachable!(),
-                })
-                .collect::<Vec<_>>();
-            return terrio::ops::warp::warp_paths(&paths, &o);
-        }
-        let mut inputs = args
-            .into_iter()
-            .map(|arg| match arg {
-                Arg::Path(p) => terrio::open_raster_lazy(&p).map(Box::new).map(Input::File),
-                Arg::Raster(r) => Ok(Input::Python(r)),
-            })
-            .collect::<terrio::Result<Vec<_>>>()?;
+        let prepared = if let Some(path) = first_path.as_deref() {
+            let header = terrio::ops::warp::WarpSource::info(&mut inputs[0])?.raster;
+            terrio::ops::warp::with_file_gcps(&o, path, &header)?
+        } else {
+            std::borrow::Cow::Borrowed(&o)
+        };
         let mut refs = inputs.iter_mut().map(|r| r as &mut dyn terrio::ops::warp::WarpSource).collect::<Vec<_>>();
-        terrio::ops::warp::warp_sources(&mut refs, &o)
+        terrio::ops::warp::warp_sources(&mut refs, &prepared)
     })?;
     finish_raster(py, out, dst, format, compress, tile_size, bigtiff)
 }

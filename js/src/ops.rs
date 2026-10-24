@@ -158,6 +158,18 @@ enum WarpInput {
 }
 
 impl terrio::ops::warp::WarpSource for WarpInput {
+    fn with_dataset(&self, visit: &mut dyn FnMut(&terrio::RasterDataset)) -> terrio::Result<bool> {
+        match self {
+            Self::File(reader) => terrio::ops::warp::WarpSource::with_dataset(reader.as_ref(), visit),
+            Self::Shared(inner) => {
+                let inner = inner.try_borrow().map_err(|_| terrio::Error::InvalidArgument("raster is already in use".into()))?;
+                match &*inner {
+                    Inner::Raster(reader) => terrio::ops::warp::WarpSource::with_dataset(reader, visit),
+                    _ => Err(terrio::Error::InvalidArgument("expected a raster".into())),
+                }
+            }
+        }
+    }
     fn info(&mut self) -> terrio::Result<terrio::ops::warp::WarpSourceInfo> {
         match self {
             Self::File(r) => terrio::ops::warp::WarpSource::info(r.as_mut()),

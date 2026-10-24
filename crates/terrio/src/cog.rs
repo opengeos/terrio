@@ -398,11 +398,16 @@ impl LazyRaster {
                 metadata: r.metadata.clone(),
                 data: wbraster::raster::RasterData::new_filled(r.data_type, 0, 0.0),
             };
-            let mut header = RasterDataset::with_driver(raster, ds.driver, ds.has_nodata);
-            header.affine = ds.affine;
-            header.complex = ds.complex;
-            header.geolocation = ds.geolocation.clone();
-            return header;
+            // Spell out dataset fields too: additions to Raster or RasterDataset
+            // must be handled here, and cannot silently disappear from headers.
+            return RasterDataset {
+                raster,
+                driver: ds.driver,
+                has_nodata: ds.has_nodata,
+                affine: ds.affine,
+                complex: ds.complex,
+                geolocation: ds.geolocation.clone(),
+            };
         }
         let raster = wbraster::Raster {
             cols: self.width(),
@@ -983,6 +988,37 @@ fn sample_type<R: Read + Seek>(dec: &mut Decoder<R>) -> Result<DataType> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn memory_header_preserves_metadata_without_pixels() {
+        let cfg = wbraster::RasterConfig { cols: 4, rows: 3, bands: 2, data_type: DataType::I32, ..Default::default() };
+        let raster = wbraster::Raster::from_data_native(cfg, RasterData::I32((0..24).collect())).unwrap();
+        let mut dataset = RasterDataset::new(raster, true);
+        dataset.set_geo_transform([10., 2., 0.1, 20., 0.2, -3.]);
+        dataset.complex = true;
+        dataset.geolocation = Some(crate::Geolocation {
+            srs: "EPSG:4326".into(),
+            x_dataset: "x.tif".into(),
+            y_dataset: "y.tif".into(),
+            x_band: 1,
+            y_band: 2,
+            pixel_offset: 0.,
+            line_offset: 0.,
+            pixel_step: 2.,
+            line_step: 2.,
+            pixel_center: true,
+        });
+        dataset.raster.metadata = vec![("example".into(), "value".into())];
+        let lazy = LazyRaster::from(dataset.clone());
+        let header = lazy.header();
+        assert_eq!(header.raster.data.len(), 0);
+        assert_eq!(header.geo_transform(), dataset.geo_transform());
+        assert_eq!(header.geolocation, dataset.geolocation);
+        assert_eq!(header.complex, dataset.complex);
+        assert_eq!(header.raster.metadata, dataset.raster.metadata);
+        assert_eq!(header.raster.cols, 4);
+        assert_eq!(lazy.dataset().unwrap().raster.data.len(), 24);
+    }
 
     #[test]
     fn window_fits() {

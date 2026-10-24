@@ -106,7 +106,9 @@ comparison scripts need GDAL's Python bindings.
 
 The `overviews` conformance suite compares `gdalwarp -ovr` with Terrio's automatic,
 finer, full-resolution and explicit overview choices on synthetic level markers
-and real USGS terrain. It also measures response bytes while downsampling a USGS
+and real USGS terrain, including forced levels with GCP, RPC and geolocation-array
+georeferencing (the geolocation cases use the installed Python bindings with explicit arrays).
+It also measures response bytes while downsampling a USGS
 COG over HTTP; AUTO must fetch fewer than half the raster bytes of NONE.
 
 ```sh

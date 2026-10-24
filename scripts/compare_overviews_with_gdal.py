@@ -78,6 +78,56 @@ def cases(data, tmp):
         }, ["--ts", "128", "128", "--te", "1000", "464", "2024", "2000", "--order", "1", "--overview", choice])
 
 
+    # Real USGS terrain with analytic RPC/geolocation mappings. Nonzero stored
+    # levels must retain full-resolution pixel-center and array-step coordinates.
+    geographic = osr.SpatialReference()
+    geographic.ImportFromEPSG(4326)
+    values = gdal.Open(cropped).ReadAsArray()
+    def coefficients(position, value):
+        return " ".join(str(value if i == position else 0) for i in range(20))
+    rpc = {"LINE_OFF": "255.5", "SAMP_OFF": "255.5", "LAT_OFF": "44.744", "LONG_OFF": "10.256",
+           "HEIGHT_OFF": "0", "LINE_SCALE": "256", "SAMP_SCALE": "256", "LAT_SCALE": "0.256",
+           "LONG_SCALE": "0.256", "HEIGHT_SCALE": "1", "LINE_NUM_COEFF": coefficients(2, -1),
+           "SAMP_NUM_COEFF": coefficients(1, 1), "LINE_DEN_COEFF": coefficients(0, 1), "SAMP_DEN_COEFF": coefficients(0, 1)}
+    for kind in ["RPC", "geolocation"]:
+        path = str(tmp / f"terrain-{kind}.tif")
+        ds = gdal.GetDriverByName("GTiff").Create(path, 512, 512, 1, gdal.GDT_Float32, ["TILED=YES"])
+        ds.GetRasterBand(1).WriteArray(values)
+        if kind == "RPC":
+            ds.SetMetadata(rpc, "RPC")
+            georef = {"rpc": True}
+            flags = ["--rpc"]
+        else:
+            coordinates = []
+            for axis, array in [("x", [[10, 10.512], [10, 10.512]]), ("y", [[45, 45], [44.488, 44.488]])]:
+                coordinate = str(tmp / f"coordinates-{axis}.tif")
+                grid = gdal.GetDriverByName("GTiff").Create(coordinate, 2, 2, 1, gdal.GDT_Float64)
+                grid.GetRasterBand(1).WriteArray(np.array(array))
+                grid = None
+                coordinates.append(coordinate)
+            ds.SetMetadata({"SRS": geographic.ExportToWkt(), "X_DATASET": coordinates[0], "Y_DATASET": coordinates[1],
+                            "X_BAND": "1", "Y_BAND": "1", "PIXEL_OFFSET": "0", "LINE_OFFSET": "0",
+                            "PIXEL_STEP": "512", "LINE_STEP": "512"}, "GEOLOCATION")
+            georef = {"geoloc": True}
+            flags = ["--geoloc"]
+        ds.BuildOverviews("AVERAGE", [2, 4, 8])
+        ds = None
+        for choice in ["NONE", "0", "1", "2"]:
+            cli = ["--ts", "128", "128", "--te", "10", "44.488", "10.512", "45", "--t-srs", "EPSG:4326",
+                   "--et", "0", "--overview", choice, *flags]
+            if kind == "geolocation":
+                # TIFF GEOLOCATION metadata is not exposed by Terrio's TIFF reader.
+                # Exercise the supported explicit-array binding API on stored pixels.
+                cli = {"t_srs": "EPSG:4326", "te": (10, 44.488, 10.512, 45), "ts": (128, 128),
+                       "et": 0, "overview": choice, "geolocation": {"x": coordinates[0], "y": coordinates[1],
+                       "pixel_step": 512, "line_step": 512}}
+            yield (f"overview {kind} USGS {choice}", [path], {
+                **georef, "dstSRS": "EPSG:4326", "width": 128, "height": 128,
+                "outputBounds": [10, 44.488, 10.512, 45], "resampleAlg": "near", "overviewLevel": choice,
+                "errorThreshold": 0,
+            }, cli)
+
+
 def remote_cases(data, tmp, terrio):
     """Measure actual HTTP bytes while downsampling a real USGS COG."""
     source = str(tmp / "remote-source.tif")
@@ -170,9 +220,13 @@ def main():
             reference, actual = str(tmp / f"gdal-{i}.tif"), str(tmp / f"terrio-{i}.tif")
             try:
                 gdal.Warp(reference, inputs, **options)
-                result = subprocess.run([args.terrio, "warp", *inputs, actual, *cli], capture_output=True, text=True)
-                if result.returncode:
-                    raise RuntimeError(result.stderr.strip())
+                if isinstance(cli, dict):
+                    import terrio as bindings
+                    bindings.warp(inputs[0], **cli).write(actual)
+                else:
+                    result = subprocess.run([args.terrio, "warp", *inputs, actual, *cli], capture_output=True, text=True)
+                    if result.returncode:
+                        raise RuntimeError(result.stderr.strip())
                 record = compare(reference, actual, 0.0)
             except Exception as error:  # report every case, including CLI errors
                 record = {"error": str(error)}

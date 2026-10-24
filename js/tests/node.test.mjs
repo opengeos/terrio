@@ -1101,6 +1101,9 @@ test("warp selects stored overviews for datasets, bytes and repeated shared inpu
   }
   const full = terrio.warp(lazy, { ts: [8, 8], overview: "NONE" });
   assert.notDeepEqual([...full.readBand(1)], expected);
+  const loaded = terrio.warp([plain, plain], { ts: [8, 8], overview: "NONE" });
+  assert.deepEqual([...loaded.readBand(1)], [...full.readBand(1)]);
+  loaded.free();
   const fine = terrio.warp(lazy, { ts: [8, 8], overview: "AUTO-1" });
   const explicit = terrio.warp(lazy, { ts: [8, 8], overview: 0 });
   assert.deepEqual([...fine.readBand(1)], [...explicit.readBand(1)]);

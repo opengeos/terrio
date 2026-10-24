@@ -222,7 +222,10 @@ level = terrio.warp(lazy, overview=1)       # levels start at 0
 
 Paths, lazy `Raster` objects, and mixed/repeated inputs in mosaics retain their
 stored overviews. Selection precedes pixel reads and does not alter the output grid
-computed from the original metadata. Only the source resolution changes.
+computed from the original metadata. Only the source resolution changes. Loaded rasters
+have no stored overviews: a requested numeric level warns and uses full resolution.
+Calls with loaded inputs reuse their existing pixels, including repeated references.
+File GCPs/RPCs of the first path are retained in mixed path/`Raster` calls.
 
 ## SQL queries
 

@@ -1382,6 +1382,12 @@ pub struct WarpSourceInfo {
 /// run in parallel. This permits bindings to borrow a shared dataset only during
 /// each read, including when it occurs more than once in a mosaic.
 pub trait WarpSource {
+    /// Visits already-loaded pixels without copying them. Returns false for lazy sources.
+    /// The callback runs while any shared-reader borrow remains alive; implementations
+    /// must invoke it exactly once when returning true and must not load pixels here.
+    fn with_dataset(&self, _visit: &mut dyn FnMut(&RasterDataset)) -> Result<bool> {
+        Ok(false)
+    }
     /// Returns full-resolution metadata and the available overview dimensions.
     fn info(&mut self) -> Result<WarpSourceInfo>;
     /// Reads valid raster data for this window and overview, with the requested bands.
@@ -1389,6 +1395,14 @@ pub trait WarpSource {
 }
 
 impl WarpSource for crate::LazyRaster {
+    fn with_dataset(&self, visit: &mut dyn FnMut(&RasterDataset)) -> Result<bool> {
+        if let Some(dataset) = self.dataset() {
+            visit(dataset);
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
     fn info(&mut self) -> Result<WarpSourceInfo> {
         Ok(WarpSourceInfo { raster: self.header(), overviews: self.overviews() })
     }
@@ -1402,10 +1416,7 @@ impl WarpSource for crate::LazyRaster {
 /// pixels it reads, not the whole source. The result is [`warp`]'s, bit for bit. Without a
 /// cutline, which masks the whole source.
 pub fn warp_lazy(src: &mut crate::LazyRaster, o: &WarpOptions) -> Result<RasterDataset> {
-    if let Some(ds) = src.dataset() {
-        return warp(&[ds], o);
-    }
-    warp_reader(src, o)
+    warp_sources(&mut [src], o)
 }
 
 fn warp_reader(src: &mut dyn WarpSource, o: &WarpOptions) -> Result<RasterDataset> {
@@ -1469,6 +1480,29 @@ pub fn warp_lazy_many(sources: &mut [&mut crate::LazyRaster], o: &WarpOptions) -
 /// # Ok::<(), terrio::Error>(())
 /// ```
 pub fn warp_sources(sources: &mut [&mut dyn WarpSource], o: &WarpOptions) -> Result<RasterDataset> {
+    // Scoped visits retain binding borrow guards until rendering has finished, including
+    // repeated references to one shared raster. No full or per-chunk pixel copies.
+    fn memory(sources: &[&mut dyn WarpSource], datasets: &[&RasterDataset], o: &WarpOptions) -> Result<Option<RasterDataset>> {
+        let Some((first, rest)) = sources.split_first() else {
+            if let Some(first) = datasets.first() {
+                o.overview.select(first.raster.cols, &[], 1.0);
+            }
+            return warp(datasets, o).map(Some);
+        };
+        let mut result = Ok(None);
+        first.with_dataset(&mut |dataset| {
+            let mut datasets = datasets.to_vec();
+            datasets.push(dataset);
+            result = memory(rest, &datasets, o);
+        })?;
+        result
+    }
+    // Bound nested shared-reader guards for very large in-memory mosaics.
+    if sources.len() <= 128
+        && let Some(output) = memory(sources, &[], o)?
+    {
+        return Ok(output);
+    }
     if sources.len() == 1 && o.cutline.is_none() {
         return warp_reader(sources[0], o);
     }
@@ -1644,7 +1678,7 @@ pub fn warp_to_path(paths: &[String], o: &WarpOptions, path: &str, options: &cra
 /// `o`, with the GCPs of the raster at `path` (opened as `ds`) when `o` has neither GCPs nor RPCs
 /// and the raster has no geotransform; else with its RPCs, as GDAL picks a geotransform, then
 /// GCPs, then RPCs.
-fn with_file_gcps<'a>(o: &'a WarpOptions, path: &str, ds: &RasterDataset) -> Result<std::borrow::Cow<'a, WarpOptions>> {
+pub fn with_file_gcps<'a>(o: &'a WarpOptions, path: &str, ds: &RasterDataset) -> Result<std::borrow::Cow<'a, WarpOptions>> {
     let default_gt = [0.0, 1.0, 0.0, ds.raster.rows as f64, 0.0, -1.0];
     if o.geoloc
         || o.geolocation.is_some()
@@ -2990,6 +3024,44 @@ mod tests {
 #[cfg(test)]
 mod overview_tests {
     use super::*;
+
+    #[test]
+    fn loaded_shared_sources_do_not_read_or_clone_windows() {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+        struct Shared(Rc<RefCell<crate::LazyRaster>>);
+        impl WarpSource for Shared {
+            fn with_dataset(&self, visit: &mut dyn FnMut(&RasterDataset)) -> Result<bool> {
+                self.0.borrow().with_dataset(visit)
+            }
+            fn info(&mut self) -> Result<WarpSourceInfo> {
+                panic!("loaded source must not request metadata")
+            }
+            fn read_window(&mut self, _: crate::Window, _: &crate::WindowOptions) -> Result<RasterDataset> {
+                panic!("loaded source must not copy windows")
+            }
+        }
+        let grid = Grid { width: 4, height: 4, geo_transform: [0., 1., 0., 4., 0., -1.] };
+        let ds = super::super::build_raster(
+            grid,
+            vec![(0..16).map(|i| i as f64).collect()],
+            DataType::F64,
+            None,
+            &SpatialRef::from_epsg(3857).unwrap(),
+            super::super::convert_value,
+        )
+        .unwrap();
+        let lazy = Rc::new(RefCell::new(crate::LazyRaster::from(ds.clone())));
+        let mut a = Shared(lazy.clone());
+        let mut b = Shared(lazy);
+        for overview in [OverviewSelection::Auto, OverviewSelection::None, OverviewSelection::Level(2)] {
+            let options = WarpOptions { overview, size: Some((2, 2)), ..Default::default() };
+            let expected = warp(&[&ds, &ds], &options).unwrap();
+            let got = warp_sources(&mut [&mut a, &mut b], &options).unwrap();
+            assert_eq!(got.geo_transform(), expected.geo_transform());
+            assert_eq!(super::super::band_f64(&got.raster, 0), super::super::band_f64(&expected.raster, 0));
+        }
+    }
 
     #[test]
     fn selects_stored_pixels_without_changing_the_target_grid() {
