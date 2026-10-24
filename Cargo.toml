@@ -102,6 +102,11 @@ rayon = "1.10"
 gdal = "0.19"
 gdal-sys = "0.12"
 
+# Full DWARF for the codec-heavy workspace makes local/test artifacts very large.
+# Opt in when debugging with CARGO_PROFILE_DEV_DEBUG=2.
+[profile.dev]
+debug = 0
+
 # openjp2 frees never-allocated code-block buffers (a null `dealloc`, harmless with the system
 # allocator) and trips the standard library's debug-mode precondition checks: build it as in
 # release. Its inverse wavelet transform of a decode area also adds samples just outside the area,
