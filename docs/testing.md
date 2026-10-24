@@ -116,11 +116,30 @@ python scripts/compare_dem_calc_with_gdal.py ../terrio-data --only fill-nodata
 The fetch script downloads Landsat 8 B8/B4/B3/B2 real image pairs from the public
 [rio-pansharpen test fixtures](https://github.com/mapbox/rio-pansharpen/tree/f23d1edbedddf157ca5014ec805918cdf713bb7f/tests/fixtures/tiny_20_tiffs/LC81070352015122LGN00).
 The comparison retains unequal pan/spectral resolutions and checks all six interpolation
-methods, weights, output selection, bit depth, nodata borders, internal masks, integer clipping and union/
-intersection extents against `gdal_pansharpen`. No tolerance is allowed for integer cases; the Float32 comparison allows 0.002, one ULP at
-the scene's radiometric scale.
+methods, weights, output selection, bit depth, nodata borders, internal masks, integer
+clipping and union/intersection extents against `gdal_pansharpen`. No tolerance is allowed
+for integer cases; the Float32 comparison allows 0.002, one ULP at the scene's radiometric scale.
 
 ```sh
 python scripts/compare_pansharpen_with_gdal.py ../terrio-data
 python scripts/conformance.py ../terrio-data --only pansharpen
 ```
+
+## Build size and iteration speed
+
+Development and test builds omit debug symbols by default. Enable full debugger
+information with `CARGO_PROFILE_DEV_DEBUG=2 cargo test`; this increases disk use.
+Incremental compilation remains available locally for repeated edits.
+
+For several independent worktrees, use a shared compiler cache such as `sccache`
+with `RUSTC_WRAPPER=sccache CARGO_INCREMENTAL=0`. Rust incremental compilation
+cannot be cached by sccache. Keep each active worktree's target directory separate:
+a single shared Cargo target directory serializes concurrent builds on its lock.
+Put build targets on disk rather than a memory-backed `/tmp`, and limit aggregate
+build parallelism when running multiple worktrees (for example, `CARGO_BUILD_JOBS=2`
+per worktree). Use development WASM/Python builds for iteration; run optimized
+package builds for final validation.
+
+CI saves dependency caches for PR updates as well as main, disables incremental
+compilation, and cancels obsolete runs when a PR receives a newer push. Release
+profiles and the full validation matrix are unchanged.
