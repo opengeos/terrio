@@ -162,11 +162,7 @@ pub fn translate(ds: &RasterDataset, o: &TranslateOptions) -> Result<RasterDatas
         return Err(Error::InvalidArgument(format!("band {b} does not exist (the raster has {})", r.bands)));
     }
     let out_type = o.output_type.unwrap_or(r.data_type);
-    let src_nodata = ds.nodata();
-    let out_nodata = match o.assign_nodata {
-        Some(v) => v,
-        None => src_nodata,
-    };
+    let out_nodata: Vec<Option<f64>> = bands.iter().map(|b| o.assign_nodata.unwrap_or_else(|| ds.band_nodata(*b))).collect();
 
     // The destination window, after clamping the source window to the raster (FixSrcDstWindow).
     let (mut s, mut d) = ([win.0, win.1, win.2, win.3], [0.0, 0.0, ow as f64, oh as f64]);
@@ -182,6 +178,7 @@ pub fn translate(ds: &RasterDataset, o: &TranslateOptions) -> Result<RasterDatas
     let n = ow * oh;
     let mut out = RasterData::new_filled(out_type, n * bands.len(), 0.0);
     for (k, &b) in bands.iter().enumerate() {
+        let src_nodata = ds.band_nodata(b);
         let values = super::BandView::of(r, b - 1);
         let valid: Option<Vec<bool>> = src_nodata.map(|nd| values.valid(nd));
         let read = SourceRead {
@@ -217,7 +214,7 @@ pub fn translate(ds: &RasterDataset, o: &TranslateOptions) -> Result<RasterDatas
             None
         };
         let float_working = matches!(r.data_type, DataType::F64 | DataType::I32 | DataType::U32 | DataType::I64 | DataType::U64);
-        let fill = convert_value(out_nodata.unwrap_or(0.0), out_type);
+        let fill = convert_value(out_nodata[k].unwrap_or(0.0), out_type);
         let scaled = |v: f64| match scaling {
             None => v,
             Some((smin, smax, dmin, dmax)) => {
@@ -243,7 +240,8 @@ pub fn translate(ds: &RasterDataset, o: &TranslateOptions) -> Result<RasterDatas
     }
     let grid = Grid { width: ow, height: oh, geo_transform: gt };
     let srs = o.assign_srs.clone().unwrap_or_else(|| ds.crs());
-    let mut res = super::build_raster_data(grid, out, bands.len(), out_nodata, &srs)?;
+    let mut res = super::build_raster_data(grid, out, bands.len(), out_nodata.first().copied().flatten(), &srs)?;
+    res.band_nodata = out_nodata;
     res.driver = ds.driver;
     Ok(res)
 }

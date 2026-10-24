@@ -101,10 +101,13 @@ built-in operations before considering arbitrary user-supplied pixel functions.
 
 ### 5. Richer vector SQL
 
-Implemented by the [documented SQL subset](sql.md): computed columns, single-field DISTINCT,
-COUNT/SUM/AVG/MIN/MAX summaries and same-dataset attribute LEFT JOINs. Queries retain primary
-geometry except DISTINCT and summaries; duplicate join keys use the first matching secondary
-feature. GROUP BY and spatial SQL remain separate extensions.
+Implemented in [PR #245](https://github.com/opengeos/terrio/pull/245):
+[`ops/sql.rs`](../crates/terrio/src/ops/sql.rs) supports computed SELECT columns,
+single-field DISTINCT, summary aggregates and same-dataset attribute LEFT JOINs.
+Duplicate join keys use OGR's first matching secondary row; null keys and unmatched
+rows retain the primary feature with null joined fields. Rust, CLI/MCP, Python
+and JavaScript share the documented subset. GROUP BY and spatial SQL remain
+separate extensions.
 [GDAL OGR SQL](https://gdal.org/en/stable/user/ogr_sql_dialect.html).
 
 Acceptance: compare values, nulls, field types and geometry retention with OGR SQL,

@@ -1440,6 +1440,22 @@ pub fn warp_to_path(paths: &[String], o: &WarpOptions, path: &str, options: &cra
         if paths.len() != 1 {
             return Err(Error::Unsupported("a warped VRT requires one source; mosaic it first".into()));
         }
+        if options.compression.is_some()
+            || options.tile_size.is_some()
+            || options.bigtiff
+            || !options.creation_options.is_empty()
+            || !options.band_metadata.is_empty()
+            || !options.color_table.is_empty()
+            || !options.overviews.is_empty()
+            || options.overview_resampling.is_some()
+            || options.geo_transform.is_some()
+            || !options.gcps.is_empty()
+            || options.mask.is_some()
+            || !options.rpc.is_empty()
+        {
+            return Err(Error::Unsupported("raster creation options are not supported for a serialized warped VRT".into()));
+        }
+
         if super::strips::overwrites(path, paths) {
             return Err(Error::InvalidArgument("a VRT cannot replace its source".into()));
         }

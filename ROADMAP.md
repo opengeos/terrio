@@ -41,8 +41,9 @@ operations and drivers below; no release deadline is assigned yet.
 - [x] Richer VRT interoperability: serialized warped VRTs, then selected built-in derived bands
       and kernel-filtered sources, with lazy window reads and GDAL-compatible output.
       Rust, CLI/MCP, Python and WebAssembly; supported subsets are documented in the CLI guide.
-- [ ] Richer vector SQL: computed SELECT columns, DISTINCT, summary aggregates and limited
-      attribute joins, with the supported OGR SQL subset documented explicitly.
+- [x] Richer vector SQL: computed SELECT columns, DISTINCT, summary aggregates and limited
+      attribute joins, with the supported OGR SQL subset documented explicitly. Done in
+      [#245](https://github.com/opengeos/terrio/pull/245), with real-data OGR SQL comparisons.
 - [x] Viewshed: single-observer visibility and minimum visible height, observer/target heights,
       maximum distance and curvature/refraction controls, with explicit input nodata behavior.
       Done in [#240](https://github.com/opengeos/terrio/pull/240), through Rust, CLI/MCP, Python

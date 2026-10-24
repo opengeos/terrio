@@ -651,6 +651,12 @@ Band mappings may reorder or repeat source bands; nodata is retained per band,
 including `UNIFIED_SRC_NODATA=YES`, `NO` and `PARTIAL`. GeoTIFF file output uses
 a `.aux.xml` sidecar when nodata differs between bands; keep that sidecar with
 the TIFF. A standalone TIFF byte buffer has only the shared embedded nodata tag.
+Raster creation options (compression, tiles, masks, overviews and metadata overrides)
+are rejected for a serialized warp; set the warp grid through the warp options.
+GDAL 3.12's generic `sum` polygon path can lose overlap area on pixel boundaries,
+including when a redundant identity CRS transformer disables its affine fast path.
+Terrio preserves conservative affine overlap sums; its results match GDAL's affine
+path within one Float32 ULP, and can differ from that generic clipping behavior.
 Serialized cutlines, alpha warps and geolocation transformers are currently
 reported as unsupported; use a materialized warp for those supported by the
 normal warper. Custom `INIT_DEST` values are also unsupported.
