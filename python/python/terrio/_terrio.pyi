@@ -804,6 +804,7 @@ def warp(
     dst_transform: tuple[float, float, float, float, float, float] | None = None,
     tap: bool = False,
     resampling: str = "near",
+    overview: int | str | None = None,
     srcnodata: _Nodata | None = None,
     dstnodata: _Nodata | None = None,
     ot: str | None = None,
