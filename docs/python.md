@@ -221,6 +221,20 @@ uv run maturin develop --release
 uv run pytest
 ```
 
+## SQL queries
+
+`terrio.sql(src, query, layers=None)` returns a `Layer`. Inputs may be a vector path,
+`VectorDataset`, `Layer`, list of layers, or GeoJSON. It implements the shared
+[OGR SQL subset](sql.md), including computed columns, DISTINCT, summaries and attribute joins.
+
+```python
+result = terrio.sql("countries.gpkg", "SELECT ADMIN, POP_EST/1000000.0 AS millions FROM countries")
+summary = terrio.sql("countries.gpkg", "SELECT COUNT(*) AS n, SUM(POP_EST) AS population FROM countries")
+```
+
+Raw GeoJSON inputs use the layer name `layer`; use `Layer.from_geojson(..., name=...)`
+(Python) or `fromGeoJSON(src, name)` (JavaScript) to assign another name.
+
 ## Geolocation-array warping
 
 `terrio.warp(path, geoloc=True, t_srs="EPSG:4326")` requires the longitude/latitude arrays

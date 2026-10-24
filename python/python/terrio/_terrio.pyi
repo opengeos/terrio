@@ -27,6 +27,7 @@ __all__ = [
     "write_netcdf_groups",
     "write_vector",
     "convert",
+    "sql",
     "rasterize",
     "pansharpen",
     "polygonize",
@@ -1088,4 +1089,8 @@ def pansharpen(
     bigtiff: bool = False,
 ) -> Raster:
     """Weighted Brovey pansharpening on one or several spectral rasters."""
+    ...
+
+def sql(src: Any, query: str, *, layers: list[str] | None = None) -> Layer:
+    """Run the documented OGR SQL subset; DISTINCT and summaries discard geometry."""
     ...

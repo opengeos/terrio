@@ -297,7 +297,7 @@ pub struct SqlArgs {
     input: VectorInput,
     #[command(flatten)]
     output: VectorOutput,
-    /// Read-only SELECT: fields/aliases, FROM layer, optional WHERE, ORDER BY field and LIMIT.
+    /// Read-only OGR SQL subset: expressions, DISTINCT, summaries and attribute LEFT JOIN.
     #[arg(short = 'q', long = "query", alias = "sql")]
     query: String,
 }
