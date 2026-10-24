@@ -54,6 +54,9 @@ def cases(data, work):
         )
 
     add("default cubic")
+    small_pan = str(work / "pan_window.tif")
+    gdal.Translate(small_pan, pan, srcWin=[20, 30, 100, 90])
+    add("pan extent only", p=small_pan, opts=["-spat_adjust", "none"])
     for method in ("nearest", "bilinear", "cubicspline", "lanczos", "average"):
         add(method, opts=["-r", method])
     add("weights", opts=["-w", "0.6", "-w", "0.3", "-w", "0.1"])
@@ -108,6 +111,31 @@ def cases(data, work):
         shifted.append(target)
     for extent in ("union", "intersection"):
         add(f"extent {extent}", s=shifted, opts=["-spat_adjust", extent])
+    # Nonmatching extents drop nodata in GDAL's adjustment VRT unless explicitly overridden.
+    shifted_holes = []
+    for i, path in enumerate(holes):
+        target = str(work / f"shifted_holes{i}.tif")
+        ds = gdal.Translate(target, path)
+        gt = list(ds.GetGeoTransform())
+        gt[0] += 4 * gt[1]
+        gt[3] -= 2 * abs(gt[5])
+        ds.SetGeoTransform(gt)
+        ds = None
+        shifted_holes.append(target)
+    add("unequal nodata auto", p=masked_pan, s=shifted_holes)
+    add("unequal nodata explicit", p=masked_pan, s=shifted_holes, opts=["-nodata", "0"])
+    # GDAL's one-pixel footprint tolerance permits negative fractional source origins.
+    fractional = []
+    for i, path in enumerate(spectral):
+        target = str(work / f"fractional{i}.tif")
+        ds = gdal.Translate(target, path)
+        gt = list(ds.GetGeoTransform())
+        gt[0] += 10
+        ds.SetGeoTransform(gt)
+        ds = None
+        fractional.append(target)
+    for method in ("nearest", "bilinear", "cubic", "cubicspline", "lanczos", "average"):
+        add(f"fractional origin {method}", s=fractional, opts=["-r", method])
     # Integer arithmetic is constrained by pan type before final output conversion.
     byte_pan = str(work / "byte_pan.tif")
     ds = gdal.Translate(byte_pan, pan, outputType=gdal.GDT_Byte, scaleParams=[[0, 20000, 0, 255]])
