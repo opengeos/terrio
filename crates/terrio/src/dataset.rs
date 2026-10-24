@@ -679,14 +679,8 @@ pub fn write_raster(raster: &Raster, path: &str, options: &RasterWriteOptions) -
 pub fn write_raster_dataset(ds: &RasterDataset, path: &str, options: &RasterWriteOptions) -> Result<()> {
     let options = RasterWriteOptions { geo_transform: options.geo_transform.or(ds.affine), ..options.clone() };
     let driver = options.driver.or_else(|| RasterDriver::for_extension(path));
-    let distinct = !ds.band_nodata.is_empty()
-        && ds.band_nodata.iter().any(|v| match (*v, ds.nodata()) {
-            (Some(a), Some(b)) => a != b && !(a.is_nan() && b.is_nan()),
-            (None, None) => false,
-            _ => true,
-        });
-    let pam = distinct && matches!(driver, Some(RasterDriver::GTiff | RasterDriver::Cog));
-    write_raster_with_nodata(&ds.raster, if pam { None } else { ds.nodata() }, ds.complex, path, &options)?;
+    let pam = needs_nodata_pam(ds) && matches!(driver, Some(RasterDriver::GTiff | RasterDriver::Cog));
+    write_raster_with_nodata(&ds.raster, ds.nodata(), ds.complex, path, &options)?;
     if matches!(driver, Some(RasterDriver::GTiff | RasterDriver::Cog)) {
         let mut aux = std::ffi::OsString::from(path);
         aux.push(".aux.xml");
@@ -696,6 +690,21 @@ pub fn write_raster_dataset(ds: &RasterDataset, path: &str, options: &RasterWrit
         }
     }
     Ok(())
+}
+
+/// TIFF nodata that needs a PAM override to retain its per-band or raw Float32 value.
+pub(crate) fn needs_nodata_pam(ds: &RasterDataset) -> bool {
+    let distinct = !ds.band_nodata.is_empty()
+        && ds.band_nodata.iter().any(|v| match (*v, ds.nodata()) {
+            (Some(a), Some(b)) => a != b && !(a.is_nan() && b.is_nan()),
+            (None, None) => false,
+            _ => true,
+        });
+    // GDAL's TIFF reader rounds its Float32 nodata tag to that type. As GDAL
+    // Translate does, keep a raw double that cannot be represented there in PAM.
+    let raw_float32_nodata = ds.raster.data_type == wbraster::DataType::F32
+        && (1..=ds.raster.bands).any(|band| ds.band_nodata(band).is_some_and(|value| value.is_finite() && value as f32 as f64 != value));
+    distinct || raw_float32_nodata
 }
 
 fn write_raster_with_nodata(raster: &Raster, nodata: Option<f64>, complex: bool, path: &str, options: &RasterWriteOptions) -> Result<()> {

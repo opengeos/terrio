@@ -1085,6 +1085,32 @@ test("Zarr stores and netCDF/HDF5 products as GDAL reads them", { skip: needs("n
   }
 });
 
+test("warp selects stored overviews for datasets, bytes and repeated shared inputs", () => {
+  const rows = Array.from({ length: 32 }, (_, y) => Array.from({ length: 32 }, (_, x) => y * y + x + 0.25).join(" ")).join("\n");
+  const plain = terrio.open(new TextEncoder().encode(`ncols 32\nnrows 32\nxllcorner 0\nyllcorner 0\ncellsize 1\n${rows}\n`), "source.asc");
+  const bytes = plain.toBytes("pyramid.tif", { overviews: [2, 4, 8], overviewResampling: "average" });
+  const lazy = terrio.open(bytes, "pyramid.tif");
+  const expected = [...lazy.readBand(1, undefined, 1)];
+  for (const src of [lazy, bytes, { bytes, filename: "pyramid.tif" }, [lazy, lazy], [bytes, lazy]]) {
+    for (const overview of [undefined, "AUTO", 1, "1"]) {
+      const out = terrio.warp(src, { ts: [8, 8], overview });
+      assert.deepEqual([...out.readBand(1)], expected);
+      assert.deepEqual([...out.transform], [0, 4, 0, 32, 0, -4]);
+      out.free();
+    }
+  }
+  const full = terrio.warp(lazy, { ts: [8, 8], overview: "NONE" });
+  assert.notDeepEqual([...full.readBand(1)], expected);
+  const loaded = terrio.warp([plain, plain], { ts: [8, 8], overview: "NONE" });
+  assert.deepEqual([...loaded.readBand(1)], [...full.readBand(1)]);
+  loaded.free();
+  const fine = terrio.warp(lazy, { ts: [8, 8], overview: "AUTO-1" });
+  const explicit = terrio.warp(lazy, { ts: [8, 8], overview: 0 });
+  assert.deepEqual([...fine.readBand(1)], [...explicit.readBand(1)]);
+  assert.throws(() => terrio.warp(lazy, { overview: "invalid" }), /overview selection/);
+  plain.free(); lazy.free(); full.free(); fine.free(); explicit.free();
+});
+
 test("SQL computed columns, DISTINCT and summary aggregates", () => {
   const src = { type: "FeatureCollection", features: [2, 2, null].map((v) => ({
     type: "Feature", geometry: { type: "Point", coordinates: [0, 0] }, properties: { v },
@@ -1146,5 +1172,13 @@ test("openVrt resolves uploaded sources and reads derived windows lazily", () =>
   const out = terrio.openVrt(xml, { "upload.tif": bytes });
   assert.deepEqual([...out.readBand(1, [1, 1, 2, 2])], [6, 7, 9, 10]);
   assert.throws(() => terrio.openVrt(xml.replace("sum", "external_custom_function"), { "upload.tif": bytes }), /external_custom_function/);
+  const fractional = terrio.rasterFromArray(new Float64Array([1.250000000001, 2.75]), 2, 1, [0, 1, 0, 1, 0, -1]);
+  const bands = ["Byte", "Float32", "Float64"].map(type => `<VRTRasterBand dataType="${type}"><SimpleSource><SourceFilename>source.tif</SourceFilename><SourceBand>1</SourceBand></SimpleSource></VRTRasterBand>`).join("");
+  const mixed = terrio.openVrt(`<VRTDataset rasterXSize="2" rasterYSize="1">${bands}</VRTDataset>`, { "source.tif": fractional.toBytes("source.tif") });
+  assert.equal(mixed.dtype, "float64");
+  assert.deepEqual([...mixed.readBand(1)], [1, 3]);
+  assert.deepEqual([...mixed.readBand(2)], [Math.fround(1.250000000001), Math.fround(2.75)]);
+  assert.deepEqual([...mixed.readBand(3)], [1.250000000001, 2.75]);
+  mixed.free(); fractional.free();
   src.free(); out.free();
 });

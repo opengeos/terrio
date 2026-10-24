@@ -42,6 +42,10 @@ pub struct Args {
     /// med, q1, q3, sum.
     #[arg(short = 'r', long = "resampling", default_value = "near")]
     resampling: String,
+    /// Source overview: AUTO, AUTO-n, NONE, or a level numbered from 0.
+    #[arg(long, alias = "ovr", default_value = "AUTO")]
+    overview: String,
+
     /// Source nodata values (one, or one per band), or `none` to ignore the sources'.
     #[arg(long, allow_hyphen_values = true)]
     srcnodata: Option<String>,
@@ -121,6 +125,7 @@ pub fn run(a: Args) -> terrio::Result<()> {
         dst_transform: a.dst_transform.as_ref().map(|v| [v[0], v[1], v[2], v[3], v[4], v[5]]),
         target_aligned_pixels: a.tap,
         resampling: Resampling::parse(&a.resampling)?,
+        overview: terrio::ops::overview::OverviewSelection::parse(&a.overview)?,
         src_nodata: a.srcnodata.as_deref().map(Nodata::parse).transpose()?.unwrap_or_default(),
         dst_nodata: a.dstnodata.as_deref().map(Nodata::parse).transpose()?.unwrap_or_default(),
         output_type: a.ot.as_deref().map(parse_data_type).transpose()?,

@@ -50,6 +50,7 @@ pub(crate) struct StripWriter {
     rows: usize,
     bands: usize,
     width: usize,
+    nodata_pam: Option<Vec<Option<f64>>>,
 }
 
 enum Inner {
@@ -68,6 +69,10 @@ impl StripWriter {
         let r = &header.raster;
         let (rows, bands, width) = (r.rows, r.bands, r.cols);
         if let Some(tiff) = Tiff::create(header, path, options)? {
+            let mut aux = std::ffi::OsString::from(path);
+            aux.push(".aux.xml");
+            let nodata_pam = (crate::dataset::needs_nodata_pam(header) || std::path::Path::new(&aux).exists())
+                .then(|| (1..=bands).map(|b| header.band_nodata(b)).collect());
             let inner = {
                 #[cfg(not(target_family = "wasm"))]
                 {
@@ -84,7 +89,7 @@ impl StripWriter {
                 #[cfg(target_family = "wasm")]
                 Inner::Tiff(tiff)
             };
-            return Ok(Self { inner: Some(inner), path: path.to_string(), rows, bands, width });
+            return Ok(Self { inner: Some(inner), path: path.to_string(), rows, bands, width, nodata_pam });
         }
         let mut ds = header.clone();
         ds.raster.data = RasterData::new_filled(r.data_type, width * rows * bands, 0.0);
@@ -94,6 +99,7 @@ impl StripWriter {
             rows,
             bands,
             width,
+            nodata_pam: None,
         })
     }
 
@@ -158,7 +164,13 @@ impl StripWriter {
                 }
                 return crate::write_raster_dataset(&ds, &self.path, &options);
             }
-        };
+        }
+        .and_then(|()| {
+            if let Some(values) = &self.nodata_pam {
+                crate::drivers::common::write_band_nodata_pam(std::path::Path::new(&self.path), values)?;
+            }
+            Ok(())
+        });
         if result.is_err() {
             let _ = std::fs::remove_file(&self.path);
         }
@@ -503,5 +515,29 @@ mod tests {
         let path = dir.path().join("out.tif");
         let options = RasterWriteOptions { compression: Some("JPEG".into()), ..Default::default() };
         assert!(StripWriter::create(&header(DataType::F32), path.to_str().unwrap(), &options).is_err());
+    }
+
+    #[test]
+    fn streamed_tiff_keeps_per_band_and_raw_float_nodata() {
+        let dir = tempfile::tempdir().unwrap();
+        for (label, nodata) in [("different", vec![Some(-101.), Some(-202.)]), ("decimal", vec![Some(0.1), Some(0.1)])] {
+            let mut source = crate::ops::build_raster(
+                crate::ops::Grid { width: 2, height: 1, geo_transform: [0., 1., 0., 1., 0., -1.] },
+                vec![vec![1., 2.], vec![3., 4.]],
+                DataType::F32,
+                nodata[0],
+                &Default::default(),
+                crate::ops::convert_value,
+            )
+            .unwrap();
+            source.band_nodata = nodata.clone();
+            let path = dir.path().join(format!("{label}.tif"));
+            let mut writer = StripWriter::create(&source, path.to_str().unwrap(), &Default::default()).unwrap();
+            writer.write(source.raster.data.clone(), 1).unwrap();
+            writer.finish().unwrap();
+            let mut opened = crate::open_raster_lazy(path.to_str().unwrap()).unwrap();
+            assert_eq!(opened.read().unwrap().band_nodata, nodata);
+            assert_eq!(opened.read().unwrap().raster.data.to_f64_vec(), source.raster.data.to_f64_vec());
+        }
     }
 }
