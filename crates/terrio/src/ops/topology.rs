@@ -98,6 +98,8 @@ pub fn overlay(a: &Layer, b: &Layer, operation: OverlayOperation) -> Result<Laye
     }
     let left = polygon_features(a)?;
     let right = polygon_features(b)?;
+    let left_bounds: Vec<_> = left.iter().map(|(_, g)| g.bounding_rect()).collect();
+    let right_bounds: Vec<_> = right.iter().map(|(_, g)| g.bounding_rect()).collect();
     let mut out = Layer::new(a.name.clone());
     out.crs = a.crs.clone();
     out.geom_type = Some(GeometryType::MultiPolygon);
@@ -125,9 +127,9 @@ pub fn overlay(a: &Layer, b: &Layer, operation: OverlayOperation) -> Result<Laye
         Ok(())
     };
     if matches!(operation, OverlayOperation::Intersection | OverlayOperation::Union) {
-        for (fa, ga) in &left {
-            for (fb, gb) in &right {
-                if overlaps(ga, gb) {
+        for ((fa, ga), ba) in left.iter().zip(&left_bounds) {
+            for ((fb, gb), bb) in right.iter().zip(&right_bounds) {
+                if overlaps(*ba, *bb) {
                     emit(ga.intersection(gb), Some(fa), Some(fb))?;
                 }
             }
@@ -135,13 +137,17 @@ pub fn overlay(a: &Layer, b: &Layer, operation: OverlayOperation) -> Result<Laye
     }
     if operation != OverlayOperation::Intersection {
         let right_union = union(right.iter().map(|(_, g)| g));
-        for (f, g) in &left {
-            emit(g.difference(&right_union), Some(f), None)?;
+        let right_union_bounds = right_union.bounding_rect();
+        for ((f, g), bounds) in left.iter().zip(&left_bounds) {
+            let result = if overlaps(*bounds, right_union_bounds) { g.difference(&right_union) } else { g.clone() };
+            emit(result, Some(f), None)?;
         }
         if matches!(operation, OverlayOperation::Union | OverlayOperation::SymmetricDifference) {
             let left_union = union(left.iter().map(|(_, g)| g));
-            for (f, g) in &right {
-                emit(g.difference(&left_union), None, Some(f))?;
+            let left_union_bounds = left_union.bounding_rect();
+            for ((f, g), bounds) in right.iter().zip(&right_bounds) {
+                let result = if overlaps(*bounds, left_union_bounds) { g.difference(&left_union) } else { g.clone() };
+                emit(result, None, Some(f))?;
             }
         }
     }
@@ -365,10 +371,8 @@ fn polygon_features(layer: &Layer) -> Result<Vec<(&Feature, geo::MultiPolygon<f6
         .collect()
 }
 
-fn overlaps(a: &geo::MultiPolygon<f64>, b: &geo::MultiPolygon<f64>) -> bool {
-    a.bounding_rect()
-        .zip(b.bounding_rect())
-        .is_some_and(|(a, b)| a.min().x <= b.max().x && b.min().x <= a.max().x && a.min().y <= b.max().y && b.min().y <= a.max().y)
+fn overlaps(a: Option<geo::Rect<f64>>, b: Option<geo::Rect<f64>>) -> bool {
+    a.zip(b).is_some_and(|(a, b)| a.min().x <= b.max().x && b.min().x <= a.max().x && a.min().y <= b.max().y && b.min().y <= a.max().y)
 }
 
 fn union<'a>(shapes: impl Iterator<Item = &'a geo::MultiPolygon<f64>>) -> geo::MultiPolygon<f64> {

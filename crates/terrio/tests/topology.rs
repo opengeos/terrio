@@ -92,6 +92,25 @@ fn overlay_areas_attributes_ids_and_empty_results() {
 }
 
 #[test]
+fn disjoint_overlay_keeps_both_sides_and_their_attributes() {
+    let mut a = layer(vec![Some(rect(-10., -10., 2., 2.)), None, Some(Geometry::MultiPolygon(vec![]))]);
+    let mut b = layer(vec![Some(rect(10., 10., 3., 3.)), None, Some(Geometry::MultiPolygon(vec![]))]);
+    a.features[0].attributes[0] = V::Text("left".into());
+    b.features[0].attributes[0] = V::Text("right".into());
+    for (op, expected_area, count) in [(Op::Difference, 4., 1), (Op::Union, 13., 2), (Op::SymmetricDifference, 13., 2)] {
+        let out = topology::overlay(&a, &b, op).unwrap();
+        close(total(&out), expected_area);
+        assert_eq!(out.len(), count);
+        assert_eq!(out.features[0].attributes, vec![V::Text("left".into()), V::Null, V::Text(u64::MAX.to_string()), V::Null]);
+        if count == 2 {
+            assert_eq!(out.features[1].attributes, vec![V::Null, V::Text("right".into()), V::Null, V::Text(u64::MAX.to_string())]);
+        }
+        assert!(topology::validity(&out).features.iter().all(|f| f.attributes[4] == V::Boolean(true)));
+    }
+    assert!(topology::overlay(&a, &b, Op::Intersection).unwrap().is_empty());
+}
+
+#[test]
 fn dissolve_groups_and_nulls_preserve_only_group_attributes() {
     let mut l = layer(vec![Some(rect(0., 0., 2., 2.)), Some(rect(1., 0., 2., 2.)), None]);
     l.features[2].attributes[0] = V::Null;

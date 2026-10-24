@@ -207,11 +207,12 @@ def snapped(g, spacing):
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("data", type=Path)
-    p.add_argument("--terrio", default=shutil.which("terrio"))
+    local_terrio = Path(__file__).resolve().parents[1] / "target/release/terrio"
+    p.add_argument("--terrio", default=shutil.which("terrio") or str(local_terrio))
     p.add_argument("--work-dir", type=Path)
     p.add_argument("--json", type=Path)
     args = p.parse_args()
-    if not args.terrio:
+    if not shutil.which(args.terrio):
         p.error("pass --terrio with the compiled CLI path")
     work = (args.work_dir or args.data / "topology-validation").resolve()
     work.mkdir(parents=True, exist_ok=True)
