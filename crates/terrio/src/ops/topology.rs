@@ -9,6 +9,8 @@ use crate::{Error, Feature, FieldDef, FieldType, FieldValue, Geometry, GeometryT
 use geo::algorithm::buffer::{BufferStyle, LineCap, LineJoin};
 use geo::algorithm::kernels::{Kernel, Orientation, RobustKernel};
 use geo::{BooleanOps, BoundingRect, Buffer, MakeValid, Orient, Validation};
+use rstar::primitives::{GeomWithData, Rectangle};
+use rstar::{AABB, RTree};
 use std::collections::HashMap;
 use wbvector::{Coord, Ring};
 
@@ -100,6 +102,7 @@ pub fn overlay(a: &Layer, b: &Layer, operation: OverlayOperation) -> Result<Laye
     let right = polygon_features(b)?;
     let left_bounds: Vec<_> = left.iter().map(|(_, g)| g.bounding_rect()).collect();
     let right_bounds: Vec<_> = right.iter().map(|(_, g)| g.bounding_rect()).collect();
+    let right_index = bounds_index(&right_bounds);
     let mut out = Layer::new(a.name.clone());
     out.crs = a.crs.clone();
     out.geom_type = Some(GeometryType::MultiPolygon);
@@ -115,7 +118,7 @@ pub fn overlay(a: &Layer, b: &Layer, operation: OverlayOperation) -> Result<Laye
         out.schema.add_field(FieldDef::new(name, FieldType::Text));
     }
     let mut emit = |geometry: geo::MultiPolygon<f64>, fa: Option<&Feature>, fb: Option<&Feature>| -> Result<()> {
-        if geometry.0.is_empty() {
+        if geometry.0.iter().all(|p| p.exterior().0.is_empty()) {
             return Ok(());
         }
         let geometry = checked_output(from_polygons(geometry))?;
@@ -127,26 +130,24 @@ pub fn overlay(a: &Layer, b: &Layer, operation: OverlayOperation) -> Result<Laye
         Ok(())
     };
     if matches!(operation, OverlayOperation::Intersection | OverlayOperation::Union) {
-        for ((fa, ga), ba) in left.iter().zip(&left_bounds) {
-            for ((fb, gb), bb) in right.iter().zip(&right_bounds) {
-                if overlaps(*ba, *bb) {
-                    emit(ga.intersection(gb), Some(fa), Some(fb))?;
-                }
+        for ((fa, ga), bounds) in left.iter().zip(&left_bounds) {
+            for i in candidates(&right_index, *bounds) {
+                let (fb, gb) = &right[i];
+                emit(ga.intersection(gb), Some(fa), Some(fb))?;
             }
         }
     }
     if operation != OverlayOperation::Intersection {
-        let right_union = union(right.iter().map(|(_, g)| g));
-        let right_union_bounds = right_union.bounding_rect();
         for ((f, g), bounds) in left.iter().zip(&left_bounds) {
-            let result = if overlaps(*bounds, right_union_bounds) { g.difference(&right_union) } else { g.clone() };
+            let matches = candidates(&right_index, *bounds);
+            let result = if matches.is_empty() { g.clone() } else { g.difference(&union(matches.iter().map(|&i| &right[i].1))) };
             emit(result, Some(f), None)?;
         }
         if matches!(operation, OverlayOperation::Union | OverlayOperation::SymmetricDifference) {
-            let left_union = union(left.iter().map(|(_, g)| g));
-            let left_union_bounds = left_union.bounding_rect();
+            let left_index = bounds_index(&left_bounds);
             for ((f, g), bounds) in right.iter().zip(&right_bounds) {
-                let result = if overlaps(*bounds, left_union_bounds) { g.difference(&left_union) } else { g.clone() };
+                let matches = candidates(&left_index, *bounds);
+                let result = if matches.is_empty() { g.clone() } else { g.difference(&union(matches.iter().map(|&i| &left[i].1))) };
                 emit(result, None, Some(f))?;
             }
         }
@@ -274,8 +275,7 @@ pub fn clean(layer: &Layer, options: &CleanOptions) -> Result<Layer> {
     map_layer(layer, |g| {
         finite(g)?;
         let g = clean_geometry(g, options.snap_grid)?;
-        let g = repair(&g)?;
-        Ok(g)
+        repair(&g)
     })
     .map(|mut out| {
         for f in &mut out.features {
@@ -296,8 +296,17 @@ fn attributes(layer: &Layer, f: &Feature) -> Vec<FieldValue> {
 fn map_layer(layer: &Layer, transform: impl Fn(&Geometry) -> Result<Geometry>) -> Result<Layer> {
     let mut out = header(layer, None);
     for f in &layer.features {
-        let geometry =
-            f.geometry.as_ref().map(|g| transform(g).map_err(|e| Error::InvalidArgument(format!("feature {}: {e}", f.fid)))).transpose()?;
+        let geometry = f
+            .geometry
+            .as_ref()
+            .map(|g| {
+                transform(g).map_err(|e| match e {
+                    Error::InvalidArgument(message) => Error::InvalidArgument(format!("feature {}: {message}", f.fid)),
+                    Error::InvalidData(message) => Error::InvalidData(format!("feature {}: {message}", f.fid)),
+                    other => other,
+                })
+            })
+            .transpose()?;
         out.features.push(Feature { fid: f.fid, geometry, attributes: attributes(layer, f) });
     }
     Ok(out)
@@ -371,8 +380,24 @@ fn polygon_features(layer: &Layer) -> Result<Vec<(&Feature, geo::MultiPolygon<f6
         .collect()
 }
 
-fn overlaps(a: Option<geo::Rect<f64>>, b: Option<geo::Rect<f64>>) -> bool {
-    a.zip(b).is_some_and(|(a, b)| a.min().x <= b.max().x && b.min().x <= a.max().x && a.min().y <= b.max().y && b.min().y <= a.max().y)
+type BoundsIndex = RTree<GeomWithData<Rectangle<[f64; 2]>, usize>>;
+
+fn envelope(r: geo::Rect<f64>) -> AABB<[f64; 2]> {
+    AABB::from_corners([r.min().x, r.min().y], [r.max().x, r.max().y])
+}
+
+fn bounds_index(bounds: &[Option<geo::Rect<f64>>]) -> BoundsIndex {
+    RTree::bulk_load(
+        bounds.iter().enumerate().filter_map(|(i, b)| b.map(|b| GeomWithData::new(Rectangle::from_aabb(envelope(b)), i))).collect(),
+    )
+}
+
+fn candidates(index: &BoundsIndex, bounds: Option<geo::Rect<f64>>) -> Vec<usize> {
+    let Some(bounds) = bounds else { return Vec::new() };
+    let mut indices: Vec<_> = index.locate_in_envelope_intersecting(&envelope(bounds)).map(|entry| entry.data).collect();
+    // R-tree traversal order must not change source-pair order or output feature IDs.
+    indices.sort_unstable();
+    indices
 }
 
 fn union<'a>(shapes: impl Iterator<Item = &'a geo::MultiPolygon<f64>>) -> geo::MultiPolygon<f64> {
@@ -405,17 +430,22 @@ fn repair(g: &Geometry) -> Result<Geometry> {
     Ok(result)
 }
 
+fn clean_coord(c: &Coord, grid: f64) -> Result<Coord> {
+    let mut c = c.clone();
+    if grid > 0.0 {
+        c.x = (c.x / grid).round() * grid;
+        c.y = (c.y / grid).round() * grid;
+    }
+    if !c.x.is_finite() || !c.y.is_finite() {
+        return Err(Error::InvalidArgument("coordinate overflow while snapping".into()));
+    }
+    Ok(c)
+}
+
 fn clean_line(cs: &[Coord], grid: f64, ring: bool) -> Result<Vec<Coord>> {
     let mut out: Vec<Coord> = Vec::new();
     for c in cs {
-        let mut c = c.clone();
-        if grid > 0.0 {
-            c.x = (c.x / grid).round() * grid;
-            c.y = (c.y / grid).round() * grid;
-        }
-        if !c.x.is_finite() || !c.y.is_finite() {
-            return Err(Error::InvalidArgument("coordinate overflow while snapping".into()));
-        }
+        let c = clean_coord(c, grid)?;
         if out.last().is_none_or(|last| last.x != c.x || last.y != c.y) {
             out.push(c);
         }
@@ -432,17 +462,7 @@ fn clean_line(cs: &[Coord], grid: f64, ring: bool) -> Result<Vec<Coord>> {
 
 fn clean_geometry(g: &Geometry, grid: f64) -> Result<Geometry> {
     Ok(match g {
-        Geometry::Point(c) => {
-            let mut c = c.clone();
-            if grid > 0.0 {
-                c.x = (c.x / grid).round() * grid;
-                c.y = (c.y / grid).round() * grid;
-            }
-            if !c.x.is_finite() || !c.y.is_finite() {
-                return Err(Error::InvalidArgument("coordinate overflow while snapping".into()));
-            }
-            Geometry::Point(c)
-        }
+        Geometry::Point(c) => Geometry::Point(clean_coord(c, grid)?),
         Geometry::LineString(cs) => Geometry::LineString(clean_line(cs, grid, false)?),
         Geometry::Polygon { exterior, interiors } => {
             let exterior = Ring(clean_line(&exterior.0, grid, true)?);
@@ -554,4 +574,21 @@ fn key(value: &FieldValue) -> Result<Key> {
         FieldValue::DateTime(v) => Key::DateTime(v.clone()),
         FieldValue::Null => Key::Null,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn feature_context_preserves_error_categories() {
+        let mut layer = Layer::new("input");
+        layer.features.push(Feature { fid: 42, geometry: Some(Geometry::point(0.0, 0.0)), attributes: vec![] });
+        let argument = map_layer(&layer, |_| Err(Error::InvalidArgument("non-finite XY coordinates".into()))).unwrap_err();
+        assert!(matches!(argument, Error::InvalidArgument(_)));
+        assert_eq!(argument.to_string(), "feature 42: non-finite XY coordinates");
+        let data = map_layer(&layer, |_| Err(Error::InvalidData("polygon repair failed".into()))).unwrap_err();
+        assert!(matches!(data, Error::InvalidData(_)));
+        assert_eq!(data.to_string(), "feature 42: polygon repair failed");
+    }
 }

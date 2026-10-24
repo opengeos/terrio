@@ -2735,6 +2735,7 @@ dependencies = [
  "png 0.18.1",
  "quick-xml",
  "rayon",
+ "rstar",
  "rusty_av1d",
  "ruzstd 0.9.1",
  "serde",

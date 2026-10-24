@@ -93,8 +93,10 @@ fn overlay_areas_attributes_ids_and_empty_results() {
 
 #[test]
 fn disjoint_overlay_keeps_both_sides_and_their_attributes() {
-    let mut a = layer(vec![Some(rect(-10., -10., 2., 2.)), None, Some(Geometry::MultiPolygon(vec![]))]);
-    let mut b = layer(vec![Some(rect(10., 10., 3., 3.)), None, Some(Geometry::MultiPolygon(vec![]))]);
+    let mut a =
+        layer(vec![Some(rect(-10., -10., 2., 2.)), None, Some(Geometry::MultiPolygon(vec![])), Some(Geometry::polygon(vec![], vec![]))]);
+    let mut b =
+        layer(vec![Some(rect(10., 10., 3., 3.)), None, Some(Geometry::MultiPolygon(vec![])), Some(Geometry::polygon(vec![], vec![]))]);
     a.features[0].attributes[0] = V::Text("left".into());
     b.features[0].attributes[0] = V::Text("right".into());
     for (op, expected_area, count) in [(Op::Difference, 4., 1), (Op::Union, 13., 2), (Op::SymmetricDifference, 13., 2)] {
@@ -108,6 +110,25 @@ fn disjoint_overlay_keeps_both_sides_and_their_attributes() {
         assert!(topology::validity(&out).features.iter().all(|f| f.attributes[4] == V::Boolean(true)));
     }
     assert!(topology::overlay(&a, &b, Op::Intersection).unwrap().is_empty());
+}
+
+#[test]
+fn indexed_overlay_preserves_pair_order_and_unions_candidate_coverage() {
+    let a = layer(vec![Some(rect(0., 0., 2., 2.)), Some(rect(20., 0., 2., 2.))]);
+    let b = layer(vec![Some(rect(21., 0., 2., 2.)), Some(rect(1., 0., 2., 2.)), Some(rect(-100., 0., 1., 1.))]);
+    for (op, expected, count) in [(Op::Intersection, 4., 2), (Op::Union, 13., 7), (Op::Difference, 4., 2), (Op::SymmetricDifference, 9., 5)]
+    {
+        let out = topology::overlay(&a, &b, op).unwrap();
+        close(total(&out), expected);
+        assert_eq!(out.len(), count);
+        if matches!(op, Op::Intersection | Op::Union) {
+            assert_eq!(out.features[0].attributes[2..], [V::Text(u64::MAX.to_string()), V::Text((u64::MAX - 1).to_string())]);
+            assert_eq!(out.features[1].attributes[2..], [V::Text((u64::MAX - 1).to_string()), V::Text(u64::MAX.to_string())]);
+        }
+    }
+    let a = layer(vec![Some(rect(0., 0., 10., 1.))]);
+    let b = layer(vec![Some(rect(2., 0., 4., 1.)), Some(rect(4., 0., 4., 1.)), Some(rect(100., 0., 1., 1.))]);
+    close(total(&topology::overlay(&a, &b, Op::Difference).unwrap()), 4.);
 }
 
 #[test]
@@ -171,6 +192,15 @@ fn cleaning_snaps_deduplicates_closes_and_drops_collapsed_parts() {
     assert_eq!((cs[0].x, cs[0].y, cs[0].z, cs[0].m), (0., 0., Some(3.), Some(7.)));
     assert!(out.features[1].geometry.is_none());
     assert!(out.features[2].geometry.is_none());
+    let mut point = Coord::xyz(0.25, -0.25, 6.);
+    point.m = Some(8.);
+    let snapped = topology::clean(&layer(vec![Some(Geometry::Point(point))]), &CleanOptions { snap_grid: 0.5 }).unwrap();
+    let Some(Geometry::Point(c)) = &snapped.features[0].geometry else { panic!("point") };
+    assert_eq!((c.x, c.y, c.z, c.m), (0.5, -0.5, Some(6.), Some(8.)));
+    // The empty exterior drops its holes during cleanup, so check all coordinates first.
+    let bad_hole = Geometry::Polygon { exterior: wbvector::Ring(vec![]), interiors: vec![wbvector::Ring(vec![Coord::xy(f64::NAN, 0.)])] };
+    let error = topology::clean(&layer(vec![Some(bad_hole)]), &Default::default()).unwrap_err();
+    assert!(matches!(error, terrio::Error::InvalidArgument(_)));
     let unclosed = Geometry::polygon(vec![Coord::xy(0., 0.), Coord::xy(1., 0.), Coord::xy(1., 1.), Coord::xy(0., 1.)], vec![]);
     let out = topology::clean(&layer(vec![Some(unclosed)]), &Default::default()).unwrap();
     let Some(Geometry::Polygon { exterior, .. }) = &out.features[0].geometry else { panic!("polygon") };
