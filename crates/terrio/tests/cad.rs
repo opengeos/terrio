@@ -142,10 +142,6 @@ fn cad_multiple_layers_multipart_and_empty_drawing() {
 fn cad_rejects_unsupported_or_invalid_data_without_writing_output() {
     assert!(open_vector_bytes(b"not CAD".to_vec(), "broken.dwg", &Default::default()).is_err());
     assert!(open_vector_bytes(b"not CAD".to_vec(), "broken.dxf", &Default::default()).is_err());
-    let mut doc = CadDocument::new();
-    doc.add_entity(EntityType::Spline(Default::default())).unwrap();
-    let err = open_vector_bytes(DxfWriter::new(&doc).write_to_vec().unwrap(), "spline.dxf", &Default::default()).unwrap_err();
-    assert!(err.to_string().contains("unsupported SPLINE"), "{err}");
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("out.dxf");
     let mut layer = fixture();
@@ -205,5 +201,30 @@ fn cad_hatch_external_shells_and_tilted_holes() {
         assert_eq!(ps[0].1.len(), 1);
         assert!(ps[1].1.is_empty());
         assert!(ps.iter().flat_map(|(e, hs)| std::iter::once(e).chain(hs)).flat_map(|r| &r.0).all(|c| (c.y - 5.0).abs() < 1e-12));
+    }
+}
+
+/// The public reader can use GDAL for entities the native adapter rejects.
+#[test]
+fn cad_unsupported_spline_uses_available_backend() {
+    let mut doc = CadDocument::new();
+    let spline =
+        acadrust::entities::Spline::from_control_points(2, vec![Vector3::ZERO, Vector3::new(1.0, 1.0, 0.0), Vector3::new(2.0, 0.0, 0.0)]);
+    doc.add_entity(EntityType::Spline(spline)).unwrap();
+    let result = open_vector_bytes(DxfWriter::new(&doc).write_to_vec().unwrap(), "spline.dxf", &Default::default());
+    #[cfg(not(feature = "gdal"))]
+    {
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("unsupported SPLINE"), "{err}");
+    }
+    #[cfg(feature = "gdal")]
+    {
+        let ds = result.unwrap();
+        assert_eq!(ds.driver, VectorDriver::Gdal);
+        assert_eq!(ds.layers[0].features.len(), 1);
+        let Some(Geometry::LineString(cs)) = &ds.layers[0].features[0].geometry else { panic!("GDAL must linearize the spline") };
+        assert!(cs.len() > 2);
+        assert_eq!(cs.first().map(|c| (c.x, c.y)), Some((0.0, 0.0)));
+        assert_eq!(cs.last().map(|c| (c.x, c.y)), Some((2.0, 0.0)));
     }
 }

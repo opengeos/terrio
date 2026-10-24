@@ -445,3 +445,25 @@ fn encode_geometry(g: &Geometry, text: Option<&str>, out: &mut Vec<EntityType>) 
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Check native rejection directly, even when the public API has GDAL fallback.
+    #[test]
+    fn native_reader_rejects_unsupported_splines() {
+        let mut doc = CadDocument::new();
+        let spline = acadrust::entities::Spline::from_control_points(
+            2,
+            vec![Vector3::ZERO, Vector3::new(1.0, 1.0, 0.0), Vector3::new(2.0, 0.0, 0.0)],
+        );
+        doc.add_entity(EntityType::Spline(spline)).unwrap();
+        for (bytes, driver) in
+            [(DxfWriter::new(&doc).write_to_vec().unwrap(), VectorDriver::DXF), (DwgWriter::write_to_vec(&doc).unwrap(), VectorDriver::DWG)]
+        {
+            let error = parse(bytes, driver).unwrap_err();
+            assert!(matches!(error, Error::Unsupported(ref message) if message.contains("unsupported SPLINE")), "{error}");
+        }
+    }
+}
