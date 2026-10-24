@@ -4,7 +4,7 @@ use crate::cog::WindowSource;
 use crate::ops::vrt::xml;
 use crate::ops::{Resampling, data_type_name, parse_data_type};
 use crate::{Error, LazyRaster, RasterDataset, RasterWriteOptions, Result, Window, WindowOptions};
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::path::Path;
 use wbraster::raster::RasterData;
 
@@ -265,7 +265,7 @@ impl PansharpenVrt {
                 .iter()
                 .any(|prefix| name.get(..prefix.len()).is_some_and(|v| v.eq_ignore_ascii_case(prefix)))
             {
-                Ok(crate::ops::vrt::resolve_reference(&std::env::current_dir()?.join("__vrt__.vrt").to_string_lossy(), name, false))
+                Ok(crate::ops::vrt::resolve_reference(&std::env::current_dir()?.join("__vrt__.vrt").to_string_lossy(), name, true))
             } else if crate::vfs::Location::parse(name).is_local() {
                 Ok(std::fs::canonicalize(name)?.to_string_lossy().into_owned())
             } else {
@@ -291,7 +291,10 @@ impl PansharpenVrt {
     }
     /// Write the description; no source pixels or expanded output are materialized.
     pub fn write(&self, path: &str) -> Result<()> {
-        let inputs = std::iter::once(&self.pan).chain(&self.spectral).map(|s| s.name.clone()).collect::<Vec<_>>();
+        let inputs = std::iter::once(&self.pan)
+            .chain(&self.spectral)
+            .map(|s| crate::ops::vrt::resolve_reference(path, &s.name, s.relative))
+            .collect::<Vec<_>>();
         if crate::ops::strips::overwrites(path, &inputs) {
             return Err(invalid("VRT output would overwrite one of its required sources"));
         }
@@ -303,7 +306,7 @@ impl PansharpenVrt {
     }
     pub(crate) fn into_lazy_reference(self, base: &str, sources: HashMap<String, LazyRaster>) -> Result<LazyRaster> {
         let _depth = OpenDepth::enter()?;
-        let mut cache = Cache { base: base.into(), supplied: sources.keys().cloned().collect(), sources };
+        let mut cache = Cache { base: base.into(), supplied: sources, sources: HashMap::new(), recent: VecDeque::new() };
         let mut headers = Vec::with_capacity(self.spectral.len() + 1);
         headers.push(cache.get(&self.pan)?.header());
         for source in &self.spectral {
@@ -363,20 +366,27 @@ impl PansharpenVrt {
 struct Cache {
     base: String,
     sources: HashMap<String, LazyRaster>,
-    supplied: HashSet<String>,
+    supplied: HashMap<String, LazyRaster>,
+    recent: VecDeque<String>,
 }
 impl Cache {
     fn get(&mut self, source: &Source) -> Result<&mut LazyRaster> {
-        if !self.sources.contains_key(&source.name) {
-            if self.sources.len().saturating_sub(self.supplied.len()) >= 32
-                && let Some(name) = self.sources.keys().find(|name| !self.supplied.contains(*name)).cloned()
+        if self.supplied.contains_key(&source.name) {
+            return Ok(self.supplied.get_mut(&source.name).expect("supplied source"));
+        }
+        let key = crate::ops::vrt::resolve_reference(&self.base, &source.name, source.relative);
+        if !self.sources.contains_key(&key) {
+            let raster = crate::open_raster_lazy(&key)?;
+            if self.sources.len() >= 32
+                && let Some(name) = self.recent.pop_front()
             {
                 self.sources.remove(&name);
             }
-            let name = crate::ops::vrt::resolve_reference(&self.base, &source.name, source.relative);
-            self.sources.insert(source.name.clone(), crate::open_raster_lazy(&name)?);
+            self.sources.insert(key.clone(), raster);
         }
-        Ok(self.sources.get_mut(&source.name).expect("inserted source"))
+        self.recent.retain(|name| name != &key);
+        self.recent.push_back(key.clone());
+        Ok(self.sources.get_mut(&key).expect("inserted source"))
     }
 }
 struct Reader {
@@ -554,6 +564,66 @@ mod tests {
         .unwrap()
     }
     #[test]
+    fn source_cache_keeps_recent_handles_bounded_and_supplied_sources_pinned() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut cache = Cache {
+            base: dir.path().join("description.vrt").to_string_lossy().into_owned(),
+            sources: HashMap::new(),
+            supplied: HashMap::from([("uploaded".into(), LazyRaster::from(header(1, 1.)))]),
+            recent: VecDeque::new(),
+        };
+        let sources = (0..33)
+            .map(|i| {
+                let name = format!("source{i}.asc");
+                std::fs::write(dir.path().join(&name), "ncols 1\nnrows 1\nxllcorner 0\nyllcorner 0\ncellsize 1\n7\n").unwrap();
+                Source { name, relative: true, band: 1 }
+            })
+            .collect::<Vec<_>>();
+        for source in &sources[..32] {
+            cache.get(source).unwrap();
+        }
+        // A cache hit must reuse its handle even when the source can no longer be opened.
+        cache.get(&sources[0]).unwrap();
+        std::fs::remove_file(dir.path().join(&sources[0].name)).unwrap();
+        cache.get(&sources[32]).unwrap();
+        assert_eq!(cache.sources.len(), 32);
+        assert_eq!(cache.recent.len(), 32);
+        let evicted = crate::ops::vrt::resolve_reference(&cache.base, &sources[1].name, true);
+        assert!(!cache.sources.contains_key(&evicted));
+        assert_eq!(cache.get(&sources[0]).unwrap().width(), 1);
+        assert_eq!(cache.get(&Source { name: "uploaded".into(), relative: false, band: 1 }).unwrap().width(), 1);
+        assert_eq!(cache.supplied.len(), 1);
+        assert_eq!(cache.recent.len(), 32);
+    }
+    #[test]
+    fn source_cache_distinguishes_resolved_relative_and_unbased_names() {
+        let cwd = std::env::current_dir().unwrap();
+        let dir = tempfile::tempdir_in(&cwd).unwrap();
+        let name = format!("{}/source.asc", dir.path().file_name().unwrap().to_string_lossy());
+        let base = dir.path().join("nested/description.vrt");
+        let relative = base.parent().unwrap().join(&name);
+        std::fs::create_dir_all(relative.parent().unwrap()).unwrap();
+        std::fs::write(dir.path().join("source.asc"), "ncols 1\nnrows 1\nxllcorner 0\nyllcorner 0\ncellsize 1\n7\n").unwrap();
+        std::fs::write(relative, "ncols 2\nnrows 1\nxllcorner 0\nyllcorner 0\ncellsize 1\n8 9\n").unwrap();
+        let mut cache =
+            Cache { base: base.to_string_lossy().into_owned(), sources: HashMap::new(), supplied: HashMap::new(), recent: VecDeque::new() };
+        assert_eq!(cache.get(&Source { name: name.clone(), relative: false, band: 1 }).unwrap().width(), 1);
+        assert_eq!(cache.get(&Source { name, relative: true, band: 1 }).unwrap().width(), 2);
+        assert_eq!(cache.sources.len(), 2);
+    }
+    #[test]
+    fn writing_relative_description_cannot_overwrite_a_required_source() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("pan.asc");
+        std::fs::write(&path, "required source pixels").unwrap();
+        let h = header(1, 1.);
+        let description = PansharpenVrt::from_rasters("pan.asc", &h, &[("spectral.asc", &h, 1)], &Default::default()).unwrap();
+        let xml = description.to_xml().replace("relativeToVRT=\"0\"", "relativeToVRT=\"1\"");
+        let relative = PansharpenVrt::from_xml(&xml).unwrap();
+        assert!(relative.write(path.to_str().unwrap()).is_err());
+        assert_eq!(std::fs::read_to_string(path).unwrap(), "required source pixels");
+    }
+    #[test]
     fn supplied_sources_open_without_pixels_and_read_only_window_halos() {
         let pan = header(2048, 1.);
         let spectral = header(1024, 2.);
@@ -688,7 +758,8 @@ mod tests {
     #[cfg(feature = "netcdf-hdf5")]
     #[test]
     fn persistent_subdataset_names_open_and_round_trip() {
-        let dir = tempfile::tempdir().unwrap();
+        let cwd = std::env::current_dir().unwrap();
+        let dir = tempfile::tempdir_in(&cwd).unwrap();
         let file = dir.path().join("spectral.nc");
         let dataset = crate::ops::build_raster(
             Grid { width: 2, height: 2, geo_transform: [0., 1., 0., 2., 0., -1.] },
@@ -700,12 +771,15 @@ mod tests {
         )
         .unwrap();
         crate::write_raster_dataset(&dataset, file.to_str().unwrap(), &Default::default()).unwrap();
-        let selector = format!("NETCDF:\"{}\":Band1", file.display());
-        let description = PansharpenVrt::from_paths(&selector, &[(selector.clone(), 1)], &Default::default()).unwrap();
-        let path = dir.path().join("sharp.vrt");
-        description.write(path.to_str().unwrap()).unwrap();
-        let mut lazy = crate::open_raster_lazy(path.to_str().unwrap()).unwrap();
-        assert_eq!(lazy.read().unwrap().raster.data.to_f64_vec(), vec![80.; 4]);
+        let path = dir.path().join("nested/sharp.vrt");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        for name in [file.as_path(), file.strip_prefix(&cwd).unwrap()] {
+            let selector = format!("NETCDF:\"{}\":Band1", name.display());
+            let description = PansharpenVrt::from_paths(&selector, &[(selector.clone(), 1)], &Default::default()).unwrap();
+            description.write(path.to_str().unwrap()).unwrap();
+            let mut lazy = crate::open_raster_lazy(path.to_str().unwrap()).unwrap();
+            assert_eq!(lazy.read().unwrap().raster.data.to_f64_vec(), vec![80.; 4]);
+        }
         assert_eq!(
             crate::ops::vrt::resolve_reference("/data/scene/description.vrt", "NETCDF:\"inputs.nc\":Band1", true),
             "NETCDF:\"/data/scene/inputs.nc\":Band1"

@@ -874,11 +874,7 @@ pub(crate) fn resolve_reference(base: &str, name: &str, relative: bool) -> Strin
             }
         }
     }
-    if relative || (crate::vfs::Location::parse(name).is_local() && Path::new(name).is_relative()) {
-        crate::stac::resolve_href(base, name)
-    } else {
-        name.to_string()
-    }
+    if relative { crate::stac::resolve_href(base, name) } else { name.to_string() }
 }
 
 fn invalid(s: &str) -> Error {
