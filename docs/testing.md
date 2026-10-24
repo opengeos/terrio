@@ -110,3 +110,17 @@ these cases on the real USGS terrain, with holes and explicit validity masks:
 ```sh
 python scripts/compare_dem_calc_with_gdal.py ../terrio-data --only fill-nodata
 ```
+
+### Pansharpening against GDAL
+
+The fetch script downloads Landsat 8 B8/B4/B3/B2 real image pairs from the public
+[rio-pansharpen test fixtures](https://github.com/mapbox/rio-pansharpen/tree/f23d1edbedddf157ca5014ec805918cdf713bb7f/tests/fixtures/tiny_20_tiffs/LC81070352015122LGN00).
+The comparison retains unequal pan/spectral resolutions and checks all six interpolation
+methods, weights, output selection, bit depth, nodata borders, internal masks, integer clipping and union/
+intersection extents against `gdal_pansharpen`. No tolerance is allowed for integer cases; the Float32 comparison allows 0.002, one ULP at
+the scene's radiometric scale.
+
+```sh
+python scripts/compare_pansharpen_with_gdal.py ../terrio-data
+python scripts/conformance.py ../terrio-data --only pansharpen
+```

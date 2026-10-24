@@ -259,3 +259,18 @@ files of GDAL's test suite are among terrio's test files (crates/terrio/tests/da
   NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
   DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
   OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+-------------------------------------------------------------------------------
+GDAL weighted Brovey pansharpening and convolution
+-------------------------------------------------------------------------------
+
+crates/terrio/src/ops/pansharpen.rs adapts alg/gdalpansharpen.cpp, the spatial
+extent adjustment of frmts/vrt/vrtpansharpened.cpp, and the separable convolution
+of gcore/overview.cpp from GDAL 3.12 (https://github.com/OSGeo/gdal).
+
+Copyright (c) 2015, Even Rouault <even.rouault at spatialys.com>
+Copyright (c) 2015, Airbus DS Geo SA (weighted Brovey algorithm)
+Copyright (c) 2000, Frank Warmerdam
+Copyright (c) 2007-2010, Even Rouault <even dot rouault at spatialys.com>
+
+Licensed under the MIT permission and warranty terms reproduced above for GDAL.
