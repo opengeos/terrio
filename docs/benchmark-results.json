@@ -293,6 +293,7 @@
             "background CPU use exceeded 1 CPUs; rerun on an idle machine"
           ],
           "ratio": null,
+          "timing_notes": [],
           "background_series_averages": {
             "tuning": [
               0.6068460058386752,
@@ -545,6 +546,7 @@
           ],
           "measurement_issues": [],
           "ratio": null,
+          "timing_notes": [],
           "background_series_averages": {
             "tuning": [
               0.4179211713272318,
@@ -795,6 +797,7 @@
           ],
           "measurement_issues": [],
           "ratio": 1.5556224313632743,
+          "timing_notes": [],
           "background_series_averages": {
             "tuning": [
               0.44730099847277033,
@@ -1058,6 +1061,7 @@
           ],
           "measurement_issues": [],
           "ratio": null,
+          "timing_notes": [],
           "background_series_averages": {
             "tuning": [
               0.6178176698804111,
@@ -1317,6 +1321,7 @@
             "background CPU use exceeded 1 CPUs; rerun on an idle machine"
           ],
           "ratio": null,
+          "timing_notes": [],
           "background_series_averages": {
             "tuning": [
               1.4755931612680282,
@@ -1570,6 +1575,7 @@
           ],
           "measurement_issues": [],
           "ratio": null,
+          "timing_notes": [],
           "background_series_averages": {
             "tuning": [
               0.6387198246090939,
@@ -1833,6 +1839,7 @@
           ],
           "measurement_issues": [],
           "ratio": 1.2099236212994489,
+          "timing_notes": [],
           "background_series_averages": {
             "tuning": [
               0.47659762125502214,
@@ -2091,6 +2098,7 @@
             "background CPU use exceeded 1 CPUs; rerun on an idle machine"
           ],
           "ratio": null,
+          "timing_notes": [],
           "background_series_averages": {
             "tuning": [
               0.5176108461263296,
@@ -2355,6 +2363,7 @@
             "background CPU use exceeded 1 CPUs; rerun on an idle machine"
           ],
           "ratio": null,
+          "timing_notes": [],
           "background_series_averages": {
             "tuning": [
               0.631244678715042,
@@ -2614,6 +2623,9 @@
           ],
           "measurement_issues": [],
           "ratio": 1.4504337599965098,
+          "timing_notes": [
+            "wide timing range"
+          ],
           "background_series_averages": {
             "tuning": [
               0.5397465097578777,
@@ -2879,6 +2891,7 @@
             "background CPU use exceeded 1 CPUs; rerun on an idle machine"
           ],
           "ratio": null,
+          "timing_notes": [],
           "background_series_averages": {
             "tuning": [
               0.4802874834062979,
@@ -3129,6 +3142,7 @@
           ],
           "measurement_issues": [],
           "ratio": null,
+          "timing_notes": [],
           "background_series_averages": {
             "tuning": [
               0.4491118677986948,
@@ -3379,6 +3393,7 @@
             "background CPU use exceeded 1 CPUs; rerun on an idle machine"
           ],
           "ratio": null,
+          "timing_notes": [],
           "background_series_averages": {
             "tuning": [
               0.5357087111697081,
@@ -3627,6 +3642,7 @@
           ],
           "measurement_issues": [],
           "ratio": 1.4806399354982527,
+          "timing_notes": [],
           "background_series_averages": {
             "tuning": [
               0.42185154132866337,
@@ -3879,6 +3895,7 @@
             "background CPU use exceeded 1 CPUs; rerun on an idle machine"
           ],
           "ratio": null,
+          "timing_notes": [],
           "background_series_averages": {
             "tuning": [
               1.399902503338838,
@@ -4140,6 +4157,7 @@
             "background CPU use exceeded 1 CPUs; rerun on an idle machine"
           ],
           "ratio": null,
+          "timing_notes": [],
           "background_series_averages": {
             "tuning": [
               0.4443210455521196,
@@ -4405,6 +4423,7 @@
             "background CPU use exceeded 1 CPUs; rerun on an idle machine"
           ],
           "ratio": null,
+          "timing_notes": [],
           "background_series_averages": {
             "tuning": [
               1.0305227056854103,
@@ -4658,6 +4677,7 @@
             "background CPU use exceeded 1 CPUs; rerun on an idle machine"
           ],
           "ratio": null,
+          "timing_notes": [],
           "background_series_averages": {
             "tuning": [
               1.1823957574819504,
@@ -4906,6 +4926,7 @@
           ],
           "measurement_issues": [],
           "ratio": 1.3231749774987611,
+          "timing_notes": [],
           "background_series_averages": {
             "tuning": [
               0.46928010744656934,
@@ -5210,7 +5231,8 @@
             "measurement": 0.4073968575095103
           },
           "measurement_issues": [],
-          "ratio": 1.654654032224118
+          "ratio": 1.654654032224118,
+          "timing_notes": []
         },
         {
           "group": "Large rasters",
@@ -5455,7 +5477,8 @@
             "measurement": 0.8066855456607062
           },
           "measurement_issues": [],
-          "ratio": null
+          "ratio": null,
+          "timing_notes": []
         },
         {
           "group": "Large rasters",
@@ -5700,7 +5723,10 @@
             "measurement": 0.5924694139700711
           },
           "measurement_issues": [],
-          "ratio": null
+          "ratio": null,
+          "timing_notes": [
+            "wide timing range"
+          ]
         }
       ]
     },
@@ -5998,7 +6024,10 @@
             "measurement": 0.5502160953262283
           },
           "measurement_issues": [],
-          "ratio": 1.4805558226800455
+          "ratio": 1.4805558226800455,
+          "timing_notes": [
+            "wide timing range"
+          ]
         }
       ]
     },
@@ -6290,7 +6319,8 @@
             "measurement": 0.3981793779350133
           },
           "measurement_issues": [],
-          "ratio": 1.5958540372461563
+          "ratio": 1.5958540372461563,
+          "timing_notes": []
         }
       ]
     }

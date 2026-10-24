@@ -4,6 +4,7 @@ import contextlib
 import io
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -98,6 +99,21 @@ class BenchmarkTests(unittest.TestCase):
         self.assertIsNotNone(result["ratio"])
         self.assertLess(result["background_series_averages"]["measurement"], 1)
 
+    def test_outlier_is_annotated_without_changing_the_median_ratio(self):
+        calls = {"T": 0, "G": 0}
+
+        def fake_run(cmd, env, stdout, metrics):
+            calls[cmd[0]] += 1
+            # T's sixth call is the final measurement after tuning and warm-ups.
+            elapsed = 4.0 if cmd[0] == "T" and calls["T"] == 6 else (1.0 if cmd[0] == "T" else 2.0)
+            return elapsed, 1, 0, ""
+
+        with tempfile.TemporaryDirectory() as root, patch.object(benchmark, "run_once", fake_run):
+            result = benchmark.measure_pair(lambda out, n: (["T"], ["G"]), root, [1], 3, 1, {}, lambda a, b: [])
+        self.assertEqual(result["samples"][0], [1, 1, 4])
+        self.assertEqual(result["timing_notes"], ["wide timing range"])
+        self.assertEqual(result["ratio"], 2)
+
     @unittest.skipUnless(hasattr(os, "sched_getaffinity"), "Linux affinity")
     def test_affinity_is_inherited_by_non_rayon_child(self):
         with tempfile.TemporaryFile() as stdout:
@@ -145,17 +161,27 @@ class BenchmarkTests(unittest.TestCase):
         def large_cases(data, out, budget):
             return [("test", "cached case", ["terrio", str(Path(out) / "out.tif")], ["gdal", str(Path(out) / "out.tif")])]
 
+        actual_output = subprocess.check_output
+
+        def version_or_git(command, **kwargs):
+            return actual_output(command, **kwargs) if command[0] == "git" else "test"
+
         with (
             tempfile.TemporaryDirectory() as root,
             patch.object(sys, "argv", ["benchmark.py", "--large", root, "--thread-counts", "1", "--large-runs", "1", "--tune-runs", "1"]),
             patch.object(benchmark, "large_cases", side_effect=large_cases) as factory,
             patch.object(benchmark, "gdal_version", return_value="GDAL " + gdal.VersionInfo("RELEASE_NAME")),
-            patch.object(benchmark.subprocess, "check_output", return_value="test"),
+            patch.object(benchmark.subprocess, "check_output", side_effect=version_or_git),
             patch.object(benchmark, "run_once", return_value=(1.0, None, 0, "")),
             patch("benchmark_validation.validate_case", return_value=[]),
             contextlib.redirect_stdout(io.StringIO()),
         ):
-            benchmark.main()
+            original_cwd = os.getcwd()
+            try:
+                os.chdir(root)  # An invocation from outside the harness's Git checkout.
+                benchmark.main()
+            finally:
+                os.chdir(original_cwd)
         # One metadata list, then one list for each tool's output directory.
         self.assertEqual(factory.call_count, 3)
 

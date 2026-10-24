@@ -419,6 +419,7 @@ def measure_pair(commands, root, budgets, runs, tune_runs, env, validate):
         "samples": samples,
         "medians": medians,
         "validation": differences,
+        "timing_notes": ["wide timing range"] if any(max(s) > 2 * statistics.median(s) for s in samples) else [],
         "background_cpus": background,
     }
     return apply_background_gate(result, float(env.get("TERRIO_BENCH_MAX_BACKGROUND_CPUS", "1")))
@@ -529,7 +530,7 @@ def main():
     machine = {
         "timestamp_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "command": sys.argv,
-        "source_commit": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
+        "source_commit": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True, cwd=Path(__file__).resolve().parent).strip(),
         "platform": platform.platform(),
         "processor": cpu_model,
         "available_cpus": available,
@@ -593,6 +594,8 @@ def main():
             score = "—" if ratio is None else (f"{ratio:.2f}× faster" if ratio >= 1 else f"{1 / ratio:.2f}× slower")
             durations = [f"{fmt(statistics.median(s))} [{fmt(min(s))}–{fmt(max(s))}]" for s in result["samples"]]
             status = "; ".join(result["validation"] + result["measurement_issues"]) or "pass"
+            if result["timing_notes"]:
+                status += "; " + "; ".join(result["timing_notes"])
             status = status.replace("|", "/").replace("\n", " ")
             if len(status) > 600:
                 status = status[:600] + "… (full details in JSON)"

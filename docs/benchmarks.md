@@ -18,27 +18,30 @@ They are machine-specific snapshots, not guarantees of performance on other data
   observed settings among the tested budgets, not a claim of globally optimal configuration.
 - Measurement runs alternate Terrio/GDAL and GDAL/Terrio order. Tables show the median and full
   minimum–maximum range of seven samples, or five for large files. Raw samples and tuning results
-  accompany the tables in JSON.
+  accompany the tables in JSON. Ratios describe observed medians, not statistical significance.
+  The Checks column marks a **wide timing range** when either tool's maximum sample exceeds twice
+  its median; this annotation does not alter the samples or their median ratio.
 - On Linux, `taskset` restricts each process and all its child threads to its selected CPU budget.
   `RAYON_NUM_THREADS`, `GDAL_NUM_THREADS`, and `gdalwarp`'s `NUM_THREADS` also configure the pools.
   A budget of one therefore bounds Terrio's workers outside Rayon as well. On other platforms,
   these variables are hints; the script does not claim a hard CPU limit.
-  The Linux runner uses the lowest-numbered available CPU IDs for both tools. Budgets count logical
-  CPUs; the selection
-  does not distinguish physical cores from SMT siblings. Hardware topology and OS placement can
+  The Linux runner uses the lowest-numbered available CPU IDs for both tools.
+  Budgets count logical CPUs; the selection does not distinguish physical cores from SMT siblings.
+  Hardware topology and OS placement can
   therefore affect these machine-specific results. Budgets above the available affinity are rejected.
 - The Linux runner estimates competing CPU use from machine CPU time minus the measured child's
   CPU time. Estimates are averaged by elapsed time across each paired tuning or measurement
   series, reducing clock-tick noise in short commands. If a series exceeds one CPU, the row
   receives no ratio. Raw background estimates are retained. This detects contention; it does not
-  provide hardware isolation or remove filesystem and network noise.
+  provide hardware isolation or remove filesystem and network noise. On other platforms,
+  background CPU use is unmeasured and ratios carry no background-load guarantee.
 - Every invocation starts with an empty, separate output directory. PAM statistics caches are
   disabled. Validation runs after timing, against the final output of each selected setting.
   The benchmark does not prove that every earlier invocation produced the same output.
 - GDAL uses its single-process `gdal raster mosaic` and `gdal raster polygonize` commands.
   Mosaic resolution is explicitly averaged, as in the former `gdalbuildvrt` command, to accept
-  tiles whose resolutions differ at floating-point precision. Both COG writers build fresh average overviews; GDAL is explicitly told to ignore source
-  overviews. Warp benchmarks retain NAD83 (`EPSG:4269` → `EPSG:26913`) to avoid measuring different
+  tiles whose resolutions differ at floating-point precision. Both COG writers build fresh average
+  overviews; GDAL is explicitly told to ignore source overviews. Warp benchmarks retain NAD83 (`EPSG:4269` → `EPSG:26913`) to avoid measuring different
   datum transformations or grid availability. Networking for datum grids is disabled.
 - GDAL Shapefile output explicitly uses UTF-8 encoding to match Terrio. The countries GeoJSON
   fixture has scalar attributes supported by Shapefile.
@@ -114,9 +117,9 @@ from speed comparisons.
 | Task | terrio median [range] | GDAL median [range] | CPUs T / G | terrio vs GDAL | Checks |
 |---|---|---|---|---|---|
 | Translate: window + Int16: USGS 3DEP tile | 46 ms [44 ms–49 ms] | 56 ms [54 ms–57 ms] | 40 / 40 | 1.21× faster | pass |
-| Warp to NAD83 / UTM 13N, nearest: USGS 3DEP tile | 155 ms [149 ms–589 ms] | 229 ms [214 ms–482 ms] | 40 / 8 | 1.48× faster | pass |
+| Warp to NAD83 / UTM 13N, nearest: USGS 3DEP tile | 155 ms [149 ms–589 ms] | 229 ms [214 ms–482 ms] | 40 / 8 | 1.48× faster | pass; wide timing range |
 | Warp to NAD83 / UTM 13N, bilinear: USGS 3DEP tile | 197 ms [194 ms–202 ms] | 261 ms [257 ms–271 ms] | 40 / 8 | — | pixels differ (exact check); background load |
-| Mosaic 4 USGS 3DEP tiles → GeoTIFF | 373 ms [285 ms–769 ms] | 541 ms [513 ms–1.02 s] | 40 / 8 | 1.45× faster | pass |
+| Mosaic 4 USGS 3DEP tiles → GeoTIFF | 373 ms [285 ms–769 ms] | 541 ms [513 ms–1.02 s] | 40 / 8 | 1.45× faster | pass; wide timing range |
 | Mosaic 4 USGS 3DEP tiles → VRT | 14 ms [13 ms–14 ms] | 33 ms [31 ms–33 ms] | 1 / 1 | — | band 1: color interpretation differs; background load |
 
 ### Vector conversion
@@ -148,7 +151,7 @@ from speed comparisons.
 |---|---|---|---|---|---|
 | Window 2048² of the mosaic | 38 ms [38 ms–39 ms] | 62 ms [56 ms–67 ms] | 16 / 16 | 1.65× faster | pass |
 | Hillshade of the mosaic | 498 ms [495 ms–511 ms] | 3.96 s [3.91 s–4.03 s] | 40 / 4 | — | pixels differ (exact check) |
-| Slope of the mosaic | 788 ms [718 ms–1.61 s] | 4.67 s [4.61 s–4.84 s] | 40 / 4 | — | pixels differ (exact check) |
+| Slope of the mosaic | 788 ms [718 ms–1.61 s] | 4.67 s [4.61 s–4.84 s] | 40 / 4 | — | pixels differ (exact check); wide timing range |
 
 ## Running the benchmarks
 
@@ -180,7 +183,9 @@ use exactly N threads. `--thread-counts 1,4,16` supplies an explicit candidate s
 `--large-runs`, and `--tune-runs` control the respective sample counts; all must be positive.
 `--only hillshade` selects a description substring for a focused rerun. `--max-background-cpus`
 controls the competing-load threshold; increasing it weakens that protection and is recorded in
-JSON. `--out FILE` writes Markdown and `FILE.json`, checkpointing completed rows.
+JSON. `--out FILE` writes Markdown and `FILE.json`, checkpointing completed rows. The recorded
+`source_commit` identifies the harness checkout; the selected `TERRIO_BIN` and its reported version
+are recorded separately.
 
 The regression tests cover wrong-but-successful commands, independent tuning, alternating order,
 fresh outputs, inherited CPU affinity, noisy measurements, pixel/mask/metadata differences,
