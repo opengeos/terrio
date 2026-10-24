@@ -235,7 +235,7 @@ impl VirtualRaster {
         let first = &self.layout.bands[0];
         let mut header = crate::ops::raster_header(
             grid,
-            first.data_type,
+            super::common_type(self.layout.bands.iter().map(|b| b.data_type)),
             self.layout.bands.len(),
             first.nodata,
             &self.layout.srs.clone().unwrap_or_default(),
@@ -699,9 +699,9 @@ impl Reader {
             if element.attr("subClass") == Some("VRTDerivedRasterBand") {
                 out = derived(element, &inputs, out.len())?;
             }
-            values.extend(out);
+            values.extend(out.into_iter().map(|v| crate::ops::convert_value(v, layout.data_type)));
         }
-        let data_type = description.layout.bands[0].data_type;
+        let data_type = super::common_type(bands.iter().map(|&b| description.layout.bands[b - 1].data_type));
         let values = values.into_iter().map(|v| crate::ops::convert_value(v, data_type)).collect();
         Ok(RasterData::from_f64_vec(data_type, values))
     }
@@ -1162,6 +1162,64 @@ mod tests {
     }
     fn source(tag: &str, extra: &str) -> String {
         format!("<{tag}><SourceFilename>source.tif</SourceFilename><SourceBand>1</SourceBand>{extra}</{tag}>")
+    }
+
+    #[test]
+    fn common_band_types_follow_gdal_union() {
+        use DataType::*;
+        for (a, b, expected) in [(U8, F32, F32), (U8, F64, F64), (U16, I16, I32), (U32, I32, I64), (U32, F32, F64), (U64, I64, F64)] {
+            assert_eq!(super::super::common_type([a, b]), expected);
+            assert_eq!(super::super::common_type([b, a]), expected);
+        }
+    }
+
+    #[test]
+    fn mixed_types_promote_without_losing_native_band_rounding() {
+        let grid = Grid { width: 2, height: 1, geo_transform: [0., 1., 0., 1., 0., -1.] };
+        let source = crate::ops::build_raster(
+            grid,
+            vec![vec![1.250000000001, 2.75]],
+            DataType::F64,
+            None,
+            &crate::crs::SpatialRef::default(),
+            crate::ops::convert_value,
+        )
+        .unwrap();
+        let band = |dtype: &str, derived: bool| {
+            format!(
+                "<VRTRasterBand dataType=\"{dtype}\"{}>{}{}{}</VRTRasterBand>",
+                if derived { " subClass=\"VRTDerivedRasterBand\"" } else { "" },
+                if derived { "<PixelFunctionType>sum</PixelFunctionType><SourceTransferType>Float64</SourceTransferType>" } else { "" },
+                self::source("SimpleSource", ""),
+                if derived { self::source("SimpleSource", "") } else { String::new() }
+            )
+        };
+        let text = format!(
+            "<VRTDataset rasterXSize=\"2\" rasterYSize=\"1\">{}{}{}{}</VRTDataset>",
+            band("Byte", false),
+            band("Float32", false),
+            band("Float64", false),
+            band("Byte", true)
+        );
+        let dir = tempfile::tempdir().unwrap();
+        crate::write_raster_dataset(&source, dir.path().join("source.tif").to_str().unwrap(), &Default::default()).unwrap();
+        let plain =
+            format!("<VRTDataset rasterXSize=\"2\" rasterYSize=\"1\">{}{}</VRTDataset>", band("Byte", false), band("Float64", false));
+        let materialized = VrtDataset::from_xml(&plain).unwrap().materialize(dir.path()).unwrap();
+        assert_eq!(materialized.raster.data_type, DataType::F64);
+        assert_eq!(materialized.raster.data.to_f64_vec(), vec![1., 3., 1.250000000001, 2.75]);
+        let document = VirtualRaster::from_xml(&text).unwrap();
+        let mut lazy = document.into_lazy(Path::new(""), HashMap::from([("source.tif".into(), LazyRaster::from(source))])).unwrap();
+        assert_eq!(lazy.header().raster.data_type, DataType::F64);
+        let out = lazy.read().unwrap();
+        assert_eq!(out.raster.data.to_f64_vec(), vec![1., 3., 1.25, 2.75, 1.250000000001, 2.75, 3., 6.]);
+        for (band, dtype, expected) in
+            [(1, DataType::U8, vec![1., 3.]), (2, DataType::F32, vec![1.25, 2.75]), (3, DataType::F64, vec![1.250000000001, 2.75])]
+        {
+            let out = lazy.read_window(Window::full(2, 1), &WindowOptions { bands: vec![band], ..Default::default() }).unwrap();
+            assert_eq!(out.raster.data_type, dtype);
+            assert_eq!(out.raster.data.to_f64_vec(), expected);
+        }
     }
 
     #[test]
