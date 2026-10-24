@@ -152,9 +152,9 @@ def cases(d, out, threads):
         ),
         (
             "Vector conversion",
-            "GeoJSON → Shapefile: world cables",
-            [t, "convert", p("cables.geojson"), o("l.shp")],
-            ["ogr2ogr", o("l.shp"), p("cables.geojson")],
+            "GeoJSON → Shapefile: world countries (176 features)",
+            [t, "convert", p("countries.geojson"), o("l.shp")],
+            ["ogr2ogr", "-lco", "ENCODING=UTF-8", o("l.shp"), p("countries.geojson")],
         ),
         (
             "Vector conversion",

@@ -36,6 +36,8 @@ They are machine-specific snapshots, not guarantees of performance on other data
   tiles whose resolutions differ at floating-point precision. Both COG writers build fresh average overviews; GDAL is explicitly told to ignore source
   overviews. Warp benchmarks retain NAD83 (`EPSG:4269` → `EPSG:26913`) to avoid measuring different
   datum transformations or grid availability. Networking for datum grids is disabled.
+- GDAL Shapefile output explicitly uses UTF-8 encoding to match Terrio. The countries GeoJSON
+  fixture has scalar attributes supported by Shapefile.
 - Memory ratios are omitted: launching commands from a Python process that also validates large
   datasets can contaminate child peak-RSS accounting with inherited parent memory.
 
@@ -71,7 +73,7 @@ The rerun covers all 19 small-file/remote cases plus the large-mosaic window, hi
 cases. The other historical large-file timings remain withdrawn. The full case list is still
 available in the script.
 
-22 distinct cases were measured; 12 passed the output checks and 7 also passed the background-load
+22 distinct cases were measured; 13 passed the output checks and 8 also passed the background-load
 gate. Other computation jobs were temporarily paused for these measurements. Any rows still marked
 **background load** are diagnostic timings, not supported performance comparisons.
 
@@ -120,16 +122,8 @@ from speed comparisons.
 | Shapefile → GeoPackage: 7,342 populated places | 57 ms [54 ms–61 ms] | 80 ms [74 ms–82 ms] | 8 / 1 | — | field names/types differ |
 | GeoPackage → FlatGeobuf: US counties | 51 ms [49 ms–56 ms] | 64 ms [62 ms–67 ms] | 4 / 8 | — | background load |
 | GeoPackage → GeoParquet: US counties | 70 ms [68 ms–76 ms] | 104 ms [100 ms–107 ms] | 4 / 1 | 1.48× faster | pass |
-| GeoJSON → Shapefile: world cables | 25 ms [23 ms–30 ms] | failed | 4 / 2 | — | GDAL exit 1; background load |
+| GeoJSON → Shapefile: world countries (176 features) | 31 ms [27 ms–33 ms] | 49 ms [47 ms–51 ms] | 8 / 1 | 1.60× faster | pass |
 | Filter + reproject: US counties → EPSG:5070 | 45 ms [42 ms–48 ms] | 50 ms [47 ms–52 ms] | 4 / 1 | — | features differ (exact check); background load |
-
-**Cables → Shapefile:** The GeoJSON has a numeric-array `coordinates` attribute, which GDAL reads
-as `RealList`. [Shapefile does not support list fields](https://gdal.org/en/stable/drivers/vector/shapefile.html),
-so the benchmark's default `ogr2ogr` command fails when creating that field. Terrio automatically
-serializes the array as text. A separate check using `-mapFieldType RealList=String` successfully
-wrote all 530 features, but GDAL and Terrio produced different array strings. A fair rerun needs
-matching field-conversion and text-encoding policies. The table retains the original unmapped
-command's failure and assigns no speed ratio.
 
 ### Raster ↔ vector
 
