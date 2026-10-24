@@ -112,3 +112,10 @@ COG over HTTP; AUTO must fetch fewer than half the raster bytes of NONE.
 ```sh
 python scripts/conformance.py ../terrio-data --only overviews --strict
 ```
+
+Fill-nodata comparisons are part of the `dem-calc` conformance suite. To run just
+these cases on the real USGS terrain, with holes and explicit validity masks:
+
+```sh
+python scripts/compare_dem_calc_with_gdal.py ../terrio-data --only fill-nodata
+```

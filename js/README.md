@@ -197,3 +197,17 @@ const level = warp(dataset, { overview: 1 });
 mosaics preserve their stored pyramids. The output grid is planned at full
 resolution before source levels are selected. `toBytes` also accepts `overviews`
 (decimation factors) and `overviewResampling` when writing GeoTIFF pyramids.
+
+### Fill nodata
+
+```js
+const filled = fillNodata(dem, { maxDistance: 100, smoothingIterations: 1 });
+const nearest = fillNodata(image, { band: 2, mask: validity, interpolation: "nearest" });
+```
+
+`fillNodata` is a named export. Inputs and masks accept the same datasets or file bytes
+as the other operations. A mask is zero at holes and nonzero at donor pixels. Without
+one, the source's mask or nodata is used. The result contains one band, retaining its
+type, nodata and georeferencing; valid samples remain unchanged. `maxDistance: 0`
+searches the whole image. Smoothing leaves original valid pixels and first/last rows
+unchanged. As in GDAL, interpolation uses Float32 samples.
