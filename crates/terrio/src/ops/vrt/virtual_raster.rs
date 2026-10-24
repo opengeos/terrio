@@ -2174,6 +2174,8 @@ mod inventory_tests {
             while !thread_stop.load(Ordering::Relaxed) {
                 match listener.accept() {
                     Ok((mut stream, _)) => {
+                        // Windows inherits the listener's nonblocking mode on accepted sockets.
+                        stream.set_nonblocking(false).unwrap();
                         stream.set_read_timeout(Some(std::time::Duration::from_secs(5))).unwrap();
                         let mut request = String::new();
                         let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
@@ -2284,8 +2286,9 @@ mod inventory_tests {
             );
             let reader = VirtualRaster::from_xml(&xml).unwrap().into_lazy(dir.path(), HashMap::new()).unwrap();
             let paths = reader.input_paths().unwrap();
-            assert!(paths.contains(&mask.to_string_lossy().into_owned()));
-            assert!(paths.contains(&dir.path().join("mask.tif.msk").to_string_lossy().into_owned()));
+            // Resolved references can use forward slashes even on Windows.
+            assert!(paths.iter().any(|path| Path::new(path) == mask));
+            assert!(paths.iter().any(|path| Path::new(path) == dir.path().join("mask.tif.msk")));
             assert!(paths.iter().any(|p| p.contains("science.")
                 && !p.contains("NETCDF:")
                 && !p.contains("HDF5:")
