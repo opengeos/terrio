@@ -28,6 +28,7 @@ __all__ = [
     "write_netcdf_groups",
     "write_vector",
     "convert",
+    "sql",
     "rasterize",
     "polygonize",
     "transform_points",
@@ -1070,3 +1071,6 @@ class RpcTransformer:
     ) -> tuple[list[float], list[float], list[bool]]: ...
 
 def cli_main(args: Sequence[str], terrio: Sequence[str] | None = None) -> int: ...
+def sql(src: Any, query: str, *, layers: list[str] | None = None) -> Layer:
+    """Run the documented OGR SQL subset; DISTINCT and summaries discard geometry."""
+    ...

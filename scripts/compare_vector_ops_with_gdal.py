@@ -28,7 +28,7 @@ from collections import defaultdict
 from pathlib import Path
 
 import numpy as np
-from osgeo import gdal, ogr
+from osgeo import gdal, ogr, osr
 
 gdal.UseExceptions()
 ogr.UseExceptions()
@@ -91,6 +91,90 @@ def close(a, b, tol: float = 1e-7) -> bool:
     if isinstance(a, (int, float)) and isinstance(b, (int, float)) and not isinstance(a, bool):
         return math.isclose(a, b, rel_tol=tol, abs_tol=tol)
     return a == b
+
+
+def compare_sql(data: Path, work: Path, terrio: Path) -> list[str]:
+    """Compare richer SQL against OGRSQL on Natural Earth, including duplicate join keys.
+
+    Integer32 and Integer64 both map to Terrio's Integer field type. Values, nulls,
+    names, logical field types, CRS and complete geometry WKB must otherwise agree.
+    """
+    source = work / "sql_source.gpkg"
+    gdal.VectorTranslate(str(source), str(data / "countries.geojson"), layerName="countries")
+    ds = ogr.Open(str(source), update=1)
+    countries = ds.GetLayerByName("countries")
+    lookup = ds.CreateLayer("lookup", geom_type=ogr.wkbNone)
+    lookup.CreateField(ogr.FieldDefn("continent", ogr.OFTString))
+    lookup.CreateField(ogr.FieldDefn("label", ogr.OFTString))
+    lookup.CreateField(ogr.FieldDefn("amount", ogr.OFTReal))
+    for name in ("Africa", "Asia", "Europe", None):
+        for label in ("first", "duplicate"):
+            f = ogr.Feature(lookup.GetLayerDefn())
+            f.SetField("continent", name) if name is not None else f.SetFieldNull("continent")
+            f.SetField("label", label)
+            if name is not None:
+                f.SetField("amount", 1.5)
+            lookup.CreateFeature(f)
+    ds.CopyLayer(lookup, "lookup_copy")
+    ds = None
+
+    def snapshot(layer):
+        defn = layer.GetLayerDefn()
+        fields = []
+        for i in range(defn.GetFieldCount()):
+            f = defn.GetFieldDefn(i)
+            ty = "Integer" if f.GetType() in (ogr.OFTInteger, ogr.OFTInteger64) else f.GetTypeName()
+            fields.append((f.GetName(), ty))
+        srs = layer.GetSpatialRef()
+        rows = [(list(f.items().values()), bytes(f.GetGeometryRef().ExportToWkb()) if f.GetGeometryRef() else None) for f in layer]
+        return fields, rows, srs.ExportToWkt() if srs else None
+
+    cases = [
+        ("computed literals", "SELECT NULL AS missing, 2 AS two, 2.5 AS real, 'x' AS text FROM countries LIMIT 2"),
+        ("computed integer", "SELECT ADMIN, POP_EST*2 AS doubled, POP_EST/3 AS third FROM countries LIMIT 20"),
+        ("computed float", "SELECT ADMIN, POP_EST/1000000.0 AS millions FROM countries WHERE POP_EST>0 ORDER BY POP_EST DESC LIMIT 10"),
+        ("computed predicate", "SELECT ADMIN, POP_EST>100000000 AS large FROM countries LIMIT 20"),
+        ("computed nulls", "SELECT amount*2 AS doubled, amount/2 AS half, label='FIRST' AS same, label<='FIRST' AS ordered, label BETWEEN 'FIRST' AND 'FIRST' AS range_value FROM lookup"),
+        ("computed empty schema", "SELECT POP_EST*2 AS doubled FROM countries WHERE POP_EST<0"),
+        ("distinct", "SELECT DISTINCT CONTINENT FROM countries ORDER BY CONTINENT DESC LIMIT 5"),
+        ("distinct null and case", "SELECT DISTINCT continent FROM lookup ORDER BY continent"),
+        ("summary numeric", "SELECT COUNT(*) AS n, SUM(POP_EST) AS total, AVG(POP_EST) AS average, MIN(POP_EST) AS smallest, MAX(POP_EST) AS largest FROM countries"),
+        ("summary filtered", "SELECT COUNT(POP_EST) AS n, SUM(POP_EST) AS total FROM countries WHERE CONTINENT='Asia'"),
+        ("summary empty", "SELECT COUNT(*) AS n, SUM(POP_EST) AS total, AVG(POP_EST) AS average, MIN(POP_EST) AS smallest FROM countries WHERE POP_EST<0"),
+        ("summary nulls", "SELECT COUNT(continent) AS n, COUNT(DISTINCT continent) AS kinds, MIN(label) AS first FROM lookup"),
+        ("left join duplicate keys", "SELECT c.ADMIN, l.label, c.POP_EST*2 AS doubled FROM countries c LEFT JOIN lookup l ON c.CONTINENT=l.continent ORDER BY POP_EST DESC LIMIT 20"),
+        ("left join unmatched", "SELECT countries.ADMIN, lookup.label FROM countries LEFT JOIN lookup ON countries.CONTINENT=lookup.continent"),
+        ("left join wildcards", "SELECT c.*, l.* FROM countries c LEFT JOIN lookup l ON c.CONTINENT=l.continent LIMIT 3"),
+        ("join null keys", "SELECT a.label, b.label AS joined FROM lookup a LEFT JOIN lookup_copy b ON a.continent=b.continent"),
+    ]
+    lines = []
+    for label, query in cases:
+        try:
+            ds = ogr.Open(str(source))
+            expected_layer = ds.ExecuteSQL(query, dialect="OGRSQL")
+            expected = snapshot(expected_layer)
+            ds.ReleaseResultSet(expected_layer)
+            ds = None
+            errors = []
+            for command in ("sql", "convert"):
+                out = work / f"sql_{command}.gpkg"
+                out.unlink(missing_ok=True)
+                run([terrio, command, source, out, "--query" if command == "sql" else "--sql", query])
+                actual_ds = ogr.Open(str(out))
+                actual = snapshot(actual_ds.GetLayer(0))
+                actual_ds = None
+                if actual[0] != expected[0]:
+                    errors.append(f"{command} fields {actual[0]} vs {expected[0]}")
+                if not close(actual[1], expected[1]):
+                    errors.append(f"{command} rows differ")
+                if bool(actual[2]) != bool(expected[2]) or (
+                    actual[2] and not osr.SpatialReference(wkt=actual[2]).IsSame(osr.SpatialReference(wkt=expected[2]))
+                ):
+                    errors.append(f"{command} CRS retention differs")
+            lines.append(f"{label:<28} " + ("DIFF " + "; ".join(errors) if errors else "OK"))
+        except Exception as exc:
+            lines.append(f"{label:<28} ERROR {exc}")
+    return lines
 
 
 def compare_convert(data: Path, work: Path, terrio: Path) -> list[str]:
@@ -494,6 +578,7 @@ def main() -> int:
         work = Path(tmp)
         sections = [
             ("convert vs ogr2ogr", compare_convert),
+            ("sql vs OGRSQL", compare_sql),
             ("convert --append/--overwrite vs ogr2ogr", compare_append),
             ("rasterize vs gdal_rasterize", compare_rasterize),
             ("polygonize vs gdal_polygonize", compare_polygonize),

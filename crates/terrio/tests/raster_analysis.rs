@@ -252,8 +252,7 @@ fn standalone_sql_preserves_features_and_checks_layer_names_and_schema() {
     let sorted = terrio::ops::sql::query(&[l.clone()], "SELECT * FROM zones ORDER BY population").unwrap();
     assert_eq!(sorted.features[0].fid, 102);
     assert_eq!(sorted.features[0].attributes[1], V::Null);
-    for bad in ["SELECT * FROM missing", "SELECT name AS x, population AS X FROM zones", "SELECT COUNT(*) FROM zones", "DELETE FROM zones"]
-    {
+    for bad in ["SELECT * FROM missing", "SELECT name AS x, population AS X FROM zones", "DELETE FROM zones"] {
         assert!(terrio::ops::sql::query(&[l.clone()], bad).is_err(), "{bad}");
     }
     l.features[0].attributes[1] = V::Integer(9_007_199_254_740_993);
