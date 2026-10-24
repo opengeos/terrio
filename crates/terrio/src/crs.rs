@@ -817,6 +817,31 @@ pub struct TransformOptions {
     /// The coordinate epoch of the target coordinates, for a dynamic target CRS (GDAL's
     /// `-t_coord_epoch`).
     pub target_coordinate_epoch: Option<f64>,
+    /// Allow approximate datum operations. `None` uses GDAL's default (yes).
+    pub allow_ballpark: Option<bool>,
+    /// Require the best operation assuming all grids were available (GDAL's ONLY_BEST).
+    pub only_best: bool,
+}
+
+impl TransformOptions {
+    /// Parse GDAL transformer/coordinate-operation options. Unrelated keys are ignored.
+    pub fn from_options<K: AsRef<str>, V: AsRef<str>>(items: &[(K, V)]) -> Result<Self> {
+        let mut out = Self::default();
+        for (key, value) in items {
+            let (key, value) = (key.as_ref(), value.as_ref());
+            let boolean = || match value.to_ascii_uppercase().as_str() {
+                "YES" | "TRUE" | "ON" | "1" => Ok(true),
+                "NO" | "FALSE" | "OFF" | "0" => Ok(false),
+                _ => Err(Error::InvalidArgument(format!("{key} must be YES or NO"))),
+            };
+            match key.to_ascii_uppercase().as_str() {
+                "ALLOW_BALLPARK" => out.allow_ballpark = Some(boolean()?),
+                "ONLY_BEST" => out.only_best = boolean()?,
+                _ => {}
+            }
+        }
+        Ok(out)
+    }
 }
 
 /// Transforms coordinates from one CRS to another, as GDAL does: linear and angular units, axis
@@ -830,6 +855,9 @@ pub struct Transformer {
     dst: Def,
     identity: bool,
     route: route::Route,
+    best_route: std::sync::OnceLock<route::Route>,
+    policy: TransformOptions,
+    diagnostics: std::sync::atomic::AtomicU8,
     /// The time of time-dependent transformations, as GDAL sets it from the coordinate epochs.
     time: Option<f64>,
     /// The height transformation, between CRSs that both have heights.
@@ -846,6 +874,21 @@ pub struct Transformer {
     src_horizontal: Def,
     /// Whether the vertical CRSs share their datum (heights only change unit).
     same_vertical_datum: bool,
+}
+
+impl Drop for Transformer {
+    fn drop(&mut self) {
+        let flags = self.diagnostics.load(std::sync::atomic::Ordering::Relaxed);
+        for (bit, message) in [
+            (1, "ballpark coordinate operation used between different ellipsoids; datum shift is unknown"),
+            (2, "best coordinate operation needs a missing grid; set TERRIO_NETWORK=ON or TERRIO_GRID_DIR"),
+            (4, "coordinate operation used outside its area of use"),
+        ] {
+            if flags & bit != 0 && (bit != 1 || self.src.ell.a != self.dst.ell.a || self.src.ell.es != self.dst.ell.es) {
+                crate::warnings::warn(message.into());
+            }
+        }
+    }
 }
 
 /// A side of a height transformation: the CRS and the geographic 3D CRSs of its geoid models.
@@ -944,7 +987,10 @@ impl Transformer {
             (true, true, Some(e), Some(_)) => Some(e),
             _ => None,
         };
-        let route = route::Route::new(&s, &d);
+        let mut route = route::Route::new(&s, &d);
+        if opts.allow_ballpark == Some(false) && !route.disallow_ballpark() {
+            return Err(Error::Crs("cannot find coordinate operations with ALLOW_BALLPARK=NO".into()));
+        }
         let motion = match (s.datum_code(), opts.source_coordinate_epoch, opts.target_coordinate_epoch) {
             // Between geographic CRSs of the datum, as PROJ applies it (not to projected ones).
             (Some(datum), Some(from), Some(to))
@@ -987,7 +1033,21 @@ impl Transformer {
         };
         let src_horizontal = s.horizontal();
         let identity = src.same_as(dst) && motion.is_none();
-        Ok(Self { identity, src: s, dst: d, route, time, heights, motion, vertical_ops, same_vertical_datum, src_horizontal })
+        Ok(Self {
+            identity,
+            src: s,
+            dst: d,
+            route,
+            time,
+            heights,
+            motion,
+            vertical_ops,
+            same_vertical_datum,
+            src_horizontal,
+            best_route: std::sync::OnceLock::new(),
+            policy: opts.clone(),
+            diagnostics: std::sync::atomic::AtomicU8::new(0),
+        })
     }
 
     /// Transforms one point.
@@ -999,12 +1059,68 @@ impl Transformer {
         Ok((x, y))
     }
 
+    fn best_route(&self) -> &route::Route {
+        self.best_route.get_or_init(|| {
+            let mut route = route::Route::all(&self.src, &self.dst);
+            if self.policy.allow_ballpark == Some(false) {
+                route.disallow_ballpark();
+            }
+            route
+        })
+    }
+
+    /// Return any strict coordinate-operation failure observed by this transformer, including
+    /// those encountered by raster workers which represent failed points as invalid pixels.
+    pub fn check_policy(&self) -> Result<()> {
+        let flags = self.diagnostics.load(std::sync::atomic::Ordering::Relaxed);
+        if self.policy.only_best && flags & 2 != 0 {
+            return Err(Error::Crs(
+                "ONLY_BEST=YES: best coordinate operation needs a missing grid; set TERRIO_NETWORK=ON or TERRIO_GRID_DIR".into(),
+            ));
+        }
+        if flags & 8 != 0 {
+            return Err(Error::Crs("strict coordinate operation failed for a point".into()));
+        }
+        Ok(())
+    }
+
+    fn check_point_policy(&self, x: f64, y: f64, p: datum::Point) -> Result<()> {
+        if !self.route.same_datum() {
+            let best = self.best_route();
+            let (ideal, _) = best.selected(&self.src, x, y, p);
+            let missing = ideal.is_some_and(|op| !op.available());
+            if missing {
+                self.diagnostics.fetch_or(2, std::sync::atomic::Ordering::Relaxed);
+                if self.policy.only_best {
+                    return Err(Error::Crs(
+                        "ONLY_BEST=YES: best coordinate operation needs a missing grid; set TERRIO_NETWORK=ON or TERRIO_GRID_DIR".into(),
+                    ));
+                }
+            }
+            let (selected, outside) = self.route.selected(&self.src, x, y, p);
+            let ballpark = selected.is_none_or(|op| op.ballpark);
+            if ballpark && self.policy.allow_ballpark == Some(false) {
+                self.diagnostics.fetch_or(8, std::sync::atomic::Ordering::Relaxed);
+                return Err(Error::Crs("ALLOW_BALLPARK=NO: no non-ballpark coordinate operation for this point".into()));
+            }
+            if ballpark && (self.src.ell.a != self.dst.ell.a || self.src.ell.es != self.dst.ell.es) {
+                self.diagnostics.fetch_or(1, std::sync::atomic::Ordering::Relaxed);
+            }
+            if outside {
+                self.diagnostics.fetch_or(4, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
+        Ok(())
+    }
+
     /// The 2D transformation of a point, with its height kept (or, for transformations PROJ runs
     /// without keeping heights, transformed).
     fn transform_2d(&self, x: f64, y: f64, z: f64, t: Option<f64>) -> Result<(f64, f64, f64)> {
         let fail = || Error::Crs(format!("cannot transform ({x}, {y})"));
         let (lon, lat) = self.src.unproject(x, y).ok_or_else(fail)?;
         let p = datum::Point { lon, lat, h: z, t };
+        self.check_point_policy(x, y, p)?;
+
         let p = match &self.motion {
             Some(steps) => datum::run(steps, p, false, true).ok_or_else(|| {
                 let grids: Vec<String> = steps.iter().flat_map(|s| s.grid_names()).map(|(g, _)| g).collect();
@@ -1015,7 +1131,20 @@ impl Transformer {
             })?,
             None => p,
         };
-        let q = self.route.apply(&self.src, x, y, p, false).ok_or_else(fail)?;
+        let q = if self.policy.only_best {
+            self.best_route().apply_best(&self.src, x, y, p, false)
+        } else {
+            self.route.apply_reporting(&self.src, x, y, p, false, &|op, outside| {
+                let flags = u8::from(op.is_none_or(|op| op.ballpark)) | if outside { 4 } else { 0 };
+                self.diagnostics.fetch_or(flags, std::sync::atomic::Ordering::Relaxed);
+            })
+        }
+        .ok_or_else(|| {
+            if self.policy.only_best {
+                self.diagnostics.fetch_or(8, std::sync::atomic::Ordering::Relaxed);
+            }
+            fail()
+        })?;
         let (tx, ty) = self.dst.project(q.lon, q.lat).ok_or_else(fail)?;
         Ok((tx, ty, q.h))
     }
@@ -1038,6 +1167,8 @@ impl Transformer {
             return Ok((x, y, z));
         }
         let Some(h) = &self.heights else { return self.transform_2d(x, y, z, t) };
+        let (lon, lat) = self.src.unproject(x, y).ok_or_else(|| Error::Crs("cannot unproject coordinate".into()))?;
+        self.check_point_policy(x, y, datum::Point { lon, lat, h: z, t })?;
         // A point motion between epochs moves ellipsoidal heights with the position.
         if self.motion.is_some() && self.src.vertical().is_none() && self.dst.vertical().is_none() {
             return self.transform_2d(x, y, z, t);

@@ -169,3 +169,15 @@ fn pansharpen_tool_uses_all_spectral_bands() {
     assert_eq!(out.raster.get(0, 0, 0), 53.0);
     assert_eq!(out.raster.get(1, 0, 0), 107.0);
 }
+
+#[test]
+fn coordinate_operation_warnings_and_controls_reach_mcp() {
+    let replies = session(&[
+        call(1, "crs", &["EPSG:4610", "--to", "EPSG:4326", "110", "35"]),
+        call(2, "crs", &["EPSG:4610", "--to", "EPSG:4326", "110", "35", "--ct-opt", "ALLOW_BALLPARK=NO"]),
+    ]);
+    assert_eq!(replies[&1]["result"]["isError"], false);
+    assert!(replies[&1]["result"]["content"][0]["text"].as_str().unwrap().contains("ballpark"));
+    assert_eq!(replies[&2]["result"]["isError"], true);
+    assert!(replies[&2]["result"]["content"][0]["text"].as_str().unwrap().contains("ALLOW_BALLPARK"));
+}

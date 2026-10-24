@@ -497,7 +497,7 @@ impl LazyRaster {
     /// metadata).
     pub fn metadata(&self) -> Vec<(String, String)> {
         match &self.inner {
-            Inner::Tiff(_) => Vec::new(),
+            Inner::Tiff(t) => t.tags.metadata.clone(),
             Inner::Memory(ds) | Inner::Source(ds, _) => ds.raster.metadata.clone(),
         }
     }
@@ -583,7 +583,7 @@ impl LazyRaster {
             nodata: self.nodata().unwrap_or(-9999.0),
             data_type: self.data_type(),
             crs: self.crs().to_crs_info(),
-            metadata: Vec::new(),
+            metadata: self.metadata(),
             data: wbraster::raster::RasterData::new_filled(self.data_type(), 0, 0.0),
         };
         let mut ds = RasterDataset::with_driver(raster, self.driver(), self.nodata().is_some());
@@ -699,6 +699,7 @@ impl LazyRaster {
             nodata,
             data_type: data.data_type(),
             crs: crs.unwrap_or_default(),
+            metadata: self.metadata(),
             ..Default::default()
         };
         let raster = crate::pixel::raster_from_data(cfg, data)?;

@@ -5,6 +5,9 @@ use terrio::ops::vector_filter::{GeometryConversion, VectorTranslateOptions, Wri
 
 #[derive(clap::Args, Default)]
 pub struct VectorArgs {
+    /// Coordinate operation options: ALLOW_BALLPARK=YES|NO, ONLY_BEST=YES|NO.
+    #[arg(long = "ct-opt", visible_alias = "ct_opt", value_name = "KEY=VALUE", help_heading = "Vector options")]
+    transform_options: Vec<String>,
     /// Keep the features matching this OGR SQL expression, such as "pop > 1e6 AND name LIKE 'A%'".
     #[arg(long = "where", value_name = "EXPR", help_heading = "Vector options")]
     where_clause: Option<String>,
@@ -88,6 +91,7 @@ impl VectorArgs {
             src_srs: srs(&self.s_srs)?,
             dst_srs: t_srs,
             assign_srs: srs(&self.a_srs)?,
+            transform_options: terrio::crs::TransformOptions::from_options(&super::convert::key_values(&self.transform_options)?)?,
         })
     }
 
@@ -95,6 +99,7 @@ impl VectorArgs {
     /// archives).
     pub fn append_only(&self) -> bool {
         self.append
+            && self.transform_options.is_empty()
             && self.where_clause.is_none()
             && self.spat.is_none()
             && self.select.is_none()

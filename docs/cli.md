@@ -808,3 +808,35 @@ The Rust `VirtualRaster` API parses and serializes these descriptions. Its
 Warped VRT block evaluation is limited to 8,388,608 samples across all bands per
 declared block. Larger blocks return an unsupported error, including for small
 subwindow reads, to keep temporary memory bounded while preserving GDAL block semantics.
+
+### Coordinate operation safeguards and warp kernel versions
+
+`crs` and `convert` accept repeated `--ct-opt KEY=VALUE`; `warp` accepts the same
+coordinate operation controls through its existing `--to KEY=VALUE` option:
+
+```sh
+terrio crs EPSG:4610 --to EPSG:4326 110 35 --ct-opt ALLOW_BALLPARK=NO
+terrio convert input.shp output.geojson --t-srs EPSG:4326 --ct-opt ONLY_BEST=YES
+terrio warp input.tif output.tif --t-srs EPSG:2056 --to ONLY_BEST=YES
+```
+
+`ALLOW_BALLPARK=NO` excludes approximate datum operations; a CRS pair with no
+remaining operation fails. `ONLY_BEST=YES` requires the best registered operation
+for each point assuming all datum grids were available; it fails if that operation
+needs a missing grid or cannot evaluate the point. `ONLY_BEST` alone still permits
+a ballpark when no better operation exists. Defaults preserve fallback behavior.
+Warnings report ballparks between different ellipsoids, missing best-operation
+grids (with `TERRIO_NETWORK=ON` / `TERRIO_GRID_DIR` guidance), and operations used
+outside their area of use. Parallel work aggregates warnings, which appear once
+on stderr and in MCP tool result text. These controls govern horizontal datum
+operation selection; vertical/geoid selection retains its existing behavior.
+
+GDAL 3.13 changed warp kernel scales and the bilinear/cubic downsampling threshold.
+Use `warp --kernel-version 3.13` to reproduce that behavior. The default `3.12`
+retains Terrio's earlier results and the repository's GDAL 3.12 conformance baseline.
+Both modes keep lazy window/overview reads. Versioned kernels and explicit
+coordinate-operation policies currently require materialized output rather than
+serialized warped VRTs.
+
+GeoTIFF and COG translation and warping preserve `AREA_OR_POINT=Point`, including
+point tie points and rotated affine transforms, without moving pixel corners.

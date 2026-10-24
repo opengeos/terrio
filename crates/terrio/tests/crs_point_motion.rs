@@ -7,7 +7,7 @@ use terrio::crs::{SpatialRef, TransformOptions, Transformer};
 
 fn moved(code: &str, from: f64, to: f64, p: (f64, f64, f64)) -> (f64, f64, f64) {
     let crs = SpatialRef::parse(code).unwrap();
-    let opts = TransformOptions { source_coordinate_epoch: Some(from), target_coordinate_epoch: Some(to) };
+    let opts = TransformOptions { source_coordinate_epoch: Some(from), target_coordinate_epoch: Some(to), ..Default::default() };
     Transformer::with_options(&crs, &crs, &opts).unwrap().transform_3d(p.0, p.1, p.2).unwrap()
 }
 
@@ -29,7 +29,7 @@ fn velocity_grids_as_proj() {
     assert_eq!(p, (450000.0, 5030000.0, 100.0));
     // Canada's v8 grid is not on the CDN: the transformation fails, as PROJ's does, naming it.
     let crs = SpatialRef::parse("EPSG:10413").unwrap();
-    let opts = TransformOptions { source_coordinate_epoch: Some(2010.0), target_coordinate_epoch: Some(2020.0) };
+    let opts = TransformOptions { source_coordinate_epoch: Some(2010.0), target_coordinate_epoch: Some(2020.0), ..Default::default() };
     let e = Transformer::with_options(&crs, &crs, &opts).unwrap().transform_3d(-100.0, 50.0, 0.0).unwrap_err();
     assert!(e.to_string().contains("NAD83v80VG.gvb"), "{e}");
 }

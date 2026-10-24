@@ -686,6 +686,32 @@ fn plan(raster: &Raster, opts: &TiffOptions) -> Result<Plan> {
             geo.push((34264, Value::Doubles(m)));
         }
     }
+    if pixel_is_point(raster) {
+        // Public geotransforms refer to corners. GeoTIFF point tags refer to centres.
+        for (tag, value) in &mut geo {
+            if let Value::Doubles(v) = value {
+                match *tag {
+                    33922 if !opts.gcps.is_empty() => {
+                        for g in v.as_chunks_mut::<6>().0 {
+                            g[0] -= 0.5;
+                            g[1] -= 0.5;
+                        }
+                    }
+                    33922 => {
+                        let gt =
+                            opts.geo_transform.unwrap_or([raster.x_min, raster.cell_size_x, 0.0, raster.y_max(), 0.0, -raster.cell_size_y]);
+                        v[3] += (gt[1] + gt[2]) * 0.5;
+                        v[4] += (gt[4] + gt[5]) * 0.5;
+                    }
+                    34264 => {
+                        v[3] += (v[0] + v[1]) * 0.5;
+                        v[7] += (v[4] + v[5]) * 0.5;
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
     if !opts.rpc.is_empty() {
         if opts.rpc.len() != 92 {
             return Err(Error::InvalidArgument(format!("RPCs are 92 coefficients, not {}", opts.rpc.len())));
@@ -1449,6 +1475,10 @@ pub(crate) fn encode_sample_le(t: DataType, v: f64, out: &mut Vec<u8>) {
 }
 
 /// The georeferencing tags: pixel scale and tie point, GeoKeys, nodata and metadata.
+fn pixel_is_point(r: &Raster) -> bool {
+    r.metadata.iter().any(|(k, v)| k == "AREA_OR_POINT" && v.eq_ignore_ascii_case("Point"))
+}
+
 fn geo_tags(r: &Raster, nodata: Option<f64>, bands: &[crate::BandMetadata]) -> Result<Vec<(u16, Value)>> {
     let mut tags = vec![
         (33550, Value::Doubles(vec![r.cell_size_x, r.cell_size_y, 0.0])),
@@ -1456,7 +1486,7 @@ fn geo_tags(r: &Raster, nodata: Option<f64>, bands: &[crate::BandMetadata]) -> R
     ];
     let crs = super::common::spatial_ref(&r.crs);
     let mut v = crate::drivers::geokeys::GeoKeyValues::default();
-    v.shorts.push((1025, 1)); // RasterPixelIsArea
+    v.shorts.push((1025, if pixel_is_point(r) { 2 } else { 1 }));
     let local = crs.wkt.as_deref().and_then(local_cs);
     if let Some((name, unit)) = &local {
         // A local CRS, as GDAL writes one: a citation and the linear unit, no model type.
@@ -2499,6 +2529,38 @@ fn directories(mut images: Vec<Directory>, big: bool, cog: bool) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pixel_is_point_roundtrip_preserves_corners() {
+        let r = Raster::from_data(
+            wbraster::RasterConfig {
+                cols: 4,
+                rows: 3,
+                bands: 1,
+                x_min: 100.0,
+                y_min: 200.0,
+                cell_size: 10.0,
+                crs: wbraster::CrsInfo::from_epsg(32610),
+                metadata: vec![("AREA_OR_POINT".into(), "Point".into())],
+                ..Default::default()
+            },
+            vec![7.0; 12],
+        )
+        .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        for gt in [None, Some([100.0, 10.0, 2.0, 230.0, 1.0, -10.0]), Some([100.0, 10.0, 0.0, 200.0, 0.0, 10.0])] {
+            for cog in [false, true] {
+                let path = dir.path().join("point.tif");
+                let options = TiffOptions { cog, geo_transform: gt, ..Default::default() };
+                write(&r, path.to_str().unwrap(), &options).unwrap();
+                let tags = crate::geotiff::read_geo_tags(&path).unwrap();
+                assert!(tags.pixel_is_point);
+                assert_eq!(tags.corner_geo_transform().unwrap(), gt.unwrap_or([100.0, 10.0, 0.0, 230.0, 0.0, -10.0]));
+                let read = crate::geotiff::read_geotiff(&path).unwrap();
+                assert!(read.raster.metadata.iter().any(|(k, v)| k == "AREA_OR_POINT" && v == "Point"));
+            }
+        }
+    }
 
     #[test]
     fn packbits_round_trips() {

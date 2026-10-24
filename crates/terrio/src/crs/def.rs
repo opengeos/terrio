@@ -569,6 +569,17 @@ impl Def {
         &self.ops
     }
 
+    /// A definition with all registered grid operations, including unavailable grids.
+    pub fn with_all_operations(&self) -> Self {
+        let mut out = self.clone();
+        if let Some(e) = self.geog.and_then(epsg::get)
+            && !e.grid_ops.is_empty()
+        {
+            out.ops = e.grid_ops.clone();
+        }
+        out
+    }
+
     /// The area of use, when known.
     pub fn area(&self) -> Option<[f64; 4]> {
         self.area

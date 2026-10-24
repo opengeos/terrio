@@ -166,3 +166,9 @@ uv run maturin develop
 uv run pytest                                    # synthetic tests
 TERRIO_TEST_DATA=../../terrio-data uv run pytest # real files, compared with GDAL when installed
 ```
+
+Coordinate-operation safeguards: `transform_points(..., allow_ballpark=False,
+only_best=True)`; `convert(..., ct_opt={"ALLOW_BALLPARK": "NO", "ONLY_BEST": "YES"})`;
+`warp(..., to={"ONLY_BEST": "YES"})`. Warnings identify horizontal datum fallbacks,
+missing grids and operations outside their area. `warp(..., kernel_version="3.13")`
+selects GDAL 3.13 resampling behavior; the default remains `"3.12"`.

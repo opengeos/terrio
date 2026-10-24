@@ -242,6 +242,9 @@ pub(crate) fn read_geo_tags_from<R: Read + Seek>(mut f: R) -> Option<GeoTags> {
     if let Some(keys) = keys {
         apply_geokeys(&mut out, keys, doubles(GEO_DOUBLE_PARAMS), ascii(GEO_ASCII_PARAMS));
     }
+    // Raster type is a GeoKey, exposed as dataset metadata by GDAL.
+    out.metadata.retain(|(k, _)| k != "AREA_OR_POINT");
+    out.metadata.push(("AREA_OR_POINT".into(), if out.pixel_is_point { "Point" } else { "Area" }.into()));
     if out.pixel_is_point {
         // GCPs of PixelIsPoint files refer to pixel centres, as GDAL reads them.
         for g in &mut out.gcps {

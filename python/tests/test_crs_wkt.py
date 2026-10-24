@@ -204,3 +204,52 @@ def test_rasterio_reads_terrio_geotiff_as_the_proj_string(name, tmp_path):
     a = list(zip(*rasterio.warp.transform("EPSG:4326", given, lons, lats), strict=True))
     b = list(zip(*rasterio.warp.transform("EPSG:4326", read, lons, lats), strict=True))
     assert _dist(a, b) < 1e-3, read.to_wkt()
+
+
+def test_coordinate_operation_policy_and_warnings():
+    """Ballpark and missing-grid policy reaches Python coordinate and warp APIs."""
+    with pytest.warns(UserWarning, match="ballpark"):
+        x, y = terrio.transform_points([110], [35], "EPSG:4610", "EPSG:4326")
+    np.testing.assert_allclose([x[0], y[0]], [110, 35])
+    with pytest.raises(terrio.CRSError, match="ALLOW_BALLPARK"):
+        terrio.transform_points([110], [35], "EPSG:4610", "EPSG:4326", allow_ballpark=False)
+    terrio.set_grid_search_paths([])
+    terrio.set_network_enabled(False)
+    try:
+        with pytest.warns(UserWarning, match="missing grid"):
+            terrio.transform_points([600000], [200000], "EPSG:21781", "EPSG:2056")
+        with (
+            pytest.warns(UserWarning, match="missing grid"),
+            pytest.raises(terrio.CRSError, match="ONLY_BEST"),
+        ):
+            terrio.transform_points([600000], [200000], "EPSG:21781", "EPSG:2056", only_best=True)
+    finally:
+        terrio.set_grid_search_paths(None)
+        terrio.set_network_enabled(None)
+
+
+def test_convert_and_warp_coordinate_operation_controls(tmp_path):
+    """Conversion and raster warping use the same horizontal policy as coordinates."""
+    point = tmp_path / "point.geojson"
+    point.write_text(
+        '{"type":"FeatureCollection","features":[{"type":"Feature","properties":{},'
+        '"geometry":{"type":"Point","coordinates":[110,35]}}]}'
+    )
+    with pytest.raises(terrio.CRSError, match="ALLOW_BALLPARK"):
+        terrio.convert(
+            str(point),
+            str(tmp_path / "out.geojson"),
+            s_srs="EPSG:4610",
+            t_srs="EPSG:4326",
+            ct_opt={"ALLOW_BALLPARK": "NO"},
+        )
+    raster = terrio.Raster.from_array(
+        np.arange(16, dtype="float32").reshape(4, 4),
+        (110, 0.01, 0, 35, 0, -0.01),
+        crs="EPSG:4610",
+    )
+    with pytest.raises(terrio.CRSError, match="ALLOW_BALLPARK"):
+        terrio.warp(raster, t_srs="EPSG:4326", to={"ALLOW_BALLPARK": "NO"})
+    for version in ["3.12", "3.13"]:
+        out = terrio.warp(raster, ts=(2, 2), kernel_version=version)
+        assert out.read(1).shape == (2, 2)

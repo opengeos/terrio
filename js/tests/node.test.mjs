@@ -1302,3 +1302,14 @@ test("openCatalog: defers unused encoded sources and preserves supplied lazy dat
   assert.deepEqual([...lazy.readBand(1, [0, 0, 1, 1])], [10]);
   lazy.free(); source.free();
 });
+
+test("coordinate operation safeguards and warnings", () => {
+  terrio.takeWarnings();
+  const [x, y] = terrio.transformPoints([110], [35], "EPSG:4610", "EPSG:4326");
+  assert.equal(x[0], 110);
+  assert.equal(y[0], 35);
+  assert.ok(Array.from(terrio.takeWarnings()).some((w) => w.includes("ballpark")));
+  assert.throws(() => terrio.transformPoints([110], [35], "EPSG:4610", "EPSG:4326", undefined, { allowBallpark: false }), /ALLOW_BALLPARK/);
+  assert.throws(() => terrio.transformPoints([600000], [200000], "EPSG:21781", "EPSG:2056", undefined, { onlyBest: true }), /ONLY_BEST/);
+  assert.ok(Array.from(terrio.takeWarnings()).some((w) => w.includes("missing grid")));
+});

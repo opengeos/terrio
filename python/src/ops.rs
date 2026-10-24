@@ -396,7 +396,7 @@ fn write_vector(
 #[pyo3(signature = (
     src, dst, *, format=None, layers=None, t_srs=None, compress=None, tile_size=None, bigtiff=false, srcwin=None,
     overview=None, r#where=None, spat=None, spat_srs=None, select=None, limit=None, sql=None, nln=None, nlt=None,
-    explodecollections=false, s_srs=None, a_srs=None, append=false, overwrite=false
+    explodecollections=false, s_srs=None, a_srs=None, append=false, overwrite=false, ct_opt=None
 ))]
 #[allow(clippy::too_many_arguments)]
 fn convert(
@@ -424,7 +424,9 @@ fn convert(
     a_srs: Option<&str>,
     append: bool,
     overwrite: bool,
+    ct_opt: Option<std::collections::HashMap<String, String>>,
 ) -> PyResult<()> {
+    let transform_options = TransformOptions::from_options(&ct_opt.unwrap_or_default().into_iter().collect::<Vec<_>>()).py()?;
     let t_srs = srs(t_srs)?;
     let vector_options = VectorTranslateOptions {
         where_clause: r#where,
@@ -439,6 +441,7 @@ fn convert(
         src_srs: srs(s_srs)?,
         dst_srs: t_srs.clone(),
         assign_srs: srs(a_srs)?,
+        transform_options: transform_options.clone(),
     };
     let vector_set = vector_options.where_clause.is_some()
         || vector_options.sql.is_some()
@@ -516,7 +519,11 @@ fn convert(
                     .ok_or_else(|| terrio::Error::InvalidArgument(format!("unknown raster format '{}'", format.unwrap_or_default())))?;
                 let mut r = r;
                 if let Some(dst_srs) = t_srs {
-                    let o = terrio::ops::warp::WarpOptions { dst_srs: Some(dst_srs), ..Default::default() };
+                    let o = terrio::ops::warp::WarpOptions {
+                        dst_srs: Some(dst_srs),
+                        transform_options: transform_options.clone(),
+                        ..Default::default()
+                    };
                     r = terrio::ops::warp::warp(&[&r], &o)?;
                 }
                 terrio::write_raster_dataset(&r, dst, &options)
@@ -797,7 +804,7 @@ fn polygonize(
 /// Raises:
 ///     CRSError: If a CRS cannot be parsed or a point cannot be transformed.
 #[pyfunction]
-#[pyo3(signature = (xs, ys, src_crs, dst_crs, zs=None, *, s_coord_epoch=None, t_coord_epoch=None))]
+#[pyo3(signature = (xs, ys, src_crs, dst_crs, zs=None, *, s_coord_epoch=None, t_coord_epoch=None, allow_ballpark=None, only_best=false))]
 #[allow(clippy::too_many_arguments)]
 fn transform_points<'py>(
     py: Python<'py>,
@@ -808,6 +815,8 @@ fn transform_points<'py>(
     zs: Option<&Bound<'py, PyAny>>,
     s_coord_epoch: Option<f64>,
     t_coord_epoch: Option<f64>,
+    allow_ballpark: Option<bool>,
+    only_best: bool,
 ) -> PyResult<Bound<'py, PyTuple>> {
     let np = py.import("numpy")?;
     let coords = |v: &Bound<'py, PyAny>| -> PyResult<Vec<f64>> {
@@ -826,31 +835,30 @@ fn transform_points<'py>(
     }
     let src = SpatialRef::parse(src_crs).py()?;
     let dst = SpatialRef::parse(dst_crs).py()?;
-    let opts = TransformOptions { source_coordinate_epoch: s_coord_epoch, target_coordinate_epoch: t_coord_epoch };
-    let (ox, oy, oz) = py
-        .detach(|| -> terrio::Result<(Vec<f64>, Vec<f64>, Vec<f64>)> {
-            let t = Transformer::with_options(&src, &dst, &opts)?;
-            let mut ox = Vec::with_capacity(xs.len());
-            let mut oy = Vec::with_capacity(ys.len());
-            let mut oz = Vec::with_capacity(zs.as_ref().map_or(0, Vec::len));
-            for (i, (x, y)) in xs.iter().zip(&ys).enumerate() {
-                match &zs {
-                    Some(z) => {
-                        let (a, b, c) = t.transform_3d(*x, *y, z[i])?;
-                        ox.push(a);
-                        oy.push(b);
-                        oz.push(c);
-                    }
-                    None => {
-                        let (a, b) = t.transform(*x, *y)?;
-                        ox.push(a);
-                        oy.push(b);
-                    }
+    let opts =
+        TransformOptions { source_coordinate_epoch: s_coord_epoch, target_coordinate_epoch: t_coord_epoch, allow_ballpark, only_best };
+    let (ox, oy, oz) = crate::with_warnings(py, || -> terrio::Result<(Vec<f64>, Vec<f64>, Vec<f64>)> {
+        let t = Transformer::with_options(&src, &dst, &opts)?;
+        let mut ox = Vec::with_capacity(xs.len());
+        let mut oy = Vec::with_capacity(ys.len());
+        let mut oz = Vec::with_capacity(zs.as_ref().map_or(0, Vec::len));
+        for (i, (x, y)) in xs.iter().zip(&ys).enumerate() {
+            match &zs {
+                Some(z) => {
+                    let (a, b, c) = t.transform_3d(*x, *y, z[i])?;
+                    ox.push(a);
+                    oy.push(b);
+                    oz.push(c);
+                }
+                None => {
+                    let (a, b) = t.transform(*x, *y)?;
+                    ox.push(a);
+                    oy.push(b);
                 }
             }
-            Ok((ox, oy, oz))
-        })
-        .py()?;
+        }
+        Ok((ox, oy, oz))
+    })?;
     let (ox, oy) = (PyArray1::from_vec(py, ox), PyArray1::from_vec(py, oy));
     if zs.is_some() { PyTuple::new(py, [ox, oy, PyArray1::from_vec(py, oz)]) } else { PyTuple::new(py, [ox, oy]) }
 }
@@ -1087,7 +1095,7 @@ fn translate(
     src, dst=None, *, s_srs=None, t_srs=None, tr=None, te=None, te_srs=None, ts=None, dst_transform=None, tap=false,
     resampling="near", overview=None, srcnodata=None, dstnodata=None, ot=None, cutline=None, crop_to_cutline=false, et=0.125,
     format=None, compress=None, tile_size=None, bigtiff=false, gcps=None, order=0, gcp_method="auto",
-    rpc=None, to=None, wo=None, geoloc=false, geolocation=None
+    rpc=None, to=None, wo=None, geoloc=false, geolocation=None, kernel_version="3.12"
 ))]
 #[allow(clippy::too_many_arguments)]
 fn warp(
@@ -1122,6 +1130,7 @@ fn warp(
     wo: Option<std::collections::HashMap<String, String>>,
     geoloc: bool,
     geolocation: Option<&Bound<'_, pyo3::types::PyDict>>,
+    kernel_version: &str,
 ) -> PyResult<PyRaster> {
     if tap && tr.is_none() {
         return Err(invalid("tap needs tr"));
@@ -1165,6 +1174,8 @@ fn warp(
         order,
         gcp_method: terrio::ops::gcp::GcpMethod::parse(gcp_method).py()?,
         rpc: rpc.map(crate::rio::parse_rpc).transpose()?,
+        transform_options: TransformOptions::from_options(&to.clone().unwrap_or_default().into_iter().collect::<Vec<_>>()).py()?,
+        kernel_version: terrio::ops::warp::KernelVersion::parse(kernel_version).py()?,
         rpc_options: crate::rio::parse_rpc_options(to)?,
         geoloc,
         ..Default::default()

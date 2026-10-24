@@ -602,6 +602,13 @@ pub(crate) fn pair(from: u32, to: u32) -> Option<(Vec<Arc<Op>>, bool)> {
     Some((usable(&p.lists.0, &p.lists.1), reverse))
 }
 
+/// The direct operations assuming every grid is available.
+pub(crate) fn pair_all(from: u32, to: u32) -> Option<(Vec<Arc<Op>>, bool)> {
+    let t = table();
+    let (p, reverse) = t.pair(from, to).map(|o| (o, false)).or_else(|| t.pair(to, from).map(|o| (o, true)))?;
+    Some((if p.lists.1.is_empty() { p.lists.0.clone() } else { p.lists.1.clone() }, reverse))
+}
+
 /// An EPSG vertical CRS.
 pub(crate) fn vertical(code: u32) -> Option<&'static Vertical> {
     let t = table();

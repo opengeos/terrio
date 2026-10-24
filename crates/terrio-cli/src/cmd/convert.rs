@@ -206,7 +206,11 @@ pub fn run(mut a: Args) -> terrio::Result<()> {
                 return Err(terrio::Error::InvalidArgument("the vector options apply to vector inputs only".into()));
             }
             if let Some(dst) = t_srs {
-                let o = terrio::ops::warp::WarpOptions { dst_srs: Some(dst), ..Default::default() };
+                let o = terrio::ops::warp::WarpOptions {
+                    dst_srs: Some(dst),
+                    transform_options: a.vector.to_options(None)?.transform_options,
+                    ..Default::default()
+                };
                 r = terrio::ops::warp::warp(&[&r], &o)?;
             }
             let mut creation_options: Vec<(String, String)> =

@@ -224,3 +224,9 @@ VRT window reads in the browser and Node.js. It supports scalar built-in derived
 bands, full/separable kernel filters, mask sources and serialized warped VRTs
 (affine/reprojection, GCP/TPS/homography/RPC). External pixel functions, complex
 buffers and serialized cutline/alpha/geolocation warps are unsupported.
+
+`transformPoints`, `Dataset.toBytes` and `warp` accept `allowBallpark: false` and
+`onlyBest: true` to control horizontal datum-operation fallbacks. Read diagnostics
+with `takeWarnings()` after an operation. `warp` also accepts `kernelVersion: "3.13"`
+for GDAL 3.13 resampling; `"3.12"` remains the default. GeoTIFF/COG outputs preserve
+PixelIsPoint metadata and corner georeferencing.
