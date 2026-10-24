@@ -202,6 +202,8 @@ def cases(d, tmp):
     out = []
 
     def add(name, gdal_cmd, terrio_args, tol=0.0, out_ext="tif"):
+        if gdal_cmd[0] == "gdalwarp" and "-ovr" in gdal_cmd:
+            terrio_args = [*terrio_args, "--overview", gdal_cmd[gdal_cmd.index("-ovr") + 1]]
         out.append({"name": name, "gdal": gdal_cmd, "terrio": terrio_args, "tol": tol, "ext": out_ext})
 
     # netCDF-4 written by gdal_translate and by terrio, read by GDAL (attributes included).

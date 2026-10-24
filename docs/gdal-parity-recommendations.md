@@ -52,14 +52,13 @@ valid regions, NaN nodata and explicit masks. Valid source pixels must be preser
 
 ### 2. Overview-aware warping
 
-The [warp documentation](cli.md#warp) explicitly compares Terrio to GDAL with
-`-ovr NONE`: Terrio does not warp from overviews. Overview construction and reads
-already exist, including Python `build_overviews`; this proposal concerns which
-source resolution the warper reads.
-
-Add explicit level selection first, then GDAL-compatible `AUTO` selection. Coarse
-outputs of large remote images can then avoid reading full-resolution data.
-GDAL exposes `AUTO`, `AUTO-n`, a level, and `NONE`.
+Implemented in [PR #242](https://github.com/opengeos/terrio/pull/242): the warper
+selects `AUTO`, `AUTO-n`, `NONE` or a forced source level after planning the output
+grid from full-resolution metadata. CLI/MCP, Python paths/lazy handles and
+JavaScript bytes/datasets retain stored pyramids. The conformance suite checks
+GDAL's selected pixels and measures actual HTTP response bytes for a USGS COG.
+Mosaics and cutlines currently load each selected level before compositing;
+single-source warps read only the required source windows.
 [GDAL warp](https://gdal.org/en/stable/programs/gdalwarp.html).
 
 Acceptance: compare selected levels and output pixels with GDAL under matching
