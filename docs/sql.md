@@ -17,7 +17,8 @@ WHERE POP_EST > 10000000 ORDER BY POP_EST DESC LIMIT 10
   and explicit `AS` column aliases. Computed expressions support `+`, `-`, `*`, `/`, `%`,
   unary signs, parentheses, comparisons, predicates and the existing `||` string concatenation
   extension. Integer division truncates toward zero; use a floating literal for real division.
-  Field types are determined from the expression and schema even when no rows match.
+  SELECT arithmetic requires numeric columns. Field types are determined from the expression
+  and schema even when no rows match; the legacy WHERE evaluator may also coerce numeric text.
 - `WHERE`: comparisons, `AND`, `OR`, `NOT`, `IN`, `BETWEEN`, `IS [NOT] NULL`, `LIKE`, `ILIKE`,
   arithmetic and parentheses. Only primary-layer fields may appear in `WHERE` or `ORDER BY`.
 - One `ORDER BY` primary field, optionally `ASC` or `DESC`, followed by optional `LIMIT n`.
@@ -59,7 +60,7 @@ division by zero). Use floating-point expressions for larger numeric ranges.
 
 Unordered projections iterate borrowed source features and can stop once the requested result
 limit is reached; summaries use constant accumulator memory except `COUNT(DISTINCT ...)`.
-`DISTINCT` stores seen values, `ORDER BY` stores sorted feature references, and joins index
+`DISTINCT` stores seen values, `ORDER BY` caches sort keys and feature references, and joins index
 secondary keys once, retaining the first row per matching key. Existing file-based SQL entry points load their input layers;
 chunked `FeatureStream` SQL is not supported. Ordinary streaming vector conversions retain
 their existing path.

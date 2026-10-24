@@ -818,6 +818,8 @@ def warp(
     rpc: Mapping[str, str] | None = None,
     to: Mapping[str, str] | None = None,
     wo: Mapping[str, str] | None = None,
+    geoloc: bool = False,
+    geolocation: Mapping[str, Any] | None = None,
 ) -> Raster: ...
 def mosaic(
     srcs: _RasterSource | Sequence[_RasterSource],

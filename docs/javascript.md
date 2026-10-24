@@ -178,3 +178,22 @@ const summary = sql(countries, "SELECT COUNT(*) AS n, SUM(POP_EST) AS population
 
 Raw GeoJSON inputs use the layer name `layer`; use `Layer.from_geojson(..., name=...)`
 (Python) or `fromGeoJSON(src, name)` (JavaScript) to assign another name.
+
+## Geolocation-array warping
+
+Pass longitude and latitude rasters explicitly when array datasets cannot be reopened from
+paths in WebAssembly. `x` and `y` accept a `Dataset`, file bytes, or `{ bytes, filename }`:
+
+```javascript
+const output = terrio.warp(swath, {
+  tSrs: "EPSG:4326",
+  geolocation: { x: longitude, y: latitude, pixelStep: 2, lineStep: 2, pixelCenter: true },
+});
+```
+
+`xBand` and `yBand` select the 1-based coordinate bands (default 1).
+Optional `srs` defaults to EPSG:4326, `pixelOffset`/`lineOffset` to 0, and steps to 1.
+`pixelCenter` shifts by half an array step. `geoloc: true` requires geolocation metadata;
+the explicit `geolocation` option supplies arrays for the first source. The operation remains
+pure Rust in full and core WASM builds. See [CLI warping](cli.md#warp) for invalid coordinates,
+antimeridian handling and boundary differences from GDAL.

@@ -378,7 +378,7 @@ fn compare(a: &Value, b: &Value) -> Option<Ordering> {
 // ORDER BY and MIN/MAX use the case-sensitive ordering in `compare` above.
 fn compare_predicate(a: &Value, b: &Value) -> Option<Ordering> {
     match (a, b) {
-        (Value::Text(a), Value::Text(b)) => Some(a.to_ascii_lowercase().cmp(&b.to_ascii_lowercase())),
+        (Value::Text(a), Value::Text(b)) => Some(a.bytes().map(|c| c.to_ascii_lowercase()).cmp(b.bytes().map(|c| c.to_ascii_lowercase()))),
         _ => compare(a, b),
     }
 }

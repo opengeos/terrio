@@ -124,7 +124,15 @@ fn expression_type(e: &Expr, schema: &Schema) -> Result<FieldType> {
             }
             if a == FieldType::Float || b == FieldType::Float { FieldType::Float } else { FieldType::Integer }
         }
-        _ => FieldType::Integer,
+        Expr::Not(_)
+        | Expr::Like { .. }
+        | Expr::In { .. }
+        | Expr::Between { .. }
+        | Expr::IsNull { .. }
+        | Expr::Binary(BinOp::And | BinOp::Or | BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge, _, _) => {
+            FieldType::Integer
+        }
+        Expr::Field(name) => return Err(syntax(format!("unbound field '{name}'"))),
     })
 }
 fn field_value(v: Value, ty: FieldType) -> FieldValue {
@@ -336,6 +344,7 @@ pub(crate) fn execute(layers: &[Layer], s: &Select, copy_limit: Option<usize>) -
                     seen: Default::default(),
                     count: 0,
                     value: Value::Null,
+                    input_type: ty,
                 });
             }
         }
@@ -355,19 +364,22 @@ pub(crate) fn execute(layers: &[Layer], s: &Select, copy_limit: Option<usize>) -
         .transpose()?;
     let mut sorted;
     let features: Box<dyn Iterator<Item = &Feature>> = if let Some((e, desc)) = &order {
-        sorted = layer.features.iter().filter(|f| filter.as_ref().is_none_or(|e| truth(e, f).value)).collect::<Vec<_>>();
-        sorted.sort_by(|a, b| {
-            let a = eval(e, a);
-            let b = eval(e, b);
-            let o = match (&a, &b) {
+        sorted = layer
+            .features
+            .iter()
+            .filter(|f| filter.as_ref().is_none_or(|e| truth(e, f).value))
+            .map(|f| (eval(e, f), f))
+            .collect::<Vec<_>>();
+        sorted.sort_by(|(a, _), (b, _)| {
+            let order = match (a, b) {
                 (Value::Null, Value::Null) => Ordering::Equal,
                 (Value::Null, _) => Ordering::Less,
                 (_, Value::Null) => Ordering::Greater,
-                _ => compare(&a, &b).unwrap_or(Ordering::Equal),
+                _ => compare(a, b).unwrap_or(Ordering::Equal),
             };
-            if *desc { o.reverse() } else { o }
+            if *desc { order.reverse() } else { order }
         });
-        Box::new(sorted.into_iter())
+        Box::new(sorted.into_iter().map(|(_, f)| f))
     } else {
         Box::new(layer.features.iter().filter(|f| filter.as_ref().is_none_or(|e| truth(e, f).value)))
     };
@@ -434,17 +446,19 @@ struct Aggregate {
     seen: std::collections::HashSet<String>,
     count: u64,
     value: Value,
+    input_type: FieldType,
 }
 impl Aggregate {
     fn push(&mut self, f: &Feature) -> Result<()> {
         let mut v = self.expr.as_ref().map(|e| eval(e, f)).unwrap_or(Value::Int(1));
-        if self.op == "AVG"
-            && let Some(x) = v.as_f64()
-        {
-            v = Value::Float(x);
+        if v != Value::Null && (self.op == "AVG" || (self.op == "SUM" && self.input_type == FieldType::Float)) {
+            v = Value::Float(v.as_f64().ok_or_else(|| syntax("summary value does not match the numeric field type".into()))?);
         }
         if v == Value::Null || (self.distinct && !self.seen.insert(key(&v))) {
             return Ok(());
+        }
+        if self.op == "SUM" && self.input_type == FieldType::Integer && !matches!(v, Value::Int(_)) {
+            return Err(syntax("SUM value does not match the integer field type".into()));
         }
         self.count += 1;
         self.value = match self.op.as_str() {

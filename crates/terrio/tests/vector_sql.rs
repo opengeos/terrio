@@ -171,3 +171,29 @@ fn integer_summary_overflow_is_reported_instead_of_wrapping() {
     let error = query(&[l], "SELECT SUM(n) FROM numbers").unwrap_err();
     assert!(error.to_string().contains("SUM exceeds"));
 }
+
+#[test]
+fn sum_respects_the_declared_numeric_field_type() {
+    let mut l = Layer::new("numbers");
+    l.schema.add_field(FieldDef::new("n", FieldType::Float));
+    for n in [V::Integer(i64::MAX), V::Integer(1)] {
+        l.features.push(Feature { fid: 0, geometry: None, attributes: vec![n] });
+    }
+    let out = query(std::slice::from_ref(&l), "SELECT SUM(n) FROM numbers").unwrap();
+    assert_eq!(out.schema.fields()[0].field_type, FieldType::Float);
+    assert!(matches!(out.features[0].attributes[0], V::Float(_)));
+    let mut integers = Layer::new("integers");
+    integers.schema.add_field(FieldDef::new("n", FieldType::Integer));
+    integers.features.push(Feature { fid: 0, geometry: None, attributes: vec![V::Float(1.5)] });
+    assert!(query(&[integers], "SELECT SUM(n) FROM integers").unwrap_err().to_string().contains("integer field type"));
+}
+
+#[test]
+fn malformed_numeric_summary_values_report_errors() {
+    let mut l = Layer::new("numbers");
+    l.schema.add_field(FieldDef::new("n", FieldType::Float));
+    l.features.push(Feature { fid: 0, geometry: None, attributes: vec![V::Text("invalid".into())] });
+    for q in ["SELECT SUM(n) FROM numbers", "SELECT AVG(n) FROM numbers"] {
+        assert!(query(std::slice::from_ref(&l), q).unwrap_err().to_string().contains("numeric field type"));
+    }
+}
