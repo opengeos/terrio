@@ -426,16 +426,28 @@ impl WindowSource for Reader {
             let options = &self.description.options;
             let headers = &self.headers;
             let description = &self.description;
-            let cache = &mut self.cache;
-            Some(blocks::request(layout, options, window, &sharp, |index, source_layout, area| {
-                let src = if index == 0 { &description.pan } else { &description.spectral[index - 1] };
-                blocks::aligned(
-                    source_layout,
-                    area,
-                    |original| cache.get(src)?.read_window(original, &WindowOptions { bands: vec![src.band], overview: None }),
-                    &headers[index],
-                )
-            })?)
+            let cache = std::cell::RefCell::new(&mut self.cache);
+            Some(blocks::request(
+                layout,
+                options,
+                window,
+                &sharp,
+                |index, source_layout, area| {
+                    let src = if index == 0 { &description.pan } else { &description.spectral[index - 1] };
+                    blocks::aligned(
+                        source_layout,
+                        area,
+                        |original| {
+                            cache.borrow_mut().get(src)?.read_window(original, &WindowOptions { bands: vec![src.band], overview: None })
+                        },
+                        &headers[index],
+                    )
+                },
+                |index, _, area| {
+                    let src = &description.spectral[index - 1];
+                    cache.borrow_mut().get(src)?.read_mask(area, None)
+                },
+            )?)
         };
         let size = window.width * window.height;
         let mut sharp_index = 0;
@@ -564,6 +576,61 @@ mod tests {
         assert!(calls.len() <= 5);
         assert!(calls.iter().all(|w| w.width <= 16 && w.height <= 16));
     }
+    #[test]
+    fn direct_masks_are_used_but_temporary_and_nodata_wrappers_drop_them() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        struct Masked {
+            reads: Arc<AtomicUsize>,
+            value: u16,
+        }
+        impl WindowSource for Masked {
+            fn overviews(&self) -> Vec<(usize, usize)> {
+                Vec::new()
+            }
+            fn has_mask(&self) -> bool {
+                true
+            }
+            fn read_mask(&mut self, _: usize, w: Window) -> Result<Option<Vec<u8>>> {
+                self.reads.fetch_add(1, Ordering::Relaxed);
+                Ok(Some(vec![0; w.width * w.height]))
+            }
+            fn read(&mut self, _: usize, w: Window, bands: &[usize]) -> Result<RasterData> {
+                Ok(RasterData::U16(vec![self.value; w.width * w.height * bands.len()]))
+            }
+        }
+        for (nodata, resampling, expected, mask_reads, pan_size, pan_resolution) in [
+            (PansharpenNodata::Auto, Resampling::Cubic, 0., 2, 4, 1.),
+            (PansharpenNodata::None, Resampling::Cubic, 0., 2, 4, 1.),
+            (PansharpenNodata::Value(0.), Resampling::Cubic, 53., 0, 4, 1.),
+            (PansharpenNodata::None, Resampling::Nearest, 53., 0, 4, 1.),
+            (PansharpenNodata::Auto, Resampling::Cubic, 53., 0, 2, 2.),
+        ] {
+            let pan = header(pan_size, pan_resolution);
+            let spectral = header(2, 2.);
+            let options = PansharpenOptions { nodata, resampling, ..Default::default() };
+            let description =
+                PansharpenVrt::from_rasters("pan", &pan, &[("red", &spectral, 1), ("green", &spectral, 1)], &options).unwrap();
+            let reads = Arc::new(AtomicUsize::new(0));
+            let sources = HashMap::from([
+                ("pan".into(), LazyRaster::from_source(pan, Box::new(Counted { requests: Arc::new(Mutex::new(Vec::new())), value: 80 }))),
+                ("red".into(), LazyRaster::from_source(spectral.clone(), Box::new(Masked { reads: reads.clone(), value: 20 }))),
+                ("green".into(), LazyRaster::from_source(spectral, Box::new(Masked { reads: reads.clone(), value: 40 }))),
+            ]);
+            let mut lazy = description.into_lazy(Path::new(""), sources).unwrap();
+            assert_eq!(lazy.read().unwrap().raster.data.get_f64(0), 53.);
+            assert_eq!(reads.load(Ordering::Relaxed), 0);
+            assert_eq!(
+                lazy.read_window(Window::new(if pan_size == 2 { 0 } else { 1 }, 1, 2, 1), &Default::default())
+                    .unwrap()
+                    .raster
+                    .data
+                    .get_f64(0),
+                expected
+            );
+            assert_eq!(reads.load(Ordering::Relaxed), mask_reads);
+        }
+    }
+
     #[test]
     fn average_fractional_request_clips_to_gdal_temporary_buffer() {
         let pan = crate::ops::build_raster(

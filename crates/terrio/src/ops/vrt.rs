@@ -831,6 +831,17 @@ fn gdal_chunks(
 /// factor of two, GDAL's sum of quarters in the work type), a sum over the valid pixels otherwise,
 /// in the work type of the source's data type; `None` where no pixel is valid.
 pub(crate) fn gdal_average(s: &SourceRead, req_off: (usize, usize), win: (f64, f64, f64, f64), out: (usize, usize)) -> Vec<Option<f64>> {
+    gdal_average_with_origin(s, req_off, win, out, None)
+}
+
+/// Average with an explicit RasterIO reference frame, preserving virtual-output offsets.
+pub(crate) fn gdal_average_with_origin(
+    s: &SourceRead,
+    req_off: (usize, usize),
+    win: (f64, f64, f64, f64),
+    out: (usize, usize),
+    origin: Option<[f64; 8]>,
+) -> Vec<Option<f64>> {
     let (fx, fy, fw, fh) = win;
     let (ow, oh) = out;
     let mut res = vec![None; ow * oh];
@@ -839,7 +850,19 @@ pub(crate) fn gdal_average(s: &SourceRead, req_off: (usize, usize), win: (f64, f
     }
     let ratio = (fw / ow as f64, fh / oh as f64);
     // Offsets are relative to the request's integer origin, as in GDAL.
-    let delta = (fx - req_off.0 as f64, fy - req_off.1 as f64);
+    let o = origin.unwrap_or([
+        0.,
+        0.,
+        -(req_off.0 as f64),
+        -(req_off.1 as f64),
+        fx - req_off.0 as f64,
+        fy - req_off.1 as f64,
+        ratio.0,
+        ratio.1,
+    ]);
+    let ratio = (o[6], o[7]);
+    let delta = (o[4], o[5]);
+    let source_origin = (o[2] as i64, o[3] as i64);
     let wt = WorkType::of(s.src_type);
     let float = matches!(wt, WorkType::F32 | WorkType::F64);
     let nodata = s.valid.and(s.invalid_value);
@@ -867,8 +890,8 @@ pub(crate) fn gdal_average(s: &SourceRead, req_off: (usize, usize), win: (f64, f
         }
         let masked = !all_valid;
         // Request-relative chunk bounds.
-        let (rx0, rx1) = (cx0 as i64 - req_off.0 as i64, cx1 as i64 - req_off.0 as i64);
-        let (ry0, ry1) = (cy0 as i64 - req_off.1 as i64, cy1 as i64 - req_off.1 as i64);
+        let (rx0, rx1) = (cx0 as i64 + source_origin.0, cx1 as i64 + source_origin.0);
+        let (ry0, ry1) = (cy0 as i64 + source_origin.1, cy1 as i64 + source_origin.1);
         struct SrcX {
             x0: i64,
             x1: i64,
@@ -880,9 +903,9 @@ pub(crate) fn gdal_average(s: &SourceRead, req_off: (usize, usize), win: (f64, f
         let mut last_x1 = -1i64;
         let xs: Vec<SrcX> = (dx0..dx0 + nx)
             .map(|i| {
-                let a = delta.0 + i as f64 * ratio.0;
+                let a = delta.0 + (i as f64 + o[0]) * ratio.0;
                 let x0 = ((a + 1e-8) as i64).max(rx0);
-                let b = delta.0 + (i + 1) as f64 * ratio.0;
+                let b = delta.0 + (i as f64 + o[0] + 1.) * ratio.0;
                 let mut x1 = (b - 1e-8).ceil() as i64;
                 if x1 == x0 {
                     x1 += 1;
@@ -903,12 +926,12 @@ pub(crate) fn gdal_average(s: &SourceRead, req_off: (usize, usize), win: (f64, f
             })
             .collect();
         // Absolute source coordinates of request-relative ones.
-        let ax = |x: i64| (x + req_off.0 as i64) as usize;
-        let ay = |y: i64| (y + req_off.1 as i64) as usize;
+        let ax = |x: i64| (x - source_origin.0) as usize;
+        let ay = |y: i64| (y - source_origin.1) as usize;
         for j in dy0..dy0 + ny {
-            let a = delta.1 + j as f64 * ratio.1;
+            let a = delta.1 + (j as f64 + o[1]) * ratio.1;
             let y0 = ((a + 1e-8) as i64).max(ry0);
-            let b = delta.1 + (j + 1) as f64 * ratio.1;
+            let b = delta.1 + (j as f64 + o[1] + 1.) * ratio.1;
             let mut y1 = (b - 1e-8).ceil() as i64;
             if y1 == y0 {
                 y1 += 1;

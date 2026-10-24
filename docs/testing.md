@@ -133,7 +133,7 @@ A local HTTP range-server measurement on a 1024×1024 UInt16 Landsat pan and thr
 eight source GETs and the whole image twelve (plus the VRT description). Source
 headers are read at open; the Rust counting-reader regression verifies no pixel
 reads at open and bounded interpolation margins for small windows. On that scene,
-the development CLI's peak RSS fell from 125,544 KiB to 100,284 KiB with the shared
+the development CLI's peak RSS fell from 125,544 KiB to 101,824 KiB with the shared
 block implementation and streamed TIFF output, measured with two Rayon threads.
 These are fixture measurements, not memory or transfer guarantees for every codec.
 

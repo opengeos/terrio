@@ -591,28 +591,47 @@ fn pansharpen(
     };
     let virtual_output = format.is_some_and(|v| v.eq_ignore_ascii_case("VRT"))
         || (format.is_none() && dst.is_some_and(|v| std::path::Path::new(v).extension().is_some_and(|e| e.eq_ignore_ascii_case("vrt"))));
-    if virtual_output {
-        let dst = dst.ok_or_else(|| invalid("VRT output requires dst"))?;
-        let pan = crate::ops::raster_path(pan)?.ok_or_else(|| invalid("VRT output requires persistent input paths"))?;
-        let items = if spectral.extract::<std::path::PathBuf>().is_ok() {
-            vec![spectral.clone()]
-        } else {
-            spectral.extract::<Vec<Bound<'_, PyAny>>>()?
-        };
+    let pan_path = crate::ops::raster_path(pan)?;
+    let items = if spectral.extract::<std::path::PathBuf>().is_ok() || spectral.cast::<PyRaster>().is_ok() {
+        vec![spectral.clone()]
+    } else {
+        spectral.extract::<Vec<Bound<'_, PyAny>>>()?
+    };
+    let paths = items.iter().map(crate::ops::raster_path).collect::<PyResult<Vec<_>>>()?;
+    let persistent = pan_path.is_some() && paths.iter().all(Option::is_some);
+    if virtual_output && !persistent {
+        return Err(invalid("VRT output requires persistent input paths"));
+    }
+    if persistent {
+        let pan_path = pan_path.unwrap();
         let mut sources = Vec::new();
-        for item in items {
-            let path = crate::ops::raster_path(&item)?.ok_or_else(|| invalid("VRT output requires persistent input paths"))?;
+        for path in paths.into_iter().flatten() {
             let count = py.detach(|| terrio::open_raster_lazy(&path)).py()?.band_count();
             sources.extend((1..=count).map(|band| (path.clone(), band)));
         }
-        let inner = py
+        if virtual_output {
+            let dst = dst.ok_or_else(|| invalid("VRT output requires dst"))?;
+            let inner = py
+                .detach(|| {
+                    let description = terrio::ops::pansharpen::vrt::PansharpenVrt::from_paths(&pan_path, &sources, &o)?;
+                    description.write(dst)?;
+                    description.into_lazy(std::path::Path::new(""), Default::default())
+                })
+                .py()?;
+            return Ok(PyRaster { inner });
+        }
+        if let Some(dst) = dst {
+            let options = crate::raster::write_options(format, compress, tile_size, bigtiff)?;
+            py.detach(|| terrio::ops::pansharpen::vrt::pansharpen_to_path(&pan_path, &sources, &o, dst, &options)).py()?;
+            return Ok(PyRaster { inner: py.detach(|| terrio::open_raster_lazy(dst)).py()? });
+        }
+        let out = py
             .detach(|| {
-                let description = terrio::ops::pansharpen::vrt::PansharpenVrt::from_paths(&pan, &sources, &o)?;
-                description.write(dst)?;
-                description.into_lazy(std::path::Path::new(""), Default::default())
+                let description = terrio::ops::pansharpen::vrt::PansharpenVrt::from_paths(&pan_path, &sources, &o)?;
+                description.into_lazy(std::path::Path::new(""), Default::default())?.read()
             })
             .py()?;
-        return Ok(PyRaster { inner });
+        return Ok(PyRaster::from_dataset(out));
     }
     let pan = input_raster(py, pan)?;
     let datasets = crate::ops::input_rasters(py, spectral)?;

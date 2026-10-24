@@ -68,6 +68,8 @@ struct Sampling {
     right: usize,
     bottom: usize,
     extracted: bool,
+    copied: bool,
+    origin: [f64; 8],
 }
 
 /// Keep GDAL's fractional sampling rectangle fixed over a request while splitting its
@@ -79,26 +81,24 @@ pub(crate) fn request(
     window: Window,
     bands: &[usize],
     mut read: impl FnMut(usize, &SourceLayout, Window) -> Result<RasterDataset>,
+    mut read_mask: impl FnMut(usize, &SourceLayout, Window) -> Result<Option<Vec<u8>>>,
 ) -> Result<RasterData> {
-    let grid = window_grid(plan.pan.grid, window);
-    let gt = grid.geo_transform;
     let samples = plan
         .spectral
         .iter()
         .map(|layout| {
             let sgt = layout.grid.geo_transform;
-            let (mut x, mut y) = ((gt[0] - sgt[0]) / sgt[1], (gt[3] - sgt[3]) / sgt[5]);
-            if x.abs() < 1e-8 {
-                x = 0.0;
-            }
-            if y.abs() < 1e-8 {
-                y = 0.0;
-            }
-            if x <= -1.0 || y <= -1.0 {
+            let pg = plan.pan.grid.geo_transform;
+            // Use GDAL's inverse-transform composition and operation order.
+            let invx = 1.0 / sgt[1];
+            let invy = 1.0 / sgt[5];
+            let x = (invx * pg[0] - sgt[0] / sgt[1]) + window.x as f64 * (invx * pg[1]);
+            let y = (invy * pg[3] - sgt[3] / sgt[5]) + window.y as f64 * (invy * pg[5]);
+            if x <= -1. || y <= -1. {
                 return Err(bad("pansharpen request is outside spectral input"));
             }
-            let width = (window.width as f64 * gt[1] / sgt[1]).min(layout.grid.width as f64 - x);
-            let height = (window.height as f64 * gt[5] / sgt[5]).min(layout.grid.height as f64 - y);
+            let width = (window.width as f64 * (invx * pg[1])).min(layout.grid.width as f64 - x);
+            let height = (window.height as f64 * (invy * pg[5])).min(layout.grid.height as f64 - y);
             if width <= 0.0 || height <= 0.0 {
                 return Err(bad("pansharpen request has no spectral coverage"));
             }
@@ -121,7 +121,23 @@ pub(crate) fn request(
             } else {
                 layout.grid.height
             };
-            Ok(Sampling { x, y, rx: width / window.width as f64, ry: height / window.height as f64, right, bottom, extracted })
+            let copied = x == x.trunc() && y == y.trunc() && width == window.width as f64 && height == window.height as f64;
+            let rx = width / window.width as f64;
+            let ry = height / window.height as f64;
+            let mut frame = [0., 0., -(x as isize) as f64, -(y as isize) as f64, x - (x as isize) as f64, y - (y as isize) as f64, rx, ry];
+            for (value, ratio, base, dest, source, delta) in [
+                (x, rx, if extracted { (x as isize - radius as isize).max(0) } else { 0 }, 0, 2, 4),
+                (y, ry, if extracted { (y as isize - radius as isize).max(0) } else { 0 }, 1, 3, 5),
+            ] {
+                let virtual_off = (value - base as f64) / ratio;
+                let rounded = (virtual_off + 0.5) as isize;
+                if (virtual_off - rounded as f64).abs() < 1e-8 {
+                    frame[dest] = rounded as f64;
+                    frame[source] = -(base as f64);
+                    frame[delta] = 0.;
+                }
+            }
+            Ok(Sampling { x, y, rx, ry, right, bottom, extracted, copied, origin: frame })
         })
         .collect::<Result<Vec<_>>>()?;
     let count = window
@@ -130,6 +146,9 @@ pub(crate) fn request(
         .and_then(|n| n.checked_mul(bands.len()))
         .ok_or_else(|| bad("pansharpen output is too large"))?;
     let mut output = allocate(plan.output_type, count)?;
+    // GDAL wraps all spectral bands when a common nodata override is needed.
+    // Those SimpleSource wrappers do not propagate explicit dataset masks.
+    let nodata_wrapper = plan.nodata.is_some_and(|nd| plan.spectral.iter().any(|source| source.nodata != Some(nd)));
     let mut operation = options.clone();
     operation.pan_band = 1;
     operation.extent = PansharpenExtent::None;
@@ -142,8 +161,8 @@ pub(crate) fn request(
             let width = BLOCK.min(window.width - x);
             let height = BLOCK.min(window.height - y);
             let pan = read(0, &plan.pan, Window::new(window.x + x, window.y + y, width, height))?;
-            let pgt = pan.geo_transform();
             let mut spectral = Vec::with_capacity(samples.len());
+            let mut reads = Vec::with_capacity(samples.len());
             for (i, (sampling, layout)) in samples.iter().zip(&plan.spectral).enumerate() {
                 let (sx, sy) = (sampling.x + x as f64 * sampling.rx, sampling.y + y as f64 * sampling.ry);
                 let radius = options.resampling.radius().max(1) as f64;
@@ -156,7 +175,29 @@ pub(crate) fn request(
                 if right <= left || bottom <= top {
                     return Err(bad("pansharpen block has no spectral coverage"));
                 }
-                let mut src = read(i + 1, layout, Window::new(left, top, right - left, bottom - top))?;
+                let area = Window::new(left, top, right - left, bottom - top);
+                let mut src = read(i + 1, layout, area)?;
+                let mask = if !sampling.extracted
+                    && !sampling.copied
+                    && !layout.adjusted
+                    && !nodata_wrapper
+                    && options.resampling != crate::ops::Resampling::Nearest
+                {
+                    read_mask(i + 1, layout, area)?
+                } else {
+                    None
+                };
+                let mut origin = sampling.origin;
+                origin[0] += x as f64;
+                origin[1] += y as f64;
+                origin[2] += left as f64;
+                origin[3] += top as f64;
+                reads.push(super::SpectralRead {
+                    rect: [sx - left as f64, sy - top as f64, width as f64 * sampling.rx, height as f64 * sampling.ry],
+                    mask,
+                    copied: sampling.copied,
+                    origin,
+                });
                 if sampling.extracted {
                     // RasterIO fills GDAL's MEM buffer in the pan working type
                     // before resampling, including rounding/clipping mixed inputs.
@@ -175,15 +216,10 @@ pub(crate) fn request(
                     src.has_nodata = plan.nodata.is_some();
                     src.raster.nodata = plan.nodata.unwrap_or(0.0);
                 }
-                // Encode the fixed request sampling ratio in this temporary source's
-                // affine metadata. Its pixel values still come from the original grid.
-                let dx = pgt[1] / sampling.rx;
-                let dy = pgt[5] / sampling.ry;
-                src.set_geo_transform([pgt[0] - (sx - left as f64) * dx, dx, 0.0, pgt[3] - (sy - top as f64) * dy, 0.0, dy]);
                 spectral.push(src);
             }
             let refs = spectral.iter().map(|dataset| SpectralBand { dataset, band: 1 }).collect::<Vec<_>>();
-            let block = process_aligned(&pan, &refs, &operation)?;
+            let block = process_aligned(&pan, &refs, &operation, &reads)?;
             let raw = &block.raster.data;
             for band in 0..bands.len() {
                 for row in 0..height {
@@ -207,29 +243,36 @@ pub(crate) fn in_memory(
 ) -> Result<RasterData> {
     let bands = (1..=plan.output.len()).collect::<Vec<_>>();
     let window = Window::new(0, 0, plan.pan.grid.width, plan.pan.grid.height);
-    request(plan, options, window, &bands, |index, layout, area| {
-        let (source, band) = if index == 0 { (pan, options.pan_band) } else { (spectral[index - 1].dataset, spectral[index - 1].band) };
-        aligned(
-            layout,
-            area,
-            |original| {
-                let view = BandView::of(&source.raster, band - 1);
-                let mut values = Vec::with_capacity(original.width * original.height);
-                for y in original.y..original.y + original.height {
-                    for x in original.x..original.x + original.width {
-                        values.push(view.get(y * source.raster.cols + x));
+    request(
+        plan,
+        options,
+        window,
+        &bands,
+        |index, layout, area| {
+            let (source, band) = if index == 0 { (pan, options.pan_band) } else { (spectral[index - 1].dataset, spectral[index - 1].band) };
+            aligned(
+                layout,
+                area,
+                |original| {
+                    let view = BandView::of(&source.raster, band - 1);
+                    let mut values = Vec::with_capacity(original.width * original.height);
+                    for y in original.y..original.y + original.height {
+                        for x in original.x..original.x + original.width {
+                            values.push(view.get(y * source.raster.cols + x));
+                        }
                     }
-                }
-                build_raster(
-                    window_grid(Grid::of(&source.raster), original),
-                    vec![values],
-                    source.raster.data_type,
-                    source.nodata(),
-                    &source.crs(),
-                    |v, _| v,
-                )
-            },
-            source,
-        )
-    })
+                    build_raster(
+                        window_grid(Grid::of(&source.raster), original),
+                        vec![values],
+                        source.raster.data_type,
+                        source.nodata(),
+                        &source.crs(),
+                        |v, _| v,
+                    )
+                },
+                source,
+            )
+        },
+        |_, _, _| Ok(None),
+    )
 }

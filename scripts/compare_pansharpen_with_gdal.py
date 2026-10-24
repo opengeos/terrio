@@ -110,6 +110,15 @@ def cases(data, work):
         ds = None
         explicit_masks.append(target)
     add("internal dataset masks", s=explicit_masks)
+    add("internal dataset masks nodata override", s=explicit_masks, opts=["-nodata", "0"])
+    same_pan = str(work / "same_resolution_pan.tif")
+    gdal.Translate(same_pan, pan, width=128, height=120, resampleAlg="average")
+    add("internal dataset masks direct resampling", p=same_pan, s=explicit_masks)
+    aligned_pan = str(work / "integer_aligned_pan.tif")
+    ds = gdal.Translate(aligned_pan, same_pan)
+    ds.SetGeoTransform(gdal.Open(spectral[0]).GetGeoTransform())
+    ds = None
+    add("internal dataset masks integer pixel copy", p=aligned_pan, s=explicit_masks)
     # Shift all spectral footprints together, preserving their native pixel sizes.
     shifted = []
     for i, path in enumerate(spectral):
@@ -201,11 +210,16 @@ def virtual_comparisons(case, terrio, work, index):
     gvrt, tvrt = (str(work / f"{prefix}_{index}.vrt") for prefix in ("gdal", "terrio"))
     run([v.replace("{out}", gvrt) for v in [*case["gdal"][:1], "-of", "VRT", *case["gdal"][1:]]])
     run([terrio, *[v.replace("{out}", tvrt) for v in case["terrio"]]])
-    for label, path, window in (("GDAL VRT full", gvrt, None), ("Terrio VRT full", tvrt, None),
-                                ("GDAL VRT window", gvrt, [17, 23, 53, 47]),
-                                ("Terrio VRT window", tvrt, [17, 23, 53, 47]),
-                                ("GDAL VRT scanline", gvrt, [17, 23, 53, 1]),
-                                ("Terrio VRT column", tvrt, [17, 23, 1, 47])):
+    requests = [("GDAL VRT full", gvrt, None), ("Terrio VRT full", tvrt, None),
+                ("GDAL VRT window", gvrt, [17,23,53,47]), ("Terrio VRT window",tvrt,[17,23,53,47]),
+                ("GDAL VRT scanline",gvrt,[17,23,53,1]), ("Terrio VRT column",tvrt,[17,23,1,47])]
+    if "internal dataset masks" in case["name"]:
+        ds = gdal.Open(gvrt)
+        small = ds.RasterXSize < 153
+        requests += [("masked direct row",gvrt,[50 if small else 100,32 if small else 65,53,1]),
+                     ("masked direct column",tvrt,[51 if small else 101,30 if small else 60,1,40]),
+                     ("masked border row",tvrt,[17,1,53,1])]
+    for label, path, window in requests:
         gout = str(work / f"virtual_gdal_{index}.tif")
         tout = str(work / f"virtual_terrio_{index}.tif")
         for output in (gout, tout):

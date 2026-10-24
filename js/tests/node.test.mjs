@@ -1173,3 +1173,16 @@ test("pansharpenVrt creates a lazy uploaded-source virtual raster", () => {
   assert.equal(sharp.count, 3);
   pan.free(); spectral.free(); sharp.free();
 });
+
+
+test("pansharpenVrt keeps direct source masks and ignores them in temporary upsampling", () => {
+  const pan = terrio.rasterFromArray(new Uint16Array(16).fill(80), 4, 4, [0, 1, 0, 4, 0, -1], "EPSG:32611");
+  // GDAL-generated 2x2 UInt16 bands filled with 20/40 and an all-zero internal TIFF mask.
+  const masked = new Uint8Array(Buffer.from("SUkqAAgAAAAQAAABAwABAAAAAgAAAAEBAwABAAAAAgAAAAIBAwACAAAAEAAQAAMBAwABAAAAAQAAAAYBAwABAAAAAQAAABEBBAABAAAAFgIAABUBAwABAAAAAgAAABYBAwABAAAAAgAAABcBBAABAAAAEAAAABwBAwABAAAAAQAAAFIBAwABAAAAAAAAAFMBAwACAAAAAQABAA6DDAADAAAAzgAAAIKEDAAGAAAA5gAAAK+HAwAgAAAAFgEAALGHAgAeAAAAVgEAAHQBAAAAAAAAAAAAQAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABBAAAAAAAAAAAABAAEAAAAHAAAEAAABAAEAAQQAAAEAAQACBLGHFgAAAAEIsYcHABYABggAAAEAjiMADAAAAQBjfwQMAAABACkjV0dTIDg0IC8gVVRNIHpvbmUgMTFOfFdHUyA4NHwADQD+AAQAAQAAAAQAAAAAAQMAAQAAAAIAAAABAQMAAQAAAAIAAAACAQMAAQAAAAEAAAADAQMAAQAAAAgAAAAGAQMAAQAAAAQAAAARAQQAAQAAACYCAAAVAQMAAQAAAAEAAAAWAQMAAQAAAAIAAAAXAQQAAQAAAA0AAAAcAQMAAQAAAAEAAAA9AQMAAQAAAAEAAABTAQMAAQAAAAEAAAAAAAAAFAAoABQAKAAUACgAFAAoAHicAQIA/f8AAAACAAE=", "base64"));
+  const sources = { "pan.tif": pan.toBytes("pan.tif"), "spectral.tif": masked };
+  const xml = terrio.pansharpenVrt("pan.tif", ["spectral.tif"], sources, {});
+  const out = terrio.openVrt(xml, sources);
+  assert.deepEqual([...out.readBand(1)], new Array(16).fill(53));
+  assert.deepEqual([...out.readBand(1, [1, 1, 2, 1])], [0, 0]);
+  pan.free(); out.free();
+});

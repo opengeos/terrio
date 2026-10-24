@@ -474,9 +474,11 @@ input order. Every spectral input contributes intensity, including unselected ou
 Weights default to equal weights and are used as provided, without normalization.
 
 `--resampling` selects nearest, bilinear, cubic (default), cubicspline, lanczos or average.
-Resampling uses the spectral native type; Brovey works in the pan type for Byte/UInt16 and
+Direct reads resample in the spectral native type; temporary upsampling first converts
+spectral samples to the pan working type. Brovey works in the pan type for Byte/UInt16 and
 Float64 otherwise. Intermediate integer results are rounded/clipped even with `--ot Float64`.
-`--bitdepth` explicitly clamps unsigned samples/results to `2^N-1`; NBITS metadata is not inferred.
+`--bitdepth` clamps Byte/UInt16 pan samples/results to `2^N-1`; other pan types ignore it,
+as in GDAL. NBITS metadata is not inferred.
 
 `--spat-adjust union` (default) pads unequal footprints with zero at their native resolutions,
 `intersection` crops them, and `none` preserves the pan footprint. Extents align to the pan
@@ -488,7 +490,10 @@ ordinary sample values, and Terrio follows that behavior. Like GDAL, footprint p
 source nodata declaration; use an explicit `--nodata` to preserve common nodata processing
 with adjusted extents. A nodata contributor or zero weighted intensity
 produces nodata in every output band when enabled; otherwise zero intensity produces zero.
-Explicit dataset masks are not used. Zero padding and nodata are separate: use `--nodata 0`
+Path and virtual reads follow GDAL's mask behavior: direct resampling honors explicit
+dataset masks; temporary upsampling buffers, footprint-adjustment VRTs and common-nodata
+override wrappers drop those masks. Nearest sampling copies pixels without applying masks.
+Zero padding and nodata are separate: use `--nodata 0`
 when padded margins should be missing. An output ending in `.vrt` (or `-f VRT`) writes a GDAL-compatible
 `VRTPansharpenedDataset`, opening only source headers. Sources are stored as absolute paths
 or URLs. Opening the description and reading a window fetches the matching pan pixels and
