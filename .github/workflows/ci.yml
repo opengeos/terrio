@@ -356,6 +356,9 @@ jobs:
           # As in the real-data job: the two share the cached environment.
           create-args: gdal=3.12.2 libgdal-core=3.12.2 proj=9.8.1 libgdal-arrow-parquet libgdal-jp2openjpeg libgdal-netcdf libgdal-hdf5 libgdal-grib numpy pip pytest maturin pyproj pdal laspy lazrs-python pyarrow geopandas shapely
           cache-environment: true
+      - name: Benchmark harness regression tests
+        shell: micromamba-shell {0}
+        run: python -m unittest discover -s scripts/tests -v
       # Restores the real-data job's data; only that job saves it.
       - uses: actions/cache/restore@v6
         with:

@@ -1,38 +1,27 @@
-"""Time terrio's commands against their GDAL equivalents on real-world files.
+"""Validated command wall-time benchmarks against GDAL (CLI and Python bindings required).
 
-Each case runs the terrio command and the GDAL command doing the same work, in a fresh process,
-once to warm the file cache and then ``--runs`` times; the median wall time is reported, and for
-the large-data cases the peak memory (resident set size) too. Results print as a Markdown table
-per group.
-
-Usage: python scripts/benchmark.py [DATA_DIR] [--runs N] [--remote] [--large DIR] [--large-runs N] [--threads N] [--out FILE]
-
-``--large`` adds cases on gigabyte-sized files, which ``scripts/fetch_large_data.sh`` downloads;
-without ``DATA_DIR``, only those run.
-
-Both tools get the same number of threads (``--threads``, all of the machine's by default):
-terrio through ``RAYON_NUM_THREADS``, and GDAL through ``GDAL_NUM_THREADS`` (GeoTIFF and COG
-compression and decompression, JPEG 2000 decoding) and ``gdalwarp -multi -wo NUM_THREADS``, since
-most of GDAL's multithreading is off by default. Mosaics to GeoTIFF run ``gdalbuildvrt`` then
-``gdal_translate``, which copy the tiles' pixels as terrio does, rather than ``gdalwarp``, which
-resamples them.
-
-Needs the GDAL command-line tools on PATH and a release build of terrio
-(``target/release/terrio``, or the path in ``TERRIO_BIN``).
+Each tool is tuned independently over the requested CPU budgets. Selected settings are
+measured again in alternating order, with a warm-up, fresh output directories, raw samples,
+median and range. Only equivalent outputs receive a speed ratio. See docs/benchmarks.md.
 """
 
 import argparse
+import json
 import os
 import platform
-import shlex
 import shutil
 import statistics
 import subprocess
 import sys
 import tempfile
 import time
+from functools import cache
+from pathlib import Path
 
-TERRIO = os.environ.get("TERRIO_BIN", os.path.join(os.path.dirname(__file__), "..", "target", "release", "terrio"))
+TERRIO = os.environ.get(
+    "TERRIO_BIN",
+    os.path.join(os.path.dirname(__file__), "..", "target", "release", "terrio"),
+)
 USGS = "https://prd-tnm.s3.amazonaws.com/StagedProducts/Elevation/1/TIFF/current/n40w106/USGS_1_n40w106.tif"
 
 
@@ -48,19 +37,9 @@ def warp(threads):
     return ["gdalwarp", "-q", "-multi", "-wo", f"NUM_THREADS={threads}"]
 
 
-def mosaic(tiles, vrt, tif):
-    """Return a GDAL mosaic to GeoTIFF that copies pixels: ``gdalbuildvrt`` then ``gdal_translate``.
-
-    Args:
-        tiles: The input tiles.
-        vrt: The intermediate VRT.
-        tif: The output GeoTIFF.
-
-    Returns:
-        A shell command running both, timed as one.
-    """
-    q = shlex.quote
-    return ["sh", "-c", f"gdalbuildvrt -q {q(vrt)} {' '.join(map(q, tiles))} && gdal_translate -q {q(vrt)} {q(tif)}"]
+def mosaic(tiles, tif):
+    """Use GDAL's single-process materialized mosaic command."""
+    return ["gdal", "raster", "mosaic", "-q", "--resolution", "average", *tiles, tif]
 
 
 def cases(d, out, threads):
@@ -69,35 +48,48 @@ def cases(d, out, threads):
     Args:
         d: The test data directory.
         out: A scratch directory for outputs.
-        threads: The number of threads each tool uses.
+        threads: The CPU budget for this tuning candidate.
 
     Returns:
         A list of ``(group, description, terrio_command, gdal_command)`` tuples.
     """
-    p = lambda name: os.path.join(d, name)  # noqa: E731 - a short local helper
-    o = lambda name: os.path.join(out, name)  # noqa: E731
+    p = lambda name: os.path.join(d, name)
+    o = lambda name: os.path.join(out, name)
     t = TERRIO
     tiles = [p(f"USGS_1_{n}.tif") for n in ("n40w106", "n40w107", "n41w106", "n41w107")]
     return [
-        ("Summaries", "Raster info: USGS 3DEP tile (3612×3612)", [t, "info", p("usgs_dem.tif")], ["gdalinfo", p("usgs_dem.tif")]),
+        ("Summaries", "Raster info: USGS 3DEP tile (3612×3612)", [t, "info", "--json", p("usgs_dem.tif")], ["gdalinfo", "-json", p("usgs_dem.tif")]),
         (
             # SRTM has no statistics stored in its metadata, so GDAL computes them too.
             "Summaries",
             "Raster statistics: SRTM 90 m (4269×2465)",
-            [t, "info", "--stats", p("srtm90.tif")],
-            ["gdalinfo", "-stats", p("srtm90.tif")],
+            [t, "info", "--json", "--stats", p("srtm90.tif")],
+            ["gdalinfo", "-json", "-stats", p("srtm90.tif")],
         ),
         (
             "Summaries",
             "Vector info: US counties GeoPackage",
-            [t, "info", p("UScounties.gpkg")],
-            ["ogrinfo", "-so", "-al", p("UScounties.gpkg")],
+            [t, "info", "--json", p("UScounties.gpkg")],
+            ["ogrinfo", "-json", "-so", "-al", p("UScounties.gpkg")],
         ),
         (
             "Raster conversion",
             "GeoTIFF → COG (Deflate): USGS 3DEP tile",
             [t, "convert", p("usgs_dem.tif"), o("a.tif"), "-f", "COG", "--compress", "DEFLATE"],
-            ["gdal_translate", "-q", "-of", "COG", "-co", "COMPRESS=DEFLATE", p("usgs_dem.tif"), o("a.tif")],
+            [
+                "gdal_translate",
+                "-q",
+                "-of",
+                "COG",
+                "-co",
+                "COMPRESS=DEFLATE",
+                "-co",
+                "OVERVIEWS=IGNORE_EXISTING",
+                "-co",
+                "RESAMPLING=AVERAGE",
+                p("usgs_dem.tif"),
+                o("a.tif"),
+            ],
         ),
         (
             "Raster conversion",
@@ -119,27 +111,27 @@ def cases(d, out, threads):
         ),
         (
             "Raster operations",
-            "Warp to UTM 13N, nearest: USGS 3DEP tile",
-            [t, "warp", p("usgs_dem.tif"), o("e.tif"), "--t-srs", "EPSG:32613"],
-            [*warp(threads), "-t_srs", "EPSG:32613", p("usgs_dem.tif"), o("e.tif")],
+            "Warp to NAD83 / UTM 13N, nearest: USGS 3DEP tile",
+            [t, "warp", p("usgs_dem.tif"), o("e.tif"), "--t-srs", "EPSG:26913"],
+            [*warp(threads), "-t_srs", "EPSG:26913", p("usgs_dem.tif"), o("e.tif")],
         ),
         (
             "Raster operations",
-            "Warp to UTM 13N, bilinear: USGS 3DEP tile",
-            [t, "warp", p("usgs_dem.tif"), o("f.tif"), "--t-srs", "EPSG:32613", "-r", "bilinear"],
-            [*warp(threads), "-t_srs", "EPSG:32613", "-r", "bilinear", p("usgs_dem.tif"), o("f.tif")],
+            "Warp to NAD83 / UTM 13N, bilinear: USGS 3DEP tile",
+            [t, "warp", p("usgs_dem.tif"), o("f.tif"), "--t-srs", "EPSG:26913", "-r", "bilinear"],
+            [*warp(threads), "-t_srs", "EPSG:26913", "-r", "bilinear", p("usgs_dem.tif"), o("f.tif")],
         ),
         (
             "Raster operations",
             "Mosaic 4 USGS 3DEP tiles → GeoTIFF",
             [t, "mosaic", *tiles, o("g.tif")],
-            mosaic(tiles, o("g.vrt"), o("g.tif")),
+            mosaic(tiles, o("g.tif")),
         ),
         (
             "Raster operations",
             "Mosaic 4 USGS 3DEP tiles → VRT",
             [t, "mosaic", *tiles, o("h.vrt")],
-            ["gdalbuildvrt", "-q", o("h.vrt"), *tiles],
+            ["gdal", "raster", "mosaic", "-q", "--resolution", "average", "-f", "VRT", *tiles, o("h.vrt")],
         ),
         (
             "Vector conversion",
@@ -161,9 +153,9 @@ def cases(d, out, threads):
         ),
         (
             "Vector conversion",
-            "GeoJSON → Shapefile: world cables",
-            [t, "convert", p("cables.geojson"), o("l.shp")],
-            ["ogr2ogr", o("l.shp"), p("cables.geojson")],
+            "GeoJSON → Shapefile: world countries (176 features)",
+            [t, "convert", p("countries.geojson"), o("l.shp")],
+            ["ogr2ogr", "-lco", "ENCODING=UTF-8", o("l.shp"), p("countries.geojson")],
         ),
         (
             "Vector conversion",
@@ -181,7 +173,7 @@ def cases(d, out, threads):
             "Raster ↔ vector",
             "Polygonize NLCD land cover (966×731)",
             [t, "polygonize", p("nlcd_knoxville.tif"), o("q.gpkg")],
-            ["gdal_polygonize.py", "-q", p("nlcd_knoxville.tif"), o("q.gpkg")],
+            ["gdal", "raster", "polygonize", "-q", p("nlcd_knoxville.tif"), o("q.gpkg")],
         ),
     ]
 
@@ -192,13 +184,13 @@ def large_cases(d, out, threads):
     Args:
         d: The large data directory.
         out: A scratch directory for outputs.
-        threads: The number of threads each tool uses.
+        threads: The CPU budget for this tuning candidate.
 
     Returns:
         A list of ``(group, description, terrio_command, gdal_command)`` tuples.
     """
-    p = lambda name: os.path.join(d, name)  # noqa: E731 - a short local helper
-    o = lambda name: os.path.join(out, name)  # noqa: E731
+    p = lambda name: os.path.join(d, name)
+    o = lambda name: os.path.join(out, name)
     t = TERRIO
     dem, s2, gpkg, pbf = p("dem16.tif"), p("s2_b04.tif"), p("colorado.gpkg"), p("colorado.osm.pbf")
     # The 16 tiles scripts/fetch_large_data.sh downloads, not other tiles the directory may hold.
@@ -208,12 +200,12 @@ def large_cases(d, out, threads):
         sys.exit(f"missing large-data files (run scripts/fetch_large_data.sh): {', '.join(missing)}")
     r, v = "Large rasters", "Large vectors"
     return [
-        (r, "Statistics: 14412² Float32 mosaic", [t, "info", "--stats", dem], ["gdalinfo", "-stats", dem]),
+        (r, "Statistics: 14412² Float32 mosaic", [t, "info", "--json", "--stats", dem], ["gdalinfo", "-json", "-stats", dem]),
         (
             r,
             "GeoTIFF → COG (Deflate): the mosaic",
             [t, "convert", dem, o("a.tif"), "-f", "COG", "--compress", "DEFLATE"],
-            ["gdal_translate", "-q", "-of", "COG", "-co", "COMPRESS=DEFLATE", dem, o("a.tif")],
+            ["gdal_translate", "-q", "-of", "COG", "-co", "COMPRESS=DEFLATE", "-co", "OVERVIEWS=IGNORE_EXISTING", "-co", "RESAMPLING=AVERAGE", dem, o("a.tif")],
         ),
         (
             r,
@@ -223,11 +215,11 @@ def large_cases(d, out, threads):
         ),
         (
             r,
-            "Warp the mosaic to EPSG:3857, bilinear",
-            [t, "warp", "--t-srs", "EPSG:3857", "-r", "bilinear", dem, o("c.tif")],
-            [*warp(threads), "-t_srs", "EPSG:3857", "-r", "bilinear", dem, o("c.tif")],
+            "Warp the mosaic to NAD83 / UTM 13N, bilinear",
+            [t, "warp", "--t-srs", "EPSG:26913", "-r", "bilinear", dem, o("c.tif")],
+            [*warp(threads), "-t_srs", "EPSG:26913", "-r", "bilinear", dem, o("c.tif")],
         ),
-        (r, "Mosaic 16 USGS 3DEP tiles → GeoTIFF", [t, "mosaic", *tiles, o("d.tif")], mosaic(tiles, o("d.vrt"), o("d.tif"))),
+        (r, "Mosaic 16 USGS 3DEP tiles → GeoTIFF", [t, "mosaic", *tiles, o("d.tif")], mosaic(tiles, o("d.tif"))),
         (r, "Hillshade of the mosaic", [t, "dem", "hillshade", dem, o("e.tif")], ["gdaldem", "hillshade", "-q", dem, o("e.tif")]),
         (r, "Slope of the mosaic", [t, "dem", "slope", dem, o("f.tif")], ["gdaldem", "slope", "-q", dem, o("f.tif")]),
         (
@@ -236,8 +228,8 @@ def large_cases(d, out, threads):
             [t, "convert", p("s2_l1c_B04.jp2"), o("g.tif")],
             ["gdal_translate", "-q", p("s2_l1c_B04.jp2"), o("g.tif")],
         ),
-        (r, "Statistics: Sentinel-2 band (15-bit samples)", [t, "info", "--stats", s2], ["gdalinfo", "-stats", s2]),
-        (v, "Info: Colorado OpenStreetMap GeoPackage (6.2 M features)", [t, "info", gpkg], ["ogrinfo", "-so", "-al", gpkg]),
+        (r, "Statistics: Sentinel-2 band (15-bit samples)", [t, "info", "--json", "--stats", s2], ["gdalinfo", "-json", "-stats", s2]),
+        (v, "Info: Colorado OpenStreetMap GeoPackage (6.2 M features)", [t, "info", "--json", gpkg], ["ogrinfo", "-json", "-so", "-al", gpkg]),
         (
             v,
             "Lines (2.0 M) → FlatGeobuf",
@@ -276,7 +268,7 @@ def remote_cases():
         A list of ``(group, description, terrio_command, gdal_command)`` tuples.
     """
     return [
-        ("Remote data", "Info of a remote COG (USGS 3DEP on S3)", [TERRIO, "info", USGS], ["gdalinfo", "/vsicurl/" + USGS]),
+        ("Remote data", "Info of a remote COG (USGS 3DEP on S3)", [TERRIO, "info", "--json", USGS], ["gdalinfo", "-json", "/vsicurl/" + USGS]),
     ]
 
 
@@ -291,59 +283,146 @@ def clean(out):
         shutil.rmtree(path) if os.path.isdir(path) else os.remove(path)
 
 
-def run_once(cmd, env):
-    """Run a command, measuring its wall time and peak memory.
+def busy_cpu_seconds():
+    """Linux machine CPU time, excluding idle/iowait and double-counted guest time."""
+    if not Path("/proc/stat").exists():
+        return None
+    counters = [int(x) for x in Path("/proc/stat").read_text().splitlines()[0].split()[1:]]
+    return sum(counters[i] for i in (0, 1, 2, 5, 6, 7)) / os.sysconf("SC_CLK_TCK")
 
-    Args:
-        cmd: The command and its arguments.
-        env: The environment.
 
-    Returns:
-        ``(seconds, peak MB or None, return code, stderr)``. The peak memory is the process's
-        largest resident set size, which only POSIX systems report.
+def run_once(cmd, env, stdout=None, metrics=None):
+    """Measure one fresh process, including startup; capture output outside Python memory.
+
+    Linux CPU affinity bounds *all* child threads, including terrio's non-Rayon workers.
+    On other platforms the environment variables are pool hints, not CPU limits.
     """
+    limit = int(env.get("TERRIO_BENCH_CPU_LIMIT", "1"))
+    if hasattr(os, "sched_getaffinity"):
+        cpus = sorted(os.sched_getaffinity(0))[:limit]
+        cmd = ["taskset", "--cpu-list", ",".join(map(str, cpus)), *cmd]
     with tempfile.TemporaryFile() as err:
+        busy_start = busy_cpu_seconds()
         start = time.perf_counter()
-        p = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=err, env=env)
+        p = subprocess.Popen(
+            cmd,
+            stdout=stdout if stdout is not None else subprocess.DEVNULL,
+            stderr=err,
+            env=env,
+        )
         if hasattr(os, "wait4"):
             _, status, usage = os.wait4(p.pid, 0)
             elapsed = time.perf_counter() - start
             code = os.waitstatus_to_exitcode(status)
             p.returncode = code
-            # Kilobytes on Linux, bytes on macOS.
             peak = usage.ru_maxrss / (1024 * 1024 if platform.system() == "Darwin" else 1024)
         else:
             code = p.wait()
-            elapsed = time.perf_counter() - start
-            peak = None
+            elapsed, peak = time.perf_counter() - start, None
+        busy_end = busy_cpu_seconds()
+        if metrics is not None and busy_start is not None and hasattr(os, "wait4"):
+            metrics["background_cpus"] = max(0.0, (busy_end - busy_start - usage.ru_utime - usage.ru_stime) / elapsed)
         err.seek(0)
         return elapsed, peak, code, err.read().decode(errors="replace")
 
 
-def run(cmd, out, runs, env):
-    """Time a command.
+def positive_int(value):
+    """argparse type for counts that cannot be zero."""
+    n = int(value)
+    if n < 1:
+        raise ValueError("must be at least 1")
+    return n
 
-    Args:
-        cmd: The command and its arguments.
-        out: The output directory, emptied before each run.
-        runs: The number of timed runs (after one warm-up run).
-        env: The environment.
 
-    Returns:
-        ``(median wall time in seconds, largest peak memory in MB)``; ``(None, None)`` when the
-        command fails.
+def apply_background_gate(result, threshold=1.0):
+    """Average CPU estimates over paired series, avoiding tick noise on short commands.
+
+    /proc/stat has clock-tick granularity. A single 15 ms command cannot resolve
+    sub-core background use reliably; aggregate its CPU seconds with its paired tool.
+    This analysis can also be reproduced from saved raw samples without retiming.
     """
-    times, peaks = [], []
-    for i in range(runs + 1):
-        clean(out)
-        elapsed, peak, code, err = run_once(cmd, env)
-        if code != 0:
-            print(f"  failed: {' '.join(cmd)}\n  {err[:300]}")
-            return None, None
-        if i:
-            times.append(elapsed)
-            peaks.append(peak)
-    return statistics.median(times), (max(peaks) if None not in peaks else None)
+
+    def average(background, samples):
+        pairs = [(cpu, seconds) for values, durations in zip(background, samples) for cpu, seconds in zip(values, durations)]
+        duration = sum(seconds for _, seconds in pairs)
+        return sum(cpu * seconds for cpu, seconds in pairs) / duration if duration else None
+
+    tuning = [average(t["background_cpus"], t["samples"]) for t in result["tuning"]]
+    measured = average(result["background_cpus"], result["samples"])
+    result["background_series_averages"] = {"tuning": tuning, "measurement": measured}
+    noisy = any(value > threshold for value in [*tuning, measured] if value is not None)
+    result["measurement_issues"] = [f"background CPU use exceeded {threshold:g} CPUs; rerun on an idle machine"] if noisy else []
+    a, b = result["medians"]
+    result["ratio"] = None if result["validation"] or noisy else b / a
+    return result
+
+
+def measure_pair(commands, root, budgets, runs, tune_runs, env, validate):
+    """Tune separately, then measure interleaved, retaining final outputs for validation.
+
+    ``commands(out, budget)`` returns both commands with separate, disposable outputs.
+    Validation is deliberately outside the timed region. Failures never receive ratios.
+    """
+    dirs = [os.path.join(root, name) for name in ("terrio", "gdal")]
+    for d in dirs:
+        os.makedirs(d, exist_ok=True)
+    errors = []
+    background = [[], []]
+
+    def execute(tool, budget):
+        clean(dirs[tool])
+        command = commands(dirs[tool], budget)[tool]
+        process_env = dict(
+            env,
+            GDAL_NUM_THREADS=str(budget),
+            RAYON_NUM_THREADS=str(budget),
+            TERRIO_BENCH_CPU_LIMIT=str(budget),
+        )
+        with open(os.path.join(dirs[tool], "stdout.json"), "wb") as stdout:
+            metrics = {}
+            elapsed, peak, code, err = run_once(command, process_env, stdout, metrics)
+        if code:
+            failure = f"{'terrio' if tool == 0 else 'GDAL'} exit {code}: {err[-1000:]}"
+            if failure not in errors:
+                errors.append(failure)
+        return elapsed, peak, metrics.get("background_cpus")
+
+    tuning = []
+    for budget in budgets:
+        samples, background_tuning = [[], []], [[], []]
+        for i in range(tune_runs + 1):
+            for tool in [0, 1] if i % 2 == 0 else [1, 0]:
+                elapsed, _, busy = execute(tool, budget)
+                if i:
+                    samples[tool].append(elapsed)
+                    if busy is not None:
+                        background_tuning[tool].append(busy)
+        tuning.append({"budget": budget, "samples": samples, "background_cpus": background_tuning})
+    selected = [min(tuning, key=lambda t: statistics.median(t["samples"][tool]))["budget"] for tool in (0, 1)]
+    samples = [[], []]
+    for tool in (0, 1):
+        execute(tool, selected[tool])  # independent warm-up at selected settings
+    for i in range(runs):
+        for tool in [0, 1] if i % 2 == 0 else [1, 0]:
+            elapsed, _, busy = execute(tool, selected[tool])
+            samples[tool].append(elapsed)
+            if busy is not None:
+                background[tool].append(busy)
+    try:
+        differences = errors or validate(*dirs)
+    except Exception as exc:  # noqa: BLE001 - validation errors must suppress scoring
+        differences = [f"validation failed: {exc}"]
+    medians = [statistics.median(s) for s in samples]
+    result = {
+        "budgets": selected,
+        "tuning": tuning,
+        "samples": samples,
+        "medians": medians,
+        "validation": differences,
+        "timing_notes": ["wide timing range"] if any(max(s) > 2 * statistics.median(s) for s in samples) else [],
+        "background_cpus": background,
+    }
+    return apply_background_gate(result, float(env.get("TERRIO_BENCH_MAX_BACKGROUND_CPUS", "1")))
 
 
 def fmt(seconds):
@@ -360,20 +439,6 @@ def fmt(seconds):
     return f"{seconds * 1000:.0f} ms" if seconds < 1 else f"{seconds:.2f} s"
 
 
-def fmt_mb(mb):
-    """Format a memory size.
-
-    Args:
-        mb: Megabytes, or None.
-
-    Returns:
-        The size in MB or GB.
-    """
-    if mb is None:
-        return "–"
-    return f"{mb:.0f} MB" if mb < 1000 else f"{mb / 1024:.1f} GB"
-
-
 def gdal_version(env):
     """Return the GDAL version string.
 
@@ -383,67 +448,181 @@ def gdal_version(env):
     Returns:
         The output of ``gdalinfo --version``.
     """
-    return subprocess.run(["gdalinfo", "--version"], capture_output=True, text=True, env=env).stdout.strip()
+    return subprocess.run(["gdalinfo", "--version"], check=True, capture_output=True, text=True, env=env).stdout.strip()
 
 
 def main():
-    """Run the benchmark and print Markdown tables."""
-    ap = argparse.ArgumentParser()
-    ap.add_argument("data", nargs="?", help="the test data (see scripts/fetch_test_data.sh)")
-    ap.add_argument("--runs", type=int, default=5)
-    ap.add_argument("--remote", action="store_true", help="include remote reads")
-    ap.add_argument("--large", help="include the cases on large files in this directory (see scripts/fetch_large_data.sh)")
-    ap.add_argument("--large-runs", type=int, default=1, help="timed runs of the large cases")
-    ap.add_argument("--threads", type=int, default=os.cpu_count() or 1, help="threads for each tool (default: all)")
-    ap.add_argument("--out", help="also write the tables to this file")
+    """Run validated benchmarks and save Markdown plus reproducible raw measurements."""
+    from benchmark_validation import validate_case
+    from osgeo import gdal, osr
+
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("data", nargs="?", help="test data directory")
+    ap.add_argument("--runs", type=positive_int, default=7)
+    ap.add_argument("--remote", action="store_true")
+    ap.add_argument("--large", help="large data directory")
+    ap.add_argument("--large-runs", type=positive_int, default=5)
+    ap.add_argument("--tune-runs", type=positive_int, default=3)
+    ap.add_argument(
+        "--threads",
+        type=positive_int,
+        help="maximum CPU budget (default: available CPUs)",
+    )
+    ap.add_argument(
+        "--thread-counts",
+        help="comma-separated tuning budgets (default: 1,2,4,8,16,max)",
+    )
+    ap.add_argument("--only", help="case description substring, for focused reruns")
+    ap.add_argument(
+        "--max-background-cpus",
+        type=float,
+        default=1.0,
+        help="withhold ratios when series-average competing CPU use exceeds this value (Linux)",
+    )
+    ap.add_argument("--out", help="Markdown output; raw samples go to FILE.json")
     args = ap.parse_args()
-    if args.threads < 1:
-        ap.error("--threads must be 1 or more")
-    threads = args.threads
-    # No .aux.xml statistics caches: every run computes from the pixels. No directory listing when
-    # opening remote files, as recommended for cloud data. The same number of threads for both
-    # tools: GDAL's multithreading is mostly off unless GDAL_NUM_THREADS is set.
+    if hasattr(os, "sched_getaffinity") and not shutil.which("taskset"):
+        ap.error("Linux CPU affinity requires taskset; install util-linux and ensure taskset is on PATH")
+    if not 0 <= args.max_background_cpus < float("inf"):
+        ap.error("--max-background-cpus must be finite and nonnegative")
+    available = len(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else os.cpu_count() or 1
+    maximum = args.threads or available
+    if maximum > available:
+        ap.error(f"only {available} CPUs available")
+    try:
+        budgets = (
+            sorted({positive_int(x) for x in args.thread_counts.split(",")})
+            if args.thread_counts
+            else sorted({n for n in (1, 2, 4, 8, 16, maximum) if n <= maximum})
+        )
+    except ValueError:
+        ap.error("--thread-counts must contain positive integers")
+    if any(n > maximum for n in budgets):
+        ap.error("tuning budgets must not exceed --threads / available CPUs")
+    if not args.data and not args.large:
+        ap.error("give DATA_DIR, --large DIR or both")
     env = dict(
         os.environ,
         GDAL_PAM_ENABLED="NO",
         GDAL_DISABLE_READDIR_ON_OPEN="EMPTY_DIR",
-        GDAL_NUM_THREADS=str(threads),
-        RAYON_NUM_THREADS=str(threads),
+        PROJ_NETWORK="OFF",
+        TERRIO_GRID_DOWNLOAD="NO",
+        TERRIO_NETWORK="OFF",
+        TERRIO_BENCH_MAX_BACKGROUND_CPUS=str(args.max_background_cpus),
     )
-    out = tempfile.mkdtemp(prefix="terrio-bench-")
-    if not args.data and not args.large:
-        ap.error("give DATA_DIR, --large DIR or both")
-    all_cases = [(c, args.runs, False) for c in (cases(os.path.abspath(args.data), out, threads) if args.data else [])]
-    all_cases += [(c, args.runs, False) for c in (remote_cases() if args.remote else [])]
-    all_cases += [(c, args.large_runs, True) for c in (large_cases(os.path.abspath(args.large), out, threads) if args.large else [])]
+    # The validator runs in this process and must not create PAM statistics caches either.
+    gdal.SetConfigOption("GDAL_PAM_ENABLED", "NO")
+    gdal.SetConfigOption("GDAL_NUM_THREADS", "1")
+    osr.UseExceptions()
+    try:
+        osr.SpatialReference().ImportFromEPSG(4326)
+    except RuntimeError:
+        ap.error("PROJ database unavailable: activate the GDAL environment and set PROJ_DATA to its share/proj directory")
+    version = gdal_version(env)
+    if gdal.VersionInfo("RELEASE_NAME") not in version:
+        ap.error("GDAL CLI and Python binding versions must match")
+    cpu_model = platform.processor() or platform.machine()
+    if Path("/proc/cpuinfo").exists():
+        cpu_model = next(
+            (line.split(":", 1)[1].strip() for line in Path("/proc/cpuinfo").read_text().splitlines() if line.startswith("model name")),
+            cpu_model,
+        )
+    machine = {
+        "timestamp_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "command": sys.argv,
+        "source_commit": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True, cwd=Path(__file__).resolve().parent).strip(),
+        "platform": platform.platform(),
+        "processor": cpu_model,
+        "available_cpus": available,
+        "load_average": os.getloadavg() if hasattr(os, "getloadavg") else None,
+        "gdal": version,
+        "proj_search_paths": osr.GetPROJSearchPaths(),
+        "terrio": subprocess.check_output([TERRIO, "--version"], text=True).strip(),
+        "budgets": budgets,
+        "affinity": hasattr(os, "sched_getaffinity"),
+        "runs": args.runs,
+        "large_runs": args.large_runs,
+        "tune_runs": args.tune_runs,
+        "max_background_cpus": args.max_background_cpus,
+    }
     lines = [
-        f"Machine: {platform.processor() or platform.machine()}, {os.cpu_count()} threads, {platform.system()}; "
-        f"{threads} threads for each tool. "
-        f"{gdal_version(env)}; terrio {subprocess.run([TERRIO, '--version'], capture_output=True, text=True).stdout.split()[-1]}. "
-        f"Median of {args.runs} runs after a warm-up run; wall time of the whole command.",
+        f"Machine: {machine['processor']}, {available} available CPUs, {machine['platform']}; {version}; {machine['terrio']}.",
+        "",
+        (
+            f"CPU budgets tested independently: {budgets}; {args.tune_runs} tuning samples per budget after warm-up. "
+            f"Fresh measurement: {args.runs} samples ({args.large_runs} for large files), alternating tool order. "
+            "Times are median [min–max], including process startup; validation is outside timing. "
+            "Ratios require passing output validation. CPU columns show terrio / GDAL selected budgets."
+        ),
         "",
     ]
-    group = None
-    for (g, desc, terrio_cmd, gdal_cmd), runs, memory in all_cases:
-        if g != group:
-            group = g
-            if memory:
-                header = ["| Task | terrio | GDAL | terrio vs GDAL | terrio memory | GDAL memory |", "|---|---|---|---|---|---|"]
-                lines += ["", f"### {g}", "", f"Median of {runs} run(s) after a warm-up run; peak resident memory.", "", *header]
-            else:
-                lines += ["", f"### {g}", "", "| Task | terrio | GDAL | terrio vs GDAL |", "|---|---|---|---|"]
-        a, ma = run(terrio_cmd, out, runs, env)
-        b, mb = run(gdal_cmd, out, runs, env)
-        ratio = f"{b / a:.1f}× faster" if a and b and b >= a else (f"{a / b:.1f}× slower" if a and b else "")
-        row = f"| {desc} | {fmt(a)} | {fmt(b)} | {ratio} |"
-        lines.append(row + (f" {fmt_mb(ma)} | {fmt_mb(mb)} |" if memory else ""))
-        print(lines[-1], flush=True)
-    shutil.rmtree(out, ignore_errors=True)
-    text = "\n".join(lines) + "\n"
-    print(text)
-    if args.out:
-        with open(args.out, "w") as f:
-            f.write(text)
+    records = []
+    with tempfile.TemporaryDirectory(prefix="terrio-bench-") as root:
+
+        @cache
+        def make_cases(out, budget):
+            result = [(c, args.runs) for c in (cases(os.path.abspath(args.data), out, budget) if args.data else [])]
+            result += [(c, args.runs) for c in (remote_cases() if args.remote else [])]
+            result += [(c, args.large_runs) for c in (large_cases(os.path.abspath(args.large), out, budget) if args.large else [])]
+            return result
+
+        all_cases = make_cases(root, budgets[0])
+        group = None
+        for index, ((g, desc, tcmd, gcmd), runs) in enumerate(all_cases):
+            if args.only and args.only.lower() not in desc.lower():
+                continue
+            if g != group:
+                group = g
+                lines += [
+                    "",
+                    f"### {g}",
+                    "",
+                    "| Task | terrio median [range] | GDAL median [range] | CPUs T / G | terrio vs GDAL | Validation |",
+                    "|---|---|---|---|---|---|",
+                ]
+            print(f"Benchmarking: {desc}", flush=True)
+
+            def commands(out, budget, case_index=index):
+                c, _ = make_cases(out, budget)[case_index]
+                return c[2:]
+
+            def validate(a, b):
+                return validate_case(commands(a, budgets[0])[0], commands(b, budgets[0])[1], a, b)
+
+            result = measure_pair(commands, root, budgets, runs, args.tune_runs, env, validate)
+            ratio = result["ratio"]
+            score = "—" if ratio is None else (f"{ratio:.2f}× faster" if ratio >= 1 else f"{1 / ratio:.2f}× slower")
+            durations = [f"{fmt(statistics.median(s))} [{fmt(min(s))}–{fmt(max(s))}]" for s in result["samples"]]
+            for tool, name in enumerate(("terrio", "GDAL")):
+                if any(difference.startswith(name + " exit") for difference in result["validation"]):
+                    durations[tool] = "failed"
+            status = "; ".join(result["validation"] + result["measurement_issues"]) or "pass"
+            if result["timing_notes"]:
+                status += "; " + "; ".join(result["timing_notes"])
+            status = status.replace("|", "/").replace("\n", " ")
+            if len(status) > 600:
+                status = status[:600] + "… (full details in JSON)"
+            lines.append(f"| {desc} | {durations[0]} | {durations[1]} | {result['budgets'][0]} / {result['budgets'][1]} | {score} | {status} |")
+            print(lines[-1], flush=True)
+            records.append(
+                dict(
+                    group=g,
+                    task=desc,
+                    commands=[
+                        commands(os.path.join(root, "terrio"), result["budgets"][0])[0],
+                        commands(os.path.join(root, "gdal"), result["budgets"][1])[1],
+                    ],
+                    load_average_end=os.getloadavg() if hasattr(os, "getloadavg") else None,
+                    **result,
+                )
+            )
+            # Checkpoint complete rows so interrupted large runs preserve their evidence.
+            if args.out:
+                Path(args.out).write_text("\n".join(lines) + "\n")
+                Path(args.out + ".json").write_text(json.dumps({"machine": machine, "cases": records}, indent=2) + "\n")
+    if not records:
+        ap.error("no cases matched")
+    print("\n".join(lines))
 
 
 if __name__ == "__main__":

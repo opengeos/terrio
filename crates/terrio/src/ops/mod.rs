@@ -33,6 +33,7 @@ pub mod geolocation;
 pub mod geometry;
 pub mod mosaic;
 pub mod overview;
+pub mod pansharpen;
 pub mod polygonize;
 pub mod proximity;
 pub mod rasterize;
