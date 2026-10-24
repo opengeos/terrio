@@ -186,6 +186,10 @@ struct WriteOptions {
     compress: Option<String>,
     /// GeoTIFF/COG tile size.
     tile_size: Option<u32>,
+    /// Overview decimation factors to build when writing GeoTIFFs.
+    overviews: Vec<usize>,
+    /// Overview resampling: nearest, average, min, max or mode.
+    overview_resampling: Option<String>,
     /// PMTiles, MBTiles: the lowest zoom level written.
     minzoom: Option<u8>,
     /// PMTiles, MBTiles: the highest zoom level written.
@@ -571,7 +575,8 @@ impl Dataset {
     /// `where`, `select` and `limit`, for rasters `srcwin`, `overview`, `bands`, `compress`
     /// (GeoTIFF/COG: `NONE`, `LZW`, `DEFLATE`, `PACKBITS`, `ZSTD`, `LERC`, `LERC_DEFLATE`,
     /// `LERC_ZSTD`, `JXL`, `JPEG`), `tileSize` and `creationOptions` (GDAL's: `MAX_Z_ERROR`,
-    /// `JPEG_QUALITY`, `PREDICTOR`, `FORMAT=NC4` for netCDF, `FORMAT=ZARR_V3` for Zarr...). Zarr
+    /// `JPEG_QUALITY`, `PREDICTOR`, `FORMAT=NC4` for netCDF, `FORMAT=ZARR_V3` for Zarr...),
+    /// `overviews` (GeoTIFF factors such as `[2,4,8]`) and `overviewResampling`. Zarr
     /// stores come back as a zip archive of their files.
     #[wasm_bindgen(js_name = toBytes)]
     pub fn to_bytes(&self, filename: &str, options: JsValue) -> Result<Vec<u8>, JsError> {
@@ -609,8 +614,15 @@ impl Dataset {
                     .collect();
                 creation_options.extend(o.minzoom.map(|z| ("MINZOOM".to_string(), z.to_string())));
                 creation_options.extend(o.maxzoom.map(|z| ("MAXZOOM".to_string(), z.to_string())));
-                let options =
-                    RasterWriteOptions { driver, compression: o.compress, tile_size: o.tile_size, creation_options, ..Default::default() };
+                let options = RasterWriteOptions {
+                    driver,
+                    compression: o.compress,
+                    tile_size: o.tile_size,
+                    creation_options,
+                    overviews: o.overviews,
+                    overview_resampling: o.overview_resampling,
+                    ..Default::default()
+                };
                 terrio::memory::write_raster_bytes(&ds, filename, &options).map_err(js_err)
             }
             Inner::Vector(layers, _) => {

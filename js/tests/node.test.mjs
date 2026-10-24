@@ -1085,6 +1085,29 @@ test("Zarr stores and netCDF/HDF5 products as GDAL reads them", { skip: needs("n
   }
 });
 
+test("warp selects stored overviews for datasets, bytes and repeated shared inputs", () => {
+  const rows = Array.from({ length: 32 }, (_, y) => Array.from({ length: 32 }, (_, x) => y * y + x + 0.25).join(" ")).join("\n");
+  const plain = terrio.open(new TextEncoder().encode(`ncols 32\nnrows 32\nxllcorner 0\nyllcorner 0\ncellsize 1\n${rows}\n`), "source.asc");
+  const bytes = plain.toBytes("pyramid.tif", { overviews: [2, 4, 8], overviewResampling: "average" });
+  const lazy = terrio.open(bytes, "pyramid.tif");
+  const expected = [...lazy.readBand(1, undefined, 1)];
+  for (const src of [lazy, bytes, { bytes, filename: "pyramid.tif" }, [lazy, lazy], [bytes, lazy]]) {
+    for (const overview of [undefined, "AUTO", 1, "1"]) {
+      const out = terrio.warp(src, { ts: [8, 8], overview });
+      assert.deepEqual([...out.readBand(1)], expected);
+      assert.deepEqual([...out.transform], [0, 4, 0, 32, 0, -4]);
+      out.free();
+    }
+  }
+  const full = terrio.warp(lazy, { ts: [8, 8], overview: "NONE" });
+  assert.notDeepEqual([...full.readBand(1)], expected);
+  const fine = terrio.warp(lazy, { ts: [8, 8], overview: "AUTO-1" });
+  const explicit = terrio.warp(lazy, { ts: [8, 8], overview: 0 });
+  assert.deepEqual([...fine.readBand(1)], [...explicit.readBand(1)]);
+  assert.throws(() => terrio.warp(lazy, { overview: "invalid" }), /overview selection/);
+  plain.free(); lazy.free(); full.free(); fine.free(); explicit.free();
+});
+
 test("viewshed visibility, height and byte input", () => {
   const dem = terrio.rasterFromArray(new Float64Array([0, 0, 10, 0, 0]), 5, 1, [0, 10, 0, 10, 0, -10], "EPSG:32611");
   assert.deepEqual([...terrio.viewshed(dem, 5, 5, { cc: 0 }).readBand(1)], [255, 255, 255, 0, 0]);

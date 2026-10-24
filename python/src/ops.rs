@@ -7,7 +7,7 @@ use crate::vector::{PyLayer, PyVectorDataset, layers_from_object};
 use crate::{PyResultExt, invalid};
 use numpy::{PyArray1, PyArrayMethods};
 use pyo3::prelude::*;
-use pyo3::types::PyTuple;
+use pyo3::types::{PyBool, PyTuple};
 use terrio::crs::{SpatialRef, TransformOptions, Transformer};
 use terrio::formats::VectorDriver;
 use terrio::ops::Resampling;
@@ -1005,6 +1005,8 @@ fn translate(
 ///     tap: Align the extent on multiples of `tr`.
 ///     resampling: `"near"`, `"bilinear"`, `"cubic"`, `"cubicspline"`, `"lanczos"`,
 ///         `"average"`, `"rms"`, `"mode"`, `"min"`, `"max"`, `"med"`, `"q1"`, `"q3"` or `"sum"`.
+///     overview: Source pyramid selection: `"AUTO"` (default), `"AUTO-n"`, `"NONE"` or
+///         a zero-based stored level. The output grid still uses full-resolution metadata.
 ///     srcnodata: The sources' nodata: a number, one per band, or `"none"` to ignore theirs.
 ///     dstnodata: The output nodata, or `"none"`. By default, the sources'.
 ///     ot: The output data type.
@@ -1039,7 +1041,7 @@ fn translate(
 #[pyfunction]
 #[pyo3(signature = (
     src, dst=None, *, s_srs=None, t_srs=None, tr=None, te=None, te_srs=None, ts=None, dst_transform=None, tap=false,
-    resampling="near", srcnodata=None, dstnodata=None, ot=None, cutline=None, crop_to_cutline=false, et=0.125,
+    resampling="near", overview=None, srcnodata=None, dstnodata=None, ot=None, cutline=None, crop_to_cutline=false, et=0.125,
     format=None, compress=None, tile_size=None, bigtiff=false, gcps=None, order=0, gcp_method="auto",
     rpc=None, to=None, wo=None, geoloc=false, geolocation=None
 ))]
@@ -1057,6 +1059,7 @@ fn warp(
     dst_transform: Option<[f64; 6]>,
     tap: bool,
     resampling: &str,
+    overview: Option<&Bound<'_, PyAny>>,
     srcnodata: Option<&Bound<'_, PyAny>>,
     dstnodata: Option<&Bound<'_, PyAny>>,
     ot: Option<&str>,
@@ -1097,6 +1100,17 @@ fn warp(
         dst_transform,
         target_aligned_pixels: tap,
         resampling: Resampling::parse(resampling).py()?,
+        overview: match overview {
+            None => terrio::ops::overview::OverviewSelection::Auto,
+            Some(v) if v.is_instance_of::<PyBool>() => return Err(invalid("overview must not be a boolean")),
+            Some(v) => match v.extract::<usize>() {
+                Ok(level) => terrio::ops::overview::OverviewSelection::Level(level),
+                Err(_) => terrio::ops::overview::OverviewSelection::parse(
+                    &v.extract::<String>().map_err(|_| invalid("overview is AUTO, AUTO-n, NONE or a level from 0"))?,
+                )
+                .py()?,
+            },
+        },
         src_nodata: nodata_arg(srcnodata)?,
         dst_nodata: nodata_arg(dstnodata)?,
         output_type: ot.map(terrio::ops::parse_data_type).transpose().py()?,
@@ -1118,21 +1132,64 @@ fn warp(
             _ => {}
         }
     }
-    // A lazy raster is read a chunk's source window at a time, not whole.
-    // Borrowing raises (rather than panics) when the raster is in use elsewhere.
-    if geolocation.is_none()
-        && o.cutline.is_none()
-        && let Ok(r) = src.cast::<PyRaster>()
-        && r.try_borrow()?.inner.is_lazy()
-    {
-        let mut r = r.try_borrow_mut()?;
-        let lazy = &mut r.inner;
-        let out = py.detach(|| terrio::ops::warp::warp_lazy(lazy, &o)).py()?;
-        drop(r);
-        return finish_raster(py, out, dst, format, compress, tile_size, bigtiff);
+    enum Input {
+        File(Box<terrio::LazyRaster>),
+        Python(Py<PyRaster>),
     }
-    let sources = input_rasters(py, src)?;
+    impl terrio::ops::warp::WarpSource for Input {
+        fn info(&mut self) -> terrio::Result<terrio::ops::warp::WarpSourceInfo> {
+            match self {
+                Self::File(r) => terrio::ops::warp::WarpSource::info(r.as_mut()),
+                Self::Python(obj) => Python::attach(|py| {
+                    let mut r = obj.bind(py).try_borrow_mut().map_err(|e| terrio::Error::InvalidArgument(e.to_string()))?;
+                    terrio::ops::warp::WarpSource::info(&mut r.inner)
+                }),
+            }
+        }
+        fn read_window(&mut self, window: Window, options: &WindowOptions) -> terrio::Result<RasterDataset> {
+            match self {
+                Self::File(r) => r.read_window(window, options),
+                Self::Python(obj) => Python::attach(|py| {
+                    let mut r = obj.bind(py).try_borrow_mut().map_err(|e| terrio::Error::InvalidArgument(e.to_string()))?;
+                    let lazy = &mut r.inner;
+                    py.detach(|| lazy.read_window(window, options))
+                }),
+            }
+        }
+    }
+    enum Arg {
+        Path(String),
+        Raster(Py<PyRaster>),
+    }
+    let items: Vec<Bound<'_, PyAny>> = if src.cast::<PyRaster>().is_ok() || src.extract::<std::path::PathBuf>().is_ok() {
+        vec![src.clone()]
+    } else {
+        src.extract().map_err(|_| invalid("expected a raster path, Raster, or sequence of them"))?
+    };
+    let args = items
+        .iter()
+        .map(|v| {
+            if let Ok(r) = v.extract::<Py<PyRaster>>() {
+                return Ok(Arg::Raster(r));
+            }
+            let p = v.extract::<std::path::PathBuf>().map_err(|_| invalid("expected a raster path or Raster"))?;
+            Ok(Arg::Path(p.into_os_string().into_string().map_err(|_| invalid("raster paths must be UTF-8"))?))
+        })
+        .collect::<PyResult<Vec<_>>>()?;
+    if args.is_empty() {
+        return Err(invalid("no input rasters"));
+    }
     if let Some(g) = geolocation {
+        let (width, height) = match &args[0] {
+            Arg::Path(path) => {
+                let reader = py.detach(|| terrio::open_raster_lazy(path)).py()?;
+                (reader.width(), reader.height())
+            }
+            Arg::Raster(obj) => {
+                let raster = obj.bind(py).try_borrow()?;
+                (raster.inner.width(), raster.inner.height())
+            }
+        };
         for (key, _) in g.iter() {
             let key = key.extract::<String>()?;
             if !["x", "y", "srs", "x_band", "y_band", "pixel_offset", "line_offset", "pixel_step", "line_step", "pixel_center"]
@@ -1163,23 +1220,29 @@ fn warp(
             line_step: number("line_step", 1.0)?,
             pixel_center: g.get_item("pixel_center")?.map(|v| v.extract::<bool>()).transpose()?.unwrap_or(false),
         };
-        o.geolocation = Some(
-            terrio::ops::geolocation::GeolocationTransformer::new(
-                &metadata,
-                &xs[0].1,
-                &ys[0].1,
-                sources[0].1.raster.cols,
-                sources[0].1.raster.rows,
-            )
-            .py()?,
-        );
+        o.geolocation = Some(terrio::ops::geolocation::GeolocationTransformer::new(&metadata, &xs[0].1, &ys[0].1, width, height).py()?);
     }
-    let out = py
-        .detach(|| {
-            let refs: Vec<&RasterDataset> = sources.iter().map(|(_, ds)| ds).collect();
-            terrio::ops::warp::warp(&refs, &o)
-        })
-        .py()?;
+    let out = crate::with_warnings(py, || {
+        if args.iter().all(|a| matches!(a, Arg::Path(_))) {
+            let paths = args
+                .iter()
+                .map(|a| match a {
+                    Arg::Path(p) => p.clone(),
+                    _ => unreachable!(),
+                })
+                .collect::<Vec<_>>();
+            return terrio::ops::warp::warp_paths(&paths, &o);
+        }
+        let mut inputs = args
+            .into_iter()
+            .map(|arg| match arg {
+                Arg::Path(p) => terrio::open_raster_lazy(&p).map(Box::new).map(Input::File),
+                Arg::Raster(r) => Ok(Input::Python(r)),
+            })
+            .collect::<terrio::Result<Vec<_>>>()?;
+        let mut refs = inputs.iter_mut().map(|r| r as &mut dyn terrio::ops::warp::WarpSource).collect::<Vec<_>>();
+        terrio::ops::warp::warp_sources(&mut refs, &o)
+    })?;
     finish_raster(py, out, dst, format, compress, tile_size, bigtiff)
 }
 

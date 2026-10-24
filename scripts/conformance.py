@@ -16,6 +16,7 @@ Suites:
     raster-roundtrip  raster drivers, GDAL writing and terrio reading and back (raster_roundtrip.py)
     windows           windowed and overview reads of GeoTIFFs and JPEG 2000 (compare_windows_with_gdal.py)
     ops               translate, warp, mosaic vs GDAL's tools (compare_ops_with_gdal.py)
+    overviews         source overview selection and HTTP COG bytes vs gdalwarp -ovr
     dem-calc          dem, calc, proximity, sieve vs GDAL's tools (compare_dem_calc_with_gdal.py)
     vector-ops        ogr2ogr options, rasterize, polygonize (compare_vector_ops_with_gdal.py)
     topology          buffer, polygon overlay/dissolve, validity, repair and cleanup vs GEOS
@@ -448,6 +449,18 @@ def suite_ops(ctx):
         "match, then pixels are compared. Identical: every pixel equal. Within tolerance: every "
         "pixel within the case's tolerance (1e-2 for interpolating resamplings).",
         1,
+    )
+
+
+def suite_overviews(ctx):
+    """Stored source levels and HTTP COG transfers against gdalwarp."""
+    return suite_json_ops(
+        ctx, "overviews", "compare_overviews_with_gdal.py", "Warp source overviews",
+        "`gdalwarp -ovr`",
+        "Full-resolution target grids, source-level selection and output pixels must match GDAL. "
+        "Synthetic level markers and real USGS terrain exercise AUTO, AUTO-n, NONE and forced levels. "
+        "A real COG served over HTTP must transfer less than half as many raster bytes with AUTO as NONE.",
+        2,
     )
 
 
@@ -993,6 +1006,7 @@ SUITES = OrderedDict(
         ("raster-roundtrip", suite_raster_roundtrip),
         ("windows", suite_windows),
         ("ops", suite_ops),
+        ("overviews", suite_overviews),
         ("geolocation", suite_geolocation),
         ("dem-calc", suite_dem_calc),
         ("vector-ops", suite_vector_ops),

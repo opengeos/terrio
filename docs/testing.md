@@ -104,6 +104,15 @@ python scripts/compare_with_gdal.py ../terrio-data
 The Rust tests hold expected values taken from GDAL, so they run without GDAL installed; the
 comparison scripts need GDAL's Python bindings.
 
+The `overviews` conformance suite compares `gdalwarp -ovr` with Terrio's automatic,
+finer, full-resolution and explicit overview choices on synthetic level markers
+and real USGS terrain. It also measures response bytes while downsampling a USGS
+COG over HTTP; AUTO must fetch fewer than half the raster bytes of NONE.
+
+```sh
+python scripts/conformance.py ../terrio-data --only overviews --strict
+```
+
 Fill-nodata comparisons are part of the `dem-calc` conformance suite. To run just
 these cases on the real USGS terrain, with holes and explicit validity masks:
 

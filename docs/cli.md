@@ -367,12 +367,34 @@ for a source with RPCs, 5 more source pixels are read around each chunk, an RPC 
 transformations exact (`--et 0`) and samples every edge point, and a GeoTIFF output is warped only
 where the source's footprint falls. `--wo SOURCE_EXTRA=n`, `--wo SAMPLE_STEPS=ALL` and
 `--wo SKIP_NOSOURCE=NO` set those warp options (other warp options are ignored, with a warning). On ICEYE images with a Copernicus DEM, the output
-grids and pixels are `gdalwarp`'s (with `-ovr NONE`: terrio does not warp from overviews).
+grids and pixels follow `gdalwarp`. `--overview` (`--ovr`) selects `AUTO` (the default),
+`AUTO-n` (n levels finer), `NONE` (full resolution), or a stored level numbered from 0.
+The target grid is always planned from full-resolution metadata before choosing source
+overviews. Downsampling remote COGs therefore fetches coarse tiles instead of full-resolution
+pixels. An unavailable explicit level falls back to the last available level, as GDAL does.
 
 ```sh
 terrio warp scene.tif scene_4326.tif --rpc --to RPC_HEIGHT=120
 terrio warp scene.tif scene_utm.tif --rpc --to RPC_DEM=dem.tif --t-srs EPSG:32720 -r bilinear
 ```
+
+### Warp source overviews
+
+```sh
+terrio warp large-cog.tif preview.tif --ts 256 256 --overview AUTO
+terrio warp large-cog.tif finer.tif --ts 256 256 --overview AUTO-1
+terrio warp large-cog.tif full.tif --ts 256 256 --overview NONE
+terrio warp large-cog.tif level.tif --overview 1
+```
+
+Overview selection changes which stored pixels are resampled; the final grid remains
+based on the full-resolution source. Use `NONE` when the source pyramids were built
+with a filter unsuitable for the analysis. Mosaics select a level independently for
+each source. GCP/RPC transformations retain their full-resolution coordinate meaning.
+
+Forced GCP overviews can give slightly different automatically suggested bounds than GDAL,
+which refits GCPs at the selected resolution. Specify `--te` and `--ts` for an identical
+target grid; Terrio keeps its full-resolution grid while selecting source pixels.
 
 Swaths from netCDF and HDF-EOS use their longitude/latitude geolocation arrays automatically
 when no GCP/RPC method is supplied. `--geoloc` (or `--to METHOD=GEOLOC_ARRAY`) requires arrays

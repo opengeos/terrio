@@ -151,6 +151,39 @@ fn tuple4(v: Option<[f64; 4]>) -> Option<(f64, f64, f64, f64)> {
     v.map(|[a, b, c, d]| (a, b, c, d))
 }
 
+/// A file or a shared dataset, borrowed only for each metadata/window request.
+enum WarpInput {
+    File(Box<terrio::LazyRaster>),
+    Shared(std::rc::Rc<std::cell::RefCell<Inner>>),
+}
+
+impl terrio::ops::warp::WarpSource for WarpInput {
+    fn info(&mut self) -> terrio::Result<terrio::ops::warp::WarpSourceInfo> {
+        match self {
+            Self::File(r) => terrio::ops::warp::WarpSource::info(r.as_mut()),
+            Self::Shared(inner) => {
+                let mut inner = inner.try_borrow_mut().map_err(|_| terrio::Error::InvalidArgument("raster is already in use".into()))?;
+                match &mut *inner {
+                    Inner::Raster(r) => terrio::ops::warp::WarpSource::info(r),
+                    _ => Err(terrio::Error::InvalidArgument("expected a raster".into())),
+                }
+            }
+        }
+    }
+    fn read_window(&mut self, window: terrio::Window, options: &terrio::WindowOptions) -> terrio::Result<RasterDataset> {
+        match self {
+            Self::File(r) => r.read_window(window, options),
+            Self::Shared(inner) => {
+                let mut inner = inner.try_borrow_mut().map_err(|_| terrio::Error::InvalidArgument("raster is already in use".into()))?;
+                match &mut *inner {
+                    Inner::Raster(r) => r.read_window(window, options),
+                    _ => Err(terrio::Error::InvalidArgument("expected a raster".into())),
+                }
+            }
+        }
+    }
+}
+
 /// Options of [`warp`].
 #[derive(Deserialize, Default)]
 #[serde(rename_all = "camelCase", default, deny_unknown_fields)]
@@ -164,6 +197,7 @@ struct WarpArgs {
     ts: Option<[usize; 2]>,
     tap: bool,
     resampling: Option<String>,
+    overview: Option<SizeArg>,
     src_nodata: Option<NumberOrList>,
     dst_nodata: Option<NumberOrList>,
     ot: Option<String>,
@@ -206,6 +240,11 @@ pub fn warp(src: JsValue, options: JsValue) -> Result<Dataset, JsError> {
         size: a.ts.map(|[w, h]| (w, h)),
         target_aligned_pixels: a.tap,
         resampling: Resampling::parse(a.resampling.as_deref().unwrap_or("near")).map_err(js_err)?,
+        overview: match a.overview {
+            None => terrio::ops::overview::OverviewSelection::Auto,
+            Some(SizeArg::Pixels(n)) => terrio::ops::overview::OverviewSelection::Level(n),
+            Some(SizeArg::Text(s)) => terrio::ops::overview::OverviewSelection::parse(&s).map_err(js_err)?,
+        },
         src_nodata: nodata_arg(a.src_nodata)?,
         dst_nodata: nodata_arg(a.dst_nodata)?,
         output_type: a.ot.as_deref().map(parse_data_type).transpose().map_err(js_err)?,
@@ -217,8 +256,24 @@ pub fn warp(src: JsValue, options: JsValue) -> Result<Dataset, JsError> {
     if let Some(wm) = a.wm {
         o.memory_limit = wm;
     }
-    let sources = input_rasters(&src)?;
+    let items: Vec<JsValue> = if js_sys::Array::is_array(&src) { js_sys::Array::from(&src).iter().collect() } else { vec![src] };
+    let mut sources = items
+        .iter()
+        .map(|v| {
+            if let Some(inner) = Dataset::lookup(v) {
+                return Ok(WarpInput::Shared(inner));
+            }
+            if let Some((bytes, name)) = file_bytes(v) {
+                return terrio::memory::open_raster_lazy_bytes(bytes, &name).map(Box::new).map(WarpInput::File).map_err(js_err);
+            }
+            Err(invalid("expected a raster: a Dataset, a Uint8Array or { bytes, filename }"))
+        })
+        .collect::<Result<Vec<_>, JsError>>()?;
+    if sources.is_empty() {
+        return Err(invalid("no input rasters"));
+    }
     if let Some(g) = &taken[1] {
+        let info = terrio::ops::warp::WarpSource::info(&mut sources[0]).map_err(js_err)?;
         let (params, arrays) = split_options(g, &["x", "y"])?;
         #[derive(Deserialize, Default)]
         #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -265,12 +320,13 @@ pub fn warp(src: JsValue, options: JsValue) -> Result<Dataset, JsError> {
             pixel_center: a.pixel_center,
         };
         o.geolocation = Some(
-            terrio::ops::geolocation::GeolocationTransformer::new(&metadata, &x, &y, sources[0].raster.cols, sources[0].raster.rows)
+            terrio::ops::geolocation::GeolocationTransformer::new(&metadata, &x, &y, info.raster.raster.cols, info.raster.raster.rows)
                 .map_err(js_err)?,
         );
     }
-    let refs: Vec<&RasterDataset> = sources.iter().collect();
-    Ok(Dataset::from_raster(terrio::ops::warp::warp(&refs, &o).map_err(js_err)?))
+    let mut refs: Vec<&mut dyn terrio::ops::warp::WarpSource> =
+        sources.iter_mut().map(|r| r as &mut dyn terrio::ops::warp::WarpSource).collect();
+    Ok(Dataset::from_raster(terrio::ops::warp::warp_sources(&mut refs, &o).map_err(js_err)?))
 }
 
 /// An output size: pixels, or a percentage such as `"50%"`.

@@ -382,11 +382,27 @@ impl LazyRaster {
     /// without pixels: its data buffer is empty. For operations that only need the metadata, such
     /// as building a VRT.
     pub fn header(&self) -> RasterDataset {
-        if let Inner::Memory(ds) = &self.inner {
-            return ds.clone();
-        }
-        if let Inner::Source(ds, _) = &self.inner {
-            return ds.clone();
+        if let Inner::Memory(ds) | Inner::Source(ds, _) = &self.inner {
+            let r = &ds.raster;
+            let raster = wbraster::Raster {
+                cols: r.cols,
+                rows: r.rows,
+                bands: r.bands,
+                x_min: r.x_min,
+                y_min: r.y_min,
+                cell_size_x: r.cell_size_x,
+                cell_size_y: r.cell_size_y,
+                nodata: r.nodata,
+                data_type: r.data_type,
+                crs: r.crs.clone(),
+                metadata: r.metadata.clone(),
+                data: wbraster::raster::RasterData::new_filled(r.data_type, 0, 0.0),
+            };
+            let mut header = RasterDataset::with_driver(raster, ds.driver, ds.has_nodata);
+            header.affine = ds.affine;
+            header.complex = ds.complex;
+            header.geolocation = ds.geolocation.clone();
+            return header;
         }
         let raster = wbraster::Raster {
             cols: self.width(),
