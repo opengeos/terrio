@@ -81,6 +81,8 @@ pub(super) fn write(dataset: &Dataset, destination: &str) -> Result<()> {
     }
     #[cfg(feature = "netcdf-hdf5")]
     {
+        // Avoid reading source arrays for a destination that already exists.
+        // Exclusive persistence below also protects against creation after this check.
         if std::path::Path::new(destination).exists() {
             return Err(bad("destination already exists"));
         }
@@ -95,7 +97,11 @@ pub(super) fn write(dataset: &Dataset, destination: &str) -> Result<()> {
             temporary.persist_noclobber(path).map_err(|e| e.error)?;
         }
         #[cfg(target_family = "wasm")]
-        std::fs::write(destination, bytes)?;
+        {
+            use std::io::Write;
+            let mut output = std::fs::OpenOptions::new().write(true).create_new(true).open(destination)?;
+            output.write_all(&bytes)?;
+        }
         Ok(())
     }
     #[cfg(not(feature = "netcdf-hdf5"))]
@@ -143,7 +149,7 @@ pub(crate) fn sample(value: &Value, t: DataType) -> Vec<u8> {
 #[cfg(feature = "netcdf-hdf5")]
 pub(super) fn netcdf_bytes(dataset: &Dataset) -> Result<Vec<u8>> {
     use crate::drivers::hdf5_write::{self, Attr, H5Type, Values};
-    use std::collections::HashMap;
+    use std::collections::BTreeMap;
     fn dtype(t: DataType) -> H5Type {
         match t {
             DataType::F32 => H5Type::Float { size: 4 },
@@ -304,7 +310,7 @@ pub(super) fn netcdf_bytes(dataset: &Dataset) -> Result<Vec<u8>> {
             attrs: attributes,
         });
     }
-    let mut scales = HashMap::new();
+    let mut scales = BTreeMap::new();
     for (id, d) in dimensions.iter().enumerate() {
         if let Some(name) = &d.indexing_variable {
             let coordinate = arrays

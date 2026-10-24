@@ -289,3 +289,14 @@ fn selected_zarr_subgroups_keep_external_dimension_references() {
     let array = terrio::multidim::open(&format!("ZARR:\"{}\":/science/temperature", path.display())).unwrap();
     assert_eq!(array.array("array").unwrap().read().unwrap().bytes, expected);
 }
+
+#[test]
+fn snapshots_are_reproducible_and_preserve_existing_destinations() {
+    let ds = dataset();
+    assert_eq!(ds.to_netcdf_bytes().unwrap(), ds.to_netcdf_bytes().unwrap());
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("existing.nc");
+    std::fs::write(&path, b"existing content").unwrap();
+    assert!(ds.write(path.to_str().unwrap()).is_err());
+    assert_eq!(std::fs::read(path).unwrap(), b"existing content");
+}
