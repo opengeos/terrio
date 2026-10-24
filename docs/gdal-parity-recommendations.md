@@ -67,12 +67,14 @@ explicit full-resolution path because overview generation changes sampled values
 
 ### 3. Geolocation-array warping
 
-[`RasterDataset`](../crates/terrio/src/dataset.rs) carries geolocation arrays, and
-the scientific drivers populate them, but
-[`WarpOptions`](../crates/terrio/src/ops/warp.rs) has affine, GCP and RPC paths
-without a geolocation-array transformer. This leaves a gap between reading swath
-products and reprojecting them. GDAL supports a dedicated `-geoloc` path.
-[GDAL warp](https://gdal.org/en/stable/programs/gdalwarp.html).
+Implemented in [PR #241](https://github.com/opengeos/terrio/pull/241): the warper
+uses indexed bilinear geolocation cells for scientific swaths, including
+subsampled arrays, pixel-center conventions, invalid coordinates and antimeridian
+crossings. Rust, CLI/MCP, Python and JavaScript expose the capability. The
+supported subset and in-memory indexing are documented. Sentinel-5P and
+full-resolution valid arrays match GDAL exactly; subsampled/invalid-node cases
+retain 9–32 boundary-mask differences per 160×100 band, with common-valid values
+identical. [GDAL warp](https://gdal.org/en/stable/programs/gdalwarp.html).
 
 Acceptance: use real swath products already represented in the scientific-format
 fixtures; compare bounds, valid-data coverage and resampled values. Include
@@ -81,14 +83,16 @@ antimeridian crossings.
 
 ### 4. Richer VRT interoperability
 
-[`ops/vrt.rs`](../crates/terrio/src/ops/vrt.rs) already supports SimpleSource,
-ComplexSource and AveragedSource. It explicitly excludes derived bands, kernel
-filters, pixel functions and warped VRTs. Extend serialized warped VRT support
-first; then implement selected built-in derived operations and kernel filters.
-The Python WarpedVRT interface already exists, so describe this as extending
-interoperable VRT files and the core reader. GDAL supports these virtual dataset
-forms, including pansharpened VRTs.
-[GDAL VRT](https://gdal.org/en/stable/drivers/raster/vrt.html).
+The `VirtualRaster` reader now extends existing simple/complex/averaged sources
+with serialized warped VRTs (affine/reprojection, GCP/TPS/homography/RPC), selected
+scalar derived functions, full/separable kernel filters and lazy masks. Rust
+parses/serializes the descriptions; CLI/MCP and Python write warped VRT files
+without materializing pixels, and Python/JavaScript accept uploaded source maps.
+Whole/cropped GDAL cross-reads are registered in the `vrt` conformance suite;
+a counted source regression checks bounded pixel reads. See the
+[supported subset](cli.md#serialized-virtual-rasters) for remaining serialized
+cutline/alpha/geolocation and external-function limitations. Pansharpened VRTs
+follow the pansharpening implementation. [GDAL VRT](https://gdal.org/en/stable/drivers/raster/vrt.html).
 
 Acceptance: open GDAL-generated VRT fixtures and compare window reads, masks and
 pixels; verify Terrio-generated files in GDAL. Keep evaluation lazy and implement
@@ -96,10 +100,13 @@ built-in operations before considering arbitrary user-supplied pixel functions.
 
 ### 5. Richer vector SQL
 
-Implemented by the [documented SQL subset](sql.md): computed columns, single-field DISTINCT,
-COUNT/SUM/AVG/MIN/MAX summaries and same-dataset attribute LEFT JOINs. Queries retain primary
-geometry except DISTINCT and summaries; duplicate join keys use the first matching secondary
-feature. GROUP BY and spatial SQL remain separate extensions.
+Implemented in [PR #245](https://github.com/opengeos/terrio/pull/245):
+the [documented SQL subset](sql.md) supports computed SELECT columns,
+single-field DISTINCT, COUNT/SUM/AVG/MIN/MAX summaries and same-dataset attribute LEFT JOINs.
+Duplicate join keys use OGR's first matching secondary row; null keys and unmatched
+rows retain the primary feature with null joined fields. Rust, CLI/MCP, Python
+and JavaScript share the subset. Queries retain primary geometry except DISTINCT
+and summaries. GROUP BY and spatial SQL remain separate extensions.
 [GDAL OGR SQL](https://gdal.org/en/stable/user/ogr_sql_dialect.html).
 
 Acceptance: compare values, nulls, field types and geometry retention with OGR SQL,
@@ -108,11 +115,13 @@ operations that do not require materialization.
 
 ### 6. Viewshed
 
-No viewshed operation appears in the core or CLI inventory. Extend the terrain
-suite with a single-observer operation; defer cumulative visibility until the
-first algorithm is validated. GDAL supports binary visibility and minimum visible
-height outputs, with observer/target heights and curvature/refraction controls;
-its documented algorithm requires projected georeferencing for meaningful results.
+Implemented in [PR #240](https://github.com/opengeos/terrio/pull/240): shared Rust
+single-observer binary visibility and minimum visible height, with observer/target
+heights, maximum distance, curvature/refraction and projected-unit handling.
+CLI/MCP, Python and JavaScript expose the operation. Real projected DEM comparisons
+are registered in conformance; numeric input nodata is treated as elevation, as in
+GDAL, and nonfinite elevations must be filled or cropped first. Cumulative
+visibility remains outside this subset.
 [GDAL viewshed](https://gdal.org/en/stable/programs/gdal_viewshed.html).
 
 Acceptance: compare with GDAL on projected DEMs, hills/ridges, maximum distances

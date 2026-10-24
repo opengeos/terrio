@@ -7,7 +7,7 @@ use crate::vector::{PyLayer, PyVectorDataset, layers_from_object};
 use crate::{PyResultExt, invalid};
 use numpy::{PyArray1, PyArrayMethods};
 use pyo3::prelude::*;
-use pyo3::types::{PyBool, PyTuple};
+use pyo3::types::{PyBool, PyBytes, PyDict, PyTuple};
 use terrio::crs::{SpatialRef, TransformOptions, Transformer};
 use terrio::formats::VectorDriver;
 use terrio::ops::Resampling;
@@ -23,6 +23,7 @@ use terrio::{DataType, Dataset, RasterDataset, VectorOpenOptions, VectorWriteOpt
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(open, m)?)?;
     m.add_function(wrap_pyfunction!(open_raster, m)?)?;
+    m.add_function(wrap_pyfunction!(open_vrt, m)?)?;
     m.add_function(wrap_pyfunction!(open_vector, m)?)?;
     m.add_function(wrap_pyfunction!(open_bytes, m)?)?;
     m.add_function(wrap_pyfunction!(list_layers, m)?)?;
@@ -95,6 +96,29 @@ fn open(py: Python<'_>, path: &str) -> PyResult<Py<PyAny>> {
     // Warnings are issued whether the open succeeds or not, so none is left for a later call.
     let ds = crate::with_warnings(py, || terrio::open(path))?;
     dataset_to_py(py, ds)
+}
+
+/// Opens a serialized VRT with source names mapped to file bytes or paths.
+/// Sources are opened once; pixel windows remain lazy. This also supports VRTs
+/// referring to uploaded GeoTIFFs without writing those files beside the XML.
+#[pyfunction]
+fn open_vrt(py: Python<'_>, xml: &str, sources: &Bound<'_, PyDict>) -> PyResult<PyRaster> {
+    let description = terrio::ops::vrt::VirtualRaster::from_xml(xml).py()?;
+    let mut resolved = std::collections::HashMap::new();
+    for (name, value) in sources.iter() {
+        let name = name.extract::<String>()?;
+        let reader = if let Ok(bytes) = value.cast::<PyBytes>() {
+            let bytes = bytes.as_bytes().to_vec();
+            py.detach(|| terrio::memory::open_raster_lazy_bytes(bytes, &name)).py()?
+        } else {
+            let path = value.extract::<std::path::PathBuf>()?;
+            let path = path.to_str().ok_or_else(|| invalid("source paths must be UTF-8"))?;
+            py.detach(|| terrio::open_raster_lazy(path)).py()?
+        };
+        resolved.insert(name, reader);
+    }
+    let inner = py.detach(|| description.into_lazy(std::path::Path::new(""), resolved)).py()?;
+    Ok(PyRaster { inner })
 }
 
 /// Opens a raster.
@@ -1205,6 +1229,21 @@ fn warp(
         .collect::<PyResult<Vec<_>>>()?;
     if args.is_empty() {
         return Err(invalid("no input rasters"));
+    }
+    if let Some(path) = dst
+        && (format.is_some_and(|f| f.eq_ignore_ascii_case("VRT"))
+            || (format.is_none() && std::path::Path::new(path).extension().is_some_and(|e| e.eq_ignore_ascii_case("vrt"))))
+    {
+        if geolocation.is_some() {
+            return Err(terrio::Error::Unsupported("serialized geolocation transformer".into())).py();
+        }
+        let source = match args.as_slice() {
+            [Arg::Path(path)] => path.clone(),
+            _ => return Err(invalid("serialized warped VRT output needs a single source path")),
+        };
+        let options = write_options(format, compress, tile_size, bigtiff)?;
+        py.detach(|| terrio::ops::warp::warp_to_path(&[source], &o, path, &options)).py()?;
+        return Ok(PyRaster { inner: py.detach(|| terrio::open_raster_lazy(path)).py()? });
     }
     let first_path = match &args[0] {
         Arg::Path(path) => Some(path.clone()),

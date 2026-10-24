@@ -1197,6 +1197,24 @@ test("native multidimensional views retain integer precision and store lifetimes
   view.free(); nc.free(); back.free();
 });
 
+test("openVrt resolves uploaded sources and reads derived windows lazily", () => {
+  const src = terrio.open(new TextEncoder().encode("ncols 3\nnrows 3\nxllcorner 0\nyllcorner 0\ncellsize 1\n0 1 2\n3 4 5\n6 7 8\n"), "source.asc");
+  const bytes = src.toBytes("upload.tif");
+  const xml = '<VRTDataset rasterXSize="3" rasterYSize="3"><GeoTransform>0,1,0,3,0,-1</GeoTransform><VRTRasterBand dataType="Float64" subClass="VRTDerivedRasterBand"><PixelFunctionType>sum</PixelFunctionType><PixelFunctionArguments k="2"/><SimpleSource><SourceFilename>upload.tif</SourceFilename><SourceBand>1</SourceBand></SimpleSource></VRTRasterBand></VRTDataset>';
+  const out = terrio.openVrt(xml, { "upload.tif": bytes });
+  assert.deepEqual([...out.readBand(1, [1, 1, 2, 2])], [6, 7, 9, 10]);
+  assert.throws(() => terrio.openVrt(xml.replace("sum", "external_custom_function"), { "upload.tif": bytes }), /external_custom_function/);
+  const fractional = terrio.rasterFromArray(new Float64Array([1.250000000001, 2.75]), 2, 1, [0, 1, 0, 1, 0, -1]);
+  const bands = ["Byte", "Float32", "Float64"].map(type => `<VRTRasterBand dataType="${type}"><SimpleSource><SourceFilename>source.tif</SourceFilename><SourceBand>1</SourceBand></SimpleSource></VRTRasterBand>`).join("");
+  const mixed = terrio.openVrt(`<VRTDataset rasterXSize="2" rasterYSize="1">${bands}</VRTDataset>`, { "source.tif": fractional.toBytes("source.tif") });
+  assert.equal(mixed.dtype, "float64");
+  assert.deepEqual([...mixed.readBand(1)], [1, 3]);
+  assert.deepEqual([...mixed.readBand(2)], [Math.fround(1.250000000001), Math.fround(2.75)]);
+  assert.deepEqual([...mixed.readBand(3)], [1.250000000001, 2.75]);
+  mixed.free(); fractional.free();
+  src.free(); out.free();
+});
+
 test("pansharpen weights, selected bands and unequal resolutions", () => {
   const pan = terrio.rasterFromArray(new Uint16Array(16).fill(80), 4, 4, [0, 1, 0, 4, 0, -1], "EPSG:32611");
   const spectral = terrio.rasterFromArray(new Uint16Array([20, 20, 20, 20, 40, 40, 40, 40]), 2, 2, [0, 2, 0, 4, 0, -2], "EPSG:32611");

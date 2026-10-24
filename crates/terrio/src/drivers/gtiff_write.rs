@@ -1712,7 +1712,7 @@ impl GeoTiffWriter {
             options.geo_transform = header.affine;
         }
         let with_mask = options.mask.take().is_some();
-        let opts = TiffOptions::from_write_options(&options, false, header.nodata())?.ok_or_else(|| {
+        let opts = TiffOptions::from_write_options(&options, false, crate::dataset::tiff_nodata(header))?.ok_or_else(|| {
             let name = options.compression.as_deref().unwrap_or_default();
             Error::Unsupported(format!("{name} compression needs the whole raster"))
         })?;

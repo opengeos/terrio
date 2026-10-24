@@ -232,7 +232,7 @@ fn raster_info_at(ds: &RasterDataset, options: &InfoOptions, path: Option<&str>,
                     crate::histogram::default_histogram(ds, b * part, &ctx, statistics.map(|s| (s.min, s.max)))
                 })
                 .flatten();
-            BandInfo { band: b + 1, data_type: ds.data_type_name(), nodata: ds.nodata(), statistics, histogram }
+            BandInfo { band: b + 1, data_type: ds.data_type_name(), nodata: ds.band_nodata(b * part + 1), statistics, histogram }
         })
         .collect();
     RasterInfo {
@@ -349,7 +349,7 @@ fn lazy_raster_info_at(r: &mut LazyRaster, options: &InfoOptions, path: Option<&
         .map(|b| BandInfo {
             band: b + 1,
             data_type: gdal_type_name(r.data_type()).to_string(),
-            nodata: r.nodata(),
+            nodata: r.band_nodata(b + 1),
             statistics: None,
             histogram: None,
         })
@@ -450,7 +450,7 @@ pub fn info_path(path: &str, options: &InfoOptions) -> crate::Result<Info> {
 
 /// Computes a band's statistics over its valid pixels. `None` when every pixel is nodata.
 pub fn band_statistics(ds: &RasterDataset, band: usize) -> Option<Statistics> {
-    let mut acc = StatsAcc::new(ds.nodata());
+    let mut acc = StatsAcc::new(ds.band_nodata(band + 1));
     acc.add(ds.raster.band_view(band).as_slice());
     acc.finish()
 }
@@ -504,7 +504,7 @@ fn lazy_band_statistics(r: &mut LazyRaster) -> crate::Result<Vec<Option<Statisti
     // Whole blocks, about 64 MB of float64 values per strip.
     let block = r.block_size().map_or(256, |(_, bh)| bh.max(1));
     let rows = ((64 << 20) / (8 * w.max(1) * bands.max(1))).max(1).div_ceil(block) * block;
-    let mut acc: Vec<StatsAcc> = (0..bands).map(|_| StatsAcc::new(r.nodata())).collect();
+    let mut acc: Vec<StatsAcc> = (0..bands).map(|b| StatsAcc::new(r.band_nodata(b + 1))).collect();
     let mut y = 0;
     while y < h {
         let n = rows.min(h - y);

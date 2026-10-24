@@ -647,3 +647,69 @@ options (`--format`, `--compress`, `--co`, etc.) apply.
 
 See [Native multidimensional arrays](multidim.md) for scientific groups, named dimensions,
 lazy coordinate arrays, time/depth slicing, transposition and netCDF/Zarr numeric snapshots.
+
+## Serialized virtual rasters
+
+```sh
+terrio warp dem.tif projected.vrt --t-srs EPSG:3857 --ts 512 512
+terrio convert projected.vrt crop.tif --srcwin 32 48 128 128
+```
+
+A `.vrt` warp destination (or `--format VRT`) writes a GDAL-compatible virtual
+warp without reading the source pixels. Source references are absolute, so the
+file can be written in a different directory. GDAL can read the result. Reading a
+VRT resolves relative sources against its original location, including URLs and
+archive members, and reads only windows needed for the requested output.
+
+Serialized affine/reprojection, polynomial GCP, TPS, homography and RPC
+transformers are supported. Warped reads use the declared VRT block boundaries,
+preserving GDAL's approximation and resampling behavior for cropped requests.
+Band mappings may reorder or repeat source bands; nodata is retained per band,
+including `UNIFIED_SRC_NODATA=YES`, `NO` and `PARTIAL`. GeoTIFF file output uses
+a `.aux.xml` sidecar when nodata differs between bands or a Float32 nodata
+value needs its original double precision; keep that sidecar with the TIFF. A standalone TIFF byte buffer has only the shared embedded nodata tag.
+Raster creation options (compression, tiles, masks, overviews and metadata overrides)
+are rejected for a serialized warp; set the warp grid through the warp options.
+GDAL 3.12's generic `sum` polygon path can lose overlap area on pixel boundaries,
+including when a redundant identity CRS transformer disables its affine fast path.
+Terrio preserves conservative affine overlap sums; its results match GDAL's affine
+path within one Float32 ULP, and can differ from that generic clipping behavior.
+Serialized cutlines, alpha warps and geolocation transformers are currently
+reported as unsupported; use a materialized warp for those supported by the
+normal warper. Custom `INIT_DEST` values are also unsupported.
+
+`VRTDerivedRasterBand` supports the scalar built-ins `sum`, `diff`, `mul`, `div`,
+`mean`, `min`, `max`, `sqrt`, `real`, `imag`, `conj`, `mod`, `inv`, `intensity`,
+`log10`, `dB`, `dB2amp`, `dB2pow`, `pow` and `exp`, with numeric arguments,
+source transfer types and applicable nodata behavior. Complex-valued derived
+buffers, external pixel functions and expression languages are unsupported.
+`KernelFilteredSource` supports odd full/separable kernels, normalization and
+`min`, `max`, `stddev`, `median` and `mode`. Kernels read the necessary halo and
+replicate source edges as GDAL does. Explicit dataset masks, `SourceBand mask,N`
+and `ComplexSource` with `UseMaskBand` are read lazily.
+
+Mixed native band types use a common numeric buffer selected with GDAL-style
+`DataTypeUnion` promotion, preserving Float64 precision. Plain and derived bands
+round to their declared type before entering that buffer. A selected lazy band
+retains its native type. Warped VRTs convert source windows and compute shared
+blocks in the XML `WorkingDataType`; if omitted, it is inferred from source,
+destination and nodata types. The working block converts directly to the requested
+common buffer, as GDAL's warped dataset RasterIO does. This can retain fractional
+working values for an integer-declared band in a multiband read; reading that band
+alone converts to its native integer type. Python GDAL's default `ReadAsArray`
+chooses Float32 for any mixed dataset; use its explicit `buf_type` argument to
+compare a promoted Float64 buffer.
+
+VRT references use the caller’s normal file and network access. Supplied source maps
+override matching names; unresolved names are opened by the usual drivers.
+For heterogeneous plain/derived bands, a shared buffer uses the common numeric
+type needed by its requested bands. Each band's declared rounding is retained;
+a leading Byte band does not truncate later floating-point bands.
+
+The Rust `VirtualRaster` API parses and serializes these descriptions. Its
+`into_lazy` source map also permits filesystem-free reads in WebAssembly.
+
+
+Warped VRT block evaluation is limited to 8,388,608 samples across all bands per
+declared block. Larger blocks return an unsupported error, including for small
+subwindow reads, to keep temporary memory bounded while preserving GDAL block semantics.

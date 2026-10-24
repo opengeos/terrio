@@ -17,6 +17,10 @@ pub struct RasterDataset {
     pub driver: RasterDriver,
     /// Whether the file declares a nodata value (the raster always carries one).
     pub has_nodata: bool,
+    /// Per-band nodata in band order; empty means the shared raster value applies.
+    /// A nonempty vector overrides has_nodata/raster.nodata, including explicit None.
+    /// Clear or update this vector when changing the shared nodata fields.
+    pub band_nodata: Vec<Option<f64>>,
     /// The geotransform of a rotated or south-up raster, which the raster's origin and cell sizes
     /// cannot hold (they then hold the extent of its footprint); `None` for north-up rasters.
     /// Set it with [`RasterDataset::set_geo_transform`].
@@ -140,7 +144,7 @@ impl RasterDataset {
 
     /// Wraps a raster read by a driver: real-valued bands, without geolocation arrays.
     pub fn with_driver(raster: Raster, driver: RasterDriver, has_nodata: bool) -> Self {
-        Self { raster, driver, has_nodata, affine: None, complex: false, geolocation: None }
+        Self { raster, driver, has_nodata, band_nodata: Vec::new(), affine: None, complex: false, geolocation: None }
     }
 
     /// The number of bands as GDAL counts them: complex bands count once.
@@ -167,9 +171,18 @@ impl RasterDataset {
         self.affine.unwrap_or_else(|| geo_transform(&self.raster))
     }
 
-    /// The nodata value, when the file declares one.
+    /// The nodata value of a band, numbered from one.
+    pub fn band_nodata(&self, band: usize) -> Option<f64> {
+        if band == 0 || band > self.raster.bands {
+            return None;
+        }
+        self.band_nodata.get(band - 1).copied().unwrap_or_else(|| self.nodata())
+    }
+
+    /// The first band's nodata value. Explicit band_nodata takes precedence
+    /// over has_nodata and raster.nodata.
     pub fn nodata(&self) -> Option<f64> {
-        self.has_nodata.then_some(self.raster.nodata)
+        self.band_nodata.first().copied().unwrap_or_else(|| self.has_nodata.then_some(self.raster.nodata))
     }
 }
 
@@ -667,13 +680,40 @@ pub fn write_raster(raster: &Raster, path: &str, options: &RasterWriteOptions) -
 /// # Ok::<(), terrio::Error>(())
 /// ```
 pub fn write_raster_dataset(ds: &RasterDataset, path: &str, options: &RasterWriteOptions) -> Result<()> {
-    if let Some(gt) = ds.affine
-        && options.geo_transform.is_none()
-    {
-        let options = RasterWriteOptions { geo_transform: Some(gt), ..options.clone() };
-        return write_raster_with_nodata(&ds.raster, ds.nodata(), ds.complex, path, &options);
+    let options = RasterWriteOptions { geo_transform: options.geo_transform.or(ds.affine), ..options.clone() };
+    let driver = options.driver.or_else(|| RasterDriver::for_extension(path));
+    let pam = needs_nodata_pam(ds) && matches!(driver, Some(RasterDriver::GTiff | RasterDriver::Cog));
+    let tag = if matches!(driver, Some(RasterDriver::GTiff | RasterDriver::Cog)) { tiff_nodata(ds) } else { ds.nodata() };
+    write_raster_with_nodata(&ds.raster, tag, ds.complex, path, &options)?;
+    if matches!(driver, Some(RasterDriver::GTiff | RasterDriver::Cog)) {
+        let mut aux = std::ffi::OsString::from(path);
+        aux.push(".aux.xml");
+        if pam || crate::memfs::exists(Path::new(&aux)) {
+            let values = if ds.band_nodata.is_empty() { vec![ds.nodata(); ds.raster.bands] } else { ds.band_nodata.clone() };
+            crate::drivers::common::write_band_nodata_pam(Path::new(path), &values)?;
+        }
     }
-    write_raster_with_nodata(&ds.raster, ds.nodata(), ds.complex, path, options)
+    Ok(())
+}
+
+/// TIFF's shared nodata tag cannot be overridden to "no nodata" by PAM.
+pub(crate) fn tiff_nodata(ds: &RasterDataset) -> Option<f64> {
+    if (1..=ds.raster.bands).any(|band| ds.band_nodata(band).is_none()) { None } else { ds.nodata() }
+}
+
+/// TIFF nodata that needs a PAM override to retain its per-band or raw Float32 value.
+pub(crate) fn needs_nodata_pam(ds: &RasterDataset) -> bool {
+    let distinct = !ds.band_nodata.is_empty()
+        && ds.band_nodata.iter().any(|v| match (*v, ds.nodata()) {
+            (Some(a), Some(b)) => a != b && !(a.is_nan() && b.is_nan()),
+            (None, None) => false,
+            _ => true,
+        });
+    // GDAL's TIFF reader rounds its Float32 nodata tag to that type. As GDAL
+    // Translate does, keep a raw double that cannot be represented there in PAM.
+    let raw_float32_nodata = ds.raster.data_type == wbraster::DataType::F32
+        && (1..=ds.raster.bands).any(|band| ds.band_nodata(band).is_some_and(|value| value.is_finite() && value as f32 as f64 != value));
+    distinct || raw_float32_nodata
 }
 
 fn write_raster_with_nodata(raster: &Raster, nodata: Option<f64>, complex: bool, path: &str, options: &RasterWriteOptions) -> Result<()> {

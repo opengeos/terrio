@@ -35,15 +35,20 @@ operations and drivers below; no release deadline is assigned yet.
 - [x] Overview-aware warping: explicit source overview selection, automatic selection for
       downsampling and a full-resolution override, reducing remote COG reads. Implemented in
       [#242](https://github.com/opengeos/terrio/pull/242), through Rust, CLI/MCP, Python and JavaScript.
-- [ ] Geolocation-array warping: reproject swaths using the longitude/latitude arrays already
+- [x] Geolocation-array warping: reproject swaths using the longitude/latitude arrays already
       exposed by the scientific-format drivers, including subsampled arrays and pixel-center
-      conventions.
-- [ ] Richer VRT interoperability: serialized warped VRTs, then selected built-in derived bands
+      conventions. Done in [#241](https://github.com/opengeos/terrio/pull/241);
+      subsampled/invalid-node swaths retain documented GDAL boundary-mask differences.
+- [x] Richer VRT interoperability: serialized warped VRTs, then selected built-in derived bands
       and kernel-filtered sources, with lazy window reads and GDAL-compatible output.
-- [ ] Richer vector SQL: computed SELECT columns, DISTINCT, summary aggregates and limited
-      attribute joins, with the supported OGR SQL subset documented explicitly.
-- [ ] Viewshed: single-observer visibility and minimum visible height, observer/target heights,
+      Rust, CLI/MCP, Python and WebAssembly; supported subsets are documented in the CLI guide.
+- [x] Richer vector SQL: computed SELECT columns, DISTINCT, summary aggregates and limited
+      attribute joins, with the supported OGR SQL subset documented explicitly. Done in
+      [#245](https://github.com/opengeos/terrio/pull/245), with real-data OGR SQL comparisons.
+- [x] Viewshed: single-observer visibility and minimum visible height, observer/target heights,
       maximum distance and curvature/refraction controls, with explicit input nodata behavior.
+      Done in [#240](https://github.com/opengeos/terrio/pull/240), through Rust, CLI/MCP, Python
+      and JavaScript; projected DEM comparisons are registered in conformance.
 - [ ] Indexed raster catalogs: GTI-compatible GeoPackage/FlatGeobuf tile indexes, spatial source
       selection, compositing order, mixed-CRS sources and a bounded source cache.
 - [ ] Pansharpening: weighted Brovey processing, spectral weights, resampling, nodata, bit depth
@@ -51,7 +56,7 @@ operations and drivers below; no release deadline is assigned yet.
 - [ ] Native multidimensional API: groups, named dimensions, coordinate arrays, lazy time/depth
       slicing and transposition across netCDF/HDF5/Zarr, retaining the existing raster views.
 
-Continue with geolocation warping and VRT support.
+Continue the remaining independent features.
 SQL, viewshed and pansharpening can ship independently; schedule indexed catalogs and the
 multidimensional API according to demand for large mosaics and scientific data cubes. Each item
 must preserve pure-Rust/default WebAssembly builds, add real-data comparisons to the GDAL

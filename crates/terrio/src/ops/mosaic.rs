@@ -150,31 +150,39 @@ pub fn build_vrt(sources: &[MosaicSource], o: &MosaicOptions, vrt_dir: Option<&P
     if !o.separate && sources.iter().any(|s| band_list(s.ds).iter().any(|b| *b > s.ds.raster.bands)) {
         return Err(Error::InvalidArgument("a source lacks one of the requested bands".into()));
     }
-    let src_nodata = |s: &MosaicSource, b: usize| match &o.src_nodata {
-        Nodata::Auto => s.ds.nodata(),
+    let src_nodata = |s: &MosaicSource, b: usize, band: usize| match &o.src_nodata {
+        Nodata::Auto => s.ds.band_nodata(band),
         Nodata::None => None,
         Nodata::Values(v) => v.get(b).or(v.last()).copied(),
+        Nodata::PerBand(v) => v.get(b).or(v.last()).copied().flatten(),
     };
-    let vrt_nodata = |b: usize| match &o.dst_nodata {
-        Nodata::Auto => sources.iter().find_map(|s| src_nodata(s, b)),
+    let vrt_nodata = |b: usize, source_nodata: Option<f64>| match &o.dst_nodata {
+        Nodata::Auto => source_nodata,
         Nodata::None => None,
         Nodata::Values(v) => v.get(b).or(v.last()).copied(),
+        Nodata::PerBand(v) => v.get(b).or(v.last()).copied().flatten(),
     };
     let mut bands: Vec<VrtBand> = Vec::new();
     if !o.separate {
         for b in 0..nbands {
-            bands.push(VrtBand { data_type: first.ds.raster.data_type, nodata: vrt_nodata(b), color_interp: None, sources: Vec::new() });
+            let nd = band_list(first.ds).get(b).and_then(|&band| src_nodata(first, b, band));
+            bands.push(VrtBand {
+                data_type: first.ds.raster.data_type,
+                nodata: vrt_nodata(b, nd),
+                color_interp: None,
+                sources: Vec::new(),
+            });
         }
     }
-    for (i, s) in sources.iter().enumerate() {
+    for s in sources {
         let Some((src_rect, dst_rect)) = src_dst_window(s.ds, we, ns, (min_x, min_y, max_x, max_y), width, height) else { continue };
         let (path, relative) = source_path(&s.path, vrt_dir);
         for (k, &b) in band_list(s.ds).iter().enumerate() {
             if b == 0 || b > s.ds.raster.bands {
                 return Err(Error::InvalidArgument(format!("'{}' has no band {b}", s.path)));
             }
-            let target = if o.separate { i } else { k };
-            let nd = src_nodata(s, if o.separate { i } else { k });
+            let target = if o.separate { bands.len() } else { k };
+            let nd = src_nodata(s, target, b);
             let src = VrtSource {
                 filename: path.clone(),
                 relative_to_vrt: relative,
@@ -189,7 +197,12 @@ pub fn build_vrt(sources: &[MosaicSource], o: &MosaicOptions, vrt_dir: Option<&P
                 properties: Some((s.ds.raster.cols, s.ds.raster.rows, s.ds.raster.data_type)),
             };
             if o.separate {
-                bands.push(VrtBand { data_type: s.ds.raster.data_type, nodata: vrt_nodata(i), color_interp: None, sources: vec![src] });
+                bands.push(VrtBand {
+                    data_type: s.ds.raster.data_type,
+                    nodata: vrt_nodata(target, nd),
+                    color_interp: None,
+                    sources: vec![src],
+                });
             } else {
                 bands[target].sources.push(src);
             }
@@ -325,7 +338,8 @@ fn copy_in_strips(
     let (w, h, nbands) = (vrt.width, vrt.height, vrt.bands.len());
     let data_type = vrt.bands[0].data_type;
     let grid = Grid { width: w, height: h, geo_transform: vrt.geo_transform.unwrap_or([0.0, 1.0, 0.0, 0.0, 0.0, -1.0]) };
-    let header = super::raster_header(grid, data_type, nbands, vrt.bands[0].nodata, &vrt.srs.clone().unwrap_or_default())?;
+    let mut header = super::raster_header(grid, data_type, nbands, vrt.bands[0].nodata, &vrt.srs.clone().unwrap_or_default())?;
+    header.band_nodata = vrt.bands.iter().map(|band| band.nodata).collect();
     let mut out = super::strips::StripWriter::create(&header, path, options)?;
     let span = |i: usize| (i * rows, ((i + 1) * rows).min(h));
     super::strips::pipelined(
@@ -464,7 +478,9 @@ fn vrt_from_memory(vrt: &VrtDataset, sources: &[MosaicSource]) -> Result<RasterD
         }
     }
     let grid = Grid { width: vrt.width, height: vrt.height, geo_transform: vrt.geo_transform.unwrap_or([0.0, 1.0, 0.0, 0.0, 0.0, -1.0]) };
-    super::build_raster_data(grid, out, vrt.bands.len(), vrt.bands[0].nodata, &vrt.srs.clone().unwrap_or_default())
+    let mut ds = super::build_raster_data(grid, out, vrt.bands.len(), vrt.bands[0].nodata, &vrt.srs.clone().unwrap_or_default())?;
+    ds.band_nodata = vrt.bands.iter().map(|band| band.nodata).collect();
+    Ok(ds)
 }
 
 #[cfg(test)]
@@ -513,6 +529,67 @@ mod tests {
         assert_eq!(out.raster.cols, 6);
         // b's nodata pixel at (2, 0) lets a's value show through.
         assert_eq!(&out.raster.data.to_f64_vec()[..6], &[-1.0, 1.0, 1.0, 2.0, 2.0, 2.0]);
+    }
+
+    #[test]
+    fn selected_and_separate_bands_keep_source_nodata_and_output_mapping() {
+        let make = |values, nodata| {
+            let mut ds = super::super::build_raster(
+                Grid { width: 2, height: 1, geo_transform: [0., 1., 0., 1., 0., -1.] },
+                values,
+                DataType::I16,
+                None,
+                &Default::default(),
+                |v, _| v,
+            )
+            .unwrap();
+            ds.band_nodata = vec![None, Some(nodata)];
+            ds
+        };
+        let a = make(vec![vec![1., 2.], vec![41., 42.]], -101.);
+        let b = make(vec![vec![3., 4.], vec![-202., 84.]], -202.);
+        let sources = [MosaicSource { path: "a.tif".into(), ds: &a }, MosaicSource { path: "b.tif".into(), ds: &b }];
+        let selected = MosaicOptions { bands: vec![2, 1, 2], ..Default::default() };
+        let vrt = build_vrt(&sources, &selected, None).unwrap();
+        let nodata = vec![Some(-101.), None, Some(-101.)];
+        assert_eq!(vrt.bands.iter().map(|band| band.nodata).collect::<Vec<_>>(), nodata);
+        assert_eq!(vrt.bands.iter().map(|band| band.sources[1].nodata).collect::<Vec<_>>(), vec![Some(-202.), None, Some(-202.)]);
+        let out = mosaic(&sources, &selected).unwrap();
+        assert_eq!(out.raster.data.to_f64_vec(), vec![41., 84., 3., 4., 41., 84.]);
+        assert_eq!(out.band_nodata, nodata);
+        let mut without_nodata = a.clone();
+        without_nodata.band_nodata = vec![None, None];
+        let first_without_nodata =
+            [MosaicSource { path: "a.tif".into(), ds: &without_nodata }, MosaicSource { path: "b.tif".into(), ds: &b }];
+        let vrt = build_vrt(&first_without_nodata, &selected, None).unwrap();
+        assert!(vrt.bands.iter().all(|band| band.nodata.is_none()));
+
+        let separate = MosaicOptions { separate: true, ..selected.clone() };
+        let vrt = build_vrt(&sources, &separate, None).unwrap();
+        assert_eq!(
+            vrt.bands.iter().map(|band| band.nodata).collect::<Vec<_>>(),
+            vec![Some(-101.), None, Some(-101.), Some(-202.), None, Some(-202.)]
+        );
+        // GDAL indexes explicit nodata by the flattened output band, including -separate.
+        for (src_nodata, expected) in [
+            (Nodata::Values(vec![9., 8.]), vec![Some(9.), Some(8.), Some(8.), Some(8.), Some(8.), Some(8.)]),
+            (Nodata::PerBand(vec![Some(9.), None]), vec![Some(9.), None, None, None, None, None]),
+        ] {
+            let vrt = build_vrt(&sources, &MosaicOptions { src_nodata, ..separate.clone() }, None).unwrap();
+            assert_eq!(vrt.bands.iter().map(|band| band.nodata).collect::<Vec<_>>(), expected);
+            assert_eq!(vrt.bands.iter().map(|band| band.sources[0].nodata).collect::<Vec<_>>(), expected);
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let paths = [dir.path().join("a.tif"), dir.path().join("b.tif")].map(|p| p.to_string_lossy().into_owned());
+        for (ds, path) in [(&a, &paths[0]), (&b, &paths[1])] {
+            crate::write_raster_dataset(ds, path, &Default::default()).unwrap();
+        }
+        let path = dir.path().join("mosaic.tif");
+        mosaic_to_path(&paths, &selected, path.to_str().unwrap(), &Default::default()).unwrap();
+        let streamed = crate::open_raster(path.to_str().unwrap()).unwrap();
+        assert_eq!(streamed.raster.data.to_f64_vec(), out.raster.data.to_f64_vec());
+        assert_eq!((1..=3).map(|b| streamed.band_nodata(b)).collect::<Vec<_>>(), nodata);
     }
 
     /// Overlapping tiles, offset in both directions, copied a few rows at a time, are the

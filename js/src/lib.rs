@@ -262,6 +262,28 @@ impl Dataset {
     }
 }
 
+/// Opens serialized VRT XML with a map of source file names to Uint8Array bytes.
+/// Source GeoTIFFs and VRT pixel windows are read lazily, including in WebAssembly.
+#[wasm_bindgen(js_name = openVrt)]
+pub fn open_vrt(xml: &str, sources: JsValue) -> Result<Dataset, JsError> {
+    let description = terrio::ops::vrt::VirtualRaster::from_xml(xml).map_err(js_err)?;
+    if !sources.is_object() || sources.is_null() {
+        return Err(JsError::new("sources must map filenames to Uint8Array bytes"));
+    }
+    let mut resolved = std::collections::HashMap::new();
+    let object = js_sys::Object::from(sources);
+    for name in js_sys::Object::keys(&object).iter() {
+        let key = name.as_string().ok_or_else(|| JsError::new("invalid source name"))?;
+        let bytes = js_sys::Reflect::get(&object, &name)
+            .map_err(|_| JsError::new("cannot read VRT source map"))?
+            .dyn_into::<js_sys::Uint8Array>()
+            .map_err(|_| JsError::new("source values must be Uint8Array bytes"))?;
+        let reader = terrio::memory::open_raster_lazy_bytes(bytes.to_vec(), &key).map_err(js_err)?;
+        resolved.insert(key, reader);
+    }
+    Ok(Dataset::from_lazy(description.into_lazy(std::path::Path::new(""), resolved).map_err(js_err)?))
+}
+
 /// Opens a dataset from its bytes. `filename`'s extension tells the format (`dem.tif`,
 /// `roads.fgb`, `parcels.zip`); its stem names vector layers.
 ///

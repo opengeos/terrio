@@ -50,6 +50,7 @@ pub(crate) struct StripWriter {
     rows: usize,
     bands: usize,
     width: usize,
+    nodata_pam: Option<Vec<Option<f64>>>,
 }
 
 enum Inner {
@@ -68,6 +69,10 @@ impl StripWriter {
         let r = &header.raster;
         let (rows, bands, width) = (r.rows, r.bands, r.cols);
         if let Some(tiff) = Tiff::create(header, path, options)? {
+            let mut aux = std::ffi::OsString::from(path);
+            aux.push(".aux.xml");
+            let nodata_pam = (crate::dataset::needs_nodata_pam(header) || crate::memfs::exists(std::path::Path::new(&aux)))
+                .then(|| (1..=bands).map(|b| header.band_nodata(b)).collect());
             let inner = {
                 #[cfg(not(target_family = "wasm"))]
                 {
@@ -84,7 +89,7 @@ impl StripWriter {
                 #[cfg(target_family = "wasm")]
                 Inner::Tiff(tiff)
             };
-            return Ok(Self { inner: Some(inner), path: path.to_string(), rows, bands, width });
+            return Ok(Self { inner: Some(inner), path: path.to_string(), rows, bands, width, nodata_pam });
         }
         let mut ds = header.clone();
         ds.raster.data = RasterData::new_filled(r.data_type, width * rows * bands, 0.0);
@@ -94,6 +99,7 @@ impl StripWriter {
             rows,
             bands,
             width,
+            nodata_pam: None,
         })
     }
 
@@ -158,9 +164,15 @@ impl StripWriter {
                 }
                 return crate::write_raster_dataset(&ds, &self.path, &options);
             }
-        };
+        }
+        .and_then(|()| {
+            if let Some(values) = &self.nodata_pam {
+                crate::drivers::common::write_band_nodata_pam(std::path::Path::new(&self.path), values)?;
+            }
+            Ok(())
+        });
         if result.is_err() {
-            let _ = std::fs::remove_file(&self.path);
+            remove_incomplete_output(&self.path);
         }
         result
     }
@@ -183,8 +195,15 @@ impl Drop for StripWriter {
             #[cfg(target_family = "wasm")]
             Inner::Tiff(w) => drop(w),
         }
-        let _ = std::fs::remove_file(&self.path);
+        remove_incomplete_output(&self.path);
     }
+}
+
+fn remove_incomplete_output(path: &str) {
+    let _ = std::fs::remove_file(path);
+    let mut aux = std::ffi::OsString::from(path);
+    aux.push(".aux.xml");
+    let _ = std::fs::remove_file(aux);
 }
 
 /// A GeoTIFF or COG written as its rows come, by terrio's own writer.
@@ -204,7 +223,7 @@ impl Tiff {
             return Ok(None);
         }
         // Compressions only wbraster encodes are written whole.
-        let Some(mut opts) = TiffOptions::from_write_options(options, cog, header.nodata())? else { return Ok(None) };
+        let Some(mut opts) = TiffOptions::from_write_options(options, cog, crate::dataset::tiff_nodata(header))? else { return Ok(None) };
         crate::dataset::ensure_writable_location(path)?;
         if !cog {
             return Ok(Some(Self::GeoTiff(GeoTiffWriter::create(path, header, options)?)));
@@ -381,8 +400,17 @@ mod tests {
         let rows = || RasterData::new_filled(DataType::U8, 4 * 3, 7.0);
         let mut w = StripWriter::create(&header(DataType::U8), path, &Default::default()).unwrap();
         w.write(rows(), 3).unwrap();
+        let aux = format!("{path}.aux.xml");
+        std::fs::write(&aux, "<PAMDataset/>").unwrap();
         drop(w);
         assert!(!std::path::Path::new(path).exists());
+        assert!(!std::path::Path::new(&aux).exists());
+        let mut failed = StripWriter::create(&header(DataType::U8), path, &Default::default()).unwrap();
+        failed.write(rows(), 3).unwrap();
+        std::fs::write(&aux, "<PAMDataset/>").unwrap();
+        assert!(failed.finish().is_err());
+        assert!(!std::path::Path::new(path).exists());
+        assert!(!std::path::Path::new(&aux).exists());
         let mut w = StripWriter::create(&header(DataType::U8), path, &Default::default()).unwrap();
         w.write(rows(), 3).unwrap();
         w.write(rows(), 3).unwrap();
@@ -503,5 +531,39 @@ mod tests {
         let path = dir.path().join("out.tif");
         let options = RasterWriteOptions { compression: Some("JPEG".into()), ..Default::default() };
         assert!(StripWriter::create(&header(DataType::F32), path.to_str().unwrap(), &options).is_err());
+    }
+
+    #[test]
+    fn streamed_tiff_keeps_per_band_and_raw_float_nodata() {
+        let dir = tempfile::tempdir().unwrap();
+        for (label, nodata) in [
+            ("different", vec![Some(-101.), Some(-202.)]),
+            ("decimal", vec![Some(0.1), Some(0.1)]),
+            ("first-only", vec![Some(-101.), None]),
+            ("second-only", vec![None, Some(-202.)]),
+        ] {
+            let mut source = crate::ops::build_raster(
+                crate::ops::Grid { width: 2, height: 1, geo_transform: [0., 1., 0., 1., 0., -1.] },
+                vec![vec![1., 2.], vec![3., 4.]],
+                DataType::F32,
+                nodata[0],
+                &Default::default(),
+                crate::ops::convert_value,
+            )
+            .unwrap();
+            source.band_nodata = nodata.clone();
+            let path = dir.path().join(format!("{label}.tif"));
+            let mut writer = StripWriter::create(&source, path.to_str().unwrap(), &Default::default()).unwrap();
+            writer.write(source.raster.data.clone(), 1).unwrap();
+            writer.finish().unwrap();
+            let mut opened = crate::open_raster_lazy(path.to_str().unwrap()).unwrap();
+            assert_eq!(opened.read().unwrap().band_nodata, nodata);
+            assert_eq!(opened.read().unwrap().raster.data.to_f64_vec(), source.raster.data.to_f64_vec());
+            let whole = dir.path().join(format!("{label}-whole.tif"));
+            crate::write_raster_dataset(&source, whole.to_str().unwrap(), &Default::default()).unwrap();
+            let mut opened = crate::open_raster_lazy(whole.to_str().unwrap()).unwrap();
+            assert_eq!((1..=2).map(|band| opened.band_nodata(band)).collect::<Vec<_>>(), nodata);
+            assert_eq!(opened.read().unwrap().band_nodata, nodata);
+        }
     }
 }

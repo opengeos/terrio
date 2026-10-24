@@ -123,6 +123,14 @@ these cases on the real USGS terrain, with holes and explicit validity masks:
 python scripts/compare_dem_calc_with_gdal.py ../terrio-data --only fill-nodata
 ```
 
+The `vrt` conformance suite cross-reads GDAL/Terrio virtual rasters on USGS terrain,
+including whole and cropped requests, derived bands, nodata, masks, full and
+separable kernels, and affine/reprojection/GCP/TPS/homography/RPC transforms:
+
+```sh
+python scripts/conformance.py ../terrio-data --only vrt --strict
+```
+
 ### Pansharpening against GDAL
 
 The fetch script downloads Landsat 8 B8/B4/B3/B2 real image pairs from the public
@@ -169,3 +177,8 @@ interleaved measurements and Linux affinity/background-load handling. They run i
 CI's conformance job without downloading benchmark datasets or asserting timing
 thresholds. Performance measurements remain an explicit local task; see
 [Benchmarks](benchmarks.md) for the methodology and latest GDAL version used.
+
+The VRT conformance suite also compares ordinary GeoTIFF warp output against GDAL
+for multiband inputs with distinct per-band nodata, both jointly invalid and
+independently invalid pixels, and a separate destination fill. Nearest and bilinear
+cases require exact pixel agreement (tolerance 0).

@@ -5,8 +5,11 @@
 //! ("sources"). terrio writes VRTs GDAL opens, and opens the VRTs GDAL writes for mosaics and
 //! subsets: `SimpleSource`, `ComplexSource` (with `NODATA`, `ScaleOffset`, `ScaleRatio` and
 //! `LUT`, as `gdaldem color-relief -of VRT` writes them) and `AveragedSource`, with
-//! `SrcRect`/`DstRect` windows. Derived bands, kernel filters, pixel functions and warped VRTs are
-//! not supported.
+//! `SrcRect`/`DstRect` windows. [`VirtualRaster`] extends serialized interoperability with
+//! lazy warped VRTs, built-in scalar derived bands, kernel sources and validity masks.
+
+mod virtual_raster;
+pub use virtual_raster::{VirtualRaster, open_virtual_raster};
 
 use super::{Grid, Resampling, convert_value, data_type_name, parse_data_type};
 use crate::crs::SpatialRef;
@@ -30,6 +33,47 @@ pub struct VrtDataset {
     pub srs: Option<SpatialRef>,
     /// The bands.
     pub bands: Vec<VrtBand>,
+}
+
+/// GDALDataTypeUnion-style common buffer type for bands with different native types.
+/// Float64 is required when Float32 cannot cover an integer type's precision/range.
+fn common_type(types: impl IntoIterator<Item = DataType>) -> DataType {
+    fn union(a: DataType, b: DataType) -> DataType {
+        use DataType::*;
+        if a == b {
+            return a;
+        }
+        if a == F64 || b == F64 {
+            return F64;
+        }
+        if a == F32 || b == F32 {
+            let integer = if a == F32 { b } else { a };
+            return if integer.size_bytes() > 2 { F64 } else { F32 };
+        }
+        fn range(t: DataType) -> (i128, i128) {
+            match t {
+                U8 => (0, u8::MAX as i128),
+                I8 => (i8::MIN as i128, i8::MAX as i128),
+                U16 => (0, u16::MAX as i128),
+                I16 => (i16::MIN as i128, i16::MAX as i128),
+                U32 => (0, u32::MAX as i128),
+                I32 => (i32::MIN as i128, i32::MAX as i128),
+                U64 => (0, u64::MAX as i128),
+                I64 => (i64::MIN as i128, i64::MAX as i128),
+                F32 | F64 => unreachable!("integer types only"),
+            }
+        }
+        let (amin, amax) = range(a);
+        let (bmin, bmax) = range(b);
+        [U8, I8, U16, I16, U32, I32, U64, I64]
+            .into_iter()
+            .find(|&t| {
+                let (min, max) = range(t);
+                min <= amin.min(bmin) && max >= amax.max(bmax)
+            })
+            .unwrap_or(F64)
+    }
+    types.into_iter().reduce(union).unwrap_or(DataType::U8)
 }
 
 /// A band of a virtual raster.
@@ -108,7 +152,7 @@ impl VrtDataset {
             }
             None => None,
         };
-        let srs = root.child("SRS").map(|s| SpatialRef::parse(s.text.trim())).transpose()?;
+        let srs = root.child("SRS").filter(|s| !s.text.trim().is_empty()).map(|s| SpatialRef::parse(s.text.trim())).transpose()?;
         let mut bands = Vec::new();
         for b in root.children.iter().filter(|c| c.name == "VRTRasterBand") {
             if let Some(sub) = b.attr("subClass") {
@@ -268,14 +312,14 @@ impl VrtDataset {
     pub fn materialize(&self, base: &Path) -> Result<RasterDataset> {
         let mut cache: HashMap<PathBuf, RasterDataset> = HashMap::new();
         let n = self.width * self.height;
-        let data_type = self.bands[0].data_type;
+        let data_type = common_type(self.bands.iter().map(|b| b.data_type));
         let nodata = self.bands[0].nodata;
         // The output in its type, values converted as they are stored.
         let mut out = RasterData::new_filled(data_type, n * self.bands.len(), 0.0);
         let mut srs = self.srs.clone();
         for (bi, band) in self.bands.iter().enumerate() {
             crate::pixel::with_data!(&mut out, v => {
-                let fill = convert_value(band.nodata.unwrap_or(0.0), data_type);
+                let fill = convert_value(band.nodata.unwrap_or(0.0), band.data_type);
                 v[bi * n..(bi + 1) * n].iter_mut().for_each(|x| *x = fill as _);
             });
             for src in &band.sources {
@@ -341,7 +385,7 @@ impl VrtDataset {
                     }
                 };
                 crate::pixel::with_data!(&mut out, v => {
-                    req.read(self.width, self.height, &mut v[bi * n..(bi + 1) * n], |x| convert_value(value(x), data_type) as _);
+                    req.read(self.width, self.height, &mut v[bi * n..(bi + 1) * n], |x| convert_value(value(x), band.data_type) as _);
                 });
             }
         }
@@ -361,9 +405,7 @@ fn is_float_working(dt: DataType) -> bool {
 /// Opens a VRT file and reads its pixels.
 #[cfg(not(target_family = "wasm"))]
 pub fn read_vrt(path: &str) -> Result<RasterDataset> {
-    let vrt = VrtDataset::open(path)?;
-    let base = Path::new(path).parent().map(Path::to_path_buf).unwrap_or_default();
-    vrt.materialize(&base)
+    open_virtual_raster(path)?.read()
 }
 
 /// Opens a VRT file and reads its pixels.
@@ -1152,11 +1194,11 @@ fn resample_window(s: &SourceRead, win: (f64, f64, f64, f64), out: (usize, usize
 
 // ─── A small XML reader ─────────────────────────────────────────────────────────────────────────
 
-mod xml {
+pub(crate) mod xml {
     use crate::{Error, Result};
 
     /// An element: name, attributes, text and children.
-    #[derive(Debug, Default)]
+    #[derive(Debug, Default, Clone)]
     pub struct Element {
         pub name: String,
         pub attrs: Vec<(String, String)>,
@@ -1165,6 +1207,12 @@ mod xml {
     }
 
     impl Element {
+        pub fn to_xml(&self) -> String {
+            let attrs = self.attrs.iter().map(|(k, v)| format!(" {k}=\"{}\"", escape(v))).collect::<String>();
+            let children = self.children.iter().map(Self::to_xml).collect::<String>();
+            format!("<{}{attrs}>{}{children}</{}>", self.name, escape(&self.text), self.name)
+        }
+
         pub fn attr(&self, name: &str) -> Option<&str> {
             self.attrs.iter().find(|(k, _)| k == name).map(|(_, v)| v.as_str())
         }

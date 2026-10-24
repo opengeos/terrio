@@ -76,6 +76,15 @@ impl GcpTransformer {
         }
     }
 
+    /// Construct a transformer from GDAL's nine serialized homography coefficients.
+    pub fn from_homography(h: [f64; 9]) -> Result<Self> {
+        if h.iter().any(|v| !v.is_finite()) {
+            return Err(Error::InvalidArgument("nonfinite homography".into()));
+        }
+        let inv = invert_homography(&h).ok_or_else(|| Error::InvalidArgument("the homography is not invertible".into()))?;
+        Ok(Self::Homography(Box::new((h, inv))))
+    }
+
     /// Fits a homography to 4 or more GCPs by least squares (`GDALGCPsToHomography`), as
     /// `gdalwarp` does with 4 or 5 GCPs.
     ///

@@ -35,6 +35,8 @@ pub(crate) struct GeoTags {
     pub pixel_is_point: bool,
     /// The `GDAL_NODATA` value.
     pub nodata: Option<f64>,
+    /// One-based nodata overrides from PAM.
+    pub band_nodata: Vec<(usize, f64)>,
     /// For palette images, the file offsets of the `PhotometricInterpretation` values, in every
     /// image (overviews included).
     pub palette_photometric_offsets: Vec<u64>,
@@ -306,7 +308,12 @@ impl GeoTags {
     /// Takes the CRS of the `.aux.xml` sidecar of the file at `path`, when it holds one: it
     /// overrides the GeoKeys, as GDAL reads it (GDAL writes there the CRSs GeoKeys cannot hold).
     pub(crate) fn apply_sidecar_crs(&mut self, path: &std::path::Path) {
-        if let Some(crs) = crate::drivers::common::read_pam(path).and_then(|p| p.crs) {
+        let Some(pam) = crate::drivers::common::read_pam(path) else {
+            return;
+        };
+        self.nodata = self.nodata.or(pam.dataset_nodata);
+        self.band_nodata = pam.band_nodata;
+        if let Some(crs) = pam.crs {
             self.epsg = crs.epsg;
             self.proj4 = None;
             self.crs = Some(crs);
@@ -677,6 +684,11 @@ pub(crate) fn read_geotiff(path: &std::path::Path) -> crate::Result<crate::Raste
     let raster = crate::pixel::raster_from_data(cfg, data)?;
     let has_nodata = tags.nodata.is_some();
     let mut ds = crate::RasterDataset::with_driver(raster, crate::formats::RasterDriver::GTiff, has_nodata);
+    if !tags.band_nodata.is_empty() {
+        ds.band_nodata = (1..=samples).map(|b| tags.band_nodata.iter().find(|(i, _)| *i == b).map(|(_, v)| *v).or(tags.nodata)).collect();
+        ds.has_nodata = ds.band_nodata[0].is_some();
+        ds.raster.nodata = ds.band_nodata[0].unwrap_or(-9999.);
+    }
     match tags.corner_geo_transform() {
         Some(gt) => ds.set_geo_transform(gt),
         None => {
