@@ -2179,8 +2179,7 @@ mod inventory_tests {
             while !thread_stop.load(Ordering::Relaxed) {
                 match listener.accept() {
                     Ok((mut stream, _)) => {
-                        // Winsock may inherit the listener's nonblocking mode. Read complete
-                        // HTTP headers with the timeout on a blocking accepted stream.
+                        // Windows inherits the listener's nonblocking mode on accepted sockets.
                         stream.set_nonblocking(false).unwrap();
                         stream.set_read_timeout(Some(std::time::Duration::from_secs(5))).unwrap();
                         let mut request = String::new();
@@ -2292,10 +2291,9 @@ mod inventory_tests {
             );
             let reader = VirtualRaster::from_xml(&xml).unwrap().into_lazy(dir.path(), HashMap::new()).unwrap();
             let paths = reader.input_paths().unwrap();
-            // Relative VRT references can use forward slashes on Windows too.
-            // Compare filesystem paths rather than their separator spelling.
-            assert!(paths.iter().any(|p| Path::new(p) == mask));
-            assert!(paths.iter().any(|p| Path::new(p) == dir.path().join("mask.tif.msk")));
+            // Resolved references can use forward slashes even on Windows.
+            assert!(paths.iter().any(|path| Path::new(path) == mask));
+            assert!(paths.iter().any(|path| Path::new(path) == dir.path().join("mask.tif.msk")));
             assert!(paths.iter().any(|p| p.contains("science.")
                 && !p.contains("NETCDF:")
                 && !p.contains("HDF5:")
