@@ -292,3 +292,8 @@ crates/terrio/src/ops/viewshed.rs adapts the edge-mode height recurrence in GDAL
 alg/viewshed/viewshed_executor.cpp (https://github.com/OSGeo/gdal), by Tamas Szekeres.
 Copyright (c) 2024 info@hobu.co. Licensed under the MIT permission and warranty
 terms reproduced above for GDAL.
+
+The GDAL 3.13 transformed-unit-square warp scale calculation in
+crates/terrio/src/ops/warp.rs is ported from alg/gdalwarpkernel.cpp,
+GDAL 3.13 (https://github.com/OSGeo/gdal), under the MIT license.
+Copyright (c) 2003, Frank Warmerdam; Copyright (c) 2008-2013, Even Rouault.
