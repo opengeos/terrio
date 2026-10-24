@@ -6,7 +6,6 @@ use crate::crs::{SpatialRef, Transformer};
 use crate::ops::sql::{Expression, Select, field_index};
 use crate::{Error, Result, VectorWriteOptions};
 use std::borrow::Cow;
-use std::cmp::Ordering;
 use wbvector::{Coord, Feature, FieldValue, Geometry, GeometryType, Layer, Ring};
 
 /// What to do with a layer's geometries, as `ogr2ogr -nlt` does.
@@ -296,62 +295,7 @@ impl Translator {
 /// `copy_limit` caps ordered feature references before cloning; translate leaves this unset
 /// so its filters run before the returned SQL limit is applied.
 pub(crate) fn run_select(layers: &[Layer], s: &Select, copy_limit: Option<usize>) -> Result<(Layer, Option<usize>)> {
-    let layer = layers
-        .iter()
-        .find(|l| l.name.eq_ignore_ascii_case(&s.from))
-        .or_else(|| (layers.len() == 1).then(|| &layers[0]))
-        .ok_or_else(|| Error::InvalidArgument(format!("SQL: no layer named '{}'", s.from)))?;
-    let filter = s.filter.as_ref().map(|e| e.bind(&layer.schema)).transpose()?;
-    let mut features: Vec<&Feature> = layer.features.iter().filter(|f| filter.as_ref().is_none_or(|e| e.matches(f))).collect();
-    if let Some((field, desc)) = &s.order_by {
-        let i = field_index(&layer.schema, field).ok_or_else(|| Error::InvalidArgument(format!("SQL: no field named '{field}'")))?;
-        features.sort_by(|a, b| {
-            let o = compare_values(a.attributes.get(i).unwrap_or(&FieldValue::Null), b.attributes.get(i).unwrap_or(&FieldValue::Null));
-            if *desc { o.reverse() } else { o }
-        });
-    }
-    if let Some(n) = copy_limit {
-        features.truncate(n);
-    }
-    let mut out = Layer::new(layer.name.clone());
-    out.geom_type = layer.geom_type;
-    out.crs = layer.crs.clone();
-    let idx: Vec<usize> = if s.columns.is_empty() {
-        out.schema = layer.schema.clone();
-        (0..layer.schema.len()).collect()
-    } else {
-        let mut idx = Vec::new();
-        for (name, alias) in &s.columns {
-            let i = field_index(&layer.schema, name).ok_or_else(|| Error::InvalidArgument(format!("SQL: no field named '{name}'")))?;
-            let mut def = layer.schema.fields()[i].clone();
-            if let Some(a) = alias {
-                def.name = a.clone();
-            }
-            out.schema.add_field(def);
-            idx.push(i);
-        }
-        idx
-    };
-    for f in features {
-        let attributes = idx.iter().map(|&i| f.attributes.get(i).cloned().unwrap_or(FieldValue::Null)).collect();
-        out.features.push(Feature { fid: f.fid, geometry: f.geometry.clone(), attributes });
-    }
-    Ok((out, s.limit))
-}
-
-/// Orders field values, nulls first.
-fn compare_values(a: &FieldValue, b: &FieldValue) -> Ordering {
-    match (a, b) {
-        (FieldValue::Null, FieldValue::Null) => Ordering::Equal,
-        (FieldValue::Null, _) => Ordering::Less,
-        (_, FieldValue::Null) => Ordering::Greater,
-        (FieldValue::Integer(x), FieldValue::Integer(y)) => x.cmp(y),
-        (FieldValue::Boolean(x), FieldValue::Boolean(y)) => x.cmp(y),
-        _ => match (a.as_f64(), b.as_f64()) {
-            (Some(x), Some(y)) => x.partial_cmp(&y).unwrap_or(Ordering::Equal),
-            _ => a.as_str().unwrap_or_default().cmp(b.as_str().unwrap_or_default()),
-        },
-    }
+    crate::ops::sql::select_query(layers, s, copy_limit)
 }
 
 /// A spatial filter: a polygon (a rectangle, or a rectangle transformed into the layer's CRS).

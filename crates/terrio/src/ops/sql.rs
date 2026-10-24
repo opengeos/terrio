@@ -17,10 +17,14 @@ use crate::{Error, Result};
 use std::cmp::Ordering;
 use wbvector::{Feature, FieldValue, Layer, Schema};
 
+mod select;
+pub(crate) use select::execute as select_query;
+
 /// Runs a read-only `SELECT` using terrio's OGR SQL subset, preserving source geometry, CRS
 /// and feature IDs. Supports field selection/aliases, WHERE, one ORDER BY field, and LIMIT.
-/// FROM must name an input layer (case-insensitively). Joins, aggregates, spatial functions and
-/// computed SELECT columns are unsupported. Output field names must be unique.
+/// FROM must name an input layer (case-insensitively). Supports computed expressions, single-field
+/// DISTINCT, COUNT/SUM/AVG/MIN/MAX summaries and same-dataset attribute LEFT JOINs.
+/// DISTINCT and summaries discard geometry. Output field names must be unique.
 ///
 /// ```no_run
 /// let ds = terrio::open_vector("countries.gpkg", &Default::default())?;
@@ -55,7 +59,7 @@ pub struct BoundExpression(Expr);
 /// [LIMIT n]`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Select {
-    /// The selected columns: `(field, alias)`. Empty means all fields (`*`).
+    /// Legacy name/alias view of ordinary or computed columns; excludes wildcards and summaries.
     pub columns: Vec<(String, Option<String>)>,
     /// The layer to read.
     pub from: String,
@@ -65,6 +69,11 @@ pub struct Select {
     pub order_by: Option<(String, bool)>,
     /// `LIMIT n`.
     pub limit: Option<usize>,
+    /// Whether to return unique values of one selected field, without geometry.
+    pub distinct: bool,
+    items: Vec<select::Item>,
+    joins: Vec<select::Join>,
+    alias: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -128,6 +137,7 @@ enum Value {
     Int(i64),
     Float(f64),
     Text(String),
+    Blob(Vec<u8>),
 }
 
 impl Value {
@@ -137,7 +147,8 @@ impl Value {
             FieldValue::Float(f) => Value::Float(*f),
             FieldValue::Boolean(b) => Value::Int(*b as i64),
             FieldValue::Text(s) | FieldValue::Date(s) | FieldValue::DateTime(s) => Value::Text(s.clone()),
-            FieldValue::Blob(_) | FieldValue::Null => Value::Null,
+            FieldValue::Blob(b) => Value::Blob(b.clone()),
+            FieldValue::Null => Value::Null,
         }
     }
 
@@ -146,7 +157,7 @@ impl Value {
             Value::Int(i) => Some(*i as f64),
             Value::Float(f) => Some(*f),
             Value::Text(s) => s.trim().parse().ok(),
-            Value::Null => None,
+            Value::Null | Value::Blob(_) => None,
         }
     }
 
@@ -155,7 +166,7 @@ impl Value {
             Value::Int(i) => i.to_string(),
             Value::Float(f) => f.to_string(),
             Value::Text(s) => s.clone(),
-            Value::Null => String::new(),
+            Value::Null | Value::Blob(_) => String::new(),
         }
     }
 
@@ -164,6 +175,7 @@ impl Value {
             Value::Int(i) => *i != 0,
             Value::Float(f) => *f != 0.0,
             Value::Text(s) => !s.is_empty(),
+            Value::Blob(b) => !b.is_empty(),
             Value::Null => false,
         }
     }
@@ -223,20 +235,46 @@ impl Select {
         let tokens = tokenize(text)?;
         let mut p = Parser { tokens, pos: 0 };
         p.expect_keyword("SELECT")?;
+        let distinct = p.eat_keyword("DISTINCT");
         let mut columns = Vec::new();
-        if p.eat(&Token::Op("*")) {
-        } else {
-            loop {
-                let name = p.identifier()?;
-                let alias = if p.eat_keyword("AS") { Some(p.identifier()?) } else { None };
-                columns.push((name, alias));
-                if !p.eat(&Token::Comma) {
-                    break;
-                }
+        let mut items = Vec::new();
+        loop {
+            let item = select::Item::parse(&mut p)?;
+            if let select::Item::Column(expr, alias) = &item {
+                columns.push((
+                    match expr {
+                        Expr::Field(n) => n.clone(),
+                        _ => format!("FIELD_{}", items.len() + 1),
+                    },
+                    alias.clone(),
+                ));
             }
+            items.push(item);
+            if !p.eat(&Token::Comma) {
+                break;
+            }
+        }
+        if items == [select::Item::Star(None)] {
+            columns.clear();
         }
         p.expect_keyword("FROM")?;
         let from = p.identifier()?;
+        let alias = select::table_alias(&mut p)?;
+        let mut joins = Vec::new();
+        while p.is_keyword(0, "LEFT") || p.is_keyword(0, "JOIN") {
+            p.eat_keyword("LEFT");
+            p.eat_keyword("OUTER");
+            p.expect_keyword("JOIN")?;
+            let layer = p.identifier()?;
+            let alias = select::table_alias(&mut p)?;
+            p.expect_keyword("ON")?;
+            let left = p.identifier()?;
+            if !p.eat(&Token::Op("=")) {
+                return Err(syntax("JOIN requires an equality of attribute fields".into()));
+            }
+            let right = p.identifier()?;
+            joins.push(select::Join { layer, alias, left, right });
+        }
         let filter = if p.eat_keyword("WHERE") { Some(Expression(p.expr()?)) } else { None };
         let mut order_by = None;
         if p.eat_keyword("ORDER") {
@@ -260,7 +298,7 @@ impl Select {
         if p.pos < p.tokens.len() {
             return Err(syntax(format!("unexpected '{}'", p.tokens[p.pos])));
         }
-        Ok(Select { columns, from, filter, order_by, limit })
+        Ok(Select { columns, from, filter, order_by, limit, distinct, items, joins, alias })
     }
 }
 
@@ -325,12 +363,23 @@ fn compare(a: &Value, b: &Value) -> Option<Ordering> {
     match (a, b) {
         (Value::Null, _) | (_, Value::Null) => None,
         (Value::Int(x), Value::Int(y)) => Some(x.cmp(y)),
+        (Value::Blob(x), Value::Blob(y)) => Some(x.cmp(y)),
+        (Value::Blob(_), _) | (_, Value::Blob(_)) => None,
         (Value::Text(x), Value::Text(y)) => Some(x.cmp(y)),
         (Value::Text(_), _) | (_, Value::Text(_)) => match (a.as_f64(), b.as_f64()) {
             (Some(x), Some(y)) => x.partial_cmp(&y),
             _ => Some(a.to_text().cmp(&b.to_text())),
         },
         _ => a.as_f64()?.partial_cmp(&b.as_f64()?),
+    }
+}
+
+// Current OGRSQL applies case-insensitive string comparisons to predicates, while
+// ORDER BY and MIN/MAX use the case-sensitive ordering in `compare` above.
+fn compare_predicate(a: &Value, b: &Value) -> Option<Ordering> {
+    match (a, b) {
+        (Value::Text(a), Value::Text(b)) => Some(a.bytes().map(|c| c.to_ascii_lowercase()).cmp(b.bytes().map(|c| c.to_ascii_lowercase()))),
+        _ => compare(a, b),
     }
 }
 
@@ -350,7 +399,8 @@ fn truth(e: &Expr, f: &Feature) -> Truth {
             Truth { value: !x.value && !x.null, null: x.null }
         }
         Expr::Binary(op @ (BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge), a, b) => {
-            let Some(ord) = compare(&eval(a, f), &eval(b, f)) else { return NULL_TRUTH };
+            let (a, b) = (eval(a, f), eval(b, f));
+            let Some(ord) = compare_predicate(&a, &b) else { return NULL_TRUTH };
             Truth::of(match op {
                 BinOp::Eq => ord == Ordering::Equal,
                 BinOp::Ne => ord != Ordering::Equal,
@@ -373,12 +423,12 @@ fn truth(e: &Expr, f: &Feature) -> Truth {
             if v == Value::Null {
                 return NULL_TRUTH;
             }
-            let found = list.iter().any(|x| compare(&v, &eval(x, f)) == Some(Ordering::Equal));
+            let found = list.iter().any(|x| compare_predicate(&v, &eval(x, f)) == Some(Ordering::Equal));
             Truth::of(found != *negated)
         }
         Expr::Between { expr, low, high, negated } => {
             let v = eval(expr, f);
-            match (compare(&v, &eval(low, f)), compare(&v, &eval(high, f))) {
+            match (compare_predicate(&v, &eval(low, f)), compare_predicate(&v, &eval(high, f))) {
                 (Some(lo), Some(hi)) => Truth::of((lo != Ordering::Less && hi != Ordering::Greater) != *negated),
                 _ => NULL_TRUTH,
             }
@@ -398,7 +448,7 @@ fn eval(e: &Expr, f: &Feature) -> Value {
         Expr::Fid => Value::Int(f.fid as i64),
         Expr::Field(_) => Value::Null,
         Expr::Neg(a) => match eval(a, f) {
-            Value::Int(i) => Value::Int(-i),
+            Value::Int(i) => i.checked_neg().map(Value::Int).unwrap_or(Value::Null),
             v => v.as_f64().map(|x| Value::Float(-x)).unwrap_or(Value::Null),
         },
         Expr::Binary(op @ (BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod), a, b) => arith(*op, eval(a, f), eval(b, f)),
@@ -420,8 +470,8 @@ fn arith(op: BinOp, a: Value, b: Value) -> Value {
             BinOp::Add => Value::Int(x.wrapping_add(y)),
             BinOp::Sub => Value::Int(x.wrapping_sub(y)),
             BinOp::Mul => Value::Int(x.wrapping_mul(y)),
-            BinOp::Div if y != 0 => Value::Int(x / y),
-            BinOp::Mod if y != 0 => Value::Int(x % y),
+            BinOp::Div => x.checked_div(y).map(Value::Int).unwrap_or(Value::Null),
+            BinOp::Mod => x.checked_rem(y).map(Value::Int).unwrap_or(Value::Null),
             _ => Value::Null,
         };
     }
@@ -603,8 +653,10 @@ struct Parser {
     pos: usize,
 }
 
-const RESERVED: &[&str] =
-    &["AND", "OR", "NOT", "IN", "LIKE", "ILIKE", "IS", "NULL", "BETWEEN", "ESCAPE", "FROM", "WHERE", "ORDER", "BY", "LIMIT", "AS"];
+const RESERVED: &[&str] = &[
+    "AND", "OR", "NOT", "IN", "LIKE", "ILIKE", "IS", "NULL", "BETWEEN", "ESCAPE", "FROM", "WHERE", "ORDER", "BY", "LIMIT", "AS", "LEFT",
+    "OUTER", "JOIN", "ON", "GROUP", "OFFSET", "UNION",
+];
 
 impl Parser {
     fn peek(&self) -> Option<&Token> {
@@ -831,7 +883,7 @@ mod tests {
         let f = feature(Some("France"), Some(67_000_000), 551_695.5);
         assert!(check("pop > 1e6", &f));
         assert!(check("POP >= 67000000 AND name = 'France'", &f));
-        assert!(!check("name = 'france'", &f));
+        assert!(check("name = 'france'", &f));
         assert!(check("name <> 'Spain' or pop < 0", &f));
         assert!(check("NOT (pop < 10)", &f));
         assert!(check("area BETWEEN 500000 AND 600000", &f));

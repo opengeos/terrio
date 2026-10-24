@@ -181,6 +181,19 @@ Inputs can be datasets or raster bytes. All spectral inputs contribute to intens
 `bands` selects/reorders output bands. See [pansharpen](cli.md#pansharpen) for working
 types, interpolation, nodata, bit depth and extent handling.
 
+## SQL queries
+
+`sql(src, query)` returns a `Dataset` using the shared [OGR SQL subset](sql.md).
+Inputs may be a `Dataset`, file bytes, `{ bytes, filename }`, or GeoJSON.
+
+```js
+const result = sql(countries, "SELECT ADMIN, POP_EST/1000000.0 AS millions FROM countries");
+const summary = sql(countries, "SELECT COUNT(*) AS n, SUM(POP_EST) AS population FROM countries");
+```
+
+Raw GeoJSON inputs use the layer name `layer`; use `Layer.from_geojson(..., name=...)`
+(Python) or `fromGeoJSON(src, name)` (JavaScript) to assign another name.
+
 ## Viewshed
 
 ```javascript
