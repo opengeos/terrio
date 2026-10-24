@@ -126,6 +126,15 @@ impl PyMdArray {
     fn slice(&self, dimension: &str, start: usize, count: usize, step: usize) -> PyResult<Self> {
         Ok(Self { view: self.view.slice(dimension, start, count, step).py()?, info: self.info.clone() })
     }
+    /// Select and remove a zero-based axis in the current view, including repeated names.
+    fn isel_axis(&self, axis: usize, index: usize) -> PyResult<Self> {
+        Ok(Self { view: self.view.isel_axis(axis, index).py()?, info: self.info.clone() })
+    }
+    /// Slice a zero-based current axis position rather than a dimension name.
+    #[pyo3(signature=(axis,start,count,step=1))]
+    fn slice_axis(&self, axis: usize, start: usize, count: usize, step: usize) -> PyResult<Self> {
+        Ok(Self { view: self.view.slice_axis(axis, start, count, step).py()?, info: self.info.clone() })
+    }
     /// Reorder all current dimensions by name; the default reverses their order.
     #[pyo3(signature=(dimensions=None))]
     fn transpose(&self, dimensions: Option<Vec<String>>) -> PyResult<Self> {

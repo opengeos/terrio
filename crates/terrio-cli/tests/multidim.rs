@@ -46,6 +46,27 @@ fn reads_a_named_hyperslab_as_json() {
     assert_eq!(result["data_type"], "UInt16");
 }
 #[test]
+fn positional_selections_and_json_cap_are_checked_before_reading() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("cube.nc");
+    fixture(&path);
+    let run = |extra: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_terrio"))
+            .args(["mdread", path.to_str().unwrap(), "--array", "/wind"])
+            .args(extra)
+            .output()
+            .unwrap()
+    };
+    let capped = run(&["--max-elements", "2"]);
+    assert!(!capped.status.success());
+    assert!(String::from_utf8_lossy(&capped.stderr).contains("--slice/--isel"));
+    assert!(run(&["--max-elements", "0"]).status.success());
+    let selected = run(&["--isel-axis", "0=1", "--slice-axis", "0=0,2", "--max-elements", "2"]);
+    assert!(selected.status.success());
+    let json: Value = serde_json::from_slice(&selected.stdout).unwrap();
+    assert_eq!(json["values"], json!([3, 4]));
+}
+#[test]
 fn mcp_discovers_native_tools_and_reads_the_cli() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("cube.nc");

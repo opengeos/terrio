@@ -78,6 +78,16 @@ impl MdArray {
     pub fn slice(&self, dimension: &str, start: usize, count: usize, step: Option<usize>) -> Result<MdArray, JsError> {
         Ok(Self { view: self.view.slice(dimension, start, count, step.unwrap_or(1)).map_err(js_err)?, info: self.info.clone() })
     }
+    /// Select and remove a zero-based current axis, including repeated dimension names.
+    #[wasm_bindgen(js_name=iselAxis)]
+    pub fn isel_axis(&self, axis: usize, index: usize) -> Result<MdArray, JsError> {
+        Ok(Self { view: self.view.isel_axis(axis, index).map_err(js_err)?, info: self.info.clone() })
+    }
+    /// Slice a zero-based current axis position.
+    #[wasm_bindgen(js_name=sliceAxis)]
+    pub fn slice_axis(&self, axis: usize, start: usize, count: usize, step: Option<usize>) -> Result<MdArray, JsError> {
+        Ok(Self { view: self.view.slice_axis(axis, start, count, step.unwrap_or(1)).map_err(js_err)?, info: self.info.clone() })
+    }
     /// Reorder all remaining axes by name, or reverse their order when omitted.
     pub fn transpose(&self, dimensions: JsValue) -> Result<MdArray, JsError> {
         let current = self.view.dimensions();

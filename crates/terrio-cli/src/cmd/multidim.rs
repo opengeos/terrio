@@ -22,6 +22,15 @@ pub struct ReadArgs {
     /// Positive-stride range after indexing: dimension=start,count[,step]. May be repeated.
     #[arg(long, value_name = "DIM=START,COUNT[,STEP]")]
     slice: Vec<String>,
+    /// Select/remove a zero-based current axis: axis=index. Useful for repeated names.
+    #[arg(long, value_name = "AXIS=INDEX")]
+    isel_axis: Vec<String>,
+    /// Slice a zero-based current axis: axis=start,count[,step].
+    #[arg(long, value_name = "AXIS=START,COUNT[,STEP]")]
+    slice_axis: Vec<String>,
+    /// Maximum JSON element count; 0 explicitly permits an unlimited selection.
+    #[arg(long, default_value_t = 1_000_000)]
+    max_elements: usize,
     /// Reorder all remaining dimensions, by their comma-separated names.
     #[arg(long, value_delimiter = ',')]
     transpose: Vec<String>,
@@ -78,6 +87,27 @@ pub fn read(args: ReadArgs) -> Result<()> {
         }
         view = view.slice(name, values[0], values[1], values.get(2).copied().unwrap_or(1))?;
     }
+    for selection in &args.isel_axis {
+        let (axis, index) = selection.split_once('=').ok_or_else(|| invalid("--isel-axis requires axis=index"))?;
+        view = view.isel_axis(
+            axis.parse().map_err(|_| invalid("axis must be a zero-based integer"))?,
+            index.parse().map_err(|_| invalid("axis index must be a nonnegative integer"))?,
+        )?;
+    }
+    for selection in &args.slice_axis {
+        let (axis, range) = selection.split_once('=').ok_or_else(|| invalid("--slice-axis requires axis=start,count[,step]"))?;
+        let sizes: Vec<usize> =
+            range.split(',').map(|v| v.parse().map_err(|_| invalid("slice values must be nonnegative integers"))).collect::<Result<_>>()?;
+        if !(2..=3).contains(&sizes.len()) {
+            return Err(invalid("--slice-axis requires axis=start,count[,step]"));
+        }
+        view = view.slice_axis(
+            axis.parse().map_err(|_| invalid("axis must be a zero-based integer"))?,
+            sizes[0],
+            sizes[1],
+            sizes.get(2).copied().unwrap_or(1),
+        )?;
+    }
     if !args.transpose.is_empty() {
         let dimensions = view.dimensions();
         let permutation: Vec<_> = args
@@ -91,6 +121,14 @@ pub fn read(args: ReadArgs) -> Result<()> {
             })
             .collect::<Result<_>>()?;
         view = view.transpose(&permutation)?;
+    }
+    let elements =
+        view.shape().into_iter().try_fold(1usize, |n, size| n.checked_mul(size).ok_or_else(|| invalid("selection size overflows")))?;
+    if args.max_elements != 0 && elements > args.max_elements {
+        return Err(invalid(format!(
+            "selection has {elements} elements, exceeding --max-elements {}; use --slice/--isel or increase --max-elements (0 permits unlimited)",
+            args.max_elements
+        )));
     }
     let buffer = view.read()?;
     println!(

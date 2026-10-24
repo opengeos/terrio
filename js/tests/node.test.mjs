@@ -1155,6 +1155,9 @@ test("native multidimensional views retain integer precision and store lifetimes
   assert.ok(ds.arrayPaths.includes("/cube"));
   const array = ds.array("cube");
   assert.deepEqual([...array.shape], [2, 2, 3]);
+  const positional = array.iselAxis(0, 1).sliceAxis(1, 1, 1);
+  assert.deepEqual([...positional.read()], [7n, 10n].map((n) => base + n));
+  positional.free();
   const view = array.isel("time", 1).transpose(["x", "y"]);
   assert.deepEqual([...view.shape], [3, 2]);
   assert.ok(view.read() instanceof BigInt64Array);

@@ -196,3 +196,37 @@ fn failed_snapshot_leaves_no_destination_and_can_be_retried() {
     assert!(fixed.write(destination.to_str().unwrap()).is_err());
     assert_eq!(std::fs::read(destination.join("a/0")).unwrap(), before);
 }
+
+#[test]
+fn repeated_dimension_axes_have_positional_selections() {
+    let mut ds = dataset();
+    let x = ds.root.dimensions.iter().find(|d| d.name == "x").unwrap().clone();
+    let a = Array::from_bytes(
+        ArrayInfo {
+            name: "covariance".into(),
+            path: "/covariance".into(),
+            data_type: DataType::I64,
+            dimensions: vec![x.clone(), x],
+            chunks: Some(vec![2, 2]),
+            attributes: json!({}),
+            coordinates: vec!["/x".into()],
+        },
+        (0i64..16).flat_map(i64::to_le_bytes).collect(),
+    )
+    .unwrap();
+    assert!(a.view().isel("x", 1).is_err());
+    assert_eq!(a.view().isel_axis(0, 1).unwrap().read().unwrap().values().unwrap(), json!([4, 5, 6, 7]));
+    assert_eq!(a.view().slice_axis(1, 1, 2, 1).unwrap().read().unwrap().values().unwrap(), json!([1, 2, 5, 6, 9, 10, 13, 14]));
+    assert!(a.view().isel_axis(2, 0).is_err());
+    ds.root.arrays.push(a);
+    #[cfg(feature = "zarr")]
+    {
+        let reopened = terrio::multidim::open_zarr_store(ds.to_zarr_store().unwrap()).unwrap();
+        assert_eq!(reopened.array("covariance").unwrap().read().unwrap().values().unwrap(), json!((0..16).collect::<Vec<_>>()));
+        #[cfg(feature = "netcdf-hdf5")]
+        assert_eq!(
+            terrio::multidim::open_bytes(&reopened.to_netcdf_bytes().unwrap()).unwrap().array("covariance").unwrap().shape(),
+            [4, 4]
+        );
+    }
+}

@@ -134,7 +134,7 @@ pub(super) fn netcdf_bytes(dataset: &Dataset) -> Result<Vec<u8>> {
             values: Values::Bytes(value.to_le_bytes().to_vec()),
         }
     }
-    fn attrs(raw: &Value) -> Vec<Attr> {
+    fn attrs(raw: &Value, types: &AttributeTypes) -> Vec<Attr> {
         let Some(attrs) = raw.as_object() else {
             return Vec::new();
         };
@@ -151,6 +151,7 @@ pub(super) fn netcdf_bytes(dataset: &Dataset) -> Result<Vec<u8>> {
                         | "_Netcdf4Dimid"
                         | "_ARRAY_DIMENSIONS"
                         | "_terrio_dimensions"
+                        | "_terrio_attribute_types"
                 )
             })
             .map(|(name, value)| {
@@ -158,6 +159,16 @@ pub(super) fn netcdf_bytes(dataset: &Dataset) -> Result<Vec<u8>> {
                     Value::Array(v) => (v.clone(), Some(vec![v.len() as u64])),
                     v => (vec![v.clone()], None),
                 };
+                if let Some(&native) = types.get(name)
+                    && values.iter().all(|v| v.is_number() || matches!(v.as_str(), Some("NaN" | "Infinity" | "-Infinity")))
+                {
+                    return Attr {
+                        name: name.clone(),
+                        dtype: dtype(native),
+                        shape,
+                        values: Values::Bytes(values.iter().flat_map(|v| sample(v, native)).collect()),
+                    };
+                }
                 if values.iter().all(Value::is_i64) {
                     return Attr {
                         name: name.clone(),
@@ -217,18 +228,18 @@ pub(super) fn netcdf_bytes(dataset: &Dataset) -> Result<Vec<u8>> {
             }
         }
     }
-    let mut file = hdf5_write::File { attrs: attrs(&dataset.root.attributes), ..Default::default() };
+    let mut file = hdf5_write::File { attrs: attrs(&dataset.root.attributes, &dataset.root.attribute_types), ..Default::default() };
     file.attrs.push(Attr::text("_NCProperties", concat!("version=2,terrio=", env!("CARGO_PKG_VERSION"))));
     fn group_attrs(group: &Group, out: &mut Vec<(String, Vec<Attr>)>) {
         for child in &group.groups {
-            out.push((child.path.trim_matches('/').into(), attrs(&child.attributes)));
+            out.push((child.path.trim_matches('/').into(), attrs(&child.attributes, &child.attribute_types)));
             group_attrs(child, out);
         }
     }
     group_attrs(&dataset.root, &mut file.group_attrs);
     for array in &arrays {
         let shape = array.shape();
-        let mut attributes = attrs(&array.info.attributes);
+        let mut attributes = attrs(&array.info.attributes, &array.attribute_types);
         let fill = sample(&array.info.attributes["_FillValue"], array.info.data_type);
         if array.info.attributes.get("_FillValue").is_some() {
             attributes.retain(|a| a.name != "_FillValue");

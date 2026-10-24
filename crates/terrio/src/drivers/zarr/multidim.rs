@@ -47,6 +47,7 @@ pub(crate) fn md_open(name: &str, mount: Option<std::sync::Arc<crate::memfs::Mou
         if !group.attributes.is_object() {
             group.attributes = json!({});
         }
+        group.attribute_types = crate::multidim::take_attribute_types(&mut group.attributes)?;
         let standalone = match read_array_opt(node) {
             Ok(array) => array.is_some(),
             Err(e @ Error::Unsupported(_)) => {
@@ -127,18 +128,21 @@ pub(crate) fn md_open(name: &str, mount: Option<std::sync::Arc<crate::memfs::Mou
                     }
                 }
             }
+            let mut attributes = if a.attrs.is_object() { a.attrs.clone() } else { json!({}) };
+            let attribute_types = crate::multidim::take_attribute_types(&mut attributes)?;
             let info = ArrayInfo {
                 path: format!("{}/{}", p.trim_end_matches('/'), name),
                 name,
                 data_type: a.data_type,
                 dimensions,
                 chunks: Some(a.chunks.clone()),
-                attributes: if a.attrs.is_object() { a.attrs.clone() } else { json!({}) },
+                attributes,
                 coordinates,
             };
             group.arrays.push(crate::multidim::Array {
                 info,
                 source: Source::Zarr(std::sync::Arc::new(MdSource { array: a, _mount: mount.clone() })),
+                attribute_types,
             });
         }
         if let Some(saved) = group.attributes.get("_terrio_dimensions") {
@@ -175,6 +179,7 @@ pub(crate) fn md_write(dataset: &crate::multidim::Dataset, destination: &str) ->
         if !group_attributes.is_object() {
             group_attributes = json!({});
         }
+        group_attributes["_terrio_attribute_types"] = crate::multidim::attribute_type_metadata(&g.attribute_types);
         group_attributes["_terrio_dimensions"] = serde_json::to_value(&g.dimensions).map_err(|e| bad(e.to_string()))?;
         write_group(&directory, &group_attributes, Version::V2, metadata, prefix)?;
         for array in &g.arrays {
@@ -187,6 +192,7 @@ pub(crate) fn md_write(dataset: &crate::multidim::Dataset, destination: &str) ->
             if !attrs.is_object() {
                 attrs = json!({});
             }
+            attrs["_terrio_attribute_types"] = crate::multidim::attribute_type_metadata(&array.attribute_types);
             attrs["_terrio_dimensions"] = serde_json::to_value(&array.info.dimensions).map_err(|e| bad(e.to_string()))?;
             attrs["_ARRAY_DIMENSIONS"] = Value::Array(array.info.dimensions.iter().map(|d| Value::String(d.name.clone())).collect());
             let fill = attrs.get("_FillValue").cloned().unwrap_or(Value::Null);
@@ -209,7 +215,7 @@ pub(crate) fn md_write(dataset: &crate::multidim::Dataset, destination: &str) ->
                 let valid: Vec<_> = shape.iter().zip(&start).zip(&chunks).map(|((&s, &o), &c)| (s - o).min(c)).collect();
                 let mut view = array.view();
                 for (axis, (&origin, &count)) in start.iter().zip(&valid).enumerate() {
-                    view = view.slice(&array.info.dimensions[axis].path, origin, count, 1)?;
+                    view = view.slice_axis(axis, origin, count, 1)?;
                 }
                 let buffer = view.read()?;
                 let mut chunk = fill.repeat(chunk_elements);

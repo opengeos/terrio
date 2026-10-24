@@ -181,6 +181,11 @@ def comparisons(data, work, cli):
             sample = original.u_wind.isel(lat=slice(0, 8), lon=slice(0, 12)).load()
         values = np.broadcast_to(sample.values, (3, 2, 8, 12)).copy()
         ds = xr.Dataset({"wind": (("time", "depth", "lat", "lon"), values)}, coords={"time": [0, 6, 12], "depth": [0., 10.], "lat": sample.lat.values, "lon": sample.lon.values})
+        ds["depth_covariance"] = (("depth", "depth"), np.outer(ds.depth.values, ds.depth.values))
+        ds.attrs["diagnostic_nan"] = np.float32(np.nan)
+        ds.attrs["diagnostic_vector"] = np.array([np.inf, -np.inf, 1.5], dtype="float32")
+        ds.attrs["literal_nan"] = "NaN"
+        ds.wind.attrs["minimum_nonfinite"] = np.float32(-np.inf)
         ds.time.attrs["units"] = "hours since 2000-01-01"
         ds.depth.attrs.update({"units": "m", "positive": "down"})
         ds.to_netcdf(cube, engine="h5netcdf", unlimited_dims=["time"], encoding={"wind": {"chunksizes": (1, 1, 4, 6), "zlib": True, "complevel": 1}})
@@ -188,6 +193,16 @@ def comparisons(data, work, cli):
     case("read", "wind-derived cube time/depth view", lambda: read_case(cli, cube, "/wind", indices={"time": 1, "depth": 1}, slices={"lat": (1, 3, 1), "lon": (2, 4, 2)}, transpose=["lon", "lat"]))
     case("snapshot", "four-dimensional netCDF to Zarr chunk and coordinate preservation", lambda: snapshot_equal(cli, cube, cube_zarr))
     case("snapshot", "four-dimensional Zarr to netCDF unlimited axis preservation", lambda: snapshot_equal(cli, cube_zarr, cube_back))
+    def numeric_attribute_types():
+        with h5py.File(cube, "r") as expected, h5py.File(cube_back, "r") as actual:
+            for name in ["diagnostic_nan", "diagnostic_vector"]:
+                assert actual.attrs[name].dtype == expected.attrs[name].dtype == np.dtype("float32")
+                np.testing.assert_array_equal(actual.attrs[name], expected.attrs[name])
+            text = lambda value: value.decode() if isinstance(value, bytes) else value
+            assert text(actual.attrs["literal_nan"]) == text(expected.attrs["literal_nan"])
+            assert actual["wind"].attrs["minimum_nonfinite"].dtype == np.dtype("float32")
+            assert np.isneginf(actual["wind"].attrs["minimum_nonfinite"])
+    case("snapshot", "numeric Float32 and nonfinite attributes retain their types", numeric_attribute_types)
     def lazy_zarr():
         # The uncompressed chunk holds 24 Float64 values; truncating it must fail if fetched.
         (cube_zarr / "wind/2.1.0.0").write_bytes(b"x")

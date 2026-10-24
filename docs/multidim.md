@@ -31,12 +31,18 @@ positive-stride range relative to the current view. `transpose` reorders the rem
 All three construct lazy views; `read` materializes the selected values. Dimension selectors
 accept either a local name or its absolute defining path; ambiguous or missing names are errors.
 Indices are zero-based. Empty ranges and scalar arrays are supported.
+For repeated dimension names, such as a covariance array with axes `[x, x]`, use
+`isel_axis(axis, index)` and `slice_axis(axis, start, count, step=1)` in Rust/Python,
+`iselAxis`/`sliceAxis` in JavaScript, or `--isel-axis`/`--slice-axis` in the CLI.
+Axis positions refer to the current view and change after indexing or transposition.
 
 Values retain the source's packed representation, original axis order, signedness and numeric
 width, including exact 64-bit integers. Scale/offset, units, fill values and calendar metadata
 remain attributes; CF masking, unpacking and date decoding are left to the caller. Floating
 nonfinite attributes and CLI JSON values use `NaN`, `Infinity` and `-Infinity` strings. Rust
 buffers and NumPy/JavaScript typed arrays keep the original floating-point values.
+Original numeric attribute types are retained internally, so netCDF snapshots preserve
+Float32 attributes and numeric nonfinite values without converting literal text `NaN` to a number.
 
 Native reads support local netCDF classic/CDF-2/CDF-5, netCDF-4 and numeric HDF5, including JPSS
 user blocks, plus local/remote Zarr v2/v3 using the existing codecs and store backends. netCDF/HDF5
@@ -59,8 +65,10 @@ values and source chunk shapes where the destination permits them. netCDF output
 to fixed-axis lengths, while retaining chunk sizes on unlimited axes and the unlimited flags.
 Zarr output uses
 standard `_ARRAY_DIMENSIONS` names and stores dimension identity, inherited coordinate
-references and unlimited provenance in `_terrio_dimensions` JSON attributes, which other readers
-can ignore. Source compression settings are not copied; snapshots are uncompressed.
+references and unlimited provenance in `_terrio_dimensions` JSON attributes. A reserved
+`_terrio_attribute_types` map retains original numeric attribute widths across netCDF–Zarr
+snapshots; it is removed from the public attributes on reopen. Other readers can ignore these
+extensions. Source compression settings are not copied; snapshots are uncompressed.
 
 Zarr snapshots iterate source chunks and keep one output chunk in memory. netCDF serialization
 currently materializes its numeric arrays before encoding the file. A snapshot containing an
@@ -97,7 +105,9 @@ terrio mdconvert ocean.nc ocean.zarr
 
 `mdread` emits the selected shape, dimensions, type and row-major values as JSON. Indexing is
 applied before ranges, then transposition. The MCP tools are `mdinfo`, `mdread` and `mdconvert`;
-the first two have read-only annotations.
+the first two have read-only annotations. JSON reads default to at most 1,000,000 selected
+elements, checked before payload reads; use selectors to reduce the result, increase
+`--max-elements`, or explicitly set `--max-elements 0` for an unrestricted CLI read.
 
 ## Conformance
 

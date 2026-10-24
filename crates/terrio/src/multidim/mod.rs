@@ -27,6 +27,25 @@ fn serialize_type<S: serde::Serializer>(t: &DataType, s: S) -> std::result::Resu
     s.serialize_str(crate::info::gdal_type_name(*t))
 }
 
+pub(crate) type AttributeTypes = std::collections::BTreeMap<String, DataType>;
+#[cfg(feature = "zarr")]
+pub(crate) fn attribute_type_metadata(types: &AttributeTypes) -> Value {
+    Value::Object(types.iter().map(|(name, dtype)| (name.clone(), Value::String(crate::info::gdal_type_name(*dtype).into()))).collect())
+}
+#[cfg(feature = "zarr")]
+pub(crate) fn take_attribute_types(attributes: &mut Value) -> Result<AttributeTypes> {
+    let Some(saved) = attributes.as_object_mut().and_then(|a| a.remove("_terrio_attribute_types")) else {
+        return Ok(AttributeTypes::new());
+    };
+    let Some(saved) = saved.as_object() else {
+        return Err(bad("invalid numeric attribute type metadata"));
+    };
+    saved
+        .iter()
+        .map(|(name, dtype)| Ok((name.clone(), crate::ops::parse_data_type(dtype.as_str().ok_or_else(|| bad("invalid attribute type"))?)?)))
+        .collect()
+}
+
 /// A named dimension, scoped by its defining group.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Dimension {
@@ -79,6 +98,8 @@ pub struct Group {
     pub path: String,
     /// Group attributes.
     pub attributes: Value,
+    #[serde(skip)]
+    pub(crate) attribute_types: AttributeTypes,
     /// Dimensions defined in this group.
     pub dimensions: Vec<Dimension>,
     /// Numeric arrays, without reading their elements.
@@ -96,11 +117,16 @@ impl Group {
             name: p.rsplit('/').next().filter(|s| !s.is_empty()).unwrap_or("/").into(),
             path: p,
             attributes: serde_json::json!({}),
+            attribute_types: AttributeTypes::new(),
             dimensions: Vec::new(),
             arrays: Vec::new(),
             unsupported_arrays: Vec::new(),
             groups: Vec::new(),
         }
+    }
+    /// Original numeric type of a source attribute, when known.
+    pub fn attribute_type(&self, name: &str) -> Option<DataType> {
+        self.attribute_types.get(name).copied()
     }
     fn find(&self, p: &str) -> Option<&Array> {
         self.arrays.iter().find(|a| a.info.path == p).or_else(|| self.groups.iter().find_map(|g| g.find(p)))
@@ -177,6 +203,8 @@ pub struct Array {
     pub info: ArrayInfo,
     #[serde(skip)]
     pub(crate) source: Source,
+    #[serde(skip)]
+    pub(crate) attribute_types: AttributeTypes,
 }
 impl std::fmt::Debug for Array {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -194,7 +222,11 @@ impl Array {
         if info.chunks.as_ref().is_some_and(|c| c.len() != shape.len() || c.contains(&0)) {
             return Err(bad("chunk shape must have one positive size per dimension"));
         }
-        Ok(Self { info, source: Source::Memory(Arc::new(bytes)) })
+        Ok(Self { info, source: Source::Memory(Arc::new(bytes)), attribute_types: AttributeTypes::new() })
+    }
+    /// Original numeric type of a source attribute, when known.
+    pub fn attribute_type(&self, name: &str) -> Option<DataType> {
+        self.attribute_types.get(name).copied()
     }
     /// The full array's shape.
     pub fn shape(&self) -> Vec<usize> {
@@ -265,7 +297,12 @@ impl View {
     }
     /// Selects one index by dimension name and removes that axis, without reading data.
     pub fn isel(&self, dimension: &str, index: usize) -> Result<Self> {
-        let i = self.axis(dimension)?;
+        let source = self.axis(dimension)?;
+        self.isel_axis(self.order.iter().position(|&i| i == source).expect("current axis"), index)
+    }
+    /// Selects an axis by its zero-based position in the current view; repeated names are supported.
+    pub fn isel_axis(&self, axis: usize, index: usize) -> Result<Self> {
+        let i = *self.order.get(axis).ok_or_else(|| bad("axis position is out of bounds"))?;
         let old = &self.axes[i];
         if index >= old.count {
             return Err(bad("dimension index is out of bounds"));
@@ -277,7 +314,12 @@ impl View {
     }
     /// Selects a positive-stride range relative to the current view of a named dimension.
     pub fn slice(&self, dimension: &str, start: usize, count: usize, step: usize) -> Result<Self> {
-        let i = self.axis(dimension)?;
+        let source = self.axis(dimension)?;
+        self.slice_axis(self.order.iter().position(|&i| i == source).expect("current axis"), start, count, step)
+    }
+    /// Slices a zero-based axis position in the current view, including repeated dimension names.
+    pub fn slice_axis(&self, axis: usize, start: usize, count: usize, step: usize) -> Result<Self> {
+        let i = *self.order.get(axis).ok_or_else(|| bad("axis position is out of bounds"))?;
         let old = &self.axes[i];
         if step == 0
             || start > old.count
@@ -440,7 +482,7 @@ impl Buffer {
 /// Opens local netCDF/HDF5 or a local/remote Zarr store without reading array payloads.
 pub fn open(name: &str) -> Result<Dataset> {
     #[cfg(feature = "zarr")]
-    if name.ends_with(".zarr")
+    if name.to_ascii_lowercase().ends_with(".zarr")
         || crate::drivers::zarr::parse_name(name).is_some()
         || crate::drivers::zarr::is_zarr(std::path::Path::new(name))
     {

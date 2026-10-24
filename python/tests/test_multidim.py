@@ -55,6 +55,9 @@ def test_native_lazy_named_views_and_exact_integer_snapshots(tmp_path):
     assert array.info()["chunks"] == [1, 2, 2]
     assert array.coordinates == ["/time", "/y", "/x"]
     view = array.isel("time", 1).slice("x", 1, 2, 2).transpose(["x", "y"])
+    np.testing.assert_array_equal(
+        array.isel_axis(0, 1).slice_axis(1, 1, 2, 2).read(), expected[1, :, 1::2]
+    )
     assert view.shape == (2, 2)
     np.testing.assert_array_equal(view.read(), expected[1, :, 1::2].T)
     assert view.read().dtype == np.int64

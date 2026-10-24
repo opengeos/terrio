@@ -58,9 +58,31 @@ fn attribute(a: &NcAttrValue) -> Value {
 fn attributes(attrs: &[NcAttribute]) -> Value {
     Value::Object(attrs.iter().map(|a| (a.name.clone(), attribute(&a.value))).collect())
 }
+fn attribute_types(attrs: &[NcAttribute]) -> AttributeTypes {
+    attrs
+        .iter()
+        .filter_map(|a| {
+            let dtype = match &a.value {
+                NcAttrValue::Bytes(_) => DataType::I8,
+                NcAttrValue::UBytes(_) => DataType::U8,
+                NcAttrValue::Shorts(_) => DataType::I16,
+                NcAttrValue::UShorts(_) => DataType::U16,
+                NcAttrValue::Ints(_) => DataType::I32,
+                NcAttrValue::UInts(_) => DataType::U32,
+                NcAttrValue::Int64s(_) => DataType::I64,
+                NcAttrValue::UInt64s(_) => DataType::U64,
+                NcAttrValue::Floats(_) => DataType::F32,
+                NcAttrValue::Doubles(_) => DataType::F64,
+                NcAttrValue::Chars(_) | NcAttrValue::Strings(_) => return None,
+            };
+            Some((a.name.clone(), dtype))
+        })
+        .collect()
+}
 fn group(g: &NcGroup, p: &str, file: &Arc<NcFile>, hdf: Option<&hdf5_reader::Hdf5File>, inherited: &[Dimension]) -> Result<Group> {
     let mut out = Group::new(p);
     out.attributes = attributes(&g.attributes);
+    out.attribute_types = attribute_types(&g.attributes);
     let mut visible = inherited.to_vec();
     for d in &g.dimensions {
         let full = path(p, &d.name);
@@ -123,6 +145,7 @@ fn group(g: &NcGroup, p: &str, file: &Arc<NcFile>, hdf: Option<&hdf5_reader::Hdf
                 coordinates,
             },
             source: Source::Netcdf(Arc::clone(file)),
+            attribute_types: attribute_types(&v.attributes),
         });
     }
     // Lossy netCDF reconstruction can omit HDF5-specific datatypes. Report those
@@ -347,5 +370,57 @@ mod tests {
         eprintln!("range bytes: metadata={baseline}, selected={selected}, whole={full}, file={size}");
         assert!(selected < (size / 8) as u64, "selected read fetched {selected} bytes from a {size}-byte file");
         assert!(full > selected * 4, "full read {full} was not substantially larger than selected read {selected}");
+    }
+}
+
+#[cfg(test)]
+mod attribute_tests {
+    use super::*;
+    use crate::drivers::hdf5_write::{self, Attr, H5Type, Values};
+    #[test]
+    fn numeric_attribute_types_and_nonfinite_values_survive_snapshots() {
+        let numeric = |name: &str, values: &[f32]| Attr {
+            name: name.into(),
+            dtype: H5Type::Float { size: 4 },
+            shape: (values.len() != 1).then(|| vec![values.len() as u64]),
+            values: Values::Bytes(values.iter().flat_map(|v| v.to_le_bytes()).collect()),
+        };
+        let file = hdf5_write::File {
+            attrs: vec![
+                numeric("nan32", &[f32::NAN]),
+                numeric("vector32", &[f32::INFINITY, f32::NEG_INFINITY, 1.5]),
+                Attr::text("literal", "NaN"),
+            ],
+            datasets: vec![hdf5_write::Dataset {
+                name: "sample".into(),
+                dtype: H5Type::Int { size: 1, signed: false },
+                shape: Some(vec![2]),
+                max_shape: None,
+                data: vec![1, 2],
+                fill: vec![0],
+                storage: Default::default(),
+                attrs: vec![numeric("minimum32", &[f32::NEG_INFINITY])],
+            }],
+            ..Default::default()
+        };
+        let original = crate::multidim::open_bytes(&hdf5_write::encode(&file)).unwrap();
+        let check = |ds: &Dataset| {
+            assert_eq!(ds.root.attribute_type("nan32"), Some(DataType::F32));
+            assert_eq!(ds.root.attribute_type("vector32"), Some(DataType::F32));
+            assert_eq!(ds.root.attribute_type("literal"), None);
+            assert_eq!(ds.root.attributes["nan32"], "NaN");
+            assert_eq!(ds.root.attributes["literal"], "NaN");
+            assert_eq!(ds.root.attributes["vector32"], serde_json::json!(["Infinity", "-Infinity", 1.5]));
+            assert_eq!(ds.array("sample").unwrap().attribute_type("minimum32"), Some(DataType::F32));
+        };
+        check(&original);
+        check(&crate::multidim::open_bytes(&original.to_netcdf_bytes().unwrap()).unwrap());
+        #[cfg(feature = "zarr")]
+        {
+            let zarr = crate::multidim::open_zarr_store(original.to_zarr_store().unwrap()).unwrap();
+            check(&zarr);
+            assert!(zarr.root.attributes.get("_terrio_attribute_types").is_none());
+            check(&crate::multidim::open_bytes(&zarr.to_netcdf_bytes().unwrap()).unwrap());
+        }
     }
 }
