@@ -196,7 +196,8 @@ fn checked_point_count(nx: usize, ny: usize, message_len: u64, limit: usize) -> 
         .filter(|n| n.checked_mul(8).is_some_and(|bytes| bytes <= isize::MAX as usize))
         .ok_or_else(|| Error::InvalidData("GRIB grid larger than this platform's memory".into()))?;
     if n > limit {
-        return Err(Error::InvalidData(format!("GRIB grid of {n} points exceeds TERRIO_GRIB_MAX_POINTS={limit}")));
+        // A configured resource limit must not trigger the optional GDAL fallback.
+        return Err(Error::InvalidArgument(format!("GRIB grid of {n} points exceeds TERRIO_GRIB_MAX_POINTS={limit}")));
     }
     // degrib's check on large grids: at most 1000 points per byte of the message.
     if n > 100 * 1024 * 1024 && n as u64 / 1000 > message_len {
@@ -737,7 +738,7 @@ mod tests {
     #[test]
     fn caps_even_constant_fields_and_allows_an_explicit_larger_limit() {
         assert!(matches!(checked_point_count(10_000, 10_000, 200, DEFAULT_MAX_POINTS),
-            Err(Error::InvalidData(e)) if e.contains("TERRIO_GRIB_MAX_POINTS")));
+            Err(Error::InvalidArgument(e)) if e.contains("TERRIO_GRIB_MAX_POINTS")));
         assert_eq!(checked_point_count(DEFAULT_MAX_POINTS, 1, 200, DEFAULT_MAX_POINTS).unwrap(), DEFAULT_MAX_POINTS);
         assert!(checked_point_count(DEFAULT_MAX_POINTS + 1, 1, 200, DEFAULT_MAX_POINTS).is_err());
         assert_eq!(checked_point_count(10_000, 10_000, 200, 100_000_000).unwrap(), 100_000_000);
@@ -770,8 +771,17 @@ mod tests {
         }
         for (bytes, name) in [(grib1, "large.grb"), (grib2, "large.grb2")] {
             assert!(matches!(crate::memory::open_raster_lazy_bytes(bytes, name),
-                Err(Error::InvalidData(e)) if e.contains("TERRIO_GRIB_MAX_POINTS")));
+                Err(Error::InvalidArgument(e)) if e.contains("TERRIO_GRIB_MAX_POINTS")));
         }
+    }
+
+    #[cfg(feature = "gdal")]
+    #[test]
+    fn field_limit_errors_do_not_trigger_gdal_fallback() {
+        let error = checked_point_count(10_000, 10_000, 200, DEFAULT_MAX_POINTS).unwrap_err();
+        let result: Result<()> =
+            crate::dataset::gdal_fallback("large.grb2", Err(error), |_| panic!("a field-limit error must not be retried with GDAL"));
+        assert!(matches!(result, Err(Error::InvalidArgument(e)) if e.contains("TERRIO_GRIB_MAX_POINTS")));
     }
 
     #[test]

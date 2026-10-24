@@ -244,10 +244,10 @@ fn vectors_match_terrio_drivers() {
     }
 }
 
-/// A real DEM converted by GDAL into formats terrio has no driver for (GRIB2, HDF4, NITF), then
-/// opened by plain path: the pixels must be the DEM's.
+/// A real DEM converted by GDAL into GRIB2, HDF4 and NITF, then opened by plain path through
+/// terrio's GRIB driver when enabled, or the GDAL fallback: the pixels must be the DEM's.
 #[test]
-fn real_raster_in_formats_terrio_lacks() {
+fn real_rasters_written_by_gdal() {
     let Some(p) = data("srtm_sub.tif") else { return };
     let src = terrio::open_raster(&p).unwrap();
     let dir = tempfile::tempdir().unwrap();
@@ -258,7 +258,8 @@ fn real_raster_in_formats_terrio_lacks() {
         let path = dir.path().join(format!("srtm_sub.{ext}")).to_string_lossy().into_owned();
         terrio::gdal_backend::write_raster(&src, &path, driver, &[]).unwrap();
         let back = terrio::open_raster(&path).unwrap_or_else(|e| panic!("{driver}: {e}"));
-        assert_eq!(back.driver, RasterDriver::Gdal, "{driver}");
+        let expected_driver = if driver == "GRIB" && cfg!(feature = "grib") { RasterDriver::GRIB } else { RasterDriver::Gdal };
+        assert_eq!(back.driver, expected_driver, "{driver}");
         assert_eq!((back.raster.cols, back.raster.rows), (src.raster.cols, src.raster.rows), "{driver}");
         assert_eq!(back.crs().epsg, Some(4326), "{driver}");
         // GRIB and HDF4 keep coordinates to fewer digits; NITF keeps geographic corners in
