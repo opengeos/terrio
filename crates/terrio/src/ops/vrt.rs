@@ -5,8 +5,11 @@
 //! ("sources"). terrio writes VRTs GDAL opens, and opens the VRTs GDAL writes for mosaics and
 //! subsets: `SimpleSource`, `ComplexSource` (with `NODATA`, `ScaleOffset`, `ScaleRatio` and
 //! `LUT`, as `gdaldem color-relief -of VRT` writes them) and `AveragedSource`, with
-//! `SrcRect`/`DstRect` windows. Derived bands, kernel filters, pixel functions and warped VRTs are
-//! not supported.
+//! `SrcRect`/`DstRect` windows. [`VirtualRaster`] extends serialized interoperability with
+//! lazy warped VRTs, built-in scalar derived bands, kernel sources and validity masks.
+
+mod virtual_raster;
+pub use virtual_raster::{VirtualRaster, open_virtual_raster};
 
 use super::{Grid, Resampling, convert_value, data_type_name, parse_data_type};
 use crate::crs::SpatialRef;
@@ -108,7 +111,7 @@ impl VrtDataset {
             }
             None => None,
         };
-        let srs = root.child("SRS").map(|s| SpatialRef::parse(s.text.trim())).transpose()?;
+        let srs = root.child("SRS").filter(|s| !s.text.trim().is_empty()).map(|s| SpatialRef::parse(s.text.trim())).transpose()?;
         let mut bands = Vec::new();
         for b in root.children.iter().filter(|c| c.name == "VRTRasterBand") {
             if let Some(sub) = b.attr("subClass") {
@@ -361,9 +364,7 @@ fn is_float_working(dt: DataType) -> bool {
 /// Opens a VRT file and reads its pixels.
 #[cfg(not(target_family = "wasm"))]
 pub fn read_vrt(path: &str) -> Result<RasterDataset> {
-    let vrt = VrtDataset::open(path)?;
-    let base = Path::new(path).parent().map(Path::to_path_buf).unwrap_or_default();
-    vrt.materialize(&base)
+    open_virtual_raster(path)?.read()
 }
 
 /// Opens a VRT file and reads its pixels.
@@ -1152,11 +1153,11 @@ fn resample_window(s: &SourceRead, win: (f64, f64, f64, f64), out: (usize, usize
 
 // ─── A small XML reader ─────────────────────────────────────────────────────────────────────────
 
-mod xml {
+pub(crate) mod xml {
     use crate::{Error, Result};
 
     /// An element: name, attributes, text and children.
-    #[derive(Debug, Default)]
+    #[derive(Debug, Default, Clone)]
     pub struct Element {
         pub name: String,
         pub attrs: Vec<(String, String)>,
@@ -1165,6 +1166,12 @@ mod xml {
     }
 
     impl Element {
+        pub fn to_xml(&self) -> String {
+            let attrs = self.attrs.iter().map(|(k, v)| format!(" {k}=\"{}\"", escape(v))).collect::<String>();
+            let children = self.children.iter().map(Self::to_xml).collect::<String>();
+            format!("<{}{attrs}>{}{children}</{}>", self.name, escape(&self.text), self.name)
+        }
+
         pub fn attr(&self, name: &str) -> Option<&str> {
             self.attrs.iter().find(|(k, _)| k == name).map(|(_, v)| v.as_str())
         }

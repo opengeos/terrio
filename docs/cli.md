@@ -524,3 +524,36 @@ For nearest interpolation, GDAL's search fringe can write zero where the closest
 quadrant candidate is less than one pixel beyond the distance limit; Terrio follows
 that behavior. Complex bands are unsupported. Standard raster output
 options (`--format`, `--compress`, `--co`, etc.) apply.
+
+## Serialized virtual rasters
+
+```sh
+terrio warp dem.tif projected.vrt --t-srs EPSG:3857 --ts 512 512
+terrio convert projected.vrt crop.tif --srcwin 32 48 128 128
+```
+
+A `.vrt` warp destination (or `--format VRT`) writes a GDAL-compatible virtual
+warp without reading the source pixels. Source references are absolute, so the
+file can be written in a different directory. GDAL can read the result. Reading a
+VRT resolves relative sources against its original location, including URLs and
+archive members, and reads only windows needed for the requested output.
+
+Serialized affine/reprojection, polynomial GCP, TPS, homography and RPC
+transformers are supported. Warped reads use the declared VRT block boundaries,
+preserving GDAL's approximation and resampling behavior for cropped requests.
+Serialized cutlines, alpha warps and geolocation transformers are currently
+reported as unsupported; use a materialized warp for those supported by the
+normal warper. Custom `INIT_DEST` values are also unsupported.
+
+`VRTDerivedRasterBand` supports the scalar built-ins `sum`, `diff`, `mul`, `div`,
+`mean`, `min`, `max`, `sqrt`, `real`, `imag`, `conj`, `mod`, `inv`, `intensity`,
+`log10`, `dB`, `dB2amp`, `dB2pow`, `pow` and `exp`, with numeric arguments,
+source transfer types and applicable nodata behavior. Complex-valued derived
+buffers, external pixel functions and expression languages are unsupported.
+`KernelFilteredSource` supports odd full/separable kernels, normalization and
+`min`, `max`, `stddev`, `median` and `mode`. Kernels read the necessary halo and
+replicate source edges as GDAL does. Explicit dataset masks, `SourceBand mask,N`
+and `ComplexSource` with `UseMaskBand` are read lazily.
+
+The Rust `VirtualRaster` API parses and serializes these descriptions. Its
+`into_lazy` source map also permits filesystem-free reads in WebAssembly.

@@ -213,3 +213,16 @@ raster, retaining the selected band's type, nodata and georeferencing. The mask 
 at holes and nonzero at donors; without it, the source mask or nodata defines holes.
 Distances are in pixels; zero searches the whole image. Smoothing affects only filled
 pixels and preserves the first/last rows. Valid source samples remain unchanged.
+
+## Serialized VRTs and uploaded sources
+
+```python
+virtual = terrio.warp("dem.tif", "projected.vrt", t_srs="EPSG:3857", ts=(512, 512))
+window = virtual.read(1, window=(32, 48, 128, 128))
+uploaded = terrio.open_vrt(xml, {"dem.tif": image_bytes})
+```
+
+`open_vrt` accepts source names mapped to file bytes, paths or `PathLike` objects;
+source windows remain lazy. `open_raster(path, lazy=True)` also opens VRT files
+lazily. The [serialized VRT support](cli.md#serialized-virtual-rasters) lists the
+supported transformers, built-in functions, kernels and masks.

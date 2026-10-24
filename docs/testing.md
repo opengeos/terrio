@@ -110,3 +110,11 @@ these cases on the real USGS terrain, with holes and explicit validity masks:
 ```sh
 python scripts/compare_dem_calc_with_gdal.py ../terrio-data --only fill-nodata
 ```
+
+The `vrt` conformance suite cross-reads GDAL/Terrio virtual rasters on USGS terrain,
+including whole and cropped requests, derived bands, nodata, masks, full and
+separable kernels, and affine/reprojection/GCP/TPS/homography/RPC transforms:
+
+```sh
+python scripts/conformance.py ../terrio-data --only vrt --strict
+```

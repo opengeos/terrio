@@ -18,6 +18,7 @@ __all__ = [
     "from_arrow",
     "open",
     "open_raster",
+    "open_vrt",
     "open_vector",
     "open_bytes",
     "list_layers",
@@ -617,6 +618,7 @@ _VectorData: TypeAlias = _Layers | str | _GeoJSON | _ArrowData
 
 def open(path: str) -> Raster | VectorDataset: ...
 def open_raster(path: str, lazy: bool = False) -> Raster: ...
+def open_vrt(xml: str, sources: Mapping[str, bytes | str | os.PathLike[str]]) -> Raster: ...
 def open_vector(
     path: str, layers: Sequence[str] | None = None, bbox: _Bounds | None = None
 ) -> VectorDataset: ...

@@ -106,6 +106,15 @@ enum Inner {
 pub(crate) trait WindowSource: Send + Sync {
     /// The sizes `(width, height)` of the overviews, largest first.
     fn overviews(&self) -> Vec<(usize, usize)>;
+    /// Whether the source supplies an explicit per-dataset validity mask.
+    fn has_mask(&self) -> bool {
+        false
+    }
+    /// Read the validity mask: 0 is invalid and 255 valid; absent means all valid.
+    fn read_mask(&mut self, _level: usize, _window: Window) -> Result<Option<Vec<u8>>> {
+        Ok(None)
+    }
+
     /// The block size `(width, height)` reads are best aligned to, when the format has one.
     fn block_size(&self) -> Option<(usize, usize)> {
         None
@@ -171,6 +180,9 @@ impl LazyRaster {
     }
 
     fn open_without_sidecars(path: &str) -> Result<Self> {
+        if crate::formats::extension(path).as_deref() == Some("vrt") {
+            return crate::ops::vrt::open_virtual_raster(path);
+        }
         if let Some(result) = crate::stac::open_lazy(path) {
             return result;
         }
@@ -526,6 +538,7 @@ impl LazyRaster {
     pub fn has_mask(&self) -> bool {
         self.sidecar_mask.is_some()
             || match &self.inner {
+                Inner::Source(_, s) => s.has_mask(),
                 Inner::Tiff(t) => t.masks.iter().any(|m| !m.overview && (m.width, m.height) == (t.levels[0].width, t.levels[0].height)),
                 _ => false,
             }
@@ -546,6 +559,9 @@ impl LazyRaster {
         let (fw, fh) = (self.width(), self.height());
         if let Some(m) = self.sidecar_mask.as_mut() {
             return read_sidecar_mask(m, window, (lw, lh)).map(Some);
+        }
+        if let Inner::Source(_, source) = &mut self.inner {
+            return source.read_mask(overview.map_or(0, |v| v + 1), window);
         }
         let Inner::Tiff(t) = &mut self.inner else { return Ok(None) };
         let w = (window.x, window.y, window.width, window.height);

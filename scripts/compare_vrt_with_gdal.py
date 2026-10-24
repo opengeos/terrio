@@ -1,0 +1,174 @@
+#!/usr/bin/env python3
+"""Cross-read lazy, warped, derived and kernel-filtered VRTs on real USGS terrain."""
+import argparse
+import json
+import os
+from pathlib import Path
+import subprocess
+import tempfile
+
+import numpy as np
+from osgeo import gdal
+
+from compare_dem_calc_with_gdal import compare
+
+gdal.UseExceptions()
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("data")
+    parser.add_argument("--terrio", default="target/debug/terrio")
+    parser.add_argument("--json", action="store_true")
+    args = parser.parse_args()
+    records = []
+    with tempfile.TemporaryDirectory(prefix="terrio-vrt-") as directory:
+        tmp = Path(directory)
+        # Match GDAL's installed grid search paths. Terrio's private download cache
+        # may contain extra datum grids from unrelated earlier runs.
+        env = {**os.environ, "TERRIO_GRID_CACHE": str(tmp / "datum-grids")}
+        source = tmp / "source.tif"
+        ds = gdal.Translate(str(source), str(Path(args.data) / "usgs_dem.tif"), srcWin=[0, 0, 96, 80], outputType=gdal.GDT_Float32)
+        transform, projection = ds.GetGeoTransform(), ds.GetProjection()
+        values = ds.ReadAsArray()
+        ds = None
+        second = tmp / "second.tif"
+        ds = gdal.GetDriverByName("GTiff").Create(str(second), 96, 80, 1, gdal.GDT_Float32)
+        ds.SetGeoTransform(transform)
+        ds.SetProjection(projection)
+        ds.GetRasterBand(1).WriteArray(values * np.float32(0.3))
+        ds = None
+
+        def run(name, path, authored=False):
+            for window in [None, [17, 13, 31, 27], [0, 0, 11, 9]]:
+                label = name + (" whole" if window is None else f" window {window[0]},{window[1]}")
+                reference, actual = tmp / "reference.tif", tmp / "actual.tif"
+                try:
+                    gdal.Translate(str(reference), str(path), srcWin=window)
+                    cmd = [args.terrio, "convert", str(path), str(actual)]
+                    if window is not None:
+                        cmd += ["--srcwin", *map(str, window)]
+                    process = subprocess.run(cmd, capture_output=True, text=True, env=env)
+                    if process.returncode:
+                        raise RuntimeError(process.stderr)
+                    record = compare(str(reference), str(actual), 1e-5)
+                except Exception as error:
+                    record = {"error": str(error)}
+                record["name"] = label
+                records.append(record)
+
+        def source_xml(tag="SimpleSource", filename="source.tif", extra=""):
+            return f'<{tag}><SourceFilename relativeToVRT="1">{filename}</SourceFilename><SourceBand>1</SourceBand>{extra}</{tag}>'
+
+        def write(name, band):
+            path = tmp / f"{name}.vrt"
+            path.write_text(f'<VRTDataset rasterXSize="96" rasterYSize="80"><SRS>{projection}</SRS><GeoTransform>{",".join(map(str, transform))}</GeoTransform>{band}</VRTDataset>')
+            return path
+
+        for function, arguments in [
+            ("sum", 'k="3"'), ("diff", ""), ("mul", 'k="0.5"'), ("div", ""),
+            ("mean", ""), ("min", ""), ("max", ""), ("sqrt", ""), ("mod", ""),
+            ("inv", 'k="3"'), ("pow", 'power="2"'), ("log10", ""), ("dB", 'fact="10"'),
+            ("exp", 'base="1.0001" fact="0.2"'),
+        ]:
+            sources = source_xml()
+            if function in ["sum", "diff", "mul", "div", "mean", "min", "max"]:
+                sources += source_xml(filename="second.tif")
+            band = f'<VRTRasterBand dataType="Float64" band="1" subClass="VRTDerivedRasterBand"><PixelFunctionType>{function}</PixelFunctionType><SourceTransferType>Float64</SourceTransferType><PixelFunctionArguments {arguments}/>{sources}</VRTRasterBand>'
+            run(f"VRT derived {function}", write(f"derived-{function}", band))
+        for kernel, coefs in [("full", "1 2 1 2 4 2 1 2 1"), ("separable", "1 2 1")]:
+            for normalized in [0, 1]:
+                for function in [None, "min", "max", "stddev", "median", "mode"]:
+                    extra = f'<Kernel normalized="{normalized}"><Size>3</Size><Coefs>{coefs}</Coefs></Kernel>'
+                    if function:
+                        extra += f"<Function>{function}</Function>"
+                    band = f'<VRTRasterBand dataType="Float32" band="1">{source_xml("KernelFilteredSource", extra=extra)}</VRTRasterBand>'
+                    name = f"kernel-{kernel}-{normalized}-{function or 'sum'}"
+                    run(f"VRT {name}", write(name, band))
+        nc = tmp / "source.nc"
+        gdal.Translate(str(nc), str(source), format="netCDF", creationOptions=["FORMAT=NC4"])
+        selector = f'NETCDF:"{nc}":Band1'
+        band = f'<VRTRasterBand dataType="Float32"><SimpleSource><SourceFilename relativeToVRT="0">{selector}</SourceFilename><SourceBand>1</SourceBand></SimpleSource></VRTRasterBand>'
+        run("VRT netCDF subdataset source", write("netcdf-source", band))
+        masked = tmp / "masked.tif"
+        ds = gdal.Translate(str(masked), str(source))
+        pixels = values.copy()
+        pixels[5:12, 7:16] = -9999
+        ds.GetRasterBand(1).SetNoDataValue(-9999)
+        ds.GetRasterBand(1).WriteArray(pixels)
+        ds.CreateMaskBand(gdal.GMF_PER_DATASET)
+        mask = np.full(pixels.shape, 255, dtype="uint8")
+        mask[20:30, 25:35] = 0
+        ds.GetRasterBand(1).GetMaskBand().WriteArray(mask)
+        ds = None
+        mask_source = source_xml(filename="masked.tif").replace("<SourceBand>1</SourceBand>", "<SourceBand>mask,1</SourceBand>")
+        run("VRT source mask", write("mask-band", f'<VRTRasterBand dataType="Byte">{mask_source}</VRTRasterBand>'))
+        complex_source = source_xml("ComplexSource", "masked.tif", "<UseMaskBand>true</UseMaskBand>")
+        run("VRT complex mask", write("complex-mask", f'<VRTRasterBand dataType="Float32"><NoDataValue>-9999</NoDataValue>{complex_source}</VRTRasterBand>'))
+        for kind, coefs in [("full", "1 2 1 2 4 2 1 2 1"), ("separable", "1 2 1")]:
+            extra = f'<Kernel normalized="1"><Size>3</Size><Coefs>{coefs}</Coefs></Kernel>'
+            kernel = source_xml("KernelFilteredSource", "masked.tif", extra)
+            run(f"VRT kernel nodata {kind}", write(f"kernel-nodata-{kind}", f'<VRTRasterBand dataType="Float32"><NoDataValue>-9999</NoDataValue>{kernel}</VRTRasterBand>'))
+        for function in ["sum", "mul", "mean", "min", "max", "sqrt", "inv"]:
+            for propagate in ["true", "false"]:
+                sources = source_xml(filename="masked.tif")
+                if function in ["sum", "mul", "mean", "min", "max"]:
+                    sources += source_xml(filename="second.tif")
+                band = f'<VRTRasterBand dataType="Float64" subClass="VRTDerivedRasterBand"><NoDataValue>-9999</NoDataValue><PixelFunctionType>{function}</PixelFunctionType><PixelFunctionArguments propagateNoData="{propagate}"/>{sources}</VRTRasterBand>'
+                run(f"VRT derived nodata {function} {propagate}", write(f"derived-nodata-{function}-{propagate}", band))
+        from osgeo import osr
+        gcp_srs = osr.SpatialReference()
+        gcp_srs.ImportFromEPSG(32613)
+        for method, points, gdal_options, cli in [
+            ("polynomial", [(0, 0), (96, 0), (0, 80), (96, 80), (48, 40), (24, 60)], {"polynomialOrder": 1}, ["--order", "1"]),
+            ("tps", [(0, 0), (96, 0), (0, 80), (96, 80), (48, 40), (24, 60)], {"tps": True}, ["--tps"]),
+            ("homography", [(0, 0), (96, 0), (0, 80), (96, 80)], {}, []),
+        ]:
+            src = tmp / f"{method}-source.tif"
+            ds = gdal.Translate(str(src), str(source))
+            ds.SetGCPs([gdal.GCP(500000 + x*30, 4400000 - y*30, 0, x, y) for x, y in points], gcp_srs.ExportToWkt())
+            ds = None
+            path = tmp / f"{method}-reference.vrt"
+            gdal.Warp(str(path), str(src), format="VRT", width=48, height=40, **gdal_options)
+            run(f"VRT GDAL {method}", path)
+            path = tmp / f"{method}-authored.vrt"
+            process = subprocess.run([args.terrio, "warp", str(src), str(path), "--ts", "48", "40", *cli], capture_output=True, text=True, env=env)
+            if process.returncode:
+                records.append({"name": f"VRT authored {method}", "error": process.stderr})
+            else:
+                run(f"VRT authored {method}", path)
+        src = tmp / "rpc-source.tif"
+        ds = gdal.GetDriverByName("GTiff").Create(str(src), 96, 80, 1, gdal.GDT_Float32)
+        ds.GetRasterBand(1).WriteArray(values)
+        rpc = {"LINE_OFF":"40", "SAMP_OFF":"48", "LAT_OFF":"40", "LONG_OFF":"-106", "HEIGHT_OFF":"0", "LINE_SCALE":"40", "SAMP_SCALE":"48", "LAT_SCALE":".1", "LONG_SCALE":".1", "HEIGHT_SCALE":"100", "LINE_NUM_COEFF":"0 0 -1 " + "0 "*17, "SAMP_NUM_COEFF":"0 1 0 " + "0 "*17, "LINE_DEN_COEFF":"1 " + "0 "*19, "SAMP_DEN_COEFF":"1 " + "0 "*19}
+        ds.SetMetadata(rpc, "RPC")
+        ds = None
+        path = tmp / "rpc-reference.vrt"
+        gdal.Warp(str(path), str(src), format="VRT", rpc=True, width=48, height=40)
+        run("VRT GDAL rpc", path)
+        path = tmp / "rpc-authored.vrt"
+        process = subprocess.run([args.terrio, "warp", str(src), str(path), "--ts", "48", "40", "--rpc"], capture_output=True, text=True, env=env)
+        if process.returncode:
+            records.append({"name": "VRT authored rpc", "error": process.stderr})
+        else:
+            run("VRT authored rpc", path)
+        for resampling in ["near", "bilinear", "cubic", "average"]:
+            path = tmp / f"warped-{resampling}.vrt"
+            gdal.Warp(str(path), str(source), format="VRT", dstSRS="EPSG:3857", width=64, height=56, resampleAlg=resampling)
+            run(f"VRT GDAL warped {resampling}", path)
+            path = tmp / f"authored-{resampling}.vrt"
+            process = subprocess.run([args.terrio, "warp", str(source), str(path), "--t-srs", "EPSG:3857", "--ts", "64", "56", "-r", resampling], capture_output=True, text=True, env=env)
+            if process.returncode:
+                records.append({"name": f"VRT authored {resampling}", "error": process.stderr})
+            else:
+                run(f"VRT authored {resampling}", path, True)
+    if args.json:
+        print(json.dumps(records, indent=2))
+    else:
+        for record in records:
+            print(record["name"], record.get("exact", record.get("error")))
+    return int(any("error" in r or r.get("within_tol") != 1 or not r.get("same_type") or not r.get("same_nodata") or r.get("gt_diff_px") != 0 for r in records))
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

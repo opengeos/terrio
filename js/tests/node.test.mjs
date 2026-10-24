@@ -1103,3 +1103,13 @@ test("fillNodata: holes, nearest ties, explicit masks and invalid options", () =
   assert.throws(() => terrio.fillNodata(src, { maxDistance: -1 }), /nonnegative/);
   src.free(); out.free(); mask.free();
 });
+
+test("openVrt resolves uploaded sources and reads derived windows lazily", () => {
+  const src = terrio.open(new TextEncoder().encode("ncols 3\nnrows 3\nxllcorner 0\nyllcorner 0\ncellsize 1\n0 1 2\n3 4 5\n6 7 8\n"), "source.asc");
+  const bytes = src.toBytes("upload.tif");
+  const xml = '<VRTDataset rasterXSize="3" rasterYSize="3"><GeoTransform>0,1,0,3,0,-1</GeoTransform><VRTRasterBand dataType="Float64" subClass="VRTDerivedRasterBand"><PixelFunctionType>sum</PixelFunctionType><PixelFunctionArguments k="2"/><SimpleSource><SourceFilename>upload.tif</SourceFilename><SourceBand>1</SourceBand></SimpleSource></VRTRasterBand></VRTDataset>';
+  const out = terrio.openVrt(xml, { "upload.tif": bytes });
+  assert.deepEqual([...out.readBand(1, [1, 1, 2, 2])], [6, 7, 9, 10]);
+  assert.throws(() => terrio.openVrt(xml.replace("sum", "external_custom_function"), { "upload.tif": bytes }), /external_custom_function/);
+  src.free(); out.free();
+});
