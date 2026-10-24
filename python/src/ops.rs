@@ -521,11 +521,21 @@ fn input_layers(py: Python<'_>, src: &Bound<'_, PyAny>, layers: Option<Vec<Strin
     }
 }
 
+/// A raster path as UTF-8, accepting Python strings and os.PathLike objects.
+/// Rasters return None so they keep their existing in-memory/lazy handling.
+pub(crate) fn raster_path(src: &Bound<'_, PyAny>) -> PyResult<Option<String>> {
+    if src.cast::<PyRaster>().is_ok() {
+        return Ok(None);
+    }
+    let path = src.extract::<std::path::PathBuf>().map_err(|_| invalid("expected a path or a terrio.Raster"))?;
+    path.into_os_string().into_string().map(Some).map_err(|_| invalid("raster paths must be UTF-8"))
+}
+
 /// Opens the raster given to an operation: a path, or a `Raster`.
 pub(crate) fn input_raster(py: Python<'_>, src: &Bound<'_, PyAny>) -> PyResult<RasterDataset> {
-    match src.extract::<String>() {
-        Ok(path) => crate::with_warnings(py, || terrio::open_raster(&path)),
-        Err(_) => {
+    match raster_path(src)? {
+        Some(path) => crate::with_warnings(py, || terrio::open_raster(&path)),
+        None => {
             let mut r = src.cast::<PyRaster>().map_err(|_| invalid("expected a path or a terrio.Raster"))?.borrow_mut();
             r.with_dataset(|ds| Ok(ds.clone())).py()
         }

@@ -199,7 +199,7 @@ uv run maturin develop --release
 uv run pytest
 ```
 
-### Geolocation-array warping
+## Geolocation-array warping
 
 `terrio.warp(path, geoloc=True, t_srs="EPSG:4326")` requires the longitude/latitude arrays
 already exposed by netCDF/HDF-EOS drivers. Arrays are also used automatically when present.
@@ -216,3 +216,18 @@ out = terrio.warp(source, t_srs="EPSG:4326", geolocation={
 `pixel_offset`/`line_offset` default to 0 and steps to 1. The center shift is half an array
 step. Invalid coordinate cells remain empty. See [CLI warping](cli.md#warp) for the supported
 subset and comparison behavior at swath boundaries.
+
+## Fill nodata
+
+```python
+filled = terrio.fill_nodata("dem.tif", "filled.tif", max_distance=100,
+                           smoothing_iterations=1)
+nearest = terrio.fill_nodata("image.tif", band=2, mask="validity.tif",
+                            interpolation="nearest")
+```
+
+Inputs and masks may also be `terrio.Raster` objects. The result is a new, single-band
+raster, retaining the selected band's type, nodata and georeferencing. The mask is zero
+at holes and nonzero at donors; without it, the source mask or nodata defines holes.
+Distances are in pixels; zero searches the whole image. Smoothing affects only filled
+pixels and preserves the first/last rows. Valid source samples remain unchanged.

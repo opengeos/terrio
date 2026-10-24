@@ -230,7 +230,7 @@ pub fn sieve(ds: &RasterDataset, o: &SieveOptions) -> Result<RasterDataset> {
 
 /// GDAL's nodata mask: pixels equal to the nodata value (NaN matching NaN; floats compared with
 /// GDAL's tolerance).
-fn nodata_mask(values: &[f64], nd: f64, dt: DataType) -> Vec<bool> {
+pub(crate) fn nodata_mask(values: &[f64], nd: f64, dt: DataType) -> Vec<bool> {
     let close32 = |a: f32, b: f32| a == b || (a - b).abs() < f32::EPSILON * (a + b).abs() * 2.0;
     let close64 = |a: f64, b: f64| a == b || (a - b).abs() < f32::EPSILON as f64 * (a + b).abs() * 2.0;
     match dt {

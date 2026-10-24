@@ -72,3 +72,18 @@ fn topology_tools_are_discoverable_and_execute_the_cli() {
     assert_eq!(replies[&2]["result"]["isError"], false);
     assert_eq!(terrio::open_vector(output.to_str().unwrap(), &Default::default()).unwrap().layers[0].len(), 1);
 }
+
+#[test]
+fn fill_nodata_is_discoverable_and_executes() {
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("holes.asc");
+    let output = dir.path().join("filled.tif");
+    std::fs::write(&input, "ncols 3\nnrows 1\nxllcorner 0\nyllcorner 0\ncellsize 1\nNODATA_value -9999\n1 -9999 3\n").unwrap();
+    let replies = session(&[
+        json!({"jsonrpc":"2.0","id":1,"method":"tools/list"}),
+        call(2, "fill-nodata", &[input.to_str().unwrap(), output.to_str().unwrap(), "--interpolation", "nearest"]),
+    ]);
+    assert!(replies[&1]["result"]["tools"].as_array().unwrap().iter().any(|t| t["name"] == "fill-nodata"));
+    assert_eq!(replies[&2]["result"]["isError"], false);
+    assert_eq!(terrio::open_raster(output.to_str().unwrap()).unwrap().raster.get(0, 0, 1), 1.0);
+}

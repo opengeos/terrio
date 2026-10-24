@@ -26,6 +26,7 @@
 pub mod calc;
 pub mod contour;
 pub mod dem;
+pub mod fill_nodata;
 pub mod footprint;
 pub mod gcp;
 pub mod geolocation;

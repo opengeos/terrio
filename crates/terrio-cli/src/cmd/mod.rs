@@ -4,6 +4,7 @@ pub mod calc;
 pub mod convert;
 pub mod crs;
 pub mod dem;
+pub mod fill_nodata;
 pub mod filter;
 pub mod formats;
 pub mod grid;
