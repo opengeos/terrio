@@ -10,11 +10,11 @@
 //!
 //! - reading: GeoTIFF, Esri ASCII grid, JPEG 2000 (JP2 and J2K), GeoPackage (vector layers and rasters), PMTiles and
 //!   MBTiles (raster and vector tiles), MVT tiles, GeoJSON, TopoJSON,
-//!   FlatGeobuf, CSV, GeoParquet, KML, KMZ, GML, GPX, OSM PBF and XML, and zip archives of these,
+//!   FlatGeobuf, CSV, GeoParquet, KML, KMZ, GML, GPX, DWG, DXF, OSM PBF and XML, and zip archives of these,
 //!   and Shapefile and MapInfo (MIF/MID and TAB) in zip archives (or their `.shp` or `.mif` alone);
 //! - writing: GeoTIFF and COG (with lossless compressions), Esri ASCII grid, JPEG 2000, GeoPackage (vector
 //!   layers and rasters), PMTiles and MBTiles, GeoJSON, TopoJSON, FlatGeobuf, CSV, GeoParquet, KML, KMZ, GML (without
-//!   its schema) and GPX.
+//!   its schema), GPX, DWG and DXF.
 //!
 //! Formats made of several files (a shapefile's `.shp`, `.dbf`, `.prj`...) are written as a zip
 //! archive of them.
@@ -158,7 +158,7 @@ pub fn write_raster_bytes(ds: &RasterDataset, name: &str, options: &RasterWriteO
 }
 
 /// Writes vector layers to bytes. `name` is a file name whose extension tells the format, unless
-/// the options name the driver. GeoPackage, GPX, KML, KMZ and TopoJSON hold several layers.
+/// the options name the driver. GeoPackage, GPX, KML, KMZ and TopoJSON hold several layers; CAD combines them into drawing layers.
 pub fn write_vector_bytes(layers: &[Layer], name: &str, options: &VectorWriteOptions) -> Result<Vec<u8>> {
     let driver = match options.driver.or_else(|| VectorDriver::for_extension(name)) {
         Some(d) => d,

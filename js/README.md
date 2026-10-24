@@ -76,7 +76,11 @@ The package holds two WebAssembly modules with the same API. `terrio-js` has eve
 `terrio-js/core` leaves out the heaviest ones (GeoParquet and Arrow IPC, netCDF and HDF5, point
 clouds, JPEG 2000, GRIB, Zarr, AVIF tiles and OpenStreetMap) and keeps GeoTIFF/COG with all its
 compressions, GeoJSON and the other text formats, FlatGeobuf, GeoPackage, Shapefile, PMTiles and
-MBTiles, the CRS transformations and the operations, at about half the size:
+MBTiles, the CRS transformations and the operations, with a smaller download. The full module also
+includes DWG/DXF through the `cad` feature; the core module leaves CAD out. See the
+[CAD supported subset](../docs/formats.md#cad-drawings-dwg-and-dxf).
+
+For reference, measurements before CAD was added were:
 
 | Module | `.wasm` | gzip | Brotli |
 |---|---|---|---|

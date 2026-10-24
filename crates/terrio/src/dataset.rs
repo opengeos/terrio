@@ -886,7 +886,7 @@ pub fn write_vector(layers: &[Layer], path: &str, options: &VectorWriteOptions) 
     let driver = match options.driver.or_else(|| VectorDriver::for_extension(path)) {
         Some(d) => d,
         None => {
-            // With the GDAL backend, the GDAL driver of the extension (`.dxf`, `.gdb`...).
+            // With the GDAL backend, the GDAL driver of the extension (`.gdb`...).
             #[cfg(feature = "gdal")]
             if let Some(d) = crate::gdal_backend::driver_for_path(path, true) {
                 return crate::gdal_backend::write_vector(layers, path, &d, &[], &[]);
@@ -902,6 +902,11 @@ pub fn write_vector(layers: &[Layer], path: &str, options: &VectorWriteOptions) 
         (_, []) => Err(Error::InvalidArgument("no layers to write".into())),
         #[cfg(feature = "sqlite")]
         (VectorDriver::GPKG, _) => crate::drivers::vector::geopackage::write(layers, path),
+        #[cfg(feature = "cad")]
+        (d @ (VectorDriver::DXF | VectorDriver::DWG), _) => {
+            std::fs::write(path, crate::drivers::vector::cad::to_bytes(layers, d)?)?;
+            Ok(())
+        }
         (VectorDriver::GPX, _) => crate::drivers::vector::gpx::write_layers(layers, path),
         (VectorDriver::KML, _) => crate::drivers::vector::kml::write(layers, path),
         (VectorDriver::KMZ, _) => crate::drivers::vector::kml::write_kmz(layers, path),

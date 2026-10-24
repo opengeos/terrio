@@ -315,6 +315,8 @@ terrio convert 'STACTA:"https://example.com/pyramid/stacta.json":bands' preview.
 | KMZ | Zipped KML | ✓ | ✓ | kmz |
 | GML | GML | ✓ | ✓ | gml |
 | GPX | GPS Exchange Format | ✓ | ✓ | gpx |
+| DXF | AutoCAD DXF (ASCII and binary read; ASCII write) | ✓ | ✓ | dxf |
+| DWG | AutoCAD DWG | ✓ | ✓ | dwg |
 | TopoJSON | TopoJSON | ✓ | ✓ | topojson |
 | MapInfo File | MapInfo TAB and interchange format | ✓ | ✓ | tab, mif |
 | OSM | OpenStreetMap PBF and XML | ✓ | | osm.pbf, osm |
@@ -372,6 +374,51 @@ reads it.
 - **OSM XML** (`.osm`) gives the same five layers as PBF, with tags in the file's order.
 - **KML styles** (`<Style>`, `<StyleMap>`) are read into an `OGR_STYLE` field holding GDAL's style
   strings (`PEN(c:#FF0000FF,w:2.000000px);BRUSH(fc:#00FF0040)`), and written back as KML styles.
+
+### CAD drawings (DWG and DXF)
+
+The default-enabled `cad` Cargo feature uses [acadrust](https://github.com/hakanaktt/acadrust)
+without native libraries or its optional thread pool. It is included in the full JavaScript/WASM
+module; the lighter `terrio-js/core` module leaves it out. File, remote/downloaded and byte inputs
+use the same codecs. CLI/MCP `info` and `convert`, Rust, Python and JavaScript use the existing
+vector APIs:
+
+```sh
+terrio info drawing.dwg
+terrio convert drawing.dwg entities.geojson
+terrio convert parcels.gpkg drawing.dxf
+terrio convert drawing.dxf drawing.dwg
+```
+
+Input versions are those supported by acadrust 0.6.7 (R12 through R2018+); Terrio writes R2018
+DWG and ASCII DXF. Each drawing becomes one `entities` layer, including model and paper space.
+Fields are `Layer`, `EntityHandle`, `EntityType`, `Linetype`, `Text` and `PaperSpace` (1 for paper
+space, null otherwise). Coordinates stay in drawing units, including Z and object-coordinate
+system transformations. CAD coordinates are exposed as XYZ, including zero elevations. No CRS
+is inferred or assigned. Assign a known source CRS explicitly before reprojection. Layer filters select `entities`; attribute filters such as
+`--where "Layer = 'survey'"` select drawing layers.
+
+Supported entities are POINT, LINE, straight and bulged LWPOLYLINE/POLYLINE, 3D polylines,
+CIRCLE, ARC, ELLIPSE, TEXT/MTEXT, SOLID/TRACE, 3DFACE and HATCH with polyline, line or circular-arc
+boundaries. INSERT expands block geometry (up to 32 levels and one million output features);
+unused block definitions are excluded. Expanded entities receive new handles. Viewports and
+sequence markers carry no exported geometry.
+Closed polylines remain lines. Curves are linearized at a maximum four-degree step; curve samples
+can differ from GDAL's. Hatch rings are organized by containment into polygons with holes.
+Unsupported entities (including splines, dimensions, ACIS solids and mesh entities), unsupported
+hatch boundaries, fitted polylines and extruded/thick geometry produce an error identifying the
+unsupported data rather than silently discarding it. Text is returned as raw CAD text; font styles
+and MTEXT formatting are not interpreted. Styling, external references and CAD object dictionaries
+are outside Terrio's vector model.
+
+On export, points become POINT (or TEXT when the `Text` attribute is present), lines become LINE
+or 3D POLYLINE, and horizontal polygons become HATCH with their holes. Non-horizontal polygons
+and measured coordinates are rejected. Multi-geometries/collections become separate entities.
+Several input layers can share a drawing: the `Layer` attribute names the CAD layer, falling back
+to the input layer name. `Text`, `Linetype` and `PaperSpace` are mapped back; other GIS fields,
+feature IDs, CRS and CAD-specific objects/styles are not preserved. Handles are newly allocated.
+This is vector geometry interchange, not lossless CAD document editing. The optional STL,
+COLLADA, OBJ, glTF/GLB and FBX importers in acadrust are not enabled by Terrio's `cad` feature.
 
 ## Tile archives
 

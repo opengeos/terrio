@@ -1,6 +1,8 @@
 //! The vector drivers terrio supplies itself, where the format libraries are wrong or missing, and
 //! fixes applied to what the format libraries read.
 
+#[cfg(feature = "cad")]
+pub(crate) mod cad;
 pub mod csv;
 pub(crate) mod datetime;
 #[cfg(feature = "flatgeobuf")]
@@ -68,6 +70,8 @@ pub(crate) fn read(path: &str, driver: VectorDriver, options: &VectorOpenOptions
             }
             None => vec![flatgeobuf::read(path)?],
         },
+        #[cfg(feature = "cad")]
+        VectorDriver::DXF | VectorDriver::DWG => vec![cad::parse(std::fs::read(path)?, driver)?],
         VectorDriver::GeoJSON => vec![geojson::read(path)?],
         VectorDriver::GeoJSONSeq => {
             let stem = std::path::Path::new(path).file_stem().and_then(|s| s.to_str()).unwrap_or("layer");
@@ -96,6 +100,8 @@ pub(crate) fn write(layer: &Layer, path: &str, driver: VectorDriver, options: &V
     match driver {
         #[cfg(feature = "flatgeobuf")]
         VectorDriver::FlatGeobuf => flatgeobuf::write(layer, path)?,
+        #[cfg(feature = "cad")]
+        VectorDriver::DXF | VectorDriver::DWG => std::fs::write(path, cad::to_bytes(std::slice::from_ref(layer), driver)?)?,
         VectorDriver::GeoJSON => geojson::write(layer, path, &options.geojson)?,
         VectorDriver::GeoJSONSeq => std::fs::write(path, geojson::to_seq_string(layer)?)?,
         VectorDriver::CSV => csv::write(layer, path, &options.csv)?,
@@ -127,6 +133,8 @@ pub(crate) fn read_bytes(bytes: Vec<u8>, name: &str, driver: VectorDriver, optio
     Ok(Some(match driver {
         #[cfg(feature = "flatgeobuf")]
         VectorDriver::FlatGeobuf => vec![flatgeobuf::parse(&bytes)?],
+        #[cfg(feature = "cad")]
+        VectorDriver::DXF | VectorDriver::DWG => vec![cad::parse(bytes, driver)?],
         VectorDriver::GeoJSON => vec![geojson::parse(&bytes, stem)?],
         VectorDriver::GeoJSONSeq => vec![geojson::parse_seq(&bytes, stem)?],
         VectorDriver::CSV => {
@@ -177,6 +185,8 @@ pub(crate) fn write_bytes(layers: &[Layer], driver: VectorDriver, options: &Vect
     Ok(Some(match driver {
         #[cfg(feature = "sqlite")]
         VectorDriver::GPKG => geopackage::to_bytes(layers)?,
+        #[cfg(feature = "cad")]
+        VectorDriver::DXF | VectorDriver::DWG => cad::to_bytes(layers, driver)?,
         VectorDriver::GPX => gpx::layers_to_string(layers)?.into_bytes(),
         VectorDriver::KML => kml::to_string(layers)?.into_bytes(),
         VectorDriver::KMZ => kml::kmz_bytes(layers)?,

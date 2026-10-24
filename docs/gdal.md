@@ -60,7 +60,7 @@ are not supported.
 
 ## The optional GDAL backend
 
-For the long tail of formats (HDF4, NITF, KEA, PCIDSK, SQLite, DXF, spreadsheets...),
+For the long tail of formats (HDF4, NITF, KEA, PCIDSK, SQLite, spreadsheets...),
 terrio can hand files to GDAL. The backend is a cargo feature, `gdal`, off by default: it is
 terrio's only C dependency, and builds need GDAL 3.4 or later installed where `pkg-config` (or
 `GDAL_HOME`) finds it.
@@ -73,6 +73,9 @@ cargo install terrio-cli --features gdal
 [dependencies]
 terrio = { git = "https://github.com/opengeos/terrio", features = ["gdal"] }
 ```
+
+DWG/DXF also have [native CAD drivers](formats.md#cad-drawings-dwg-and-dxf). They take
+priority by default; use the explicit GDAL backend to select GDAL's DXF behavior.
 
 With the feature enabled:
 
@@ -96,8 +99,8 @@ With the feature enabled:
   included; a layer of unknown type gets the type its features share, single geometries promoted
   to multi ones as `-nlt PROMOTE_TO_MULTI` does) and CRSs are kept; an existing output is
   replaced.
-- An output extension terrio has no driver for goes to the GDAL driver that claims it (`.dxf`,
-  `.gdb`, `.ntf`...), in `terrio convert` and in `terrio::write_vector` and
+- An output extension terrio has no driver for goes to the GDAL driver that claims it (`.gdb`,
+  `.ntf`...), in `terrio convert` and in `terrio::write_vector` and
   `write_raster_dataset`.
 - Bytes in memory: `terrio::memory::open_bytes` (and `open_raster_bytes`, `open_vector_bytes`)
   hands what terrio cannot read to GDAL through its `/vsimem/` file system, zip archives through
@@ -122,7 +125,7 @@ let roads = terrio::open_vector("roads.gpkg", &Default::default())?;
 let lco = [("FEATURE_DATASET".to_string(), "transport".to_string())];
 terrio::gdal_backend::write_vector(&roads.layers, "roads.gdb", "OpenFileGDB", &[], &lco)?;
 // A DXF drawing, as bytes.
-let dxf = terrio::memory::write_vector_bytes(&roads.layers, "roads.dxf", &Default::default())?;
+let dxf = terrio::gdal_backend::write_vector_bytes(&roads.layers, "roads.dxf", "DXF", &[], &[])?;
 // A NITF file from bytes: GDAL reads it from memory.
 let ntf = terrio::memory::open_raster_bytes(std::fs::read("image.ntf")?, "image.ntf")?;
 # }

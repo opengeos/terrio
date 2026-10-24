@@ -98,7 +98,8 @@ for (const f of ["terrio_bg.wasm", "core/terrio_bg.wasm", "threads/terrio_bg.was
  * The crates that do not build for wasm64-unknown-unknown as published, and the edits that make
  * them: they treat wasm32 as WebAssembly. `tar` (wbraster's) leaves out its path conversions
  * (https://github.com/alexcrichton/tar-rs, `cfg(target_arch = "wasm32")`), `zstd-sys` (Arrow's
- * Zstandard, for GeoParquet) its libc shim, and `arrow-buffer` its alignment constant. Copies of
+ * Zstandard, for GeoParquet) its libc shim, `arrow-buffer` its alignment constant, and acadrust
+ * its mmap/thread target guards. Copies of
  * the locked versions are edited (replacing `target_arch = "wasm32"` with `target_family =
  * "wasm"`) for this build only, through cargo's `--config patch...`.
  */
@@ -109,6 +110,10 @@ function wasm64Patches() {
       ["src/lib.rs", /#\[cfg\(target_arch = "wasm32"\)\]/g, '#[cfg(target_family = "wasm")]'],
       ["build.rs", /target == "wasm32-unknown-unknown"/g, 'target == "wasm32-unknown-unknown" || target == "wasm64-unknown-unknown"'],
     ],
+    // acadrust uses wasm32-specific guards for mmap and thread spawning.
+    acadrust: (dir) => ["Cargo.toml", ...readdirSync(join(dir, "src"), { recursive: true }).filter((f) => f.endsWith(".rs")).map((f) => join("src", f))]
+      .filter((f) => /target_arch = "wasm32"/.test(readFileSync(join(dir, f), "utf8")))
+      .map((f) => [f, /target_arch = "wasm32"/g, 'target_family = "wasm"']),
     "arrow-buffer": () => [["src/alloc/alignment.rs", /#\[cfg\(target_arch = "wasm32"\)\]/g, '#[cfg(target_family = "wasm")]']],
   };
 }

@@ -31,8 +31,9 @@ serde_json.workspace = true
 # `core` is its lighter build (`terrio-js/core`), without the heaviest codecs.
 [features]
 default = ["full"]
-full = ["core", "parquet", "avif", "netcdf-hdf5", "osm", "jp2", "pointcloud", "zarr", "grib"]
+full = ["cad", "core", "parquet", "avif", "netcdf-hdf5", "osm", "jp2", "pointcloud", "zarr", "grib"]
 core = ["flatgeobuf", "sqlite", "tiles", "lzma", "lerc"]
+cad = ["terrio/cad"]
 parquet = ["terrio/parquet"]
 avif = ["tiles", "terrio/avif"]
 netcdf-hdf5 = ["terrio/netcdf-hdf5"]

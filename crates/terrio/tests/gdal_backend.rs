@@ -181,7 +181,8 @@ fn vectors_in_formats_terrio_lacks() {
         let arc = gdal::vector::Geometry::from_wkt("CIRCULARSTRING (0 0, 1 1, 2 0)").unwrap();
         layer.create_feature(arc).unwrap();
     }
-    let ds = terrio::open_vector(&dxf, &Default::default()).unwrap();
+    // DXF has a native driver too; keep this test on the GDAL backend.
+    let ds = terrio::open_vector(&format!("GDAL:{dxf}"), &Default::default()).unwrap();
     let geometry = ds.layers[0].features[0].geometry.as_ref().unwrap();
     assert!(matches!(geometry, terrio::Geometry::LineString(c) if c.len() > 3), "{geometry:?}");
 }
@@ -421,7 +422,8 @@ fn gdal_driver_chosen_by_extension() {
     let coords = [(0.0, 0.0), (10.0, 5.0), (20.0, 0.0)].map(|(x, y)| wbvector::Coord::xy(x, y)).to_vec();
     lines.push(terrio::Feature { fid: 0, geometry: Some(terrio::Geometry::line_string(coords)), attributes: vec![] });
     let dxf = dir.path().join("lines.dxf").to_string_lossy().into_owned();
-    terrio::write_vector(&[lines], &dxf, &Default::default()).unwrap();
+    // Explicit GDAL output, independently of the default-enabled native CAD driver.
+    terrio::gdal_backend::write_vector(&[lines], &dxf, "DXF", &[], &[]).unwrap();
     let (_, _, features) = read_with_gdal(&dxf);
     assert_eq!(features[0].0, "LINESTRING (0 0,10 5,20 0)");
     let gdb = dir.path().join("parcels.gdb").to_string_lossy().into_owned();

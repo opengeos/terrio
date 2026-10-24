@@ -1302,3 +1302,30 @@ test("openCatalog: defers unused encoded sources and preserves supplied lazy dat
   assert.deepEqual([...lazy.readBand(1, [0, 0, 1, 1])], [10]);
   lazy.free(); source.free();
 });
+
+test("CAD DWG/DXF byte roundtrips preserve drawing coordinates, labels and holes", { skip: needs("cad") }, () => {
+  const source = terrio.open(new TextEncoder().encode(JSON.stringify({
+    type: "FeatureCollection",
+    features: [
+      { type: "Feature", properties: { Layer: "survey", Text: "日本語" }, geometry: { type: "Point", coordinates: [12, 34, 56] } },
+      { type: "Feature", properties: { Layer: "survey" }, geometry: { type: "Polygon", coordinates: [
+        [[0, 0], [10, 0], [10, 10], [0, 10], [0, 0]],
+        [[2, 2], [4, 2], [4, 4], [2, 4], [2, 2]],
+      ] } },
+    ],
+  })), "drawing.geojson");
+  for (const ext of ["dxf", "dwg"]) {
+    const bytes = source.toBytes(`drawing.${ext}`);
+    const back = terrio.open(bytes, `drawing.${ext}`);
+    assert.deepEqual(back.layerNames(), ["entities"]);
+    const features = back.toGeoJSON().features;
+    assert.equal(features.length, 2);
+    assert.deepEqual(features[0].geometry.coordinates, [12, 34, 56]);
+    assert.equal(features[0].properties.Layer, "survey");
+    assert.equal(features[0].properties.Text, "日本語");
+    assert.equal(features[1].geometry.type, "Polygon");
+    assert.equal(features[1].geometry.coordinates.length, 2);
+    back.free();
+  }
+  source.free();
+});

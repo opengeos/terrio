@@ -440,6 +440,32 @@ def suite_json_ops(ctx, key, script, title, reference, criteria, group_words):
     return s
 
 
+def suite_cad(ctx):
+    """CAD geometry interchange against public GDAL drawings and real OSM roads."""
+    suite = Suite(
+        "cad", "DWG and DXF", "GDAL DXF and libopencad CAD drivers",
+        "Feature counts, geometry types, layer names and drawing coordinates. Linear geometry: "
+        "1e-8; curves: Hausdorff distance 0.001 times geometry diagonal and relative length/area "
+        "0.002. Z bounds checked separately. Independent R2000 DWG reference coordinates were "
+        "checked with libopencad; generated DWG is cross-read via DXF. GDAL uses unmerged "
+        "blocks and a UTF-8 override for the mislabeled Russian hatch fixture.",
+    )
+    code, out, err = run([
+        sys.executable, str(SCRIPTS / "compare_cad_with_gdal.py"), ctx.data,
+        "--terrio", ctx.terrio, "--json",
+    ])
+    try:
+        results = json.loads(out)
+    except json.JSONDecodeError:
+        suite.error = tail(err or out)
+        return suite
+    for result in results:
+        suite.cases.append(Case(result["name"].split()[0], result["name"], result["status"], result["detail"]))
+    if code and not any(r["status"] == DIFFERS for r in results):
+        suite.error = tail(err or out)
+    return suite
+
+
 def suite_ops(ctx):
     """translate, warp and mosaic against gdal_translate, gdalwarp, gdalbuildvrt and gdal_merge."""
     return suite_json_ops(
@@ -1063,6 +1089,7 @@ SUITES = OrderedDict(
         ("subdatasets", suite_subdatasets),
         ("histograms", suite_histograms),
         ("vector-roundtrip", suite_vector_roundtrip),
+        ("cad", suite_cad),
         ("raster-roundtrip", suite_raster_roundtrip),
         ("windows", suite_windows),
         ("ops", suite_ops),

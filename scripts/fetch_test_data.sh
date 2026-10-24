@@ -21,6 +21,18 @@ files=(
 for f in "${files[@]}"; do
   [ -e "$(basename "$f")" ] || curl -sSfL -o "$(basename "$f")" "$base/$f"
 done
+# Public CAD interoperability fixtures from the GDAL 3.12 test suite.
+mkdir -p cad
+for name in 3dface.dxf LWPOLYLINE-OCS.dxf circle.dxf closed_polyline_with_bulge.dxf \
+  solid-vertex-ordering.dxf hatch_as_multipolygon.dxf bin_dxf_r2000.dxf block-basepoint.dxf; do
+  [ -e "cad/$name" ] || curl -sSfL -o "cad/$name" \
+    "https://raw.githubusercontent.com/OSGeo/gdal/v3.12.0/autotest/ogr/data/dxf/$name"
+done
+# Independent AutoCAD R2000 samples; keep all downloaded CAD files outside the repo.
+for name in Line.dwg Point.dwg; do
+  [ -e "cad/$name" ] || curl -sSfL -o "cad/$name" \
+    "https://raw.githubusercontent.com/LibreDWG/libredwg/a8ccb1f314d9feb2215be67d1f6f2a3d64b2c9a0/test/test-data/2000/$name"
+done
 # Real Landsat 8 panchromatic and spectral pairs, from rio-pansharpen's public fixtures.
 mkdir -p pansharpen
 for band in 8 4 3 2; do

@@ -57,6 +57,7 @@ const BUILD: &str = if cfg!(feature = "threads") {
 /// The cargo features of this build, the formats it reads and writes besides the ones always built.
 const FEATURES: &[(&str, bool)] = &[
     ("avif", cfg!(feature = "avif")),
+    ("cad", cfg!(feature = "cad")),
     ("flatgeobuf", cfg!(feature = "flatgeobuf")),
     ("grib", cfg!(feature = "grib")),
     ("jp2", cfg!(feature = "jp2")),

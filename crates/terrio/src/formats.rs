@@ -114,6 +114,10 @@ pub enum VectorDriver {
     GML,
     /// GPS Exchange Format.
     GPX,
+    /// AutoCAD DXF (ASCII or binary). Requires the `cad` feature.
+    DXF,
+    /// AutoCAD DWG. Requires the `cad` feature.
+    DWG,
     /// MapInfo interchange format.
     MapInfo,
     /// OpenStreetMap PBF and XML.
@@ -348,6 +352,8 @@ impl VectorDriver {
         Self::KMZ,
         Self::GML,
         Self::GPX,
+        Self::DXF,
+        Self::DWG,
         Self::MapInfo,
         Self::OSM,
         Self::CSV,
@@ -372,6 +378,8 @@ impl VectorDriver {
             Self::KMZ => ("KMZ", "Zipped KML", &["kmz"], true, true),
             Self::GML => ("GML", "Geography Markup Language", &["gml"], true, true),
             Self::GPX => ("GPX", "GPS Exchange Format", &["gpx"], true, true),
+            Self::DXF => ("DXF", "AutoCAD DXF", &["dxf"], true, true),
+            Self::DWG => ("DWG", "AutoCAD DWG", &["dwg"], true, true),
             Self::MapInfo => ("MapInfo File", "MapInfo TAB and Interchange Format", &["mif", "tab"], true, true),
             Self::OSM => ("OSM", "OpenStreetMap PBF and XML", &["pbf", "osm"], true, false),
             Self::CSV => ("CSV", "Comma Separated Value", &["csv", "tsv"], true, true),
@@ -390,6 +398,7 @@ impl VectorDriver {
             Self::GPKG => ("sqlite", cfg!(feature = "sqlite")),
             Self::Parquet => ("parquet", cfg!(feature = "parquet")),
             Self::FlatGeobuf => ("flatgeobuf", cfg!(feature = "flatgeobuf")),
+            Self::DXF | Self::DWG => ("cad", cfg!(feature = "cad")),
             Self::OSM => ("osm", cfg!(feature = "osm")),
             Self::MBTiles | Self::PMTiles | Self::MVT => ("tiles", cfg!(feature = "tiles")),
             _ => return None,
@@ -455,7 +464,7 @@ impl VectorDriver {
             Self::Parquet => return None,
             #[cfg(not(feature = "osm"))]
             Self::OSM => return None,
-            Self::GeoJSONSeq | Self::CSV | Self::MBTiles | Self::PMTiles | Self::MVT | Self::Gdal => return None,
+            Self::DXF | Self::DWG | Self::GeoJSONSeq | Self::CSV | Self::MBTiles | Self::PMTiles | Self::MVT | Self::Gdal => return None,
         })
     }
 }

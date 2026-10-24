@@ -445,6 +445,16 @@ WebAssembly (the `terrio-js` npm package):
       GeoTIFFs and scanline formats); color relief written as a VRT (`terrio dem color-relief -f
       VRT`, lookup tables identical to `gdaldem`'s). Done.
 
+## CAD vector interchange (#262)
+
+- [x] Native DWG and ASCII/binary DXF reading and DWG/ASCII DXF writing through acadrust,
+      exposed by the existing Rust, CLI/MCP, Python and full JavaScript/WASM vector APIs.
+      Common linework, curves, text, faces, polygon hatches and inserted blocks are supported;
+      output includes horizontal polygon holes. Drawing coordinates have no inferred CRS.
+      See [supported entities and limits](docs/formats.md#cad-drawings-dwg-and-dxf).
+- [ ] Additional CAD entities (splines, dimensions, meshes, ACIS solids) and acadrust's optional
+      STL, COLLADA, OBJ, glTF/GLB and FBX importers.
+
 ## Decisions
 
 - The core API is synchronous and reads datasets into memory; remote files are downloaded first.
