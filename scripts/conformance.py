@@ -458,7 +458,7 @@ def suite_dem_calc(ctx):
         "dem-calc",
         "compare_dem_calc_with_gdal.py",
         "Terrain analysis and raster algebra",
-        "`gdaldem`, `gdal_calc.py`, `gdal_proximity.py`, `gdal_sieve.py`",
+        "`gdaldem`, `gdal_calc.py`, `gdal_proximity.py`, `gdal_sieve.py`, `gdal_fillnodata`",
         "The outputs of the same command lines on real DEMs and land cover: size, type, nodata and "
         "geotransform must match, then pixels are compared. Within tolerance: every pixel within "
         "the case's tolerance (float32 rounding of NumPy's SIMD functions, for example).",

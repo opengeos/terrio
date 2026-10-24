@@ -373,6 +373,10 @@ def main() -> None:
     with tempfile.TemporaryDirectory() as d:
         tmp = Path(d)
         raster = rasters(tmp)
+        filled_dem: terrio.Raster = terrio.fill_nodata(
+            raster, max_distance=20, interpolation="nearest", smoothing_iterations=1
+        )
+        assert filled_dem.read(1).shape == raster.read(1).shape
         vectors(tmp, raster)
         points(tmp)
         rio(tmp)

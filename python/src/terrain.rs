@@ -19,6 +19,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(calc, m)?)?;
     m.add_function(wrap_pyfunction!(proximity, m)?)?;
     m.add_function(wrap_pyfunction!(sieve, m)?)?;
+    m.add_function(wrap_pyfunction!(fill_nodata, m)?)?;
     Ok(())
 }
 
@@ -432,5 +433,68 @@ fn sieve(
             terrio::ops::sieve::sieve(&ds, &SieveOptions { band, threshold, eight_connected: connectedness == 8, mask })
         })
         .py()?;
+    finish_raster(py, out, dst, format, compress, tile_size, bigtiff)
+}
+
+/// Fills raster holes using GDAL's four-quadrant interpolation.
+///
+/// Args:
+///     src: A raster path or Raster.
+///     dst: Also write the single-band result to this path.
+///     band: The band to fill, from 1.
+///     mask: A raster path or Raster whose band 1 is zero at holes. Without one,
+///         use the source's internal/sidecar mask, otherwise its nodata value.
+///     max_distance: Search distance in pixels; 0 searches the whole image.
+///     interpolation: "inv_dist" or "nearest".
+///     smoothing_iterations: Number of 3x3 smoothing passes on filled pixels.
+///     format: Output format for dst.
+///     compress: GeoTIFF compression for dst.
+///     tile_size: GeoTIFF tile size for dst.
+///     bigtiff: Write a BigTIFF for dst.
+///
+/// Returns:
+///     Raster: One band, with the source's type, nodata and georeferencing.
+#[pyfunction]
+#[pyo3(signature = (src, dst=None, *, band=1, mask=None, max_distance=100.0,
+    interpolation="inv_dist", smoothing_iterations=0, format=None, compress=None,
+    tile_size=None, bigtiff=false))]
+#[allow(clippy::too_many_arguments)]
+fn fill_nodata(
+    py: Python<'_>,
+    src: &Bound<'_, PyAny>,
+    dst: Option<&str>,
+    band: usize,
+    mask: Option<&Bound<'_, PyAny>>,
+    max_distance: f64,
+    interpolation: &str,
+    smoothing_iterations: usize,
+    format: Option<&str>,
+    compress: Option<String>,
+    tile_size: Option<u32>,
+    bigtiff: bool,
+) -> PyResult<PyRaster> {
+    use terrio::ops::fill_nodata::{FillNodataOptions, Interpolation, raster_mask};
+    let method = Interpolation::parse(interpolation).py()?;
+    let use_default_mask = mask.is_none();
+    let (ds, default_mask) = match src.extract::<String>() {
+        Ok(path) => crate::with_warnings(py, || {
+            let mut r = terrio::open_raster_lazy(&path)?;
+            let window = terrio::Window::new(0, 0, r.width(), r.height());
+            let bytes = if use_default_mask { r.read_mask(window, None)? } else { None };
+            Ok((r.read()?, bytes))
+        })?,
+        Err(_) => {
+            let mut r = src.cast::<PyRaster>().map_err(|_| invalid("expected a path or a terrio.Raster"))?.borrow_mut();
+            let window = terrio::Window::new(0, 0, r.inner.width(), r.inner.height());
+            let bytes = if mask.is_none() { r.inner.read_mask(window, None).py()? } else { None };
+            (r.inner.read().py()?, bytes)
+        }
+    };
+    let bytes = match mask {
+        Some(m) => Some(raster_mask(&input_raster(py, m)?, ds.raster.cols, ds.raster.rows).py()?),
+        None => default_mask,
+    };
+    let options = FillNodataOptions { band, mask: bytes.as_deref(), max_distance, interpolation: method, smoothing_iterations };
+    let out = py.detach(|| terrio::ops::fill_nodata::fill_nodata(&ds, &options)).py()?;
     finish_raster(py, out, dst, format, compress, tile_size, bigtiff)
 }

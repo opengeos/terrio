@@ -801,3 +801,60 @@ pub fn sieve(src: JsValue, options: JsValue) -> Result<Dataset, JsError> {
     let o = SieveOptions { band: a.band, threshold: a.threshold, eight_connected: a.connectedness == 8, mask };
     Ok(Dataset::from_raster(terrio::ops::sieve::sieve(&ds, &o).map_err(js_err)?))
 }
+
+/// Options of [`fill_nodata`].
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", default, deny_unknown_fields)]
+struct FillNodataArgs {
+    band: usize,
+    max_distance: f64,
+    interpolation: String,
+    smoothing_iterations: usize,
+}
+
+impl Default for FillNodataArgs {
+    fn default() -> Self {
+        Self { band: 1, max_distance: 100.0, interpolation: "inv_dist".into(), smoothing_iterations: 0 }
+    }
+}
+
+/// Fills holes using GDAL's four-quadrant interpolation, returning a single-band raster.
+/// Options: `band`, `mask` (a raster with zero at holes), `maxDistance` (pixels,
+/// 100 by default, 0 for unlimited), `interpolation` (`inv_dist` or `nearest`),
+/// `smoothingIterations`. Without a mask, uses the source's mask or nodata.
+#[wasm_bindgen(js_name = fillNodata)]
+pub fn fill_nodata(src: JsValue, options: JsValue) -> Result<Dataset, JsError> {
+    use terrio::ops::fill_nodata::{FillNodataOptions, Interpolation, raster_mask};
+    let (rest, taken) = split_options(&options, &["mask"])?;
+    let a: FillNodataArgs = parse_options(&rest)?;
+    let default_mask = if taken[0].is_none() {
+        if let Some(inner) = Dataset::lookup(&src) {
+            match &mut *inner.borrow_mut() {
+                Inner::Raster(r) => {
+                    let window = terrio::Window::new(0, 0, r.width(), r.height());
+                    r.read_mask(window, None).map_err(js_err)?
+                }
+                _ => None,
+            }
+        } else if let Some((bytes, name)) = file_bytes(&src) {
+            let mut r = terrio::memory::open_raster_lazy_bytes(bytes, &name).map_err(js_err)?;
+            let window = terrio::Window::new(0, 0, r.width(), r.height());
+            r.read_mask(window, None).map_err(js_err)?
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+    let ds = input_raster(&src)?;
+    let mask = taken[0].as_ref().map(input_raster).transpose()?;
+    let bytes = mask.as_ref().map(|m| raster_mask(m, ds.raster.cols, ds.raster.rows)).transpose().map_err(js_err)?.or(default_mask);
+    let o = FillNodataOptions {
+        band: a.band,
+        mask: bytes.as_deref(),
+        max_distance: a.max_distance,
+        interpolation: Interpolation::parse(&a.interpolation).map_err(js_err)?,
+        smoothing_iterations: a.smoothing_iterations,
+    };
+    Ok(Dataset::from_raster(terrio::ops::fill_nodata::fill_nodata(&ds, &o).map_err(js_err)?))
+}

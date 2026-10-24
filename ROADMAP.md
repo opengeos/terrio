@@ -22,6 +22,40 @@ of GDAL: the long tail of formats stays reachable through an optional GDAL backe
 - Proprietary formats that need vendor SDKs (MrSID, ECW, FileGDB raster).
 - Database drivers (PostGIS, Oracle, SQL Server) in the core crate.
 
+## Next: Practical GDAL feature parity
+
+Tracked in [#238](https://github.com/opengeos/terrio/issues/238), in priority order.
+The [gap analysis](docs/gdal-parity-recommendations.md) records the existing support,
+implementation scope and validation criteria. These additions build on the completed
+operations and drivers below; no release deadline is assigned yet.
+
+- [ ] Fill nodata: inverse-distance and nearest interpolation, validity masks, maximum
+      pixel distance and smoothing, preserving valid source pixels.
+- [ ] Overview-aware warping: explicit source overview selection, automatic selection for
+      downsampling and a full-resolution override, reducing remote COG reads.
+- [ ] Geolocation-array warping: reproject swaths using the longitude/latitude arrays already
+      exposed by the scientific-format drivers, including subsampled arrays and pixel-center
+      conventions.
+- [ ] Richer VRT interoperability: serialized warped VRTs, then selected built-in derived bands
+      and kernel-filtered sources, with lazy window reads and GDAL-compatible output.
+- [ ] Richer vector SQL: computed SELECT columns, DISTINCT, summary aggregates and limited
+      attribute joins, with the supported OGR SQL subset documented explicitly.
+- [ ] Viewshed: single-observer visibility and minimum visible height, observer/target heights,
+      maximum distance and curvature/refraction controls, with explicit input nodata behavior.
+- [ ] Indexed raster catalogs: GTI-compatible GeoPackage/FlatGeobuf tile indexes, spatial source
+      selection, compositing order, mixed-CRS sources and a bounded source cache.
+- [ ] Pansharpening: weighted Brovey processing, spectral weights, resampling, nodata, bit depth
+      and extent handling; virtual output after the VRT extensions.
+- [ ] Native multidimensional API: groups, named dimensions, coordinate arrays, lazy time/depth
+      slicing and transposition across netCDF/HDF5/Zarr, retaining the existing raster views.
+
+Start with fill nodata and overview-aware warping, then geolocation warping and VRT support.
+SQL, viewshed and pansharpening can ship independently; schedule indexed catalogs and the
+multidimensional API according to demand for large mosaics and scientific data cubes. Each item
+must preserve pure-Rust/default WebAssembly builds, add real-data comparisons to the GDAL
+conformance workflow, and expose applicable functionality through Rust, CLI, Python, JavaScript
+and MCP. Record implementation PRs in the tracking issue before marking items complete.
+
 ## 0.1: Foundations
 
 - [x] Data model: `Dataset`, raster `Band` with block access, vector `Layer` with `Feature`, field
