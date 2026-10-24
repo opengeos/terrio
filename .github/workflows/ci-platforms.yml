@@ -110,8 +110,9 @@ jobs:
         # xarray, dask, rioxarray, zarr and scipy: terrio.xarray is compared with rioxarray.
         run: python -m pip install pytest rasterio shapely xarray "dask[array]" rioxarray zarr scipy python/dist/*.whl
       - name: Test
+        timeout-minutes: 15
         working-directory: python
-        run: python -m pytest -v -s -o faulthandler_timeout=60
+        run: python -m pytest -v -o faulthandler_timeout=60
       - uses: actions/upload-artifact@v7
         with:
           name: wheel-${{ matrix.os }}
