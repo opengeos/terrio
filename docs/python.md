@@ -177,6 +177,17 @@ data = open("dem.tif", "rb").read()
 raster = terrio.open_bytes(data, "dem.tif")  # from bytes; to bytes with raster.to_bytes("x.tif")
 ```
 
+### Viewshed
+
+```python
+visible = terrio.viewshed("dem_utm.tif", 500000, 4400000, oz=2, tz=0, md=5000)
+height = terrio.viewshed("dem_utm.tif", 500000, 4400000, om="GROUND", cc=0)
+```
+
+`om="NORMAL"` returns visibility; `DEM` and `GROUND` return minimum visible elevation
+or height above the DEM. `cc` is 1 minus refraction. See [viewshed](cli.md#viewshed) for
+units, curvature, radius cropping and input nodata behavior.
+
 ## Typing
 
 The package ships type stubs (`py.typed`), checked with `mypy --strict` and `stubtest`:

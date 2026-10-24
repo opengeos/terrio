@@ -259,3 +259,12 @@ files of GDAL's test suite are among terrio's test files (crates/terrio/tests/da
   NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
   DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
   OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+-------------------------------------------------------------------------------
+GDAL viewshed edge recurrence
+-------------------------------------------------------------------------------
+
+crates/terrio/src/ops/viewshed.rs adapts the edge-mode height recurrence in GDAL's
+alg/viewshed/viewshed_executor.cpp (https://github.com/OSGeo/gdal), by Tamas Szekeres.
+Copyright (c) 2024 info@hobu.co. Licensed under the MIT permission and warranty
+terms reproduced above for GDAL.

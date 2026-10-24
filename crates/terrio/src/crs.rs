@@ -538,7 +538,7 @@ impl std::fmt::Display for SpatialRef {
 const REALIZATIONS: &[&str] = &["2011", "HARN", "NSRS", "CSRS", "CORS", "MA11", "PA11", "NAD83(", "ITRF", "GDA2020", "ETRF"];
 
 /// The semi-major axis of the first `SPHEROID` or `ELLIPSOID` of a WKT definition.
-fn semi_major_axis(wkt: &str) -> Option<f64> {
+pub(crate) fn semi_major_axis(wkt: &str) -> Option<f64> {
     let upper = wkt.to_ascii_uppercase();
     let start = upper.find("SPHEROID[").or_else(|| upper.find("ELLIPSOID["))?;
     let body = &wkt[start..];
