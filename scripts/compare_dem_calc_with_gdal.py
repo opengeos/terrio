@@ -373,6 +373,37 @@ def cases(d, tmp):
     ox, oy = str(gt[0] + 75.5 * gt[1]), str(gt[3] + 70.5 * gt[5])
     add("viewshed numeric nodata", ["gdal_viewshed", "-q", "-ox", ox, "-oy", oy, ndpath, "{out}"],
         ["viewshed", ndpath, "{out}", "--ox", ox, "--oy", oy])
+    # Real USGS terrain with controlled holes: edges, interior blocks and an
+    # isolated donor. Keep Float32 so valid-pixel preservation is exact in both.
+    hole_path = os.path.join(tmp, "fill_holes.tif")
+    mask_path = os.path.join(tmp, "fill_mask.tif")
+    terrain = gdal.Translate(hole_path, usgs, srcWin=[0, 0, 96, 80], outputType=gdal.GDT_Float32)
+    band = terrain.GetRasterBand(1)
+    pixels = band.ReadAsArray()
+    validity = np.full(pixels.shape, 255, dtype=np.uint8)
+    validity[0:7, :13] = 0
+    validity[23:35, 37:49] = 0
+    validity[50:65, 60:79] = 0
+    validity[58, 69] = 255
+    mask_ds = gdal.GetDriverByName("GTiff").Create(mask_path, 96, 80, 1, gdal.GDT_Byte)
+    mask_ds.GetRasterBand(1).WriteArray(validity)
+    mask_ds = None
+    pixels[validity == 0] = -9999
+    band.WriteArray(pixels)
+    band.SetNoDataValue(-9999)
+    terrain = None
+    for method in ["inv_dist", "nearest"]:
+        for distance in [2, 10, 0]:
+            for smooth in [0, 1, 3]:
+                for explicit in [False, True]:
+                    add(
+                        f"fill-nodata USGS {method} d{distance} smooth{smooth} mask{explicit}",
+                        ["gdal_fillnodata", "-q", "-interp", method, "-md", str(distance), "-si", str(smooth),
+                         *(["-mask", mask_path] if explicit else []), hole_path, "{out}"],
+                        ["fill-nodata", hole_path, "{out}", "--interpolation", method,
+                         "--max-distance", str(distance), "--smoothing-iterations", str(smooth),
+                         *(["--mask", mask_path] if explicit else [])],
+                    )
     return out
 
 

@@ -103,3 +103,10 @@ python scripts/compare_with_gdal.py ../terrio-data
 
 The Rust tests hold expected values taken from GDAL, so they run without GDAL installed; the
 comparison scripts need GDAL's Python bindings.
+
+Fill-nodata comparisons are part of the `dem-calc` conformance suite. To run just
+these cases on the real USGS terrain, with holes and explicit validity masks:
+
+```sh
+python scripts/compare_dem_calc_with_gdal.py ../terrio-data --only fill-nodata
+```

@@ -82,6 +82,8 @@ enum Command {
     Viewshed(cmd::viewshed::Args),
     /// Merge raster areas smaller than a threshold into their largest neighbour (like gdal_sieve.py).
     Sieve(cmd::sieve::Args),
+    /// Fill raster holes by interpolation, as gdal_fillnodata.
+    FillNodata(cmd::fill_nodata::Args),
     /// Grid a point cloud into a raster: min, max, mean, IDW, count or standard deviation per cell
     /// (like PDAL's writers.gdal), or a TIN or nearest-neighbour interpolation (like gdal_grid).
     Grid(cmd::grid::Args),
@@ -161,6 +163,7 @@ fn run_on_this_thread(args: Vec<OsString>, terrio: Option<Vec<OsString>>) -> i32
         Command::Proximity(a) => cmd::proximity::run(a),
         Command::Viewshed(a) => cmd::viewshed::run(a),
         Command::Sieve(a) => cmd::sieve::run(a),
+        Command::FillNodata(a) => cmd::fill_nodata::run(a),
         Command::Grid(a) => cmd::grid::run(a),
         Command::Filter(a) => cmd::filter::run(a),
         Command::Mcp => serve_mcp(terrio),

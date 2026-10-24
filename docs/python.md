@@ -209,3 +209,18 @@ uv venv && uv pip install maturin numpy pytest
 uv run maturin develop --release
 uv run pytest
 ```
+
+## Fill nodata
+
+```python
+filled = terrio.fill_nodata("dem.tif", "filled.tif", max_distance=100,
+                           smoothing_iterations=1)
+nearest = terrio.fill_nodata("image.tif", band=2, mask="validity.tif",
+                            interpolation="nearest")
+```
+
+Inputs and masks may also be `terrio.Raster` objects. The result is a new, single-band
+raster, retaining the selected band's type, nodata and georeferencing. The mask is zero
+at holes and nonzero at donors; without it, the source mask or nodata defines holes.
+Distances are in pixels; zero searches the whole image. Smoothing affects only filled
+pixels and preserves the first/last rows. Valid source samples remain unchanged.

@@ -536,3 +536,24 @@ terrio mcp
 
 Serves the other commands to AI agents (Claude Code, Claude Desktop, Cursor, VS Code) as a Model
 Context Protocol server over standard input and output. See [AI Agents](mcp.md).
+
+## fill-nodata
+
+```sh
+terrio fill-nodata dem.tif filled.tif --max-distance 100 --smoothing-iterations 1
+terrio fill-nodata image.tif filled.tif --band 2 --mask validity.tif --interpolation nearest
+```
+
+Fills holes in one band using GDAL's four-quadrant inverse-distance (`inv_dist`, the
+default) or nearest interpolation. The output contains the selected band, retaining its
+type, nodata and georeferencing. Valid source pixels are preserved exactly. The mask's
+first band is zero at holes and nonzero at donor pixels; without `--mask`, the source's
+internal/sidecar validity mask is used, otherwise its nodata value. Mask dimensions must
+match the input; mask georeferencing is ignored. `--max-distance` is in pixels (100 by
+default, 0 for unlimited search). `--smoothing-iterations` applies 3×3 mean-filter passes
+only to filled pixels, leaving the first/last rows unchanged as GDAL does. Inputs are
+processed in memory; interpolation uses Float32 samples, including for Float64 rasters.
+For nearest interpolation, GDAL's search fringe can write zero where the closest
+quadrant candidate is less than one pixel beyond the distance limit; Terrio follows
+that behavior. Complex bands are unsupported. Standard raster output
+options (`--format`, `--compress`, `--co`, etc.) apply.
