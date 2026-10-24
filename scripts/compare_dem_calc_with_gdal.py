@@ -100,6 +100,7 @@ def compare(gdal_path, terrio_path, tol, radius=None):
         gdal_path: GDAL's output.
         terrio_path: terrio's output.
         tol: The tolerance of the "within tolerance" count.
+        radius: Optional (observer_x, observer_y, maximum_distance, out_of_range).
 
     Returns:
         A dict of comparison results.
@@ -127,11 +128,11 @@ def compare(gdal_path, terrio_path, tol, radius=None):
         # GDAL 3.12 races its two half-row jobs on an outside observer's boundary
         # column. Assert Terrio's radius mask independently, then compare in-range
         # pixels against GDAL. Repeated GDAL calls can disagree outside the radius.
-        ox, oy, distance = radius
+        ox, oy, distance, out_of_range = radius
         rows, cols = np.indices(gd.shape[1:])
         outside = ((g["gt"][0] + cols * g["gt"][1] - ox) ** 2
                    + (g["gt"][3] + rows * g["gt"][5] - oy) ** 2) > distance ** 2
-        if np.any(td[0][outside] != 0):
+        if np.any(td[0][outside] != out_of_range):
             raise AssertionError("Terrio failed the independent maximum-distance mask check")
         diff[:, outside] = 0
         res["excluded_reference_pixels"] = int(outside.sum())
@@ -343,7 +344,7 @@ def cases(d, tmp):
         ("outside west", -10, 70, []),
         ("outside north", 75, -10, []),
         ("outside southeast height", 160, 150, ["-om", "GROUND"]),
-        ("outside radius", -5, 70, ["-md", "10000"]),
+        ("outside radius", -5, 70, ["-md", "10000", "-ov", "7"]),
         ("boundary truncation", -1, 70, []),
         ("target height", 75, 70, ["-oz", "8", "-tz", "10"]),
         ("radius", 75, 70, ["-md", "5000", "-ov", "7"]),
@@ -356,7 +357,7 @@ def cases(d, tmp):
         case = add(f"viewshed {label}", ["gdal_viewshed", "-q", *shared, projected, "{out}"],
             ["viewshed", projected, "{out}", *[{"-ox": "--ox", "-oy": "--oy", "-cc": "--cc", "-oz": "--oz", "-tz": "--tz", "-md": "--md", "-ov": "--ov", "-om": "--om"}.get(v, v) for v in shared]], 1e-9)
         if label == "outside radius":
-            case["radius"] = (gt[0] + int(col + 0.5) * gt[1], gt[3] + int(row + 0.5) * gt[5], 10000)
+            case["radius"] = (gt[0] + int(col + 0.5) * gt[1], gt[3] + int(row + 0.5) * gt[5], 10000, 7)
     feet = os.path.join(tmp, "viewshed_feet.tif")
     feet_ds = gdal.Warp(feet, usgs, dstSRS="EPSG:2232", width=103, height=97)
     feet_gt = feet_ds.GetGeoTransform()
@@ -471,6 +472,7 @@ def format_row(r):
         f"nodata={'ok' if r['same_nodata'] else 'DIFF'} gt={r['gt_diff_px']:.0e}px "
         f"exact={100 * r['exact']:.4f}% ({r['differing']} differ) max={r['max_diff']:.3g}"
         + (f" within_tol={100 * r['within_tol']:.4f}%" if r["exact"] < 1 else "")
+        + (f" ({r['excluded_reference_pixels']} GDAL pixels excluded; radius mask independently verified)" if r.get("excluded_reference_pixels") else "")
     )
 
 

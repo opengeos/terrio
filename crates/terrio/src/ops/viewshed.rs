@@ -121,18 +121,17 @@ pub fn viewshed(ds: &RasterDataset, o: &ViewshedOptions) -> Result<RasterDataset
         return Err(invalid("viewshed maximum distance does not intersect the DEM"));
     }
     let (nw, nh) = (x1 - x0, y1 - y0);
-    let src = super::band_f64(&ds.raster, o.band - 1);
+    let src = super::BandView::of(&ds.raster, o.band - 1);
     let mut z = Vec::with_capacity(nw * nh);
     for y in y0..y1 {
         for x in x0..x1 {
-            let v = src[y * w + x];
+            let v = src.get(y * w + x);
             if !v.is_finite() {
                 return Err(invalid("viewshed input contains nonfinite elevations in the processed window; fill or crop them first"));
             }
             z.push(v);
         }
     }
-    drop(src);
     let (ox, oy) = (ox - x0 as isize, oy - y0 as isize);
     let (start_x, start_y) = (ox.clamp(0, nw as isize - 1) as usize, oy.clamp(0, nh as isize - 1) as usize);
     let inside_x = ox >= 0 && ox < nw as isize;
