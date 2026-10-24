@@ -120,6 +120,11 @@ fn netcdf_zarr_round_trip_preserves_groups_coordinates_chunks_and_unlimited_axes
     }
     let bytes = std::fs::read(&nc).unwrap();
     let memory = terrio::multidim::open_bytes(&bytes).unwrap();
+    let mut userblock = vec![0; 512];
+    userblock.extend_from_slice(&bytes);
+    let prefixed = terrio::multidim::open_bytes(&userblock).unwrap();
+    drop(userblock);
+    assert_eq!(prefixed.array("temperature").unwrap().read().unwrap().bytes, memory.array("temperature").unwrap().read().unwrap().bytes);
     drop(bytes);
     assert_eq!(
         memory.array("temperature").unwrap().view().isel("time", 1).unwrap().read().unwrap().values().unwrap(),
@@ -241,7 +246,18 @@ fn snapshots_reject_invalid_fill_values_and_coordinate_links() {
         assert!(ds.to_zarr_store().unwrap_err().to_string().contains("_FillValue"));
     }
     let mut ds = dataset();
-    ds.root.dimensions[0].indexing_variable = Some("/x".into());
+    let path = ds.root.dimensions[0].path.clone();
+    fn invalid_coordinate(group: &mut Group, path: &str) {
+        for d in group.dimensions.iter_mut().chain(group.arrays.iter_mut().flat_map(|a| &mut a.info.dimensions)) {
+            if d.path == path {
+                d.indexing_variable = Some("/x".into());
+            }
+        }
+        for child in &mut group.groups {
+            invalid_coordinate(child, path);
+        }
+    }
+    invalid_coordinate(&mut ds.root, &path);
     assert!(ds.to_netcdf_bytes().unwrap_err().to_string().contains("indexing variable"));
 }
 
@@ -299,4 +315,19 @@ fn snapshots_are_reproducible_and_preserve_existing_destinations() {
     std::fs::write(&path, b"existing content").unwrap();
     assert!(ds.write(path.to_str().unwrap()).is_err());
     assert_eq!(std::fs::read(path).unwrap(), b"existing content");
+}
+
+#[cfg(all(feature = "netcdf-hdf5", feature = "zarr"))]
+#[test]
+fn snapshots_reject_conflicting_dimension_declarations() {
+    for unlimited in [false, true] {
+        let mut source = dataset();
+        if unlimited {
+            source.root.dimensions[0].unlimited = !source.root.dimensions[0].unlimited;
+        } else {
+            source.root.dimensions[0].size += 1;
+        }
+        assert!(source.to_netcdf_bytes().unwrap_err().to_string().contains("conflicting declarations for dimension"));
+        assert!(source.to_zarr_store().unwrap_err().to_string().contains("conflicting declarations for dimension"));
+    }
 }

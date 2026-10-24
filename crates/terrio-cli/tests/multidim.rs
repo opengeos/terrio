@@ -94,3 +94,34 @@ fn mcp_discovers_native_tools_and_reads_the_cli() {
     let values: Value = serde_json::from_str(read["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
     assert_eq!(values["values"], json!([3, 4, 5]));
 }
+
+#[test]
+fn named_transpose_rejects_repeated_axes_clearly() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("repeated.nc");
+    let dimension = Dimension { name: "x".into(), path: "/x".into(), size: 2, unlimited: false, indexing_variable: None };
+    let mut root = Group::new("/");
+    root.dimensions.push(dimension.clone());
+    root.arrays.push(
+        Array::from_bytes(
+            ArrayInfo {
+                name: "matrix".into(),
+                path: "/matrix".into(),
+                data_type: DataType::U8,
+                dimensions: vec![dimension.clone(), dimension],
+                chunks: None,
+                attributes: json!({}),
+                coordinates: vec![],
+            },
+            vec![0, 1, 2, 3],
+        )
+        .unwrap(),
+    );
+    Dataset { driver: "Memory".into(), root }.write(path.to_str().unwrap()).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_terrio"))
+        .args(["mdread", path.to_str().unwrap(), "--array", "matrix", "--transpose", "x,x"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("ambiguous transpose dimension 'x'"));
+}

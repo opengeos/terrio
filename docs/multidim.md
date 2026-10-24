@@ -71,7 +71,9 @@ references and unlimited provenance in `_terrio_dimensions` JSON attributes. A r
 snapshots; it is removed from the public attributes on reopen. Other readers can ignore these
 extensions. Source compression settings are not copied; snapshots are uncompressed.
 
-Zarr snapshots iterate source chunks and keep one output chunk in memory. netCDF serialization
+Zarr snapshots iterate source chunks and keep one output chunk in memory. When the source
+has no chunk shape, inferred chunks are capped at 8 MiB in both snapshot formats;
+source-declared chunk shapes are preserved where valid. netCDF serialization
 currently materializes its numeric arrays before encoding the file. A snapshot containing an
 unsupported payload fails explicitly rather than silently dropping that array.
 Native snapshots stage their output before publishing it to a new destination. An unreadable
@@ -143,9 +145,10 @@ changing coordinate identity. Open a selected array or subgroup directly with
 a Zarr selector to inspect it independently of an inconsistent sibling.
 
 
-In-memory netCDF/HDF5 opens may copy the supplied bytes into each format reader;
-they do not promise zero-copy storage. Prefer paths/URLs and range-backed reads
-for large files.
+In-memory netCDF/HDF5 opens copy the encoded input into one owned storage buffer
+shared by both metadata readers; they do not promise zero-copy storage. HDF5 userblock
+prefixes are omitted from that buffer. Lazy selections avoid decoding unselected payloads,
+but retain the encoded input. Prefer local file paths for large netCDF/HDF5 files.
 
 Zarr snapshots stage payloads before exclusively creating the destination and
 moving entries into it. Publication is not an atomic directory swap: coordinate

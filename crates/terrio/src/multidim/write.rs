@@ -62,7 +62,38 @@ pub(super) fn validate(dataset: &Dataset) -> Result<()> {
         }
         Ok(())
     }
-    group(&dataset.root, &mut std::collections::HashSet::new(), &mut std::collections::HashSet::new())
+    group(&dataset.root, &mut std::collections::HashSet::new(), &mut std::collections::HashSet::new())?;
+    fn dimensions(g: &Group, known: &mut std::collections::HashMap<String, Dimension>) -> Result<()> {
+        for d in g.dimensions.iter().chain(g.arrays.iter().flat_map(|a| &a.info.dimensions)) {
+            if !valid(&d.path) || d.path == "/" {
+                return Err(bad("dimension paths must be valid absolute names"));
+            }
+            if let Some(previous) = known.get(&d.path) {
+                if previous != d {
+                    return Err(bad(format!("conflicting declarations for dimension '{}'", d.path)));
+                }
+            } else {
+                known.insert(d.path.clone(), d.clone());
+            }
+        }
+        for child in &g.groups {
+            dimensions(child, known)?;
+        }
+        Ok(())
+    }
+    dimensions(&dataset.root, &mut std::collections::HashMap::new())
+}
+
+/// Keep inferred chunk buffers below 8 MiB regardless of array rank.
+#[cfg(any(feature = "netcdf-hdf5", feature = "zarr"))]
+pub(crate) fn default_chunks(shape: &[usize], dtype: DataType) -> Vec<usize> {
+    let mut chunks: Vec<_> = shape.iter().map(|&n| n.clamp(1, 256)).collect();
+    let budget = (8 * 1024 * 1024) / dtype.size_bytes();
+    while chunks.iter().try_fold(1usize, |n, &c| n.checked_mul(c)).is_none_or(|n| n > budget) {
+        let (axis, &largest) = chunks.iter().enumerate().max_by_key(|(_, c)| *c).expect("oversized non-scalar chunk");
+        chunks[axis] = largest.div_ceil(2);
+    }
+    chunks
 }
 pub(super) fn write(dataset: &Dataset, destination: &str) -> Result<()> {
     validate(dataset)?;
@@ -290,14 +321,13 @@ pub(super) fn netcdf_bytes(dataset: &Dataset) -> Result<Vec<u8>> {
             });
         }
         let unlimited = array.info.dimensions.iter().any(|d| d.unlimited);
-        let chunks =
-            array.info.chunks.clone().or_else(|| unlimited.then(|| shape.iter().map(|&n| n.clamp(1, 256)).collect())).map(|chunks| {
-                chunks
-                    .iter()
-                    .zip(&array.info.dimensions)
-                    .map(|(&chunk, dimension)| if dimension.unlimited { chunk } else { chunk.min(dimension.size.max(1)) })
-                    .collect::<Vec<_>>()
-            });
+        let chunks = array.info.chunks.clone().or_else(|| unlimited.then(|| default_chunks(&shape, array.info.data_type))).map(|chunks| {
+            chunks
+                .iter()
+                .zip(&array.info.dimensions)
+                .map(|(&chunk, dimension)| if dimension.unlimited { chunk } else { chunk.min(dimension.size.max(1)) })
+                .collect::<Vec<_>>()
+        });
         file.datasets.push(hdf5_write::Dataset {
             name: array.info.path.trim_start_matches('/').into(),
             dtype: dtype(array.info.data_type),
@@ -393,4 +423,17 @@ pub(super) fn netcdf_bytes(dataset: &Dataset) -> Result<Vec<u8>> {
         }
     }
     Ok(hdf5_write::encode(&file))
+}
+
+#[cfg(all(test, any(feature = "netcdf-hdf5", feature = "zarr")))]
+mod tests {
+    #[test]
+    fn inferred_chunks_bound_bytes_even_for_high_rank_shapes() {
+        for shape in [vec![300; 4], vec![256; 3], vec![usize::MAX; 16], vec![], vec![0, 1]] {
+            let chunks = super::default_chunks(&shape, super::DataType::F64);
+            assert_eq!(chunks.len(), shape.len());
+            assert!(chunks.iter().all(|&n| n > 0));
+            assert!(chunks.iter().product::<usize>() * 8 <= 8 * 1024 * 1024);
+        }
+    }
 }

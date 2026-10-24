@@ -141,7 +141,9 @@ fn transpose_axis(dimensions: &[multidim::Dimension], name: &str) -> Result<usiz
     let mut matches = dimensions.iter().enumerate().filter(|(_, d)| d.name == name || d.path == name);
     let index = matches.next().map(|(i, _)| i).ok_or_else(|| invalid(format!("unknown remaining dimension '{name}'")))?;
     if matches.next().is_some() {
-        return Err(invalid(format!("ambiguous transpose dimension '{name}'; use a unique full dimension path")));
+        return Err(invalid(format!(
+            "ambiguous transpose dimension '{name}'; use a unique full dimension path or --isel-axis to remove repeated axes"
+        )));
     }
     Ok(index)
 }

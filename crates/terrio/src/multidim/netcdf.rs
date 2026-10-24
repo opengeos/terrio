@@ -259,9 +259,15 @@ pub(super) fn open(name: &str) -> Result<Dataset> {
 }
 pub(super) fn open_bytes(bytes: &[u8]) -> Result<Dataset> {
     let body = crate::drivers::hdf5::signature_offset_in(bytes).map(|offset| &bytes[offset..]).unwrap_or(bytes);
-    let file = NcFile::from_bytes_with_options(body, NcOpenOptions { metadata_mode: NcMetadataMode::Lossy, ..Default::default() })
-        .map_err(error)?;
-    let hdf = crate::drivers::hdf5::open_bytes(bytes.to_vec(), "memory").ok();
+    // Both metadata readers retain the same owned input buffer. Array payloads
+    // remain lazy, and HDF5 userblock bytes need not be retained.
+    let storage: hdf5_reader::storage::DynStorage = Arc::new(hdf5_reader::storage::BytesStorage::new(body.to_vec()));
+    let file = NcFile::from_storage_with_options(
+        Arc::clone(&storage),
+        NcOpenOptions { metadata_mode: NcMetadataMode::Lossy, ..Default::default() },
+    )
+    .map_err(error)?;
+    let hdf = (!bytes.starts_with(b"CDF")).then(|| hdf5_reader::Hdf5File::from_storage(storage).ok()).flatten();
     dataset(file, hdf, if bytes.starts_with(b"CDF") { "netCDF" } else { "netCDF/HDF5" })
 }
 pub(super) fn read(file: &NcFile, name: &str, t: DataType, selections: &[Selection]) -> Result<Vec<u8>> {

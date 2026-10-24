@@ -309,7 +309,7 @@ pub(crate) fn md_write(dataset: &crate::multidim::Dataset, destination: &str) ->
         write_group(&directory, &group_attributes, Version::V2, metadata, prefix)?;
         for array in &g.arrays {
             let shape = array.shape();
-            let chunks = array.info.chunks.clone().unwrap_or_else(|| shape.iter().map(|&n| n.clamp(1, 256)).collect());
+            let chunks = array.info.chunks.clone().unwrap_or_else(|| crate::multidim::write::default_chunks(&shape, array.info.data_type));
             if chunks.len() != shape.len() || chunks.contains(&0) {
                 return Err(bad("chunk shape must have one positive size per dimension"));
             }
