@@ -374,6 +374,15 @@ fn compare(a: &Value, b: &Value) -> Option<Ordering> {
     }
 }
 
+// Current OGRSQL applies case-insensitive string comparisons to predicates, while
+// ORDER BY and MIN/MAX use the case-sensitive ordering in `compare` above.
+fn compare_predicate(a: &Value, b: &Value) -> Option<Ordering> {
+    match (a, b) {
+        (Value::Text(a), Value::Text(b)) => Some(a.to_ascii_lowercase().cmp(&b.to_ascii_lowercase())),
+        _ => compare(a, b),
+    }
+}
+
 /// Evaluates a predicate the way OGR SQL does.
 fn truth(e: &Expr, f: &Feature) -> Truth {
     match e {
@@ -391,14 +400,10 @@ fn truth(e: &Expr, f: &Feature) -> Truth {
         }
         Expr::Binary(op @ (BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge), a, b) => {
             let (a, b) = (eval(a, f), eval(b, f));
-            let Some(ord) = compare(&a, &b) else { return NULL_TRUTH };
-            let equal = match (&a, &b) {
-                (Value::Text(a), Value::Text(b)) => a.eq_ignore_ascii_case(b),
-                _ => ord == Ordering::Equal,
-            };
+            let Some(ord) = compare_predicate(&a, &b) else { return NULL_TRUTH };
             Truth::of(match op {
-                BinOp::Eq => equal,
-                BinOp::Ne => !equal,
+                BinOp::Eq => ord == Ordering::Equal,
+                BinOp::Ne => ord != Ordering::Equal,
                 BinOp::Lt => ord == Ordering::Less,
                 BinOp::Le => ord != Ordering::Greater,
                 BinOp::Gt => ord == Ordering::Greater,
@@ -418,15 +423,12 @@ fn truth(e: &Expr, f: &Feature) -> Truth {
             if v == Value::Null {
                 return NULL_TRUTH;
             }
-            let found = list.iter().any(|x| match (&v, eval(x, f)) {
-                (Value::Text(a), Value::Text(b)) => a.eq_ignore_ascii_case(&b),
-                (_, b) => compare(&v, &b) == Some(Ordering::Equal),
-            });
+            let found = list.iter().any(|x| compare_predicate(&v, &eval(x, f)) == Some(Ordering::Equal));
             Truth::of(found != *negated)
         }
         Expr::Between { expr, low, high, negated } => {
             let v = eval(expr, f);
-            match (compare(&v, &eval(low, f)), compare(&v, &eval(high, f))) {
+            match (compare_predicate(&v, &eval(low, f)), compare_predicate(&v, &eval(high, f))) {
                 (Some(lo), Some(hi)) => Truth::of((lo != Ordering::Less && hi != Ordering::Greater) != *negated),
                 _ => NULL_TRUTH,
             }

@@ -48,8 +48,8 @@ OGR's distinction between 32-bit and 64-bit count/predicate fields is not repres
 This is a defined subset of [OGRSQL](https://gdal.org/en/stable/user/ogr_sql_dialect.html).
 `GROUP BY`, spatial SQL, external-dataset joins, arbitrary `ON` expressions, `OFFSET`,
 `UNION`, casts, scalar functions and standard-deviation summaries are not implemented.
-String equality and `IN` predicates, like join lookups, ignore ASCII case; ordering and
-`MIN`/`MAX` comparisons are case-sensitive. SQL expressions should use explicit null tests where needed.
+String predicates (comparisons, `IN` and `BETWEEN`), like join lookups, ignore ASCII case
+as observed with GDAL 3.12; `ORDER BY` and `MIN`/`MAX` use case-sensitive ordering. SQL expressions should use explicit null tests where needed.
 Integer addition, subtraction and multiplication wrap at 64 bits; division/remainder overflow
 and division by zero yield null (OGRSQL instead uses an integer-maximum sentinel for non-null
 division by zero). Use floating-point expressions for larger numeric ranges.

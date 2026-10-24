@@ -256,8 +256,8 @@ terrio sql countries.gpkg summary.gpkg --query \
 
 Computed columns and joins retain primary geometries, CRS and feature IDs. `DISTINCT` and
 summaries produce attribute-only results. Output drivers apply their normal file-ID conventions.
-String equality (`=`, `<>`, `!=`) and `IN` now ignore ASCII case to match OGRSQL;
-ordering and range predicates retain case-sensitive comparisons.
+String predicates (comparisons, `IN` and `BETWEEN`) now ignore ASCII case to match
+current OGRSQL; `ORDER BY` and `MIN`/`MAX` retain case-sensitive ordering.
 Output field names must be unique, ignoring case. The `convert --sql` path retains its legacy
 single-layer fallback for `FROM` and allows duplicate output field names.
 

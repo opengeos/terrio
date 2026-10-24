@@ -127,7 +127,7 @@ fn null_literal_has_ogr_string_type() {
 #[test]
 fn string_equality_and_ordering_follow_ogr_operator_rules() {
     let out=query(&data(),"SELECT name='A' AS equal, name IN ('A') AS member, name<='A' AS ordered, name BETWEEN 'A' AND 'A' AS range FROM cities WHERE name='a' ORDER BY name DESC LIMIT 1").unwrap();
-    assert_eq!(out.features[0].attributes, vec![V::Integer(1), V::Integer(1), V::Integer(0), V::Integer(0)]);
+    assert_eq!(out.features[0].attributes, vec![V::Integer(1), V::Integer(1), V::Integer(1), V::Integer(1)]);
 }
 
 #[test]
