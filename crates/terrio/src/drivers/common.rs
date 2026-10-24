@@ -346,6 +346,8 @@ pub(crate) struct Pam {
     pub geo_transform: Option<[f64; 6]>,
     /// The first band's nodata value.
     pub nodata: Option<f64>,
+    /// Explicit band nodata, with one-based band indices.
+    pub band_nodata: Vec<(usize, f64)>,
 }
 
 /// Reads the `.aux.xml` sidecar of a dataset, if there is one.
@@ -370,7 +372,53 @@ pub(crate) fn parse_pam(xml: &str) -> Pam {
         <[f64; 6]>::try_from(v).ok()
     });
     let nodata = element("NoDataValue").and_then(|v| parse_f64(&v));
-    Pam { crs, geo_transform, nodata }
+    let band_nodata: Vec<(usize, f64)> = crate::ops::vrt::xml::parse(xml)
+        .ok()
+        .map(|root| {
+            root.children
+                .iter()
+                .filter(|e| e.name == "PAMRasterBand")
+                .filter_map(|e| Some((e.attr("band")?.parse::<usize>().ok()?, parse_f64(&e.child("NoDataValue")?.text)?)))
+                .collect()
+        })
+        .unwrap_or_default();
+    let nodata = if band_nodata.is_empty() { nodata } else { band_nodata.iter().find(|(b, _)| *b == 1).map(|(_, v)| *v) };
+    Pam { crs, geo_transform, nodata, band_nodata }
+}
+
+/// Records differing band nodata for TIFF, which has only one embedded nodata tag.
+pub(crate) fn write_band_nodata_pam(path: &Path, values: &[Option<f64>]) -> Result<()> {
+    let mut aux = path.as_os_str().to_owned();
+    aux.push(".aux.xml");
+    let aux = Path::new(&aux);
+    let mut root = crate::memfs::read(aux)
+        .ok()
+        .and_then(|v| String::from_utf8(v).ok())
+        .and_then(|v| crate::ops::vrt::xml::parse(&v).ok())
+        .unwrap_or_else(|| crate::ops::vrt::xml::Element { name: "PAMDataset".into(), ..Default::default() });
+    for (index, value) in values.iter().enumerate() {
+        let number = (index + 1).to_string();
+        let position = root.children.iter().position(|e| e.name == "PAMRasterBand" && e.attr("band") == Some(number.as_str()));
+        let position = position.unwrap_or_else(|| {
+            root.children.push(crate::ops::vrt::xml::Element {
+                name: "PAMRasterBand".into(),
+                attrs: vec![("band".into(), number)],
+                ..Default::default()
+            });
+            root.children.len() - 1
+        });
+        let band = &mut root.children[position];
+        band.children.retain(|e| e.name != "NoDataValue");
+        if let Some(value) = value {
+            band.children.push(crate::ops::vrt::xml::Element {
+                name: "NoDataValue".into(),
+                text: super::gtiff_write::format_nodata(*value),
+                ..Default::default()
+            });
+        }
+    }
+    std::fs::write(aux, root.to_xml())?;
+    Ok(())
 }
 
 /// Writes the CRS to a `.aux.xml` sidecar, as GDAL does for formats without a CRS of their own.

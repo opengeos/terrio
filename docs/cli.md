@@ -616,5 +616,8 @@ buffers, external pixel functions and expression languages are unsupported.
 replicate source edges as GDAL does. Explicit dataset masks, `SourceBand mask,N`
 and `ComplexSource` with `UseMaskBand` are read lazily.
 
+VRT references use the caller’s normal file and network access. Supplied source maps
+override matching names; unresolved names are opened by the usual drivers.
+
 The Rust `VirtualRaster` API parses and serializes these descriptions. Its
 `into_lazy` source map also permits filesystem-free reads in WebAssembly.

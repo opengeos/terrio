@@ -120,26 +120,35 @@ impl VirtualRaster {
         let mut bands = String::new();
         let mut mappings = String::new();
         for band in 1..=header.raster.bands {
-            let nd = target.nodata().map(|v| format!("<NoDataValue>{}</NoDataValue>", super::fmt_number(v))).unwrap_or_default();
+            let dest_nodata = match &options.dst_nodata {
+                Nodata::Auto => match &options.src_nodata {
+                    Nodata::Auto => header.band_nodata(band),
+                    Nodata::None => None,
+                    v => v.value(band - 1),
+                },
+                Nodata::None => None,
+                v => v.value(band - 1),
+            };
+            let nd = dest_nodata.map(|v| format!("<NoDataValue>{}</NoDataValue>", super::fmt_number(v))).unwrap_or_default();
             bands += &format!(
                 "<VRTRasterBand band=\"{band}\" dataType=\"{}\" subClass=\"VRTWarpedRasterBand\">{nd}</VRTRasterBand>",
                 crate::ops::data_type_name(target.raster.data_type)
             );
             let srcnd = match &options.src_nodata {
                 Nodata::None => None,
-                Nodata::Auto => header.nodata(),
+                Nodata::Auto => header.band_nodata(band),
                 Nodata::Values(v) => v.get(band - 1).or(v.last()).copied(),
+                Nodata::PerBand(v) => v.get(band - 1).or(v.last()).copied().flatten(),
             };
             let srcnd = srcnd
                 .map(|v| format!("<SrcNoDataReal>{}</SrcNoDataReal><SrcNoDataImag>0</SrcNoDataImag>", super::fmt_number(v)))
                 .unwrap_or_default();
-            let dstnd = target
-                .nodata()
+            let dstnd = dest_nodata
                 .map(|v| format!("<DstNoDataReal>{}</DstNoDataReal><DstNoDataImag>0</DstNoDataImag>", super::fmt_number(v)))
                 .unwrap_or_default();
             mappings += &format!("<BandMapping src=\"{band}\" dst=\"{band}\">{srcnd}{dstnd}</BandMapping>");
         }
-        let reprojection = if src_srs.is_unknown() && dst_srs.is_unknown() {
+        let reprojection = if src_srs.is_unknown() || dst_srs.is_unknown() {
             String::new()
         } else {
             format!(
@@ -172,13 +181,19 @@ impl VirtualRaster {
         } else {
             transformer
         };
+        let unified_option = match options.unified_src_nodata {
+            Some(true) => "YES",
+            Some(false) => "NO",
+            None if matches!(options.src_nodata, Nodata::Values(_)) => "YES",
+            None => "PARTIAL",
+        };
         let alg = match options.resampling {
             Resampling::Nearest => "NearestNeighbour",
             Resampling::CubicSpline => "CubicSpline",
             v => v.name(),
         };
         Self::from_xml(&format!(
-            "<VRTDataset rasterXSize=\"{}\" rasterYSize=\"{}\" subClass=\"VRTWarpedDataset\"><SRS>{}</SRS><GeoTransform>{}</GeoTransform>{bands}<BlockXSize>512</BlockXSize><BlockYSize>128</BlockYSize><GDALWarpOptions><WarpMemoryLimit>{}</WarpMemoryLimit><ResampleAlg>{alg}</ResampleAlg><WorkingDataType>{}</WorkingDataType><Option name=\"INIT_DEST\">NO_DATA</Option><SourceDataset relativeToVRT=\"0\">{}</SourceDataset><Transformer>{transformer}</Transformer><BandList>{mappings}</BandList></GDALWarpOptions></VRTDataset>",
+            "<VRTDataset rasterXSize=\"{}\" rasterYSize=\"{}\" subClass=\"VRTWarpedDataset\"><SRS>{}</SRS><GeoTransform>{}</GeoTransform>{bands}<BlockXSize>512</BlockXSize><BlockYSize>128</BlockYSize><GDALWarpOptions><WarpMemoryLimit>{}</WarpMemoryLimit><ResampleAlg>{alg}</ResampleAlg><WorkingDataType>{}</WorkingDataType><Option name=\"INIT_DEST\">NO_DATA</Option><Option name=\"UNIFIED_SRC_NODATA\">{unified_option}</Option><SourceDataset relativeToVRT=\"0\">{}</SourceDataset><Transformer>{transformer}</Transformer><BandList>{mappings}</BandList></GDALWarpOptions></VRTDataset>",
             target.raster.cols,
             target.raster.rows,
             xml::escape(&srs(&dst_srs)),
@@ -218,6 +233,7 @@ impl VirtualRaster {
             &self.layout.srs.clone().unwrap_or_default(),
         )?;
         header.driver = crate::formats::RasterDriver::VRT;
+        header.band_nodata = self.layout.bands.iter().map(|b| b.nodata).collect();
         if let Some(metadata) = self.root.child("Metadata") {
             header.raster.metadata =
                 metadata.children.iter().filter_map(|e| e.attr("key").map(|k| (k.to_string(), e.text.clone()))).collect();
@@ -234,6 +250,15 @@ pub fn open_virtual_raster(path: &str) -> Result<LazyRaster> {
     let local = crate::vfs::resolve(path)?;
     let text = std::fs::read_to_string(local.path())?;
     VirtualRaster::from_xml(&text)?.into_lazy_reference(path, HashMap::new())
+}
+
+struct ParsedWarp {
+    source: String,
+    relative: bool,
+    options: WarpOptions,
+    pairs: Vec<(usize, usize)>,
+    source_nodata: Vec<Option<f64>>,
+    destination_nodata: Vec<Option<f64>>,
 }
 
 struct Reader {
@@ -378,11 +403,46 @@ impl Reader {
         };
         let (bw, bh) = (block("BlockXSize", 512), block("BlockYSize", 128));
         let (width, height) = (self.description.layout.width, self.description.layout.height);
+        if !window.fits(width, height) {
+            return Err(invalid("warped window is outside the raster"));
+        }
+        let parsed = self.parse_warp()?;
+        let gt = self.description.layout.geo_transform.ok_or_else(|| invalid("missing warped geotransform"))?;
+        let data_type = self.description.layout.bands[0].data_type;
+        let mut options = parsed.options;
+        let count = self.description.layout.bands.len();
+        let source = self.source(&parsed.source, parsed.relative)?;
+        let mut selection = vec![0; count];
+        let mut nodata = vec![None; count];
+        let mut destination_nodata = vec![None; count];
+        for (index, (src, dst)) in parsed.pairs.iter().copied().enumerate() {
+            if src == 0 || src > source.band_count() {
+                return Err(invalid("invalid warped source band"));
+            }
+            selection[dst - 1] = src;
+            nodata[dst - 1] = parsed.source_nodata[index];
+            destination_nodata[dst - 1] = parsed.destination_nodata[index];
+        }
+        if selection.contains(&0) {
+            return Err(invalid("unmapped warped band"));
+        }
+        options.src_nodata = Nodata::PerBand(nodata);
+        options.dst_nodata = Nodata::PerBand(destination_nodata);
         let mut output = vec![0.; window.width * window.height * bands.len()];
         for y in (window.y / bh * bh..window.y + window.height).step_by(bh) {
             for x in (window.x / bw * bw..window.x + window.width).step_by(bw) {
                 let area = Window::new(x, y, bw.min(width - x), bh.min(height - y));
-                let values = self.warped(area, bands)?.to_f64_vec();
+                options.dst_transform = Some([
+                    gt[0] + x as f64 * gt[1] + y as f64 * gt[2],
+                    gt[1],
+                    gt[2],
+                    gt[3] + x as f64 * gt[4] + y as f64 * gt[5],
+                    gt[4],
+                    gt[5],
+                ]);
+                options.size = Some((area.width, area.height));
+                let result = crate::ops::warp::warp_lazy_bands(source, &selection, &options)?;
+                let values = crate::cog::cut(&result.raster, Window::full(area.width, area.height), bands).to_f64_vec();
                 let (left, top, right, bottom) = (
                     x.max(window.x),
                     y.max(window.y),
@@ -398,12 +458,12 @@ impl Reader {
                 }
             }
         }
-        Ok(RasterData::from_f64_vec(self.description.layout.bands[0].data_type, output))
+        Ok(RasterData::from_f64_vec(data_type, output))
     }
 
-    fn warped(&mut self, window: Window, bands: &[usize]) -> Result<RasterData> {
-        let root = self.description.root.clone();
-        let warp = root.child("GDALWarpOptions").ok_or_else(|| invalid("missing GDALWarpOptions"))?;
+    fn parse_warp(&self) -> Result<ParsedWarp> {
+        let window = Window::full(self.description.layout.width, self.description.layout.height);
+        let warp = self.description.root.child("GDALWarpOptions").ok_or_else(|| invalid("missing GDALWarpOptions"))?;
         let source = warp.child("SourceDataset").ok_or_else(|| invalid("missing SourceDataset"))?;
         let gt = self.description.layout.geo_transform.ok_or_else(|| invalid("warped VRT has no GeoTransform"))?;
         let srs = self.description.layout.srs.clone();
@@ -420,12 +480,15 @@ impl Reader {
             size: Some((window.width, window.height)),
             resampling: warp.child("ResampleAlg").map(|e| resampling(&e.text)).transpose()?.unwrap_or(Resampling::Nearest),
             output_type: Some(self.description.layout.bands[0].data_type),
+            unified_src_nodata: None,
+            src_nodata: Nodata::None,
+            dst_nodata: Nodata::None,
             ..Default::default()
         };
         if let Some(v) = descendant(warp, "MaxError") {
             options.error_threshold = super::parse_number(&v.text)?;
         }
-        if let Some(v) = descendant(warp, "SourceSRS") {
+        if let Some(v) = descendant(warp, "SourceSRS").filter(|v| !v.text.trim().is_empty()) {
             options.src_srs = Some(crate::crs::SpatialRef::parse(v.text.trim())?);
         }
         if let Some(geo) = descendant(warp, "SrcGeoTransform") {
@@ -497,6 +560,14 @@ impl Reader {
         }
         for option in warp.children.iter().filter(|e| e.name == "Option") {
             match option.attr("name") {
+                Some("UNIFIED_SRC_NODATA") => {
+                    options.unified_src_nodata = match option.text.trim().to_ascii_uppercase().as_str() {
+                        "YES" => Some(true),
+                        "NO" => Some(false),
+                        "PARTIAL" => None,
+                        _ => return Err(invalid("unsupported UNIFIED_SRC_NODATA value")),
+                    };
+                }
                 Some("SOURCE_EXTRA") => {
                     options.source_extra = Some(option.text.trim().parse().map_err(|_| invalid("invalid SOURCE_EXTRA"))?)
                 }
@@ -508,29 +579,33 @@ impl Reader {
         let mapping = warp.child("BandList").ok_or_else(|| invalid("missing BandList"))?;
         let mut pairs = Vec::new();
         let mut source_nodata = Vec::new();
+        let mut destination_nodata = Vec::new();
         for b in &mapping.children {
             let src = b.attr("src").and_then(|v| v.parse::<usize>().ok()).ok_or_else(|| invalid("invalid source band mapping"))?;
             let dst = b.attr("dst").and_then(|v| v.parse::<usize>().ok()).ok_or_else(|| invalid("invalid destination band mapping"))?;
+            if dst == 0 || dst > self.description.layout.bands.len() {
+                return Err(invalid("invalid destination band mapping"));
+            }
             pairs.push((src, dst));
+            destination_nodata.push(
+                b.child("DstNoDataReal")
+                    .map(|e| super::parse_number(&e.text))
+                    .transpose()?
+                    .or(self.description.layout.bands[dst - 1].nodata),
+            );
             source_nodata.push(b.child("SrcNoDataReal").map(|e| super::parse_number(&e.text)).transpose()?);
-        }
-        if source_nodata.iter().all(Option::is_some) {
-            options.src_nodata = Nodata::Values(source_nodata.into_iter().flatten().collect());
         }
         if let Some(nd) = self.description.layout.bands[0].nodata {
             options.dst_nodata = Nodata::Values(vec![nd]);
         }
-        let src = self.source(source.text.trim(), source.attr("relativeToVRT") == Some("1"))?;
-        let result = crate::ops::warp::warp_lazy(src, &options)?;
-        let mut selected = Vec::new();
-        for b in bands {
-            let source_band = pairs.iter().find(|(_, dst)| dst == b).map(|(src, _)| *src).ok_or_else(|| invalid("unmapped warped band"))?;
-            if source_band == 0 || source_band > result.raster.bands {
-                return Err(invalid("invalid warped source band"));
-            }
-            selected.push(source_band);
-        }
-        Ok(crate::cog::cut(&result.raster, Window::full(window.width, window.height), &selected))
+        Ok(ParsedWarp {
+            source: source.text.trim().to_string(),
+            relative: source.attr("relativeToVRT") == Some("1"),
+            options,
+            pairs,
+            source_nodata,
+            destination_nodata,
+        })
     }
 }
 
@@ -1054,6 +1129,76 @@ mod tests {
     }
     fn source(tag: &str, extra: &str) -> String {
         format!("<{tag}><SourceFilename>source.tif</SourceFilename><SourceBand>1</SourceBand>{extra}</{tag}>")
+    }
+
+    #[test]
+    fn serialized_multiband_nodata_modes() {
+        let source = || {
+            crate::ops::build_raster(
+                Grid { width: 1, height: 1, geo_transform: [0., 1., 0., 1., 0., -1.] },
+                vec![vec![-9999.], vec![2.]],
+                DataType::F64,
+                Some(-9999.),
+                &Default::default(),
+                crate::ops::convert_value,
+            )
+            .unwrap()
+        };
+        for (label, src_nodata, unified, expected) in [
+            ("partial", "<SrcNoDataReal>-9999</SrcNoDataReal>", "", vec![0., 2.]),
+            ("ignore", "", "", vec![-9999., 2.]),
+            ("unified", "<SrcNoDataReal>-9999</SrcNoDataReal>", "<Option name=\"UNIFIED_SRC_NODATA\">YES</Option>", vec![-9999., 2.]),
+        ] {
+            let xml = format!(
+                "<VRTDataset rasterXSize=\"1\" rasterYSize=\"1\" subClass=\"VRTWarpedDataset\"><GeoTransform>0,1,0,1,0,-1</GeoTransform><VRTRasterBand dataType=\"Float64\"><NoDataValue>0</NoDataValue></VRTRasterBand><VRTRasterBand dataType=\"Float64\"><NoDataValue>0</NoDataValue></VRTRasterBand><GDALWarpOptions>{unified}<SourceDataset>source.tif</SourceDataset><BandList><BandMapping src=\"1\" dst=\"1\">{src_nodata}</BandMapping><BandMapping src=\"2\" dst=\"2\">{src_nodata}</BandMapping></BandList></GDALWarpOptions></VRTDataset>"
+            );
+            let mut lazy = VirtualRaster::from_xml(&xml)
+                .unwrap()
+                .into_lazy(Path::new(""), HashMap::from([("source.tif".into(), LazyRaster::from(source()))]))
+                .unwrap();
+            assert_eq!(lazy.read().unwrap().raster.data.to_f64_vec(), expected, "{label}");
+        }
+    }
+
+    #[test]
+    fn per_band_nodata_survives_tiff_and_window_selection() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bands.tif");
+        let mut ds = crate::ops::build_raster(
+            Grid { width: 2, height: 1, geo_transform: [0., 1., 0., 1., 0., -1.] },
+            vec![vec![1., 2.], vec![-202., 3.]],
+            DataType::F64,
+            None,
+            &Default::default(),
+            crate::ops::convert_value,
+        )
+        .unwrap();
+        ds.band_nodata = vec![None, Some(-202.)];
+        crate::write_raster_dataset(&ds, path.to_str().unwrap(), &Default::default()).unwrap();
+        let mut lazy = crate::open_raster_lazy(path.to_str().unwrap()).unwrap();
+        assert_eq!(lazy.band_nodata(1), None);
+        assert_eq!(lazy.band_nodata(2), Some(-202.));
+        let selected = lazy.read_window(Window::new(0, 0, 2, 1), &WindowOptions { bands: vec![2, 1, 2], overview: None }).unwrap();
+        assert_eq!(selected.band_nodata, vec![Some(-202.), None, Some(-202.)]);
+        assert_eq!(selected.nodata(), Some(-202.));
+        let all = lazy.read().unwrap();
+        assert_eq!(all.band_nodata, ds.band_nodata);
+        ds.band_nodata.clear();
+        crate::write_raster_dataset(&ds, path.to_str().unwrap(), &Default::default()).unwrap();
+        let lazy = crate::open_raster_lazy(path.to_str().unwrap()).unwrap();
+        assert_eq!(lazy.band_nodata(2), None);
+    }
+
+    #[test]
+    fn serializes_unknown_source_crs_into_known_target() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("source.tif");
+        crate::write_raster_dataset(&raster(), path.to_str().unwrap(), &Default::default()).unwrap();
+        let options = WarpOptions { dst_srs: Some(crate::crs::SpatialRef::from_epsg(4326).unwrap()), ..Default::default() };
+        let document = VirtualRaster::warped(path.to_str().unwrap(), &options).unwrap();
+        assert!(!document.to_xml().contains("<SourceSRS></SourceSRS>"));
+        let mut lazy = document.into_lazy(dir.path(), HashMap::new()).unwrap();
+        assert_eq!(lazy.read().unwrap().raster.data.to_f64_vec(), raster().raster.data.to_f64_vec());
     }
 
     #[test]

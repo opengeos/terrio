@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import subprocess
 import tempfile
+import xml.etree.ElementTree as ET
 
 import numpy as np
 from osgeo import gdal
@@ -42,9 +43,9 @@ def main():
         def run(name, path, authored=False):
             for window in [None, [17, 13, 31, 27], [0, 0, 11, 9]]:
                 label = name + (" whole" if window is None else f" window {window[0]},{window[1]}")
-                reference, actual = tmp / "reference.tif", tmp / "actual.tif"
+                reference, actual = tmp / "reference.vrt", tmp / "actual.tif"
                 try:
-                    gdal.Translate(str(reference), str(path), srcWin=window)
+                    gdal.Translate(str(reference), str(path), srcWin=window, format="VRT")
                     cmd = [args.terrio, "convert", str(path), str(actual)]
                     if window is not None:
                         cmd += ["--srcwin", *map(str, window)]
@@ -152,6 +153,38 @@ def main():
             records.append({"name": "VRT authored rpc", "error": process.stderr})
         else:
             run("VRT authored rpc", path)
+        multiband = tmp / "multiband.tif"
+        ds = gdal.GetDriverByName("GTiff").Create(str(multiband), 96, 80, 3, gdal.GDT_Float32)
+        ds.SetGeoTransform(transform)
+        ds.SetProjection(projection)
+        for band in range(1, 4):
+            pixels = values.copy() + band * 10
+            pixels[7 * band:7 * band + 8, 9 * band:9 * band + 9] = -9999
+            ds.GetRasterBand(band).WriteArray(pixels)
+            ds.GetRasterBand(band).SetNoDataValue(-9999)
+        ds = None
+        for label, options in [("auto", {}), ("ignore", {"srcNodata": "None"}),
+                               ("unified", {"srcNodata": -9999}),
+                               ("per-band", {"warpOptions": ["UNIFIED_SRC_NODATA=NO"]})]:
+            path = tmp / f"multiband-{label}.vrt"
+            gdal.Warp(str(path), str(multiband), format="VRT", width=64, height=56,
+                      resampleAlg="bilinear", **options)
+            run(f"VRT multiband nodata {label}", path)
+        for label, source_bands, source_nodata, destination_nodata in [
+            ("reordered", [3, 1, 2], [-9999, -9998, -9997], [-9999] * 3),
+            ("destination", [1, 2, 3], [-9999] * 3, [-101, -202, -303]),
+            ("duplicate", [1, 1, 1], [-9999] * 3, [-101, -202, -303]),
+        ]:
+            root = ET.parse(tmp / "multiband-auto.vrt").getroot()
+            for index, mapping in enumerate(root.find("GDALWarpOptions/BandList")):
+                mapping.set("src", str(source_bands[index]))
+                mapping.find("SrcNoDataReal").text = str(source_nodata[index])
+                mapping.find("DstNoDataReal").text = str(destination_nodata[index])
+            for index, band in enumerate(root.findall("VRTRasterBand")):
+                band.find("NoDataValue").text = str(destination_nodata[index])
+            path = tmp / f"multiband-{label}.vrt"
+            ET.ElementTree(root).write(path, encoding="unicode")
+            run(f"VRT multiband mapping {label}", path)
         for resampling in ["near", "bilinear", "cubic", "average"]:
             path = tmp / f"warped-{resampling}.vrt"
             gdal.Warp(str(path), str(source), format="VRT", dstSRS="EPSG:3857", width=64, height=56, resampleAlg=resampling)
