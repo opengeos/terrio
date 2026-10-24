@@ -32,6 +32,11 @@ println!("{}", terrio::info::info(&ds, &Default::default()).to_text());
   the tiles a window touches, from full resolution or an overview.
 - `terrio::memory` opens datasets from bytes and writes them to bytes.
 
+`RasterDataset::band_nodata`, when nonempty, overrides the shared
+`has_nodata` / `raster.nodata` fields, including explicit `None` entries. Read
+nodata with `band_nodata(band)` (one-based) or `nodata()` (band 1). To replace it
+with one shared value, clear the per-band vector and update both shared fields.
+
 ## Writing
 
 ```rust,no_run
