@@ -18,6 +18,8 @@ pub struct RasterDataset {
     /// Whether the file declares a nodata value (the raster always carries one).
     pub has_nodata: bool,
     /// Per-band nodata in band order; empty means the shared raster value applies.
+    /// A nonempty vector overrides has_nodata/raster.nodata, including explicit None.
+    /// Clear or update this vector when changing the shared nodata fields.
     pub band_nodata: Vec<Option<f64>>,
     /// The geotransform of a rotated or south-up raster, which the raster's origin and cell sizes
     /// cannot hold (they then hold the extent of its footprint); `None` for north-up rasters.
@@ -177,7 +179,8 @@ impl RasterDataset {
         self.band_nodata.get(band - 1).copied().unwrap_or_else(|| self.nodata())
     }
 
-    /// The first band’s nodata value, when the file declares one.
+    /// The first band's nodata value. Explicit band_nodata takes precedence
+    /// over has_nodata and raster.nodata.
     pub fn nodata(&self) -> Option<f64> {
         self.band_nodata.first().copied().unwrap_or_else(|| self.has_nodata.then_some(self.raster.nodata))
     }

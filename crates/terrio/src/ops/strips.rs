@@ -172,7 +172,7 @@ impl StripWriter {
             Ok(())
         });
         if result.is_err() {
-            let _ = std::fs::remove_file(&self.path);
+            remove_incomplete_output(&self.path);
         }
         result
     }
@@ -195,8 +195,15 @@ impl Drop for StripWriter {
             #[cfg(target_family = "wasm")]
             Inner::Tiff(w) => drop(w),
         }
-        let _ = std::fs::remove_file(&self.path);
+        remove_incomplete_output(&self.path);
     }
+}
+
+fn remove_incomplete_output(path: &str) {
+    let _ = std::fs::remove_file(path);
+    let mut aux = std::ffi::OsString::from(path);
+    aux.push(".aux.xml");
+    let _ = std::fs::remove_file(aux);
 }
 
 /// A GeoTIFF or COG written as its rows come, by terrio's own writer.
@@ -393,8 +400,17 @@ mod tests {
         let rows = || RasterData::new_filled(DataType::U8, 4 * 3, 7.0);
         let mut w = StripWriter::create(&header(DataType::U8), path, &Default::default()).unwrap();
         w.write(rows(), 3).unwrap();
+        let aux = format!("{path}.aux.xml");
+        std::fs::write(&aux, "<PAMDataset/>").unwrap();
         drop(w);
         assert!(!std::path::Path::new(path).exists());
+        assert!(!std::path::Path::new(&aux).exists());
+        let mut failed = StripWriter::create(&header(DataType::U8), path, &Default::default()).unwrap();
+        failed.write(rows(), 3).unwrap();
+        std::fs::write(&aux, "<PAMDataset/>").unwrap();
+        assert!(failed.finish().is_err());
+        assert!(!std::path::Path::new(path).exists());
+        assert!(!std::path::Path::new(&aux).exists());
         let mut w = StripWriter::create(&header(DataType::U8), path, &Default::default()).unwrap();
         w.write(rows(), 3).unwrap();
         w.write(rows(), 3).unwrap();
