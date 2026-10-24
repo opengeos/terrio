@@ -129,3 +129,17 @@ package builds for final validation.
 CI saves dependency caches for PR updates as well as main, disables incremental
 compilation, and cancels obsolete runs when a PR receives a newer push. Release
 profiles and the full validation matrix are unchanged.
+
+## Benchmark harness regressions
+
+With GDAL's Python bindings and NumPy available, run:
+
+```sh
+python -m unittest discover -s scripts/tests -v
+```
+
+These tests exercise benchmark correctness gates, independent CPU-budget selection,
+interleaved measurements and Linux affinity/background-load handling. They run in
+CI's conformance job without downloading benchmark datasets or asserting timing
+thresholds. Performance measurements remain an explicit local task; see
+[Benchmarks](benchmarks.md) for the methodology and latest GDAL version used.
