@@ -46,7 +46,7 @@ impl PansharpenExtent {
 /// Common nodata setting used during both resampling and Brovey computation.
 #[derive(Debug, Clone, Copy, Default)]
 pub enum PansharpenNodata {
-    /// Use nodata when all bands declare the same value.
+    /// Infer common nodata from the selected pan band, as GDAL 3.12 does.
     #[default]
     Auto,
     /// Disable nodata processing.
@@ -123,7 +123,7 @@ fn source_layout(ds: &RasterDataset, band: usize, bounds: (f64, f64, f64, f64), 
     let old = grid.bounds();
     let tolerance = pixel.max(gt[1]).max(-gt[5]);
     if !enabled || [old.0 - bounds.0, old.1 - bounds.1, old.2 - bounds.2, old.3 - bounds.3].iter().all(|v| v.abs() <= tolerance) {
-        return Ok(SourceLayout { grid, source_grid: grid, offset: (0, 0), adjusted: false, nodata: ds.nodata() });
+        return Ok(SourceLayout { grid, source_grid: grid, offset: (0, 0), adjusted: false, nodata: ds.band_nodata(band) });
     }
     let width = 0.5 + (bounds.2 - bounds.0) / gt[1];
     let height = 0.5 + (bounds.3 - bounds.1) / -gt[5];
@@ -332,7 +332,9 @@ pub(crate) fn plan(pan: &RasterDataset, spectral: &[SpectralBand<'_>], o: &Pansh
     let nodata = match o.nodata {
         PansharpenNodata::None => None,
         PansharpenNodata::Value(v) => Some(v),
-        PansharpenNodata::Auto => pan_layout.nodata.filter(|v| v.is_finite() && spectral_layouts.iter().all(|b| b.nodata == Some(*v))),
+        // GDAL 3.12's VRT checks the pan band again while visiting spectral
+        // bands, so its inferred common nodata comes from the adjusted pan only.
+        PansharpenNodata::Auto => pan_layout.nodata.filter(|v| v.is_finite()),
     };
     let output_type = o.output_type.unwrap_or(spectral[output[0] - 1].dataset.raster.data_type);
     Ok(Plan { pan: pan_layout, spectral: spectral_layouts, weights, output, work, output_type, nodata })
@@ -344,7 +346,7 @@ pub(crate) fn plan(pan: &RasterDataset, spectral: &[SpectralBand<'_>], o: &Pansh
 /// produces zero, or common nodata when enabled. Any nodata contributor invalidates all
 /// output bands. Integer working values are rounded/clamped before output conversion,
 /// including when the output itself is floating point, as in GDAL. Explicit input masks
-/// are not used. The output is materialized; virtual pansharpened VRT output is deferred.
+/// are not used. Use [`vrt::PansharpenVrt`] for lazy virtual output.
 pub fn pansharpen(pan: &RasterDataset, spectral: &[SpectralBand<'_>], o: &PansharpenOptions) -> Result<RasterDataset> {
     let plan = plan(pan, spectral, o)?;
     let data = blocks::in_memory(pan, spectral, o, &plan)?;
@@ -523,6 +525,27 @@ mod tests {
         assert_eq!(out.raster.get(0, 0, 0), 200.0);
         assert_eq!(out.raster.get(1, 0, 0), 0.0);
     }
+    #[test]
+    fn common_nodata_follows_selected_pan_and_disabled_interpolation_keeps_numbers() {
+        let pan = raster(vec![vec![80.; 16]], 4, 4, 1., DataType::U16, Some(0.));
+        let mut ms = raster(vec![vec![0., 20., 20., 20.], vec![40.; 4]], 2, 2, 2., DataType::U16, Some(1.));
+        ms.band_nodata = vec![Some(1.), None];
+        let inputs = [SpectralBand { dataset: &ms, band: 1 }, SpectralBand { dataset: &ms, band: 2 }];
+        let o = PansharpenOptions { resampling: Resampling::Bilinear, ..Default::default() };
+        let inferred = pansharpen(&pan, &inputs, &o).unwrap();
+        assert_eq!(inferred.nodata(), Some(0.));
+        let numeric = pansharpen(&pan, &inputs, &PansharpenOptions { nodata: PansharpenNodata::None, ..o }).unwrap();
+        assert_eq!(numeric.nodata(), None);
+        assert_eq!(numeric.raster.get(0, 0, 1), 18.);
+        assert_eq!(numeric.raster.get(1, 0, 1), 142.);
+        let mut multiband_pan = raster(vec![vec![80.; 16], vec![80.; 16]], 4, 4, 1., DataType::U16, Some(0.));
+        multiband_pan.band_nodata = vec![Some(0.), Some(7.)];
+        assert_eq!(
+            pansharpen(&multiband_pan, &inputs, &PansharpenOptions { pan_band: 2, ..Default::default() }).unwrap().nodata(),
+            Some(7.)
+        );
+    }
+
     #[test]
     fn ungeoreferenced_rasters_share_the_same_affine_space() {
         let mut src = raster(vec![vec![10.0; 4]], 2, 2, 1.0, DataType::U8, None);

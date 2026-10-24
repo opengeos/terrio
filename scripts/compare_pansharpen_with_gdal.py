@@ -85,6 +85,18 @@ def cases(data, work):
     ds = None
     add("masked borders", p=masked_pan, s=holes, opts=["-nodata", "0"])
     add("disabled nodata nearest", p=masked_pan, s=holes, opts=["-nodata", "none", "-r", "nearest"])
+    add("disabled nodata cubic", p=masked_pan, s=holes, opts=["-nodata", "none"])
+    mixed_nodata = []
+    for i, path in enumerate(holes):
+        target = str(work / f"mixed_nodata{i}.tif")
+        ds = gdal.Translate(target, path)
+        if i == 1:
+            ds.GetRasterBand(1).SetNoDataValue(1)
+        elif i == 2:
+            ds.GetRasterBand(1).DeleteNoDataValue()
+        ds = None
+        mixed_nodata.append(target)
+    add("mixed source nodata", p=masked_pan, s=mixed_nodata)
     # Internal dataset masks, without nodata, are ignored by GDAL's pansharpen path.
     explicit_masks = []
     for i, path in enumerate(spectral):

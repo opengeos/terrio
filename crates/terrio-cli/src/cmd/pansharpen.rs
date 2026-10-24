@@ -24,7 +24,7 @@ pub struct Args {
     /// Clamp unsigned samples to this bit depth (1..31, fitting the input type).
     #[arg(long)]
     bitdepth: Option<u8>,
-    /// Common nodata, or none to disable. Default: infer when input bands agree.
+    /// Common nodata, or none to disable. Default: infer from the selected pan band.
     #[arg(long, allow_hyphen_values = true)]
     nodata: Option<String>,
     /// How unequal footprints are handled: union, intersection or none.

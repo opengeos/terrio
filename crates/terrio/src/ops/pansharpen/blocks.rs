@@ -138,6 +138,17 @@ pub(crate) fn request(
                     return Err(bad("pansharpen block has no spectral coverage"));
                 }
                 let mut src = read(i + 1, layout, Window::new(left, top, right - left, bottom - top))?;
+                let extracted = ((window.width as f64 * sampling.rx + 0.49999) as usize).max(1) < window.width
+                    && ((window.height as f64 * sampling.ry + 0.49999) as usize).max(1) < window.height
+                    && window.height > 1
+                    && options.resampling != crate::ops::Resampling::Nearest;
+                if extracted {
+                    // GDAL's temporary MEM upsampling bands receive only the
+                    // operation's common nodata; original per-source nodata is dropped.
+                    src.band_nodata = vec![plan.nodata];
+                    src.has_nodata = plan.nodata.is_some();
+                    src.raster.nodata = plan.nodata.unwrap_or(0.0);
+                }
                 // Encode the fixed request sampling ratio in this temporary source's
                 // affine metadata. Its pixel values still come from the original grid.
                 let dx = pgt[1] / sampling.rx;

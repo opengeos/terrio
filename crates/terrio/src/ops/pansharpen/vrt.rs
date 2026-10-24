@@ -327,6 +327,24 @@ impl PansharpenVrt {
         let srs =
             self.root.child("SRS").map(|e| crate::crs::SpatialRef::parse(e.text.trim())).transpose()?.unwrap_or_else(|| headers[0].crs());
         let mut header = crate::ops::raster_header(grid, layout.output_type, self.outputs.len(), layout.nodata, &srs)?;
+        header.band_nodata = self
+            .outputs
+            .iter()
+            .enumerate()
+            .map(|(i, output)| {
+                let declared = self
+                    .root
+                    .children
+                    .iter()
+                    .find(|e| e.name == "VRTRasterBand" && e.attr("band").and_then(|v| v.parse::<usize>().ok()) == Some(i + 1));
+                declared.and_then(|e| e.child("NoDataValue")).map(|e| number::<f64>(&e.text, "output nodata")).transpose().map(|value| {
+                    value.or(match output {
+                        Output::Sharp(_) => layout.nodata,
+                        Output::Pan(_) => None,
+                    })
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
         header.driver = crate::formats::RasterDriver::VRT;
         if let Some(metadata) = self.root.child("Metadata") {
             header.raster.metadata =

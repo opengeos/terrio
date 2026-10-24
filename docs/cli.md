@@ -474,8 +474,10 @@ Float64 otherwise. Intermediate integer results are rounded/clipped even with `-
 `--spat-adjust union` (default) pads unequal footprints with zero at their native resolutions,
 `intersection` crops them, and `none` preserves the pan footprint. Extents align to the pan
 pixel grid with GDAL's one-spectral-pixel tolerance. `--nodata VALUE` sets common nodata for
-resampling and sharpening; `none` disables common nodata processing. By default a common
-value is inferred when all inputs agree. Like GDAL, footprint padding/cropping drops the
+resampling and sharpening; `none` disables common nodata processing. By default GDAL 3.12's common value is inferred
+from the selected pan band; spectral declarations do not override it. When common nodata
+processing is disabled, GDAL's temporary upsampling buffer treats numeric source nodata as
+ordinary sample values, and Terrio follows that behavior. Like GDAL, footprint padding/cropping drops the
 source nodata declaration; use an explicit `--nodata` to preserve common nodata processing
 with adjusted extents. A nodata contributor or zero weighted intensity
 produces nodata in every output band when enabled; otherwise zero intensity produces zero.
