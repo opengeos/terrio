@@ -18,9 +18,9 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(dem, m)?)?;
     m.add_function(wrap_pyfunction!(calc, m)?)?;
     m.add_function(wrap_pyfunction!(proximity, m)?)?;
-    m.add_function(wrap_pyfunction!(viewshed, m)?)?;
-    m.add_function(wrap_pyfunction!(fill_nodata, m)?)?;
     m.add_function(wrap_pyfunction!(sieve, m)?)?;
+    m.add_function(wrap_pyfunction!(fill_nodata, m)?)?;
+    m.add_function(wrap_pyfunction!(viewshed, m)?)?;
     Ok(())
 }
 

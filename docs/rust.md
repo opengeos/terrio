@@ -196,6 +196,7 @@ let visible = viewshed(&dem, &ViewshedOptions {
     observer_x: 500000.0, observer_y: 4400000.0, max_distance: 5000.0,
     ..Default::default()
 })?;
+# Ok::<(), terrio::Error>(())
 ```
 
 `ViewshedMode::Dem` and `Ground` return minimum visible elevation or height above the DEM.

@@ -1085,7 +1085,6 @@ test("Zarr stores and netCDF/HDF5 products as GDAL reads them", { skip: needs("n
   }
 });
 
-
 test("viewshed visibility, height and byte input", () => {
   const dem = terrio.rasterFromArray(new Float64Array([0, 0, 10, 0, 0]), 5, 1, [0, 10, 0, 10, 0, -10], "EPSG:32611");
   assert.deepEqual([...terrio.viewshed(dem, 5, 5, { cc: 0 }).readBand(1)], [255, 255, 255, 0, 0]);

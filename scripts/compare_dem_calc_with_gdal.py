@@ -180,7 +180,9 @@ def cases(d, tmp):
     out = []
 
     def add(name, gdal_cmd, terrio_cmd, tol=0.0, ext="tif"):
-        out.append({"name": name, "gdal": gdal_cmd, "terrio": terrio_cmd, "tol": tol, "ext": ext})
+        case = {"name": name, "gdal": gdal_cmd, "terrio": terrio_cmd, "tol": tol, "ext": ext}
+        out.append(case)
+        return case
 
     def dem(name, mode, path, gdal_opts=(), terrio_opts=(), tol=0.0):
         add(
@@ -351,10 +353,10 @@ def cases(d, tmp):
     ]:
         ox, oy = str(gt[0] + (col + 0.5) * gt[1]), str(gt[3] + (row + 0.5) * gt[5])
         shared = ["-ox", ox, "-oy", oy, *opts]
-        add(f"viewshed {label}", ["gdal_viewshed", "-q", *shared, projected, "{out}"],
-            ["viewshed", projected, "{out}", *["-" + v if v.startswith("-") and v[1:].isalpha() else v for v in shared]], 1e-9)
+        case = add(f"viewshed {label}", ["gdal_viewshed", "-q", *shared, projected, "{out}"],
+            ["viewshed", projected, "{out}", *[{"-ox": "--ox", "-oy": "--oy", "-cc": "--cc", "-oz": "--oz", "-tz": "--tz", "-md": "--md", "-ov": "--ov", "-om": "--om"}.get(v, v) for v in shared]], 1e-9)
         if label == "outside radius":
-            out[-1]["radius"] = (gt[0] + int(col + 0.5) * gt[1], gt[3] + int(row + 0.5) * gt[5], 10000)
+            case["radius"] = (gt[0] + int(col + 0.5) * gt[1], gt[3] + int(row + 0.5) * gt[5], 10000)
     feet = os.path.join(tmp, "viewshed_feet.tif")
     feet_ds = gdal.Warp(feet, usgs, dstSRS="EPSG:2232", width=103, height=97)
     feet_gt = feet_ds.GetGeoTransform()

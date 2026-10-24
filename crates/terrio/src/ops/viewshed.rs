@@ -132,6 +132,7 @@ pub fn viewshed(ds: &RasterDataset, o: &ViewshedOptions) -> Result<RasterDataset
             z.push(v);
         }
     }
+    drop(src);
     let (ox, oy) = (ox - x0 as isize, oy - y0 as isize);
     let (start_x, start_y) = (ox.clamp(0, nw as isize - 1) as usize, oy.clamp(0, nh as isize - 1) as usize);
     let inside_x = ox >= 0 && ox < nw as isize;
@@ -193,6 +194,7 @@ pub fn viewshed(ds: &RasterDataset, o: &ViewshedOptions) -> Result<RasterDataset
             z[p] = current.max(horizon);
         }
     }
+    drop(z);
     let mut output_gt = gt;
     output_gt[0] += x0 as f64 * gt[1];
     output_gt[3] += y0 as f64 * gt[5];
