@@ -93,6 +93,55 @@ fn missing_best_grid_can_be_refused_and_outside_area_is_reported() {
     );
     assert!(!output.exists());
 
+    // Every preflight boundary sample is grid-free, but later interior rows cross
+    // Switzerland. A failure after opening the streamed writer must remove its output.
+    let boundary = Transformer::with_options(&dst, &src, &options.transform_options).unwrap();
+    for i in 0..=20 {
+        let f = i as f64 / 20.0;
+        for (x, y) in [(1e6 + f * 3e6, 0.0), (1e6 + f * 3e6, 3e6), (1e6, f * 3e6), (4e6, f * 3e6)] {
+            assert!(boundary.transform(x, y).is_ok());
+        }
+    }
+    assert!(boundary.check_policy().is_ok());
+    assert!(boundary.transform(2600000.0, 1200000.0).is_err());
+    drop(boundary);
+    let wide = terrio::RasterDataset::new(
+        wbraster::Raster::from_data(
+            wbraster::RasterConfig {
+                cols: 8,
+                rows: 8,
+                bands: 1,
+                x_min: -1e6,
+                y_min: -1e6,
+                cell_size: 375000.0,
+                crs: wbraster::CrsInfo::from_epsg(21781),
+                ..Default::default()
+            },
+            vec![1.0; 64],
+        )
+        .unwrap(),
+        false,
+    );
+    let late_input = dir.path().join("late-input.tif");
+    let late_output = dir.path().join("late-output.tif");
+    terrio::write_raster_dataset(&wide, late_input.to_str().unwrap(), &Default::default()).unwrap();
+    let late_options = terrio::ops::warp::WarpOptions {
+        extent: Some((1e6, 0.0, 4e6, 3e6)),
+        size: Some((100, 100)),
+        error_threshold: 0.0,
+        ..options.clone()
+    };
+    let error = terrio::ops::warp::warp_to_path(
+        &[late_input.to_str().unwrap().into()],
+        &late_options,
+        late_output.to_str().unwrap(),
+        &Default::default(),
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("ONLY_BEST"));
+    assert!(!late_output.exists());
+    assert!(!dir.path().join("late-output.tif.aux.xml").exists());
+
     // The source and target share a CRS; only the extent/cutline need a datum shift.
     // Their transforms must still enforce ONLY_BEST.
     let mut target_source = source.clone();
