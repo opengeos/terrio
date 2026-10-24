@@ -501,8 +501,9 @@ impl Reader {
             return Err(invalid("unmapped warped band"));
         }
         options.src_nodata = Nodata::PerBand(nodata.into_iter().map(|v| v.map(|v| crate::ops::convert_value(v, working))).collect());
-        options.dst_nodata =
-            Nodata::PerBand(destination_nodata.into_iter().map(|v| v.map(|v| crate::ops::convert_value(v, working))).collect());
+        // GDAL compares a working result with the raw double destination sentinel.
+        // Only the fill value is converted to the working type by the warp plan.
+        options.dst_nodata = Nodata::PerBand(destination_nodata);
         let mut output = vec![0.; window.width * window.height * bands.len()];
         for y in (window.y / bh * bh..window.y + window.height).step_by(bh) {
             for x in (window.x / bw * bw..window.x + window.width).step_by(bw) {
@@ -1328,7 +1329,7 @@ mod tests {
     #[test]
     fn float_working_mask_casts_decimal_nodata_but_retains_metadata() {
         let raw = 1.23456789;
-        for destination in [-99., raw] {
+        for (source_nodata, destination) in [(raw, -99.), (raw, raw), (-9999., raw)] {
             let source = crate::ops::build_raster(
                 Grid { width: 3, height: 1, geo_transform: [0., 1., 0., 1., 0., -1.] },
                 vec![vec![raw, 2.5, 3.5]],
@@ -1339,7 +1340,7 @@ mod tests {
             )
             .unwrap();
             let xml = format!(
-                "<VRTDataset rasterXSize=\"3\" rasterYSize=\"1\" subClass=\"VRTWarpedDataset\"><GeoTransform>0,1,0,1,0,-1</GeoTransform><VRTRasterBand dataType=\"Float32\"><NoDataValue>{destination}</NoDataValue></VRTRasterBand><GDALWarpOptions><WorkingDataType>Float32</WorkingDataType><SourceDataset>source.tif</SourceDataset><BandList><BandMapping src=\"1\" dst=\"1\"><SrcNoDataReal>{raw}</SrcNoDataReal><DstNoDataReal>{destination}</DstNoDataReal></BandMapping></BandList></GDALWarpOptions></VRTDataset>"
+                "<VRTDataset rasterXSize=\"3\" rasterYSize=\"1\" subClass=\"VRTWarpedDataset\"><GeoTransform>0,1,0,1,0,-1</GeoTransform><VRTRasterBand dataType=\"Float32\"><NoDataValue>{destination}</NoDataValue></VRTRasterBand><GDALWarpOptions><WorkingDataType>Float32</WorkingDataType><SourceDataset>source.tif</SourceDataset><BandList><BandMapping src=\"1\" dst=\"1\"><SrcNoDataReal>{source_nodata}</SrcNoDataReal><DstNoDataReal>{destination}</DstNoDataReal></BandMapping></BandList></GDALWarpOptions></VRTDataset>"
             );
             let mut lazy = VirtualRaster::from_xml(&xml)
                 .unwrap()
@@ -1348,7 +1349,7 @@ mod tests {
             assert_eq!(lazy.header().nodata(), Some(destination));
             let out = lazy.read().unwrap();
             assert_eq!(out.nodata(), Some(destination));
-            assert_eq!(out.raster.data.to_f64_vec(), vec![destination as f32 as f64, 2.5, 3.5]);
+            assert_eq!(out.raster.data.to_f64_vec(), vec![(if source_nodata == raw { destination } else { raw }) as f32 as f64, 2.5, 3.5]);
         }
     }
 
