@@ -145,7 +145,7 @@ impl VirtualRaster {
         let subdataset =
             ["NETCDF:", "HDF5:", "ZARR:", "GPKG:"].iter().any(|p| source.get(..p.len()).is_some_and(|v| v.eq_ignore_ascii_case(p)));
         let source = if subdataset {
-            resolve_reference(&std::env::current_dir()?.join("__vrt__.vrt").to_string_lossy(), source, false)
+            resolve_reference(&std::env::current_dir()?.join("__vrt__.vrt").to_string_lossy(), source, true)
         } else if crate::vfs::Location::parse(source).is_local() {
             std::fs::canonicalize(source)?.to_string_lossy().into_owned()
         } else {
@@ -312,7 +312,8 @@ impl VirtualRaster {
                 description: std::sync::Arc::new(self),
                 mask,
                 base: base.into(),
-                supplied: sources.keys().cloned().collect(),
+                cached: HashMap::new(),
+                lru: Default::default(),
                 sources,
             }),
         ))
@@ -322,7 +323,7 @@ impl VirtualRaster {
 /// Open a local, archived or remote VRT and resolve relative sources from its location.
 pub fn open_virtual_raster(path: &str) -> Result<LazyRaster> {
     let local = crate::vfs::resolve(path)?;
-    let text = std::fs::read_to_string(local.path())?;
+    let text = String::from_utf8(crate::memfs::read(local.path())?).map_err(|e| invalid(&format!("invalid XML encoding: {e}")))?;
     VirtualRaster::from_xml(&text)?.into_lazy_reference(path, HashMap::new())
 }
 
@@ -378,22 +379,32 @@ struct Reader {
     mask: Option<std::sync::Arc<VirtualRaster>>,
     base: String,
     sources: HashMap<String, LazyRaster>,
-    supplied: std::collections::HashSet<String>,
+    cached: HashMap<String, LazyRaster>,
+    lru: std::collections::VecDeque<String>,
 }
 
 impl Reader {
     fn source(&mut self, name: &str, relative: bool) -> Result<&mut LazyRaster> {
-        if !self.sources.contains_key(name) {
-            // Bound the cache; callers can supply arbitrary numbers of virtual sources.
-            if self.sources.len().saturating_sub(self.supplied.len()) >= 32
-                && let Some(key) = self.sources.keys().find(|k| !self.supplied.contains(*k)).cloned()
-            {
-                self.sources.remove(&key);
-            }
-            let path = resolve_reference(&self.base, name, relative);
-            self.sources.insert(name.into(), crate::open_raster_lazy(&path)?);
+        // Uploaded source names override references exactly; persistent readers use
+        // resolved paths so relativeToVRT=0/1 cannot alias different files.
+        if self.sources.contains_key(name) {
+            return Ok(self.sources.get_mut(name).expect("supplied source exists"));
         }
-        Ok(self.sources.get_mut(name).expect("source inserted"))
+        let path = resolve_reference(&self.base, name, relative);
+        if !self.cached.contains_key(&path) {
+            let source = crate::open_raster_lazy(&path)?;
+            if self.cached.len() >= 32
+                && let Some(oldest) = self.lru.pop_front()
+            {
+                self.cached.remove(&oldest);
+            }
+            self.cached.insert(path.clone(), source);
+        }
+        if let Some(position) = self.lru.iter().position(|key| key == &path) {
+            self.lru.remove(position);
+        }
+        self.lru.push_back(path.clone());
+        Ok(self.cached.get_mut(&path).expect("source inserted"))
     }
 
     fn source_values(
@@ -1295,6 +1306,39 @@ mod tests {
     }
 
     #[test]
+    fn source_cache_uses_resolved_references_and_lru() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().join("dataset.vrt").to_string_lossy().into_owned();
+        let document =
+            VirtualRaster::from_xml("<VRTDataset rasterXSize=\"1\" rasterYSize=\"1\"><VRTRasterBand dataType=\"Byte\"/></VRTDataset>")
+                .unwrap();
+        let mut reader = Reader {
+            description: std::sync::Arc::new(document),
+            mask: None,
+            base: base.clone(),
+            sources: HashMap::new(),
+            cached: HashMap::new(),
+            lru: Default::default(),
+        };
+        for index in 0..33 {
+            std::fs::write(dir.path().join(format!("{index}.asc")), "ncols 1\nnrows 1\nxllcorner 0\nyllcorner 0\ncellsize 1\n7\n").unwrap();
+        }
+        for index in 0..32 {
+            reader.source(&format!("{index}.asc"), true).unwrap();
+        }
+        reader.source("0.asc", true).unwrap();
+        reader.source("32.asc", true).unwrap();
+        assert_eq!(reader.cached.len(), 32);
+        assert!(reader.cached.contains_key(&resolve_reference(&base, "0.asc", true)));
+        assert!(!reader.cached.contains_key(&resolve_reference(&base, "1.asc", true)));
+        // Absolute and relative aliases of the same reference share their reader.
+        reader.source(&dir.path().join("0.asc").to_string_lossy(), false).unwrap();
+        assert_eq!(reader.cached.len(), 32);
+        assert_eq!(resolve_reference(&base, "0.asc", false), "0.asc");
+        assert_ne!(resolve_reference(&base, "0.asc", true), "0.asc");
+    }
+
+    #[test]
     fn common_band_types_follow_gdal_union() {
         use DataType::*;
         assert_eq!(super::union_value(F32, f32::MIN as f64), F32);
@@ -1564,7 +1608,8 @@ mod tests {
                 mask: None,
                 base: String::new(),
                 sources: HashMap::new(),
-                supplied: Default::default(),
+                cached: HashMap::new(),
+                lru: Default::default(),
             };
             let parsed = reader.parse_warp().unwrap();
             assert_eq!(parsed.source_overview, expected_level);
@@ -1592,7 +1637,8 @@ mod tests {
                         mask: None,
                         base: String::new(),
                         sources: HashMap::new(),
-                        supplied: Default::default(),
+                        cached: HashMap::new(),
+                        lru: Default::default(),
                     };
                     assert!(reader.parse_warp().is_err());
                 }
@@ -1619,7 +1665,8 @@ mod tests {
                 mask: None,
                 base: String::new(),
                 sources: HashMap::new(),
-                supplied: Default::default(),
+                cached: HashMap::new(),
+                lru: Default::default(),
             };
             let parsed = reader.parse_warp().unwrap();
             assert_eq!(parsed.source_overview, Some(1));
@@ -1667,7 +1714,8 @@ mod tests {
             mask: None,
             base: String::new(),
             sources: HashMap::new(),
-            supplied: Default::default(),
+            cached: HashMap::new(),
+            lru: Default::default(),
         };
         let scaled = reader.parse_warp().unwrap().options.rpc.unwrap();
         assert_eq!(scaled.line_off, rpc.line_off / 4.);
@@ -1693,7 +1741,8 @@ mod tests {
             mask: None,
             base: String::new(),
             sources: HashMap::new(),
-            supplied: Default::default(),
+            cached: HashMap::new(),
+            lru: Default::default(),
         };
         let parsed = reader.parse_warp().unwrap();
         assert_eq!(parsed.options.error_threshold, 0.);
@@ -1704,6 +1753,12 @@ mod tests {
         let write = crate::RasterWriteOptions { compression: Some("DEFLATE".into()), ..Default::default() };
         assert!(crate::ops::warp::warp_to_path(&paths, &options, out.to_str().unwrap(), &write).is_err());
         assert!(!out.exists());
+        let mount = crate::memfs::Mount::new([]);
+        let virtual_path = mount.path().join("warped.vrt");
+        crate::ops::warp::warp_to_path(&paths, &options, virtual_path.to_str().unwrap(), &Default::default()).unwrap();
+        assert!(crate::memfs::exists(&virtual_path));
+        let mut opened = open_virtual_raster(virtual_path.to_str().unwrap()).unwrap();
+        assert_eq!(opened.read().unwrap().raster.data.to_f64_vec(), raster().raster.data.to_f64_vec());
     }
 
     #[test]

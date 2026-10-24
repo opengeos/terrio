@@ -90,6 +90,16 @@ def main():
             path.write_text(f'<VRTDataset rasterXSize="96" rasterYSize="80"><SRS>{projection}</SRS><GeoTransform>{",".join(map(str, transform))}</GeoTransform>{band}</VRTDataset>')
             return path
 
+        # GDAL's missing/zero relativeToVRT flag resolves from the process CWD;
+        # only flag 1 resolves from the VRT directory.
+        cwd_source = os.path.relpath(Path(args.data).resolve() / "usgs_dem.tif")
+        rectangles = '<SrcRect xOff="0" yOff="0" xSize="96" ySize="80"/><DstRect xOff="0" yOff="0" xSize="96" ySize="80"/>'
+        for flag in [None, "0", "1"]:
+            filename = "source.tif" if flag == "1" else cwd_source
+            attribute = "" if flag is None else f' relativeToVRT="{flag}"'
+            band = f'<VRTRasterBand dataType="Float32"><SimpleSource><SourceFilename{attribute}>{filename}</SourceFilename><SourceBand>1</SourceBand>{rectangles}</SimpleSource></VRTRasterBand>'
+            run(f"VRT relativeToVRT {flag}", write(f"relative-{flag}", band))
+
         for label, nodata in [("long-decimal", 1.23456789), ("decimal-tenth", 0.1)]:
             path = write(f"nodata-{label}", f'<VRTRasterBand dataType="Float32"><NoDataValue>{nodata}</NoDataValue>{source_xml()}</VRTRasterBand>')
             run(f"VRT raw decimal nodata {label}", path)
@@ -302,6 +312,37 @@ def main():
             root.write(path)
             mixed_compare("VRT mixed warped working " + working, path)
 
+        # The PARTIAL default also applies to ordinary materialized warps.
+        # Give each source band a distinct nodata value, with both jointly and
+        # independently invalid pixels, using real terrain for valid samples.
+        distinct = tmp / "distinct-nodata.tif"
+        ds = gdal.GetDriverByName("GTiff").Create(str(distinct), 96, 80, 3, gdal.GDT_Float32)
+        ds.SetGeoTransform(transform)
+        ds.SetProjection(projection)
+        for band in range(1, 4):
+            pixels = values.copy() + band * 10
+            pixels[:4, :4] = -9999 + band
+            pixels[10 * band:10 * band + 3, :4] = -9999 + band
+            ds.GetRasterBand(band).WriteArray(pixels)
+        ds = None
+        distinct_vrt = tmp / "distinct-source.vrt"
+        ds = gdal.Translate(str(distinct_vrt), str(distinct), format="VRT")
+        for band in range(1, 4):
+            ds.GetRasterBand(band).SetNoDataValue(-9999 + band)
+        ds = None
+        for method in ["near", "bilinear"]:
+            reference = tmp / f"ordinary-{method}-reference.tif"
+            actual = tmp / f"ordinary-{method}-actual.tif"
+            gdal.Warp(str(reference), str(distinct_vrt), format="GTiff",
+                      width=64, height=56, resampleAlg=method, dstNodata=-12345)
+            process = subprocess.run(
+                [args.terrio, "warp", str(distinct_vrt), str(actual),
+                 "--ts", "64", "56", "-r", method, "--dstnodata=-12345"],
+                capture_output=True, text=True, env=env)
+            record = ({"error": process.stderr} if process.returncode
+                      else compare(str(reference), str(actual), 0))
+            record["name"] = f"ordinary multiband per-band nodata {method}"
+            records.append(record)
         for resampling in ["near", "bilinear", "cubic", "average"]:
             path = tmp / f"warped-{resampling}.vrt"
             gdal.Warp(str(path), str(source), format="VRT", dstSRS="EPSG:3857", width=64, height=56, resampleAlg=resampling)

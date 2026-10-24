@@ -203,3 +203,8 @@ interleaved measurements and Linux affinity/background-load handling. They run i
 CI's conformance job without downloading benchmark datasets or asserting timing
 thresholds. Performance measurements remain an explicit local task; see
 [Benchmarks](benchmarks.md) for the methodology and latest GDAL version used.
+
+The VRT conformance suite also compares ordinary GeoTIFF warp output against GDAL
+for multiband inputs with distinct per-band nodata, both jointly invalid and
+independently invalid pixels, and a separate destination fill. Nearest and bilinear
+cases require exact pixel agreement (tolerance 0).

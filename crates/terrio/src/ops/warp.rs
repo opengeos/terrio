@@ -1379,7 +1379,9 @@ fn warp_data(p: &Plan<'_>, sources: &[&RasterDataset], o: &WarpOptions) -> Resul
     // already rounded to the type, see `Sink::value`).
     let fill = p.fill();
     let mut out = RasterData::new_filled(out_type, n * bands, 0.0);
-    crate::pixel::with_data!(&mut out, v => v.chunks_mut(n).zip(&fill).for_each(|(band,fill)|band.iter_mut().for_each(|x|*x=*fill as _)));
+    if n != 0 {
+        crate::pixel::with_data!(&mut out, v => v.chunks_mut(n).zip(&fill).for_each(|(band,fill)|band.iter_mut().for_each(|x|*x=*fill as _)));
+    }
 
     for (k, s) in p.srcs.iter().enumerate() {
         let t = p.transformer(k)?;
@@ -1531,10 +1533,14 @@ fn warp_reader_selected(
     let unified = o.unified_src_nodata.unwrap_or(matches!(o.src_nodata, Nodata::Values(_))) && bands > 1;
     let fill = p.fill();
     let mut out = RasterData::new_filled(out_type, n * bands, 0.0);
-    crate::pixel::with_data!(&mut out, v => v.chunks_mut(n).zip(&fill).for_each(|(band,fill)|band.iter_mut().for_each(|x|*x=*fill as _)));
+    if n != 0 {
+        crate::pixel::with_data!(&mut out, v => v.chunks_mut(n).zip(&fill).for_each(|(band,fill)|band.iter_mut().for_each(|x|*x=*fill as _)));
+    }
     for c in &chunks {
         let mut window = src.read_window(crate::Window::new(c.sx, c.sy, c.sw, c.sh), &read_options)?;
-        if let Some(dtype) = working {
+        if let Some(dtype) = working
+            && window.raster.data_type != dtype
+        {
             let values = window.raster.data.to_f64_vec().into_iter().map(|v| super::convert_value(v, dtype)).collect();
             window.raster.data = RasterData::from_f64_vec(dtype, values);
             window.raster.data_type = dtype;
@@ -1555,7 +1561,6 @@ fn warp_reader_selected(
     Ok(ds)
 }
 
-/// The warped raster of `grid`, holding `out`, whatever its geotransform.
 /// Warps multiple lazy rasters, selecting a stored source resolution for each one.
 /// The target grid is computed from full-resolution headers before selection.
 /// Single sources without cutlines use windowed reads; mosaics and cutlines load
@@ -1700,7 +1705,7 @@ pub fn warp_to_path(paths: &[String], o: &WarpOptions, path: &str, options: &cra
             return Err(Error::InvalidArgument("a VRT cannot replace its source".into()));
         }
         let document = super::vrt::VirtualRaster::warped(&paths[0], o)?;
-        return Ok(std::fs::write(path, document.to_xml())?);
+        return Ok(crate::memfs::write(std::path::Path::new(path), document.to_xml())?);
     }
     if paths.is_empty() {
         return Err(Error::InvalidArgument("no source rasters".into()));
@@ -2438,6 +2443,9 @@ impl WarpContext<'_> {
     /// Warps one output row of a chunk.
     fn warp_row<T: crate::pixel::Pixel>(&self, c: &Chunk, k: &Kernel<T>, sink: &Sink, row: usize, out: &mut [&mut [f64]]) {
         let (xscale, yscale) = (k.xscale, k.yscale);
+        // Include stored masks/cutlines as well as nodata, but skip the all-band
+        // hot-loop check when this chunk has no validity planes.
+        let global_validity = self.global_validity && k.src.valid.iter().any(Option::is_some);
         let four = matches!(self.resampling, Resampling::Bilinear | Resampling::Cubic) && xscale >= 0.95 && yscale >= 0.95;
         let mut xs = vec![0.0; c.dw];
         let mut ys = vec![0.0; c.dw];
@@ -2508,7 +2516,7 @@ impl WarpContext<'_> {
                 if iy == c.sh {
                     iy -= 1;
                 }
-                if self.global_validity && (0..self.bands).all(|b| !k.valid(b, ix, iy)) {
+                if global_validity && (0..self.bands).all(|b| !k.valid(b, ix, iy)) {
                     continue;
                 }
                 let (fx, fy) = (xs[i] - sxo, ys[i] - syo);
