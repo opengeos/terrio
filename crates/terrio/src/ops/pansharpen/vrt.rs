@@ -257,10 +257,16 @@ impl PansharpenVrt {
         Self::from_xml(&text)
     }
 
-    /// Create a VRT from persistent paths/URLs. Only source headers are opened.
+    /// Create a VRT from persistent paths/URLs using their existing lazy readers.
+    /// GeoTIFF/COG sources open by header; formats without window readers may load at open.
     pub fn from_paths(pan: &str, spectral: &[(String, usize)], options: &PansharpenOptions) -> Result<Self> {
         let persistent = |name: &str| -> Result<String> {
-            if crate::vfs::Location::parse(name).is_local() {
+            if ["NETCDF:", "HDF5:", "ZARR:", "GPKG:"]
+                .iter()
+                .any(|prefix| name.get(..prefix.len()).is_some_and(|v| v.eq_ignore_ascii_case(prefix)))
+            {
+                Ok(crate::ops::vrt::resolve_reference(&std::env::current_dir()?.join("__vrt__.vrt").to_string_lossy(), name, false))
+            } else if crate::vfs::Location::parse(name).is_local() {
                 Ok(std::fs::canonicalize(name)?.to_string_lossy().into_owned())
             } else {
                 Ok(name.into())
@@ -367,12 +373,7 @@ impl Cache {
             {
                 self.sources.remove(&name);
             }
-            let name = if source.relative || (crate::vfs::Location::parse(&source.name).is_local() && Path::new(&source.name).is_relative())
-            {
-                crate::stac::resolve_href(&self.base, &source.name)
-            } else {
-                source.name.clone()
-            };
+            let name = crate::ops::vrt::resolve_reference(&self.base, &source.name, source.relative);
             self.sources.insert(source.name.clone(), crate::open_raster_lazy(&name)?);
         }
         Ok(self.sources.get_mut(&source.name).expect("inserted source"))
@@ -412,7 +413,12 @@ impl WindowSource for Reader {
                 Output::Pan(_) => None,
             })
             .collect::<Vec<_>>();
-        let mut result = RasterData::new_filled(self.layout.output_type, window.width * window.height * bands.len(), 0.0);
+        let count = window
+            .width
+            .checked_mul(window.height)
+            .and_then(|n| n.checked_mul(bands.len()))
+            .ok_or_else(|| invalid("pansharpen output size overflow"))?;
+        let mut result = blocks::allocate(self.layout.output_type, count)?;
         let values = if sharp.is_empty() {
             None
         } else {
@@ -421,18 +427,15 @@ impl WindowSource for Reader {
             let headers = &self.headers;
             let description = &self.description;
             let cache = &mut self.cache;
-            Some(
-                blocks::request(layout, options, window, &sharp, |index, source_layout, area| {
-                    let src = if index == 0 { &description.pan } else { &description.spectral[index - 1] };
-                    blocks::aligned(
-                        source_layout,
-                        area,
-                        |original| cache.get(src)?.read_window(original, &WindowOptions { bands: vec![src.band], overview: None }),
-                        &headers[index],
-                    )
-                })?
-                .to_f64_vec(),
-            )
+            Some(blocks::request(layout, options, window, &sharp, |index, source_layout, area| {
+                let src = if index == 0 { &description.pan } else { &description.spectral[index - 1] };
+                blocks::aligned(
+                    source_layout,
+                    area,
+                    |original| cache.get(src)?.read_window(original, &WindowOptions { bands: vec![src.band], overview: None }),
+                    &headers[index],
+                )
+            })?)
         };
         let size = window.width * window.height;
         let mut sharp_index = 0;
@@ -441,15 +444,15 @@ impl WindowSource for Reader {
                 Output::Sharp(_) => {
                     let data = values.as_ref().expect("sharp planes");
                     for i in 0..size {
-                        result.set_f64(out * size + i, data[sharp_index * size + i]);
+                        result.set_f64(out * size + i, data.get_f64(sharp_index * size + i));
                     }
                     sharp_index += 1;
                 }
                 Output::Pan(band) => {
                     let layout = self.layout.pan.clone();
-                    let data = self.source(0, &layout, window, band)?.raster.data.to_f64_vec();
-                    for (i, value) in data.into_iter().enumerate() {
-                        result.set_f64(out * size + i, value);
+                    let data = self.source(0, &layout, window, band)?.raster.data;
+                    for i in 0..size {
+                        result.set_f64(out * size + i, data.get_f64(i));
                     }
                 }
             }
@@ -589,6 +592,54 @@ mod tests {
         assert_eq!(out[0], 80.);
         assert_eq!(out[4], 120.);
         assert_eq!(out[24], 120.);
+    }
+
+    #[test]
+    fn huge_virtual_union_can_open_and_read_a_small_window() {
+        assert!(blocks::allocate(DataType::F64, usize::MAX).is_err());
+        let pan = crate::ops::build_raster(
+            Grid { width: 1, height: 1, geo_transform: [0., 1., 0., 1., 0., -1.] },
+            vec![vec![80.]],
+            DataType::U8,
+            None,
+            &Default::default(),
+            |v, _| v,
+        )
+        .unwrap();
+        let mut spectral = pan.clone();
+        spectral.set_geo_transform([1_500_000_000., 1., 0., 1_500_000_001., 0., -1.]);
+        let description = PansharpenVrt::from_rasters("pan", &pan, &[("spectral", &spectral, 1)], &Default::default()).unwrap();
+        let sources = HashMap::from([("pan".into(), LazyRaster::from(pan)), ("spectral".into(), LazyRaster::from(spectral))]);
+        let mut lazy = description.into_lazy(Path::new(""), sources).unwrap();
+        assert!(lazy.width() > 1_000_000_000);
+        assert_eq!(lazy.read_window(Window::new(0, 1_500_000_000, 1, 1), &Default::default()).unwrap().raster.data.to_f64_vec(), vec![0.]);
+    }
+
+    #[cfg(feature = "netcdf-hdf5")]
+    #[test]
+    fn persistent_subdataset_names_open_and_round_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("spectral.nc");
+        let dataset = crate::ops::build_raster(
+            Grid { width: 2, height: 2, geo_transform: [0., 1., 0., 2., 0., -1.] },
+            vec![vec![80.; 4]],
+            DataType::U16,
+            None,
+            &Default::default(),
+            |v, _| v,
+        )
+        .unwrap();
+        crate::write_raster_dataset(&dataset, file.to_str().unwrap(), &Default::default()).unwrap();
+        let selector = format!("NETCDF:\"{}\":Band1", file.display());
+        let description = PansharpenVrt::from_paths(&selector, &[(selector.clone(), 1)], &Default::default()).unwrap();
+        let path = dir.path().join("sharp.vrt");
+        description.write(path.to_str().unwrap()).unwrap();
+        let mut lazy = crate::open_raster_lazy(path.to_str().unwrap()).unwrap();
+        assert_eq!(lazy.read().unwrap().raster.data.to_f64_vec(), vec![80.; 4]);
+        assert_eq!(
+            crate::ops::vrt::resolve_reference("/data/scene/description.vrt", "NETCDF:\"inputs.nc\":Band1", true),
+            "NETCDF:\"/data/scene/inputs.nc\":Band1"
+        );
     }
 
     #[test]

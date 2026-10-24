@@ -487,7 +487,9 @@ when padded margins should be missing. An output ending in `.vrt` (or `-f VRT`) 
 or URLs. Opening the description and reading a window fetches the matching pan pixels and
 spectral pixels with interpolation margins. GeoTIFF/COG outputs stream row strips with
 bounded interpolation buffers; other output formats may gather the output in memory.
-Inputs remain separate files needed by the VRT. Rotated grids, cross-CRS alignment and
+Inputs remain separate files needed by the VRT. Source formats without a lazy window
+reader may load their pixels at open. As in GDAL, nodata metadata retains the supplied
+number even when the working sentinel is rounded/clamped to an integer type. Rotated grids, cross-CRS alignment and
 mixed output data types within a VRT are unsupported.
 The command is also an MCP tool.
 

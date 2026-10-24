@@ -700,7 +700,7 @@ impl Drop for ReadDepth {
     }
 }
 
-fn resolve_reference(base: &str, name: &str, relative: bool) -> String {
+pub(crate) fn resolve_reference(base: &str, name: &str, relative: bool) -> String {
     // GDAL subdataset names embed a filename; resolve that filename rather than
     // treating the complete driver-prefixed selector as a relative path.
     for prefix in ["NETCDF:", "HDF5:", "ZARR:", "GPKG:"] {

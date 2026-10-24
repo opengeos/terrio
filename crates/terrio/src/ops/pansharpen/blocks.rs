@@ -6,6 +6,23 @@ use wbraster::raster::RasterData;
 
 pub(crate) const BLOCK: usize = 512;
 
+/// Fallible typed output allocation, including capacity-overflow checks.
+pub(super) fn allocate(dtype: wbraster::DataType, count: usize) -> Result<RasterData> {
+    use wbraster::DataType;
+    Ok(match dtype {
+        DataType::U8 => RasterData::U8(super::filled(count, 0u8)?),
+        DataType::I8 => RasterData::I8(super::filled(count, 0i8)?),
+        DataType::U16 => RasterData::U16(super::filled(count, 0u16)?),
+        DataType::I16 => RasterData::I16(super::filled(count, 0i16)?),
+        DataType::U32 => RasterData::U32(super::filled(count, 0u32)?),
+        DataType::I32 => RasterData::I32(super::filled(count, 0i32)?),
+        DataType::U64 => RasterData::U64(super::filled(count, 0u64)?),
+        DataType::I64 => RasterData::I64(super::filled(count, 0i64)?),
+        DataType::F32 => RasterData::F32(super::filled(count, 0f32)?),
+        DataType::F64 => RasterData::F64(super::filled(count, 0f64)?),
+    })
+}
+
 pub(crate) fn window_grid(grid: Grid, window: Window) -> Grid {
     let mut gt = grid.geo_transform;
     gt[0] += window.x as f64 * gt[1];
@@ -27,7 +44,7 @@ pub(crate) fn aligned(
     let right = ((window.x + window.width) as isize + ox).max(0).min(layout.source_grid.width as isize) as usize;
     let bottom = ((window.y + window.height) as isize + oy).max(0).min(layout.source_grid.height as isize) as usize;
     let grid = window_grid(layout.grid, window);
-    let mut values = vec![0.0; window.width * window.height];
+    let mut values = super::filled(window.width.checked_mul(window.height).ok_or_else(|| bad("pansharpen buffer size overflow"))?, 0.0)?;
     if right > left && bottom > top {
         let source = read(Window::new(left, top, right - left, bottom - top))?;
         let view = BandView::of(&source.raster, 0);
@@ -110,7 +127,7 @@ pub(crate) fn request(
         .checked_mul(window.height)
         .and_then(|n| n.checked_mul(bands.len()))
         .ok_or_else(|| bad("pansharpen output is too large"))?;
-    let mut output = RasterData::new_filled(plan.output_type, count, 0.0);
+    let mut output = allocate(plan.output_type, count)?;
     let mut operation = options.clone();
     operation.pan_band = 1;
     operation.extent = PansharpenExtent::None;
@@ -158,13 +175,13 @@ pub(crate) fn request(
             }
             let refs = spectral.iter().map(|dataset| SpectralBand { dataset, band: 1 }).collect::<Vec<_>>();
             let block = process_aligned(&pan, &refs, &operation)?;
-            let raw = block.raster.data.to_f64_vec();
+            let raw = &block.raster.data;
             for band in 0..bands.len() {
                 for row in 0..height {
                     for col in 0..width {
                         let source = band * width * height + row * width + col;
                         let target = band * window.width * window.height + (y + row) * window.width + x + col;
-                        output.set_f64(target, raw[source]);
+                        output.set_f64(target, raw.get_f64(source));
                     }
                 }
             }

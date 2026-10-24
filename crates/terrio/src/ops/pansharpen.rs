@@ -94,6 +94,13 @@ fn bad(message: &str) -> Error {
     Error::InvalidArgument(message.into())
 }
 
+fn filled<T: Clone>(count: usize, value: T) -> Result<Vec<T>> {
+    let mut values = Vec::new();
+    values.try_reserve_exact(count).map_err(|_| bad("pansharpen buffer is too large to allocate"))?;
+    values.resize(count, value);
+    Ok(values)
+}
+
 fn check(ds: &RasterDataset, band: usize) -> Result<Grid> {
     if ds.complex || band == 0 || band > ds.raster.bands {
         return Err(bad("pansharpen requires existing real input bands"));

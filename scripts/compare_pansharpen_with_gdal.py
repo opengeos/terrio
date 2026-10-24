@@ -189,7 +189,9 @@ def virtual_comparisons(case, terrio, work, index):
     run([terrio, *[v.replace("{out}", tvrt) for v in case["terrio"]]])
     for label, path, window in (("GDAL VRT full", gvrt, None), ("Terrio VRT full", tvrt, None),
                                 ("GDAL VRT window", gvrt, [17, 23, 53, 47]),
-                                ("Terrio VRT window", tvrt, [17, 23, 53, 47])):
+                                ("Terrio VRT window", tvrt, [17, 23, 53, 47]),
+                                ("GDAL VRT scanline", gvrt, [17, 23, 53, 1]),
+                                ("Terrio VRT column", tvrt, [17, 23, 1, 47])):
         gout = str(work / f"virtual_gdal_{index}.tif")
         tout = str(work / f"virtual_terrio_{index}.tif")
         for output in (gout, tout):
