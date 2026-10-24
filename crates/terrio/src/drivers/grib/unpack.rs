@@ -358,7 +358,7 @@ fn jpeg2000(_: &Packing, _: &[u8], _: usize) -> Result<Vec<f32>> {
 
 /// PNG packing (5.41): a grey, RGB or RGBA image whose samples are the packed values.
 fn png(p: &Packing, data: &[u8], ndpts: usize) -> Result<Vec<f32>> {
-    if p.nbits == 0 {
+    if p.nbits == 0 || ndpts == 0 {
         return Ok(vec![p.ref_d_png(); ndpts]);
     }
     let mut d = png::Decoder::new(std::io::Cursor::new(data));
@@ -369,18 +369,24 @@ fn png(p: &Packing, data: &[u8], ndpts: usize) -> Result<Vec<f32>> {
     if w.checked_mul(h) != Some(ndpts) {
         return Err(Error::InvalidData("GRIB2 PNG data of the wrong size".into()));
     }
-    let mut buf = vec![0; reader.output_buffer_size().unwrap_or(0)];
+    // Multi-channel 16-bit samples do not fit in a GRIB packed integer (at most 32 bits).
+    let depth = match (reader.info().color_type, reader.info().bit_depth) {
+        (png::ColorType::Rgb, png::BitDepth::Eight) => 24,
+        (png::ColorType::Rgba, png::BitDepth::Eight) => 32,
+        (png::ColorType::Grayscale, depth) => depth as u32,
+        _ => return Err(Error::Unsupported("GRIB2 PNG color type or bit depth".into())),
+    };
+    if depth != p.nbits {
+        return Err(Error::InvalidData(format!("GRIB2 PNG data of {depth} bits per value, not {}", p.nbits)));
+    }
+    let size = reader.output_buffer_size().ok_or_else(|| Error::InvalidData("GRIB2 PNG buffer too large".into()))?;
+    let mut buf = vec![0; size];
     let info = reader.next_frame(&mut buf).map_err(|e| Error::InvalidData(format!("GRIB2 PNG data: {e}")))?;
     if info.width as usize * info.height as usize != ndpts {
         return Err(Error::InvalidData("GRIB2 PNG data of the wrong size".into()));
     }
-    let depth = match info.color_type {
-        png::ColorType::Rgb => 24,
-        png::ColorType::Rgba => 32,
-        _ => info.bit_depth as u32,
-    };
-    if depth != p.nbits {
-        return Err(Error::InvalidData(format!("GRIB2 PNG data of {depth} bits per value, not {}", p.nbits)));
+    if info.line_size == 0 {
+        return Err(Error::InvalidData("GRIB2 PNG data has an empty row".into()));
     }
     // As g2clib copies the rows: whole bytes per value (none below 8 bits).
     let bytes = depth as usize / 8;
@@ -450,5 +456,32 @@ mod tests {
         // No bits: the reference value, scaled.
         sec5[19] = 0;
         assert_eq!(unpack(&sec5, &[], 2).unwrap(), vec![1.5 * 0.1f64 as f32; 2]);
+    }
+
+    #[test]
+    fn validates_png_dimensions_and_sample_layout() {
+        let image = |color, depth, bytes: &[u8]| {
+            let mut out = Vec::new();
+            {
+                let mut encoder = png::Encoder::new(&mut out, 2, 1);
+                encoder.set_color(color);
+                encoder.set_depth(depth);
+                encoder.write_header().unwrap().write_image_data(bytes).unwrap();
+            }
+            out
+        };
+        let mut p = Packing { reference: 0.0, binary_scale: 0, decimal_scale: 0, nbits: 16, field_type: 0 };
+        let gray = image(png::ColorType::Grayscale, png::BitDepth::Sixteen, &[0, 1, 1, 0]);
+        assert_eq!(png(&p, &gray, 2).unwrap(), vec![1.0, 256.0]);
+        assert!(matches!(png(&p, &gray, 1), Err(Error::InvalidData(s)) if s.contains("wrong size")));
+        assert!(png(&p, &gray, 0).unwrap().is_empty());
+        p.nbits = 24;
+        let rgb = image(png::ColorType::Rgb, png::BitDepth::Eight, &[0, 0, 1, 0, 1, 0]);
+        assert_eq!(png(&p, &rgb, 2).unwrap(), vec![1.0, 256.0]);
+        let rgb16 = image(png::ColorType::Rgb, png::BitDepth::Sixteen, &[0; 12]);
+        assert!(matches!(png(&p, &rgb16, 2), Err(Error::Unsupported(_))));
+        p.nbits = 32;
+        let rgba16 = image(png::ColorType::Rgba, png::BitDepth::Sixteen, &[0; 16]);
+        assert!(matches!(png(&p, &rgba16, 2), Err(Error::Unsupported(_))));
     }
 }

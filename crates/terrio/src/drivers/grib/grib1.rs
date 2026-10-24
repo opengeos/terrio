@@ -406,6 +406,7 @@ pub(super) fn bands(r: &mut MessageReader, offset: u64, len: u64) -> Result<Vec<
     }
     let gl = u3(r.bytes(offset + pos as u64, 3)?, 0) as usize;
     let g = gds(r.bytes(offset + pos as u64, gl.min(len as usize - pos))?, p.center)?;
+    super::point_count(g.nx, g.ny, len)?;
     pos += gl;
     let bms = if p.has_bms {
         let bl = u3(r.bytes(offset + pos as u64, 3)?, 0) as usize;
@@ -432,10 +433,24 @@ pub(super) fn bands(r: &mut MessageReader, offset: u64, len: u64) -> Result<Vec<
     ];
     let field = Field { gds: g.clone(), bms, bds: pos, dsf: p.dsf, convert };
     // degrib's missing value where the bitmap masks points: 9999 unless valid values reach it.
+    // Without reading the data when the packing's range of values does not reach 9999.
     let nodata = if p.has_bms {
-        let msg = r.bytes(offset, len as usize)?.to_vec();
-        // A message terrio cannot decode has none (and fails when read).
-        decode_values(&msg, &field, normalize, false).ok().map(|(_, missing)| missing)
+        let bds = r.bytes(offset + pos as u64, 11)?.to_vec();
+        let simple = bds[3] & 0xc0 == 0 && bds[10] <= 32;
+        let (m, add) = if normalize { convert.metric().unwrap_or((1.0, 0.0)) } else { (1.0, 0.0) };
+        let convert = |v: f64| if m == -10.0 { 10f64.powf(v) } else { m * v + add };
+        let reference = fval_360(u3(&bds, 6) << 8 | u32::from(bds[9]));
+        let p2 = 2f64.powi(s2(&bds, 4));
+        let p10 = 10f64.powi(p.dsf);
+        // degrib initializes both extrema with this value, even when bits are packed.
+        let min = convert(reference * p2 / p10);
+        let bound = if bds[10] == 0 { min } else { min.max(convert((reference + (2f64.powi(i32::from(bds[10])) - 1.0) * p2) / p10)) };
+        if simple && (bound < UNDEFINED_PRIM || min > UNDEFINED_PRIM) {
+            Some(UNDEFINED_PRIM)
+        } else {
+            let msg = r.bytes(offset, len as usize)?.to_vec();
+            Some(decode_values(&msg, &field, normalize, false)?.1)
+        }
     } else {
         None
     };
@@ -454,11 +469,7 @@ pub(super) fn decode(msg: &[u8], f: &Field, normalize: bool) -> Result<Decoded> 
 fn decode_values(msg: &[u8], f: &Field, normalize: bool, values: bool) -> Result<(Vec<f64>, f64)> {
     let bad = |m: &str| Error::InvalidData(format!("GRIB1 data: {m}"));
     let (nx, ny) = (f.gds.nx, f.gds.ny);
-    let npts = nx * ny;
-    // degrib's check on large grids: at most 1000 points per byte of the message.
-    if npts > 100 * 1024 * 1024 && npts / 1000 > msg.len() {
-        return Err(bad("grid too large for its message"));
-    }
+    let npts = super::point_count(nx, ny, msg.len() as u64)?;
     // The bitmap.
     let bitmap: Option<Vec<bool>> = match f.bms {
         Some(at) => {
@@ -584,5 +595,34 @@ mod tests {
         assert_eq!(fval_360(0x4110_0000), 1.0);
         assert_eq!(fval_360(0xc276_a000), -118.625);
         assert_eq!(fval_360(0), 0.0);
+    }
+
+    #[test]
+    fn opens_bitmap_metadata_without_reading_the_packed_values() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        struct TrackedSource {
+            bytes: Vec<u8>,
+            end: AtomicUsize,
+        }
+        impl super::super::Source for TrackedSource {
+            fn len(&self) -> u64 {
+                self.bytes.len() as u64
+            }
+            fn read_at(&self, offset: u64, len: usize) -> Result<Vec<u8>> {
+                let start = offset as usize;
+                let end = (start + len).min(self.bytes.len());
+                self.end.fetch_max(end, Ordering::Relaxed);
+                Ok(self.bytes[start..end].to_vec())
+            }
+        }
+        let bytes = include_bytes!("../../../tests/data/grib/Sample_QuikSCAT.grb").to_vec();
+        let len = u3(&bytes, 4) as u64;
+        let src = TrackedSource { bytes, end: AtomicUsize::new(0) };
+        let mut reader = MessageReader::new(&src, 0);
+        let bands = bands(&mut reader, 0, len).unwrap();
+        let field = bands[0].grib1.as_ref().unwrap();
+        assert_eq!(bands[0].nodata, Some(9999.0));
+        assert_eq!(src.end.load(Ordering::Relaxed), field.bds + 11);
+        assert!(src.end.load(Ordering::Relaxed) < len as usize);
     }
 }

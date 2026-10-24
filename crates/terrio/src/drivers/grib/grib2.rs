@@ -484,6 +484,7 @@ fn band(r: &mut MessageReader, offset: u64, len: u64, discipline: u8, sec1: &[u8
         None => 255,
     };
     let gds = grid::parse(&sec3)?;
+    super::point_count(gds.nx, gds.ny, len)?;
     let inv = inventory(discipline, sec1, &sec4)?;
     let mut items: Vec<(String, String)> = vec![
         ("GRIB_UNIT".into(), convert_unit_text(normalize, &inv.unit)),
@@ -565,14 +566,10 @@ pub(super) fn decode(msg: &[u8], gds: &Gds, s: &FieldSections, convert: UnitConv
     let sec5 = sect(s.sec5)?;
     let sec7 = sect(s.sec7)?;
     let ndpts = be_u32(sec5, 5) as usize;
-    let npts = gds.nx * gds.ny;
+    let npts = super::point_count(gds.nx, gds.ny, msg.len() as u64)?;
     let drs = be_u16(sec5, 9);
     if ndpts > npts {
         return Err(Error::InvalidData(format!("GRIB2 field of {ndpts} values on a grid of {npts} points")));
-    }
-    // degrib's check on large grids: at most 1000 points per byte of the message.
-    if npts > 100 * 1024 * 1024 && npts / 1000 > msg.len() {
-        return Err(Error::InvalidData(format!("GRIB2 grid of {npts} points too large for its {}-byte message", msg.len())));
     }
     let packed = unpack::unpack(sec5, &sec7[5..], ndpts)?;
     // The bitmap (1 where a value is packed).

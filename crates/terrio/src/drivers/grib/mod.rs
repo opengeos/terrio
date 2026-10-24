@@ -63,7 +63,7 @@ impl Source for FileSource {
         use std::io::{Read, Seek, SeekFrom};
         let mut f = self.file.lock().map_err(|_| Error::InvalidData("GRIB file lock poisoned".into()))?;
         f.seek(SeekFrom::Start(offset))?;
-        let n = len.min(self.len.saturating_sub(offset) as usize);
+        let n = (len as u64).min(self.len.saturating_sub(offset)) as usize;
         let mut buf = vec![0; n];
         f.read_exact(&mut buf)?;
         Ok(buf)
@@ -173,6 +173,19 @@ struct Decoded {
     nx: usize,
     ny: usize,
     values: Vec<f64>,
+}
+
+/// Validates a grid before allocating its decoded Float64 values.
+fn point_count(nx: usize, ny: usize, message_len: u64) -> Result<usize> {
+    let n = nx
+        .checked_mul(ny)
+        .filter(|n| n.checked_mul(8).is_some_and(|bytes| bytes <= isize::MAX as usize))
+        .ok_or_else(|| Error::InvalidData("GRIB grid larger than this platform's memory".into()))?;
+    // degrib's check on large grids: at most 1000 points per byte of the message.
+    if n > 100 * 1024 * 1024 && n as u64 / 1000 > message_len {
+        return Err(Error::InvalidData("GRIB grid too large for its message".into()));
+    }
+    Ok(n)
 }
 
 /// Whether bytes start a GRIB file: `GRIB` and an edition of 1 or 2 within the first bytes (as
@@ -373,7 +386,7 @@ impl GribSource {
 /// top-left corner, the rest zeros.
 fn arrange(d: &Decoded, width: usize, height: usize, split: usize) -> Vec<f64> {
     let mut out = vec![0f64; width * height];
-    let split = if d.nx != width { 0 } else { split };
+    let split = if d.nx != width { 0 } else { split.min(width) };
     let copy = width.min(d.nx);
     for y in 0..height.min(d.ny) {
         let src = &d.values[(d.ny - y - 1) * d.nx..(d.ny - y) * d.nx];
@@ -428,7 +441,8 @@ fn header(bands: &[Band]) -> Result<(RasterDataset, usize)> {
         Some(c) => crate::crs::SpatialRef::from_wkt(c).to_crs_info(),
         None => wbraster::CrsInfo::default(),
     };
-    // One nodata value for the dataset: the bands' when they agree, else the first band's.
+    // One nodata value for the dataset: that of the first band with one (the others' are in
+    // `TERRIO#BAND_<n>_NODATA`).
     let nodata = bands.iter().find_map(|b| b.nodata);
     let mut metadata = Vec::new();
     for (i, b) in bands.iter().enumerate() {
@@ -654,4 +668,37 @@ fn index_offsets(fetcher: &crate::http::ObjectFetcher, remote: &crate::http::Rem
         return Some(offsets);
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn caps_wrap_at_the_row_width() {
+        let d = Decoded { nx: 3, ny: 2, values: vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0] };
+        assert_eq!(arrange(&d, 3, 2, 1), vec![5.0, 6.0, 4.0, 2.0, 3.0, 1.0]);
+        assert_eq!(arrange(&d, 3, 2, 10), vec![4.0, 5.0, 6.0, 1.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn rejects_grids_that_cannot_be_allocated() {
+        assert!(point_count(usize::MAX, 2, u64::MAX).is_err());
+        assert!(point_count(isize::MAX as usize / 8 + 1, 1, u64::MAX).is_err());
+        assert!(point_count(200_000_000, 1, 100).is_err());
+        assert_eq!(point_count(360, 181, 100_000).unwrap(), 65_160);
+    }
+
+    #[test]
+    fn reads_headers_from_a_file_larger_than_four_gib() {
+        use std::io::{Seek, SeekFrom, Write};
+        let mut file = tempfile::tempfile().unwrap();
+        let len = (1u64 << 32) + 8;
+        file.set_len(len).unwrap();
+        file.seek(SeekFrom::Start(0)).unwrap();
+        file.write_all(b"GRIB012345678901").unwrap();
+        let src = FileSource { file: Mutex::new(file), len };
+        assert_eq!(src.read_at(0, 16).unwrap(), b"GRIB012345678901");
+        assert!(src.read_at(len + 1, 16).unwrap().is_empty());
+    }
 }
