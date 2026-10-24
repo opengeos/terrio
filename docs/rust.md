@@ -284,3 +284,8 @@ static ALLOCATOR: terrio::NullSafeAllocator = terrio::NullSafeAllocator;
 
 API documentation: [docs.rs/terrio](https://docs.rs/terrio), or `cargo doc -p terrio --open` in
 the repository.
+
+## Native multidimensional arrays
+
+See [Native multidimensional arrays](multidim.md) for scientific groups, named dimensions,
+lazy coordinate arrays, time/depth slicing, transposition and netCDF/Zarr numeric snapshots.

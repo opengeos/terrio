@@ -1103,3 +1103,32 @@ test("fillNodata: holes, nearest ties, explicit masks and invalid options", () =
   assert.throws(() => terrio.fillNodata(src, { maxDistance: -1 }), /nonnegative/);
   src.free(); out.free(); mask.free();
 });
+
+test("native multidimensional views retain integer precision and store lifetimes", { skip: needs("netcdf-hdf5", "zarr") }, () => {
+  const encode = (value) => new TextEncoder().encode(JSON.stringify(value));
+  const files = { ".zgroup": encode({ zarr_format: 2 }), ".zattrs": encode({}) };
+  const base = 9007199254741001n;
+  files["cube/.zarray"] = encode({ zarr_format: 2, shape: [2, 2, 3], chunks: [1, 2, 3], dtype: "<i8", compressor: null, fill_value: null, order: "C", filters: null });
+  files["cube/.zattrs"] = encode({ _ARRAY_DIMENSIONS: ["time", "y", "x"] });
+  for (let time = 0; time < 2; time++) {
+    const raw = new Uint8Array(6 * 8);
+    const view = new DataView(raw.buffer);
+    for (let i = 0; i < 6; i++) view.setBigInt64(i * 8, base + BigInt(time * 6 + i), true);
+    files[`cube/${time}.0.0`] = raw;
+  }
+  const ds = terrio.openMultidim(files);
+  assert.ok(ds.arrayPaths.includes("/cube"));
+  const array = ds.array("cube");
+  assert.deepEqual([...array.shape], [2, 2, 3]);
+  const view = array.isel("time", 1).transpose(["x", "y"]);
+  assert.deepEqual([...view.shape], [3, 2]);
+  assert.ok(view.read() instanceof BigInt64Array);
+  assert.deepEqual([...view.read()], [6n, 9n, 7n, 10n, 8n, 11n].map((n) => base + n));
+  const nc = terrio.openMultidim(ds.toBytes());
+  assert.deepEqual([...nc.array("cube").read()], [...array.read()]);
+  const back = terrio.openMultidim(nc.toZarrStore());
+  assert.deepEqual([...back.array("cube").read()], [...array.read()]);
+  ds.free(); array.free();
+  assert.equal(view.read()[0], base + 6n);
+  view.free(); nc.free(); back.free();
+});

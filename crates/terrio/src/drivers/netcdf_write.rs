@@ -789,6 +789,7 @@ fn to_hdf5(dims: &[(String, usize)], globals: &[(String, Attr)], vars: &[Var], s
             name: v.name.clone(),
             dtype: h5_type(v.nc_type),
             shape,
+            max_shape: None,
             // A scalar character (a grid mapping) is never written, as netCDF-C leaves it.
             data: if v.dims.is_empty() && v.nc_type == NcType::Char { Vec::new() } else { to_le(&v.data, size) },
             fill,

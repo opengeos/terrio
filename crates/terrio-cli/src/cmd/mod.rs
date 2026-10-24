@@ -10,6 +10,7 @@ pub mod formats;
 pub mod grid;
 pub mod info;
 pub mod mosaic;
+pub mod multidim;
 pub mod points;
 pub mod polygonize;
 pub mod processing;

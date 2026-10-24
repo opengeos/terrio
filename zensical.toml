@@ -19,6 +19,7 @@ nav = [
   { "Command Line" = "cli.md" },
   { "AI Agents (MCP)" = "mcp.md" },
   { "Formats" = "formats.md" },
+  { "Multidimensional Arrays" = "multidim.md" },
   { "Point Clouds" = "point-clouds.md" },
   { "Remote Data" = "remote-data.md" },
   { "Coordinate Systems" = "crs.md" },

@@ -213,3 +213,8 @@ raster, retaining the selected band's type, nodata and georeferencing. The mask 
 at holes and nonzero at donors; without it, the source mask or nodata defines holes.
 Distances are in pixels; zero searches the whole image. Smoothing affects only filled
 pixels and preserves the first/last rows. Valid source samples remain unchanged.
+
+## Native multidimensional arrays
+
+See [Native multidimensional arrays](multidim.md) for scientific groups, named dimensions,
+lazy coordinate arrays, time/depth slicing, transposition and netCDF/Zarr numeric snapshots.

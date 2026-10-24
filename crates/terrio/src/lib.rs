@@ -200,6 +200,7 @@ pub mod info;
 mod jpeg;
 mod memfs;
 pub mod memory;
+pub mod multidim;
 pub mod ops;
 mod par;
 mod pixel;

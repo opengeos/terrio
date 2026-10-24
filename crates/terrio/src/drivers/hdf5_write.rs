@@ -138,6 +138,8 @@ pub(crate) struct Dataset {
     pub dtype: H5Type,
     /// `None` for a scalar.
     pub shape: Option<Vec<u64>>,
+    /// Optional maximum dimensions; u64::MAX marks an unlimited axis.
+    pub max_shape: Option<Vec<u64>>,
     /// Little-endian values, row-major; empty for a dataset never written (it reads as its fill
     /// value).
     pub data: Vec<u8>,
@@ -248,12 +250,21 @@ impl Header {
 }
 
 fn dataspace(shape: Option<&[u64]>) -> Vec<u8> {
+    dataspace_with_max(shape, None)
+}
+
+fn dataspace_with_max(shape: Option<&[u64]>, maximum: Option<&[u64]>) -> Vec<u8> {
     match shape {
         None => vec![2, 0, 0, 0],
         Some(dims) => {
-            let mut v = vec![2, dims.len() as u8, 0, 1];
+            let mut v = vec![2, dims.len() as u8, u8::from(maximum.is_some()), 1];
             for d in dims {
                 v.extend_from_slice(&d.to_le_bytes());
+            }
+            if let Some(maximum) = maximum {
+                for d in maximum {
+                    v.extend_from_slice(&d.to_le_bytes());
+                }
             }
             v
         }
@@ -527,7 +538,7 @@ pub(crate) fn encode(f: &File) -> Vec<u8> {
         let mut headers = Vec::new();
         for (i, d) in f.datasets.iter().enumerate() {
             let mut h = Header { messages: Vec::new() };
-            h.messages.push((MSG_DATASPACE, dataspace(d.shape.as_deref())));
+            h.messages.push((MSG_DATASPACE, dataspace_with_max(d.shape.as_deref(), d.max_shape.as_deref())));
             h.messages.push((MSG_DATATYPE, datatype(&d.dtype)));
             let chunked = stored[i].is_some();
             // Fill value: allocated late (contiguous) or incrementally (chunked), written if set.
@@ -689,6 +700,7 @@ mod tests {
                     name: "x".into(),
                     dtype: H5Type::Float { size: 8 },
                     shape: Some(vec![7]),
+                    max_shape: None,
                     data: x,
                     fill: 9.969209968386869e36f64.to_le_bytes().to_vec(),
                     storage: Storage::default(),
@@ -698,6 +710,7 @@ mod tests {
                     name: "v".into(),
                     dtype: H5Type::Int { size: 2, signed: true },
                     shape: Some(vec![130, 7]),
+                    max_shape: None,
                     data,
                     fill: (-1i16).to_le_bytes().to_vec(),
                     storage,
