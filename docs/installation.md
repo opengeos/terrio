@@ -24,11 +24,11 @@ powershell -ExecutionPolicy ByPass -c "irm https://terrio.opengeos.org/install.p
 Set `TERRIO_VERSION` to install another release, and `TERRIO_INSTALL_DIR` to install elsewhere:
 
 ```sh
-curl -LsSf https://terrio.opengeos.org/install.sh | TERRIO_VERSION=0.4.2 sh
+curl -LsSf https://terrio.opengeos.org/install.sh | TERRIO_VERSION=0.5.0 sh
 ```
 
 ```powershell
-$env:TERRIO_VERSION = "0.4.2"; irm https://terrio.opengeos.org/install.ps1 | iex
+$env:TERRIO_VERSION = "0.5.0"; irm https://terrio.opengeos.org/install.ps1 | iex
 ```
 
 The Windows installer adds the directory to your `PATH` (`TERRIO_NO_MODIFY_PATH=1` to leave it);
@@ -89,8 +89,8 @@ release or a copy served next to the page:
 import micropip
 
 await micropip.install(
-    "https://github.com/opengeos/terrio/releases/download/v0.4.2/"
-    "terrio-0.4.2-cp310-abi3-pyemscripten_2025_0_wasm32.whl"
+    "https://github.com/opengeos/terrio/releases/download/v0.5.0/"
+    "terrio-0.5.0-cp310-abi3-pyemscripten_2025_0_wasm32.whl"
 )
 ```
 
