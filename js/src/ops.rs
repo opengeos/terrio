@@ -1028,6 +1028,68 @@ pub fn fill_nodata(src: JsValue, options: JsValue) -> Result<Dataset, JsError> {
     Ok(Dataset::from_raster(terrio::ops::fill_nodata::fill_nodata(&ds, &o).map_err(js_err)?))
 }
 
+/// Opens a lazy indexed raster mosaic from a vector index and named source rasters in memory.
+/// `sources` maps the index's location values to Dataset/bytes inputs. Options: locationField,
+/// sortField, sortDescending, tr, te, srs, bands, ot, nodata, alphaBand, cacheSize, resampling.
+#[wasm_bindgen(js_name = openCatalog)]
+pub fn open_catalog(index: JsValue, sources: JsValue, options: JsValue) -> Result<Dataset, JsError> {
+    #[derive(Deserialize, Default)]
+    #[serde(rename_all = "camelCase", default, deny_unknown_fields)]
+    struct Args {
+        location_field: Option<String>,
+        sort_field: Option<String>,
+        sort_descending: Option<bool>,
+        tr: Option<[f64; 2]>,
+        te: Option<[f64; 4]>,
+        srs: Option<String>,
+        bands: Option<usize>,
+        ot: Option<String>,
+        nodata: Option<f64>,
+        alpha_band: Option<usize>,
+        cache_size: Option<usize>,
+        resampling: Option<String>,
+    }
+    let a: Args = parse_options(&options)?;
+    let mut layers = input_layers(&index)?;
+    if layers.len() != 1 {
+        return Err(invalid("an in-memory catalog needs one index layer"));
+    }
+    if !sources.is_object() || js_sys::Array::is_array(&sources) {
+        return Err(invalid("catalog sources must be an object mapping location strings to rasters"));
+    }
+    let mut rasters = std::collections::HashMap::new();
+    for name in js_sys::Object::keys(&js_sys::Object::from(sources.clone())).iter() {
+        let value = js_sys::Reflect::get(&sources, &name).map_err(|_| invalid("cannot read catalog source"))?;
+        let input = if let Some(inner) = Dataset::lookup(&value) {
+            match &mut *inner.borrow_mut() {
+                Inner::Raster(reader) => terrio::catalog::CatalogInput::raster(reader.shared()),
+                Inner::Vector(..) => return Err(invalid("expected a raster, got a vector dataset")),
+            }
+        } else if let Some((bytes, name)) = file_bytes(&value) {
+            terrio::catalog::CatalogInput::bytes(bytes, name)
+        } else {
+            return Err(invalid("expected a raster: a Dataset, a Uint8Array or { bytes, filename }"));
+        };
+        rasters.insert(name.as_string().ok_or_else(|| invalid("source name must be a string"))?, input);
+    }
+    let options = terrio::catalog::CatalogOptions {
+        location_field: a.location_field,
+        sort_field: a.sort_field,
+        sort_descending: a.sort_descending,
+        resolution: tuple2(a.tr),
+        extent: tuple4(a.te),
+        srs: srs(a.srs.as_deref())?,
+        bands: a.bands,
+        data_type: a.ot.as_deref().map(parse_data_type).transpose().map_err(js_err)?,
+        nodata: a.nodata,
+        alpha_band: a.alpha_band,
+        cache_size: a.cache_size,
+        resampling: a.resampling.as_deref().map(Resampling::parse).transpose().map_err(js_err)?,
+        ..Default::default()
+    };
+    Ok(Dataset::from_lazy(terrio::catalog::RasterCatalog::from_sources(layers.remove(0), rasters, options).map_err(js_err)?.into_lazy()))
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", default, deny_unknown_fields)]
 struct PansharpenArgs {

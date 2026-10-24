@@ -601,6 +601,87 @@ fn summarize_layer(db: &Db, c: &Content, path: &str) -> Result<LayerSummary> {
     Ok(LayerSummary { layer, feature_count: rows.len(), geometry_type, extent })
 }
 
+/// A read-only index layer with an open database, parsed schema and feature definition.
+/// Repeated spatial queries visit only R-tree nodes and matching feature rows.
+pub(crate) struct IndexedLayer {
+    db: Db,
+    schema: Vec<sqlite::SchemaEntry>,
+    def: LayerDef,
+    root: u32,
+    columns: usize,
+    rtree: Option<String>,
+}
+impl IndexedLayer {
+    pub(crate) fn new(db: Db, content: &Content) -> Result<Self> {
+        let schema = db.schema()?;
+        let entry = schema
+            .iter()
+            .find(|e| e.0 == "table" && e.1.eq_ignore_ascii_case(&content.name))
+            .ok_or_else(|| bad("index table is missing"))?;
+        let root = entry.3;
+        let columns = sqlite::column_types(&entry.4).len();
+        let def = layer_def(&db, content)?;
+        let rtree = def.geom_name.as_ref().map(|g| format!("rtree_{}_{g}", content.name));
+        Ok(Self { db, schema, def, root, columns, rtree })
+    }
+    pub(crate) fn layer(&self) -> &Layer {
+        &self.def.layer
+    }
+    fn feature(&self, rowid: i64, mut row: Vec<Value>, bbox: Option<Rect>) -> Option<Feature> {
+        row.resize(self.columns.max(row.len()), Value::Null);
+        if let Some(column) = self.def.fid_col
+            && row[column] == Value::Null
+        {
+            row[column] = Value::Int(rowid);
+        }
+        self.def.feature(&row, rowid.saturating_sub(1), bbox)
+    }
+    pub(crate) fn first(&self) -> Result<Layer> {
+        let mut layer = self.def.layer.clone();
+        if let Some((rowid, row)) = self.db.first_row(self.root)?
+            && let Some(feature) = self.feature(rowid, row, None)
+        {
+            layer.push(feature);
+        }
+        Ok(layer)
+    }
+    pub(crate) fn query(&self, bbox: Option<Rect>) -> Result<Layer> {
+        let mut layer = self.def.layer.clone();
+        let candidates = if let (Some(rtree), Some(bbox), Some(_)) = (&self.rtree, bbox, self.def.fid_col) {
+            rtree_candidates(self, rtree, bbox)?
+        } else {
+            None
+        };
+        if let Some(ids) = candidates {
+            for rowid in ids {
+                if let Some(payload) = self.db.lookup(self.root, rowid)?
+                    && let Some(feature) = self.feature(rowid, Db::record_values(&payload), bbox)
+                {
+                    layer.push(feature);
+                }
+            }
+        } else {
+            for (rowid, row) in self.db.stored_rows(self.root)? {
+                if let Some(feature) = self.feature(rowid, row, bbox) {
+                    layer.push(feature);
+                }
+            }
+        }
+        Ok(layer)
+    }
+}
+impl Tables for IndexedLayer {
+    fn schema(&self) -> Result<Vec<sqlite::SchemaEntry>> {
+        Ok(self.schema.clone())
+    }
+    fn table(&self, name: &str) -> Result<sqlite::Table> {
+        self.db.table(name)
+    }
+    fn lookup(&self, root: u32, rowid: i64) -> Result<Option<Vec<u8>>> {
+        self.db.lookup(root, rowid)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -709,6 +790,13 @@ mod tests {
             });
         }
         let bytes = super::super::geopackage::to_bytes(&[l.clone()]).unwrap();
+        let db = Db::new(bytes.clone()).unwrap();
+        let content = contents(&db).unwrap().0.remove(0);
+        let indexed = IndexedLayer::new(db, &content).unwrap();
+        let first = indexed.first().unwrap();
+        assert_eq!(first.features.len(), 1);
+        assert_eq!(first.features[0].fid, 1);
+        assert_eq!(first.features[0].attributes, l.features[0].attributes);
         let back = parse(bytes, &[]).unwrap();
         assert_eq!(back.len(), 1);
         let b = &back[0];

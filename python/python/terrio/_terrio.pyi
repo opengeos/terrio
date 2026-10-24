@@ -18,6 +18,7 @@ __all__ = [
     "from_arrow",
     "open",
     "open_raster",
+    "open_catalog",
     "open_vrt",
     "open_vector",
     "open_bytes",
@@ -1112,6 +1113,24 @@ class MultidimArray:
     def read(self) -> NDArray[Any]: ...
 
 def open_multidim(src: str | os.PathLike[str] | bytes | dict[str, bytes]) -> MultidimDataset: ...
+def open_catalog(
+    index: _VectorSource | str,
+    sources: Mapping[str, _RasterSource] | None = None,
+    *,
+    layer: str | None = None,
+    location_field: str | None = None,
+    sort_field: str | None = None,
+    sort_descending: bool | None = None,
+    tr: tuple[float, float] | None = None,
+    te: tuple[float, float, float, float] | None = None,
+    srs: str | None = None,
+    bands: int | None = None,
+    ot: str | None = None,
+    nodata: float | None = None,
+    alpha_band: int | None = None,
+    cache_size: int | None = None,
+    resampling: str | None = None,
+) -> Raster: ...
 def pansharpen(
     pan: str | Raster,
     spectral: str | Raster | Sequence[str | Raster],

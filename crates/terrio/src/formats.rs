@@ -71,6 +71,8 @@ pub enum RasterDriver {
     GRIB,
     /// GDAL virtual raster (read by [`crate::ops::vrt`]; written by mosaics).
     VRT,
+    /// GDAL-compatible indexed raster catalogs (GeoPackage/FlatGeobuf, read only).
+    GTI,
     /// A mosaic of the assets of STAC items (see [`crate::stac`]); read only.
     STACIT,
     /// A STAC item's tiled assets, one raster with its tile matrices as overviews, as GDAL's
@@ -173,6 +175,7 @@ impl RasterDriver {
         Self::HDF5,
         Self::GRIB,
         Self::VRT,
+        Self::GTI,
         Self::STACIT,
         Self::STACTA,
         Self::MBTiles,
@@ -209,6 +212,7 @@ impl RasterDriver {
             Self::HDF5 => ("HDF5", "Hierarchical Data Format Release 5", &["h5", "hdf5", "he5"], true, false),
             // Written through GDAL when the `gdal` feature is enabled.
             Self::GRIB => ("GRIB", "GRIdded Binary (.grb, .grb2)", &["grb", "grb2", "grib", "grib2"], true, cfg!(feature = "gdal")),
+            Self::GTI => ("GTI", "GDAL Raster Tile Index", &["gti"], true, false),
             Self::VRT => ("VRT", "Virtual Raster", &["vrt"], true, true),
             Self::STACIT => ("STACIT", "Spatio-Temporal Asset Catalog Items", &[], true, false),
             Self::STACTA => ("STACTA", "Spatio-Temporal Asset Catalog Tiled Assets", &[], true, false),
@@ -300,7 +304,7 @@ impl RasterDriver {
             Self::NetCDF | Self::HDF5 | Self::GRIB => F::Zarr,
             // Never used: terrio reads and writes VRTs and tile archives, and reads STAC mosaics
             // itself; GDAL reads its formats.
-            Self::VRT | Self::STACIT | Self::STACTA | Self::MBTiles | Self::PMTiles | Self::Gdal => F::GeoTiff,
+            Self::VRT | Self::GTI | Self::STACIT | Self::STACTA | Self::MBTiles | Self::PMTiles | Self::Gdal => F::GeoTiff,
         }
     }
 
