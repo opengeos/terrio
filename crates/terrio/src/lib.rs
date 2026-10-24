@@ -220,6 +220,7 @@ pub mod raster {
     pub use wbraster::raster::{BandView, RasterData};
     pub use wbraster::{CrsInfo, RasterError, ReprojectOptions, ResampleMethod};
 }
+pub mod catalog;
 pub mod stac;
 mod stacta;
 pub mod stream;

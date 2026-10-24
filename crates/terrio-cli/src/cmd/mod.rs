@@ -1,6 +1,7 @@
 //! The subcommands.
 
 pub mod calc;
+pub mod catalog;
 pub mod convert;
 pub mod crs;
 pub mod dem;

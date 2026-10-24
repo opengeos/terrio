@@ -184,6 +184,28 @@ impl Db {
         self.leaves(right, out, depth + 1)
     }
 
+    /// The first stored row of a table, descending only its leftmost b-tree branch.
+    pub(crate) fn first_row(&self, mut n: u32) -> Result<Option<(i64, Vec<Value>)>> {
+        for _ in 0..64 {
+            let page = self.page(n)?;
+            let h = if n == 1 { 100 } else { 0 };
+            match page.get(h).copied() {
+                Some(0x0d) => return Ok(self.leaf_rows(n)?.into_iter().next().map(|(id, payload)| (id, Self::record_values(&payload)))),
+                Some(0x05) => {
+                    let count = u16::from_be_bytes(page.get(h + 3..h + 5).and_then(|b| b.try_into().ok()).ok_or_else(|| bad("page"))?);
+                    let offset = if count == 0 {
+                        h + 8
+                    } else {
+                        u16::from_be_bytes(page.get(h + 12..h + 14).and_then(|b| b.try_into().ok()).ok_or_else(|| bad("page"))?) as usize
+                    };
+                    n = u32::from_be_bytes(page.get(offset..offset + 4).and_then(|b| b.try_into().ok()).ok_or_else(|| bad("page"))?);
+                }
+                _ => return Err(bad("unsupported page type")),
+            }
+        }
+        Err(bad("b-tree is too deep"))
+    }
+
     /// The rows of a leaf page, as `(rowid, payload)`.
     fn leaf_rows(&self, n: u32) -> Result<Vec<(i64, Vec<u8>)>> {
         let page = self.page(n)?;

@@ -111,6 +111,28 @@ fn fill_nodata_is_discoverable_and_executes() {
 }
 
 #[test]
+fn catalog_is_exposed_and_reads_an_indexed_window() {
+    let dir = tempfile::tempdir().unwrap();
+    let tile = dir.path().join("tile.asc");
+    std::fs::write(&tile, "ncols 2\nnrows 2\nxllcorner 0\nyllcorner 0\ncellsize 1\n1 2\n3 4\n").unwrap();
+    let json = dir.path().join("index.geojson");
+    std::fs::write(&json,r#"{"type":"FeatureCollection","features":[{"type":"Feature","properties":{"location":"tile.asc"},"geometry":{"type":"Polygon","coordinates":[[[0,0],[2,0],[2,2],[0,2],[0,0]]]}}]}"#).unwrap();
+    let index = dir.path().join("index.gpkg");
+    let vector = terrio::open_vector(json.to_str().unwrap(), &Default::default()).unwrap();
+    terrio::write_vector(&vector.layers, index.to_str().unwrap(), &Default::default()).unwrap();
+    let output = dir.path().join("window.tif");
+    let replies = session(&[
+        json!({"jsonrpc":"2.0","id":1,"method":"tools/list"}),
+        call(2, "catalog", &[index.to_str().unwrap(), output.to_str().unwrap(), "--window", "0", "0", "1", "1", "--stats"]),
+    ]);
+    assert!(replies[&1]["result"]["tools"].as_array().unwrap().iter().any(|t| t["name"] == "catalog"));
+    assert_eq!(replies[&2]["result"]["isError"], false, "{:?}", replies[&2]);
+    let stats: Value = serde_json::from_str(replies[&2]["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(stats["source_opens"], 1);
+    assert_eq!(terrio::open_raster(output.to_str().unwrap()).unwrap().raster.band_view(0).as_slice(), &[1.0]);
+}
+
+#[test]
 fn warp_serializes_and_reads_vrt_without_materializing_output() {
     let dir = tempfile::tempdir().unwrap();
     let input = dir.path().join("source.asc");

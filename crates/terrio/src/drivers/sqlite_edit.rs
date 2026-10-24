@@ -1148,6 +1148,59 @@ mod tests {
     }
 
     #[test]
+    fn catalog_reads_original_index_during_a_hot_journal() {
+        use crate::drivers::sqlite::{Db, Value};
+        use wbvector::{Coord, Feature, FieldDef, FieldType, FieldValue, Geometry, Layer};
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("index.gti.gpkg");
+        let mut layer = Layer::new("tiles");
+        layer.set_crs_epsg(Some(3857));
+        layer.add_field(FieldDef::new("location", FieldType::Text));
+        let mut feature = Feature::with_geometry(
+            0,
+            Geometry::polygon(vec![Coord::xy(0., 0.), Coord::xy(4., 0.), Coord::xy(4., 4.), Coord::xy(0., 4.)], vec![]),
+            1,
+        );
+        feature.attributes = vec![FieldValue::Text("tile.tif".into())];
+        layer.push(feature);
+        std::fs::write(&path, crate::drivers::vector::geopackage::to_bytes(&[layer]).unwrap()).unwrap();
+        let db = Db::open(&path).unwrap();
+        let schema = db.schema().unwrap();
+        let entry = schema.iter().find(|entry| entry.1 == "gpkg_contents").unwrap();
+        let field = db.table("gpkg_contents").unwrap().column("data_type").unwrap();
+        let (rowid, mut row) = db.stored_rows(entry.3).unwrap().remove(0);
+        row[field] = Value::Text("not-a-layer".into());
+        let values = row
+            .into_iter()
+            .map(|value| match value {
+                Value::Null => w::Value::Null,
+                Value::Int(value) => w::Value::Int(value),
+                Value::Real(value) => w::Value::Real(value),
+                Value::Text(value) => w::Value::Text(value),
+                Value::Blob(value) => w::Value::Blob(value),
+            })
+            .collect::<Vec<_>>();
+        let root = entry.3;
+        drop(db);
+        let mut editor = Editor::open(&path).unwrap().unwrap();
+        editor.insert(root, rowid, &w::record(&values)).unwrap();
+        editor.commit_until(Stage::Written).unwrap();
+        assert!(has_hot_journal(&path).unwrap());
+        assert!(crate::drivers::vector::gpkg_read::contents(&Db::open(&path).unwrap()).unwrap().0.is_empty());
+        let options = crate::catalog::CatalogOptions {
+            resolution: Some((1., 1.)),
+            extent: Some((0., 0., 4., 4.)),
+            bands: Some(1),
+            data_type: Some(wbraster::DataType::F64),
+            ..Default::default()
+        };
+        let catalog = crate::catalog::RasterCatalog::open(path.to_str().unwrap(), options).unwrap();
+        assert_eq!(catalog.header().raster.cols, 4);
+        assert_eq!(catalog.stats().source_opens, 0);
+        assert!(has_hot_journal(&path).unwrap()); // Read-only recovery leaves the file/journal intact.
+    }
+
+    #[test]
     fn recovers_from_an_interrupted_commit() {
         let dir = tempfile::tempdir().unwrap();
         for stage in [Stage::Journal, Stage::HalfWritten, Stage::Written] {

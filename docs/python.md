@@ -288,6 +288,32 @@ at holes and nonzero at donors; without it, the source mask or nodata defines ho
 Distances are in pixels; zero searches the whole image. Smoothing affects only filled
 pixels and preserves the first/last rows. Valid source samples remain unchanged.
 
+## Indexed raster catalogs
+
+```python
+catalog = terrio.open_catalog("tiles.gti.gpkg", cache_size=16, sort_field="priority")
+window = catalog.read(1, window=(100, 200, 256, 256))
+```
+
+Catalogs select features through the GeoPackage/FlatGeobuf spatial index and cache a bounded
+number of source datasets. `terrio.open_raster("GTI:tiles.gpkg", lazy=True)` also works with
+catalog defaults. For in-memory indexes and named source rasters:
+
+```python
+catalog = terrio.open_catalog(index_layer, {"left.tif": left, "right.tif": right},
+                             tr=(30, 30), sort_field="priority", cache_size=16)
+```
+
+The source mapping accepts `Raster` objects and paths, including `PathLike` values. Paths
+are opened only when selected and close on cache eviction. Supplied lazy rasters retain their
+window/overview reads; loaded buffers and existing readers remain shared with the caller.
+Replacing or deleting the original Python object does not replace the catalog's handle.
+
+Options include `layer`, `location_field`, `sort_field`, `sort_descending`, `tr`, `te`, `srs`,
+`bands`, `ot`, `nodata`, `alpha_band`, `cache_size` and `resampling`. Missing grid characteristics
+come from index metadata or one tile header. Dataset masks, source nodata and zero alpha are
+transparent. See [CLI catalogs](cli.md#catalog) for the supported GTI subset.
+
 ## Serialized VRTs and uploaded sources
 
 ```python

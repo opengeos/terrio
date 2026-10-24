@@ -23,6 +23,8 @@ use terrio::{DataType, Dataset, RasterDataset, VectorOpenOptions, VectorWriteOpt
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(open, m)?)?;
     m.add_function(wrap_pyfunction!(open_raster, m)?)?;
+    m.add_function(wrap_pyfunction!(open_catalog, m)?)?;
+
     m.add_function(wrap_pyfunction!(open_vrt, m)?)?;
     m.add_function(wrap_pyfunction!(open_vector, m)?)?;
     m.add_function(wrap_pyfunction!(open_bytes, m)?)?;
@@ -1405,4 +1407,69 @@ fn mosaic(
         })
         .py()?;
     finish_raster(py, out, dst, format, compress, tile_size, bigtiff).map(Some)
+}
+
+/// Opens an indexed raster catalog lazily. `index` is a GTI/index path or a vector layer;
+/// `sources` optionally maps location strings to in-memory rasters for WASM-style use.
+#[pyfunction]
+#[pyo3(signature = (index, sources=None, *, layer=None, location_field=None, sort_field=None, sort_descending=None, tr=None, te=None, srs=None, bands=None, ot=None, nodata=None, alpha_band=None, cache_size=None, resampling=None))]
+#[allow(clippy::too_many_arguments)]
+fn open_catalog(
+    py: Python<'_>,
+    index: &Bound<'_, PyAny>,
+    sources: Option<&Bound<'_, PyAny>>,
+    layer: Option<String>,
+    location_field: Option<String>,
+    sort_field: Option<String>,
+    sort_descending: Option<bool>,
+    tr: Option<(f64, f64)>,
+    te: Option<(f64, f64, f64, f64)>,
+    srs: Option<&str>,
+    bands: Option<usize>,
+    ot: Option<&str>,
+    nodata: Option<f64>,
+    alpha_band: Option<usize>,
+    cache_size: Option<usize>,
+    resampling: Option<&str>,
+) -> PyResult<PyRaster> {
+    let options = terrio::catalog::CatalogOptions {
+        layer,
+        location_field,
+        sort_field,
+        sort_descending,
+        resolution: tr,
+        extent: te,
+        srs: srs.map(SpatialRef::parse).transpose().py()?,
+        bands,
+        data_type: ot.map(terrio::ops::parse_data_type).transpose().py()?,
+        nodata,
+        alpha_band,
+        cache_size,
+        resampling: resampling.map(Resampling::parse).transpose().py()?,
+    };
+    let catalog = if sources.is_none()
+        && let Ok(path) = index.extract::<String>()
+    {
+        py.detach(|| terrio::catalog::RasterCatalog::open(&path, options)).py()?
+    } else {
+        let mut layers = input_layers(py, index, options.layer.clone().map(|name| vec![name]))?;
+        if layers.len() != 1 {
+            return Err(invalid("an in-memory catalog needs one index layer"));
+        }
+        let mut rasters = std::collections::HashMap::new();
+        if let Some(sources) = sources {
+            for item in sources.call_method0("items")?.try_iter()? {
+                let (name, value): (String, Bound<'_, PyAny>) = item?.extract()?;
+                let input = if let Some(path) = raster_path(&value)? {
+                    terrio::catalog::CatalogInput::path(path)
+                } else {
+                    let mut raster = value.cast::<PyRaster>()?.try_borrow_mut()?;
+                    terrio::catalog::CatalogInput::raster(raster.inner.shared())
+                };
+                rasters.insert(name, input);
+            }
+        }
+        terrio::catalog::RasterCatalog::from_sources(layers.remove(0), rasters, options).py()?
+    };
+    Ok(PyRaster { inner: catalog.into_lazy() })
 }

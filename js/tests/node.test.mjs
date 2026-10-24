@@ -1165,6 +1165,38 @@ test("fillNodata: holes, nearest ties, explicit masks and invalid options", () =
   src.free(); out.free(); mask.free();
 });
 
+test("openCatalog: lazy windows and z-order with named in-memory sources", () => {
+  const index = { type: "FeatureCollection", features: [["left", 0, 2], ["right", 2, 1], ["missing", 100, 3]].map(([location, x, z]) => ({
+    type: "Feature", properties: { location, z }, geometry: { type: "Polygon", coordinates: [[[x, 0], [x + 4, 0], [x + 4, 4], [x, 4], [x, 0]]] },
+  })) };
+  const left = terrio.rasterFromArray(new Float32Array(16).fill(10), 4, 4, [0, 1, 0, 4, 0, -1], "EPSG:4326");
+  const right = terrio.rasterFromArray(new Float32Array(16).fill(20), 4, 4, [2, 1, 0, 4, 0, -1], "EPSG:4326");
+  const catalog = terrio.openCatalog(index, { left, right }, { tr: [1, 1], te: [0, 0, 6, 4], sortField: "z", cacheSize: 1 });
+  assert.deepEqual([catalog.width, catalog.height, catalog.count], [6, 4, 1]);
+  assert.deepEqual([...catalog.readBand(1)].slice(0, 6), [10, 10, 10, 10, 20, 20]);
+  assert.deepEqual([...catalog.readBand(1, [4, 0, 2, 2])], [20, 20, 20, 20]);
+  assert.throws(() => terrio.openCatalog(index, { left }, { cacheSize: 0 }), /positive/);
+  catalog.free(); left.free(); right.free();
+});
+
+
+test("openCatalog: selected data band retains the required source alpha", () => {
+  const index = { type: "FeatureCollection", features: [{ type: "Feature", properties: { location: "source" },
+    geometry: { type: "Polygon", coordinates: [[[0, 0], [4, 0], [4, 4], [0, 4], [0, 0]]] } }] };
+  const values = new Float64Array(96);
+  for (let band = 0; band < 5; band++) values.fill((band + 1) * 10, band * 16, (band + 1) * 16);
+  values.fill(255, 80); values[80] = 0;
+  const source = terrio.rasterFromArray(values, 4, 4, [0, 1, 0, 4, 0, -1], "EPSG:4326");
+  const catalog = terrio.openCatalog(index, { source }, { tr: [1, 1], te: [0, 0, 4, 4], bands: 6, alphaBand: 6 });
+  assert.equal(catalog.dtype, "uint8");
+  assert.deepEqual([...catalog.readBand(3)], [0, ...Array(15).fill(30)]);
+  const untagged = terrio.openCatalog(index, { source }, { tr: [1, 1], te: [0, 0, 4, 4], bands: 5 });
+  source.free();
+  assert.deepEqual([...untagged.readBand(3)], Array(16).fill(30));
+  assert.deepEqual([...catalog.readBand(3)], [0, ...Array(15).fill(30)]);
+  catalog.free(); untagged.free();
+});
+
 test("openVrt resolves uploaded sources and reads derived windows lazily", () => {
   const src = terrio.open(new TextEncoder().encode("ncols 3\nnrows 3\nxllcorner 0\nyllcorner 0\ncellsize 1\n0 1 2\n3 4 5\n6 7 8\n"), "source.asc");
   const bytes = src.toBytes("upload.tif");
@@ -1221,4 +1253,20 @@ test("pansharpenVrt keeps direct source masks and ignores them in temporary upsa
   assert.deepEqual([...out.readBand(1)], new Array(16).fill(53));
   assert.deepEqual([...out.readBand(1, [1, 1, 2, 1])], [0, 0]);
   pan.free(); out.free();
+});
+
+test("openCatalog: defers unused encoded sources and preserves supplied lazy datasets", () => {
+  const index = { type: "FeatureCollection", features: [["left", 0], ["right", 2]].map(([location, x]) => ({
+    type: "Feature", properties: { location }, geometry: { type: "Polygon", coordinates: [[[x, 0], [x + 4, 0], [x + 4, 4], [x, 4], [x, 0]]] },
+  })) };
+  const source = terrio.rasterFromArray(new Uint8Array(16).fill(10), 4, 4, [0, 1, 0, 4, 0, -1], "EPSG:4326");
+  const bytes = source.toBytes("source.tif");
+  const lazy = terrio.open(bytes, "source.tif");
+  for (const left of [lazy, { bytes, filename: "source.tif" }]) {
+    const catalog = terrio.openCatalog(index, { left, right: { bytes: new Uint8Array(12), filename: "invalid.tif" } }, { tr: [1, 1], te: [0, 0, 6, 4], bands: 1 });
+    assert.deepEqual([...catalog.readBand(1, [0, 0, 1, 1])], [10]);
+    catalog.free();
+  }
+  assert.deepEqual([...lazy.readBand(1, [0, 0, 1, 1])], [10]);
+  lazy.free(); source.free();
 });

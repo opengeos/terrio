@@ -257,6 +257,9 @@ pub fn open(path: &str) -> Result<Dataset> {
 }
 
 pub(crate) fn open_native(path: &str) -> Result<Dataset> {
+    if let Some(result) = crate::catalog::open_lazy(path) {
+        return result?.read().map(Dataset::Raster);
+    }
     if let Some(result) = crate::stac::open(path) {
         return result;
     }
@@ -297,6 +300,9 @@ pub fn open_raster(path: &str) -> Result<RasterDataset> {
 }
 
 fn open_raster_native(path: &str) -> Result<RasterDataset> {
+    if let Some(result) = crate::catalog::open_lazy(path) {
+        return result?.read();
+    }
     if let Some(result) = crate::stac::open(path) {
         return match result? {
             Dataset::Raster(r) => Ok(r),

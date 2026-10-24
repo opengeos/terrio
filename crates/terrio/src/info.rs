@@ -385,6 +385,9 @@ fn lazy_raster_info_at(r: &mut LazyRaster, options: &InfoOptions, path: Option<&
 /// # Ok::<(), terrio::Error>(())
 /// ```
 pub fn info_path(path: &str, options: &InfoOptions) -> crate::Result<Info> {
+    if let Some(result) = crate::catalog::open_lazy(path) {
+        return Ok(Info::Raster(Box::new(lazy_raster_info(&mut result?, options)?)));
+    }
     if let Some(result) = crate::stac::info(path, options) {
         return result;
     }

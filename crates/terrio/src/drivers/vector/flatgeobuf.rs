@@ -213,12 +213,76 @@ pub fn read_filtered<R: std::io::Read + std::io::Seek>(
     bbox: Option<(f64, f64, f64, f64)>,
     prefetch: crate::sparse::Prefetch<'_>,
 ) -> Result<(FlatGeobufInfo, Layer)> {
-    read_impl(r, file_len, bbox, false, prefetch)
+    read_impl(r, file_len, bbox, false, prefetch, None)
 }
 
 /// Reads a FlatGeobuf file's header, and the layer it describes, without features.
 pub fn read_header<R: std::io::Read + std::io::Seek>(r: &mut R, file_len: u64) -> Result<(FlatGeobufInfo, Layer)> {
-    read_impl(r, file_len, None, true, &|_| Ok(()))
+    read_impl(r, file_len, None, true, &|_| Ok(()), None)
+}
+
+/// Parsed header state reused by an open indexed catalog.
+pub(crate) struct PreparedIndex {
+    pub info: FlatGeobufInfo,
+    pub layer: Layer,
+    pub metadata: Option<String>,
+    header: FgbHeader,
+    file_len: u64,
+}
+impl PreparedIndex {
+    pub(crate) fn open<R: std::io::Read + std::io::Seek>(reader: &mut R, file_len: u64) -> Result<Self> {
+        use std::io::SeekFrom;
+        if file_len < 12 {
+            return Err(bad("truncated header"));
+        }
+        reader.seek(SeekFrom::Start(0))?;
+        let mut start = [0u8; 12];
+        reader.read_exact(&mut start)?;
+        let size = header_len(&start)?;
+        if size as u64 > file_len {
+            return Err(bad("truncated header"));
+        }
+        reader.seek(SeekFrom::Start(0))?;
+        let mut bytes = vec![0u8; size];
+        reader.read_exact(&mut bytes)?;
+        let (layer, header) = parse_header(&bytes)?;
+        let data_start = (size as u64).checked_add(header.index_size).filter(|v| *v <= file_len).ok_or_else(|| bad("truncated index"))?;
+        let metadata = flatgeobuf::size_prefixed_root_as_header_with_opts(&verifier(), &bytes[8..])
+            .ok()
+            .and_then(|h| h.metadata().map(str::to_string));
+        let info = FlatGeobufInfo {
+            name: layer.name.clone(),
+            feature_count: header.features_count,
+            extent: header.extent,
+            index_node_size: header.index_node_size,
+            header_size: size as u64,
+            index_size: data_start - size as u64,
+        };
+        Ok(Self { info, layer, metadata, header, file_len })
+    }
+    pub(crate) fn query<R: std::io::Read + std::io::Seek>(&self, reader: &mut R, bbox: Option<(f64, f64, f64, f64)>) -> Result<Layer> {
+        read_impl(reader, self.file_len, bbox, false, &|_| Ok(()), Some(self)).map(|(_, layer)| layer)
+    }
+    pub(crate) fn first<R: std::io::Read + std::io::Seek>(&self, reader: &mut R) -> Result<Layer> {
+        use std::io::SeekFrom;
+        let start = self.info.header_size + self.info.index_size;
+        let mut layer = self.layer.clone();
+        if start == self.file_len {
+            return Ok(layer);
+        }
+        reader.seek(SeekFrom::Start(start))?;
+        let mut prefix = [0u8; 4];
+        reader.read_exact(&mut prefix)?;
+        let size = u32::from_le_bytes(prefix) as u64 + 4;
+        if start.checked_add(size).is_none_or(|end| end > self.file_len) {
+            return Err(bad("truncated feature"));
+        }
+        let mut bytes = vec![0u8; usize::try_from(size).map_err(|_| bad("feature too large"))?];
+        bytes[..4].copy_from_slice(&prefix);
+        reader.read_exact(&mut bytes[4..])?;
+        layer.push(decode_feature(&bytes, &self.header, 0)?);
+        Ok(layer)
+    }
 }
 
 fn read_impl<R: std::io::Read + std::io::Seek>(
@@ -227,8 +291,19 @@ fn read_impl<R: std::io::Read + std::io::Seek>(
     bbox: Option<(f64, f64, f64, f64)>,
     header_only: bool,
     prefetch: crate::sparse::Prefetch<'_>,
+    prepared: Option<&PreparedIndex>,
 ) -> Result<(FlatGeobufInfo, Layer)> {
     use std::io::SeekFrom;
+    let owned;
+    let prepared = if let Some(prepared) = prepared {
+        prepared
+    } else {
+        owned = PreparedIndex::open(r, file_len)?;
+        &owned
+    };
+    let mut layer = prepared.layer.clone();
+    let header = &prepared.header;
+    let info = prepared.info.clone();
     // Lengths and offsets come from the file: they are checked against its size before anything
     // is allocated.
     let mut read_at = |offset: u64, len: u64| -> Result<Vec<u8>> {
@@ -240,22 +315,11 @@ fn read_impl<R: std::io::Read + std::io::Seek>(
         r.read_exact(&mut b)?;
         Ok(b)
     };
-    let start = read_at(0, 12.min(file_len))?;
-    let hlen = header_len(&start)? as u64;
-    let (mut layer, header) = parse_header(&read_at(0, hlen)?)?;
     let count = header.features_count;
     let node_size = header.index_node_size;
-    let index_start = hlen;
+    let index_start = info.header_size;
     let isize = header.index_size;
-    let data_start = index_start.checked_add(isize).filter(|&d| d <= file_len).ok_or_else(|| bad("truncated index"))?;
-    let info = FlatGeobufInfo {
-        name: layer.name.clone(),
-        feature_count: count,
-        extent: header.extent,
-        index_node_size: node_size,
-        header_size: index_start,
-        index_size: isize,
-    };
+    let data_start = index_start + isize;
     if header_only {
         return Ok((info, layer));
     }
@@ -334,7 +398,7 @@ fn read_impl<R: std::io::Read + std::io::Seek>(
                 let len = u32::from_le_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]]) as usize;
                 let fbuf = data.get(pos..pos + 4 + len).ok_or_else(|| bad("truncated feature"))?;
                 pos += 4 + len;
-                layer.push(decode_feature(fbuf, &header, fid)?);
+                layer.push(decode_feature(fbuf, header, fid)?);
                 fid += 1;
             }
             return Ok((info, layer));
@@ -352,7 +416,7 @@ fn read_impl<R: std::io::Read + std::io::Seek>(
         let size = read_at(off, 4)?;
         let len = u32::from_le_bytes([size[0], size[1], size[2], size[3]]) as u64;
         let fbuf = read_at(off, 4 + len)?;
-        layer.push(decode_feature(&fbuf, &header, fid)?);
+        layer.push(decode_feature(&fbuf, header, fid)?);
     }
     Ok((info, layer))
 }

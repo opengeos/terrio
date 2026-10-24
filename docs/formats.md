@@ -23,6 +23,7 @@ GDAL's drivers (the formats marked * are written that way): see
 | PMTiles | PMTiles v3 raster tiles (PNG, JPEG, WebP; AVIF read) | ✓ | ✓ | pmtiles |
 | MBTiles | MBTiles raster tiles (PNG, JPEG, WebP; AVIF read) | ✓ | ✓ | mbtiles |
 | VRT | GDAL Virtual Raster | ✓ | ✓ | vrt |
+| GTI | Indexed raster catalogs, local GeoPackage/FlatGeobuf footprints with lazy local/remote tiles | ✓ | | gti, gti.gpkg, gti.fgb, GTI: |
 | STACIT | Mosaics of STAC items' assets (`STACIT:"search or items":asset=name`) | ✓ | | |
 | STACTA | STAC items with tiled assets (`item.json`, `STACTA:"item.json":asset:tile_matrix_set`) | ✓ | | json |
 | ENVI | ENVI labelled raster | ✓ | ✓ | envi, hdr, dat, bsq, bip |
