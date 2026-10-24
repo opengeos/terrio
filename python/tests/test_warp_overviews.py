@@ -48,3 +48,9 @@ def test_finer_auto_and_explicit_bounds(pyramid):
     np.testing.assert_array_equal(cropped.read(1), expected)
     with pytest.raises(terrio.InvalidArgumentError):
         terrio.warp(lazy, overview="invalid")
+
+
+@pytest.mark.parametrize("mode", [True, False])
+def test_rejects_boolean_overview(pyramid, mode):
+    with pytest.raises(terrio.InvalidArgumentError, match="boolean"):
+        terrio.warp(pyramid, overview=mode)

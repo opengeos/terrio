@@ -7,7 +7,7 @@ use crate::vector::{PyLayer, PyVectorDataset, layers_from_object};
 use crate::{PyResultExt, invalid};
 use numpy::{PyArray1, PyArrayMethods};
 use pyo3::prelude::*;
-use pyo3::types::PyTuple;
+use pyo3::types::{PyBool, PyTuple};
 use terrio::crs::{SpatialRef, TransformOptions, Transformer};
 use terrio::formats::VectorDriver;
 use terrio::ops::Resampling;
@@ -1097,6 +1097,7 @@ fn warp(
         resampling: Resampling::parse(resampling).py()?,
         overview: match overview {
             None => terrio::ops::overview::OverviewSelection::Auto,
+            Some(v) if v.is_instance_of::<PyBool>() => return Err(invalid("overview must not be a boolean")),
             Some(v) => match v.extract::<usize>() {
                 Ok(level) => terrio::ops::overview::OverviewSelection::Level(level),
                 Err(_) => terrio::ops::overview::OverviewSelection::parse(
