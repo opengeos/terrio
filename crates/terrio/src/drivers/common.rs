@@ -391,33 +391,72 @@ pub(crate) fn write_band_nodata_pam(path: &Path, values: &[Option<f64>]) -> Resu
     let mut aux = path.as_os_str().to_owned();
     aux.push(".aux.xml");
     let aux = Path::new(&aux);
-    let mut root = crate::memfs::read(aux)
-        .ok()
-        .and_then(|v| String::from_utf8(v).ok())
-        .and_then(|v| crate::ops::vrt::xml::parse(&v).ok())
-        .unwrap_or_else(|| crate::ops::vrt::xml::Element { name: "PAMDataset".into(), ..Default::default() });
-    for (index, value) in values.iter().enumerate() {
-        let number = (index + 1).to_string();
-        let position = root.children.iter().position(|e| e.name == "PAMRasterBand" && e.attr("band") == Some(number.as_str()));
-        let position = position.unwrap_or_else(|| {
-            root.children.push(crate::ops::vrt::xml::Element {
-                name: "PAMRasterBand".into(),
-                attrs: vec![("band".into(), number)],
-                ..Default::default()
-            });
-            root.children.len() - 1
-        });
-        let band = &mut root.children[position];
-        band.children.retain(|e| e.name != "NoDataValue");
+    use quick_xml::events::{BytesEnd, BytesStart, BytesText, Event};
+    let existing = match crate::memfs::read(aux) {
+        Ok(bytes) => bytes,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => b"<PAMDataset/>".to_vec(),
+        Err(e) => return Err(e.into()),
+    };
+    let mut reader = quick_xml::Reader::from_reader(existing.as_slice());
+    reader.config_mut().expand_empty_elements = true;
+    let mut writer = quick_xml::Writer::new(Vec::new());
+    let mut depth = 0usize;
+    let mut band = None;
+    let mut seen = vec![false; values.len()];
+    let invalid = |e: quick_xml::Error| crate::Error::InvalidArgument(format!("invalid PAM XML: {e}"));
+    let write_nodata = |writer: &mut quick_xml::Writer<Vec<u8>>, value: Option<f64>| -> Result<()> {
         if let Some(value) = value {
-            band.children.push(crate::ops::vrt::xml::Element {
-                name: "NoDataValue".into(),
-                text: super::gtiff_write::format_nodata(*value),
-                ..Default::default()
-            });
+            writer.write_event(Event::Start(BytesStart::new("NoDataValue")))?;
+            writer.write_event(Event::Text(BytesText::new(&super::gtiff_write::format_nodata(value))))?;
+            writer.write_event(Event::End(BytesEnd::new("NoDataValue")))?;
         }
+        Ok(())
+    };
+    loop {
+        let event = reader.read_event().map_err(invalid)?;
+        match &event {
+            Event::Start(e) if depth == 2 && band.is_some() && e.name().as_ref() == "NoDataValue" => {
+                reader.read_to_end(e.name()).map_err(invalid)?;
+                continue;
+            }
+            Event::Start(e) => {
+                if depth == 1 && e.name().as_ref() == "PAMRasterBand" {
+                    band = e
+                        .attributes()
+                        .filter_map(std::result::Result::ok)
+                        .find(|a| a.key.as_ref() == "band")
+                        .and_then(|a| a.value.parse::<usize>().ok())
+                        .and_then(|b| b.checked_sub(1))
+                        .filter(|b| *b < values.len());
+                    if let Some(b) = band {
+                        seen[b] = true;
+                    }
+                }
+                depth += 1;
+            }
+            Event::End(_) => {
+                if depth == 2 {
+                    if let Some(b) = band.take() {
+                        write_nodata(&mut writer, values[b])?;
+                    }
+                } else if depth == 1 {
+                    for (b, value) in values.iter().enumerate().filter(|(b, _)| !seen[*b]) {
+                        let mut element = BytesStart::new("PAMRasterBand");
+                        let number = (b + 1).to_string();
+                        element.push_attribute(("band", number.as_str()));
+                        writer.write_event(Event::Start(element))?;
+                        write_nodata(&mut writer, *value)?;
+                        writer.write_event(Event::End(BytesEnd::new("PAMRasterBand")))?;
+                    }
+                }
+                depth -= 1;
+            }
+            Event::Eof => break,
+            _ => {}
+        }
+        writer.write_event(event)?;
     }
-    crate::memfs::write(aux, root.to_xml())?;
+    crate::memfs::write(aux, writer.into_inner())?;
     Ok(())
 }
 
@@ -510,6 +549,28 @@ mod tests {
                 let RasterData::I16(back) = decode(&bytes, &l).unwrap() else { panic!() };
                 assert_eq!(back, data);
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod band_pam_tests {
+    #[test]
+    fn updates_disk_and_virtual_pam_without_reordering_mixed_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let mount = crate::memfs::Mount::new([]);
+        for root in [dir.path(), mount.path()] {
+            let path = root.join("raster.tif");
+            let aux = root.join("raster.tif.aux.xml");
+            let content = r#"<PAMDataset><SRS>EPSG:4326</SRS><!--keep--><Metadata><MDI key="text">before<Part/>after</MDI></Metadata><PAMRasterBand band="1"><NoDataValue>9</NoDataValue><Metadata><MDI key="STATISTICS_MINIMUM">2</MDI></Metadata></PAMRasterBand></PAMDataset>"#;
+            crate::memfs::write(&aux, content).unwrap();
+            super::write_band_nodata_pam(&path, &[Some(-1.), Some(-2.)]).unwrap();
+            let text = String::from_utf8(crate::memfs::read(&aux).unwrap()).unwrap();
+            assert!(text.contains("before<Part></Part>after"));
+            assert!(text.contains("<!--keep-->"));
+            assert!(text.contains("STATISTICS_MINIMUM"));
+            assert!(text.contains("<SRS>EPSG:4326</SRS>"));
+            assert_eq!(super::parse_pam(&text).band_nodata, vec![(1, -1.), (2, -2.)]);
         }
     }
 }

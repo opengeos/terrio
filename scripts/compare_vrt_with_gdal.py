@@ -302,6 +302,37 @@ def main():
             root.write(path)
             mixed_compare("VRT mixed warped working " + working, path)
 
+        # The PARTIAL default also applies to ordinary materialized warps.
+        # Give each source band a distinct nodata value, with both jointly and
+        # independently invalid pixels, using real terrain for valid samples.
+        distinct = tmp / "distinct-nodata.tif"
+        ds = gdal.GetDriverByName("GTiff").Create(str(distinct), 96, 80, 3, gdal.GDT_Float32)
+        ds.SetGeoTransform(transform)
+        ds.SetProjection(projection)
+        for band in range(1, 4):
+            pixels = values.copy() + band * 10
+            pixels[:4, :4] = -9999 + band
+            pixels[10 * band:10 * band + 3, :4] = -9999 + band
+            ds.GetRasterBand(band).WriteArray(pixels)
+        ds = None
+        distinct_vrt = tmp / "distinct-source.vrt"
+        ds = gdal.Translate(str(distinct_vrt), str(distinct), format="VRT")
+        for band in range(1, 4):
+            ds.GetRasterBand(band).SetNoDataValue(-9999 + band)
+        ds = None
+        for method in ["near", "bilinear"]:
+            reference = tmp / f"ordinary-{method}-reference.tif"
+            actual = tmp / f"ordinary-{method}-actual.tif"
+            gdal.Warp(str(reference), str(distinct_vrt), format="GTiff",
+                      width=64, height=56, resampleAlg=method, dstNodata=-12345)
+            process = subprocess.run(
+                [args.terrio, "warp", str(distinct_vrt), str(actual),
+                 "--ts", "64", "56", "-r", method, "--dstnodata=-12345"],
+                capture_output=True, text=True, env=env)
+            record = ({"error": process.stderr} if process.returncode
+                      else compare(str(reference), str(actual), 0))
+            record["name"] = f"ordinary multiband per-band nodata {method}"
+            records.append(record)
         for resampling in ["near", "bilinear", "cubic", "average"]:
             path = tmp / f"warped-{resampling}.vrt"
             gdal.Warp(str(path), str(source), format="VRT", dstSRS="EPSG:3857", width=64, height=56, resampleAlg=resampling)
