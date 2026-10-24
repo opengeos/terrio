@@ -177,6 +177,17 @@ data = open("dem.tif", "rb").read()
 raster = terrio.open_bytes(data, "dem.tif")  # from bytes; to bytes with raster.to_bytes("x.tif")
 ```
 
+### Viewshed
+
+```python
+visible = terrio.viewshed("dem_utm.tif", 500000, 4400000, oz=2, tz=0, md=5000)
+height = terrio.viewshed("dem_utm.tif", 500000, 4400000, om="GROUND", cc=0)
+```
+
+`om="NORMAL"` returns visibility; `DEM` and `GROUND` return minimum visible elevation
+or height above the DEM. `cc` is 1 minus refraction. See [viewshed](cli.md#viewshed) for
+units, curvature, radius cropping and input nodata behavior.
+
 ## Typing
 
 The package ships type stubs (`py.typed`), checked with `mypy --strict` and `stubtest`:
@@ -198,6 +209,25 @@ uv venv && uv pip install maturin numpy pytest
 uv run maturin develop --release
 uv run pytest
 ```
+
+## Geolocation-array warping
+
+`terrio.warp(path, geoloc=True, t_srs="EPSG:4326")` requires the longitude/latitude arrays
+already exposed by netCDF/HDF-EOS drivers. Arrays are also used automatically when present.
+For coordinate rasters held separately or in memory, supply the first source's arrays directly:
+
+```python
+out = terrio.warp(source, t_srs="EPSG:4326", geolocation={
+    "x": longitude_raster, "y": latitude_raster,
+    "pixel_step": 2, "line_step": 2, "pixel_center": True,
+})
+```
+
+`x` and `y` each accept a raster or a path. `x_band` and `y_band` select their 1-based
+coordinate bands (default 1). Optional `srs` defaults to EPSG:4326;
+`pixel_offset`/`line_offset` default to 0 and steps to 1. The center shift is half an array
+step. Invalid coordinate cells remain empty. See [CLI warping](cli.md#warp) for the supported
+subset and comparison behavior at swath boundaries.
 
 ## Fill nodata
 

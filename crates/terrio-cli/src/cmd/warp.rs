@@ -72,6 +72,9 @@ pub struct Args {
     /// sidecar), as `gdalwarp -rpc`.
     #[arg(long, conflicts_with = "tps")]
     rpc: bool,
+    /// Require longitude/latitude geolocation arrays, as `gdalwarp -geoloc`.
+    #[arg(long, conflicts_with_all = ["rpc", "tps", "order"])]
+    geoloc: bool,
     /// A transformer option, as `gdalwarp -to` takes it: `RPC_HEIGHT=`, `RPC_HEIGHT_SCALE=`,
     /// `RPC_DEM=`, `RPC_DEMINTERPOLATION=near|bilinear|cubic`, `RPC_DEM_MISSING_VALUE=`,
     /// `RPC_DEM_SRS=`, `RPC_DEM_APPLY_VDATUM_SHIFT=`, `RPC_PIXEL_ERROR_THRESHOLD=`,
@@ -96,13 +99,18 @@ pub fn run(a: Args) -> terrio::Result<()> {
         super::convert::key_values(&a.warp_options)?.into_iter().map(|(k, v)| (k.to_ascii_uppercase(), v.to_string())).collect();
     let option = |list: &[(String, String)], k: &str| list.iter().rev().find(|(key, _)| key == k).map(|(_, v)| v.clone());
     let method = option(&to, "SRC_METHOD").or_else(|| option(&to, "METHOD")).map(|m| m.to_ascii_uppercase());
+    let force_geoloc = a.geoloc || method.as_deref() == Some("GEOLOC_ARRAY");
     let force_rpc = a.rpc || method.as_deref() == Some("RPC");
+    if force_geoloc && (force_rpc || a.tps || a.order.is_some()) {
+        return Err(terrio::Error::InvalidArgument("geolocation arrays exclude RPC and GCP methods".into()));
+    }
     if force_rpc && a.tps {
         return Err(terrio::Error::InvalidArgument("--tps and the RPC method exclude each other".into()));
     }
     let rpc_options = RpcOptions::from_options(&to)?;
     let has_dem = rpc_options.dem.is_some();
     let mut o = WarpOptions {
+        geoloc: force_geoloc,
         src_srs: srs(&a.s_srs)?,
         dst_srs: srs(&a.t_srs)?,
         resolution: pair(&a.tr),
@@ -131,7 +139,7 @@ pub fn run(a: Args) -> terrio::Result<()> {
     }
     // A first source with RPCs, which the transformer may use (gdalwarp's FetchSrcMethod).
     let local = !inputs[0].contains("://") && !inputs[0].starts_with("/vsi");
-    let rpc_allowed = !a.tps && method.as_deref().is_none_or(|m| m == "RPC");
+    let rpc_allowed = !force_geoloc && !a.tps && method.as_deref().is_none_or(|m| m == "RPC");
     // Remote files are fetched for their RPCs only when asked to use them.
     // A file whose RPCs cannot be read has none, unless asked to use them.
     let file_rpc = if force_rpc {

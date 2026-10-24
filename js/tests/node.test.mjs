@@ -1085,6 +1085,29 @@ test("Zarr stores and netCDF/HDF5 products as GDAL reads them", { skip: needs("n
   }
 });
 
+test("viewshed visibility, height and byte input", () => {
+  const dem = terrio.rasterFromArray(new Float64Array([0, 0, 10, 0, 0]), 5, 1, [0, 10, 0, 10, 0, -10], "EPSG:32611");
+  assert.deepEqual([...terrio.viewshed(dem, 5, 5, { cc: 0 }).readBand(1)], [255, 255, 255, 0, 0]);
+  const ground = terrio.viewshed(dem.toBytes("dem.tif"), 5, 5, { cc: 0, om: "GROUND" });
+  assert.equal(ground.dtype, "float64");
+  assert.deepEqual([...ground.readBand(1)], [0, 0, 0, 14, 18]);
+  assert.equal(terrio.viewshed(dem, 5, 5, { md: 20 }).width, 3);
+  assert.throws(() => terrio.viewshed(dem, 5, 5, { om: "ACCUM" }), /mode/);
+});
+
+test("warp from subsampled pixel-center geolocation arrays", () => {
+  const values = Float64Array.from({ length: 12 }, (_, i) => i + 1);
+  const source = terrio.rasterFromArray(values, 4, 3, [0, 1, 0, 3, 0, -1]);
+  const x = terrio.rasterFromArray(new Float64Array([0, 0, 0, 0, 11, 13, 11, 13]), 2, 2, [0, 1, 0, 2, 0, -1]);
+  const y = terrio.rasterFromArray(new Float64Array([0, 0, 0, 0, 49, 49, 47, 47]), 2, 2, [0, 1, 0, 2, 0, -1]);
+  const result = terrio.warp(source, {
+    geolocation: { x, y, xBand: 2, yBand: 2, pixelStep: 2, lineStep: 2, pixelCenter: true },
+    te: [10, 47, 14, 50], ts: [4, 3], tSrs: "EPSG:4326", et: 0,
+  });
+  assert.deepEqual([...result.readBand(1)], [...values]);
+  assert.throws(() => terrio.warp(source, { geoloc: true }), /no geolocation arrays/);
+});
+
 test("fillNodata: holes, nearest ties, explicit masks and invalid options", () => {
   const src = terrio.open(new TextEncoder().encode("ncols 3\nnrows 3\nxllcorner 0\nyllcorner 0\ncellsize 1\nNODATA_value -9999\n0 1 2\n3 -9999 5\n6 7 8\n"), "holes.asc");
   const out = terrio.fillNodata(src, { maxDistance: 1 });

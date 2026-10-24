@@ -170,3 +170,33 @@ node js/bench/bench.mjs ../terrio-data    # timings of decoding and writing real
 
 See [Native multidimensional arrays](multidim.md) for scientific groups, named dimensions,
 lazy coordinate arrays, time/depth slicing, transposition and netCDF/Zarr numeric snapshots.
+
+## Viewshed
+
+```javascript
+const visible = terrio.viewshed(dem, 500000, 4400000, { oz: 2, tz: 0, md: 5000 });
+const height = terrio.viewshed(dem, 500000, 4400000, { om: "GROUND", cc: 0 });
+```
+
+The input can be a dataset or raster bytes. `om` selects NORMAL visibility, DEM minimum
+visible elevation, or GROUND minimum height above the DEM. `cc` is 1 minus refraction.
+See [viewshed](cli.md#viewshed) for units, curvature, radius cropping and nodata behavior.
+
+## Geolocation-array warping
+
+Pass longitude and latitude rasters explicitly when array datasets cannot be reopened from
+paths in WebAssembly. `x` and `y` accept a `Dataset`, file bytes, or `{ bytes, filename }`:
+
+```javascript
+const output = terrio.warp(swath, {
+  tSrs: "EPSG:4326",
+  geolocation: { x: longitude, y: latitude, pixelStep: 2, lineStep: 2, pixelCenter: true },
+});
+```
+
+`xBand` and `yBand` select the 1-based coordinate bands (default 1).
+Optional `srs` defaults to EPSG:4326, `pixelOffset`/`lineOffset` to 0, and steps to 1.
+`pixelCenter` shifts by half an array step. `geoloc: true` requires geolocation metadata;
+the explicit `geolocation` option supplies arrays for the first source. The operation remains
+pure Rust in full and core WASM builds. See [CLI warping](cli.md#warp) for invalid coordinates,
+antimeridian handling and boundary differences from GDAL.

@@ -41,6 +41,7 @@ __all__ = [
     "dem",
     "calc",
     "proximity",
+    "viewshed",
     "sieve",
     "fill_nodata",
     "PointCloud",
@@ -820,6 +821,8 @@ def warp(
     rpc: Mapping[str, str] | None = None,
     to: Mapping[str, str] | None = None,
     wo: Mapping[str, str] | None = None,
+    geoloc: bool = False,
+    geolocation: Mapping[str, Any] | None = None,
 ) -> Raster: ...
 def mosaic(
     srcs: _RasterSource | Sequence[_RasterSource],
@@ -890,6 +893,27 @@ def calc(
     bigtiff: bool = False,
     **inputs: _RasterSource | int,
 ) -> Raster: ...
+def viewshed(
+    src: str | Raster,
+    ox: float,
+    oy: float,
+    dst: str | None = None,
+    *,
+    oz: float = 2.0,
+    tz: float = 0.0,
+    md: float = 0.0,
+    cc: float | None = None,
+    om: str = "NORMAL",
+    ov: int = 0,
+    band: int = 1,
+    format: str | None = None,
+    compress: str | None = None,
+    tile_size: int | None = None,
+    bigtiff: bool = False,
+) -> Raster:
+    """Single-observer visibility or minimum visible height on a projected DEM."""
+    ...
+
 def proximity(
     src: _RasterSource,
     dst: str | None = None,

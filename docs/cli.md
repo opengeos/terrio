@@ -27,6 +27,7 @@ terrio <COMMAND>
   dem         Terrain analysis: hillshade, slope, aspect, color relief, TRI, TPI, roughness (like gdaldem)
   calc        Raster algebra: band math in NumPy syntax over one or more rasters (like gdal_calc.py)
   proximity   Distance from every pixel to the nearest target pixel (like gdal_proximity.py)
+  viewshed    Single-observer visibility or minimum visible height (like gdal_viewshed)
   sieve       Merge raster areas smaller than a threshold into their largest neighbour (like gdal_sieve.py)
   crs         Describe a coordinate reference system, or transform coordinates between two
   formats     List the formats terrio reads and writes
@@ -373,6 +374,29 @@ terrio warp scene.tif scene_4326.tif --rpc --to RPC_HEIGHT=120
 terrio warp scene.tif scene_utm.tif --rpc --to RPC_DEM=dem.tif --t-srs EPSG:32720 -r bilinear
 ```
 
+Swaths from netCDF and HDF-EOS use their longitude/latitude geolocation arrays automatically
+when no GCP/RPC method is supplied. `--geoloc` (or `--to METHOD=GEOLOC_ARRAY`) requires arrays
+on every source. Pixel/line offsets, separate sampling steps and RFC 4's `PIXEL_CENTER` or
+`TOP_LEFT_CORNER` conventions are honored. The center shift is half a **geolocation-array
+step**, including subsampled arrays. Coordinates interpolate bilinearly; an indexed inverse
+maps output pixels through the same resampling kernels as other warps.
+
+```sh
+terrio warp 'NETCDF:"swath.nc":/PRODUCT/qa_value' swath.tif --geoloc --t-srs EPSG:4326 --tr 0.05 0.05
+```
+
+Coordinate nodata, NaNs, infinities and invalid geographic latitudes invalidate the neighboring
+cells; no interpolation bridges those holes. Adjacent geographic longitudes are unwrapped
+across the antimeridian; use canonical longitude extents on either side for GDAL comparisons.
+Arrays must have matching dimensions of at least 2 by 2 and positive steps. Cutlines with
+geolocation arrays are currently unsupported. Automatic selection preserves an existing affine
+cutline workflow when the dataset also has a usable affine transform; explicitly selecting
+geolocation arrays still rejects cutlines. Coordinate arrays and their cell index are held
+in memory. The index stores only cell envelopes and array positions; its size is linear
+in the number of valid cells, in addition to the two coordinate arrays. The inverse solves bilinear cells directly; GDAL's inverse backmap can differ by a
+few boundary pixels, particularly with sparse arrays or invalid nodes. The conformance suite
+reports those mask differences explicitly. Specify `--te` and `--ts` to compare identical grids.
+
 ## mosaic
 
 ```sh
@@ -425,6 +449,38 @@ with `--alpha`), each a `ComplexSource` of the DEM's band with a `LUT` built fro
 (the midpoints between entries with `--nearest-color-entry`, zero around them with
 `--exact-color-entry`). The lookup tables are those `gdaldem` writes, so GDAL reads the same
 pixels from both, and terrio reads such VRTs (`gdaldem`'s too) as GDAL reads them.
+
+## viewshed
+
+```sh
+terrio viewshed dem_utm.tif visible.tif --ox 500000 --oy 4400000 --oz 2 --tz 0 --md 5000
+terrio viewshed dem_utm.tif height.tif --ox 500000 --oy 4400000 --om GROUND --cc 0
+```
+
+Single-observer viewshed using GDAL's default edge recurrence. `--om NORMAL` produces Byte
+visibility (255 visible, 0 hidden); `DEM` produces the minimum visible elevation and `GROUND`
+the minimum visible height above the DEM surface, both Float64. Height modes ignore `--tz`.
+`--md` is maximum distance, zero for unlimited, and crops the output rectangle. Its corner
+pixels outside the radius receive `--ov` (default 0). `--band` selects a source band.
+
+The DEM must be north-up in a projected CRS. Heights use DEM units and maximum distance
+uses projected CRS units. Observer coordinates are converted to pixels by truncating toward
+zero, as in GDAL. Outside observers start at an unobstructed nearest edge. Their height is
+absolute when X is outside; when only Y is outside, GDAL samples elevation on the nearest row.
+For physically consistent curvature, use horizontal and vertical units in metres: GDAL's
+curvature formula uses the ellipsoid diameter in metres even for other projected units. `--cc` is the curvature
+coefficient, equal to 1 minus the atmospheric refraction coefficient: 0 gives a flat Earth,
+1 disables refraction. The default is 0.85714 for Earth ellipsoids, 1 for other bodies.
+
+Like GDAL, numeric nodata values are treated as elevations and masks are ignored; this can
+produce misleading occlusion. Nonfinite elevations in the processed rectangle produce an
+error. Fill or crop missing elevations before use. Output has no nodata marker. Cumulative
+visibility is not supported. The command is also an MCP tool.
+
+Terrio applies the radius mask deterministically. GDAL 3.12 can race its left/right row jobs
+for an outside observer, occasionally leaving an out-of-range boundary pixel visible. The
+conformance suite checks Terrio's mask independently and compares in-radius GDAL pixels for
+that case; all other viewshed cases compare every pixel.
 
 ## calc
 
