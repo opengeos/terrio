@@ -23,7 +23,7 @@ pub struct Args {
     #[arg(long, default_value_t = 0.0)]
     md: f64,
     /// Curvature coefficient (1 minus refraction). 0 disables curvature, 1 disables refraction.
-    #[arg(long)]
+    #[arg(long, allow_negative_numbers = true)]
     cc: Option<f64>,
     /// NORMAL visibility, DEM minimum visible elevation, or GROUND minimum height above DEM.
     #[arg(long, default_value = "NORMAL")]
@@ -52,4 +52,16 @@ pub fn run(a: Args) -> terrio::Result<()> {
         out_of_range: a.ov,
     };
     a.out.write(&viewshed(&ds, &o)?, &a.output)
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::Parser;
+    #[test]
+    fn parses_negative_curvature() {
+        let cli =
+            crate::Cli::try_parse_from(["terrio", "viewshed", "dem.tif", "out.tif", "--ox", "5", "--oy", "5", "--cc", "-0.5"]).unwrap();
+        let crate::Command::Viewshed(args) = cli.command else { panic!("wrong command") };
+        assert_eq!(args.cc, Some(-0.5));
+    }
 }

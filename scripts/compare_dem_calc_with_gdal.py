@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Compare terrio's terrain and raster algebra tools with GDAL's on real files.
 
-Runs ``terrio dem``, ``terrio viewshed``, ``terrio calc``, ``terrio proximity`` and ``terrio sieve`` and the
-equivalent ``gdaldem``, ``gdal_viewshed``, ``gdal_calc.py``, ``gdal_proximity.py`` and ``gdal_sieve.py`` commands
+Runs ``terrio dem``, ``terrio viewshed``, ``terrio calc``, ``terrio proximity`` and
+``terrio sieve`` and the equivalent ``gdaldem``, ``gdal_viewshed``, ``gdal_calc.py``, ``gdal_proximity.py`` and ``gdal_sieve.py`` commands
 on the files fetched by ``scripts/fetch_test_data.sh``, then reports for each case whether the
 outputs have the same size, type, geotransform and nodata value, and how many pixels agree.
 

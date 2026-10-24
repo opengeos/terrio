@@ -19,6 +19,7 @@ pub mod rasterout;
 pub mod sieve;
 pub mod translate;
 pub mod vector_opts;
+pub mod viewshed;
 pub mod warp;
 
 /// Runs `f` with standard output discarded, so that drivers' diagnostic prints do not mix with the
@@ -42,5 +43,3 @@ pub fn with_driver(input: &str, driver: Option<&str>) -> terrio::Result<String> 
         _ => Ok(input.to_string()),
     }
 }
-
-pub mod viewshed;
