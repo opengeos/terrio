@@ -301,14 +301,12 @@ def main():
                     for band in range(1, reference.RasterCount + 1)])
                 observed_masks = np.stack([actual.GetRasterBand(band).GetMaskBand().ReadAsArray() != 0
                     for band in range(1, actual.RasterCount + 1)])
+                np.testing.assert_array_equal(observed_masks, expected_masks)
+                record.update(compare(str(exported_path), str(actual_path), 0))
                 record.update(
-                    size=f"{reference.RasterXSize}x{reference.RasterYSize}x{reference.RasterCount}",
-                    same_size=(actual.RasterXSize, actual.RasterYSize, actual.RasterCount)
-                        == (reference.RasterXSize, reference.RasterYSize, reference.RasterCount),
-                    type=gdal.GetDataTypeName(dtype), same_type=True, same_crs=True,
-                    same_nodata=True, gt_diff_px=0., exact=1., within_tol=1.,
+                    same_crs=bool(actual.GetSpatialRef().IsSame(exported.GetSpatialRef())),
                     valid_gdal=int(np.count_nonzero(expected_masks)),
-                    valid_mismatch=int(np.count_nonzero(expected_masks != observed_masks)), differing=0, max_diff=0., mean_diff=0.,
+                    valid_mismatch=int(np.count_nonzero(expected_masks != observed_masks)),
                 )
             except Exception as error:
                 record["error"] = str(error)

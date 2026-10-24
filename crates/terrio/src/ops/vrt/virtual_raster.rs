@@ -2293,6 +2293,11 @@ mod inventory_tests {
                 && !p.contains("GPKG:")));
         }
         assert!(source_input_paths("UNSUPPORTED_DRIVER:source.dat:band").is_err());
+        // An explicit filesystem path disambiguates literal driver-like names.
+        assert!(source_input_paths("DATA:1.tif").is_err());
+        assert_eq!(source_input_paths("./DATA:1.tif").unwrap(), vec!["./DATA:1.tif"]);
+        let literal = dir.path().join("DATA:1.tif").to_string_lossy().into_owned();
+        assert_eq!(source_input_paths(&literal).unwrap(), vec![literal]);
         let archive = dir.path().join("unopened.zip");
         let paths = source_input_paths(&format!("{}.zip!tile.tif", dir.path().join("unopened").display())).unwrap();
         assert_eq!(paths, vec![archive.to_string_lossy().into_owned()]);

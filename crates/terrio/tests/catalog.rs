@@ -344,6 +344,22 @@ fn supplied_sources_defer_paths_and_encoded_files_until_selection() {
     assert!(catalog.read_window(Window::new(5, 0, 1, 1), &[]).is_err());
     assert_eq!(catalog.read_window(Window::new(0, 0, 1, 1), &[]).unwrap().raster.data.to_f64_vec(), vec![10.]);
     assert_eq!(catalog.stats().peak_cached_sources, 1);
+    // A previous failed decode leaves an unknown inventory, even though the
+    // unaffected window above remains readable. Fail before touching any output.
+    let directory = tempfile::tempdir().unwrap();
+    let mut lazy = catalog.into_lazy();
+    for existing in [false, true] {
+        let output = directory.path().join(if existing { "existing.tif" } else { "new.tif" });
+        if existing {
+            std::fs::write(&output, b"keep").unwrap();
+        }
+        assert!(lazy.write(output.to_str().unwrap(), &Default::default()).is_err());
+        if existing {
+            assert_eq!(std::fs::read(&output).unwrap(), b"keep");
+        } else {
+            assert!(!output.exists());
+        }
+    }
 }
 
 #[cfg(feature = "geotiff")]
