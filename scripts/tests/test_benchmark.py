@@ -1,5 +1,7 @@
 """Regression tests for benchmark scoring; run with unittest discover -s scripts/tests."""
 
+import contextlib
+import io
 import json
 import os
 import sys
@@ -108,6 +110,39 @@ class BenchmarkTests(unittest.TestCase):
             self.assertEqual(result[2], 0)
             stdout.seek(0)
             self.assertEqual(json.load(stdout), [1, 1])
+
+    def test_missing_taskset_is_reported_before_running_commands(self):
+        stderr = io.StringIO()
+        with (
+            patch.object(sys, "argv", ["benchmark.py", "fixtures"]),
+            patch.object(benchmark.os, "sched_getaffinity", return_value={0}, create=True),
+            patch.object(benchmark.shutil, "which", return_value=None),
+            contextlib.redirect_stderr(stderr),
+            self.assertRaises(SystemExit) as error,
+        ):
+            benchmark.main()
+        self.assertEqual(error.exception.code, 2)
+        self.assertIn("requires taskset", stderr.getvalue())
+
+    def test_case_lists_are_cached_across_repeated_commands(self):
+        from osgeo import gdal
+
+        def large_cases(data, out, budget):
+            return [("test", "cached case", ["terrio", str(Path(out) / "out.tif")], ["gdal", str(Path(out) / "out.tif")])]
+
+        with (
+            tempfile.TemporaryDirectory() as root,
+            patch.object(sys, "argv", ["benchmark.py", "--large", root, "--thread-counts", "1", "--large-runs", "1", "--tune-runs", "1"]),
+            patch.object(benchmark, "large_cases", side_effect=large_cases) as factory,
+            patch.object(benchmark, "gdal_version", return_value="GDAL " + gdal.VersionInfo("RELEASE_NAME")),
+            patch.object(benchmark.subprocess, "check_output", return_value="test"),
+            patch.object(benchmark, "run_once", return_value=(1.0, None, 0, "")),
+            patch("benchmark_validation.validate_case", return_value=[]),
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
+            benchmark.main()
+        # One metadata list, then one list for each tool's output directory.
+        self.assertEqual(factory.call_count, 3)
 
     def test_rejects_nonpositive_counts(self):
         self.assertRaises(ValueError, benchmark.positive_int, "0")

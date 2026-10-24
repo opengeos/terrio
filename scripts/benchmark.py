@@ -15,6 +15,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from functools import cache
 from pathlib import Path
 
 TERRIO = os.environ.get(
@@ -479,6 +480,8 @@ def main():
     )
     ap.add_argument("--out", help="Markdown output; raw samples go to FILE.json")
     args = ap.parse_args()
+    if hasattr(os, "sched_getaffinity") and not shutil.which("taskset"):
+        ap.error("Linux CPU affinity requires taskset; install util-linux and ensure taskset is on PATH")
     if not 0 <= args.max_background_cpus < float("inf"):
         ap.error("--max-background-cpus must be finite and nonnegative")
     available = len(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else os.cpu_count() or 1
@@ -555,6 +558,7 @@ def main():
     records = []
     with tempfile.TemporaryDirectory(prefix="terrio-bench-") as root:
 
+        @cache
         def make_cases(out, budget):
             result = [(c, args.runs) for c in (cases(os.path.abspath(args.data), out, budget) if args.data else [])]
             result += [(c, args.runs) for c in (remote_cases() if args.remote else [])]

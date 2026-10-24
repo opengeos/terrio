@@ -1,10 +1,12 @@
 """Exercise correctness gates with corrupt outputs, including GDAL statistics."""
 
 import json
+import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 from osgeo import gdal, ogr
@@ -45,6 +47,16 @@ class ValidationTests(unittest.TestCase):
         b = self.raster()
         b.BuildOverviews("NEAREST", [2])
         self.assertTrue(compare_rasters(a, b))
+
+    def test_complex_raster_mismatch_with_nan_is_reported(self):
+        a, b = (gdal.GetDriverByName("MEM").Create("", 2, 1, 1, gdal.GDT_CFloat64) for _ in range(2))
+        for ds in (a, b):
+            ds.SetGeoTransform((1, 2, 0, 9, 0, -2))
+        a.GetRasterBand(1).WriteArray(np.array([[complex(float("nan"), 1), 2 + 3j]], dtype=np.complex128))
+        b.GetRasterBand(1).WriteArray(np.array([[complex(float("nan"), 1), 2 + 4j]], dtype=np.complex128))
+        differences = compare_rasters(a, b)
+        self.assertEqual(len(differences), 1)
+        self.assertIn("1 differing pixels", differences[0])
 
     def test_independent_statistics_and_poisoned_gdal_summary(self):
         with tempfile.TemporaryDirectory() as root:
@@ -107,23 +119,35 @@ class ValidationTests(unittest.TestCase):
         band.SetNoDataValue(-9999)
         self.assertTrue(np.allclose(numpy_statistics(band), [1, 4, 2.5, np.sqrt(1.25)]))
 
+    def vector(self, values):
+        """Create numeric point features for whole-layer and sort-dependency checks."""
+        ds = ogr.GetDriverByName("MEM").CreateDataSource("")
+        layer = ds.CreateLayer("points", geom_type=ogr.wkbPoint)
+        layer.CreateField(ogr.FieldDefn("value", ogr.OFTInteger))
+        for value in values:
+            feature = ogr.Feature(layer.GetLayerDefn())
+            feature.SetField("value", value)
+            feature.SetGeometry(ogr.CreateGeometryFromWkt(f"POINT ({value} 0)"))
+            layer.CreateFeature(feature)
+        return ds
+
     def test_every_vector_feature_and_order(self):
-        driver = ogr.GetDriverByName("MEM")
-
-        def vector(values):
-            ds = driver.CreateDataSource("")
-            layer = ds.CreateLayer("points", geom_type=ogr.wkbPoint)
-            layer.CreateField(ogr.FieldDefn("value", ogr.OFTInteger))
-            for value in values:
-                f = ogr.Feature(layer.GetLayerDefn())
-                f.SetField("value", value)
-                f.SetGeometry(ogr.CreateGeometryFromWkt(f"POINT ({value} 0)"))
-                layer.CreateFeature(f)
-            return ds
-
-        a, b = vector([1, 2]), vector([2, 1])
+        a, b = self.vector([1, 2]), self.vector([2, 1])
         self.assertEqual(compare_vectors(a, b), [])
-        self.assertTrue(compare_vectors(a, vector([1, 3])))
+        self.assertTrue(compare_vectors(a, self.vector([1, 3])))
+
+    def test_missing_sort_reports_a_validation_failure(self):
+        a, b = self.vector([1]), self.vector([1])
+        with patch("benchmark_validation.shutil.which", return_value=None):
+            self.assertIn("requires external sort", compare_vectors(a, b)[0])
+
+    def test_incompatible_sort_reports_its_stderr(self):
+        a, b = self.vector([1]), self.vector([1])
+        failure = subprocess.CalledProcessError(2, ["sort"], stderr="unsupported -S option")
+        with patch("benchmark_validation.subprocess.run", side_effect=failure):
+            difference = compare_vectors(a, b)[0]
+        self.assertIn("sort failed", difference)
+        self.assertIn("unsupported -S option", difference)
 
 
 if __name__ == "__main__":

@@ -151,6 +151,12 @@ from speed comparisons.
 Use the latest GDAL release and matching Python bindings. The commands below pin the version
 used for this update; check GDAL's download page before a future rerun.
 
+Linux CPU affinity requires `taskset` from util-linux. Vector validation requires an external
+`sort` supporting `-S 64M` and `-T DIR`, as provided by GNU coreutils or compatible BSD versions.
+`gsort` is preferred when available (for example, GNU coreutils installed on macOS). Missing or
+incompatible sort commands are reported as validation failures and receive no ratio. Windows
+users need these Unix tools through WSL or another compatible environment.
+
 ```sh
 conda create -n terrio-benchmark -c conda-forge gdal=3.13.3 libgdal-arrow-parquet=3.13.3 numpy
 conda activate terrio-benchmark

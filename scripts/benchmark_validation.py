@@ -10,6 +10,7 @@ import hashlib
 import json
 import math
 import os
+import shutil
 import subprocess
 import tempfile
 from pathlib import Path
@@ -102,6 +103,7 @@ def numpy_statistics(band):
 
 def validate_summary(tcmd, gcmd, a, b):
     """Check the actual captured summaries, using source pixels as the statistics oracle."""
+    # This helper installs a global GDAL error handler; load it only for summary checks.
     from compare_with_gdal import compare_raster, compare_vector, epsg_of
     from osgeo import osr
 
@@ -185,6 +187,9 @@ def compare_vectors(a, b):
     Normalize ring starts/orientations and multipart ordering through GEOS. Generated
     feature IDs and layer names are storage details; field definitions and CRS are not.
     """
+    sort = shutil.which("gsort") or shutil.which("sort")
+    if sort is None:
+        return ["vector validation requires external sort with -S/-T support; install coreutils or a compatible BSD sort"]
     if a.GetLayerCount() != b.GetLayerCount():
         return ["vector layer count differs"]
     with tempfile.TemporaryDirectory(prefix="terrio-bench-validation-") as scratch:
@@ -220,12 +225,19 @@ def compare_vectors(a, b):
                         ).encode()
                         stream.write(hashlib.sha256(attributes + b"\0" + geometry).hexdigest().encode() + b"\n")
                 with (Path(scratch) / f"{tool}.sorted").open("wb") as stream:
-                    subprocess.run(
-                        ["sort", "-S", "64M", "-T", scratch, str(raw)],
-                        stdout=stream,
-                        env=dict(os.environ, LC_ALL="C"),
-                        check=True,
-                    )
+                    try:
+                        subprocess.run(
+                            [sort, "-S", "64M", "-T", scratch, str(raw)],
+                            stdout=stream,
+                            stderr=subprocess.PIPE,
+                            text=True,
+                            env=dict(os.environ, LC_ALL="C"),
+                            check=True,
+                        )
+                    except subprocess.CalledProcessError as exc:
+                        return [f"vector validation sort failed (requires -S/-T support): {exc.stderr.strip()}"]
+                    except OSError as exc:
+                        return [f"vector validation cannot execute sort: {exc}"]
             with (
                 (Path(scratch) / "0.sorted").open("rb") as x,
                 (Path(scratch) / "1.sorted").open("rb") as y,
