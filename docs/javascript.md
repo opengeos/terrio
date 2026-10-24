@@ -165,3 +165,14 @@ wasm-pack build js --release --target nodejs --out-dir pkg-node/core --out-name 
 TERRIO_JS_PKG=../pkg-node/core/terrio.js node --test js/tests/node.test.mjs
 node js/bench/bench.mjs ../terrio-data    # timings of decoding and writing real files
 ```
+
+## Viewshed
+
+```javascript
+const visible = terrio.viewshed(dem, 500000, 4400000, { oz: 2, tz: 0, md: 5000 });
+const height = terrio.viewshed(dem, 500000, 4400000, { om: "GROUND", cc: 0 });
+```
+
+The input can be a dataset or raster bytes. `om` selects NORMAL visibility, DEM minimum
+visible elevation, or GROUND minimum height above the DEM. `cc` is 1 minus refraction.
+See [viewshed](cli.md#viewshed) for units, curvature, radius cropping and nodata behavior.

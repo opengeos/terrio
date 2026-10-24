@@ -452,16 +452,18 @@ def suite_ops(ctx):
 
 
 def suite_dem_calc(ctx):
-    """dem, calc, proximity and sieve against gdaldem, gdal_calc.py, gdal_proximity.py, gdal_sieve.py."""
+    """Terrain, viewshed, algebra, proximity and sieve against GDAL tools."""
     return suite_json_ops(
         ctx,
         "dem-calc",
         "compare_dem_calc_with_gdal.py",
         "Terrain analysis and raster algebra",
-        "`gdaldem`, `gdal_calc.py`, `gdal_proximity.py`, `gdal_sieve.py`",
+        "`gdaldem`, `gdal_viewshed`, `gdal_calc.py`, `gdal_proximity.py`, `gdal_sieve.py`",
         "The outputs of the same command lines on real DEMs and land cover: size, type, nodata and "
         "geotransform must match, then pixels are compared. Within tolerance: every pixel within "
-        "the case's tolerance (float32 rounding of NumPy's SIMD functions, for example).",
+        "the case's tolerance (float32 rounding of NumPy's SIMD functions, for example). "
+        "Viewshed outside-observer/radius cases independently verify the radius mask, then "
+        "compare in-radius pixels, avoiding GDAL's nondeterministic out-of-range boundary race.",
         2,
     )
 

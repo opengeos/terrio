@@ -41,3 +41,5 @@ pub fn with_driver(input: &str, driver: Option<&str>) -> terrio::Result<String> 
         _ => Ok(input.to_string()),
     }
 }
+
+pub mod viewshed;

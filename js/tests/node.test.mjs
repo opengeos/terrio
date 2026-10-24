@@ -1084,3 +1084,14 @@ test("Zarr stores and netCDF/HDF5 products as GDAL reads them", { skip: needs("n
     }
   }
 });
+
+
+test("viewshed visibility, height and byte input", () => {
+  const dem = terrio.rasterFromArray(new Float64Array([0, 0, 10, 0, 0]), 5, 1, [0, 10, 0, 10, 0, -10], "EPSG:32611");
+  assert.deepEqual([...terrio.viewshed(dem, 5, 5, { cc: 0 }).readBand(1)], [255, 255, 255, 0, 0]);
+  const ground = terrio.viewshed(dem.toBytes("dem.tif"), 5, 5, { cc: 0, om: "GROUND" });
+  assert.equal(ground.dtype, "float64");
+  assert.deepEqual([...ground.readBand(1)], [0, 0, 0, 14, 18]);
+  assert.equal(terrio.viewshed(dem, 5, 5, { md: 20 }).width, 3);
+  assert.throws(() => terrio.viewshed(dem, 5, 5, { om: "ACCUM" }), /mode/);
+});

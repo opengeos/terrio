@@ -72,3 +72,25 @@ fn topology_tools_are_discoverable_and_execute_the_cli() {
     assert_eq!(replies[&2]["result"]["isError"], false);
     assert_eq!(terrio::open_vector(output.to_str().unwrap(), &Default::default()).unwrap().layers[0].len(), 1);
 }
+
+#[test]
+fn viewshed_tool_writes_height_raster() {
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("ridge.tif");
+    let output = dir.path().join("ground.tif");
+    let cfg = terrio::RasterConfig { cols: 5, rows: 1, cell_size: 10.0, data_type: terrio::DataType::F64, ..Default::default() };
+    let mut ds = terrio::RasterDataset::new(terrio::Raster::from_data(cfg, vec![0.0, 0.0, 10.0, 0.0, 0.0]).unwrap(), false);
+    ds.raster.crs.epsg = Some(32611);
+    ds.set_geo_transform([0.0, 10.0, 0.0, 10.0, 0.0, -10.0]);
+    terrio::write_raster_dataset(&ds, input.to_str().unwrap(), &Default::default()).unwrap();
+    let replies = session(&[
+        json!({"jsonrpc":"2.0","id":1,"method":"tools/list"}),
+        call(2, "viewshed", &[input.to_str().unwrap(), output.to_str().unwrap(), "--ox", "5", "--oy", "5", "--om", "GROUND", "--cc", "0"]),
+    ]);
+    assert!(replies[&1]["result"]["tools"].as_array().unwrap().iter().any(|t| t["name"] == "viewshed"));
+    assert_eq!(replies[&2]["result"]["isError"], false);
+    let out = terrio::open_raster(output.to_str().unwrap()).unwrap();
+    assert_eq!(out.raster.data_type, terrio::DataType::F64);
+    assert_eq!(out.raster.get(0, 0, 3), 14.0);
+    assert_eq!(out.raster.get(0, 0, 4), 18.0);
+}
