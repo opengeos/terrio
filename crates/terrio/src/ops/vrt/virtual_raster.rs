@@ -82,6 +82,16 @@ impl VirtualRaster {
         let header = src.header();
         let options = crate::ops::warp::with_file_gcps(options, source, &header)?;
         let options = options.as_ref();
+        if options.geoloc
+            || options.geolocation.is_some()
+            || (header.geolocation.is_some()
+                && options.gcps.is_empty()
+                && options.rpc.is_none()
+                && options.homography.is_none()
+                && options.src_transform.is_none())
+        {
+            return Err(unsupported("serialized geolocation transformer"));
+        }
         let target = crate::ops::warp::virtual_header(&header, options)?;
         let subdataset =
             ["NETCDF:", "HDF5:", "ZARR:", "GPKG:"].iter().any(|p| source.get(..p.len()).is_some_and(|v| v.eq_ignore_ascii_case(p)));

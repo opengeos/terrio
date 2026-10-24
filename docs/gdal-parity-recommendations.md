@@ -68,12 +68,14 @@ explicit full-resolution path because overview generation changes sampled values
 
 ### 3. Geolocation-array warping
 
-[`RasterDataset`](../crates/terrio/src/dataset.rs) carries geolocation arrays, and
-the scientific drivers populate them, but
-[`WarpOptions`](../crates/terrio/src/ops/warp.rs) has affine, GCP and RPC paths
-without a geolocation-array transformer. This leaves a gap between reading swath
-products and reprojecting them. GDAL supports a dedicated `-geoloc` path.
-[GDAL warp](https://gdal.org/en/stable/programs/gdalwarp.html).
+Implemented in [PR #241](https://github.com/opengeos/terrio/pull/241): the warper
+uses indexed bilinear geolocation cells for scientific swaths, including
+subsampled arrays, pixel-center conventions, invalid coordinates and antimeridian
+crossings. Rust, CLI/MCP, Python and JavaScript expose the capability. The
+supported subset and in-memory indexing are documented. Sentinel-5P and
+full-resolution valid arrays match GDAL exactly; subsampled/invalid-node cases
+retain 9–32 boundary-mask differences per 160×100 band, with common-valid values
+identical. [GDAL warp](https://gdal.org/en/stable/programs/gdalwarp.html).
 
 Acceptance: use real swath products already represented in the scientific-format
 fixtures; compare bounds, valid-data coverage and resampled values. Include
@@ -82,14 +84,16 @@ antimeridian crossings.
 
 ### 4. Richer VRT interoperability
 
-[`ops/vrt.rs`](../crates/terrio/src/ops/vrt.rs) already supports SimpleSource,
-ComplexSource and AveragedSource. It explicitly excludes derived bands, kernel
-filters, pixel functions and warped VRTs. Extend serialized warped VRT support
-first; then implement selected built-in derived operations and kernel filters.
-The Python WarpedVRT interface already exists, so describe this as extending
-interoperable VRT files and the core reader. GDAL supports these virtual dataset
-forms, including pansharpened VRTs.
-[GDAL VRT](https://gdal.org/en/stable/drivers/raster/vrt.html).
+The `VirtualRaster` reader now extends existing simple/complex/averaged sources
+with serialized warped VRTs (affine/reprojection, GCP/TPS/homography/RPC), selected
+scalar derived functions, full/separable kernel filters and lazy masks. Rust
+parses/serializes the descriptions; CLI/MCP and Python write warped VRT files
+without materializing pixels, and Python/JavaScript accept uploaded source maps.
+Whole/cropped GDAL cross-reads are registered in the `vrt` conformance suite;
+a counted source regression checks bounded pixel reads. See the
+[supported subset](cli.md#serialized-virtual-rasters) for remaining serialized
+cutline/alpha/geolocation and external-function limitations. Pansharpened VRTs
+follow the pansharpening implementation. [GDAL VRT](https://gdal.org/en/stable/drivers/raster/vrt.html).
 
 Acceptance: open GDAL-generated VRT fixtures and compare window reads, masks and
 pixels; verify Terrio-generated files in GDAL. Keep evaluation lazy and implement

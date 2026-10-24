@@ -118,3 +118,22 @@ separable kernels, and affine/reprojection/GCP/TPS/homography/RPC transforms:
 ```sh
 python scripts/conformance.py ../terrio-data --only vrt --strict
 ```
+
+## Build size and iteration speed
+
+Development and test builds omit debug symbols by default. Enable full debugger
+information with `CARGO_PROFILE_DEV_DEBUG=2 cargo test`; this increases disk use.
+Incremental compilation remains available locally for repeated edits.
+
+For several independent worktrees, use a shared compiler cache such as `sccache`
+with `RUSTC_WRAPPER=sccache CARGO_INCREMENTAL=0`. Rust incremental compilation
+cannot be cached by sccache. Keep each active worktree's target directory separate:
+a single shared Cargo target directory serializes concurrent builds on its lock.
+Put build targets on disk rather than a memory-backed `/tmp`, and limit aggregate
+build parallelism when running multiple worktrees (for example, `CARGO_BUILD_JOBS=2`
+per worktree). Use development WASM/Python builds for iteration; run optimized
+package builds for final validation.
+
+CI saves dependency caches for PR updates as well as main, disables incremental
+compilation, and cancels obsolete runs when a PR receives a newer push. Release
+profiles and the full validation matrix are unchanged.
