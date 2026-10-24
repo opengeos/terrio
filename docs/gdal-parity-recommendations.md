@@ -164,7 +164,7 @@ preservation during netCDF–Zarr conversions.
 
 ## Suggested sequence
 
-Start with fill nodata and overview-aware warping. Next implement geolocation
+Start with overview-aware warping. Next implement geolocation
 warping and richer VRT support to complete existing reader workflows. SQL,
 viewshed and pansharpening can ship independently. Schedule indexed catalogs and
 the multidimensional model according to demand for continental mosaics and

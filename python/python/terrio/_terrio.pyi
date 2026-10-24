@@ -905,11 +905,11 @@ def proximity(
     bigtiff: bool = False,
 ) -> Raster: ...
 def fill_nodata(
-    src: _RasterSource,
+    src: _RasterSource | os.PathLike[str],
     dst: str | None = None,
     *,
     band: int = 1,
-    mask: _RasterSource | None = None,
+    mask: _RasterSource | os.PathLike[str] | None = None,
     max_distance: float = 100.0,
     interpolation: str = "inv_dist",
     smoothing_iterations: int = 0,

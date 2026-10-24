@@ -29,6 +29,7 @@ pub struct Args {
 }
 
 pub fn run(a: Args) -> terrio::Result<()> {
+    let interpolation = Interpolation::parse(&a.interpolation)?;
     let mut input = open_lazy(&a.input)?;
     let (w, h) = (input.width(), input.height());
     let mask = match a.mask {
@@ -40,7 +41,7 @@ pub fn run(a: Args) -> terrio::Result<()> {
         band: a.band,
         mask: mask.as_deref(),
         max_distance: a.max_distance,
-        interpolation: Interpolation::parse(&a.interpolation)?,
+        interpolation,
         smoothing_iterations: a.smoothing_iterations,
     };
     a.out.write(&fill_nodata(&ds, &options)?, &a.output)

@@ -476,14 +476,14 @@ fn fill_nodata(
     use terrio::ops::fill_nodata::{FillNodataOptions, Interpolation, raster_mask};
     let method = Interpolation::parse(interpolation).py()?;
     let use_default_mask = mask.is_none();
-    let (ds, default_mask) = match src.extract::<String>() {
-        Ok(path) => crate::with_warnings(py, || {
+    let (ds, default_mask) = match crate::ops::raster_path(src)? {
+        Some(path) => crate::with_warnings(py, || {
             let mut r = terrio::open_raster_lazy(&path)?;
             let window = terrio::Window::new(0, 0, r.width(), r.height());
             let bytes = if use_default_mask { r.read_mask(window, None)? } else { None };
             Ok((r.read()?, bytes))
         })?,
-        Err(_) => {
+        None => {
             let mut r = src.cast::<PyRaster>().map_err(|_| invalid("expected a path or a terrio.Raster"))?.borrow_mut();
             let window = terrio::Window::new(0, 0, r.inner.width(), r.inner.height());
             let bytes = if mask.is_none() { r.inner.read_mask(window, None).py()? } else { None };

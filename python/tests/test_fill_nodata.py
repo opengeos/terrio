@@ -127,3 +127,14 @@ def test_sparse_nearest_smoothing_stays_finite(distance):
     ).read(1)
     assert np.isfinite(out).all()
     np.testing.assert_array_equal(out, band.ReadAsArray())
+
+
+def test_pathlike_source_and_mask(tmp_path):
+    source = tmp_path / "source.tif"
+    mask = tmp_path / "mask.tif"
+    raster(np.array([[1, 0, 3]], dtype="float32"), 0).write(str(source))
+    raster(np.array([[255, 0, 255]], dtype="uint8")).write(str(mask))
+    out = terrio.fill_nodata(source, mask=mask)
+    np.testing.assert_array_equal(out.read(1), [[1, 2, 3]])
+    # The shared raster-input helper remains consistent with the other operations.
+    assert terrio.proximity(source).read(1).shape == (1, 3)

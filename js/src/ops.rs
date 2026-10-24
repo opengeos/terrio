@@ -827,6 +827,7 @@ pub fn fill_nodata(src: JsValue, options: JsValue) -> Result<Dataset, JsError> {
     use terrio::ops::fill_nodata::{FillNodataOptions, Interpolation, raster_mask};
     let (rest, taken) = split_options(&options, &["mask"])?;
     let a: FillNodataArgs = parse_options(&rest)?;
+    let interpolation = Interpolation::parse(&a.interpolation).map_err(js_err)?;
     let read = |r: &mut terrio::LazyRaster| -> Result<(RasterDataset, Option<Vec<u8>>), JsError> {
         let window = terrio::Window::new(0, 0, r.width(), r.height());
         let mask = if taken[0].is_none() { r.read_mask(window, None).map_err(js_err)? } else { None };
@@ -849,7 +850,7 @@ pub fn fill_nodata(src: JsValue, options: JsValue) -> Result<Dataset, JsError> {
         band: a.band,
         mask: bytes.as_deref(),
         max_distance: a.max_distance,
-        interpolation: Interpolation::parse(&a.interpolation).map_err(js_err)?,
+        interpolation,
         smoothing_iterations: a.smoothing_iterations,
     };
     Ok(Dataset::from_raster(terrio::ops::fill_nodata::fill_nodata(&ds, &o).map_err(js_err)?))
