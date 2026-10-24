@@ -178,9 +178,11 @@ def main():
                 record = {"error": str(error)}
             record["name"] = name
             records.append(record)
-        if args.only is None or args.only in "overview remote USGS":
+        remote_names = ["overview remote USGS NONE", "overview remote USGS AUTO"]
+        if args.only is None or any(args.only in name for name in remote_names):
             try:
-                records.extend(remote_cases(args.data, tmp, args.terrio))
+                records.extend(r for r in remote_cases(args.data, tmp, args.terrio)
+                               if args.only is None or args.only in r["name"])
             except Exception as error:
                 records.append({"name": "overview remote USGS", "error": str(error)})
     if args.json:
