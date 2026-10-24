@@ -150,17 +150,19 @@ resolutions, masked borders, explicit weights and integer output clipping.
 
 ### 9. Native multidimensional API
 
-The roadmap documents higher-dimensional Zarr reads by flattening additional
-dimensions into raster bands. Scientific format support is already substantial;
-the missing abstraction is a common named-dimension array API, rather than another
-netCDF or Zarr reader. Introduce groups, named dimensions and coordinates, lazy
-slicing and transposition, while retaining the raster view for compatibility.
-GDAL's multidimensional model exposes groups, arrays, attributes and dimensions.
-[GDAL multidimensional model](https://gdal.org/en/stable/user/multidim_raster_data_model.html).
+The native [multidimensional API](multidim.md) now exposes groups, named dimensions,
+coordinate arrays and lazy positive-stride slicing/transposition across numeric
+netCDF/HDF5 and Zarr arrays. Rust, CLI/MCP, Python and JavaScript bindings retain
+packed values and native integer precision. Existing raster views remain available.
+General string/compound arrays are listed as unsupported; netCDF snapshots currently
+materialize numeric arrays, while Zarr snapshots iterate chunks.
 
-Acceptance: compare named slices with GDAL's multidimensional API and xarray on
-existing CMIP6/HRRR fixtures; verify chunk-level I/O and dimension/coordinate
-preservation during netCDF–Zarr conversions.
+Conformance compares real NOAA wind, JPSS geolocation, Sentinel-5P and SRTM arrays
+with GDAL MD and xarray. A wind-derived four-dimensional cube checks time/depth
+slices, coordinate/chunk/unlimited-axis preservation across netCDF–Zarr snapshots,
+and reads that skip damaged unselected chunks. A counting-storage regression measures
+selected hyperslab I/O. The documented numeric scope follows
+[GDAL's multidimensional model](https://gdal.org/en/stable/user/multidim_raster_data_model.html).
 
 ## Suggested sequence
 
