@@ -34,6 +34,8 @@ fn same_datum_is_not_a_ballpark() {
 #[test]
 fn operation_options_are_validated() {
     assert!(TransformOptions::from_options(&[("ALLOW_BALLPARK", "perhaps")]).is_err());
+    assert!(TransformOptions::from_strict_options(&[("ALLOW_BALPARK", "NO")]).is_err());
+    assert!(TransformOptions::from_options(&[("UNRELATED_TRANSFORMER_OPTION", "YES")]).is_ok());
     let opts = TransformOptions::from_options(&[("allow_ballpark", "no"), ("ONLY_BEST", "yes")]).unwrap();
     assert_eq!(opts.allow_ballpark, Some(false));
     assert!(opts.only_best);
@@ -54,6 +56,9 @@ fn missing_best_grid_can_be_refused_and_outside_area_is_reported() {
     let t = Transformer::with_options(&src, &dst, &opts).unwrap();
     let error = t.transform(600000.0, 200000.0).unwrap_err().to_string();
     assert!(error.contains("ONLY_BEST"), "{error}");
+    // An outside-area point chooses a grid-free fallback. The previous missing-grid
+    // diagnostic must not turn that independently valid point into a failure.
+    assert!(t.transform(0.0, 0.0).is_ok());
     assert!(t.check_policy().is_err());
     let raster = wbraster::Raster::from_data(
         wbraster::RasterConfig {

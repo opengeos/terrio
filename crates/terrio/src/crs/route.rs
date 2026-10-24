@@ -303,8 +303,7 @@ impl Route {
     }
 
     /// Evaluate exactly the chosen operation, without a fallback after a pipeline failure.
-    pub fn apply_best(&self, src: &Def, x: f64, y: f64, p: Point, three_d: bool) -> Option<Point> {
-        let (op, _) = self.selected(src, x, y, p);
+    pub fn apply_selected(&self, src: &Def, x: f64, y: f64, p: Point, three_d: bool, op: Option<&Op>) -> Option<Point> {
         let Some(op) = op else { return self.apply(src, x, y, p, three_d) };
         match &self.kind {
             Kind::List(list) => {

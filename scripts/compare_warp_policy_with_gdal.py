@@ -30,7 +30,7 @@ def main():
         ds = None
         env = {**os.environ, "TERRIO_NETWORK": "OFF", "TERRIO_GRID_CACHE": str(tmp / "grids")}
 
-        def run(name, reference, command, tolerance):
+        def run(name, reference, command, tolerance, raster_type="Point"):
             actual = tmp / "actual.tif"
             try:
                 process = subprocess.run([args.terrio, *map(str, command)], capture_output=True, text=True, env=env)
@@ -43,10 +43,11 @@ def main():
                 record["same_nodata"] = ref_ds.GetRasterBand(1).GetNoDataValue() == actual_ds.GetRasterBand(1).GetNoDataValue()
                 expected = gdal.Open(str(reference)).GetMetadataItem("AREA_OR_POINT")
                 observed = gdal.Open(str(actual)).GetMetadataItem("AREA_OR_POINT")
-                record["same_metadata"] = record.get("same_metadata", True) and expected == observed == "Point"
+                record["same_metadata"] = record.get("same_metadata", True) and expected == observed == raster_type
             except Exception as error:
                 record = {"error": str(error)}
-            record["name"] = name
+            record["name"] = f"{name} (abs_tol={tolerance})"
+            record["tolerance"] = tolerance
             records.append(record)
 
         for driver in ["GTiff", "COG"]:
@@ -54,6 +55,17 @@ def main():
             gdal.Translate(str(reference), str(source), srcWin=[7, 9, 60, 50], format=driver)
             run(f"point translate {driver}", reference,
                 ["translate", source, tmp / "actual.tif", "--srcwin", 7, 9, 60, 50, "-f", driver], 0)
+        plain = tmp / "plain.tif"
+        dataset = gdal.GetDriverByName("GTiff").Create(str(plain), 4, 4, 1, gdal.GDT_Float32)
+        # Georeferenced, without a CRS or raster-type GeoKey.
+        dataset.SetGeoTransform([0, 1, 0, 4, 0, -1])
+        dataset.GetRasterBand(1).Fill(7)
+        dataset = None
+        reference = tmp / "plain-reference.tif"
+        dataset = gdal.Translate(str(reference), str(plain))
+        dataset = None
+        run("plain TIFF has no raster-type metadata", reference,
+            ["translate", plain, tmp / "actual.tif"], 0, raster_type=None)
         for resolution in [10, 25, 60]:
             for method in ["near", "bilinear", "cubic", "cubicspline", "lanczos"]:
                 reference = tmp / "warp.tif"

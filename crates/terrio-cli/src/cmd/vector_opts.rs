@@ -53,6 +53,10 @@ pub struct VectorArgs {
 }
 
 impl VectorArgs {
+    pub fn has_transform_options(&self) -> bool {
+        !self.transform_options.is_empty()
+    }
+
     pub fn coordinate_options(&self) -> terrio::Result<terrio::crs::TransformOptions> {
         coordinate_options(&self.transform_options)
     }
@@ -130,13 +134,7 @@ impl VectorArgs {
 
 /// Dedicated coordinate-operation flags reject typos; warp's mixed --to list remains permissive.
 pub(super) fn coordinate_options(items: &[String]) -> terrio::Result<terrio::crs::TransformOptions> {
-    let pairs = super::convert::key_values(items)?;
-    for (key, _) in &pairs {
-        if !key.eq_ignore_ascii_case("ALLOW_BALLPARK") && !key.eq_ignore_ascii_case("ONLY_BEST") {
-            return Err(terrio::Error::InvalidArgument(format!("unknown coordinate operation option: {key}")));
-        }
-    }
-    terrio::crs::TransformOptions::from_options(&pairs)
+    terrio::crs::TransformOptions::from_strict_options(&super::convert::key_values(items)?)
 }
 
 #[cfg(test)]

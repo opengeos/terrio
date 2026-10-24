@@ -426,7 +426,7 @@ fn convert(
     overwrite: bool,
     ct_opt: Option<std::collections::HashMap<String, String>>,
 ) -> PyResult<()> {
-    let transform_options = TransformOptions::from_options(&ct_opt.unwrap_or_default().into_iter().collect::<Vec<_>>()).py()?;
+    let transform_options = TransformOptions::from_strict_options(&ct_opt.unwrap_or_default().into_iter().collect::<Vec<_>>()).py()?;
     let t_srs = srs(t_srs)?;
     let vector_options = VectorTranslateOptions {
         where_clause: r#where,

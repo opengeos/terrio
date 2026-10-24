@@ -157,3 +157,12 @@ fn vector_conversion_refuses_ballparks_and_reports_fallbacks() {
     assert!(String::from_utf8_lossy(&output.stderr).contains("ALLOW_BALLPARK"));
     assert!(!dir.path().join("strict.geojson").exists());
 }
+
+#[test]
+fn point_cloud_reprojection_rejects_coordinate_options_before_reading() {
+    let dir = tempfile::tempdir().unwrap();
+    let output = run(&["convert", "missing.las", "out.las", "--t-srs", "EPSG:4326", "--ct-opt", "ONLY_BEST=YES"], dir.path());
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("--ct-opt is not supported for point-cloud reprojection"));
+    assert!(!dir.path().join("out.las").exists());
+}

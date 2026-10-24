@@ -2564,6 +2564,10 @@ mod tests {
         let error = write(&unknown, path.to_str().unwrap(), &Default::default()).unwrap_err();
         assert!(error.to_string().contains("requires a CRS"));
         assert!(!path.exists());
+        unknown.metadata.clear();
+        write(&unknown, path.to_str().unwrap(), &Default::default()).unwrap();
+        let plain = crate::geotiff::read_geotiff(&path).unwrap();
+        assert!(!plain.raster.metadata.iter().any(|(k, _)| k == "AREA_OR_POINT"));
         for gt in [None, Some([100.0, 10.0, 2.0, 230.0, 1.0, -10.0]), Some([100.0, 10.0, 0.0, 200.0, 0.0, 10.0])] {
             for cog in [false, true] {
                 let path = dir.path().join("point.tif");

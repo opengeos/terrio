@@ -831,6 +831,8 @@ grids (sampled at the first coordinate with default options, with
 outside their area of use. Parallel work aggregates warnings, which appear once
 on stderr and in MCP tool result text. These controls govern horizontal datum
 operation selection; vertical/geoid selection retains its existing behavior.
+Point-cloud reprojection currently rejects `--ct-opt` because it does not support
+these controls.
 
 GDAL 3.13 changed warp kernel scales and the bilinear/cubic downsampling threshold.
 Use `warp --kernel-version 3.13` to reproduce that behavior. The default `3.12`

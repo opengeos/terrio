@@ -235,6 +235,12 @@ def test_convert_and_warp_coordinate_operation_controls(tmp_path):
         '{"type":"FeatureCollection","features":[{"type":"Feature","properties":{},'
         '"geometry":{"type":"Point","coordinates":[110,35]}}]}'
     )
+    with pytest.raises(ValueError, match="unknown coordinate operation option"):
+        terrio.convert(
+            str(point),
+            str(tmp_path / "typo.geojson"),
+            ct_opt={"ALLOW_BALPARK": "NO"},
+        )
     with pytest.raises(terrio.CRSError, match="ALLOW_BALLPARK"):
         terrio.convert(
             str(point),

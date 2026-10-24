@@ -158,6 +158,9 @@ pub fn run(mut a: Args) -> terrio::Result<()> {
     a.input = super::with_driver(&a.input, a.driver.as_deref())?;
     if terrio::pointcloud::is_point_cloud_path(&a.input) {
         let t_srs = a.t_srs.as_deref().map(SpatialRef::parse).transpose()?;
+        if t_srs.is_some() && a.vector.has_transform_options() {
+            return Err(terrio::Error::InvalidArgument("--ct-opt is not supported for point-cloud reprojection".into()));
+        }
         let format = a.format.as_deref().filter(|f| terrio::pointcloud::PointFormat::from_name(f).is_some());
         return super::points::convert(&a.input, &a.output, format, t_srs, &a.vector, &a.points, &a.point_write);
     }
