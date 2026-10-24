@@ -371,8 +371,9 @@ pub(crate) fn parse_pam(xml: &str) -> Pam {
         let v: Vec<f64> = g.split(',').filter_map(|x| x.trim().parse().ok()).collect();
         <[f64; 6]>::try_from(v).ok()
     });
-    let band_nodata: Vec<(usize, f64)> = crate::ops::vrt::xml::parse(xml)
-        .ok()
+    let root = crate::ops::vrt::xml::parse(xml).ok();
+    let band_nodata: Vec<(usize, f64)> = root
+        .as_ref()
         .map(|root| {
             root.children
                 .iter()
@@ -381,7 +382,7 @@ pub(crate) fn parse_pam(xml: &str) -> Pam {
                 .collect()
         })
         .unwrap_or_default();
-    let dataset_nodata = crate::ops::vrt::xml::parse(xml).ok().and_then(|root| root.child("NoDataValue").and_then(|e| parse_f64(&e.text)));
+    let dataset_nodata = root.as_ref().and_then(|root| root.child("NoDataValue").and_then(|e| parse_f64(&e.text)));
     let nodata = band_nodata.iter().find(|(b, _)| *b == 1).map(|(_, v)| *v).or(dataset_nodata);
     Pam { crs, geo_transform, nodata, band_nodata }
 }
