@@ -179,6 +179,17 @@ const summary = sql(countries, "SELECT COUNT(*) AS n, SUM(POP_EST) AS population
 Raw GeoJSON inputs use the layer name `layer`; use `Layer.from_geojson(..., name=...)`
 (Python) or `fromGeoJSON(src, name)` (JavaScript) to assign another name.
 
+## Viewshed
+
+```javascript
+const visible = terrio.viewshed(dem, 500000, 4400000, { oz: 2, tz: 0, md: 5000 });
+const height = terrio.viewshed(dem, 500000, 4400000, { om: "GROUND", cc: 0 });
+```
+
+The input can be a dataset or raster bytes. `om` selects NORMAL visibility, DEM minimum
+visible elevation, or GROUND minimum height above the DEM. `cc` is 1 minus refraction.
+See [viewshed](cli.md#viewshed) for units, curvature, radius cropping and nodata behavior.
+
 ## Geolocation-array warping
 
 Pass longitude and latitude rasters explicitly when array datasets cannot be reopened from
