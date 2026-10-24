@@ -28,6 +28,8 @@ terrio <COMMAND>
   calc        Raster algebra: band math in NumPy syntax over one or more rasters (like gdal_calc.py)
   proximity   Distance from every pixel to the nearest target pixel (like gdal_proximity.py)
   pansharpen  Weighted Brovey pansharpening of panchromatic and spectral bands
+
+  viewshed    Single-observer visibility or minimum visible height (like gdal_viewshed)
   sieve       Merge raster areas smaller than a threshold into their largest neighbour (like gdal_sieve.py)
   crs         Describe a coordinate reference system, or transform coordinates between two
   formats     List the formats terrio reads and writes
@@ -480,6 +482,38 @@ produces nodata in every output band when enabled; otherwise zero intensity prod
 Explicit dataset masks are not used. Zero padding and nodata are separate: use `--nodata 0`
 when padded margins should be missing. Output is materialized; pansharpened VRT output is deferred.
 The command is also an MCP tool.
+
+## viewshed
+
+```sh
+terrio viewshed dem_utm.tif visible.tif --ox 500000 --oy 4400000 --oz 2 --tz 0 --md 5000
+terrio viewshed dem_utm.tif height.tif --ox 500000 --oy 4400000 --om GROUND --cc 0
+```
+
+Single-observer viewshed using GDAL's default edge recurrence. `--om NORMAL` produces Byte
+visibility (255 visible, 0 hidden); `DEM` produces the minimum visible elevation and `GROUND`
+the minimum visible height above the DEM surface, both Float64. Height modes ignore `--tz`.
+`--md` is maximum distance, zero for unlimited, and crops the output rectangle. Its corner
+pixels outside the radius receive `--ov` (default 0). `--band` selects a source band.
+
+The DEM must be north-up in a projected CRS. Heights use DEM units and maximum distance
+uses projected CRS units. Observer coordinates are converted to pixels by truncating toward
+zero, as in GDAL. Outside observers start at an unobstructed nearest edge. Their height is
+absolute when X is outside; when only Y is outside, GDAL samples elevation on the nearest row.
+For physically consistent curvature, use horizontal and vertical units in metres: GDAL's
+curvature formula uses the ellipsoid diameter in metres even for other projected units. `--cc` is the curvature
+coefficient, equal to 1 minus the atmospheric refraction coefficient: 0 gives a flat Earth,
+1 disables refraction. The default is 0.85714 for Earth ellipsoids, 1 for other bodies.
+
+Like GDAL, numeric nodata values are treated as elevations and masks are ignored; this can
+produce misleading occlusion. Nonfinite elevations in the processed rectangle produce an
+error. Fill or crop missing elevations before use. Output has no nodata marker. Cumulative
+visibility is not supported. The command is also an MCP tool.
+
+Terrio applies the radius mask deterministically. GDAL 3.12 can race its left/right row jobs
+for an outside observer, occasionally leaving an out-of-range boundary pixel visible. The
+conformance suite checks Terrio's mask independently and compares in-radius GDAL pixels for
+that case; all other viewshed cases compare every pixel.
 
 ## calc
 

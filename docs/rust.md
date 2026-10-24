@@ -201,6 +201,21 @@ let sharp = pansharpen(&pan, &spectral, &PansharpenOptions::default())?;
 Each `SpectralBand` can reference a separate raster. See [pansharpen](cli.md#pansharpen)
 for working types, interpolation, nodata, bit depth and extent handling.
 
+### Viewshed
+
+```rust
+use terrio::ops::viewshed::{viewshed, ViewshedOptions};
+let dem = terrio::open_raster("dem_utm.tif")?;
+let visible = viewshed(&dem, &ViewshedOptions {
+    observer_x: 500000.0, observer_y: 4400000.0, max_distance: 5000.0,
+    ..Default::default()
+})?;
+# Ok::<(), terrio::Error>(())
+```
+
+`ViewshedMode::Dem` and `Ground` return minimum visible elevation or height above the DEM.
+See [viewshed](cli.md#viewshed) for units, curvature, radius cropping and nodata behavior.
+
 ## Coordinate systems
 
 ```rust,no_run

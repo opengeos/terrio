@@ -188,6 +188,17 @@ All spectral inputs contribute to intensity; `bands` selects/reorders output ban
 the flattened input sequence. See [pansharpen](cli.md#pansharpen) for interpolation,
 working types, nodata, bit depth and extent handling.
 
+### Viewshed
+
+```python
+visible = terrio.viewshed("dem_utm.tif", 500000, 4400000, oz=2, tz=0, md=5000)
+height = terrio.viewshed("dem_utm.tif", 500000, 4400000, om="GROUND", cc=0)
+```
+
+`om="NORMAL"` returns visibility; `DEM` and `GROUND` return minimum visible elevation
+or height above the DEM. `cc` is 1 minus refraction. See [viewshed](cli.md#viewshed) for
+units, curvature, radius cropping and input nodata behavior.
+
 ## Typing
 
 The package ships type stubs (`py.typed`), checked with `mypy --strict` and `stubtest`:

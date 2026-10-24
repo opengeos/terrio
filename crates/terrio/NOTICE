@@ -274,3 +274,12 @@ Copyright (c) 2000, Frank Warmerdam
 Copyright (c) 2007-2010, Even Rouault <even dot rouault at spatialys.com>
 
 Licensed under the MIT permission and warranty terms reproduced above for GDAL.
+
+-------------------------------------------------------------------------------
+GDAL viewshed edge recurrence
+-------------------------------------------------------------------------------
+
+crates/terrio/src/ops/viewshed.rs adapts the edge-mode height recurrence in GDAL's
+alg/viewshed/viewshed_executor.cpp (https://github.com/OSGeo/gdal), by Tamas Szekeres.
+Copyright (c) 2024 info@hobu.co. Licensed under the MIT permission and warranty
+terms reproduced above for GDAL.

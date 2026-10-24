@@ -44,6 +44,7 @@ pub(crate) mod strips;
 pub mod topology;
 pub mod translate;
 pub mod vector_filter;
+pub mod viewshed;
 pub mod vrt;
 pub mod warp;
 pub mod zonal;
