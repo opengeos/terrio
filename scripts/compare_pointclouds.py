@@ -56,6 +56,8 @@ import laspy
 import numpy as np
 import terrio
 
+from pdal_reference import ept_codec_available, run_pipeline
+
 PDAL = shutil.which("pdal")
 GDAL_GRID = shutil.which("gdal_grid")
 # Files that laspy and PDAL cannot read, and another file of the same points.
@@ -457,7 +459,7 @@ def pdal_text(stages: list) -> dict[str, np.ndarray]:
     with tempfile.TemporaryDirectory() as d:
         out = Path(d) / "points.txt"
         writer = {"type": "writers.text", "filename": str(out), "precision": 17, "keep_unspecified": True}
-        subprocess.run([PDAL, "pipeline", "--stdin"], input=json.dumps(stages + [writer]), text=True, check=True, capture_output=True)
+        run_pipeline(PDAL, stages + [writer])
         with open(out) as f:
             names = [h.strip().strip('"') for h in f.readline().split(",")]
         a = np.loadtxt(out, delimiter=",", skiprows=1, ndmin=2)
@@ -563,14 +565,14 @@ def compare_formats(root: Path, tmp: Path) -> None:
     for data_type in ["laszip", "binary", "zstandard"]:
         out = tmp / f"ept_{data_type}" / "ept.json"
         terrio.convert_points(str(src), str(out), ept_data_type=data_type)
-        try:
-            got = pdal_text([{"type": "readers.ept", "filename": str(out)}])
-        except subprocess.CalledProcessError as e:
-            got = None
-            if data_type == "zstandard":
-                print(f"skip writefmt autzen_trim.laz -> EPT ({data_type}), read by PDAL: this PDAL cannot read {data_type} tiles")
-            else:
-                report(f"writefmt autzen_trim.laz -> EPT ({data_type}), read by PDAL readers.ept", False, (e.stderr or "")[:200])
+        got = None
+        if ept_codec_available(PDAL, root / "ept" / "ellipsoid-zstandard" / "ept.json", data_type):
+            try:
+                got = pdal_text([{"type": "readers.ept", "filename": str(out)}])
+            except subprocess.CalledProcessError as error:
+                report(f"writefmt autzen_trim.laz -> EPT ({data_type}), read by PDAL readers.ept", False, error.stderr)
+        else:
+            print(f"skip writefmt autzen_trim.laz -> EPT ({data_type}), read by PDAL: known PDAL fixture confirms unsupported {data_type} tiles")
         if data_type != "laszip":
             ref_cmp = {k: (np.where(v > 0, np.floor(v + 0.5), np.ceil(v - 0.5)) if k in ("x", "y", "z") else v) for k, v in ref.items()}
         else:
@@ -652,10 +654,13 @@ def compare_ept_append(root: Path, tmp: Path) -> None:
         a, b = np.lexsort([np.asarray(back[k]) for k in keys]), np.lexsort([np.asarray(pc[k]) for k in keys])
         bad = [k for k in pc.dimensions if k in back and not np.array_equal(np.asarray(back[k]).astype("f8")[a], np.asarray(pc[k]).astype("f8")[b])]
         report(f"EPT append ({data_type}): {info['points']} points, read back by terrio as the source", info["points"] == len(pc) and len(back) == len(pc) and not bad, f"differ: {bad}")
+        if not ept_codec_available(PDAL, root / "ept" / "ellipsoid-zstandard" / "ept.json", data_type):
+            print(f"skip EPT append ({data_type}), read by PDAL: known PDAL fixture confirms unsupported {data_type} tiles")
+            continue
         try:
             got = pdal_text([{"type": "readers.ept", "filename": str(out)}])
-        except subprocess.CalledProcessError:
-            print(f"skip EPT append ({data_type}), read by PDAL: this PDAL cannot read {data_type} tiles")
+        except subprocess.CalledProcessError as error:
+            report(f"EPT append ({data_type}), read by PDAL readers.ept", False, error.stderr)
             continue
         exp = rounded(ref) if data_type != "laszip" else ref
         report(f"EPT append ({data_type}), read by PDAL readers.ept: every point of the source once", same_points(got, exp), "different points")
