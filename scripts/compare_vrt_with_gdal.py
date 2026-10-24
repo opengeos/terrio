@@ -289,7 +289,16 @@ def main():
                 assert actual.GetSpatialRef().IsSame(reference.GetSpatialRef())
                 assert all(same_value(actual.GetRasterBand(band).GetNoDataValue(), reference.GetRasterBand(band).GetNoDataValue())
                     for band in range(1, reference.RasterCount + 1))
-                record.update(exact=1., within_tol=1., same_type=True, same_nodata=True, gt_diff_px=0.)
+                record.update(
+                    size=f"{reference.RasterXSize}x{reference.RasterYSize}x{reference.RasterCount}",
+                    same_size=(actual.RasterXSize, actual.RasterYSize, actual.RasterCount)
+                        == (reference.RasterXSize, reference.RasterYSize, reference.RasterCount),
+                    type=gdal.GetDataTypeName(dtype), same_type=True, same_crs=True,
+                    same_nodata=True, gt_diff_px=0., exact=1., within_tol=1.,
+                    valid_gdal=sum(int(np.count_nonzero(reference.GetRasterBand(band).GetMaskBand().ReadAsArray()))
+                        for band in range(1, reference.RasterCount + 1)),
+                    valid_mismatch=0, differing=0, max_diff=0., mean_diff=0.,
+                )
             except Exception as error:
                 record["error"] = str(error)
             records.append(record)

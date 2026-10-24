@@ -37,8 +37,14 @@ fn rows_of(bytes: usize, width: usize, bands: usize, value_size: usize, block: O
 /// Whether writing `output` would overwrite one of `inputs` (the same file, under any name):
 /// those inputs are read whole before the output is written.
 pub(crate) fn overwrites(output: &str, inputs: &[String]) -> bool {
-    let Ok(out) = std::fs::canonicalize(output) else { return false };
-    inputs.iter().any(|p| std::fs::canonicalize(p).is_ok_and(|p| p == out))
+    let output_path = std::path::Path::new(output);
+    let out = std::fs::canonicalize(output_path).or_else(|error| {
+        let Some(parent) = output_path.parent() else { return Err(error) };
+        let Some(name) = output_path.file_name() else { return Err(error) };
+        std::fs::canonicalize(parent).map(|parent| parent.join(name))
+    });
+    let Ok(out) = out else { return false };
+    inputs.iter().any(|p| std::fs::canonicalize(p).is_ok_and(|p| p == out || (p.is_dir() && out.starts_with(&p))))
 }
 
 /// An output raster written a strip of rows at a time, from the top. A GeoTIFF dropped before
@@ -380,6 +386,20 @@ pub(crate) fn read_ahead<R: Send>(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn overwrite_guard_includes_directory_store_members() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = dir.path().join("source.zarr");
+        std::fs::create_dir_all(store.join("data")).unwrap();
+        let chunk = store.join("data/0.0");
+        std::fs::write(&chunk, b"source pixels").unwrap();
+        let adjacent = dir.path().join("source.zarr-other");
+        std::fs::write(&adjacent, b"unrelated").unwrap();
+        let inputs = vec![store.to_string_lossy().into_owned()];
+        assert!(super::overwrites(chunk.to_str().unwrap(), &inputs));
+        assert!(super::overwrites(store.join("data/new-chunk").to_str().unwrap(), &inputs));
+        assert!(!super::overwrites(adjacent.to_str().unwrap(), &inputs));
+    }
     use super::*;
     use crate::crs::SpatialRef;
     use crate::ops::{Grid, raster_header};

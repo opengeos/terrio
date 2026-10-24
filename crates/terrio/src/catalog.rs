@@ -141,7 +141,11 @@ impl CatalogInput {
     }
     fn open(&mut self) -> Result<LazyRaster> {
         if let Input::Bytes(bytes, name) = &mut self.0 {
-            self.0 = match crate::memory::open_raster_lazy_bytes(std::mem::take(bytes), name) {
+            let opened = match virtual_bytes(bytes, name)? {
+                Some(reader) => Ok(reader),
+                None => crate::memory::open_raster_lazy_bytes(std::mem::take(bytes), name),
+            };
+            self.0 = match opened {
                 Ok(reader) => Input::Raster(reader),
                 Err(error) => Input::Failed(error.to_string()),
             };
@@ -160,11 +164,23 @@ impl CatalogInput {
     }
     fn inputs(&self) -> Result<Vec<String>> {
         match &self.0 {
-            Input::Path(path) => Ok(vec![path.clone()]),
+            Input::Path(path) => crate::ops::vrt::source_input_paths(path),
             Input::Raster(reader) => reader.input_paths(),
-            Input::Bytes(..) | Input::Failed(_) => Ok(Vec::new()),
+            Input::Bytes(bytes, name) => virtual_bytes(bytes, name)?.map_or_else(|| Ok(Vec::new()), |reader| reader.input_paths()),
+            Input::Failed(message) => Err(bad(message)),
         }
     }
+}
+// Unlike ordinary encoded tiles, a VRT may still read physical references after open.
+// Both opening and overwrite inventory must resolve them against the same filename.
+fn virtual_bytes(bytes: &[u8], name: &str) -> Result<Option<LazyRaster>> {
+    let text = std::str::from_utf8(bytes);
+    let vrt = crate::formats::extension(name).as_deref() == Some("vrt") || text.is_ok_and(|s| s.trim_start().starts_with("<VRTDataset"));
+    if !vrt {
+        return Ok(None);
+    }
+    let text = text.map_err(|_| bad("invalid VRT XML encoding"))?;
+    crate::ops::vrt::VirtualRaster::from_xml(text)?.into_lazy(Path::new(name).parent().unwrap_or(Path::new(".")), HashMap::new()).map(Some)
 }
 /// A catalog whose pixels are assembled on demand. Local catalogs use the index's on-disk
 /// spatial index. [`RasterCatalog::from_layer`] supports in-memory indexes and sources in WASM.
@@ -978,28 +994,27 @@ impl crate::cog::StreamedSource for CatalogSource {
             return Ok(paths);
         }
         let field = catalog.schema.schema.field_index(catalog.options.location_field.as_deref().unwrap_or("location")).unwrap();
-        let mut add = |layer: &Layer| {
+        let mut add = |layer: &Layer| -> Result<()> {
             for feature in &layer.features {
-                if let Some(path) = feature.attributes.get(field).and_then(FieldValue::as_str)
-                    && !path.contains("://")
-                    && !path.starts_with("/vsi")
-                {
-                    paths.push(if Path::new(path).is_absolute() {
-                        path.into()
+                if let Some(location) = feature.attributes.get(field).and_then(FieldValue::as_str) {
+                    let path = if Path::new(location).is_absolute() || location.contains("://") || location.starts_with("/vsi") {
+                        location.into()
                     } else {
-                        catalog.base.join(path).to_string_lossy().into_owned()
-                    });
+                        catalog.base.join(location).to_string_lossy().into_owned()
+                    };
+                    paths.extend(crate::ops::vrt::source_input_paths(&path)?);
                 }
             }
+            Ok(())
         };
         match &catalog.index {
-            Index::Memory { layer, .. } => add(layer),
+            Index::Memory { layer, .. } => add(layer)?,
             Index::File { path, layer, .. } => {
                 let readers =
                     crate::stream::open_layers(path, &VectorOpenOptions { layers: vec![layer.clone()], ..Default::default() }, 4096)?;
                 for mut reader in readers {
                     while let Some(chunk) = reader.read_chunk(4096)? {
-                        add(&chunk);
+                        add(&chunk)?;
                     }
                 }
                 paths.push(path.clone());

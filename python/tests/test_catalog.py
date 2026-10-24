@@ -134,3 +134,68 @@ def test_supplied_lazy_sources_and_paths_are_deferred(tmp_path, mapping):
         )
         np.testing.assert_array_equal(catalog.read(1, window=(0, 0, 1, 1)), [[10]])
     np.testing.assert_array_equal(lazy.read(1, window=(0, 0, 1, 1)), [[10]])
+
+
+@pytest.mark.parametrize("mode", ["physical-index", "supplied-vrt", "supplied-path"])
+def test_nested_vrt_catalog_overwrite_reads_source_before_create(tmp_path, mode):
+    path = tmp_path / "source.tif"
+    terrio.Raster.from_array(
+        np.full((4, 4), 10, dtype="float32"), (0, 1, 0, 4, 0, -1), crs="EPSG:4326"
+    ).write(str(path))
+
+    def description(name):
+        return (
+            '<VRTDataset rasterXSize="4" rasterYSize="4"><SRS>EPSG:4326</SRS>'
+            '<GeoTransform>0,1,0,4,0,-1</GeoTransform><VRTRasterBand dataType="Float32">'
+            f'<SimpleSource><SourceFilename relativeToVRT="1">{name}</SourceFilename>'
+            "<SourceBand>1</SourceBand></SimpleSource></VRTRasterBand></VRTDataset>"
+        )
+
+    child = tmp_path / "child.vrt"
+    outer = tmp_path / "outer.vrt"
+    child.write_text(description("source.tif"))
+    outer.write_text(description("child.vrt"))
+    footprints = index()
+    footprints["features"] = footprints["features"][:1]
+    if mode == "physical-index":
+        footprints["features"][0]["properties"]["location"] = "outer.vrt"
+        index_path = tmp_path / "index.gti.gpkg"
+        terrio.write_vector(terrio.Layer.from_geojson(footprints), str(index_path))
+        catalog = terrio.open_catalog(
+            str(index_path), tr=(1, 1), te=(0, 0, 4, 4), bands=1, ot="Float32"
+        )
+    else:
+        source = terrio.open_raster(str(outer), lazy=True) if mode == "supplied-vrt" else outer
+        catalog = terrio.open_catalog(
+            footprints, {"left": source}, tr=(1, 1), te=(0, 0, 4, 4), bands=1, ot="Float32"
+        )
+    catalog.write(str(path))
+    np.testing.assert_array_equal(terrio.open_raster(str(path)).read(1), np.full((4, 4), 10))
+
+
+def test_vrt_subdataset_inventory_protects_physical_container(tmp_path):
+    gdal = pytest.importorskip("osgeo.gdal")
+    source = gdal.GetDriverByName("MEM").Create("", 4, 4, 1, gdal.GDT_Float32)
+    source.SetGeoTransform((0, 1, 0, 4, 0, -1))
+    osr = pytest.importorskip("osgeo.osr")
+    srs = osr.SpatialReference()
+    srs.ImportFromEPSG(4326)
+    source.SetSpatialRef(srs)
+    source.GetRasterBand(1).Fill(10)
+    path = tmp_path / "source.nc"
+    gdal.Translate(str(path), source, format="netCDF")
+    xml = (
+        '<VRTDataset rasterXSize="4" rasterYSize="4"><SRS>EPSG:4326</SRS>'
+        "<GeoTransform>0,1,0,4,0,-1</GeoTransform>"
+        '<VRTRasterBand dataType="Float32"><SimpleSource>'
+        f'<SourceFilename>NETCDF:"{path}":Band1</SourceFilename><SourceBand>1</SourceBand>'
+        "</SimpleSource></VRTRasterBand></VRTDataset>"
+    )
+    vrt = terrio.open_vrt(xml, {})
+    footprints = index()
+    footprints["features"] = footprints["features"][:1]
+    catalog = terrio.open_catalog(
+        footprints, {"left": vrt}, tr=(1, 1), te=(0, 0, 4, 4), bands=1, ot="Float32"
+    )
+    catalog.write(str(path), driver="GTiff")
+    np.testing.assert_array_equal(gdal.Open(str(path)).ReadAsArray(), np.full((4, 4), 10))

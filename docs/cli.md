@@ -703,6 +703,11 @@ overviews. Supplied handles remain alive with the catalog; the cache limit bound
 reader handles, not the caller-owned source map. Native supplied paths open only when selected
 and close on eviction; encoded files open on first selection.
 
+Catalog exports enumerate nested VRT references before creating their destination, including
+supplied aliases, masks, dataset containers and archive files. Inventory errors and cyclic
+references fail before opening the output. A destination within a referenced directory store
+also triggers a completed read before writing.
+
 Catalog mask caching retains at most 1 MiB of coverage. Larger mask requests return
 their buffer directly and release the cache instead of retaining and cloning it.
 

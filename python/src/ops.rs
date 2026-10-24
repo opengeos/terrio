@@ -1469,7 +1469,8 @@ fn open_catalog(
                 rasters.insert(name, input);
             }
         }
-        terrio::catalog::RasterCatalog::from_sources(layers.remove(0), rasters, options).py()?
+        let layer = layers.remove(0);
+        py.detach(|| terrio::catalog::RasterCatalog::from_sources(layer, rasters, options)).py()?
     };
     Ok(PyRaster { inner: catalog.into_lazy() })
 }

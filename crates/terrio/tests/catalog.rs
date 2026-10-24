@@ -398,3 +398,91 @@ fn generated_alpha_ignores_source_alpha_when_all_data_is_nodata() {
     .unwrap();
     assert_eq!(catalog.read_window(Window::new(0, 0, 1, 1), &[3]).unwrap().raster.data.to_f64_vec(), vec![0.]);
 }
+
+fn reference_vrt(source: &str, mask: Option<&str>) -> String {
+    let source_band = |name: &str| {
+        format!("<SimpleSource><SourceFilename relativeToVRT=\"1\">{name}</SourceFilename><SourceBand>1</SourceBand></SimpleSource>")
+    };
+    let mask = mask
+        .map(|name| format!("<MaskBand><VRTRasterBand dataType=\"Byte\">{}</VRTRasterBand></MaskBand>", source_band(name)))
+        .unwrap_or_default();
+    format!(
+        "<VRTDataset rasterXSize=\"4\" rasterYSize=\"4\"><SRS>EPSG:3857</SRS><GeoTransform>0,1,0,4,0,-1</GeoTransform><VRTRasterBand dataType=\"Float64\">{}</VRTRasterBand>{mask}</VRTDataset>",
+        source_band(source)
+    )
+}
+
+#[cfg(feature = "sqlite")]
+#[test]
+fn native_catalog_inventory_expands_nested_vrt_tiles_and_masks_before_overwrite() {
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path().join("actual.tif");
+    let mask = dir.path().join("mask.tif");
+    terrio::write_raster_dataset(&tile(0., 10.), data.to_str().unwrap(), &Default::default()).unwrap();
+    terrio::write_raster_dataset(&tile(0., 255.), mask.to_str().unwrap(), &Default::default()).unwrap();
+    std::fs::write(dir.path().join("nested.vrt"), reference_vrt("actual.tif", None)).unwrap();
+    std::fs::write(dir.path().join("outer.vrt"), reference_vrt("nested.vrt", Some("mask.tif"))).unwrap();
+    let mut footprints = index();
+    footprints.features.truncate(1);
+    footprints.features[0].attributes[0] = FieldValue::Text("outer.vrt".into());
+    let index_path = dir.path().join("index.gti.gpkg");
+    terrio::write_vector(&[footprints], index_path.to_str().unwrap(), &Default::default()).unwrap();
+    for destination in [&data, &mask] {
+        let catalog =
+            RasterCatalog::open(index_path.to_str().unwrap(), CatalogOptions { extent: Some((0., 0., 4., 4.)), ..options() }).unwrap();
+        catalog.into_lazy().write(destination.to_str().unwrap(), &Default::default()).unwrap();
+        assert_eq!(terrio::open_raster(destination.to_str().unwrap()).unwrap().raster.data.to_f64_vec(), vec![10.; 16]);
+    }
+}
+
+#[test]
+fn mapped_vrt_inputs_protect_actual_nested_files_for_handles_paths_and_bytes() {
+    use terrio::catalog::CatalogInput;
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path().join("actual.tif");
+    let child = dir.path().join("child.vrt");
+    let parent = dir.path().join("parent.vrt");
+    std::fs::write(&child, reference_vrt("actual.tif", None)).unwrap();
+    let xml = reference_vrt("child.vrt", None);
+    std::fs::write(&parent, &xml).unwrap();
+    for mode in 0..3 {
+        terrio::write_raster_dataset(&tile(0., 10.), data.to_str().unwrap(), &Default::default()).unwrap();
+        let source = match mode {
+            0 => CatalogInput::raster(terrio::open_raster_lazy(parent.to_str().unwrap()).unwrap()),
+            1 => CatalogInput::path(parent.to_string_lossy()),
+            _ => CatalogInput::bytes(xml.as_bytes().to_vec(), parent.to_string_lossy()),
+        };
+        let mut footprints = index();
+        footprints.features.truncate(1);
+        let catalog = RasterCatalog::from_sources(
+            footprints,
+            HashMap::from([("left.tif".into(), source)]),
+            CatalogOptions { extent: Some((0., 0., 4., 4.)), ..options() },
+        )
+        .unwrap();
+        catalog.into_lazy().write(data.to_str().unwrap(), &Default::default()).unwrap();
+        assert_eq!(terrio::open_raster(data.to_str().unwrap()).unwrap().raster.data.to_f64_vec(), vec![10.; 16]);
+    }
+}
+
+#[test]
+fn cyclic_vrt_inventory_fails_before_catalog_destination_is_opened() {
+    use terrio::catalog::CatalogInput;
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path().join("actual.tif");
+    let path = dir.path().join("cycle.vrt");
+    terrio::write_raster_dataset(&tile(0., 10.), data.to_str().unwrap(), &Default::default()).unwrap();
+    let original = std::fs::read(&data).unwrap();
+    std::fs::write(&path, reference_vrt("cycle.vrt", None)).unwrap();
+    let mut footprints = index();
+    footprints.features.truncate(1);
+    let catalog = RasterCatalog::from_sources(
+        footprints,
+        HashMap::from([("left.tif".into(), CatalogInput::path(path.to_string_lossy()))]),
+        CatalogOptions { extent: Some((0., 0., 4., 4.)), ..options() },
+    )
+    .unwrap();
+    let error = catalog.into_lazy().write(data.to_str().unwrap(), &Default::default()).unwrap_err();
+    assert!(error.to_string().contains("cyclic"), "{error}");
+    assert_eq!(std::fs::read(&data).unwrap(), original);
+}

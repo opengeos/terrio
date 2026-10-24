@@ -126,6 +126,9 @@ python scripts/compare_dem_calc_with_gdal.py ../terrio-data --only fill-nodata
 The catalog suite also supplies a lazy HTTP reader and a deferred URL through Python's
 source mapping. Catalog construction transfers zero additional tile bytes; an 8x8 real-DEM
 query must match GDAL exactly and transfer less than half of the 1.6 MB tile.
+Catalog/VRT regressions additionally verify physical indexes and supplied source aliases,
+nested masks and netCDF container overwrites; unknown inventories and cyclic references
+must fail before opening the destination, without decoding source pixels.
 
 The `vrt` conformance suite cross-reads GDAL/Terrio virtual rasters on USGS terrain,
 including whole and cropped requests, derived bands, nodata, masks, full and
