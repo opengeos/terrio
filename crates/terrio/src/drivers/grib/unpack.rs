@@ -130,12 +130,20 @@ pub(super) fn unpack(sec5: &[u8], data: &[u8], ndpts: usize) -> Result<Vec<f32>>
     let template = u16_at(sec5, 9);
     let p = Packing::of(sec5);
     match template {
-        0 => Ok(if p.nbits != 0 {
-            p.scale(&gbits(data, 0, p.nbits, ndpts))
-        } else {
-            let (_, dscale) = p.scales();
-            vec![p.reference * dscale; ndpts]
-        }),
+        0 => {
+            if sec5.len() < 21 {
+                return Err(Error::InvalidData("GRIB2 simple packing header too short".into()));
+            }
+            if p.nbits > 32 || ndpts.checked_mul(p.nbits as usize).is_none_or(|n| n.div_ceil(8) > data.len()) {
+                return Err(Error::InvalidData("GRIB2 simple data section too short or invalid bit width".into()));
+            }
+            Ok(if p.nbits != 0 {
+                p.scale(&gbits(data, 0, p.nbits, ndpts))
+            } else {
+                let (_, dscale) = p.scales();
+                vec![p.reference * dscale; ndpts]
+            })
+        }
         2 | 3 => complex(sec5, data, ndpts, template),
         4 => match sec5.get(11).copied().unwrap_or(0) {
             1 => {
@@ -483,5 +491,20 @@ mod tests {
         p.nbits = 32;
         let rgba16 = image(png::ColorType::Rgba, png::BitDepth::Sixteen, &[0; 16]);
         assert!(matches!(png(&p, &rgba16, 2), Err(Error::Unsupported(_))));
+    }
+
+    #[test]
+    fn rejects_truncated_simple_fields_before_allocating() {
+        let mut sec5 = vec![0u8; 21];
+        sec5[19] = 1;
+        assert!(unpack(&sec5, &[0], 100_000_000).is_err());
+        assert!(unpack(&sec5, &[0], 9).is_err());
+        assert!(unpack(&sec5, &[0], usize::MAX).is_err());
+        sec5[19] = 33;
+        assert!(unpack(&sec5, &[0; 8], 1).is_err());
+        // Constant fields need no bytes per point.
+        sec5[19] = 0;
+        assert_eq!(unpack(&sec5, &[], 9).unwrap(), vec![0.0; 9]);
+        assert!(unpack(&sec5[..19], &[], 100_000_000).is_err());
     }
 }

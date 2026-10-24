@@ -505,6 +505,10 @@ fn decode_values(msg: &[u8], f: &Field, normalize: bool, values: bool) -> Result
         return Err(bad("more than 32 bits per value"));
     }
     let data = &b[11..(u3(b, 0) as usize).min(b.len()).max(11)];
+    let packed_points = bitmap.as_ref().map_or(npts, |bm| bm.iter().filter(|b| **b).count());
+    if packed_points.checked_mul(nbits as usize).is_none_or(|n| n.div_ceil(8) > data.len()) {
+        return Err(bad("data section truncated"));
+    }
     let (m, add) = if normalize { f.convert.metric().unwrap_or((1.0, 0.0)) } else { (1.0, 0.0) };
     let convert = |v: f64| if m == -10.0 { 10f64.powf(v) } else { m * v + add };
     let p10 = 10f64.powi(f.dsf);
@@ -595,6 +599,15 @@ mod tests {
         assert_eq!(fval_360(0x4110_0000), 1.0);
         assert_eq!(fval_360(0xc276_a000), -118.625);
         assert_eq!(fval_360(0), 0.0);
+    }
+
+    #[test]
+    fn rejects_short_data_before_allocating() {
+        let mut msg = vec![0u8; 11];
+        msg[2] = 11;
+        msg[10] = 1;
+        let f = Field { gds: Gds { nx: 10_000, ny: 10_000, ..Default::default() }, bms: None, bds: 0, dsf: 0, convert: UnitConvert::None };
+        assert!(matches!(decode(&msg, &f, false), Err(Error::InvalidData(e)) if e.contains("data section truncated")));
     }
 
     #[test]

@@ -571,16 +571,20 @@ pub(super) fn decode(msg: &[u8], gds: &Gds, s: &FieldSections, convert: UnitConv
     if ndpts > npts {
         return Err(Error::InvalidData(format!("GRIB2 field of {ndpts} values on a grid of {npts} points")));
     }
-    let packed = unpack::unpack(sec5, &sec7[5..], ndpts)?;
-    // The bitmap (1 where a value is packed).
+    // Validate the bitmap's length before allocating any field-sized buffer.
     let bitmap: Option<Vec<bool>> = match s.sec6 {
         Some(p) => {
             let sec6 = sect(p)?;
-            let bits = sec6.get(6..).unwrap_or_default();
-            Some((0..npts).map(|i| bits.get(i / 8).is_some_and(|b| b & (0x80 >> (i % 8)) != 0)).collect())
+            let bits = sec6
+                .get(6..)
+                .filter(|b| b.len() >= npts.div_ceil(8))
+                .ok_or_else(|| Error::InvalidData("GRIB2 bitmap section too short".into()))?;
+            Some((0..npts).map(|i| bits[i / 8] & (0x80 >> (i % 8)) != 0).collect())
         }
-        None => None,
+        None if npts == ndpts => None,
+        None => return Err(Error::InvalidData(format!("GRIB2 field of {ndpts} values on a grid of {npts} points"))),
     };
+    let packed = unpack::unpack(sec5, &sec7[5..], ndpts)?;
     // g2clib's expansion: packed values where the bitmap is set, zeros elsewhere.
     let fld: Vec<f32> = match &bitmap {
         Some(bm) => {
@@ -597,12 +601,7 @@ pub(super) fn decode(msg: &[u8], gds: &Gds, s: &FieldSections, convert: UnitConv
             }
             out
         }
-        None => {
-            if npts != ndpts {
-                return Err(Error::InvalidData(format!("GRIB2 field of {ndpts} values on a grid of {npts} points")));
-            }
-            packed
-        }
+        None => packed,
     };
     // degrib's missing values: complex packing's (f_miss 1 or 2), primary and secondary.
     let field_type = sec5.get(20).copied().unwrap_or(0);
@@ -697,6 +696,20 @@ pub(super) fn decode(msg: &[u8], gds: &Gds, s: &FieldSections, convert: UnitConv
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rejects_short_bitmaps_before_allocating() {
+        let mut msg = vec![0u8; 32];
+        msg[..4].copy_from_slice(&21u32.to_be_bytes());
+        msg[5..9].copy_from_slice(&1u32.to_be_bytes());
+        msg[21..25].copy_from_slice(&6u32.to_be_bytes());
+        msg[27..31].copy_from_slice(&5u32.to_be_bytes());
+        let gds = Gds { nx: 10_000, ny: 10_000, ..Default::default() };
+        let s = FieldSections { sec5: 0, sec6: Some(21), sec7: 27, ..Default::default() };
+        assert!(
+            matches!(decode(&msg, &gds, &s, UnitConvert::None, false), Err(Error::InvalidData(e)) if e.contains("bitmap section too short"))
+        );
+    }
 
     #[test]
     fn computes_times_as_degrib() {
