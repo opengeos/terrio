@@ -131,3 +131,13 @@ A local HTTP Zarr regression reads two UInt16 values 1,000 positions apart using
 two chunk requests and four payload bytes after metadata, while skipping a corrupted intervening
 chunk. Sparse strided reads keep chunk-sized temporary buffers plus the selected result, rather
 than allocating the full bounding rectangle.
+
+
+CLI selections apply in fixed groups: `--isel`, `--slice`, `--isel-axis`,
+`--slice-axis`, then `--transpose`, regardless of flag order. Numeric axes
+refer to the view remaining after earlier groups and earlier indexing entries.
+
+Arrays sharing a named dimension in one group must declare the same length.
+Conflicting metadata is rejected rather than silently renaming dimensions and
+changing coordinate identity. Open a selected array or subgroup directly with
+a Zarr selector to inspect it independently of an inconsistent sibling.

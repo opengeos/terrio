@@ -17,15 +17,18 @@ pub struct ReadArgs {
     #[arg(long)]
     array: String,
     /// Select and remove an axis: dimension=index. May be repeated.
+    /// Selections run in this order: --isel, --slice, --isel-axis, --slice-axis,
+    /// then --transpose, regardless of their order on the command line.
     #[arg(long, value_name = "DIM=INDEX")]
     isel: Vec<String>,
     /// Positive-stride range after indexing: dimension=start,count[,step]. May be repeated.
     #[arg(long, value_name = "DIM=START,COUNT[,STEP]")]
     slice: Vec<String>,
-    /// Select/remove a zero-based current axis: axis=index. Useful for repeated names.
+    /// Select/remove a zero-based axis after all named selections and earlier
+    /// --isel-axis entries: axis=index. Useful for repeated names.
     #[arg(long, value_name = "AXIS=INDEX")]
     isel_axis: Vec<String>,
-    /// Slice a zero-based current axis: axis=start,count[,step].
+    /// Slice a zero-based axis after all indexing: axis=start,count[,step].
     #[arg(long, value_name = "AXIS=START,COUNT[,STEP]")]
     slice_axis: Vec<String>,
     /// Maximum JSON element count; 0 explicitly permits an unlimited selection.
