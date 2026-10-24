@@ -198,7 +198,7 @@ Conversions with `ogr2ogr`'s options (where, spat, select, sql, nlt...) compared
 |---|---:|---:|---:|---:|
 | convert (ogr2ogr options) | 28 | 28 | 0 | 0 |
 | convert --append/--overwrite | 1 | 1 | 0 | 0 |
-| sql | 15 | 15 | 0 | 0 |
+| sql | 16 | 16 | 0 | 0 |
 | rasterize | 18 | 18 | 0 | 0 |
 | polygonize | 4 | 4 | 0 | 0 |
 

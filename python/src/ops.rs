@@ -355,7 +355,7 @@ fn write_vector(
 ///     spat_srs: The CRS of `spat`. By default, that of the layer.
 ///     select: Keep only these fields, in this order.
 ///     limit: Keep at most this many features per layer.
-///     sql: Read the result of `SELECT fields FROM layer [WHERE ...] [ORDER BY ...] [LIMIT n]`.
+///     sql: Read the documented OGR SQL subset, including expressions, DISTINCT, summaries and LEFT JOIN.
 ///     nln: The output layer name.
 ///     nlt: Convert geometries: `"PROMOTE_TO_MULTI"`, `"POINT"`, `"MULTIPOLYGON"`...
 ///     explodecollections: Write each part of multi-part geometries as its own feature.

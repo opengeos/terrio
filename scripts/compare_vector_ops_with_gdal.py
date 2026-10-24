@@ -130,6 +130,7 @@ def compare_sql(data: Path, work: Path, terrio: Path) -> list[str]:
         return fields, rows, srs.ExportToWkt() if srs else None
 
     cases = [
+        ("computed literals", "SELECT NULL AS missing, 2 AS two, 2.5 AS real, 'x' AS text FROM countries LIMIT 2"),
         ("computed integer", "SELECT ADMIN, POP_EST*2 AS doubled, POP_EST/3 AS third FROM countries LIMIT 20"),
         ("computed float", "SELECT ADMIN, POP_EST/1000000.0 AS millions FROM countries WHERE POP_EST>0 ORDER BY POP_EST DESC LIMIT 10"),
         ("computed predicate", "SELECT ADMIN, POP_EST>100000000 AS large FROM countries LIMIT 20"),

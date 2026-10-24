@@ -105,7 +105,8 @@ fn expression_type(e: &Expr, schema: &Schema) -> Result<FieldType> {
         Expr::Index(i) => schema.fields()[*i].field_type,
         Expr::Fid | Expr::Literal(Value::Int(_)) => FieldType::Integer,
         Expr::Literal(Value::Text(_)) | Expr::Binary(BinOp::Concat, _, _) => FieldType::Text,
-        Expr::Literal(Value::Float(_) | Value::Null) => FieldType::Float,
+        Expr::Literal(Value::Float(_)) => FieldType::Float,
+        Expr::Literal(Value::Null) => FieldType::Text,
         Expr::Literal(Value::Blob(_)) => FieldType::Blob,
         Expr::Neg(e) => {
             let ty = expression_type(e, schema)?;

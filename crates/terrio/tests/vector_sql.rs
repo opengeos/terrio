@@ -115,3 +115,11 @@ fn binary_values_are_not_confused_with_null() {
     let out = query(&[l], "SELECT COUNT(payload) AS n,COUNT(DISTINCT payload) AS kinds FROM binary").unwrap();
     assert_eq!(out.features[0].attributes, vec![V::Integer(3), V::Integer(2)]);
 }
+
+#[test]
+fn null_literal_has_ogr_string_type() {
+    let out = query(&data(), "SELECT NULL AS missing FROM cities LIMIT 1").unwrap();
+    assert_eq!(out.schema.fields()[0].field_type, FieldType::Text);
+    assert_eq!(out.features[0].attributes, vec![V::Null]);
+    assert!(query(&data(), "SELECT 1+NULL FROM cities").is_err());
+}
