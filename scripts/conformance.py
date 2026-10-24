@@ -521,6 +521,27 @@ def suite_dem_calc(ctx):
     )
 
 
+def suite_multidim(ctx):
+    """Native groups, dimensions, slices and snapshots against GDAL MD and xarray."""
+    suite = Suite(
+        "multidim", "Native multidimensional arrays", "GDAL multidimensional API and xarray",
+        "Real NOAA wind, JPSS HDF5, Sentinel-5P and SRTM Zarr arrays: native types, packed values, "
+        "named axes, indexing variables and sliced/transposed values must match exactly. "
+        "netCDF-Zarr snapshots retain coordinate values, chunk shapes and unlimited-axis metadata. "
+        "Damaged unselected chunks must not affect metadata inspection or selected reads.",
+    )
+    _code, out, err = run([sys.executable, str(SCRIPTS / "compare_multidim_with_gdal.py"), ctx.data, "--terrio", ctx.terrio, "--json"])
+    try:
+        results = json.loads(out)
+    except json.JSONDecodeError:
+        suite.error = tail(err or out)
+        return suite
+    for result in results:
+        status = IDENTICAL if result["status"] == "identical" else DIFFERS
+        suite.cases.append(Case(result["operation"], result["name"], status, result.get("detail", "")))
+    return suite
+
+
 def suite_pansharpen(ctx):
     """Real Landsat panchromatic/spectral pairs against GDAL's weighted Brovey."""
     return suite_json_ops(
@@ -1052,6 +1073,7 @@ SUITES = OrderedDict(
         ("dem-calc", suite_dem_calc),
         ("pansharpen", suite_pansharpen),
         ("vector-ops", suite_vector_ops),
+        ("multidim", suite_multidim),
         ("topology", suite_topology),
         ("arrow", suite_arrow),
         ("gpkg", suite_gpkg),

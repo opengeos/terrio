@@ -85,6 +85,18 @@ def cases(data, work):
     ds = None
     add("masked borders", p=masked_pan, s=holes, opts=["-nodata", "0"])
     add("disabled nodata nearest", p=masked_pan, s=holes, opts=["-nodata", "none", "-r", "nearest"])
+    add("disabled nodata cubic", p=masked_pan, s=holes, opts=["-nodata", "none"])
+    mixed_nodata = []
+    for i, path in enumerate(holes):
+        target = str(work / f"mixed_nodata{i}.tif")
+        ds = gdal.Translate(target, path)
+        if i == 1:
+            ds.GetRasterBand(1).SetNoDataValue(1)
+        elif i == 2:
+            ds.GetRasterBand(1).DeleteNoDataValue()
+        ds = None
+        mixed_nodata.append(target)
+    add("mixed source nodata", p=masked_pan, s=mixed_nodata)
     # Internal dataset masks, without nodata, are ignored by GDAL's pansharpen path.
     explicit_masks = []
     for i, path in enumerate(spectral):
@@ -98,6 +110,15 @@ def cases(data, work):
         ds = None
         explicit_masks.append(target)
     add("internal dataset masks", s=explicit_masks)
+    add("internal dataset masks nodata override", s=explicit_masks, opts=["-nodata", "0"])
+    same_pan = str(work / "same_resolution_pan.tif")
+    gdal.Translate(same_pan, pan, width=128, height=120, resampleAlg="average")
+    add("internal dataset masks direct resampling", p=same_pan, s=explicit_masks)
+    aligned_pan = str(work / "integer_aligned_pan.tif")
+    ds = gdal.Translate(aligned_pan, same_pan)
+    ds.SetGeoTransform(gdal.Open(spectral[0]).GetGeoTransform())
+    ds = None
+    add("internal dataset masks integer pixel copy", p=aligned_pan, s=explicit_masks)
     # Shift all spectral footprints together, preserving their native pixel sizes.
     shifted = []
     for i, path in enumerate(spectral):
@@ -158,9 +179,109 @@ def cases(data, work):
         target = str(work / f"float{i}.tif")
         gdal.Translate(target, path, outputType=gdal.GDT_Float32)
         float_spectral.append(target)
+    add("byte pan uint16 spectral", p=byte_pan, s=spectral)
+    double_pan = str(work / "double_pan.tif")
+    gdal.Translate(double_pan, pan, outputType=gdal.GDT_Float64)
+    add("float64 pan uint16 spectral", p=double_pan, s=spectral)
+    fractional_float = []
+    for i, path in enumerate(float_spectral):
+        target = str(work / f"fractional_float{i}.tif")
+        ds = gdal.Translate(target, path)
+        ds.GetRasterBand(1).WriteArray(ds.ReadAsArray() + np.float32(0.375))
+        ds = None
+        fractional_float.append(target)
+    add("uint16 pan fractional float spectral", s=fractional_float)
     # One Float32 ULP at this scene's radiometric scale; integer cases remain exact.
     add("float32", p=float_pan, s=float_spectral, tol=0.002)
+    large_pan = str(work / "large_pan.tif")
+    gdal.Translate(large_pan, str(root / f"{scene}_B8.tif"), srcWin=[1400, 1000, 1024, 1040])
+    large_spectral = []
+    for band in (4, 3, 2):
+        path = str(work / f"large_spectral{band}.tif")
+        gdal.Translate(path, str(root / f"{scene}_B{band}.tif"), srcWin=[700, 500, 512, 520])
+        large_spectral.append(path)
+    for method in ("nearest", "bilinear", "cubic", "cubicspline", "lanczos", "average"):
+        add(f"multiple blocks {method}", p=large_pan, s=large_spectral, opts=["-r", method])
     return result
+
+
+def virtual_comparisons(case, terrio, work, index):
+    """Cross-read GDAL/Terrio VRT descriptions as whole images and cropped requests."""
+    gvrt, tvrt = (str(work / f"{prefix}_{index}.vrt") for prefix in ("gdal", "terrio"))
+    run([v.replace("{out}", gvrt) for v in [*case["gdal"][:1], "-of", "VRT", *case["gdal"][1:]]])
+    run([terrio, *[v.replace("{out}", tvrt) for v in case["terrio"]]])
+    requests = [("GDAL VRT full", gvrt, None), ("Terrio VRT full", tvrt, None),
+                ("GDAL VRT window", gvrt, [17,23,53,47]), ("Terrio VRT window",tvrt,[17,23,53,47]),
+                ("GDAL VRT scanline",gvrt,[17,23,53,1]), ("Terrio VRT column",tvrt,[17,23,1,47])]
+    if "internal dataset masks" in case["name"]:
+        ds = gdal.Open(gvrt)
+        small = ds.RasterXSize < 153
+        requests += [("masked direct row",gvrt,[50 if small else 100,32 if small else 65,53,1]),
+                     ("masked direct column",tvrt,[51 if small else 101,30 if small else 60,1,40]),
+                     ("masked border row",tvrt,[17,1,53,1])]
+    for label, path, window in requests:
+        gout = str(work / f"virtual_gdal_{index}.tif")
+        tout = str(work / f"virtual_terrio_{index}.tif")
+        for output in (gout, tout):
+            if os.path.exists(output):
+                os.remove(output)
+        gdal.Translate(gout, path, srcWin=window)
+        command = [terrio, "convert", path, tout]
+        if window:
+            command += ["--srcwin", *map(str, window)]
+        run(command)
+        result = compare(gout, tout, case["tol"])
+        expected, actual = gdal.Open(gout), gdal.Open(tout)
+        result["same_crs"] = bool(osr.SpatialReference(expected.GetProjection()).IsSame(osr.SpatialReference(actual.GetProjection())))
+        result["name"] = f"{case['name']} {label}"
+        expected = actual = None
+        yield result
+
+
+def native_passthrough_comparisons(terrio, work):
+    """GDAL passthrough bands retain integers beyond f64 precision."""
+    for dtype, numpy_type in [(gdal.GDT_UInt64, np.uint64), (gdal.GDT_Int64, np.int64)]:
+        name = gdal.GetDataTypeName(dtype)
+        pan = str(work / f"native-{name}-pan.tif")
+        spectral = str(work / f"native-{name}-spectral.tif")
+        srs = osr.SpatialReference()
+        srs.ImportFromEPSG(3857)
+        for path, bands, kind in [(pan, 2, dtype), (spectral, 1, gdal.GDT_UInt16)]:
+            ds = gdal.GetDriverByName("GTiff").Create(path, 2, 2, bands, kind)
+            ds.SetGeoTransform([0, 1, 0, 2, 0, -1])
+            ds.SetSpatialRef(srs)
+            for band in range(1, bands + 1):
+                value = ((9007199254741001 + band) * (-1 if dtype == gdal.GDT_Int64 else 1)
+                         if path == pan else 1)
+                ds.GetRasterBand(band).WriteArray(np.full((2, 2), value,
+                    dtype=numpy_type if path == pan else np.uint16))
+            ds = None
+        bands = "".join(
+            f'<VRTRasterBand band="{out}" dataType="{name}"><SimpleSource>'
+            f'<SourceFilename>{pan}</SourceFilename><SourceBand>{band}</SourceBand>'
+            '</SimpleSource></VRTRasterBand>'
+            for out, band in enumerate([2, 1, 2], 1))
+        description = work / f"native-{name}.vrt"
+        description.write_text(
+            '<VRTDataset subClass="VRTPansharpenedDataset">' + bands +
+            f'<VRTRasterBand band="4" dataType="{name}" subClass="VRTPansharpenedRasterBand"/>'
+            '<PansharpeningOptions><PanchroBand>'
+            f'<SourceFilename>{pan}</SourceFilename></PanchroBand><SpectralBand dstBand="4">'
+            f'<SourceFilename>{spectral}</SourceFilename></SpectralBand>'
+            '</PansharpeningOptions></VRTDataset>')
+        reference, output = (str(work / f"native-{name}-{kind}.tif")
+                             for kind in ["gdal", "terrio"])
+        gdal.Translate(reference, str(description))
+        run([terrio, "convert", str(description), output])
+        expected, actual = gdal.Open(reference), gdal.Open(output)
+        np.testing.assert_array_equal(expected.ReadAsArray(), actual.ReadAsArray())
+        result = compare(reference, output, 0)
+        result.update(
+            name=f"native {name} repeated pan passthrough",
+            same_crs=bool(expected.GetSpatialRef().IsSame(actual.GetSpatialRef())),
+        )
+        expected = actual = None
+        yield result
 
 
 def main():
@@ -175,6 +296,11 @@ def main():
     work = Path(args.keep or tempfile.mkdtemp(prefix="terrio_pansharpen_"))
     work.mkdir(parents=True, exist_ok=True)
     results = []
+    if not args.only or args.only in "native passthrough":
+        for result in native_passthrough_comparisons(args.terrio, work):
+            results.append(result)
+            if not args.json:
+                print(format_row(result), flush=True)
     for i, case in enumerate(cases(args.data, work)):
         if args.only and args.only not in case["name"]:
             continue
@@ -198,6 +324,16 @@ def main():
         results.append(result)
         if not args.json:
             print(format_row(result), flush=True)
+        try:
+            for virtual in virtual_comparisons(case, args.terrio, work, i):
+                results.append(virtual)
+                if not args.json:
+                    print(format_row(virtual), flush=True)
+        except Exception as exc:
+            results.append({"name": case["name"] + " virtual", "error": str(exc)})
+            if not args.json:
+                print(format_row(results[-1]), flush=True)
+
     if args.json:
         print(json.dumps(results, indent=2))
     if not args.keep:

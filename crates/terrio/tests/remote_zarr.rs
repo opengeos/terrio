@@ -370,3 +370,32 @@ fn cmip6_on_gcs_as_gdal_reads_it() {
     let w = r.read_window(Window::new(100, 179 - 50, 1, 1), &WindowOptions { bands: vec![1980], overview: None }).unwrap();
     assert_eq!(w.raster.get(0, 0, 0), 286.898_07_f32 as f64);
 }
+
+#[test]
+fn multidimensional_sparse_strides_fetch_only_selected_chunks() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("sparse.zarr");
+    std::fs::create_dir_all(root.join("a")).unwrap();
+    let metadata = serde_json::json!({".zgroup":{"zarr_format":2},".zattrs":{},
+        "a/.zarray":{"zarr_format":2,"shape":[1001],"chunks":[1],"dtype":"<u2","compressor":null,"fill_value":0,"order":"C","filters":null},
+        "a/.zattrs":{"_ARRAY_DIMENSIONS":["x"]}});
+    for (name, value) in metadata.as_object().unwrap() {
+        std::fs::write(root.join(name), serde_json::to_vec(value).unwrap()).unwrap();
+    }
+    std::fs::write(
+        root.join(".zmetadata"),
+        serde_json::to_vec(&serde_json::json!({"zarr_consolidated_format":1,"metadata":metadata})).unwrap(),
+    )
+    .unwrap();
+    std::fs::write(root.join("a/0"), 7u16.to_le_bytes()).unwrap();
+    std::fs::write(root.join("a/1000"), 9u16.to_le_bytes()).unwrap();
+    std::fs::write(root.join("a/500"), [1]).unwrap();
+    let (url, counter) = serve(dir.path().to_path_buf());
+    let ds = terrio::multidim::open(&format!("{url}/sparse.zarr")).unwrap();
+    counter.take();
+    let result = ds.array("a").unwrap().view().slice("x", 0, 2, 1000).unwrap().read().unwrap();
+    assert_eq!(result.values().unwrap(), serde_json::json!([7, 9]));
+    let (requests, bytes) = counter.take();
+    assert_eq!(requests, 2);
+    assert_eq!(bytes, 4);
+}

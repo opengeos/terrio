@@ -497,20 +497,37 @@ input order. Every spectral input contributes intensity, including unselected ou
 Weights default to equal weights and are used as provided, without normalization.
 
 `--resampling` selects nearest, bilinear, cubic (default), cubicspline, lanczos or average.
-Resampling uses the spectral native type; Brovey works in the pan type for Byte/UInt16 and
+Direct reads resample in the spectral native type; temporary upsampling first converts
+spectral samples to the pan working type. Brovey works in the pan type for Byte/UInt16 and
 Float64 otherwise. Intermediate integer results are rounded/clipped even with `--ot Float64`.
-`--bitdepth` explicitly clamps unsigned samples/results to `2^N-1`; NBITS metadata is not inferred.
+`--bitdepth` clamps Byte/UInt16 pan samples/results to `2^N-1`; other pan types ignore it,
+as in GDAL. NBITS metadata is not inferred.
 
 `--spat-adjust union` (default) pads unequal footprints with zero at their native resolutions,
 `intersection` crops them, and `none` preserves the pan footprint. Extents align to the pan
 pixel grid with GDAL's one-spectral-pixel tolerance. `--nodata VALUE` sets common nodata for
-resampling and sharpening; `none` disables common nodata processing. By default a common
-value is inferred when all inputs agree. Like GDAL, footprint padding/cropping drops the
+resampling and sharpening; `none` disables common nodata processing. By default GDAL 3.12's common value is inferred
+from the selected pan band; spectral declarations do not override it. When common nodata
+processing is disabled, GDAL's temporary upsampling buffer treats numeric source nodata as
+ordinary sample values, and Terrio follows that behavior. Like GDAL, footprint padding/cropping drops the
 source nodata declaration; use an explicit `--nodata` to preserve common nodata processing
 with adjusted extents. A nodata contributor or zero weighted intensity
 produces nodata in every output band when enabled; otherwise zero intensity produces zero.
-Explicit dataset masks are not used. Zero padding and nodata are separate: use `--nodata 0`
-when padded margins should be missing. Output is materialized; pansharpened VRT output is deferred.
+Path and virtual reads follow GDAL's mask behavior: direct resampling honors explicit
+dataset masks; temporary upsampling buffers, footprint-adjustment VRTs and common-nodata
+override wrappers drop those masks. Nearest sampling copies pixels without applying masks.
+Zero padding and nodata are separate: use `--nodata 0`
+when padded margins should be missing. An output ending in `.vrt` (or `-f VRT`) writes a GDAL-compatible
+`VRTPansharpenedDataset`, opening only source headers. Sources are stored as absolute paths
+or URLs; moving the inputs requires updating those references. Declared VRT block sizes
+must be positive integers and are treated as hints: Terrio uses fixed 512×512 internal
+processing blocks. Opening the description and reading a window fetches the matching pan pixels and
+spectral pixels with interpolation margins. GeoTIFF/COG outputs stream row strips with
+bounded interpolation buffers; other output formats may gather the output in memory.
+Inputs remain separate files needed by the VRT. Source formats without a lazy window
+reader may load their pixels at open. As in GDAL, nodata metadata retains the supplied
+number even when the working sentinel is rounded/clamped to an integer type. Rotated grids, cross-CRS alignment and
+mixed output data types within a VRT are unsupported.
 The command is also an MCP tool.
 
 ## viewshed
@@ -643,6 +660,11 @@ For nearest interpolation, GDAL's search fringe can write zero where the closest
 quadrant candidate is less than one pixel beyond the distance limit; Terrio follows
 that behavior. Complex bands are unsupported. Standard raster output
 options (`--format`, `--compress`, `--co`, etc.) apply.
+
+## Native multidimensional arrays
+
+See [Native multidimensional arrays](multidim.md) for scientific groups, named dimensions,
+lazy coordinate arrays, time/depth slicing, transposition and netCDF/Zarr numeric snapshots.
 
 ## catalog
 

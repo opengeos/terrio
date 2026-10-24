@@ -1165,6 +1165,38 @@ test("fillNodata: holes, nearest ties, explicit masks and invalid options", () =
   src.free(); out.free(); mask.free();
 });
 
+test("native multidimensional views retain integer precision and store lifetimes", { skip: needs("netcdf-hdf5", "zarr") }, () => {
+  const encode = (value) => new TextEncoder().encode(JSON.stringify(value));
+  const files = { ".zgroup": encode({ zarr_format: 2 }), ".zattrs": encode({}) };
+  const base = 9007199254741001n;
+  files["cube/.zarray"] = encode({ zarr_format: 2, shape: [2, 2, 3], chunks: [1, 2, 3], dtype: "<i8", compressor: null, fill_value: null, order: "C", filters: null });
+  files["cube/.zattrs"] = encode({ _ARRAY_DIMENSIONS: ["time", "y", "x"] });
+  for (let time = 0; time < 2; time++) {
+    const raw = new Uint8Array(6 * 8);
+    const view = new DataView(raw.buffer);
+    for (let i = 0; i < 6; i++) view.setBigInt64(i * 8, base + BigInt(time * 6 + i), true);
+    files[`cube/${time}.0.0`] = raw;
+  }
+  const ds = terrio.openMultidim(files);
+  assert.ok(ds.arrayPaths.includes("/cube"));
+  const array = ds.array("cube");
+  assert.deepEqual([...array.shape], [2, 2, 3]);
+  const positional = array.iselAxis(0, 1).sliceAxis(1, 1, 1);
+  assert.deepEqual([...positional.read()], [7n, 10n].map((n) => base + n));
+  positional.free();
+  const view = array.isel("time", 1).transpose(["x", "y"]);
+  assert.deepEqual([...view.shape], [3, 2]);
+  assert.ok(view.read() instanceof BigInt64Array);
+  assert.deepEqual([...view.read()], [6n, 9n, 7n, 10n, 8n, 11n].map((n) => base + n));
+  const nc = terrio.openMultidim(ds.toBytes());
+  assert.deepEqual([...nc.array("cube").read()], [...array.read()]);
+  const back = terrio.openMultidim(nc.toZarrStore());
+  assert.deepEqual([...back.array("cube").read()], [...array.read()]);
+  ds.free(); array.free();
+  assert.equal(view.read()[0], base + 6n);
+  view.free(); nc.free(); back.free();
+});
+
 test("openCatalog: lazy windows and z-order with named in-memory sources", () => {
   const index = { type: "FeatureCollection", features: [["left", 0, 2], ["right", 2, 1], ["missing", 100, 3]].map(([location, x, z]) => ({
     type: "Feature", properties: { location, z }, geometry: { type: "Polygon", coordinates: [[[x, 0], [x + 4, 0], [x + 4, 4], [x, 4], [x, 0]]] },
@@ -1228,6 +1260,32 @@ test("pansharpen weights, selected bands and unequal resolutions", () => {
   pan.free(); spectral.free(); out.free(); selected.free();
 });
 
+
+
+test("pansharpenVrt creates a lazy uploaded-source virtual raster", () => {
+  const pan = terrio.rasterFromArray(new Uint16Array(64).fill(80), 8, 8, [0, 1, 0, 8, 0, -1], "EPSG:32611");
+  const spectral = terrio.rasterFromArray(new Uint16Array([...new Array(16).fill(20), ...new Array(16).fill(40)]), 4, 4, [0, 2, 0, 8, 0, -2], "EPSG:32611");
+  const sources = { "pan.tif": pan.toBytes("pan.tif"), "spectral.tif": spectral.toBytes("spectral.tif") };
+  const xml = terrio.pansharpenVrt("pan.tif", ["spectral.tif"], sources, { bands: [2, 1, 2] });
+  assert.match(xml, /VRTPansharpenedDataset/);
+  const sharp = terrio.openVrt(xml, sources);
+  assert.deepEqual([...sharp.readBand(1, [2, 3, 3, 2])], new Array(6).fill(107));
+  assert.equal(sharp.count, 3);
+  pan.free(); spectral.free(); sharp.free();
+});
+
+
+test("pansharpenVrt keeps direct source masks and ignores them in temporary upsampling", () => {
+  const pan = terrio.rasterFromArray(new Uint16Array(16).fill(80), 4, 4, [0, 1, 0, 4, 0, -1], "EPSG:32611");
+  // GDAL-generated 2x2 UInt16 bands filled with 20/40 and an all-zero internal TIFF mask.
+  const masked = new Uint8Array(Buffer.from("SUkqAAgAAAAQAAABAwABAAAAAgAAAAEBAwABAAAAAgAAAAIBAwACAAAAEAAQAAMBAwABAAAAAQAAAAYBAwABAAAAAQAAABEBBAABAAAAFgIAABUBAwABAAAAAgAAABYBAwABAAAAAgAAABcBBAABAAAAEAAAABwBAwABAAAAAQAAAFIBAwABAAAAAAAAAFMBAwACAAAAAQABAA6DDAADAAAAzgAAAIKEDAAGAAAA5gAAAK+HAwAgAAAAFgEAALGHAgAeAAAAVgEAAHQBAAAAAAAAAAAAQAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABBAAAAAAAAAAAABAAEAAAAHAAAEAAABAAEAAQQAAAEAAQACBLGHFgAAAAEIsYcHABYABggAAAEAjiMADAAAAQBjfwQMAAABACkjV0dTIDg0IC8gVVRNIHpvbmUgMTFOfFdHUyA4NHwADQD+AAQAAQAAAAQAAAAAAQMAAQAAAAIAAAABAQMAAQAAAAIAAAACAQMAAQAAAAEAAAADAQMAAQAAAAgAAAAGAQMAAQAAAAQAAAARAQQAAQAAACYCAAAVAQMAAQAAAAEAAAAWAQMAAQAAAAIAAAAXAQQAAQAAAA0AAAAcAQMAAQAAAAEAAAA9AQMAAQAAAAEAAABTAQMAAQAAAAEAAAAAAAAAFAAoABQAKAAUACgAFAAoAHicAQIA/f8AAAACAAE=", "base64"));
+  const sources = { "pan.tif": pan.toBytes("pan.tif"), "spectral.tif": masked };
+  const xml = terrio.pansharpenVrt("pan.tif", ["spectral.tif"], sources, {});
+  const out = terrio.openVrt(xml, sources);
+  assert.deepEqual([...out.readBand(1)], new Array(16).fill(53));
+  assert.deepEqual([...out.readBand(1, [1, 1, 2, 1])], [0, 0]);
+  pan.free(); out.free();
+});
 
 test("openCatalog: defers unused encoded sources and preserves supplied lazy datasets", () => {
   const index = { type: "FeatureCollection", features: [["left", 0], ["right", 2]].map(([location, x]) => ({

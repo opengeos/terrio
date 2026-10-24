@@ -166,6 +166,12 @@ TERRIO_JS_PKG=../pkg-node/core/terrio.js node --test js/tests/node.test.mjs
 node js/bench/bench.mjs ../terrio-data    # timings of decoding and writing real files
 ```
 
+## Native multidimensional arrays
+
+See [Native multidimensional arrays](multidim.md) for scientific groups, named dimensions,
+lazy coordinate arrays, time/depth slicing, transposition and netCDF/Zarr numeric snapshots.
+
+
 ## Indexed raster catalogs
 
 `openCatalog(index, sources, options)` opens an index `Dataset`, vector file bytes or GeoJSON,
@@ -193,6 +199,10 @@ transparent; tiles in other CRSs are reprojected into the index CRS. See
 ```javascript
 const sharp = terrio.pansharpen(pan, rgbnir, { bands: [1, 2, 3], bitdepth: 12, nodata: 0 });
 const rgb = terrio.pansharpen(pan, [red, green, blue], { weights: [0.6, 0.3, 0.1] });
+const sources = { "pan.tif": panBytes, "rgb.tif": spectralBytes };
+const xml = terrio.pansharpenVrt("pan.tif", ["rgb.tif"], sources, { bands: [1, 2, 3] });
+const virtual = terrio.openVrt(xml, sources);
+const window = virtual.readBand(1, [100, 200, 64, 64]);
 ```
 
 Inputs can be datasets or raster bytes. All spectral inputs contribute to intensity;

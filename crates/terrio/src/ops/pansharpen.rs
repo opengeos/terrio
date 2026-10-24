@@ -3,6 +3,9 @@
 //! Input rasters must share a CRS and have north-up geotransforms. Spectral bands are
 //! resampled in their native type, converted to the panchromatic working type (Byte,
 //! UInt16, otherwise Float64), then sharpened and converted to the output type.
+mod blocks;
+pub mod vrt;
+
 use super::vrt::SourceRead;
 use super::{BandView, Grid, Resampling, build_raster, convert_value, type_range};
 use crate::{Error, RasterDataset, Result};
@@ -43,7 +46,7 @@ impl PansharpenExtent {
 /// Common nodata setting used during both resampling and Brovey computation.
 #[derive(Debug, Clone, Copy, Default)]
 pub enum PansharpenNodata {
-    /// Use nodata when all bands declare the same value.
+    /// Infer common nodata from the selected pan band, as GDAL 3.12 does.
     #[default]
     Auto,
     /// Disable nodata processing.
@@ -111,62 +114,96 @@ fn check(ds: &RasterDataset, band: usize) -> Result<Grid> {
     Ok(grid)
 }
 
-/// Pad/crop a band to common bounds at its original resolution, as GDAL's adjustment VRT does.
-fn adjust(ds: &RasterDataset, band: usize, bounds: (f64, f64, f64, f64), enabled: bool, pixel: f64) -> Result<RasterDataset> {
-    let g = check(ds, band)?;
-    let gt = g.geo_transform;
-    let old = g.bounds();
+/// A source's grid after GDAL footprint adjustment, without allocating its pixels.
+#[derive(Debug, Clone)]
+pub(crate) struct SourceLayout {
+    pub grid: Grid,
+    pub source_grid: Grid,
+    pub offset: (isize, isize),
+    pub adjusted: bool,
+    pub nodata: Option<f64>,
+}
+
+fn source_layout(ds: &RasterDataset, band: usize, bounds: (f64, f64, f64, f64), enabled: bool, pixel: f64) -> Result<SourceLayout> {
+    let grid = check(ds, band)?;
+    let gt = grid.geo_transform;
+    let old = grid.bounds();
     let tolerance = pixel.max(gt[1]).max(-gt[5]);
-    if !enabled || [old.0 - bounds.0, old.1 - bounds.1, old.2 - bounds.2, old.3 - bounds.3].iter().all(|d| d.abs() <= tolerance) {
-        return super::translate::translate(ds, &super::translate::TranslateOptions { bands: vec![band], ..Default::default() });
+    if !enabled || [old.0 - bounds.0, old.1 - bounds.1, old.2 - bounds.2, old.3 - bounds.3].iter().all(|v| v.abs() <= tolerance) {
+        return Ok(SourceLayout { grid, source_grid: grid, offset: (0, 0), adjusted: false, nodata: ds.band_nodata(band) });
     }
     let width = 0.5 + (bounds.2 - bounds.0) / gt[1];
     let height = 0.5 + (bounds.3 - bounds.1) / -gt[5];
     if !width.is_finite() || !height.is_finite() || width < 1.0 || height < 1.0 || width >= i32::MAX as f64 || height >= i32::MAX as f64 {
         return Err(bad("pansharpen adjusted grid dimensions are invalid or too large"));
     }
-    let (width, height) = (width as usize, height as usize);
-    let xoff = ((bounds.0 - gt[0]) / gt[1] + 0.001).floor() as isize;
-    let yoff = ((bounds.3 - gt[3]) / gt[5] + 0.001).floor() as isize;
+    let offset = (((bounds.0 - gt[0]) / gt[1] + 0.001).floor() as isize, ((bounds.3 - gt[3]) / gt[5] + 0.001).floor() as isize);
+    Ok(SourceLayout {
+        grid: Grid { width: width as usize, height: height as usize, geo_transform: [bounds.0, gt[1], 0.0, bounds.3, 0.0, gt[5]] },
+        source_grid: grid,
+        offset,
+        adjusted: true,
+        nodata: None,
+    })
+}
+
+/// Pad/crop a band to common bounds at its original resolution, as GDAL's adjustment VRT does.
+fn adjust(ds: &RasterDataset, band: usize, layout: &SourceLayout) -> Result<RasterDataset> {
+    if !layout.adjusted {
+        return super::translate::translate(ds, &super::translate::TranslateOptions { bands: vec![band], ..Default::default() });
+    }
+    let (width, height) = (layout.grid.width, layout.grid.height);
+    let (xoff, yoff) = layout.offset;
     let mut values = filled(width.checked_mul(height).ok_or_else(|| bad("pansharpen grid too large"))?, 0.0)?;
     let input = BandView::of(&ds.raster, band - 1);
     for y in 0..height {
         for x in 0..width {
             let (sx, sy) = (x as isize + xoff, y as isize + yoff);
-            if sx >= 0 && sy >= 0 && sx < g.width as isize && sy < g.height as isize {
-                values[y * width + x] = input.get(sy as usize * g.width + sx as usize);
+            if sx >= 0 && sy >= 0 && sx < ds.raster.cols as isize && sy < ds.raster.rows as isize {
+                values[y * width + x] = input.get(sy as usize * ds.raster.cols + sx as usize);
             }
         }
     }
-    // GDAL's adjustment VRT drops source nodata. The common explicit override
-    // is applied after adjustment; retaining it here would change Auto behavior.
-    build_raster(
-        Grid { width, height, geo_transform: [bounds.0, gt[1], 0.0, bounds.3, 0.0, gt[5]] },
-        vec![values],
-        ds.raster.data_type,
-        None,
-        &ds.crs(),
-        |v, _| v,
-    )
+    build_raster(layout.grid, vec![values], ds.raster.data_type, layout.nodata, &ds.crs(), |v, _| v)
 }
 
-// GDAL's overview convolution is separable: masked horizontal rows carry an
+/// The common materialized/virtual metadata plan. Building it never reads source pixels.
+pub(crate) struct Plan {
+    pub pan: SourceLayout,
+    pub spectral: Vec<SourceLayout>,
+    pub weights: Vec<f64>,
+    pub output: Vec<usize>,
+    pub work: DataType,
+    pub output_type: DataType,
+    pub nodata: Option<f64>,
+}
+
+/// Sampling coordinates in GDAL RasterIO's source/destination reference frame.
+struct SpectralRead {
+    rect: [f64; 4],
+    mask: Option<Vec<u8>>,
+    copied: bool,
+    // Destination origin, source ROI origin, fractional delta, ratios (x/y pairs).
+    origin: [f64; 8],
+}
+
+// GDAL's overview convolution is separable: masked horizontal rows carry a
 // binary row validity to the vertical pass (GDAL 3.12); integer inputs use Float32 final
 // interpolation before conversion back to their native type.
-fn convolution(s: &SourceRead<'_>, rect: [f64; 4], width: usize, height: usize, work: DataType) -> Result<Vec<f64>> {
-    let (rx, ry) = (rect[2] / width as f64, rect[3] / height as f64);
+fn convolution(s: &SourceRead<'_>, width: usize, height: usize, work: DataType, origin: [f64; 8]) -> Result<Vec<f64>> {
+    let (rx, ry) = (origin[6], origin[7]);
     let method = s.resampling;
-    let taps = |dst: usize, ratio: f64, off: f64, size: usize| {
-        let center = (dst as f64 + 0.5) * ratio + off;
+    let taps = |dst: usize, ratio: f64, dest: f64, source: f64, delta: f64, size: usize| {
+        let center = (dst as f64 + dest + 0.5) * ratio + delta;
         let scale = (1.0 / ratio).min(1.0);
         let radius = method.radius().max(1) as f64 / scale;
-        let start = ((center - radius + 0.5).floor().max(0.0) as usize).min(size);
-        let stop = ((center + radius + 0.5) as usize).min(size).max(start);
-        (start, (start..stop).map(|p| method.weight(scale * (p as f64 - center + 0.5))).collect::<Vec<_>>())
+        let start = (((center - radius + 0.5).floor() as isize - source as isize).max(0) as usize).min(size);
+        let stop = (((center + radius + 0.5) as isize - source as isize).max(0) as usize).min(size).max(start);
+        (start, (start..stop).map(|p| method.weight(scale * (p as f64 + source - center + 0.5))).collect::<Vec<_>>())
     };
-    let xt = (0..width).map(|x| taps(x, rx, rect[0], s.width)).collect::<Vec<_>>();
+    let xt = (0..width).map(|x| taps(x, rx, origin[0], origin[2], origin[4], s.width)).collect::<Vec<_>>();
     let negative = matches!(method, Resampling::Cubic | Resampling::Lanczos);
-    let yt = (0..height).map(|row| taps(row, ry, rect[1], s.height)).collect::<Vec<_>>();
+    let yt = (0..height).map(|row| taps(row, ry, origin[1], origin[3], origin[5], s.height)).collect::<Vec<_>>();
     let first_row = yt.iter().map(|(start, _)| *start).min().unwrap_or(0);
     let last_row = yt.iter().map(|(start, weights)| start + weights.len()).max().unwrap_or(first_row);
     let size = width.checked_mul(last_row - first_row).ok_or_else(|| bad("pansharpen buffer size overflow"))?;
@@ -194,8 +231,10 @@ fn convolution(s: &SourceRead<'_>, rect: [f64; 4], width: usize, height: usize, 
             }
         }
     }
-    let mut result =
-        filled(width.checked_mul(height).ok_or_else(|| bad("pansharpen buffer size overflow"))?, s.invalid_value.unwrap_or(0.0))?;
+    let mut result = filled(
+        width.checked_mul(height).ok_or_else(|| bad("pansharpen buffer size overflow"))?,
+        convert_value(s.invalid_value.unwrap_or(0.0), work),
+    )?;
     for (y, (start, weights)) in yt.iter().enumerate() {
         for x in 0..width {
             let (mut value, mut total) = (0.0, 0.0);
@@ -232,14 +271,7 @@ fn convolution(s: &SourceRead<'_>, rect: [f64; 4], width: usize, height: usize, 
     Ok(result)
 }
 
-/// Sharpen the selected spectral bands at the panchromatic resolution.
-///
-/// Weighted Brovey computes `spectral * pan / sum(weight * spectral)`; zero intensity
-/// produces zero, or common nodata when enabled. Any nodata contributor invalidates all
-/// output bands. Integer working values are rounded/clamped before output conversion,
-/// including when the output itself is floating point, as in GDAL. Explicit input masks
-/// are not used. The output is materialized; virtual pansharpened VRT output is deferred.
-pub fn pansharpen(pan: &RasterDataset, spectral: &[SpectralBand<'_>], o: &PansharpenOptions) -> Result<RasterDataset> {
+pub(crate) fn plan(pan: &RasterDataset, spectral: &[SpectralBand<'_>], o: &PansharpenOptions) -> Result<Plan> {
     let pg = check(pan, o.pan_band)?;
     if spectral.is_empty() {
         return Err(bad("pansharpen needs at least one spectral band"));
@@ -312,44 +344,66 @@ pub fn pansharpen(pan: &RasterDataset, spectral: &[SpectralBand<'_>], o: &Pansha
         bounds.1 = gt[3] + ((bounds.1 - gt[3]) / gt[5] + 0.5).floor() * gt[5];
         bounds.3 = gt[3] + ((bounds.3 - gt[3]) / gt[5] + 0.5).floor() * gt[5];
     }
-    let pan = adjust(pan, o.pan_band, bounds, o.extent != PansharpenExtent::None, pixel)?;
-    let bands = spectral
+    let pan_layout = source_layout(pan, o.pan_band, bounds, o.extent != PansharpenExtent::None, pixel)?;
+    let spectral_layouts = spectral
         .iter()
-        .map(|b| adjust(b.dataset, b.band, bounds, o.extent != PansharpenExtent::None, pixel))
+        .map(|b| source_layout(b.dataset, b.band, bounds, o.extent != PansharpenExtent::None, pixel))
         .collect::<Result<Vec<_>>>()?;
     let nodata = match o.nodata {
         PansharpenNodata::None => None,
         PansharpenNodata::Value(v) => Some(v),
-        PansharpenNodata::Auto => pan.nodata().filter(|v| v.is_finite() && bands.iter().all(|b| b.nodata() == Some(*v))),
+        // GDAL 3.12's VRT checks the pan band again while visiting spectral
+        // bands, so its inferred common nodata comes from the adjusted pan only.
+        PansharpenNodata::Auto => pan_layout.nodata.filter(|v| v.is_finite()),
     };
-    let grid = Grid::of(&pan.raster);
+    let output_type = o.output_type.unwrap_or(spectral[output[0] - 1].dataset.raster.data_type);
+    Ok(Plan { pan: pan_layout, spectral: spectral_layouts, weights, output, work, output_type, nodata })
+}
+
+/// Sharpen the selected spectral bands at the panchromatic resolution.
+///
+/// Weighted Brovey computes `spectral * pan / sum(weight * spectral)`; zero intensity
+/// produces zero, or common nodata when enabled. Any nodata contributor invalidates all
+/// output bands. Integer working values are rounded/clamped before output conversion,
+/// including when the output itself is floating point, as in GDAL. These in-memory datasets
+/// carry pixels and nodata; use [`vrt::PansharpenVrt`] for lazy file reads with dataset masks.
+pub fn pansharpen(pan: &RasterDataset, spectral: &[SpectralBand<'_>], o: &PansharpenOptions) -> Result<RasterDataset> {
+    let plan = plan(pan, spectral, o)?;
+    let data = blocks::in_memory(pan, spectral, o, &plan)?;
+    super::build_raster_data(plan.pan.grid, data, plan.output.len(), plan.nodata, &pan.crs())
+}
+
+fn process_aligned(
+    pan: &RasterDataset,
+    spectral: &[SpectralBand<'_>],
+    o: &PansharpenOptions,
+    reads: &[SpectralRead],
+) -> Result<RasterDataset> {
+    let plan = plan(pan, spectral, o)?;
+    let pan = adjust(pan, o.pan_band, &plan.pan)?;
+    let bands = spectral.iter().zip(&plan.spectral).map(|(b, layout)| adjust(b.dataset, b.band, layout)).collect::<Result<Vec<_>>>()?;
+    let (weights, output, work, nodata) = (plan.weights, plan.output, plan.work, plan.nodata);
+    let grid = plan.pan.grid;
     let n = grid.width.checked_mul(grid.height).ok_or_else(|| bad("pansharpen buffer size overflow"))?;
-    let gt = grid.geo_transform;
     let max = if matches!(work, DataType::U8 | DataType::U16) { o.bit_depth.map(|b| ((1u64 << b) - 1) as f64) } else { None };
     let mut values = Vec::new();
-    for ds in bands {
-        let sgt = ds.geo_transform();
+    for (index, ds) in bands.into_iter().enumerate() {
+        let geometry = &reads[index];
         let input = BandView::of(&ds.raster, 0);
         let source_nodata = nodata.or(ds.nodata());
-        let valid = if o.resampling == Resampling::Nearest { None } else { source_nodata.map(|nd| input.valid(nd)) };
-        let (mut x, mut y) = ((gt[0] - sgt[0]) / sgt[1], (gt[3] - sgt[3]) / sgt[5]);
-        if x.abs() < 1e-8 {
-            x = 0.0;
-        }
-        if y.abs() < 1e-8 {
-            y = 0.0;
-        }
-        // GDAL truncates floating RasterIO origins toward zero, so a fractional
-        // offset down to (but excluding) -1 still has a valid integer origin 0.
-        if x <= -1.0 || y <= -1.0 {
-            return Err(bad("pansharpen spectral window is outside input; use union or intersection extent"));
-        }
-        let rect = [
-            x,
-            y,
-            (grid.width as f64 * gt[1] / sgt[1]).min(ds.raster.cols as f64 - x),
-            (grid.height as f64 * gt[5] / sgt[5]).min(ds.raster.rows as f64 - y),
-        ];
+        let method = if geometry.copied { Resampling::Nearest } else { o.resampling };
+        let valid = if method == Resampling::Nearest {
+            None
+        } else if let Some(mask) = geometry.mask.as_ref() {
+            if mask.len() != ds.raster.cols * ds.raster.rows {
+                return Err(bad("pansharpen source mask dimensions disagree"));
+            }
+            Some(mask.iter().map(|v| *v != 0).collect())
+        } else {
+            source_nodata.map(|nd| input.valid(nd))
+        };
+        let rect = geometry.rect;
+        let (x, y) = (rect[0], rect[1]);
         if rect[2] <= 0.0 || rect[3] <= 0.0 {
             return Err(bad("pansharpen spectral window does not intersect input"));
         }
@@ -366,9 +420,9 @@ pub fn pansharpen(pan: &RasterDataset, spectral: &[SpectralBand<'_>], o: &Pansha
             working_float: false,
             invalid_value: source_nodata,
         };
-        match o.resampling {
+        match method {
             Resampling::Nearest => {
-                let (rx, ry) = (rect[2] / grid.width as f64, rect[3] / grid.height as f64);
+                let (rx, ry) = (geometry.origin[6], geometry.origin[7]);
                 for row in 0..grid.height {
                     let sy = ((row as f64 + 0.5) * ry + y + 1e-10).clamp(0.0, ds.raster.rows as f64 - 1.0) as usize;
                     for col in 0..grid.width {
@@ -378,17 +432,18 @@ pub fn pansharpen(pan: &RasterDataset, spectral: &[SpectralBand<'_>], o: &Pansha
                 }
             }
             Resampling::Average => {
-                let averaged = super::vrt::gdal_average(
+                let averaged = super::vrt::gdal_average_with_origin(
                     &read,
                     (x.max(0.0) as usize, y.max(0.0) as usize),
                     (rect[0], rect[1], rect[2], rect[3]),
                     (grid.width, grid.height),
+                    Some(geometry.origin),
                 );
                 for (target, value) in out.iter_mut().zip(averaged) {
                     *target = convert_value(convert_value(value.unwrap_or(source_nodata.unwrap_or(0.0)), ds.raster.data_type), work);
                 }
             }
-            _ => out = convolution(&read, rect, grid.width, grid.height, work)?,
+            _ => out = convolution(&read, grid.width, grid.height, work, geometry.origin)?,
         }
         if matches!(o.resampling, Resampling::Cubic | Resampling::CubicSpline | Resampling::Lanczos)
             && let Some(max) = max
@@ -403,7 +458,7 @@ pub fn pansharpen(pan: &RasterDataset, spectral: &[SpectralBand<'_>], o: &Pansha
     let output_crs = pan.crs();
     drop(pan);
     let no = nodata.map(|v| convert_value(v, work));
-    let dtype = o.output_type.unwrap_or(spectral[output[0] - 1].dataset.raster.data_type);
+    let dtype = plan.output_type;
     let mut result = output.iter().map(|_| filled(n, 0.0)).collect::<Result<Vec<_>>>()?;
     for p in 0..n {
         let sum = weights.iter().zip(&values).map(|(w, b)| w * b[p]).sum::<f64>();
@@ -494,6 +549,42 @@ mod tests {
         assert_eq!(out.raster.get(0, 0, 0), 200.0);
         assert_eq!(out.raster.get(1, 0, 0), 0.0);
     }
+    #[test]
+    fn mixed_input_types_convert_before_temporary_upsampling() {
+        for (pan_type, source_type, red, green, expected) in [
+            (DataType::U8, DataType::U16, vec![0., 1000., 0., 1000.], 100., (62., 98.)),
+            (DataType::F64, DataType::U16, vec![0., 1., 0., 1.], 1., (32., 128.)),
+            (DataType::U16, DataType::F32, vec![0.4, 1.4, 0.4, 1.4], 1., (0., 160.)),
+        ] {
+            let pan = raster(vec![vec![80.; 16]], 4, 4, 1., pan_type, None);
+            let spectral = raster(vec![red, vec![green; 4]], 2, 2, 2., source_type, None);
+            let inputs = [SpectralBand { dataset: &spectral, band: 1 }, SpectralBand { dataset: &spectral, band: 2 }];
+            let out = pansharpen(&pan, &inputs, &PansharpenOptions { resampling: Resampling::Bilinear, ..Default::default() }).unwrap();
+            assert_eq!((out.raster.get(0, 0, 1), out.raster.get(1, 0, 1)), expected);
+        }
+    }
+
+    #[test]
+    fn common_nodata_follows_selected_pan_and_disabled_interpolation_keeps_numbers() {
+        let pan = raster(vec![vec![80.; 16]], 4, 4, 1., DataType::U16, Some(0.));
+        let mut ms = raster(vec![vec![0., 20., 20., 20.], vec![40.; 4]], 2, 2, 2., DataType::U16, Some(1.));
+        ms.band_nodata = vec![Some(1.), None];
+        let inputs = [SpectralBand { dataset: &ms, band: 1 }, SpectralBand { dataset: &ms, band: 2 }];
+        let o = PansharpenOptions { resampling: Resampling::Bilinear, ..Default::default() };
+        let inferred = pansharpen(&pan, &inputs, &o).unwrap();
+        assert_eq!(inferred.nodata(), Some(0.));
+        let numeric = pansharpen(&pan, &inputs, &PansharpenOptions { nodata: PansharpenNodata::None, ..o }).unwrap();
+        assert_eq!(numeric.nodata(), None);
+        assert_eq!(numeric.raster.get(0, 0, 1), 18.);
+        assert_eq!(numeric.raster.get(1, 0, 1), 142.);
+        let mut multiband_pan = raster(vec![vec![80.; 16], vec![80.; 16]], 4, 4, 1., DataType::U16, Some(0.));
+        multiband_pan.band_nodata = vec![Some(0.), Some(7.)];
+        assert_eq!(
+            pansharpen(&multiband_pan, &inputs, &PansharpenOptions { pan_band: 2, ..Default::default() }).unwrap().nodata(),
+            Some(7.)
+        );
+    }
+
     #[test]
     fn ungeoreferenced_rasters_share_the_same_affine_space() {
         let mut src = raster(vec![vec![10.0; 4]], 2, 2, 1.0, DataType::U8, None);

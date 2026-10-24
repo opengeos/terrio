@@ -23,7 +23,7 @@ pub(crate) mod gtiff_write;
 #[cfg(feature = "netcdf-hdf5")]
 pub(crate) mod hdf5;
 #[cfg(feature = "netcdf-hdf5")]
-mod hdf5_write;
+pub(crate) mod hdf5_write;
 #[cfg(feature = "netcdf-hdf5")]
 pub(crate) mod hdfeos;
 mod hfa;

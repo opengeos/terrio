@@ -43,6 +43,7 @@ python scripts/conformance.py ../terrio-data --remote --strict     # remote COGs
 | Area | Script | Checks |
 |---|---|---|
 | Dataset summaries | `scripts/compare_with_gdal.py` (`--pixels`) | size, bands, data types, nodata, geotransform, EPSG code, statistics, pixels; layers, feature counts, fields, extents, geometry types |
+| Native multidimensional arrays | `scripts/compare_multidim_with_gdal.py` | GDAL MD and xarray: named axes, indexing variables, native slices/transposes, netCDF/Zarr coordinate/chunk preservation and damaged-unselected-chunk checks |
 | NetCDF and HDF5 subdatasets | `scripts/compare_with_gdal.py --subdatasets` | the subdataset lists of netCDF (groups included) and HDF5 files, HDF5 metadata, then every subdataset's summary and pixels |
 | Histograms | `scripts/compare_hist_with_gdal.py` | `terrio info --hist` vs `gdalinfo -hist` and `-json -hist`, byte for byte, with `-stats` and with histograms stored in `.aux.xml` sidecars, on every data type |
 | Raster round trips | `scripts/raster_roundtrip.py` | GDAL writes → terrio reads; terrio writes → GDAL reads, pixel for pixel; COGs pass GDAL's validator |
@@ -144,13 +145,25 @@ The fetch script downloads Landsat 8 B8/B4/B3/B2 real image pairs from the publi
 [rio-pansharpen test fixtures](https://github.com/mapbox/rio-pansharpen/tree/f23d1edbedddf157ca5014ec805918cdf713bb7f/tests/fixtures/tiny_20_tiffs/LC81070352015122LGN00).
 The comparison retains unequal pan/spectral resolutions and checks all six interpolation
 methods, weights, output selection, bit depth, nodata borders, internal masks, integer
-clipping and union/intersection extents against `gdal_pansharpen`. No tolerance is allowed
+clipping and union/intersection extents against `gdal_pansharpen`. It also cross-reads
+GDAL/Terrio pansharpened VRTs as full images and cropped requests, and exercises all six
+resamplers on images spanning multiple 512-pixel interpolation blocks. No tolerance is allowed
 for integer cases; the Float32 comparison allows 0.002, one ULP at the scene's radiometric scale.
 
 ```sh
 python scripts/compare_pansharpen_with_gdal.py ../terrio-data
 python scripts/conformance.py ../terrio-data --only pansharpen
 ```
+
+A local HTTP range-server measurement on a 1024×1024 UInt16 Landsat pan and three
+512×512 spectral TIFFs fetched 853,965 bytes for a 64×64 output window, versus
+3,676,141 bytes for the whole VRT. Both touched four source TIFFs; the window made
+eight source GETs and the whole image twelve (plus the VRT description). Source
+headers are read at open; the Rust counting-reader regression verifies no pixel
+reads at open and bounded interpolation margins for small windows. On that scene,
+the development CLI's peak RSS fell from 125,544 KiB to 101,824 KiB with the shared
+block implementation and streamed TIFF output, measured with two Rayon threads.
+These are fixture measurements, not memory or transfer guarantees for every codec.
 
 ## Build size and iteration speed
 
@@ -189,3 +202,9 @@ The VRT conformance suite also compares ordinary GeoTIFF warp output against GDA
 for multiband inputs with distinct per-band nodata, both jointly invalid and
 independently invalid pixels, and a separate destination fill. Nearest and bilinear
 cases require exact pixel agreement (tolerance 0).
+
+Pansharpened VRT comparisons include repeated/reordered Int64 and UInt64 pan
+passthrough bands above 2^53, checked in their native integer dtype with tolerance
+zero. A counted-reader regression requests three passthrough output bands
+sourced from two pan bands in a 2×2 window with one two-band read (64 native sample bytes),
+rather than three one-band reads (96 bytes); no spectral pixels are fetched.

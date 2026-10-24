@@ -374,6 +374,9 @@ jobs:
         run: |
           maturin build --release -m python/Cargo.toml -o python/dist
           python -m pip install --no-deps python/dist/*.whl
+      - name: Install multidimensional reference packages
+        shell: micromamba-shell {0}
+        run: python -m pip install xarray h5netcdf h5py zarr
       - name: Compare point clouds with laspy and PDAL
         shell: micromamba-shell {0}
         # Kept for the conformance report below, which reads it instead of comparing again. Pull
