@@ -123,6 +123,14 @@ from speed comparisons.
 | GeoJSON → Shapefile: world cables | 25 ms [23 ms–30 ms] | failed | 4 / 2 | — | GDAL exit 1; background load |
 | Filter + reproject: US counties → EPSG:5070 | 45 ms [42 ms–48 ms] | 50 ms [47 ms–52 ms] | 4 / 1 | — | features differ (exact check); background load |
 
+**Cables → Shapefile:** The GeoJSON has a numeric-array `coordinates` attribute, which GDAL reads
+as `RealList`. [Shapefile does not support list fields](https://gdal.org/en/stable/drivers/vector/shapefile.html),
+so the benchmark's default `ogr2ogr` command fails when creating that field. Terrio automatically
+serializes the array as text. A separate check using `-mapFieldType RealList=String` successfully
+wrote all 530 features, but GDAL and Terrio produced different array strings. A fair rerun needs
+matching field-conversion and text-encoding policies. The table retains the original unmapped
+command's failure and assigns no speed ratio.
+
 ### Raster ↔ vector
 
 | Task | terrio median [range] | GDAL median [range] | CPUs T / G | terrio vs GDAL | Checks |
