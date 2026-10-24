@@ -140,14 +140,22 @@ pub fn overlay(a: &Layer, b: &Layer, operation: OverlayOperation) -> Result<Laye
     if operation != OverlayOperation::Intersection {
         for ((f, g), bounds) in left.iter().zip(&left_bounds) {
             let matches = candidates(&right_index, *bounds);
-            let result = if matches.is_empty() { g.clone() } else { g.difference(&union(matches.iter().map(|&i| &right[i].1))) };
+            let result = match matches.as_slice() {
+                [] => g.clone(),
+                [i] => g.difference(&right[*i].1),
+                _ => g.difference(&union(matches.iter().map(|&i| &right[i].1))),
+            };
             emit(result, Some(f), None)?;
         }
         if matches!(operation, OverlayOperation::Union | OverlayOperation::SymmetricDifference) {
             let left_index = bounds_index(&left_bounds);
             for ((f, g), bounds) in right.iter().zip(&right_bounds) {
                 let matches = candidates(&left_index, *bounds);
-                let result = if matches.is_empty() { g.clone() } else { g.difference(&union(matches.iter().map(|&i| &left[i].1))) };
+                let result = match matches.as_slice() {
+                    [] => g.clone(),
+                    [i] => g.difference(&left[*i].1),
+                    _ => g.difference(&union(matches.iter().map(|&i| &left[i].1))),
+                };
                 emit(result, None, Some(f))?;
             }
         }
