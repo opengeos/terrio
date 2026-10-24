@@ -173,6 +173,8 @@ Linux CPU affinity requires `taskset` from util-linux. Vector validation require
 `gsort` is preferred when available (for example, GNU coreutils installed on macOS). Missing or
 incompatible sort commands are reported as validation failures and receive no ratio. Windows
 users need these Unix tools through WSL or another compatible environment.
+Vector geometry normalization also requires GDAL built with GEOS. Missing GEOS or a failed
+normalization produces a validation failure and receives no ratio.
 
 ```sh
 conda create -n terrio-benchmark -c conda-forge gdal=3.13.3 libgdal-arrow-parquet=3.13.3 numpy

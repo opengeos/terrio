@@ -145,6 +145,16 @@ class ValidationTests(unittest.TestCase):
         self.assertEqual(compare_vectors(a, b), [])
         self.assertTrue(compare_vectors(a, self.vector([1, 3])))
 
+    def test_missing_geos_reports_a_validation_failure(self):
+        a, b = self.vector([1]), self.vector([1])
+        with patch("benchmark_validation.ogr.GetGEOSVersionMajor", return_value=0):
+            self.assertIn("requires GDAL built with GEOS", compare_vectors(a, b)[0])
+
+    def test_failed_geometry_normalization_is_reported(self):
+        a, b = self.vector([1]), self.vector([1])
+        with patch.object(ogr.Geometry, "Normalize", return_value=None):
+            self.assertIn("GEOS normalization failed", compare_vectors(a, b)[0])
+
     def test_missing_sort_reports_a_validation_failure(self):
         a, b = self.vector([1]), self.vector([1])
         with patch("benchmark_validation.shutil.which", return_value=None):

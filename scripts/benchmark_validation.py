@@ -194,6 +194,8 @@ def compare_vectors(a, b):
     Normalize ring starts/orientations and multipart ordering through GEOS. Generated
     feature IDs and layer names are storage details; field definitions and CRS are not.
     """
+    if ogr.GetGEOSVersionMajor() == 0:
+        return ["vector validation requires GDAL built with GEOS for geometry normalization"]
     sort = shutil.which("gsort") or shutil.which("sort")
     if sort is None:
         return ["vector validation requires external sort with -S/-T support; install coreutils or a compatible BSD sort"]
@@ -224,7 +226,13 @@ def compare_vectors(a, b):
                 with raw.open("wb") as stream:
                     for feature in layer:
                         geom = feature.GetGeometryRef()
-                        geometry = bytes(geom.Normalize().ExportToIsoWkb()) if geom else b""
+                        if geom:
+                            normalized = geom.Normalize()
+                            if normalized is None:
+                                return [f"layer {i}: GEOS normalization failed for feature {feature.GetFID()}"]
+                            geometry = bytes(normalized.ExportToIsoWkb())
+                        else:
+                            geometry = b""
                         attributes = json.dumps(
                             [feature.GetField(k) for k in range(len(schemas[tool]))],
                             ensure_ascii=False,
