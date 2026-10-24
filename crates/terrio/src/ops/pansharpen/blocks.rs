@@ -30,13 +30,40 @@ pub(crate) fn window_grid(grid: Grid, window: Window) -> Grid {
     Grid { width: window.width, height: window.height, geo_transform: gt }
 }
 
+/// Copy native samples in bulk when possible, retaining the existing conversion otherwise.
+pub(super) fn copy_samples(dst: &mut RasterData, dst_offset: usize, src: &RasterData, src_offset: usize, count: usize) {
+    macro_rules! copy {
+        ($($variant:ident),*) => {
+            match (dst, src) {
+                $((RasterData::$variant(dst), RasterData::$variant(src)) =>
+                    dst[dst_offset..dst_offset+count].copy_from_slice(&src[src_offset..src_offset+count]),)*
+                (dst, src) => {
+                    for i in 0..count { dst.set_f64(dst_offset+i, src.get_f64(src_offset+i)); }
+                }
+            }
+        };
+    }
+    copy!(U8, I8, U16, I16, U32, I32, U64, I64, F32, F64);
+}
+
 /// Copy the requested part of an adjusted source, padding outside the original with zero.
 /// Only the intersection is passed to `read`, so lazy sources do not fetch padded pixels.
 pub(crate) fn aligned(
     layout: &SourceLayout,
     window: Window,
+    read: impl FnMut(Window) -> Result<RasterDataset>,
+    header: &RasterDataset,
+) -> Result<RasterDataset> {
+    aligned_bands(layout, window, read, header, 1)
+}
+
+/// Align selected bands together, preserving native samples in copied and padded rows.
+pub(crate) fn aligned_bands(
+    layout: &SourceLayout,
+    window: Window,
     mut read: impl FnMut(Window) -> Result<RasterDataset>,
     header: &RasterDataset,
+    bands: usize,
 ) -> Result<RasterDataset> {
     let (ox, oy) = layout.offset;
     let left = (window.x as isize + ox).max(0).min(layout.source_grid.width as isize) as usize;
@@ -44,19 +71,27 @@ pub(crate) fn aligned(
     let right = ((window.x + window.width) as isize + ox).max(0).min(layout.source_grid.width as isize) as usize;
     let bottom = ((window.y + window.height) as isize + oy).max(0).min(layout.source_grid.height as isize) as usize;
     let grid = window_grid(layout.grid, window);
-    let mut values = super::filled(window.width.checked_mul(window.height).ok_or_else(|| bad("pansharpen buffer size overflow"))?, 0.0)?;
+    let size = window.width.checked_mul(window.height).ok_or_else(|| bad("pansharpen buffer size overflow"))?;
+    let mut values = allocate(header.raster.data_type, size.checked_mul(bands).ok_or_else(|| bad("pansharpen band size overflow"))?)?;
     if right > left && bottom > top {
         let source = read(Window::new(left, top, right - left, bottom - top))?;
-        let view = BandView::of(&source.raster, 0);
         let dx = (left as isize - ox - window.x as isize) as usize;
         let dy = (top as isize - oy - window.y as isize) as usize;
-        for y in 0..bottom - top {
-            for x in 0..right - left {
-                values[(dy + y) * window.width + dx + x] = view.get(y * (right - left) + x);
+        let source_width = right - left;
+        let source_size = source_width * (bottom - top);
+        for band in 0..bands {
+            for y in 0..bottom - top {
+                copy_samples(
+                    &mut values,
+                    band * size + (dy + y) * window.width + dx,
+                    &source.raster.data,
+                    band * source_size + y * source_width,
+                    source_width,
+                );
             }
         }
     }
-    build_raster(grid, vec![values], header.raster.data_type, layout.nodata, &header.crs(), |v, _| v)
+    crate::ops::build_raster_data(grid, values, bands, layout.nodata, &header.crs())
 }
 
 #[derive(Clone, Copy)]

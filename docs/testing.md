@@ -198,3 +198,9 @@ The VRT conformance suite also compares ordinary GeoTIFF warp output against GDA
 for multiband inputs with distinct per-band nodata, both jointly invalid and
 independently invalid pixels, and a separate destination fill. Nearest and bilinear
 cases require exact pixel agreement (tolerance 0).
+
+Pansharpened VRT comparisons include repeated/reordered Int64 and UInt64 pan
+passthrough bands above 2^53, checked in their native integer dtype with tolerance
+zero. A counted-reader regression requests three passthrough output bands
+sourced from two pan bands in a 2×2 window with one two-band read (64 native sample bytes),
+rather than three one-band reads (96 bytes); no spectral pixels are fetched.

@@ -234,6 +234,53 @@ def virtual_comparisons(case, terrio, work, index):
         expected, actual = gdal.Open(gout), gdal.Open(tout)
         result["same_crs"] = bool(osr.SpatialReference(expected.GetProjection()).IsSame(osr.SpatialReference(actual.GetProjection())))
         result["name"] = f"{case['name']} {label}"
+        expected = actual = None
+        yield result
+
+
+def native_passthrough_comparisons(terrio, work):
+    """GDAL passthrough bands retain integers beyond f64 precision."""
+    for dtype, numpy_type in [(gdal.GDT_UInt64, np.uint64), (gdal.GDT_Int64, np.int64)]:
+        name = gdal.GetDataTypeName(dtype)
+        pan = str(work / f"native-{name}-pan.tif")
+        spectral = str(work / f"native-{name}-spectral.tif")
+        srs = osr.SpatialReference()
+        srs.ImportFromEPSG(3857)
+        for path, bands, kind in [(pan, 2, dtype), (spectral, 1, gdal.GDT_UInt16)]:
+            ds = gdal.GetDriverByName("GTiff").Create(path, 2, 2, bands, kind)
+            ds.SetGeoTransform([0, 1, 0, 2, 0, -1])
+            ds.SetSpatialRef(srs)
+            for band in range(1, bands + 1):
+                value = ((9007199254741001 + band) * (-1 if dtype == gdal.GDT_Int64 else 1)
+                         if path == pan else 1)
+                ds.GetRasterBand(band).WriteArray(np.full((2, 2), value,
+                    dtype=numpy_type if path == pan else np.uint16))
+            ds = None
+        bands = "".join(
+            f'<VRTRasterBand band="{out}" dataType="{name}"><SimpleSource>'
+            f'<SourceFilename>{pan}</SourceFilename><SourceBand>{band}</SourceBand>'
+            '</SimpleSource></VRTRasterBand>'
+            for out, band in enumerate([2, 1, 2], 1))
+        description = work / f"native-{name}.vrt"
+        description.write_text(
+            '<VRTDataset subClass="VRTPansharpenedDataset">' + bands +
+            f'<VRTRasterBand band="4" dataType="{name}" subClass="VRTPansharpenedRasterBand"/>'
+            '<PansharpeningOptions><PanchroBand>'
+            f'<SourceFilename>{pan}</SourceFilename></PanchroBand><SpectralBand dstBand="4">'
+            f'<SourceFilename>{spectral}</SourceFilename></SpectralBand>'
+            '</PansharpeningOptions></VRTDataset>')
+        reference, output = (str(work / f"native-{name}-{kind}.tif")
+                             for kind in ["gdal", "terrio"])
+        gdal.Translate(reference, str(description))
+        run([terrio, "convert", str(description), output])
+        expected, actual = gdal.Open(reference), gdal.Open(output)
+        np.testing.assert_array_equal(expected.ReadAsArray(), actual.ReadAsArray())
+        result = compare(reference, output, 0)
+        result.update(
+            name=f"native {name} repeated pan passthrough",
+            same_crs=bool(expected.GetSpatialRef().IsSame(actual.GetSpatialRef())),
+        )
+        expected = actual = None
         yield result
 
 
@@ -249,6 +296,11 @@ def main():
     work = Path(args.keep or tempfile.mkdtemp(prefix="terrio_pansharpen_"))
     work.mkdir(parents=True, exist_ok=True)
     results = []
+    if not args.only or args.only in "native passthrough":
+        for result in native_passthrough_comparisons(args.terrio, work):
+            results.append(result)
+            if not args.json:
+                print(format_row(result), flush=True)
     for i, case in enumerate(cases(args.data, work)):
         if args.only and args.only not in case["name"]:
             continue

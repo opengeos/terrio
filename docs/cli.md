@@ -519,7 +519,9 @@ override wrappers drop those masks. Nearest sampling copies pixels without apply
 Zero padding and nodata are separate: use `--nodata 0`
 when padded margins should be missing. An output ending in `.vrt` (or `-f VRT`) writes a GDAL-compatible
 `VRTPansharpenedDataset`, opening only source headers. Sources are stored as absolute paths
-or URLs. Opening the description and reading a window fetches the matching pan pixels and
+or URLs; moving the inputs requires updating those references. Declared VRT block sizes
+must be positive integers and are treated as hints: Terrio uses fixed 512×512 internal
+processing blocks. Opening the description and reading a window fetches the matching pan pixels and
 spectral pixels with interpolation margins. GeoTIFF/COG outputs stream row strips with
 bounded interpolation buffers; other output formats may gather the output in memory.
 Inputs remain separate files needed by the VRT. Source formats without a lazy window

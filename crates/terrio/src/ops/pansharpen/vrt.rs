@@ -92,7 +92,10 @@ impl PansharpenVrt {
             spectral.push(source(item)?);
             if let Some(dst) = item.attr("dstBand") {
                 let dst = number::<usize>(dst, "dstBand")?;
-                if dst > 0 && mapping.insert(dst, spectral.len()).is_some() {
+                if dst == 0 {
+                    return Err(invalid("destination bands start at 1; omit dstBand for an unmapped spectral input"));
+                }
+                if mapping.insert(dst, spectral.len()).is_some() {
                     return Err(invalid("duplicate destination band"));
                 }
             }
@@ -176,7 +179,7 @@ impl PansharpenVrt {
                 let e = declaration.ok_or_else(|| invalid("hole in output band numbering"))?;
                 let simple = e.child("SimpleSource").ok_or_else(|| unsupported("unmapped output band"))?;
                 let input = source(simple)?;
-                if input.name != pan.name {
+                if input.name != pan.name || input.relative != pan.relative {
                     return Err(unsupported("only pan-source passthrough bands are supported"));
                 }
                 if simple.child("SrcRect").is_some() || simple.child("DstRect").is_some() {
@@ -187,7 +190,9 @@ impl PansharpenVrt {
         }
         options.output_type = data_type;
         for name in ["BlockXSize", "BlockYSize"] {
-            if root.child(name).is_some_and(|e| e.text.trim().parse::<usize>().ok() == Some(0)) {
+            if let Some(value) = root.child(name)
+                && number::<usize>(&value.text, name)? == 0
+            {
                 return Err(invalid("block sizes must be positive"));
             }
         }
@@ -267,7 +272,10 @@ impl PansharpenVrt {
             {
                 Ok(crate::ops::vrt::resolve_reference(&std::env::current_dir()?.join("__vrt__.vrt").to_string_lossy(), name, true))
             } else if crate::vfs::Location::parse(name).is_local() {
-                Ok(std::fs::canonicalize(name)?.to_string_lossy().into_owned())
+                Ok(std::fs::canonicalize(name)
+                    .map_err(|e| std::io::Error::new(e.kind(), format!("{name}: {e}")))?
+                    .to_string_lossy()
+                    .into_owned())
             } else {
                 Ok(name.into())
             }
@@ -395,25 +403,14 @@ struct Reader {
     headers: Vec<RasterDataset>,
     cache: Cache,
 }
-impl Reader {
-    fn source(&mut self, index: usize, layout: &super::SourceLayout, window: Window, band: usize) -> Result<RasterDataset> {
-        let src = if index == 0 { &self.description.pan } else { &self.description.spectral[index - 1] };
-        let header = &self.headers[index];
-        let cache = &mut self.cache;
-        blocks::aligned(
-            layout,
-            window,
-            |area| cache.get(src)?.read_window(area, &WindowOptions { bands: vec![band], overview: None }),
-            header,
-        )
-    }
-}
 impl WindowSource for Reader {
     fn overviews(&self) -> Vec<(usize, usize)> {
         Vec::new()
     }
     fn block_size(&self) -> Option<(usize, usize)> {
-        Some((512, 512))
+        // XML block sizes are validated hints; request processing uses fixed,
+        // bounded internal blocks independently of those hints.
+        Some((blocks::BLOCK, blocks::BLOCK))
     }
     fn read(&mut self, _level: usize, window: Window, bands: &[usize]) -> Result<RasterData> {
         let sharp = bands
@@ -423,11 +420,8 @@ impl WindowSource for Reader {
                 Output::Pan(_) => None,
             })
             .collect::<Vec<_>>();
-        let count = window
-            .width
-            .checked_mul(window.height)
-            .and_then(|n| n.checked_mul(bands.len()))
-            .ok_or_else(|| invalid("pansharpen output size overflow"))?;
+        let size = window.width.checked_mul(window.height).ok_or_else(|| invalid("pansharpen window size overflow"))?;
+        let count = size.checked_mul(bands.len()).ok_or_else(|| invalid("pansharpen output size overflow"))?;
         let mut result = blocks::allocate(self.layout.output_type, count)?;
         let values = if sharp.is_empty() {
             None
@@ -459,23 +453,43 @@ impl WindowSource for Reader {
                 },
             )?)
         };
-        let size = window.width * window.height;
+        let mut pan_bands = bands
+            .iter()
+            .filter_map(|b| match self.description.outputs[*b - 1] {
+                Output::Pan(band) => Some(band),
+                Output::Sharp(_) => None,
+            })
+            .collect::<Vec<_>>();
+        pan_bands.sort_unstable();
+        pan_bands.dedup();
+        let pan = if pan_bands.is_empty() {
+            None
+        } else {
+            let source = &self.description.pan;
+            let cache = &mut self.cache;
+            Some(
+                blocks::aligned_bands(
+                    &self.layout.pan,
+                    window,
+                    |area| cache.get(source)?.read_window(area, &WindowOptions { bands: pan_bands.clone(), overview: None }),
+                    &self.headers[0],
+                    pan_bands.len(),
+                )?
+                .raster
+                .data,
+            )
+        };
         let mut sharp_index = 0;
         for (out, band) in bands.iter().enumerate() {
             match self.description.outputs[*band - 1] {
                 Output::Sharp(_) => {
                     let data = values.as_ref().expect("sharp planes");
-                    for i in 0..size {
-                        result.set_f64(out * size + i, data.get_f64(sharp_index * size + i));
-                    }
+                    blocks::copy_samples(&mut result, out * size, data, sharp_index * size, size);
                     sharp_index += 1;
                 }
                 Output::Pan(band) => {
-                    let layout = self.layout.pan.clone();
-                    let data = self.source(0, &layout, window, band)?.raster.data;
-                    for i in 0..size {
-                        result.set_f64(out * size + i, data.get_f64(i));
-                    }
+                    let index = pan_bands.binary_search(&band).expect("requested pan band");
+                    blocks::copy_samples(&mut result, out * size, pan.as_ref().expect("pan planes"), index * size, size);
                 }
             }
         }
@@ -563,6 +577,122 @@ mod tests {
         )
         .unwrap()
     }
+    fn passthrough_xml(dtype: &str, pan_relative: bool, output_relative: bool) -> String {
+        format!(
+            r#"<VRTDataset subClass="VRTPansharpenedDataset">
+        <VRTRasterBand band="1" dataType="{dtype}"><SimpleSource><SourceFilename relativeToVRT="{}">pan</SourceFilename><SourceBand>2</SourceBand></SimpleSource></VRTRasterBand>
+        <VRTRasterBand band="2" dataType="{dtype}"><SimpleSource><SourceFilename relativeToVRT="{}">pan</SourceFilename><SourceBand>1</SourceBand></SimpleSource></VRTRasterBand>
+        <VRTRasterBand band="3" dataType="{dtype}"><SimpleSource><SourceFilename relativeToVRT="{}">pan</SourceFilename><SourceBand>2</SourceBand></SimpleSource></VRTRasterBand>
+        <VRTRasterBand band="4" dataType="{dtype}" subClass="VRTPansharpenedRasterBand"/>
+        <PansharpeningOptions><PanchroBand><SourceFilename relativeToVRT="{}">pan</SourceFilename></PanchroBand>
+        <SpectralBand dstBand="4"><SourceFilename>spectral</SourceFilename></SpectralBand></PansharpeningOptions></VRTDataset>"#,
+            u8::from(output_relative),
+            u8::from(output_relative),
+            u8::from(output_relative),
+            u8::from(pan_relative)
+        )
+    }
+
+    #[test]
+    fn passthrough_source_identity_includes_reference_mode() {
+        for relative in [false, true] {
+            assert!(PansharpenVrt::from_xml(&passthrough_xml("UInt16", relative, relative)).is_ok());
+            assert!(
+                PansharpenVrt::from_xml(&passthrough_xml("UInt16", relative, !relative))
+                    .unwrap_err()
+                    .to_string()
+                    .contains("only pan-source passthrough")
+            );
+        }
+    }
+
+    #[test]
+    fn passthrough_batches_native_int64_planes_without_precision_loss() {
+        type Calls = Arc<Mutex<Vec<(Window, Vec<usize>)>>>;
+        struct Native {
+            calls: Calls,
+            signed: bool,
+        }
+        impl WindowSource for Native {
+            fn overviews(&self) -> Vec<(usize, usize)> {
+                Vec::new()
+            }
+            fn read(&mut self, _: usize, window: Window, bands: &[usize]) -> Result<RasterData> {
+                self.calls.lock().unwrap().push((window, bands.to_vec()));
+                let base = 9_007_199_254_741_001u64;
+                let values = bands.iter().flat_map(|b| vec![base + *b as u64; window.width * window.height]).collect::<Vec<_>>();
+                Ok(if self.signed { RasterData::I64(values.into_iter().map(|v| -(v as i64)).collect()) } else { RasterData::U64(values) })
+            }
+        }
+        for (dtype, name) in [(DataType::U64, "UInt64"), (DataType::I64, "Int64")] {
+            let calls = Arc::new(Mutex::new(Vec::new()));
+            let mut pan = header(2, 1.);
+            pan.raster.data_type = dtype;
+            pan.raster.bands = 2;
+            let sources = HashMap::from([
+                ("pan".into(), LazyRaster::from_source(pan, Box::new(Native { calls: calls.clone(), signed: dtype == DataType::I64 }))),
+                ("spectral".into(), LazyRaster::from(header(2, 1.))),
+            ]);
+            let mut reader =
+                PansharpenVrt::from_xml(&passthrough_xml(name, false, false)).unwrap().into_lazy(Path::new(""), sources).unwrap();
+            assert!(calls.lock().unwrap().is_empty());
+            let output = reader.read_window(Window::new(0, 0, 2, 2), &WindowOptions { bands: vec![3, 1, 2], overview: None }).unwrap();
+            let expected = [vec![9_007_199_254_741_003u64; 4], vec![9_007_199_254_741_003; 4], vec![9_007_199_254_741_002; 4]].concat();
+            match output.raster.data {
+                RasterData::U64(values) => assert_eq!(values, expected),
+                RasterData::I64(values) => assert_eq!(values, expected.into_iter().map(|v| -(v as i64)).collect::<Vec<_>>()),
+                _ => panic!("native passthrough type changed"),
+            }
+            assert_eq!(*calls.lock().unwrap(), vec![(Window::new(0, 0, 2, 2), vec![1, 2])]);
+        }
+    }
+
+    #[test]
+    fn malformed_blocks_and_zero_destination_are_rejected() {
+        let h = header(2, 1.);
+        let xml = PansharpenVrt::from_rasters("pan", &h, &[("spectral", &h, 1)], &Default::default()).unwrap().to_xml();
+        assert!(PansharpenVrt::from_xml(&xml.replace("dstBand=\"1\"", "dstBand=\"0\"")).is_err());
+        let subset = PansharpenVrt::from_rasters(
+            "pan",
+            &h,
+            &[("red", &h, 1), ("nir", &h, 1)],
+            &PansharpenOptions { output_bands: vec![1], ..Default::default() },
+        )
+        .unwrap();
+        assert_eq!(subset.spectral.len(), 2);
+        assert_eq!(subset.outputs.len(), 1);
+        for name in ["BlockXSize", "BlockYSize"] {
+            for value in ["abc", "0", "-1", ""] {
+                assert!(
+                    PansharpenVrt::from_xml(&xml.replace(&format!("<{name}>512</{name}>"), &format!("<{name}>{value}</{name}>"))).is_err()
+                );
+            }
+            assert!(PansharpenVrt::from_xml(&xml.replace(&format!("<{name}>512</{name}>"), &format!("<{name}> 32 </{name}>"))).is_ok());
+        }
+    }
+
+    #[test]
+    fn empty_band_request_still_checks_window_size_overflow() {
+        let h = header(2, 1.);
+        let description = PansharpenVrt::from_rasters("pan", &h, &[("spectral", &h, 1)], &Default::default()).unwrap();
+        let layout = plan(&h, &[SpectralBand { dataset: &h, band: 1 }], &description.options).unwrap();
+        let mut reader = Reader {
+            description,
+            layout,
+            headers: vec![h.clone(), h],
+            cache: Cache { base: String::new(), sources: HashMap::new(), supplied: HashMap::new(), recent: VecDeque::new() },
+        };
+        assert!(reader.read(0, Window::new(0, 0, usize::MAX, 2), &[]).unwrap_err().to_string().contains("window size overflow"));
+    }
+
+    #[test]
+    fn missing_local_source_error_includes_its_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("missing-pan.tif");
+        let error = PansharpenVrt::from_paths(path.to_str().unwrap(), &[("unused".into(), 1)], &Default::default()).unwrap_err();
+        assert!(error.to_string().contains(path.to_str().unwrap()));
+    }
+
     #[test]
     fn source_cache_keeps_recent_handles_bounded_and_supplied_sources_pinned() {
         let dir = tempfile::tempdir().unwrap();
