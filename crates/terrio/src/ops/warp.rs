@@ -1351,6 +1351,9 @@ impl WarpSource for crate::LazyRaster {
 /// pixels it reads, not the whole source. The result is [`warp`]'s, bit for bit. Without a
 /// cutline, which masks the whole source.
 pub fn warp_lazy(src: &mut crate::LazyRaster, o: &WarpOptions) -> Result<RasterDataset> {
+    if let Some(ds) = src.dataset() {
+        return warp(&[ds], o);
+    }
     warp_reader(src, o)
 }
 
