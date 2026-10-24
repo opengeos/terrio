@@ -91,6 +91,7 @@ terrio dem hillshade dem.tif shade.tif -z 2 --multidirectional              # li
 terrio dem slope dem.tif slope.tif -s 111120 -p
 terrio dem color-relief dem.tif colors.txt relief.tif --alpha
 terrio calc -A red.tif -B nir.tif --calc "(B - A * 1.0) / (B + A * 1.0)" --type Float32 ndvi.tif  # gdal_calc.py
+terrio fill-nodata dem.tif filled.tif --max-distance 100 --smoothing-iterations 1  # like gdal_fillnodata
 terrio proximity roads.tif dist.tif --values 1 --distunits GEO --maxdist 5000  # like gdal_proximity.py
 terrio sieve landcover.tif clean.tif --st 10 -8                            # like gdal_sieve.py
 terrio info "https://earth-search.aws.element84.com/v1/search?collections=sentinel-2-l2a&bbox=..."  # STAC: footprints, mosaics
