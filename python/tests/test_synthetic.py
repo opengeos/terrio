@@ -402,3 +402,61 @@ def test_proximity_and_sieve():
     sieved = terrio.sieve(r, threshold=2).read(1)
     assert sieved[2, 2] == 0
     assert terrio.sieve(r, threshold=1).read(1)[2, 2] == 1
+
+
+@pytest.mark.parametrize("center", [False, True])
+@pytest.mark.parametrize("step", [1.0, 2.0])
+def test_geolocation_arrays_match_gdal(gdal, tmp_path, center, step):
+    """Center offsets are measured in array steps, including subsampled arrays."""
+    values = np.arange(48, dtype="float64").reshape(6, 8)
+    source = terrio.Raster.from_array(values, (0, 1, 0, 6, 0, -1))
+    lon = np.array([[10, 12, 14], [10.1, 12.1, 14.1], [10.2, 12.2, 14.2]], dtype="float64")
+    lat = np.array([[50, 50.1, 50.2], [48, 48.1, 48.2], [46, 46.1, 46.2]], dtype="float64")
+    geo = {"pixel_step": step, "line_step": step, "pixel_center": center}
+    paths = []
+    for name, data in [("source", values), ("lon", lon), ("lat", lat)]:
+        path = str(tmp_path / f"{name}.tif")
+        terrio.Raster.from_array(data, (0, 1, 0, data.shape[0], 0, -1)).write(path)
+        paths.append(path)
+    ref_source = gdal.Open(paths[0])
+    from osgeo import osr
+
+    srs = osr.SpatialReference()
+    srs.ImportFromEPSG(4326)
+    ref_source.SetMetadata(
+        {
+            "SRS": srs.ExportToWkt(),
+            "X_DATASET": paths[1],
+            "Y_DATASET": paths[2],
+            "X_BAND": "1",
+            "Y_BAND": "1",
+            "PIXEL_OFFSET": "0",
+            "LINE_OFFSET": "0",
+            "PIXEL_STEP": str(step),
+            "LINE_STEP": str(step),
+            "GEOREFERENCING_CONVENTION": "PIXEL_CENTER" if center else "TOP_LEFT_CORNER",
+        },
+        "GEOLOCATION",
+    )
+    ref = gdal.Warp(
+        "",
+        ref_source,
+        format="MEM",
+        geoloc=True,
+        dstSRS="EPSG:4326",
+        outputBounds=(10.2, 46.4, 13.8, 49.7),
+        width=31,
+        height=29,
+        dstNodata=-9999,
+        errorThreshold=0,
+    )
+    actual = terrio.warp(
+        source,
+        geolocation={"x": paths[1], "y": paths[2], **geo},
+        te=(10.2, 46.4, 13.8, 49.7),
+        ts=(31, 29),
+        dstnodata=-9999,
+        t_srs="EPSG:4326",
+        et=0,
+    )
+    np.testing.assert_array_equal(actual.read(1), ref.ReadAsArray())

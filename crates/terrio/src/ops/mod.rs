@@ -28,6 +28,7 @@ pub mod contour;
 pub mod dem;
 pub mod footprint;
 pub mod gcp;
+pub mod geolocation;
 pub mod geometry;
 pub mod mosaic;
 pub mod polygonize;

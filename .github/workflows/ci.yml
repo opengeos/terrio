@@ -396,6 +396,7 @@ jobs:
         # a suite cannot run.
         shell: micromamba-shell {0}
         run: |
+          python -m pip install h5py
           TERRIO_POINTCLOUDS_LOG=pointclouds.log python scripts/conformance.py terrio-data --output conformance.md --json conformance.json --jobs 4
           cat conformance.md >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v7

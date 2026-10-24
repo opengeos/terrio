@@ -373,6 +373,26 @@ terrio warp scene.tif scene_4326.tif --rpc --to RPC_HEIGHT=120
 terrio warp scene.tif scene_utm.tif --rpc --to RPC_DEM=dem.tif --t-srs EPSG:32720 -r bilinear
 ```
 
+Swaths from netCDF and HDF-EOS use their longitude/latitude geolocation arrays automatically
+when no GCP/RPC method is supplied. `--geoloc` (or `--to METHOD=GEOLOC_ARRAY`) requires arrays
+on every source. Pixel/line offsets, separate sampling steps and RFC 4's `PIXEL_CENTER` or
+`TOP_LEFT_CORNER` conventions are honored. The center shift is half a **geolocation-array
+step**, including subsampled arrays. Coordinates interpolate bilinearly; an indexed inverse
+maps output pixels through the same resampling kernels as other warps.
+
+```sh
+terrio warp 'NETCDF:"swath.nc":/PRODUCT/qa_value' swath.tif --geoloc --t-srs EPSG:4326 --tr 0.05 0.05
+```
+
+Coordinate nodata, NaNs, infinities and invalid geographic latitudes invalidate the neighboring
+cells; no interpolation bridges those holes. Adjacent geographic longitudes are unwrapped
+across the antimeridian; use canonical longitude extents on either side for GDAL comparisons.
+Arrays must have matching dimensions of at least 2 by 2 and positive steps. Cutlines with
+geolocation arrays are currently unsupported. Coordinate arrays and their cell index are held
+in memory. The inverse solves bilinear cells directly; GDAL's inverse backmap can differ by a
+few boundary pixels, particularly with sparse arrays or invalid nodes. The conformance suite
+reports those mask differences explicitly. Specify `--te` and `--ts` to compare identical grids.
+
 ## mosaic
 
 ```sh

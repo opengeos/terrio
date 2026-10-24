@@ -165,3 +165,21 @@ wasm-pack build js --release --target nodejs --out-dir pkg-node/core --out-name 
 TERRIO_JS_PKG=../pkg-node/core/terrio.js node --test js/tests/node.test.mjs
 node js/bench/bench.mjs ../terrio-data    # timings of decoding and writing real files
 ```
+
+## Geolocation-array warping
+
+Pass longitude and latitude rasters explicitly when array datasets cannot be reopened from
+paths in WebAssembly. `x` and `y` accept a `Dataset`, file bytes, or `{ bytes, filename }`:
+
+```javascript
+const output = terrio.warp(swath, {
+  tSrs: "EPSG:4326",
+  geolocation: { x: longitude, y: latitude, pixelStep: 2, lineStep: 2, pixelCenter: true },
+});
+```
+
+Optional `srs` defaults to EPSG:4326, `pixelOffset`/`lineOffset` to 0, and steps to 1.
+`pixelCenter` shifts by half an array step. `geoloc: true` requires geolocation metadata;
+the explicit `geolocation` option supplies arrays for the first source. The operation remains
+pure Rust in full and core WASM builds. See [CLI warping](cli.md#warp) for invalid coordinates,
+antimeridian handling and boundary differences from GDAL.

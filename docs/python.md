@@ -198,3 +198,21 @@ uv venv && uv pip install maturin numpy pytest
 uv run maturin develop --release
 uv run pytest
 ```
+
+### Geolocation-array warping
+
+`terrio.warp(path, geoloc=True, t_srs="EPSG:4326")` requires the longitude/latitude arrays
+already exposed by netCDF/HDF-EOS drivers. Arrays are also used automatically when present.
+For coordinate rasters held separately or in memory, supply the first source's arrays directly:
+
+```python
+out = terrio.warp(source, t_srs="EPSG:4326", geolocation={
+    "x": longitude_raster, "y": latitude_raster,
+    "pixel_step": 2, "line_step": 2, "pixel_center": True,
+})
+```
+
+`x` and `y` each accept a raster or a path. Optional `srs` defaults to EPSG:4326;
+`pixel_offset`/`line_offset` default to 0 and steps to 1. The center shift is half an array
+step. Invalid coordinate cells remain empty. See [CLI warping](cli.md#warp) for the supported
+subset and comparison behavior at swath boundaries.
