@@ -317,6 +317,35 @@ pub fn open_virtual_raster(path: &str) -> Result<LazyRaster> {
     VirtualRaster::from_xml(&text)?.into_lazy_reference(path, HashMap::new())
 }
 
+#[derive(Default)]
+struct InventoryState {
+    users: usize,
+    active: std::collections::HashSet<String>,
+    completed: HashMap<String, Vec<String>>,
+}
+thread_local! { static INVENTORY: std::cell::RefCell<InventoryState> = std::cell::RefCell::new(InventoryState::default()); }
+
+/// One synchronous overwrite-inventory traversal. Nested readers share its memoized
+/// descriptions; dropping the outer scope releases every cached path.
+pub(crate) struct SourceInventoryScope(std::marker::PhantomData<std::rc::Rc<()>>);
+impl SourceInventoryScope {
+    pub(crate) fn enter() -> Self {
+        INVENTORY.with(|state| state.borrow_mut().users += 1);
+        Self(std::marker::PhantomData)
+    }
+}
+impl Drop for SourceInventoryScope {
+    fn drop(&mut self) {
+        INVENTORY.with(|state| {
+            let mut state = state.borrow_mut();
+            state.users -= 1;
+            if state.users == 0 {
+                *state = InventoryState::default();
+            }
+        });
+    }
+}
+
 /// Inventory a reference without decoding its pixels. Nested VRT descriptions need only
 /// XML reads; ordinary files, subdataset containers and archive files are listed directly.
 pub(crate) fn source_input_paths(path: &str) -> Result<Vec<String>> {
@@ -337,12 +366,41 @@ pub(crate) fn source_input_paths(path: &str) -> Result<Vec<String>> {
     }
     let mut paths = Vec::new();
     local_files(&location, &mut paths);
-    if crate::formats::extension(&location.file_name()).as_deref() == Some("vrt") {
-        paths.extend(open_virtual_raster(file)?.input_paths()?);
+    if crate::formats::extension(&location.file_name()).as_deref() != Some("vrt") {
+        return Ok(paths);
     }
-    paths.sort_unstable();
-    paths.dedup();
-    Ok(paths)
+    let _inventory = SourceInventoryScope::enter();
+    // Preserve the reference's base: symlink aliases can share XML but resolve
+    // relative sources from different directories, just like the reader itself.
+    let key = file.to_string();
+    let cached = INVENTORY.with(|state| {
+        let mut state = state.borrow_mut();
+        if state.active.contains(&key) {
+            return Err(invalid("cyclic VRT sources"));
+        }
+        if let Some(paths) = state.completed.get(&key) {
+            return Ok(Some(paths.clone()));
+        }
+        state.active.insert(key.clone());
+        Ok(None)
+    })?;
+    if let Some(paths) = cached {
+        return Ok(paths);
+    }
+    let result = (|| {
+        paths.extend(LazyRaster::open(file)?.input_paths()?);
+        paths.sort_unstable();
+        paths.dedup();
+        Ok(paths)
+    })();
+    INVENTORY.with(|state| {
+        let mut state = state.borrow_mut();
+        state.active.remove(&key);
+        if let Ok(paths) = &result {
+            state.completed.insert(key, paths.clone());
+        }
+    });
+    result
 }
 
 // Parse the filename once for both relative-reference resolution and overwrite inventory.
@@ -835,6 +893,7 @@ impl Reader {
 
 impl WindowSource for Reader {
     fn input_paths(&self) -> Result<Vec<String>> {
+        let _inventory = SourceInventoryScope::enter();
         let _depth = ReadDepth::enter()?;
         fn references<'a>(element: &'a xml::Element, out: &mut Vec<(&'a str, bool)>) {
             if matches!(element.name.as_str(), "SourceFilename" | "SourceDataset") {
@@ -849,12 +908,16 @@ impl WindowSource for Reader {
         refs.sort_unstable();
         refs.dedup();
         let mut paths = Vec::new();
+        let mut resolved = std::collections::HashSet::new();
         for (name, relative) in refs {
             if let Some(source) = self.sources.get(name) {
                 // Supplied names can alias unrelated files: ask the actual reader.
                 paths.extend(source.input_paths()?);
             } else {
-                paths.extend(source_input_paths(&resolve_reference(&self.base, name, relative))?);
+                let path = resolve_reference(&self.base, name, relative);
+                if resolved.insert(path.clone()) {
+                    paths.extend(source_input_paths(&path)?);
+                }
             }
         }
         paths.sort_unstable();
@@ -2043,6 +2106,153 @@ mod inventory_tests {
                 assert_eq!(std::fs::read(&destination).unwrap(), b"keep");
             }
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn memoized_symlink_aliases_preserve_each_reference_base() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = dir.path().join("a");
+        let b = dir.path().join("b");
+        std::fs::create_dir(&a).unwrap();
+        std::fs::create_dir(&b).unwrap();
+        let xml = dir.path().join("shared.vrt");
+        std::fs::write(&xml, "<VRTDataset rasterXSize=\"1\" rasterYSize=\"1\"><VRTRasterBand dataType=\"Byte\"><SimpleSource><SourceFilename relativeToVRT=\"1\">tile.tif</SourceFilename></SimpleSource></VRTRasterBand></VRTDataset>").unwrap();
+        for parent in [&a, &b] {
+            std::os::unix::fs::symlink(&xml, parent.join("alias.vrt")).unwrap();
+        }
+        let _inventory = SourceInventoryScope::enter();
+        for parent in [&a, &b] {
+            let paths = source_input_paths(parent.join("alias.vrt").to_str().unwrap()).unwrap();
+            assert!(paths.contains(&parent.join("tile.tif").to_string_lossy().into_owned()));
+        }
+    }
+
+    #[cfg(remote)]
+    #[test]
+    fn remote_inventory_fetches_only_xml_and_deduplicates_catalog_locations() {
+        use std::io::{BufRead, Write};
+        use std::sync::{
+            Arc, Mutex,
+            atomic::{AtomicBool, Ordering},
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let leaf = dir.path().join("unopened.tif");
+        let source = |name: &str, relative: bool| {
+            format!(
+                "<SimpleSource><SourceFilename relativeToVRT=\"{}\">{name}</SourceFilename><SourceBand>1</SourceBand></SimpleSource>",
+                u8::from(relative)
+            )
+        };
+        let document = |sources: String| {
+            format!(
+                "<VRTDataset rasterXSize=\"1\" rasterYSize=\"1\"><VRTRasterBand dataType=\"Byte\">{sources}</VRTRasterBand></VRTDataset>"
+            )
+        };
+        let root = document(format!("{}{}", source("a.vrt", true), source("b.vrt", true)));
+        let parent = document(source("nested.vrt", true));
+        let nested = document(source(leaf.to_str().unwrap(), false));
+        let expected_bytes = root.len() + 2 * parent.len() + nested.len();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let stop = Arc::new(AtomicBool::new(false));
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let thread_stop = stop.clone();
+        let thread_requests = requests.clone();
+        let server = std::thread::spawn(move || {
+            while !thread_stop.load(Ordering::Relaxed) {
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        stream.set_read_timeout(Some(std::time::Duration::from_secs(5))).unwrap();
+                        let mut request = String::new();
+                        let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
+                        reader.read_line(&mut request).unwrap();
+                        loop {
+                            let mut header = String::new();
+                            if reader.read_line(&mut header).unwrap() == 0 || header.trim().is_empty() {
+                                break;
+                            }
+                        }
+                        let path = request.split_whitespace().nth(1).unwrap_or("").to_string();
+                        let payload = match path.as_str() {
+                            "/root.vrt" => &root,
+                            "/a.vrt" | "/b.vrt" => &parent,
+                            "/nested.vrt" => &nested,
+                            _ => "",
+                        };
+                        thread_requests.lock().unwrap().push((path, payload.len()));
+                        write!(stream, "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", payload.len(), payload)
+                            .unwrap();
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => std::thread::sleep(std::time::Duration::from_millis(1)),
+                    Err(error) => panic!("{error}"),
+                }
+            }
+        });
+        let run = || -> Result<()> {
+            let url = format!("http://{address}/root.vrt");
+            let mut layer = wbvector::Layer::new("tiles");
+            layer.add_field(wbvector::FieldDef::new("location", wbvector::FieldType::Text));
+            for name in ["a", "b"] {
+                let mut feature = wbvector::Feature::with_geometry(
+                    layer.features.len() as u64,
+                    wbvector::Geometry::polygon(
+                        vec![
+                            wbvector::Coord::xy(0., 0.),
+                            wbvector::Coord::xy(1., 0.),
+                            wbvector::Coord::xy(1., 1.),
+                            wbvector::Coord::xy(0., 1.),
+                        ],
+                        vec![],
+                    ),
+                    1,
+                );
+                feature.attributes[0] = wbvector::FieldValue::Text(name.into());
+                layer.push(feature);
+            }
+            let options = crate::catalog::CatalogOptions {
+                resolution: Some((1., 1.)),
+                bands: Some(1),
+                data_type: Some(DataType::U8),
+                ..Default::default()
+            };
+            let catalog = crate::catalog::RasterCatalog::from_sources(
+                layer.clone(),
+                HashMap::from([
+                    ("a".into(), crate::catalog::CatalogInput::path(&url)),
+                    ("b".into(), crate::catalog::CatalogInput::path(&url)),
+                ]),
+                options.clone(),
+            )?
+            .into_lazy();
+            assert_eq!(catalog.input_paths()?, vec![leaf.to_string_lossy().into_owned()]);
+            assert_eq!(catalog.input_paths()?, vec![leaf.to_string_lossy().into_owned()]);
+            assert_eq!(requests.lock().unwrap().len(), 4);
+            #[cfg(feature = "sqlite")]
+            {
+                for feature in &mut layer.features {
+                    feature.attributes[0] = wbvector::FieldValue::Text(url.clone());
+                }
+                let index = dir.path().join("remote.gti.gpkg");
+                crate::write_vector(&[layer], index.to_str().unwrap(), &Default::default())?;
+                let catalog = crate::catalog::RasterCatalog::open(index.to_str().unwrap(), options)?.into_lazy();
+                let paths = catalog.input_paths()?;
+                assert!(paths.contains(&leaf.to_string_lossy().into_owned()));
+                assert_eq!(requests.lock().unwrap().len(), 8);
+            }
+            Ok(())
+        };
+        let result = run();
+        stop.store(true, Ordering::Relaxed);
+        server.join().unwrap();
+        result.unwrap();
+        let requests = requests.lock().unwrap();
+        assert!(requests.iter().all(|(path, _)| matches!(path.as_str(), "/root.vrt" | "/a.vrt" | "/b.vrt" | "/nested.vrt")));
+        let passes = if cfg!(feature = "sqlite") { 2 } else { 1 };
+        assert_eq!(requests.iter().map(|(_, bytes)| bytes).sum::<usize>(), expected_bytes * passes);
+        assert!(expected_bytes < 4096);
+        assert!(!leaf.exists());
     }
 
     #[test]

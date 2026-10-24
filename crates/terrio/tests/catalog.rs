@@ -486,3 +486,23 @@ fn cyclic_vrt_inventory_fails_before_catalog_destination_is_opened() {
     assert!(error.to_string().contains("cyclic"), "{error}");
     assert_eq!(std::fs::read(&data).unwrap(), original);
 }
+
+#[test]
+fn failed_encoded_vrt_is_stable_and_blocks_export_before_creation() {
+    use terrio::catalog::CatalogInput;
+    let mut layer = index();
+    layer.features.truncate(1);
+    let mut catalog = RasterCatalog::from_sources(
+        layer,
+        HashMap::from([("left.tif".into(), CatalogInput::bytes(b"invalid VRT XML".to_vec(), "bad.vrt"))]),
+        CatalogOptions { extent: Some((0., 0., 4., 4.)), ..options() },
+    )
+    .unwrap();
+    let first = catalog.read_window(Window::new(0, 0, 1, 1), &[]).unwrap_err().to_string();
+    assert_eq!(catalog.read_window(Window::new(0, 0, 1, 1), &[]).unwrap_err().to_string(), first);
+    let dir = tempfile::tempdir().unwrap();
+    let output = dir.path().join("existing.tif");
+    std::fs::write(&output, b"unchanged").unwrap();
+    assert!(catalog.into_lazy().write(output.to_str().unwrap(), &Default::default()).is_err());
+    assert_eq!(std::fs::read(&output).unwrap(), b"unchanged");
+}

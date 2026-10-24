@@ -706,7 +706,12 @@ and close on eviction; encoded files open on first selection.
 Catalog exports enumerate nested VRT references before creating their destination, including
 supplied aliases, masks, dataset containers and archive files. Inventory errors and cyclic
 references fail before opening the output. A destination within a referenced directory store
-also triggers a completed read before writing.
+also triggers a completed read before writing. Supported container selectors are `NETCDF:`,
+`HDF5:`, `ZARR:` and `GPKG:`; other driver-style selectors report an unknown inventory instead
+of claiming they read no files. Materialize such a tile first when its provider cannot enumerate
+its inputs. Remote VRTs require fetching their XML descriptions during export inventory;
+ordinary remote raster pixels stay unread. Duplicate locations and shared nested VRTs are
+inventoried once per export traversal; its metadata cache is released when the traversal ends.
 
 Catalog mask caching retains at most 1 MiB of coverage. Larger mask requests return
 their buffer directly and release the cache instead of retaining and cloning it.

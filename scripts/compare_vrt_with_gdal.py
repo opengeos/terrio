@@ -289,15 +289,26 @@ def main():
                 assert actual.GetSpatialRef().IsSame(reference.GetSpatialRef())
                 assert all(same_value(actual.GetRasterBand(band).GetNoDataValue(), reference.GetRasterBand(band).GetNoDataValue())
                     for band in range(1, reference.RasterCount + 1))
+                # Compare export masks at the common buffer type. A native Byte VRT
+                # band's nodata mask can round a valid fractional working value to zero,
+                # while both GDAL/Terrio Float64 exports retain that fraction as valid.
+                exported_path = tmp / "mixed-reference.tif"
+                exported = gdal.Translate(str(exported_path), reference, outputType=dtype)
+                exported = None
+                exported = gdal.Open(str(exported_path))
+                np.testing.assert_array_equal(exported.ReadAsArray(), expected)
+                expected_masks = np.stack([exported.GetRasterBand(band).GetMaskBand().ReadAsArray() != 0
+                    for band in range(1, reference.RasterCount + 1)])
+                observed_masks = np.stack([actual.GetRasterBand(band).GetMaskBand().ReadAsArray() != 0
+                    for band in range(1, actual.RasterCount + 1)])
                 record.update(
                     size=f"{reference.RasterXSize}x{reference.RasterYSize}x{reference.RasterCount}",
                     same_size=(actual.RasterXSize, actual.RasterYSize, actual.RasterCount)
                         == (reference.RasterXSize, reference.RasterYSize, reference.RasterCount),
                     type=gdal.GetDataTypeName(dtype), same_type=True, same_crs=True,
                     same_nodata=True, gt_diff_px=0., exact=1., within_tol=1.,
-                    valid_gdal=sum(int(np.count_nonzero(reference.GetRasterBand(band).GetMaskBand().ReadAsArray()))
-                        for band in range(1, reference.RasterCount + 1)),
-                    valid_mismatch=0, differing=0, max_diff=0., mean_diff=0.,
+                    valid_gdal=int(np.count_nonzero(expected_masks)),
+                    valid_mismatch=int(np.count_nonzero(expected_masks != observed_masks)), differing=0, max_diff=0., mean_diff=0.,
                 )
             except Exception as error:
                 record["error"] = str(error)

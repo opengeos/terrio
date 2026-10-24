@@ -41,6 +41,7 @@ pub(crate) fn overwrites(output: &str, inputs: &[String]) -> bool {
     let out = std::fs::canonicalize(output_path).or_else(|error| {
         let Some(parent) = output_path.parent() else { return Err(error) };
         let Some(name) = output_path.file_name() else { return Err(error) };
+        let parent = if parent.as_os_str().is_empty() { std::path::Path::new(".") } else { parent };
         std::fs::canonicalize(parent).map(|parent| parent.join(name))
     });
     let Ok(out) = out else { return false };
@@ -399,6 +400,8 @@ mod tests {
         assert!(super::overwrites(chunk.to_str().unwrap(), &inputs));
         assert!(super::overwrites(store.join("data/new-chunk").to_str().unwrap(), &inputs));
         assert!(!super::overwrites(adjacent.to_str().unwrap(), &inputs));
+        let relative = format!("terrio-new-chunk-{}.bin", std::process::id());
+        assert!(super::overwrites(&relative, &[std::env::current_dir().unwrap().to_string_lossy().into_owned()]));
     }
     use super::*;
     use crate::crs::SpatialRef;

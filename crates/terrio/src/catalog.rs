@@ -7,7 +7,7 @@ use crate::crs::SpatialRef;
 use crate::ops::warp::{Nodata, WarpOptions};
 use crate::ops::{Resampling, apply_gt, invert_gt};
 use crate::{Error, RasterDataset, Result, VectorOpenOptions};
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use wbraster::raster::RasterData;
 use wbraster::{DataType, Raster, RasterConfig};
@@ -141,10 +141,10 @@ impl CatalogInput {
     }
     fn open(&mut self) -> Result<LazyRaster> {
         if let Input::Bytes(bytes, name) = &mut self.0 {
-            let opened = match virtual_bytes(bytes, name)? {
+            let opened = virtual_bytes(bytes, name).and_then(|reader| match reader {
                 Some(reader) => Ok(reader),
                 None => crate::memory::open_raster_lazy_bytes(std::mem::take(bytes), name),
-            };
+            });
             self.0 = match opened {
                 Ok(reader) => Input::Raster(reader),
                 Err(error) => Input::Failed(error.to_string()),
@@ -981,13 +981,20 @@ impl crate::cog::StreamedSource for CatalogSource {
     fn checked_inputs(&self) -> Result<Vec<String>> {
         // The writer checks these before creating its destination, so overwriting a source
         // tile uses a completed in-memory read instead of truncating a tile still needed.
+        let _inventory = crate::ops::vrt::SourceInventoryScope::enter();
         let mut catalog = self.0.lock().map_err(|_| bad("catalog lock poisoned"))?;
         if let Some(paths) = &catalog.input_paths {
             return Ok(paths.clone());
         }
         let mut paths = Vec::new();
+        let mut inventoried = HashSet::new();
         if let Some(sources) = &catalog.memory {
             for source in sources.values() {
+                if let Input::Path(path) = &source.0
+                    && !inventoried.insert(path.clone())
+                {
+                    continue;
+                }
                 paths.extend(source.inputs()?);
             }
             catalog.input_paths = Some(paths.clone());
@@ -1002,7 +1009,9 @@ impl crate::cog::StreamedSource for CatalogSource {
                     } else {
                         catalog.base.join(location).to_string_lossy().into_owned()
                     };
-                    paths.extend(crate::ops::vrt::source_input_paths(&path)?);
+                    if inventoried.insert(path.clone()) {
+                        paths.extend(crate::ops::vrt::source_input_paths(&path)?);
+                    }
                 }
             }
             Ok(())
