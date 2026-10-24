@@ -156,7 +156,7 @@ impl PansharpenVrt {
         let mut outputs = Vec::with_capacity(count);
         let mut data_type = None;
         for band in 1..=count {
-            let declaration = declared.iter().find(|e| e.attr("band").and_then(|v| v.parse::<usize>().ok()) == Some(band));
+            let declaration = declared.iter().find(|e| e.attr("band").and_then(|v| v.trim().parse::<usize>().ok()) == Some(band));
             if let Some(e) = declaration
                 && let Some(dtype) = e.attr("dataType")
             {
@@ -345,7 +345,7 @@ impl PansharpenVrt {
                     .root
                     .children
                     .iter()
-                    .find(|e| e.name == "VRTRasterBand" && e.attr("band").and_then(|v| v.parse::<usize>().ok()) == Some(i + 1));
+                    .find(|e| e.name == "VRTRasterBand" && e.attr("band").and_then(|v| v.trim().parse::<usize>().ok()) == Some(i + 1));
                 declared.and_then(|e| e.child("NoDataValue")).map(|e| number::<f64>(&e.text, "output nodata")).transpose().map(|value| {
                     value.or(match output {
                         Output::Sharp(_) => layout.nodata,
@@ -622,6 +622,22 @@ mod tests {
         let relative = PansharpenVrt::from_xml(&xml).unwrap();
         assert!(relative.write(path.to_str().unwrap()).is_err());
         assert_eq!(std::fs::read_to_string(path).unwrap(), "required source pixels");
+    }
+    #[test]
+    fn whitespace_band_numbers_keep_declared_type_and_nodata() {
+        let h = header(1, 1.);
+        let options = PansharpenOptions { output_type: Some(DataType::F64), nodata: PansharpenNodata::Value(-9.), ..Default::default() };
+        let description = PansharpenVrt::from_rasters("pan", &h, &[("spectral", &h, 1)], &options).unwrap();
+        for number in [" 1 ", "01", "+1"] {
+            let xml = description
+                .to_xml()
+                .replace("band=\"1\"", &format!("band=\"{number}\""))
+                .replace("<NoDataValue>-9</NoDataValue>", "<NoDataValue>-17</NoDataValue>");
+            let sources = HashMap::from([("pan".into(), LazyRaster::from(h.clone())), ("spectral".into(), LazyRaster::from(h.clone()))]);
+            let lazy = PansharpenVrt::from_xml(&xml).unwrap().into_lazy(Path::new(""), sources).unwrap();
+            assert_eq!(lazy.data_type(), DataType::F64);
+            assert_eq!(lazy.band_nodata(1), Some(-17.));
+        }
     }
     #[test]
     fn supplied_sources_open_without_pixels_and_read_only_window_halos() {
