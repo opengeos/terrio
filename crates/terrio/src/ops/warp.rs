@@ -124,6 +124,11 @@ fn collect_polygons(g: &wbvector::Geometry, out: &mut Polygons) {
 /// Options for [`warp`], named after `gdalwarp`'s.
 #[derive(Debug, Clone)]
 pub struct WarpOptions {
+    /// Require geolocation-array georeferencing (`-geoloc`). Arrays are used automatically
+    /// when present, unless GCPs or RPCs were explicitly supplied.
+    pub geoloc: bool,
+    /// An in-memory coordinate-array transformer for the first source, including WASM inputs.
+    pub geolocation: Option<super::geolocation::GeolocationTransformer>,
     /// The sources' CRS, overriding what they declare (`-s_srs`).
     pub src_srs: Option<SpatialRef>,
     /// The output CRS (`-t_srs`). By default, the first source's.
@@ -190,6 +195,8 @@ pub struct WarpOptions {
 impl Default for WarpOptions {
     fn default() -> Self {
         Self {
+            geoloc: false,
+            geolocation: None,
             src_srs: None,
             dst_srs: None,
             resolution: None,
@@ -223,6 +230,8 @@ impl Default for WarpOptions {
 /// How a source's pixels are georeferenced in place of its geotransform.
 #[derive(Clone)]
 enum Georef {
+    /// By longitude/latitude coordinate arrays.
+    Geolocation(std::sync::Arc<super::geolocation::GeolocationTransformer>),
     /// By GCPs.
     Gcp(super::gcp::GcpTransformer),
     /// By RPCs, to WGS 84 longitudes and latitudes.
@@ -270,6 +279,7 @@ impl GenImgProj {
     /// Source pixel/line to source georeferenced coordinates.
     fn src_to_geo(&self, c: f64, r: f64) -> Option<(f64, f64)> {
         match &self.src_gcp {
+            Some(Georef::Geolocation(g)) => g.to_geo(c, r),
             Some(Georef::Gcp(g)) => Some(g.to_geo(c, r)),
             Some(Georef::Rpc(t)) => t.to_geo(c, r, 0.0),
             None => Some(apply_gt(&self.src_gt, c, r)),
@@ -279,6 +289,7 @@ impl GenImgProj {
     /// Source georeferenced coordinates to source pixel/line.
     fn geo_to_src(&self, x: f64, y: f64) -> Option<(f64, f64)> {
         match &self.src_gcp {
+            Some(Georef::Geolocation(g)) => g.to_pixel(x, y),
             Some(Georef::Gcp(g)) => Some(g.to_pixel(x, y)),
             Some(Georef::Rpc(t)) => t.to_pixel(x, y, 0.0),
             None => Some(apply_gt(&self.src_inv, x, y)),
@@ -1076,6 +1087,46 @@ impl<'a> Plan<'a> {
                 gcp: None,
             })
             .collect();
+        if (o.geoloc || o.geolocation.is_some()) && (!o.gcps.is_empty() || o.rpc.is_some()) {
+            return Err(Error::InvalidArgument("geolocation arrays exclude GCP and RPC georeferencing".into()));
+        }
+        if o.gcps.is_empty() && o.rpc.is_none() {
+            for (index, source) in srcs.iter_mut().enumerate() {
+                if index == 0
+                    && let Some(g) = &o.geolocation
+                {
+                    if o.cutline.is_some() {
+                        return Err(Error::Unsupported("cutlines are not supported with geolocation arrays".into()));
+                    }
+                    source.gcp = Some(Georef::Geolocation(std::sync::Arc::new(g.clone())));
+                    if o.src_srs.is_none() {
+                        source.srs = SpatialRef::parse(if g.srs().is_empty() { "EPSG:4326" } else { g.srs() })?;
+                    }
+                    continue;
+                }
+                if let Some(g) = &source.ds.geolocation {
+                    // Preserve affine cutline workflows on datasets that also happen to
+                    // carry array metadata. A plain swath has no usable affine fallback.
+                    let default_gt = [0.0, 1.0, 0.0, source.grid.height as f64, 0.0, -1.0];
+                    if !o.geoloc && o.cutline.is_some() && (source.ds.affine.is_some() || source.ds.geo_transform() != default_gt) {
+                        continue;
+                    }
+                    if o.cutline.is_some() {
+                        return Err(Error::Unsupported("cutlines are not supported with geolocation arrays".into()));
+                    }
+                    source.gcp = Some(Georef::Geolocation(std::sync::Arc::new(super::geolocation::GeolocationTransformer::open(
+                        g,
+                        source.grid.width,
+                        source.grid.height,
+                    )?)));
+                    if o.src_srs.is_none() {
+                        source.srs = SpatialRef::parse(if g.srs.is_empty() { "EPSG:4326" } else { &g.srs })?;
+                    }
+                } else if o.geoloc {
+                    return Err(Error::InvalidArgument("source has no geolocation arrays".into()));
+                }
+            }
+        }
         if !o.gcps.is_empty() {
             if o.cutline.is_some() {
                 return Err(Error::Unsupported("cutlines are not supported with GCPs".into()));
@@ -1435,7 +1486,14 @@ pub fn warp_to_path(paths: &[String], o: &WarpOptions, path: &str, options: &cra
 /// GCPs, then RPCs.
 fn with_file_gcps<'a>(o: &'a WarpOptions, path: &str, ds: &RasterDataset) -> Result<std::borrow::Cow<'a, WarpOptions>> {
     let default_gt = [0.0, 1.0, 0.0, ds.raster.rows as f64, 0.0, -1.0];
-    if !o.gcps.is_empty() || o.rpc.is_some() || ds.affine.is_some() || ds.geo_transform() != default_gt {
+    if o.geoloc
+        || o.geolocation.is_some()
+        || ds.geolocation.is_some()
+        || !o.gcps.is_empty()
+        || o.rpc.is_some()
+        || ds.affine.is_some()
+        || ds.geo_transform() != default_gt
+    {
         return Ok(std::borrow::Cow::Borrowed(o));
     }
     let gcps = crate::read_gcps(path)?;
