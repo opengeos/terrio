@@ -106,6 +106,15 @@ enum Inner {
 pub(crate) trait WindowSource: Send + Sync {
     /// The sizes `(width, height)` of the overviews, largest first.
     fn overviews(&self) -> Vec<(usize, usize)>;
+    /// Whether the source supplies an explicit per-dataset validity mask.
+    fn has_mask(&self) -> bool {
+        false
+    }
+    /// Read the validity mask: 0 is invalid and 255 valid; absent means all valid.
+    fn read_mask(&mut self, _level: usize, _window: Window) -> Result<Option<Vec<u8>>> {
+        Ok(None)
+    }
+
     /// The block size `(width, height)` reads are best aligned to, when the format has one.
     fn block_size(&self) -> Option<(usize, usize)> {
         None
@@ -171,6 +180,9 @@ impl LazyRaster {
     }
 
     fn open_without_sidecars(path: &str) -> Result<Self> {
+        if crate::formats::extension(path).as_deref() == Some("vrt") {
+            return crate::ops::vrt::open_virtual_raster(path);
+        }
         if let Some(result) = crate::stac::open_lazy(path) {
             return result;
         }
@@ -326,8 +338,19 @@ impl LazyRaster {
     /// The nodata value, when the file declares one.
     pub fn nodata(&self) -> Option<f64> {
         match &self.inner {
-            Inner::Tiff(t) => t.tags.nodata,
+            Inner::Tiff(t) => t.tags.band_nodata.iter().find(|(b, _)| *b == 1).map(|(_, v)| *v).or(t.tags.nodata),
             Inner::Memory(ds) | Inner::Source(ds, _) => ds.nodata(),
+        }
+    }
+
+    /// A band's nodata value (one-based), including per-band VRT/PAM metadata.
+    pub fn band_nodata(&self, band: usize) -> Option<f64> {
+        if band == 0 || band > self.band_count() {
+            return None;
+        }
+        match &self.inner {
+            Inner::Tiff(t) => t.tags.band_nodata.iter().find(|(b, _)| *b == band).map(|(_, v)| *v).or(t.tags.nodata),
+            Inner::Memory(ds) | Inner::Source(ds, _) => ds.band_nodata(band),
         }
     }
 
@@ -403,6 +426,9 @@ impl LazyRaster {
             data: wbraster::raster::RasterData::new_filled(self.data_type(), 0, 0.0),
         };
         let mut ds = RasterDataset::with_driver(raster, self.driver(), self.nodata().is_some());
+        ds.band_nodata = (1..=self.band_count()).map(|b| self.band_nodata(b)).collect();
+        ds.has_nodata = ds.band_nodata[0].is_some();
+        ds.raster.nodata = ds.band_nodata[0].unwrap_or(-9999.);
         ds.set_geo_transform(self.geo_transform());
         ds
     }
@@ -490,6 +516,7 @@ impl LazyRaster {
         if let Some(b) = bands.iter().find(|b| **b == 0 || **b > self.band_count()) {
             return Err(Error::InvalidArgument(format!("no band {b}: the raster has {} band(s)", self.band_count())));
         }
+        let band_nodata: Vec<Option<f64>> = bands.iter().map(|b| self.band_nodata(*b)).collect();
         let gt = self.level_geo_transform(options.overview)?;
         let (data, nodata, has_nodata, crs) = match &mut self.inner {
             Inner::Tiff(t) => {
@@ -515,6 +542,9 @@ impl LazyRaster {
         let raster = crate::pixel::raster_from_data(cfg, data)?;
         let (x, y) = (window.x as f64, window.y as f64);
         let mut ds = RasterDataset::with_driver(raster, self.driver(), has_nodata);
+        ds.has_nodata = band_nodata[0].is_some();
+        ds.raster.nodata = band_nodata[0].unwrap_or(-9999.);
+        ds.band_nodata = band_nodata;
         ds.set_geo_transform([gt[0] + x * gt[1] + y * gt[2], gt[1], gt[2], gt[3] + x * gt[4] + y * gt[5], gt[4], gt[5]]);
         Ok(ds)
     }
@@ -526,6 +556,7 @@ impl LazyRaster {
     pub fn has_mask(&self) -> bool {
         self.sidecar_mask.is_some()
             || match &self.inner {
+                Inner::Source(_, s) => s.has_mask(),
                 Inner::Tiff(t) => t.masks.iter().any(|m| !m.overview && (m.width, m.height) == (t.levels[0].width, t.levels[0].height)),
                 _ => false,
             }
@@ -546,6 +577,9 @@ impl LazyRaster {
         let (fw, fh) = (self.width(), self.height());
         if let Some(m) = self.sidecar_mask.as_mut() {
             return read_sidecar_mask(m, window, (lw, lh)).map(Some);
+        }
+        if let Inner::Source(_, source) = &mut self.inner {
+            return source.read_mask(overview.map_or(0, |v| v + 1), window);
         }
         let Inner::Tiff(t) = &mut self.inner else { return Ok(None) };
         let w = (window.x, window.y, window.width, window.height);

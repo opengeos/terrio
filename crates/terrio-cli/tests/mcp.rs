@@ -109,3 +109,16 @@ fn fill_nodata_is_discoverable_and_executes() {
     assert_eq!(replies[&2]["result"]["isError"], false);
     assert_eq!(terrio::open_raster(output.to_str().unwrap()).unwrap().raster.get(0, 0, 1), 1.0);
 }
+
+#[test]
+fn warp_serializes_and_reads_vrt_without_materializing_output() {
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("source.asc");
+    let output = dir.path().join("warped.vrt");
+    std::fs::write(&input, "ncols 3\nnrows 3\nxllcorner 0\nyllcorner 0\ncellsize 1\n1 2 3\n4 5 6\n7 8 9\n").unwrap();
+    let replies = session(&[call(1, "warp", &[input.to_str().unwrap(), output.to_str().unwrap(), "--ts", "2", "2"])]);
+    assert_eq!(replies[&1]["result"]["isError"], false, "{:?}", replies[&1]);
+    assert!(std::fs::read_to_string(&output).unwrap().contains("VRTWarpedDataset"));
+    let mut result = terrio::open_raster_lazy(output.to_str().unwrap()).unwrap();
+    assert_eq!(result.read().unwrap().raster.data.to_f64_vec(), vec![1., 3., 7., 9.]);
+}

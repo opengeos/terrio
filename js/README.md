@@ -197,3 +197,16 @@ one, the source's mask or nodata is used. The result contains one band, retainin
 type, nodata and georeferencing; valid samples remain unchanged. `maxDistance: 0`
 searches the whole image. Smoothing leaves original valid pixels and first/last rows
 unchanged. As in GDAL, interpolation uses Float32 samples.
+
+### Serialized VRTs
+
+```js
+const virtual = openVrt(xml, { "dem.tif": imageBytes });
+const crop = virtual.readBand(1, [32, 48, 128, 128]);
+```
+
+`openVrt` resolves source names to `Uint8Array` bytes, retaining lazy GeoTIFF and
+VRT window reads in the browser and Node.js. It supports scalar built-in derived
+bands, full/separable kernel filters, mask sources and serialized warped VRTs
+(affine/reprojection, GCP/TPS/homography/RPC). External pixel functions, complex
+buffers and serialized cutline/alpha/geolocation warps are unsupported.

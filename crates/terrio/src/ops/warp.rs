@@ -28,6 +28,8 @@ pub enum Nodata {
     None,
     /// These values, one per band (the last one repeats for the remaining bands).
     Values(Vec<f64>),
+    /// Per-band values, with `None` disabling nodata for that band. The last repeats.
+    PerBand(Vec<Option<f64>>),
 }
 
 impl Nodata {
@@ -47,9 +49,10 @@ impl Nodata {
         Ok(Self::Values(values))
     }
 
-    fn value(&self, band: usize) -> Option<f64> {
+    pub(crate) fn value(&self, band: usize) -> Option<f64> {
         match self {
             Self::Values(v) => v.get(band).or(v.last()).copied(),
+            Self::PerBand(v) => v.get(band).or(v.last()).copied().flatten(),
             _ => None,
         }
     }
@@ -131,6 +134,10 @@ pub struct WarpOptions {
     pub geolocation: Option<super::geolocation::GeolocationTransformer>,
     /// The sources' CRS, overriding what they declare (`-s_srs`).
     pub src_srs: Option<SpatialRef>,
+    /// An explicit source affine transform, for serialized VRT transformers.
+    pub src_transform: Option<[f64; 6]>,
+    /// An explicit GDAL-order homography, for serialized VRT transformers.
+    pub homography: Option<[f64; 9]>,
     /// The output CRS (`-t_srs`). By default, the first source's.
     pub dst_srs: Option<SpatialRef>,
     /// The output resolution `(x, y)`, both positive (`-tr`).
@@ -151,6 +158,10 @@ pub struct WarpOptions {
     pub resampling: Resampling,
     /// Source nodata (`-srcnodata`).
     pub src_nodata: Nodata,
+    /// Override unified source validity. By default explicit `Values` unify bands;
+    /// inherited and per-band nodata use independent masks plus shared validity when all
+    /// bands are nodata (`PARTIAL`). `Some(false)` disables that shared mask (`NO`).
+    pub unified_src_nodata: Option<bool>,
     /// Output nodata (`-dstnodata`). By default, the source nodata.
     pub dst_nodata: Nodata,
     /// The output data type (`-ot`). By default, the first source's.
@@ -198,6 +209,8 @@ impl Default for WarpOptions {
             geoloc: false,
             geolocation: None,
             src_srs: None,
+            src_transform: None,
+            homography: None,
             dst_srs: None,
             resolution: None,
             extent: None,
@@ -207,6 +220,7 @@ impl Default for WarpOptions {
             target_aligned_pixels: false,
             resampling: Resampling::Nearest,
             src_nodata: Nodata::Auto,
+            unified_src_nodata: None,
             dst_nodata: Nodata::Auto,
             output_type: None,
             cutline: None,
@@ -1072,6 +1086,7 @@ struct Plan<'a> {
     bands: usize,
     out_type: DataType,
     dst_nodata: Option<f64>,
+    dst_nodata_all: Vec<Option<f64>>,
 }
 
 impl<'a> Plan<'a> {
@@ -1082,15 +1097,21 @@ impl<'a> Plan<'a> {
             .iter()
             .map(|ds| Source {
                 ds,
-                grid: Grid { width: ds.raster.cols, height: ds.raster.rows, geo_transform: ds.geo_transform() },
+                grid: Grid {
+                    width: ds.raster.cols,
+                    height: ds.raster.rows,
+                    geo_transform: o.src_transform.unwrap_or_else(|| ds.geo_transform()),
+                },
                 srs: o.src_srs.clone().unwrap_or_else(|| ds.crs()),
                 gcp: None,
             })
             .collect();
-        if (o.geoloc || o.geolocation.is_some()) && (!o.gcps.is_empty() || o.rpc.is_some()) {
+        if (o.geoloc || o.geolocation.is_some())
+            && (!o.gcps.is_empty() || o.rpc.is_some() || o.homography.is_some() || o.src_transform.is_some())
+        {
             return Err(Error::InvalidArgument("geolocation arrays exclude GCP and RPC georeferencing".into()));
         }
-        if o.gcps.is_empty() && o.rpc.is_none() {
+        if o.gcps.is_empty() && o.rpc.is_none() && o.homography.is_none() && o.src_transform.is_none() {
             for (index, source) in srcs.iter_mut().enumerate() {
                 if index == 0
                     && let Some(g) = &o.geolocation
@@ -1133,6 +1154,12 @@ impl<'a> Plan<'a> {
             }
             srcs[0].gcp = Some(Georef::Gcp(super::gcp::GcpTransformer::new(&o.gcps, o.gcp_method, o.order)?));
         }
+        if let Some(homography) = o.homography {
+            if o.cutline.is_some() {
+                return Err(Error::Unsupported("cutlines are not supported with homographies".into()));
+            }
+            srcs[0].gcp = Some(Georef::Gcp(super::gcp::GcpTransformer::from_homography(homography)?));
+        }
         if let Some(rpc) = &o.rpc {
             if o.cutline.is_some() {
                 return Err(Error::Unsupported("cutlines are not supported with RPCs".into()));
@@ -1168,17 +1195,20 @@ impl<'a> Plan<'a> {
         };
         let out_type = o.output_type.unwrap_or(first.raster.data_type);
         // The output's nodata defaults to the source's.
-        let dst_nodata: Option<f64> = match &o.dst_nodata {
-            Nodata::Auto => src_nodata(&srcs[0], o, 0),
-            Nodata::None => None,
-            v => v.value(0),
-        };
-        Ok(Self { srcs, dst_srs, grid, bands, out_type, dst_nodata })
+        let dst_nodata_all: Vec<_> = (0..bands)
+            .map(|band| match &o.dst_nodata {
+                Nodata::Auto => src_nodata(&srcs[0], o, band),
+                Nodata::None => None,
+                v => v.value(band),
+            })
+            .collect();
+        let dst_nodata = dst_nodata_all[0];
+        Ok(Self { srcs, dst_srs, grid, bands, out_type, dst_nodata, dst_nodata_all })
     }
 
-    /// The output's initial value, rounded to its type.
-    fn fill(&self) -> f64 {
-        warp_round(self.dst_nodata.unwrap_or(0.0), self.out_type)
+    /// The output's initial values, rounded to its type, one per band.
+    fn fill(&self) -> Vec<f64> {
+        self.dst_nodata_all.iter().map(|v| warp_round(v.unwrap_or(0.), self.out_type)).collect()
     }
 
     /// The transformer from source `k`'s pixels to the output's.
@@ -1223,7 +1253,7 @@ impl<'a> Plan<'a> {
     fn context<'t>(&self, k: usize, t: &'t GenImgProj, o: &WarpOptions) -> (WarpContext<'t>, Vec<Chunk>, Sink) {
         let s = &self.srcs[k];
         let nodata = self.src_nodata(k, o);
-        let unified = matches!(o.src_nodata, Nodata::Values(_)) && self.bands > 1;
+        let unified = o.unified_src_nodata.unwrap_or(matches!(o.src_nodata, Nodata::Values(_))) && self.bands > 1;
         let translation = t.ct.is_none() && s.gcp.is_none() && is_pixel_translation(&s.grid.geo_transform, &self.grid.geo_transform);
         let ctx = WarpContext {
             t,
@@ -1236,7 +1266,8 @@ impl<'a> Plan<'a> {
             bands: self.bands,
             out_bits: self.out_type.size_bytes() * 8,
             src_has_nodata: nodata.iter().any(Option::is_some),
-            dst_has_nodata: self.dst_nodata.is_some(),
+            global_validity: o.unified_src_nodata != Some(false) && self.bands > 1,
+            dst_has_nodata: self.dst_nodata_all.iter().any(Option::is_some),
             cutline: o.cutline.is_some(),
             source_extra: o.source_extra,
             sample_all: o.sample_steps_all,
@@ -1251,7 +1282,11 @@ impl<'a> Plan<'a> {
         // except with a nodata value unified across several bands. Pixels are masked by nodata
         // values and cutlines (see `validity`).
         let masked = nodata.iter().any(Option::is_some) || o.cutline.is_some();
-        let sink = Sink { out_type: self.out_type, dst_nodata: self.dst_nodata, avoid_nodata: masked && (self.bands == 1 || !unified) };
+        let sink = Sink {
+            out_type: self.out_type,
+            dst_nodata: self.dst_nodata_all.clone(),
+            avoid_nodata: masked && (self.bands == 1 || !unified),
+        };
         (ctx, chunks, sink)
     }
 }
@@ -1259,7 +1294,7 @@ impl<'a> Plan<'a> {
 /// A source's nodata value for a band: explicit, else declared by the source.
 fn src_nodata(s: &Source, o: &WarpOptions, band: usize) -> Option<f64> {
     match &o.src_nodata {
-        Nodata::Auto => s.ds.nodata(),
+        Nodata::Auto => s.ds.band_nodata(band + 1),
         Nodata::None => None,
         v => v.value(band),
     }
@@ -1275,13 +1310,13 @@ pub fn warp(sources: &[&RasterDataset], o: &WarpOptions) -> Result<RasterDataset
     // already rounded to the type, see `Sink::value`).
     let fill = p.fill();
     let mut out = RasterData::new_filled(out_type, n * bands, 0.0);
-    crate::pixel::with_data!(&mut out, v => v.iter_mut().for_each(|x| *x = fill as _));
+    crate::pixel::with_data!(&mut out, v => v.chunks_mut(n).zip(&fill).for_each(|(band,fill)|band.iter_mut().for_each(|x|*x=*fill as _)));
 
     for (k, s) in p.srcs.iter().enumerate() {
         let t = p.transformer(k)?;
         let (ctx, chunks, sink) = p.context(k, &t, o);
         let nodata = p.src_nodata(k, o);
-        let unified = matches!(o.src_nodata, Nodata::Values(_)) && bands > 1;
+        let unified = o.unified_src_nodata.unwrap_or(matches!(o.src_nodata, Nodata::Values(_))) && bands > 1;
         let src_bands: Vec<super::BandView> = (0..bands).map(|b| super::BandView::of(&s.ds.raster, b)).collect();
         let cut_mask = match &o.cutline {
             Some(c) => Some(cutline_mask(c, s)?),
@@ -1291,14 +1326,16 @@ pub fn warp(sources: &[&RasterDataset], o: &WarpOptions) -> Result<RasterDataset
         // The source's bands in their type: the kernels are compiled for each (no conversion of
         // the bands, and no dispatch on the type per pixel).
         let sn = s.grid.width * s.grid.height;
-        let target = Target { out: &mut out, width: grid.width, n, fill, out_type, first: k == 0 };
+        let target = Target { out: &mut out, width: grid.width, n, fill: &fill, out_type, first: k == 0 };
         crate::pixel::with_data!(&s.ds.raster.data, v => {
             let typed: Vec<&[_]> = (0..bands).map(|b| &v[b * sn..(b + 1) * sn]).collect();
             let data = SrcData { bands: &typed, valid: &valid, width: s.grid.width, origin: (0, 0) };
             warp_source(&ctx, &chunks, &data, &sink, target);
         });
     }
-    output_dataset(grid, out, bands, p.dst_nodata, &p.dst_srs)
+    let mut ds = output_dataset(grid, out, bands, p.dst_nodata, &p.dst_srs)?;
+    ds.band_nodata = p.dst_nodata_all.clone();
+    Ok(ds)
 }
 
 /// Warps one raster as [`warp`] does, reading from it only the source window each chunk of the
@@ -1306,37 +1343,61 @@ pub fn warp(sources: &[&RasterDataset], o: &WarpOptions) -> Result<RasterDataset
 /// pixels it reads, not the whole source. The result is [`warp`]'s, bit for bit. Without a
 /// cutline, which masks the whole source.
 pub fn warp_lazy(src: &mut crate::LazyRaster, o: &WarpOptions) -> Result<RasterDataset> {
-    if let Some(ds) = src.dataset() {
+    warp_lazy_selected(src, o, None)
+}
+
+/// Warp selected/repeated source bands in output order for a serialized VRT mapping.
+pub(crate) fn warp_lazy_bands(src: &mut crate::LazyRaster, bands: &[usize], o: &WarpOptions) -> Result<RasterDataset> {
+    if bands.is_empty() || bands.iter().any(|b| *b == 0 || *b > src.band_count()) {
+        return Err(Error::InvalidArgument("invalid source band selection".into()));
+    }
+    warp_lazy_selected(src, o, Some(bands))
+}
+
+fn warp_lazy_selected(src: &mut crate::LazyRaster, o: &WarpOptions, selection: Option<&[usize]>) -> Result<RasterDataset> {
+    if selection.is_none()
+        && let Some(ds) = src.dataset()
+    {
         return warp(&[ds], o);
     }
     if o.cutline.is_some() {
         return Err(Error::Unsupported("a cutline needs the source in memory".into()));
     }
-    let header = src.header();
+    let mut header = src.header();
+    if let Some(bands) = selection {
+        header.band_nodata = bands.iter().map(|b| src.band_nodata(*b)).collect();
+        header.has_nodata = header.band_nodata[0].is_some();
+        header.raster.nodata = header.band_nodata[0].unwrap_or(-9999.);
+        header.raster.bands = bands.len();
+        header.raster.data = RasterData::new_filled(header.raster.data_type, 0, 0.);
+    }
+    let read_options = crate::WindowOptions { bands: selection.map_or_else(Vec::new, |v| v.to_vec()), overview: None };
     let p = Plan::new(&[&header], o)?;
     let (grid, bands, out_type) = (p.grid, p.bands, p.out_type);
     let n = grid.width * grid.height;
     let t = p.transformer(0)?;
     let (ctx, chunks, sink) = p.context(0, &t, o);
     let nodata = p.src_nodata(0, o);
-    let unified = matches!(o.src_nodata, Nodata::Values(_)) && bands > 1;
+    let unified = o.unified_src_nodata.unwrap_or(matches!(o.src_nodata, Nodata::Values(_))) && bands > 1;
     let fill = p.fill();
     let mut out = RasterData::new_filled(out_type, n * bands, 0.0);
-    crate::pixel::with_data!(&mut out, v => v.iter_mut().for_each(|x| *x = fill as _));
+    crate::pixel::with_data!(&mut out, v => v.chunks_mut(n).zip(&fill).for_each(|(band,fill)|band.iter_mut().for_each(|x|*x=*fill as _)));
     for c in &chunks {
-        let window = src.read_window(crate::Window::new(c.sx, c.sy, c.sw, c.sh), &crate::WindowOptions::default())?;
+        let window = src.read_window(crate::Window::new(c.sx, c.sy, c.sw, c.sh), &read_options)?;
         let src_bands: Vec<super::BandView> = (0..bands).map(|b| super::BandView::of(&window.raster, b)).collect();
         let valid = validity(&src_bands, &nodata, unified, None);
         let sn = c.sw * c.sh;
         // The chunks partition the output: each finds it at its initial value.
-        let target = Target { out: &mut out, width: grid.width, n, fill, out_type, first: true };
+        let target = Target { out: &mut out, width: grid.width, n, fill: &fill, out_type, first: true };
         crate::pixel::with_data!(&window.raster.data, v => {
             let typed: Vec<&[_]> = (0..bands).map(|b| &v[b * sn..(b + 1) * sn]).collect();
             let data = SrcData { bands: &typed, valid: &valid, width: c.sw, origin: (c.sx, c.sy) };
             warp_source(&ctx, std::slice::from_ref(c), &data, &sink, target);
         });
     }
-    output_dataset(grid, out, bands, p.dst_nodata, &p.dst_srs)
+    let mut ds = output_dataset(grid, out, bands, p.dst_nodata, &p.dst_srs)?;
+    ds.band_nodata = p.dst_nodata_all.clone();
+    Ok(ds)
 }
 
 /// The warped raster of `grid`, holding `out`, whatever its geotransform.
@@ -1373,6 +1434,18 @@ fn stored_grid(grid: Grid) -> (Grid, Option<[f64; 6]>) {
 /// # Ok::<(), terrio::Error>(())
 /// ```
 pub fn warp_to_path(paths: &[String], o: &WarpOptions, path: &str, options: &crate::RasterWriteOptions) -> Result<()> {
+    if options.driver == Some(crate::formats::RasterDriver::VRT)
+        || (options.driver.is_none() && crate::formats::extension(path).as_deref() == Some("vrt"))
+    {
+        if paths.len() != 1 {
+            return Err(Error::Unsupported("a warped VRT requires one source; mosaic it first".into()));
+        }
+        if super::strips::overwrites(path, paths) {
+            return Err(Error::InvalidArgument("a VRT cannot replace its source".into()));
+        }
+        let document = super::vrt::VirtualRaster::warped(&paths[0], o)?;
+        return Ok(std::fs::write(path, document.to_xml())?);
+    }
     if paths.is_empty() {
         return Err(Error::InvalidArgument("no source rasters".into()));
     }
@@ -1391,7 +1464,7 @@ pub fn warp_to_path(paths: &[String], o: &WarpOptions, path: &str, options: &cra
     let t = p.transformer(0)?;
     let (ctx, chunks, sink) = p.context(0, &t, o);
     let nodata = p.src_nodata(0, o);
-    let unified = matches!(o.src_nodata, Nodata::Values(_)) && bands > 1;
+    let unified = o.unified_src_nodata.unwrap_or(matches!(o.src_nodata, Nodata::Values(_))) && bands > 1;
     let fill = p.fill();
     let (stored, gt) = stored_grid(grid);
     let mut header = super::raster_header(stored, out_type, bands, p.dst_nodata, &p.dst_srs)?;
@@ -1416,7 +1489,7 @@ pub fn warp_to_path(paths: &[String], o: &WarpOptions, path: &str, options: &cra
                 let mut grown = Vec::with_capacity(new * w * bands);
                 for b in 0..bands {
                     grown.extend_from_slice(&v[b * old * w..(b + 1) * old * w]);
-                    grown.resize((b + 1) * new * w, fill as _);
+                    grown.resize((b + 1) * new * w, fill[b] as _);
                 }
                 *v = grown;
             });
@@ -1450,7 +1523,7 @@ pub fn warp_to_path(paths: &[String], o: &WarpOptions, path: &str, options: &cra
             let c = &chunks[i];
             // The chunk's part of the output, as `f64`: the output's initial value (the chunks of
             // a source don't overlap), warped.
-            let mut staged: Vec<Vec<f64>> = vec![vec![fill; c.dw * c.dh]; bands];
+            let mut staged: Vec<Vec<f64>> = fill.iter().map(|fill| vec![*fill; c.dw * c.dh]).collect();
             let src_bands: Vec<super::BandView> = (0..bands).map(|b| super::BandView::of(&window.raster, b)).collect();
             let valid = validity(&src_bands, &nodata, unified, None);
             let sn = c.sw * c.sh;
@@ -1481,16 +1554,24 @@ pub fn warp_to_path(paths: &[String], o: &WarpOptions, path: &str, options: &cra
     out.finish()
 }
 
+/// Plan a virtual warp without reading source pixels.
+pub(crate) fn virtual_header(source: &RasterDataset, o: &WarpOptions) -> Result<RasterDataset> {
+    let p = Plan::new(&[source], o)?;
+    super::raster_header(p.grid, p.out_type, p.bands, p.dst_nodata, &p.dst_srs)
+}
+
 /// `o`, with the GCPs of the raster at `path` (opened as `ds`) when `o` has neither GCPs nor RPCs
 /// and the raster has no geotransform; else with its RPCs, as GDAL picks a geotransform, then
 /// GCPs, then RPCs.
-fn with_file_gcps<'a>(o: &'a WarpOptions, path: &str, ds: &RasterDataset) -> Result<std::borrow::Cow<'a, WarpOptions>> {
+pub(crate) fn with_file_gcps<'a>(o: &'a WarpOptions, path: &str, ds: &RasterDataset) -> Result<std::borrow::Cow<'a, WarpOptions>> {
     let default_gt = [0.0, 1.0, 0.0, ds.raster.rows as f64, 0.0, -1.0];
     if o.geoloc
         || o.geolocation.is_some()
         || ds.geolocation.is_some()
         || !o.gcps.is_empty()
         || o.rpc.is_some()
+        || o.homography.is_some()
+        || o.src_transform.is_some()
         || ds.affine.is_some()
         || ds.geo_transform() != default_gt
     {
@@ -1676,6 +1757,7 @@ struct WarpContext<'a> {
     bands: usize,
     out_bits: usize,
     src_has_nodata: bool,
+    global_validity: bool,
     dst_has_nodata: bool,
     cutline: bool,
     /// GDAL's `SOURCE_EXTRA` warp option.
@@ -1701,7 +1783,7 @@ struct Target<'a> {
     width: usize,
     n: usize,
     /// The initial value, rounded to the output type.
-    fill: f64,
+    fill: &'a [f64],
     out_type: DataType,
     /// Whether this is the first source (whose chunks find the output at its initial value).
     first: bool,
@@ -1719,7 +1801,7 @@ fn warp_source<T: crate::pixel::Pixel>(ctx: &WarpContext, chunks: &[Chunk], data
         let rows = c.dy..c.dy + c.dh;
         for (b, part) in staged.iter_mut().enumerate() {
             part.clear();
-            part.resize(c.dw * c.dh, t.fill);
+            part.resize(c.dw * c.dh, t.fill[b]);
             if !t.first {
                 crate::pixel::with_data!(&*t.out, v => {
                     let src = &v[b * n + rows.start * w..b * n + rows.end * w];
@@ -1748,7 +1830,7 @@ fn warp_source<T: crate::pixel::Pixel>(ctx: &WarpContext, chunks: &[Chunk], data
 /// How warped values are stored in the output.
 struct Sink {
     out_type: DataType,
-    dst_nodata: Option<f64>,
+    dst_nodata: Vec<Option<f64>>,
     avoid_nodata: bool,
 }
 
@@ -1768,10 +1850,10 @@ fn chunk_rows<'a>(out: &'a mut [Vec<f64>], width: usize, c: &Chunk) -> Vec<RowOu
 
 impl Sink {
     /// The value to store for a warped value `v`.
-    fn value(&self, v: f64) -> f64 {
+    fn value(&self, v: f64, band: usize) -> f64 {
         let mut v = warp_round(v, self.out_type);
         if self.avoid_nodata
-            && let Some(nd) = self.dst_nodata
+            && let Some(nd) = self.dst_nodata[band]
             && v == nd
         {
             v = if super::is_integer(self.out_type) {
@@ -2151,6 +2233,9 @@ impl WarpContext<'_> {
                 if iy == c.sh {
                     iy -= 1;
                 }
+                if self.global_validity && (0..self.bands).all(|b| !k.valid(b, ix, iy)) {
+                    continue;
+                }
                 let (fx, fy) = (xs[i] - sxo, ys[i] - syo);
                 for (b, o) in out.iter_mut().enumerate() {
                     let v = if self.resampling == Resampling::Nearest || c.sw == 1 || c.sh == 1 {
@@ -2163,7 +2248,7 @@ impl WarpContext<'_> {
                         k.general(b, fx, fy)
                     };
                     if let Some(v) = v {
-                        o[i] = sink.value(v);
+                        o[i] = sink.value(v, b);
                     }
                 }
             }
@@ -2255,7 +2340,7 @@ impl WarpContext<'_> {
                         &mut values,
                         matches!(sink.out_type, DataType::U8 | DataType::I8 | DataType::U16 | DataType::I16),
                     ) {
-                        o[i] = sink.value(v);
+                        o[i] = sink.value(v, b);
                     }
                 }
             }
