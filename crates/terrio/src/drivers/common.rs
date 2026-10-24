@@ -417,7 +417,7 @@ pub(crate) fn write_band_nodata_pam(path: &Path, values: &[Option<f64>]) -> Resu
             });
         }
     }
-    std::fs::write(aux, root.to_xml())?;
+    crate::memfs::write(aux, root.to_xml())?;
     Ok(())
 }
 

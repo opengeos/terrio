@@ -40,22 +40,30 @@ def main():
         ds.GetRasterBand(1).WriteArray(values * np.float32(0.3))
         ds = None
 
-        def run(name, path, authored=False):
+        def run(name, path, authored=False, reference_path=None, tolerance=1e-5):
             for window in [None, [17, 13, 31, 27], [0, 0, 11, 9]]:
                 label = name + (" whole" if window is None else f" window {window[0]},{window[1]}")
                 reference, actual = tmp / "reference.vrt", tmp / "actual.tif"
                 try:
-                    gdal.Translate(str(reference), str(path), srcWin=window, format="VRT")
+                    gdal.Translate(str(reference), str(reference_path or path), srcWin=window, format="VRT")
                     cmd = [args.terrio, "convert", str(path), str(actual)]
                     if window is not None:
                         cmd += ["--srcwin", *map(str, window)]
                     process = subprocess.run(cmd, capture_output=True, text=True, env=env)
                     if process.returncode:
                         raise RuntimeError(process.stderr)
-                    record = compare(str(reference), str(actual), 1e-5)
+                    record = compare(str(reference), str(actual), tolerance)
                 except Exception as error:
                     record = {"error": str(error)}
                 record["name"] = label
+                if reference_path is not None:
+                    record["reference_note"] = "GDAL affine sum path: redundant identity ReprojectTransformer removed; generic GDAL 3.12 polygon clipping loses boundary overlaps"
+                    record["absolute_tolerance"] = tolerance
+                    if "error" not in record:
+                        expected = gdal.Open(str(reference)).ReadAsArray().astype(np.float32)
+                        observed = gdal.Open(str(actual)).ReadAsArray().astype(np.float32)
+                        ulp = np.maximum(np.abs(np.spacing(expected)), np.abs(np.spacing(observed)))
+                        record["max_float32_ulp"] = float(np.max(np.abs(expected - observed) / ulp))
                 records.append(record)
 
         def source_xml(tag="SimpleSource", filename="source.tif", extra=""):
@@ -170,6 +178,39 @@ def main():
             gdal.Warp(str(path), str(multiband), format="VRT", width=64, height=56,
                       resampleAlg="bilinear", **options)
             run(f"VRT multiband nodata {label}", path)
+            actual = tmp / "direct-warp.tif"
+            command = [args.terrio, "warp", str(multiband), str(actual), "--ts", "64", "56", "-r", "bilinear"]
+            if label == "ignore":
+                command += ["--srcnodata", "none"]
+            elif label == "unified":
+                command += ["--srcnodata", "-9999"]
+            elif label == "per-band":
+                command += ["--wo", "UNIFIED_SRC_NODATA=NO"]
+            process = subprocess.run(command, capture_output=True, text=True, env=env)
+            record = compare(str(path), str(actual), 1e-5) if process.returncode == 0 else {"error": process.stderr}
+            record["name"] = f"VRT shared materialized warper nodata {label}"
+            records.append(record)
+
+        for algorithm in ["near", "cubic", "cubicspline", "lanczos", "average", "mode", "min", "max", "med", "q1", "q3", "rms", "sum"]:
+            for label, options in [("partial", {}), ("no", {"warpOptions": ["UNIFIED_SRC_NODATA=NO"]}),
+                                   ("yes", {"srcNodata": -9999}), ("ignore", {"srcNodata": "None"})]:
+                path = tmp / f"multiband-{algorithm}-{label}.vrt"
+                gdal.Warp(str(path), str(multiband), format="VRT", width=64, height=56,
+                          resampleAlg=algorithm, **options)
+                reference_path = None
+                if algorithm == "sum":
+                    # Removing only the identity CRS transformer enables GDAL's conservative
+                    # affine sum. Its generic polygon clipping otherwise drops boundary areas.
+                    root = ET.parse(path).getroot()
+                    transformer = root.find(".//GenImgProjTransformer")
+                    for child in list(transformer):
+                        if child.tag == "ReprojectTransformer":
+                            transformer.remove(child)
+                    reference_path = tmp / f"sum-affine-reference-{label}.vrt"
+                    ET.ElementTree(root).write(reference_path, encoding="unicode")
+                run(f"VRT multiband {algorithm} nodata {label}", path, reference_path=reference_path,
+                    tolerance=0.002 if algorithm == "sum" else 1e-5)
+
         for label, source_bands, source_nodata, destination_nodata in [
             ("reordered", [3, 1, 2], [-9999, -9998, -9997], [-9999] * 3),
             ("destination", [1, 2, 3], [-9999] * 3, [-101, -202, -303]),
@@ -200,7 +241,7 @@ def main():
     else:
         for record in records:
             print(record["name"], record.get("exact", record.get("error")))
-    return int(any("error" in r or r.get("within_tol") != 1 or not r.get("same_type") or not r.get("same_nodata") or r.get("gt_diff_px") != 0 for r in records))
+    return int(any("error" in r or r.get("within_tol") != 1 or not r.get("same_type") or not r.get("same_nodata") or r.get("gt_diff_px") != 0 or r.get("max_float32_ulp", 0) > 1 for r in records))
 
 
 if __name__ == "__main__":

@@ -182,11 +182,29 @@ impl VirtualRaster {
         };
         let alg = match options.resampling {
             Resampling::Nearest => "NearestNeighbour",
+            Resampling::Bilinear => "Bilinear",
+            Resampling::Cubic => "Cubic",
             Resampling::CubicSpline => "CubicSpline",
-            v => v.name(),
+            Resampling::Lanczos => "Lanczos",
+            Resampling::Average => "Average",
+            Resampling::Mode => "Mode",
+            Resampling::Min => "Minimum",
+            Resampling::Max => "Maximum",
+            Resampling::Med => "Median",
+            Resampling::Q1 => "Quartile1",
+            Resampling::Q3 => "Quartile3",
+            Resampling::Sum => "Sum",
+            Resampling::Rms => "RootMeanSquare",
         };
+        let mut extra_options = String::new();
+        if let Some(extra) = options.source_extra {
+            extra_options += &format!("<Option name=\"SOURCE_EXTRA\">{extra}</Option>");
+        }
+        if options.sample_steps_all {
+            extra_options += "<Option name=\"SAMPLE_STEPS\">ALL</Option>";
+        }
         Self::from_xml(&format!(
-            "<VRTDataset rasterXSize=\"{}\" rasterYSize=\"{}\" subClass=\"VRTWarpedDataset\"><SRS>{}</SRS><GeoTransform>{}</GeoTransform>{bands}<BlockXSize>512</BlockXSize><BlockYSize>128</BlockYSize><GDALWarpOptions><WarpMemoryLimit>{}</WarpMemoryLimit><ResampleAlg>{alg}</ResampleAlg><WorkingDataType>{}</WorkingDataType><Option name=\"INIT_DEST\">NO_DATA</Option><Option name=\"UNIFIED_SRC_NODATA\">{unified_option}</Option><SourceDataset relativeToVRT=\"0\">{}</SourceDataset><Transformer>{transformer}</Transformer><BandList>{mappings}</BandList></GDALWarpOptions></VRTDataset>",
+            "<VRTDataset rasterXSize=\"{}\" rasterYSize=\"{}\" subClass=\"VRTWarpedDataset\"><SRS>{}</SRS><GeoTransform>{}</GeoTransform>{bands}<BlockXSize>512</BlockXSize><BlockYSize>128</BlockYSize><GDALWarpOptions><WarpMemoryLimit>{}</WarpMemoryLimit><ResampleAlg>{alg}</ResampleAlg><WorkingDataType>{}</WorkingDataType><Option name=\"INIT_DEST\">NO_DATA</Option><Option name=\"UNIFIED_SRC_NODATA\">{unified_option}</Option>{extra_options}<SourceDataset relativeToVRT=\"0\">{}</SourceDataset><Transformer>{transformer}</Transformer><BandList>{mappings}</BandList></GDALWarpOptions></VRTDataset>",
             target.raster.cols,
             target.raster.rows,
             xml::escape(&srs(&dst_srs)),
@@ -228,9 +246,24 @@ impl VirtualRaster {
             header.raster.metadata =
                 metadata.children.iter().filter_map(|e| e.attr("key").map(|k| (k.to_string(), e.text.clone()))).collect();
         }
+        let mask = if let Some(band) = self.root.child("MaskBand").and_then(|e| e.child("VRTRasterBand")) {
+            let mut root = self.root.clone();
+            root.attrs.retain(|(k, _)| k != "subClass");
+            root.children.retain(|e| e.name != "MaskBand" && e.name != "VRTRasterBand" && e.name != "GDALWarpOptions");
+            root.children.push(band.clone());
+            Some(std::sync::Arc::new(VirtualRaster::from_xml(&root.to_xml())?))
+        } else {
+            None
+        };
         Ok(LazyRaster::from_source(
             header,
-            Box::new(Reader { description: self, base: base.into(), supplied: sources.keys().cloned().collect(), sources }),
+            Box::new(Reader {
+                description: std::sync::Arc::new(self),
+                mask,
+                base: base.into(),
+                supplied: sources.keys().cloned().collect(),
+                sources,
+            }),
         ))
     }
 }
@@ -252,7 +285,8 @@ struct ParsedWarp {
 }
 
 struct Reader {
-    description: VirtualRaster,
+    description: std::sync::Arc<VirtualRaster>,
+    mask: Option<std::sync::Arc<VirtualRaster>>,
     base: String,
     sources: HashMap<String, LazyRaster>,
     supplied: std::collections::HashSet<String>,
@@ -468,6 +502,7 @@ impl Reader {
                 gt[5],
             ]),
             size: Some((window.width, window.height)),
+            error_threshold: 0.,
             resampling: warp.child("ResampleAlg").map(|e| resampling(&e.text)).transpose()?.unwrap_or(Resampling::Nearest),
             output_type: Some(self.description.layout.bands[0].data_type),
             unified_src_nodata: None,
@@ -610,28 +645,30 @@ impl WindowSource for Reader {
         self.description.root.child("MaskBand").is_some()
     }
     fn read_mask(&mut self, _level: usize, window: Window) -> Result<Option<Vec<u8>>> {
-        let Some(mask) = self.description.root.child("MaskBand").and_then(|e| e.child("VRTRasterBand")) else {
+        let _depth = ReadDepth::enter()?;
+        let Some(mask) = self.mask.clone() else {
             return Ok(None);
         };
-        let mut root = self.description.root.clone();
-        root.attrs.retain(|(k, _)| k != "subClass");
-        root.children.retain(|e| e.name != "MaskBand" && e.name != "VRTRasterBand" && e.name != "GDALWarpOptions");
-        root.children.push(mask.clone());
-        let mask = VirtualRaster::from_xml(&root.to_xml())?;
-        let description = std::mem::replace(&mut self.description, mask);
-        let result = self.read(0, window, &[1]);
-        self.description = description;
-        result.map(|v| Some(v.to_f64_vec().into_iter().map(|v| if v == 0. { 0 } else { 255 }).collect()))
+        self.read_description(&mask, window, &[1])
+            .map(|v| Some(v.to_f64_vec().into_iter().map(|v| if v == 0. { 0 } else { 255 }).collect()))
     }
+
     fn read(&mut self, _level: usize, window: Window, bands: &[usize]) -> Result<RasterData> {
         let _depth = ReadDepth::enter()?;
         if self.description.warped {
             return self.warped_blocks(window, bands);
         }
+        let description = self.description.clone();
+        self.read_description(&description, window, bands)
+    }
+}
+
+impl Reader {
+    fn read_description(&mut self, description: &VirtualRaster, window: Window, bands: &[usize]) -> Result<RasterData> {
         let mut values = Vec::with_capacity(window.width * window.height * bands.len());
-        let elements = self.description.root.children.iter().filter(|e| e.name == "VRTRasterBand").cloned().collect::<Vec<_>>();
+        let elements = description.root.children.iter().filter(|e| e.name == "VRTRasterBand").cloned().collect::<Vec<_>>();
         for b in bands {
-            let layout = self.description.layout.bands[*b - 1].clone();
+            let layout = description.layout.bands[*b - 1].clone();
             let element = &elements[*b - 1];
             let sources = element
                 .children
@@ -664,7 +701,7 @@ impl WindowSource for Reader {
             }
             values.extend(out);
         }
-        let data_type = self.description.layout.bands[0].data_type;
+        let data_type = description.layout.bands[0].data_type;
         let values = values.into_iter().map(|v| crate::ops::convert_value(v, data_type)).collect();
         Ok(RasterData::from_f64_vec(data_type, values))
     }
@@ -723,9 +760,15 @@ fn descendant<'a>(e: &'a xml::Element, name: &str) -> Option<&'a xml::Element> {
     e.children.iter().find_map(|e| descendant(e, name))
 }
 fn resampling(name: &str) -> Result<Resampling> {
-    Resampling::parse(match name.trim() {
-        "NearestNeighbour" => "near",
-        "CubicSpline" => "cubicspline",
+    let normalized = name.trim().to_ascii_lowercase();
+    Resampling::parse(match normalized.as_str() {
+        "nearestneighbour" => "near",
+        "minimum" => "min",
+        "maximum" => "max",
+        "median" => "med",
+        "quartile1" => "q1",
+        "quartile3" => "q3",
+        "rootmeansquare" => "rms",
         v => v,
     })
 }
@@ -1164,6 +1207,19 @@ mod tests {
         )
         .unwrap();
         ds.band_nodata = vec![None, Some(-202.)];
+        let stats = crate::info::band_statistics(&ds, 1).unwrap();
+        assert_eq!((stats.min, stats.max, stats.valid_count), (3., 3., 1));
+        let translated =
+            crate::ops::translate::translate(&ds, &crate::ops::translate::TranslateOptions { bands: vec![2, 1, 2], ..Default::default() })
+                .unwrap();
+        assert_eq!(translated.band_nodata, vec![Some(-202.), None, Some(-202.)]);
+        assert_eq!(translated.raster.data.to_f64_vec(), vec![-202., 3., 1., 2., -202., 3.]);
+        let cleared = crate::ops::translate::translate(
+            &ds,
+            &crate::ops::translate::TranslateOptions { assign_nodata: Some(None), ..Default::default() },
+        )
+        .unwrap();
+        assert_eq!(cleared.band_nodata, vec![None, None]);
         crate::write_raster_dataset(&ds, path.to_str().unwrap(), &Default::default()).unwrap();
         let mut lazy = crate::open_raster_lazy(path.to_str().unwrap()).unwrap();
         assert_eq!(lazy.band_nodata(1), None);
@@ -1177,6 +1233,61 @@ mod tests {
         crate::write_raster_dataset(&ds, path.to_str().unwrap(), &Default::default()).unwrap();
         let lazy = crate::open_raster_lazy(path.to_str().unwrap()).unwrap();
         assert_eq!(lazy.band_nodata(2), None);
+    }
+
+    #[test]
+    fn generic_pam_does_not_replace_native_nodata() {
+        let mut ds = raster();
+        ds.has_nodata = true;
+        ds.raster.nodata = 1.70141e38_f32 as f64;
+        let pam = crate::drivers::common::parse_pam(
+            "<PAMDataset><PAMRasterBand band=\"1\"><NoDataValue>-32768</NoDataValue></PAMRasterBand></PAMDataset>",
+        );
+        crate::drivers::nodata::apply(pam, &mut ds);
+        assert_eq!(ds.nodata(), Some(1.70141e38_f32 as f64));
+        assert!(ds.band_nodata.is_empty());
+    }
+
+    #[test]
+    fn sidecar_updates_preserve_metadata_in_memory() {
+        let files = crate::memfs::Mount::new([("bands.tif.aux.xml".into(), b"<PAMDataset><SRS>EPSG:4326</SRS><Metadata><MDI key=\"STATISTICS_MEAN\">12.5</MDI></Metadata><PAMRasterBand band=\"1\"><Description>first</Description><NoDataValue>-1</NoDataValue></PAMRasterBand></PAMDataset>".to_vec())]);
+        let path = files.path().join("bands.tif");
+        crate::drivers::common::write_band_nodata_pam(&path, &[Some(-101.), None]).unwrap();
+        let xml = String::from_utf8(crate::memfs::read(&files.path().join("bands.tif.aux.xml")).unwrap()).unwrap();
+        assert!(xml.contains("<SRS>EPSG:4326</SRS>"));
+        assert!(xml.contains("STATISTICS_MEAN"));
+        assert!(xml.contains("<Description>first</Description>"));
+        let pam = crate::drivers::common::read_pam(&path).unwrap();
+        assert_eq!(pam.band_nodata, vec![(1, -101.)]);
+    }
+
+    #[test]
+    fn serialized_warp_preserves_sampling_options_and_rejects_creation_options() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("source.tif");
+        crate::write_raster_dataset(&raster(), source.to_str().unwrap(), &Default::default()).unwrap();
+        let options = WarpOptions { source_extra: Some(7), sample_steps_all: true, error_threshold: 0., ..Default::default() };
+        let document = VirtualRaster::warped(source.to_str().unwrap(), &options).unwrap();
+        let warp = document.root.child("GDALWarpOptions").unwrap();
+        assert!(warp.children.iter().any(|e| e.attr("name") == Some("SOURCE_EXTRA") && e.text == "7"));
+        assert!(warp.children.iter().any(|e| e.attr("name") == Some("SAMPLE_STEPS") && e.text == "ALL"));
+        assert!(descendant(warp, "ApproxTransformer").is_none());
+        let reader = Reader {
+            description: std::sync::Arc::new(document),
+            mask: None,
+            base: String::new(),
+            sources: HashMap::new(),
+            supplied: Default::default(),
+        };
+        let parsed = reader.parse_warp().unwrap();
+        assert_eq!(parsed.options.error_threshold, 0.);
+        assert_eq!(parsed.options.source_extra, Some(7));
+        assert!(parsed.options.sample_steps_all);
+        let paths = vec![source.to_string_lossy().into_owned()];
+        let out = dir.path().join("out.vrt");
+        let write = crate::RasterWriteOptions { compression: Some("DEFLATE".into()), ..Default::default() };
+        assert!(crate::ops::warp::warp_to_path(&paths, &options, out.to_str().unwrap(), &write).is_err());
+        assert!(!out.exists());
     }
 
     #[test]

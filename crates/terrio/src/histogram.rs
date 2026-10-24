@@ -154,7 +154,7 @@ pub(crate) fn default_histogram(ds: &RasterDataset, band: usize, ctx: &BandConte
     }
     let r = &ds.raster;
     let t = r.data_type;
-    let nodata = ds.nodata();
+    let nodata = ds.band_nodata(band + 1);
     let values = crate::ops::band_f64(r, band);
     let mut buckets = 256usize;
     let (min, max) = match t {

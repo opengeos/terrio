@@ -82,6 +82,7 @@ pub struct Args {
     #[arg(long = "to", value_name = "KEY=VALUE")]
     transformer_options: Vec<String>,
     /// A warp option, as `gdalwarp -wo` takes it: `SOURCE_EXTRA=n`, `SAMPLE_STEPS=ALL`,
+    /// `UNIFIED_SRC_NODATA=YES|NO|PARTIAL`,
     /// `SKIP_NOSOURCE=NO` (to warp beyond the footprint of a source with RPCs; `YES` is the
     /// default and changes nothing).
     #[arg(long = "wo", value_name = "KEY=VALUE")]
@@ -170,6 +171,19 @@ pub fn run(a: Args) -> terrio::Result<()> {
                 )
             }
             "SAMPLE_STEPS" => o.sample_steps_all = v.eq_ignore_ascii_case("ALL"),
+            "UNIFIED_SRC_NODATA" => {
+                o.unified_src_nodata = match v.trim().to_ascii_uppercase().as_str() {
+                    "YES" => Some(true),
+                    "NO" => Some(false),
+                    "PARTIAL" => {
+                        if let Nodata::Values(values) = &o.src_nodata {
+                            o.src_nodata = Nodata::PerBand(values.iter().copied().map(Some).collect());
+                        }
+                        None
+                    }
+                    _ => return Err(terrio::Error::InvalidArgument("UNIFIED_SRC_NODATA must be YES, NO or PARTIAL".into())),
+                };
+            }
             "SKIP_NOSOURCE" => o.rpc_output_window &= !matches!(v.to_ascii_uppercase().as_str(), "NO" | "FALSE" | "OFF" | "0"),
             // Options that tune GDAL's warper without changing the result (NUM_THREADS,
             // INIT_DEST...) are ignored.
