@@ -346,6 +346,8 @@ pub(crate) struct Pam {
     pub geo_transform: Option<[f64; 6]>,
     /// The first band's nodata value.
     pub nodata: Option<f64>,
+    /// Direct dataset-level fallback, distinct from a band-1 declaration.
+    pub dataset_nodata: Option<f64>,
     /// Explicit band nodata, with one-based band indices.
     pub band_nodata: Vec<(usize, f64)>,
 }
@@ -371,8 +373,9 @@ pub(crate) fn parse_pam(xml: &str) -> Pam {
         let v: Vec<f64> = g.split(',').filter_map(|x| x.trim().parse().ok()).collect();
         <[f64; 6]>::try_from(v).ok()
     });
-    let band_nodata: Vec<(usize, f64)> = crate::ops::vrt::xml::parse(xml)
-        .ok()
+    let root = crate::ops::vrt::xml::parse(xml).ok();
+    let band_nodata: Vec<(usize, f64)> = root
+        .as_ref()
         .map(|root| {
             root.children
                 .iter()
@@ -381,9 +384,9 @@ pub(crate) fn parse_pam(xml: &str) -> Pam {
                 .collect()
         })
         .unwrap_or_default();
-    let dataset_nodata = crate::ops::vrt::xml::parse(xml).ok().and_then(|root| root.child("NoDataValue").and_then(|e| parse_f64(&e.text)));
+    let dataset_nodata = root.as_ref().and_then(|root| root.child("NoDataValue").and_then(|e| parse_f64(&e.text)));
     let nodata = band_nodata.iter().find(|(b, _)| *b == 1).map(|(_, v)| *v).or(dataset_nodata);
-    Pam { crs, geo_transform, nodata, band_nodata }
+    Pam { crs, geo_transform, nodata, dataset_nodata, band_nodata }
 }
 
 /// Records differing band nodata for TIFF, which has only one embedded nodata tag.
@@ -614,5 +617,26 @@ mod band_pam_tests {
             assert!(text.contains("<SRS>EPSG:4326</SRS>"));
             assert_eq!(super::parse_pam(&text).band_nodata, vec![(1, -1.), (2, -2.)]);
         }
+    }
+}
+
+#[cfg(test)]
+mod dataset_pam_fallback_tests {
+    #[test]
+    fn dataset_fallback_applies_to_missing_band_declarations() {
+        let pam = super::parse_pam(
+            "<PAMDataset><NoDataValue>-10</NoDataValue><PAMRasterBand band=\"2\"><NoDataValue>-20</NoDataValue></PAMRasterBand></PAMDataset>",
+        );
+        let mut ds = crate::ops::build_raster(
+            crate::ops::Grid { width: 1, height: 1, geo_transform: [0., 1., 0., 1., 0., -1.] },
+            vec![vec![1.], vec![2.]],
+            wbraster::DataType::F64,
+            None,
+            &Default::default(),
+            crate::ops::convert_value,
+        )
+        .unwrap();
+        super::super::nodata::apply(pam, &mut ds);
+        assert_eq!(ds.band_nodata, vec![Some(-10.), Some(-20.)]);
     }
 }
