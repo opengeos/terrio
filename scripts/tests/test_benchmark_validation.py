@@ -106,6 +106,15 @@ class ValidationTests(unittest.TestCase):
             g["bands"][0]["metadata"][""]["STATISTICS_MEAN"] = "8"
             (dirs[1] / "stdout.json").write_text(json.dumps(g))
             self.assertIn("GDAL statistics differ", validate_summary(cmd, [], *dirs)[0])
+            for value in (None, "not-a-number"):
+                with self.subTest(gdal_mean=value):
+                    metadata = g["bands"][0]["metadata"][""]
+                    if value is None:
+                        del metadata["STATISTICS_MEAN"]
+                    else:
+                        metadata["STATISTICS_MEAN"] = value
+                    (dirs[1] / "stdout.json").write_text(json.dumps(g))
+                    self.assertIn("GDAL band 1: statistics missing or invalid", validate_summary(cmd, [], *dirs))
             # Ordinary info has nullable statistics; --stats must not silently omit them.
             t["bands"][0]["statistics"] = None
             (dirs[0] / "stdout.json").write_text(json.dumps(t))

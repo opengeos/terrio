@@ -23,6 +23,10 @@ They are machine-specific snapshots, not guarantees of performance on other data
   `RAYON_NUM_THREADS`, `GDAL_NUM_THREADS`, and `gdalwarp`'s `NUM_THREADS` also configure the pools.
   A budget of one therefore bounds Terrio's workers outside Rayon as well. On other platforms,
   these variables are hints; the script does not claim a hard CPU limit.
+  The Linux runner uses the lowest-numbered available CPU IDs for both tools. Budgets count logical
+  CPUs; the selection
+  does not distinguish physical cores from SMT siblings. Hardware topology and OS placement can
+  therefore affect these machine-specific results. Budgets above the available affinity are rejected.
 - The Linux runner estimates competing CPU use from machine CPU time minus the measured child's
   CPU time. Estimates are averaged by elapsed time across each paired tuning or measurement
   series, reducing clock-tick noise in short commands. If a series exceeds one CPU, the row

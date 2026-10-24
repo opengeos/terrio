@@ -124,6 +124,21 @@ class BenchmarkTests(unittest.TestCase):
         self.assertEqual(error.exception.code, 2)
         self.assertIn("requires taskset", stderr.getvalue())
 
+    def test_cpu_budgets_above_available_affinity_are_rejected(self):
+        for args, message in [(["--threads", "2"], "only 1 CPUs available"), (["--thread-counts", "2"], "tuning budgets must not exceed")]:
+            with self.subTest(args=args):
+                stderr = io.StringIO()
+                with (
+                    patch.object(sys, "argv", ["benchmark.py", "fixtures", *args]),
+                    patch.object(benchmark.os, "sched_getaffinity", return_value={0}, create=True),
+                    patch.object(benchmark.shutil, "which", return_value="/bin/taskset"),
+                    contextlib.redirect_stderr(stderr),
+                    self.assertRaises(SystemExit) as error,
+                ):
+                    benchmark.main()
+                self.assertEqual(error.exception.code, 2)
+                self.assertIn(message, stderr.getvalue())
+
     def test_case_lists_are_cached_across_repeated_commands(self):
         from osgeo import gdal
 

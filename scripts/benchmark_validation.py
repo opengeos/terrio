@@ -108,6 +108,7 @@ def validate_summary(tcmd, gcmd, a, b):
     from osgeo import osr
 
     t, g = (json.loads((Path(d) / "stdout.json").read_text()) for d in (a, b))
+    # The fixed info-case catalog places all options before the source path.
     source = tcmd[-1]
     if t["type"] == "vector":
         differences = compare_vector(source, t)
@@ -174,8 +175,14 @@ def validate_summary(tcmd, gcmd, a, b):
         gb = g["bands"][i]
         # gdalinfo -stats emits rounded display statistics as well as full precision metadata.
         metadata = gb.get("metadata", {}).get("", {})
-        gv = [float(metadata[f"STATISTICS_{key}"]) for key in ("MINIMUM", "MAXIMUM", "MEAN", "STDDEV")]
-        for name, values in (("terrio", tv), ("GDAL", gv)):
+        checks = [("terrio", tv)]
+        try:
+            gv = [float(metadata[f"STATISTICS_{key}"]) for key in ("MINIMUM", "MAXIMUM", "MEAN", "STDDEV")]
+        except (KeyError, TypeError, ValueError):
+            differences.append(f"GDAL band {i + 1}: statistics missing or invalid")
+        else:
+            checks.append(("GDAL", gv))
+        for name, values in checks:
             if not np.allclose(values, expected, rtol=1e-6, atol=1e-8):
                 differences.append(f"{name} statistics differ from NumPy pixel reduction: {values} vs {expected}")
     return differences
