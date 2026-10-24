@@ -54,3 +54,21 @@ fn serves_the_commands() {
         assert!(reply["result"]["content"][0]["text"].as_str().unwrap().contains(code), "{reply}");
     }
 }
+
+#[test]
+fn topology_tools_are_discoverable_and_execute_the_cli() {
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("point.geojson");
+    let output = dir.path().join("buffer.gpkg");
+    std::fs::write(&input,r#"{"type":"FeatureCollection","features":[{"type":"Feature","properties":{"name":"site"},"geometry":{"type":"Point","coordinates":[0,0]}}]}"#).unwrap();
+    let replies = session(&[
+        json!({"jsonrpc":"2.0","id":1,"method":"tools/list"}),
+        call(2, "buffer", &[input.to_str().unwrap(), output.to_str().unwrap(), "--distance", "1"]),
+    ]);
+    let tools = replies[&1]["result"]["tools"].as_array().unwrap();
+    for name in ["buffer", "overlay", "dissolve", "is-valid", "make-valid", "clean"] {
+        assert!(tools.iter().any(|t| t["name"] == name), "missing {name}");
+    }
+    assert_eq!(replies[&2]["result"]["isError"], false);
+    assert_eq!(terrio::open_vector(output.to_str().unwrap(), &Default::default()).unwrap().layers[0].len(), 1);
+}

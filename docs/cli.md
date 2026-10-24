@@ -13,6 +13,12 @@ terrio <COMMAND>
   centroid    One planar centroid per feature
   singlepart  Split multipart geometries and collections into individual features
   vertices    Extract vertices as points with source attributes and vertex indices
+  buffer      Planar buffers with round caps and joins
+  overlay     Polygon intersection, union, difference and symmetric difference
+  dissolve    Merge polygon features, optionally grouped by attributes
+  is-valid    Report geometry validity and a reason per feature
+  make-valid  Repair invalid geometry
+  clean       Snap, deduplicate, close rings and repair geometry
   footprint   Exact valid-data footprint of a raster
   sample      Sample multiple raster bands at vector points
   contour     Contour lines at interval or fixed elevation levels
@@ -69,6 +75,66 @@ the default writes a new dataset, replacing an existing file; `--overwrite` repl
 the named layers of a GeoPackage, preserving its other layers.
 Rust operations retain source feature IDs except when generating new features. Output formats
 can assign new dataset-specific IDs when writing; GeoPackage outputs normally number them from 1.
+
+## Vector topology
+
+```sh
+terrio buffer roads_utm.gpkg buffers.gpkg --distance 100 --quad-segs 30
+terrio overlay parcels.gpkg zones.gpkg intersections.gpkg --operation intersection
+terrio overlay parcels.gpkg zones.gpkg remainder.gpkg --operation difference
+terrio dissolve counties.gpkg states.gpkg --field STATEFP
+terrio is-valid polygons.gpkg validity.gpkg
+terrio make-valid polygons.gpkg repaired.gpkg
+terrio clean roads.gpkg cleaned.gpkg --snap-grid 0.01
+```
+
+These operations use planar XY coordinates in the source CRS. Buffer distances and cleanup
+spacings are in metres for metre-based CRSs, and **degrees for geographic CRSs**; reproject
+with `convert --t-srs` first when a linear distance is needed. They use pure Rust and require
+no GDAL or GEOS installation. Inputs and outputs are held in memory. All accept the vector
+layer selection and output options described above, including append and overwrite.
+
+`buffer` retains attributes, source IDs and null geometries. Other outputs are XY
+MultiPolygons with round caps and joins; `--quad-segs` controls segments per quadrant (1–4096,
+default 30). Negative distances erode polygons; points and lines then have empty buffers.
+Non-finite distances and invalid geometries fail; run `make-valid` first when needed.
+
+`overlay` accepts Polygon/MultiPolygon features in a common CRS; both inputs may also have
+unknown CRS. It does not reproject automatically. `--operation` is `intersection` (default),
+`union`, `difference` or `symmetric-difference` (alias `xor`). `--layer` selects left layers;
+`--overlay-layer` selects the single right layer when its dataset has several. Output fields
+have `a_` and `b_` prefixes, followed by text `a_source_fid`/`b_source_fid` fields preserving
+64-bit source IDs. Fields of an absent side are null. Collisions receive `_2`, `_3`, etc.
+Null and empty geometries contribute no area; touching lines and points are omitted. Results
+have sequential IDs from 1. Overlaps within an input retain source feature multiplicity;
+dissolve the input first when disjoint coverage is required.
+
+`dissolve` also accepts only valid Polygon/MultiPolygon features. Without `--field` it merges
+the whole layer; repeat or comma-separate `--field` (alias `--by`) to group by typed attribute
+values. Null values form a group; non-finite numeric group values are rejected. Only grouping
+fields and `feature_count` are retained. Null geometries count toward a group but add no area;
+an all-null group stays null. Groups follow first-seen order with sequential IDs from 1;
+an empty layer produces no features. Output topology is XY MultiPolygon.
+
+`is-valid` (alias `validity`) appends collision-safe Boolean `is_valid` and text `valid_reason`
+fields, preserving geometry, Z/M and attributes. Null geometry has null status/reason; empty
+geometry is valid. Rings are logically closed even if their driver omits the repeated closing
+vertex. Reasons describe the first detected problem; their wording differs from GEOS.
+Non-finite XY coordinates are reported as invalid.
+
+`make-valid` preserves already-valid geometry, including Z/M. Invalid polygons use an odd-even
+triangulated fill, which can change Polygon to MultiPolygon; rebuilt topology is XY. Collapsed
+area parts are dropped, rather than returned as lines or points; a fully collapsed polygon
+becomes an empty MultiPolygon. Degenerate lines become empty lines, and collections are
+repaired recursively. Attributes, null features and source IDs are retained. Non-finite XY
+or an unsuccessful repair returns an error.
+
+`clean` removes consecutive XY duplicates, closes rings, drops empty/collapsed parts and repairs
+invalid polygons. `--snap-grid` is a finite nonnegative spacing in CRS units: 0 (default) disables
+snapping, otherwise XY coordinates round to the nearest multiple, with ties away from zero.
+The first retained duplicate supplies Z/M; polygon repair discards Z/M when it rebuilds topology.
+A fully collapsed feature becomes null, retaining its attributes and source ID. Non-finite XY
+and coordinate overflow fail. Output formats may assign their own feature IDs on writing.
 
 ## footprint
 

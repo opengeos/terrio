@@ -17,6 +17,57 @@ fn first(path: &Path) -> terrio::Layer {
 }
 
 #[test]
+fn topology_commands_preserve_attributes_and_use_output_modes() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    std::fs::write(d.join("a.geojson"), r#"{"type":"FeatureCollection","features":[{"type":"Feature","properties":{"group":"east"},"geometry":{"type":"Polygon","coordinates":[[[0,0],[1,0],[1,1],[0,1],[0,0]]]}},{"type":"Feature","properties":{"group":"east"},"geometry":{"type":"Polygon","coordinates":[[[1,0],[2,0],[2,1],[1,1],[1,0]]]}},{"type":"Feature","properties":{"group":"west"},"geometry":null}]}"#).unwrap();
+    std::fs::write(d.join("b.geojson"), r#"{"type":"FeatureCollection","features":[{"type":"Feature","properties":{"zone":7},"geometry":{"type":"Polygon","coordinates":[[[0.5,0],[1.5,0],[1.5,1],[0.5,1],[0.5,0]]]}}]}"#).unwrap();
+    std::fs::write(d.join("invalid.geojson"), r#"{"type":"FeatureCollection","features":[{"type":"Feature","properties":{"name":"bowtie"},"geometry":{"type":"Polygon","coordinates":[[[0,0],[2,2],[0,2],[2,0],[0,0]]]}}]}"#).unwrap();
+    ok(&["buffer", "a.geojson", "buffer.gpkg", "--distance", "0.1", "--quad-segs", "16", "--nln", "buffered"], d);
+    assert_eq!(first(&d.join("buffer.gpkg")).len(), 3);
+    let before = first(&d.join("buffer.gpkg")).features[0].geometry.clone();
+    // Default output replaces the dataset; append adds features to the named layer.
+    ok(&["buffer", "a.geojson", "buffer.gpkg", "--distance", "1", "--nln", "buffered"], d);
+    assert_ne!(first(&d.join("buffer.gpkg")).features[0].geometry, before);
+    ok(&["buffer", "a.geojson", "buffer.gpkg", "--distance", "1", "--nln", "buffered", "--append"], d);
+    assert_eq!(first(&d.join("buffer.gpkg")).len(), 6);
+    ok(&["buffer", "a.geojson", "buffer.gpkg", "--distance", "-0.1", "--nln", "buffered", "--overwrite"], d);
+    assert_eq!(first(&d.join("buffer.gpkg")).len(), 3);
+    ok(&["dissolve", "a.geojson", "dissolved.gpkg", "--field", "group"], d);
+    let dissolved = first(&d.join("dissolved.gpkg"));
+    assert_eq!(dissolved.len(), 2);
+    assert_eq!(dissolved.schema.len(), 2);
+    assert_eq!(dissolved.features[0].attributes[1], terrio::FieldValue::Integer(2));
+    ok(&["is-valid", "invalid.geojson", "validity.gpkg"], d);
+    assert_eq!(first(&d.join("validity.gpkg")).features[0].attributes[1], terrio::FieldValue::Boolean(false));
+    ok(&["make-valid", "invalid.geojson", "fixed.gpkg"], d);
+    let fixed = first(&d.join("fixed.gpkg"));
+    assert_eq!(fixed.len(), 1);
+    assert_eq!(terrio::ops::topology::validity(&fixed).features[0].attributes[1], terrio::FieldValue::Boolean(true));
+    ok(&["clean", "a.geojson", "cleaned.gpkg", "--snap-grid", "0.1"], d);
+    assert_eq!(first(&d.join("cleaned.gpkg")).len(), 3);
+    for op in ["intersection", "union", "difference", "symmetric-difference"] {
+        let name = format!("{op}.gpkg");
+        ok(&["overlay", "a.geojson", "b.geojson", &name, "--operation", op], d);
+        let out = first(&d.join(&name));
+        assert!(!out.is_empty());
+        assert!(out.schema.fields().iter().any(|f| f.name == "a_group"));
+        assert!(out.schema.fields().iter().any(|f| f.name == "b_zone"));
+    }
+    for args in [
+        vec!["buffer", "a.geojson", "bad.gpkg", "--distance", "NaN"],
+        vec!["buffer", "a.geojson", "bad.gpkg", "--distance", "1", "--quad-segs", "0"],
+        vec!["buffer", "invalid.geojson", "bad.gpkg", "--distance", "1"],
+        vec!["dissolve", "a.geojson", "bad.gpkg", "--field", "missing"],
+        vec!["clean", "a.geojson", "bad.gpkg", "--snap-grid", "-1"],
+        vec!["overlay", "a.geojson", "b.geojson", "bad.gpkg", "--operation", "invalid"],
+    ] {
+        assert!(!run(&args, d).status.success(), "{args:?}");
+        assert!(!d.join("bad.gpkg").exists());
+    }
+}
+
+#[test]
 fn geometry_commands_sample_multiple_rasters_and_create_a_footprint() {
     let dir = tempfile::tempdir().unwrap();
     let d = dir.path();

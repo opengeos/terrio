@@ -147,6 +147,28 @@ fields. It reuses a cropped membership mask across bands of the same raster.
 `ops::sql::query` runs the existing SQL subset with strict input-layer lookup. These operations
 are also available in the core crate without extra features.
 
+`ops::topology` provides `buffer` (`BufferOptions`), `overlay` (`OverlayOperation`),
+`dissolve` (group field names), `validity`, `make_valid` and `clean` (`CleanOptions`). These
+pure-Rust operations are included in WebAssembly builds without extra features. Distances
+and snap grids use planar source CRS units, including degrees. Overlay and dissolve accept
+polygons only; overlay requires matching CRSs. Buffer/overlay/dissolve construct XY geometry;
+validity and repair of already-valid features preserve Z/M. See [Vector topology](cli.md#vector-topology)
+for null, attribute, ID and collapsed-part handling.
+
+```rust,no_run
+use terrio::ops::topology::{self, BufferOptions, CleanOptions, OverlayOperation};
+
+let ds = terrio::open_vector("parcels_utm.gpkg", &Default::default())?;
+let layer = &ds.layers[0];
+let repaired = topology::make_valid(layer)?;
+let buffers = topology::buffer(&repaired, &BufferOptions { distance: 100.0, ..Default::default() })?;
+let dissolved = topology::dissolve(&buffers, &["zone".into()])?;
+let overlaps = topology::overlay(&repaired, &dissolved, OverlayOperation::Intersection)?;
+let report = topology::validity(&overlaps);
+let cleaned = topology::clean(&repaired, &CleanOptions { snap_grid: 0.01 })?;
+# Ok::<(), terrio::Error>(())
+```
+
 The commands are also available through the Python package's `terrio` CLI and MCP. Dedicated
 Python and JavaScript operation bindings are not yet provided for these additions.
 

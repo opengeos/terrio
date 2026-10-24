@@ -1,4 +1,4 @@
-//! Geometry operations, raster footprints and point sampling.
+//! Geometry and topology operations, raster footprints, point sampling and raster analysis.
 
 use terrio::formats::VectorDriver;
 use terrio::ops::footprint::FootprintOptions;
@@ -86,6 +86,111 @@ pub fn singlepart(a: GeometryArgs) -> Result<()> {
 
 pub fn vertices(a: GeometryArgs) -> Result<()> {
     let layers = a.input.open()?.iter().map(terrio::ops::geometry::vertices).collect();
+    a.output.write(layers)
+}
+
+#[derive(clap::Args)]
+pub struct BufferArgs {
+    #[command(flatten)]
+    input: VectorInput,
+    #[command(flatten)]
+    output: VectorOutput,
+    /// Distance in CRS units (degrees in a geographic CRS). Negative values erode polygons.
+    #[arg(short = 'd', long, allow_hyphen_values = true)]
+    distance: f64,
+    /// Segments per quadrant of round caps and joins, from 1 to 4096.
+    #[arg(long = "quad-segs", default_value_t = 30)]
+    quadrant_segments: usize,
+}
+
+pub fn buffer(a: BufferArgs) -> Result<()> {
+    let options = terrio::ops::topology::BufferOptions { distance: a.distance, quadrant_segments: a.quadrant_segments };
+    let layers = a.input.open()?.iter().map(|l| terrio::ops::topology::buffer(l, &options)).collect::<Result<_>>()?;
+    a.output.write(layers)
+}
+
+#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+enum OverlayOperation {
+    Intersection,
+    Union,
+    Difference,
+    #[value(alias = "xor")]
+    SymmetricDifference,
+}
+
+#[derive(clap::Args)]
+pub struct OverlayArgs {
+    #[command(flatten)]
+    input: VectorInput,
+    /// Right-hand polygon dataset, in the input CRS.
+    overlay: String,
+    #[command(flatten)]
+    output: VectorOutput,
+    /// Polygon overlay operation. Touching lines and points are omitted.
+    #[arg(long, value_enum, default_value_t = OverlayOperation::Intersection)]
+    operation: OverlayOperation,
+    /// Select a single layer of the right-hand dataset (required when it has multiple layers).
+    #[arg(long = "overlay-layer")]
+    overlay_layer: Option<String>,
+}
+
+pub fn overlay(a: OverlayArgs) -> Result<()> {
+    let right = super::quiet(|| {
+        terrio::open_vector(&a.overlay, &terrio::VectorOpenOptions { layers: a.overlay_layer.into_iter().collect(), ..Default::default() })
+    })?;
+    if right.layers.len() != 1 {
+        return Err(Error::InvalidArgument("overlay needs one right-hand layer; choose it with --overlay-layer".into()));
+    }
+    use terrio::ops::topology::OverlayOperation as Op;
+    let op = match a.operation {
+        OverlayOperation::Intersection => Op::Intersection,
+        OverlayOperation::Union => Op::Union,
+        OverlayOperation::Difference => Op::Difference,
+        OverlayOperation::SymmetricDifference => Op::SymmetricDifference,
+    };
+    let layers = a.input.open()?.iter().map(|l| terrio::ops::topology::overlay(l, &right.layers[0], op)).collect::<Result<_>>()?;
+    a.output.write(layers)
+}
+
+#[derive(clap::Args)]
+pub struct DissolveArgs {
+    #[command(flatten)]
+    input: VectorInput,
+    #[command(flatten)]
+    output: VectorOutput,
+    /// Group by these fields (repeat or comma-separate). By default, dissolve the whole layer.
+    #[arg(long = "field", visible_alias = "by", value_delimiter = ',')]
+    fields: Vec<String>,
+}
+
+pub fn dissolve(a: DissolveArgs) -> Result<()> {
+    let layers = a.input.open()?.iter().map(|l| terrio::ops::topology::dissolve(l, &a.fields)).collect::<Result<_>>()?;
+    a.output.write(layers)
+}
+
+pub fn validity(a: GeometryArgs) -> Result<()> {
+    a.output.write(a.input.open()?.iter().map(terrio::ops::topology::validity).collect())
+}
+
+pub fn make_valid(a: GeometryArgs) -> Result<()> {
+    let layers = a.input.open()?.iter().map(terrio::ops::topology::make_valid).collect::<Result<_>>()?;
+    a.output.write(layers)
+}
+
+#[derive(clap::Args)]
+pub struct CleanArgs {
+    #[command(flatten)]
+    input: VectorInput,
+    #[command(flatten)]
+    output: VectorOutput,
+    /// Optional XY snap grid spacing in CRS units. Zero disables snapping. First duplicate wins.
+    #[arg(long = "snap-grid", default_value_t = 0.0, allow_hyphen_values = true)]
+    snap_grid: f64,
+}
+
+pub fn clean(a: CleanArgs) -> Result<()> {
+    let options = terrio::ops::topology::CleanOptions { snap_grid: a.snap_grid };
+    let layers = a.input.open()?.iter().map(|l| terrio::ops::topology::clean(l, &options)).collect::<Result<_>>()?;
     a.output.write(layers)
 }
 

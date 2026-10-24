@@ -4,6 +4,7 @@
 //! [`calc`] (`gdal_calc.py`), [`proximity`] (`gdal_proximity.py`), [`sieve`] (`gdal_sieve.py`),
 //! [`geometry`] (centroids, singleparts and vertices), [`footprint`], [`sample`], and the vector
 //! filtering of `ogr2ogr` ([`vector_filter`], [`sql`]).
+//! [`topology`] provides planar buffers, polygon overlay/dissolve, validity, repair and cleanup.
 //! [`contour`] generates elevation lines and [`zonal`] summarizes raster bands within polygons.
 //!
 //! ```no_run
@@ -37,6 +38,7 @@ pub mod sample;
 pub mod sieve;
 pub mod sql;
 pub(crate) mod strips;
+pub mod topology;
 pub mod translate;
 pub mod vector_filter;
 pub mod vrt;

@@ -68,6 +68,12 @@ terrio polygonize landcover.tif landcover.gpkg --8
 terrio centroid countries.gpkg centroids.gpkg     # planar centroids, keeping attributes and CRS
 terrio singlepart countries.gpkg parts.gpkg       # split multipart geometries and collections
 terrio vertices roads.gpkg nodes.gpkg             # vertices with source/part/ring/vertex indices
+terrio buffer roads_utm.gpkg buffers.gpkg --distance 100  # planar CRS units
+terrio overlay parcels.gpkg zones.gpkg intersections.gpkg --operation intersection
+terrio dissolve counties.gpkg states.gpkg --field STATEFP
+terrio is-valid polygons.gpkg validity.gpkg
+terrio make-valid polygons.gpkg repaired.gpkg
+terrio clean roads.gpkg cleaned.gpkg --snap-grid 0.01
 terrio footprint image.tif footprint.gpkg         # exact valid-data boundary, including holes
 terrio sample sites.gpkg sampled.gpkg --raster dem.tif --raster rain.tif  # values at points
 terrio contour dem.tif contours.gpkg --interval 10 --3d
@@ -266,6 +272,7 @@ python scripts/compare_windows_with_gdal.py remote     # the same on public COGs
 cargo test -- --ignored                                # tests that read public cloud files
 python scripts/compare_vector_ops_with_gdal.py ../terrio-data  # convert options, rasterize, polygonize
 python scripts/compare_processing_with_gdal.py ../terrio-data  # centroids, singleparts, vertices, footprints, sampling
+python scripts/compare_topology_with_gdal.py ../terrio-data  # buffer, overlay, dissolve, validity, repair and cleanup
 python scripts/compare_raster_analysis_with_gdal.py ../terrio-data  # contours, zonal statistics and SQL
 python scripts/compare_ops_with_gdal.py ../terrio-data # compare translate, warp and mosaic with GDAL's tools
 python scripts/compare_dem_calc_with_gdal.py ../terrio-data  # dem, calc, proximity and sieve vs GDAL

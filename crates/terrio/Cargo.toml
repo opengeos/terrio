@@ -23,6 +23,7 @@ wbraster.workspace = true
 wbvector.workspace = true
 wbprojection.workspace = true
 geographiclib-rs.workspace = true
+geo.workspace = true
 thiserror.workspace = true
 serde.workspace = true
 # Keeps JSON object keys (properties, fields) in file order, and parses numbers exactly.

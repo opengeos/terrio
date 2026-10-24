@@ -25,6 +25,8 @@ wbvector = { version = "0.1.6", features = ["kmz"] }
 wbprojection = "0.3.3"
 # Karney's geodesics, for the ellipsoidal gnomonic projection (pure Rust).
 geographiclib-rs = { version = "0.2.7", default-features = false }
+# Planar topology, buffering, validity and polygon repair, without native libraries.
+geo = { version = "0.33.1", default-features = false, features = ["spade"] }
 
 flatgeobuf = { version = "6", default-features = false }
 # The version flatgeobuf's generated code is built with.

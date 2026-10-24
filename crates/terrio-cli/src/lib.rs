@@ -53,6 +53,19 @@ enum Command {
     ZonalStats(cmd::processing::ZonalArgs),
     /// Query vector layers with read-only SELECT, WHERE, ORDER BY and LIMIT.
     Sql(cmd::processing::SqlArgs),
+    /// Planar buffer in input CRS units, with round caps and joins.
+    Buffer(cmd::processing::BufferArgs),
+    /// Overlay valid polygon layers in a common CRS, preserving both sets of attributes.
+    Overlay(cmd::processing::OverlayArgs),
+    /// Dissolve polygons across a layer or by selected attributes.
+    Dissolve(cmd::processing::DissolveArgs),
+    /// Report geometry validity and the first reason for each feature.
+    #[command(visible_alias = "validity")]
+    IsValid(cmd::processing::GeometryArgs),
+    /// Repair invalid geometries, preserving attributes and reporting failures.
+    MakeValid(cmd::processing::GeometryArgs),
+    /// Snap, deduplicate, close rings, remove collapsed parts and repair polygon topology.
+    Clean(cmd::processing::CleanArgs),
     /// Subset, resize, rescale or change the type of a raster (like gdal_translate).
     Translate(cmd::translate::Args),
     /// Reproject and resample rasters (like gdalwarp).
@@ -132,6 +145,12 @@ fn run_on_this_thread(args: Vec<OsString>, terrio: Option<Vec<OsString>>) -> i32
         Command::Contour(a) => cmd::processing::contour(a),
         Command::ZonalStats(a) => cmd::processing::zonal(a),
         Command::Sql(a) => cmd::processing::sql(a),
+        Command::Buffer(a) => cmd::processing::buffer(a),
+        Command::Overlay(a) => cmd::processing::overlay(a),
+        Command::Dissolve(a) => cmd::processing::dissolve(a),
+        Command::IsValid(a) => cmd::processing::validity(a),
+        Command::MakeValid(a) => cmd::processing::make_valid(a),
+        Command::Clean(a) => cmd::processing::clean(a),
         Command::Translate(a) => cmd::translate::run(a),
         Command::Warp(a) => cmd::warp::run(a),
         Command::Mosaic(a) => cmd::mosaic::run(a),

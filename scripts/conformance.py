@@ -18,6 +18,7 @@ Suites:
     ops               translate, warp, mosaic vs GDAL's tools (compare_ops_with_gdal.py)
     dem-calc          dem, calc, proximity, sieve vs GDAL's tools (compare_dem_calc_with_gdal.py)
     vector-ops        ogr2ogr options, rasterize, polygonize (compare_vector_ops_with_gdal.py)
+    topology          buffer, polygon overlay/dissolve, validity, repair and cleanup vs GEOS
     arrow             Arrow and GeoArrow export and import (compare_arrow_with_gdal.py)
     gpkg              GeoPackage updates and R-tree filters (compare_gpkg_with_gdal.py)
     streams           streamed vector conversions vs whole ones and ogr2ogr
@@ -912,6 +913,63 @@ def suite_grib(ctx):
     return s
 
 
+def suite_topology(ctx):
+    """Vector topology on real counties and roads against GDAL/GEOS."""
+    s = Suite(
+        "topology",
+        "Vector topology",
+        "GDAL/OGR with GEOS",
+        "Tennessee counties and Las Vegas roads, projected into metre-based CRSs: source "
+        "attributes, validity, and geometry coverage by source IDs. Relative symmetric-"
+        "difference area <= 1e-7 for topology and <= 5e-4 for tessellated buffers. "
+        "Collapsed polygon linework is excluded from the area comparison.",
+    )
+    if missing_modules("osgeo"):
+        s.skipped = "needs osgeo with GEOS"
+        return s
+    if any(
+        not os.path.isfile(os.path.join(ctx.data, name))
+        for name in ("TN_Counties.geojson", "las_vegas_roads.geojson")
+    ):
+        s.skipped = (
+            "needs Tennessee counties and Las Vegas roads (scripts/fetch_test_data.sh)"
+        )
+        return s
+    with tempfile.TemporaryDirectory(prefix="terrio-topology-") as tmp:
+        report = os.path.join(tmp, "report.json")
+        code, out, err = run(
+            [
+                sys.executable,
+                str(SCRIPTS / "compare_topology_with_gdal.py"),
+                ctx.data,
+                "--terrio",
+                ctx.terrio,
+                "--work-dir",
+                os.path.join(tmp, "outputs"),
+                "--json",
+                report,
+            ]
+        )
+        if code != 0:
+            s.error = tail(err or out)
+            return s
+        try:
+            results = json.loads(Path(report).read_text())["cases"]
+        except (OSError, KeyError, json.JSONDecodeError) as e:
+            s.error = str(e)
+            return s
+        for r in results:
+            name = r["name"]
+            group = (
+                "make-valid" if name.startswith("make-valid") else name.split("-")[0]
+            )
+            detail = ""
+            if r["status"] == TOLERANCE:
+                detail = f"relative symmetric-difference area {r['max_relative_symmetric_difference']:.3g} (limit {r['tolerance']:.3g})"
+            s.cases.append(Case(group, name, r["status"], detail))
+    return s
+
+
 SUITES = OrderedDict(
     [
         ("summaries", suite_summaries),
@@ -923,6 +981,7 @@ SUITES = OrderedDict(
         ("ops", suite_ops),
         ("dem-calc", suite_dem_calc),
         ("vector-ops", suite_vector_ops),
+        ("topology", suite_topology),
         ("arrow", suite_arrow),
         ("gpkg", suite_gpkg),
         ("streams", suite_streams),

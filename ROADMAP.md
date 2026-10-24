@@ -65,8 +65,9 @@ of GDAL: the long tail of formats stays reachable through an optional GDAL backe
 - [x] Contour lines with interval/fixed levels, nodata handling and optional elevations in Z;
       multi-raster zonal statistics with GDAL's centre/all-touched pixel rules and per-raster CRS
       transformations; a standalone read-only SQL command using the existing query engine.
-- [ ] More vector and raster processing commands from [#211](https://github.com/opengeos/terrio/issues/211):
-      buffer, overlay, dissolve, geometry validity/repair and cleanup;
+- [x] Planar buffers, polygon overlay/dissolve, geometry validity/repair and explicit cleanup
+      tolerances through the Rust API, CLI and MCP, completing the commands from
+      [#211](https://github.com/opengeos/terrio/issues/211);
       tracked in [#227](https://github.com/opengeos/terrio/issues/227).
 
 ## 0.4: More formats
