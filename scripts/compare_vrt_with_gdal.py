@@ -11,7 +11,7 @@ import xml.etree.ElementTree as ET
 import numpy as np
 from osgeo import gdal
 
-from compare_dem_calc_with_gdal import compare
+from compare_dem_calc_with_gdal import compare, same_value
 
 gdal.UseExceptions()
 
@@ -226,6 +226,62 @@ def main():
             path = tmp / f"multiband-{label}.vrt"
             ET.ElementTree(root).write(path, encoding="unicode")
             run(f"VRT multiband mapping {label}", path)
+        # Mixed-band buffers use GDALDataTypeUnion; Python's default ReadAsArray
+        # chooses Float32 for every mixed dataset, which can discard Float64 precision.
+        mixed_source = tmp / "mixed-source.tif"
+        mixed = gdal.GetDriverByName("GTiff").Create(str(mixed_source), 96, 80, 2, gdal.GDT_Float64)
+        mixed.SetGeoTransform(transform)
+        mixed.SetProjection(projection)
+        samples = values.astype(np.float64) / 1000.0
+        samples[0, :3] = [0., 0.25, -9999.]
+        for band in [1, 2]:
+            mixed.GetRasterBand(band).WriteArray(samples + (1.250000000001 if band == 2 else 0.))
+            mixed.GetRasterBand(band).SetNoDataValue(-9999.)
+        mixed = None
+
+        def mixed_compare(name, path):
+            record = {"name": name}
+            try:
+                reference = gdal.Open(str(path))
+                dtype = reference.GetRasterBand(1).DataType
+                for band in range(2, reference.RasterCount + 1):
+                    dtype = gdal.DataTypeUnion(dtype, reference.GetRasterBand(band).DataType)
+                expected = reference.ReadAsArray(buf_type=dtype)
+                actual_path = tmp / "mixed-actual.tif"
+                result = subprocess.run([args.terrio, "convert", str(path), str(actual_path)], capture_output=True, text=True, env=env)
+                if result.returncode:
+                    raise RuntimeError(result.stderr)
+                actual = gdal.Open(str(actual_path))
+                observed = actual.ReadAsArray()
+                np.testing.assert_array_equal(observed, expected)
+                assert all(actual.GetRasterBand(band).DataType == dtype for band in range(1, actual.RasterCount + 1))
+                assert actual.GetGeoTransform() == reference.GetGeoTransform()
+                assert actual.GetSpatialRef().IsSame(reference.GetSpatialRef())
+                assert all(same_value(actual.GetRasterBand(band).GetNoDataValue(), reference.GetRasterBand(band).GetNoDataValue())
+                    for band in range(1, reference.RasterCount + 1))
+                record.update(exact=1., within_tol=1., same_type=True, same_nodata=True, gt_diff_px=0.)
+            except Exception as error:
+                record["error"] = str(error)
+            records.append(record)
+
+        for native in ["Float32", "Float64"]:
+            path = write("mixed-plain-" + native,
+                f'<VRTRasterBand dataType="Byte" band="1">{source_xml(filename="mixed-source.tif")}</VRTRasterBand>'
+                f'<VRTRasterBand dataType="{native}" band="2">{source_xml(filename="mixed-source.tif")}</VRTRasterBand>')
+            mixed_compare("VRT mixed Byte+" + native, path)
+        for working in ["Float32", "Float64"]:
+            path = tmp / f"mixed-warp-{working}.vrt"
+            warped = gdal.Warp(str(path), str(mixed_source), format="VRT", width=96, height=80,
+                srcNodata=-9999., dstNodata=0., warpOptions=["UNIFIED_SRC_NODATA=PARTIAL"])
+            warped = None
+            root = ET.parse(path)
+            native = root.getroot().findall("VRTRasterBand")
+            native[0].set("dataType", "Byte")
+            native[1].set("dataType", "Float64")
+            root.find(".//WorkingDataType").text = working
+            root.write(path)
+            mixed_compare("VRT mixed warped working " + working, path)
+
         for resampling in ["near", "bilinear", "cubic", "average"]:
             path = tmp / f"warped-{resampling}.vrt"
             gdal.Warp(str(path), str(source), format="VRT", dstSRS="EPSG:3857", width=64, height=56, resampleAlg=resampling)

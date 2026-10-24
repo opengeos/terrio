@@ -1286,6 +1286,7 @@ impl<'a> Plan<'a> {
             out_type: self.out_type,
             dst_nodata: self.dst_nodata_all.clone(),
             avoid_nodata: masked && (self.bands == 1 || !unified),
+            avoid_all_nodata: false,
         };
         (ctx, chunks, sink)
     }
@@ -1343,18 +1344,30 @@ pub fn warp(sources: &[&RasterDataset], o: &WarpOptions) -> Result<RasterDataset
 /// pixels it reads, not the whole source. The result is [`warp`]'s, bit for bit. Without a
 /// cutline, which masks the whole source.
 pub fn warp_lazy(src: &mut crate::LazyRaster, o: &WarpOptions) -> Result<RasterDataset> {
-    warp_lazy_selected(src, o, None)
+    warp_lazy_selected(src, o, None, None, false)
 }
 
-/// Warp selected/repeated source bands in output order for a serialized VRT mapping.
-pub(crate) fn warp_lazy_bands(src: &mut crate::LazyRaster, bands: &[usize], o: &WarpOptions) -> Result<RasterDataset> {
+/// Serialized VRT working type: source conversion happens before validity and resampling.
+pub(crate) fn warp_lazy_bands_working(
+    src: &mut crate::LazyRaster,
+    bands: &[usize],
+    o: &WarpOptions,
+    working: Option<DataType>,
+    unified_sink: bool,
+) -> Result<RasterDataset> {
     if bands.is_empty() || bands.iter().any(|b| *b == 0 || *b > src.band_count()) {
         return Err(Error::InvalidArgument("invalid source band selection".into()));
     }
-    warp_lazy_selected(src, o, Some(bands))
+    warp_lazy_selected(src, o, Some(bands), working, unified_sink)
 }
 
-fn warp_lazy_selected(src: &mut crate::LazyRaster, o: &WarpOptions, selection: Option<&[usize]>) -> Result<RasterDataset> {
+fn warp_lazy_selected(
+    src: &mut crate::LazyRaster,
+    o: &WarpOptions,
+    selection: Option<&[usize]>,
+    working: Option<DataType>,
+    unified_sink: bool,
+) -> Result<RasterDataset> {
     if selection.is_none()
         && let Some(ds) = src.dataset()
     {
@@ -1371,19 +1384,32 @@ fn warp_lazy_selected(src: &mut crate::LazyRaster, o: &WarpOptions, selection: O
         header.raster.bands = bands.len();
         header.raster.data = RasterData::new_filled(header.raster.data_type, 0, 0.);
     }
+    if let Some(dtype) = working {
+        header.raster.data_type = dtype;
+        header.raster.data = RasterData::new_filled(dtype, 0, 0.);
+    }
     let read_options = crate::WindowOptions { bands: selection.map_or_else(Vec::new, |v| v.to_vec()), overview: None };
     let p = Plan::new(&[&header], o)?;
     let (grid, bands, out_type) = (p.grid, p.bands, p.out_type);
     let n = grid.width * grid.height;
     let t = p.transformer(0)?;
-    let (ctx, chunks, sink) = p.context(0, &t, o);
+    let (ctx, chunks, mut sink) = p.context(0, &t, o);
     let nodata = p.src_nodata(0, o);
+    if working.is_some() && nodata.iter().any(Option::is_some) {
+        sink.avoid_nodata = bands == 1 || !unified_sink;
+        sink.avoid_all_nodata = bands > 1 && unified_sink;
+    }
     let unified = o.unified_src_nodata.unwrap_or(matches!(o.src_nodata, Nodata::Values(_))) && bands > 1;
     let fill = p.fill();
     let mut out = RasterData::new_filled(out_type, n * bands, 0.0);
     crate::pixel::with_data!(&mut out, v => v.chunks_mut(n).zip(&fill).for_each(|(band,fill)|band.iter_mut().for_each(|x|*x=*fill as _)));
     for c in &chunks {
-        let window = src.read_window(crate::Window::new(c.sx, c.sy, c.sw, c.sh), &read_options)?;
+        let mut window = src.read_window(crate::Window::new(c.sx, c.sy, c.sw, c.sh), &read_options)?;
+        if let Some(dtype) = working {
+            let values = window.raster.data.to_f64_vec().into_iter().map(|v| super::convert_value(v, dtype)).collect();
+            window.raster.data = RasterData::from_f64_vec(dtype, values);
+            window.raster.data_type = dtype;
+        }
         let src_bands: Vec<super::BandView> = (0..bands).map(|b| super::BandView::of(&window.raster, b)).collect();
         let valid = validity(&src_bands, &nodata, unified, None);
         let sn = c.sw * c.sh;
@@ -1848,6 +1874,7 @@ struct Sink {
     out_type: DataType,
     dst_nodata: Vec<Option<f64>>,
     avoid_nodata: bool,
+    avoid_all_nodata: bool,
 }
 
 /// One output row of a chunk: the chunk's part of the row in each band.
@@ -1865,26 +1892,30 @@ fn chunk_rows<'a>(out: &'a mut [Vec<f64>], width: usize, c: &Chunk) -> Vec<RowOu
 }
 
 impl Sink {
+    fn nudge(&self, v: f64) -> f64 {
+        if super::is_integer(self.out_type) {
+            let (lo, _) = super::type_range(self.out_type);
+            if v == lo { lo + 1. } else { v - 1. }
+        } else if self.out_type == DataType::F32 {
+            let f = v as f32;
+            (if f == f32::MAX { f32::from_bits(f.to_bits() - 1) } else { next_up_f32(f) }) as f64
+        } else if v == f64::MAX {
+            f64::from_bits(v.to_bits() - 1)
+        } else {
+            next_up_f64(v)
+        }
+    }
     /// The value to store for a warped value `v`.
     fn value(&self, v: f64, band: usize) -> f64 {
-        let mut v = warp_round(v, self.out_type);
-        if self.avoid_nodata
-            && let Some(nd) = self.dst_nodata[band]
-            && v == nd
-        {
-            v = if super::is_integer(self.out_type) {
-                let (lo, _) = super::type_range(self.out_type);
-                if v == lo { lo + 1.0 } else { v - 1.0 }
-            } else if self.out_type == DataType::F32 {
-                let f = v as f32;
-                (if f == f32::MAX { f32::from_bits(f.to_bits() - 1) } else { next_up_f32(f) }) as f64
-            } else if v == f64::MAX {
-                f64::from_bits(v.to_bits() - 1)
-            } else {
-                next_up_f64(v)
-            };
+        let v = warp_round(v, self.out_type);
+        if self.avoid_nodata && self.dst_nodata[band].is_some_and(|nd| v == nd) { self.nudge(v) } else { v }
+    }
+    fn avoid_all(&self, out: &mut [&mut [f64]], index: usize) {
+        if self.avoid_all_nodata && out.iter().zip(&self.dst_nodata).all(|(v, nd)| nd.is_some_and(|nd| v[index] == nd)) {
+            for band in out {
+                band[index] = self.nudge(band[index]);
+            }
         }
-        v
     }
 }
 
@@ -2253,6 +2284,7 @@ impl WarpContext<'_> {
                     continue;
                 }
                 let (fx, fy) = (xs[i] - sxo, ys[i] - syo);
+                let mut found = false;
                 for (b, o) in out.iter_mut().enumerate() {
                     let v = if self.resampling == Resampling::Nearest || c.sw == 1 || c.sh == 1 {
                         k.valid(b, ix, iy).then(|| k.value(b, ix, iy))
@@ -2265,7 +2297,11 @@ impl WarpContext<'_> {
                     };
                     if let Some(v) = v {
                         o[i] = sink.value(v, b);
+                        found = true;
                     }
+                }
+                if found {
+                    sink.avoid_all(out, i);
                 }
             }
         }
@@ -2341,6 +2377,7 @@ impl WarpContext<'_> {
                         w
                     }
                 };
+                let mut found = false;
                 for (b, o) in out.iter_mut().enumerate() {
                     values.clear();
                     for y in iy0..iy1 {
@@ -2357,7 +2394,11 @@ impl WarpContext<'_> {
                         matches!(sink.out_type, DataType::U8 | DataType::I8 | DataType::U16 | DataType::I16),
                     ) {
                         o[i] = sink.value(v, b);
+                        found = true;
                     }
+                }
+                if found {
+                    sink.avoid_all(out, i);
                 }
             }
         }

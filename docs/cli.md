@@ -628,6 +628,18 @@ buffers, external pixel functions and expression languages are unsupported.
 replicate source edges as GDAL does. Explicit dataset masks, `SourceBand mask,N`
 and `ComplexSource` with `UseMaskBand` are read lazily.
 
+Mixed native band types use a common numeric buffer selected with GDAL-style
+`DataTypeUnion` promotion, preserving Float64 precision. Plain and derived bands
+round to their declared type before entering that buffer. A selected lazy band
+retains its native type. Warped VRTs convert source windows and compute shared
+blocks in the XML `WorkingDataType`; if omitted, it is inferred from source,
+destination and nodata types. The working block converts directly to the requested
+common buffer, as GDAL's warped dataset RasterIO does. This can retain fractional
+working values for an integer-declared band in a multiband read; reading that band
+alone converts to its native integer type. Python GDAL's default `ReadAsArray`
+chooses Float32 for any mixed dataset; use its explicit `buf_type` argument to
+compare a promoted Float64 buffer.
+
 VRT references use the caller’s normal file and network access. Supplied source maps
 override matching names; unresolved names are opened by the usual drivers.
 
