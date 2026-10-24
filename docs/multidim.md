@@ -141,3 +141,18 @@ Arrays sharing a named dimension in one group must declare the same length.
 Conflicting metadata is rejected rather than silently renaming dimensions and
 changing coordinate identity. Open a selected array or subgroup directly with
 a Zarr selector to inspect it independently of an inconsistent sibling.
+
+
+In-memory netCDF/HDF5 opens may copy the supplied bytes into each format reader;
+they do not promise zero-copy storage. Prefer paths/URLs and range-backed reads
+for large files.
+
+Zarr snapshots stage payloads before exclusively creating the destination and
+moving entries into it. Publication is not an atomic directory swap: coordinate
+concurrent readers until the write returns. A process interruption can leave a
+partial destination that must be removed before retrying. This preserves the
+no-clobber guarantee even when another process creates an empty destination.
+
+Named CLI transposition rejects ambiguous dimension names with an explicit error;
+use unique full dimension paths when available. Repeated identical dimension paths
+cannot be transposed by name.

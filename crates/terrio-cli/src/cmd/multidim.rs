@@ -113,16 +113,7 @@ pub fn read(args: ReadArgs) -> Result<()> {
     }
     if !args.transpose.is_empty() {
         let dimensions = view.dimensions();
-        let permutation: Vec<_> = args
-            .transpose
-            .iter()
-            .map(|name| {
-                dimensions
-                    .iter()
-                    .position(|d| d.name == *name || d.path == *name)
-                    .ok_or_else(|| invalid(format!("unknown remaining dimension '{name}'")))
-            })
-            .collect::<Result<_>>()?;
+        let permutation: Vec<_> = args.transpose.iter().map(|name| transpose_axis(&dimensions, name)).collect::<Result<_>>()?;
         view = view.transpose(&permutation)?;
     }
     let elements =
@@ -144,4 +135,32 @@ pub fn read(args: ReadArgs) -> Result<()> {
 }
 pub fn convert(args: ConvertArgs) -> Result<()> {
     multidim::open(&args.input)?.write(&args.output)
+}
+
+fn transpose_axis(dimensions: &[multidim::Dimension], name: &str) -> Result<usize> {
+    let mut matches = dimensions.iter().enumerate().filter(|(_, d)| d.name == name || d.path == name);
+    let index = matches.next().map(|(i, _)| i).ok_or_else(|| invalid(format!("unknown remaining dimension '{name}'")))?;
+    if matches.next().is_some() {
+        return Err(invalid(format!("ambiguous transpose dimension '{name}'; use a unique full dimension path")));
+    }
+    Ok(index)
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn transpose_rejects_ambiguous_names_and_accepts_unique_paths() {
+        let make = |path: &str| terrio::multidim::Dimension {
+            name: "x".into(),
+            path: path.into(),
+            size: 2,
+            unlimited: false,
+            indexing_variable: None,
+        };
+        let dimensions = [make("/a/x"), make("/b/x")];
+        assert!(super::transpose_axis(&dimensions, "x").unwrap_err().to_string().contains("ambiguous transpose dimension"));
+        assert_eq!(super::transpose_axis(&dimensions, "/b/x").unwrap(), 1);
+        let repeated = [make("/x"), make("/x")];
+        assert!(super::transpose_axis(&repeated, "/x").is_err());
+    }
 }
