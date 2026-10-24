@@ -160,3 +160,14 @@ fn indexed_joins_preserve_text_numeric_precision_and_first_match_semantics() {
         vec![V::Text("float coercion".into()), V::Text("numeric first".into()), V::Text("case first".into()), V::Null]
     );
 }
+
+#[test]
+fn integer_summary_overflow_is_reported_instead_of_wrapping() {
+    let mut l = Layer::new("numbers");
+    l.schema.add_field(FieldDef::new("n", FieldType::Integer));
+    for n in [i64::MAX, 1] {
+        l.features.push(Feature { fid: 0, geometry: None, attributes: vec![V::Integer(n)] });
+    }
+    let error = query(&[l], "SELECT SUM(n) FROM numbers").unwrap_err();
+    assert!(error.to_string().contains("SUM exceeds"));
+}

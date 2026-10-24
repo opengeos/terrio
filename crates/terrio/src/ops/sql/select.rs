@@ -375,7 +375,7 @@ pub(crate) fn execute(layers: &[Layer], s: &Select, copy_limit: Option<usize>) -
     for f in features {
         if summary {
             for agg in &mut aggregates {
-                agg.push(f);
+                agg.push(f)?;
             }
             continue;
         }
@@ -436,7 +436,7 @@ struct Aggregate {
     value: Value,
 }
 impl Aggregate {
-    fn push(&mut self, f: &Feature) {
+    fn push(&mut self, f: &Feature) -> Result<()> {
         let mut v = self.expr.as_ref().map(|e| eval(e, f)).unwrap_or(Value::Int(1));
         if self.op == "AVG"
             && let Some(x) = v.as_f64()
@@ -444,11 +444,15 @@ impl Aggregate {
             v = Value::Float(x);
         }
         if v == Value::Null || (self.distinct && !self.seen.insert(key(&v))) {
-            return;
+            return Ok(());
         }
         self.count += 1;
         self.value = match self.op.as_str() {
             "COUNT" => Value::Null,
+            "SUM" if matches!((&self.value, &v), (Value::Int(_), Value::Int(_))) => {
+                let (Value::Int(a), Value::Int(b)) = (&self.value, v) else { unreachable!() };
+                Value::Int(a.checked_add(b).ok_or_else(|| syntax("SUM exceeds the signed 64-bit integer range".into()))?)
+            }
             "SUM" | "AVG" => {
                 if self.value == Value::Null {
                     v
@@ -472,6 +476,7 @@ impl Aggregate {
             }
             _ => unreachable!(),
         };
+        Ok(())
     }
     fn finish(self) -> Value {
         match self.op.as_str() {

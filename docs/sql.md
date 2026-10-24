@@ -50,7 +50,8 @@ This is a defined subset of [OGRSQL](https://gdal.org/en/stable/user/ogr_sql_dia
 `UNION`, casts, scalar functions and standard-deviation summaries are not implemented.
 String predicates (comparisons, `IN` and `BETWEEN`), like join lookups, ignore ASCII case
 as observed with GDAL 3.12; `ORDER BY` and `MIN`/`MAX` use case-sensitive ordering. SQL expressions should use explicit null tests where needed.
-Integer addition, subtraction and multiplication wrap at 64 bits; division/remainder overflow
+Integer SUM reports an error on overflow. Row-expression integer addition, subtraction and
+multiplication wrap at 64 bits; division/remainder overflow
 and division by zero yield null (OGRSQL instead uses an integer-maximum sentinel for non-null
 division by zero). Use floating-point expressions for larger numeric ranges.
 
