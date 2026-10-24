@@ -321,6 +321,22 @@ def main():
             root.write(path)
             mixed_compare("VRT mixed warped working " + working, path)
 
+        partial_reference = tmp / "partial-option-order-reference.vrt"
+        gdal.Warp(str(partial_reference), str(multiband), format="VRT", width=64, height=56,
+                  resampleAlg="bilinear", srcNodata=-9999, dstNodata=-12345,
+                  warpOptions=["UNIFIED_SRC_NODATA=PARTIAL"])
+        for label, options in [
+            ("src-first", ["--srcnodata", "-9999", "--wo", "UNIFIED_SRC_NODATA=PARTIAL"]),
+            ("wo-first", ["--wo", "UNIFIED_SRC_NODATA=PARTIAL", "--srcnodata", "-9999"]),
+        ]:
+            actual = tmp / f"partial-option-order-{label}.tif"
+            process = subprocess.run([args.terrio, "warp", str(multiband), str(actual),
+                                      "--ts", "64", "56", "-r", "bilinear", "--dstnodata=-12345", *options],
+                                     capture_output=True, text=True, env=env)
+            record = {"error": process.stderr} if process.returncode else compare(str(partial_reference), str(actual), 0)
+            record["name"] = f"ordinary PARTIAL source nodata option order {label}"
+            records.append(record)
+
         # The PARTIAL default also applies to ordinary materialized warps.
         # Give each source band a distinct nodata value, with both jointly and
         # independently invalid pixels, using real terrain for valid samples.

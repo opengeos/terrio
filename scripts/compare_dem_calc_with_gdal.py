@@ -407,6 +407,23 @@ def cases(d, tmp):
                          "--max-distance", str(distance), "--smoothing-iterations", str(smooth),
                          *(["--mask", mask_path] if explicit else [])],
                     )
+    nan_path = os.path.join(tmp, "fill_nan_holes.tif")
+    terrain = gdal.Translate(nan_path, hole_path)
+    pixels[validity == 0] = np.nan
+    band = terrain.GetRasterBand(1)
+    band.WriteArray(pixels)
+    band.SetNoDataValue(float("nan"))
+    terrain = None
+    for method in ["inv_dist", "nearest"]:
+        for distance in [2, 10]:
+            for smooth in [0, 1]:
+                case = add(
+                    f"fill-nodata USGS NaN {method} d{distance} smooth{smooth}",
+                    ["gdal_fillnodata", "-q", "-interp", method, "-md", str(distance), "-si", str(smooth), nan_path, "{out}"],
+                    ["fill-nodata", nan_path, "{out}", "--interpolation", method,
+                     "--max-distance", str(distance), "--smoothing-iterations", str(smooth)],
+                )
+                case["preserve_valid"] = nan_path
     return out
 
 
@@ -438,6 +455,13 @@ def main():
             run([x.replace("{out}", gout) for x in c["gdal"]])
             run([a.terrio] + [x.replace("{out}", tout).replace("{gout}", gout) for x in c["terrio"]])
             r = compare(gout, tout, c["tol"], c.get("radius"))
+            if c.get("preserve_valid"):
+                source = read(c["preserve_valid"])["data"]
+                valid = np.isfinite(source)
+                for output in (gout, tout):
+                    if not np.array_equal(read(output)["data"][valid], source[valid]):
+                        raise AssertionError("fill-nodata changed valid source samples")
+                r["preserved_valid_pixels"] = int(valid.sum())
         except Exception as e:  # noqa: BLE001 - report and continue
             r = {"error": str(e).strip().splitlines()[-1][:200]}
         r["name"] = c["name"]

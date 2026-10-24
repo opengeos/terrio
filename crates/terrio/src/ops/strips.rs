@@ -438,6 +438,28 @@ mod tests {
         assert!(std::path::Path::new(path).exists());
     }
 
+    #[test]
+    fn failed_pam_finish_removes_sidecar_and_allows_retry() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("out.tif");
+        let aux = dir.path().join("out.tif.aux.xml");
+        std::fs::write(&aux, "<PAMDataset><Metadata>").unwrap();
+        let source = header(DataType::U8);
+        let mut writer = StripWriter::create(&source, path.to_str().unwrap(), &Default::default()).unwrap();
+        writer.write(RasterData::new_filled(DataType::U8, 4 * 6, 7.), 6).unwrap();
+        assert!(writer.finish().is_err());
+        assert!(!path.exists());
+        assert!(!aux.exists());
+        let mut writer = StripWriter::create(&source, path.to_str().unwrap(), &Default::default()).unwrap();
+        writer.write(RasterData::new_filled(DataType::U8, 4 * 6, 7.), 6).unwrap();
+        writer.finish().unwrap();
+        assert_eq!(crate::open_raster_lazy(path.to_str().unwrap()).unwrap().read().unwrap().raster.data.to_f64_vec(), vec![7.; 24]);
+        std::fs::write(&aux, "<PAMDataset/>").unwrap();
+        drop(StripWriter::create(&source, path.to_str().unwrap(), &Default::default()).unwrap());
+        assert!(!path.exists());
+        assert!(!aux.exists());
+    }
+
     /// A raster of 300 x 200 Float32 values with nodata and metadata, in UTM.
     fn utm_raster() -> RasterDataset {
         let (w, h) = (300, 200);
