@@ -530,6 +530,12 @@ impl Reader {
         if !window.fits(width, height) {
             return Err(invalid("warped window is outside the raster"));
         }
+        // GDAL evaluates the whole declared block for a small window too.
+        // Bound its f64 sample buffers rather than allocating an untrusted area.
+        let samples = bw.min(width).checked_mul(bh.min(height)).and_then(|n| n.checked_mul(self.description.layout.bands.len()));
+        if samples.is_none_or(|n| n > 8 * 1024 * 1024) {
+            return Err(unsupported("warped VRT blocks larger than 8 million samples"));
+        }
         let parsed = self.parse_warp()?;
         let gt = self.description.layout.geo_transform.ok_or_else(|| invalid("missing warped geotransform"))?;
         let data_type = super::common_type(bands.iter().map(|&b| self.description.layout.bands[b - 1].data_type));
@@ -811,7 +817,7 @@ impl WindowSource for Reader {
 impl Reader {
     fn read_description(&mut self, description: &VirtualRaster, window: Window, bands: &[usize]) -> Result<RasterData> {
         let mut values = Vec::with_capacity(window.width * window.height * bands.len());
-        let elements = description.root.children.iter().filter(|e| e.name == "VRTRasterBand").cloned().collect::<Vec<_>>();
+        let elements = description.root.children.iter().filter(|e| e.name == "VRTRasterBand").collect::<Vec<_>>();
         for b in bands {
             let layout = description.layout.bands[*b - 1].clone();
             let element = &elements[*b - 1];
@@ -1303,6 +1309,15 @@ mod tests {
     }
     fn source(tag: &str, extra: &str) -> String {
         format!("<{tag}><SourceFilename>source.tif</SourceFilename><SourceBand>1</SourceBand>{extra}</{tag}>")
+    }
+
+    #[test]
+    fn oversized_declared_blocks_fail_before_opening_sources() {
+        let xml = r#"<VRTDataset rasterXSize="1000000" rasterYSize="1000000" subClass="VRTWarpedDataset"><GeoTransform>0,1,0,1,0,-1</GeoTransform><VRTRasterBand dataType="Float64"/><BlockXSize>1000000</BlockXSize><BlockYSize>1000000</BlockYSize><GDALWarpOptions><SourceDataset>must-not-be-opened.tif</SourceDataset><BandList><BandMapping src="1" dst="1"/></BandList></GDALWarpOptions></VRTDataset>"#;
+        let mut raster = VirtualRaster::from_xml(xml).unwrap().into_lazy(Path::new(""), HashMap::new()).unwrap();
+        let error = raster.read_window(Window::new(0, 0, 1, 1), &Default::default()).unwrap_err();
+        assert!(matches!(error, Error::Unsupported(_)));
+        assert!(error.to_string().contains("8 million samples"));
     }
 
     #[test]

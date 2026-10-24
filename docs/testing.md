@@ -122,6 +122,14 @@ these cases on the real USGS terrain, with holes and explicit validity masks:
 python scripts/compare_dem_calc_with_gdal.py ../terrio-data --only fill-nodata
 ```
 
+The `vrt` conformance suite cross-reads GDAL/Terrio virtual rasters on USGS terrain,
+including whole and cropped requests, derived bands, nodata, masks, full and
+separable kernels, and affine/reprojection/GCP/TPS/homography/RPC transforms:
+
+```sh
+python scripts/conformance.py ../terrio-data --only vrt --strict
+```
+
 ### Pansharpening against GDAL
 
 The fetch script downloads Landsat 8 B8/B4/B3/B2 real image pairs from the public
@@ -147,29 +155,6 @@ reads at open and bounded interpolation margins for small windows. On that scene
 the development CLI's peak RSS fell from 125,544 KiB to 101,824 KiB with the shared
 block implementation and streamed TIFF output, measured with two Rayon threads.
 These are fixture measurements, not memory or transfer guarantees for every codec.
-
-
-The `vrt` conformance suite cross-reads GDAL/Terrio virtual rasters on USGS terrain,
-including whole and cropped requests, derived bands, nodata, masks, full and
-separable kernels, and affine/reprojection/GCP/TPS/homography/RPC transforms:
-
-```sh
-python scripts/conformance.py ../terrio-data --only vrt --strict
-```
-
-### Pansharpening against GDAL
-
-The fetch script downloads Landsat 8 B8/B4/B3/B2 real image pairs from the public
-[rio-pansharpen test fixtures](https://github.com/mapbox/rio-pansharpen/tree/f23d1edbedddf157ca5014ec805918cdf713bb7f/tests/fixtures/tiny_20_tiffs/LC81070352015122LGN00).
-The comparison retains unequal pan/spectral resolutions and checks all six interpolation
-methods, weights, output selection, bit depth, nodata borders, internal masks, integer
-clipping and union/intersection extents against `gdal_pansharpen`. No tolerance is allowed
-for integer cases; the Float32 comparison allows 0.002, one ULP at the scene's radiometric scale.
-
-```sh
-python scripts/compare_pansharpen_with_gdal.py ../terrio-data
-python scripts/conformance.py ../terrio-data --only pansharpen
-```
 
 ## Build size and iteration speed
 

@@ -311,6 +311,7 @@ impl GeoTags {
         let Some(pam) = crate::drivers::common::read_pam(path) else {
             return;
         };
+        self.nodata = self.nodata.or(pam.dataset_nodata);
         self.band_nodata = pam.band_nodata;
         if let Some(crs) = pam.crs {
             self.epsg = crs.epsg;
