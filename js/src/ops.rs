@@ -181,7 +181,7 @@ struct WarpArgs {
 /// `"none"`), `ot`, `cutline` (polygons: a `Dataset`, bytes or GeoJSON), `cropToCutline`, `et`
 /// (the approximate transformer's error in pixels, 0.125 by default) and `wm` (working memory in
 /// bytes). `geoloc` requires array metadata; `geolocation: { x, y, pixelStep, lineStep,
-/// pixelOffset, lineOffset, pixelCenter, srs }` supplies coordinate rasters for the first source.
+/// pixelOffset, lineOffset, pixelCenter, xBand, yBand, srs }` supplies coordinate rasters for the first source.
 #[wasm_bindgen]
 pub fn warp(src: JsValue, options: JsValue) -> Result<Dataset, JsError> {
     let (rest, taken) = split_options(&options, &["cutline", "geolocation"])?;
@@ -225,6 +225,10 @@ pub fn warp(src: JsValue, options: JsValue) -> Result<Dataset, JsError> {
         struct GeoArgs {
             #[serde(default = "default_geo_srs")]
             srs: String,
+            #[serde(default = "default_geo_band")]
+            x_band: usize,
+            #[serde(default = "default_geo_band")]
+            y_band: usize,
             #[serde(default)]
             pixel_offset: f64,
             #[serde(default)]
@@ -239,6 +243,9 @@ pub fn warp(src: JsValue, options: JsValue) -> Result<Dataset, JsError> {
         fn default_geo_srs() -> String {
             "EPSG:4326".into()
         }
+        fn default_geo_band() -> usize {
+            1
+        }
         fn default_geo_step() -> f64 {
             1.0
         }
@@ -249,8 +256,8 @@ pub fn warp(src: JsValue, options: JsValue) -> Result<Dataset, JsError> {
             srs: a.srs,
             x_dataset: String::new(),
             y_dataset: String::new(),
-            x_band: 1,
-            y_band: 1,
+            x_band: a.x_band,
+            y_band: a.y_band,
             pixel_offset: a.pixel_offset,
             line_offset: a.line_offset,
             pixel_step: a.pixel_step,

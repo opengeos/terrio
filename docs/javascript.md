@@ -178,6 +178,7 @@ const output = terrio.warp(swath, {
 });
 ```
 
+`xBand` and `yBand` select the 1-based coordinate bands (default 1).
 Optional `srs` defaults to EPSG:4326, `pixelOffset`/`lineOffset` to 0, and steps to 1.
 `pixelCenter` shifts by half an array step. `geoloc: true` requires geolocation metadata;
 the explicit `geolocation` option supplies arrays for the first source. The operation remains

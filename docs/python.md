@@ -212,7 +212,8 @@ out = terrio.warp(source, t_srs="EPSG:4326", geolocation={
 })
 ```
 
-`x` and `y` each accept a raster or a path. Optional `srs` defaults to EPSG:4326;
+`x` and `y` each accept a raster or a path. `x_band` and `y_band` select their 1-based
+coordinate bands (default 1). Optional `srs` defaults to EPSG:4326;
 `pixel_offset`/`line_offset` default to 0 and steps to 1. The center shift is half an array
 step. Invalid coordinate cells remain empty. See [CLI warping](cli.md#warp) for the supported
 subset and comparison behavior at swath boundaries.

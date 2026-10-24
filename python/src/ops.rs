@@ -1135,7 +1135,9 @@ fn warp(
     if let Some(g) = geolocation {
         for (key, _) in g.iter() {
             let key = key.extract::<String>()?;
-            if !["x", "y", "srs", "pixel_offset", "line_offset", "pixel_step", "line_step", "pixel_center"].contains(&key.as_str()) {
+            if !["x", "y", "srs", "x_band", "y_band", "pixel_offset", "line_offset", "pixel_step", "line_step", "pixel_center"]
+                .contains(&key.as_str())
+            {
                 return Err(invalid(format!("unknown geolocation option '{key}'")));
             }
         }
@@ -1153,8 +1155,8 @@ fn warp(
             srs: g.get_item("srs")?.map(|v| v.extract::<String>()).transpose()?.unwrap_or_else(|| "EPSG:4326".into()),
             x_dataset: String::new(),
             y_dataset: String::new(),
-            x_band: 1,
-            y_band: 1,
+            x_band: g.get_item("x_band")?.map(|v| v.extract::<usize>()).transpose()?.unwrap_or(1),
+            y_band: g.get_item("y_band")?.map(|v| v.extract::<usize>()).transpose()?.unwrap_or(1),
             pixel_offset: number("pixel_offset", 0.0)?,
             line_offset: number("line_offset", 0.0)?,
             pixel_step: number("pixel_step", 1.0)?,

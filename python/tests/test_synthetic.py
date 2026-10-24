@@ -412,11 +412,15 @@ def test_geolocation_arrays_match_gdal(gdal, tmp_path, center, step):
     source = terrio.Raster.from_array(values, (0, 1, 0, 6, 0, -1))
     lon = np.array([[10, 12, 14], [10.1, 12.1, 14.1], [10.2, 12.2, 14.2]], dtype="float64")
     lat = np.array([[50, 50.1, 50.2], [48, 48.1, 48.2], [46, 46.1, 46.2]], dtype="float64")
-    geo = {"pixel_step": step, "line_step": step, "pixel_center": center}
+    geo = {"pixel_step": step, "line_step": step, "pixel_center": center, "x_band": 2, "y_band": 2}
     paths = []
-    for name, data in [("source", values), ("lon", lon), ("lat", lat)]:
+    for name, data in [
+        ("source", values),
+        ("lon", np.stack([np.zeros_like(lon), lon])),
+        ("lat", np.stack([np.zeros_like(lat), lat])),
+    ]:
         path = str(tmp_path / f"{name}.tif")
-        terrio.Raster.from_array(data, (0, 1, 0, data.shape[0], 0, -1)).write(path)
+        terrio.Raster.from_array(data, (0, 1, 0, data.shape[-2], 0, -1)).write(path)
         paths.append(path)
     ref_source = gdal.Open(paths[0])
     from osgeo import osr
@@ -428,8 +432,8 @@ def test_geolocation_arrays_match_gdal(gdal, tmp_path, center, step):
             "SRS": srs.ExportToWkt(),
             "X_DATASET": paths[1],
             "Y_DATASET": paths[2],
-            "X_BAND": "1",
-            "Y_BAND": "1",
+            "X_BAND": "2",
+            "Y_BAND": "2",
             "PIXEL_OFFSET": "0",
             "LINE_OFFSET": "0",
             "PIXEL_STEP": str(step),

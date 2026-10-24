@@ -10,9 +10,6 @@ use std::sync::Arc;
 struct Cell {
     col: usize,
     row: usize,
-    x: [f64; 4],
-    y: [f64; 4],
-    limits: [f64; 4],
     envelope: AABB<[f64; 2]>,
 }
 impl RTreeObject for Cell {
@@ -28,6 +25,7 @@ pub struct GeolocationTransformer {
     metadata: Geolocation,
     width: usize,
     height: usize,
+    source_size: (usize, usize),
     x: Arc<[f64]>,
     y: Arc<[f64]>,
     cells: Arc<RTree<Cell>>,
@@ -39,6 +37,12 @@ fn interpolate(v: &[f64; 4], u: f64, vpos: f64) -> f64 {
 }
 fn unwrap(x: f64, anchor: f64) -> f64 {
     anchor + (x - anchor + 180.0).rem_euclid(360.0) - 180.0
+}
+fn bounds(n: usize, count: usize, offset: f64, step: f64, size: usize, pixel_center: bool) -> (f64, f64) {
+    let center = if pixel_center { 0.5 } else { 0.0 };
+    let lo = if n == 0 { ((-offset) / step - center).min(0.0) } else { 0.0 };
+    let hi = if n + 2 == count { ((size as f64 - offset) / step - center - n as f64).max(1.0) } else { 1.0 };
+    (lo, hi)
 }
 impl GeolocationTransformer {
     /// Opens the coordinate rasters using Terrio's drivers, without GDAL.
@@ -66,13 +70,13 @@ impl GeolocationTransformer {
             if band == 0 || band > ds.raster.bands {
                 return Err(Error::InvalidArgument("geolocation band is out of range".into()));
             }
-            let b = super::BandView::of(&ds.raster, band - 1);
-            Ok((0..b.len())
-                .map(|i| {
-                    let v = b.get(i);
-                    if !v.is_finite() || (ds.has_nodata && super::is_nodata(v, ds.raster.nodata)) { f64::NAN } else { v }
-                })
-                .collect())
+            let mut values = super::band_f64(&ds.raster, band - 1);
+            for v in &mut values {
+                if !v.is_finite() || (ds.has_nodata && super::is_nodata(*v, ds.raster.nodata)) {
+                    *v = f64::NAN;
+                }
+            }
+            Ok(values)
         };
         let mut xs = read(x, metadata.x_band)?;
         let mut ys = read(y, metadata.y_band)?;
@@ -95,12 +99,6 @@ impl GeolocationTransformer {
             }
         }
         let (w, h) = (x.raster.cols, x.raster.rows);
-        let center = if metadata.pixel_center { 0.5 } else { 0.0 };
-        let bounds = |n: usize, count: usize, offset: f64, step: f64, size: usize| {
-            let lo = if n == 0 { ((-offset) / step - center).min(0.0) } else { 0.0 };
-            let hi = if n + 2 == count { ((size as f64 - offset) / step - center - n as f64).max(1.0) } else { 1.0 };
-            (lo, hi)
-        };
         let mut cells = Vec::new();
         for row in 0..h - 1 {
             for col in 0..w - 1 {
@@ -116,8 +114,8 @@ impl GeolocationTransformer {
                         *x = unwrap(*x, base);
                     }
                 }
-                let (u0, u1) = bounds(col, w, metadata.pixel_offset, metadata.pixel_step, width);
-                let (v0, v1) = bounds(row, h, metadata.line_offset, metadata.line_step, height);
+                let (u0, u1) = bounds(col, w, metadata.pixel_offset, metadata.pixel_step, width, metadata.pixel_center);
+                let (v0, v1) = bounds(row, h, metadata.line_offset, metadata.line_step, height, metadata.pixel_center);
                 let mut lo = [f64::INFINITY; 2];
                 let mut hi = [f64::NEG_INFINITY; 2];
                 for (u, v) in [(u0, v0), (u1, v0), (u0, v1), (u1, v1)] {
@@ -127,7 +125,7 @@ impl GeolocationTransformer {
                         hi[k] = hi[k].max(p[k]);
                     }
                 }
-                cells.push(Cell { col, row, x: cx, y: cy, limits: [u0, v0, u1, v1], envelope: AABB::from_corners(lo, hi) });
+                cells.push(Cell { col, row, envelope: AABB::from_corners(lo, hi) });
             }
         }
         if cells.is_empty() {
@@ -137,6 +135,7 @@ impl GeolocationTransformer {
             metadata: metadata.clone(),
             width: w,
             height: h,
+            source_size: (width, height),
             x: xs.into(),
             y: ys.into(),
             cells: Arc::new(RTree::bulk_load(cells)),
@@ -186,13 +185,30 @@ impl GeolocationTransformer {
             }
             let x = x + shift;
             for c in self.cells.locate_in_envelope_intersecting(&AABB::from_point([x, y])) {
+                let ids = [
+                    c.row * self.width + c.col,
+                    c.row * self.width + c.col + 1,
+                    (c.row + 1) * self.width + c.col,
+                    (c.row + 1) * self.width + c.col + 1,
+                ];
+                let mut cx = ids.map(|i| self.x[i]);
+                let cy = ids.map(|i| self.y[i]);
+                if self.longitude {
+                    let base = cx[0];
+                    for x in &mut cx {
+                        *x = unwrap(*x, base);
+                    }
+                }
+                let m = &self.metadata;
+                let (u0, u1) = bounds(c.col, self.width, m.pixel_offset, m.pixel_step, self.source_size.0, m.pixel_center);
+                let (v0, v1) = bounds(c.row, self.height, m.line_offset, m.line_step, self.source_size.1, m.pixel_center);
                 let (mut u, mut v) = (0.5, 0.5);
                 for _ in 0..20 {
-                    let (ex, ey) = (interpolate(&c.x, u, v) - x, interpolate(&c.y, u, v) - y);
-                    let dxdu = (c.x[1] - c.x[0]) * (1.0 - v) + (c.x[3] - c.x[2]) * v;
-                    let dxdv = (c.x[2] - c.x[0]) * (1.0 - u) + (c.x[3] - c.x[1]) * u;
-                    let dydu = (c.y[1] - c.y[0]) * (1.0 - v) + (c.y[3] - c.y[2]) * v;
-                    let dydv = (c.y[2] - c.y[0]) * (1.0 - u) + (c.y[3] - c.y[1]) * u;
+                    let (ex, ey) = (interpolate(&cx, u, v) - x, interpolate(&cy, u, v) - y);
+                    let dxdu = (cx[1] - cx[0]) * (1.0 - v) + (cx[3] - cx[2]) * v;
+                    let dxdv = (cx[2] - cx[0]) * (1.0 - u) + (cx[3] - cx[1]) * u;
+                    let dydu = (cy[1] - cy[0]) * (1.0 - v) + (cy[3] - cy[2]) * v;
+                    let dydv = (cy[2] - cy[0]) * (1.0 - u) + (cy[3] - cy[1]) * u;
                     let det = dxdu * dydv - dxdv * dydu;
                     if !det.is_finite() || det.abs() < 1e-20 {
                         break;
@@ -205,11 +221,11 @@ impl GeolocationTransformer {
                         break;
                     }
                 }
-                if u >= c.limits[0] - 1e-8
-                    && u <= c.limits[2] + 1e-8
-                    && v >= c.limits[1] - 1e-8
-                    && v <= c.limits[3] + 1e-8
-                    && (interpolate(&c.x, u, v) - x).abs() + (interpolate(&c.y, u, v) - y).abs() < 1e-7
+                if u >= u0 - 1e-8
+                    && u <= u1 + 1e-8
+                    && v >= v0 - 1e-8
+                    && v <= v1 + 1e-8
+                    && (interpolate(&cx, u, v) - x).abs() + (interpolate(&cy, u, v) - y).abs() < 1e-7
                 {
                     let m = &self.metadata;
                     let center = if m.pixel_center { 0.5 } else { 0.0 };

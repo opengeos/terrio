@@ -1088,10 +1088,10 @@ test("Zarr stores and netCDF/HDF5 products as GDAL reads them", { skip: needs("n
 test("warp from subsampled pixel-center geolocation arrays", () => {
   const values = Float64Array.from({ length: 12 }, (_, i) => i + 1);
   const source = terrio.rasterFromArray(values, 4, 3, [0, 1, 0, 3, 0, -1]);
-  const x = terrio.rasterFromArray(new Float64Array([11, 13, 11, 13]), 2, 2, [0, 1, 0, 2, 0, -1]);
-  const y = terrio.rasterFromArray(new Float64Array([49, 49, 47, 47]), 2, 2, [0, 1, 0, 2, 0, -1]);
+  const x = terrio.rasterFromArray(new Float64Array([0, 0, 0, 0, 11, 13, 11, 13]), 2, 2, [0, 1, 0, 2, 0, -1]);
+  const y = terrio.rasterFromArray(new Float64Array([0, 0, 0, 0, 49, 49, 47, 47]), 2, 2, [0, 1, 0, 2, 0, -1]);
   const result = terrio.warp(source, {
-    geolocation: { x, y, pixelStep: 2, lineStep: 2, pixelCenter: true },
+    geolocation: { x, y, xBand: 2, yBand: 2, pixelStep: 2, lineStep: 2, pixelCenter: true },
     te: [10, 47, 14, 50], ts: [4, 3], tSrs: "EPSG:4326", et: 0,
   });
   assert.deepEqual([...result.readBand(1)], [...values]);
