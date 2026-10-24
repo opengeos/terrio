@@ -55,7 +55,9 @@ support browser and Python callers. Remote Zarr stores retain their existing ran
 
 `Dataset.write(destination)` chooses netCDF-4 for `.nc` and Zarr v2 for `.zarr`. The destination
 must be new. Snapshots preserve groups, numeric values/types, coordinate variables, attribute
-values and source chunk shapes. netCDF output also preserves unlimited axes. Zarr output uses
+values and source chunk shapes where the destination permits them. netCDF output clamps chunks
+to fixed-axis lengths, while retaining chunk sizes on unlimited axes and the unlimited flags.
+Zarr output uses
 standard `_ARRAY_DIMENSIONS` names and stores dimension identity, inherited coordinate
 references and unlimited provenance in `_terrio_dimensions` JSON attributes, which other readers
 can ignore. Source compression settings are not copied; snapshots are uncompressed.
@@ -63,6 +65,8 @@ can ignore. Source compression settings are not copied; snapshots are uncompress
 Zarr snapshots iterate source chunks and keep one output chunk in memory. netCDF serialization
 currently materializes its numeric arrays before encoding the file. A snapshot containing an
 unsupported payload fails explicitly rather than silently dropping that array.
+Native snapshots stage their output before publishing it to a new destination. An unreadable
+source chunk leaves no partial destination; an existing destination is never replaced.
 
 Python `open_multidim` accepts a path, netCDF/HDF5 bytes, or a dictionary of Zarr keys and bytes.
 `to_bytes()` writes netCDF-4 bytes; `to_zarr_store()` returns a Zarr key/value dictionary.

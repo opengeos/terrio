@@ -129,7 +129,11 @@ def snapshot_equal(cli, source, destination):
     after = arrays(run(cli, "mdinfo", destination, "--json")["root"])
     for name, array in before.items():
         if array["chunks"]:
-            assert after[name]["chunks"] == array["chunks"]
+            expected_chunks = array["chunks"]
+            if destination.suffix == ".nc":
+                expected_chunks = [c if d["unlimited"] else min(c, max(d["size"], 1))
+                                   for c, d in zip(expected_chunks, array["dimensions"])]
+            assert after[name]["chunks"] == expected_chunks
         assert [(d["path"], d["size"], d["unlimited"], d["indexing_variable"]) for d in after[name]["dimensions"]] == [(d["path"], d["size"], d["unlimited"], d["indexing_variable"]) for d in array["dimensions"]]
 
 
@@ -143,6 +147,17 @@ def comparisons(data, work, cli):
         except Exception as exc:
             results.append({"operation": operation, "name": name, "status": "differs", "detail": f"{type(exc).__name__}: {exc}"})
     wind = data / "wind_global.nc"
+    def oversized_chunks():
+        source = work / "oversized-chunks.zarr"
+        destination = work / "clamped-chunks.nc"
+        with xr.open_dataset(wind, decode_cf=False) as cube:
+            selected = cube.isel(lat=slice(0, 3), lon=slice(0, 4)).load()
+            encoding = {name: {"chunks": (256,) * array.ndim} for name, array in selected.variables.items() if array.ndim}
+            selected.to_zarr(source, zarr_format=2, consolidated=True, encoding=encoding)
+        snapshot_equal(cli, source, destination)
+        with h5py.File(destination, "r") as output:
+            assert output["u_wind"].chunks == (3, 4)
+    case("snapshot", "NOAA wind oversized Zarr chunks clamp to fixed netCDF axes", oversized_chunks)
     case("metadata", "NOAA wind named axes and indexing variables", lambda: compare_metadata(cli, wind, ["/u_wind", "/v_wind", "/lat", "/lon"]))
     case("read", "NOAA wind positive-stride transpose", lambda: read_case(cli, wind, "/u_wind", slices={"lat": (5, 4, 3), "lon": (12, 5, 2)}, transpose=["lon", "lat"]))
     case("read", "SRTM packed hyperslab", lambda: read_case(cli, data / "srtm_sub.nc", "/Band1", slices={"lat": (10, 3, 2), "lon": (20, 4, 3)}))

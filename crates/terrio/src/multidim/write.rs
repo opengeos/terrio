@@ -51,7 +51,18 @@ pub(super) fn write(dataset: &Dataset, destination: &str) -> Result<()> {
         if std::path::Path::new(destination).exists() {
             return Err(bad("destination already exists"));
         }
-        std::fs::write(destination, netcdf_bytes(dataset)?)?;
+        let bytes = netcdf_bytes(dataset)?;
+        #[cfg(not(target_family = "wasm"))]
+        {
+            use std::io::Write;
+            let path = std::path::Path::new(destination);
+            let parent = path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or_else(|| std::path::Path::new("."));
+            let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
+            temporary.write_all(&bytes)?;
+            temporary.persist_noclobber(path).map_err(|e| e.error)?;
+        }
+        #[cfg(target_family = "wasm")]
+        std::fs::write(destination, bytes)?;
         Ok(())
     }
     #[cfg(not(feature = "netcdf-hdf5"))]
@@ -229,7 +240,14 @@ pub(super) fn netcdf_bytes(dataset: &Dataset) -> Result<Vec<u8>> {
             });
         }
         let unlimited = array.info.dimensions.iter().any(|d| d.unlimited);
-        let chunks = array.info.chunks.clone().or_else(|| unlimited.then(|| shape.iter().map(|&n| n.clamp(1, 256)).collect()));
+        let chunks =
+            array.info.chunks.clone().or_else(|| unlimited.then(|| shape.iter().map(|&n| n.clamp(1, 256)).collect())).map(|chunks| {
+                chunks
+                    .iter()
+                    .zip(&array.info.dimensions)
+                    .map(|(&chunk, dimension)| if dimension.unlimited { chunk } else { chunk.min(dimension.size.max(1)) })
+                    .collect::<Vec<_>>()
+            });
         file.datasets.push(hdf5_write::Dataset {
             name: array.info.path.trim_start_matches('/').into(),
             dtype: dtype(array.info.data_type),

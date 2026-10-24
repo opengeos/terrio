@@ -148,3 +148,51 @@ fn snapshots_reject_invalid_or_duplicate_paths() {
     original.root.arrays[0].info.path = "/../escape".into();
     assert!(original.to_netcdf_bytes().is_err());
 }
+
+#[cfg(feature = "netcdf-hdf5")]
+#[test]
+fn netcdf_clamps_fixed_axis_chunks_and_preserves_unlimited_chunks() {
+    let mut original = dataset();
+    original.root.arrays[0].info.chunks = Some(vec![256]);
+    original.root.arrays[1].info.chunks = Some(vec![256]);
+    original.root.arrays[2].info.chunks = Some(vec![256]);
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("chunks.nc");
+    original.write(file.to_str().unwrap()).unwrap();
+    let opened = terrio::multidim::open(file.to_str().unwrap()).unwrap();
+    assert_eq!(opened.array("time").unwrap().info.chunks, Some(vec![256]));
+    assert_eq!(opened.array("y").unwrap().info.chunks, Some(vec![2]));
+    assert_eq!(opened.array("x").unwrap().info.chunks, Some(vec![4]));
+    for name in ["time", "y", "x"] {
+        assert_eq!(opened.array(name).unwrap().read().unwrap().bytes, original.array(name).unwrap().read().unwrap().bytes);
+    }
+}
+
+#[cfg(feature = "zarr")]
+#[test]
+fn failed_snapshot_leaves_no_destination_and_can_be_retried() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("source.zarr");
+    std::fs::create_dir_all(source.join("a")).unwrap();
+    std::fs::write(source.join(".zgroup"), br#"{"zarr_format":2}"#).unwrap();
+    std::fs::write(
+        source.join("a/.zarray"),
+        br#"{"zarr_format":2,"shape":[2],"chunks":[2],"dtype":"<i8","compressor":null,"fill_value":0,"order":"C","filters":null}"#,
+    )
+    .unwrap();
+    std::fs::write(source.join("a/0"), [1]).unwrap();
+    let broken = terrio::multidim::open(source.to_str().unwrap()).unwrap();
+    let destination = dir.path().join("copy.zarr");
+    assert!(broken.write(destination.to_str().unwrap()).is_err());
+    assert!(!destination.exists());
+    assert!(!std::fs::read_dir(dir.path()).unwrap().any(|e| e.unwrap().file_name().to_string_lossy().starts_with(".terrio-md-")));
+    let bytes: Vec<_> = [7i64, 8].into_iter().flat_map(i64::to_le_bytes).collect();
+    std::fs::write(source.join("a/0"), &bytes).unwrap();
+    let fixed = terrio::multidim::open(source.to_str().unwrap()).unwrap();
+    fixed.write(destination.to_str().unwrap()).unwrap();
+    let copy = terrio::multidim::open(destination.to_str().unwrap()).unwrap();
+    assert_eq!(copy.array("a").unwrap().read().unwrap().bytes, bytes);
+    let before = std::fs::read(destination.join("a/0")).unwrap();
+    assert!(fixed.write(destination.to_str().unwrap()).is_err());
+    assert_eq!(std::fs::read(destination.join("a/0")).unwrap(), before);
+}

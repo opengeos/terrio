@@ -336,6 +336,7 @@ impl View {
         }
         let source_shape: Vec<_> = natural.iter().map(|&i| self.axes[i].count).collect();
         let strides = strides(&source_shape)?;
+        let permuted: Vec<_> = self.order.iter().map(|axis| strides[natural.iter().position(|a| a == axis).unwrap()]).collect();
         let mut out = vec![0u8; bytes];
         for flat in 0..n {
             let mut remaining = flat;
@@ -343,8 +344,7 @@ impl View {
             for pos in (0..shape.len()).rev() {
                 let coord = remaining % shape[pos];
                 remaining /= shape[pos];
-                let source_axis = natural.iter().position(|&a| a == self.order[pos]).unwrap();
-                src += coord * strides[source_axis];
+                src += coord * permuted[pos];
             }
             out[flat * size..(flat + 1) * size].copy_from_slice(&raw[src * size..(src + 1) * size]);
         }

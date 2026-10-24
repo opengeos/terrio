@@ -155,6 +155,18 @@ pub(crate) fn md_write(dataset: &crate::multidim::Dataset, destination: &str) ->
     if crate::memfs::exists(root) {
         return Err(bad("destination already exists"));
     }
+    #[cfg(not(target_family = "wasm"))]
+    let staging = if crate::memfs::is_virtual(root) {
+        None
+    } else {
+        let parent = root.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or_else(|| Path::new("."));
+        std::fs::create_dir_all(parent)?;
+        Some(tempfile::Builder::new().prefix(".terrio-md-").tempdir_in(parent)?)
+    };
+    #[cfg(not(target_family = "wasm"))]
+    let output_root = staging.as_ref().map_or(root, |directory| directory.path());
+    #[cfg(target_family = "wasm")]
+    let output_root = root;
     let mut metadata = serde_json::Map::new();
     fn group(g: &crate::multidim::Group, root: &Path, metadata: &mut serde_json::Map<String, Value>) -> Result<()> {
         let prefix = g.path.trim_matches('/');
@@ -212,10 +224,27 @@ pub(crate) fn md_write(dataset: &crate::multidim::Dataset, destination: &str) ->
         }
         Ok(())
     }
-    group(&dataset.root, root, &mut metadata)?;
+    group(&dataset.root, output_root, &mut metadata)?;
     crate::memfs::write(
-        &root.join(".zmetadata"),
+        &output_root.join(".zmetadata"),
         serde_json::to_vec(&json!({"zarr_consolidated_format":1,"metadata":metadata})).map_err(|e| bad(e.to_string()))?,
     )?;
+    #[cfg(not(target_family = "wasm"))]
+    if let Some(staging) = staging {
+        // Claim the new destination exclusively after every source chunk was read.
+        // A failed source read leaves only the private staging directory, removed on drop.
+        std::fs::create_dir(root)?;
+        let publish = (|| -> std::io::Result<()> {
+            for entry in std::fs::read_dir(staging.path())? {
+                let entry = entry?;
+                std::fs::rename(entry.path(), root.join(entry.file_name()))?;
+            }
+            Ok(())
+        })();
+        if let Err(error) = publish {
+            let _ = std::fs::remove_dir_all(root);
+            return Err(error.into());
+        }
+    }
     Ok(())
 }
