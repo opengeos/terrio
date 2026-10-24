@@ -91,6 +91,13 @@ fn bad(message: &str) -> Error {
     Error::InvalidArgument(message.into())
 }
 
+fn filled<T: Clone>(count: usize, value: T) -> Result<Vec<T>> {
+    let mut values = Vec::new();
+    values.try_reserve_exact(count).map_err(|_| bad("pansharpen buffer is too large to allocate"))?;
+    values.resize(count, value);
+    Ok(values)
+}
+
 fn check(ds: &RasterDataset, band: usize) -> Result<Grid> {
     if ds.complex || band == 0 || band > ds.raster.bands {
         return Err(bad("pansharpen requires existing real input bands"));
@@ -121,7 +128,7 @@ fn adjust(ds: &RasterDataset, band: usize, bounds: (f64, f64, f64, f64), enabled
     let (width, height) = (width as usize, height as usize);
     let xoff = ((bounds.0 - gt[0]) / gt[1] + 0.001).floor() as isize;
     let yoff = ((bounds.3 - gt[3]) / gt[5] + 0.001).floor() as isize;
-    let mut values = vec![0.0; width.checked_mul(height).ok_or_else(|| bad("pansharpen grid too large"))?];
+    let mut values = filled(width.checked_mul(height).ok_or_else(|| bad("pansharpen grid too large"))?, 0.0)?;
     let input = BandView::of(&ds.raster, band - 1);
     for y in 0..height {
         for x in 0..width {
@@ -146,7 +153,7 @@ fn adjust(ds: &RasterDataset, band: usize, bounds: (f64, f64, f64, f64), enabled
 // GDAL's overview convolution is separable: masked horizontal rows carry an
 // binary row validity to the vertical pass (GDAL 3.12); integer inputs use Float32 final
 // interpolation before conversion back to their native type.
-fn convolution(s: &SourceRead<'_>, rect: [f64; 4], width: usize, height: usize, work: DataType) -> Vec<f64> {
+fn convolution(s: &SourceRead<'_>, rect: [f64; 4], width: usize, height: usize, work: DataType) -> Result<Vec<f64>> {
     let (rx, ry) = (rect[2] / width as f64, rect[3] / height as f64);
     let method = s.resampling;
     let taps = |dst: usize, ratio: f64, off: f64, size: usize| {
@@ -162,8 +169,9 @@ fn convolution(s: &SourceRead<'_>, rect: [f64; 4], width: usize, height: usize, 
     let yt = (0..height).map(|row| taps(row, ry, rect[1], s.height)).collect::<Vec<_>>();
     let first_row = yt.iter().map(|(start, _)| *start).min().unwrap_or(0);
     let last_row = yt.iter().map(|(start, weights)| start + weights.len()).max().unwrap_or(first_row);
-    let mut horizontal = vec![0.0; width * (last_row - first_row)];
-    let mut coverage = vec![0u8; width * (last_row - first_row)];
+    let size = width.checked_mul(last_row - first_row).ok_or_else(|| bad("pansharpen buffer size overflow"))?;
+    let mut horizontal = filled(size, 0.0)?;
+    let mut coverage = filled(size, 0u8)?;
     for y in first_row..last_row {
         for (x, (start, weights)) in xt.iter().enumerate() {
             let (mut value, mut valid_weight) = (0.0, 0.0);
@@ -186,7 +194,8 @@ fn convolution(s: &SourceRead<'_>, rect: [f64; 4], width: usize, height: usize, 
             }
         }
     }
-    let mut result = vec![s.invalid_value.unwrap_or(0.0); width * height];
+    let mut result =
+        filled(width.checked_mul(height).ok_or_else(|| bad("pansharpen buffer size overflow"))?, s.invalid_value.unwrap_or(0.0))?;
     for (y, (start, weights)) in yt.iter().enumerate() {
         for x in 0..width {
             let (mut value, mut total) = (0.0, 0.0);
@@ -220,7 +229,7 @@ fn convolution(s: &SourceRead<'_>, rect: [f64; 4], width: usize, height: usize, 
             }
         }
     }
-    result
+    Ok(result)
 }
 
 /// Sharpen the selected spectral bands at the panchromatic resolution.
@@ -314,7 +323,7 @@ pub fn pansharpen(pan: &RasterDataset, spectral: &[SpectralBand<'_>], o: &Pansha
         PansharpenNodata::Auto => pan.nodata().filter(|v| v.is_finite() && bands.iter().all(|b| b.nodata() == Some(*v))),
     };
     let grid = Grid::of(&pan.raster);
-    let n = grid.width * grid.height;
+    let n = grid.width.checked_mul(grid.height).ok_or_else(|| bad("pansharpen buffer size overflow"))?;
     let gt = grid.geo_transform;
     let max = if matches!(work, DataType::U8 | DataType::U16) { o.bit_depth.map(|b| ((1u64 << b) - 1) as f64) } else { None };
     let mut values = Vec::new();
@@ -344,7 +353,7 @@ pub fn pansharpen(pan: &RasterDataset, spectral: &[SpectralBand<'_>], o: &Pansha
         if rect[2] <= 0.0 || rect[3] <= 0.0 {
             return Err(bad("pansharpen spectral window does not intersect input"));
         }
-        let mut out = vec![nodata.unwrap_or(0.0); n];
+        let mut out = filled(n, nodata.unwrap_or(0.0))?;
         let read = SourceRead {
             values: input,
             valid: valid.as_deref(),
@@ -379,7 +388,7 @@ pub fn pansharpen(pan: &RasterDataset, spectral: &[SpectralBand<'_>], o: &Pansha
                     *target = convert_value(convert_value(value.unwrap_or(source_nodata.unwrap_or(0.0)), ds.raster.data_type), work);
                 }
             }
-            _ => out = convolution(&read, rect, grid.width, grid.height, work),
+            _ => out = convolution(&read, rect, grid.width, grid.height, work)?,
         }
         if matches!(o.resampling, Resampling::Cubic | Resampling::CubicSpline | Resampling::Lanczos)
             && let Some(max) = max
@@ -395,7 +404,7 @@ pub fn pansharpen(pan: &RasterDataset, spectral: &[SpectralBand<'_>], o: &Pansha
     drop(pan);
     let no = nodata.map(|v| convert_value(v, work));
     let dtype = o.output_type.unwrap_or(spectral[output[0] - 1].dataset.raster.data_type);
-    let mut result = vec![vec![0.0; n]; output.len()];
+    let mut result = output.iter().map(|_| filled(n, 0.0)).collect::<Result<Vec<_>>>()?;
     for p in 0..n {
         let sum = weights.iter().zip(&values).map(|(w, b)| w * b[p]).sum::<f64>();
         let invalid = no.is_some_and(|nd| pan_values[p] == nd || values.iter().any(|b| b[p] == nd) || sum == 0.0);
@@ -504,6 +513,27 @@ mod tests {
         assert_eq!(out.raster.get(0, 0, 0), 53.0);
         assert_eq!(out.raster.get(1, 0, 0), 107.0);
     }
+    #[test]
+    fn explicit_nodata_metadata_keeps_raw_value_while_working_sentinel_converts() {
+        for (raw, sample) in [(300., 255.), (1.25, 1.)] {
+            let pan = raster(vec![vec![sample]], 1, 1, 1., DataType::U8, None);
+            let spectral = raster(vec![vec![90.], vec![60.]], 1, 1, 1., DataType::U8, None);
+            let inputs = [SpectralBand { dataset: &spectral, band: 1 }, SpectralBand { dataset: &spectral, band: 2 }];
+            let out = pansharpen(&pan, &inputs, &PansharpenOptions { nodata: PansharpenNodata::Value(raw), ..Default::default() }).unwrap();
+            assert_eq!(out.nodata(), Some(raw));
+            assert_eq!(out.raster.data.to_f64_vec(), vec![sample, sample]);
+        }
+    }
+
+    #[test]
+    fn unallocatable_union_returns_an_error() {
+        let pan = raster(vec![vec![80.]], 1, 1, 1., DataType::U8, None);
+        let mut spectral = raster(vec![vec![20.]], 1, 1, 1., DataType::U8, None);
+        spectral.set_geo_transform([1_500_000_000., 1., 0., 1_500_000_001., 0., -1.]);
+        let error = pansharpen(&pan, &[SpectralBand { dataset: &spectral, band: 1 }], &Default::default()).unwrap_err();
+        assert!(error.to_string().contains("too large to allocate"));
+    }
+
     #[test]
     fn invalid_inputs_are_errors() {
         let src = raster(vec![vec![10.0; 4]], 2, 2, 1.0, DataType::U8, None);

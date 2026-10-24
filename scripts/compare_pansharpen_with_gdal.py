@@ -149,6 +149,8 @@ def cases(data, work):
         ds = None
         byte_spectral.append(target)
     add("byte clipping", p=byte_pan, s=byte_spectral, opts=["-w", "0.1", "-w", "0.1", "-w", "0.1"])
+    add("byte nodata300", p=byte_pan, s=byte_spectral, opts=["-nodata", "300"])
+    add("byte fractional nodata", p=byte_pan, s=byte_spectral, opts=["-nodata", "1.25"])
     float_pan = str(work / "float_pan.tif")
     gdal.Translate(float_pan, pan, outputType=gdal.GDT_Float32)
     float_spectral = []
