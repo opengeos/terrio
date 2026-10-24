@@ -103,3 +103,27 @@ def test_nearest_search_fringe():
         out.read(1),
         [[8, 8, 8, -9999], [8, 8, 0, -9999], [8, 0, 0, -9999], [-9999, -9999, -9999, -9999]],
     )
+
+
+@pytest.mark.parametrize("distance", [0.1, 0.9, 1.1, 1.5, 2.1, 2.9, 4.2, 9.5])
+def test_sparse_nearest_smoothing_stays_finite(distance):
+    gdal = pytest.importorskip("osgeo.gdal")
+    gdal.UseExceptions()
+    a = np.zeros((11, 13), dtype="float32")
+    a[2, 3], a[8, 10] = 17, 219
+    mask = (a != 0).astype("uint8")
+    ds = gdal.GetDriverByName("MEM").Create("", 13, 11, 1, gdal.GDT_Float32)
+    band = ds.GetRasterBand(1)
+    band.WriteArray(a)
+    m = gdal.GetDriverByName("MEM").Create("", 13, 11, 1, gdal.GDT_Byte)
+    m.GetRasterBand(1).WriteArray(mask)
+    gdal.FillNodata(band, m.GetRasterBand(1), distance, 3, ["INTERPOLATION=NEAREST"])
+    out = terrio.fill_nodata(
+        raster(a),
+        mask=raster(mask),
+        max_distance=distance,
+        interpolation="nearest",
+        smoothing_iterations=3,
+    ).read(1)
+    assert np.isfinite(out).all()
+    np.testing.assert_array_equal(out, band.ReadAsArray())

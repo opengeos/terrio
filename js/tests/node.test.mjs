@@ -1093,6 +1093,12 @@ test("fillNodata: holes, nearest ties, explicit masks and invalid options", () =
   assert.equal(terrio.fillNodata(src, { interpolation: "nearest" }).readBand(1)[4], 1);
   const mask = terrio.open(new TextEncoder().encode("ncols 3\nnrows 3\nxllcorner 0\nyllcorner 0\ncellsize 1\n0 0 0\n0 0 0\n0 0 0\n"), "mask.asc");
   assert.deepEqual([...terrio.fillNodata(src, { mask }).readBand(1)], [...src.readBand(1)]);
+  const bytes = src.toBytes("holes.tif");
+  for (const input of [bytes, { bytes, filename: "holes.tif" }]) {
+    const filled = terrio.fillNodata(input, { maxDistance: 1 });
+    assert.equal(filled.readBand(1)[4], Math.fround(13 / 3));
+    filled.free();
+  }
   assert.equal(src.readBand(1)[4], -9999);
   assert.throws(() => terrio.fillNodata(src, { maxDistance: -1 }), /nonnegative/);
   src.free(); out.free(); mask.free();

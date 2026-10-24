@@ -827,26 +827,22 @@ pub fn fill_nodata(src: JsValue, options: JsValue) -> Result<Dataset, JsError> {
     use terrio::ops::fill_nodata::{FillNodataOptions, Interpolation, raster_mask};
     let (rest, taken) = split_options(&options, &["mask"])?;
     let a: FillNodataArgs = parse_options(&rest)?;
-    let default_mask = if taken[0].is_none() {
-        if let Some(inner) = Dataset::lookup(&src) {
-            match &mut *inner.borrow_mut() {
-                Inner::Raster(r) => {
-                    let window = terrio::Window::new(0, 0, r.width(), r.height());
-                    r.read_mask(window, None).map_err(js_err)?
-                }
-                _ => None,
-            }
-        } else if let Some((bytes, name)) = file_bytes(&src) {
-            let mut r = terrio::memory::open_raster_lazy_bytes(bytes, &name).map_err(js_err)?;
-            let window = terrio::Window::new(0, 0, r.width(), r.height());
-            r.read_mask(window, None).map_err(js_err)?
-        } else {
-            None
-        }
-    } else {
-        None
+    let read = |r: &mut terrio::LazyRaster| -> Result<(RasterDataset, Option<Vec<u8>>), JsError> {
+        let window = terrio::Window::new(0, 0, r.width(), r.height());
+        let mask = if taken[0].is_none() { r.read_mask(window, None).map_err(js_err)? } else { None };
+        Ok((r.read().map_err(js_err)?, mask))
     };
-    let ds = input_raster(&src)?;
+    let (ds, default_mask) = if let Some(inner) = Dataset::lookup(&src) {
+        let mut inner = inner.borrow_mut();
+        match &mut *inner {
+            Inner::Raster(r) => read(r)?,
+            Inner::Vector(..) => return Err(invalid("expected a raster, got a vector dataset")),
+        }
+    } else if let Some((bytes, name)) = file_bytes(&src) {
+        read(&mut terrio::memory::open_raster_lazy_bytes(bytes, &name).map_err(js_err)?)?
+    } else {
+        return Err(invalid("expected a raster: a Dataset, a Uint8Array or { bytes, filename }"));
+    };
     let mask = taken[0].as_ref().map(input_raster).transpose()?;
     let bytes = mask.as_ref().map(|m| raster_mask(m, ds.raster.cols, ds.raster.rows)).transpose().map_err(js_err)?.or(default_mask);
     let o = FillNodataOptions {

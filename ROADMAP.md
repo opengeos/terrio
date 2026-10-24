@@ -29,8 +29,9 @@ The [gap analysis](docs/gdal-parity-recommendations.md) records the existing sup
 implementation scope and validation criteria. These additions build on the completed
 operations and drivers below; no release deadline is assigned yet.
 
-- [ ] Fill nodata: inverse-distance and nearest interpolation, validity masks, maximum
-      pixel distance and smoothing, preserving valid source pixels.
+- [x] Fill nodata: inverse-distance and nearest interpolation, validity masks, maximum
+      pixel distance and smoothing, preserving valid source pixels. Done in
+      [#239](https://github.com/opengeos/terrio/pull/239), through Rust, CLI/MCP, Python and JavaScript.
 - [ ] Overview-aware warping: explicit source overview selection, automatic selection for
       downsampling and a full-resolution override, reducing remote COG reads.
 - [ ] Geolocation-array warping: reproject swaths using the longitude/latitude arrays already

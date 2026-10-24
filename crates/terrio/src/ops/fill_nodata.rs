@@ -246,7 +246,9 @@ pub fn fill_nodata(ds: &RasterDataset, o: &FillNodataOptions<'_>) -> Result<Rast
                         }
                     }
                 }
-                next[p] = sum / count;
+                if count > 0.0 {
+                    next[p] = sum / count;
+                }
             }
         }
         values = next;

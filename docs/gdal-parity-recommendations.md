@@ -1,6 +1,6 @@
 # Recommended GDAL parity work
 
-Assessment date: 2026-10-24. Based on the current checkout and official GDAL
+Initial assessment date: 2026-10-24. Based on the checkout before PR #239 and official GDAL
 documentation. Priorities and effort are engineering judgments, not measured estimates.
 Implementation is tracked in [#238](https://github.com/opengeos/terrio/issues/238)
 and the [roadmap](../ROADMAP.md#next-practical-gdal-feature-parity).
@@ -20,7 +20,7 @@ native implementation of the proposed operations.
 
 | Order | Feature | Suggested first deliverable | Relative effort |
 |---|---|---|---|
-| 1 | Fill nodata | GDAL-compatible inverse-distance and nearest filling, validity mask, maximum pixel distance and smoothing | Medium |
+| 1 | Fill nodata (implemented in [#239](https://github.com/opengeos/terrio/pull/239)) | GDAL-compatible inverse-distance and nearest filling, validity mask, maximum pixel distance and smoothing | Medium |
 | 2 | Overview-aware warping | Explicit overview selection and automatic selection for downsampling, with a full-resolution override | Medium |
 | 3 | Geolocation-array warping | Warp swaths using longitude/latitude arrays already exposed by the drivers | Large |
 | 4 | Richer VRT interoperability | Warped VRTs, followed by built-in derived bands and kernel filters | Large, incremental |
@@ -32,14 +32,17 @@ native implementation of the proposed operations.
 
 ### 1. Fill nodata
 
-The CLI command inventory and core operations contain no fill-nodata operation.
+Implemented in [PR #239](https://github.com/opengeos/terrio/pull/239): a shared Rust
+operation exposed through CLI/MCP, Python and JavaScript, with GDAL comparison tests.
+The following describes the gap identified in the initial assessment.
+
+Before PR #239, the CLI command inventory and core operations contained no fill-nodata operation.
 The rasterio-compatible CLI explicitly rejects `fillnodata` in
 [`rio/cli.py`](../python/python/terrio/rio/cli.py). The xarray accessor's
 `interpolate_na` is an existing interpolation surface, but does not supply this
 GDAL-compatible core operation.
 
-Implement a shared Rust operation and expose it in CLI, Python, JS and MCP. This
-would repair holes in DEMs and continuous imagery before contours, terrain
+The shared Rust operation repairs holes in DEMs and continuous imagery before contours, terrain
 analysis or reprojection. GDAL supports inverse-distance or nearest filling,
 an explicit mask, search distance and smoothing.
 [GDAL fill-nodata](https://gdal.org/en/stable/programs/gdal_fillnodata.html).
@@ -172,6 +175,10 @@ Features access and overview refresh tooling. Avoid prioritizing proprietary
 drivers and core database connections: the current roadmap explicitly excludes
 them and provides an optional GDAL backend for the long tail.
 
-No runtime tests were executed for this recommendation-only review. Local gaps
-were established through source and documentation inspection; effort, demand
-and performance benefits remain hypotheses to validate during implementation.
+The initial recommendation-only assessment used source and documentation inspection.
+Fill-nodata implementation validation now includes Rust regression tests, Python
+comparisons with GDAL 3.12.2, real USGS terrain comparisons in the `dem-calc`
+conformance suite, and JavaScript tests of the WebAssembly build. The separate
+`terrio.rio` compatibility CLI still rejects `fillnodata`; the new operation is
+available through `terrio.fill_nodata` and `terrio fill-nodata`. Effort, demand and
+performance benefits for the remaining recommendations are estimates.
