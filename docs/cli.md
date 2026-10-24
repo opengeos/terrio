@@ -638,6 +638,10 @@ archive members, and reads only windows needed for the requested output.
 Serialized affine/reprojection, polynomial GCP, TPS, homography and RPC
 transformers are supported. Warped reads use the declared VRT block boundaries,
 preserving GDAL's approximation and resampling behavior for cropped requests.
+Band mappings may reorder or repeat source bands; nodata is retained per band,
+including `UNIFIED_SRC_NODATA=YES`, `NO` and `PARTIAL`. GeoTIFF file output uses
+a `.aux.xml` sidecar when nodata differs between bands; keep that sidecar with
+the TIFF. A standalone TIFF byte buffer has only the shared embedded nodata tag.
 Serialized cutlines, alpha warps and geolocation transformers are currently
 reported as unsupported; use a materialized warp for those supported by the
 normal warper. Custom `INIT_DEST` values are also unsupported.
