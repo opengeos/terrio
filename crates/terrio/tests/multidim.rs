@@ -244,3 +244,48 @@ fn snapshots_reject_invalid_fill_values_and_coordinate_links() {
     ds.root.dimensions[0].indexing_variable = Some("/x".into());
     assert!(ds.to_netcdf_bytes().unwrap_err().to_string().contains("indexing variable"));
 }
+
+#[cfg(feature = "zarr")]
+#[test]
+fn sparse_zarr_strides_skip_corrupt_intervening_chunks() {
+    let files=vec![(".zgroup".into(),br#"{"zarr_format":2}"#.to_vec()),
+        ("a/.zarray".into(),br#"{"zarr_format":2,"shape":[1000001],"chunks":[1],"dtype":"<u2","compressor":null,"fill_value":0,"order":"C","filters":null}"#.to_vec()),
+        ("a/.zattrs".into(),br#"{"_ARRAY_DIMENSIONS":["x"]}"#.to_vec()),
+        ("a/0".into(),7u16.to_le_bytes().to_vec()),("a/1000000".into(),9u16.to_le_bytes().to_vec()),("a/500000".into(),vec![1])];
+    let ds = terrio::multidim::open_zarr_store(files).unwrap();
+    let view = ds.array("a").unwrap().view().slice("x", 0, 2, 1000000).unwrap();
+    assert_eq!(view.read().unwrap().values().unwrap(), json!([7, 9]));
+}
+
+#[cfg(feature = "zarr")]
+#[test]
+fn zarr_saved_dimensions_and_store_roots_are_unambiguous() {
+    let files = dataset().to_zarr_store().unwrap();
+    let mut stale = files.clone();
+    stale.retain(|(name, _)| name != ".zmetadata");
+    let attrs = stale.iter_mut().find(|(name, _)| name == ".zattrs").unwrap();
+    let mut metadata: serde_json::Value = serde_json::from_slice(&attrs.1).unwrap();
+    metadata["_terrio_dimensions"][0]["size"] = json!(999);
+    attrs.1 = serde_json::to_vec(&metadata).unwrap();
+    assert!(terrio::multidim::open_zarr_store(stale).is_err());
+    let two: Vec<_> =
+        files.iter().map(|(n, b)| (format!("a/{n}"), b.clone())).chain(files.iter().map(|(n, b)| (format!("bb/{n}"), b.clone()))).collect();
+    assert!(terrio::multidim::open_zarr_store(two.clone()).unwrap_err().to_string().contains("multiple Zarr store roots"));
+    assert!(terrio::multidim::open_zarr_store(two.into_iter().rev().collect()).is_err());
+    let root = vec![(".zgroup".into(), br#"{"zarr_format":2}"#.to_vec()), ("a/.zgroup".into(), br#"{"zarr_format":2}"#.to_vec())];
+    assert!(terrio::multidim::open_zarr_store(root).is_ok());
+}
+
+#[cfg(feature = "zarr")]
+#[test]
+fn selected_zarr_subgroups_keep_external_dimension_references() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("cube.zarr");
+    let original = dataset();
+    original.write(path.to_str().unwrap()).unwrap();
+    let expected = original.array("science/temperature").unwrap().read().unwrap().bytes;
+    let group = terrio::multidim::open(&format!("ZARR:\"{}\":/science", path.display())).unwrap();
+    assert_eq!(group.array("temperature").unwrap().read().unwrap().bytes, expected);
+    let array = terrio::multidim::open(&format!("ZARR:\"{}\":/science/temperature", path.display())).unwrap();
+    assert_eq!(array.array("array").unwrap().read().unwrap().bytes, expected);
+}

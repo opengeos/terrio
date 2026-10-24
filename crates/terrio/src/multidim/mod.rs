@@ -514,14 +514,26 @@ pub fn open_bytes(bytes: &[u8]) -> Result<Dataset> {
 pub fn open_zarr_store(files: Vec<(String, Vec<u8>)>) -> Result<Dataset> {
     #[cfg(feature = "zarr")]
     {
-        let prefix = files
+        let candidates: std::collections::BTreeSet<_> = files
             .iter()
             .filter_map(|(name, _)| {
                 let (parent, file) = name.rsplit_once('/').unwrap_or(("", name));
-                matches!(file, ".zgroup" | ".zarray" | "zarr.json").then_some(parent.to_owned())
+                matches!(file, ".zgroup" | ".zarray" | ".zmetadata" | "zarr.json").then_some(parent.to_owned())
             })
-            .min_by_key(|s| (s.matches('/').count(), s.len()))
-            .unwrap_or_default();
+            .collect();
+        let roots: Vec<_> = candidates
+            .iter()
+            .filter(|candidate| {
+                !candidates.iter().any(|parent| {
+                    parent != *candidate
+                        && (parent.is_empty() || candidate.strip_prefix(parent.as_str()).is_some_and(|tail| tail.starts_with('/')))
+                })
+            })
+            .collect();
+        if roots.len() > 1 {
+            return Err(bad("in-memory input contains multiple Zarr store roots; provide one store"));
+        }
+        let prefix = roots.first().map_or("", |s| s.as_str());
         let mount = Arc::new(crate::memfs::Mount::new(files));
         let root = mount.path().join(prefix).to_string_lossy().to_string();
         crate::drivers::zarr::md_open(&root, Some(mount))

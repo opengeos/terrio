@@ -1,5 +1,6 @@
 //! Native multidimensional adapter over the shared Zarr codecs and store.
 use super::*;
+use std::collections::HashMap;
 
 /// A native multidimensional source retaining an optional in-memory store mount.
 pub(crate) struct MdSource {
@@ -9,13 +10,60 @@ pub(crate) struct MdSource {
 impl MdSource {
     pub(crate) fn read(&self, selection: &[crate::multidim::Selection]) -> Result<Vec<u8>> {
         let start: Vec<_> = selection.iter().map(|s| s.start).collect();
-        let shape: Vec<_> = selection.iter().map(|s| (s.count - 1) * s.step + 1).collect();
-        let raw = read_region(&self.array, &start, &shape)?;
+        let counts: Vec<_> = selection.iter().map(|s| s.count).collect();
         if selection.iter().all(|s| s.step == 1) {
-            return Ok(raw);
+            return read_region(&self.array, &start, &counts);
         }
-        let relative: Vec<_> = selection.iter().map(|s| crate::multidim::Selection { start: 0, ..s.clone() }).collect();
-        crate::multidim::select_bytes(&raw, &shape, &relative, self.array.data_type.size_bytes())
+        // Partition selected indices by the actual I/O/decompression unit. Shards
+        // with no outer codecs can fetch individual inner chunks through read_region.
+        let chunk = self
+            .array
+            .pipeline
+            .shard
+            .as_ref()
+            .filter(|_| self.array.pipeline.codecs.is_empty())
+            .map_or(self.array.chunks.as_slice(), |s| s.chunks.as_slice());
+        if chunk.len() != selection.len() || chunk.contains(&0) {
+            return Err(bad("invalid chunk shape"));
+        }
+        let runs: Vec<Vec<(usize, usize, usize)>> = selection
+            .iter()
+            .zip(chunk)
+            .map(|(s, &c)| {
+                let mut runs = Vec::new();
+                let mut first = 0;
+                while first < s.count {
+                    let origin = s.start + first * s.step;
+                    let count = ((c - 1 - origin % c) / s.step + 1).min(s.count - first);
+                    runs.push((first, count, origin));
+                    first += count;
+                }
+                runs
+            })
+            .collect();
+        let size = self.array.data_type.size_bytes();
+        let n = counts.iter().try_fold(1usize, |n, &c| n.checked_mul(c).ok_or_else(|| bad("selected size overflows")))?;
+        let mut out = vec![0; n.checked_mul(size).ok_or_else(|| bad("selected byte size overflows"))?];
+        let grid: Vec<_> = runs.iter().map(Vec::len).collect();
+        let total = grid.iter().try_fold(1usize, |n, &c| n.checked_mul(c).ok_or_else(|| bad("chunk grid overflows")))?;
+        for tile in 0..total {
+            let index = unravel(tile, &grid);
+            let chosen: Vec<_> = index.iter().enumerate().map(|(axis, &i)| runs[axis][i]).collect();
+            let origin: Vec<_> = chosen.iter().map(|r| r.0).collect();
+            let shape: Vec<_> = chosen.iter().map(|r| r.1).collect();
+            let start: Vec<_> = chosen.iter().map(|r| r.2).collect();
+            let extent: Vec<_> = chosen.iter().zip(selection).map(|(r, s)| (r.1 - 1) * s.step + 1).collect();
+            let raw = read_region(&self.array, &start, &extent)?;
+            let selected = if shape == extent {
+                raw
+            } else {
+                let relative: Vec<_> =
+                    selection.iter().zip(&shape).map(|(s, &count)| crate::multidim::Selection { start: 0, count, ..s.clone() }).collect();
+                crate::multidim::select_bytes(&raw, &extent, &relative, size)?
+            };
+            scatter(&selected, &origin, &shape, &mut out, &vec![0; counts.len()], &counts, size);
+        }
+        Ok(out)
     }
 }
 /// Opens groups and native arrays without reading their chunks.
@@ -150,7 +198,84 @@ pub(crate) fn md_open(name: &str, mount: Option<std::sync::Arc<crate::memfs::Mou
         }
         Ok(group)
     }
-    Ok(crate::multidim::Dataset { driver: "Zarr".into(), root: visit(&node, "/", &mount, 0)? })
+    fn valid_path(path: &str) -> bool {
+        path.starts_with('/')
+            && path != "/"
+            && !path.contains(['\\', '\0'])
+            && path[1..].split('/').all(|part| !part.is_empty() && part != "." && part != "..")
+    }
+    fn collect<'a>(
+        g: &'a Group,
+        partial: bool,
+        dims: &mut HashMap<String, &'a Dimension>,
+        arrays: &mut HashMap<String, &'a crate::multidim::Array>,
+        unsupported: &mut HashMap<String, &'a crate::multidim::UnsupportedArray>,
+    ) -> Result<()> {
+        for d in &g.dimensions {
+            if g.attributes.get("_terrio_dimensions").is_some()
+                && (!valid_path(&d.path)
+                    || !d.path.ends_with(&format!("/{}", d.name))
+                    || (!partial && d.path != format!("{}/{}", g.path.trim_end_matches('/'), d.name))
+                    || d.indexing_variable.as_ref().is_some_and(|p| !valid_path(p)))
+            {
+                return Err(bad("saved dimension has an invalid name, path or group scope"));
+            }
+            if let Some(previous) = dims.insert(d.path.clone(), d)
+                && (!partial || previous != d)
+            {
+                return Err(bad("saved dimension is declared more than once"));
+            }
+        }
+        arrays.extend(g.arrays.iter().map(|a| (a.info.path.clone(), a)));
+        unsupported.extend(g.unsupported_arrays.iter().map(|a| (a.path.clone(), a)));
+        for child in &g.groups {
+            collect(child, partial, dims, arrays, unsupported)?;
+        }
+        Ok(())
+    }
+    fn dimension_scope_exists(g: &Group, d: &Dimension) -> bool {
+        d.path == format!("{}/{}", g.path.trim_end_matches('/'), d.name) || g.groups.iter().any(|g| dimension_scope_exists(g, d))
+    }
+    let root = visit(&node, "/", &mount, 0)?;
+    // A selected subgroup/array may legitimately refer to dimensions and indexing
+    // variables outside that subset. Full stores must resolve every declaration.
+    let partial = selected.is_some() || read_array_opt(&node).is_ok_and(|a| a.is_some());
+    let (mut dimensions, mut arrays, mut unsupported) = (HashMap::new(), HashMap::new(), HashMap::new());
+    collect(&root, partial, &mut dimensions, &mut arrays, &mut unsupported)?;
+    for array in arrays.values() {
+        for d in &array.info.dimensions {
+            if array.info.attributes.get("_terrio_dimensions").is_some()
+                && (!valid_path(&d.path)
+                    || !d.path.ends_with(&format!("/{}", d.name))
+                    || d.indexing_variable.as_ref().is_some_and(|p| !valid_path(p)))
+            {
+                return Err(bad("saved array dimension has an invalid path"));
+            }
+            if let Some(declared) = dimensions.get(&d.path) {
+                if **declared != *d {
+                    return Err(bad("saved group dimension conflicts with an array's dimensions"));
+                }
+            } else if !partial {
+                // In-memory models may declare dimensions through ArrayInfo only.
+                // Infer such declarations when their owning group is present.
+                if !dimension_scope_exists(&root, d) {
+                    return Err(bad("saved array dimension has no owning group"));
+                }
+                dimensions.insert(d.path.clone(), d);
+            }
+        }
+    }
+    for d in dimensions.values() {
+        if let Some(name) = &d.indexing_variable {
+            let shape = arrays.get(name).map(|a| a.shape()).or_else(|| unsupported.get(name).map(|a| a.shape.clone()));
+            match shape {
+                Some(shape) if shape != [d.size] => return Err(bad("saved indexing variable has an incompatible shape")),
+                None if !partial => return Err(bad("saved indexing variable does not exist")),
+                _ => {}
+            }
+        }
+    }
+    Ok(crate::multidim::Dataset { driver: "Zarr".into(), root })
 }
 
 /// Writes a numeric snapshot a source chunk at a time, preserving coordinate and dimension identity.

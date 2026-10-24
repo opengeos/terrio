@@ -46,8 +46,8 @@ Float32 attributes and numeric nonfinite values without converting literal text 
 
 Native reads support local netCDF classic/CDF-2/CDF-5, netCDF-4 and numeric HDF5, including JPSS
 user blocks, plus local/remote Zarr v2/v3 using the existing codecs and store backends. netCDF/HDF5
-hyperslabs read through range-backed storage. Zarr views fetch intersecting source chunks;
-positive strides currently read their bounding rectangle before selecting the requested values.
+hyperslabs read through range-backed storage. Zarr views fetch only source chunks containing selected elements, including sparse positive
+strides; sharded stores fetch the selected inner chunks when their codecs permit range reads.
 The source chunk is the minimum decompression unit. Array handles keep their source storage
 alive after the parent dataset is released.
 
@@ -126,3 +126,8 @@ The range-read regression uses a 4,322,152-byte chunked cube: metadata requests 
 bytes, a 16×16 slab requests another 121,696 bytes (including chunk-index metadata), and a
 subsequent whole-array read requests 4,313,952 bytes. The selected read requests about 2.8%
 of the whole-read bytes while returning the same native values.
+
+A local HTTP Zarr regression reads two UInt16 values 1,000 positions apart using exactly
+two chunk requests and four payload bytes after metadata, while skipping a corrupted intervening
+chunk. Sparse strided reads keep chunk-sized temporary buffers plus the selected result, rather
+than allocating the full bounding rectangle.
