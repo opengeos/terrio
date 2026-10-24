@@ -555,7 +555,11 @@ impl Reader {
             size: Some((window.width, window.height)),
             error_threshold: 0.,
             resampling: warp.child("ResampleAlg").map(|e| resampling(&e.text)).transpose()?.unwrap_or(Resampling::Nearest),
-            output_type: warp.child("WorkingDataType").map(|e| crate::ops::parse_data_type(e.text.trim())).transpose()?,
+            output_type: warp
+                .child("WorkingDataType")
+                .filter(|e| !e.text.trim().eq_ignore_ascii_case("Unknown"))
+                .map(|e| crate::ops::parse_data_type(e.text.trim()))
+                .transpose()?,
             unified_src_nodata: None,
             src_nodata: Nodata::None,
             dst_nodata: Nodata::None,
@@ -1290,6 +1294,7 @@ mod tests {
             ("<WorkingDataType>Float32</WorkingDataType>", 1.25),
             ("<WorkingDataType>Float64</WorkingDataType>", 1.250000000001),
             ("", 1.250000000001),
+            ("<WorkingDataType>Unknown</WorkingDataType>", 1.250000000001),
         ] {
             let xml = format!(
                 "<VRTDataset rasterXSize=\"3\" rasterYSize=\"1\" subClass=\"VRTWarpedDataset\"><GeoTransform>0,1,0,1,0,-1</GeoTransform><VRTRasterBand dataType=\"Byte\"><NoDataValue>0</NoDataValue></VRTRasterBand><VRTRasterBand dataType=\"Float64\"><NoDataValue>0</NoDataValue></VRTRasterBand><GDALWarpOptions>{working}<Option name=\"UNIFIED_SRC_NODATA\">PARTIAL</Option><SourceDataset>source.tif</SourceDataset><BandList><BandMapping src=\"1\" dst=\"1\"><SrcNoDataReal>-9999</SrcNoDataReal><DstNoDataReal>0</DstNoDataReal></BandMapping><BandMapping src=\"2\" dst=\"2\"><SrcNoDataReal>-9999</SrcNoDataReal><DstNoDataReal>0</DstNoDataReal></BandMapping></BandList></GDALWarpOptions></VRTDataset>"
