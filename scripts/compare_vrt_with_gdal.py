@@ -90,6 +90,16 @@ def main():
             path.write_text(f'<VRTDataset rasterXSize="96" rasterYSize="80"><SRS>{projection}</SRS><GeoTransform>{",".join(map(str, transform))}</GeoTransform>{band}</VRTDataset>')
             return path
 
+        # GDAL's missing/zero relativeToVRT flag resolves from the process CWD;
+        # only flag 1 resolves from the VRT directory.
+        cwd_source = os.path.relpath(Path(args.data).resolve() / "usgs_dem.tif")
+        rectangles = '<SrcRect xOff="0" yOff="0" xSize="96" ySize="80"/><DstRect xOff="0" yOff="0" xSize="96" ySize="80"/>'
+        for flag in [None, "0", "1"]:
+            filename = "source.tif" if flag == "1" else cwd_source
+            attribute = "" if flag is None else f' relativeToVRT="{flag}"'
+            band = f'<VRTRasterBand dataType="Float32"><SimpleSource><SourceFilename{attribute}>{filename}</SourceFilename><SourceBand>1</SourceBand>{rectangles}</SimpleSource></VRTRasterBand>'
+            run(f"VRT relativeToVRT {flag}", write(f"relative-{flag}", band))
+
         for label, nodata in [("long-decimal", 1.23456789), ("decimal-tenth", 0.1)]:
             path = write(f"nodata-{label}", f'<VRTRasterBand dataType="Float32"><NoDataValue>{nodata}</NoDataValue>{source_xml()}</VRTRasterBand>')
             run(f"VRT raw decimal nodata {label}", path)

@@ -680,16 +680,22 @@ pub fn write_raster_dataset(ds: &RasterDataset, path: &str, options: &RasterWrit
     let options = RasterWriteOptions { geo_transform: options.geo_transform.or(ds.affine), ..options.clone() };
     let driver = options.driver.or_else(|| RasterDriver::for_extension(path));
     let pam = needs_nodata_pam(ds) && matches!(driver, Some(RasterDriver::GTiff | RasterDriver::Cog));
-    write_raster_with_nodata(&ds.raster, ds.nodata(), ds.complex, path, &options)?;
+    let tag = if matches!(driver, Some(RasterDriver::GTiff | RasterDriver::Cog)) { tiff_nodata(ds) } else { ds.nodata() };
+    write_raster_with_nodata(&ds.raster, tag, ds.complex, path, &options)?;
     if matches!(driver, Some(RasterDriver::GTiff | RasterDriver::Cog)) {
         let mut aux = std::ffi::OsString::from(path);
         aux.push(".aux.xml");
-        if pam || Path::new(&aux).exists() {
+        if pam || crate::memfs::exists(Path::new(&aux)) {
             let values = if ds.band_nodata.is_empty() { vec![ds.nodata(); ds.raster.bands] } else { ds.band_nodata.clone() };
             crate::drivers::common::write_band_nodata_pam(Path::new(path), &values)?;
         }
     }
     Ok(())
+}
+
+/// TIFF's shared nodata tag cannot be overridden to "no nodata" by PAM.
+pub(crate) fn tiff_nodata(ds: &RasterDataset) -> Option<f64> {
+    if (1..=ds.raster.bands).any(|band| ds.band_nodata(band).is_none()) { None } else { ds.nodata() }
 }
 
 /// TIFF nodata that needs a PAM override to retain its per-band or raw Float32 value.

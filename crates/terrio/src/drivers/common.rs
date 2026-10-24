@@ -371,7 +371,6 @@ pub(crate) fn parse_pam(xml: &str) -> Pam {
         let v: Vec<f64> = g.split(',').filter_map(|x| x.trim().parse().ok()).collect();
         <[f64; 6]>::try_from(v).ok()
     });
-    let nodata = element("NoDataValue").and_then(|v| parse_f64(&v));
     let band_nodata: Vec<(usize, f64)> = crate::ops::vrt::xml::parse(xml)
         .ok()
         .map(|root| {
@@ -382,7 +381,8 @@ pub(crate) fn parse_pam(xml: &str) -> Pam {
                 .collect()
         })
         .unwrap_or_default();
-    let nodata = if band_nodata.is_empty() { nodata } else { band_nodata.iter().find(|(b, _)| *b == 1).map(|(_, v)| *v) };
+    let dataset_nodata = crate::ops::vrt::xml::parse(xml).ok().and_then(|root| root.child("NoDataValue").and_then(|e| parse_f64(&e.text)));
+    let nodata = band_nodata.iter().find(|(b, _)| *b == 1).map(|(_, v)| *v).or(dataset_nodata);
     Pam { crs, geo_transform, nodata, band_nodata }
 }
 
@@ -401,6 +401,7 @@ pub(crate) fn write_band_nodata_pam(path: &Path, values: &[Option<f64>]) -> Resu
     reader.config_mut().expand_empty_elements = true;
     let mut writer = quick_xml::Writer::new(Vec::new());
     let mut depth = 0usize;
+    let mut seen_root = false;
     let mut band = None;
     let mut seen = vec![false; values.len()];
     let invalid = |e: quick_xml::Error| crate::Error::InvalidArgument(format!("invalid PAM XML: {e}"));
@@ -415,11 +416,17 @@ pub(crate) fn write_band_nodata_pam(path: &Path, values: &[Option<f64>]) -> Resu
     loop {
         let event = reader.read_event().map_err(invalid)?;
         match &event {
-            Event::Start(e) if depth == 2 && band.is_some() && e.name().as_ref() == "NoDataValue" => {
+            Event::Start(e) if (depth == 1 || depth == 2 && band.is_some()) && e.name().as_ref() == "NoDataValue" => {
                 reader.read_to_end(e.name()).map_err(invalid)?;
                 continue;
             }
             Event::Start(e) => {
+                if depth == 0 {
+                    if seen_root || e.name().as_ref() != "PAMDataset" {
+                        return Err(Error::InvalidData("expected one PAMDataset root".into()));
+                    }
+                    seen_root = true;
+                }
                 if depth == 1 && e.name().as_ref() == "PAMRasterBand" {
                     band = e
                         .attributes()
@@ -449,12 +456,15 @@ pub(crate) fn write_band_nodata_pam(path: &Path, values: &[Option<f64>]) -> Resu
                         writer.write_event(Event::End(BytesEnd::new("PAMRasterBand")))?;
                     }
                 }
-                depth -= 1;
+                depth = depth.checked_sub(1).ok_or_else(|| Error::InvalidData("unbalanced PAM XML".into()))?;
             }
             Event::Eof => break,
             _ => {}
         }
         writer.write_event(event)?;
+    }
+    if depth != 0 || !seen_root {
+        return Err(Error::InvalidData("unclosed or missing PAMDataset root".into()));
     }
     crate::memfs::write(aux, writer.into_inner())?;
     Ok(())
@@ -514,6 +524,38 @@ pub(crate) const WGS84_LAT_LONG_WKT: &str = "GEOGCS[\"WGS 84\",DATUM[\"WGS_1984\
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pam_nodata_preserves_dataset_fallback_and_other_xml() {
+        let xml =
+            "<PAMDataset><NoDataValue>-9</NoDataValue><PAMRasterBand band=\"2\"><NoDataValue>-2</NoDataValue></PAMRasterBand></PAMDataset>";
+        assert_eq!(parse_pam(xml).nodata, Some(-9.));
+        assert_eq!(parse_pam(&xml.replace("<NoDataValue>-9</NoDataValue>", "")).nodata, None);
+        let metadata = "<Metadata domain=\"xml:test\">before<b attr=\"v\"/>after<![CDATA[<literal>]]><!--keep--></Metadata>";
+        let existing = format!(
+            "<PAMDataset>{metadata}<PAMRasterBand band=\"1\"><Description>band</Description><NoDataValue>-1</NoDataValue></PAMRasterBand><PAMRasterBand band=\"2\"/></PAMDataset>"
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let mount = crate::memfs::Mount::new(Vec::new());
+        for root in [dir.path(), mount.path()] {
+            let path = root.join("output.tif");
+            let aux = root.join("output.tif.aux.xml");
+            crate::memfs::write(&aux, &existing).unwrap();
+            write_band_nodata_pam(&path, &[None, Some(0.1), Some(-3.)]).unwrap();
+            let updated = String::from_utf8(crate::memfs::read(&aux).unwrap()).unwrap();
+            assert!(updated.contains(&metadata.replace("<b attr=\"v\"/>", "<b attr=\"v\"></b>")));
+            assert!(updated.contains("<Description>band</Description>"));
+            assert!(!updated.contains("<NoDataValue>-1</NoDataValue>"));
+            assert_eq!(parse_pam(&updated).band_nodata, vec![(2, 0.1), (3, -3.)]);
+            assert_eq!(parse_pam(&updated).nodata, None);
+            crate::memfs::write(&aux, "<PAMDataset/>").unwrap();
+            write_band_nodata_pam(&path, &[Some(-8.)]).unwrap();
+            assert_eq!(read_pam(&path).unwrap().nodata, Some(-8.));
+        }
+        let broken = dir.path().join("broken.tif");
+        crate::memfs::write(&dir.path().join("broken.tif.aux.xml"), "<PAMDataset><Metadata>").unwrap();
+        assert!(write_band_nodata_pam(&broken, &[Some(1.)]).is_err());
+    }
 
     #[test]
     fn formats_like_printf_g() {

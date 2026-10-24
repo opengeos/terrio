@@ -56,7 +56,7 @@ operations and drivers below; no release deadline is assigned yet.
 - [ ] Native multidimensional API: groups, named dimensions, coordinate arrays, lazy time/depth
       slicing and transposition across netCDF/HDF5/Zarr, retaining the existing raster views.
 
-Continue richer VRT interoperability and the remaining independent features.
+Continue the remaining independent features.
 SQL, viewshed and pansharpening can ship independently; schedule indexed catalogs and the
 multidimensional API according to demand for large mosaics and scientific data cubes. Each item
 must preserve pure-Rust/default WebAssembly builds, add real-data comparisons to the GDAL

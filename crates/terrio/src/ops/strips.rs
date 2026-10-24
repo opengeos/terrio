@@ -71,7 +71,7 @@ impl StripWriter {
         if let Some(tiff) = Tiff::create(header, path, options)? {
             let mut aux = std::ffi::OsString::from(path);
             aux.push(".aux.xml");
-            let nodata_pam = (crate::dataset::needs_nodata_pam(header) || std::path::Path::new(&aux).exists())
+            let nodata_pam = (crate::dataset::needs_nodata_pam(header) || crate::memfs::exists(std::path::Path::new(&aux)))
                 .then(|| (1..=bands).map(|b| header.band_nodata(b)).collect());
             let inner = {
                 #[cfg(not(target_family = "wasm"))]
@@ -216,7 +216,7 @@ impl Tiff {
             return Ok(None);
         }
         // Compressions only wbraster encodes are written whole.
-        let Some(mut opts) = TiffOptions::from_write_options(options, cog, header.nodata())? else { return Ok(None) };
+        let Some(mut opts) = TiffOptions::from_write_options(options, cog, crate::dataset::tiff_nodata(header))? else { return Ok(None) };
         crate::dataset::ensure_writable_location(path)?;
         if !cog {
             return Ok(Some(Self::GeoTiff(GeoTiffWriter::create(path, header, options)?)));
@@ -520,7 +520,12 @@ mod tests {
     #[test]
     fn streamed_tiff_keeps_per_band_and_raw_float_nodata() {
         let dir = tempfile::tempdir().unwrap();
-        for (label, nodata) in [("different", vec![Some(-101.), Some(-202.)]), ("decimal", vec![Some(0.1), Some(0.1)])] {
+        for (label, nodata) in [
+            ("different", vec![Some(-101.), Some(-202.)]),
+            ("decimal", vec![Some(0.1), Some(0.1)]),
+            ("first-only", vec![Some(-101.), None]),
+            ("second-only", vec![None, Some(-202.)]),
+        ] {
             let mut source = crate::ops::build_raster(
                 crate::ops::Grid { width: 2, height: 1, geo_transform: [0., 1., 0., 1., 0., -1.] },
                 vec![vec![1., 2.], vec![3., 4.]],
@@ -538,6 +543,11 @@ mod tests {
             let mut opened = crate::open_raster_lazy(path.to_str().unwrap()).unwrap();
             assert_eq!(opened.read().unwrap().band_nodata, nodata);
             assert_eq!(opened.read().unwrap().raster.data.to_f64_vec(), source.raster.data.to_f64_vec());
+            let whole = dir.path().join(format!("{label}-whole.tif"));
+            crate::write_raster_dataset(&source, whole.to_str().unwrap(), &Default::default()).unwrap();
+            let mut opened = crate::open_raster_lazy(whole.to_str().unwrap()).unwrap();
+            assert_eq!((1..=2).map(|band| opened.band_nodata(band)).collect::<Vec<_>>(), nodata);
+            assert_eq!(opened.read().unwrap().band_nodata, nodata);
         }
     }
 }
