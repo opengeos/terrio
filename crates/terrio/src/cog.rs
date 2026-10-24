@@ -449,8 +449,9 @@ impl LazyRaster {
         };
         let mut ds = RasterDataset::with_driver(raster, self.driver(), self.nodata().is_some());
         ds.band_nodata = (1..=self.band_count()).map(|b| self.band_nodata(b)).collect();
-        ds.has_nodata = ds.band_nodata.first().copied().flatten().is_some();
-        ds.raster.nodata = ds.band_nodata.first().copied().flatten().unwrap_or(-9999.);
+        let first_nodata = ds.band_nodata.first().copied().flatten();
+        ds.has_nodata = first_nodata.is_some();
+        ds.raster.nodata = first_nodata.unwrap_or(-9999.);
         ds.set_geo_transform(self.geo_transform());
         ds
     }
@@ -564,8 +565,9 @@ impl LazyRaster {
         let raster = crate::pixel::raster_from_data(cfg, data)?;
         let (x, y) = (window.x as f64, window.y as f64);
         let mut ds = RasterDataset::with_driver(raster, self.driver(), has_nodata);
-        ds.has_nodata = band_nodata.first().copied().flatten().is_some();
-        ds.raster.nodata = band_nodata.first().copied().flatten().unwrap_or(-9999.);
+        let first_nodata = band_nodata.first().copied().flatten();
+        ds.has_nodata = first_nodata.is_some();
+        ds.raster.nodata = first_nodata.unwrap_or(-9999.);
         ds.band_nodata = band_nodata;
         ds.set_geo_transform([gt[0] + x * gt[1] + y * gt[2], gt[1], gt[2], gt[3] + x * gt[4] + y * gt[5], gt[4], gt[5]]);
         Ok(ds)
