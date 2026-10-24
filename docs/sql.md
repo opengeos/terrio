@@ -58,8 +58,8 @@ division by zero). Use floating-point expressions for larger numeric ranges.
 
 Unordered projections iterate borrowed source features and can stop once the requested result
 limit is reached; summaries use constant accumulator memory except `COUNT(DISTINCT ...)`.
-`DISTINCT` stores seen values, `ORDER BY` stores sorted feature references, and joins scan
-secondary rows in source order. Existing file-based SQL entry points load their input layers;
+`DISTINCT` stores seen values, `ORDER BY` stores sorted feature references, and joins index
+secondary keys once, retaining the first row per matching key. Existing file-based SQL entry points load their input layers;
 chunked `FeatureStream` SQL is not supported. Ordinary streaming vector conversions retain
 their existing path.
 

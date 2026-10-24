@@ -27,6 +27,7 @@ __all__ = [
     "write_netcdf_groups",
     "write_vector",
     "convert",
+    "sql",
     "rasterize",
     "polygonize",
     "transform_points",

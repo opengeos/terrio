@@ -123,3 +123,40 @@ fn null_literal_has_ogr_string_type() {
     assert_eq!(out.features[0].attributes, vec![V::Null]);
     assert!(query(&data(), "SELECT 1+NULL FROM cities").is_err());
 }
+
+#[test]
+fn string_equality_and_ordering_follow_ogr_operator_rules() {
+    let out=query(&data(),"SELECT name='A' AS equal, name IN ('A') AS member, name<='A' AS ordered, name BETWEEN 'A' AND 'A' AS range FROM cities WHERE name='a' ORDER BY name DESC LIMIT 1").unwrap();
+    assert_eq!(out.features[0].attributes, vec![V::Integer(1), V::Integer(1), V::Integer(0), V::Integer(0)]);
+}
+
+#[test]
+fn indexed_joins_preserve_text_numeric_precision_and_first_match_semantics() {
+    let mut lhs = Layer::new("left_table");
+    let mut rhs = Layer::new("right_table");
+    for l in [&mut lhs, &mut rhs] {
+        l.schema.add_field(FieldDef::new("key", FieldType::Text));
+    }
+    rhs.schema.add_field(FieldDef::new("value", FieldType::Text));
+    let keys = [V::Integer(9_007_199_254_740_993), V::Text("01".into()), V::Text("ALPHA".into()), V::Float(f64::NAN)];
+    for key in keys {
+        lhs.features.push(Feature { fid: 0, geometry: None, attributes: vec![key] });
+    }
+    for (key, name) in [
+        (V::Integer(9_007_199_254_740_992), "exact other integer"),
+        (V::Float(9_007_199_254_740_992.), "float coercion"),
+        (V::Integer(9_007_199_254_740_993), "exact integer later"),
+        (V::Integer(1), "numeric first"),
+        (V::Text("01".into()), "text later"),
+        (V::Text("alpha".into()), "case first"),
+        (V::Text("ALPHA".into()), "case later"),
+        (V::Float(f64::NAN), "nan"),
+    ] {
+        rhs.features.push(Feature { fid: 0, geometry: None, attributes: vec![key, V::Text(name.into())] });
+    }
+    let out = query(&[lhs, rhs], "SELECT b.value FROM left_table a LEFT JOIN right_table b ON a.key=b.key").unwrap();
+    assert_eq!(
+        out.features.iter().map(|f| f.attributes[0].clone()).collect::<Vec<_>>(),
+        vec![V::Text("float coercion".into()), V::Text("numeric first".into()), V::Text("case first".into()), V::Null]
+    );
+}

@@ -134,7 +134,7 @@ def compare_sql(data: Path, work: Path, terrio: Path) -> list[str]:
         ("computed integer", "SELECT ADMIN, POP_EST*2 AS doubled, POP_EST/3 AS third FROM countries LIMIT 20"),
         ("computed float", "SELECT ADMIN, POP_EST/1000000.0 AS millions FROM countries WHERE POP_EST>0 ORDER BY POP_EST DESC LIMIT 10"),
         ("computed predicate", "SELECT ADMIN, POP_EST>100000000 AS large FROM countries LIMIT 20"),
-        ("computed nulls", "SELECT amount*2 AS doubled, amount/2 AS half, label='FIRST' AS same FROM lookup"),
+        ("computed nulls", "SELECT amount*2 AS doubled, amount/2 AS half, label='FIRST' AS same, label<='FIRST' AS ordered, label BETWEEN 'FIRST' AND 'FIRST' AS range_value FROM lookup"),
         ("computed empty schema", "SELECT POP_EST*2 AS doubled FROM countries WHERE POP_EST<0"),
         ("distinct", "SELECT DISTINCT CONTINENT FROM countries ORDER BY CONTINENT DESC LIMIT 5"),
         ("distinct null and case", "SELECT DISTINCT continent FROM lookup ORDER BY continent"),

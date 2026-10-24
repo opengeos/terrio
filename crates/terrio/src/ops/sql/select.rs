@@ -151,6 +151,63 @@ fn key(v: &Value) -> String {
     }
 }
 
+// Separate numeric key classes preserve the evaluator's exact integer/integer comparison,
+// while integer/float and numeric-text comparisons deliberately use floating-point coercion.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum JoinKey {
+    Integer(i64),
+    IntegerAsFloat(u64),
+    Float(u64),
+    NumericText(u64),
+    Text(String),
+    Blob(Vec<u8>),
+}
+fn float_key(value: f64) -> Option<u64> {
+    (!value.is_nan()).then(|| if value == 0.0 { 0 } else { value.to_bits() })
+}
+fn join_keys(value: Value, indexing: bool) -> Vec<JoinKey> {
+    match value {
+        Value::Null => Vec::new(),
+        Value::Blob(b) => vec![JoinKey::Blob(b)],
+        Value::Int(i) => {
+            let numeric = float_key(i as f64).unwrap();
+            if indexing {
+                vec![JoinKey::Integer(i), JoinKey::IntegerAsFloat(numeric)]
+            } else {
+                vec![JoinKey::Integer(i), JoinKey::Float(numeric), JoinKey::NumericText(numeric)]
+            }
+        }
+        Value::Float(f) => match float_key(f) {
+            Some(n) if indexing => vec![JoinKey::Float(n)],
+            Some(n) => vec![JoinKey::IntegerAsFloat(n), JoinKey::Float(n), JoinKey::NumericText(n)],
+            None => Vec::new(),
+        },
+        Value::Text(text) => {
+            let mut keys = vec![JoinKey::Text(text.to_ascii_lowercase())];
+            if let Some(number) = text.trim().parse().ok().and_then(float_key) {
+                if indexing {
+                    keys.push(JoinKey::NumericText(number));
+                } else {
+                    keys.extend([JoinKey::IntegerAsFloat(number), JoinKey::Float(number)]);
+                }
+            }
+            keys
+        }
+    }
+}
+struct JoinPlan<'a> {
+    layer: &'a Layer,
+    primary_key: usize,
+    first: std::collections::HashMap<JoinKey, usize>,
+}
+impl JoinPlan<'_> {
+    fn lookup(&self, feature: &Feature) -> Option<&Feature> {
+        let value = feature.attributes.get(self.primary_key).map(Value::from_field).unwrap_or(Value::Null);
+        let index = join_keys(value, false).iter().filter_map(|key| self.first.get(key)).min()?;
+        self.layer.features.get(*index)
+    }
+}
+
 pub(crate) fn execute(layers: &[Layer], s: &Select, copy_limit: Option<usize>) -> Result<(Layer, Option<usize>)> {
     let layer = layers
         .iter()
@@ -185,7 +242,14 @@ pub(crate) fn execute(layers: &[Layer], s: &Select, copy_limit: Option<usize>) -
             def.name = format!("{qualifier}.{}", f.name);
             schema.add_field(def);
         }
-        joins.push((rhs, li, ri));
+        let mut first = std::collections::HashMap::new();
+        for (i, row) in rhs.features.iter().enumerate() {
+            let value = row.attributes.get(ri).map(Value::from_field).unwrap_or(Value::Null);
+            for key in join_keys(value, true) {
+                first.entry(key).or_insert(i);
+            }
+        }
+        joins.push(JoinPlan { layer: rhs, primary_key: li, first });
     }
     let summary = s.items.iter().any(|i| matches!(i, Item::Aggregate(..)));
     if summary && s.items.iter().any(|i| !matches!(i, Item::Aggregate(..))) {
@@ -324,16 +388,9 @@ pub(crate) fn execute(layers: &[Layer], s: &Select, copy_limit: Option<usize>) -
         } else {
             joined = Feature { fid: f.fid, geometry: None, attributes: f.attributes.clone() };
             joined.attributes.resize(layer.schema.len(), FieldValue::Null);
-            for (rhs, li, ri) in &joins {
-                let v = f.attributes.get(*li).map(Value::from_field).unwrap_or(Value::Null);
-                let matched = rhs.features.iter().find(|r| {
-                    let other = r.attributes.get(*ri).map(Value::from_field).unwrap_or(Value::Null);
-                    match (&v, &other) {
-                        (Value::Text(a), Value::Text(b)) => a.eq_ignore_ascii_case(b),
-                        _ => compare(&v, &other) == Some(Ordering::Equal),
-                    }
-                });
-                for i in 0..rhs.schema.len() {
+            for join in &joins {
+                let matched = join.lookup(f);
+                for i in 0..join.layer.schema.len() {
                     joined.attributes.push(matched.and_then(|r| r.attributes.get(i)).cloned().unwrap_or(FieldValue::Null));
                 }
             }
