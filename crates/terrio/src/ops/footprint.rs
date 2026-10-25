@@ -20,7 +20,7 @@ pub struct FootprintOptions {
     /// Emit one polygon feature per connected region instead of one multipolygon.
     pub singlepart: bool,
     /// Text fields copied to every output feature, in the supplied order.
-    /// Names must be nonempty and unique (case-insensitively).
+    /// Names must be nonempty, have no surrounding whitespace, and be unique (case-insensitively).
     pub attributes: Vec<(String, String)>,
 }
 
@@ -41,8 +41,8 @@ pub struct FootprintOptions {
 pub fn footprint(ds: &RasterDataset, options: &FootprintOptions) -> Result<Layer> {
     let mut names = std::collections::HashSet::new();
     for (name, _) in &options.attributes {
-        if name.trim().is_empty() || !names.insert(name.to_lowercase()) {
-            return Err(Error::InvalidArgument(format!("footprint attribute names must be nonempty and unique: '{name}'")));
+        if name.trim().is_empty() || name.trim() != name || !names.insert(name.to_lowercase()) {
+            return Err(Error::InvalidArgument(format!("footprint attribute names must be nonempty, unpadded and unique: '{name}'")));
         }
     }
     super::sample::check_raster(ds)?;

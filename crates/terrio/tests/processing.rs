@@ -327,7 +327,7 @@ fn footprint_singleparts_keep_holes_attributes_and_empty_schema() {
     assert_eq!(empty.schema.len(), 2);
     assert_eq!(empty.schema.fields()[0].name, "location");
     assert_eq!(empty.schema.fields()[1].name, "label");
-    for names in [vec![""], vec![" "], vec!["name", "NAME"]] {
+    for names in [vec![""], vec![" "], vec!["name "], vec![" name"], vec!["name", "NAME"]] {
         let options = FootprintOptions { attributes: names.into_iter().map(|n| (n.into(), "v".into())).collect(), ..Default::default() };
         assert!(footprint(&r, &options).is_err());
     }

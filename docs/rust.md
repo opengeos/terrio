@@ -159,7 +159,7 @@ their CRS and attributes. `ops::footprint::footprint` extracts an exact raster v
 footprint with `FootprintOptions` (bands, intersection, optional mask, `singlepart`, and
 `attributes: Vec<(String, String)>` for text fields copied to every feature). The Rust
 operation does not infer a source path from an in-memory raster; supply a `location`
-attribute explicitly when needed. Field names must be nonempty and unique ignoring case.
+attribute explicitly when needed. Field names must be nonempty, have no surrounding whitespace, and be unique ignoring case.
 `ops::sample::sample` accepts a point layer and a slice of `SampleInput` values, each naming a
 raster, a band and an output field. It transforms points into each raster's CRS for sampling,
 retains their original geometries, and records missing samples as nulls. These operations are
