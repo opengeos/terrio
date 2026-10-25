@@ -457,11 +457,16 @@ WebAssembly (the `terrio-js` npm package):
 
 ## Standalone CRS crate (#268)
 
-- [ ] Extract `terrio-crs` in this workspace with its tables, standalone tests and
+- [x] Extract `terrio-crs` in this workspace with its tables, standalone tests and
       attribution, keeping `terrio::crs` compatible. Share grid configuration and
-      decoded caches; keep network transport optional and lazy.
+      decoded caches; keep network transport optional and lazy. Landed in #274.
 - [ ] Measure and reduce the standalone dependency footprint, retaining Terrio's
       existing projection coverage, and publish the crate with release wiring.
+- The portable table decoder also affects native Terrio, including CLI and Python:
+  measured first CRS use increases from about 10.6 ms to 17.9–18.1 ms. Repeated
+  calls remain about 3.4–3.7 µs. This initialization tradeoff removes the duplicate
+  table-decoder dependency; TIFF codecs remain supported. See
+  [the measurement report](docs/crs-footprint.md#native-first-use-cost).
 - Missing geocentric, PROJJSON, IAU and additional projection capabilities are
   scoped separately in #269–#272.
 
