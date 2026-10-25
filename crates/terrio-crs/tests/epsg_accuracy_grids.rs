@@ -16,8 +16,8 @@ fn epsg_transformations_with_grids_match_gdal() {
         eprintln!("{} has no grids: run scripts/fetch_test_data.sh", grids.display());
         return;
     }
-    terrio::crs::set_grid_search_paths(Some(vec![grids]));
-    terrio::crs::set_network_enabled(Some(false));
+    terrio_crs::set_grid_search_paths(Some(vec![grids]));
+    terrio_crs::set_network_enabled(Some(false));
     let Some((fwd, inv, cross)) = epsg_common::check("epsg_points_grids.tsv") else { return };
     // Regression guards, counting CRSs (pairs from CRS to CRS) whose every point is within the
     // distance. With GDAL 3.12.2 and PROJ 9.8.1 and 50 points of each kind per CRS, every point

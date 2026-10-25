@@ -1,4 +1,4 @@
-"""Writes `crates/terrio/tests/data/world_projections.tsv`: PROJ's coordinates for the spherical
+"""Writes `crates/terrio-crs/tests/data/world_projections.tsv`: PROJ's coordinates for the spherical
 world projections terrio ports from PROJ (Robinson, the Winkels, Gall, Foucaut sinusoidal...).
 
 Usage:
@@ -17,7 +17,7 @@ from pathlib import Path
 import numpy as np
 import pyproj
 
-OUT = Path(__file__).resolve().parent.parent / "crates" / "terrio" / "tests" / "data" / "world_projections.tsv"
+OUT = Path(__file__).resolve().parent.parent / "crates" / "terrio-crs" / "tests" / "data" / "world_projections.tsv"
 
 FIGURES = {
     "+R=6371000": "+proj=longlat +R=6371000 +no_defs",

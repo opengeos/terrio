@@ -25,4 +25,14 @@ fn geoid_read_by_range_from_the_cdn() {
     }
     let fetched = terrio::http::fetch_stats().bytes - before.bytes;
     assert!(fetched < 5_000_000, "{fetched} bytes fetched of the 80 MB grid");
+    // Direct standalone users see the same grid configuration and decoded block cache.
+    let cached = terrio::http::fetch_stats().bytes;
+    let direct = terrio_crs::Transformer::new(
+        &terrio_crs::SpatialRef::parse("EPSG:4979").unwrap(),
+        &terrio_crs::SpatialRef::parse("EPSG:4326+3855").unwrap(),
+    )
+    .unwrap();
+    assert!((direct.transform_3d(-105.27, 40.01, 1700.0).unwrap().2 - 1715.8606414245605).abs() < 1e-9);
+    assert_eq!(terrio::http::fetch_stats().bytes, cached, "standalone caller fetched a second copy of a cached grid");
+    eprintln!("remote EGM2008 grid: {fetched} bytes fetched; standalone cached query: 0 additional bytes");
 }

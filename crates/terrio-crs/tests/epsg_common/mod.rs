@@ -6,7 +6,7 @@
 
 use std::collections::HashMap;
 use std::fmt::Write as _;
-use terrio::crs::{SpatialRef, Transformer};
+use terrio_crs::{SpatialRef, Transformer};
 
 /// The errors of one kind of check, one per CRS (or pair of CRSs): the largest over its points,
 /// in metres, `None` when terrio could not transform one of them.

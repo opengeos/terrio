@@ -1,6 +1,6 @@
 """Generate terrio's EPSG table from GDAL and PROJ.
 
-Writes ``crates/terrio/data/epsg.tsv.zst``, a zstd-compressed text table with these lines:
+Writes ``crates/terrio-crs/data/epsg.tsv.zst``, a zstd-compressed text table with these lines:
 
 - ``O<TAB>id<TAB>west,south,east,north<TAB>accuracy<TAB>flags<TAB>steps<TAB>name<TAB>steps accuracy<TAB>steps area``: a datum
   transformation, as the geodetic steps of the PROJ pipeline GDAL uses (``cart ellps=intl;helmert
@@ -81,7 +81,7 @@ osr.UseExceptions()
 gdal.PushErrorHandler("CPLQuietErrorHandler")
 warnings.simplefilter("ignore")
 
-OUT = os.path.join(os.path.dirname(__file__), "..", "crates", "terrio", "data", "epsg.tsv.zst")
+OUT = os.path.join(os.path.dirname(__file__), "..", "crates", "terrio-crs", "data", "epsg.tsv.zst")
 
 # Steps of a PROJ pipeline that belong to the datum transformation; the others convert units,
 # swap axes or (un)project, which terrio does from the CRS's own definition.

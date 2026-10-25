@@ -265,6 +265,9 @@ mod tests {
 
     #[test]
     fn reprojects_nad83_like_ogr2ogr() {
+        // The reference was generated without datum grids, regardless of the host's setup.
+        crate::crs::set_grid_search_paths(Some(Vec::new()));
+        crate::crs::set_network_enabled(Some(false));
         // ogr2ogr -s_srs EPSG:4269 -t_srs EPSG:32613 of POINT (-106.001666667 40.001666667) gives
         // POINT (414499.347197613 4428422.65095327): NAD83 to WGS 84 is a null transformation.
         let mut layer = Layer::new("p");
@@ -277,6 +280,8 @@ mod tests {
 
     #[test]
     fn reprojects_with_units_and_keeps_heights() {
+        crate::crs::set_grid_search_paths(Some(Vec::new()));
+        crate::crs::set_network_enabled(Some(false));
         // ogr2ogr -s_srs EPSG:2263 -t_srs EPSG:4326: US survey feet in, degrees out.
         let mut layer = Layer::new("p");
         layer.set_crs_epsg(Some(2263));

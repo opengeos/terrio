@@ -19,6 +19,7 @@ all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
 [dependencies]
+terrio-crs.workspace = true
 wbraster.workspace = true
 wbvector.workspace = true
 wbprojection.workspace = true
@@ -93,7 +94,7 @@ cad = ["dep:acadrust"]
 ## GeoParquet, the `arrow` module and Arrow streams of vector layers.
 parquet = ["dep:parquet", "dep:arrow-array", "dep:arrow-schema", "dep:arrow-ipc", "dep:arrow-buffer", "dep:bytes", "wbvector/geoparquet"]
 ## HTTP(S), S3, GCS and Azure inputs, range reads of remote COGs and STAC (native builds only).
-remote = ["dep:ureq", "dep:hmac", "dep:sha2"]
+remote = ["dep:ureq", "dep:hmac", "dep:sha2", "terrio-crs/grid-transport"]
 ## AVIF tiles of PMTiles and MBTiles archives.
 avif = ["tiles", "dep:rusty_av1d"]
 ## NetCDF, HDF5 and HDF-EOS reading, netCDF writing.

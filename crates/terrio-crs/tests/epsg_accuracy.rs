@@ -10,8 +10,8 @@ mod epsg_common;
 #[test]
 fn epsg_transformations_match_gdal() {
     // The reference uses no grid, whatever is installed: neither does terrio.
-    terrio::crs::set_grid_search_paths(Some(Vec::new()));
-    terrio::crs::set_network_enabled(Some(false));
+    terrio_crs::set_grid_search_paths(Some(Vec::new()));
+    terrio_crs::set_network_enabled(Some(false));
     let Some((fwd, inv, cross)) = epsg_common::check("epsg_points.tsv") else { return };
     // Regression guards, counting CRSs (pairs of CRSs from CRS to CRS) whose every point is
     // within the distance. With GDAL 3.12.2 and PROJ 9.8.1 (which generated the EPSG table, as

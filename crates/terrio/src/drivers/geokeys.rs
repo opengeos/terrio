@@ -320,7 +320,7 @@ pub(crate) fn user_keys(crs: &crate::crs::SpatialRef, name: &str) -> Option<GeoK
     }
     // A WKT: its PROJ string as terrio reads it, on the EPSG geographic CRS it is identified on.
     if let Some(p) = crs.wkt.as_deref().and_then(crate::crs::wkt_proj) {
-        let geog = crate::crs::Def::new(crs).ok().and_then(|d| d.geog());
+        let geog = crs.geographic_code();
         return keys_for_proj(&p, name, geog);
     }
     crs.to_wbp().ok().and_then(|c| keys_for_crs(&c, name))

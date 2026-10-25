@@ -5,7 +5,7 @@
 //! (`osr.CoordinateTransformation`, GDAL 3.12.2 and PROJ 9.8.1, without grids), as
 //! `scripts/compare_chains_with_proj.py` computes them.
 
-use terrio::crs::{SpatialRef, Transformer};
+use terrio_crs::{SpatialRef, Transformer};
 
 /// Moves a point from one EPSG CRS to another, with no grid to be found.
 fn moved(src: u32, dst: u32, x: f64, y: f64) -> (f64, f64) {
@@ -13,8 +13,8 @@ fn moved(src: u32, dst: u32, x: f64, y: f64) -> (f64, f64) {
     NO_GRIDS.call_once(|| {
         // An empty directory of this process, kept for its tests.
         let empty = tempfile::tempdir().unwrap().keep();
-        terrio::crs::set_grid_search_paths(Some(vec![empty]));
-        terrio::crs::set_network_enabled(Some(false));
+        terrio_crs::set_grid_search_paths(Some(vec![empty]));
+        terrio_crs::set_network_enabled(Some(false));
     });
     let (s, d) = (SpatialRef::from_epsg(src).unwrap(), SpatialRef::from_epsg(dst).unwrap());
     Transformer::new(&s, &d).unwrap().transform(x, y).unwrap()

@@ -1,6 +1,6 @@
 """Compare terrio's transformations between vertical CRSs with PROJ's.
 
-For each pair of ``crates/terrio/data/epsg_vertical.tsv.zst`` and a point inside each of its
+For each pair of ``crates/terrio-crs/data/epsg_vertical.tsv.zst`` and a point inside each of its
 transformations' areas, transforms a height between the compound CRSs ``EPSG:4326+source`` and
 ``EPSG:4326+target`` with ``terrio crs`` and with pyproj (network access on, for the grids), and
 reports the pairs whose heights differ by more than a micrometre.
@@ -15,7 +15,7 @@ import sys
 import pyproj
 from pyproj import Transformer
 
-TABLE = os.path.join(os.path.dirname(__file__), "..", "crates", "terrio", "data", "epsg_vertical.tsv.zst")
+TABLE = os.path.join(os.path.dirname(__file__), "..", "crates", "terrio-crs", "data", "epsg_vertical.tsv.zst")
 TOLERANCE = 1e-6
 
 

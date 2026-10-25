@@ -46,6 +46,17 @@ impl From<wbprojection::ProjectionError> for Error {
     }
 }
 
+impl From<terrio_crs::Error> for Error {
+    fn from(error: terrio_crs::Error) -> Self {
+        match error {
+            terrio_crs::Error::Crs(message) => Self::Crs(message),
+            terrio_crs::Error::InvalidArgument(message) => Self::InvalidArgument(message),
+            terrio_crs::Error::Io(error) => Self::Io(error),
+            other => Self::Crs(other.to_string()),
+        }
+    }
+}
+
 impl From<zip::result::ZipError> for Error {
     fn from(e: zip::result::ZipError) -> Self {
         Error::InvalidData(format!("zip: {e}"))

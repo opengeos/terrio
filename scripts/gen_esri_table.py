@@ -1,6 +1,6 @@
 """Generate terrio's ESRI table from GDAL and PROJ.
 
-Writes ``crates/terrio/data/esri.tsv.zst``, a zstd-compressed text table of the geographic (2D
+Writes ``crates/terrio-crs/data/esri.tsv.zst``, a zstd-compressed text table of the geographic (2D
 and 3D) and projected CRSs of PROJ's ESRI authority (``ESRI:54009``, ``ESRI:102003``), in the
 format of the EPSG table's ``O`` and ``C`` lines (see ``scripts/gen_epsg_table.py``): the
 datum transformations to WGS 84 GDAL uses for them, then each CRS with its name, the EPSG codes
@@ -27,7 +27,7 @@ from gen_epsg_table import gis_axis, normalize_proj, transformations  # noqa: E4
 from osgeo import gdal, osr  # noqa: E402
 from pyproj.enums import PJType  # noqa: E402
 
-OUT = os.path.join(os.path.dirname(__file__), "..", "crates", "terrio", "data", "esri.tsv.zst")
+OUT = os.path.join(os.path.dirname(__file__), "..", "crates", "terrio-crs", "data", "esri.tsv.zst")
 
 
 def esri_codes():

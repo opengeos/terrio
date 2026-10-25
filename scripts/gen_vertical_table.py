@@ -1,4 +1,4 @@
-"""Generate crates/terrio/data/epsg_vertical.tsv.zst, the transformations between EPSG vertical CRSs.
+"""Generate crates/terrio-crs/data/epsg_vertical.tsv.zst, the transformations between EPSG vertical CRSs.
 
 The table lists, for each ordered pair of EPSG vertical CRSs that the EPSG dataset connects
 directly or through one intermediate vertical CRS, the transformations PROJ lists between them
@@ -35,7 +35,7 @@ import pyproj
 sys.path.insert(0, os.path.dirname(__file__))
 import gen_epsg_table as epsg  # noqa: E402
 
-OUT = os.path.join(os.path.dirname(__file__), "..", "crates", "terrio", "data", "epsg_vertical.tsv.zst")
+OUT = os.path.join(os.path.dirname(__file__), "..", "crates", "terrio-crs", "data", "epsg_vertical.tsv.zst")
 
 
 def vertical_pairs():

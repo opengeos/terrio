@@ -9,7 +9,7 @@ Rust crates terrio's packages and binaries are built with are in LICENSE-THIRD-P
 PROJ
 -------------------------------------------------------------------------------
 
-The map projections, ellipsoid helpers and datum grid interpolation in crates/terrio/src/crs/
+The map projections, ellipsoid helpers and datum grid interpolation in crates/terrio-crs/src/
 are ported from PROJ (https://proj.org).
 The Mollweide and Wagner IV/V formulas follow src/projections/moll.cpp at PROJ commit
 5fa31c29f0a806568ed7bc76c1a557604db4a804.
@@ -124,7 +124,7 @@ vendors (https://github.com/PDAL/PDAL/tree/master/filters/private/csf), after Zh
 EPSG Geodetic Parameter Dataset
 -------------------------------------------------------------------------------
 
-crates/terrio/data/epsg.tsv.zst and crates/terrio/data/datums.tsv.zst are derived from the EPSG
+crates/terrio-crs/data/epsg.tsv.zst and crates/terrio-crs/data/datums.tsv.zst are derived from the EPSG
 Geodetic Parameter Dataset (https://epsg.org), copyright the International Association of Oil &
 Gas Producers (IOGP), through PROJ's database and GDAL. They are redistributed under the EPSG
 terms of use (https://epsg.org/terms-of-use.html), with this attribution. They are not the EPSG
@@ -134,7 +134,7 @@ Dataset itself, and terrio is not endorsed by IOGP.
 Esri projection engine data
 -------------------------------------------------------------------------------
 
-crates/terrio/data/esri.tsv.zst, and the ESRI datum names in crates/terrio/data/datums.tsv.zst,
+crates/terrio-crs/data/esri.tsv.zst, and the ESRI datum names in crates/terrio-crs/data/datums.tsv.zst,
 are derived, through PROJ's database, from Esri's projection engine documentation
 (https://github.com/Esri/projection-engine-db-doc), modified.
 
@@ -337,5 +337,5 @@ The versioned Float32 slope and standard hillshade arithmetic in
 crates/terrio/src/ops/dem.rs follows apps/gdaldem_lib.cpp from GDAL 3.13.3
 (https://github.com/OSGeo/gdal), under the MIT permission and warranty terms above.
 Copyright (c) 2006, 2009 Matthew Perry; Copyright (c) 2009-2013 Even Rouault.
-The authalic-q calculation in crates/terrio/src/crs/math.rs follows
+The authalic-q calculation in crates/terrio-crs/src/math.rs follows
 src/latitudes.cpp from PROJ 9.9, under PROJ's MIT terms reproduced above.

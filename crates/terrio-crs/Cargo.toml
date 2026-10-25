@@ -1,0 +1,34 @@
+[package]
+name = "terrio-crs"
+version = "0.1.0"
+description = "Coordinate reference systems and transformations in Rust, with EPSG/ESRI tables and datum grids"
+readme = "README.md"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+authors.workspace = true
+keywords = ["gis", "geospatial", "crs", "projection", "coordinates"]
+categories = ["science::geo"]
+
+[dependencies]
+wbprojection.workspace = true
+geographiclib-rs.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+tiff.workspace = true
+ruzstd.workspace = true
+rayon.workspace = true
+
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
+tiff = { workspace = true, features = ["zstd"] }
+zstd.workspace = true
+
+[features]
+default = []
+# A transport supplied by an embedding application; no networking dependency.
+grid-transport = []
+
+[dev-dependencies]
+serde_json = { workspace = true, features = ["float_roundtrip"] }
+tempfile.workspace = true

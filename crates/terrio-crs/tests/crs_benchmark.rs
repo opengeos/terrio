@@ -3,7 +3,7 @@
 //! with longitude scaled by cos(latitude) at poles, as in the upstream benchmark. At an exact
 //! input pole, allow 1e-6 degrees: one last bit before asin can move PROJ's inverse by 8.5e-7°.
 
-use terrio::crs::{SpatialRef, Transformer};
+use terrio_crs::{SpatialRef, Transformer};
 
 fn check(id: &str) {
     let reference: serde_json::Value = serde_json::from_str(include_str!("data/crs_benchmark.json")).unwrap();

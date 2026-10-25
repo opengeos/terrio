@@ -23,7 +23,7 @@ formats terrio supports, and they made a C-free geospatial library in Rust a rea
 terrio measures itself against. Its commands, options and outputs follow GDAL's and PDAL's, and its
 tests compare its results with theirs, pixel for pixel and point for point.
 
-- The map projections in `crates/terrio/src/crs/` are ported from PROJ (MIT licence). The
+- The map projections in `crates/terrio-crs/src/` are ported from PROJ (MIT licence). The
   ellipsoidal gnomonic, as PROJ's, uses Charles Karney's geodesic algorithms, from
   [`geographiclib-rs`](https://crates.io/crates/geographiclib-rs) (MIT licence), a port of
   [GeographicLib](https://geographiclib.sourceforge.io).
@@ -38,12 +38,12 @@ tests compare its results with theirs, pixel for pixel and point for point.
 
 ## The EPSG dataset and Esri's projection data
 
-terrio's EPSG table and datum names (`crates/terrio/data/epsg.tsv.zst` and `datums.tsv.zst`) are
+terrio's EPSG table and datum names (`crates/terrio-crs/data/epsg.tsv.zst` and `datums.tsv.zst`) are
 derived from the [EPSG Geodetic Parameter Dataset](https://epsg.org), copyright the International
 Association of Oil & Gas Producers (IOGP), whose [terms of use](https://epsg.org/terms-of-use.html)
 permit their redistribution with this attribution.
 
-Its ESRI table (`crates/terrio/data/esri.tsv.zst`) and the ESRI datum names are derived, through
+Its ESRI table (`crates/terrio-crs/data/esri.tsv.zst`) and the ESRI datum names are derived, through
 PROJ's database, from Esri's
 [projection engine data](https://github.com/Esri/projection-engine-db-doc), copyright Esri,
 under the Apache License 2.0.

@@ -1,8 +1,8 @@
 name: Release
 
-# On version tags, publishes the Python wheels and source distribution to PyPI, the terrio and
-# terrio-cli crates to crates.io, and the WebAssembly package to npm, and attaches the Pyodide
-# wheel and the command-line binaries to the GitHub release. All three use trusted
+# On version tags, publishes Python wheels and a source distribution to PyPI, terrio-crs,
+# terrio and terrio-cli to crates.io, and WebAssembly to npm. Attaches the Pyodide wheel
+# and command-line binaries to the GitHub release. All three registries use trusted
 # publishing: no API tokens are stored, each registry trusts this workflow and its environment
 # (pypi, crates-io, npm). The artifacts are built by release-build.yml, which
 # release-dry-run.yml also runs for pull requests, without publishing. Then linux-packages.yml
@@ -93,12 +93,13 @@ jobs:
         id: auth
       # A version already on crates.io (such as a first release published by hand, before the
       # crates trusted this workflow) is skipped rather than failing the job.
-      - name: Publish terrio, then terrio-cli
+      - name: Publish terrio-crs, then terrio and terrio-cli
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
         run: |
-          version=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "terrio") | .version')
-          for crate in terrio terrio-cli; do
+          metadata=$(cargo metadata --no-deps --format-version 1)
+          for crate in terrio-crs terrio terrio-cli; do
+            version=$(echo "$metadata" | jq -r --arg crate "$crate" '.packages[] | select(.name == $crate) | .version')
             if curl -sf -A "terrio release (https://github.com/opengeos/terrio)" "https://crates.io/api/v1/crates/$crate/$version" > /dev/null; then
               echo "$crate $version is already on crates.io"
             else

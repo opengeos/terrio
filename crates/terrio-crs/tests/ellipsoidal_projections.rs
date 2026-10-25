@@ -5,7 +5,7 @@
 //! on WGS 84 and on a sphere, forward and inverse, against pyproj (PROJ 9.8.1), from the
 //! geographic CRS on the same ellipsoid, so that no datum transformation is involved.
 
-use terrio::crs::{SpatialRef, Transformer};
+use terrio_crs::{SpatialRef, Transformer};
 
 const WGS84_GEOG: &str = "+proj=longlat +ellps=WGS84 +no_defs";
 const SPHERE_GEOG: &str = "+proj=longlat +R=6371000 +no_defs";

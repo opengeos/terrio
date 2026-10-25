@@ -2,7 +2,7 @@
 
 For each projection PROJ has (117 of them, with typical parameters), on a sphere
 (``+R=6371000``) and on WGS 84 (``+ellps=WGS84``), writes to
-``crates/terrio/tests/data/proj_strings.tsv`` (checked by ``crates/terrio/tests/proj_strings.rs``
+``crates/terrio-crs/tests/data/proj_strings.tsv`` (checked by ``crates/terrio-crs/tests/proj_strings.rs``
 and ``python/tests/test_proj_strings.py``):
 
 - ``# case NAME EARTH``, then ``# proj STRING``: the PROJ string, ``+units=m +no_defs``;
@@ -30,7 +30,7 @@ import numpy as np
 import pyproj
 
 warnings.simplefilter("ignore")
-OUT = Path(sys.argv[1]) if len(sys.argv) > 1 else Path(__file__).resolve().parents[1] / "crates/terrio/tests/data/proj_strings.tsv"
+OUT = Path(sys.argv[1]) if len(sys.argv) > 1 else Path(__file__).resolve().parents[1] / "crates/terrio-crs/tests/data/proj_strings.tsv"
 
 # Every projection of PROJ's `proj -l`, with parameters typical of its use (none where its
 # defaults are the usual ones).

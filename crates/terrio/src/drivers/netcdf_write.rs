@@ -269,14 +269,6 @@ fn encode_value(t: DataType, v: f64) -> Option<Vec<u8>> {
     })
 }
 
-/// The definition of a rotated-pole CRS and its CF parameters (`grid_north_pole_latitude`,
-/// `grid_north_pole_longitude`, `north_pole_grid_longitude`).
-fn rotated_pole(s: &crate::crs::SpatialRef) -> Option<(crate::crs::Def, [f64; 3])> {
-    let d = crate::crs::Def::new(s).ok()?;
-    let pole = d.rotated_pole()?;
-    Some((d, pole))
-}
-
 /// The CF grid mapping of a CRS: the variable name (GDAL names it after the mapping, `crs` for
 /// geographic CRSs and those without a CF mapping) and its attributes.
 fn grid_mapping(s: &crate::crs::SpatialRef) -> (String, Vec<(String, Attr)>) {
@@ -294,11 +286,11 @@ fn grid_mapping(s: &crate::crs::SpatialRef) -> (String, Vec<(String, Attr)>) {
             attrs.push(d("semi_minor_axis", a * (1.0 - f)));
         }
     };
-    if let Some((def, [lat, lon, o_lon])) = rotated_pole(s) {
+    if let Some(([lat, lon, o_lon], a, es)) = s.rotated_pole_parameters() {
         name = "rotated_pole".into();
         attrs.push(("grid_mapping_name".into(), Attr::Text("rotated_latitude_longitude".into())));
         attrs.extend([d("grid_north_pole_latitude", lat), d("grid_north_pole_longitude", lon), d("north_pole_grid_longitude", o_lon)]);
-        ellipsoid(&mut attrs, def.ell.a, 1.0 - (1.0 - def.ell.es).sqrt());
+        ellipsoid(&mut attrs, a, 1.0 - (1.0 - es).sqrt());
     } else if let Ok(crs) = s.to_wbp() {
         let p = crs.projection.params();
         let (fe, fnn, lat0, lon0, k) = (p.false_easting, p.false_northing, p.lat0, p.lon0, p.scale);
@@ -516,7 +508,7 @@ fn raster_vars(r: &Raster, nodata: Option<f64>, version: Version) -> Result<Rast
     let crs = common::spatial_ref(&r.crs);
     let geographic = !crs.is_unknown() && crs.is_geographic();
     // A rotated-pole grid's axes are CF's grid longitude and latitude, in degrees.
-    let rotated = !geographic && rotated_pole(&crs).is_some();
+    let rotated = !geographic && crs.rotated_pole_parameters().is_some();
     let (xn, yn) = if geographic {
         ("lon", "lat")
     } else if rotated {

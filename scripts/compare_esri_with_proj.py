@@ -5,7 +5,7 @@ Transforms four points of each CRS's area of use from WGS 84 with terrio's Pytho
 with pyproj (no datum shift grid on either side), and reports, per PROJ projection, how many
 CRSs agree within a millimetre, how many differ (with the largest difference) and how many terrio
 refuses: the codes whose projection terrio does not compute as PROJ does
-(``ESRI_UNLIKE_PROJ`` in ``crates/terrio/src/crs.rs``) or not at all.
+(``ESRI_UNLIKE_PROJ`` in ``crates/terrio-crs/src/lib.rs``) or not at all.
 
 Usage:
     python scripts/compare_esri_with_proj.py
@@ -27,7 +27,7 @@ import pyproj
 import terrio
 
 warnings.simplefilter("ignore")
-TABLE = os.path.join(os.path.dirname(__file__), "..", "crates", "terrio", "data", "esri.tsv.zst")
+TABLE = os.path.join(os.path.dirname(__file__), "..", "crates", "terrio-crs", "data", "esri.tsv.zst")
 
 
 def points(crs):

@@ -15,6 +15,7 @@ authors = ["Qiusheng Wu <giswqs@gmail.com>"]
 # Memory-mapped reads of SQLite files (GeoPackage, MBTiles), native builds only.
 memmap2 = "0.9"
 terrio = { path = "crates/terrio", version = "0.5.0" }
+terrio-crs = { path = "crates/terrio-crs", version = "0.1.0" }
 # For the Python package (not published to crates.io), so without a version to keep in step.
 terrio-cli = { path = "crates/terrio-cli" }
 

@@ -34,7 +34,7 @@ operations GDAL uses for them (generated from GDAL and PROJ by `scripts/gen_epsg
 pure-Rust ports of the projections they need. For each of the 6,354 EPSG geographic and projected
 CRSs GDAL 3.12 transforms, transformations from and to WGS 84 agree with GDAL's within a
 centimetre, and 99 % of a sample of transformations between two CRSs within a metre (see
-`crates/terrio/tests/epsg_accuracy.rs`).
+`crates/terrio-crs/tests/epsg_accuracy.rs`).
 
 ## Command line
 
@@ -125,6 +125,10 @@ the Model Context Protocol: `claude mcp add terrio -- terrio mcp` (see
 [AI Agents](https://terrio.opengeos.org/mcp/)).
 
 ## Library
+
+For coordinate transformations without raster/vector I/O, use the standalone
+[`terrio-crs`](crates/terrio-crs/README.md) crate. Terrio uses the same engine
+through its existing `terrio::crs` interface.
 
 ```rust,no_run
 let ds = terrio::open("countries.gpkg")?;
@@ -295,6 +299,7 @@ TERRIO_TEST_DATA=../terrio-data cargo test --release --test epsg_accuracy -- --n
 | Path | Contents |
 |---|---|
 | `crates/terrio` | The library |
+| `crates/terrio-crs` | Standalone coordinate systems, transformations and datum grids |
 | `crates/terrio-cli` | The `terrio` command-line tool |
 | `python` | Python bindings (PyO3, NumPy), the `terrio` package on PyPI |
 | `js` | WebAssembly bindings (wasm-bindgen), the `terrio` package on npm |
@@ -344,13 +349,13 @@ anything that looks wrong.
 
 MIT
 
-terrio's EPSG table and datum names (`crates/terrio/data/epsg.tsv.zst`, `datums.tsv.zst`) are
+terrio's EPSG table and datum names (`crates/terrio-crs/data/epsg.tsv.zst`, `datums.tsv.zst`) are
 derived from the [EPSG Geodetic Parameter Dataset](https://epsg.org), copyright the International
 Association of Oil & Gas Producers (IOGP), whose [terms of use](https://epsg.org/terms-of-use.html)
 permit their redistribution with this attribution; its ESRI table (`esri.tsv.zst`) from Esri's
 [projection engine data](https://github.com/Esri/projection-engine-db-doc) (Apache-2.0). The
 tables were produced with [PROJ](https://proj.org) and [GDAL](https://gdal.org). The projection
-formulas in `crates/terrio/src/crs/` are ported from PROJ (MIT licence), and the cloth simulation
+formulas in `crates/terrio-crs/src/` are ported from PROJ (MIT licence), and the cloth simulation
 filter from CSF (Apache-2.0). [`NOTICE`](NOTICE) holds the notices of the code and data terrio
 adapts, and [`LICENSE-THIRD-PARTY.md`](LICENSE-THIRD-PARTY.md) the licenses of the Rust crates
 it is built with.

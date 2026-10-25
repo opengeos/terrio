@@ -7,7 +7,7 @@
 
 use std::path::Path;
 
-use terrio::crs::{SpatialRef, Transformer};
+use terrio_crs::{SpatialRef, Transformer};
 
 /// A projected CRS and its points: longitude, latitude, PROJ's x and y (infinite where PROJ
 /// refuses the point) and PROJ's inverse of that x and y.

@@ -7,7 +7,7 @@
 //! searching the same grid directories, network off). `scripts/compare_crs_grids_with_gdal.py`
 //! compares many more points.
 
-use terrio::crs::{SpatialRef, TransformOptions, Transformer};
+use terrio_crs::{SpatialRef, TransformOptions, Transformer};
 
 /// Points the grid directories at the test data's, or `None` when the grids are missing.
 fn grids() -> Option<()> {
@@ -17,8 +17,8 @@ fn grids() -> Option<()> {
         eprintln!("the grids are missing: run scripts/fetch_test_data.sh");
         return None;
     }
-    terrio::crs::set_grid_search_paths(Some(vec![grids, legacy]));
-    terrio::crs::set_network_enabled(Some(false));
+    terrio_crs::set_grid_search_paths(Some(vec![grids, legacy]));
+    terrio_crs::set_network_enabled(Some(false));
     Some(())
 }
 

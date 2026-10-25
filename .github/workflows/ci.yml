@@ -88,14 +88,14 @@ jobs:
       - name: Documentation builds without warnings (missing docs included)
         env:
           RUSTDOCFLAGS: -D warnings
-        run: cargo doc -p terrio --no-deps
+        run: cargo doc -p terrio -p terrio-crs --no-deps
       - name: Doctests
-        run: cargo test -p terrio --doc
+        run: cargo test -p terrio -p terrio-crs --doc
       - name: The crate packages and verifies
-        run: cargo publish -p terrio --dry-run
+        run: cargo publish -p terrio-crs -p terrio --dry-run
       - name: The copies of LICENSE and NOTICE in the packages match the originals
         run: |
-          for f in python/LICENSE crates/terrio/LICENSE crates/terrio-cli/LICENSE; do cmp LICENSE "$f"; done
+          for f in python/LICENSE crates/terrio/LICENSE crates/terrio-cli/LICENSE crates/terrio-crs/LICENSE; do cmp LICENSE "$f"; done
           cmp NOTICE crates/terrio/NOTICE
       - name: The Python sdist carries the license
         working-directory: python
@@ -114,9 +114,14 @@ jobs:
         run: |
           cargo package --list -p terrio > terrio.list
           cargo package --list -p terrio-cli > terrio-cli.list
+          cargo package --list -p terrio-crs > terrio-crs.list
           grep -qx NOTICE terrio.list
           grep -qx LICENSE terrio.list
           grep -qx LICENSE terrio-cli.list
+          grep -qx LICENSE terrio-crs.list
+          grep -qx NOTICE terrio-crs.list
+          grep -qx data/epsg.tsv.zst terrio-crs.list
+          grep -qx data/esri.tsv.zst terrio-crs.list
 
   wasm:
     runs-on: ubuntu-latest

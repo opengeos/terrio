@@ -64,9 +64,9 @@ python scripts/conformance.py ../terrio-data --remote --strict     # remote COGs
 | Vector conversions | `scripts/compare_with_gdal.py --roundtrip` | files converted by terrio, read back by GDAL |
 | Streamed vector conversions | `scripts/compare_streams_with_gdal.py` | conversions read and written as streams vs the same conversions of whole layers (identical files) and read back by GDAL; with `--features N`, a synthetic layer converted by terrio and `ogr2ogr`, with time and peak memory |
 | rasterio API | `scripts/compare_rio_with_rasterio.py` | `terrio.rio` vs rasterio: metadata, reads, masks, writes read back by rasterio, features, warping, merging, masking, warped VRTs, rasterio's documentation examples, and `terrio-rio` against rasterio's `rio` command line (see [Coming from rasterio](rasterio.md)) |
-| Coordinate transformations | `crates/terrio/tests/epsg_accuracy.rs` | a point per EPSG CRS, forward, inverse and between CRSs, vs GDAL |
-| Chains through intermediate datums | `crates/terrio/tests/crs_chains.rs`, `scripts/compare_chains_with_proj.py` | every pair of EPSG geographic 2D CRSs on two datums no transformation links directly whose areas overlap, and a projected CRS of each datum, without and with grids, vs GDAL |
-| Datum shift grids, geoid models, epochs | `crates/terrio/tests/epsg_accuracy_grids.rs`, `crates/terrio/tests/crs_grids.rs`, `scripts/compare_crs_grids_with_gdal.py` | the same EPSG points with the grids of `scripts/proj_grids.txt`; random points through every grid (forward and inverse), legacy NTv2 and GTX files, NADCON5 and geocentric grids, compound CRSs and coordinate epochs, vs GDAL with the same grids |
+| Coordinate transformations | `crates/terrio-crs/tests/epsg_accuracy.rs` | a point per EPSG CRS, forward, inverse and between CRSs, vs GDAL |
+| Chains through intermediate datums | `crates/terrio-crs/tests/crs_chains.rs`, `scripts/compare_chains_with_proj.py` | every pair of EPSG geographic 2D CRSs on two datums no transformation links directly whose areas overlap, and a projected CRS of each datum, without and with grids, vs GDAL |
+| Datum shift grids, geoid models, epochs | `crates/terrio-crs/tests/epsg_accuracy_grids.rs`, `crates/terrio-crs/tests/crs_grids.rs`, `scripts/compare_crs_grids_with_gdal.py` | the same EPSG points with the grids of `scripts/proj_grids.txt`; random points through every grid (forward and inverse), legacy NTv2 and GTX files, NADCON5 and geocentric grids, compound CRSs and coordinate epochs, vs GDAL with the same grids |
 
 ## Results
 
@@ -190,10 +190,10 @@ profiles and the full validation matrix are unchanged.
 ### CRS benchmark regressions (#266, #268)
 
 ```sh
-cargo test -p terrio --no-default-features --test crs_benchmark
+cargo test -p terrio-crs --test crs_benchmark
 ```
 
-The fixture `crates/terrio/tests/data/crs_benchmark.json` retains the source
+The fixture `crates/terrio-crs/tests/data/crs_benchmark.json` retains the source
 revision and oracle environment from rust-proj-capability: revision
 `ddd9fac70ec370acd9651ebb8b46035207347ad5`, PROJ development version 9.10.0,
 commit `5fa31c29f0a806568ed7bc76c1a557604db4a804`, pyproj 3.8.0. This is the

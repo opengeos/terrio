@@ -11,7 +11,7 @@ import terrio
 
 REFERENCE = json.loads(
     (
-        Path(__file__).resolve().parents[2] / "crates/terrio/tests/data/crs_benchmark.json"
+        Path(__file__).resolve().parents[2] / "crates/terrio-crs/tests/data/crs_benchmark.json"
     ).read_text()
 )
 

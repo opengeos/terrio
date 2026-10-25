@@ -10,7 +10,7 @@ LICENSE-THIRD-PARTY.md`, from `about.toml`.
 ## Overview
 
 - Apache License 2.0 (265)
-- MIT License (73)
+- MIT License (74)
 - ISC License (19)
 - BSD 3-Clause "New" or "Revised" License (14)
 - BSD 2-Clause "Simplified" License (8)
@@ -9334,6 +9334,7 @@ Used by:
 
 - terrio (terrio's own crate)
 - terrio-cli (terrio's own crate)
+- terrio-crs (terrio's own crate)
 - terrio-py (terrio's own crate)
 
 ```text

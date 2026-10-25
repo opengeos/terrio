@@ -12,7 +12,7 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use terrio::crs::{SpatialRef, Transformer};
+use terrio_crs::{SpatialRef, Transformer};
 
 /// Projections terrio does not implement: their PROJ strings (and WKT) are refused.
 const UNSUPPORTED: &[&str] = &[
@@ -126,10 +126,10 @@ fn dlon(a: f64, b: f64) -> f64 {
 }
 
 /// Checks a CRS and its geographic CRS, as terrio reads them, against PROJ's points.
-fn outcome(crs: terrio::Result<SpatialRef>, geog: terrio::Result<SpatialRef>, points: &[[f64; 6]]) -> Outcome {
-    let tr = |a: &terrio::Result<SpatialRef>, b: &terrio::Result<SpatialRef>| match (a, b) {
+fn outcome(crs: terrio_crs::Result<SpatialRef>, geog: terrio_crs::Result<SpatialRef>, points: &[[f64; 6]]) -> Outcome {
+    let tr = |a: &terrio_crs::Result<SpatialRef>, b: &terrio_crs::Result<SpatialRef>| match (a, b) {
         (Ok(a), Ok(b)) => Transformer::new(a, b),
-        (Err(e), _) | (_, Err(e)) => Err(terrio::Error::Crs(e.to_string())),
+        (Err(e), _) | (_, Err(e)) => Err(terrio_crs::Error::Crs(e.to_string())),
     };
     let (fwd, inv) = match (tr(&geog, &crs), tr(&crs, &geog)) {
         (Ok(f), Ok(i)) => (f, i),
@@ -166,13 +166,13 @@ fn outcome(crs: terrio::Result<SpatialRef>, geog: terrio::Result<SpatialRef>, po
 }
 
 /// The PROJ string of a case, and its geographic CRS, as terrio reads them.
-fn from_proj(c: &Case) -> (terrio::Result<SpatialRef>, terrio::Result<SpatialRef>) {
+fn from_proj(c: &Case) -> (terrio_crs::Result<SpatialRef>, terrio_crs::Result<SpatialRef>) {
     let earth = if c.earth == "sphere" { "+R=6371000" } else { "+ellps=WGS84" };
     (SpatialRef::from_proj4(&c.encodings["proj"]), SpatialRef::from_proj4(&format!("+proj=longlat {earth} +no_defs")))
 }
 
 /// A case's WKT in an encoding, and its geographic CRS's, as terrio reads them.
-fn from_wkt(c: &Case, key: &str) -> Option<(terrio::Result<SpatialRef>, terrio::Result<SpatialRef>)> {
+fn from_wkt(c: &Case, key: &str) -> Option<(terrio_crs::Result<SpatialRef>, terrio_crs::Result<SpatialRef>)> {
     let wkt = c.encodings.get(key)?;
     let geog = c.encodings.get(&format!("{key}_geog"))?;
     Some((SpatialRef::parse(wkt), SpatialRef::parse(geog)))
@@ -242,7 +242,7 @@ fn own_wkt_reads_back_as_the_same_crs() {
         }
         let (crs, geog) = from_proj(c);
         let (Ok(crs), Ok(geog)) = (crs, geog) else { continue };
-        let back = |s: &SpatialRef| s.to_wkt().ok_or_else(|| terrio::Error::Crs("no WKT".into())).and_then(|w| SpatialRef::parse(&w));
+        let back = |s: &SpatialRef| s.to_wkt().ok_or_else(|| terrio_crs::Error::Crs("no WKT".into())).and_then(|w| SpatialRef::parse(&w));
         let listed = OWN_WKT_DIFFERS.iter().any(|&(n, _)| n == c.name);
         match outcome(back(&crs), back(&geog), &c.points) {
             Outcome::Matches if listed => fixed.push(format!("{} ({})", c.name, c.earth)),

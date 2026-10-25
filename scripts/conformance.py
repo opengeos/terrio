@@ -748,7 +748,7 @@ def epsg_cases(s, ctx, test, points, suffix=""):
     with tempfile.TemporaryDirectory() as tmp:
         report = os.path.join(tmp, "epsg.tsv")
         env = {"TERRIO_TEST_DATA": os.path.abspath(ctx.data), "TERRIO_EPSG_REPORT": report}
-        _code, out, err = run(["cargo", "test", "--release", "-p", "terrio", "--test", test, "--", "--nocapture"], env)
+        _code, out, err = run(["cargo", "test", "--release", "-p", "terrio-crs", "--test", test, "--", "--nocapture"], env)
         if not os.path.exists(report):
             s.error = tail(err or out)
             return False
@@ -781,7 +781,7 @@ def epsg_cases(s, ctx, test, points, suffix=""):
 
 
 def suite_crs(ctx):
-    """Every EPSG CRS's transformations against GDAL's (crates/terrio/tests/epsg_accuracy.rs)."""
+    """Every EPSG CRS's transformations against GDAL's (crates/terrio-crs/tests/epsg_accuracy.rs)."""
     s = Suite(
         "crs",
         "Coordinate transformations",
@@ -794,12 +794,12 @@ def suite_crs(ctx):
         "projections EPSG has no code for, against PROJ "
         "(crates/terrio/tests/geostationary.rs: points from nadir to near the limb, forward "
         "within 1 mm and inverse within 1e-8°, and points the satellite cannot see refused; "
-        "crates/terrio/tests/ellipsoidal_projections.rs: points over the globe on WGS 84 and on "
+        "crates/terrio-crs/tests/ellipsoidal_projections.rs: points over the globe on WGS 84 and on "
         "a sphere, forward within 1 mm and inverse within 1e-8°, and for the gnomonic points "
-        "beyond the horizon refused; crates/terrio/tests/proj_strings.rs: every PROJ projection "
+        "beyond the horizon refused; crates/terrio-crs/tests/proj_strings.rs: every PROJ projection "
         "with typical parameters, on WGS 84 and on a sphere, as a PROJ string and as pyproj's "
         "WKT1_GDAL and WKT2_2019, 20 points each, matching PROJ or refused; "
-        "crates/terrio/tests/crs_benchmark.rs: five 91-point graticules pinned to PROJ "
+        "crates/terrio-crs/tests/crs_benchmark.rs: five 91-point graticules pinned to PROJ "
         "9.10.0 development commit 5fa31c2, forward within 1 mm and inverse within "
         "1e-7 degrees with longitude weighted by cos(latitude) (1e-6 degrees at exact "
         "input poles for platform asin rounding); PROJ-refused inverse "
@@ -873,7 +873,7 @@ def proj_cases(s):
     """
     group = "PROJ definitions without an EPSG code"
     for file, tests in PROJ_CASES.items():
-        code, out, err = run(["cargo", "test", "--release", "-p", "terrio", "--test", file])
+        code, out, err = run(["cargo", "test", "--release", "-p", "terrio" if file == "geostationary" else "terrio-crs", "--test", file])
         first_case = len(s.cases)
         for test, description in tests.items():
             name, status, detail = (description, IDENTICAL, "") if isinstance(description, str) else description
@@ -895,7 +895,7 @@ def suite_crs_grids(ctx):
         "Datum shift grids, geoid models and coordinate epochs",
         "GDAL 3.12 and PROJ, with the same grids",
         "The EPSG reference points again, GDAL and terrio both using the grids of "
-        "`scripts/proj_grids.txt` (crates/terrio/tests/epsg_accuracy_grids.rs); then random "
+        "`scripts/proj_grids.txt` (crates/terrio-crs/tests/epsg_accuracy_grids.rs); then random "
         "points through every horizontal shift grid (NTv2 and GeoTIFF, forward and inverse), "
         "geoid models (GeoTIFF and GTX), NADCON5 and geocentric translation grids, compound CRSs "
         "and time-dependent transformations with coordinate epochs "

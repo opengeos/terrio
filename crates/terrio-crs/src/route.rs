@@ -1061,7 +1061,7 @@ fn step_names(op: &Op, reverse: bool) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::crs::{SpatialRef, Transformer};
+    use crate::{SpatialRef, Transformer};
 
     #[test]
     fn reports_the_successful_fallback_after_a_grid_pipeline_fails() {

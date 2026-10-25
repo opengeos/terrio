@@ -1,6 +1,6 @@
 """Generate the names of EPSG geodetic datums terrio identifies WKT datums by.
 
-Writes ``crates/terrio/data/datums.tsv.zst``, a zstd-compressed text table with lines
+Writes ``crates/terrio-crs/data/datums.tsv.zst``, a zstd-compressed text table with lines
 ``code<TAB>rank<TAB>name``: a name of the EPSG datum ``code``, from its official name and the
 name GDAL writes in WKT 1 (rank 0), its EPSG aliases (1), PROJ's (2), ESRI's (3: ``D_ETRS_1989``
 for ETRS89) and the former EPSG and ESRI ones (4), from PROJ's database (``alias_name``), and the
@@ -22,7 +22,7 @@ import subprocess
 
 import pyproj
 
-OUT = os.path.join(os.path.dirname(__file__), "..", "crates", "terrio", "data", "datums.tsv.zst")
+OUT = os.path.join(os.path.dirname(__file__), "..", "crates", "terrio-crs", "data", "datums.tsv.zst")
 
 # The rank of each source of aliases.
 RANKS = {"EPSG": 1, "PROJ": 2, "ESRI": 3, "EPSG_OLD": 4, "ESRI_OLD": 4}

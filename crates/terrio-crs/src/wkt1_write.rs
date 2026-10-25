@@ -107,7 +107,7 @@ pub(crate) fn from_proj(s: &str) -> Option<String> {
 /// A PROJ string as its WKT 1 describes it, for formats that describe CRSs by parameters
 /// (GeoTIFF's GeoKeys): its method and parameters (in degrees and its linear unit), its linear
 /// unit and datum.
-pub(crate) struct Described {
+pub struct Described {
     /// GDAL's WKT 1 method; `None` for a geographic CRS.
     pub method: Option<&'static str>,
     pub params: Vec<(&'static str, f64)>,
@@ -126,7 +126,7 @@ pub(crate) struct Described {
 
 /// The description of a PROJ string whose WKT 1 describes it whole (without the PROJ4
 /// extension), with east-north axes. `None` otherwise.
-pub(crate) fn describe(s: &str) -> Option<Described> {
+pub fn describe(s: &str) -> Option<Described> {
     let wkt = from_proj(s)?;
     if wkt.contains("EXTENSION[") {
         return None;
@@ -162,7 +162,7 @@ pub(crate) fn describe(s: &str) -> Option<Described> {
 /// identifies the datum), as GDAL reads GeoKeys that give the geographic CRS by its code. `None`
 /// when the code is not a geographic CRS of the EPSG table, or the WKT 1 needs the PROJ string to
 /// describe the projection.
-pub(crate) fn from_proj_on(s: &str, geog: u32) -> Option<String> {
+pub fn from_proj_on(s: &str, geog: u32) -> Option<String> {
     let e = epsg::get(geog).filter(|e| e.proj.starts_with("+proj=longlat"))?;
     let wkt = from_proj(s).filter(|w| w.starts_with("PROJCS[") && !w.contains("EXTENSION["))?;
     let start = wkt.find("GEOGCS[")?;
@@ -188,7 +188,7 @@ pub(crate) fn from_proj_on(s: &str, geog: u32) -> Option<String> {
 }
 
 /// The ellipsoid of an EPSG geographic CRS, as PROJ parameters.
-pub(crate) fn epsg_ellipsoid(geog: u32) -> Option<String> {
+pub fn epsg_ellipsoid(geog: u32) -> Option<String> {
     let e = epsg::get(geog).filter(|e| e.proj.starts_with("+proj=longlat"))?;
     const ELLIPSOID: [&str; 6] = ["+ellps=", "+a=", "+b=", "+rf=", "+f=", "+R="];
     let tokens: Vec<&str> = e.proj.split_whitespace().filter(|t| ELLIPSOID.iter().any(|p| t.starts_with(p))).collect();

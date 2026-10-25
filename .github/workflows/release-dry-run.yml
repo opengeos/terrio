@@ -25,10 +25,10 @@ jobs:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      # Both crates at once, so terrio-cli is verified against the terrio being released rather
+      # All three crates at once, so terrio-cli is verified against the terrio being released rather
       # than the version on crates.io.
-      - name: Package and verify terrio and terrio-cli
-        run: cargo publish --dry-run --locked -p terrio -p terrio-cli
+      - name: Package and verify terrio-crs, terrio and terrio-cli
+        run: cargo publish --dry-run --locked -p terrio-crs -p terrio -p terrio-cli
 
   # LICENSE-THIRD-PARTY.md, which the packages ship, lists the dependencies being released.
   licenses:

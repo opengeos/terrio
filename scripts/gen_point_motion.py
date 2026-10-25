@@ -1,4 +1,4 @@
-"""Generate crates/terrio/data/point_motion.tsv, the point motion operations of EPSG datums.
+"""Generate crates/terrio-crs/data/point_motion.tsv, the point motion operations of EPSG datums.
 
 A point motion operation moves coordinates of a CRS from one coordinate epoch to another with a
 velocity model, such as the Canada velocity grid of NAD83(CSRS). For each datum the EPSG dataset
@@ -24,7 +24,7 @@ import pyproj
 sys.path.insert(0, os.path.dirname(__file__))
 import gen_epsg_table as epsg  # noqa: E402
 
-OUT = os.path.join(os.path.dirname(__file__), "..", "crates", "terrio", "data", "point_motion.tsv")
+OUT = os.path.join(os.path.dirname(__file__), "..", "crates", "terrio-crs", "data", "point_motion.tsv")
 
 
 def main():

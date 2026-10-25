@@ -245,7 +245,7 @@ test("CRS transforms", () => {
 });
 
 test("CRS benchmark projection regressions", () => {
-  const reference = JSON.parse(readFileSync(new URL("../../crates/terrio/tests/data/crs_benchmark.json", import.meta.url), "utf8"));
+  const reference = JSON.parse(readFileSync(new URL("../../crates/terrio-crs/tests/data/crs_benchmark.json", import.meta.url), "utf8"));
   for (const p of reference.projections) {
     const definition = p.proj + (p.id === "wintri" ? ` +lat_1=${Math.acos(2 / Math.PI) * 180 / Math.PI}` : "");
     const forward = p.points.flatMap((ll, i) => p.fwd[i] === null ? [] : [{ ll, xy: p.fwd[i], inv: p.inv[i] }]);

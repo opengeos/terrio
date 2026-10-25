@@ -1,8 +1,8 @@
 """The WKT terrio writes for every PROJ projection it implements, read back by PROJ (#134).
 
-The cases and PROJ's reference points are those of ``crates/terrio/tests/proj_strings.rs``
-(``crates/terrio/tests/data/proj_strings.tsv``, from ``scripts/gen_proj_string_points.py``): each
-PROJ string terrio accepts is written as WKT by terrio, read by pyproj, and PROJ's coordinates
+The cases and PROJ's reference points are those of ``crates/terrio-crs/tests/proj_strings.rs``
+(``crates/terrio-crs/tests/data/proj_strings.tsv``, from ``scripts/gen_proj_string_points.py``):
+each PROJ string terrio accepts is written as WKT by terrio, read by pyproj, and PROJ's coordinates
 from that WKT compared with PROJ's from the PROJ string, within 1 mm. Known differences, none
 since #124, are listed in ``KNOWN_DIFFERENCES``.
 """
@@ -17,7 +17,7 @@ import terrio.rio as rio
 
 pyproj = pytest.importorskip("pyproj")
 
-DATA = Path(__file__).resolve().parents[2] / "crates/terrio/tests/data/proj_strings.tsv"
+DATA = Path(__file__).resolve().parents[2] / "crates/terrio-crs/tests/data/proj_strings.tsv"
 
 # PROJ strings whose WKT, as terrio writes it, PROJ reads as another CRS or refuses, by
 # projection; both figures unless a figure is given. None since #124.

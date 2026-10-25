@@ -13,14 +13,14 @@ use std::collections::HashMap;
 use std::io::Read;
 use std::sync::{Arc, OnceLock};
 
-static DATA: &[u8] = include_bytes!("../../data/epsg.tsv.zst");
-static ESRI_DATA: &[u8] = include_bytes!("../../data/esri.tsv.zst");
+static DATA: &[u8] = include_bytes!("../data/epsg.tsv.zst");
+static ESRI_DATA: &[u8] = include_bytes!("../data/esri.tsv.zst");
 /// Transformations between EPSG vertical CRSs (`scripts/gen_vertical_table.py`).
-static VERTICAL_DATA: &[u8] = include_bytes!("../../data/epsg_vertical.tsv.zst");
+static VERTICAL_DATA: &[u8] = include_bytes!("../data/epsg_vertical.tsv.zst");
 
 /// The names and aliases of EPSG datums, generated from PROJ by `scripts/gen_datum_names.py`:
 /// `code<TAB>rank<TAB>name` lines.
-static DATUM_NAMES: &[u8] = include_bytes!("../../data/datums.tsv.zst");
+static DATUM_NAMES: &[u8] = include_bytes!("../data/datums.tsv.zst");
 
 /// An EPSG (or ESRI) CRS of the table.
 #[derive(Debug)]

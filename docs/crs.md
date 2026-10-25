@@ -22,7 +22,7 @@ Everywhere a CRS is expected (`--t-srs`, `--a-srs`, `terrio crs`, the APIs), ter
 
 Of PROJ's 117 projections, terrio computes 86 as PROJ does (within 1 mm, on a sphere and on WGS 84,
 as PROJ strings with typical parameters and as pyproj's WKT1 and WKT2 of them:
-`crates/terrio/tests/proj_strings.rs`) and refuses the 31 others (`airy`, `bacon`, `igh`, `nsper`,
+`crates/terrio-crs/tests/proj_strings.rs`) and refuses the 31 others (`airy`, `bacon`, `igh`, `nsper`,
 `tpers`, `vandg2` and others) rather than computing something else. The known difference is
 Krovak off Bessel's ellipsoid, where PROJ's inverse is not the inverse of its forward.
 
@@ -44,6 +44,46 @@ forms, and other WKT2 deriving conversions, are errors.
 
 Coordinates are always in GIS order: x (easting, longitude) first, then y (northing, latitude),
 whatever the axis order the authority defines.
+
+## Standalone Rust crate
+
+Applications that only need coordinate systems can depend on `terrio-crs` rather
+than Terrio's raster/vector library:
+
+```rust
+use terrio_crs::{SpatialRef, Transformer};
+
+let source = SpatialRef::parse("EPSG:4326")?;
+let target = SpatialRef::parse("EPSG:32613")?;
+let transform = Transformer::new(&source, &target)?;
+let (easting, northing) = transform.transform(-105.0, 40.0)?;
+# Ok::<(), terrio_crs::Error>(())
+```
+
+| Configuration | Behavior |
+|---|---|
+| Default | EPSG/ESRI tables, WKT and PROJ strings, projections, datum operations, epochs, and local or registered grids; offline |
+| `grid-transport` (native) | An application supplies `network::GridTransport` with seekable readers; the engine retains lazy TIFF block decoding |
+| Terrio's `remote` feature | Supplies Terrio's existing HTTP range reader, request controls and cache to the shared engine |
+| WebAssembly | Register grid bytes with `register_grid`; the host handles network access |
+
+The transformation implementation and embedded tables live in
+`crates/terrio-crs`. `terrio::crs` retains its existing structs, public fields,
+methods, `terrio::Error` results, and raster/vector conversion methods. Owned
+`SpatialRef` values convert between the two crates with `From`/`Into`.
+The standalone crate returns its own `terrio_crs::Error`.
+
+Grid registration, search paths, network configuration and decoded-grid caches
+are shared by both interfaces in a process. Setting a custom standalone transport
+before using Terrio preserves that transport. Network access remains controlled
+by the settings described below. Direct callers retrieve diagnostics with
+`terrio_crs::take_warnings()`, while Terrio continues to use
+`terrio::warnings::take()`. A custom transformer warning handler is also available.
+
+The extraction preserves the existing `wbprojection` fallback and grid codecs.
+Dependency reduction and measurements are tracked separately in
+[#268](https://github.com/opengeos/terrio/issues/268). The new crate does not add
+geocentric, PROJJSON, IAU or additional projection support by itself.
 
 ## Identification
 
@@ -93,7 +133,7 @@ prime meridian). NAD27 to ITRF92, for instance, goes through NAD83(2011) (PROJ's
 the NADCON5 grids), ITRF2008 and ITRF2014. NAD83 and WGS 84 are treated as equivalent, as GDAL's
 default operations do. Bounds are transformed with densified edges, so curved edges in the target
 CRS are covered. `scripts/gen_epsg_points.py` writes GDAL's results for every EPSG CRS, which
-`crates/terrio/tests/epsg_accuracy.rs` checks terrio against (see the
+`crates/terrio-crs/tests/epsg_accuracy.rs` checks terrio against (see the
 [conformance report](conformance.md)).
 
 ### Datum shift grids
@@ -170,7 +210,7 @@ TERRIO_NETWORK=ON terrio crs EPSG:4267+7968 --to EPSG:4267+5703 -105.27 40.01 17
 terrio crs EPSG:4258+5783 --to EPSG:4258+5785 13.4 52.5 100                       # DHHN92 to SNN76: 99.856
 ```
 
-These are listed in `crates/terrio/data/epsg_vertical.tsv.zst` (`scripts/gen_vertical_table.py`)
+These are listed in `crates/terrio-crs/data/epsg_vertical.tsv.zst` (`scripts/gen_vertical_table.py`)
 and compared with PROJ by `scripts/compare_vertical_with_proj.py`: of 732 points over the 604
 pairs, 727 have PROJ's heights to the micrometre; the other 5 (EVRF2000 Austria, where PROJ chains
 the horizontal transformations of some concatenations in its own way) differ by 0.3 mm to 1 cm.
@@ -223,7 +263,7 @@ compares random points through every grid of `scripts/proj_grids.txt`, legacy NT
 geoid models, compound CRSs and epochs: 250 cases, 50,000 points, the largest difference 0.02 mm).
 For every EPSG CRS, GDAL's reference points computed with those grids
 (`gen_epsg_points.py --grids`, 50 points of each kind per CRS spread over its area of use,
-checked by `crates/terrio/tests/epsg_accuracy_grids.rs`) are matched within 1 cm forward and
+checked by `crates/terrio-crs/tests/epsg_accuracy_grids.rs`) are matched within 1 cm forward and
 inverse; from CRS to CRS, every point of 6,291 of the 6,295 pairs is within 1 cm and of 6,294
 within 1 m: the other is a deprecated CRS whose own datum PROJ uses (#153).
 

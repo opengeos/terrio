@@ -2847,6 +2847,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "tempfile",
+ "terrio-crs",
  "thiserror 2.0.21",
  "tiff",
  "ureq",
@@ -2871,6 +2872,22 @@ dependencies = [
  "serde_json",
  "tempfile",
  "terrio",
+]
+
+[[package]]
+name = "terrio-crs"
+version = "0.1.0"
+dependencies = [
+ "geographiclib-rs",
+ "rayon",
+ "ruzstd 0.9.1",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tiff",
+ "wbprojection",
+ "zstd 0.14.3",
 ]
 
 [[package]]

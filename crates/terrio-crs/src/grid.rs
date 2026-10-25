@@ -105,7 +105,7 @@ type Block = (usize, Vec<f64>);
 enum GridReader {
     Bytes(Cursor<Arc<[u8]>>),
     #[cfg(remote)]
-    Remote(crate::http::RangeReader),
+    Remote(Box<dyn crate::network::GridStream>),
 }
 
 impl std::io::Read for GridReader {
@@ -917,7 +917,7 @@ fn download_whole() -> bool {
 #[cfg(remote)]
 fn open_remote(name: &str) -> Result<GridFile, bool> {
     let url = cdn_url(name).ok_or(true)?;
-    let reader = crate::http::RangeReader::open(&crate::http::Remote::Url(url)).map_err(|e| e.to_string().contains("status 404"))?;
+    let reader = crate::network::open(&url).map_err(|e| e.kind() == std::io::ErrorKind::NotFound)?;
     read_tiff(GridReader::Remote(reader)).ok_or(false)
 }
 
@@ -927,7 +927,7 @@ fn download(name: &str) -> Option<Arc<[u8]>> {
     let dir = cache_dir()?;
     std::fs::create_dir_all(&dir).ok()?;
     let tmp = dir.join(format!("{name}.part{}", std::process::id()));
-    if crate::http::download(&crate::http::Remote::Url(url), &tmp).is_err() {
+    if crate::network::download(&url, &tmp).is_err() {
         let _ = std::fs::remove_file(&tmp);
         return None;
     }

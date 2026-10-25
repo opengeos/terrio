@@ -455,6 +455,16 @@ WebAssembly (the `terrio-js` npm package):
 - [ ] Additional CAD entities (splines, dimensions, meshes, ACIS solids) and acadrust's optional
       STL, COLLADA, OBJ, glTF/GLB and FBX importers.
 
+## Standalone CRS crate (#268)
+
+- [ ] Extract `terrio-crs` in this workspace with its tables, standalone tests and
+      attribution, keeping `terrio::crs` compatible. Share grid configuration and
+      decoded caches; keep network transport optional and lazy.
+- [ ] Measure and reduce the standalone dependency footprint, retaining Terrio's
+      existing projection coverage, and publish the crate with release wiring.
+- Missing geocentric, PROJJSON, IAU and additional projection capabilities are
+  scoped separately in #269–#272.
+
 ## Decisions
 
 - The core API is synchronous and reads datasets into memory; remote files are downloaded first.
@@ -468,7 +478,7 @@ WebAssembly (the `terrio-js` npm package):
   through `object_store`, to keep the API synchronous and the dependencies small.
 - GeoPackage is read and written by terrio's own SQLite file reader and writer (pure Rust): no
   C dependency, and files written in one go.
-- terrio carries its own EPSG table (`crates/terrio/data/epsg.tsv.zst`, about 220 KB, generated
+- terrio carries its own EPSG table (`crates/terrio-crs/data/epsg.tsv.zst`, about 220 KB, generated
   from GDAL and PROJ by `scripts/gen_epsg_table.py`): the PROJ strings of the CRSs, their WKT and
   the datum transformations GDAL lists for them, so that terrio picks the same transformation as
   GDAL for each point. The projection formulas are PROJ's, ported to Rust; `wbprojection` remains
