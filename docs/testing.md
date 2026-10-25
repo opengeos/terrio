@@ -187,6 +187,38 @@ profiles and the full validation matrix are unchanged.
 
 ## Benchmark harness regressions
 
+### CRS benchmark regressions (#266, #268)
+
+```sh
+cargo test -p terrio --no-default-features --test crs_benchmark
+```
+
+The fixture `crates/terrio/tests/data/crs_benchmark.json` retains the source
+revision and oracle environment from rust-proj-capability: revision
+`ddd9fac70ec370acd9651ebb8b46035207347ad5`, PROJ development version 9.10.0,
+commit `5fa31c29f0a806568ed7bc76c1a557604db4a804`, pyproj 3.8.0. This is the
+projection-suite operation oracle; the upstream CRS study uses a separate frozen
+PROJ 9.9.0 oracle without grids.
+
+Five 91-point graticules check Mollweide, Wagner IV/V, oblique ellipsoidal
+orthographic and explicit-parallel Winkel Tripel. Forward tolerance is 1 mm;
+inverse tolerance is 1e-7 degrees with longitude weighted by cos(latitude), or
+1e-6 degrees at exact input poles (one last bit before asin moves Wagner IV
+latitude by 8.5e-7 degrees between native/WASM math implementations).
+Where PROJ refuses its own valid forward result at a pole or map boundary,
+Terrio may refuse too or recover the original point within that tolerance.
+The orthographic inverse uses an analytic ray–ellipsoid intersection and can
+recover visible poles where the reference iteration fails. Additional round-trip
+checks cover seven origins, three figures, local scales/rotations and false
+offsets (1e-5 degrees at the ill-conditioned limb); outside-limb queries fail.
+The five oracle comparisons are registered in the `crs` conformance suite.
+
+PROJ's Mollweide iteration leaves a small nonzero x at the pole (112.5 m at
+longitude -180 on a 6,371 km sphere). Terrio preserves this reference behavior;
+this is not a claim of mathematical exactness. Winkel Tripel retains the CRS
+default `lat_1=0`; an explicit `lat_1=acos(2/pi)` in degrees is used to compare
+with the operation oracle. The separate default test guards this distinction.
+
 With GDAL's Python bindings and NumPy available, run:
 
 ```sh

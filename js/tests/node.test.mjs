@@ -244,6 +244,24 @@ test("CRS transforms", () => {
   assert.equal(crs.geographic, false);
 });
 
+test("CRS benchmark projection regressions", () => {
+  const reference = JSON.parse(readFileSync(new URL("../../crates/terrio/tests/data/crs_benchmark.json", import.meta.url), "utf8"));
+  for (const p of reference.projections) {
+    const definition = p.proj + (p.id === "wintri" ? ` +lat_1=${Math.acos(2 / Math.PI) * 180 / Math.PI}` : "");
+    const forward = p.points.flatMap((ll, i) => p.fwd[i] === null ? [] : [{ ll, xy: p.fwd[i], inv: p.inv[i] }]);
+    const [xs, ys] = terrio.transformPoints(forward.map((p) => p.ll[0]), forward.map((p) => p.ll[1]), p.geographic, definition);
+    forward.forEach((q, i) => assert.ok(Math.hypot(xs[i] - q.xy[0], ys[i] - q.xy[1]) < 1e-3, `${p.id} forward ${q.ll}`));
+    const inverse = forward.filter((p) => p.inv !== null);
+    const [lons, lats] = terrio.transformPoints(inverse.map((p) => p.xy[0]), inverse.map((p) => p.xy[1]), definition, p.geographic);
+    inverse.forEach((q, i) => {
+      const dlon = ((lons[i] - q.inv[0] + 540) % 360 - 180) * Math.cos(q.inv[1] * Math.PI / 180);
+      // One last bit before asin shifts the reference latitude at poles by 8.5e-7°.
+      const tolerance = Math.abs(q.ll[1]) === 90 ? 1e-6 : 1e-7;
+      assert.ok(Math.hypot(dlon, lats[i] - q.inv[1]) < tolerance, `${p.id} inverse ${q.ll}`);
+    });
+  }
+});
+
 test("CRS transforms with heights, epochs and grids", () => {
   // Heights are kept between 2D CRSs.
   const [, , zs] = terrio.transformPoints([0], [0], "EPSG:4326", "EPSG:3857", [100]);

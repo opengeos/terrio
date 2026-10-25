@@ -11,6 +11,7 @@
 use super::math::*;
 use super::params::Params;
 use crate::{Error, Result};
+use std::f64::consts::PI;
 
 /// A map projection's forward and inverse formulas.
 pub(crate) trait Proj: Send + Sync + std::fmt::Debug {
@@ -89,6 +90,7 @@ pub(crate) fn build(name: &str, s: &mut Setup<'_>) -> Result<Option<Box<dyn Proj
         "ortho" => Box::new(Ortho::new(s)),
         "geos" => Box::new(Geos::new(s)?),
         "robin" => Box::new(Robin),
+        "moll" | "wag4" | "wag5" => Box::new(Moll::new(name)),
         "wintri" => Box::new(Wintri::new(s)?),
         "wink1" => Box::new(Wink1 { cosphi1: s.p.angle("lat_ts").unwrap_or(0.0).cos() }),
         "wink2" => Box::new(Wink2 { cosphi1: s.p.angle("lat_1").unwrap_or(0.0).cos() }),
@@ -2626,7 +2628,6 @@ mod geodesic {
 #[derive(Debug)]
 struct Ortho {
     ell: Ell,
-    phi0: f64,
     sinph0: f64,
     cosph0: f64,
     nu0: f64,
@@ -2642,7 +2643,7 @@ impl Ortho {
         let nu0 = 1.0 / (1.0 - es * sinph0 * sinph0).sqrt();
         let alpha = s.p.angle("alpha").unwrap_or(0.0);
         let k0 = s.k0;
-        Self { ell: s.ell, phi0: s.phi0, sinph0, cosph0, nu0, cos_alpha: alpha.cos(), sin_alpha: alpha.sin(), k0 }
+        Self { ell: s.ell, sinph0, cosph0, nu0, cos_alpha: alpha.cos(), sin_alpha: alpha.sin(), k0 }
     }
 }
 
@@ -2665,40 +2666,26 @@ impl Proj for Ortho {
     }
 
     fn inv(&self, x: f64, y: f64) -> Option<(f64, f64)> {
-        // Undo scale and rotation, then Newton's method on the forward formulas.
+        // Undo the local scale/rotation. In geocentric coordinates on the unit ellipsoid,
+        // x is the east component and y (less the origin shift) the north component.
+        // Intersect the line perpendicular to that plane with X² + Y² + Z²/(1-es) = 1.
+        // The nearer root has its ellipsoid normal facing the observer. Unlike an unbounded
+        // Newton iteration, this also works at visible poles and rejects points past the limb.
         let (x, y) = (x / self.k0, y / self.k0);
-        let xu = x * self.cos_alpha + y * self.sin_alpha;
-        let yu = -x * self.sin_alpha + y * self.cos_alpha;
-        let fwd = |lam: f64, phi: f64| -> (f64, f64) {
-            let es = self.ell.es;
-            let (sinphi, cosphi) = phi.sin_cos();
-            let nu = 1.0 / (1.0 - es * sinphi * sinphi).sqrt();
-            (
-                nu * cosphi * lam.sin(),
-                nu * (sinphi * self.cosph0 - cosphi * self.sinph0 * lam.cos()) + es * (self.nu0 * self.sinph0 - nu * sinphi) * self.cosph0,
-            )
-        };
-        let (mut lam, mut phi) = (xu, self.phi0 + yu);
-        for _ in 0..20 {
-            let (fx, fy) = fwd(lam, phi);
-            let h = 1e-9;
-            let (fxl, fyl) = fwd(lam + h, phi);
-            let (fxp, fyp) = fwd(lam, phi + h);
-            let (j11, j12, j21, j22) = ((fxl - fx) / h, (fxp - fx) / h, (fyl - fy) / h, (fyp - fy) / h);
-            let det = j11 * j22 - j12 * j21;
-            if det == 0.0 {
-                return None;
-            }
-            let (rx, ry) = (xu - fx, yu - fy);
-            let dl = (j22 * rx - j12 * ry) / det;
-            let dp = (-j21 * rx + j11 * ry) / det;
-            lam += dl;
-            phi += dp;
-            if dl.abs() < 1e-14 && dp.abs() < 1e-14 {
-                break;
-            }
+        let east = x * self.cos_alpha + y * self.sin_alpha;
+        let north = -x * self.sin_alpha + y * self.cos_alpha - self.ell.es * self.nu0 * self.sinph0 * self.cosph0;
+        let r = self.ell.one_es;
+        let a = self.cosph0 * self.cosph0 + self.sinph0 * self.sinph0 / r;
+        let b = self.sinph0 * self.cosph0 * north * (1.0 / r - 1.0);
+        let c = east * east + north * north * (self.sinph0 * self.sinph0 + self.cosph0 * self.cosph0 / r) - 1.0;
+        let disc = b * b - a * c;
+        if !disc.is_finite() || disc < -1e-11 {
+            return None;
         }
-        Some((lam, phi))
+        let toward = (-b + disc.max(0.0).sqrt()) / a;
+        let gx = self.cosph0 * toward - self.sinph0 * north;
+        let gz = self.sinph0 * toward + self.cosph0 * north;
+        Some((east.atan2(gx), gz.atan2(r * gx.hypot(east))))
     }
 }
 
@@ -2948,6 +2935,59 @@ impl Proj for Robin {
             return None;
         }
         Some((lam, if y < 0.0 { -phi } else { phi }))
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Mollweide and Wagner IV/V, ported from PROJ's moll.cpp. Keep PROJ's iteration limit and
+// step tolerance, including its finite approximation to the Mollweide pole.
+
+#[derive(Debug)]
+struct Moll {
+    cx: f64,
+    cy: f64,
+    cp: f64,
+}
+
+impl Moll {
+    fn new(name: &str) -> Self {
+        if name == "wag5" {
+            return Self { cx: 0.90977, cy: 1.65014, cp: 3.00896 };
+        }
+        let p = if name == "wag4" { PI / 3.0 } else { HALFPI };
+        let sp = p.sin();
+        let cp = 2.0 * p + (2.0 * p).sin();
+        let r = (2.0 * PI * sp / cp).sqrt();
+        Self { cx: 2.0 * r / PI, cy: r / sp, cp }
+    }
+}
+
+impl Proj for Moll {
+    fn fwd(&self, lam: f64, phi: f64) -> Option<(f64, f64)> {
+        let k = self.cp * phi.sin();
+        let mut theta = phi;
+        let mut converged = false;
+        for _ in 0..30 {
+            let step = (theta + theta.sin() - k) / (1.0 + theta.cos());
+            theta -= step;
+            if step.abs() < 1e-7 {
+                converged = true;
+                break;
+            }
+        }
+        theta = if converged { theta * 0.5 } else { HALFPI.copysign(theta) };
+        Some((self.cx * lam * theta.cos(), self.cy * theta.sin()))
+    }
+
+    fn inv(&self, x: f64, y: f64) -> Option<(f64, f64)> {
+        let theta = aasin_checked(y / self.cy)?;
+        let lam = x / (self.cx * theta.cos());
+        // PROJ excludes the antimeridian itself from this inverse's domain.
+        if lam.abs() >= PI {
+            return None;
+        }
+        let twice = 2.0 * theta;
+        Some((lam, aasin_checked((twice + twice.sin()) / self.cp)?))
     }
 }
 

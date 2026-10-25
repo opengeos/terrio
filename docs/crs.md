@@ -26,6 +26,15 @@ as PROJ strings with typical parameters and as pyproj's WKT1 and WKT2 of them:
 `tpers`, `vandg2` and others) rather than computing something else. The known difference is
 Krovak off Bessel's ellipsoid, where PROJ's inverse is not the inverse of its forward.
 
+Mollweide and Wagner IV/V use Terrio's own ports of PROJ's formulas, including
+PROJ's finite Mollweide pole approximation. The orthographic inverse intersects
+the viewing ray with the ellipsoid directly, including local scale and azimuth.
+For Winkel Tripel, an omitted `lat_1` means 0, as in PROJ's CRS model and GDAL;
+PROJ's bare operation instead defaults to `acos(2/pi)` (about 50.46°). Supply
+`lat_1` explicitly when comparing these paths. See the
+[CRS benchmark regressions](testing.md#crs-benchmark-regressions-266-268) for
+reference versions, tolerances and boundary differences.
+
 Rotated-pole grids (regional climate models: CORDEX, COSMO-CLM) are read as PROJ strings
 (`+proj=ob_tran +o_proj=longlat` with `+o_lat_p`, `+o_lon_p` and `+lon_0`), as the WKT2 derived
 geographic CRSs PROJ and GDAL write (the netCDF CF, GRIB and PROJ `ob_tran` pole rotations) and as

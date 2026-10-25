@@ -798,7 +798,12 @@ def suite_crs(ctx):
         "a sphere, forward within 1 mm and inverse within 1e-8°, and for the gnomonic points "
         "beyond the horizon refused; crates/terrio/tests/proj_strings.rs: every PROJ projection "
         "with typical parameters, on WGS 84 and on a sphere, as a PROJ string and as pyproj's "
-        "WKT1_GDAL and WKT2_2019, 20 points each, matching PROJ or refused). "
+        "WKT1_GDAL and WKT2_2019, 20 points each, matching PROJ or refused; "
+        "crates/terrio/tests/crs_benchmark.rs: five 91-point graticules pinned to PROJ "
+        "9.10.0 development commit 5fa31c2, forward within 1 mm and inverse within "
+        "1e-7 degrees with longitude weighted by cos(latitude) (1e-6 degrees at exact "
+        "input poles for platform asin rounding); PROJ-refused inverse "
+        "boundary points may be refused or recover the original input). "
         "Identical: within 1 mm. Within tolerance: within 1 cm (forward, inverse) or 1 m (CRS to "
         "CRS, where the datum transformations GDAL picks can differ by area of use). Known "
         "differences: deprecated CRSs whose own datum PROJ uses, where terrio uses their "
@@ -817,6 +822,13 @@ def suite_crs(ctx):
 
 # The PROJ definitions without an EPSG code that the tests check, by test file and test.
 PROJ_CASES = {
+    "crs_benchmark": {
+        "mollweide": "Mollweide: pinned PROJ 9.10 operation graticule, including the finite pole approximation",
+        "wagner_iv": "Wagner IV: pinned PROJ 9.10 operation graticule, including poles",
+        "wagner_v": "Wagner V: pinned PROJ 9.10 operation graticule, including poles",
+        "orthographic": "Orthographic: pinned PROJ 9.10 WGS84 oblique graticule, forward/inverse",
+        "winkel_tripel_explicit_parallel_matches_operation_oracle": "Winkel Tripel: explicit lat_1=acos(2/pi) against PROJ's operation default",
+    },
     "geostationary": {
         "goes16_sweep_x_matches_proj": "GOES-16: `+proj=geos +h=35786023 +lon_0=-75 +sweep=x +ellps=GRS80`",
         "seviri_sweep_y_matches_proj": "Meteosat SEVIRI: `+proj=geos +h=35785831 +lon_0=0 +sweep=y +a=6378169 +b=6356583.8`",
@@ -854,7 +866,10 @@ def proj_cases(s):
             if not m:
                 s.cases.append(Case(group, name, DIFFERS, "the test did not run: " + tail(err or out, 3)))
             elif m.group(1) == "ok":
-                s.cases.append(Case(group, name, IDENTICAL))
+                if file == "crs_benchmark":
+                    s.cases.append(Case(group, name, TOLERANCE, "forward <1 mm; inverse <1e-7 degrees, or 1e-6 at exact poles (longitude weighted by cos(latitude))"))
+                else:
+                    s.cases.append(Case(group, name, IDENTICAL))
             else:
                 s.cases.append(Case(group, name, DIFFERS, "differs from PROJ"))
 

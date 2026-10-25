@@ -11,6 +11,8 @@ PROJ
 
 The map projections, ellipsoid helpers and datum grid interpolation in crates/terrio/src/crs/
 are ported from PROJ (https://proj.org).
+The Mollweide and Wagner IV/V formulas follow src/projections/moll.cpp at PROJ commit
+5fa31c29f0a806568ed7bc76c1a557604db4a804.
 
   Copyright (c) 2000, Frank Warmerdam
   Copyright (c) 2004, Gerald I. Evenden
