@@ -89,6 +89,15 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
+      # Trusted publishing cannot create a crate before it has an owner/configuration.
+      # Bootstrap terrio-crs manually and configure its trusted publisher before a tag
+      # starts any uploads in this job. See docs/crs.md for the one-time setup.
+      - name: Verify terrio-crs has been bootstrapped
+        run: |
+          if ! curl --fail --silent --show-error -A "terrio release (https://github.com/opengeos/terrio)" https://crates.io/api/v1/crates/terrio-crs > /dev/null; then
+            echo "::error::Publish terrio-crs manually and configure its trusted publisher before tagging a release; see docs/crs.md. No crates have been uploaded by this job."
+            exit 1
+          fi
       - uses: rust-lang/crates-io-auth-action@v1
         id: auth
       # A version already on crates.io (such as a first release published by hand, before the
@@ -103,6 +112,8 @@ jobs:
             if curl -sf -A "terrio release (https://github.com/opengeos/terrio)" "https://crates.io/api/v1/crates/$crate/$version" > /dev/null; then
               echo "$crate $version is already on crates.io"
             else
+              # Cargo waits for index visibility before the next dependent crate:
+              # https://doc.rust-lang.org/cargo/commands/cargo-publish.html
               cargo publish -p "$crate" --locked
             fi
           done

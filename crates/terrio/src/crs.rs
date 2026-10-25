@@ -342,6 +342,17 @@ pub fn reset_grid_cache() {
 }
 
 fn initialize() {
+    // Every unit-test entry point uses the same no-grid reference context. Do this
+    // before constructing transformers, rather than changing shared state in
+    // individual tests that may run alongside another transformation.
+    #[cfg(test)]
+    {
+        static TEST_INIT: std::sync::Once = std::sync::Once::new();
+        TEST_INIT.call_once(|| {
+            terrio_crs::set_grid_search_paths(Some(Vec::new()));
+            terrio_crs::set_network_enabled(Some(false));
+        });
+    }
     #[cfg(remote)]
     {
         static INIT: std::sync::Once = std::sync::Once::new();
@@ -353,7 +364,14 @@ fn initialize() {
 struct GridTransport;
 #[cfg(remote)]
 fn transport_error(error: Error) -> std::io::Error {
-    let kind = if error.to_string().contains("status 404") { std::io::ErrorKind::NotFound } else { std::io::ErrorKind::Other };
+    // The HTTP layer currently exposes status errors as text. Match its terminal status,
+    // not arbitrary text in a URL or a non-HTTP error. The local-server regression below
+    // pins both open/download paths until HTTP errors carry a structured status.
+    let kind = if matches!(&error, Error::Http(message) if message.ends_with(": status 404")) {
+        std::io::ErrorKind::NotFound
+    } else {
+        std::io::ErrorKind::Other
+    };
     std::io::Error::new(kind, error)
 }
 #[cfg(remote)]
@@ -365,5 +383,36 @@ impl terrio_crs::network::GridTransport for GridTransport {
     }
     fn download(&self, url: &str, path: &std::path::Path) -> std::io::Result<()> {
         crate::http::download(&crate::http::Remote::Url(url.to_string()), path).map_err(transport_error)
+    }
+}
+
+#[cfg(all(test, remote))]
+mod transport_tests {
+    use super::*;
+    use std::io::{Read, Write};
+    use terrio_crs::network::GridTransport as _;
+
+    #[test]
+    fn grid_transport_preserves_missing_http_status() {
+        for (status, expected) in [(404, std::io::ErrorKind::NotFound), (403, std::io::ErrorKind::Other)] {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let url = format!("http://{}/grid.tif", listener.local_addr().unwrap());
+            let server = std::thread::spawn(move || {
+                for _ in 0..2 {
+                    let (mut stream, _) = listener.accept().unwrap();
+                    let mut request = [0; 4096];
+                    let _ = stream.read(&mut request).unwrap();
+                    write!(stream, "HTTP/1.1 {status} Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+                }
+            });
+            let error = GridTransport.open(&url).err().unwrap();
+            assert_eq!(error.kind(), expected);
+            let temporary = tempfile::tempdir().unwrap();
+            let error = GridTransport.download(&url, &temporary.path().join("grid.tif")).unwrap_err();
+            assert_eq!(error.kind(), expected);
+            server.join().unwrap();
+        }
+        assert_eq!(transport_error(Error::Http("http://host/status 404: status 403".into())).kind(), std::io::ErrorKind::Other);
+        assert_eq!(transport_error(Error::Crs("status 404".into())).kind(), std::io::ErrorKind::Other);
     }
 }

@@ -76,7 +76,12 @@ The standalone crate returns its own `terrio_crs::Error`.
 
 Grid registration, search paths, network configuration and decoded-grid caches
 are shared by both interfaces in a process. Setting a custom standalone transport
-before using Terrio preserves that transport. Network access remains controlled
+before using Terrio preserves that transport. Terrio installs its default HTTP
+transport lazily on the first CRS construction, transformation, grid registration
+or configuration call through `terrio::crs`; linking Terrio or calling only
+`reset_grid_cache()` does not install it. Direct `terrio_crs` callers should
+configure their own transport, or first call a Terrio CRS entry point such as
+`terrio::crs::set_network_enabled(None)`. Network access remains controlled
 by the settings described below. Direct callers retrieve diagnostics with
 `terrio_crs::take_warnings()`, while Terrio continues to use
 `terrio::warnings::take()`. A custom transformer warning handler is also available.
@@ -87,6 +92,21 @@ targets. TIFF grid codecs retain their previous features, including native Zstd.
 Dependency measurements and release work are tracked in
 [#268](https://github.com/opengeos/terrio/issues/268). The new crate does not add
 geocentric, PROJJSON, IAU or additional projection support by itself.
+
+### First publication and release workflow
+
+Before creating a Terrio release tag that includes this crate, publish the initial
+`terrio-crs` version from a verified checkout with `cargo publish -p terrio-crs
+--locked`. Then configure the crate's crates.io trusted publisher for repository
+`opengeos/terrio`, workflow `release.yml`, environment `crates-io`. This is a
+one-time owner action; subsequent versions use the release workflow. Its bootstrap
+check runs before registry authentication or uploads and fails with setup guidance
+if the crate is unavailable. Already published versions are skipped.
+
+The workflow publishes `terrio-crs`, then `terrio`, then `terrio-cli` using each
+package's own version. Cargo waits for index visibility between publications; a
+polling timeout requires checking registry state before attempting another upload.
+See [Cargo's publication behavior](https://doc.rust-lang.org/cargo/commands/cargo-publish.html).
 
 ## Identification
 
