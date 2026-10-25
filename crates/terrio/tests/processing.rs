@@ -211,9 +211,10 @@ fn area(layer: &Layer) -> f64 {
     layer
         .features
         .iter()
-        .map(|f| {
-            let Some(G::MultiPolygon(ps)) = &f.geometry else { panic!() };
-            ps.iter().map(|(e, hs)| ring_area(e) - hs.iter().map(ring_area).sum::<f64>()).sum::<f64>()
+        .map(|f| match &f.geometry {
+            Some(G::Polygon { exterior, interiors }) => ring_area(exterior) - interiors.iter().map(ring_area).sum::<f64>(),
+            Some(G::MultiPolygon(ps)) => ps.iter().map(|(e, hs)| ring_area(e) - hs.iter().map(ring_area).sum::<f64>()).sum::<f64>(),
+            _ => panic!(),
         })
         .sum()
 }
@@ -296,4 +297,38 @@ fn real_world_values_from_gdal() {
     dem.crs().apply_to_layer(&mut sites);
     let sampled = sample(&sites, &sample_inputs(&dem)).unwrap();
     assert_eq!(sampled.features[0].attributes[1], V::Float(69.76741790771484));
+}
+
+#[test]
+fn footprint_singleparts_keep_holes_attributes_and_empty_schema() {
+    let mut r = raster(5, 3, 1, &[1., 1., 1., 0., 1., 1., 0., 1., 0., 0., 1., 1., 1., 0., 0.], Some(0.));
+    r.raster.crs.epsg = Some(4326);
+    let options = FootprintOptions {
+        singlepart: true,
+        attributes: vec![("location".into(), "scene.tif".into()), ("label".into(), "a=b".into())],
+        ..Default::default()
+    };
+    let out = footprint(&r, &options).unwrap();
+    assert_eq!(out.geom_type, Some(terrio::GeometryType::Polygon));
+    assert_eq!(out.len(), 2);
+    assert_eq!(area(&out), 9.);
+    assert_eq!(out.crs_epsg(), Some(4326));
+    let mut holes = 0;
+    for (i, feature) in out.features.iter().enumerate() {
+        assert_eq!(feature.fid, i as u64 + 1);
+        assert_eq!(feature.attributes, vec![V::Text("scene.tif".into()), V::Text("a=b".into())]);
+        let Some(G::Polygon { interiors, .. }) = &feature.geometry else { panic!() };
+        holes += interiors.len();
+    }
+    assert_eq!(holes, 1);
+    let empty = footprint(&raster(1, 1, 1, &[0.], Some(0.)), &options).unwrap();
+    assert!(empty.is_empty());
+    assert_eq!(empty.geom_type, out.geom_type);
+    assert_eq!(empty.schema.len(), 2);
+    assert_eq!(empty.schema.fields()[0].name, "location");
+    assert_eq!(empty.schema.fields()[1].name, "label");
+    for names in [vec![""], vec![" "], vec!["name", "NAME"]] {
+        let options = FootprintOptions { attributes: names.into_iter().map(|n| (n.into(), "v".into())).collect(), ..Default::default() };
+        assert!(footprint(&r, &options).is_err());
+    }
 }

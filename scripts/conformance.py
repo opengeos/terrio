@@ -22,6 +22,7 @@ Suites:
     overviews         source overview selection and HTTP COG bytes vs gdalwarp -ovr
     dem-calc          dem, calc, proximity, sieve vs GDAL's tools (compare_dem_calc_with_gdal.py)
     vector-ops        ogr2ogr options, rasterize, polygonize (compare_vector_ops_with_gdal.py)
+    footprint         raster footprints, source/custom fields and singleparts vs GDAL
     topology          buffer, polygon overlay/dissolve, validity, repair and cleanup vs GEOS
     arrow             Arrow and GeoArrow export and import (compare_arrow_with_gdal.py)
     gpkg              GeoPackage updates and R-tree filters (compare_gpkg_with_gdal.py)
@@ -1107,6 +1108,29 @@ def suite_grib(ctx):
     return s
 
 
+def suite_footprint(ctx):
+    """Source attributes and multipart/singlepart footprints on real rasters."""
+    suite = Suite(
+        "footprint", "Raster footprints", "GDAL Footprint and OGR",
+        "DEM and Landsat footprints with added nodata gaps, union/intersection and multipart/singlepart, "
+        "written as Shapefiles. Feature counts, source paths, custom text and CRS must match; "
+        "symmetric-difference area <= max(1e-6, reference area * 1e-12).",
+    )
+    if missing_modules("osgeo"):
+        suite.skipped = "needs osgeo"
+        return suite
+    code, out, err = run([
+        sys.executable, str(SCRIPTS / "compare_processing_with_gdal.py"), ctx.data,
+        "--terrio", ctx.terrio, "--only-footprint",
+    ])
+    for line in out.splitlines():
+        if line.startswith("PASS "):
+            suite.cases.append(Case("footprint", line[5:].split(":", 1)[0], TOLERANCE, line.split(":", 1)[1].strip()))
+    if code != 0 or len(suite.cases) != 8:
+        suite.error = tail(err or out)
+    return suite
+
+
 def suite_topology(ctx):
     """Vector topology on real counties and roads against GDAL/GEOS."""
     s = Suite(
@@ -1186,6 +1210,7 @@ SUITES = OrderedDict(
         ("vector-ops", suite_vector_ops),
         ("multidim", suite_multidim),
         ("topology", suite_topology),
+        ("footprint", suite_footprint),
         ("arrow", suite_arrow),
         ("gpkg", suite_gpkg),
         ("streams", suite_streams),

@@ -156,7 +156,10 @@ options struct mirroring the command-line options.
 
 `ops::geometry::{centroids, singleparts, vertices}` transforms vector layers while preserving
 their CRS and attributes. `ops::footprint::footprint` extracts an exact raster valid-data
-footprint with `FootprintOptions` (bands, intersection, optional mask).
+footprint with `FootprintOptions` (bands, intersection, optional mask, `singlepart`, and
+`attributes: Vec<(String, String)>` for text fields copied to every feature). The Rust
+operation does not infer a source path from an in-memory raster; supply a `location`
+attribute explicitly when needed. Field names must be nonempty and unique ignoring case.
 `ops::sample::sample` accepts a point layer and a slice of `SampleInput` values, each naming a
 raster, a band and an output field. It transforms points into each raster's CRS for sampling,
 retains their original geometries, and records missing samples as nulls. These operations are

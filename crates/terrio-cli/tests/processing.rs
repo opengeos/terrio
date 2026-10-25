@@ -166,3 +166,41 @@ fn point_cloud_reprojection_rejects_coordinate_options_before_reading() {
     assert!(String::from_utf8_lossy(&output.stderr).contains("--ct-opt is not supported for point-cloud reprojection"));
     assert!(!dir.path().join("out.las").exists());
 }
+
+#[test]
+fn footprint_writes_source_and_custom_attributes_to_singlepart_shapefiles() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    let cfg = terrio::RasterConfig { cols: 2, rows: 2, data_type: terrio::DataType::F64, nodata: 0., ..Default::default() };
+    let mut ds = terrio::RasterDataset::new(terrio::Raster::from_data(cfg, vec![1., 0., 0., 1.]).unwrap(), true);
+    ds.raster.crs.epsg = Some(4326);
+    terrio::write_raster_dataset(&ds, d.join("scene.tif").to_str().unwrap(), &Default::default()).unwrap();
+    ok(&["footprint", "scene.tif", "parts.shp", "--singlepart", "--attribute", "label=a=b", "--attribute", "empty="], d);
+    let parts = first(&d.join("parts.shp"));
+    assert_eq!(parts.len(), 2);
+    assert_eq!(parts.crs_epsg(), Some(4326));
+    assert_eq!(parts.schema.fields().iter().map(|f| f.name.as_str()).collect::<Vec<_>>(), ["location", "label", "empty"]);
+    for feature in &parts.features {
+        assert_eq!(&feature.attributes[..2], &[terrio::FieldValue::Text("scene.tif".into()), terrio::FieldValue::Text("a=b".into())]);
+        assert!(matches!(feature.geometry, Some(terrio::Geometry::Polygon { .. })));
+    }
+    ok(&["footprint", "scene.tif", "multi.gpkg", "--location-field", "source"], d);
+    let multi = first(&d.join("multi.gpkg"));
+    assert_eq!(multi.len(), 1);
+    assert_eq!(multi.schema.fields()[0].name, "source");
+    assert_eq!(multi.features[0].attributes, [terrio::FieldValue::Text("scene.tif".into())]);
+    ok(&["footprint", "scene.tif", "bare.gpkg", "--no-location", "--attribute", "kind=test"], d);
+    assert_eq!(first(&d.join("bare.gpkg")).schema.len(), 1);
+    for extra in [
+        vec!["--attribute", "missing"],
+        vec!["--attribute", "=value"],
+        vec!["--attribute", "LOCATION=duplicate"],
+        vec!["--location-field", ""],
+    ] {
+        let mut args = vec!["footprint", "scene.tif", "bad.shp"];
+        args.extend(extra);
+        assert!(!run(&args, d).status.success());
+        assert!(!d.join("bad.shp").exists());
+        assert!(!d.join("bad.dbf").exists());
+    }
+}

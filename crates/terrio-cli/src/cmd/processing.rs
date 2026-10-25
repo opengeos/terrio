@@ -209,12 +209,36 @@ pub struct FootprintArgs {
     /// Include only finite, nonzero, non-nodata pixels of this mask's first band, on the input grid.
     #[arg(long, value_name = "RASTER")]
     mask: Option<String>,
+    /// Emit one polygon feature per connected region, preserving holes and attributes.
+    #[arg(long)]
+    singlepart: bool,
+    /// Add a text attribute to every feature (repeat for multiple fields).
+    #[arg(long = "attribute", value_name = "NAME=VALUE", value_parser = parse_footprint_attribute)]
+    attributes: Vec<(String, String)>,
+    /// Field holding the input path exactly as supplied.
+    #[arg(long, default_value = "location", conflicts_with = "no_location")]
+    location_field: String,
+    /// Omit the default source-path attribute.
+    #[arg(long)]
+    no_location: bool,
+}
+
+fn parse_footprint_attribute(value: &str) -> std::result::Result<(String, String), String> {
+    let (name, value) = value.split_once('=').ok_or("expected NAME=VALUE")?;
+    if name.trim().is_empty() {
+        return Err("attribute name must not be empty".into());
+    }
+    Ok((name.to_owned(), value.to_owned()))
 }
 
 pub fn footprint(a: FootprintArgs) -> Result<()> {
     let raster = super::quiet(|| terrio::open_raster(&a.input))?;
     let mask = a.mask.as_deref().map(|p| super::quiet(|| terrio::open_raster(p))).transpose()?;
-    let options = FootprintOptions { bands: a.bands, intersection: a.intersection, mask };
+    let mut attributes = a.attributes;
+    if !a.no_location {
+        attributes.insert(0, (a.location_field, a.input));
+    }
+    let options = FootprintOptions { bands: a.bands, intersection: a.intersection, mask, singlepart: a.singlepart, attributes };
     a.output.write(vec![terrio::ops::footprint::footprint(&raster, &options)?])
 }
 
