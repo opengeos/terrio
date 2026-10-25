@@ -1268,7 +1268,7 @@
     "workspace_tests": "passed",
     "workspace_clippy": "passed with -D warnings",
     "rust_library_tests": {
-      "passed": 483,
+      "passed": 484,
       "ignored": 1
     },
     "exact_gdal_conformance": {
@@ -1293,6 +1293,16 @@
       "windows": "passed",
       "workflow": "https://github.com/opengeos/terrio/actions/runs/40162521926",
       "scope": "Rust workspace tests and Clippy, including eight JPEG XL native roundtrips; not the unavailable vendor reproduction."
+    },
+    "projection_reference_tests": {
+      "mode": "release",
+      "real_fixture": "epsg_points.tsv",
+      "passed": {
+        "epsg_accuracy": 1,
+        "proj_string_wkt": 4,
+        "ellipsoidal_projections": 10
+      },
+      "criteria": "Existing reference tolerances unchanged: EPSG forward/inverse guards within 1 cm, CRS-to-CRS guards within 1 m, with the documented deprecated-CRS exception."
     }
   },
   "corrections": {

@@ -195,6 +195,10 @@ fn webp_encode(data: Vec<u8>, chunk: &ChunkInfo, options: &CodecParams) -> Resul
     if chunk.t != DataType::U8 || !matches!(chunk.spp, 3 | 4) {
         return Err(Error::Unsupported("WebP requires three or four interleaved Byte bands".into()));
     }
+    // Dimensions and sample count above bound this product to at most 1 GiB.
+    if data.len() != chunk.w * chunk.h * chunk.spp {
+        return Err(Error::InvalidData("WebP sample buffer length differs from chunk dimensions".into()));
+    }
     let mut rgba = if chunk.spp == 4 { data } else { data.as_chunks::<3>().0.iter().flat_map(|p| [p[0], p[1], p[2], 255]).collect() };
     // The pure Rust VP8 encoder accepts opaque RGB. Preserve alpha in the WebP
     // container's independent, uncompressed ALPH chunk instead of ignoring quality.
@@ -482,11 +486,19 @@ impl TiffOptions {
         let size = |key: &str| -> Result<Option<u32>> {
             co(key).map(|v| v.trim().parse::<u32>().map_err(|_| Error::InvalidArgument(format!("invalid {key} '{v}'")))).transpose()
         };
-        let overview_resampling = match options.overview_resampling.as_deref().or_else(|| co("RESAMPLING")) {
-            Some(method) => OverviewResampling::parse(method)?,
-            None if cog => OverviewResampling::Average,
-            None => OverviewResampling::Nearest,
+        let gdal_overviews = match co("COG_OVERVIEW_POLICY").map(str::to_ascii_uppercase).as_deref() {
+            None | Some("SOURCE") => false,
+            Some("GDAL_3_13") if cog => true,
+            Some(value) => {
+                return Err(Error::InvalidArgument(format!("invalid COG_OVERVIEW_POLICY '{value}' (SOURCE or GDAL_3_13 for COG)")));
+            }
         };
+        let overview_resampling =
+            match options.overview_resampling.as_deref().or_else(|| if gdal_overviews { co("RESAMPLING") } else { None }) {
+                Some(method) => OverviewResampling::parse(method)?,
+                None if cog => OverviewResampling::Average,
+                None => OverviewResampling::Nearest,
+            };
         let mut o = Self {
             compression,
             tile_size: options.tile_size,
@@ -494,6 +506,7 @@ impl TiffOptions {
             cog,
             nodata,
             overview_resampling,
+            gdal_overviews,
             band_metadata: options.band_metadata.clone(),
             color_table: options.color_table.clone(),
             geo_transform: options.geo_transform,
@@ -501,13 +514,6 @@ impl TiffOptions {
             mask: options.mask.clone(),
             rpc: options.rpc.clone(),
             ..Default::default()
-        };
-        o.gdal_overviews = match co("COG_OVERVIEW_POLICY").map(str::to_ascii_uppercase).as_deref() {
-            None | Some("SOURCE") => false,
-            Some("GDAL_3_13") if cog => true,
-            Some(value) => {
-                return Err(Error::InvalidArgument(format!("invalid COG_OVERVIEW_POLICY '{value}' (SOURCE or GDAL_3_13 for COG)")));
-            }
         };
         if cog {
             if let Some(b) = size("BLOCKSIZE")? {
@@ -2278,6 +2284,7 @@ impl GdalCogOverview {
         };
         self.emitted = end;
         let keep = if end == self.out_rows { self.rows } else { (end as f64 * ratio + 1e-8) as usize };
+        // end never decreases, and this window-start function is monotonic for the fixed ratio.
         let dropped = keep - self.start;
         self.pending = Some(slice_rows(&pending, self.pending_rows, dropped..self.pending_rows, self.cols, self.bands));
         self.pending_rows -= dropped;
@@ -3074,8 +3081,29 @@ mod tests {
     }
 
     #[test]
+    fn creation_option_resampling_is_scoped_to_gdal_cog_profile() {
+        for cog in [false, true] {
+            let mut options =
+                crate::RasterWriteOptions { creation_options: vec![("RESAMPLING".into(), "CUBIC".into())], ..Default::default() };
+            let actual = TiffOptions::from_write_options(&options, cog, None).unwrap().unwrap();
+            assert_eq!(actual.overview_resampling, if cog { OverviewResampling::Average } else { OverviewResampling::Nearest });
+            options.overview_resampling = Some("min".into());
+            assert_eq!(TiffOptions::from_write_options(&options, cog, None).unwrap().unwrap().overview_resampling, OverviewResampling::Min);
+        }
+        let mut options = crate::RasterWriteOptions {
+            creation_options: vec![("COG_OVERVIEW_POLICY".into(), "GDAL_3_13".into()), ("RESAMPLING".into(), "CUBIC".into())],
+            ..Default::default()
+        };
+        assert!(TiffOptions::from_write_options(&options, true, None).is_err());
+        options.creation_options[1].1 = "nearest".into();
+        assert_eq!(
+            TiffOptions::from_write_options(&options, true, None).unwrap().unwrap().overview_resampling,
+            OverviewResampling::Nearest
+        );
+    }
+
+    #[test]
     fn gdal_cog_pyramids_are_recursive_and_independent_of_slabs() {
-        let raster = overview_fixture(1, DataType::F32, RasterData::F32((0..65 * 35).map(|i| 777.0 + (i % 217) as f32 * 0.25).collect()));
         let opts = TiffOptions {
             cog: true,
             gdal_overviews: true,
@@ -3083,24 +3111,31 @@ mod tests {
             overview_resampling: OverviewResampling::Average,
             ..Default::default()
         };
-        let expected = encode(&raster, &opts).unwrap();
-        let lazy = crate::LazyRaster::from_tiff_bytes(expected.clone()).unwrap().unwrap();
-        assert_eq!(lazy.overviews(), [(32, 17), (16, 8)]);
-        let dir = tempfile::tempdir().unwrap();
-        for step in [1, 2, 7, 16, 35] {
-            let path = dir.path().join("gdal.tif");
-            let mut writer = CogWriter::create(path.to_str().unwrap(), &raster, &opts).unwrap();
-            for y in (0..35).step_by(step) {
-                let count = step.min(35 - y);
-                writer.write_rows(slice_rows(&raster.data, 35, y..y + count, 65, 1), count).unwrap();
-                for level in &writer.levels[1..] {
-                    if let Some(CogReducer::Gdal(reducer)) = &level.overview {
-                        assert!(reducer.pending_rows <= 3, "only the unfinished resampling window is retained");
+        for (rows, sizes) in [(35, [(32, 17), (16, 8)]), (7, [(32, 3), (16, 1)]), (3, [(32, 1), (16, 1)])] {
+            let raster = Raster::from_data_native(
+                wbraster::RasterConfig { cols: 65, rows, bands: 1, data_type: DataType::F32, ..Default::default() },
+                RasterData::F32((0..65 * rows).map(|i| 777.0 + (i % 217) as f32 * 0.25).collect()),
+            )
+            .unwrap();
+            let expected = encode(&raster, &opts).unwrap();
+            let lazy = crate::LazyRaster::from_tiff_bytes(expected.clone()).unwrap().unwrap();
+            assert_eq!(lazy.overviews(), sizes);
+            let dir = tempfile::tempdir().unwrap();
+            for step in [1, 2, 7, 16, rows] {
+                let path = dir.path().join("gdal.tif");
+                let mut writer = CogWriter::create(path.to_str().unwrap(), &raster, &opts).unwrap();
+                for y in (0..rows).step_by(step) {
+                    let count = step.min(rows - y);
+                    writer.write_rows(slice_rows(&raster.data, rows, y..y + count, 65, 1), count).unwrap();
+                    for level in &writer.levels[1..] {
+                        if let Some(CogReducer::Gdal(reducer)) = &level.overview {
+                            assert!(reducer.pending_rows <= 3, "only the unfinished resampling window is retained");
+                        }
                     }
                 }
+                writer.finish().unwrap();
+                assert_eq!(std::fs::read(path).unwrap(), expected, "rows {rows}, slab size {step}");
             }
-            writer.finish().unwrap();
-            assert_eq!(std::fs::read(path).unwrap(), expected, "slab size {step}");
         }
     }
 
@@ -3125,6 +3160,14 @@ mod tests {
             assert_eq!(result.is_ok(), valid);
             if let Err(error) = result {
                 assert!(error.to_string().contains(key));
+            }
+        }
+        for spp in [3, 4] {
+            for length in [0, spp - 1, spp + 1, spp + 2] {
+                assert!(matches!(
+                    webp_encode(vec![0; length], &ChunkInfo { w: 1, h: 1, spp, t: DataType::U8 }, &CodecParams::default()),
+                    Err(Error::InvalidData(_))
+                ));
             }
         }
         for (w, h) in [(0, 1), (1, 0), (16384, 1), (1, 16384)] {

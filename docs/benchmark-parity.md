@@ -71,7 +71,13 @@ speed ratio. Projection arithmetic uses platform transcendental implementations:
 for an identical authalic-q intermediate, Rust's `atanh` and the reference C
 library differ by one Float64 ULP. Replacing the older logarithmic ratio with
 PROJ's modern `atanh` formulation also avoids cancellation near the equator; a
-regression checks that precision independently of the benchmark. These residuals
+regression checks that precision independently of the benchmark. This correction
+applies globally to authalic projections using `qsfn` (including Albers, LAEA and
+CEA), so their default coordinates may change in the last bits. It is intentionally
+independent of the opt-in COG overview and terrain kernel policies. The existing
+EPSG accuracy, PROJ-string/WKT and ellipsoidal-projection reference tests pass in
+release mode, including the real `epsg_points.tsv` fixture, at their existing
+reference tolerances. Coordinate bit identity is not claimed. These residuals
 are documented numerical differences, not a claim of exact parity. Existing warp
 conformance retains its explicit 0.002 m tolerance; benchmark gates are not relaxed.
 
@@ -111,7 +117,7 @@ parity requirement remain outstanding.
 
 ## Final validation and timed reruns
 
-Workspace tests (483 core tests passed, one ignored, plus workspace integration
+Workspace tests (484 core tests passed, one ignored, plus workspace integration
 and binding tests), Clippy with `-D warnings`, formatting and full pre-commit
 checks pass. The 46 selected GDAL conformance cases are identical, including 20
 compatibility/codec cases. Python passes 55 API tests; release WASM passes 99
