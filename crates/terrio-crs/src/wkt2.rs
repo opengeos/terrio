@@ -57,12 +57,28 @@ pub(crate) fn to_proj(root: &Node) -> Result<Converted> {
         if let Some(cs) = root.child("CS")
             && matches!(cs.args.first(), Some(Arg::Ident(t)) if t.eq_ignore_ascii_case("Cartesian"))
         {
-            if cs.num(1) != Some(3.0) {
-                return Err(bad("geocentric Cartesian CS must have three axes"));
+            let axes: Vec<_> = root.children("AXIS").collect();
+            if cs.num(1) != Some(3.0) || axes.len() != 3 {
+                return Err(bad("geocentric Cartesian CS must declare three axes"));
             }
-            let units: Vec<f64> =
-                root.children("AXIS").filter_map(|a| a.child("LENGTHUNIT")).map(|u| u.num(1).unwrap_or(f64::NAN)).collect();
-            let unit = root.child("LENGTHUNIT").and_then(|u| u.num(1)).or_else(|| units.first().copied()).unwrap_or(1.0);
+            let directions = ["geocentricX", "geocentricY", "geocentricZ"];
+            for (i, axis) in axes.iter().enumerate() {
+                if !matches!(axis.args.get(1), Some(Arg::Ident(d)) if d.eq_ignore_ascii_case(directions[i]))
+                    || axis.child("ORDER").is_some_and(|o| o.num(0) != Some((i + 1) as f64))
+                {
+                    return Err(bad("geocentric WKT axes must be canonical X/Y/Z"));
+                }
+            }
+            let units = axes
+                .iter()
+                .map(|a| {
+                    a.child("LENGTHUNIT")
+                        .or_else(|| root.child("LENGTHUNIT"))
+                        .and_then(|u| u.num(1))
+                        .ok_or_else(|| bad("geocentric axis needs a linear unit"))
+                })
+                .collect::<Result<Vec<_>>>()?;
+            let unit = units[0];
             if units.iter().any(|u| *u != unit) {
                 return Err(bad("geocentric axes must use one linear unit"));
             }

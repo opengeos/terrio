@@ -89,13 +89,40 @@ fn frozen_gdal_composition_and_definition_oracles() {
 
 #[test]
 fn malformed_geocentric_definitions_fail_explicitly() {
-    for definition in ["+proj=geocent +units=nonsense", "+proj=geocent +to_meter=0", "+proj=geocent +a=-1 +b=1"] {
+    for definition in [
+        "+proj=geocent +units=nonsense",
+        "+proj=geocent +to_meter=0",
+        "+proj=geocent +a=-1 +b=1",
+        "+proj=geocent +to_meter=invalid",
+        "+proj=geocent +to_meter=1/invalid",
+        "+proj=geocent +axis=eeu",
+        "+proj=geocent +axis=nnu",
+        "+proj=geocent +axis=enq",
+        "+proj=geocent +axis=en",
+        "+proj=geocent +axis=uen",
+        "+proj=geocent +axis",
+        "+proj=geocent +units",
+        "+proj=geocent +a=invalid",
+        "+proj=geocent +ellps=invalid",
+        "+proj=geocent +datum=invalid",
+        "+proj=geocent +towgs84=0,invalid,0,0",
+        "+proj=geocent +towgs84=0,NaN,0",
+        "+proj=geocent +pm=invalid",
+    ] {
         assert!(SpatialRef::parse(definition).is_err(), "{definition}");
     }
     let reference: serde_json::Value = serde_json::from_str(include_str!("data/geocentric_reference.json")).unwrap();
     let wkt =
         reference["cases"].as_array().unwrap().iter().find(|c| c["name"] == "WKT2_2019 without IDs").unwrap()["dst"].as_str().unwrap();
-    for modified in [wkt.replace("CS[Cartesian,3]", "CS[Cartesian,2]"), wkt.replace("CS[Cartesian,3]", "CS[spherical,3]")] {
+    for modified in [
+        wkt.replace("CS[Cartesian,3]", "CS[Cartesian,2]"),
+        wkt.replace("CS[Cartesian,3]", "CS[spherical,3]"),
+        wkt.replace(r#",AXIS["(Z)",geocentricZ,ORDER[3],LENGTHUNIT["metre",1]]"#, ""),
+        wkt.replace("geocentricZ", "geocentricX"),
+        wkt.replace("ORDER[3]", "ORDER[2]"),
+        wkt.replace(r#"AXIS["(Z)",geocentricZ,ORDER[3],LENGTHUNIT["metre",1]]"#, r#"AXIS["(Z)",geocentricZ,ORDER[3]]"#),
+    ] {
+        assert_ne!(modified, wkt);
         let crs = SpatialRef::from_wkt(&modified);
         assert!(Transformer::new(&crs, &SpatialRef::from_epsg(4979).unwrap()).is_err());
     }
@@ -107,4 +134,27 @@ fn geocentric_identification_searches_all_ambiguous_datums() {
     // datum 6258, after IRENET95's datum 6173 in the name index.
     let wkt = r#"GEOCCS["ETRS89",DATUM["ETRS89",SPHEROID["GRS 1980",6378137,298.257222101]],PRIMEM["Greenwich",0],UNIT["metre",1]]"#;
     assert_eq!(SpatialRef::from_wkt(wkt).epsg, Some(4936));
+}
+
+#[test]
+fn zero_wgs84_datum_preserves_same_ellipsoid_coordinates_exactly() {
+    let zero = SpatialRef::parse("+proj=longlat +datum=WGS84 +towgs84=0,0,0").unwrap();
+    let wkt = SpatialRef::from_wkt(&zero.to_wkt().unwrap());
+    let target = SpatialRef::from_epsg(4979).unwrap();
+    for source in [zero, wkt] {
+        let t = Transformer::new(&source, &target).unwrap();
+        for p in [(12.123456789, 89.999999, 123.456), (0.0, 90.0, -20.0), (-179.999999, -89.999999, 9e6)] {
+            assert_eq!(t.transform_3d(p.0, p.1, p.2).unwrap(), p);
+        }
+    }
+    near(transform("EPSG:4979", "+proj=geocent +datum=WGS84 +to_meter=1000/1", (0.0, 0.0, 0.0)), (6378.137, 0.0, 0.0), 1e-9);
+}
+
+#[test]
+fn geocentric_prime_meridian_accepts_dms() {
+    near(
+        transform("EPSG:4979", "+proj=geocent +datum=WGS84 +pm=2d0'0E", (0.0, 0.0, 0.0)),
+        transform("EPSG:4979", "+proj=geocent +datum=WGS84 +pm=2", (0.0, 0.0, 0.0)),
+        1e-9,
+    );
 }

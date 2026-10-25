@@ -199,6 +199,11 @@ pub(crate) fn helmert(t: [f64; 3], rot: [f64; 3], s: f64, position_vector: bool,
 
 /// The steps of a `+towgs84=` shift (position vector convention) from an ellipsoid to WGS 84.
 pub(crate) fn towgs84_steps(ell: Ell, p: &[f64]) -> Vec<Step> {
+    let wgs84 = Ell::wgs84();
+    if p.iter().all(|v| *v == 0.0) && ell.a == wgs84.a && ell.es == wgs84.es {
+        return Vec::new();
+    }
+
     let g = |i: usize| p.get(i).copied().unwrap_or(0.0);
     vec![
         Step::Cart { ell, inv: false },

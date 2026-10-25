@@ -340,8 +340,11 @@ and in WebAssembly. These CRSs report `is_geocentric()`, not `is_geographic()`.
 Use all three ordinates. Cartesian X points toward longitude 0, latitude 0,
 Y toward longitude 90, latitude 0, and Z toward the north pole. Linear units apply
 to all three coordinates; PROJ `+units`, `+to_meter`, prime meridians and axis
-options are supported. Geographic inputs remain longitude, latitude, ellipsoidal
-height in traditional GIS order. Geocentric conversions compose with projected
+options are supported. Geocentric PROJ axes must contain one east/west and one
+north/south direction in the first two positions, followed by up/down. WKT2
+requires three canonical geocentric X/Y/Z axes with consistent linear units;
+other layouts are refused. Geographic inputs remain longitude, latitude,
+ellipsoidal height in traditional GIS order. Geocentric conversions compose with projected
 CRSs, datum shifts and existing coordinate-epoch options.
 
 ```rust

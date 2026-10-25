@@ -217,6 +217,25 @@ impl Def {
         }
         let name = p.str("proj").ok_or_else(|| Error::Crs(format!("no +proj in '{s}'")))?;
         let datum_name = p.str("datum");
+        if name == "geocent" {
+            for key in ["a", "b", "rf", "f", "es", "e", "R"] {
+                if p.has(key) && p.f64(key).is_none_or(|v| !v.is_finite()) {
+                    return Err(Error::Crs(format!("invalid geocentric ellipsoid parameter {key}")));
+                }
+            }
+            if (p.has("ellps") && p.str("ellps").and_then(Ell::named).is_none())
+                || (p.has("datum") && datum_name.and_then(datum_geog).is_none())
+            {
+                return Err(Error::Crs("unknown geocentric ellipsoid or datum".into()));
+            }
+            if p.has("towgs84") {
+                let values = p.str("towgs84").unwrap_or("").split(',').collect::<Vec<_>>();
+                if !matches!(values.len(), 3 | 7) || values.iter().any(|v| v.trim().parse::<f64>().ok().is_none_or(|n| !n.is_finite())) {
+                    return Err(Error::Crs("geocentric towgs84 needs 3 or 7 finite parameters".into()));
+                }
+            }
+        }
+
         let mut ell = datum::ellipsoid(&p).or_else(|| datum_name.and_then(datum_ellps).and_then(Ell::named)).unwrap_or_else(Ell::wgs84);
         // `+R_A`: a sphere of the ellipsoid's area.
         if p.has("R_A") && ell.es != 0.0 {
@@ -224,15 +243,21 @@ impl Def {
             let r = ell.a * (0.5 * qsfn(1.0, e, ell.one_es)).sqrt();
             ell = Ell::from_a_rf(r, 0.0);
         }
-        let to_meter = p
-            .str("to_meter")
-            .and_then(|v| match v.split_once('/') {
-                Some((n, d)) => Some(n.parse::<f64>().ok()? / d.parse::<f64>().ok()?),
-                None => v.parse().ok(),
-            })
-            .or_else(|| p.str("units").and_then(unit_to_meter))
-            .unwrap_or(1.0);
-        let pm = p.str("pm").map(|v| v.parse::<f64>().ok().or_else(|| prime_meridian(v)).unwrap_or(0.0)).unwrap_or(0.0);
+        let explicit_to_meter = p.str("to_meter").and_then(|v| match v.split_once('/') {
+            Some((n, d)) => Some(n.parse::<f64>().ok()? / d.parse::<f64>().ok()?),
+            None => v.parse().ok(),
+        });
+        let to_meter = explicit_to_meter.or_else(|| p.str("units").and_then(unit_to_meter)).unwrap_or(1.0);
+        let explicit_pm = p.str("pm").and_then(|v| {
+            v.parse::<f64>()
+                .ok()
+                .or_else(|| prime_meridian(v))
+                .or_else(|| if name == "geocent" { p.angle("pm").map(f64::to_degrees) } else { None })
+        });
+        if name == "geocent" && p.has("pm") && explicit_pm.is_none_or(|v| !v.is_finite()) {
+            return Err(Error::Crs("invalid geocentric prime meridian".into()));
+        }
+        let pm = explicit_pm.unwrap_or(0.0);
         let axis = match p.str("axis") {
             Some(a) if a.len() >= 2 && a.bytes().take(2).all(|c| b"enws".contains(&c)) => [a.as_bytes()[0], a.as_bytes()[1]],
             _ => *b"en",
@@ -248,7 +273,21 @@ impl Def {
         };
         let rot = if name == "ob_tran" { Some(Rotation::from_params(&p)?) } else { None };
         let geocentric = name == "geocent";
-        if geocentric && p.str("units").is_some_and(|u| unit_to_meter(u).is_none()) && !p.has("to_meter") {
+        if geocentric && p.has("to_meter") && explicit_to_meter.is_none() {
+            return Err(Error::Crs("invalid geocentric to_meter".into()));
+        }
+        if geocentric && p.has("axis") {
+            let b = p.str("axis").unwrap_or("").as_bytes();
+            let valid = b.len() == 3
+                && matches!(b[2], b'u' | b'd')
+                && ((matches!(b[0], b'e' | b'w') && matches!(b[1], b'n' | b's'))
+                    || (matches!(b[0], b'n' | b's') && matches!(b[1], b'e' | b'w')));
+            if !valid {
+                return Err(Error::Crs("geocentric axis must span east/west, north/south and up/down".into()));
+            }
+        }
+
+        if geocentric && p.has("units") && p.str("units").and_then(unit_to_meter).is_none() && !p.has("to_meter") {
             return Err(Error::Crs("unknown geocentric linear unit".into()));
         }
         if geocentric
@@ -306,8 +345,15 @@ impl Def {
         if let Some(g) = nadgrids {
             d.ops = vec![Arc::new(Op::world(datum::nadgrids_steps(g)))];
         } else if let Some(t) = towgs84 {
-            // Zero translation still converts between the declared ellipsoid and WGS 84.
-            d.ops = vec![Arc::new(Op::world(datum::towgs84_steps(ell, &t)))];
+            // Zero translation still converts between different ellipsoids. On
+            // WGS 84 itself it is exactly the WGS 84 datum, without a Cartesian round trip.
+            let wgs84 = Ell::wgs84();
+            if t.iter().all(|v| *v == 0.0) && ell.a == wgs84.a && ell.es == wgs84.es {
+                d.datum = Some(6326);
+                d.geog = Some(4326);
+            } else {
+                d.ops = vec![Arc::new(Op::world(datum::towgs84_steps(ell, &t)))];
+            }
         } else if let Some(code) = datum_name.and_then(datum_geog)
             && let Some(e) = epsg::get(code)
         {
