@@ -378,3 +378,53 @@ case also checks independent GDAL reads of Z without an invented M, and all-aste
 text. These comparisons use exactly
 representable real attributes; general DBF real precision is documented in
 [the archive format policy](formats.md#shapefile-zip-output-in-memory).
+
+## PMTiles decoded-byte limits (#279)
+
+With `default-features = false, features = ["tiles"]`, native and WebAssembly
+builds support uncompressed, gzip and Zstandard PMTiles payloads through the same
+pure-Rust decoders. Brotli is unsupported. The sparse caller supplies fetched
+ranges, including in browsers; no native filesystem or network support is needed.
+
+```rust
+use terrio::sparse::SparseFile;
+use terrio::tiles::{PmTilesReadLimits, TileArchive};
+
+let file = SparseFile::new(archive_length);
+let limits = PmTilesReadLimits {
+    root_directory: Some(8 * 1024 * 1024),
+    leaf_directory: Some(8 * 1024 * 1024),
+    metadata: Some(8 * 1024 * 1024),
+    tile: Some(16 * 1024 * 1024),
+};
+// Fetch file.missing() ranges and insert them, retrying as described in sparse's docs.
+let archive = TileArchive::from_sparse_with_limits(file.clone(), limits);
+```
+
+These are example caller policies, not defaults. `None` means unlimited; existing
+`from_sparse` calls retain their behavior. Each limit applies separately to a
+payload, including construction-time root and metadata decoding and later leaf,
+single-tile and batched-tile decoding. Exactly-at-limit output succeeds;
+`terrio::Error::DecodedLimitExceeded { resource, limit }` distinguishes refusal
+from malformed data, unsupported codecs and missing sparse ranges. The bounded
+reader probes one byte beyond the limit and stops without collecting the rest.
+Limits cover decoded bytes before parsing, not codec working memory, parsed
+objects, cumulative caches, image/MVT expansion or compressed input transfers.
+Normal sparse block sizing/read-ahead still applies. These configurable limits
+are currently a Rust API (including Rust compiled to WASM). Python, CLI and the
+JavaScript remote wrappers retain their existing unlimited defaults. Malformed
+PMTiles offset/range arithmetic is refused with `InvalidData`, including root,
+metadata, leaf and tile locations and directory-relative offsets/tile runs.
+
+The public-API regression constructs independent PMTiles with leaf directories,
+raw/gzip/Zstandard payloads and a 1 MiB repeated tile. It checks all four limits
+at the exact boundary and one byte over, a zero tile budget, unlimited defaults,
+missing-range retries and measured fetched bytes (construction fetches under
+20 KiB and the trailing 256 KiB is never fetched). Run natively or in WASI:
+
+```sh
+cargo test -p terrio --no-default-features --features tiles --test pmtiles_limits
+CARGO_TARGET_WASM32_WASIP1_RUNNER=wasmtime cargo test -p terrio \
+  --target wasm32-wasip1 --no-default-features --features tiles --test pmtiles_limits
+cargo check -p terrio --target wasm32-unknown-unknown --no-default-features --features tiles
+```

@@ -240,7 +240,7 @@ pub(crate) fn parse_directory(bytes: &[u8]) -> Result<Vec<Entry>> {
             if i == 0 {
                 return Err(bad("the first directory entry has a relative offset"));
             }
-            entries[i - 1].offset + entries[i - 1].length as u64
+            entries[i - 1].offset.checked_add(entries[i - 1].length as u64).ok_or_else(|| bad("directory offset overflow"))?
         } else {
             v - 1
         };
@@ -263,19 +263,44 @@ pub(crate) fn compress(data: &[u8], codec: u8) -> Result<Vec<u8>> {
 
 /// Decompresses with a PMTiles codec (none, gzip or zstd).
 pub(crate) fn decompress(data: &[u8], codec: u8) -> Result<Vec<u8>> {
-    match codec {
-        COMPRESSION_NONE | 0 => Ok(data.to_vec()),
-        COMPRESSION_GZIP => {
-            let mut out = Vec::new();
-            flate2::read::GzDecoder::new(data).read_to_end(&mut out).map_err(|e| bad(format!("gzip: {e}")))?;
-            Ok(out)
+    decompress_with_limit(data, codec, None, "PMTiles payload")
+}
+
+fn read_decoded(mut reader: impl Read, limit: Option<usize>, resource: &'static str) -> Result<Vec<u8>> {
+    let mut out = Vec::new();
+    let Some(limit) = limit else {
+        reader.read_to_end(&mut out).map_err(|e| bad(format!("decode: {e}")))?;
+        return Ok(out);
+    };
+    let mut buf = [0u8; 8192];
+    loop {
+        // Probe one byte beyond the budget, without overflow even for usize::MAX.
+        let count = limit.saturating_sub(out.len()).saturating_add(1).min(buf.len());
+        let n = reader.read(&mut buf[..count]).map_err(|e| bad(format!("decode: {e}")))?;
+        if n == 0 {
+            return Ok(out);
         }
+        if n > limit - out.len() {
+            return Err(Error::DecodedLimitExceeded { resource, limit });
+        }
+        out.extend_from_slice(&buf[..n]);
+    }
+}
+
+fn decompress_with_limit(data: &[u8], codec: u8, limit: Option<usize>, resource: &'static str) -> Result<Vec<u8>> {
+    match codec {
+        COMPRESSION_NONE | 0 => {
+            if let Some(limit) = limit
+                && data.len() > limit
+            {
+                return Err(Error::DecodedLimitExceeded { resource, limit });
+            }
+            Ok(data.to_vec())
+        }
+        COMPRESSION_GZIP => read_decoded(flate2::read::GzDecoder::new(data), limit, resource),
         COMPRESSION_ZSTD => {
-            let mut src = data;
-            let mut d = ruzstd::decoding::StreamingDecoder::new(&mut src).map_err(|e| bad(format!("zstd: {e}")))?;
-            let mut out = Vec::new();
-            d.read_to_end(&mut out).map_err(|e| bad(format!("zstd: {e}")))?;
-            Ok(out)
+            let decoder = ruzstd::decoding::StreamingDecoder::new(data).map_err(|e| bad(format!("zstd: {e}")))?;
+            read_decoded(decoder, limit, resource)
         }
         COMPRESSION_BROTLI => Err(Error::Unsupported("PMTiles: brotli compression is not supported".into())),
         c => Err(bad(format!("unknown compression {c}"))),
@@ -342,6 +367,7 @@ pub(crate) fn tile_id_to_zxy(id: u64) -> (u8, u32, u32) {
 /// open; leaf directories and tiles when they are needed.
 pub(crate) struct Reader {
     source: ByteSource,
+    limits: super::PmTilesReadLimits,
     pub header: Header,
     root: Vec<Entry>,
     leaves: HashMap<(u64, u32), Vec<Entry>>,
@@ -357,25 +383,30 @@ impl std::fmt::Debug for Reader {
 
 impl Reader {
     /// Opens an archive: reads its first 16 KiB (header and root directory), then its metadata.
-    pub(crate) fn open(mut source: ByteSource) -> Result<Self> {
+    pub(crate) fn open(source: ByteSource) -> Result<Self> {
+        Self::open_with_limits(source, super::PmTilesReadLimits::default())
+    }
+
+    pub(crate) fn open_with_limits(mut source: ByteSource, limits: super::PmTilesReadLimits) -> Result<Self> {
         let len = source.len();
         let prelude = source.read_at(0, len.min(PRELUDE_LEN as u64))?;
         let header = Header::parse(&prelude)?;
-        let root_end = header.root_dir_offset + header.root_dir_length;
+        let root_end = header.root_dir_offset.checked_add(header.root_dir_length).ok_or_else(|| bad("root directory range overflow"))?;
         let raw = if root_end <= prelude.len() as u64 {
             prelude[header.root_dir_offset as usize..root_end as usize].to_vec()
         } else {
             source.read_at(header.root_dir_offset, header.root_dir_length)?
         };
-        let root = parse_directory(&decompress(&raw, header.internal_compression)?)?;
+        let root =
+            parse_directory(&decompress_with_limit(&raw, header.internal_compression, limits.root_directory, "PMTiles root directory")?)?;
         let metadata = if header.metadata_length > 0 {
             let raw = source.read_at(header.metadata_offset, header.metadata_length)?;
-            let json = decompress(&raw, header.internal_compression)?;
+            let json = decompress_with_limit(&raw, header.internal_compression, limits.metadata, "PMTiles metadata")?;
             serde_json::from_slice(&json).map_err(|e| bad(format!("metadata: {e}")))?
         } else {
             serde_json::Value::Object(Default::default())
         };
-        Ok(Self { source, header, root, leaves: HashMap::new(), metadata })
+        Ok(Self { source, limits, header, root, leaves: HashMap::new(), metadata })
     }
 
     /// Whether the archive is read in place from a remote file.
@@ -392,8 +423,14 @@ impl Reader {
         if let Some(e) = self.leaves.get(&(offset, length)) {
             return Ok(e.clone());
         }
-        let raw = self.source.read_at(self.header.leaf_dirs_offset + offset, length as u64)?;
-        let entries = parse_directory(&decompress(&raw, self.header.internal_compression)?)?;
+        let absolute_offset = self.header.leaf_dirs_offset.checked_add(offset).ok_or_else(|| bad("leaf directory offset overflow"))?;
+        let raw = self.source.read_at(absolute_offset, length as u64)?;
+        let entries = parse_directory(&decompress_with_limit(
+            &raw,
+            self.header.internal_compression,
+            self.limits.leaf_directory,
+            "PMTiles leaf directory",
+        )?)?;
         self.leaves.insert((offset, length), entries.clone());
         Ok(entries)
     }
@@ -412,7 +449,12 @@ impl Reader {
                 entries = self.leaf(e.offset, e.length)?;
                 continue;
             }
-            return Ok((id < e.tile_id + e.run_length as u64).then_some((self.header.tile_data_offset + e.offset, e.length)));
+            let end = e.tile_id.checked_add(e.run_length as u64).ok_or_else(|| bad("tile run overflow"))?;
+            if id >= end {
+                return Ok(None);
+            }
+            let offset = self.header.tile_data_offset.checked_add(e.offset).ok_or_else(|| bad("tile data offset overflow"))?;
+            return Ok(Some((offset, e.length)));
         }
         Err(bad("directories nest too deeply"))
     }
@@ -422,7 +464,7 @@ impl Reader {
         match self.locate(z, x, y)? {
             Some((offset, length)) => {
                 let raw = self.source.read_at(offset, length as u64)?;
-                Ok(Some(decompress(&raw, self.header.tile_compression)?))
+                Ok(Some(decompress_with_limit(&raw, self.header.tile_compression, self.limits.tile, "PMTiles tile")?))
             }
             None => Ok(None),
         }
@@ -441,7 +483,7 @@ impl Reader {
             out.push(match loc {
                 Some((offset, length)) => {
                     let raw = self.source.read_at(offset, length as u64)?;
-                    Some(decompress(&raw, self.header.tile_compression)?)
+                    Some(decompress_with_limit(&raw, self.header.tile_compression, self.limits.tile, "PMTiles tile")?)
                 }
                 None => None,
             });
@@ -472,7 +514,7 @@ impl Reader {
                 }
                 continue;
             }
-            let end = e.tile_id + e.run_length as u64;
+            let end = e.tile_id.checked_add(e.run_length as u64).ok_or_else(|| bad("tile run overflow"))?;
             for id in e.tile_id.max(lo)..end.min(hi) {
                 let (_, x, y) = tile_id_to_zxy(id);
                 out.push((x, y));
@@ -602,6 +644,68 @@ fn build_directories(entries: &[Entry]) -> Result<(Vec<u8>, Vec<u8>)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn malformed_directory_arithmetic_is_rejected() {
+        // Two entries: the second offset is relative to MAX-1 + 8, which overflows.
+        let mut bytes = vec![2, 0, 1, 1, 1, 8, 1];
+        write_uvarint(&mut bytes, u64::MAX);
+        bytes.push(0);
+        assert!(matches!(parse_directory(&bytes), Err(Error::InvalidData(_))));
+        let entries = [Entry { tile_id: u64::MAX - 1, offset: 0, length: 1, run_length: 4 }];
+        let mut reader = Reader {
+            source: ByteSource::Memory(Vec::new()),
+            limits: Default::default(),
+            header: Default::default(),
+            root: entries.to_vec(),
+            leaves: HashMap::new(),
+            metadata: serde_json::json!({}),
+        };
+        assert!(matches!(reader.tiles_at_zoom(0), Err(Error::InvalidData(_))));
+    }
+
+    #[test]
+    fn bounded_reader_stops_after_one_probe_byte() {
+        use std::cell::Cell;
+        let count = Cell::new(0usize);
+        // A counting Read verifies early termination without relying on allocation metrics.
+        struct Counted<'a>(&'a Cell<usize>);
+        impl Read for Counted<'_> {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                self.0.set(self.0.get() + buf.len());
+                buf.fill(0);
+                Ok(buf.len())
+            }
+        }
+        assert!(matches!(read_decoded(Counted(&count), Some(10), "test"), Err(Error::DecodedLimitExceeded { limit: 10, .. })));
+        assert_eq!(count.get(), 11);
+        assert_eq!(read_decoded(&b""[..], Some(0), "test").unwrap(), b"");
+        assert_eq!(read_decoded(&b"ok"[..], Some(usize::MAX), "test").unwrap(), b"ok");
+    }
+
+    #[test]
+    fn batched_tiles_keep_decoded_limits() {
+        let data = compress(&[42; 4096], COMPRESSION_GZIP).unwrap();
+        let params = ArchiveParams {
+            tile_type: TILE_MVT,
+            tile_compression: COMPRESSION_GZIP,
+            min_zoom: 0,
+            max_zoom: 0,
+            bounds: [-180.0, -85.0, 180.0, 85.0],
+            center: (0.0, 0.0, 0),
+        };
+        let bytes = write_archive(vec![OutTile { z: 0, x: 0, y: 0, data }], b"{}", &params).unwrap();
+        for limit in [4095, 4096] {
+            let limits = super::super::PmTilesReadLimits { tile: Some(limit), ..Default::default() };
+            let mut reader = Reader::open_with_limits(ByteSource::Memory(bytes.clone()), limits).unwrap();
+            let result = reader.tiles(&[(0, 0, 0), (0, 0, 0)]);
+            if limit == 4096 {
+                assert_eq!(result.unwrap(), vec![Some(vec![42; 4096]); 2]);
+            } else {
+                assert!(matches!(result, Err(Error::DecodedLimitExceeded { resource: "PMTiles tile", limit: 4095 })));
+            }
+        }
+    }
 
     #[test]
     fn tile_ids_match_the_spec() {
