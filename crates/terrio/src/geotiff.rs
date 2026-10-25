@@ -254,14 +254,11 @@ pub(crate) fn read_geo_tags_from<R: Read + Seek>(mut f: R) -> Option<GeoTags> {
         })
         .collect();
     if let Some(xml) = ascii(GDAL_METADATA) {
-        for item in xml.split("<Item ").skip(1) {
-            let Some((attrs, rest)) = item.split_once('>') else { continue };
-            let Some(i) = attrs.split("sample=\"").nth(1).and_then(|s| s.split('"').next()).and_then(|s| s.parse::<usize>().ok()) else {
-                continue;
-            };
+        for item in crate::drivers::gtiff_write::gdal_metadata_items(xml) {
+            let Some(i) = item.attr("sample").and_then(|s| s.parse::<usize>().ok()) else { continue };
             let Some(band) = out.band_properties.get_mut(i) else { continue };
-            if attrs.contains("role=\"colorinterp\"") {
-                band.color_interp = rest.split("</Item>").next().map(str::to_string);
+            if item.attr("role") == Some("colorinterp") && item.attr("domain").is_none() {
+                band.color_interp = Some(color_interpretation(&item.text).into());
             }
         }
     }
@@ -310,6 +307,53 @@ pub(crate) fn read_geo_tags_from<R: Read + Seek>(mut f: R) -> Option<GeoTags> {
         }
     }
     Some(out)
+}
+
+/// Canonical GDAL band roles; unknown metadata roles map to Undefined as GDAL does.
+fn color_interpretation(value: &str) -> &'static str {
+    const NAMES: &[&str] = &[
+        "Undefined",
+        "Gray",
+        "Palette",
+        "Red",
+        "Green",
+        "Blue",
+        "Alpha",
+        "Hue",
+        "Saturation",
+        "Lightness",
+        "Cyan",
+        "Magenta",
+        "Yellow",
+        "Black",
+        "YCbCr_Y",
+        "YCbCr_Cb",
+        "YCbCr_Cr",
+        "Pan",
+        "Coastal",
+        "RedEdge",
+        "NIR",
+        "SWIR",
+        "MWIR",
+        "LWIR",
+        "TIR",
+        "OtherIR",
+        "IR_Reserved_1",
+        "IR_Reserved_2",
+        "IR_Reserved_3",
+        "IR_Reserved_4",
+        "SAR_Ka",
+        "SAR_K",
+        "SAR_Ku",
+        "SAR_X",
+        "SAR_C",
+        "SAR_S",
+        "SAR_L",
+        "SAR_P",
+        "SAR_Reserved_1",
+        "SAR_Reserved_2",
+    ];
+    NAMES.iter().copied().find(|name| name.eq_ignore_ascii_case(value.trim())).unwrap_or("Undefined")
 }
 
 /// The CRS of a GeoKey directory and its double and ASCII parameters (as stored in GeoTIFF tags
@@ -811,6 +855,18 @@ impl<R: Seek> Seek for PatchedReader<R> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn metadata_xml_handles_quotes_entities_and_validated_color_roles() {
+        use crate::drivers::gtiff_write::{gdal_metadata_items, parse_gdal_band_metadata, parse_gdal_metadata};
+        let xml = "<GDALMetadata><Item name='COLORINTERP' sample='0' role='colorinterp'>Gr&#97;y</Item><Item name='title'>a&amp;lt;b</Item><Item name='note' sample='1'>c&amp;amp;d</Item></GDALMetadata>";
+        let items = gdal_metadata_items(xml);
+        assert_eq!(items[0].attr("role"), Some("colorinterp"));
+        assert_eq!(color_interpretation(&items[0].text), "Gray");
+        assert_eq!(color_interpretation("not a color &amp; role"), "Undefined");
+        assert_eq!(parse_gdal_metadata(xml), [("title".into(), "a<b".into())]);
+        assert_eq!(parse_gdal_band_metadata(xml), [(1, "note".into(), "c&d".into())]);
+    }
 
     #[test]
     fn identifies_user_defined_utm() {

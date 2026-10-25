@@ -657,11 +657,8 @@ impl Builder {
             }
             let t = match f.field_type {
                 FieldType::Integer => {
-                    if f.width < 10 && small(i) {
-                        "MEDIUMINT".to_string()
-                    } else {
-                        "INTEGER".to_string()
-                    }
+                    // DBF widths >= 10 declare Integer64, irrespective of current values.
+                    if f.width < 10 && small(i) { "MEDIUMINT".to_string() } else { "INTEGER".to_string() }
                 }
                 FieldType::Float => "REAL".into(),
                 FieldType::Boolean => "BOOLEAN".into(),

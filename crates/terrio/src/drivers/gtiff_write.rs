@@ -188,6 +188,10 @@ fn strip_rows(asked: Option<u32>, rows: usize, row_bytes: usize, compression: Co
 }
 
 fn webp_encode(data: Vec<u8>, chunk: &ChunkInfo, options: &CodecParams) -> Result<Vec<u8>> {
+    let maximum = if options.webp_lossless { 16384 } else { 16383 };
+    if chunk.w == 0 || chunk.h == 0 || chunk.w > maximum || chunk.h > maximum {
+        return Err(Error::InvalidArgument(format!("WebP chunk dimensions must be between 1 and {maximum}")));
+    }
     if chunk.t != DataType::U8 || !matches!(chunk.spp, 3 | 4) {
         return Err(Error::Unsupported("WebP requires three or four interleaved Byte bands".into()));
     }
@@ -213,6 +217,9 @@ fn webp_encode(data: Vec<u8>, chunk: &ChunkInfo, options: &CodecParams) -> Resul
     }
     .map_err(|error| Error::InvalidData(format!("WebP: {error}")))?;
     let Some(alpha) = alpha else { return Ok(encoded) };
+    if encoded.get(..4) != Some(b"RIFF") || encoded.get(8..16) != Some(b"WEBPVP8 ") {
+        return Err(Error::InvalidData("WebP encoder did not return a simple VP8 container".into()));
+    }
     let mut body = b"WEBP".to_vec();
     let mut append = |tag: &[u8; 4], payload: &[u8]| {
         body.extend_from_slice(tag);
@@ -553,13 +560,16 @@ impl TiffOptions {
                 .filter(|e| *e >= 0.0)
                 .ok_or_else(|| Error::InvalidArgument(format!("invalid MAX_Z_ERROR '{v}'")))?;
         }
-        if let Some(v) = co("JPEG_QUALITY").or_else(|| co("QUALITY")).filter(|_| o.compression == Compression::Jpeg) {
-            o.codec.jpeg_quality = v
+        if let Some(v) = co("JPEG_QUALITY").or_else(|| if o.compression == Compression::WebP { None } else { co("QUALITY") }) {
+            let quality = v
                 .trim()
                 .parse::<u8>()
                 .ok()
                 .filter(|q| (1..=100).contains(q))
                 .ok_or_else(|| Error::InvalidArgument(format!("invalid JPEG_QUALITY '{v}' (1 to 100)")))?;
+            if o.compression == Compression::Jpeg {
+                o.codec.jpeg_quality = quality;
+            }
         }
         if o.compression == Compression::WebP {
             o.codec.webp_lossless = co("WEBP_LOSSLESS").is_some_and(yes);
@@ -1748,35 +1758,37 @@ pub(crate) fn format_nodata(nd: f64) -> String {
     }
 }
 
+/// Shared XML parsing for dataset metadata, band metadata and descriptive roles.
+pub(crate) fn gdal_metadata_items(xml: &str) -> Vec<crate::drivers::vector::xml::Element> {
+    crate::drivers::vector::xml::parse(xml)
+        .map(|root| root.children.into_iter().filter(|item| item.name == "Item").collect())
+        .unwrap_or_default()
+}
+
 /// The dataset-level items of a `GDAL_METADATA` XML document (band items are skipped).
 pub(crate) fn parse_gdal_metadata(xml: &str) -> Vec<(String, String)> {
-    let mut out = Vec::new();
-    for item in xml.split("<Item ").skip(1) {
-        let Some((attrs, rest)) = item.split_once('>') else { continue };
-        if attrs.contains("sample=") || attrs.contains("role=") || attrs.contains("domain=") {
-            continue;
-        }
-        let Some(name) = attrs.split("name=\"").nth(1).and_then(|s| s.split('"').next()) else { continue };
-        let Some(value) = rest.split("</Item>").next() else { continue };
-        out.push((xml_unescape(name), xml_unescape(&xml_unescape(value))));
-    }
-    out
+    gdal_metadata_items(xml)
+        .into_iter()
+        .filter_map(|item| {
+            if item.attr("sample").is_some() || item.attr("role").is_some() || item.attr("domain").is_some() {
+                return None;
+            }
+            Some((item.attr("name")?.to_string(), xml_unescape(&item.text)))
+        })
+        .collect()
 }
 
 /// The band items of a `GDAL_METADATA` tag (default domain, no role): `(band from 0, name, value)`.
 pub(crate) fn parse_gdal_band_metadata(xml: &str) -> Vec<(usize, String, String)> {
-    let mut out = Vec::new();
-    for item in xml.split("<Item ").skip(1) {
-        let Some((attrs, rest)) = item.split_once('>') else { continue };
-        if attrs.contains("role=") || attrs.contains("domain=") {
-            continue;
-        }
-        let attr = |key: &str| attrs.split(&format!("{key}=\"")).nth(1).and_then(|s| s.split('"').next());
-        let (Some(name), Some(sample)) = (attr("name"), attr("sample").and_then(|s| s.parse().ok())) else { continue };
-        let Some(value) = rest.split("</Item>").next() else { continue };
-        out.push((sample, xml_unescape(name), xml_unescape(&xml_unescape(value))));
-    }
-    out
+    gdal_metadata_items(xml)
+        .into_iter()
+        .filter_map(|item| {
+            if item.attr("role").is_some() || item.attr("domain").is_some() {
+                return None;
+            }
+            Some((item.attr("sample")?.parse().ok()?, item.attr("name")?.to_string(), xml_unescape(&item.text)))
+        })
+        .collect()
 }
 
 fn xml_unescape(s: &str) -> String {
@@ -3077,6 +3089,26 @@ mod tests {
             }
             writer.finish().unwrap();
             assert_eq!(std::fs::read(path).unwrap(), expected, "slab size {step}");
+        }
+    }
+
+    #[test]
+    fn quality_validation_and_webp_limits_fail_before_encoding() {
+        for (compression, key, value, valid) in [
+            ("DEFLATE", "QUALITY", "abc", false),
+            ("WEBP", "JPEG_QUALITY", "0", false),
+            ("WEBP", "QUALITY", "0", true),
+            ("JPEG", "QUALITY", "0", false),
+        ] {
+            let options = crate::RasterWriteOptions {
+                compression: Some(compression.into()),
+                creation_options: vec![(key.into(), value.into())],
+                ..Default::default()
+            };
+            assert_eq!(TiffOptions::from_write_options(&options, false, None).is_ok(), valid);
+        }
+        for (w, h) in [(0, 1), (1, 0), (16384, 1), (1, 16384)] {
+            assert!(webp_encode(Vec::new(), &ChunkInfo { w, h, spp: 3, t: DataType::U8 }, &CodecParams::default()).is_err());
         }
     }
 

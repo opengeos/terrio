@@ -1268,7 +1268,7 @@
     "workspace_tests": "passed",
     "workspace_clippy": "passed with -D warnings",
     "rust_library_tests": {
-      "passed": 481,
+      "passed": 483,
       "ignored": 1
     },
     "exact_gdal_conformance": {
@@ -1286,7 +1286,14 @@
       "release CLI",
       "release Python binding",
       "release Rust-optimized WebAssembly, wasm-opt postprocessing omitted"
-    ]
+    ],
+    "native_platform_tests": {
+      "commit": "4aa97627a4cef2dc12cbd1da9a2b40eb73658b49",
+      "macos": "passed",
+      "windows": "passed",
+      "workflow": "https://github.com/opengeos/terrio/actions/runs/40162521926",
+      "scope": "Rust workspace tests and Clippy, including eight JPEG XL native roundtrips; not the unavailable vendor reproduction."
+    }
   },
   "corrections": {
     "cog313": {

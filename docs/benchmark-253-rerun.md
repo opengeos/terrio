@@ -3,6 +3,8 @@
 All eight affected cases were rerun on 2026-10-25 against GDAL 3.13.3 with a release
 build of the fixes in this PR. [Raw samples and commands](benchmark-253-rerun.json)
 include tuning, measurement, CPU activity, validation and source/binary provenance.
+Samples cover `4aa9762`; subsequent option/container validation and XML parser
+review fixes are checked separately by conformance and binding tests.
 
 Each tool was tuned independently at CPU budgets **1 and 2**, with a warm-up and
 three samples per budget. Fresh measurements alternate tool order, with seven

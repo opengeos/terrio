@@ -40,7 +40,10 @@ geometry gates remain exact.
   Both full 14412² benchmark outputs now agree exactly with GDAL 3.13.3, including
   all 207,648,100 common-valid pixels and their masks. The benchmark chooses the
   installed reference version explicitly. Platform transcendental/SIMD rounding
-  can vary; these measurements establish fixture-specific exactness.
+  can vary; these measurements establish fixture-specific exactness. On x86,
+  reciprocal-square-root estimates can differ between Intel and AMD CPUs even
+  after refinement; non-x86 builds use scalar square roots. Hillshade is therefore
+  not guaranteed bit-reproducible across CPUs or architectures.
 - **WebP options:** independently reproduced ignored lossless/quality settings.
   Native pure Rust encoding now honors `WEBP_LOSSLESS=YES` and `WEBP_LEVEL=0..100`
   for Byte RGB/RGBA, including WASM. Lossless output preserves transparent color
@@ -49,8 +52,10 @@ geometry gates remain exact.
   decoded images. Lossy WebP is not claimed pixel-identical to a different encoder.
 - **JPEG XL:** added native round trips and independent GDAL decoding for Byte
   and UInt16, one/three bands, strips and tiles. All eight Linux variants preserve
-  every sample. No Linux decoder defect was reproduced. macOS/Windows CI exercises
-  the same regression; the unavailable vendor commands remain unverified.
+  every sample. The matching eight native round trips also pass on macOS and
+  Windows in [platform CI](https://github.com/opengeos/terrio/actions/runs/40162521926)
+  at `4aa9762`. No decoder defect was reproduced on these fixtures; the unavailable
+  vendor commands remain unverified.
 
 ## Residual numerical differences
 
@@ -98,15 +103,15 @@ See [testing](testing.md#benchmark-mismatch-regressions) for supported scope.
 
 The exact ICEYE, vendor elevation and optical assets/commands were unavailable.
 Their reported failure patterns now have independent regressions, but those
-particular assets cannot be certified. The macOS/Windows JPEG XL report requires
-platform CI evidence and, for the precise vendor failure, its reproduction.
+particular assets cannot be certified. The native JPEG XL regressions pass on macOS and Windows, but the precise vendor
+failure still requires its reproduction.
 The GDAL multithreaded statistics observation is an upstream report, not a Terrio
 fix. Keep the multi-report issue open while these items or the exact numerical
 parity requirement remain outstanding.
 
 ## Final validation and timed reruns
 
-Workspace tests (481 core tests passed, one ignored, plus workspace integration
+Workspace tests (483 core tests passed, one ignored, plus workspace integration
 and binding tests), Clippy with `-D warnings`, formatting and full pre-commit
 checks pass. The 45 selected GDAL conformance cases are identical, including 19
 compatibility/codec cases. Python passes 55 API tests; release WASM passes 99
