@@ -78,7 +78,11 @@ level's row reductions still use native parallelism. No speed advantage is impli
 Native WebP TIFF output supports pixel-interleaved Byte RGB and RGBA.
 `WEBP_LOSSLESS=YES` preserves all samples, including transparent colors;
 `WEBP_LEVEL=0..100` controls lossy quality (default 75). Lossy RGBA retains alpha
-losslessly. The same codecs and creation options are available in WebAssembly.
+losslessly, using an uncompressed ALPH chunk; files can be larger than libwebp's
+compressed-alpha output. Lossless RGBA preserves RGB under transparent pixels,
+which differs from libwebp/GDAL defaults that may discard hidden colors.
+Compressed TIFF/WebP bytes are not claimed identical across encoders.
+The same codecs and creation options are available in WebAssembly.
 
 `write_vector(&layers, path, &VectorWriteOptions)` writes layers; GeoPackage holds several.
 `ops::vector_filter::write_vector_with_mode` appends to or overwrites the layers of an existing

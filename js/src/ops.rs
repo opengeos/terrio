@@ -613,6 +613,8 @@ impl Default for DemArgs {
 /// Computes a terrain product of a DEM, as `terrio dem` (GDAL's `gdaldem`).
 ///
 /// `processing`: `hillshade`, `slope`, `aspect`, `color-relief`, `TRI`, `TPI` or `roughness`.
+/// GDAL 3.13 hillshade uses CPU-specific SIMD rounding; results are not bit-portable across CPUs/architectures.
+///
 /// Options: `kernelVersion` (`3.12` by default; `3.13` for slope and standard hillshade), `band`, `z`, `scale`, `xscale`, `yscale`, `azimuth`, `altitude`, `combined`,
 /// `multidirectional`, `igor`, `alg` (`Horn` or `ZevenbergenThorne`; `Riley` or `Wilson` for
 /// TRI), `percent`, `trigonometric`, `zeroForFlat`, `computeEdges`, and for color relief

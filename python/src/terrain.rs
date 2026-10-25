@@ -35,6 +35,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
 ///     color_file: For color relief, the color file: lines of `value R G B [A]` or
 ///         `value colorname`, where the value may be `nv` (nodata) or a percentage.
 ///     kernel_version: GDAL arithmetic version, "3.12" (default) or "3.13" for slope and standard hillshade.
+///         GDAL 3.13 hillshade uses CPU-specific SIMD rounding; results are not bit-portable across CPUs/architectures.
 ///     band: The band to process, from 1.
 ///     z: Vertical exaggeration (hillshade).
 ///     scale: Ratio of vertical to horizontal units (hillshade, slope); `111120` for a

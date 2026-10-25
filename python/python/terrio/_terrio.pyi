@@ -888,7 +888,10 @@ def dem(
     tile_size: int | None = None,
     bigtiff: bool = False,
     kernel_version: str = "3.12",
-) -> Raster: ...
+) -> Raster:
+    """Compute terrain; GDAL 3.13 hillshade rounding varies across CPUs/architectures."""
+    ...
+
 def calc(
     calc: str | Sequence[str],
     dst: str | None = None,
