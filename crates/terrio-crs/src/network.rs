@@ -17,6 +17,8 @@ pub trait GridTransport: Send + Sync {
     fn open(&self, url: &str) -> io::Result<Box<dyn GridStream>>;
 
     /// Download a whole grid when explicitly requested or when range opening fails.
+    /// The destination is a caller-owned scratch path and may contain partial bytes
+    /// on error. The engine removes it on failure and renames it only after success.
     fn download(&self, url: &str, path: &Path) -> io::Result<()> {
         let mut source = self.open(url)?;
         let mut output = std::fs::File::create(path)?;
@@ -31,6 +33,7 @@ fn transport() -> &'static RwLock<Option<Arc<dyn GridTransport>>> {
 }
 
 /// Set the process-wide grid transport. Existing open streams remain valid.
+/// Clears shared decoded-grid and missing-grid caches for subsequent lookups.
 /// Search paths, registered grids and the decoded grid cache are shared by all callers.
 pub fn set_grid_transport(value: Arc<dyn GridTransport>) {
     *transport().write().unwrap_or_else(|e| e.into_inner()) = Some(value);
