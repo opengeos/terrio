@@ -100,3 +100,11 @@ fn malformed_geocentric_definitions_fail_explicitly() {
         assert!(Transformer::new(&crs, &SpatialRef::from_epsg(4979).unwrap()).is_err());
     }
 }
+
+#[test]
+fn geocentric_identification_searches_all_ambiguous_datums() {
+    // ETRS89 is an EPSG alias of IRENET95 too. The named Cartesian CRS is on
+    // datum 6258, after IRENET95's datum 6173 in the name index.
+    let wkt = r#"GEOCCS["ETRS89",DATUM["ETRS89",SPHEROID["GRS 1980",6378137,298.257222101]],PRIMEM["Greenwich",0],UNIT["metre",1]]"#;
+    assert_eq!(SpatialRef::from_wkt(wkt).epsg, Some(4936));
+}

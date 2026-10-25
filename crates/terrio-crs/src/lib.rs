@@ -696,10 +696,10 @@ pub fn identify_epsg(wkt: &str) -> Option<u32> {
         let own = own.as_ref()?;
         let geogs = datums.iter().flat_map(|d| epsg::geographic_on(*d)).copied();
         if own.is_geocentric() {
-            return epsg::registry()
-                .by_datum
-                .get(datums.first()?)?
+            return datums
                 .iter()
+                .filter_map(|d| epsg::registry().by_datum.get(d))
+                .flatten()
                 .copied()
                 .filter(|c| epsg::registry().geodetic.get(c).is_some_and(|g| g.kind == epsg::GeodeticKind::Geocentric) && same(own, *c))
                 .min_by_key(|c| (!named(*c), *c));
