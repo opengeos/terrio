@@ -242,7 +242,8 @@ fn polyline(vertices: &[(Vector2, f64)], closed: bool, elevation: f64, normal: V
             cs.extend(arc.into_iter().skip(1).take(interior));
         }
     }
-    if closed && !cs.is_empty() {
+    cs.dedup();
+    if closed && cs.len() > 1 {
         cs.push(cs[0].clone());
     }
     Ok(cs)
@@ -585,6 +586,75 @@ mod tests {
     use super::*;
 
     /// Check native rejection directly, even when the public API has GDAL fallback.
+    #[test]
+    fn closed_single_vertex_polyline_is_a_point() {
+        for count in [1, 3] {
+            let mut p = acadrust::entities::LwPolyline::from_points(vec![Vector2::new(3.0, 7.0); count]);
+            p.close();
+            p.elevation = 12.0;
+            let mut doc = CadDocument::new();
+            doc.add_entity(EntityType::LwPolyline(p)).unwrap();
+            for (bytes, driver) in [
+                (DxfWriter::new(&doc).write_to_vec().unwrap(), VectorDriver::DXF),
+                (DwgWriter::write_to_vec(&doc).unwrap(), VectorDriver::DWG),
+            ] {
+                let layer = parse(bytes, driver).unwrap();
+                assert_eq!(layer.features[0].geometry, Some(Geometry::Point(Coord::xyz(3.0, 7.0, 12.0))));
+            }
+        }
+    }
+
+    #[test]
+    fn missing_or_empty_linetype_uses_upstream_by_layer_default() {
+        assert!(Point::at(Vector3::ZERO).common.linetype.is_empty());
+        for with_field in [false, true] {
+            let mut layer = Layer::new("survey");
+            if with_field {
+                layer.add_field(FieldDef::new("Linetype", FieldType::Text));
+            }
+            layer.features.push(Feature {
+                fid: 0,
+                geometry: Some(Geometry::Point(Coord::xyz(1.0, 2.0, 3.0))),
+                attributes: if with_field { vec![FieldValue::Text(String::new())] } else { Vec::new() },
+            });
+            for driver in [VectorDriver::DXF, VectorDriver::DWG] {
+                let stream = Cursor::new(to_bytes(std::slice::from_ref(&layer), driver).unwrap());
+                let doc = if driver == VectorDriver::DWG {
+                    DwgReader::from_stream(stream).read().unwrap()
+                } else {
+                    DxfReader::from_reader(stream).unwrap().read().unwrap()
+                };
+                let block = doc.block_records.iter().find(|b| b.name.eq_ignore_ascii_case("*Model_Space")).unwrap();
+                assert_eq!(block.entity_handles.len(), 1);
+                let entity = doc.get_entity_arc(block.entity_handles[0]).unwrap();
+                assert!(!entity.common().has_linetype(), "expected ByLayer: {:?}", entity.common().linetype);
+            }
+        }
+    }
+
+    #[test]
+    fn mixed_case_layer_names_share_one_symbol() {
+        let mut layer = Layer::new("survey");
+        layer.add_field(FieldDef::new("Layer", FieldType::Text));
+        for (fid, name) in ["Roads", "ROADS"].into_iter().enumerate() {
+            layer.features.push(Feature {
+                fid: fid as u64,
+                geometry: Some(Geometry::Point(Coord::xyz(fid as f64, 2.0, 3.0))),
+                attributes: vec![FieldValue::Text(name.into())],
+            });
+        }
+        for driver in [VectorDriver::DXF, VectorDriver::DWG] {
+            let stream = Cursor::new(to_bytes(std::slice::from_ref(&layer), driver).unwrap());
+            let doc = if driver == VectorDriver::DWG {
+                DwgReader::from_stream(stream).read().unwrap()
+            } else {
+                DxfReader::from_reader(stream).unwrap().read().unwrap()
+            };
+            assert_eq!(doc.layers.iter().filter(|l| l.name.eq_ignore_ascii_case("roads")).count(), 1);
+            assert_eq!(layer_from_document(doc, 8).unwrap().features.len(), 2);
+        }
+    }
+
     #[test]
     fn native_reader_rejects_unsupported_splines() {
         let mut doc = CadDocument::new();
