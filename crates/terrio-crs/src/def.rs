@@ -128,17 +128,20 @@ pub(crate) fn datum_ellps(name: &str) -> Option<&'static str> {
 }
 
 /// Wraps a wbprojection projection, for projections terrio does not implement itself.
+#[cfg(feature = "wbprojection-fallback")]
 struct WbProj {
     crs: wbprojection::Crs,
     a: f64,
 }
 
+#[cfg(feature = "wbprojection-fallback")]
 impl std::fmt::Debug for WbProj {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "WbProj({})", self.crs.name)
     }
 }
 
+#[cfg(feature = "wbprojection-fallback")]
 impl Proj for WbProj {
     fn fwd(&self, lam: f64, phi: f64) -> Option<(f64, f64)> {
         let (x, y) = self.crs.forward(lam.to_degrees(), phi.to_degrees()).ok()?;
@@ -249,12 +252,17 @@ impl Def {
             match projections::build(name, &mut setup)? {
                 Some(b) => Some(Arc::from(b)),
                 None => {
-                    // Fall back on wbprojection, which applies the origin and false easting itself.
-                    let crs = wbprojection::from_proj_string(s).map_err(|e| Error::Crs(format!("{e}")))?;
-                    setup.lam0 = 0.0;
-                    setup.x0 = 0.0;
-                    setup.y0 = 0.0;
-                    Some(Arc::new(WbProj { crs, a: setup.ell.a }))
+                    #[cfg(feature = "wbprojection-fallback")]
+                    {
+                        // Fall back on wbprojection, which applies the origin and false easting itself.
+                        let crs = wbprojection::from_proj_string(s).map_err(|e| Error::Crs(format!("{e}")))?;
+                        setup.lam0 = 0.0;
+                        setup.x0 = 0.0;
+                        setup.y0 = 0.0;
+                        Some(Arc::new(WbProj { crs, a: setup.ell.a }))
+                    }
+                    #[cfg(not(feature = "wbprojection-fallback"))]
+                    return Err(Error::Crs(format!("unsupported projection: +proj={name}; enable the wbprojection-fallback feature")));
                 }
             }
         };
@@ -399,34 +407,39 @@ impl Def {
         // Other kinds of WKT 2 CRS and WKT 1 projections the readers do not know: wbprojection's
         // parser. A WKT 2 geographic or projected CRS the reader refuses is not handed to it: its
         // WKT 2 parameters and method names would be read wrongly, silently (#123).
-        let crs = wbprojection::Crs::from_wkt(w).map_err(|e| Error::Crs(format!("{e}")))?;
-        let geographic = crs.is_geographic();
-        let e = &crs.datum.ellipsoid;
-        let ell = Ell::from_a_es(e.a, 2.0 * e.f - e.f * e.f);
-        let mut d = Self {
-            proj: None,
-            rot: None,
-            ell,
-            lam0: 0.0,
-            phi0: 0.0,
-            x0: 0.0,
-            y0: 0.0,
-            to_meter: wkt_linear_unit(w).filter(|_| !geographic).unwrap_or(1.0),
-            to_deg: 1.0,
-            pm: 0.0,
-            axis: *b"en",
-            ops: Vec::new(),
-            datum: None,
-            geog: None,
-            three_d: false,
-            dynamic: false,
-            vertical: None,
-            area: None,
-        };
-        if !geographic {
-            d.proj = Some(Arc::new(WbProj { crs, a: ell.a }));
+        #[cfg(feature = "wbprojection-fallback")]
+        {
+            let crs = wbprojection::Crs::from_wkt(w).map_err(|e| Error::Crs(format!("{e}")))?;
+            let geographic = crs.is_geographic();
+            let e = &crs.datum.ellipsoid;
+            let ell = Ell::from_a_es(e.a, 2.0 * e.f - e.f * e.f);
+            let mut d = Self {
+                proj: None,
+                rot: None,
+                ell,
+                lam0: 0.0,
+                phi0: 0.0,
+                x0: 0.0,
+                y0: 0.0,
+                to_meter: wkt_linear_unit(w).filter(|_| !geographic).unwrap_or(1.0),
+                to_deg: 1.0,
+                pm: 0.0,
+                axis: *b"en",
+                ops: Vec::new(),
+                datum: None,
+                geog: None,
+                three_d: false,
+                dynamic: false,
+                vertical: None,
+                area: None,
+            };
+            if !geographic {
+                d.proj = Some(Arc::new(WbProj { crs, a: ell.a }));
+            }
+            Ok(d)
         }
-        Ok(d)
+        #[cfg(not(feature = "wbprojection-fallback"))]
+        Err(Error::Crs("unsupported WKT definition; enable the wbprojection-fallback feature".into()))
     }
 
     /// Metres per linear unit.
@@ -746,6 +759,7 @@ fn geogcs_text(w: &str) -> Option<&str> {
 
 /// The size in metres of a WKT definition's linear unit: the last `UNIT` (WKT 1) or
 /// `LENGTHUNIT` (WKT 2) that is not angular.
+#[cfg(feature = "wbprojection-fallback")]
 pub(crate) fn wkt_linear_unit(w: &str) -> Option<f64> {
     let root = wkt1::parse(w)?;
     if let Some(u) = root.children("UNIT").last().or_else(|| root.children("LENGTHUNIT").last()) {

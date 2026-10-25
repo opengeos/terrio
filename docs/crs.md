@@ -62,7 +62,8 @@ let (easting, northing) = transform.transform(-105.0, 40.0)?;
 
 | Configuration | Behavior |
 |---|---|
-| Default | EPSG/ESRI tables, WKT and PROJ strings, projections, datum operations, epochs, and local or registered grids; offline |
+| Default | EPSG/ESRI tables, WKT and PROJ strings, 40 native methods from the 117-method test corpus, datum operations, epochs, and local or registered grids; offline |
+| `wbprojection-fallback` | 46 additional projection methods and legacy WKT/identification fallback; enabled by Terrio |
 | `grid-transport` (native) | An application supplies `network::GridTransport` with seekable readers; the engine retains lazy TIFF block decoding |
 | Terrio's `remote` feature | Supplies Terrio's existing HTTP range reader, request controls and cache to the shared engine |
 | WebAssembly | Register grid bytes with `register_grid`; the host handles network access |
@@ -80,8 +81,10 @@ by the settings described below. Direct callers retrieve diagnostics with
 `terrio_crs::take_warnings()`, while Terrio continues to use
 `terrio::warnings::take()`. A custom transformer warning handler is also available.
 
-The extraction preserves the existing `wbprojection` fallback and grid codecs.
-Dependency reduction and measurements are tracked separately in
+The standalone default omits `wbprojection`; Terrio enables the fallback to retain
+its existing coverage. Bundled tables use portable `ruzstd` decompression on all
+targets. TIFF grid codecs retain their previous features, including native Zstd.
+Dependency measurements and release work are tracked in
 [#268](https://github.com/opengeos/terrio/issues/268). The new crate does not add
 geocentric, PROJJSON, IAU or additional projection support by itself.
 

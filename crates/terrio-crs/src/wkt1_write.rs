@@ -553,7 +553,16 @@ mod tests {
         let w = from_proj("+proj=tmerc +lon_0=-100 +ellps=WGS84 +towgs84=100,50,-30 +pm=ferro +units=us-ft").unwrap();
         assert!(w.contains("TOWGS84[100,50,-30,0,0,0,0]") && w.contains("PRIMEM[\"Ferro\",-17.666666666667]"), "{w}");
         assert!(w.contains("UNIT[\"US survey foot\",0.304800609601219"), "{w}");
-        let w = from_proj("+proj=hammer +ellps=WGS84 +units=m").unwrap();
-        assert!(w.contains("PROJECTION[\"custom_proj4\"]") && w.contains("+proj=hammer +ellps=WGS84 +units=m +wktext +no_defs"), "{w}");
+    }
+
+    #[test]
+    fn fallback_methods_require_the_feature() {
+        let result = from_proj("+proj=hammer +ellps=WGS84 +units=m");
+        if cfg!(feature = "wbprojection-fallback") {
+            let w = result.unwrap();
+            assert!(w.contains("PROJECTION[\"custom_proj4\"]") && w.contains("+proj=hammer +ellps=WGS84 +units=m +wktext +no_defs"), "{w}");
+        } else {
+            assert!(result.is_none());
+        }
     }
 }

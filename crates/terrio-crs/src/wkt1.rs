@@ -461,6 +461,11 @@ pub(crate) fn to_proj(root: &Node) -> Option<Converted> {
             out.push(format!("+proj={name}"));
             push(&mut out, "lon_0", lon_0);
         }
+        "wagneriv" | "wagnerv" => {
+            let name = if method == "wagneriv" { "wag4" } else { "wag5" };
+            out.push(format!("+proj={name}"));
+            push(&mut out, "lon_0", lon_0);
+        }
         "gnomonic" => {
             out.push("+proj=gnom".into());
             push(&mut out, "lat_0", lat_0);

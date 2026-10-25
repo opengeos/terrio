@@ -748,7 +748,7 @@ def epsg_cases(s, ctx, test, points, suffix=""):
     with tempfile.TemporaryDirectory() as tmp:
         report = os.path.join(tmp, "epsg.tsv")
         env = {"TERRIO_TEST_DATA": os.path.abspath(ctx.data), "TERRIO_EPSG_REPORT": report}
-        _code, out, err = run(["cargo", "test", "--release", "-p", "terrio-crs", "--test", test, "--", "--nocapture"], env)
+        _code, out, err = run(["cargo", "test", "--release", "-p", "terrio-crs", "--features", "wbprojection-fallback", "--test", test, "--", "--nocapture"], env)
         if not os.path.exists(report):
             s.error = tail(err or out)
             return False
@@ -873,7 +873,9 @@ def proj_cases(s):
     """
     group = "PROJ definitions without an EPSG code"
     for file, tests in PROJ_CASES.items():
-        code, out, err = run(["cargo", "test", "--release", "-p", "terrio" if file == "geostationary" else "terrio-crs", "--test", file])
+        package = "terrio" if file == "geostationary" else "terrio-crs"
+        features = [] if package == "terrio" else ["--features", "wbprojection-fallback"]
+        code, out, err = run(["cargo", "test", "--release", "-p", package, *features, "--test", file])
         first_case = len(s.cases)
         for test, description in tests.items():
             name, status, detail = (description, IDENTICAL, "") if isinstance(description, str) else description
