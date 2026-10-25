@@ -34,11 +34,23 @@ fn transport() -> &'static RwLock<Option<Arc<dyn GridTransport>>> {
 /// Search paths, registered grids and the decoded grid cache are shared by all callers.
 pub fn set_grid_transport(value: Arc<dyn GridTransport>) {
     *transport().write().unwrap_or_else(|e| e.into_inner()) = Some(value);
+    crate::reset_grid_cache();
 }
 
 /// Install an embedding application's default without replacing caller configuration.
 pub fn set_default_grid_transport(value: Arc<dyn GridTransport>) {
-    transport().write().unwrap_or_else(|e| e.into_inner()).get_or_insert(value);
+    let inserted = {
+        let mut current = transport().write().unwrap_or_else(|e| e.into_inner());
+        if current.is_some() {
+            false
+        } else {
+            *current = Some(value);
+            true
+        }
+    };
+    if inserted {
+        crate::reset_grid_cache();
+    }
 }
 
 fn current() -> io::Result<Arc<dyn GridTransport>> {
