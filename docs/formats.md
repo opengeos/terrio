@@ -411,7 +411,9 @@ blocks, array inserts and external/non-explodable references produce errors. Exp
 receive new handles. Viewports and
 sequence markers carry no exported geometry.
 Closed polylines remain lines. Curves are linearized at a maximum four-degree step; curve samples
-can differ from GDAL's. Hatch rings are organized by containment into polygons with holes.
+can differ from GDAL's. Hatch rings are organized by containment into polygons with holes. Edge boundaries must be
+listed in connected sequence; individual edges and the first edge may be reversed, but arbitrary
+edge reordering is unsupported. Endpoint joins use an absolute tolerance of 1e-7 drawing units.
 Unsupported entities (including splines, dimensions, ACIS solids and mesh entities), unsupported
 hatch boundaries, fitted polylines and extruded/thick geometry produce an error identifying the
 unsupported data rather than silently discarding it. The optional GDAL backend can read entities

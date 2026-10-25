@@ -58,6 +58,10 @@ are not supported.
 - Only the drivers listed in [Formats](formats.md) exist, unless terrio is built with the
   optional GDAL backend (below).
 
+DXF exports use the native CAD writer when the `cad` feature is enabled, including builds
+with `gdal`. Use the Rust `gdal_backend` API explicitly to select GDAL's DXF writer.
+See [CAD drawings](formats.md#cad-drawings-dwg-and-dxf) for the native subset.
+
 ## The optional GDAL backend
 
 For the long tail of formats (HDF4, NITF, KEA, PCIDSK, SQLite, spreadsheets...),

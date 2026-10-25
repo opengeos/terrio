@@ -14,6 +14,7 @@ pub struct Args {
     /// chosen from the output's extension. Builds with the GDAL backend also write with any GDAL
     /// driver: rasters (`NITF`, `KEA`, `GRIB`...) and vector layers (`DXF`, `OpenFileGDB`,
     /// `MapInfo File`, `SQLite`...), and choose GDAL's driver for extensions terrio has none for.
+    /// With the `cad` feature, DXF output uses the native CAD writer even in GDAL builds.
     #[arg(short = 'f', long = "format")]
     format: Option<String>,
     /// Only these layers of a vector dataset.

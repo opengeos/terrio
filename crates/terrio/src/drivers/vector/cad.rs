@@ -550,6 +550,19 @@ fn encode_geometry(g: &Geometry, text: Option<&str>, entity_type: Option<&str>, 
                 if vs.first() == vs.last() {
                     vs.pop();
                 }
+                // Only three distinct vertices are needed to establish validity.
+                let mut distinct = Vec::with_capacity(3);
+                for v in &vs {
+                    if !distinct.contains(v) {
+                        distinct.push(*v);
+                        if distinct.len() == 3 {
+                            break;
+                        }
+                    }
+                }
+                if distinct.len() < 3 {
+                    return Err(Error::InvalidArgument("CAD: a polygon ring needs at least three distinct vertices".into()));
+                }
                 let mut path = if i == 0 { BoundaryPath::external() } else { BoundaryPath::new() };
                 path.flags.set_polyline(true);
                 path.add_edge(BoundaryEdge::Polyline(PolylineEdge::new(vs, true)));
@@ -585,7 +598,42 @@ fn encode_geometry(g: &Geometry, text: Option<&str>, entity_type: Option<&str>, 
 mod tests {
     use super::*;
 
-    /// Check native rejection directly, even when the public API has GDAL fallback.
+    #[test]
+    fn writer_rejects_degenerate_exterior_and_interior_rings() {
+        let a = Coord::xy(0.0, 0.0);
+        let b = Coord::xy(4.0, 0.0);
+        let valid = Ring::new(vec![a.clone(), b.clone(), Coord::xy(0.0, 4.0), a.clone()]);
+        for vertices in
+            [vec![a.clone(), b.clone(), a.clone()], vec![a.clone(); 3], vec![a.clone(), b.clone(), a.clone(), b.clone(), a.clone()]]
+        {
+            for interior in [false, true] {
+                let ring = Ring::new(vertices.clone());
+                let mut layer = Layer::new("survey");
+                layer.features.push(Feature {
+                    fid: 0,
+                    geometry: Some(if interior {
+                        Geometry::Polygon { exterior: valid.clone(), interiors: vec![ring] }
+                    } else {
+                        Geometry::Polygon { exterior: ring, interiors: Vec::new() }
+                    }),
+                    attributes: Vec::new(),
+                });
+                for driver in [VectorDriver::DXF, VectorDriver::DWG] {
+                    assert!(matches!(to_bytes(std::slice::from_ref(&layer), driver), Err(Error::InvalidArgument(_))));
+                }
+            }
+        }
+        let mut layer = Layer::new("survey");
+        layer.features.push(Feature {
+            fid: 0,
+            geometry: Some(Geometry::Polygon { exterior: valid, interiors: Vec::new() }),
+            attributes: Vec::new(),
+        });
+        for driver in [VectorDriver::DXF, VectorDriver::DWG] {
+            assert_eq!(parse(to_bytes(std::slice::from_ref(&layer), driver).unwrap(), driver).unwrap().features.len(), 1);
+        }
+    }
+
     #[test]
     fn closed_single_vertex_polyline_is_a_point() {
         for count in [1, 3] {
@@ -655,6 +703,7 @@ mod tests {
         }
     }
 
+    /// Check native rejection directly, even when the public API has GDAL fallback.
     #[test]
     fn native_reader_rejects_unsupported_splines() {
         let mut doc = CadDocument::new();
