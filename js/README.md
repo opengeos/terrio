@@ -104,8 +104,7 @@ with a dynamic `import("terrio-js")`: datasets belong to the module that opened 
 is passed only to the functions of its own module.
 
 Both modules are built for size: whole-program LTO, the codecs optimized for speed and the rest
-for size, and wasm-opt -Oz. The full module is 21% smaller than before (20.6 MB, 6.7 MB gzipped)
-and decodes and writes as fast.
+for size, and wasm-opt -Oz.
 
 ## Threads: `terrio-js/load` and `terrio-js/threads`
 
