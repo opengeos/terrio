@@ -194,6 +194,8 @@ impl SpatialRef {
                 (Some(c), _) => c.wkt.clone(),
                 (None, Some(v)) => v.wkt.clone(),
                 _ => {
+                    // Match wbprojection's three legacy ESRI-as-EPSG aliases, as
+                    // documented above. Other ESRI codes require the ESRI namespace.
                     #[cfg(not(feature = "wbprojection-fallback"))]
                     if matches!(code, 54008 | 54009 | 54030) && epsg::esri(code).is_some() {
                         return Self::from_esri(code);
@@ -1640,6 +1642,11 @@ mod tests {
         for s in ["EPSG:4326", "4326", "urn:ogc:def:crs:EPSG::4326", "http://www.opengis.net/def/crs/EPSG/0/4326", "OGC:CRS84"] {
             assert_eq!(SpatialRef::parse(s).unwrap().epsg, Some(4326), "{s}");
         }
+        for code in [54008, 54009, 54030] {
+            assert_eq!(SpatialRef::from_epsg(code).unwrap(), SpatialRef::from_esri(code).unwrap());
+        }
+        assert!(SpatialRef::from_epsg(102003).is_err());
+        assert_eq!(SpatialRef::parse("ESRI:102003").unwrap().esri, Some(102003));
         let wkt = SpatialRef::from_epsg(32633).unwrap().to_wkt().unwrap();
         assert_eq!(SpatialRef::parse(&wkt).unwrap().epsg, Some(32633));
         // An ESRI .prj (New York City boroughs): GDAL identifies EPSG:2263.

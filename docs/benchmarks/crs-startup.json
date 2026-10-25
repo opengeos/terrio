@@ -1,0 +1,282 @@
+{
+  "before_revision": "0e58a72a7a287b97142e6457920226a7e0e2d510",
+  "after_revision": "53e90f922cd7b7993b8b8d75d10069f836260975",
+  "trials_per_configuration": 15,
+  "method": "Fresh Python process per trial, ctypes load before timer, first exported EPSG:4326-to-3857 transform at (10,40), then 100 repeated parse/build/transform calls. Process startup and dynamic loading excluded. Alternating configurations on shared desktop, warm filesystem, RAYON_NUM_THREADS=2, network off. This is total first-use table/index/CRS setup, not isolated decoder throughput.",
+  "measurements": {
+    "before": [
+      {
+        "first_ns": 11038236,
+        "steady_ns": 3774.15
+      },
+      {
+        "first_ns": 10977424,
+        "steady_ns": 3654.0
+      },
+      {
+        "first_ns": 10991609,
+        "steady_ns": 3755.06
+      },
+      {
+        "first_ns": 10582340,
+        "steady_ns": 3486.02
+      },
+      {
+        "first_ns": 10868692,
+        "steady_ns": 3572.87
+      },
+      {
+        "first_ns": 10652285,
+        "steady_ns": 3781.54
+      },
+      {
+        "first_ns": 10498974,
+        "steady_ns": 3618.81
+      },
+      {
+        "first_ns": 14674340,
+        "steady_ns": 6240.26
+      },
+      {
+        "first_ns": 10664909,
+        "steady_ns": 3598.7
+      },
+      {
+        "first_ns": 10484667,
+        "steady_ns": 3619.73
+      },
+      {
+        "first_ns": 10380163,
+        "steady_ns": 3571.47
+      },
+      {
+        "first_ns": 11194033,
+        "steady_ns": 3657.96
+      },
+      {
+        "first_ns": 10858178,
+        "steady_ns": 3549.25
+      },
+      {
+        "first_ns": 10387544,
+        "steady_ns": 3603.48
+      },
+      {
+        "first_ns": 10259989,
+        "steady_ns": 3536.04
+      }
+    ],
+    "native": [
+      {
+        "first_ns": 18095721,
+        "steady_ns": 3311.52
+      },
+      {
+        "first_ns": 19609826,
+        "steady_ns": 4275.82
+      },
+      {
+        "first_ns": 18215858,
+        "steady_ns": 3432.95
+      },
+      {
+        "first_ns": 18932081,
+        "steady_ns": 3526.56
+      },
+      {
+        "first_ns": 18095612,
+        "steady_ns": 3354.15
+      },
+      {
+        "first_ns": 18532830,
+        "steady_ns": 3300.8
+      },
+      {
+        "first_ns": 25576494,
+        "steady_ns": 5779.54
+      },
+      {
+        "first_ns": 22003888,
+        "steady_ns": 3335.76
+      },
+      {
+        "first_ns": 17984706,
+        "steady_ns": 3347.06
+      },
+      {
+        "first_ns": 18855036,
+        "steady_ns": 3341.22
+      },
+      {
+        "first_ns": 19107432,
+        "steady_ns": 3440.71
+      },
+      {
+        "first_ns": 17984848,
+        "steady_ns": 3312.62
+      },
+      {
+        "first_ns": 17735938,
+        "steady_ns": 3288.74
+      },
+      {
+        "first_ns": 19203506,
+        "steady_ns": 3285.26
+      },
+      {
+        "first_ns": 17565367,
+        "steady_ns": 3355.54
+      }
+    ],
+    "fallback": [
+      {
+        "first_ns": 17716499,
+        "steady_ns": 3577.47
+      },
+      {
+        "first_ns": 18323723,
+        "steady_ns": 3577.88
+      },
+      {
+        "first_ns": 17702766,
+        "steady_ns": 3628.24
+      },
+      {
+        "first_ns": 18320577,
+        "steady_ns": 4536.36
+      },
+      {
+        "first_ns": 17923643,
+        "steady_ns": 3679.84
+      },
+      {
+        "first_ns": 17835677,
+        "steady_ns": 3540.31
+      },
+      {
+        "first_ns": 20878202,
+        "steady_ns": 5418.33
+      },
+      {
+        "first_ns": 19663220,
+        "steady_ns": 5311.29
+      },
+      {
+        "first_ns": 18840901,
+        "steady_ns": 3592.71
+      },
+      {
+        "first_ns": 18164792,
+        "steady_ns": 3563.42
+      },
+      {
+        "first_ns": 19520653,
+        "steady_ns": 3599.36
+      },
+      {
+        "first_ns": 17936074,
+        "steady_ns": 3516.13
+      },
+      {
+        "first_ns": 17952336,
+        "steady_ns": 3605.29
+      },
+      {
+        "first_ns": 19153310,
+        "steady_ns": 3514.01
+      },
+      {
+        "first_ns": 17698199,
+        "steady_ns": 3583.97
+      }
+    ],
+    "terrio-after": [
+      {
+        "first_ns": 18576794,
+        "steady_ns": 3680.66
+      },
+      {
+        "first_ns": 17985202,
+        "steady_ns": 3631.42
+      },
+      {
+        "first_ns": 18830054,
+        "steady_ns": 3605.68
+      },
+      {
+        "first_ns": 18396021,
+        "steady_ns": 3343.03
+      },
+      {
+        "first_ns": 17958552,
+        "steady_ns": 3652.83
+      },
+      {
+        "first_ns": 18390569,
+        "steady_ns": 3585.02
+      },
+      {
+        "first_ns": 22587861,
+        "steady_ns": 3926.54
+      },
+      {
+        "first_ns": 18571390,
+        "steady_ns": 3644.3
+      },
+      {
+        "first_ns": 17973514,
+        "steady_ns": 3674.73
+      },
+      {
+        "first_ns": 18286583,
+        "steady_ns": 3587.78
+      },
+      {
+        "first_ns": 18933777,
+        "steady_ns": 3685.84
+      },
+      {
+        "first_ns": 18788301,
+        "steady_ns": 3575.95
+      },
+      {
+        "first_ns": 18551864,
+        "steady_ns": 3503.14
+      },
+      {
+        "first_ns": 17667280,
+        "steady_ns": 3585.13
+      },
+      {
+        "first_ns": 18313845,
+        "steady_ns": 3521.93
+      }
+    ]
+  },
+  "summary": {
+    "before": {
+      "first_median_ms": 10.664909,
+      "first_min_ms": 10.259989,
+      "first_max_ms": 14.67434,
+      "steady_median_us": 3.61881
+    },
+    "native": {
+      "first_median_ms": 18.53283,
+      "first_min_ms": 17.565367,
+      "first_max_ms": 25.576494,
+      "steady_median_us": 3.34706
+    },
+    "fallback": {
+      "first_median_ms": 18.164792,
+      "first_min_ms": 17.698199,
+      "first_max_ms": 20.878202,
+      "steady_median_us": 3.59271
+    },
+    "terrio-after": {
+      "first_median_ms": 18.396021,
+      "first_min_ms": 17.66728,
+      "first_max_ms": 22.587861,
+      "steady_median_us": 3.60568
+    }
+  }
+}

@@ -60,6 +60,56 @@ checkout, records dependency trees and build logs, and runs every build serially
 `--configurations` and `--targets` allow an isolated configuration to be repeated
 in a fresh output directory. No source checkout is modified or package uploaded.
 
+## Native first-use cost
+
+Fifteen fresh processes per configuration called the same compiled probe, loading
+the library before the timer. The first timed EPSG:4326-to-3857 call includes
+lazy table decompression/indexing, CRS parsing and transformer construction. Each
+process then repeated parsing/construction/transformation 100 times. Configurations
+were alternated on the same host, with `RAYON_NUM_THREADS=2`, network disabled and
+warm filesystem caches. This measures caller-visible first use; it is not an
+isolated decoder-throughput measurement.
+
+| Consumer | First-call median | First-call min–max | Repeated-call median |
+| --- | ---: | ---: | ---: |
+| Terrio before extraction | 10.66 ms | 10.26–14.67 ms | 3.62 µs |
+| Standalone native default | 18.53 ms | 17.57–25.58 ms | 3.35 µs |
+| Standalone with fallback | 18.16 ms | 17.70–20.88 ms | 3.59 µs |
+| Terrio after extraction | 18.40 ms | 17.67–22.59 ms | 3.61 µs |
+
+Portable decoding adds roughly 8 ms to the first call in this experiment; it
+removes the duplicate table-decoder dependency and uses the same implementation
+on both targets. The measured repeated-call cost is similar. The selected default
+keeps that initialization tradeoff explicit. [Raw trials and scope](benchmarks/crs-startup.json)
+use the same compiled source revisions and release artifacts as the footprint
+matrix above.
+
+To repeat an individual trial against one of the script's native probe libraries
+(`libcrs_footprint_probe.so` on Linux), start a fresh interpreter each time:
+
+```sh
+RAYON_NUM_THREADS=2 python - /path/to/libcrs_footprint_probe.so <<'PY'
+import ctypes, json, sys, time
+library = ctypes.CDLL(sys.argv[1])
+transform = library.transform
+transform.argtypes = [ctypes.c_double, ctypes.c_double]
+transform.restype = ctypes.c_double
+start = time.perf_counter_ns()
+x = transform(10.0, 40.0)
+first = time.perf_counter_ns() - start
+assert abs(x - 1113194.9079327357) < 1e-8
+start = time.perf_counter_ns()
+for _ in range(100):
+    transform(10.0, 40.0)
+steady = (time.perf_counter_ns() - start) / 100
+print(json.dumps({"first_ns": first, "steady_ns": steady}))
+PY
+```
+
+The tables are immutable build-time inputs, and the decoder's existing failure
+handling is unchanged. EPSG/grid conformance and package verification exercise
+the bundled tables; no caller-supplied table bytes enter this decoder.
+
 ## Codec audit and portability
 
 Bundled EPSG/ESRI/datum tables use `ruzstd` on native and WASM targets. Removing
