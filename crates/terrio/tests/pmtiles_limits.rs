@@ -142,3 +142,25 @@ fn sparse_limits_cover_all_payloads_and_codecs() {
         assert!(matches!(zero.tile(0, 0, 0), Err(Error::DecodedLimitExceeded { limit: 0, .. })));
     }
 }
+
+#[test]
+fn overflowing_archive_offsets_are_invalid_data() {
+    for section in [8, 24, 40, 56] {
+        let (mut bytes, _) = archive(1, b"tile");
+        let read_u64 = |at: usize| u64::from_le_bytes(bytes[at..at + 8].try_into().unwrap()) as usize;
+        let root = read_u64(8);
+        let leaf = read_u64(40);
+        if section == 40 {
+            // Root leaf pointer has relative offset one; MAX + 1 must be refused.
+            bytes[root + 4] = 2;
+        } else if section == 56 {
+            // Tile pointer in the leaf has relative offset one.
+            bytes[leaf + 4] = 2;
+        }
+        bytes[section..section + 8].copy_from_slice(&u64::MAX.to_le_bytes());
+        let file = SparseFile::new(bytes.len() as u64);
+        file.insert(0, &bytes);
+        let result = TileArchive::from_sparse_with_limits(file, PmTilesReadLimits::default()).and_then(|mut a| a.tile(0, 0, 0));
+        assert!(matches!(result, Err(Error::InvalidData(_))), "section {section}: {result:?}");
+    }
+}

@@ -240,7 +240,7 @@ pub(crate) fn parse_directory(bytes: &[u8]) -> Result<Vec<Entry>> {
             if i == 0 {
                 return Err(bad("the first directory entry has a relative offset"));
             }
-            entries[i - 1].offset + entries[i - 1].length as u64
+            entries[i - 1].offset.checked_add(entries[i - 1].length as u64).ok_or_else(|| bad("directory offset overflow"))?
         } else {
             v - 1
         };
@@ -423,7 +423,8 @@ impl Reader {
         if let Some(e) = self.leaves.get(&(offset, length)) {
             return Ok(e.clone());
         }
-        let raw = self.source.read_at(self.header.leaf_dirs_offset + offset, length as u64)?;
+        let absolute_offset = self.header.leaf_dirs_offset.checked_add(offset).ok_or_else(|| bad("leaf directory offset overflow"))?;
+        let raw = self.source.read_at(absolute_offset, length as u64)?;
         let entries = parse_directory(&decompress_with_limit(
             &raw,
             self.header.internal_compression,
@@ -448,7 +449,12 @@ impl Reader {
                 entries = self.leaf(e.offset, e.length)?;
                 continue;
             }
-            return Ok((id < e.tile_id + e.run_length as u64).then_some((self.header.tile_data_offset + e.offset, e.length)));
+            let end = e.tile_id.checked_add(e.run_length as u64).ok_or_else(|| bad("tile run overflow"))?;
+            if id >= end {
+                return Ok(None);
+            }
+            let offset = self.header.tile_data_offset.checked_add(e.offset).ok_or_else(|| bad("tile data offset overflow"))?;
+            return Ok(Some((offset, e.length)));
         }
         Err(bad("directories nest too deeply"))
     }
@@ -508,7 +514,7 @@ impl Reader {
                 }
                 continue;
             }
-            let end = e.tile_id + e.run_length as u64;
+            let end = e.tile_id.checked_add(e.run_length as u64).ok_or_else(|| bad("tile run overflow"))?;
             for id in e.tile_id.max(lo)..end.min(hi) {
                 let (_, x, y) = tile_id_to_zxy(id);
                 out.push((x, y));
@@ -638,6 +644,25 @@ fn build_directories(entries: &[Entry]) -> Result<(Vec<u8>, Vec<u8>)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn malformed_directory_arithmetic_is_rejected() {
+        // Two entries: the second offset is relative to MAX-1 + 8, which overflows.
+        let mut bytes = vec![2, 0, 1, 1, 1, 8, 1];
+        write_uvarint(&mut bytes, u64::MAX);
+        bytes.push(0);
+        assert!(matches!(parse_directory(&bytes), Err(Error::InvalidData(_))));
+        let entries = [Entry { tile_id: u64::MAX - 1, offset: 0, length: 1, run_length: 4 }];
+        let mut reader = Reader {
+            source: ByteSource::Memory(Vec::new()),
+            limits: Default::default(),
+            header: Default::default(),
+            root: entries.to_vec(),
+            leaves: HashMap::new(),
+            metadata: serde_json::json!({}),
+        };
+        assert!(matches!(reader.tiles_at_zoom(0), Err(Error::InvalidData(_))));
+    }
 
     #[test]
     fn bounded_reader_stops_after_one_probe_byte() {

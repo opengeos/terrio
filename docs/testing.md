@@ -379,7 +379,11 @@ from malformed data, unsupported codecs and missing sparse ranges. The bounded
 reader probes one byte beyond the limit and stops without collecting the rest.
 Limits cover decoded bytes before parsing, not codec working memory, parsed
 objects, cumulative caches, image/MVT expansion or compressed input transfers.
-Normal sparse block sizing/read-ahead still applies.
+Normal sparse block sizing/read-ahead still applies. These configurable limits
+are currently a Rust API (including Rust compiled to WASM). Python, CLI and the
+JavaScript remote wrappers retain their existing unlimited defaults. Malformed
+PMTiles offset/range arithmetic is refused with `InvalidData`, including root,
+metadata, leaf and tile locations and directory-relative offsets/tile runs.
 
 The public-API regression constructs independent PMTiles with leaf directories,
 raw/gzip/Zstandard payloads and a 1 MiB repeated tile. It checks all four limits
