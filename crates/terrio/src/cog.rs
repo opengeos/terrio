@@ -720,18 +720,21 @@ impl LazyRaster {
         ds.has_nodata = first_nodata.is_some();
         ds.raster.nodata = first_nodata.unwrap_or(-9999.);
         ds.set_geo_transform([gt[0] + x * gt[1] + y * gt[2], gt[1], gt[2], gt[3] + x * gt[4] + y * gt[5], gt[4], gt[5]]);
-        let header = self.header();
-        ds.gcps = header
-            .gcps
+        let (full_cols, full_rows) = (self.width(), self.height());
+        let (gcps, band_metadata) = match &self.inner {
+            Inner::Tiff(t) => (&t.tags.gcps, &t.tags.band_properties),
+            Inner::Memory(source) | Inner::Source(source, _) => (&source.gcps, &source.band_metadata),
+        };
+        ds.gcps = gcps
             .iter()
             .cloned()
             .map(|mut g| {
-                g.pixel = g.pixel * lw as f64 / header.raster.cols as f64 - window.x as f64;
-                g.line = g.line * lh as f64 / header.raster.rows as f64 - window.y as f64;
+                g.pixel = g.pixel * lw as f64 / full_cols as f64 - window.x as f64;
+                g.line = g.line * lh as f64 / full_rows as f64 - window.y as f64;
                 g
             })
             .collect();
-        ds.band_metadata = bands.iter().map(|&b| header.band_metadata.get(b - 1).cloned().unwrap_or_default()).collect();
+        ds.band_metadata = bands.iter().map(|&b| band_metadata.get(b - 1).cloned().unwrap_or_default()).collect();
         ds.band_nodata = band_nodata;
         Ok(ds)
     }

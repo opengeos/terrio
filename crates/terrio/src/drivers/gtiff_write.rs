@@ -3219,6 +3219,15 @@ mod tests {
         assert_eq!(overview.gcps[0].line, header.gcps[0].line * height as f64 / r.rows as f64 - 2.0);
         let whole = lazy.read().unwrap();
         assert_eq!(whole.gcps, header.gcps);
+        let mut memory = crate::LazyRaster::from(whole.clone());
+        let mut shared = lazy.shared();
+        for reader in [&mut memory, &mut shared] {
+            let window = reader.read_window(crate::Window::new(1, 2, 2, 2), &Default::default()).unwrap();
+            assert_eq!(window.gcps, cropped.gcps);
+            assert_eq!(window.band_metadata, cropped.band_metadata);
+            assert_eq!(window.raster.data.to_f64_vec(), cropped.raster.data.to_f64_vec());
+        }
+
         let dir = tempfile::tempdir().unwrap();
         let options = crate::RasterWriteOptions { driver: Some(crate::formats::RasterDriver::Cog), ..Default::default() };
         for (name, streamed) in [("streamed.tif", true), ("whole.tif", false)] {
