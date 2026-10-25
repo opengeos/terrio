@@ -141,11 +141,22 @@ fn orthographic_roundtrips_across_origins_scales_and_rotations() {
 #[test]
 fn native_wagner_wkt1_includes_pole_graticules() {
     let definitions = include_str!("data/proj_strings.tsv");
-    for id in ["wag4", "wag5"] {
-        let marker = format!("# case {id} sphere\n");
-        let section = definitions.split_once(&marker).unwrap().1.split("# case ").next().unwrap();
-        let wkt = section.lines().find_map(|line| line.strip_prefix("# wkt1 ")).unwrap();
-        check_encoding(id, Some(wkt));
+    // Git can check out this text fixture with CRLF on Windows. Exercise both
+    // forms on every platform, including the full forward/inverse graticules.
+    let lf = definitions.lines().collect::<Vec<_>>().join("\n");
+    let crlf = lf.replace('\n', "\r\n");
+    for definitions in [&lf, &crlf] {
+        for id in ["wag4", "wag5"] {
+            let marker = format!("# case {id} sphere");
+            let wkt = definitions
+                .lines()
+                .skip_while(|line| *line != marker)
+                .skip(1)
+                .take_while(|line| !line.starts_with("# case "))
+                .find_map(|line| line.strip_prefix("# wkt1 "))
+                .expect("Wagner sphere case must contain WKT1");
+            check_encoding(id, Some(wkt));
+        }
     }
 }
 
