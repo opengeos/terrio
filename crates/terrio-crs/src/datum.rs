@@ -323,30 +323,41 @@ pub(crate) fn parse_steps(s: &str) -> Option<Vec<Step>> {
 }
 
 /// Geodetic (radians, metres) to geocentric coordinates.
-fn to_cart(ell: &Ell, lon: f64, lat: f64, h: f64) -> [f64; 3] {
+pub(crate) fn to_cart(ell: &Ell, lon: f64, lat: f64, h: f64) -> [f64; 3] {
     let (sp, cp) = lat.sin_cos();
     let n = ell.a / (1.0 - ell.es * sp * sp).sqrt();
     [(n + h) * cp * lon.cos(), (n + h) * cp * lon.sin(), (n * ell.one_es + h) * sp]
 }
 
 /// Geocentric to geodetic coordinates, by Bowring's formula as PROJ's `cart` does.
-fn from_cart(ell: &Ell, x: f64, y: f64, z: f64) -> [f64; 3] {
-    let a = ell.a;
-    let b = a * ell.one_es.sqrt();
-    let p = x.hypot(y);
-    let lon = y.atan2(x);
-    if ell.es == 0.0 {
-        let lat = z.atan2(p);
-        return [lon, lat, x.hypot(y).hypot(z) - a];
-    }
-    let second = ell.es / ell.one_es;
-    let theta = (z * a).atan2(p * b);
-    let (s, c) = theta.sin_cos();
-    let lat = (z + second * b * s * s * s).atan2(p - ell.es * a * c * c * c);
-    let (sp, cp) = lat.sin_cos();
-    let n = a / (1.0 - ell.es * sp * sp).sqrt();
-    let h = if cp.abs() < 1e-6 { z / sp - n * ell.one_es } else { p / cp - n };
-    [lon, lat, h]
+pub(crate) fn from_cart(ell: &Ell, x: f64, y: f64, z: f64) -> [f64; 3] {
+    // PROJ 9.7.0 cart.cpp (Thomas Knudsen / SDFE): normalized Bowring inverse,
+    // including its pole clamp inside the ellipsoid and its origin convention.
+    let (xn, yn, zn) = (x / ell.a, y / ell.a, z / ell.a);
+    let p = xn.hypot(yn);
+    let b_a = ell.one_es.sqrt();
+    let norm = zn.hypot(p * b_a);
+    let (c, s) = if norm == 0.0 { (1.0, 0.0) } else { (p * b_a / norm, zn / norm) };
+    let y_phi = zn + ell.es / ell.one_es * b_a * s * s * s;
+    let x_phi = p - ell.es * c * c * c;
+    let norm_phi = y_phi.hypot(x_phi);
+    let (mut cp, mut sp) = if norm_phi == 0.0 { (1.0, 0.0) } else { (x_phi / norm_phi, y_phi / norm_phi) };
+    let lat = if x_phi <= 0.0 {
+        cp = 0.0;
+        sp = if z >= 0.0 { 1.0 } else { -1.0 };
+        sp * std::f64::consts::FRAC_PI_2
+    } else {
+        (y_phi / x_phi).atan()
+    };
+    let h = if cp < 1e-6 {
+        let b2 = b_a * b_a;
+        let radius = ell.a * ((cp * cp + b2 * b2 * sp * sp) / (cp * cp + b2 * sp * sp)).sqrt();
+        z.abs() - radius
+    } else {
+        let n = ell.a / (1.0 - ell.es * sp * sp).sqrt();
+        ell.a * p / cp - n
+    };
+    [yn.atan2(xn), lat, h]
 }
 
 /// Applies a Helmert transformation (or its inverse, with the transposed rotation).

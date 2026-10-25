@@ -347,3 +347,34 @@ reference datasets described above. The 117-method inventory explicitly checks
 40 native methods with default features and 86 with `wbprojection-fallback`.
 Unsupported methods must be refused in every tested encoding. The projection
 conformance runner enables the fallback to retain Terrio's full coverage.
+
+## Geocentric endpoints (#269)
+
+`crates/terrio-crs/tests/data/geocentric_benchmark.json` retains the
+`pair-4979-4978` fixture from rust-proj-capability revision
+`ddd9fac70ec370acd9651ebb8b46035207347ad5`: its CRS-study oracle is PROJ 9.9.0,
+pyproj 3.8.0, without grids. This is distinct from the projections-suite oracle.
+The source point is longitude 147, latitude -42, height 100 on EPSG:4979,
+transformed to EPSG:4978 with all three expected Cartesian components retained.
+
+`geocentric_reference.json` adds 24 cases / 59 points frozen with GDAL 3.12.2 /
+PROJ 9.8.1: forward/inverse, poles, centre/interior conventions, GRS80 and spherical
+ellipsoids, linear units, axis options, prime meridians, WKT1/WKT2 without IDs,
+projected composition, datum transformations and an ITRF2014-to-GDA2020 coordinate
+epoch. Two custom geocentric TOWGS84 cases use explicit GDAL pipelines because
+PROJ's CRS factory drops that declared transformation. Both the operation and
+the exception are recorded; tolerances are not widened to hide it.
+
+```sh
+cargo test -p terrio-crs --test geocentric
+cargo test -p terrio --test geocentric -p terrio-cli --test mcp
+python scripts/conformance.py ../terrio-data --only geocentric --strict
+python -m pytest python/tests/test_geocentric.py
+node --test --test-name-pattern='geocentric XYZ' js/tests/node.test.mjs
+```
+
+The conformance suite compares the CLI to live GDAL for every stored case. It
+reports nonzero component errors as within tolerance (1 mm Cartesian/projected
+and height; 1e-8 degrees geographic), never as identical. The Rust tests also
+check malformed definitions, nonfinite inputs, round trips, coordinate metadata,
+vector Z and measure retention, and an actual MCP XYZ call through `--dim 3`.

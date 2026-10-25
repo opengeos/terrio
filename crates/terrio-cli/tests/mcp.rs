@@ -181,3 +181,15 @@ fn coordinate_operation_warnings_and_controls_reach_mcp() {
     assert_eq!(replies[&2]["result"]["isError"], true);
     assert!(replies[&2]["result"]["content"][0]["text"].as_str().unwrap().contains("ALLOW_BALLPARK"));
 }
+
+#[test]
+fn geocentric_xyz_is_available_to_mcp() {
+    let replies = session(&[call(1, "crs", &["EPSG:4979", "--to", "EPSG:4978", "--dim", "3", "147", "-42", "100"])]);
+    assert_eq!(replies[&1]["result"]["isError"], false);
+    let text = replies[&1]["result"]["content"][0]["text"].as_str().unwrap();
+    let values: Vec<f64> = text.split_whitespace().filter_map(|v| v.parse().ok()).collect();
+    assert_eq!(values.len(), 3);
+    for (actual, expected) in values.iter().zip([-3981230.6461390946, 2585441.4118733606, -4245670.74916175]) {
+        assert!((actual - expected).abs() < 0.001);
+    }
+}

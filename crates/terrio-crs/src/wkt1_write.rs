@@ -58,6 +58,16 @@ pub(crate) fn from_proj(s: &str) -> Option<String> {
     let extension = format!("EXTENSION[\"PROJ4\",\"{}\"]", s.trim().replace('"', ""));
     let (geogcs, datum_described) = geogcs(&p, &own);
     let described = datum_described && p.keys().all(|k| DESCRIBED.contains(&k));
+    if own.is_geocentric() {
+        let root = super::wkt1::parse(&geogcs)?;
+        let datum = root.child("DATUM")?.to_wkt();
+        let pm = root.child("PRIMEM")?.to_wkt();
+        let unit = unit(&p, own.to_meter());
+        let w = format!(
+            "GEOCCS[\"unknown\",{datum},{pm},{unit},AXIS[\"Geocentric X\",OTHER],AXIS[\"Geocentric Y\",OTHER],AXIS[\"Geocentric Z\",NORTH]]"
+        );
+        return Some(extended(&w, &extension));
+    }
     if own.is_rotated_pole() {
         // Its base geographic CRS extended with the PROJ string, as GDAL 2 wrote it. Unnamed and
         // without its code, so as not to be taken for the base CRS.

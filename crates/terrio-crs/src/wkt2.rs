@@ -22,10 +22,7 @@ pub(crate) fn handles(root: &Node) -> bool {
         return root.child("SOURCECRS").and_then(first_node).is_some_and(handles);
     }
     if GEOGRAPHIC.contains(&key.as_str()) {
-        // A geocentric GEODCRS (a Cartesian CS) is not a longitude-latitude CRS.
-        return !root
-            .child("CS")
-            .is_some_and(|cs| matches!(cs.args.first(), Some(Arg::Ident(t)) if !t.eq_ignore_ascii_case("ellipsoidal")));
+        return true;
     }
     PROJECTED.contains(&key.as_str())
 }
@@ -52,6 +49,27 @@ pub(crate) fn to_proj(root: &Node) -> Result<Converted> {
     let geog = Geodetic::read(base, !projected)?;
     let mut tail = geog.tail();
     if !projected {
+        if let Some(cs) = root.child("CS")
+            && !matches!(cs.args.first(), Some(Arg::Ident(t)) if t.eq_ignore_ascii_case("Cartesian") || t.eq_ignore_ascii_case("ellipsoidal"))
+        {
+            return Err(bad("unsupported geodetic coordinate system"));
+        }
+        if let Some(cs) = root.child("CS")
+            && matches!(cs.args.first(), Some(Arg::Ident(t)) if t.eq_ignore_ascii_case("Cartesian"))
+        {
+            if cs.num(1) != Some(3.0) {
+                return Err(bad("geocentric Cartesian CS must have three axes"));
+            }
+            let units: Vec<f64> =
+                root.children("AXIS").filter_map(|a| a.child("LENGTHUNIT")).map(|u| u.num(1).unwrap_or(f64::NAN)).collect();
+            let unit = root.child("LENGTHUNIT").and_then(|u| u.num(1)).or_else(|| units.first().copied()).unwrap_or(1.0);
+            if units.iter().any(|u| *u != unit) {
+                return Err(bad("geocentric axes must use one linear unit"));
+            }
+            let mut out = vec![format!("+proj=geocent +to_meter={unit}")];
+            out.append(&mut tail);
+            return Ok(geog.converted(out.join(" ")));
+        }
         let mut out = vec!["+proj=longlat".to_string()];
         if (geog.ang - 1.0).abs() > 1e-12 {
             out.push(format!("+to_deg={}", geog.ang));

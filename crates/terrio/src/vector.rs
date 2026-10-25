@@ -119,7 +119,9 @@ pub(crate) fn extent_of(boxes: impl Iterator<Item = (f64, f64, f64, f64)>) -> Op
 }
 
 /// Reprojects a layer into `dst`, with terrio's transformations (units, axis order and datum
-/// transformations as GDAL applies them). Heights and measures are kept. The layer's CRS must
+/// transformations as GDAL applies them). Heights and measures are kept for ordinary 2D
+/// reprojection. Geocentric endpoints transform all three ordinates and retain output Z
+/// (an absent input Z is zero); measures remain unchanged. The layer's CRS must
 /// be known.
 pub fn reproject_layer(layer: &Layer, dst: &crate::crs::SpatialRef) -> crate::Result<Layer> {
     reproject_layer_owned(layer.clone(), dst)
@@ -143,6 +145,7 @@ pub fn reproject_layer_with_options(
     if src.same_as(dst) {
         return Ok(layer);
     }
+    let cartesian = src.is_geocentric() || dst.is_geocentric();
     let t = crate::crs::Transformer::with_options(&src, dst, options)?;
     let len = crate::par::chunk_len(layer.features.len(), 16);
     let errors = std::sync::Mutex::new(Vec::new());
@@ -150,9 +153,16 @@ pub fn reproject_layer_with_options(
         for (j, f) in features.iter_mut().enumerate() {
             if let Some(g) = f.geometry.as_mut()
                 && let Err(e) = map_coords(g, &mut |c| {
-                    let (x, y) = t.transform(c.x, c.y)?;
-                    c.x = x;
-                    c.y = y;
+                    if cartesian {
+                        let (x, y, z) = t.transform_3d(c.x, c.y, c.z.unwrap_or(0.0))?;
+                        c.x = x;
+                        c.y = y;
+                        c.z = Some(z);
+                    } else {
+                        let (x, y) = t.transform(c.x, c.y)?;
+                        c.x = x;
+                        c.y = y;
+                    }
                     Ok(())
                 })
             {

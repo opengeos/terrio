@@ -1412,3 +1412,19 @@ test("GDAL 3.13 terrain and native WebP creation options", () => {
   const cog = terrio.open(grid.toBytes("gdal.tif", { format: "COG", tileSize: 16, creationOptions: { COG_OVERVIEW_POLICY: "GDAL_3_13" } }), "gdal.tif");
   assert.deepEqual(cog.info().overviews, [[32,17],[16,8]]);
 });
+
+test("geocentric XYZ coordinates and vector reprojection retain all three ordinates", () => {
+  const reference = JSON.parse(readFileSync(new URL("../../crates/terrio-crs/tests/data/geocentric_reference.json", import.meta.url)));
+  for (const c of reference.cases) {
+    const actual = terrio.transformPoints(c.points.map(p => p[0]), c.points.map(p => p[1]), c.src, c.dst, c.points.map(p => p[2]), { sCoordEpoch: c.source_epoch ?? undefined });
+    for (let i = 0; i < c.points.length; i++) {
+      for (let axis = 0; axis < 3; axis++) assert.ok(Math.abs(actual[axis][i] - c.expected[i][axis]) <= c.tolerance[axis], `${c.name}, point ${i}, axis ${axis}`);
+    }
+  }
+  assert.equal(terrio.describeCrs("EPSG:4978").geocentric, true);
+  assert.equal(terrio.describeCrs("EPSG:4978").geographic, false);
+  const layer = terrio.fromGeoJSON({ type: "FeatureCollection", features: [{ type: "Feature", geometry: { type: "Point", coordinates: [147, -42, 100] }, properties: { id: 7 } }] });
+  const out = terrio.open(layer.toBytes("xyz.geojson", { tSrs: "EPSG:4978" }), "xyz.geojson");
+  const point = out.toGeoJSON().features[0].geometry.coordinates;
+  for (const [i, expected] of [-3981230.6461390946, 2585441.4118733606, -4245670.74916175].entries()) assert.ok(Math.abs(point[i] - expected) < 0.001);
+});

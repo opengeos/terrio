@@ -969,6 +969,28 @@ def grid_alternatives(names):
     return sorted({("A", a, b) for a, b in rows if a in names and b and b != a})
 
 
+def geocentric_rows(base):
+    """Cartesian endpoint definitions, reusing the datum's geographic 3D operation lists.
+
+    Datum steps in Terrio run in geographic coordinates: Cartesian conversion is
+    performed by the endpoint, not duplicated in the stored operations.
+    """
+    for code in sorted(map(int, pyproj.get_codes("EPSG", PJType.GEOCENTRIC_CRS, allow_deprecated=True))):
+        srs = osr.SpatialReference()
+        srs.ImportFromEPSG(code)
+        requested = pyproj.CRS.from_epsg(code)
+        crs = pyproj.CRS.from_epsg(int(srs.GetAuthorityCode(None) or code))
+        datum = str(crs.datum.to_json_dict().get("id", {}).get("code", ""))
+        candidates = [r for r in base.values() if str(r[3]) == datum and str(r[9]).startswith("+proj=longlat")]
+        candidates.sort(key=lambda r: ("3" not in str(r[7]), r[2] != crs.name, int(r[1])))
+        proxy = candidates[0] if candidates else None
+        area = crs.area_of_use
+        bounds = ",".join(repr(round(v, 6)) for v in (area.west, area.south, area.east, area.north)) if area else ""
+        yield ("C", code, requested.name.replace("\t", " "), datum, proxy[4] if proxy else "",
+               proxy[5] if proxy else "", proxy[6] if proxy else "", "3" + ("d" if srs.IsDynamic() else ""), bounds,
+               normalize_proj(srs.ExportToProj4(), crs, "en"), srs.ExportToWkt())
+
+
 def rows():
     """Yield the table's rows.
 
@@ -1069,10 +1091,14 @@ def rows():
         return ids, ([] if gids == ids else gids), new + gnew
 
     grids_used = set()
+    base = {}
     for (_, _, _, _, (code, name, datum, geog, flags, area, proj, wkt)), transfos, transfos_grids in zip(crss, found, found_grids):
         ids, gids, new = both(transfos, transfos_grids)
         yield from new
-        yield ("C", code, name, datum, geog, ",".join(map(str, ids)), ",".join(map(str, gids)), flags, area, proj, wkt)
+        row = ("C", code, name, datum, geog, ",".join(map(str, ids)), ",".join(map(str, gids)), flags, area, proj, wkt)
+        base[code] = row
+        yield row
+    yield from geocentric_rows(base)
 
     # Direct transformations between datums other than WGS 84.
     geogs = {}

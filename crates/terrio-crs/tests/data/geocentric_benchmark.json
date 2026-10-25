@@ -1,0 +1,117 @@
+{
+  "source_revision": "ddd9fac70ec370acd9651ebb8b46035207347ad5",
+  "source": "https://github.com/mdsumner/rust-proj-capability",
+  "environment": {
+    "schema_version": 1,
+    "generated": "2026-10-15T23:26:19+00:00",
+    "proj_version": "9.9.0",
+    "projinfo_banner": "Rel. 9.9.0, September 15th, 2026",
+    "pyproj_version": "3.8.0",
+    "proj_data": "/work/.proj-nogrids",
+    "proj_data_files": [
+      "CH",
+      "GL27",
+      "ITRF2000",
+      "ITRF2008",
+      "ITRF2014",
+      "ITRF2020",
+      "deformation_model.schema.json",
+      "nad.lst",
+      "nad27",
+      "nad83",
+      "other.extra",
+      "proj.db",
+      "proj.ini",
+      "projjson.schema.json",
+      "triangulation.schema.json",
+      "world"
+    ],
+    "grid_files_present": [],
+    "network_enabled": false,
+    "epsg_version": "v13.102",
+    "epsg_date": "2026-08-27",
+    "esri_version": "ArcGIS Pro 3.6",
+    "grid_configuration": "no proj-data grids (proj.db, proj.ini and init files only), network off",
+    "axis_order": "always_xy=True: oracle normalised for visualisation (east, north)"
+  },
+  "fixture": {
+    "id": "pair-4979-4978",
+    "group": "pair",
+    "src": "EPSG:4979",
+    "dst": "EPSG:4978",
+    "form": "authority",
+    "point": [
+      147.0,
+      -42.0,
+      100.0
+    ],
+    "layers": [
+      "E5"
+    ],
+    "note": "geographic 3D to geocentric",
+    "src_ref": "EPSG:4979",
+    "dst_ref": "EPSG:4978",
+    "oracle": {
+      "resolved": true,
+      "src_name": "WGS 84",
+      "dst_name": "WGS 84",
+      "src_kind": "geographic",
+      "dst_kind": "geocentric",
+      "src_unit": "degree",
+      "src_unit_factor": 0.017453292519943295,
+      "dst_unit": "metre",
+      "dst_unit_factor": 1.0,
+      "src_export": {
+        "proj": "+proj=longlat +datum=WGS84 +no_defs +type=crs",
+        "proj_error": null,
+        "proj_bound": "+proj=longlat +datum=WGS84 +no_defs +type=crs",
+        "proj_bound_error": null,
+        "wkt1_gdal_bound": null
+      },
+      "dst_export": {
+        "proj": "+proj=geocent +datum=WGS84 +units=m +no_defs +type=crs",
+        "proj_error": null,
+        "proj_bound": "+proj=geocent +datum=WGS84 +units=m +no_defs +type=crs",
+        "proj_bound_error": null,
+        "wkt1_gdal_bound": "GEOCCS[\"WGS 84\",DATUM[\"WGS_1984\",SPHEROID[\"WGS 84\",6378137,298.257223563,AUTHORITY[\"EPSG\",\"7030\"]],AUTHORITY[\"EPSG\",\"6326\"]],PRIMEM[\"Greenwich\",0,AUTHORITY[\"EPSG\",\"8901\"]],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Geocentric X\",OTHER],AXIS[\"Geocentric Y\",OTHER],AXIS[\"Geocentric Z\",NORTH],AUTHORITY[\"EPSG\",\"4978\"]]"
+      },
+      "point": [
+        147.0,
+        -42.0,
+        100.0
+      ],
+      "candidates": [
+        {
+          "name": "Conversion from WGS 84 (geog3D) to WGS 84 (geocentric) (with axis order normalized for visualization)",
+          "accuracy": -1.0,
+          "available": true
+        }
+      ],
+      "best_available": true,
+      "transformer": "Conversion from WGS 84 (geog3D) to WGS 84 (geocentric) (with axis order normalized for visualization)",
+      "executed": true,
+      "fwd": [
+        -3981230.6461390946,
+        2585441.4118733606,
+        -4245670.74916175
+      ],
+      "op": {
+        "name": "Conversion from WGS 84 (geog3D) to WGS 84 (geocentric) (with axis order normalized for visualization)",
+        "accuracy": -1.0,
+        "ballpark": false,
+        "proj": "+proj=pipeline +step +proj=unitconvert +xy_in=deg +z_in=m +xy_out=rad +z_out=m +step +proj=cart +ellps=WGS84"
+      },
+      "inv": [
+        147.0,
+        -42.0,
+        99.99999999813735
+      ],
+      "inv_op": {
+        "name": "Conversion from WGS 84 (geog3D) to WGS 84 (geocentric) (with axis order normalized for visualization)",
+        "accuracy": -1.0,
+        "ballpark": false,
+        "proj": "+proj=pipeline +step +proj=unitconvert +xy_in=deg +z_in=m +xy_out=rad +z_out=m +step +proj=cart +ellps=WGS84"
+      }
+    }
+  }
+}

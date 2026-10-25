@@ -154,6 +154,10 @@ impl SpatialRef {
     pub fn is_geographic(&self) -> bool {
         self.as_core().is_geographic()
     }
+    /// Whether the CRS has geocentric Cartesian X/Y/Z coordinates.
+    pub fn is_geocentric(&self) -> bool {
+        self.as_core().is_geocentric()
+    }
     /// Whether this is a rotated-pole grid (PROJ's `+proj=ob_tran`, CF's
     /// `rotated_latitude_longitude`): its coordinates are in degrees but are not longitudes and
     /// latitudes, so it is not geographic.

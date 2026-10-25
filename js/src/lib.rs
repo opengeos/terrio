@@ -757,7 +757,8 @@ impl NetcdfGroups {
 
 /// Transforms coordinates between two CRSs (`EPSG:4326`, `EPSG:4326+5773`, WKT or PROJ
 /// strings), x (longitude) first. Returns `[xs, ys]` as two `Float64Array`s, or `[xs, ys, zs]`
-/// when heights `zs` are given (they go through geoid models between CRSs with heights).
+/// when `zs` are given. For geocentric CRSs these are Cartesian Z ordinates; use
+/// all three arrays to retain XYZ (the 2D call uses input Z=0 and drops output Z).
 /// Options: `sCoordEpoch` and `tCoordEpoch`, the coordinate epochs of time-dependent
 /// transformations. Datum shift grids are used once registered with `registerGrid`.
 #[wasm_bindgen(js_name = transformPoints)]
@@ -825,6 +826,7 @@ pub fn describe_crs(crs: &str) -> Result<JsValue, JsError> {
         "esri": s.esri,
         "name": s.name(),
         "geographic": s.is_geographic(),
+        "geocentric": s.is_geocentric(),
         "wkt": s.to_wkt(),
     }))
 }

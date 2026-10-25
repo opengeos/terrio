@@ -28,7 +28,10 @@ pub struct Args {
     /// Coordinate operation options: ALLOW_BALLPARK=YES|NO, ONLY_BEST=YES|NO.
     #[arg(long = "ct-opt", visible_aliases = ["to-option", "ct_opt"], value_name = "KEY=VALUE")]
     transform_options: Vec<String>,
-    /// Coordinates to transform: x y [x y ...].
+    /// Number of ordinates per positional point (2: XY, 3: XYZ, 4: XYZ and epoch).
+    #[arg(long = "dim", default_value_t = 2, value_parser = clap::value_parser!(u8).range(2..=4))]
+    dimension: u8,
+    /// Coordinates to transform, grouped according to --dim (XY by default).
     #[arg(allow_negative_numbers = true)]
     coords: Vec<f64>,
 }
@@ -41,6 +44,9 @@ pub fn run(a: Args) -> terrio::Result<()> {
             println!("Name: {name}");
         }
         println!("Geographic: {}", src.is_geographic());
+        if src.is_geocentric() {
+            println!("Geocentric: true");
+        }
         if a.wkt
             && let Some(w) = src.to_wkt()
         {
@@ -74,10 +80,11 @@ pub fn run(a: Args) -> terrio::Result<()> {
         Ok(())
     };
     if !a.coords.is_empty() {
-        if !a.coords.len().is_multiple_of(2) {
-            return Err(terrio::Error::InvalidArgument("coordinates come in x y pairs".into()));
+        let dimension = usize::from(a.dimension);
+        if !a.coords.len().is_multiple_of(dimension) {
+            return Err(terrio::Error::InvalidArgument(format!("coordinates come in groups of {dimension} ordinates")));
         }
-        for p in a.coords.chunks(2) {
+        for p in a.coords.chunks(dimension) {
             print(p)?;
         }
         return Ok(());

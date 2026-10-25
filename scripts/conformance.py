@@ -782,6 +782,28 @@ def epsg_cases(s, ctx, test, points, suffix=""):
     return True
 
 
+def suite_geocentric(ctx):
+    """XYZ conversions, units, poles, datum shifts and projected composition."""
+    suite = Suite("geocentric", "Geocentric XYZ endpoints", "GDAL/PROJ",
+                  "All three ordinates: 1 mm for Cartesian/projected values and heights; "
+                  "1e-8 degrees for geographic angles. Includes explicit declared Helmert "
+                  "pipelines where PROJ 9.8.1's geocentric BoundCRS factory drops the shift.")
+    if missing_modules("osgeo"):
+        suite.skipped = "needs GDAL Python bindings"
+        return suite
+    code, out, err = run([sys.executable, str(SCRIPTS / "compare_geocentric_with_gdal.py"), ctx.data, "--terrio", ctx.terrio, "--json"])
+    try:
+        cases = json.loads(out)
+    except json.JSONDecodeError:
+        suite.error = tail(err or out)
+        return suite
+    for case in cases:
+        suite.cases.append(Case("XYZ", case["name"], case["status"], case["detail"]))
+    if code and not any(c.status == DIFFERS for c in suite.cases):
+        suite.error = tail(err or out)
+    return suite
+
+
 def suite_crs(ctx):
     """Every EPSG CRS's transformations against GDAL's (crates/terrio-crs/tests/epsg_accuracy.rs)."""
     s = Suite(
@@ -1250,6 +1272,7 @@ SUITES = OrderedDict(
         ("grib", suite_grib),
         ("pointclouds", suite_pointclouds),
         ("crs", suite_crs),
+        ("geocentric", suite_geocentric),
         ("crs-grids", suite_crs_grids),
     ]
 )

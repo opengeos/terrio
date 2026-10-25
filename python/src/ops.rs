@@ -791,7 +791,8 @@ fn polygonize(
 ///     ys: The y coordinates.
 ///     src_crs: The source CRS: `"EPSG:4326"`, `"EPSG:4326+5773"`, WKT or a PROJ string.
 ///     dst_crs: The target CRS.
-///     zs: The heights, when transforming them.
+///     zs: Heights, or Cartesian Z for geocentric CRSs. Supply all three ordinates
+///         for geocentric transforms; the 2D call uses input Z=0 and drops output Z.
 ///     s_coord_epoch: The coordinate epoch of the source coordinates (a decimal year), for a
 ///         dynamic source CRS (GDAL's ``-s_coord_epoch``).
 ///     t_coord_epoch: The coordinate epoch of the target coordinates, for a dynamic target CRS

@@ -1,0 +1,982 @@
+{
+  "generator": "scripts/gen_geocentric_reference.py",
+  "gdal": "3.12.2",
+  "proj": "9.8.1",
+  "network": false,
+  "cases": [
+    {
+      "name": "WGS84 XYZ",
+      "src": "EPSG:4979",
+      "dst": "EPSG:4978",
+      "pipeline": null,
+      "source_epoch": null,
+      "points": [
+        [
+          147,
+          -42,
+          100
+        ],
+        [
+          0,
+          0,
+          0
+        ],
+        [
+          90,
+          0,
+          1000
+        ],
+        [
+          0,
+          90,
+          50
+        ],
+        [
+          0,
+          -90,
+          -20
+        ],
+        [
+          -73,
+          40,
+          100
+        ],
+        [
+          180,
+          0,
+          -100
+        ],
+        [
+          12,
+          45,
+          10000
+        ]
+      ],
+      "expected": [
+        [
+          -3981230.6461390946,
+          2585441.4118733606,
+          -4245670.74916175
+        ],
+        [
+          6378137.0,
+          0.0,
+          0.0
+        ],
+        [
+          3.9060948541862245e-10,
+          6379137.0,
+          0.0
+        ],
+        [
+          3.9186515409844503e-10,
+          0.0,
+          6356802.314245179
+        ],
+        [
+          3.9186086783464803e-10,
+          0.0,
+          -6356732.314245179
+        ],
+        [
+          1430511.658715116,
+          -4678992.8046804285,
+          4078049.850961345
+        ],
+        [
+          -6378037.0,
+          7.810842596893387e-10,
+          0.0
+        ],
+        [
+          4425787.22725781,
+          940730.1157090208,
+          4494419.476677785
+        ]
+      ],
+      "tolerance": [
+        0.001,
+        0.001,
+        0.001
+      ]
+    },
+    {
+      "name": "inverse, poles and interior",
+      "src": "EPSG:4978",
+      "dst": "EPSG:4979",
+      "pipeline": null,
+      "source_epoch": null,
+      "points": [
+        [
+          -3981230.6461390946,
+          2585441.4118733606,
+          -4245670.74916175
+        ],
+        [
+          6378137.0,
+          0.0,
+          0.0
+        ],
+        [
+          3.9060948541862245e-10,
+          6379137.0,
+          0.0
+        ],
+        [
+          3.9186515409844503e-10,
+          0.0,
+          6356802.314245179
+        ],
+        [
+          3.9186086783464803e-10,
+          0.0,
+          -6356732.314245179
+        ],
+        [
+          1430511.658715116,
+          -4678992.8046804285,
+          4078049.850961345
+        ],
+        [
+          -6378037.0,
+          7.810842596893387e-10,
+          0.0
+        ],
+        [
+          4425787.22725781,
+          940730.1157090208,
+          4494419.476677785
+        ],
+        [
+          0,
+          0,
+          0
+        ],
+        [
+          1,
+          0,
+          0
+        ],
+        [
+          0,
+          0,
+          -1
+        ],
+        [
+          1,
+          2,
+          3
+        ],
+        [
+          1000000.0,
+          1000000.0,
+          1000000.0
+        ]
+      ],
+      "expected": [
+        [
+          147.0,
+          -42.0,
+          99.99999999813735
+        ],
+        [
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          90.0,
+          0.0,
+          1000.0
+        ],
+        [
+          0.0,
+          90.0,
+          50.0
+        ],
+        [
+          0.0,
+          -90.0,
+          -20.0
+        ],
+        [
+          -73.0,
+          39.99999999999999,
+          99.99999999906868
+        ],
+        [
+          180.0,
+          0.0,
+          -100.00000000093132
+        ],
+        [
+          12.0,
+          45.00000000000799,
+          10000.000000889413
+        ],
+        [
+          0.0,
+          90.0,
+          -6356752.314245179
+        ],
+        [
+          0.0,
+          90.0,
+          -6356752.314245179
+        ],
+        [
+          0.0,
+          -90.0,
+          -6356751.314245179
+        ],
+        [
+          63.43494882292201,
+          90.0,
+          -6356749.314245179
+        ],
+        [
+          45.0,
+          35.9364168522793,
+          -4638846.161804986
+        ]
+      ],
+      "tolerance": [
+        1e-08,
+        1e-08,
+        0.001
+      ]
+    },
+    {
+      "name": "projected to XYZ",
+      "src": "EPSG:32633",
+      "dst": "EPSG:4978",
+      "pipeline": null,
+      "source_epoch": null,
+      "points": [
+        [
+          500000,
+          5000000,
+          123
+        ],
+        [
+          300000,
+          4000000,
+          -50
+        ]
+      ],
+      "expected": [
+        [
+          4352076.145481079,
+          1166135.288580407,
+          4499480.159671463
+        ],
+        [
+          5030122.933121308,
+          1140748.8170280624,
+          3739293.340479205
+        ]
+      ],
+      "tolerance": [
+        0.001,
+        0.001,
+        0.001
+      ]
+    },
+    {
+      "name": "XYZ to projected",
+      "src": "EPSG:4978",
+      "dst": "EPSG:32633",
+      "pipeline": null,
+      "source_epoch": null,
+      "points": [
+        [
+          -3981230.6461390946,
+          2585441.4118733606,
+          -4245670.74916175
+        ],
+        [
+          6378137.0,
+          0.0,
+          0.0
+        ]
+      ],
+      "expected": [
+        [
+          4469394.70962703,
+          -14076619.24282484,
+          99.99999999813735
+        ],
+        [
+          -1188659.4132666453,
+          0.0,
+          0.0
+        ]
+      ],
+      "tolerance": [
+        0.001,
+        0.001,
+        0.001
+      ]
+    },
+    {
+      "name": "ellipsoid EPSG:4936",
+      "src": "EPSG:4937",
+      "dst": "EPSG:4936",
+      "pipeline": null,
+      "source_epoch": null,
+      "points": [
+        [
+          12,
+          45,
+          100
+        ]
+      ],
+      "expected": [
+        [
+          4418939.844759466,
+          939274.6596287334,
+          4487419.119432918
+        ]
+      ],
+      "tolerance": [
+        0.001,
+        0.001,
+        0.001
+      ]
+    },
+    {
+      "name": "ellipsoid EPSG:4954",
+      "src": "EPSG:4955",
+      "dst": "EPSG:4954",
+      "pipeline": null,
+      "source_epoch": null,
+      "points": [
+        [
+          -75,
+          45,
+          100
+        ]
+      ],
+      "expected": [
+        [
+          1169256.858707335,
+          -4363726.003794159,
+          4487419.119432918
+        ]
+      ],
+      "tolerance": [
+        0.001,
+        0.001,
+        0.001
+      ]
+    },
+    {
+      "name": "CSRS datum XYZ",
+      "src": "EPSG:4954",
+      "dst": "EPSG:4978",
+      "pipeline": null,
+      "source_epoch": null,
+      "points": [
+        [
+          1169256.858707335,
+          -4363726.003794159,
+          4487419.119432918
+        ]
+      ],
+      "expected": [
+        [
+          1169256.3243283061,
+          -4363724.591572713,
+          4487419.032019483
+        ]
+      ],
+      "tolerance": [
+        0.001,
+        0.001,
+        0.001
+      ]
+    },
+    {
+      "name": "Helmert XYZ to geographic",
+      "src": "+proj=geocent +ellps=airy +towgs84=446.448,-125.157,542.06,0.15,0.247,0.842,-20.489 +units=m",
+      "dst": "EPSG:4979",
+      "pipeline": "+proj=pipeline +step +proj=helmert +x=446.448 +y=-125.157 +z=542.06 +rx=0.15 +ry=0.247 +rz=0.842 +s=-20.489 +convention=position_vector +step +inv +proj=cart +ellps=WGS84 +step +proj=unitconvert +xy_in=rad +xy_out=deg +step +proj=axisswap +order=2,1",
+      "source_epoch": null,
+      "points": [
+        [
+          3844021.4982971195,
+          -134236.18866335644,
+          5070250.331334757
+        ]
+      ],
+      "expected": [
+        [
+          -2.0014488280031397,
+          53.00030801620564,
+          149.84746922086924
+        ]
+      ],
+      "tolerance": [
+        1e-08,
+        1e-08,
+        0.001
+      ]
+    },
+    {
+      "name": "Helmert XYZ to projected",
+      "src": "+proj=geocent +ellps=airy +towgs84=446.448,-125.157,542.06,0.15,0.247,0.842,-20.489 +units=m",
+      "dst": "EPSG:32630",
+      "pipeline": "+proj=pipeline +step +proj=helmert +x=446.448 +y=-125.157 +z=542.06 +rx=0.15 +ry=0.247 +rz=0.842 +s=-20.489 +convention=position_vector +step +inv +proj=cart +ellps=WGS84 +step +proj=utm +zone=30 +ellps=WGS84",
+      "source_epoch": null,
+      "points": [
+        [
+          3844021.4982971195,
+          -134236.18866335644,
+          5070250.331334757
+        ]
+      ],
+      "expected": [
+        [
+          567011.7310954839,
+          5872771.169797716,
+          149.84746922086924
+        ]
+      ],
+      "tolerance": [
+        0.001,
+        0.001,
+        0.001
+      ]
+    },
+    {
+      "name": "Helmert geographic to XYZ",
+      "src": "+proj=longlat +ellps=airy +towgs84=446.448,-125.157,542.06,0.15,0.247,0.842,-20.489",
+      "dst": "EPSG:4978",
+      "pipeline": null,
+      "source_epoch": null,
+      "points": [
+        [
+          -2,
+          53,
+          100
+        ]
+      ],
+      "expected": [
+        [
+          3844395.8055477627,
+          -134346.59093406808,
+          5070683.806276215
+        ]
+      ],
+      "tolerance": [
+        0.001,
+        0.001,
+        0.001
+      ]
+    },
+    {
+      "name": "Cartesian option +units=km",
+      "src": "EPSG:4979",
+      "dst": "+proj=geocent +datum=WGS84 +units=km",
+      "pipeline": null,
+      "source_epoch": null,
+      "points": [
+        [
+          147,
+          -42,
+          100
+        ],
+        [
+          0,
+          0,
+          0
+        ]
+      ],
+      "expected": [
+        [
+          -3981.230646139095,
+          2585.4414118733607,
+          -4245.67074916175
+        ],
+        [
+          6378.137,
+          0.0,
+          0.0
+        ]
+      ],
+      "tolerance": [
+        0.001,
+        0.001,
+        0.001
+      ]
+    },
+    {
+      "name": "inverse option +units=km",
+      "src": "+proj=geocent +datum=WGS84 +units=km",
+      "dst": "EPSG:4979",
+      "pipeline": null,
+      "source_epoch": null,
+      "points": [
+        [
+          -3981.230646139095,
+          2585.4414118733607,
+          -4245.67074916175
+        ],
+        [
+          6378.137,
+          0.0,
+          0.0
+        ]
+      ],
+      "expected": [
+        [
+          147.0,
+          -41.99999999999999,
+          100.00000000093132
+        ],
+        [
+          0.0,
+          0.0,
+          0.0
+        ]
+      ],
+      "tolerance": [
+        1e-08,
+        1e-08,
+        0.001
+      ]
+    },
+    {
+      "name": "Cartesian option +units=ft",
+      "src": "EPSG:4979",
+      "dst": "+proj=geocent +datum=WGS84 +units=ft",
+      "pipeline": null,
+      "source_epoch": null,
+      "points": [
+        [
+          147,
+          -42,
+          100
+        ],
+        [
+          0,
+          0,
+          0
+        ]
+      ],
+      "expected": [
+        [
+          -13061780.335102014,
+          8482419.330293177,
+          -13929365.974940123
+        ],
+        [
+          20925646.325459316,
+          0.0,
+          0.0
+        ]
+      ],
+      "tolerance": [
+        0.001,
+        0.001,
+        0.001
+      ]
+    },
+    {
+      "name": "inverse option +units=ft",
+      "src": "+proj=geocent +datum=WGS84 +units=ft",
+      "dst": "EPSG:4979",
+      "pipeline": null,
+      "source_epoch": null,
+      "points": [
+        [
+          -13061780.335102014,
+          8482419.330293177,
+          -13929365.974940123
+        ],
+        [
+          20925646.325459316,
+          0.0,
+          0.0
+        ]
+      ],
+      "expected": [
+        [
+          147.0,
+          -42.00000000000001,
+          99.99999999906868
+        ],
+        [
+          0.0,
+          0.0,
+          0.0
+        ]
+      ],
+      "tolerance": [
+        1e-08,
+        1e-08,
+        0.001
+      ]
+    },
+    {
+      "name": "Cartesian option +axis=neu",
+      "src": "EPSG:4979",
+      "dst": "+proj=geocent +datum=WGS84 +axis=neu",
+      "pipeline": null,
+      "source_epoch": null,
+      "points": [
+        [
+          147,
+          -42,
+          100
+        ],
+        [
+          0,
+          0,
+          0
+        ]
+      ],
+      "expected": [
+        [
+          2585441.4118733606,
+          -3981230.6461390946,
+          -4245670.74916175
+        ],
+        [
+          0.0,
+          6378137.0,
+          0.0
+        ]
+      ],
+      "tolerance": [
+        0.001,
+        0.001,
+        0.001
+      ]
+    },
+    {
+      "name": "inverse option +axis=neu",
+      "src": "+proj=geocent +datum=WGS84 +axis=neu",
+      "dst": "EPSG:4979",
+      "pipeline": null,
+      "source_epoch": null,
+      "points": [
+        [
+          2585441.4118733606,
+          -3981230.6461390946,
+          -4245670.74916175
+        ],
+        [
+          0.0,
+          6378137.0,
+          0.0
+        ]
+      ],
+      "expected": [
+        [
+          147.0,
+          -42.0,
+          99.99999999813735
+        ],
+        [
+          0.0,
+          0.0,
+          0.0
+        ]
+      ],
+      "tolerance": [
+        1e-08,
+        1e-08,
+        0.001
+      ]
+    },
+    {
+      "name": "Cartesian option +axis=end",
+      "src": "EPSG:4979",
+      "dst": "+proj=geocent +datum=WGS84 +axis=end",
+      "pipeline": null,
+      "source_epoch": null,
+      "points": [
+        [
+          147,
+          -42,
+          100
+        ],
+        [
+          0,
+          0,
+          0
+        ]
+      ],
+      "expected": [
+        [
+          -3981230.6461390946,
+          2585441.4118733606,
+          4245670.74916175
+        ],
+        [
+          6378137.0,
+          0.0,
+          -0.0
+        ]
+      ],
+      "tolerance": [
+        0.001,
+        0.001,
+        0.001
+      ]
+    },
+    {
+      "name": "inverse option +axis=end",
+      "src": "+proj=geocent +datum=WGS84 +axis=end",
+      "dst": "EPSG:4979",
+      "pipeline": null,
+      "source_epoch": null,
+      "points": [
+        [
+          -3981230.6461390946,
+          2585441.4118733606,
+          4245670.74916175
+        ],
+        [
+          6378137.0,
+          0.0,
+          -0.0
+        ]
+      ],
+      "expected": [
+        [
+          147.0,
+          -42.0,
+          99.99999999813735
+        ],
+        [
+          0.0,
+          0.0,
+          0.0
+        ]
+      ],
+      "tolerance": [
+        1e-08,
+        1e-08,
+        0.001
+      ]
+    },
+    {
+      "name": "Cartesian option +pm=paris",
+      "src": "EPSG:4979",
+      "dst": "+proj=geocent +datum=WGS84 +pm=paris",
+      "pipeline": null,
+      "source_epoch": null,
+      "points": [
+        [
+          147,
+          -42,
+          100
+        ],
+        [
+          0,
+          0,
+          0
+        ]
+      ],
+      "expected": [
+        [
+          -3872481.721784129,
+          2745649.297786346,
+          -4245670.74916175
+        ],
+        [
+          6372831.076867034,
+          -260107.00968401163,
+          0.0
+        ]
+      ],
+      "tolerance": [
+        0.001,
+        0.001,
+        0.001
+      ]
+    },
+    {
+      "name": "inverse option +pm=paris",
+      "src": "+proj=geocent +datum=WGS84 +pm=paris",
+      "dst": "EPSG:4979",
+      "pipeline": null,
+      "source_epoch": null,
+      "points": [
+        [
+          -3872481.721784129,
+          2745649.297786346,
+          -4245670.74916175
+        ],
+        [
+          6372831.076867034,
+          -260107.00968401163,
+          0.0
+        ]
+      ],
+      "expected": [
+        [
+          147.0,
+          -42.0,
+          99.99999999813735
+        ],
+        [
+          0.0,
+          0.0,
+          -1.862645149230957e-09
+        ]
+      ],
+      "tolerance": [
+        1e-08,
+        1e-08,
+        0.001
+      ]
+    },
+    {
+      "name": "ITRF2014 XYZ epoch to GDA2020",
+      "src": "EPSG:7789",
+      "dst": "EPSG:7842",
+      "pipeline": null,
+      "source_epoch": 2020.0,
+      "points": [
+        [
+          -4089979.688651446,
+          4089979.6886514463,
+          -2679116.7247034516
+        ]
+      ],
+      "expected": [
+        [
+          -4089979.688651446,
+          4089979.6886514463,
+          -2679116.7247034516
+        ]
+      ],
+      "tolerance": [
+        0.001,
+        0.001,
+        0.001
+      ]
+    },
+    {
+      "name": "sphere",
+      "src": "+proj=longlat +R=1000000",
+      "dst": "+proj=geocent +R=1000000 +units=m",
+      "pipeline": null,
+      "source_epoch": null,
+      "points": [
+        [
+          147,
+          -42,
+          100
+        ],
+        [
+          0,
+          0,
+          0
+        ],
+        [
+          90,
+          0,
+          1000
+        ]
+      ],
+      "expected": [
+        [
+          -623316.018218114,
+          404786.1551924813,
+          -669197.5194194941
+        ],
+        [
+          1000000.0,
+          0.0,
+          0.0
+        ],
+        [
+          6.129357229732503e-11,
+          1001000.0,
+          0.0
+        ]
+      ],
+      "tolerance": [
+        0.001,
+        0.001,
+        0.001
+      ]
+    },
+    {
+      "name": "WKT1_GDAL without IDs",
+      "src": "EPSG:4979",
+      "dst": "GEOCCS[\"WGS 84\",DATUM[\"WGS_1984\",SPHEROID[\"WGS 84\",6378137,298.257223563]],PRIMEM[\"Greenwich\",0],UNIT[\"metre\",1],AXIS[\"Geocentric X\",OTHER],AXIS[\"Geocentric Y\",OTHER],AXIS[\"Geocentric Z\",NORTH]]",
+      "pipeline": null,
+      "source_epoch": null,
+      "points": [
+        [
+          147,
+          -42,
+          100
+        ],
+        [
+          0,
+          0,
+          0
+        ]
+      ],
+      "expected": [
+        [
+          -3981230.6461390946,
+          2585441.4118733606,
+          -4245670.74916175
+        ],
+        [
+          6378137.0,
+          0.0,
+          0.0
+        ]
+      ],
+      "tolerance": [
+        0.001,
+        0.001,
+        0.001
+      ]
+    },
+    {
+      "name": "WKT2_2019 without IDs",
+      "src": "EPSG:4979",
+      "dst": "GEODCRS[\"WGS 84\",ENSEMBLE[\"World Geodetic System 1984 ensemble\",MEMBER[\"World Geodetic System 1984 (Transit)\"],MEMBER[\"World Geodetic System 1984 (G730)\"],MEMBER[\"World Geodetic System 1984 (G873)\"],MEMBER[\"World Geodetic System 1984 (G1150)\"],MEMBER[\"World Geodetic System 1984 (G1674)\"],MEMBER[\"World Geodetic System 1984 (G1762)\"],MEMBER[\"World Geodetic System 1984 (G2139)\"],MEMBER[\"World Geodetic System 1984 (G2296)\"],ELLIPSOID[\"WGS 84\",6378137,298.257223563,LENGTHUNIT[\"metre\",1]],ENSEMBLEACCURACY[2.0]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[Cartesian,3],AXIS[\"(X)\",geocentricX,ORDER[1],LENGTHUNIT[\"metre\",1]],AXIS[\"(Y)\",geocentricY,ORDER[2],LENGTHUNIT[\"metre\",1]],AXIS[\"(Z)\",geocentricZ,ORDER[3],LENGTHUNIT[\"metre\",1]],USAGE[SCOPE[\"Geodesy. Navigation and positioning using GPS satellite system.\"],AREA[\"World.\"],BBOX[-90,-180,90,180]]]",
+      "pipeline": null,
+      "source_epoch": null,
+      "points": [
+        [
+          147,
+          -42,
+          100
+        ],
+        [
+          0,
+          0,
+          0
+        ]
+      ],
+      "expected": [
+        [
+          -3981230.6461390946,
+          2585441.4118733606,
+          -4245670.74916175
+        ],
+        [
+          6378137.0,
+          0.0,
+          0.0
+        ]
+      ],
+      "tolerance": [
+        0.001,
+        0.001,
+        0.001
+      ]
+    }
+  ]
+}

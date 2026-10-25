@@ -16,6 +16,8 @@ use std::sync::Arc;
 pub(crate) struct Def {
     /// The projection, `None` for a geographic CRS.
     proj: Option<Arc<dyn Proj>>,
+    geocentric: bool,
+    z_down: bool,
     /// The pole rotation of a rotated-pole grid (`+proj=ob_tran`), a CRS in degrees without a
     /// projection, whose longitudes are relative to `lam0`.
     rot: Option<Rotation>,
@@ -245,8 +247,17 @@ impl Def {
             y0: p.f64("y_0").unwrap_or(0.0),
         };
         let rot = if name == "ob_tran" { Some(Rotation::from_params(&p)?) } else { None };
+        let geocentric = name == "geocent";
+        if geocentric && p.str("units").is_some_and(|u| unit_to_meter(u).is_none()) && !p.has("to_meter") {
+            return Err(Error::Crs("unknown geocentric linear unit".into()));
+        }
+        if geocentric
+            && (!to_meter.is_finite() || to_meter <= 0.0 || !ell.a.is_finite() || ell.a <= 0.0 || !ell.es.is_finite() || ell.es >= 1.0)
+        {
+            return Err(Error::Crs("invalid geocentric unit or ellipsoid".into()));
+        }
         let geographic = matches!(name, "longlat" | "latlong" | "lonlat" | "latlon") || rot.is_some();
-        let proj: Option<Arc<dyn Proj>> = if geographic {
+        let proj: Option<Arc<dyn Proj>> = if geographic || geocentric {
             None
         } else {
             match projections::build(name, &mut setup)? {
@@ -269,6 +280,8 @@ impl Def {
         let (ell, lam0, phi0, x0, y0) = (setup.ell, setup.lam0, setup.phi0, setup.x0, setup.y0);
         let mut d = Self {
             proj,
+            geocentric,
+            z_down: p.str("axis").is_some_and(|a| a.as_bytes().get(2) == Some(&b'd')),
             rot,
             ell,
             lam0,
@@ -326,6 +339,15 @@ impl Def {
     /// Whether both CRSs have the same coordinate conversion (projection, units, axes and prime
     /// meridian), whatever their datums: compared on points around the projection's origin.
     pub fn same_conversion(&self, other: &Def) -> bool {
+        if self.geocentric != other.geocentric {
+            return false;
+        }
+        if self.geocentric {
+            return self.axis == other.axis
+                && self.z_down == other.z_down
+                && (self.to_meter / other.to_meter - 1.0).abs() < 1e-12
+                && (self.pm - other.pm).abs() < 1e-12;
+        }
         match (&self.proj, &other.proj) {
             (None, None) => {
                 (self.to_deg - other.to_deg).abs() < 1e-12
@@ -393,6 +415,7 @@ impl Def {
                     Some(text) => super::identify_epsg(text).filter(|g| wkt2::same_ellipsoid(*g, d.ell.a, d.ell.es)),
                     None => super::identify_epsg(geogcs_text(w)?),
                 });
+                let geog = geog.map(|g| epsg::get(g).filter(|e| e.proj.starts_with("+proj=geocent")).map_or(g, |e| e.geog));
                 if let Some(e) = geog.and_then(epsg::get)
                     && e.proj.starts_with("+proj=longlat")
                 {
@@ -415,6 +438,8 @@ impl Def {
             let ell = Ell::from_a_es(e.a, 2.0 * e.f - e.f * e.f);
             let mut d = Self {
                 proj: None,
+                geocentric: false,
+                z_down: false,
                 rot: None,
                 ell,
                 lam0: 0.0,
@@ -450,7 +475,41 @@ impl Def {
     /// Whether this is a geographic CRS. A rotated-pole grid is not: its coordinates are in
     /// degrees, but are not longitudes and latitudes.
     pub fn is_geographic(&self) -> bool {
-        self.proj.is_none() && self.rot.is_none()
+        self.proj.is_none() && self.rot.is_none() && !self.geocentric
+    }
+
+    pub fn is_geocentric(&self) -> bool {
+        self.geocentric
+    }
+
+    /// The internal geographic coordinate space used to select and apply datum operations.
+    pub fn geographic_endpoint(&self) -> Self {
+        let mut d = self.clone();
+        d.geocentric = false;
+        d.three_d = true;
+        d.to_meter = 1.0;
+        d.to_deg = 1.0;
+        d.pm = 0.0;
+        d.axis = *b"en";
+        d.z_down = false;
+        d
+    }
+
+    pub fn unproject_geocentric(&self, x: f64, y: f64, z: f64) -> Option<(f64, f64, f64)> {
+        let (x, y) = self.unaxis(x, y);
+        let z = if self.z_down { -z } else { z };
+        let [lon, lat, h] = datum::from_cart(&self.ell, x * self.to_meter, y * self.to_meter, z * self.to_meter);
+        (lon.is_finite() && lat.is_finite() && h.is_finite()).then_some((adjlon(lon + self.pm).to_degrees(), lat.to_degrees(), h))
+    }
+
+    pub fn project_geocentric(&self, lon: f64, lat: f64, h: f64) -> Option<(f64, f64, f64)> {
+        if lat.abs() > 90.0 + 1e-10 {
+            return None;
+        }
+        let [x, y, z] = datum::to_cart(&self.ell, lon.to_radians() - self.pm, lat.clamp(-90.0, 90.0).to_radians(), h);
+        let (x, y) = self.axis(x / self.to_meter, y / self.to_meter);
+        let z = z / self.to_meter * if self.z_down { -1.0 } else { 1.0 };
+        (x.is_finite() && y.is_finite() && z.is_finite()).then_some((x, y, z))
     }
 
     /// Whether this is a rotated-pole grid (`+proj=ob_tran`).
@@ -615,7 +674,7 @@ impl Def {
 
     /// Whether coordinates have a height: a geographic 3D or a compound CRS.
     pub fn has_height(&self) -> bool {
-        self.three_d || self.vertical.is_some()
+        self.three_d || self.geocentric || self.vertical.is_some()
     }
 
     /// Whether it is a dynamic CRS.

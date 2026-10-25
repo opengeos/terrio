@@ -677,6 +677,28 @@ mod tests {
     use super::*;
 
     #[test]
+    fn geocentric_registry_entries_are_usable() {
+        let codes: Vec<u32> = table()
+            .crs
+            .iter()
+            .filter(|(_, lazy)| {
+                table().text[lazy.line.0 as usize..lazy.line.1 as usize]
+                    .split('\t')
+                    .nth(7)
+                    .is_some_and(|proj| proj.starts_with("+proj=geocent"))
+            })
+            .map(|(code, _)| *code)
+            .collect();
+        assert_eq!(codes.len(), 269);
+        for code in codes {
+            let crs = crate::SpatialRef::from_epsg(code).unwrap();
+            assert!(crs.is_geocentric() && !crs.is_geographic(), "EPSG:{code}");
+            let t = crate::Transformer::new(&crs, &crs).unwrap();
+            assert_eq!(t.transform_3d(1.0, 2.0, 3.0).unwrap(), (1.0, 2.0, 3.0));
+        }
+    }
+
+    #[test]
     fn table_loads() {
         let e = get(2263).unwrap();
         assert_eq!(e.name, "NAD83 / New York Long Island (ftUS)");

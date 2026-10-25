@@ -497,8 +497,13 @@ impl SpatialRef {
             .unwrap_or(1.0)
     }
 
+    /// Whether the CRS has geocentric Cartesian X/Y/Z coordinates.
+    pub fn is_geocentric(&self) -> bool {
+        Def::new(self).is_ok_and(|d| d.is_geocentric())
+    }
+
     /// Whether the enabled engines recognize a geographic (longitude/latitude) CRS.
-    /// Unrecognized definitions return `false`, as do projected CRSs.
+    /// Unrecognized definitions return `false`, as do projected and geocentric CRSs.
     pub fn is_geographic(&self) -> bool {
         match Def::new(self) {
             Ok(d) => d.is_geographic(),
@@ -690,6 +695,15 @@ pub fn identify_epsg(wkt: &str) -> Option<u32> {
     let search = |datums: &[u32]| {
         let own = own.as_ref()?;
         let geogs = datums.iter().flat_map(|d| epsg::geographic_on(*d)).copied();
+        if own.is_geocentric() {
+            return epsg::registry()
+                .by_datum
+                .get(datums.first()?)?
+                .iter()
+                .copied()
+                .filter(|c| epsg::registry().geodetic.get(c).is_some_and(|g| g.kind == epsg::GeodeticKind::Geocentric) && same(own, *c))
+                .min_by_key(|c| (!named(*c), *c));
+        }
         if own.is_geographic() {
             return geogs.filter(|c| same(own, *c)).min_by_key(|c| (!named(*c), realization(*c), *c));
         }
@@ -944,6 +958,8 @@ impl TransformOptions {
 pub struct Transformer {
     src: Def,
     dst: Def,
+    cartesian_src: Option<Def>,
+    cartesian_dst: Option<Def>,
     identity: bool,
     route: route::Route,
     best_route: std::sync::OnceLock<route::Route>,
@@ -1065,7 +1081,15 @@ impl Transformer {
     /// static, the target epoch when the target is dynamic and the source static, and the source
     /// epoch when both are dynamic and both epochs are given.
     pub fn with_options(src: &SpatialRef, dst: &SpatialRef, opts: &TransformOptions) -> Result<Self> {
-        let (s, d) = (Def::new(src)?, Def::new(dst)?);
+        let (mut s, mut d) = (Def::new(src)?, Def::new(dst)?);
+        let cartesian_src = s.is_geocentric().then(|| s.clone());
+        let cartesian_dst = d.is_geocentric().then(|| d.clone());
+        if cartesian_src.is_some() {
+            s = s.geographic_endpoint();
+        }
+        if cartesian_dst.is_some() {
+            d = d.geographic_endpoint();
+        }
         let time = match (s.is_dynamic(), d.is_dynamic(), opts.source_coordinate_epoch, opts.target_coordinate_epoch) {
             (true, false, Some(e), _) => Some(e),
             (false, true, _, Some(e)) => Some(e),
@@ -1085,7 +1109,7 @@ impl Transformer {
             }
             _ => None,
         };
-        let heights = (s.has_height() && d.has_height()).then(|| {
+        let heights = ((s.has_height() && d.has_height()) || cartesian_src.is_some() || cartesian_dst.is_some()).then(|| {
             Box::new(Heights {
                 src: Side::new(&s, true),
                 dst: Side::new(&d, false),
@@ -1122,6 +1146,8 @@ impl Transformer {
             identity,
             src: s,
             dst: d,
+            cartesian_src,
+            cartesian_dst,
             route,
             time,
             heights,
@@ -1145,8 +1171,13 @@ impl Transformer {
         self
     }
 
-    /// Transforms one point.
+    /// Transforms one point. With a geocentric endpoint, input Z defaults to zero
+    /// and output Z is discarded; use `transform_3d` to retain all three ordinates.
     pub fn transform(&self, x: f64, y: f64) -> Result<(f64, f64)> {
+        if self.cartesian_src.is_some() || self.cartesian_dst.is_some() {
+            let (x, y, _) = self.transform_at(x, y, 0.0, self.time)?;
+            return Ok((x, y));
+        }
         if self.identity {
             return Ok((x, y));
         }
@@ -1299,6 +1330,37 @@ impl Transformer {
     }
 
     fn transform_at(&self, x: f64, y: f64, z: f64, t: Option<f64>) -> Result<(f64, f64, f64)> {
+        let fail = || Error::Crs(format!("cannot transform ({x}, {y}, {z})"));
+        if self.cartesian_src.is_some() || self.cartesian_dst.is_some() {
+            if !x.is_finite() || !y.is_finite() || !z.is_finite() {
+                return Err(fail());
+            }
+            if self.identity {
+                return Ok((x, y, z));
+            }
+            if self.cartesian_src.is_none()
+                && self.src.is_geographic()
+                && self.src.unproject(x, y).is_none_or(|(_, lat)| lat.abs() > std::f64::consts::FRAC_PI_2 + 1e-12)
+            {
+                return Err(fail());
+            }
+            let (x, y, z) = match &self.cartesian_src {
+                Some(src) => src.unproject_geocentric(x, y, z).ok_or_else(fail)?,
+                None => (x, y, z),
+            };
+            let (x, y, z) = self.transform_geographic_at(x, y, z, t)?;
+            if !x.is_finite() || !y.is_finite() || !z.is_finite() {
+                return Err(fail());
+            }
+            return match &self.cartesian_dst {
+                Some(dst) => dst.project_geocentric(x, y, z).ok_or_else(fail),
+                None => Ok((x, y, z)),
+            };
+        }
+        self.transform_geographic_at(x, y, z, t)
+    }
+
+    fn transform_geographic_at(&self, x: f64, y: f64, z: f64, t: Option<f64>) -> Result<(f64, f64, f64)> {
         if self.identity {
             return Ok((x, y, z));
         }

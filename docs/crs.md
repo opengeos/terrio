@@ -326,3 +326,64 @@ apply.
 EPSG definitions come from the [EPSG Geodetic Parameter Dataset](https://epsg.org), through the
 `wbprojection` crate and PROJ. The grid algorithms follow [PROJ](https://proj.org) (MIT licence);
 the grids themselves come from [PROJ-data](https://cdn.proj.org), under their producers' licences.
+
+## Geocentric Cartesian CRSs
+
+The shared pure-Rust engine accepts geocentric Cartesian endpoints such as
+`EPSG:4978` (WGS 84 X/Y/Z), `+proj=geocent`, WKT1 `GEOCCS`, and WKT2
+`GEODCRS`/`GEODETICCRS` with a three-axis Cartesian CS. Authority-free WKT is
+supported. The bundled table adds 269 EPSG geocentric definitions from PROJ 9.8.1 /
+GDAL 3.12.2; the update script reuses each datum's existing geographic operation
+lists. This works in the standalone crate without optional features, in Terrio,
+and in WebAssembly. These CRSs report `is_geocentric()`, not `is_geographic()`.
+
+Use all three ordinates. Cartesian X points toward longitude 0, latitude 0,
+Y toward longitude 90, latitude 0, and Z toward the north pole. Linear units apply
+to all three coordinates; PROJ `+units`, `+to_meter`, prime meridians and axis
+options are supported. Geographic inputs remain longitude, latitude, ellipsoidal
+height in traditional GIS order. Geocentric conversions compose with projected
+CRSs, datum shifts and existing coordinate-epoch options.
+
+```rust
+let src = terrio_crs::SpatialRef::from_epsg(4979)?;
+let dst = terrio_crs::SpatialRef::from_epsg(4978)?;
+let xyz = terrio_crs::Transformer::new(&src, &dst)?.transform_3d(147.0, -42.0, 100.0)?;
+// Approximately (-3981230.646139, 2585441.411873, -4245670.749162) metres.
+```
+
+```sh
+terrio crs EPSG:4979 --to EPSG:4978 --dim 3 147 -42 100
+# Standard input also accepts XYZ or XYZ plus observation epoch, as before.
+```
+
+`--dim 3` (or `--dim 4` with epoch) groups positional ordinates and makes the same
+operation available to the MCP `crs` tool, whose arguments are CLI arguments.
+
+```python
+x, y, z = terrio.transform_points([147], [-42], "EPSG:4979", "EPSG:4978", zs=[100])
+```
+
+```js
+const [x, y, z] = terrio.transformPoints([147], [-42], "EPSG:4979", "EPSG:4978", [100]);
+```
+
+Vector reprojection involving a geocentric endpoint retains all three output
+ordinates, treating missing input Z as zero; measures remain unchanged. The 2D
+point API likewise uses input Z=0, but returns only X/Y. Use the 3D API to retain
+the result's Z; a two-coordinate raster or bounding box does not supply a 3D
+height model.
+
+Native, CLI/MCP, Python and WASM regressions check all three ordinates against
+the pinned `rust-proj-capability` PROJ 9.9.0 fixture and a frozen GDAL 3.12.2 /
+PROJ 9.8.1 suite. Cartesian/projected coordinates and heights allow 1 mm;
+geographic angles allow 1e-8 degrees. This is numerical agreement, not bit
+identity. The inverse uses PROJ's normalized Bowring convention: at the ellipsoid
+centre longitude is zero, latitude is +90 and height is minus the polar radius;
+interior points can have no unique geographic inverse. Nonfinite coordinates,
+invalid linear units/ellipsoids and out-of-range geographic latitude are errors.
+
+One reference discrepancy is explicit: PROJ 9.8.1's CRS factory skips a declared
+`TOWGS84` on a custom geocentric BoundCRS in the tested Airy case. Terrio honors
+that declared shift. Those two composition cases are compared with the declared
+Helmert operation run as an explicit GDAL pipeline, recorded in
+`geocentric_reference.json`, rather than certifying a lost datum transformation.

@@ -13,6 +13,8 @@ The map projections, ellipsoid helpers and datum grid interpolation in crates/te
 are ported from PROJ (https://proj.org).
 The Mollweide and Wagner IV/V formulas follow src/projections/moll.cpp at PROJ commit
 5fa31c29f0a806568ed7bc76c1a557604db4a804.
+The normalized Cartesian inverse follows src/conversions/cart.cpp in PROJ 9.7.0.
+  Copyright (c) 2016, Thomas Knudsen / SDFE
 
   Copyright (c) 2000, Frank Warmerdam
   Copyright (c) 2004, Gerald I. Evenden
@@ -339,3 +341,10 @@ crates/terrio/src/ops/dem.rs follows apps/gdaldem_lib.cpp from GDAL 3.13.3
 Copyright (c) 2006, 2009 Matthew Perry; Copyright (c) 2009-2013 Even Rouault.
 The authalic-q calculation in crates/terrio-crs/src/math.rs follows
 src/latitudes.cpp from PROJ 9.9, under PROJ's MIT terms reproduced above.
+
+Geocentric benchmark reference data
+---------------------------------
+The pair-4979-4978 numeric fixture is from Michael Sumner's rust-proj-capability
+(https://github.com/mdsumner/rust-proj-capability), revision
+ddd9fac70ec370acd9651ebb8b46035207347ad5, generated with PROJ 9.9.0.
+The CRS-study oracle version is retained separately from projection-suite data.
