@@ -17,6 +17,8 @@ pub trait GridTransport: Send + Sync {
     fn open(&self, url: &str) -> io::Result<Box<dyn GridStream>>;
 
     /// Download a whole grid when explicitly requested or when range opening fails.
+    /// The destination is a caller-owned scratch path and may contain partial bytes
+    /// on error. The engine removes it on failure and renames it only after success.
     fn download(&self, url: &str, path: &Path) -> io::Result<()> {
         let mut source = self.open(url)?;
         let mut output = std::fs::File::create(path)?;
