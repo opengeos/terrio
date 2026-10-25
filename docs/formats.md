@@ -395,27 +395,39 @@ DWG and ASCII DXF. Each drawing becomes one `entities` layer, including model an
 Fields are `Layer`, `EntityHandle`, `EntityType`, `Linetype`, `Text` and `PaperSpace` (1 for paper
 space, null otherwise). Coordinates stay in drawing units, including Z and object-coordinate
 system transformations. CAD coordinates are exposed as XYZ, including zero elevations. No CRS
-is inferred or assigned. Assign a known source CRS explicitly before reprojection. Layer filters select `entities`; attribute filters such as
+is inferred or assigned. Assign a known source CRS explicitly before reprojection. CAD files are decoded in memory; the expansion budget does not limit the
+upstream codec's input file size. Layer filters select `entities`; attribute filters such as
 `--where "Layer = 'survey'"` select drawing layers.
 
 Supported entities are POINT, LINE, straight and bulged LWPOLYLINE/POLYLINE, 3D polylines,
 CIRCLE, ARC, ELLIPSE, TEXT/MTEXT, SOLID/TRACE, 3DFACE and HATCH with polyline, line or circular-arc
-boundaries. INSERT expands block geometry (up to 32 levels and one million output features);
-unused block definitions are excluded. Expanded entities receive new handles. Viewports and
+boundaries. INSERT expands block geometry (up to 32 levels, one million output features and a shared
+work budget of one million entity visits/clones, including skipped leaves and generated segments);
+unused block definitions are excluded. Empty ordinary block references are skipped; missing
+blocks, array inserts and external/non-explodable references produce errors. Expanded entities
+receive new handles. Viewports and
 sequence markers carry no exported geometry.
 Closed polylines remain lines. Curves are linearized at a maximum four-degree step; curve samples
 can differ from GDAL's. Hatch rings are organized by containment into polygons with holes.
 Unsupported entities (including splines, dimensions, ACIS solids and mesh entities), unsupported
 hatch boundaries, fitted polylines and extruded/thick geometry produce an error identifying the
-unsupported data rather than silently discarding it. Text is returned as raw CAD text; font styles
+unsupported data rather than silently discarding it. The optional GDAL backend can read entities
+outside the native subset through its existing fallback; there is no skip-and-discard mode. Text is returned as raw CAD text; font styles
 and MTEXT formatting are not interpreted. Styling, external references and CAD object dictionaries
 are outside Terrio's vector model.
 
-On export, points become POINT (or TEXT when the `Text` attribute is present), lines become LINE
+On export, points become POINT (or TEXT when the `Text` attribute is nonempty), lines become LINE
 or 3D POLYLINE, and horizontal polygons become HATCH with their holes. Non-horizontal polygons
-and measured coordinates are rejected. Multi-geometries/collections become separate entities.
+and measured coordinates are rejected. An explicit point `EntityType` of `POINT`, `TEXT` or
+`MTEXT` overrides that default and preserves text entity kinds; an explicitly requested TEXT/MTEXT
+can have an empty value. Multi-geometries/collections become separate entities, which can increase
+feature counts. The same text/type attributes apply to every point member of a MultiPoint or
+GeometryCollection.
+
 Several input layers can share a drawing: the `Layer` attribute names the CAD layer, falling back
-to the input layer name. `Text`, `Linetype` and `PaperSpace` are mapped back; other GIS fields,
+to the input layer name. Forbidden characters in `Layer`/`Linetype` names are rejected with a
+field-specific error rather than silently renamed. `Text`, `Linetype` and `PaperSpace` are mapped
+back; other GIS fields,
 feature IDs, CRS and CAD-specific objects/styles are not preserved. Handles are newly allocated.
 This is vector geometry interchange, not lossless CAD document editing. The optional STL,
 COLLADA, OBJ, glTF/GLB and FBX importers in acadrust are not enabled by Terrio's `cad` feature.

@@ -1312,6 +1312,9 @@ test("CAD DWG/DXF byte roundtrips preserve drawing coordinates, labels and holes
         [[0, 0], [10, 0], [10, 10], [0, 10], [0, 0]],
         [[2, 2], [4, 2], [4, 4], [2, 4], [2, 2]],
       ] } },
+      { type: "Feature", properties: { Text: "" }, geometry: { type: "Point", coordinates: [1, 2, 3] } },
+      { type: "Feature", properties: { Text: "annotation", EntityType: "POINT" }, geometry: { type: "Point", coordinates: [1, 2, 3] } },
+      { type: "Feature", properties: { Text: "multi\\Pline", EntityType: "MTEXT" }, geometry: { type: "Point", coordinates: [1, 2, 3] } },
     ],
   })), "drawing.geojson");
   for (const ext of ["dxf", "dwg"]) {
@@ -1319,12 +1322,14 @@ test("CAD DWG/DXF byte roundtrips preserve drawing coordinates, labels and holes
     const back = terrio.open(bytes, `drawing.${ext}`);
     assert.deepEqual(back.layerNames(), ["entities"]);
     const features = back.toGeoJSON().features;
-    assert.equal(features.length, 2);
+    assert.equal(features.length, 5);
     assert.deepEqual(features[0].geometry.coordinates, [12, 34, 56]);
     assert.equal(features[0].properties.Layer, "survey");
     assert.equal(features[0].properties.Text, "日本語");
     assert.equal(features[1].geometry.type, "Polygon");
     assert.equal(features[1].geometry.coordinates.length, 2);
+    assert.deepEqual(features.slice(2).map((f) => f.properties.EntityType), ["POINT", "POINT", "MTEXT"]);
+    assert.equal(features[4].properties.Text, "multi\\Pline");
     back.free();
   }
   source.free();

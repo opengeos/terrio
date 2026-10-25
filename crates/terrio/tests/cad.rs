@@ -228,3 +228,73 @@ fn cad_unsupported_spline_uses_available_backend() {
         assert_eq!(cs.last().map(|c| (c.x, c.y)), Some((2.0, 0.0)));
     }
 }
+
+#[test]
+fn cad_empty_blocks_are_benign() {
+    let mut doc = CadDocument::new();
+    let mut block = BlockRecord::new("placeholder");
+    block.handle = doc.allocate_handle();
+    doc.block_records.add(block).unwrap();
+    doc.add_entity(EntityType::Insert(Insert::new("placeholder", Vector3::ZERO))).unwrap();
+    doc.add_entity(EntityType::Point(Point::at(Vector3::UNIT_X))).unwrap();
+    for (bytes, ext) in [(DxfWriter::new(&doc).write_to_vec().unwrap(), "dxf"), (DwgWriter::write_to_vec(&doc).unwrap(), "dwg")] {
+        let ds = read(bytes, ext);
+        assert_eq!(ds.layers[0].features.len(), 1);
+        assert_eq!(ds.layers[0].features[0].geometry, Some(Geometry::Point(Coord::xyz(1.0, 0.0, 0.0))));
+    }
+}
+
+#[test]
+fn cad_point_text_rules_and_mtext_roundtrip() {
+    let mut layer = Layer::new("labels");
+    for name in ["Text", "EntityType"] {
+        layer.add_field(FieldDef::new(name, FieldType::Text));
+    }
+    for (i, (text, kind)) in
+        [("", None), ("label", Some("POINT")), ("multi\\Pline", Some("MTEXT")), ("label", None)].into_iter().enumerate()
+    {
+        let g = if i == 3 {
+            Geometry::MultiPoint(vec![Coord::xyz(3.0, 0.0, 0.0), Coord::xyz(4.0, 0.0, 0.0)])
+        } else {
+            Geometry::Point(Coord::xyz(i as f64, 0.0, 0.0))
+        };
+        layer.features.push(Feature {
+            fid: i as u64,
+            geometry: Some(g),
+            attributes: vec![FieldValue::Text(text.into()), kind.map_or(FieldValue::Null, |s| FieldValue::Text(s.into()))],
+        });
+    }
+    for ext in ["dxf", "dwg"] {
+        let ds = read(write_vector_bytes(&[layer.clone()], &format!("labels.{ext}"), &Default::default()).unwrap(), ext);
+        let layer = &ds.layers[0];
+        assert_eq!(layer.features.len(), 5);
+        for (i, kind) in ["POINT", "POINT", "MTEXT", "TEXT", "TEXT"].into_iter().enumerate() {
+            assert_eq!(property(layer, i, "EntityType"), &FieldValue::Text(kind.into()));
+        }
+        assert_eq!(property(layer, 2, "Text"), &FieldValue::Text("multi\\Pline".into()));
+        assert_eq!(property(layer, 3, "Text"), property(layer, 4, "Text"));
+    }
+}
+
+#[test]
+fn cad_invalid_symbol_names_explain_the_field_and_preserve_output() {
+    let dir = tempfile::tempdir().unwrap();
+    for field in ["Layer", "Linetype"] {
+        let mut layer = Layer::new("valid");
+        layer.add_field(FieldDef::new(field, FieldType::Text));
+        let invalid_name = if field == "Layer" { "bad,name" } else { "bad/name" };
+        layer.features.push(Feature {
+            fid: 0,
+            geometry: Some(Geometry::Point(Coord::xy(0.0, 0.0))),
+            attributes: vec![FieldValue::Text(invalid_name.into())],
+        });
+        let path = dir.path().join(format!("{field}.dxf"));
+        std::fs::write(&path, b"existing file").unwrap();
+        let error = terrio::write_vector(&[layer], path.to_str().unwrap(), &Default::default()).unwrap_err();
+        assert!(
+            matches!(error, terrio::Error::InvalidArgument(ref message) if message.contains(field) && message.contains(invalid_name)),
+            "{error}"
+        );
+        assert_eq!(std::fs::read(path).unwrap(), b"existing file");
+    }
+}

@@ -24,13 +24,20 @@ fn unsupported(entity: &EntityType) -> Error {
     Error::Unsupported(format!("CAD: unsupported {} entity (handle {})", entity.as_entity().entity_type(), entity.common().handle))
 }
 
+const MAX_CAD_WORK: usize = 1_000_000;
+
 pub(crate) fn parse(bytes: Vec<u8>, driver: VectorDriver) -> Result<Layer> {
     let stream = Cursor::new(bytes);
-    let mut doc = if driver == VectorDriver::DWG {
+    let doc = if driver == VectorDriver::DWG {
         DwgReader::from_stream(stream).read().map_err(codec_error)?
     } else {
         DxfReader::from_reader(stream).map_err(codec_error)?.read().map_err(codec_error)?
     };
+    layer_from_document(doc, MAX_CAD_WORK)
+}
+
+fn layer_from_document(mut doc: CadDocument, max_work: usize) -> Result<Layer> {
+    let mut budget = WorkBudget { remaining: max_work };
     let mut layer = Layer::new("entities");
     for name in ["Layer", "EntityHandle", "EntityType", "Linetype", "Text"] {
         layer.add_field(FieldDef::new(name, FieldType::Text));
@@ -41,25 +48,89 @@ pub(crate) fn parse(bytes: Vec<u8>, driver: VectorDriver) -> Result<Layer> {
         .block_records
         .iter()
         .filter(|b| b.name.eq_ignore_ascii_case("*Model_Space") || b.name.to_ascii_lowercase().starts_with("*paper_space"))
-        .flat_map(|b| doc.entities_in_block(&b.name).map(move |e| (e.clone(), !b.name.eq_ignore_ascii_case("*Model_Space"))))
+        .flat_map(|b| b.entity_handles.iter().map(move |h| (*h, !b.name.eq_ignore_ascii_case("*Model_Space"))))
         .collect();
-    for (entity, paper) in roots {
-        push_entity(&mut doc, &entity, paper, 0, &mut layer)?;
+    for (handle, paper) in roots {
+        // Arc shares the document's entity; expansion can mutate the document
+        // without deep-cloning all root geometries up front.
+        let entity = doc.get_entity_arc(handle).ok_or_else(|| Error::InvalidData(format!("CAD: missing entity {handle}")))?;
+        push_entity(&mut doc, &entity, paper, 0, &mut budget, &mut layer)?;
     }
     Ok(layer)
 }
 
-fn push_entity(doc: &mut CadDocument, entity: &EntityType, paper: bool, depth: usize, layer: &mut Layer) -> Result<()> {
+struct WorkBudget {
+    remaining: usize,
+}
+
+impl WorkBudget {
+    fn spend(&mut self, count: usize) -> Result<()> {
+        self.remaining =
+            self.remaining.checked_sub(count).ok_or_else(|| Error::InvalidData("CAD: entity expansion work limit exceeded".into()))?;
+        Ok(())
+    }
+}
+
+fn push_entity(
+    doc: &mut CadDocument,
+    entity: &EntityType,
+    paper: bool,
+    depth: usize,
+    budget: &mut WorkBudget,
+    layer: &mut Layer,
+) -> Result<()> {
+    // Count skipped leaves and INSERTs too, not only emitted features.
+    budget.spend(1)?;
     if depth > 32 || layer.features.len() >= 1_000_000 {
         return Err(Error::InvalidData("CAD: block expansion exceeds the depth (32) or feature (1000000) limit".into()));
     }
-    if matches!(entity, EntityType::Insert(_)) {
+    if let EntityType::Insert(insert) = entity {
+        // acadrust refuses MINSERT in its document-aware explosion API. Reject
+        // arrays before inspecting/allocating any of their potential instances.
+        if insert.is_minsert() {
+            return Err(unsupported(entity));
+        }
+        let record = doc
+            .block_records
+            .get(&insert.block_name)
+            .ok_or_else(|| Error::InvalidData(format!("CAD: missing block '{}'", insert.block_name)))?;
+        if !record.explodable
+            || record.flags.is_xref
+            || record.flags.is_xref_overlay
+            || record.flags.is_external
+            || !record.xref_path.is_empty()
+        {
+            return Err(unsupported(entity));
+        }
+        if record.entity_handles.is_empty() && insert.attributes.is_empty() {
+            return Ok(());
+        }
+        // Reserve cloning work before calling the eager upstream expander.
+        // Stretched bulged polylines can produce one entity per segment, and
+        // nested INSERT shear fallbacks can clone the referenced child block.
+        budget.spend(record.entity_handles.len())?;
+        for handle in &record.entity_handles {
+            let member = doc.get_entity(*handle).ok_or_else(|| Error::InvalidData(format!("CAD: missing block member {handle}")))?;
+            budget.spend(clone_extra_work(member)?)?;
+            if let EntityType::Insert(nested) = member
+                && let Some(child) = doc.block_records.get(&nested.block_name)
+            {
+                budget.spend(child.entity_handles.len())?;
+                for child_handle in &child.entity_handles {
+                    let child_member = doc
+                        .get_entity(*child_handle)
+                        .ok_or_else(|| Error::InvalidData(format!("CAD: missing block member {child_handle}")))?;
+                    budget.spend(clone_extra_work(child_member)?)?;
+                }
+            }
+        }
         let parts = doc.explode_entity(entity);
+        budget.spend(parts.len())?;
         if parts.is_empty() {
             return Err(unsupported(entity));
         }
         for part in parts {
-            push_entity(doc, &part, paper, depth + 1, layer)?;
+            push_entity(doc, &part, paper, depth + 1, budget, layer)?;
         }
         return Ok(());
     }
@@ -85,6 +156,18 @@ fn push_entity(doc: &mut CadDocument, entity: &EntityType, paper: bool, depth: u
     ];
     layer.features.push(Feature { fid: layer.features.len() as u64, geometry: Some(geometry), attributes });
     Ok(())
+}
+
+fn clone_extra_work(entity: &EntityType) -> Result<usize> {
+    ensure_native_properties(entity)?;
+    Ok(match entity {
+        EntityType::LwPolyline(p) => p.vertices.len(),
+        EntityType::Polyline2D(p) => p.vertices.len(),
+        EntityType::Insert(i) => i.attributes.len(),
+        // Avoid an upstream modeler decomposition outside our supported scope.
+        EntityType::Solid3D(_) | EntityType::Region(_) | EntityType::Body(_) => return Err(unsupported(entity)),
+        _ => 0,
+    })
 }
 
 fn coord(v: Vector3) -> Coord {
@@ -161,26 +244,42 @@ fn polyline(vertices: &[(Vector2, f64)], closed: bool, elevation: f64, normal: V
     Ok(cs)
 }
 
+/// Check before transforming too: an upstream non-uniform transform may turn
+/// a thick circle/arc into an ELLIPSE, which has no thickness field to validate.
+fn ensure_native_properties(entity: &EntityType) -> Result<()> {
+    let valid = match entity {
+        EntityType::Point(p) => p.thickness == 0.0,
+        EntityType::Line(l) => l.thickness == 0.0,
+        EntityType::LwPolyline(p) => p.thickness == 0.0,
+        EntityType::Polyline2D(p) => p.thickness == 0.0 && p.flags.bits() & 0x56 == 0,
+        EntityType::Polyline(p) => p.flags.bits() & 0x56 == 0,
+        EntityType::Polyline3D(p) => !p.flags.spline_fit && !p.flags.is_3d_mesh && !p.flags.is_polyface_mesh,
+        EntityType::Circle(c) => c.thickness == 0.0,
+        EntityType::Arc(a) => a.thickness == 0.0,
+        EntityType::Text(t) => t.thickness == 0.0,
+        EntityType::Solid(s) => s.thickness == 0.0,
+        _ => true,
+    };
+    if valid { Ok(()) } else { Err(unsupported(entity)) }
+}
+
 fn geometry(entity: &EntityType) -> Result<Geometry> {
+    ensure_native_properties(entity)?;
     Ok(match entity {
         EntityType::Point(p) => Geometry::Point(coord(p.location)),
-        EntityType::Line(l) if l.thickness == 0.0 => Geometry::LineString(vec![coord(l.start), coord(l.end)]),
-        EntityType::LwPolyline(p) if p.thickness == 0.0 => line(
+        EntityType::Line(l) => Geometry::LineString(vec![coord(l.start), coord(l.end)]),
+        EntityType::LwPolyline(p) => line(
             polyline(&p.vertices.iter().map(|v| (v.location, v.bulge)).collect::<Vec<_>>(), p.is_closed, p.elevation, p.normal)?,
             false,
         )?,
-        EntityType::Polyline2D(p) if p.thickness == 0.0 && p.flags.bits() & 6 == 0 => {
+        EntityType::Polyline2D(p) => {
             let vertices: Vec<_> = p.vertices.iter().map(|v| (Vector2::new(v.location.x, v.location.y), v.bulge)).collect();
             line(polyline(&vertices, p.is_closed(), p.elevation, p.normal)?, false)?
         }
-        EntityType::Polyline(p) if p.flags.bits() & 6 == 0 => {
-            line(p.vertices.iter().map(|v| coord(v.location)).collect(), p.flags.is_closed())?
-        }
-        EntityType::Polyline3D(p) if !p.flags.spline_fit && !p.flags.is_3d_mesh && !p.flags.is_polyface_mesh => {
-            line(p.vertices.iter().map(|v| coord(v.position)).collect(), p.is_closed())?
-        }
-        EntityType::Circle(c) if c.thickness == 0.0 => Geometry::LineString(curve(0.0, TAU, |t| c.point_at_angle_wcs(t))?),
-        EntityType::Arc(a) if a.thickness == 0.0 => {
+        EntityType::Polyline(p) => line(p.vertices.iter().map(|v| coord(v.location)).collect(), p.flags.is_closed())?,
+        EntityType::Polyline3D(p) => line(p.vertices.iter().map(|v| coord(v.position)).collect(), p.is_closed())?,
+        EntityType::Circle(c) => Geometry::LineString(curve(0.0, TAU, |t| c.point_at_angle_wcs(t))?),
+        EntityType::Arc(a) => {
             Geometry::LineString(curve(a.start_angle, ccw_sweep(a.start_angle, a.end_angle), |t| a.point_at_angle_wcs(t))?)
         }
         EntityType::Ellipse(e) => {
@@ -192,7 +291,7 @@ fn geometry(entity: &EntityType) -> Result<Geometry> {
         EntityType::Text(t) => Geometry::Point(coord(ocs(t.insertion_point, t.normal))),
         EntityType::MText(t) => Geometry::Point(coord(t.insertion_point)),
         EntityType::Face3D(f) => polygon(f.corners().into_iter().map(coord).collect())?,
-        EntityType::Solid(s) if s.thickness == 0.0 => polygon(s.boundary_corners().into_iter().map(|v| coord(ocs(v, s.normal))).collect())?,
+        EntityType::Solid(s) => polygon(s.boundary_corners().into_iter().map(|v| coord(ocs(v, s.normal))).collect())?,
         EntityType::Hatch(h) => hatch_geometry(h)?,
         _ => return Err(unsupported(entity)),
     })
@@ -200,8 +299,14 @@ fn geometry(entity: &EntityType) -> Result<Geometry> {
 
 fn polygon(mut cs: Vec<Coord>) -> Result<Geometry> {
     cs.dedup();
-    if cs.len() < 3 {
-        return line(cs, false);
+    let mut distinct = Vec::new();
+    for c in &cs {
+        if !distinct.contains(c) {
+            distinct.push(c.clone());
+        }
+    }
+    if distinct.len() < 3 {
+        return line(distinct, false);
     }
     if cs.first() != cs.last() {
         cs.push(cs[0].clone());
@@ -340,10 +445,12 @@ pub(crate) fn to_bytes(layers: &[Layer], driver: VectorDriver) -> Result<Vec<u8>
             };
             let name = text("Layer").filter(|s| !s.is_empty()).unwrap_or(&layer.name);
             let name = if name.is_empty() { "0" } else { name };
+            validate_symbol_name(name, "Layer")?;
             if !doc.layers.contains(name) {
                 doc.layers.add(acadrust::tables::Layer::new(name)).map_err(codec_error)?;
             }
             let linetype = text("Linetype").unwrap_or("");
+            validate_symbol_name(linetype, "Linetype")?;
             if !linetype.is_empty() && !doc.line_types.contains(linetype) {
                 // The name is useful for filtering; GIS fields do not carry the
                 // CAD dash pattern, so no pattern is invented here.
@@ -351,7 +458,7 @@ pub(crate) fn to_bytes(layers: &[Layer], driver: VectorDriver) -> Result<Vec<u8>
             }
             let paper = layer.schema.field_index("PaperSpace").and_then(|i| f.attributes.get(i)) == Some(&FieldValue::Integer(1));
             let mut entities = Vec::new();
-            encode_geometry(g, text("Text"), &mut entities)?;
+            encode_geometry(g, text("Text").filter(|s| !s.is_empty()), text("EntityType"), &mut entities)?;
             for mut entity in entities {
                 entity.common_mut().layer = name.into();
                 entity.common_mut().linetype = linetype.into();
@@ -380,12 +487,29 @@ fn vector(c: &Coord) -> Result<Vector3> {
     Ok(Vector3::new(c.x, c.y, c.z.unwrap_or(0.0)))
 }
 
-fn encode_geometry(g: &Geometry, text: Option<&str>, out: &mut Vec<EntityType>) -> Result<()> {
+// Extended symbol-name rules: https://help.autodesk.com/cloudhelp/2023/ENU/AutoCAD-AutoLISP-Reference/files/GUID-2EFBE198-9860-456B-A090-206C743ACB90.htm
+fn validate_symbol_name(name: &str, field: &str) -> Result<()> {
+    if name.chars().any(|c| c.is_control() || matches!(c, '<' | '>' | '/' | '\\' | ':' | ';' | '?' | '*' | '|' | ',' | '=' | '`' | '"')) {
+        return Err(Error::InvalidArgument(format!("CAD: invalid {field} name {name:?}: contains a forbidden character")));
+    }
+    Ok(())
+}
+
+fn encode_geometry(g: &Geometry, text: Option<&str>, entity_type: Option<&str>, out: &mut Vec<EntityType>) -> Result<()> {
     match g {
-        Geometry::Point(c) => out.push(match text {
-            Some(text) => EntityType::Text(Text::with_value(text, vector(c)?)),
-            None => EntityType::Point(Point::from_coords(c.x, c.y, vector(c)?.z)),
-        }),
+        Geometry::Point(c) => {
+            let location = vector(c)?;
+            let entity = match entity_type.map(str::to_ascii_uppercase).as_deref() {
+                Some("POINT") => EntityType::Point(Point::at(location)),
+                Some("TEXT") => EntityType::Text(Text::with_value(text.unwrap_or(""), location)),
+                Some("MTEXT") => EntityType::MText(Box::new(acadrust::entities::MText::with_value(text.unwrap_or(""), location))),
+                _ => match text {
+                    Some(text) => EntityType::Text(Text::with_value(text, location)),
+                    None => EntityType::Point(Point::at(location)),
+                },
+            };
+            out.push(entity);
+        }
         Geometry::LineString(cs) => {
             if cs.len() < 2 {
                 return Err(Error::InvalidArgument("CAD: a line needs at least two vertices".into()));
@@ -424,22 +548,22 @@ fn encode_geometry(g: &Geometry, text: Option<&str>, out: &mut Vec<EntityType>) 
         }
         Geometry::MultiPoint(cs) => {
             for c in cs {
-                encode_geometry(&Geometry::Point(c.clone()), text, out)?;
+                encode_geometry(&Geometry::Point(c.clone()), text, entity_type, out)?;
             }
         }
         Geometry::MultiLineString(ls) => {
             for cs in ls {
-                encode_geometry(&Geometry::LineString(cs.clone()), None, out)?;
+                encode_geometry(&Geometry::LineString(cs.clone()), None, None, out)?;
             }
         }
         Geometry::MultiPolygon(ps) => {
             for (e, hs) in ps {
-                encode_geometry(&Geometry::Polygon { exterior: e.clone(), interiors: hs.clone() }, None, out)?;
+                encode_geometry(&Geometry::Polygon { exterior: e.clone(), interiors: hs.clone() }, None, None, out)?;
             }
         }
         Geometry::GeometryCollection(gs) => {
             for g in gs {
-                encode_geometry(g, text, out)?;
+                encode_geometry(g, text, entity_type, out)?;
             }
         }
     }
@@ -465,5 +589,108 @@ mod tests {
             let error = parse(bytes, driver).unwrap_err();
             assert!(matches!(error, Error::Unsupported(ref message) if message.contains("unsupported SPLINE")), "{error}");
         }
+    }
+
+    fn add_block(doc: &mut CadDocument, name: &str, entities: Vec<EntityType>) {
+        let mut block = acadrust::tables::BlockRecord::new(name);
+        block.handle = doc.allocate_handle();
+        let owner = block.handle;
+        doc.block_records.add(block).unwrap();
+        for mut e in entities {
+            e.common_mut().owner_handle = owner;
+            doc.add_entity(e).unwrap();
+        }
+    }
+
+    #[test]
+    fn expansion_budget_counts_skipped_leaves_and_fanout() {
+        let mut doc = CadDocument::new();
+        add_block(&mut doc, "leaf", vec![EntityType::Viewport(Box::default())]);
+        let mut child = "leaf".to_string();
+        for level in 0..8 {
+            let name = format!("level{level}");
+            let children = (0..2).map(|_| EntityType::Insert(acadrust::entities::Insert::new(&child, Vector3::ZERO))).collect();
+            add_block(&mut doc, &name, children);
+            child = name;
+        }
+        doc.add_entity(EntityType::Insert(acadrust::entities::Insert::new(child, Vector3::ZERO))).unwrap();
+        // Below the depth cap and no emitted features: the old limits miss this.
+        let err = layer_from_document(doc, 64).unwrap_err();
+        assert!(err.to_string().contains("work limit"), "{err}");
+    }
+
+    #[test]
+    fn eager_expansion_is_budgeted_before_cloning() {
+        let mut doc = CadDocument::new();
+        let p = acadrust::entities::LwPolyline::from_points((0..100).map(|i| Vector2::new(i as f64, 0.0)).collect());
+        add_block(&mut doc, "large", vec![EntityType::LwPolyline(p)]);
+        let insert = EntityType::Insert(acadrust::entities::Insert::new("large", Vector3::ZERO));
+        let next_handle = doc.next_handle();
+        let mut layer = Layer::new("entities");
+        let error = push_entity(&mut doc, &insert, false, 0, &mut WorkBudget { remaining: 16 }, &mut layer).unwrap_err();
+        assert!(error.to_string().contains("work limit"));
+        assert_eq!(doc.next_handle(), next_handle, "upstream explosion must not run");
+    }
+
+    #[test]
+    fn reject_mesh_flags_and_thickness_consistently() {
+        for bits in [16, 64] {
+            let mut p = acadrust::entities::Polyline::from_points(vec![Vector3::ZERO, Vector3::UNIT_X]);
+            p.flags = acadrust::entities::PolylineFlags::from_bits(bits);
+            assert!(matches!(geometry(&EntityType::Polyline(p)), Err(Error::Unsupported(_))));
+        }
+        let mut p = Point::at(Vector3::ZERO);
+        p.thickness = 2.0;
+        let mut t = Text::with_value("label", Vector3::ZERO);
+        t.thickness = 2.0;
+        for entity in [EntityType::Point(p), EntityType::Text(t)] {
+            assert!(matches!(geometry(&entity), Err(Error::Unsupported(_))));
+        }
+    }
+
+    #[test]
+    fn degenerate_faces_use_their_distinct_vertices() {
+        assert_eq!(
+            polygon(vec![coord(Vector3::ZERO), coord(Vector3::UNIT_X), coord(Vector3::ZERO)]).unwrap(),
+            Geometry::LineString(vec![coord(Vector3::ZERO), coord(Vector3::UNIT_X)])
+        );
+        assert_eq!(polygon(vec![coord(Vector3::ZERO); 4]).unwrap(), Geometry::Point(coord(Vector3::ZERO)));
+    }
+
+    #[test]
+    fn arrays_are_rejected_before_eager_expansion() {
+        let mut doc = CadDocument::new();
+        add_block(&mut doc, "array", vec![EntityType::Point(Point::at(Vector3::ZERO))]);
+        let mut insert = acadrust::entities::Insert::new("array", Vector3::ZERO);
+        insert.row_count = u16::MAX;
+        insert.column_count = u16::MAX;
+        let next_handle = doc.next_handle();
+        let error =
+            push_entity(&mut doc, &EntityType::Insert(insert), false, 0, &mut WorkBudget { remaining: 8 }, &mut Layer::new("entities"))
+                .unwrap_err();
+        assert!(matches!(error, Error::Unsupported(_)));
+        assert_eq!(doc.next_handle(), next_handle);
+    }
+
+    #[test]
+    fn empty_external_references_still_report_unsupported_data() {
+        let mut doc = CadDocument::new();
+        let mut block = acadrust::tables::BlockRecord::new("external");
+        block.handle = doc.allocate_handle();
+        block.flags.is_xref = true;
+        doc.block_records.add(block).unwrap();
+        doc.add_entity(EntityType::Insert(acadrust::entities::Insert::new("external", Vector3::ZERO))).unwrap();
+        assert!(matches!(layer_from_document(doc, 8), Err(Error::Unsupported(_))));
+    }
+
+    #[test]
+    fn thick_curves_in_stretched_blocks_are_rejected() {
+        let mut doc = CadDocument::new();
+        let mut circle = acadrust::entities::Circle::from_coords(0.0, 0.0, 0.0, 1.0);
+        circle.thickness = 2.0;
+        add_block(&mut doc, "thick", vec![EntityType::Circle(circle)]);
+        let insert = acadrust::entities::Insert::new("thick", Vector3::ZERO).with_scale(2.0, 1.0, 1.0);
+        doc.add_entity(EntityType::Insert(insert)).unwrap();
+        assert!(matches!(layer_from_document(doc, 64), Err(Error::Unsupported(_))));
     }
 }
