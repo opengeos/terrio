@@ -485,3 +485,66 @@ def test_geolocation_arrays_match_gdal(gdal, tmp_path, center, step):
         et=0,
     )
     np.testing.assert_array_equal(actual.read(1), ref.ReadAsArray())
+
+
+@pytest.mark.parametrize(
+    "geometry",
+    [
+        {"type": "Point", "coordinates": [8.5, 47.4]},
+        {"type": "Point", "coordinates": [8.5, 47.4, 123.5]},
+        {"type": "LineString", "coordinates": [[0, 0], [2, 3], [5, 1]]},
+        {"type": "Polygon", "coordinates": [[[0, 0], [0, 5], [5, 5], [5, 0], [0, 0]]]},
+    ],
+)
+def test_shapefile_zip_bytes(geometry):
+    import io
+    import zipfile
+
+    source = {
+        "type": "FeatureCollection",
+        "features": [
+            {
+                "type": "Feature",
+                "geometry": geometry,
+                "properties": {"name": "Zürich", "id": 12345678901, "real": 2.5, "flag": True},
+            },
+            {
+                "type": "Feature",
+                "geometry": None,
+                "properties": {"name": None, "id": None, "real": None, "flag": None},
+            },
+        ],
+    }
+    layer = terrio.Layer.from_geojson(source, name="source")
+    archive = layer.to_bytes("places.shp.zip")
+    with zipfile.ZipFile(io.BytesIO(archive)) as members:
+        assert sorted(members.namelist()) == [
+            "places.cpg",
+            "places.dbf",
+            "places.prj",
+            "places.shp",
+            "places.shx",
+        ]
+        assert members.read("places.cpg") == b"UTF-8"
+    back = terrio.open_bytes(archive, "places.shp.zip")[0]
+    assert back.crs == "EPSG:4326"
+    assert back.columns() == {
+        "name": ["Zürich", None],
+        "id": [12345678901, None],
+        "real": [2.5, None],
+        "flag": [True, None],
+    }
+    with pytest.raises(terrio.InvalidArgumentError, match="shp.zip"):
+        layer.to_bytes("places.shp")
+    source["features"][0]["properties"]["name"] = "https://example.org/" + "x" * 254
+    with pytest.raises(terrio.UnsupportedError, match="254 UTF-8 bytes"):
+        terrio.Layer.from_geojson(source).to_bytes("long.shp.zip")
+
+
+def test_geojson_utf8_text_uses_shared_parser():
+    source = (
+        '{"type":"Feature","geometry":{"type":"Point","coordinates":[1,2]},'
+        '"properties":{"name":"Zürich 東京 🌍"}}'
+    )
+    layer = terrio.Layer.from_geojson(source)
+    assert layer.columns()["name"] == ["Zürich 東京 🌍"]

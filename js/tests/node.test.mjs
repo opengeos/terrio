@@ -1412,3 +1412,37 @@ test("GDAL 3.13 terrain and native WebP creation options", () => {
   const cog = terrio.open(grid.toBytes("gdal.tif", { format: "COG", tileSize: 16, creationOptions: { COG_OVERVIEW_POLICY: "GDAL_3_13" } }), "gdal.tif");
   assert.deepEqual(cog.info().overviews, [[32,17],[16,8]]);
 });
+
+
+test("Shapefile ZIP writes point, line and polygon with scalar attributes and nulls", () => {
+  for (const geometry of [
+    { type: "Point", coordinates: [8.5, 47.4] },
+    { type: "Point", coordinates: [8.5, 47.4, 123.5] },
+    { type: "LineString", coordinates: [[0, 0], [2, 3], [5, 1]] },
+    { type: "Polygon", coordinates: [[[0, 0], [0, 5], [5, 5], [5, 0], [0, 0]], [[1, 1], [2, 1], [2, 2], [1, 2], [1, 1]]] },
+  ]) {
+    const source = { type: "FeatureCollection", features: [
+      { type: "Feature", geometry, properties: { name: "Zürich", id: 12345678901, real: 2.5, flag: true } },
+      { type: "Feature", geometry: null, properties: { name: null, id: null, real: null, flag: null } },
+    ] };
+    const ds = terrio.fromGeoJSON(source, "source", "EPSG:4326");
+    assert.equal(ds.toGeoJSON().features[0].properties.name, "Zürich");
+    const bytes = ds.toBytes("places.shp.zip");
+    assert.deepEqual(Array.from(bytes.slice(0, 4)), [80, 75, 3, 4]);
+    const back = terrio.open(bytes, "places.shp.zip");
+    assert.equal(back.info().layers[0].crs.epsg, 4326);
+    assert.deepEqual(back.layerNames(), ["places"]);
+    const actual = back.toGeoJSON();
+    assert.deepEqual(actual.features.map(f => f.geometry), source.features.map(f => f.geometry));
+    assert.deepEqual(actual.features.map(f => f.properties), source.features.map(f => f.properties));
+    assert.throws(() => ds.toBytes("places.shp"), /shp.zip/);
+    assert.ok(ds.toBytes("places.zip", { format: "ESRI Shapefile" }).length > 0);
+  }
+  const point = (text) => terrio.fromGeoJSON({ type: "FeatureCollection", features: [
+    { type: "Feature", geometry: { type: "Point", coordinates: [1, 2] }, properties: { url: text } },
+  ] });
+  assert.equal(terrio.open(point("é".repeat(127)).toBytes("p.shp.zip"), "p.zip").toGeoJSON().features[0].properties.url, "é".repeat(127));
+  assert.equal(terrio.open(point("*").toBytes("p.shp.zip"), "p.zip").toGeoJSON().features[0].properties.url, "*");
+  assert.throws(() => point("https://example.org/" + "a".repeat(254)).toBytes("p.shp.zip"), /254 UTF-8 bytes/);
+  assert.throws(() => point("é".repeat(128)).toBytes("p.shp.zip"), /254 UTF-8 bytes/);
+});

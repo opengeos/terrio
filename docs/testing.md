@@ -347,3 +347,31 @@ reference datasets described above. The 117-method inventory explicitly checks
 40 native methods with default features and 86 with `wbprojection-fallback`.
 Unsupported methods must be refused in every tested encoding. The projection
 conformance runner enables the fallback to retain Terrio's full coverage.
+
+## Shapefile archives (#278)
+
+The public archive regression runs without optional Terrio features. It checks
+point, Z point, line and polygon-with-hole geometries, scalar attributes/nulls,
+EPSG:4326, required ZIP members, UTF-8 at the 254-byte boundary, overlong-URL
+refusal and explicit unsupported output. Native runs also compare every member
+with the existing filesystem writer. Z-only output must not invent M=0 values;
+all-asterisk text must remain text rather than becoming a numeric null marker.
+
+```sh
+cargo test -p terrio --no-default-features --test shapefile_archive
+CARGO_TARGET_WASM32_WASIP1_RUNNER=wasmtime cargo test -p terrio \
+  --target wasm32-wasip1 --no-default-features --test shapefile_archive
+# After rebuilding the JS package: actual wasm32-unknown-unknown execution in Node
+node --test --test-name-pattern='Shapefile ZIP' js/tests/node.test.mjs
+python scripts/conformance.py ../terrio-data --only shapefile-archives --strict
+```
+
+The `shapefile-archives` suite cross-reads the ZIPs with GDAL and Terrio on 16
+Natural Earth places, Las Vegas roads and Tennessee counties each, using explicit
+scalar test attributes. It checks nulls, EPSG:4326 and exact coordinates after
+normalizing ring orientation/start, part order and the Polygon/single-part
+MultiPolygon wrapper (the Shapefile record stores those identically). The Z/text
+case also checks independent GDAL reads of Z without an invented M, and all-asterisk
+text. These comparisons use exactly
+representable real attributes; general DBF real precision is documented in
+[the archive format policy](formats.md#shapefile-zip-output-in-memory).
