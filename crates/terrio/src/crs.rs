@@ -149,7 +149,8 @@ impl SpatialRef {
     pub fn label(&self) -> String {
         self.as_core().label()
     }
-    /// Whether this is a geographic (longitude/latitude) CRS.
+    /// Whether the enabled engines recognize a geographic (longitude/latitude) CRS.
+    /// Unrecognized definitions return `false`, as do projected CRSs.
     pub fn is_geographic(&self) -> bool {
         self.as_core().is_geographic()
     }

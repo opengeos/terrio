@@ -497,7 +497,8 @@ impl SpatialRef {
             .unwrap_or(1.0)
     }
 
-    /// Whether this is a geographic (longitude/latitude) CRS.
+    /// Whether the enabled engines recognize a geographic (longitude/latitude) CRS.
+    /// Unrecognized definitions return `false`, as do projected CRSs.
     pub fn is_geographic(&self) -> bool {
         match Def::new(self) {
             Ok(d) => d.is_geographic(),
