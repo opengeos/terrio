@@ -19,7 +19,7 @@ all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
 [dependencies]
-terrio-crs.workspace = true
+terrio-crs = { workspace = true, features = ["wbprojection-fallback"] }
 wbraster.workspace = true
 wbvector.workspace = true
 wbprojection.workspace = true

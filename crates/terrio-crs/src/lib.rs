@@ -43,6 +43,7 @@ pub use warnings::take as take_warnings;
 #[cfg(remote)]
 pub mod network;
 use serde::Serialize;
+#[cfg(feature = "wbprojection-fallback")]
 use wbprojection as wbp;
 
 mod datum;
@@ -111,6 +112,76 @@ pub fn is_esri_code(code: u32) -> bool {
     epsg::get(code).is_none() && epsg::compound(code).is_none() && epsg::vertical(code).is_none() && epsg::esri(code).is_some()
 }
 
+// Optional legacy registry lookups. Built-in EPSG/ESRI tables remain independent of the fallback.
+fn registry_wkt(code: u32) -> Option<String> {
+    #[cfg(feature = "wbprojection-fallback")]
+    {
+        wbp::to_ogc_wkt(code).ok()
+    }
+    #[cfg(not(feature = "wbprojection-fallback"))]
+    {
+        let _ = code;
+        None
+    }
+}
+
+fn registry_name(code: u32) -> Option<String> {
+    #[cfg(feature = "wbprojection-fallback")]
+    {
+        wbp::epsg::epsg_info(code).map(|i| i.name.to_string())
+    }
+    #[cfg(not(feature = "wbprojection-fallback"))]
+    {
+        epsg::get(code).map(|e| e.name.clone())
+    }
+}
+
+fn epsg_reference(s: &str) -> Option<u32> {
+    let code = canonical_epsg_reference(s);
+    #[cfg(feature = "wbprojection-fallback")]
+    {
+        // Keep legacy free-form references, but normalize canonical versioned
+        // references first: the fallback can mistake their version for the code.
+        code.or_else(|| wbp::epsg_from_srs_reference(s))
+    }
+    #[cfg(not(feature = "wbprojection-fallback"))]
+    code
+}
+
+/// Canonical authority forms are independent of the optional projection engine.
+fn canonical_epsg_reference(s: &str) -> Option<u32> {
+    let digits = |s: &str| {
+        if !s.is_empty() && s.bytes().all(|c| c.is_ascii_digit()) { s.parse().ok() } else { None }
+    };
+    let s = s.trim();
+    if let Some(code) = digits(s) {
+        return Some(code);
+    }
+    let upper = s.to_ascii_uppercase();
+    if let Some(code) = upper.strip_prefix("EPSG:") {
+        return digits(code.strip_prefix(':').unwrap_or(code));
+    }
+    if let Some(rest) = upper.strip_prefix("URN:OGC:DEF:CRS:EPSG:") {
+        let (_, code) = rest.split_once(':')?;
+        return digits(code);
+    }
+    for prefix in [
+        "HTTP://WWW.OPENGIS.NET/DEF/CRS/EPSG/",
+        "HTTPS://WWW.OPENGIS.NET/DEF/CRS/EPSG/",
+        "HTTP://OPENGIS.NET/DEF/CRS/EPSG/",
+        "HTTPS://OPENGIS.NET/DEF/CRS/EPSG/",
+    ] {
+        if let Some(rest) = upper.strip_prefix(prefix) {
+            let (version, code) = rest.split_once('/')?;
+            if version.is_empty() {
+                return None;
+            }
+            return digits(code);
+        }
+    }
+    None
+}
+
 /// A coordinate reference system, known by an EPSG (or ESRI) code, a WKT definition, a PROJ
 /// string or a combination of them.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
@@ -138,11 +209,17 @@ impl SpatialRef {
                 (Some(c), _) => c.wkt.clone(),
                 (None, Some(v)) => v.wkt.clone(),
                 _ => {
-                    let w = wbp::to_ogc_wkt(code).map_err(|_| Error::Crs(format!("unknown EPSG code {code}")))?;
+                    // Match wbprojection's three legacy ESRI-as-EPSG aliases, as
+                    // documented above. Other ESRI codes require the ESRI namespace.
+                    #[cfg(not(feature = "wbprojection-fallback"))]
+                    if matches!(code, 54008 | 54009 | 54030) && epsg::esri(code).is_some() {
+                        return Self::from_esri(code);
+                    }
+                    let wkt = registry_wkt(code).ok_or_else(|| Error::Crs(format!("unknown EPSG code {code}")))?;
                     if epsg::esri(code).is_some() {
                         return Self::from_esri(code);
                     }
-                    w
+                    wkt
                 }
             },
         };
@@ -280,7 +357,7 @@ impl SpatialRef {
         if let Some(code) = esri_reference(&upper) {
             return Self::from_esri(code);
         }
-        if let Some(code) = wbp::epsg_from_srs_reference(s) {
+        if let Some(code) = epsg_reference(s) {
             return Self::from_epsg(code);
         }
         #[cfg(not(target_family = "wasm"))]
@@ -363,7 +440,7 @@ impl SpatialRef {
                 .map(|e| e.wkt.clone())
                 .or_else(|| epsg::compound(code).map(|c| c.wkt.clone()))
                 .or_else(|| epsg::vertical(code).map(|v| v.wkt.clone()))
-                .or_else(|| wbp::to_ogc_wkt(code).ok());
+                .or_else(|| registry_wkt(code));
         }
         self.proj4.as_deref().and_then(proj_to_wkt)
     }
@@ -383,12 +460,12 @@ impl SpatialRef {
         if let Some(e) = self.esri.and_then(epsg::esri) {
             return Some(e.name.clone());
         }
-        let registry = self.epsg.and_then(|code| wbp::to_ogc_wkt(code).ok());
+        let registry = self.epsg.and_then(registry_wkt);
         registry
             .as_deref()
             .and_then(wkt_name)
             .or_else(|| self.to_wkt().as_deref().and_then(wkt_name))
-            .or_else(|| self.epsg.and_then(wbp::epsg::epsg_info).map(|i| i.name.to_string()))
+            .or_else(|| self.epsg.and_then(registry_name))
     }
 
     /// A short label: `EPSG:4326` (or `ESRI:54009`) when the code is known, otherwise the name.
@@ -420,11 +497,15 @@ impl SpatialRef {
             .unwrap_or(1.0)
     }
 
-    /// Whether this is a geographic (longitude/latitude) CRS.
+    /// Whether the enabled engines recognize a geographic (longitude/latitude) CRS.
+    /// Unrecognized definitions return `false`, as do projected CRSs.
     pub fn is_geographic(&self) -> bool {
         match Def::new(self) {
             Ok(d) => d.is_geographic(),
+            #[cfg(feature = "wbprojection-fallback")]
             Err(_) => self.to_wbp().map(|c| c.is_geographic()).unwrap_or(false),
+            #[cfg(not(feature = "wbprojection-fallback"))]
+            Err(_) => false,
         }
     }
 
@@ -451,6 +532,7 @@ impl SpatialRef {
 
     /// Converts to the projection engine's CRS.
     #[doc(hidden)]
+    #[cfg(feature = "wbprojection-fallback")]
     pub fn to_wbp(&self) -> Result<wbp::Crs> {
         if let Some(code) = self.epsg
             && let Ok(c) = wbp::Crs::from_epsg(code)
@@ -503,6 +585,7 @@ fn proj4_extension(wkt: &str) -> Option<String> {
 
 /// A PROJ string whose Mercator standard parallel (`+lat_ts`) is given as the scale at the
 /// equator it implies (`+k`): wbprojection's Mercator has no standard parallel.
+#[cfg(feature = "wbprojection-fallback")]
 fn mercator_lat_ts_as_k(p: &str) -> std::borrow::Cow<'_, str> {
     let tokens: Vec<&str> = p.split_whitespace().collect();
     let lat_ts = tokens.iter().find_map(|t| t.strip_prefix("+lat_ts=")).and_then(|v| v.parse::<f64>().ok());
@@ -540,11 +623,12 @@ pub fn semi_major_axis(wkt: &str) -> Option<f64> {
 /// The EPSG datums the geodetic datum of a WKT definition is: the one its `AUTHORITY` (WKT 1) or
 /// `ID` (WKT 2) declares, else those it is named as (`D_European_1950` is ED50). Empty for a datum
 /// with another name (`Unknown based on Bessel 1841 ellipsoid`), as for GDAL.
+#[cfg(feature = "wbprojection-fallback")]
 fn wkt_datums(wkt: &str) -> Vec<u32> {
     wkt_datums_and_others(wkt).0
 }
 
-/// The EPSG datums of a WKT definition's geodetic datum ([`wkt_datums`]), and the other datums
+/// The EPSG datums of a WKT definition's geodetic datum, and the other datums
 /// whose CRSs ESRI writes with its name (ETRS89-NOR for `D_ETRS_1989`).
 fn wkt_datums_and_others(wkt: &str) -> (Vec<u32>, &'static [u32]) {
     fn find(n: &wkt1::Node) -> Option<&wkt1::Node> {
@@ -599,7 +683,7 @@ pub fn identify_epsg(wkt: &str) -> Option<u32> {
     let upper = wkt.to_ascii_uppercase();
     let wkt_names_realization = REALIZATIONS.iter().any(|r| upper.contains(r));
     let realization = |code: u32| {
-        let name = wbp::epsg::epsg_info(code).map(|i| i.name.to_ascii_uppercase()).unwrap_or_default();
+        let name = registry_name(code).map(|name| name.to_ascii_uppercase()).unwrap_or_default();
         !wkt_names_realization && REALIZATIONS.iter().any(|r| name.contains(r))
     };
     // A CRS of the table on these datums with the WKT's conversion, as GDAL finds it.
@@ -623,54 +707,59 @@ pub fn identify_epsg(wkt: &str) -> Option<u32> {
     if let Some(code) = search(&datums).or_else(|| search(others)) {
         return Some(code);
     }
-    // A current CRS on the WKT's datum. Its datum: its code in the table, else its WKT's (WKT 2
-    // CRSs of the table, on datum ensembles, and those only the registry has). A deprecated code
-    // has its replacement's WKT in the table.
-    let on_datum = |code: u32| {
-        let theirs = match epsg::get(code) {
-            Some(e) if declared_epsg(&e.wkt).is_some_and(|c| c != code) => return false,
-            Some(e) if e.datum != 0 => vec![e.datum],
-            Some(e) => wkt_datums(&e.wkt),
-            None => wbp::to_ogc_wkt(code).map(|w| wkt_datums(&w)).unwrap_or_default(),
-        };
-        theirs.iter().any(|d| datums.contains(d))
-    };
-    // Else wbprojection's registry (projections terrio cannot compare, CRSs its table lacks).
-    let report = wbp::identify_epsg_from_wkt_report(wkt, wbp::EpsgIdentifyPolicy::Lenient)?;
-    // The registry matches loosely: keep a code only when its definition converts coordinates
-    // as the WKT does, on its datum (GDAL leaves a custom CRS without code).
-    let fits = |code: u32| {
-        if !on_datum(code) {
-            return false;
-        }
-        // A projection terrio cannot compare: at least the same ellipsoid (a sinusoidal
-        // projection on MODIS's sphere is not ESRI's World Sinusoidal on WGS 84).
-        let Some(own) = &own else {
-            let candidate = wbp::to_ogc_wkt(code).ok();
-            return match (semi_major_axis(wkt), candidate.as_deref().and_then(semi_major_axis)) {
-                (Some(a), Some(b)) => (a - b).abs() < 1e-3,
-                _ => true,
+    #[cfg(feature = "wbprojection-fallback")]
+    {
+        // A current CRS on the WKT's datum. Its datum: its code in the table, else its WKT's (WKT 2
+        // CRSs of the table, on datum ensembles, and those only the registry has). A deprecated code
+        // has its replacement's WKT in the table.
+        let on_datum = |code: u32| {
+            let theirs = match epsg::get(code) {
+                Some(e) if declared_epsg(&e.wkt).is_some_and(|c| c != code) => return false,
+                Some(e) if e.datum != 0 => vec![e.datum],
+                Some(e) => wkt_datums(&e.wkt),
+                None => wbp::to_ogc_wkt(code).map(|w| wkt_datums(&w)).unwrap_or_default(),
             };
+            theirs.iter().any(|d| datums.contains(d))
         };
-        same(own, code)
-    };
-    // The registry can take a datum's or prime meridian's code for the CRS's: then match the WKT
-    // by its parameters alone.
-    if report.used_embedded_epsg && !report.resolved_code.is_some_and(|c| wbp::to_ogc_wkt(c).is_ok()) {
-        let stripped = strip_authorities(wkt);
-        return if stripped != wkt { identify_epsg(&stripped) } else { None };
+        // Else wbprojection's registry (projections terrio cannot compare, CRSs its table lacks).
+        let report = wbp::identify_epsg_from_wkt_report(wkt, wbp::EpsgIdentifyPolicy::Lenient)?;
+        // The registry matches loosely: keep a code only when its definition converts coordinates
+        // as the WKT does, on its datum (GDAL leaves a custom CRS without code).
+        let fits = |code: u32| {
+            if !on_datum(code) {
+                return false;
+            }
+            // A projection terrio cannot compare: at least the same ellipsoid (a sinusoidal
+            // projection on MODIS's sphere is not ESRI's World Sinusoidal on WGS 84).
+            let Some(own) = &own else {
+                let candidate = registry_wkt(code);
+                return match (semi_major_axis(wkt), candidate.as_deref().and_then(semi_major_axis)) {
+                    (Some(a), Some(b)) => (a - b).abs() < 1e-3,
+                    _ => true,
+                };
+            };
+            same(own, code)
+        };
+        // The registry can take a datum's or prime meridian's code for the CRS's: then match the WKT
+        // by its parameters alone.
+        if report.used_embedded_epsg && !report.resolved_code.is_some_and(|c| wbp::to_ogc_wkt(c).is_ok()) {
+            let stripped = strip_authorities(wkt);
+            return if stripped != wkt { identify_epsg(&stripped) } else { None };
+        }
+        if report.used_embedded_epsg || !report.ambiguous {
+            return report.resolved_code.filter(|c| fits(*c));
+        }
+        let best = report.top_candidates.first()?.total_score;
+        report
+            .top_candidates
+            .iter()
+            .filter(|c| c.total_score >= best && fits(c.code))
+            .min_by_key(|c| (realization(c.code), c.code))
+            .map(|c| c.code)
+            .or(report.resolved_code.filter(|c| fits(*c)))
     }
-    if report.used_embedded_epsg || !report.ambiguous {
-        return report.resolved_code.filter(|c| fits(*c));
-    }
-    let best = report.top_candidates.first()?.total_score;
-    report
-        .top_candidates
-        .iter()
-        .filter(|c| c.total_score >= best && fits(c.code))
-        .min_by_key(|c| (realization(c.code), c.code))
-        .map(|c| c.code)
-        .or(report.resolved_code.filter(|c| fits(*c)))
+    #[cfg(not(feature = "wbprojection-fallback"))]
+    None
 }
 
 /// The projection method (`+proj=tmerc`) of a WKT definition's conversion.
@@ -694,6 +783,7 @@ fn same_method(a: &str, b: &str) -> bool {
 }
 
 /// A WKT definition without its `AUTHORITY[...]` nodes.
+#[cfg(feature = "wbprojection-fallback")]
 fn strip_authorities(wkt: &str) -> String {
     let mut out = wkt.to_string();
     while let Some(start) = out.find(",AUTHORITY[") {
@@ -1563,12 +1653,70 @@ mod tests {
         assert!(epsg::datums_named("Unknown based on Bessel 1841 ellipsoid").is_empty());
     }
 
+    /// Canonical references stay identical across feature configurations; legacy
+    /// free-form acceptance is explicit, including the fallback's version-token bug.
+    #[test]
+    fn authority_reference_forms_are_feature_independent() {
+        // input, canonical result, upstream legacy-parser result
+        let cases = [
+            ("4326", Some(4326), Some(4326)),
+            (" epsg:4326 ", Some(4326), Some(4326)),
+            ("EPSG::4326", Some(4326), Some(4326)),
+            ("urn:ogc:def:crs:EPSG::4326", Some(4326), Some(4326)),
+            ("urn:ogc:def:crs:EPSG:6.6:4326", Some(4326), Some(6)),
+            ("urn:ogc:def:crs:EPSG:9.9:4326", Some(4326), Some(9)),
+            ("http://www.opengis.net/def/crs/EPSG/0/4326", Some(4326), Some(4326)),
+            ("https://opengis.net/def/crs/EPSG/6.6/4326", Some(4326), Some(6)),
+            ("https://www.opengis.net/def/crs/EPSG/100/4326", Some(4326), Some(100)),
+            ("+4326", None, Some(4326)),
+            ("EPSG:+4326", None, None),
+            ("EPSG:-4326", None, None),
+            ("EPSG:::4326", None, Some(4326)),
+            ("EPSG:4326junk", None, Some(4326)),
+            ("4326junk", None, None),
+            ("EPSG:4326/extra", None, Some(4326)),
+            ("urn:ogc:def:crs:EPSG::4326:extra", None, Some(4326)),
+            ("http://www.opengis.net/def/crs/EPSG/0/4326/extra", None, Some(4326)),
+            ("http://www.opengis.net/def/crs/EPSG//4326", None, Some(4326)),
+            ("urn:ogc:def:crs:EPSG::", None, None),
+            ("EPSG:", None, None),
+            ("4294967296", None, None),
+            ("EPSG:4294967296", None, None),
+            ("ESRI:4326", None, None),
+            ("", None, None),
+        ];
+        for (input, canonical, legacy) in cases {
+            assert_eq!(canonical_epsg_reference(input), canonical, "canonical: {input}");
+            #[cfg(feature = "wbprojection-fallback")]
+            {
+                assert_eq!(wbp::epsg_from_srs_reference(input), legacy, "upstream: {input}");
+                assert_eq!(epsg_reference(input), canonical.or(legacy), "with fallback: {input}");
+            }
+            #[cfg(not(feature = "wbprojection-fallback"))]
+            {
+                let _ = legacy;
+                assert_eq!(epsg_reference(input), canonical, "native: {input}");
+            }
+            if canonical == Some(4326) {
+                assert_eq!(SpatialRef::parse(input).unwrap().epsg, Some(4326), "public: {input}");
+            }
+        }
+        // Public '+' inputs are PROJ definitions, even though the legacy helper
+        // accepts a leading '+' on a bare number.
+        assert!(SpatialRef::parse("+4326").is_err());
+    }
+
     #[test]
     fn parses_common_forms() {
         for s in ["EPSG:4326", "4326", "urn:ogc:def:crs:EPSG::4326", "http://www.opengis.net/def/crs/EPSG/0/4326", "OGC:CRS84"] {
             assert_eq!(SpatialRef::parse(s).unwrap().epsg, Some(4326), "{s}");
         }
-        let wkt = wbp::to_ogc_wkt(32633).unwrap();
+        for code in [54008, 54009, 54030] {
+            assert_eq!(SpatialRef::from_epsg(code).unwrap(), SpatialRef::from_esri(code).unwrap());
+        }
+        assert!(SpatialRef::from_epsg(102003).is_err());
+        assert_eq!(SpatialRef::parse("ESRI:102003").unwrap().esri, Some(102003));
+        let wkt = SpatialRef::from_epsg(32633).unwrap().to_wkt().unwrap();
         assert_eq!(SpatialRef::parse(&wkt).unwrap().epsg, Some(32633));
         // An ESRI .prj (New York City boroughs): GDAL identifies EPSG:2263.
         let esri = r#"PROJCS["NAD_1983_StatePlane_New_York_Long_Island_FIPS_3104_Feet",GEOGCS["GCS_North_American_1983",DATUM["D_North_American_1983",SPHEROID["GRS_1980",6378137.0,298.257222101]],PRIMEM["Greenwich",0.0],UNIT["Degree",0.0174532925199433]],PROJECTION["Lambert_Conformal_Conic"],PARAMETER["False_Easting",984250.0],PARAMETER["False_Northing",0.0],PARAMETER["Central_Meridian",-74.0],PARAMETER["Standard_Parallel_1",40.66666666666666],PARAMETER["Standard_Parallel_2",41.03333333333333],PARAMETER["Latitude_Of_Origin",40.16666666666666],UNIT["Foot_US",0.3048006096012192]]"#;

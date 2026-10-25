@@ -49,6 +49,75 @@ const UNSUPPORTED: &[&str] = &[
     "wag7",
 ];
 
+/// Methods supplied by the optional fallback in the 117-method conformance inventory.
+const FALLBACK_ONLY: &[&str] = &[
+    "aitoff",
+    "collg",
+    "crast",
+    "eck1",
+    "eck2",
+    "eck3",
+    "eck4",
+    "eck5",
+    "eck6",
+    "euler",
+    "fahey",
+    "fouc",
+    "hammer",
+    "hatano",
+    "kav5",
+    "kav7",
+    "lagrng",
+    "loxim",
+    "mbt_s",
+    "mbtfpp",
+    "mbtfpq",
+    "murd1",
+    "murd3",
+    "natearth",
+    "natearth2",
+    "nell",
+    "nell_h",
+    "patterson",
+    "putp1",
+    "putp2",
+    "putp3",
+    "putp3p",
+    "putp5",
+    "putp5p",
+    "putp6",
+    "putp6p",
+    "qua_aut",
+    "tcea",
+    "times",
+    "tobmerc",
+    "tpeqd",
+    "vitk1",
+    "wag1",
+    "wag2",
+    "wag3",
+    "wag6",
+];
+
+fn unsupported(name: &str) -> bool {
+    UNSUPPORTED.contains(&name) || (!cfg!(feature = "wbprojection-fallback") && FALLBACK_ONLY.contains(&name))
+}
+
+#[test]
+fn optional_fallback_has_an_explicit_public_boundary() {
+    let definition = "+proj=hammer +R=6371000 +units=m";
+    let parsed = SpatialRef::from_proj4(definition);
+    #[cfg(feature = "wbprojection-fallback")]
+    {
+        let geographic = SpatialRef::from_proj4("+proj=longlat +R=6371000").unwrap();
+        let transform = Transformer::new(&geographic, &parsed.unwrap()).unwrap();
+        let (x, y) = transform.transform(20.0, 30.0).unwrap();
+        assert!(x.is_finite() && y.is_finite());
+    }
+    #[cfg(not(feature = "wbprojection-fallback"))]
+    assert!(parsed.unwrap_err().to_string().contains("wbprojection-fallback"));
+}
+
 /// PROJ strings terrio transforms differently from PROJ, on both figures: `(projection, why)`.
 const PROJ_DIFFERS: &[(&str, &str)] = &[(
     "krovak",
@@ -183,7 +252,7 @@ fn proj_strings_match_proj_or_are_refused() {
     let mut problems = Vec::new();
     for c in cases().iter().filter(|c| !c.rejected) {
         let (crs, geog) = from_proj(c);
-        let unsupported = UNSUPPORTED.contains(&c.name.as_str());
+        let unsupported = unsupported(&c.name);
         let differs = proj_differs(&c.name);
         let label = format!("{} ({})", c.encodings["proj"], c.earth);
         match outcome(crs, geog, &c.points) {
@@ -202,7 +271,7 @@ fn proj_strings_match_proj_or_are_refused() {
 
 #[test]
 fn unsupported_projections_are_refused_in_every_encoding() {
-    for c in cases().iter().filter(|c| UNSUPPORTED.contains(&c.name.as_str())) {
+    for c in cases().iter().filter(|c| unsupported(&c.name)) {
         for key in ["wkt1", "wkt2"] {
             if let Some((crs, geog)) = from_wkt(c, key) {
                 let o = outcome(crs, geog, &c.points);
@@ -215,7 +284,7 @@ fn unsupported_projections_are_refused_in_every_encoding() {
 #[test]
 fn pyproj_wkt_matches_proj() {
     let mut problems = Vec::new();
-    for c in cases().iter().filter(|c| !c.rejected && !UNSUPPORTED.contains(&c.name.as_str())) {
+    for c in cases().iter().filter(|c| !c.rejected && !unsupported(&c.name)) {
         for key in ["wkt1", "wkt2"] {
             let Some((crs, geog)) = from_wkt(c, key) else { continue };
             let listed = WKT_DIFFERS.iter().any(|&(k, n, _)| k == key && n == c.name);
@@ -236,7 +305,7 @@ fn pyproj_wkt_matches_proj() {
 fn own_wkt_reads_back_as_the_same_crs() {
     let mut problems = Vec::new();
     let mut fixed = Vec::new();
-    for c in cases().iter().filter(|c| !c.rejected && !UNSUPPORTED.contains(&c.name.as_str())) {
+    for c in cases().iter().filter(|c| !c.rejected && !unsupported(&c.name)) {
         if proj_differs(&c.name) {
             continue;
         }
@@ -261,16 +330,25 @@ fn own_wkt_reads_back_as_the_same_crs() {
 fn proj_methods_keep_the_crs_figure_and_units() {
     // A PROJ method's parameters are its projection's: one naming the figure, datum or units, or
     // one given twice, is refused rather than overriding the CRS's.
-    let hammer = cases().into_iter().find(|c| c.name == "hammer" && c.earth == "wgs84").unwrap();
-    let (wkt, geog) = (&hammer.encodings["wkt2"], &hammer.encodings["wkt2_geog"]);
-    let usable = |w: &str| {
-        let (crs, geog) = (SpatialRef::parse(w), SpatialRef::parse(geog));
-        matches!(outcome(crs, geog, &hammer.points), Outcome::Matches | Outcome::Differs(_))
-    };
-    assert!(usable(wkt));
-    for extra in [r#"PARAMETER["towgs84",100]"#, r#"PARAMETER["R",6371000]"#, r#"PARAMETER["lon_0",10],PARAMETER["lon_0",20]"#] {
-        let bad = wkt.replace(r#"METHOD["PROJ hammer"]"#, &format!(r#"METHOD["PROJ hammer"],{extra}"#));
-        assert_ne!(&bad, wkt);
-        assert!(!usable(&bad), "{extra} accepted");
+    let all = cases();
+    let template = all.iter().find(|c| c.name == "hammer" && c.earth == "wgs84").unwrap();
+    for name in ["moll", "hammer"] {
+        if name == "hammer" && !cfg!(feature = "wbprojection-fallback") {
+            continue;
+        }
+        let case = all.iter().find(|c| c.name == name && c.earth == "wgs84").unwrap();
+        let method = format!("METHOD[\"PROJ {name}\"]");
+        let wkt = template.encodings["wkt2"].replace("METHOD[\"PROJ hammer\"]", &method);
+        let geog = &case.encodings["wkt2_geog"];
+        let usable = |w: &str| {
+            let (crs, geog) = (SpatialRef::parse(w), SpatialRef::parse(geog));
+            matches!(outcome(crs, geog, &case.points), Outcome::Matches | Outcome::Differs(_))
+        };
+        assert!(usable(&wkt), "{name}");
+        for extra in [r#"PARAMETER["towgs84",100]"#, r#"PARAMETER["R",6371000]"#, r#"PARAMETER["lon_0",10],PARAMETER["lon_0",20]"#] {
+            let bad = wkt.replace(&method, &format!("{method},{extra}"));
+            assert_ne!(&bad, &wkt);
+            assert!(!usable(&bad), "{name}: {extra} accepted");
+        }
     }
 }

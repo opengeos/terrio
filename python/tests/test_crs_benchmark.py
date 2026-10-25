@@ -50,3 +50,19 @@ def test_projection_benchmark(case):
     # At a pole, one last bit before asin shifts the reference latitude by 8.5e-7°.
     tolerance = np.array([1e-6 if abs(case["points"][i][1]) == 90 else 1e-7 for i in valid])
     assert np.all(np.hypot(dlon, lat - expected[:, 1]) < tolerance)
+
+
+@pytest.mark.parametrize(
+    "reference",
+    [
+        "urn:ogc:def:crs:EPSG:6.6:4326",
+        "urn:ogc:def:crs:EPSG:9.9:4326",
+        "http://www.opengis.net/def/crs/EPSG/0/4326",
+        "https://opengis.net/def/crs/EPSG/6.6/4326",
+    ],
+)
+def test_versioned_authority_references(reference):
+    """The version token is independent of the code, as in PROJ 9.8.1."""
+    (x,), (y,) = terrio.transform_points([10.0], [40.0], reference, "EPSG:3857")
+    assert abs(x - 1113194.9079327357) < 1e-7
+    assert abs(y - 4865942.279503175) < 1e-7

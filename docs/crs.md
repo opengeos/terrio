@@ -62,7 +62,8 @@ let (easting, northing) = transform.transform(-105.0, 40.0)?;
 
 | Configuration | Behavior |
 |---|---|
-| Default | EPSG/ESRI tables, WKT and PROJ strings, projections, datum operations, epochs, and local or registered grids; offline |
+| Default | EPSG/ESRI tables, WKT and PROJ strings, 40 native methods from the 117-method test corpus, datum operations, epochs, and local or registered grids; offline |
+| `wbprojection-fallback` | 46 additional projection methods and legacy WKT/identification fallback; enabled by Terrio |
 | `grid-transport` (native) | An application supplies `network::GridTransport` with seekable readers; the engine retains lazy TIFF block decoding |
 | Terrio's `remote` feature | Supplies Terrio's existing HTTP range reader, request controls and cache to the shared engine |
 | WebAssembly | Register grid bytes with `register_grid`; the host handles network access |
@@ -85,8 +86,11 @@ by the settings described below. Direct callers retrieve diagnostics with
 `terrio_crs::take_warnings()`, while Terrio continues to use
 `terrio::warnings::take()`. A custom transformer warning handler is also available.
 
-The extraction preserves the existing `wbprojection` fallback and grid codecs.
-Dependency reduction and measurements are tracked separately in
+The standalone default omits `wbprojection`; Terrio enables the fallback to retain
+its existing coverage. Bundled tables use portable `ruzstd` decompression on all
+targets. TIFF grid codecs retain their previous features, including native Zstd.
+The [dependency and build measurements](crs-footprint.md) record both standalone
+configurations and full Terrio before/after extraction. Release work is tracked in
 [#268](https://github.com/opengeos/terrio/issues/268). The new crate does not add
 geocentric, PROJJSON, IAU or additional projection support by itself.
 
@@ -104,6 +108,17 @@ The workflow publishes `terrio-crs`, then `terrio`, then `terrio-cli` using each
 package's own version. Cargo waits for index visibility between publications; a
 polling timeout requires checking registry state before attempting another upload.
 See [Cargo's publication behavior](https://doc.rust-lang.org/cargo/commands/cargo-publish.html).
+
+The [standalone benchmark validation](crs-benchmark-validation.md) records the
+direct native/fallback results against both pinned upstream suites.
+
+Canonical EPSG references use one parser in both standalone configurations.
+Versioned URNs/URLs resolve the code separately from the authority version
+(`urn:ogc:def:crs:EPSG:6.6:4326` resolves EPSG:4326). The fallback retains its
+legacy free-form authority extraction only after canonical parsing fails;
+inputs such as `EPSG:4326junk` are refused by the native default and retain the
+legacy acceptance with the fallback. Inputs beginning with `+` remain PROJ
+strings in every configuration.
 
 ## Identification
 

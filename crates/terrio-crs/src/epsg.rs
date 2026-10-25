@@ -131,12 +131,6 @@ impl<T> Lazy<T> {
 
 /// A table's decompressed text.
 fn decompress(data: &[u8]) -> String {
-    #[cfg(not(target_family = "wasm"))]
-    if let Ok(bytes) = zstd::stream::decode_all(data)
-        && let Ok(text) = String::from_utf8(bytes)
-    {
-        return text;
-    }
     let mut text = String::new();
     if let Ok(mut d) = ruzstd::decoding::StreamingDecoder::new(&mut &data[..]) {
         let _ = d.read_to_string(&mut text);

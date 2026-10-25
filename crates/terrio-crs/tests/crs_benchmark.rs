@@ -6,6 +6,10 @@
 use terrio_crs::{SpatialRef, Transformer};
 
 fn check(id: &str) {
+    check_encoding(id, None);
+}
+
+fn check_encoding(id: &str, wkt: Option<&str>) {
     let reference: serde_json::Value = serde_json::from_str(include_str!("data/crs_benchmark.json")).unwrap();
     let case = reference["projections"].as_array().unwrap().iter().find(|p| p["id"] == id).unwrap();
     let geographic = SpatialRef::from_proj4(case["geographic"].as_str().unwrap()).unwrap();
@@ -15,7 +19,7 @@ fn check(id: &str) {
     if id == "wintri" {
         definition.push_str(&format!(" +lat_1={}", (2.0 / std::f64::consts::PI).acos().to_degrees()));
     }
-    let projected = SpatialRef::from_proj4(&definition).unwrap();
+    let projected = wkt.map_or_else(|| SpatialRef::from_proj4(&definition), |wkt| Ok(SpatialRef::from_wkt(wkt))).unwrap();
     let forward = Transformer::new(&geographic, &projected).unwrap();
     let inverse = Transformer::new(&projected, &geographic).unwrap();
     let mut failures = Vec::new();
@@ -131,5 +135,34 @@ fn orthographic_roundtrips_across_origins_scales_and_rotations() {
                 assert!(inv.transform(1e9, -1e9).is_err(), "outside limb accepted: {definition}");
             }
         }
+    }
+}
+
+#[test]
+fn native_wagner_wkt1_includes_pole_graticules() {
+    let definitions = include_str!("data/proj_strings.tsv");
+    for id in ["wag4", "wag5"] {
+        let marker = format!("# case {id} sphere\n");
+        let section = definitions.split_once(&marker).unwrap().1.split("# case ").next().unwrap();
+        let wkt = section.lines().find_map(|line| line.strip_prefix("# wkt1 ")).unwrap();
+        check_encoding(id, Some(wkt));
+    }
+}
+
+/// PROJ 9.8.1 / pyproj 3.8.0 resolve the versioned references to EPSG:4326.
+#[test]
+fn versioned_authority_references_match_proj() {
+    for reference in [
+        "urn:ogc:def:crs:EPSG:6.6:4326",
+        "urn:ogc:def:crs:EPSG:9.9:4326",
+        "http://www.opengis.net/def/crs/EPSG/0/4326",
+        "https://opengis.net/def/crs/EPSG/6.6/4326",
+    ] {
+        let source = SpatialRef::parse(reference).unwrap();
+        assert_eq!(source.epsg, Some(4326));
+        let transform = Transformer::new(&source, &SpatialRef::from_epsg(3857).unwrap()).unwrap();
+        let (x, y) = transform.transform(10.0, 40.0).unwrap();
+        assert!((x - 1_113_194.907_932_735_7).abs() < 1e-7, "{reference}: {x}");
+        assert!((y - 4_865_942.279_503_175).abs() < 1e-7, "{reference}: {y}");
     }
 }

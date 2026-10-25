@@ -12,7 +12,7 @@ keywords = ["gis", "geospatial", "crs", "projection", "coordinates"]
 categories = ["science::geo"]
 
 [dependencies]
-wbprojection.workspace = true
+wbprojection = { workspace = true, optional = true }
 geographiclib-rs.workspace = true
 serde.workspace = true
 thiserror.workspace = true
@@ -22,10 +22,11 @@ rayon.workspace = true
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 tiff = { workspace = true, features = ["zstd"] }
-zstd.workspace = true
 
 [features]
 default = []
+# Additional projection methods and legacy identification through wbprojection.
+wbprojection-fallback = ["dep:wbprojection"]
 # A transport supplied by an embedding application; no networking dependency.
 grid-transport = []
 

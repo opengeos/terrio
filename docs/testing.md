@@ -331,3 +331,19 @@ limits and errors before output creation. Decimal places affect only computed
 numeric attributes, not coordinates or format-specific trailing-zero display.
 The options also apply to Python's bundled CLI and MCP; there are currently no
 direct point-sampling or zonal-statistics functions in Python/JavaScript bindings.
+
+## Standalone CRS feature coverage
+
+Run the standalone suite separately from the workspace to avoid Cargo feature
+unification with Terrio, which enables the optional projection fallback:
+
+```sh
+TERRIO_TEST_DATA=../terrio-data cargo test -p terrio-crs
+TERRIO_TEST_DATA=../terrio-data cargo test -p terrio-crs --all-features
+```
+
+Both runs exercise EPSG tables and grids; the data-dependent tests require the
+reference datasets described above. The 117-method inventory explicitly checks
+40 native methods with default features and 86 with `wbprojection-fallback`.
+Unsupported methods must be refused in every tested encoding. The projection
+conformance runner enables the fallback to retain Terrio's full coverage.

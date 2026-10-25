@@ -2887,7 +2887,6 @@ dependencies = [
  "thiserror 2.0.21",
  "tiff",
  "wbprojection",
- "zstd 0.14.3",
 ]
 
 [[package]]

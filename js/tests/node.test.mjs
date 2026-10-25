@@ -242,6 +242,18 @@ test("CRS transforms", () => {
   assert.equal(crs.epsg, 32633);
   assert.match(crs.name, /UTM zone 33N/);
   assert.equal(crs.geographic, false);
+  // PROJ 9.8.1 resolves the authority version separately from the EPSG code.
+  for (const reference of [
+    "urn:ogc:def:crs:EPSG:6.6:4326",
+    "urn:ogc:def:crs:EPSG:9.9:4326",
+    "http://www.opengis.net/def/crs/EPSG/0/4326",
+    "https://opengis.net/def/crs/EPSG/6.6/4326",
+  ]) {
+    assert.equal(terrio.describeCrs(reference).epsg, 4326);
+    const [x, y] = terrio.transformPoints([10], [40], reference, "EPSG:3857");
+    assert.ok(Math.abs(x[0] - 1113194.9079327357) < 1e-7);
+    assert.ok(Math.abs(y[0] - 4865942.279503175) < 1e-7);
+  }
 });
 
 test("CRS benchmark projection regressions", () => {

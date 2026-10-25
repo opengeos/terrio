@@ -750,7 +750,7 @@ def epsg_cases(s, ctx, test, points, suffix=""):
     with tempfile.TemporaryDirectory() as tmp:
         report = os.path.join(tmp, "epsg.tsv")
         env = {"TERRIO_TEST_DATA": os.path.abspath(ctx.data), "TERRIO_EPSG_REPORT": report}
-        _code, out, err = run(["cargo", "test", "--release", "-p", "terrio-crs", "--test", test, "--", "--nocapture"], env)
+        _code, out, err = run(["cargo", "test", "--release", "-p", "terrio-crs", "--features", "wbprojection-fallback", "--test", test, "--", "--nocapture"], env)
         if not os.path.exists(report):
             s.error = tail(err or out)
             return False
@@ -825,6 +825,10 @@ def suite_crs(ctx):
 # The PROJ definitions without an EPSG code that the tests check, by test file and test.
 PROJ_CASES = {
     "crs_benchmark": {
+        "versioned_authority_references_match_proj": (
+            "Versioned EPSG URN/URL references", TOLERANCE,
+            "EPSG:4326 resolution; EPSG:3857 coordinates within 1e-7 m of PROJ 9.8.1",
+        ),
         "winkel_tripel_omitted_parallel_preserves_crs_default": (
             "Winkel Tripel: omitted lat_1 equals explicit zero (CRS semantics)", TOLERANCE,
             "omitted and explicit-zero CRS parallel give equal coordinates",
@@ -873,9 +877,11 @@ def proj_cases(s):
     Args:
         s: The suite the cases go to.
     """
-    group = "PROJ definitions without an EPSG code"
+    group = "CRS references and projection definitions"
     for file, tests in PROJ_CASES.items():
-        code, out, err = run(["cargo", "test", "--release", "-p", "terrio" if file == "geostationary" else "terrio-crs", "--test", file])
+        package = "terrio" if file == "geostationary" else "terrio-crs"
+        features = [] if package == "terrio" else ["--features", "wbprojection-fallback"]
+        code, out, err = run(["cargo", "test", "--release", "-p", package, *features, "--test", file])
         first_case = len(s.cases)
         for test, description in tests.items():
             name, status, detail = (description, IDENTICAL, "") if isinstance(description, str) else description

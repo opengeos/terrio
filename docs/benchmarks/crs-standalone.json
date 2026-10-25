@@ -1,0 +1,3691 @@
+{
+  "benchmark_revision": "ddd9fac70ec370acd9651ebb8b46035207347ad5",
+  "terrio_revision": "f454562cb87f7b4795ff40949a4503e466248f63",
+  "features": {
+    "native": [],
+    "fallback": [
+      "wbprojection-fallback"
+    ]
+  },
+  "grids": "isolated empty search/cache directories, network off",
+  "input_sha256": {
+    "suites/crs/crs.json": "dee073be5c6c57af493b648d202df9f5945c5aa6cd1fadcb9fe1d989a8e5a3cd",
+    "suites/projections/reference.json": "f9efa581ca4711509f109f7399ea458bdfdb18a7c6bed705ecb68718ad868827"
+  },
+  "configurations": {
+    "native": {
+      "crs_verdicts": {
+        "exact": 71,
+        "unresolved": 15,
+        "refused-like-oracle": 5,
+        "close": 1,
+        "failed": 1
+      },
+      "projection_verdicts": {
+        "exact": 35,
+        "unsupported": 14,
+        "gaps": 2,
+        "close": 2,
+        "off": 1
+      },
+      "crs": [
+        {
+          "fixture": "seed-4326",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 0.0,
+          "dz_m": null,
+          "inv_diff_m": 0.0
+        },
+        {
+          "fixture": "seed-3857",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 0.0,
+          "dz_m": null,
+          "inv_diff_m": 0.0
+        },
+        {
+          "fixture": "seed-32755",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 2.0954757928848267e-09,
+          "dz_m": null,
+          "inv_diff_m": 2.4807196597173195e-09
+        },
+        {
+          "fixture": "seed-3031",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 2.3283064365386963e-10,
+          "dz_m": null,
+          "inv_diff_m": 0.0
+        },
+        {
+          "fixture": "seed-28355",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 2.0954757928848267e-09,
+          "dz_m": null,
+          "inv_diff_m": 2.3512394014955906e-09
+        },
+        {
+          "fixture": "seed-7855",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 2.0954757928848267e-09,
+          "dz_m": null,
+          "inv_diff_m": 2.3512394014955906e-09
+        },
+        {
+          "fixture": "seed-9354",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 0.0,
+          "dz_m": null,
+          "inv_diff_m": 1.581952346896287e-09
+        },
+        {
+          "fixture": "seed-8857",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 0.0,
+          "dz_m": null,
+          "inv_diff_m": 0.0
+        },
+        {
+          "fixture": "seed-esri-54042",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 0.0,
+          "dz_m": null,
+          "inv_diff_m": 0.0
+        },
+        {
+          "fixture": "seed-esri-54052",
+          "verdict": "unresolved",
+          "resolve_error": "dst: coordinate reference system: ESRI:54052 (World_Goode_Homolosine_Land) is not supported: coordinate reference system: unsupported projection: +proj=igh; enable the wbprojection-fallback feature",
+          "exec_error": null,
+          "diff_m": null,
+          "dz_m": null,
+          "inv_diff_m": null
+        },
+        {
+          "fixture": "seed-esri-102020",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 2.2483533150316177e-09,
+          "dz_m": null,
+          "inv_diff_m": 0.0
+        },
+        {
+          "fixture": "seed-tpers",
+          "verdict": "unresolved",
+          "resolve_error": "dst: coordinate reference system: unsupported projection: +proj=tpers; enable the wbprojection-fallback feature",
+          "exec_error": null,
+          "diff_m": null,
+          "dz_m": null,
+          "inv_diff_m": null
+        },
+        {
+          "fixture": "seed-ob_tran-moll",
+          "verdict": "unresolved",
+          "resolve_error": "dst: coordinate reference system: unsupported projection: +proj=ob_tran with +o_proj=moll (only +o_proj=longlat is)",
+          "exec_error": null,
+          "diff_m": null,
+          "dz_m": null,
+          "inv_diff_m": null
+        },
+        {
+          "fixture": "seed-wintri",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 0.0,
+          "dz_m": null,
+          "inv_diff_m": 0.0
+        },
+        {
+          "fixture": "seed-igh",
+          "verdict": "unresolved",
+          "resolve_error": "dst: coordinate reference system: unsupported projection: +proj=igh; enable the wbprojection-fallback feature",
+          "exec_error": null,
+          "diff_m": null,
+          "dz_m": null,
+          "inv_diff_m": null
+        },
+        {
+          "fixture": "seed-7415",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 5.646443140123866e-09,
+          "dz_m": null,
+          "inv_diff_m": 0.0
+        },
+        {
+          "fixture": "seed-2056",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 2.3283064365386963e-10,
+          "dz_m": null,
+          "inv_diff_m": 6.74936336906534e-11
+        },
+        {
+          "fixture": "seed-2154",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 1.862645149230957e-09,
+          "dz_m": null,
+          "inv_diff_m": 3.1640719247961496e-09
+        },
+        {
+          "fixture": "seed-bad-code",
+          "verdict": "refused-like-oracle",
+          "resolve_error": "dst: coordinate reference system: unknown EPSG code 99999",
+          "exec_error": null,
+          "diff_m": null,
+          "dz_m": null,
+          "inv_diff_m": null
+        },
+        {
+          "fixture": "pair-4283-7844",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 7.909761734481435e-10,
+          "dz_m": null,
+          "inv_diff_m": 1.581952346896287e-09
+        },
+        {
+          "fixture": "pair-4283-7855",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 2.2931159012476224e-09,
+          "dz_m": null,
+          "inv_diff_m": 2.4807196597173423e-09
+        },
+        {
+          "fixture": "pair-28355-7855",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 0.0,
+          "dz_m": null,
+          "inv_diff_m": 9.313225746154785e-10
+        },
+        {
+          "fixture": "pair-4326-3031",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 2.3283064365386963e-10,
+          "dz_m": null,
+          "inv_diff_m": 0.0
+        },
+        {
+          "fixture": "pair-nad27-nad83",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 1.2118458599315947e-09,
+          "dz_m": null,
+          "inv_diff_m": 1.211845804619232e-09
+        },
+        {
+          "fixture": "pair-ed50-wgs84",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 7.909761734481435e-10,
+          "dz_m": null,
+          "inv_diff_m": 7.918716025313683e-10
+        },
+        {
+          "fixture": "pair-itrf2014-gda2020-epoch",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 2.833884174327995e-09,
+          "dz_m": 9.313225746154785e-10,
+          "inv_diff_m": 2.351239401495592e-09
+        },
+        {
+          "fixture": "pair-4979-egm2008",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 0.0,
+          "dz_m": 0.0,
+          "inv_diff_m": 0.0
+        },
+        {
+          "fixture": "pair-4979-4978",
+          "verdict": "unresolved",
+          "resolve_error": "dst: coordinate reference system: unknown EPSG code 4978",
+          "exec_error": null,
+          "diff_m": null,
+          "dz_m": null,
+          "inv_diff_m": null
+        },
+        {
+          "fixture": "pair-2056-21781",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 0.0,
+          "dz_m": null,
+          "inv_diff_m": 0.0
+        },
+        {
+          "fixture": "pair-mars-iau",
+          "verdict": "unresolved",
+          "resolve_error": "src: coordinate reference system: cannot parse 'IAU_2015:49900'",
+          "exec_error": null,
+          "diff_m": null,
+          "dz_m": null,
+          "inv_diff_m": null
+        },
+        {
+          "fixture": "form-2056-proj-bare",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 0.0,
+          "dz_m": null,
+          "inv_diff_m": 0.0
+        },
+        {
+          "fixture": "form-2056-proj-bound",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 2.3283064365386963e-10,
+          "dz_m": null,
+          "inv_diff_m": 6.74936336906534e-11
+        },
+        {
+          "fixture": "form-2056-wkt1-esri",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 2.3283064365386963e-10,
+          "dz_m": null,
+          "inv_diff_m": 6.74936336906534e-11
+        },
+        {
+          "fixture": "form-27700-epsg",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 0.0007274667738823168,
+          "dz_m": null,
+          "inv_diff_m": 0.0007279997250208222
+        },
+        {
+          "fixture": "form-27700-proj-bare",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 9.943347061655112e-06,
+          "dz_m": null,
+          "inv_diff_m": 9.950487414656689e-06
+        },
+        {
+          "fixture": "form-27700-proj-bound",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 9.943347061655112e-06,
+          "dz_m": null,
+          "inv_diff_m": 9.950487414656689e-06
+        },
+        {
+          "fixture": "form-27700-wkt1-gdal",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 0.0007274667738823168,
+          "dz_m": null,
+          "inv_diff_m": 0.0007279997250208222
+        },
+        {
+          "fixture": "form-27700-wkt1-gdal-bound",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 0.0007274667738823168,
+          "dz_m": null,
+          "inv_diff_m": 0.0007279997250208222
+        },
+        {
+          "fixture": "form-27700-wkt1-esri",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 0.0007274667738823168,
+          "dz_m": null,
+          "inv_diff_m": 0.0007279997250208222
+        },
+        {
+          "fixture": "form-27700-wkt2-2015",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 0.0007274667738823168,
+          "dz_m": null,
+          "inv_diff_m": 0.0007279997250208222
+        },
+        {
+          "fixture": "form-27700-wkt2-2019",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 0.0007274667738823168,
+          "dz_m": null,
+          "inv_diff_m": 0.0007279997250208222
+        },
+        {
+          "fixture": "form-27700-projjson",
+          "verdict": "unresolved",
+          "resolve_error": "dst: no PROJJSON input",
+          "exec_error": null,
+          "diff_m": null,
+          "dz_m": null,
+          "inv_diff_m": null
+        },
+        {
+          "fixture": "form-2264-ftus",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 1.3856734512106476e-09,
+          "dz_m": null,
+          "inv_diff_m": 0.0
+        },
+        {
+          "fixture": "form-2264-proj-bound",
+          "verdict": "close",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 0.8149910086822696,
+          "dz_m": null,
+          "inv_diff_m": 0.8174789167342112
+        },
+        {
+          "fixture": "form-3857-proj-export",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 0.0,
+          "dz_m": null,
+          "inv_diff_m": 0.0
+        },
+        {
+          "fixture": "form-4326-wkt2-2019",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 0.0,
+          "dz_m": null,
+          "inv_diff_m": 0.0
+        },
+        {
+          "fixture": "form-3785-deprecated",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 0.0,
+          "dz_m": null,
+          "inv_diff_m": 0.0
+        },
+        {
+          "fixture": "form-crs84-from-4326",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 0.0,
+          "dz_m": null,
+          "inv_diff_m": 0.0
+        },
+        {
+          "fixture": "form-unknown-param",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 0.0,
+          "dz_m": null,
+          "inv_diff_m": 0.0
+        },
+        {
+          "fixture": "form-unknown-method",
+          "verdict": "refused-like-oracle",
+          "resolve_error": "dst: coordinate reference system: unsupported projection: +proj=nosuchproj; enable the wbprojection-fallback feature",
+          "exec_error": null,
+          "diff_m": null,
+          "dz_m": null,
+          "inv_diff_m": null
+        },
+        {
+          "fixture": "form-invalid-param",
+          "verdict": "refused-like-oracle",
+          "resolve_error": "dst: coordinate reference system: merc: lat_ts must be less than 90\u00b0",
+          "exec_error": null,
+          "diff_m": null,
+          "dz_m": null,
+          "inv_diff_m": null
+        },
+        {
+          "fixture": "form-grads",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 0.0002441736333581579,
+          "dz_m": null,
+          "inv_diff_m": 0.0002441838742402549
+        },
+        {
+          "fixture": "method-tmerc-far",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 2.3283064365386963e-09,
+          "dz_m": null,
+          "inv_diff_m": 2.4807196597173195e-09
+        },
+        {
+          "fixture": "method-geos",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 0.0,
+          "dz_m": null,
+          "inv_diff_m": 1.2872179819501756e-08
+        },
+        {
+          "fixture": "method-omerc-2pt",
+          "verdict": "unresolved",
+          "resolve_error": "dst: coordinate reference system: omerc: two-point form is not supported",
+          "exec_error": null,
+          "diff_m": null,
+          "dz_m": null,
+          "inv_diff_m": null
+        },
+        {
+          "fixture": "method-omerc-alpha",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 0.0,
+          "dz_m": null,
+          "inv_diff_m": 0.0
+        },
+        {
+          "fixture": "method-krovak",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 0.0,
+          "dz_m": null,
+          "inv_diff_m": 0.0
+        },
+        {
+          "fixture": "method-nzmg",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 0.0,
+          "dz_m": null,
+          "inv_diff_m": 7.909761734481435e-10
+        },
+        {
+          "fixture": "method-eck4",
+          "verdict": "unresolved",
+          "resolve_error": "dst: coordinate reference system: unsupported projection: +proj=eck4; enable the wbprojection-fallback feature",
+          "exec_error": null,
+          "diff_m": null,
+          "dz_m": null,
+          "inv_diff_m": null
+        },
+        {
+          "fixture": "method-natearth",
+          "verdict": "unresolved",
+          "resolve_error": "dst: coordinate reference system: unsupported projection: +proj=natearth; enable the wbprojection-fallback feature",
+          "exec_error": null,
+          "diff_m": null,
+          "dz_m": null,
+          "inv_diff_m": null
+        },
+        {
+          "fixture": "method-hammer",
+          "verdict": "unresolved",
+          "resolve_error": "dst: coordinate reference system: unsupported projection: +proj=hammer; enable the wbprojection-fallback feature",
+          "exec_error": null,
+          "diff_m": null,
+          "dz_m": null,
+          "inv_diff_m": null
+        },
+        {
+          "fixture": "method-qsc",
+          "verdict": "unresolved",
+          "resolve_error": "dst: coordinate reference system: unsupported projection: +proj=qsc; enable the wbprojection-fallback feature",
+          "exec_error": null,
+          "diff_m": null,
+          "dz_m": null,
+          "inv_diff_m": null
+        },
+        {
+          "fixture": "method-healpix",
+          "verdict": "unresolved",
+          "resolve_error": "dst: coordinate reference system: unsupported projection: +proj=healpix; enable the wbprojection-fallback feature",
+          "exec_error": null,
+          "diff_m": null,
+          "dz_m": null,
+          "inv_diff_m": null
+        },
+        {
+          "fixture": "method-rhealpix",
+          "verdict": "unresolved",
+          "resolve_error": "dst: coordinate reference system: unsupported projection: +proj=rhealpix; enable the wbprojection-fallback feature",
+          "exec_error": null,
+          "diff_m": null,
+          "dz_m": null,
+          "inv_diff_m": null
+        },
+        {
+          "fixture": "method-isea",
+          "verdict": "unresolved",
+          "resolve_error": "dst: coordinate reference system: unsupported projection: +proj=isea; enable the wbprojection-fallback feature",
+          "exec_error": null,
+          "diff_m": null,
+          "dz_m": null,
+          "inv_diff_m": null
+        },
+        {
+          "fixture": "method-eqearth",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 0.0,
+          "dz_m": null,
+          "inv_diff_m": 0.0
+        },
+        {
+          "fixture": "method-moll",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 0.0,
+          "dz_m": null,
+          "inv_diff_m": 7.909761734481435e-10
+        },
+        {
+          "fixture": "method-robin",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 0.0,
+          "dz_m": null,
+          "inv_diff_m": 7.909761734481435e-10
+        },
+        {
+          "fixture": "method-sinu",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 4.731118679046631e-07,
+          "dz_m": null,
+          "inv_diff_m": 9.398088522295025e-07
+        },
+        {
+          "fixture": "method-laea",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 7.275957614183426e-10,
+          "dz_m": null,
+          "inv_diff_m": 7.909761734481435e-10
+        },
+        {
+          "fixture": "method-aeqd",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 8.016012235671491e-07,
+          "dz_m": null,
+          "inv_diff_m": 8.023417396322796e-07
+        },
+        {
+          "fixture": "method-ortho",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 0.0,
+          "dz_m": null,
+          "inv_diff_m": 7.909761734481435e-10
+        },
+        {
+          "fixture": "method-stere",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 2.3283064365386963e-10,
+          "dz_m": null,
+          "inv_diff_m": 0.0
+        },
+        {
+          "fixture": "method-sterea",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 0.0,
+          "dz_m": null,
+          "inv_diff_m": 7.909761734481435e-10
+        },
+        {
+          "fixture": "method-lcc",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 1.4018261081995787e-09,
+          "dz_m": null,
+          "inv_diff_m": 3.163904693792574e-09
+        },
+        {
+          "fixture": "method-aea",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 2.3283064365386963e-10,
+          "dz_m": null,
+          "inv_diff_m": 1.581952346896287e-09
+        },
+        {
+          "fixture": "method-somerc",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 0.0,
+          "dz_m": null,
+          "inv_diff_m": 0.0
+        },
+        {
+          "fixture": "method-cass",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 7.174094207584858e-08,
+          "dz_m": null,
+          "inv_diff_m": 7.118785561033292e-08
+        },
+        {
+          "fixture": "method-poly",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 4.023313522338867e-07,
+          "dz_m": null,
+          "inv_diff_m": 4.034261159789047e-07
+        },
+        {
+          "fixture": "method-cea",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 0.0,
+          "dz_m": null,
+          "inv_diff_m": 0.0
+        },
+        {
+          "fixture": "method-eqc",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 4.731118679046631e-07,
+          "dz_m": null,
+          "inv_diff_m": 4.745857040688861e-07
+        },
+        {
+          "fixture": "method-eqdc",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 4.657297926855782e-07,
+          "dz_m": null,
+          "inv_diff_m": 4.6489796870833276e-07
+        },
+        {
+          "fixture": "method-merc",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 4.656612873077393e-10,
+          "dz_m": null,
+          "inv_diff_m": 0.0
+        },
+        {
+          "fixture": "method-ups-32761",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 0.0,
+          "dz_m": null,
+          "inv_diff_m": 0.0
+        },
+        {
+          "fixture": "edge-3031-pole",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 3.8119196688057855e-10,
+          "dz_m": null,
+          "inv_diff_m": 0.0
+        },
+        {
+          "fixture": "edge-3857-85",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 0.0,
+          "dz_m": null,
+          "inv_diff_m": 2.7575246357029366e-10
+        },
+        {
+          "fixture": "edge-8857-seam-e",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 0.0,
+          "dz_m": null,
+          "inv_diff_m": 2.3512394014955914e-09
+        },
+        {
+          "fixture": "edge-8857-seam-w",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 0.0,
+          "dz_m": null,
+          "inv_diff_m": 2.3512394014955914e-09
+        },
+        {
+          "fixture": "edge-32755-far",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 2.9451005721170265e-09,
+          "dz_m": null,
+          "inv_diff_m": 2.351239401495591e-09
+        },
+        {
+          "fixture": "edge-ortho-back",
+          "verdict": "refused-like-oracle",
+          "resolve_error": null,
+          "exec_error": "coordinate reference system: cannot transform (-33, 42)",
+          "diff_m": null,
+          "dz_m": null,
+          "inv_diff_m": null
+        },
+        {
+          "fixture": "edge-tpers-back",
+          "verdict": "refused-like-oracle",
+          "resolve_error": "dst: coordinate reference system: unsupported projection: +proj=tpers; enable the wbprojection-fallback feature",
+          "exec_error": null,
+          "diff_m": null,
+          "dz_m": null,
+          "inv_diff_m": null
+        },
+        {
+          "fixture": "edge-laea-antipode",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 0.0,
+          "dz_m": null,
+          "inv_diff_m": 0.0016085481297523074
+        },
+        {
+          "fixture": "edge-merc-pole",
+          "verdict": "failed",
+          "resolve_error": null,
+          "exec_error": "coordinate reference system: cannot transform (0, 90)",
+          "diff_m": null,
+          "dz_m": null,
+          "inv_diff_m": null
+        }
+      ],
+      "projections": [
+        {
+          "projection": "merc",
+          "engine": "terrio-crs",
+          "engine_version": "0.1.0",
+          "supported": true,
+          "points": 171,
+          "fwd_max_m": 1.862645149230957e-09,
+          "fwd_worst_at": [
+            -180,
+            -80
+          ],
+          "fwd_missing": 0,
+          "fwd_extra": 0,
+          "inv_max_deg": 2.842170943040401e-14,
+          "inv_worst_at": [
+            -180,
+            0
+          ],
+          "inv_missing": 0,
+          "verdict": "exact"
+        },
+        {
+          "projection": "webmerc",
+          "engine": "terrio-crs",
+          "engine_version": "0.1.0",
+          "supported": false,
+          "verdict": "unsupported",
+          "error": "coordinate reference system: unsupported projection: +proj=webmerc; enable the wbprojection-fallback feature"
+        },
+        {
+          "projection": "tmerc",
+          "engine": "terrio-crs",
+          "engine_version": "0.1.0",
+          "supported": true,
+          "points": 119,
+          "fwd_max_m": 9.313225746154785e-10,
+          "fwd_worst_at": [
+            117,
+            -10
+          ],
+          "fwd_missing": 0,
+          "fwd_extra": 0,
+          "inv_max_deg": 1.7217499488499932e-14,
+          "inv_worst_at": [
+            127,
+            -70
+          ],
+          "inv_missing": 0,
+          "verdict": "exact"
+        },
+        {
+          "projection": "etmerc",
+          "engine": "terrio-crs",
+          "engine_version": "0.1.0",
+          "supported": true,
+          "points": 119,
+          "fwd_max_m": 9.313225746154785e-10,
+          "fwd_worst_at": [
+            117,
+            -10
+          ],
+          "fwd_missing": 0,
+          "fwd_extra": 0,
+          "inv_max_deg": 1.7217499488499932e-14,
+          "inv_worst_at": [
+            127,
+            -70
+          ],
+          "inv_missing": 0,
+          "verdict": "exact"
+        },
+        {
+          "projection": "utm",
+          "engine": "terrio-crs",
+          "engine_version": "0.1.0",
+          "supported": true,
+          "points": 91,
+          "fwd_max_m": 3.725290298461914e-09,
+          "fwd_worst_at": [
+            132,
+            -10
+          ],
+          "fwd_missing": 0,
+          "fwd_extra": 0,
+          "inv_max_deg": 3.2961132475068304e-14,
+          "inv_worst_at": [
+            147,
+            -5
+          ],
+          "inv_missing": 0,
+          "verdict": "exact"
+        },
+        {
+          "projection": "lcc",
+          "engine": "terrio-crs",
+          "engine_version": "0.1.0",
+          "supported": true,
+          "points": 70,
+          "fwd_max_m": 3.166839133187999e-09,
+          "fwd_worst_at": [
+            -70,
+            20
+          ],
+          "fwd_missing": 0,
+          "fwd_extra": 0,
+          "inv_max_deg": 4.085620730620576e-14,
+          "inv_worst_at": [
+            -110,
+            10
+          ],
+          "inv_missing": 0,
+          "verdict": "exact"
+        },
+        {
+          "projection": "aea",
+          "engine": "terrio-crs",
+          "engine_version": "0.1.0",
+          "supported": true,
+          "points": 70,
+          "fwd_max_m": 2.9451005721170265e-09,
+          "fwd_worst_at": [
+            -140,
+            60
+          ],
+          "fwd_missing": 0,
+          "fwd_extra": 0,
+          "inv_max_deg": 7.944109290391274e-14,
+          "inv_worst_at": [
+            -140,
+            60
+          ],
+          "inv_missing": 0,
+          "verdict": "exact"
+        },
+        {
+          "projection": "leac",
+          "engine": "terrio-crs",
+          "engine_version": "0.1.0",
+          "supported": false,
+          "verdict": "unsupported",
+          "error": "coordinate reference system: unsupported projection: +proj=leac; enable the wbprojection-fallback feature"
+        },
+        {
+          "projection": "stere-polar",
+          "engine": "terrio-crs",
+          "engine_version": "0.1.0",
+          "supported": true,
+          "points": 222,
+          "fwd_max_m": 1.3170890159654386e-09,
+          "fwd_worst_at": [
+            -130,
+            -40
+          ],
+          "fwd_missing": 37,
+          "fwd_extra": 0,
+          "inv_max_deg": 1.4210854715202004e-14,
+          "inv_worst_at": [
+            -120,
+            -70
+          ],
+          "inv_missing": 0,
+          "verdict": "gaps"
+        },
+        {
+          "projection": "stere-oblique",
+          "engine": "terrio-crs",
+          "engine_version": "0.1.0",
+          "supported": true,
+          "points": 72,
+          "fwd_max_m": 0.0,
+          "fwd_worst_at": null,
+          "fwd_missing": 0,
+          "fwd_extra": 0,
+          "inv_max_deg": 2.842170943040401e-14,
+          "inv_worst_at": [
+            147,
+            -75
+          ],
+          "inv_missing": 0,
+          "verdict": "exact"
+        },
+        {
+          "projection": "ups",
+          "engine": "terrio-crs",
+          "engine_version": "0.1.0",
+          "supported": true,
+          "points": 185,
+          "fwd_max_m": 1.041250292910165e-09,
+          "fwd_worst_at": [
+            120,
+            70
+          ],
+          "fwd_missing": 37,
+          "fwd_extra": 0,
+          "inv_max_deg": 1.4210854715202004e-14,
+          "inv_worst_at": [
+            -120,
+            70
+          ],
+          "inv_missing": 0,
+          "verdict": "gaps"
+        },
+        {
+          "projection": "sterea",
+          "engine": "terrio-crs",
+          "engine_version": "0.1.0",
+          "supported": true,
+          "points": 42,
+          "fwd_max_m": 0.0,
+          "fwd_worst_at": null,
+          "fwd_missing": 0,
+          "fwd_extra": 0,
+          "inv_max_deg": 2.842170943040401e-14,
+          "inv_worst_at": [
+            0,
+            65
+          ],
+          "inv_missing": 0,
+          "verdict": "exact"
+        },
+        {
+          "projection": "somerc",
+          "engine": "terrio-crs",
+          "engine_version": "0.1.0",
+          "supported": true,
+          "points": 48,
+          "fwd_max_m": 0.0,
+          "fwd_worst_at": null,
+          "fwd_missing": 0,
+          "fwd_extra": 0,
+          "inv_max_deg": 7.105427357601002e-15,
+          "inv_worst_at": [
+            -10,
+            40
+          ],
+          "inv_missing": 0,
+          "verdict": "exact"
+        },
+        {
+          "projection": "laea",
+          "engine": "terrio-crs",
+          "engine_version": "0.1.0",
+          "supported": true,
+          "points": 135,
+          "fwd_max_m": 5.122274160385132e-09,
+          "fwd_worst_at": [
+            -60,
+            80
+          ],
+          "fwd_missing": 0,
+          "fwd_extra": 0,
+          "inv_max_deg": 7.173661282324072e-14,
+          "inv_worst_at": [
+            -50,
+            80
+          ],
+          "inv_missing": 0,
+          "verdict": "exact"
+        },
+        {
+          "projection": "laea-polar",
+          "engine": "terrio-crs",
+          "engine_version": "0.1.0",
+          "supported": true,
+          "points": 259,
+          "fwd_max_m": 2.4750236917134956e-09,
+          "fwd_worst_at": [
+            -130,
+            -70
+          ],
+          "fwd_missing": 0,
+          "fwd_extra": 0,
+          "inv_max_deg": 2.1316282072803006e-14,
+          "inv_worst_at": [
+            -180,
+            -60
+          ],
+          "inv_missing": 0,
+          "verdict": "exact"
+        },
+        {
+          "projection": "moll",
+          "engine": "terrio-crs",
+          "engine_version": "0.1.0",
+          "supported": true,
+          "points": 91,
+          "fwd_max_m": 0.0,
+          "fwd_worst_at": null,
+          "fwd_missing": 0,
+          "fwd_extra": 0,
+          "inv_max_deg": 3.552713678800501e-15,
+          "inv_worst_at": [
+            -150,
+            -30
+          ],
+          "inv_missing": 0,
+          "verdict": "exact"
+        },
+        {
+          "projection": "wag4",
+          "engine": "terrio-crs",
+          "engine_version": "0.1.0",
+          "supported": true,
+          "points": 91,
+          "fwd_max_m": 0.0,
+          "fwd_worst_at": null,
+          "fwd_missing": 0,
+          "fwd_extra": 0,
+          "inv_max_deg": 4.235164753674779e-22,
+          "inv_worst_at": [
+            -150,
+            -90
+          ],
+          "inv_missing": 0,
+          "verdict": "exact"
+        },
+        {
+          "projection": "wag5",
+          "engine": "terrio-crs",
+          "engine_version": "0.1.0",
+          "supported": true,
+          "points": 91,
+          "fwd_max_m": 0.0,
+          "fwd_worst_at": null,
+          "fwd_missing": 0,
+          "fwd_extra": 0,
+          "inv_max_deg": 2.6822400070865448e-14,
+          "inv_worst_at": [
+            -150,
+            -30
+          ],
+          "inv_missing": 0,
+          "verdict": "exact"
+        },
+        {
+          "projection": "geos",
+          "engine": "terrio-crs",
+          "engine_version": "0.1.0",
+          "supported": true,
+          "points": 156,
+          "fwd_max_m": 1.862645149230957e-09,
+          "fwd_worst_at": [
+            95,
+            9
+          ],
+          "fwd_missing": 0,
+          "fwd_extra": 0,
+          "inv_max_deg": 1.560550997761473e-10,
+          "inv_worst_at": [
+            155,
+            -81
+          ],
+          "inv_missing": 0,
+          "verdict": "exact"
+        },
+        {
+          "projection": "eqc",
+          "engine": "terrio-crs",
+          "engine_version": "0.1.0",
+          "supported": true,
+          "points": 91,
+          "fwd_max_m": 3.300607204437256e-06,
+          "fwd_worst_at": [
+            -180,
+            -60
+          ],
+          "fwd_missing": 0,
+          "fwd_extra": 0,
+          "inv_max_deg": 2.963674091561537e-11,
+          "inv_worst_at": [
+            -180,
+            -60
+          ],
+          "inv_missing": 0,
+          "verdict": "exact"
+        },
+        {
+          "projection": "aeqd",
+          "engine": "terrio-crs",
+          "engine_version": "0.1.0",
+          "supported": true,
+          "points": 91,
+          "fwd_max_m": 0.0002154958211508601,
+          "fwd_worst_at": [
+            -60,
+            30
+          ],
+          "fwd_missing": 0,
+          "fwd_extra": 0,
+          "inv_max_deg": 4.931166587937563e-10,
+          "inv_worst_at": [
+            30,
+            0
+          ],
+          "inv_missing": 0,
+          "verdict": "exact"
+        },
+        {
+          "projection": "aeqd-polar",
+          "engine": "terrio-crs",
+          "engine_version": "0.1.0",
+          "supported": true,
+          "points": 175,
+          "fwd_max_m": 3.915994958373564e-06,
+          "fwd_worst_at": [
+            -165,
+            75
+          ],
+          "fwd_missing": 0,
+          "fwd_extra": 0,
+          "inv_max_deg": 3.5072389437118545e-11,
+          "inv_worst_at": [
+            -180,
+            75
+          ],
+          "inv_missing": 0,
+          "verdict": "exact"
+        },
+        {
+          "projection": "krovak",
+          "engine": "terrio-crs",
+          "engine_version": "0.1.0",
+          "supported": true,
+          "points": 91,
+          "fwd_max_m": 0.0,
+          "fwd_worst_at": null,
+          "fwd_missing": 0,
+          "fwd_extra": 0,
+          "inv_max_deg": 2.842170943040401e-14,
+          "inv_worst_at": [
+            9,
+            48
+          ],
+          "inv_missing": 0,
+          "verdict": "exact"
+        },
+        {
+          "projection": "mill",
+          "engine": "terrio-crs",
+          "engine_version": "0.1.0",
+          "supported": true,
+          "points": 91,
+          "fwd_max_m": 0.0,
+          "fwd_worst_at": null,
+          "fwd_missing": 0,
+          "fwd_extra": 0,
+          "inv_max_deg": 2.842170943040401e-14,
+          "inv_worst_at": [
+            -120,
+            0
+          ],
+          "inv_missing": 0,
+          "verdict": "exact"
+        },
+        {
+          "projection": "cea",
+          "engine": "terrio-crs",
+          "engine_version": "0.1.0",
+          "supported": true,
+          "points": 91,
+          "fwd_max_m": 0.0,
+          "fwd_worst_at": null,
+          "fwd_missing": 0,
+          "fwd_extra": 0,
+          "inv_max_deg": 2.842170943040401e-14,
+          "inv_worst_at": [
+            -180,
+            0
+          ],
+          "inv_missing": 0,
+          "verdict": "exact"
+        },
+        {
+          "projection": "poly",
+          "engine": "terrio-crs",
+          "engine_version": "0.1.0",
+          "supported": true,
+          "points": 108,
+          "fwd_max_m": 4.838220775127411e-06,
+          "fwd_worst_at": [
+            -120,
+            70
+          ],
+          "fwd_missing": 0,
+          "fwd_extra": 0,
+          "inv_max_deg": 4.329414723375485e-11,
+          "inv_worst_at": [
+            -100,
+            70
+          ],
+          "inv_missing": 0,
+          "verdict": "exact"
+        },
+        {
+          "projection": "ortho",
+          "engine": "terrio-crs",
+          "engine_version": "0.1.0",
+          "supported": true,
+          "points": 91,
+          "fwd_max_m": 0.0,
+          "fwd_worst_at": null,
+          "fwd_missing": 0,
+          "fwd_extra": 0,
+          "inv_max_deg": 5.935584142769306e-13,
+          "inv_worst_at": [
+            30,
+            -30
+          ],
+          "inv_missing": 0,
+          "verdict": "exact"
+        },
+        {
+          "projection": "gnom",
+          "engine": "terrio-crs",
+          "engine_version": "0.1.0",
+          "supported": true,
+          "points": 259,
+          "fwd_max_m": 1.862645149230957e-09,
+          "fwd_worst_at": [
+            -160,
+            -40
+          ],
+          "fwd_missing": 0,
+          "fwd_extra": 0,
+          "inv_max_deg": 1.4210854715202004e-14,
+          "inv_worst_at": [
+            -150,
+            -70
+          ],
+          "inv_missing": 0,
+          "verdict": "exact"
+        },
+        {
+          "projection": "sinu",
+          "engine": "terrio-crs",
+          "engine_version": "0.1.0",
+          "supported": true,
+          "points": 91,
+          "fwd_max_m": 3.300607204437256e-06,
+          "fwd_worst_at": [
+            -180,
+            -60
+          ],
+          "fwd_missing": 0,
+          "fwd_extra": 0,
+          "inv_max_deg": 8.578641755050361e-11,
+          "inv_worst_at": [
+            -180,
+            -60
+          ],
+          "inv_missing": 0,
+          "verdict": "exact"
+        },
+        {
+          "projection": "omerc",
+          "engine": "terrio-crs",
+          "engine_version": "0.1.0",
+          "supported": true,
+          "points": 63,
+          "fwd_max_m": 4.679838019013819e-09,
+          "fwd_worst_at": [
+            99,
+            -2
+          ],
+          "fwd_missing": 0,
+          "fwd_extra": 0,
+          "inv_max_deg": 3.019806626980426e-14,
+          "inv_worst_at": [
+            97,
+            10
+          ],
+          "inv_missing": 0,
+          "verdict": "exact"
+        },
+        {
+          "projection": "tpers",
+          "engine": "terrio-crs",
+          "engine_version": "0.1.0",
+          "supported": false,
+          "verdict": "unsupported",
+          "error": "coordinate reference system: unsupported projection: +proj=tpers; enable the wbprojection-fallback feature"
+        },
+        {
+          "projection": "nsper",
+          "engine": "terrio-crs",
+          "engine_version": "0.1.0",
+          "supported": false,
+          "verdict": "unsupported",
+          "error": "coordinate reference system: unsupported projection: +proj=nsper; enable the wbprojection-fallback feature"
+        },
+        {
+          "projection": "cass",
+          "engine": "terrio-crs",
+          "engine_version": "0.1.0",
+          "supported": true,
+          "points": 63,
+          "fwd_max_m": 2.8279609978199005e-06,
+          "fwd_worst_at": [
+            162,
+            -60
+          ],
+          "fwd_missing": 0,
+          "fwd_extra": 0,
+          "inv_max_deg": 2.538058652135078e-11,
+          "inv_worst_at": [
+            147,
+            -60
+          ],
+          "inv_missing": 0,
+          "verdict": "exact"
+        },
+        {
+          "projection": "eqdc",
+          "engine": "terrio-crs",
+          "engine_version": "0.1.0",
+          "supported": true,
+          "points": 108,
+          "fwd_max_m": 4.493738119212971e-06,
+          "fwd_worst_at": [
+            -100,
+            70
+          ],
+          "fwd_missing": 0,
+          "fwd_extra": 0,
+          "inv_max_deg": 4.026621500190759e-11,
+          "inv_worst_at": [
+            -100,
+            70
+          ],
+          "inv_missing": 0,
+          "verdict": "exact"
+        },
+        {
+          "projection": "robin",
+          "engine": "terrio-crs",
+          "engine_version": "0.1.0",
+          "supported": true,
+          "points": 91,
+          "fwd_max_m": 0.0,
+          "fwd_worst_at": null,
+          "fwd_missing": 0,
+          "fwd_extra": 0,
+          "inv_max_deg": 2.461392238570962e-14,
+          "inv_worst_at": [
+            -180,
+            -30
+          ],
+          "inv_missing": 0,
+          "verdict": "exact"
+        },
+        {
+          "projection": "eqearth",
+          "engine": "terrio-crs",
+          "engine_version": "0.1.0",
+          "supported": true,
+          "points": 91,
+          "fwd_max_m": 0.0,
+          "fwd_worst_at": null,
+          "fwd_missing": 0,
+          "fwd_extra": 0,
+          "inv_max_deg": 6.583761162914925e-06,
+          "inv_worst_at": [
+            -180,
+            -90
+          ],
+          "inv_missing": 0,
+          "verdict": "close"
+        },
+        {
+          "projection": "tmerc-sphere",
+          "engine": "terrio-crs",
+          "engine_version": "0.1.0",
+          "supported": true,
+          "points": 63,
+          "fwd_max_m": 1.9199706733309015e-09,
+          "fwd_worst_at": [
+            137,
+            -10
+          ],
+          "fwd_missing": 0,
+          "fwd_extra": 0,
+          "inv_max_deg": 1.730260725074836e-14,
+          "inv_worst_at": [
+            177,
+            -80
+          ],
+          "inv_missing": 0,
+          "verdict": "exact"
+        },
+        {
+          "projection": "aeqd-far",
+          "engine": "terrio-crs",
+          "engine_version": "0.1.0",
+          "supported": true,
+          "points": 325,
+          "fwd_max_m": 0.00029770098286312924,
+          "fwd_worst_at": [
+            312,
+            30
+          ],
+          "fwd_missing": 0,
+          "fwd_extra": 0,
+          "inv_max_deg": 4.939409027337474e-10,
+          "inv_worst_at": [
+            27,
+            0
+          ],
+          "inv_missing": 0,
+          "verdict": "exact"
+        },
+        {
+          "projection": "wintri",
+          "engine": "terrio-crs",
+          "engine_version": "0.1.0",
+          "supported": true,
+          "points": 91,
+          "fwd_max_m": 3636543.3980102856,
+          "fwd_worst_at": [
+            -180,
+            -90
+          ],
+          "fwd_missing": 0,
+          "fwd_extra": 0,
+          "inv_max_deg": 32.70422048691768,
+          "inv_worst_at": [
+            -180,
+            0
+          ],
+          "inv_missing": 0,
+          "verdict": "off"
+        },
+        {
+          "projection": "aitoff",
+          "engine": "terrio-crs",
+          "engine_version": "0.1.0",
+          "supported": false,
+          "verdict": "unsupported",
+          "error": "coordinate reference system: unsupported projection: +proj=aitoff; enable the wbprojection-fallback feature"
+        },
+        {
+          "projection": "hammer",
+          "engine": "terrio-crs",
+          "engine_version": "0.1.0",
+          "supported": false,
+          "verdict": "unsupported",
+          "error": "coordinate reference system: unsupported projection: +proj=hammer; enable the wbprojection-fallback feature"
+        },
+        {
+          "projection": "natearth",
+          "engine": "terrio-crs",
+          "engine_version": "0.1.0",
+          "supported": false,
+          "verdict": "unsupported",
+          "error": "coordinate reference system: unsupported projection: +proj=natearth; enable the wbprojection-fallback feature"
+        },
+        {
+          "projection": "natearth2",
+          "engine": "terrio-crs",
+          "engine_version": "0.1.0",
+          "supported": false,
+          "verdict": "unsupported",
+          "error": "coordinate reference system: unsupported projection: +proj=natearth2; enable the wbprojection-fallback feature"
+        },
+        {
+          "projection": "eck4",
+          "engine": "terrio-crs",
+          "engine_version": "0.1.0",
+          "supported": false,
+          "verdict": "unsupported",
+          "error": "coordinate reference system: unsupported projection: +proj=eck4; enable the wbprojection-fallback feature"
+        },
+        {
+          "projection": "eck6",
+          "engine": "terrio-crs",
+          "engine_version": "0.1.0",
+          "supported": false,
+          "verdict": "unsupported",
+          "error": "coordinate reference system: unsupported projection: +proj=eck6; enable the wbprojection-fallback feature"
+        },
+        {
+          "projection": "gall",
+          "engine": "terrio-crs",
+          "engine_version": "0.1.0",
+          "supported": true,
+          "points": 91,
+          "fwd_max_m": 0.0,
+          "fwd_worst_at": null,
+          "fwd_missing": 0,
+          "fwd_extra": 0,
+          "inv_max_deg": 1.4210854715202004e-14,
+          "inv_worst_at": [
+            -180,
+            -90
+          ],
+          "inv_missing": 0,
+          "verdict": "exact"
+        },
+        {
+          "projection": "vandg",
+          "engine": "terrio-crs",
+          "engine_version": "0.1.0",
+          "supported": true,
+          "points": 91,
+          "fwd_max_m": 0.0,
+          "fwd_worst_at": null,
+          "fwd_missing": 0,
+          "fwd_extra": 0,
+          "inv_max_deg": 6.882551630838023e-07,
+          "inv_worst_at": [
+            -180,
+            -30
+          ],
+          "inv_missing": 0,
+          "verdict": "close"
+        },
+        {
+          "projection": "bonne",
+          "engine": "terrio-crs",
+          "engine_version": "0.1.0",
+          "supported": true,
+          "points": 91,
+          "fwd_max_m": 6.0195161241368155e-06,
+          "fwd_worst_at": [
+            -180,
+            60
+          ],
+          "fwd_missing": 0,
+          "fwd_extra": 0,
+          "inv_max_deg": 1.0502306311567939e-10,
+          "inv_worst_at": [
+            -180,
+            -60
+          ],
+          "inv_missing": 0,
+          "verdict": "exact"
+        },
+        {
+          "projection": "qsc",
+          "engine": "terrio-crs",
+          "engine_version": "0.1.0",
+          "supported": false,
+          "verdict": "unsupported",
+          "error": "coordinate reference system: unsupported projection: +proj=qsc; enable the wbprojection-fallback feature"
+        },
+        {
+          "projection": "healpix",
+          "engine": "terrio-crs",
+          "engine_version": "0.1.0",
+          "supported": false,
+          "verdict": "unsupported",
+          "error": "coordinate reference system: unsupported projection: +proj=healpix; enable the wbprojection-fallback feature"
+        },
+        {
+          "projection": "igh",
+          "engine": "terrio-crs",
+          "engine_version": "0.1.0",
+          "supported": false,
+          "verdict": "unsupported",
+          "error": "coordinate reference system: unsupported projection: +proj=igh; enable the wbprojection-fallback feature"
+        },
+        {
+          "projection": "times",
+          "engine": "terrio-crs",
+          "engine_version": "0.1.0",
+          "supported": false,
+          "verdict": "unsupported",
+          "error": "coordinate reference system: unsupported projection: +proj=times; enable the wbprojection-fallback feature"
+        },
+        {
+          "projection": "eqc-sphere",
+          "engine": "terrio-crs",
+          "engine_version": "0.1.0",
+          "supported": true,
+          "points": 91,
+          "fwd_max_m": 0.0,
+          "fwd_worst_at": null,
+          "fwd_missing": 0,
+          "fwd_extra": 0,
+          "inv_max_deg": 0.0,
+          "inv_worst_at": null,
+          "inv_missing": 0,
+          "verdict": "exact"
+        },
+        {
+          "projection": "merc-sphere",
+          "engine": "terrio-crs",
+          "engine_version": "0.1.0",
+          "supported": true,
+          "points": 171,
+          "fwd_max_m": 0.0,
+          "fwd_worst_at": null,
+          "fwd_missing": 0,
+          "fwd_extra": 0,
+          "inv_max_deg": 2.842170943040401e-14,
+          "inv_worst_at": [
+            -120,
+            0
+          ],
+          "inv_missing": 0,
+          "verdict": "exact"
+        }
+      ]
+    },
+    "fallback": {
+      "crs_verdicts": {
+        "exact": 74,
+        "unresolved": 12,
+        "refused-like-oracle": 5,
+        "close": 1,
+        "failed": 1
+      },
+      "projection_verdicts": {
+        "exact": 40,
+        "unsupported": 6,
+        "gaps": 5,
+        "close": 2,
+        "off": 1
+      },
+      "crs": [
+        {
+          "fixture": "seed-4326",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 0.0,
+          "dz_m": null,
+          "inv_diff_m": 0.0
+        },
+        {
+          "fixture": "seed-3857",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 0.0,
+          "dz_m": null,
+          "inv_diff_m": 0.0
+        },
+        {
+          "fixture": "seed-32755",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 2.0954757928848267e-09,
+          "dz_m": null,
+          "inv_diff_m": 2.4807196597173195e-09
+        },
+        {
+          "fixture": "seed-3031",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 2.3283064365386963e-10,
+          "dz_m": null,
+          "inv_diff_m": 0.0
+        },
+        {
+          "fixture": "seed-28355",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 2.0954757928848267e-09,
+          "dz_m": null,
+          "inv_diff_m": 2.3512394014955906e-09
+        },
+        {
+          "fixture": "seed-7855",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 2.0954757928848267e-09,
+          "dz_m": null,
+          "inv_diff_m": 2.3512394014955906e-09
+        },
+        {
+          "fixture": "seed-9354",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 0.0,
+          "dz_m": null,
+          "inv_diff_m": 1.581952346896287e-09
+        },
+        {
+          "fixture": "seed-8857",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 0.0,
+          "dz_m": null,
+          "inv_diff_m": 0.0
+        },
+        {
+          "fixture": "seed-esri-54042",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 0.0,
+          "dz_m": null,
+          "inv_diff_m": 0.0
+        },
+        {
+          "fixture": "seed-esri-54052",
+          "verdict": "unresolved",
+          "resolve_error": "dst: coordinate reference system: ESRI:54052 (World_Goode_Homolosine_Land) is not supported: coordinate reference system: unsupported projection: PROJ +proj=igh is not supported by wbprojection",
+          "exec_error": null,
+          "diff_m": null,
+          "dz_m": null,
+          "inv_diff_m": null
+        },
+        {
+          "fixture": "seed-esri-102020",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 2.2483533150316177e-09,
+          "dz_m": null,
+          "inv_diff_m": 0.0
+        },
+        {
+          "fixture": "seed-tpers",
+          "verdict": "unresolved",
+          "resolve_error": "dst: coordinate reference system: unsupported projection: PROJ +proj=tpers is not supported by wbprojection",
+          "exec_error": null,
+          "diff_m": null,
+          "dz_m": null,
+          "inv_diff_m": null
+        },
+        {
+          "fixture": "seed-ob_tran-moll",
+          "verdict": "unresolved",
+          "resolve_error": "dst: coordinate reference system: unsupported projection: +proj=ob_tran with +o_proj=moll (only +o_proj=longlat is)",
+          "exec_error": null,
+          "diff_m": null,
+          "dz_m": null,
+          "inv_diff_m": null
+        },
+        {
+          "fixture": "seed-wintri",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 0.0,
+          "dz_m": null,
+          "inv_diff_m": 0.0
+        },
+        {
+          "fixture": "seed-igh",
+          "verdict": "unresolved",
+          "resolve_error": "dst: coordinate reference system: unsupported projection: PROJ +proj=igh is not supported by wbprojection",
+          "exec_error": null,
+          "diff_m": null,
+          "dz_m": null,
+          "inv_diff_m": null
+        },
+        {
+          "fixture": "seed-7415",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 5.646443140123866e-09,
+          "dz_m": null,
+          "inv_diff_m": 0.0
+        },
+        {
+          "fixture": "seed-2056",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 2.3283064365386963e-10,
+          "dz_m": null,
+          "inv_diff_m": 6.74936336906534e-11
+        },
+        {
+          "fixture": "seed-2154",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 1.862645149230957e-09,
+          "dz_m": null,
+          "inv_diff_m": 3.1640719247961496e-09
+        },
+        {
+          "fixture": "seed-bad-code",
+          "verdict": "refused-like-oracle",
+          "resolve_error": "dst: coordinate reference system: unknown EPSG code 99999",
+          "exec_error": null,
+          "diff_m": null,
+          "dz_m": null,
+          "inv_diff_m": null
+        },
+        {
+          "fixture": "pair-4283-7844",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 7.909761734481435e-10,
+          "dz_m": null,
+          "inv_diff_m": 1.581952346896287e-09
+        },
+        {
+          "fixture": "pair-4283-7855",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 2.2931159012476224e-09,
+          "dz_m": null,
+          "inv_diff_m": 2.4807196597173423e-09
+        },
+        {
+          "fixture": "pair-28355-7855",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 0.0,
+          "dz_m": null,
+          "inv_diff_m": 9.313225746154785e-10
+        },
+        {
+          "fixture": "pair-4326-3031",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 2.3283064365386963e-10,
+          "dz_m": null,
+          "inv_diff_m": 0.0
+        },
+        {
+          "fixture": "pair-nad27-nad83",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 1.2118458599315947e-09,
+          "dz_m": null,
+          "inv_diff_m": 1.211845804619232e-09
+        },
+        {
+          "fixture": "pair-ed50-wgs84",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 7.909761734481435e-10,
+          "dz_m": null,
+          "inv_diff_m": 7.918716025313683e-10
+        },
+        {
+          "fixture": "pair-itrf2014-gda2020-epoch",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 2.833884174327995e-09,
+          "dz_m": 9.313225746154785e-10,
+          "inv_diff_m": 2.351239401495592e-09
+        },
+        {
+          "fixture": "pair-4979-egm2008",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 0.0,
+          "dz_m": 0.0,
+          "inv_diff_m": 0.0
+        },
+        {
+          "fixture": "pair-4979-4978",
+          "verdict": "unresolved",
+          "resolve_error": "dst: coordinate reference system: unknown EPSG code 4978",
+          "exec_error": null,
+          "diff_m": null,
+          "dz_m": null,
+          "inv_diff_m": null
+        },
+        {
+          "fixture": "pair-2056-21781",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 0.0,
+          "dz_m": null,
+          "inv_diff_m": 0.0
+        },
+        {
+          "fixture": "pair-mars-iau",
+          "verdict": "unresolved",
+          "resolve_error": "src: coordinate reference system: cannot parse 'IAU_2015:49900'",
+          "exec_error": null,
+          "diff_m": null,
+          "dz_m": null,
+          "inv_diff_m": null
+        },
+        {
+          "fixture": "form-2056-proj-bare",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 0.0,
+          "dz_m": null,
+          "inv_diff_m": 0.0
+        },
+        {
+          "fixture": "form-2056-proj-bound",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 2.3283064365386963e-10,
+          "dz_m": null,
+          "inv_diff_m": 6.74936336906534e-11
+        },
+        {
+          "fixture": "form-2056-wkt1-esri",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 2.3283064365386963e-10,
+          "dz_m": null,
+          "inv_diff_m": 6.74936336906534e-11
+        },
+        {
+          "fixture": "form-27700-epsg",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 0.0007274667738823168,
+          "dz_m": null,
+          "inv_diff_m": 0.0007279997250208222
+        },
+        {
+          "fixture": "form-27700-proj-bare",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 9.943347061655112e-06,
+          "dz_m": null,
+          "inv_diff_m": 9.950487414656689e-06
+        },
+        {
+          "fixture": "form-27700-proj-bound",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 9.943347061655112e-06,
+          "dz_m": null,
+          "inv_diff_m": 9.950487414656689e-06
+        },
+        {
+          "fixture": "form-27700-wkt1-gdal",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 0.0007274667738823168,
+          "dz_m": null,
+          "inv_diff_m": 0.0007279997250208222
+        },
+        {
+          "fixture": "form-27700-wkt1-gdal-bound",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 0.0007274667738823168,
+          "dz_m": null,
+          "inv_diff_m": 0.0007279997250208222
+        },
+        {
+          "fixture": "form-27700-wkt1-esri",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 0.0007274667738823168,
+          "dz_m": null,
+          "inv_diff_m": 0.0007279997250208222
+        },
+        {
+          "fixture": "form-27700-wkt2-2015",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 0.0007274667738823168,
+          "dz_m": null,
+          "inv_diff_m": 0.0007279997250208222
+        },
+        {
+          "fixture": "form-27700-wkt2-2019",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 0.0007274667738823168,
+          "dz_m": null,
+          "inv_diff_m": 0.0007279997250208222
+        },
+        {
+          "fixture": "form-27700-projjson",
+          "verdict": "unresolved",
+          "resolve_error": "dst: no PROJJSON input",
+          "exec_error": null,
+          "diff_m": null,
+          "dz_m": null,
+          "inv_diff_m": null
+        },
+        {
+          "fixture": "form-2264-ftus",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 1.3856734512106476e-09,
+          "dz_m": null,
+          "inv_diff_m": 0.0
+        },
+        {
+          "fixture": "form-2264-proj-bound",
+          "verdict": "close",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 0.8149910086822696,
+          "dz_m": null,
+          "inv_diff_m": 0.8174789167342112
+        },
+        {
+          "fixture": "form-3857-proj-export",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 0.0,
+          "dz_m": null,
+          "inv_diff_m": 0.0
+        },
+        {
+          "fixture": "form-4326-wkt2-2019",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 0.0,
+          "dz_m": null,
+          "inv_diff_m": 0.0
+        },
+        {
+          "fixture": "form-3785-deprecated",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 0.0,
+          "dz_m": null,
+          "inv_diff_m": 0.0
+        },
+        {
+          "fixture": "form-crs84-from-4326",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 0.0,
+          "dz_m": null,
+          "inv_diff_m": 0.0
+        },
+        {
+          "fixture": "form-unknown-param",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 0.0,
+          "dz_m": null,
+          "inv_diff_m": 0.0
+        },
+        {
+          "fixture": "form-unknown-method",
+          "verdict": "refused-like-oracle",
+          "resolve_error": "dst: coordinate reference system: unsupported projection: PROJ +proj=nosuchproj is not supported by wbprojection",
+          "exec_error": null,
+          "diff_m": null,
+          "dz_m": null,
+          "inv_diff_m": null
+        },
+        {
+          "fixture": "form-invalid-param",
+          "verdict": "refused-like-oracle",
+          "resolve_error": "dst: coordinate reference system: merc: lat_ts must be less than 90\u00b0",
+          "exec_error": null,
+          "diff_m": null,
+          "dz_m": null,
+          "inv_diff_m": null
+        },
+        {
+          "fixture": "form-grads",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 0.0002441736333581579,
+          "dz_m": null,
+          "inv_diff_m": 0.0002441838742402549
+        },
+        {
+          "fixture": "method-tmerc-far",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 2.3283064365386963e-09,
+          "dz_m": null,
+          "inv_diff_m": 2.4807196597173195e-09
+        },
+        {
+          "fixture": "method-geos",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 0.0,
+          "dz_m": null,
+          "inv_diff_m": 1.2872179819501756e-08
+        },
+        {
+          "fixture": "method-omerc-2pt",
+          "verdict": "unresolved",
+          "resolve_error": "dst: coordinate reference system: omerc: two-point form is not supported",
+          "exec_error": null,
+          "diff_m": null,
+          "dz_m": null,
+          "inv_diff_m": null
+        },
+        {
+          "fixture": "method-omerc-alpha",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 0.0,
+          "dz_m": null,
+          "inv_diff_m": 0.0
+        },
+        {
+          "fixture": "method-krovak",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 0.0,
+          "dz_m": null,
+          "inv_diff_m": 0.0
+        },
+        {
+          "fixture": "method-nzmg",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 0.0,
+          "dz_m": null,
+          "inv_diff_m": 7.909761734481435e-10
+        },
+        {
+          "fixture": "method-eck4",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 3.839941346661803e-09,
+          "dz_m": null,
+          "inv_diff_m": 2.351239401495591e-09
+        },
+        {
+          "fixture": "method-natearth",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 0.0,
+          "dz_m": null,
+          "inv_diff_m": 2.4807196597173195e-09
+        },
+        {
+          "fixture": "method-hammer",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 9.313225746154785e-10,
+          "dz_m": null,
+          "inv_diff_m": 0.0
+        },
+        {
+          "fixture": "method-qsc",
+          "verdict": "unresolved",
+          "resolve_error": "dst: coordinate reference system: unsupported projection: PROJ +proj=qsc is not supported by wbprojection",
+          "exec_error": null,
+          "diff_m": null,
+          "dz_m": null,
+          "inv_diff_m": null
+        },
+        {
+          "fixture": "method-healpix",
+          "verdict": "unresolved",
+          "resolve_error": "dst: coordinate reference system: unsupported projection: PROJ +proj=healpix is not supported by wbprojection",
+          "exec_error": null,
+          "diff_m": null,
+          "dz_m": null,
+          "inv_diff_m": null
+        },
+        {
+          "fixture": "method-rhealpix",
+          "verdict": "unresolved",
+          "resolve_error": "dst: coordinate reference system: unsupported projection: PROJ +proj=rhealpix is not supported by wbprojection",
+          "exec_error": null,
+          "diff_m": null,
+          "dz_m": null,
+          "inv_diff_m": null
+        },
+        {
+          "fixture": "method-isea",
+          "verdict": "unresolved",
+          "resolve_error": "dst: coordinate reference system: unsupported projection: PROJ +proj=isea is not supported by wbprojection",
+          "exec_error": null,
+          "diff_m": null,
+          "dz_m": null,
+          "inv_diff_m": null
+        },
+        {
+          "fixture": "method-eqearth",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 0.0,
+          "dz_m": null,
+          "inv_diff_m": 0.0
+        },
+        {
+          "fixture": "method-moll",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 0.0,
+          "dz_m": null,
+          "inv_diff_m": 7.909761734481435e-10
+        },
+        {
+          "fixture": "method-robin",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 0.0,
+          "dz_m": null,
+          "inv_diff_m": 7.909761734481435e-10
+        },
+        {
+          "fixture": "method-sinu",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 4.731118679046631e-07,
+          "dz_m": null,
+          "inv_diff_m": 9.398088522295025e-07
+        },
+        {
+          "fixture": "method-laea",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 7.275957614183426e-10,
+          "dz_m": null,
+          "inv_diff_m": 7.909761734481435e-10
+        },
+        {
+          "fixture": "method-aeqd",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 8.016012235671491e-07,
+          "dz_m": null,
+          "inv_diff_m": 8.023417396322796e-07
+        },
+        {
+          "fixture": "method-ortho",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 0.0,
+          "dz_m": null,
+          "inv_diff_m": 7.909761734481435e-10
+        },
+        {
+          "fixture": "method-stere",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 2.3283064365386963e-10,
+          "dz_m": null,
+          "inv_diff_m": 0.0
+        },
+        {
+          "fixture": "method-sterea",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 0.0,
+          "dz_m": null,
+          "inv_diff_m": 7.909761734481435e-10
+        },
+        {
+          "fixture": "method-lcc",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 1.4018261081995787e-09,
+          "dz_m": null,
+          "inv_diff_m": 3.163904693792574e-09
+        },
+        {
+          "fixture": "method-aea",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 2.3283064365386963e-10,
+          "dz_m": null,
+          "inv_diff_m": 1.581952346896287e-09
+        },
+        {
+          "fixture": "method-somerc",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 0.0,
+          "dz_m": null,
+          "inv_diff_m": 0.0
+        },
+        {
+          "fixture": "method-cass",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 7.174094207584858e-08,
+          "dz_m": null,
+          "inv_diff_m": 7.118785561033292e-08
+        },
+        {
+          "fixture": "method-poly",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 4.023313522338867e-07,
+          "dz_m": null,
+          "inv_diff_m": 4.034261159789047e-07
+        },
+        {
+          "fixture": "method-cea",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 0.0,
+          "dz_m": null,
+          "inv_diff_m": 0.0
+        },
+        {
+          "fixture": "method-eqc",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 4.731118679046631e-07,
+          "dz_m": null,
+          "inv_diff_m": 4.745857040688861e-07
+        },
+        {
+          "fixture": "method-eqdc",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 4.657297926855782e-07,
+          "dz_m": null,
+          "inv_diff_m": 4.6489796870833276e-07
+        },
+        {
+          "fixture": "method-merc",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 4.656612873077393e-10,
+          "dz_m": null,
+          "inv_diff_m": 0.0
+        },
+        {
+          "fixture": "method-ups-32761",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 0.0,
+          "dz_m": null,
+          "inv_diff_m": 0.0
+        },
+        {
+          "fixture": "edge-3031-pole",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 3.8119196688057855e-10,
+          "dz_m": null,
+          "inv_diff_m": 0.0
+        },
+        {
+          "fixture": "edge-3857-85",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 0.0,
+          "dz_m": null,
+          "inv_diff_m": 2.7575246357029366e-10
+        },
+        {
+          "fixture": "edge-8857-seam-e",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 0.0,
+          "dz_m": null,
+          "inv_diff_m": 2.3512394014955914e-09
+        },
+        {
+          "fixture": "edge-8857-seam-w",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 0.0,
+          "dz_m": null,
+          "inv_diff_m": 2.3512394014955914e-09
+        },
+        {
+          "fixture": "edge-32755-far",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 2.9451005721170265e-09,
+          "dz_m": null,
+          "inv_diff_m": 2.351239401495591e-09
+        },
+        {
+          "fixture": "edge-ortho-back",
+          "verdict": "refused-like-oracle",
+          "resolve_error": null,
+          "exec_error": "coordinate reference system: cannot transform (-33, 42)",
+          "diff_m": null,
+          "dz_m": null,
+          "inv_diff_m": null
+        },
+        {
+          "fixture": "edge-tpers-back",
+          "verdict": "refused-like-oracle",
+          "resolve_error": "dst: coordinate reference system: unsupported projection: PROJ +proj=tpers is not supported by wbprojection",
+          "exec_error": null,
+          "diff_m": null,
+          "dz_m": null,
+          "inv_diff_m": null
+        },
+        {
+          "fixture": "edge-laea-antipode",
+          "verdict": "exact",
+          "resolve_error": null,
+          "exec_error": null,
+          "diff_m": 0.0,
+          "dz_m": null,
+          "inv_diff_m": 0.0016085481297523074
+        },
+        {
+          "fixture": "edge-merc-pole",
+          "verdict": "failed",
+          "resolve_error": null,
+          "exec_error": "coordinate reference system: cannot transform (0, 90)",
+          "diff_m": null,
+          "dz_m": null,
+          "inv_diff_m": null
+        }
+      ],
+      "projections": [
+        {
+          "projection": "merc",
+          "engine": "terrio-crs",
+          "engine_version": "0.1.0",
+          "supported": true,
+          "points": 171,
+          "fwd_max_m": 1.862645149230957e-09,
+          "fwd_worst_at": [
+            -180,
+            -80
+          ],
+          "fwd_missing": 0,
+          "fwd_extra": 0,
+          "inv_max_deg": 2.842170943040401e-14,
+          "inv_worst_at": [
+            -180,
+            0
+          ],
+          "inv_missing": 0,
+          "verdict": "exact"
+        },
+        {
+          "projection": "webmerc",
+          "engine": "terrio-crs",
+          "engine_version": "0.1.0",
+          "supported": true,
+          "points": 171,
+          "fwd_max_m": 5.587935447692871e-09,
+          "fwd_worst_at": [
+            -180,
+            80
+          ],
+          "fwd_missing": 0,
+          "fwd_extra": 0,
+          "inv_max_deg": 2.842170943040401e-14,
+          "inv_worst_at": [
+            -180,
+            0
+          ],
+          "inv_missing": 0,
+          "verdict": "exact"
+        },
+        {
+          "projection": "tmerc",
+          "engine": "terrio-crs",
+          "engine_version": "0.1.0",
+          "supported": true,
+          "points": 119,
+          "fwd_max_m": 9.313225746154785e-10,
+          "fwd_worst_at": [
+            117,
+            -10
+          ],
+          "fwd_missing": 0,
+          "fwd_extra": 0,
+          "inv_max_deg": 1.7217499488499932e-14,
+          "inv_worst_at": [
+            127,
+            -70
+          ],
+          "inv_missing": 0,
+          "verdict": "exact"
+        },
+        {
+          "projection": "etmerc",
+          "engine": "terrio-crs",
+          "engine_version": "0.1.0",
+          "supported": true,
+          "points": 119,
+          "fwd_max_m": 9.313225746154785e-10,
+          "fwd_worst_at": [
+            117,
+            -10
+          ],
+          "fwd_missing": 0,
+          "fwd_extra": 0,
+          "inv_max_deg": 1.7217499488499932e-14,
+          "inv_worst_at": [
+            127,
+            -70
+          ],
+          "inv_missing": 0,
+          "verdict": "exact"
+        },
+        {
+          "projection": "utm",
+          "engine": "terrio-crs",
+          "engine_version": "0.1.0",
+          "supported": true,
+          "points": 91,
+          "fwd_max_m": 3.725290298461914e-09,
+          "fwd_worst_at": [
+            132,
+            -10
+          ],
+          "fwd_missing": 0,
+          "fwd_extra": 0,
+          "inv_max_deg": 3.2961132475068304e-14,
+          "inv_worst_at": [
+            147,
+            -5
+          ],
+          "inv_missing": 0,
+          "verdict": "exact"
+        },
+        {
+          "projection": "lcc",
+          "engine": "terrio-crs",
+          "engine_version": "0.1.0",
+          "supported": true,
+          "points": 70,
+          "fwd_max_m": 3.166839133187999e-09,
+          "fwd_worst_at": [
+            -70,
+            20
+          ],
+          "fwd_missing": 0,
+          "fwd_extra": 0,
+          "inv_max_deg": 4.085620730620576e-14,
+          "inv_worst_at": [
+            -110,
+            10
+          ],
+          "inv_missing": 0,
+          "verdict": "exact"
+        },
+        {
+          "projection": "aea",
+          "engine": "terrio-crs",
+          "engine_version": "0.1.0",
+          "supported": true,
+          "points": 70,
+          "fwd_max_m": 2.9451005721170265e-09,
+          "fwd_worst_at": [
+            -140,
+            60
+          ],
+          "fwd_missing": 0,
+          "fwd_extra": 0,
+          "inv_max_deg": 7.944109290391274e-14,
+          "inv_worst_at": [
+            -140,
+            60
+          ],
+          "inv_missing": 0,
+          "verdict": "exact"
+        },
+        {
+          "projection": "leac",
+          "engine": "terrio-crs",
+          "engine_version": "0.1.0",
+          "supported": false,
+          "verdict": "unsupported",
+          "error": "coordinate reference system: unsupported projection: PROJ +proj=leac is not supported by wbprojection"
+        },
+        {
+          "projection": "stere-polar",
+          "engine": "terrio-crs",
+          "engine_version": "0.1.0",
+          "supported": true,
+          "points": 222,
+          "fwd_max_m": 1.3170890159654386e-09,
+          "fwd_worst_at": [
+            -130,
+            -40
+          ],
+          "fwd_missing": 37,
+          "fwd_extra": 0,
+          "inv_max_deg": 1.4210854715202004e-14,
+          "inv_worst_at": [
+            -120,
+            -70
+          ],
+          "inv_missing": 0,
+          "verdict": "gaps"
+        },
+        {
+          "projection": "stere-oblique",
+          "engine": "terrio-crs",
+          "engine_version": "0.1.0",
+          "supported": true,
+          "points": 72,
+          "fwd_max_m": 0.0,
+          "fwd_worst_at": null,
+          "fwd_missing": 0,
+          "fwd_extra": 0,
+          "inv_max_deg": 2.842170943040401e-14,
+          "inv_worst_at": [
+            147,
+            -75
+          ],
+          "inv_missing": 0,
+          "verdict": "exact"
+        },
+        {
+          "projection": "ups",
+          "engine": "terrio-crs",
+          "engine_version": "0.1.0",
+          "supported": true,
+          "points": 185,
+          "fwd_max_m": 1.041250292910165e-09,
+          "fwd_worst_at": [
+            120,
+            70
+          ],
+          "fwd_missing": 37,
+          "fwd_extra": 0,
+          "inv_max_deg": 1.4210854715202004e-14,
+          "inv_worst_at": [
+            -120,
+            70
+          ],
+          "inv_missing": 0,
+          "verdict": "gaps"
+        },
+        {
+          "projection": "sterea",
+          "engine": "terrio-crs",
+          "engine_version": "0.1.0",
+          "supported": true,
+          "points": 42,
+          "fwd_max_m": 0.0,
+          "fwd_worst_at": null,
+          "fwd_missing": 0,
+          "fwd_extra": 0,
+          "inv_max_deg": 2.842170943040401e-14,
+          "inv_worst_at": [
+            0,
+            65
+          ],
+          "inv_missing": 0,
+          "verdict": "exact"
+        },
+        {
+          "projection": "somerc",
+          "engine": "terrio-crs",
+          "engine_version": "0.1.0",
+          "supported": true,
+          "points": 48,
+          "fwd_max_m": 0.0,
+          "fwd_worst_at": null,
+          "fwd_missing": 0,
+          "fwd_extra": 0,
+          "inv_max_deg": 7.105427357601002e-15,
+          "inv_worst_at": [
+            -10,
+            40
+          ],
+          "inv_missing": 0,
+          "verdict": "exact"
+        },
+        {
+          "projection": "laea",
+          "engine": "terrio-crs",
+          "engine_version": "0.1.0",
+          "supported": true,
+          "points": 135,
+          "fwd_max_m": 5.122274160385132e-09,
+          "fwd_worst_at": [
+            -60,
+            80
+          ],
+          "fwd_missing": 0,
+          "fwd_extra": 0,
+          "inv_max_deg": 7.173661282324072e-14,
+          "inv_worst_at": [
+            -50,
+            80
+          ],
+          "inv_missing": 0,
+          "verdict": "exact"
+        },
+        {
+          "projection": "laea-polar",
+          "engine": "terrio-crs",
+          "engine_version": "0.1.0",
+          "supported": true,
+          "points": 259,
+          "fwd_max_m": 2.4750236917134956e-09,
+          "fwd_worst_at": [
+            -130,
+            -70
+          ],
+          "fwd_missing": 0,
+          "fwd_extra": 0,
+          "inv_max_deg": 2.1316282072803006e-14,
+          "inv_worst_at": [
+            -180,
+            -60
+          ],
+          "inv_missing": 0,
+          "verdict": "exact"
+        },
+        {
+          "projection": "moll",
+          "engine": "terrio-crs",
+          "engine_version": "0.1.0",
+          "supported": true,
+          "points": 91,
+          "fwd_max_m": 0.0,
+          "fwd_worst_at": null,
+          "fwd_missing": 0,
+          "fwd_extra": 0,
+          "inv_max_deg": 3.552713678800501e-15,
+          "inv_worst_at": [
+            -150,
+            -30
+          ],
+          "inv_missing": 0,
+          "verdict": "exact"
+        },
+        {
+          "projection": "wag4",
+          "engine": "terrio-crs",
+          "engine_version": "0.1.0",
+          "supported": true,
+          "points": 91,
+          "fwd_max_m": 0.0,
+          "fwd_worst_at": null,
+          "fwd_missing": 0,
+          "fwd_extra": 0,
+          "inv_max_deg": 4.235164753674779e-22,
+          "inv_worst_at": [
+            -150,
+            -90
+          ],
+          "inv_missing": 0,
+          "verdict": "exact"
+        },
+        {
+          "projection": "wag5",
+          "engine": "terrio-crs",
+          "engine_version": "0.1.0",
+          "supported": true,
+          "points": 91,
+          "fwd_max_m": 0.0,
+          "fwd_worst_at": null,
+          "fwd_missing": 0,
+          "fwd_extra": 0,
+          "inv_max_deg": 2.6822400070865448e-14,
+          "inv_worst_at": [
+            -150,
+            -30
+          ],
+          "inv_missing": 0,
+          "verdict": "exact"
+        },
+        {
+          "projection": "geos",
+          "engine": "terrio-crs",
+          "engine_version": "0.1.0",
+          "supported": true,
+          "points": 156,
+          "fwd_max_m": 1.862645149230957e-09,
+          "fwd_worst_at": [
+            95,
+            9
+          ],
+          "fwd_missing": 0,
+          "fwd_extra": 0,
+          "inv_max_deg": 1.560550997761473e-10,
+          "inv_worst_at": [
+            155,
+            -81
+          ],
+          "inv_missing": 0,
+          "verdict": "exact"
+        },
+        {
+          "projection": "eqc",
+          "engine": "terrio-crs",
+          "engine_version": "0.1.0",
+          "supported": true,
+          "points": 91,
+          "fwd_max_m": 3.300607204437256e-06,
+          "fwd_worst_at": [
+            -180,
+            -60
+          ],
+          "fwd_missing": 0,
+          "fwd_extra": 0,
+          "inv_max_deg": 2.963674091561537e-11,
+          "inv_worst_at": [
+            -180,
+            -60
+          ],
+          "inv_missing": 0,
+          "verdict": "exact"
+        },
+        {
+          "projection": "aeqd",
+          "engine": "terrio-crs",
+          "engine_version": "0.1.0",
+          "supported": true,
+          "points": 91,
+          "fwd_max_m": 0.0002154958211508601,
+          "fwd_worst_at": [
+            -60,
+            30
+          ],
+          "fwd_missing": 0,
+          "fwd_extra": 0,
+          "inv_max_deg": 4.931166587937563e-10,
+          "inv_worst_at": [
+            30,
+            0
+          ],
+          "inv_missing": 0,
+          "verdict": "exact"
+        },
+        {
+          "projection": "aeqd-polar",
+          "engine": "terrio-crs",
+          "engine_version": "0.1.0",
+          "supported": true,
+          "points": 175,
+          "fwd_max_m": 3.915994958373564e-06,
+          "fwd_worst_at": [
+            -165,
+            75
+          ],
+          "fwd_missing": 0,
+          "fwd_extra": 0,
+          "inv_max_deg": 3.5072389437118545e-11,
+          "inv_worst_at": [
+            -180,
+            75
+          ],
+          "inv_missing": 0,
+          "verdict": "exact"
+        },
+        {
+          "projection": "krovak",
+          "engine": "terrio-crs",
+          "engine_version": "0.1.0",
+          "supported": true,
+          "points": 91,
+          "fwd_max_m": 0.0,
+          "fwd_worst_at": null,
+          "fwd_missing": 0,
+          "fwd_extra": 0,
+          "inv_max_deg": 2.842170943040401e-14,
+          "inv_worst_at": [
+            9,
+            48
+          ],
+          "inv_missing": 0,
+          "verdict": "exact"
+        },
+        {
+          "projection": "mill",
+          "engine": "terrio-crs",
+          "engine_version": "0.1.0",
+          "supported": true,
+          "points": 91,
+          "fwd_max_m": 0.0,
+          "fwd_worst_at": null,
+          "fwd_missing": 0,
+          "fwd_extra": 0,
+          "inv_max_deg": 2.842170943040401e-14,
+          "inv_worst_at": [
+            -120,
+            0
+          ],
+          "inv_missing": 0,
+          "verdict": "exact"
+        },
+        {
+          "projection": "cea",
+          "engine": "terrio-crs",
+          "engine_version": "0.1.0",
+          "supported": true,
+          "points": 91,
+          "fwd_max_m": 0.0,
+          "fwd_worst_at": null,
+          "fwd_missing": 0,
+          "fwd_extra": 0,
+          "inv_max_deg": 2.842170943040401e-14,
+          "inv_worst_at": [
+            -180,
+            0
+          ],
+          "inv_missing": 0,
+          "verdict": "exact"
+        },
+        {
+          "projection": "poly",
+          "engine": "terrio-crs",
+          "engine_version": "0.1.0",
+          "supported": true,
+          "points": 108,
+          "fwd_max_m": 4.838220775127411e-06,
+          "fwd_worst_at": [
+            -120,
+            70
+          ],
+          "fwd_missing": 0,
+          "fwd_extra": 0,
+          "inv_max_deg": 4.329414723375485e-11,
+          "inv_worst_at": [
+            -100,
+            70
+          ],
+          "inv_missing": 0,
+          "verdict": "exact"
+        },
+        {
+          "projection": "ortho",
+          "engine": "terrio-crs",
+          "engine_version": "0.1.0",
+          "supported": true,
+          "points": 91,
+          "fwd_max_m": 0.0,
+          "fwd_worst_at": null,
+          "fwd_missing": 0,
+          "fwd_extra": 0,
+          "inv_max_deg": 5.935584142769306e-13,
+          "inv_worst_at": [
+            30,
+            -30
+          ],
+          "inv_missing": 0,
+          "verdict": "exact"
+        },
+        {
+          "projection": "gnom",
+          "engine": "terrio-crs",
+          "engine_version": "0.1.0",
+          "supported": true,
+          "points": 259,
+          "fwd_max_m": 1.862645149230957e-09,
+          "fwd_worst_at": [
+            -160,
+            -40
+          ],
+          "fwd_missing": 0,
+          "fwd_extra": 0,
+          "inv_max_deg": 1.4210854715202004e-14,
+          "inv_worst_at": [
+            -150,
+            -70
+          ],
+          "inv_missing": 0,
+          "verdict": "exact"
+        },
+        {
+          "projection": "sinu",
+          "engine": "terrio-crs",
+          "engine_version": "0.1.0",
+          "supported": true,
+          "points": 91,
+          "fwd_max_m": 3.300607204437256e-06,
+          "fwd_worst_at": [
+            -180,
+            -60
+          ],
+          "fwd_missing": 0,
+          "fwd_extra": 0,
+          "inv_max_deg": 8.578641755050361e-11,
+          "inv_worst_at": [
+            -180,
+            -60
+          ],
+          "inv_missing": 0,
+          "verdict": "exact"
+        },
+        {
+          "projection": "omerc",
+          "engine": "terrio-crs",
+          "engine_version": "0.1.0",
+          "supported": true,
+          "points": 63,
+          "fwd_max_m": 4.679838019013819e-09,
+          "fwd_worst_at": [
+            99,
+            -2
+          ],
+          "fwd_missing": 0,
+          "fwd_extra": 0,
+          "inv_max_deg": 3.019806626980426e-14,
+          "inv_worst_at": [
+            97,
+            10
+          ],
+          "inv_missing": 0,
+          "verdict": "exact"
+        },
+        {
+          "projection": "tpers",
+          "engine": "terrio-crs",
+          "engine_version": "0.1.0",
+          "supported": false,
+          "verdict": "unsupported",
+          "error": "coordinate reference system: unsupported projection: PROJ +proj=tpers is not supported by wbprojection"
+        },
+        {
+          "projection": "nsper",
+          "engine": "terrio-crs",
+          "engine_version": "0.1.0",
+          "supported": false,
+          "verdict": "unsupported",
+          "error": "coordinate reference system: unsupported projection: PROJ +proj=nsper is not supported by wbprojection"
+        },
+        {
+          "projection": "cass",
+          "engine": "terrio-crs",
+          "engine_version": "0.1.0",
+          "supported": true,
+          "points": 63,
+          "fwd_max_m": 2.8279609978199005e-06,
+          "fwd_worst_at": [
+            162,
+            -60
+          ],
+          "fwd_missing": 0,
+          "fwd_extra": 0,
+          "inv_max_deg": 2.538058652135078e-11,
+          "inv_worst_at": [
+            147,
+            -60
+          ],
+          "inv_missing": 0,
+          "verdict": "exact"
+        },
+        {
+          "projection": "eqdc",
+          "engine": "terrio-crs",
+          "engine_version": "0.1.0",
+          "supported": true,
+          "points": 108,
+          "fwd_max_m": 4.493738119212971e-06,
+          "fwd_worst_at": [
+            -100,
+            70
+          ],
+          "fwd_missing": 0,
+          "fwd_extra": 0,
+          "inv_max_deg": 4.026621500190759e-11,
+          "inv_worst_at": [
+            -100,
+            70
+          ],
+          "inv_missing": 0,
+          "verdict": "exact"
+        },
+        {
+          "projection": "robin",
+          "engine": "terrio-crs",
+          "engine_version": "0.1.0",
+          "supported": true,
+          "points": 91,
+          "fwd_max_m": 0.0,
+          "fwd_worst_at": null,
+          "fwd_missing": 0,
+          "fwd_extra": 0,
+          "inv_max_deg": 2.461392238570962e-14,
+          "inv_worst_at": [
+            -180,
+            -30
+          ],
+          "inv_missing": 0,
+          "verdict": "exact"
+        },
+        {
+          "projection": "eqearth",
+          "engine": "terrio-crs",
+          "engine_version": "0.1.0",
+          "supported": true,
+          "points": 91,
+          "fwd_max_m": 0.0,
+          "fwd_worst_at": null,
+          "fwd_missing": 0,
+          "fwd_extra": 0,
+          "inv_max_deg": 6.583761162914925e-06,
+          "inv_worst_at": [
+            -180,
+            -90
+          ],
+          "inv_missing": 0,
+          "verdict": "close"
+        },
+        {
+          "projection": "tmerc-sphere",
+          "engine": "terrio-crs",
+          "engine_version": "0.1.0",
+          "supported": true,
+          "points": 63,
+          "fwd_max_m": 1.9199706733309015e-09,
+          "fwd_worst_at": [
+            137,
+            -10
+          ],
+          "fwd_missing": 0,
+          "fwd_extra": 0,
+          "inv_max_deg": 1.730260725074836e-14,
+          "inv_worst_at": [
+            177,
+            -80
+          ],
+          "inv_missing": 0,
+          "verdict": "exact"
+        },
+        {
+          "projection": "aeqd-far",
+          "engine": "terrio-crs",
+          "engine_version": "0.1.0",
+          "supported": true,
+          "points": 325,
+          "fwd_max_m": 0.00029770098286312924,
+          "fwd_worst_at": [
+            312,
+            30
+          ],
+          "fwd_missing": 0,
+          "fwd_extra": 0,
+          "inv_max_deg": 4.939409027337474e-10,
+          "inv_worst_at": [
+            27,
+            0
+          ],
+          "inv_missing": 0,
+          "verdict": "exact"
+        },
+        {
+          "projection": "wintri",
+          "engine": "terrio-crs",
+          "engine_version": "0.1.0",
+          "supported": true,
+          "points": 91,
+          "fwd_max_m": 3636543.3980102856,
+          "fwd_worst_at": [
+            -180,
+            -90
+          ],
+          "fwd_missing": 0,
+          "fwd_extra": 0,
+          "inv_max_deg": 32.70422048691768,
+          "inv_worst_at": [
+            -180,
+            0
+          ],
+          "inv_missing": 0,
+          "verdict": "off"
+        },
+        {
+          "projection": "aitoff",
+          "engine": "terrio-crs",
+          "engine_version": "0.1.0",
+          "supported": true,
+          "points": 91,
+          "fwd_max_m": 1.9199706733309015e-09,
+          "fwd_worst_at": [
+            -60,
+            -60
+          ],
+          "fwd_missing": 0,
+          "fwd_extra": 0,
+          "inv_max_deg": 4.2877766002921165e-12,
+          "inv_worst_at": [
+            90,
+            -60
+          ],
+          "inv_missing": 9,
+          "verdict": "gaps"
+        },
+        {
+          "projection": "hammer",
+          "engine": "terrio-crs",
+          "engine_version": "0.1.0",
+          "supported": true,
+          "points": 91,
+          "fwd_max_m": 5.587935447692871e-09,
+          "fwd_worst_at": [
+            -120,
+            0
+          ],
+          "fwd_missing": 0,
+          "fwd_extra": 0,
+          "inv_max_deg": 4.973799150320702e-14,
+          "inv_worst_at": [
+            -120,
+            -30
+          ],
+          "inv_missing": 0,
+          "verdict": "exact"
+        },
+        {
+          "projection": "natearth",
+          "engine": "terrio-crs",
+          "engine_version": "0.1.0",
+          "supported": true,
+          "points": 91,
+          "fwd_max_m": 3.725290298461914e-09,
+          "fwd_worst_at": [
+            -150,
+            0
+          ],
+          "fwd_missing": 0,
+          "fwd_extra": 0,
+          "inv_max_deg": 1.1368683772161603e-13,
+          "inv_worst_at": [
+            -180,
+            -90
+          ],
+          "inv_missing": 13,
+          "verdict": "gaps"
+        },
+        {
+          "projection": "natearth2",
+          "engine": "terrio-crs",
+          "engine_version": "0.1.0",
+          "supported": true,
+          "points": 91,
+          "fwd_max_m": 0.0,
+          "fwd_worst_at": null,
+          "fwd_missing": 0,
+          "fwd_extra": 0,
+          "inv_max_deg": 2.842170943040401e-14,
+          "inv_worst_at": [
+            -150,
+            0
+          ],
+          "inv_missing": 0,
+          "verdict": "exact"
+        },
+        {
+          "projection": "eck4",
+          "engine": "terrio-crs",
+          "engine_version": "0.1.0",
+          "supported": true,
+          "points": 91,
+          "fwd_max_m": 1.666000468656264e-08,
+          "fwd_worst_at": [
+            -180,
+            -30
+          ],
+          "fwd_missing": 26,
+          "fwd_extra": 0,
+          "inv_max_deg": 4.9737991503207076e-14,
+          "inv_worst_at": [
+            -120,
+            -30
+          ],
+          "inv_missing": 0,
+          "verdict": "gaps"
+        },
+        {
+          "projection": "eck6",
+          "engine": "terrio-crs",
+          "engine_version": "0.1.0",
+          "supported": true,
+          "points": 91,
+          "fwd_max_m": 3.725290298461914e-09,
+          "fwd_worst_at": [
+            -180,
+            0
+          ],
+          "fwd_missing": 0,
+          "fwd_extra": 0,
+          "inv_max_deg": 4.935587579328813e-14,
+          "inv_worst_at": [
+            -150,
+            -30
+          ],
+          "inv_missing": 0,
+          "verdict": "exact"
+        },
+        {
+          "projection": "gall",
+          "engine": "terrio-crs",
+          "engine_version": "0.1.0",
+          "supported": true,
+          "points": 91,
+          "fwd_max_m": 0.0,
+          "fwd_worst_at": null,
+          "fwd_missing": 0,
+          "fwd_extra": 0,
+          "inv_max_deg": 1.4210854715202004e-14,
+          "inv_worst_at": [
+            -180,
+            -90
+          ],
+          "inv_missing": 0,
+          "verdict": "exact"
+        },
+        {
+          "projection": "vandg",
+          "engine": "terrio-crs",
+          "engine_version": "0.1.0",
+          "supported": true,
+          "points": 91,
+          "fwd_max_m": 0.0,
+          "fwd_worst_at": null,
+          "fwd_missing": 0,
+          "fwd_extra": 0,
+          "inv_max_deg": 6.882551630838023e-07,
+          "inv_worst_at": [
+            -180,
+            -30
+          ],
+          "inv_missing": 0,
+          "verdict": "close"
+        },
+        {
+          "projection": "bonne",
+          "engine": "terrio-crs",
+          "engine_version": "0.1.0",
+          "supported": true,
+          "points": 91,
+          "fwd_max_m": 6.0195161241368155e-06,
+          "fwd_worst_at": [
+            -180,
+            60
+          ],
+          "fwd_missing": 0,
+          "fwd_extra": 0,
+          "inv_max_deg": 1.0502306311567939e-10,
+          "inv_worst_at": [
+            -180,
+            -60
+          ],
+          "inv_missing": 0,
+          "verdict": "exact"
+        },
+        {
+          "projection": "qsc",
+          "engine": "terrio-crs",
+          "engine_version": "0.1.0",
+          "supported": false,
+          "verdict": "unsupported",
+          "error": "coordinate reference system: unsupported projection: PROJ +proj=qsc is not supported by wbprojection"
+        },
+        {
+          "projection": "healpix",
+          "engine": "terrio-crs",
+          "engine_version": "0.1.0",
+          "supported": false,
+          "verdict": "unsupported",
+          "error": "coordinate reference system: unsupported projection: PROJ +proj=healpix is not supported by wbprojection"
+        },
+        {
+          "projection": "igh",
+          "engine": "terrio-crs",
+          "engine_version": "0.1.0",
+          "supported": false,
+          "verdict": "unsupported",
+          "error": "coordinate reference system: unsupported projection: PROJ +proj=igh is not supported by wbprojection"
+        },
+        {
+          "projection": "times",
+          "engine": "terrio-crs",
+          "engine_version": "0.1.0",
+          "supported": true,
+          "points": 91,
+          "fwd_max_m": 0.0,
+          "fwd_worst_at": null,
+          "fwd_missing": 0,
+          "fwd_extra": 0,
+          "inv_max_deg": 2.461392238570962e-14,
+          "inv_worst_at": [
+            -150,
+            -30
+          ],
+          "inv_missing": 0,
+          "verdict": "exact"
+        },
+        {
+          "projection": "eqc-sphere",
+          "engine": "terrio-crs",
+          "engine_version": "0.1.0",
+          "supported": true,
+          "points": 91,
+          "fwd_max_m": 0.0,
+          "fwd_worst_at": null,
+          "fwd_missing": 0,
+          "fwd_extra": 0,
+          "inv_max_deg": 0.0,
+          "inv_worst_at": null,
+          "inv_missing": 0,
+          "verdict": "exact"
+        },
+        {
+          "projection": "merc-sphere",
+          "engine": "terrio-crs",
+          "engine_version": "0.1.0",
+          "supported": true,
+          "points": 171,
+          "fwd_max_m": 0.0,
+          "fwd_worst_at": null,
+          "fwd_missing": 0,
+          "fwd_extra": 0,
+          "inv_max_deg": 2.842170943040401e-14,
+          "inv_worst_at": [
+            -120,
+            0
+          ],
+          "inv_missing": 0,
+          "verdict": "exact"
+        }
+      ]
+    }
+  },
+  "oracle": {
+    "crs": {
+      "schema_version": 1,
+      "generated": "2026-10-15T23:26:19+00:00",
+      "proj_version": "9.9.0",
+      "projinfo_banner": "Rel. 9.9.0, September 15th, 2026",
+      "pyproj_version": "3.8.0",
+      "proj_data": "/work/.proj-nogrids",
+      "proj_data_files": [
+        "CH",
+        "GL27",
+        "ITRF2000",
+        "ITRF2008",
+        "ITRF2014",
+        "ITRF2020",
+        "deformation_model.schema.json",
+        "nad.lst",
+        "nad27",
+        "nad83",
+        "other.extra",
+        "proj.db",
+        "proj.ini",
+        "projjson.schema.json",
+        "triangulation.schema.json",
+        "world"
+      ],
+      "grid_files_present": [],
+      "network_enabled": false,
+      "epsg_version": "v13.102",
+      "epsg_date": "2026-08-27",
+      "esri_version": "ArcGIS Pro 3.6",
+      "grid_configuration": "no proj-data grids (proj.db, proj.ini and init files only), network off",
+      "axis_order": "always_xy=True: oracle normalised for visualisation (east, north)"
+    },
+    "projections": {
+      "schema_version": 1,
+      "generated": "2026-10-25T03:36:49+00:00",
+      "proj_version": "9.10.0",
+      "proj_git_sha": "5fa31c29f0a806568ed7bc76c1a557604db4a804",
+      "pyproj_version": "3.8.0",
+      "defaults": {
+        "lon": [
+          -180,
+          180
+        ],
+        "lat": [
+          -90,
+          90
+        ],
+        "step": 30
+      }
+    }
+  },
+  "projection_tolerances": {
+    "exact_forward_metres": 0.001,
+    "exact_inverse_degrees": 1e-08,
+    "close_forward_metres": 1.0,
+    "close_inverse_degrees": 1e-05,
+    "longitude_difference": "wrapped and multiplied by cos(reference latitude)"
+  }
+}

@@ -15,6 +15,7 @@ pub enum Error {
     Io(#[from] std::io::Error),
 }
 
+#[cfg(feature = "wbprojection-fallback")]
 impl From<wbprojection::ProjectionError> for Error {
     fn from(error: wbprojection::ProjectionError) -> Self {
         Self::Crs(error.to_string())
