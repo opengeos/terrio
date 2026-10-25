@@ -89,7 +89,8 @@ by the settings described below. Direct callers retrieve diagnostics with
 The standalone default omits `wbprojection`; Terrio enables the fallback to retain
 its existing coverage. Bundled tables use portable `ruzstd` decompression on all
 targets. TIFF grid codecs retain their previous features, including native Zstd.
-Dependency measurements and release work are tracked in
+The [dependency and build measurements](crs-footprint.md) record both standalone
+configurations and full Terrio before/after extraction. Release work is tracked in
 [#268](https://github.com/opengeos/terrio/issues/268). The new crate does not add
 geocentric, PROJJSON, IAU or additional projection support by itself.
 

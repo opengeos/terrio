@@ -1,0 +1,181 @@
+{
+  "rustc": "rustc 1.99.0 (b940084d7 2026-09-28)\nbinary: rustc\ncommit-hash: b940084d7eb6a299eb4bfeb8e34901bc051e7ac4\ncommit-date: 2026-09-28\nhost: x86_64-unknown-linux-gnu\nrelease: 1.99.0\nLLVM version: 23.1.1",
+  "wasm_opt": "wasm-opt version 117 (version_117)",
+  "machine": "Linux-7.3.0-3-cachyos-x86_64-with-glibc2.44",
+  "cpu": "Intel(R) Xeon(R) w7-3445",
+  "resource_scope": "Cargo process tree; resource counters exclude the persistent sccache daemon and its compiler workers",
+  "timing_scope": "Single serial fresh-target builds, sccache recache, filesystem and dependency downloads may be warm; shared desktop host",
+  "jobs": 2,
+  "compiler_cache": "recache",
+  "profile": {
+    "opt-level": "s",
+    "lto": true,
+    "codegen-units": 1,
+    "panic": "abort",
+    "strip": true
+  },
+  "before": {
+    "commit": "0e58a72a7a287b97142e6457920226a7e0e2d510",
+    "dirty": false,
+    "diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "after": {
+    "commit": "53e90f922cd7b7993b8b8d75d10069f836260975",
+    "dirty": false,
+    "diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "configurations": [
+    "before",
+    "native",
+    "fallback",
+    "terrio-after"
+  ],
+  "targets": [
+    "native",
+    "wasm32-unknown-unknown"
+  ],
+  "measurements": [
+    {
+      "configuration": "before",
+      "target": "native",
+      "packages": 149,
+      "elapsed_seconds": 169.29151947700302,
+      "max_rss_kib": 332548,
+      "user_seconds": 5.099328,
+      "system_seconds": 2.22304,
+      "command": [
+        "cargo",
+        "build",
+        "--release",
+        "--locked"
+      ]
+    },
+    {
+      "configuration": "before",
+      "target": "wasm32-unknown-unknown",
+      "packages": 130,
+      "elapsed_seconds": 120.62630082000396,
+      "max_rss_kib": 327676,
+      "user_seconds": 4.610783,
+      "system_seconds": 1.9352049999999998,
+      "command": [
+        "cargo",
+        "build",
+        "--release",
+        "--locked",
+        "--target",
+        "wasm32-unknown-unknown"
+      ],
+      "wasm_bytes": 4197535,
+      "optimized_wasm_bytes": 3946779,
+      "optimized_gzip_bytes": 1260844
+    },
+    {
+      "configuration": "native",
+      "target": "native",
+      "packages": 47,
+      "elapsed_seconds": 32.61061833900749,
+      "max_rss_kib": 334392,
+      "user_seconds": 4.036887,
+      "system_seconds": 1.294457,
+      "command": [
+        "cargo",
+        "build",
+        "--release",
+        "--locked"
+      ]
+    },
+    {
+      "configuration": "native",
+      "target": "wasm32-unknown-unknown",
+      "packages": 38,
+      "elapsed_seconds": 21.489261820999673,
+      "max_rss_kib": 332304,
+      "user_seconds": 3.6176909999999998,
+      "system_seconds": 0.989459,
+      "command": [
+        "cargo",
+        "build",
+        "--release",
+        "--locked",
+        "--target",
+        "wasm32-unknown-unknown"
+      ],
+      "wasm_bytes": 1683729,
+      "optimized_wasm_bytes": 1518533,
+      "optimized_gzip_bytes": 908412
+    },
+    {
+      "configuration": "fallback",
+      "target": "native",
+      "packages": 53,
+      "elapsed_seconds": 44.72790681000333,
+      "max_rss_kib": 336740,
+      "user_seconds": 4.493966,
+      "system_seconds": 1.456006,
+      "command": [
+        "cargo",
+        "build",
+        "--release",
+        "--locked"
+      ]
+    },
+    {
+      "configuration": "fallback",
+      "target": "wasm32-unknown-unknown",
+      "packages": 43,
+      "elapsed_seconds": 31.581563732004724,
+      "max_rss_kib": 336012,
+      "user_seconds": 4.118825,
+      "system_seconds": 1.161381,
+      "command": [
+        "cargo",
+        "build",
+        "--release",
+        "--locked",
+        "--target",
+        "wasm32-unknown-unknown"
+      ],
+      "wasm_bytes": 4147954,
+      "optimized_wasm_bytes": 3917282,
+      "optimized_gzip_bytes": 1244987
+    },
+    {
+      "configuration": "terrio-after",
+      "target": "native",
+      "packages": 150,
+      "elapsed_seconds": 161.18572826799937,
+      "max_rss_kib": 345840,
+      "user_seconds": 5.152819,
+      "system_seconds": 2.201886,
+      "command": [
+        "cargo",
+        "build",
+        "--release",
+        "--locked"
+      ]
+    },
+    {
+      "configuration": "terrio-after",
+      "target": "wasm32-unknown-unknown",
+      "packages": 131,
+      "elapsed_seconds": 114.69478948801407,
+      "max_rss_kib": 334320,
+      "user_seconds": 4.570822,
+      "system_seconds": 1.776343,
+      "command": [
+        "cargo",
+        "build",
+        "--release",
+        "--locked",
+        "--target",
+        "wasm32-unknown-unknown"
+      ],
+      "wasm_bytes": 4175412,
+      "optimized_wasm_bytes": 3942218,
+      "optimized_gzip_bytes": 1259334
+    }
+  ],
+  "baseline_wasm_note": "Reused from the initial serial matrix at the same clean pre-extraction source, dependency lock, toolchain and build profile. The native baseline was repeated after a briefly overlapping lint check; only the uncontaminated repeat is included.",
+  "artifact_scope": "Equivalent CRS-only consumer; package counts include the consumed library and normal/build dependencies, exclude the probe and dev dependencies. Sizes are bytes. Resource counters exclude sccache compiler workers and are not whole-build peak memory."
+}
