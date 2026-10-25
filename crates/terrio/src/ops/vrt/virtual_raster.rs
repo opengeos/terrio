@@ -245,6 +245,11 @@ impl VirtualRaster {
             Resampling::Sum => "Sum",
             Resampling::Rms => "RootMeanSquare",
         };
+        if options.kernel_version != crate::ops::warp::KernelVersion::Gdal312 || options.transform_options != Default::default() {
+            return Err(crate::Error::Unsupported(
+                "versioned kernels and strict coordinate-operation options require a materialized warp output".into(),
+            ));
+        }
         let mut extra_options = String::new();
         if let Some(extra) = options.source_extra {
             extra_options += &format!("<Option name=\"SOURCE_EXTRA\">{extra}</Option>");

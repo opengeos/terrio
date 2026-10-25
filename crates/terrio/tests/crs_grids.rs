@@ -130,7 +130,8 @@ fn geoid_models_match_gdal() {
 #[test]
 fn coordinate_epochs_match_gdal() {
     // Time-dependent Helmert transformations need no grid.
-    let opts = |s: Option<f64>, t: Option<f64>| TransformOptions { source_coordinate_epoch: s, target_coordinate_epoch: t };
+    let opts =
+        |s: Option<f64>, t: Option<f64>| TransformOptions { source_coordinate_epoch: s, target_coordinate_epoch: t, ..Default::default() };
     let run = |src: &str, dst: &str, o: TransformOptions, p: (f64, f64, f64)| {
         Transformer::with_options(&crs(src), &crs(dst), &o).unwrap().transform_3d(p.0, p.1, p.2).unwrap()
     };

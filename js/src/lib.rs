@@ -166,6 +166,8 @@ fn dtype_name(t: DataType) -> &'static str {
 #[derive(Deserialize, Default)]
 #[serde(rename_all = "camelCase", default, deny_unknown_fields)]
 struct WriteOptions {
+    allow_ballpark: Option<bool>,
+    only_best: bool,
     /// The output format's short name, overriding the file name's extension.
     format: Option<String>,
     /// Reproject into this CRS.
@@ -605,6 +607,7 @@ impl Dataset {
     #[wasm_bindgen(js_name = toBytes)]
     pub fn to_bytes(&self, filename: &str, options: JsValue) -> Result<Vec<u8>, JsError> {
         let o: WriteOptions = parse_options(&options)?;
+        let transform_options = TransformOptions { allow_ballpark: o.allow_ballpark, only_best: o.only_best, ..Default::default() };
         let t_srs = o.t_srs.as_deref().map(SpatialRef::parse).transpose().map_err(js_err)?;
         match &mut *self.inner.borrow_mut() {
             Inner::Raster(r) => {
@@ -627,7 +630,11 @@ impl Dataset {
                 let opts = WindowOptions { bands: o.bands.unwrap_or_default(), overview: o.overview };
                 let mut ds = r.read_window(window, &opts).map_err(js_err)?;
                 if let Some(dst) = t_srs {
-                    let o = terrio::ops::warp::WarpOptions { dst_srs: Some(dst), ..Default::default() };
+                    let o = terrio::ops::warp::WarpOptions {
+                        dst_srs: Some(dst),
+                        transform_options: transform_options.clone(),
+                        ..Default::default()
+                    };
                     ds = terrio::ops::warp::warp(&[&ds], &o).map_err(js_err)?;
                 }
                 let mut creation_options: Vec<(String, String)> = o
@@ -673,6 +680,7 @@ impl Dataset {
                     select: o.select,
                     limit: o.limit,
                     dst_srs: t_srs,
+                    transform_options,
                     ..Default::default()
                 };
                 let out = terrio::ops::vector_filter::translate(&chosen, &translate).map_err(js_err)?;
@@ -689,6 +697,8 @@ impl Dataset {
 #[derive(Deserialize, Default)]
 #[serde(rename_all = "camelCase", default, deny_unknown_fields)]
 struct TransformPointsOptions {
+    allow_ballpark: Option<bool>,
+    only_best: bool,
     /// The coordinate epoch of the source coordinates (decimal year), for a dynamic source CRS.
     s_coord_epoch: Option<f64>,
     /// The coordinate epoch of the target coordinates, for a dynamic target CRS.
@@ -765,7 +775,12 @@ pub fn transform_points(
     let o: TransformPointsOptions = parse_options(&options)?;
     let src = SpatialRef::parse(src_crs).map_err(js_err)?;
     let dst = SpatialRef::parse(dst_crs).map_err(js_err)?;
-    let opts = TransformOptions { source_coordinate_epoch: o.s_coord_epoch, target_coordinate_epoch: o.t_coord_epoch };
+    let opts = TransformOptions {
+        source_coordinate_epoch: o.s_coord_epoch,
+        target_coordinate_epoch: o.t_coord_epoch,
+        allow_ballpark: o.allow_ballpark,
+        only_best: o.only_best,
+    };
     let t = Transformer::with_options(&src, &dst, &opts).map_err(js_err)?;
     let (mut ox, mut oy, mut oz) = (Vec::with_capacity(xs.len()), Vec::with_capacity(ys.len()), Vec::new());
     for (i, (x, y)) in xs.iter().zip(&ys).enumerate() {
@@ -898,4 +913,10 @@ mod getrandom_custom {
         }
         Ok(())
     }
+}
+
+/// Take coordinate-operation and driver warnings recorded since the previous call.
+#[wasm_bindgen(js_name = takeWarnings)]
+pub fn take_warnings() -> js_sys::Array {
+    terrio::warnings::take().into_iter().map(JsValue::from).collect()
 }

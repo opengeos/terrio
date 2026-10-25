@@ -25,6 +25,9 @@ pub struct Args {
     /// `gdaltransform -t_coord_epoch`.
     #[arg(long = "t_coord_epoch", visible_alias = "t-coord-epoch", value_name = "YEAR")]
     t_coord_epoch: Option<f64>,
+    /// Coordinate operation options: ALLOW_BALLPARK=YES|NO, ONLY_BEST=YES|NO.
+    #[arg(long = "ct-opt", visible_aliases = ["to-option", "ct_opt"], value_name = "KEY=VALUE")]
+    transform_options: Vec<String>,
     /// Coordinates to transform: x y [x y ...].
     #[arg(allow_negative_numbers = true)]
     coords: Vec<f64>,
@@ -46,7 +49,11 @@ pub fn run(a: Args) -> terrio::Result<()> {
         return Ok(());
     };
     let dst = SpatialRef::parse(&to)?;
-    let opts = TransformOptions { source_coordinate_epoch: a.s_coord_epoch, target_coordinate_epoch: a.t_coord_epoch };
+    let opts = TransformOptions {
+        source_coordinate_epoch: a.s_coord_epoch,
+        target_coordinate_epoch: a.t_coord_epoch,
+        ..super::vector_opts::coordinate_options(&a.transform_options)?
+    };
     let t = Transformer::with_options(&src, &dst, &opts)?;
     let print = |nums: &[f64]| -> terrio::Result<()> {
         match nums {

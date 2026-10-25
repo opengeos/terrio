@@ -86,7 +86,9 @@ def rasters(tmp: Path) -> terrio.Raster:
 
     small = terrio.translate(r, outsize=("50%", 0), resampling="average", a_nodata="none")
     scaled = terrio.translate(str(path), bands=[1], ot="Float32", scale=(0, 100, 0, 1))
-    warped = terrio.warp(r, t_srs="EPSG:4326", resampling="bilinear", srcnodata=-1)
+    warped = terrio.warp(
+        r, t_srs="EPSG:4326", resampling="bilinear", srcnodata=-1, kernel_version="3.13"
+    )
     merged = terrio.mosaic([r, str(path)], resolution="highest")
     assert merged is not None
     shade = terrio.dem(r, "hillshade", z=2.0, multidirectional=True)
@@ -100,7 +102,9 @@ def rasters(tmp: Path) -> terrio.Raster:
     info: dict[str, Any] = terrio.info(str(path), stats=True)
     drivers: list[dict[str, Any]] = terrio.drivers()
     print(info["driver"], len(drivers))
-    xs, ys = terrio.transform_points([500000.0], [4100000.0], "EPSG:32610", "EPSG:4326")
+    xs, ys = terrio.transform_points(
+        [500000.0], [4100000.0], "EPSG:32610", "EPSG:4326", allow_ballpark=False, only_best=True
+    )
     lon: float = float(xs[0])
     lat: float = float(ys[0])
     print(lon, lat)
@@ -174,7 +178,13 @@ def vectors(tmp: Path, raster: terrio.Raster) -> None:
     if isinstance(anything, terrio.VectorDataset):
         print(anything.layer_names)
 
-    terrio.convert(gpkg, str(tmp / "west.fgb"), where="value < 5", select=["name"])
+    terrio.convert(
+        gpkg,
+        str(tmp / "west.fgb"),
+        where="value < 5",
+        select=["name"],
+        ct_opt={"ALLOW_BALLPARK": "NO"},
+    )
     stream: terrio.FeatureStream = terrio.open_stream(
         gpkg, "parcels", batch_size=1, bbox=(0.0, 0.0, 50.0, 50.0)
     )

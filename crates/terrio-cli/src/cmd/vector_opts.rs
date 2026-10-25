@@ -5,6 +5,9 @@ use terrio::ops::vector_filter::{GeometryConversion, VectorTranslateOptions, Wri
 
 #[derive(clap::Args, Default)]
 pub struct VectorArgs {
+    /// Coordinate operation options: ALLOW_BALLPARK=YES|NO, ONLY_BEST=YES|NO.
+    #[arg(long = "ct-opt", visible_aliases = ["ct_opt", "to-option"], value_name = "KEY=VALUE", help_heading = "Vector options")]
+    transform_options: Vec<String>,
     /// Keep the features matching this OGR SQL expression, such as "pop > 1e6 AND name LIKE 'A%'".
     #[arg(long = "where", value_name = "EXPR", help_heading = "Vector options")]
     where_clause: Option<String>,
@@ -50,7 +53,15 @@ pub struct VectorArgs {
 }
 
 impl VectorArgs {
-    /// Whether any option is given.
+    pub fn has_transform_options(&self) -> bool {
+        !self.transform_options.is_empty()
+    }
+
+    pub fn coordinate_options(&self) -> terrio::Result<terrio::crs::TransformOptions> {
+        coordinate_options(&self.transform_options)
+    }
+
+    /// Whether any vector-only option is given (coordinate controls also apply to rasters).
     pub fn is_set(&self) -> bool {
         self.where_clause.is_some()
             || self.spat.is_some()
@@ -88,6 +99,7 @@ impl VectorArgs {
             src_srs: srs(&self.s_srs)?,
             dst_srs: t_srs,
             assign_srs: srs(&self.a_srs)?,
+            transform_options: self.coordinate_options()?,
         })
     }
 
@@ -95,6 +107,7 @@ impl VectorArgs {
     /// archives).
     pub fn append_only(&self) -> bool {
         self.append
+            && self.transform_options.is_empty()
             && self.where_clause.is_none()
             && self.spat.is_none()
             && self.select.is_none()
@@ -116,5 +129,23 @@ impl VectorArgs {
         } else {
             WriteMode::Create
         }
+    }
+}
+
+/// Dedicated coordinate-operation flags reject typos; warp's mixed --to list remains permissive.
+pub(super) fn coordinate_options(items: &[String]) -> terrio::Result<terrio::crs::TransformOptions> {
+    terrio::crs::TransformOptions::from_strict_options(&super::convert::key_values(items)?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dedicated_coordinate_options_reject_unknown_keys() {
+        assert!(coordinate_options(&["ALLOW_BALPARK=NO".into()]).is_err());
+        let args = VectorArgs { transform_options: vec!["ONLY_BEST=YES".into()], ..Default::default() };
+        assert!(!args.is_set(), "coordinate controls also apply to raster inputs");
+        assert!(args.coordinate_options().unwrap().only_best);
     }
 }

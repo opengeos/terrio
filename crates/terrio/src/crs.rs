@@ -817,6 +817,42 @@ pub struct TransformOptions {
     /// The coordinate epoch of the target coordinates, for a dynamic target CRS (GDAL's
     /// `-t_coord_epoch`).
     pub target_coordinate_epoch: Option<f64>,
+    /// Allow approximate datum operations. `None` uses GDAL's default (yes).
+    pub allow_ballpark: Option<bool>,
+    /// Require the best operation assuming all grids were available (GDAL's ONLY_BEST).
+    pub only_best: bool,
+}
+
+impl TransformOptions {
+    /// Parse a dedicated coordinate-operation option list, rejecting unknown keys.
+    pub fn from_strict_options<K: AsRef<str>, V: AsRef<str>>(items: &[(K, V)]) -> Result<Self> {
+        for (key, _) in items {
+            let key = key.as_ref();
+            if !key.eq_ignore_ascii_case("ALLOW_BALLPARK") && !key.eq_ignore_ascii_case("ONLY_BEST") {
+                return Err(Error::InvalidArgument(format!("unknown coordinate operation option: {key}")));
+            }
+        }
+        Self::from_options(items)
+    }
+
+    /// Parse GDAL transformer/coordinate-operation options. Unrelated keys are ignored.
+    pub fn from_options<K: AsRef<str>, V: AsRef<str>>(items: &[(K, V)]) -> Result<Self> {
+        let mut out = Self::default();
+        for (key, value) in items {
+            let (key, value) = (key.as_ref(), value.as_ref());
+            let boolean = || match value.to_ascii_uppercase().as_str() {
+                "YES" | "TRUE" | "ON" | "1" => Ok(true),
+                "NO" | "FALSE" | "OFF" | "0" => Ok(false),
+                _ => Err(Error::InvalidArgument(format!("{key} must be YES or NO"))),
+            };
+            match key.to_ascii_uppercase().as_str() {
+                "ALLOW_BALLPARK" => out.allow_ballpark = Some(boolean()?),
+                "ONLY_BEST" => out.only_best = boolean()?,
+                _ => {}
+            }
+        }
+        Ok(out)
+    }
 }
 
 /// Transforms coordinates from one CRS to another, as GDAL does: linear and angular units, axis
@@ -830,6 +866,11 @@ pub struct Transformer {
     dst: Def,
     identity: bool,
     route: route::Route,
+    best_route: std::sync::OnceLock<route::Route>,
+    policy: TransformOptions,
+    missing_grid_checked: std::sync::OnceLock<()>,
+    emitted_diagnostics: std::sync::atomic::AtomicU8,
+    diagnostics: std::sync::atomic::AtomicU8,
     /// The time of time-dependent transformations, as GDAL sets it from the coordinate epochs.
     time: Option<f64>,
     /// The height transformation, between CRSs that both have heights.
@@ -846,6 +887,12 @@ pub struct Transformer {
     src_horizontal: Def,
     /// Whether the vertical CRSs share their datum (heights only change unit).
     same_vertical_datum: bool,
+}
+
+impl Drop for Transformer {
+    fn drop(&mut self) {
+        self.flush_warnings();
+    }
 }
 
 /// A side of a height transformation: the CRS and the geographic 3D CRSs of its geoid models.
@@ -944,7 +991,10 @@ impl Transformer {
             (true, true, Some(e), Some(_)) => Some(e),
             _ => None,
         };
-        let route = route::Route::new(&s, &d);
+        let mut route = route::Route::new(&s, &d);
+        if opts.allow_ballpark == Some(false) && !route.disallow_ballpark() {
+            return Err(Error::Crs("cannot find coordinate operations with ALLOW_BALLPARK=NO".into()));
+        }
         let motion = match (s.datum_code(), opts.source_coordinate_epoch, opts.target_coordinate_epoch) {
             // Between geographic CRSs of the datum, as PROJ applies it (not to projected ones).
             (Some(datum), Some(from), Some(to))
@@ -987,7 +1037,23 @@ impl Transformer {
         };
         let src_horizontal = s.horizontal();
         let identity = src.same_as(dst) && motion.is_none();
-        Ok(Self { identity, src: s, dst: d, route, time, heights, motion, vertical_ops, same_vertical_datum, src_horizontal })
+        Ok(Self {
+            identity,
+            src: s,
+            dst: d,
+            route,
+            time,
+            heights,
+            motion,
+            vertical_ops,
+            same_vertical_datum,
+            src_horizontal,
+            best_route: std::sync::OnceLock::new(),
+            policy: opts.clone(),
+            missing_grid_checked: std::sync::OnceLock::new(),
+            emitted_diagnostics: std::sync::atomic::AtomicU8::new(0),
+            diagnostics: std::sync::atomic::AtomicU8::new(0),
+        })
     }
 
     /// Transforms one point.
@@ -999,12 +1065,108 @@ impl Transformer {
         Ok((x, y))
     }
 
+    fn best_route(&self) -> &route::Route {
+        self.best_route.get_or_init(|| {
+            let mut route = route::Route::all(&self.src, &self.dst);
+            if self.policy.allow_ballpark == Some(false) {
+                // The primary route was already validated by with_options; retain the
+                // same restriction when considering unavailable operations.
+                route.disallow_ballpark();
+            }
+            route
+        })
+    }
+
+    /// Emit recorded diagnostics on the caller's thread. Repeated calls emit only new warnings.
+    /// Operations should call this before draining their warning sink; Drop is a fallback.
+    pub fn flush_warnings(&self) {
+        let flags = self.diagnostics.load(std::sync::atomic::Ordering::Relaxed);
+        let previous = self.emitted_diagnostics.fetch_or(flags, std::sync::atomic::Ordering::Relaxed);
+        let flags = flags & !previous;
+        for (bit, message) in [
+            (1, "ballpark coordinate operation used between different ellipsoids; datum shift is unknown"),
+            (2, "best coordinate operation needs a missing grid; set TERRIO_NETWORK=ON or TERRIO_GRID_DIR"),
+            (4, "coordinate operation used outside its area of use"),
+        ] {
+            if flags & bit != 0 {
+                crate::warnings::warn(message.into());
+            }
+        }
+    }
+
+    /// Return any strict coordinate-operation failure observed by this transformer, including
+    /// those encountered by raster workers which represent failed points as invalid pixels.
+    pub fn check_policy(&self) -> Result<()> {
+        self.flush_warnings();
+        let flags = self.diagnostics.load(std::sync::atomic::Ordering::Relaxed);
+        if self.policy.only_best && flags & 2 != 0 {
+            return Err(Error::Crs(
+                "ONLY_BEST=YES: best coordinate operation needs a missing grid; set TERRIO_NETWORK=ON or TERRIO_GRID_DIR".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn record_operation(&self, op: Option<&datum::Op>, outside: bool) {
+        let ballpark = op.is_none_or(|op| op.ballpark) && (self.src.ell.a != self.dst.ell.a || self.src.ell.es != self.dst.ell.es);
+        let flags = u8::from(ballpark) | if outside { 4 } else { 0 };
+        if flags != 0 && self.diagnostics.load(std::sync::atomic::Ordering::Relaxed) & flags != flags {
+            self.diagnostics.fetch_or(flags, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
+    fn note_missing_grid(&self, x: f64, y: f64, p: datum::Point) {
+        if self.route.same_datum() {
+            return;
+        }
+        // Advisory availability diagnostics use the first point; strict selection checks
+        // every point. Ordinary transforms select their actual operation only once.
+        self.missing_grid_checked.get_or_init(|| {
+            let (ideal, _) = self.best_route().selected(&self.src, x, y, p);
+            if ideal.is_some_and(|op| !op.available()) {
+                self.diagnostics.fetch_or(2, std::sync::atomic::Ordering::Relaxed);
+            }
+        });
+    }
+
+    fn check_point_policy(&self, x: f64, y: f64, p: datum::Point) -> Result<Option<&datum::Op>> {
+        if self.route.same_datum() {
+            return Ok(None);
+        }
+        let selected = if self.policy.only_best {
+            let (ideal, outside) = self.best_route().selected(&self.src, x, y, p);
+            self.record_operation(ideal, outside);
+            if ideal.is_some_and(|op| !op.available()) {
+                self.diagnostics.fetch_or(2, std::sync::atomic::Ordering::Relaxed);
+                return Err(Error::Crs(
+                    "ONLY_BEST=YES: best coordinate operation needs a missing grid; set TERRIO_NETWORK=ON or TERRIO_GRID_DIR".into(),
+                ));
+            }
+            ideal
+        } else {
+            self.note_missing_grid(x, y, p);
+            if self.policy.allow_ballpark == Some(false) { self.route.selected(&self.src, x, y, p).0 } else { None }
+        };
+        if self.policy.allow_ballpark == Some(false) && selected.is_none_or(|op| op.ballpark) {
+            return Err(Error::Crs("ALLOW_BALLPARK=NO: no non-ballpark coordinate operation for this point".into()));
+        }
+        Ok(selected)
+    }
+
     /// The 2D transformation of a point, with its height kept (or, for transformations PROJ runs
     /// without keeping heights, transformed).
     fn transform_2d(&self, x: f64, y: f64, z: f64, t: Option<f64>) -> Result<(f64, f64, f64)> {
         let fail = || Error::Crs(format!("cannot transform ({x}, {y})"));
         let (lon, lat) = self.src.unproject(x, y).ok_or_else(fail)?;
         let p = datum::Point { lon, lat, h: z, t };
+        let selected = if self.policy.only_best {
+            self.check_point_policy(x, y, p)?
+        } else {
+            self.note_missing_grid(x, y, p);
+            None
+        };
+        let refused_ballpark = std::cell::Cell::new(false);
+
         let p = match &self.motion {
             Some(steps) => datum::run(steps, p, false, true).ok_or_else(|| {
                 let grids: Vec<String> = steps.iter().flat_map(|s| s.grid_names()).map(|(g, _)| g).collect();
@@ -1015,7 +1177,21 @@ impl Transformer {
             })?,
             None => p,
         };
-        let q = self.route.apply(&self.src, x, y, p, false).ok_or_else(fail)?;
+        let q = if self.policy.only_best {
+            self.best_route().apply_selected(&self.src, x, y, p, false, selected)
+        } else {
+            self.route.apply_reporting(&self.src, x, y, p, false, &|op, outside| {
+                if self.policy.allow_ballpark == Some(false) && op.is_none_or(|op| op.ballpark) {
+                    refused_ballpark.set(true);
+                } else {
+                    self.record_operation(op, outside);
+                }
+            })
+        }
+        .ok_or_else(fail)?;
+        if refused_ballpark.get() {
+            return Err(Error::Crs("ALLOW_BALLPARK=NO: no non-ballpark coordinate operation for this point".into()));
+        }
         let (tx, ty) = self.dst.project(q.lon, q.lat).ok_or_else(fail)?;
         Ok((tx, ty, q.h))
     }
@@ -1069,6 +1245,7 @@ impl Transformer {
         }
         let fail = || Error::Crs(format!("cannot transform ({x}, {y}, {z})"));
         let (lon, lat) = self.src.unproject(x, y).ok_or_else(fail)?;
+        let _ = self.check_point_policy(x, y, datum::Point { lon, lat, h: z, t })?;
         let p0 = datum::Point { lon, lat, h: self.src.vertical().map_or(z, |v| v.to_metres(z)), t };
         // To ellipsoidal heights, on the source CRS or a geoid model's CRS.
         let mut start = None;

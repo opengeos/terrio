@@ -1180,12 +1180,13 @@ test("native multidimensional views retain integer precision and store lifetimes
   const ds = terrio.openMultidim(files);
   assert.ok(ds.arrayPaths.includes("/cube"));
   const array = ds.array("cube");
-  assert.deepEqual([...array.shape], [2, 2, 3]);
+  // Vec<usize> shapes use BigUint64Array in memory64; these fixture sizes are exact Numbers.
+  assert.deepEqual(Array.from(array.shape, Number), [2, 2, 3]);
   const positional = array.iselAxis(0, 1).sliceAxis(1, 1, 1);
   assert.deepEqual([...positional.read()], [7n, 10n].map((n) => base + n));
   positional.free();
   const view = array.isel("time", 1).transpose(["x", "y"]);
-  assert.deepEqual([...view.shape], [3, 2]);
+  assert.deepEqual(Array.from(view.shape, Number), [3, 2]);
   assert.ok(view.read() instanceof BigInt64Array);
   assert.deepEqual([...view.read()], [6n, 9n, 7n, 10n, 8n, 11n].map((n) => base + n));
   const nc = terrio.openMultidim(ds.toBytes());
@@ -1333,4 +1334,15 @@ test("CAD DWG/DXF byte roundtrips preserve drawing coordinates, labels and holes
     back.free();
   }
   source.free();
+});
+
+test("coordinate operation safeguards and warnings", () => {
+  terrio.takeWarnings();
+  const [x, y] = terrio.transformPoints([110], [35], "EPSG:4610", "EPSG:4326");
+  assert.equal(x[0], 110);
+  assert.equal(y[0], 35);
+  assert.ok(Array.from(terrio.takeWarnings()).some((w) => w.includes("ballpark")));
+  assert.throws(() => terrio.transformPoints([110], [35], "EPSG:4610", "EPSG:4326", undefined, { allowBallpark: false }), /ALLOW_BALLPARK/);
+  assert.throws(() => terrio.transformPoints([600000], [200000], "EPSG:21781", "EPSG:2056", undefined, { onlyBest: true }), /ONLY_BEST/);
+  assert.ok(Array.from(terrio.takeWarnings()).some((w) => w.includes("missing grid")));
 });

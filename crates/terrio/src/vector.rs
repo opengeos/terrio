@@ -126,7 +126,16 @@ pub fn reproject_layer(layer: &Layer, dst: &crate::crs::SpatialRef) -> crate::Re
 }
 
 /// [`reproject_layer`], consuming the layer. Features are reprojected in parallel.
-pub(crate) fn reproject_layer_owned(mut layer: Layer, dst: &crate::crs::SpatialRef) -> crate::Result<Layer> {
+pub(crate) fn reproject_layer_owned(layer: Layer, dst: &crate::crs::SpatialRef) -> crate::Result<Layer> {
+    reproject_layer_with_options(layer, dst, &Default::default())
+}
+
+/// Reproject a layer with explicit coordinate operation selection controls.
+pub fn reproject_layer_with_options(
+    mut layer: Layer,
+    dst: &crate::crs::SpatialRef,
+    options: &crate::crs::TransformOptions,
+) -> crate::Result<Layer> {
     let src = crate::crs::SpatialRef::from_layer(&layer);
     if src.is_unknown() {
         return Err(crate::Error::Crs(format!("layer '{}' has no CRS to reproject from", layer.name)));
@@ -134,7 +143,7 @@ pub(crate) fn reproject_layer_owned(mut layer: Layer, dst: &crate::crs::SpatialR
     if src.same_as(dst) {
         return Ok(layer);
     }
-    let t = crate::crs::Transformer::new(&src, dst)?;
+    let t = crate::crs::Transformer::with_options(&src, dst, options)?;
     let len = crate::par::chunk_len(layer.features.len(), 16);
     let errors = std::sync::Mutex::new(Vec::new());
     crate::par::chunks_mut(&mut layer.features, len, |k, features| {
@@ -155,6 +164,7 @@ pub(crate) fn reproject_layer_owned(mut layer: Layer, dst: &crate::crs::SpatialR
             }
         }
     });
+    t.flush_warnings();
     // The first feature that fails, as a sequential pass would report it.
     if let Some((i, e)) = errors.into_inner().unwrap_or_default().into_iter().min_by_key(|(i, _)| *i) {
         return Err(crate::Error::Crs(format!("failed to reproject feature {i} of layer '{}': {e}", layer.name)));

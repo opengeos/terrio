@@ -93,6 +93,12 @@ const netcdf = cube.toBytes();
 const zarrFiles = cube.toZarrStore();
 ```
 
+JavaScript `shape` is a native-width typed array: `Uint32Array` in the 32-bit modules
+and `BigUint64Array` in `terrio-js/memory64`. For small dimensions,
+`Array.from(array.shape, Number)` provides ordinary numbers in either module.
+Keep BigInt dimensions when they exceed JavaScript's safe integer range. Numeric
+array samples retain their native typed arrays, including exact Int64/UInt64 values.
+
 Rust entry points are `terrio::multidim::{open, open_bytes, open_zarr_store}`. `Dataset::array`
 returns a cloneable handle; `Array::view` exposes lazy indexing/slicing/transposition and
 `View::read` returns an exact little-endian `Buffer`. `Buffer::data` converts to the shared typed

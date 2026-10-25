@@ -14,7 +14,7 @@
 use super::Ct as Transformer;
 use super::overview::OverviewSelection;
 use super::{Grid, Resampling, apply_gt, invert_gt, is_nodata, warp_round};
-use crate::crs::SpatialRef;
+use crate::crs::{SpatialRef, TransformOptions};
 use crate::{Error, RasterDataset, Result};
 use wbraster::DataType;
 use wbraster::raster::RasterData;
@@ -125,9 +125,34 @@ fn collect_polygons(g: &wbvector::Geometry, out: &mut Polygons) {
     }
 }
 
+/// GDAL resampling behavior to reproduce. The default retains Terrio's GDAL 3.12 results.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum KernelVersion {
+    /// Window-ratio scales and the GDAL 3.12 bilinear/cubic threshold.
+    #[default]
+    Gdal312,
+    /// Local transformed-square scales and the GDAL 3.13 bilinear/cubic threshold.
+    Gdal313,
+}
+
+impl KernelVersion {
+    /// Parse a supported GDAL version.
+    pub fn parse(value: &str) -> Result<Self> {
+        match value {
+            "3.12" => Ok(Self::Gdal312),
+            "3.13" => Ok(Self::Gdal313),
+            _ => Err(Error::InvalidArgument("kernel version must be 3.12 or 3.13".into())),
+        }
+    }
+}
+
 /// Options for [`warp`], named after `gdalwarp`'s.
 #[derive(Debug, Clone)]
 pub struct WarpOptions {
+    /// GDAL kernel behavior to reproduce, 3.12 by default.
+    pub kernel_version: KernelVersion,
+    /// Coordinate operation selection controls.
+    pub transform_options: crate::crs::TransformOptions,
     /// Require geolocation-array georeferencing (`-geoloc`). Arrays are used automatically
     /// when present, unless GCPs or RPCs were explicitly supplied.
     pub geoloc: bool,
@@ -209,6 +234,8 @@ pub struct WarpOptions {
 impl Default for WarpOptions {
     fn default() -> Self {
         Self {
+            kernel_version: KernelVersion::default(),
+            transform_options: Default::default(),
             geoloc: false,
             geolocation: None,
             src_srs: None,
@@ -275,11 +302,15 @@ const IDENTITY: [f64; 6] = [0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
 
 impl GenImgProj {
     fn new(src_gt: [f64; 6], src_srs: &SpatialRef, dst_srs: &SpatialRef) -> Result<Self> {
+        Self::with_options(src_gt, src_srs, dst_srs, &Default::default())
+    }
+
+    fn with_options(src_gt: [f64; 6], src_srs: &SpatialRef, dst_srs: &SpatialRef, options: &TransformOptions) -> Result<Self> {
         let src_inv = invert_gt(&src_gt).ok_or_else(|| Error::InvalidData("the source geotransform is not invertible".into()))?;
         let ct = if same_crs(src_srs, dst_srs) {
             None
         } else {
-            Some((Transformer::new(src_srs, dst_srs)?, Transformer::new(dst_srs, src_srs)?))
+            Some((Transformer::with_options(src_srs, dst_srs, options)?, Transformer::with_options(dst_srs, src_srs, options)?))
         };
         Ok(Self { src_gt, src_inv, src_gcp: None, src_scale: (1.0, 1.0), dst_gt: IDENTITY, dst_inv: IDENTITY, ct })
     }
@@ -321,6 +352,14 @@ impl GenImgProj {
     fn set_dst_gt(&mut self, gt: [f64; 6]) {
         self.dst_gt = gt;
         self.dst_inv = invert_gt(&gt).unwrap_or(IDENTITY);
+    }
+
+    fn check_policy(&self) -> Result<()> {
+        if let Some((fwd, inv)) = &self.ct {
+            fwd.check_policy()?;
+            inv.check_policy()?;
+        }
+        Ok(())
     }
 
     fn reproject(&self, dst_to_src: bool, x: f64, y: f64) -> Option<(f64, f64)> {
@@ -792,6 +831,7 @@ fn suggested_warp_output(
 
 /// A source prepared for warping.
 struct Source<'a> {
+    transform_options: crate::crs::TransformOptions,
     ds: &'a RasterDataset,
     grid: Grid,
     srs: SpatialRef,
@@ -803,14 +843,15 @@ struct Source<'a> {
 impl Source<'_> {
     /// The transformer from this source's pixels to the output CRS.
     fn transformer(&self, dst_srs: &SpatialRef) -> Result<GenImgProj> {
-        match &self.gcp {
-            Some(g) => {
-                let mut t = GenImgProj::with_georef(&self.srs, dst_srs, g.clone())?;
-                t.src_scale = self.pixel_scale;
-                Ok(t)
-            }
-            None => GenImgProj::new(self.grid.geo_transform, &self.srs, dst_srs),
-        }
+        let mut t = GenImgProj::with_options(
+            if self.gcp.is_some() { IDENTITY } else { self.grid.geo_transform },
+            &self.srs,
+            dst_srs,
+            &self.transform_options,
+        )?;
+        t.src_gcp = self.gcp.clone();
+        t.src_scale = self.pixel_scale;
+        Ok(t)
     }
 }
 
@@ -1114,6 +1155,7 @@ impl<'a> Plan<'a> {
             .iter()
             .map(|ds| Source {
                 ds,
+                transform_options: o.transform_options.clone(),
                 grid: Grid {
                     width: ds.raster.cols,
                     height: ds.raster.rows,
@@ -1199,7 +1241,10 @@ impl<'a> Plan<'a> {
         if let (Some(b), Some(srs)) = (te, &o.extent_srs)
             && !same_crs(srs, &dst_srs)
         {
-            te = Some(super::transform_bounds(&Transformer::new(srs, &dst_srs)?, b, 21)?);
+            let t = Transformer::with_options(srs, &dst_srs, &o.transform_options)?;
+            let bounds = super::transform_bounds(&t, b, 21);
+            t.check_policy()?;
+            te = Some(bounds?);
         }
         // The cutline, in each source's pixel space, and its extent.
         if o.crop_to_cutline {
@@ -1319,6 +1364,7 @@ impl<'a> Plan<'a> {
         let unified = o.unified_src_nodata.unwrap_or(matches!(o.src_nodata, Nodata::Values(_))) && self.bands > 1;
         let translation = t.ct.is_none() && s.gcp.is_none() && is_pixel_translation(&s.grid.geo_transform, &self.grid.geo_transform);
         let ctx = WarpContext {
+            kernel_version: o.kernel_version,
             t,
             approx: Approx { base: t, max_error: o.error_threshold },
             src_w: s.grid.width,
@@ -1386,6 +1432,7 @@ fn warp_data(p: &Plan<'_>, sources: &[&RasterDataset], o: &WarpOptions) -> Resul
     for (k, s) in p.srcs.iter().enumerate() {
         let t = p.transformer(k)?;
         let (ctx, chunks, sink) = p.context(k, &t, o);
+        t.check_policy()?;
         let nodata = p.src_nodata(k, o);
         let unified = o.unified_src_nodata.unwrap_or(matches!(o.src_nodata, Nodata::Values(_))) && bands > 1;
         let src_bands: Vec<super::BandView> = (0..bands).map(|b| super::BandView::of(&sources[k].raster, b)).collect();
@@ -1403,8 +1450,10 @@ fn warp_data(p: &Plan<'_>, sources: &[&RasterDataset], o: &WarpOptions) -> Resul
             let data = SrcData { bands: &typed, valid: &valid, width: s.grid.width, origin: (0, 0) };
             warp_source(&ctx, &chunks, &data, &sink, target);
         });
+        t.check_policy()?;
     }
     let mut ds = output_dataset(grid, out, bands, p.dst_nodata, &p.dst_srs)?;
+    ds.raster.metadata = p.srcs[0].ds.raster.metadata.iter().filter(|(k, _)| k == "AREA_OR_POINT").cloned().collect();
     ds.band_nodata = p.dst_nodata_all.clone();
     Ok(ds)
 }
@@ -1556,7 +1605,9 @@ fn warp_reader_selected(
             warp_source(&ctx, std::slice::from_ref(c), &data, &sink, target);
         });
     }
+    t.check_policy()?;
     let mut ds = output_dataset(grid, out, bands, p.dst_nodata, &p.dst_srs)?;
+    ds.raster.metadata = p.srcs[0].ds.raster.metadata.iter().filter(|(k, _)| k == "AREA_OR_POINT").cloned().collect();
     ds.band_nodata = p.dst_nodata_all.clone();
     Ok(ds)
 }
@@ -1722,11 +1773,13 @@ pub fn warp_to_path(paths: &[String], o: &WarpOptions, path: &str, options: &cra
     let w = grid.width;
     let t = p.transformer(0)?;
     let (ctx, chunks, sink) = p.context(0, &t, o);
+    t.check_policy()?;
     let nodata = p.src_nodata(0, o);
     let unified = o.unified_src_nodata.unwrap_or(matches!(o.src_nodata, Nodata::Values(_))) && bands > 1;
     let fill = p.fill();
     let (stored, gt) = stored_grid(grid);
     let mut header = super::raster_header(stored, out_type, bands, p.dst_nodata, &p.dst_srs)?;
+    header.raster.metadata = p.srcs[0].ds.raster.metadata.iter().filter(|(k, _)| k == "AREA_OR_POINT").cloned().collect();
     header.band_nodata = p.dst_nodata_all.clone();
     if let Some(gt) = gt {
         header.set_geo_transform(gt);
@@ -1811,6 +1864,7 @@ pub fn warp_to_path(paths: &[String], o: &WarpOptions, path: &str, options: &cra
     )?;
     write_done(&mut rows, &mut base, grid.height)?;
     drop(write_done);
+    t.check_policy()?;
     out.finish()
 }
 
@@ -1898,10 +1952,10 @@ fn validity(bands: &[super::BandView], nodata: &[Option<f64>], unified: bool, cu
 /// The transformed extent of a cutline, as `gdalwarp -crop_to_cutline` computes it.
 fn cutline_extent(c: &Cutline, s: &Source, dst_srs: &SpatialRef, has_res: bool) -> Result<(f64, f64, f64, f64)> {
     let to_src: Option<Transformer> = match &c.srs {
-        Some(cs) if !same_crs(cs, &s.srs) => Some(Transformer::new(cs, &s.srs)?),
+        Some(cs) if !same_crs(cs, &s.srs) => Some(Transformer::with_options(cs, &s.srs, &s.transform_options)?),
         _ => None,
     };
-    let to_dst = (!same_crs(&s.srs, dst_srs)).then(|| Transformer::new(&s.srs, dst_srs)).transpose()?;
+    let to_dst = (!same_crs(&s.srs, dst_srs)).then(|| Transformer::with_options(&s.srs, dst_srs, &s.transform_options)).transpose()?;
     let (mut x0, mut y0, mut x1, mut y1) = (f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY);
     for poly in &c.polygons {
         for ring in poly {
@@ -1936,13 +1990,16 @@ fn cutline_extent(c: &Cutline, s: &Source, dst_srs: &SpatialRef, has_res: bool) 
         x1 = gt[0] + ((x1 - gt[0]) / gt[1] + REL).floor() * gt[1];
         y1 = gt[3] + ((y1 - gt[3]) / gt[5] - REL).ceil() * gt[5];
     }
+    for t in [&to_src, &to_dst].into_iter().flatten() {
+        t.check_policy()?;
+    }
     Ok((x0, y0, x1, y1))
 }
 
 /// Rasterizes the cutline in a source's pixel space: pixels whose centre is inside are valid.
 fn cutline_mask(c: &Cutline, s: &Source) -> Result<Vec<bool>> {
     let to_src: Option<Transformer> = match &c.srs {
-        Some(cs) if !same_crs(cs, &s.srs) => Some(Transformer::new(cs, &s.srs)?),
+        Some(cs) if !same_crs(cs, &s.srs) => Some(Transformer::with_options(cs, &s.srs, &s.transform_options)?),
         _ => None,
     };
     let inv = invert_gt(&s.grid.geo_transform).ok_or_else(|| Error::InvalidData("invalid geotransform".into()))?;
@@ -1953,6 +2010,9 @@ fn cutline_mask(c: &Cutline, s: &Source) -> Result<Vec<bool>> {
         };
         Some(apply_gt(&inv, x, y))
     })?;
+    if let Some(t) = &to_src {
+        t.check_policy()?;
+    }
     Ok(rasterize_polygons(&polys, s.grid.width, s.grid.height))
 }
 
@@ -2021,7 +2081,29 @@ struct Chunk {
     raw_h: f64,
 }
 
+/// Scales from four transformed unit-square corners in GDAL's 00, 10, 01, 11 order.
+fn square_scales(p: [(f64, f64); 4]) -> Option<(f64, f64)> {
+    let edge = |a: usize, b: usize| (p[b].0 - p[a].0, p[b].1 - p[a].1);
+    let length2 = |v: (f64, f64)| v.0 * v.0 + v.1 * v.1;
+    let (v01, v23) = (edge(0, 1), edge(2, 3));
+    let (a, b, c, d) = (length2(v01), length2(v23), length2(edge(0, 2)), length2(edge(1, 3)));
+    let (x, y) =
+        if v01.1.abs() < 0.35 * v01.0 && v23.1.abs() < 0.35 * v23.0 && (a - b).abs() < 0.1 * a.abs() && (c - d).abs() < 0.1 * c.abs() {
+            ((a * b).sqrt().sqrt(), (c * d).sqrt().sqrt())
+        } else {
+            let poly = [p[0], p[1], p[3], p[2]];
+            let mut area = 0.0;
+            for i in 0..4 {
+                area += poly[i].0 * (poly[(i + 1) % 4].1 - poly[(i + 3) % 4].1);
+            }
+            let side = (0.5 * area.abs()).sqrt();
+            (side, side)
+        };
+    (x > 1e-10 && y > 1e-10).then_some((1.0 / x, 1.0 / y))
+}
+
 struct WarpContext<'a> {
+    kernel_version: KernelVersion,
     t: &'a GenImgProj,
     approx: Approx<'a>,
     src_w: usize,
@@ -2379,6 +2461,9 @@ impl WarpContext<'_> {
     /// The kernel scales of a chunk, as GDAL 3.12's warp kernel computes them: the ratio of the
     /// destination window's size to the (unpadded) source window's.
     fn scales(&self, c: &Chunk) -> (f64, f64) {
+        if self.kernel_version == KernelVersion::Gdal313 {
+            return self.local_scales(c);
+        }
         let (dw, dh) = (c.dw as f64, c.dh as f64);
         let (extra_x, extra_y) = (c.sw as f64 - c.raw_w, c.sh as f64 - c.raw_h);
         let mut sx = dw / (c.sw as f64 - extra_x);
@@ -2429,6 +2514,61 @@ impl WarpContext<'_> {
         (sx, sy)
     }
 
+    /// GDAL 3.13 samples transformed unit squares on a 10 by 10 destination grid.
+    fn local_scales(&self, c: &Chunk) -> (f64, f64) {
+        let (nx, ny) = (c.dw.min(10), c.dh.min(10));
+        let mut xs = Vec::with_capacity(nx * ny * 4);
+        let mut ys = Vec::with_capacity(nx * ny * 4);
+        let position = |i: usize, n: usize, size: usize, offset: usize| {
+            offset as f64 + if n == 1 { 0.0 } else { i as f64 * size as f64 / (n - 1) as f64 - if i == n - 1 { 1.0 } else { 0.0 } }
+        };
+        for iy in 0..ny {
+            let y = position(iy, ny, c.dh, c.dy);
+            for ix in 0..nx {
+                let x = position(ix, nx, c.dw, c.dx);
+                xs.extend([x, x + 1.0, x, x + 1.0]);
+                ys.extend([y, y, y + 1.0, y + 1.0]);
+            }
+        }
+        let mut ok = vec![false; xs.len()];
+        self.approx.transform(true, &mut xs, &mut ys, &mut ok);
+        let mut values: Vec<(f64, f64)> = (0..xs.len())
+            .step_by(4)
+            .filter_map(|i| {
+                if !ok[i..i + 4].iter().all(|v| *v) {
+                    return None;
+                }
+                square_scales(std::array::from_fn(|k| (xs[i + k], ys[i + k])))
+            })
+            .collect();
+        values.sort_by(|a, b| (a.0 * a.1).total_cmp(&(b.0 * b.1)));
+        let max = values.iter().fold((0.0_f64, 0.0_f64), |a, b| (a.0.max(b.0), a.1.max(b.1)));
+        let mut mean = (0.0, 0.0);
+        let mut count = 0;
+        for (x, y) in values {
+            if x > 0.1 * max.0 && y > 0.1 * max.1 {
+                count += 1;
+                let inv = 1.0 / count as f64;
+                mean.0 += (x - mean.0) * inv;
+                mean.1 += (y - mean.1) * inv;
+            }
+        }
+        let fix = |s: f64| {
+            if s <= 0.0 {
+                return 1.0;
+            }
+            if s < 1.0 {
+                let r = 1.0 / s;
+                let n = (r + 0.5) as i64;
+                if (r - n as f64).abs() < 0.05 {
+                    return 1.0 / n as f64;
+                }
+            }
+            s
+        };
+        (fix(mean.0), fix(mean.1))
+    }
+
     /// Warps a chunk, its output rows in parallel.
     fn warp_chunk<T: crate::pixel::Pixel>(&self, c: &Chunk, src: &SrcData<T>, sink: &Sink, rows: Vec<RowOut>) {
         let (xscale, yscale) = self.scales(c);
@@ -2446,7 +2586,11 @@ impl WarpContext<'_> {
         // Include stored masks/cutlines as well as nodata, but skip the all-band
         // hot-loop check when this chunk has no validity planes.
         let global_validity = self.global_validity && k.src.valid.iter().any(Option::is_some);
-        let four = matches!(self.resampling, Resampling::Bilinear | Resampling::Cubic) && xscale >= 0.95 && yscale >= 0.95;
+        let four = matches!(self.resampling, Resampling::Bilinear | Resampling::Cubic)
+            && match self.kernel_version {
+                KernelVersion::Gdal312 => xscale >= 0.95 && yscale >= 0.95,
+                KernelVersion::Gdal313 => xscale > 0.5 && yscale > 0.5,
+            };
         let mut xs = vec![0.0; c.dw];
         let mut ys = vec![0.0; c.dw];
         let mut ok = vec![false; c.dw];
@@ -2968,6 +3112,56 @@ mod tests {
         let (a, b) = (all.raster.data.to_f64_vec(), windowed.raster.data.to_f64_vec());
         assert!(b.iter().filter(|v| **v != 0.0).count() > 1000);
         assert!(a.iter().zip(&b).all(|(x, y)| y == x || *y == 0.0));
+    }
+
+    #[test]
+    fn gdal313_scales_follow_local_geometry() {
+        assert_eq!(square_scales([(0.0, 0.0), (2.0, 0.0), (0.0, 4.0), (2.0, 4.0)]), Some((0.5, 0.25)));
+        let rotated = square_scales([(0.0, 0.0), (2.0, 2.0), (-2.0, 2.0), (0.0, 4.0)]).unwrap();
+        assert!((rotated.0 - 1.0 / 8.0_f64.sqrt()).abs() < 1e-15);
+        assert_eq!(rotated.0, rotated.1);
+        assert!(square_scales([(0.0, 0.0); 4]).is_none());
+    }
+
+    #[test]
+    fn strict_warp_keeps_projection_domain_failures_as_nodata() {
+        let source = raster(36, 36, [-20_000_000.0, 40_000_000.0 / 36.0, 0.0, 20_000_000.0, 0.0, -40_000_000.0 / 36.0], 3857, |_, _| 7.0);
+        let options = WarpOptions {
+            dst_srs: Some(SpatialRef::parse("EPSG:4326").unwrap()),
+            extent: Some((-10.0, 80.0, 10.0, 100.0)),
+            size: Some((32, 32)),
+            transform_options: TransformOptions { allow_ballpark: Some(false), only_best: true, ..Default::default() },
+            error_threshold: 0.0,
+            ..Default::default()
+        };
+        let out = warp(&[&source], &options).unwrap();
+        let values = super::super::band_f64(&out.raster, 0);
+        assert_eq!(values.iter().filter(|v| **v == 7.0).count(), 256);
+        assert_eq!(values.iter().filter(|v| **v != 7.0).count(), 768);
+    }
+
+    #[test]
+    fn point_metadata_survives_memory_and_lazy_warp() {
+        let mut source = raster(8, 8, [10.0, 0.01, 0.0, 47.0, 0.0, -0.01], 4326, |x, y| (x + y) as f64);
+        source.raster.metadata.push(("AREA_OR_POINT".into(), "Point".into()));
+        source.raster.metadata.push(("STATISTICS_MINIMUM".into(), "-999".into()));
+        let options = WarpOptions { dst_srs: Some(SpatialRef::parse("EPSG:3857").unwrap()), ..Default::default() };
+        let out = warp(&[&source], &options).unwrap();
+        assert!(out.raster.metadata.iter().any(|(k, v)| k == "AREA_OR_POINT" && v == "Point"));
+        assert!(!out.raster.metadata.iter().any(|(k, _)| k == "STATISTICS_MINIMUM"));
+        let dir = tempfile::tempdir().unwrap();
+        let input = dir.path().join("in.tif");
+        let output = dir.path().join("out.tif");
+        crate::write_raster_dataset(&source, input.to_str().unwrap(), &Default::default()).unwrap();
+        let mut lazy = crate::open_raster_lazy(input.to_str().unwrap()).unwrap();
+        assert!(lazy.header().raster.metadata.iter().any(|(k, _)| k == "STATISTICS_MINIMUM"));
+        let window = lazy.read_window(crate::Window::new(1, 1, 4, 4), &Default::default()).unwrap();
+        assert!(window.raster.metadata.iter().any(|(k, v)| k == "AREA_OR_POINT" && v == "Point"));
+        assert!(!window.raster.metadata.iter().any(|(k, _)| k == "STATISTICS_MINIMUM"));
+        warp_to_path(&[input.to_str().unwrap().into()], &options, output.to_str().unwrap(), &Default::default()).unwrap();
+        let out = crate::open_raster(output.to_str().unwrap()).unwrap();
+        assert!(out.raster.metadata.iter().any(|(k, v)| k == "AREA_OR_POINT" && v == "Point"));
+        assert!(!out.raster.metadata.iter().any(|(k, _)| k == "STATISTICS_MINIMUM"));
     }
 
     fn raster(cols: usize, rows: usize, gt: [f64; 6], epsg: u32, f: impl Fn(usize, usize) -> f64) -> RasterDataset {

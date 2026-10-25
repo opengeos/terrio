@@ -1,0 +1,194 @@
+//! Coordinate-operation policy regressions from #257.
+use terrio::crs::{SpatialRef, TransformOptions, Transformer};
+
+#[test]
+fn ballpark_can_be_refused() {
+    let src = SpatialRef::parse("EPSG:4610").unwrap();
+    let dst = SpatialRef::parse("EPSG:4326").unwrap();
+    let t = Transformer::new(&src, &dst).unwrap();
+    assert_eq!(t.transform(110.0, 35.0).unwrap(), (110.0, 35.0));
+    t.flush_warnings();
+    assert!(terrio::warnings::take().iter().any(|w| w.contains("ballpark")));
+    drop(t);
+    assert!(terrio::warnings::take().is_empty());
+    let opts = TransformOptions { allow_ballpark: Some(false), ..Default::default() };
+    assert!(Transformer::with_options(&src, &dst, &opts).is_err());
+    // ONLY_BEST by itself permits a ballpark when there is no better operation.
+    let opts = TransformOptions { only_best: true, ..Default::default() };
+    assert!(Transformer::with_options(&src, &dst, &opts).unwrap().transform(110.0, 35.0).is_ok());
+}
+
+#[test]
+fn same_datum_is_not_a_ballpark() {
+    let src = SpatialRef::parse("EPSG:4326").unwrap();
+    let dst = SpatialRef::parse("EPSG:3857").unwrap();
+    let opts = TransformOptions { allow_ballpark: Some(false), only_best: true, ..Default::default() };
+    assert!(Transformer::with_options(&src, &dst, &opts).unwrap().transform(10.0, 45.0).is_ok());
+    // A custom WGS84 side uses the direct WGS84 route, not an empty hub leg.
+    let custom = SpatialRef::parse("+proj=longlat +datum=WGS84").unwrap();
+    let osgb = SpatialRef::parse("EPSG:4277").unwrap();
+    let options = TransformOptions { allow_ballpark: Some(false), ..Default::default() };
+    assert!(Transformer::with_options(&custom, &osgb, &options).unwrap().transform(-2.0, 52.0).is_ok());
+}
+
+#[test]
+fn operation_options_are_validated() {
+    assert!(TransformOptions::from_options(&[("ALLOW_BALLPARK", "perhaps")]).is_err());
+    assert!(TransformOptions::from_strict_options(&[("ALLOW_BALPARK", "NO")]).is_err());
+    assert!(TransformOptions::from_options(&[("UNRELATED_TRANSFORMER_OPTION", "YES")]).is_ok());
+    let opts = TransformOptions::from_options(&[("allow_ballpark", "no"), ("ONLY_BEST", "yes")]).unwrap();
+    assert_eq!(opts.allow_ballpark, Some(false));
+    assert!(opts.only_best);
+}
+
+#[test]
+fn missing_best_grid_can_be_refused_and_outside_area_is_reported() {
+    // Confine this test executable to a machine with no installed grids.
+    terrio::crs::set_grid_search_paths(Some(vec![]));
+    terrio::crs::set_network_enabled(Some(false));
+    let src = SpatialRef::parse("EPSG:21781").unwrap();
+    let dst = SpatialRef::parse("EPSG:2056").unwrap();
+    let t = Transformer::new(&src, &dst).unwrap();
+    assert!(t.transform(600000.0, 200000.0).is_ok());
+    drop(t);
+    assert!(terrio::warnings::take().iter().any(|w| w.contains("missing grid")));
+    let opts = TransformOptions { only_best: true, ..Default::default() };
+    let t = Transformer::with_options(&src, &dst, &opts).unwrap();
+    let error = t.transform(600000.0, 200000.0).unwrap_err().to_string();
+    assert!(error.contains("ONLY_BEST"), "{error}");
+    // An outside-area point chooses a grid-free fallback. The previous missing-grid
+    // diagnostic must not turn that independently valid point into a failure.
+    assert!(t.transform(0.0, 0.0).is_ok());
+    assert!(t.check_policy().is_err());
+    let raster = wbraster::Raster::from_data(
+        wbraster::RasterConfig {
+            cols: 4,
+            rows: 4,
+            bands: 1,
+            x_min: 600000.0,
+            y_min: 200000.0,
+            cell_size: 10.0,
+            crs: wbraster::CrsInfo::from_epsg(21781),
+            ..Default::default()
+        },
+        vec![1.0; 16],
+    )
+    .unwrap();
+    let source = terrio::RasterDataset::new(raster, false);
+    let options = terrio::ops::warp::WarpOptions {
+        dst_srs: Some(dst.clone()),
+        transform_options: opts,
+        extent: Some((2600000.0, 1200000.0, 2600040.0, 1200040.0)),
+        size: Some((4, 4)),
+        ..Default::default()
+    };
+    assert!(terrio::ops::warp::warp(&[&source], &options).is_err());
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("input.tif");
+    let output = dir.path().join("output.tif");
+    terrio::write_raster_dataset(&source, input.to_str().unwrap(), &Default::default()).unwrap();
+    assert!(
+        terrio::ops::warp::warp_to_path(&[input.to_str().unwrap().into()], &options, output.to_str().unwrap(), &Default::default())
+            .is_err()
+    );
+    assert!(!output.exists());
+
+    // Every preflight boundary sample is grid-free, but later interior rows cross
+    // Switzerland. A failure after opening the streamed writer must remove its output.
+    let boundary = Transformer::with_options(&dst, &src, &options.transform_options).unwrap();
+    for i in 0..=20 {
+        let f = i as f64 / 20.0;
+        for (x, y) in [(1e6 + f * 3e6, 0.0), (1e6 + f * 3e6, 3e6), (1e6, f * 3e6), (4e6, f * 3e6)] {
+            assert!(boundary.transform(x, y).is_ok());
+        }
+    }
+    assert!(boundary.check_policy().is_ok());
+    assert!(boundary.transform(2600000.0, 1200000.0).is_err());
+    drop(boundary);
+    let wide = terrio::RasterDataset::new(
+        wbraster::Raster::from_data(
+            wbraster::RasterConfig {
+                cols: 8,
+                rows: 8,
+                bands: 1,
+                x_min: -1e6,
+                y_min: -1e6,
+                cell_size: 375000.0,
+                crs: wbraster::CrsInfo::from_epsg(21781),
+                ..Default::default()
+            },
+            vec![1.0; 64],
+        )
+        .unwrap(),
+        false,
+    );
+    let late_input = dir.path().join("late-input.tif");
+    let late_output = dir.path().join("late-output.tif");
+    terrio::write_raster_dataset(&wide, late_input.to_str().unwrap(), &Default::default()).unwrap();
+    let late_options = terrio::ops::warp::WarpOptions {
+        extent: Some((1e6, 0.0, 4e6, 3e6)),
+        size: Some((100, 100)),
+        error_threshold: 0.0,
+        ..options.clone()
+    };
+    let error = terrio::ops::warp::warp_to_path(
+        &[late_input.to_str().unwrap().into()],
+        &late_options,
+        late_output.to_str().unwrap(),
+        &Default::default(),
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("ONLY_BEST"));
+    assert!(!late_output.exists());
+    assert!(!dir.path().join("late-output.tif.aux.xml").exists());
+
+    // The source and target share a CRS; only the extent/cutline need a datum shift.
+    // Their transforms must still enforce ONLY_BEST.
+    let mut target_source = source.clone();
+    target_source.raster.crs = wbraster::CrsInfo::from_epsg(2056);
+    let extent_options = terrio::ops::warp::WarpOptions {
+        dst_srs: Some(dst.clone()),
+        transform_options: options.transform_options.clone(),
+        extent_srs: Some(src.clone()),
+        extent: Some((600000.0, 200000.0, 600040.0, 200040.0)),
+        size: Some((4, 4)),
+        ..Default::default()
+    };
+    assert!(terrio::ops::warp::warp(&[&target_source], &extent_options).unwrap_err().to_string().contains("ONLY_BEST"));
+    let cutline = terrio::ops::warp::Cutline {
+        polygons: vec![vec![vec![(600000.0, 200000.0), (600040.0, 200000.0), (600040.0, 200040.0), (600000.0, 200000.0)]]],
+        srs: Some(src.clone()),
+    };
+    let cut_options =
+        terrio::ops::warp::WarpOptions { cutline: Some(cutline), crop_to_cutline: true, extent_srs: None, extent: None, ..extent_options };
+    assert!(terrio::ops::warp::warp(&[&target_source], &cut_options).unwrap_err().to_string().contains("ONLY_BEST"));
+
+    drop(t);
+    terrio::warnings::take();
+    let t = Transformer::new(&SpatialRef::parse("EPSG:4326").unwrap(), &dst).unwrap();
+    assert!(t.transform(11.0, 46.5).is_ok());
+    drop(t);
+    assert!(terrio::warnings::take().iter().any(|w| w.contains("outside its area")));
+}
+
+#[test]
+fn out_of_domain_points_do_not_poison_strict_transformers() {
+    let src = SpatialRef::parse("EPSG:4326").unwrap();
+    let dst = SpatialRef::parse("EPSG:3857").unwrap();
+    let opts = TransformOptions { only_best: true, allow_ballpark: Some(false), ..Default::default() };
+    let t = Transformer::with_options(&src, &dst, &opts).unwrap();
+    assert!(t.transform(0.0, 100.0).is_err());
+    assert!(t.transform(0.0, 45.0).is_ok());
+    assert!(t.check_policy().is_ok());
+}
+
+#[test]
+fn strict_hub_routes_reject_point_fallbacks_without_poisoning_later_points() {
+    let src = SpatialRef::parse("EPSG:4277").unwrap();
+    let dst = SpatialRef::parse("+proj=longlat +a=6371000 +b=6371000 +towgs84=1,2,3").unwrap();
+    let options = TransformOptions { allow_ballpark: Some(false), ..Default::default() };
+    let t = Transformer::with_options(&src, &dst, &options).unwrap();
+    assert!(t.transform(140.0, 30.0).unwrap_err().to_string().contains("ALLOW_BALLPARK"));
+    assert!(t.transform(-2.0, 52.0).is_ok());
+    assert!(t.check_policy().is_ok());
+}

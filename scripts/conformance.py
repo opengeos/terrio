@@ -496,6 +496,17 @@ def suite_ops(ctx):
     )
 
 
+def suite_warp_policy(ctx):
+    """Version-specific warp kernels and point-raster metadata on real terrain."""
+    return suite_json_ops(
+        ctx, "warp-policy", "compare_warp_policy_with_gdal.py", "Warp kernels and raster type",
+        "Installed GDAL (3.12 or 3.13 kernel selected explicitly)",
+        "Real USGS DEM clips marked PixelIsPoint: GTiff/COG translations and projected/rotated "
+        "warps preserve raster type, CRS, transform, nodata and masks. Nearest is exact; "
+        "interpolated Float32 values allow 0.002 m.", 2,
+    )
+
+
 def suite_catalogs(ctx):
     """Indexed GeoPackage/FlatGeobuf real DEM mosaics against GDAL GTI."""
     return suite_json_ops(
@@ -1108,6 +1119,7 @@ SUITES = OrderedDict(
         ("raster-roundtrip", suite_raster_roundtrip),
         ("windows", suite_windows),
         ("ops", suite_ops),
+        ("warp-policy", suite_warp_policy),
         ("catalogs", suite_catalogs),
         ("vrt", suite_vrt),
         ("overviews", suite_overviews),

@@ -209,3 +209,21 @@ passthrough bands above 2^53, checked in their native integer dtype with toleran
 zero. A counted-reader regression requests three passthrough output bands
 sourced from two pan bands in a 2×2 window with one two-band read (64 native sample bytes),
 rather than three one-band reads (96 bytes); no spectral pixels are fetched.
+
+The `warp-policy` suite compares versioned kernels and PixelIsPoint metadata on
+real USGS terrain. It selects Terrio's `3.12` or `3.13` kernel to match the installed
+GDAL, checks nearest and four interpolation kernels at 10/25/60 m plus rotated
+output grids, and checks GeoTIFF/COG translation. Raster type, CRS, corner transform,
+nodata and validity are checked; interpolated Float32 elevations allow 0.002 m.
+
+```sh
+python scripts/conformance.py ../terrio-data --only warp-policy --strict
+cargo test -p terrio --test crs_policy
+cargo test -p terrio-cli --test mcp coordinate_operation_warnings_and_controls_reach_mcp
+```
+
+Known numerical limitation: on rotated grids whose output centres land exactly on
+source centres, GDAL's optimized stretched Lanczos recurrence can differ from
+Terrio's direct sinc evaluation. A 40×30 USGS case showed a maximum 2.54 m
+difference; the fractional-origin rotated cases above agree exactly. This is
+separate from the 3.13 scale change and is not claimed as pixel-identical parity.

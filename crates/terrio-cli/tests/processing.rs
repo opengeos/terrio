@@ -140,3 +140,29 @@ fn sample_keeps_valid_points_after_a_projection_failure() {
         assert_eq!(samples.features[i].attributes[1], value);
     }
 }
+
+#[test]
+fn vector_conversion_refuses_ballparks_and_reports_fallbacks() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("point.geojson"), r#"{"type":"FeatureCollection","features":[{"type":"Feature","properties":{},"geometry":{"type":"Point","coordinates":[110,35]}}]}"#).unwrap();
+    let args = ["convert", "point.geojson", "out.geojson", "--s-srs", "EPSG:4610", "--t-srs", "EPSG:4326"];
+    let output = run(&args, dir.path());
+    assert!(output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("ballpark"));
+    let mut strict = args.to_vec();
+    strict[2] = "strict.geojson";
+    strict.extend(["--ct-opt", "ALLOW_BALLPARK=NO"]);
+    let output = run(&strict, dir.path());
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("ALLOW_BALLPARK"));
+    assert!(!dir.path().join("strict.geojson").exists());
+}
+
+#[test]
+fn point_cloud_reprojection_rejects_coordinate_options_before_reading() {
+    let dir = tempfile::tempdir().unwrap();
+    let output = run(&["convert", "missing.las", "out.las", "--t-srs", "EPSG:4326", "--ct-opt", "ONLY_BEST=YES"], dir.path());
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("--ct-opt is not supported for point-cloud reprojection"));
+    assert!(!dir.path().join("out.las").exists());
+}

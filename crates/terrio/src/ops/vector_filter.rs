@@ -74,6 +74,8 @@ pub struct VectorTranslateOptions {
     pub dst_srs: Option<SpatialRef>,
     /// `-a_srs`: assign this CRS to the output, without reprojecting.
     pub assign_srs: Option<SpatialRef>,
+    /// Coordinate operation selection, including ALLOW_BALLPARK and ONLY_BEST.
+    pub transform_options: crate::crs::TransformOptions,
 }
 
 impl VectorTranslateOptions {
@@ -278,7 +280,7 @@ impl Translator {
             s.apply_to_layer(&mut out);
         }
         if let Some(dst) = &o.dst_srs {
-            out = crate::vector::reproject_layer_owned(out, dst)?;
+            out = crate::vector::reproject_layer_with_options(out, dst, &o.transform_options)?;
         }
         if let Some(a) = &o.assign_srs {
             a.apply_to_layer(&mut out);

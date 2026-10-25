@@ -154,9 +154,13 @@ fn streamed_raster(a: &Args) -> terrio::Result<Option<(terrio::LazyRaster, Raste
 }
 
 pub fn run(mut a: Args) -> terrio::Result<()> {
+    let coordinate_options = a.vector.coordinate_options()?;
     a.input = super::with_driver(&a.input, a.driver.as_deref())?;
     if terrio::pointcloud::is_point_cloud_path(&a.input) {
         let t_srs = a.t_srs.as_deref().map(SpatialRef::parse).transpose()?;
+        if t_srs.is_some() && a.vector.has_transform_options() {
+            return Err(terrio::Error::InvalidArgument("--ct-opt is not supported for point-cloud reprojection".into()));
+        }
         let format = a.format.as_deref().filter(|f| terrio::pointcloud::PointFormat::from_name(f).is_some());
         return super::points::convert(&a.input, &a.output, format, t_srs, &a.vector, &a.points, &a.point_write);
     }
@@ -206,7 +210,7 @@ pub fn run(mut a: Args) -> terrio::Result<()> {
                 return Err(terrio::Error::InvalidArgument("the vector options apply to vector inputs only".into()));
             }
             if let Some(dst) = t_srs {
-                let o = terrio::ops::warp::WarpOptions { dst_srs: Some(dst), ..Default::default() };
+                let o = terrio::ops::warp::WarpOptions { dst_srs: Some(dst), transform_options: coordinate_options, ..Default::default() };
                 r = terrio::ops::warp::warp(&[&r], &o)?;
             }
             let mut creation_options: Vec<(String, String)> =
