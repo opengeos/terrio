@@ -5,6 +5,16 @@
   "cpu": "Intel(R) Xeon(R) w7-3445",
   "resource_scope": "Cargo process tree; resource counters exclude the persistent sccache daemon and its compiler workers",
   "timing_scope": "Single serial fresh-target builds, sccache recache, filesystem and dependency downloads may be warm; shared desktop host",
+  "configurations": [
+    "before",
+    "native",
+    "fallback",
+    "terrio-after"
+  ],
+  "targets": [
+    "native",
+    "wasm32-unknown-unknown"
+  ],
   "jobs": 2,
   "compiler_cache": "recache",
   "profile": {
@@ -20,20 +30,10 @@
     "diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
   },
   "after": {
-    "commit": "53e90f922cd7b7993b8b8d75d10069f836260975",
+    "commit": "69d63717c3256a48a5e0b1d80f56f24fa3123846",
     "dirty": false,
     "diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
   },
-  "configurations": [
-    "before",
-    "native",
-    "fallback",
-    "terrio-after"
-  ],
-  "targets": [
-    "native",
-    "wasm32-unknown-unknown"
-  ],
   "measurements": [
     {
       "configuration": "before",
@@ -74,10 +74,10 @@
       "configuration": "native",
       "target": "native",
       "packages": 47,
-      "elapsed_seconds": 32.61061833900749,
-      "max_rss_kib": 334392,
-      "user_seconds": 4.036887,
-      "system_seconds": 1.294457,
+      "elapsed_seconds": 33.39606403899961,
+      "max_rss_kib": 336584,
+      "user_seconds": 4.11598,
+      "system_seconds": 1.301918,
       "command": [
         "cargo",
         "build",
@@ -89,10 +89,10 @@
       "configuration": "native",
       "target": "wasm32-unknown-unknown",
       "packages": 38,
-      "elapsed_seconds": 21.489261820999673,
-      "max_rss_kib": 332304,
-      "user_seconds": 3.6176909999999998,
-      "system_seconds": 0.989459,
+      "elapsed_seconds": 21.703968854999403,
+      "max_rss_kib": 333776,
+      "user_seconds": 3.6704470000000002,
+      "system_seconds": 1.053946,
       "command": [
         "cargo",
         "build",
@@ -101,18 +101,18 @@
         "--target",
         "wasm32-unknown-unknown"
       ],
-      "wasm_bytes": 1683729,
-      "optimized_wasm_bytes": 1518533,
-      "optimized_gzip_bytes": 908412
+      "wasm_bytes": 1684505,
+      "optimized_wasm_bytes": 1519218,
+      "optimized_gzip_bytes": 909147
     },
     {
       "configuration": "fallback",
       "target": "native",
       "packages": 53,
-      "elapsed_seconds": 44.72790681000333,
-      "max_rss_kib": 336740,
-      "user_seconds": 4.493966,
-      "system_seconds": 1.456006,
+      "elapsed_seconds": 45.2507038989861,
+      "max_rss_kib": 337044,
+      "user_seconds": 4.552199,
+      "system_seconds": 1.451867,
       "command": [
         "cargo",
         "build",
@@ -124,10 +124,10 @@
       "configuration": "fallback",
       "target": "wasm32-unknown-unknown",
       "packages": 43,
-      "elapsed_seconds": 31.581563732004724,
-      "max_rss_kib": 336012,
-      "user_seconds": 4.118825,
-      "system_seconds": 1.161381,
+      "elapsed_seconds": 32.23828692198731,
+      "max_rss_kib": 337392,
+      "user_seconds": 4.263531,
+      "system_seconds": 1.172336,
       "command": [
         "cargo",
         "build",
@@ -136,18 +136,18 @@
         "--target",
         "wasm32-unknown-unknown"
       ],
-      "wasm_bytes": 4147954,
-      "optimized_wasm_bytes": 3917282,
-      "optimized_gzip_bytes": 1244987
+      "wasm_bytes": 4150368,
+      "optimized_wasm_bytes": 3919480,
+      "optimized_gzip_bytes": 1245948
     },
     {
       "configuration": "terrio-after",
       "target": "native",
       "packages": 150,
-      "elapsed_seconds": 161.18572826799937,
-      "max_rss_kib": 345840,
-      "user_seconds": 5.152819,
-      "system_seconds": 2.201886,
+      "elapsed_seconds": 163.84345980500802,
+      "max_rss_kib": 337792,
+      "user_seconds": 5.228539,
+      "system_seconds": 2.329791,
       "command": [
         "cargo",
         "build",
@@ -159,10 +159,10 @@
       "configuration": "terrio-after",
       "target": "wasm32-unknown-unknown",
       "packages": 131,
-      "elapsed_seconds": 114.69478948801407,
-      "max_rss_kib": 334320,
-      "user_seconds": 4.570822,
-      "system_seconds": 1.776343,
+      "elapsed_seconds": 115.4176683179976,
+      "max_rss_kib": 328200,
+      "user_seconds": 4.601263,
+      "system_seconds": 1.829894,
       "command": [
         "cargo",
         "build",
@@ -171,9 +171,9 @@
         "--target",
         "wasm32-unknown-unknown"
       ],
-      "wasm_bytes": 4175412,
-      "optimized_wasm_bytes": 3942218,
-      "optimized_gzip_bytes": 1259334
+      "wasm_bytes": 4177826,
+      "optimized_wasm_bytes": 3944419,
+      "optimized_gzip_bytes": 1260393
     }
   ],
   "baseline_wasm_note": "Reused from the initial serial matrix at the same clean pre-extraction source, dependency lock, toolchain and build profile. The native baseline was repeated after a briefly overlapping lint check; only the uncontaminated repeat is included.",

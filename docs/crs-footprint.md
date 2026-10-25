@@ -1,7 +1,8 @@
 # CRS dependency and build footprint
 
 These measurements compare equivalent consumers that parse EPSG:4326 and
-EPSG:3857 and export the same coordinate-transform function. The baseline uses
+EPSG:3857 and export the same coordinate-transform function, returning the
+projected x component. The baseline uses
 Terrio with `default-features = false`. Standalone configurations use
 `terrio-crs` directly; the fallback configuration enables `wbprojection-fallback`.
 The final Terrio configuration retains that fallback. All consumers are isolated
@@ -10,9 +11,9 @@ from the workspace and use fresh target directories.
 | Consumer | Packages native / WASM | Build seconds native / WASM | Raw WASM bytes | Optimized WASM bytes | Optimized gzip bytes |
 | --- | ---: | ---: | ---: | ---: | ---: |
 | Terrio before extraction | 149 / 130 | 169.29 / 120.63 | 4,197,535 | 3,946,779 | 1,260,844 |
-| Standalone native default | 47 / 38 | 32.61 / 21.49 | 1,683,729 | 1,518,533 | 908,412 |
-| Standalone with fallback | 53 / 43 | 44.73 / 31.58 | 4,147,954 | 3,917,282 | 1,244,987 |
-| Terrio after extraction | 150 / 131 | 161.19 / 114.69 | 4,175,412 | 3,942,218 | 1,259,334 |
+| Standalone native default | 47 / 38 | 33.40 / 21.70 | 1,684,505 | 1,519,218 | 909,147 |
+| Standalone with fallback | 53 / 43 | 45.25 / 32.24 | 4,150,368 | 3,919,480 | 1,245,948 |
+| Terrio after extraction | 150 / 131 | 163.84 / 115.42 | 4,177,826 | 3,944,419 | 1,260,393 |
 
 Counts include the consumed library plus unique name/version pairs in normal
 and build dependencies. They exclude the probe and development dependencies.
@@ -28,7 +29,7 @@ records the 93-fixture CRS and 54-projection study results for both configuratio
 ## Method and source versions
 
 - Before: `0e58a72a7a287b97142e6457920226a7e0e2d510` (numerical fixes merged, before extraction).
-- After: `53e90f922cd7b7993b8b8d75d10069f836260975` (optional fallback and transport concurrency fix).
+- After: `69d63717c3256a48a5e0b1d80f56f24fa3123846` (optional fallback and transport concurrency fix).
 - Rust: 1.99.0 (`b940084d7`, LLVM 23.1.1).
 - Targets: `x86_64-unknown-linux-gnu` and `wasm32-unknown-unknown`.
 - Host: Intel(R) Xeon(R) w7-3445; Linux, glibc 2.44.
@@ -72,12 +73,12 @@ isolated decoder-throughput measurement.
 
 | Consumer | First-call median | First-call min–max | Repeated-call median |
 | --- | ---: | ---: | ---: |
-| Terrio before extraction | 10.66 ms | 10.26–14.67 ms | 3.62 µs |
-| Standalone native default | 18.53 ms | 17.57–25.58 ms | 3.35 µs |
-| Standalone with fallback | 18.16 ms | 17.70–20.88 ms | 3.59 µs |
-| Terrio after extraction | 18.40 ms | 17.67–22.59 ms | 3.61 µs |
+| Terrio before extraction | 10.62 ms | 10.11–11.35 ms | 3.68 µs |
+| Standalone native default | 18.01 ms | 17.50–18.65 ms | 3.42 µs |
+| Standalone with fallback | 18.12 ms | 17.49–19.43 ms | 3.57 µs |
+| Terrio after extraction | 17.94 ms | 17.44–19.36 ms | 3.60 µs |
 
-Portable decoding adds roughly 8 ms to the first call in this experiment; it
+Portable decoding adds roughly 7 ms to the first call in this experiment; it
 removes the duplicate table-decoder dependency and uses the same implementation
 on both targets. The measured repeated-call cost is similar. The selected default
 keeps that initialization tradeoff explicit. [Raw trials and scope](benchmarks/crs-startup.json)
