@@ -1,7 +1,5 @@
 //! Filesystem-free public archive writer, native/WASM read-back and native member parity.
-use std::io::Cursor;
-#[cfg(not(target_family = "wasm"))]
-use std::io::Read;
+use std::io::{Cursor, Read};
 use terrio::memory::{open_vector_bytes, write_shapefile_zip_bytes, write_vector_bytes};
 use terrio::{FieldValue, VectorWriteOptions};
 
@@ -106,4 +104,34 @@ fn unrepresentable_fields_and_mixed_geometry_are_errors() {
     input.layers[0].features[1].geometry = None;
     input.layers[0].add_field(terrio::FieldDef::new("blob", terrio::FieldType::Blob));
     assert!(write_vector_bytes(&input.layers, "p.shp.zip", &Default::default()).unwrap_err().to_string().contains("scalars only"));
+}
+
+#[test]
+fn z_only_records_omit_optional_measure_blocks() {
+    for geometry in [
+        r#"{"type":"Point","coordinates":[1,2,3]}"#,
+        r#"{"type":"MultiPoint","coordinates":[[1,2,3],[4,5,6]]}"#,
+        r#"{"type":"LineString","coordinates":[[0,0,1],[2,3,2],[5,1,3]]}"#,
+        r#"{"type":"Polygon","coordinates":[[[0,0,1],[0,5,2],[5,5,3],[5,0,4],[0,0,1]]]}"#,
+    ] {
+        let input = source(geometry);
+        let bytes = write_vector_bytes(&input.layers, "z.shp.zip", &Default::default()).unwrap();
+        let mut zip = zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
+        let mut shp = Vec::new();
+        zip.by_name("z.shp").unwrap().read_to_end(&mut shp).unwrap();
+        let f64_at = |at| f64::from_le_bytes(shp[at..at + 8].try_into().unwrap());
+        assert_eq!((f64_at(84), f64_at(92)), (0.0, 0.0), "file header M bounds");
+        let length = u32::from_be_bytes(shp[104..108].try_into().unwrap()) as usize * 2;
+        let record = &shp[108..108 + length];
+        let u32_at = |at| u32::from_le_bytes(record[at..at + 4].try_into().unwrap()) as usize;
+        let expected_length = match u32_at(0) {
+            11 => 28,
+            18 => 56 + 24 * u32_at(36),
+            13 | 15 => 60 + 4 * u32_at(36) + 24 * u32_at(40),
+            st => panic!("unexpected shape type {st}"),
+        };
+        // GDAL omits optional M ranges/arrays for Z-only data, rather than
+        // emitting no-data sentinels as if they were actual measure bounds.
+        assert_eq!(length, expected_length);
+    }
 }

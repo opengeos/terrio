@@ -356,6 +356,9 @@ EPSG:4326, required ZIP members, UTF-8 at the 254-byte boundary, overlong-URL
 refusal and explicit unsupported output. Native runs also compare every member
 with the existing filesystem writer. Z-only output must not invent M=0 values;
 all-asterisk text must remain text rather than becoming a numeric null marker.
+Z-only point, multipoint, line and polygon records omit optional M sections, as
+GDAL does, and keep zero M bounds in the file header. Where filesystem output
+has real M samples, the record M range excludes missing samples.
 
 ```sh
 cargo test -p terrio --no-default-features --test shapefile_archive

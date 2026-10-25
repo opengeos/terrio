@@ -10,6 +10,8 @@ halves; general real fields retain the documented width-24/15-decimal policy.
 
 import argparse
 import json
+import io
+import zipfile
 import tempfile
 from pathlib import Path
 
@@ -78,16 +80,39 @@ def check(data, directory, kind, filename):
 
 
 def check_z(directory):
-    source = {"type": "Feature", "geometry": {"type": "Point", "coordinates": [8.5, 47.4, 123.5]}, "properties": {"name": "*"}}
-    archive = directory / "xyz.shp.zip"
-    archive.write_bytes(terrio.Layer.from_geojson(source).to_bytes(archive.name))
-    dataset = ogr.Open(f"/vsizip/{archive}")
-    feature = dataset.GetLayer(0).GetNextFeature()
-    geometry = feature.GetGeometryRef()
-    assert geometry.GetZ() == 123.5
-    assert not geometry.IsMeasured()
-    assert feature.GetField("name") == "*"
-    return {"name": "Shapefile ZIP Z and asterisk text", "status": "identical", "detail": "Z retained, no invented M, asterisk text retained by GDAL"}
+    cases = [
+        ("point", "POINT Z (1 2 3)"),
+        ("multipoint", "MULTIPOINT Z ((1 2 3),(4 5 6))"),
+        ("line", "LINESTRING Z (0 0 1,2 3 2,5 1 3)"),
+        ("polygon", "POLYGON Z ((0 0 1,0 5 2,5 5 3,5 0 4,0 0 1))"),
+    ]
+    for kind, wkt in cases:
+        geometry = ogr.CreateGeometryFromWkt(wkt)
+        source = {"type": "Feature", "geometry": json.loads(geometry.ExportToJson()), "properties": {"name": "*"}}
+        archive = directory / f"xyz_{kind}.shp.zip"
+        archive.write_bytes(terrio.Layer.from_geojson(source).to_bytes(archive.name))
+        dataset = ogr.Open(f"/vsizip/{archive}")
+        feature = dataset.GetLayer(0).GetNextFeature()
+        actual = feature.GetGeometryRef()
+        assert not actual.IsMeasured()
+        assert from_wkb(bytes(actual.ExportToIsoWkb())).normalize().wkb == from_wkb(bytes(geometry.ExportToIsoWkb())).normalize().wkb
+        assert feature.GetField("name") == "*"
+        # Compare the raw optional-M layout with a fresh independent GDAL write.
+        reference_path = directory / f"reference_{kind}.shp"
+        reference = ogr.GetDriverByName("ESRI Shapefile").CreateDataSource(str(reference_path))
+        layer = reference.CreateLayer(kind, geom_type=geometry.GetGeometryType())
+        item = ogr.Feature(layer.GetLayerDefn())
+        item.SetGeometry(geometry)
+        layer.CreateFeature(item)
+        item = None
+        layer = None
+        reference = None
+        with zipfile.ZipFile(io.BytesIO(archive.read_bytes())) as members:
+            raw = members.read(f"xyz_{kind}.shp")
+        expected = reference_path.read_bytes()
+        assert raw[84:100] == expected[84:100] == bytes(16), "file M bounds"
+        assert raw[104:108] == expected[104:108], "optional-M record layout differs from GDAL"
+    return {"name": "Shapefile ZIP Z and asterisk text", "status": "identical", "detail": "four XYZ layouts match independent GDAL writes; no invented M; asterisk text retained"}
 
 
 def main():

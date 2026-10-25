@@ -304,7 +304,7 @@ impl DbfLayout {
                 }
                 let text = decode(raw, utf8);
                 let v = text.trim_matches(|c: char| c == ' ' || c == '\0');
-                if v.is_empty() || matches!(kind, b'N' | b'F') && v.bytes().all(|b| b == b'*') {
+                if v.is_empty() || (matches!(kind, b'N' | b'F') && v.bytes().all(|b| b == b'*')) {
                     return FieldValue::Null;
                 }
                 match def.field_type {
@@ -648,13 +648,16 @@ fn encode_shape(g: &Geometry, st: i32, has_z: bool, total: &mut Bounds) -> Vec<u
         total.add(c);
     }
     let put = |out: &mut Vec<u8>, v: f64| out.extend_from_slice(&v.to_le_bytes());
+    let measure = |c: &Coord| c.m.filter(|m| m.is_finite() && *m > -1e38);
     if st % 10 == 1 {
         let c = &parts[0][0];
         put(&mut out, c.x);
         put(&mut out, c.y);
         if has_z {
             put(&mut out, c.z.unwrap_or(0.0));
-            put(&mut out, c.m.unwrap_or(-1e39));
+            if let Some(m) = measure(c) {
+                put(&mut out, m);
+            }
         }
         return out;
     }
@@ -685,11 +688,15 @@ fn encode_shape(g: &Geometry, st: i32, has_z: bool, total: &mut Bounds) -> Vec<u
         for c in &points {
             put(&mut out, c.z.unwrap_or(0.0));
         }
-        let ms: Vec<f64> = points.iter().map(|c| c.m.unwrap_or(-1e39)).collect();
-        put(&mut out, ms.iter().copied().fold(f64::INFINITY, f64::min));
-        put(&mut out, ms.iter().copied().fold(f64::NEG_INFINITY, f64::max));
-        for m in ms {
-            put(&mut out, m);
+        let ms: Vec<f64> = points.iter().filter_map(|c| measure(c)).collect();
+        // Z-only records omit the optional M section, as GDAL does. When real
+        // measures exist, missing samples do not participate in the M range.
+        if !ms.is_empty() {
+            put(&mut out, ms.iter().copied().fold(f64::INFINITY, f64::min));
+            put(&mut out, ms.iter().copied().fold(f64::NEG_INFINITY, f64::max));
+            for c in points {
+                put(&mut out, measure(c).unwrap_or(-1e39));
+            }
         }
     }
     out
@@ -825,6 +832,23 @@ fn encode_dbf(layer: &Layer) -> Result<Vec<u8>> {
 mod tests {
     use super::*;
     use wbvector::{Feature, FieldDef};
+
+    #[test]
+    fn measure_ranges_exclude_missing_samples() {
+        let coordinates = vec![
+            Coord { x: 0.0, y: 0.0, z: Some(1.0), m: Some(3.0) },
+            Coord { x: 1.0, y: 1.0, z: Some(2.0), m: None },
+            Coord { x: 2.0, y: 2.0, z: Some(3.0), m: Some(8.0) },
+        ];
+        let shape = Geometry::LineString(coordinates);
+        let record = encode_shape(&shape, 13, true, &mut Bounds::empty());
+        // One part, three XY/Z coordinates; M range starts after the Z array.
+        let at = 60 + 4 + 24 * 3;
+        let value = |i| f64::from_le_bytes(record[i..i + 8].try_into().unwrap());
+        assert_eq!((value(at), value(at + 8)), (3.0, 8.0));
+        assert_eq!((value(at + 16), value(at + 24), value(at + 32)), (3.0, -1e39, 8.0));
+        assert_eq!(parse_shape(&record).unwrap(), shape);
+    }
 
     #[test]
     fn launders_names_like_gdal() {
