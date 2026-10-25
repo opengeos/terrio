@@ -823,13 +823,24 @@ def suite_crs(ctx):
 # The PROJ definitions without an EPSG code that the tests check, by test file and test.
 PROJ_CASES = {
     "crs_benchmark": {
-        "winkel_tripel_omitted_parallel_preserves_crs_default": "Winkel Tripel: omitted lat_1 equals explicit zero (CRS semantics)",
-        "orthographic_roundtrips_across_origins_scales_and_rotations": "Orthographic: round trips across origins, figures, scales and azimuths (within 1e-5 degrees at the limb)",
-        "mollweide": "Mollweide: pinned PROJ 9.10 operation graticule, including the finite pole approximation",
-        "wagner_iv": "Wagner IV: pinned PROJ 9.10 operation graticule, including poles",
-        "wagner_v": "Wagner V: pinned PROJ 9.10 operation graticule, including poles",
-        "orthographic": "Orthographic: pinned PROJ 9.10 WGS84 oblique graticule, forward/inverse",
-        "winkel_tripel_explicit_parallel_matches_operation_oracle": "Winkel Tripel: explicit lat_1=acos(2/pi) against PROJ's operation default",
+        "winkel_tripel_omitted_parallel_preserves_crs_default": (
+            "Winkel Tripel: omitted lat_1 equals explicit zero (CRS semantics)", TOLERANCE,
+            "omitted and explicit-zero CRS parallel give equal coordinates",
+        ),
+        "orthographic_roundtrips_across_origins_scales_and_rotations": (
+            "Orthographic: round trips across origins, figures, scales and azimuths", TOLERANCE,
+            "round trip <1e-5 degrees at the ill-conditioned limb",
+        ),
+        **{
+            test: (name, TOLERANCE, "forward <1 mm; inverse <1e-7 degrees, or 1e-6 at exact poles (longitude weighted by cos(latitude))")
+            for test, name in {
+                "mollweide": "Mollweide: pinned PROJ 9.10 operation graticule, including the finite pole approximation",
+                "wagner_iv": "Wagner IV: pinned PROJ 9.10 operation graticule, including poles",
+                "wagner_v": "Wagner V: pinned PROJ 9.10 operation graticule, including poles",
+                "orthographic": "Orthographic: pinned PROJ 9.10 WGS84 oblique graticule, forward/inverse",
+                "winkel_tripel_explicit_parallel_matches_operation_oracle": "Winkel Tripel: explicit lat_1=acos(2/pi) against PROJ's operation default",
+            }.items()
+        },
     },
     "geostationary": {
         "goes16_sweep_x_matches_proj": "GOES-16: `+proj=geos +h=35786023 +lon_0=-75 +sweep=x +ellps=GRS80`",
@@ -864,21 +875,13 @@ def proj_cases(s):
     for file, tests in PROJ_CASES.items():
         code, out, err = run(["cargo", "test", "--release", "-p", "terrio", "--test", file])
         first_case = len(s.cases)
-        for test, name in tests.items():
+        for test, description in tests.items():
+            name, status, detail = (description, IDENTICAL, "") if isinstance(description, str) else description
             m = re.search(rf"^test {test} \.\.\. (\w+)$", out, re.M)
             if not m:
                 s.cases.append(Case(group, name, DIFFERS, "the test did not run: " + tail(err or out, 3)))
             elif m.group(1) == "ok":
-                if file == "crs_benchmark":
-                    if test == "orthographic_roundtrips_across_origins_scales_and_rotations":
-                        detail = "round trip <1e-5 degrees at the ill-conditioned limb"
-                    elif test == "winkel_tripel_omitted_parallel_preserves_crs_default":
-                        detail = "omitted and explicit-zero CRS parallel give equal coordinates"
-                    else:
-                        detail = "forward <1 mm; inverse <1e-7 degrees, or 1e-6 at exact poles (longitude weighted by cos(latitude))"
-                    s.cases.append(Case(group, name, TOLERANCE, detail))
-                else:
-                    s.cases.append(Case(group, name, IDENTICAL))
+                s.cases.append(Case(group, name, status, detail))
             else:
                 s.cases.append(Case(group, name, DIFFERS, "differs from PROJ"))
         if code != 0 and not any(case.status == DIFFERS for case in s.cases[first_case:]):
