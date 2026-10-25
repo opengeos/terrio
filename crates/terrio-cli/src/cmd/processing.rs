@@ -234,9 +234,6 @@ fn parse_footprint_attribute(value: &str) -> std::result::Result<(String, String
 // Preserve local filenames verbatim; remote source identifiers must not persist authentication.
 fn footprint_location(input: &str) -> String {
     let Some((scheme, rest)) = input.split_once("://") else { return input.to_owned() };
-    if !["http", "https", "s3", "gs", "az"].iter().any(|s| scheme.eq_ignore_ascii_case(s)) {
-        return input.to_owned();
-    }
     let rest = rest.split(['?', '#']).next().unwrap_or(rest);
     let (authority, path) = rest.split_once('/').map_or((rest, ""), |(authority, _)| (authority, &rest[authority.len()..]));
     let host = authority.rsplit_once('@').map_or(authority, |(_, host)| host);
@@ -405,6 +402,10 @@ mod footprint_tests {
             ("s3://bucket/key.tif?X-Amz-Signature=example", "s3://bucket/key.tif"),
             ("az://container/key.tif?sig=example", "az://container/key.tif"),
             ("gs://bucket/key.tif", "gs://bucket/key.tif"),
+            ("/vsicurl/https://user:password@example.org/a.tif?token=example", "/vsicurl/https://example.org/a.tif"),
+            ("GDAL:ftp://user:password@example.org/a.tif?token=example", "GDAL:ftp://example.org/a.tif"),
+            ("abfs://user@example.org/a.tif?sig=example", "abfs://example.org/a.tif"),
+            ("s3a://bucket/a.tif?sig=example", "s3a://bucket/a.tif"),
         ] {
             assert_eq!(footprint_location(input), expected);
         }

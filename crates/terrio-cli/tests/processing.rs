@@ -204,3 +204,19 @@ fn footprint_writes_source_and_custom_attributes_to_singlepart_shapefiles() {
         assert!(!d.join("bad.dbf").exists());
     }
 }
+
+#[test]
+fn footprint_long_source_paths_follow_dbf_limits_and_survive_in_geopackage() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    let source = format!("{}/{}/scene.tif", "a".repeat(130), "b".repeat(130));
+    let path = d.join(&source);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let cfg = terrio::RasterConfig { cols: 1, rows: 1, data_type: terrio::DataType::F64, ..Default::default() };
+    let ds = terrio::RasterDataset::new(terrio::Raster::from_data(cfg, vec![1.]).unwrap(), false);
+    terrio::write_raster_dataset(&ds, path.to_str().unwrap(), &Default::default()).unwrap();
+    ok(&["footprint", &source, "long.shp"], d);
+    assert_eq!(first(&d.join("long.shp")).features[0].attributes[0], terrio::FieldValue::Text(source[..254].into()));
+    ok(&["footprint", &source, "long.gpkg"], d);
+    assert_eq!(first(&d.join("long.gpkg")).features[0].attributes[0], terrio::FieldValue::Text(source));
+}
