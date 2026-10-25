@@ -301,8 +301,7 @@ fn geometry(entity: &EntityType) -> Result<Geometry> {
     })
 }
 
-fn polygon(mut cs: Vec<Coord>) -> Result<Geometry> {
-    cs.dedup();
+fn polygon(cs: Vec<Coord>) -> Result<Geometry> {
     let mut distinct = Vec::new();
     for c in &cs {
         if !distinct.contains(c) {
@@ -312,10 +311,9 @@ fn polygon(mut cs: Vec<Coord>) -> Result<Geometry> {
     if distinct.len() < 3 {
         return line(distinct, false);
     }
-    if cs.first() != cs.last() {
-        cs.push(cs[0].clone());
-    }
-    Ok(Geometry::Polygon { exterior: Ring::new(cs), interiors: Vec::new() })
+    // Faces have at most four corners; remove repeated corners before closing.
+    distinct.push(distinct[0].clone());
+    Ok(Geometry::Polygon { exterior: Ring::new(distinct), interiors: Vec::new() })
 }
 
 fn hatch_geometry(h: &Hatch) -> Result<Geometry> {
@@ -323,7 +321,7 @@ fn hatch_geometry(h: &Hatch) -> Result<Geometry> {
     let mut external = Vec::new();
     for path in &h.paths {
         let mut cs: Vec<Coord> = Vec::new();
-        for edge in &path.edges {
+        for (edge_index, edge) in path.edges.iter().enumerate() {
             let at = |x, y| Vector3::new(x, y, h.elevation);
             let mut part = match edge {
                 BoundaryEdge::Polyline(p) => polyline(
@@ -344,6 +342,14 @@ fn hatch_geometry(h: &Hatch) -> Result<Geometry> {
                     ));
                 }
             };
+            if edge_index == 1
+                && let (Some(first), Some(last), Some(start), Some(end)) = (cs.first(), cs.last(), part.first(), part.last())
+                && (last.x - start.x).hypot(last.y - start.y) > 1e-7
+                && (last.x - end.x).hypot(last.y - end.y) > 1e-7
+                && ((first.x - start.x).hypot(first.y - start.y) <= 1e-7 || (first.x - end.x).hypot(first.y - end.y) <= 1e-7)
+            {
+                cs.reverse();
+            }
             if let (Some(last), Some(first)) = (cs.last(), part.first()) {
                 if (last.x - first.x).hypot(last.y - first.y) > 1e-7 {
                     part.reverse();
@@ -659,6 +665,48 @@ mod tests {
             Geometry::LineString(vec![coord(Vector3::ZERO), coord(Vector3::UNIT_X)])
         );
         assert_eq!(polygon(vec![coord(Vector3::ZERO); 4]).unwrap(), Geometry::Point(coord(Vector3::ZERO)));
+    }
+
+    #[test]
+    fn repeated_face_corner_produces_a_triangle() {
+        let a = coord(Vector3::ZERO);
+        let b = coord(Vector3::UNIT_X);
+        let c = coord(Vector3::UNIT_Y);
+        assert_eq!(
+            polygon(vec![a.clone(), b.clone(), a.clone(), c.clone()]).unwrap(),
+            Geometry::Polygon { exterior: Ring::new(vec![a.clone(), b, c, a]), interiors: Vec::new() }
+        );
+    }
+
+    #[test]
+    fn hatch_arc_units_and_reversed_first_edge_roundtrip() {
+        use acadrust::entities::hatch::{CircularArcEdge, LineEdge};
+        for reversed in [false, true] {
+            let mut path = BoundaryPath::external();
+            let a = Vector2::new(-1.0, 0.0);
+            let b = Vector2::new(1.0, 0.0);
+            path.add_edge(BoundaryEdge::Line(LineEdge { start: if reversed { b } else { a }, end: if reversed { a } else { b } }));
+            path.add_edge(BoundaryEdge::CircularArc(CircularArcEdge {
+                center: Vector2::ZERO,
+                radius: 1.0,
+                start_angle: 0.0,
+                end_angle: PI,
+                counter_clockwise: true,
+            }));
+            let mut hatch = Hatch::new();
+            hatch.add_path(path);
+            let mut doc = CadDocument::new();
+            doc.add_entity(EntityType::Hatch(Box::new(hatch))).unwrap();
+            for (bytes, driver) in [
+                (DxfWriter::new(&doc).write_to_vec().unwrap(), VectorDriver::DXF),
+                (DwgWriter::write_to_vec(&doc).unwrap(), VectorDriver::DWG),
+            ] {
+                let layer = parse(bytes, driver).unwrap();
+                let Geometry::Polygon { exterior, .. } = layer.features[0].geometry.as_ref().unwrap() else { panic!("expected polygon") };
+                let expected = PI / 2.0;
+                assert!((exterior.signed_area().abs() - expected).abs() < 0.002);
+            }
+        }
     }
 
     #[test]

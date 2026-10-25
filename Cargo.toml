@@ -31,7 +31,7 @@ geo = { version = "0.33.1", default-features = false, features = ["spade"] }
 rstar = "0.12.2"
 
 # Native CAD codecs, sequential on every target (including WebAssembly).
-acadrust = { version = "0.6.7", default-features = false }
+acadrust = { version = "=0.6.7", default-features = false }
 
 flatgeobuf = { version = "6", default-features = false }
 # The version flatgeobuf's generated code is built with.
