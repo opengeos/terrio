@@ -137,34 +137,49 @@ fn registry_name(code: u32) -> Option<String> {
 }
 
 fn epsg_reference(s: &str) -> Option<u32> {
+    let code = canonical_epsg_reference(s);
     #[cfg(feature = "wbprojection-fallback")]
     {
-        wbp::epsg_from_srs_reference(s)
+        // Keep legacy free-form references, but normalize canonical versioned
+        // references first: the fallback can mistake their version for the code.
+        code.or_else(|| wbp::epsg_from_srs_reference(s))
     }
     #[cfg(not(feature = "wbprojection-fallback"))]
-    {
-        if let Ok(code) = s.parse() {
-            return Some(code);
-        }
-        let upper = s.to_ascii_uppercase();
-        if let Some(code) = upper.strip_prefix("EPSG:") {
-            return code.trim_start_matches(':').parse().ok();
-        }
-        if upper.starts_with("URN:OGC:DEF:CRS:EPSG:") {
-            return upper.rsplit(':').next()?.parse().ok();
-        }
-        for prefix in [
-            "HTTP://WWW.OPENGIS.NET/DEF/CRS/EPSG/",
-            "HTTPS://WWW.OPENGIS.NET/DEF/CRS/EPSG/",
-            "HTTP://OPENGIS.NET/DEF/CRS/EPSG/",
-            "HTTPS://OPENGIS.NET/DEF/CRS/EPSG/",
-        ] {
-            if let Some(rest) = upper.strip_prefix(prefix) {
-                return rest.rsplit('/').next()?.parse().ok();
-            }
-        }
-        None
+    code
+}
+
+/// Canonical authority forms are independent of the optional projection engine.
+fn canonical_epsg_reference(s: &str) -> Option<u32> {
+    let digits = |s: &str| {
+        if !s.is_empty() && s.bytes().all(|c| c.is_ascii_digit()) { s.parse().ok() } else { None }
+    };
+    let s = s.trim();
+    if let Some(code) = digits(s) {
+        return Some(code);
     }
+    let upper = s.to_ascii_uppercase();
+    if let Some(code) = upper.strip_prefix("EPSG:") {
+        return digits(code.strip_prefix(':').unwrap_or(code));
+    }
+    if let Some(rest) = upper.strip_prefix("URN:OGC:DEF:CRS:EPSG:") {
+        let (_, code) = rest.split_once(':')?;
+        return digits(code);
+    }
+    for prefix in [
+        "HTTP://WWW.OPENGIS.NET/DEF/CRS/EPSG/",
+        "HTTPS://WWW.OPENGIS.NET/DEF/CRS/EPSG/",
+        "HTTP://OPENGIS.NET/DEF/CRS/EPSG/",
+        "HTTPS://OPENGIS.NET/DEF/CRS/EPSG/",
+    ] {
+        if let Some(rest) = upper.strip_prefix(prefix) {
+            let (version, code) = rest.split_once('/')?;
+            if version.is_empty() {
+                return None;
+            }
+            return digits(code);
+        }
+    }
+    None
 }
 
 /// A coordinate reference system, known by an EPSG (or ESRI) code, a WKT definition, a PROJ
@@ -1635,6 +1650,59 @@ mod tests {
         let nad83 = r#"GEOGCS["unknown",DATUM["NAD83",SPHEROID["GRS 1980",6378137,298.257222101]],PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433]]"#;
         assert_eq!(identify_epsg(nad83), Some(4269));
         assert!(epsg::datums_named("Unknown based on Bessel 1841 ellipsoid").is_empty());
+    }
+
+    /// Canonical references stay identical across feature configurations; legacy
+    /// free-form acceptance is explicit, including the fallback's version-token bug.
+    #[test]
+    fn authority_reference_forms_are_feature_independent() {
+        // input, canonical result, upstream legacy-parser result
+        let cases = [
+            ("4326", Some(4326), Some(4326)),
+            (" epsg:4326 ", Some(4326), Some(4326)),
+            ("EPSG::4326", Some(4326), Some(4326)),
+            ("urn:ogc:def:crs:EPSG::4326", Some(4326), Some(4326)),
+            ("urn:ogc:def:crs:EPSG:6.6:4326", Some(4326), Some(6)),
+            ("urn:ogc:def:crs:EPSG:9.9:4326", Some(4326), Some(9)),
+            ("http://www.opengis.net/def/crs/EPSG/0/4326", Some(4326), Some(4326)),
+            ("https://opengis.net/def/crs/EPSG/6.6/4326", Some(4326), Some(6)),
+            ("https://www.opengis.net/def/crs/EPSG/100/4326", Some(4326), Some(100)),
+            ("+4326", None, Some(4326)),
+            ("EPSG:+4326", None, None),
+            ("EPSG:-4326", None, None),
+            ("EPSG:::4326", None, Some(4326)),
+            ("EPSG:4326junk", None, Some(4326)),
+            ("4326junk", None, None),
+            ("EPSG:4326/extra", None, Some(4326)),
+            ("urn:ogc:def:crs:EPSG::4326:extra", None, Some(4326)),
+            ("http://www.opengis.net/def/crs/EPSG/0/4326/extra", None, Some(4326)),
+            ("http://www.opengis.net/def/crs/EPSG//4326", None, Some(4326)),
+            ("urn:ogc:def:crs:EPSG::", None, None),
+            ("EPSG:", None, None),
+            ("4294967296", None, None),
+            ("EPSG:4294967296", None, None),
+            ("ESRI:4326", None, None),
+            ("", None, None),
+        ];
+        for (input, canonical, legacy) in cases {
+            assert_eq!(canonical_epsg_reference(input), canonical, "canonical: {input}");
+            #[cfg(feature = "wbprojection-fallback")]
+            {
+                assert_eq!(wbp::epsg_from_srs_reference(input), legacy, "upstream: {input}");
+                assert_eq!(epsg_reference(input), canonical.or(legacy), "with fallback: {input}");
+            }
+            #[cfg(not(feature = "wbprojection-fallback"))]
+            {
+                let _ = legacy;
+                assert_eq!(epsg_reference(input), canonical, "native: {input}");
+            }
+            if canonical == Some(4326) {
+                assert_eq!(SpatialRef::parse(input).unwrap().epsg, Some(4326), "public: {input}");
+            }
+        }
+        // Public '+' inputs are PROJ definitions, even though the legacy helper
+        // accepts a leading '+' on a bare number.
+        assert!(SpatialRef::parse("+4326").is_err());
     }
 
     #[test]

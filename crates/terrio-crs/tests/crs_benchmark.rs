@@ -148,3 +148,21 @@ fn native_wagner_wkt1_includes_pole_graticules() {
         check_encoding(id, Some(wkt));
     }
 }
+
+/// PROJ 9.8.1 / pyproj 3.8.0 resolve the versioned references to EPSG:4326.
+#[test]
+fn versioned_authority_references_match_proj() {
+    for reference in [
+        "urn:ogc:def:crs:EPSG:6.6:4326",
+        "urn:ogc:def:crs:EPSG:9.9:4326",
+        "http://www.opengis.net/def/crs/EPSG/0/4326",
+        "https://opengis.net/def/crs/EPSG/6.6/4326",
+    ] {
+        let source = SpatialRef::parse(reference).unwrap();
+        assert_eq!(source.epsg, Some(4326));
+        let transform = Transformer::new(&source, &SpatialRef::from_epsg(3857).unwrap()).unwrap();
+        let (x, y) = transform.transform(10.0, 40.0).unwrap();
+        assert!((x - 1_113_194.907_932_735_7).abs() < 1e-7, "{reference}: {x}");
+        assert!((y - 4_865_942.279_503_175).abs() < 1e-7, "{reference}: {y}");
+    }
+}

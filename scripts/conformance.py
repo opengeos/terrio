@@ -823,6 +823,7 @@ def suite_crs(ctx):
 # The PROJ definitions without an EPSG code that the tests check, by test file and test.
 PROJ_CASES = {
     "crs_benchmark": {
+        "versioned_authority_references_match_proj": "Versioned EPSG URN/URL references (PROJ 9.8.1, 1e-7 m)",
         "winkel_tripel_omitted_parallel_preserves_crs_default": (
             "Winkel Tripel: omitted lat_1 equals explicit zero (CRS semantics)", TOLERANCE,
             "omitted and explicit-zero CRS parallel give equal coordinates",

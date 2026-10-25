@@ -112,6 +112,14 @@ See [Cargo's publication behavior](https://doc.rust-lang.org/cargo/commands/carg
 The [standalone benchmark validation](crs-benchmark-validation.md) records the
 direct native/fallback results against both pinned upstream suites.
 
+Canonical EPSG references use one parser in both standalone configurations.
+Versioned URNs/URLs resolve the code separately from the authority version
+(`urn:ogc:def:crs:EPSG:6.6:4326` resolves EPSG:4326). The fallback retains its
+legacy free-form authority extraction only after canonical parsing fails;
+inputs such as `EPSG:4326junk` are refused by the native default and retain the
+legacy acceptance with the fallback. Inputs beginning with `+` remain PROJ
+strings in every configuration.
+
 ## Identification
 
 When a dataset stores WKT without an EPSG code, as shapefiles do, terrio identifies the code: an
