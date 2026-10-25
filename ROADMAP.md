@@ -469,8 +469,11 @@ WebAssembly (the `terrio-js` npm package):
   calls remain about 3.4–3.7 µs. This initialization tradeoff removes the duplicate
   table-decoder dependency; TIFF codecs remain supported. See
   [the measurement report](docs/crs-footprint.md#native-first-use-cost).
-- Missing geocentric, PROJJSON, IAU and additional projection capabilities are
-  scoped separately in #269–#272.
+- [x] Geocentric Cartesian XYZ endpoints, EPSG/PROJ/WKT definitions, datum and
+      projected composition, and Rust/CLI/MCP/Python/JavaScript/WASM validation
+      against pinned and live GDAL/PROJ references (#269, #286).
+- PROJJSON, IAU and additional projection capabilities remain scoped separately
+  in #270–#272.
 
 ## Decisions
 
