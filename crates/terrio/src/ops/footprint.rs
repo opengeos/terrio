@@ -1,7 +1,9 @@
 //! Exact valid-data raster footprints, with boundaries on pixel edges.
 
 use super::polygonize::{PolygonizeOptions, polygonize};
-use crate::{DataType, Error, Feature, Geometry, GeometryType, Layer, Raster, RasterConfig, RasterDataset, Result};
+use crate::{
+    DataType, Error, Feature, FieldDef, FieldType, FieldValue, Geometry, GeometryType, Layer, Raster, RasterConfig, RasterDataset, Result,
+};
 
 /// Options for [`footprint`]. Validity uses declared nodata and finite values; an optional
 /// explicit mask can further restrict it. Implicit alpha bands and external mask files are not
@@ -15,11 +17,17 @@ pub struct FootprintOptions {
     /// Optional mask on exactly the input grid and CRS. Only finite, nonzero, non-nodata pixels
     /// of its first band are included.
     pub mask: Option<RasterDataset>,
+    /// Emit one polygon feature per connected region instead of one multipolygon.
+    pub singlepart: bool,
+    /// Text fields copied to every output feature, in the supplied order.
+    /// Names must be nonempty, have no surrounding whitespace, and be unique (case-insensitively).
+    pub attributes: Vec<(String, String)>,
 }
 
 /// A single multipolygon containing every valid pixel, including holes and disconnected areas.
 /// Pixels connect through their sides (4-connectedness); regions touching only at a corner
 /// remain separate polygon members, as in GDAL's default footprint.
+/// With `singlepart`, each polygon member becomes a feature with the same attributes.
 /// No simplification or overview is applied. An entirely invalid raster gives an empty layer.
 /// Rotated/south-up affine grids and the source CRS are preserved. Complex rasters and rasters
 /// georeferenced by geolocation arrays are rejected.
@@ -31,6 +39,12 @@ pub struct FootprintOptions {
 /// # Ok::<(), terrio::Error>(())
 /// ```
 pub fn footprint(ds: &RasterDataset, options: &FootprintOptions) -> Result<Layer> {
+    let mut names = std::collections::HashSet::new();
+    for (name, _) in &options.attributes {
+        if name.trim().is_empty() || name.trim() != name || !names.insert(name.to_lowercase()) {
+            return Err(Error::InvalidArgument(format!("footprint attribute names must be nonempty, unpadded and unique: '{name}'")));
+        }
+    }
     super::sample::check_raster(ds)?;
     let r = &ds.raster;
     let bands = if options.bands.is_empty() { (1..=r.bands).collect() } else { options.bands.clone() };
@@ -80,8 +94,12 @@ pub fn footprint(ds: &RasterDataset, options: &FootprintOptions) -> Result<Layer
     let mut out = Layer::new("footprint");
     out.geom_type = Some(GeometryType::MultiPolygon);
     ds.crs().apply_to_layer(&mut out);
-    if !parts.is_empty() {
-        out.features.push(Feature { fid: 1, geometry: Some(Geometry::MultiPolygon(parts)), attributes: Vec::new() });
+    for (name, _) in &options.attributes {
+        out.schema.add_field(FieldDef::new(name, FieldType::Text));
     }
-    Ok(out)
+    if !parts.is_empty() {
+        let attributes = options.attributes.iter().map(|(_, value)| FieldValue::Text(value.clone())).collect();
+        out.features.push(Feature { fid: 1, geometry: Some(Geometry::MultiPolygon(parts)), attributes });
+    }
+    Ok(if options.singlepart { super::geometry::singleparts(&out) } else { out })
 }

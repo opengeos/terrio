@@ -298,6 +298,21 @@ TIFF metadata and asserts actual JPEG XL block dimensions. The portable GDAL 3.1
 slope golden unit check permits one Float32 ULP for platform `atan` rounding; this
 allowance does not apply to exact benchmark or conformance comparisons.
 
+### Footprint attributes and singleparts (#275)
+
+```sh
+cargo test -p terrio -p terrio-cli --test processing
+python scripts/conformance.py ../terrio-data --only footprint --strict
+```
+
+The GDAL comparison writes real DEM and Landsat footprints as Shapefiles in both
+multipart and singlepart modes, with union/intersection band validity. Temporary
+copies add a nodata stripe and a hole to exercise disconnected regions. It checks
+feature counts, source-path and custom text fields, CRS and symmetric-difference
+area (at most `max(1e-6, reference area * 1e-12)` per feature). Rust regressions
+also cover holes, corner-touching regions, empty output schemas, field validation
+and sequential singlepart IDs. Python's bundled CLI uses the same options; there
+is currently no direct footprint operation in the Python or JavaScript bindings.
 
 ## Standalone CRS feature coverage
 

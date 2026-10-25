@@ -143,14 +143,40 @@ def compare_geometry(terrio: Path, source: Path, work: Path) -> None:
 
 
 def compare_footprint(terrio: Path, source: Path, work: Path) -> None:
-    for intersection in (False, True):
-        out = work / f"{source.stem}-footprint-{intersection}.gpkg"
+    # Retain real pixel values/georeferencing, adding a dividing nodata stripe and a hole
+    # so that split mode must preserve multiple features as well as interior rings.
+    original = source
+    source = work / f"{original.stem}-gaps.tif"
+    raster = gdal.Translate(str(source), str(original), format="GTiff")
+    width, height = raster.RasterXSize, raster.RasterYSize
+    for index in range(1, raster.RasterCount + 1):
+        band = raster.GetRasterBand(index)
+        values = band.ReadAsArray()
+        nodata = band.GetNoDataValue()
+        if nodata is None:
+            nodata = 0
+            band.SetNoDataValue(nodata)
+        values[:, width // 2 : width // 2 + 2] = nodata
+        values[height // 4 : height // 4 + 4, width // 4 : width // 4 + 4] = nodata
+        band.WriteArray(values)
+    band = None
+    raster = None
+    for intersection, singlepart in (
+        (False, False),
+        (True, False),
+        (False, True),
+        (True, True),
+    ):
+        out = work / f"{source.stem}-footprint-{intersection}-{singlepart}.shp"
         run(
             terrio,
             "footprint",
             source,
             out,
             *(["--intersection"] if intersection else []),
+            *(["--singlepart"] if singlepart else []),
+            "--attribute",
+            "label=survey=2026",
         )
         got = features(out)
         ds = gdal.Footprint(
@@ -160,17 +186,39 @@ def compare_footprint(terrio: Path, source: Path, work: Path) -> None:
             simplify=0,
             maxPoints="unlimited",
             combineBands="intersection" if intersection else "union",
+            splitPolys=singlepart,
         )
-        feature = ds.GetLayer(0).GetNextFeature()
-        expected = feature.GetGeometryRef().Clone()
-        assert len(got) == 1
-        actual = got[0].GetGeometryRef()
-        assert actual.IsValid()
-        difference = actual.SymDifference(expected).GetArea()
-        tolerance = max(1e-6, expected.GetArea() * 1e-12)
-        assert difference <= tolerance, (source.name, difference, tolerance)
+        expected = list(ds.GetLayer(0))
+        assert len(got) == len(expected)
+        assert len(got) >= 2 if singlepart else len(got) == 1
+        actual_srs = ogr.Open(str(out))
+        assert (
+            actual_srs.GetLayer(0)
+            .GetSpatialRef()
+            .IsSame(ds.GetLayer(0).GetSpatialRef())
+        )
+        remaining = list(expected)
+        max_difference = 0.0
+        for feature in got:
+            assert feature["location"] == str(source)
+            assert feature["label"] == "survey=2026"
+            actual = feature.GetGeometryRef()
+            assert actual.IsValid()
+            # Match spatially rather than relying on polygon traversal order.
+            reference = min(
+                remaining,
+                key=lambda f: actual.SymDifference(f.GetGeometryRef()).GetArea(),
+            )
+            remaining.remove(reference)
+            geometry = reference.GetGeometryRef()
+            difference = actual.SymDifference(geometry).GetArea()
+            tolerance = max(1e-6, geometry.GetArea() * 1e-12)
+            assert difference <= tolerance, (source.name, difference, tolerance)
+            assert feature["location"] == reference["location"]
+            max_difference = max(max_difference, difference)
         print(
-            f"PASS {source.name} footprint {'intersection' if intersection else 'union'}: difference area {difference:.3g}"
+            f"PASS {source.name} footprint intersection={intersection} singlepart={singlepart}: "
+            f"{len(got)} features; attributes/CRS identical; difference area {max_difference:.3g}"
         )
 
 
@@ -254,11 +302,16 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("data", type=Path)
     parser.add_argument("--terrio", type=Path, default=Path("target/debug/terrio"))
+    parser.add_argument("--only-footprint", action="store_true")
     args = parser.parse_args()
     terrio, data = args.terrio.resolve(), args.data.resolve()
     print(f"GDAL {gdal.VersionInfo('--version')}")
     with tempfile.TemporaryDirectory(prefix="terrio-processing-") as tmp:
         work = Path(tmp)
+        if args.only_footprint:
+            for name in ("dem.tif", "landsat.tif"):
+                compare_footprint(terrio, data / name, work)
+            return
         for name in ("countries.geojson", "cables.geojson", "TN_Counties.geojson"):
             compare_geometry(terrio, data / name, work)
         for name in ("dem.tif", "landsat.tif"):

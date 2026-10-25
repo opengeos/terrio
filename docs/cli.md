@@ -146,6 +146,7 @@ and coordinate overflow fail. Output formats may assign their own feature IDs on
 terrio footprint image.tif footprint.gpkg
 terrio footprint image.tif footprint.gpkg --band 1,2 --intersection
 terrio footprint image.tif footprint.gpkg --mask valid.tif
+terrio footprint image.tif footprint.shp --singlepart --attribute survey=2026 --attribute "label=North field"
 ```
 
 Writes one multipolygon of all finite, non-nodata pixels, preserving holes, disconnected areas,
@@ -155,6 +156,19 @@ follow exact pixel edges, without overviews or simplification. Pixels connect th
 default footprint. An entirely invalid raster
 produces an empty layer. By default, any band may be valid; `--intersection` requires all selected
 bands to be valid. `--band` selects bands from 1; omitted, it uses all bands.
+
+The output includes a text `location` field containing the input path. Local paths are stored exactly as supplied;
+URL sources (inputs containing `://`, including GDAL virtual-path prefixes) omit
+user information, query strings and fragments.
+Use `--location-field NAME` to rename it or `--no-location` to omit it. Repeated
+`--attribute NAME=VALUE` options add text fields to every feature; values may be empty or
+contain `=`. Field names must be nonempty, have no surrounding whitespace, and be unique
+ignoring case, including the location field. Output format limits still apply (Shapefile field names are limited to 10 characters
+and text values are truncated to at most 254 bytes, at a UTF-8 boundary); use
+GeoPackage to retain long names or values.
+
+`--singlepart` writes one polygon feature per disconnected region, keeping holes, CRS and
+all attributes on each feature. Without it, the output remains a single multipolygon.
 
 `--mask` further restricts the footprint to finite, nonzero, non-nodata pixels of the mask's first
 band; its grid and CRS must match the input. Alpha bands and external mask files are not used as
