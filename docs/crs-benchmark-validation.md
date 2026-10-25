@@ -3,7 +3,7 @@
 The standalone crate was run directly through the reporter's unmodified judges
 and frozen inputs at `rust-proj-capability` revision
 [`ddd9fac70ec370acd9651ebb8b46035207347ad5`](https://github.com/mdsumner/rust-proj-capability/tree/ddd9fac70ec370acd9651ebb8b46035207347ad5).
-The Terrio source revision was `5d8e86e` on `perf/crs-optional-fallback`.
+The Terrio source revision was `f454562` on `perf/crs-optional-fallback`.
 [Machine-readable results](benchmarks/crs-standalone.json) include input hashes,
 oracle environments, per-fixture results and projection error maxima.
 
@@ -67,7 +67,7 @@ In the pinned benchmark checkout, replace its two `terrio` Cargo dependencies
 with aliases of the standalone package at the Terrio revision above:
 
 ```toml
-terrio = { package = "terrio-crs", git = "https://github.com/opengeos/terrio", rev = "5d8e86e", default-features = false }
+terrio = { package = "terrio-crs", git = "https://github.com/opengeos/terrio", rev = "f454562", default-features = false }
 ```
 
 Retain `optional = true` in `engines/rust-crs/Cargo.toml`. Replace the adapter
