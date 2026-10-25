@@ -406,6 +406,8 @@ mod footprint_tests {
             ("GDAL:ftp://user:password@example.org/a.tif?token=example", "GDAL:ftp://example.org/a.tif"),
             ("abfs://user@example.org/a.tif?sig=example", "abfs://example.org/a.tif"),
             ("s3a://bucket/a.tif?sig=example", "s3a://bucket/a.tif"),
+            ("/vsicurl?url=https://user:password@example.org/a.tif?token=example", "/vsicurl?url=https://example.org/a.tif"),
+            ("https://user:pa%3Fss%23word@example.org/a.tif?token=example", "https://example.org/a.tif"),
         ] {
             assert_eq!(footprint_location(input), expected);
         }
