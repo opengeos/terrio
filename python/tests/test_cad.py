@@ -57,3 +57,14 @@ def test_cad_roundtrip(tmp_path, ext):
     target = tmp_path / "converted.geojson"
     terrio.convert(str(path), str(target))
     assert len(terrio.open_vector(str(target))[0]) == 5
+
+
+def test_invalid_drawing_coordinates_are_data_errors(tmp_path):
+    path = tmp_path / "invalid.dxf"
+    path.write_text(
+        "0\nSECTION\n2\nHEADER\n9\n$ACADVER\n1\nAC1032\n0\nENDSEC\n"
+        "0\nSECTION\n2\nENTITIES\n0\nPOINT\n5\n100\n100\nAcDbEntity\n"
+        "8\n0\n100\nAcDbPoint\n10\nNaN\n20\n0\n30\n0\n0\nENDSEC\n0\nEOF\n"
+    )
+    with pytest.raises(terrio.InvalidDataError, match="coordinates must be finite"):
+        terrio.open_vector(str(path))

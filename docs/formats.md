@@ -377,6 +377,9 @@ reads it.
 
 ### CAD drawings (DWG and DXF)
 
+**The native reader is strict:** an unsupported geometric entity fails the entire drawing.
+The optional GDAL backend can provide fallback for entities outside the native subset below.
+
 The default-enabled `cad` Cargo feature uses [acadrust](https://github.com/hakanaktt/acadrust)
 without native libraries or its optional thread pool. It is included in the full JavaScript/WASM
 module; the lighter `terrio-js/core` module leaves it out. File, remote/downloaded and byte inputs

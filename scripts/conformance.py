@@ -450,6 +450,21 @@ def suite_cad(ctx):
         "checked with libopencad; generated DWG is cross-read via DXF. GDAL uses unmerged "
         "blocks and a UTF-8 override for the mislabeled Russian hatch fixture.",
     )
+    missing = missing_modules("osgeo", "numpy", "shapely")
+    if missing:
+        suite.skipped = "needs the Python modules " + ", ".join(missing)
+        return suite
+    required = [Path(ctx.data) / "las_vegas_roads.geojson"] + [
+        Path(ctx.data) / "cad" / name
+        for name in (
+            "3dface.dxf", "LWPOLYLINE-OCS.dxf", "circle.dxf", "closed_polyline_with_bulge.dxf",
+            "solid-vertex-ordering.dxf", "hatch_as_multipolygon.dxf", "bin_dxf_r2000.dxf",
+            "block-basepoint.dxf", "Line.dwg", "Point.dwg",
+        )
+    ]
+    if any(not path.is_file() for path in required):
+        suite.skipped = "needs CAD fixtures and Las Vegas roads (scripts/fetch_test_data.sh)"
+        return suite
     code, out, err = run([
         sys.executable, str(SCRIPTS / "compare_cad_with_gdal.py"), ctx.data,
         "--terrio", ctx.terrio, "--json",

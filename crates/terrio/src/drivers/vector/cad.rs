@@ -105,6 +105,10 @@ fn push_entity(
         if record.entity_handles.is_empty() && insert.attributes.is_empty() {
             return Ok(());
         }
+        // acadrust 0.6.7 keeps nested INSERTs as references. Its shear fallback
+        // can clone one child block, but does not recursively expand that child.
+        // The upstream_insert_expansion_keeps_nested_references test locks this
+        // assumption down for both uniform and non-uniform parent transforms.
         // Reserve cloning work before calling the eager upstream expander.
         // Stretched bulged polylines can produce one entity per segment, and
         // nested INSERT shear fallbacks can clone the referenced child block.
@@ -139,7 +143,7 @@ fn push_entity(
         return Ok(());
     }
     let mut geometry = geometry(entity)?;
-    crate::vector::map_coords(&mut geometry, &mut |c| vector(c).map(|_| ()))?;
+    crate::vector::map_coords(&mut geometry, &mut |c| vector(c).map(|_| ()).map_err(|error| Error::InvalidData(error.to_string())))?;
     let text = match entity {
         EntityType::Text(t) => FieldValue::Text(t.value.clone()),
         EntityType::MText(t) => FieldValue::Text(t.value.clone()),
@@ -692,5 +696,43 @@ mod tests {
         let insert = acadrust::entities::Insert::new("thick", Vector3::ZERO).with_scale(2.0, 1.0, 1.0);
         doc.add_entity(EntityType::Insert(insert)).unwrap();
         assert!(matches!(layer_from_document(doc, 64), Err(Error::Unsupported(_))));
+    }
+
+    #[test]
+    fn invalid_drawing_coordinates_are_invalid_data() {
+        let mut doc = CadDocument::new();
+        doc.add_entity(EntityType::Point(Point::from_coords(f64::NAN, 0.0, 0.0))).unwrap();
+        assert!(matches!(layer_from_document(doc, 8), Err(Error::InvalidData(_))));
+    }
+
+    #[test]
+    fn upstream_insert_expansion_keeps_nested_references() {
+        for stretch in [false, true] {
+            let mut doc = CadDocument::new();
+            add_block(&mut doc, "leaf", vec![EntityType::Point(Point::at(Vector3::ZERO))]);
+            let mut child = "leaf".to_string();
+            for level in 0..8 {
+                let name = format!("nested{level}");
+                let members =
+                    (0..2).map(|_| EntityType::Insert(acadrust::entities::Insert::new(&child, Vector3::ZERO).with_rotation(0.4))).collect();
+                add_block(&mut doc, &name, members);
+                child = name;
+            }
+            let mut insert = acadrust::entities::Insert::new(child, Vector3::ZERO);
+            if stretch {
+                insert = insert.with_scale(2.0, 1.0, 1.0);
+            }
+            let parts = doc.explode_entity(&EntityType::Insert(insert));
+            assert_eq!(parts.len(), 2, "only the immediate block members should be expanded");
+            for part in &parts {
+                let EntityType::Insert(nested) = part else { panic!("nested INSERT must remain a reference") };
+                let members: Vec<_> = doc.entities_in_block(&nested.block_name).collect();
+                assert_eq!(members.len(), 2);
+                assert!(
+                    members.iter().all(|member| matches!(member, EntityType::Insert(_))),
+                    "shear fallbacks must not recursively expand the referenced descendants"
+                );
+            }
+        }
     }
 }
