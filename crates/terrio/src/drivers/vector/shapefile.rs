@@ -367,7 +367,9 @@ pub fn write(layer: &Layer, path: &str) -> Result<()> {
 /// `stem` must be a single nonempty filename stem. Point/MultiPoint, line and
 /// polygon (including multipart) geometries support XY and Z; M is refused.
 /// Fields support text, integer, finite real, boolean, date and null values. DBF
-/// names are laundered to ten bytes; reals use width 24 and 15 decimal places.
+/// names are laundered to ten bytes; reals use width 24 and 15 decimal places,
+/// rounding to that precision (tiny magnitudes can become zero). Reals that do not
+/// fit that fixed layout are refused; convert them to text explicitly.
 /// Text over 254 UTF-8 bytes, empty/trailing-space/NUL text, integers requiring
 /// over 18 decimal columns, and non-scalar/blob/datetime fields are refused rather
 /// than silently losing data. Convert such fields explicitly before writing.
@@ -406,7 +408,12 @@ pub fn to_zip_bytes(layer: &Layer, stem: &str) -> Result<Vec<u8>> {
                     true
                 }
                 (FieldType::Integer, FieldValue::Integer(_)) | (FieldType::Boolean, FieldValue::Boolean(_)) => true,
-                (FieldType::Float, FieldValue::Float(x)) => x.is_finite(),
+                (FieldType::Float, FieldValue::Float(x)) => {
+                    if x.is_finite() && format!("{x:.15}").len() > 24 {
+                        return Err(refuse("real exceeds the DBF width of 24 columns at 15 decimal places; convert to text"));
+                    }
+                    x.is_finite()
+                }
                 (FieldType::Date, FieldValue::Date(text)) => super::datetime::parse_date(text).is_some(),
                 _ => false,
             };

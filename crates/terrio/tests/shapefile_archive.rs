@@ -135,3 +135,20 @@ fn z_only_records_omit_optional_measure_blocks() {
         assert_eq!(length, expected_length);
     }
 }
+
+#[test]
+fn real_fields_reject_overflow_and_document_fixed_decimal_rounding() {
+    let mut input = source(r#"{"type":"Point","coordinates":[1,2]}"#);
+    let field = input.layers[0].schema.fields().iter().position(|f| f.name == "real").unwrap();
+    for x in [1e300, -1e300, 1e8, -1e7, f64::MAX] {
+        input.layers[0].features[0].attributes[field] = FieldValue::Float(x);
+        let err = write_vector_bytes(&input.layers, "p.shp.zip", &Default::default()).unwrap_err();
+        assert!(err.to_string().contains("24 columns at 15 decimal places"), "{err}");
+    }
+    for (x, expected) in [(12345678.5, 12345678.5), (-1234567.5, -1234567.5), (1e-300, 0.0), (-1e-300, -0.0)] {
+        input.layers[0].features[0].attributes[field] = FieldValue::Float(x);
+        let bytes = write_vector_bytes(&input.layers, "p.shp.zip", &Default::default()).unwrap();
+        let back = open_vector_bytes(bytes, "p.zip", &Default::default()).unwrap();
+        assert_eq!(back.layers[0].features[0].attributes[field], FieldValue::Float(expected));
+    }
+}
