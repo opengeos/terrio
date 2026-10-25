@@ -173,7 +173,9 @@ nodata override and optional Z coordinates), returning a line layer with IDs and
 `ops::zonal::zonal_stats` accepts a polygon layer, `ZonalInput` raster bands and `ZonalOptions`
 (statistics, pixel inclusion, optional `dst_srs` and `decimal_places`); the result retains the
 source features and adds statistic fields. Output reprojection occurs after analysis, and
-rounding (0–15 decimal places, ties away from zero) leaves source attributes and counts intact. It reuses a cropped membership mask across bands of the same raster.
+rounding (0–15 decimal places, ties away from zero after binary64 scaling) leaves source
+attributes and counts intact. Zonal statistics reuse a cropped membership mask across
+bands of the same raster.
 `ops::sql::query` runs the [documented OGR SQL subset](sql.md), including computed columns,
 DISTINCT, summaries and attribute joins, with strict input-layer lookup. These operations
 are also available in the core crate without extra features.

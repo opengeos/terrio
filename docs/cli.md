@@ -195,7 +195,9 @@ CRS by default. `--t-srs CRS` reprojects the output points after sampling; it re
 input CRS. Output reprojection failure is an error. `--decimal-places N` rounds newly sampled
 values to 0–15 decimal places, with halfway values rounded away from zero. Existing attributes
 are unchanged. Values remain numeric floats; output formats control trailing-zero display.
-Coordinates retain full precision. Nodata, non-finite pixels, out-of-bounds locations and
+Rounding uses binary64 scaling, so decimal values very close to a halfway boundary may
+fall on either side because of floating-point representation. Coordinates retain full precision.
+Nodata, non-finite pixels, out-of-bounds locations and
 null geometries yield null values.
 Points that cannot be projected into a raster's CRS yield null samples for that raster too;
 the CLI prints one warning per affected output field with the failure count. Errors constructing
@@ -260,7 +262,8 @@ pixel membership or the analytical grid. The input must declare a CRS, and outpu
 failure is an error. `--decimal-places N` rounds only newly calculated floating statistics to
 0–15 decimal places (halfway values away from zero); integer counts and original attributes
 are unchanged. This controls numeric values, not coordinate precision or trailing-zero display.
-For point inputs, use `sample`/`point-sample`, which accepts multiple rasters in one command.
+Rounding uses the same binary64 scaling as `sample`; decimal values near halfway boundaries
+are subject to floating-point representation. For point inputs, use `sample`/`point-sample`, which accepts multiple rasters in one command.
 
 Rasters may use different resolutions, CRSs, rotated grids or south-up grids. Boundaries are
 transformed for each raster; a boundary transformation failure is an error. Missing CRSs are

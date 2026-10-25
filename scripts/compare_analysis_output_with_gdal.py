@@ -9,15 +9,14 @@ must match exactly. Inputs are read-only; all outputs are temporary.
 from __future__ import annotations
 
 import argparse
-import math
 import tempfile
+from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
-
-from osgeo import ogr, osr
-from shapely import from_wkb, hausdorff_distance
 
 from compare_processing_with_gdal import compare_sample
 from compare_raster_analysis_with_gdal import compare_zonal, run, traditional
+from osgeo import ogr, osr
+from shapely import from_wkb, hausdorff_distance
 
 
 def check_output(terrio, command, source, baseline, rasters, work):
@@ -52,8 +51,10 @@ def check_output(terrio, command, source, baseline, rasters, work):
             assert got.GetFID() == expected.GetFID()
             for name, value in expected.items().items():
                 if name not in source_fields and isinstance(value, float):
-                    value = math.copysign(
-                        math.floor(abs(value) * 100 + 0.5) / 100, value
+                    # Match f64 scaling, but use Decimal's independent rounding engine.
+                    scaled = Decimal.from_float(value * 100)
+                    value = (
+                        float(scaled.to_integral_value(rounding=ROUND_HALF_UP)) / 100
                     )
                 assert got[name] == value, (command, target, name, got[name], value)
             geometry = expected.GetGeometryRef()
