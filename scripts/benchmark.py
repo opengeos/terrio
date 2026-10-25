@@ -25,6 +25,24 @@ TERRIO = os.environ.get(
 USGS = "https://prd-tnm.s3.amazonaws.com/StagedProducts/Elevation/1/TIFF/current/n40w106/USGS_1_n40w106.tif"
 
 
+@cache
+def gdal_kernel_version():
+    """Match Terrio's existing warp policy to the GDAL used by this benchmark."""
+    from osgeo import gdal
+
+    version = int(gdal.VersionInfo("VERSION_NUM"))
+    if 3120000 <= version < 3130000:
+        return "3.12"
+    if 3130000 <= version < 3140000:
+        return "3.13"
+    raise ValueError("benchmark warp comparisons support GDAL 3.12 and 3.13")
+
+
+def terrio_warp(binary):
+    """Use equal kernel semantics; exact output validation still decides equivalence."""
+    return [binary, "warp", "--kernel-version", gdal_kernel_version()]
+
+
 def warp(threads):
     """Return ``gdalwarp`` with its multithreading on.
 
@@ -112,13 +130,13 @@ def cases(d, out, threads):
         (
             "Raster operations",
             "Warp to NAD83 / UTM 13N, nearest: USGS 3DEP tile",
-            [t, "warp", p("usgs_dem.tif"), o("e.tif"), "--t-srs", "EPSG:26913"],
+            [*terrio_warp(t), p("usgs_dem.tif"), o("e.tif"), "--t-srs", "EPSG:26913"],
             [*warp(threads), "-t_srs", "EPSG:26913", p("usgs_dem.tif"), o("e.tif")],
         ),
         (
             "Raster operations",
             "Warp to NAD83 / UTM 13N, bilinear: USGS 3DEP tile",
-            [t, "warp", p("usgs_dem.tif"), o("f.tif"), "--t-srs", "EPSG:26913", "-r", "bilinear"],
+            [*terrio_warp(t), p("usgs_dem.tif"), o("f.tif"), "--t-srs", "EPSG:26913", "-r", "bilinear"],
             [*warp(threads), "-t_srs", "EPSG:26913", "-r", "bilinear", p("usgs_dem.tif"), o("f.tif")],
         ),
         (
@@ -131,7 +149,7 @@ def cases(d, out, threads):
             "Raster operations",
             "Mosaic 4 USGS 3DEP tiles → VRT",
             [t, "mosaic", *tiles, o("h.vrt")],
-            ["gdal", "raster", "mosaic", "-q", "--resolution", "average", "-f", "VRT", *tiles, o("h.vrt")],
+            ["gdal", "raster", "mosaic", "--config", "VRT_VIRTUAL_OVERVIEWS", "NO", "-q", "--resolution", "average", "-f", "VRT", *tiles, o("h.vrt")],
         ),
         (
             "Vector conversion",
@@ -216,7 +234,7 @@ def large_cases(d, out, threads):
         (
             r,
             "Warp the mosaic to NAD83 / UTM 13N, bilinear",
-            [t, "warp", "--t-srs", "EPSG:26913", "-r", "bilinear", dem, o("c.tif")],
+            [*terrio_warp(t), "--t-srs", "EPSG:26913", "-r", "bilinear", dem, o("c.tif")],
             [*warp(threads), "-t_srs", "EPSG:26913", "-r", "bilinear", dem, o("c.tif")],
         ),
         (r, "Mosaic 16 USGS 3DEP tiles → GeoTIFF", [t, "mosaic", *tiles, o("d.tif")], mosaic(tiles, o("d.tif"))),

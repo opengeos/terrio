@@ -232,6 +232,8 @@ impl LazyRaster {
         let mut header = self.header();
         if let Inner::Tiff(t) = &self.inner {
             header.raster.metadata = t.tags.metadata.clone();
+            header.band_metadata = t.tags.band_properties.clone();
+            header.gcps = t.tags.gcps.clone();
             header.raster.crs = t.tags.crs_info();
         }
         let overviews = self.overviews();
@@ -567,6 +569,8 @@ impl LazyRaster {
                 driver: ds.driver,
                 has_nodata: ds.has_nodata,
                 band_nodata: ds.band_nodata.clone(),
+                band_metadata: ds.band_metadata.clone(),
+                gcps: ds.gcps.clone(),
                 affine: ds.affine,
                 complex: ds.complex,
                 geolocation: ds.geolocation.clone(),
@@ -591,6 +595,10 @@ impl LazyRaster {
         let first_nodata = ds.band_nodata.first().copied().flatten();
         ds.has_nodata = first_nodata.is_some();
         ds.raster.nodata = first_nodata.unwrap_or(-9999.);
+        if let Inner::Tiff(t) = &self.inner {
+            ds.band_metadata = t.tags.band_properties.clone();
+            ds.gcps = t.tags.gcps.clone();
+        }
         ds.set_geo_transform(self.geo_transform());
         ds
     }
@@ -649,6 +657,8 @@ impl LazyRaster {
         let mut header = self.header();
         header.raster.crs = t.tags.crs_info();
         header.raster.metadata = t.tags.metadata.clone();
+        header.band_metadata = t.tags.band_properties.clone();
+        header.gcps = t.tags.gcps.clone();
         let rows = crate::ops::strips::strip_rows(width, bands, value_size, block);
         let mut out = crate::ops::strips::StripWriter::create(&header, path, options)?;
         let read = WindowOptions::default();
@@ -709,6 +719,18 @@ impl LazyRaster {
         let first_nodata = band_nodata.first().copied().flatten();
         ds.has_nodata = first_nodata.is_some();
         ds.raster.nodata = first_nodata.unwrap_or(-9999.);
+        let header = self.header();
+        ds.gcps = header
+            .gcps
+            .iter()
+            .cloned()
+            .map(|mut g| {
+                g.pixel = g.pixel * lw as f64 / header.raster.cols as f64 - window.x as f64;
+                g.line = g.line * lh as f64 / header.raster.rows as f64 - window.y as f64;
+                g
+            })
+            .collect();
+        ds.band_metadata = bands.iter().map(|&b| header.band_metadata.get(b - 1).cloned().unwrap_or_default()).collect();
         ds.band_nodata = band_nodata;
         ds.set_geo_transform([gt[0] + x * gt[1] + y * gt[2], gt[1], gt[2], gt[3] + x * gt[4] + y * gt[5], gt[4], gt[5]]);
         Ok(ds)
@@ -1186,12 +1208,14 @@ mod tests {
             line_step: 2.,
             pixel_center: true,
         });
+        dataset.band_metadata = vec![crate::BandMetadata { color_interp: Some("Gray".into()), ..Default::default() }];
         dataset.raster.metadata = vec![("example".into(), "value".into())];
         let lazy = LazyRaster::from(dataset.clone());
         let header = lazy.header();
         assert_eq!(header.raster.data.len(), 0);
         assert_eq!(header.geo_transform(), dataset.geo_transform());
         assert_eq!(header.geolocation, dataset.geolocation);
+        assert_eq!(header.band_metadata, dataset.band_metadata);
         assert_eq!(header.complex, dataset.complex);
         assert_eq!(header.raster.metadata, dataset.raster.metadata);
         assert_eq!(header.raster.cols, 4);

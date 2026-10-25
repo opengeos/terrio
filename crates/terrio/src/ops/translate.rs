@@ -242,6 +242,19 @@ pub fn translate(ds: &RasterDataset, o: &TranslateOptions) -> Result<RasterDatas
     let srs = o.assign_srs.clone().unwrap_or_else(|| ds.crs());
     let mut res = super::build_raster_data(grid, out, bands.len(), out_nodata.first().copied().flatten(), &srs)?;
     res.raster.metadata = ds.raster.metadata.iter().filter(|(k, _)| k == "AREA_OR_POINT").cloned().collect();
+    res.band_metadata = bands.iter().map(|&b| ds.band_metadata.get(b - 1).cloned().unwrap_or_default()).collect();
+    if o.assign_ullr.is_none() {
+        res.gcps = ds
+            .gcps
+            .iter()
+            .cloned()
+            .map(|mut g| {
+                g.pixel = (g.pixel - win.0) * ow as f64 / win.2;
+                g.line = (g.line - win.1) * oh as f64 / win.3;
+                g
+            })
+            .collect();
+    }
     res.band_nodata = out_nodata;
     res.driver = ds.driver;
     Ok(res)

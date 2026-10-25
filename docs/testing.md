@@ -227,3 +227,20 @@ source centres, GDAL's optimized stretched Lanczos recurrence can differ from
 Terrio's direct sinc evaluation. A 40×30 USGS case showed a maximum 2.54 m
 difference; the fractional-origin rotated cases above agree exactly. This is
 separate from the 3.13 scale change and is not claimed as pixel-identical parity.
+
+## Benchmark mismatch regressions
+
+The `benchmark-metadata` conformance suite compares real SRTM Zarr output, a
+four-tile USGS VRT and Natural Earth populated places in GeoPackage against GDAL.
+It also checks a real SRTM crop with 1,599 assigned GCPs through COG conversion:
+
+```sh
+python scripts/conformance.py ../terrio-data --only benchmark-metadata --strict
+```
+
+It requires exact GCP coordinates and CRS, no invented affine, and exact colors,
+field schemas, pixels, masks, attributes and normalized
+geometries. The VRT reference explicitly disables GDAL 3.13's synthetic virtual
+overviews to match Terrio's supported base-resolution output. The separate
+[benchmark output investigation](benchmark-parity.md) records full numerical
+errors and intentional differences; benchmark equivalence checks remain exact.

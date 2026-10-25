@@ -298,6 +298,15 @@ impl VirtualRaster {
         )?;
         header.driver = crate::formats::RasterDriver::VRT;
         header.band_nodata = self.layout.bands.iter().map(|b| b.nodata).collect();
+        header.band_metadata = self
+            .layout
+            .bands
+            .iter()
+            .map(|b| crate::BandMetadata {
+                color_interp: Some(b.color_interp.clone().unwrap_or_else(|| "Undefined".into())),
+                ..Default::default()
+            })
+            .collect();
         if let Some(metadata) = self.root.child("Metadata") {
             header.raster.metadata =
                 metadata.children.iter().filter_map(|e| e.attr("key").map(|k| (k.to_string(), e.text.clone()))).collect();

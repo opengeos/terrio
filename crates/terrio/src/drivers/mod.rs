@@ -261,7 +261,7 @@ pub(crate) fn write(
         #[cfg(feature = "jp2")]
         RasterDriver::JP2 => jp2::write(r, nodata, p),
         #[cfg(feature = "zarr")]
-        RasterDriver::Zarr => zarr::write_with(r, nodata, p, compression, &options.creation_options),
+        RasterDriver::Zarr => zarr::write_with(r, nodata, p, compression, &options.creation_options, &options.band_metadata),
         #[cfg(feature = "netcdf-hdf5")]
         RasterDriver::NetCDF => {
             let o = netcdf_write::Options {

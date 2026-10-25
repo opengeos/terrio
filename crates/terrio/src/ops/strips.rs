@@ -73,6 +73,12 @@ enum Inner {
 impl StripWriter {
     /// Prepares to write a raster described by `header` (its data is not read) to `path`.
     pub fn create(header: &RasterDataset, path: &str, options: &RasterWriteOptions) -> Result<Self> {
+        let inherited = RasterWriteOptions {
+            gcps: if options.gcps.is_empty() && options.geo_transform.is_none() { header.gcps.clone() } else { options.gcps.clone() },
+            band_metadata: if options.band_metadata.is_empty() { header.band_metadata.clone() } else { options.band_metadata.clone() },
+            ..options.clone()
+        };
+        let options = &inherited;
         let r = &header.raster;
         let (rows, bands, width) = (r.rows, r.bands, r.cols);
         if let Some(tiff) = Tiff::create(header, path, options)? {

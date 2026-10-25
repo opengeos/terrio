@@ -2839,6 +2839,67 @@ mod tests {
     }
 
     #[test]
+    fn gcp_only_copies_preserve_all_points_without_an_affine() {
+        let r = layouts_raster(1, DataType::U8);
+        let gcps = (0..1599)
+            .map(|i| crate::Gcp {
+                pixel: (i % 41) as f64 + 0.5,
+                line: (i / 41) as f64 + 0.5,
+                x: 500000.0 + (i % 41) as f64 * 10.0,
+                y: 4000000.0 - (i / 41) as f64 * 10.0,
+                ..Default::default()
+            })
+            .collect();
+        let bytes = encode(&r, &TiffOptions { gcps, ..Default::default() }).unwrap();
+        let mut lazy = crate::LazyRaster::from_tiff_bytes(bytes).unwrap().unwrap();
+        let header = lazy.header();
+        assert_eq!(header.gcps.len(), 1599);
+        assert!(header.raster.data.is_empty());
+        let cropped = lazy.read_window(crate::Window::new(1, 2, 2, 2), &Default::default()).unwrap();
+        assert_eq!((cropped.gcps[0].pixel, cropped.gcps[0].line), (-0.5, -1.5));
+        let whole = lazy.read().unwrap();
+        assert_eq!(whole.gcps, header.gcps);
+        let dir = tempfile::tempdir().unwrap();
+        let options = crate::RasterWriteOptions { driver: Some(crate::formats::RasterDriver::Cog), ..Default::default() };
+        for (name, streamed) in [("streamed.tif", true), ("whole.tif", false)] {
+            let path = dir.path().join(name);
+            if streamed {
+                lazy.write(path.to_str().unwrap(), &options).unwrap();
+            } else {
+                crate::write_raster_dataset(&whole, path.to_str().unwrap(), &options).unwrap();
+            }
+            let tags = crate::geotiff::read_geo_tags(&path).unwrap();
+            assert_eq!(tags.gcps, header.gcps);
+            assert!(tags.geo_transform.is_none());
+        }
+        let assigned = dir.path().join("assigned.tif");
+        let gt = [10., 2., 0., 30., 0., -2.];
+        crate::write_raster_dataset(&whole, assigned.to_str().unwrap(), &crate::RasterWriteOptions { geo_transform: Some(gt), ..options })
+            .unwrap();
+        let tags = crate::geotiff::read_geo_tags(&assigned).unwrap();
+        assert!(tags.gcps.is_empty());
+        assert_eq!(tags.geo_transform, Some(gt));
+    }
+
+    #[test]
+    fn color_interpretations_survive_lazy_reads_and_band_selection() {
+        let r = layouts_raster(4, DataType::U8);
+        let opts = TiffOptions {
+            photometric: Some(2),
+            alpha: true,
+            band_metadata: vec![crate::BandMetadata { color_interp: Some("Undefined".into()), ..Default::default() }],
+            ..Default::default()
+        };
+        let mut lazy = crate::LazyRaster::from_tiff_bytes(encode(&r, &opts).unwrap()).unwrap().unwrap();
+        let header = lazy.header();
+        assert!(header.raster.data.is_empty());
+        assert_eq!((1..=4).map(|b| header.band_color_interp(b)).collect::<Vec<_>>(), ["Undefined", "Green", "Blue", "Alpha"]);
+        let subset =
+            lazy.read_window(crate::Window::new(1, 1, 2, 2), &crate::WindowOptions { bands: vec![4, 2, 1], ..Default::default() }).unwrap();
+        assert_eq!((1..=3).map(|b| subset.band_color_interp(b)).collect::<Vec<_>>(), ["Alpha", "Green", "Undefined"]);
+    }
+
+    #[test]
     fn writes_band_metadata_color_tables_and_overviews() {
         let r = layouts_raster(1, DataType::U8);
         let options = crate::RasterWriteOptions {

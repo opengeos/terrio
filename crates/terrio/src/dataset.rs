@@ -21,6 +21,10 @@ pub struct RasterDataset {
     /// A nonempty vector overrides has_nodata/raster.nodata, including explicit None.
     /// Clear or update this vector when changing the shared nodata fields.
     pub band_nodata: Vec<Option<f64>>,
+    /// Descriptive band properties, in band order; empty entries use driver defaults.
+    pub band_metadata: Vec<BandMetadata>,
+    /// Ground control points in the raster CRS, retained instead of inventing an affine grid.
+    pub gcps: Vec<Gcp>,
     /// The geotransform of a rotated or south-up raster, which the raster's origin and cell sizes
     /// cannot hold (they then hold the extent of its footprint); `None` for north-up rasters.
     /// Set it with [`RasterDataset::set_geo_transform`].
@@ -144,7 +148,17 @@ impl RasterDataset {
 
     /// Wraps a raster read by a driver: real-valued bands, without geolocation arrays.
     pub fn with_driver(raster: Raster, driver: RasterDriver, has_nodata: bool) -> Self {
-        Self { raster, driver, has_nodata, band_nodata: Vec::new(), affine: None, complex: false, geolocation: None }
+        Self {
+            raster,
+            driver,
+            has_nodata,
+            band_nodata: Vec::new(),
+            band_metadata: Vec::new(),
+            gcps: Vec::new(),
+            affine: None,
+            complex: false,
+            geolocation: None,
+        }
     }
 
     /// The number of bands as GDAL counts them: complex bands count once.
@@ -177,6 +191,16 @@ impl RasterDataset {
             return None;
         }
         self.band_nodata.get(band - 1).copied().unwrap_or_else(|| self.nodata())
+    }
+
+    /// The color interpretation of a one-based band, as GDAL names it.
+    pub fn band_color_interp(&self, band: usize) -> &str {
+        if band == 0 || band > self.band_count() {
+            return "Undefined";
+        }
+        self.band_metadata.get(band - 1).and_then(|b| b.color_interp.as_deref()).unwrap_or({
+            if self.raster.bands == 1 && matches!(self.driver, RasterDriver::GTiff | RasterDriver::Cog) { "Gray" } else { "Undefined" }
+        })
     }
 
     /// The first band's nodata value. Explicit band_nodata takes precedence
@@ -686,7 +710,12 @@ pub fn write_raster(raster: &Raster, path: &str, options: &RasterWriteOptions) -
 /// # Ok::<(), terrio::Error>(())
 /// ```
 pub fn write_raster_dataset(ds: &RasterDataset, path: &str, options: &RasterWriteOptions) -> Result<()> {
-    let options = RasterWriteOptions { geo_transform: options.geo_transform.or(ds.affine), ..options.clone() };
+    let options = RasterWriteOptions {
+        geo_transform: options.geo_transform.or(ds.affine),
+        gcps: if options.gcps.is_empty() && options.geo_transform.is_none() { ds.gcps.clone() } else { options.gcps.clone() },
+        band_metadata: if options.band_metadata.is_empty() { ds.band_metadata.clone() } else { options.band_metadata.clone() },
+        ..options.clone()
+    };
     let driver = options.driver.or_else(|| RasterDriver::for_extension(path));
     let pam = needs_nodata_pam(ds) && matches!(driver, Some(RasterDriver::GTiff | RasterDriver::Cog));
     let tag = if matches!(driver, Some(RasterDriver::GTiff | RasterDriver::Cog)) { tiff_nodata(ds) } else { ds.nodata() };

@@ -1,0 +1,1291 @@
+{
+  "baseline_commit": "9ed48c6",
+  "gdal_version": "3.13.3",
+  "threads": {
+    "RAYON_NUM_THREADS": 2,
+    "GDAL_NUM_THREADS": 2
+  },
+  "measurements": {
+    "cog": {
+      "exact_gate": [
+        "band 1, level 1, rows 0:128: 15240 differing pixels (exact check)"
+      ],
+      "crs_equal": true,
+      "geotransforms": [
+        [
+          -106.00166666708242,
+          0.00027777777803598015,
+          0.0,
+          40.00166666698402,
+          0.0,
+          -0.0002777777777870148
+        ],
+        [
+          -106.00166666708242,
+          0.00027777777803598015,
+          0.0,
+          40.00166666698402,
+          0.0,
+          -0.0002777777777870148
+        ]
+      ],
+      "gcp_counts": [
+        0,
+        0
+      ],
+      "bands": [
+        {
+          "band": 1,
+          "metadata": [
+            {
+              "size": [
+                3612,
+                3612
+              ],
+              "type": "Float32",
+              "nodata": -999999.0,
+              "color": "Gray",
+              "scale": null,
+              "offset": null,
+              "unit": ""
+            },
+            {
+              "size": [
+                3612,
+                3612
+              ],
+              "type": "Float32",
+              "nodata": -999999.0,
+              "color": "Gray",
+              "scale": null,
+              "offset": null,
+              "unit": ""
+            }
+          ],
+          "overview_counts": [
+            3,
+            3
+          ],
+          "levels": [
+            {
+              "level": -1,
+              "sizes": [
+                [
+                  3612,
+                  3612
+                ],
+                [
+                  3612,
+                  3612
+                ]
+              ],
+              "pixels": 13046544,
+              "differing_pixels": 0,
+              "common_valid": 13046544,
+              "differing_valid": 0,
+              "mask_differences": 0,
+              "nonfinite_differences": 0,
+              "max_absolute": 0.0,
+              "max_relative": 0.0,
+              "max_ulp": 0
+            },
+            {
+              "level": 0,
+              "sizes": [
+                [
+                  1806,
+                  1806
+                ],
+                [
+                  1806,
+                  1806
+                ]
+              ],
+              "pixels": 3261636,
+              "differing_pixels": 0,
+              "common_valid": 3261636,
+              "differing_valid": 0,
+              "mask_differences": 0,
+              "nonfinite_differences": 0,
+              "max_absolute": 0.0,
+              "max_relative": 0.0,
+              "max_ulp": 0
+            },
+            {
+              "level": 1,
+              "sizes": [
+                [
+                  903,
+                  903
+                ],
+                [
+                  903,
+                  903
+                ]
+              ],
+              "pixels": 815409,
+              "differing_pixels": 107679,
+              "common_valid": 815409,
+              "differing_valid": 107679,
+              "mask_differences": 0,
+              "nonfinite_differences": 0,
+              "max_absolute": 0.00048828125,
+              "max_relative": 1.1920786848225019e-07,
+              "max_ulp": 1
+            },
+            {
+              "level": 2,
+              "sizes": [
+                [
+                  452,
+                  452
+                ],
+                [
+                  451,
+                  451
+                ]
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "zarr": {
+      "exact_gate": [
+        "band 1: color interpretation differs"
+      ],
+      "crs_equal": true,
+      "geotransforms": [
+        [
+          -120.75592734926073,
+          0.0008084837557075667,
+          0.0,
+          38.6269234341147,
+          0.0,
+          -0.0008084837557075707
+        ],
+        [
+          -120.75592734926073,
+          0.0008084837557075667,
+          0.0,
+          38.6269234341147,
+          0.0,
+          -0.0008084837557075707
+        ]
+      ],
+      "gcp_counts": [
+        0,
+        0
+      ],
+      "bands": [
+        {
+          "band": 1,
+          "metadata": [
+            {
+              "size": [
+                4269,
+                2465
+              ],
+              "type": "Int16",
+              "nodata": null,
+              "color": "Undefined",
+              "scale": null,
+              "offset": null,
+              "unit": ""
+            },
+            {
+              "size": [
+                4269,
+                2465
+              ],
+              "type": "Int16",
+              "nodata": null,
+              "color": "Gray",
+              "scale": null,
+              "offset": null,
+              "unit": ""
+            }
+          ],
+          "overview_counts": [
+            0,
+            0
+          ],
+          "levels": [
+            {
+              "level": -1,
+              "sizes": [
+                [
+                  4269,
+                  2465
+                ],
+                [
+                  4269,
+                  2465
+                ]
+              ],
+              "pixels": 10523085,
+              "differing_pixels": 0,
+              "common_valid": 10523085,
+              "differing_valid": 0,
+              "mask_differences": 0,
+              "nonfinite_differences": 0,
+              "max_absolute": 0.0,
+              "max_relative": 0.0,
+              "max_ulp": null
+            }
+          ]
+        }
+      ]
+    },
+    "warp": {
+      "exact_gate": [
+        "band 1, level -1, rows 0:128: 358833 differing pixels (exact check)"
+      ],
+      "crs_equal": true,
+      "geotransforms": [
+        [
+          413260.9626364063,
+          27.57538910850518,
+          0.0,
+          4428422.6508377,
+          0.0,
+          -27.57538910850518
+        ],
+        [
+          413260.9626364052,
+          27.57538910850518,
+          0.0,
+          4428422.6508377,
+          0.0,
+          -27.57538910850518
+        ]
+      ],
+      "gcp_counts": [
+        0,
+        0
+      ],
+      "bands": [
+        {
+          "band": 1,
+          "metadata": [
+            {
+              "size": [
+                3151,
+                4055
+              ],
+              "type": "Float32",
+              "nodata": -999999.0,
+              "color": "Gray",
+              "scale": null,
+              "offset": null,
+              "unit": ""
+            },
+            {
+              "size": [
+                3151,
+                4055
+              ],
+              "type": "Float32",
+              "nodata": -999999.0,
+              "color": "Gray",
+              "scale": null,
+              "offset": null,
+              "unit": ""
+            }
+          ],
+          "overview_counts": [
+            0,
+            0
+          ],
+          "levels": [
+            {
+              "level": -1,
+              "sizes": [
+                [
+                  3151,
+                  4055
+                ],
+                [
+                  3151,
+                  4055
+                ]
+              ],
+              "pixels": 12777305,
+              "differing_pixels": 12551806,
+              "common_valid": 12634273,
+              "differing_valid": 12551806,
+              "mask_differences": 0,
+              "nonfinite_differences": 0,
+              "max_absolute": 7.502197265625,
+              "max_relative": 0.002875295200626839,
+              "max_ulp": 41747
+            }
+          ]
+        }
+      ]
+    },
+    "vrt": {
+      "exact_gate": [
+        "band 1: color interpretation differs"
+      ],
+      "crs_equal": true,
+      "geotransforms": [
+        [
+          -107.00166666688256,
+          0.00027777777791148956,
+          0.0,
+          41.00166666678416,
+          0.0,
+          -0.0002777777777870069
+        ],
+        [
+          -107.00166666688256,
+          0.00027777777791148956,
+          0.0,
+          41.00166666678416,
+          0.0,
+          -0.0002777777777870069
+        ]
+      ],
+      "gcp_counts": [
+        0,
+        0
+      ],
+      "bands": [
+        {
+          "band": 1,
+          "metadata": [
+            {
+              "size": [
+                7212,
+                7212
+              ],
+              "type": "Float32",
+              "nodata": -999999.0,
+              "color": "Undefined",
+              "scale": 1.0,
+              "offset": 0.0,
+              "unit": ""
+            },
+            {
+              "size": [
+                7212,
+                7212
+              ],
+              "type": "Float32",
+              "nodata": -999999.0,
+              "color": "Gray",
+              "scale": 1.0,
+              "offset": 0.0,
+              "unit": ""
+            }
+          ],
+          "overview_counts": [
+            0,
+            3
+          ],
+          "levels": [
+            {
+              "level": -1,
+              "sizes": [
+                [
+                  7212,
+                  7212
+                ],
+                [
+                  7212,
+                  7212
+                ]
+              ],
+              "pixels": 52012944,
+              "differing_pixels": 0,
+              "common_valid": 52012944,
+              "differing_valid": 0,
+              "mask_differences": 0,
+              "nonfinite_differences": 0,
+              "max_absolute": 0.0,
+              "max_relative": 0.0,
+              "max_ulp": 0
+            }
+          ]
+        }
+      ]
+    },
+    "places": {
+      "exact_gate": [
+        "layer 0: field names/types differ"
+      ],
+      "layers": [
+        {
+          "schemas": [
+            [
+              [
+                "scalerank",
+                "Integer",
+                0
+              ],
+              [
+                "natscale",
+                "Integer",
+                0
+              ],
+              [
+                "labelrank",
+                "Integer",
+                0
+              ],
+              [
+                "featurecla",
+                "String",
+                0
+              ],
+              [
+                "name",
+                "String",
+                0
+              ],
+              [
+                "namepar",
+                "String",
+                0
+              ],
+              [
+                "namealt",
+                "String",
+                0
+              ],
+              [
+                "nameascii",
+                "String",
+                0
+              ],
+              [
+                "adm0cap",
+                "Integer",
+                0
+              ],
+              [
+                "capalt",
+                "Integer",
+                0
+              ],
+              [
+                "capin",
+                "String",
+                0
+              ],
+              [
+                "worldcity",
+                "Integer",
+                0
+              ],
+              [
+                "megacity",
+                "Integer",
+                0
+              ],
+              [
+                "sov0name",
+                "String",
+                0
+              ],
+              [
+                "sov_a3",
+                "String",
+                0
+              ],
+              [
+                "adm0name",
+                "String",
+                0
+              ],
+              [
+                "adm0_a3",
+                "String",
+                0
+              ],
+              [
+                "adm1name",
+                "String",
+                0
+              ],
+              [
+                "iso_a2",
+                "String",
+                0
+              ],
+              [
+                "note",
+                "String",
+                0
+              ],
+              [
+                "latitude",
+                "Real",
+                0
+              ],
+              [
+                "longitude",
+                "Real",
+                0
+              ],
+              [
+                "pop_max",
+                "Integer",
+                0
+              ],
+              [
+                "pop_min",
+                "Integer",
+                0
+              ],
+              [
+                "pop_other",
+                "Integer",
+                0
+              ],
+              [
+                "rank_max",
+                "Integer",
+                0
+              ],
+              [
+                "rank_min",
+                "Integer",
+                0
+              ],
+              [
+                "meganame",
+                "String",
+                0
+              ],
+              [
+                "ls_name",
+                "String",
+                0
+              ],
+              [
+                "min_zoom",
+                "Real",
+                0
+              ],
+              [
+                "ne_id",
+                "Integer",
+                0
+              ]
+            ],
+            [
+              [
+                "scalerank",
+                "Integer",
+                0
+              ],
+              [
+                "natscale",
+                "Integer",
+                0
+              ],
+              [
+                "labelrank",
+                "Integer",
+                0
+              ],
+              [
+                "featurecla",
+                "String",
+                0
+              ],
+              [
+                "name",
+                "String",
+                0
+              ],
+              [
+                "namepar",
+                "String",
+                0
+              ],
+              [
+                "namealt",
+                "String",
+                0
+              ],
+              [
+                "nameascii",
+                "String",
+                0
+              ],
+              [
+                "adm0cap",
+                "Integer",
+                0
+              ],
+              [
+                "capalt",
+                "Integer",
+                0
+              ],
+              [
+                "capin",
+                "String",
+                0
+              ],
+              [
+                "worldcity",
+                "Integer",
+                0
+              ],
+              [
+                "megacity",
+                "Integer",
+                0
+              ],
+              [
+                "sov0name",
+                "String",
+                0
+              ],
+              [
+                "sov_a3",
+                "String",
+                0
+              ],
+              [
+                "adm0name",
+                "String",
+                0
+              ],
+              [
+                "adm0_a3",
+                "String",
+                0
+              ],
+              [
+                "adm1name",
+                "String",
+                0
+              ],
+              [
+                "iso_a2",
+                "String",
+                0
+              ],
+              [
+                "note",
+                "String",
+                0
+              ],
+              [
+                "latitude",
+                "Real",
+                0
+              ],
+              [
+                "longitude",
+                "Real",
+                0
+              ],
+              [
+                "pop_max",
+                "Integer64",
+                0
+              ],
+              [
+                "pop_min",
+                "Integer64",
+                0
+              ],
+              [
+                "pop_other",
+                "Integer64",
+                0
+              ],
+              [
+                "rank_max",
+                "Integer",
+                0
+              ],
+              [
+                "rank_min",
+                "Integer",
+                0
+              ],
+              [
+                "meganame",
+                "String",
+                0
+              ],
+              [
+                "ls_name",
+                "String",
+                0
+              ],
+              [
+                "min_zoom",
+                "Real",
+                0
+              ],
+              [
+                "ne_id",
+                "Integer64",
+                0
+              ]
+            ]
+          ],
+          "counts": [
+            7342,
+            7342
+          ]
+        }
+      ]
+    },
+    "counties": {
+      "exact_gate": [
+        "layer 0: feature attributes/normalized geometries differ (exact check)"
+      ],
+      "layers": [
+        {
+          "schemas": [
+            [
+              [
+                "STATE_FIPS",
+                "String",
+                0
+              ],
+              [
+                "COUNTY_FIP",
+                "String",
+                0
+              ],
+              [
+                "FIPS",
+                "String",
+                0
+              ],
+              [
+                "STATE",
+                "String",
+                0
+              ],
+              [
+                "NAME",
+                "String",
+                0
+              ],
+              [
+                "LSAD",
+                "String",
+                0
+              ]
+            ],
+            [
+              [
+                "STATE_FIPS",
+                "String",
+                0
+              ],
+              [
+                "COUNTY_FIP",
+                "String",
+                0
+              ],
+              [
+                "FIPS",
+                "String",
+                0
+              ],
+              [
+                "STATE",
+                "String",
+                0
+              ],
+              [
+                "NAME",
+                "String",
+                0
+              ],
+              [
+                "LSAD",
+                "String",
+                0
+              ]
+            ]
+          ],
+          "counts": [
+            95,
+            95
+          ],
+          "unmatched_keys": [
+            [],
+            []
+          ],
+          "attribute_differences": {},
+          "differing_geometries": 95,
+          "structure_differences": 0,
+          "max_coordinate_absolute": 7.2177499532699585e-09
+        }
+      ]
+    },
+    "slope": {
+      "exact_gate": [
+        "band 1, level -1, rows 0:128: 838475 differing pixels (exact check)"
+      ],
+      "crs_equal": true,
+      "geotransforms": [
+        [
+          -107.00166666688256,
+          0.0002777777778492436,
+          0.0,
+          42.0016666665843,
+          0.0,
+          -0.0002777777778492483
+        ],
+        [
+          -107.00166666688256,
+          0.0002777777778492436,
+          0.0,
+          42.0016666665843,
+          0.0,
+          -0.0002777777778492483
+        ]
+      ],
+      "gcp_counts": [
+        0,
+        0
+      ],
+      "bands": [
+        {
+          "band": 1,
+          "metadata": [
+            {
+              "size": [
+                14412,
+                14412
+              ],
+              "type": "Float32",
+              "nodata": -9999.0,
+              "color": "Gray",
+              "scale": null,
+              "offset": null,
+              "unit": ""
+            },
+            {
+              "size": [
+                14412,
+                14412
+              ],
+              "type": "Float32",
+              "nodata": -9999.0,
+              "color": "Gray",
+              "scale": null,
+              "offset": null,
+              "unit": ""
+            }
+          ],
+          "overview_counts": [
+            0,
+            0
+          ],
+          "levels": [
+            {
+              "level": -1,
+              "sizes": [
+                [
+                  14412,
+                  14412
+                ],
+                [
+                  14412,
+                  14412
+                ]
+              ],
+              "pixels": 207705744,
+              "differing_pixels": 95360773,
+              "common_valid": 207648100,
+              "differing_valid": 95360773,
+              "mask_differences": 0,
+              "nonfinite_differences": 0,
+              "max_absolute": 7.62939453125e-06,
+              "max_relative": 2.845647795120947e-07,
+              "max_ulp": 4
+            }
+          ]
+        }
+      ]
+    },
+    "hillshade": {
+      "exact_gate": [
+        "band 1, level -1, rows 0:128: 5 differing pixels (exact check)"
+      ],
+      "crs_equal": true,
+      "geotransforms": [
+        [
+          -107.00166666688256,
+          0.0002777777778492436,
+          0.0,
+          42.0016666665843,
+          0.0,
+          -0.0002777777778492483
+        ],
+        [
+          -107.00166666688256,
+          0.0002777777778492436,
+          0.0,
+          42.0016666665843,
+          0.0,
+          -0.0002777777778492483
+        ]
+      ],
+      "gcp_counts": [
+        0,
+        0
+      ],
+      "bands": [
+        {
+          "band": 1,
+          "metadata": [
+            {
+              "size": [
+                14412,
+                14412
+              ],
+              "type": "Byte",
+              "nodata": 0.0,
+              "color": "Gray",
+              "scale": null,
+              "offset": null,
+              "unit": ""
+            },
+            {
+              "size": [
+                14412,
+                14412
+              ],
+              "type": "Byte",
+              "nodata": 0.0,
+              "color": "Gray",
+              "scale": null,
+              "offset": null,
+              "unit": ""
+            }
+          ],
+          "overview_counts": [
+            0,
+            0
+          ],
+          "levels": [
+            {
+              "level": -1,
+              "sizes": [
+                [
+                  14412,
+                  14412
+                ],
+                [
+                  14412,
+                  14412
+                ]
+              ],
+              "pixels": 207705744,
+              "differing_pixels": 1675,
+              "common_valid": 207648100,
+              "differing_valid": 1675,
+              "mask_differences": 0,
+              "nonfinite_differences": 0,
+              "max_absolute": 1.0,
+              "max_relative": 0.02631578947368421,
+              "max_ulp": null
+            }
+          ]
+        }
+      ]
+    },
+    "warp313": {
+      "exact_gate": [
+        "band 1, level -1, rows 1024:1152: 1 differing pixels (exact check)"
+      ],
+      "crs_equal": true,
+      "geotransforms": [
+        [
+          413260.9626364063,
+          27.57538910850518,
+          0.0,
+          4428422.6508377,
+          0.0,
+          -27.57538910850518
+        ],
+        [
+          413260.9626364052,
+          27.57538910850518,
+          0.0,
+          4428422.6508377,
+          0.0,
+          -27.57538910850518
+        ]
+      ],
+      "gcp_counts": [
+        0,
+        0
+      ],
+      "bands": [
+        {
+          "band": 1,
+          "metadata": [
+            {
+              "size": [
+                3151,
+                4055
+              ],
+              "type": "Float32",
+              "nodata": -999999.0,
+              "color": "Gray",
+              "scale": null,
+              "offset": null,
+              "unit": ""
+            },
+            {
+              "size": [
+                3151,
+                4055
+              ],
+              "type": "Float32",
+              "nodata": -999999.0,
+              "color": "Gray",
+              "scale": null,
+              "offset": null,
+              "unit": ""
+            }
+          ],
+          "overview_counts": [
+            0,
+            0
+          ],
+          "levels": [
+            {
+              "level": -1,
+              "sizes": [
+                [
+                  3151,
+                  4055
+                ],
+                [
+                  3151,
+                  4055
+                ]
+              ],
+              "pixels": 12777305,
+              "differing_pixels": 6,
+              "common_valid": 12634273,
+              "differing_valid": 6,
+              "mask_differences": 0,
+              "nonfinite_differences": 0,
+              "max_absolute": 0.000244140625,
+              "max_relative": 1.1107265528956864e-07,
+              "max_ulp": 1
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "terrain_thread_1_vs_2_identical_files": {
+    "t-slope": true,
+    "g-slope": true,
+    "t-hillshade": true,
+    "g-hillshade": true
+  },
+  "terrain_512_square_clip": {
+    "source": "dem16.tif",
+    "window": [
+      0,
+      0,
+      512,
+      512
+    ],
+    "gdal_3.12.2": {
+      "slope_different": 0,
+      "hillshade_different": 0
+    },
+    "gdal_3.13.3": {
+      "slope_different": 108806,
+      "slope_max_absolute": 3.814697265625e-06,
+      "hillshade_different": 1,
+      "hillshade_max_absolute": 1
+    }
+  },
+  "reference_environment": {
+    "GDAL_PAM_ENABLED": "NO",
+    "PROJ_NETWORK": "OFF",
+    "TERRIO_NETWORK": "OFF",
+    "PROJ_DATA": "matching GDAL prefix/share/proj"
+  },
+  "commands": {
+    "cog": {
+      "terrio": [
+        "terrio",
+        "convert",
+        "DATA/usgs_dem.tif",
+        "OUT.tif",
+        "-f",
+        "COG",
+        "--compress",
+        "DEFLATE"
+      ],
+      "gdal": [
+        "gdal_translate",
+        "-q",
+        "-of",
+        "COG",
+        "-co",
+        "COMPRESS=DEFLATE",
+        "-co",
+        "OVERVIEWS=IGNORE_EXISTING",
+        "-co",
+        "RESAMPLING=AVERAGE",
+        "DATA/usgs_dem.tif",
+        "OUT.tif"
+      ]
+    },
+    "warp": {
+      "terrio": [
+        "terrio",
+        "warp",
+        "DATA/usgs_dem.tif",
+        "OUT.tif",
+        "--t-srs",
+        "EPSG:26913",
+        "-r",
+        "bilinear",
+        "--kernel-version",
+        "3.12"
+      ],
+      "gdal": [
+        "gdalwarp",
+        "-q",
+        "-multi",
+        "-wo",
+        "NUM_THREADS=2",
+        "-t_srs",
+        "EPSG:26913",
+        "-r",
+        "bilinear",
+        "DATA/usgs_dem.tif",
+        "OUT.tif"
+      ]
+    },
+    "warp313": {
+      "terrio": [
+        "terrio",
+        "warp",
+        "DATA/usgs_dem.tif",
+        "OUT.tif",
+        "--t-srs",
+        "EPSG:26913",
+        "-r",
+        "bilinear",
+        "--kernel-version",
+        "3.13"
+      ],
+      "gdal": "same as warp"
+    },
+    "counties": {
+      "terrio": [
+        "terrio",
+        "convert",
+        "DATA/UScounties.gpkg",
+        "OUT.gpkg",
+        "--where",
+        "STATE_FIPS = '47'",
+        "--t-srs",
+        "EPSG:5070"
+      ],
+      "gdal": [
+        "ogr2ogr",
+        "-where",
+        "STATE_FIPS = '47'",
+        "-t_srs",
+        "EPSG:5070",
+        "OUT.gpkg",
+        "DATA/UScounties.gpkg"
+      ]
+    },
+    "slope": {
+      "terrio": [
+        "terrio",
+        "dem",
+        "slope",
+        "LARGE_DATA/dem16.tif",
+        "OUT.tif"
+      ],
+      "gdal": [
+        "gdaldem",
+        "slope",
+        "-q",
+        "LARGE_DATA/dem16.tif",
+        "OUT.tif"
+      ]
+    },
+    "hillshade": {
+      "terrio": [
+        "terrio",
+        "dem",
+        "hillshade",
+        "LARGE_DATA/dem16.tif",
+        "OUT.tif"
+      ],
+      "gdal": [
+        "gdaldem",
+        "hillshade",
+        "-q",
+        "LARGE_DATA/dem16.tif",
+        "OUT.tif"
+      ]
+    }
+  },
+  "independent_gcp_reproduction": {
+    "fixture": "GDAL-generated 64x64 Byte TIFF, all pixels 7, EPSG:4326 GCP CRS, 41 columns x 39 rows of GCPs",
+    "input_gcps": 1599,
+    "before_output_gcps": 0,
+    "before_input_affine": null,
+    "before_output_affine": [
+      0,
+      1,
+      0,
+      64,
+      0,
+      -1
+    ],
+    "external_iceye_asset_verified": false,
+    "after_output_gcps": 1599,
+    "after_output_affine": null,
+    "after_crs_equal": true,
+    "after_pixels_equal": true,
+    "wasm_copy_verified": true,
+    "python_path_and_bytes_copies_verified": true
+  },
+  "validation": {
+    "workspace_tests": "passed",
+    "workspace_clippy": "passed with -D warnings",
+    "rust_library_tests": {
+      "passed": 476,
+      "ignored": 1
+    },
+    "exact_gdal_conformance": {
+      "identical": 4,
+      "within_tolerance": 0,
+      "different": 0
+    },
+    "python_api_tests": 14,
+    "benchmark_harness_and_diagnostic_tests": 31,
+    "javascript_wasm_tests": {
+      "passed": 98,
+      "skipped": 2
+    },
+    "builds": [
+      "release CLI",
+      "release Python binding",
+      "release Rust-optimized WebAssembly, wasm-opt postprocessing omitted"
+    ]
+  }
+}

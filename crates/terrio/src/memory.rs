@@ -460,7 +460,14 @@ pub(crate) mod codec {
     fn write_zarr(ds: &RasterDataset, options: &RasterWriteOptions, name: &str) -> Result<Vec<u8>> {
         let mount = crate::memfs::Mount::new(std::iter::empty());
         let dir = mount.path().join(format!("{name}.zarr"));
-        crate::drivers::zarr::write_with(&ds.raster, ds.nodata(), &dir, options.compression.as_deref(), &options.creation_options)?;
+        crate::drivers::zarr::write_with(
+            &ds.raster,
+            ds.nodata(),
+            &dir,
+            options.compression.as_deref(),
+            &options.creation_options,
+            if options.band_metadata.is_empty() { &ds.band_metadata } else { &options.band_metadata },
+        )?;
         let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
         let opts = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
         for (path, bytes) in mount.files() {
@@ -497,6 +504,12 @@ pub(crate) mod codec {
                          LERC_ZSTD, JXL, JPEG)"
                     ))
                 })?;
+                if options.band_metadata.is_empty() {
+                    opts.band_metadata = ds.band_metadata.clone();
+                }
+                if options.gcps.is_empty() && options.geo_transform.is_none() {
+                    opts.gcps = ds.gcps.clone();
+                }
                 // Complex bands as complex samples, as the file writer stores them.
                 opts.complex = ds.complex;
                 encode(&ds.raster, &opts)
@@ -575,6 +588,15 @@ mod tests {
     use super::*;
     use wbraster::raster::RasterData;
     use wbraster::{DataType, Raster};
+
+    #[test]
+    fn memory_codec_preserves_color_overrides() {
+        let mut ds = raster(1, DataType::U8);
+        ds.band_metadata = vec![crate::BandMetadata { color_interp: Some("Undefined".into()), ..Default::default() }];
+        let bytes = codec::write_raster(&ds, RasterDriver::GTiff, &RasterWriteOptions::default(), "raster").unwrap();
+        let back = crate::LazyRaster::from_tiff_bytes(bytes).unwrap().unwrap().header();
+        assert_eq!(back.band_color_interp(1), "Undefined");
+    }
 
     fn raster(bands: usize, dt: DataType) -> RasterDataset {
         let (cols, rows) = (5, 3);

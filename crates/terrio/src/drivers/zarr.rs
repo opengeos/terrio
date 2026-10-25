@@ -1330,6 +1330,13 @@ fn open_node(node: &Node, list_subdatasets: bool) -> Result<(RasterDataset, Zarr
         data: RasterData::new_filled(array.data_type, 0, 0.0),
     };
     let mut header = RasterDataset::with_driver(raster, RasterDriver::Zarr, array.fill.is_some());
+    header.band_metadata = (0..bands)
+        .map(|i| {
+            let colors = &array.attrs["COLOR_INTERPRETATION"];
+            let color = if colors.is_string() { colors.as_str() } else { colors.get(i).and_then(Value::as_str) };
+            crate::BandMetadata { color_interp: Some(color.unwrap_or("Undefined").into()), ..Default::default() }
+        })
+        .collect();
     // A group opened: its arrays, as GDAL lists them (for its header: not to read its pixels).
     if list_subdatasets && array.node != *node {
         header.raster.metadata.extend(subdatasets(node));
@@ -1820,6 +1827,7 @@ fn write_level(
     r: &Raster,
     nodata: Option<f64>,
     compression: Option<&str>,
+    band_metadata: &[crate::BandMetadata],
     version: Version,
     conv: Convention,
     meta: &mut serde_json::Map<String, Value>,
@@ -1831,7 +1839,10 @@ fn write_level(
     } else {
         (vec![r.bands, r.rows, r.cols], vec![1, r.rows.min(256), r.cols.min(256)], json!(["Band", yname, xname]))
     };
-    let mut attrs = json!({});
+    let colors: Vec<_> = (0..r.bands)
+        .map(|i| band_metadata.get(i).and_then(|b| b.color_interp.as_deref()).unwrap_or(if r.bands == 1 { "Gray" } else { "Undefined" }))
+        .collect();
+    let mut attrs = json!({"COLOR_INTERPRETATION": if r.bands == 1 { json!(colors[0]) } else { json!(colors) }});
     let s = super::common::spatial_ref(&r.crs);
     match conv {
         // GDAL's `_CRS` with GeoZarr too: GDAL 3.12 and earlier do not read `proj:`.
@@ -1993,13 +2004,20 @@ fn overview_factors(v: &str, cols: usize, rows: usize) -> Result<Vec<usize>> {
 #[cfg(test)]
 pub(crate) fn write(r: &Raster, nodata: Option<f64>, path: &Path, compression: Option<&str>, format: Option<&str>) -> Result<()> {
     let co: Vec<(String, String)> = format.map(|f| ("FORMAT".to_string(), f.to_string())).into_iter().collect();
-    write_with(r, nodata, path, compression, &co)
+    write_with(r, nodata, path, compression, &co, &[])
 }
 
 /// Writes a raster as a Zarr group (see the module's documentation), with GDAL's creation options
 /// `FORMAT` (`ZARR_V2`, the default, or `ZARR_V3`) and `GEOREFERENCING_CONVENTION` (`GDAL`,
 /// `SPATIAL_PROJ` or `CF`), and terrio's `OVERVIEW_LEVELS` and `OVERVIEW_RESAMPLING`.
-pub(crate) fn write_with(r: &Raster, nodata: Option<f64>, path: &Path, compression: Option<&str>, co: &[(String, String)]) -> Result<()> {
+pub(crate) fn write_with(
+    r: &Raster,
+    nodata: Option<f64>,
+    path: &Path,
+    compression: Option<&str>,
+    co: &[(String, String)],
+    band_metadata: &[crate::BandMetadata],
+) -> Result<()> {
     let opt = |key: &str| co.iter().find(|(k, _)| k.eq_ignore_ascii_case(key)).map(|(_, v)| v.as_str());
     let version = match opt("FORMAT").map(str::to_ascii_uppercase).as_deref() {
         None | Some("ZARR_V2") | Some("V2") | Some("2") => Version::V2,
@@ -2091,12 +2109,12 @@ pub(crate) fn write_with(r: &Raster, nodata: Option<f64>, path: &Path, compressi
         root["multiscales"] = json!({"layout": layout, "resampling_method": resampling.name()});
     }
     write_group(path, &root, version, &mut meta, "")?;
-    write_level(path, &name, r, nodata, compression, version, conv, &mut meta, "")?;
+    write_level(path, &name, r, nodata, compression, band_metadata, version, conv, &mut meta, "")?;
     for (f, l) in &levels {
         let group = format!("ovr_{f}x");
         let dir = path.join(&group);
         write_group(&dir, &json!({}), version, &mut meta, &format!("{group}/"))?;
-        write_level(&dir, &name, &l.raster, nodata, compression, version, conv, &mut meta, &format!("{group}/"))?;
+        write_level(&dir, &name, &l.raster, nodata, compression, band_metadata, version, conv, &mut meta, &format!("{group}/"))?;
     }
     if version == Version::V2 {
         let consolidated = json!({"metadata": meta, "zarr_consolidated_format": 1});
@@ -2147,6 +2165,20 @@ mod tests {
     }
 
     #[test]
+    fn preserves_explicit_colors_in_both_store_versions() {
+        let r = common::make_raster(2, 2, 2, RasterData::U8(vec![1; 8]), common::NO_GEOTRANSFORM, CrsInfo::default(), None).unwrap();
+        let colors = ["Alpha", "Undefined"].map(|s| crate::BandMetadata { color_interp: Some(s.into()), ..Default::default() });
+        let dir = tempfile::tempdir().unwrap();
+        for version in ["ZARR_V2", "ZARR_V3"] {
+            let p = dir.path().join(format!("{version}.zarr"));
+            write_with(&r, None, &p, None, &[("FORMAT".into(), version.into())], &colors).unwrap();
+            let (header, _) = open_node(&Node::local(&p), false).unwrap();
+            assert_eq!(header.band_color_interp(1), "Alpha");
+            assert_eq!(header.band_color_interp(2), "Undefined");
+        }
+    }
+
+    #[test]
     fn round_trips_a_store() {
         let data: Vec<f32> = (0..300 * 270).map(|i| i as f32 * 0.5).collect();
         let r = common::make_raster(
@@ -2172,6 +2204,9 @@ mod tests {
         {
             let p = dir.path().join(format!("t{i}.zarr"));
             write(&r, Some(-1.0), &p, compression, format).unwrap();
+            let node = Node::local(&p);
+            let array = read_array(&node.join(&format!("t{i}"))).unwrap();
+            assert_eq!(array.attrs["COLOR_INTERPRETATION"], json!("Gray"));
             let ds = read(&p).unwrap();
             assert_eq!(ds.raster.data_f32().unwrap(), &data[..]);
             assert_eq!(ds.nodata(), Some(-1.0));

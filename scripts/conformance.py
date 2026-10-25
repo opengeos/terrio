@@ -496,6 +496,21 @@ def suite_ops(ctx):
     )
 
 
+def suite_benchmark_metadata(ctx):
+    """Full real-data regressions for the metadata/schema defects from #253."""
+    return suite_json_ops(
+        ctx,
+        "benchmark-metadata",
+        "compare_benchmark_metadata_with_gdal.py",
+        "Benchmark color and schema preservation",
+        "GDAL Zarr, gdalbuildvrt and ogr2ogr",
+        "GCP-only COGs retain 1,599 points and their CRS without an invented affine. "
+        "Real SRTM Zarr, four-tile USGS base-resolution VRT and Natural Earth places "
+        "GeoPackage: exact color interpretation, schemas, pixels, masks and normalized features.",
+        1,
+    )
+
+
 def suite_warp_policy(ctx):
     """Version-specific warp kernels and point-raster metadata on real terrain."""
     return suite_json_ops(
@@ -1120,6 +1135,7 @@ SUITES = OrderedDict(
         ("windows", suite_windows),
         ("ops", suite_ops),
         ("warp-policy", suite_warp_policy),
+        ("benchmark-metadata", suite_benchmark_metadata),
         ("catalogs", suite_catalogs),
         ("vrt", suite_vrt),
         ("overviews", suite_overviews),

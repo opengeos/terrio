@@ -50,6 +50,15 @@ They are machine-specific snapshots, not guarantees of performance on other data
 - Memory ratios are omitted: launching commands from a Python process that also validates large
   datasets can contaminate child peak-RSS accounting with inherited parent memory.
 
+## Output mismatch follow-up
+
+The [#253 investigation](benchmark-parity.md) measures complete raster errors and
+precise schema/geometry differences, and records metadata/schema corrections and
+reference-version/default mismatches. The warp commands now select the matching
+GDAL kernel; VRT commands explicitly disable GDAL-only synthetic overviews.
+The tables below retain their original samples. No timings or speed ratios have
+been regenerated, and numerical differences still fail the exact output gate.
+
 ## Correctness gates
 
 A zero exit status is insufficient. Failed commands, validation errors, differing outputs, and

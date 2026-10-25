@@ -169,7 +169,7 @@ pub fn build_vrt(sources: &[MosaicSource], o: &MosaicOptions, vrt_dir: Option<&P
             bands.push(VrtBand {
                 data_type: first.ds.raster.data_type,
                 nodata: vrt_nodata(b, nd),
-                color_interp: None,
+                color_interp: Some(first.ds.band_color_interp(band_list(first.ds)[b]).into()),
                 sources: Vec::new(),
             });
         }
@@ -200,7 +200,7 @@ pub fn build_vrt(sources: &[MosaicSource], o: &MosaicOptions, vrt_dir: Option<&P
                 bands.push(VrtBand {
                     data_type: s.ds.raster.data_type,
                     nodata: vrt_nodata(target, nd),
-                    color_interp: None,
+                    color_interp: Some(s.ds.band_color_interp(b).into()),
                     sources: vec![src],
                 });
             } else {
@@ -517,6 +517,7 @@ mod tests {
         assert_eq!(&v[..8], &[-1.0, 1.0, 1.0, 1.0, -1.0, 2.0, 2.0, 2.0]);
         assert_eq!(out.nodata(), Some(-1.0));
         let vrt = build_vrt(&srcs, &MosaicOptions::default(), None).unwrap();
+        assert_eq!(vrt.bands[0].color_interp.as_deref(), Some("Gray"));
         assert_eq!(vrt.bands[0].sources[1].dst_rect, [4.0, 0.0, 4.0, 4.0]);
         assert!(vrt.bands[0].sources[0].complex);
     }
