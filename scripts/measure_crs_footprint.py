@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Measure equivalent CRS-only consumers before and after extraction, serially.
 
-Requires Rust's wasm32-unknown-unknown target, GNU time and wasm-opt. Output must
+Requires Rust's wasm32-unknown-unknown target, Unix and wasm-opt. Output must
 be a new directory on disk. Run without other builds for meaningful timings.
 No registry packages are published and no repository checkout is modified.
 """
@@ -15,6 +15,7 @@ from pathlib import Path
 import platform
 import shutil
 import subprocess
+import sys
 import time
 
 
@@ -107,7 +108,17 @@ def main():
             packages.discard(("crs-footprint-probe", "v0.0.0"))
             command = ["cargo", "build", "--release", "--locked", *target_args]
             usage = probe / f"usage-{target}.json"
-            measured_command = ["/usr/bin/time", "-f", '{"max_rss_kib": %M, "user_seconds": %U, "system_seconds": %S}', "-o", str(usage), *command]
+            # A fresh observer process prevents earlier children from contributing
+            # to resource.getrusage's cumulative child-resource counters.
+            observer = """import json, resource, subprocess, sys
+from pathlib import Path
+result = subprocess.run(sys.argv[2:])
+usage = resource.getrusage(resource.RUSAGE_CHILDREN)
+rss = usage.ru_maxrss / 1024 if sys.platform == 'darwin' else usage.ru_maxrss
+Path(sys.argv[1]).write_text(json.dumps(dict(max_rss_kib=rss, user_seconds=usage.ru_utime, system_seconds=usage.ru_stime)))
+sys.exit(result.returncode)
+"""
+            measured_command = [sys.executable, "-c", observer, str(usage), *command]
             started = time.perf_counter()
             with (probe / f"build-{target}.log").open("w") as log:
                 subprocess.run(measured_command, cwd=probe, env=build_env, stdout=log, stderr=subprocess.STDOUT, check=True)
