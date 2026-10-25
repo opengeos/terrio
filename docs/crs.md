@@ -99,17 +99,16 @@ The standalone default omits `wbprojection`; Terrio enables the fallback to reta
 its existing coverage. Bundled tables use portable `ruzstd` decompression on all
 targets. TIFF grid codecs retain their previous features, including native Zstd.
 The [dependency and build measurements](crs-footprint.md) record both standalone
-configurations and full Terrio before/after extraction. Release work is tracked in
+configurations and full Terrio before/after extraction. Extraction and validation are tracked in
 [#268](https://github.com/opengeos/terrio/issues/268). The new crate does not add
 geocentric, PROJJSON, IAU or additional projection support by itself.
 
-### First publication and release workflow
+### Publication and release workflow
 
-Before creating a Terrio release tag that includes this crate, publish the initial
-`terrio-crs` version from a verified checkout with `cargo publish -p terrio-crs
---locked`. Then configure the crate's crates.io trusted publisher for repository
-`opengeos/terrio`, workflow `release.yml`, environment `crates-io`. This is a
-one-time owner action; subsequent versions use the release workflow. Its bootstrap
+The initial `terrio-crs` 0.1.0 release was published from a verified checkout with
+`cargo publish -p terrio-crs --locked`. Its crates.io trusted publisher is configured
+for repository `opengeos/terrio`, workflow `release.yml`, environment `crates-io`.
+Subsequent versions use the release workflow. Its bootstrap
 check runs before registry authentication or uploads and fails with setup guidance
 if the crate is unavailable. Already published versions are skipped.
 
