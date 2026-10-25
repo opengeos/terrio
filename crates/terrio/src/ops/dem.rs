@@ -100,6 +100,7 @@ pub enum ColorSelection {
 #[derive(Debug, Clone)]
 pub struct DemOptions {
     /// GDAL arithmetic version; 3.12 preserves existing results.
+    /// Standard hillshade in 3.13 follows CPU-dependent SIMD rounding; it is not bit-portable.
     pub kernel_version: super::warp::KernelVersion,
     /// The band to process, from 1 (`-b`).
     pub band: usize,

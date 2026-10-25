@@ -575,14 +575,21 @@ impl TiffOptions {
             }
         }
         if o.compression == Compression::WebP {
-            o.codec.webp_lossless = co("WEBP_LOSSLESS").is_some_and(yes);
-            if let Some(value) = co("WEBP_LEVEL").or_else(|| co("QUALITY")) {
+            o.codec.webp_lossless = match co("WEBP_LOSSLESS") {
+                None => false,
+                Some(value) => match value.trim().to_ascii_uppercase().as_str() {
+                    "YES" | "TRUE" | "ON" | "1" => true,
+                    "NO" | "FALSE" | "OFF" | "0" => false,
+                    _ => return Err(Error::InvalidArgument(format!("invalid WEBP_LOSSLESS '{value}' (YES or NO)"))),
+                },
+            };
+            if let Some((key, value)) = co("WEBP_LEVEL").map(|v| ("WEBP_LEVEL", v)).or_else(|| co("QUALITY").map(|v| ("QUALITY", v))) {
                 o.codec.webp_quality = value
                     .trim()
                     .parse::<u8>()
                     .ok()
                     .filter(|q| *q <= 100)
-                    .ok_or_else(|| Error::InvalidArgument(format!("invalid WEBP_LEVEL '{value}' (0 to 100)")))?;
+                    .ok_or_else(|| Error::InvalidArgument(format!("invalid {key} '{value}' (0 to 100)")))?;
             }
         }
         if o.compression == Compression::Jxl && co("JXL_LOSSLESS").is_some_and(|v| !yes(v)) {
@@ -3103,6 +3110,10 @@ mod tests {
             ("DEFLATE", "QUALITY", "abc", false),
             ("WEBP", "JPEG_QUALITY", "0", false),
             ("WEBP", "QUALITY", "0", true),
+            ("WEBP", "QUALITY", "abc", false),
+            ("WEBP", "WEBP_LOSSLESS", "maybe", false),
+            ("WEBP", "WEBP_LOSSLESS", "yes", true),
+            ("WEBP", "WEBP_LOSSLESS", "OFF", true),
             ("JPEG", "QUALITY", "0", false),
         ] {
             let options = crate::RasterWriteOptions {
@@ -3110,7 +3121,11 @@ mod tests {
                 creation_options: vec![(key.into(), value.into())],
                 ..Default::default()
             };
-            assert_eq!(TiffOptions::from_write_options(&options, false, None).is_ok(), valid);
+            let result = TiffOptions::from_write_options(&options, false, None);
+            assert_eq!(result.is_ok(), valid);
+            if let Err(error) = result {
+                assert!(error.to_string().contains(key));
+            }
         }
         for (w, h) in [(0, 1), (1, 0), (16384, 1), (1, 16384)] {
             assert!(webp_encode(Vec::new(), &ChunkInfo { w, h, spp: 3, t: DataType::U8 }, &CodecParams::default()).is_err());

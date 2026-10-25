@@ -322,7 +322,8 @@ alpha is retained losslessly. COG output accepts
 `SOURCE` policy reduces each overview directly from source samples.
 `QUALITY` aliases WebP quality (0–100) or JPEG quality (1–100).
 `JPEG_QUALITY` always accepts 1–100. For compatibility, quality keys are validated
-even when an unrelated codec ignores them.
+even when an unrelated codec ignores them. Invalid `WEBP_LOSSLESS` values are
+rejected; accepted booleans are `YES/NO`, `TRUE/FALSE`, `ON/OFF`, and `1/0`.
 
 Tile archives (PMTiles, MBTiles, MVT) take `--oo ZOOM_LEVEL=N` and `--oo CLIP=NO` as inputs; see
 [Formats](formats.md#tile-archives).

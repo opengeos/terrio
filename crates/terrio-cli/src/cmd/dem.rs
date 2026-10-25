@@ -13,6 +13,7 @@ pub struct Args {
     /// The processing: hillshade, slope, aspect, color-relief, TRI, TPI or roughness.
     mode: String,
     /// GDAL arithmetic version: 3.12 (default) or 3.13 (slope/standard hillshade).
+    /// GDAL 3.13 hillshade rounding may differ across CPUs and architectures.
     #[arg(long, default_value = "3.12")]
     kernel_version: String,
     /// The input DEM, then (for color-relief) the color file, then the output path.

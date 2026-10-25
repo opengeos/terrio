@@ -1353,6 +1353,8 @@ test("GDAL 3.13 terrain and native WebP creation options", () => {
   assert.ok(Math.abs(terrio.dem(dem, "slope", { kernelVersion: "3.13" }).readBand(1)[4] - 64.0974) < 1e-5);
   const rgb = new Uint8Array(3 * 20 * 12).map((_, i) => i * 37 % 251);
   const image = terrio.rasterFromArray(rgb, 20, 12, [0, 1, 0, 12, 0, -1]);
+  assert.throws(() => image.toBytes("bad.tif", { compress: "WEBP", creationOptions: { WEBP_LOSSLESS: "maybe" } }), /WEBP_LOSSLESS/);
+  assert.throws(() => image.toBytes("bad.tif", { compress: "WEBP", creationOptions: { QUALITY: "abc" } }), /invalid QUALITY/);
   const bytes = image.toBytes("webp.tif", { compress: "WEBP", creationOptions: { WEBP_LOSSLESS: "YES" } });
   const decoded = terrio.open(bytes, "webp.tif");
   for (let band = 1; band <= 3; band++) assert.deepEqual([...decoded.readBand(band)], [...rgb.slice((band-1)*240, band*240)]);

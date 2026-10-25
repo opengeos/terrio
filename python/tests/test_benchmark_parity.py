@@ -1,6 +1,7 @@
 """Binding regressions for the georeferencing loss found while investigating #253."""
 
 import numpy as np
+import pytest
 
 import terrio
 
@@ -56,6 +57,10 @@ def test_versioned_terrain_and_webp_options(tmp_path):
     assert abs(float(slope) - 64.0974) < 1e-5
     rgb = (np.arange(3 * 20 * 12).reshape(3, 12, 20) * 37 % 251).astype(np.uint8)
     image = terrio.Raster.from_array(rgb, [0, 1, 0, 12, 0, -1])
+    with pytest.raises(ValueError, match="WEBP_LOSSLESS"):
+        image.write(str(tmp_path / "bad.tif"), compress="WEBP", options={"WEBP_LOSSLESS": "maybe"})
+    with pytest.raises(ValueError, match="invalid QUALITY"):
+        image.write(str(tmp_path / "bad.tif"), compress="WEBP", options={"QUALITY": "abc"})
     path = tmp_path / "lossless.tif"
     image.write(str(path), compress="WEBP", options={"WEBP_LOSSLESS": "YES"})
     np.testing.assert_array_equal(terrio.open_bytes(path.read_bytes(), "webp.tif").read(), rgb)
