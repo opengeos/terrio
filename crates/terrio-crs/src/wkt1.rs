@@ -207,7 +207,7 @@ pub(crate) fn to_proj(root: &Node) -> Option<Converted> {
         let unit = root.child("UNIT").and_then(|u| u.num(1)).unwrap_or(1.0);
         out.push(format!("+proj=geocent +to_meter={unit}"));
         out.extend(tail);
-        let geog = datum.epsg().and_then(|d| d.checked_sub(2000)).filter(|g| super::epsg::get(*g).is_some());
+        let geog = datum.epsg().and_then(|d| super::epsg::geographic_on(d).first().copied());
         return Some(Converted { proj: out.join(" "), geogcs: root.clone(), geog, geogcs_wkt1: None });
     }
     if key == "GEOGCS" {
@@ -525,6 +525,16 @@ pub(crate) fn to_proj(root: &Node) -> Option<Converted> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn geocentric_geographic_parent_uses_datum_registry() {
+        // GDA2020 datum 1168 is on geographic CRS 7844, without a numeric offset.
+        let wkt = r#"GEOCCS["GDA2020",DATUM["Geocentric_Datum_of_Australia_2020",SPHEROID["GRS 1980",6378137,298.257222101],AUTHORITY["EPSG","1168"]],PRIMEM["Greenwich",0],UNIT["metre",1]]"#;
+        let c = to_proj(&parse(wkt).unwrap()).unwrap();
+        assert_eq!(c.geog, Some(7844));
+        let unknown = wkt.replace("1168", "999999");
+        assert_eq!(to_proj(&parse(&unknown).unwrap()).unwrap().geog, None);
+    }
 
     #[test]
     fn converts_esri_feet() {
