@@ -2964,6 +2964,9 @@ impl Moll {
 
 impl Proj for Moll {
     fn fwd(&self, lam: f64, phi: f64) -> Option<(f64, f64)> {
+        if !lam.is_finite() || !phi.is_finite() {
+            return None;
+        }
         let k = self.cp * phi.sin();
         let mut theta = phi;
         let mut converged = false;
@@ -2983,7 +2986,7 @@ impl Proj for Moll {
         let theta = aasin_checked(y / self.cy)?;
         let lam = x / (self.cx * theta.cos());
         // PROJ excludes the antimeridian itself from this inverse's domain.
-        if lam.abs() >= PI {
+        if !lam.is_finite() || lam.abs() >= PI {
             return None;
         }
         let twice = 2.0 * theta;
@@ -3398,5 +3401,23 @@ impl Proj for Sconic {
             SconicKind::Tissot => self.rho_c - rho,
         };
         Some((lam, phi))
+    }
+}
+
+#[cfg(test)]
+mod benchmark_regressions {
+    use super::*;
+
+    #[test]
+    fn mollweide_and_wagner_refuse_non_finite_inputs() {
+        for name in ["moll", "wag4", "wag5"] {
+            let projection = Moll::new(name);
+            for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+                assert!(projection.fwd(0.0, value).is_none(), "{name}: latitude {value}");
+                assert!(projection.fwd(value, 0.0).is_none(), "{name}: longitude {value}");
+                assert!(projection.inv(value, 0.0).is_none(), "{name}: x {value}");
+                assert!(projection.inv(0.0, value).is_none(), "{name}: y {value}");
+            }
+        }
     }
 }

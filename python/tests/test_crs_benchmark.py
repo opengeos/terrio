@@ -22,6 +22,20 @@ def test_projection_benchmark(case):
     definition = case["proj"]
     if case["id"] == "wintri":
         definition += f" +lat_1={math.degrees(math.acos(2 / math.pi))}"
+    for i, point in enumerate(case["points"]):
+        if case["fwd"][i] is None:
+            with pytest.raises(ValueError):
+                terrio.transform_points([point[0]], [point[1]], case["geographic"], definition)
+        elif case["inv"][i] is None:
+            try:
+                lo, la = terrio.transform_points(
+                    [case["fwd"][i][0]], [case["fwd"][i][1]], definition, case["geographic"]
+                )
+            except ValueError:
+                continue
+            dl = ((lo[0] - point[0] + 180) % 360 - 180) * math.cos(math.radians(point[1]))
+            tolerance = 1e-6 if abs(point[1]) == 90 else 1e-7
+            assert math.hypot(dl, la[0] - point[1]) < tolerance
     valid = [i for i, xy in enumerate(case["fwd"]) if xy is not None]
     points = np.array([case["points"][i] for i in valid])
     expected = np.array([case["fwd"][i] for i in valid])

@@ -251,6 +251,22 @@ test("CRS benchmark projection regressions", () => {
     const forward = p.points.flatMap((ll, i) => p.fwd[i] === null ? [] : [{ ll, xy: p.fwd[i], inv: p.inv[i] }]);
     const [xs, ys] = terrio.transformPoints(forward.map((p) => p.ll[0]), forward.map((p) => p.ll[1]), p.geographic, definition);
     forward.forEach((q, i) => assert.ok(Math.hypot(xs[i] - q.xy[0], ys[i] - q.xy[1]) < 1e-3, `${p.id} forward ${q.ll}`));
+    p.points.forEach((ll, i) => {
+      if (p.fwd[i] === null) {
+        assert.throws(() => terrio.transformPoints([ll[0]], [ll[1]], p.geographic, definition), undefined, `${p.id} hidden ${ll}`);
+      } else if (p.inv[i] === null) {
+        let recovered;
+        try {
+          const [lo, la] = terrio.transformPoints([p.fwd[i][0]], [p.fwd[i][1]], definition, p.geographic);
+          recovered = [lo[0], la[0]];
+        } catch {
+          return; // Refusing the valid boundary is also allowed by the reference contract.
+        }
+        const dl = ((recovered[0] - ll[0] + 540) % 360 - 180) * Math.cos(ll[1] * Math.PI / 180);
+        const tolerance = Math.abs(ll[1]) === 90 ? 1e-6 : 1e-7;
+        assert.ok(Math.hypot(dl, recovered[1] - ll[1]) < tolerance, `${p.id} recovered boundary ${ll}`);
+      }
+    });
     const inverse = forward.filter((p) => p.inv !== null);
     const [lons, lats] = terrio.transformPoints(inverse.map((p) => p.xy[0]), inverse.map((p) => p.xy[1]), definition, p.geographic);
     inverse.forEach((q, i) => {
