@@ -108,6 +108,9 @@ package's own version. Cargo waits for index visibility between publications; a
 polling timeout requires checking registry state before attempting another upload.
 See [Cargo's publication behavior](https://doc.rust-lang.org/cargo/commands/cargo-publish.html).
 
+The [standalone benchmark validation](crs-benchmark-validation.md) records the
+direct native/fallback results against both pinned upstream suites.
+
 ## Identification
 
 When a dataset stores WKT without an EPSG code, as shapefiles do, terrio identifies the code: an
