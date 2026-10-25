@@ -33,6 +33,7 @@ fn transport() -> &'static RwLock<Option<Arc<dyn GridTransport>>> {
 }
 
 /// Set the process-wide grid transport. Existing open streams remain valid.
+/// Clears shared decoded-grid and missing-grid caches for subsequent lookups.
 /// Search paths, registered grids and the decoded grid cache are shared by all callers.
 pub fn set_grid_transport(value: Arc<dyn GridTransport>) {
     *transport().write().unwrap_or_else(|e| e.into_inner()) = Some(value);
