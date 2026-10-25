@@ -12,6 +12,9 @@ use terrio::ops::dem::{
 pub struct Args {
     /// The processing: hillshade, slope, aspect, color-relief, TRI, TPI or roughness.
     mode: String,
+    /// GDAL arithmetic version: 3.12 (default) or 3.13 (slope/standard hillshade).
+    #[arg(long, default_value = "3.12")]
+    kernel_version: String,
     /// The input DEM, then (for color-relief) the color file, then the output path.
     #[arg(required = true, num_args = 2..=3, value_names = ["INPUT", "OUTPUT"])]
     paths: Vec<String>,
@@ -90,6 +93,7 @@ pub fn run(a: Args) -> terrio::Result<()> {
         return Err(Error::InvalidArgument("--combined, --multidirectional, --igor, --az and --alt apply to hillshade".into()));
     }
     let mut o = DemOptions {
+        kernel_version: terrio::ops::warp::KernelVersion::parse(&a.kernel_version)?,
         band: a.band,
         z: a.z,
         scale: a.scale,

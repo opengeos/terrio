@@ -244,3 +244,19 @@ geometries. The VRT reference explicitly disables GDAL 3.13's synthetic virtual
 overviews to match Terrio's supported base-resolution output. The separate
 [benchmark output investigation](benchmark-parity.md) records full numerical
 errors and intentional differences; benchmark equivalence checks remain exact.
+
+The `benchmark-compat` suite independently decodes native WebP and JPEG XL output
+with GDAL, verifies lossless pixels and alpha, checks that WebP quality changes
+lossy output, and compares both GDAL terrain arithmetic profiles (Horn and
+Zevenbergen–Thorne). With GDAL 3.13 it also compares every COG overview on a real
+DEM and an odd-sized optical crop:
+
+```sh
+python scripts/conformance.py ../terrio-data --only benchmark-compat --strict
+```
+
+The GDAL 3.13 COG profile supports nearest/average without alpha or explicit masks.
+The GDAL 3.13 terrain profile covers slope and standard hillshade. Exactness on
+these fixtures does not promise identical transcendental/SIMD rounding across
+architectures. JPEG XL cases cover Byte/UInt16, one/three bands, strips and tiles;
+macOS/Windows CI runs the matching native round-trip regression.

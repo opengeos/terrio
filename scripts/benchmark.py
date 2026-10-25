@@ -43,6 +43,19 @@ def terrio_warp(binary):
     return [binary, "warp", "--kernel-version", gdal_kernel_version()]
 
 
+def terrio_dem(binary, processing):
+    """Select the reference terrain arithmetic explicitly."""
+    return [binary, "dem", processing, "--kernel-version", gdal_kernel_version()]
+
+
+def terrio_cog(binary):
+    """Select recursive, floor-sized overviews when the reference uses GDAL 3.13."""
+    command = [binary, "convert"]
+    if gdal_kernel_version() == "3.13":
+        command += ["--co", "COG_OVERVIEW_POLICY=GDAL_3_13"]
+    return command
+
+
 def warp(threads):
     """Return ``gdalwarp`` with its multithreading on.
 
@@ -93,7 +106,7 @@ def cases(d, out, threads):
         (
             "Raster conversion",
             "GeoTIFF → COG (Deflate): USGS 3DEP tile",
-            [t, "convert", p("usgs_dem.tif"), o("a.tif"), "-f", "COG", "--compress", "DEFLATE"],
+            [*terrio_cog(t), p("usgs_dem.tif"), o("a.tif"), "-f", "COG", "--compress", "DEFLATE"],
             [
                 "gdal_translate",
                 "-q",
@@ -222,7 +235,7 @@ def large_cases(d, out, threads):
         (
             r,
             "GeoTIFF → COG (Deflate): the mosaic",
-            [t, "convert", dem, o("a.tif"), "-f", "COG", "--compress", "DEFLATE"],
+            [*terrio_cog(t), dem, o("a.tif"), "-f", "COG", "--compress", "DEFLATE"],
             ["gdal_translate", "-q", "-of", "COG", "-co", "COMPRESS=DEFLATE", "-co", "OVERVIEWS=IGNORE_EXISTING", "-co", "RESAMPLING=AVERAGE", dem, o("a.tif")],
         ),
         (
@@ -238,8 +251,8 @@ def large_cases(d, out, threads):
             [*warp(threads), "-t_srs", "EPSG:26913", "-r", "bilinear", dem, o("c.tif")],
         ),
         (r, "Mosaic 16 USGS 3DEP tiles → GeoTIFF", [t, "mosaic", *tiles, o("d.tif")], mosaic(tiles, o("d.tif"))),
-        (r, "Hillshade of the mosaic", [t, "dem", "hillshade", dem, o("e.tif")], ["gdaldem", "hillshade", "-q", dem, o("e.tif")]),
-        (r, "Slope of the mosaic", [t, "dem", "slope", dem, o("f.tif")], ["gdaldem", "slope", "-q", dem, o("f.tif")]),
+        (r, "Hillshade of the mosaic", [*terrio_dem(t, "hillshade"), dem, o("e.tif")], ["gdaldem", "hillshade", "-q", dem, o("e.tif")]),
+        (r, "Slope of the mosaic", [*terrio_dem(t, "slope"), dem, o("f.tif")], ["gdaldem", "slope", "-q", dem, o("f.tif")]),
         (
             r,
             "Sentinel-2 band: JPEG 2000 → GeoTIFF",

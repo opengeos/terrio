@@ -8,6 +8,7 @@ exact order-independent comparison always uses benchmark_validation's comparator
 
 import argparse
 import json
+import math
 from collections import Counter
 from pathlib import Path
 
@@ -110,9 +111,10 @@ def raster_differences(a, b):
                         dtype=np.longdouble,
                     )
                 else:
-                    delta = np.abs(pv.astype(np.longdouble) - qv.astype(np.longdouble))
+                    precision = np.clongdouble if pv.dtype.kind == "c" else np.longdouble
+                    delta = np.abs(pv.astype(precision) - qv.astype(precision))
                 relative = delta / np.maximum(
-                    np.abs(qv.astype(np.longdouble)), np.finfo(np.longdouble).tiny
+                    np.abs(qv.astype(np.clongdouble if qv.dtype.kind == "c" else np.longdouble)), np.finfo(np.longdouble).tiny
                 )
                 stats["max_absolute"] = max(
                     stats["max_absolute"], float(delta.max(initial=0))
@@ -199,6 +201,17 @@ def vector_differences(a, b, key=None):
     return result
 
 
+def json_safe(value):
+    """Represent non-finite measurements explicitly in strict JSON."""
+    if isinstance(value, dict):
+        return {key: json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [json_safe(item) for item in value]
+    if isinstance(value, float) and not math.isfinite(value):
+        return "NaN" if math.isnan(value) else ("Infinity" if value > 0 else "-Infinity")
+    return value
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("a")
@@ -213,7 +226,7 @@ def main():
     else:
         result = vector_differences(a, b, args.key)
     result["gdal_version"] = gdal.VersionInfo("RELEASE_NAME")
-    text = json.dumps(result, indent=2, allow_nan=True) + "\n"
+    text = json.dumps(json_safe(result), indent=2, allow_nan=False) + "\n"
     if args.output:
         args.output.write_text(text)
     else:

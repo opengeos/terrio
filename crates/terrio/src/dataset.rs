@@ -122,8 +122,9 @@ impl RasterDataset {
 
     /// Sets the geotransform: a north-up one goes to the raster's origin and cell sizes; a rotated
     /// or south-up one is kept in [`RasterDataset::affine`], the raster's origin and cell sizes
-    /// then describing the bounding box of its footprint.
+    /// then describing the bounding box of its footprint. Clears any inherited GCPs.
     pub fn set_geo_transform(&mut self, gt: [f64; 6]) {
+        self.gcps.clear();
         let r = &mut self.raster;
         if is_north_up(&gt) {
             r.x_min = gt[0];
@@ -712,7 +713,7 @@ pub fn write_raster(raster: &Raster, path: &str, options: &RasterWriteOptions) -
 pub fn write_raster_dataset(ds: &RasterDataset, path: &str, options: &RasterWriteOptions) -> Result<()> {
     let options = RasterWriteOptions {
         geo_transform: options.geo_transform.or(ds.affine),
-        gcps: if options.gcps.is_empty() && options.geo_transform.is_none() { ds.gcps.clone() } else { options.gcps.clone() },
+        gcps: options.inherited_gcps(ds),
         band_metadata: if options.band_metadata.is_empty() { ds.band_metadata.clone() } else { options.band_metadata.clone() },
         ..options.clone()
     };
@@ -960,4 +961,10 @@ pub(crate) fn ensure_writable_location(path: &str) -> Result<()> {
         return Err(Error::Unsupported(format!("cannot write to '{path}': only local outputs are supported")));
     }
     Ok(())
+}
+
+impl RasterWriteOptions {
+    pub(crate) fn inherited_gcps(&self, ds: &RasterDataset) -> Vec<Gcp> {
+        if self.gcps.is_empty() && self.geo_transform.or(ds.affine).is_none() { ds.gcps.clone() } else { self.gcps.clone() }
+    }
 }

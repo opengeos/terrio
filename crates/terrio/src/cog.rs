@@ -595,11 +595,11 @@ impl LazyRaster {
         let first_nodata = ds.band_nodata.first().copied().flatten();
         ds.has_nodata = first_nodata.is_some();
         ds.raster.nodata = first_nodata.unwrap_or(-9999.);
+        ds.set_geo_transform(self.geo_transform());
         if let Inner::Tiff(t) = &self.inner {
             ds.band_metadata = t.tags.band_properties.clone();
             ds.gcps = t.tags.gcps.clone();
         }
-        ds.set_geo_transform(self.geo_transform());
         ds
     }
 
@@ -719,6 +719,7 @@ impl LazyRaster {
         let first_nodata = band_nodata.first().copied().flatten();
         ds.has_nodata = first_nodata.is_some();
         ds.raster.nodata = first_nodata.unwrap_or(-9999.);
+        ds.set_geo_transform([gt[0] + x * gt[1] + y * gt[2], gt[1], gt[2], gt[3] + x * gt[4] + y * gt[5], gt[4], gt[5]]);
         let header = self.header();
         ds.gcps = header
             .gcps
@@ -732,7 +733,6 @@ impl LazyRaster {
             .collect();
         ds.band_metadata = bands.iter().map(|&b| header.band_metadata.get(b - 1).cloned().unwrap_or_default()).collect();
         ds.band_nodata = band_nodata;
-        ds.set_geo_transform([gt[0] + x * gt[1] + y * gt[2], gt[1], gt[2], gt[3] + x * gt[4] + y * gt[5], gt[4], gt[5]]);
         Ok(ds)
     }
 }

@@ -66,6 +66,16 @@ O(levels × source pixels) work, more than recursively reducing already-rounded 
 Mode counts native sample values with hash tables, retaining the first value to reach the
 highest count when frequencies tie; floating-point signed zeros count as the same value.
 
+Set the creation option `COG_OVERVIEW_POLICY=GDAL_3_13` to recursively reduce
+previously rounded levels and truncate halved dimensions as GDAL 3.13 does. This
+profile supports nearest and average, with nodata, without alpha bands or explicit
+masks. It retains bounded row streaming; `SOURCE` remains the default policy above.
+
+Native WebP TIFF output supports pixel-interleaved Byte RGB and RGBA.
+`WEBP_LOSSLESS=YES` preserves all samples, including transparent colors;
+`WEBP_LEVEL=0..100` controls lossy quality (default 75). Lossy RGBA retains alpha
+losslessly. The same codecs and creation options are available in WebAssembly.
+
 `write_vector(&layers, path, &VectorWriteOptions)` writes layers; GeoPackage holds several.
 `ops::vector_filter::write_vector_with_mode` appends to or overwrites the layers of an existing
 output; GeoPackages are updated keeping their other tables.

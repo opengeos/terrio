@@ -142,6 +142,7 @@ pub(crate) fn read_geo_tags_from<R: Read + Seek>(mut f: R) -> Option<GeoTags> {
         if !matches!(
             tag,
             PHOTOMETRIC
+                | 259
                 | 277
                 | 338
                 | MODEL_PIXEL_SCALE
@@ -222,7 +223,12 @@ pub(crate) fn read_geo_tags_from<R: Read + Seek>(mut f: R) -> Option<GeoTags> {
     };
     let photometric = shorts(PHOTOMETRIC).and_then(|s| s.first()).copied().unwrap_or(1);
     let samples = shorts(277).and_then(|s| s.first()).copied().unwrap_or(1) as usize;
-    let base = if photometric == 2 { 3 } else { 1 };
+    let jpeg = shorts(259).and_then(|s| s.first()).copied() == Some(7);
+    let base = match photometric {
+        2 | 6 | 8 | 9 | 10 => 3,
+        5 => 4,
+        _ => 1,
+    };
     out.band_properties = (0..samples)
         .map(|i| {
             let color = match (photometric, i) {
@@ -230,6 +236,16 @@ pub(crate) fn read_geo_tags_from<R: Read + Seek>(mut f: R) -> Option<GeoTags> {
                 (2, 0) => "Red",
                 (2, 1) => "Green",
                 (2, 2) => "Blue",
+                (6, 0) if jpeg => "Red",
+                (6, 1) if jpeg => "Green",
+                (6, 2) if jpeg => "Blue",
+                (6, 0) => "YCbCr_Y",
+                (6, 1) => "YCbCr_Cb",
+                (6, 2) => "YCbCr_Cr",
+                (5, 0) => "Cyan",
+                (5, 1) => "Magenta",
+                (5, 2) => "Yellow",
+                (5, 3) => "Black",
                 (3, 0) => "Palette",
                 _ if i >= base && shorts(338).and_then(|v| v.get(i - base)).is_some_and(|v| matches!(v, 1 | 2)) => "Alpha",
                 _ => "Undefined",

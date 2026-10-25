@@ -74,7 +74,7 @@ impl StripWriter {
     /// Prepares to write a raster described by `header` (its data is not read) to `path`.
     pub fn create(header: &RasterDataset, path: &str, options: &RasterWriteOptions) -> Result<Self> {
         let inherited = RasterWriteOptions {
-            gcps: if options.gcps.is_empty() && options.geo_transform.is_none() { header.gcps.clone() } else { options.gcps.clone() },
+            gcps: options.inherited_gcps(header),
             band_metadata: if options.band_metadata.is_empty() { header.band_metadata.clone() } else { options.band_metadata.clone() },
             ..options.clone()
         };

@@ -458,6 +458,13 @@ terrio polygonize INPUT OUTPUT [options]
 `-f`, `--append`, `--overwrite`. Polygons have holes; exteriors are counter-clockwise and holes
 clockwise.
 
+GeoTIFF/COG WebP output accepts `--compress WEBP --co WEBP_LOSSLESS=YES` or
+`--co WEBP_LEVEL=0..100` for lossy quality. Supported inputs are Byte RGB/RGBA;
+alpha is retained losslessly. COG output accepts
+`--co COG_OVERVIEW_POLICY=GDAL_3_13` for recursive, floor-sized overviews with
+`--co RESAMPLING=NEAREST|AVERAGE` and nodata, without alpha or explicit masks. The default
+`SOURCE` policy reduces each overview directly from source samples.
+
 ## dem
 
 ```sh
@@ -472,8 +479,12 @@ DEM in metres), `--xscale`/`--yscale`, `--az`, `--alt`, `--combined`, `--multidi
 `--exact-color-entry`, `--nearest-color-entry` (color relief). Without `-s`, geographic DEMs are
 scaled from the ellipsoid at their centre latitude, as `gdaldem` does since GDAL 3.11. Color files
 are GDAL's: `value R G B [A]` or `value colorname [A]`, where the value may be `nv` (the nodata
-value) or a percentage of the band's range; GMT `.cpt` files work too. Outputs are identical to
-`gdaldem`'s, pixel for pixel.
+value) or a percentage of the band's range; GMT `.cpt` files work too.
+
+`--kernel-version 3.12|3.13` selects terrain arithmetic (default `3.12`). The
+`3.13` profile supports slope and standard hillshade, including both gradient
+algorithms. Other products and hillshade variants require `3.12`. Use the version
+matching the GDAL reference; transcendental and SIMD rounding can vary by platform.
 
 A color relief written as a VRT (`-f VRT`, `--of VRT`, or a `.vrt` output) is a virtual raster of
 lookup tables over the DEM, as `gdaldem color-relief -of VRT` writes it: three Byte bands (four

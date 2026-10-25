@@ -1,6 +1,7 @@
 """Ensure diagnostics expose errors hidden behind the benchmark's first-strip failure."""
 
 import sys
+import json
 import unittest
 from pathlib import Path
 
@@ -8,10 +9,19 @@ import numpy as np
 from osgeo import gdal
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from diagnose_benchmark_outputs import max_ulp, raster_differences
+from diagnose_benchmark_outputs import json_safe, max_ulp, raster_differences
 
 
 class DiagnosticTests(unittest.TestCase):
+    def test_complex_error_and_strict_json(self):
+        a, b = [gdal.GetDriverByName("MEM").Create("", 1, 1, 1, gdal.GDT_CFloat64) for _ in range(2)]
+        a.GetRasterBand(1).WriteArray(np.array([[1 + 2j]]))
+        b.GetRasterBand(1).WriteArray(np.array([[1 + 3j]]))
+        stats = raster_differences(a, b)["bands"][0]["levels"][0]
+        self.assertEqual(stats["max_absolute"], 1.0)
+        self.assertAlmostEqual(stats["max_relative"], 1 / np.sqrt(10))
+        self.assertEqual(json.loads(json.dumps(json_safe({"overflow": float("inf")}), allow_nan=False)), {"overflow": "Infinity"})
+
     def test_ulp_signs_and_adjacent_values(self):
         for dtype in (np.float32, np.float64):
             a = np.array([-1.0, -0.0, 0.0, 1.0], dtype=dtype)

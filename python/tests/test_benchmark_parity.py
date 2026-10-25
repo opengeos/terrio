@@ -41,3 +41,25 @@ def test_gcp_only_cog_copies_keep_coordinates(data_dir, gdal, tmp_path):
             (g.GCPPixel, g.GCPLine, g.GCPX, g.GCPY, g.GCPZ) for g in original.GetGCPs()
         ]
         np.testing.assert_array_equal(actual.ReadAsArray(), expected)
+
+
+def test_versioned_terrain_and_webp_options(tmp_path):
+    data = np.array(
+        [942.315, 946.702, 951.43, 945.132, 943.95, 959.37, 948.15, 954.318, 960.01],
+        dtype=np.float32,
+    ).reshape(3, 3)
+    raster = terrio.Raster.from_array(data, [500000, 3.5, 0, 4100000, 0, -3.5], "EPSG:32610")
+    slope = terrio.dem(raster, "slope", kernel_version="3.13").read()[0, 1, 1]
+    assert abs(float(slope) - 64.0974) < 1e-5
+    rgb = (np.arange(3 * 20 * 12).reshape(3, 12, 20) * 37 % 251).astype(np.uint8)
+    image = terrio.Raster.from_array(rgb, [0, 1, 0, 12, 0, -1])
+    path = tmp_path / "lossless.tif"
+    image.write(str(path), compress="WEBP", options={"WEBP_LOSSLESS": "YES"})
+    np.testing.assert_array_equal(terrio.open_bytes(path.read_bytes(), "webp.tif").read(), rgb)
+    low, high = [tmp_path / f"quality-{quality}.tif" for quality in [10, 95]]
+    for path, quality in [(low, 10), (high, 95)]:
+        image.write(str(path), compress="WEBP", options={"WEBP_LEVEL": str(quality)})
+    assert low.read_bytes() != high.read_bytes()
+    assert not np.array_equal(
+        terrio.open_raster(str(low)).read(), terrio.open_raster(str(high)).read()
+    )

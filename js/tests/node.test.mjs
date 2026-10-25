@@ -1346,3 +1346,18 @@ test("coordinate operation safeguards and warnings", () => {
   assert.throws(() => terrio.transformPoints([600000], [200000], "EPSG:21781", "EPSG:2056", undefined, { onlyBest: true }), /ONLY_BEST/);
   assert.ok(Array.from(terrio.takeWarnings()).some((w) => w.includes("missing grid")));
 });
+
+test("GDAL 3.13 terrain and native WebP creation options", () => {
+  const values = new Float32Array([942.315, 946.702, 951.43, 945.132, 943.95, 959.37, 948.15, 954.318, 960.01]);
+  const dem = terrio.rasterFromArray(values, 3, 3, [500000, 3.5, 0, 4100000, 0, -3.5], "EPSG:32610");
+  assert.ok(Math.abs(terrio.dem(dem, "slope", { kernelVersion: "3.13" }).readBand(1)[4] - 64.0974) < 1e-5);
+  const rgb = new Uint8Array(3 * 20 * 12).map((_, i) => i * 37 % 251);
+  const image = terrio.rasterFromArray(rgb, 20, 12, [0, 1, 0, 12, 0, -1]);
+  const bytes = image.toBytes("webp.tif", { compress: "WEBP", creationOptions: { WEBP_LOSSLESS: "YES" } });
+  const decoded = terrio.open(bytes, "webp.tif");
+  for (let band = 1; band <= 3; band++) assert.deepEqual([...decoded.readBand(band)], [...rgb.slice((band-1)*240, band*240)]);
+  assert.notDeepEqual(image.toBytes("low.tif", { compress: "WEBP", creationOptions: { WEBP_LEVEL: "10" } }), image.toBytes("high.tif", { compress: "WEBP", creationOptions: { WEBP_LEVEL: "95" } }));
+  const grid = terrio.rasterFromArray(new Float32Array(65 * 35).map((_, i) => i % 71), 65, 35, [0,1,0,35,0,-1]);
+  const cog = terrio.open(grid.toBytes("gdal.tif", { format: "COG", tileSize: 16, creationOptions: { COG_OVERVIEW_POLICY: "GDAL_3_13" } }), "gdal.tif");
+  assert.deepEqual(cog.info().overviews, [[32,17],[16,8]]);
+});

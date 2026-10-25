@@ -29,6 +29,8 @@ pub(crate) enum Compression {
     Jxl,
     /// Baseline JPEG, for Byte data of 1 band, or 3 bands in YCbCr.
     Jpeg,
+    /// Pure Rust lossy/lossless WebP.
+    WebP,
 }
 
 /// The parameters of the lossy and variable compressions.
@@ -40,11 +42,13 @@ pub(crate) struct CodecParams {
     pub jpeg_quality: u8,
     /// JPEG: three bands in YCbCr (`PHOTOMETRIC=YCBCR`), subsampled.
     pub jpeg_ycbcr: bool,
+    pub webp_quality: u8,
+    pub webp_lossless: bool,
 }
 
 impl Default for CodecParams {
     fn default() -> Self {
-        Self { max_z_error: 0.0, jpeg_quality: 75, jpeg_ycbcr: false }
+        Self { max_z_error: 0.0, jpeg_quality: 75, jpeg_ycbcr: false, webp_quality: 75, webp_lossless: false }
     }
 }
 
@@ -70,6 +74,7 @@ impl Compression {
             "LERC_ZSTD" => Self::LercZstd,
             "JXL" => Self::Jxl,
             "JPEG" => Self::Jpeg,
+            "WEBP" => Self::WebP,
             _ => return None,
         })
     }
@@ -84,6 +89,7 @@ impl Compression {
             Self::Lerc | Self::LercDeflate | Self::LercZstd => 34887,
             Self::Jxl => 50002,
             Self::Jpeg => 7,
+            Self::WebP => 50001,
         }
     }
 
@@ -106,6 +112,7 @@ impl Compression {
             Self::LercZstd => zstd_compress(&lerc_encode(&data, c, p.max_z_error)?)?,
             Self::Jxl => jxl_encode(data, c)?,
             Self::Jpeg => jpeg_encode(&data, c, p.jpeg_quality, p.jpeg_ycbcr)?,
+            Self::WebP => webp_encode(data, c, p)?,
         })
     }
 }
@@ -178,6 +185,55 @@ fn strip_rows(asked: Option<u32>, rows: usize, row_bytes: usize, compression: Co
         None => ((1usize << 16) / row_bytes.max(1)).clamp(1, rows),
     };
     if compression == Compression::Jpeg && per < rows { (per / 16 * 16).max(16).min(rows) } else { per }
+}
+
+fn webp_encode(data: Vec<u8>, chunk: &ChunkInfo, options: &CodecParams) -> Result<Vec<u8>> {
+    if chunk.t != DataType::U8 || !matches!(chunk.spp, 3 | 4) {
+        return Err(Error::Unsupported("WebP requires three or four interleaved Byte bands".into()));
+    }
+    let mut rgba = if chunk.spp == 4 { data } else { data.as_chunks::<3>().0.iter().flat_map(|p| [p[0], p[1], p[2], 255]).collect() };
+    // The pure Rust VP8 encoder accepts opaque RGB. Preserve alpha in the WebP
+    // container's independent, uncompressed ALPH chunk instead of ignoring quality.
+    let alpha = (!options.webp_lossless && chunk.spp == 4 && rgba.as_chunks::<4>().0.iter().any(|p| p[3] != 255)).then(|| {
+        rgba.as_chunks_mut::<4>()
+            .0
+            .iter_mut()
+            .map(|p| {
+                let a = p[3];
+                p[3] = 255;
+                a
+            })
+            .collect::<Vec<_>>()
+    });
+    let image = webp_rust::ImageBuffer { width: chunk.w, height: chunk.h, rgba };
+    let encoded = if options.webp_lossless {
+        webp_rust::encode_lossless(&image, 2, None)
+    } else {
+        webp_rust::encode_lossy(&image, 0, options.webp_quality as usize, None)
+    }
+    .map_err(|error| Error::InvalidData(format!("WebP: {error}")))?;
+    let Some(alpha) = alpha else { return Ok(encoded) };
+    let mut body = b"WEBP".to_vec();
+    let mut append = |tag: &[u8; 4], payload: &[u8]| {
+        body.extend_from_slice(tag);
+        body.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+        body.extend_from_slice(payload);
+        if !payload.len().is_multiple_of(2) {
+            body.push(0);
+        }
+    };
+    let mut extended = vec![0x10, 0, 0, 0];
+    extended.extend_from_slice(&((chunk.w - 1) as u32).to_le_bytes()[..3]);
+    extended.extend_from_slice(&((chunk.h - 1) as u32).to_le_bytes()[..3]);
+    append(b"VP8X", &extended);
+    let mut alpha_chunk = vec![0]; // uncompressed, unfiltered alpha
+    alpha_chunk.extend_from_slice(&alpha);
+    append(b"ALPH", &alpha_chunk);
+    body.extend_from_slice(&encoded[12..]);
+    let mut output = b"RIFF".to_vec();
+    output.extend_from_slice(&(body.len() as u32).to_le_bytes());
+    output.extend_from_slice(&body);
+    Ok(output)
 }
 
 /// Encodes a chunk as a lossless JPEG XL codestream: 1 to 4 channels (gray, gray and alpha, RGB,
@@ -299,6 +355,8 @@ pub(crate) struct TiffOptions {
     pub bigtiff: bool,
     /// Write a Cloud Optimized GeoTIFF: tiled, with overviews and GDAL's layout.
     pub cog: bool,
+    /// GDAL 3.13 recursive, floor-sized COG overview policy.
+    pub gdal_overviews: bool,
     /// The nodata value to declare.
     pub nodata: Option<f64>,
     /// Tiles of `(width, height)`, overriding `tile_size` (GeoTIFF only).
@@ -348,6 +406,7 @@ impl Default for TiffOptions {
             tile_size: None,
             bigtiff: false,
             cog: false,
+            gdal_overviews: false,
             nodata: None,
             block: None,
             rows_per_strip: None,
@@ -416,7 +475,7 @@ impl TiffOptions {
         let size = |key: &str| -> Result<Option<u32>> {
             co(key).map(|v| v.trim().parse::<u32>().map_err(|_| Error::InvalidArgument(format!("invalid {key} '{v}'")))).transpose()
         };
-        let overview_resampling = match options.overview_resampling.as_deref() {
+        let overview_resampling = match options.overview_resampling.as_deref().or_else(|| co("RESAMPLING")) {
             Some(method) => OverviewResampling::parse(method)?,
             None if cog => OverviewResampling::Average,
             None => OverviewResampling::Nearest,
@@ -435,6 +494,13 @@ impl TiffOptions {
             mask: options.mask.clone(),
             rpc: options.rpc.clone(),
             ..Default::default()
+        };
+        o.gdal_overviews = match co("COG_OVERVIEW_POLICY").map(str::to_ascii_uppercase).as_deref() {
+            None | Some("SOURCE") => false,
+            Some("GDAL_3_13") if cog => true,
+            Some(value) => {
+                return Err(Error::InvalidArgument(format!("invalid COG_OVERVIEW_POLICY '{value}' (SOURCE or GDAL_3_13 for COG)")));
+            }
         };
         if cog {
             if let Some(b) = size("BLOCKSIZE")? {
@@ -487,7 +553,7 @@ impl TiffOptions {
                 .filter(|e| *e >= 0.0)
                 .ok_or_else(|| Error::InvalidArgument(format!("invalid MAX_Z_ERROR '{v}'")))?;
         }
-        if let Some(v) = co("JPEG_QUALITY").or_else(|| co("QUALITY")) {
+        if let Some(v) = co("JPEG_QUALITY").or_else(|| co("QUALITY")).filter(|_| o.compression == Compression::Jpeg) {
             o.codec.jpeg_quality = v
                 .trim()
                 .parse::<u8>()
@@ -495,11 +561,32 @@ impl TiffOptions {
                 .filter(|q| (1..=100).contains(q))
                 .ok_or_else(|| Error::InvalidArgument(format!("invalid JPEG_QUALITY '{v}' (1 to 100)")))?;
         }
+        if o.compression == Compression::WebP {
+            o.codec.webp_lossless = co("WEBP_LOSSLESS").is_some_and(yes);
+            if let Some(value) = co("WEBP_LEVEL").or_else(|| co("QUALITY")) {
+                o.codec.webp_quality = value
+                    .trim()
+                    .parse::<u8>()
+                    .ok()
+                    .filter(|q| *q <= 100)
+                    .ok_or_else(|| Error::InvalidArgument(format!("invalid WEBP_LEVEL '{value}' (0 to 100)")))?;
+            }
+        }
         if o.compression == Compression::Jxl && co("JXL_LOSSLESS").is_some_and(|v| !yes(v)) {
             return Err(Error::Unsupported("lossy JPEG XL is not written: JXL_LOSSLESS=YES only".into()));
         }
         o.codec.jpeg_ycbcr = o.photometric == Some(6);
         o.alpha = co("ALPHA").is_some_and(|v| yes(v) || v.eq_ignore_ascii_case("NON-PREMULTIPLIED"));
+        if o.gdal_overviews
+            && (o.alpha
+                || o.mask.is_some()
+                || o.band_metadata.iter().any(|b| b.color_interp.as_deref() == Some("Alpha"))
+                || !matches!(o.overview_resampling, OverviewResampling::Average | OverviewResampling::Nearest))
+        {
+            return Err(Error::Unsupported(
+                "GDAL_3_13 COG overviews support average and nearest for rasters without explicit masks or alpha bands".into(),
+            ));
+        }
         if !o.color_table.is_empty() && o.photometric.is_none() {
             o.photometric = Some(3);
         }
@@ -630,6 +717,11 @@ fn plan(raster: &Raster, opts: &TiffOptions) -> Result<Plan> {
     {
         return Err(Error::Unsupported("JPEG is written for 1 or 3 Byte bands, pixel-interleaved".into()));
     }
+    if opts.compression == Compression::WebP
+        && (raster.data_type != DataType::U8 || !matches!(samples, 3 | 4) || opts.planar || !opts.color_table.is_empty())
+    {
+        return Err(Error::Unsupported("WebP requires three or four pixel-interleaved Byte bands".into()));
+    }
     // Two or four interleaved bands would be gray and alpha or RGBA in JPEG XL, which GDAL reads
     // as extra channels.
     if opts.compression == Compression::Jxl && !opts.planar && !matches!(samples, 1 | 3) {
@@ -639,7 +731,7 @@ fn plan(raster: &Raster, opts: &TiffOptions) -> Result<Plan> {
         Some(6) if jpeg && samples == 3 => 6,
         Some(6) => return Err(Error::Unsupported("PHOTOMETRIC=YCBCR needs JPEG compression of 3 bands".into())),
         Some(p) => p,
-        None if samples == 3 && raster.data_type == DataType::U8 => 2,
+        None if (samples == 3 || (samples == 4 && opts.compression == Compression::WebP)) && raster.data_type == DataType::U8 => 2,
         None => 1,
     };
     let base_samples = if matches!(photometric, 2 | 6) { 3 } else { 1 };
@@ -735,25 +827,33 @@ fn prepare(raster: &Raster, opts: &TiffOptions) -> Result<Prepared> {
     let mut levels = vec![Level::from_raster(raster)];
     if let (true, Some((t, _))) = (opts.cog, tile) {
         let t = t as usize;
-        let (mut cols, mut rows) = (raster.cols, raster.rows);
-        let mut count = 0;
-        while cols > t || rows > t {
-            cols = cols.div_ceil(2);
-            rows = rows.div_ceil(2);
-            count += 1;
-        }
-        levels.extend(crate::par::map_range_coarse(count, |i| {
-            let factor = 1usize << (i + 1);
-            let mut reducer =
-                CogOverview::new(raster.cols, raster.rows, raster.bands, factor, opts.overview_resampling, opts.nodata, opts.alpha);
-            let data = reducer.write_rows(&raster.data, raster.rows);
-            Level {
-                cols: raster.cols.div_ceil(factor),
-                rows: raster.rows.div_ceil(factor),
-                bands: raster.bands,
-                data: std::borrow::Cow::Owned(data),
+        if opts.gdal_overviews {
+            while levels.last().is_some_and(|level| level.cols > t || level.rows > t) {
+                let previous = levels.last().unwrap();
+                let next = previous.resample((previous.cols / 2).max(1), (previous.rows / 2).max(1), opts.overview_resampling, opts.nodata);
+                levels.push(next);
             }
-        }));
+        } else {
+            let (mut cols, mut rows) = (raster.cols, raster.rows);
+            let mut count = 0;
+            while cols > t || rows > t {
+                cols = cols.div_ceil(2);
+                rows = rows.div_ceil(2);
+                count += 1;
+            }
+            levels.extend(crate::par::map_range_coarse(count, |i| {
+                let factor = 1usize << (i + 1);
+                let mut reducer =
+                    CogOverview::new(raster.cols, raster.rows, raster.bands, factor, opts.overview_resampling, opts.nodata, opts.alpha);
+                let data = reducer.write_rows(&raster.data, raster.rows);
+                Level {
+                    cols: raster.cols.div_ceil(factor),
+                    rows: raster.rows.div_ceil(factor),
+                    bands: raster.bands,
+                    data: std::borrow::Cow::Owned(data),
+                }
+            }));
+        }
     } else if !opts.cog {
         let mut factors: Vec<usize> = opts.overviews.iter().copied().filter(|f| *f > 1).collect();
         factors.sort_unstable();
@@ -1038,7 +1138,20 @@ fn resample<T: Pixel>(
     nodata: Option<f64>,
     fill: f64,
 ) -> Vec<T> {
-    let (rx, ry) = (cols as f64 / out_cols as f64, rows as f64 / out_rows as f64);
+    resample_region(src, (cols, rows, bands), (out_cols, out_rows), method, nodata, fill, None)
+}
+
+fn resample_region<T: Pixel>(
+    src: &[T],
+    (cols, rows, bands): (usize, usize, usize),
+    (out_cols, out_rows): (usize, usize),
+    method: OverviewResampling,
+    nodata: Option<f64>,
+    fill: f64,
+    region: Option<(usize, usize, usize, usize)>,
+) -> Vec<T> {
+    let (row_offset, output_start, full_rows, full_out_rows) = region.unwrap_or((0, 0, rows, out_rows));
+    let (rx, ry) = (cols as f64 / out_cols as f64, full_rows as f64 / full_out_rows as f64);
     // Source windows: (first, end, first weight, last weight).
     let window = |i: usize, ratio: f64, n: usize| -> (usize, usize, f64, f64) {
         let (f0, f1) = (i as f64 * ratio, (i + 1) as f64 * ratio);
@@ -1058,14 +1171,14 @@ fn resample<T: Pixel>(
         let (b, r) = (k / out_rows, k % out_rows);
         let band = &src[b * cols * rows..(b + 1) * cols * rows];
         if method == OverviewResampling::Nearest {
-            let sy = ((0.5 + r as f64 * ry) as usize).min(rows - 1);
+            let sy = ((0.5 + (r + output_start) as f64 * ry) as usize).min(full_rows - 1) - row_offset;
             for (c, o) in line.iter_mut().enumerate() {
                 let sx = ((0.5 + c as f64 * rx) as usize).min(cols - 1);
                 *o = band[sy * cols + sx];
             }
             return;
         }
-        let (y0, y1, wy0, wy1) = window(r, ry, rows);
+        let (y0, y1, wy0, wy1) = window(r + output_start, ry, full_rows);
         let mut values: Vec<f64> = Vec::new();
         for (c, o) in line.iter_mut().enumerate() {
             let (x0, x1, wx0, wx1) = xs[c];
@@ -1080,7 +1193,7 @@ fn resample<T: Pixel>(
                     1.0
                 };
                 for x in x0..x1 {
-                    let v = band[y * cols + x].to_f64();
+                    let v = band[(y - row_offset) * cols + x].to_f64();
                     if v.is_nan() || nodata.is_some_and(|nd| v == nd) {
                         continue;
                     }
@@ -2073,6 +2186,82 @@ fn chunk_spool() -> Result<ChunkSpool> {
     Ok(Default::default())
 }
 
+enum CogReducer {
+    Source(CogOverview),
+    Gdal(GdalCogOverview),
+}
+
+impl CogReducer {
+    fn write_rows(&mut self, data: &RasterData, rows: usize) -> Result<RasterData> {
+        match self {
+            Self::Source(reducer) => Ok(reducer.write_rows(data, rows)),
+            Self::Gdal(reducer) => reducer.write_rows(data, rows),
+        }
+    }
+}
+
+struct GdalCogOverview {
+    cols: usize,
+    rows: usize,
+    bands: usize,
+    out_cols: usize,
+    out_rows: usize,
+    received: usize,
+    emitted: usize,
+    start: usize,
+    pending_rows: usize,
+    pending: Option<RasterData>,
+    method: OverviewResampling,
+    nodata: Option<f64>,
+}
+
+impl GdalCogOverview {
+    fn new(cols: usize, rows: usize, bands: usize, method: OverviewResampling, nodata: Option<f64>) -> Self {
+        Self {
+            cols,
+            rows,
+            bands,
+            out_cols: (cols / 2).max(1),
+            out_rows: (rows / 2).max(1),
+            received: 0,
+            emitted: 0,
+            start: 0,
+            pending_rows: 0,
+            pending: None,
+            method,
+            nodata,
+        }
+    }
+
+    fn write_rows(&mut self, data: &RasterData, rows: usize) -> Result<RasterData> {
+        let pending = match self.pending.take() {
+            Some(previous) => append_rows(&previous, self.pending_rows, data, rows, self.cols, self.bands)?,
+            None => data.clone(),
+        };
+        self.pending_rows += rows;
+        self.received += rows;
+        let ratio = self.rows as f64 / self.out_rows as f64;
+        let mut end = self.emitted;
+        while end < self.out_rows && (((end + 1) as f64 * ratio - 1e-8).ceil() as usize).min(self.rows) <= self.received {
+            end += 1;
+        }
+        let count = end - self.emitted;
+        let out = if count == 0 {
+            RasterData::new_filled(data.data_type(), 0, 0.0)
+        } else {
+            map_data!(&pending, values => resample_region(values, (self.cols, self.pending_rows, self.bands), (self.out_cols, count),
+                self.method, self.nodata, self.nodata.unwrap_or(0.0), Some((self.start, self.emitted, self.rows, self.out_rows))))
+        };
+        self.emitted = end;
+        let keep = if end == self.out_rows { self.rows } else { (end as f64 * ratio + 1e-8) as usize };
+        let dropped = keep - self.start;
+        self.pending = Some(slice_rows(&pending, self.pending_rows, dropped..self.pending_rows, self.cols, self.bands));
+        self.pending_rows -= dropped;
+        self.start = keep;
+        Ok(out)
+    }
+}
+
 /// One resolution level of a [`CogWriter`].
 struct CogLevel {
     cols: usize,
@@ -2083,7 +2272,7 @@ struct CogLevel {
     pending: RasterData,
     pending_rows: usize,
     /// Reduces full-resolution source rows independently for this overview.
-    overview: Option<CogOverview>,
+    overview: Option<CogReducer>,
     /// The compressed chunks of each plane, and their sizes.
     spools: Vec<ChunkSpool>,
     sizes: Vec<Vec<u64>>,
@@ -2130,8 +2319,9 @@ impl CogWriter {
         let planes = if layout.planar { raster.bands / layout.parts } else { 1 };
         let mut sizes = vec![(raster.cols, raster.rows)];
         while let Some(&(c, r)) = sizes.last().filter(|(c, r)| *c > tile || *r > tile) {
-            sizes.push((c.div_ceil(2), r.div_ceil(2)));
+            sizes.push(if opts.gdal_overviews { ((c / 2).max(1), (r / 2).max(1)) } else { (c.div_ceil(2), r.div_ceil(2)) });
         }
+        let previous_sizes = sizes.clone();
         let levels = sizes
             .into_iter()
             .enumerate()
@@ -2143,7 +2333,11 @@ impl CogWriter {
                     pending: RasterData::new_filled(raster.data_type, 0, 0.0),
                     pending_rows: 0,
                     overview: (i > 0).then(|| {
-                        CogOverview::new(
+                        if opts.gdal_overviews {
+                            let (cols, rows) = previous_sizes[i - 1];
+                            return CogReducer::Gdal(GdalCogOverview::new(cols, rows, raster.bands, opts.overview_resampling, opts.nodata));
+                        }
+                        CogReducer::Source(CogOverview::new(
                             raster.cols,
                             raster.rows,
                             raster.bands,
@@ -2151,7 +2345,7 @@ impl CogWriter {
                             opts.overview_resampling,
                             opts.nodata,
                             opts.alpha,
-                        )
+                        ))
                     }),
                     spools: (0..planes).map(|_| chunk_spool()).collect::<Result<_>>()?,
                     sizes: vec![Vec::new(); planes],
@@ -2199,8 +2393,25 @@ impl CogWriter {
         if rows == 0 {
             return Ok(());
         }
+        if self.levels.get(1).is_some_and(|level| matches!(level.overview, Some(CogReducer::Gdal(_)))) {
+            let mut current = data;
+            let mut count = rows;
+            for i in 0..self.levels.len() {
+                let next =
+                    self.levels.get_mut(i + 1).map(|level| level.overview.as_mut().unwrap().write_rows(&current, count)).transpose()?;
+                self.push(i, current, count)?;
+                let Some(next) = next else { break };
+                count = next.len() / (self.levels[i + 1].cols * self.bands);
+                if count == 0 {
+                    break;
+                }
+                current = next;
+            }
+            return Ok(());
+        }
         let overviews = crate::par::map_mut_coarse(&mut self.levels[1..], |level| level.overview.as_mut().unwrap().write_rows(&data, rows));
         for (i, overview) in overviews.into_iter().enumerate() {
+            let overview = overview?;
             let i = i + 1;
             let overview_rows = overview.len() / (self.levels[i].cols * self.bands);
             if overview_rows > 0 {
@@ -2839,6 +3050,95 @@ mod tests {
     }
 
     #[test]
+    fn gdal_cog_pyramids_are_recursive_and_independent_of_slabs() {
+        let raster = overview_fixture(1, DataType::F32, RasterData::F32((0..65 * 35).map(|i| 777.0 + (i % 217) as f32 * 0.25).collect()));
+        let opts = TiffOptions {
+            cog: true,
+            gdal_overviews: true,
+            tile_size: Some(16),
+            overview_resampling: OverviewResampling::Average,
+            ..Default::default()
+        };
+        let expected = encode(&raster, &opts).unwrap();
+        let lazy = crate::LazyRaster::from_tiff_bytes(expected.clone()).unwrap().unwrap();
+        assert_eq!(lazy.overviews(), [(32, 17), (16, 8)]);
+        let dir = tempfile::tempdir().unwrap();
+        for step in [1, 2, 7, 16, 35] {
+            let path = dir.path().join("gdal.tif");
+            let mut writer = CogWriter::create(path.to_str().unwrap(), &raster, &opts).unwrap();
+            for y in (0..35).step_by(step) {
+                let count = step.min(35 - y);
+                writer.write_rows(slice_rows(&raster.data, 35, y..y + count, 65, 1), count).unwrap();
+                for level in &writer.levels[1..] {
+                    if let Some(CogReducer::Gdal(reducer)) = &level.overview {
+                        assert!(reducer.pending_rows <= 3, "only the unfinished resampling window is retained");
+                    }
+                }
+            }
+            writer.finish().unwrap();
+            assert_eq!(std::fs::read(path).unwrap(), expected, "slab size {step}");
+        }
+    }
+
+    #[test]
+    fn webp_lossless_preserves_rgb_and_alpha_and_quality_changes_output() {
+        for bands in [3, 4] {
+            let raster = layouts_raster(bands, DataType::U8);
+            let options = TiffOptions {
+                compression: Compression::WebP,
+                codec: CodecParams { webp_lossless: true, ..Default::default() },
+                ..Default::default()
+            };
+            let bytes = encode(&raster, &options).unwrap();
+            let back = crate::LazyRaster::from_tiff_bytes(bytes).unwrap().unwrap().read().unwrap();
+            assert_eq!(back.raster.data.to_f64_vec(), raster.data.to_f64_vec(), "{bands} bands, including colors under transparent alpha");
+        }
+        let rgba = layouts_raster(4, DataType::U8);
+        let encoded = encode(&rgba, &TiffOptions { compression: Compression::WebP, ..Default::default() }).unwrap();
+        let decoded = crate::LazyRaster::from_tiff_bytes(encoded).unwrap().unwrap().read().unwrap();
+        assert!(
+            decoded.raster.data.to_f64_vec()[3 * 70 * 50..] == rgba.data.to_f64_vec()[3 * 70 * 50..],
+            "lossy RGB preserves alpha exactly"
+        );
+        let raster = layouts_raster(3, DataType::U8);
+        let write = |quality| {
+            encode(
+                &raster,
+                &TiffOptions {
+                    compression: Compression::WebP,
+                    codec: CodecParams { webp_quality: quality, ..Default::default() },
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+        };
+        assert_ne!(write(10), write(95));
+    }
+
+    #[test]
+    fn jpeg_xl_roundtrips_native_sample_depths_and_layouts() {
+        for data_type in [DataType::U8, DataType::U16] {
+            for bands in [1, 3] {
+                let cfg = wbraster::RasterConfig { cols: 35, rows: 19, bands, data_type, ..Default::default() };
+                let data = match data_type {
+                    DataType::U8 => RasterData::U8((0..35 * 19 * bands).map(|i| (i * 37 % 256) as u8).collect()),
+                    _ => RasterData::U16((0..35 * 19 * bands).map(|i| (i * 113 % 65536) as u16).collect()),
+                };
+                let raster = Raster::from_data_native(cfg, data).unwrap();
+                for tiled in [false, true] {
+                    let bytes = encode(
+                        &raster,
+                        &TiffOptions { compression: Compression::Jxl, tile_size: tiled.then_some(16), ..Default::default() },
+                    )
+                    .unwrap();
+                    let back = crate::LazyRaster::from_tiff_bytes(bytes).unwrap().unwrap().read().unwrap();
+                    assert_eq!(back.raster.data.to_f64_vec(), raster.data.to_f64_vec(), "{data_type:?} x{bands} tiled={tiled}");
+                }
+            }
+        }
+    }
+
+    #[test]
     fn gcp_only_copies_preserve_all_points_without_an_affine() {
         let r = layouts_raster(1, DataType::U8);
         let gcps = (0..1599)
@@ -2850,13 +3150,21 @@ mod tests {
                 ..Default::default()
             })
             .collect();
-        let bytes = encode(&r, &TiffOptions { gcps, ..Default::default() }).unwrap();
+        let bytes = encode(&r, &TiffOptions { gcps, cog: true, tile_size: Some(16), ..Default::default() }).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let input = dir.path().join("input.tif");
+        std::fs::write(&input, &bytes).unwrap();
         let mut lazy = crate::LazyRaster::from_tiff_bytes(bytes).unwrap().unwrap();
         let header = lazy.header();
         assert_eq!(header.gcps.len(), 1599);
         assert!(header.raster.data.is_empty());
         let cropped = lazy.read_window(crate::Window::new(1, 2, 2, 2), &Default::default()).unwrap();
         assert_eq!((cropped.gcps[0].pixel, cropped.gcps[0].line), (-0.5, -1.5));
+        let (width, height) = lazy.overviews()[0];
+        let overview =
+            lazy.read_window(crate::Window::new(1, 2, 2, 2), &crate::WindowOptions { overview: Some(0), ..Default::default() }).unwrap();
+        assert_eq!(overview.gcps[0].pixel, header.gcps[0].pixel * width as f64 / r.cols as f64 - 1.0);
+        assert_eq!(overview.gcps[0].line, header.gcps[0].line * height as f64 / r.rows as f64 - 2.0);
         let whole = lazy.read().unwrap();
         assert_eq!(whole.gcps, header.gcps);
         let dir = tempfile::tempdir().unwrap();
@@ -2864,7 +3172,8 @@ mod tests {
         for (name, streamed) in [("streamed.tif", true), ("whole.tif", false)] {
             let path = dir.path().join(name);
             if streamed {
-                lazy.write(path.to_str().unwrap(), &options).unwrap();
+                let mut file = crate::open_raster_lazy(input.to_str().unwrap()).unwrap();
+                file.write(path.to_str().unwrap(), &options).unwrap();
             } else {
                 crate::write_raster_dataset(&whole, path.to_str().unwrap(), &options).unwrap();
             }
@@ -2879,10 +3188,38 @@ mod tests {
         let tags = crate::geotiff::read_geo_tags(&assigned).unwrap();
         assert!(tags.gcps.is_empty());
         assert_eq!(tags.geo_transform, Some(gt));
+        for gt in [gt, [10., 2., 0.1, 30., 0.2, -2.]] {
+            let mut assigned_ds = whole.clone();
+            assigned_ds.set_geo_transform(gt);
+            assert!(assigned_ds.gcps.is_empty());
+            let options = crate::RasterWriteOptions::default();
+            crate::write_raster_dataset(&assigned_ds, assigned.to_str().unwrap(), &options).unwrap();
+            let tags = crate::geotiff::read_geo_tags(&assigned).unwrap();
+            assert!(tags.gcps.is_empty());
+            assert_eq!(tags.geo_transform, Some(gt));
+            let bytes = crate::memory::write_raster_bytes(&assigned_ds, "assigned.tif", &options).unwrap();
+            let tags = crate::geotiff::read_geo_tags_from(std::io::Cursor::new(bytes)).unwrap();
+            assert!(tags.gcps.is_empty());
+            assert_eq!(tags.geo_transform, Some(gt));
+        }
     }
 
     #[test]
     fn color_interpretations_survive_lazy_reads_and_band_selection() {
+        let rgb = layouts_raster(3, DataType::U8);
+        let bytes = encode(
+            &rgb,
+            &TiffOptions {
+                compression: Compression::Jpeg,
+                photometric: Some(6),
+                codec: CodecParams { jpeg_ycbcr: true, ..Default::default() },
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let jpeg = crate::LazyRaster::from_tiff_bytes(bytes).unwrap().unwrap().header();
+        assert_eq!((1..=3).map(|b| jpeg.band_color_interp(b)).collect::<Vec<_>>(), ["Red", "Green", "Blue"]);
+
         let r = layouts_raster(4, DataType::U8);
         let opts = TiffOptions {
             photometric: Some(2),

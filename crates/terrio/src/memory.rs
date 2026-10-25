@@ -501,15 +501,14 @@ pub(crate) mod codec {
                     let name = options.compression.as_deref().unwrap_or_default();
                     Error::Unsupported(format!(
                         "{name} compression cannot be written in this build (NONE, LZW, DEFLATE, PACKBITS, ZSTD, LERC, LERC_DEFLATE, \
-                         LERC_ZSTD, JXL, JPEG)"
+                         LERC_ZSTD, JXL, JPEG, WEBP)"
                     ))
                 })?;
                 if options.band_metadata.is_empty() {
                     opts.band_metadata = ds.band_metadata.clone();
                 }
-                if options.gcps.is_empty() && options.geo_transform.is_none() {
-                    opts.gcps = ds.gcps.clone();
-                }
+                opts.gcps = options.inherited_gcps(ds);
+                opts.geo_transform = options.geo_transform.or(ds.affine);
                 // Complex bands as complex samples, as the file writer stores them.
                 opts.complex = ds.complex;
                 encode(&ds.raster, &opts)

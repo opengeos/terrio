@@ -56,6 +56,7 @@ e57 = { workspace = true, optional = true }
 delaunator = { workspace = true, optional = true }
 jpeg-encoder.workspace = true
 image-webp.workspace = true
+webp-rust.workspace = true
 # JPEG 2000, in WebAssembly builds too (see `drivers::jp2` for the allocator it links against).
 openjp2 = { workspace = true, optional = true }
 gribberish = { workspace = true, optional = true }

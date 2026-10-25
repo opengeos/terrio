@@ -99,6 +99,8 @@ pub enum ColorSelection {
 /// apply to it.
 #[derive(Debug, Clone)]
 pub struct DemOptions {
+    /// GDAL arithmetic version; 3.12 preserves existing results.
+    pub kernel_version: super::warp::KernelVersion,
     /// The band to process, from 1 (`-b`).
     pub band: usize,
     /// Vertical exaggeration, for hillshade (`-z`).
@@ -138,6 +140,7 @@ pub struct DemOptions {
 impl Default for DemOptions {
     fn default() -> Self {
         Self {
+            kernel_version: super::warp::KernelVersion::Gdal312,
             band: 1,
             z: 1.0,
             scale: None,
@@ -530,6 +533,102 @@ impl MultiDirectionalParams {
     }
 }
 
+/// GDAL 3.13 changed terrain arithmetic and parameters to Float32.
+#[derive(Clone, Copy)]
+struct Terrain313 {
+    alg: GradientAlg,
+    inv_ew: f32,
+    inv_ns: f32,
+    sin_alt: f32,
+    cos_az: f32,
+    sin_az: f32,
+    square_z: f32,
+    same_res: bool,
+    same_square: f32,
+    same_x: f32,
+    same_y: f32,
+}
+impl Terrain313 {
+    fn new(gt: &[f64; 6], o: &DemOptions, xs: f64, ys: f64) -> Self {
+        let inv_ew = (1.0 / (gt[1] * xs)) as f32;
+        let inv_ns = (1.0 / (gt[5] * ys)) as f32;
+        let alt = o.altitude as f32 * D2R as f32;
+        let az = o.azimuth as f32 * D2R as f32;
+        let z = (o.z / if o.gradient == GradientAlg::Horn { 8.0 } else { 2.0 }) as f32;
+        let ca = alt.cos() * z;
+        let cos_az = az.cos() * ca;
+        let sin_az = az.sin() * ca;
+        let square_z = z * z;
+        Self {
+            alg: o.gradient,
+            inv_ew,
+            inv_ns,
+            sin_alt: 254.0 * alt.sin(),
+            cos_az: 254.0 * cos_az,
+            sin_az: 254.0 * sin_az,
+            square_z,
+            same_res: gt[1] == -gt[5] && xs == ys,
+            same_square: square_z * inv_ew * inv_ew,
+            same_x: (254.0 * sin_az) * inv_ew,
+            same_y: (254.0 * cos_az) * -inv_ew,
+        }
+    }
+    fn numerator<T: Px>(&self, w: &[T; 9]) -> (f32, f32) {
+        let (x, y) = match self.alg {
+            GradientAlg::Horn => horn(w),
+            GradientAlg::ZevenbergenThorne => (w[3].sub(w[5]), w[7].sub(w[1])),
+        };
+        (x.f32(), y.f32())
+    }
+    fn shade<T: Px>(&self, w: &[T; 9], multi: bool) -> f32 {
+        let (num, den) = if self.same_res && self.alg == GradientAlg::Horn {
+            let (x, y) = HillshadeParams::same_res_acc(w);
+            let (x, y) = (x as f32, y as f32);
+            let terms =
+                if multi { (self.sin_alt + self.same_x * x) + self.same_y * y } else { self.sin_alt + (x * self.same_x + y * self.same_y) };
+            (terms, 1.0 + self.same_square * (x * x + y * y))
+        } else {
+            let (x, y) = self.numerator(w);
+            let (x, y) = (x * self.inv_ew, y * self.inv_ns);
+            (self.sin_alt - (y * self.cos_az - x * self.sin_az), 1.0 + self.square_z * (x * x + y * y))
+        };
+        let ratio = divide_sqrt313(num, den, multi);
+        if ratio <= 0.0 { 1.0 } else { 1.0 + ratio }
+    }
+}
+
+#[inline]
+fn divide_sqrt313(numerator: f32, denominator: f32, multi: bool) -> f32 {
+    if !multi {
+        return numerator / denominator.sqrt();
+    }
+    #[cfg(target_arch = "x86_64")]
+    {
+        use std::arch::x86_64::{_mm_cvtss_f32, _mm_rsqrt_ss, _mm_set_ss};
+        // SAFETY: SSE is in the x86-64 baseline. GDAL refines the estimate in Float32.
+        let estimate = unsafe { _mm_cvtss_f32(_mm_rsqrt_ss(_mm_set_ss(denominator))) };
+        numerator * (estimate * (1.5 - (denominator * 0.5) * (estimate * estimate)))
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        numerator / denominator.sqrt()
+    }
+}
+
+fn slope313<T: Px>(w: &[T; 9], alg: GradientAlg, ew: f64, ns: f64, percent: bool) -> f32 {
+    let (x, y, div) = match alg {
+        GradientAlg::Horn => {
+            let (x, y) = horn(w);
+            (x.f32(), y.f32(), 8.0)
+        }
+        GradientAlg::ZevenbergenThorne => (w[3].sub(w[5]).f32(), w[7].sub(w[1]).f32(), 2.0),
+    };
+    let dx = x * (1.0 / ew as f32);
+    let dy = y * (1.0 / ns as f32);
+    let root = (dx * dx + dy * dy).sqrt();
+    if percent { (100.0 / div) * root } else { (root * (1.0 / div)).atan() * R2D as f32 }
+}
+
 /// Slope, in degrees or percent.
 fn slope<T: Px>(w: &[T; 9], alg: GradientAlg, ewres_xscale: f64, nsres_yscale: f64, percent: bool) -> f32 {
     let (dx, dy, div) = match alg {
@@ -898,6 +997,12 @@ impl Terrain {
     /// `ds` is only read for its metadata.
     fn new(ds: &RasterDataset, product: DemProduct, o: &DemOptions) -> Result<Self> {
         o.validate()?;
+        if o.kernel_version == super::warp::KernelVersion::Gdal313
+            && (!matches!(product, DemProduct::Slope | DemProduct::Hillshade)
+                || (product == DemProduct::Hillshade && o.shading != Shading::Standard))
+        {
+            return Err(Error::Unsupported("GDAL 3.13 terrain arithmetic currently supports slope and standard hillshade".into()));
+        }
         if o.shading != Shading::Standard && product != DemProduct::Hillshade {
             return Err(Error::InvalidArgument("combined, multidirectional and Igor shading apply to hillshade only".into()));
         }
@@ -938,10 +1043,13 @@ impl Terrain {
             ($t:ty, $src:expr, $nd:expr) => {{
                 let hs = HillshadeParams::new(&gt, o, xscale, yscale);
                 let md = MultiDirectionalParams::new(&gt, o, xscale, yscale);
+                let modern = o.kernel_version == super::warp::KernelVersion::Gdal313;
+                let f313 = Terrain313::new(&gt, o, xscale, yscale);
                 let same_res = gt[1] == -gt[5] && xscale == yscale;
                 let (ew, ns) = (gt[1] * xscale, gt[5] * yscale);
                 let azimuth = !o.trigonometric;
                 let f: Box<dyn Fn(&[$t; 9]) -> f32 + Sync> = match product {
+                    DemProduct::Hillshade if modern => Box::new(move |w| f313.shade(w, false)),
                     DemProduct::Hillshade => match o.shading {
                         Shading::MultiDirectional => Box::new(move |w| md.shade(w)),
                         Shading::Combined => Box::new(move |w| hs.combined(w)),
@@ -951,7 +1059,7 @@ impl Terrain {
                     },
                     DemProduct::Slope => {
                         let (alg, percent) = (o.gradient, o.slope_percent);
-                        Box::new(move |w| slope(w, alg, ew, ns, percent))
+                        Box::new(move |w| if modern { slope313(w, alg, ew, ns, percent) } else { slope(w, alg, ew, ns, percent) })
                     }
                     DemProduct::Aspect => {
                         let alg = o.gradient;
@@ -963,7 +1071,7 @@ impl Terrain {
                     DemProduct::Roughness => Box::new(roughness::<$t>),
                 };
                 #[cfg(target_arch = "x86_64")]
-                let simd = move |w: &[$t; 9]| hs.same_res_simd(w);
+                let simd = move |w: &[$t; 9]| if modern { f313.shade(w, true) } else { hs.same_res_simd(w) };
                 #[cfg(target_arch = "x86_64")]
                 let multi: Option<&(dyn Fn(&[$t; 9]) -> f32 + Sync)> =
                     (product == DemProduct::Hillshade && o.shading == Shading::Standard && o.gradient == GradientAlg::Horn && same_res)
@@ -1564,6 +1672,17 @@ mod tests {
         // Window statistics don't use the pixel size, and keep the rotated geotransform.
         let tri = dem(&ds, DemProduct::Tri, &DemOptions::default()).unwrap();
         assert_eq!(tri.geo_transform(), [0.0, 0.0, 10.0, 0.0, 10.0, 0.0]);
+    }
+
+    /// Captured from GDAL 3.13.3 on this Float32 3x3 source, without SIMD columns.
+    #[test]
+    fn modern_terrain_matches_gdal_float32_golden_values() {
+        let ds = dem_ds(vec![942.315, 946.702, 951.43, 945.132, 943.95, 959.37, 948.15, 954.318, 960.01], 3, 3, DataType::F32, None, 3.5);
+        let options = DemOptions { kernel_version: super::super::warp::KernelVersion::Gdal313, ..Default::default() };
+        let slope = slope_map(&ds, &options).unwrap();
+        assert_eq!((slope.raster.get(0, 1, 1) as f32).to_bits(), 1115697630);
+        let hillshade = hillshade(&ds, &options).unwrap();
+        assert_eq!(hillshade.raster.get(0, 1, 1), 236.0);
     }
 
     #[test]

@@ -511,6 +511,17 @@ def suite_benchmark_metadata(ctx):
     )
 
 
+def suite_benchmark_compat(ctx):
+    """GDAL-versioned pyramids, terrain arithmetic and portable codec contracts."""
+    return suite_json_ops(
+        ctx, "benchmark-compat", "compare_benchmark_compat_with_gdal.py",
+        "Benchmark compatibility and codec roundtrips", "Installed GDAL independent decoder",
+        "GDAL 3.13 recursive COG pyramids and versioned slope/hillshade match exactly. "
+        "WebP lossless pixels/masks and JPEG XL Byte/UInt16 layouts roundtrip exactly; "
+        "lossy WebP quality must change valid decoded output, with no cross-encoder pixel equality claim.", 1,
+    )
+
+
 def suite_warp_policy(ctx):
     """Version-specific warp kernels and point-raster metadata on real terrain."""
     return suite_json_ops(
@@ -1136,6 +1147,7 @@ SUITES = OrderedDict(
         ("ops", suite_ops),
         ("warp-policy", suite_warp_policy),
         ("benchmark-metadata", suite_benchmark_metadata),
+        ("benchmark-compat", suite_benchmark_compat),
         ("catalogs", suite_catalogs),
         ("vrt", suite_vrt),
         ("overviews", suite_overviews),

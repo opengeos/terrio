@@ -125,7 +125,8 @@ fn collect_polygons(g: &wbvector::Geometry, out: &mut Polygons) {
     }
 }
 
-/// GDAL resampling behavior to reproduce. The default retains Terrio's GDAL 3.12 results.
+/// GDAL raster arithmetic version, shared by warp resampling and terrain operations.
+/// The default retains Terrio's GDAL 3.12 results.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum KernelVersion {
     /// Window-ratio scales and the GDAL 3.12 bilinear/cubic threshold.

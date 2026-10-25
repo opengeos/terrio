@@ -561,6 +561,7 @@ pub fn polygonize(src: JsValue, options: JsValue) -> Result<Dataset, JsError> {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", default, deny_unknown_fields)]
 struct DemArgs {
+    kernel_version: String,
     color_table: Option<String>,
     band: usize,
     z: f64,
@@ -585,6 +586,7 @@ struct DemArgs {
 impl Default for DemArgs {
     fn default() -> Self {
         Self {
+            kernel_version: "3.12".into(),
             color_table: None,
             band: 1,
             z: 1.0,
@@ -611,7 +613,7 @@ impl Default for DemArgs {
 /// Computes a terrain product of a DEM, as `terrio dem` (GDAL's `gdaldem`).
 ///
 /// `processing`: `hillshade`, `slope`, `aspect`, `color-relief`, `TRI`, `TPI` or `roughness`.
-/// Options: `band`, `z`, `scale`, `xscale`, `yscale`, `azimuth`, `altitude`, `combined`,
+/// Options: `kernelVersion` (`3.12` by default; `3.13` for slope and standard hillshade), `band`, `z`, `scale`, `xscale`, `yscale`, `azimuth`, `altitude`, `combined`,
 /// `multidirectional`, `igor`, `alg` (`Horn` or `ZevenbergenThorne`; `Riley` or `Wilson` for
 /// TRI), `percent`, `trigonometric`, `zeroForFlat`, `computeEdges`, and for color relief
 /// `colorTable` (the text of a color file: lines of `value R G B [A]`), `alpha`,
@@ -637,6 +639,7 @@ pub fn dem(src: JsValue, processing: &str, options: JsValue) -> Result<Dataset, 
         return Err(invalid("colorTable is needed by color-relief, and only by it"));
     }
     let mut o = DemOptions {
+        kernel_version: terrio::ops::warp::KernelVersion::parse(&a.kernel_version).map_err(js_err)?,
         band: a.band,
         z: a.z,
         scale: a.scale,

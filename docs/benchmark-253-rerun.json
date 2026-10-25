@@ -1,0 +1,1498 @@
+{
+  "base_revision": "0d59291d94ae229d531d0de8d6a9e8933da2ad64",
+  "working_tree_source_diff_sha256": "99a5cc7575d9cfe0a0ea86289a818ac4231b3c4d705c1aa2d5f88fbb084b4d85",
+  "release_binary_sha256": "4d88421a60101e0cbf56eabec4b00cafed19cfc17ac2f48e27e4a2ec47bfc1ae",
+  "provenance": "Release build of the fixes in this PR on top of base_revision, measured before committing; the source diff hash excludes documentation and binding test files.",
+  "runs": [
+    {
+      "machine": {
+        "timestamp_utc": "2026-10-25T04:30:06Z",
+        "command": [
+          "scripts/benchmark.py",
+          "../terrio-data",
+          "--only",
+          "COG (Deflate)",
+          "--threads",
+          "2",
+          "--out",
+          "/home/qiusheng/Documents/GitHub/terrio-parity-scratch/benchmark-253-cog.md"
+        ],
+        "source_commit": "0d59291d94ae229d531d0de8d6a9e8933da2ad64",
+        "platform": "Linux-7.3.0-3-cachyos-x86_64-with-glibc2.44",
+        "processor": "Intel(R) Xeon(R) w7-3445",
+        "available_cpus": 40,
+        "load_average": [
+          6.96142578125,
+          8.224609375,
+          6.8583984375
+        ],
+        "gdal": "GDAL 3.13.3 \"Iowa City\", released 2026/08/13",
+        "proj_search_paths": [
+          "/home/qiusheng/terrio-benchmark-gdal/share/proj"
+        ],
+        "terrio": "terrio 0.5.0",
+        "budgets": [
+          1,
+          2
+        ],
+        "affinity": true,
+        "runs": 7,
+        "large_runs": 5,
+        "tune_runs": 3,
+        "max_background_cpus": 1.0
+      },
+      "cases": [
+        {
+          "group": "Raster conversion",
+          "task": "GeoTIFF \u2192 COG (Deflate): USGS 3DEP tile",
+          "commands": [
+            [
+              "/home/qiusheng/Documents/GitHub/terrio-review-target/release/terrio",
+              "convert",
+              "--co",
+              "COG_OVERVIEW_POLICY=GDAL_3_13",
+              "/home/qiusheng/Documents/GitHub/terrio-data/usgs_dem.tif",
+              "/home/qiusheng/Documents/GitHub/terrio-parity-scratch/terrio-bench-8x1d7x2i/terrio/a.tif",
+              "-f",
+              "COG",
+              "--compress",
+              "DEFLATE"
+            ],
+            [
+              "gdal_translate",
+              "-q",
+              "-of",
+              "COG",
+              "-co",
+              "COMPRESS=DEFLATE",
+              "-co",
+              "OVERVIEWS=IGNORE_EXISTING",
+              "-co",
+              "RESAMPLING=AVERAGE",
+              "/home/qiusheng/Documents/GitHub/terrio-data/usgs_dem.tif",
+              "/home/qiusheng/Documents/GitHub/terrio-parity-scratch/terrio-bench-8x1d7x2i/gdal/a.tif"
+            ]
+          ],
+          "load_average_end": [
+            4.990234375,
+            7.54052734375,
+            6.68359375
+          ],
+          "budgets": [
+            2,
+            2
+          ],
+          "tuning": [
+            {
+              "budget": 1,
+              "samples": [
+                [
+                  2.2196050139900763,
+                  2.176538457017159,
+                  2.203431472997181
+                ],
+                [
+                  1.443900501995813,
+                  1.418042011995567,
+                  1.4445509840152226
+                ]
+              ],
+              "background_cpus": [
+                [
+                  1.6401264986876933,
+                  1.5020327297203524,
+                  1.7645649740402667
+                ],
+                [
+                  1.6723735442680348,
+                  1.3520565567563025,
+                  1.5907240557160969
+                ]
+              ]
+            },
+            {
+              "budget": 2,
+              "samples": [
+                [
+                  1.157686175982235,
+                  1.169919985026354,
+                  1.1501585730002262
+                ],
+                [
+                  0.8635853739979211,
+                  0.85318161098985,
+                  0.8683738200052176
+                ]
+              ],
+              "background_cpus": [
+                [
+                  2.692151866902759,
+                  2.476408675017275,
+                  1.7917581526545046
+                ],
+                [
+                  2.769378769063127,
+                  1.7301920024500175,
+                  1.5273974980804192
+                ]
+              ]
+            }
+          ],
+          "samples": [
+            [
+              1.138943397992989,
+              1.1376882570039015,
+              1.141001412004698,
+              1.1281195420015138,
+              1.1436266080127098,
+              1.1633210080035497,
+              1.286044687993126
+            ],
+            [
+              0.8538924760068767,
+              0.8415658549929503,
+              0.8113471779797692,
+              0.8511339609976858,
+              0.8897171819990035,
+              0.8268906550074462,
+              0.8351157849829178
+            ]
+          ],
+          "medians": [
+            1.141001412004698,
+            0.8415658549929503
+          ],
+          "validation": [],
+          "timing_notes": [],
+          "background_cpus": [
+            [
+              1.5282796344419587,
+              1.4783232486063849,
+              1.778127510389802,
+              1.7470799206350627,
+              1.4984777269227698,
+              1.6499624667646335,
+              1.4442841818773622
+            ],
+            [
+              1.5605067821737646,
+              1.6966693592118887,
+              1.5138069537773873,
+              1.9500420334386226,
+              1.647784295552714,
+              1.6346901393659283,
+              1.6308409258650145
+            ]
+          ],
+          "background_series_averages": {
+            "tuning": [
+              1.5979781433394549,
+              2.1885196651482848
+            ],
+            "measurement": 1.618749397935292
+          },
+          "measurement_issues": [
+            "background CPU use exceeded 1 CPUs; rerun on an idle machine"
+          ],
+          "ratio": null
+        }
+      ]
+    },
+    {
+      "machine": {
+        "timestamp_utc": "2026-10-25T04:30:46Z",
+        "command": [
+          "scripts/benchmark.py",
+          "../terrio-data",
+          "--only",
+          "Zarr",
+          "--threads",
+          "2",
+          "--out",
+          "/home/qiusheng/Documents/GitHub/terrio-parity-scratch/benchmark-253-zarr.md"
+        ],
+        "source_commit": "0d59291d94ae229d531d0de8d6a9e8933da2ad64",
+        "platform": "Linux-7.3.0-3-cachyos-x86_64-with-glibc2.44",
+        "processor": "Intel(R) Xeon(R) w7-3445",
+        "available_cpus": 40,
+        "load_average": [
+          4.990234375,
+          7.54052734375,
+          6.68359375
+        ],
+        "gdal": "GDAL 3.13.3 \"Iowa City\", released 2026/08/13",
+        "proj_search_paths": [
+          "/home/qiusheng/terrio-benchmark-gdal/share/proj"
+        ],
+        "terrio": "terrio 0.5.0",
+        "budgets": [
+          1,
+          2
+        ],
+        "affinity": true,
+        "runs": 7,
+        "large_runs": 5,
+        "tune_runs": 3,
+        "max_background_cpus": 1.0
+      },
+      "cases": [
+        {
+          "group": "Raster conversion",
+          "task": "GeoTIFF \u2192 Zarr: SRTM 90 m",
+          "commands": [
+            [
+              "/home/qiusheng/Documents/GitHub/terrio-review-target/release/terrio",
+              "convert",
+              "/home/qiusheng/Documents/GitHub/terrio-data/srtm90.tif",
+              "/home/qiusheng/Documents/GitHub/terrio-parity-scratch/terrio-bench-abr0dl40/terrio/c.zarr"
+            ],
+            [
+              "gdal_translate",
+              "-q",
+              "-of",
+              "Zarr",
+              "/home/qiusheng/Documents/GitHub/terrio-data/srtm90.tif",
+              "/home/qiusheng/Documents/GitHub/terrio-parity-scratch/terrio-bench-abr0dl40/gdal/c.zarr"
+            ]
+          ],
+          "load_average_end": [
+            5.0712890625,
+            7.5146484375,
+            6.6796875
+          ],
+          "budgets": [
+            2,
+            2
+          ],
+          "tuning": [
+            {
+              "budget": 1,
+              "samples": [
+                [
+                  0.12528547100373544,
+                  0.12580300300032832,
+                  0.1199044730165042
+                ],
+                [
+                  0.10139521799283102,
+                  0.09887138998601586,
+                  0.09910550998756662
+                ]
+              ],
+              "background_cpus": [
+                [
+                  2.6790017810823397,
+                  2.903468051471979,
+                  1.5102522480977445
+                ],
+                [
+                  3.052017700227995,
+                  1.8411190531181045,
+                  2.338447177191062
+                ]
+              ]
+            },
+            {
+              "budget": 2,
+              "samples": [
+                [
+                  0.08690794798894785,
+                  0.08788965601706877,
+                  0.08810277297743596
+                ],
+                [
+                  0.07570355301140808,
+                  0.08354458399116993,
+                  0.07609253900591284
+                ]
+              ],
+              "background_cpus": [
+                [
+                  1.7610817372814214,
+                  2.522538032617403,
+                  1.9388379533787676
+                ],
+                [
+                  1.8890791027793536,
+                  2.4238435381673824,
+                  2.13065567448115
+                ]
+              ]
+            }
+          ],
+          "samples": [
+            [
+              0.08856986500904895,
+              0.09054506401298568,
+              0.19286401401041076,
+              0.09285911300685257,
+              0.09511012598522939,
+              0.08812022898928262,
+              0.09520636001252569
+            ],
+            [
+              0.07404227700317279,
+              0.07957256300142035,
+              0.07811832299921662,
+              0.07772226398810744,
+              0.07553831400582567,
+              0.07492417600587942,
+              0.07883283999399282
+            ]
+          ],
+          "medians": [
+            0.09285911300685257,
+            0.07772226398810744
+          ],
+          "validation": [],
+          "timing_notes": [
+            "wide timing range"
+          ],
+          "background_cpus": [
+            [
+              2.6163187666861094,
+              2.1972263438850517,
+              2.729000548563639,
+              2.437488283668261,
+              2.7299616873001833,
+              7.620191274448851,
+              4.092268625408722
+            ],
+            [
+              2.0906434306805566,
+              2.0498648512266087,
+              2.4440872845166615,
+              2.321947287393311,
+              2.3214709279584955,
+              3.123371020663016,
+              4.514311549682603
+            ]
+          ],
+          "background_series_averages": {
+            "tuning": [
+              2.394572873413958,
+              2.1138563227602183
+            ],
+            "measurement": 3.087809028431299
+          },
+          "measurement_issues": [
+            "background CPU use exceeded 1 CPUs; rerun on an idle machine"
+          ],
+          "ratio": null
+        }
+      ]
+    },
+    {
+      "machine": {
+        "timestamp_utc": "2026-10-25T04:30:49Z",
+        "command": [
+          "scripts/benchmark.py",
+          "../terrio-data",
+          "--only",
+          "bilinear",
+          "--threads",
+          "2",
+          "--out",
+          "/home/qiusheng/Documents/GitHub/terrio-parity-scratch/benchmark-253-warp.md"
+        ],
+        "source_commit": "0d59291d94ae229d531d0de8d6a9e8933da2ad64",
+        "platform": "Linux-7.3.0-3-cachyos-x86_64-with-glibc2.44",
+        "processor": "Intel(R) Xeon(R) w7-3445",
+        "available_cpus": 40,
+        "load_average": [
+          5.0712890625,
+          7.5146484375,
+          6.6796875
+        ],
+        "gdal": "GDAL 3.13.3 \"Iowa City\", released 2026/08/13",
+        "proj_search_paths": [
+          "/home/qiusheng/terrio-benchmark-gdal/share/proj"
+        ],
+        "terrio": "terrio 0.5.0",
+        "budgets": [
+          1,
+          2
+        ],
+        "affinity": true,
+        "runs": 7,
+        "large_runs": 5,
+        "tune_runs": 3,
+        "max_background_cpus": 1.0
+      },
+      "cases": [
+        {
+          "group": "Raster operations",
+          "task": "Warp to NAD83 / UTM 13N, bilinear: USGS 3DEP tile",
+          "commands": [
+            [
+              "/home/qiusheng/Documents/GitHub/terrio-review-target/release/terrio",
+              "warp",
+              "--kernel-version",
+              "3.13",
+              "/home/qiusheng/Documents/GitHub/terrio-data/usgs_dem.tif",
+              "/home/qiusheng/Documents/GitHub/terrio-parity-scratch/terrio-bench-_syc263p/terrio/f.tif",
+              "--t-srs",
+              "EPSG:26913",
+              "-r",
+              "bilinear"
+            ],
+            [
+              "gdalwarp",
+              "-q",
+              "-multi",
+              "-wo",
+              "NUM_THREADS=2",
+              "-t_srs",
+              "EPSG:26913",
+              "-r",
+              "bilinear",
+              "/home/qiusheng/Documents/GitHub/terrio-data/usgs_dem.tif",
+              "/home/qiusheng/Documents/GitHub/terrio-parity-scratch/terrio-bench-_syc263p/gdal/f.tif"
+            ]
+          ],
+          "load_average_end": [
+            5.1123046875,
+            7.3662109375,
+            6.64794921875
+          ],
+          "budgets": [
+            2,
+            2
+          ],
+          "tuning": [
+            {
+              "budget": 1,
+              "samples": [
+                [
+                  1.2880622110096738,
+                  1.2645795999851543,
+                  1.275201919983374
+                ],
+                [
+                  0.7325232600269374,
+                  0.7241311419929843,
+                  0.7160629889986012
+                ]
+              ],
+              "background_cpus": [
+                [
+                  3.4375583431579244,
+                  1.8673209658158845,
+                  1.9760658766524535
+                ],
+                [
+                  2.376645350516863,
+                  1.9597196111581106,
+                  1.4201962894403415
+                ]
+              ]
+            },
+            {
+              "budget": 2,
+              "samples": [
+                [
+                  0.6800067680014763,
+                  0.6774002329912037,
+                  0.6758992919931188
+                ],
+                [
+                  0.42865988399717025,
+                  0.4196743310021702,
+                  0.44392971697379835
+                ]
+              ],
+              "background_cpus": [
+                [
+                  2.066950015903012,
+                  1.938236711665783,
+                  1.77927986363495
+                ],
+                [
+                  1.8060565705367875,
+                  1.746220690272026,
+                  1.5607110167299312
+                ]
+              ]
+            }
+          ],
+          "samples": [
+            [
+              0.6602295349875931,
+              0.7198122890258674,
+              0.683737868006574,
+              0.6730775090109091,
+              0.6680357790028211,
+              0.656634752987884,
+              0.6707983719825279
+            ],
+            [
+              0.471107949008001,
+              0.4266444050008431,
+              0.43072625299100764,
+              0.4253977680054959,
+              0.4289889159845188,
+              0.42143685001065023,
+              0.4222535550070461
+            ]
+          ],
+          "medians": [
+            0.6707983719825279,
+            0.4266444050008431
+          ],
+          "validation": [
+            "band 1, level -1, rows 1024:1152: 1 differing pixels (exact check)"
+          ],
+          "timing_notes": [],
+          "background_cpus": [
+            [
+              1.5714807425880075,
+              1.5548234130733551,
+              2.1815246307156007,
+              1.8933629232399218,
+              1.569866514478594,
+              1.4597521614441875,
+              1.5662336759022868
+            ],
+            [
+              1.597943744264654,
+              1.52586555075692,
+              1.97898547872937,
+              2.1032573917809025,
+              1.623699294099414,
+              1.8204744079228279,
+              1.549469488783942
+            ]
+          ],
+          "background_series_averages": {
+            "tuning": [
+              2.247463149825425,
+              1.8405835949829814
+            ],
+            "measurement": 1.7076596009117337
+          },
+          "measurement_issues": [
+            "background CPU use exceeded 1 CPUs; rerun on an idle machine"
+          ],
+          "ratio": null
+        }
+      ]
+    },
+    {
+      "machine": {
+        "timestamp_utc": "2026-10-25T04:31:11Z",
+        "command": [
+          "scripts/benchmark.py",
+          "../terrio-data",
+          "--only",
+          "tiles \u2192 VRT",
+          "--threads",
+          "2",
+          "--out",
+          "/home/qiusheng/Documents/GitHub/terrio-parity-scratch/benchmark-253-vrt.md"
+        ],
+        "source_commit": "0d59291d94ae229d531d0de8d6a9e8933da2ad64",
+        "platform": "Linux-7.3.0-3-cachyos-x86_64-with-glibc2.44",
+        "processor": "Intel(R) Xeon(R) w7-3445",
+        "available_cpus": 40,
+        "load_average": [
+          5.1123046875,
+          7.3662109375,
+          6.64794921875
+        ],
+        "gdal": "GDAL 3.13.3 \"Iowa City\", released 2026/08/13",
+        "proj_search_paths": [
+          "/home/qiusheng/terrio-benchmark-gdal/share/proj"
+        ],
+        "terrio": "terrio 0.5.0",
+        "budgets": [
+          1,
+          2
+        ],
+        "affinity": true,
+        "runs": 7,
+        "large_runs": 5,
+        "tune_runs": 3,
+        "max_background_cpus": 1.0
+      },
+      "cases": [
+        {
+          "group": "Raster operations",
+          "task": "Mosaic 4 USGS 3DEP tiles \u2192 VRT",
+          "commands": [
+            [
+              "/home/qiusheng/Documents/GitHub/terrio-review-target/release/terrio",
+              "mosaic",
+              "/home/qiusheng/Documents/GitHub/terrio-data/USGS_1_n40w106.tif",
+              "/home/qiusheng/Documents/GitHub/terrio-data/USGS_1_n40w107.tif",
+              "/home/qiusheng/Documents/GitHub/terrio-data/USGS_1_n41w106.tif",
+              "/home/qiusheng/Documents/GitHub/terrio-data/USGS_1_n41w107.tif",
+              "/home/qiusheng/Documents/GitHub/terrio-parity-scratch/terrio-bench-wzx4aapk/terrio/h.vrt"
+            ],
+            [
+              "gdal",
+              "raster",
+              "mosaic",
+              "--config",
+              "VRT_VIRTUAL_OVERVIEWS",
+              "NO",
+              "-q",
+              "--resolution",
+              "average",
+              "-f",
+              "VRT",
+              "/home/qiusheng/Documents/GitHub/terrio-data/USGS_1_n40w106.tif",
+              "/home/qiusheng/Documents/GitHub/terrio-data/USGS_1_n40w107.tif",
+              "/home/qiusheng/Documents/GitHub/terrio-data/USGS_1_n41w106.tif",
+              "/home/qiusheng/Documents/GitHub/terrio-data/USGS_1_n41w107.tif",
+              "/home/qiusheng/Documents/GitHub/terrio-parity-scratch/terrio-bench-wzx4aapk/gdal/h.vrt"
+            ]
+          ],
+          "load_average_end": [
+            4.86279296875,
+            7.27685546875,
+            6.62255859375
+          ],
+          "budgets": [
+            1,
+            2
+          ],
+          "tuning": [
+            {
+              "budget": 1,
+              "samples": [
+                [
+                  0.014631684985943139,
+                  0.013971506006782874,
+                  0.01582331000827253
+                ],
+                [
+                  0.03825790999690071,
+                  0.03850527701433748,
+                  0.037584973993944004
+                ]
+              ],
+              "background_cpus": [
+                [
+                  1.0815569038513098,
+                  0.4591487857867365,
+                  1.572869394851096
+                ],
+                [
+                  1.6362629348598374,
+                  2.133837394930298,
+                  1.1515506160803588
+                ]
+              ]
+            },
+            {
+              "budget": 2,
+              "samples": [
+                [
+                  0.017726977996062487,
+                  0.016159424994839355,
+                  0.018230323999887332
+                ],
+                [
+                  0.040088815992930904,
+                  0.037700351007515565,
+                  0.036835708015132695
+                ]
+              ],
+              "background_cpus": [
+                [
+                  2.4209428175186907,
+                  0.9038069062598815,
+                  1.2332748403690756
+                ],
+                [
+                  2.2653699730286556,
+                  1.6749446200260605,
+                  1.739914977792816
+                ]
+              ]
+            }
+          ],
+          "samples": [
+            [
+              0.01580740700592287,
+              0.016968390002148226,
+              0.01538716399227269,
+              0.016571353015024215,
+              0.014922259986633435,
+              0.01623243300127797,
+              0.014210102992365137
+            ],
+            [
+              0.03793704099371098,
+              0.037738355982583016,
+              0.040365887980442494,
+              0.03927635098807514,
+              0.037545031984336674,
+              0.03716619900660589,
+              0.039607073995284736
+            ]
+          ],
+          "medians": [
+            0.01580740700592287,
+            0.03793704099371098
+          ],
+          "validation": [],
+          "timing_notes": [],
+          "background_cpus": [
+            [
+              1.5788800799461546,
+              1.9922337972127209,
+              1.634349256944426,
+              2.0621731982647162,
+              2.39246601802474,
+              1.5070445643553017,
+              1.1467897197293544
+            ],
+            [
+              1.6536345042597462,
+              1.9359348886249392,
+              0.9997798135307635,
+              1.5596408127454466,
+              1.948699897673633,
+              1.1723555606738627,
+              1.2892141432483173
+            ]
+          ],
+          "background_series_averages": {
+            "tuning": [
+              1.4811746222128004,
+              1.7875383017357527
+            ],
+            "measurement": 1.5793880457136298
+          },
+          "measurement_issues": [
+            "background CPU use exceeded 1 CPUs; rerun on an idle machine"
+          ],
+          "ratio": null
+        }
+      ]
+    },
+    {
+      "machine": {
+        "timestamp_utc": "2026-10-25T04:31:15Z",
+        "command": [
+          "scripts/benchmark.py",
+          "../terrio-data",
+          "--only",
+          "populated places",
+          "--threads",
+          "2",
+          "--out",
+          "/home/qiusheng/Documents/GitHub/terrio-parity-scratch/benchmark-253-places.md"
+        ],
+        "source_commit": "0d59291d94ae229d531d0de8d6a9e8933da2ad64",
+        "platform": "Linux-7.3.0-3-cachyos-x86_64-with-glibc2.44",
+        "processor": "Intel(R) Xeon(R) w7-3445",
+        "available_cpus": 40,
+        "load_average": [
+          4.86279296875,
+          7.27685546875,
+          6.62255859375
+        ],
+        "gdal": "GDAL 3.13.3 \"Iowa City\", released 2026/08/13",
+        "proj_search_paths": [
+          "/home/qiusheng/terrio-benchmark-gdal/share/proj"
+        ],
+        "terrio": "terrio 0.5.0",
+        "budgets": [
+          1,
+          2
+        ],
+        "affinity": true,
+        "runs": 7,
+        "large_runs": 5,
+        "tune_runs": 3,
+        "max_background_cpus": 1.0
+      },
+      "cases": [
+        {
+          "group": "Vector conversion",
+          "task": "Shapefile \u2192 GeoPackage: 7,342 populated places",
+          "commands": [
+            [
+              "/home/qiusheng/Documents/GitHub/terrio-review-target/release/terrio",
+              "convert",
+              "/home/qiusheng/Documents/GitHub/terrio-data/ne_places/ne_10m_populated_places_simple.shp",
+              "/home/qiusheng/Documents/GitHub/terrio-parity-scratch/terrio-bench-w3nrvl20/terrio/i.gpkg"
+            ],
+            [
+              "ogr2ogr",
+              "/home/qiusheng/Documents/GitHub/terrio-parity-scratch/terrio-bench-w3nrvl20/gdal/i.gpkg",
+              "/home/qiusheng/Documents/GitHub/terrio-data/ne_places/ne_10m_populated_places_simple.shp"
+            ]
+          ],
+          "load_average_end": [
+            4.55322265625,
+            7.17236328125,
+            6.59228515625
+          ],
+          "budgets": [
+            2,
+            2
+          ],
+          "tuning": [
+            {
+              "budget": 1,
+              "samples": [
+                [
+                  0.08978912699967623,
+                  0.08919759999844246,
+                  0.0892126550024841
+                ],
+                [
+                  0.08659906301181763,
+                  0.08697988200583495,
+                  0.08656626101583242
+                ]
+              ],
+              "background_cpus": [
+                [
+                  2.128687586289027,
+                  2.153970510768166,
+                  2.0375696700604298
+                ],
+                [
+                  2.244065850936749,
+                  1.540183739994881,
+                  2.474243400756247
+                ]
+              ]
+            },
+            {
+              "budget": 2,
+              "samples": [
+                [
+                  0.06746971100801602,
+                  0.0665034200064838,
+                  0.07301166100660339
+                ],
+                [
+                  0.0855719720129855,
+                  0.08630596700822935,
+                  0.08754616399528459
+                ]
+              ],
+              "background_cpus": [
+                [
+                  2.0510240508504993,
+                  2.0981778075138,
+                  3.2138153922682084
+                ],
+                [
+                  2.051711511132065,
+                  2.0218532513826615,
+                  3.4642523004240964
+                ]
+              ]
+            }
+          ],
+          "samples": [
+            [
+              0.06845351899391972,
+              0.0682786870165728,
+              0.06939512499957345,
+              0.06864153599599376,
+              0.06863066501682624,
+              0.06851344200549647,
+              0.06687769800191745
+            ],
+            [
+              0.08475834401906468,
+              0.08509484599926509,
+              0.08510016900254413,
+              0.0852150909777265,
+              0.0862474080058746,
+              0.08776634000241756,
+              0.08731745500699617
+            ]
+          ],
+          "medians": [
+            0.06851344200549647,
+            0.0852150909777265
+          ],
+          "validation": [],
+          "timing_notes": [],
+          "background_cpus": [
+            [
+              1.7156313043540383,
+              2.008298723554693,
+              1.6739360288415233,
+              1.5630623428373045,
+              2.2856109577481396,
+              1.8598686074163027,
+              1.6338630565112506
+            ],
+            [
+              1.6039836731765418,
+              1.5940683407927179,
+              1.3622299629790804,
+              1.5936261806908822,
+              1.3306139002532926,
+              1.5174040522641359,
+              1.6441157151210033
+            ]
+          ],
+          "background_series_averages": {
+            "tuning": [
+              2.0962152829880347,
+              2.499765789971557
+            ],
+            "measurement": 1.6536304719334296
+          },
+          "measurement_issues": [
+            "background CPU use exceeded 1 CPUs; rerun on an idle machine"
+          ],
+          "ratio": null
+        }
+      ]
+    },
+    {
+      "machine": {
+        "timestamp_utc": "2026-10-25T04:31:19Z",
+        "command": [
+          "scripts/benchmark.py",
+          "../terrio-data",
+          "--only",
+          "Filter + reproject",
+          "--threads",
+          "2",
+          "--out",
+          "/home/qiusheng/Documents/GitHub/terrio-parity-scratch/benchmark-253-counties.md"
+        ],
+        "source_commit": "0d59291d94ae229d531d0de8d6a9e8933da2ad64",
+        "platform": "Linux-7.3.0-3-cachyos-x86_64-with-glibc2.44",
+        "processor": "Intel(R) Xeon(R) w7-3445",
+        "available_cpus": 40,
+        "load_average": [
+          4.55322265625,
+          7.17236328125,
+          6.59228515625
+        ],
+        "gdal": "GDAL 3.13.3 \"Iowa City\", released 2026/08/13",
+        "proj_search_paths": [
+          "/home/qiusheng/terrio-benchmark-gdal/share/proj"
+        ],
+        "terrio": "terrio 0.5.0",
+        "budgets": [
+          1,
+          2
+        ],
+        "affinity": true,
+        "runs": 7,
+        "large_runs": 5,
+        "tune_runs": 3,
+        "max_background_cpus": 1.0
+      },
+      "cases": [
+        {
+          "group": "Vector conversion",
+          "task": "Filter + reproject: US counties \u2192 EPSG:5070",
+          "commands": [
+            [
+              "/home/qiusheng/Documents/GitHub/terrio-review-target/release/terrio",
+              "convert",
+              "/home/qiusheng/Documents/GitHub/terrio-data/UScounties.gpkg",
+              "/home/qiusheng/Documents/GitHub/terrio-parity-scratch/terrio-bench-iu82im75/terrio/m.gpkg",
+              "--where",
+              "STATE_FIPS = '47'",
+              "--t-srs",
+              "EPSG:5070"
+            ],
+            [
+              "ogr2ogr",
+              "-where",
+              "STATE_FIPS = '47'",
+              "-t_srs",
+              "EPSG:5070",
+              "/home/qiusheng/Documents/GitHub/terrio-parity-scratch/terrio-bench-iu82im75/gdal/m.gpkg",
+              "/home/qiusheng/Documents/GitHub/terrio-data/UScounties.gpkg"
+            ]
+          ],
+          "load_average_end": [
+            4.55322265625,
+            7.17236328125,
+            6.59228515625
+          ],
+          "budgets": [
+            2,
+            1
+          ],
+          "tuning": [
+            {
+              "budget": 1,
+              "samples": [
+                [
+                  0.059631787007674575,
+                  0.059314573009032756,
+                  0.059081609011627734
+                ],
+                [
+                  0.05268933699699119,
+                  0.05388778500491753,
+                  0.05291556700831279
+                ]
+              ],
+              "background_cpus": [
+                [
+                  1.7008713829009154,
+                  1.712395367275571,
+                  2.9058281054530073
+                ],
+                [
+                  1.8672658573954215,
+                  1.9821375086475304,
+                  1.6583399739472586
+                ]
+              ]
+            },
+            {
+              "budget": 2,
+              "samples": [
+                [
+                  0.04820818800362758,
+                  0.04804539500037208,
+                  0.050501284014899284
+                ],
+                [
+                  0.05437483798596077,
+                  0.05652456299867481,
+                  0.05478745000436902
+                ]
+              ],
+              "background_cpus": [
+                [
+                  2.0185989962713045,
+                  2.4399841035819323,
+                  1.8851797907654877
+                ],
+                [
+                  1.959858713696052,
+                  2.199539338990064,
+                  1.9396230345475478
+                ]
+              ]
+            }
+          ],
+          "samples": [
+            [
+              0.04861981197609566,
+              0.05010103699169122,
+              0.048575135006103665,
+              0.04853839598945342,
+              0.04944354499457404,
+              0.050897990993689746,
+              0.04864159898716025
+            ],
+            [
+              0.05344355999841355,
+              0.05211485200561583,
+              0.05301025899825618,
+              0.053038529003970325,
+              0.053264906018739566,
+              0.053596819983795285,
+              0.05285578197799623
+            ]
+          ],
+          "medians": [
+            0.04864159898716025,
+            0.053038529003970325
+          ],
+          "validation": [
+            "layer 0: feature attributes/normalized geometries differ (exact check)"
+          ],
+          "timing_notes": [],
+          "background_cpus": [
+            [
+              3.0291972365416258,
+              2.0868629913355585,
+              2.190956340698521,
+              2.8381860846778366,
+              1.942700506744045,
+              1.6662936663609729,
+              3.235193810417281
+            ],
+            [
+              2.7536339262916316,
+              1.8918215485416503,
+              2.220079702794528,
+              2.0296188815516114,
+              2.390842480908901,
+              1.9985887234537953,
+              2.045339147145746
+            ]
+          ],
+          "background_series_averages": {
+            "tuning": [
+              1.9780330006459454,
+              2.0704949522254124
+            ],
+            "measurement": 2.301100182792138
+          },
+          "measurement_issues": [
+            "background CPU use exceeded 1 CPUs; rerun on an idle machine"
+          ],
+          "ratio": null
+        }
+      ]
+    },
+    {
+      "machine": {
+        "timestamp_utc": "2026-10-25T04:31:21Z",
+        "command": [
+          "scripts/benchmark.py",
+          "--large",
+          "../terrio-large-data",
+          "--only",
+          "Hillshade",
+          "--threads",
+          "2",
+          "--out",
+          "/home/qiusheng/Documents/GitHub/terrio-parity-scratch/benchmark-253-hillshade.md"
+        ],
+        "source_commit": "0d59291d94ae229d531d0de8d6a9e8933da2ad64",
+        "platform": "Linux-7.3.0-3-cachyos-x86_64-with-glibc2.44",
+        "processor": "Intel(R) Xeon(R) w7-3445",
+        "available_cpus": 40,
+        "load_average": [
+          4.55322265625,
+          7.17236328125,
+          6.59228515625
+        ],
+        "gdal": "GDAL 3.13.3 \"Iowa City\", released 2026/08/13",
+        "proj_search_paths": [
+          "/home/qiusheng/terrio-benchmark-gdal/share/proj"
+        ],
+        "terrio": "terrio 0.5.0",
+        "budgets": [
+          1,
+          2
+        ],
+        "affinity": true,
+        "runs": 7,
+        "large_runs": 5,
+        "tune_runs": 3,
+        "max_background_cpus": 1.0
+      },
+      "cases": [
+        {
+          "group": "Large rasters",
+          "task": "Hillshade of the mosaic",
+          "commands": [
+            [
+              "/home/qiusheng/Documents/GitHub/terrio-review-target/release/terrio",
+              "dem",
+              "hillshade",
+              "--kernel-version",
+              "3.13",
+              "/home/qiusheng/Documents/GitHub/terrio-large-data/dem16.tif",
+              "/home/qiusheng/Documents/GitHub/terrio-parity-scratch/terrio-bench-6gpftlv2/terrio/e.tif"
+            ],
+            [
+              "gdaldem",
+              "hillshade",
+              "-q",
+              "/home/qiusheng/Documents/GitHub/terrio-large-data/dem16.tif",
+              "/home/qiusheng/Documents/GitHub/terrio-parity-scratch/terrio-bench-6gpftlv2/gdal/e.tif"
+            ]
+          ],
+          "load_average_end": [
+            4.43017578125,
+            6.14990234375,
+            6.28369140625
+          ],
+          "budgets": [
+            2,
+            1
+          ],
+          "tuning": [
+            {
+              "budget": 1,
+              "samples": [
+                [
+                  6.982412245997693,
+                  6.984219442005269,
+                  7.007336457987549
+                ],
+                [
+                  4.200721475004684,
+                  4.174507034011185,
+                  4.167422190017533
+                ]
+              ],
+              "background_cpus": [
+                [
+                  1.8524414692684479,
+                  1.632429234885634,
+                  1.7797267299551738
+                ],
+                [
+                  2.6027193340599073,
+                  1.6749769357049626,
+                  1.7029616094572224
+                ]
+              ]
+            },
+            {
+              "budget": 2,
+              "samples": [
+                [
+                  3.6478944170230534,
+                  3.662927158991806,
+                  3.7151099200127646
+                ],
+                [
+                  4.961781744990731,
+                  5.147894832974998,
+                  5.082726435997756
+                ]
+              ],
+              "background_cpus": [
+                [
+                  2.019841628542955,
+                  2.2533030665694387,
+                  1.8287423915713275
+                ],
+                [
+                  1.7741751758585529,
+                  2.351453825835915,
+                  2.334098470453384
+                ]
+              ]
+            }
+          ],
+          "samples": [
+            [
+              3.612720770004671,
+              3.660500259982655,
+              3.606036266020965,
+              3.6437064099882264,
+              3.705511452018982
+            ],
+            [
+              4.171678629994858,
+              4.193234333011787,
+              4.208177638996858,
+              4.225635773997055,
+              4.192278249014635
+            ]
+          ],
+          "medians": [
+            3.6437064099882264,
+            4.193234333011787
+          ],
+          "validation": [],
+          "timing_notes": [],
+          "background_cpus": [
+            [
+              1.8598392811880502,
+              2.10618479782992,
+              1.8375294952999468,
+              2.196664906373354,
+              2.538520288443337
+            ],
+            [
+              1.7459348252703486,
+              1.8064986114310233,
+              1.8985225162541102,
+              2.6076565963844125,
+              1.9199484198988728
+            ]
+          ],
+          "background_series_averages": {
+            "tuning": [
+              1.8447373909003841,
+              2.1049210421447384
+            ],
+            "measurement": 2.0495254512437295
+          },
+          "measurement_issues": [
+            "background CPU use exceeded 1 CPUs; rerun on an idle machine"
+          ],
+          "ratio": null
+        }
+      ]
+    },
+    {
+      "machine": {
+        "timestamp_utc": "2026-10-25T04:33:29Z",
+        "command": [
+          "scripts/benchmark.py",
+          "--large",
+          "../terrio-large-data",
+          "--only",
+          "Slope",
+          "--threads",
+          "2",
+          "--out",
+          "/home/qiusheng/Documents/GitHub/terrio-parity-scratch/benchmark-253-slope.md"
+        ],
+        "source_commit": "0d59291d94ae229d531d0de8d6a9e8933da2ad64",
+        "platform": "Linux-7.3.0-3-cachyos-x86_64-with-glibc2.44",
+        "processor": "Intel(R) Xeon(R) w7-3445",
+        "available_cpus": 40,
+        "load_average": [
+          4.43017578125,
+          6.14990234375,
+          6.28369140625
+        ],
+        "gdal": "GDAL 3.13.3 \"Iowa City\", released 2026/08/13",
+        "proj_search_paths": [
+          "/home/qiusheng/terrio-benchmark-gdal/share/proj"
+        ],
+        "terrio": "terrio 0.5.0",
+        "budgets": [
+          1,
+          2
+        ],
+        "affinity": true,
+        "runs": 7,
+        "large_runs": 5,
+        "tune_runs": 3,
+        "max_background_cpus": 1.0
+      },
+      "cases": [
+        {
+          "group": "Large rasters",
+          "task": "Slope of the mosaic",
+          "commands": [
+            [
+              "/home/qiusheng/Documents/GitHub/terrio-review-target/release/terrio",
+              "dem",
+              "slope",
+              "--kernel-version",
+              "3.13",
+              "/home/qiusheng/Documents/GitHub/terrio-large-data/dem16.tif",
+              "/home/qiusheng/Documents/GitHub/terrio-parity-scratch/terrio-bench-gvfoz803/terrio/f.tif"
+            ],
+            [
+              "gdaldem",
+              "slope",
+              "-q",
+              "/home/qiusheng/Documents/GitHub/terrio-large-data/dem16.tif",
+              "/home/qiusheng/Documents/GitHub/terrio-parity-scratch/terrio-bench-gvfoz803/gdal/f.tif"
+            ]
+          ],
+          "load_average_end": [
+            5.4677734375,
+            5.6494140625,
+            6.05029296875
+          ],
+          "budgets": [
+            2,
+            1
+          ],
+          "tuning": [
+            {
+              "budget": 1,
+              "samples": [
+                [
+                  8.209178585006157,
+                  8.199857683008304,
+                  8.285335721011506
+                ],
+                [
+                  5.021922990999883,
+                  5.057042909989832,
+                  5.1209195549890865
+                ]
+              ],
+              "background_cpus": [
+                [
+                  1.7885951496784276,
+                  1.8015769993857296,
+                  2.696124303486915
+                ],
+                [
+                  1.8242503950082596,
+                  1.7573210586107428,
+                  1.8522230037296914
+                ]
+              ]
+            },
+            {
+              "budget": 2,
+              "samples": [
+                [
+                  4.3286923760024365,
+                  4.533525919017848,
+                  4.319649310986279
+                ],
+                [
+                  7.50832091801567,
+                  6.190346645016689,
+                  6.3227196450170595
+                ]
+              ],
+              "background_cpus": [
+                [
+                  2.439828031794534,
+                  2.8028285769173302,
+                  2.2786639125936956
+                ],
+                [
+                  2.5398173850414483,
+                  2.39264710837186,
+                  2.4603890213956774
+                ]
+              ]
+            }
+          ],
+          "samples": [
+            [
+              4.275023079011589,
+              4.265494444000069,
+              4.266117121995194,
+              4.264565692021279,
+              4.310864963015774
+            ],
+            [
+              5.164796846016543,
+              5.224346842995146,
+              5.132762596011162,
+              5.113270553003531,
+              5.117214379017241
+            ]
+          ],
+          "medians": [
+            4.266117121995194,
+            5.132762596011162
+          ],
+          "validation": [],
+          "timing_notes": [],
+          "background_cpus": [
+            [
+              2.539632137498274,
+              2.5535886034012316,
+              2.5868516227989886,
+              2.389323728565328,
+              2.4919156810057435
+            ],
+            [
+              2.4218487915417524,
+              2.841150950755322,
+              2.4860744601521123,
+              2.622041775611891,
+              2.4415500455032566
+            ]
+          ],
+          "background_series_averages": {
+            "tuning": [
+              1.9884326737828808,
+              2.4861544286041473
+            ],
+            "measurement": 2.5401787534515337
+          },
+          "measurement_issues": [
+            "background CPU use exceeded 1 CPUs; rerun on an idle machine"
+          ],
+          "ratio": null
+        }
+      ]
+    }
+  ]
+}

@@ -64,6 +64,7 @@ jpeg-decoder = { version = "0.3", default-features = false, features = ["platfor
 jpeg-encoder = "0.7"
 # WebP tiles of PMTiles and MBTiles archives; the version tiff already uses.
 image-webp = "0.2"
+webp-rust = "0.2.1"
 openjp2 = { version = "0.6", default-features = false, features = ["std"] }
 # GRIB2 CCSDS packing (its pure-Rust decoder); without its C features (OpenJPEG, libaec): terrio
 # decodes the other packings itself (JPEG 2000 with openjp2).

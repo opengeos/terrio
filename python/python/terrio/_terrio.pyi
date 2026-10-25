@@ -887,6 +887,7 @@ def dem(
     compress: str | None = None,
     tile_size: int | None = None,
     bigtiff: bool = False,
+    kernel_version: str = "3.12",
 ) -> Raster: ...
 def calc(
     calc: str | Sequence[str],

@@ -52,12 +52,13 @@ They are machine-specific snapshots, not guarantees of performance on other data
 
 ## Output mismatch follow-up
 
-The [#253 investigation](benchmark-parity.md) measures complete raster errors and
-precise schema/geometry differences, and records metadata/schema corrections and
-reference-version/default mismatches. The warp commands now select the matching
-GDAL kernel; VRT commands explicitly disable GDAL-only synthetic overviews.
-The tables below retain their original samples. No timings or speed ratios have
-been regenerated, and numerical differences still fail the exact output gate.
+The [#253 investigation](benchmark-parity.md) records complete error measurements,
+metadata/schema fixes, native WebP corrections and explicit GDAL 3.13 COG/terrain
+profiles. [All eight affected cases were rerun](benchmark-253-rerun.md), including
+fresh timing samples and CPU tuning at budgets one and two. Six pass exact output
+validation; warp and counties retain documented numerical residuals. Background
+CPU activity exceeded the unchanged measurement limit, so no new speed ratios are
+eligible. The tables below retain their original samples.
 
 ## Correctness gates
 

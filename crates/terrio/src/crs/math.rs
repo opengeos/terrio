@@ -172,13 +172,15 @@ pub(crate) fn msfn(sinphi: f64, cosphi: f64, es: f64) -> f64 {
     cosphi / (1.0 - es * sinphi * sinphi).sqrt()
 }
 
-/// PROJ's `pj_qsfn`, for authalic latitudes.
+/// PROJ 9.8's `pj_authalic_lat_q`, using atanh to avoid cancellation in the log ratio.
 pub(crate) fn qsfn(sinphi: f64, e: f64, one_es: f64) -> f64 {
     if e >= 1e-7 {
         let con = e * sinphi;
         let div1 = 1.0 - con * con;
-        let div2 = 1.0 + con;
-        one_es * (sinphi / div1 - (0.5 / e) * ((1.0 - con) / div2).ln())
+        if div1 == 0.0 {
+            return f64::INFINITY;
+        }
+        one_es * (sinphi / div1 + con.atanh() / e)
     } else {
         sinphi + sinphi
     }
@@ -330,3 +332,16 @@ pub(crate) fn authlat(beta: f64, apa: &[f64; 6]) -> f64 {
 /// π/4, for the formulas below.
 pub(crate) const FORTPI: f64 = FRAC_PI_4;
 pub(crate) const HALFPI: f64 = FRAC_PI_2;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn authalic_q_retains_precision_near_the_equator() {
+        let ellipsoid = Ell::named("GRS80").unwrap();
+        for sine in [1e-12, -1e-12] {
+            let expected = 2.0 * ellipsoid.one_es * sine;
+            assert!((qsfn(sine, ellipsoid.e, ellipsoid.one_es) - expected).abs() < 1e-27);
+        }
+    }
+}

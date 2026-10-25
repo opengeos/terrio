@@ -34,6 +34,8 @@ enum Codec {
     /// it reads row by row (edge tiles narrower than the tile).
     Lzw,
     Jpeg,
+    /// WebP decoded with the TIFF sample count, including unspecified fourth bands.
+    WebP,
     /// Unsigned samples of 9 to 31 bits (not 16), packed MSB first with each row starting on a
     /// byte, under compression `.0`.
     Packed(u16),
@@ -242,6 +244,7 @@ impl ChunkCodec {
             ZSTD if cfg!(target_family = "wasm") => Codec::Zstd,
             5 => Codec::Lzw,
             7 => Codec::Jpeg,
+            50001 => Codec::WebP,
             1 | 8 | 32946 | 32773 | ZSTD if misread => Codec::Chunky(compression),
             _ => return Ok(None),
         };
@@ -334,6 +337,7 @@ impl ChunkCodec {
             Codec::Lerc => self.lerc(raw, w, h)?,
             Codec::Jxl => self.jxl(&raw, w, h)?,
             Codec::Jpeg => self.jpeg(&raw, w, h)?,
+            Codec::WebP => self.webp(&raw, w, h)?,
             Codec::Packed(compression) => {
                 let row_bytes = (w * self.spp).checked_mul(usize::from(self.bits)).map(|b| b.div_ceil(8));
                 let size = row_bytes.and_then(|r| r.checked_mul(h)).ok_or_else(|| invalid("TIFF chunk too large"))?;
@@ -574,6 +578,26 @@ impl ChunkCodec {
             }
         }
         Ok(self.to_bytes(&samples))
+    }
+
+    /// Decode using the TIFF sample count rather than inferred extra-sample roles.
+    fn webp(&self, raw: &[u8], w: usize, h: usize) -> TiffResult<Vec<u8>> {
+        let mut decoder = image_webp::WebPDecoder::new(std::io::Cursor::new(raw)).map_err(|e| invalid(format!("WebP: {e}")))?;
+        if decoder.dimensions() != (w as u32, h as u32) || self.sample != Sample::U8 || !matches!(self.spp, 3 | 4) {
+            return Err(invalid("WebP dimensions or sample layout differ from TIFF"));
+        }
+        let channels = if decoder.has_alpha() { 4 } else { 3 };
+        if self.spp < channels {
+            return Err(invalid("WebP alpha needs four TIFF samples"));
+        }
+        let len = decoder.output_buffer_size().ok_or_else(|| invalid("WebP image too large"))?;
+        let mut data = vec![0; len];
+        decoder.read_image(&mut data).map_err(|e| invalid(format!("WebP: {e}")))?;
+        if channels == 3 && self.spp == 4 {
+            Ok(data.as_chunks::<3>().0.iter().flat_map(|p| [p[0], p[1], p[2], 255]).collect())
+        } else {
+            Ok(data)
+        }
     }
 
     /// Decodes a JPEG chunk, its stream completed with the shared tables.

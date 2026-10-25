@@ -34,6 +34,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
 ///     dst: Also write the result to this path.
 ///     color_file: For color relief, the color file: lines of `value R G B [A]` or
 ///         `value colorname`, where the value may be `nv` (nodata) or a percentage.
+///     kernel_version: GDAL arithmetic version, "3.12" (default) or "3.13" for slope and standard hillshade.
 ///     band: The band to process, from 1.
 ///     z: Vertical exaggeration (hillshade).
 ///     scale: Ratio of vertical to horizontal units (hillshade, slope); `111120` for a
@@ -69,7 +70,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     src, processing, dst=None, *, color_file=None, band=1, z=1.0, scale=None, xscale=None, yscale=None, azimuth=None,
     altitude=None, combined=false, multidirectional=false, igor=false, alg=None, percent=false, trigonometric=false,
     zero_for_flat=false, compute_edges=false, alpha=false, exact_color_entry=false, nearest_color_entry=false,
-    format=None, compress=None, tile_size=None, bigtiff=false
+    format=None, compress=None, tile_size=None, bigtiff=false, kernel_version="3.12"
 ))]
 #[allow(clippy::too_many_arguments)]
 fn dem(
@@ -100,6 +101,7 @@ fn dem(
     compress: Option<String>,
     tile_size: Option<u32>,
     bigtiff: bool,
+    kernel_version: &str,
 ) -> PyResult<PyRaster> {
     if [combined, multidirectional, igor].iter().filter(|b| **b).count() > 1 {
         return Err(invalid("combined, multidirectional and igor exclude each other"));
@@ -119,6 +121,7 @@ fn dem(
         return Err(invalid("color_file is needed by color-relief, and only by it"));
     }
     let mut o = DemOptions {
+        kernel_version: terrio::ops::warp::KernelVersion::parse(kernel_version).py()?,
         band,
         z,
         scale,
