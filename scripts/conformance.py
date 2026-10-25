@@ -823,7 +823,10 @@ def suite_crs(ctx):
 # The PROJ definitions without an EPSG code that the tests check, by test file and test.
 PROJ_CASES = {
     "crs_benchmark": {
-        "versioned_authority_references_match_proj": "Versioned EPSG URN/URL references (PROJ 9.8.1, 1e-7 m)",
+        "versioned_authority_references_match_proj": (
+            "Versioned EPSG URN/URL references", TOLERANCE,
+            "EPSG:4326 resolution; EPSG:3857 coordinates within 1e-7 m of PROJ 9.8.1",
+        ),
         "winkel_tripel_omitted_parallel_preserves_crs_default": (
             "Winkel Tripel: omitted lat_1 equals explicit zero (CRS semantics)", TOLERANCE,
             "omitted and explicit-zero CRS parallel give equal coordinates",
@@ -872,7 +875,7 @@ def proj_cases(s):
     Args:
         s: The suite the cases go to.
     """
-    group = "PROJ definitions without an EPSG code"
+    group = "CRS references and projection definitions"
     for file, tests in PROJ_CASES.items():
         package = "terrio" if file == "geostationary" else "terrio-crs"
         features = [] if package == "terrio" else ["--features", "wbprojection-fallback"]
