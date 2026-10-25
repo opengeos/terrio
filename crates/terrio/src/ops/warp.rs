@@ -3153,6 +3153,11 @@ mod tests {
         let input = dir.path().join("in.tif");
         let output = dir.path().join("out.tif");
         crate::write_raster_dataset(&source, input.to_str().unwrap(), &Default::default()).unwrap();
+        let mut lazy = crate::open_raster_lazy(input.to_str().unwrap()).unwrap();
+        assert!(lazy.header().raster.metadata.iter().any(|(k, _)| k == "STATISTICS_MINIMUM"));
+        let window = lazy.read_window(crate::Window::new(1, 1, 4, 4), &Default::default()).unwrap();
+        assert!(window.raster.metadata.iter().any(|(k, v)| k == "AREA_OR_POINT" && v == "Point"));
+        assert!(!window.raster.metadata.iter().any(|(k, _)| k == "STATISTICS_MINIMUM"));
         warp_to_path(&[input.to_str().unwrap().into()], &options, output.to_str().unwrap(), &Default::default()).unwrap();
         let out = crate::open_raster(output.to_str().unwrap()).unwrap();
         assert!(out.raster.metadata.iter().any(|(k, v)| k == "AREA_OR_POINT" && v == "Point"));

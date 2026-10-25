@@ -542,7 +542,7 @@ impl LazyRaster {
 
     /// The raster's metadata (size, bands, data type, georeferencing, CRS, nodata) as a dataset
     /// without pixels: its data buffer is empty. For operations that only need the metadata, such
-    /// as building a VRT.
+    /// as building a VRT. Dataset items describe the complete source and remain valid here.
     pub fn header(&self) -> RasterDataset {
         if let Inner::Memory(ds) | Inner::Source(ds, _) = &self.inner {
             let r = &ds.raster;
@@ -699,7 +699,8 @@ impl LazyRaster {
             nodata,
             data_type: data.data_type(),
             crs: crs.unwrap_or_default(),
-            metadata: self.metadata(),
+            // Source-wide statistics and other dataset items do not describe a subset.
+            metadata: self.metadata().into_iter().filter(|(k, _)| k == "AREA_OR_POINT").collect(),
             ..Default::default()
         };
         let raster = crate::pixel::raster_from_data(cfg, data)?;

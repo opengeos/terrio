@@ -1115,6 +1115,20 @@ impl Transformer {
         }
     }
 
+    fn note_missing_grid(&self, x: f64, y: f64, p: datum::Point) {
+        if self.route.same_datum() {
+            return;
+        }
+        // Advisory availability diagnostics use the first point; strict selection checks
+        // every point. Ordinary transforms select their actual operation only once.
+        self.missing_grid_checked.get_or_init(|| {
+            let (ideal, _) = self.best_route().selected(&self.src, x, y, p);
+            if ideal.is_some_and(|op| !op.available()) {
+                self.diagnostics.fetch_or(2, std::sync::atomic::Ordering::Relaxed);
+            }
+        });
+    }
+
     fn check_point_policy(&self, x: f64, y: f64, p: datum::Point) -> Result<Option<&datum::Op>> {
         if self.route.same_datum() {
             return Ok(None);
@@ -1130,14 +1144,7 @@ impl Transformer {
             }
             ideal
         } else {
-            // Advisory availability diagnostics use the first point. Strict selection still
-            // checks every point; ordinary transforms select their actual operation only once.
-            self.missing_grid_checked.get_or_init(|| {
-                let (ideal, _) = self.best_route().selected(&self.src, x, y, p);
-                if ideal.is_some_and(|op| !op.available()) {
-                    self.diagnostics.fetch_or(2, std::sync::atomic::Ordering::Relaxed);
-                }
-            });
+            self.note_missing_grid(x, y, p);
             if self.policy.allow_ballpark == Some(false) { self.route.selected(&self.src, x, y, p).0 } else { None }
         };
         if self.policy.allow_ballpark == Some(false) && selected.is_none_or(|op| op.ballpark) {
@@ -1152,7 +1159,13 @@ impl Transformer {
         let fail = || Error::Crs(format!("cannot transform ({x}, {y})"));
         let (lon, lat) = self.src.unproject(x, y).ok_or_else(fail)?;
         let p = datum::Point { lon, lat, h: z, t };
-        let selected = self.check_point_policy(x, y, p)?;
+        let selected = if self.policy.only_best {
+            self.check_point_policy(x, y, p)?
+        } else {
+            self.note_missing_grid(x, y, p);
+            None
+        };
+        let refused_ballpark = std::cell::Cell::new(false);
 
         let p = match &self.motion {
             Some(steps) => datum::run(steps, p, false, true).ok_or_else(|| {
@@ -1168,10 +1181,17 @@ impl Transformer {
             self.best_route().apply_selected(&self.src, x, y, p, false, selected)
         } else {
             self.route.apply_reporting(&self.src, x, y, p, false, &|op, outside| {
-                self.record_operation(op, outside);
+                if self.policy.allow_ballpark == Some(false) && op.is_none_or(|op| op.ballpark) {
+                    refused_ballpark.set(true);
+                } else {
+                    self.record_operation(op, outside);
+                }
             })
         }
         .ok_or_else(fail)?;
+        if refused_ballpark.get() {
+            return Err(Error::Crs("ALLOW_BALLPARK=NO: no non-ballpark coordinate operation for this point".into()));
+        }
         let (tx, ty) = self.dst.project(q.lon, q.lat).ok_or_else(fail)?;
         Ok((tx, ty, q.h))
     }

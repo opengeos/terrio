@@ -181,3 +181,14 @@ fn out_of_domain_points_do_not_poison_strict_transformers() {
     assert!(t.transform(0.0, 45.0).is_ok());
     assert!(t.check_policy().is_ok());
 }
+
+#[test]
+fn strict_hub_routes_reject_point_fallbacks_without_poisoning_later_points() {
+    let src = SpatialRef::parse("EPSG:4277").unwrap();
+    let dst = SpatialRef::parse("+proj=longlat +a=6371000 +b=6371000 +towgs84=1,2,3").unwrap();
+    let options = TransformOptions { allow_ballpark: Some(false), ..Default::default() };
+    let t = Transformer::with_options(&src, &dst, &options).unwrap();
+    assert!(t.transform(140.0, 30.0).unwrap_err().to_string().contains("ALLOW_BALLPARK"));
+    assert!(t.transform(-2.0, 52.0).is_ok());
+    assert!(t.check_policy().is_ok());
+}
