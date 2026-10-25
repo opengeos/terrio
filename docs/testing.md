@@ -378,3 +378,84 @@ reports nonzero component errors as within tolerance (1 mm Cartesian/projected
 and height; 1e-8 degrees geographic), never as identical. The Rust tests also
 check malformed definitions, nonfinite inputs, round trips, coordinate metadata,
 vector Z and measure retention, and an actual MCP XYZ call through `--dim 3`.
+
+## Shapefile archives (#278)
+
+The public archive regression runs without optional Terrio features. It checks
+point, Z point, line and polygon-with-hole geometries, scalar attributes/nulls,
+EPSG:4326, required ZIP members, UTF-8 at the 254-byte boundary, overlong-URL
+refusal and explicit unsupported output. Native runs also compare every member
+with the existing filesystem writer. Z-only output must not invent M=0 values;
+all-asterisk text must remain text rather than becoming a numeric null marker.
+Z-only point, multipoint, line and polygon records omit optional M sections, as
+GDAL does, and keep zero M bounds in the file header. Where filesystem output
+has real M samples, the record M range excludes missing samples.
+
+```sh
+cargo test -p terrio --no-default-features --test shapefile_archive
+CARGO_TARGET_WASM32_WASIP1_RUNNER=wasmtime cargo test -p terrio \
+  --target wasm32-wasip1 --no-default-features --test shapefile_archive
+# After rebuilding the JS package: actual wasm32-unknown-unknown execution in Node
+node --test --test-name-pattern='Shapefile ZIP' js/tests/node.test.mjs
+python scripts/conformance.py ../terrio-data --only shapefile-archives --strict
+```
+
+The `shapefile-archives` suite cross-reads the ZIPs with GDAL and Terrio on 16
+Natural Earth places, Las Vegas roads and Tennessee counties each, using explicit
+scalar test attributes. It checks nulls, EPSG:4326 and exact coordinates after
+normalizing ring orientation/start, part order and the Polygon/single-part
+MultiPolygon wrapper (the Shapefile record stores those identically). The Z/text
+case also checks independent GDAL reads of Z without an invented M, and all-asterisk
+text. These comparisons use exactly
+representable real attributes; general DBF real precision is documented in
+[the archive format policy](formats.md#shapefile-zip-output-in-memory).
+
+## PMTiles decoded-byte limits (#279)
+
+With `default-features = false, features = ["tiles"]`, native and WebAssembly
+builds support uncompressed, gzip and Zstandard PMTiles payloads through the same
+pure-Rust decoders. Brotli is unsupported. The sparse caller supplies fetched
+ranges, including in browsers; no native filesystem or network support is needed.
+
+```rust
+use terrio::sparse::SparseFile;
+use terrio::tiles::{PmTilesReadLimits, TileArchive};
+
+let file = SparseFile::new(archive_length);
+let limits = PmTilesReadLimits {
+    root_directory: Some(8 * 1024 * 1024),
+    leaf_directory: Some(8 * 1024 * 1024),
+    metadata: Some(8 * 1024 * 1024),
+    tile: Some(16 * 1024 * 1024),
+};
+// Fetch file.missing() ranges and insert them, retrying as described in sparse's docs.
+let archive = TileArchive::from_sparse_with_limits(file.clone(), limits);
+```
+
+These are example caller policies, not defaults. `None` means unlimited; existing
+`from_sparse` calls retain their behavior. Each limit applies separately to a
+payload, including construction-time root and metadata decoding and later leaf,
+single-tile and batched-tile decoding. Exactly-at-limit output succeeds;
+`terrio::Error::DecodedLimitExceeded { resource, limit }` distinguishes refusal
+from malformed data, unsupported codecs and missing sparse ranges. The bounded
+reader probes one byte beyond the limit and stops without collecting the rest.
+Limits cover decoded bytes before parsing, not codec working memory, parsed
+objects, cumulative caches, image/MVT expansion or compressed input transfers.
+Normal sparse block sizing/read-ahead still applies. These configurable limits
+are currently a Rust API (including Rust compiled to WASM). Python, CLI and the
+JavaScript remote wrappers retain their existing unlimited defaults. Malformed
+PMTiles offset/range arithmetic is refused with `InvalidData`, including root,
+metadata, leaf and tile locations and directory-relative offsets/tile runs.
+
+The public-API regression constructs independent PMTiles with leaf directories,
+raw/gzip/Zstandard payloads and a 1 MiB repeated tile. It checks all four limits
+at the exact boundary and one byte over, a zero tile budget, unlimited defaults,
+missing-range retries and measured fetched bytes (construction fetches under
+20 KiB and the trailing 256 KiB is never fetched). Run natively or in WASI:
+
+```sh
+cargo test -p terrio --no-default-features --features tiles --test pmtiles_limits
+CARGO_TARGET_WASM32_WASIP1_RUNNER=wasmtime cargo test -p terrio \
+  --target wasm32-wasip1 --no-default-features --features tiles --test pmtiles_limits
+cargo check -p terrio --target wasm32-unknown-unknown --no-default-features --features tiles
+```

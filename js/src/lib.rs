@@ -390,7 +390,7 @@ pub fn from_geojson(geojson: JsValue, name: Option<String>, crs: Option<String>)
         Some(s) => s,
         None => js_sys::JSON::stringify(&geojson).map_err(|_| JsError::new("cannot serialize the GeoJSON"))?.into(),
     };
-    let mut layer = wbvector::geojson::parse_str(&text).map_err(|e| js_err(e.into()))?;
+    let mut layer = terrio::memory::parse_geojson_layer(text.as_bytes(), "layer").map_err(js_err)?;
     layer.name = name.unwrap_or_else(|| "layer".into());
     let crs = SpatialRef::parse(crs.as_deref().unwrap_or("EPSG:4326")).map_err(js_err)?;
     crs.apply_to_layer(&mut layer);
@@ -603,7 +603,10 @@ impl Dataset {
     /// `LERC_ZSTD`, `JXL`, `JPEG`), `tileSize` and `creationOptions` (GDAL's: `MAX_Z_ERROR`,
     /// `JPEG_QUALITY`, `PREDICTOR`, `FORMAT=NC4` for netCDF, `FORMAT=ZARR_V3` for Zarr...),
     /// `overviews` (GeoTIFF factors such as `[2,4,8]`) and `overviewResampling`. Zarr
-    /// stores come back as a zip archive of their files.
+    /// stores come back as a zip archive of their files. Shapefile output requires
+    /// `roads.shp.zip` (MIME `application/zip`); `.shp` alone is refused. The ZIP holds
+    /// `.shp`, `.shx`, `.dbf`, `.cpg` and, when a CRS is present, `.prj`.
+    /// Text over 254 UTF-8 bytes and unsupported DBF values are explicit errors.
     #[wasm_bindgen(js_name = toBytes)]
     pub fn to_bytes(&self, filename: &str, options: JsValue) -> Result<Vec<u8>, JsError> {
         let o: WriteOptions = parse_options(&options)?;

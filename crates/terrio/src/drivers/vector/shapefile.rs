@@ -304,7 +304,7 @@ impl DbfLayout {
                 }
                 let text = decode(raw, utf8);
                 let v = text.trim_matches(|c: char| c == ' ' || c == '\0');
-                if v.is_empty() || v.bytes().all(|b| b == b'*') {
+                if v.is_empty() || (matches!(kind, b'N' | b'F') && v.bytes().all(|b| b == b'*')) {
                     return FieldValue::Null;
                 }
                 match def.field_type {
@@ -358,6 +358,76 @@ pub fn write(layer: &Layer, path: &str) -> Result<()> {
         None => {}
     }
     Ok(())
+}
+
+/// Writes one layer to a ZIP containing `.shp`, `.shx`, `.dbf`, `.cpg` and,
+/// when present, `.prj`. Pure Rust on native and WebAssembly, without filesystem I/O.
+/// Save the returned bytes as `{stem}.shp.zip`, MIME type `application/zip`.
+///
+/// `stem` must be a single nonempty filename stem. Point/MultiPoint, line and
+/// polygon (including multipart) geometries support XY and Z; M is refused.
+/// Fields support text, integer, finite real, boolean, date and null values. DBF
+/// names are laundered to ten bytes; reals use width 24 and 15 decimal places.
+/// Text over 254 UTF-8 bytes, empty/trailing-space/NUL text, integers requiring
+/// over 18 decimal columns, and non-scalar/blob/datetime fields are refused rather
+/// than silently losing data. Convert such fields explicitly before writing.
+pub fn to_zip_bytes(layer: &Layer, stem: &str) -> Result<Vec<u8>> {
+    use std::io::{Cursor, Write};
+    if stem.is_empty() || matches!(stem, "." | "..") || stem.contains(['/', '\\', '\0', ':']) {
+        return Err(Error::InvalidArgument("Shapefile archive stem must be a single nonempty filename stem".into()));
+    }
+    let profile = LayerProfile::of(layer);
+    if profile.geometry.has_m {
+        return Err(Error::Unsupported("Shapefile ZIP writing does not support M coordinates".into()));
+    }
+    if layer.features.iter().any(|f| f.attributes.len() > layer.schema.len()) {
+        return Err(Error::InvalidArgument("Shapefile feature has more attributes than its schema".into()));
+    }
+    let fields = dbf_fields(layer, &profile);
+    for (i, field) in layer.schema.fields().iter().enumerate() {
+        let refuse = |reason: &str| Error::Unsupported(format!("Shapefile archive field '{}': {reason}", field.name));
+        if !matches!(field.field_type, FieldType::Text | FieldType::Integer | FieldType::Float | FieldType::Boolean | FieldType::Date) {
+            return Err(refuse("supports text, integer, finite real, boolean and date scalars only; convert explicitly"));
+        }
+        if field.field_type == FieldType::Integer && fields[i].width > 18 {
+            return Err(refuse("integers requiring more than 18 decimal columns must be converted to text"));
+        }
+        for feature in &layer.features {
+            let value = feature.attributes.get(i).unwrap_or(&FieldValue::Null);
+            let valid = match (field.field_type, value) {
+                (_, FieldValue::Null) => true,
+                (FieldType::Text, FieldValue::Text(text)) => {
+                    if text.len() > 254 {
+                        return Err(refuse("text exceeds the DBF limit of 254 UTF-8 bytes; use a sidecar or another format"));
+                    }
+                    if text.is_empty() || text.ends_with(' ') || text.contains('\0') {
+                        return Err(refuse("empty, trailing-space or NUL text cannot round-trip through DBF"));
+                    }
+                    true
+                }
+                (FieldType::Integer, FieldValue::Integer(_)) | (FieldType::Boolean, FieldValue::Boolean(_)) => true,
+                (FieldType::Float, FieldValue::Float(x)) => x.is_finite(),
+                (FieldType::Date, FieldValue::Date(text)) => super::datetime::parse_date(text).is_some(),
+                _ => false,
+            };
+            if !valid {
+                return Err(refuse("value does not match its scalar field type or is not finite/a valid date"));
+            }
+        }
+    }
+    let (shp, shx) = encode_shapes(layer)?;
+    let mut members = vec![("shp", shp), ("shx", shx), ("dbf", encode_dbf(layer)?), ("cpg", b"UTF-8".to_vec())];
+    if let Some(wkt) = super::output_wkt(layer) {
+        members.push(("prj", wkt.into_bytes()));
+    }
+    members.sort_by_key(|(ext, _)| *ext);
+    let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
+    let opts = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+    for (ext, bytes) in members {
+        zip.start_file(format!("{stem}.{ext}"), opts)?;
+        zip.write_all(&bytes)?;
+    }
+    Ok(zip.finish()?.into_inner())
 }
 
 /// The shape type for the layer's geometries, as GDAL chooses it.
@@ -578,13 +648,16 @@ fn encode_shape(g: &Geometry, st: i32, has_z: bool, total: &mut Bounds) -> Vec<u
         total.add(c);
     }
     let put = |out: &mut Vec<u8>, v: f64| out.extend_from_slice(&v.to_le_bytes());
+    let measure = |c: &Coord| c.m.filter(|m| m.is_finite() && *m > -1e38);
     if st % 10 == 1 {
         let c = &parts[0][0];
         put(&mut out, c.x);
         put(&mut out, c.y);
         if has_z {
             put(&mut out, c.z.unwrap_or(0.0));
-            put(&mut out, c.m.unwrap_or(0.0));
+            if let Some(m) = measure(c) {
+                put(&mut out, m);
+            }
         }
         return out;
     }
@@ -615,11 +688,15 @@ fn encode_shape(g: &Geometry, st: i32, has_z: bool, total: &mut Bounds) -> Vec<u
         for c in &points {
             put(&mut out, c.z.unwrap_or(0.0));
         }
-        let ms: Vec<f64> = points.iter().map(|c| c.m.unwrap_or(0.0)).collect();
-        put(&mut out, ms.iter().copied().fold(f64::INFINITY, f64::min));
-        put(&mut out, ms.iter().copied().fold(f64::NEG_INFINITY, f64::max));
-        for m in ms {
-            put(&mut out, m);
+        let ms: Vec<f64> = points.iter().filter_map(|c| measure(c)).collect();
+        // Z-only records omit the optional M section, as GDAL does. When real
+        // measures exist, missing samples do not participate in the M range.
+        if !ms.is_empty() {
+            put(&mut out, ms.iter().copied().fold(f64::INFINITY, f64::min));
+            put(&mut out, ms.iter().copied().fold(f64::NEG_INFINITY, f64::max));
+            for c in points {
+                put(&mut out, measure(c).unwrap_or(-1e39));
+            }
         }
     }
     out
@@ -755,6 +832,23 @@ fn encode_dbf(layer: &Layer) -> Result<Vec<u8>> {
 mod tests {
     use super::*;
     use wbvector::{Feature, FieldDef};
+
+    #[test]
+    fn measure_ranges_exclude_missing_samples() {
+        let coordinates = vec![
+            Coord { x: 0.0, y: 0.0, z: Some(1.0), m: Some(3.0) },
+            Coord { x: 1.0, y: 1.0, z: Some(2.0), m: None },
+            Coord { x: 2.0, y: 2.0, z: Some(3.0), m: Some(8.0) },
+        ];
+        let shape = Geometry::LineString(coordinates);
+        let record = encode_shape(&shape, 13, true, &mut Bounds::empty());
+        // One part, three XY/Z coordinates; M range starts after the Z array.
+        let at = 60 + 4 + 24 * 3;
+        let value = |i| f64::from_le_bytes(record[i..i + 8].try_into().unwrap());
+        assert_eq!((value(at), value(at + 8)), (3.0, 8.0));
+        assert_eq!((value(at + 16), value(at + 24), value(at + 32)), (3.0, -1e39, 8.0));
+        assert_eq!(parse_shape(&record).unwrap(), shape);
+    }
 
     #[test]
     fn launders_names_like_gdal() {

@@ -544,3 +544,58 @@ its `.aux.xml` sidecar), and GeoTIFFs in every compression above are read. Forma
 of several files (Shapefile, MapInfo MIF and TAB) are read from zip archives of their files;
 OSM is read from PBF or XML bytes. GeoPackage (layers and rasters), PMTiles and MBTiles (raster
 and vector tiles) are read from and written to bytes; MVT tiles are read from bytes.
+
+## Shapefile ZIP output in memory
+
+Rust, Python and JavaScript/WASM use the same pure-Rust archive writer, including
+builds with default features disabled. Request **`places.shp.zip`**, save that
+filename, and use MIME type **`application/zip`**. The ZIP contains `places.shp`,
+`places.shx`, `places.dbf`, `places.cpg` (`UTF-8`) and, when a CRS is present,
+`places.prj`. Members can be obtained with any ZIP reader, without a filesystem.
+A `.zip` name also works with an explicit Shapefile driver. The output holds
+exactly one layer; select a layer before writing a multi-layer dataset.
+
+```rust
+let bytes = terrio::memory::write_vector_bytes(&layers, "places.shp.zip", &Default::default())?;
+// Or write a single layer directly, without format inference:
+let bytes = terrio::memory::write_shapefile_zip_bytes(&layers[0], "places")?;
+```
+
+```js
+const filename = "places.shp.zip";
+const bytes = dataset.toBytes(filename);
+const download = new File([bytes], filename, { type: "application/zip" });
+const again = terrio.open(bytes, filename);
+```
+
+```python
+archive = layer.to_bytes("places.shp.zip")
+again = terrio.open_bytes(archive, "places.shp.zip")
+```
+
+This enables filesystem-free Shapefile output on `wasm32-unknown-unknown` in both
+the full and core JS modules, and in minimal Rust builds. Native builds produce
+the same members. The bytes API now refuses bare `.shp` names with an error
+pointing to `.shp.zip`, replacing native-only implicit ZIP output under a `.shp`
+name. Filesystem writing to `.shp` continues to write separate members.
+
+Supported geometries are Point/MultiPoint, lines and polygons (including
+multipart features and polygon holes), XY or Z, plus null geometry. Collections,
+mixed geometry families and M coordinates are refused by the archive writer.
+Polygon rings are closed and oriented to Shapefile conventions. Shapefile stores
+single-part MultiPolygon/Polygon (and MultiLineString/LineString) identically;
+a single-part multi geometry can read back as its single form. Feature IDs are
+record numbers, so keep stable application IDs in scalar attributes.
+
+DBF supports text, integers, finite reals, booleans, dates and nulls. Names are
+laundered to ten bytes with unique suffixes. Text widths grow to fit values up to
+254 **UTF-8 bytes**. Longer values, including long URLs, are refused without
+truncation: keep those values in a caller-owned sidecar keyed by a stable ID or
+choose a format without DBF limits. Empty, trailing-space and NUL text are also
+refused because DBF cannot distinguish them reliably from null/padding. Integers
+requiring more than 18 decimal columns must be converted explicitly to text to
+avoid being read as floating point. Reals retain the native writer's width-24,
+15-decimal policy and can round; this is not arbitrary-precision storage.
+Blob, JSON/list and datetime fields require explicit conversion. Schema/value
+mismatches and nonfinite real values are errors. These stricter archive policies
+are shared by native and WASM; filesystem-member writing keeps its prior attribute conversion policy.

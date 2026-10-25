@@ -8,6 +8,24 @@ enum Inner {
     Mb(mbtiles::MbTiles),
 }
 
+/// Per-payload decoded-byte limits for PMTiles. `None` preserves unlimited decoding.
+///
+/// Limits apply before directory/JSON parsing and before returning decompressed tile bytes.
+/// They do not bound parsed object overhead, codec working memory, image/MVT decoding,
+/// cumulative cache memory, or compressed bytes fetched. Available with `tiles` on native
+/// and WebAssembly targets; none, gzip and zstd use the same pure-Rust readers on both.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PmTilesReadLimits {
+    /// Maximum decoded bytes in the root directory (checked during construction).
+    pub root_directory: Option<usize>,
+    /// Maximum decoded bytes in each leaf directory.
+    pub leaf_directory: Option<usize>,
+    /// Maximum decoded bytes in JSON metadata (checked during construction).
+    pub metadata: Option<usize>,
+    /// Maximum decoded bytes in each tile payload.
+    pub tile: Option<usize>,
+}
+
 /// A PMTiles or MBTiles archive opened for reading tiles.
 pub struct TileArchive {
     inner: Inner,
@@ -60,7 +78,17 @@ impl TileArchive {
     /// Opens a remote PMTiles archive whose bytes the caller fetches (see [`crate::sparse`]):
     /// reads fail until the bytes they need are fetched, and are then run again.
     pub fn from_sparse(file: crate::sparse::SparseFile) -> Result<Self> {
-        Ok(Self { inner: Inner::Pm(Box::new(pmtiles::Reader::open(ByteSource::Sparse(file))?)), _local: None })
+        Self::from_sparse_with_limits(file, PmTilesReadLimits::default())
+    }
+
+    /// Opens caller-fetched PMTiles with limits, including root and metadata decoding on open.
+    ///
+    /// Returns [`Error::DecodedLimitExceeded`] at the first decoded byte beyond a limit,
+    /// without collecting the rest of the payload. Exactly-at-limit payloads succeed.
+    /// Missing ranges retain [`crate::sparse`] retry/fill behavior; this does not fetch the
+    /// whole archive. Brotli remains unsupported. Limits are retained for later leaf/tile reads.
+    pub fn from_sparse_with_limits(file: crate::sparse::SparseFile, limits: PmTilesReadLimits) -> Result<Self> {
+        Ok(Self { inner: Inner::Pm(Box::new(pmtiles::Reader::open_with_limits(ByteSource::Sparse(file), limits)?)), _local: None })
     }
 
     /// The archive as a dataset: a raster for image tiles (at the zoom level of `options.tiles`),

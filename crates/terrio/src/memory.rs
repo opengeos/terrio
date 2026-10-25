@@ -14,7 +14,7 @@
 //!   and Shapefile and MapInfo (MIF/MID and TAB) in zip archives (or their `.shp` or `.mif` alone);
 //! - writing: GeoTIFF and COG (with lossless compressions), Esri ASCII grid, JPEG 2000, GeoPackage (vector
 //!   layers and rasters), PMTiles and MBTiles, GeoJSON, TopoJSON, FlatGeobuf, CSV, GeoParquet, KML, KMZ, GML (without
-//!   its schema), GPX, DWG and DXF.
+//!   its schema), GPX, DWG, DXF and Shapefile ZIP archives (`.shp.zip`).
 //!
 //! Formats made of several files (a shapefile's `.shp`, `.dbf`, `.prj`...) are written as a zip
 //! archive of them.
@@ -34,6 +34,9 @@
 use crate::formats::{RasterDriver, VectorDriver, extension};
 use crate::{Dataset, Error, LazyRaster, RasterDataset, RasterWriteOptions, Result, VectorDataset, VectorOpenOptions, VectorWriteOptions};
 use wbvector::Layer;
+
+pub use crate::drivers::vector::geojson::parse as parse_geojson_layer;
+pub use crate::drivers::vector::shapefile::to_zip_bytes as write_shapefile_zip_bytes;
 
 /// Opens a dataset, raster or vector, from its bytes. `name` is a file name whose extension tells
 /// the format (`dem.tif`, `roads.fgb`, `parcels.zip`).
@@ -159,8 +162,14 @@ pub fn write_raster_bytes(ds: &RasterDataset, name: &str, options: &RasterWriteO
 
 /// Writes vector layers to bytes. `name` is a file name whose extension tells the format, unless
 /// the options name the driver. GeoPackage, GPX, KML, KMZ and TopoJSON hold several layers; CAD combines them into drawing layers.
+/// Shapefiles require an explicit ZIP filename (`roads.shp.zip`, or `.zip` with the
+/// Shapefile driver). The result is `application/zip` on native and WASM alike.
+/// Bare `.shp` names are refused: use [`crate::write_vector`] for filesystem members.
+/// See [`write_shapefile_zip_bytes`] for supported data and refusals.
 pub fn write_vector_bytes(layers: &[Layer], name: &str, options: &VectorWriteOptions) -> Result<Vec<u8>> {
-    let driver = match options.driver.or_else(|| VectorDriver::for_extension(name)) {
+    let driver = match options.driver.or_else(|| {
+        if name.to_ascii_lowercase().ends_with(".shp.zip") { Some(VectorDriver::Shapefile) } else { VectorDriver::for_extension(name) }
+    }) {
         Some(d) => d,
         None => {
             #[cfg(feature = "gdal")]
@@ -170,6 +179,18 @@ pub fn write_vector_bytes(layers: &[Layer], name: &str, options: &VectorWriteOpt
             return Err(Error::InvalidArgument(format!("cannot tell the output format of '{name}': give it explicitly")));
         }
     };
+    if driver == VectorDriver::Shapefile {
+        if !name.to_ascii_lowercase().ends_with(".zip") {
+            return Err(Error::InvalidArgument("Shapefile bytes are a ZIP archive: use a .shp.zip filename (MIME application/zip)".into()));
+        }
+        let [layer] = layers else {
+            return Err(Error::InvalidArgument("a Shapefile ZIP holds exactly one layer".into()));
+        };
+        let file = name.rsplit(['/', '\\']).next().unwrap_or(name);
+        let stem = &file[..file.len() - 4];
+        let stem = if stem.to_ascii_lowercase().ends_with(".shp") { &stem[..stem.len() - 4] } else { stem };
+        return crate::drivers::vector::shapefile::to_zip_bytes(layer, stem);
+    }
     #[cfg(not(target_family = "wasm"))]
     {
         let dir = native::temp_dir()?;
@@ -812,7 +833,7 @@ mod tests {
         // Shapefiles come back as a zip archive of their files.
         let gj = r#"{"type":"FeatureCollection","features":[{"type":"Feature","properties":{"id":7},"geometry":{"type":"Point","coordinates":[1,2]}}]}"#;
         let v = open_vector_bytes(gj.as_bytes().to_vec(), "p.geojson", &Default::default()).unwrap();
-        let shp = write_vector_bytes(&v.layers, "p.shp", &Default::default()).unwrap();
+        let shp = write_vector_bytes(&v.layers, "p.shp.zip", &Default::default()).unwrap();
         let zip = zip::ZipArchive::new(std::io::Cursor::new(shp)).unwrap();
         let mut names: Vec<String> = zip.file_names().map(|n| n.unwrap().to_string()).collect();
         names.sort();
@@ -826,7 +847,7 @@ mod tests {
             {"type":"Feature","properties":{"id":7,"name":"Zürich"},"geometry":{"type":"Point","coordinates":[8.5,47.4]}},
             {"type":"Feature","properties":{"id":8,"name":"b"},"geometry":{"type":"Point","coordinates":[1,2]}}]}"#;
         let v = open_vector_bytes(gj.as_bytes().to_vec(), "p.geojson", &Default::default()).unwrap();
-        for name in ["p.shp", "p.mif"] {
+        for name in ["p.shp.zip", "p.mif"] {
             let zip = write_vector_bytes(&v.layers, name, &Default::default()).unwrap();
             // The in-memory codecs (what WebAssembly builds use), and the native path.
             let Dataset::Vector(back) = codec::open(zip.clone(), "p.zip", &Default::default()).unwrap() else { panic!() };

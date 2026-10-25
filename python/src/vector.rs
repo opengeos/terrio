@@ -46,7 +46,7 @@ fn value_to_py<'py>(py: Python<'py>, v: &FieldValue) -> PyResult<Bound<'py, PyAn
 
 /// Parses GeoJSON text into a layer.
 fn layer_from_geojson_text(text: &str, name: Option<&str>, crs: Option<&str>) -> PyResult<Layer> {
-    let mut layer = wbvector::geojson::parse_str(text).map_err(terrio::Error::from).py()?;
+    let mut layer = terrio::memory::parse_geojson_layer(text.as_bytes(), "layer").py()?;
     layer.name = name.unwrap_or("layer").to_string();
     let crs = match crs {
         Some(c) => SpatialRef::parse(c).py()?,
@@ -353,8 +353,10 @@ impl PyLayer {
     ///     driver: The format's short name, overriding the extension.
     ///
     /// Returns:
-    ///     bytes: The file's contents. Formats made of several files (shapefiles) come as a zip
-    ///     archive.
+    ///     bytes: The file's contents. Shapefiles require a `.shp.zip` filename and
+    ///     return a ZIP archive (MIME `application/zip`) with geometry, index, attributes,
+    ///     encoding and CRS members. Bare `.shp` names and unsupported DBF values
+    ///     (including text over 254 UTF-8 bytes) raise an error.
     #[pyo3(signature = (filename="layer.geojson", driver=None))]
     fn to_bytes<'py>(&self, py: Python<'py>, filename: &str, driver: Option<&str>) -> PyResult<Bound<'py, PyBytes>> {
         let options = crate::ops::vector_write_options(driver)?;

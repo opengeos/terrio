@@ -442,6 +442,29 @@ def suite_json_ops(ctx, key, script, title, reference, criteria, group_words):
     return s
 
 
+def suite_shapefile_archives(ctx):
+    """Filesystem-free Shapefile ZIPs cross-read with GDAL on real public geometry."""
+    suite = Suite("shapefile-archives", "Shapefile ZIP archives", "GDAL/OGR",
+                  "16 Natural Earth places, Las Vegas roads and Tennessee counties each; "
+                  "normalized geometry coordinates exactly (including the single-part polygon wrapper), "
+                  "scalar attributes/nulls and EPSG:4326; Z without invented M and asterisk text.")
+    missing = missing_modules("terrio", "osgeo", "shapely")
+    if missing:
+        suite.skipped = "needs the Python modules " + ", ".join(missing)
+        return suite
+    code, out, err = run([sys.executable, str(SCRIPTS / "compare_shapefile_archives.py"), ctx.data, "--json"])
+    try:
+        results = json.loads(out)
+    except json.JSONDecodeError:
+        suite.error = tail(err or out)
+        return suite
+    for result in results:
+        suite.cases.append(Case("Shapefile ZIP", result["name"], result["status"], result["detail"]))
+    if code and not any(case.status == DIFFERS for case in suite.cases):
+        suite.error = tail(err or out) or f"exit {code}"
+    return suite
+
+
 def suite_cad(ctx):
     """CAD geometry interchange against public GDAL drawings and real OSM roads."""
     suite = Suite(
@@ -1248,6 +1271,7 @@ SUITES = OrderedDict(
         ("histograms", suite_histograms),
         ("vector-roundtrip", suite_vector_roundtrip),
         ("cad", suite_cad),
+        ("shapefile-archives", suite_shapefile_archives),
         ("raster-roundtrip", suite_raster_roundtrip),
         ("windows", suite_windows),
         ("ops", suite_ops),
