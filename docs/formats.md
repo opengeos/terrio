@@ -594,8 +594,11 @@ truncation: keep those values in a caller-owned sidecar keyed by a stable ID or
 choose a format without DBF limits. Empty, trailing-space and NUL text are also
 refused because DBF cannot distinguish them reliably from null/padding. Integers
 requiring more than 18 decimal columns must be converted explicitly to text to
-avoid being read as floating point. Reals retain the native writer's width-24,
-15-decimal policy and can round; this is not arbitrary-precision storage.
+avoid being read as floating point. Reals use width 24 with 15 decimals and can
+round; magnitudes below half of 1e-15 become zero. The archive writer refuses
+values that overflow that fixed layout instead of reducing decimals or switching
+to scientific notation. Convert those values to text. This is not
+arbitrary-precision storage.
 Blob, JSON/list and datetime fields require explicit conversion. Schema/value
 mismatches and nonfinite real values are errors. These stricter archive policies
 are shared by native and WASM; filesystem-member writing keeps its prior attribute conversion policy.
