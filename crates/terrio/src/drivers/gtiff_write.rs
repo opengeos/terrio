@@ -560,13 +560,16 @@ impl TiffOptions {
                 .filter(|e| *e >= 0.0)
                 .ok_or_else(|| Error::InvalidArgument(format!("invalid MAX_Z_ERROR '{v}'")))?;
         }
-        if let Some(v) = co("JPEG_QUALITY").or_else(|| if o.compression == Compression::WebP { None } else { co("QUALITY") }) {
+        if let Some((key, v)) = co("JPEG_QUALITY")
+            .map(|v| ("JPEG_QUALITY", v))
+            .or_else(|| if o.compression == Compression::WebP { None } else { co("QUALITY").map(|v| ("QUALITY", v)) })
+        {
             let quality = v
                 .trim()
                 .parse::<u8>()
                 .ok()
                 .filter(|q| (1..=100).contains(q))
-                .ok_or_else(|| Error::InvalidArgument(format!("invalid JPEG_QUALITY '{v}' (1 to 100)")))?;
+                .ok_or_else(|| Error::InvalidArgument(format!("invalid {key} '{v}' (1 to 100)")))?;
             if o.compression == Compression::Jpeg {
                 o.codec.jpeg_quality = quality;
             }
@@ -1791,6 +1794,8 @@ pub(crate) fn parse_gdal_band_metadata(xml: &str) -> Vec<(usize, String, String)
         .collect()
 }
 
+// GDAL TIFF Item values carry a second CPL-escaped layer after XML decoding.
+// The writer mirrors GDAL; decoding only XML would change values and literal entities.
 fn xml_unescape(s: &str) -> String {
     s.replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"").replace("&apos;", "'").replace("&amp;", "&")
 }
@@ -3213,6 +3218,20 @@ mod tests {
             assert_eq!(tags.gcps, header.gcps);
             assert!(tags.geo_transform.is_none());
         }
+        // Inherited TIFF-only georeferencing must not make other output formats fail.
+        for streamed in [false, true] {
+            let path = dir.path().join("copy.asc");
+            let options = crate::RasterWriteOptions::default();
+            if streamed {
+                crate::open_raster_lazy(input.to_str().unwrap()).unwrap().write(path.to_str().unwrap(), &options).unwrap();
+            } else {
+                crate::write_raster_dataset(&whole, path.to_str().unwrap(), &options).unwrap();
+            }
+            let actual = crate::open_raster(path.to_str().unwrap()).unwrap();
+            assert_eq!(actual.raster.data.to_f64_vec(), whole.raster.data.to_f64_vec());
+        }
+        let explicit = crate::RasterWriteOptions { gcps: whole.gcps.clone(), ..Default::default() };
+        assert!(crate::write_raster_dataset(&whole, dir.path().join("explicit.asc").to_str().unwrap(), &explicit).is_err());
         let assigned = dir.path().join("assigned.tif");
         let gt = [10., 2., 0., 30., 0., -2.];
         crate::write_raster_dataset(&whole, assigned.to_str().unwrap(), &crate::RasterWriteOptions { geo_transform: Some(gt), ..options })
@@ -3275,7 +3294,7 @@ mod tests {
             band_metadata: vec![crate::BandMetadata {
                 description: Some("a<b".into()),
                 scale: Some(2.0),
-                items: vec![("k".into(), "v".into())],
+                items: vec![("k".into(), "c&d &amp;literal".into())],
                 ..Default::default()
             }],
             color_table: vec![[255, 0, 0, 255], [0, 255, 0, 255]],
@@ -3289,10 +3308,10 @@ mod tests {
         let bytes = encode(&r, &opts).unwrap();
         let text = String::from_utf8_lossy(&bytes);
         assert!(text.contains(r#"<Item name="DESCRIPTION" sample="0" role="description">a&amp;lt;b</Item>"#));
-        assert!(text.contains(r#"<Item name="k" sample="0">v</Item>"#));
+        assert!(text.contains(r#"<Item name="k" sample="0">c&amp;amp;d &amp;amp;amp;literal</Item>"#));
         let tags = crate::geotiff::read_geo_tags_from(std::io::Cursor::new(&bytes)).unwrap();
         assert_eq!(tags.geo_transform, None);
-        assert_eq!(tags.band_metadata, vec![(0, "k".to_string(), "v".to_string())]);
+        assert_eq!(tags.band_metadata, vec![(0, "k".to_string(), "c&d &amp;literal".to_string())]);
         let mut lazy = crate::LazyRaster::from_tiff_bytes(bytes).unwrap().unwrap();
         assert_eq!(lazy.overviews(), vec![(35, 25), (18, 13)]);
         let o = lazy.read_window(crate::Window::new(0, 0, 35, 25), &crate::WindowOptions { bands: vec![], overview: Some(0) }).unwrap();

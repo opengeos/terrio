@@ -711,13 +711,13 @@ pub fn write_raster(raster: &Raster, path: &str, options: &RasterWriteOptions) -
 /// # Ok::<(), terrio::Error>(())
 /// ```
 pub fn write_raster_dataset(ds: &RasterDataset, path: &str, options: &RasterWriteOptions) -> Result<()> {
+    let driver = options.driver.or_else(|| RasterDriver::for_extension(path));
     let options = RasterWriteOptions {
         geo_transform: options.geo_transform.or(ds.affine),
-        gcps: options.inherited_gcps(ds),
+        gcps: options.inherited_gcps(ds, driver),
         band_metadata: if options.band_metadata.is_empty() { ds.band_metadata.clone() } else { options.band_metadata.clone() },
         ..options.clone()
     };
-    let driver = options.driver.or_else(|| RasterDriver::for_extension(path));
     let pam = needs_nodata_pam(ds) && matches!(driver, Some(RasterDriver::GTiff | RasterDriver::Cog));
     let tag = if matches!(driver, Some(RasterDriver::GTiff | RasterDriver::Cog)) { tiff_nodata(ds) } else { ds.nodata() };
     write_raster_with_nodata(&ds.raster, tag, ds.complex, path, &options)?;
@@ -964,7 +964,14 @@ pub(crate) fn ensure_writable_location(path: &str) -> Result<()> {
 }
 
 impl RasterWriteOptions {
-    pub(crate) fn inherited_gcps(&self, ds: &RasterDataset) -> Vec<Gcp> {
-        if self.gcps.is_empty() && self.geo_transform.or(ds.affine).is_none() { ds.gcps.clone() } else { self.gcps.clone() }
+    pub(crate) fn inherited_gcps(&self, ds: &RasterDataset, driver: Option<RasterDriver>) -> Vec<Gcp> {
+        if matches!(driver, Some(RasterDriver::GTiff | RasterDriver::Cog))
+            && self.gcps.is_empty()
+            && self.geo_transform.or(ds.affine).is_none()
+        {
+            ds.gcps.clone()
+        } else {
+            self.gcps.clone()
+        }
     }
 }

@@ -597,6 +597,8 @@ impl Terrain313 {
     }
 }
 
+/// Match the reference's x86 estimate/refinement path, not a cross-CPU bit pattern.
+/// Intel and AMD rsqrt estimates can differ; non-x86 uses exact division/sqrt.
 #[inline]
 fn divide_sqrt313(numerator: f32, denominator: f32, multi: bool) -> f32 {
     if !multi {
@@ -1680,7 +1682,9 @@ mod tests {
         let ds = dem_ds(vec![942.315, 946.702, 951.43, 945.132, 943.95, 959.37, 948.15, 954.318, 960.01], 3, 3, DataType::F32, None, 3.5);
         let options = DemOptions { kernel_version: super::super::warp::KernelVersion::Gdal313, ..Default::default() };
         let slope = slope_map(&ds, &options).unwrap();
-        assert_eq!((slope.raster.get(0, 1, 1) as f32).to_bits(), 1115697630);
+        // One ULP allows platform libm rounding in atan; benchmark gates stay exact.
+        let bits = (slope.raster.get(0, 1, 1) as f32).to_bits();
+        assert!(bits.abs_diff(1115697630) <= 1, "slope differs from GDAL 3.13.3 by more than one ULP");
         let hillshade = hillshade(&ds, &options).unwrap();
         assert_eq!(hillshade.raster.get(0, 1, 1), 236.0);
     }

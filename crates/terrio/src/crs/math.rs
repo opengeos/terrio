@@ -172,7 +172,7 @@ pub(crate) fn msfn(sinphi: f64, cosphi: f64, es: f64) -> f64 {
     cosphi / (1.0 - es * sinphi * sinphi).sqrt()
 }
 
-/// PROJ 9.8's `pj_authalic_lat_q`, using atanh to avoid cancellation in the log ratio.
+/// PROJ 9.9's `pj_authalic_lat_q`, using atanh to avoid cancellation in the log ratio.
 pub(crate) fn qsfn(sinphi: f64, e: f64, one_es: f64) -> f64 {
     if e >= 1e-7 {
         let con = e * sinphi;

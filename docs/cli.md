@@ -314,6 +314,16 @@ terrio convert INPUT OUTPUT [-f FORMAT] [options]
 | `--co KEY=VALUE` | rasters | Creation options (Zarr; netCDF: `FORMAT=NC4`, `COMPRESS=DEFLATE`, `ZLEVEL`, `CHUNKING`; PMTiles and MBTiles: `TILE_FORMAT=WEBP`...) |
 | `--minzoom N`, `--maxzoom N` | both | Zoom levels of PMTiles, MBTiles and MVT outputs |
 
+GeoTIFF/COG WebP output accepts `--compress WEBP --co WEBP_LOSSLESS=YES` or
+`--co WEBP_LEVEL=0..100` for lossy quality. Supported inputs are Byte RGB/RGBA;
+alpha is retained losslessly. COG output accepts
+`--co COG_OVERVIEW_POLICY=GDAL_3_13` for recursive, floor-sized overviews with
+`--co RESAMPLING=NEAREST|AVERAGE` and nodata, without alpha or explicit masks. The default
+`SOURCE` policy reduces each overview directly from source samples.
+`QUALITY` aliases WebP quality (0–100) or JPEG quality (1–100).
+`JPEG_QUALITY` always accepts 1–100. For compatibility, quality keys are validated
+even when an unrelated codec ignores them.
+
 Tile archives (PMTiles, MBTiles, MVT) take `--oo ZOOM_LEVEL=N` and `--oo CLIP=NO` as inputs; see
 [Formats](formats.md#tile-archives).
 
@@ -457,13 +467,6 @@ terrio polygonize INPUT OUTPUT [options]
 `-b`, `--field NAME` (default `DN`), `--nln`, `--8` (8-connectedness), `--nomask`, `--mask RASTER`,
 `-f`, `--append`, `--overwrite`. Polygons have holes; exteriors are counter-clockwise and holes
 clockwise.
-
-GeoTIFF/COG WebP output accepts `--compress WEBP --co WEBP_LOSSLESS=YES` or
-`--co WEBP_LEVEL=0..100` for lossy quality. Supported inputs are Byte RGB/RGBA;
-alpha is retained losslessly. COG output accepts
-`--co COG_OVERVIEW_POLICY=GDAL_3_13` for recursive, floor-sized overviews with
-`--co RESAMPLING=NEAREST|AVERAGE` and nodata, without alpha or explicit masks. The default
-`SOURCE` policy reduces each overview directly from source samples.
 
 ## dem
 

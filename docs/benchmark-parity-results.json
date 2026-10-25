@@ -1272,7 +1272,7 @@
       "ignored": 1
     },
     "exact_gdal_conformance": {
-      "identical": 45,
+      "identical": 46,
       "within_tolerance": 0,
       "different": 0
     },
@@ -1797,7 +1797,7 @@
         "title": "Benchmark color and schema preservation",
         "skipped": "",
         "error": "",
-        "seconds": 5.146185,
+        "seconds": 5.18761,
         "cases": [
           {
             "group": "COG",
@@ -1830,7 +1830,7 @@
         "title": "Benchmark compatibility and codec roundtrips",
         "skipped": "",
         "error": "",
-        "seconds": 3.567116,
+        "seconds": 3.570073,
         "cases": [
           {
             "group": "COG",
@@ -1847,6 +1847,12 @@
           {
             "group": "COG",
             "name": "COG optical nearest complete pyramid every pixel",
+            "status": "identical",
+            "detail": ""
+          },
+          {
+            "group": "GDAL-authored",
+            "name": "GDAL-authored dataset metadata preserves entity text",
             "status": "identical",
             "detail": ""
           },
@@ -1953,7 +1959,7 @@
         "title": "Warp kernels and raster type",
         "skipped": "",
         "error": "",
-        "seconds": 1.429508,
+        "seconds": 1.340927,
         "cases": [
           {
             "group": "point translate",

@@ -507,7 +507,7 @@ pub(crate) mod codec {
                 if options.band_metadata.is_empty() {
                     opts.band_metadata = ds.band_metadata.clone();
                 }
-                opts.gcps = options.inherited_gcps(ds);
+                opts.gcps = options.inherited_gcps(ds, Some(driver));
                 opts.geo_transform = options.geo_transform.or(ds.affine);
                 // Complex bands as complex samples, as the file writer stores them.
                 opts.complex = ds.complex;

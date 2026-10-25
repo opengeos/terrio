@@ -1356,7 +1356,10 @@ test("GDAL 3.13 terrain and native WebP creation options", () => {
   const bytes = image.toBytes("webp.tif", { compress: "WEBP", creationOptions: { WEBP_LOSSLESS: "YES" } });
   const decoded = terrio.open(bytes, "webp.tif");
   for (let band = 1; band <= 3; band++) assert.deepEqual([...decoded.readBand(band)], [...rgb.slice((band-1)*240, band*240)]);
-  assert.notDeepEqual(image.toBytes("low.tif", { compress: "WEBP", creationOptions: { WEBP_LEVEL: "10" } }), image.toBytes("high.tif", { compress: "WEBP", creationOptions: { WEBP_LEVEL: "95" } }));
+  const low = image.toBytes("low.tif", { compress: "WEBP", creationOptions: { WEBP_LEVEL: "10" } });
+  const high = image.toBytes("high.tif", { compress: "WEBP", creationOptions: { WEBP_LEVEL: "95" } });
+  assert.notDeepEqual(low, high);
+  assert.notDeepEqual([...terrio.open(low, "low.tif").readBand(1)], [...terrio.open(high, "high.tif").readBand(1)]);
   const grid = terrio.rasterFromArray(new Float32Array(65 * 35).map((_, i) => i % 71), 65, 35, [0,1,0,35,0,-1]);
   const cog = terrio.open(grid.toBytes("gdal.tif", { format: "COG", tileSize: 16, creationOptions: { COG_OVERVIEW_POLICY: "GDAL_3_13" } }), "gdal.tif");
   assert.deepEqual(cog.info().overviews, [[32,17],[16,8]]);

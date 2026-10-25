@@ -41,6 +41,9 @@ def test_gcp_only_cog_copies_keep_coordinates(data_dir, gdal, tmp_path):
             (g.GCPPixel, g.GCPLine, g.GCPX, g.GCPY, g.GCPZ) for g in original.GetGCPs()
         ]
         np.testing.assert_array_equal(actual.ReadAsArray(), expected)
+        ascii_grid = tmp_path / f"grid-{i}.asc"
+        raster.write(str(ascii_grid))
+        np.testing.assert_array_equal(terrio.open_raster(str(ascii_grid)).read()[0], expected)
 
 
 def test_versioned_terrain_and_webp_options(tmp_path):

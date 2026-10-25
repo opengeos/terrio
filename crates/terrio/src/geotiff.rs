@@ -859,13 +859,13 @@ mod tests {
     #[test]
     fn metadata_xml_handles_quotes_entities_and_validated_color_roles() {
         use crate::drivers::gtiff_write::{gdal_metadata_items, parse_gdal_band_metadata, parse_gdal_metadata};
-        let xml = "<GDALMetadata><Item name='COLORINTERP' sample='0' role='colorinterp'>Gr&#97;y</Item><Item name='title'>a&amp;lt;b</Item><Item name='note' sample='1'>c&amp;amp;d</Item></GDALMetadata>";
+        let xml = "<GDALMetadata><Item name='COLORINTERP' sample='0' role='colorinterp'>Gr&#97;y</Item><Item name='title'>a&amp;lt;b &amp;amp;lt;literal</Item><Item name='note' sample='1'>c&amp;amp;d &amp;amp;amp;literal</Item></GDALMetadata>";
         let items = gdal_metadata_items(xml);
         assert_eq!(items[0].attr("role"), Some("colorinterp"));
         assert_eq!(color_interpretation(&items[0].text), "Gray");
         assert_eq!(color_interpretation("not a color &amp; role"), "Undefined");
-        assert_eq!(parse_gdal_metadata(xml), [("title".into(), "a<b".into())]);
-        assert_eq!(parse_gdal_band_metadata(xml), [(1, "note".into(), "c&d".into())]);
+        assert_eq!(parse_gdal_metadata(xml), [("title".into(), "a<b &lt;literal".into())]);
+        assert_eq!(parse_gdal_band_metadata(xml), [(1, "note".into(), "c&d &amp;literal".into())]);
     }
 
     #[test]

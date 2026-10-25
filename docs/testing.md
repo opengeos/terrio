@@ -260,3 +260,8 @@ The GDAL 3.13 terrain profile covers slope and standard hillshade. Exactness on
 these fixtures does not promise identical transcendental/SIMD rounding across
 architectures. JPEG XL cases cover Byte/UInt16, one/three bands, strips and tiles;
 macOS/Windows CI runs the matching native round-trip regression.
+
+The benchmark compatibility suite also preserves entity text from GDAL-authored
+TIFF metadata and asserts actual JPEG XL block dimensions. The portable GDAL 3.13
+slope golden unit check permits one Float32 ULP for platform `atan` rounding; this
+allowance does not apply to exact benchmark or conformance comparisons.

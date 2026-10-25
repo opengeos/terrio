@@ -127,6 +127,19 @@ def main():
         if version == "3.13":
             run("COG optical nearest complete pyramid every pixel", lambda: cog(optical, "optical-near", "nearest"))
 
+        def metadata_entities():
+            source, actual = tmp / "metadata-source.tif", tmp / "metadata-output.tif"
+            dataset = gdal.Translate(str(source), str(optical), srcWin=[0, 0, 16, 16])
+            dataset.SetMetadataItem("title", "a<b &lt;literal")
+            dataset = None
+            command([args.terrio, "convert", source, actual])
+            output = gdal.Open(str(actual))
+            if output.GetMetadataItem("title") != "a<b &lt;literal":
+                raise AssertionError("GDAL metadata entity text changed")
+            exact(actual, source)
+
+        run("GDAL-authored dataset metadata preserves entity text", metadata_entities)
+
         dem = tmp / "dem-clip.tif"
         gdal.Translate(
             str(dem), str(args.data / "usgs_dem.tif"), srcWin=[0, 0, 512, 512]
@@ -283,6 +296,10 @@ def main():
                                 *options,
                             ]
                         )
+                        dataset = gdal.Open(str(actual))
+                        block = dataset.GetRasterBand(1).GetBlockSize()
+                        if (tiled and block != [32, 32]) or (not tiled and block[0] != dataset.RasterXSize):
+                            raise AssertionError(f"JPEG XL layout differs: tiled={tiled}, block={block}")
                         exact(actual, source)
 
                     run(

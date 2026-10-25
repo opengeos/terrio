@@ -113,7 +113,7 @@ parity requirement remain outstanding.
 
 Workspace tests (483 core tests passed, one ignored, plus workspace integration
 and binding tests), Clippy with `-D warnings`, formatting and full pre-commit
-checks pass. The 45 selected GDAL conformance cases are identical, including 19
+checks pass. The 46 selected GDAL conformance cases are identical, including 20
 compatibility/codec cases. Python passes 55 API tests; release WASM passes 99
 JavaScript tests with two skips. The CLI and Python bindings were built in
 release mode; WASM uses Rust release optimization without the optional wasm-opt
@@ -125,3 +125,10 @@ and the original measurement/output gates. Six cases pass exact validation;
 warp and counties still fail. Background activity exceeded the one-CPU limit,
 so all speed ratios are withheld. Raw samples remain available for review;
 these measurements do not establish new performance claims.
+
+The review regressions also check GCP-only sources converted to AAIGrid through
+whole and lazy paths, preserve explicitly supplied unsupported-option errors,
+compare decoded WebP pixels at both quality levels, and assert JPEG XL tile/strip
+block dimensions. A GDAL-authored metadata case verifies its additional escaped
+text layer, including literal entity strings. The portable 3×3 slope unit check
+allows one Float32 ULP for libm rounding; conformance and benchmark gates stay exact.
