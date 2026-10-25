@@ -73,6 +73,11 @@ fn in_flight_transport_results_cannot_restore_old_cache_entries() {
             started_rx.recv_timeout(Duration::from_secs(10)).unwrap();
             let attempts = Arc::new(AtomicUsize::new(0));
             network::set_grid_transport(Arc::new(Missing(attempts.clone())));
+            // Populate the new transport's negative cache before the old result
+            // finishes. A late old result must not evict this newer cache entry.
+            assert!(query().is_err());
+            let cached_attempts = attempts.load(Ordering::SeqCst);
+            assert!(cached_attempts > 0);
             release_tx.send(()).unwrap();
             let old = pending.join().unwrap();
             assert_eq!(old.is_ok(), valid, "old lookup: {old:?}");
@@ -80,7 +85,7 @@ fn in_flight_transport_results_cannot_restore_old_cache_entries() {
                 assert_eq!(height, 10.0);
             }
             assert!(query().is_err(), "old grid survived the transport replacement");
-            assert!(attempts.load(Ordering::SeqCst) > 0, "old miss prevented the new transport from being consulted");
+            assert_eq!(attempts.load(Ordering::SeqCst), cached_attempts, "old lookup evicted the new transport's cached result");
         });
     }
 }

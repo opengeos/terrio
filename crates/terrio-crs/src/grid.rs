@@ -763,6 +763,16 @@ fn files() -> &'static FileCache {
     F.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+/// A late lookup must not overwrite a result cached after a reset. Check while
+/// holding the cache lock so reset either invalidates this write or clears it.
+fn cache_file_result(name: &str, generation: u64, file: Option<Arc<GridFile>>) -> Option<()> {
+    let mut cache = files().lock().ok()?;
+    if generation == cache_generation() {
+        cache.insert(name.to_string(), (generation, file));
+    }
+    Some(())
+}
+
 /// Makes a grid file available under a name (such as `us_noaa_conus.tif`), from its bytes: for
 /// WebAssembly, where there is no file system, or to use a grid without installing it.
 pub fn register_grid(name: &str, bytes: Vec<u8>) {
@@ -962,7 +972,7 @@ fn load(name: &str) -> Option<Arc<GridFile>> {
         for old in old_names(name) {
             if let Some(b) = find_local(&old) {
                 let file = read_file(&old, b).map(Arc::new);
-                files().lock().ok()?.insert(name.to_string(), (generation, file.clone()));
+                cache_file_result(name, generation, file.clone())?;
                 return file;
             }
         }
@@ -974,11 +984,11 @@ fn load(name: &str) -> Option<Arc<GridFile>> {
         match open_remote(name) {
             Ok(file) => {
                 let file = Arc::new(file);
-                files().lock().ok()?.insert(name.to_string(), (generation, Some(file.clone())));
+                cache_file_result(name, generation, Some(file.clone()))?;
                 return Some(file);
             }
             Err(true) => {
-                files().lock().ok()?.insert(name.to_string(), (generation, None));
+                cache_file_result(name, generation, None)?;
                 return None;
             }
             Err(false) => {}
@@ -987,7 +997,7 @@ fn load(name: &str) -> Option<Arc<GridFile>> {
     #[cfg(remote)]
     let bytes = if bytes.is_none() && network_enabled() { download(name) } else { bytes };
     let file = bytes.and_then(|b| read_file(name, b)).map(Arc::new);
-    files().lock().ok()?.insert(name.to_string(), (generation, file.clone()));
+    cache_file_result(name, generation, file.clone())?;
     file
 }
 
@@ -1007,7 +1017,9 @@ pub(crate) fn available(name: &str) -> bool {
         return a;
     }
     let a = present_locally(name) || (network_enabled() && name.ends_with(".tif") && !name.contains(['/', '\\']));
-    if let Ok(mut m) = availability().lock() {
+    if let Ok(mut m) = availability().lock()
+        && generation == cache_generation()
+    {
         m.insert(name.to_string(), (generation, a));
     }
     a
@@ -1126,7 +1138,10 @@ where
         match load(&name).and_then(|f| build(&f)).filter(|g| !g.is_empty()) {
             Some(grids) => {
                 let s = Arc::new(GridSet { grids });
-                cache.lock().ok()?.insert((name, kind), (generation, s.clone()));
+                let mut cache = cache.lock().ok()?;
+                if generation == cache_generation() {
+                    cache.insert((name, kind), (generation, s.clone()));
+                }
                 out.push(s);
             }
             None if optional => {}
