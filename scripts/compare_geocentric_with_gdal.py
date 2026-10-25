@@ -2,8 +2,9 @@
 """Compare geocentric XYZ endpoints with GDAL and the frozen reference suite.
 
 Cartesian/projected coordinates and heights allow 1 mm; geographic angles allow
-1e-8 degrees. Two custom BoundCRS cases use their declared Helmert operation as an
+1e-8 degrees. Two nonzero custom BoundCRS cases use their declared Helmert operation as an
 explicit GDAL pipeline because PROJ 9.8.1's CRS factory skips that operation.
+An explicit no-op also verifies zero Helmert Cartesian vector preservation.
 """
 import argparse
 import json
@@ -57,7 +58,9 @@ def main():
                     assert error <= case["tolerance"][i], f"axis {i}: {error} > {case['tolerance'][i]}"
             status = "identical" if maxima == [0.0, 0.0, 0.0] else "within tolerance"
             detail = f"{len(actual)} points; max component errors {maxima}"
-            if case.get("pipeline"):
+            if case.get("pipeline") == "+proj=noop":
+                detail += "; explicit zero Helmert (Cartesian vector unchanged)"
+            elif case.get("pipeline"):
                 detail += "; explicit declared Helmert pipeline (PROJ factory discrepancy)"
             results.append({"name": case["name"], "status": status, "detail": detail})
         except Exception as error:

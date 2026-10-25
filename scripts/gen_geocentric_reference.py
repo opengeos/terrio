@@ -53,6 +53,15 @@ def main():
     add("Helmert XYZ to projected", airy, "EPSG:32630", local_xyz, False,
         helmert + " +step +inv +proj=cart +ellps=WGS84 +step +proj=utm +zone=30 +ellps=WGS84")
     add("Helmert geographic to XYZ", "+proj=longlat +ellps=airy +towgs84=446.448,-125.157,542.06,0.15,0.247,0.842,-20.489", "EPSG:4978", [[-2, 53, 100]])
+    bessel = "+proj=longlat +ellps=bessel +towgs84=0,0,0"
+    bessel_points = [[12, 45, 123], [10, 50, -5]]
+    add("WKT2 zero Helmert geographic to XYZ", srs(bessel).ExportToWkt(["FORMAT=WKT2_2019"]), "EPSG:4978", bessel_points)
+    bessel_cart = "+proj=geocent +ellps=bessel +towgs84=0,0,0 +units=m"
+    conversion = osr.CoordinateTransformation(srs("+proj=longlat +ellps=bessel"), srs("+proj=geocent +ellps=bessel"))
+    bessel_xyz = [list(conversion.TransformPoint(*p)) for p in bessel_points]
+    # A declared zero geocentric translation preserves the Cartesian vector,
+    # even when the source and destination ellipsoids differ.
+    add("WKT2 zero Helmert XYZ to XYZ", srs(bessel_cart).ExportToWkt(["FORMAT=WKT2_2019"]), "EPSG:4978", bessel_xyz, pipeline="+proj=noop")
     for suffix in ["+units=km", "+units=ft", "+axis=neu", "+axis=end", "+pm=paris"]:
         target = "+proj=geocent +datum=WGS84 " + suffix
         add("Cartesian option " + suffix, "EPSG:4979", target, points[:2])

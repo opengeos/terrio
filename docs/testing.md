@@ -357,13 +357,15 @@ pyproj 3.8.0, without grids. This is distinct from the projections-suite oracle.
 The source point is longitude 147, latitude -42, height 100 on EPSG:4979,
 transformed to EPSG:4978 with all three expected Cartesian components retained.
 
-`geocentric_reference.json` adds 24 cases / 59 points frozen with GDAL 3.12.2 /
+`geocentric_reference.json` adds 26 cases / 63 points frozen with GDAL 3.12.2 /
 PROJ 9.8.1: forward/inverse, poles, centre/interior conventions, GRS80 and spherical
 ellipsoids, linear units, axis options, prime meridians, WKT1/WKT2 without IDs,
 projected composition, datum transformations and an ITRF2014-to-GDA2020 coordinate
 epoch. Two custom geocentric TOWGS84 cases use explicit GDAL pipelines because
 PROJ's CRS factory drops that declared transformation. Both the operation and
-the exception are recorded; tolerances are not widened to hide it.
+the exception are recorded; tolerances are not widened to hide it. Zero-valued
+Helmert regressions retain the Cartesian datum operation across different
+ellipsoids; an explicit GDAL no-op checks Cartesian vector preservation.
 
 ```sh
 cargo test -p terrio-crs --test geocentric

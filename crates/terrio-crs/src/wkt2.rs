@@ -736,7 +736,7 @@ impl Params {
 }
 
 /// The 3 or 7 `+towgs84` parameters of a `BOUNDCRS`'s transformation to WGS 84: `None` when
-/// it is to another CRS, or does not shift.
+/// it is to another CRS or is not a supported Helmert operation.
 fn towgs84(root: &Node) -> Result<Option<Vec<f64>>> {
     let target = root.child("TARGETCRS").and_then(first_node);
     let to_wgs84 = target.is_some_and(|t| {
@@ -794,8 +794,7 @@ fn towgs84(root: &Node) -> Result<Option<Vec<f64>>> {
         };
         seven |= i >= 3;
     }
-    if v.iter().all(|x| *x == 0.0) {
-        return Ok(None);
-    }
+    // Even zero parameters declare a Cartesian datum operation. Keeping it is
+    // necessary when the source and destination ellipsoids differ.
     Ok(Some(if seven { v.to_vec() } else { v[..3].to_vec() }))
 }

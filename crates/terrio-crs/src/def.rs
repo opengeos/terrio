@@ -306,9 +306,8 @@ impl Def {
         if let Some(g) = nadgrids {
             d.ops = vec![Arc::new(Op::world(datum::nadgrids_steps(g)))];
         } else if let Some(t) = towgs84 {
-            if t.iter().any(|v| *v != 0.0) {
-                d.ops = vec![Arc::new(Op::world(datum::towgs84_steps(ell, &t)))];
-            }
+            // Zero translation still converts between the declared ellipsoid and WGS 84.
+            d.ops = vec![Arc::new(Op::world(datum::towgs84_steps(ell, &t)))];
         } else if let Some(code) = datum_name.and_then(datum_geog)
             && let Some(e) = epsg::get(code)
         {
@@ -791,10 +790,11 @@ pub(crate) fn vertical_from_wkt(w: &str) -> Option<Vertical> {
 /// The `TOWGS84` parameters of a WKT 1 definition, when they shift.
 fn wkt_towgs84(w: &str) -> Option<Vec<f64>> {
     let root = wkt1::parse(w)?;
-    let geogcs = if root.key.eq_ignore_ascii_case("GEOGCS") { &root } else { root.child("GEOGCS")? };
+    let geogcs =
+        if root.key.eq_ignore_ascii_case("GEOGCS") || root.key.eq_ignore_ascii_case("GEOCCS") { &root } else { root.child("GEOGCS")? };
     let t = geogcs.child("DATUM")?.child("TOWGS84")?;
     let v: Vec<f64> = (0..t.args.len()).filter_map(|i| t.num(i)).collect();
-    ((v.len() == 3 || v.len() == 7) && v.iter().any(|x| *x != 0.0)).then_some(v)
+    (v.len() == 3 || v.len() == 7).then_some(v)
 }
 
 /// The `GEOGCS[...]` part of a WKT 1 definition.

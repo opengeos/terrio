@@ -475,6 +475,78 @@
       ]
     },
     {
+      "name": "WKT2 zero Helmert geographic to XYZ",
+      "src": "BOUNDCRS[SOURCECRS[GEOGCRS[\"unknown\",DATUM[\"Unknown based on Bessel 1841 ellipsoid using towgs84=0,0,0\",ELLIPSOID[\"Bessel 1841\",6377397.155,299.1528128,LENGTHUNIT[\"metre\",1,ID[\"EPSG\",9001]]]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433],ID[\"EPSG\",8901]],CS[ellipsoidal,2],AXIS[\"longitude\",east,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433,ID[\"EPSG\",9122]]],AXIS[\"latitude\",north,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433,ID[\"EPSG\",9122]]]]],TARGETCRS[GEOGCRS[\"WGS 84\",DATUM[\"World Geodetic System 1984\",ELLIPSOID[\"WGS 84\",6378137,298.257223563,LENGTHUNIT[\"metre\",1]]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[ellipsoidal,2],AXIS[\"latitude\",north,ORDER[1],ANGLEUNIT[\"degree\",0.0174532925199433]],AXIS[\"longitude\",east,ORDER[2],ANGLEUNIT[\"degree\",0.0174532925199433]],ID[\"EPSG\",4326]]],ABRIDGEDTRANSFORMATION[\"Transformation from unknown to WGS84\",METHOD[\"Geocentric translations (geog2D domain)\",ID[\"EPSG\",9603]],PARAMETER[\"X-axis translation\",0,ID[\"EPSG\",8605]],PARAMETER[\"Y-axis translation\",0,ID[\"EPSG\",8606]],PARAMETER[\"Z-axis translation\",0,ID[\"EPSG\",8607]]]]",
+      "dst": "EPSG:4978",
+      "pipeline": null,
+      "source_epoch": null,
+      "points": [
+        [
+          12,
+          45,
+          123
+        ],
+        [
+          10,
+          50,
+          -5
+        ]
+      ],
+      "expected": [
+        [
+          4418421.002457555,
+          939164.3762929903,
+          4486982.721759215
+        ],
+        [
+          4044960.1396603007,
+          713235.6085123916,
+          4862290.419540933
+        ]
+      ],
+      "tolerance": [
+        0.001,
+        0.001,
+        0.001
+      ]
+    },
+    {
+      "name": "WKT2 zero Helmert XYZ to XYZ",
+      "src": "BOUNDCRS[SOURCECRS[GEODCRS[\"unknown\",DATUM[\"Unknown based on Bessel 1841 ellipsoid using towgs84=0,0,0\",ELLIPSOID[\"Bessel 1841\",6377397.155,299.1528128,LENGTHUNIT[\"metre\",1,ID[\"EPSG\",9001]]]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433],ID[\"EPSG\",8901]],CS[Cartesian,3],AXIS[\"(X)\",geocentricX,ORDER[1],LENGTHUNIT[\"metre\",1,ID[\"EPSG\",9001]]],AXIS[\"(Y)\",geocentricY,ORDER[2],LENGTHUNIT[\"metre\",1,ID[\"EPSG\",9001]]],AXIS[\"(Z)\",geocentricZ,ORDER[3],LENGTHUNIT[\"metre\",1,ID[\"EPSG\",9001]]]]],TARGETCRS[GEODCRS[\"WGS 84\",DATUM[\"World Geodetic System 1984\",ELLIPSOID[\"WGS 84\",6378137,298.257223563,LENGTHUNIT[\"metre\",1]]],PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.0174532925199433]],CS[Cartesian,3],AXIS[\"(X)\",geocentricX,ORDER[1],LENGTHUNIT[\"metre\",1]],AXIS[\"(Y)\",geocentricY,ORDER[2],LENGTHUNIT[\"metre\",1]],AXIS[\"(Z)\",geocentricZ,ORDER[3],LENGTHUNIT[\"metre\",1]],ID[\"EPSG\",4978]]],ABRIDGEDTRANSFORMATION[\"Transformation from unknown to WGS84\",METHOD[\"Geocentric translations (geocentric domain)\",ID[\"EPSG\",1031]],PARAMETER[\"X-axis translation\",0,ID[\"EPSG\",8605]],PARAMETER[\"Y-axis translation\",0,ID[\"EPSG\",8606]],PARAMETER[\"Z-axis translation\",0,ID[\"EPSG\",8607]]]]",
+      "dst": "EPSG:4978",
+      "pipeline": "+proj=noop",
+      "source_epoch": null,
+      "points": [
+        [
+          4418421.002457555,
+          939164.3762929903,
+          4486982.721759215
+        ],
+        [
+          4044960.1396603007,
+          713235.6085123916,
+          4862290.419540933
+        ]
+      ],
+      "expected": [
+        [
+          4418421.002457555,
+          939164.3762929903,
+          4486982.721759215
+        ],
+        [
+          4044960.1396603007,
+          713235.6085123916,
+          4862290.419540933
+        ]
+      ],
+      "tolerance": [
+        0.001,
+        0.001,
+        0.001
+      ]
+    },
+    {
       "name": "Cartesian option +units=km",
       "src": "EPSG:4979",
       "dst": "+proj=geocent +datum=WGS84 +units=km",
