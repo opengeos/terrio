@@ -49,6 +49,10 @@ def main():
     parser.add_argument("--after", type=Path, required=True, help="Workspace with terrio-crs")
     parser.add_argument("--output", type=Path, required=True, help="New disk-backed directory")
     parser.add_argument("--wasm-opt", required=True)
+    parser.add_argument("--configurations", nargs="+", choices=["before", "native", "fallback", "terrio-after"],
+                        default=["before", "native", "fallback", "terrio-after"])
+    parser.add_argument("--targets", nargs="+", choices=["native", "wasm32-unknown-unknown"],
+                        default=["native", "wasm32-unknown-unknown"])
     args = parser.parse_args()
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=False)
@@ -64,11 +68,19 @@ def main():
     # compiler cache as required by the workspace's local-build instructions.
     if shutil.which("sccache"):
         env.update(RUSTC_WRAPPER="sccache", SCCACHE_RECACHE="1")
+    cpu = platform.processor()
+    if Path("/proc/cpuinfo").exists():
+        cpu = next((line.split(":", 1)[1].strip() for line in Path("/proc/cpuinfo").read_text().splitlines()
+                    if line.startswith("model name")), cpu)
     report = {
         "rustc": capture(["rustc", "-Vv"]),
         "wasm_opt": capture([args.wasm_opt, "--version"]),
         "machine": platform.platform(),
-        "cpu": platform.processor(),
+        "cpu": cpu,
+        "resource_scope": "Cargo process tree; resource counters exclude the persistent sccache daemon and its compiler workers",
+        "timing_scope": "Single serial fresh-target builds, sccache recache, filesystem and dependency downloads may be warm; shared desktop host",
+        "configurations": args.configurations,
+        "targets": args.targets,
         "jobs": 2,
         "compiler_cache": "recache" if env.get("SCCACHE_RECACHE") else "disabled",
         "profile": {"opt-level": "s", "lto": True, "codegen-units": 1, "panic": "abort", "strip": True},
@@ -84,6 +96,8 @@ def main():
         ("terrio-after", args.after.resolve(), "terrio", "terrio::crs", []),
     ]
     for label, workspace, package, rust_crate, features in configurations:
+        if label not in args.configurations:
+            continue
         probe = output / label
         (probe / "src").mkdir(parents=True)
         dependency = json.dumps(str(workspace / "crates" / package))
@@ -96,7 +110,7 @@ def main():
         (probe / "src/lib.rs").write_text(PROBE.format(crate=rust_crate))
         # Seed shared dependency versions from the corresponding source snapshot.
         shutil.copyfile(workspace / "Cargo.lock", probe / "Cargo.lock")
-        for target in ["native", "wasm32-unknown-unknown"]:
+        for target in args.targets:
             target_args = [] if target == "native" else ["--target", target]
             target_dir = probe / ("target-" + target)
             build_env = dict(env, CARGO_TARGET_DIR=str(target_dir))
