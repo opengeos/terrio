@@ -7,7 +7,7 @@
 
 # terrio
 
-[![crates.io](https://img.shields.io/crates/v/terrio.svg)](https://crates.io/crates/terrio) [![docs.rs](https://img.shields.io/docsrs/terrio)](https://docs.rs/terrio) [![PyPI](https://img.shields.io/pypi/v/terrio.svg)](https://pypi.org/project/terrio/) [![npm](https://img.shields.io/npm/v/terrio-js.svg)](https://www.npmjs.com/package/terrio-js) [![CI](https://github.com/opengeos/terrio/actions/workflows/ci.yml/badge.svg)](https://github.com/opengeos/terrio/actions/workflows/ci.yml) [![Docs](https://github.com/opengeos/terrio/actions/workflows/docs.yml/badge.svg)](https://terrio.opengeos.org) [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/opengeos/terrio/blob/main/LICENSE)
+[![crates.io](https://img.shields.io/crates/v/terrio.svg)](https://crates.io/crates/terrio) [![docs.rs](https://img.shields.io/docsrs/terrio)](https://docs.rs/terrio) [![PyPI](https://img.shields.io/pypi/v/terrio.svg)](https://pypi.org/project/terrio/) [![npm](https://img.shields.io/npm/v/terrio-js.svg)](https://www.npmjs.com/package/terrio-js) [![CI](https://github.com/opengeos/terrio/actions/workflows/ci.yml/badge.svg)](https://github.com/opengeos/terrio/actions/workflows/ci.yml) [![Docs](https://github.com/opengeos/terrio/actions/workflows/docs.yml/badge.svg)](https://terrio.opengeos.org) [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/opengeos/terrio/blob/main/LICENSE) [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.23642204.svg)](https://doi.org/10.5281/zenodo.23642204)
 
 Pure-Rust geospatial raster, vector and point cloud data I/O.
 
@@ -322,6 +322,16 @@ terrio builds on the work of many projects and their authors:
   wasm-bindgen.
 
 See the [acknowledgements](https://terrio.opengeos.org/acknowledgements/) for the full list.
+
+## Citation
+
+If you use terrio in your work, please cite it. terrio is archived on [Zenodo](https://zenodo.org/), which mints a DOI for every release. The concept DOI below always resolves to the latest version.
+
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.23642204.svg)](https://doi.org/10.5281/zenodo.23642204)
+
+> Wu, Q. (2026). terrio: Pure-Rust geospatial raster, vector and point cloud data I/O. Zenodo. <https://doi.org/10.5281/zenodo.23642204>
+
+You can also use GitHub's **"Cite this repository"** button (which reads [`CITATION.cff`](CITATION.cff)) to copy a ready-made APA or BibTeX entry. See the [How to Cite](https://terrio.opengeos.org/citation/) page for more formats.
 
 ## Disclaimer
 

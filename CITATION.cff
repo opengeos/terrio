@@ -1,0 +1,25 @@
+cff-version: 1.2.0
+title: "terrio: Pure-Rust geospatial raster, vector and point cloud data I/O"
+message: "If you use this software, please cite it using the metadata from this file."
+type: software
+abstract: "terrio reads, writes, converts and reprojects geospatial raster, vector and point cloud data in pure Rust, without C dependencies, so it builds anywhere Rust does, including WebAssembly. It is available as a command line tool, a Rust library, a Python package and a JavaScript package, with an MCP server for AI agents."
+authors:
+  - given-names: Qiusheng
+    family-names: Wu
+    email: giswqs@gmail.com
+    affiliation: "University of Tennessee, Knoxville, USA"
+    orcid: "https://orcid.org/0000-0001-5437-4073"
+version: 0.5.0
+date-released: 2026-10-24
+doi: "10.5281/zenodo.23642204"
+repository-code: "https://github.com/opengeos/terrio"
+url: "https://terrio.opengeos.org"
+license: MIT
+keywords:
+  - geospatial
+  - raster
+  - vector
+  - point cloud
+  - Rust
+  - WebAssembly
+  - GDAL
