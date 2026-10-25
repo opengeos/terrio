@@ -22,6 +22,7 @@ Suites:
     overviews         source overview selection and HTTP COG bytes vs gdalwarp -ovr
     dem-calc          dem, calc, proximity, sieve vs GDAL's tools (compare_dem_calc_with_gdal.py)
     vector-ops        ogr2ogr options, rasterize, polygonize (compare_vector_ops_with_gdal.py)
+    analysis-output   zonal/point-sampling output reprojection and decimal rounding
     footprint         raster footprints, source/custom fields and singleparts vs GDAL
     topology          buffer, polygon overlay/dissolve, validity, repair and cleanup vs GEOS
     arrow             Arrow and GeoArrow export and import (compare_arrow_with_gdal.py)
@@ -1108,6 +1109,30 @@ def suite_grib(ctx):
     return s
 
 
+def suite_analysis_output(ctx):
+    """Output reprojection and decimal rounding for zonal statistics and point sampling."""
+    suite = Suite(
+        "analysis-output", "Zonal and point-sampling output", "GDAL, NumPy and OGR",
+        "Real Tennessee zones, DEM, Landsat and NLCD rasters. Baseline values are checked "
+        "against GDAL/NumPy; output-only reprojection agrees within 1e-5 m in EPSG:3857. "
+        "Rounded statistics/samples, nulls, counts and source attributes must agree exactly.",
+    )
+    if missing_modules("osgeo", "numpy", "shapely"):
+        suite.skipped = "needs osgeo, numpy and shapely"
+        return suite
+    code, out, err = run([
+        sys.executable, str(SCRIPTS / "compare_analysis_output_with_gdal.py"), ctx.data,
+        "--terrio", ctx.terrio,
+    ])
+    for line in out.splitlines():
+        if line.startswith("PASS "):
+            name, _, detail = line[5:].partition(": ")
+            suite.cases.append(Case("analysis-output", name, TOLERANCE, detail))
+    if code != 0 or len(suite.cases) != 6:
+        suite.error = tail(err or out)
+    return suite
+
+
 def suite_footprint(ctx):
     """Source attributes and multipart/singlepart footprints on real rasters."""
     suite = Suite(
@@ -1211,6 +1236,7 @@ SUITES = OrderedDict(
         ("multidim", suite_multidim),
         ("topology", suite_topology),
         ("footprint", suite_footprint),
+        ("analysis-output", suite_analysis_output),
         ("arrow", suite_arrow),
         ("gpkg", suite_gpkg),
         ("streams", suite_streams),

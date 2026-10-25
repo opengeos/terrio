@@ -87,3 +87,51 @@ fn contours_zonal_statistics_and_sql_share_vector_outputs() {
         assert!(!d.join("bad.gpkg").exists());
     }
 }
+
+#[test]
+fn zonal_and_point_sampling_support_output_crs_and_decimal_places() {
+    let tmp = tempfile::tempdir().unwrap();
+    let d = tmp.path();
+    let cfg = terrio::RasterConfig { cols: 2, rows: 1, data_type: terrio::DataType::F64, cell_size: 1., ..Default::default() };
+    let mut raster = terrio::RasterDataset::new(terrio::Raster::from_data(cfg, vec![1.125, 2.125]).unwrap(), false);
+    raster.raster.crs.epsg = Some(4326);
+    for path in ["a.tif", "b.tif"] {
+        terrio::write_raster_dataset(&raster, d.join(path).to_str().unwrap(), &Default::default()).unwrap();
+    }
+    std::fs::write(d.join("zones.geojson"), r#"{"type":"FeatureCollection","features":[{"type":"Feature","properties":{"original":1.23456789},"geometry":{"type":"Polygon","coordinates":[[[0,0],[2,0],[2,1],[0,1],[0,0]]]}}]}"#).unwrap();
+    std::fs::write(d.join("points.geojson"), r#"{"type":"FeatureCollection","features":[{"type":"Feature","properties":{"original":1.23456789},"geometry":{"type":"Point","coordinates":[0.5,0.5]}},{"type":"Feature","properties":{"original":2.3456789},"geometry":{"type":"Point","coordinates":[10,10]}}]}"#).unwrap();
+    for (command, source) in [("zonal-stats", "zones.geojson"), ("sample", "points.geojson"), ("point-sample", "points.geojson")] {
+        let output = format!("{command}.gpkg");
+        let mut args =
+            vec![command, source, &output, "--raster", "a.tif", "--raster", "b.tif", "--t-srs", "EPSG:3857", "--decimal-places", "2"];
+        if command == "zonal-stats" {
+            args.extend(["--stats", "count,mean"]);
+        }
+        ok(&args, d);
+        let out = layer(&d.join(&output));
+        assert_eq!(out.crs_epsg(), Some(3857));
+        assert_eq!(out.features[0].attributes[0], terrio::FieldValue::Float(1.23456789));
+        if command == "zonal-stats" {
+            assert_eq!(
+                out.features[0].attributes[1..],
+                [
+                    terrio::FieldValue::Integer(2),
+                    terrio::FieldValue::Float(1.63),
+                    terrio::FieldValue::Integer(2),
+                    terrio::FieldValue::Float(1.63)
+                ]
+            );
+        } else {
+            assert_eq!(out.features[0].attributes[1..], [terrio::FieldValue::Float(1.13), terrio::FieldValue::Float(1.13)]);
+            assert_eq!(out.features[1].attributes[1..], [terrio::FieldValue::Null, terrio::FieldValue::Null]);
+            let Some(terrio::Geometry::Point(c)) = &out.features[0].geometry else { panic!() };
+            assert!((c.x - 55_659.74539663678).abs() < 1e-6);
+        }
+        for extra in [vec!["--decimal-places", "16"], vec!["--decimal-places", "-1"], vec!["--t-srs", "not-a-crs"]] {
+            let mut args = vec![command, source, "bad.gpkg", "--raster", "a.tif"];
+            args.extend(extra);
+            assert!(!run(&args, d).status.success());
+            assert!(!d.join("bad.gpkg").exists());
+        }
+    }
+}

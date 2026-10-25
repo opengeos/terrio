@@ -350,3 +350,31 @@ fn real_world_contours_and_zonal_values_from_gdal() {
     assert_eq!(out.len(), 10);
     assert_eq!(field(&out, 0, "ADMIN").as_str(), Some("China"));
 }
+
+#[test]
+fn zonal_output_controls_leave_source_and_analytical_grid_unchanged() {
+    let mut r = raster(2, 1, 1, &[1.125, 2.125], None);
+    r.raster.crs.epsg = Some(4326);
+    let mut l = zones(vec![Some(rectangle(0., 0., 2., 1.)), None]);
+    l.set_crs_epsg(Some(4326));
+    l.schema.add_field(FieldDef::new("source_float", FieldType::Float));
+    for feature in &mut l.features {
+        feature.attributes.push(V::Float(1.23456789));
+    }
+    let inputs = [ZonalInput { prefix: "v".into(), raster: &r, band: 1 }];
+    let options = ZonalOptions {
+        stats: vec![S::Count, S::Mean, S::Sum],
+        dst_srs: Some(terrio::crs::SpatialRef::from_epsg(3857).unwrap()),
+        decimal_places: Some(2),
+        ..Default::default()
+    };
+    let out = zonal_stats(&l, &inputs, &options).unwrap();
+    assert_eq!(out.crs_epsg(), Some(3857));
+    assert_eq!(out.features[0].attributes, [V::Text("zone 0".into()), V::Float(1.23456789), V::Integer(2), V::Float(1.63), V::Float(3.25)]);
+    assert_eq!(out.features[1].attributes[2..], [V::Integer(0), V::Null, V::Null]);
+    assert_eq!(out.features[0].fid, l.features[0].fid);
+    let expected = terrio::vector::reproject_layer(&l, options.dst_srs.as_ref().unwrap()).unwrap();
+    assert_eq!(out.features[0].geometry, expected.features[0].geometry);
+    assert_eq!(field(&zonal_stats(&l, &inputs, &Default::default()).unwrap(), 0, "v_mean"), &V::Float(1.625));
+    assert!(zonal_stats(&l, &inputs, &ZonalOptions { decimal_places: Some(16), ..Default::default() }).is_err());
+}

@@ -411,6 +411,11 @@ mod tests {
             assert!(names.contains(&name), "missing processing command {name}");
         }
         assert!(!names.contains(&"mcp") && !names.contains(&"help"));
+        for name in ["sample", "zonal-stats"] {
+            let tool = tools.iter().find(|t| t["name"] == name).unwrap();
+            let help = tool["description"].as_str().unwrap();
+            assert!(help.contains("--t-srs") && help.contains("--decimal-places"));
+        }
         let info = tools.iter().find(|t| t["name"] == "info").unwrap();
         assert!(info["description"].as_str().unwrap().contains("--json"));
         assert_eq!(info["annotations"]["readOnlyHint"], true);

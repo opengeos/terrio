@@ -14,6 +14,16 @@ pub struct SampleInput<'a> {
     pub band: usize,
 }
 
+/// Output controls for [`sample_with_options`]. Defaults retain input geometry and full precision.
+#[derive(Debug, Clone, Default)]
+pub struct SampleOptions {
+    /// Reproject output geometries into this CRS after sampling. The input CRS must be known.
+    pub dst_srs: Option<SpatialRef>,
+    /// Round only newly sampled values to 0–15 decimal places. Ties round away from zero.
+    /// Numeric fields remain floats; trailing zero display depends on the output format.
+    pub decimal_places: Option<u8>,
+}
+
 /// Adds a Float field per input raster band, retaining the points' geometry (including Z/M),
 /// attributes, IDs and CRS. Null geometries, nodata, non-finite pixels and out-of-bounds samples
 /// yield null fields. A point that cannot be transformed into a raster's CRS also yields a null
@@ -37,6 +47,14 @@ pub struct SampleInput<'a> {
 /// # Ok::<(), terrio::Error>(())
 /// ```
 pub fn sample(points: &Layer, inputs: &[SampleInput<'_>]) -> Result<Layer> {
+    sample_with_options(points, inputs, &SampleOptions::default())
+}
+
+/// [`sample`] with optional output CRS and numeric rounding. Sampling always uses the original
+/// points, so output reprojection cannot change the pixel selected. Output reprojection failures
+/// are errors, even when sampling into an individual raster would have yielded null.
+pub fn sample_with_options(points: &Layer, inputs: &[SampleInput<'_>], options: &SampleOptions) -> Result<Layer> {
+    validate_decimal_places(options.decimal_places)?;
     if inputs.is_empty() {
         return Err(Error::InvalidArgument("sampling needs at least one raster band".into()));
     }
@@ -122,7 +140,43 @@ pub fn sample(points: &Layer, inputs: &[SampleInput<'_>]) -> Result<Layer> {
             ));
         }
     }
-    Ok(out)
+    finish_output(out, points.schema.len(), options.dst_srs.as_ref(), options.decimal_places)
+}
+
+pub(crate) fn validate_decimal_places(decimal_places: Option<u8>) -> Result<()> {
+    if decimal_places.is_some_and(|places| places > 15) {
+        return Err(Error::InvalidArgument("decimal places must be between 0 and 15".into()));
+    }
+    Ok(())
+}
+
+// Shared by sampling and zonal statistics: preserve source attributes and integer counts,
+// round only newly computed float fields, then transform output geometry independently.
+pub(crate) fn finish_output(
+    mut layer: Layer,
+    first_field: usize,
+    dst_srs: Option<&SpatialRef>,
+    decimal_places: Option<u8>,
+) -> Result<Layer> {
+    if let Some(places) = decimal_places {
+        let factor = 10_f64.powi(i32::from(places));
+        for feature in &mut layer.features {
+            for value in feature.attributes.iter_mut().skip(first_field) {
+                if let FieldValue::Float(v) = value {
+                    let scaled = *v * factor;
+                    // Avoid a multiply/divide round trip when no fractional digits remain:
+                    // it can perturb large or already rounded values by one floating-point step.
+                    if scaled.is_finite() && scaled.fract() != 0.0 {
+                        *v = scaled.round() / factor;
+                    }
+                }
+            }
+        }
+    }
+    match dst_srs {
+        Some(dst) => crate::vector::reproject_layer_owned(layer, dst),
+        None => Ok(layer),
+    }
 }
 
 pub(crate) fn check_band(ds: &RasterDataset, band: usize) -> Result<()> {

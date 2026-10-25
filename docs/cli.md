@@ -179,16 +179,24 @@ implicit masks. Complex bands and geolocation arrays are unsupported.
 ```sh
 terrio sample sites.gpkg samples.gpkg --raster dem.tif --raster rain.tif
 terrio sample sites.gpkg samples.gpkg --raster image.tif --band 1,2,3 --prefix image
+terrio point-sample sites.gpkg samples.gpkg --raster dem.tif --raster rain.tif \
+  --t-srs EPSG:3857 --decimal-places 2
 ```
 
-Samples the pixel containing each point, adding a Float field for each raster/band pair. Repeat
+`sample` (alias `point-sample`) is the multi-raster point sampling tool. It samples the pixel
+containing each point, adding a Float field for each raster/band pair. Repeat
 `--raster` for multiple rasters; `--band` selects the same bands (from 1, default 1) from each.
 Fields are named `FILE_STEM_bN`, or `PREFIX_bN` when one `--prefix` is supplied per raster in the
 same order. Name collisions get `_2`, `_3`, etc.; existing attributes remain intact.
 
 Each raster may have a different resolution, affine grid or CRS. Coordinates are transformed
 for sampling while the output retains the original point geometries, Z/M, attributes and
-CRS. Nodata, non-finite pixels, out-of-bounds locations and null geometries yield null values.
+CRS by default. `--t-srs CRS` reprojects the output points after sampling; it requires a declared
+input CRS. Output reprojection failure is an error. `--decimal-places N` rounds newly sampled
+values to 0–15 decimal places, with halfway values rounded away from zero. Existing attributes
+are unchanged. Values remain numeric floats; output formats control trailing-zero display.
+Coordinates retain full precision. Nodata, non-finite pixels, out-of-bounds locations and
+null geometries yield null values.
 Points that cannot be projected into a raster's CRS yield null samples for that raster too;
 the CLI prints one warning per affected output field with the failure count. Errors constructing
 the CRS transformation still fail the command.
@@ -228,6 +236,8 @@ geolocation arrays are unsupported. Standard vector output options apply.
 terrio zonal-stats counties.gpkg stats.gpkg --raster elevation.tif --raster rain.tif
 terrio zonal-stats counties.gpkg stats.gpkg --raster image.tif --band 1,2 --prefix image \
   --stats count,min,max,mean,sum,stddev,median --all-touched
+terrio zonal-stats counties.gpkg stats.gpkg --raster dem.tif \
+  --t-srs EPSG:3857 --decimal-places 2
 ```
 
 `zonal-stats` (alias `zonal`) adds statistics independently for each polygon or multipolygon.
@@ -243,7 +253,14 @@ zones are evaluated independently, so a pixel can contribute to multiple zones. 
 and non-finite values are excluded; alpha bands and external masks are not applied implicitly.
 With no valid contributing pixels, including null/empty geometries and zones outside the raster,
 `count` is 0 and every other statistic is null. Source geometry, Z/M, attributes and CRS remain
-unchanged. All non-null geometries must be polygons or multipolygons.
+unchanged by default. All non-null geometries must be polygons or multipolygons.
+
+`--t-srs CRS` reprojects output zones after statistics are computed, so it does not change
+pixel membership or the analytical grid. The input must declare a CRS, and output reprojection
+failure is an error. `--decimal-places N` rounds only newly calculated floating statistics to
+0–15 decimal places (halfway values away from zero); integer counts and original attributes
+are unchanged. This controls numeric values, not coordinate precision or trailing-zero display.
+For point inputs, use `sample`/`point-sample`, which accepts multiple rasters in one command.
 
 Rasters may use different resolutions, CRSs, rotated grids or south-up grids. Boundaries are
 transformed for each raster; a boundary transformation failure is an error. Missing CRSs are

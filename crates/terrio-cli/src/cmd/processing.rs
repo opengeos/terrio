@@ -2,7 +2,7 @@
 
 use terrio::formats::VectorDriver;
 use terrio::ops::footprint::FootprintOptions;
-use terrio::ops::sample::SampleInput;
+use terrio::ops::sample::{SampleInput, SampleOptions};
 use terrio::ops::vector_filter::{WriteMode, write_vector_with_mode};
 use terrio::{Error, Layer, Result};
 
@@ -267,9 +267,17 @@ pub struct SampleArgs {
     /// Base field names are PREFIX_bN; zonal statistics append the statistic name.
     #[arg(long = "prefix", value_name = "NAME")]
     prefixes: Vec<String>,
+    /// Reproject the output points or polygons after analysis (requires an input CRS).
+    #[arg(long = "t-srs", value_name = "CRS")]
+    t_srs: Option<String>,
+    /// Round newly computed values to this many decimal places (0–15); counts stay integers.
+    #[arg(long, value_name = "N", value_parser = clap::value_parser!(u8).range(0..=15))]
+    decimal_places: Option<u8>,
 }
 
 pub fn sample(a: SampleArgs) -> Result<()> {
+    let options =
+        SampleOptions { dst_srs: a.t_srs.as_deref().map(terrio::crs::SpatialRef::parse).transpose()?, decimal_places: a.decimal_places };
     let (rasters, prefixes) = sample_sources(&a)?;
     let mut inputs = Vec::new();
     for (i, raster) in rasters.iter().enumerate() {
@@ -277,7 +285,8 @@ pub fn sample(a: SampleArgs) -> Result<()> {
             inputs.push(SampleInput { field_name: format!("{}_b{band}", prefixes[i]), raster, band });
         }
     }
-    let layers = a.input.open()?.iter().map(|l| terrio::ops::sample::sample(l, &inputs)).collect::<Result<Vec<_>>>()?;
+    let layers =
+        a.input.open()?.iter().map(|l| terrio::ops::sample::sample_with_options(l, &inputs, &options)).collect::<Result<Vec<_>>>()?;
     a.output.write(layers)
 }
 
@@ -312,7 +321,12 @@ pub struct ZonalArgs {
 
 pub fn zonal(a: ZonalArgs) -> Result<()> {
     use terrio::ops::zonal::{Statistic, ZonalInput, ZonalOptions, zonal_stats};
-    let options = ZonalOptions { stats: a.stats.iter().map(|s| Statistic::parse(s)).collect::<Result<_>>()?, all_touched: a.all_touched };
+    let options = ZonalOptions {
+        stats: a.stats.iter().map(|s| Statistic::parse(s)).collect::<Result<_>>()?,
+        all_touched: a.all_touched,
+        dst_srs: a.sources.t_srs.as_deref().map(terrio::crs::SpatialRef::parse).transpose()?,
+        decimal_places: a.sources.decimal_places,
+    };
     let (rasters, prefixes) = sample_sources(&a.sources)?;
     let mut inputs = Vec::new();
     for (i, raster) in rasters.iter().enumerate() {

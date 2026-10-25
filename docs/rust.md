@@ -162,14 +162,18 @@ operation does not infer a source path from an in-memory raster; supply a `locat
 attribute explicitly when needed. Field names must be nonempty, have no surrounding whitespace, and be unique ignoring case.
 `ops::sample::sample` accepts a point layer and a slice of `SampleInput` values, each naming a
 raster, a band and an output field. It transforms points into each raster's CRS for sampling,
-retains their original geometries, and records missing samples as nulls. These operations are
+retains their original geometries, and records missing samples as nulls.
+`sample_with_options` additionally accepts `SampleOptions { dst_srs, decimal_places }` to
+reproject output geometries after sampling and round only newly sampled numeric fields.
+`sample` keeps its existing behavior. These operations are
 available in the core crate, including WebAssembly builds, without additional features.
 
 `ops::contour::contour` accepts a raster and `ContourOptions` (interval/fixed levels, band,
 nodata override and optional Z coordinates), returning a line layer with IDs and elevations.
 `ops::zonal::zonal_stats` accepts a polygon layer, `ZonalInput` raster bands and `ZonalOptions`
-(statistics and pixel inclusion); the result retains the source features and adds statistic
-fields. It reuses a cropped membership mask across bands of the same raster.
+(statistics, pixel inclusion, optional `dst_srs` and `decimal_places`); the result retains the
+source features and adds statistic fields. Output reprojection occurs after analysis, and
+rounding (0–15 decimal places, ties away from zero) leaves source attributes and counts intact. It reuses a cropped membership mask across bands of the same raster.
 `ops::sql::query` runs the [documented OGR SQL subset](sql.md), including computed columns,
 DISTINCT, summaries and attribute joins, with strict input-layer lookup. These operations
 are also available in the core crate without extra features.

@@ -71,6 +71,11 @@ pub struct ZonalOptions {
     pub stats: Vec<Statistic>,
     /// Include every pixel touched by the polygon, instead of pixels whose centres are inside.
     pub all_touched: bool,
+    /// Reproject output geometries after computing statistics on the original zones.
+    pub dst_srs: Option<SpatialRef>,
+    /// Round only newly computed floating statistics to 0–15 decimal places, ties away from zero.
+    /// Counts and source attributes are unchanged. Trailing zero display is format-dependent.
+    pub decimal_places: Option<u8>,
 }
 
 impl Default for ZonalOptions {
@@ -78,16 +83,20 @@ impl Default for ZonalOptions {
         Self {
             stats: vec![Statistic::Count, Statistic::Min, Statistic::Max, Statistic::Mean, Statistic::Sum, Statistic::StdDev],
             all_touched: false,
+            dst_srs: None,
+            decimal_places: None,
         }
     }
 }
 
-/// Adds statistics for each zone and raster band, preserving source geometry, Z/M, attributes,
+/// Adds statistics for each zone and raster band, preserving source geometry by default, Z/M, attributes,
 /// feature IDs and CRS. Zones must be polygons or multipolygons; null/empty geometries and zones
 /// with no valid contributing pixels have count 0 and null values for the other statistics.
 /// Nodata and non-finite pixels are excluded. Holes are excluded; overlapping zones are evaluated
 /// independently. Statistics use f64 values; integers above 2^53 can lose precision.
 ///
+/// `dst_srs` reprojects output geometries after analysis; `decimal_places` rounds only newly
+/// computed floating statistics. Both are optional and leave counts and source attributes intact.
 /// Raster grids may be rotated or south-up and use different CRSs. Each boundary is reprojected
 /// into each raster's CRS before rasterization; a boundary transformation failure is an error.
 /// Missing CRSs are accepted only when both zone and raster CRS are missing. Curved edges are
@@ -103,6 +112,7 @@ impl Default for ZonalOptions {
 /// # Ok::<(), terrio::Error>(())
 /// ```
 pub fn zonal_stats(zones: &Layer, inputs: &[ZonalInput<'_>], options: &ZonalOptions) -> Result<Layer> {
+    super::sample::validate_decimal_places(options.decimal_places)?;
     if inputs.is_empty() || options.stats.is_empty() {
         return Err(Error::InvalidArgument("zonal statistics needs at least one raster band and one statistic".into()));
     }
@@ -194,7 +204,7 @@ pub fn zonal_stats(zones: &Layer, inputs: &[ZonalInput<'_>], options: &ZonalOpti
             }
         }
     }
-    Ok(out)
+    super::sample::finish_output(out, zones.schema.len(), options.dst_srs.as_ref(), options.decimal_places)
 }
 
 struct Group<'a> {

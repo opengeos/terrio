@@ -2,7 +2,7 @@
 
 use terrio::ops::footprint::{FootprintOptions, footprint};
 use terrio::ops::geometry::{centroids, singleparts, vertices};
-use terrio::ops::sample::{SampleInput, sample};
+use terrio::ops::sample::{SampleInput, SampleOptions, sample, sample_with_options};
 use terrio::vector::{Coord, Ring};
 use terrio::{DataType, Feature, FieldDef, FieldType, FieldValue as V, Geometry as G, Layer, Raster, RasterConfig, RasterDataset};
 
@@ -330,5 +330,55 @@ fn footprint_singleparts_keep_holes_attributes_and_empty_schema() {
     for names in [vec![""], vec![" "], vec!["name "], vec![" name"], vec!["name", "NAME"]] {
         let options = FootprintOptions { attributes: names.into_iter().map(|n| (n.into(), "v".into())).collect(), ..Default::default() };
         assert!(footprint(&r, &options).is_err());
+    }
+}
+
+#[test]
+fn sampling_output_crs_and_rounding_preserve_values_attributes_and_nulls() {
+    let mut r = raster(3, 1, 1, &[1.125, -1.125, f64::MAX / 100.], None);
+    r.raster.crs.epsg = Some(4326);
+    let mut points = layer(vec![
+        Some(G::Point(Coord { x: 0.5, y: 0.5, z: Some(7.), m: Some(8.) })),
+        Some(G::point(1.5, 0.5)),
+        Some(G::point(2.5, 0.5)),
+        Some(G::point(10., 0.5)),
+        None,
+    ]);
+    points.schema.add_field(FieldDef::new("source_float", FieldType::Float));
+    for feature in &mut points.features {
+        feature.attributes.push(V::Float(9.87654321));
+    }
+    let inputs = [SampleInput { field_name: "value".into(), raster: &r, band: 1 }];
+    let options = SampleOptions { dst_srs: Some(terrio::crs::SpatialRef::from_epsg(3857).unwrap()), decimal_places: Some(2) };
+    let out = sample_with_options(&points, &inputs, &options).unwrap();
+    assert_eq!(out.crs_epsg(), Some(3857));
+    for (i, expected) in [V::Float(1.13), V::Float(-1.13), V::Float(f64::MAX / 100.), V::Null, V::Null].iter().enumerate() {
+        assert_eq!(&out.features[i].attributes[2], expected);
+        assert_eq!(out.features[i].attributes[..2], points.features[i].attributes);
+        assert_eq!(out.features[i].fid, points.features[i].fid);
+    }
+    let Some(G::Point(c)) = &out.features[0].geometry else { panic!() };
+    assert!((c.x - 55_659.74539663678).abs() < 1e-6);
+    assert!((c.y - 55_660.45186542152).abs() < 1e-6);
+    assert_eq!((c.z, c.m), (Some(7.), Some(8.)));
+    assert_eq!(sample(&points, &inputs).unwrap().features[0].attributes[2], V::Float(1.125));
+    assert!(sample_with_options(&points, &inputs, &SampleOptions { decimal_places: Some(16), ..Default::default() }).is_err());
+    points.set_crs_epsg(None);
+    r.raster.crs = Default::default();
+    let inputs = [SampleInput { field_name: "value".into(), raster: &r, band: 1 }];
+    assert!(sample_with_options(&points, &inputs, &options).is_err());
+}
+
+#[test]
+fn sampling_rounding_respects_precision_limits_and_zero_decimal_places() {
+    let points = layer(vec![Some(G::point(0.5, 0.5))]);
+    for (value, places, expected) in [(736_754.262_358_918, 15, 736_754.262_358_918), (1.5, 0, 2.), (-1.5, 0, -2.), (f64::MAX, 2, f64::MAX)]
+    {
+        let mut r = raster(1, 1, 1, &[value], None);
+        r.raster.crs.epsg = Some(4326);
+        let inputs = [SampleInput { field_name: "value".into(), raster: &r, band: 1 }];
+        let options = SampleOptions { decimal_places: Some(places), ..Default::default() };
+        let out = sample_with_options(&points, &inputs, &options).unwrap();
+        assert_eq!(out.features[0].attributes[1], V::Float(expected));
     }
 }

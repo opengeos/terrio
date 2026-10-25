@@ -313,3 +313,21 @@ area (at most `max(1e-6, reference area * 1e-12)` per feature). Rust regressions
 also cover holes, corner-touching regions, empty output schemas, field validation
 and sequential singlepart IDs. Python's bundled CLI uses the same options; there
 is currently no direct footprint operation in the Python or JavaScript bindings.
+
+### Zonal and point-sampling output controls (#280)
+
+```sh
+cargo test -p terrio -p terrio-cli --test processing --test raster_analysis
+python scripts/conformance.py ../terrio-data --only analysis-output --strict
+```
+
+The `analysis-output` suite checks real Tennessee polygons and points across DEM,
+Landsat and NLCD rasters. Independent GDAL/NumPy baseline checks cover pixel
+selection, nodata and statistics. Output CRS comparisons use GDAL transformations
+with a 1e-5 metre tolerance in EPSG:3857; rounded values, original attributes,
+integer counts and nulls must match exactly. Rust/CLI regressions cover positive
+and negative halfway rounding, huge finite values, Z/M preservation, precision
+limits and errors before output creation. Decimal places affect only computed
+numeric attributes, not coordinates or format-specific trailing-zero display.
+The options also apply to Python's bundled CLI and MCP; there are currently no
+direct point-sampling or zonal-statistics functions in Python/JavaScript bindings.
