@@ -1,9 +1,7 @@
 //! `terrio clean-collar` and `terrio nearblack`.
 
 use super::rasterout::{OutputArgs, open_lazy, same_file};
-use terrio::ops::nearblack::{
-    CollarAlgorithm, NearblackOptions, color_bands, keep_alpha_or_mask, nearblack, nearblack_in_place, parse_color,
-};
+use terrio::ops::nearblack::{CollarAlgorithm, NearblackOptions, color_bands, keep_alpha_or_mask, nearblack, nearblack_file, parse_color};
 
 #[derive(clap::Args)]
 pub struct Args {
@@ -74,42 +72,12 @@ pub fn run(a: Args, clean_collar: bool) -> terrio::Result<()> {
         keep_alpha_or_mask(&mut o, &header, lazy.has_mask());
     }
     if in_place {
-        return update(&a.input, lazy, &o, &a.out);
+        drop(lazy);
+        return super::quiet(|| nearblack_file(&a.input, &o, &a.out.options()?));
     }
     let ds = lazy.read()?;
     let collar = nearblack(&ds, &o)?;
     let mut options = a.out.options()?;
     options.mask = collar.mask;
     super::quiet(|| terrio::write_raster_dataset(&collar.dataset, &path, &options))
-}
-
-/// Updates a local GeoTIFF in place: the result is written next to it, then replaces it, so that
-/// a failure leaves the input as it was.
-fn update(input: &str, mut lazy: terrio::LazyRaster, o: &NearblackOptions, out: &OutputArgs) -> terrio::Result<()> {
-    let p = std::path::Path::new(input);
-    let driver = lazy.driver();
-    if !p.is_file() || !matches!(driver, terrio::formats::RasterDriver::GTiff | terrio::formats::RasterDriver::Cog) {
-        return Err(terrio::Error::Unsupported(format!("only local GeoTIFF files can be updated in place, not '{input}'")));
-    }
-    if std::fs::metadata(p)?.permissions().readonly() {
-        return Err(terrio::Error::InvalidArgument(format!("'{input}' is read-only")));
-    }
-    let (w, h) = (lazy.width(), lazy.height());
-    let existing_mask = lazy.read_mask(terrio::Window::full(w, h), None)?;
-    let mut ds = lazy.read()?;
-    drop(lazy);
-    let mask = nearblack_in_place(&mut ds, o)?;
-    let mut options = out.options()?;
-    options.mask = mask.or(existing_mask);
-    if options.driver.is_none() {
-        options.driver = Some(driver);
-    }
-    let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("raster");
-    let tmp = p.with_file_name(format!(".{name}.terrio-{}.tmp", std::process::id()));
-    let tmp_str = tmp.to_string_lossy().into_owned();
-    let result = super::quiet(|| terrio::write_raster_dataset(&ds, &tmp_str, &options)).and_then(|()| Ok(std::fs::rename(&tmp, p)?));
-    if result.is_err() {
-        let _ = std::fs::remove_file(&tmp);
-    }
-    result
 }

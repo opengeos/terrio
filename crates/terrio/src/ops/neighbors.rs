@@ -553,6 +553,12 @@ mod tests {
     }
 
     #[test]
+    fn vrt_size_one_kernel_is_applied_once() {
+        // GDAL 3.13.3 KernelFilteredSource: Size=1, Coefs=2, normalized=0.
+        assert_eq!(filter(&[3.], 1, 1, &kernel(vec![2.], false, None), None), vec![6.]);
+    }
+
+    #[test]
     fn builtin_kernels_follow_gdal() {
         let o = NeighborsOptions { kernels: vec!["u".into(), "gaussian".into(), "equal".into()], ..Default::default() };
         let k = kernels(&o).unwrap();

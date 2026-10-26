@@ -753,6 +753,8 @@ value of their largest neighbour. The band's nodata pixels are left out unless `
 
 ## neighbors
 
+A 1×1 unnormalized VRT kernel is applied once, matching GDAL 3.13.3 (coefficient 2 maps sample 3 to 6).
+
 ```sh
 terrio neighbors INPUT OUTPUT --kernel KERNEL [--kernel ...] [--method METHOD ...] [--size N]
                  [-b BAND] [--ot TYPE] [--nodata VALUE|none] [output options]
@@ -803,13 +805,23 @@ georeferencing and no nodata value; values are read as Byte (rounded and clamped
 
 `--update` (or an output equal to the input) updates a local GeoTIFF in place: its bands and
 type are kept, with `--add-alpha` its last alpha band is updated (it must have one), and an
-existing mask is kept. The result is written next to the input, then replaces it, so a failure
+existing mask is kept unless mask processing regenerates it from the collar. The result is written next to the input, then replaces it, so a failure
 leaves the input as it was; remote files, other formats and read-only files are refused. The
 file is rewritten by Terrio's writer: overviews are dropped, and compression and tiling are those
 of the output options. GDAL 3.12's in-place flood fill of a raster with an alpha band writes stale
 alpha values on every modified line (2,715,128 alpha values of the Landsat 7 case become 0);
 Terrio's alpha band matches GDAL's output to a new file instead. Images are processed in memory
-as Byte values (one byte per band and pixel); the flood fill visits lines out of order.
+as Byte values (one byte per band and pixel); the flood fill visits lines out of order. New-file output holds an interleaved
+working image and a planar output image at once (about two Byte output buffers,
+plus input data and any mask); this keeps the GDAL scan order and contiguous scanlines.
+In-place updates follow input symlinks and retain mode bits. Replacement detaches
+hard links and does not preserve ownership, ACLs or extended attributes.
+
+`nearblack --update` and `clean-collar --update` follow GDAL's Byte processing:
+non-Byte samples across the image are rounded/clamped to 0–255 before being written
+back to the original data type. Terrio emits a warning for these inputs.
+For RGBA sources, `nearblack --color black` compares four bands unless `--add-alpha`
+or `--add-mask` selects alpha/mask processing; `clean-collar` keeps existing alpha.
 
 ## enhance
 
@@ -1014,6 +1026,9 @@ normal warper. Custom `INIT_DEST` values are also unsupported.
 `log10`, `dB`, `dB2amp`, `dB2pow`, `pow` and `exp`, with numeric arguments,
 source transfer types and applicable nodata behavior. Complex-valued derived
 buffers, external pixel functions and expression languages are unsupported.
+A 1×1 unnormalized VRT kernel is applied once, matching GDAL 3.13.3
+(coefficient 2 maps sample 3 to 6).
+
 `KernelFilteredSource` supports odd full/separable kernels, normalization and
 `min`, `max`, `stddev`, `median` and `mode`. Kernels read the necessary halo and
 replicate source edges as GDAL does. Explicit dataset masks, `SourceBand mask,N`
@@ -1089,12 +1104,3 @@ point tie points and rotated affine transforms, without moving pixel corners.
 Writing a PixelIsPoint GeoTIFF requires a CRS. A write with an unknown CRS is
 rejected before creating the file, avoiding a half-pixel origin shift without
 a corresponding raster-type GeoKey.
-
-
-`nearblack --update` and `clean-collar --update` follow GDAL's Byte processing:
-non-Byte samples across the image are rounded/clamped to 0–255 before being written
-back to the original data type. Terrio emits a warning for these inputs.
-For RGBA sources, `nearblack --color black` compares four bands unless `--add-alpha`
-or `--add-mask` selects alpha/mask processing; `clean-collar` keeps existing alpha.
-A 1×1 unnormalized VRT kernel is applied once, matching GDAL 3.13.3 (coefficient 2
-maps sample 3 to 6).

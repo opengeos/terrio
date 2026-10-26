@@ -291,12 +291,7 @@ impl Flood<'_, '_> {
         let (sb, db) = (self.img.src_bands, self.img.dst_bands);
         let px = &self.img.data[i * db..i * db + sb];
         // A pixel within `near` of one of the colors.
-        let transparent = self.p.colors.iter().any(|c| {
-            px.iter().enumerate().all(|(b, v)| {
-                let v = *v as i32;
-                !(c[b] - v > self.p.near || v > self.p.near + c[b])
-            })
-        });
+        let transparent = !self.p.non_black(px);
         self.must[i] = if transparent { TRUE } else { FALSE };
         transparent
     }
@@ -549,6 +544,47 @@ pub fn nearblack_in_place(ds: &mut RasterDataset, o: &NearblackOptions) -> Resul
     Ok(mask)
 }
 
+/// Updates a local GeoTIFF through a neighboring temporary file. Follows input
+/// symlinks and preserves permission bits; ownership, ACLs and hard links are not
+/// preserved. A regenerated mask replaces the old mask; otherwise it is retained.
+#[cfg(not(target_family = "wasm"))]
+pub fn nearblack_file(input: &str, o: &NearblackOptions, write: &crate::RasterWriteOptions) -> Result<()> {
+    if !crate::vfs::Location::parse(input).is_local() {
+        return Err(Error::Unsupported("only local GeoTIFF files can be updated in place".into()));
+    }
+    let path = std::fs::canonicalize(input)?;
+    let metadata = std::fs::metadata(&path)?;
+    if metadata.permissions().readonly() {
+        return Err(Error::InvalidArgument(format!("'{input}' is read-only")));
+    }
+    let mut lazy = crate::open_raster_lazy(input)?;
+    let driver = lazy.driver();
+    if !metadata.is_file() || !matches!(driver, crate::formats::RasterDriver::GTiff | crate::formats::RasterDriver::Cog) {
+        return Err(Error::Unsupported(format!("only local GeoTIFF files can be updated in place, not '{input}'")));
+    }
+    let existing_mask = lazy.read_mask(crate::Window::full(lazy.width(), lazy.height()), None)?;
+    let mut ds = lazy.read()?;
+    drop(lazy);
+    let mask = nearblack_in_place(&mut ds, o)?;
+    let mut options = write.clone();
+    options.mask = mask.or(existing_mask);
+    if options.driver.is_none() {
+        options.driver = Some(driver);
+    }
+    let temporary = tempfile::NamedTempFile::new_in(path.parent().unwrap_or(std::path::Path::new(".")))?;
+    let filename = temporary.path().to_str().ok_or_else(|| Error::InvalidArgument("temporary path must be UTF-8".into()))?;
+    crate::write_raster_dataset(&ds, filename, &options)?;
+    temporary.as_file().set_permissions(metadata.permissions())?;
+    temporary.as_file().sync_all()?;
+    temporary.persist(path).map_err(|e| Error::Io(e.error))?;
+    Ok(())
+}
+
+#[cfg(target_family = "wasm")]
+pub fn nearblack_file(_input: &str, _o: &NearblackOptions, _write: &crate::RasterWriteOptions) -> Result<()> {
+    Err(Error::Unsupported("in-place file updates are unavailable in WebAssembly".into()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -570,6 +606,7 @@ mod tests {
         let ds = image(1, 1, &[128]);
         let o = NearblackOptions { colors: vec![vec![i32::MAX]], near: i32::MAX, max_non_black: 0, ..Default::default() };
         assert_eq!(values(&nearblack(&ds, &o).unwrap()), vec![0]);
+        assert_eq!(values(&nearblack(&ds, &NearblackOptions { algorithm: CollarAlgorithm::FloodFill, ..o }).unwrap()), vec![0]);
         let bad = NearblackOptions { max_non_black: i32::MAX, ..Default::default() };
         assert!(nearblack(&ds, &bad).is_err());
     }

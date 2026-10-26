@@ -171,3 +171,18 @@ fn non_byte_update_warns_and_matches_gdal_byte_conversion() {
     assert_eq!(output.raster.data.to_f64_vec(), vec![0., 255., 124., 0.]);
     assert!(fails(&["enhance", "float.tif", "out.tif", "--equalize", "--config", "lut.txt"], d).contains("requires no raster output"));
 }
+
+#[cfg(unix)]
+#[test]
+fn collar_update_follows_source_symlink_and_preserves_mode() {
+    use std::os::unix::fs::{PermissionsExt, symlink};
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("source.tif");
+    write(&source, 4, vec![0., 120., 120., 0.], terrio::DataType::U8, None);
+    std::fs::set_permissions(&source, std::fs::Permissions::from_mode(0o640)).unwrap();
+    let link = dir.path().join("link.tif");
+    symlink(&source, &link).unwrap();
+    ok(&["nearblack", "link.tif", "--update", "--nb", "0"], dir.path());
+    assert!(std::fs::symlink_metadata(link).unwrap().file_type().is_symlink());
+    assert_eq!(std::fs::metadata(source).unwrap().permissions().mode() & 0o777, 0o640);
+}

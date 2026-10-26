@@ -159,6 +159,9 @@ fn collar(
     if keep {
         terrio::ops::nearblack::keep_alpha_or_mask(&mut o, &ds, has_mask);
     }
+    if o.set_mask && dst.is_none() {
+        return Err(invalid("a mask (add_mask, or an input with a mask) needs dst, the file that holds it"));
+    }
     let collar = py.detach(|| terrio::ops::nearblack::nearblack(&ds, &o)).py()?;
     let Some(mask) = collar.mask else { return finish_raster(py, collar.dataset, dst, format, compress, tile_size, bigtiff) };
     // A mask is kept by the file it is written to.
