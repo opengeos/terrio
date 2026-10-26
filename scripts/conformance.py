@@ -25,7 +25,7 @@ Suites:
     analysis-output   zonal/point-sampling output reprojection and decimal rounding
     footprint         raster footprints, source/custom fields and singleparts vs GDAL
     topology          buffer, polygon overlay/dissolve, validity, repair and cleanup vs GEOS
-    vector-dataset    concat, partition, set-field-type, make-point, create, export-schema
+    vector-dataset    concat, partition, set-field-type, make-point, create, export-schema, rename-layer, edit, update
     vector-geom       simplify, segmentize, hulls, swap-xy, set-geom-type, combine and sort vs
                       gdal vector and GEOS (compare_vector_geom_with_gdal.py)
     arrow             Arrow and GeoArrow export and import (compare_arrow_with_gdal.py)
@@ -1448,22 +1448,28 @@ def suite_vector_dataset(ctx):
     s = Suite(
         "vector-dataset",
         "Vector dataset commands",
-        "GDAL gdal vector concat, partition, set-field-type, make-point, ogrmerge.py, ogrinfo",
-        "Natural Earth countries and places, US and Tennessee counties, Las Vegas buildings and "
-        "roads, a GPS trace: OGR_SCHEMA members, created schemas, field type conversions, "
+        "GDAL vector concat, partition, set-field-type, make-point, create, export-schema, rename-layer, edit and update",
+        "Natural Earth countries and places, US and Tennessee counties, Las Vegas roads and "
+        "a GPS trace: OGR_SCHEMA members, created schemas, field type conversions, "
         "concatenated, partitioned and point layers read back by GDAL. Values exact; "
         "coordinates of layers reprojected to a common CRS within 1e-9 (degrees) or 1e-6 "
         "(metres). Int16, Float32 and JSON subtypes stored without the subtype are within "
-        "tolerance.",
+        "tolerance. Renames use OGRLayer::Rename as the reference; edits use gdal vector edit; "
+        "updates use GDAL's 3.13 update API. GeoPackage validity and R-tree results are checked.",
     )
     if missing_modules("osgeo"):
         s.skipped = "needs osgeo"
+        return s
+    from osgeo import gdal
+
+    if int(gdal.VersionInfo("VERSION_NUM")) < 3130000:
+        s.skipped = "needs GDAL >= 3.13 for the complete vector dataset suite"
         return s
     tools = [t for t in ("gdal", "ogr2ogr", "ogrinfo", "ogrmerge.py") if shutil.which(t) is None]
     if tools:
         s.skipped = "needs the GDAL command-line tools (" + ", ".join(tools) + ")"
         return s
-    needed = ("countries.gpkg", "UScounties.gpkg", "multi.gpkg", "TN_Counties.geojson")
+    needed = ("countries.gpkg", "UScounties.gpkg", "multi.gpkg", "TN_Counties.geojson", "las_vegas_roads.geojson")
     if any(not os.path.isfile(os.path.join(ctx.data, name)) for name in needed):
         s.skipped = "needs the vector test data (scripts/fetch_test_data.sh)"
         return s

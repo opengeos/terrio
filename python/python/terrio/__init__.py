@@ -76,7 +76,6 @@ from terrio._terrio import (
     open_vector,
     open_vrt,
     pansharpen,
-    partition,
     polygonize,
     proximity,
     rasterize,
@@ -202,6 +201,12 @@ __all__ = [
     "write_raster",
     "write_vector",
 ]
+
+try:
+    from terrio._terrio import partition
+except ImportError:
+    # Native filesystem partitioning is absent from the Pyodide extension.
+    __all__.remove("partition")
 
 
 def iter_features(

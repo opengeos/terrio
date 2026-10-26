@@ -350,6 +350,15 @@ pub fn new_layer_names(names: &[String], o: &RenameOptions) -> Result<Vec<String
             _ => s.push_str(&suffix),
         }
     }
+    let mut unique = std::collections::HashSet::new();
+    for name in &out {
+        if !unique.insert(name) {
+            return Err(Error::InvalidArgument(format!(
+                "renaming would create duplicate layer name '{name}'; choose a distinct output name"
+            )));
+        }
+    }
+
     Ok(out)
 }
 
@@ -517,10 +526,11 @@ pub fn edit_in_place(path: &str, o: &EditOptions) -> Result<()> {
                 return Err(Error::InvalidArgument(format!("cannot find layer '{a}'")));
             }
             for n in names.iter().filter(|n| o.active_layer.as_ref().is_none_or(|a| a == *n)) {
-                if let Some(c) = &o.crs {
+                let spatial = ge::has_geometry(d, n) || o.active_layer.is_some();
+                if spatial && let Some(c) = &o.crs {
                     ge::set_layer_crs(d, n, c.as_ref())?;
                 }
-                if let Some((t, z, m)) = o.geometry_type {
+                if spatial && let Some((t, z, m)) = o.geometry_type {
                     ge::set_geometry_type(d, n, t, z, m)?;
                 }
                 ge::edit_metadata(d, Some(n), &o.layer_metadata, &o.unset_layer_metadata)?;
@@ -574,7 +584,9 @@ pub fn edit_to(input: &str, output: &str, o: &EditOptions, write: &crate::Vector
                 }
             }
             for n in names.iter().filter(|n| o.active_layer.as_ref().is_none_or(|a| a == *n)) {
-                if let Some((t, z, m)) = o.geometry_type {
+                if (ge::has_geometry(d, n) || o.active_layer.is_some())
+                    && let Some((t, z, m)) = o.geometry_type
+                {
                     ge::set_geometry_type(d, n, t, z, m)?;
                 }
                 ge::edit_metadata(d, Some(n), &o.layer_metadata, &o.unset_layer_metadata)?;
@@ -792,14 +804,14 @@ pub fn update_layer(dst: &mut Layer, src: &Layer, o: &UpdateOptions) -> Result<U
 /// Updates an existing dataset from the layer of an input, as `gdal vector update` does: each
 /// input feature is matched with the output feature of the same feature id, or of the same
 /// values of the `key` fields (String, Integer or Real fields of the same type in both
-/// layers; features with a null key are skipped, a key matching several features matches
+/// layers; features with a null key match nothing and are appended unless update-only; a key matching several features matches
 /// none). Matched features take the input's geometry and the values of the fields both layers
 /// have (fields only the output has are kept, those only the input has are not added);
 /// unmatched features are appended with new feature ids. `mode` keeps only updates or only
 /// appends. No reprojection is done. GeoPackages are changed in place; other formats are
 /// rewritten, the new files replacing the old ones once complete.
 pub fn update(src: &[Layer], output: &str, o: &UpdateOptions) -> Result<UpdateCounts> {
-    let _src_layer = pick(src, o.input_layer.as_deref(), "input")?;
+    let source = pick(src, o.input_layer.as_deref(), "input")?;
     if !crate::vfs::Location::parse(output).is_local() {
         return Err(Error::Unsupported(format!("'{output}': only local datasets can be updated")));
     }
@@ -823,7 +835,7 @@ pub fn update(src: &[Layer], output: &str, o: &UpdateOptions) -> Result<UpdateCo
                     return Err(Error::InvalidArgument(format!("the output dataset has {} layers: name the output layer", names.len())));
                 }
             };
-            ge::update_features(d, &name, _src_layer, &o.key, mode)
+            ge::update_features(d, &name, source, &o.key, mode)
         });
     }
     let ds = crate::open_vector(output, &Default::default())?;
@@ -833,7 +845,8 @@ pub fn update(src: &[Layer], output: &str, o: &UpdateOptions) -> Result<UpdateCo
     Ok(counts)
 }
 
-/// Writes a dataset over an existing one safely: into a temporary directory next to it, then
+/// Stages a replacement beside the original, then renames its files into place.
+/// Multi-file formats are not atomic across sidecars; an error can leave a partial replacement.
 /// each file renamed over the one of the same name (a shapefile's parts too).
 #[cfg(not(target_family = "wasm"))]
 fn replace_dataset(layers: &[Layer], path: &str, write: &crate::VectorWriteOptions) -> Result<()> {
@@ -848,9 +861,24 @@ fn replace_dataset(layers: &[Layer], path: &str, write: &crate::VectorWriteOptio
     (|| -> Result<()> {
         let target = tmp.join(file);
         crate::write_vector(layers, &target.to_string_lossy(), write)?;
+        let staged: std::collections::HashSet<_> =
+            std::fs::read_dir(tmp)?.map(|entry| entry.map(|entry| entry.file_name())).collect::<std::io::Result<_>>()?;
         for e in std::fs::read_dir(tmp)? {
             let e = e?;
             std::fs::rename(e.path(), parent.join(e.file_name()))?;
+        }
+        if write.driver.or_else(|| VectorDriver::for_extension(path)) == Some(VectorDriver::Shapefile) {
+            // Old indexes/optional sidecars do not describe the new geometry and attributes.
+            for extension in ["qix", "sbn", "sbx", "prj", "cpg"] {
+                let sidecar = p.with_extension(extension);
+                if !staged.contains(sidecar.file_name().unwrap()) {
+                    match std::fs::remove_file(&sidecar) {
+                        Ok(()) => {}
+                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                        Err(error) => return Err(error.into()),
+                    }
+                }
+            }
         }
         Ok(())
     })()
@@ -898,12 +926,56 @@ mod tests {
     }
 
     #[test]
+    fn selected_rename_rejects_collision_with_a_retained_layer() {
+        let options = RenameOptions { input_layer: Some("a".into()), output_layer: Some("b".into()), ..Default::default() };
+        for input in [names(&["a", "b"]), names(&["b", "a"])] {
+            assert!(new_layer_names(&input, &options).unwrap_err().to_string().contains("duplicate layer name"));
+        }
+    }
+
+    #[test]
     fn parses_edit_options() {
         assert_eq!(parse_metadata_items(&["A=1=2".into()]).unwrap(), [("A".to_string(), "1=2".to_string())]);
         assert!(parse_metadata_items(&["nokey".into()]).is_err());
         assert!(parse_crs_override("none").unwrap().is_none());
         assert_eq!(parse_crs_override("EPSG:4326").unwrap().unwrap().epsg, Some(4326));
         assert_eq!(UpdateMode::parse("update-only").unwrap(), UpdateMode::UpdateOnly);
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    #[test]
+    fn successful_shapefile_replacement_removes_stale_indexes() {
+        use wbvector::{Coord, Feature, Geometry};
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("points.shp");
+        let mut layer = Layer::new("points").with_geom_type(GeometryType::Point);
+        layer.push(Feature { fid: 1, geometry: Some(Geometry::Point(Coord::xy(1., 2.))), attributes: vec![] });
+        let write = crate::VectorWriteOptions { driver: Some(VectorDriver::Shapefile), ..Default::default() };
+        crate::write_vector(&[layer.clone()], path.to_str().unwrap(), &write).unwrap();
+        for extension in ["qix", "sbn", "sbx", "prj"] {
+            std::fs::write(path.with_extension(extension), b"stale").unwrap();
+        }
+        replace_dataset(&[layer], path.to_str().unwrap(), &write).unwrap();
+        for extension in ["qix", "sbn", "sbx", "prj"] {
+            assert!(!path.with_extension(extension).exists(), "{extension}");
+        }
+        assert_eq!(crate::open_vector(path.to_str().unwrap(), &Default::default()).unwrap().layers[0].len(), 1);
+    }
+
+    #[cfg(feature = "sqlite")]
+    #[test]
+    fn default_gpkg_edit_skips_attribute_tables() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("mixed.gpkg");
+        let spatial = Layer::new("spatial").with_geom_type(GeometryType::Point);
+        let attributes = Layer::new("attributes");
+        crate::write_vector(&[spatial, attributes], path.to_str().unwrap(), &Default::default()).unwrap();
+        let options = EditOptions { crs: Some(Some(SpatialRef::from_epsg(4326).unwrap())), ..Default::default() };
+        edit_in_place(path.to_str().unwrap(), &options).unwrap();
+        let layers = crate::open_vector(path.to_str().unwrap(), &Default::default()).unwrap().layers;
+        assert_eq!(layers.iter().find(|layer| layer.name == "spatial").unwrap().crs_epsg(), Some(4326));
+        assert!(layers.iter().find(|layer| layer.name == "attributes").unwrap().geom_type.is_none());
+        assert!(edit_in_place(path.to_str().unwrap(), &EditOptions { active_layer: Some("attributes".into()), ..options }).is_err());
     }
 
     #[test]

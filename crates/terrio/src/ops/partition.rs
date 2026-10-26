@@ -390,7 +390,8 @@ pub enum PartitionWriteMode {
 /// replaced (`Overwrite`, only when it looks like the output of a partitioning: Hive
 /// `layer/field=value` directories, or flat files only) or added to (`Append`: new parts are
 /// numbered after the existing ones; GDAL also fills the last existing part while it has
-/// room).
+/// room). The input layers are materialized: callers must ensure source files are not
+/// inside an overwrite target; path-based callers can use [`check_input_directory`].
 #[cfg(not(target_family = "wasm"))]
 pub fn partition_to_dir(
     layers: &[Layer],

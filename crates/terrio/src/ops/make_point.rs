@@ -98,6 +98,18 @@ mod tests {
     }
 
     #[test]
+    fn non_finite_text_coordinates_follow_gdal() {
+        let options = MakePointOptions { x: "lon".into(), y: "lat".into(), ..Default::default() };
+        for text in ["NaN", "inf", "infinity", "-inf"] {
+            let mut input = layer();
+            input.features[0].attributes[0] = FieldValue::Text(text.into());
+            let output = make_point(&input, &options).unwrap();
+            let Some(Geometry::Point(point)) = output.features[0].geometry.as_ref() else { panic!() };
+            assert!(!point.x.is_finite());
+        }
+    }
+
+    #[test]
     fn points_from_fields() {
         let o = MakePointOptions {
             x: "lon".into(),

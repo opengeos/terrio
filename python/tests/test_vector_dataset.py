@@ -76,7 +76,7 @@ def test_set_field_type_conversions(tmp_path):
     layer = points("t", [("12", 1.7), ("abc", -1.7), ("3.9", 3e10)], fields=("s", "r"))
     with pytest.warns(UserWarning, match="parsed incompletely"):
         out = terrio.set_field_type(layer, "Integer", field_name="s")
-    assert [f["s"] for f in out[0].to_geojson()["features"] for f in [f["properties"]]] == [
+    assert [feature["properties"]["s"] for feature in out[0].to_geojson()["features"]] == [
         12,
         0,
         3,
@@ -127,7 +127,7 @@ def test_export_schema_and_create(tmp_path):
     path = tmp_path / "schema.json"
     path.write_text(json.dumps(schema))
     copy = str(tmp_path / "copy.gpkg")
-    terrio.create_vector(copy, schema=str(path))
+    terrio.create_vector(copy, schema=path)
     # GDAL 3.13 creates schema/template fields in name order; explicit fields
     # above retain the caller's order.
     expected = json.loads(json.dumps(schema))
@@ -203,3 +203,23 @@ def test_copy_operations_refuse_existing_output(tmp_path):
         with pytest.raises(terrio.InvalidArgumentError, match="already exists"):
             operation()
         assert dst.read_bytes() == b"preserve"
+
+
+def test_package_import_without_native_partition(monkeypatch):
+    import runpy
+
+    import terrio._terrio as extension
+
+    monkeypatch.delattr(extension, "partition")
+    loaded = runpy.run_path(terrio.__file__)
+    assert "partition" not in loaded["__all__"]
+    assert "partition" not in loaded
+
+
+def test_collision_errors_are_clear():
+    a = points("a", [("x", 1)])
+    b = points("b", [("y", 2)])
+    with pytest.raises(terrio.InvalidArgumentError, match="source-layer field.*already exists"):
+        terrio.concat([a, b], mode="single", source_layer_field_name="name")
+    with pytest.raises(terrio.InvalidArgumentError, match="duplicate layer name"):
+        terrio.rename_layer([a, b], input_layer="a", output_layer="b")

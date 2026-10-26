@@ -54,7 +54,7 @@ python scripts/conformance.py ../terrio-data --remote --strict     # remote COGs
 | Focal statistics, collars, enhancement | `scripts/compare_focal_with_gdal.py` | `gdal raster neighbors` (every kernel and method, matrices, types, nodata, the whole USGS DEM in strips), `nearblack` and `gdal raster clean-collar` (both algorithms, colors, thresholds, distances, alpha, masks, in-place updates) and `gdalenhance` (equalization, LUT file output and input) on Sentinel-2, Landsat 7 and USGS data: pixels, masks, type, nodata, geotransform, LUT text |
 | Vector operations | `scripts/compare_vector_ops_with_gdal.py` | `ogr2ogr` filters, `gdal_rasterize` and `gdal_polygonize.py` |
 | Vector topology | `scripts/compare_topology_with_gdal.py` | Tennessee county polygons and Las Vegas roads projected to metre-based CRSs: buffer, all four polygon overlays, dissolve, validity, repair of a deliberately corrupted county boundary and snap cleanup against GDAL/GEOS; attributes, source IDs and CRS, with relative symmetric-difference area tolerance 1e-7 (5e-4 for buffer curves). Registered in conformance as `topology`. |
-| Vector dataset commands | `scripts/compare_vector_dataset_with_gdal.py` | `concat` (all modes, source-layer fields, intersection, reprojection; also `ogrmerge.py -single`), `partition` (Hive and flat, string and integer fields, feature limits, patterns), `set-field-type` (a 77-conversion matrix of edge values, every type to every type, and conversions of real fields), `make-point` (GPS trace, places with Z), `create` (`--like`, `--schema`, fields) and `export-schema` (GeoPackage, Shapefile, GeoJSON, FlatGeobuf, GeoParquet) against GDAL 3.12.2's `gdal vector` commands and `ogrinfo -json`: values exact, coordinates within 1e-9 degrees (or 1e-6 metres) after reprojection; Int16, Float32 and JSON subtypes are reported within tolerance. Registered in conformance as `vector-dataset`. |
+| Vector dataset commands | `scripts/compare_vector_dataset_with_gdal.py` | `concat` (all modes, source-layer fields, intersection, reprojection; also `ogrmerge.py -single`), `partition` (Hive and flat, string and integer fields, feature limits, patterns), `set-field-type` (a 77-conversion matrix of edge values, every type to every type, and conversions of real fields), `make-point` (GPS trace, places with Z), `create` (`--like`, `--schema`, fields) and `export-schema` (GeoPackage, Shapefile, GeoJSON, FlatGeobuf, GeoParquet) plus `rename-layer`, `edit` and `update`, against GDAL 3.13.3's vector commands/API, OGRLayer::Rename and `ogrinfo -json`; GeoPackage validity and R-tree checks: values exact, coordinates within 1e-9 degrees (or 1e-6 metres) after reprojection; Int16, Float32 and JSON subtypes are reported within tolerance. Registered in conformance as `vector-dataset`. |
 | Terrain and raster algebra | `scripts/compare_dem_calc_with_gdal.py` | every `gdaldem` mode and option, `gdal_calc.py` expressions, types, nodata and extents, `gdal_proximity.py`, `gdal_sieve.py` |
 | STAC and GeoZarr | `scripts/compare_stac_geozarr.py` (`stac`, `stacta`, `geozarr`) | STACIT subdatasets, mosaic sizes, geotransforms, CRSs and windows on Earth Search; STACTA items (GDAL's test data and pyramids `gdal raster tile` writes from real rasters, local, over HTTP and with a missing tile): summaries, subdatasets, metadata, whole rasters, windows and overviews vs GDAL's STACTA driver; STAC footprint fields vs `ogrinfo`; GeoZarr stores read by GDAL and rioxarray, overviews vs `gdaladdo` |
 | Remote Zarr stores | `scripts/compare_remote_zarr.py` | public cloud stores read in place (EOPF Sentinel-2 Zarr v2, EOPF GeoZarr v3 with shards and value codecs, NOAA HRRR on S3, CMIP6 on Google Cloud Storage, Daymet on Azure, a sharded store on a local port): sizes, geotransforms, nodata vs `gdalinfo` (`/vsicurl/`, `/vsis3/`, `/vsigs/`, `/vsiaz/`), windows vs `gdal_translate` and xarray, overviews vs xarray, bytes and requests fetched |
@@ -690,13 +690,15 @@ work; the existing bindings retain their behavior.
 
 ## Vector dataset commands (#289)
 
-`concat`, `partition`, `set-field-type`, `make-point`, `create` and `export-schema` are GDAL
-3.13's `gdal vector` commands. GDAL 3.12.2 has the first four; `export-schema` is compared
-with `ogrinfo -json` (whose layer description `gdal vector export-schema` reuses) and `create`
-with `ogr2ogr -limit 0` and GDAL's API. GDAL 3.12.2 crashes with `partition --max-file-size`,
-and 3.12 requires `--field`: file-size limits and limit-only partitions are covered by unit
-tests. GDAL's union layers merge later layers' fields into the wrong field when a source-layer
-field is added (in 3.12 and 3.13); that case is compared with GDAL's output without the field.
+`concat`, `partition`, `set-field-type`, `make-point`, `create`, `export-schema`,
+`rename-layer`, `edit` and `update` are checked against GDAL 3.13.3. The complete suite
+requires GDAL 3.13 or newer and reports an explicit skip for older references. Renames use
+OGRLayer::Rename, edits use `gdal vector edit`, and updates use GDAL's update API, with
+GeoPackage validity and R-tree checks. The datasets include Las Vegas roads, countries,
+counties, places and a GPS trace. GDAL's union layers merge later fields into the wrong
+field when a source-layer field is added; that case compares with GDAL's output without
+the source-layer field. The integer-subtype waiver applies only to values in field `i`;
+feature counts, other values, field names, CRS and geometries remain strict gates.
 
 ```sh
 cargo test -p terrio --lib -- vector_schema concat partition make_point
@@ -706,6 +708,14 @@ python -m pytest python/tests/test_vector_dataset.py
 node --test --test-name-pattern='vector dataset commands' js/tests/node.test.mjs
 ```
 
+The vector-dataset comparison gives GDAL and Terrio the same installed PROJ grid
+paths, disables grid downloads, and isolates per-user grid caches. This avoids
+comparing results from different datum grids. Grid availability and network grid
+reads are validated separately by the coordinate transformation suites. Unicode
+rename fixtures are inventoried with SQLite and OGR's WKB parser: GDAL 3.13.3 can
+raise `Cannot find table` during GPKG introspection for these names even in its own
+outputs; table names, schema, attributes, CRS and geometries are still compared.
+
 ## Release rehearsal
 
 The full release dry run is manual: select **Release dry run → Run workflow** in
@@ -714,13 +724,6 @@ wheel, CLI, installer and npm matrix without publishing. Pull requests retain th
 normal CI checks, including Python, WASM, API documentation and package validation.
 
 
-The vector-dataset comparison gives GDAL and Terrio the same installed PROJ grid
-paths, disables grid downloads, and isolates per-user grid caches. This avoids
-comparing results from different datum grids. Grid availability and network grid
-reads are validated separately by the coordinate transformation suites. Unicode
-rename fixtures are inventoried with SQLite and OGR's WKB parser: GDAL 3.13.3 can
-raise `Cannot find table` during GPKG introspection for these names even in its own
-outputs; table names, schema, attributes, CRS and geometries are still compared.
 
 ## Pixel-operation buffer checks
 

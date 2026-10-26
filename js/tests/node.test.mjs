@@ -1231,6 +1231,7 @@ test("vector dataset commands: concat, partition, setFieldType, makePoint, schem
   assert.equal(features.length, 6);
   assert.equal(features[5].properties.src, "b_a"); // {AUTO_NAME}: the file and layer names
   assert.throws(() => terrio.concat([a], { outputLayer: "x" }), /merge-per-layer-name/);
+  assert.throws(() => terrio.concat([a], { mode: "single", sourceLayerFieldName: "state" }), /source-layer field.*already exists/);
 
   const parts = terrio.partition(a, { fields: ["state"], format: "GeoJSON" });
   assert.deepEqual(parts.map((p) => p.path), ["a/state=TN/part_0000000001.json", "a/state=NY/part_0000000001.json"]);
@@ -1253,6 +1254,11 @@ test("vector dataset commands: concat, partition, setFieldType, makePoint, schem
   assert.deepEqual(schema.layers[0].fields.map((f) => f.type), ["String", "Integer64"]);
   const copy = terrio.createVector("copy.gpkg", { schema });
   assert.deepEqual(terrio.exportSchema({ bytes: copy, filename: "copy.gpkg" }), schema);
+  for (const base of [{ schema }, { like: a }]) {
+    for (const explicit of [{ fields: [] }, { geometryType: "POINT" }, { crs: "EPSG:4326" }, { fid: "rowid" }]) {
+      assert.throws(() => terrio.createVector("invalid.gpkg", { ...base, ...explicit }), /give one of schema, like, or explicit fields/);
+    }
+  }
   a.free(); merged.free();
 });
 

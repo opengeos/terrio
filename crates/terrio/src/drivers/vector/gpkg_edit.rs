@@ -270,12 +270,19 @@ pub(crate) fn set_layer_crs(d: &mut Database, name: &str, srs: Option<&SpatialRe
                 && b.len() >= 8
                 && &b[..2] == b"GP"
             {
-                b[4..8].copy_from_slice(&(id as i32).to_le_bytes());
+                let id = id as i32;
+                let bytes = if b[3] & 1 == 1 { id.to_le_bytes() } else { id.to_be_bytes() };
+                b[4..8].copy_from_slice(&bytes);
             }
         }
     }
     d.set("gpkg_contents", "table_name", &name, "last_change", w::Value::Text(gw::now()));
     Ok(())
+}
+
+/// Whether a GeoPackage layer has a geometry column rather than an attribute table.
+pub(crate) fn has_geometry(d: &Database, name: &str) -> bool {
+    d.geometry_column(name).is_some()
 }
 
 /// Sets the declared geometry type of a layer (`None`: any), with its Z and M flags, in
@@ -288,10 +295,15 @@ pub(crate) fn set_geometry_type(d: &mut Database, name: &str, t: Option<wbvector
     let decl = r::column_types(&table.sql).into_iter().find(|(n, _)| eq(n, &g)).map(|(_, t)| t).unwrap_or_default();
     if !decl.is_empty() {
         let candidates = [format!("{} {decl}", quote(&g)), format!("{g} {decl}"), format!("`{g}` {decl}"), format!("[{g}] {decl}")];
-        let found = candidates.iter().find(|c| table.sql.contains(c.as_str())).cloned();
-        let Some(found) = found else { return Err(refuse(format!("cannot rewrite the declaration of '{g}'"))) };
+        let found = candidates.iter().find_map(|candidate| {
+            table.sql.match_indices(candidate).find_map(|(at, _)| {
+                let before = table.sql[..at].chars().next_back();
+                before.is_none_or(|ch| ch.is_whitespace() || matches!(ch, '(' | ',')).then_some((at, candidate))
+            })
+        });
+        let Some((at, found)) = found else { return Err(refuse(format!("cannot rewrite the declaration of '{g}'"))) };
         let replacement = format!("{} {type_name}", &found[..found.len() - decl.len() - 1]);
-        table.sql = table.sql.replacen(&found, &replacement, 1);
+        table.sql.replace_range(at..at + found.len(), &replacement);
     }
     d.set("gpkg_geometry_columns", "table_name", &name, "geometry_type_name", w::Value::Text(type_name));
     d.set("gpkg_geometry_columns", "table_name", &name, "z", w::Value::Int(i64::from(z)));
@@ -324,7 +336,8 @@ pub(crate) fn parse_metadata_xml(xml: &str) -> Metadata {
         let Some(close) = after.find('>') else { break };
         let head = &after[..close];
         let domain = head.split("domain=\"").nth(1).and_then(|d| d.split('"').next()).map(unescape).unwrap_or_default();
-        let body_end = after.find("</Metadata>").unwrap_or(after.len());
+        let body_end =
+            if head.ends_with('/') { close + 1 } else { after[close + 1..].find("</Metadata>").map_or(after.len(), |end| close + 1 + end) };
         let mut items = Vec::new();
         if !head.ends_with('/') {
             let mut body = &after[close + 1..body_end];
@@ -574,7 +587,7 @@ fn key_of_value(v: &w::Value) -> Option<KeyValue> {
 
 /// Updates the features of layer `name` from those of `src`, as `gdal vector update` does:
 /// each input feature is matched with the output feature of the same feature id (`keys`
-/// empty) or the same values of the key fields (input features with a null key are skipped;
+/// empty) or the same values of the key fields (input features with a null key match nothing and are appended unless update-only;
 /// a key matching several output features matches none); matched features take the input's
 /// geometry and the values of the fields both layers have (matched by name, ignoring case),
 /// unmatched ones are appended with new feature ids, as `mode` says. The R-tree, extent,
@@ -792,6 +805,71 @@ mod tests {
         assert!(modify_bytes(out2.clone(), |d| rename_layer(d, "renamed", "b")).is_err());
         assert!(modify_bytes(out2.clone(), |d| rename_layer(d, "renamed", "parcels (2020)")).is_err());
         assert!(modify_bytes(out2, |d| rename_layer(d, "nope", "x")).is_err());
+    }
+
+    #[test]
+    fn empty_metadata_domain_keeps_following_domains() {
+        let parsed = parse_metadata_xml(
+            r#"<GDALMultiDomainMetadata><Metadata/><Metadata domain="next"><MDI key="name">value</MDI></Metadata></GDALMultiDomainMetadata>"#,
+        );
+        assert_eq!(parsed, vec![(String::new(), vec![]), ("next".into(), vec![("name".into(), "value".into())])]);
+    }
+
+    #[test]
+    fn crs_updates_respect_big_endian_geometry_headers() {
+        let base = gw::to_bytes(&[layer("a", 1)]).unwrap();
+        let (out, ()) = modify_bytes(base, |d| {
+            let (g, ..) = d.geometry_column("a").unwrap();
+            let t = d.table_mut("a").unwrap();
+            let index = columns(&t.sql).iter().position(|name| name == &g).unwrap();
+            let w::Value::Blob(blob) = &mut t.rows[0].1[index] else { panic!() };
+            let id = i32::from_le_bytes(blob[4..8].try_into().unwrap());
+            blob[3] &= !1;
+            blob[4..8].copy_from_slice(&id.to_be_bytes());
+            let doubles = match (blob[3] >> 1) & 7 {
+                0 => 0,
+                1 => 4,
+                2 | 3 => 6,
+                4 => 8,
+                _ => panic!(),
+            };
+            for value in blob[8..8 + doubles * 8].as_chunks_mut::<8>().0 {
+                value.reverse();
+            }
+            set_layer_crs(d, "a", Some(&SpatialRef::from_epsg(32633).unwrap()))?;
+            let w::Value::Blob(blob) = &d.table("a").unwrap().rows[0].1[index] else { panic!() };
+            assert_eq!(i32::from_be_bytes(blob[4..8].try_into().unwrap()), 32633);
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(read(&out)[0].crs_epsg(), Some(32633));
+    }
+
+    #[test]
+    fn geometry_declaration_does_not_match_a_longer_column_name() {
+        let mut input = layer("a", 1);
+        input.add_field(FieldDef::new("mygeom", FieldType::Text));
+        input.features[0].attributes.push(FieldValue::Text("kept".into()));
+        let base = gw::to_bytes(&[input]).unwrap();
+        let (_, ()) = modify_bytes(base, |d| {
+            let table = d.table_mut("a").unwrap();
+            // Put the similarly suffixed attribute before the unquoted geometry declaration.
+            let names = columns(&table.sql);
+            let geometry = names.iter().position(|name| name == "geom").unwrap();
+            let attribute = names.iter().position(|name| name == "mygeom").unwrap();
+            table.sql = table.sql.replace("\"geom\" POLYGON", "mygeom POLYGON").replace("\"mygeom\" TEXT", "geom POLYGON");
+            for (_, values) in &mut table.rows {
+                values.swap(geometry, attribute);
+            }
+            let before = table.sql.clone();
+            // This test checks the SQL rewrite; the attribute's physical value stays text.
+            set_geometry_type(d, "a", Some(wbvector::GeometryType::MultiPolygon), false, false)?;
+            let after = &d.table("a").unwrap().sql;
+            assert!(after.contains("geom MULTIPOLYGON"), "{before} => {after}");
+            assert!(!after.contains("mygeom MULTIPOLYGON"), "{after}");
+            Ok(())
+        })
+        .unwrap();
     }
 
     #[test]

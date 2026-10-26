@@ -11,6 +11,9 @@ terrio <COMMAND>
   make-point      Point geometries from coordinate fields (like gdal vector make-point)
   create          Create a vector dataset from a schema or template (like gdal vector create)
   export-schema   Print a vector dataset's OGR_SCHEMA JSON (like gdal vector export-schema)
+  rename-layer    Rename vector layers or normalize their names (like gdal vector rename-layer)
+  edit            Assign vector CRS, geometry declarations or metadata (like gdal vector edit)
+  update          Update or append vector features by key or FID (like gdal vector update)
   translate       Subset, resize, rescale or change the type of a raster (like gdal_translate)
   warp            Reproject and resample rasters (like gdalwarp)
   catalog         Read an indexed raster mosaic from GeoPackage or FlatGeobuf footprints
@@ -414,7 +417,7 @@ single-layer fallback for `FROM` and allows duplicate output field names.
 ## Vector datasets
 
 These commands are GDAL 3.13's `gdal vector concat`, `partition`, `set-field-type`,
-`make-point`, `create` and `export-schema`. Their results are compared with GDAL in the
+`make-point`, `create`, `export-schema`, `rename-layer`, `edit` and `update`. Their results are compared with GDAL in the
 `vector-dataset` conformance suite (see [Testing](testing.md)).
 
 ### concat
@@ -431,6 +434,8 @@ terrio concat a.gpkg b.geojson out.gpkg --mode single --field-strategy intersect
 default: `{DS_BASENAME}_{LAYER_NAME}`, or the layer name when both are the same), and
 `single` one layer (`merged` by default). Templates also take `{DS_NAME}`, `{DS_INDEX}` and
 `{LAYER_INDEX}` (from 0). Output layers are ordered by name, as GDAL orders them.
+The generated source-layer field must have an unused name; collisions with source fields
+are rejected before creating an output (GDAL's writer may instead rename a colliding field).
 `--field-strategy union` (the default) keeps every field, matched by exact name;
 `intersection` the fields every layer has, ignoring case. Fields of the same name merge into a
 type holding both (reals over integers, 64-bit over 32-bit integers, strings otherwise).
@@ -466,6 +471,15 @@ numbered after the existing ones; GDAL also fills the last existing part while i
 limits) is given. GDAL's `--skip-errors`, `--co` and `--lco` are not supported, nor GDAL's
 Parquet `_metadata` file.
 
+Partition output directories carry a `.terrio-partition` ownership marker. Overwrite
+validates options and every descendant entry before removal, refuses a directory containing
+the path input, and requires a matching marker; unmarked directories must be removed
+explicitly. Flat output accepts only the selected format's files and sidecars. Empty and
+dot-only names are escaped. The Rust `partition_to_dir` API receives materialized layers,
+so callers must keep any source files outside an overwrite target; path-based CLI/Python
+calls check that relation. Partition and concat currently materialize feature copies;
+large datasets can require roughly input plus output memory.
+
 ### set-field-type
 
 ```sh
@@ -488,6 +502,9 @@ integers, Float32 values are doubles, UUIDs text, times text (`HH:MM:SS[.sss]`),
 Integer field changed to Boolean holds 0 or 1 where GDAL keeps the integer. List types are not
 supported.
 
+Numeric-prefix conversion of unusually long text values currently involves repeated parsing
+and can be expensive.
+
 ### make-point
 
 ```sh
@@ -501,6 +518,10 @@ keeping every field. `--z` and `--m` add Z and M. `--dst-crs` assigns a CRS with
 reprojecting; without it the points have none, as in GDAL. Unlike GDAL, Integer64 fields are
 accepted. terrio's GeoPackage writer writes XY and XYZ geometries, so M values are kept in
 memory (Rust, Python and JavaScript) but not in GeoPackages.
+
+Text coordinates accept NaN and infinity as GDAL 3.13.3 does; use finite coordinates for
+valid extents and spatial indexes. GDAL can report an extent-update error for infinite
+GeoPackage coordinates even while its command exits successfully.
 
 ### create
 
@@ -523,6 +544,9 @@ width of 10 or more, which marks 64-bit integers. Z and M suffixes of geometry t
 accepted but not recorded in empty layers (a warning says so). Curve, surface, TIN and list
 types, `--geometry-field` and GDAL's `--oo` are not supported.
 
+Vector schema/template creation orders fields by name, matching GDAL 3.13; explicit
+`--field` arguments keep their order.
+
 ### export-schema
 
 ```sh
@@ -540,9 +564,57 @@ default). Local GeoPackages are described from their table declarations (exact c
 `Integer64` when 10 or more digits wide or holding 64-bit values, as GDAL's DBF reader and
 GeoJSON reader type them).
 
-Partition output directories carry a `.terrio-partition` ownership marker. Overwrite
-requires a matching marker and checks every existing entry before removing the directory;
-unmarked directories must be removed explicitly.
+### rename-layer
+
+```sh
+terrio rename-layer data.gpkg --input-layer roads --output-layer transport
+terrio rename-layer source.gpkg renamed.gpkg --ascii --lower-case
+```
+
+Renames a chosen layer or normalizes every layer name. `--ascii`, `--lower-case`,
+`--filename-compatible`, `--reserved-characters`, `--replacement-character` and
+`--max-length` control normalization; colliding results receive unique suffixes.
+A selected rename retains the other input layers; name collisions are rejected clearly.
+GDAL's CLI `--input-layer` selection can instead produce only the selected layer.
+Without an output, local GeoPackages are changed in place, including their indexes,
+triggers and metadata references. Other formats require an output.
+
+### edit
+
+```sh
+terrio edit data.gpkg --crs EPSG:4326 --metadata SOURCE=survey
+terrio edit data.gpkg edited.gpkg --active-layer roads --geometry-type LINESTRING
+```
+
+Assigns CRS without reprojecting, changes declared geometry type (including Z/M), or
+sets/removes dataset and layer metadata. `--active-layer` selects one layer; default CRS
+and geometry edits skip attribute-only tables. `--crs none` removes a CRS. `--unset-fid`
+requires an output. Geometries are not converted by a declaration change.
+
+In-place GeoPackage edits materialize the database and replace it with a unique temporary
+file beside the resolved input. Mode bits and symlink targets are preserved; hard links
+are detached, and ownership, ACLs and extended attributes are not preserved. Exclude
+concurrent writers: journal/WAL checks are not transaction locks. Atomic replacement
+is not a power-loss durability guarantee. Output creation and metadata application are
+separate steps, so a failed output edit can leave a file.
+
+### update
+
+```sh
+terrio update incoming.gpkg existing.gpkg --key code --mode merge
+```
+
+Matches features by FID, or by repeated `--key` fields of matching types. `--input-layer`
+and `--output-layer` select layers. `merge` updates matched features and appends unmatched
+ones; `update-only` and `append-only` restrict that behavior. NULL keys match nothing, so
+merge and append-only append them, while update-only skips them. A key matching several
+output features matches none. Shared fields and geometry are updated without reprojection;
+output-only fields are retained and input-only fields are not added.
+
+GeoPackages use the in-place mechanism above. Other formats stage new files then replace
+the originals. Multi-file replacements are not atomic across sidecars and a failure may
+leave a partial replacement. Successful Shapefile replacements remove obsolete QIX/SBN/SBX
+indexes and optional PRJ/CPG sidecars not produced by the new write.
 
 ## info
 
@@ -1347,21 +1419,3 @@ point tie points and rotated affine transforms, without moving pixel corners.
 Writing a PixelIsPoint GeoTIFF requires a CRS. A write with an unknown CRS is
 rejected before creating the file, avoiding a half-pixel origin shift without
 a corresponding raster-type GeoKey.
-
-GeoPackage vector edits write a unique temporary file next to the resolved input and
-replace it atomically. They preserve mode bits and follow symlinks to their target.
-They materialize the database in memory, need space for a second file, detach hard
-links and do not preserve ownership, ACLs or extended attributes. Exclude concurrent
-writers; journal/WAL checks do not provide a transaction lock.
-
-Partition overwrite validates options before removing output. Flat output directories
-must contain only regular files of the selected output format (including Shapefile
-sidecars), so unrelated files are refused. Dot-only and empty layer names are escaped.
-
-
-Partition overwrite refuses output directories containing the path input. Hive
-validation checks all descendant files before removal, including unrelated files
-inside an otherwise valid partition tree. Vector schema/template creation orders
-fields by name, as GDAL 3.13 does; explicit `--field` options retain their order.
-Null update keys do not match existing rows: merge appends them and update-only
-skips them, following SQL null equality semantics.

@@ -2,9 +2,7 @@
 
 Usage: python scripts/compare_vector_dataset_with_gdal.py ../terrio-data --terrio target/release/terrio
 
-Commands compared (GDAL 3.12 has the gdal vector concat, partition, set-field-type and
-make-point commands; export-schema and create are GDAL 3.13 commands, compared with what
-GDAL 3.12 reports of the same files):
+Commands compared (the complete suite requires GDAL 3.13 or newer):
 
 - export-schema: the OGR_SCHEMA of GeoPackage, Shapefile, GeoJSON, FlatGeobuf and GeoParquet
   files, against ``ogrinfo -json``'s layer descriptions (the same JSON members, as
@@ -209,7 +207,7 @@ def same_value(a, b):
     return a == b
 
 
-def compare_dumps(name, mine, ref, tolerance=0.0, ignore_types=(), check_crs=True):
+def compare_dumps(name, mine, ref, tolerance=0.0, ignore_types=(), check_crs=True, ignore_field_values=()):
     """Compares two dumps.
 
     Args:
@@ -219,6 +217,7 @@ def compare_dumps(name, mine, ref, tolerance=0.0, ignore_types=(), check_crs=Tru
         tolerance: The largest coordinate difference accepted.
         ignore_types: Field types (as GDAL names them) whose difference is a known one.
         check_crs: Compare CRS codes.
+        ignore_field_values: Only skip value comparison for these field names; all structure and geometry still participate.
 
     Returns:
         A case dict.
@@ -246,7 +245,7 @@ def compare_dumps(name, mine, ref, tolerance=0.0, ignore_types=(), check_crs=Tru
             continue
         bad_values = 0
         for k, ((ga, va), (gb, vb)) in enumerate(zip(a["features"], b["features"])):
-            if not all(same_value(x, y) for x, y in zip(va, vb)):
+            if not all(same_value(x, y) for (field, _), x, y in zip(a["fields"], va, vb) if field not in ignore_field_values):
                 bad_values += 1
                 if bad_values <= 3:
                     problems.append(f"{lname} feature {k}: {va} vs {vb}")
@@ -567,6 +566,10 @@ def main():
     p.add_argument("--work-dir", type=Path)
     p.add_argument("--json", type=Path)
     args = p.parse_args()
+    if int(gdal.VersionInfo("VERSION_NUM")) < 3130000:
+        p.error("this complete vector-dataset suite requires GDAL >= 3.13")
+    if not (args.data / "las_vegas_roads.geojson").is_file():
+        p.error("needs las_vegas_roads.geojson (scripts/fetch_test_data.sh)")
     # Both implementations must see the same installed datum grids. PROJ can
     # otherwise fetch a high-accuracy grid while Terrio uses an older cached one,
     # making a dataset-operation comparison measure unrelated grid availability.
@@ -667,7 +670,13 @@ def main():
             known_value = fname == "i" and target in ("Boolean", "Int16")
             if c["status"] == IDENTICAL:
                 same += 1
-            elif c["status"] == TOLERANCE or known_value:
+            elif known_value:
+                structural = compare_dumps(f"{fname}->{target}", dump(mine), dump(ref), ignore_types=KNOWN_TYPES, ignore_field_values=("i",))
+                if structural["status"] == DIFFERS:
+                    bad.append(f"{fname}->{target}: {structural['detail'][:200]}")
+                else:
+                    notes.append(f"{fname}->{target}: {c['detail'][:120]}")
+            elif c["status"] == TOLERANCE:
                 notes.append(f"{fname}->{target}: {c['detail'][:120]}")
             else:
                 bad.append(f"{fname}->{target}: {c['detail'][:200]}")

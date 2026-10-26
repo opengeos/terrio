@@ -344,7 +344,7 @@ fn create_vector(
     }
     let doc = match (schema, like) {
         (Some(s), _) => {
-            let text = if let Ok(t) = s.extract::<String>() {
+            let text = if let Some(t) = path_of(s) {
                 if t.trim_start().starts_with('{') { t } else { std::fs::read_to_string(&t).map_err(|e| invalid(format!("{t}: {e}")))? }
             } else {
                 py.import("json")?.call_method1("dumps", (s,))?.extract::<String>()?

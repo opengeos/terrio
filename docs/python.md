@@ -232,7 +232,8 @@ These are `terrio concat`, `partition`, `set-field-type`, `make-point`, `export-
 `create` (GDAL's `gdal vector` commands of the same names); sources are paths or vector data in
 memory (`VectorDataset`, `Layer`, lists of layers, GeoJSON). Conversion warnings are issued as
 `UserWarning`s. See [Vector datasets](cli.md#vector-datasets) for the options, GDAL's rules
-and the differences.
+and the differences. Filesystem `partition` is unavailable in Pyodide;
+the remaining imported APIs remain available.
 
 ### Pixel-wise operations
 

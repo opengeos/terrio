@@ -251,6 +251,11 @@ fn merge(
         }
     }
 
+    if let Some(source_field) = source_field
+        && fields.iter().any(|field| field.name.eq_ignore_ascii_case(source_field))
+    {
+        return Err(Error::InvalidArgument(format!("source-layer field '{source_field}' already exists; choose an unused name")));
+    }
     let first = layers.first();
     let mut out = Layer::new(name);
     out.geom_type = first.and_then(|l| l.geom_type).filter(|t| layers.iter().all(|l| l.geom_type == Some(*t)));
@@ -327,6 +332,13 @@ mod tests {
             &[vec![FieldValue::Integer(3), FieldValue::Text("e".into())]],
         );
         vec![ConcatSource { name: "data/one.gpkg".into(), layers: vec![a, b1] }, ConcatSource { name: "two.gpkg".into(), layers: vec![b2] }]
+    }
+
+    #[test]
+    fn source_layer_field_cannot_duplicate_an_output_field() {
+        let options = ConcatOptions { mode: ConcatMode::Single, source_layer_field_name: Some("name".into()), ..Default::default() };
+        let error = concat(&sources(), &options).unwrap_err();
+        assert!(error.to_string().contains("already exists"));
     }
 
     #[test]

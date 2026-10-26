@@ -210,7 +210,7 @@ struct CreateArgs {
     geometry_type: Option<String>,
     crs: Option<String>,
     fid: Option<String>,
-    fields: Vec<String>,
+    fields: Option<Vec<String>>,
     format: Option<String>,
 }
 
@@ -223,6 +223,10 @@ struct CreateArgs {
 pub fn create_vector(filename: &str, options: JsValue) -> Result<Vec<u8>, JsError> {
     let (rest, taken) = crate::ops::split_options(&options, &["like"])?;
     let a: CreateArgs = parse_options(&rest)?;
+    let explicit = a.geometry_type.is_some() || a.crs.is_some() || a.fid.is_some() || a.fields.is_some();
+    if (a.schema.is_some() || taken[0].is_some()) && explicit {
+        return Err(invalid("give one of schema, like, or explicit fields"));
+    }
     let doc = match (&a.schema, &taken[0]) {
         (Some(_), Some(_)) => return Err(invalid("give schema or like, not both")),
         (Some(s), None) => {
@@ -243,9 +247,15 @@ pub fn create_vector(filename: &str, options: JsValue) -> Result<Vec<u8>, JsErro
         doc.layers.retain(|l| names.contains(&l.name));
     }
     let crs = srs(a.crs.as_deref())?;
-    let created =
-        vs::created_layers(doc.as_ref(), a.output_layer.as_deref(), &a.fields, a.geometry_type.as_deref(), crs.as_ref(), a.fid.as_deref())
-            .map_err(js_err)?;
+    let created = vs::created_layers(
+        doc.as_ref(),
+        a.output_layer.as_deref(),
+        a.fields.as_deref().unwrap_or_default(),
+        a.geometry_type.as_deref(),
+        crs.as_ref(),
+        a.fid.as_deref(),
+    )
+    .map_err(js_err)?;
     let driver = a
         .format
         .as_deref()
