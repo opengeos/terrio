@@ -748,6 +748,7 @@ time. Comparing two copies of a 51 MB USGS GeoTIFF served over HTTP with `--skip
 read both files (103 MB). The MCP tool reports query statuses as results, not execution failures.
 On the command line, status 1 can mean either one difference or an execution error;
 check stderr for errors. `pixel-info` similarly uses status 1 for off-raster positions.
+`--skip-all-optional` takes precedence over individual `--skip-*` flags.
 
 Compared with GDAL 3.13.3 in the `raster-query` conformance suite: 20 of 21 cases give the
 same lines and exit status. One known mask-count reporting difference is detailed in Testing. Differences: CRS mismatch lines print Terrio's WKT where GDAL
@@ -796,7 +797,8 @@ points in the raster's CRS when it has an EPSG code, else in WGS 84;
 `value` (`gdallocationinfo -valonly`, with `--field-sep`) and `json` (a list of
 `{input, extra, column, line, xy, bands: [{band, value, unscaled}]}`). With `text` and `value`,
 the exit status is 1 when a position is off the raster, as `gdallocationinfo`'s. `-o` writes
-the GeoJSON, CSV or a vector layer of points (any vector format) to a file.
+the GeoJSON, CSV or a vector layer of points (any vector format) to a file. Vector-file output records
+missing/off-raster samples as null and returns normal write success.
 
 Only the 64 x 64 pixel blocks around the positions are read: two cubic queries of a 51 MB
 USGS GeoTIFF served over HTTP fetched 1.8 MB in 3 requests.
@@ -1124,8 +1126,3 @@ point tie points and rotated affine transforms, without moving pixel corners.
 Writing a PixelIsPoint GeoTIFF requires a CRS. A write with an unknown CRS is
 rejected before creating the file, avoiding a half-pixel origin shift without
 a corresponding raster-type GeoKey.
-
-
-`compare --skip-all-optional` takes precedence over individual `--skip-*` flags.
-`pixel-info` reports off-raster status for text/value reports; vector file output
-records missing samples as null and returns normal write success, matching GDAL.

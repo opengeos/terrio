@@ -230,17 +230,17 @@ def max_rel_diff(a, b):
     return 0.0
 
 
-def csv_rows(text, gdal312):
+def csv_rows(text, gdal_output):
     """Parses pixel-info CSV, mapping GDAL 3.12's columns to GDAL 3.13's.
 
     Args:
         text: The CSV text.
-        gdal312: Whether the text is GDAL 3.12's (``input_x``, ``input_y``, ``extra_input``).
+        gdal_output: GDAL output; accepts legacy 3.12 column names when present.
 
     Returns:
         A list of dicts of floats (strings for extra content, None for empty fields).
     """
-    rename = {"input_x": "geom_x", "input_y": "geom_y", "extra_input": "extra_content"} if gdal312 else {}
+    rename = {"input_x": "geom_x", "input_y": "geom_y", "extra_input": "extra_content"} if gdal_output else {}
     rows = []
     for row in csv.DictReader(io.StringIO(text)):
         out = {}
@@ -336,8 +336,9 @@ def pixel_info_cases(data, work, terrio):
             add(f"{name} (CSV)", "differs", f"gdal {g!r:.300} terrio {t!r:.300}")
         # gdallocationinfo text and -valonly, byte for byte.
         for fmt, extra in (("text", []), ("value", ["-valonly"])):
-            gc, go, _ = run(["gdallocationinfo", *li_opts, *extra, raster, *pos[:2]])
-            tc, to, _ = run([terrio, "pixel-info", "-f", fmt, *opts, raster, *pos[:2]])
+            positions = "".join(f"{pos[i]} {pos[i + 1]}\n" for i in range(0, len(pos), 2))
+            gc, go, _ = run(["gdallocationinfo", *li_opts, *extra, raster], positions)
+            tc, to, _ = run([terrio, "pixel-info", "-f", fmt, *opts, raster], positions)
             ok = go == to and gc == tc
             add(f"{name} ({'gdallocationinfo' if fmt == 'text' else '-valonly'})", "identical" if ok else "differs",
                 "" if ok else f"exit {gc}/{tc}: {go!r:.200} vs {to!r:.200}")

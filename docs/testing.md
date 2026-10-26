@@ -665,3 +665,10 @@ The full release dry run is manual: select **Release dry run → Run workflow** 
 GitHub Actions before tagging a release. It builds the complete cross-platform
 wheel, CLI, installer and npm matrix without publishing. Pull requests retain the
 normal CI checks, including Python, WASM, API documentation and package validation.
+
+
+A local HTTP check of XYZ `--skip 64` on the 51,486,544-byte USGS GeoTIFF
+transferred 38,248,272 bytes in 9 requests before and after block-aware sampling.
+All 3,249 output lines were byte-identical. One run of each optimized CLI took
+3.89 s before and 1.07 s after; these are local observations rather than a timing
+threshold in the test suite.

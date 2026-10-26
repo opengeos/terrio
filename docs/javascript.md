@@ -283,3 +283,8 @@ Optional `srs` defaults to EPSG:4326, `pixelOffset`/`lineOffset` to 0, and steps
 the explicit `geolocation` option supplies arrays for the first source. The operation remains
 pure Rust in full and core WASM builds. See [CLI warping](cli.md#warp) for invalid coordinates,
 antimeridian handling and boundary differences from GDAL.
+
+
+`pixelInfo(src, positions, {format: "value", fieldSep: "|"})` selects the
+separator between band values. For vector file bytes, pass the GeoJSON result to
+`fromGeoJSON` and serialize that Dataset with `toBytes`.

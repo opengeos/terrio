@@ -975,6 +975,9 @@ def pixel_info(
     resampling: Literal["nearest", "bilinear", "cubic", "cubicspline"] = "nearest",
     promote_pixel_value_to_z: bool = False,
     format: Literal["geojson", "json", "csv", "text", "value"] = "geojson",
+    field_sep: str = "\n",
+    dst: str | None = None,
+    output_format: str | None = None,
 ) -> Any:
     """Pixel values at positions, as ``gdal raster pixel-info`` and ``gdallocationinfo``."""
     ...

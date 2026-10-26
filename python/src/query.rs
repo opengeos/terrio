@@ -152,10 +152,11 @@ fn open_or_borrow<'py>(py: Python<'py>, src: &Bound<'py, PyAny>) -> PyResult<Hel
 ///         `"value"` (gdallocationinfo -valonly) as strings.
 ///
 /// Returns:
-///     dict | list | str: The results in `format`.
+///     dict | list | str: The results in `format`. With dst, also writes a vector
+///         layer (output_format selects its driver); field_sep separates value-format bands.
 #[pyfunction]
 #[pyo3(signature = (src, positions=None, *, position_crs=None, position_dataset=None, layer=None, include_fields=None,
-    bands=None, overview=None, resampling="nearest", promote_pixel_value_to_z=false, format="geojson"))]
+    bands=None, overview=None, resampling="nearest", promote_pixel_value_to_z=false, format="geojson", field_sep="\n", dst=None, output_format=None))]
 #[allow(clippy::too_many_arguments)]
 fn pixel_info<'py>(
     py: Python<'py>,
@@ -170,6 +171,9 @@ fn pixel_info<'py>(
     resampling: &str,
     promote_pixel_value_to_z: bool,
     format: &str,
+    field_sep: &str,
+    dst: Option<&str>,
+    output_format: Option<&str>,
 ) -> PyResult<Bound<'py, PyAny>> {
     use terrio::ops::Resampling;
     let resampling = match Resampling::parse(resampling).py()? {
@@ -209,12 +213,31 @@ fn pixel_info<'py>(
         }
         with_raster(py, src, |r| terrio::ops::pixel_info::pixel_info(r, &list, &options))?
     };
+    if let Some(dst) = dst {
+        let output = std::path::Path::new(dst);
+        let aliases = |path: &std::path::Path| {
+            path == output || std::fs::canonicalize(path).ok().zip(std::fs::canonicalize(output).ok()).is_some_and(|(a, b)| a == b)
+        };
+        if crate::ops::raster_path(src)?.is_some_and(|path| aliases(std::path::Path::new(&path)))
+            || position_dataset.and_then(|p| p.extract::<std::path::PathBuf>().ok()).is_some_and(|p| aliases(&p))
+        {
+            return Err(invalid("the output would overwrite an input"));
+        }
+        let driver = output_format
+            .map(|name| terrio::formats::VectorDriver::from_name(name).ok_or_else(|| invalid(format!("unknown vector format '{name}'"))))
+            .transpose()?;
+        let layer_name = output.file_stem().and_then(|s| s.to_str()).unwrap_or("pixel_info");
+        let layer = info.to_layer(layer_name);
+        crate::with_warnings(py, || terrio::write_vector(&[layer], dst, &terrio::VectorWriteOptions { driver, ..Default::default() }))?;
+    } else if output_format.is_some() {
+        return Err(invalid("output_format requires dst"));
+    }
     match format.to_ascii_lowercase().as_str() {
         "geojson" => py.import("json")?.call_method1("loads", (info.to_geojson_string(),)),
         "json" => json_to_python(py, &info.to_json()),
         "csv" => Ok(info.to_csv().into_pyobject(py)?.into_any()),
         "text" => Ok(info.to_text().into_pyobject(py)?.into_any()),
-        "value" | "valonly" => Ok(info.to_values("\n").into_pyobject(py)?.into_any()),
+        "value" | "valonly" => Ok(info.to_values(field_sep).into_pyobject(py)?.into_any()),
         other => Err(invalid(format!("unknown format '{other}': use geojson, json, csv, text or value"))),
     }
 }

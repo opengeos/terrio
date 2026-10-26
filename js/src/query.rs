@@ -145,6 +145,7 @@ struct PixelInfoArgs {
     resampling: String,
     promote_pixel_value_to_z: bool,
     format: String,
+    field_sep: String,
 }
 
 impl Default for PixelInfoArgs {
@@ -158,6 +159,7 @@ impl Default for PixelInfoArgs {
             resampling: "nearest".into(),
             promote_pixel_value_to_z: false,
             format: "geojson".into(),
+            field_sep: "\n".into(),
         }
     }
 }
@@ -208,7 +210,7 @@ pub fn pixel_info(src: JsValue, positions: JsValue, options: JsValue) -> Result<
         "json" => Ok(value_to_js(&info.to_json())),
         "csv" => Ok(JsValue::from_str(&info.to_csv())),
         "text" => Ok(JsValue::from_str(&info.to_text())),
-        "value" | "valonly" => Ok(JsValue::from_str(&info.to_values("\n"))),
+        "value" | "valonly" => Ok(JsValue::from_str(&info.to_values(&a.field_sep))),
         other => Err(invalid(format!("unknown format '{other}': use geojson, json, csv, text or value"))),
     }
 }

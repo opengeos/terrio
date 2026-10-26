@@ -157,7 +157,9 @@ pub fn write_xyz<W: Write>(raster: &mut LazyRaster, out: &mut W, options: &XyzOp
     let mut y = y_off;
     let end = y_off + y_size;
     while y < end {
-        let count = if sy > 1 { 1 } else { rows.min(end - y) };
+        // Decode each needed physical block row once, while jumping over block
+        // rows that contain no selected sample. Keep the strip memory budget.
+        let count = if sy > 1 { rows.min(block - y % block).min(end - y) } else { rows.min(end - y) };
         let data = raster.read_window(Window::new(x_off, y, x_size, count), &read)?.raster.data;
         let plane = x_size * count;
         for r in 0..count {
@@ -207,7 +209,7 @@ pub fn write_xyz<W: Write>(raster: &mut LazyRaster, out: &mut W, options: &XyzOp
             }
             out.write_all(text.as_bytes())?;
         }
-        y = y.saturating_add(if sy > 1 { sy } else { count });
+        y = if sy > 1 { y_off.saturating_add((y + count - y_off).div_ceil(sy).saturating_mul(sy)) } else { y + count };
     }
     out.flush()?;
     Ok(lines)
@@ -217,18 +219,36 @@ pub fn write_xyz<W: Write>(raster: &mut LazyRaster, out: &mut W, options: &XyzOp
 /// successful reads and an explicit flush. The caller must reject input aliases.
 #[cfg(not(target_family = "wasm"))]
 pub fn write_xyz_file(raster: &mut LazyRaster, path: &std::path::Path, options: &XyzOptions) -> Result<u64> {
+    let resolved =
+        if std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink()) { Some(std::fs::canonicalize(path)?) } else { None };
+    let path = resolved.as_deref().unwrap_or(path);
+    let existing_permissions = match std::fs::metadata(path) {
+        Ok(meta) => Some(meta.permissions()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => return Err(e.into()),
+    };
     let parent = path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(std::path::Path::new("."));
-    let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
+    let mut builder = tempfile::Builder::new();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        builder.permissions(std::fs::Permissions::from_mode(0o666));
+    }
+    let mut temporary = builder.tempfile_in(parent)?;
     let lines = {
         let mut output = std::io::BufWriter::new(temporary.as_file_mut());
         let lines = write_xyz(raster, &mut output, options)?;
         output.flush()?;
         lines
     };
+    if let Some(permissions) = existing_permissions {
+        temporary.as_file().set_permissions(permissions)?;
+    }
     temporary.persist(path).map_err(|e| Error::Io(e.error))?;
     Ok(lines)
 }
 
+/// File output is unavailable in WebAssembly; use the text-returning XYZ API.
 #[cfg(target_family = "wasm")]
 pub fn write_xyz_file(_raster: &mut LazyRaster, _path: &std::path::Path, _options: &XyzOptions) -> Result<u64> {
     Err(Error::Unsupported("file output is unavailable in WebAssembly; return XYZ text instead".into()))
@@ -260,6 +280,23 @@ mod tests {
         let mut out = Vec::new();
         write_xyz(r, &mut out, o).unwrap();
         String::from_utf8(out).unwrap()
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn file_output_uses_normal_creation_mode_and_preserves_existing_mode() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let baseline = dir.path().join("baseline");
+        std::fs::write(&baseline, "").unwrap();
+        let expected = std::fs::metadata(baseline).unwrap().permissions().mode() & 0o777;
+        let path = dir.path().join("samples.xyz");
+        let mut source = raster(DataType::I32, None);
+        write_xyz_file(&mut source, &path, &Default::default()).unwrap();
+        assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, expected);
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640)).unwrap();
+        write_xyz_file(&mut source, &path, &Default::default()).unwrap();
+        assert_eq!(std::fs::metadata(path).unwrap().permissions().mode() & 0o777, 0o640);
     }
 
     #[test]

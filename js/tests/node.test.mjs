@@ -1583,6 +1583,34 @@ test("vector geometry operations: simplify, segmentize, hulls, swap-xy, set-geom
   assert.throws(() => terrio.simplify(line, -1), /tolerance/);
 });
 
+test("compare, pixelInfo and xyz", () => {
+  const values = Float64Array.from({ length: 20 }, (_, i) => i);
+  const a = terrio.rasterFromArray(values, 5, 4, [100, 10, 0, 240, 0, -10], "EPSG:32611");
+  const edited = Float64Array.from(values);
+  edited[7] += 2.5;
+  const b = terrio.rasterFromArray(edited, 5, 4, [100, 10, 0, 240, 0, -10], "EPSG:32611");
+  assert.equal(terrio.compare(a, a).difference_count, 0);
+  const c = terrio.compare(a, b);
+  assert.deepEqual(c.differences.map((d) => d.message), ["1: pixels differing: 1", "1: maximum pixel value difference: 2.500000"]);
+  assert.equal(c.bands[0].pixels_differing, 1);
+  const bytes = a.toBytes("a.tif");
+  assert.equal(terrio.compare(bytes, bytes).difference_count, 0);
+  assert.equal(terrio.compare(bytes, b.toBytes("b.tif")).differences[0].kind, "binary");
+
+  const twoBands = terrio.rasterFromArray(new Float64Array([0, 10]), 1, 1, [0, 1, 0, 1, 0, -1]);
+  assert.equal(terrio.pixelInfo(twoBands, [[0, 0]], {format: "value", fieldSep: "|"}), "0|10\n");
+  const g = terrio.pixelInfo(a, [[125, 225, "site"]], { positionCrs: "dataset", resampling: "bilinear" });
+  assert.equal(g.crs.properties.name, "urn:ogc:def:crs:EPSG::32611");
+  assert.equal(g.features[0].properties.extra_content, "site");
+  assert.equal(g.features[0].properties.bands[0].raw_value, 7);
+  assert.equal(terrio.pixelInfo(a, [[0.5, 0.5]], { format: "text" }), "Report:\n  Location: (0P,0L)\n  Band 1:\n    Value: 0\n");
+  const points = { type: "FeatureCollection", features: [{ type: "Feature", properties: { id: 3 }, geometry: { type: "Point", coordinates: [125, 225] } }] };
+  const fromLayer = terrio.pixelInfo(a, points, { positionCrs: "dataset", format: "json" });
+  assert.equal(fromLayer[0].bands[0].value, 7);
+
+  assert.equal(terrio.xyz(a, { skip: [2], srcwin: [0, 0, 5, 1] }), "105.000 235.000 0\n125.000 235.000 2\n145.000 235.000 4\n");
+});
+
 test("promoteTo3d transforms ellipsoidal heights of a 2D CRS", () => {
   // GDAL 3.12.2 / PROJ 9.8.1, RD New to WGS 84 3D, without grids.
   const args = [[85000], [447000], "EPSG:28992", "EPSG:4979", [0]];
@@ -1614,30 +1642,4 @@ test("promoteTo3d applies to vector toBytes and preserves 2D geometry", () => {
 test("unterminated quoted PROJ values raise an error", () => {
   assert.throws(() => terrio.transformPoints([10], [40], "EPSG:4326",
     '+proj=tmerc +datum=WGS84 +title="abc +k=0.9996'), /unterminated quoted PROJ value/);
-});
-
-test("compare, pixelInfo and xyz", () => {
-  const values = Float64Array.from({ length: 20 }, (_, i) => i);
-  const a = terrio.rasterFromArray(values, 5, 4, [100, 10, 0, 240, 0, -10], "EPSG:32611");
-  const edited = Float64Array.from(values);
-  edited[7] += 2.5;
-  const b = terrio.rasterFromArray(edited, 5, 4, [100, 10, 0, 240, 0, -10], "EPSG:32611");
-  assert.equal(terrio.compare(a, a).difference_count, 0);
-  const c = terrio.compare(a, b);
-  assert.deepEqual(c.differences.map((d) => d.message), ["1: pixels differing: 1", "1: maximum pixel value difference: 2.500000"]);
-  assert.equal(c.bands[0].pixels_differing, 1);
-  const bytes = a.toBytes("a.tif");
-  assert.equal(terrio.compare(bytes, bytes).difference_count, 0);
-  assert.equal(terrio.compare(bytes, b.toBytes("b.tif")).differences[0].kind, "binary");
-
-  const g = terrio.pixelInfo(a, [[125, 225, "site"]], { positionCrs: "dataset", resampling: "bilinear" });
-  assert.equal(g.crs.properties.name, "urn:ogc:def:crs:EPSG::32611");
-  assert.equal(g.features[0].properties.extra_content, "site");
-  assert.equal(g.features[0].properties.bands[0].raw_value, 7);
-  assert.equal(terrio.pixelInfo(a, [[0.5, 0.5]], { format: "text" }), "Report:\n  Location: (0P,0L)\n  Band 1:\n    Value: 0\n");
-  const points = { type: "FeatureCollection", features: [{ type: "Feature", properties: { id: 3 }, geometry: { type: "Point", coordinates: [125, 225] } }] };
-  const fromLayer = terrio.pixelInfo(a, points, { positionCrs: "dataset", format: "json" });
-  assert.equal(fromLayer[0].bands[0].value, 7);
-
-  assert.equal(terrio.xyz(a, { skip: [2], srcwin: [0, 0, 5, 1] }), "105.000 235.000 0\n125.000 235.000 2\n145.000 235.000 4\n");
 });

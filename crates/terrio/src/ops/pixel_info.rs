@@ -1085,6 +1085,16 @@ mod tests {
     }
 
     #[test]
+    fn nan_nodata_queries_keep_nan_like_gdal_313() {
+        let config = crate::RasterConfig { cols: 2, rows: 2, bands: 1, data_type: DataType::F32, nodata: f64::NAN, ..Default::default() };
+        let mut source = LazyRaster::from(crate::RasterDataset::new(crate::Raster::from_data(config, vec![f64::NAN; 4]).unwrap(), true));
+        for resampling in [Resampling::Nearest, Resampling::Bilinear, Resampling::Cubic, Resampling::CubicSpline] {
+            let info = pixel_info(&mut source, &[Position::new(0.5, 0.5)], &PixelInfoOptions { resampling, ..Default::default() }).unwrap();
+            assert!(info.locations[0].bands[0].value.is_some_and(f64::is_nan));
+        }
+    }
+
+    #[test]
     fn numeric_prefix_scan_handles_long_suffixes_and_incomplete_exponents() {
         assert_eq!(c_atof(&format!("12{}", "q".repeat(100_000))), 12.);
         assert_eq!(c_atof("1e+oops"), 1.);

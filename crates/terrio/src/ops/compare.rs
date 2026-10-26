@@ -808,21 +808,28 @@ fn compare_image(a: &mut LazyRaster, b: &mut LazyRaster, overview: Option<usize>
         return Ok(None);
     }
     let bands = a.band_count();
-    let union = data_type_union(a.data_type(), b.data_type());
-    let mut stats = vec![PixelStats::new(union); bands];
-    let rows = strip_rows(w, bands, 8, a.block_size().map(|(_, bh)| bh));
-    let options = WindowOptions { bands: Vec::new(), overview };
-    let mut y = 0;
-    while y < h {
-        let n = rows.min(h - y);
-        let window = Window::new(0, y, w, n);
-        let ra = a.read_window(window, &options)?.raster.data;
-        let rb = b.read_window(window, &options)?.raster.data;
-        let plane = w * n;
-        for (band, s) in stats.iter_mut().enumerate() {
-            s.add(&ra, &rb, band * plane, plane);
+    let mut stats: Vec<_> =
+        (1..=bands).map(|band| PixelStats::new(data_type_union(a.band_data_type(band), b.band_data_type(band)))).collect();
+    // Keep one multiband read for ordinary homogeneous rasters. Mixed VRT bands
+    // are read separately so integer bands never pass through a floating buffer.
+    let homogeneous =
+        (1..=bands).all(|band| a.band_data_type(band) == a.band_data_type(1) && b.band_data_type(band) == b.band_data_type(1));
+    let groups: Vec<Vec<usize>> = if homogeneous { vec![(1..=bands).collect()] } else { (1..=bands).map(|band| vec![band]).collect() };
+    for group in groups {
+        let rows = strip_rows(w, group.len(), 8, a.block_size().map(|(_, bh)| bh));
+        let options = WindowOptions { bands: group.clone(), overview };
+        let mut y = 0;
+        while y < h {
+            let n = rows.min(h - y);
+            let window = Window::new(0, y, w, n);
+            let ra = a.read_window(window, &options)?.raster.data;
+            let rb = b.read_window(window, &options)?.raster.data;
+            let plane = w * n;
+            for (i, band) in group.iter().enumerate() {
+                stats[*band - 1].add(&ra, &rb, i * plane, plane);
+            }
+            y += n;
         }
-        y += n;
     }
     Ok(Some(stats))
 }
@@ -855,13 +862,13 @@ fn mask_flags(r: &mut LazyRaster, band: usize) -> u32 {
     }
     if let Some(nd) = r.band_nodata(band) {
         // A nodata value the data type cannot hold masks nothing, as GDAL's `IsNoDataInRange`.
-        if nodata_in_range(nd, r.data_type()) {
+        if nodata_in_range(nd, r.band_data_type(band)) {
             return 8;
         }
         return 1;
     }
     let n = r.band_count();
-    if matches!(r.data_type(), DataType::U8 | DataType::U16)
+    if matches!(r.band_data_type(band), DataType::U8 | DataType::U16)
         && let Some(alpha) = r.alpha_band()
         && alpha == n
         && matches!(n, 2 | 4)
@@ -909,7 +916,7 @@ fn band_props(r: &LazyRaster, band: usize, level: Level) -> Option<BandProps> {
                 width,
                 height,
                 description: if ovr.is_none() { meta.and_then(|m| m.description.clone()).unwrap_or_default() } else { String::new() },
-                data_type: r.data_type(),
+                data_type: r.band_data_type(band),
                 nodata: r.band_nodata(band),
                 color: header.band_color_interp(band).to_string(),
             }
@@ -1103,6 +1110,25 @@ mod tests {
         };
         let r = Raster::from_data(cfg, values).unwrap();
         LazyRaster::from(RasterDataset::new(r, nodata.is_some()))
+    }
+
+    #[test]
+    fn mixed_vrt_bands_compare_in_their_native_types() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut paths = Vec::new();
+        for (name, value) in [("a", 1234567.125), ("b", 1234567.25)] {
+            let config = RasterConfig { cols: 1, rows: 1, bands: 1, data_type: DataType::F64, ..Default::default() };
+            let source = RasterDataset::new(Raster::from_data(config, vec![value]).unwrap(), false);
+            crate::write_raster_dataset(&source, dir.path().join(format!("{name}.tif")).to_str().unwrap(), &Default::default()).unwrap();
+            let path = dir.path().join(format!("{name}.vrt"));
+            std::fs::write(&path, format!(r#"<VRTDataset rasterXSize="1" rasterYSize="1"><VRTRasterBand dataType="Int32" band="1"><SimpleSource><SourceFilename relativeToVRT="1">{name}.tif</SourceFilename><SourceBand>1</SourceBand></SimpleSource></VRTRasterBand><VRTRasterBand dataType="Float64" band="2"><SimpleSource><SourceFilename relativeToVRT="1">{name}.tif</SourceFilename><SourceBand>1</SourceBand></SimpleSource></VRTRasterBand></VRTDataset>"#)).unwrap();
+            paths.push(path);
+        }
+        let result = compare(paths[0].to_str().unwrap(), paths[1].to_str().unwrap(), &CompareOptions::skip_all_optional()).unwrap();
+        assert_eq!(result.bands[0].data_type, "Int32");
+        assert_eq!(result.bands[1].data_type, "Float64");
+        assert_eq!(result.bands[0].pixels_differing, 0);
+        assert_eq!(result.bands[1].pixels_differing, 1);
     }
 
     #[test]

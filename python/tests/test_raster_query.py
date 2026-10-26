@@ -107,3 +107,12 @@ def test_same_object_compare_and_xyz_preserves_source(tmp_path):
     with pytest.raises(ValueError, match="overwrite the input"):
         terrio.xyz(path, path)
     assert (tmp_path / "source.tif").read_bytes() == before
+
+
+def test_pixel_info_file_output_and_field_separator(tmp_path):
+    src = _raster(np.stack([np.arange(6).reshape(2, 3), np.arange(10, 16).reshape(2, 3)]))
+    assert terrio.pixel_info(src, [(0, 0)], format="value", field_sep="|") == "0|10\n"
+    path = str(tmp_path / "samples.gpkg")
+    result = terrio.pixel_info(src, [(0, 0), (-1, -1)], dst=path)
+    assert len(result["features"]) == 2
+    assert len(terrio.open_vector(path)[0]) == 2
