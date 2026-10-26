@@ -136,3 +136,42 @@ def test_export_schema_and_create(tmp_path):
         terrio.create_vector(like, like=src)
     terrio.create_vector(like, schema=schema, update=True, output_layer="second")
     assert terrio.list_layers(like) == ["renamed", "second"]
+
+
+def test_rename_edit_update_bindings(tmp_path):
+    """Copies preserve inputs; path edits and key updates persist into GeoPackages."""
+    original = points("Café", [("x", 1), ("y", 2)])
+    renamed = terrio.rename_layer(original, ascii=True, lower_case=True)
+    assert renamed.layer_names == ["cafe"]
+    assert original.name == "Café"
+    assigned = terrio.edit_vector(renamed, crs="EPSG:3857")
+    assert "3857" in assigned[0].crs
+    assert "4326" in renamed[0].crs
+    changes = points("changes", [("x", 9), ("z", 3)])
+    result = terrio.update_vector(changes, renamed, key=["name"])
+    assert len(result[0]) == 3
+    assert len(renamed[0]) == 2
+    assert sorted(f["properties"]["n"] for f in result[0].to_geojson()["features"]) == [
+        2,
+        3,
+        9,
+    ]
+    path = tmp_path / "edit.gpkg"
+    terrio.concat([renamed], str(path))
+    terrio.rename_layer(path, in_place=True, output_layer="renamed")
+    assert terrio.list_layers(str(path)) == ["renamed"]
+    terrio.edit_vector(
+        path,
+        in_place=True,
+        crs="EPSG:3857",
+        metadata=["REVIEW=checked"],
+        layer_metadata=["DESCRIPTION=review"],
+    )
+    persisted = terrio.update_vector(changes, path, key=["name"], mode="update-only")
+    assert len(persisted[0]) == 2
+    with pytest.raises(terrio.InvalidArgumentError, match="metadata edits require"):
+        terrio.edit_vector(original, metadata=["A=B"])
+    with pytest.raises(terrio.InvalidArgumentError, match="different"):
+        terrio.update_vector(path, path)
+    with pytest.raises(terrio.InvalidArgumentError, match="excludes"):
+        terrio.rename_layer(path, str(path), in_place=True)

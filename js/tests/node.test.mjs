@@ -1651,3 +1651,18 @@ test("unterminated quoted PROJ values raise an error", () => {
   assert.throws(() => terrio.transformPoints([10], [40], "EPSG:4326",
     '+proj=tmerc +datum=WGS84 +title="abc +k=0.9996'), /unterminated quoted PROJ value/);
 });
+
+
+test("vector dataset commands: rename, edit and key update preserve source datasets", () => {
+  const geo = (rows) => ({ type: "FeatureCollection", features: rows.map(([name, n], i) => ({ type: "Feature", properties: {name, n}, geometry: {type: "Point", coordinates: [i, i]} })) });
+  const original = terrio.concat([geo([["x", 1], ["y", 2]])], {mode: "single", outputLayer: "Café"});
+  const renamed = terrio.renameLayer(original, {ascii: true, lowerCase: true});
+  assert.equal(terrio.exportSchema(renamed).layers[0].name, "cafe");
+  assert.equal(terrio.exportSchema(original).layers[0].name, "Café");
+  const edited = terrio.editVector(renamed, {crs: "EPSG:3857"});
+  assert.equal(terrio.exportSchema(edited).layers[0].geometryFields[0].coordinateSystem.authid, "EPSG:3857");
+  const updated = terrio.updateVector(geo([["x", 9], ["z", 3]]), renamed, {key: ["name"]});
+  assert.equal(updated.info().layers[0].feature_count, 3);
+  assert.equal(renamed.info().layers[0].feature_count, 2);
+  assert.throws(() => terrio.editVector(original, {metadata: ["A=B"]}), /unknown field/);
+});

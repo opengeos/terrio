@@ -80,6 +80,9 @@ __all__ = [
     "make_point",
     "export_schema",
     "create_vector",
+    "rename_layer",
+    "edit_vector",
+    "update_vector",
     "cli_main",
 ]
 
@@ -1323,3 +1326,43 @@ def create_vector(
 ) -> None:
     """Create a vector dataset of empty layers (gdal vector create)."""
     ...
+
+def rename_layer(
+    src: Any,
+    dst: str | None = None,
+    *,
+    in_place: bool = False,
+    input_layer: str | None = None,
+    output_layer: str | None = None,
+    ascii: bool = False,
+    lower_case: bool = False,
+    filename_compatible: bool = False,
+    reserved_characters: str | None = None,
+    replacement_character: str | None = None,
+    max_length: int | None = None,
+    format: str | None = None,
+) -> VectorDataset: ...
+def edit_vector(
+    src: Any,
+    dst: str | None = None,
+    *,
+    in_place: bool = False,
+    active_layer: str | None = None,
+    crs: str | None = None,
+    geometry_type: str | None = None,
+    metadata: list[str] | None = None,
+    unset_metadata: list[str] | None = None,
+    layer_metadata: list[str] | None = None,
+    unset_layer_metadata: list[str] | None = None,
+    unset_fid: bool = False,
+    format: str | None = None,
+) -> VectorDataset: ...
+def update_vector(
+    src: Any,
+    dst: Any,
+    *,
+    input_layer: str | None = None,
+    output_layer: str | None = None,
+    key: list[str] | None = None,
+    mode: str = "merge",
+) -> VectorDataset: ...

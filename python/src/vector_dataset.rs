@@ -23,6 +23,9 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(make_point, m)?)?;
     m.add_function(wrap_pyfunction!(export_schema, m)?)?;
     m.add_function(wrap_pyfunction!(create_vector, m)?)?;
+    m.add_function(wrap_pyfunction!(rename_layer, m)?)?;
+    m.add_function(wrap_pyfunction!(edit_vector, m)?)?;
+    m.add_function(wrap_pyfunction!(update_vector, m)?)?;
     Ok(())
 }
 
@@ -395,4 +398,139 @@ fn create_vector(
     }
     let o = vs::CreateOptions { write: terrio::VectorWriteOptions { driver: driver(format)?, ..Default::default() }, update, overwrite };
     with_warnings(py, || vs::create(&created, dst, &o))
+}
+
+/// Renames layers on a copy, optionally writing dst or changing a local GeoPackage in place.
+/// Naming rules and uniqueness suffixes follow GDAL's vector rename-layer command.
+#[pyfunction]
+#[pyo3(signature = (src, dst=None, *, in_place=false, input_layer=None, output_layer=None, ascii=false, lower_case=false, filename_compatible=false, reserved_characters=None, replacement_character=None, max_length=None, format=None))]
+#[allow(clippy::too_many_arguments)]
+fn rename_layer(
+    py: Python<'_>,
+    src: &Bound<'_, PyAny>,
+    dst: Option<&str>,
+    in_place: bool,
+    input_layer: Option<String>,
+    output_layer: Option<String>,
+    ascii: bool,
+    lower_case: bool,
+    filename_compatible: bool,
+    reserved_characters: Option<String>,
+    replacement_character: Option<char>,
+    max_length: Option<usize>,
+    format: Option<&str>,
+) -> PyResult<PyVectorDataset> {
+    use terrio::ops::vector_edit as ve;
+    let o = ve::RenameOptions {
+        input_layer,
+        output_layer,
+        ascii,
+        lower_case,
+        filename_compatible,
+        reserved_characters,
+        replacement_character,
+        max_length,
+    };
+    if in_place {
+        if dst.is_some() || format.is_some() {
+            return Err(invalid("in_place excludes dst and format"));
+        }
+        let path = path_of(src).ok_or_else(|| invalid("in_place requires a local dataset path"))?;
+        with_warnings(py, || ve::rename_layers_in_place(&path, &o))?;
+        let (ls, d) = source(py, src, None)?;
+        return dataset(py, ls, d);
+    }
+    let (mut ls, d) = source(py, src, None)?;
+    with_warnings(py, || ve::rename_layers(&mut ls, &o))?;
+    let write = terrio::VectorWriteOptions { driver: driver(format)?, ..Default::default() };
+    if let Some(dst) = dst {
+        with_warnings(py, || terrio::write_vector(&ls, dst, &write))?;
+    }
+    dataset(py, ls, d)
+}
+
+/// Assigns vector CRS/type without transforming geometries. Metadata edits need path input
+/// and dst, or in_place=True (a local GeoPackage). In-memory metadata is unsupported.
+#[pyfunction]
+#[pyo3(signature = (src, dst=None, *, in_place=false, active_layer=None, crs=None, geometry_type=None, metadata=None, unset_metadata=None, layer_metadata=None, unset_layer_metadata=None, unset_fid=false, format=None))]
+#[allow(clippy::too_many_arguments)]
+fn edit_vector(
+    py: Python<'_>,
+    src: &Bound<'_, PyAny>,
+    dst: Option<&str>,
+    in_place: bool,
+    active_layer: Option<String>,
+    crs: Option<&str>,
+    geometry_type: Option<&str>,
+    metadata: Option<Vec<String>>,
+    unset_metadata: Option<Vec<String>>,
+    layer_metadata: Option<Vec<String>>,
+    unset_layer_metadata: Option<Vec<String>>,
+    unset_fid: bool,
+    format: Option<&str>,
+) -> PyResult<PyVectorDataset> {
+    use terrio::ops::vector_edit as ve;
+    let o = ve::EditOptions {
+        active_layer,
+        crs: crs.map(ve::parse_crs_override).transpose().py()?,
+        geometry_type: geometry_type.map(vs::parse_geometry_type).transpose().py()?,
+        metadata: ve::parse_metadata_items(&metadata.unwrap_or_default()).py()?,
+        unset_metadata: unset_metadata.unwrap_or_default(),
+        layer_metadata: ve::parse_metadata_items(&layer_metadata.unwrap_or_default()).py()?,
+        unset_layer_metadata: unset_layer_metadata.unwrap_or_default(),
+        unset_fid,
+    };
+    let write = terrio::VectorWriteOptions { driver: driver(format)?, ..Default::default() };
+    if in_place {
+        if dst.is_some() || format.is_some() {
+            return Err(invalid("in_place excludes dst and format"));
+        }
+        let path = path_of(src).ok_or_else(|| invalid("in_place requires a local dataset path"))?;
+        with_warnings(py, || ve::edit_in_place(&path, &o))?;
+        let (ls, d) = source(py, src, None)?;
+        return dataset(py, ls, d);
+    }
+    if let (Some(path), Some(dst)) = (path_of(src), dst) {
+        with_warnings(py, || ve::edit_to(&path, dst, &o, &write))?;
+        let ds = with_warnings(py, || terrio::open_vector(dst, &Default::default()))?;
+        return dataset(py, ds.layers, Some(ds.driver));
+    }
+    if !(o.metadata.is_empty() && o.unset_metadata.is_empty() && o.layer_metadata.is_empty() && o.unset_layer_metadata.is_empty()) {
+        return Err(invalid("metadata edits require input and output paths, or in_place=True"));
+    }
+    let (mut ls, d) = source(py, src, None)?;
+    with_warnings(py, || ve::edit_layers(&mut ls, &o))?;
+    if let Some(dst) = dst {
+        with_warnings(py, || terrio::write_vector(&ls, dst, &write))?;
+    }
+    dataset(py, ls, d)
+}
+
+/// Updates a destination dataset by FID or key fields. A destination path is changed in
+/// place; an in-memory destination is copied. Returns the resulting VectorDataset.
+#[pyfunction]
+#[pyo3(signature = (src, dst, *, input_layer=None, output_layer=None, key=None, mode="merge"))]
+fn update_vector(
+    py: Python<'_>,
+    src: &Bound<'_, PyAny>,
+    dst: &Bound<'_, PyAny>,
+    input_layer: Option<String>,
+    output_layer: Option<String>,
+    key: Option<Vec<String>>,
+    mode: &str,
+) -> PyResult<PyVectorDataset> {
+    use terrio::ops::vector_edit as ve;
+    let (ls, _) = source(py, src, None)?;
+    let o = ve::UpdateOptions { input_layer, output_layer, key: key.unwrap_or_default(), mode: ve::UpdateMode::parse(mode).py()? };
+    if let Some(path) = path_of(dst) {
+        if path_of(src).and_then(|p| std::fs::canonicalize(p).ok()).zip(std::fs::canonicalize(&path).ok()).is_some_and(|(a, b)| a == b) {
+            return Err(invalid("input and output datasets must be different"));
+        }
+        with_warnings(py, || ve::update(&ls, &path, &o))?;
+        let (out, d) = source(py, dst, None)?;
+        return dataset(py, out, d);
+    }
+    let (mut out, d) = source(py, dst, None)?;
+    with_warnings(py, || ve::update_layers(&mut out, &ls, &o))?;
+    dataset(py, out, d)
 }

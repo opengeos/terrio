@@ -533,6 +533,9 @@ pub fn edit_in_place(path: &str, o: &EditOptions) -> Result<()> {
 /// edited ([`edit_layers`]) and written to `output`; for a GeoPackage output, the metadata of a
 /// GeoPackage input is kept and edited, and the geometry type's Z and M are recorded.
 pub fn edit_to(input: &str, output: &str, o: &EditOptions, write: &crate::VectorWriteOptions) -> Result<()> {
+    if input == output || std::fs::canonicalize(input).ok().zip(std::fs::canonicalize(output).ok()).is_some_and(|(a, b)| a == b) {
+        return Err(Error::InvalidArgument("input and output datasets must be different; use edit_in_place".into()));
+    }
     let mut layers = crate::open_vector(input, &Default::default())?.layers;
     edit_layers(&mut layers, o)?;
     let out_gpkg = write.driver.or_else(|| VectorDriver::for_extension(output)) == Some(VectorDriver::GPKG);
@@ -686,6 +689,14 @@ fn pick<'a>(layers: &'a [Layer], name: Option<&str>, what: &str) -> Result<&'a L
     }
 }
 
+/// Updates one selected destination layer in memory, preserving the other layers.
+pub fn update_layers(dst: &mut [Layer], src: &[Layer], o: &UpdateOptions) -> Result<UpdateCounts> {
+    let source = pick(src, o.input_layer.as_deref(), "input")?;
+    let name = pick(dst, o.output_layer.as_deref(), "output")?.name.clone();
+    let target = dst.iter_mut().find(|l| l.name == name).expect("selected layer");
+    update_layer(target, source, o)
+}
+
 /// Updates layer `dst` in memory from `src`, as [`update`] does.
 pub fn update_layer(dst: &mut Layer, src: &Layer, o: &UpdateOptions) -> Result<UpdateCounts> {
     let mut counts = UpdateCounts::default();
@@ -817,15 +828,14 @@ pub fn update(src: &[Layer], output: &str, o: &UpdateOptions) -> Result<UpdateCo
     }
     let ds = crate::open_vector(output, &Default::default())?;
     let mut layers = ds.layers;
-    let name = pick(&layers, o.output_layer.as_deref(), "output")?.name.clone();
-    let dst = layers.iter_mut().find(|l| l.name == name).expect("the layer was picked");
-    let counts = update_layer(dst, src_layer, o)?;
+    let counts = update_layers(&mut layers, src, o)?;
     replace_dataset(&layers, output, &crate::VectorWriteOptions { driver: Some(ds.driver), ..Default::default() })?;
     Ok(counts)
 }
 
 /// Writes a dataset over an existing one safely: into a temporary directory next to it, then
 /// each file renamed over the one of the same name (a shapefile's parts too).
+#[cfg(not(target_family = "wasm"))]
 fn replace_dataset(layers: &[Layer], path: &str, write: &crate::VectorWriteOptions) -> Result<()> {
     let p = std::path::Path::new(path);
     if std::fs::metadata(p)?.permissions().readonly() {
@@ -833,19 +843,22 @@ fn replace_dataset(layers: &[Layer], path: &str, write: &crate::VectorWriteOptio
     }
     let parent = p.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(std::path::Path::new("."));
     let file = p.file_name().ok_or_else(|| Error::InvalidArgument(format!("'{path}' has no file name")))?;
-    let tmp = parent.join(format!(".terrio-update-{}", std::process::id()));
-    std::fs::create_dir_all(&tmp)?;
-    let result = (|| -> Result<()> {
+    let staging = tempfile::tempdir_in(parent)?;
+    let tmp = staging.path();
+    (|| -> Result<()> {
         let target = tmp.join(file);
         crate::write_vector(layers, &target.to_string_lossy(), write)?;
-        for e in std::fs::read_dir(&tmp)? {
+        for e in std::fs::read_dir(tmp)? {
             let e = e?;
             std::fs::rename(e.path(), parent.join(e.file_name()))?;
         }
         Ok(())
-    })();
-    let _ = std::fs::remove_dir_all(&tmp);
-    result
+    })()
+}
+
+#[cfg(target_family = "wasm")]
+fn replace_dataset(_layers: &[Layer], _path: &str, _write: &crate::VectorWriteOptions) -> Result<()> {
+    Err(Error::Unsupported("file updates are unavailable in WebAssembly; use update_layers".into()))
 }
 
 #[cfg(test)]

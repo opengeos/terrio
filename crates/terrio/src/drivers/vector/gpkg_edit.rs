@@ -9,6 +9,7 @@
 //! triggers or views on a renamed table that terrio does not rewrite are refused.
 
 use std::collections::HashMap;
+#[cfg(not(target_family = "wasm"))]
 use std::path::Path;
 
 use super::geopackage as gw;
@@ -37,6 +38,7 @@ fn refuse(msg: impl std::fmt::Display) -> Error {
 /// rollback journal or a write-ahead log; the changed database is written to a temporary file
 /// in the same directory, then renamed over the original. On any error the original is left
 /// as it was.
+#[cfg(not(target_family = "wasm"))]
 pub(crate) fn modify_file<T>(path: &str, f: impl FnOnce(&mut Database) -> Result<T>) -> Result<T> {
     if !crate::vfs::Location::parse(path).is_local() {
         return Err(Error::Unsupported(format!("'{path}': only local GeoPackages can be changed in place")));
@@ -75,6 +77,11 @@ pub(crate) fn modify_file<T>(path: &str, f: impl FnOnce(&mut Database) -> Result
         let _ = std::fs::remove_file(&tmp);
     })?;
     Ok(value)
+}
+
+#[cfg(target_family = "wasm")]
+pub(crate) fn modify_file<T>(_path: &str, _f: impl FnOnce(&mut Database) -> Result<T>) -> Result<T> {
+    Err(Error::Unsupported("in-place GeoPackage files are unavailable in WebAssembly".into()))
 }
 
 /// Changes a GeoPackage held in memory with `f`: see [`modify_file`].
@@ -726,9 +733,10 @@ pub(crate) fn update_features(d: &mut Database, name: &str, src: &Layer, keys: &
     }
     let total = {
         let t = d.table_mut(&name).expect("the layer has a table");
+        let positions: HashMap<i64, usize> = t.rows.iter().enumerate().map(|(i, (id, _))| (*id, i)).collect();
         for (id, v) in changed {
-            if let Some(row) = t.rows.iter_mut().find(|(r, _)| *r == id) {
-                row.1 = v;
+            if let Some(&i) = positions.get(&id) {
+                t.rows[i].1 = v;
             }
         }
         t.rows.extend(added.iter().cloned());

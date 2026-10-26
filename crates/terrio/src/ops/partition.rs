@@ -473,18 +473,38 @@ fn append_target(path: &std::path::Path, seen: &mut std::collections::HashMap<St
 /// replacing it: empty, or (Hive) holding a `layer/field=value` directory, or (flat) no
 /// directories.
 #[cfg(not(target_family = "wasm"))]
-fn looks_partitioned(root: &std::path::Path, scheme: PartitionScheme) -> Result<bool> {
-    let entries: Vec<_> = std::fs::read_dir(root)?.flatten().collect();
-    if entries.is_empty() {
-        return Ok(true);
+fn looks_partitioned(root: &std::path::Path, scheme: PartitionScheme, driver: VectorDriver) -> Result<bool> {
+    fn directory(path: &std::path::Path, scheme: PartitionScheme, driver: VectorDriver, depth: usize) -> Result<bool> {
+        if depth > 256 || std::fs::symlink_metadata(path)?.file_type().is_symlink() {
+            return Ok(false);
+        }
+        for entry in std::fs::read_dir(path)? {
+            let entry = entry?;
+            let kind = entry.file_type()?;
+            if kind.is_dir() && scheme == PartitionScheme::Hive {
+                // The first directory is the layer; subsequent ones are field=value.
+                if (depth > 0 && !entry.file_name().to_string_lossy().contains('='))
+                    || !directory(&entry.path(), scheme, driver, depth + 1)?
+                {
+                    return Ok(false);
+                }
+            } else if kind.is_file() && (scheme == PartitionScheme::Flat || depth >= 2) {
+                let path = entry.path();
+                let accepted = path.extension().and_then(|ext| ext.to_str()).is_some_and(|ext| {
+                    ext.eq_ignore_ascii_case(driver_extension(driver))
+                        || (driver == VectorDriver::Shapefile
+                            && ["shp", "shx", "dbf", "prj", "cpg"].iter().any(|e| ext.eq_ignore_ascii_case(e)))
+                });
+                if !accepted {
+                    return Ok(false);
+                }
+            } else {
+                return Ok(false);
+            }
+        }
+        Ok(true)
     }
-    Ok(match scheme {
-        PartitionScheme::Hive => entries.iter().filter(|e| e.path().is_dir()).any(|e| {
-            std::fs::read_dir(e.path())
-                .is_ok_and(|sub| sub.flatten().any(|s| s.path().is_dir() && s.file_name().to_string_lossy().contains('=')))
-        }),
-        PartitionScheme::Flat => entries.iter().all(|e| !e.path().is_dir()),
-    })
+    directory(root, scheme, driver, 0)
 }
 
 #[cfg(test)]
@@ -584,6 +604,19 @@ mod tests {
     }
 
     #[cfg(not(target_family = "wasm"))]
+    #[test]
+    fn hive_overwrite_refuses_unrelated_nested_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("parts");
+        let write = crate::VectorWriteOptions { driver: Some(VectorDriver::GPKG), ..Default::default() };
+        let options = PartitionOptions { fields: vec!["state".into()], ..Default::default() };
+        let written = partition_to_dir(&[layer()], root.to_str().unwrap(), &options, &write, PartitionWriteMode::Create).unwrap();
+        let notes = std::path::Path::new(&written[0]).parent().unwrap().join("notes.txt");
+        std::fs::write(&notes, "keep me").unwrap();
+        assert!(partition_to_dir(&[layer()], root.to_str().unwrap(), &options, &write, PartitionWriteMode::Overwrite).is_err());
+        assert_eq!(std::fs::read_to_string(notes).unwrap(), "keep me");
+    }
+
     #[test]
     fn flat_overwrite_preserves_unrelated_files_and_invalid_options() {
         let tmp = tempfile::tempdir().unwrap();

@@ -37,6 +37,7 @@ import math
 import os
 from pathlib import Path
 import shutil
+import sqlite3
 import subprocess
 import sys
 
@@ -139,6 +140,36 @@ def dump(path, layer_names=None):
             g = f.GetGeometryRef()
             features.append((g.ExportToIsoWkt() if g else None, [f.GetField(k) for k in range(defn.GetFieldCount())]))
         out[layer.GetName()] = {"fields": fields, "crs": code, "features": features}
+    return out
+
+
+def naming_inventory(path):
+    """Read naming fixtures with SQLite and OGR's WKB parser.
+
+    GDAL 3.13.3's GPKG table introspection raises Cannot find table for some
+    Unicode names, including files GDAL itself writes. Direct SQLite reads and
+    OGR geometry parsing avoid that reference-reader failure while still
+    comparing names, schema, attributes, CRS and geometries independently.
+    """
+    quote = lambda name: '"' + name.replace('"', '""') + '"'  # noqa: E731
+    out = {}
+    with sqlite3.connect(path) as db:
+        for name, in db.execute("SELECT table_name FROM gpkg_contents"):
+            geom, crs = db.execute("SELECT column_name,srs_id FROM gpkg_geometry_columns WHERE table_name=?", (name,)).fetchone()
+            columns = db.execute("PRAGMA table_info(" + quote(name) + ")").fetchall()
+            fields = [(c[1], c[2]) for c in columns if not c[5] and c[1] != geom]
+            names = [c[1] for c in columns]
+            gi = names.index(geom)
+            features = []
+            for row in db.execute("SELECT * FROM " + quote(name)):
+                blob = row[gi]
+                geometry = None
+                if blob:
+                    envelope = (blob[3] >> 1) & 7
+                    offset = 8 + 8 * [0, 4, 6, 6, 8][envelope]
+                    geometry = ogr.CreateGeometryFromWkb(bytes(blob[offset:])).ExportToIsoWkt()
+                features.append((geometry, [row[names.index(n)] for n, _ in fields]))
+            out[name] = {"fields": fields, "crs": str(crs), "features": features}
     return out
 
 
@@ -746,7 +777,7 @@ def main():
                 run([t, "rename-layer", names_src, mine, *opts])
                 shutil.copy(names_src, inplace)
                 run([t, "rename-layer", inplace, *opts])
-                for c in (compare_dumps(f"rename-layer-{label}", dump(mine), dump(ref)), compare_dumps(f"rename-layer-{label}-in-place", dump(inplace), dump(ref))):
+                for c in (compare_dumps(f"rename-layer-{label}", naming_inventory(mine), naming_inventory(ref)), compare_dumps(f"rename-layer-{label}-in-place", naming_inventory(inplace), naming_inventory(ref))):
                     case(c)
         # edit in place and on output, against gdal vector edit (input to output).
         ref = work / "edit-ref.gpkg"

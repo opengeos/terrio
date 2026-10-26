@@ -275,6 +275,9 @@ pub struct ExportSchemaArgs {
     /// Write the schema to this file instead of standard output.
     #[arg(short = 'o', long)]
     output: Option<String>,
+    /// Replace an existing schema output.
+    #[arg(long)]
+    overwrite: bool,
 }
 
 /// `terrio export-schema`: `gdal vector export-schema`.
@@ -282,7 +285,13 @@ pub fn export_schema(a: ExportSchemaArgs) -> Result<()> {
     let schema = super::quiet(|| vs::export_schema_path(&a.input, &a.layers))?;
     let json = schema.to_json();
     match a.output {
-        Some(path) => std::fs::write(path, json + "\n")?,
+        Some(path) => {
+            if path == a.input || super::rasterout::same_file(&path, &a.input) {
+                return Err(Error::InvalidArgument("the output would overwrite the input".into()));
+            }
+            existing_output(&path, a.overwrite)?;
+            std::fs::write(path, json + "\n")?;
+        }
         None => println!("{json}"),
     }
     Ok(())
@@ -377,19 +386,6 @@ pub fn create(a: CreateArgs) -> Result<()> {
         overwrite: a.overwrite,
     };
     vs::create(&created, &a.output, &o)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::parse_size;
-
-    #[test]
-    fn parses_sizes() {
-        assert_eq!(parse_size("2MB"), Ok(2 << 20));
-        assert_eq!(parse_size("1.5 GB"), Ok(3 << 29));
-        assert_eq!(parse_size("1048576"), Ok(1 << 20));
-        assert!(parse_size("3 parsecs").is_err());
-    }
 }
 
 #[derive(clap::Args)]
@@ -563,4 +559,17 @@ pub fn update(a: UpdateArgs) -> Result<()> {
     let c = super::quiet(|| ve::update(&src, &a.output, &o))?;
     eprintln!("terrio: {} feature(s) updated, {} appended, {} unchanged or skipped", c.updated, c.appended, c.unchanged);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_size;
+
+    #[test]
+    fn parses_sizes() {
+        assert_eq!(parse_size("2MB"), Ok(2 << 20));
+        assert_eq!(parse_size("1.5 GB"), Ok(3 << 29));
+        assert_eq!(parse_size("1048576"), Ok(1 << 20));
+        assert!(parse_size("3 parsecs").is_err());
+    }
 }

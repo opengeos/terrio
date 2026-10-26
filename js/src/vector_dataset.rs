@@ -294,3 +294,90 @@ pub fn create_vector(filename: &str, options: JsValue) -> Result<Vec<u8>, JsErro
     let write = terrio::VectorWriteOptions { driver, ..Default::default() };
     terrio::memory::write_vector_bytes(&layers, filename, &write).map_err(js_err)
 }
+
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase", default, deny_unknown_fields)]
+struct RenameArgs {
+    input_layer: Option<String>,
+    output_layer: Option<String>,
+    ascii: bool,
+    lower_case: bool,
+    filename_compatible: bool,
+    reserved_characters: Option<String>,
+    replacement_character: Option<char>,
+    max_length: Option<usize>,
+}
+
+/// Renames layers on a copy of vector data. Options match the CLI naming rules:
+/// inputLayer, outputLayer, ascii, lowerCase, filenameCompatible, reservedCharacters,
+/// replacementCharacter and maxLength. Serialize the returned Dataset to persist it.
+#[wasm_bindgen(js_name = renameLayer)]
+pub fn rename_layer(src: JsValue, options: JsValue) -> Result<Dataset, JsError> {
+    let a: RenameArgs = parse_options(&options)?;
+    let (mut layers, driver) = source(&src)?;
+    let o = terrio::ops::vector_edit::RenameOptions {
+        input_layer: a.input_layer,
+        output_layer: a.output_layer,
+        ascii: a.ascii,
+        lower_case: a.lower_case,
+        filename_compatible: a.filename_compatible,
+        reserved_characters: a.reserved_characters,
+        replacement_character: a.replacement_character,
+        max_length: a.max_length,
+    };
+    terrio::ops::vector_edit::rename_layers(&mut layers, &o).map_err(js_err)?;
+    Ok(Dataset::from_layers(layers, driver.unwrap_or(VectorDriver::GPKG)))
+}
+
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase", default, deny_unknown_fields)]
+struct EditArgs {
+    active_layer: Option<String>,
+    crs: Option<String>,
+    geometry_type: Option<String>,
+    unset_fid: bool,
+}
+
+/// Assigns CRS/type on a copy without transforming geometries. Options: activeLayer,
+/// crs ("none" removes it), geometryType, unsetFid. Dataset metadata is not represented
+/// in the in-memory model; use the native path API for metadata edits.
+#[wasm_bindgen(js_name = editVector)]
+pub fn edit_vector(src: JsValue, options: JsValue) -> Result<Dataset, JsError> {
+    let a: EditArgs = parse_options(&options)?;
+    let (mut layers, driver) = source(&src)?;
+    let o = terrio::ops::vector_edit::EditOptions {
+        active_layer: a.active_layer,
+        crs: a.crs.as_deref().map(terrio::ops::vector_edit::parse_crs_override).transpose().map_err(js_err)?,
+        geometry_type: a.geometry_type.as_deref().map(vs::parse_geometry_type).transpose().map_err(js_err)?,
+        unset_fid: a.unset_fid,
+        ..Default::default()
+    };
+    terrio::ops::vector_edit::edit_layers(&mut layers, &o).map_err(js_err)?;
+    Ok(Dataset::from_layers(layers, driver.unwrap_or(VectorDriver::GPKG)))
+}
+
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase", default, deny_unknown_fields)]
+struct UpdateArgs {
+    input_layer: Option<String>,
+    output_layer: Option<String>,
+    key: Vec<String>,
+    mode: Option<String>,
+}
+
+/// Updates a copy of dst from src, by FID or key fields. Options: inputLayer,
+/// outputLayer, key (array), mode (merge, update-only, append-only).
+#[wasm_bindgen(js_name = updateVector)]
+pub fn update_vector(src: JsValue, dst: JsValue, options: JsValue) -> Result<Dataset, JsError> {
+    let a: UpdateArgs = parse_options(&options)?;
+    let (input, _) = source(&src)?;
+    let (mut output, driver) = source(&dst)?;
+    let o = terrio::ops::vector_edit::UpdateOptions {
+        input_layer: a.input_layer,
+        output_layer: a.output_layer,
+        key: a.key,
+        mode: terrio::ops::vector_edit::UpdateMode::parse(a.mode.as_deref().unwrap_or("merge")).map_err(js_err)?,
+    };
+    terrio::ops::vector_edit::update_layers(&mut output, &input, &o).map_err(js_err)?;
+    Ok(Dataset::from_layers(output, driver.unwrap_or(VectorDriver::GPKG)))
+}
