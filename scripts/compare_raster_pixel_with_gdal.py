@@ -254,7 +254,7 @@ def compare_vector(gout, tout):
     gn, gf, gl, gs = read_layer(gout)
     tn, tf, tl, ts = read_layer(tout)
     res = {"size": f"{len(gf)} features", "same_size": len(gf) == len(tf), "type": ",".join(gn),
-           "same_type": gn == tn, "same_nodata": True, "gt_diff_px": 0.0,
+           "same_type": gn == tn,
            "same_crs": (gs is None and ts is None) or (gs is not None and ts is not None and bool(gs.IsSame(ts))),
            "same_metadata": gl == tl or gout.endswith(".csv")}
     if not res["same_size"] or not res["same_type"]:

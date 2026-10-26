@@ -1,5 +1,7 @@
 //! `terrio unscale`, `terrio nodata-to-alpha`, `terrio reclassify` and `terrio as-features`.
 
+use std::io::Read;
+
 use super::rasterout::{OutputArgs, open};
 use terrio::formats::VectorDriver;
 use terrio::ops::as_features::{AsFeaturesOptions, PixelGeometry};
@@ -83,9 +85,16 @@ pub struct ReclassifyArgs {
 /// Runs `terrio reclassify`.
 pub fn reclassify(a: ReclassifyArgs) -> terrio::Result<()> {
     let mapping = match a.mapping.strip_prefix('@') {
-        Some(path) => mapping_from_file_text(
-            &std::fs::read_to_string(path).map_err(|e| terrio::Error::InvalidArgument(format!("cannot open {path}: {e}")))?,
-        )?,
+        Some(path) => {
+            let mut text = String::new();
+            std::fs::File::open(path)
+                .and_then(|file| file.take(10_000_001).read_to_string(&mut text))
+                .map_err(|e| terrio::Error::InvalidArgument(format!("cannot read {path}: {e}")))?;
+            if text.len() > 10_000_000 {
+                return Err(terrio::Error::InvalidArgument("the mapping file is too large (maximum 10 MB)".into()));
+            }
+            mapping_from_file_text(&text)?
+        }
         None => a.mapping,
     };
     let ds = open(&a.input)?;

@@ -840,8 +840,9 @@ alpha band of their type, 0 where the first band's mask is 0 and 255 elsewhere (
 saturates at 127, as GDAL converts it). The mask is the first band's nodata value; one
 `--nodata` overrides it for every band, and one `--nodata` per band (`nan`, `inf` and `-inf`
 are accepted) makes a pixel transparent only where every band has its value, as GDAL's
-`NODATA_VALUES`. A raster whose first band has no nodata value, or that already ends with an
-alpha band (two or four bands), is copied unchanged. Internal and `.msk` masks are not used.
+`NODATA_VALUES`. Without explicit `--nodata`, a raster whose first band has no nodata
+value, or that already ends with an alpha band (two or four bands), is copied unchanged.
+Explicit nodata adds a new alpha band even to RGBA input, matching GDAL 3.13.3. Internal and `.msk` masks are not used.
 
 ## reclassify
 

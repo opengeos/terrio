@@ -1183,6 +1183,7 @@ test("unscale, nodataToAlpha, reclassify and asFeatures", () => {
   assert.deepEqual([...fromFile.readBand(1)], [7, 7, 255, 40]);
   assert.throws(() => terrio.reclassify(src, "1=2"), /no specified mapping/);
   assert.throws(() => terrio.reclassify(src, "@map.txt"), /mappingFile/);
+  assert.throws(() => terrio.reclassify(src, "1=2", {mappingFile: "1=3"}), /not both/);
   const scaled = terrio.unscale(src.toBytes("s.tif"), { ot: "Float64" });
   assert.equal(scaled.dtype, "float64");
   const fc = terrio.asFeatures(src, { geometryType: "polygon", skipNodata: true, includeRowCol: true }).toGeoJSON();

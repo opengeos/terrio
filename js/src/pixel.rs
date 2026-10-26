@@ -76,6 +76,9 @@ struct ReclassifyArgs {
 #[wasm_bindgen]
 pub fn reclassify(src: JsValue, mapping: &str, options: JsValue) -> Result<Dataset, JsError> {
     let a: ReclassifyArgs = parse_options(&options)?;
+    if a.mapping_file.is_some() && !mapping.is_empty() {
+        return Err(invalid("give mapping or mappingFile, not both"));
+    }
     let mapping = match a.mapping_file {
         Some(text) => mapping_from_file_text(&text).map_err(js_err)?,
         None if mapping.starts_with('@') => return Err(invalid("files cannot be read here: give their text as `mappingFile`")),

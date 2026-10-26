@@ -87,3 +87,10 @@ def test_as_features_fields_and_geometries(tmp_path):
     assert len(skipped) == 3
     with pytest.raises(ValueError, match="geometry type"):
         terrio.as_features(src, geometry_type="line")
+
+
+@pytest.mark.parametrize("options", [{"format": "CSV"}, {"append": True}, {"overwrite": True}])
+def test_as_features_output_options_require_destination(options):
+    src = terrio.Raster.from_array(np.array([[1]], dtype="uint8"), GT)
+    with pytest.raises(ValueError, match="require dst"):
+        terrio.as_features(src, **options)

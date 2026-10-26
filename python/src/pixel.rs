@@ -174,6 +174,9 @@ fn as_features(
     append: bool,
     overwrite: bool,
 ) -> PyResult<PyLayer> {
+    if dst.is_none() && (format.is_some() || append || overwrite) {
+        return Err(invalid("format, append and overwrite require dst"));
+    }
     let o = AsFeaturesOptions {
         bands: bands.unwrap_or_default(),
         geometry: PixelGeometry::parse(geometry_type).py()?,

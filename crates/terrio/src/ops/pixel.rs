@@ -105,7 +105,7 @@ pub fn unscale(ds: &RasterDataset, o: &UnscaleOptions) -> Result<RasterDataset> 
 /// The scale and offset of a band (from 1): its properties, or the packing a driver recorded
 /// (netCDF's `scale_factor` and `add_offset`), 1 and 0 by default.
 pub fn band_scale_offset(ds: &RasterDataset, band: usize) -> (f64, f64) {
-    let meta = ds.band_metadata.get(band - 1);
+    let meta = band.checked_sub(1).and_then(|index| ds.band_metadata.get(index));
     let internal = |what: &str| {
         let key = format!("{}BAND_{band}_{what}", crate::info::INTERNAL);
         ds.raster.metadata.iter().find(|(k, _)| *k == key).and_then(|(_, v)| v.trim().parse::<f64>().ok())
@@ -574,6 +574,20 @@ mod tests {
     fn ds(bands: Vec<Vec<f64>>, w: usize, h: usize, dt: DataType, nodata: Option<f64>) -> RasterDataset {
         let grid = Grid { width: w, height: h, geo_transform: [10.0, 1.0, 0.0, 20.0, 0.0, -1.0] };
         build_raster(grid, bands, dt, nodata, &crate::crs::SpatialRef::default(), convert_value).unwrap()
+    }
+
+    #[test]
+    fn zero_band_scale_offset_uses_defaults() {
+        assert_eq!(band_scale_offset(&ds(vec![vec![1.]], 1, 1, DataType::U8, None), 0), (1., 0.));
+    }
+
+    #[test]
+    fn explicit_nodata_adds_alpha_to_rgba_like_gdal() {
+        let mut src = ds(vec![vec![0.], vec![0.], vec![0.], vec![255.]], 1, 1, DataType::U8, None);
+        src.band_metadata.resize_with(4, Default::default);
+        src.band_metadata[3].color_interp = Some("Alpha".into());
+        assert_eq!(nodata_to_alpha(&src, &Default::default()).unwrap().band_count(), 4);
+        assert_eq!(nodata_to_alpha(&src, &NodataToAlphaOptions { nodata: vec![0.] }).unwrap().band_count(), 5);
     }
 
     #[test]
