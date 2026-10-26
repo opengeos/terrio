@@ -872,7 +872,7 @@ As `gdal raster as-features`: one feature per pixel, row by row, in a layer name
 and `COL` (`--include-row-col`), then `BAND_<n>` (Float) per band. `--geometry-type` is `none`
 (an attribute table, the default), `point` (pixel centres) or `polygon` (pixel squares, in the
 raster's CRS). `--skip-nodata` leaves out the pixels whose first reported band has its nodata
-value. `-b` selects bands (GDAL 3.12 and 3.13 accept `-b` but report every band). `--append`
+value. `-b` selects bands (GDAL 3.13.3 accepts `-b` but reports every band). `--append`
 and `--overwrite` update an existing output, as for `polygonize`. The features are built in
 memory: mind the pixel count of large rasters. GDAL's `--update`, `--overwrite-layer` and
 layer creation options are not supported.

@@ -4,7 +4,7 @@
 Runs ``terrio unscale``, ``terrio nodata-to-alpha``, ``terrio reclassify`` and
 ``terrio as-features`` and the equivalent ``gdal raster unscale``, ``gdal raster
 nodata-to-alpha``, ``gdal raster reclassify`` and ``gdal raster as-features`` commands
-(GDAL 3.11 or later) on the files fetched by ``scripts/fetch_test_data.sh``, then reports
+(GDAL 3.12 or later; the reference is GDAL 3.13.3) on the files fetched by ``scripts/fetch_test_data.sh``, then reports
 for each case whether the outputs have the same size, type, nodata value, CRS, band color
 interpretations and scales, and how many pixels agree. Feature outputs are compared
 feature by feature: count, field names, field values and geometry coordinates.
@@ -135,7 +135,8 @@ def cases(d, tmp):
     unscale("Landsat Byte", p["landsat_scaled"], "Byte")
     unscale("LST Float32 NaN", p["lst_scaled"])
     unscale("LST Int32", p["lst_scaled"], "Int32")
-    unscale("S5P qa_value netCDF", p["s5p_qa"])
+    if gdal.GetDriverByName("netCDF") is not None:
+        unscale("S5P qa_value netCDF", p["s5p_qa"])
     unscale("unscaled DEM Float64", p["dem_window"])
 
     def alpha(name, src, nodata=()):
@@ -166,7 +167,7 @@ def cases(d, tmp):
     reclass("Landsat bands", p["landsat_window"], "0=NO_DATA;[1,100)=50;[100,255]=PASS_THROUGH")
 
     def features(name, src, opts, ext="gpkg"):
-        # GDAL 3.12 names the layer "" by default (3.13: "pixels"): name it for both.
+        # GDAL 3.12 names the layer "" by default (3.13 names it "pixels"): name it for both.
         opts = [*opts, "--output-layer", "pixels"]
         add(f"as-features {name}", ["gdal", "raster", "as-features", src, "{out}", *opts],
             ["as-features", src, "{out}", *opts], ext=ext, kind="vector")
