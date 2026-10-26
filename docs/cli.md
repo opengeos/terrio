@@ -825,7 +825,7 @@ query attached to the archive, for example
 `/vsizip/{/vsicurl/https://host/data.zip?sig=TOKEN}/dir/member.tif`.
 
 `copy SRC DST` copies a file to `DST`, or into it when `DST` is an existing directory (or ends
-with `/`); a directory needs `-r` and is copied as `DST`, or into an existing `DST` as
+with `/`; a local destination directory named this way must already exist); a directory needs `-r` and is copied as `DST`, or into an existing `DST` as
 `DST/<name>`, as GDAL does. `--skip-errors` goes on past the files that fail, reporting them.
 Copies within S3 are server-side (`x-amz-copy-source`), uploads are single `PUT`s (up to 5 GiB),
 and other remote copies go through a temporary file. Local files are written to a temporary file
@@ -847,6 +847,9 @@ and archive and HTTP locations. Recursive deletion never follows symbolic links 
 deleted), checks that every directory it enters is below the path given, and on object stores
 deletes only the keys below `prefix/` (not `prefix2/...`). Like GDAL 3.13.3, recursive object-store deletion preserves an exact object named `prefix`, even when it coexists with `prefix/` children; delete that exact object without `-r`. Recursive deletion of a lone object fails because there is no directory prefix to remove. `copy`, `sync` and `move` refuse to
 copy a directory into itself.
+Local recursive removal uses the standard library's symlink-race-protected removal on
+Linux, macOS and Windows. Counting makes a discovery pass before the removal pass;
+`deleted` reflects that discovery count, which requires an unchanged tree to be exact.
 
 `-q` prints nothing, `--json` prints what was done (`copied`, `bytes`, `unchanged`, `deleted`,
 `errors`), `--stats` the HTTP requests and bytes received.

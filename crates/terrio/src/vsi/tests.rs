@@ -792,3 +792,74 @@ fn native_cloud_depth_walk_keeps_space_prefixes_raw() {
         }
     }
 }
+
+#[cfg(unix)]
+#[test]
+fn recursive_delete_keeps_outside_files_during_symlink_replacement() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let tmp = tempfile::tempdir().unwrap();
+    let outside = tmp.path().join("outside");
+    fs::create_dir(&outside).unwrap();
+    let sentinel = outside.join("keep");
+    fs::write(&sentinel, "outside contents").unwrap();
+    for index in 0..64 {
+        let root = tmp.path().join(format!("root{index}"));
+        let child = root.join("child");
+        let parked = tmp.path().join(format!("parked{index}"));
+        fs::create_dir_all(&child).unwrap();
+        let stop = Arc::new(AtomicBool::new(false));
+        let flag = stop.clone();
+        let target = outside.clone();
+        let writer = std::thread::spawn(move || {
+            while !flag.load(Ordering::Relaxed) {
+                if fs::rename(&child, &parked).is_ok() {
+                    if std::os::unix::fs::symlink(&target, &child).is_ok() {
+                        let _ = fs::remove_file(&child);
+                    }
+                    let _ = fs::rename(&parked, &child);
+                }
+            }
+        });
+        // Concurrent mutation can make deletion fail. Neither outcome may delete outside.
+        let _ = delete(&s(&root), true);
+        stop.store(true, Ordering::Relaxed);
+        writer.join().unwrap();
+        assert_eq!(fs::read_to_string(&sentinel).unwrap(), "outside contents");
+    }
+}
+
+#[cfg(remote)]
+#[test]
+fn nested_http_listing_failure_redacts_query_credentials() {
+    use std::io::{BufRead, BufReader};
+    let _cache = HtmlCacheScope::new();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let base = format!("http://{}/root", listener.local_addr().unwrap());
+    let server = std::thread::spawn(move || {
+        for (index, stream) in listener.incoming().take(2).enumerate() {
+            let mut stream = stream.unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut line = String::new();
+            loop {
+                line.clear();
+                reader.read_line(&mut line).unwrap();
+                if line == "\r\n" || line.is_empty() {
+                    break;
+                }
+            }
+            let body = if index == 0 { "<title>Index of /root/</title><a href='sub/'>sub</a>" } else { "<html>ordinary page</html>" };
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            )
+            .unwrap();
+        }
+    });
+    let error = remote_read_dir(&Node::Url { base, query: "sig=PRIVATE_TEST_SIGNATURE".into() }, 2).unwrap_err().to_string();
+    server.join().unwrap();
+    assert!(error.contains("not a listable directory"));
+    assert!(error.contains("<redacted>"));
+    assert!(!error.contains("PRIVATE_TEST_SIGNATURE"));
+}

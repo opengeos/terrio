@@ -671,7 +671,8 @@ fn remote_read_dir(node: &Node, max_depth: usize) -> Result<Vec<Entry>> {
         }
         pages += 1;
         let page = if query.is_empty() { url.clone() } else { format!("{url}?{query}") };
-        let listed = list_html_cached(&page)?.ok_or_else(|| Error::Unsupported(format!("'{}': not a listable directory", page)))?;
+        let listed = list_html_cached(&page)?
+            .ok_or_else(|| Error::Unsupported(format!("'{}': not a listable directory", listing::redact_url(&page))))?;
         for e in listed {
             let name = join_key(&rel, &e.name);
             if e.dir && level < max_depth {
@@ -1493,7 +1494,13 @@ fn checked_child_target(root: &Node, name: &str, portable: bool) -> Result<Node>
     }
     let target = root.join(name);
     if let (Node::Local(root), Node::Local(path)) = (root, &target) {
-        let root = std::fs::canonicalize(root).map_err(|error| io_context(error, &root.display().to_string()))?;
+        let root = std::fs::canonicalize(root).map_err(|error| {
+            if error.kind() == std::io::ErrorKind::NotFound {
+                Error::InvalidArgument(format!("destination directory '{}' does not exist", root.display()))
+            } else {
+                io_context(error, &root.display().to_string())
+            }
+        })?;
         let mut existing = path.as_path();
         loop {
             match std::fs::symlink_metadata(existing) {
@@ -1905,38 +1912,32 @@ fn delete_file(node: &Node) -> Result<()> {
     }
 }
 
-/// Deletes a local directory's contents, then the directory, without following symbolic links,
-/// checking that every path deleted is below `root`.
+/// Counts a stable tree, then lets the standard library remove it using its
+/// platform symlink-race protection. The discovery walk itself never deletes.
 fn delete_local_tree(dir: &Path, root: &Path, report: &mut Report) -> Result<()> {
-    for entry in std::fs::read_dir(dir)? {
-        let entry = entry?;
-        let path = entry.path();
-        let file_type = entry.file_type()?;
-        if file_type.is_dir() {
-            let canonical = std::fs::canonicalize(&path)?;
-            if !canonical.starts_with(root) {
-                return Err(Error::InvalidArgument(format!("refusing to delete '{}': outside '{}'", path.display(), root.display())));
-            }
-            delete_local_tree(&path, root, report)?;
-        } else {
-            // Files and symbolic links (to files or directories) alike: the entry itself.
-            remove_link_or_file(&path)?;
-            report.deleted += 1;
-        }
-    }
-    std::fs::remove_dir(dir)?;
-    report.deleted += 1;
+    let entries = count_local_tree(dir, root)?;
+    std::fs::remove_dir_all(dir)?;
+    report.deleted += entries;
     Ok(())
 }
 
-fn remove_link_or_file(path: &Path) -> std::io::Result<()> {
-    match std::fs::remove_file(path) {
-        // A symbolic link to a directory on Windows is removed as a directory.
-        Err(e) if cfg!(windows) && std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink()) => {
-            std::fs::remove_dir(path).map_err(|_| e)
+fn count_local_tree(dir: &Path, root: &Path) -> Result<u64> {
+    let mut count = 1;
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if entry.file_type()?.is_dir() {
+            let canonical = std::fs::canonicalize(&path)?;
+            if !canonical.starts_with(root) {
+                return Err(Error::InvalidArgument(format!("refusing to inspect '{}': outside '{}'", path.display(), root.display())));
+            }
+            count += count_local_tree(&path, root)?;
+        } else {
+            // Count the entry itself, including symbolic links; do not open its target.
+            count += 1;
         }
-        r => r,
     }
+    Ok(count)
 }
 
 /// Copy-delete moves cannot represent symlinks across all supported stores. Refuse

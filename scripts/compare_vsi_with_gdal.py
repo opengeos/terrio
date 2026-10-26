@@ -500,6 +500,14 @@ def main() -> int:
                 compare_listing(f"tar archive (lv_dem.zarr{suffix})", terrio, f"/vsitar/{archive}")
         # Copies, extractions and syncs of real trees.
         source = data / "ne_places"
+        source_file = next(path for path in sorted(source.iterdir()) if path.is_file())
+        missing_destinations = []
+        for tool, name in [([terrio, "vsi"], "terrio"), (["gdal", "vsi"], "gdal")]:
+            destination = work / f"missing_{name}" / "directory"
+            result = run(tool + ["copy", str(source_file), f"{destination}/"])
+            missing_destinations.append(result.returncode != 0 and not destination.exists())
+        record("missing local destination directory with trailing slash", all(missing_destinations),
+               "both commands fail without creating the missing destination directory")
         for tool, name in [([terrio, "vsi"], "terrio"), (["gdal", "vsi"], "gdal")]:
             run(tool + ["copy", "-r", "-q", str(source), str(work / f"copy_{name}")])
             run(tool + ["copy", "-r", "-q", f"/vsizip/{data / 'nybb.zip'}", str(work / f"unzip_{name}")])

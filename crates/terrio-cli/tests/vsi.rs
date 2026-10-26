@@ -445,3 +445,19 @@ fn signed_file_tree_names_and_recursive_single_object_refusal() {
     let one = ok(&endpoint, tmp.path(), &["vsi", "list", "same", "--tree", "--abs", "-f", "json"]);
     assert_eq!(serde_json::from_str::<serde_json::Value>(&one).unwrap()[0], tmp.path().join("same/same").to_str().unwrap());
 }
+
+#[test]
+fn missing_destination_directory_error_names_the_missing_directory() {
+    let tmp = tempfile::tempdir().unwrap();
+    let source = tmp.path().join("source");
+    std::fs::write(&source, "keep source").unwrap();
+    let destination = tmp.path().join("missing");
+    let endpoint = "http://127.0.0.1:1";
+    let out = terrio(endpoint, tmp.path(), &["vsi", "copy", source.to_str().unwrap(), &format!("{}/", destination.display())]);
+    assert!(!out.status.success());
+    let error = String::from_utf8_lossy(&out.stderr);
+    assert!(error.contains("destination directory") && error.contains("does not exist"));
+    assert!(error.contains(destination.to_str().unwrap()));
+    assert!(!destination.exists());
+    assert_eq!(std::fs::read_to_string(source).unwrap(), "keep source");
+}
