@@ -233,3 +233,24 @@ fn edited_iau_parameters_cannot_short_circuit_transformations() {
     let result = Transformer::new(&source, &overridden).unwrap().transform(0.0, 0.0).unwrap();
     assert!((result.0 - 1234.0).abs() < 1e-8);
 }
+
+#[test]
+fn custom_ellipsoid_body_compatibility_applies_without_iau_ids() {
+    for (source, target, allowed) in [
+        ("+proj=longlat +R=1", "+proj=longlat +R=2", false),
+        ("+proj=longlat +R=1", "EPSG:4326", false),
+        ("+proj=longlat +R=1737400", "EPSG:4326", false),
+        ("+proj=longlat +R=1", "+proj=eqc +R=1", true),
+        ("+proj=longlat +R=1", "+proj=longlat +R=1.006", true),
+        ("+proj=longlat +R=1", "+proj=longlat +R=1.008", false),
+    ] {
+        let source = SpatialRef::parse(source).unwrap();
+        let target = SpatialRef::parse(target).unwrap();
+        let result = Transformer::new(&source, &target);
+        if allowed {
+            assert!(result.unwrap().transform(1.0, 2.0).is_ok());
+        } else {
+            assert!(result.err().unwrap().to_string().contains("celestial body"));
+        }
+    }
+}
