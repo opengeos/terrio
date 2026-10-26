@@ -396,3 +396,7 @@ Update supports `input_layer`, `output_layer`, `key` and `mode` (`merge`,
 `update-only`, `append-only`); missing layer selections in multilayer datasets fail.
 File edits materialize the dataset and require space for a neighboring temporary
 copy. See the CLI documentation for atomicity and metadata preservation limits.
+
+The vector dataset copy operations `concat`, `rename_layer` and `edit_vector` refuse an
+existing destination path. Choose a new output path; use `in_place=True` for supported
+GeoPackage edits.

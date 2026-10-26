@@ -41,7 +41,8 @@ pub struct RenameOptions {
 }
 
 /// GDAL's ASCII equivalents of the Latin-1 Supplement and Latin Extended-A characters
-/// (`CPLUTF8ForceToASCII`, GDAL 3.13.3), by code point.
+/// (`CPLUTF8ForceToASCII`, GDAL 3.13.3), by code point. GDAL maps U+00FF to `u`;
+/// unsupported eth/thorn code points use the caller's replacement policy.
 fn ascii_of(c: char) -> Option<&'static str> {
     const LATIN: [(u32, &str); 182] = [
         (0x00C0, "A"),
@@ -860,6 +861,11 @@ fn replace_dataset(_layers: &[Layer], _path: &str, _write: &crate::VectorWriteOp
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn latin_y_diaeresis_matches_gdal_313() {
+        assert_eq!(super::ascii_of('ÿ'), Some("u"));
+    }
+
     use super::*;
 
     fn names(v: &[&str]) -> Vec<String> {

@@ -532,6 +532,10 @@ default). Local GeoPackages are described from their table declarations (exact c
 `Integer64` when 10 or more digits wide or holding 64-bit values, as GDAL's DBF reader and
 GeoJSON reader type them).
 
+Partition output directories carry a `.terrio-partition` ownership marker. Overwrite
+requires a matching marker and checks every existing entry before removing the directory;
+unmarked directories must be removed explicitly.
+
 ## info
 
 ```sh

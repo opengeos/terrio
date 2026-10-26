@@ -55,6 +55,15 @@ fn source(py: Python<'_>, src: &Bound<'_, PyAny>, layers: Option<Vec<String>>) -
     Ok((input_layers(py, src, layers)?, d))
 }
 
+fn require_new_output(dst: Option<&str>) -> PyResult<()> {
+    if let Some(path) = dst
+        && std::path::Path::new(path).exists()
+    {
+        return Err(invalid(format!("'{path}' already exists: choose a new output path")));
+    }
+    Ok(())
+}
+
 fn dataset(py: Python<'_>, layers: Vec<terrio::Layer>, driver: Option<VectorDriver>) -> PyResult<PyVectorDataset> {
     PyVectorDataset::new(py, VectorDataset { layers, driver: driver.unwrap_or(VectorDriver::GPKG) })
 }
@@ -97,6 +106,7 @@ fn concat(
     dst_crs: Option<&str>,
     format: Option<&str>,
 ) -> PyResult<PyVectorDataset> {
+    require_new_output(dst)?;
     let mut sources = Vec::with_capacity(srcs.len());
     for (i, s) in srcs.iter().enumerate() {
         let name = path_of(s).unwrap_or_else(|| format!("dataset{i}"));
@@ -229,27 +239,7 @@ fn set_field_type(
         (None, None) => return Err(invalid("give field_name or src_field_type")),
     };
     let (ls, d) = source(py, src, layers)?;
-    let out = with_warnings(py, || {
-        let changed = |l: &terrio::Layer| active_layer.as_ref().is_none_or(|a| &l.name == a);
-        if let Some(a) = &active_layer
-            && !ls.iter().any(|l| &l.name == a)
-        {
-            return Err(terrio::Error::InvalidArgument(format!("cannot find layer '{a}'")));
-        }
-        let first = ls.iter().find(|l| changed(l)).ok_or_else(|| terrio::Error::InvalidArgument("no input vector layer".into()))?;
-        let has = |l: &terrio::Layer, n: &str| l.schema.fields().iter().any(|f| f.name.eq_ignore_ascii_case(n));
-        if let FieldSelector::Name(n) = &selector
-            && !has(first, n)
-        {
-            return Err(terrio::Error::InvalidArgument(format!("cannot find field '{n}' in layer '{}'", first.name)));
-        }
-        ls.iter()
-            .map(|l| {
-                let skip = !changed(l) || matches!(&selector, FieldSelector::Name(n) if !has(l, n));
-                if skip { Ok(l.clone()) } else { vs::set_field_type(l, &selector, to) }
-            })
-            .collect::<terrio::Result<Vec<_>>>()
-    })?;
+    let out = with_warnings(py, || vs::set_field_type_in(&ls, &selector, to, active_layer.as_deref()))?;
     dataset(py, out, d)
 }
 
@@ -377,28 +367,10 @@ fn create_vector(
         }),
         (None, None) => None,
     };
-    let mut created = match doc {
-        Some(d) => d.layers.iter().map(vs::layer_from_schema).collect::<terrio::Result<Vec<_>>>().py()?,
-        None => {
-            let name = output_layer.clone().ok_or_else(|| invalid("give the layer name with output_layer"))?;
-            let mut layer = terrio::Layer::new(name);
-            for spec in fields.unwrap_or_default() {
-                layer.add_field(vs::parse_field_spec(&spec).py()?);
-            }
-            let (t, z, m) = geometry_type.map(vs::parse_geometry_type).transpose().py()?.unwrap_or((None, false, false));
-            layer.geom_type = t;
-            if let Some(c) = srs(crs)? {
-                c.apply_to_layer(&mut layer);
-            }
-            vec![vs::CreatedLayer { layer, spatial: geometry_type.is_some() || crs.is_some(), z, m, fid }]
-        }
-    };
-    if let (Some(name), true) = (&output_layer, schema.is_some() || like.is_some()) {
-        if created.len() != 1 {
-            return Err(invalid("output_layer needs a single template layer: choose one with layers"));
-        }
-        created[0].layer.name = name.clone();
-    }
+    let crs = srs(crs)?;
+    let created =
+        vs::created_layers(doc.as_ref(), output_layer.as_deref(), &fields.unwrap_or_default(), geometry_type, crs.as_ref(), fid.as_deref())
+            .py()?;
     let o = vs::CreateOptions { write: terrio::VectorWriteOptions { driver: driver(format)?, ..Default::default() }, update, overwrite };
     with_warnings(py, || vs::create(&created, dst, &o))
 }
@@ -423,6 +395,9 @@ fn rename_layer(
     max_length: Option<usize>,
     format: Option<&str>,
 ) -> PyResult<PyVectorDataset> {
+    if !in_place {
+        require_new_output(dst)?;
+    }
     use terrio::ops::vector_edit as ve;
     let o = ve::RenameOptions {
         input_layer,
@@ -472,6 +447,9 @@ fn edit_vector(
     unset_fid: bool,
     format: Option<&str>,
 ) -> PyResult<PyVectorDataset> {
+    if !in_place {
+        require_new_output(dst)?;
+    }
     use terrio::ops::vector_edit as ve;
     let o = ve::EditOptions {
         active_layer,

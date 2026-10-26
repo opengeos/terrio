@@ -253,7 +253,7 @@ fn merge(
 
     let first = layers.first();
     let mut out = Layer::new(name);
-    out.geom_type = first.and_then(|l| l.geom_type);
+    out.geom_type = first.and_then(|l| l.geom_type).filter(|t| layers.iter().all(|l| l.geom_type == Some(*t)));
     if let Some(t) = &target {
         t.apply_to_layer(&mut out);
     }
@@ -369,6 +369,15 @@ mod tests {
         assert_eq!(out[0].schema.fields().iter().map(|f| (f.name.as_str(), f.field_type)).collect::<Vec<_>>(), [("id", FieldType::Float)]);
         assert_eq!(out[0].features.iter().map(|f| f.attributes[0].clone()).collect::<Vec<_>>(), [1.0, 2.5, 3.0].map(FieldValue::Float));
         assert!(concat(&sources(), &ConcatOptions { output_layer: Some("x".into()), ..Default::default() }).is_err());
+    }
+
+    #[test]
+    fn mixed_declared_geometry_types_are_not_misreported() {
+        let mut sources = sources();
+        sources[0].layers[0].geom_type = Some(wbvector::GeometryType::Point);
+        sources[0].layers[1].geom_type = Some(wbvector::GeometryType::LineString);
+        let out = concat(&sources, &ConcatOptions { mode: ConcatMode::Single, ..Default::default() }).unwrap();
+        assert_eq!(out[0].geom_type, None);
     }
 
     #[test]

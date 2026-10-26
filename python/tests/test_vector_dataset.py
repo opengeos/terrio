@@ -189,3 +189,17 @@ def test_partition_preserves_source_inside_overwrite_directory(tmp_path):
     with pytest.raises(terrio.InvalidArgumentError, match="contains the input"):
         terrio.partition(path, str(tmp_path), fields=["name"], scheme="flat", overwrite=True)
     assert (tmp_path / "source.gpkg").read_bytes() == before
+
+
+def test_copy_operations_refuse_existing_output(tmp_path):
+    src = points("data", [("x", 1)])
+    dst = tmp_path / "existing.gpkg"
+    dst.write_bytes(b"preserve")
+    for operation in [
+        lambda: terrio.concat([src], str(dst)),
+        lambda: terrio.rename_layer(src, str(dst)),
+        lambda: terrio.edit_vector(src, str(dst)),
+    ]:
+        with pytest.raises(terrio.InvalidArgumentError, match="already exists"):
+            operation()
+        assert dst.read_bytes() == b"preserve"

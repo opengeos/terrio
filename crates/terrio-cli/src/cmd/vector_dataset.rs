@@ -209,27 +209,7 @@ pub fn set_field_type(a: SetFieldTypeArgs) -> Result<()> {
         (None, None) => return Err(Error::InvalidArgument("give --field-name or --src-field-type".into())),
     };
     let layers = a.input.open()?;
-    // The layer the field must be in: the active layer, or the first.
-    let checked = match &a.active_layer {
-        Some(active) => {
-            layers.iter().find(|l| &l.name == active).ok_or_else(|| Error::InvalidArgument(format!("cannot find layer '{active}'")))?
-        }
-        None => layers.first().ok_or_else(|| Error::InvalidArgument("no input vector layer".into()))?,
-    };
-    let has = |l: &terrio::Layer, n: &str| l.schema.fields().iter().any(|f| f.name.eq_ignore_ascii_case(n));
-    if let FieldSelector::Name(n) = &selector
-        && !has(checked, n)
-    {
-        return Err(Error::InvalidArgument(format!("cannot find field '{n}' in layer '{}'", checked.name)));
-    }
-    let layers = layers
-        .iter()
-        .map(|l| {
-            let skip = a.active_layer.as_ref().is_some_and(|active| &l.name != active)
-                || matches!(&selector, FieldSelector::Name(n) if !has(l, n));
-            if skip { Ok(l.clone()) } else { vs::set_field_type(l, &selector, to) }
-        })
-        .collect::<Result<Vec<_>>>()?;
+    let layers = vs::set_field_type_in(&layers, &selector, to, a.active_layer.as_deref())?;
     a.output.write(layers)
 }
 
@@ -355,34 +335,15 @@ pub fn create(a: CreateArgs) -> Result<()> {
         (None, Some(like)) => Some(super::quiet(|| vs::export_schema_path(like, &a.layers))?),
         (None, None) => None,
     };
-    let mut created = match schema {
-        Some(s) => s.layers.iter().map(vs::layer_from_schema).collect::<Result<Vec<_>>>()?,
-        None => {
-            let name = a.output_layer.clone().ok_or_else(|| Error::InvalidArgument("give the layer name with --output-layer".into()))?;
-            let mut layer = terrio::Layer::new(name);
-            for spec in &a.fields {
-                layer.add_field(vs::parse_field_spec(spec)?);
-            }
-            let (t, z, m) = match &a.geometry_type {
-                Some(g) => vs::parse_geometry_type(g)?,
-                None => (None, false, false),
-            };
-            layer.geom_type = t;
-            if let Some(c) = srs(&a.crs)? {
-                c.apply_to_layer(&mut layer);
-            }
-            vec![vs::CreatedLayer { layer, spatial: a.geometry_type.is_some() || a.crs.is_some(), z, m, fid: a.fid.clone() }]
-        }
-    };
-    if created.is_empty() {
-        return Err(Error::InvalidArgument("the template has no layer".into()));
-    }
-    if let (Some(name), true) = (&a.output_layer, a.schema.is_some() || a.like.is_some()) {
-        if created.len() != 1 {
-            return Err(Error::InvalidArgument("--output-layer needs a single template layer: choose one with --layer".into()));
-        }
-        created[0].layer.name = name.clone();
-    }
+    let crs = srs(&a.crs)?;
+    let created = vs::created_layers(
+        schema.as_ref(),
+        a.output_layer.as_deref(),
+        &a.fields,
+        a.geometry_type.as_deref(),
+        crs.as_ref(),
+        a.fid.as_deref(),
+    )?;
     let o = vs::CreateOptions {
         write: terrio::VectorWriteOptions { driver: driver(a.format.as_deref())?, ..Default::default() },
         update: a.update,

@@ -66,6 +66,9 @@ pub struct Partition {
 /// Percent-encodes a name as GDAL encodes partition keys and file names: bytes outside `!` to
 /// DEL, and `:`, `/`, `\`, `>`, `%`, `=`.
 pub fn percent_encode(s: &str) -> String {
+    if matches!(s, "." | "..") {
+        return "%2E".repeat(s.len());
+    }
     let mut out = String::with_capacity(s.len());
     for &c in s.as_bytes() {
         if c > 32 && c <= 127 && !matches!(c, b':' | b'/' | b'\\' | b'>' | b'%' | b'=') {
@@ -402,14 +405,20 @@ pub fn partition_to_dir(
     if !driver.info().write {
         return Err(Error::Unsupported(format!("the {} driver cannot write", driver.name())));
     }
+    let parts = partition(layers, o, driver)?;
     let root = Path::new(dir);
+    let new_root = !root.exists();
+    let marker = root.join(".terrio-partition");
+    let signature = format!("terrio partition {:?} {:?}\n", o.scheme, driver);
     if root.exists() {
         match mode {
             PartitionWriteMode::Create => {
                 return Err(Error::InvalidArgument(format!("'{dir}' already exists: overwrite or append to it")));
             }
             PartitionWriteMode::Overwrite => {
-                if !looks_partitioned(root, o.scheme)? {
+                if std::fs::read_to_string(&marker).ok().as_deref() != Some(signature.as_str())
+                    || !looks_partitioned(root, o.scheme, driver)?
+                {
                     return Err(Error::InvalidArgument(format!(
                         "refusing to remove '{dir}': it does not look like a partitioned dataset; remove it yourself if you are sure"
                     )));
@@ -419,7 +428,6 @@ pub fn partition_to_dir(
             PartitionWriteMode::Append => {}
         }
     }
-    let parts = partition(layers, o, driver)?;
     let mut written = Vec::with_capacity(parts.len());
     // In append mode, part numbers continue those in the directory.
     let mut appended_keys: std::collections::HashMap<String, usize> = Default::default();
@@ -439,6 +447,9 @@ pub fn partition_to_dir(
             crate::ops::vector_filter::WriteMode::Append,
         )?;
         written.push(s);
+    }
+    if new_root || mode == PartitionWriteMode::Overwrite {
+        std::fs::write(marker, signature)?;
     }
     Ok(written)
 }
@@ -490,6 +501,9 @@ fn looks_partitioned(root: &std::path::Path, scheme: PartitionScheme, driver: Ve
         for entry in std::fs::read_dir(path)? {
             let entry = entry?;
             let kind = entry.file_type()?;
+            if depth == 0 && entry.file_name() == ".terrio-partition" && kind.is_file() {
+                continue;
+            }
             if kind.is_dir() && scheme == PartitionScheme::Hive {
                 // The first directory is the layer; subsequent ones are field=value.
                 if (depth > 0 && !entry.file_name().to_string_lossy().contains('='))
@@ -497,7 +511,7 @@ fn looks_partitioned(root: &std::path::Path, scheme: PartitionScheme, driver: Ve
                 {
                     return Ok(false);
                 }
-            } else if kind.is_file() && (scheme == PartitionScheme::Flat || depth >= 2) {
+            } else if kind.is_file() && (scheme == PartitionScheme::Flat || depth >= 1) {
                 let path = entry.path();
                 let accepted = path.extension().and_then(|ext| ext.to_str()).is_some_and(|ext| {
                     ext.eq_ignore_ascii_case(driver_extension(driver))
@@ -624,6 +638,16 @@ mod tests {
         std::fs::write(&notes, "keep me").unwrap();
         assert!(partition_to_dir(&[layer()], root.to_str().unwrap(), &options, &write, PartitionWriteMode::Overwrite).is_err());
         assert_eq!(std::fs::read_to_string(notes).unwrap(), "keep me");
+    }
+
+    #[test]
+    fn limit_only_hive_output_can_be_overwritten() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("parts");
+        let options = PartitionOptions { feature_limit: Some(1), ..Default::default() };
+        let write = crate::VectorWriteOptions { driver: Some(VectorDriver::GPKG), ..Default::default() };
+        partition_to_dir(&[layer()], root.to_str().unwrap(), &options, &write, PartitionWriteMode::Create).unwrap();
+        partition_to_dir(&[layer()], root.to_str().unwrap(), &options, &write, PartitionWriteMode::Overwrite).unwrap();
     }
 
     #[test]

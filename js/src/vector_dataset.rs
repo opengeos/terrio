@@ -154,22 +154,7 @@ pub fn set_field_type(src: JsValue, field_type: &str, options: JsValue) -> Resul
         _ => return Err(invalid("give fieldName or srcFieldType")),
     };
     let (layers, driver) = source(&src)?;
-    let changed = |l: &terrio::Layer| a.active_layer.as_ref().is_none_or(|n| &l.name == n);
-    let first = layers.iter().find(|l| changed(l)).ok_or_else(|| invalid("no layer to change"))?;
-    let has = |l: &terrio::Layer, n: &str| l.schema.fields().iter().any(|f| f.name.eq_ignore_ascii_case(n));
-    if let FieldSelector::Name(n) = &selector
-        && !has(first, n)
-    {
-        return Err(invalid(format!("cannot find field '{n}' in layer '{}'", first.name)));
-    }
-    let out = layers
-        .iter()
-        .map(|l| {
-            let skip = !changed(l) || matches!(&selector, FieldSelector::Name(n) if !has(l, n));
-            if skip { Ok(l.clone()) } else { vs::set_field_type(l, &selector, to) }
-        })
-        .collect::<terrio::Result<Vec<_>>>()
-        .map_err(js_err)?;
+    let out = vs::set_field_type_in(&layers, &selector, to, a.active_layer.as_deref()).map_err(js_err)?;
     Ok(Dataset::from_layers(out, driver.unwrap_or(VectorDriver::GeoJSON)))
 }
 
@@ -253,38 +238,14 @@ pub fn create_vector(filename: &str, options: JsValue) -> Result<Vec<u8>, JsErro
         }
         (None, None) => None,
     };
-    let templated = doc.is_some();
-    let mut created = match doc {
-        Some(mut d) => {
-            if let Some(names) = &a.layers {
-                d.layers.retain(|l| names.contains(&l.name));
-            }
-            d.layers.iter().map(vs::layer_from_schema).collect::<terrio::Result<Vec<_>>>().map_err(js_err)?
-        }
-        None => {
-            let name = a.output_layer.clone().ok_or_else(|| invalid("give outputLayer"))?;
-            let mut layer = terrio::Layer::new(name);
-            for spec in &a.fields {
-                layer.add_field(vs::parse_field_spec(spec).map_err(js_err)?);
-            }
-            let (t, z, m) =
-                a.geometry_type.as_deref().map(vs::parse_geometry_type).transpose().map_err(js_err)?.unwrap_or((None, false, false));
-            layer.geom_type = t;
-            if let Some(c) = srs(a.crs.as_deref())? {
-                c.apply_to_layer(&mut layer);
-            }
-            vec![vs::CreatedLayer { layer, spatial: a.geometry_type.is_some(), z, m, fid: a.fid.clone() }]
-        }
-    };
-    if let (Some(name), true) = (&a.output_layer, templated) {
-        if created.len() != 1 {
-            return Err(invalid("outputLayer needs a single template layer: choose one with layers"));
-        }
-        created[0].layer.name = name.clone();
+    let mut doc = doc;
+    if let (Some(doc), Some(names)) = (&mut doc, &a.layers) {
+        doc.layers.retain(|l| names.contains(&l.name));
     }
-    if created.is_empty() {
-        return Err(invalid("no layer to create"));
-    }
+    let crs = srs(a.crs.as_deref())?;
+    let created =
+        vs::created_layers(doc.as_ref(), a.output_layer.as_deref(), &a.fields, a.geometry_type.as_deref(), crs.as_ref(), a.fid.as_deref())
+            .map_err(js_err)?;
     let driver = a
         .format
         .as_deref()

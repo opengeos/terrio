@@ -580,9 +580,13 @@ def main():
     osr.SetPROJEnableNetwork(False)
     data = args.data
     work = args.work_dir or data / "vector-dataset-validation"
+    marker = work / ".terrio-vector-dataset-validation"
     if work.exists():
+        if any(work.iterdir()) and not marker.is_file():
+            raise ValueError(f"refusing to remove nonempty unmarked work directory: {work}")
         shutil.rmtree(work)
     work.mkdir(parents=True)
+    marker.write_text("Terrio vector dataset conformance scratch directory\n")
     t = args.terrio
     cases = []
 

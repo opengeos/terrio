@@ -557,6 +557,69 @@ pub(crate) fn merge_types(a: OgrType, b: OgrType) -> OgrType {
     })
 }
 
+/// Builds empty layers from a parsed schema or explicit fields with consistent naming rules.
+pub fn created_layers(
+    schema: Option<&OgrSchema>,
+    name: Option<&str>,
+    fields: &[String],
+    geometry: Option<&str>,
+    crs: Option<&SpatialRef>,
+    fid: Option<&str>,
+) -> Result<Vec<CreatedLayer>> {
+    let mut out = match schema {
+        Some(schema) => schema.layers.iter().map(layer_from_schema).collect::<Result<Vec<_>>>()?,
+        None => {
+            let mut layer = Layer::new(name.ok_or_else(|| Error::InvalidArgument("give the output layer name".into()))?);
+            for field in fields {
+                layer.add_field(parse_field_spec(field)?);
+            }
+            let (kind, z, m) = geometry.map(parse_geometry_type).transpose()?.unwrap_or((None, false, false));
+            layer.geom_type = kind;
+            if let Some(crs) = crs {
+                crs.apply_to_layer(&mut layer);
+            }
+            vec![CreatedLayer { layer, spatial: geometry.is_some() || crs.is_some(), z, m, fid: fid.map(str::to_owned) }]
+        }
+    };
+    if out.is_empty() {
+        return Err(Error::InvalidArgument("the template has no layer".into()));
+    }
+    if let (Some(name), Some(_)) = (name, schema) {
+        if out.len() != 1 {
+            return Err(Error::InvalidArgument("output layer naming needs a single template layer: choose one with layers".into()));
+        }
+        out[0].layer.name = name.into();
+    }
+    Ok(out)
+}
+
+/// Converts fields across selected layers, validating the active layer and first target field.
+/// Layers without a named field are retained unchanged after the first target validates.
+pub fn set_field_type_in(layers: &[Layer], selector: &FieldSelector, to: OgrType, active: Option<&str>) -> Result<Vec<Layer>> {
+    let first = match active {
+        Some(name) => {
+            layers.iter().find(|l| l.name == name).ok_or_else(|| Error::InvalidArgument(format!("cannot find layer '{name}'")))?
+        }
+        None => layers.first().ok_or_else(|| Error::InvalidArgument("no input vector layer".into()))?,
+    };
+    let has = |l: &Layer, name: &str| l.schema.fields().iter().any(|f| f.name.eq_ignore_ascii_case(name));
+    if let FieldSelector::Name(name) = selector
+        && !has(first, name)
+    {
+        return Err(Error::InvalidArgument(format!("cannot find field '{name}' in layer '{}'", first.name)));
+    }
+    layers
+        .iter()
+        .map(|l| {
+            if active.is_some_and(|name| l.name != name) || matches!(selector, FieldSelector::Name(name) if !has(l, name)) {
+                Ok(l.clone())
+            } else {
+                set_field_type(l, selector, to)
+            }
+        })
+        .collect()
+}
+
 /// Which fields `set_field_type` changes: one by name, or all of a type.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FieldSelector {
@@ -1088,6 +1151,9 @@ pub fn create(layers: &[CreatedLayer], path: &str, o: &CreateOptions) -> Result<
         }
         if driver != Some(VectorDriver::GPKG) {
             return Err(Error::Unsupported("layers can only be added to an existing GeoPackage".into()));
+        }
+        if layers.iter().any(|c| c.fid.as_deref().is_some_and(|fid| !fid.eq_ignore_ascii_case("fid"))) {
+            crate::warnings::warn("custom FID names are not applied when adding layers to an existing GeoPackage".into());
         }
         return crate::ops::vector_filter::write_vector_with_mode(&plain, path, &o.write, crate::ops::vector_filter::WriteMode::Append);
     }
