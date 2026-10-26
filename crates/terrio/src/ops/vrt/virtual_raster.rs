@@ -1152,8 +1152,7 @@ fn coefficients(k: &xml::Element) -> Result<Vec<f64>> {
     }
     Ok(result)
 }
-// Arithmetic and axis ordering follow GDAL's VRTKernelFilteredSource::FilterData
-// (frmts/vrt/vrtfilters.cpp, MIT; attribution in NOTICE).
+// The arithmetic is shared with `gdal raster neighbors` ([`crate::ops::neighbors`]).
 fn filter(
     input: &[f64],
     width: usize,
@@ -1162,101 +1161,15 @@ fn filter(
     nodata: Option<f64>,
     function: Option<&xml::Element>,
 ) -> Result<Vec<f64>> {
+    use crate::ops::neighbors::{Kernel, NeighborMethod};
     let size = kernel_size(kernel)?;
     let coefs = coefficients(kernel)?;
-    let radius = size / 2;
     let normalized = kernel.attr("normalized").is_some_and(|v| v == "1" || v.eq_ignore_ascii_case("true"));
-    let separable = coefs.len() == size;
-    let mut input = input.iter().map(|v| *v as f32).collect::<Vec<_>>();
-    let nd = nodata.map(|v| v as f32);
-    for axis in 0..if separable { 2 } else { 1 } {
-        let mut output = vec![0f32; input.len()];
-        for y in 0..height {
-            for x in 0..width {
-                let center = input[y * width + x];
-                if nd == Some(center) {
-                    output[y * width + x] = center;
-                    continue;
-                }
-                let (mut sum, mut weight) = (0., 0.);
-                let mut neighbors = Vec::new();
-                for ky in 0..if separable && axis == 1 { 1 } else { size } {
-                    for kx in 0..if separable && axis == 0 { 1 } else { size } {
-                        let c = if separable { coefs[if axis == 0 { ky } else { kx }] } else { coefs[ky * size + kx] };
-                        if c == 0. {
-                            continue;
-                        }
-                        let yy = if separable && axis == 1 {
-                            y
-                        } else {
-                            (y as isize + ky as isize - radius as isize).clamp(0, height as isize - 1) as usize
-                        };
-                        let xx = if separable && axis == 0 {
-                            x
-                        } else {
-                            (x as isize + kx as isize - radius as isize).clamp(0, width as isize - 1) as usize
-                        };
-                        let value = input[yy * width + xx];
-                        if nd.is_some() && (nd == Some(value) || value.is_nan()) {
-                            continue;
-                        }
-                        let value = f64::from(value) * c;
-                        sum += value;
-                        weight += c;
-                        neighbors.push(value);
-                    }
-                }
-                let empty = nodata.unwrap_or(0.);
-                let value = if let Some(f) = function {
-                    neighborhood(f.text.trim(), &mut neighbors, empty)
-                } else if !normalized {
-                    sum
-                } else if neighbors.is_empty() || weight == 0. {
-                    empty
-                } else {
-                    sum / weight
-                };
-                output[y * width + x] = value as f32;
-            }
-        }
-        input = output;
-    }
-    Ok(input.into_iter().map(f64::from).collect())
-}
-fn neighborhood(f: &str, values: &mut [f64], empty: f64) -> f64 {
-    if values.is_empty() {
-        return empty;
-    }
-    match f {
-        "min" => values.iter().copied().fold(f64::MAX, f64::min),
-        "max" => values.iter().copied().fold(-f64::MAX, f64::max),
-        "median" => {
-            values.sort_by(f64::total_cmp);
-            let n = values.len();
-            if n % 2 == 1 { values[n / 2] } else { (values[n / 2 - 1] + values[n / 2]) / 2. }
-        }
-        "stddev" => {
-            let (mut mean, mut m2) = (0., 0.);
-            for (i, v) in values.iter().enumerate() {
-                let delta = v - mean;
-                mean += delta / (i + 1) as f64;
-                m2 += delta * (v - mean);
-            }
-            (m2 / values.len() as f64).sqrt()
-        }
-        "mode" => {
-            let (mut best, mut count) = (values[0], 0);
-            for v in values.iter() {
-                let n = values.iter().filter(|w| *w == v).count();
-                if n > count {
-                    best = *v;
-                    count = n;
-                }
-            }
-            best
-        }
-        _ => empty,
-    }
+    let function = function.map(|f| NeighborMethod::parse(f.text.trim())).transpose()?.and_then(NeighborMethod::function);
+    let k = Kernel { size, coefs, normalized, function };
+    let input = input.iter().map(|v| *v as f32).collect::<Vec<_>>();
+    let out = crate::ops::neighbors::filter(&input, width, height, &k, nodata.map(|v| v as f32));
+    Ok(out.into_iter().map(f64::from).collect())
 }
 fn derived(element: &xml::Element, inputs: &[Vec<f64>], length: usize) -> Result<Vec<f64>> {
     let name = element.child("PixelFunctionType").ok_or_else(|| invalid("missing pixel function"))?.text.trim();
@@ -2040,6 +1953,18 @@ mod tests {
             source("KernelFilteredSource", "<Kernel><Size>2</Size><Coefs>1 1 1 1</Coefs></Kernel>")
         ));
         assert!(VirtualRaster::from_xml(&bad).is_err());
+        // GDAL 3.13.3 rejects these KernelFilteredSource Function names, even
+        // though sum/mean are supported by the separate neighbors operation.
+        for function in ["sum", "mean", "mystery"] {
+            let xml = document(&format!(
+                "<VRTRasterBand>{}</VRTRasterBand>",
+                source(
+                    "KernelFilteredSource",
+                    &format!("<Kernel><Size>3</Size><Coefs>1 1 1 1 1 1 1 1 1</Coefs></Kernel><Function>{function}</Function>")
+                )
+            ));
+            assert!(VirtualRaster::from_xml(&xml).is_err(), "{function}");
+        }
     }
 }
 

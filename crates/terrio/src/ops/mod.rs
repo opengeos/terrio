@@ -8,6 +8,9 @@
 //! [`vector_geom`] simplifies, segmentizes, builds hulls, swaps axes, changes geometry types,
 //! combines and spatially sorts vector features (GDAL's `gdal vector` commands of those names),
 //! with the algorithms of [`simplify`] and [`hull`].
+//! [`neighbors`] computes focal statistics (`gdal raster neighbors`), [`nearblack`] cleans image
+//! collars (`nearblack`, `gdal raster clean-collar`) and [`enhance`] applies lookup-table
+//! contrast enhancement (`gdalenhance`).
 //! [`contour`] generates elevation lines and [`zonal`] summarizes raster bands within polygons.
 //!
 //! ```no_run
@@ -29,6 +32,7 @@
 pub mod calc;
 pub mod contour;
 pub mod dem;
+pub mod enhance;
 pub mod fill_nodata;
 pub mod footprint;
 pub mod gcp;
@@ -37,6 +41,8 @@ pub mod geometry;
 pub mod hull;
 pub mod lineref;
 pub mod mosaic;
+pub mod nearblack;
+pub mod neighbors;
 pub mod overview;
 pub mod pansharpen;
 pub mod polygonize;

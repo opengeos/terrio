@@ -1,5 +1,6 @@
 //! The processing operations, as the command line and Python offer them: `warp`, `translate`,
-//! `rasterize`, `polygonize`, `dem`, `calc`, `mosaic`, `proximity` and `sieve`.
+//! `rasterize`, `polygonize`, `dem`, `calc`, `mosaic`, `proximity`, `sieve`, `neighbors`,
+//! `nearblack`, `cleanCollar` and `enhance`.
 //!
 //! Inputs are `Dataset`s, or the bytes of a file (a `Uint8Array`, or `{ bytes, filename }` when
 //! the format cannot be told from the bytes); vector inputs may also be GeoJSON (an object or a
@@ -1325,4 +1326,191 @@ pub fn sort(src: JsValue, options: JsValue) -> Result<Dataset, JsError> {
     let layers = input_layers(&src)?;
     let out = layers.iter().map(|l| terrio::ops::vector_geom::sort(l, method)).collect();
     Ok(Dataset::from_layers(out, VectorDriver::GeoJSON))
+}
+
+/// Options of [`neighbors`].
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase", default, deny_unknown_fields)]
+struct NeighborsArgs {
+    band: Option<usize>,
+    kernel: OneOrMany,
+    method: OneOrMany,
+    size: Option<usize>,
+    ot: Option<String>,
+}
+
+/// A string or an array of strings.
+#[derive(Deserialize, Default)]
+#[serde(untagged)]
+enum OneOrMany {
+    #[default]
+    None,
+    One(String),
+    Many(Vec<String>),
+}
+
+impl OneOrMany {
+    fn into_vec(self) -> Vec<String> {
+        match self {
+            Self::None => Vec::new(),
+            Self::One(s) => vec![s],
+            Self::Many(v) => v,
+        }
+    }
+}
+
+/// Focal statistics and convolution kernels, as `terrio neighbors` (GDAL's
+/// `gdal raster neighbors`).
+///
+/// Options: `kernel` (required: `"u"`, `"v"`, `"edge1"`, `"edge2"`, `"sharpen"`, `"gaussian"`,
+/// `"unsharp-masking"`, `"equal"` or a matrix `"[[0,1,0],[1,1,1],[0,1,0]]"`, or an array of
+/// them), `method` (`"sum"`, `"mean"`, `"min"`, `"max"`, `"stddev"`, `"median"`, `"mode"`, or
+/// one per kernel), `size`, `band` (every band by default), `ot` (`"Float64"`) and `nodata` (a
+/// number or `"none"`; the input band's by default).
+#[wasm_bindgen]
+pub fn neighbors(src: JsValue, options: JsValue) -> Result<Dataset, JsError> {
+    use terrio::ops::neighbors::{NeighborMethod, NeighborsNodata, NeighborsOptions};
+    let (rest, taken) = split_options(&options, &["nodata"])?;
+    let a: NeighborsArgs = parse_options(&rest)?;
+    let nodata = match &taken[0] {
+        None => NeighborsNodata::Source,
+        Some(v) => match (v.as_string(), v.as_f64()) {
+            (Some(s), _) => NeighborsNodata::parse(&s).map_err(js_err)?,
+            (_, Some(x)) => NeighborsNodata::Value(x),
+            _ => return Err(invalid("nodata is a number or 'none'")),
+        },
+    };
+    let o = NeighborsOptions {
+        band: a.band,
+        kernels: a.kernel.into_vec(),
+        methods: a.method.into_vec().iter().map(|m| NeighborMethod::parse(m)).collect::<terrio::Result<_>>().map_err(js_err)?,
+        size: a.size,
+        output_type: parse_data_type(a.ot.as_deref().unwrap_or("Float64")).map_err(js_err)?,
+        nodata,
+    };
+    let ds = input_raster(&src)?;
+    Ok(Dataset::from_raster(terrio::ops::neighbors::neighbors(&ds, &o).map_err(js_err)?))
+}
+
+/// Options of [`nearblack`] and [`clean_collar`].
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", default, deny_unknown_fields)]
+struct CollarArgs {
+    colors: OneOrMany,
+    white: bool,
+    color_threshold: i32,
+    pixel_distance: i32,
+    add_alpha: bool,
+    add_mask: bool,
+    algorithm: Option<String>,
+}
+
+impl Default for CollarArgs {
+    fn default() -> Self {
+        Self {
+            colors: OneOrMany::None,
+            white: false,
+            color_threshold: 15,
+            pixel_distance: 2,
+            add_alpha: false,
+            add_mask: false,
+            algorithm: None,
+        }
+    }
+}
+
+fn collar(src: JsValue, options: JsValue, clean_collar: bool) -> Result<Dataset, JsError> {
+    use terrio::ops::nearblack::CollarRequest;
+    let a: CollarArgs = parse_options(&options)?;
+    if a.add_mask {
+        return Err(invalid("addMask is not supported in JavaScript, whose Datasets hold no mask: use addAlpha"));
+    }
+    let ds = input_raster(&src)?;
+    let o = CollarRequest {
+        colors: a.colors.into_vec(),
+        white: a.white,
+        near: a.color_threshold,
+        max_non_black: a.pixel_distance,
+        set_alpha: a.add_alpha,
+        set_mask: false,
+        algorithm: a.algorithm,
+        clean_collar,
+    }
+    .resolve(&ds, false)
+    .map_err(js_err)?;
+    Ok(Dataset::from_raster(terrio::ops::nearblack::nearblack(&ds, &o).map_err(js_err)?.dataset))
+}
+
+/// Sets the nearly black (or white) borders of an image to exact black (or white), as
+/// `terrio nearblack` (GDAL's `nearblack`, two scan passes by default).
+///
+/// Options: `colors` (`"black"`, `"white"` or `"r,g,b"` strings), `white`, `colorThreshold`
+/// (15), `pixelDistance` (2), `addAlpha` and `algorithm` (`"twopasses"` or `"floodfill"`).
+/// Masks (`addMask`) are not supported: Datasets hold none.
+#[wasm_bindgen]
+pub fn nearblack(src: JsValue, options: JsValue) -> Result<Dataset, JsError> {
+    collar(src, options, false)
+}
+
+/// Cleans the noisy collar of an image, as `terrio clean-collar` (GDAL's
+/// `gdal raster clean-collar`): a flood fill from the edges by default, an input's last alpha
+/// band kept updated. Options as [`nearblack`]'s.
+#[wasm_bindgen(js_name = cleanCollar)]
+pub fn clean_collar(src: JsValue, options: JsValue) -> Result<Dataset, JsError> {
+    collar(src, options, true)
+}
+
+/// Options of [`enhance`] and [`enhance_luts`].
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", default, deny_unknown_fields)]
+struct EnhanceArgs {
+    equalize: bool,
+    config: Option<String>,
+    src_scale: Option<[f64; 2]>,
+    lut_bins: usize,
+    ot: String,
+}
+
+impl Default for EnhanceArgs {
+    fn default() -> Self {
+        Self { equalize: false, config: None, src_scale: None, lut_bins: 256, ot: "Byte".into() }
+    }
+}
+
+fn enhance_tables(ds: &RasterDataset, a: &EnhanceArgs) -> Result<Vec<terrio::ops::enhance::BandLut>, JsError> {
+    use terrio::ops::enhance as e;
+    match (a.equalize, &a.config, a.src_scale) {
+        (true, None, None) => e::equalization_luts(ds, a.lut_bins).map_err(js_err),
+        (false, Some(text), None) => e::parse_luts(text, ds.band_count(), a.lut_bins).map_err(js_err),
+        (false, None, Some([lo, hi])) => e::linear_luts(ds.band_count(), lo, hi).map_err(js_err),
+        _ => Err(invalid("give one of equalize, config (the LUT file's text) or srcScale")),
+    }
+}
+
+/// Enhances the contrast of a raster with lookup tables, as `terrio enhance` (GDAL's
+/// `gdalenhance`).
+///
+/// Options: `equalize` (histogram equalization), `config` (the text of a LUT file, as
+/// `enhanceLuts` returns it), or `srcScale` (`[min, max]` stretched over the bins); `lutBins`
+/// (256) and `ot` (`"Byte"`).
+#[wasm_bindgen]
+pub fn enhance(src: JsValue, options: JsValue) -> Result<Dataset, JsError> {
+    let a: EnhanceArgs = parse_options(&options)?;
+    let ds = input_raster(&src)?;
+    let tables = enhance_tables(&ds, &a)?;
+    let o = terrio::ops::enhance::EnhanceOptions { bins: a.lut_bins, output_type: parse_data_type(&a.ot).map_err(js_err)? };
+    Ok(Dataset::from_raster(terrio::ops::enhance::enhance(&ds, &tables, &o).map_err(js_err)?))
+}
+
+/// The histogram-equalization tables of a raster, as the text of a `gdalenhance -config` file.
+/// Options: `lutBins` (256).
+#[wasm_bindgen(js_name = enhanceLuts)]
+pub fn enhance_luts(src: JsValue, options: JsValue) -> Result<String, JsError> {
+    let mut a: EnhanceArgs = parse_options(&options)?;
+    if a.config.is_some() {
+        return Err(invalid("enhanceLuts only computes equalization tables; config is not accepted"));
+    }
+    a.equalize = true;
+    let ds = input_raster(&src)?;
+    Ok(terrio::ops::enhance::format_luts(&enhance_tables(&ds, &a)?))
 }

@@ -209,6 +209,26 @@ Inputs can be datasets or raster bytes. All spectral inputs contribute to intens
 `bands` selects/reorders output bands. See [pansharpen](cli.md#pansharpen) for working
 types, interpolation, nodata, bit depth and extent handling.
 
+## Focal statistics, collars and enhancement
+
+```javascript
+const max5 = terrio.neighbors(dem, { kernel: "equal", size: 5, method: "max" });
+const edges = terrio.neighbors(image, { kernel: ["gaussian", "edge2"], band: 2, ot: "Float32" });
+const clean = terrio.cleanCollar(scene, { addAlpha: true });          // flood fill
+const nb = terrio.nearblack(scene, { colors: ["0,0,0", "255,255,255"], pixelDistance: 0 });
+const lut = terrio.enhanceLuts(image, {});                            // gdalenhance's LUT file text
+const eq = terrio.enhance(image, { equalize: true });
+const again = terrio.enhance(image, { config: lut });
+```
+
+`nearblack` and `cleanCollar` accept `colors` as a single string or an array of strings.
+
+These are `terrio neighbors`, `clean-collar`, `nearblack` and `enhance` (see
+[neighbors](cli.md#neighbors), [clean-collar](cli.md#clean-collar-and-nearblack) and
+[enhance](cli.md#enhance)), on rasters in memory. Datasets hold no mask: `addMask` is refused,
+and an input's mask is not kept (use `addAlpha`). There is no in-place update; LUT files are
+passed and returned as text.
+
 ## SQL queries
 
 `sql(src, query)` returns a `Dataset` using the shared [OGR SQL subset](sql.md).

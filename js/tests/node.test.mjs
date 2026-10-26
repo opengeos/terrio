@@ -652,6 +652,57 @@ function sameRaster(got, refPath, { tol = 0, nodata = true } = {}) {
   }
 }
 
+test("neighbors, collar cleaning and LUT enhancement", () => {
+  const values = new Float32Array([1, 2, 3, 4, -1, 6, 7, 8, 9]);
+  const dem = terrio.rasterFromArray(values, 3, 3, [0, 1, 0, 3, 0, -1], "EPSG:32610", -1);
+  const mean = terrio.neighbors(dem, { kernel: "equal" });
+  assert.equal(mean.dtype, "float64");
+  assert.equal(mean.readBand(1)[4], -1);
+  assert.deepEqual([...terrio.neighbors(dem, { kernel: "equal", nodata: " -9999 " }).readBand(1)],
+    [...terrio.neighbors(dem, { kernel: "equal", nodata: -9999 }).readBand(1)]);
+  assert.throws(() => terrio.neighbors(dem, { kernel: "equal", nodata: "invalid" }), /invalid nodata/);
+  assert.equal(mean.readBand(1)[0], (1 + 1 + 2 + 1 + 1 + 2 + 4 + 4) / 8);
+  const two = terrio.neighbors(dem, { kernel: ["equal", "u"], method: ["max", "sum"], ot: "Float32", nodata: "none" });
+  assert.equal(two.count, 2);
+  assert.equal(two.readBand(1)[0], 4);
+  assert.throws(() => terrio.neighbors(dem, { kernel: "sharpen", size: 5 }), /size 5/);
+
+  // A dark, noisy collar around a bright middle.
+  const img = new Uint8Array(8 * 6).map((_, i) => {
+    const [x, y] = [i % 8, Math.floor(i / 8)];
+    return x > 0 && x < 7 && y > 0 && y < 5 ? 150 + x : (x + y) % 5;
+  });
+  const scene = terrio.rasterFromArray(img, 8, 6, [0, 1, 0, 6, 0, -1], "EPSG:32610");
+  const clean = terrio.cleanCollar(scene, { addAlpha: true, pixelDistance: 0 });
+  assert.equal(clean.count, 2);
+  assert.equal(clean.readBand(1)[0], 0);
+  assert.equal(clean.readBand(2)[0], 0);
+  assert.equal(clean.readBand(2)[9], 255);
+  assert.equal(terrio.nearblack(scene, { colors: ["0"], colorThreshold: 4, pixelDistance: 0 }).readBand(1)[9], 151);
+  assert.equal(terrio.nearblack(scene, { colors: "0", colorThreshold: 4, pixelDistance: 0 }).readBand(1)[9], 151);
+  assert.throws(() => terrio.nearblack(scene, { addMask: true }), /addMask/);
+
+  const lut = terrio.enhanceLuts(scene, {});
+  assert.throws(() => terrio.enhanceLuts(scene, { config: lut }), /only computes equalization tables/);
+  assert.ok(lut.startsWith("1:Band -0.5:ScaleMin 255.5:ScaleMax "));
+  const eq = terrio.enhance(scene, { equalize: true });
+  assert.deepEqual([...terrio.enhance(scene, { config: lut }).readBand(1)], [...eq.readBand(1)]);
+  assert.deepEqual([...terrio.enhance(scene, { srcScale: [0, 256] }).readBand(1)], [...img]);
+  assert.throws(() => terrio.enhance(scene, {}), /equalize/);
+  assert.throws(() => terrio.cleanCollar(scene, { white: true, colors: "0" }), /exclusive/);
+  for (const [nodata, expected] of [[-9999, 241], [300, 44], [Infinity, 0]]) {
+    const source = terrio.rasterFromArray(new Float64Array([nodata, 128]), 2, 1,
+      [0, 1, 0, 1, 0, -1], "EPSG:32610", nodata);
+    assert.deepEqual([...terrio.enhance(source, { srcScale: [0, 256] }).readBand(1)], [expected, 128]);
+  }
+  const nodata = 1.0000000001;
+  const source = terrio.rasterFromArray(new Float64Array([nodata, 1]), 2, 1,
+    [0, 1, 0, 1, 0, -1], "EPSG:32610", nodata);
+  const precise = terrio.enhance(source, { srcScale: [0, 256], ot: "Float64" });
+  assert.equal(precise.nodata, nodata);
+  assert.deepEqual([...precise.readBand(1)], [nodata, 1]);
+});
+
 test("operations on in-memory rasters and layers", () => {
   const data = new Float32Array(20 * 10).map((_, i) => (i % 20) * 10 + Math.floor(i / 20));
   const dem = terrio.rasterFromArray(data, 20, 10, [500000, 30, 0, 4100000, 0, -30], "EPSG:32610", -9999);
