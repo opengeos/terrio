@@ -740,3 +740,55 @@ fn local_copy_and_sync_preserve_unix_colons_and_backslashes() {
         }
     }
 }
+
+#[cfg(remote)]
+#[test]
+fn native_cloud_depth_walk_keeps_space_prefixes_raw() {
+    use std::io::{BufRead, BufReader};
+    for azure in [false, true] {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            let mut requests = Vec::new();
+            for (i, stream) in listener.incoming().take(2).enumerate() {
+                let mut stream = stream.unwrap();
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                requests.push(line.clone());
+                loop {
+                    line.clear();
+                    reader.read_line(&mut line).unwrap();
+                    if line == "\r\n" || line.is_empty() {
+                        break;
+                    }
+                }
+                let body = match (azure, i) {
+                    (false, 0) => "<ListBucketResult><CommonPrefixes><Prefix>root/a b/</Prefix></CommonPrefixes></ListBucketResult>",
+                    (false, _) => "<ListBucketResult><Contents><Key>root/a b/x.tif</Key><Size>7</Size></Contents></ListBucketResult>",
+                    (true, 0) => "<EnumerationResults><Blobs><BlobPrefix><Name>root/a b/</Name></BlobPrefix></Blobs></EnumerationResults>",
+                    (true, _) => {
+                        "<EnumerationResults><Blobs><Blob><Name>root/a b/x.tif</Name><Properties><Content-Length>7</Content-Length></Properties></Blob></Blobs></EnumerationResults>"
+                    }
+                };
+                write!(stream, "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+            }
+            requests
+        });
+        let api = if azure {
+            listing::Api::Azure { base, prefix: "root/".into(), sas: "sig=example".into() }
+        } else {
+            listing::Api::Url { base, prefix: "root/".into() }
+        };
+        let entries = remote_read_dir_api(api, 2).unwrap();
+        assert_eq!(names(&entries), ["a b", "a b/x.tif"]);
+        let requests = server.join().unwrap();
+        assert_eq!(requests.len(), 2);
+        assert!(requests[1].contains("prefix=root%2Fa%20b%2F"), "{}", requests[1]);
+        assert!(!requests[1].contains("%2520"));
+        assert!(requests.iter().all(|request| request.contains("delimiter=")));
+        if azure {
+            assert!(requests.iter().all(|request| request.contains("sig=example")));
+        }
+    }
+}

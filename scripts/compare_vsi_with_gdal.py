@@ -407,12 +407,14 @@ def s3_cases(terrio: str, source: Path, work: Path) -> None:
     compare_trees("S3 download of a tree", work / "s3down_terrio", work / "s3down_gdal")
     # Sync twice: the second copies nothing.
     for name, (tool, e) in tools.items():
-        run(tool + ["sync", "-r", "-q", f"{source}/", f"/vsis3/{name}/synced"], e)
+        first = run(tool + ["sync", "-r", "-q", f"{source}/", f"/vsis3/{name}/synced"], e)
         store.log.clear()
-        run(tool + ["sync", "-r", "-q", f"{source}/", f"/vsis3/{name}/synced"], e)
+        second = run(tool + ["sync", "-r", "-q", f"{source}/", f"/vsis3/{name}/synced"], e)
+        counts[f"{name} sync succeeded"] = first.returncode == second.returncode == 0
         counts[f"{name} resync"] = sum(1 for l in store.log if l.startswith("PUT"))
     a, b = keys("terrio", "synced/"), keys("gdal", "synced/")
-    record("S3 sync (timestamp), then again", a == b and counts["terrio resync"] == counts["gdal resync"] == 0,
+    record("S3 sync (timestamp), then again", a == b and bool(a) and counts["terrio sync succeeded"] and counts["gdal sync succeeded"]
+           and counts["terrio resync"] == counts["gdal resync"] == 0,
            f"{len(a)} objects identical; uploads on the second run: terrio {counts['terrio resync']}, GDAL {counts['gdal resync']}")
     # Bounded deletion: data/ goes, data2/ and dirkeep stay.
     for name, (tool, e) in tools.items():
@@ -444,10 +446,30 @@ def s3_cases(terrio: str, source: Path, work: Path) -> None:
     record("S3 recursive delete preserves coexisting exact object", a == b
            and "coexisting" in a and "coexisting/child.tif" not in a
            and "coexisting2/keep.tif" in a, "exact object and neighboring prefix retained")
+    # GDAL refuses -r on a lone object: no directory prefix exists to delete.
+    refused_files = []
+    for name, (tool, e) in tools.items():
+        store.objects[f"{name}/single_file"] = (b"keep exact object", 0)
+        result = run(tool + ["delete", "-r", f"/vsis3/{name}/single_file"], e)
+        refused_files.append(result.returncode != 0 and "single_file" in keys(name))
+    record("S3 recursive delete refuses a lone exact object", all(refused_files),
+           "both commands fail and retain the exact object when no directory children exist")
     # Refusals.
     p = run([terrio, "vsi", "delete", "-r", "/vsis3/terrio"], env)
     record("S3 whole-bucket delete refused", p.returncode != 0 and "dirkeep" in keys("terrio"), (p.stderr.strip() or "accepted")[-200:])
     server.shutdown()
+    server.server_close()
+
+
+def record_zip_transfer(process):
+    """Every requested transfer measurement produces a success or failure result."""
+    match = re.search(r"(\d+) HTTP request\(s\), (\d+) byte", process.stderr)
+    if process.returncode or not match:
+        record("remote zip listing transfer", False,
+               "listing failed or did not report HTTP request/byte statistics")
+    else:
+        record("remote zip listing transfer", int(match.group(2)) < 100_000,
+               f"terrio: {match.group(1)} requests, {match.group(2)} bytes of a 4,930,492-byte archive", tolerance=True)
 
 
 def main() -> int:
@@ -509,10 +531,7 @@ def main() -> int:
             url = "https://naciscdn.org/naturalearth/10m/cultural/ne_10m_admin_0_countries.zip"
             compare_listing("remote zip archive (Natural Earth, 4.9 MB)", terrio, f"/vsizip//vsicurl/{url}")
             p = run([terrio, "vsi", "list", "--stats", f"/vsizip//vsicurl/{url}"])
-            m = re.search(r"(\d+) HTTP request\(s\), (\d+) byte", p.stderr)
-            if m:
-                record("remote zip listing transfer", int(m.group(2)) < 100_000,
-                       f"terrio: {m.group(1)} requests, {m.group(2)} bytes of a 4,930,492-byte archive", tolerance=True)
+            record_zip_transfer(p)
     if args.json:
         print(json.dumps(RESULTS, indent=1))
     else:

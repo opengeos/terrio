@@ -845,7 +845,7 @@ Safety: `delete` and `move` refuse an empty path, a file system root, the home d
 current directory or one of its parents, the root of `/vsimem/`, a whole bucket or container,
 and archive and HTTP locations. Recursive deletion never follows symbolic links (the links are
 deleted), checks that every directory it enters is below the path given, and on object stores
-deletes only the keys below `prefix/` (not `prefix2/...`). Like GDAL 3.13.3, recursive object-store deletion preserves an exact object named `prefix`, even when it coexists with `prefix/` children; delete that exact object without `-r`. `copy`, `sync` and `move` refuse to
+deletes only the keys below `prefix/` (not `prefix2/...`). Like GDAL 3.13.3, recursive object-store deletion preserves an exact object named `prefix`, even when it coexists with `prefix/` children; delete that exact object without `-r`. Recursive deletion of a lone object fails because there is no directory prefix to remove. `copy`, `sync` and `move` refuse to
 copy a directory into itself.
 
 `-q` prints nothing, `--json` prints what was done (`copied`, `bytes`, `unchanged`, `deleted`,

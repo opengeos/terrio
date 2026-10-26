@@ -123,6 +123,18 @@ impl Api {
         !matches!(self, Api::Html { .. })
     }
 
+    /// Descends using the raw XML key, encoding it only when making the query.
+    pub(crate) fn child_prefix(&self, child: &str) -> Result<Self> {
+        let mut api = self.clone();
+        match &mut api {
+            Api::S3 { prefix, .. } | Api::Url { prefix, .. } | Api::Azure { prefix, .. } => {
+                *prefix = format!("{}{}/", prefix, child.trim_end_matches('/'));
+            }
+            Api::Html { .. } => return Err(Error::Unsupported("not an object-store listing".into())),
+        }
+        Ok(api)
+    }
+
     /// The query of a listing request (`ListObjectsV2` or List Blobs), from a continuation token,
     /// asking for at most `max` entries a page. Its parameters are in sorted order, as SigV4's
     /// canonical query has them.
@@ -392,7 +404,7 @@ pub(crate) fn parse_iso8601(s: &str) -> Option<i64> {
     if s.len() < 19 {
         return None;
     }
-    Some(crate::civil_time::unix_seconds(num(0, 4)?, num(5, 7)?, num(8, 10)?, num(11, 13)?, num(14, 16)?, num(17, 19)?))
+    crate::civil_time::checked_unix_seconds(num(0, 4)?, num(5, 7)?, num(8, 10)?, num(11, 13)?, num(14, 16)?, num(17, 19)?)
 }
 
 /// Seconds since the epoch of an HTTP date (`Mon, 01 Jan 2024 01:42:27 GMT`).
@@ -534,13 +546,7 @@ impl RemoteLister {
                     continue;
                 }
                 if entry.dir && self.object_level < self.max_depth {
-                    let mut child = self.api.clone();
-                    match &mut child {
-                        Api::S3 { prefix, .. } | Api::Url { prefix, .. } | Api::Azure { prefix, .. } => {
-                            *prefix = format!("{}{}/", prefix, entry.name.trim_end_matches('/'));
-                        }
-                        Api::Html { .. } => unreachable!("handled above"),
-                    }
+                    let child = self.api.child_prefix(&entry.name)?;
                     self.object_pending.push((child, name.clone(), self.object_level + 1));
                 }
                 self.index.insert((name.clone(), entry.dir), self.out.len());
@@ -675,29 +681,29 @@ mod tests {
             let azure = root.contains("blob.core");
             assert!(l.next_url().unwrap().contains("delimiter="));
             let page = if azure {
-                b"<EnumerationResults><BlobPrefix><Name>dir/sub/</Name></BlobPrefix><NextMarker>next</NextMarker></EnumerationResults>"
+                b"<EnumerationResults><BlobPrefix><Name>dir/a b/</Name></BlobPrefix><NextMarker>next</NextMarker></EnumerationResults>"
                     .as_slice()
             } else {
-                b"<ListBucketResult><CommonPrefixes><Prefix>dir/sub/</Prefix></CommonPrefixes><IsTruncated>true</IsTruncated><NextContinuationToken>next</NextContinuationToken></ListBucketResult>".as_slice()
+                b"<ListBucketResult><CommonPrefixes><Prefix>dir/a b/</Prefix></CommonPrefixes><IsTruncated>true</IsTruncated><NextContinuationToken>next</NextContinuationToken></ListBucketResult>".as_slice()
             };
             l.feed(200, page).unwrap();
             let second = l.next_url().unwrap();
             assert!(second.contains("delimiter=") && second.contains("next"));
             l.feed(200, if azure { b"<EnumerationResults/>" } else { b"<ListBucketResult/>" }).unwrap();
             let child = l.next_url().unwrap();
-            assert!(child.contains("prefix=dir%2Fsub%2F") && child.contains("delimiter="), "{child}");
+            assert!(child.contains("prefix=dir%2Fa%20b%2F") && child.contains("delimiter="), "{child}");
             if azure {
                 assert!(child.contains("sig=example"));
             }
             let child_page = if azure {
-                b"<EnumerationResults><Blob><Name>dir/sub/a.txt</Name><Properties><Content-Length>1</Content-Length></Properties></Blob><BlobPrefix><Name>dir/sub/deeper/</Name></BlobPrefix></EnumerationResults>".as_slice()
+                b"<EnumerationResults><Blob><Name>dir/a b/a.txt</Name><Properties><Content-Length>1</Content-Length></Properties></Blob><BlobPrefix><Name>dir/a b/deeper/</Name></BlobPrefix></EnumerationResults>".as_slice()
             } else {
-                b"<ListBucketResult><Contents><Key>dir/sub/a.txt</Key><Size>1</Size></Contents><CommonPrefixes><Prefix>dir/sub/deeper/</Prefix></CommonPrefixes></ListBucketResult>".as_slice()
+                b"<ListBucketResult><Contents><Key>dir/a b/a.txt</Key><Size>1</Size></Contents><CommonPrefixes><Prefix>dir/a b/deeper/</Prefix></CommonPrefixes></ListBucketResult>".as_slice()
             };
             l.feed(200, child_page).unwrap();
             assert_eq!(l.next_url(), None);
             let names: Vec<_> = l.finish().into_iter().map(|e| e.name).collect();
-            assert_eq!(names, ["sub", "sub/a.txt", "sub/deeper"]);
+            assert_eq!(names, ["a b", "a b/a.txt", "a b/deeper"]);
         }
     }
 
@@ -729,6 +735,10 @@ mod tests {
         assert_eq!(parse_iso8601("1970-01-01T00:00:00Z"), Some(0));
         assert_eq!(parse_http_date("Thu, 01 Jan 1970 00:01:00 GMT"), Some(60));
         assert_eq!(parse_iso8601("garbage"), None);
+        for value in ["2024-13-01T00:00:00Z", "2024-02-31T00:00:00Z", "2023-02-29T00:00:00Z", "2024-01-01T24:00:00Z"] {
+            assert_eq!(parse_iso8601(value), None, "{value}");
+        }
+        assert!(parse_iso8601("2024-02-29T00:00:00Z").is_some());
         for value in [
             "Mon, 99999999999999 Jan 2024 01:00:00 GMT",
             "Mon, 01 Jan 9223372036854775807 01:00:00 GMT",

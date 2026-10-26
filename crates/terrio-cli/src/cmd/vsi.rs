@@ -2,7 +2,7 @@
 //! `gdal vsi`).
 
 use terrio::Error;
-use terrio::vsi::{self, CopyOptions, Entry, ListOptions, Report, SyncOptions};
+use terrio::vsi::{self, CopyOptions, ListOptions, Report, SyncOptions};
 
 #[derive(clap::Args)]
 pub struct Args {
@@ -159,103 +159,19 @@ fn list(a: ListArgs) -> terrio::Result<()> {
     if !json && !a.format.eq_ignore_ascii_case("text") {
         return Err(Error::InvalidArgument(format!("unknown output format '{}' (text or json)", a.format)));
     }
-    let entries = vsi::list(
-        &a.path,
-        &ListOptions { recursive: a.recursive, depth: a.depth, absolute: a.absolute && !(json && a.tree), details: a.long },
-    )?;
+    let options = ListOptions { recursive: a.recursive, depth: a.depth, absolute: a.absolute, details: a.long };
     if json {
-        let value = if a.tree {
-            let absolute = if a.absolute {
-                let mut absolute = entries.clone();
-                for e in &mut absolute {
-                    // A single-file listing already names its input path.
-                    let name = if entries.len() == 1 && !e.is_dir() && e.name == a.path { "" } else { &e.name };
-                    e.name = vsi::absolute_entry_name(&a.path, name)?;
-                }
-                Some(absolute)
-            } else {
-                None
-            };
-            tree_json(&entries, a.long, absolute.as_deref())
-        } else {
-            serde_json::Value::Array(entries.iter().map(|e| entry_json(e, &e.name, a.long)).collect())
-        };
+        let value = vsi::list_json(&a.path, &options, a.tree)?;
         println!("{}", serde_json::to_string_pretty(&value).map_err(|e| Error::InvalidArgument(e.to_string()))?);
     } else {
-        for e in &entries {
-            println!("{}", if a.long { e.long_line() } else { e.name.clone() });
+        for e in vsi::list(&a.path, &options)? {
+            println!("{}", if a.long { e.long_line() } else { e.name });
         }
     }
     if a.stats {
         print_stats();
     }
     Ok(())
-}
-
-/// An entry as GDAL's JSON prints it: its name alone, or with -l an object.
-fn entry_json(e: &Entry, name: &str, long: bool) -> serde_json::Value {
-    if !long {
-        return serde_json::Value::String(name.to_string());
-    }
-    let mut o = serde_json::Map::new();
-    o.insert("name".into(), name.into());
-    o.insert("type".into(), (if e.is_dir() { "directory" } else { "file" }).into());
-    if let Some(s) = e.size {
-        o.insert("size".into(), s.into());
-    }
-    if let Some(m) = e.modified_string() {
-        o.insert("last_modification_date".into(), m.into());
-    }
-    if let Some(p) = &e.permissions {
-        o.insert("permissions".into(), p.clone().into());
-    }
-    if let Some(t) = &e.etag {
-        o.insert("etag".into(), t.clone().into());
-    }
-    serde_json::Value::Object(o)
-}
-
-/// Entries nested by directory, as `gdal vsi list --tree -f json` prints them.
-fn tree_json(entries: &[Entry], long: bool, absolute: Option<&[Entry]>) -> serde_json::Value {
-    if entries.len() == 1 && !entries[0].is_dir() {
-        let e = absolute.map_or(&entries[0], |a| &a[0]);
-        return vec![entry_json(e, &e.name, long)].into();
-    }
-    let mut index: std::collections::HashMap<&str, Vec<usize>> = Default::default();
-    for (i, e) in entries.iter().enumerate() {
-        let parent = e.name.rsplit_once('/').map_or("", |(parent, _)| parent);
-        index.entry(parent).or_default().push(i);
-    }
-    fn children(
-        entries: &[Entry],
-        parent: &str,
-        long: bool,
-        absolute: Option<&[Entry]>,
-        index: &std::collections::HashMap<&str, Vec<usize>>,
-    ) -> Vec<serde_json::Value> {
-        let mut out = Vec::new();
-        for &i in index.get(parent).into_iter().flatten() {
-            let e = &entries[i];
-            let rel = e.name.rsplit('/').next().unwrap_or(&e.name);
-            let shown = absolute.map_or(rel, |a| a[i].name.as_str());
-            if e.is_dir() {
-                let mut o = match entry_json(e, shown, true) {
-                    serde_json::Value::Object(o) if long => o,
-                    _ => {
-                        let mut o = serde_json::Map::new();
-                        o.insert("name".into(), shown.into());
-                        o
-                    }
-                };
-                o.insert("entries".into(), children(entries, &e.name, long, absolute, index).into());
-                out.push(serde_json::Value::Object(o));
-            } else {
-                out.push(entry_json(e, shown, long));
-            }
-        }
-        out
-    }
-    children(entries, "", long, absolute, &index).into()
 }
 
 fn report(args: &ReportArgs, r: &Report) -> terrio::Result<()> {

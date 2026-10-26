@@ -412,13 +412,36 @@ fn refuses_dangerous_local_targets() {
 fn bounded_depth_uses_delimiter_listings_only() {
     let (endpoint, store) = serve();
     let tmp = tempfile::tempdir().unwrap();
-    for name in ["bkt/root/a/file.txt", "bkt/root/b/c/deep.txt"] {
+    for name in ["bkt/root/a/file.txt", "bkt/root/b/c/deep.txt", "bkt/root/c d/file.txt"] {
         store.lock().unwrap().objects.insert(name.into(), (b"data".to_vec(), 1));
     }
     let listed = ok(&endpoint, tmp.path(), &["vsi", "list", "-R", "--depth", "2", "s3://bkt/root"]);
-    assert_eq!(listed.lines().collect::<Vec<_>>(), ["a", "a/file.txt", "b", "b/c"]);
+    assert_eq!(listed.lines().collect::<Vec<_>>(), ["a", "a/file.txt", "b", "b/c", "c d", "c d/file.txt"]);
     let store = store.lock().unwrap();
     let requests: Vec<_> = store.log.iter().filter(|line| line.contains("list-type")).collect();
     assert!(!requests.is_empty());
     assert!(requests.iter().all(|line| line.contains("delimiter")), "{requests:?}");
+}
+
+#[test]
+fn signed_file_tree_names_and_recursive_single_object_refusal() {
+    let (endpoint, store) = serve();
+    let tmp = tempfile::tempdir().unwrap();
+    store.lock().unwrap().objects.insert("bkt/file".into(), (b"file bytes".to_vec(), 1));
+    let url = format!("{endpoint}/bkt/file?sig=PRIVATE_TEST_SIGNATURE");
+    let output = ok(&endpoint, tmp.path(), &["vsi", "list", &url, "--tree", "--abs", "-l", "-f", "json"]);
+    let value: serde_json::Value = serde_json::from_str(&output).unwrap();
+    assert_eq!(value[0]["name"], format!("{endpoint}/bkt/file?<redacted>"));
+    assert!(!output.contains("PRIVATE_TEST_SIGNATURE"));
+    let refused = terrio(&endpoint, tmp.path(), &["vsi", "delete", "-r", "s3://bkt/file"]);
+    assert!(!refused.status.success());
+    assert!(store.lock().unwrap().objects.contains_key("bkt/file"));
+    let deleted = ok(&endpoint, tmp.path(), &["vsi", "delete", "--json", "s3://bkt/file"]);
+    assert_eq!(serde_json::from_str::<serde_json::Value>(&deleted).unwrap()["deleted"], 1);
+    assert!(!store.lock().unwrap().objects.contains_key("bkt/file"));
+
+    std::fs::create_dir(tmp.path().join("same")).unwrap();
+    std::fs::write(tmp.path().join("same/same"), "child").unwrap();
+    let one = ok(&endpoint, tmp.path(), &["vsi", "list", "same", "--tree", "--abs", "-f", "json"]);
+    assert_eq!(serde_json::from_str::<serde_json::Value>(&one).unwrap()[0], tmp.path().join("same/same").to_str().unwrap());
 }

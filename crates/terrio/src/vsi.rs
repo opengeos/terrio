@@ -658,32 +658,7 @@ fn remote_read_dir(node: &Node, max_depth: usize) -> Result<Vec<Entry>> {
         etag: e.etag,
     };
     if store::is_object_store(&dir) {
-        let list_level = |node: &Node, recursive| -> Result<Vec<store::ObjectEntry>> {
-            store::list_objects(&node.directory().ok_or_else(|| Error::InvalidArgument("not remote".into()))?, recursive)?.ok_or_else(
-                || {
-                    Error::Unsupported(format!(
-                        "'{}': the store refused to list it (not public, or credentials missing)",
-                        display_node(node)
-                    ))
-                },
-            )
-        };
-        if max_depth == usize::MAX {
-            // A full recursive listing is most efficient as one paged prefix scan.
-            return Ok(list_level(node, true)?.into_iter().map(to_entry).collect());
-        }
-        let mut out = Vec::new();
-        let mut pending = vec![(node.clone(), String::new(), 1usize)];
-        while let Some((directory, relative, level)) = pending.pop() {
-            for entry in list_level(&directory, false)? {
-                let name = join_key(&relative, &entry.name);
-                if entry.dir && level < max_depth {
-                    pending.push((directory.join(&entry.name), name.clone(), level + 1));
-                }
-                out.push(to_entry(store::ObjectEntry { name, ..entry }));
-            }
-        }
-        return Ok(out);
+        return remote_read_dir_api(store::listing_api(&dir), max_depth);
     }
     // A plain HTTP server: one index page per directory.
     let Node::Url { base, query } = node else { unreachable!("S3 is an object store") };
@@ -703,6 +678,30 @@ fn remote_read_dir(node: &Node, max_depth: usize) -> Result<Vec<Entry>> {
                 pending.push((format!("{url}/{}", e.name), name.clone(), level + 1));
             }
             out.push(to_entry(store::ObjectEntry { name, ..e }));
+        }
+    }
+    Ok(out)
+}
+
+/// Native finite-depth traversal retains raw object-store prefixes between pages.
+#[cfg(remote)]
+fn remote_read_dir_api(api: listing::Api, max_depth: usize) -> Result<Vec<Entry>> {
+    let list_level = |api: &listing::Api, recursive| -> Result<Vec<listing::ObjectEntry>> {
+        crate::http::store::list_objects(api, recursive)?
+            .ok_or_else(|| Error::Unsupported("the store refused to list this directory".into()))
+    };
+    if max_depth == usize::MAX {
+        return Ok(list_level(&api, true)?.into_iter().map(listing::ObjectEntry::into_entry).collect());
+    }
+    let mut out = Vec::new();
+    let mut pending = vec![(api, String::new(), 1usize)];
+    while let Some((api, relative, level)) = pending.pop() {
+        for entry in list_level(&api, false)? {
+            let name = join_key(&relative, &entry.name);
+            if entry.dir && level < max_depth {
+                pending.push((api.child_prefix(&entry.name)?, name.clone(), level + 1));
+            }
+            out.push(listing::ObjectEntry { name, ..entry }.into_entry());
         }
     }
     Ok(out)
@@ -1272,12 +1271,16 @@ fn is_within(inner: &Node, outer: &Node) -> bool {
 /// Lists a directory (its entries, named relative to it), or describes a file (one entry named
 /// as given), as `gdal vsi list` does.
 pub fn list(path: &str, options: &ListOptions) -> Result<Vec<Entry>> {
+    list_inner(path, options).map(|(_, entries)| entries)
+}
+
+fn list_inner(path: &str, options: &ListOptions) -> Result<(bool, Vec<Entry>)> {
     let _cache = HtmlCacheScope::new();
     let node = Node::parse(path)?;
     let stat = stat_node(&node)?.ok_or_else(|| not_found(path))?;
     if !stat.dir {
         let name = if options.absolute { absolute_name(path, &node, "") } else { listing::redact_url(path.trim()).into_owned() };
-        return Ok(vec![stat.entry(name)]);
+        return Ok((true, vec![stat.entry(name)]));
     }
     let mut entries = read_dir(&node, options.recursive, options.depth)?;
     forget_html_page();
@@ -1301,7 +1304,95 @@ pub fn list(path: &str, options: &ListOptions) -> Result<Vec<Entry>> {
             e.name = absolute_name(path, &node, &e.name);
         }
     }
-    Ok(entries)
+    Ok((false, entries))
+}
+
+/// Lists a location in GDAL-compatible JSON, flat or nested, with optional details.
+/// Absolute tree names are resolved from the listing's file/directory context,
+/// without reopening entries or joining redacted URLs as relative names.
+pub fn list_json(path: &str, options: &ListOptions, tree: bool) -> Result<serde_json::Value> {
+    let read_options = ListOptions { absolute: options.absolute && !tree, ..options.clone() };
+    let (single_file, entries) = list_inner(path, &read_options)?;
+    if !tree {
+        return Ok(serde_json::Value::Array(entries.iter().map(|e| entry_json(e, &e.name, options.details)).collect()));
+    }
+    let absolute = if options.absolute {
+        let node = Node::parse(path)?;
+        let mut absolute = entries.clone();
+        for e in &mut absolute {
+            e.name = absolute_name(path, &node, if single_file { "" } else { &e.name });
+        }
+        Some(absolute)
+    } else {
+        None
+    };
+    Ok(tree_json(&entries, options.details, absolute.as_deref()))
+}
+
+/// An entry as GDAL's JSON prints it: its name alone, or with -l an object.
+fn entry_json(e: &Entry, name: &str, long: bool) -> serde_json::Value {
+    if !long {
+        return serde_json::Value::String(name.to_string());
+    }
+    let mut o = serde_json::Map::new();
+    o.insert("name".into(), name.into());
+    o.insert("type".into(), (if e.is_dir() { "directory" } else { "file" }).into());
+    if let Some(s) = e.size {
+        o.insert("size".into(), s.into());
+    }
+    if let Some(m) = e.modified_string() {
+        o.insert("last_modification_date".into(), m.into());
+    }
+    if let Some(p) = &e.permissions {
+        o.insert("permissions".into(), p.clone().into());
+    }
+    if let Some(t) = &e.etag {
+        o.insert("etag".into(), t.clone().into());
+    }
+    serde_json::Value::Object(o)
+}
+
+/// Entries nested by directory, as `gdal vsi list --tree -f json` prints them.
+fn tree_json(entries: &[Entry], long: bool, absolute: Option<&[Entry]>) -> serde_json::Value {
+    if entries.len() == 1 && !entries[0].is_dir() {
+        let e = absolute.map_or(&entries[0], |a| &a[0]);
+        return vec![entry_json(e, &e.name, long)].into();
+    }
+    let mut index: std::collections::HashMap<&str, Vec<usize>> = Default::default();
+    for (i, e) in entries.iter().enumerate() {
+        let parent = e.name.rsplit_once('/').map_or("", |(parent, _)| parent);
+        index.entry(parent).or_default().push(i);
+    }
+    fn children(
+        entries: &[Entry],
+        parent: &str,
+        long: bool,
+        absolute: Option<&[Entry]>,
+        index: &std::collections::HashMap<&str, Vec<usize>>,
+    ) -> Vec<serde_json::Value> {
+        let mut out = Vec::new();
+        for &i in index.get(parent).into_iter().flatten() {
+            let e = &entries[i];
+            let rel = e.name.rsplit('/').next().unwrap_or(&e.name);
+            let shown = absolute.map_or(rel, |a| a[i].name.as_str());
+            if e.is_dir() {
+                let mut o = match long.then(|| entry_json(e, shown, true)) {
+                    Some(serde_json::Value::Object(o)) => o,
+                    _ => {
+                        let mut o = serde_json::Map::new();
+                        o.insert("name".into(), shown.into());
+                        o
+                    }
+                };
+                o.insert("entries".into(), children(entries, &e.name, long, absolute, index).into());
+                out.push(serde_json::Value::Object(o));
+            } else {
+                out.push(entry_json(e, shown, long));
+            }
+        }
+        out
+    }
+    children(entries, "", long, absolute, &index).into()
 }
 
 /// Resolves a relative listing entry against its source path without opening the entry.
@@ -1772,6 +1863,11 @@ pub fn delete(path: &str, recursive: bool) -> Result<Report> {
     }
     // Every file below `path/`, never a sibling sharing its name as a prefix.
     let entries = read_dir(&node, true, None)?;
+    if !stat.dir && entries.is_empty() {
+        return Err(Error::InvalidArgument(
+            "recursive deletion found no directory entries; delete the exact object without the recursive option".into(),
+        ));
+    }
     for e in &entries {
         if !e.is_dir() {
             delete_file(&node.join(&e.name))?;

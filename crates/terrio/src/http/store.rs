@@ -31,7 +31,7 @@ pub(crate) struct ObjectStat {
 }
 
 /// How `dir` is listed.
-fn listing_api(dir: &Directory) -> Api {
+pub(crate) fn listing_api(dir: &Directory) -> Api {
     match dir {
         Directory::S3 { bucket, prefix } => {
             let prefix = if prefix.is_empty() { String::new() } else { format!("{}/", prefix.trim_end_matches('/')) };
@@ -44,14 +44,6 @@ fn listing_api(dir: &Directory) -> Api {
 /// Whether `dir` is in a store with a listing API (S3, Google Cloud Storage, Azure).
 pub(crate) fn is_object_store(dir: &Directory) -> bool {
     listing_api(dir).is_object_store()
-}
-
-/// The entries below a directory of an object store: one level down (objects and common prefixes),
-/// or with `recursive` every object below it, with the "directories" their keys imply. `None`
-/// when the store cannot list (a plain HTTP server), or refuses to (a bucket whose listing is not
-/// public). Names are relative to the directory.
-pub(crate) fn list_objects(dir: &Directory, recursive: bool) -> Result<Option<Vec<ObjectEntry>>> {
-    list_pages(dir, recursive, None, false)
 }
 
 /// Capped read-only discovery retains its historical warn-and-partial behavior.
@@ -68,7 +60,19 @@ pub(crate) fn has_entries(dir: &Directory) -> Result<Option<bool>> {
 
 /// [`list_objects`]; with `max`, only the first page, of at most `max` entries.
 fn list_pages(dir: &Directory, recursive: bool, max: Option<u32>, allow_partial: bool) -> Result<Option<Vec<ObjectEntry>>> {
-    let api = listing_api(dir);
+    list_pages_api(listing_api(dir), recursive, max, allow_partial)
+}
+
+/// The entries below a directory of an object store: one level down (objects and common prefixes),
+/// or with `recursive` every object below it, with the "directories" their keys imply. `None`
+/// when the store cannot list (a plain HTTP server), or refuses to (a bucket whose listing is not
+/// public). Names are relative to the directory.
+/// The API prefix is a raw object key, encoded only in the request query.
+pub(crate) fn list_objects(api: &Api, recursive: bool) -> Result<Option<Vec<ObjectEntry>>> {
+    list_pages_api(api.clone(), recursive, None, false)
+}
+
+fn list_pages_api(api: Api, recursive: bool, max: Option<u32>, allow_partial: bool) -> Result<Option<Vec<ObjectEntry>>> {
     if !api.is_object_store() {
         return Ok(None);
     }
