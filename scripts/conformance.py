@@ -950,6 +950,10 @@ PROJ_CASES = {
         "cass_matches_proj": "Cassini-Soldner: `+proj=cass +lat_0=48 +lon_0=10` (WGS 84 and sphere) and `+hyperbolic`",
     },
     "proj_strings": {
+        "earth_wkt2_negative_axes_match_gdal": (
+            "Earth WKT2 west/south geographic axes", TOLERANCE,
+            "GDAL 3.12.2/PROJ 9.8.1 traditional GIS order: forward/inverse within 1e-12 degrees for west/south, south/west and north/east controls",
+        ),
         "earth_meridian_and_inverse_values_match_proj": (
             "Earth meridian series and inverse normalization", TOLERANCE,
             "nine pinned GDAL 3.12.2/PROJ 9.8.1 points: UTM 10N, equidistant conic and sinusoidal; forward <1 micrometre, inverse <1e-11 degrees",

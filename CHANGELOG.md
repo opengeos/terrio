@@ -17,3 +17,8 @@
   is no `PROJ_IGNORE_CELESTIAL_BODY` override in Rust, CLI/MCP, Python or
   JavaScript. Use a CRS on the correct body; changes of arbitrary coordinate
   units should use the applicable CRS unit parameters.
+- Geographic WKT2 definitions with west- or south-positive axes now preserve
+  those directions and their declared order, including Earth CRSs. They were
+  previously treated as ordinary east/north coordinates. This matches GDAL's
+  traditional GIS axis strategy; ordinary north/east Earth axes still use
+  longitude, latitude order.

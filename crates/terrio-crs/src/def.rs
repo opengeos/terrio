@@ -223,6 +223,13 @@ impl Def {
                 return Err(Error::Crs("Earth datum operations cannot be applied to an IAU planetary CRS".into()));
             }
             self.body = Some(entry.body);
+            // Both effective definitions exactly match immutable registry data.
+            // Avoid reparsing the datum and rebuilding the base on repeated setup.
+            if s.wkt.as_deref() == Some(entry.wkt.as_str()) && s.proj4.as_deref() == Some(entry.proj.as_str()) {
+                self.iau_datum = Some(entry.datum);
+                self.ocentric = entry.geographic && entry.ocentric;
+                return Ok(());
+            }
             // A CRS identifier must not override an edited datum definition.
             let datum_node = |w: &str| {
                 let root = super::wkt1::parse(w)?;
@@ -237,9 +244,6 @@ impl Def {
                 && s.proj4.as_deref().is_none_or(|p| p == entry.proj)
             {
                 self.iau_datum = Some(entry.datum);
-            }
-            if s.wkt.as_deref() == Some(entry.wkt.as_str()) && s.proj4.as_deref() == Some(entry.proj.as_str()) {
-                self.ocentric = entry.geographic && entry.ocentric;
             }
         }
         Ok(())
@@ -257,7 +261,10 @@ impl Def {
         if (a.is_some() && b.is_some() && a != b)
             || ((a.is_none() || b.is_none()) && (self.ell.a - other.ell.a).abs() > 0.007 * other.ell.a)
         {
-            return Err(Error::Crs("source and target ellipsoids do not belong to the same celestial body".into()));
+            return Err(Error::Crs(format!(
+                "source and target ellipsoids do not belong to the same celestial body (source semi-major axis {} m, target {} m)",
+                self.ell.a, other.ell.a
+            )));
         }
         if (a != Some(399) && (self.datum.is_some() || !self.ops.is_empty()))
             || (b != Some(399) && (other.datum.is_some() || !other.ops.is_empty()))
