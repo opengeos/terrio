@@ -472,8 +472,10 @@ WebAssembly (the `terrio-js` npm package):
 - [x] Geocentric Cartesian XYZ endpoints, EPSG/PROJ/WKT definitions, datum and
       projected composition, and Rust/CLI/MCP/Python/JavaScript/WASM validation
       against pinned and live GDAL/PROJ references (#269, #286).
-- PROJJSON, IAU and additional projection capabilities remain scoped separately
-  in #270–#272.
+- [x] PROJJSON v0.7 parsing for static 2D geographic, projected and bound CRSs,
+      including units, GIS axis normalization and explicit Helmert operations.
+      Rust/CLI/MCP/Python/JavaScript/WASM validation is tracked in #270.
+- IAU and additional projection capabilities remain scoped separately in #271–#272.
 
 ## Decisions
 

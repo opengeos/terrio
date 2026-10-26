@@ -1,0 +1,142 @@
+{
+  "revision": "ddd9fac70ec370acd9651ebb8b46035207347ad5",
+  "environment": {
+    "schema_version": 1,
+    "generated": "2026-10-15T23:26:19+00:00",
+    "proj_version": "9.9.0",
+    "projinfo_banner": "Rel. 9.9.0, September 15th, 2026",
+    "pyproj_version": "3.8.0",
+    "proj_data": "/work/.proj-nogrids",
+    "proj_data_files": [
+      "CH",
+      "GL27",
+      "ITRF2000",
+      "ITRF2008",
+      "ITRF2014",
+      "ITRF2020",
+      "deformation_model.schema.json",
+      "nad.lst",
+      "nad27",
+      "nad83",
+      "other.extra",
+      "proj.db",
+      "proj.ini",
+      "projjson.schema.json",
+      "triangulation.schema.json",
+      "world"
+    ],
+    "grid_files_present": [],
+    "network_enabled": false,
+    "epsg_version": "v13.102",
+    "epsg_date": "2026-08-27",
+    "esri_version": "ArcGIS Pro 3.6",
+    "grid_configuration": "no proj-data grids (proj.db, proj.ini and init files only), network off",
+    "axis_order": "always_xy=True: oracle normalised for visualisation (east, north)"
+  },
+  "fixture": {
+    "id": "form-27700-projjson",
+    "group": "form",
+    "src": "OGC:CRS84",
+    "dst": "{\"$schema\":\"https://proj.org/schemas/v0.7/projjson.schema.json\",\"type\":\"ProjectedCRS\",\"name\":\"OSGB36 / British National Grid\",\"base_crs\":{\"type\":\"GeographicCRS\",\"name\":\"OSGB36\",\"datum\":{\"type\":\"GeodeticReferenceFrame\",\"name\":\"Ordnance Survey of Great Britain 1936\",\"ellipsoid\":{\"name\":\"Airy 1830\",\"semi_major_axis\":6377563.396,\"inverse_flattening\":299.3249646}},\"coordinate_system\":{\"subtype\":\"ellipsoidal\",\"axis\":[{\"name\":\"Geodetic latitude\",\"abbreviation\":\"Lat\",\"direction\":\"north\",\"unit\":\"degree\"},{\"name\":\"Geodetic longitude\",\"abbreviation\":\"Lon\",\"direction\":\"east\",\"unit\":\"degree\"}]},\"id\":{\"authority\":\"EPSG\",\"code\":4277}},\"conversion\":{\"name\":\"British National Grid\",\"method\":{\"name\":\"Transverse Mercator\",\"id\":{\"authority\":\"EPSG\",\"code\":9807}},\"parameters\":[{\"name\":\"Latitude of natural origin\",\"value\":49,\"unit\":\"degree\",\"id\":{\"authority\":\"EPSG\",\"code\":8801}},{\"name\":\"Longitude of natural origin\",\"value\":-2,\"unit\":\"degree\",\"id\":{\"authority\":\"EPSG\",\"code\":8802}},{\"name\":\"Scale factor at natural origin\",\"value\":0.9996012717,\"unit\":\"unity\",\"id\":{\"authority\":\"EPSG\",\"code\":8805}},{\"name\":\"False easting\",\"value\":400000,\"unit\":\"metre\",\"id\":{\"authority\":\"EPSG\",\"code\":8806}},{\"name\":\"False northing\",\"value\":-100000,\"unit\":\"metre\",\"id\":{\"authority\":\"EPSG\",\"code\":8807}}]},\"coordinate_system\":{\"subtype\":\"Cartesian\",\"axis\":[{\"name\":\"Easting\",\"abbreviation\":\"E\",\"direction\":\"east\",\"unit\":\"metre\"},{\"name\":\"Northing\",\"abbreviation\":\"N\",\"direction\":\"north\",\"unit\":\"metre\"}]},\"scope\":\"Engineering survey, topographic mapping.\",\"area\":\"United Kingdom (UK) - offshore to boundary of UKCS within 49\u00b045'N to 61\u00b0N and 9\u00b0W to 2\u00b0E; onshore Great Britain (England, Wales and Scotland). Isle of Man onshore.\",\"bbox\":{\"south_latitude\":49.75,\"west_longitude\":-9.01,\"north_latitude\":61.01,\"east_longitude\":2.01},\"id\":{\"authority\":\"EPSG\",\"code\":27700}}",
+    "form": "projjson",
+    "point": [
+      -1.5,
+      52.5
+    ],
+    "layers": [
+      "I4"
+    ],
+    "compare_to": "form-27700-epsg",
+    "src_ref": "OGC:CRS84",
+    "dst_ref": "@export:EPSG:27700:PROJJSON",
+    "oracle": {
+      "resolved": true,
+      "src_name": "WGS 84 (CRS84)",
+      "dst_name": "OSGB36 / British National Grid",
+      "src_kind": "geographic",
+      "dst_kind": "projected",
+      "src_unit": "degree",
+      "src_unit_factor": 0.017453292519943295,
+      "dst_unit": "metre",
+      "dst_unit_factor": 1.0,
+      "src_export": {
+        "proj": "+proj=longlat +datum=WGS84 +no_defs +type=crs",
+        "proj_error": null,
+        "proj_bound": "+proj=longlat +datum=WGS84 +no_defs +type=crs",
+        "proj_bound_error": null,
+        "wkt1_gdal_bound": "GEOGCS[\"WGS 84 (CRS84)\",DATUM[\"WGS_1984\",SPHEROID[\"WGS 84\",6378137,298.257223563,AUTHORITY[\"EPSG\",\"7030\"]],AUTHORITY[\"EPSG\",\"6326\"]],PRIMEM[\"Greenwich\",0,AUTHORITY[\"EPSG\",\"8901\"]],UNIT[\"degree\",0.0174532925199433,AUTHORITY[\"EPSG\",\"9122\"]],AUTHORITY[\"OGC\",\"CRS84\"]]"
+      },
+      "dst_export": {
+        "proj": "+proj=tmerc +lat_0=49 +lon_0=-2 +k=0.9996012717 +x_0=400000 +y_0=-100000 +ellps=airy +units=m +no_defs +type=crs",
+        "proj_error": null,
+        "proj_bound": "+proj=tmerc +lat_0=49 +lon_0=-2 +k=0.9996012717 +x_0=400000 +y_0=-100000 +ellps=airy +units=m +no_defs +type=crs",
+        "proj_bound_error": null,
+        "wkt1_gdal_bound": "PROJCS[\"OSGB36 / British National Grid\",GEOGCS[\"OSGB36\",DATUM[\"Ordnance_Survey_of_Great_Britain_1936\",SPHEROID[\"Airy 1830\",6377563.396,299.3249646]],PRIMEM[\"Greenwich\",0,AUTHORITY[\"EPSG\",\"8901\"]],UNIT[\"degree\",0.0174532925199433,AUTHORITY[\"EPSG\",\"9122\"]],AUTHORITY[\"EPSG\",\"4277\"]],PROJECTION[\"Transverse_Mercator\"],PARAMETER[\"latitude_of_origin\",49],PARAMETER[\"central_meridian\",-2],PARAMETER[\"scale_factor\",0.9996012717],PARAMETER[\"false_easting\",400000],PARAMETER[\"false_northing\",-100000],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH],AUTHORITY[\"EPSG\",\"27700\"]]"
+      },
+      "point": [
+        -1.5,
+        52.5
+      ],
+      "candidates": [
+        {
+          "name": "axis order change (2D) + Inverse of OSGB36 to WGS 84 (6) + British National Grid",
+          "accuracy": 2.0,
+          "available": true
+        },
+        {
+          "name": "axis order change (2D) + Inverse of OSGB36 to WGS 84 (1) + British National Grid",
+          "accuracy": 21.0,
+          "available": true
+        },
+        {
+          "name": "axis order change (2D) + Inverse of OSGB36 to WGS 84 (2) + British National Grid",
+          "accuracy": 10.0,
+          "available": true
+        },
+        {
+          "name": "axis order change (2D) + Inverse of OSGB36 to WGS 84 (3) + British National Grid",
+          "accuracy": 21.0,
+          "available": true
+        },
+        {
+          "name": "axis order change (2D) + Inverse of OSGB36 to WGS 84 (4) + British National Grid",
+          "accuracy": 18.0,
+          "available": true
+        },
+        {
+          "name": "axis order change (2D) + Inverse of OSGB36 to WGS 84 (5) + British National Grid",
+          "accuracy": 35.0,
+          "available": true
+        },
+        {
+          "name": "axis order change (2D) + Inverse of OSGB36 to WGS 84 (9) + British National Grid",
+          "accuracy": 1.0,
+          "available": false
+        }
+      ],
+      "best_available": false,
+      "transformer": "unavailable until proj_trans is called",
+      "executed": true,
+      "fwd": [
+        434039.4572860588,
+        289239.2810926733
+      ],
+      "op": {
+        "name": "axis order change (2D) + Inverse of OSGB36 to WGS 84 (6) + British National Grid",
+        "accuracy": 2.0,
+        "ballpark": false,
+        "proj": "+proj=pipeline +step +proj=unitconvert +xy_in=deg +xy_out=rad +step +proj=push +v_3 +step +proj=cart +ellps=WGS84 +step +inv +proj=helmert +x=446.448 +y=-125.157 +z=542.06 +rx=0.15 +ry=0.247 +rz=0.842 +s=-20.489 +convention=position_vector +step +inv +proj=cart +ellps=airy +step +proj=pop +v_3 +step +proj=tmerc +lat_0=49 +lon_0=-2 +k=0.9996012717 +x_0=400000 +y_0=-100000 +ellps=airy"
+      },
+      "inv": [
+        -1.4999999876496841,
+        52.49999999619332
+      ],
+      "inv_op": {
+        "name": "axis order change (2D) + Inverse of OSGB36 to WGS 84 (6) + British National Grid",
+        "accuracy": 2.0,
+        "ballpark": false,
+        "proj": "+proj=pipeline +step +proj=unitconvert +xy_in=deg +xy_out=rad +step +proj=push +v_3 +step +proj=cart +ellps=WGS84 +step +inv +proj=helmert +x=446.448 +y=-125.157 +z=542.06 +rx=0.15 +ry=0.247 +rz=0.842 +s=-20.489 +convention=position_vector +step +inv +proj=cart +ellps=airy +step +proj=pop +v_3 +step +proj=tmerc +lat_0=49 +lon_0=-2 +k=0.9996012717 +x_0=400000 +y_0=-100000 +ellps=airy"
+      }
+    }
+  }
+}

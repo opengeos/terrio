@@ -53,6 +53,7 @@ mod grid;
 mod math;
 mod params;
 mod projections;
+mod projjson;
 mod rotation;
 mod route;
 mod wkt1;
@@ -327,9 +328,15 @@ impl SpatialRef {
         Ok(Self { wkt: proj_to_wkt(proj4), proj4: Some(proj4.to_string()), ..Default::default() })
     }
 
+    /// Parses the supported PROJJSON v0.7 geographic, projected or bound CRS subset.
+    /// Unsupported coordinate systems, datum models and operations return errors.
+    pub fn from_projjson(text: &str) -> Result<Self> {
+        projjson::parse(text)
+    }
+
     /// Parses a user-supplied CRS: `EPSG:4326`, `4326`, `urn:ogc:def:crs:EPSG::4326`, an OGC URL,
     /// `OGC:CRS84`, `WGS84`, `ESRI:54009` (or `urn:ogc:def:crs:ESRI::54009`), a WKT definition,
-    /// a PROJ string, or the path of a file holding one of these (such as a shapefile's `.prj`).
+    /// a PROJ/PROJJSON string, or the path of a file holding one of these (such as a shapefile's `.prj`).
     pub fn parse(s: &str) -> Result<Self> {
         let s = s.trim();
         if s.is_empty() {
@@ -343,6 +350,9 @@ impl SpatialRef {
         }
         if s.starts_with('+') {
             return Self::from_proj4(s);
+        }
+        if s.starts_with('{') {
+            return Self::from_projjson(s);
         }
         // `EPSG:4326+5773`: a horizontal and a vertical CRS.
         if let Some(rest) = upper.strip_prefix("EPSG:")

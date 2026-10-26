@@ -16,6 +16,7 @@ Everywhere a CRS is expected (`--t-srs`, `--a-srs`, `terrio crs`, the APIs), ter
 - WKT1 and WKT2 (2015 and 2019) definitions, including ESRI `.prj` WKT and WKT2 `BOUNDCRS`s
   (a CRS with its transformation to WGS 84, as `+towgs84`); an unknown WKT2 projection method
   or parameter is an error rather than ignored;
+- PROJJSON v0.7 definitions in the [supported object subset](#projjson-definitions);
 - PROJ strings: `+proj=utm +zone=13 +datum=WGS84`, with `+nadgrids=` and `+geoidgrids=` for
   datum shift and geoid grids;
 - the path of a file holding one of these.
@@ -100,8 +101,7 @@ its existing coverage. Bundled tables use portable `ruzstd` decompression on all
 targets. TIFF grid codecs retain their previous features, including native Zstd.
 The [dependency and build measurements](crs-footprint.md) record both standalone
 configurations and full Terrio before/after extraction. Extraction and validation are tracked in
-[#268](https://github.com/opengeos/terrio/issues/268). The new crate does not add
-geocentric, PROJJSON, IAU or additional projection support by itself.
+[#268](https://github.com/opengeos/terrio/issues/268). Capability additions are tracked separately in #269–#272.
 
 ### Publication and release workflow
 
@@ -390,3 +390,56 @@ One reference discrepancy is explicit: PROJ 9.8.1's CRS factory skips a declared
 that declared shift. Those two composition cases are compared with the declared
 Helmert operation run as an explicit GDAL pipeline, recorded in
 `geocentric_reference.json`, rather than certifying a lost datum transformation.
+
+## PROJJSON definitions
+
+The shared parser accepts serialized [PROJJSON v0.7](https://proj.org/schemas/v0.7/projjson.schema.json)
+objects and files containing them. `SpatialRef::from_projjson` is also available
+in both Rust crates. Python and JavaScript CRS arguments accept JSON strings;
+serialize a language object with `json.dumps` or `JSON.stringify`.
+
+| Object | Supported subset |
+|---|---|
+| `GeographicCRS`, `GeodeticCRS` | Two-dimensional ellipsoidal coordinates on a static geodetic reference frame or datum ensemble; longitude/latitude in GIS order |
+| `ProjectedCRS` | A supported geographic base and WKT2 projection conversion, two Cartesian axes, including north-first and west/south orientations |
+| `BoundCRS` | A geographic/projected source, a Greenwich WGS 84 geographic target, and a complete three- or seven-parameter Helmert transformation, identified by EPSG codes or standard names |
+
+Geographic axes must span east and north; projected axes may use west and south.
+Both axes need the same explicit unit. Standard unit strings include `metre`,
+`degree`, `radian`, `grad`, `unity`, `arc-second` and `parts per million`.
+Other units use a `LinearUnit`, `AngularUnit` or `ScaleUnit` object with a finite,
+positive `conversion_factor`, such as the US survey foot in PROJ's exports.
+Ellipsoid axis/radius quantities and prime-meridian longitude quantities are
+converted using their declared units. Projection and Helmert parameters require
+explicit units of the appropriate kind, using the shared WKT2 parameter
+catalogue. Duplicate parameter identities and contradictory known names/IDs
+are refused. Zero Helmert parameters retain the
+conversion between different ellipsoids.
+
+```sh
+terrio crs OGC:CRS84 --to british-grid.projjson -1.5 52.5
+```
+
+```python
+import json
+x, y = terrio.transform_points(lons, lats, "EPSG:4326", json.dumps(definition))
+```
+
+```js
+const [x, y] = terrio.transformPoints(lons, lats, "EPSG:4326", JSON.stringify(definition));
+```
+
+The supplied conversion parameters are retained even when the root object has
+an authority ID. IDs identify component methods, parameters and datums; they do
+not replace the complete definition with a registry lookup. The resulting CRS
+stores WKT2 and does not assign a root EPSG/ESRI code merely from an ID. Descriptive
+usage fields (`scope`, `area`, `bbox`, `usages`, `remarks`) are accepted without
+affecting coordinates.
+
+This is a reader for the documented subset, rather than a general JSON Schema
+validator or PROJJSON serializer. Unsupported semantic members and object types
+are errors: dynamic/derived/compound/vertical CRSs, Cartesian geocentric or 3D
+PROJJSON, polar axis meridians, grid/deformation operations and nested bound
+sources are not supported.
+Geocentric and 3D CRSs remain available through EPSG, PROJ and WKT definitions.
+This prevents silent loss of datum, axis, unit or operation information.

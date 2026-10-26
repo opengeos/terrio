@@ -82,9 +82,9 @@ are derived, through PROJ's database, from Esri's projection engine documentatio
 The authalic-q calculation in src/math.rs follows src/latitudes.cpp from PROJ 9.9,
 under PROJ's MIT terms reproduced above.
 
-Geocentric benchmark reference data
----------------------------------
-The pair-4979-4978 numeric fixture is from Michael Sumner's rust-proj-capability
+CRS benchmark reference data
+----------------------------
+The pair-4979-4978 and form-27700-projjson numeric fixtures are from Michael Sumner's rust-proj-capability
 (https://github.com/mdsumner/rust-proj-capability), revision
 ddd9fac70ec370acd9651ebb8b46035207347ad5, generated with PROJ 9.9.0.
 The CRS-study oracle version is retained separately from projection-suite data.

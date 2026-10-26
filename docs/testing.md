@@ -461,3 +461,38 @@ CARGO_TARGET_WASM32_WASIP1_RUNNER=wasmtime cargo test -p terrio \
   --target wasm32-wasip1 --no-default-features --features tiles --test pmtiles_limits
 cargo check -p terrio --target wasm32-unknown-unknown --no-default-features --features tiles
 ```
+
+## PROJJSON parsing (#270)
+
+`projjson_benchmark.json` retains `form-27700-projjson` from rust-proj-capability
+revision `ddd9fac70ec370acd9651ebb8b46035207347ad5`, including its CRS-study
+PROJ 9.9.0 / pyproj 3.8.0 no-grid oracle. The source is OGC:CRS84 at longitude
+-1.5, latitude 52.5; the target is the complete British National Grid PROJJSON.
+This reference is independent of the projections-suite nightly oracle.
+
+`projjson_reference.json` freezes 18 cases / 40 points with GDAL 3.12.2 /
+PROJ 9.8.1. Geographic/projected/ensemble and bound definitions are tested with
+and without IDs, including US survey feet, north-first and west/south projected
+axes, Paris prime meridian/grads and zero/three/seven-parameter Helmert cases.
+Equivalent GDAL-exported WKT2 definitions and representable PROJ strings are
+also compared with those coordinates. The tests isolate grid search paths for
+the no-grid reference. Component
+allowances are 1 mm projected and 1e-8 degrees geographic; nonzero discrepancies
+are reported as within tolerance rather than identical.
+
+```sh
+cargo test -p terrio-crs --test projjson
+CARGO_TARGET_WASM32_WASIP1_RUNNER=wasmtime cargo test -p terrio-crs \
+  --target wasm32-wasip1 --test projjson
+cargo test -p terrio-cli --test mcp projjson
+python -m pytest python/tests/test_projjson.py
+node --test --test-name-pattern='PROJJSON CRS' js/tests/node.test.mjs
+python scripts/conformance.py ../terrio-data --only projjson --strict
+```
+
+The live comparison sends full JSON definitions through the CLI and GDAL,
+normalizing both to traditional GIS coordinate order. It also imports and validates
+Terrio-exported WKT with GDAL, then compares its transformed coordinates with
+the original JSON definitions. Rust regressions also
+check file loading, malformed/unsupported definitions, wrong units/dimensions,
+and that a root authority ID cannot overwrite a caller's false easting.

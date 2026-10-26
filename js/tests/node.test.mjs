@@ -1461,3 +1461,14 @@ test("Shapefile ZIP writes point, line and polygon with scalar attributes and nu
   assert.throws(() => point("https://example.org/" + "a".repeat(254)).toBytes("p.shp.zip"), /254 UTF-8 bytes/);
   assert.throws(() => point("é".repeat(128)).toBytes("p.shp.zip"), /254 UTF-8 bytes/);
 });
+
+test("PROJJSON CRS definitions match GDAL in traditional GIS order", () => {
+  const reference = JSON.parse(readFileSync(new URL("../../crates/terrio-crs/tests/data/projjson_reference.json", import.meta.url)));
+  for (const c of reference.cases) {
+    const actual = terrio.transformPoints(c.points.map(p => p[0]), c.points.map(p => p[1]), JSON.stringify(c.src), JSON.stringify(c.dst));
+    for (let i = 0; i < c.points.length; i++) {
+      for (let axis = 0; axis < 2; axis++) assert.ok(Math.abs(actual[axis][i] - c.expected[i][axis]) <= c.tolerance[axis], `${c.name}, point ${i}, axis ${axis}`);
+    }
+  }
+  assert.throws(() => terrio.describeCrs('{"type":"VerticalCRS","name":"unsupported"}'), /PROJJSON/);
+});

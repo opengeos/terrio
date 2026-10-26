@@ -193,3 +193,20 @@ fn geocentric_xyz_is_available_to_mcp() {
         assert!((actual - expected).abs() < 0.001);
     }
 }
+
+#[test]
+fn projjson_definitions_are_available_through_cli_and_mcp() {
+    let reference: Value = serde_json::from_str(include_str!("../../terrio-crs/tests/data/projjson_reference.json")).unwrap();
+    let case = reference["cases"].as_array().unwrap().iter().find(|c| c["name"] == "Web Mercator with IDs").unwrap();
+    let source = case["src"].to_string();
+    let target = case["dst"].to_string();
+    let replies = session(&[call(1, "crs", &[&source, "--to", &target, "12", "45"])]);
+    let result = &replies[&1]["result"];
+    assert_eq!(result["isError"], false, "{result}");
+    let coordinates: Vec<f64> =
+        result["content"][0]["text"].as_str().unwrap().lines().next().unwrap().split_whitespace().map(|s| s.parse().unwrap()).collect();
+    assert_eq!(coordinates.len(), 2);
+    for (axis, value) in coordinates.iter().enumerate() {
+        assert!((value - case["expected"][1][axis].as_f64().unwrap()).abs() < 0.001);
+    }
+}

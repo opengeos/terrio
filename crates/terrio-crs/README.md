@@ -1,7 +1,7 @@
 # terrio-crs
 
 Coordinate reference systems and transformations, extracted from Terrio.
-The crate includes EPSG and ESRI definitions, WKT/PROJ parsing, datum operation
+The crate includes EPSG and ESRI definitions, WKT/PROJ parsing, the documented PROJJSON v0.7 subset, datum operation
 selection, coordinate epochs, and local or in-memory datum grids. Coordinates
 use traditional GIS order: longitude/easting, then latitude/northing.
 

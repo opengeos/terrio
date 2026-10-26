@@ -707,6 +707,34 @@ struct Params {
     used: std::cell::RefCell<Vec<u32>>,
 }
 
+/// Canonical identity and SI unit kind of a supported projection parameter.
+pub(crate) fn parameter_info(name: &str, code: Option<u32>) -> Option<(u32, &'static str)> {
+    let key = norm(name);
+    let by_name = PARAMS.iter().find(|(names, _, _)| names.contains(&key.as_str()));
+    let by_code = code.and_then(|c| PARAMS.iter().find(|(_, id, _)| *id == c));
+    if let (Some(a), Some(b)) = (by_name, by_code)
+        && a.1 != b.1
+    {
+        return None;
+    }
+    let (_, id, kind) = by_code.or(by_name)?;
+    let id = if *id == FE_FALSE.1 {
+        FE.1
+    } else if *id == FN_FALSE.1 {
+        FN.1
+    } else {
+        *id
+    };
+    Some((
+        id,
+        match kind {
+            Kind::Angle => "ANGLEUNIT",
+            Kind::Length => "LENGTHUNIT",
+            Kind::Scale => "SCALEUNIT",
+        },
+    ))
+}
+
 impl Params {
     fn read(conv: &Node, ang: f64, to_meter: f64) -> Result<Self> {
         let mut values = Vec::new();
