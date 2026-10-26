@@ -267,6 +267,7 @@ pub(crate) fn kernels(o: &NeighborsOptions) -> Result<Vec<Kernel>> {
 // Arithmetic and axis ordering follow GDAL's VRTKernelFilteredSource::FilterData
 // (frmts/vrt/vrtfilters.cpp, MIT; attribution in NOTICE).
 pub(crate) fn filter(input: &[f32], width: usize, height: usize, k: &Kernel, nodata: Option<f32>) -> Vec<f32> {
+    // A 1x1 kernel is a full kernel applied once (GDAL 3.13.3), not two separable passes.
     let separable = k.coefs.len() == k.size && k.size != 1;
     let radius = (k.size / 2) as isize;
     let mut input = std::borrow::Cow::Borrowed(input);
@@ -637,6 +638,13 @@ mod tests {
         let out = filter(&[1., 1., f32::NAN, f32::NAN, f32::NAN, 2., 3., 4., 5.], 3, 3, &k, None);
         assert_eq!(out[4], 1.0);
     }
+    #[test]
+    fn nan_nodata_center_is_interpolated_like_gdal_313() {
+        let values = [1., 1., 1., 1., f32::NAN, 1., 1., 1., 1.];
+        let out = filter(&values, 3, 3, &kernel(vec![1.; 9], true, None), Some(f32::NAN));
+        assert_eq!(out[4], 1.);
+    }
+
     #[test]
     fn vrt_mode_ignores_leading_nan_without_nodata() {
         let out = filter(&[f32::NAN, 2., 3., 4., 5., 6., 7., 8., 9.], 3, 3, &kernel(vec![1.; 9], true, Some(NeighborMethod::Mode)), None);

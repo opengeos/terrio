@@ -653,6 +653,16 @@ mod tests {
         assert!(parse_color("1,a", 2).is_err());
     }
     #[test]
+    fn red_collar_replacement_matches_each_gdal_algorithm() {
+        let grid = Grid { width: 2, height: 2, geo_transform: [0., 1., 0., 2., 0., -1.] };
+        let ds = super::super::build_raster_data(grid, RasterData::U8([vec![255; 4], vec![0; 8]].concat()), 3, None, &Default::default())
+            .unwrap();
+        let o = NearblackOptions { colors: vec![vec![255, 0, 0]], max_non_black: 0, ..Default::default() };
+        assert_eq!(values(&nearblack(&ds, &o).unwrap()), vec![255; 12]);
+        assert_eq!(values(&nearblack(&ds, &NearblackOptions { algorithm: CollarAlgorithm::FloodFill, ..o }).unwrap()), vec![0; 12]);
+    }
+
+    #[test]
     fn existing_alpha_takes_precedence_over_existing_mask() {
         let grid = Grid { width: 1, height: 1, geo_transform: [0., 1., 0., 1., 0., -1.] };
         let mut ds = super::super::build_raster_data(grid, RasterData::U8(vec![0, 0, 0, 255]), 4, None, &Default::default()).unwrap();

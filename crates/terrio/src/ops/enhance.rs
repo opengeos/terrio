@@ -343,6 +343,15 @@ mod tests {
     }
 
     #[test]
+    fn nan_nodata_uses_first_lut_bin_like_gdal_313() {
+        let grid = super::super::Grid { width: 1, height: 1, geo_transform: [0., 1., 0., 1., 0., -1.] };
+        let ds = super::super::build_raster_data(grid, RasterData::F32(vec![f32::NAN]), 1, Some(f64::NAN), &Default::default()).unwrap();
+        let luts = vec![BandLut { min: 0., max: 8., lut: Some((0..256).rev().collect()) }];
+        let out = enhance(&ds, &luts, &EnhanceOptions::default()).unwrap();
+        assert_eq!(out.raster.data.to_f64_vec(), vec![255.]);
+    }
+
+    #[test]
     fn values_map_to_bins_and_nodata_stays() {
         let grid = super::super::Grid { width: 4, height: 1, geo_transform: [0., 1., 0., 1., 0., -1.] };
         let ds = super::super::build_raster_data(grid, RasterData::U8(vec![0, 10, 200, 255]), 1, Some(10.0), &Default::default()).unwrap();
