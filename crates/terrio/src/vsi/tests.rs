@@ -34,7 +34,7 @@ fn lists_local_directories() {
     let x = all.iter().find(|e| e.name == "x.txt").unwrap();
     assert_eq!((x.kind, x.size), (EntryKind::File, Some(6)));
     assert!(x.modified.is_some());
-    assert!(x.long_line().ends_with(" 6 ".to_string().as_str()) || x.long_line().contains("            6 "), "{}", x.long_line());
+    assert_eq!(x.long_line().split_whitespace().nth(4), Some("6"));
     let depth1 = list(&s(&t), &ListOptions { recursive: true, depth: Some(1), ..Default::default() }).unwrap();
     assert_eq!(names(&depth1), ["a", "x.txt"]);
     let depth2 = list(&s(&t), &ListOptions { recursive: true, depth: Some(2), ..Default::default() }).unwrap();
@@ -690,4 +690,53 @@ fn repeated_memory_sync_skips_unchanged_content_and_detects_same_size_edits() {
     assert_eq!(read(target).unwrap(), b"other");
     delete(source, false).unwrap();
     delete(target, false).unwrap();
+}
+
+#[test]
+fn memory_root_cannot_be_replaced_by_a_file() {
+    for path in ["/vsimem", "/vsimem/", "/vsimem//./"] {
+        assert!(write(path, b"not a root file").is_err());
+        assert!(stat(path).unwrap().unwrap().is_dir());
+    }
+}
+
+#[test]
+fn archive_urls_keep_queries_out_of_member_paths() {
+    for prefix in ["/vsizip/", "/vsitar/"] {
+        let ext = if prefix == "/vsizip/" { "zip" } else { "tar.gz" };
+        let url = format!("https://example.com/data.{ext}?sig=example/test&token=value");
+        for (path, expected_inner) in
+            [(format!("{prefix}{{/vsicurl/{url}}}/member.tif"), "member.tif"), (format!("{prefix}/vsicurl/{url}"), "")]
+        {
+            let Node::Archive { archive, inner, .. } = Node::parse(&path).unwrap() else { panic!("not an archive") };
+            assert_eq!(
+                *archive,
+                Node::Url { base: format!("https://example.com/data.{ext}"), query: "sig=example/test&token=value".into() }
+            );
+            assert_eq!(inner, expected_inner);
+            assert!(!display_node(&archive).contains("example/test"));
+        }
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn local_copy_and_sync_preserve_unix_colons_and_backslashes() {
+    let tmp = tempfile::tempdir().unwrap();
+    let source = tmp.path().join("source");
+    fs::create_dir(&source).unwrap();
+    for name in ["a:b.txt", r"a\..\b.txt"] {
+        fs::write(source.join(name), name).unwrap();
+    }
+    for sync_mode in [false, true] {
+        let dst = tmp.path().join(if sync_mode { "sync" } else { "copy" });
+        if sync_mode {
+            sync(&format!("{}/", s(&source)), &s(&dst), &SyncOptions { recursive: true, ..Default::default() }).unwrap();
+        } else {
+            copy(&s(&source), &s(&dst), &CopyOptions { recursive: true, ..Default::default() }).unwrap();
+        }
+        for name in ["a:b.txt", r"a\..\b.txt"] {
+            assert_eq!(fs::read(dst.join(name)).unwrap(), name.as_bytes());
+        }
+    }
 }

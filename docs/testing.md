@@ -668,7 +668,10 @@ synchronized (with and without a trailing slash) by both tools, byte-identical; 
 S3-compatible server, the same tree uploaded (directory markers included), listed, copied
 server-side, downloaded, synchronized twice (no upload on the second run, as GDAL), deleted
 recursively without touching the sibling `data2/` and `dirkeep` keys, and the whole bucket
-refused. Uploading the 7-file Natural Earth tree took terrio 10 requests and GDAL 20; the
+refused. GDAL 3.13.3 review regressions also compare a query-bearing remote ZIP listing
+and extracted real-file bytes, and recursive S3 deletion when an exact object and its
+`prefix/` children coexist: only children are deleted, preserving the exact object and
+neighboring prefixes. File moves remove the exact source object and preserve coexisting prefix children. The local suite has 22 cases. Uploading the 7-file Natural Earth tree took terrio 10 requests and GDAL 20; the
 recursive listing 3 requests each. With `--remote`, listings of public S3 (hrrrzarr), Google
 Cloud Storage (CMIP6), Azure (Daymet, with a Planetary Computer SAS token), an HTML index page
 (download.osgeo.org) and a remote zip archive compare identically; GDAL omits the directories

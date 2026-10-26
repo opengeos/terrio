@@ -430,6 +430,10 @@ pub struct RemoteLister {
     pages: usize,
     out: Vec<ObjectEntry>,
     index: EntryIndex,
+    /// Finite-depth object-store directories still to list, without recursive scans.
+    object_pending: Vec<(Api, String, usize)>,
+    object_relative: String,
+    object_level: usize,
     /// HTML index pages still to read: `(directory URL, path relative to the root, level)`.
     html_pending: Vec<(String, String, usize)>,
     /// The page being read: `(relative path, level)`.
@@ -470,6 +474,9 @@ impl RemoteLister {
             pages: 0,
             out: Vec::new(),
             index: EntryIndex::new(),
+            object_pending: Vec::new(),
+            object_relative: String::new(),
+            object_level: 1,
             html_pending,
             html_current: None,
             done: false,
@@ -486,7 +493,7 @@ impl RemoteLister {
             self.html_current = Some((rel, level));
             return Some(html_directory_url(&url));
         }
-        self.api.request_url(self.token.as_deref(), self.recursive && self.max_depth > 1)
+        self.api.request_url(self.token.as_deref(), self.recursive && self.max_depth == usize::MAX)
     }
 
     /// Reads the response to the last [`RemoteLister::next_url`]: its status and body.
@@ -516,12 +523,43 @@ impl RemoteLister {
             self.done = self.html_pending.is_empty();
             return Ok(());
         }
-        self.token = self.api.read_page(body, &mut self.out, &mut self.index);
-        if self.pages >= MAX_PAGES && self.token.is_some() {
+        if self.max_depth == usize::MAX {
+            self.token = self.api.read_page(body, &mut self.out, &mut self.index);
+        } else {
+            let mut page = Vec::new();
+            self.token = self.api.read_page(body, &mut page, &mut EntryIndex::new());
+            for entry in page {
+                let name = super::join_key(&self.object_relative, &entry.name);
+                if self.index.contains_key(&(name.clone(), entry.dir)) {
+                    continue;
+                }
+                if entry.dir && self.object_level < self.max_depth {
+                    let mut child = self.api.clone();
+                    match &mut child {
+                        Api::S3 { prefix, .. } | Api::Url { prefix, .. } | Api::Azure { prefix, .. } => {
+                            *prefix = format!("{}{}/", prefix, entry.name.trim_end_matches('/'));
+                        }
+                        Api::Html { .. } => unreachable!("handled above"),
+                    }
+                    self.object_pending.push((child, name.clone(), self.object_level + 1));
+                }
+                self.index.insert((name.clone(), entry.dir), self.out.len());
+                self.out.push(ObjectEntry { name, ..entry });
+            }
+        }
+        if self.pages >= MAX_PAGES && (self.token.is_some() || !self.object_pending.is_empty()) {
             self.done = true;
             return Err(Error::InvalidData("remote listing exceeds the page budget".into()));
         }
-        self.done = self.token.is_none();
+        if self.token.is_none() {
+            if let Some((api, relative, level)) = self.object_pending.pop() {
+                self.api = api;
+                self.object_relative = relative;
+                self.object_level = level;
+            } else {
+                self.done = true;
+            }
+        }
         Ok(())
     }
 
@@ -626,6 +664,41 @@ mod tests {
             "https://h/b/?continuation-token=t%2B1&delimiter=%2F&list-type=2&prefix=a%20b%2F"
         );
         assert_eq!(html_directory_url("https://h/d?x=1"), "https://h/d/?x=1");
+    }
+
+    #[test]
+    fn finite_depth_object_listing_uses_delimiters_and_stops_at_the_boundary() {
+        for root in
+            ["s3://bkt/dir", "https://storage.googleapis.com/bkt/dir", "https://account.blob.core.windows.net/container/dir?sig=example"]
+        {
+            let mut l = RemoteLister::new(root, true, Some(2)).unwrap();
+            let azure = root.contains("blob.core");
+            assert!(l.next_url().unwrap().contains("delimiter="));
+            let page = if azure {
+                b"<EnumerationResults><BlobPrefix><Name>dir/sub/</Name></BlobPrefix><NextMarker>next</NextMarker></EnumerationResults>"
+                    .as_slice()
+            } else {
+                b"<ListBucketResult><CommonPrefixes><Prefix>dir/sub/</Prefix></CommonPrefixes><IsTruncated>true</IsTruncated><NextContinuationToken>next</NextContinuationToken></ListBucketResult>".as_slice()
+            };
+            l.feed(200, page).unwrap();
+            let second = l.next_url().unwrap();
+            assert!(second.contains("delimiter=") && second.contains("next"));
+            l.feed(200, if azure { b"<EnumerationResults/>" } else { b"<ListBucketResult/>" }).unwrap();
+            let child = l.next_url().unwrap();
+            assert!(child.contains("prefix=dir%2Fsub%2F") && child.contains("delimiter="), "{child}");
+            if azure {
+                assert!(child.contains("sig=example"));
+            }
+            let child_page = if azure {
+                b"<EnumerationResults><Blob><Name>dir/sub/a.txt</Name><Properties><Content-Length>1</Content-Length></Properties></Blob><BlobPrefix><Name>dir/sub/deeper/</Name></BlobPrefix></EnumerationResults>".as_slice()
+            } else {
+                b"<ListBucketResult><Contents><Key>dir/sub/a.txt</Key><Size>1</Size></Contents><CommonPrefixes><Prefix>dir/sub/deeper/</Prefix></CommonPrefixes></ListBucketResult>".as_slice()
+            };
+            l.feed(200, child_page).unwrap();
+            assert_eq!(l.next_url(), None);
+            let names: Vec<_> = l.finish().into_iter().map(|e| e.name).collect();
+            assert_eq!(names, ["sub", "sub/a.txt", "sub/deeper"]);
+        }
     }
 
     #[test]

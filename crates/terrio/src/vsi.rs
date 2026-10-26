@@ -243,16 +243,31 @@ impl Node {
         }
         for (prefix, exts) in [("/vsizip/", ZIP_EXTENSIONS), ("/vsitar/", TAR_EXTENSIONS)] {
             let Some(rest) = input.strip_prefix(prefix) else { continue };
-            let rest = rest.strip_prefix('{').map(|r| r.replacen('}', "", 1)).unwrap_or_else(|| rest.to_string());
-            let (end, n) = archive_end(&rest, exts)
-                .ok_or_else(|| Error::InvalidArgument(format!("'{shown}': no archive name ({}) after {prefix}", exts.join(", "))))?;
+            // Braces delimit the archive URL, including its query, from the member path.
+            let (archive_path, inner, n) = if let Some(braced) = rest.strip_prefix('{') {
+                let (archive, suffix) =
+                    braced.split_once('}').ok_or_else(|| Error::InvalidArgument(format!("'{shown}': unclosed archive braces")))?;
+                if !suffix.is_empty() && !suffix.starts_with('/') {
+                    return Err(Error::InvalidArgument(format!("'{shown}': expected a member path after archive braces")));
+                }
+                let path = archive.split_once('?').map_or(archive, |(path, _)| path);
+                let (_, n) = archive_end(path, exts)
+                    .filter(|(end, _)| *end == path.len())
+                    .ok_or_else(|| Error::InvalidArgument(format!("'{shown}': invalid archive name")))?;
+                (archive, suffix.trim_matches('/'), n)
+            } else {
+                let path = rest.split_once('?').map_or(rest, |(path, _)| path);
+                let (end, n) = archive_end(path, exts)
+                    .ok_or_else(|| Error::InvalidArgument(format!("'{shown}': no archive name ({}) after {prefix}", exts.join(", "))))?;
+                if end == path.len() { (rest, "", n) } else { (&rest[..end], rest[end..].trim_matches('/'), n) }
+            };
             let kind = match (prefix, exts[n]) {
                 ("/vsizip/", _) => ArchiveKind::Zip,
                 (_, ".tar") => ArchiveKind::Tar,
                 _ => ArchiveKind::TarGz,
             };
-            let archive = Node::parse(&rest[..end])?;
-            let inner = rest[end..].trim_matches('/').to_string();
+            let archive = Node::parse(archive_path)?;
+            let inner = inner.to_string();
             return Ok(Node::Archive { archive: Box::new(archive), kind, inner });
         }
         if input == "/vsimem" || input.starts_with("/vsimem/") {
@@ -1026,7 +1041,12 @@ pub fn write(path: &str, bytes: &[u8]) -> Result<()> {
     }
     match &node {
         Node::Local(p) => write_local_atomic(p, |f| Ok(f.write_all(bytes)?)),
-        Node::Mem(k) => Ok(crate::memfs::write(Path::new(k), bytes)?),
+        Node::Mem(k) => {
+            if k == "/vsimem" {
+                return Err(Error::InvalidArgument("cannot write a file at the /vsimem root".into()));
+            }
+            Ok(crate::memfs::write(Path::new(k), bytes)?)
+        }
         #[cfg(remote)]
         _ => crate::http::store::put(
             &node.remote().ok_or_else(|| Error::InvalidArgument("not remote".into()))?,
@@ -1318,7 +1338,8 @@ pub fn stat(path: &str) -> Result<Option<Entry>> {
 fn copy_target(src: &Node, dst_input: &str, dst: &Node) -> Result<Node> {
     let existing_directory = stat_node(dst)?.is_some_and(|s| s.dir);
     let into = dst_input.trim().ends_with('/') || existing_directory;
-    Ok(if into { archive_target(dst, &src.file_name())? } else { dst.clone() })
+    let portable = !cfg!(unix) || !matches!((src, dst), (Node::Local(_), Node::Local(_)));
+    Ok(if into { checked_child_target(dst, &src.file_name(), portable)? } else { dst.clone() })
 }
 
 /// Copies a file, or with `recursive` a directory, as `gdal vsi copy` does: into `dst` when it is
@@ -1372,7 +1393,11 @@ fn unsafe_relative(name: &str) -> bool {
 }
 
 fn archive_target(root: &Node, name: &str) -> Result<Node> {
-    if unsafe_relative(name) {
+    checked_child_target(root, name, true)
+}
+
+fn checked_child_target(root: &Node, name: &str, portable: bool) -> Result<Node> {
+    if portable && unsafe_relative(name) {
         return Err(Error::InvalidArgument("refusing archive path traversal in copy source".into()));
     }
     let target = root.join(name);
@@ -1566,7 +1591,10 @@ fn copy_tree(src: &Node, dst: &Node, skip_errors: bool, sync: Option<&SyncOption
     }
     // A non-recursive sync creates the subdirectories, empty, as GDAL does.
     let entries = read_dir(src, recursive, None)?;
-    if entries.iter().any(|e| unsafe_relative(&e.name)) {
+    // Unix local names may contain colons and backslashes. Keep portable guards
+    // for archive/remote/memory names and retain containment checks for all targets.
+    let portable = !cfg!(unix) || !matches!((src, dst), (Node::Local(_), Node::Local(_)));
+    if portable && entries.iter().any(|e| unsafe_relative(&e.name)) {
         return Err(Error::InvalidArgument("refusing archive path traversal in copy source".into()));
     }
     let target_entries = match sync {
@@ -1596,7 +1624,7 @@ fn copy_tree(src: &Node, dst: &Node, skip_errors: bool, sync: Option<&SyncOption
             }
             return Err(Error::Unsupported(message.into()));
         }
-        let to = archive_target(dst, &e.name)?;
+        let to = checked_child_target(dst, &e.name, portable)?;
         if e.is_dir() {
             // Already there (a sync's target).
             if target_index.get(e.name.as_str()).is_some_and(|t| t.is_dir()) {
@@ -1731,7 +1759,7 @@ pub fn delete(path: &str, recursive: bool) -> Result<Report> {
         return Ok(report);
     }
     let stat = stat_node(&node)?.ok_or_else(|| not_found(path))?;
-    if !stat.dir {
+    if !stat.dir && !(recursive && node.is_remote()) {
         delete_file(&node)?;
         report.deleted += 1;
         return Ok(report);
@@ -1906,7 +1934,7 @@ pub fn rename(src: &str, dst: &str) -> Result<Report> {
         report.bytes += copy_file(&src_node, &target, stat.size)?;
         report.copied += 1;
     }
-    let deleted = delete(src, true)?;
+    let deleted = delete(src, stat.dir)?;
     report.deleted = deleted.deleted;
     Ok(report)
 }

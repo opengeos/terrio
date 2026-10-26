@@ -74,6 +74,10 @@ def test_copy_sync_move_delete(tree, tmp_path):
 
 
 def test_memory_and_archives(tree, tmp_path):
+    for root in ["/vsimem", "/vsimem/"]:
+        with pytest.raises(InvalidArgumentError, match="root"):
+            terrio.vsi_write(root, b"not a directory")
+        assert terrio.vsi_stat(root)["type"] == "directory"
     terrio.vsi_write("/vsimem/pytest_vsi/a.txt", b"bytes")
     assert terrio.vsi_read("/vsimem/pytest_vsi/a.txt") == b"bytes"
     assert [e["name"] for e in terrio.vsi_list("/vsimem/pytest_vsi")] == ["a.txt"]

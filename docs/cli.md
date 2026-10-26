@@ -818,10 +818,11 @@ and siblings by name; `-l` adds permissions, size and date as `ls -l` (and `gdal
 print them, `-R` recurses (`--depth N` levels), `--abs` prints absolute paths, `-f json` prints
 GDAL's JSON (names, or with `-l` objects with `name`, `type`, `size`,
 `last_modification_date`, `permissions`, and `etag` for objects), `--tree` nests it. An object
-store is listed recursively in one paged listing (1,000 keys per request on S3), not one per
-directory. Remote zip archives are listed by range requests: the archive's end and central
+store with unlimited depth is listed recursively in one paged listing (1,000 keys per request on S3). Finite depths use delimiter listings only down to the requested levels, including JavaScript `listUrl`. Remote zip archives are listed by range requests: the archive's end and central
 directory, about 32 KB for Natural Earth's 4.9 MB `ne_10m_admin_0_countries.zip`; tar archives
-by seeking from header to header.
+by seeking from header to header. For an archive URL with a query string, braces keep the
+query attached to the archive, for example
+`/vsizip/{/vsicurl/https://host/data.zip?sig=TOKEN}/dir/member.tif`.
 
 `copy SRC DST` copies a file to `DST`, or into it when `DST` is an existing directory (or ends
 with `/`); a directory needs `-r` and is copied as `DST`, or into an existing `DST` as
@@ -844,7 +845,7 @@ Safety: `delete` and `move` refuse an empty path, a file system root, the home d
 current directory or one of its parents, the root of `/vsimem/`, a whole bucket or container,
 and archive and HTTP locations. Recursive deletion never follows symbolic links (the links are
 deleted), checks that every directory it enters is below the path given, and on object stores
-deletes only the keys below `prefix/` (not `prefix2/...`). `copy`, `sync` and `move` refuse to
+deletes only the keys below `prefix/` (not `prefix2/...`). Like GDAL 3.13.3, recursive object-store deletion preserves an exact object named `prefix`, even when it coexists with `prefix/` children; delete that exact object without `-r`. `copy`, `sync` and `move` refuse to
 copy a directory into itself.
 
 `-q` prints nothing, `--json` prints what was done (`copied`, `bytes`, `unchanged`, `deleted`,
@@ -856,7 +857,7 @@ copy-delete moves between stores or filesystems refuse symbolic links and non-UT
 entries before copying. Keep the source unchanged during a copy-delete move.
 
 Recursive extraction and copy reject parent traversal, Windows drive-style child
-names (on all platforms for portable paths), and symlinks escaping the output root. Tar and tar.gz copies and sync stream payloads in one pass after discovery. ZIP
+names from archives or remote/memory listings (on all platforms for portable paths), and symlinks escaping the output root. Local-to-local copies on Unix preserve legal colons and backslashes in file names. Tar and tar.gz copies and sync stream payloads in one pass after discovery. ZIP
 central directories are indexed once per operation with a bounded read buffer.
 Local file writes sync the temporary file before renaming it into place; many small files
 therefore pay one file sync each. Containment checks resolve the root and existing target

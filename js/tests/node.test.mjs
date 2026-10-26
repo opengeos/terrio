@@ -1645,6 +1645,31 @@ test("vsi: in-memory files, zip archives in memory and refused targets", () => {
   terrio.vsiDelete("/vsimem/jsvsi3", true);
 });
 
+test("vsi: memory root remains a directory after refused writes", () => {
+  for (const path of ["/vsimem", "/vsimem/"]) {
+    assert.throws(() => terrio.vsiWrite(path, new Uint8Array([1])), /root/);
+    assert.equal(terrio.vsiStat(path).type, "directory");
+  }
+});
+
+test("vsi: finite-depth listUrl requests delimiter pages only to its boundary", async () => {
+  const seen = [];
+  const fetch = async url => {
+    seen.push(url);
+    const query = new URL(url).searchParams;
+    assert.equal(query.get("delimiter"), "/");
+    const prefix = query.get("prefix");
+    if (prefix === "dir/") {
+      return new Response("<ListBucketResult><CommonPrefixes><Prefix>dir/sub/</Prefix></CommonPrefixes></ListBucketResult>");
+    }
+    assert.equal(prefix, "dir/sub/");
+    return new Response("<ListBucketResult><Contents><Key>dir/sub/a.tif</Key><Size>5</Size></Contents><CommonPrefixes><Prefix>dir/sub/deeper/</Prefix></CommonPrefixes></ListBucketResult>");
+  };
+  const result = await terrio.listUrl("s3://bkt/dir", { recursive: true, depth: 2, fetch });
+  assert.deepEqual(result.entries.map(e => e.name), ["sub", "sub/a.tif", "sub/deeper"]);
+  assert.equal(seen.length, 2);
+});
+
 test("vsi: listUrl failures do not expose SAS credentials", async () => {
   await assert.rejects(
     terrio.listUrl("https://account.blob.core.windows.net/container/dir?sig=PRIVATE_TEST_SIGNATURE", {

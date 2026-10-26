@@ -20,7 +20,9 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import datetime
 import hashlib
+import io
 import json
 import os
 import re
@@ -31,6 +33,7 @@ import tarfile
 import tempfile
 import threading
 import urllib.parse
+import zipfile
 from email.utils import formatdate
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -316,7 +319,7 @@ def make_handler(store: S3):
                     xml.append(f"<CommonPrefixes><Prefix>{k}</Prefix></CommonPrefixes>")
                 else:
                     data, at = store.objects[f"{bucket}/{k}"]
-                    stamp = __import__("datetime").datetime.fromtimestamp(at, __import__("datetime").timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+                    stamp = datetime.datetime.fromtimestamp(at, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
                     xml.append(
                         f"<Contents><Key>{k}</Key><LastModified>{stamp}</LastModified>"
                         f"<ETag>&quot;{hashlib.md5(data).hexdigest()}&quot;</ETag><Size>{len(data)}</Size></Contents>"
@@ -351,6 +354,24 @@ def s3_cases(terrio: str, source: Path, work: Path) -> None:
 
     def keys(bucket: str, prefix: str = "") -> dict:
         return {k.split("/", 1)[1]: hashlib.sha256(v[0]).hexdigest() for k, v in store.objects.items() if k.startswith(f"{bucket}/{prefix}")}
+
+    # Serve an actual source file in an archive behind a query-bearing URL.
+    source_files = sorted(p for p in source.rglob("*") if p.is_file())[:2]
+    payload = io.BytesIO()
+    with zipfile.ZipFile(payload, "w", zipfile.ZIP_DEFLATED) as archive:
+        for source_file in source_files:
+            archive.write(source_file, source_file.name)
+    store.objects["archives/real.zip"] = (payload.getvalue(), 0)
+    archive_url = f"/vsizip/{{/vsicurl/http://{host}/archives/real.zip?sig=test%2Fsignature}}"
+    compare_listing("query-bearing remote ZIP archive", terrio, archive_url, dates=False)
+    copied_members = []
+    for name, (tool, e) in tools.items():
+        destination = work / f"query_zip_{name}"
+        result = run(tool + ["copy", "-q", f"{archive_url}/{source_files[0].name}", str(destination)], e)
+        copied_members.append(result.returncode == 0 and destination.is_file()
+                              and destination.read_bytes() == source_files[0].read_bytes())
+    record("query-bearing remote ZIP member bytes", all(copied_members),
+           "both tools extract bytes identical to the real source file")
 
     counts = {}
     for name, (tool, e) in tools.items():
@@ -399,6 +420,30 @@ def s3_cases(terrio: str, source: Path, work: Path) -> None:
     a, b = sorted(keys("terrio")), sorted(keys("gdal"))
     kept = all(k in a for k in ["dirkeep", "data2/keep.txt"]) and not any(k.startswith("data/") for k in a)
     record("S3 recursive delete bounded by prefix/", a == b and kept, f"remaining keys identical ({len(a)})" if a == b else f"terrio {a[:8]} vs GDAL {b[:8]}")
+    # Moving a file must delete the exact source object, never its directory prefix.
+    moved_files = []
+    for name, (tool, e) in tools.items():
+        store.objects[f"{name}/move_file"] = (b"exact object", 0)
+        store.objects[f"{name}/move_file/child.tif"] = (b"child", 0)
+        result = run(tool + ["move", f"/vsis3/{name}/move_file", f"/vsis3/{name}/moved_file"], e)
+        remaining = keys(name)
+        moved_files.append(result.returncode == 0 and "move_file" not in remaining
+                           and "move_file/child.tif" in remaining and "moved_file" in remaining)
+    record("S3 file move preserves coexisting prefix children", all(moved_files),
+           "exact source removed, destination written, children retained")
+    # An exact object and its directory prefix can coexist. Recursive deletion
+    # selects the directory, preserving the exact object (GDAL 3.13.3 semantics).
+    for name, (tool, e) in tools.items():
+        store.objects[f"{name}/coexisting"] = (b"exact object", 0)
+        store.objects[f"{name}/coexisting/child.tif"] = (b"child", 0)
+        store.objects[f"{name}/coexisting2/keep.tif"] = (b"neighbor", 0)
+        result = run(tool + ["delete", "-r", f"/vsis3/{name}/coexisting"], e)
+        if result.returncode:
+            record(f"S3 coexisting object/prefix delete ({name})", False, result.stderr[-300:])
+    a, b = keys("terrio"), keys("gdal")
+    record("S3 recursive delete preserves coexisting exact object", a == b
+           and "coexisting" in a and "coexisting/child.tif" not in a
+           and "coexisting2/keep.tif" in a, "exact object and neighboring prefix retained")
     # Refusals.
     p = run([terrio, "vsi", "delete", "-r", "/vsis3/terrio"], env)
     record("S3 whole-bucket delete refused", p.returncode != 0 and "dirkeep" in keys("terrio"), (p.stderr.strip() or "accepted")[-200:])
