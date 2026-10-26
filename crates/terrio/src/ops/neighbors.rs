@@ -60,7 +60,9 @@ impl NeighborMethod {
     }
 }
 
-/// The output nodata value (`--nodata`).
+/// The output nodata tag (`--nodata`). Finite source nodata samples keep the
+/// source value; changing or removing this tag does not rewrite those samples.
+/// NaN nodata centres follow GDAL's neighborhood interpolation behavior.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub enum NeighborsNodata {
     /// The input band's nodata value, when it has one (the default).
@@ -70,6 +72,19 @@ pub enum NeighborsNodata {
     None,
     /// This value.
     Value(f64),
+}
+
+impl NeighborsNodata {
+    /// Parse the CLI/Python/JavaScript string form: a number, nan, inf, -inf or none.
+    pub fn parse(s: &str) -> Result<Self> {
+        Ok(match s.trim().to_ascii_lowercase().as_str() {
+            "none" => Self::None,
+            "nan" => Self::Value(f64::NAN),
+            "inf" => Self::Value(f64::INFINITY),
+            "-inf" => Self::Value(f64::NEG_INFINITY),
+            value => Self::Value(value.parse().map_err(|_| Error::InvalidArgument(format!("invalid nodata value '{s}'")))?),
+        })
+    }
 }
 
 /// Options for [`neighbors`], named after `gdal raster neighbors`'.
@@ -643,6 +658,15 @@ mod tests {
         let values = [1., 1., 1., 1., f32::NAN, 1., 1., 1., 1.];
         let out = filter(&values, 3, 3, &kernel(vec![1.; 9], true, None), Some(f32::NAN));
         assert_eq!(out[4], 1.);
+    }
+
+    #[test]
+    fn parses_shared_nodata_forms() {
+        assert_eq!(NeighborsNodata::parse(" NONE ").unwrap(), NeighborsNodata::None);
+        assert_eq!(NeighborsNodata::parse(" -9999 ").unwrap(), NeighborsNodata::Value(-9999.));
+        assert!(matches!(NeighborsNodata::parse("NaN").unwrap(), NeighborsNodata::Value(v) if v.is_nan()));
+        assert_eq!(NeighborsNodata::parse("-INF").unwrap(), NeighborsNodata::Value(f64::NEG_INFINITY));
+        assert!(NeighborsNodata::parse("missing").is_err());
     }
 
     #[test]

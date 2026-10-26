@@ -89,7 +89,7 @@ The [Conformance](conformance.md) page has the full, generated results; in short
 | Histograms | 84 of 84 cases identical to `gdalinfo -hist` (21 rasters of every type) |
 | `calc` | 35 of 37 cases identical; the other two within one float32 rounding step (NumPy's vectorized float32 `sin`, `exp`, `log10`, `arctan2`) |
 | `proximity`, `sieve` | 13 of 13 cases identical |
-| `neighbors`, `nearblack`/`clean-collar`, `enhance` | 95 of 95 cases identical (26, 57 and 12) to `gdal raster neighbors`, `nearblack`, `gdal raster clean-collar` and `gdalenhance`, pixels and masks; one in-place alpha case compared with GDAL's new-file output (GDAL writes stale alpha values) |
+| `neighbors`, `nearblack`/`clean-collar`, `enhance` | 96 of 96 cases identical (27, 57 and 12) to `gdal raster neighbors`, `nearblack`, `gdal raster clean-collar` and `gdalenhance`, pixels and masks; one in-place alpha case compared with GDAL's new-file output (GDAL writes stale alpha values) |
 | STAC and GeoZarr | 16 of 16 STAC checks (subdatasets, mosaics and windows identical to GDAL STACIT's, 328 footprint fields as `ogrinfo`'s), 99 of 99 STACTA checks (summaries, subdatasets and metadata as `gdalinfo`'s; whole rasters, windows and every overview identical to GDAL STACTA's on its 7 test items and on `gdal raster tile` pyramids of a DEM and a Landsat scene, local, over HTTP and with a missing tile) and 60 of 60 GeoZarr checks |
 | Remote Zarr stores | 45 of 45 checks on six public and served stores: sizes, geotransforms and nodata as `gdalinfo`'s; every window identical to `gdal_translate`'s (`/vsicurl/`, `/vsis3/`, `/vsigs/`, `/vsiaz/`) and xarray's, GeoZarr multiscales overviews identical to xarray's levels; windows 2 to 15 times faster than GDAL's |
 | Point clouds | 485 of 485 checks: every value identical to laspy; COPC queries and grids identical to PDAL |
@@ -153,7 +153,7 @@ python scripts/compare_focal_with_gdal.py ../terrio-data
 python scripts/conformance.py ../terrio-data --only focal --strict
 ```
 
-The `focal` suite runs 26 `gdal raster neighbors` cases (every built-in kernel, `equal` with
+The `focal` suite runs 27 `gdal raster neighbors` cases (every built-in kernel, `equal` with
 every method on a DEM with deliberate nodata holes, matrices, several kernels and methods at
 once, output types and nodata, and two cases on the whole 3612x3612 USGS DEM, which Terrio
 reads and writes in four strips), 57 `nearblack`/`gdal raster clean-collar` cases (the

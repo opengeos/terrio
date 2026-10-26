@@ -78,8 +78,7 @@ fn neighbors(
     let nodata = match nodata {
         None => NeighborsNodata::Source,
         Some(v) => match v.extract::<String>() {
-            Ok(s) if s.eq_ignore_ascii_case("none") => NeighborsNodata::None,
-            Ok(s) => NeighborsNodata::Value(s.parse().map_err(|_| invalid(format!("invalid nodata value '{s}'")))?),
+            Ok(s) => NeighborsNodata::parse(&s).py()?,
             Err(_) => NeighborsNodata::Value(v.extract().map_err(|_| invalid("nodata is a number or 'none'"))?),
         },
     };

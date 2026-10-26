@@ -36,17 +36,6 @@ pub struct Args {
     out: OutputArgs,
 }
 
-/// Parses a `--nodata` value.
-pub fn parse_nodata(s: &str) -> terrio::Result<NeighborsNodata> {
-    Ok(match s.trim().to_ascii_lowercase().as_str() {
-        "none" => NeighborsNodata::None,
-        "nan" => NeighborsNodata::Value(f64::NAN),
-        "inf" => NeighborsNodata::Value(f64::INFINITY),
-        "-inf" => NeighborsNodata::Value(f64::NEG_INFINITY),
-        t => NeighborsNodata::Value(t.parse().map_err(|_| terrio::Error::InvalidArgument(format!("invalid nodata value '{s}'")))?),
-    })
-}
-
 pub fn run(a: Args) -> terrio::Result<()> {
     let o = NeighborsOptions {
         band: a.band,
@@ -54,7 +43,7 @@ pub fn run(a: Args) -> terrio::Result<()> {
         methods: a.methods.iter().map(|m| NeighborMethod::parse(m)).collect::<terrio::Result<_>>()?,
         size: a.size,
         output_type: terrio::ops::parse_data_type(&a.ot)?,
-        nodata: a.nodata.as_deref().map(parse_nodata).transpose()?.unwrap_or_default(),
+        nodata: a.nodata.as_deref().map(NeighborsNodata::parse).transpose()?.unwrap_or_default(),
     };
     // The input read whole first when it is also the output.
     if same_file(&a.input, &a.output) {

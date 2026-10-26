@@ -32,6 +32,9 @@ def test_neighbors_api(tmp_path):
     assert out.read(1).dtype == np.float64
     assert out.nodata == -1
     assert out.read(1)[1, 1] == -1
+    tagged = terrio.neighbors(src, kernel="equal", nodata=" -9999 ")
+    assert tagged.nodata == -9999 and tagged.read(1)[1, 1] == -1
+    assert terrio.neighbors(src, kernel="equal", nodata=" NONE ").nodata is None
     assert out.read(1)[0, 0] == (1 + 1 + 2 + 1 + 1 + 2 + 4 + 4) / 8
     path = str(tmp_path / "max.tif")
     both = terrio.neighbors(

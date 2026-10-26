@@ -658,6 +658,9 @@ test("neighbors, collar cleaning and LUT enhancement", () => {
   const mean = terrio.neighbors(dem, { kernel: "equal" });
   assert.equal(mean.dtype, "float64");
   assert.equal(mean.readBand(1)[4], -1);
+  assert.deepEqual([...terrio.neighbors(dem, { kernel: "equal", nodata: " -9999 " }).readBand(1)],
+    [...terrio.neighbors(dem, { kernel: "equal", nodata: -9999 }).readBand(1)]);
+  assert.throws(() => terrio.neighbors(dem, { kernel: "equal", nodata: "invalid" }), /invalid nodata/);
   assert.equal(mean.readBand(1)[0], (1 + 1 + 2 + 1 + 1 + 2 + 4 + 4) / 8);
   const two = terrio.neighbors(dem, { kernel: ["equal", "u"], method: ["max", "sum"], ot: "Float32", nodata: "none" });
   assert.equal(two.count, 2);
@@ -680,6 +683,7 @@ test("neighbors, collar cleaning and LUT enhancement", () => {
   assert.throws(() => terrio.nearblack(scene, { addMask: true }), /addMask/);
 
   const lut = terrio.enhanceLuts(scene, {});
+  assert.throws(() => terrio.enhanceLuts(scene, { config: lut }), /only computes equalization tables/);
   assert.ok(lut.startsWith("1:Band -0.5:ScaleMin 255.5:ScaleMax "));
   const eq = terrio.enhance(scene, { equalize: true });
   assert.deepEqual([...terrio.enhance(scene, { config: lut }).readBand(1)], [...eq.readBand(1)]);

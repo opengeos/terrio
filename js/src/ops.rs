@@ -1375,7 +1375,7 @@ pub fn neighbors(src: JsValue, options: JsValue) -> Result<Dataset, JsError> {
     let nodata = match &taken[0] {
         None => NeighborsNodata::Source,
         Some(v) => match (v.as_string(), v.as_f64()) {
-            (Some(s), _) if s.eq_ignore_ascii_case("none") => NeighborsNodata::None,
+            (Some(s), _) => NeighborsNodata::parse(&s).map_err(js_err)?,
             (_, Some(x)) => NeighborsNodata::Value(x),
             _ => return Err(invalid("nodata is a number or 'none'")),
         },
@@ -1520,6 +1520,9 @@ pub fn enhance(src: JsValue, options: JsValue) -> Result<Dataset, JsError> {
 #[wasm_bindgen(js_name = enhanceLuts)]
 pub fn enhance_luts(src: JsValue, options: JsValue) -> Result<String, JsError> {
     let mut a: EnhanceArgs = parse_options(&options)?;
+    if a.config.is_some() {
+        return Err(invalid("enhanceLuts only computes equalization tables; config is not accepted"));
+    }
     a.equalize = true;
     let ds = input_raster(&src)?;
     Ok(terrio::ops::enhance::format_luts(&enhance_tables(&ds, &a)?))

@@ -772,7 +772,8 @@ kernel. The output type defaults to Float64 and the output nodata to the input b
 
 Values follow GDAL's `VRTKernelFilteredSource` exactly: inputs are read as Float32, nodata and
 NaN neighbours (with a nodata value) and zero coefficients are skipped, finite nodata
-centres stay nodata. NaN nodata centres are interpolated, matching GDAL 3.13.3;
+centres keep the input nodata value, even when `--nodata` changes the output tag
+or removes it with `none`. NaN nodata centres are interpolated, matching GDAL 3.13.3;
 pixels past the raster's edges repeat the edge pixels, and results are Float32 values
 converted to the output type. `mode` breaks ties for the first value to reach the highest count,
 in row order. The input is read and GeoTIFF/COG outputs are written a strip of rows at a time,
