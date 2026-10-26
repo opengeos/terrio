@@ -1061,24 +1061,29 @@ fn check_deletable(input: &str, node: &Node) -> Result<()> {
     }
 }
 
+/// A local path made absolute through its nearest existing ancestor: that ancestor canonical
+/// (links resolved), with the components below it that do not exist yet.
+fn absolute_path(p: &Path) -> Option<PathBuf> {
+    let mut missing = Vec::new();
+    let mut at = p;
+    loop {
+        let existing = if at.as_os_str().is_empty() { Path::new(".") } else { at };
+        if let Ok(c) = std::fs::canonicalize(existing) {
+            return Some(missing.iter().rev().fold(c, |c, n: &&std::ffi::OsStr| c.join(n)));
+        }
+        missing.push(at.file_name()?);
+        at = at.parent()?;
+    }
+}
+
 /// Whether `inner` is `outer` or below it (the same location named the same way).
 fn is_within(inner: &Node, outer: &Node) -> bool {
     let below = |a: &str, b: &str| a == b || b.is_empty() || a.starts_with(&format!("{}/", b.trim_end_matches('/')));
     match (inner, outer) {
-        (Node::Local(a), Node::Local(b)) => {
-            let abs = |p: &Path| {
-                std::fs::canonicalize(p).ok().or_else(|| {
-                    // A path that does not exist yet: its existing parent, canonical, with the rest.
-                    let parent = p.parent()?;
-                    let name = p.file_name()?;
-                    Some(std::fs::canonicalize(if parent.as_os_str().is_empty() { Path::new(".") } else { parent }).ok()?.join(name))
-                })
-            };
-            match (abs(a), abs(b)) {
-                (Some(a), Some(b)) => a.starts_with(b),
-                _ => false,
-            }
-        }
+        (Node::Local(a), Node::Local(b)) => match (absolute_path(a), absolute_path(b)) {
+            (Some(a), Some(b)) => a.starts_with(b),
+            _ => false,
+        },
         (Node::Mem(a), Node::Mem(b)) => below(a, b),
         (Node::S3 { bucket: ba, key: a }, Node::S3 { bucket: bb, key: b }) => ba == bb && below(a, b),
         (Node::Url { base: a, .. }, Node::Url { base: b, .. }) => below(a, b),
@@ -1414,8 +1419,11 @@ pub fn rename(src: &str, dst: &str) -> Result<Report> {
         if let Some(parent) = b.parent().filter(|d| !d.as_os_str().is_empty()) {
             std::fs::create_dir_all(parent)?;
         }
-        if std::fs::rename(a, b).is_ok() {
-            return Ok(Report { copied: 1, bytes: stat.size.unwrap_or(0), ..Default::default() });
+        match std::fs::rename(a, b) {
+            Ok(()) => return Ok(Report { copied: 1, bytes: stat.size.unwrap_or(0), ..Default::default() }),
+            // Across file systems: copied, then deleted, below.
+            Err(e) if e.kind() == std::io::ErrorKind::CrossesDevices => {}
+            Err(e) => return Err(Error::Io(std::io::Error::new(e.kind(), format!("moving '{src}' to '{}': {e}", b.display())))),
         }
     }
     if let (Node::Mem(a), Node::Mem(b)) = (&src_node, &target) {

@@ -186,6 +186,17 @@ fn moves_and_syncs_as_gdal() {
     rename(&s(&m2.join("m1/x.txt")), &s(&tmp.path().join("m3.txt"))).unwrap();
     assert!(tmp.path().join("m3.txt").is_file() && !m2.join("m1/x.txt").exists());
     assert!(rename(&s(&m2), &s(&m2.join("m1"))).is_err());
+    // Not into itself through a target whose parents do not exist yet (nothing moved or lost).
+    assert!(rename(&s(&m2), &s(&m2.join("new/deeper/still"))).is_err());
+    assert!(copy(&s(&m2), &s(&m2.join("new/deeper")), &CopyOptions { recursive: true, ..Default::default() }).is_err());
+    assert_eq!(files_below(&m2), ["m1/a/b/z.txt", "m1/a/y.txt"]);
+    // A rename failing for another reason than crossing file systems is reported, not turned
+    // into a copy and a deletion.
+    let dir_target = tmp.path().join("occupied");
+    fs::create_dir_all(dir_target.join("inner")).unwrap();
+    fs::write(dir_target.join("inner/keep"), "k").unwrap();
+    assert!(rename(&s(&m2.join("m1")), &s(&dir_target.join("inner/keep"))).is_err());
+    assert!(m2.join("m1/a/y.txt").exists() && dir_target.join("inner/keep").exists());
 
     // Without a trailing slash, the directory itself; with one, its contents.
     let s1 = tmp.path().join("s1");
