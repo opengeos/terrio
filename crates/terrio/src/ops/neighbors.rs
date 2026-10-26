@@ -220,15 +220,6 @@ pub(crate) fn kernels(o: &NeighborsOptions) -> Result<Vec<Kernel>> {
         }
     }
     let zero_sum: Vec<bool> = matrices.iter().map(|m| m.as_ref().is_some_and(|m| m.iter().sum::<f64>().abs() < 1e-10)).collect();
-    if o.methods.len() == o.kernels.len() {
-        for (i, m) in o.methods.iter().enumerate() {
-            if zero_sum[i] && *m == NeighborMethod::Mean {
-                return Err(Error::InvalidArgument(
-                    "method 'mean' is not allowed for a kernel whose coefficients sum to zero: use 'sum'".into(),
-                ));
-            }
-        }
-    }
     let methods: Vec<NeighborMethod> = match o.methods.as_slice() {
         [] => o
             .kernels
@@ -239,6 +230,13 @@ pub(crate) fn kernels(o: &NeighborsOptions) -> Result<Vec<Kernel>> {
         [m] => vec![*m; o.kernels.len()],
         m => m.to_vec(),
     };
+    for (zero, method) in zero_sum.iter().zip(&methods) {
+        if *zero && *method == NeighborMethod::Mean {
+            return Err(Error::InvalidArgument(
+                "method 'mean' is not allowed for a kernel whose coefficients sum to zero: use 'sum'".into(),
+            ));
+        }
+    }
     o.kernels
         .iter()
         .zip(matrices)
@@ -632,5 +630,16 @@ mod tests {
         assert_eq!(out[4], 0.0);
         let out = filter(&[1., 1., f32::NAN, f32::NAN, f32::NAN, 2., 3., 4., 5.], 3, 3, &k, None);
         assert_eq!(out[4], 1.0);
+    }
+    #[test]
+    fn shared_mean_method_rejects_zero_sum_matrix() {
+        let mut options = NeighborsOptions {
+            kernels: vec!["equal".into(), "[[0,1,0],[1,-4,1],[0,1,0]]".into()],
+            methods: vec![NeighborMethod::Mean],
+            ..Default::default()
+        };
+        assert!(kernels(&options).is_err());
+        options.methods = vec![NeighborMethod::Mean, NeighborMethod::Sum];
+        assert!(kernels(&options).is_ok());
     }
 }

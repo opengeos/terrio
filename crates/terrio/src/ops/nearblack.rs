@@ -436,6 +436,9 @@ fn interleave(ds: &RasterDataset, bands: usize, stride: usize, out: &mut [u8]) {
 /// # Ok::<(), terrio::Error>(())
 /// ```
 pub fn nearblack(ds: &RasterDataset, o: &NearblackOptions) -> Result<Collar> {
+    if o.set_alpha && o.set_mask {
+        return Err(Error::InvalidArgument("set_alpha and set_mask are mutually exclusive".into()));
+    }
     if ds.complex {
         return Err(Error::Unsupported("collars of complex bands are not supported".into()));
     }
@@ -495,6 +498,9 @@ pub fn nearblack(ds: &RasterDataset, o: &NearblackOptions) -> Result<Collar> {
 /// needs one), and the mask is returned with `set_mask`.
 pub fn nearblack_in_place(ds: &mut RasterDataset, o: &NearblackOptions) -> Result<Option<Vec<u8>>> {
     use crate::pixel::Pixel;
+    if o.set_alpha && o.set_mask {
+        return Err(Error::InvalidArgument("set_alpha and set_mask are mutually exclusive".into()));
+    }
     if ds.complex {
         return Err(Error::Unsupported("collars of complex bands are not supported".into()));
     }
@@ -589,5 +595,12 @@ mod tests {
         assert_eq!(parse_color("white", 3).unwrap(), vec![255; 3]);
         assert_eq!(parse_color("1,2,3", 3).unwrap(), vec![1, 2, 3]);
         assert!(parse_color("1,a", 2).is_err());
+    }
+    #[test]
+    fn alpha_and_mask_are_exclusive_for_both_core_paths() {
+        let mut ds = image(2, 2, &[0; 4]);
+        let o = NearblackOptions { set_alpha: true, set_mask: true, ..Default::default() };
+        assert!(nearblack(&ds, &o).err().unwrap().to_string().contains("exclusive"));
+        assert!(nearblack_in_place(&mut ds, &o).unwrap_err().to_string().contains("exclusive"));
     }
 }
