@@ -70,3 +70,14 @@ def test_iau_strict_datum_policy():
     )
     assert abs(x[0] - 10) < 1e-8
     assert abs(y[0] - 44.6617680466192) < 1e-8
+
+
+def test_edited_iau_wkt_keeps_its_parameters():
+    source = "IAU_2015:49910"
+    wkt = CRS.from_string(source).to_wkt()
+    edited = wkt.replace('PARAMETER["False easting",0,', 'PARAMETER["False easting",1234,', 1)
+    assert edited != wkt
+    assert CRS.from_wkt(edited).to_authority() is None
+    x, y = terrio.transform_points([0], [0], source, edited)
+    assert abs(x[0] - 1234) < 1e-8
+    assert abs(y[0]) < 1e-8

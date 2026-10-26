@@ -1512,3 +1512,15 @@ test("IAU strict datum selection", () => {
   assert.ok(Math.abs(result[0][0] - 10) < 1e-8);
   assert.ok(Math.abs(result[1][0] - 44.6617680466192) < 1e-8);
 });
+
+
+test("edited IAU WKT parameters override its root identifier", () => {
+  const source = "IAU_2015:49910";
+  const wkt = terrio.describeCrs(source).wkt;
+  const edited = wkt.replace('PARAMETER["False easting",0,', 'PARAMETER["False easting",1234,');
+  assert.notEqual(wkt, edited);
+  assert.equal(terrio.describeCrs(edited).authority, null);
+  const [x, y] = terrio.transformPoints([0], [0], source, edited);
+  assert.ok(Math.abs(x[0] - 1234) < 1e-8);
+  assert.ok(Math.abs(y[0]) < 1e-8);
+});

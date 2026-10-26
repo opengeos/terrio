@@ -397,9 +397,7 @@ impl SpatialRef {
     /// known.
     #[doc(hidden)]
     pub fn geographic_wkt(&self) -> Option<String> {
-        if let Some(entry) = self.wkt.as_deref().and_then(iau::declared).and_then(iau::get)
-            && self.wkt.as_deref() == Some(entry.wkt.as_str())
-        {
+        if let Some(entry) = self.wkt.as_deref().and_then(|wkt| iau::identify(wkt, self.proj4.as_deref())).and_then(iau::get) {
             return iau::get(entry.base).map(|base| base.wkt.clone());
         }
         if let Some(e) = self.epsg.and_then(epsg::get).or_else(|| self.esri.and_then(epsg::esri))
@@ -447,7 +445,7 @@ impl SpatialRef {
         match (self.epsg, self.esri) {
             (Some(code), _) => Some(("EPSG", code)),
             (None, Some(code)) => Some(("ESRI", code)),
-            (None, None) => self.wkt.as_deref().and_then(iau::declared).map(|code| ("IAU_2015", code)),
+            (None, None) => self.wkt.as_deref().and_then(|wkt| iau::identify(wkt, self.proj4.as_deref())).map(|code| ("IAU_2015", code)),
         }
     }
 
@@ -561,7 +559,15 @@ impl SpatialRef {
     pub fn same_as(&self, other: &SpatialRef) -> bool {
         match (self.authority(), other.authority()) {
             (Some(a), Some(b)) => a == b,
-            _ => self.to_wkt().is_some() && self.to_wkt() == other.to_wkt(),
+            _ => {
+                // WKT can retain an IAU ID while an explicit PROJ override changes
+                // the effective definition. Equal stored WKT alone is insufficient.
+                let iau = |s: &SpatialRef| s.wkt.as_deref().and_then(iau::declared).is_some();
+                if (iau(self) || iau(other)) && self.proj4 != other.proj4 {
+                    return false;
+                }
+                self.to_wkt().is_some() && self.to_wkt() == other.to_wkt()
+            }
         }
     }
 

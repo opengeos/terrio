@@ -1420,12 +1420,18 @@ pub fn warp(sources: &[&RasterDataset], o: &WarpOptions) -> Result<RasterDataset
 
 /// Render pixels from `sources` with a plan already built from their metadata.
 fn warp_data(p: &Plan<'_>, sources: &[&RasterDataset], o: &WarpOptions) -> Result<RasterDataset> {
+    warp_data_with_storage(p, sources, o, p.out_type)
+}
+
+// Keep storage separate from the logical output type so its representation can
+// be checked without changing resampling, quantization or chunk planning.
+fn warp_data_with_storage(p: &Plan<'_>, sources: &[&RasterDataset], o: &WarpOptions, storage: DataType) -> Result<RasterDataset> {
     let (grid, bands, out_type) = (p.grid, p.bands, p.out_type);
     let n = grid.width * grid.height;
     // The output, in its type: chunks are warped into `f64` rows, then stored (the values are
     // already rounded to the type, see `Sink::value`).
     let fill = p.fill();
-    let mut out = RasterData::new_filled(out_type, n * bands, 0.0);
+    let mut out = RasterData::new_filled(storage, n * bands, 0.0);
     if n != 0 {
         crate::pixel::with_data!(&mut out, v => v.chunks_mut(n).zip(&fill).for_each(|(band,fill)|band.iter_mut().for_each(|x|*x=*fill as _)));
     }
@@ -3363,39 +3369,42 @@ mod tests {
         assert_eq!(on, vec![5, 6, 9, 10]);
     }
 
-    /// Several sources warped in one chunk and in many, in integer types (rounded where stored),
-    /// the second source laid over the first where it has data: the values are those of the
-    /// warper writing `f64` output bands (checksums of its results at 0f256c4).
+    /// Compare typed output storage with the previous Float64 buffer representation,
+    /// retaining the same logical output type, resampling, nodata and chunk planning.
     #[test]
     fn typed_output_keeps_values() {
         let a = raster(60, 40, [500000.0, 30.0, 0.0, 4000000.0, 0.0, -30.0], 32610, |c, r| (c * 7 + r * 3) as f64 + 0.37);
         let b = raster(50, 30, [500600.0, 30.0, 0.0, 3999400.0, 0.0, -30.0], 32610, |c, r| {
             if (c + r) % 5 == 0 { -9999.0 } else { 1000.0 - (c * 3 + r) as f64 * 1.5 }
         });
-        let expected = [
-            (Resampling::Bilinear, DataType::I16, 0x84d523e9ef65765d_u64, 0xd4b833e9ef65765d_u64),
-            (Resampling::Cubic, DataType::U8, 0xa34c60e9ef65765d, 0xa34c60e9ef65765d),
-            (Resampling::Nearest, DataType::F32, 0xfcbcca5b6f65765d, 0xfcbcca5b6f65765d),
-        ];
-        for (resampling, out_type, one_chunk, many_chunks) in expected {
-            let o = |memory_limit: f64| WarpOptions {
-                dst_srs: Some(SpatialRef::from_epsg(4326).unwrap()),
-                resampling,
-                output_type: Some(out_type),
-                src_nodata: Nodata::Values(vec![-9999.0]),
-                memory_limit,
-                error_threshold: 0.0,
-                ..Default::default()
-            };
-            let sum = |d: &RasterDataset| {
-                super::super::band_f64(&d.raster, 0)
-                    .iter()
-                    .fold(0xcbf29ce484222325u64, |h, x| (h ^ x.to_bits()).wrapping_mul(0x100000001b3))
-            };
-            let one = warp(&[&a, &b], &o(1e9)).unwrap();
-            let many = warp(&[&a, &b], &o(4096.0)).unwrap();
-            assert_eq!(one.raster.data_type, out_type);
-            assert_eq!((sum(&one), sum(&many)), (one_chunk, many_chunks), "{resampling:?}");
+        for (resampling, out_type) in
+            [(Resampling::Bilinear, DataType::I16), (Resampling::Cubic, DataType::U8), (Resampling::Nearest, DataType::F32)]
+        {
+            for memory_limit in [1e9, 4096.0] {
+                let options = WarpOptions {
+                    dst_srs: Some(SpatialRef::from_epsg(4326).unwrap()),
+                    resampling,
+                    output_type: Some(out_type),
+                    src_nodata: Nodata::Values(vec![-9999.0]),
+                    memory_limit,
+                    error_threshold: 0.0,
+                    ..Default::default()
+                };
+                let sources = [&a, &b];
+                let actual = warp(&sources, &options).unwrap();
+                let plan = Plan::new(&sources, &options).unwrap();
+                let reference = warp_data_with_storage(&plan, &sources, &options, DataType::F64).unwrap();
+                assert_eq!(actual.raster.data_type, out_type);
+                assert_eq!(actual.raster.data.data_type(), out_type);
+                assert_eq!(reference.raster.data.data_type(), DataType::F64);
+                assert_eq!((actual.raster.cols, actual.raster.rows), (reference.raster.cols, reference.raster.rows));
+                assert_eq!(actual.geo_transform(), reference.geo_transform());
+                assert_eq!(
+                    super::super::band_f64(&actual.raster, 0),
+                    super::super::band_f64(&reference.raster, 0),
+                    "{resampling:?}, memory {memory_limit}"
+                );
+            }
         }
     }
 }

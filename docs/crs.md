@@ -466,8 +466,8 @@ Supported references include:
 - `urn:ogc:def:crs:IAU_2015::49900`;
 - `https://www.opengis.net/def/crs/IAU/2015/49900`.
 
-Unknown codes and other registry years are errors; `IAU:0:49900` is not a latest-
-version alias. Both Rust crates expose `SpatialRef::from_iau(code)`. Authority
+Unknown codes and other registry years are errors; `IAU:0:49900` is not a
+latest-version alias. Both Rust crates expose `SpatialRef::from_iau(code)`. Authority
 reporting uses `("IAU_2015", code)` and does not assign an EPSG code. Python
 `rio.CRS.to_authority()` and JavaScript `describeCrs(...).authority` retain this
 versioned identity. Stored WKT2 preserves the IAU version and the geographic
@@ -502,7 +502,10 @@ reference behavior.
 CRSs on different known celestial bodies cannot be transformed into each other.
 The Earth-radius heuristic identifies custom Earth ellipsoids. When a body
 identity remains unknown, semi-major axes must agree within 0.7% of the target's
-axis. Use IAU authority references to retain explicit non-Earth body identities. Earth datum operations
+axis. This is a compatibility change: custom CRS pairs with different small or
+planetary radii that previously passed through as an unshifted datum now fail
+when their axes exceed that allowance (for example, unit spheres of radii 1 and
+2). Use IAU authority references to retain explicit non-Earth body identities. Earth datum operations
 are rejected for planetary coordinates. There is no implicit Earth-frame bridge
 and no `PROJ_IGNORE_CELESTIAL_BODY` bypass. Planetary datum shifts and time-varying
 body orientation models are outside this registry's static 2D scope.
@@ -527,3 +530,7 @@ available with `ALLOW_BALLPARK=NO`. Changes between different IAU datums, or fro
 registered datum to an unidentified custom planetary datum, require the default
 ballpark policy; strict mode rejects them. Editing a registered WKT datum does not
 retain the original datum identity merely because the outer CRS identifier remains.
+
+IAU authority reporting checks the stored definition against the registered CRS.
+Editing parameters while retaining a root IAU identifier does not preserve that
+registry identity or make the edited CRS equivalent to the original.

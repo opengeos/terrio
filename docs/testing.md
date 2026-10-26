@@ -541,3 +541,18 @@ planetocentric latitude conversion and rejection of Earth datum operations on
 planetary coordinates. The numerical fixes use PROJ's sixth-order meridian
 series, inverse authalic-latitude refinement and inverse normalization order;
 the copied formulas and tables are attributed in `NOTICE`.
+
+
+The sixth-order meridian series also changes Earth calculations. A WGS 84
+latitude sweep from -90 to 90 degrees in 0.001-degree increments, comparing
+`Mlfn` before this change (d8411cd2) with the new series, measured a maximum
+meridian-distance change of 4.920 micrometres and inverse-latitude change of
+4.409e-11 degrees. Earth projections remain covered by the `proj_strings`
+regressions registered in the conformance runner's CRS suite. These small
+coordinate changes can affect integer raster rounding near half-integer
+boundaries; the typed-storage warp regression compares every pixel exactly with
+the previous Float64 buffer representation. Both runs retain the same logical output type,
+resampling, nodata rules and chunk plan; only buffer storage changes. This keeps
+multiple-source overlays and both memory budgets covered without coupling the
+storage invariant to historical projection checksums. No pixel tolerance is
+used in this differential storage test.

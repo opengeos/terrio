@@ -205,3 +205,31 @@ fn strict_datum_selection_preserves_iau_identity() {
         assert!(Transformer::with_options(&reopened, &target, &strict).is_ok());
     }
 }
+
+#[test]
+fn edited_iau_parameters_cannot_short_circuit_transformations() {
+    let source = SpatialRef::from_iau(49910).unwrap();
+    let wkt = source.to_wkt().unwrap();
+    let edited = wkt.replacen("PARAMETER[\"False easting\",0,", "PARAMETER[\"False easting\",1234,", 1);
+    assert_ne!(wkt, edited);
+    let target = SpatialRef::parse(&edited).unwrap();
+    assert_eq!(target.authority(), None);
+    assert!(!source.same_as(&target));
+    let result = Transformer::new(&source, &target).unwrap().transform(0.0, 0.0).unwrap();
+    assert!((result.0 - 1234.0).abs() < 1e-8);
+    assert!(result.1.abs() < 1e-8);
+    let shifted = wkt.replacen("PRIMEM[\"Reference Meridian\",0,", "PRIMEM[\"Reference Meridian\",10,", 1);
+    assert_ne!(shifted, wkt);
+    let target = SpatialRef::parse(&shifted).unwrap();
+    assert_eq!(target.authority(), None);
+    assert!(!source.same_as(&target));
+    let result = Transformer::new(&source, &target).unwrap().transform(0.0, 0.0).unwrap();
+    assert!((result.0 + 592746.9752330622).abs() < 0.001);
+    assert!(result.1.abs() < 1e-8);
+    let mut overridden = source.clone();
+    overridden.proj4 = Some(source.proj4.as_deref().unwrap().replace("+x_0=0", "+x_0=1234"));
+    assert_eq!(overridden.authority(), None);
+    assert!(!source.same_as(&overridden));
+    let result = Transformer::new(&source, &overridden).unwrap().transform(0.0, 0.0).unwrap();
+    assert!((result.0 - 1234.0).abs() < 1e-8);
+}

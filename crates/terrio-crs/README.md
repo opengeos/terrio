@@ -3,7 +3,10 @@
 Coordinate reference systems and transformations, extracted from Terrio.
 The crate includes EPSG, ESRI and IAU_2015 definitions, WKT/PROJ parsing, the documented PROJJSON v0.7 subset, datum operation
 selection, coordinate epochs, and local or in-memory datum grids. Coordinates
-use traditional GIS order: longitude/easting, then latitude/northing.
+use GDAL's traditional GIS mapping: longitude/easting, then latitude/northing
+for ordinary Earth CRSs. Planetary west-positive systems retain their registry
+mapping; for example, IAU_2015:49901 uses latitude then west-positive longitude,
+and its projected CRS 49911 uses westing then northing.
 
 ```rust
 use terrio_crs::{SpatialRef, Transformer};

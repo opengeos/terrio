@@ -121,3 +121,21 @@ pub(crate) fn declared(wkt: &str) -> Option<u32> {
     let valid = if authority.eq_ignore_ascii_case("IAU_2015") { version.is_empty() } else { version == "2015" };
     valid.then_some(code)
 }
+
+/// Identifies a registered definition, rather than trusting a caller-supplied root ID.
+pub(crate) fn identify(wkt: &str, proj: Option<&str>) -> Option<u32> {
+    let code = declared(wkt)?;
+    let entry = get(code)?;
+    if proj.is_some_and(|p| p != entry.proj) {
+        return None;
+    }
+    if wkt == entry.wkt {
+        return Some(code);
+    }
+    let without_root_id = |text: &str| {
+        let mut root = wkt1::parse(text)?;
+        root.args.retain(|arg| !matches!(arg, wkt1::Arg::Node(node) if node.key.eq_ignore_ascii_case("ID")));
+        Some(root)
+    };
+    (without_root_id(wkt)? == without_root_id(&entry.wkt)?).then_some(code)
+}
