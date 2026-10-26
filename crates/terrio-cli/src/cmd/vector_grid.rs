@@ -3,7 +3,6 @@
 
 use terrio::VectorOpenOptions;
 use terrio::crs::SpatialRef;
-use terrio::ops::vector_filter::VectorTranslateOptions;
 use terrio::ops::vector_grid::{GridAlgorithm, GridParams, VectorGridOptions};
 
 #[derive(clap::Args)]
@@ -110,19 +109,6 @@ pub fn run(a: Args) -> terrio::Result<()> {
     };
     let algorithm = GridAlgorithm::with_params(&a.algorithm, &params)?;
     let ds = super::quiet(|| terrio::open_vector(&a.input, &VectorOpenOptions { layers: a.layers.clone(), ..Default::default() }))?;
-    let layers = match &a.sql {
-        Some(sql) => {
-            terrio::ops::vector_filter::translate(&ds.layers, &VectorTranslateOptions { sql: Some(sql.clone()), ..Default::default() })?
-        }
-        None if a.layers.is_empty() && ds.layers.len() != 1 => {
-            return Err(terrio::Error::InvalidArgument(format!(
-                "the dataset has {} layers: choose with --layer or --sql ({})",
-                ds.layers.len(),
-                ds.layers.iter().map(|l| l.name.as_str()).collect::<Vec<_>>().join(", ")
-            )));
-        }
-        None => ds.layers,
-    };
     let four = |v: &Option<Vec<f64>>| v.as_deref().map(|v| (v[0], v[1], v[2], v[3]));
     let options = VectorGridOptions {
         algorithm,
@@ -138,6 +124,6 @@ pub fn run(a: Args) -> terrio::Result<()> {
         crs: a.crs.as_deref().map(SpatialRef::parse).transpose()?,
         band_nodata: None,
     };
-    let out = terrio::ops::vector_grid::vector_grid(&layers, &options)?;
+    let out = terrio::ops::vector_grid::vector_grid_from_layers(&ds.layers, a.sql.as_deref(), !a.layers.is_empty(), &options)?;
     a.out.write(&out, &a.output)
 }

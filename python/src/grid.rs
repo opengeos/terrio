@@ -7,7 +7,7 @@ use crate::vector::PyLayer;
 use crate::{PyResultExt, invalid};
 use pyo3::prelude::*;
 use terrio::ops::lineref::LineRefOptions;
-use terrio::ops::vector_filter::{VectorTranslateOptions, WriteMode};
+use terrio::ops::vector_filter::WriteMode;
 use terrio::ops::vector_grid::{GridAlgorithm, GridParams, VectorGridOptions};
 use terrio::{DataType, RasterDataset};
 
@@ -119,17 +119,6 @@ fn vector_grid(
         return Err(invalid("give layers or sql, not both"));
     }
     let all = input_layers(py, src, layers)?;
-    let to_grid = match &sql {
-        Some(sql) => {
-            let o = VectorTranslateOptions { sql: Some(sql.clone()), ..Default::default() };
-            py.detach(|| terrio::ops::vector_filter::translate(&all, &o)).py()?
-        }
-        None if !named && all.len() != 1 => {
-            let names: Vec<&str> = all.iter().map(|l| l.name.as_str()).collect();
-            return Err(invalid(format!("the dataset has {} layers: choose with layers or sql ({})", all.len(), names.join(", "))));
-        }
-        None => all,
-    };
     let options = VectorGridOptions {
         algorithm,
         z_field: zfield,
@@ -146,7 +135,7 @@ fn vector_grid(
     };
     let write = dst.map(|_| write_options(format, compress, None, false)).transpose()?;
     let out = crate::with_warnings(py, || -> terrio::Result<RasterDataset> {
-        let out = terrio::ops::vector_grid::vector_grid(&to_grid, &options)?;
+        let out = terrio::ops::vector_grid::vector_grid_from_layers(&all, sql.as_deref(), named, &options)?;
         if let (Some(path), Some(o)) = (dst, &write) {
             terrio::write_raster_dataset(&out, path, o)?;
         }

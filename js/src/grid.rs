@@ -9,7 +9,6 @@ use terrio::Layer;
 use terrio::crs::SpatialRef;
 use terrio::formats::VectorDriver;
 use terrio::ops::lineref::LineRefOptions;
-use terrio::ops::vector_filter::VectorTranslateOptions;
 use terrio::ops::vector_grid::{GridAlgorithm, GridParams, VectorGridOptions};
 use wasm_bindgen::prelude::*;
 
@@ -80,17 +79,6 @@ pub fn vector_grid(src: JsValue, options: JsValue) -> Result<Dataset, JsError> {
         Some(names) => all.into_iter().filter(|l| names.contains(&l.name)).collect(),
         None => all,
     };
-    let layers = match &a.sql {
-        Some(sql) => {
-            let o = VectorTranslateOptions { sql: Some(sql.clone()), ..Default::default() };
-            terrio::ops::vector_filter::translate(&all, &o).map_err(js_err)?
-        }
-        None if !named && all.len() != 1 => {
-            let names: Vec<&str> = all.iter().map(|l| l.name.as_str()).collect();
-            return Err(invalid(format!("the dataset has {} layers: choose with layers or sql ({})", all.len(), names.join(", "))));
-        }
-        None => all,
-    };
     let four = |v: Option<[f64; 4]>| v.map(|[a, b, c, d]| (a, b, c, d));
     let o = VectorGridOptions {
         algorithm,
@@ -106,7 +94,7 @@ pub fn vector_grid(src: JsValue, options: JsValue) -> Result<Dataset, JsError> {
         crs: a.crs.as_deref().map(SpatialRef::parse).transpose().map_err(js_err)?,
         band_nodata: None,
     };
-    Ok(Dataset::from_raster(terrio::ops::vector_grid::vector_grid(&layers, &o).map_err(js_err)?))
+    Ok(Dataset::from_raster(terrio::ops::vector_grid::vector_grid_from_layers(&all, a.sql.as_deref(), named, &o).map_err(js_err)?))
 }
 
 /// The first layer of a vector source, or the named one.

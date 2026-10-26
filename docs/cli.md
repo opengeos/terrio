@@ -822,11 +822,20 @@ reproduced, so outputs are pixel-identical with `gdal_grid` (see
 - GDAL computes the default `invdist` (power 2, no smoothing, no radius) with AVX or SSE, in
   single precision with approximate reciprocals, unless `GDAL_USE_AVX=NO` and
   `GDAL_USE_SSE=NO`; terrio computes in double precision, as GDAL's scalar code.
+- Grids are materialized in memory and limited to 67,108,864 cells across all bands
+  (512 MiB of Float64 values before conversion); allocation failure returns an error.
 - `linear` triangulates with spade rather than qhull. The triangles of scattered points are
   the same, but their vertex order (and so the last bits of the interpolation) can differ, and
   the ties of co-circular points (a regular grid's squares) are broken differently.
 - GDAL 3.12 scanned every point for a rotated ellipse (and refused rotation with per-quadrant
   limits); 3.13, as terrio, searches its quadtree: sums can differ in their last bits from 3.12.
+- Like GDAL 3.13.3, `linear` skips triangles whose barycentric determinant has absolute
+  value below 1e-5. Small geographic triangles can therefore produce nodata with radius 0;
+  use a suitable projected CRS for those inputs. Coordinates outside the triangulator's
+  supported numeric range are rejected.
+- Zero-width or zero-height extents are rejected before allocating; GDAL can emit a
+  noninvertible transform for these inputs. Reversed x bounds retain negative pixel width,
+  matching GDAL.
 - With `--sql`, `gdal_grid` writes no CRS; terrio keeps the query result's.
 - `-clipsrc` with a geometry or a datasource, `-spat` and `-co` other than terrio's raster
   output options are not supported.
@@ -855,7 +864,11 @@ position on each part strictly spanning it (both with six decimals, as `ogrliner
 `--json` for full precision), and `get-subline` writes the route between two positions. As
 ogrlineref, positions are rounded to six decimals in its part lookups. `--layer-name` names
 the output layer (by default the file's stem); `--lines-layer`, `--points-layer` and
-`--parts-layer` choose input layers.
+`--parts-layer` choose input layers. Like GDAL, an initial route stretch before the
+first retained picket can produce a zero position span and a non-finite `scale`;
+avoid such inputs when using the resulting parts for position lookup. With exactly two
+milestones at the route endpoints, creation produces no parts, matching GDAL 3.13.3;
+include an intermediate milestone when using this case.
 
 ## mcp
 

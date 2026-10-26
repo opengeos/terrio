@@ -579,11 +579,12 @@ pub fn grid_points(
         return Err(Error::InvalidArgument("output raster dimensions should have non-zero size".into()));
     }
     check_size(cols, rows, 1)?;
-    if ![extent.x_min, extent.x_max, extent.y_min, extent.y_max].iter().all(|v| v.is_finite()) {
-        return Err(Error::InvalidArgument("the grid extent must be finite".into()));
-    }
+    check_extent(extent)?;
     let mut alg = algorithm.clone();
     alg.validate()?;
+    if alg.method == GridMethod::Linear && x.iter().chain(y).any(|v| spade::validate_coordinate(*v).is_err()) {
+        return Err(Error::InvalidArgument("linear gridding coordinates exceed the triangulation range".into()));
+    }
     let mut engine = Engine::new(x, y, z, &alg);
     // The blocks `gdal_grid` processes: whole rows, as many as the GeoTIFF's strips grown to 16 MB.
     let size = data_type_size(data_type);
@@ -607,6 +608,23 @@ pub fn grid_points(
         row0 += n;
     }
     Ok(out)
+}
+
+/// Number of pairs visited by GDAL's two average-distance traversal variants.
+/// Point arrays are limited to u32::MAX, so their pair count fits u64.
+fn distance_pair_count(points: usize, include_self: bool, omit_last_self: bool) -> u64 {
+    let n = points as u64;
+    if include_self { n * (n + 1) / 2 - u64::from(omit_last_self && n > 0) } else { n * n.saturating_sub(1) / 2 }
+}
+
+fn check_extent(extent: &GridExtent) -> Result<()> {
+    if ![extent.x_min, extent.x_max, extent.y_min, extent.y_max].iter().all(|v| v.is_finite()) {
+        return Err(Error::InvalidArgument("the grid extent must be finite".into()));
+    }
+    if extent.x_min == extent.x_max || extent.y_min == extent.y_max {
+        return Err(Error::InvalidArgument("the grid extent must have nonzero width and height".into()));
+    }
+    Ok(())
 }
 
 /// The most cells of an output grid (all bands): 2^26, 512 MiB of Float64.
@@ -1150,7 +1168,8 @@ impl<'a> Engine<'a> {
         let (r1sq, r2sq) = (a.radius1 * a.radius1, a.radius2 * a.radius2);
         let r12sq = r1sq * r2sq;
         let (x, y) = (self.x, self.y);
-        let (mut acc, mut n) = (0.0, 0u32);
+        let mut acc = 0.0;
+        let n;
         if self.quadtree {
             self.quadtree_search(px, py, a.radius1.max(a.radius2), ids);
             // As GDAL: unrotated offsets, and each point paired with itself too (the last one
@@ -1163,6 +1182,7 @@ impl<'a> Engine<'a> {
                 })
                 .collect();
             let count = ids.len();
+            n = distance_pair_count(inside.iter().filter(|v| **v).count(), true, inside.last() == Some(&true));
             for k in 0..count.saturating_sub(1) {
                 if !inside[k] {
                     continue;
@@ -1173,7 +1193,6 @@ impl<'a> Engine<'a> {
                         let ji = ids[j] as usize;
                         let (dx, dy) = (x[ji] - x[i], y[ji] - y[i]);
                         acc += (dx * dx + dy * dy).sqrt();
-                        n += 1;
                     }
                 }
             }
@@ -1187,16 +1206,16 @@ impl<'a> Engine<'a> {
                     r2sq * rx * rx + r1sq * ry * ry <= r12sq
                 })
                 .collect();
+            n = distance_pair_count(inside.len(), false, false);
             // GDAL's scan stops before the last point: it has no later point to pair with.
             for (k, &i) in inside.iter().enumerate() {
                 for &j in &inside[k + 1..] {
                     let (dx, dy) = (x[j as usize] - x[i as usize], y[j as usize] - y[i as usize]);
                     acc += (dx * dx + dy * dy).sqrt();
-                    n += 1;
                 }
             }
         }
-        if n < a.min_points || n == 0 { a.nodata } else { acc / n as f64 }
+        if n < u64::from(a.min_points) || n == 0 { a.nodata } else { acc / n as f64 }
     }
 
     /// `GDALGridLinear` over a block: in a triangle, its plane; elsewhere the nodata value, or the
@@ -1447,7 +1466,10 @@ impl Triangulation {
             .filter(|&i| spade::validate_coordinate(x[i]).is_ok() && spade::validate_coordinate(y[i]).is_ok())
             .map(|i| Vertex(Point2::new(x[i], y[i]), i))
             .collect();
-        let t: spade::DelaunayTriangulation<Vertex> = spade::DelaunayTriangulation::bulk_load(vertices).unwrap_or_default();
+        let t: spade::DelaunayTriangulation<Vertex> = spade::DelaunayTriangulation::bulk_load(vertices).unwrap_or_else(|e| {
+            crate::warnings::warn(format!("linear triangulation failed: {e}"));
+            Default::default()
+        });
         let faces: Vec<[usize; 3]> = t.inner_faces().map(|f| f.vertices().map(|v| v.data().1)).collect();
         let mut triangles = Vec::with_capacity(faces.len());
         for tri in &faces {
@@ -1671,6 +1693,31 @@ fn visit_coords(g: &Geometry, f: &mut dyn FnMut(&Coord)) {
 /// and the bounding box, as GDAL drivers with stored extents report it). The size is
 /// `options.size`, or from `options.resolution` as `(|max - min| + res / 2) / res` cells (the cell
 /// size is then the extent over that), or 256 × 256. Geometries are not reprojected.
+pub fn vector_grid_from_layers(layers: &[Layer], sql: Option<&str>, named: bool, options: &VectorGridOptions) -> Result<RasterDataset> {
+    if named && sql.is_some() {
+        return Err(Error::InvalidArgument("give layer names or sql, not both".into()));
+    }
+    let selected;
+    let layers = if let Some(sql) = sql {
+        selected = super::vector_filter::translate(
+            layers,
+            &super::vector_filter::VectorTranslateOptions { sql: Some(sql.into()), ..Default::default() },
+        )?;
+        &selected
+    } else {
+        if !named && layers.len() != 1 {
+            return Err(Error::InvalidArgument(format!(
+                "the dataset has {} layers: choose layer names or sql ({})",
+                layers.len(),
+                layers.iter().map(|l| l.name.as_str()).collect::<Vec<_>>().join(", ")
+            )));
+        }
+        layers
+    };
+    vector_grid(layers, options)
+}
+
+/// Grids already-selected layers using the supplied options.
 pub fn vector_grid(layers: &[Layer], options: &VectorGridOptions) -> Result<RasterDataset> {
     if layers.is_empty() {
         return Err(Error::InvalidArgument("no layer to grid".into()));
@@ -1707,10 +1754,10 @@ pub fn vector_grid(layers: &[Layer], options: &VectorGridOptions) -> Result<Rast
     }
     check_size(cols, rows, layers.len())?;
     let extent = GridExtent { x_min: x0, x_max: x1, y_min: y0.min(y1), y_max: y0.max(y1), cols, rows };
+    check_extent(&extent)?;
     let bands = layers.len();
     let mut data = Vec::with_capacity(cols * rows * bands);
     let dt = options.data_type;
-    let mut names = Vec::new();
     for layer in layers {
         let (xs, ys, zs) = layer_points(layer, options)?;
         if xs.is_empty() {
@@ -1718,7 +1765,6 @@ pub fn vector_grid(layers: &[Layer], options: &VectorGridOptions) -> Result<Rast
         }
         let values = grid_points(&xs, &ys, &zs, &algorithm, &extent, dt, bands)?;
         data.extend(values.into_iter().map(|v| crate::ops::convert_value(v, dt)));
-        names.push(layer.name.clone());
     }
     let crs = match &options.crs {
         Some(c) => c.clone(),
@@ -1937,6 +1983,31 @@ mod tests {
         let v: Vec<f64> = (0..2).flat_map(|r| (0..2).map(move |c| (r, c))).map(|(r, c)| ds.raster.get(0, r as isize, c as isize)).collect();
         assert_eq!(v, vec![2.0, 3.0, 0.0, 1.0]);
     }
+    #[test]
+    fn pair_counts_exceed_u32_without_overflow() {
+        assert_eq!(distance_pair_count(100_000, false, false), 4_999_950_000);
+        assert_eq!(distance_pair_count(100_000, true, false), 5_000_050_000);
+        assert_eq!(distance_pair_count(100_000, true, true), 5_000_049_999);
+    }
+
+    #[test]
+    fn extent_guards_preserve_negative_x_resolution() {
+        let mut e = GridExtent { x_min: 0., x_max: 0., y_min: 0., y_max: 1., cols: 2, rows: 2 };
+        assert!(check_extent(&e).is_err());
+        e.x_min = 1.;
+        assert!(check_extent(&e).is_ok());
+        e.y_max = e.y_min;
+        assert!(check_extent(&e).is_err());
+    }
+
+    #[test]
+    fn tiny_linear_triangles_match_gdal_cutoff() {
+        let mut a = GridAlgorithm::new(GridMethod::Linear);
+        a.radius = 0.;
+        a.nodata = -9.;
+        assert_eq!(grid(&[0., 0.001, 0.], &[0., 0., 0.001], &[1., 2., 3.], &a, [0., 0., 0.001, 0.001], 2, 2), vec![-9.; 4]);
+    }
+
     #[test]
     fn rejects_large_output_before_allocating() {
         assert!(check_size(100_000, 100_000, 1).is_err());

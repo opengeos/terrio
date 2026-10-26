@@ -90,10 +90,13 @@ impl Line {
     }
 
     /// OGR's `Value`: the point at a distance along the line (its ends beyond them).
-    fn value(&self, distance: f64) -> Point {
+    fn value(&self, distance: f64) -> Result<Point> {
         let n = self.pts.len();
+        if n == 0 {
+            return Err(Error::InvalidArgument("cannot interpolate an empty line".into()));
+        }
         if distance < 0.0 {
-            return self.point(0);
+            return Ok(self.point(0));
         }
         let mut len = 0.0;
         for i in 0..n.saturating_sub(1) {
@@ -101,12 +104,12 @@ impl Line {
             if seg > 0.0 {
                 if len <= distance && len + seg >= distance {
                     let p = self.lerp(i, (distance - len) / seg);
-                    return Point { x: p[0], y: p[1], z: p[2], has_z: self.has_z };
+                    return Ok(Point { x: p[0], y: p[1], z: p[2], has_z: self.has_z });
                 }
                 len += seg;
             }
         }
-        self.point(n - 1)
+        Ok(self.point(n - 1))
     }
 
     /// OGR's `getSubLine` (distances, not ratios): None for invalid distances.
@@ -346,7 +349,7 @@ fn is_geographic(layer: &Layer) -> bool {
 /// computes it; its length in degrees if it cannot be transformed.
 fn utm_length(part: &Line, src: &SpatialRef) -> f64 {
     let len = part.length();
-    let mid = part.value(len / 2.0);
+    let Ok(mid) = part.value(len / 2.0) else { return 0.0 };
     let zone = (30.0 + (mid.x + 3.0) / 6.0 + 0.5) as i32;
     let epsg = if mid.y > 0.0 { 32600 + zone } else { 32700 + zone };
     let transformed = || -> Result<f64> {
@@ -499,7 +502,7 @@ fn parts_of_line(
     let mut dist_now = round_beg;
     while dist_now <= end_position {
         if let Some(s) = sub_lines.iter().find(|s| s.is_inside(dist_now)) {
-            pickets.insert(OrderedF64(dist_now), s.part.value((dist_now - s.beg) * s.factor));
+            pickets.insert(OrderedF64(dist_now), s.part.value((dist_now - s.beg) * s.factor)?);
         }
         if dist_now + step == dist_now {
             break;
@@ -636,16 +639,14 @@ pub fn position(parts: &Layer, x: f64, y: f64) -> Result<f64> {
     let mut min = f64::MAX;
     for f in &parts.features {
         let Some(g) = &f.geometry else { continue };
-        let d = match g {
-            Geometry::LineString(cs) => Line::from_coords(cs).distance(&pt),
-            Geometry::MultiLineString(ls) => ls.iter().map(|l| Line::from_coords(l).distance(&pt)).fold(f64::INFINITY, f64::min),
-            _ => continue,
-        };
+        let Some(line) = part_line(Some(g)) else { continue };
+        if line.pts.is_empty() {
+            continue;
+        }
+        let d = line.distance(&pt);
         if d < min {
             min = d;
-            if let Some(line) = part_line(Some(g)) {
-                closest = Some((line, as_double(f.attributes.get(b)), as_double(f.attributes.get(s))));
-            }
+            closest = Some((line, as_double(f.attributes.get(b)), as_double(f.attributes.get(s))));
         }
     }
     let (line, beg, scale) = closest.ok_or_else(|| Error::InvalidArgument("failed to find the closest part".into()))?;
@@ -675,7 +676,7 @@ pub fn coordinates(parts: &Layer, position: f64) -> Result<Vec<[f64; 3]>> {
         }
         any = true;
         let Some(line) = part_line(f.geometry.as_ref()) else { continue };
-        let pt = line.value((position - beg) * as_double(f.attributes.get(s)));
+        let pt = line.value((position - beg) * as_double(f.attributes.get(s)))?;
         out.push([pt.x, pt.y, pt.z]);
     }
     if !any {
@@ -746,7 +747,7 @@ mod tests {
         assert_eq!(l.sub_line(5.0, 15.0).unwrap().pts, vec![[5.0, 0.0, 0.0], [10.0, 0.0, 0.0], [10.0, 5.0, 0.0]]);
         assert_eq!(l.sub_line(2.0, 3.0).unwrap().pts, vec![[2.0, 0.0, 0.0], [3.0, 0.0, 0.0]]);
         assert!(l.sub_line(20.0, 25.0).is_none());
-        let v = l.value(12.0);
+        let v = l.value(12.0).unwrap();
         assert_eq!((v.x, v.y), (10.0, 2.0));
         assert_eq!(l.geos_project(&Point { x: 12.0, y: 4.0, z: 0.0, has_z: false }), 14.0);
         assert_eq!(l.distance(&Point { x: 12.0, y: 4.0, z: 0.0, has_z: false }), 2.0);
@@ -811,6 +812,31 @@ mod tests {
             create_reference(&lines, &repers, &LineRefOptions { position_field: "nope".into(), step: 1.0, ..Default::default() }).is_err()
         );
     }
+    #[test]
+    fn two_endpoint_milestones_match_gdal_empty_parts() {
+        let (mut lines, mut stones) = layers();
+        lines.features[0].geometry = Some(Geometry::LineString(vec![Coord::xy(0., 0.), Coord::xy(100., 0.)]));
+        stones.features.truncate(2);
+        for (i, f) in stones.features.iter_mut().enumerate() {
+            let v = i as f64 * 100.;
+            f.geometry = Some(Geometry::point(v, 0.));
+            f.attributes = vec![FieldValue::Float(v)];
+        }
+        let options = LineRefOptions { position_field: "pos".into(), step: 10., ..Default::default() };
+        assert!(create_reference(&lines, &stones, &options).unwrap().features.is_empty());
+    }
+
+    #[test]
+    fn empty_part_returns_error_instead_of_panicking() {
+        let (lines, stones) = layers();
+        let options = LineRefOptions { position_field: "pos".into(), step: 500., ..Default::default() };
+        let mut parts = create_reference(&lines, &stones, &options).unwrap();
+        parts.features.truncate(1);
+        parts.features[0].geometry = Some(Geometry::LineString(vec![]));
+        assert!(coordinates(&parts, 1250.).is_err());
+        assert!(position(&parts, 0., 0.).is_err());
+    }
+
     #[test]
     fn metric_factor_refuses_degenerate_lengths() {
         assert!(metric_factor(0., 0.).is_err());
