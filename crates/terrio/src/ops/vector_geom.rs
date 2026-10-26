@@ -413,7 +413,9 @@ fn empty_of(t: GeometryType) -> Geometry {
 /// multipoint: terrio cannot represent empty points).
 pub fn force_to(g: Geometry, target: GeometryTypeSpec) -> Geometry {
     use GeometryType as T;
-    let Some(tt) = target.base else { return with_dims(g, target) };
+    // OGR ForceTo leaves generic GEOMETRY targets unchanged, including Z/M suffixes.
+    // The explicit --dim option is the operation that changes their coordinates.
+    let Some(tt) = target.base else { return g };
     if is_empty(&g) {
         return empty_of(tt);
     }
@@ -978,9 +980,12 @@ mod tests {
         assert_eq!(GeometryTypeSpec::of(&out), GeometryTypeSpec { base: Some(GeometryType::LineString), z: true, m: false });
         // To POINT, an incompatible geometry keeps its dimensions.
         assert_eq!(force_to(line_m.clone(), GeometryTypeSpec::parse("POINT").unwrap()), line_m);
-        for (kind, z, m) in [("GEOMETRYZ", Some(0.), None), ("GEOMETRYM", None, Some(0.)), ("GEOMETRYZM", Some(0.), Some(0.))] {
-            let result = force_to(Geometry::point(1., 2.), GeometryTypeSpec::parse(kind).unwrap());
-            assert_eq!(result, Geometry::Point(Coord { x: 1., y: 2., z, m }));
+        for kind in ["GEOMETRY", "GEOMETRYZ", "GEOMETRYM", "GEOMETRYZM"] {
+            let xy = Geometry::point(1., 2.);
+            let xyz = Geometry::point_z(1., 2., 3.);
+            let spec = GeometryTypeSpec::parse(kind).unwrap();
+            assert_eq!(force_to(xy.clone(), spec), xy);
+            assert_eq!(force_to(xyz.clone(), spec), xyz);
         }
         let point_z = Geometry::point_z(1.0, 2.0, 3.0);
         assert_eq!(force_to(point_z.clone(), GeometryTypeSpec::parse("POINT").unwrap()), Geometry::point(1.0, 2.0));
