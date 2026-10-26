@@ -16,6 +16,7 @@ mod multidim;
 mod ops;
 #[cfg(feature = "pointcloud")]
 mod pointcloud;
+mod query;
 mod remote;
 #[cfg(feature = "threads")]
 mod threads;

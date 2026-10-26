@@ -42,6 +42,7 @@ from terrio._terrio import (
     calc,
     combine,
     concave_hull,
+    compare,
     convert,
     convert_points,
     convex_hull,
@@ -64,6 +65,7 @@ from terrio._terrio import (
     open_vector,
     open_vrt,
     pansharpen,
+    pixel_info,
     polygonize,
     proximity,
     rasterize,
@@ -85,6 +87,7 @@ from terrio._terrio import (
     write_netcdf_groups,
     write_raster,
     write_vector,
+    xyz,
 )
 from terrio.errors import (
     CRSError,
@@ -122,6 +125,7 @@ __all__ = [
     "combine",
     "concave_hull",
     "convex_hull",
+    "compare",
     "convert",
     "convert_points",
     "grid_points",
@@ -143,6 +147,7 @@ __all__ = [
     "open_stream",
     "open_vector",
     "pansharpen",
+    "pixel_info",
     "polygonize",
     "proximity",
     "rasterize",
@@ -165,6 +170,7 @@ __all__ = [
     "write_netcdf_groups",
     "write_raster",
     "write_vector",
+    "xyz",
 ]
 
 

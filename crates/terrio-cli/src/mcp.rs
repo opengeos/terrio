@@ -37,7 +37,11 @@ const INSTRUCTIONS: &str = "terrio reads, writes and converts geospatial rasters
 - Start with info (--json) to see what a dataset holds; formats lists the formats terrio reads and writes.";
 
 /// Commands that only read: they write no file.
-const READ_ONLY: &[&str] = &["info", "formats", "crs", "mdinfo", "mdread"];
+const READ_ONLY: &[&str] = &["info", "formats", "crs", "mdinfo", "mdread", "compare"];
+
+/// Commands whose exit status reports what they found rather than a failure: `compare` exits with
+/// its difference count (as GDAL's), and `pixel-info` with 1 for locations off the raster.
+const STATUS_IS_RESULT: &[&str] = &["compare", "pixel-info"];
 
 type RpcError = (i64, String);
 
@@ -206,18 +210,30 @@ fn call_tool(terrio: &[OsString], name: &str, args: Vec<OsString>, cancel: &Atom
                 }
                 text.push_str(&stderr);
             }
-            if !status.success() {
+            // A reported status (a difference count) is a result, unless the command printed why it
+            // failed.
+            let reported = STATUS_IS_RESULT.contains(&name) && status.code().is_some() && !stderr_failed(&text);
+            let failed = !status.success() && !reported;
+            if failed {
                 let code = status.code().map_or_else(|| "a signal".to_string(), |c| format!("exit code {c}"));
                 text.push_str(&format!("\n(terrio {name} failed with {code})"));
+            } else if !status.success() {
+                text.push_str(&format!("\n(terrio {name} exited with status {})", status.code().unwrap_or_default()));
             }
             if text.trim().is_empty() {
                 text = format!("terrio {name} finished.");
             }
-            (text, !status.success())
+            (text, failed)
         }
         Err(e) => (format!("could not run terrio: {e}"), true),
     };
     Some(json!({"content": [{"type": "text", "text": text}], "isError": failed}))
+}
+
+/// Whether a command's output says it failed: terrio prints `terrio: <error>` (warnings are
+/// `terrio: warning: ...`).
+fn stderr_failed(text: &str) -> bool {
+    text.lines().any(|l| (l.starts_with("terrio: ") && !l.starts_with("terrio: warning: ")) || l.starts_with("error: "))
 }
 
 /// A command's output: its first [`MAX_OUTPUT`] bytes, and how many it wrote.

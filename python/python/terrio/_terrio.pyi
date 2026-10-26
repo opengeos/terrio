@@ -48,6 +48,9 @@ __all__ = [
     "viewshed",
     "sieve",
     "fill_nodata",
+    "compare",
+    "pixel_info",
+    "xyz",
     "PointCloud",
     "PointCloudFile",
     "PointChunks",
@@ -940,6 +943,56 @@ def viewshed(
     bigtiff: bool = False,
 ) -> Raster:
     """Single-observer visibility or minimum visible height on a projected DEM."""
+    ...
+
+def compare(
+    reference: _RasterSource,
+    input: _RasterSource,
+    *,
+    skip_all_optional: bool = False,
+    skip_binary: bool = False,
+    skip_crs: bool = False,
+    skip_geotransform: bool = False,
+    skip_overview: bool = False,
+    skip_metadata: bool = False,
+    skip_rpc: bool = False,
+    skip_geolocation: bool = False,
+    skip_subdataset: bool = False,
+) -> dict[str, Any]:
+    """Compare two rasters as ``gdal raster compare``: report, count and pixel statistics."""
+    ...
+
+def pixel_info(
+    src: _RasterSource,
+    positions: Sequence[tuple[float, float] | tuple[float, float, str]] | None = None,
+    *,
+    position_crs: str | None = None,
+    position_dataset: str | Layer | VectorDataset | None = None,
+    layer: str | None = None,
+    include_fields: Sequence[str] | None = None,
+    bands: Sequence[int] | None = None,
+    overview: int | None = None,
+    resampling: Literal["nearest", "bilinear", "cubic", "cubicspline"] = "nearest",
+    promote_pixel_value_to_z: bool = False,
+    format: Literal["geojson", "json", "csv", "text", "value"] = "geojson",
+) -> Any:
+    """Pixel values at positions, as ``gdal raster pixel-info`` and ``gdallocationinfo``."""
+    ...
+
+def xyz(
+    src: _RasterSource,
+    dst: str | os.PathLike[str] | None = None,
+    *,
+    bands: Sequence[int] | None = None,
+    all_bands: bool = False,
+    skip: int | tuple[int, int] | None = None,
+    srcwin: _Window | None = None,
+    skip_nodata: bool = False,
+    src_nodata: float | Sequence[float] | None = None,
+    dst_nodata: float | Sequence[float] | None = None,
+    delimiter: str = " ",
+) -> int | str:
+    """Raster pixels as XYZ text, as ``gdal2xyz.py``: lines written to ``dst``, or the text."""
     ...
 
 def proximity(

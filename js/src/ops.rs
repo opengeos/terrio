@@ -25,12 +25,12 @@ use terrio::ops::warp::{Cutline, Nodata, WarpOptions};
 use terrio::{Layer, RasterDataset};
 use wasm_bindgen::prelude::*;
 
-fn invalid(msg: impl std::fmt::Display) -> JsError {
+pub(crate) fn invalid(msg: impl std::fmt::Display) -> JsError {
     JsError::new(&msg.to_string())
 }
 
 /// The bytes of a file given as a `Uint8Array` or `{ bytes, filename }`, with its file name.
-fn file_bytes(v: &JsValue) -> Option<(Vec<u8>, String)> {
+pub(crate) fn file_bytes(v: &JsValue) -> Option<(Vec<u8>, String)> {
     if let Some(a) = v.dyn_ref::<js_sys::Uint8Array>() {
         return Some((a.to_vec(), "data".into()));
     }
