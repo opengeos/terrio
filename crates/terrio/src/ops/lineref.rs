@@ -375,6 +375,17 @@ impl CurveData {
     }
 }
 
+fn metric_factor(length: f64, metric_length: f64) -> Result<f64> {
+    if !(length.is_finite() && length > 0.0 && metric_length.is_finite() && metric_length > 0.0) {
+        return Err(Error::InvalidArgument("cannot measure a degenerate route segment".into()));
+    }
+    let factor = length / metric_length;
+    if !factor.is_finite() || factor <= 0.0 {
+        return Err(Error::InvalidArgument("route segment scale must be finite and positive".into()));
+    }
+    Ok(factor)
+}
+
 /// `CreatePartsFromLineString`: the parts of one route.
 #[allow(clippy::too_many_arguments)]
 fn parts_of_line(
@@ -430,7 +441,7 @@ fn parts_of_line(
         && let Some(part) = path.sub_line(0.0, d1)
     {
         let len = if geographic { utm_length(&part, srs) } else { part.length() };
-        let factor = if geographic { part.length() / len } else { 1.0 };
+        let factor = if geographic { metric_factor(part.length(), len)? } else { 1.0 };
         pt_beg = Some(part.point(0));
         pt_beg_position = position_now - len;
         sub_lines.push(CurveData { beg: position_now - len, end: position_now, factor, part });
@@ -438,6 +449,7 @@ fn parts_of_line(
     if d2 - d1 > DELTA
         && let Some(part) = path.sub_line(d1, d2)
     {
+        // BTreeMap position keys are distinct, so this denominator is nonzero.
         let factor = part.length() / (entries[1].0 - position_now);
         sub_lines.push(CurveData { part, beg: position_now, end: entries[1].0, factor });
     }
@@ -462,7 +474,7 @@ fn parts_of_line(
         && let Some(part) = path.sub_line(d1, total)
     {
         let len = if geographic { utm_length(&part, srs) } else { part.length() };
-        let factor = if geographic { part.length() / len } else { 1.0 };
+        let factor = if geographic { metric_factor(part.length(), len)? } else { 1.0 };
         pt_end = Some(part.point(part.pts.len() - 1));
         pt_end_position = position_now + len;
         sub_lines.push(CurveData { beg: position_now, end: position_now + len, factor, part });
@@ -798,5 +810,12 @@ mod tests {
         assert!(
             create_reference(&lines, &repers, &LineRefOptions { position_field: "nope".into(), step: 1.0, ..Default::default() }).is_err()
         );
+    }
+    #[test]
+    fn metric_factor_refuses_degenerate_lengths() {
+        assert!(metric_factor(0., 0.).is_err());
+        assert!(metric_factor(1., 0.).is_err());
+        assert!(metric_factor(f64::INFINITY, 1.).is_err());
+        assert_eq!(metric_factor(2., 4.).unwrap(), 0.5);
     }
 }

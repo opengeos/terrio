@@ -188,6 +188,14 @@ impl GridAlgorithm {
     /// `invdistnn` (with `radius`, or `radius1`, which must then equal `radius2`, as its radius),
     /// and `radius` sets both semi-axes of the methods that search an ellipse.
     pub fn parse(s: &str) -> Result<Self> {
+        fn get<'a>(params: &'a [(String, String)], k: &str) -> Option<&'a str> {
+            params.iter().rev().find(|(n, _)| n == k).map(|(_, v)| v.as_str())
+        }
+        fn num(params: &[(String, String)], k: &str) -> Result<Option<f64>> {
+            get(params, k)
+                .map(|v| v.parse::<f64>().map_err(|_| Error::InvalidArgument(format!("gridding parameter {k}={v:?} is not a number"))))
+                .transpose()
+        }
         let mut parts = s.split(':');
         let name = parts.next().unwrap_or_default();
         let mut method = GridMethod::parse(name)?;
@@ -199,38 +207,28 @@ impl GridAlgorithm {
             let (k, v) = p.split_once('=').ok_or_else(|| Error::InvalidArgument(format!("gridding parameter {p:?} is not key=value")))?;
             params.push((k.trim().to_ascii_lowercase(), v.trim().to_string()));
         }
-        let get = |k: &str| params.iter().rev().find(|(n, _)| n == k).map(|(_, v)| v.as_str());
-        let num = |k: &str| -> Result<Option<f64>> {
-            get(k)
-                .map(|v| v.parse::<f64>().map_err(|_| Error::InvalidArgument(format!("gridding parameter {k}={v:?} is not a number"))))
-                .transpose()
-        };
-        if method == GridMethod::InverseDistance && (get("min_points_per_quadrant").is_some() || get("max_points_per_quadrant").is_some()) {
+        if method == GridMethod::InverseDistance
+            && (get(&params, "min_points_per_quadrant").is_some() || get(&params, "max_points_per_quadrant").is_some())
+        {
             // GDAL remaps invdist to invdistnn when per-quadrant parameters are given.
-            if get("radius").is_none() {
-                let (r1, r2) = (num("radius1")?.unwrap_or(1.0), num("radius2")?.unwrap_or(1.0));
+            if get(&params, "radius").is_none() {
+                let (r1, r2) = (num(&params, "radius1")?.unwrap_or(1.0), num(&params, "radius2")?.unwrap_or(1.0));
                 if r1 != r2 {
                     return Err(Error::Unsupported(
                         "radius1 != radius2 not supported when min_points_per_quadrant and/or max_points_per_quadrant is specified".into(),
                     ));
                 }
             }
-            if num("angle")?.unwrap_or(0.0) != 0.0 {
+            if num(&params, "angle")?.unwrap_or(0.0) != 0.0 {
                 return Err(Error::Unsupported(
                     "angle != 0 not supported when min_points_per_quadrant and/or max_points_per_quadrant is specified".into(),
                 ));
             }
-            if get("radius").is_none() {
-                params.push(("radius".into(), get("radius1").unwrap_or("1").to_string()));
+            if get(&params, "radius").is_none() {
+                params.push(("radius".into(), get(&params, "radius1").unwrap_or("1").to_string()));
             }
             method = GridMethod::InverseDistanceNearest;
         }
-        let get = |k: &str| params.iter().rev().find(|(n, _)| n == k).map(|(_, v)| v.as_str());
-        let num = |k: &str| -> Result<Option<f64>> {
-            get(k)
-                .map(|v| v.parse::<f64>().map_err(|_| Error::InvalidArgument(format!("gridding parameter {k}={v:?} is not a number"))))
-                .transpose()
-        };
         let mut a = Self::new(method);
         let known: &[&str] = match method {
             GridMethod::InverseDistance => {
@@ -267,26 +265,26 @@ impl GridAlgorithm {
             }
         }
         let has = |k: &str| known.contains(&k);
-        if let Some(v) = num("power")?.filter(|_| has("power")) {
+        if let Some(v) = num(&params, "power")?.filter(|_| has("power")) {
             a.power = v;
         }
-        if let Some(v) = num("smoothing")?.filter(|_| has("smoothing")) {
+        if let Some(v) = num(&params, "smoothing")?.filter(|_| has("smoothing")) {
             a.smoothing = v;
         }
         if method.uses_ellipse() {
-            match num("radius")? {
+            match num(&params, "radius")? {
                 Some(r) => (a.radius1, a.radius2) = (r, r),
                 None => {
-                    a.radius1 = num("radius1")?.unwrap_or(0.0);
-                    a.radius2 = num("radius2")?.unwrap_or(0.0);
+                    a.radius1 = num(&params, "radius1")?.unwrap_or(0.0);
+                    a.radius2 = num(&params, "radius2")?.unwrap_or(0.0);
                 }
             }
-            a.angle = num("angle")?.unwrap_or(0.0);
-        } else if let Some(r) = num("radius")? {
+            a.angle = num(&params, "angle")?.unwrap_or(0.0);
+        } else if let Some(r) = num(&params, "radius")? {
             a.radius = r;
         }
         let count = |k: &str| -> Result<Option<u32>> {
-            match num(k)?.filter(|_| has(k)) {
+            match num(&params, k)?.filter(|_| has(k)) {
                 Some(v) if !(v.is_finite() && v >= 0.0) => {
                     Err(Error::InvalidArgument(format!("gridding parameter {k} must be a non-negative number of points")))
                 }
@@ -305,7 +303,7 @@ impl GridAlgorithm {
         if let Some(v) = count("max_points_per_quadrant")? {
             a.max_points_per_quadrant = v;
         }
-        if let Some(v) = num("nodata")? {
+        if let Some(v) = num(&params, "nodata")? {
             a.nodata = v;
             a.nodata_set = true;
         }
@@ -331,6 +329,18 @@ impl GridAlgorithm {
     /// Checks the parameters as GDAL does, remapping `invdist` with per-quadrant parameters to
     /// `invdistnn`.
     pub fn validate(&mut self) -> Result<()> {
+        for (name, value) in [
+            ("power", self.power),
+            ("smoothing", self.smoothing),
+            ("radius", self.radius),
+            ("radius1", self.radius1),
+            ("radius2", self.radius2),
+            ("angle", self.angle),
+        ] {
+            if !value.is_finite() {
+                return Err(Error::InvalidArgument(format!("gridding parameter {name} must be finite")));
+            }
+        }
         if self.method == GridMethod::InverseDistance && self.per_quadrant() {
             if self.radius1 != self.radius2 {
                 return Err(Error::Unsupported(
@@ -555,6 +565,9 @@ pub fn grid_points(
     if x.len() != y.len() || x.len() != z.len() {
         return Err(Error::InvalidArgument("x, y and z must have the same length".into()));
     }
+    if x.iter().chain(y).any(|v| !v.is_finite()) {
+        return Err(Error::InvalidArgument("gridding point coordinates must be finite".into()));
+    }
     if x.is_empty() {
         return Err(Error::InvalidArgument("no points to grid".into()));
     }
@@ -579,7 +592,9 @@ pub fn grid_points(
     let (top, bottom) = (extent.y_max, extent.y_min);
     let dx = (extent.x_max - extent.x_min) / cols as f64;
     let dy = (bottom - top) / rows as f64;
-    let mut out = vec![0.0; cols * rows];
+    let mut out = Vec::new();
+    out.try_reserve_exact(cols * rows).map_err(|_| Error::InvalidArgument("cannot allocate the output grid".into()))?;
+    out.resize(cols * rows, 0.0);
     let mut row0 = 0;
     while row0 < rows {
         let n = block_rows.min(rows - row0);
@@ -594,8 +609,8 @@ pub fn grid_points(
     Ok(out)
 }
 
-/// The most cells of an output grid (all bands): 2^31, 16 GB of Float64.
-const MAX_CELLS: usize = 1 << 31;
+/// The most cells of an output grid (all bands): 2^26, 512 MiB of Float64.
+const MAX_CELLS: usize = 1 << 26;
 
 /// Rejects grids whose cells overflow or exceed [`MAX_CELLS`].
 fn check_size(cols: usize, rows: usize, bands: usize) -> Result<()> {
@@ -1921,5 +1936,20 @@ mod tests {
         assert!(!ds.has_nodata);
         let v: Vec<f64> = (0..2).flat_map(|r| (0..2).map(move |c| (r, c))).map(|(r, c)| ds.raster.get(0, r as isize, c as isize)).collect();
         assert_eq!(v, vec![2.0, 3.0, 0.0, 1.0]);
+    }
+    #[test]
+    fn rejects_large_output_before_allocating() {
+        assert!(check_size(100_000, 100_000, 1).is_err());
+        let extent = GridExtent { x_min: 0., x_max: 1., y_min: 0., y_max: 1., cols: 100_000, rows: 100_000 };
+        assert!(grid_points(&[0.], &[0.], &[1.], &GridAlgorithm::new(GridMethod::Nearest), &extent, DataType::F64, 1).is_err());
+    }
+    #[test]
+    fn rejects_non_finite_parameters_and_xy_but_allows_nan_nodata() {
+        for text in ["invdist:power=nan", "average:radius1=nan", "nearest:angle=inf", "invdist:smoothing=inf"] {
+            assert!(GridAlgorithm::parse(text).is_err(), "{text}");
+        }
+        assert!(GridAlgorithm::parse("nearest:nodata=nan").is_ok());
+        let extent = GridExtent { x_min: 0., x_max: 1., y_min: 0., y_max: 1., cols: 1, rows: 1 };
+        assert!(grid_points(&[f64::NAN], &[0.], &[1.], &GridAlgorithm::new(GridMethod::Nearest), &extent, DataType::F64, 1).is_err());
     }
 }
