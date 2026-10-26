@@ -523,21 +523,35 @@ pub fn reclassify(ds: &RasterDataset, o: &ReclassifyOptions) -> Result<RasterDat
     let r = &ds.raster;
     let dst = o.output_type.unwrap_or(r.data_type);
     let n = r.cols * r.rows;
-    // GDAL validates against the first band's nodata value before reading.
-    Reclassifier::parse(&o.mapping, ds.band_nodata(1), o.output_type)?;
+    // GDAL validates against the first band's nodata before reading. Reuse the parsed
+    // mapping for bands sharing that value, preserving distinct floating-point bit patterns.
+    let first_nodata = ds.band_nodata(1);
+    let mut mappings = std::collections::HashMap::new();
+    mappings.insert(first_nodata.map(f64::to_bits), Reclassifier::parse(&o.mapping, first_nodata, Some(dst))?);
     let mut bands = Vec::with_capacity(r.bands);
     for b in 0..r.bands {
-        let rc = Reclassifier::parse(&o.mapping, ds.band_nodata(b + 1), Some(dst))?;
+        let nodata = ds.band_nodata(b + 1);
+        let rc = match mappings.entry(nodata.map(f64::to_bits)) {
+            std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
+            std::collections::hash_map::Entry::Vacant(entry) => entry.insert(Reclassifier::parse(&o.mapping, nodata, Some(dst))?),
+        };
         let view = super::BandView::of(r, b);
-        let values: Vec<Option<f64>> = crate::par::map_range(n, |i| rc.reclassify(view.get(i)).map(|v| convert_value(v, dst)));
-        let mut band = Vec::with_capacity(n);
-        for (i, v) in values.into_iter().enumerate() {
-            match v {
-                Some(v) => band.push(v),
-                None => {
-                    return Err(Error::InvalidArgument(format!("encountered value {} with no specified mapping", view.get(i))));
+        let mut band = vec![0.0; n];
+        let first_unmapped = std::sync::atomic::AtomicUsize::new(usize::MAX);
+        let chunk = crate::par::chunk_len(n, 4096);
+        crate::par::chunks_mut(&mut band, chunk, |index, values| {
+            for (offset, out) in values.iter_mut().enumerate() {
+                let i = index * chunk + offset;
+                if let Some(value) = rc.reclassify(view.get(i)) {
+                    *out = convert_value(value, dst);
+                } else {
+                    first_unmapped.fetch_min(i, std::sync::atomic::Ordering::Relaxed);
                 }
             }
+        });
+        let first_unmapped = first_unmapped.load(std::sync::atomic::Ordering::Relaxed);
+        if first_unmapped != usize::MAX {
+            return Err(Error::InvalidArgument(format!("encountered value {} with no specified mapping", view.get(first_unmapped))));
         }
         bands.push(band);
     }
@@ -657,5 +671,14 @@ mod tests {
         let mapping = Reclassifier::parse("NAN=0;[0,10)=1", Some(f64::NAN), None).unwrap();
         assert_eq!(mapping.reclassify(f64::NAN), Some(0.));
         assert_eq!(mapping.reclassify(5.), Some(1.));
+    }
+    #[test]
+    fn reclassification_keeps_distinct_band_nodata_and_first_error() {
+        let mut src = ds(vec![vec![1., 2.], vec![1., 2.]], 2, 1, DataType::F64, None);
+        src.band_nodata = vec![Some(1.), Some(2.)];
+        let output = reclassify(&src, &ReclassifyOptions { mapping: "NO_DATA=0;DEFAULT=PASS_THROUGH".into(), output_type: None }).unwrap();
+        assert_eq!(output.raster.data.to_f64_vec(), vec![0., 2., 1., 0.]);
+        let error = reclassify(&src, &ReclassifyOptions { mapping: "9=1".into(), output_type: None }).unwrap_err();
+        assert!(error.to_string().contains("encountered value 1 with no specified mapping"));
     }
 }
