@@ -137,6 +137,11 @@ fn enhance_equalizes_and_reads_and_writes_lut_files() {
     let text = std::fs::read_to_string(d.join("lut.txt")).unwrap();
     assert!(text.starts_with("1:Band -0.5:ScaleMin 255.5:ScaleMax "), "{text}");
     assert_eq!(text.split_whitespace().count(), 3 + 256);
+    assert!(fails(&["enhance", "image.tif", "--config", "lut.txt"], d).contains("give an output"));
+    assert_eq!(std::fs::read_to_string(d.join("lut.txt")).unwrap(), text);
+    let input = std::fs::read(d.join("image.tif")).unwrap();
+    assert!(fails(&["enhance", "image.tif", "--equalize", "--config", "image.tif"], d).contains("must not be the input"));
+    assert_eq!(std::fs::read(d.join("image.tif")).unwrap(), input);
     ok(&["enhance", "image.tif", "eq.tif", "--equalize"], d);
     ok(&["enhance", "image.tif", "lut.tif", "--config", "lut.txt"], d);
     let (eq, lut) = (

@@ -144,7 +144,7 @@ fn collar(
     if white && !colors.is_empty() {
         return Err(invalid("white and colors are exclusive"));
     }
-    if add_alpha && add_mask && keep {
+    if add_alpha && add_mask {
         return Err(invalid("add_alpha and add_mask are exclusive"));
     }
     let mut o = NearblackOptions {
@@ -380,8 +380,14 @@ fn enhance(
 #[pyfunction]
 #[pyo3(signature = (src, *, config=None, lut_bins=256))]
 fn enhance_luts(py: Python<'_>, src: &Bound<'_, PyAny>, config: Option<&str>, lut_bins: usize) -> PyResult<String> {
-    let ds = input_raster(py, src)?;
-    let text = terrio::ops::enhance::format_luts(&luts(py, src, &ds, true, None, None, lut_bins)?);
+    let tables = match raster_path(src)? {
+        Some(path) => py.detach(|| terrio::ops::enhance::equalization_luts_from_path(&path, lut_bins)).py()?,
+        None => {
+            let ds = input_raster(py, src)?;
+            py.detach(|| terrio::ops::enhance::equalization_luts(&ds, lut_bins)).py()?
+        }
+    };
+    let text = terrio::ops::enhance::format_luts(&tables);
     if let Some(path) = config {
         std::fs::write(path, &text).map_err(|err| invalid(format!("{path}: {err}")))?;
     }

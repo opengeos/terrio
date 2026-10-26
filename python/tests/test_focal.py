@@ -45,6 +45,12 @@ def test_neighbors_api(tmp_path):
         terrio.neighbors(src, kernel="[[1,2],[3,4]]")
 
 
+@pytest.mark.parametrize("operation", [terrio.nearblack, terrio.clean_collar])
+def test_alpha_and_mask_are_exclusive(operation):
+    with pytest.raises(terrio.errors.InvalidArgumentError, match="exclusive"):
+        operation(raster(scene()), add_alpha=True, add_mask=True)
+
+
 def test_collar_api(tmp_path):
     src = terrio.Raster.from_array(scene(), TRANSFORM, crs="EPSG:32610")
     out = terrio.clean_collar(src, add_alpha=True, pixel_distance=0)
@@ -70,6 +76,9 @@ def test_enhance_api(tmp_path):
     config = str(tmp_path / "lut.txt")
     text = terrio.enhance_luts(src, config=config)
     assert text.startswith("1:Band -0.5:ScaleMin 255.5:ScaleMax ")
+    path = str(tmp_path / "source.tif")
+    src.write(path)
+    assert terrio.enhance_luts(path) == text
     eq = terrio.enhance(src, equalize=True)
     np.testing.assert_array_equal(terrio.enhance(src, config=config).read(1), eq.read(1))
     linear = terrio.enhance(src, src_scale=(0, 256), ot="UInt16")
