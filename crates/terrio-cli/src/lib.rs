@@ -73,6 +73,25 @@ enum Command {
     MakeValid(cmd::processing::GeometryArgs),
     /// Snap, deduplicate, close rings, remove collapsed parts and repair polygon topology.
     Clean(cmd::processing::CleanArgs),
+    /// Topology-preserving Douglas-Peucker simplification per feature (like gdal vector
+    /// simplify and ogr2ogr -simplify).
+    Simplify(cmd::vector_geom::SimplifyArgs),
+    /// Add vertices so that no segment is longer than a length (like gdal vector segmentize).
+    Segmentize(cmd::vector_geom::SegmentizeArgs),
+    /// The convex hull of each feature's geometry (like gdal vector convex-hull).
+    ConvexHull(cmd::vector_geom::HullArgs),
+    /// The concave hull of each feature's geometry, of its polygons for polygons (like gdal
+    /// vector concave-hull).
+    ConcaveHull(cmd::vector_geom::ConcaveHullArgs),
+    /// Swap the X and Y coordinates of every geometry (like gdal vector swap-xy).
+    SwapXy(cmd::vector_geom::HullArgs),
+    /// Change geometry types and dimensions: multi/single, a given type, XY/XYZ/XYM/XYZM (like
+    /// gdal vector set-geom-type).
+    SetGeomType(cmd::vector_geom::SetGeomTypeArgs),
+    /// Combine geometries into collections, by groups of field values (like gdal vector combine).
+    Combine(cmd::vector_geom::CombineArgs),
+    /// Sort features spatially, along a Hilbert curve or an STR tree (like gdal vector sort).
+    Sort(cmd::vector_geom::SortArgs),
     /// Subset, resize, rescale or change the type of a raster (like gdal_translate).
     Translate(cmd::translate::Args),
     /// Reproject and resample rasters (like gdalwarp).
@@ -169,6 +188,14 @@ fn run_on_this_thread(args: Vec<OsString>, terrio: Option<Vec<OsString>>) -> i32
         Command::IsValid(a) => cmd::processing::validity(a),
         Command::MakeValid(a) => cmd::processing::make_valid(a),
         Command::Clean(a) => cmd::processing::clean(a),
+        Command::Simplify(a) => cmd::vector_geom::simplify(a),
+        Command::Segmentize(a) => cmd::vector_geom::segmentize(a),
+        Command::ConvexHull(a) => cmd::vector_geom::convex_hull(a),
+        Command::ConcaveHull(a) => cmd::vector_geom::concave_hull(a),
+        Command::SwapXy(a) => cmd::vector_geom::swap_xy(a),
+        Command::SetGeomType(a) => cmd::vector_geom::set_geom_type(a),
+        Command::Combine(a) => cmd::vector_geom::combine(a),
+        Command::Sort(a) => cmd::vector_geom::sort(a),
         Command::Translate(a) => cmd::translate::run(a),
         Command::Warp(a) => cmd::warp::run(a),
         Command::Catalog(a) => cmd::catalog::run(a),

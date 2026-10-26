@@ -68,6 +68,11 @@ pub struct VectorTranslateOptions {
     pub geometry_type: Option<GeometryConversion>,
     /// `-explodecollections`: write each part of multi-part geometries as its own feature.
     pub explode_collections: bool,
+    /// A per-feature geometry operation, applied after exploding collections and before the
+    /// geometry type conversion and reprojection: `-simplify` and `-segmentize`, or any
+    /// [`crate::ops::vector_geom::GeometryOp`]. A simplification that fails leaves the geometry
+    /// unchanged, as `ogr2ogr -simplify` does; other operations' errors fail the translation.
+    pub geometry_op: Option<crate::ops::vector_geom::GeometryOp>,
     /// `-s_srs`: the CRS of the input, overriding what the layer declares.
     pub src_srs: Option<SpatialRef>,
     /// `-t_srs`: reproject into this CRS.
@@ -195,6 +200,9 @@ impl Translator {
             Some(idx) => idx.iter().for_each(|&i| src.schema.add_field(layer.schema.fields()[i].clone())),
             None => src.schema = layer.schema.clone(),
         }
+        if let Some(op) = &o.geometry_op {
+            op.validate()?;
+        }
         let mut t = Self { src, options: o.clone(), filter, spatial, limit, taken: 0, mapping, schema: Layer::new(String::new()) };
         t.schema = t.finish(t.empty())?;
         Ok(t)
@@ -261,6 +269,25 @@ impl Translator {
     /// The geometry conversion, reprojection, CRS assignment and renaming of a chunk.
     fn finish(&self, mut out: Layer) -> Result<Layer> {
         let o = &self.options;
+        if let Some(op) = &o.geometry_op {
+            use crate::ops::vector_geom::GeometryOp;
+            let layer_type = out.geom_type;
+            let features = std::mem::take(&mut out.features);
+            out.features.reserve(features.len());
+            for mut f in features {
+                if let GeometryOp::Simplify { tolerance } = op {
+                    if let Some(g) = &f.geometry
+                        && let Ok(simple) = crate::ops::simplify::simplify_preserve_topology(g, *tolerance)
+                    {
+                        f.geometry = Some(simple);
+                    }
+                    out.features.push(f);
+                } else {
+                    out.features.extend(op.apply_feature(f, layer_type)?);
+                }
+            }
+            out.geom_type = op.layer_type(layer_type);
+        }
         if let Some(conv) = o.geometry_type {
             for f in &mut out.features {
                 if let Some(g) = f.geometry.take() {

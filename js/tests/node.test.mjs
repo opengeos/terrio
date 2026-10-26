@@ -1581,3 +1581,37 @@ test("unterminated quoted PROJ values raise an error", () => {
   assert.throws(() => terrio.transformPoints([10], [40], "EPSG:4326",
     '+proj=tmerc +datum=WGS84 +title="abc +k=0.9996'), /unterminated quoted PROJ value/);
 });
+
+test("vector geometry operations: simplify, segmentize, hulls, swap-xy, set-geom-type, combine, sort", () => {
+  const line = {
+    type: "FeatureCollection",
+    features: [
+      { type: "Feature", properties: { k: "a" }, geometry: { type: "LineString", coordinates: [[0, 0], [5, 0.1], [10, 0]] } },
+      { type: "Feature", properties: { k: "a" }, geometry: { type: "Point", coordinates: [1, 2] } },
+      { type: "Feature", properties: { k: "b" }, geometry: null },
+    ],
+  };
+  const simple = terrio.simplify(line, 1).toGeoJSON();
+  assert.deepEqual(simple.features[0].geometry.coordinates, [[0, 0], [10, 0]]);
+  assert.equal(simple.features[2].geometry, null);
+  const dense = terrio.segmentize(line, 3).toGeoJSON();
+  assert.equal(dense.features[0].geometry.coordinates.length, 7);
+  assert.equal(terrio.convexHull(line).toGeoJSON().features[1].geometry.type, "Point");
+  const pts = {
+    type: "Feature",
+    properties: {},
+    geometry: { type: "MultiPoint", coordinates: [[0, 0], [10, 1], [11, 10], [1, 12], [5, 5], [5, 9], [2, 3], [8, 3]] },
+  };
+  assert.equal(terrio.concaveHull(pts, 0, { allowHoles: false }).toGeoJSON().features[0].geometry.type, "Polygon");
+  assert.deepEqual(terrio.swapXy(line).toGeoJSON().features[1].geometry.coordinates, [2, 1]);
+  const multi = terrio.setGeomType(line, { multi: true }).toGeoJSON();
+  assert.equal(multi.features[0].geometry.type, "MultiLineString");
+  assert.equal(terrio.setGeomType(line, { geometryType: "POINT", skip: true }).toGeoJSON().features.length, 2);
+  const groups = terrio.combine(line, { groupBy: ["k"] }).toGeoJSON();
+  assert.deepEqual(groups.features.map((f) => f.properties.k), ["a", "b"]);
+  assert.equal(groups.features[0].geometry.type, "GeometryCollection");
+  const sorted = terrio.sort(line, { method: "strtree" }).toGeoJSON();
+  assert.equal(sorted.features[2].geometry, null);
+  assert.throws(() => terrio.sort(line, { method: "nope" }), /sort method/);
+  assert.throws(() => terrio.simplify(line, -1), /tolerance/);
+});

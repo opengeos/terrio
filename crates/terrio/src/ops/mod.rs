@@ -5,6 +5,9 @@
 //! [`geometry`] (centroids, singleparts and vertices), [`footprint`], [`sample`], and the vector
 //! filtering of `ogr2ogr` ([`vector_filter`], [`sql`]).
 //! [`topology`] provides planar buffers, polygon overlay/dissolve, validity, repair and cleanup.
+//! [`vector_geom`] simplifies, segmentizes, builds hulls, swaps axes, changes geometry types,
+//! combines and spatially sorts vector features (GDAL's `gdal vector` commands of those names),
+//! with the algorithms of [`simplify`] and [`hull`].
 //! [`contour`] generates elevation lines and [`zonal`] summarizes raster bands within polygons.
 //!
 //! ```no_run
@@ -31,6 +34,7 @@ pub mod footprint;
 pub mod gcp;
 pub mod geolocation;
 pub mod geometry;
+pub mod hull;
 pub mod mosaic;
 pub mod overview;
 pub mod pansharpen;
@@ -40,11 +44,13 @@ pub mod rasterize;
 pub mod rpc;
 pub mod sample;
 pub mod sieve;
+pub mod simplify;
 pub mod sql;
 pub(crate) mod strips;
 pub mod topology;
 pub mod translate;
 pub mod vector_filter;
+pub mod vector_geom;
 pub mod viewshed;
 pub mod vrt;
 pub mod warp;

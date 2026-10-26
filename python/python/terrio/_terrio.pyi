@@ -706,6 +706,8 @@ def convert(
     nln: str | None = None,
     nlt: str | None = None,
     explodecollections: bool = False,
+    simplify: float | None = None,
+    segmentize: float | None = None,
     s_srs: str | None = None,
     a_srs: str | None = None,
     append: bool = False,
@@ -1166,4 +1168,62 @@ def pansharpen(
 
 def sql(src: Any, query: str, *, layers: list[str] | None = None) -> Layer:
     """Run the documented OGR SQL subset; DISTINCT and summaries discard geometry."""
+    ...
+
+def simplify(src: Any, tolerance: float, *, layer: str | None = None) -> Layer:
+    """Topology-preserving simplification (GEOS TopologyPreservingSimplifier); Z kept, M dropped."""
+    ...
+
+def segmentize(src: Any, max_length: float, *, layer: str | None = None) -> Layer:
+    """Add vertices so that no segment is longer than ``max_length`` (OGR segmentize)."""
+    ...
+
+def convex_hull(src: Any, *, layer: str | None = None) -> Layer:
+    """The convex hull of each geometry."""
+    ...
+
+def concave_hull(
+    src: Any,
+    ratio: float,
+    *,
+    allow_holes: bool = False,
+    tight: bool = False,
+    layer: str | None = None,
+) -> Layer:
+    """The concave hull of each geometry, of its polygons for polygonal input."""
+    ...
+
+def swap_xy(src: Any, *, layer: str | None = None) -> Layer:
+    """Swap the X and Y coordinates of every geometry."""
+    ...
+
+def set_geom_type(
+    src: Any,
+    *,
+    geometry_type: str | None = None,
+    multi: bool = False,
+    single: bool = False,
+    linear: bool = False,
+    dim: str | None = None,
+    layer_only: bool = False,
+    feature_only: bool = False,
+    skip: bool = False,
+    layer: str | None = None,
+) -> Layer:
+    """Change geometry types and dimensions, as gdal vector set-geom-type."""
+    ...
+
+def combine(
+    src: Any,
+    *,
+    group_by: Sequence[str] | None = None,
+    keep_nested: bool = False,
+    add_extra_fields: str = "no",
+    layer: str | None = None,
+) -> Layer:
+    """Combine geometries into collections, one feature per group of field values."""
+    ...
+
+def sort(src: Any, *, method: str = "hilbert", layer: str | None = None) -> Layer:
+    """Sort features spatially (``"hilbert"`` or ``"strtree"``); null geometries last."""
     ...

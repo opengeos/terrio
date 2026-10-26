@@ -36,6 +36,14 @@ pub struct VectorArgs {
     /// Write each part of multi-part geometries as its own feature.
     #[arg(long, help_heading = "Vector options")]
     explodecollections: bool,
+    /// Simplify geometries with this tolerance, preserving topology, before reprojection
+    /// (ogr2ogr -simplify). A simplification that fails keeps the geometry.
+    #[arg(long, value_name = "TOLERANCE", conflicts_with = "segmentize", allow_negative_numbers = true, help_heading = "Vector options")]
+    simplify: Option<f64>,
+    /// Add vertices so that no segment is longer than this, before reprojection (ogr2ogr
+    /// -segmentize).
+    #[arg(long, value_name = "MAX_LENGTH", allow_negative_numbers = true, help_heading = "Vector options")]
+    segmentize: Option<f64>,
     /// The CRS of the input, overriding what it declares.
     #[arg(long = "s-srs", value_name = "CRS", help_heading = "Vector options")]
     s_srs: Option<String>,
@@ -71,6 +79,8 @@ impl VectorArgs {
             || self.nln.is_some()
             || self.nlt.is_some()
             || self.explodecollections
+            || self.simplify.is_some()
+            || self.segmentize.is_some()
             || self.s_srs.is_some()
             || self.a_srs.is_some()
             || self.append
@@ -96,6 +106,7 @@ impl VectorArgs {
             layer_name: self.nln.clone(),
             geometry_type: self.nlt.as_deref().map(GeometryConversion::parse).transpose()?,
             explode_collections: self.explodecollections,
+            geometry_op: self.geometry_op(),
             src_srs: srs(&self.s_srs)?,
             dst_srs: t_srs,
             assign_srs: srs(&self.a_srs)?,
@@ -116,8 +127,20 @@ impl VectorArgs {
             && self.nln.is_none()
             && self.nlt.is_none()
             && !self.explodecollections
+            && self.simplify.is_none()
+            && self.segmentize.is_none()
             && self.s_srs.is_none()
             && self.a_srs.is_none()
+    }
+
+    /// `--simplify` or `--segmentize`, which ogr2ogr ignores unless positive.
+    fn geometry_op(&self) -> Option<terrio::ops::vector_geom::GeometryOp> {
+        use terrio::ops::vector_geom::GeometryOp;
+        match (self.simplify, self.segmentize) {
+            (Some(tolerance), _) if tolerance > 0.0 => Some(GeometryOp::Simplify { tolerance }),
+            (_, Some(max_length)) if max_length > 0.0 => Some(GeometryOp::Segmentize { max_length }),
+            _ => None,
+        }
     }
 
     /// How to treat an existing output.

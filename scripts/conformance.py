@@ -25,6 +25,8 @@ Suites:
     analysis-output   zonal/point-sampling output reprojection and decimal rounding
     footprint         raster footprints, source/custom fields and singleparts vs GDAL
     topology          buffer, polygon overlay/dissolve, validity, repair and cleanup vs GEOS
+    vector-geom       simplify, segmentize, hulls, swap-xy, set-geom-type, combine and sort vs
+                      gdal vector and GEOS (compare_vector_geom_with_gdal.py)
     arrow             Arrow and GeoArrow export and import (compare_arrow_with_gdal.py)
     gpkg              GeoPackage updates and R-tree filters (compare_gpkg_with_gdal.py)
     streams           streamed vector conversions vs whole ones and ogr2ogr
@@ -1406,6 +1408,61 @@ def suite_topology(ctx):
     return s
 
 
+def suite_vector_geom(ctx):
+    """Vector geometry commands on real data against gdal vector and GEOS."""
+    s = Suite(
+        "vector-geom",
+        "Vector geometry commands",
+        "gdal vector, OGR and GEOS",
+        "Tennessee and US counties, Las Vegas roads and Natural Earth countries and places: "
+        "simplify, segmentize, swap-xy and set-geom-type against gdal vector, coordinate by "
+        "coordinate; convex and concave hulls against OGR/GEOS by their edges (relative "
+        "symmetric-difference area <= 0.2 where erosion order differs); combine and sort "
+        "against GDAL 3.13's algorithms (GEOS's STR tree, GDAL's Hilbert code), ties aside.",
+    )
+    if missing_modules("osgeo"):
+        s.skipped = "needs osgeo with GEOS"
+        return s
+    if not shutil.which("gdal"):
+        s.skipped = "needs the gdal command (GDAL >= 3.11)"
+        return s
+    needed = ("TN_Counties.geojson", "UScounties.fgb", "las_vegas_roads.geojson", "ne_countries.zip", "ne_places.zip")
+    if any(not os.path.isfile(os.path.join(ctx.data, name)) for name in needed):
+        s.skipped = "needs " + ", ".join(needed) + " (scripts/fetch_test_data.sh)"
+        return s
+    with tempfile.TemporaryDirectory(prefix="terrio-vector-geom-") as tmp:
+        report = os.path.join(tmp, "report.json")
+        code, out, err = run(
+            [
+                sys.executable,
+                str(SCRIPTS / "compare_vector_geom_with_gdal.py"),
+                ctx.data,
+                "--terrio",
+                ctx.terrio,
+                "--work-dir",
+                os.path.join(tmp, "outputs"),
+                "--json",
+                report,
+            ]
+        )
+        if code != 0:
+            s.error = tail(err or out)
+            return s
+        try:
+            results = json.loads(Path(report).read_text())["cases"]
+        except (OSError, KeyError, json.JSONDecodeError) as e:
+            s.error = str(e)
+            return s
+        for r in results:
+            name = r["name"]
+            group = next(g for g in ("simplify", "segmentize", "swap-xy", "set-geom-type", "convert", "convex-hull", "concave-hull", "combine", "sort") if name.startswith(g))
+            detail = ""
+            if r["status"] != IDENTICAL:
+                detail = ", ".join(f"{k} {v:.3g}" if isinstance(v, float) else f"{k} {v}" for k, v in r.items() if k not in ("name", "status"))
+            s.cases.append(Case(group, name, r["status"], detail))
+    return s
+
+
 SUITES = OrderedDict(
     [
         ("summaries", suite_summaries),
@@ -1429,6 +1486,7 @@ SUITES = OrderedDict(
         ("vector-ops", suite_vector_ops),
         ("multidim", suite_multidim),
         ("topology", suite_topology),
+        ("vector-geom", suite_vector_geom),
         ("footprint", suite_footprint),
         ("analysis-output", suite_analysis_output),
         ("arrow", suite_arrow),

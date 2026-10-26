@@ -1184,3 +1184,145 @@ pub fn pansharpen_vrt(pan: &str, spectral: Vec<String>, sources: JsValue, option
         .collect::<Vec<_>>();
     Ok(terrio::ops::pansharpen::vrt::PansharpenVrt::from_rasters(pan, &pan_header, &inputs, &o).map_err(js_err)?.to_xml())
 }
+
+/// Applies a per-feature geometry operation to every layer of vector input.
+fn vector_geom_op(src: &JsValue, op: terrio::ops::vector_geom::GeometryOp) -> Result<Dataset, JsError> {
+    let layers = input_layers(src)?;
+    let out = layers.iter().map(|l| terrio::ops::vector_geom::apply(l, &op)).collect::<terrio::Result<Vec<_>>>().map_err(js_err)?;
+    Ok(Dataset::from_layers(out, VectorDriver::GeoJSON))
+}
+
+/// Topology-preserving simplification of every geometry (GEOS's TopologyPreservingSimplifier,
+/// as `gdal vector simplify`), with a tolerance in CRS units. Z is kept, M dropped.
+#[wasm_bindgen]
+pub fn simplify(src: JsValue, tolerance: f64) -> Result<Dataset, JsError> {
+    vector_geom_op(&src, terrio::ops::vector_geom::GeometryOp::Simplify { tolerance })
+}
+
+/// Adds vertices so that no segment is longer than `maxLength` (CRS units), as `gdal vector
+/// segmentize`.
+#[wasm_bindgen]
+pub fn segmentize(src: JsValue, max_length: f64) -> Result<Dataset, JsError> {
+    vector_geom_op(&src, terrio::ops::vector_geom::GeometryOp::Segmentize { max_length })
+}
+
+/// The convex hull of every geometry, as `gdal vector convex-hull`.
+#[wasm_bindgen(js_name = convexHull)]
+pub fn convex_hull(src: JsValue) -> Result<Dataset, JsError> {
+    vector_geom_op(&src, terrio::ops::vector_geom::GeometryOp::ConvexHull)
+}
+
+/// Options of [`concave_hull`].
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase", default, deny_unknown_fields)]
+struct ConcaveHullArgs {
+    allow_holes: bool,
+    tight: bool,
+}
+
+/// The concave hull of every geometry (of its polygons for polygonal input), as `gdal vector
+/// concave-hull`. `ratio` goes from 0 (most concave) to 1 (convex hull). Options: `allowHoles`,
+/// `tight`.
+#[wasm_bindgen(js_name = concaveHull)]
+pub fn concave_hull(src: JsValue, ratio: f64, options: JsValue) -> Result<Dataset, JsError> {
+    let a: ConcaveHullArgs = parse_options(&options)?;
+    let o = terrio::ops::vector_geom::ConcaveHullOptions { ratio, allow_holes: a.allow_holes, tight: a.tight };
+    vector_geom_op(&src, terrio::ops::vector_geom::GeometryOp::ConcaveHull(o))
+}
+
+/// Swaps the X and Y coordinates of every geometry, as `gdal vector swap-xy`.
+#[wasm_bindgen(js_name = swapXy)]
+pub fn swap_xy(src: JsValue) -> Result<Dataset, JsError> {
+    vector_geom_op(&src, terrio::ops::vector_geom::GeometryOp::SwapXy)
+}
+
+/// Options of [`set_geom_type`].
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase", default, deny_unknown_fields)]
+struct SetGeomTypeArgs {
+    geometry_type: Option<String>,
+    multi: bool,
+    single: bool,
+    linear: bool,
+    dim: Option<String>,
+    layer_only: bool,
+    feature_only: bool,
+    skip: bool,
+}
+
+/// Changes geometry types and dimensions, as `gdal vector set-geom-type`. Options:
+/// `geometryType` (`"MULTIPOLYGON"`, `"POINTZ"`...), `multi`, `single`, `linear`, `dim`
+/// (`"XY"`, `"XYZ"`, `"XYM"`, `"XYZM"`), `layerOnly`, `featureOnly`, `skip`.
+#[wasm_bindgen(js_name = setGeomType)]
+pub fn set_geom_type(src: JsValue, options: JsValue) -> Result<Dataset, JsError> {
+    use terrio::ops::vector_geom::{Dimension, GeometryOp, GeometryTypeSpec, SetGeomTypeOptions};
+    let a: SetGeomTypeArgs = parse_options(&options)?;
+    let o = SetGeomTypeOptions {
+        geometry_type: a.geometry_type.as_deref().map(GeometryTypeSpec::parse).transpose().map_err(js_err)?,
+        multi: a.multi,
+        single: a.single,
+        linear: a.linear,
+        curve: false,
+        dim: a.dim.as_deref().map(Dimension::parse).transpose().map_err(js_err)?,
+        layer_only: a.layer_only,
+        feature_only: a.feature_only,
+        skip: a.skip,
+    };
+    vector_geom_op(&src, GeometryOp::SetGeomType(o))
+}
+
+/// Options of [`combine`].
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", default, deny_unknown_fields)]
+struct CombineArgs {
+    group_by: Vec<String>,
+    keep_nested: bool,
+    add_extra_fields: String,
+}
+
+impl Default for CombineArgs {
+    fn default() -> Self {
+        Self { group_by: Vec::new(), keep_nested: false, add_extra_fields: "no".into() }
+    }
+}
+
+/// Combines geometries into collections, one feature per group of field values, as `gdal
+/// vector combine`. Options: `groupBy` (field names), `keepNested`, `addExtraFields` (`"no"`,
+/// `"sometimes-identical"`, `"always-identical"`).
+#[wasm_bindgen]
+pub fn combine(src: JsValue, options: JsValue) -> Result<Dataset, JsError> {
+    use terrio::ops::vector_geom::{CombineOptions, ExtraFields};
+    let a: CombineArgs = parse_options(&options)?;
+    let o = CombineOptions {
+        group_by: a.group_by,
+        keep_nested: a.keep_nested,
+        add_extra_fields: ExtraFields::parse(&a.add_extra_fields).map_err(js_err)?,
+    };
+    let layers = input_layers(&src)?;
+    let out = layers.iter().map(|l| terrio::ops::vector_geom::combine(l, &o)).collect::<terrio::Result<Vec<_>>>().map_err(js_err)?;
+    Ok(Dataset::from_layers(out, VectorDriver::GeoJSON))
+}
+
+/// Options of [`sort`].
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", default, deny_unknown_fields)]
+struct SortArgs {
+    method: String,
+}
+
+impl Default for SortArgs {
+    fn default() -> Self {
+        Self { method: "hilbert".into() }
+    }
+}
+
+/// Sorts features spatially, as `gdal vector sort`. Options: `method` (`"hilbert"`, the
+/// default, or `"strtree"`). Null and empty geometries go last.
+#[wasm_bindgen]
+pub fn sort(src: JsValue, options: JsValue) -> Result<Dataset, JsError> {
+    let a: SortArgs = parse_options(&options)?;
+    let method = terrio::ops::vector_geom::SortMethod::parse(&a.method).map_err(js_err)?;
+    let layers = input_layers(&src)?;
+    let out = layers.iter().map(|l| terrio::ops::vector_geom::sort(l, method)).collect();
+    Ok(Dataset::from_layers(out, VectorDriver::GeoJSON))
+}
