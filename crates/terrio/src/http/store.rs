@@ -260,7 +260,8 @@ struct Reply {
 
 /// Sends a write request (`PUT`, `DELETE`, `POST`) for an object: S3 objects signed when
 /// credentials are set (retried in the bucket's region when another was asked), Azure blobs with
-/// the SAS token of their URL. Transient errors are retried and redirects followed. Statuses
+/// the SAS token of their URL. Transient errors are retried; only same-origin write
+/// redirects are followed. Bucket-region discovery uses the store’s own endpoint. Statuses
 /// other than 2xx (and 404 when `missing_ok`) are errors.
 fn write_request(
     method: &str,
@@ -359,7 +360,12 @@ fn write_request(
             if redirects > MAX_REDIRECTS {
                 return Err(Error::Http(format!("{}: too many redirects", redact(&url))));
             }
-            url = resolve_redirect(&url, &location);
+            let next = resolve_redirect(&url, &location);
+            let origin = crate::vfs::url_origin(&url);
+            if origin.is_none() || origin != crate::vfs::url_origin(&next) {
+                return Err(Error::Http(format!("{}: refusing a cross-origin write redirect", redact(&url))));
+            }
+            url = next;
             continue;
         }
         if matches!(status, 429 | 500 | 502 | 503 | 504) && attempt < options.max_retry {
@@ -458,4 +464,81 @@ pub(crate) fn s3_copy(from: &S3Object, to: &S3Object) -> Result<()> {
 /// A local path's bytes as an upload.
 pub(crate) fn file_payload(path: &Path) -> Payload {
     Payload::File(path.to_path_buf())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{BufRead, BufReader, Write};
+    use std::net::{TcpListener, TcpStream};
+    use std::time::Duration;
+
+    fn reply(mut stream: TcpStream, status: u16, location: &str) -> Vec<u8> {
+        stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        let mut line = String::new();
+        reader.read_line(&mut line).unwrap();
+        let mut length = 0;
+        loop {
+            line.clear();
+            reader.read_line(&mut line).unwrap();
+            if line.trim().is_empty() {
+                break;
+            }
+            if let Some((key, value)) = line.split_once(':')
+                && key.eq_ignore_ascii_case("content-length")
+            {
+                length = value.trim().parse().unwrap();
+            }
+        }
+        let mut body = vec![0; length];
+        reader.read_exact(&mut body).unwrap();
+        write!(stream, "HTTP/1.1 {status} Test\r\nLocation: {location}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+        body
+    }
+
+    #[test]
+    fn uploads_refuse_cross_origin_redirects_without_sending_the_payload() {
+        for status in [307, 308] {
+            let target = TcpListener::bind("127.0.0.1:0").unwrap();
+            target.set_nonblocking(true).unwrap();
+            let destination = format!("http://{}/other", target.local_addr().unwrap());
+            let (stop, stopped) = std::sync::mpsc::channel();
+            let destination_thread = std::thread::spawn(move || {
+                loop {
+                    match target.accept() {
+                        Ok((stream, _)) => return Some(reply(stream, 200, "")),
+                        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+                        Err(e) => panic!("{e}"),
+                    }
+                    if stopped.recv_timeout(Duration::from_millis(5)).is_ok() {
+                        return None;
+                    }
+                }
+            });
+            let source = TcpListener::bind("127.0.0.1:0").unwrap();
+            let remote = Remote::Url(format!("http://{}/upload", source.local_addr().unwrap()));
+            let source_thread = std::thread::spawn(move || reply(source.accept().unwrap().0, status, &destination));
+            let payload = b"upload body".to_vec();
+            let result = write_request("PUT", &remote, "", &[], &Payload::Bytes(payload.clone()), false);
+            let _ = stop.send(());
+            assert_eq!(source_thread.join().unwrap(), payload);
+            assert!(destination_thread.join().unwrap().is_none(), "redirect target must receive no request or payload");
+            assert!(result.err().expect("cross-origin redirect must fail").to_string().contains("cross-origin write redirect"));
+        }
+    }
+
+    #[test]
+    fn uploads_follow_same_origin_redirects() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let remote = Remote::Url(format!("http://{}/upload", listener.local_addr().unwrap()));
+        let server = std::thread::spawn(move || {
+            let first = reply(listener.accept().unwrap().0, 307, "/other");
+            let second = reply(listener.accept().unwrap().0, 200, "");
+            (first, second)
+        });
+        let payload = b"upload body".to_vec();
+        write_request("PUT", &remote, "", &[], &Payload::Bytes(payload.clone()), false).unwrap();
+        assert_eq!(server.join().unwrap(), (payload.clone(), payload));
+    }
 }

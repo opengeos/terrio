@@ -190,7 +190,10 @@ Signatures and SAS tokens are hidden in logs and error messages.
 `terrio vsi` lists, copies, synchronizes, moves and deletes files on these locations and in
 `/vsimem/` and tar archives (`/vsitar/`), as `gdal vsi` does: S3 objects are written with signed
 requests (single `PUT`s up to 5 GiB, server-side copies within S3), Azure blobs with a SAS token;
-Google Cloud Storage and plain HTTP servers are read only. See [vsi](cli.md#vsi).
+Google Cloud Storage and plain HTTP servers are read only. Write redirects stay on the
+same origin (scheme, host and port); a redirect to another origin is refused before
+forwarding the body or signing another request. S3 bucket-region discovery still uses
+the store’s own endpoint. See [vsi](cli.md#vsi).
 
 ```sh
 terrio vsi list -lR s3://bucket/prefix
