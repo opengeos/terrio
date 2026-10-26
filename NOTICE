@@ -441,3 +441,14 @@ and src/latitudes.cpp (Karney's auxiliary-latitude series), under the same terms
 The LERC header bounds in crates/terrio/src/tiff_codecs.rs follow the
 Lerc1/Lerc2 layouts implemented by lerc-rust 0.5.0
 (https://github.com/i-norden/lerc-rust), under its MIT license.
+
+GDAL raster compare, pixel-info and gdal2xyz
+--------------------------------------------
+crates/terrio/src/ops/compare.rs follows GDAL 3.13's apps/gdalalg_raster_compare.cpp
+(report wording and order, data type unions, pixel and metadata comparisons);
+crates/terrio/src/ops/pixel_info.rs ports alg/gdal_interpolateatpoint.cpp and the
+cubic and cubic B-spline kernels of alg/gdalresamplingkernels.h (Copyright (c) 2001,
+Frank Warmerdam; 2008-2012, 2025 Even Rouault; 2024, Javier Jimenez Shaw), and follows
+apps/gdalalg_raster_pixel_info.cpp and apps/gdallocationinfo.cpp for its output; and
+crates/terrio/src/ops/xyz.rs follows swig/python/gdal-utils/osgeo_utils/gdal2xyz.py.
+GDAL is distributed under the MIT license (https://github.com/OSGeo/gdal/blob/master/LICENSE.TXT).

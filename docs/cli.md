@@ -30,6 +30,9 @@ terrio <COMMAND>
   sort        Spatial sort along a Hilbert curve or an STR tree (like gdal vector sort)
   footprint   Exact valid-data footprint of a raster
   sample      Sample multiple raster bands at vector points
+  compare     Compare two rasters and report the differences (like gdal raster compare, gdalcompare.py)
+  pixel-info  Pixel values at positions (like gdal raster pixel-info, gdallocationinfo)
+  xyz         Raster pixels as XYZ text (like gdal2xyz.py)
   contour     Contour lines at interval or fixed elevation levels
   zonal-stats Per-polygon statistics across multiple raster bands
   sql         Read-only SELECT queries over vector layers
@@ -708,6 +711,119 @@ Terrio applies the radius mask deterministically. GDAL 3.12 can race its left/ri
 for an outside observer, occasionally leaving an out-of-range boundary pixel visible. The
 conformance suite checks Terrio's mask independently and compares in-radius GDAL pixels for
 that case; all other viewshed cases compare every pixel.
+
+## compare
+
+```sh
+terrio compare reference.tif output.tif            # exit status: the number of differences
+terrio compare reference.tif output.tif --skip-binary --json
+terrio compare golden.tif new.tif --skip-all-optional
+```
+
+Compares two rasters as `gdal raster compare` (and `gdalcompare.py`) do, and prints GDAL's
+report: one line per difference, worded and ordered as GDAL's, and exits with the number of
+lines (capped at 255). The first raster is the reference. Identical files have no difference
+and nothing else is compared; otherwise the report covers the file sizes and bytes, the
+subdataset count, CRS, geotransform (relative tolerance 1e-10), band count and size, the
+dataset's default, `RPC` and `GEOLOCATION` metadata, then per band its size, description, data
+type, nodata value, color interpretation, pixels, overviews (each compared as a band), mask
+flags and per-dataset mask (compared as a band), and band metadata; then each subdataset.
+Metadata includes `.aux.xml` (PAM) items, GeoTIFF `TIFFTAG_*` items and RPC tags, as GDAL
+reports them. Differing pixels add two lines per band: `1: pixels differing: N` and
+`1: maximum pixel value difference: X`, computed in the union of both types (GDAL's
+`GDALDataTypeUnion`); a NaN in one band only differs, NaNs in both do not.
+
+`--skip-all-optional`, `--skip-binary`, `--skip-crs`, `--skip-geotransform`,
+`--skip-overview`, `--skip-metadata`, `--skip-rpc`, `--skip-geolocation` and
+`--skip-subdataset` skip what GDAL's options skip; sizes, band counts, descriptions, types,
+nodata, color interpretations and pixels are always compared. `--json` prints
+`{difference_count, differences: [{kind, band, subdataset, message}], bands: [{band,
+data_type, pixels, pixels_differing, max_abs_diff}]}`, with every band, overview and mask
+compared, including those without differences.
+
+Rasters are read lazily: strips of rows by window (of every band at once), overviews from
+their own levels, and the binary comparison compares sizes first and then reads a megabyte at a
+time. Comparing two copies of a 51 MB USGS GeoTIFF served over HTTP with `--skip-binary
+--skip-overview` fetched 76.5 MB in 10 requests; the binary comparison of two identical copies
+read both files (103 MB). The MCP tool reports the exit status as a result, not a failure.
+
+Compared with GDAL 3.12.2 in the `raster-query` conformance suite: 21 of 21 cases give the
+same lines and exit status. Differences: CRS mismatch lines print Terrio's WKT where GDAL
+prints WKT2_2019; GDAL's metadata value line swaps the two values (`Reference ... has value
+<input's>`), Terrio names them in reference, input order. Not supported: complex bands,
+`--input-format`/`--open-option`, pipelines, and GDAL's per-dataset comparison of more than
+10 pixel-interleaved bands (whose lines read `Band 1: ...`); `RPC` comes from GeoTIFF tags
+only (not `_RPC.TXT`). Terrio opens a multi-variable netCDF/HDF5 container as its first
+variable, so the comparison of two containers differs from GDAL's empty container datasets;
+compare their subdatasets.
+
+## pixel-info
+
+```sh
+terrio pixel-info dem.tif 100 200                          # column, line; GeoJSON
+terrio pixel-info --position-crs WGS84 -r bilinear dem.tif -105.5 39.5
+echo "-105.5 39.5 site A" | terrio pixel-info -f text --position-crs EPSG:4326 dem.tif
+terrio pixel-info --position-dataset sites.gpkg -f csv dem.tif
+terrio pixel-info --position-dataset sites.gpkg dem.tif -o values.gpkg
+```
+
+Pixel values at positions, as `gdal raster pixel-info` and `gdallocationinfo` (`locationinfo`
+is an alias). Positions are pairs of arguments (`X Y` or `X,Y`), `-p X,Y`, lines of standard
+input (an `X Y` pair, then any text, reported as extra content; GDAL's tokenizing, quotes
+kept together) or the points of a vector dataset with `--position-dataset` (GDAL 3.13; centroids
+of other geometries, `-l` for the layer, `--include-field NAME|ALL|NONE`). `--position-crs` is
+`pixel` (column and line, the default), `dataset` (the raster's CRS) or any CRS, X being the
+longitude or easting; with `--position-dataset` it defaults to the layer's CRS. `-b` selects
+bands, `--overview N` (from 0) queries an overview with full-resolution positions, and
+`-r nearest|bilinear|cubic|cubicspline` interpolates as GDAL's `GDALRasterInterpolateAtPoint`:
+pixel centres at half-integers, kernels shifted inside at edges, no value when a bilinear kernel
+touches nodata, nodata skipped by cubic kernels. Values are reported raw and with the band's
+scale and offset applied.
+
+`-f` selects the output: `geojson` (the default: `gdal raster pixel-info`'s feature collection,
+points in the raster's CRS when it has an EPSG code, else in WGS 84;
+`--promote-pixel-value-to-z` puts the value as Z), `csv` (GDAL 3.13's columns `geom_x`,
+`geom_y`, the layer's fields or `extra_content`, `column`, `line`, `band_N_raw_value`,
+`band_N_unscaled_value`, numbers as `%.15g`), `text` (`gdallocationinfo`'s report),
+`value` (`gdallocationinfo -valonly`, with `--field-sep`) and `json` (a list of
+`{input, extra, column, line, xy, bands: [{band, value, unscaled}]}`). With `text` and `value`,
+the exit status is 1 when a position is off the raster, as `gdallocationinfo`'s. `-o` writes
+the GeoJSON, CSV or a vector layer of points (any vector format) to a file.
+
+Only the 64 x 64 pixel blocks around the positions are read: two cubic queries of a 51 MB
+USGS GeoTIFF served over HTTP fetched 1.8 MB in 3 requests.
+
+Compared with GDAL 3.12.2 (`gdal raster pixel-info` and `gdallocationinfo`) in the
+`raster-query` conformance suite: of 67 cases, 64 identical (GeoJSON and CSV values parsed;
+text and `-valonly` byte for byte) and 3 within tolerance: positions in WGS 84 on a custom Albers
+raster (column, line and geometry within 1e-11 relative, from Terrio's projection arithmetic)
+and one scale/offset product one ULP from GDAL's build. Formatting differences: GeoJSON
+whitespace (values are identical); CSV follows GDAL 3.13 (3.12's columns were `input_x`,
+`input_y`, `extra_input` with 17 significant digits). Not supported: complex bands, VRT
+`LocationInfo` (source files), GDAL pipelines, `-xml`, `-lifonly` and `-E`.
+
+## xyz
+
+```sh
+terrio xyz dem.tif dem.xyz
+terrio xyz landsat.tif --allbands --csv --skipnodata > landsat.csv
+terrio xyz dem.tif --srcwin 100 200 50 50 --skip 2 --dstnodata -9999
+```
+
+Writes a line per pixel with the X and Y of its centre and the band values, as `gdal2xyz.py`:
+coordinates as `%.10g` when the raster's origin and extent are within 180 units, `%.3f`
+otherwise, values as `%d` when the first band is Int32 or UInt32, else `%g`, converted to the
+first band's type. `-b` (band 1 by default; repeat or comma-separate), `--allbands`,
+`--skip N` or `--skip X,Y`, `--srcwin XOFF YOFF XSIZE YSIZE`, `--skipnodata`,
+`--srcnodata` and `--dstnodata` (one value, or one per band), `--csv` and `--delimiter`. Output
+goes to the file given, or standard output. The raster is read and the text written a strip of
+rows at a time.
+
+Compared with GDAL 3.12.2's `gdal2xyz.py` in the `raster-query` conformance suite: 11 of 11
+cases byte-identical. Difference: `--skipnodata` and `--dstnodata` match NaN nodata values,
+which `gdal2xyz.py` never matches (so it keeps those lines). `gdal2xyz.py`'s `-skip` takes no
+value on its 3.12 command line; Terrio's `--skip N` is its function's `skip`. Not supported:
+returning NumPy arrays (use `Raster.read`).
 
 ## calc
 

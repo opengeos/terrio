@@ -138,7 +138,9 @@ enum Command {
 }
 
 /// Runs the command line `args` (the program name first) and returns the process exit code: 0 on
-/// success, 1 when the command fails, 2 for a usage error (as clap reports it).
+/// success, 1 when the command fails, 2 for a usage error (as clap reports it). `compare` exits
+/// with its difference count and `pixel-info` (text and value outputs) with 1 for positions off
+/// the raster, as GDAL's tools do.
 pub fn run(args: Vec<OsString>) -> i32 {
     run_as(args, None)
 }
