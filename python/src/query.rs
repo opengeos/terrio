@@ -281,7 +281,8 @@ fn xyz<'py>(
     match dst {
         Some(path) => {
             if crate::ops::raster_path(src)?.is_some_and(|input| {
-                input == path || std::fs::canonicalize(input).ok().zip(std::fs::canonicalize(&path).ok()).is_some_and(|(a, b)| a == b)
+                std::path::Path::new(&input) == path.as_path()
+                    || std::fs::canonicalize(input).ok().zip(std::fs::canonicalize(&path).ok()).is_some_and(|(a, b)| a == b)
             }) {
                 return Err(invalid("the output would overwrite the input"));
             }
