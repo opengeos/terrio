@@ -616,3 +616,10 @@ python scripts/conformance.py ../terrio-data --only lazy-geotiff --strict
 `LazyRaster::rpc`, `file_list` and `sample_bits` are Rust APIs. Python and
 JavaScript exposure of these additional lazy-reader facts remains follow-up
 work; the existing bindings retain their behavior.
+
+## Release rehearsal
+
+The full release dry run is manual: select **Release dry run → Run workflow** in
+GitHub Actions before tagging a release. It builds the complete cross-platform
+wheel, CLI, installer and npm matrix without publishing. Pull requests retain the
+normal CI checks, including Python, WASM, API documentation and package validation.

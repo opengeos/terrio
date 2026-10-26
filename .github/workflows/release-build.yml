@@ -3,7 +3,7 @@ name: Release build
 # The release artifacts: the Python wheels for every platform, the source distribution, the
 # Pyodide wheel (tested in Pyodide under Node.js) and the `terrio` command-line binaries, with
 # the installers that download them. Called by release.yml, which publishes them on
-# tags, and by release-dry-run.yml, which builds them for pull requests without publishing.
+# tags, and by release-dry-run.yml, which builds them on demand without publishing.
 on:
   workflow_call:
 

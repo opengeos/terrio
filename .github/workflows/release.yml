@@ -5,7 +5,7 @@ name: Release
 # and command-line binaries to the GitHub release. All three registries use trusted
 # publishing: no API tokens are stored, each registry trusts this workflow and its environment
 # (pypi, crates-io, npm). The artifacts are built by release-build.yml, which
-# release-dry-run.yml also runs for pull requests, without publishing. Then linux-packages.yml
+# release-dry-run.yml can run manually before a release, without publishing. Then linux-packages.yml
 # updates the AUR packages and builds the COPR one, with the two secrets it describes (the AUR
 # and COPR have no trusted publishing).
 on:
