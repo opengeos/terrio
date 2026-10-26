@@ -110,25 +110,23 @@ pub fn compare(reference: JsValue, input: JsValue, options: JsValue) -> Result<J
             Some(terrio::memory::open_raster_lazy_bytes(bytes, &name).map_err(js_err)?)
         }
     };
-    let mut comparison = with_raster(&reference, |r| match &mut lazy_input {
-        Some(i) => terrio::ops::compare::compare_rasters(r, i, &options),
-        None => Ok(terrio::ops::compare::Comparison::default()),
-    })?;
-    if lazy_input.is_none() {
+    let mut comparison = if let Some(i) = &mut lazy_input {
+        with_raster(&reference, |r| terrio::ops::compare::compare_rasters(r, i, &options))?
+    } else {
         // The input is a Dataset: borrowed after the reference, unless both are the same one.
         let same = Dataset::lookup(&reference).zip(Dataset::lookup(&input)).is_some_and(|(a, b)| std::rc::Rc::ptr_eq(&a, &b));
         if same {
-            comparison = with_raster(&reference, |r| {
+            with_raster(&reference, |r| {
                 let mut copy = r.shared();
                 terrio::ops::compare::compare_rasters(r, &mut copy, &options)
-            })?;
+            })?
         } else {
             let other = Dataset::lookup(&input).expect("a Dataset");
             let mut other = other.borrow_mut();
             let Inner::Raster(i) = &mut *other else { return Err(invalid("expected a raster, got a vector dataset")) };
-            comparison = with_raster(&reference, |r| terrio::ops::compare::compare_rasters(r, i, &options))?;
+            with_raster(&reference, |r| terrio::ops::compare::compare_rasters(r, i, &options))?
         }
-    }
+    };
     if let Some(message) = binary {
         comparison.differences.insert(0, terrio::ops::compare::Difference { kind: "binary", band: None, subdataset: None, message });
     }

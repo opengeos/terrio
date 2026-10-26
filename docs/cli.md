@@ -749,8 +749,8 @@ read both files (103 MB). The MCP tool reports query statuses as results, not ex
 On the command line, status 1 can mean either one difference or an execution error;
 check stderr for errors. `pixel-info` similarly uses status 1 for off-raster positions.
 
-Compared with GDAL 3.12.2 in the `raster-query` conformance suite: 21 of 21 cases give the
-same lines and exit status. Differences: CRS mismatch lines print Terrio's WKT where GDAL
+Compared with GDAL 3.13.3 in the `raster-query` conformance suite: 20 of 21 cases give the
+same lines and exit status. One known mask-count reporting difference is detailed in Testing. Differences: CRS mismatch lines print Terrio's WKT where GDAL
 prints WKT2_2019; GDAL's metadata value line swaps the two values (`Reference ... has value
 <input's>`), Terrio names them in reference, input order. Not supported: complex bands,
 `--input-format`/`--open-option`, pipelines, and GDAL's per-dataset comparison of more than
@@ -801,7 +801,7 @@ the GeoJSON, CSV or a vector layer of points (any vector format) to a file.
 Only the 64 x 64 pixel blocks around the positions are read: two cubic queries of a 51 MB
 USGS GeoTIFF served over HTTP fetched 1.8 MB in 3 requests.
 
-Compared with GDAL 3.12.2 (`gdal raster pixel-info` and `gdallocationinfo`) in the
+Compared with GDAL 3.13.3 (`gdal raster pixel-info` and `gdallocationinfo`) in the
 `raster-query` conformance suite: of 67 cases, 64 identical (GeoJSON and CSV values parsed;
 text and `-valonly` byte for byte) and 3 within tolerance: positions in WGS 84 on a custom Albers
 raster (column, line and geometry within 1e-11 relative, from Terrio's projection arithmetic)
@@ -827,7 +827,7 @@ first band's type. `-b` (band 1 by default; repeat or comma-separate), `--allban
 goes to the file given, or standard output. The raster is read and the text written a strip of
 rows at a time.
 
-Compared with GDAL 3.12.2's `gdal2xyz.py` in the `raster-query` conformance suite: 11 of 11
+Compared with GDAL 3.13.3's `gdal2xyz.py` in the `raster-query` conformance suite: 11 of 11
 cases byte-identical. Difference: `--skipnodata` and `--dstnodata` match NaN nodata values,
 which `gdal2xyz.py` never matches (so it keeps those lines). `gdal2xyz.py`'s `-skip` takes no
 value on its 3.12 command line; Terrio's `--skip N` is its function's `skip`. Not supported:
@@ -1124,3 +1124,8 @@ point tie points and rotated affine transforms, without moving pixel corners.
 Writing a PixelIsPoint GeoTIFF requires a CRS. A write with an unknown CRS is
 rejected before creating the file, avoiding a half-pixel origin shift without
 a corresponding raster-type GeoKey.
+
+
+`compare --skip-all-optional` takes precedence over individual `--skip-*` flags.
+`pixel-info` reports off-raster status for text/value reports; vector file output
+records missing samples as null and returns normal write success, matching GDAL.

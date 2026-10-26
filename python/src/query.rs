@@ -93,6 +93,11 @@ fn compare<'py>(
     };
     let comparison = match (crate::ops::raster_path(reference)?, crate::ops::raster_path(input)?) {
         (Some(a), Some(b)) => crate::with_warnings(py, || terrio::ops::compare::compare(&a, &b, &options))?,
+        (None, None) if reference.is(input) => {
+            let mut a = open_or_borrow(py, reference)?;
+            let mut copy = a.raster().shared();
+            terrio::ops::compare::compare_rasters(a.raster(), &mut copy, &options).py()?
+        }
         _ => {
             let mut a = open_or_borrow(py, reference)?;
             let mut b = open_or_borrow(py, input)?;
@@ -275,10 +280,12 @@ fn xyz<'py>(
     };
     match dst {
         Some(path) => {
-            let lines = with_raster(py, src, |r| {
-                let mut out = std::io::BufWriter::new(std::fs::File::create(&path)?);
-                terrio::ops::xyz::write_xyz(r, &mut out, &options)
-            })?;
+            if crate::ops::raster_path(src)?.is_some_and(|input| {
+                input == path || std::fs::canonicalize(input).ok().zip(std::fs::canonicalize(&path).ok()).is_some_and(|(a, b)| a == b)
+            }) {
+                return Err(invalid("the output would overwrite the input"));
+            }
+            let lines = with_raster(py, src, |r| terrio::ops::xyz::write_xyz_file(r, &path, &options))?;
             Ok(lines.into_pyobject(py)?.into_any())
         }
         None => {

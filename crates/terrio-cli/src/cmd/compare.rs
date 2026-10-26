@@ -8,7 +8,7 @@ pub struct Args {
     /// The raster compared with it.
     input: String,
     /// Skip every optional comparison: only sizes, band counts, band descriptions, data types,
-    /// color interpretations, nodata values and pixels are compared.
+    /// color interpretations, nodata values and pixels are compared. Takes precedence over individual skip flags.
     #[arg(long)]
     skip_all_optional: bool,
     /// Skip the byte-by-byte comparison of the files.

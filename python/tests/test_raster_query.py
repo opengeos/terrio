@@ -96,3 +96,14 @@ def test_xyz_text_and_file(tmp_path):
     assert path.read_text() == "115.000 225.000 4\n125.000 225.000 -1\n"
     with pytest.raises(ValueError):
         terrio.xyz(src, srcwin=(2, 0, 5, 1))
+
+
+def test_same_object_compare_and_xyz_preserves_source(tmp_path):
+    src = _raster(np.arange(6).reshape(2, 3))
+    assert terrio.compare(src, src)["differences"] == []
+    path = str(tmp_path / "source.tif")
+    src.write(path)
+    before = (tmp_path / "source.tif").read_bytes()
+    with pytest.raises(ValueError, match="overwrite the input"):
+        terrio.xyz(path, path)
+    assert (tmp_path / "source.tif").read_bytes() == before

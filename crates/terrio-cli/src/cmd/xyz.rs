@@ -1,4 +1,5 @@
 //! `terrio xyz` (also exposed automatically as an MCP tool).
+use std::io::Write;
 use terrio::ops::xyz::{XyzOptions, write_xyz};
 use terrio::{Error, Result};
 
@@ -77,10 +78,10 @@ pub fn run(a: Args) -> Result<()> {
             let stdout = std::io::stdout();
             let mut out = std::io::BufWriter::new(stdout.lock());
             write_xyz(&mut raster, &mut out, &options)?;
+            out.flush()?;
         }
         Some(path) => {
-            let mut out = std::io::BufWriter::new(std::fs::File::create(path)?);
-            write_xyz(&mut raster, &mut out, &options)?;
+            terrio::ops::xyz::write_xyz_file(&mut raster, std::path::Path::new(path), &options)?;
         }
     }
     Ok(())

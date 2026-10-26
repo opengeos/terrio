@@ -173,7 +173,41 @@ fn tokenize(line: &str) -> Vec<String> {
 /// C's `atof`: the longest numeric prefix, 0 when there is none.
 fn c_atof(s: &str) -> f64 {
     let s = s.trim_start();
-    (0..=s.len()).rev().filter(|&i| s.is_char_boundary(i)).find_map(|i| s[..i].parse::<f64>().ok()).unwrap_or(0.0)
+    let bytes = s.as_bytes();
+    let mut end = usize::from(matches!(bytes.first(), Some(b'+' | b'-')));
+    for special in ["infinity", "inf", "nan"] {
+        if s.get(end..end + special.len()).is_some_and(|p| p.eq_ignore_ascii_case(special)) {
+            return s[..end + special.len()].parse().unwrap_or(0.0);
+        }
+    }
+    let start = end;
+    while bytes.get(end).is_some_and(u8::is_ascii_digit) {
+        end += 1;
+    }
+    if bytes.get(end) == Some(&b'.') {
+        end += 1;
+        while bytes.get(end).is_some_and(u8::is_ascii_digit) {
+            end += 1;
+        }
+    }
+    if end == start {
+        return 0.0;
+    }
+    let exponent = end;
+    if matches!(bytes.get(end), Some(b'e' | b'E')) {
+        end += 1;
+        if matches!(bytes.get(end), Some(b'+' | b'-')) {
+            end += 1;
+        }
+        let digits = end;
+        while bytes.get(end).is_some_and(u8::is_ascii_digit) {
+            end += 1;
+        }
+        if end == digits {
+            end = exponent;
+        }
+    }
+    s[..end].parse().unwrap_or(0.0)
 }
 
 /// The value of one band at a position.
@@ -593,14 +627,18 @@ fn query(
         },
     };
     let header = raster.header();
-    let props: Vec<(Option<f64>, f64, f64)> = bands
+    let props: Vec<(Option<f64>, f64, f64, bool)> = bands
         .iter()
         .map(|&b| {
             let m = header.band_metadata.get(b - 1);
-            (raster.band_nodata(b), m.and_then(|m| m.scale).unwrap_or(1.0), m.and_then(|m| m.offset).unwrap_or(0.0))
+            (
+                raster.band_nodata(b),
+                m.and_then(|m| m.scale).unwrap_or(1.0),
+                m.and_then(|m| m.offset).unwrap_or(0.0),
+                !matches!(raster.band_data_type(b), DataType::F32 | DataType::F64),
+            )
         })
         .collect();
-    let integer = !matches!(raster.data_type(), DataType::F32 | DataType::F64);
     let (full_w, full_h) = (raster.width(), raster.height());
     let (lw, lh) = match options.overview {
         Some(o) => raster.overviews()[o],
@@ -624,7 +662,7 @@ fn query(
         };
         let mut values = Vec::with_capacity(bands.len());
         for (i, &band) in bands.iter().enumerate() {
-            let (nodata, scale, offset) = props[i];
+            let (nodata, scale, offset, integer) = props[i];
             let value = if column.is_finite() && line.is_finite() {
                 interpolate(&mut blocks, i, nodata, qx, qy, options.resampling)?
             } else {
@@ -1044,6 +1082,14 @@ mod tests {
         assert!(g["features"][1]["properties"]["bands"][0].get("raw_value").is_none());
         assert_eq!(info.to_csv().lines().nth(1).unwrap(), "125,225,,2.5,1.5,7,7");
         assert_eq!(info.to_values("\n"), "7\n\n");
+    }
+
+    #[test]
+    fn numeric_prefix_scan_handles_long_suffixes_and_incomplete_exponents() {
+        assert_eq!(c_atof(&format!("12{}", "q".repeat(100_000))), 12.);
+        assert_eq!(c_atof("1e+oops"), 1.);
+        assert_eq!(c_atof("-1.5e2tail"), -150.);
+        assert!(c_atof("-infinityrest").is_infinite());
     }
 
     #[test]

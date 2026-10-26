@@ -113,3 +113,14 @@ fn pixel_info_refuses_missing_layers_and_positions() {
     let (code, _, _) = terrio(&["pixel-info", "--position-dataset", points.to_str().unwrap(), "-l", "nope", &a], None);
     assert_eq!(code, 1);
 }
+
+#[test]
+fn pixel_info_refuses_to_replace_the_source() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = write(dir.path(), "source.tif", vec![1.; 8], None);
+    let bytes = std::fs::read(&path).unwrap();
+    let (status, _, err) = terrio(&["pixel-info", &path, "0", "0", "-o", &path], None);
+    assert_ne!(status, 0);
+    assert!(err.contains("overwrite the input"));
+    assert_eq!(std::fs::read(path).unwrap(), bytes);
+}

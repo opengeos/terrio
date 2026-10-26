@@ -71,6 +71,9 @@ fn parse_positions(values: &[String]) -> Result<Vec<Position>> {
 }
 
 pub fn run(a: Args) -> Result<()> {
+    if a.output.as_ref().is_some_and(|path| path == &a.input || super::rasterout::same_file(path, &a.input)) {
+        return Err(Error::InvalidArgument("the output would overwrite the input".into()));
+    }
     let options = PixelInfoOptions {
         bands: a.bands.clone(),
         overview: a.overview,
@@ -153,7 +156,10 @@ pub fn run(a: Args) -> Result<()> {
     };
     match &a.output {
         Some(path) => std::fs::write(path, text)?,
-        None => print!("{text}"),
+        None => {
+            use std::io::Write;
+            std::io::stdout().lock().write_all(text.as_bytes())?;
+        }
     }
     // gdallocationinfo exits with 1 when a location is off the raster.
     if matches!(format.as_str(), "text" | "value" | "valonly") && info.off_raster_count() > 0 {

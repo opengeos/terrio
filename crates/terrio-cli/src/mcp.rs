@@ -210,8 +210,6 @@ fn call_tool(terrio: &[OsString], name: &str, args: Vec<OsString>, cancel: &Atom
             if failed {
                 let code = status.code().map_or_else(|| "a signal".to_string(), |c| format!("exit code {c}"));
                 text.push_str(&format!("\n(terrio {name} failed with {code})"));
-            } else if !status.success() {
-                text.push_str(&format!("\n(terrio {name} exited with status {})", status.code().unwrap_or_default()));
             }
             if text.trim().is_empty() {
                 text = format!("terrio {name} finished.");

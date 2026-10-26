@@ -157,7 +157,7 @@ pub fn write_xyz<W: Write>(raster: &mut LazyRaster, out: &mut W, options: &XyzOp
     let mut y = y_off;
     let end = y_off + y_size;
     while y < end {
-        let count = rows.min(end - y);
+        let count = if sy > 1 { 1 } else { rows.min(end - y) };
         let data = raster.read_window(Window::new(x_off, y, x_size, count), &read)?.raster.data;
         let plane = x_size * count;
         for r in 0..count {
@@ -207,10 +207,31 @@ pub fn write_xyz<W: Write>(raster: &mut LazyRaster, out: &mut W, options: &XyzOp
             }
             out.write_all(text.as_bytes())?;
         }
-        y += count;
+        y = y.saturating_add(if sy > 1 { sy } else { count });
     }
     out.flush()?;
     Ok(lines)
+}
+
+/// Writes XYZ to a neighboring temporary file and replaces the output only after
+/// successful reads and an explicit flush. The caller must reject input aliases.
+#[cfg(not(target_family = "wasm"))]
+pub fn write_xyz_file(raster: &mut LazyRaster, path: &std::path::Path, options: &XyzOptions) -> Result<u64> {
+    let parent = path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(std::path::Path::new("."));
+    let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
+    let lines = {
+        let mut output = std::io::BufWriter::new(temporary.as_file_mut());
+        let lines = write_xyz(raster, &mut output, options)?;
+        output.flush()?;
+        lines
+    };
+    temporary.persist(path).map_err(|e| Error::Io(e.error))?;
+    Ok(lines)
+}
+
+#[cfg(target_family = "wasm")]
+pub fn write_xyz_file(_raster: &mut LazyRaster, _path: &std::path::Path, _options: &XyzOptions) -> Result<u64> {
+    Err(Error::Unsupported("file output is unavailable in WebAssembly; return XYZ text instead".into()))
 }
 
 #[cfg(test)]
@@ -280,6 +301,10 @@ mod tests {
         let path = dir.path().join("mixed.vrt");
         std::fs::write(&path, vrt).unwrap();
         let mut source = crate::open_raster_lazy(path.to_str().unwrap()).unwrap();
+        let info =
+            crate::ops::pixel_info::pixel_info(&mut source, &[crate::ops::pixel_info::Position::new(0., 0.)], &Default::default()).unwrap();
+        let json = info.to_geojson();
+        assert_eq!(json["features"][0]["properties"]["bands"][1]["raw_value"], 1234567.25);
         assert!(xyz(&mut source, &XyzOptions { bands: vec![1], ..Default::default() }).ends_with(" 1234567\n"));
         assert!(xyz(&mut source, &XyzOptions { bands: vec![2], ..Default::default() }).ends_with(" 1.23457e+06\n"));
     }

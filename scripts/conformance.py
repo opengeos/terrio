@@ -665,7 +665,7 @@ def suite_raster_query(ctx):
     suite = Suite(
         "raster-query",
         "Raster comparison, pixel queries and XYZ text",
-        "`gdal raster compare`, `gdal raster pixel-info`, `gdallocationinfo`, `gdal2xyz.py` (GDAL 3.12.2)",
+        "`gdal raster compare`, `gdal raster pixel-info`, `gdallocationinfo`, `gdal2xyz.py` (GDAL 3.13.3)",
         "Real DEMs, Landsat, OPERA, ECOSTRESS, NLCD and netCDF rasters and derived copies. compare: the same "
         "report lines and exit status (CRS WKT text, and the two values GDAL swaps in its metadata value "
         "message, normalized). pixel-info: GeoJSON and CSV values parsed and compared (CSV to GDAL 3.13's "
