@@ -132,6 +132,11 @@ pub(crate) fn read_db(db: &Db, wanted: &[String], bbox: Option<Rect>) -> Result<
         .collect()
 }
 
+/// The terrio field type of a declared column type.
+pub(crate) fn declared_field_type(decl: &str) -> FieldType {
+    field_type(decl).0
+}
+
 /// The field type GDAL gives a declared column type.
 fn field_type(decl: &str) -> (FieldType, usize) {
     let upper = decl.trim().to_ascii_uppercase();
