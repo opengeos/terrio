@@ -413,7 +413,14 @@ fn crs(value: &Value, base: bool, depth: usize) -> Result<String> {
         }
         _ => return Err(bad(format!("unsupported CRS type '{kind}'"))),
     };
-    id(o, &mut args)?;
+    let mut identifiers = vec![];
+    id(o, &mut identifiers)?;
+    // A root ID would make the general WKT reader resolve the registry CRS,
+    // replacing supplied conversion parameters after serialization/reopening.
+    // Validate those identifiers but retain only component IDs in exported WKT.
+    if depth != 0 {
+        args.extend(identifiers);
+    }
     Ok(named(key, string(o, "name")?, args))
 }
 

@@ -15,7 +15,14 @@ fn gdal_definition_and_coordinate_oracles() {
     for case in reference["cases"].as_array().unwrap() {
         let src = SpatialRef::parse(&case["src"].to_string()).unwrap_or_else(|e| panic!("{} source: {e}", case["name"]));
         let dst = SpatialRef::parse(&case["dst"].to_string()).unwrap_or_else(|e| panic!("{} target: {e}", case["name"]));
-        let mut transforms = vec![("JSON", Transformer::new(&src, &dst).unwrap())];
+        let mut transforms = vec![
+            ("JSON", Transformer::new(&src, &dst).unwrap()),
+            (
+                "reopened JSON WKT",
+                Transformer::new(&SpatialRef::parse(&src.to_wkt().unwrap()).unwrap(), &SpatialRef::parse(&dst.to_wkt().unwrap()).unwrap())
+                    .unwrap(),
+            ),
+        ];
         for (label, source, target) in [("WKT", "src_wkt", "dst_wkt"), ("PROJ", "src_proj", "dst_proj")] {
             if let (Some(source), Some(target)) = (case[source].as_str(), case[target].as_str()) {
                 transforms
@@ -103,6 +110,10 @@ fn authority_id_does_not_replace_supplied_conversion_parameters() {
     let b = Transformer::new(&source, &modified).unwrap().transform(-1.5, 52.5).unwrap();
     assert!((b.0 - a.0 - 100.0).abs() < 1e-8);
     assert_eq!(a.1, b.1);
+    let reopened = SpatialRef::parse(&modified.to_wkt().unwrap()).unwrap();
+    let c = Transformer::new(&source, &reopened).unwrap().transform(-1.5, 52.5).unwrap();
+    assert!((c.0 - b.0).abs() < 1e-8, "reopened WKT must retain modified false easting");
+    assert!((c.1 - b.1).abs() < 1e-8);
 }
 
 #[cfg(not(target_family = "wasm"))]

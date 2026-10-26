@@ -432,7 +432,9 @@ const [x, y] = terrio.transformPoints(lons, lats, "EPSG:4326", JSON.stringify(de
 The supplied conversion parameters are retained even when the root object has
 an authority ID. IDs identify component methods, parameters and datums; they do
 not replace the complete definition with a registry lookup. The resulting CRS
-stores WKT2 and does not assign a root EPSG/ESRI code merely from an ID. Descriptive
+stores WKT2 and does not assign a root EPSG/ESRI code merely from an ID. The
+exported WKT omits root CRS identifiers so that reopening it also preserves
+caller-supplied conversion parameters; component identifiers remain. Descriptive
 usage fields (`scope`, `area`, `bbox`, `usages`, `remarks`) are accepted without
 affecting coordinates.
 
