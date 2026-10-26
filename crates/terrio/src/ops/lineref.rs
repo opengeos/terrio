@@ -129,6 +129,7 @@ impl Line {
         let mut len = 0.0;
         let mut i = 0;
         if from == 0.0 {
+            // OGR getSubLine includes the first vertex here and again in the loop.
             out.pts.push(self.pts[0]);
         } else {
             while i < n - 1 {
@@ -756,6 +757,7 @@ mod tests {
         assert_eq!(l.length(), 20.0);
         assert_eq!(l.sub_line(5.0, 15.0).unwrap().pts, vec![[5.0, 0.0, 0.0], [10.0, 0.0, 0.0], [10.0, 5.0, 0.0]]);
         assert_eq!(l.sub_line(2.0, 3.0).unwrap().pts, vec![[2.0, 0.0, 0.0], [3.0, 0.0, 0.0]]);
+        assert_eq!(l.sub_line(0.0, 5.0).unwrap().pts, vec![[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [5.0, 0.0, 0.0]]);
         assert!(l.sub_line(20.0, 25.0).is_none());
         let v = l.value(12.0).unwrap();
         assert_eq!((v.x, v.y), (10.0, 2.0));

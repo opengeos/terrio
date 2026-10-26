@@ -567,6 +567,22 @@ pub fn grid_points(
     data_type: DataType,
     bands: usize,
 ) -> Result<Vec<f64>> {
+    let mut out = Vec::new();
+    grid_points_into(x, y, z, algorithm, extent, (data_type, bands), &mut out)?;
+    Ok(out)
+}
+
+/// Appends one band directly to the output allocation, avoiding a second full band buffer.
+fn grid_points_into(
+    x: &[f64],
+    y: &[f64],
+    z: &[f64],
+    algorithm: &GridAlgorithm,
+    extent: &GridExtent,
+    layout: (DataType, usize),
+    out: &mut Vec<f64>,
+) -> Result<()> {
+    let (data_type, bands) = layout;
     if x.len() != y.len() || x.len() != z.len() {
         return Err(Error::InvalidArgument("x, y and z must have the same length".into()));
     }
@@ -598,9 +614,9 @@ pub fn grid_points(
     let (top, bottom) = (extent.y_max, extent.y_min);
     let dx = (extent.x_max - extent.x_min) / cols as f64;
     let dy = (bottom - top) / rows as f64;
-    let mut out = Vec::new();
+    let first = out.len();
     out.try_reserve_exact(cols * rows).map_err(|_| Error::InvalidArgument("cannot allocate the output grid".into()))?;
-    out.resize(cols * rows, 0.0);
+    out.resize(first + cols * rows, 0.0);
     let mut row0 = 0;
     while row0 < rows {
         let n = block_rows.min(rows - row0);
@@ -609,10 +625,10 @@ pub fn grid_points(
         let by0 = top + dy * row0 as f64;
         let by1 = top + dy * (row0 + n) as f64;
         let block = Block { x0: bx0, y0: by0, dx: (bx1 - bx0) / cols as f64, dy: (by1 - by0) / n as f64, cols, rows: n };
-        engine.process(&block, &mut out[row0 * cols..(row0 + n) * cols]);
+        engine.process(&block, &mut out[first + row0 * cols..first + (row0 + n) * cols]);
         row0 += n;
     }
-    Ok(out)
+    Ok(())
 }
 
 /// Number of pairs visited by GDAL's two average-distance traversal variants.
@@ -990,6 +1006,8 @@ impl<'a> Engine<'a> {
         let a = self.alg;
         let mut value = a.nodata;
         if self.quadtree {
+            // GDAL's indexed nearest search uses a square, including for anisotropic
+            // radii. Unlike the scan path, it does not filter candidates by an ellipse.
             let has_radius = r1 > 0.0 || r2 > 0.0;
             let mut search = if has_radius { r1.max(r2) } else { self.initial_radius };
             while search > 0.0 {
@@ -1467,7 +1485,7 @@ impl Triangulation {
         // The first of points at the same place is a vertex, as qhull keeps it.
         let mut seen = std::collections::HashSet::new();
         let vertices: Vec<Vertex> = (0..x.len())
-            .filter(|&i| seen.insert((x[i].to_bits(), y[i].to_bits())))
+            .filter(|&i| seen.insert(((x[i] + 0.0).to_bits(), (y[i] + 0.0).to_bits())))
             .filter(|&i| spade::validate_coordinate(x[i]).is_ok() && spade::validate_coordinate(y[i]).is_ok())
             .map(|i| Vertex(Point2::new(x[i], y[i]), i))
             .collect();
@@ -1765,8 +1783,11 @@ pub fn vector_grid(layers: &[Layer], options: &VectorGridOptions) -> Result<Rast
         if xs.is_empty() {
             return Err(Error::InvalidArgument(format!("no point geometry found on layer {}", layer.name)));
         }
-        let values = grid_points(&xs, &ys, &zs, &algorithm, &extent, dt, bands)?;
-        data.extend(values.into_iter().map(|v| crate::ops::convert_value(v, dt)));
+        let first = data.len();
+        grid_points_into(&xs, &ys, &zs, &algorithm, &extent, (dt, bands), &mut data)?;
+        for value in &mut data[first..] {
+            *value = crate::ops::convert_value(*value, dt);
+        }
     }
     let crs = match &options.crs {
         Some(c) => c.clone(),
@@ -1997,6 +2018,20 @@ mod tests {
         let x: Vec<f64> = (0..150).map(|i| i as f64).collect();
         let y = vec![0.; 150];
         assert_eq!(grid(&x, &y, &x, &GridAlgorithm::new(GridMethod::Nearest), [0., -1., 150., 1.], 1, 1), vec![75.]);
+    }
+
+    #[test]
+    fn linear_signed_zero_duplicates_keep_first_value_like_gdal() {
+        let a = GridAlgorithm::parse("linear:radius=0").unwrap();
+        assert_eq!(grid(&[-0., 0., 1., 0.], &[0., -0., 0., 1.], &[0., 100., 10., 20.], &a, [0., 0., 0.5, 0.5], 1, 1), vec![7.5]);
+    }
+
+    #[test]
+    fn linear_collinear_points_have_no_triangulation() {
+        let x: Vec<f64> = (0..150).map(|i| i as f64).collect();
+        let y = vec![0.; 150];
+        let a = GridAlgorithm::parse("linear:nodata=-9999").unwrap();
+        assert_eq!(grid(&x, &y, &x, &a, [0., -1., 150., 1.], 1, 1), vec![-9999.]);
     }
 
     #[test]

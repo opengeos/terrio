@@ -833,7 +833,9 @@ tolerances and known differences reported in
 - Like GDAL 3.13.3, `linear` skips triangles whose barycentric determinant has absolute
   value below 1e-5. Small geographic triangles can therefore produce nodata with radius 0;
   use a suitable projected CRS for those inputs. Coordinates outside the triangulator's
-  supported numeric range are rejected.
+  supported numeric range are rejected. Collinear points have no triangulation:
+  Terrio returns nodata, while GDAL 3.13.3 reports a triangulation failure and leaves
+  its initialized nodata output. The default nearest fallback does not fill that case.
 - Zero-width or zero-height extents are rejected before allocating; GDAL can emit a
   noninvertible transform for these inputs. Reversed x bounds retain negative pixel width,
   matching GDAL.
