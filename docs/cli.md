@@ -1135,3 +1135,13 @@ point tie points and rotated affine transforms, without moving pixel corners.
 Writing a PixelIsPoint GeoTIFF requires a CRS. A write with an unknown CRS is
 rejected before creating the file, avoiding a half-pixel origin shift without
 a corresponding raster-type GeoKey.
+
+GeoPackage vector edits write a unique temporary file next to the resolved input and
+replace it atomically. They preserve mode bits and follow symlinks to their target.
+They materialize the database in memory, need space for a second file, detach hard
+links and do not preserve ownership, ACLs or extended attributes. Exclude concurrent
+writers; journal/WAL checks do not provide a transaction lock.
+
+Partition overwrite validates options before removing output. Flat output directories
+must contain only regular files of the selected output format (including Shapefile
+sidecars), so unrelated files are refused. Dot-only and empty layer names are escaped.

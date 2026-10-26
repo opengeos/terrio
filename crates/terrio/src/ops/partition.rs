@@ -280,7 +280,7 @@ pub fn partition(layers: &[Layer], o: &PartitionOptions, driver: VectorDriver) -
                 .push(n);
         }
 
-        let layer_dir = percent_encode(&layer.name);
+        let layer_dir = if layer.name.is_empty() { "%00".to_string() } else { percent_encode(&layer.name) };
         for key in order {
             let members = &groups[&key];
             let field_value = key
@@ -571,5 +571,29 @@ mod tests {
         let parts = partition(&[l], &o, VectorDriver::GPKG).unwrap();
         assert_eq!(parts[1].path, "my%20layer/OGR_GEOMETRY=LINESTRING/part_0000000001.gpkg");
         assert_eq!(parts[1].layer.geom_type, Some(wbvector::GeometryType::LineString));
+    }
+    #[test]
+    fn dot_layer_names_stay_in_output_root() {
+        for name in ["", ".", ".."] {
+            let mut l = layer();
+            l.name = name.into();
+            let parts = partition(&[l], &PartitionOptions { feature_limit: Some(2), ..Default::default() }, VectorDriver::GPKG).unwrap();
+            assert!(parts.iter().all(|p| !std::path::Path::new(&p.path).is_absolute()
+                && !std::path::Path::new(&p.path).components().any(|c| c == std::path::Component::ParentDir)));
+        }
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    #[test]
+    fn flat_overwrite_preserves_unrelated_files_and_invalid_options() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("parts");
+        std::fs::create_dir(&root).unwrap();
+        let notes = root.join("notes.txt");
+        std::fs::write(&notes, "keep me").unwrap();
+        let write = crate::VectorWriteOptions { driver: Some(VectorDriver::GPKG), ..Default::default() };
+        let options = PartitionOptions { scheme: PartitionScheme::Flat, feature_limit: Some(2), ..Default::default() };
+        assert!(partition_to_dir(&[layer()], root.to_str().unwrap(), &options, &write, PartitionWriteMode::Overwrite).is_err());
+        assert_eq!(std::fs::read_to_string(notes).unwrap(), "keep me");
     }
 }
