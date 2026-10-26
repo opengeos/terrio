@@ -13,6 +13,8 @@ use super::params::Params;
 use crate::{Error, Result};
 use std::f64::consts::PI;
 
+mod perspective;
+
 /// A map projection's forward and inverse formulas.
 pub(crate) trait Proj: Send + Sync + std::fmt::Debug {
     /// Projects a longitude (relative to the central meridian) and latitude in radians.
@@ -41,6 +43,7 @@ fn err(msg: &str) -> Error {
 /// Builds the projection `name`. `Ok(None)` when terrio does not implement it.
 pub(crate) fn build(name: &str, s: &mut Setup<'_>) -> Result<Option<Box<dyn Proj>>> {
     Ok(Some(match name {
+        "nsper" | "tpers" => Box::new(perspective::Perspective::new(s, name == "tpers")?),
         "tmerc" | "etmerc" => Box::new(Tmerc::new(s.ell, s.k0, s.phi0)),
         "utm" => {
             let zone = s.p.f64("zone").ok_or_else(|| err("utm needs +zone"))?;

@@ -210,3 +210,19 @@ fn projjson_definitions_are_available_through_cli_and_mcp() {
         assert!((value - case["expected"][1][axis].as_f64().unwrap()).abs() < 0.001);
     }
 }
+
+#[test]
+fn tilted_perspective_coordinates_and_backside_refusal_through_mcp() {
+    let target = "+proj=tpers +lat_0=-42 +lon_0=147 +h=3000000 +tilt=20 +azi=30 +datum=WGS84 +units=m";
+    let replies = session(&[
+        call(1, "crs", &["OGC:CRS84", "--to", target, "150", "-40"]),
+        call(2, "crs", &["OGC:CRS84", "--to", target, "-33", "42"]),
+    ]);
+    assert_eq!(replies[&1]["result"]["isError"], false);
+    let values: Vec<f64> =
+        replies[&1]["result"]["content"][0]["text"].as_str().unwrap().split_whitespace().filter_map(|v| v.parse().ok()).collect();
+    assert_eq!(values.len(), 2);
+    assert!((values[0] - 107928.4911266584).abs() < 0.001);
+    assert!((values[1] - 323680.07658763544).abs() < 0.001);
+    assert_eq!(replies[&2]["result"]["isError"], true);
+}

@@ -1474,3 +1474,27 @@ test("PROJJSON CRS definitions match GDAL in traditional GIS order", () => {
   }
   assert.throws(() => terrio.describeCrs('{"type":"VerticalCRS","name":"unsupported"}'), /PROJJSON/);
 });
+
+
+test("near-sided and tilted perspective projections match PROJ", () => {
+  const reference = JSON.parse(readFileSync(new URL("../../crates/terrio-crs/tests/data/perspective_reference.json", import.meta.url), "utf8"));
+  for (const c of reference.cases) {
+    const visible = c.samples.filter(s => s[2] !== null);
+    const result = terrio.transformPoints(visible.map(s => s[0]), visible.map(s => s[1]), c.source, c.target);
+    for (let i = 0; i < visible.length; i++) for (let j = 0; j < 2; j++) {
+      assert.ok(Math.abs(result[j][i] - visible[i][2][j]) * c.metres_per_unit <= 0.001, `${c.name} forward ${i}/${j}`);
+    }
+    const reversible = visible.filter(s => s[3] !== null);
+    const inverse = terrio.transformPoints(reversible.map(s => s[2][0]), reversible.map(s => s[2][1]), c.target, c.source);
+    for (let i = 0; i < reversible.length; i++) {
+      const [lon, lat] = reversible[i][3];
+      const dlon = ((inverse[0][i] - lon + 540) % 360 - 180) * Math.cos(lat * Math.PI / 180);
+      assert.ok(Math.abs(dlon) <= 1e-8 && Math.abs(inverse[1][i] - lat) <= 1e-8, `${c.name} inverse ${i}`);
+    }
+    const invisible = c.samples.find(s => s[2] === null);
+    assert.throws(() => terrio.transformPoints([invisible[0]], [invisible[1]], c.source, c.target));
+    for (const [point, expected] of c.inverse_samples) if (expected === null) {
+      assert.throws(() => terrio.transformPoints([point[0]], [point[1]], c.target, c.source));
+    }
+  }
+});

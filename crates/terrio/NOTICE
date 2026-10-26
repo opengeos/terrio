@@ -13,6 +13,7 @@ The map projections, ellipsoid helpers and datum grid interpolation in crates/te
 are ported from PROJ (https://proj.org).
 The Mollweide and Wagner IV/V formulas follow src/projections/moll.cpp at PROJ commit
 5fa31c29f0a806568ed7bc76c1a557604db4a804.
+The near-sided and tilted perspective formulas follow src/projections/nsper.cpp in PROJ 9.8.1.
 The normalized Cartesian inverse follows src/conversions/cart.cpp in PROJ 9.7.0.
   Copyright (c) 2016, Thomas Knudsen / SDFE
 

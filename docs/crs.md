@@ -21,10 +21,10 @@ Everywhere a CRS is expected (`--t-srs`, `--a-srs`, `terrio crs`, the APIs), ter
   datum shift and geoid grids;
 - the path of a file holding one of these.
 
-Of PROJ's 117 projections, terrio computes 86 as PROJ does (within 1 mm, on a sphere and on WGS 84,
+Of PROJ's 117 projections, terrio computes 88 as PROJ does (within 1 mm, on a sphere and on WGS 84,
 as PROJ strings with typical parameters and as pyproj's WKT1 and WKT2 of them:
-`crates/terrio-crs/tests/proj_strings.rs`) and refuses the 31 others (`airy`, `bacon`, `igh`, `nsper`,
-`tpers`, `vandg2` and others) rather than computing something else. The known difference is
+`crates/terrio-crs/tests/proj_strings.rs`) and refuses the 29 others (`airy`, `bacon`, `igh`,
+`vandg2` and others) rather than computing something else. The known difference is
 Krovak off Bessel's ellipsoid, where PROJ's inverse is not the inverse of its forward.
 
 Mollweide and Wagner IV/V use Terrio's own ports of PROJ's formulas, including
@@ -445,3 +445,36 @@ PROJJSON, polar axis meridians, grid/deformation operations and nested bound
 sources are not supported.
 Geocentric and 3D CRSs remain available through EPSG, PROJ and WKT definitions.
 This prevents silent loss of datum, axis, unit or operation information.
+
+
+## Perspective projections
+
+`+proj=nsper` (near-sided perspective) and `+proj=tpers` (tilted perspective)
+use the native pure-Rust engine. Supply a positive viewpoint height `+h` in
+metres and the view centre `+lat_0` / `+lon_0`. Tilted perspective additionally
+accepts `+tilt` and `+azi` in degrees, both zero by default. The shared `+units`,
+`+to_meter`, `+x_0` and `+y_0` options apply; height and false offsets remain in
+metres even when the output is in kilometres or feet.
+
+These are PROJ's spherical perspective formulas. With an ellipsoid such as
+WGS 84, its semi-major axis supplies the sphere radius, matching PROJ 9.8.1;
+this does not implement an ellipsoidal 3D camera model. All four viewing
+aspects (north/south pole, equatorial and oblique) are supported. Coordinates
+beyond the visible horizon and inverse coordinates outside the projection
+domain raise a coordinate error. The CLI's streaming input reports each failed
+point and continues; Python and JavaScript coordinate arrays raise if any point
+fails.
+
+PROJ strings and their WKT1 PROJ4 extensions retain the parameters. WKT2
+`PROJ tpers` and PROJ's `Vertical Perspective` conversion are accepted; the latter
+requires zero topocentric-origin height. Nonzero topocentric-origin height is
+refused explicitly. This restriction preserves the supported spherical model
+instead of ignoring the extra parameter.
+
+The original `seed-tpers` and `edge-tpers-back` fixtures retain their separate
+PROJ 9.9.0 oracle. The additional GDAL 3.12.2 / PROJ 9.8.1 corpus covers 20
+configurations and 2,500 forward samples, both sides of the horizon, inverse
+domain boundaries, metres/kilometres/US survey feet, offsets and non-default
+origins/tilt/azimuth. Component allowances are 1 mm projected and 1e-8 degrees
+inverse, with longitude weighted by cos(latitude) at the poles. Other projection
+families in #272 remain tracked there.

@@ -805,6 +805,29 @@ def epsg_cases(s, ctx, test, points, suffix=""):
     return True
 
 
+def suite_perspective(ctx):
+    """Native near-sided and tilted perspective, including visibility/domain limits."""
+    suite = Suite("perspective", "Perspective projections", "GDAL/PROJ",
+                  "20 spherical/WGS84 configurations and 2,500 geographic samples; "
+                  "all aspects, horizon sides, tilt/azimuth, units and offsets. "
+                  "Projected allowance 1 mm; inverse 1e-8 degrees, longitude weighted "
+                  "by cos(latitude). PROJ strings and WKT2 are checked.")
+    if missing_modules("osgeo"):
+        suite.skipped = "needs GDAL Python bindings"
+        return suite
+    code, out, err = run([sys.executable, str(SCRIPTS / "compare_perspective_with_gdal.py"), ctx.data, "--terrio", ctx.terrio, "--json"])
+    try:
+        cases = json.loads(out)
+    except json.JSONDecodeError:
+        suite.error = tail(err or out)
+        return suite
+    for case in cases:
+        suite.cases.append(Case("Perspective", case["name"], case["status"], case["detail"]))
+    if code and not any(c.status == DIFFERS for c in suite.cases):
+        suite.error = tail(err or out)
+    return suite
+
+
 def suite_projjson(ctx):
     """PROJJSON units, axes and bound transformations, with and without IDs."""
     suite = Suite("projjson", "PROJJSON CRS definitions", "GDAL/PROJ",
@@ -1318,6 +1341,7 @@ SUITES = OrderedDict(
         ("pointclouds", suite_pointclouds),
         ("crs", suite_crs),
         ("geocentric", suite_geocentric),
+        ("perspective", suite_perspective),
         ("projjson", suite_projjson),
         ("crs-grids", suite_crs_grids),
     ]

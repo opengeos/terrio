@@ -262,6 +262,14 @@ pub(crate) fn to_proj(root: &Node) -> Result<Converted> {
     } else if is(&["equalearth"], &[1078]) {
         push("lon_0", lon_0());
         "eqearth"
+    } else if is(&["verticalperspective"], &[9838]) {
+        if p.get(HEIGHT_TOPO).unwrap_or(0.0) != 0.0 {
+            return Err(bad("Vertical Perspective with a nonzero topocentric height is not supported"));
+        }
+        push("lat_0", p.get(LAT_TOPO));
+        push("lon_0", p.get(LON_TOPO));
+        push("h", Some(p.get(VIEW_HEIGHT).ok_or_else(|| bad("Vertical Perspective without its Viewpoint Height"))?));
+        "nsper"
     } else if is(&["orthographic"], &[9840]) {
         push("lat_0", lat_0());
         push("lon_0", lon_0());
@@ -656,6 +664,11 @@ const FN_FALSE: Param = (&["northingatfalseorigin"], 8827, Kind::Length);
 const LAT_TS: Param = (&["latitudeofstandardparallel"], 8832, Kind::Angle);
 const LON_ORIGIN: Param = (&["longitudeoforigin"], 8833, Kind::Angle);
 
+const LAT_TOPO: Param = (&["latitudeoftopocentricorigin"], 8834, Kind::Angle);
+const LON_TOPO: Param = (&["longitudeoftopocentricorigin"], 8835, Kind::Angle);
+const HEIGHT_TOPO: Param = (&["ellipsoidalheightoftopocentricorigin"], 8836, Kind::Length);
+const VIEW_HEIGHT: Param = (&["viewpointheight"], 8840, Kind::Length);
+
 const CO_LAT_CONE: Param = (&["colatitudeofconeaxis"], 1036, Kind::Angle);
 const LAT_PSEUDO_SP: Param = (&["latitudeofpseudostandardparallel"], 8818, Kind::Angle);
 const K_PSEUDO_SP: Param = (&["scalefactoronpseudostandardparallel"], 8819, Kind::Scale);
@@ -668,7 +681,11 @@ const LAT_P2: Param = (&["latitudeof2ndpoint"], u32::MAX - 3, Kind::Angle);
 const LON_P2: Param = (&["longitudeof2ndpoint"], u32::MAX - 4, Kind::Angle);
 const LAT_TRUE_SCALE: Param = (&["latitudeoftruescale"], u32::MAX - 5, Kind::Angle);
 
-const PARAMS: [Param; 29] = [
+const PARAMS: [Param; 33] = [
+    LAT_TOPO,
+    LON_TOPO,
+    HEIGHT_TOPO,
+    VIEW_HEIGHT,
     SAT_HEIGHT,
     LAT_P1,
     LON_P1,
