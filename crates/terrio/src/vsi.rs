@@ -246,6 +246,7 @@ fn archive_end(s: &str, extensions: &[&str]) -> Option<(usize, usize)> {
 impl Node {
     fn parse(input: &str) -> Result<Node> {
         let input = input.trim();
+        let shown = listing::redact_url(input);
         if input.is_empty() {
             return Err(Error::InvalidArgument("empty path".into()));
         }
@@ -253,7 +254,7 @@ impl Node {
             let Some(rest) = input.strip_prefix(prefix) else { continue };
             let rest = rest.strip_prefix('{').map(|r| r.replacen('}', "", 1)).unwrap_or_else(|| rest.to_string());
             let (end, n) = archive_end(&rest, exts)
-                .ok_or_else(|| Error::InvalidArgument(format!("'{input}': no archive name ({}) after {prefix}", exts.join(", "))))?;
+                .ok_or_else(|| Error::InvalidArgument(format!("'{shown}': no archive name ({}) after {prefix}", exts.join(", "))))?;
             let kind = match (prefix, exts[n]) {
                 ("/vsizip/", _) => ArchiveKind::Zip,
                 (_, ".tar") => ArchiveKind::Tar,
@@ -267,13 +268,13 @@ impl Node {
             return Ok(Node::Mem(normalize_mem(input)));
         }
         if input.starts_with("/vsi") && !["/vsicurl/", "/vsis3/", "/vsigs/", "/vsiaz/"].iter().any(|p| input.starts_with(p)) {
-            return Err(Error::Unsupported(format!("'{input}': this virtual file system is not supported")));
+            return Err(Error::Unsupported(format!("'{shown}': this virtual file system is not supported")));
         }
         Ok(match crate::vfs::Location::parse_unarchived(input) {
             crate::vfs::Location::Local(p) => Node::Local(p.components().collect()),
             crate::vfs::Location::S3 { bucket, key } => {
                 if bucket.is_empty() {
-                    return Err(Error::InvalidArgument(format!("'{input}': no bucket")));
+                    return Err(Error::InvalidArgument(format!("'{shown}': no bucket")));
                 }
                 Node::S3 { bucket, key: key.trim_end_matches('/').to_string() }
             }
@@ -455,7 +456,10 @@ fn permissions(meta: &std::fs::Metadata) -> String {
 }
 
 fn not_found(what: &str) -> Error {
-    Error::Io(std::io::Error::new(std::io::ErrorKind::NotFound, format!("'{what}' does not exist or cannot be accessed")))
+    Error::Io(std::io::Error::new(
+        std::io::ErrorKind::NotFound,
+        format!("'{}' does not exist or cannot be accessed", listing::redact_url(what)),
+    ))
 }
 
 /// What is at a node, or `None` when nothing is.
@@ -534,6 +538,11 @@ fn remote_stat(node: &Node) -> Result<Option<Stat>> {
     let dir = node.directory().ok_or_else(|| Error::InvalidArgument("not remote".into()))?;
     let object_store = store::is_object_store(&dir);
     if object_store {
+        if let Node::Url { base, .. } = node
+            && listing::Api::for_url(base).is_root()
+        {
+            return Ok(Some(Stat::directory()));
+        }
         if let Some(s) = store::stat(&remote)? {
             return Ok(Some(Stat { dir: false, size: Some(s.size), modified: s.modified, permissions: None, etag: s.etag }));
         }
@@ -941,7 +950,7 @@ pub fn write(path: &str, bytes: &[u8]) -> Result<()> {
     let _cache = HtmlCacheScope::new();
     let node = Node::parse(path)?;
     if let Some(reason) = node.read_only_reason() {
-        return Err(Error::Unsupported(format!("'{path}': {reason}")));
+        return Err(Error::Unsupported(format!("'{}': {reason}", listing::redact_url(path))));
     }
     match &node {
         Node::Local(p) => write_local_atomic(p, |f| Ok(f.write_all(bytes)?)),
@@ -1077,7 +1086,8 @@ fn make_dir(node: &Node) -> Result<()> {
 /// Refuses to delete (or move away) locations whose loss would be catastrophic or that are not
 /// precise: see the [module documentation](self).
 fn check_deletable(input: &str, node: &Node, operation: &str) -> Result<()> {
-    let refuse = |why: &str| Err(Error::InvalidArgument(format!("refusing to {operation} '{input}': {why}")));
+    let shown = listing::redact_url(input);
+    let refuse = |why: &str| Err(Error::InvalidArgument(format!("refusing to {operation} '{shown}': {why}")));
     if input.trim().is_empty() {
         return refuse("empty path");
     }
@@ -1170,7 +1180,7 @@ pub fn list(path: &str, options: &ListOptions) -> Result<Vec<Entry>> {
     let node = Node::parse(path)?;
     let stat = stat_node(&node)?.ok_or_else(|| not_found(path))?;
     if !stat.dir {
-        let name = if options.absolute { absolute_name(path, &node, "") } else { path.trim().to_string() };
+        let name = if options.absolute { absolute_name(path, &node, "") } else { listing::redact_url(path.trim()).into_owned() };
         return Ok(vec![stat.entry(name)]);
     }
     let mut entries = read_dir(&node, options.recursive, options.depth)?;
@@ -1200,9 +1210,15 @@ pub fn list(path: &str, options: &ListOptions) -> Result<Vec<Entry>> {
 
 /// The absolute name of `name` below the listed `path`.
 fn absolute_name(path: &str, node: &Node, name: &str) -> String {
+    if let Node::Url { base, query } = node {
+        let joined = if name.is_empty() { base.clone() } else { format!("{}/{name}", base.trim_end_matches('/')) };
+        return listing::redact_url(&if query.is_empty() { joined } else { format!("{joined}?{query}") }).into_owned();
+    }
     let base = match node {
-        Node::Local(p) => std::path::absolute(p).map(|p| p.display().to_string()).unwrap_or_else(|_| path.trim().to_string()),
-        _ => path.trim().to_string(),
+        Node::Local(p) => {
+            std::path::absolute(p).map(|p| p.display().to_string()).unwrap_or_else(|_| listing::redact_url(path.trim()).into_owned())
+        }
+        _ => listing::redact_url(path.trim()).into_owned(),
     };
     let base = base.trim_end_matches('/');
     if name.is_empty() { base.to_string() } else { format!("{base}/{name}") }
@@ -1212,7 +1228,7 @@ fn absolute_name(path: &str, node: &Node, name: &str) -> String {
 pub fn stat(path: &str) -> Result<Option<Entry>> {
     let _cache = HtmlCacheScope::new();
     let node = Node::parse(path)?;
-    Ok(stat_node(&node)?.map(|s| s.entry(path.trim().to_string())))
+    Ok(stat_node(&node)?.map(|s| s.entry(listing::redact_url(path.trim()).into_owned())))
 }
 
 /// Where a file or directory copied to `dst` goes: into `dst` when it is an existing directory
@@ -1241,17 +1257,25 @@ pub fn copy(src: &str, dst: &str, options: &CopyOptions) -> Result<Report> {
     let mut report = Report::default();
     if !stat.dir {
         if is_same(&src_node, &target) {
-            return Err(Error::InvalidArgument(format!("'{src}' and '{dst}' are the same file")));
+            return Err(Error::InvalidArgument(format!(
+                "'{}' and '{}' are the same file",
+                listing::redact_url(src),
+                listing::redact_url(dst)
+            )));
         }
         report.bytes += copy_file(&src_node, &target)?;
         report.copied += 1;
         return Ok(report);
     }
     if !options.recursive {
-        return Err(Error::InvalidArgument(format!("'{src}' is a directory: use the recursive option")));
+        return Err(Error::InvalidArgument(format!("'{}' is a directory: use the recursive option", listing::redact_url(src))));
     }
     if is_within(&target, &src_node) {
-        return Err(Error::InvalidArgument(format!("cannot copy '{src}' into itself ('{dst}')")));
+        return Err(Error::InvalidArgument(format!(
+            "cannot copy '{}' into itself ('{}')",
+            listing::redact_url(src),
+            listing::redact_url(dst)
+        )));
     }
     copy_tree(&src_node, &target, options.skip_errors, None, &mut report)?;
     Ok(report)
@@ -1568,7 +1592,8 @@ pub fn delete(path: &str, recursive: bool) -> Result<Report> {
     }
     if !recursive {
         return Err(Error::InvalidArgument(format!(
-            "cannot delete '{path}': a directory (use the recursive option to delete what it holds)"
+            "cannot delete '{}': a directory (use the recursive option to delete what it holds)",
+            listing::redact_url(path)
         )));
     }
     // Every file below `path/`, never a sibling sharing its name as a prefix.
@@ -1685,10 +1710,14 @@ pub fn rename(src: &str, dst: &str) -> Result<Report> {
     let stat = stat_node(&src_node)?.ok_or_else(|| not_found(src))?;
     let target = copy_target(&src_node, dst, &dst_node)?;
     if is_same(&src_node, &target) {
-        return Err(Error::InvalidArgument(format!("'{src}' and '{dst}' are the same")));
+        return Err(Error::InvalidArgument(format!("'{}' and '{}' are the same", listing::redact_url(src), listing::redact_url(dst))));
     }
     if stat.dir && is_within(&target, &src_node) {
-        return Err(Error::InvalidArgument(format!("cannot move '{src}' into itself ('{dst}')")));
+        return Err(Error::InvalidArgument(format!(
+            "cannot move '{}' into itself ('{}')",
+            listing::redact_url(src),
+            listing::redact_url(dst)
+        )));
     }
     if stat_node(&target)?.is_some_and(|t| t.dir) {
         return Err(Error::InvalidArgument(format!("'{}' is a directory that exists", display_node(&target))));
@@ -1754,7 +1783,11 @@ pub fn sync(src: &str, dst: &str, options: &SyncOptions) -> Result<Report> {
     }
     let target = if src.trim().ends_with('/') { dst_node.clone() } else { dst_node.join(&src_node.file_name()) };
     if is_within(&target, &src_node) {
-        return Err(Error::InvalidArgument(format!("cannot synchronize '{src}' into itself ('{dst}')")));
+        return Err(Error::InvalidArgument(format!(
+            "cannot synchronize '{}' into itself ('{}')",
+            listing::redact_url(src),
+            listing::redact_url(dst)
+        )));
     }
     copy_tree(&src_node, &target, false, Some((options, true)), &mut report)?;
     Ok(report)

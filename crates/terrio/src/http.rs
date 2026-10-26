@@ -431,10 +431,7 @@ fn resolve_redirect(from: &str, location: &str) -> String {
 /// A URL for messages: without its query when the query holds a signature (such as an Azure SAS
 /// token or a presigned URL's).
 fn redact(url: &str) -> std::borrow::Cow<'_, str> {
-    match url.split_once('?') {
-        Some((base, query)) if query.to_ascii_lowercase().contains("sig") => format!("{base}?<redacted>").into(),
-        _ => url.into(),
-    }
+    crate::vsi::listing::redact_url(url)
 }
 
 /// The total length in a `Content-Range` header (`bytes 0-99/1234` or `bytes */1234`).
@@ -493,7 +490,7 @@ pub(crate) enum Directory {
 /// `/vsiaz/`. `None` when the store cannot list (a plain HTTP server), or refuses to (a bucket
 /// whose listing is not public).
 pub(crate) fn list_subdirectories(dir: &Directory) -> Result<Option<Vec<String>>> {
-    let Some(entries) = store::list_objects(dir, false)? else { return Ok(None) };
+    let Some(entries) = store::list_objects_for_discovery(dir, false)? else { return Ok(None) };
     let mut out: Vec<String> = entries.into_iter().filter(|e| e.dir).map(|e| e.name).collect();
     out.sort();
     out.dedup();

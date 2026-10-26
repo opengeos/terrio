@@ -51,17 +51,23 @@ pub(crate) fn is_object_store(dir: &Directory) -> bool {
 /// when the store cannot list (a plain HTTP server), or refuses to (a bucket whose listing is not
 /// public). Names are relative to the directory.
 pub(crate) fn list_objects(dir: &Directory, recursive: bool) -> Result<Option<Vec<ObjectEntry>>> {
-    list_pages(dir, recursive, None)
+    list_pages(dir, recursive, None, false)
+}
+
+/// Capped read-only discovery retains its historical warn-and-partial behavior.
+/// Mutation callers must use list_objects, which requires a complete listing.
+pub(crate) fn list_objects_for_discovery(dir: &Directory, recursive: bool) -> Result<Option<Vec<ObjectEntry>>> {
+    list_pages(dir, recursive, None, true)
 }
 
 /// Whether a directory of an object store holds anything: one listing request for one key.
 /// `None` when the store cannot list.
 pub(crate) fn has_entries(dir: &Directory) -> Result<Option<bool>> {
-    Ok(list_pages(dir, false, Some(1))?.map(|l| !l.is_empty()))
+    Ok(list_pages(dir, false, Some(1), false)?.map(|l| !l.is_empty()))
 }
 
 /// [`list_objects`]; with `max`, only the first page, of at most `max` entries.
-fn list_pages(dir: &Directory, recursive: bool, max: Option<u32>) -> Result<Option<Vec<ObjectEntry>>> {
+fn list_pages(dir: &Directory, recursive: bool, max: Option<u32>, allow_partial: bool) -> Result<Option<Vec<ObjectEntry>>> {
     let api = listing_api(dir);
     if !api.is_object_store() {
         return Ok(None);
@@ -101,6 +107,10 @@ fn list_pages(dir: &Directory, recursive: bool, max: Option<u32>) -> Result<Opti
             break;
         }
         match next {
+            Some(_) if page + 1 == MAX_PAGES && allow_partial => {
+                crate::warnings::warn(format!("listing stopped after {MAX_PAGES} pages ({} entries)", out.len()));
+                break;
+            }
             Some(_) if page + 1 == MAX_PAGES => {
                 return Err(Error::InvalidData(format!("object listing exceeds {MAX_PAGES} pages; refusing an incomplete operation")));
             }

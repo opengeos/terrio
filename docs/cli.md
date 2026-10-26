@@ -1089,3 +1089,10 @@ HTTP directory listings reject index pages larger than 4 MiB and stop with an er
 at the object-listing page budget. Binary HTTP responses are not read as index
 pages. Recursive copy/sync refuses nested directory symlinks rather than silently creating
 an empty directory; `--skip-errors` records the refusal in its error report.
+
+
+Bucket/container roots are directories across S3, GCS and Azure URL forms.
+Credential-bearing URL queries are redacted in diagnostics and listing names.
+VSI mutation/listing operations require complete object-store listings; capped
+read-only subdirectory discovery retains its existing warning and partial results
+for readers such as Zarr.

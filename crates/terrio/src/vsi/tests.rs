@@ -501,3 +501,18 @@ fn deleting_a_directory_symlink_with_a_trailing_slash_preserves_its_target() {
         assert_eq!(fs::read(target.join("keep.txt")).unwrap(), b"keep");
     }
 }
+
+#[test]
+fn credential_queries_are_redacted_in_refusals_and_public_names() {
+    let path = "https://account.blob.core.windows.net/container?sig=test-signature";
+    let error = delete(path, true).unwrap_err().to_string();
+    assert!(!error.contains("test-signature"));
+    assert!(error.contains("redacted"));
+    let node = Node::parse(path).unwrap();
+    assert_eq!(absolute_name(path, &node, "item.tif"), "https://account.blob.core.windows.net/container/item.tif?<redacted>");
+    for url in
+        ["https://storage.googleapis.com/bucket", "https://account.blob.core.windows.net/container", "https://bucket.s3.amazonaws.com/"]
+    {
+        assert!(listing::Api::for_url(url).is_root());
+    }
+}

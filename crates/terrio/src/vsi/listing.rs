@@ -12,6 +12,17 @@ use std::collections::HashMap;
 
 type EntryIndex = HashMap<(String, bool), usize>;
 
+/// Removes credential-bearing query strings from diagnostics and public names.
+pub(crate) fn redact_url(url: &str) -> std::borrow::Cow<'_, str> {
+    if let Some((base, query)) = url.split_once('?') {
+        let lower = query.to_ascii_lowercase();
+        if ["sig", "token=", "credential=", "api_key=", "apikey=", "access_key="].iter().any(|key| lower.contains(key)) {
+            return format!("{base}?<redacted>").into();
+        }
+    }
+    url.into()
+}
+
 /// An entry of a remote listing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ObjectEntry {
@@ -101,6 +112,13 @@ impl Api {
     }
 
     /// Whether the store lists through an API (not an HTML page).
+    pub(crate) fn is_root(&self) -> bool {
+        match self {
+            Self::S3 { prefix, .. } | Self::Url { prefix, .. } | Self::Azure { prefix, .. } => prefix.trim_matches('/').is_empty(),
+            Self::Html { .. } => false,
+        }
+    }
+
     pub(crate) fn is_object_store(&self) -> bool {
         !matches!(self, Api::Html { .. })
     }
@@ -411,7 +429,7 @@ impl RemoteLister {
         } else if url.starts_with("http://") || url.starts_with("https://") {
             url.to_string()
         } else {
-            return Err(Error::InvalidArgument(format!("'{url}': not a remote URL")));
+            return Err(Error::InvalidArgument(format!("'{}': not a remote URL", redact_url(url))));
         };
         let api = Api::for_url(&url);
         let max_depth = if recursive { depth.unwrap_or(usize::MAX) } else { 1 };

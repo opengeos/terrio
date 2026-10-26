@@ -184,6 +184,6 @@ fn vsi_read<'py>(py: Python<'py>, path: &str) -> PyResult<Bound<'py, PyBytes>> {
 ///     path: The file.
 ///     data: Its contents.
 #[pyfunction]
-fn vsi_write(py: Python<'_>, path: &str, data: Vec<u8>) -> PyResult<()> {
-    py.detach(|| vsi::write(path, &data)).py()
+fn vsi_write(py: Python<'_>, path: &str, data: &[u8]) -> PyResult<()> {
+    py.detach(|| vsi::write(path, data)).py()
 }
