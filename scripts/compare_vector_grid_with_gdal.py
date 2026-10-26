@@ -259,6 +259,18 @@ def cases(inputs):
         ["-l", "france", "-l", "spain", "-zfield", "pop_max", "-ot", "Float32", "-txe", "-10", "10", "-tye", "35", "52", "-outsize", "80", "68"],
         ["-l", "france", "-l", "spain", "--zfield", "pop_max", "--ot", "Float32", "--extent", "-10", "35", "10", "52", "--size", "80", "68"],
     )
+    # GDAL preserves the declared nodata even if integer conversion saturates empty cells.
+    for dtype, nodata in [("Byte", "-1"), ("Int16", "nan"), ("Float32", "-9999.1")]:
+        add(
+            f"empty {dtype} nodata {nodata}", inputs["grid"], f"nearest:radius=0.001:nodata={nodata}",
+            ["-ot", dtype, "-txe", "-200", "-199", "-tye", "-80", "-79", "-outsize", "1", "1"],
+            ["--ot", dtype, "--extent", "-200", "-80", "-199", "-79", "--size", "1", "1"],
+        )
+    add(
+        "ignored malformed option", inputs["grid"], "nearest:power=abc:max_points=abc",
+        ["-ot", "Float64", "-txe", "0", "20", "-tye", "0", "20", "-outsize", "8", "8"],
+        ["--extent", "0", "0", "20", "20", "--size", "8", "8"],
+    )
     return out
 
 

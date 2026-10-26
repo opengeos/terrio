@@ -860,6 +860,11 @@ mod tests {
         let field = field_index(&parts.schema, &options.output_id_field).unwrap();
         let ids: Vec<String> = parts.features.iter().map(|f| as_string(f.attributes.get(field))).collect();
         assert_eq!(ids, ["a", "a", "a", "a", "b", "b", "b", "b"]);
+        // GDAL keeps the first feature even when NULL; later geometry does not replace it.
+        lines.features[0].geometry = None;
+        let parts = create_reference(&lines, &points, &options).unwrap();
+        assert!(parts.features.iter().all(|feature| as_string(feature.attributes.get(field)) == "a"));
+        assert_eq!(parts.features.len(), 4);
     }
 
     #[test]

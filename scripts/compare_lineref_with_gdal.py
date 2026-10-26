@@ -155,6 +155,27 @@ def datasets(data, work):
                 o.CreateFeature(n)
         ds = None
     out.append(("two routes", rpath, rstones, 1000, ["-lf", "route", "-pf", "route"], ["--line-field", "route", "--point-field", "route"]))
+    # A NULL first feature for route a must not be replaced by the later valid line.
+    null_path = str(work / "null_first_routes.gpkg")
+    source = ogr.Open(rpath)
+    layer = source.GetLayer(0)
+    ds = ogr.GetDriverByName("GPKG").CreateDataSource(null_path)
+    target = ds.CreateLayer("routes", layer.GetSpatialRef(), layer.GetGeomType())
+    for i in range(layer.GetLayerDefn().GetFieldCount()):
+        target.CreateField(layer.GetLayerDefn().GetFieldDefn(i))
+    first = next(iter(layer))
+    feature = ogr.Feature(target.GetLayerDefn())
+    feature.SetFrom(first)
+    feature.SetGeometry(None)
+    target.CreateFeature(feature)
+    layer.ResetReading()
+    for feature in layer:
+        copied = ogr.Feature(target.GetLayerDefn())
+        copied.SetFrom(feature)
+        target.CreateFeature(copied)
+    ds = None
+    source = None
+    out.append(("first null route", null_path, rstones, 1000, ["-lf", "route", "-pf", "route"], ["--line-field", "route", "--point-field", "route"]))
     return out
 
 
@@ -187,7 +208,7 @@ def main():
                 report("create", name, "differs", str(e).splitlines()[-1])
                 continue
             parts = features(gparts)
-            if label == "two routes":
+            if label in {"two routes", "first null route"}:
                 continue
             # Positions of the milestones, of points beside the route and of GDAL's test point.
             src = ogr.Open(points)
@@ -216,6 +237,26 @@ def main():
                     report("get_subline", f"{label} {mb:.6f} to {me:.6f}", *compare_layers(gsub, tsub, 1e-9))
                 except RuntimeError as e:
                     report("get_subline", f"{label} {mb:.6f} to {me:.6f}", "differs", str(e).splitlines()[-1])
+            if label == "projected":
+                # Preserve GDAL's skip behavior, including any gap in the selected parts.
+                malformed = str(work / "missing_middle.gpkg")
+                source = ogr.Open(gparts)
+                copied = ogr.GetDriverByName("GPKG").CopyDataSource(source, malformed)
+                layer = copied.GetLayer(0)
+                selected = list(layer)
+                middle = selected[len(selected) // 2]
+                middle.SetGeometry(None)
+                layer.SetFeature(middle)
+                copied = None
+                source = None
+                mb, me = begs[1] + 1, ends[-2] - 1
+                gsub, tsub = str(work / "gsub_missing.gpkg"), str(work / "tsub_missing.gpkg")
+                try:
+                    run(["ogrlineref", "-quiet", "-get_subline", "-r", malformed, "-mb", repr(mb), "-me", repr(me), "-f", "GPKG", "-o", gsub, "-on", "sub"])
+                    run([args.terrio, "lineref", "get-subline", "--parts", malformed, "--begin", repr(mb), "--end", repr(me), tsub, "--layer-name", "sub"])
+                    report("get_subline", "projected missing middle geometry", *compare_layers(gsub, tsub, 1e-9))
+                except RuntimeError as error:
+                    report("get_subline", "projected missing middle geometry", "differs", str(error).splitlines()[-1])
     finally:
         shutil.rmtree(work, ignore_errors=True)
     if args.json:

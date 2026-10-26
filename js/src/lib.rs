@@ -15,6 +15,7 @@
 mod grid;
 mod multidim;
 mod ops;
+mod pixel;
 #[cfg(feature = "pointcloud")]
 mod pointcloud;
 mod remote;

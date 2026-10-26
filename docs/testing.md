@@ -50,6 +50,7 @@ python scripts/conformance.py ../terrio-data --remote --strict     # remote COGs
 | Window and overview reads | `scripts/compare_windows_with_gdal.py` | every overview level of every GeoTIFF, local and remote over `/vsicurl/` |
 | Indexed raster catalogs | `scripts/compare_catalogs_with_gdal.py` | Real DEM mosaics in GeoPackage/FlatGeobuf indexes: z-order, nodata, masks, partial alpha, mixed CRS and Terrio-written indexes read by GDAL GTI; an 8x8 HTTP query from 1,002 features checks opens/cache bounds and actual bytes for both implementations |
 | Raster operations | `scripts/compare_ops_with_gdal.py` | translate, warp (all resampling methods), mosaic and VRT against `gdal_translate`, `gdalwarp`, `gdalbuildvrt`, `gdal_merge.py` |
+| Pixel-wise raster commands | `scripts/compare_raster_pixel_with_gdal.py` | `gdal raster unscale`, `nodata-to-alpha`, `reclassify` (inline and `@file` mappings, ranges, `NO_DATA`, `NAN`, `DEFAULT`, `PASS_THROUGH`, `--ot`) and `as-features` (polygons, points, tables, `--skip-nodata`, `--include-xy`, `--include-row-col`) on USGS, Landsat, ECOSTRESS, NLCD and Sentinel-5P data: size, type, nodata, CRS, color interpretations, scales and every pixel, or every feature's fields and vertices. Registered in conformance as `raster-pixel`. |
 | Focal statistics, collars, enhancement | `scripts/compare_focal_with_gdal.py` | `gdal raster neighbors` (every kernel and method, matrices, types, nodata, the whole USGS DEM in strips), `nearblack` and `gdal raster clean-collar` (both algorithms, colors, thresholds, distances, alpha, masks, in-place updates) and `gdalenhance` (equalization, LUT file output and input) on Sentinel-2, Landsat 7 and USGS data: pixels, masks, type, nodata, geotransform, LUT text |
 | Vector operations | `scripts/compare_vector_ops_with_gdal.py` | `ogr2ogr` filters, `gdal_rasterize` and `gdal_polygonize.py` |
 | Vector topology | `scripts/compare_topology_with_gdal.py` | Tennessee county polygons and Las Vegas roads projected to metre-based CRSs: buffer, all four polygon overlays, dissolve, validity, repair of a deliberately corrupted county boundary and snap cleanup against GDAL/GEOS; attributes, source IDs and CRS, with relative symmetric-difference area tolerance 1e-7 (5e-4 for buffer curves). Registered in conformance as `topology`. |
@@ -89,6 +90,7 @@ The [Conformance](conformance.md) page has the full, generated results; in short
 | Histograms | 84 of 84 cases identical to `gdalinfo -hist` (21 rasters of every type) |
 | `calc` | 35 of 37 cases identical; the other two within one float32 rounding step (NumPy's vectorized float32 `sin`, `exp`, `log10`, `arctan2`) |
 | `proximity`, `sieve` | 13 of 13 cases identical |
+| `unscale`, `nodata-to-alpha`, `reclassify`, `as-features` | 30 of 31 cases identical to GDAL 3.13.3's `gdal raster` commands (pixels or features, types, nodata, CRS, color interpretations, scales and affine transforms); the Sentinel-5P case has identical pixels and metadata but a known default-grid difference (reported as within tolerance). An unexpected affine transform fails comparison. Known differences: netCDF default geotransform, selected bands vs GDAL reporting all bands, default layer names, unsupported as-features update/layer options and nodata-to-alpha masks (see [CLI scope](cli.md#as-features)); a missing reference netCDF driver is an explicit case error, and repeated bands, Float32 nodata-adjacent samples, packed grayscale color interpretations, Float64 input converted to Float32 working pixels, and OGR field types are covered. |
 | `neighbors`, `nearblack`/`clean-collar`, `enhance` | 103 of 103 cases identical (27, 58 and 18) to `gdal raster neighbors`, `nearblack`, `gdal raster clean-collar` and `gdalenhance`, pixels and masks; one in-place alpha case compared with GDAL's new-file output (GDAL writes stale alpha values) |
 | STAC and GeoZarr | 16 of 16 STAC checks (subdatasets, mosaics and windows identical to GDAL STACIT's, 328 footprint fields as `ogrinfo`'s), 99 of 99 STACTA checks (summaries, subdatasets and metadata as `gdalinfo`'s; whole rasters, windows and every overview identical to GDAL STACTA's on its 7 test items and on `gdal raster tile` pyramids of a DEM and a Landsat scene, local, over HTTP and with a missing tile) and 60 of 60 GeoZarr checks |
 | Remote Zarr stores | 45 of 45 checks on six public and served stores: sizes, geotransforms and nodata as `gdalinfo`'s; every window identical to `gdal_translate`'s (`/vsicurl/`, `/vsis3/`, `/vsigs/`, `/vsiaz/`) and xarray's, GeoZarr multiscales overviews identical to xarray's levels; windows 2 to 15 times faster than GDAL's |
@@ -202,8 +204,8 @@ places, above GDAL's 100-point quadtree threshold, and 89 Peruvian ones, below i
 of the Autzen lidar (3D) with every algorithm, ellipse, rotation, point limit and per-quadrant
 limit, and every option, and compares every pixel, the type, nodata and geotransform with
 `gdal_grid` (run with `GDAL_USE_AVX=NO GDAL_USE_SSE=NO`, GDAL's double-precision code; one case
-compares its default SIMD code within a tolerance). In a local environment with GDAL 3.13.3: 104
-cases, 97 identical, 5 within tolerance (`linear` on scattered points, 4.7e-9 on populations of
+compares its default SIMD code within a tolerance). In a local environment with GDAL 3.13.3: 108
+cases, 101 identical, 5 within tolerance (`linear` on scattered points, 4.7e-9 on populations of
 1e7 and 1.7e-13 on elevations, identical in Float32; the SIMD `invdist`, single precision, up to
 265 on populations) and 2 differing (`linear` on the regular grid off its nodes, 229 of 400 and
 1261 of 2451 pixels, where qhull breaks co-circular ties differently). GDAL 3.12 scans every
@@ -213,8 +215,8 @@ point for a rotated ellipse where 3.13 searches its quadtree: against 3.12.2 a r
 `compare_lineref_with_gdal.py` runs `ogrlineref` and `terrio lineref` on GDAL's test route and
 milestones (geographic, reprojected to UTM, and as two routes told apart by a field, one drawn
 backwards): the parts feature by feature, the printed positions and coordinates, and sublines
-vertex by vertex. 63 cases: 61 identical, 2 within tolerance (the UTM lengths of a geographic
-route's end parts, 1.1e-11 and 3.8e-11, from terrio's projection rather than PROJ).
+vertex by vertex. 65 cases: 62 identical, 3 within tolerance (the UTM lengths of a geographic
+route's end parts, including the first-NULL-route case, 1.1e-11 to 3.8e-11, from terrio's projection rather than PROJ). NULL middle parts are skipped identically to GDAL.
 
 ```sh
 python scripts/compare_vector_grid_with_gdal.py ../terrio-data
@@ -723,3 +725,11 @@ The full release dry run is manual: select **Release dry run → Run workflow** 
 GitHub Actions before tagging a release. It builds the complete cross-platform
 wheel, CLI, installer and npm matrix without publishing. Pull requests retain the
 normal CI checks, including Python, WASM, API documentation and package validation.
+
+## Pixel-operation buffer checks
+
+When changing typed output-buffer paths, measure peak RSS before and after with the same
+multiband fixture, build profile and thread count. Compare every output pixel, type, nodata
+value and georeferencing value as well as memory use. Record fixture details and observations
+in the PR validation notes; they are not runtime or general memory guarantees. These operations
+still materialize input and output, so eliminating intermediates does not make them streaming.

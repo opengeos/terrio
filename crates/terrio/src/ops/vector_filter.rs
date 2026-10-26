@@ -29,7 +29,12 @@ pub fn open_layers(path: &str, options: &crate::VectorOpenOptions) -> Result<Vec
         None
     };
     for name in &options.layers {
-        if !ds.layers.iter().any(|layer| layer.name == *name) && alias != Some(name.as_str()) {
+        if !ds.layers.iter().any(|layer| layer.name == *name) {
+            // A selected subset is not proof that the source has only one layer.
+            // Inspect all names only when validating an otherwise missing stem alias.
+            if alias == Some(name.as_str()) && crate::list_layers(path)?.len() == 1 {
+                continue;
+            }
             return Err(Error::InvalidArgument(format!("no layer named '{name}'")));
         }
     }
@@ -717,6 +722,17 @@ mod tests {
         assert_eq!(open_layers(path.to_str().unwrap(), &options).unwrap().len(), 1);
         let options = crate::VectorOpenOptions { layers: vec!["single".into(), "missing".into()], ..Default::default() };
         assert!(open_layers(path.to_str().unwrap(), &options).unwrap_err().to_string().contains("missing"));
+    }
+
+    #[test]
+    fn filtered_multilayer_file_does_not_gain_a_stem_alias() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("source.kml");
+        std::fs::write(&path, r#"<kml xmlns="http://www.opengis.net/kml/2.2"><Document><Folder><name>a</name><Placemark><Point><coordinates>0,0</coordinates></Point></Placemark></Folder><Folder><name>b</name><Placemark><Point><coordinates>1,1</coordinates></Point></Placemark></Folder></Document></kml>"#).unwrap();
+        let options = crate::VectorOpenOptions { layers: vec!["a".into(), "source".into()], ..Default::default() };
+        assert!(open_layers(path.to_str().unwrap(), &options).unwrap_err().to_string().contains("source"));
+        let options = crate::VectorOpenOptions { layers: vec!["a".into()], ..Default::default() };
+        assert_eq!(open_layers(path.to_str().unwrap(), &options).unwrap()[0].name, "a");
     }
 
     fn square(x: f64, y: f64, s: f64) -> Geometry {

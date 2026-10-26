@@ -270,11 +270,11 @@ impl GridAlgorithm {
                 crate::warnings::warn(format!("gridding option {k} ignored"));
             }
         }
-        let has = |k: &str| known.contains(&k);
-        if let Some(v) = num(&params, "power")?.filter(|_| has("power")) {
+        params.retain(|(key, _)| known.contains(&key.as_str()));
+        if let Some(v) = num(&params, "power")? {
             a.power = v;
         }
-        if let Some(v) = num(&params, "smoothing")?.filter(|_| has("smoothing")) {
+        if let Some(v) = num(&params, "smoothing")? {
             a.smoothing = v;
         }
         if method.uses_ellipse() {
@@ -290,7 +290,7 @@ impl GridAlgorithm {
             a.radius = r;
         }
         let count = |k: &str| -> Result<Option<u32>> {
-            match num(&params, k)?.filter(|_| has(k)) {
+            match num(&params, k)? {
                 Some(v) if !(v.is_finite() && v >= 0.0) => {
                     Err(Error::InvalidArgument(format!("gridding parameter {k} must be a non-negative number of points")))
                 }
@@ -1800,7 +1800,9 @@ pub fn vector_grid(layers: &[Layer], options: &VectorGridOptions) -> Result<Rast
         Some(c) => c.clone(),
         None => SpatialRef::from_layer(&layers[0]),
     };
-    let band_nodata = algorithm.nodata_set.then_some(algorithm.nodata);
+    // GDAL rounds Float32 band nodata to the stored sample precision. Integer
+    // outputs retain GDAL's original declared value even when empty cells saturate.
+    let band_nodata = algorithm.nodata_set.then_some(if dt == DataType::F32 { algorithm.nodata as f32 as f64 } else { algorithm.nodata });
     // GDAL's geotransform: (x_min, (x_max - x_min) / cols, 0, top, 0, (bottom - top) / rows).
     let (top, bottom) = (extent.y_max, extent.y_min);
     let gt = [x0, (x1 - x0) / cols as f64, 0.0, top, 0.0, (bottom - top) / rows as f64];
@@ -1847,6 +1849,14 @@ mod tests {
     fn grid(x: &[f64], y: &[f64], z: &[f64], a: &GridAlgorithm, e: [f64; 4], cols: usize, rows: usize) -> Vec<f64> {
         let extent = GridExtent { x_min: e[0], y_min: e[1], x_max: e[2], y_max: e[3], cols, rows };
         grid_points(x, y, z, a, &extent, DataType::F64, 1).unwrap()
+    }
+
+    #[test]
+    fn malformed_ignored_options_do_not_fail_parsing() {
+        let options = GridAlgorithm::parse("nearest:power=abc:max_points=not-a-number").unwrap();
+        assert_eq!(options.method, GridMethod::Nearest);
+        assert!(GridAlgorithm::parse("invdist:power=abc").is_err());
+        assert!(GridAlgorithm::parse("average:min_points=abc").is_err());
     }
 
     #[test]
@@ -2036,6 +2046,22 @@ mod tests {
         assert!(vector_grid(&[layer.clone()], &options).unwrap().raster.get(0, 0, 0).is_nan());
         options.z_field = None;
         assert_eq!(vector_grid(&[layer], &options).unwrap().raster.get(0, 0, 0), 5.);
+    }
+
+    #[test]
+    fn float32_nodata_matches_the_stored_empty_cell() {
+        let mut layer = Layer::new("points");
+        layer.features.push(Feature { fid: 0, geometry: Some(Geometry::point_z(100., 100., 1.)), attributes: vec![] });
+        let options = VectorGridOptions {
+            algorithm: GridAlgorithm::parse("nearest:radius=0.001:nodata=-9999.1").unwrap(),
+            extent: Some((0., 0., 1., 1.)),
+            size: Some((1, 1)),
+            data_type: DataType::F32,
+            ..Default::default()
+        };
+        let output = vector_grid(&[layer], &options).unwrap();
+        assert_eq!(output.band_nodata(1), Some(-9999.1_f32 as f64));
+        assert_eq!(output.raster.get(0, 0, 0), output.band_nodata(1).unwrap());
     }
 
     #[test]

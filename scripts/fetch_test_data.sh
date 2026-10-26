@@ -100,7 +100,15 @@ gdal_utilities=https://raw.githubusercontent.com/OSGeo/gdal/v3.13.3/autotest/uti
 mkdir -p gdal_utilities
 for f in grid.csv grid.vrt path.shp path.shx path.dbf path.prj path.cpg mstones.shp mstones.shx mstones.dbf mstones.prj \
   mstones.cpg; do
-  [ -e "gdal_utilities/$f" ] || curl -sSfL -o "gdal_utilities/$f" "$gdal_utilities/$f"
+  if [ ! -e "gdal_utilities/$f" ]; then
+    fixture_tmp=$(mktemp "gdal_utilities/$f.XXXXXX")
+    if curl -sSfL -o "$fixture_tmp" "$gdal_utilities/$f"; then
+      mv "$fixture_tmp" "gdal_utilities/$f"
+    else
+      rm -f "$fixture_tmp"
+      exit 1
+    fi
+  fi
 done
 # NASA HDF-EOS5 products, when Earthdata Login credentials are in ~/.netrc (not in CI): a VIIRS
 # Black Marble grid (geographic, LAADS), a VIIRS surface reflectance grid (sinusoidal, LP DAAC),

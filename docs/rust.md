@@ -311,6 +311,25 @@ let pos = position(&parts, -1.4345, 51.9497)?;
 `grid_points` grids coordinate arrays directly; `coordinates` and `subline` are the other
 lookups. See [vector-grid](cli.md#vector-grid) and [lineref](cli.md#lineref).
 
+### Pixel-wise operations
+
+```rust
+use terrio::ops::as_features::{as_features, AsFeaturesOptions, PixelGeometry};
+use terrio::ops::pixel::{nodata_to_alpha, reclassify, unscale, ReclassifyOptions};
+let packed = terrio::open_raster("packed.tif")?;
+let physical = unscale(&packed, &Default::default())?; // value * scale + offset, Float32
+let rgba = nodata_to_alpha(&terrio::open_raster("landsat.tif")?, &Default::default())?;
+let nlcd = terrio::open_raster("nlcd.tif")?;
+let groups = reclassify(&nlcd, &ReclassifyOptions { mapping: "11=1;[21,25)=2;DEFAULT=0".into(), output_type: None })?;
+let pixels = as_features(&nlcd, &AsFeaturesOptions { geometry: PixelGeometry::Polygon, ..Default::default() })?;
+# Ok::<(), terrio::Error>(())
+```
+
+`terrio::ops::pixel::Reclassifier` parses and applies GDAL's mapping syntax on its own, and
+`mapping_from_file_text` reads mapping files. See [unscale](cli.md#unscale),
+[nodata-to-alpha](cli.md#nodata-to-alpha), [reclassify](cli.md#reclassify) and
+[as-features](cli.md#as-features).
+
 ## Coordinate systems
 
 ```rust,no_run
