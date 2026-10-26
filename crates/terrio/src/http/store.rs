@@ -104,6 +104,9 @@ fn list_pages(dir: &Directory, recursive: bool, max: Option<u32>, allow_partial:
         };
         let next = api.read_page(&body, &mut out, &mut index);
         if max.is_some() {
+            if out.is_empty() && api.has_directory_marker(&body) {
+                out.push(ObjectEntry { name: String::new(), dir: true, size: None, modified: None, etag: None });
+            }
             break;
         }
         match next {

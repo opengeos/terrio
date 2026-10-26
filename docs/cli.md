@@ -850,12 +850,38 @@ copy a directory into itself.
 `-q` prints nothing, `--json` prints what was done (`copied`, `bytes`, `unchanged`, `deleted`,
 `errors`), `--stats` the HTTP requests and bytes received.
 
+VSI moves replace existing destination files, as GDAL does, and refuse existing
+destination directories. Local filesystem renames preserve native links and names;
+copy-delete moves between stores or filesystems refuse symbolic links and non-UTF-8
+entries before copying. Keep the source unchanged during a copy-delete move.
+
+Recursive extraction and copy reject parent traversal, Windows drive-style child
+names (on all platforms for portable paths), and symlinks escaping the output root. Tar and tar.gz copies and sync stream payloads in one pass after discovery. ZIP
+central directories are indexed once per operation. Local atomic writes follow destination
+symlinks and preserve mode bits, while replacement detaches hard links and does not
+preserve ownership, ACLs or extended attributes.
+
+HTTP directory listings reject index pages larger than 4 MiB and stop with an error
+at the object-listing page budget. Binary HTTP responses are not read as index
+pages. Recursive copy/sync refuses nested directory symlinks rather than silently creating
+an empty directory; `--skip-errors` records the refusal in its error report.
+
+Bucket/container roots are directories across S3, GCS and Azure URL forms.
+Credential-bearing URL queries are redacted in diagnostics and listing names.
+VSI mutation/listing operations require complete object-store listings; capped
+read-only subdirectory discovery retains its existing warning and partial results
+for readers such as Zarr.
+
+Recursive object-store listings include directories implied by keys; GDAL omits those
+implied directory entries. `--skip-errors` continues copying but exits nonzero when
+any files fail.
+
 Differences from GDAL (checked with 3.13.3): entries are sorted (GDAL prints local directories in the order
 the file system returns them); dates are UTC (a zip member's date is its stored DOS time, as
 GDAL prints it); HTTP index names stay percent-encoded, as GDAL keeps them. Not supported:
 `sync -j/--num-threads` (requests are sequential), multipart uploads (objects over 5 GiB), Azure
-shared-key authentication, writing to Google Cloud Storage's own API, creating empty
-"directories" in object stores (they are implied by keys), progress bars, and the virtual file
+shared-key authentication, writing to Google Cloud Storage's own API, empty directory
+creation outside S3 (S3 uses marker keys), progress bars, and the virtual file
 systems `/vsigzip/`, `/vsi7z/`, `/vsirar/`, `/vsiswift/`, `/vsioss/`, `/vsiadls/`, `/vsihdfs/`
 and `/vsiwebhdfs/`.
 
@@ -1023,7 +1049,6 @@ a leading Byte band does not truncate later floating-point bands.
 The Rust `VirtualRaster` API parses and serializes these descriptions. Its
 `into_lazy` source map also permits filesystem-free reads in WebAssembly.
 
-
 Warped VRT block evaluation is limited to 8,388,608 samples across all bands per
 declared block. Larger blocks return an unsupported error, including for small
 subwindow reads, to keep temporary memory bounded while preserving GDAL block semantics.
@@ -1072,27 +1097,3 @@ point tie points and rotated affine transforms, without moving pixel corners.
 Writing a PixelIsPoint GeoTIFF requires a CRS. A write with an unknown CRS is
 rejected before creating the file, avoiding a half-pixel origin shift without
 a corresponding raster-type GeoKey.
-
-VSI moves replace existing destination files, as GDAL does, and refuse existing
-destination directories. Local filesystem renames preserve native links and names;
-copy-delete moves between stores or filesystems refuse symbolic links and non-UTF-8
-entries before copying. Keep the source unchanged during a copy-delete move.
-
-Recursive archive extraction rejects parent traversal and symlinks escaping its output
-root. Tar and tar.gz copies and sync stream payloads in one pass after discovery. ZIP
-central directories are indexed once per operation. Local atomic writes follow destination
-symlinks and preserve mode bits, while replacement detaches hard links and does not
-preserve ownership, ACLs or extended attributes.
-
-
-HTTP directory listings reject index pages larger than 4 MiB and stop with an error
-at the object-listing page budget. Binary HTTP responses are not read as index
-pages. Recursive copy/sync refuses nested directory symlinks rather than silently creating
-an empty directory; `--skip-errors` records the refusal in its error report.
-
-
-Bucket/container roots are directories across S3, GCS and Azure URL forms.
-Credential-bearing URL queries are redacted in diagnostics and listing names.
-VSI mutation/listing operations require complete object-store listings; capped
-read-only subdirectory discovery retains its existing warning and partial results
-for readers such as Zarr.

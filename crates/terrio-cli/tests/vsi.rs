@@ -318,6 +318,23 @@ fn copies_lists_syncs_and_deletes_on_s3() {
 }
 
 #[test]
+fn refused_directory_operations_do_not_create_targets() {
+    let (endpoint, _) = serve();
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    std::fs::create_dir(d.join("source")).unwrap();
+    let out = terrio(&endpoint, d, &["vsi", "move", "source", "source/sub/"]);
+    assert!(!out.status.success());
+    assert!(!d.join("source/sub").exists());
+    let out = terrio(&endpoint, d, &["vsi", "copy", "source", "new/"]);
+    assert!(!out.status.success());
+    assert!(!d.join("new").exists());
+    std::fs::write(d.join("source/file"), b"x").unwrap();
+    let text = ok(&endpoint, d, &["vsi", "list", "source", "--tree", "--abs"]);
+    assert_eq!(text.trim(), d.join("source/file").to_str().unwrap());
+}
+
+#[test]
 fn ordinary_html_with_links_is_copied_as_a_file() {
     let (endpoint, store) = serve();
     let data = b"<html><title>A page</title><a href='relative.html'>Read more</a></html>".to_vec();

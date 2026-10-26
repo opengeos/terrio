@@ -657,13 +657,6 @@ python scripts/conformance.py ../terrio-data --only lazy-geotiff --strict
 JavaScript exposure of these additional lazy-reader facts remains follow-up
 work; the existing bindings retain their behavior.
 
-## Release rehearsal
-
-The full release dry run is manual: select **Release dry run → Run workflow** in
-GitHub Actions before tagging a release. It builds the complete cross-platform
-wheel, CLI, installer and npm matrix without publishing. Pull requests retain the
-normal CI checks, including Python, WASM, API documentation and package validation.
-
 ## File management (#289)
 
 `scripts/compare_vsi_with_gdal.py` (the `vsi` conformance suite) compares `terrio vsi` with
@@ -691,3 +684,10 @@ cargo test -p terrio-cli --test vsi     # S3 (local server): paging, uploads, ET
 pytest python/tests/test_vsi.py
 node --test --test-name-pattern='vsi' js/tests/node.test.mjs
 ```
+
+## Release rehearsal
+
+The full release dry run is manual: select **Release dry run → Run workflow** in
+GitHub Actions before tagging a release. It builds the complete cross-platform
+wheel, CLI, installer and npm matrix without publishing. Pull requests retain the
+normal CI checks, including Python, WASM, API documentation and package validation.

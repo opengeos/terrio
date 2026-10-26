@@ -1017,7 +1017,7 @@ fn write_local_atomic(path: &Path, fill: impl FnOnce(&mut std::fs::File) -> Resu
 }
 
 /// Copies one file from `src` to `dst`; returns the bytes copied.
-fn copy_file(src: &Node, dst: &Node) -> Result<u64> {
+fn copy_file(src: &Node, dst: &Node, _known_size: Option<u64>) -> Result<u64> {
     if let Some(reason) = dst.read_only_reason() {
         return Err(Error::Unsupported(format!("'{}': {reason}", display_node(dst))));
     }
@@ -1048,7 +1048,10 @@ fn copy_file(src: &Node, dst: &Node) -> Result<u64> {
             match (src, &remote) {
                 // Within S3: a server-side copy.
                 (Node::S3 { bucket, key }, crate::http::Remote::S3(to)) => {
-                    let size = stat_node(src)?.and_then(|s| s.size).unwrap_or(0);
+                    let size = match _known_size {
+                        Some(size) => size,
+                        None => stat_node(src)?.and_then(|s| s.size).unwrap_or(0),
+                    };
                     store::s3_copy(&crate::s3::S3Object { bucket: bucket.clone(), key: key.clone() }, to)?;
                     Ok(size)
                 }
@@ -1249,9 +1252,6 @@ pub fn stat(path: &str) -> Result<Option<Entry>> {
 fn copy_target(src: &Node, dst_input: &str, dst: &Node) -> Result<Node> {
     let existing_directory = stat_node(dst)?.is_some_and(|s| s.dir);
     let into = dst_input.trim().ends_with('/') || existing_directory;
-    if into && !existing_directory {
-        make_dir(dst)?;
-    }
     if existing_directory && matches!(src, Node::Archive { .. }) {
         return archive_target(dst, &src.file_name());
     }
@@ -1276,7 +1276,7 @@ pub fn copy(src: &str, dst: &str, options: &CopyOptions) -> Result<Report> {
                 listing::redact_url(dst)
             )));
         }
-        report.bytes += copy_file(&src_node, &target)?;
+        report.bytes += copy_file(&src_node, &target, stat.size)?;
         report.copied += 1;
         return Ok(report);
     }
@@ -1512,7 +1512,7 @@ fn copy_tree(src: &Node, dst: &Node, skip_errors: bool, sync: Option<(&SyncOptio
                 continue;
             }
         }
-        match copy_file(&from, &to) {
+        match copy_file(&from, &to, e.size) {
             Ok(n) => {
                 report.copied += 1;
                 report.bytes += n;
@@ -1535,10 +1535,20 @@ fn up_to_date(src: &Node, s: &Entry, dst: &Node, t: &Entry, strategy: SyncStrate
             match (single_part(&s.etag), single_part(&t.etag)) {
                 (Some(a), Some(b)) => a == b,
                 // A local (or in-memory) file against an object: its MD5.
-                (None, Some(b)) if matches!(src, Node::Local(_) | Node::Mem(_)) && s.size == t.size => {
+                (None, Some(b))
+                    if matches!(src, Node::Local(_) | Node::Mem(_))
+                        && s.size == t.size
+                        && b.len() == 32
+                        && b.bytes().all(|c| c.is_ascii_hexdigit()) =>
+                {
                     md5_of(src)? == b.to_ascii_lowercase()
                 }
-                (Some(a), None) if matches!(dst, Node::Local(_) | Node::Mem(_)) && s.size == t.size => {
+                (Some(a), None)
+                    if matches!(dst, Node::Local(_) | Node::Mem(_))
+                        && s.size == t.size
+                        && a.len() == 32
+                        && a.bytes().all(|c| c.is_ascii_hexdigit()) =>
+                {
                     md5_of(dst)? == a.to_ascii_lowercase()
                 }
                 _ => s.size == t.size && (s.etag.is_some() && s.etag == t.etag || timestamp()),
@@ -1764,7 +1774,7 @@ pub fn rename(src: &str, dst: &str) -> Result<Report> {
     if stat.dir {
         copy_tree(&src_node, &target, false, None, &mut report)?;
     } else {
-        report.bytes += copy_file(&src_node, &target)?;
+        report.bytes += copy_file(&src_node, &target, stat.size)?;
         report.copied += 1;
     }
     let deleted = delete(src, true)?;
@@ -1783,14 +1793,14 @@ pub fn sync(src: &str, dst: &str, options: &SyncOptions) -> Result<Report> {
     let mut report = Report::default();
     if !stat.dir {
         let target = copy_target(&src_node, dst, &dst_node)?;
-        let s = stat.entry(String::new());
+        let s = stat.clone().entry(String::new());
         if let Some(t) = stat_node(&target)?.filter(|t| !t.dir).map(|t| t.entry(String::new()))
             && up_to_date(&src_node, &s, &target, &t, options.strategy)?
         {
             report.unchanged += 1;
             return Ok(report);
         }
-        report.bytes += copy_file(&src_node, &target)?;
+        report.bytes += copy_file(&src_node, &target, stat.size)?;
         report.copied += 1;
         return Ok(report);
     }

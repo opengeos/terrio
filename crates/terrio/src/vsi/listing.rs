@@ -176,6 +176,17 @@ impl Api {
         })
     }
 
+    /// A placeholder equal to the listed prefix proves that the directory exists.
+    pub(crate) fn has_directory_marker(&self, body: &[u8]) -> bool {
+        let (prefix, group, key) = match self {
+            Self::S3 { prefix, .. } | Self::Url { prefix, .. } => (prefix, "Contents", "Key"),
+            Self::Azure { prefix, .. } => (prefix, "Blob", "Name"),
+            Self::Html { .. } => return false,
+        };
+        let xml = String::from_utf8_lossy(body);
+        xml_elements(&xml, group).iter().any(|block| xml_elements(block, key).first().is_some_and(|v| xml_unescape(v) == *prefix))
+    }
+
     /// Reads one listing page into `out`; returns the continuation token, if there are more.
     pub(crate) fn read_page(&self, body: &[u8], out: &mut Vec<ObjectEntry>, index: &mut EntryIndex) -> Option<String> {
         let body = body.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(body);
@@ -493,11 +504,19 @@ impl RemoteLister {
                 }
                 self.out.push(ObjectEntry { name, ..e });
             }
-            self.done = self.html_pending.is_empty() || self.pages >= MAX_PAGES;
+            if self.pages >= MAX_PAGES && !self.html_pending.is_empty() {
+                self.done = true;
+                return Err(Error::InvalidData("remote listing exceeds the page budget".into()));
+            }
+            self.done = self.html_pending.is_empty();
             return Ok(());
         }
         self.token = self.api.read_page(body, &mut self.out, &mut self.index);
-        self.done = self.token.is_none() || self.pages >= MAX_PAGES;
+        if self.pages >= MAX_PAGES && self.token.is_some() {
+            self.done = true;
+            return Err(Error::InvalidData("remote listing exceeds the page budget".into()));
+        }
+        self.done = self.token.is_none();
         Ok(())
     }
 
@@ -515,6 +534,16 @@ impl RemoteLister {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn directory_markers_and_page_caps_are_not_silent() {
+        let api = super::Api::for_url("https://bucket.s3.amazonaws.com/dir");
+        assert!(api.has_directory_marker(b"<ListBucketResult><Contents><Key>dir/</Key><Size>0</Size></Contents></ListBucketResult>"));
+        let mut lister = super::RemoteLister::new("s3://bucket/dir", true, None).unwrap();
+        lister.pages = super::MAX_PAGES - 1;
+        assert!(lister.next_url().is_some());
+        assert!(lister.feed(200, b"<ListBucketResult><IsTruncated>true</IsTruncated><NextContinuationToken>more</NextContinuationToken></ListBucketResult>").is_err());
+    }
+
     use super::*;
 
     #[test]

@@ -516,3 +516,22 @@ fn credential_queries_are_redacted_in_refusals_and_public_names() {
         assert!(listing::Api::for_url(url).is_root());
     }
 }
+
+#[test]
+fn opaque_entity_tags_use_timestamp_without_hashing_local_data() {
+    let mut source = super::Stat::file(4).entry("local".into());
+    source.modified = Some(1);
+    let mut target = super::Stat::file(4).entry("remote".into());
+    target.modified = Some(2);
+    target.etag = Some("0x8DAZURETAG".into());
+    assert!(
+        super::up_to_date(
+            &super::Node::Mem("missing".into()),
+            &source,
+            &super::Node::Mem("also-missing".into()),
+            &target,
+            super::SyncStrategy::ETag
+        )
+        .unwrap()
+    );
+}

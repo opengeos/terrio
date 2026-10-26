@@ -282,8 +282,8 @@ terrio.vsiDelete("/vsimem/old", true);
 const { entries } = await terrio.listUrl("s3://bucket/prefix", { recursive: true });
 ```
 
-The [vsi](cli.md#vsi) commands on the in-memory file system (`/vsimem/`) and the zip archives in
-it, and remote listings with `listUrl`. WebAssembly has no local file system (local paths fail)
+The [vsi](cli.md#vsi) commands support the in-memory file system (`/vsimem/`) and the zip archives in
+it, and `listUrl` provides remote listings. WebAssembly has no local file system (local paths fail)
 and no request signing: tar archives, local files, signed S3 requests and writes to object stores
 are available in the native CLI, Rust and Python only. `/vsimem/` files carry no dates, so
 `vsiSync` with the `timestamp` strategy copies every file. In browsers, a store must allow the

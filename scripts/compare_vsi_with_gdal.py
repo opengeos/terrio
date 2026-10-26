@@ -168,6 +168,9 @@ def compare_trees(name: str, ours: Path, theirs: Path) -> None:
         theirs: GDAL's copy.
     """
     a, b = tree(ours), tree(theirs)
+    if not a and not b:
+        record(name, False, "both output trees are empty or missing")
+        return
     diff = sorted(set(a.items()) ^ set(b.items()))
     if diff:
         record(name, False, f"{len(diff)} differences: {diff[:6]}")
@@ -455,7 +458,7 @@ def main() -> int:
                 azure = {"AZURE_STORAGE_ACCOUNT": "daymeteuwest", "AZURE_STORAGE_SAS_TOKEN": sas}
                 compare_listing("Azure Blob Storage with a SAS token (Daymet Zarr array)", terrio,
                                 "/vsiaz/daymet-zarr/daily/hi.zarr/lat", env=azure, object_store=True)
-            except OSError as e:
+            except (OSError, ValueError, KeyError) as e:
                 record("Azure Blob Storage with a SAS token (Daymet Zarr array)", False, f"no SAS token: {e}")
             compare_listing("HTTP index page (download.osgeo.org)", terrio, "/vsicurl/https://download.osgeo.org/gdal/data/gtiff/", extra=["--depth", "1"])
             url = "https://naciscdn.org/naturalearth/10m/cultural/ne_10m_admin_0_countries.zip"

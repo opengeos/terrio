@@ -74,6 +74,14 @@ __all__ = [
     "set_geom_type",
     "combine",
     "sort",
+    "vsi_list",
+    "vsi_stat",
+    "vsi_read",
+    "vsi_write",
+    "vsi_copy",
+    "vsi_delete",
+    "vsi_move",
+    "vsi_sync",
     "cli_main",
 ]
 

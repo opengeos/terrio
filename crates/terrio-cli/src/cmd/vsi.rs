@@ -159,8 +159,10 @@ fn list(a: ListArgs) -> terrio::Result<()> {
     if !json && !a.format.eq_ignore_ascii_case("text") {
         return Err(Error::InvalidArgument(format!("unknown output format '{}' (text or json)", a.format)));
     }
-    let entries =
-        vsi::list(&a.path, &ListOptions { recursive: a.recursive, depth: a.depth, absolute: a.absolute && !a.tree, details: a.long })?;
+    let entries = vsi::list(
+        &a.path,
+        &ListOptions { recursive: a.recursive, depth: a.depth, absolute: a.absolute && !(json && a.tree), details: a.long },
+    )?;
     if json {
         let value = if a.tree {
             let absolute = if a.absolute {
@@ -219,13 +221,22 @@ fn tree_json(entries: &[Entry], long: bool, absolute: Option<&[Entry]>) -> serde
         let e = absolute.map_or(&entries[0], |a| &a[0]);
         return vec![entry_json(e, &e.name, long)].into();
     }
-    fn children(entries: &[Entry], prefix: &str, long: bool, absolute: Option<&[Entry]>) -> Vec<serde_json::Value> {
+    let mut index: std::collections::HashMap<&str, Vec<usize>> = Default::default();
+    for (i, e) in entries.iter().enumerate() {
+        let parent = e.name.rsplit_once('/').map_or("", |(parent, _)| parent);
+        index.entry(parent).or_default().push(i);
+    }
+    fn children(
+        entries: &[Entry],
+        parent: &str,
+        long: bool,
+        absolute: Option<&[Entry]>,
+        index: &std::collections::HashMap<&str, Vec<usize>>,
+    ) -> Vec<serde_json::Value> {
         let mut out = Vec::new();
-        for (i, e) in entries.iter().enumerate() {
-            let Some(rel) = e.name.strip_prefix(prefix) else { continue };
-            if rel.is_empty() || rel.contains('/') {
-                continue;
-            }
+        for &i in index.get(parent).into_iter().flatten() {
+            let e = &entries[i];
+            let rel = e.name.rsplit('/').next().unwrap_or(&e.name);
             let shown = absolute.map_or(rel, |a| a[i].name.as_str());
             if e.is_dir() {
                 let mut o = match entry_json(e, shown, true) {
@@ -236,7 +247,7 @@ fn tree_json(entries: &[Entry], long: bool, absolute: Option<&[Entry]>) -> serde
                         o
                     }
                 };
-                o.insert("entries".into(), children(entries, &format!("{}/", e.name), long, absolute).into());
+                o.insert("entries".into(), children(entries, &e.name, long, absolute, index).into());
                 out.push(serde_json::Value::Object(o));
             } else {
                 out.push(entry_json(e, shown, long));
@@ -244,7 +255,7 @@ fn tree_json(entries: &[Entry], long: bool, absolute: Option<&[Entry]>) -> serde
         }
         out
     }
-    children(entries, "", long, absolute).into()
+    children(entries, "", long, absolute, &index).into()
 }
 
 fn report(args: &ReportArgs, r: &Report) -> terrio::Result<()> {
@@ -268,6 +279,9 @@ fn report(args: &ReportArgs, r: &Report) -> terrio::Result<()> {
     }
     if args.stats {
         print_stats();
+    }
+    if !r.errors.is_empty() {
+        return Err(Error::InvalidData(format!("{} VSI operation(s) failed", r.errors.len())));
     }
     Ok(())
 }
