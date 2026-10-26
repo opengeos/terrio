@@ -338,3 +338,26 @@ fn standalone_geographic_root_id_does_not_replace_its_datum() {
     assert!((actual.1 - expected.1).abs() < 1e-8);
     assert!((actual.0 + 1.5).abs() > 1e-4);
 }
+
+#[test]
+fn bound_source_root_id_cannot_replace_parameters_when_reopened() {
+    offline();
+    let reference: serde_json::Value = serde_json::from_str(include_str!("data/projjson_reference.json")).unwrap();
+    let case = reference["cases"].as_array().unwrap().iter().find(|c| c["name"] == "Bound projected seven parameters with IDs").unwrap();
+    let mut bound = case["src"].clone();
+    bound["source_crs"]["id"] = serde_json::json!({"authority":"EPSG", "code":27700});
+    bound["source_crs"]["conversion"]["parameters"][3]["value"] = 400100.0.into();
+    let source = SpatialRef::from_projjson(&bound.to_string()).unwrap();
+    let reopened = SpatialRef::parse(&source.to_wkt().unwrap()).unwrap();
+    bound["source_crs"].as_object_mut().unwrap().remove("id");
+    let id_free = SpatialRef::from_projjson(&bound.to_string()).unwrap();
+    let target = SpatialRef::from_projjson(&case["dst"].to_string()).unwrap();
+    for src in [&source, &reopened, &id_free] {
+        let t = Transformer::new(src, &target).unwrap();
+        for (p, expected) in case["points"].as_array().unwrap().iter().zip(case["expected"].as_array().unwrap()) {
+            let result = t.transform(p[0].as_f64().unwrap() + 100.0, p[1].as_f64().unwrap()).unwrap();
+            assert!((result.0 - expected[0].as_f64().unwrap()).abs() < 1e-8);
+            assert!((result.1 - expected[1].as_f64().unwrap()).abs() < 1e-8);
+        }
+    }
+}
