@@ -344,12 +344,24 @@ pub(crate) fn parse_html_index(html: &str, dir_path: &str) -> Vec<ObjectEntry> {
     let mut out: Vec<ObjectEntry> = Vec::new();
     let mut index = EntryIndex::new();
     let mut at = 0;
+    let mut scanned = 0;
+    let mut tag_start = None;
+    let mut tag_end = None;
     while let Some(i) = lower[at..].find("href=") {
-        let start = at + i + 5;
-        let tag_start = lower[..at + i].rfind('<');
+        let attribute = at + i;
+        let start = attribute + 5;
+        // Scan each segment once, retaining context even for arbitrarily long tags.
+        let segment = &lower[scanned..attribute];
+        if let Some(offset) = segment.rfind('<') {
+            tag_start = Some(scanned + offset);
+        }
+        if let Some(offset) = segment.rfind('>') {
+            tag_end = Some(scanned + offset);
+        }
+        scanned = start;
         let anchor = tag_start.is_some_and(|tag| {
-            let tag = &lower[tag + 1..at + i];
-            tag.starts_with('a') && tag.as_bytes().get(1).is_some_and(u8::is_ascii_whitespace) && !tag.contains('>')
+            let prefix = &lower[tag + 1..attribute];
+            prefix.starts_with('a') && prefix.as_bytes().get(1).is_some_and(u8::is_ascii_whitespace) && tag_end.is_none_or(|end| end < tag)
         });
         if !anchor {
             at = start;
@@ -728,6 +740,16 @@ mod tests {
         let names: Vec<String> = l.finish().into_iter().map(|e| e.name).collect();
         assert_eq!(names, ["sub", "sub/deeper", "sub/y.tif", "x.tif"]);
         assert!(RemoteLister::new("local/dir", false, None).is_err());
+    }
+
+    #[test]
+    fn html_context_survives_long_anchors_and_repeated_non_anchor_attributes() {
+        let html = format!("<a data-padding='{}' href='long.txt'>long</a>{}", "x".repeat(4096), " href='ignored'".repeat(100_000));
+        let names: Vec<_> = parse_html_index(&html, "/").into_iter().map(|entry| entry.name).collect();
+        assert_eq!(names, ["long.txt"]);
+        let html = "<a href='one' href='two'>both</a><span href='ignored'></span><a href='three'>three</a>";
+        let names: Vec<_> = parse_html_index(html, "/").into_iter().map(|entry| entry.name).collect();
+        assert_eq!(names, ["one", "two", "three"]);
     }
 
     #[test]
