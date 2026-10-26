@@ -25,7 +25,7 @@ use terrio::ops::warp::{Cutline, Nodata, WarpOptions};
 use terrio::{Layer, RasterDataset};
 use wasm_bindgen::prelude::*;
 
-fn invalid(msg: impl std::fmt::Display) -> JsError {
+pub(crate) fn invalid(msg: impl std::fmt::Display) -> JsError {
     JsError::new(&msg.to_string())
 }
 

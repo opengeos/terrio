@@ -1,5 +1,7 @@
 """Pixel-wise raster operations: unscale, nodata_to_alpha, reclassify and as_features."""
 
+import random
+
 import numpy as np
 import pytest
 
@@ -116,3 +118,13 @@ def test_mapping_file_limit_and_signed_nan(tmp_path):
     for mapping in ("-nan=0", "+nan=0"):
         with pytest.raises(ValueError, match="NaN"):
             terrio.reclassify(src, mapping)
+
+
+def test_many_intervals_with_nan_nodata_return_an_error_instead_of_panicking():
+    src = terrio.Raster.from_array(
+        np.array([[np.nan, 1.0]], dtype="float32"), GT, nodata=float("nan")
+    )
+    entries = [f"{i}={i}" for i in range(80)] + ["NO_DATA=0"]
+    random.Random(0).shuffle(entries)
+    with pytest.raises(terrio.errors.InvalidArgumentError, match="overlaps"):
+        terrio.reclassify(src, ";".join(entries))

@@ -33,7 +33,7 @@ impl PixelGeometry {
     }
 }
 
-/// Options for [`as_features`], named after `gdal raster as-features`'.
+/// Options for [`as_features`], named after `gdal raster as-features`.
 #[derive(Debug, Clone)]
 pub struct AsFeaturesOptions {
     /// The bands to report, from 1 (`-b`); all by default.

@@ -205,11 +205,9 @@ pub fn nodata_to_alpha(ds: &RasterDataset, o: &NodataToAlphaOptions) -> Result<R
     let data = with_alpha!(U8: u8, I8: i8, U16: u16, I16: i16, U32: u32, I32: i32, U64: u64, I64: i64, F32: f32, F64: f64);
     let mut out = super::derived(ds, data, nbands + 1)?;
     out.band_metadata = (0..nbands).map(|b| ds.band_metadata.get(b).cloned().unwrap_or_default()).collect();
-    if out.band_metadata.iter().all(|m| *m == Default::default()) {
-        // Keep the drivers' default color interpretations of the bands.
-        for (b, m) in out.band_metadata.iter_mut().enumerate() {
-            m.color_interp = Some(ds.band_color_interp(b + 1).to_string());
-        }
+    // Unrelated metadata (such as scale/offset) must not hide a driver's default color.
+    for (b, metadata) in out.band_metadata.iter_mut().enumerate() {
+        metadata.color_interp.get_or_insert_with(|| ds.band_color_interp(b + 1).to_string());
     }
     out.band_metadata.push(crate::BandMetadata { color_interp: Some("Alpha".into()), ..Default::default() });
     Ok(out)
@@ -408,8 +406,8 @@ impl Reclassifier {
             let after = after.trim_start();
             let Some(after) = after.strip_prefix('=') else {
                 return Err(Error::InvalidArgument(format!(
-                    "failed to parse the mapping (expected '=', got '{}')",
-                    after.chars().next().map(String::from).unwrap_or_default()
+                    "failed to parse the mapping at byte {} (expected '=')",
+                    mapping.len() - after.len()
                 )));
             };
             let to_text = after.trim_start();
@@ -429,8 +427,8 @@ impl Reclassifier {
             let after = after.trim_start();
             if !after.is_empty() && !after.starts_with(';') {
                 return Err(Error::InvalidArgument(format!(
-                    "failed to parse the mapping (expected ';' or the end, got '{}')",
-                    after.chars().next().map(String::from).unwrap_or_default()
+                    "failed to parse the mapping at byte {} (expected ';' or the end)",
+                    mapping.len() - after.len()
                 )));
             }
             if let (Some(v), Some(dt)) = (to, data_type)
@@ -454,7 +452,7 @@ impl Reclassifier {
                 None => break,
             }
         }
-        out.intervals.sort_by(|a, b| a.0.min.partial_cmp(&b.0.min).unwrap_or(std::cmp::Ordering::Equal));
+        out.intervals.sort_by(|a, b| a.0.min.total_cmp(&b.0.min));
         for w in out.intervals.windows(2) {
             let (a, b) = (&w[0], &w[1]);
             if !(a.0.min > b.0.max || a.0.max < b.0.min) {
@@ -745,6 +743,44 @@ mod tests {
             assert!(Reclassifier::parse(text, None, None).is_err(), "{text}");
         }
     }
+    #[test]
+    fn shuffled_nan_nodata_intervals_return_error_without_panicking() {
+        // This shuffled mapping previously panicked in the standard-library sort.
+        let order = [
+            24, 48, 26, 75, 9, 76, 29, 44, 37, 60, 1, 11, 42, 8, 23, 47, 69, 41, 10, 34, 56, 14, 66, 59, 67, 7, 63, 52, 2, 50, 74, 80, 15,
+            55, 31, 73, 25, 78, 0, 71, 3, 16, 77, 28, 58, 79, 13, 40, 39, 20, 70, 22, 72, 35, 30, 21, 43, 54, 57, 4, 46, 6, 19, 18, 32, 12,
+            68, 36, 17, 64, 27, 45, 61, 38, 51, 62, 65, 33, 5, 53, 49,
+        ];
+        let mapping = order
+            .iter()
+            .map(|value| if *value == 80 { "NO_DATA=0".into() } else { format!("{value}={value}") })
+            .collect::<Vec<_>>()
+            .join(";");
+        for nodata in [f64::NAN, -f64::NAN] {
+            let error = Reclassifier::parse(&mapping, Some(nodata), None).expect_err("NaN interval must overlap");
+            assert!(error.to_string().contains("overlaps"));
+        }
+    }
+
+    #[test]
+    fn mapping_delimiter_errors_report_positions_without_echoing_characters() {
+        for (mapping, position) in [("1X=2", 1), ("1=2X", 3)] {
+            let error = Reclassifier::parse(mapping, None, None).unwrap_err().to_string();
+            assert!(error.contains(&format!("at byte {position}")));
+            assert!(!error.contains('X'));
+        }
+    }
+
+    #[test]
+    fn alpha_keeps_gray_default_when_scale_metadata_is_present() {
+        let mut source = ds(vec![vec![0., 10.]], 2, 1, DataType::U8, Some(0.));
+        source.band_metadata = vec![crate::BandMetadata { scale: Some(2.), offset: Some(10.), ..Default::default() }];
+        let output = nodata_to_alpha(&source, &Default::default()).unwrap();
+        assert_eq!(output.band_color_interp(1), "Gray");
+        assert_eq!(output.band_color_interp(2), "Alpha");
+        assert_eq!(band_scale_offset(&output, 1), (2., 10.));
+    }
+
     #[test]
     fn nan_nodata_mapping_matches_gdal_rejection() {
         // GDAL 3.13.3 also rejects the NaN interval as overlapping. NAN is the

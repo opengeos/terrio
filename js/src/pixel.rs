@@ -1,7 +1,7 @@
 //! Pixel-wise raster operations: `unscale`, `nodataToAlpha`, `reclassify` and `asFeatures`,
 //! with camelCase options after the command-line options.
 
-use crate::ops::input_raster;
+use crate::ops::{input_raster, invalid};
 use crate::{Dataset, js_err, parse_options};
 use serde::Deserialize;
 use terrio::formats::VectorDriver;
@@ -9,10 +9,6 @@ use terrio::ops::as_features::{AsFeaturesOptions, PixelGeometry};
 use terrio::ops::parse_data_type;
 use terrio::ops::pixel::{NodataToAlphaOptions, ReclassifyOptions, UnscaleOptions, mapping_from_file_text};
 use wasm_bindgen::prelude::*;
-
-fn invalid(msg: impl std::fmt::Display) -> JsError {
-    JsError::new(&msg.to_string())
-}
 
 /// Options of [`unscale`].
 #[derive(Deserialize, Default)]

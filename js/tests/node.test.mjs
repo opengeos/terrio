@@ -1195,6 +1195,11 @@ test("unscale, nodataToAlpha, reclassify and asFeatures", () => {
   assert.deepEqual([...fromFile.readBand(1)], [7, 7, 255, 40]);
   assert.throws(() => terrio.reclassify(src, "1=2"), /no specified mapping/);
   assert.throws(() => terrio.reclassify(src, "@map.txt"), /mappingFile/);
+  const nanSource = terrio.rasterFromArray(new Float32Array([NaN, 1]), 2, 1,
+    [0, 1, 0, 1, 0, -1], "EPSG:32610", NaN);
+  const intervals = Array.from({length: 81}, (_, i) => (i * 37) % 81)
+    .map(i => i === 80 ? "NO_DATA=0" : `${i}=${i}`).join(";");
+  assert.throws(() => terrio.reclassify(nanSource, intervals), /overlaps/);
   assert.throws(() => terrio.reclassify(src, "1=2", {mappingFile: "1=3"}), /not both/);
   const scaled = terrio.unscale(src.toBytes("s.tif"), { ot: "Float64" });
   assert.equal(scaled.dtype, "float64");

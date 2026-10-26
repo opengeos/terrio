@@ -36,7 +36,7 @@ pub struct NodataToAlphaArgs {
     input: String,
     /// The output path.
     output: String,
-    /// Nodata value overriding the input's (a number, nan, inf or -inf): once for every band, or
+    /// Nodata value overriding the first band's (a number, nan, inf or -inf): once for its mask, or
     /// once per band (transparent where every band has its value).
     #[arg(long, value_name = "VALUE", allow_hyphen_values = true, value_parser = parse_nodata)]
     nodata: Vec<f64>,

@@ -160,6 +160,7 @@ def cases(d, tmp):
     alpha("one override", p["landsat7_window"], [12])
     alpha("per-band overrides", p["landsat7_window"], [0, 0, 0])
     alpha("no nodata", f"{d}/srtm90.tif")
+    alpha("packed gray scale", p["packed"])
 
     def reclass(name, src, mapping, ot=None):
         extra = ["--ot", ot] if ot else []
@@ -210,8 +211,9 @@ def raster_extra(gout, tout, allow_s5p_default=False):
         out = []
         for i in range(1, ds.RasterCount + 1):
             b = ds.GetRasterBand(i)
-            out.append((gdal.GetColorInterpretationName(b.GetColorInterpretation()), b.GetScale() or 1.0,
-                        b.GetOffset() or 0.0))
+            scale, offset = b.GetScale(), b.GetOffset()
+            out.append((gdal.GetColorInterpretationName(b.GetColorInterpretation()),
+                        1.0 if scale is None else scale, 0.0 if offset is None else offset))
         return out
 
     gp, tp = props(g), props(t)
@@ -238,12 +240,13 @@ def read_layer(path):
         path: The dataset.
 
     Returns:
-        tuple: Field names, then per feature its field values and geometry coordinates.
+        tuple: Field names/types, then per feature its field values and geometry coordinates.
     """
     ds = gdal.OpenEx(path, gdal.OF_VECTOR)
     layer = ds.GetLayer(0)
     defn = layer.GetLayerDefn()
-    names = [defn.GetFieldDefn(i).GetName() for i in range(defn.GetFieldCount())]
+    names = [(defn.GetFieldDefn(i).GetName(), defn.GetFieldDefn(i).GetTypeName())
+             for i in range(defn.GetFieldCount())]
     feats = []
     for f in layer:
         values = [f.GetField(i) for i in range(len(names))]
@@ -273,7 +276,7 @@ def compare_vector(gout, tout):
     """
     gn, gf, gl, gs = read_layer(gout)
     tn, tf, tl, ts = read_layer(tout)
-    res = {"size": f"{len(gf)} features", "same_size": len(gf) == len(tf), "type": ",".join(gn),
+    res = {"size": f"{len(gf)} features", "same_size": len(gf) == len(tf), "type": ",".join(f"{name}:{kind}" for name, kind in gn),
            "same_type": gn == tn,
            "same_crs": (gs is None and ts is None) or (gs is not None and ts is not None and bool(gs.IsSame(ts))),
            "same_metadata": gl == tl or gout.endswith(".csv")}
