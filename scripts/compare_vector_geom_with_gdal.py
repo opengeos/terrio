@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import ctypes
+import ctypes.util
 import json
 import math
 import os
@@ -303,17 +304,23 @@ class Geos:
     """GEOS's C API through ctypes, for the functions OGR 3.12 does not expose."""
 
     def __init__(self):
-        lib = None
-        for candidate in [
+        candidates = [
             os.path.join(sys.prefix, "lib", "libgeos_c.so"),
             os.path.join(sys.prefix, "lib", "libgeos_c.dylib"),
             os.path.join(sys.prefix, "Library", "bin", "geos_c.dll"),
-        ]:
-            if os.path.exists(candidate):
+        ]
+        found = ctypes.util.find_library("geos_c")
+        if found:
+            candidates.append(found)
+        lib = None
+        for candidate in candidates:
+            try:
                 lib = ctypes.CDLL(candidate)
                 break
+            except OSError:
+                continue
         if lib is None:
-            raise OSError("libgeos_c not found next to the Python interpreter")
+            raise OSError("libgeos_c not found")
         vp, sz = ctypes.c_void_p, ctypes.c_size_t
         lib.GEOS_init_r.restype = vp
         for f, res, args in [

@@ -1028,6 +1028,17 @@ mod tests {
         let mpz = GeometryTypeSpec::parse("MULTIPOLYGONZ").unwrap();
         let out = force_to(line_m.clone(), mpz);
         assert_eq!(GeometryTypeSpec::of(&out), GeometryTypeSpec { base: Some(GeometryType::LineString), z: true, m: false });
+        // GDAL 3.13.3 flattens through POLYGON before applying MULTIPOLYGON Z,
+        // so original Z ordinates become zero for both open and closed lines.
+        for closed in [false, true] {
+            let mut points = vec![Coord::xyz(0., 0., 5.), Coord::xyz(4., 0., 6.), Coord::xyz(4., 4., 7.)];
+            if closed {
+                points.push(Coord::xyz(0., 0., 5.));
+            }
+            let result = force_to(Geometry::LineString(points), mpz);
+            assert!(result.all_coords().iter().all(|c| c.z == Some(0.)));
+            assert_eq!(result.geom_type(), if closed { GeometryType::MultiPolygon } else { GeometryType::LineString });
+        }
         // To POINT, an incompatible geometry keeps its dimensions.
         assert_eq!(force_to(line_m.clone(), GeometryTypeSpec::parse("POINT").unwrap()), line_m);
         for kind in ["GEOMETRY", "GEOMETRYZ", "GEOMETRYM", "GEOMETRYZM"] {

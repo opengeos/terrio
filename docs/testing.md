@@ -622,7 +622,8 @@ osgeo bindings.
 
 ```sh
 cargo test -p terrio --lib -- ops::simplify ops::hull ops::vector_geom
-cargo test -p terrio-cli --test processing --test mcp vector_geometry
+cargo test -p terrio-cli --test processing
+cargo test -p terrio-cli --test mcp vector_geometry
 python -m pytest python/tests/test_vector_geom.py
 node --test --test-name-pattern='vector geometry' js/tests/node.test.mjs
 python scripts/conformance.py ../terrio-data --only vector-geom

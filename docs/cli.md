@@ -189,8 +189,7 @@ direction (they are not interpolated). Ring closing segments are divided too. `c
 --segmentize` is `ogr2ogr -segmentize`; it cannot be combined with `--simplify`.
 Segmentization allows at most ten million output vertices per feature across its
 lines, rings and collection members. It checks each component against the remaining
-budget before allocating its output. This limit does not cap a whole layer's total
-output; reduce the streaming chunk size when processing many densely expanded features.
+budget before allocating its output. This limit does not cap a whole layer's total output.
 
 `convex-hull` is GEOS's Graham scan: a polygon starting at the lowest, then leftmost, vertex,
 clockwise; a line string for collinear input and a point for one distinct vertex. The layer's

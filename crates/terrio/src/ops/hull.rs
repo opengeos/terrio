@@ -784,17 +784,20 @@ fn hole_probe(p: P, q: P, ring: &[P]) -> P {
 fn split_ring(ring: Vec<usize>) -> Vec<Vec<usize>> {
     let mut out = Vec::new();
     let mut stack: Vec<usize> = Vec::new();
+    let mut positions = HashMap::new();
     for v in ring {
-        if let Some(pos) = stack.iter().position(|&s| s == v) {
-            let mut loop_: Vec<usize> = stack.split_off(pos);
+        if let Some(&position) = positions.get(&v) {
+            let mut loop_: Vec<usize> = stack.split_off(position);
+            for vertex in &loop_ {
+                positions.remove(vertex);
+            }
             loop_.push(v);
             if loop_.len() >= 4 {
                 out.push(loop_);
             }
-            stack.push(v);
-        } else {
-            stack.push(v);
         }
+        positions.insert(v, stack.len());
+        stack.push(v);
     }
     out
 }
@@ -809,6 +812,14 @@ mod tests {
 
     fn points(pts: &[(f64, f64)]) -> Geometry {
         Geometry::MultiPoint(pts.iter().map(|&(x, y)| Coord::xy(x, y)).collect())
+    }
+
+    #[test]
+    fn splits_pinched_boundary_without_losing_the_outer_ring() {
+        assert_eq!(split_ring(vec![0, 1, 2, 3, 1, 4, 5, 0]), vec![vec![1, 2, 3, 1], vec![0, 1, 4, 5, 0]]);
+        let mut ring: Vec<usize> = (0..100_000).collect();
+        ring.push(0);
+        assert_eq!(split_ring(ring.clone()), vec![ring]);
     }
 
     #[test]
