@@ -126,6 +126,23 @@ def cases(inputs):
     # sums are taken in another order.
     for alg in ["average:radius1=3:radius2=2:angle=20", "average_distance:radius1=3:radius2=2:angle=20"]:
         add(f"places US rotated {alg.partition(':')[2]}", inputs["places"], alg, us + g, us_t + t, tol=1e-6)
+    # GDAL 3.13 applies the rotation in its quadtree and per-quadrant searches (3.12 refuses
+    # rotation with per-quadrant limits).
+    if int(gdal.VersionInfo()) >= 3130000:
+        for alg in [
+            "average:radius1=3:radius2=2:angle=20:max_points_per_quadrant=2",
+            "range:radius1=4:radius2=2:angle=50:min_points_per_quadrant=1",
+            "average_distance:radius1=4:radius2=2:angle=-30:max_points_per_quadrant=3",
+            "count:radius1=4:radius2=1:angle=80:min_points_per_quadrant=1",
+        ]:
+            add(f"places US rotated {alg.partition(':')[2]}", inputs["places"], alg, us + g, us_t + t)
+    # Keyword overrides must remap invdist to invdistnn before checking the radius.
+    add(
+        "places US keyword quadrant defaults", inputs["places"],
+        "invdist:min_points_per_quadrant=1:max_points=5", us + g,
+        us_t + t + ["--min-points-per-quadrant", "1", "--max-points", "5"],
+        terrio_alg="invdist",
+    )
     # GDAL's default SIMD code: single precision with approximate reciprocals.
     add("places US SIMD (GDAL default)", inputs["places"], "invdist", us + g, us_t + t, tol=2000.0, scalar=False)
     # Peru's 89 places: GDAL scans every point, in their order.

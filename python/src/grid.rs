@@ -3,7 +3,7 @@
 
 use crate::ops::{data_type, input_layers, srs, vector_write_options};
 use crate::raster::{PyRaster, write_options};
-use crate::vector::PyLayer;
+use crate::vector::{PyLayer, PyVectorDataset};
 use crate::{PyResultExt, invalid};
 use pyo3::prelude::*;
 use terrio::ops::lineref::LineRefOptions;
@@ -148,6 +148,26 @@ fn one_layer(py: Python<'_>, src: &Bound<'_, PyAny>, layer: Option<String>) -> P
     input_layers(py, src, layer.map(|l| vec![l]))?.into_iter().next().ok_or_else(|| invalid("no layer"))
 }
 
+/// Borrow an in-memory layer for lookups; paths and serialized inputs are opened once.
+fn with_one_layer<T>(
+    py: Python<'_>,
+    src: &Bound<'_, PyAny>,
+    name: Option<&str>,
+    apply: impl FnOnce(&terrio::Layer) -> PyResult<T>,
+) -> PyResult<T> {
+    if let Ok(layer) = src.cast::<PyLayer>() {
+        let borrowed = layer.borrow();
+        if name.is_some_and(|name| name != borrowed.inner.name) {
+            return Err(invalid("no layer"));
+        }
+        return apply(&borrowed.inner);
+    }
+    if let Ok(dataset) = src.cast::<PyVectorDataset>() {
+        return dataset.borrow().with_layer(py, name, apply);
+    }
+    apply(&one_layer(py, src, name.map(str::to_owned))?)
+}
+
 /// Writes a layer to `dst`, when given.
 fn write_layer(py: Python<'_>, layer: &terrio::Layer, dst: Option<&str>, format: Option<&str>) -> PyResult<()> {
     if let Some(path) = dst {
@@ -231,8 +251,7 @@ fn lineref_create(
 #[pyfunction]
 #[pyo3(signature = (parts, x, y, *, layer=None))]
 fn lineref_position(py: Python<'_>, parts: &Bound<'_, PyAny>, x: f64, y: f64, layer: Option<String>) -> PyResult<f64> {
-    let parts = one_layer(py, parts, layer)?;
-    terrio::ops::lineref::position(&parts, x, y).py()
+    with_one_layer(py, parts, layer.as_deref(), |parts| terrio::ops::lineref::position(parts, x, y).py())
 }
 
 /// The coordinates of a position on linear reference parts, like `terrio lineref get-coord`
@@ -248,8 +267,8 @@ fn lineref_position(py: Python<'_>, parts: &Bound<'_, PyAny>, x: f64, y: f64, la
 #[pyfunction]
 #[pyo3(signature = (parts, position, *, layer=None))]
 fn lineref_coordinates(py: Python<'_>, parts: &Bound<'_, PyAny>, position: f64, layer: Option<String>) -> PyResult<Vec<(f64, f64, f64)>> {
-    let parts = one_layer(py, parts, layer)?;
-    Ok(terrio::ops::lineref::coordinates(&parts, position).py()?.into_iter().map(|[x, y, z]| (x, y, z)).collect())
+    let coordinates = with_one_layer(py, parts, layer.as_deref(), |parts| terrio::ops::lineref::coordinates(parts, position).py())?;
+    Ok(coordinates.into_iter().map(|[x, y, z]| (x, y, z)).collect())
 }
 
 /// The route between two positions, like `terrio lineref get-subline` (GDAL's
@@ -279,9 +298,10 @@ fn lineref_subline(
     layer_name: Option<String>,
     format: Option<&str>,
 ) -> PyResult<PyLayer> {
-    let parts = one_layer(py, parts, layer)?;
     let stem = dst.and_then(|d| std::path::Path::new(d).file_stem()).and_then(|s| s.to_str()).unwrap_or("subline").to_string();
-    let inner = terrio::ops::lineref::subline(&parts, begin, end, &layer_name.unwrap_or(stem)).py()?;
+    let inner = with_one_layer(py, parts, layer.as_deref(), |parts| {
+        terrio::ops::lineref::subline(parts, begin, end, &layer_name.unwrap_or(stem)).py()
+    })?;
     write_layer(py, &inner, dst, format)?;
     Ok(PyLayer { inner })
 }

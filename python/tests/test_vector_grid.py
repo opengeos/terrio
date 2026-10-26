@@ -63,6 +63,12 @@ def test_vector_grid_algorithms_and_parameters():
     d = np.sqrt([2, 2, 2, 2, 8])
     v = np.array([1.0, 2, 3, 4, 10])
     assert idw == pytest.approx((v / d).sum() / (1 / d).sum(), rel=1e-12)
+    kwargs = dict(min_points_per_quadrant=1, max_points=5)
+    keyword = terrio.vector_grid(src, algorithm="invdist", **common, **kwargs)
+    string = terrio.vector_grid(
+        src, algorithm="invdist:min_points_per_quadrant=1:max_points=5", **common
+    )
+    np.testing.assert_array_equal(keyword.read(1), string.read(1))
     # The square's diagonal is a Delaunay tie: either triangle's plane.
     assert terrio.vector_grid(src, algorithm="linear", **common).read(1)[0, 0] in (2.0, 2.5, 3.0)
     with pytest.raises(ValueError):
@@ -116,11 +122,14 @@ def lineref_inputs():
             points_geojson([(200, 0, 1200.0), (1000, 200, 2000.0), (1000, 700, 2500.0)])
         ).replace('"v"', '"pos"')
     )
-    return line, stones
+    return (
+        terrio.Layer.from_geojson(line, crs="EPSG:3857"),
+        terrio.Layer.from_geojson(stones, crs="EPSG:3857"),
+    )
 
 
 def test_lineref(tmp_path):
-    # GeoJSON is geographic: the stones are on the route (within 1e-4 degrees).
+    # The route and milestones are in EPSG:3857, with distances in metres.
     lines, stones = lineref_inputs()
     path = str(tmp_path / "parts.gpkg")
     parts = terrio.lineref_create(lines, stones, "pos", 500, path)
@@ -136,6 +145,11 @@ def test_lineref(tmp_path):
         (2500.0, 2800.0, 1.0),
     ]
     assert terrio.lineref_position(path, 100, 0) == pytest.approx(1000 + 100 / 1.15)
+    dataset = terrio.open_vector(path)
+    assert terrio.lineref_position(parts, 100, 0) == pytest.approx(1000 + 100 / 1.15)
+    assert terrio.lineref_position(dataset, 100, 0) == pytest.approx(1000 + 100 / 1.15)
+    with pytest.raises(ValueError, match="no layer"):
+        terrio.lineref_position(dataset, 100, 0, layer="missing")
     ((x, y, z),) = terrio.lineref_coordinates(path, 2250)
     assert (x, y, z) == pytest.approx((1000, 450, 0))
     sub = terrio.lineref_subline(parts, 1100, 2100)

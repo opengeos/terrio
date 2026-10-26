@@ -347,7 +347,7 @@ impl GridAlgorithm {
             }
         }
         let no_radius = self.radius1 == 0.0 && self.radius2 == 0.0;
-        if self.method == GridMethod::InverseDistance && no_radius && (self.min_points > 0 || self.max_points > 0) {
+        if self.method == GridMethod::InverseDistance && no_radius && !self.per_quadrant() && (self.min_points > 0 || self.max_points > 0) {
             return Err(Error::InvalidArgument("invdist needs a radius (or radius1 and radius2) with min-points or max-points".into()));
         }
         if self.method == GridMethod::Average && self.max_points > 0 && !self.per_quadrant() {
@@ -2018,6 +2018,16 @@ mod tests {
         let x: Vec<f64> = (0..150).map(|i| i as f64).collect();
         let y = vec![0.; 150];
         assert_eq!(grid(&x, &y, &x, &GridAlgorithm::new(GridMethod::Nearest), [0., -1., 150., 1.], 1, 1), vec![75.]);
+    }
+
+    #[test]
+    fn quadrant_keyword_parameters_remap_before_radius_validation() {
+        let params = GridParams { min_points_per_quadrant: Some(1), max_points: Some(5), ..Default::default() };
+        let keyword = GridAlgorithm::with_params("invdist", &params).unwrap();
+        let string = GridAlgorithm::parse("invdist:min_points_per_quadrant=1:max_points=5").unwrap();
+        assert_eq!(keyword.to_gdal_string(), string.to_gdal_string());
+        assert_eq!(keyword.method, GridMethod::InverseDistanceNearest);
+        assert_eq!((keyword.radius, keyword.max_points), (1., 5));
     }
 
     #[test]

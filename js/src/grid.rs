@@ -3,7 +3,7 @@
 //! `linerefCoordinates` and `linerefSubline`.
 
 use crate::ops::input_layers;
-use crate::{Dataset, js_err, parse_options};
+use crate::{Dataset, Inner, js_err, parse_options};
 use serde::Deserialize;
 use terrio::Layer;
 use terrio::crs::SpatialRef;
@@ -105,6 +105,22 @@ fn one_layer(src: &JsValue, name: Option<&str>) -> Result<Layer, JsError> {
     }
 }
 
+/// Borrow a Dataset's selected layer during a lookup instead of cloning all parts.
+fn with_one_layer<T>(src: &JsValue, name: Option<&str>, apply: impl FnOnce(&Layer) -> Result<T, JsError>) -> Result<T, JsError> {
+    if let Some(inner) = Dataset::lookup(src) {
+        let borrowed = inner.borrow();
+        let Inner::Vector(layers, _) = &*borrowed else {
+            return Err(invalid("expected a vector dataset, got a raster"));
+        };
+        let layer = match name {
+            Some(n) => layers.iter().find(|l| l.name == n).ok_or_else(|| invalid(format!("no layer named {n}")))?,
+            None => layers.first().ok_or_else(|| invalid("no layer"))?,
+        };
+        return apply(layer);
+    }
+    apply(&one_layer(src, name)?)
+}
+
 /// Options of [`lineref_create`].
 #[derive(Deserialize, Default)]
 #[serde(rename_all = "camelCase", default, deny_unknown_fields)]
@@ -157,7 +173,7 @@ struct LinerefLookupArgs {
 #[wasm_bindgen(js_name = linerefPosition)]
 pub fn lineref_position(parts: JsValue, x: f64, y: f64, options: JsValue) -> Result<f64, JsError> {
     let a: LinerefLookupArgs = parse_options(&options)?;
-    terrio::ops::lineref::position(&one_layer(&parts, a.layer.as_deref())?, x, y).map_err(js_err)
+    with_one_layer(&parts, a.layer.as_deref(), |layer| terrio::ops::lineref::position(layer, x, y).map_err(js_err))
 }
 
 /// The coordinates `[x, y, z]` of a position on each part spanning it, as
@@ -165,7 +181,7 @@ pub fn lineref_position(parts: JsValue, x: f64, y: f64, options: JsValue) -> Res
 #[wasm_bindgen(js_name = linerefCoordinates)]
 pub fn lineref_coordinates(parts: JsValue, position: f64, options: JsValue) -> Result<JsValue, JsError> {
     let a: LinerefLookupArgs = parse_options(&options)?;
-    let coords = terrio::ops::lineref::coordinates(&one_layer(&parts, a.layer.as_deref())?, position).map_err(js_err)?;
+    let coords = with_one_layer(&parts, a.layer.as_deref(), |layer| terrio::ops::lineref::coordinates(layer, position).map_err(js_err))?;
     let out = js_sys::Array::new();
     for [x, y, z] in coords {
         out.push(&js_sys::Array::of3(&x.into(), &y.into(), &z.into()));
@@ -178,8 +194,8 @@ pub fn lineref_coordinates(parts: JsValue, position: f64, options: JsValue) -> R
 #[wasm_bindgen(js_name = linerefSubline)]
 pub fn lineref_subline(parts: JsValue, begin: f64, end: f64, options: JsValue) -> Result<Dataset, JsError> {
     let a: LinerefLookupArgs = parse_options(&options)?;
-    let out =
-        terrio::ops::lineref::subline(&one_layer(&parts, a.layer.as_deref())?, begin, end, a.layer_name.as_deref().unwrap_or("subline"))
-            .map_err(js_err)?;
+    let out = with_one_layer(&parts, a.layer.as_deref(), |layer| {
+        terrio::ops::lineref::subline(layer, begin, end, a.layer_name.as_deref().unwrap_or("subline")).map_err(js_err)
+    })?;
     Ok(Dataset::from_layers(vec![out], VectorDriver::GeoJSON))
 }

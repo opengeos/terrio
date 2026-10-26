@@ -813,6 +813,10 @@ Shapefile and GeoPackage report it), `--size` (256 × 256 by default) or `--reso
 the points strictly inside a rectangle (`-clipsrc`). `--ot` sets the type (Float64 by default),
 `--crs` the CRS (by default the layer's; points are not reprojected).
 
+`average-distance-points` evaluates every pair in each node’s search neighborhood;
+work is quadratic in that neighborhood’s point count. Limit the search radius for
+dense inputs.
+
 The algorithms are ported from GDAL 3.13's `gdalgrid.cpp`: the search ellipse and its
 rotation, GDAL's switch from scanning every point to searching its quadtree above 100 points,
 and the order the quadtree returns points in (which decides ties and the rounding of sums) are

@@ -1597,9 +1597,15 @@ test("vectorGrid and linear referencing (gdal_grid, ogrlineref)", () => {
   const idw = terrio.vectorGrid(src, { algorithm: "invdist:power=1", zfield: "v", extent: [0, 0, 2, 2], size: [1, 1] });
   assert.ok(Math.abs(idw.readBand(1)[0] - 2.5) < 1e-12);
   assert.throws(() => terrio.vectorGrid(src, { algorithm: "kriging" }));
+  const common = { zfield: "v", extent: [0, 0, 2, 2], size: [2, 2] };
+  const keyword = terrio.vectorGrid(src, { ...common, algorithm: "invdist", minPointsPerQuadrant: 1, maxPoints: 5 });
+  const string = terrio.vectorGrid(src, { ...common, algorithm: "invdist:min_points_per_quadrant=1:max_points=5" });
+  assert.deepEqual([...keyword.readBand(1)], [...string.readBand(1)]);
   const line = { type: "FeatureCollection", features: [{ type: "Feature", properties: {}, geometry: { type: "LineString", coordinates: [[0, 0], [1000, 0], [1000, 1000]] } }] };
   const stones = pts([[200, 0, 1200], [1000, 200, 2000], [1000, 700, 2500]], "pos");
-  const parts = terrio.linerefCreate(line, stones, { positionField: "pos", step: 500 });
+  const projectedLine = terrio.fromGeoJSON(line, undefined, "EPSG:3857");
+  const projectedStones = terrio.fromGeoJSON(stones, undefined, "EPSG:3857");
+  const parts = terrio.linerefCreate(projectedLine, projectedStones, { positionField: "pos", step: 500 });
   const fc = parts.toGeoJSON();
   assert.deepEqual(fc.features.map((f) => f.properties.beg), [1000, 1500, 2000, 2500]);
   assert.ok(Math.abs(terrio.linerefPosition(parts, 100, 0) - (1000 + 100 / 1.15)) < 1e-9);
