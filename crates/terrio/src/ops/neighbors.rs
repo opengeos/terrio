@@ -277,7 +277,7 @@ pub(crate) fn filter(input: &[f32], width: usize, height: usize, k: &Kernel, nod
         let mut output = vec![0f32; width * height];
         crate::par::chunks_mut(&mut output, width.max(1), |y, row| {
             let mut values = Vec::new();
-            let mut counts: Vec<(f64, usize)> = Vec::new();
+            let mut counts: std::collections::HashMap<u64, usize> = std::collections::HashMap::new();
             for (x, out) in row.iter_mut().enumerate() {
                 let center = src[y * width + x];
                 if nodata == Some(center) {
@@ -322,16 +322,15 @@ pub(crate) fn filter(input: &[f32], width: usize, height: usize, k: &Kernel, nod
                             Some(NeighborMethod::Median) => values.push(v),
                             Some(NeighborMethod::Mode) => {
                                 // GDAL counts values in a std::map: equal values (0 and -0
-                                // too) share a count, and the first to exceed the best wins.
-                                let n = match counts.iter_mut().find(|(w, _)| *w == v) {
-                                    Some((_, n)) => {
-                                        *n += 1;
-                                        *n
-                                    }
-                                    None => {
-                                        counts.push((v, 1));
-                                        1
-                                    }
+                                // too, merged by adding 0) share a count, and the first to
+                                // exceed the best wins.
+                                let n = if v.is_nan() {
+                                    // NaNs never compare equal in the original counter.
+                                    1
+                                } else {
+                                    let count = counts.entry((v + 0.0).to_bits()).or_insert(0);
+                                    *count += 1;
+                                    *count
                                 };
                                 if n > best {
                                     best = n;
@@ -625,5 +624,13 @@ mod tests {
         let out = filter(&v, 3, 3, &kernel(vec![1.0; 9], true, Some(NeighborMethod::Mode)), None);
         // 2 reaches a count of 2 before 1 does.
         assert_eq!(out[4], 2.0);
+    }
+    #[test]
+    fn mode_merges_signed_zero_and_keeps_nan_unequal() {
+        let k = kernel(vec![1.0; 9], true, Some(NeighborMethod::Mode));
+        let out = filter(&[1., 1., -0., 0., -0., 2., 3., 4., 5.], 3, 3, &k, None);
+        assert_eq!(out[4], 0.0);
+        let out = filter(&[1., 1., f32::NAN, f32::NAN, f32::NAN, 2., 3., 4., 5.], 3, 3, &k, None);
+        assert_eq!(out[4], 1.0);
     }
 }
