@@ -94,7 +94,14 @@ jobs:
       - name: Doctests
         run: cargo test -p terrio -p terrio-crs --doc
       - name: The crate packages and verifies
-        run: cargo publish -p terrio-crs -p terrio --dry-run
+        run: cargo publish -p terrio-crs -p terrio -p terrio-cli --dry-run --locked
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-about@0.9.2
+      - name: Check that LICENSE-THIRD-PARTY.md is up to date
+        run: |
+          cargo about generate --locked --all-features --fail about.hbs -o LICENSE-THIRD-PARTY.md
+          git diff --exit-code LICENSE-THIRD-PARTY.md
       - name: The copies of LICENSE and NOTICE in the packages match the originals
         run: |
           for f in python/LICENSE crates/terrio/LICENSE crates/terrio-cli/LICENSE crates/terrio-crs/LICENSE; do cmp LICENSE "$f"; done
