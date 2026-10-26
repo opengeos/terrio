@@ -479,6 +479,10 @@ fn stat_node(node: &Node) -> Result<Option<Stat>> {
                 // The archive's root: a directory when the archive exists.
                 return Ok(stat_node(archive)?.map(|_| Stat::directory()));
             }
+            #[cfg(not(target_family = "wasm"))]
+            if matches!(kind, ArchiveKind::Tar | ArchiveKind::TarGz) {
+                return tar_stat(archive, kind, inner);
+            }
             let entries = archive_entries(archive, kind)?;
             if let Some(e) = entries.iter().find(|e| e.name == inner) {
                 return Ok(Some(Stat { dir: e.is_dir(), size: e.size, modified: e.modified, permissions: None, etag: None }));
@@ -880,6 +884,35 @@ fn tar_entries(archive: &Node, kind: ArchiveKind) -> Result<Vec<Entry>> {
     })
 }
 
+#[cfg(not(target_family = "wasm"))]
+fn tar_stat(archive: &Node, kind: ArchiveKind, inner: &str) -> Result<Option<Stat>> {
+    if kind == ArchiveKind::TarGz {
+        return with_archive_stream(archive, |reader| {
+            let mut tar = tar::Archive::new(flate2::read::MultiGzDecoder::new(reader));
+            tar_stat_entries(tar.entries()?, inner)
+        });
+    }
+    with_archive_reader(archive, true, |reader| {
+        let mut tar = tar::Archive::new(SeekRead(reader));
+        tar_stat_entries(tar.entries_with_seek()?, inner)
+    })
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn tar_stat_entries<R: Read>(entries: tar::Entries<'_, R>, inner: &str) -> Result<Option<Stat>> {
+    let prefix = format!("{inner}/");
+    let mut implied_directory = false;
+    for entry in entries {
+        let Some(info) = tar_entry(&entry?) else { continue };
+        if info.name == inner {
+            return Ok(Some(Stat { dir: info.is_dir(), size: info.size, modified: info.modified, permissions: None, etag: None }));
+        }
+        // Keep looking for an exact member: an implied prefix must not shadow a file.
+        implied_directory |= info.name.starts_with(&prefix);
+    }
+    Ok(implied_directory.then(Stat::directory))
+}
+
 /// A `&mut dyn ReadSeek` as a sized reader.
 struct SeekRead<'a>(&'a mut dyn ReadSeek);
 
@@ -908,7 +941,10 @@ fn read_member(archive: &Node, kind: ArchiveKind, inner: &str, out: &mut dyn Wri
             zipdir::extract(reader, entry, out)
         }
         #[cfg(not(target_family = "wasm"))]
-        ArchiveKind::Tar => read_tar_member(reader, inner, out),
+        ArchiveKind::Tar => {
+            let mut tar = tar::Archive::new(SeekRead(reader));
+            copy_tar_entries(tar.entries_with_seek()?, inner, out)
+        }
         #[cfg(not(target_family = "wasm"))]
         ArchiveKind::TarGz => unreachable!("compressed tar uses a sequential stream"),
         #[cfg(target_family = "wasm")]
@@ -919,7 +955,12 @@ fn read_member(archive: &Node, kind: ArchiveKind, inner: &str, out: &mut dyn Wri
 #[cfg(not(target_family = "wasm"))]
 fn read_tar_member(reader: &mut dyn Read, inner: &str, out: &mut dyn Write) -> Result<u64> {
     let mut tar = tar::Archive::new(reader);
-    for entry in tar.entries()? {
+    copy_tar_entries(tar.entries()?, inner, out)
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn copy_tar_entries<R: Read>(entries: tar::Entries<'_, R>, inner: &str, out: &mut dyn Write) -> Result<u64> {
+    for entry in entries {
         let mut entry = entry?;
         if clean_member(&String::from_utf8_lossy(&entry.path_bytes())) == inner && entry.header().entry_type().is_file() {
             return Ok(std::io::copy(&mut entry, out)?);

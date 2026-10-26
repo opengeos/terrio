@@ -59,6 +59,10 @@ Terrio does not require a separate confirmation argument or restrict upload dest
 Configure the MCP client's tool permissions, the server's filesystem access and cloud credentials
 to the scope you intend to allow, and review source and destination arguments before permitting
 a mutation.
+The CLI's protected-path and object-prefix guards are the complete built-in path boundary:
+other local paths writable by the server are allowed, including recursive mutations outside
+its current directory. The tool does not add a filesystem sandbox.
+
 
 Relative paths are relative to the directory the client started the server in; agents do better
 with absolute paths. A command's output (standard output and error together) is cut after 100,000

@@ -686,6 +686,14 @@ uses a 64 KiB read buffer; compressed tar payload passes use a sequential respon
 HTTP regression withholds the response body and checks that metadata-only stat returns from
 200 headers, preserving an unknown size when Content-Length is absent.
 
+A three-member tar fixture (a small first member, an 8 MiB incompressible member, then a
+small last member) checks targeted reads. Copying the first gzip member consumes 65,536
+response-body bytes instead of 8,880,407, with two requests in both versions; metadata stops
+at its header, and extraction makes a separate prefix pass. Copying the last plain-tar member
+uses 4 requests and 98,304 bytes instead of 131 requests and 8,421,376 bytes, because prior
+payloads are skipped with seeks. Both outputs match the source SHA-256. These client body-read
+counts exclude any transport prefetch beyond the consumed stream and are not timing claims.
+
 
 ```sh
 python scripts/compare_vsi_with_gdal.py ../terrio-data --terrio target/release/terrio [--remote]

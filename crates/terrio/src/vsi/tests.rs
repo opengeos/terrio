@@ -454,6 +454,52 @@ fn tar_copy_reports_links_and_syncs_untimed_memory_by_content() {
     delete(&root, true).unwrap();
 }
 
+#[cfg(not(target_family = "wasm"))]
+#[test]
+fn tar_member_metadata_stops_early_and_plain_reads_seek_over_payloads() {
+    use std::io::{Cursor, Seek, SeekFrom};
+    struct Counted {
+        inner: Cursor<Vec<u8>>,
+        bytes: usize,
+    }
+    impl Read for Counted {
+        fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+            let n = self.inner.read(out)?;
+            self.bytes += n;
+            Ok(n)
+        }
+    }
+    impl Seek for Counted {
+        fn seek(&mut self, offset: SeekFrom) -> std::io::Result<u64> {
+            self.inner.seek(offset)
+        }
+    }
+    let mut builder = tar::Builder::new(Vec::new());
+    for (name, bytes) in [("first.txt", vec![1; 4]), ("large.bin", vec![2; 1024 * 1024]), ("last.txt", vec![3; 4])] {
+        let mut header = tar::Header::new_gnu();
+        header.set_size(bytes.len() as u64);
+        header.set_mode(0o644);
+        header.set_cksum();
+        builder.append_data(&mut header, name, &bytes[..]).unwrap();
+    }
+    let mut reader = Counted { inner: Cursor::new(builder.into_inner().unwrap()), bytes: 0 };
+    {
+        let mut archive = tar::Archive::new(&mut reader);
+        let stat = tar_stat_entries(archive.entries().unwrap(), "first.txt").unwrap().unwrap();
+        assert_eq!(stat.size, Some(4));
+    }
+    assert_eq!(reader.bytes, 512, "metadata must stop before reading the first member's payload");
+    reader.inner.set_position(0);
+    reader.bytes = 0;
+    let mut out = Vec::new();
+    {
+        let mut archive = tar::Archive::new(&mut reader);
+        copy_tar_entries(archive.entries_with_seek().unwrap(), "last.txt", &mut out).unwrap();
+    }
+    assert_eq!(out, [3; 4]);
+    assert!(reader.bytes < 4096, "plain tar member reads must seek over earlier payloads");
+}
+
 #[test]
 fn archive_copy_refuses_parent_traversal() {
     let tmp = tempfile::tempdir().unwrap();

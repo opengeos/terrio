@@ -366,7 +366,12 @@ pub(crate) fn parse_html_index(html: &str, dir_path: &str) -> Vec<ObjectEntry> {
         } else {
             href.strip_prefix("./").unwrap_or(href).to_string()
         };
-        if href == "." || href.is_empty() || href.starts_with("..") || href.contains("://") || href.starts_with("mailto:") {
+        if href == "."
+            || href.is_empty()
+            || (href == ".." || href.starts_with("../"))
+            || href.contains("://")
+            || href.starts_with("mailto:")
+        {
             continue;
         }
         let dir = href.ends_with('/');
@@ -588,13 +593,19 @@ mod tests {
 
     #[test]
     fn parses_html_indexes() {
-        let html = r#"<a href=".">Self</a><a href="?C=N&amp;O=A">Name</a><a href="../">Parent</a><a href="byte%20x.tif" title="x">byte x.tif</a>
+        let html = r#"<a href="..hidden.tif">hidden</a><a href=".">Self</a><a href="?C=N&amp;O=A">Name</a><a href="../">Parent</a><a href="byte%20x.tif" title="x">byte x.tif</a>
                       <a href='sub/'>sub/</a><a href="/data/gtiff/abs.tif">abs</a><a href="/elsewhere/n.tif">n</a>
                       <a href="https://other.org/">o</a><A HREF=plain.txt>p</A><a href="sub/deeper/">no</a>"#;
         let names: Vec<(String, bool)> = parse_html_index(html, "/data/gtiff").into_iter().map(|e| (e.name, e.dir)).collect();
         assert_eq!(
             names,
-            [("byte%20x.tif".to_string(), false), ("sub".into(), true), ("abs.tif".into(), false), ("plain.txt".into(), false)]
+            [
+                ("..hidden.tif".to_string(), false),
+                ("byte%20x.tif".into(), false),
+                ("sub".into(), true),
+                ("abs.tif".into(), false),
+                ("plain.txt".into(), false)
+            ]
         );
     }
 
