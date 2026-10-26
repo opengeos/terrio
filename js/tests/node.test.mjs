@@ -1256,6 +1256,47 @@ test("vector dataset commands: concat, partition, setFieldType, makePoint, schem
   a.free(); merged.free();
 });
 
+test("unscale, nodataToAlpha, reclassify and asFeatures", () => {
+  const gt = [100, 10, 0, 50, 0, -10];
+  const src = terrio.rasterFromArray(new Uint8Array([1, 2, 255, 40]), 2, 2, gt, "EPSG:32611", 255);
+  const alpha = terrio.nodataToAlpha(src);
+  assert.equal(alpha.count, 2);
+  assert.deepEqual([...alpha.readBand(2)], [255, 255, 0, 255]);
+  assert.deepEqual([...terrio.nodataToAlpha(src, null).readBand(2)], [255, 255, 0, 255]);
+  assert.deepEqual([...terrio.nodataToAlpha(src, { nodata: 1 }).readBand(2)], [0, 255, 255, 255]);
+  assert.throws(() => terrio.nodataToAlpha(src, { nodata: NaN }), /strings/);
+  assert.throws(() => terrio.nodataToAlpha(src, { nodata: Infinity }), /strings/);
+  assert.throws(() => terrio.nodataToAlpha(src, { nodata: null }), /null/);
+  assert.throws(() => terrio.nodataToAlpha(src, { nodata: [NaN] }), /strings/);
+  const special = terrio.rasterFromArray(new Float64Array([NaN, Infinity, -Infinity, 3]), 2, 2, gt);
+  for (const [nodata, expected] of [["nan", [0, 255, 255, 255]], ["inf", [255, 0, 255, 255]], ["-inf", [255, 255, 0, 255]]]) {
+    assert.deepEqual([...terrio.nodataToAlpha(special, { nodata }).readBand(2)], expected);
+  }
+  const fractional = terrio.rasterFromArray(new Float32Array([0.1, 0.2]), 2, 1, gt, "EPSG:32611", 0.1);
+  assert.equal(terrio.asFeatures(fractional, { skipNodata: true }).toGeoJSON().features.length, 1);
+  assert.deepEqual(Object.keys(terrio.asFeatures(src, { bands: [1, 1] }).toGeoJSON().features[0].properties), ["BAND_1"]);
+  const rc = terrio.reclassify(src, "[0,3)=1;[3,50]=2;NO_DATA=NO_DATA");
+  assert.deepEqual([...rc.readBand(1)], [1, 1, 255, 2]);
+  const fromFile = terrio.reclassify(src, "", { mappingFile: "# c\n[0,3)=7\nDEFAULT=PASS_THROUGH\n", ot: "Int16" });
+  assert.equal(fromFile.dtype, "int16");
+  assert.deepEqual([...fromFile.readBand(1)], [7, 7, 255, 40]);
+  assert.throws(() => terrio.reclassify(src, "1=2"), /no specified mapping/);
+  assert.throws(() => terrio.reclassify(src, "@map.txt"), /mappingFile/);
+  const nanSource = terrio.rasterFromArray(new Float32Array([NaN, 1]), 2, 1,
+    [0, 1, 0, 1, 0, -1], "EPSG:32610", NaN);
+  const intervals = Array.from({length: 81}, (_, i) => (i * 37) % 81)
+    .map(i => i === 80 ? "NO_DATA=0" : `${i}=${i}`).join(";");
+  assert.throws(() => terrio.reclassify(nanSource, intervals), /overlaps/);
+  assert.throws(() => terrio.reclassify(src, "1=2", {mappingFile: "1=3"}), /not both/);
+  const scaled = terrio.unscale(src.toBytes("s.tif"), { ot: "Float64" });
+  assert.equal(scaled.dtype, "float64");
+  const fc = terrio.asFeatures(src, { geometryType: "polygon", skipNodata: true, includeRowCol: true }).toGeoJSON();
+  assert.equal(fc.features.length, 3);
+  assert.deepEqual(fc.features[2].properties, { ROW: 1, COL: 1, BAND_1: 40 });
+  assert.deepEqual(fc.features[0].geometry.coordinates[0][1], [100, 40]);
+  assert.throws(() => terrio.asFeatures(src, { geometryType: "line" }), /geometry type/);
+});
+
 test("viewshed visibility, height and byte input", () => {
   const dem = terrio.rasterFromArray(new Float64Array([0, 0, 10, 0, 0]), 5, 1, [0, 10, 0, 10, 0, -10], "EPSG:32611");
   assert.deepEqual([...terrio.viewshed(dem, 5, 5, { cc: 0 }).readBand(1)], [255, 255, 255, 0, 0]);

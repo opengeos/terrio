@@ -3372,6 +3372,8 @@ mod tests {
         let tags = crate::geotiff::read_geo_tags_from(std::io::Cursor::new(&bytes)).unwrap();
         assert_eq!(tags.geo_transform, None);
         assert_eq!(tags.band_metadata, vec![(0, "k".to_string(), "c&d &amp;literal".to_string())]);
+        // The scale is read back as the band's (GDAL's role="scale"); no offset was written.
+        assert_eq!((tags.band_properties[0].scale, tags.band_properties[0].offset), (Some(2.0), None));
         let mut lazy = crate::LazyRaster::from_tiff_bytes(bytes).unwrap().unwrap();
         assert_eq!(lazy.overviews(), vec![(35, 25), (18, 13)]);
         let o = lazy.read_window(crate::Window::new(0, 0, 35, 25), &crate::WindowOptions { bands: vec![], overview: Some(0) }).unwrap();

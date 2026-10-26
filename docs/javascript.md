@@ -286,6 +286,26 @@ The input can be a dataset or raster bytes. `om` selects NORMAL visibility, DEM 
 visible elevation, or GROUND minimum height above the DEM. `cc` is 1 minus refraction.
 See [viewshed](cli.md#viewshed) for units, curvature, radius cropping and nodata behavior.
 
+## Pixel-wise operations
+
+```javascript
+const physical = terrio.unscale(packed, { ot: "Float64" });
+const rgba = terrio.nodataToAlpha(landsat, { nodata: 0 });
+const groups = terrio.reclassify(nlcd, "11=1;[21,25)=2;DEFAULT=0", { ot: "Byte" });
+const fromFile = terrio.reclassify(nlcd, "", { mappingFile: await (await fetch("map.txt")).text() });
+const pixels = terrio.asFeatures(dem, { geometryType: "polygon", includeXy: true, skipNodata: true });
+```
+
+Inputs are datasets or raster bytes; `asFeatures` returns a vector dataset (`toGeoJSON`,
+`toBytes`). WebAssembly cannot read local files, so a mapping file's text is passed as
+`mappingFile` instead of `@file`. See [unscale](cli.md#unscale),
+[nodata-to-alpha](cli.md#nodata-to-alpha), [reclassify](cli.md#reclassify) and
+[as-features](cli.md#as-features).
+
+For `nodataToAlpha`, non-finite overrides use the strings `"nan"`, `"inf"` or `"-inf"`
+(as a scalar or in the nodata array). Raw JavaScript non-finite numbers and explicit null
+are rejected before JSON serialization, so they cannot silently become a default override.
+
 ## Geolocation-array warping
 
 Pass longitude and latitude rasters explicitly when array datasets cannot be reopened from

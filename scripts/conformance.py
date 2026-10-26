@@ -401,10 +401,14 @@ def classify_raster(r):
     same = [k for k in ("same_type", "same_crs", "same_nodata", "same_metadata") if r.get(k) is False]
     if same:
         return DIFFERS, ", ".join(k.replace("same_", "") + " differs" for k in same)
+    if r.get("same_georeferencing") is False and not r.get("accepted_georeferencing_difference"):
+        return DIFFERS, "georeferencing differs"
     if r.get("valid_mismatch"):
         return DIFFERS, f"{r['valid_mismatch']} pixels valid in one output only"
     n = r.get("differing", 0)
     if n == 0:
+        if r.get("same_georeferencing") is False:
+            return TOLERANCE, r["accepted_georeferencing_difference"]
         return IDENTICAL, ""
     detail = f"{n} pixels differ ({100 * (1 - r['exact']):.4g} %)"
     if r.get("max_diff") == float("inf") or r.get("inf_diff"):
@@ -656,6 +660,20 @@ def suite_pansharpen(ctx):
         "weights, selected outputs, bit depth, nodata borders, integer clipping and union/intersection "
         "extents. Compare every pixel, dimensions, type, nodata and geotransform; integer cases "
         "are exact, and Float32 allows 0.002 (one ULP at the scene's radiometric scale).", 1,
+    )
+
+
+def suite_raster_pixel(ctx):
+    """Pixel-wise raster commands against GDAL's unified ``gdal raster`` commands."""
+    return suite_json_ops(
+        ctx, "raster-pixel", "compare_raster_pixel_with_gdal.py", "Pixel-wise raster commands",
+        "`gdal raster unscale`, `nodata-to-alpha`, `reclassify` and `as-features`",
+        "Real USGS, Landsat, ECOSTRESS, NLCD and Sentinel-5P rasters (windows, packed copies with "
+        "band scales and offsets, and controlled nodata holes): size, type, nodata, CRS, band color "
+        "interpretations, scales, offsets and affine transforms must match, then every pixel is compared exactly. "
+        "The known Sentinel-5P default-grid difference is reported separately as within tolerance. "
+        "Feature outputs: feature count, field names, every field value and geometry vertex, exactly.",
+        1,
     )
 
 
@@ -1563,6 +1581,7 @@ SUITES = OrderedDict(
         ("geolocation", suite_geolocation),
         ("dem-calc", suite_dem_calc),
         ("pansharpen", suite_pansharpen),
+        ("raster-pixel", suite_raster_pixel),
         ("focal", suite_focal),
         ("vector-ops", suite_vector_ops),
         ("multidim", suite_multidim),

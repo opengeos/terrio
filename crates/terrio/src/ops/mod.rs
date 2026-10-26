@@ -29,6 +29,7 @@
 //! `[row, row + 1)` and its centre is at `(col + 0.5, row + 0.5)`. Geotransforms are GDAL's
 //! `[x_origin, pixel_width, 0, y_origin, 0, -pixel_height]`.
 
+pub mod as_features;
 pub mod calc;
 pub mod concat;
 pub mod contour;
@@ -47,6 +48,8 @@ pub mod neighbors;
 pub mod overview;
 pub mod pansharpen;
 pub mod partition;
+
+pub mod pixel;
 pub mod polygonize;
 pub mod proximity;
 pub mod rasterize;
@@ -307,6 +310,31 @@ pub(crate) fn warp_round(v: f64, dt: DataType) -> f64 {
     }
 }
 
+/// GDAL's ARE_REAL_EQUAL comparison at single precision.
+#[inline]
+pub(crate) fn gdal_real_equal32(a: f32, b: f32) -> bool {
+    a == b || (a - b).abs() < f32::EPSILON * (a + b).abs() * 2.0
+}
+
+/// GDAL's ARE_REAL_EQUAL comparison at double precision (with float epsilon).
+#[inline]
+pub(crate) fn gdal_real_equal64(a: f64, b: f64) -> bool {
+    a == b || (a - b).abs() < f32::EPSILON as f64 * (a + b).abs() * 2.0
+}
+
+/// Whether a sample is valid under GDAL's typed nodata-mask comparison.
+#[inline]
+pub(crate) fn gdal_nodata_valid(value: f64, nodata: f64, dt: DataType) -> bool {
+    match dt {
+        DataType::F32 => !(nodata.is_nan() && value.is_nan() || gdal_real_equal32(value as f32, nodata as f32)),
+        DataType::F64 => !(nodata.is_nan() && value.is_nan() || gdal_real_equal64(value, nodata)),
+        _ => {
+            let (lo, hi) = type_range(dt);
+            nodata.is_nan() || nodata < lo || nodata > hi || nodata.fract() != 0.0 || value != nodata
+        }
+    }
+}
+
 /// Whether `v` is the nodata value `nodata` (NaN matches NaN).
 #[inline]
 pub(crate) fn is_nodata(v: f64, nodata: f64) -> bool {
@@ -484,7 +512,13 @@ pub(crate) fn build_raster(
 ) -> Result<RasterDataset> {
     north_up(&grid)?;
     let nbands = bands.len().max(1);
-    let n = grid.width * grid.height;
+    let data = bands_data(&bands, grid.width * grid.height, data_type, convert);
+    build_raster_data(grid, data, nbands, nodata, srs)
+}
+
+/// The values of bands of `n` pixels (at least one band), converted to `data_type` with `convert`.
+pub(crate) fn bands_data(bands: &[Vec<f64>], n: usize, data_type: DataType, convert: fn(f64, DataType) -> f64) -> RasterData {
+    let nbands = bands.len().max(1);
     let mut data = RasterData::new_filled(data_type, n * nbands, 0.0);
     let len = crate::par::chunk_len(n, 1 << 16);
     for (b, band) in bands.iter().enumerate() {
@@ -510,7 +544,36 @@ pub(crate) fn build_raster(
             RasterData::F64(v) => fill!(v, f64),
         }
     }
-    build_raster_data(grid, data, nbands, nodata, srs)
+    data
+}
+
+/// A raster with the size, georeferencing (rotated geotransforms, GCPs and geolocation arrays
+/// included), CRS and dataset metadata of `ds`, and new bands: `data` holds `nbands` bands of
+/// `ds`'s size. Band properties and nodata values are left for the caller to set.
+pub(crate) fn derived(ds: &RasterDataset, data: RasterData, nbands: usize) -> Result<RasterDataset> {
+    let r = &ds.raster;
+    if data.len() != r.cols * r.rows * nbands {
+        return Err(Error::InvalidData(format!("{} values for {nbands} band(s) of {}x{} pixels", data.len(), r.cols, r.rows)));
+    }
+    let raster = Raster {
+        cols: r.cols,
+        rows: r.rows,
+        bands: nbands,
+        x_min: r.x_min,
+        y_min: r.y_min,
+        cell_size_x: r.cell_size_x,
+        cell_size_y: r.cell_size_y,
+        nodata: r.nodata,
+        data_type: data.data_type(),
+        crs: r.crs.clone(),
+        metadata: r.metadata.clone(),
+        data,
+    };
+    let mut out = RasterDataset::with_driver(raster, ds.driver, false);
+    out.affine = ds.affine;
+    out.gcps = ds.gcps.clone();
+    out.geolocation = ds.geolocation.clone();
+    Ok(out)
 }
 
 /// Builds a raster dataset from its values (`nbands` bands, band after band), of their type.
