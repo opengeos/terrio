@@ -256,9 +256,10 @@ fn operation(value: &Value, bound: bool) -> Result<String> {
         if !seen.insert(crate::wkt1::norm(name)) {
             return Err(bad("duplicate operation parameter"));
         }
-        let mut values = vec![number(required(p, "value")?)?.to_string()];
+        let raw = number(required(p, "value")?)?;
+        let mut values = vec![raw.to_string()];
         let (unit_kind, factor, unit_wkt) = unit(required(p, "unit")?)?;
-        if !(number(required(p, "value")?)? * factor).is_finite() {
+        if !(raw * factor).is_finite() {
             return Err(bad("operation parameter overflows its SI unit"));
         }
         values.push(unit_wkt);
@@ -286,7 +287,7 @@ fn operation(value: &Value, bound: bool) -> Result<String> {
         if bound {
             // WKT2 abridged transformations have fixed implicit units: metres,
             // arc-seconds and a scale multiplier (not a ppm difference).
-            let si = number(required(p, "value")?)? * factor;
+            let si = raw * factor;
             let value = match identity {
                 8605..=8607 => si,
                 8608..=8610 => si.to_degrees() * 3600.0,
@@ -320,9 +321,6 @@ fn helmert_parameter(p: &crate::wkt1::Node) -> Option<u32> {
         return None;
     }
     p.epsg().or(named)
-}
-fn parameters_len(tree: &crate::wkt1::Node) -> usize {
-    tree.children("PARAMETER").count()
 }
 fn crs(value: &Value, base: bool, depth: usize) -> Result<String> {
     if depth > 8 {
@@ -405,7 +403,10 @@ fn crs(value: &Value, base: bool, depth: usize) -> Result<String> {
             }
             let expected = if translation { 3 } else { 7 };
             let codes: std::collections::HashSet<_> = tree.children("PARAMETER").filter_map(helmert_parameter).collect();
-            if parameters_len(&tree) != expected || codes.len() != expected || !(8605..8605 + expected as u32).all(|c| codes.contains(&c)) {
+            if tree.children("PARAMETER").count() != expected
+                || codes.len() != expected
+                || !(8605..8605 + expected as u32).all(|c| codes.contains(&c))
+            {
                 return Err(bad("incomplete or duplicate Helmert parameters"));
             }
             return Ok(node("BOUNDCRS", &[node("SOURCECRS", &[source]), node("TARGETCRS", &[target]), operation]));

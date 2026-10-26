@@ -219,3 +219,26 @@ fn bound_parameters_convert_to_wkt2_implicit_units() {
         assert!((result.1 - expected[1].as_f64().unwrap()).abs() < 1e-8);
     }
 }
+
+#[test]
+fn bare_prime_meridian_and_ellipsoid_lengths_use_degrees_and_metres() {
+    offline();
+    let reference: serde_json::Value = serde_json::from_str(include_str!("data/projjson_reference.json")).unwrap();
+    let case = reference["cases"].as_array().unwrap().iter().find(|c| c["name"] == "Paris prime meridian and grads with IDs").unwrap();
+    let mut source = case["src"].clone();
+    let datum = &mut source["datum"];
+    let longitude = &datum["prime_meridian"]["longitude"];
+    let degrees =
+        longitude["value"].as_f64().unwrap() * longitude["unit"]["conversion_factor"].as_f64().unwrap() * 180.0 / std::f64::consts::PI;
+    datum["prime_meridian"]["longitude"] = degrees.into();
+    let a = datum["ellipsoid"]["semi_major_axis"].as_f64().unwrap();
+    datum["ellipsoid"]["semi_major_axis"] = serde_json::json!({"value":a, "unit":"metre"});
+    let src = SpatialRef::from_projjson(&source.to_string()).unwrap();
+    let dst = SpatialRef::from_projjson(&case["dst"].to_string()).unwrap();
+    let t = Transformer::new(&src, &dst).unwrap();
+    for (p, expected) in case["points"].as_array().unwrap().iter().zip(case["expected"].as_array().unwrap()) {
+        let actual = t.transform(p[0].as_f64().unwrap(), p[1].as_f64().unwrap()).unwrap();
+        assert!((actual.0 - expected[0].as_f64().unwrap()).abs() <= 1e-8);
+        assert!((actual.1 - expected[1].as_f64().unwrap()).abs() <= 1e-8);
+    }
+}
