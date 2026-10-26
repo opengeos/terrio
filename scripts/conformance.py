@@ -658,6 +658,48 @@ def suite_pansharpen(ctx):
     )
 
 
+def suite_vector_grid(ctx):
+    """Scattered points gridded by every gdal_grid algorithm, against GDAL."""
+    return suite_json_ops(
+        ctx, "vector-grid", "compare_vector_grid_with_gdal.py", "Vector gridding", "`gdal_grid`",
+        "Natural Earth populated places (geographic, above and below GDAL's 100-point quadtree "
+        "threshold), GDAL's regular grid test points and an Autzen lidar subset (3D) gridded by "
+        "every algorithm (invdist, invdistnn, average, nearest, the data metrics and linear) with "
+        "search ellipses, rotations, point and per-quadrant limits, and the Z, WHERE, SQL, layer, "
+        "clipping, extent, size, resolution, type and CRS options. Every pixel, the type, nodata "
+        "and geotransform are compared. GDAL's default invdist is also run with its double-"
+        "precision code (`GDAL_USE_AVX=NO`, `GDAL_USE_SSE=NO`). Known differences: linear "
+        "interpolation rounds differently (vertex order of delaunator's triangles against "
+        "qhull's) and breaks the ties of a regular grid's co-circular points differently; GDAL "
+        "3.12 sums rotated ellipses in another order than GDAL 3.13 and terrio; GDAL's default "
+        "SIMD invdist is single precision.", 1,
+    )
+
+
+def suite_lineref(ctx):
+    """ogrlineref's parts, positions, coordinates and sublines on a real route."""
+    s = Suite(
+        "lineref",
+        "Linear referencing",
+        "`ogrlineref`",
+        "GDAL's test route (geographic, projected to UTM, and as two routes told apart by a field, "
+        "one drawn backwards) with its milestones: the parts' positions, scales and vertices, the "
+        "positions and coordinates as ogrlineref prints them, and sublines vertex by vertex. The "
+        "first and last parts of a geographic route are measured in UTM by terrio's projection "
+        "rather than PROJ (within 1e-9).",
+    )
+    _code, out, err = run([sys.executable, str(SCRIPTS / "compare_lineref_with_gdal.py"), ctx.data, "--terrio", ctx.terrio, "--json"])
+    try:
+        results = json.loads(out)
+    except json.JSONDecodeError:
+        s.error = tail(err or out)
+        return s
+    status = {"identical": IDENTICAL, "tolerance": TOLERANCE}
+    for r in results:
+        s.cases.append(Case(r["operation"], r["name"], status.get(r["status"], DIFFERS), r.get("detail", "")))
+    return s
+
+
 def suite_vector_ops(ctx):
     """ogr2ogr's options, gdal_rasterize and gdal_polygonize."""
     s = Suite(
@@ -1488,6 +1530,8 @@ SUITES = OrderedDict(
         ("geolocation", suite_geolocation),
         ("dem-calc", suite_dem_calc),
         ("pansharpen", suite_pansharpen),
+        ("vector-grid", suite_vector_grid),
+        ("lineref", suite_lineref),
         ("vector-ops", suite_vector_ops),
         ("multidim", suite_multidim),
         ("topology", suite_topology),

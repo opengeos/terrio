@@ -10,6 +10,7 @@ pub mod filter;
 pub mod formats;
 pub mod grid;
 pub mod info;
+pub mod lineref;
 pub mod mosaic;
 pub mod multidim;
 
@@ -23,6 +24,7 @@ pub mod rasterout;
 pub mod sieve;
 pub mod translate;
 pub mod vector_geom;
+pub mod vector_grid;
 pub mod vector_opts;
 pub mod viewshed;
 pub mod warp;

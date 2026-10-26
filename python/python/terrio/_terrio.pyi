@@ -46,6 +46,11 @@ __all__ = [
     "calc",
     "proximity",
     "viewshed",
+    "vector_grid",
+    "lineref_create",
+    "lineref_position",
+    "lineref_coordinates",
+    "lineref_subline",
     "sieve",
     "fill_nodata",
     "PointCloud",
@@ -921,6 +926,83 @@ def calc(
     bigtiff: bool = False,
     **inputs: _RasterSource | int,
 ) -> Raster: ...
+def vector_grid(
+    src: _VectorSource,
+    dst: str | None = None,
+    *,
+    algorithm: str = "invdist",
+    zfield: str | None = None,
+    zoffset: float = 0.0,
+    zmultiply: float = 1.0,
+    layers: Sequence[str] | None = None,
+    sql: str | None = None,
+    where: str | None = None,
+    bbox: _Bounds | None = None,
+    extent: _Bounds | None = None,
+    size: tuple[int, int] | None = None,
+    resolution: tuple[float, float] | None = None,
+    ot: str | None = None,
+    crs: str | None = None,
+    power: float | None = None,
+    smoothing: float | None = None,
+    radius: float | None = None,
+    radius1: float | None = None,
+    radius2: float | None = None,
+    angle: float | None = None,
+    min_points: int | None = None,
+    max_points: int | None = None,
+    min_points_per_quadrant: int | None = None,
+    max_points_per_quadrant: int | None = None,
+    nodata: float | None = None,
+    format: str | None = None,
+    compress: str | None = None,
+) -> Raster:
+    """Grid scattered vector points into a raster, as gdal_grid."""
+    ...
+
+def lineref_create(
+    lines: _VectorSource,
+    points: _VectorSource,
+    position_field: str,
+    step: float,
+    dst: str | None = None,
+    *,
+    lines_layer: str | None = None,
+    points_layer: str | None = None,
+    line_field: str | None = None,
+    point_field: str | None = None,
+    id_field: str = "uniq_uid",
+    layer_name: str | None = None,
+    format: str | None = None,
+) -> Layer:
+    """Cut a route into linear reference parts, as ogrlineref -create."""
+    ...
+
+def lineref_position(
+    parts: _VectorSource, x: float, y: float, *, layer: str | None = None
+) -> float:
+    """The position of a point on linear reference parts, as ogrlineref -get_pos."""
+    ...
+
+def lineref_coordinates(
+    parts: _VectorSource, position: float, *, layer: str | None = None
+) -> list[tuple[float, float, float]]:
+    """The coordinates of a position on linear reference parts, as ogrlineref -get_coord."""
+    ...
+
+def lineref_subline(
+    parts: _VectorSource,
+    begin: float,
+    end: float,
+    dst: str | None = None,
+    *,
+    layer: str | None = None,
+    layer_name: str | None = None,
+    format: str | None = None,
+) -> Layer:
+    """The route between two positions, as ogrlineref -get_subline."""
+    ...
+
 def viewshed(
     src: str | Raster,
     ox: float,
