@@ -222,6 +222,21 @@ const summary = sql(countries, "SELECT COUNT(*) AS n, SUM(POP_EST) AS population
 Raw GeoJSON inputs use the layer name `layer`; use `Layer.from_geojson(..., name=...)`
 (Python) or `fromGeoJSON(src, name)` (JavaScript) to assign another name.
 
+## Vector geometry operations
+
+`simplify(src, tolerance)`, `segmentize(src, maxLength)`, `convexHull(src)`,
+`concaveHull(src, ratio, { allowHoles, tight })`, `swapXy(src)`, `setGeomType(src, {
+geometryType, multi, single, linear, dim, layerOnly, featureOnly, skip })`, `combine(src, {
+groupBy, keepNested, addExtraFields })` and `sort(src, { method })` run the
+[vector geometry commands](cli.md#vector-geometry-commands) on every layer of a `Dataset`,
+file bytes or GeoJSON, and return a `Dataset`.
+
+```js
+const hulls = concaveHull(combine(places, { groupBy: ["adm0_a3"] }), 0.3, { allowHoles: true });
+const simple = simplify(counties, 0.01);
+const sorted = sort(simple, { method: "hilbert" });
+```
+
 ## Viewshed
 
 ```javascript

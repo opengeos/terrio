@@ -205,6 +205,29 @@ let cleaned = topology::clean(&repaired, &CleanOptions { snap_grid: 0.01 })?;
 The commands are also available through the Python package's `terrio` CLI and MCP. Dedicated
 Python and JavaScript operation bindings are not yet provided for these additions.
 
+`ops::vector_geom` holds the equivalents of GDAL 3.13's `gdal vector simplify`, `segmentize`,
+`convex-hull`, `concave-hull`, `swap-xy`, `set-geom-type`, `combine` and `sort` (see
+[Vector geometry commands](cli.md#vector-geometry-commands)). The per-feature operations are
+`GeometryOp` values (`Simplify`, `Segmentize`, `ConvexHull`, `ConcaveHull(ConcaveHullOptions)`,
+`SwapXy`, `SetGeomType(SetGeomTypeOptions)`), applied to a layer with `vector_geom::apply`, or
+to layers read and written as streams through `VectorTranslateOptions::geometry_op` (which is
+also `ogr2ogr`'s `-simplify`/`-segmentize`). `vector_geom::combine` (`CombineOptions`) and
+`vector_geom::sort` (`SortMethod`) take whole layers; `vector_geom::force_to` is OGR's `forceTo`.
+The single-geometry algorithms are `ops::simplify::{simplify_preserve_topology, segmentize}`
+and `ops::hull::{convex_hull, concave_hull, concave_hull_of_polygons}`. They are pure Rust and
+included in WebAssembly builds.
+
+```rust,no_run
+use terrio::ops::vector_geom::{self, CombineOptions, ConcaveHullOptions, GeometryOp, SortMethod};
+
+let ds = terrio::open_vector("places.gpkg", &Default::default())?;
+let groups = vector_geom::combine(&ds.layers[0], &CombineOptions { group_by: vec!["adm0_a3".into()], ..Default::default() })?;
+let hulls = vector_geom::apply(&groups, &GeometryOp::ConcaveHull(ConcaveHullOptions { ratio: 0.3, ..Default::default() }))?;
+let simple = vector_geom::apply(&hulls, &GeometryOp::Simplify { tolerance: 0.01 })?;
+terrio::write_vector(&[vector_geom::sort(&simple, SortMethod::Hilbert)], "hulls.gpkg", &Default::default())?;
+# Ok::<(), terrio::Error>(())
+```
+
 ```rust,no_run
 use terrio::ops::{Resampling, translate, warp};
 

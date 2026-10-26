@@ -387,6 +387,14 @@ pub(crate) fn closed_ring(r: &[Coord]) -> Vec<Coord> {
     cs
 }
 
+/// A ring as terrio's layers hold them: without the closing point, which writers add.
+pub(crate) fn open_ring(mut cs: Vec<Coord>) -> Ring {
+    if cs.len() > 1 && cs.first().zip(cs.last()).is_some_and(|(a, b)| a.x == b.x && a.y == b.y) {
+        cs.pop();
+    }
+    Ring(cs)
+}
+
 /// Visits the linear components of a geometry in GEOS's order (polygon shells before their
 /// holes), as `(coordinates, is_ring)`.
 fn components(g: &Geometry, out: &mut Vec<(Vec<Coord>, bool)>) {
@@ -421,7 +429,7 @@ fn components(g: &Geometry, out: &mut Vec<(Vec<Coord>, bool)>) {
 /// Rebuilds a geometry from the simplified coordinates of its components, taken in order.
 fn rebuild(g: &Geometry, results: &mut std::vec::IntoIter<Vec<Coord>>) -> Geometry {
     let xyz = |c: &Coord| Coord { x: c.x, y: c.y, z: c.z, m: None };
-    let mut ring = |r: &Ring| if r.0.is_empty() { Ring(Vec::new()) } else { Ring(results.next().unwrap_or_default()) };
+    let mut ring = |r: &Ring| if r.0.is_empty() { Ring(Vec::new()) } else { open_ring(results.next().unwrap_or_default()) };
     match g {
         Geometry::Point(c) => Geometry::Point(xyz(c)),
         Geometry::MultiPoint(cs) => Geometry::MultiPoint(cs.iter().map(xyz).collect()),
@@ -497,7 +505,7 @@ pub fn segmentize(g: &Geometry, max_length: f64) -> Result<Geometry> {
     }
     let line = |cs: &[Coord]| segmentize_line(cs, max_length);
     // Rings are closed first: drivers may omit the closing point, whose segment OGR divides too.
-    let ring = |r: &Ring| -> Result<Ring> { Ok(Ring(line(&closed_ring(&r.0))?)) };
+    let ring = |r: &Ring| -> Result<Ring> { Ok(open_ring(line(&closed_ring(&r.0))?)) };
     Ok(match g {
         Geometry::Point(_) | Geometry::MultiPoint(_) => g.clone(),
         Geometry::LineString(cs) => Geometry::LineString(line(cs)?),
@@ -584,14 +592,14 @@ mod tests {
         // jump outside, the shell stays and the hole's endpoint moves.
         let shell = Geometry::polygon(line(&[(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0), (0.0, 0.0)]), vec![]);
         let Geometry::Polygon { exterior, .. } = simplify_preserve_topology(&shell, 100.0).unwrap() else { panic!() };
-        assert_eq!(xy(&exterior.0), [(0.0, 10.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)]);
+        assert_eq!(xy(&exterior.0), [(0.0, 10.0), (10.0, 0.0), (10.0, 10.0)]);
         let square = Geometry::polygon(
             line(&[(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0), (0.0, 0.0)]),
             vec![line(&[(4.0, 4.0), (5.0, 4.0), (5.0, 5.0), (4.0, 5.0), (4.0, 4.0)])],
         );
         let Geometry::Polygon { exterior, interiors } = simplify_preserve_topology(&square, 100.0).unwrap() else { panic!() };
-        assert_eq!(xy(&exterior.0), [(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0), (0.0, 0.0)]);
-        assert_eq!(xy(&interiors[0].0), [(4.0, 5.0), (5.0, 4.0), (5.0, 5.0), (4.0, 5.0)]);
+        assert_eq!(xy(&exterior.0), [(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)]);
+        assert_eq!(xy(&interiors[0].0), [(4.0, 5.0), (5.0, 4.0), (5.0, 5.0)]);
         // A closed line string keeps its endpoint and four points.
         let closed = Geometry::LineString(line(&[(0.0, 0.0), (5.0, 1.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0), (0.0, 0.0)]));
         let Geometry::LineString(cs) = simplify_preserve_topology(&closed, 100.0).unwrap() else { panic!() };
@@ -632,5 +640,11 @@ mod tests {
         let Geometry::LineString(cs) = segmentize(&g, 3.0).unwrap() else { panic!() };
         assert_eq!(xy(&cs), [(0.0, 0.0), (3.0, 0.0), (3.00001, 0.0), (6.000005, 0.0), (9.0, 0.0)]);
         assert!(segmentize(&g, 0.0).is_err());
+        // A ring without its closing point (as some drivers read it) is closed, and its closing
+        // segment divided, as OGR does.
+        let open = Geometry::polygon(line(&[(0.0, 0.0), (4.0, 0.0), (4.0, 4.0)]), vec![]);
+        let Geometry::Polygon { exterior, .. } = segmentize(&open, 3.0).unwrap() else { panic!() };
+        assert_eq!(exterior.0.len(), 6);
+        assert_eq!(xy(&exterior.0)[5], (2.0, 2.0));
     }
 }

@@ -544,7 +544,7 @@ fn force_to_polygon(g: Geometry) -> Geometry {
         Geometry::Polygon { .. } => g,
         Geometry::LineString(cs) => {
             let closed = cs.len() >= 3 && cs.first().zip(cs.last()).is_some_and(|(a, b)| a.x == b.x && a.y == b.y);
-            if closed { Geometry::Polygon { exterior: Ring(cs), interiors: Vec::new() } } else { Geometry::LineString(cs) }
+            if closed { Geometry::Polygon { exterior: simplify::open_ring(cs), interiors: Vec::new() } } else { Geometry::LineString(cs) }
         }
         Geometry::MultiPolygon(_) | Geometry::GeometryCollection(_) => {
             let mut rings = Vec::new();

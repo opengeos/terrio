@@ -639,3 +639,26 @@ The full release dry run is manual: select **Release dry run → Run workflow** 
 GitHub Actions before tagging a release. It builds the complete cross-platform
 wheel, CLI, installer and npm matrix without publishing. Pull requests retain the
 normal CI checks, including Python, WASM, API documentation and package validation.
+
+## Vector geometry commands (#289)
+
+`simplify`, `segmentize`, `convex-hull`, `concave-hull`, `swap-xy`, `set-geom-type`,
+`combine` and `sort` have unit tests of the GEOS/OGR behaviours they port (ring endpoint
+simplification, jump checks, OGR's segmentize direction and Z/M copies, `forceTo` dimensions,
+Graham scan ring order, concave hull areas, Hilbert codes from GDAL's C code), CLI tests of the
+streamed and whole-layer paths and refusals, and Python, Node/WASM and MCP tests. The
+`vector-geom` conformance suite compares them on Tennessee and US counties, Las Vegas roads and
+Natural Earth countries and places with `gdal vector` (GDAL 3.12.2) for simplify, segmentize,
+swap-xy, set-geom-type and `ogr2ogr -simplify/-segmentize`, coordinate by coordinate; with
+OGR's `ConvexHull`/`ConcaveHull` and GEOS's `GEOSConcaveHullOfPolygons_r` (ctypes) for hulls,
+by edge sets; and, as GDAL 3.12 has no combine or sort, with Python references of GDAL 3.13's
+algorithms (GEOS's own STR tree for `--method strtree`). It needs the `gdal` command and the
+osgeo bindings.
+
+```sh
+cargo test -p terrio --lib ops::simplify ops::hull ops::vector_geom
+cargo test -p terrio-cli --test processing --test mcp vector_geometry
+python -m pytest python/tests/test_vector_geom.py
+node --test --test-name-pattern='vector geometry' js/tests/node.test.mjs
+python scripts/conformance.py ../terrio-data --only vector-geom
+```

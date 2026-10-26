@@ -254,6 +254,24 @@ summary = terrio.sql("countries.gpkg", "SELECT COUNT(*) AS n, SUM(POP_EST) AS po
 Raw GeoJSON inputs use the layer name `layer`; use `Layer.from_geojson(..., name=...)`
 (Python) or `fromGeoJSON(src, name)` (JavaScript) to assign another name.
 
+## Vector geometry operations
+
+`simplify`, `segmentize`, `convex_hull`, `concave_hull`, `swap_xy`, `set_geom_type`, `combine`
+and `sort` run the [vector geometry commands](cli.md#vector-geometry-commands) (GDAL 3.13's
+`gdal vector` commands of those names) and return a `Layer`. Inputs may be a vector path,
+`VectorDataset`, `Layer`, list of layers, or GeoJSON, with a single layer, or the one `layer=`
+names. `convert(..., simplify=TOLERANCE)` and `convert(..., segmentize=MAX_LENGTH)` are
+`ogr2ogr`'s `-simplify` and `-segmentize`.
+
+```python
+groups = terrio.combine("places.gpkg", group_by=["adm0_a3"])
+hulls = terrio.concave_hull(groups, 0.3, allow_holes=True)
+simple = terrio.simplify("counties.gpkg", 0.01)
+dense = terrio.segmentize(simple, 0.1)
+multi = terrio.set_geom_type("roads.gpkg", multi=True, dim="XYZ")
+ordered = terrio.sort(multi, method="strtree")
+```
+
 ## Geolocation-array warping
 
 `terrio.warp(path, geoloc=True, t_srs="EPSG:4326")` requires the longitude/latitude arrays

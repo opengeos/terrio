@@ -236,3 +236,53 @@ fn footprint_long_source_paths_follow_dbf_limits_and_survive_in_geopackage() {
     ok(&["footprint", &source, "long.gpkg"], d);
     assert_eq!(first(&d.join("long.gpkg")).features[0].attributes[0], terrio::FieldValue::Text(source));
 }
+
+#[test]
+fn vector_geometry_commands_stream_and_write_whole_layers() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    std::fs::write(d.join("lines.geojson"), r#"{"type":"FeatureCollection","features":[{"type":"Feature","properties":{"k":"a","v":1},"geometry":{"type":"LineString","coordinates":[[0,0],[5,0.1],[10,0]]}},{"type":"Feature","properties":{"k":"b","v":2},"geometry":{"type":"LineString","coordinates":[[20,0],[30,0]]}},{"type":"Feature","properties":{"k":"a","v":3},"geometry":null}]}"#).unwrap();
+    let coords = |path: &str, i: usize| -> Vec<(f64, f64)> {
+        let l = first(&d.join(path));
+        l.features[i].geometry.as_ref().unwrap().all_coords().iter().map(|c| (c.x, c.y)).collect()
+    };
+    // GeoJSON to GeoJSON streams; GeoPackage is written whole.
+    for out in ["simple.geojson", "simple.gpkg"] {
+        ok(&["simplify", "lines.geojson", out, "--tolerance", "1"], d);
+        assert_eq!(coords(out, 0), [(0.0, 0.0), (10.0, 0.0)]);
+        assert!(first(&d.join(out)).features[2].geometry.is_none(), "null geometries stay null");
+    }
+    ok(&["segmentize", "lines.geojson", "dense.geojson", "--max-length", "3"], d);
+    assert_eq!(coords("dense.geojson", 1).len(), 5);
+    ok(&["swap-xy", "lines.geojson", "swapped.geojson"], d);
+    assert_eq!(coords("swapped.geojson", 1), [(0.0, 20.0), (0.0, 30.0)]);
+    ok(&["convex-hull", "lines.geojson", "hull.geojson"], d);
+    assert_eq!(first(&d.join("hull.geojson")).features[0].geometry.as_ref().unwrap().geom_type(), terrio::GeometryType::Polygon);
+    ok(&["concave-hull", "lines.geojson", "concave.geojson", "--ratio", "0.5"], d);
+    ok(&["set-geom-type", "lines.geojson", "multi.gpkg", "--multi"], d);
+    let multi = first(&d.join("multi.gpkg"));
+    assert_eq!(multi.geom_type, Some(terrio::GeometryType::MultiLineString));
+    ok(&["set-geom-type", "lines.geojson", "points.geojson", "--geometry-type", "POINT", "--skip"], d);
+    assert_eq!(first(&d.join("points.geojson")).len(), 1, "only the null geometry is kept");
+    ok(&["combine", "lines.geojson", "combined.gpkg", "--group-by", "k", "--add-extra-fields", "sometimes-identical"], d);
+    let combined = first(&d.join("combined.gpkg"));
+    assert_eq!(combined.len(), 2);
+    assert_eq!(combined.schema.fields().iter().map(|f| f.name.as_str()).collect::<Vec<_>>(), ["k", "v"]);
+    ok(&["sort", "lines.geojson", "sorted.geojson", "--method", "strtree"], d);
+    assert!(first(&d.join("sorted.geojson")).features[2].geometry.is_none());
+    ok(&["convert", "lines.geojson", "converted.geojson", "--simplify", "1"], d);
+    assert_eq!(coords("converted.geojson", 0), [(0.0, 0.0), (10.0, 0.0)]);
+    // Append goes through the whole-layer path.
+    ok(&["simplify", "lines.geojson", "simple.gpkg", "--tolerance", "1", "--append"], d);
+    assert_eq!(first(&d.join("simple.gpkg")).len(), 6);
+    for bad in [
+        &["simplify", "lines.geojson", "x.geojson", "--tolerance", "-1"][..],
+        &["concave-hull", "lines.geojson", "x.geojson", "--ratio", "2"],
+        &["set-geom-type", "lines.geojson", "x.geojson", "--curve"],
+        &["set-geom-type", "lines.geojson", "x.geojson", "--geometry-type", "POINT", "--multi"],
+        &["combine", "lines.geojson", "x.geojson", "--group-by", "missing"],
+        &["convert", "lines.geojson", "x.geojson", "--simplify", "1", "--segmentize", "1"],
+    ] {
+        assert!(!run(bad, d).status.success(), "{bad:?} should fail");
+    }
+}

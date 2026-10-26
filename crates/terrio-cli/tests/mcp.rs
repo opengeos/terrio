@@ -254,3 +254,22 @@ fn tilted_perspective_coordinates_and_backside_refusal_through_mcp() {
     assert!((values[1] - 323680.07658763544).abs() < 0.001);
     assert_eq!(replies[&2]["result"]["isError"], true);
 }
+
+#[test]
+fn vector_geometry_tools_are_discoverable_and_execute() {
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("line.geojson");
+    let output = dir.path().join("simple.geojson");
+    std::fs::write(&input, r#"{"type":"FeatureCollection","features":[{"type":"Feature","properties":{"name":"road"},"geometry":{"type":"LineString","coordinates":[[0,0],[5,0.1],[10,0]]}}]}"#).unwrap();
+    let replies = session(&[
+        json!({"jsonrpc":"2.0","id":1,"method":"tools/list"}),
+        call(2, "simplify", &[input.to_str().unwrap(), output.to_str().unwrap(), "--tolerance", "1"]),
+    ]);
+    let tools = replies[&1]["result"]["tools"].as_array().unwrap();
+    for name in ["simplify", "segmentize", "convex-hull", "concave-hull", "swap-xy", "set-geom-type", "combine", "sort"] {
+        assert!(tools.iter().any(|t| t["name"] == name), "missing {name}");
+    }
+    assert_eq!(replies[&2]["result"]["isError"], false);
+    let layer = terrio::open_vector(output.to_str().unwrap(), &Default::default()).unwrap().layers.remove(0);
+    assert_eq!(layer.features[0].geometry.as_ref().unwrap().all_coords().len(), 2);
+}

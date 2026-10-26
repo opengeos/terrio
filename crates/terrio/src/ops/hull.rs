@@ -20,7 +20,7 @@
 //! may differ from GEOS's; their coverage does not. Output vertices are input vertices: Z is kept,
 //! M dropped.
 
-use super::simplify::{dist, orient};
+use super::simplify::{dist, open_ring, orient};
 use crate::{Error, Geometry, Result};
 use spade::handles::{FixedFaceHandle, InnerTag};
 use spade::{ConstrainedDelaunayTriangulation, DelaunayTriangulation, HasPosition, Point2, Triangulation};
@@ -131,7 +131,7 @@ pub fn convex_hull(g: &Geometry) -> Result<Geometry> {
     if coords.len() == 3 {
         return Ok(Geometry::LineString(coords[..2].to_vec()));
     }
-    Ok(Geometry::Polygon { exterior: Ring(coords), interiors: Vec::new() })
+    Ok(Geometry::Polygon { exterior: open_ring(coords), interiors: Vec::new() })
 }
 
 /// A triangle of a hull triangulation, as GEOS's `HullTri`: vertex `i` and edge `i` (from vertex
@@ -691,7 +691,7 @@ fn region_boundary(pts: &[P], coords: &[Coord], faces: &[[usize; 3]]) -> Geometr
             shells[i].2.push(h);
         }
     }
-    let ring = |r: &[usize]| Ring(r.iter().map(|&i| coords[i].clone()).collect());
+    let ring = |r: &[usize]| open_ring(r.iter().map(|&i| coords[i].clone()).collect());
     let mut polygons: Vec<(Ring, Vec<Ring>)> = shells.iter().map(|(s, _, hs)| (ring(s), hs.iter().map(|h| ring(h)).collect())).collect();
     match polygons.len() {
         0 => Geometry::Polygon { exterior: Ring(Vec::new()), interiors: Vec::new() },
@@ -755,9 +755,9 @@ mod tests {
     fn convex_hulls_like_geos() {
         // GEOS 3.14 results.
         let g = convex_hull(&points(&[(5.0, 0.0), (10.0, 5.0), (5.0, 10.0), (0.0, 5.0)])).unwrap();
-        assert_eq!(wkt_xy(&g), [(5.0, 0.0), (0.0, 5.0), (5.0, 10.0), (10.0, 5.0), (5.0, 0.0)]);
+        assert_eq!(wkt_xy(&g), [(5.0, 0.0), (0.0, 5.0), (5.0, 10.0), (10.0, 5.0)]);
         let g = convex_hull(&points(&[(3.0, 1.0), (0.0, 1.0), (1.0, 0.0), (2.0, 0.0), (3.0, 3.0)])).unwrap();
-        assert_eq!(wkt_xy(&g), [(1.0, 0.0), (0.0, 1.0), (3.0, 3.0), (3.0, 1.0), (2.0, 0.0), (1.0, 0.0)]);
+        assert_eq!(wkt_xy(&g), [(1.0, 0.0), (0.0, 1.0), (3.0, 3.0), (3.0, 1.0), (2.0, 0.0)]);
         let g = convex_hull(&Geometry::LineString(vec![Coord::xy(0.0, 10.0), Coord::xy(5.0, 5.0), Coord::xy(10.0, 0.0)])).unwrap();
         assert_eq!(g, Geometry::LineString(vec![Coord::xy(10.0, 0.0), Coord::xy(0.0, 10.0)]));
         assert_eq!(convex_hull(&points(&[(1.0, 2.0), (1.0, 2.0)])).unwrap(), Geometry::point(1.0, 2.0));
@@ -779,17 +779,16 @@ mod tests {
             let hull = concave_hull(&g, ratio, false).unwrap();
             let Geometry::Polygon { exterior, interiors } = &hull else { panic!("{hull:?}") };
             assert!(interiors.is_empty());
-            let ring: Vec<P> = exterior.0[..exterior.0.len() - 1].iter().map(|c| (c.x, c.y)).collect();
+            let ring: Vec<P> = exterior.0.iter().map(|c| (c.x, c.y)).collect();
             assert_eq!(signed_area(&ring).abs(), area, "ratio {ratio}: {ring:?}");
         }
         let hull = concave_hull(&g, 0.0, false).unwrap();
         let mut got = wkt_xy(&hull);
-        got.pop();
         got.sort_by(|a, b| a.partial_cmp(b).unwrap());
         assert_eq!(got, [(0.0, 0.0), (1.0, 12.0), (2.0, 3.0), (5.0, 5.0), (5.0, 9.0), (8.0, 3.0), (10.0, 1.0), (11.0, 10.0)]);
         let convex = concave_hull(&g, 1.0, false).unwrap();
         let Geometry::Polygon { exterior, .. } = convex else { panic!() };
-        assert_eq!(exterior.0.len(), 5);
+        assert_eq!(exterior.0.len(), 4);
         // Collinear input gives the convex hull.
         let line = Geometry::LineString(vec![Coord::xy(0.0, 0.0), Coord::xy(1.0, 1.0), Coord::xy(2.0, 2.0)]);
         assert!(matches!(concave_hull(&line, 0.5, false).unwrap(), Geometry::LineString(_)));
@@ -809,7 +808,7 @@ mod tests {
         let r1 = concave_hull_of_polygons(&g, 1.0, false, false).unwrap();
         let Geometry::Polygon { exterior, interiors } = &r1 else { panic!("{r1:?}") };
         assert!(interiors.is_empty());
-        let ring: Vec<P> = exterior.0[..exterior.0.len() - 1].iter().map(|c| (c.x, c.y)).collect();
+        let ring: Vec<P> = exterior.0.iter().map(|c| (c.x, c.y)).collect();
         // The convex hull: (0,0) (10,0) (10,10) (6,10) (0,4).
         assert!((signed_area(&ring) - (100.0 - 0.5 * 6.0 * 6.0)).abs() < 1e-9, "{}", signed_area(&ring));
     }

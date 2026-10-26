@@ -20,6 +20,14 @@ terrio <COMMAND>
   is-valid    Report geometry validity and a reason per feature
   make-valid  Repair invalid geometry
   clean       Snap, deduplicate, close rings and repair geometry
+  simplify    Topology-preserving simplification (like gdal vector simplify)
+  segmentize  Limit segment lengths by adding vertices (like gdal vector segmentize)
+  convex-hull Convex hull per feature (like gdal vector convex-hull)
+  concave-hull Concave hull per feature (like gdal vector concave-hull)
+  swap-xy     Swap X and Y coordinates (like gdal vector swap-xy)
+  set-geom-type Change geometry types and dimensions (like gdal vector set-geom-type)
+  combine     Collect geometries into collections by groups (like gdal vector combine)
+  sort        Spatial sort along a Hilbert curve or an STR tree (like gdal vector sort)
   footprint   Exact valid-data footprint of a raster
   sample      Sample multiple raster bands at vector points
   contour     Contour lines at interval or fixed elevation levels
@@ -139,6 +147,93 @@ snapping, otherwise XY coordinates round to the nearest multiple, with ties away
 The first retained duplicate supplies Z/M; polygon repair discards Z/M when it rebuilds topology.
 A fully collapsed feature becomes null, retaining its attributes and source ID. Non-finite XY
 and coordinate overflow fail. Output formats may assign their own feature IDs on writing.
+
+## Vector geometry commands
+
+```sh
+terrio simplify counties.gpkg simple.gpkg --tolerance 500
+terrio segmentize borders.gpkg dense.gpkg --max-length 0.1
+terrio convex-hull parcels.gpkg hulls.gpkg
+terrio concave-hull places_by_country.gpkg hulls.gpkg --ratio 0.3 --allow-holes
+terrio swap-xy latlon.gpkg lonlat.gpkg
+terrio set-geom-type roads.gpkg roads_multi.gpkg --multi --dim XYZ
+terrio combine places.gpkg places_by_country.gpkg --group-by adm0_a3
+terrio sort buildings.gpkg buildings_sorted.fgb --method hilbert
+terrio convert counties.shp simple.gpkg --simplify 0.01
+```
+
+These are pure-Rust equivalents of GDAL 3.13's `gdal vector` commands of the same names; no
+GDAL or GEOS installation is needed. Distances are in the input CRS units (degrees for
+geographic CRSs). All accept the vector layer selection and output options described above.
+The per-feature commands (`simplify`, `segmentize`, `convex-hull`, `concave-hull`, `swap-xy`,
+`set-geom-type`) keep attributes, feature IDs and null geometries, and stream a chunk of
+features at a time when the input and output formats allow it, as `convert` does; `combine` and
+`sort` read whole layers, as GDAL does. The `vector-geom` conformance suite
+(`scripts/compare_vector_geom_with_gdal.py`) compares them with GDAL and GEOS on real data.
+
+`simplify --tolerance` is a port of GEOS 3.14's `TopologyPreservingSimplifier`, which GDAL runs
+(`OGRGeometry::SimplifyPreserveTopology`): Douglas-Peucker simplification of every line and
+ring, where a section is flattened only when the new segment crosses no other segment of the
+feature and moves no other part (a hole, say) to its other side. Rings keep at least four
+points and their start point may move. Simplification is per feature, so shared boundaries
+between features may separate. Outputs are vertex-for-vertex identical to `gdal vector
+simplify` on the conformance data. Z is kept and M dropped, as GDAL's GEOS conversion does.
+`convert --simplify TOLERANCE` (`ogr2ogr -simplify`) applies the same operation before
+reprojection and keeps a geometry whose simplification fails.
+
+`segmentize --max-length` is OGR's `segmentize`: a segment of length L gets
+`floor(L / max - 0.01)` evenly spaced points (none when L is within a relative 1e-5 of the
+maximum). Lines are processed from the end with the smaller X (then Y), so a line and its
+reverse get the same points, and added points copy the Z/M of the segment start in that
+direction (they are not interpolated). Ring closing segments are divided too. `convert
+--segmentize` is `ogr2ogr -segmentize`; it cannot be combined with `--simplify`.
+
+`convex-hull` is GEOS's Graham scan: a polygon starting at the lowest, then leftmost, vertex,
+clockwise; a line string for collinear input and a point for one distinct vertex. The layer's
+type becomes unknown. `concave-hull --ratio R` (0 most concave, 1 convex) follows GEOS's
+`ConcaveHull` for points and lines (erosion of the Delaunay triangulation of the vertices, by
+longest border edge) and `ConcaveHullOfPolygons` for polygons (erosion of the constrained
+Delaunay triangulation of the space between them, united with them); `--allow-holes` allows
+holes and `--tight` makes polygon hulls follow the polygons' outer boundaries. Triangulations
+come from the `spade` crate: ring start and orientation may differ from GEOS's, and inputs with
+co-circular vertices (grids) can triangulate, and so erode, differently. As GDAL 3.13, polygon
+and multipolygon layers keep their declared type and hulls are forced to it, which can join
+several polygons into one invalid polygon in a layer declared POLYGON; other layers' type
+becomes unknown.
+
+`set-geom-type` ports OGR's `forceTo` for linear geometries: `--geometry-type TYPE` (POINT,
+LINESTRING, POLYGON, MULTIPOINT, MULTILINESTRING, MULTIPOLYGON, GEOMETRYCOLLECTION or GEOMETRY,
+with an optional Z, M, ZM or 25D suffix), or a combination of `--multi`/`--single`, `--linear`
+and `--dim XY|XYZ|XYM|XYZM` (added Z and M values are 0). Conversions that cannot be made leave
+the geometry type as it is (OGR may still apply the target's dimensions); `--skip` drops those
+features. `--layer-only` changes only the declared layer type, `--feature-only` only the
+geometries. terrio has no curve geometries: `--curve` and curve or surface types are refused,
+and `--linear` changes nothing. terrio's writers store no M values (they remain in Python and
+JavaScript layers), and the declared Z/M of a layer follows its geometries.
+
+`combine` collects each group's geometries into one feature: without `--group-by` the whole
+layer, otherwise one feature per combination of the fields' values (repeat or comma-separate).
+Groups are ordered by their values as OGR formats them as text, nulls as empty text, as GDAL
+orders them. Output fields are the grouping fields; `--add-extra-fields sometimes-identical`
+also copies the fields identical within at least one group (null for the groups where they
+differ) and `always-identical` those identical within every group. Layers of single-part types
+give MultiPoint, MultiLineString or MultiPolygon features, others GeometryCollections; parts of
+multi-part inputs are added one by one unless `--keep-nested` adds them whole (the output then
+becomes a GeometryCollection). A geometry that does not fit the layer's collection type is an
+error, as in GDAL. Null and empty geometries add nothing (a group of them gets an empty
+collection); when any geometry has Z, all outputs do (0 where missing). Feature IDs are
+sequential from 1.
+
+`sort --method hilbert` (default) orders features by GDAL's Hilbert code of the centre of each
+bounding box on a 65535 × 65535 grid over the layer's extent; `--method strtree` by the leaf
+order of GEOS's sort-tile-recursive tree with nodes of 10 (slices by box centre X, each sorted
+by box centre Y). Null and empty geometries go last. terrio's sorts are stable, GDAL's are not:
+features whose keys tie may come in another order. Writing a sorted layer to FlatGeobuf
+re-sorts it for the spatial index.
+
+Not supported: GDAL's `--active-layer`, `--active-geometry` and `--geometry-field` (terrio
+layers have one geometry), `--use-tempfile` for `sort`, and the `--skip-errors`, `--upsert`
+and creation-option flags of `gdal vector` writes.
 
 ## footprint
 
