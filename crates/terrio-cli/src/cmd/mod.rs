@@ -14,6 +14,7 @@ pub mod mosaic;
 pub mod multidim;
 
 pub mod pansharpen;
+pub mod pixel;
 pub mod points;
 pub mod polygonize;
 pub mod processing;

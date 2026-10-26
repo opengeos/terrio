@@ -1169,6 +1169,29 @@ test("SQL computed columns, DISTINCT and summary aggregates", () => {
   assert.equal(terrio.sql(src, "SELECT DISTINCT v FROM layer").toGeoJSON().features.length, 2);
 });
 
+test("unscale, nodataToAlpha, reclassify and asFeatures", () => {
+  const gt = [100, 10, 0, 50, 0, -10];
+  const src = terrio.rasterFromArray(new Uint8Array([1, 2, 255, 40]), 2, 2, gt, "EPSG:32611", 255);
+  const alpha = terrio.nodataToAlpha(src);
+  assert.equal(alpha.count, 2);
+  assert.deepEqual([...alpha.readBand(2)], [255, 255, 0, 255]);
+  assert.deepEqual([...terrio.nodataToAlpha(src, { nodata: 1 }).readBand(2)], [0, 255, 255, 255]);
+  const rc = terrio.reclassify(src, "[0,3)=1;[3,50]=2;NO_DATA=NO_DATA");
+  assert.deepEqual([...rc.readBand(1)], [1, 1, 255, 2]);
+  const fromFile = terrio.reclassify(src, "", { mappingFile: "# c\n[0,3)=7\nDEFAULT=PASS_THROUGH\n", ot: "Int16" });
+  assert.equal(fromFile.dtype, "int16");
+  assert.deepEqual([...fromFile.readBand(1)], [7, 7, 255, 40]);
+  assert.throws(() => terrio.reclassify(src, "1=2"), /no specified mapping/);
+  assert.throws(() => terrio.reclassify(src, "@map.txt"), /mappingFile/);
+  const scaled = terrio.unscale(src.toBytes("s.tif"), { ot: "Float64" });
+  assert.equal(scaled.dtype, "float64");
+  const fc = terrio.asFeatures(src, { geometryType: "polygon", skipNodata: true, includeRowCol: true }).toGeoJSON();
+  assert.equal(fc.features.length, 3);
+  assert.deepEqual(fc.features[2].properties, { ROW: 1, COL: 1, BAND_1: 40 });
+  assert.deepEqual(fc.features[0].geometry.coordinates[0][1], [100, 40]);
+  assert.throws(() => terrio.asFeatures(src, { geometryType: "line" }), /geometry type/);
+});
+
 test("viewshed visibility, height and byte input", () => {
   const dem = terrio.rasterFromArray(new Float64Array([0, 0, 10, 0, 0]), 5, 1, [0, 10, 0, 10, 0, -10], "EPSG:32611");
   assert.deepEqual([...terrio.viewshed(dem, 5, 5, { cc: 0 }).readBand(1)], [255, 255, 255, 0, 0]);

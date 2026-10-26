@@ -658,6 +658,19 @@ def suite_pansharpen(ctx):
     )
 
 
+def suite_raster_pixel(ctx):
+    """Pixel-wise raster commands against GDAL's unified ``gdal raster`` commands."""
+    return suite_json_ops(
+        ctx, "raster-pixel", "compare_raster_pixel_with_gdal.py", "Pixel-wise raster commands",
+        "`gdal raster unscale`, `nodata-to-alpha`, `reclassify` and `as-features`",
+        "Real USGS, Landsat, ECOSTRESS, NLCD and Sentinel-5P rasters (windows, packed copies with "
+        "band scales and offsets, and controlled nodata holes): size, type, nodata, CRS, band color "
+        "interpretations, scales and offsets must match, then every pixel is compared exactly. "
+        "Feature outputs: feature count, field names, every field value and geometry vertex, exactly.",
+        1,
+    )
+
+
 def suite_vector_ops(ctx):
     """ogr2ogr's options, gdal_rasterize and gdal_polygonize."""
     s = Suite(
@@ -1488,6 +1501,7 @@ SUITES = OrderedDict(
         ("geolocation", suite_geolocation),
         ("dem-calc", suite_dem_calc),
         ("pansharpen", suite_pansharpen),
+        ("raster-pixel", suite_raster_pixel),
         ("vector-ops", suite_vector_ops),
         ("multidim", suite_multidim),
         ("topology", suite_topology),
