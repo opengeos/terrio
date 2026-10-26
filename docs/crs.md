@@ -502,8 +502,11 @@ auxiliary sphere for runtime conversion. Their WKT retains the original
 ellipsoid and a PROJ4 extension preserves the radius modifier on reopening.
 
 CRSs on different known celestial bodies cannot be transformed into each other.
-The Earth-radius heuristic identifies custom Earth ellipsoids. When a body
-identity remains unknown, semi-major axes must agree within 0.7% of the target's
+The PROJ-compatible Earth-radius heuristic treats an undeclared figure as Earth
+when its semi-major axis is within 0.7% of 6,375,000 m. This is a radius
+heuristic, not proof of body identity: use an explicit IAU body identifier for a
+non-Earth figure, even if it has an Earth-like radius. Explicit body identities
+take precedence over the heuristic. When a body identity remains unknown, semi-major axes must agree within 0.7% of the target's
 axis. This is a compatibility change: custom CRS pairs with different small or
 planetary radii that previously passed through as an unshifted datum now fail
 when their axes exceed that allowance (for example, unit spheres of radii 1 and

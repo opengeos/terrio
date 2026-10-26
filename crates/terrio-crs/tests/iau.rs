@@ -240,6 +240,7 @@ fn custom_ellipsoid_body_compatibility_applies_without_iau_ids() {
         ("+proj=longlat +R=1", "+proj=longlat +R=2", false),
         ("+proj=longlat +R=1", "EPSG:4326", false),
         ("+proj=longlat +R=1737400", "EPSG:4326", false),
+        ("+proj=longlat +R=6371000", "IAU_2015:39900", true),
         ("+proj=longlat +R=1", "+proj=eqc +R=1", true),
         ("+proj=longlat +R=1", "+proj=longlat +R=1.006", true),
         ("+proj=longlat +R=1", "+proj=longlat +R=1.008", false),
@@ -253,6 +254,13 @@ fn custom_ellipsoid_body_compatibility_applies_without_iau_ids() {
             assert!(result.err().unwrap().to_string().contains("celestial body"));
         }
     }
+    // An explicit non-Earth body wins even if its edited radius is Earth-like.
+    let source = SpatialRef::parse("+proj=longlat +R=6371000").unwrap();
+    let mars = SpatialRef::from_iau(49900).unwrap().to_wkt().unwrap();
+    let earth_sized_mars = mars.replace("3396190", "6371000");
+    assert_ne!(mars, earth_sized_mars);
+    let target = SpatialRef::parse(&earth_sized_mars).unwrap();
+    assert!(Transformer::new(&source, &target).err().unwrap().to_string().contains("celestial body"));
     for shift in ["+towgs84=1,2,3", "+datum=WGS84"] {
         let source = SpatialRef::parse(&format!("+proj=longlat +a=1 +b=1 {shift}")).unwrap();
         let target = SpatialRef::parse("+proj=longlat +R=1").unwrap();
