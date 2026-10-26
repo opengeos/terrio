@@ -675,6 +675,19 @@ def main():
         expected = [geos.concave_hull_of_polygons(notch, 0.3, tight, False)]
         r.compare_hulls(name, [g for g, _ in load(out)], expected, 0.2)
 
+    # Four shells touching only at vertices enclose an exterior gap, not an
+    # input polygon hole. GEOS fills that gap even without --allow-holes.
+    touching = ogr.CreateGeometryFromWkt("MULTIPOLYGON (((0 0,4 0,4 4,0 4,0 0)),((4 4,8 4,8 8,4 8,4 4)),((8 0,12 0,12 4,8 4,8 0)),((4 -4,8 -4,8 0,4 0,4 -4)))")
+    touching_path = work / "touching-shells.geojson"
+    touching_path.write_text(json.dumps({"type": "FeatureCollection", "features": [{"type": "Feature", "properties": {}, "geometry": json.loads(touching.ExportToJson())}]}))
+    for tight in [False, True]:
+        for holes in [False, True]:
+            name = "concave-hull-touching" + ("-tight" if tight else "") + ("-holes" if holes else "")
+            options = ["--ratio", "1"] + (["--tight"] if tight else []) + (["--allow-holes"] if holes else [])
+            out = r.terrio_run(["concave-hull", str(touching_path), *options], name)
+            expected = [geos.concave_hull_of_polygons(touching, 1, tight, holes)]
+            r.compare_hulls(name, [g for g, _ in load(out)], expected, 0)
+
     # combine: groups ordered by their text values, parts added one by one.
     for name, src, field, multi in [
         ("combine-places-by-country", "places", "adm0_a3", ogr.wkbMultiPoint),

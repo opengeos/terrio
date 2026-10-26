@@ -464,18 +464,24 @@ pub fn concave_hull_of_polygons(g: &Geometry, ratio: f64, tight: bool, allow_hol
         })
     };
     let mut edges: Vec<[usize; 2]> = Vec::new();
+    // Signed crossings distinguish a polygon hole from a gap enclosed by several
+    // shells touching at vertices. Unsigned minimum boundary depth cannot do so.
+    let mut crossings: HashMap<(usize, usize), (i32, i32)> = HashMap::new();
     for (e, h) in &polygons {
-        for r in std::iter::once(*e).chain(h.iter()) {
+        for (ring_index, r) in std::iter::once(*e).chain(h.iter()).enumerate() {
+            let orientation = if signed_area(&ring_pts(r)) > 0.0 { 1 } else { -1 };
+            let polygon_sign = if ring_index == 0 { orientation } else { -orientation };
+            let shell_sign = if ring_index == 0 { orientation } else { 0 };
             let ids: Vec<usize> = r.0.iter().map(|c| vertex(c.clone(), &mut coords)).collect();
-            for w in ids.windows(2) {
-                if w[0] != w[1] {
-                    edges.push([w[0], w[1]]);
+            for (&a, &b) in ids.iter().zip(ids.iter().cycle().skip(1)).take(ids.len()) {
+                if a == b {
+                    continue;
                 }
-            }
-            if let (Some(&a), Some(&b)) = (ids.first(), ids.last())
-                && a != b
-            {
-                edges.push([b, a]);
+                edges.push([a, b]);
+                let direction = if a < b { 1 } else { -1 };
+                let entry = crossings.entry((a.min(b), a.max(b))).or_default();
+                entry.0 += direction * polygon_sign;
+                entry.1 += direction * shell_sign;
             }
         }
     }
@@ -492,49 +498,68 @@ pub fn concave_hull_of_polygons(g: &Geometry, ratio: f64, tight: bool, allow_hol
     if conflict {
         return Err(Error::InvalidArgument("the polygons are invalid: their rings cross; run make-valid first".into()));
     }
+    // A constraint can be split by a vertex on another polygon's boundary.
+    // Transfer its crossing counts to the actual directed subedges of the CDT.
+    let handles: HashMap<_, _> = cdt.vertices().map(|v| (v.data().index, v.fix())).collect();
+    let mut split_crossings: HashMap<(usize, usize), (i32, i32)> = HashMap::new();
+    for ((a, b), delta) in crossings {
+        for intersection in spade::LineIntersectionIterator::new_from_handles(&cdt, handles[&a], handles[&b]) {
+            if let spade::Intersection::EdgeOverlap(edge) = intersection {
+                let (from, to) = (edge.from().data().index, edge.to().data().index);
+                let direction = if from < to { 1 } else { -1 };
+                let entry = split_crossings.entry((from.min(to), from.max(to))).or_default();
+                entry.0 += direction * delta.0;
+                entry.1 += direction * delta.1;
+            }
+        }
+    }
+    let crossings = split_crossings;
     let pts: Vec<P> = coords.iter().map(|c| (c.x, c.y)).collect();
     // Classify the faces: in the polygons (kept), or in the frame's space between them.
     let faces: Vec<FixedFaceHandle<InnerTag>> = cdt.fixed_inner_faces().collect();
     let slot: HashMap<FixedFaceHandle<InnerTag>, usize> = faces.iter().enumerate().map(|(i, f)| (*f, i)).collect();
     let mut t = Tris { pts, tris: Vec::new() };
-    // A 0-1 flood from the frame counts nested ring boundaries. Valid polygonal
-    // input has disjoint shells and holes, so odd depth is polygon interior and
-    // any positive depth lies within a shell. Each face/edge is visited O(1)
-    // times, without testing every face against every input ring.
+    // Flood signed polygon and shell winding counts from the exterior frame.
+    // Each face/edge is visited O(1) times, without testing faces against rings.
     let mut neighbors = Vec::with_capacity(faces.len());
-    let mut depth = vec![usize::MAX; faces.len()];
+    let mut winding = vec![None; faces.len()];
     let mut pending = VecDeque::new();
     for (i, f) in faces.iter().enumerate() {
         let face = cdt.face(*f);
         let v = face.vertices().map(|v| v.data().index);
-        let raw = face
-            .adjacent_edges()
-            .map(|e| (e.rev().face().as_inner().map(|f| slot[&f.fix()]), cdt.is_constraint_edge(e.as_undirected().fix())));
-        let adj = raw.map(|(other, boundary)| if boundary { None } else { other });
+        let raw = face.adjacent_edges().map(|e| {
+            let a = e.from().data().index;
+            let b = e.to().data().index;
+            let (polygon, shell) = crossings.get(&(a.min(b), a.max(b))).copied().unwrap_or_default();
+            // Spade's directed face is to the left of its boundary edge.
+            let direction = if a < b { -1 } else { 1 };
+            (
+                e.rev().face().as_inner().map(|f| slot[&f.fix()]),
+                cdt.is_constraint_edge(e.as_undirected().fix()),
+                (direction * polygon, direction * shell),
+            )
+        });
+        let adj = raw.map(|(other, boundary, _)| if boundary { None } else { other });
         if v.iter().any(|&v| v >= first_frame) {
-            depth[i] = 0;
+            winding[i] = Some((0, 0));
             pending.push_back(i);
         }
         neighbors.push(raw);
         t.tris.push(Tri { v, adj, size: 0.0, removed: false });
     }
     while let Some(i) = pending.pop_front() {
-        for (other, boundary) in neighbors[i] {
-            if let Some(j) = other {
-                let candidate = depth[i] + usize::from(boundary);
-                if candidate < depth[j] {
-                    depth[j] = candidate;
-                    if boundary {
-                        pending.push_back(j);
-                    } else {
-                        pending.push_front(j);
-                    }
-                }
+        let (polygon, shell) = winding[i].expect("queued face is classified");
+        for (other, _, delta) in neighbors[i] {
+            if let Some(j) = other
+                && winding[j].is_none()
+            {
+                winding[j] = Some((polygon + delta.0, shell + delta.1));
+                pending.push_back(j);
             }
         }
     }
-    let in_polygons: Vec<bool> = depth.iter().map(|d| d % 2 == 1).collect();
-    let in_shells: Vec<bool> = depth.iter().map(|&d| d > 0).collect();
+    let in_polygons: Vec<bool> = winding.iter().map(|w| w.is_some_and(|(polygon, _)| polygon > 0)).collect();
+    let in_shells: Vec<bool> = winding.iter().map(|w| w.is_some_and(|(_, shell)| shell > 0)).collect();
     // Cache the shell membership of each vertex for the tight erosion test.
     let mut memberships = vec![Vec::new(); coords.len()];
     for (shell, ring) in shells.iter().enumerate() {
@@ -843,6 +868,22 @@ mod tests {
         let empty = Geometry::GeometryCollection(vec![]);
         assert!(matches!(convex_hull(&empty).unwrap(), Geometry::GeometryCollection(_)));
         assert!(matches!(concave_hull(&empty, 0.5, false).unwrap(), Geometry::Polygon { exterior, .. } if exterior.0.is_empty()));
+    }
+
+    #[test]
+    fn polygon_hull_fills_gap_enclosed_by_touching_shells() {
+        let square = |x, y| (Ring(vec![Coord::xy(x, y), Coord::xy(x + 4., y), Coord::xy(x + 4., y + 4.), Coord::xy(x, y + 4.)]), vec![]);
+        let input = Geometry::MultiPolygon(vec![square(0., 0.), square(4., 4.), square(8., 0.), square(4., -4.)]);
+        // GEOS 3.14 fills the central gap for all four option combinations at ratio 1.
+        for tight in [false, true] {
+            for holes in [false, true] {
+                let hull = concave_hull_of_polygons(&input, 1., tight, holes).unwrap();
+                let Geometry::Polygon { exterior, interiors } = hull else { panic!("{hull:?}") };
+                assert!(interiors.is_empty());
+                let ring: Vec<P> = exterior.0.iter().map(|c| (c.x, c.y)).collect();
+                assert_eq!(signed_area(&ring).abs(), 112.);
+            }
+        }
     }
 
     #[test]

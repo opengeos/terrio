@@ -187,7 +187,10 @@ maximum). Lines are processed from the end with the larger X (then Y), so a line
 reverse get the same points, and added points copy the Z/M of the segment start in that
 direction (they are not interpolated). Ring closing segments are divided too. `convert
 --segmentize` is `ogr2ogr -segmentize`; it cannot be combined with `--simplify`.
-Terrio refuses densification beyond 10 million vertices per line before allocating the output.
+Segmentization allows at most ten million output vertices per feature across its
+lines, rings and collection members. It checks each component against the remaining
+budget before allocating its output. This limit does not cap a whole layer's total
+output; reduce the streaming chunk size when processing many densely expanded features.
 
 `convex-hull` is GEOS's Graham scan: a polygon starting at the lowest, then leftmost, vertex,
 clockwise; a line string for collinear input and a point for one distinct vertex. The layer's
@@ -998,9 +1001,3 @@ point tie points and rotated affine transforms, without moving pixel corners.
 Writing a PixelIsPoint GeoTIFF requires a CRS. A write with an unknown CRS is
 rejected before creating the file, avoiding a half-pixel origin shift without
 a corresponding raster-type GeoKey.
-
-
-Segmentization allows at most ten million output vertices per feature across its
-lines, rings and collection members. It checks each component against the remaining
-budget before allocating its output. This limit does not cap a whole layer's total
-output; reduce the streaming chunk size when processing many densely expanded features.
