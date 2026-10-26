@@ -56,6 +56,16 @@ def prepare(d, tmp):
     ds.GetRasterBand(1).SetScale(0.1)
     ds.GetRasterBand(1).SetOffset(1000)
     ds = None
+    # A real DEM window shifted beyond Float32's unit precision. GDAL narrows
+    # Float64 input before applying the offset when the requested output is Float32.
+    p["f64_packed"] = os.path.join(tmp, "f64_packed.tif")
+    ds = gdal.Translate(p["f64_packed"], usgs, srcWin=[1000, 1000, 16, 16], outputType=gdal.GDT_Float64)
+    band = ds.GetRasterBand(1)
+    band.WriteArray(band.ReadAsArray() + 100000000.0)
+    band.DeleteNoDataValue()
+    band.SetScale(1.0)
+    band.SetOffset(-100000000.0)
+    ds = None
     # Landsat bands with a scale and offset of their own (reflectance-like), nodata 0.
     p["landsat_scaled"] = os.path.join(tmp, "landsat_scaled.tif")
     ds = gdal.Translate(p["landsat_scaled"], f"{d}/landsat.tif", srcWin=[600, 500, 400, 300])
@@ -146,6 +156,7 @@ def cases(d, tmp):
     unscale("S5P qa_value netCDF", p["s5p_qa"])
     out[-1]["requires"] = "netCDF"
     unscale("unscaled DEM Float64", p["dem_window"])
+    unscale("Float64 packed DEM to Float32", p["f64_packed"], "Float32")
 
     def alpha(name, src, nodata=()):
         g = [x for v in nodata for x in ("--nodata", str(v))]

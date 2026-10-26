@@ -657,6 +657,17 @@ mod tests {
     }
 
     #[test]
+    fn float64_input_uses_the_requested_output_working_precision() {
+        // GDAL 3.13.3 narrows the input before unscaling for these output types.
+        let mut source = ds(vec![vec![100000001.]], 1, 1, DataType::F64, None);
+        source.band_metadata = vec![crate::BandMetadata { scale: Some(1.), offset: Some(-100000000.), ..Default::default() }];
+        for (data_type, expected) in [(DataType::F32, 0.), (DataType::U8, 0.), (DataType::I16, 0.), (DataType::F64, 1.)] {
+            let output = unscale(&source, &UnscaleOptions { output_type: Some(data_type) }).unwrap();
+            assert_eq!(output.raster.data.to_f64_vec(), vec![expected]);
+        }
+    }
+
+    #[test]
     fn unscales_with_nodata_and_types() {
         let mut src = ds(vec![vec![1.0, 2.0, -9999.0, 4.0], vec![1.0, 2.0, 3.0, -9999.0]], 2, 2, DataType::I16, Some(-9999.0));
         src.band_metadata = vec![

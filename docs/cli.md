@@ -824,8 +824,10 @@ offset` with its own scale and offset (GeoTIFF band scales and offsets, netCDF `
 and `add_offset`; bands without them are converted unchanged). `--ot` is the output type,
 Float32 by default (Float64 for Float64 inputs). Nodata pixels keep the band's nodata value,
 which the output declares unchanged, and the output has no scale or offset. Values are computed
-and rounded as GDAL's virtual rasters compute them (single precision unless the input or output
-is a 32- or 64-bit integer or Float64; Byte outputs round half up). Complex bands are not
+and rounded as GDAL's virtual rasters compute them: working pixels are Float32 unless the input
+or output is a 32- or 64-bit integer, or the output is Float64. A Float64 input with
+`--ot Float32`, Byte or Int16 still uses Float32 working pixels, matching GDAL 3.13.3.
+Byte outputs round half up. Complex bands are not
 supported. As in GDAL 3.13.3, if the output type cannot represent the original nodata
 value, pixels are clamped to that type while the original nodata declaration is retained
 (for example, nodata -9999 becomes a zero pixel in Byte output, still tagged -9999).
@@ -850,6 +852,8 @@ value, or that already ends with an alpha band (two or four bands), is copied un
 Explicit nodata adds a new alpha band even to RGBA input, matching GDAL 3.13.3. Copied
 bands retain their scales and offsets, including driver-recorded packing. Internal and `.msk`
 masks are not used.
+The result is an owned raster held in memory. An unchanged result also clones the input's
+pixel buffer; this path does not stream file conversion.
 
 ## reclassify
 
