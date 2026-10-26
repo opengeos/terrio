@@ -87,5 +87,29 @@ fn xyz_streams_lines() {
     assert_eq!(out.lines().next().unwrap(), "500005.000,4000015.000,0");
     let path = dir.path().join("a.xyz");
     assert_eq!(terrio(&["xyz", &a, path.to_str().unwrap(), "--srcwin", "2", "1", "2", "1"], None).0, 0);
-    assert_eq!(std::fs::read_to_string(path).unwrap(), "500025.000 4000005.000 6\n500035.000 4000005.000 7\n");
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "500025.000 4000005.000 6\n500035.000 4000005.000 7\n");
+    // Refused options leave no output behind, and the input is never overwritten.
+    let refused = dir.path().join("refused.xyz");
+    assert_eq!(terrio(&["xyz", &a, refused.to_str().unwrap(), "--srcwin", "3", "0", "5", "1"], None).0, 1);
+    assert!(!refused.exists());
+    let before = std::fs::read(&a).unwrap();
+    assert_eq!(terrio(&["xyz", &a, &a], None).0, 1);
+    assert_eq!(std::fs::read(&a).unwrap(), before);
+}
+
+#[test]
+fn pixel_info_refuses_missing_layers_and_positions() {
+    let dir = tempfile::tempdir().unwrap();
+    let a = write(dir.path(), "a.tif", (0..8).map(f64::from).collect(), None);
+    let (code, _, err) = terrio(&["pixel-info", &a], Some(""));
+    assert_eq!(code, 1);
+    assert!(err.contains("no positions"), "{err}");
+    let points = dir.path().join("p.geojson");
+    std::fs::write(
+        &points,
+        r#"{"type":"FeatureCollection","features":[{"type":"Feature","properties":{},"geometry":{"type":"Point","coordinates":[1,1]}}]}"#,
+    )
+    .unwrap();
+    let (code, _, _) = terrio(&["pixel-info", "--position-dataset", points.to_str().unwrap(), "-l", "nope", &a], None);
+    assert_eq!(code, 1);
 }

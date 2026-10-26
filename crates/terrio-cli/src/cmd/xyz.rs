@@ -65,6 +65,13 @@ pub fn run(a: Args) -> Result<()> {
         delimiter: a.delimiter.clone().unwrap_or_else(|| if a.csv { ",".into() } else { " ".into() }),
     };
     let mut raster = super::rasterout::open_lazy(&a.input)?;
+    // Checked before the output is created, so that a refused command leaves no file behind.
+    terrio::ops::xyz::check_xyz(&raster, &options)?;
+    if let Some(path) = a.output.as_deref().filter(|p| *p != "-")
+        && (path == a.input || super::rasterout::same_file(path, &a.input))
+    {
+        return Err(Error::InvalidArgument("the output would overwrite the input".into()));
+    }
     match a.output.as_deref() {
         None | Some("-") => {
             let stdout = std::io::stdout();

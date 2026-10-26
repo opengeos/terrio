@@ -89,7 +89,11 @@ pub fn run(a: Args) -> Result<()> {
         let layer = match (ds.layers.len(), &a.layer) {
             (0, _) => return Err(Error::InvalidArgument(format!("Dataset '{path}' has no vector layer"))),
             (1, _) => &ds.layers[0],
-            (_, Some(name)) => ds.layers.iter().find(|l| &l.name == name).unwrap_or(&ds.layers[0]),
+            (_, Some(name)) => ds
+                .layers
+                .iter()
+                .find(|l| &l.name == name)
+                .ok_or_else(|| Error::InvalidArgument(format!("Cannot find layer '{name}' in '{path}'")))?,
             _ => {
                 return Err(Error::InvalidArgument(format!(
                     "Dataset '{path}' has more than one vector layer. Please specify the 'layer' argument"
@@ -104,6 +108,11 @@ pub fn run(a: Args) -> Result<()> {
             let mut text = String::new();
             std::io::stdin().read_to_string(&mut text)?;
             positions = Position::parse_lines(&text)?;
+            if positions.is_empty() {
+                return Err(Error::InvalidArgument(
+                    "no positions: give X Y values, --position, --position-dataset or lines on standard input".into(),
+                ));
+            }
         }
         pixel_info(&mut raster, &positions, &options)?
     };

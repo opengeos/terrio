@@ -82,8 +82,36 @@ fn fmt_g(v: f64) -> String {
     crate::drivers::common::fmt_g(v, 6)
 }
 
+/// Checks `options` against `raster` without reading pixels: what [`write_xyz`] would refuse, so
+/// that a caller can check them before creating its output.
+pub fn check_xyz(raster: &LazyRaster, options: &XyzOptions) -> Result<()> {
+    if raster.dataset().is_some_and(|d| d.complex) {
+        return Err(Error::Unsupported("writing complex rasters as XYZ is not supported".into()));
+    }
+    let n = if options.bands.is_empty() { raster.band_count() } else { options.bands.len() };
+    if let Some(b) = options.bands.iter().find(|b| **b == 0 || **b > raster.band_count()) {
+        return Err(Error::InvalidArgument(format!("band {b} does not exist (the raster has {})", raster.band_count())));
+    }
+    if options.skip.0 == 0 || options.skip.1 == 0 {
+        return Err(Error::InvalidArgument("skip must be at least 1".into()));
+    }
+    let (w, h) = (raster.width(), raster.height());
+    let [x_off, y_off, x_size, y_size] = options.srcwin.unwrap_or([0, 0, w, h]);
+    if x_size == 0 || y_size == 0 || !Window::new(x_off, y_off, x_size, y_size).fits(w, h) {
+        return Err(Error::InvalidArgument(format!("srcwin {x_off} {y_off} {x_size} {y_size} is outside the {w}x{h} raster")));
+    }
+    if let Some(v) = &options.src_nodata {
+        per_band(v, n, "srcnodata")?;
+    }
+    if let Some(v) = &options.dst_nodata {
+        per_band(v, n, "dstnodata")?;
+    }
+    Ok(())
+}
+
 /// Writes the XYZ lines of `raster` to `out`, returning the number of lines.
 pub fn write_xyz<W: Write>(raster: &mut LazyRaster, out: &mut W, options: &XyzOptions) -> Result<u64> {
+    check_xyz(raster, options)?;
     if raster.dataset().is_some_and(|d| d.complex) {
         return Err(Error::Unsupported("writing complex rasters as XYZ is not supported".into()));
     }
@@ -119,7 +147,9 @@ pub fn write_xyz<W: Write>(raster: &mut LazyRaster, out: &mut W, options: &XyzOp
     let replace = !skip_nodata && dst_nodata.is_some();
     let delim = options.delimiter.as_str();
     let block = raster.block_size().map_or(1, |(_, bh)| bh.max(1));
-    let rows = ((8usize << 20) / (x_size * n * 8).max(1)).max(1).max(block.min(256));
+    // About 8 MiB of values a strip, in whole blocks when that holds one or more.
+    let rows = ((8usize << 20) / x_size.saturating_mul(n).saturating_mul(8).max(1)).max(1);
+    let rows = if rows > block { rows / block * block } else { rows };
     let read = WindowOptions { bands: bands.clone(), overview: None };
     let mut lines = 0u64;
     let mut text = String::new();
