@@ -166,3 +166,22 @@ def test_lineref(tmp_path):
     assert coords[-1] == pytest.approx([1000, 300])
     with pytest.raises(ValueError):
         terrio.lineref_create(lines, stones, "missing", 500)
+
+
+def test_explicit_empty_layer_selection_is_rejected(tmp_path):
+    layer = terrio.Layer.from_geojson(points_geojson([(0, 0, 1), (1, 1, 2)]), name="points")
+    path = str(tmp_path / "points.gpkg")
+    terrio.write_vector([layer], path)
+    for source in [layer, path]:
+        with pytest.raises(terrio.InvalidArgumentError, match="at least one layer name"):
+            terrio.vector_grid(source, algorithm="nearest", layers=[])
+
+
+def test_keyword_zero_radius_matches_packed_error():
+    source = points_geojson([(0, 0, 1), (1, 1, 2)])
+    for algorithm, options in [
+        ("invdist:radius1=0:radius2=0:min_points_per_quadrant=1", {}),
+        ("invdist", {"radius1": 0, "radius2": 0, "min_points_per_quadrant": 1}),
+    ]:
+        with pytest.raises(terrio.InvalidArgumentError, match="strictly positive"):
+            terrio.vector_grid(source, algorithm=algorithm, **options)

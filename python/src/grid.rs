@@ -100,6 +100,9 @@ fn vector_grid(
     format: Option<&str>,
     compress: Option<String>,
 ) -> PyResult<PyRaster> {
+    if layers.as_ref().is_some_and(Vec::is_empty) {
+        return Err(invalid("give at least one layer name"));
+    }
     let params = GridParams {
         power,
         smoothing,
@@ -157,8 +160,8 @@ fn with_one_layer<T>(
 ) -> PyResult<T> {
     if let Ok(layer) = src.cast::<PyLayer>() {
         let borrowed = layer.borrow();
-        if name.is_some_and(|name| name != borrowed.inner.name) {
-            return Err(invalid("no layer"));
+        if let Some(name) = name.filter(|name| *name != borrowed.inner.name) {
+            return Err(invalid(format!("no layer named {name}")));
         }
         return apply(&borrowed.inner);
     }

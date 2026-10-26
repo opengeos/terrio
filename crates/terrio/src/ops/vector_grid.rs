@@ -232,7 +232,9 @@ impl GridAlgorithm {
             }
             if get(&params, "radius").is_none() {
                 params.push(("radius".into(), get(&params, "radius1").unwrap_or("1").to_string()));
+                params.retain(|(key, _)| key != "radius1" && key != "radius2");
             }
+            params.retain(|(key, _)| key != "angle");
             method = GridMethod::InverseDistanceNearest;
         }
         let mut a = Self::new(method);
@@ -462,8 +464,7 @@ impl GridAlgorithm {
     /// The algorithm `algorithm` (a method name or a GDAL string such as `invdist:power=3`) with
     /// the parameters `p`, checked as `gdal vector grid` checks its options.
     pub fn with_params(algorithm: &str, p: &GridParams) -> Result<Self> {
-        let mut a = Self::parse_parameters(algorithm)?;
-        let m = a.method;
+        let m = GridMethod::parse(algorithm.split(':').next().unwrap_or_default())?;
         let ellipse = m.uses_ellipse();
         let reject = |what: &str| Err(Error::InvalidArgument(format!("{what} does not apply to the {} algorithm", m.name())));
         if !matches!(m, GridMethod::InverseDistance | GridMethod::InverseDistanceNearest) && (p.power.is_some() || p.smoothing.is_some()) {
@@ -480,7 +481,7 @@ impl GridAlgorithm {
         {
             return reject("the per-quadrant limits");
         }
-        if a.method.is_metric_like() && p.max_points.is_some() {
+        if m.is_metric_like() && p.max_points.is_some() {
             return reject("max-points");
         }
         if p.radius.is_some() && (p.radius1.is_some() || p.radius2.is_some()) {
@@ -489,39 +490,41 @@ impl GridAlgorithm {
         if p.radius1.is_some() != p.radius2.is_some() {
             return Err(Error::InvalidArgument("radius1 and radius2 go together".into()));
         }
-        if let Some(v) = p.power {
-            a.power = v;
+        // Keywords override the packed parameters before the single parser normalizes
+        // defaults and per-quadrant remapping (including explicitly supplied zeroes).
+        let mut combined = algorithm
+            .split(':')
+            .filter(|part| {
+                let key = part.split('=').next().unwrap_or_default().trim();
+                !((p.radius.is_some() && (key.eq_ignore_ascii_case("radius1") || key.eq_ignore_ascii_case("radius2")))
+                    || (p.radius1.is_some() && key.eq_ignore_ascii_case("radius")))
+            })
+            .collect::<Vec<_>>()
+            .join(":");
+        for (key, value) in [
+            ("power", p.power),
+            ("smoothing", p.smoothing),
+            ("radius", p.radius),
+            ("radius1", p.radius1),
+            ("radius2", p.radius2),
+            ("angle", p.angle),
+            ("nodata", p.nodata),
+        ] {
+            if let Some(value) = value {
+                combined.push_str(&format!(":{key}={value}"));
+            }
         }
-        if let Some(v) = p.smoothing {
-            a.smoothing = v;
+        for (key, value) in [
+            ("min_points", p.min_points),
+            ("max_points", p.max_points),
+            ("min_points_per_quadrant", p.min_points_per_quadrant),
+            ("max_points_per_quadrant", p.max_points_per_quadrant),
+        ] {
+            if let Some(value) = value {
+                combined.push_str(&format!(":{key}={value}"));
+            }
         }
-        if let Some(r) = p.radius {
-            a.set_radius(r);
-        }
-        if let (Some(r1), Some(r2)) = (p.radius1, p.radius2) {
-            (a.radius1, a.radius2) = (r1, r2);
-        }
-        if let Some(v) = p.angle {
-            a.angle = v;
-        }
-        if let Some(v) = p.min_points {
-            a.min_points = v;
-        }
-        if let Some(v) = p.max_points {
-            a.max_points = v;
-        }
-        if let Some(v) = p.min_points_per_quadrant {
-            a.min_points_per_quadrant = v;
-        }
-        if let Some(v) = p.max_points_per_quadrant {
-            a.max_points_per_quadrant = v;
-        }
-        if let Some(v) = p.nodata {
-            a.nodata = v;
-            a.nodata_set = true;
-        }
-        a.validate()?;
-        Ok(a)
+        Self::parse(&combined)
     }
 }
 
@@ -1849,6 +1852,37 @@ mod tests {
     fn grid(x: &[f64], y: &[f64], z: &[f64], a: &GridAlgorithm, e: [f64; 4], cols: usize, rows: usize) -> Vec<f64> {
         let extent = GridExtent { x_min: e[0], y_min: e[1], x_max: e[2], y_max: e[3], cols, rows };
         grid_points(x, y, z, a, &extent, DataType::F64, 1).unwrap()
+    }
+
+    #[test]
+    fn keyword_and_packed_quadrant_parameters_share_normalization() {
+        for radius in [0., 2.] {
+            let packed = GridAlgorithm::parse(&format!("invdist:radius1={radius}:radius2={radius}:min_points_per_quadrant=1"));
+            let keywords = GridAlgorithm::with_params(
+                "invdist",
+                &GridParams { radius1: Some(radius), radius2: Some(radius), min_points_per_quadrant: Some(1), ..Default::default() },
+            );
+            assert_eq!(packed.is_ok(), keywords.is_ok());
+            if let (Ok(packed), Ok(keywords)) = (packed, keywords) {
+                assert_eq!(packed.to_gdal_string(), keywords.to_gdal_string());
+            }
+        }
+        for limit in [0, 1] {
+            let packed = GridAlgorithm::parse(&format!("invdist:min_points_per_quadrant={limit}:max_points=0")).unwrap();
+            let keywords = GridAlgorithm::with_params(
+                "invdist",
+                &GridParams { min_points_per_quadrant: Some(limit), max_points: Some(0), ..Default::default() },
+            )
+            .unwrap();
+            assert_eq!(packed.to_gdal_string(), keywords.to_gdal_string());
+        }
+        let options = GridParams { radius1: Some(2.), radius2: Some(2.), ..Default::default() };
+        assert_eq!(GridAlgorithm::with_params("invdist:radius=3", &options).unwrap().radius1, 2.);
+        let options = GridParams { radius: Some(4.), ..Default::default() };
+        assert_eq!(GridAlgorithm::with_params("invdist:radius1=3:radius2=3", &options).unwrap().radius1, 4.);
+        let _ = crate::warnings::take();
+        GridAlgorithm::parse("invdist:min_points_per_quadrant=1:radius1=2:radius2=2").unwrap();
+        assert!(crate::warnings::take().is_empty());
     }
 
     #[test]

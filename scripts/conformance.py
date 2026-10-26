@@ -704,7 +704,6 @@ def suite_lineref(ctx):
     return s
 
 
-
 def suite_raster_pixel(ctx):
     """Pixel-wise raster commands against GDAL's unified ``gdal raster`` commands."""
     return suite_json_ops(
@@ -1567,7 +1566,6 @@ SUITES = OrderedDict(
         ("pansharpen", suite_pansharpen),
         ("vector-grid", suite_vector_grid),
         ("lineref", suite_lineref),
-
         ("raster-pixel", suite_raster_pixel),
         ("focal", suite_focal),
         ("vector-ops", suite_vector_ops),

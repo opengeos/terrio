@@ -26,13 +26,13 @@ enum Mode {
 
 /// A layer of a vector dataset.
 fn open_layer(path: &str, layer: Option<&str>) -> Result<Layer> {
-    let ds = super::quiet(|| {
-        terrio::open_vector(
+    let layers = super::quiet(|| {
+        terrio::ops::vector_filter::open_layers(
             path,
             &terrio::VectorOpenOptions { layers: layer.into_iter().map(str::to_string).collect(), ..Default::default() },
         )
     })?;
-    ds.layers.into_iter().next().ok_or_else(|| Error::InvalidArgument(format!("{path} has no layer")))
+    layers.into_iter().next().ok_or_else(|| Error::InvalidArgument(format!("{path} has no layer")))
 }
 
 /// The output options.
