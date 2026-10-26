@@ -318,6 +318,8 @@ impl Simplifier {
                     furthest = k;
                 }
             }
+            // Extreme finite coordinates can overflow distance arithmetic to NaN;
+            // keep the original segments when no comparable distance was found.
             if max < 0.0 {
                 for k in i..j {
                     self.lines[l].result.push(ResultSegment { a: k, b: k + 1, output: None });
