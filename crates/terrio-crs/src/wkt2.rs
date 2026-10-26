@@ -50,7 +50,7 @@ pub(crate) fn to_proj(root: &Node) -> Result<Converted> {
     let mut tail = geog.tail();
     if !projected {
         if let Some(cs) = root.child("CS")
-            && !matches!(cs.args.first(), Some(Arg::Ident(t)) if t.eq_ignore_ascii_case("Cartesian") || t.eq_ignore_ascii_case("ellipsoidal"))
+            && !matches!(cs.args.first(), Some(Arg::Ident(t)) if t.eq_ignore_ascii_case("Cartesian") || t.eq_ignore_ascii_case("ellipsoidal") || t.eq_ignore_ascii_case("spherical"))
         {
             return Err(bad("unsupported geodetic coordinate system"));
         }
@@ -87,6 +87,37 @@ pub(crate) fn to_proj(root: &Node) -> Result<Converted> {
             return Ok(geog.converted(out.join(" ")));
         }
         let mut out = vec!["+proj=longlat".to_string()];
+        if root.child("CS").is_some_and(|cs| matches!(cs.args.first(), Some(Arg::Ident(t)) if t.eq_ignore_ascii_case("spherical"))) {
+            if root.child("CS").and_then(|cs| cs.num(1)) != Some(2.0) {
+                return Err(bad("planetocentric spherical CS must be two-dimensional"));
+            }
+            out.push("+geoc".into());
+        }
+        // GDAL normalizes north/east geographic axes to lon/lat, but retains
+        // the declared order for west-positive planetary coordinate systems.
+        let directions: Vec<_> = root
+            .children("AXIS")
+            .take(2)
+            .filter_map(|a| match a.args.get(1) {
+                Some(Arg::Ident(d)) => Some(d.to_ascii_lowercase()),
+                _ => None,
+            })
+            .collect();
+        if directions.len() == 2 && directions.iter().any(|d| d == "west" || d == "south") {
+            let axes = directions
+                .iter()
+                .map(|d| match d.as_str() {
+                    "east" => Some('e'),
+                    "west" => Some('w'),
+                    "north" => Some('n'),
+                    "south" => Some('s'),
+                    _ => None,
+                })
+                .collect::<Option<String>>()
+                .ok_or_else(|| bad("invalid geographic axes"))?;
+            out.push(format!("+axis={axes}u"));
+        }
+
         if (geog.ang - 1.0).abs() > 1e-12 {
             out.push(format!("+to_deg={}", geog.ang));
         }
@@ -131,6 +162,7 @@ pub(crate) fn to_proj(root: &Node) -> Result<Converted> {
     let (mut fe, mut fn_) = (p.get(FE).unwrap_or(0.0), p.get(FN).unwrap_or(0.0));
     let mut south_orientated = false;
     let mut no_uoff = false;
+    let mut conformal_sphere = false;
     let mut sweep = None;
     let proj = if is(&["transversemercator"], &[9807]) {
         push("lat_0", Some(lat_0().unwrap_or(0.0)));
@@ -167,6 +199,11 @@ pub(crate) fn to_proj(root: &Node) -> Result<Converted> {
         }
         push("lon_0", lon_0());
         push("k", Some(p.get(K_NAT).unwrap_or(1.0)));
+        "merc"
+    } else if is(&["mercatorspherical"], &[1026]) {
+        push("lat_0", Some(lat_0().unwrap_or(0.0)));
+        push("lon_0", lon_0());
+        conformal_sphere = true;
         "merc"
     } else if is(&["mercatorvariantb", "mercator2sp"], &[9805]) {
         push("lon_0", lon_0());
@@ -355,6 +392,9 @@ pub(crate) fn to_proj(root: &Node) -> Result<Converted> {
         return Err(bad(&format!("parameter '{unused}' of the method '{}'", method.name().unwrap_or(""))));
     }
     let mut proj_str = vec![format!("+proj={proj}")];
+    if conformal_sphere {
+        proj_str.push("+R_C".into());
+    }
     if no_uoff {
         proj_str.push("+no_uoff".into());
     }

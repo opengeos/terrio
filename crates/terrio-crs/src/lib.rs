@@ -1,7 +1,8 @@
 //! Coordinate reference systems and transformations between them.
 //!
-//! Coordinates are always in traditional GIS order: x/easting/longitude first, then
-//! y/northing/latitude, whatever axis order the CRS's authority defines.
+//! Coordinates follow GDAL's traditional GIS order. East/north geographic axes are
+//! normalized to longitude/latitude; west-positive planetary systems retain their
+//! declared axis order and directions.
 //!
 //! ```no_run
 //! use terrio_crs::{SpatialRef, Transformer};
@@ -50,6 +51,7 @@ mod datum;
 mod def;
 mod epsg;
 mod grid;
+mod iau;
 mod math;
 mod params;
 mod projections;
@@ -328,6 +330,16 @@ impl SpatialRef {
         Ok(Self { wkt: proj_to_wkt(proj4), proj4: Some(proj4.to_string()), ..Default::default() })
     }
 
+    /// A geographic or projected CRS of the IAU_2015 registry (PROJ 9.8.1).
+    pub fn from_iau(code: u32) -> Result<Self> {
+        let entry = iau::get(code).ok_or_else(|| Error::Crs(format!("unknown IAU_2015 code {code}")))?;
+        let definition = Def::from_proj(&entry.proj)?;
+        if definition.is_geographic() != entry.geographic {
+            return Err(Error::Crs("IAU definition has an unsupported coordinate system".into()));
+        }
+        Ok(Self { proj4: Some(entry.proj.clone()), wkt: Some(entry.wkt.clone()), ..Default::default() })
+    }
+
     /// Parses the supported PROJJSON v0.7 geographic, projected or bound CRS subset.
     /// Unsupported coordinate systems, datum models and operations return errors.
     pub fn from_projjson(text: &str) -> Result<Self> {
@@ -353,6 +365,9 @@ impl SpatialRef {
         }
         if s.starts_with('{') {
             return Self::from_projjson(s);
+        }
+        if let Some(code) = iau::reference(s) {
+            return Self::from_iau(code?);
         }
         // `EPSG:4326+5773`: a horizontal and a vertical CRS.
         if let Some(rest) = upper.strip_prefix("EPSG:")
@@ -382,6 +397,11 @@ impl SpatialRef {
     /// known.
     #[doc(hidden)]
     pub fn geographic_wkt(&self) -> Option<String> {
+        if let Some(entry) = self.wkt.as_deref().and_then(iau::declared).and_then(iau::get)
+            && self.wkt.as_deref() == Some(entry.wkt.as_str())
+        {
+            return iau::get(entry.base).map(|base| base.wkt.clone());
+        }
         if let Some(e) = self.epsg.and_then(epsg::get).or_else(|| self.esri.and_then(epsg::esri))
             && let Some(g) = epsg::get(e.geog)
         {
@@ -422,12 +442,12 @@ impl SpatialRef {
     }
 
     /// The authority and code of the CRS: `("EPSG", 4326)`, or `("ESRI", 54009)` for a CRS of
-    /// PROJ's ESRI authority.
+    /// PROJ's ESRI authority; IAU codes use `("IAU_2015", code)`.
     pub fn authority(&self) -> Option<(&'static str, u32)> {
         match (self.epsg, self.esri) {
             (Some(code), _) => Some(("EPSG", code)),
             (None, Some(code)) => Some(("ESRI", code)),
-            (None, None) => None,
+            (None, None) => self.wkt.as_deref().and_then(iau::declared).map(|code| ("IAU_2015", code)),
         }
     }
 
@@ -1092,6 +1112,7 @@ impl Transformer {
     /// epoch when both are dynamic and both epochs are given.
     pub fn with_options(src: &SpatialRef, dst: &SpatialRef, opts: &TransformOptions) -> Result<Self> {
         let (mut s, mut d) = (Def::new(src)?, Def::new(dst)?);
+        s.compatible_body(&d)?;
         let cartesian_src = s.is_geocentric().then(|| s.clone());
         let cartesian_dst = d.is_geocentric().then(|| d.clone());
         if cartesian_src.is_some() {

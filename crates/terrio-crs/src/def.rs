@@ -17,11 +17,18 @@ pub(crate) struct Def {
     /// The projection, `None` for a geographic CRS.
     proj: Option<Arc<dyn Proj>>,
     geocentric: bool,
+    /// Geographic planetocentric latitude rather than ellipsoidal geodetic latitude.
+    ocentric: bool,
+    /// NAIF celestial-body identifier when declared by the IAU registry.
+    body: Option<u32>,
+    iau_datum: Option<u32>,
     z_down: bool,
     /// The pole rotation of a rotated-pole grid (`+proj=ob_tran`), a CRS in degrees without a
     /// projection, whose longitudes are relative to `lam0`.
     rot: Option<Rotation>,
     pub(crate) ell: Ell,
+    /// Semi-major axis used by the projection, including auxiliary-sphere modifiers.
+    projection_a: f64,
     lam0: f64,
     /// The latitude of origin (for comparing definitions).
     phi0: f64,
@@ -181,6 +188,7 @@ impl Def {
             d.three_d = e.three_d;
             d.dynamic = e.dynamic;
             d.area = e.area;
+            d.body = Some(399);
             // A WKT identified as this code but with its own TOWGS84: GDAL uses that shift (not
             // over a PROJ4 extension, which describes the whole CRS).
             if s.proj4.is_none()
@@ -194,15 +202,68 @@ impl Def {
             return Ok(d);
         }
         if let Some(p) = &s.proj4 {
-            return Self::from_proj(p);
+            let mut d = Self::from_proj(p)?;
+            d.tag_iau(s)?;
+            return Ok(d);
         }
         if let Some(w) = &s.wkt {
-            return Self::from_wkt(w);
+            let mut d = Self::from_wkt(w)?;
+            d.tag_iau(s)?;
+            return Ok(d);
         }
         if let Some(code) = s.epsg {
             return Err(Error::Crs(format!("unknown EPSG code {code}")));
         }
         Err(Error::Crs("the CRS is unknown".into()))
+    }
+
+    fn tag_iau(&mut self, s: &SpatialRef) -> Result<()> {
+        if let Some(entry) = s.wkt.as_deref().and_then(super::iau::declared).and_then(super::iau::get) {
+            if entry.body != 399 && (self.datum.is_some() || self.geog.is_some() || !self.ops.is_empty()) {
+                return Err(Error::Crs("Earth datum operations cannot be applied to an IAU planetary CRS".into()));
+            }
+            self.body = Some(entry.body);
+            // A CRS identifier must not override an edited datum definition.
+            let datum_node = |w: &str| {
+                let root = super::wkt1::parse(w)?;
+                let base = root.child("BASEGEOGCRS").or_else(|| root.child("BASEGEODCRS")).unwrap_or(&root);
+                base.child("DATUM").cloned()
+            };
+            let canonical = Self::from_proj(&super::iau::get(entry.base).expect("registered IAU base").proj)?;
+            if (self.ell.a - canonical.ell.a).abs() < 1e-6
+                && (self.ell.es - canonical.ell.es).abs() < 1e-14
+                && s.wkt.as_deref().and_then(datum_node).is_some_and(|d| Some(d) == datum_node(&entry.wkt))
+                && s.proj4.as_deref().is_none_or(|p| p == entry.proj)
+            {
+                self.iau_datum = Some(entry.datum);
+            }
+            if s.wkt.as_deref() == Some(entry.wkt.as_str()) && s.proj4.as_deref() == Some(entry.proj.as_str()) {
+                self.ocentric = entry.geographic && entry.ocentric;
+            }
+        }
+        Ok(())
+    }
+
+    /// A declared body, or PROJ's Earth-radius heuristic for custom ellipsoids.
+    pub fn celestial_body(&self) -> Option<u32> {
+        self.body.or_else(|| ((self.ell.a - 6_375_000.0).abs() < 0.007 * 6_375_000.0).then_some(399))
+    }
+
+    /// PROJ 9.8.1's compatibility rule: known body names take precedence over radius;
+    /// otherwise semi-major axes must agree within 0.7% of the destination's.
+    pub fn compatible_body(&self, other: &Self) -> Result<()> {
+        let (a, b) = (self.celestial_body(), other.celestial_body());
+        if (a.is_some() && b.is_some() && a != b)
+            || ((a.is_none() || b.is_none()) && (self.ell.a - other.ell.a).abs() > 0.007 * other.ell.a)
+        {
+            return Err(Error::Crs("source and target ellipsoids do not belong to the same celestial body".into()));
+        }
+        if (a != Some(399) && (self.datum.is_some() || !self.ops.is_empty()))
+            || (b != Some(399) && (other.datum.is_some() || !other.ops.is_empty()))
+        {
+            return Err(Error::Crs("Earth datum operations cannot be applied to planetary coordinates".into()));
+        }
+        Ok(())
     }
 
     /// A definition from a PROJ string. `+towgs84=` and `+datum=` give its datum
@@ -296,6 +357,17 @@ impl Def {
             return Err(Error::Crs("invalid geocentric unit or ellipsoid".into()));
         }
         let geographic = matches!(name, "longlat" | "latlong" | "lonlat" | "latlon") || rot.is_some();
+        // PROJ 9.8.1 evaluates R_C before parsing lat_0 (init.cpp), so its
+        // conformal radius is equatorial even with a nonzero latitude parameter.
+        // The geodetic CRS retains its original ellipsoid.
+        let conformal_ellipsoid = (p.has("R_C") && !p.has("R") && !p.has("R_A")).then_some(ell);
+        if let Some(base) = conformal_ellipsoid {
+            let radius = base.a * base.one_es.sqrt();
+            if !radius.is_finite() || radius <= 0.0 {
+                return Err(Error::Crs("invalid conformal sphere radius".into()));
+            }
+            setup.ell = Ell::from_a_rf(radius, 0.0);
+        }
         let proj: Option<Arc<dyn Proj>> = if geographic || geocentric {
             None
         } else {
@@ -316,13 +388,19 @@ impl Def {
                 }
             }
         };
-        let (ell, lam0, phi0, x0, y0) = (setup.ell, setup.lam0, setup.phi0, setup.x0, setup.y0);
+        let projection_a = setup.ell.a;
+        let ell = if proj.is_some() { conformal_ellipsoid.unwrap_or(setup.ell) } else { setup.ell };
+        let (lam0, phi0, x0, y0) = (setup.lam0, setup.phi0, setup.x0, setup.y0);
         let mut d = Self {
             proj,
             geocentric,
+            ocentric: geographic && rot.is_none() && p.has("geoc"),
+            body: None,
+            iau_datum: None,
             z_down: p.str("axis").is_some_and(|a| a.as_bytes().get(2) == Some(&b'd')),
             rot,
             ell,
+            projection_a,
             lam0,
             phi0,
             x0,
@@ -384,7 +462,10 @@ impl Def {
     /// Whether both CRSs have the same coordinate conversion (projection, units, axes and prime
     /// meridian), whatever their datums: compared on points around the projection's origin.
     pub fn same_conversion(&self, other: &Def) -> bool {
-        if self.geocentric != other.geocentric {
+        if self.geocentric != other.geocentric
+            || self.ocentric != other.ocentric
+            || self.ocentric && (self.ell.es - other.ell.es).abs() > 1e-15
+        {
             return false;
         }
         if self.geocentric {
@@ -484,9 +565,13 @@ impl Def {
             let mut d = Self {
                 proj: None,
                 geocentric: false,
+                ocentric: false,
+                body: None,
+                iau_datum: None,
                 z_down: false,
                 rot: None,
                 ell,
+                projection_a: ell.a,
                 lam0: 0.0,
                 phi0: 0.0,
                 x0: 0.0,
@@ -531,6 +616,7 @@ impl Def {
     pub fn geographic_endpoint(&self) -> Self {
         let mut d = self.clone();
         d.geocentric = false;
+        d.ocentric = false;
         d.three_d = true;
         d.to_meter = 1.0;
         d.to_deg = 1.0;
@@ -607,6 +693,7 @@ impl Def {
         let (lam, phi) = match &self.proj {
             None => {
                 let (lam, phi) = ((e * self.to_deg).to_radians(), (n * self.to_deg).to_radians());
+                let phi = if self.ocentric { phi.sin().atan2((1.0 - self.ell.es) * phi.cos()) } else { phi };
                 match &self.rot {
                     Some(r) => {
                         let (lam, phi) = r.inv(lam, phi);
@@ -616,8 +703,9 @@ impl Def {
                 }
             }
             Some(p) => {
-                let x = (e * self.to_meter - self.x0) / self.ell.a;
-                let y = (n * self.to_meter - self.y0) / self.ell.a;
+                let inverse_a = 1.0 / self.projection_a;
+                let x = (e * self.to_meter - self.x0) * inverse_a;
+                let y = (n * self.to_meter - self.y0) * inverse_a;
                 let (lam, phi) = p.inv(x, y)?;
                 (lam + self.lam0, phi)
             }
@@ -649,7 +737,7 @@ impl Def {
             None => {
                 let (lam, phi) = match &self.rot {
                     Some(r) => r.fwd(adjlon(lon - self.lam0), lat),
-                    None => (adjlon(lon), lat),
+                    None => (adjlon(lon), if self.ocentric { ((1.0 - self.ell.es) * lat.sin()).atan2(lat.cos()) } else { lat }),
                 };
                 (lam.to_degrees() / self.to_deg, phi.to_degrees() / self.to_deg)
             }
@@ -658,7 +746,7 @@ impl Def {
                     return None;
                 }
                 let (x, y) = p.fwd(adjlon(lon - self.lam0), lat)?;
-                ((x * self.ell.a + self.x0) / self.to_meter, (y * self.ell.a + self.y0) / self.to_meter)
+                ((x * self.projection_a + self.x0) / self.to_meter, (y * self.projection_a + self.y0) / self.to_meter)
             }
         };
         if !e.is_finite() || !n.is_finite() {
@@ -669,6 +757,9 @@ impl Def {
 
     /// Whether both CRSs are on the same datum, so that no datum transformation is needed.
     pub fn same_datum(&self, other: &Def) -> bool {
+        if self.iau_datum.is_some() || other.iau_datum.is_some() {
+            return self.iau_datum == other.iau_datum;
+        }
         match (self.datum, other.datum) {
             (Some(a), Some(b)) => a == b,
             _ => self.ops == other.ops,

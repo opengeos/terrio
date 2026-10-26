@@ -805,6 +805,27 @@ def epsg_cases(s, ctx, test, points, suffix=""):
     return True
 
 
+def suite_iau(ctx):
+    """All IAU_2015 projected definitions against live GDAL/PROJ."""
+    suite = Suite("iau", "IAU_2015 planetary CRSs", "GDAL/PROJ",
+                  "2,074 registered pairs plus unit/offset cases, planetary latitudes and axes. "
+                  "Component tolerances: 1 mm projected; 1e-8 degrees geographic.")
+    if missing_modules("osgeo"):
+        suite.skipped = "needs GDAL Python bindings"
+        return suite
+    code, out, err = run([sys.executable, str(SCRIPTS / "compare_iau_with_gdal.py"), ctx.data, "--terrio", ctx.terrio, "--json"])
+    try:
+        cases = json.loads(out)
+    except json.JSONDecodeError:
+        suite.error = tail(err or out)
+        return suite
+    for case in cases:
+        suite.cases.append(Case("IAU_2015", case["name"], case["status"], case["detail"]))
+    if code and not any(c.status == DIFFERS for c in suite.cases):
+        suite.error = tail(err or out)
+    return suite
+
+
 def suite_projjson(ctx):
     """PROJJSON units, axes and bound transformations, with and without IDs."""
     suite = Suite("projjson", "PROJJSON CRS definitions", "GDAL/PROJ",
@@ -1319,6 +1340,7 @@ SUITES = OrderedDict(
         ("crs", suite_crs),
         ("geocentric", suite_geocentric),
         ("projjson", suite_projjson),
+        ("iau", suite_iau),
         ("crs-grids", suite_crs_grids),
     ]
 )

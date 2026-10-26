@@ -497,3 +497,47 @@ Terrio-exported WKT with GDAL, then compares its transformed coordinates with
 the original JSON definitions. Rust regressions also
 check file loading, malformed/unsupported definitions, wrong units/dimensions,
 and that a root authority ID cannot overwrite a caller's false easting.
+
+
+## IAU_2015 authority support (#271)
+
+`iau-source.json` records the registry version, PROJ source revision and
+attribution. `scripts/gen_iau_table.py` exports all 2,201 definitions from the
+pinned PROJ 9.8.1 database, retaining their full WKT2 and celestial-body IDs.
+`iau_benchmark.json` separately retains `pair-mars-iau` and its PROJ 9.9.0 oracle
+from rust-proj-capability revision `ddd9fac70ec370acd9651ebb8b46035207347ad5`.
+
+`iau_reference.json` contains 2,074 geographic/projected CRS pairs with two points
+each, frozen against GDAL 3.12.2 / PROJ 9.8.1. It records forward and inverse
+outputs separately, plus four cases for kilometres, US survey feet, offsets, a
+Mars polar-radius sphere and a conformal sphere at a nonzero latitude. Projected
+component errors are converted to metres before applying the 1 mm allowance;
+inverse angular components allow 1e-8 degrees. Native Rust, Python and Node/WASM
+exercise the full corpus, while CLI/MCP also verify the pinned Mars case and
+cross-body refusal. The live `iau` conformance suite uses the public CLI.
+
+The reference's own inverse is approximate for some definitions. Five inverse
+samples are refused; the error text is retained in the fixture. Native refusal
+or recovery of the original point within the angular allowance is permitted
+only for these recorded reference refusals. The largest successful GDAL inverse
+round-trip residual is 3.834276481 degrees for Eros `200043361`; tests compare
+its actual inverse output with PROJ and do not claim exact original-point
+recovery. Other boundary/domain differences retain the policies documented for
+the individual projections.
+
+```sh
+cargo test -p terrio-crs --test iau
+CARGO_TARGET_WASM32_WASIP1_RUNNER=wasmtime cargo test -p terrio-crs \
+  --target wasm32-wasip1 --test iau
+cargo test -p terrio-cli --test mcp iau
+python -m pytest python/tests/test_iau.py
+node --test --test-name-pattern='IAU_2015' js/tests/node.test.mjs
+python scripts/conformance.py ../terrio-data --only iau --strict
+```
+
+The regression also checks every registry definition can initialize and reopen
+its WKT, unknown codes/years, versioned authority forms, west-positive axes,
+planetocentric latitude conversion and rejection of Earth datum operations on
+planetary coordinates. The numerical fixes use PROJ's sixth-order meridian
+series, inverse authalic-latitude refinement and inverse normalization order;
+the copied formulas and tables are attributed in `NOTICE`.

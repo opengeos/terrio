@@ -827,6 +827,7 @@ pub fn describe_crs(crs: &str) -> Result<JsValue, JsError> {
     to_js(&serde_json::json!({
         "epsg": s.epsg,
         "esri": s.esri,
+        "authority": s.authority(),
         "name": s.name(),
         "geographic": s.is_geographic(),
         "geocentric": s.is_geocentric(),

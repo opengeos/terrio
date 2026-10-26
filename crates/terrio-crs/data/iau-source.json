@@ -1,0 +1,15 @@
+{
+  "authority": "IAU_2015",
+  "version": 2015,
+  "proj": "9.8.1",
+  "gdal": "3.12.2",
+  "source": "https://github.com/OSGeo/PROJ/blob/9.8.1/data/sql/iau.sql",
+  "source_git_blob": "900564ccf2e1f77fb708ddc2c8544843b29bc24a",
+  "source_report": "https://doi.org/10.1007/s10569-017-9805-5",
+  "entries": 2201,
+  "kinds": {
+    "g": 115,
+    "c": 12,
+    "p": 2074
+  }
+}

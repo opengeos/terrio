@@ -210,3 +210,31 @@ fn projjson_definitions_are_available_through_cli_and_mcp() {
         assert!((value - case["expected"][1][axis].as_f64().unwrap()).abs() < 0.001);
     }
 }
+
+#[test]
+fn iau_planetary_coordinates_and_body_rejection_through_mcp() {
+    assert_eq!(terrio::crs::SpatialRef::from_iau(49900).unwrap().authority(), Some(("IAU_2015", 49900)));
+    let replies = session(&[
+        call(1, "crs", &["IAU_2015:49900", "--to", "IAU_2015:49910", "137.4", "-4.6"]),
+        call(2, "crs", &["IAU_2015:49902", "--to", "IAU_2015:49912", "10", "45"]),
+        call(3, "crs", &["IAU_2015:49900", "--to", "EPSG:4326", "0", "0"]),
+        call(4, "crs", &["IAU:2020:49900"]),
+        call(5, "crs", &["IAU_2015:49900", "--to", "IAU_2015:49901", "45", "-10", "--ct-opt", "ALLOW_BALLPARK=NO"]),
+        call(6, "crs", &["IAU_2015:49901", "--to", "IAU_2015:49902", "45", "-10", "--ct-opt", "ALLOW_BALLPARK=NO"]),
+    ]);
+    for (id, expected) in [(1, [8144343.439702274, -272663.6086072086]), (2, [592746.9752330622, 2664514.735491729])] {
+        let result = &replies[&id]["result"];
+        assert_eq!(result["isError"], false, "{result}");
+        let coordinates: Vec<f64> =
+            result["content"][0]["text"].as_str().unwrap().lines().next().unwrap().split_whitespace().map(|s| s.parse().unwrap()).collect();
+        assert_eq!(coordinates.len(), 2);
+        for (actual, expected) in coordinates.iter().zip(expected) {
+            assert!((actual - expected).abs() < 0.001);
+        }
+    }
+    assert_eq!(replies[&3]["result"]["isError"], true);
+    assert!(replies[&3]["result"]["content"][0]["text"].as_str().unwrap().contains("celestial body"));
+    assert_eq!(replies[&4]["result"]["isError"], true);
+    assert_eq!(replies[&5]["result"]["isError"], true);
+    assert_eq!(replies[&6]["result"]["isError"], false);
+}

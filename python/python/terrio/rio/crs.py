@@ -459,7 +459,7 @@ class CRS(Mapping[str, Any]):
             confidence_threshold: Unused.
 
         Returns:
-            tuple | None: `("EPSG", "4326")`, `("ESRI", "54009")`, or None.
+            tuple | None: An authority/code pair, including `("IAU_2015", "49900")`.
         """
         code = self.to_epsg()
         if code is not None:
@@ -467,6 +467,9 @@ class CRS(Mapping[str, Any]):
         esri = self._info.get("esri")
         if esri is not None:
             return ("ESRI", str(esri))
+        authority = self._info.get("authority")
+        if authority is not None:
+            return (authority[0], str(authority[1]))
         m = re.match(r"^\s*([A-Za-z]+):(\d+)\s*$", self._input)
         if m:
             return (m.group(1).upper(), m.group(2))

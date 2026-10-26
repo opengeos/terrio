@@ -1474,3 +1474,41 @@ test("PROJJSON CRS definitions match GDAL in traditional GIS order", () => {
   }
   assert.throws(() => terrio.describeCrs('{"type":"VerticalCRS","name":"unsupported"}'), /PROJJSON/);
 });
+
+test("IAU_2015 planetary coordinates match the full GDAL registry oracle", () => {
+  const reference = JSON.parse(readFileSync(new URL("../../crates/terrio-crs/tests/data/iau_reference.json", import.meta.url)));
+  for (const c of reference.cases) {
+    const source = `IAU_2015:${c.base}`, target = `IAU_2015:${c.code}`;
+    const result = terrio.transformPoints(c.points.map(p => p[0]), c.points.map(p => p[1]), source, target);
+    for (let i = 0; i < c.points.length; i++) {
+      for (let axis = 0; axis < 2; axis++) assert.ok(Math.abs(result[axis][i] - c.forward[i][axis]) <= 0.001, `${target} forward ${i}/${axis}`);
+      if (c.inverse[i] === null) continue; // Native tests cover domain refusals/recovery.
+      const inverse = terrio.transformPoints([c.forward[i][0]], [c.forward[i][1]], target, source);
+      for (let axis = 0; axis < 2; axis++) {
+        let delta = inverse[axis][0] - c.inverse[i][axis];
+        if (axis === c.longitude_axis) delta = ((delta + 180) % 360 + 360) % 360 - 180;
+        assert.ok(Math.abs(delta) <= 1e-8, `${target} inverse ${i}/${axis}: ${delta}`);
+      }
+    }
+  }
+  for (const c of reference.extras) {
+    const result = terrio.transformPoints(c.points.map(p => p[0]), c.points.map(p => p[1]), c.source, c.target);
+    const inverse = terrio.transformPoints(c.forward.map(p => p[0]), c.forward.map(p => p[1]), c.target, c.source);
+    for (let i = 0; i < c.points.length; i++) for (let axis = 0; axis < 2; axis++) {
+      assert.ok(Math.abs(result[axis][i] - c.forward[i][axis]) * c.metres_per_unit <= 0.001, c.name);
+      assert.ok(Math.abs(inverse[axis][i] - c.inverse[i][axis]) <= 1e-8, c.name);
+    }
+  }
+  assert.deepEqual(terrio.describeCrs("IAU:2015:49900").authority, ["IAU_2015", 49900]);
+  assert.equal(terrio.describeCrs("IAU_2015:49900").epsg, null);
+  assert.throws(() => terrio.describeCrs("IAU:2020:49900"), /IAU/);
+  assert.throws(() => terrio.transformPoints([0], [0], "IAU_2015:49900", "EPSG:4326"), /celestial body/);
+});
+
+
+test("IAU strict datum selection", () => {
+  assert.throws(() => terrio.transformPoints([45], [-10], "IAU_2015:49900", "IAU_2015:49901", undefined, { allowBallpark: false }), /ALLOW_BALLPARK/);
+  const result = terrio.transformPoints([45], [-10], "IAU_2015:49901", "IAU_2015:49902", undefined, { allowBallpark: false });
+  assert.ok(Math.abs(result[0][0] - 10) < 1e-8);
+  assert.ok(Math.abs(result[1][0] - 44.6617680466192) < 1e-8);
+});

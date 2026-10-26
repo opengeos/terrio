@@ -1,7 +1,7 @@
 # terrio-crs
 
 Coordinate reference systems and transformations, extracted from Terrio.
-The crate includes EPSG and ESRI definitions, WKT/PROJ parsing, the documented PROJJSON v0.7 subset, datum operation
+The crate includes EPSG, ESRI and IAU_2015 definitions, WKT/PROJ parsing, the documented PROJJSON v0.7 subset, datum operation
 selection, coordinate epochs, and local or in-memory datum grids. Coordinates
 use traditional GIS order: longitude/easting, then latitude/northing.
 
@@ -33,7 +33,7 @@ Terrio enables `wbprojection-fallback` to retain its existing projection coverag
 A method requiring the feature returns an error naming the feature when it is
 disabled. Canonical authority references, including versioned EPSG URNs/URLs, use the same
 parser in both configurations. Permissive legacy authority fragments remain a
-fallback feature. Both configurations include the same EPSG/ESRI tables, native datum
+fallback feature. Both configurations include the same EPSG/ESRI/IAU tables, native datum
 operations and local grid readers. Table decompression uses `ruzstd` on all
 targets. TIFF grid codecs retain their existing features, including native Zstd;
 the default crate does not claim a dependency graph free of C codecs.

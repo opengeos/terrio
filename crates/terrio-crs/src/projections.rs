@@ -795,7 +795,7 @@ impl Proj for Laea {
                 ab = if self.mode == Mode::SPole { -a } else { a };
             }
         }
-        Some((x.atan2(y), authlat(aasin(ab), &self.apa)))
+        Some((x.atan2(y), authlat_inverse(aasin(ab), &self.apa, self.e, self.one_es, self.qp)))
     }
 }
 
@@ -1803,7 +1803,7 @@ impl Proj for Cea {
             let phi = if t >= 1.0 { if y < 0.0 { -HALFPI } else { HALFPI } } else { y.asin() };
             return Some((x / self.k0, phi));
         }
-        Some((x / self.k0, authlat(aasin(2.0 * y * self.k0 / self.qp), &self.apa)))
+        Some((x / self.k0, authlat_inverse(aasin(2.0 * y * self.k0 / self.qp), &self.apa, self.e, self.one_es, self.qp)))
     }
 }
 
@@ -1875,7 +1875,7 @@ impl Proj for EqEarth {
         let psi6 = psi2 * psi2 * psi2;
         let lam = m * x * (EE_A1 + 3.0 * EE_A2 * psi2 + psi6 * (7.0 * EE_A3 + 9.0 * EE_A4 * psi2)) / psi.cos();
         let beta = aasin(psi.sin() / m);
-        let phi = if self.es != 0.0 { authlat(beta, &self.apa) } else { beta };
+        let phi = if self.es != 0.0 { authlat_inverse(beta, &self.apa, self.e, 1.0 - self.es, self.qp) } else { beta };
         Some((lam, phi))
     }
 }

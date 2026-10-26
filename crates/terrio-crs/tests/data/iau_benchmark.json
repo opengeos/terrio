@@ -1,0 +1,116 @@
+{
+  "source": {
+    "repository": "https://github.com/mdsumner/rust-proj-capability",
+    "revision": "ddd9fac70ec370acd9651ebb8b46035207347ad5",
+    "path": "suites/crs/crs.json"
+  },
+  "environment": {
+    "schema_version": 1,
+    "generated": "2026-10-15T23:26:19+00:00",
+    "proj_version": "9.9.0",
+    "projinfo_banner": "Rel. 9.9.0, September 15th, 2026",
+    "pyproj_version": "3.8.0",
+    "proj_data": "/work/.proj-nogrids",
+    "proj_data_files": [
+      "CH",
+      "GL27",
+      "ITRF2000",
+      "ITRF2008",
+      "ITRF2014",
+      "ITRF2020",
+      "deformation_model.schema.json",
+      "nad.lst",
+      "nad27",
+      "nad83",
+      "other.extra",
+      "proj.db",
+      "proj.ini",
+      "projjson.schema.json",
+      "triangulation.schema.json",
+      "world"
+    ],
+    "grid_files_present": [],
+    "network_enabled": false,
+    "epsg_version": "v13.102",
+    "epsg_date": "2026-08-27",
+    "esri_version": "ArcGIS Pro 3.6",
+    "grid_configuration": "no proj-data grids (proj.db, proj.ini and init files only), network off",
+    "axis_order": "always_xy=True: oracle normalised for visualisation (east, north)"
+  },
+  "fixture": {
+    "id": "pair-mars-iau",
+    "group": "pair",
+    "src": "IAU_2015:49900",
+    "dst": "IAU_2015:49910",
+    "form": "authority",
+    "point": [
+      137.4,
+      -4.6
+    ],
+    "layers": [
+      "I1"
+    ],
+    "note": "Mars sphere ocentric to equirectangular",
+    "src_ref": "IAU_2015:49900",
+    "dst_ref": "IAU_2015:49910",
+    "oracle": {
+      "resolved": true,
+      "src_name": "Mars (2015) - Sphere / Ocentric",
+      "dst_name": "Mars (2015) - Sphere / Ocentric / Equirectangular, clon = 0",
+      "src_kind": "geographic",
+      "dst_kind": "projected",
+      "src_unit": "degree",
+      "src_unit_factor": 0.017453292519943295,
+      "dst_unit": "metre",
+      "dst_unit_factor": 1.0,
+      "src_export": {
+        "proj": "+proj=longlat +R=3396190 +no_defs +type=crs",
+        "proj_error": null,
+        "proj_bound": "+proj=longlat +R=3396190 +no_defs +type=crs",
+        "proj_bound_error": null,
+        "wkt1_gdal_bound": "GEOGCS[\"Mars (2015) - Sphere / Ocentric\",DATUM[\"Mars (2015) - Sphere\",SPHEROID[\"Mars (2015) - Sphere\",3396190,0,AUTHORITY[\"IAU\",\"49900\"]],AUTHORITY[\"IAU\",\"49900\"]],PRIMEM[\"Reference Meridian\",0,AUTHORITY[\"IAU\",\"49900\"]],UNIT[\"degree\",0.0174532925199433,AUTHORITY[\"EPSG\",\"9122\"]],AUTHORITY[\"IAU\",\"49900\"]]"
+      },
+      "dst_export": {
+        "proj": "+proj=eqc +lat_ts=0 +lat_0=0 +lon_0=0 +x_0=0 +y_0=0 +R=3396190 +units=m +no_defs +type=crs",
+        "proj_error": null,
+        "proj_bound": "+proj=eqc +lat_ts=0 +lat_0=0 +lon_0=0 +x_0=0 +y_0=0 +R=3396190 +units=m +no_defs +type=crs",
+        "proj_bound_error": null,
+        "wkt1_gdal_bound": "PROJCS[\"Mars (2015) - Sphere / Ocentric / Equirectangular, clon = 0\",GEOGCS[\"Mars (2015) - Sphere / Ocentric\",DATUM[\"Mars (2015) - Sphere\",SPHEROID[\"Mars (2015) - Sphere\",3396190,0,AUTHORITY[\"IAU\",\"49900\"]],AUTHORITY[\"IAU\",\"49900\"]],PRIMEM[\"Reference Meridian\",0,AUTHORITY[\"IAU\",\"49900\"]],UNIT[\"degree\",0.0174532925199433,AUTHORITY[\"EPSG\",\"9122\"]],AUTHORITY[\"IAU\",\"49900\"]],PROJECTION[\"Equirectangular\"],PARAMETER[\"standard_parallel_1\",0],PARAMETER[\"central_meridian\",0],PARAMETER[\"false_easting\",0],PARAMETER[\"false_northing\",0],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH],AUTHORITY[\"IAU\",\"49910\"]]"
+      },
+      "point": [
+        137.4,
+        -4.6
+      ],
+      "candidates": [
+        {
+          "name": "Equirectangular, clon = 0 (with axis order normalized for visualization)",
+          "accuracy": -1.0,
+          "available": true
+        }
+      ],
+      "best_available": true,
+      "transformer": "Equirectangular, clon = 0 (with axis order normalized for visualization)",
+      "executed": true,
+      "fwd": [
+        8144343.439702274,
+        -272663.6086072086
+      ],
+      "op": {
+        "name": "Equirectangular, clon = 0 (with axis order normalized for visualization)",
+        "accuracy": -1.0,
+        "ballpark": false,
+        "proj": "+proj=pipeline +step +proj=unitconvert +xy_in=deg +xy_out=rad +step +proj=eqc +lat_ts=0 +lat_0=0 +lon_0=0 +x_0=0 +y_0=0 +R=3396190"
+      },
+      "inv": [
+        137.39999999999998,
+        -4.6
+      ],
+      "inv_op": {
+        "name": "Equirectangular, clon = 0 (with axis order normalized for visualization)",
+        "accuracy": -1.0,
+        "ballpark": false,
+        "proj": "+proj=pipeline +step +proj=unitconvert +xy_in=deg +xy_out=rad +step +proj=eqc +lat_ts=0 +lat_0=0 +lon_0=0 +x_0=0 +y_0=0 +R=3396190"
+      }
+    }
+  }
+}

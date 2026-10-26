@@ -216,60 +216,69 @@ pub(crate) fn phi2(ts: f64, e: f64) -> f64 {
     sinhpsi2tanphi((1.0 / ts - ts) / 2.0, e).atan()
 }
 
-/// Coefficients of the meridian distance (PROJ's `pj_enfn`).
+/// PROJ 9.8.1's meridian distance and inverse, to order six in third flattening.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Mlfn {
-    en: [f64; 5],
-    es: f64,
+    radius: f64,
+    forward: [f64; 6],
+    inverse: [f64; 6],
 }
 
 impl Mlfn {
     pub fn new(es: f64) -> Self {
-        const C00: f64 = 1.0;
-        const C02: f64 = 0.25;
-        const C04: f64 = 0.046875;
-        const C06: f64 = 0.01953125;
-        const C08: f64 = 0.01068115234375;
-        const C22: f64 = 0.75;
-        const C44: f64 = 0.46875;
-        const C46: f64 = 0.01302083333333333333;
-        const C48: f64 = 0.00712076822916666666;
-        const C66: f64 = 0.36458333333333333333;
-        const C68: f64 = 0.00569661458333333333;
-        const C88: f64 = 0.3076171875;
-        let mut en = [0.0; 5];
-        en[0] = C00 - es * (C02 + es * (C04 + es * (C06 + es * C08)));
-        en[1] = es * (C22 - es * (C04 + es * (C06 + es * C08)));
-        let mut t = es * es;
-        en[2] = t * (C44 - es * (C46 + es * C48));
-        t *= es;
-        en[3] = t * (C66 - es * C68);
-        en[4] = t * es * C88;
-        Self { en, es }
-    }
-
-    /// The meridian distance from the equator to φ, for a semi-major axis of 1.
-    pub fn mlfn(&self, phi: f64, sphi: f64, cphi: f64) -> f64 {
-        let en = &self.en;
-        let cs = cphi * sphi;
-        let s2 = sphi * sphi;
-        en[0] * phi - cs * (en[1] + s2 * (en[2] + s2 * (en[3] + s2 * en[4])))
-    }
-
-    /// The latitude at a meridian distance.
-    pub fn inv(&self, arg: f64) -> f64 {
-        let k = 1.0 / (1.0 - self.es);
-        let mut phi = arg;
-        for _ in 0..10 {
-            let s = phi.sin();
-            let t = 1.0 - self.es * s * s;
-            let d = (self.mlfn(phi, s, phi.cos()) - arg) * (t * t.sqrt()) * k;
-            phi -= d;
-            if d.abs() < 1e-11 {
-                return phi;
+        // C[mu,phi] and C[phi,mu], even powers only within each row.
+        const FORWARD: [f64; 12] = [
+            -3.0 / 2.0,
+            9.0 / 16.0,
+            -3.0 / 32.0,
+            15.0 / 16.0,
+            -15.0 / 32.0,
+            135.0 / 2048.0,
+            -35.0 / 48.0,
+            105.0 / 256.0,
+            315.0 / 512.0,
+            -189.0 / 512.0,
+            -693.0 / 1280.0,
+            1001.0 / 2048.0,
+        ];
+        const INVERSE: [f64; 12] = [
+            3.0 / 2.0,
+            -27.0 / 32.0,
+            269.0 / 512.0,
+            21.0 / 16.0,
+            -55.0 / 32.0,
+            6759.0 / 4096.0,
+            151.0 / 96.0,
+            -417.0 / 128.0,
+            1097.0 / 512.0,
+            -15543.0 / 2560.0,
+            8011.0 / 2560.0,
+            293393.0 / 61440.0,
+        ];
+        let b = (1.0 - es).sqrt();
+        let n = (1.0 - b) / (1.0 + b);
+        let n2 = n * n;
+        let coefficients = |table: &[f64; 12]| {
+            let mut result = [0.0; 6];
+            let (mut offset, mut power) = (0, n);
+            for (i, value) in result.iter_mut().enumerate() {
+                let width = (5 - i) / 2 + 1;
+                *value = power * table[offset..offset + width].iter().rev().fold(0.0, |y, c| y * n2 + c);
+                offset += width;
+                power *= n;
             }
-        }
-        phi
+            result
+        };
+        let radius = (((1.0 / 256.0 * n2 + 1.0 / 64.0) * n2 + 1.0 / 4.0) * n2 + 1.0) / (1.0 + n);
+        Self { radius, forward: coefficients(&FORWARD), inverse: coefficients(&INVERSE) }
+    }
+
+    pub fn mlfn(&self, phi: f64, sphi: f64, cphi: f64) -> f64 {
+        self.radius * (phi + auxlat_sum(sphi, cphi, &self.forward))
+    }
+
+    pub fn inv(&self, arg: f64) -> f64 {
+        authlat(arg / self.radius, &self.inverse)
     }
 }
 
@@ -319,6 +328,10 @@ pub(crate) fn authset(es: f64) -> [f64; 6] {
 /// about 1/50).
 pub(crate) fn authlat(beta: f64, apa: &[f64; 6]) -> f64 {
     let (s, c) = beta.sin_cos();
+    beta + auxlat_sum(s, c, apa)
+}
+
+fn auxlat_sum(s: f64, c: f64, apa: &[f64; 6]) -> f64 {
     let x = 2.0 * (c - s) * (c + s);
     let (mut u0, mut u1) = (0.0, 0.0);
     for a in apa.iter().rev() {
@@ -326,7 +339,30 @@ pub(crate) fn authlat(beta: f64, apa: &[f64; 6]) -> f64 {
         u1 = u0;
         u0 = t;
     }
-    beta + 2.0 * s * c * u0
+    2.0 * s * c * u0
+}
+
+/// PROJ 9.8.1's inverse authalic latitude: refine the Fourier estimate when
+/// |n| >= 0.01, where the series alone is insufficient for planetary ellipsoids.
+pub(crate) fn authlat_inverse(beta: f64, apa: &[f64; 6], e: f64, one_es: f64, qp: f64) -> f64 {
+    let mut phi = authlat(beta, apa);
+    let b = one_es.sqrt();
+    let n = (1.0 - b) / (1.0 + b);
+    if n.abs() < 0.01 {
+        return phi;
+    }
+    let es = 1.0 - one_es;
+    let q_div_one_es = beta.sin() * qp / one_es;
+    for _ in 0..10 {
+        let (sinphi, cosphi) = phi.sin_cos();
+        let t = 1.0 - es * (sinphi * sinphi);
+        let delta = t * t / (2.0 * cosphi) * (q_div_one_es - sinphi / t - (e * sinphi).atanh() / e);
+        if !matches!(delta.abs().partial_cmp(&1e-15), Some(std::cmp::Ordering::Greater | std::cmp::Ordering::Equal)) {
+            break;
+        }
+        phi += delta;
+    }
+    phi
 }
 
 /// π/4, for the formulas below.

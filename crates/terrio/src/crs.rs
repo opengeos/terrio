@@ -1,7 +1,8 @@
 //! Coordinate reference systems and transformations between them.
 //!
-//! Coordinates are always in traditional GIS order: x/easting/longitude first, then
-//! y/northing/latitude, whatever axis order the CRS's authority defines.
+//! Coordinates follow GDAL's traditional GIS order. East/north geographic axes are
+//! normalized to longitude/latitude; west-positive planetary systems retain their
+//! declared axis order and directions.
 //!
 //! ```no_run
 //! use terrio::crs::{SpatialRef, Transformer};
@@ -100,6 +101,11 @@ impl SpatialRef {
         initialize();
         terrio_crs::SpatialRef::from_esri(code).map(Into::into).map_err(Into::into)
     }
+    /// A geographic or projected CRS from the versioned IAU_2015 registry.
+    pub fn from_iau(code: u32) -> Result<Self> {
+        initialize();
+        terrio_crs::SpatialRef::from_iau(code).map(Into::into).map_err(Into::into)
+    }
     /// A compound CRS from the EPSG codes of a horizontal and a vertical CRS, as GDAL builds
     /// `EPSG:4326+5773`.
     pub fn compound(horizontal: u32, vertical: u32) -> Result<Self> {
@@ -134,7 +140,7 @@ impl SpatialRef {
         self.as_core().is_unknown()
     }
     /// The authority and code of the CRS: `("EPSG", 4326)`, or `("ESRI", 54009)` for a CRS of
-    /// PROJ's ESRI authority.
+    /// PROJ's ESRI authority; IAU codes use `("IAU_2015", code)`.
     pub fn authority(&self) -> Option<(&'static str, u32)> {
         self.as_core().authority()
     }

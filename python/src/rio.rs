@@ -252,6 +252,7 @@ fn crs_info<'py>(py: Python<'py>, crs: &str) -> PyResult<Bound<'py, PyDict>> {
     let d = PyDict::new(py);
     d.set_item("epsg", s.epsg)?;
     d.set_item("esri", s.esri)?;
+    d.set_item("authority", s.authority())?;
     d.set_item("wkt", s.to_wkt())?;
     d.set_item("proj4", s.proj4.clone())?;
     d.set_item("name", s.name())?;

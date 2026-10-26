@@ -4,7 +4,7 @@ use terrio::crs::{SpatialRef, TransformOptions, Transformer};
 
 #[derive(clap::Args)]
 pub struct Args {
-    /// The CRS: `EPSG:4326`, `EPSG:4326+5773` (a compound CRS), WKT, PROJJSON, a PROJ string, or a file
+    /// The CRS: `EPSG:4326`, `IAU_2015:49900`, `EPSG:4326+5773` (compound), WKT, PROJJSON, PROJ, or a file
     /// holding one.
     crs: String,
     /// Print the WKT definition.
