@@ -106,7 +106,7 @@ pub fn color_bands(ds: &RasterDataset, alpha_or_mask: bool) -> usize {
 pub fn keep_alpha_or_mask(o: &mut NearblackOptions, ds: &RasterDataset, has_mask: bool) {
     let (alpha, mask) = (o.set_alpha, o.set_mask);
     o.set_alpha = alpha || (!mask && is_alpha(ds, ds.band_count()));
-    o.set_mask = mask || (!alpha && has_mask);
+    o.set_mask = mask || (!alpha && !o.set_alpha && has_mask);
 }
 
 /// The result of [`nearblack`]: the Byte raster and, with `set_mask`, its per-dataset mask (0 in
@@ -580,6 +580,7 @@ pub fn nearblack_file(input: &str, o: &NearblackOptions, write: &crate::RasterWr
     Ok(())
 }
 
+/// In-place native file updates are unavailable in WebAssembly.
 #[cfg(target_family = "wasm")]
 pub fn nearblack_file(_input: &str, _o: &NearblackOptions, _write: &crate::RasterWriteOptions) -> Result<()> {
     Err(Error::Unsupported("in-place file updates are unavailable in WebAssembly".into()))
@@ -651,6 +652,22 @@ mod tests {
         assert_eq!(parse_color("1,2,3", 3).unwrap(), vec![1, 2, 3]);
         assert!(parse_color("1,a", 2).is_err());
     }
+    #[test]
+    fn existing_alpha_takes_precedence_over_existing_mask() {
+        let grid = Grid { width: 1, height: 1, geo_transform: [0., 1., 0., 1., 0., -1.] };
+        let mut ds = super::super::build_raster_data(grid, RasterData::U8(vec![0, 0, 0, 255]), 4, None, &Default::default()).unwrap();
+        ds.band_metadata.resize_with(4, Default::default);
+        ds.band_metadata[3].color_interp = Some("Alpha".into());
+        let mut o = NearblackOptions::default();
+        keep_alpha_or_mask(&mut o, &ds, true);
+        assert!(o.set_alpha);
+        assert!(!o.set_mask);
+        o = NearblackOptions { set_mask: true, ..Default::default() };
+        keep_alpha_or_mask(&mut o, &ds, true);
+        assert!(!o.set_alpha);
+        assert!(o.set_mask);
+    }
+
     #[test]
     fn alpha_and_mask_are_exclusive_for_both_core_paths() {
         let mut ds = image(2, 2, &[0; 4]);

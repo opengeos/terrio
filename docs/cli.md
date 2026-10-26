@@ -753,7 +753,6 @@ value of their largest neighbour. The band's nodata pixels are left out unless `
 
 ## neighbors
 
-A 1×1 unnormalized VRT kernel is applied once, matching GDAL 3.13.3 (coefficient 2 maps sample 3 to 6).
 
 ```sh
 terrio neighbors INPUT OUTPUT --kernel KERNEL [--kernel ...] [--method METHOD ...] [--size N]
@@ -1026,6 +1025,7 @@ normal warper. Custom `INIT_DEST` values are also unsupported.
 `log10`, `dB`, `dB2amp`, `dB2pow`, `pow` and `exp`, with numeric arguments,
 source transfer types and applicable nodata behavior. Complex-valued derived
 buffers, external pixel functions and expression languages are unsupported.
+
 A 1×1 unnormalized VRT kernel is applied once, matching GDAL 3.13.3
 (coefficient 2 maps sample 3 to 6).
 

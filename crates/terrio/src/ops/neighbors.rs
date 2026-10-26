@@ -323,8 +323,8 @@ pub(crate) fn filter(input: &[f32], width: usize, height: usize, k: &Kernel, nod
                                 // too, merged by adding 0) share a count, and the first to
                                 // exceed the best wins.
                                 let n = if v.is_nan() {
-                                    // NaNs never compare equal in the original counter.
-                                    1
+                                    // Preserve the VRT counter: NaNs compare equal to no sample.
+                                    0
                                 } else {
                                     let count = counts.entry((v + 0.0).to_bits()).or_insert(0);
                                     *count += 1;
@@ -637,6 +637,20 @@ mod tests {
         let out = filter(&[1., 1., f32::NAN, f32::NAN, f32::NAN, 2., 3., 4., 5.], 3, 3, &k, None);
         assert_eq!(out[4], 1.0);
     }
+    #[test]
+    fn vrt_mode_ignores_leading_nan_without_nodata() {
+        let out = filter(&[f32::NAN, 2., 3., 4., 5., 6., 7., 8., 9.], 3, 3, &kernel(vec![1.; 9], true, Some(NeighborMethod::Mode)), None);
+        assert_eq!(out[4], 2.);
+    }
+
+    #[test]
+    fn named_zero_sum_mean_matches_gdal_acceptance() {
+        for name in ["u", "v", "edge1", "edge2"] {
+            let o = NeighborsOptions { kernels: vec![name.into()], methods: vec![NeighborMethod::Mean], ..Default::default() };
+            assert!(kernels(&o).is_ok());
+        }
+    }
+
     #[test]
     fn shared_mean_method_rejects_zero_sum_matrix() {
         let mut options = NeighborsOptions {
