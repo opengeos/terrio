@@ -270,7 +270,7 @@ impl Node {
             return Err(Error::Unsupported(format!("'{input}': this virtual file system is not supported")));
         }
         Ok(match crate::vfs::Location::parse_unarchived(input) {
-            crate::vfs::Location::Local(p) => Node::Local(p),
+            crate::vfs::Location::Local(p) => Node::Local(p.components().collect()),
             crate::vfs::Location::S3 { bucket, key } => {
                 if bucket.is_empty() {
                     return Err(Error::InvalidArgument(format!("'{input}': no bucket")));
@@ -1438,6 +1438,7 @@ fn copy_tree(src: &Node, dst: &Node, skip_errors: bool, sync: Option<(&SyncOptio
             Vec::new()
         }
     };
+    let target_index: std::collections::HashMap<_, _> = target_entries.iter().map(|e| (e.name.as_str(), e)).collect();
     for e in &entries {
         let from = src.join(&e.name);
         if let Node::Local(path) = &from
@@ -1454,7 +1455,7 @@ fn copy_tree(src: &Node, dst: &Node, skip_errors: bool, sync: Option<(&SyncOptio
         let to = archive_target(dst, &e.name)?;
         if e.is_dir() {
             // Already there (a sync's target).
-            if target_entries.iter().any(|t| t.is_dir() && t.name == e.name) {
+            if target_index.get(e.name.as_str()).is_some_and(|t| t.is_dir()) {
                 continue;
             }
             if let Err(err) = make_dir(&to) {
@@ -1466,7 +1467,7 @@ fn copy_tree(src: &Node, dst: &Node, skip_errors: bool, sync: Option<(&SyncOptio
             continue;
         }
         if let Some((options, _)) = sync {
-            let target = target_entries.iter().find(|t| t.name == e.name && !t.is_dir());
+            let target = target_index.get(e.name.as_str()).filter(|t| !t.is_dir());
             if let Some(t) = target
                 && up_to_date(&from, e, &to, t, options.strategy)?
             {

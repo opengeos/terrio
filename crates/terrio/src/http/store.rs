@@ -67,6 +67,7 @@ fn list_pages(dir: &Directory, recursive: bool, max: Option<u32>) -> Result<Opti
         return Ok(None);
     }
     let mut out: Vec<ObjectEntry> = Vec::new();
+    let mut index = Default::default();
     let mut token: Option<String> = None;
     for page in 0..MAX_PAGES {
         let body = match &api {
@@ -95,13 +96,13 @@ fn list_pages(dir: &Directory, recursive: bool, max: Option<u32>) -> Result<Opti
                 None => return Ok(None),
             },
         };
-        let next = api.read_page(&body, &mut out);
+        let next = api.read_page(&body, &mut out, &mut index);
         if max.is_some() {
             break;
         }
         match next {
             Some(_) if page + 1 == MAX_PAGES => {
-                crate::warnings::warn(format!("listing stopped after {MAX_PAGES} pages ({} entries)", out.len()));
+                return Err(Error::InvalidData(format!("object listing exceeds {MAX_PAGES} pages; refusing an incomplete operation")));
             }
             Some(t) => token = Some(t),
             None => break,
@@ -153,7 +154,7 @@ pub(crate) fn list_html(url: &str) -> Result<Option<Vec<ObjectEntry>>> {
         return Ok(None);
     }
     let mut out = Vec::new();
-    api.read_page(&data, &mut out);
+    api.read_page(&data, &mut out, &mut Default::default());
     Ok(Some(out))
 }
 

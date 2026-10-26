@@ -8,6 +8,9 @@
 
 use super::{Entry, EntryKind};
 use crate::{Error, Result};
+use std::collections::HashMap;
+
+type EntryIndex = HashMap<(String, bool), usize>;
 
 /// An entry of a remote listing.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -156,7 +159,7 @@ impl Api {
     }
 
     /// Reads one listing page into `out`; returns the continuation token, if there are more.
-    pub(crate) fn read_page(&self, body: &[u8], out: &mut Vec<ObjectEntry>) -> Option<String> {
+    pub(crate) fn read_page(&self, body: &[u8], out: &mut Vec<ObjectEntry>, index: &mut EntryIndex) -> Option<String> {
         let body = body.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(body);
         let xml = String::from_utf8_lossy(body);
         match self {
@@ -165,11 +168,11 @@ impl Api {
                 None
             }
             Api::Azure { prefix, .. } => {
-                parse_listing_page(&xml, prefix, true, out);
+                parse_listing_page_indexed(&xml, prefix, true, out, index);
                 xml_elements(&xml, "NextMarker").first().map(|t| xml_unescape(t)).filter(|t| !t.is_empty())
             }
             Api::S3 { prefix, .. } | Api::Url { prefix, .. } => {
-                parse_listing_page(&xml, prefix, false, out);
+                parse_listing_page_indexed(&xml, prefix, false, out, index);
                 if xml_elements(&xml, "IsTruncated").first().is_some_and(|t| t.trim() == "true") {
                     xml_elements(&xml, "NextContinuationToken").first().map(|t| xml_unescape(t)).filter(|t| !t.is_empty())
                 } else {
@@ -217,13 +220,19 @@ pub(crate) fn xml_unescape(s: &str) -> String {
 /// Adds the entries of one listing page (S3 `ListObjectsV2`, GCS's XML API, or Azure's List
 /// Blobs) to `out`: names relative to `prefix`, common prefixes as directories, keys ending with
 /// `/` (directory markers) as directories with a size, so that deleting a tree deletes them too.
+#[cfg(test)]
 pub(crate) fn parse_listing_page(xml: &str, prefix: &str, azure: bool, out: &mut Vec<ObjectEntry>) {
+    let mut index = out.iter().enumerate().map(|(i, e)| ((e.name.clone(), e.dir), i)).collect();
+    parse_listing_page_indexed(xml, prefix, azure, out, &mut index);
+}
+
+fn parse_listing_page_indexed(xml: &str, prefix: &str, azure: bool, out: &mut Vec<ObjectEntry>, index: &mut EntryIndex) {
     let (group, name) = if azure { ("BlobPrefix", "Name") } else { ("CommonPrefixes", "Prefix") };
     for block in xml_elements(xml, group) {
         if let Some(p) = xml_elements(block, name).first()
             && let Some(child) = xml_unescape(p).strip_prefix(prefix)
         {
-            push_entry(out, child, true, None, None, None);
+            push_entry(out, index, child, true, None, None, None);
         }
     }
     let (group, key, size, modified, etag) = if azure {
@@ -239,21 +248,31 @@ pub(crate) fn parse_listing_page(xml: &str, prefix: &str, azure: bool, out: &mut
         let modified = field(modified).and_then(|m| if azure { parse_http_date(&m) } else { parse_iso8601(&m) });
         let etag = field(etag).map(|e| e.trim_matches('"').to_string());
         let size = field(size).and_then(|s| s.trim().parse().ok());
-        push_entry(out, child, dir, size, modified, if dir { None } else { etag });
+        push_entry(out, index, child, dir, size, modified, if dir { None } else { etag });
     }
 }
 
-fn push_entry(out: &mut Vec<ObjectEntry>, child: &str, dir: bool, size: Option<u64>, modified: Option<i64>, etag: Option<String>) {
+fn push_entry(
+    out: &mut Vec<ObjectEntry>,
+    index: &mut EntryIndex,
+    child: &str,
+    dir: bool,
+    size: Option<u64>,
+    modified: Option<i64>,
+    etag: Option<String>,
+) {
     let child = child.trim_end_matches('/');
     if child.is_empty() {
         return;
     }
-    if let Some(e) = out.iter_mut().find(|o| o.name == child && o.dir == dir) {
-        e.modified = e.modified.or(modified);
-        e.size = e.size.or(size);
-        return;
+    let key = (child.to_string(), dir);
+    if let Some(&i) = index.get(&key) {
+        out[i].modified = out[i].modified.or(modified);
+        out[i].size = out[i].size.or(size);
+    } else {
+        index.insert(key, out.len());
+        out.push(ObjectEntry { name: child.to_string(), dir, size, modified, etag });
     }
-    out.push(ObjectEntry { name: child.to_string(), dir, size, modified, etag });
 }
 
 /// Adds the directories implied by the names of a recursive listing (`a/b/c` implies `a` and `a/b`).
@@ -268,8 +287,9 @@ pub(crate) fn add_implied_directories(out: &mut Vec<ObjectEntry>) {
     }
     dirs.sort();
     dirs.dedup();
+    let existing: std::collections::HashSet<_> = out.iter().filter(|o| o.dir).map(|o| o.name.clone()).collect();
     for d in dirs {
-        if !out.iter().any(|o| o.dir && o.name == d) {
+        if !existing.contains(&d) {
             out.push(ObjectEntry { name: d, dir: true, size: None, modified: None, etag: None });
         }
     }
@@ -281,6 +301,7 @@ pub(crate) fn parse_html_index(html: &str, dir_path: &str) -> Vec<ObjectEntry> {
     let dir_path = format!("{}/", dir_path.trim_end_matches('/'));
     let lower = html.to_ascii_lowercase();
     let mut out: Vec<ObjectEntry> = Vec::new();
+    let mut index = EntryIndex::new();
     let mut at = 0;
     while let Some(i) = lower[at..].find("href=") {
         let start = at + i + 5;
@@ -316,7 +337,7 @@ pub(crate) fn parse_html_index(html: &str, dir_path: &str) -> Vec<ObjectEntry> {
         if name.is_empty() || name.contains('/') {
             continue;
         }
-        push_entry(&mut out, name, dir, None, None, None);
+        push_entry(&mut out, &mut index, name, dir, None, None, None);
     }
     out
 }
@@ -365,6 +386,7 @@ pub struct RemoteLister {
     token: Option<String>,
     pages: usize,
     out: Vec<ObjectEntry>,
+    index: EntryIndex,
     /// HTML index pages still to read: `(directory URL, path relative to the root, level)`.
     html_pending: Vec<(String, String, usize)>,
     /// The page being read: `(relative path, level)`.
@@ -397,7 +419,18 @@ impl RemoteLister {
             Api::Html { url } => vec![(url.clone(), String::new(), 1)],
             _ => Vec::new(),
         };
-        Ok(Self { api, recursive, max_depth, token: None, pages: 0, out: Vec::new(), html_pending, html_current: None, done: false })
+        Ok(Self {
+            api,
+            recursive,
+            max_depth,
+            token: None,
+            pages: 0,
+            out: Vec::new(),
+            index: EntryIndex::new(),
+            html_pending,
+            html_current: None,
+            done: false,
+        })
     }
 
     /// The URL to fetch next (a `GET`), or `None` when the listing is complete.
@@ -436,7 +469,7 @@ impl RemoteLister {
             self.done = self.html_pending.is_empty() || self.pages >= MAX_PAGES;
             return Ok(());
         }
-        self.token = self.api.read_page(body, &mut self.out);
+        self.token = self.api.read_page(body, &mut self.out, &mut self.index);
         self.done = self.token.is_none() || self.pages >= MAX_PAGES;
         Ok(())
     }
@@ -456,6 +489,18 @@ impl RemoteLister {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn repeated_keys_across_pages_merge_metadata() {
+        let api = Api::for_url("https://storage.googleapis.com/bucket/p");
+        let mut out = Vec::new();
+        let mut index = EntryIndex::new();
+        api.read_page(b"<ListBucketResult><CommonPrefixes><Prefix>p/a/</Prefix></CommonPrefixes></ListBucketResult>", &mut out, &mut index);
+        api.read_page(b"<ListBucketResult><Contents><Key>p/a/</Key><Size>0</Size><LastModified>2024-01-01T00:00:00Z</LastModified></Contents></ListBucketResult>", &mut out, &mut index);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].size, Some(0));
+        assert!(out[0].modified.is_some());
+    }
 
     #[test]
     fn parses_s3_and_azure_pages() {

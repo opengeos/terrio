@@ -484,3 +484,20 @@ fn copying_directory_links_reports_an_error() {
     let result = copy(&s(&source), &s(&tmp.path().join("skip")), &CopyOptions { recursive: true, skip_errors: true }).unwrap();
     assert_eq!(result.errors.len(), 1);
 }
+
+#[cfg(unix)]
+#[test]
+fn deleting_a_directory_symlink_with_a_trailing_slash_preserves_its_target() {
+    use std::os::unix::fs::symlink;
+    let tmp = tempfile::tempdir().unwrap();
+    let target = tmp.path().join("target");
+    fs::create_dir(&target).unwrap();
+    fs::write(target.join("keep.txt"), "keep").unwrap();
+    for suffix in ["/", "/."] {
+        let link = tmp.path().join("link");
+        symlink(&target, &link).unwrap();
+        delete(&(s(&link) + suffix), true).unwrap();
+        assert!(!link.exists());
+        assert_eq!(fs::read(target.join("keep.txt")).unwrap(), b"keep");
+    }
+}

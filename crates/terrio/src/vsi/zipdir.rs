@@ -156,6 +156,13 @@ pub(crate) fn central_directory(r: &mut dyn ReadSeek) -> Result<Vec<CdEntry>> {
         out.push(CdEntry { name, flags, method, dos_time, dos_date, crc32, compressed_size, uncompressed_size, local_offset });
         i = end;
     }
+    if out.len() as u64 != count {
+        return Err(invalid("central directory entry count mismatch"));
+    }
+    // The only permitted trailing directory record is the optional digital signature.
+    if i < cd.len() && !(cd.len() - i >= 6 && u32_at(&cd, i) == 0x0505_4b50 && i + 6 + u16_at(&cd, i + 4) as usize == cd.len()) {
+        return Err(invalid("corrupt central directory record"));
+    }
     Ok(out)
 }
 
@@ -247,6 +254,11 @@ mod tests {
         out.clear();
         assert!(extract(&mut r, &short, &mut out).is_err());
         assert!(out.len() <= 3);
+        // A central directory that advertises omitted entries is refused.
+        let mut bad_directory = r.get_ref().clone();
+        let end_record = bad_directory.windows(4).rposition(|w| w == EOCD.to_le_bytes()).unwrap();
+        bad_directory[end_record + 10..end_record + 12].copy_from_slice(&5u16.to_le_bytes());
+        assert!(central_directory(&mut std::io::Cursor::new(bad_directory)).is_err());
         // A corrupt byte is detected.
         let mut bytes = r.into_inner();
         let at = data_offset(&mut std::io::Cursor::new(&bytes), &cd[2]).unwrap() as usize;
