@@ -5,6 +5,11 @@
 #
 # Usage: scripts/fetch_test_data.sh [DIR]
 set -euo pipefail
+# Public data hosts can fail transiently. Retry the request, without restarting
+# the build or disabling a validation check. Preserve explicit GDAL overrides.
+export GDAL_HTTP_MAX_RETRY="${GDAL_HTTP_MAX_RETRY:-3}"
+export GDAL_HTTP_RETRY_DELAY="${GDAL_HTTP_RETRY_DELAY:-2}"
+curl() { command curl --retry 3 --retry-delay 2 --retry-connrefused "$@"; }
 here="$(cd "$(dirname "$0")" && pwd)"
 dir="${1:-$here/../../terrio-data}"
 mkdir -p "$dir"
