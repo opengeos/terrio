@@ -1416,7 +1416,7 @@ def suite_vector_geom(ctx):
         "gdal vector, OGR and GEOS",
         "Tennessee and US counties, Las Vegas roads and Natural Earth countries and places: "
         "simplify, segmentize, swap-xy and set-geom-type against gdal vector, coordinate by "
-        "coordinate; convex and concave hulls against OGR/GEOS by their edges (relative "
+        "coordinate; convex hulls by canonical WKB, concave hulls against OGR/GEOS by their edges (relative "
         "symmetric-difference area <= 0.2 where erosion order differs); combine and sort "
         "against GDAL 3.13's algorithms (GEOS's STR tree, GDAL's Hilbert code), ties aside.",
     )

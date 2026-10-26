@@ -719,7 +719,5 @@ def main():
     }
     (args.json or work / "report.json").write_text(json.dumps(report, indent=2) + "\n")
 
-
-
 if __name__ == "__main__":
     main()

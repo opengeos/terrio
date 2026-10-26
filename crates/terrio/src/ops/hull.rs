@@ -663,7 +663,7 @@ fn region_boundary(pts: &[P], coords: &[Coord], faces: &[[usize; 3]]) -> Geometr
             used.insert((a, b));
             ring.push(b);
             if b == a0 && ring.len() > 1 {
-                // Closed, unless another unused edge leaves the start along this sector.
+                // Close here; unused edges at a pinch vertex form separate loops later.
                 break;
             }
             let back = angle(b, a);
@@ -706,6 +706,7 @@ fn region_boundary(pts: &[P], coords: &[Coord], faces: &[[usize; 3]]) -> Geometr
             holes.push(r);
         }
     }
+    let shell_xy: Vec<Vec<P>> = shells.iter().map(|(s, _, _)| ring_xy(&s[..s.len() - 1])).collect();
     for h in holes {
         // A point just inside the hole: the midpoint of an edge, moved to its right side.
         let (p, q) = (pts[h[0]], pts[h[1]]);
@@ -713,7 +714,7 @@ fn region_boundary(pts: &[P], coords: &[Coord], faces: &[[usize; 3]]) -> Geometr
         let owner = shells
             .iter()
             .enumerate()
-            .filter(|(_, (s, _, _))| inside_rings(probe, std::slice::from_ref(&ring_xy(&s[..s.len() - 1]))))
+            .filter(|(i, _)| inside_rings(probe, std::slice::from_ref(&shell_xy[*i])))
             .min_by(|a, b| a.1.1.total_cmp(&b.1.1))
             .map(|(i, _)| i);
         if let Some(i) = owner {
@@ -739,9 +740,10 @@ fn hole_probe(p: P, q: P, ring: &[P]) -> P {
     let (dx, dy) = (q.0 - p.0, q.1 - p.1);
     let len = (dx * dx + dy * dy).sqrt();
     let mut eps = len * 1e-6;
+    let ring = ring.to_vec();
     for _ in 0..30 {
         let c = (m.0 + dy / len * eps, m.1 - dx / len * eps);
-        if inside_rings(c, std::slice::from_ref(&ring.to_vec())) {
+        if inside_rings(c, std::slice::from_ref(&ring)) {
             return c;
         }
         eps /= 4.0;

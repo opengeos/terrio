@@ -1679,6 +1679,9 @@ pub fn convert(src: &str, dst: &str, options: &ConvertOptions) -> Result<()> {
     let driver = output_driver(dst, options);
     let chunk = options.chunk_size.max(1);
     let mut readers = open_layers(src, &options.open, chunk)?;
+    if options.translate.layer_name.is_some() && readers.len() > 1 {
+        return Err(Error::InvalidArgument("a new layer name needs a single input layer: choose one".into()));
+    }
     match readers.len() {
         0 => return Err(Error::InvalidArgument("no layers to write".into())),
         1 => {}

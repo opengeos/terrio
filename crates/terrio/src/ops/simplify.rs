@@ -508,44 +508,74 @@ pub fn segmentize(g: &Geometry, max_length: f64) -> Result<Geometry> {
     if max_length.is_nan() || max_length <= 0.0 || !max_length.is_finite() {
         return Err(Error::InvalidArgument("the maximum segment length must be a positive number".into()));
     }
-    let line = |cs: &[Coord]| segmentize_line(cs, max_length);
-    // Rings are closed first: drivers may omit the closing point, whose segment OGR divides too.
-    let ring = |r: &Ring| -> Result<Ring> { Ok(open_ring(line(&closed_ring(&r.0))?)) };
+    segmentize_budget(g, max_length, &mut { MAX_SEGMENTIZED_POINTS })
+}
+
+fn segmentize_ring(r: &Ring, max_length: f64, remaining: &mut usize) -> Result<Ring> {
+    if r.0.len() > *remaining {
+        return Err(Error::InvalidArgument("too many points in a segmentized feature".into()));
+    }
+    Ok(open_ring(segmentize_line(&closed_ring(&r.0), max_length, remaining)?))
+}
+
+fn segmentize_budget(g: &Geometry, max_length: f64, remaining: &mut usize) -> Result<Geometry> {
     Ok(match g {
-        Geometry::Point(_) | Geometry::MultiPoint(_) => g.clone(),
-        Geometry::LineString(cs) => Geometry::LineString(line(cs)?),
-        Geometry::MultiLineString(ls) => Geometry::MultiLineString(ls.iter().map(|l| line(l)).collect::<Result<_>>()?),
-        Geometry::Polygon { exterior, interiors } => {
-            Geometry::Polygon { exterior: ring(exterior)?, interiors: interiors.iter().map(ring).collect::<Result<_>>()? }
+        Geometry::Point(_) | Geometry::MultiPoint(_) => {
+            let n = match g {
+                Geometry::MultiPoint(cs) => cs.len(),
+                _ => 1,
+            };
+            *remaining =
+                remaining.checked_sub(n).ok_or_else(|| Error::InvalidArgument("too many points in a segmentized feature".into()))?;
+            g.clone()
         }
+        Geometry::LineString(cs) => Geometry::LineString(segmentize_line(cs, max_length, remaining)?),
+        Geometry::MultiLineString(ls) => {
+            Geometry::MultiLineString(ls.iter().map(|l| segmentize_line(l, max_length, remaining)).collect::<Result<_>>()?)
+        }
+        Geometry::Polygon { exterior, interiors } => Geometry::Polygon {
+            exterior: segmentize_ring(exterior, max_length, remaining)?,
+            interiors: interiors.iter().map(|r| segmentize_ring(r, max_length, remaining)).collect::<Result<_>>()?,
+        },
         Geometry::MultiPolygon(ps) => Geometry::MultiPolygon(
-            ps.iter().map(|(e, h)| Ok((ring(e)?, h.iter().map(ring).collect::<Result<_>>()?))).collect::<Result<_>>()?,
+            ps.iter()
+                .map(|(e, hs)| {
+                    Ok((
+                        segmentize_ring(e, max_length, remaining)?,
+                        hs.iter().map(|h| segmentize_ring(h, max_length, remaining)).collect::<Result<_>>()?,
+                    ))
+                })
+                .collect::<Result<_>>()?,
         ),
         Geometry::GeometryCollection(gs) => {
-            Geometry::GeometryCollection(gs.iter().map(|g| segmentize(g, max_length)).collect::<Result<_>>()?)
+            Geometry::GeometryCollection(gs.iter().map(|g| segmentize_budget(g, max_length, remaining)).collect::<Result<_>>()?)
         }
     })
 }
 
-/// The most vertices a segmentized line may have.
+/// The most vertices a segmentized feature may have, including all components.
 const MAX_SEGMENTIZED_POINTS: usize = 10_000_000;
 
-fn segmentize_line(cs: &[Coord], max_length: f64) -> Result<Vec<Coord>> {
+fn segmentize_line(cs: &[Coord], max_length: f64, remaining: &mut usize) -> Result<Vec<Coord>> {
     let n = cs.len();
+    if n > *remaining {
+        return Err(Error::InvalidArgument("too many points in a segmentized feature".into()));
+    }
     if n < 2 {
+        *remaining -= n;
         return Ok(cs.to_vec());
     }
     let (first, last) = (&cs[0], &cs[n - 1]);
     if first.x < last.x || (first.x == last.x && first.y < last.y) {
         let reversed: Vec<Coord> = cs.iter().rev().cloned().collect();
-        let mut out = segmentize_line_forward(&reversed, max_length)?;
+        let mut out = segmentize_line_forward(&reversed, max_length, remaining)?;
         out.reverse();
         return Ok(out);
     }
-    segmentize_line_forward(cs, max_length)
+    segmentize_line_forward(cs, max_length, remaining)
 }
 
-fn segmentize_line_forward(cs: &[Coord], max_length: f64) -> Result<Vec<Coord>> {
+fn segmentize_line_forward(cs: &[Coord], max_length: f64, remaining: &mut usize) -> Result<Vec<Coord>> {
     const REL_EPSILON_LENGTH_SQUARE: f64 = 1e-5;
     const REL_EPSILON_ROUND: f64 = 1e-2;
     let square_max = max_length * max_length;
@@ -565,11 +595,12 @@ fn segmentize_line_forward(cs: &[Coord], max_length: f64) -> Result<Vec<Coord>> 
     let mut total = cs.len();
     for w in cs.windows(2) {
         total = total.saturating_add(intermediate(&w[0], &w[1]).2);
-        if total > MAX_SEGMENTIZED_POINTS {
+        if total > *remaining {
             return Err(Error::InvalidArgument("too many points in a segmentized line".into()));
         }
     }
     let mut out = Vec::new();
+    *remaining -= total;
     out.try_reserve_exact(total).map_err(|_| Error::InvalidArgument("cannot allocate segmentized line".into()))?;
     for (i, a) in cs.iter().enumerate() {
         out.push(a.clone());
@@ -658,6 +689,8 @@ mod tests {
     }
     #[test]
     fn refuses_singleton_lines_like_geos_and_excessive_densification() {
+        let many = Geometry::MultiLineString(vec![line(&[(0., 0.), (10., 0.)]), line(&[(0., 0.), (10., 0.)])]);
+        assert!(segmentize_budget(&many, 3., &mut 9).unwrap_err().to_string().contains("too many points"));
         let singleton = Geometry::LineString(vec![Coord::xy(1., 2.)]);
         assert!(simplify_preserve_topology(&singleton, 1.).is_err());
         let source = Geometry::LineString(vec![Coord::xy(0., 0.), Coord::xy(10., 0.)]);

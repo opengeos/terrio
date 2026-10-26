@@ -89,8 +89,7 @@ impl GeometryTypeSpec {
 
     /// The type and dimensions of a geometry.
     pub fn of(g: &Geometry) -> Self {
-        let cs = g.all_coords();
-        Self { base: Some(g.geom_type()), z: cs.iter().any(|c| c.z.is_some()), m: cs.iter().any(|c| c.m.is_some()) }
+        Self { base: Some(g.geom_type()), z: any_coord(g, &|c| c.z.is_some()), m: any_coord(g, &|c| c.m.is_some()) }
     }
 
     fn flat(base: GeometryType) -> Self {
@@ -334,8 +333,20 @@ pub fn apply(layer: &Layer, op: &GeometryOp) -> Result<Layer> {
     Ok(out)
 }
 
+fn any_coord(g: &Geometry, predicate: &impl Fn(&Coord) -> bool) -> bool {
+    let ring = |r: &Ring| r.0.iter().any(predicate);
+    match g {
+        Geometry::Point(c) => predicate(c),
+        Geometry::LineString(cs) | Geometry::MultiPoint(cs) => cs.iter().any(predicate),
+        Geometry::MultiLineString(ls) => ls.iter().any(|cs| cs.iter().any(predicate)),
+        Geometry::Polygon { exterior, interiors } => ring(exterior) || interiors.iter().any(ring),
+        Geometry::MultiPolygon(ps) => ps.iter().any(|(e, holes)| ring(e) || holes.iter().any(ring)),
+        Geometry::GeometryCollection(gs) => gs.iter().any(|g| any_coord(g, predicate)),
+    }
+}
+
 fn is_empty(g: &Geometry) -> bool {
-    g.all_coords().is_empty()
+    !any_coord(g, &|_| true)
 }
 
 fn map_coords(g: Geometry, f: &impl Fn(Coord) -> Coord) -> Geometry {
@@ -467,8 +478,14 @@ pub fn force_to(g: Geometry, target: GeometryTypeSpec) -> Geometry {
 }
 
 fn single_member(g: &Geometry) -> Option<Geometry> {
-    let ms = members(g.clone());
-    if ms.len() == 1 { ms.into_iter().next() } else { None }
+    let count = match g {
+        Geometry::MultiPoint(cs) => cs.len(),
+        Geometry::MultiLineString(ls) => ls.len(),
+        Geometry::MultiPolygon(ps) => ps.len(),
+        Geometry::GeometryCollection(gs) => gs.len(),
+        _ => 1,
+    };
+    (count == 1).then(|| members(g.clone()).remove(0))
 }
 
 fn closed(r: Ring) -> Vec<Coord> {
@@ -1072,6 +1089,8 @@ mod tests {
 
     #[test]
     fn combines_groups() {
+        assert!(combine(&Layer::new("empty"), &Default::default()).unwrap().is_empty());
+
         let l = layer(&[("b", Some(square(0.0))), ("a", Some(square(2.0))), ("a", Some(square(4.0))), ("c", None)]);
         let all = combine(&l, &Default::default()).unwrap();
         assert_eq!(all.features.len(), 1);

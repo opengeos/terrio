@@ -302,3 +302,18 @@ fn standalone_simplify_propagates_errors_on_streamed_and_whole_layer_paths() {
     ok(&["convert", "singleton.geojson", "converted.geojson", "--simplify", "1"], d);
     assert_eq!(first(&d.join("converted.geojson")).features[0].geometry.as_ref().unwrap().all_coords().len(), 1);
 }
+
+#[test]
+fn streamed_geometry_commands_refuse_one_name_for_multiple_layers() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("multiple.gpkg");
+    let mut a = terrio::Layer::new("a");
+    a.push(terrio::Feature { fid: 1, geometry: Some(terrio::Geometry::point(0., 0.)), attributes: vec![] });
+    let mut b = a.clone();
+    b.name = "b".into();
+    terrio::write_vector(&[a, b], source.to_str().unwrap(), &Default::default()).unwrap();
+    let output = run(&["simplify", "multiple.gpkg", "output.gpkg", "--tolerance", "1", "--nln", "same"], dir.path());
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("single input layer"));
+    assert!(!dir.path().join("output.gpkg").exists());
+}

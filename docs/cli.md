@@ -212,7 +212,7 @@ and `--linear` changes nothing. terrio's writers store no M values (they remain 
 JavaScript layers), and the declared Z/M of a layer follows its geometries.
 
 `combine` collects each group's geometries into one feature: without `--group-by` the whole
-layer, otherwise one feature per combination of the fields' values (repeat or comma-separate).
+layer (an empty layer produces no features, as in GDAL), otherwise one feature per combination of the fields' values (repeat or comma-separate).
 Groups are ordered by their values as OGR formats them as text, nulls as empty text, as GDAL
 orders them. Output fields are the grouping fields; `--add-extra-fields sometimes-identical`
 also copies the fields identical within at least one group (null for the groups where they
@@ -997,3 +997,9 @@ point tie points and rotated affine transforms, without moving pixel corners.
 Writing a PixelIsPoint GeoTIFF requires a CRS. A write with an unknown CRS is
 rejected before creating the file, avoiding a half-pixel origin shift without
 a corresponding raster-type GeoKey.
+
+
+Segmentization allows at most ten million output vertices per feature across its
+lines, rings and collection members. It checks each component against the remaining
+budget before allocating its output. This limit does not cap a whole layer's total
+output; reduce the streaming chunk size when processing many densely expanded features.
