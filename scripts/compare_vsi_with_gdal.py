@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""``terrio vsi`` against ``gdal vsi`` (GDAL 3.12+) on real files.
+"""``terrio vsi`` against ``gdal vsi`` (GDAL 3.12 or later; the reference is 3.13.3) on real files.
 
 Listings (``-lR -f json``) of the test data directory, of real zip archives, of a Zarr store
 and of tar archives made from it; trees copied, extracted and synchronized by both tools;
@@ -113,7 +113,7 @@ def compare_listing(
         dates: Whether to compare file dates.
         env: Extra environment variables.
         extra: Extra options for both tools.
-        object_store: GDAL (3.12.2 and 3.13.0) lists only the objects of an object store recursively, not the
+        object_store: GDAL (3.12.2 to 3.13.3) lists only the objects of an object store recursively, not the
             directories their keys imply (which terrio lists, as for local directories): compare
             the files, and check that terrio's directories are those the files imply.
     """

@@ -850,7 +850,7 @@ copy a directory into itself.
 `-q` prints nothing, `--json` prints what was done (`copied`, `bytes`, `unchanged`, `deleted`,
 `errors`), `--stats` the HTTP requests and bytes received.
 
-Differences from GDAL (checked with 3.12.2 and 3.13.0): entries are sorted (GDAL prints local directories in the order
+Differences from GDAL (checked with 3.13.3): entries are sorted (GDAL prints local directories in the order
 the file system returns them); dates are UTC (a zip member's date is its stored DOS time, as
 GDAL prints it); HTTP index names stay percent-encoded, as GDAL keeps them. Not supported:
 `sync -j/--num-threads` (requests are sequential), multipart uploads (objects over 5 GiB), Azure
