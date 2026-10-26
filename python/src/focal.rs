@@ -119,10 +119,11 @@ fn collar(
     if color_threshold < 0 || pixel_distance < 0 {
         return Err(invalid("color_threshold and pixel_distance must not be negative"));
     }
-    let has_mask = match raster_path(src)? {
-        Some(path) => py.detach(|| terrio::open_raster_lazy(&path)).py()?.has_mask(),
-        None => src.cast::<PyRaster>().map_err(|_| invalid("expected a path or a terrio.Raster"))?.borrow().inner.has_mask(),
-    };
+    let has_mask = keep
+        && match raster_path(src)? {
+            Some(path) => py.detach(|| terrio::open_raster_lazy(&path)).py()?.has_mask(),
+            None => src.cast::<PyRaster>().map_err(|_| invalid("expected a path or a terrio.Raster"))?.borrow().inner.has_mask(),
+        };
     let ds = input_raster(py, src)?;
     let bands = terrio::ops::nearblack::color_bands(&ds, add_alpha || add_mask || keep);
     let colors = match colors {

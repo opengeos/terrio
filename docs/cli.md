@@ -796,8 +796,9 @@ white, with `--white`), as GDAL's `gdal raster clean-collar` and `nearblack` do.
 `--color-threshold` (`-near`, 15) of a color in every non-alpha band are collar pixels; the
 search inwards goes past up to `--pixel-distance` (`-nb`, 2) non-collar pixels. `--add-alpha`
 adds an alpha band (transparent in the collar) and `--add-mask` a per-dataset mask (GeoTIFF:
-internal). `clean-collar` runs a flood fill from the edges by default and keeps an input's alpha
-band or mask; `nearblack` runs nearblack's two passes (top-down then bottom-up, each scanning
+internal). `clean-collar` runs a flood fill from the edges by default and retains the input's
+alpha/mask representation; requested or retained mask processing regenerates mask values
+from the collar rather than intersecting them with the old mask. `nearblack` runs nearblack's two passes (top-down then bottom-up, each scanning
 lines from both sides) by default and adds alpha or masks only when asked. Both algorithms are
 ports of GDAL's, in GDAL's scan order, and agree pixel for pixel with GDAL on the real
 Sentinel-2 and Landsat 7 comparisons. Output is a new Byte raster with the input's
@@ -822,6 +823,8 @@ non-Byte samples across the image are rounded/clamped to 0–255 before being wr
 back to the original data type. Terrio emits a warning for these inputs.
 For RGBA sources, `nearblack --color black` compares four bands unless `--add-alpha`
 or `--add-mask` selects alpha/mask processing; `clean-collar` keeps existing alpha.
+With mask processing on RGBA, new-file output drops the alpha band, while in-place
+output retains it, matching GDAL 3.13.3.
 
 ## enhance
 
