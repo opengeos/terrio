@@ -1253,7 +1253,6 @@ fn is_within(inner: &Node, outer: &Node) -> bool {
 /// as given), as `gdal vsi list` does.
 pub fn list(path: &str, options: &ListOptions) -> Result<Vec<Entry>> {
     let _cache = HtmlCacheScope::new();
-    forget_html_page();
     let node = Node::parse(path)?;
     let stat = stat_node(&node)?.ok_or_else(|| not_found(path))?;
     if !stat.dir {
@@ -1378,7 +1377,7 @@ fn archive_target(root: &Node, name: &str) -> Result<Node> {
     }
     let target = root.join(name);
     if let (Node::Local(root), Node::Local(path)) = (root, &target) {
-        let root = std::fs::canonicalize(root)?;
+        let root = std::fs::canonicalize(root).map_err(|error| io_context(error, &root.display().to_string()))?;
         let mut existing = path.as_path();
         loop {
             match std::fs::symlink_metadata(existing) {

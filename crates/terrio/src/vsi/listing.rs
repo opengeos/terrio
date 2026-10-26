@@ -404,7 +404,7 @@ pub(crate) fn parse_http_date(v: &str) -> Option<i64> {
     let (d, y): (i64, i64) = (day.parse().ok()?, year.parse().ok()?);
     let t: Vec<i64> = time.split(':').map(|x| x.parse().ok()).collect::<Option<_>>()?;
     let [h, mi, sec] = t[..] else { return None };
-    Some(crate::civil_time::unix_seconds(y, m, d, h, mi, sec))
+    crate::civil_time::checked_unix_seconds(y, m, d, h, mi, sec)
 }
 
 /// A listing of a remote directory driven by the caller, who sends the requests (with `fetch` in
@@ -656,5 +656,17 @@ mod tests {
         assert_eq!(parse_iso8601("1970-01-01T00:00:00Z"), Some(0));
         assert_eq!(parse_http_date("Thu, 01 Jan 1970 00:01:00 GMT"), Some(60));
         assert_eq!(parse_iso8601("garbage"), None);
+        for value in [
+            "Mon, 99999999999999 Jan 2024 01:00:00 GMT",
+            "Mon, 01 Jan 9223372036854775807 01:00:00 GMT",
+            "Mon, 01 Jan 2024 9223372036854775807:00:00 GMT",
+            "Mon, 31 Feb 2024 01:00:00 GMT",
+            "Mon, 29 Feb 2023 01:00:00 GMT",
+            "Mon, 01 Jan 2024 24:00:00 GMT",
+            "Mon, 01 Jan 2024 01:60:00 GMT",
+        ] {
+            assert_eq!(parse_http_date(value), None, "{value}");
+        }
+        assert!(parse_http_date("Thu, 29 Feb 2024 01:00:00 GMT").is_some());
     }
 }

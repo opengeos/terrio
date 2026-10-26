@@ -858,6 +858,10 @@ entries before copying. Keep the source unchanged during a copy-delete move.
 Recursive extraction and copy reject parent traversal, Windows drive-style child
 names (on all platforms for portable paths), and symlinks escaping the output root. Tar and tar.gz copies and sync stream payloads in one pass after discovery. ZIP
 central directories are indexed once per operation with a bounded read buffer.
+Local file writes sync the temporary file before renaming it into place; many small files
+therefore pay one file sync each. Containment checks resolve the root and existing target
+ancestors per entry, retaining current filesystem-state checks at that cost. File sync does
+not include a directory sync and is not a complete power-loss durability guarantee.
 Tar listings expose regular files and directories; copying a tar link or other unsupported
 entry fails, or records an error with `--skip-errors`. Untimed memory targets are compared
 by content during sync. Local atomic writes follow destination

@@ -501,6 +501,17 @@ fn tar_member_metadata_stops_early_and_plain_reads_seek_over_payloads() {
 }
 
 #[test]
+fn missing_copy_destination_directory_is_named() {
+    let tmp = tempfile::tempdir().unwrap();
+    let source = tmp.path().join("source.txt");
+    fs::write(&source, b"source").unwrap();
+    let target = format!("{}/missing-output-directory/", tmp.path().display());
+    let error = copy(&s(&source), &target, &CopyOptions::default()).unwrap_err();
+    assert!(error.to_string().contains("missing-output-directory"));
+    assert_eq!(fs::read(&source).unwrap(), b"source");
+}
+
+#[test]
 fn archive_copy_refuses_parent_traversal() {
     let tmp = tempfile::tempdir().unwrap();
     let path = tmp.path().join("unsafe.zip");

@@ -549,7 +549,7 @@ fn retry_after_seconds(v: &str) -> Option<u64> {
 
 /// The seconds from now to a UTC date and time; `None` when it is past.
 pub(crate) fn seconds_until_utc(y: i64, m: i64, d: i64, h: i64, mi: i64, s: i64) -> Option<u64> {
-    let at = crate::civil_time::unix_seconds(y, m, d, h, mi, s);
+    let at = crate::civil_time::checked_unix_seconds(y, m, d, h, mi, s)?;
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).ok()?.as_secs() as i64;
     u64::try_from(at - now).ok()
 }
