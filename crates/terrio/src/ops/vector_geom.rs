@@ -236,6 +236,15 @@ pub enum GeometryOp {
 }
 
 impl GeometryOp {
+    /// ogr2ogr option precedence: positive simplify first, then positive segmentize.
+    pub fn from_ogr2ogr(simplify: Option<f64>, segmentize: Option<f64>) -> Option<Self> {
+        match (simplify, segmentize) {
+            (Some(tolerance), _) if tolerance > 0. => Some(Self::Simplify { tolerance }),
+            (_, Some(max_length)) if max_length > 0. => Some(Self::Segmentize { max_length }),
+            _ => None,
+        }
+    }
+
     /// Checks the operation's parameters.
     pub fn validate(&self) -> Result<()> {
         match self {
@@ -759,6 +768,7 @@ pub fn combine(layer: &Layer, options: &CombineOptions) -> Result<Layer> {
         first: usize,
         parts: Vec<Geometry>,
         identical: Vec<bool>,
+        values: Vec<String>,
     }
     let typed = layer.geom_type.filter(|t| !is_collection(*t)).map(promote);
     let mut out_type = typed.unwrap_or(GeometryType::GeometryCollection);
@@ -766,10 +776,14 @@ pub fn combine(layer: &Layer, options: &CombineOptions) -> Result<Layer> {
     let (mut has_z, mut has_m) = (false, false);
     for (k, f) in layer.features.iter().enumerate() {
         let key: Vec<String> = group_idx.iter().map(|&i| field_string(&value(f, i))).collect();
-        let group = groups.entry(key).or_insert_with(|| Group { first: k, parts: Vec::new(), identical: vec![true; candidates.len()] });
-        let first = &layer.features[group.first];
+        let group = groups.entry(key).or_insert_with(|| Group {
+            first: k,
+            parts: Vec::new(),
+            identical: vec![true; candidates.len()],
+            values: candidates.iter().map(|&i| field_string(&value(f, i))).collect(),
+        });
         for (c, &i) in candidates.iter().enumerate() {
-            if group.identical[c] && field_string(&value(f, i)) != field_string(&value(first, i)) {
+            if group.identical[c] && field_string(&value(f, i)) != group.values[c] {
                 group.identical[c] = false;
             }
         }
@@ -922,27 +936,46 @@ fn hilbert(x: u32, y: u32) -> u32 {
 /// The Hilbert code of `(x, y)` in the extent `(min_x, min_y, max_x, max_y)`.
 fn hilbert_code(extent: (f64, f64, f64, f64), x: f64, y: f64) -> u32 {
     const MAX: f64 = ((1u32 << 16) - 2) as f64;
-    let (w, h) = (extent.2 - extent.0, extent.3 - extent.1);
-    let hx = if w != 0.0 { (MAX * (x - extent.0) / w).round() as u32 } else { 0 };
-    let hy = if h != 0.0 { (MAX * (y - extent.1) / h).round() as u32 } else { 0 };
+    let axis = |min: f64, max: f64, value: f64| {
+        let width = max - min;
+        let fraction = if width == 0.0 {
+            0.0
+        } else if width.is_finite() {
+            (value - min) / width
+        } else {
+            (value / 2.0 - min / 2.0) / (max / 2.0 - min / 2.0)
+        };
+        (MAX * fraction.clamp(0.0, 1.0)).round() as u32
+    };
+    let hx = axis(extent.0, extent.2, x);
+    let hy = axis(extent.1, extent.3, y);
     hilbert(hx, hy)
 }
 
 /// Sorts the features of a layer by the position of their geometries, as `gdal vector sort`
-/// does. Features with null or empty geometries go last. Ties keep the input order (GDAL's
+/// does. Features with null, empty or non-finite bounding boxes go last. Ties keep the input order (GDAL's
 /// sort is not stable, so its order of ties may differ). Feature IDs are kept.
 pub fn sort(layer: &Layer, method: SortMethod) -> Layer {
-    let boxes: Vec<Option<(f64, f64, f64, f64)>> =
-        layer.features.iter().map(|f| f.geometry.as_ref().and_then(|g| g.bbox()).map(|b| (b.min_x, b.min_y, b.max_x, b.max_y))).collect();
+    let boxes: Vec<Option<(f64, f64, f64, f64)>> = layer
+        .features
+        .iter()
+        .map(|f| {
+            f.geometry
+                .as_ref()
+                .and_then(|g| g.bbox())
+                .map(|b| (b.min_x, b.min_y, b.max_x, b.max_y))
+                .filter(|b| [b.0, b.1, b.2, b.3].iter().all(|v| v.is_finite()))
+        })
+        .collect();
     let order: Vec<usize> = match method {
         SortMethod::Hilbert => {
             let extent = boxes.iter().flatten().fold((f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY), |e, b| {
                 (e.0.min(b.0), e.1.min(b.1), e.2.max(b.2), e.3.max(b.3))
             });
-            let codes: Vec<u32> =
-                boxes.iter().map(|b| b.map_or(u32::MAX, |b| hilbert_code(extent, (b.0 + b.2) / 2.0, (b.1 + b.3) / 2.0))).collect();
+            let codes: Vec<Option<u32>> =
+                boxes.iter().map(|b| b.map(|b| hilbert_code(extent, b.0 / 2.0 + b.2 / 2.0, b.1 / 2.0 + b.3 / 2.0))).collect();
             let mut order: Vec<usize> = (0..boxes.len()).collect();
-            order.sort_by_key(|&i| codes[i]);
+            order.sort_by_key(|&i| (codes[i].is_none(), codes[i]));
             order
         }
         SortMethod::StrTree => {
@@ -1138,6 +1171,15 @@ mod tests {
             (32767, 32767, 715827882),
         ] {
             assert_eq!(hilbert(x, y), code, "({x}, {y})");
+        }
+    }
+    #[test]
+    fn sorting_handles_non_finite_boxes_and_extreme_finite_extents() {
+        assert_eq!(hilbert_code((-f64::MAX, 0., f64::MAX, 1.), 0., 0.5), hilbert(32767, 32767));
+        let l = layer(&[("bad", Some(Geometry::point(f64::INFINITY, 1.))), ("valid", Some(Geometry::point(0., 0.))), ("null", None)]);
+        for method in [SortMethod::Hilbert, SortMethod::StrTree] {
+            let result = sort(&l, method);
+            assert_eq!(result.features[0].fid, 2);
         }
     }
 }

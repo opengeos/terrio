@@ -555,6 +555,8 @@ pub fn concave_hull_of_polygons(g: &Geometry, ratio: f64, tight: bool, allow_hol
         if let Some(adj) = t.tris[tri].adj[e] {
             queue.push(adj);
             if let Some(i) = t.index_of(adj, tri) {
+                // GEOS ConcaveHullOfPolygons::addBorderTri uses map::insert: retain
+                // the first exposed edge even if another neighbour is removed later.
                 border_edge.entry(adj).or_insert(i);
             }
         }
@@ -599,10 +601,12 @@ pub fn concave_hull_of_polygons(g: &Geometry, ratio: f64, tight: bool, allow_hol
     };
     erode(&mut t, &mut hull, &mut queue, &mut border_edge);
     if allow_holes {
+        let mut from = 0;
         loop {
-            let seed = (0..t.tris.len())
+            let seed = (from..t.tris.len())
                 .find(|&i| hull[i] && !t.is_border(i) && (0..3).any(|e| t.tris[i].adj[e].is_some() && t.length(i, e) > max_length));
             let Some(seed) = seed else { break };
+            from = seed + 1;
             for e in 0..3 {
                 add_border(&t, seed, e, &mut queue, &mut border_edge);
             }

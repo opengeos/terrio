@@ -137,11 +137,7 @@ impl VectorArgs {
     /// `--simplify` or `--segmentize`, which ogr2ogr ignores unless positive.
     fn geometry_op(&self) -> Option<terrio::ops::vector_geom::GeometryOp> {
         use terrio::ops::vector_geom::GeometryOp;
-        match (self.simplify, self.segmentize) {
-            (Some(tolerance), _) if tolerance > 0.0 => Some(GeometryOp::Simplify { tolerance }),
-            (_, Some(max_length)) if max_length > 0.0 => Some(GeometryOp::Segmentize { max_length }),
-            _ => None,
-        }
+        GeometryOp::from_ogr2ogr(self.simplify, self.segmentize)
     }
 
     /// How to treat an existing output.

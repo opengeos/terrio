@@ -437,11 +437,7 @@ fn convert(
         return Err(invalid("simplify and segmentize cannot be combined"));
     }
     // As ogr2ogr, values that are not positive leave the geometries unchanged.
-    let geometry_op = match (simplify, segmentize) {
-        (Some(tolerance), _) if tolerance > 0.0 => Some(GeometryOp::Simplify { tolerance }),
-        (_, Some(max_length)) if max_length > 0.0 => Some(GeometryOp::Segmentize { max_length }),
-        _ => None,
-    };
+    let geometry_op = GeometryOp::from_ogr2ogr(simplify, segmentize);
     let transform_options = TransformOptions::from_strict_options(&ct_opt.unwrap_or_default().into_iter().collect::<Vec<_>>()).py()?;
     let t_srs = srs(t_srs)?;
     let vector_options = VectorTranslateOptions {

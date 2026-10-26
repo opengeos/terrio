@@ -31,7 +31,7 @@ import shutil
 import subprocess
 import sys
 
-from osgeo import gdal, ogr, osr
+from osgeo import gdal, ogr
 
 gdal.UseExceptions()
 ogr.UseExceptions()
@@ -661,6 +661,18 @@ def main():
         options = ["--ratio", str(ratio)] + (["--tight"] if tight else []) + (["--allow-holes"] if holes else [])
         out = r.terrio_run(["concave-hull", paths["ne"], *options], name)
         expected = [geos.concave_hull_of_polygons(g, ratio, tight, holes) for g, _ in ne]
+        r.compare_hulls(name, [g for g, _ in load(out)], expected, 0.2)
+
+    # A notched shell exposes erosion triangles on two sides: GEOS keeps the first
+    # exposed edge in its map, rather than replacing it with the longest edge.
+    notch = ogr.CreateGeometryFromWkt("MULTIPOLYGON (((0 0,8 0,8 2,2 2,2 8,0 8,0 0)),((5 5,9 5,9 9,5 9,5 5)))")
+    notch_path = work / "notched-polygons.geojson"
+    notch_path.write_text(json.dumps({"type": "FeatureCollection", "features": [{"type": "Feature", "properties": {}, "geometry": json.loads(notch.ExportToJson())}]}))
+    for tight in [False, True]:
+        name = "concave-hull-notch" + ("-tight" if tight else "")
+        options = ["--ratio", "0.3"] + (["--tight"] if tight else [])
+        out = r.terrio_run(["concave-hull", str(notch_path), *options], name)
+        expected = [geos.concave_hull_of_polygons(notch, 0.3, tight, False)]
         r.compare_hulls(name, [g for g, _ in load(out)], expected, 0.2)
 
     # combine: groups ordered by their text values, parts added one by one.

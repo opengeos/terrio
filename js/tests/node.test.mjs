@@ -1549,39 +1549,6 @@ test("near-sided and tilted perspective projections match PROJ", () => {
   }
 });
 
-test("promoteTo3d transforms ellipsoidal heights of a 2D CRS", () => {
-  // GDAL 3.12.2 / PROJ 9.8.1, RD New to WGS 84 3D, without grids.
-  const args = [[85000], [447000], "EPSG:28992", "EPSG:4979", [0]];
-  const normal = terrio.transformPoints(...args);
-  const promoted = terrio.transformPoints(...args, { promoteTo3d: true });
-  assert.equal(normal[2][0], 0);
-  assert.ok(Math.abs(promoted[2][0] - 43.57639261614531) < 0.001);
-  assert.ok(Math.abs(promoted[0][0] - 4.367683424792349) < 1e-8);
-  assert.ok(Math.abs(promoted[1][0] - 52.006949098822965) < 1e-8);
-});
-
-test("promoteTo3d applies to vector toBytes and preserves 2D geometry", () => {
-  const source = terrio.fromGeoJSON({ type: "FeatureCollection", features: [
-    { type: "Feature", properties: {}, geometry: { type: "Point", coordinates: [85000, 447000, 0] } },
-    { type: "Feature", properties: {}, geometry: { type: "Point", coordinates: [85000, 447000, 100] } },
-    { type: "Feature", properties: {}, geometry: { type: "Point", coordinates: [85000, 447000] } },
-  ] }, "points", "EPSG:28992");
-  const convert = promoteTo3d => terrio.open(source.toBytes("points.geojson", {
-    tSrs: "EPSG:4979", promoteTo3d,
-  }), "points.geojson").toGeoJSON().features.map(feature => feature.geometry.coordinates);
-  assert.deepEqual(convert(false).map(point => point[2]), [0, 100, undefined]);
-  const promoted = convert(true);
-  for (const [index, height] of [[0, 43.57639261614531], [1, 143.576799856499]]) {
-    assert.ok(Math.abs(promoted[index][2] - height) < 0.001, `height ${index}: ${promoted[index][2]}`);
-  }
-  assert.equal(promoted[2].length, 2);
-});
-
-test("unterminated quoted PROJ values raise an error", () => {
-  assert.throws(() => terrio.transformPoints([10], [40], "EPSG:4326",
-    '+proj=tmerc +datum=WGS84 +title="abc +k=0.9996'), /unterminated quoted PROJ value/);
-});
-
 test("vector geometry operations: simplify, segmentize, hulls, swap-xy, set-geom-type, combine, sort", () => {
   const line = {
     type: "FeatureCollection",
@@ -1614,4 +1581,37 @@ test("vector geometry operations: simplify, segmentize, hulls, swap-xy, set-geom
   assert.equal(sorted.features[2].geometry, null);
   assert.throws(() => terrio.sort(line, { method: "nope" }), /sort method/);
   assert.throws(() => terrio.simplify(line, -1), /tolerance/);
+});
+
+test("promoteTo3d transforms ellipsoidal heights of a 2D CRS", () => {
+  // GDAL 3.12.2 / PROJ 9.8.1, RD New to WGS 84 3D, without grids.
+  const args = [[85000], [447000], "EPSG:28992", "EPSG:4979", [0]];
+  const normal = terrio.transformPoints(...args);
+  const promoted = terrio.transformPoints(...args, { promoteTo3d: true });
+  assert.equal(normal[2][0], 0);
+  assert.ok(Math.abs(promoted[2][0] - 43.57639261614531) < 0.001);
+  assert.ok(Math.abs(promoted[0][0] - 4.367683424792349) < 1e-8);
+  assert.ok(Math.abs(promoted[1][0] - 52.006949098822965) < 1e-8);
+});
+
+test("promoteTo3d applies to vector toBytes and preserves 2D geometry", () => {
+  const source = terrio.fromGeoJSON({ type: "FeatureCollection", features: [
+    { type: "Feature", properties: {}, geometry: { type: "Point", coordinates: [85000, 447000, 0] } },
+    { type: "Feature", properties: {}, geometry: { type: "Point", coordinates: [85000, 447000, 100] } },
+    { type: "Feature", properties: {}, geometry: { type: "Point", coordinates: [85000, 447000] } },
+  ] }, "points", "EPSG:28992");
+  const convert = promoteTo3d => terrio.open(source.toBytes("points.geojson", {
+    tSrs: "EPSG:4979", promoteTo3d,
+  }), "points.geojson").toGeoJSON().features.map(feature => feature.geometry.coordinates);
+  assert.deepEqual(convert(false).map(point => point[2]), [0, 100, undefined]);
+  const promoted = convert(true);
+  for (const [index, height] of [[0, 43.57639261614531], [1, 143.576799856499]]) {
+    assert.ok(Math.abs(promoted[index][2] - height) < 0.001, `height ${index}: ${promoted[index][2]}`);
+  }
+  assert.equal(promoted[2].length, 2);
+});
+
+test("unterminated quoted PROJ values raise an error", () => {
+  assert.throws(() => terrio.transformPoints([10], [40], "EPSG:4326",
+    '+proj=tmerc +datum=WGS84 +title="abc +k=0.9996'), /unterminated quoted PROJ value/);
 });

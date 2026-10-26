@@ -250,7 +250,7 @@ impl Simplifier {
             }
             match excluded {
                 Some((line, start, end)) if line == l => {
-                    let inside = if start <= end { k >= start && k < end } else { k >= start || k <= end };
+                    let inside = k >= start && k < end;
                     !inside
                 }
                 _ => true,
@@ -501,7 +501,7 @@ pub fn simplify_preserve_topology(g: &Geometry, tolerance: f64) -> Result<Geomet
 /// Adds vertices so that no segment is longer than `max_length`, as OGR's
 /// `OGRSimpleCurve::segmentize` does: a segment of length `L` gets `floor(L / max_length - 0.01)`
 /// evenly spaced intermediate points (none when `L² - max² <= 1e-5 max²`). Lines are processed
-/// from the end with the smaller X (then Y), so that a line and its reverse get the same points.
+/// from the end with the larger X (then Y), so that a line and its reverse get the same points.
 /// Intermediate points take the Z and M of the segment's start in that processing direction
 /// (OGR does not interpolate them). Points are unchanged.
 pub fn segmentize(g: &Geometry, max_length: f64) -> Result<Geometry> {
