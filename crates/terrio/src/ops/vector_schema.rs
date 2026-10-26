@@ -993,7 +993,11 @@ fn crs_from_json(v: &serde_json::Value) -> Result<Option<SpatialRef>> {
 /// Z and M (which an empty terrio layer cannot hold), and the FID column name.
 pub fn layer_from_schema(s: &SchemaLayer) -> Result<CreatedLayer> {
     let mut layer = Layer::new(s.name.clone());
-    for f in &s.fields {
+    // GDAL's schema/template creation traverses field definitions by name.
+    // Explicit --field construction retains the caller's order.
+    let mut fields: Vec<_> = s.fields.iter().collect();
+    fields.sort_by(|a, b| a.name.cmp(&b.name));
+    for f in fields {
         let name = f.name.as_deref().ok_or_else(|| Error::InvalidArgument(format!("layer '{}': a field has no name", s.name)))?;
         let t = OgrType::from_names(f.field_type.as_deref(), f.sub_type.as_deref())?
             .ok_or_else(|| Error::InvalidArgument(format!("field '{name}' has no type")))?;
@@ -1248,7 +1252,8 @@ mod tests {
         let created = layer_from_schema(&parsed.layers[0]).unwrap();
         assert_eq!(created.layer.geom_type, Some(GeometryType::Point));
         assert_eq!(created.layer.crs_epsg(), Some(4326));
-        assert_eq!(ogr_type(&created.layer, 1).field_type, OgrFieldType::Integer64);
+        assert_eq!(created.layer.schema.fields().iter().map(|f| f.name.as_str()).collect::<Vec<_>>(), ["n", "name", "ok"]);
+        assert_eq!(ogr_type(&created.layer, 0).field_type, OgrFieldType::Integer64);
         assert_eq!(created.layer.schema.fields()[2].field_type, FieldType::Boolean);
         assert_eq!(created.fid.as_deref(), Some("fid"));
     }

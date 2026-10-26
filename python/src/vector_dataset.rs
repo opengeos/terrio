@@ -165,6 +165,9 @@ fn partition(
     if overwrite && append {
         return Err(invalid("overwrite and append exclude each other"));
     }
+    if overwrite && let Some(input) = path_of(src) {
+        terrio::ops::partition::check_input_directory(&input, dst).py()?;
+    }
     let (ls, src_driver) = source(py, src, layers)?;
     let d = match driver(format)? {
         Some(d) => d,

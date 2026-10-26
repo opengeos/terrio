@@ -658,13 +658,6 @@ python scripts/conformance.py ../terrio-data --only lazy-geotiff --strict
 JavaScript exposure of these additional lazy-reader facts remains follow-up
 work; the existing bindings retain their behavior.
 
-## Release rehearsal
-
-The full release dry run is manual: select **Release dry run → Run workflow** in
-GitHub Actions before tagging a release. It builds the complete cross-platform
-wheel, CLI, installer and npm matrix without publishing. Pull requests retain the
-normal CI checks, including Python, WASM, API documentation and package validation.
-
 ## Vector dataset commands (#289)
 
 `concat`, `partition`, `set-field-type`, `make-point`, `create` and `export-schema` are GDAL
@@ -682,3 +675,19 @@ python scripts/conformance.py ../terrio-data --only vector-dataset --strict
 python -m pytest python/tests/test_vector_dataset.py
 node --test --test-name-pattern='vector dataset commands' js/tests/node.test.mjs
 ```
+
+## Release rehearsal
+
+The full release dry run is manual: select **Release dry run → Run workflow** in
+GitHub Actions before tagging a release. It builds the complete cross-platform
+wheel, CLI, installer and npm matrix without publishing. Pull requests retain the
+normal CI checks, including Python, WASM, API documentation and package validation.
+
+
+The vector-dataset comparison gives GDAL and Terrio the same installed PROJ grid
+paths, disables grid downloads, and isolates per-user grid caches. This avoids
+comparing results from different datum grids. Grid availability and network grid
+reads are validated separately by the coordinate transformation suites. Unicode
+rename fixtures are inventoried with SQLite and OGR's WKB parser: GDAL 3.13.3 can
+raise `Cannot find table` during GPKG introspection for these names even in its own
+outputs; table names, schema, attributes, CRS and geometries are still compared.

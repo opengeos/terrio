@@ -147,6 +147,9 @@ pub struct PartitionArgs {
 
 /// `terrio partition`: `gdal vector partition`.
 pub fn partition(a: PartitionArgs) -> Result<()> {
+    if a.overwrite {
+        terrio::ops::partition::check_input_directory(&a.input.input, &a.output)?;
+    }
     let ds = super::quiet(|| {
         terrio::open_vector(&a.input.input, &terrio::VectorOpenOptions { layers: a.input.layers.clone(), ..Default::default() })
     })?;

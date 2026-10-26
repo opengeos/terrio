@@ -361,6 +361,15 @@ pub fn partition(layers: &[Layer], o: &PartitionOptions, driver: VectorDriver) -
     Ok(out)
 }
 
+/// Refuses overwriting a partition directory that contains the input dataset.
+/// Call before partitioning a path source; in-memory sources have no path to protect.
+pub fn check_input_directory(input: &str, output: &str) -> Result<()> {
+    if std::fs::canonicalize(input).ok().zip(std::fs::canonicalize(output).ok()).is_some_and(|(input, output)| input.starts_with(output)) {
+        return Err(Error::InvalidArgument("partition output directory contains the input dataset".into()));
+    }
+    Ok(())
+}
+
 /// What to do with an existing output directory.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum PartitionWriteMode {

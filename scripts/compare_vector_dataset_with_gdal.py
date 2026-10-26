@@ -40,8 +40,9 @@ import shutil
 import sqlite3
 import subprocess
 import sys
+import tempfile
 
-from osgeo import gdal, ogr
+from osgeo import gdal, ogr, osr
 
 gdal.UseExceptions()
 ogr.UseExceptions()
@@ -566,6 +567,17 @@ def main():
     p.add_argument("--work-dir", type=Path)
     p.add_argument("--json", type=Path)
     args = p.parse_args()
+    # Both implementations must see the same installed datum grids. PROJ can
+    # otherwise fetch a high-accuracy grid while Terrio uses an older cached one,
+    # making a dataset-operation comparison measure unrelated grid availability.
+    grid_cache = tempfile.TemporaryDirectory(prefix="terrio-dataset-grids-")
+    common_paths = osr.GetPROJSearchPaths()
+    os.environ.update(PROJ_NETWORK="OFF", TERRIO_NETWORK="OFF",
+                      XDG_DATA_HOME=grid_cache.name, TERRIO_GRID_CACHE=grid_cache.name,
+                      TERRIO_GRID_DIR=os.pathsep.join(common_paths),
+                      PROJ_DATA=os.pathsep.join(common_paths), PROJ_LIB=os.pathsep.join(common_paths))
+    osr.SetPROJSearchPaths(common_paths)
+    osr.SetPROJEnableNetwork(False)
     data = args.data
     work = args.work_dir or data / "vector-dataset-validation"
     if work.exists():
@@ -619,7 +631,6 @@ def main():
         run(["gdal", "vector", "create", "--output-layer", "sites", "--geometry-type", "POINT", "--crs", "EPSG:32633",
              *sum((["--field", f] for f in fields), []), ref, "--overwrite"])
     else:
-        from osgeo import osr
 
         ds = ogr.GetDriverByName("GPKG").CreateDataSource(str(ref))
         srs = osr.SpatialReference()
@@ -891,7 +902,7 @@ def main():
         problems += worst[:3]
         case({"name": f"partition-{label}", "status": DIFFERS if problems else IDENTICAL, "detail": "; ".join(problems), "files": len(b)})
 
-    report = {"reference": "GDAL " + gdal.VersionInfo("RELEASE_NAME"), "cases": cases}
+    report = {"reference": "GDAL " + gdal.VersionInfo("RELEASE_NAME"), "datum_grid_policy": "Common installed PROJ grids; network off and per-user caches isolated", "cases": cases}
     (args.json or work / "report.json").write_text(json.dumps(report, indent=2) + "\n")
 
 

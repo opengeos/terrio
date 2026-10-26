@@ -742,11 +742,8 @@ pub fn update_layer(dst: &mut Layer, src: &Layer, o: &UpdateOptions) -> Result<U
         let target = if keys.is_empty() {
             by_fid.get(&f.fid).copied()
         } else {
-            let Some(k) = keys.iter().map(|(si, _)| f.attributes.get(*si).and_then(key_of_field)).collect::<Option<Vec<_>>>() else {
-                counts.unchanged += 1;
-                continue;
-            };
-            match index.get(&k).map(Vec::as_slice) {
+            let key = keys.iter().map(|(si, _)| f.attributes.get(*si).and_then(key_of_field)).collect::<Option<Vec<_>>>();
+            match key.as_ref().and_then(|key| index.get(key)).map(Vec::as_slice) {
                 Some([i]) => Some(*i),
                 _ => None,
             }
@@ -927,5 +924,15 @@ mod tests {
         assert_eq!(dst.features[0].attributes[1], FieldValue::Integer(7), "fields only the output has are kept");
         assert_eq!(dst.features[3].fid, 4);
         assert!(update_layer(&mut dst, &src, &UpdateOptions { key: vec!["keep".into()], ..Default::default() }).is_err());
+        let mut null_source = src.clone();
+        null_source.features.truncate(1);
+        null_source.features[0].attributes[0] = FieldValue::Null;
+        for mode in [UpdateMode::Merge, UpdateMode::UpdateOnly, UpdateMode::AppendOnly] {
+            let mut target = dst.clone();
+            target.features[0].attributes[0] = FieldValue::Null;
+            let counts = update_layer(&mut target, &null_source, &UpdateOptions { mode, ..o.clone() }).unwrap();
+            assert_eq!(counts.updated, 0);
+            assert_eq!(counts.appended, usize::from(mode != UpdateMode::UpdateOnly));
+        }
     }
 }

@@ -128,7 +128,11 @@ def test_export_schema_and_create(tmp_path):
     path.write_text(json.dumps(schema))
     copy = str(tmp_path / "copy.gpkg")
     terrio.create_vector(copy, schema=str(path))
-    assert terrio.export_schema(copy) == schema
+    # GDAL 3.13 creates schema/template fields in name order; explicit fields
+    # above retain the caller's order.
+    expected = json.loads(json.dumps(schema))
+    expected["layers"][0]["fields"].sort(key=lambda f: f["name"])
+    assert terrio.export_schema(copy) == expected
     like = str(tmp_path / "like.gpkg")
     terrio.create_vector(like, like=src, output_layer="renamed")
     assert terrio.list_layers(like) == ["renamed"]
@@ -175,3 +179,13 @@ def test_rename_edit_update_bindings(tmp_path):
         terrio.update_vector(path, path)
     with pytest.raises(terrio.InvalidArgumentError, match="excludes"):
         terrio.rename_layer(path, str(path), in_place=True)
+
+
+def test_partition_preserves_source_inside_overwrite_directory(tmp_path):
+    """Overwriting parts must never delete the source file in their directory."""
+    path = str(tmp_path / "source.gpkg")
+    terrio.concat([points("points", [("x", 1)])], path)
+    before = (tmp_path / "source.gpkg").read_bytes()
+    with pytest.raises(terrio.InvalidArgumentError, match="contains the input"):
+        terrio.partition(path, str(tmp_path), fields=["name"], scheme="flat", overwrite=True)
+    assert (tmp_path / "source.gpkg").read_bytes() == before

@@ -683,11 +683,9 @@ pub(crate) fn update_features(d: &mut Database, name: &str, src: &Layer, keys: &
             rowids.contains(&id).then_some(id)
         } else {
             let key: Option<Vec<KeyValue>> = key_cols.iter().map(|(si, _)| f.attributes.get(*si).and_then(key_of_field)).collect();
-            let Some(key) = key else {
-                counts.unchanged += 1;
-                continue;
-            };
-            match index.get(&key).map(Vec::as_slice) {
+            // SQL equality does not match NULL keys: merge appends them,
+            // update-only skips them, just as an ordinary unmatched key.
+            match key.as_ref().and_then(|key| index.get(key)).map(Vec::as_slice) {
                 Some([id]) => Some(*id),
                 _ => None,
             }
@@ -828,6 +826,13 @@ mod tests {
                 attributes: vec![FieldValue::Text(code.into()), FieldValue::Integer(v)],
             });
         }
+        let mut null_source = src.clone();
+        null_source.features.truncate(1);
+        null_source.features[0].attributes[0] = FieldValue::Null;
+        let (with_null, counts) =
+            modify_bytes(base.clone(), |d| update_features(d, "a", &null_source, &["code".into()], Upsert::Merge)).unwrap();
+        assert_eq!(counts.appended, 1);
+        assert_eq!(read(&with_null)[0].len(), 4);
         let (out, counts) = modify_bytes(base.clone(), |d| update_features(d, "a", &src, &[], Upsert::Merge)).unwrap();
         assert_eq!(counts, UpdateCounts { updated: 1, appended: 1, unchanged: 0 });
         let l = &read(&out)[0];

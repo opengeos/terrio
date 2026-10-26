@@ -1145,3 +1145,11 @@ writers; journal/WAL checks do not provide a transaction lock.
 Partition overwrite validates options before removing output. Flat output directories
 must contain only regular files of the selected output format (including Shapefile
 sidecars), so unrelated files are refused. Dot-only and empty layer names are escaped.
+
+
+Partition overwrite refuses output directories containing the path input. Hive
+validation checks all descendant files before removal, including unrelated files
+inside an otherwise valid partition tree. Vector schema/template creation orders
+fields by name, as GDAL 3.13 does; explicit `--field` options retain their order.
+Null update keys do not match existing rows: merge appends them and update-only
+skips them, following SQL null equality semantics.
