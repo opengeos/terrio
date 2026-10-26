@@ -149,26 +149,26 @@ fn recursive_delete_does_not_follow_links() {
 #[test]
 fn refuses_dangerous_targets() {
     for p in ["", "  ", "/", ".", "..", "/vsimem", "/vsimem/", "s3://bucket", "/vsis3/bucket/", "/vsizip/a.zip/x"] {
-        let r = Node::parse(p).and_then(|n| check_deletable(p, &n));
+        let r = Node::parse(p).and_then(|n| check_deletable(p, &n, "delete"));
         assert!(r.is_err(), "'{p}' was accepted");
     }
     // The current directory and its parents, given absolutely.
     let cwd = std::env::current_dir().unwrap();
     for p in [cwd.clone(), cwd.parent().unwrap().to_path_buf()] {
         let n = Node::Local(p.clone());
-        assert!(check_deletable(&s(&p), &n).is_err(), "{}", p.display());
+        assert!(check_deletable(&s(&p), &n, "delete").is_err(), "{}", p.display());
     }
     if let Some(home) = std::env::var_os("HOME") {
         let home = s(Path::new(&home));
-        assert!(check_deletable(&home, &Node::parse(&home).unwrap()).is_err());
+        assert!(check_deletable(&home, &Node::parse(&home).unwrap(), "delete").is_err());
     }
     #[cfg(remote)]
     {
         for p in ["https://example.com/a.tif", "/vsicurl/https://example.com/dir", "gs://bucket/key"] {
-            assert!(check_deletable(p, &Node::parse(p).unwrap()).is_err(), "{p}");
+            assert!(check_deletable(p, &Node::parse(p).unwrap(), "delete").is_err(), "{p}");
         }
-        assert!(check_deletable("az://account/container", &Node::parse("az://account/container").unwrap()).is_err());
-        assert!(check_deletable("s3://bucket/key", &Node::parse("s3://bucket/key").unwrap()).is_ok());
+        assert!(check_deletable("az://account/container", &Node::parse("az://account/container").unwrap(), "delete").is_err());
+        assert!(check_deletable("s3://bucket/key", &Node::parse("s3://bucket/key").unwrap(), "delete").is_ok());
     }
     assert!(delete("", true).is_err());
 }
@@ -286,6 +286,9 @@ fn lists_and_extracts_archives() {
         let root = format!("/vsitar/{}", s(&gz_path));
         assert_eq!(names(&list(&root, &ListOptions { recursive: true, ..Default::default() }).unwrap()).len(), 5);
         assert_eq!(read(&format!("{root}/a/b/z.txt")).unwrap(), b"z\n");
+        let extracted = tmp.path().join("extracted-gzip");
+        assert_eq!(copy(&root, &s(&extracted), &CopyOptions { recursive: true, ..Default::default() }).unwrap().copied, 3);
+        assert_eq!(fs::read(extracted.join("a/b/z.txt")).unwrap(), b"z\n");
     }
 }
 
@@ -303,4 +306,181 @@ fn parses_locations() {
     assert_eq!(Node::parse("a.zip").unwrap(), Node::Local("a.zip".into()));
     assert!(Node::parse("/vsigzip/a.gz").is_err());
     assert_eq!(Node::parse("s3://b").unwrap().join("x").join("y"), Node::S3 { bucket: "b".into(), key: "x/y".into() });
+}
+
+#[cfg(unix)]
+#[test]
+fn portable_moves_refuse_links_and_non_utf8_without_deleting_source() {
+    use std::os::unix::{ffi::OsStringExt, fs::symlink};
+    let (tmp, source) = tree();
+    symlink(source.join("a"), source.join("link")).unwrap();
+    assert!(rename(&s(&source), "/vsimem/refused-link-move").is_err());
+    assert!(source.join("a/y.txt").exists());
+    fs::remove_file(source.join("link")).unwrap();
+    let odd = source.join(std::ffi::OsString::from_vec(vec![0xff]));
+    fs::write(&odd, "keep").unwrap();
+    assert!(list(&s(&source), &ListOptions { recursive: true, ..Default::default() }).is_err());
+    assert!(rename(&s(&source), "/vsimem/refused-name-move").is_err());
+    assert_eq!(fs::read(odd).unwrap(), b"keep");
+    let alias = tmp.path().join("home-link");
+    symlink(std::env::current_dir().unwrap(), &alias).unwrap();
+    delete(&s(&alias), false).unwrap();
+    assert!(std::env::current_dir().unwrap().exists());
+}
+
+#[cfg(remote)]
+#[test]
+fn failing_operation_drops_html_listing_cache() {
+    HTML_PAGE.with(|page| *page.borrow_mut() = Some(("https://example.test/stale".into(), Some(Vec::new()))));
+    assert!(copy("/vsimem/no-such-source-cache-test", "/vsimem/cache-output", &Default::default()).is_err());
+    assert!(HTML_PAGE.with(|page| page.borrow().is_none()));
+}
+
+#[cfg(unix)]
+#[test]
+fn atomic_copy_follows_destination_links_keeps_modes_and_handles_long_names() {
+    use std::os::unix::fs::{PermissionsExt, symlink};
+    let tmp = tempfile::tempdir().unwrap();
+    let input = tmp.path().join("input");
+    fs::write(&input, "new").unwrap();
+    let output = tmp.path().join("output");
+    fs::write(&output, "old").unwrap();
+    fs::set_permissions(&output, fs::Permissions::from_mode(0o640)).unwrap();
+    let link = tmp.path().join("link");
+    symlink(&output, &link).unwrap();
+    copy(&s(&input), &s(&link), &Default::default()).unwrap();
+    assert!(fs::symlink_metadata(link).unwrap().file_type().is_symlink());
+    assert_eq!(fs::read(&output).unwrap(), b"new");
+    assert_eq!(fs::metadata(output).unwrap().permissions().mode() & 0o777, 0o640);
+    let long = tmp.path().join("x".repeat(250));
+    copy(&s(&input), &s(&long), &Default::default()).unwrap();
+    assert_eq!(fs::read(long).unwrap(), b"new");
+}
+
+#[cfg(not(target_family = "wasm"))]
+#[test]
+fn tar_tree_extraction_reads_the_archive_once() {
+    use std::io::{Cursor, Read};
+    struct Counted {
+        inner: Cursor<Vec<u8>>,
+        bytes: usize,
+    }
+    impl Read for Counted {
+        fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+            let n = self.inner.read(out)?;
+            self.bytes += n;
+            Ok(n)
+        }
+    }
+    let mut builder = tar::Builder::new(Vec::new());
+    for i in 0..32 {
+        let mut header = tar::Header::new_gnu();
+        header.set_size(1024);
+        header.set_mode(0o644);
+        header.set_cksum();
+        builder.append_data(&mut header, format!("files/{i}.bin"), &[i as u8; 1024][..]).unwrap();
+    }
+    let bytes = builder.into_inner().unwrap();
+    let len = bytes.len();
+    let mut reader = Counted { inner: Cursor::new(bytes), bytes: 0 };
+    let tmp = tempfile::tempdir().unwrap();
+    let mut report = Report::default();
+    copy_tar_reader(&mut reader, "files", &Node::Local(tmp.path().join("out")), false, None, &mut report).unwrap();
+    assert_eq!(report.copied, 32);
+    assert_eq!(report.bytes, 32 * 1024);
+    assert!(reader.bytes <= len);
+    assert_eq!(fs::read(tmp.path().join("out/31.bin")).unwrap(), vec![31; 1024]);
+    reader.inner.set_position(0);
+    reader.bytes = 0;
+    let mut unchanged = Report::default();
+    copy_tar_reader(
+        &mut reader,
+        "files",
+        &Node::Local(tmp.path().join("out")),
+        false,
+        Some(&SyncOptions { recursive: true, ..Default::default() }),
+        &mut unchanged,
+    )
+    .unwrap();
+    assert_eq!(unchanged.copied, 0);
+    assert_eq!(unchanged.unchanged, 32);
+    assert!(reader.bytes <= reader.inner.get_ref().len());
+}
+
+#[test]
+fn archive_copy_refuses_parent_traversal() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("unsafe.zip");
+    let mut zip = zip::ZipWriter::new(fs::File::create(&path).unwrap());
+    zip.start_file("../escape.txt", zip::write::SimpleFileOptions::default()).unwrap();
+    zip.write_all(b"do not write outside").unwrap();
+    zip.finish().unwrap();
+    let source = format!("/vsizip/{}", s(&path));
+    let result = copy(&source, &s(&tmp.path().join("out")), &CopyOptions { recursive: true, ..Default::default() });
+    assert!(result.is_err());
+    assert!(!tmp.path().join("escape.txt").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn archive_extraction_does_not_follow_links_outside_output() {
+    use std::os::unix::fs::symlink;
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("safe.zip");
+    let mut zip = zip::ZipWriter::new(fs::File::create(&path).unwrap());
+    zip.start_file("nested/file.txt", zip::write::SimpleFileOptions::default()).unwrap();
+    zip.write_all(b"stay inside").unwrap();
+    zip.finish().unwrap();
+    let root = tmp.path().join("out");
+    let outside = tmp.path().join("outside");
+    fs::create_dir(&root).unwrap();
+    fs::create_dir(&outside).unwrap();
+    fs::create_dir(root.join("safe.zip")).unwrap();
+    symlink(&outside, root.join("safe.zip/nested")).unwrap();
+    let result = copy(&format!("/vsizip/{}", s(&path)), &s(&root), &CopyOptions { recursive: true, ..Default::default() });
+    assert!(result.is_err());
+    assert!(!outside.join("file.txt").exists());
+}
+
+#[test]
+fn move_replaces_an_existing_file_as_gdal_does() {
+    let tmp = tempfile::tempdir().unwrap();
+    let source = tmp.path().join("source");
+    let target = tmp.path().join("target");
+    fs::write(&source, "new").unwrap();
+    fs::write(&target, "old").unwrap();
+    rename(&s(&source), &s(&target)).unwrap();
+    assert!(!source.exists());
+    assert_eq!(fs::read(target).unwrap(), b"new");
+}
+
+#[test]
+fn object_names_encode_url_delimiters_and_windows_traversal_is_refused() {
+    let node = Node::Url { base: "https://storage.googleapis.com/bucket".into(), query: String::new() };
+    assert_eq!(
+        node.join("x#y?a% b.tif"),
+        Node::Url { base: "https://storage.googleapis.com/bucket/x%23y%3Fa%25%20b.tif".into(), query: String::new() }
+    );
+    let html = Node::Url { base: "https://example.com/files".into(), query: String::new() };
+    assert_eq!(html.join("a%20b.tif"), Node::Url { base: "https://example.com/files/a%20b.tif".into(), query: String::new() });
+    for name in ["..\\escape", "nested/..\\escape", "C:escape", "\\absolute"] {
+        assert!(unsafe_relative(name));
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn copying_directory_links_reports_an_error() {
+    use std::os::unix::fs::symlink;
+    let tmp = tempfile::tempdir().unwrap();
+    let source = tmp.path().join("source");
+    let outside = tmp.path().join("outside");
+    fs::create_dir(&source).unwrap();
+    fs::create_dir(&outside).unwrap();
+    fs::write(outside.join("data.txt"), "preserve").unwrap();
+    symlink(&outside, source.join("link")).unwrap();
+    let out = tmp.path().join("out");
+    assert!(copy(&s(&source), &s(&out), &CopyOptions { recursive: true, ..Default::default() }).is_err());
+    let result = copy(&s(&source), &s(&tmp.path().join("skip")), &CopyOptions { recursive: true, skip_errors: true }).unwrap();
+    assert_eq!(result.errors.len(), 1);
 }

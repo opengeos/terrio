@@ -178,8 +178,8 @@ pub(crate) fn extract(r: &mut dyn ReadSeek, e: &CdEntry, out: &mut dyn std::io::
     let raw = (&mut *r).take(e.compressed_size);
     let mut check = Crc32Writer { out, crc: flate2::Crc::new() };
     let n = match e.method {
-        0 => std::io::copy(&mut { raw }, &mut check)?,
-        8 => std::io::copy(&mut flate2::read::DeflateDecoder::new(raw), &mut check)?,
+        0 => std::io::copy(&mut raw.take(e.uncompressed_size.saturating_add(1)), &mut check)?,
+        8 => std::io::copy(&mut flate2::read::DeflateDecoder::new(raw).take(e.uncompressed_size.saturating_add(1)), &mut check)?,
         m => return Err(Error::Unsupported(format!("'{}': compression method {m} is not supported", e.name))),
     };
     if n != e.uncompressed_size || check.crc.sum() != e.crc32 {
@@ -241,6 +241,12 @@ mod tests {
         out.clear();
         extract(&mut r, &cd[3], &mut out).unwrap();
         assert_eq!(out, b"zip64");
+        // Incorrect advertised size cannot cause unbounded decompressed output.
+        let mut short = cd[1].clone();
+        short.uncompressed_size = 2;
+        out.clear();
+        assert!(extract(&mut r, &short, &mut out).is_err());
+        assert!(out.len() <= 3);
         // A corrupt byte is detected.
         let mut bytes = r.into_inner();
         let at = data_offset(&mut std::io::Cursor::new(&bytes), &cd[2]).unwrap() as usize;

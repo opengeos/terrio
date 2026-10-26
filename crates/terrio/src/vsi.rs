@@ -17,7 +17,7 @@
 //! Remote locations need the `remote` feature and a native build; tar archives a native build.
 //! Archives are read only.
 //!
-//! Deleting is guarded: an empty path, a file system root, the home directory, the current
+//! Deleting is guarded: an empty path, a file system root, the home directory and its parents, the current
 //! directory or one of its parents, the root of `/vsimem/`, a whole bucket or container, and
 //! archive or HTTP locations are refused. Recursive deletion never follows symbolic links (it
 //! deletes the links), and deletes on object stores only the keys below `prefix/` (never those of
@@ -291,7 +291,16 @@ impl Node {
             Node::Local(p) => Node::Local(name.split('/').fold(p.clone(), |p, c| p.join(c))),
             Node::Mem(k) => Node::Mem(format!("{k}/{name}")),
             Node::S3 { bucket, key } => Node::S3 { bucket: bucket.clone(), key: join_key(key, name) },
-            Node::Url { base, query } => Node::Url { base: format!("{base}/{name}"), query: query.clone() },
+            Node::Url { base, query } => {
+                let encoded;
+                let name = if listing::Api::for_url(base).is_object_store() {
+                    encoded = listing::uri_encode(name, false);
+                    &encoded
+                } else {
+                    name
+                };
+                Node::Url { base: format!("{base}/{name}"), query: query.clone() }
+            }
             Node::Archive { archive, kind, inner } => Node::Archive { archive: archive.clone(), kind: *kind, inner: join_key(inner, name) },
         }
     }
@@ -591,11 +600,14 @@ fn sort_entries(entries: &mut [Entry]) {
 fn walk_local(dir: &Path, rel: &str, level: usize, max_depth: usize, out: &mut Vec<Entry>) -> Result<()> {
     for entry in std::fs::read_dir(dir)? {
         let entry = entry?;
-        let Some(name) = entry.file_name().to_str().map(str::to_string) else { continue };
+        let name = entry
+            .file_name()
+            .into_string()
+            .map_err(|_| Error::InvalidArgument("local entry name is not UTF-8; refusing to skip it".into()))?;
         let path = entry.path();
         // Symbolic links are listed with what they point to, but not descended into.
         let link = entry.file_type().is_ok_and(|t| t.is_symlink());
-        let Ok(meta) = std::fs::metadata(&path).or_else(|_| std::fs::symlink_metadata(&path)) else { continue };
+        let meta = std::fs::metadata(&path).or_else(|_| std::fs::symlink_metadata(&path))?;
         let child = join_key(rel, &name);
         let stat = local_stat(&meta);
         let descend = stat.dir && !link && level < max_depth;
@@ -634,7 +646,12 @@ fn remote_read_dir(node: &Node, max_depth: usize) -> Result<Vec<Entry>> {
     let Node::Url { base, query } = node else { unreachable!("S3 is an object store") };
     let mut out = Vec::new();
     let mut pending: Vec<(String, String, usize)> = vec![(base.clone(), String::new(), 1)];
+    let mut pages = 0;
     while let Some((url, rel, level)) = pending.pop() {
+        if pages == listing::MAX_PAGES {
+            return Err(Error::InvalidData(format!("HTTP directory listing exceeds {} pages", listing::MAX_PAGES)));
+        }
+        pages += 1;
         let page = if query.is_empty() { url.clone() } else { format!("{url}?{query}") };
         let listed = list_html_cached(&page)?.ok_or_else(|| Error::Unsupported(format!("'{}': not a listable directory", page)))?;
         for e in listed {
@@ -736,10 +753,33 @@ fn io_context(e: std::io::Error, what: &str) -> Error {
     if e.kind() == std::io::ErrorKind::NotFound { not_found(what) } else { Error::Io(e) }
 }
 
+struct ZipIndex {
+    entries: Vec<zipdir::CdEntry>,
+    by_name: std::collections::HashMap<String, usize>,
+}
+
+thread_local! {
+    static ZIP_INDEX: std::cell::RefCell<Option<(Node, std::rc::Rc<ZipIndex>)>> = const { std::cell::RefCell::new(None) };
+}
+
+fn zip_index(archive: &Node, reader: &mut dyn ReadSeek) -> Result<std::rc::Rc<ZipIndex>> {
+    if let Some(index) = ZIP_INDEX.with(|cache| cache.borrow().as_ref().filter(|(node, _)| node == archive).map(|(_, i)| i.clone())) {
+        return Ok(index);
+    }
+    let entries = zipdir::central_directory(reader)?;
+    let mut by_name = std::collections::HashMap::with_capacity(entries.len());
+    for (i, entry) in entries.iter().enumerate().filter(|(_, e)| !e.is_dir()) {
+        by_name.entry(clean_member(&entry.name)).or_insert(i);
+    }
+    let index = std::rc::Rc::new(ZipIndex { entries, by_name });
+    ZIP_INDEX.with(|cache| *cache.borrow_mut() = Some((archive.clone(), index.clone())));
+    Ok(index)
+}
+
 fn zip_entries(archive: &Node) -> Result<Vec<Entry>> {
     with_archive_reader(archive, |r| {
         let mut out = Vec::new();
-        for f in zipdir::central_directory(r)? {
+        for f in &zip_index(archive, r)?.entries {
             let name = clean_member(&f.name);
             if name.is_empty() {
                 continue;
@@ -759,53 +799,43 @@ fn zip_entries(archive: &Node) -> Result<Vec<Entry>> {
 }
 
 #[cfg(not(target_family = "wasm"))]
+fn tar_entry<R: Read>(entry: &tar::Entry<'_, R>) -> Option<Entry> {
+    let name = clean_member(&String::from_utf8_lossy(&entry.path_bytes()));
+    let header = entry.header();
+    let dir = header.entry_type().is_dir();
+    if name.is_empty() || !(dir || header.entry_type().is_file()) {
+        return None;
+    }
+    Some(Entry {
+        name,
+        kind: if dir { EntryKind::Directory } else { EntryKind::File },
+        size: Some(if dir { 0 } else { entry.size() }),
+        modified: header.mtime().ok().map(|t| t as i64),
+        permissions: None,
+        etag: None,
+    })
+}
+
+#[cfg(not(target_family = "wasm"))]
 fn tar_entries(archive: &Node, kind: ArchiveKind) -> Result<Vec<Entry>> {
     with_archive_reader(archive, |r| {
         let mut out = Vec::new();
-        let mut push = |entry: &tar::Entry<'_, &mut dyn Read>| {
-            let name = clean_member(&String::from_utf8_lossy(&entry.path_bytes()));
-            if name.is_empty() {
-                return;
-            }
-            let header = entry.header();
-            let dir = header.entry_type().is_dir();
-            if !(dir || header.entry_type().is_file()) {
-                return;
-            }
-            out.push(Entry {
-                name,
-                kind: if dir { EntryKind::Directory } else { EntryKind::File },
-                size: Some(if dir { 0 } else { entry.size() }),
-                modified: header.mtime().ok().map(|t| t as i64),
-                permissions: None,
-                etag: None,
-            });
-        };
         if kind == ArchiveKind::TarGz {
             let gz: &mut dyn Read = &mut flate2::read::MultiGzDecoder::new(r);
             let mut tar = tar::Archive::new(gz);
             for entry in tar.entries()? {
-                push(&entry?);
+                if let Some(entry) = tar_entry(&entry?) {
+                    out.push(entry);
+                }
             }
         } else {
             // Seeking past the members' contents: a remote archive's headers only are fetched.
             let mut tar = tar::Archive::new(SeekRead(r));
             for entry in tar.entries_with_seek()? {
                 let entry = entry?;
-                let name = clean_member(&String::from_utf8_lossy(&entry.path_bytes()));
-                let header = entry.header();
-                let dir = header.entry_type().is_dir();
-                if name.is_empty() || !(dir || header.entry_type().is_file()) {
-                    continue;
+                if let Some(entry) = tar_entry(&entry) {
+                    out.push(entry);
                 }
-                out.push(Entry {
-                    name,
-                    kind: if dir { EntryKind::Directory } else { EntryKind::File },
-                    size: Some(if dir { 0 } else { entry.size() }),
-                    modified: header.mtime().ok().map(|t| t as i64),
-                    permissions: None,
-                    etag: None,
-                });
             }
         }
         Ok(out)
@@ -831,8 +861,8 @@ impl std::io::Seek for SeekRead<'_> {
 fn read_member(archive: &Node, kind: ArchiveKind, inner: &str, out: &mut dyn Write) -> Result<u64> {
     with_archive_reader(archive, |r| match kind {
         ArchiveKind::Zip => {
-            let cd = zipdir::central_directory(r)?;
-            let entry = cd.iter().find(|f| !f.is_dir() && clean_member(&f.name) == inner).ok_or_else(|| not_found(inner))?;
+            let index = zip_index(archive, r)?;
+            let entry = index.by_name.get(inner).map(|&i| &index.entries[i]).ok_or_else(|| not_found(inner))?;
             zipdir::extract(r, entry, out)
         }
         #[cfg(not(target_family = "wasm"))]
@@ -856,6 +886,22 @@ fn read_member(archive: &Node, kind: ArchiveKind, inner: &str, out: &mut dyn Wri
         #[cfg(target_family = "wasm")]
         ArchiveKind::Tar | ArchiveKind::TarGz => Err(Error::Unsupported("tar archives are not supported in WebAssembly builds".into())),
     })
+}
+
+/// Restricts the last HTML page cache to one public operation, including error exits.
+struct HtmlCacheScope;
+impl HtmlCacheScope {
+    fn new() -> Self {
+        forget_html_page();
+        ZIP_INDEX.with(|cache| *cache.borrow_mut() = None);
+        Self
+    }
+}
+impl Drop for HtmlCacheScope {
+    fn drop(&mut self) {
+        forget_html_page();
+        ZIP_INDEX.with(|cache| *cache.borrow_mut() = None);
+    }
 }
 
 // --- Reading and writing files ----------------------------------------------------------------
@@ -884,6 +930,7 @@ fn read_into(node: &Node, out: &mut dyn Write) -> Result<u64> {
 
 /// Reads a whole file into memory.
 pub fn read(path: &str) -> Result<Vec<u8>> {
+    let _cache = HtmlCacheScope::new();
     let mut out = Vec::new();
     read_into(&Node::parse(path)?, &mut out)?;
     Ok(out)
@@ -891,6 +938,7 @@ pub fn read(path: &str) -> Result<Vec<u8>> {
 
 /// Writes bytes to a file (local, in memory, or an object), replacing it.
 pub fn write(path: &str, bytes: &[u8]) -> Result<()> {
+    let _cache = HtmlCacheScope::new();
     let node = Node::parse(path)?;
     if let Some(reason) = node.read_only_reason() {
         return Err(Error::Unsupported(format!("'{path}': {reason}")));
@@ -914,18 +962,34 @@ fn write_local_atomic(path: &Path, fill: impl FnOnce(&mut std::fs::File) -> Resu
     if cfg!(target_family = "wasm") {
         return Err(Error::Unsupported(format!("'{}': WebAssembly builds have no local files (use /vsimem/)", path.display())));
     }
+    let resolved = match std::fs::symlink_metadata(path) {
+        Ok(meta) if meta.file_type().is_symlink() => Some(std::fs::canonicalize(path)?),
+        Ok(_) => None,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => return Err(e.into()),
+    };
+    let path = resolved.as_deref().unwrap_or(path);
     let dir = path.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(Path::new("."));
-    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("file");
+    let permissions = match std::fs::metadata(path) {
+        Ok(meta) => Some(meta.permissions()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => return Err(e.into()),
+    };
     let mut n = 0u32;
     let (tmp, mut file) = loop {
-        let tmp = dir.join(format!(".{name}.terrio-partial-{}-{n}", std::process::id()));
+        let tmp = dir.join(format!(".terrio-partial-{}-{n}", std::process::id()));
         match std::fs::OpenOptions::new().write(true).create_new(true).open(&tmp) {
             Ok(f) => break (tmp, f),
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists && n < 1000 => n += 1,
             Err(e) => return Err(e.into()),
         }
     };
-    let result = fill(&mut file).and_then(|()| Ok(file.sync_all()?));
+    let result = fill(&mut file).and_then(|()| {
+        if let Some(permissions) = permissions {
+            file.set_permissions(permissions)?;
+        }
+        Ok(file.sync_all()?)
+    });
     drop(file);
     match result.and_then(|()| Ok(std::fs::rename(&tmp, path)?)) {
         Ok(()) => Ok(()),
@@ -1012,26 +1076,31 @@ fn make_dir(node: &Node) -> Result<()> {
 
 /// Refuses to delete (or move away) locations whose loss would be catastrophic or that are not
 /// precise: see the [module documentation](self).
-fn check_deletable(input: &str, node: &Node) -> Result<()> {
-    let refuse = |why: &str| Err(Error::InvalidArgument(format!("refusing to delete '{input}': {why}")));
+fn check_deletable(input: &str, node: &Node, operation: &str) -> Result<()> {
+    let refuse = |why: &str| Err(Error::InvalidArgument(format!("refusing to {operation} '{input}': {why}")));
     if input.trim().is_empty() {
         return refuse("empty path");
     }
     match node {
         Node::Local(p) => {
             if p.as_os_str().is_empty()
-                || p.components().any(|c| matches!(c, Component::CurDir | Component::ParentDir)) && p.components().count() == 1
+                || (p.components().any(|c| matches!(c, Component::CurDir | Component::ParentDir)) && p.components().count() == 1)
             {
                 return refuse("not a precise path");
             }
+            if std::fs::symlink_metadata(p).is_ok_and(|m| m.file_type().is_symlink()) {
+                // delete removes only the link, never the directory it points to.
+                return Ok(());
+            }
+            // A missing/dangling path cannot be an existing protected directory.
             let Ok(canonical) = std::fs::canonicalize(p) else { return Ok(()) };
             if canonical.parent().is_none() {
                 return refuse("a file system root");
             }
             if let Some(home) = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"))
-                && std::fs::canonicalize(home).is_ok_and(|h| h == canonical)
+                && std::fs::canonicalize(home).is_ok_and(|h| h.starts_with(&canonical))
             {
-                return refuse("the home directory");
+                return refuse("the home directory or one of its parents");
             }
             if let Ok(cwd) = std::env::current_dir().and_then(std::fs::canonicalize)
                 && cwd.starts_with(&canonical)
@@ -1096,6 +1165,7 @@ fn is_within(inner: &Node, outer: &Node) -> bool {
 /// Lists a directory (its entries, named relative to it), or describes a file (one entry named
 /// as given), as `gdal vsi list` does.
 pub fn list(path: &str, options: &ListOptions) -> Result<Vec<Entry>> {
+    let _cache = HtmlCacheScope::new();
     forget_html_page();
     let node = Node::parse(path)?;
     let stat = stat_node(&node)?.ok_or_else(|| not_found(path))?;
@@ -1140,6 +1210,7 @@ fn absolute_name(path: &str, node: &Node, name: &str) -> String {
 
 /// Describes one location, or `None` when nothing is there.
 pub fn stat(path: &str) -> Result<Option<Entry>> {
+    let _cache = HtmlCacheScope::new();
     let node = Node::parse(path)?;
     Ok(stat_node(&node)?.map(|s| s.entry(path.trim().to_string())))
 }
@@ -1147,14 +1218,22 @@ pub fn stat(path: &str) -> Result<Option<Entry>> {
 /// Where a file or directory copied to `dst` goes: into `dst` when it is an existing directory
 /// (or ends with `/`), as `dst` otherwise.
 fn copy_target(src: &Node, dst_input: &str, dst: &Node) -> Result<Node> {
-    let into = dst_input.trim().ends_with('/') || stat_node(dst)?.is_some_and(|s| s.dir);
-    Ok(if into { dst.join(&src.file_name()) } else { dst.clone() })
+    let existing_directory = stat_node(dst)?.is_some_and(|s| s.dir);
+    let into = dst_input.trim().ends_with('/') || existing_directory;
+    if into && !existing_directory {
+        make_dir(dst)?;
+    }
+    if existing_directory && matches!(src, Node::Archive { .. }) {
+        return archive_target(dst, &src.file_name());
+    }
+    Ok(if into { archive_target(dst, &src.file_name())? } else { dst.clone() })
 }
 
 /// Copies a file, or with `recursive` a directory, as `gdal vsi copy` does: into `dst` when it is
 /// an existing directory, to `dst` otherwise. Archive members can be copied out; object stores
 /// copy within S3 server-side.
 pub fn copy(src: &str, dst: &str, options: &CopyOptions) -> Result<Report> {
+    let _cache = HtmlCacheScope::new();
     let src_node = Node::parse(src)?;
     let dst_node = Node::parse(dst)?;
     let stat = stat_node(&src_node)?.ok_or_else(|| not_found(src))?;
@@ -1185,15 +1264,170 @@ fn is_same(a: &Node, b: &Node) -> bool {
     }
 }
 
+/// Archive output must remain below its destination even through existing symlinks.
+fn unsafe_relative(name: &str) -> bool {
+    name.starts_with(['/', '\\'])
+        || name.split(['/', '\\']).any(|part| part == "..")
+        || (name.as_bytes().get(1) == Some(&b':') && name.as_bytes().first().is_some_and(u8::is_ascii_alphabetic))
+}
+
+fn archive_target(root: &Node, name: &str) -> Result<Node> {
+    if unsafe_relative(name) {
+        return Err(Error::InvalidArgument("refusing archive path traversal in copy source".into()));
+    }
+    let target = root.join(name);
+    if let (Node::Local(root), Node::Local(path)) = (root, &target) {
+        let root = std::fs::canonicalize(root)?;
+        let mut existing = path.as_path();
+        loop {
+            match std::fs::symlink_metadata(existing) {
+                Ok(_) => break,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    existing = existing.parent().ok_or_else(|| Error::InvalidArgument("archive target has no existing parent".into()))?;
+                }
+                Err(e) => return Err(e.into()),
+            }
+        }
+        if !std::fs::canonicalize(existing)?.starts_with(root) {
+            return Err(Error::InvalidArgument("archive target escapes its output directory through a symbolic link".into()));
+        }
+    }
+    Ok(target)
+}
+
+/// Writes one sequential archive member without reopening its archive.
+#[cfg(not(target_family = "wasm"))]
+fn write_member(dst: &Node, reader: &mut dyn Read) -> Result<u64> {
+    if let Some(reason) = dst.read_only_reason() {
+        return Err(Error::Unsupported(reason));
+    }
+    match dst {
+        Node::Local(path) => {
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            let mut copied = 0;
+            write_local_atomic(path, |out| {
+                copied = std::io::copy(reader, out)?;
+                Ok(())
+            })?;
+            Ok(copied)
+        }
+        Node::Mem(key) => {
+            let mut data = Vec::new();
+            let copied = std::io::copy(reader, &mut data)?;
+            crate::memfs::write(Path::new(key), data)?;
+            Ok(copied)
+        }
+        #[cfg(remote)]
+        Node::S3 { .. } | Node::Url { .. } => {
+            let mut tmp = tempfile::NamedTempFile::new()?;
+            let copied = std::io::copy(reader, tmp.as_file_mut())?;
+            tmp.as_file_mut().flush()?;
+            let remote = dst.remote().ok_or_else(|| Error::InvalidArgument("not remote".into()))?;
+            crate::http::store::put(&remote, crate::http::store::file_payload(tmp.path()))?;
+            Ok(copied)
+        }
+        _ => Err(Error::Unsupported("the target does not support streamed archive extraction".into())),
+    }
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn copy_tar_reader(
+    reader: &mut dyn Read,
+    inner: &str,
+    dst: &Node,
+    skip_errors: bool,
+    sync: Option<&SyncOptions>,
+    report: &mut Report,
+) -> Result<()> {
+    make_dir(dst)?;
+    let targets: std::collections::HashMap<String, Entry> = if let Some(o) = sync {
+        read_dir(dst, o.recursive, None)?.into_iter().map(|e| (e.name.clone(), e)).collect()
+    } else {
+        Default::default()
+    };
+    let prefix = format!("{}/", inner.trim_matches('/'));
+    let mut archive = tar::Archive::new(reader);
+    let mut made = std::collections::HashSet::new();
+    for entry in archive.entries()? {
+        let mut entry = entry?;
+        let Some(info) = tar_entry(&entry) else { continue };
+        let relative = if inner.is_empty() {
+            info.name.as_str()
+        } else {
+            let Some(relative) = info.name.strip_prefix(&prefix) else { continue };
+            relative
+        };
+        if relative.is_empty() {
+            continue;
+        }
+        if unsafe_relative(relative) {
+            return Err(Error::InvalidArgument("refusing archive path traversal in copy source".into()));
+        }
+        let target = archive_target(dst, relative)?;
+        if sync.is_some_and(|o| !o.recursive) && relative.contains('/') {
+            make_dir(&archive_target(dst, relative.split('/').next().expect("has separator"))?)?;
+            continue;
+        }
+        if !info.is_dir()
+            && let Some(o) = sync
+            && let Some(t) = targets.get(relative)
+        {
+            // Archive entries have no single-part object ETag, so only the ordinary
+            // size/timestamp fallback is applicable here.
+            if o.strategy != SyncStrategy::Overwrite
+                && info.size == t.size
+                && matches!((info.modified, t.modified), (Some(a), Some(b)) if a <= b)
+            {
+                report.unchanged += 1;
+                continue;
+            }
+        }
+        for (at, _) in relative.match_indices('/') {
+            let parent = &relative[..at];
+            if made.insert(parent.to_string()) {
+                make_dir(&dst.join(parent))?;
+            }
+        }
+        let result = if info.is_dir() { make_dir(&target).map(|()| None) } else { write_member(&target, &mut entry).map(Some) };
+        match result {
+            Ok(Some(bytes)) => {
+                report.copied += 1;
+                report.bytes += bytes;
+            }
+            Ok(None) => {}
+            Err(error) if skip_errors => report.errors.push((relative.into(), error.to_string())),
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(())
+}
+
 /// Copies a directory's tree: every file (and directory) below `src` to the same name below
 /// `dst`. With `sync`, files whose target is up to date are left.
 fn copy_tree(src: &Node, dst: &Node, skip_errors: bool, sync: Option<(&SyncOptions, bool)>, report: &mut Report) -> Result<()> {
     let recursive = sync.is_none_or(|(o, _)| o.recursive);
+    #[cfg(not(target_family = "wasm"))]
+    if let Node::Archive { archive, kind, inner } = src
+        && matches!(kind, ArchiveKind::Tar | ArchiveKind::TarGz)
+    {
+        return with_archive_reader(archive, |reader| {
+            if *kind == ArchiveKind::TarGz {
+                copy_tar_reader(&mut flate2::read::MultiGzDecoder::new(reader), inner, dst, skip_errors, sync.map(|(o, _)| o), report)
+            } else {
+                copy_tar_reader(reader, inner, dst, skip_errors, sync.map(|(o, _)| o), report)
+            }
+        });
+    }
     // A non-recursive sync creates the subdirectories, empty, as GDAL does.
     let entries = read_dir(src, recursive, None)?;
+    if entries.iter().any(|e| unsafe_relative(&e.name)) {
+        return Err(Error::InvalidArgument("refusing archive path traversal in copy source".into()));
+    }
     let target_entries = match sync {
         Some(_) => match stat_node(dst)? {
-            Some(s) if s.dir => read_dir(dst, recursive, None).unwrap_or_default(),
+            Some(s) if s.dir => read_dir(dst, recursive, None)?,
             _ => {
                 make_dir(dst)?;
                 Vec::new()
@@ -1206,7 +1440,18 @@ fn copy_tree(src: &Node, dst: &Node, skip_errors: bool, sync: Option<(&SyncOptio
     };
     for e in &entries {
         let from = src.join(&e.name);
-        let to = dst.join(&e.name);
+        if let Node::Local(path) = &from
+            && std::fs::symlink_metadata(path)?.file_type().is_symlink()
+            && e.is_dir()
+        {
+            let message = "recursive copy of a directory symlink is unsupported";
+            if skip_errors {
+                report.errors.push((display_node(&from), message.into()));
+                continue;
+            }
+            return Err(Error::Unsupported(message.into()));
+        }
+        let to = archive_target(dst, &e.name)?;
         if e.is_dir() {
             // Already there (a sync's target).
             if target_entries.iter().any(|t| t.is_dir() && t.name == e.name) {
@@ -1291,8 +1536,9 @@ fn md5_of(node: &Node) -> Result<String> {
 /// Deletes a file, or with `recursive` a directory and everything below it, as `gdal vsi delete`
 /// does. Refuses dangerous targets (see the [module documentation](self)).
 pub fn delete(path: &str, recursive: bool) -> Result<Report> {
+    let _cache = HtmlCacheScope::new();
     let node = Node::parse(path)?;
-    check_deletable(path, &node)?;
+    check_deletable(path, &node, "delete")?;
     let mut report = Report::default();
     // Not followed: a symbolic link is deleted, not what it points to.
     if let Node::Local(p) = &node {
@@ -1397,13 +1643,44 @@ fn remove_link_or_file(path: &Path) -> std::io::Result<()> {
     }
 }
 
+/// Copy-delete moves cannot represent symlinks across all supported stores. Refuse
+/// unsupported local entries before copying, so a later recursive delete cannot lose them.
+fn check_copy_move_source(node: &Node) -> Result<()> {
+    if let Node::Local(path) = node {
+        fn check(path: &Path) -> Result<()> {
+            let meta = std::fs::symlink_metadata(path)?;
+            if meta.file_type().is_symlink() {
+                return Err(Error::Unsupported(
+                    "copy-delete moves of symbolic links are not supported; use a local filesystem rename".into(),
+                ));
+            }
+            if meta.is_dir() {
+                for entry in std::fs::read_dir(path)? {
+                    let entry = entry?;
+                    if entry.file_name().to_str().is_none() {
+                        return Err(Error::InvalidArgument("move source contains a non-UTF-8 name".into()));
+                    }
+                    check(&entry.path())?;
+                }
+            }
+            Ok(())
+        }
+        check(path)?;
+    }
+    Ok(())
+}
+
 /// Moves (renames) a file or directory, as `gdal vsi move` does: into `dst` when it is an existing
 /// directory, to `dst` otherwise. Local moves on one file system are renames; others copy, then
-/// delete the source only once everything was copied.
+/// delete the source only once everything was copied. Existing destination files are
+/// replaced, as GDAL does; existing destination directories are refused. Copy-delete
+/// fallbacks refuse symbolic links and non-UTF-8 names they cannot faithfully preserve.
+/// Sources must not be changed concurrently during a copy-delete move.
 pub fn rename(src: &str, dst: &str) -> Result<Report> {
+    let _cache = HtmlCacheScope::new();
     let src_node = Node::parse(src)?;
     let dst_node = Node::parse(dst)?;
-    check_deletable(src, &src_node)?;
+    check_deletable(src, &src_node, "move")?;
     let stat = stat_node(&src_node)?.ok_or_else(|| not_found(src))?;
     let target = copy_target(&src_node, dst, &dst_node)?;
     if is_same(&src_node, &target) {
@@ -1412,10 +1689,10 @@ pub fn rename(src: &str, dst: &str) -> Result<Report> {
     if stat.dir && is_within(&target, &src_node) {
         return Err(Error::InvalidArgument(format!("cannot move '{src}' into itself ('{dst}')")));
     }
+    if stat_node(&target)?.is_some_and(|t| t.dir) {
+        return Err(Error::InvalidArgument(format!("'{}' is a directory that exists", display_node(&target))));
+    }
     if let (Node::Local(a), Node::Local(b)) = (&src_node, &target) {
-        if stat_node(&target)?.is_some_and(|t| t.dir) {
-            return Err(Error::InvalidArgument(format!("'{}' is a directory that exists", b.display())));
-        }
         if let Some(parent) = b.parent().filter(|d| !d.as_os_str().is_empty()) {
             std::fs::create_dir_all(parent)?;
         }
@@ -1437,7 +1714,9 @@ pub fn rename(src: &str, dst: &str) -> Result<Report> {
             return Ok(report);
         }
     }
-    // Copy, then delete what was copied.
+    // Copy, then delete what was copied. Local rename above preserves native links/names;
+    // the fallback must reject anything its portable copy cannot faithfully represent.
+    check_copy_move_source(&src_node)?;
     let mut report = Report::default();
     if stat.dir {
         copy_tree(&src_node, &target, false, None, &mut report)?;
@@ -1454,6 +1733,7 @@ pub fn rename(src: &str, dst: &str) -> Result<Report> {
 /// out of date in the target, and deletes nothing. A source directory named with a trailing `/`
 /// has its contents synchronized into `dst`; without one, it is synchronized to `dst/<name>`.
 pub fn sync(src: &str, dst: &str, options: &SyncOptions) -> Result<Report> {
+    let _cache = HtmlCacheScope::new();
     let src_node = Node::parse(src)?;
     let dst_node = Node::parse(dst)?;
     let stat = stat_node(&src_node)?.ok_or_else(|| not_found(src))?;

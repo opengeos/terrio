@@ -133,12 +133,27 @@ pub(crate) fn list_html(url: &str) -> Result<Option<Vec<ObjectEntry>>> {
     let api = Api::Html { url: url.to_string() };
     let mut client = Client::new(&Remote::Url(html_directory_url(url)), HttpOptions::from_env());
     client.missing_ok = true;
-    let fetched = client.fetch(None)?;
-    if !matches!(fetched.status, 200 | 206) || !String::from_utf8_lossy(&fetched.data).to_ascii_lowercase().contains("<a ") {
+    let response = client.send_range(None)?;
+    super::REQUESTS.fetch_add(1, Ordering::Relaxed);
+    if !matches!(response.status().as_u16(), 200 | 206) {
+        return Ok(None);
+    }
+    let content_type = response.headers().get("content-type").and_then(|v| v.to_str().ok()).unwrap_or("").to_ascii_lowercase();
+    if !content_type.is_empty() && !(content_type.starts_with("text/html") || content_type.starts_with("application/xhtml+xml")) {
+        return Ok(None);
+    }
+    const MAX_HTML_BYTES: u64 = 4 << 20;
+    let mut data = Vec::new();
+    response.into_body().into_reader().take(MAX_HTML_BYTES + 1).read_to_end(&mut data)?;
+    super::BYTES.fetch_add(data.len() as u64, Ordering::Relaxed);
+    if data.len() as u64 > MAX_HTML_BYTES {
+        return Err(Error::InvalidData("HTTP directory index exceeds 4 MiB".into()));
+    }
+    if !String::from_utf8_lossy(&data).to_ascii_lowercase().contains("<a ") {
         return Ok(None);
     }
     let mut out = Vec::new();
-    api.read_page(&fetched.data, &mut out);
+    api.read_page(&data, &mut out);
     Ok(Some(out))
 }
 

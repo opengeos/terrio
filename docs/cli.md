@@ -1072,3 +1072,20 @@ point tie points and rotated affine transforms, without moving pixel corners.
 Writing a PixelIsPoint GeoTIFF requires a CRS. A write with an unknown CRS is
 rejected before creating the file, avoiding a half-pixel origin shift without
 a corresponding raster-type GeoKey.
+
+VSI moves replace existing destination files, as GDAL does, and refuse existing
+destination directories. Local filesystem renames preserve native links and names;
+copy-delete moves between stores or filesystems refuse symbolic links and non-UTF-8
+entries before copying. Keep the source unchanged during a copy-delete move.
+
+Recursive archive extraction rejects parent traversal and symlinks escaping its output
+root. Tar and tar.gz copies and sync stream payloads in one pass after discovery. ZIP
+central directories are indexed once per operation. Local atomic writes follow destination
+symlinks and preserve mode bits, while replacement detaches hard links and does not
+preserve ownership, ACLs or extended attributes.
+
+
+HTTP directory listings reject index pages larger than 4 MiB and stop with an error
+at the object-listing page budget. Binary HTTP responses are not read as index
+pages. Recursive copy/sync refuses nested directory symlinks rather than silently creating
+an empty directory; `--skip-errors` records the refusal in its error report.
