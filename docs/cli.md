@@ -745,7 +745,9 @@ Rasters are read lazily: strips of rows by window (of every band at once), overv
 their own levels, and the binary comparison compares sizes first and then reads a megabyte at a
 time. Comparing two copies of a 51 MB USGS GeoTIFF served over HTTP with `--skip-binary
 --skip-overview` fetched 76.5 MB in 10 requests; the binary comparison of two identical copies
-read both files (103 MB). The MCP tool reports the exit status as a result, not a failure.
+read both files (103 MB). The MCP tool reports query statuses as results, not execution failures.
+On the command line, status 1 can mean either one difference or an execution error;
+check stderr for errors. `pixel-info` similarly uses status 1 for off-raster positions.
 
 Compared with GDAL 3.12.2 in the `raster-query` conformance suite: 21 of 21 cases give the
 same lines and exit status. Differences: CRS mismatch lines print Terrio's WKT where GDAL
