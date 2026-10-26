@@ -55,7 +55,7 @@ impl NeighborMethod {
     }
 
     /// The function of a VRT kernel source (`<Function>`): `None` for sums and means.
-    fn function(self) -> Option<Self> {
+    pub(crate) fn function(self) -> Option<Self> {
         (!matches!(self, Self::Sum | Self::Mean)).then_some(self)
     }
 }
@@ -308,7 +308,9 @@ pub(crate) fn filter(input: &[f32], width: usize, height: usize, k: &Kernel, nod
                 let (mut mean, mut m2) = (0.0f64, 0.0f64);
                 let (mut mode, mut best) = (f64::NAN, 0usize);
                 values.clear();
-                counts.clear();
+                if !counts.is_empty() {
+                    counts.clear();
+                }
                 let mut i = 0;
                 for dy in rows {
                     for dx in cols.clone() {

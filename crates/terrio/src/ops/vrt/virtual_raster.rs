@@ -1165,7 +1165,7 @@ fn filter(
     let size = kernel_size(kernel)?;
     let coefs = coefficients(kernel)?;
     let normalized = kernel.attr("normalized").is_some_and(|v| v == "1" || v.eq_ignore_ascii_case("true"));
-    let function = function.map(|f| NeighborMethod::parse(f.text.trim())).transpose()?;
+    let function = function.map(|f| NeighborMethod::parse(f.text.trim())).transpose()?.and_then(NeighborMethod::function);
     let k = Kernel { size, coefs, normalized, function };
     let input = input.iter().map(|v| *v as f32).collect::<Vec<_>>();
     let out = crate::ops::neighbors::filter(&input, width, height, &k, nodata.map(|v| v as f32));

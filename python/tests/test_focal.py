@@ -73,6 +73,27 @@ def test_collar_api(tmp_path):
         terrio.nearblack(src, colors=["0,0"])
 
 
+@pytest.mark.parametrize("operation", [terrio.nearblack, terrio.clean_collar])
+def test_flat_color_sequences_and_empty_defaults(operation):
+    src = raster(scene())
+    expected = operation(src, colors=[(0, 0, 0)]).read()
+    for colors in ([0, 0, 0], (0, 0, 0)):
+        np.testing.assert_array_equal(operation(src, colors=colors).read(), expected)
+    np.testing.assert_array_equal(operation(src, colors=[]).read(), operation(src).read())
+    np.testing.assert_array_equal(
+        operation(src, colors=[], white=True).read(), operation(src, white=True).read()
+    )
+
+
+def test_enhance_preserves_float64_nodata_precision():
+    nodata = 1.0000000001
+    src = raster(np.array([[nodata, 1.0]], dtype="float64"), nodata)
+    out = terrio.enhance(src, src_scale=(0, 256), ot="Float64")
+    assert out.nodata == nodata
+    assert out.read(1)[0, 0] == nodata
+    assert out.read(1)[0, 1] == 1.0
+
+
 def test_enhance_api(tmp_path):
     a = (np.arange(64, dtype="uint8") * 4).reshape(8, 8)
     src = raster(a)

@@ -1,7 +1,7 @@
 //! `terrio clean-collar` and `terrio nearblack`.
 
 use super::rasterout::{OutputArgs, open_lazy, same_file};
-use terrio::ops::nearblack::{CollarAlgorithm, NearblackOptions, color_bands, keep_alpha_or_mask, nearblack, nearblack_file, parse_color};
+use terrio::ops::nearblack::{CollarRequest, nearblack, nearblack_file};
 
 #[derive(clap::Args)]
 pub struct Args {
@@ -40,14 +40,6 @@ pub struct Args {
 /// Runs `clean-collar` (GDAL's `gdal raster clean-collar` defaults: flood fill, and an alpha band
 /// or mask when the input has one) or `nearblack` (`nearblack`'s: two passes).
 pub fn run(a: Args, clean_collar: bool) -> terrio::Result<()> {
-    if a.color_threshold < 0 || a.pixel_distance < 0 {
-        return Err(terrio::Error::InvalidArgument("--color-threshold and --pixel-distance must not be negative".into()));
-    }
-    let algorithm = match &a.algorithm {
-        Some(s) => CollarAlgorithm::parse(s)?,
-        None if clean_collar => CollarAlgorithm::FloodFill,
-        None => CollarAlgorithm::TwoPasses,
-    };
     let path = match (&a.output, a.update) {
         (Some(o), _) => o.clone(),
         (None, true) => a.input.clone(),
@@ -56,21 +48,17 @@ pub fn run(a: Args, clean_collar: bool) -> terrio::Result<()> {
     let in_place = a.update || same_file(&a.input, &path);
     let mut lazy = open_lazy(&a.input)?;
     let header = lazy.header();
-    let bands = color_bands(&header, a.add_alpha || a.add_mask || clean_collar);
-    let colors = a.colors.iter().map(|c| parse_color(c, bands)).collect::<terrio::Result<Vec<_>>>()?;
-    let mut o = NearblackOptions {
-        colors,
+    let o = CollarRequest {
+        colors: a.colors,
         white: a.white,
         near: a.color_threshold,
         max_non_black: a.pixel_distance,
         set_alpha: a.add_alpha,
         set_mask: a.add_mask,
-        algorithm,
-    };
-    // gdal raster clean-collar keeps the input's alpha band or mask.
-    if clean_collar {
-        keep_alpha_or_mask(&mut o, &header, lazy.has_mask());
+        algorithm: a.algorithm,
+        clean_collar,
     }
+    .resolve(&header, lazy.has_mask())?;
     if in_place {
         drop(lazy);
         return super::quiet(|| nearblack_file(&a.input, &o, &a.out.options()?));

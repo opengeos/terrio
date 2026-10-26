@@ -689,6 +689,18 @@ test("neighbors, collar cleaning and LUT enhancement", () => {
   assert.deepEqual([...terrio.enhance(scene, { config: lut }).readBand(1)], [...eq.readBand(1)]);
   assert.deepEqual([...terrio.enhance(scene, { srcScale: [0, 256] }).readBand(1)], [...img]);
   assert.throws(() => terrio.enhance(scene, {}), /equalize/);
+  assert.throws(() => terrio.cleanCollar(scene, { white: true, colors: "0" }), /exclusive/);
+  for (const [nodata, expected] of [[-9999, 241], [300, 44], [Infinity, 0]]) {
+    const source = terrio.rasterFromArray(new Float64Array([nodata, 128]), 2, 1,
+      [0, 1, 0, 1, 0, -1], "EPSG:32610", nodata);
+    assert.deepEqual([...terrio.enhance(source, { srcScale: [0, 256] }).readBand(1)], [expected, 128]);
+  }
+  const nodata = 1.0000000001;
+  const source = terrio.rasterFromArray(new Float64Array([nodata, 1]), 2, 1,
+    [0, 1, 0, 1, 0, -1], "EPSG:32610", nodata);
+  const precise = terrio.enhance(source, { srcScale: [0, 256], ot: "Float64" });
+  assert.equal(precise.nodata, nodata);
+  assert.deepEqual([...precise.readBand(1)], [nodata, 1]);
 });
 
 test("operations on in-memory rasters and layers", () => {

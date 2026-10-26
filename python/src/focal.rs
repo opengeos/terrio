@@ -6,7 +6,7 @@ use crate::raster::{PyRaster, write_options};
 use crate::{PyResultExt, invalid};
 use pyo3::prelude::*;
 use terrio::ops::enhance::{BandLut, EnhanceOptions};
-use terrio::ops::nearblack::{CollarAlgorithm, NearblackOptions};
+use terrio::ops::nearblack::CollarRequest;
 use terrio::ops::neighbors::{NeighborMethod, NeighborsNodata, NeighborsOptions};
 
 /// Registers the functions in the module.
@@ -32,7 +32,8 @@ fn strings(v: &Bound<'_, PyAny>, what: &str) -> PyResult<Vec<String>> {
 ///
 /// Args:
 ///     src: The raster: a path or a `Raster`.
-///     dst: Also write the result to this path.
+///     dst: Also write the result to this path; the returned Raster and intermediate
+///         output are still held in memory. Use the CLI for strip-based file processing.
 ///     kernel: A kernel or a list of kernels: `"u"`, `"v"`, `"edge1"`, `"edge2"`, `"sharpen"`,
 ///         `"gaussian"`, `"unsharp-masking"`, `"equal"`, or a matrix such as
 ///         `"[[0,1,0],[1,1,1],[0,1,0]]"`. Each input band gives one output band per kernel.
@@ -115,50 +116,42 @@ fn collar(
     tile_size: Option<u32>,
     bigtiff: bool,
 ) -> PyResult<PyRaster> {
-    if color_threshold < 0 || pixel_distance < 0 {
-        return Err(invalid("color_threshold and pixel_distance must not be negative"));
-    }
     let has_mask = keep
         && match raster_path(src)? {
             Some(path) => py.detach(|| terrio::open_raster_lazy(&path)).py()?.has_mask(),
             None => src.cast::<PyRaster>().map_err(|_| invalid("expected a path or a terrio.Raster"))?.borrow().inner.has_mask(),
         };
     let ds = input_raster(py, src)?;
-    let bands = terrio::ops::nearblack::color_bands(&ds, add_alpha || add_mask || keep);
     let colors = match colors {
         None => Vec::new(),
         Some(c) => {
+            let flat = c.extract::<Vec<i32>>().is_ok_and(|v| !v.is_empty());
             let items: Vec<Bound<'_, PyAny>> =
-                if c.extract::<String>().is_ok() { vec![c.clone()] } else { c.try_iter()?.collect::<PyResult<_>>()? };
+                if c.extract::<String>().is_ok() || flat { vec![c.clone()] } else { c.try_iter()?.collect::<PyResult<_>>()? };
             items
                 .iter()
-                .map(|i| match i.extract::<String>() {
-                    Ok(s) => terrio::ops::nearblack::parse_color(&s, bands).py(),
-                    Err(_) => {
-                        i.extract::<Vec<i32>>().map_err(|_| invalid("a color is 'black', 'white', 'r,g,b' or a sequence of integers"))
-                    }
+                .map(|item| match item.extract::<String>() {
+                    Ok(text) => Ok(text),
+                    Err(_) => item
+                        .extract::<Vec<i32>>()
+                        .map(|components| components.iter().map(i32::to_string).collect::<Vec<_>>().join(","))
+                        .map_err(|_| invalid("a color is 'black', 'white', 'r,g,b' or a sequence of integers")),
                 })
                 .collect::<PyResult<Vec<_>>>()?
         }
     };
-    if white && !colors.is_empty() {
-        return Err(invalid("white and colors are exclusive"));
-    }
-    if add_alpha && add_mask {
-        return Err(invalid("add_alpha and add_mask are exclusive"));
-    }
-    let mut o = NearblackOptions {
+    let o = CollarRequest {
         colors,
         white,
         near: color_threshold,
         max_non_black: pixel_distance,
         set_alpha: add_alpha,
         set_mask: add_mask,
-        algorithm: CollarAlgorithm::parse(algorithm).py()?,
-    };
-    if keep {
-        terrio::ops::nearblack::keep_alpha_or_mask(&mut o, &ds, has_mask);
+        algorithm: Some(algorithm.into()),
+        clean_collar: keep,
     }
+    .resolve(&ds, has_mask)
+    .py()?;
     if o.set_mask && dst.is_none() {
         return Err(invalid("a mask (add_mask, or an input with a mask) needs dst, the file that holds it"));
     }
@@ -330,7 +323,8 @@ fn luts(
 ///
 /// Args:
 ///     src: The raster: a path or a `Raster`.
-///     dst: Also write the result to this path.
+///     dst: Also write the result to this path; the returned Raster and intermediate
+///         output are still held in memory. Use the CLI for strip-based file processing.
 ///     equalize: Compute histogram-equalization tables (`gdalenhance -equalize`).
 ///     config: Read the tables from this LUT file (`gdalenhance -config`).
 ///     src_scale: Stretch this `(min, max)` source range linearly over the bins instead.

@@ -764,7 +764,10 @@ terrio neighbors image.tif edges.tif --kernel gaussian --kernel edge2 -b 2 --ot 
 Focal statistics, as GDAL 3.12's `gdal raster neighbors`. Kernels: `u` and `v` (horizontal
 and vertical derivatives), `edge1`, `edge2`, `sharpen`, `gaussian` (3x3 or 5x5),
 `unsharp-masking` (5x5), `equal` (any odd size from 3 to 99), or a matrix written row by row,
-`[[0,1,0],[1,1,1],[0,1,0]]`. `--method` combines the weighted neighbours: `sum`, `mean`, `min`,
+`[[0,1,0],[1,1,1],[0,1,0]]`. Explicit matrices accept any positive odd square size,
+as GDAL 3.13.3 does; the 99 limit applies to `--size`, not matrix dimensions. Filtering
+work grows with pixels times coefficients, and strip margins grow with the kernel radius.
+`--method` combines the weighted neighbours: `sum`, `mean`, `min`,
 `max`, `stddev`, `median` or `mode`; give one for every kernel or one per kernel. The default is
 `sum` for kernels whose coefficients sum to zero (`u`, `v`, `edge1`, `edge2`, zero-sum
 matrices) and `mean` otherwise. Each input band (or the `-b` band) gives one output band per
@@ -843,14 +846,19 @@ buckets. Without an output, the tables are written to `--config` (or printed) in
 `gdalenhance`'s format: a line per band, `1:Band -0.5:ScaleMin 255.5:ScaleMax` and the 256
 entries. Without `--equalize`, `--config` reads such a file. A pixel's bin is
 `(value - ScaleMin) * bins / (ScaleMax - ScaleMin)`, truncated and clamped; nodata pixels keep
-their value. The output keeps the georeferencing, metadata, band descriptions and color
+their value after conversion to the output type. NaN nodata uses the first LUT bin, matching GDAL 3.13.3. The output keeps the georeferencing, metadata, band descriptions and color
 interpretations, and the nodata value of bands of the output type; it is read and written in
 strips (equalization reads the bands whole for their histograms). Equalization, LUT files and
 LUT input are identical to `gdalenhance` on the real comparisons. Terrio extensions:
 `--src-scale MIN MAX` (a linear stretch over the bins, without tables; `gdalenhance` parses
 `-src_scale` but ignores it), `--lut-bins` (256 in GDAL) and `--ot` other than Byte (`gdalenhance`
 refuses it). Byte output casts LUT results modulo 256, matching GDAL (for example,
-a table value of 300 becomes 44); select a wider `--ot` to retain larger values.
+a table value of 300 becomes 44). Byte nodata also truncates and wraps through a signed
+32-bit integer (for example, -9999 becomes 241); values outside that intermediate range
+and infinities become zero. This defines the behavior observed in the GDAL 3.13.3
+reference build; C++ out-of-range conversion can vary by build. Non-Byte outputs preserve
+exact source nodata before output conversion, including Float64 precision.
+Select a wider `--ot` to retain larger LUT values.
 Unlike `gdalenhance`, Terrio does not save the histograms it computes in an
 `.aux.xml` sidecar.
 

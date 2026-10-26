@@ -4,7 +4,8 @@
 //! and, usually, a lookup table giving the output value of each bin. A pixel's bin is
 //! `(value - min) * bins / (max - min)`, truncated and clamped to the bins; its output is the
 //! table's entry for it (the bin itself without a table). Pixels equal to the band's nodata value
-//! become that value.
+//! become that value after output conversion. NaN nodata does not compare equal and uses
+//! the first LUT bin, matching GDAL 3.13.3.
 //!
 //! - [`equalization_luts`] computes histogram-equalization tables as `gdalenhance -equalize`
 //!   does, from the band's default histogram (`gdalinfo -hist`'s, see [`crate::info`]): the
@@ -220,6 +221,15 @@ fn header(src: &RasterDataset, o: &EnhanceOptions) -> Result<RasterDataset> {
     Ok(out)
 }
 
+// Define the Float32-to-Byte conversion observed in GDAL 3.13.3 on the reference
+// build: truncate through a signed 32-bit integer, then retain its low byte.
+// C++ out-of-range float conversion is not portable; use zero explicitly outside
+// that intermediate range, including infinities, rather than Rust's saturating cast.
+fn byte_nodata(value: f32) -> u8 {
+    let value = f64::from(value);
+    if !value.is_finite() || value < i32::MIN as f64 || value >= (i32::MAX as f64 + 1.) { 0 } else { (value as i32) as u8 }
+}
+
 /// Enhances the bands of `strip` (all the input's bands, in order), in the output type.
 fn apply(strip: &RasterDataset, nodata: &[Option<f64>], luts: &[BandLut], o: &EnhanceOptions) -> RasterData {
     use crate::pixel::Pixel;
@@ -233,10 +243,11 @@ fn apply(strip: &RasterDataset, nodata: &[Option<f64>], luts: &[BandLut], o: &En
         let byte = o.output_type == DataType::U8;
         crate::pixel::with_data!(&mut data, d => {
             for i in 0..n {
-                let v = src.get(i) as f32;
-                let value = if nd == Some(v) {
-                    // GDAL casts the nodata value to a byte.
-                    if byte { f64::from(v as u8) } else { f64::from(v) }
+                let original = src.get(i);
+                let v = original as f32;
+                let is_nodata = if byte { nd == Some(v) } else { nodata[b] == Some(original) };
+                let value = if is_nodata {
+                    if byte { f64::from(byte_nodata(v)) } else { original }
                 } else {
                     let bin = (f64::from(v) - l.min) * scale;
                     // GDAL's tests, NaN included: not above 0 is bin 0, not below the last bin the last.
@@ -357,6 +368,29 @@ mod tests {
         let ds = super::super::build_raster_data(grid, RasterData::U8(vec![1]), 1, None, &Default::default()).unwrap();
         let luts = vec![BandLut { min: 0., max: 16., lut: Some(vec![300; 256]) }];
         assert_eq!(enhance(&ds, &luts, &EnhanceOptions::default()).unwrap().raster.data.to_f64_vec(), vec![44.]);
+    }
+
+    #[test]
+    fn byte_nodata_conversion_matches_gdal_313_reference_build() {
+        for (nodata, expected) in [(-9999., 241.), (300., 44.), (1e30, 0.), (f64::INFINITY, 0.)] {
+            let grid = super::super::Grid { width: 2, height: 1, geo_transform: [0., 1., 0., 1., 0., -1.] };
+            let ds =
+                super::super::build_raster_data(grid, RasterData::F64(vec![nodata, 128.]), 1, Some(nodata), &Default::default()).unwrap();
+            let luts = linear_luts(1, -0.5, 255.5).unwrap();
+            let out = enhance(&ds, &luts, &EnhanceOptions::default()).unwrap();
+            assert_eq!(out.raster.data.to_f64_vec(), vec![expected, 128.]);
+        }
+    }
+
+    #[test]
+    fn float64_output_preserves_exact_nodata_without_widening_its_match() {
+        let nodata = 1.0000000001;
+        let grid = super::super::Grid { width: 2, height: 1, geo_transform: [0., 1., 0., 1., 0., -1.] };
+        let ds = super::super::build_raster_data(grid, RasterData::F64(vec![nodata, 1.]), 1, Some(nodata), &Default::default()).unwrap();
+        let luts = vec![BandLut { min: 0., max: 256., lut: Some(vec![42; 256]) }];
+        let out = enhance(&ds, &luts, &EnhanceOptions { output_type: DataType::F64, ..Default::default() }).unwrap();
+        assert_eq!(out.raster.data.to_f64_vec(), vec![nodata, 42.]);
+        assert_eq!(out.band_nodata(1), Some(nodata));
     }
 
     #[test]

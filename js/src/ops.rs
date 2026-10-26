@@ -1420,37 +1420,24 @@ impl Default for CollarArgs {
 }
 
 fn collar(src: JsValue, options: JsValue, clean_collar: bool) -> Result<Dataset, JsError> {
-    use terrio::ops::nearblack::{CollarAlgorithm, NearblackOptions};
+    use terrio::ops::nearblack::CollarRequest;
     let a: CollarArgs = parse_options(&options)?;
     if a.add_mask {
         return Err(invalid("addMask is not supported in JavaScript, whose Datasets hold no mask: use addAlpha"));
     }
-    if a.color_threshold < 0 || a.pixel_distance < 0 {
-        return Err(invalid("colorThreshold and pixelDistance must not be negative"));
-    }
-    let colors = a.colors.into_vec();
-    if a.white && !colors.is_empty() {
-        return Err(invalid("white and colors are exclusive"));
-    }
     let ds = input_raster(&src)?;
-    let bands = terrio::ops::nearblack::color_bands(&ds, a.add_alpha || clean_collar);
-    let algorithm = match a.algorithm.as_deref() {
-        Some(s) => CollarAlgorithm::parse(s).map_err(js_err)?,
-        None if clean_collar => CollarAlgorithm::FloodFill,
-        None => CollarAlgorithm::TwoPasses,
-    };
-    let mut o = NearblackOptions {
-        colors: colors.iter().map(|c| terrio::ops::nearblack::parse_color(c, bands)).collect::<terrio::Result<_>>().map_err(js_err)?,
+    let o = CollarRequest {
+        colors: a.colors.into_vec(),
         white: a.white,
         near: a.color_threshold,
         max_non_black: a.pixel_distance,
         set_alpha: a.add_alpha,
         set_mask: false,
-        algorithm,
-    };
-    if clean_collar {
-        terrio::ops::nearblack::keep_alpha_or_mask(&mut o, &ds, false);
+        algorithm: a.algorithm,
+        clean_collar,
     }
+    .resolve(&ds, false)
+    .map_err(js_err)?;
     Ok(Dataset::from_raster(terrio::ops::nearblack::nearblack(&ds, &o).map_err(js_err)?.dataset))
 }
 

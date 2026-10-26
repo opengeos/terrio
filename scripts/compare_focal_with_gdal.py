@@ -72,6 +72,16 @@ def prepare(data, work):
         path = str(work / f"{name}.tif")
         run(["nearblack", "-q", flag, "-nb", "0", "-near", "0", "-o", path, paths["landsat7"]])
         paths[name] = path
+    for label, nodata in [("fractional", 1.0000000001), ("negative", -9999.), ("above_byte", 300.),
+                          ("huge", 1e30), ("infinity", float("inf")), ("nan", float("nan"))]:
+        path = str(work / f"enhance_nodata_{label}.tif")
+        ds = gdal.Translate(path, paths["dem"], srcWin=[0, 0, 8, 8], outputType=gdal.GDT_Float64, noData=nodata)
+        band = ds.GetRasterBand(1)
+        values = band.ReadAsArray()
+        values[0, 0] = nodata
+        band.WriteArray(values)
+        ds = None
+        paths[f"enhance_nodata_{label}"] = path
     return paths
 
 
@@ -136,6 +146,8 @@ def collar_cases(p):
         for opts in ([], ["--add-mask"], ["--algorithm", "twopasses", "--pixel-distance", "3"]):
             name = " ".join(opts) or "default"
             cases.append({"name": f"clean-collar update {src} {name}", "kind": "update", "src": p[src], "gdal": opts, "terrio": opts})
+    cases.append({"name": "nearblack update keeps existing mask without mask flags", "kind": "nearblack-update",
+                  "src": p["landsat7_mask"]})
     return cases
 
 
@@ -148,7 +160,11 @@ def enhance_cases(p):
     Returns:
         list: Cases.
     """
-    return [{"name": f"enhance {src}", "kind": "enhance", "src": p[src]} for src in ("tci", "landsat7", "red", "dem")]
+    cases = [{"name": f"enhance {src}", "kind": "enhance", "src": p[src]} for src in ("tci", "landsat7", "red", "dem")]
+    cases.extend({"name": f"enhance Byte nodata {label}", "kind": "enhance-nodata", "src": path}
+                 for key, path in p.items() if key.startswith("enhance_nodata_")
+                 for label in [key.removeprefix("enhance_nodata_")])
+    return cases
 
 
 def mask_mismatch(gdal_path, terrio_path):
@@ -236,6 +252,16 @@ def run_case(case, terrio, work, i):
         shutil.copy(case["src"], tout)
         run(["gdal", "raster", "clean-collar", "-q", "--update", *case["gdal"], gout])
         run([terrio, "clean-collar", "--update", tout, *case["terrio"]])
+    elif kind == "nearblack-update":
+        gdal.Translate(gout, case["src"])
+        gdal.Translate(tout, case["src"])
+        run(["nearblack", "-q", "-o", gout, gout])
+        run([terrio, "nearblack", "--update", tout])
+    elif kind == "enhance-nodata":
+        config = str(work / f"nodata_lut_{i}.txt")
+        Path(config).write_text("1:Band -0.5:ScaleMin 255.5:ScaleMax " + " ".join(map(str, range(256))) + "\n")
+        run(["gdalenhance", "-quiet", "-config", config, case["src"], gout])
+        run([terrio, "enhance", case["src"], tout, "--config", config])
     elif kind == "enhance":
         return enhance(case, terrio, work, i)
     result = compare(gout, tout, 0)
@@ -249,7 +275,8 @@ def run_case(case, terrio, work, i):
         g, t, f = (gdal.Open(x).ReadAsArray() for x in (gout, tout, fresh))
         result = compare(gout, tout, 0)
         result["differing"] = int((g[:3] != t[:3]).sum()) + int((f[3] != t[3]).sum())
-        result["exact"] = 1.0 if result["differing"] == 0 else 0.0
+        result["exact"] = 1 - result["differing"] / t.size
+        result["within_tol"] = result["exact"]
         result["max_diff"] = 0.0 if result["differing"] == 0 else result["max_diff"]
         result["gdal_stale_alpha"] = int((g[3] != f[3]).sum())
         result["name"] = case["name"] + " (alpha vs GDAL's new-file output)"

@@ -78,6 +78,77 @@ impl Default for NearblackOptions {
     }
 }
 
+/// User-facing collar options shared by the CLI and language bindings.
+/// Resolving a request applies command defaults and interprets colors against the
+/// source's non-alpha band count before running either collar algorithm.
+#[derive(Debug, Clone)]
+pub struct CollarRequest {
+    /// `black`, `white`, or comma-separated color components; empty uses the default.
+    pub colors: Vec<String>,
+    /// Use nearly white pixels instead of nearly black pixels.
+    pub white: bool,
+    /// Maximum distance from a collar color (15 by default).
+    pub near: i32,
+    /// Consecutive non-collar pixels tolerated (2 by default).
+    pub max_non_black: i32,
+    /// Request an alpha band.
+    pub set_alpha: bool,
+    /// Request a mask.
+    pub set_mask: bool,
+    /// Explicit algorithm, or the command's default when absent.
+    pub algorithm: Option<String>,
+    /// Apply clean-collar defaults, including retaining input alpha/mask.
+    pub clean_collar: bool,
+}
+
+impl Default for CollarRequest {
+    fn default() -> Self {
+        Self {
+            colors: Vec::new(),
+            white: false,
+            near: 15,
+            max_non_black: 2,
+            set_alpha: false,
+            set_mask: false,
+            algorithm: None,
+            clean_collar: false,
+        }
+    }
+}
+
+impl CollarRequest {
+    /// Resolves command defaults, validating conflicting options and numeric bounds.
+    pub fn resolve(&self, source: &RasterDataset, has_mask: bool) -> Result<NearblackOptions> {
+        if self.near < 0 || self.max_non_black < 0 {
+            return Err(Error::InvalidArgument("color threshold and pixel distance must not be negative".into()));
+        }
+        if self.white && !self.colors.is_empty() {
+            return Err(Error::InvalidArgument("white and colors are exclusive".into()));
+        }
+        if self.set_alpha && self.set_mask {
+            return Err(Error::InvalidArgument("alpha and mask are exclusive".into()));
+        }
+        let bands = color_bands(source, self.set_alpha || self.set_mask || self.clean_collar);
+        let mut options = NearblackOptions {
+            colors: self.colors.iter().map(|color| parse_color(color, bands)).collect::<Result<_>>()?,
+            white: self.white,
+            near: self.near,
+            max_non_black: self.max_non_black,
+            set_alpha: self.set_alpha,
+            set_mask: self.set_mask,
+            algorithm: match self.algorithm.as_deref() {
+                Some(value) => CollarAlgorithm::parse(value)?,
+                None if self.clean_collar => CollarAlgorithm::FloodFill,
+                None => CollarAlgorithm::TwoPasses,
+            },
+        };
+        if self.clean_collar {
+            keep_alpha_or_mask(&mut options, source, has_mask);
+        }
+        Ok(options)
+    }
+}
+
 /// Parses a `--color` value: `black`, `white` (for `bands` bands) or integers separated by
 /// commas (`r,g,b`).
 pub fn parse_color(s: &str, bands: usize) -> Result<Vec<i32>> {
@@ -263,6 +334,8 @@ fn two_passes(img: &mut Image, p: &Params) {
             let y = if pass == 0 { k } else { h - 1 - k };
             let line = &mut img.data[y * w * db..(y + 1) * w * db];
             let mut mask = img.mask.as_deref_mut().map(|m| &mut m[y * w..(y + 1) * w]);
+            // GDAL 3.13.3 passes these same exclusive endpoints (0, width-1)
+            // and (width-1, 0); keep its scan order rather than extending a pass.
             process_line(line, mask.as_deref_mut(), 0, last, sb, db, p, &mut counts, true, true, pass == 1, k);
             process_line(line, mask, last, 0, sb, db, p, &mut counts, true, false, pass == 1, k);
         }
@@ -660,6 +733,24 @@ mod tests {
         let o = NearblackOptions { colors: vec![vec![255, 0, 0]], max_non_black: 0, ..Default::default() };
         assert_eq!(values(&nearblack(&ds, &o).unwrap()), vec![255; 12]);
         assert_eq!(values(&nearblack(&ds, &NearblackOptions { algorithm: CollarAlgorithm::FloodFill, ..o }).unwrap()), vec![0; 12]);
+    }
+
+    #[test]
+    fn collar_request_shares_command_defaults_and_color_resolution() {
+        let grid = Grid { width: 1, height: 1, geo_transform: [0., 1., 0., 1., 0., -1.] };
+        let mut ds = super::super::build_raster_data(grid, RasterData::U8(vec![0, 0, 0, 255]), 4, None, &Default::default()).unwrap();
+        ds.band_metadata.resize_with(4, Default::default);
+        ds.band_metadata[3].color_interp = Some("Alpha".into());
+        let plain = CollarRequest { colors: vec!["black".into()], ..Default::default() }.resolve(&ds, true).unwrap();
+        assert_eq!(plain.algorithm, CollarAlgorithm::TwoPasses);
+        assert_eq!(plain.colors, vec![vec![0; 4]]);
+        assert!(!plain.set_alpha && !plain.set_mask);
+        let clean = CollarRequest { colors: vec!["white".into()], clean_collar: true, ..Default::default() }.resolve(&ds, true).unwrap();
+        assert_eq!(clean.algorithm, CollarAlgorithm::FloodFill);
+        assert_eq!(clean.colors, vec![vec![255; 3]]);
+        assert!(clean.set_alpha && !clean.set_mask);
+        assert!(CollarRequest { set_alpha: true, set_mask: true, ..Default::default() }.resolve(&ds, false).is_err());
+        assert!(CollarRequest { near: -1, ..Default::default() }.resolve(&ds, false).is_err());
     }
 
     #[test]
