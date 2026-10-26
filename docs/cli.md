@@ -1037,7 +1037,9 @@ A 1×1 unnormalized VRT kernel is applied once, matching GDAL 3.13.3
 
 `KernelFilteredSource` supports odd full/separable kernels, normalization and
 `min`, `max`, `stddev`, `median` and `mode`. Kernels read the necessary halo and
-replicate source edges as GDAL does. Explicit dataset masks, `SourceBand mask,N`
+replicate source edges as GDAL does. The 3–99 limit applies to `--size`; explicit matrices
+can be larger odd squares, matching GDAL. Their work per pixel grows with the
+number of coefficients. Explicit dataset masks, `SourceBand mask,N`
 and `ComplexSource` with `UseMaskBand` are read lazily.
 
 Mixed native band types use a common numeric buffer selected with GDAL-style

@@ -1953,6 +1953,18 @@ mod tests {
             source("KernelFilteredSource", "<Kernel><Size>2</Size><Coefs>1 1 1 1</Coefs></Kernel>")
         ));
         assert!(VirtualRaster::from_xml(&bad).is_err());
+        // GDAL 3.13.3 rejects these KernelFilteredSource Function names, even
+        // though sum/mean are supported by the separate neighbors operation.
+        for function in ["sum", "mean", "mystery"] {
+            let xml = document(&format!(
+                "<VRTRasterBand>{}</VRTRasterBand>",
+                source(
+                    "KernelFilteredSource",
+                    &format!("<Kernel><Size>3</Size><Coefs>1 1 1 1 1 1 1 1 1</Coefs></Kernel><Function>{function}</Function>")
+                )
+            ));
+            assert!(VirtualRaster::from_xml(&xml).is_err(), "{function}");
+        }
     }
 }
 

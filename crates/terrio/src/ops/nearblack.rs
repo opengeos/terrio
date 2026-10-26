@@ -679,6 +679,23 @@ mod tests {
     }
 
     #[test]
+    fn rgba_mask_processing_retains_alpha_only_in_place_like_gdal_313() {
+        let grid = Grid { width: 3, height: 1, geo_transform: [0., 1., 0., 1., 0., -1.] };
+        let pixels = vec![0, 120, 0, 0, 120, 0, 0, 120, 0, 64, 64, 64];
+        let mut ds = super::super::build_raster_data(grid, RasterData::U8(pixels), 4, None, &Default::default()).unwrap();
+        ds.band_metadata.resize(4, Default::default());
+        ds.band_metadata[3].color_interp = Some("Alpha".into());
+        let o = NearblackOptions { set_mask: true, max_non_black: 0, ..Default::default() };
+        let copied = nearblack(&ds, &o).unwrap();
+        assert_eq!(copied.dataset.band_count(), 3);
+        assert_eq!(copied.mask, Some(vec![0, 255, 0]));
+        let mask = nearblack_in_place(&mut ds, &o).unwrap();
+        assert_eq!(mask, copied.mask);
+        assert_eq!(ds.band_count(), 4);
+        assert_eq!(&ds.raster.data.to_f64_vec()[9..], &[64., 64., 64.]);
+    }
+
+    #[test]
     fn alpha_and_mask_are_exclusive_for_both_core_paths() {
         let mut ds = image(2, 2, &[0; 4]);
         let o = NearblackOptions { set_alpha: true, set_mask: true, ..Default::default() };
