@@ -529,13 +529,19 @@ pub fn neighbors_to_path(src: &mut LazyRaster, o: &NeighborsOptions, path: &str,
     let p = Plan::new(&header, o)?;
     let inputs = input_bands(&p.bands).len();
     let rows = super::strips::strip_rows(src.width(), p.bands.len() + inputs, 8, src.block_size().map(|b| b.1));
-    in_strips(src, o, path, options, rows)
+    in_strips(src, o, p, path, options, rows)
 }
 
 /// [`neighbors_to_path`] in strips of `rows` rows.
-fn in_strips(src: &mut LazyRaster, o: &NeighborsOptions, path: &str, options: &crate::RasterWriteOptions, rows: usize) -> Result<()> {
+fn in_strips(
+    src: &mut LazyRaster,
+    o: &NeighborsOptions,
+    p: Plan,
+    path: &str,
+    options: &crate::RasterWriteOptions,
+    rows: usize,
+) -> Result<()> {
     let header = src.header();
-    let p = Plan::new(&header, o)?;
     let (w, h) = (src.width(), src.height());
     let inputs = input_bands(&p.bands);
     let mut out = super::strips::StripWriter::create(&p.header(&header, o)?, path, options)?;
@@ -628,7 +634,7 @@ mod tests {
             let whole = neighbors(&ds, &o).unwrap();
             let path = dir.path().join("strips.tif");
             let path = path.to_str().unwrap();
-            in_strips(&mut LazyRaster::from(ds.clone()), &o, path, &Default::default(), 5).unwrap();
+            in_strips(&mut LazyRaster::from(ds.clone()), &o, Plan::new(&ds, &o).unwrap(), path, &Default::default(), 5).unwrap();
             let read = crate::open_raster(path).unwrap();
             assert_eq!(read.raster.data.to_f64_vec(), whole.raster.data.to_f64_vec());
             assert_eq!(read.band_nodata(1), Some(-3.0));
