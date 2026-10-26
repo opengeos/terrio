@@ -73,6 +73,9 @@ pub struct VectorTranslateOptions {
     /// [`crate::ops::vector_geom::GeometryOp`]. A simplification that fails leaves the geometry
     /// unchanged, as `ogr2ogr -simplify` does; other operations' errors fail the translation.
     pub geometry_op: Option<crate::ops::vector_geom::GeometryOp>,
+    /// Propagate simplification failures instead of preserving the original geometry.
+    /// Standalone geometry commands set this; ogr2ogr-compatible conversion leaves it false.
+    pub strict_geometry_op: bool,
     /// `-s_srs`: the CRS of the input, overriding what the layer declares.
     pub src_srs: Option<SpatialRef>,
     /// `-t_srs`: reproject into this CRS.
@@ -275,7 +278,9 @@ impl Translator {
             let features = std::mem::take(&mut out.features);
             out.features.reserve(features.len());
             for mut f in features {
-                if let GeometryOp::Simplify { tolerance } = op {
+                if let GeometryOp::Simplify { tolerance } = op
+                    && !o.strict_geometry_op
+                {
                     if let Some(g) = &f.geometry
                         && let Ok(simple) = crate::ops::simplify::simplify_preserve_topology(g, *tolerance)
                     {

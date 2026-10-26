@@ -455,6 +455,7 @@ fn convert(
         geometry_type: nlt.map(GeometryConversion::parse).transpose().py()?,
         explode_collections: explodecollections,
         geometry_op,
+        strict_geometry_op: false,
         src_srs: srs(s_srs)?,
         dst_srs: t_srs.clone(),
         assign_srs: srs(a_srs)?,

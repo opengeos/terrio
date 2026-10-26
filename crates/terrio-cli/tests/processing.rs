@@ -286,3 +286,19 @@ fn vector_geometry_commands_stream_and_write_whole_layers() {
         assert!(!run(bad, d).status.success(), "{bad:?} should fail");
     }
 }
+
+#[test]
+fn standalone_simplify_propagates_errors_on_streamed_and_whole_layer_paths() {
+    let tmp = tempfile::tempdir().unwrap();
+    let d = tmp.path();
+    std::fs::write(d.join("singleton.geojson"), r#"{"type":"FeatureCollection","features":[{"type":"Feature","properties":{},"geometry":{"type":"LineString","coordinates":[[1,2]]}}]}"#).unwrap();
+    for extra in [None, Some("--overwrite")] {
+        let mut args = vec!["simplify", "singleton.geojson", "simplified.geojson", "--tolerance", "1"];
+        args.extend(extra);
+        let output = run(&args, d);
+        assert!(!output.status.success(), "{args:?}");
+        assert!(String::from_utf8_lossy(&output.stderr).contains("at least two points"));
+    }
+    ok(&["convert", "singleton.geojson", "converted.geojson", "--simplify", "1"], d);
+    assert_eq!(first(&d.join("converted.geojson")).features[0].geometry.as_ref().unwrap().all_coords().len(), 1);
+}

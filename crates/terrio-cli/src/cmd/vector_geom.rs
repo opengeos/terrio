@@ -23,6 +23,7 @@ fn run_op(input: &VectorInput, output: &VectorOutput, op: GeometryOp) -> Result<
             translate: terrio::ops::vector_filter::VectorTranslateOptions {
                 layer_name: output.nln.clone(),
                 geometry_op: Some(op.clone()),
+                strict_geometry_op: true,
                 ..Default::default()
             },
             write: terrio::VectorWriteOptions { driver, ..Default::default() },

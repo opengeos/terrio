@@ -107,6 +107,7 @@ impl VectorArgs {
             geometry_type: self.nlt.as_deref().map(GeometryConversion::parse).transpose()?,
             explode_collections: self.explodecollections,
             geometry_op: self.geometry_op(),
+            strict_geometry_op: false,
             src_srs: srs(&self.s_srs)?,
             dst_srs: t_srs,
             assign_srs: srs(&self.a_srs)?,
