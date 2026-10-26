@@ -674,19 +674,18 @@ fn six_decimals(v: f64) -> f64 {
 pub fn coordinates(parts: &Layer, position: f64) -> Result<Vec<[f64; 3]>> {
     let (b, e, s) = part_fields(parts)?;
     let p = six_decimals(position);
-    let mut any = false;
     let mut out = Vec::new();
     for f in &parts.features {
         let (beg, end) = (as_double(f.attributes.get(b)), as_double(f.attributes.get(e)));
         if !(beg < p && end > p) {
             continue;
         }
-        any = true;
-        let Some(line) = part_line(f.geometry.as_ref()) else { continue };
+        let line = part_line(f.geometry.as_ref())
+            .ok_or_else(|| Error::InvalidArgument("a part spanning the position has no single LineString geometry".into()))?;
         let pt = line.value((position - beg) * as_double(f.attributes.get(s)))?;
         out.push([pt.x, pt.y, pt.z]);
     }
-    if !any {
+    if out.is_empty() {
         return Err(Error::InvalidArgument(format!("get coordinates for position {position:.6} failed")));
     }
     Ok(out)
@@ -808,6 +807,18 @@ mod tests {
         assert!((cs[0].x - 115.0).abs() < 1e-9 && cs[0].y == 0.0);
         let last = cs.last().unwrap();
         assert!((last.x - 1000.0).abs() < 1e-9 && (last.y - 300.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn coordinates_rejects_malformed_spanning_parts() {
+        let (lines, repers) = layers();
+        let options = LineRefOptions { position_field: "pos".into(), step: 500., ..Default::default() };
+        let mut parts = create_reference(&lines, &repers, &options).unwrap();
+        // Keep a valid match too: returning a partial result would hide the bad part.
+        parts.features.push(parts.features[0].clone());
+        parts.features[0].geometry = None;
+        let error = coordinates(&parts, 1250.).unwrap_err();
+        assert!(error.to_string().contains("no single LineString"));
     }
 
     #[test]

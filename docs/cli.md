@@ -829,7 +829,11 @@ dense inputs.
 The algorithms are ported from GDAL 3.13's `gdalgrid.cpp`: the search ellipse and its
 rotation, GDAL's switch from scanning every point to searching its quadtree above 100 points,
 and the order the quadtree returns points in (which decides ties and the rounding of sums) are
-reproduced. Many cases agree exactly; linear triangulation and SIMD arithmetic have the
+reproduced. With one zero ellipse semi-axis, the scan accepts an unbounded line through
+the node while the quadtree search clips its candidates to a square of half-width equal
+to the other semi-axis; Terrio preserves this GDAL 3.13.3 behavior across the threshold.
+Unbounded `average`, `minimum`, `maximum`, `range` and `count` compute their constant
+value once per output block. Many cases agree exactly; linear triangulation and SIMD arithmetic have the
 tolerances and known differences reported in
 [Testing](testing.md#vector-gridding-and-linear-referencing-against-gdal). Known differences:
 

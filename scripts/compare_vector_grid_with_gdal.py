@@ -25,7 +25,7 @@ from pathlib import Path
 
 from osgeo import gdal, osr
 
-from compare_dem_calc_with_gdal import compare, format_row, run
+from compare_dem_calc_with_gdal import compare, format_row as format_raster_row, run
 
 gdal.UseExceptions()
 
@@ -98,6 +98,11 @@ def cases(inputs):
         "invdistnn:radius=4:min_points=3:smoothing=0.5",
         "invdistnn:radius=4:min_points_per_quadrant=1:max_points_per_quadrant=3",
         "invdist:radius=4:max_points_per_quadrant=2",
+        "average",
+        "minimum",
+        "maximum",
+        "range",
+        "count",
         "average:radius1=3:radius2=2",
         "average:radius=3:max_points_per_quadrant=2:max_points=6",
         "average:radius=3:min_points_per_quadrant=1",
@@ -257,6 +262,14 @@ def cases(inputs):
     return out
 
 
+def format_row(result):
+    """Formats raster agreement together with the separately checked CRS."""
+    row = format_raster_row(result)
+    if "error" in result:
+        return row
+    return row + (" crs=ok" if result.get("same_crs") else " crs=DIFF")
+
+
 def main():
     """Runs and reports the comparisons."""
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
@@ -297,7 +310,7 @@ def main():
             shutil.rmtree(work, ignore_errors=True)
     if args.json:
         print(json.dumps(results, indent=1))
-    return 0
+    return int(any("error" in result for result in results))
 
 
 if __name__ == "__main__":

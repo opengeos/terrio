@@ -390,14 +390,7 @@ impl GridAlgorithm {
             GridMethod::AverageDistancePoints if self.per_quadrant() => {
                 Err(Error::Unsupported("algorithm average_distance_pts not supported when per quadrant parameters are specified".into()))
             }
-            _ => {
-                if self.method == GridMethod::Average && !self.per_quadrant() && self.max_points > 0 {
-                    crate::warnings::warn(
-                        "max_points is ignored unless one of min_points_per_quadrant or max_points_per_quadrant is >= 1".into(),
-                    );
-                }
-                Ok(())
-            }
+            _ => Ok(()),
         }
     }
 
@@ -833,6 +826,18 @@ impl<'a> Engine<'a> {
         if self.alg.method == GridMethod::AverageDistancePoints && !self.quadtree && self.unbounded_scan() {
             // Every point is in the ellipse of every node: the same value everywhere.
             let v = self.average_distance_points(0.0, 0.0, &mut Vec::new());
+            out.fill(v);
+            return;
+        }
+        if !self.quadtree
+            && self.unbounded_scan()
+            && matches!(
+                self.alg.method,
+                GridMethod::Average | GridMethod::Minimum | GridMethod::Maximum | GridMethod::Range | GridMethod::Count
+            )
+        {
+            // Every point contributes at every node, in the same order.
+            let v = self.ellipse_metric(self.alg.method, 0.0, 0.0, &mut Vec::new());
             out.fill(v);
             return;
         }
@@ -1840,6 +1845,31 @@ mod tests {
     fn grid(x: &[f64], y: &[f64], z: &[f64], a: &GridAlgorithm, e: [f64; 4], cols: usize, rows: usize) -> Vec<f64> {
         let extent = GridExtent { x_min: e[0], y_min: e[1], x_max: e[2], y_max: e[3], cols, rows };
         grid_points(x, y, z, a, &extent, DataType::F64, 1).unwrap()
+    }
+
+    #[test]
+    fn unbounded_metrics_are_constant_and_honor_minimum_points() {
+        for (name, expected) in [("average", 4.0), ("minimum", 1.0), ("maximum", 9.0), ("range", 8.0), ("count", 3.0)] {
+            let a = GridAlgorithm::parse(name).unwrap();
+            assert_eq!(grid(&[1., 2., 8.], &[3., 7., 9.], &[1., 2., 9.], &a, [-100., -100., 100., 100.], 9, 4), vec![expected; 36]);
+            let a = GridAlgorithm::parse(&format!("{name}:min_points=4:nodata=-1")).unwrap();
+            assert_eq!(grid(&[1., 2., 8.], &[3., 7., 9.], &[1., 2., 9.], &a, [-100., -100., 100., 100.], 9, 4), vec![-1.; 36]);
+        }
+    }
+
+    #[test]
+    fn one_zero_axis_matches_gdal_scan_and_quadtree() {
+        // GDAL 3.13.3 clips the quadtree query to a square even though the ellipse
+        // degenerates into an unbounded line. Preserve its 100-point threshold.
+        for (n, count, average, distance) in [(99, 99., 49., 33.333333333333336), (101, 3., 50., 0.8)] {
+            let x = vec![0.; n];
+            let y: Vec<f64> = (0..n).map(|i| i as f64 - (n / 2) as f64).collect();
+            let z: Vec<f64> = (0..n).map(|i| i as f64).collect();
+            for (name, expected) in [("count", count), ("average", average), ("average_distance_pts", distance)] {
+                let a = GridAlgorithm::parse(&format!("{name}:radius1=0:radius2=1")).unwrap();
+                assert_eq!(grid(&x, &y, &z, &a, [-0.5, -0.5, 0.5, 0.5], 1, 1), vec![expected]);
+            }
+        }
     }
 
     #[test]

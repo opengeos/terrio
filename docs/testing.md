@@ -174,8 +174,8 @@ places, above GDAL's 100-point quadtree threshold, and 89 Peruvian ones, below i
 of the Autzen lidar (3D) with every algorithm, ellipse, rotation, point limit and per-quadrant
 limit, and every option, and compares every pixel, the type, nodata and geotransform with
 `gdal_grid` (run with `GDAL_USE_AVX=NO GDAL_USE_SSE=NO`, GDAL's double-precision code; one case
-compares its default SIMD code within a tolerance). In a local environment with GDAL 3.13.3: 99
-cases, 92 identical, 5 within tolerance (`linear` on scattered points, 4.7e-9 on populations of
+compares its default SIMD code within a tolerance). In a local environment with GDAL 3.13.3: 104
+cases, 97 identical, 5 within tolerance (`linear` on scattered points, 4.7e-9 on populations of
 1e7 and 1.7e-13 on elevations, identical in Float32; the SIMD `invdist`, single precision, up to
 265 on populations) and 2 differing (`linear` on the regular grid off its nodes, 229 of 400 and
 1261 of 2451 pixels, where qhull breaks co-circular ties differently). GDAL 3.12 scans every
