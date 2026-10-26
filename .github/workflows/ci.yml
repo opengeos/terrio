@@ -18,15 +18,13 @@ env:
   CARGO_INCREMENTAL: 0
 
 jobs:
-  # Linux only: macOS and Windows run in ci-platforms.yml, on every push to main and, for pull
-  # requests, by hand or with the label ci:macos, ci:windows or ci:all.
-  # The npm package and the conformance report run in ci-extended.yml, on the same terms (labels
-  # ci:npm, ci:conformance or ci:all).
-
-  # Whether the real-data job runs: on every push to main, and for pull requests that change
-  # anything but documentation, the npm package (js/, tested by the wasm job) or other workflows.
+  # Whether the real-data job runs: on every push to main, and for pull requests unless they
+  # change only documentation, the npm package's JavaScript (js/, tested by the wasm job) or
+  # other workflows. When the file list is unavailable, it runs.
   changes:
     runs-on: ubuntu-latest
+    permissions:
+      pull-requests: read
     outputs:
       real-data: ${{ steps.pick.outputs.real-data }}
     steps:
@@ -40,17 +38,27 @@ jobs:
             echo "real-data=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          files=$(gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR/files" -q '.[].filename')
+          # The paths a file was renamed from count too.
+          if ! files=$(gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR/files" -q '.[] | .filename, (.previous_filename // empty)'); then
+            echo "real-data=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           echo "$files"
-          # The files that cannot change its results; ci.yml itself can.
+          # The files that cannot change its results. ci.yml can, and so can the js crate's Rust
+          # code: js is a workspace member, built and tested natively by cargo test --workspace.
           skip='^(docs/|site/|js/|packaging/|\.github/|[^/]+\.md$|zensical\.toml$|requirements_docs\.txt$|CITATION\.cff$|about\.(hbs|toml)$)'
-          if echo "$files" | grep -Evq "$skip" || echo "$files" | grep -qx '.github/workflows/ci.yml'; then
+          keep='^(\.github/workflows/ci\.yml|js/.*\.rs|js/Cargo\.toml)$'
+          if echo "$files" | grep -Evq "$skip" || echo "$files" | grep -Eq "$keep"; then
             echo "real-data=true" >> "$GITHUB_OUTPUT"
           else
             echo "real-data=false" >> "$GITHUB_OUTPUT"
             echo "Real-data job skipped: no file it depends on changed."
           fi
 
+  # Linux only: macOS and Windows run in ci-platforms.yml, on every push to main and, for pull
+  # requests, by hand or with the label ci:macos, ci:windows or ci:all.
+  # The npm package and the conformance report run in ci-extended.yml, on the same terms (labels
+  # ci:npm, ci:conformance or ci:all).
   check:
     name: ${{ matrix.os }}
     runs-on: ${{ matrix.os }}

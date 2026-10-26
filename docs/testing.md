@@ -190,13 +190,14 @@ asked for them:
 
 | Job | Pull requests |
 | --- | --- |
-| real data vs GDAL (`ci.yml`) | Runs unless the PR changes only docs, Markdown, `js/`, `packaging/` or other workflows |
+| real data vs GDAL (`ci.yml`) | Runs unless the PR changes only docs, Markdown, `js/` (other than its Rust code), `packaging/` or other workflows |
 | npm package (`ci-extended.yml`) | Label `ci:npm` or `ci:all`; the `wasm` job tests the Node.js package on every PR |
 | point clouds and conformance vs GDAL (`ci-extended.yml`) | Label `ci:conformance` or `ci:all` |
 | macOS and Windows (`ci-platforms.yml`) | Label `ci:macos`, `ci:windows` or `ci:all` |
 
 A label starts its jobs when added and reruns them on each push while it stays.
-Each of these workflows can also be run by hand from GitHub Actions. Add
+`ci-extended.yml` and `ci-platforms.yml` can also be run by hand from GitHub
+Actions. Add
 `ci:npm` to PRs that change the npm build or WebAssembly-sensitive code, and
 `ci:conformance` to GDAL-parity work.
 
