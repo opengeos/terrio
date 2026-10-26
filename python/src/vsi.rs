@@ -15,6 +15,10 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(vsi_sync, m)?)?;
     m.add_function(wrap_pyfunction!(vsi_read, m)?)?;
     m.add_function(wrap_pyfunction!(vsi_write, m)?)?;
+    m.add_function(wrap_pyfunction!(sozip_create, m)?)?;
+    m.add_function(wrap_pyfunction!(sozip_optimize, m)?)?;
+    m.add_function(wrap_pyfunction!(sozip_list, m)?)?;
+    m.add_function(wrap_pyfunction!(sozip_validate, m)?)?;
     Ok(())
 }
 
@@ -186,4 +190,119 @@ fn vsi_read<'py>(py: Python<'py>, path: &str) -> PyResult<Bound<'py, PyBytes>> {
 #[pyfunction]
 fn vsi_write(py: Python<'_>, path: &str, data: &[u8]) -> PyResult<()> {
     py.detach(|| vsi::write(path, data)).py()
+}
+
+/// A serializable value as Python objects (through JSON).
+fn to_py_value<'py, T: serde::Serialize>(py: Python<'py>, value: &T) -> PyResult<Bound<'py, PyAny>> {
+    let text = serde_json::to_string(value).map_err(|e| crate::invalid(e.to_string()))?;
+    py.import("json")?.call_method1("loads", (text,))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn sozip_options(
+    enable: &str,
+    chunk_size: u32,
+    min_file_size: u64,
+    overwrite: bool,
+    recursive: bool,
+    junk_paths: bool,
+    content_type: Option<String>,
+) -> PyResult<vsi::sozip::SozipOptions> {
+    if chunk_size == 0 {
+        return Err(crate::invalid("chunk_size must not be 0"));
+    }
+    Ok(vsi::sozip::SozipOptions { enable: enable.parse().py()?, chunk_size, min_file_size, overwrite, recursive, junk_paths, content_type })
+}
+
+/// Creates a Seek-Optimized ZIP (SOZip) archive, or adds files to an existing one, as
+/// `gdal vsi sozip create` does.
+///
+/// Args:
+///     inputs: The files (or directories, with ``recursive``) to add.
+///     output: The archive (a local path or ``/vsimem/``).
+///     enable: ``"auto"`` (files of at least ``min_file_size``), ``"yes"`` or ``"no"``.
+///     chunk_size: The uncompressed bytes of a chunk.
+///     min_file_size: The smallest file seek-optimized in auto mode.
+///     overwrite: Replace an existing archive rather than add to it.
+///     recursive: Add the files of directories.
+///     junk_paths: Store names without directories.
+///     content_type: A ``Content-Type`` stored with each file.
+///
+/// Returns:
+///     dict: ``added``, ``seek_optimized`` and ``bytes``.
+#[pyfunction]
+#[pyo3(signature = (inputs, output, *, enable="auto", chunk_size=32768, min_file_size=1048576, overwrite=false, recursive=false,
+    junk_paths=false, content_type=None))]
+#[allow(clippy::too_many_arguments)]
+fn sozip_create<'py>(
+    py: Python<'py>,
+    inputs: Vec<String>,
+    output: &str,
+    enable: &str,
+    chunk_size: u32,
+    min_file_size: u64,
+    overwrite: bool,
+    recursive: bool,
+    junk_paths: bool,
+    content_type: Option<String>,
+) -> PyResult<Bound<'py, PyAny>> {
+    let options = sozip_options(enable, chunk_size, min_file_size, overwrite, recursive, junk_paths, content_type)?;
+    let inputs: Vec<&str> = inputs.iter().map(String::as_str).collect();
+    let r = py.detach(|| vsi::sozip::create(&inputs, output, &options)).py()?;
+    to_py_value(py, &r)
+}
+
+/// Rewrites a zip archive as a SOZip archive, as `gdal vsi sozip optimize` does.
+///
+/// Args:
+///     input: The zip archive.
+///     output: The SOZip archive to write.
+///     enable: ``"auto"``, ``"yes"`` or ``"no"``.
+///     chunk_size: The uncompressed bytes of a chunk.
+///     min_file_size: The smallest file seek-optimized in auto mode.
+///     overwrite: Replace an existing output.
+///
+/// Returns:
+///     dict: ``added``, ``seek_optimized`` and ``bytes``.
+#[pyfunction]
+#[pyo3(signature = (input, output, *, enable="auto", chunk_size=32768, min_file_size=1048576, overwrite=false))]
+fn sozip_optimize<'py>(
+    py: Python<'py>,
+    input: &str,
+    output: &str,
+    enable: &str,
+    chunk_size: u32,
+    min_file_size: u64,
+    overwrite: bool,
+) -> PyResult<Bound<'py, PyAny>> {
+    let options = sozip_options(enable, chunk_size, min_file_size, overwrite, false, false, None)?;
+    let r = py.detach(|| vsi::sozip::optimize(input, output, &options)).py()?;
+    to_py_value(py, &r)
+}
+
+/// Lists a zip archive's members with their SOZip status, as `gdal vsi sozip list` does.
+///
+/// Args:
+///     input: The archive (local, ``/vsimem/`` or remote).
+///
+/// Returns:
+///     list[dict]: ``name``, ``size``, ``compressed_size``, ``modified``, ``method``,
+///     ``sozip_chunk_size`` (``None`` without a valid index) and ``properties``.
+#[pyfunction]
+fn sozip_list<'py>(py: Python<'py>, input: &str) -> PyResult<Bound<'py, PyAny>> {
+    let members = py.detach(|| vsi::sozip::list(input)).py()?;
+    to_py_value(py, &members)
+}
+
+/// Validates a zip archive and its SOZip indexes, as `gdal vsi sozip validate` does.
+///
+/// Args:
+///     input: The archive.
+///
+/// Returns:
+///     dict: ``valid``, ``sozip_files``, ``messages`` and ``errors``.
+#[pyfunction]
+fn sozip_validate<'py>(py: Python<'py>, input: &str) -> PyResult<Bound<'py, PyAny>> {
+    let v = py.detach(|| vsi::sozip::validate(input)).py()?;
+    to_py_value(py, &v)
 }

@@ -29,6 +29,7 @@
 pub(crate) mod dataset;
 pub(crate) mod listing;
 pub(crate) mod md5;
+pub mod sozip;
 pub(crate) mod zipdir;
 
 pub use listing::RemoteLister;

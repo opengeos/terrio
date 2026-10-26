@@ -431,6 +431,14 @@ impl LazyRaster {
             }
             Location::Local(p) if !p.is_file() => return Ok(None),
             Location::Local(p) => (Source::File(BufReader::new(std::fs::File::open(p)?)), None, Some(p.clone())),
+            // A member of a zip archive, stored or seek-optimized: read in place, without
+            // extracting the archive (remote archives by range requests).
+            #[cfg(not(target_family = "wasm"))]
+            Location::Zip { archive, inner: Some(inner) }
+                if let Some(member) = crate::vsi::sozip::open_member(archive, inner.trim_start_matches('/'))? =>
+            {
+                (Source::Zip(Box::new(member)), None, None)
+            }
             _ => {
                 let local = vfs::resolve(path)?;
                 let file = local.path().to_path_buf();
@@ -1153,6 +1161,8 @@ enum Source {
     Http(crate::http::RangeReader),
     /// A remote file whose bytes the caller fetches (see [`crate::sparse`]).
     Sparse(crate::sparse::SparseFile),
+    /// A zip archive member read in place: stored, or seek-optimized (SOZip).
+    Zip(Box<crate::vsi::sozip::MemberReader>),
 }
 
 impl Source {
@@ -1160,7 +1170,7 @@ impl Source {
     #[cfg_attr(not(remote), allow(unused_variables))]
     fn prefetch(&self, ranges: &[(u64, u64)]) -> Result<()> {
         match self {
-            Source::File(_) | Source::Memory(_) => Ok(()),
+            Source::File(_) | Source::Memory(_) | Source::Zip(_) => Ok(()),
             #[cfg(remote)]
             Source::Http(r) => Ok(r.prefetch(ranges)?),
             Source::Sparse(s) => Ok(s.prefetch(ranges)?),
@@ -1176,6 +1186,7 @@ impl Read for Source {
             #[cfg(remote)]
             Source::Http(r) => r.read(buf),
             Source::Sparse(s) => s.read(buf),
+            Source::Zip(z) => z.read(buf),
         }
     }
 }
@@ -1188,6 +1199,7 @@ impl Seek for Source {
             #[cfg(remote)]
             Source::Http(r) => r.seek(pos),
             Source::Sparse(s) => s.seek(pos),
+            Source::Zip(z) => z.seek(pos),
         }
     }
 }

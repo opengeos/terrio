@@ -31,6 +31,194 @@ enum Command {
     /// Copy the files missing or out of date in the target; nothing is deleted (like
     /// `gdal vsi sync`).
     Sync(SyncArgs),
+    /// Seek-optimized ZIP (SOZip 1.0): create, list, optimize, validate (like `gdal vsi sozip`).
+    Sozip(SozipArgs),
+}
+
+#[derive(clap::Args)]
+struct SozipArgs {
+    #[command(subcommand)]
+    command: SozipCommand,
+}
+
+#[derive(clap::Subcommand)]
+enum SozipCommand {
+    /// Create a SOZip archive from files, or add them to an existing archive (like
+    /// `gdal vsi sozip create`).
+    Create(SozipCreateArgs),
+    /// List an archive's members with their SOZip status (like `gdal vsi sozip list`).
+    List(SozipListArgs),
+    /// Rewrite a zip archive as a SOZip archive (like `gdal vsi sozip optimize`).
+    Optimize(SozipOptimizeArgs),
+    /// Check an archive and its SOZip indexes; exits with status 1 when invalid (like
+    /// `gdal vsi sozip validate`).
+    Validate(SozipValidateArgs),
+}
+
+#[derive(clap::Args)]
+struct SozipWriteArgs {
+    /// Replace an existing output (create adds to it otherwise; optimize refuses it).
+    #[arg(long)]
+    overwrite: bool,
+    /// When to seek-optimize a file: auto (files of at least --sozip-min-file-size), yes (every
+    /// file larger than a chunk) or no.
+    #[arg(long, default_value = "auto")]
+    enable_sozip: String,
+    /// The uncompressed size of a chunk, in bytes or with a K or M suffix.
+    #[arg(long, default_value = "32768")]
+    sozip_chunk_size: String,
+    /// The smallest file seek-optimized in auto mode, in bytes or with a K, M or G suffix.
+    #[arg(long, default_value = "1M")]
+    sozip_min_file_size: String,
+    /// Print nothing on success.
+    #[arg(short = 'q', long)]
+    quiet: bool,
+}
+
+#[derive(clap::Args)]
+struct SozipCreateArgs {
+    /// The files (or directories, with -r) to add, then the output archive.
+    #[arg(required = true, num_args = 2.., value_names = ["INPUT", "OUTPUT"])]
+    paths: Vec<String>,
+    /// Add the files of directories, recursively.
+    #[arg(short = 'r', long)]
+    recursive: bool,
+    /// Store files by their names alone, without directories.
+    #[arg(short = 'j', long = "junk-paths", visible_alias = "no-paths")]
+    junk_paths: bool,
+    /// A Content-Type stored with each file added.
+    #[arg(long)]
+    content_type: Option<String>,
+    #[command(flatten)]
+    write: SozipWriteArgs,
+}
+
+#[derive(clap::Args)]
+struct SozipOptimizeArgs {
+    /// The zip archive to rewrite.
+    input: String,
+    /// The SOZip archive to write.
+    output: String,
+    #[command(flatten)]
+    write: SozipWriteArgs,
+}
+
+#[derive(clap::Args)]
+struct SozipListArgs {
+    /// The zip archive.
+    input: String,
+    /// JSON output.
+    #[arg(long)]
+    json: bool,
+    /// Print the HTTP requests sent and bytes received to standard error.
+    #[arg(long)]
+    stats: bool,
+}
+
+#[derive(clap::Args)]
+struct SozipValidateArgs {
+    /// The zip archive.
+    input: String,
+    /// Print each check.
+    #[arg(short = 'v', long)]
+    verbose: bool,
+    /// JSON output.
+    #[arg(long)]
+    json: bool,
+}
+
+/// A size in bytes, or with a K, M or G suffix (powers of 1024).
+fn parse_size(s: &str) -> terrio::Result<u64> {
+    let t = s.trim();
+    let (num, mult) = match t.chars().last().map(|c| c.to_ascii_uppercase()) {
+        Some('K') => (&t[..t.len() - 1], 1u64 << 10),
+        Some('M') => (&t[..t.len() - 1], 1 << 20),
+        Some('G') => (&t[..t.len() - 1], 1 << 30),
+        _ => (t, 1),
+    };
+    num.trim().parse::<u64>().ok().and_then(|n| n.checked_mul(mult)).ok_or_else(|| Error::InvalidArgument(format!("invalid size '{s}'")))
+}
+
+fn sozip_options(w: &SozipWriteArgs) -> terrio::Result<vsi::sozip::SozipOptions> {
+    let chunk = parse_size(&w.sozip_chunk_size)?;
+    let chunk =
+        u32::try_from(chunk).ok().filter(|c| *c > 0).ok_or_else(|| Error::InvalidArgument("--sozip-chunk-size: 1 byte to 4 GiB".into()))?;
+    Ok(vsi::sozip::SozipOptions {
+        enable: w.enable_sozip.parse()?,
+        chunk_size: chunk,
+        min_file_size: parse_size(&w.sozip_min_file_size)?,
+        overwrite: w.overwrite,
+        ..Default::default()
+    })
+}
+
+fn sozip(args: SozipArgs) -> terrio::Result<()> {
+    use vsi::sozip;
+    match args.command {
+        SozipCommand::Create(a) => {
+            let (output, inputs) = a.paths.split_last().ok_or_else(|| Error::InvalidArgument("no output".into()))?;
+            let inputs: Vec<&str> = inputs.iter().map(String::as_str).collect();
+            let options = sozip::SozipOptions {
+                recursive: a.recursive,
+                junk_paths: a.junk_paths,
+                content_type: a.content_type.clone(),
+                ..sozip_options(&a.write)?
+            };
+            let r = sozip::create(&inputs, output, &options)?;
+            if !a.write.quiet {
+                eprintln!("terrio: {} file(s) added, {} seek-optimized ({} bytes)", r.added, r.seek_optimized, r.bytes);
+            }
+        }
+        SozipCommand::Optimize(a) => {
+            let r = sozip::optimize(&a.input, &a.output, &sozip_options(&a.write)?)?;
+            if !a.write.quiet {
+                eprintln!("terrio: {} file(s) written, {} seek-optimized ({} bytes)", r.added, r.seek_optimized, r.bytes);
+            }
+        }
+        SozipCommand::List(a) => {
+            let members = sozip::list(&a.input)?;
+            if a.json {
+                println!("{}", serde_json::to_string_pretty(&members).map_err(|e| Error::InvalidArgument(e.to_string()))?);
+            } else {
+                println!("{}", sozip::LIST_HEADER);
+                for m in &members {
+                    println!("{}", m.list_line());
+                }
+            }
+            if a.stats {
+                print_stats();
+            }
+        }
+        SozipCommand::Validate(a) => {
+            let v = sozip::validate(&a.input)?;
+            if a.json {
+                println!("{}", serde_json::to_string_pretty(&v).map_err(|e| Error::InvalidArgument(e.to_string()))?);
+            } else {
+                if a.verbose {
+                    for m in &v.messages {
+                        println!("{m}");
+                    }
+                } else {
+                    for m in v.messages.iter().filter(|m| m.starts_with("* ")) {
+                        println!("{m}");
+                    }
+                }
+                for e in &v.errors {
+                    println!("Error: {e}");
+                }
+                println!("-----");
+                match (v.valid, v.sozip_files.len()) {
+                    (false, _) => println!("{} is not a valid .zip file, or has invalid SOZip indexes.", a.input),
+                    (true, 0) => println!("{} is a valid .zip file, but does not contain any SOZip-enabled files.", a.input),
+                    (true, n) => println!("{} is a valid .zip file, and contains {n} SOZip-enabled file(s).", a.input),
+                }
+            }
+            if !v.valid {
+                return Err(Error::InvalidData(format!("'{}': not a valid SOZip archive", a.input)));
+            }
+        }
+    }
+    Ok(())
 }
 
 #[derive(clap::Args)]
@@ -146,6 +334,7 @@ pub fn run(args: Args) -> terrio::Result<()> {
             let r = vsi::rename(&a.source, &a.destination)?;
             report(&a.report, &r)
         }
+        Command::Sozip(a) => sozip(a),
         Command::Sync(a) => {
             let options = SyncOptions { recursive: a.recursive, strategy: a.strategy.parse()? };
             let r = vsi::sync(&a.source, &a.destination, &options)?;

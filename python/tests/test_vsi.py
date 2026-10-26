@@ -128,3 +128,36 @@ def test_recursive_copy_preserves_io_exception(tree, tmp_path):
         terrio.vsi_copy(str(tree), str(destination), recursive=True)
     assert (destination / "t" / "x.txt").is_dir()
     assert (tree / "x.txt").read_text() == "hello\n"
+
+
+def test_sozip(tmp_path):
+    big = tmp_path / "big.csv"
+    big.write_bytes(b"".join(f"{i},{i * 7919 % 10007}\n".encode() for i in range(20000)))
+    (tmp_path / "small.txt").write_text("small")
+    archive = tmp_path / "out.zip"
+    r = terrio.sozip_create(
+        [str(big), str(tmp_path / "small.txt")],
+        str(archive),
+        enable="yes",
+        chunk_size=4096,
+        junk_paths=True,
+    )
+    assert (r["added"], r["seek_optimized"]) == (2, 1)
+    members = terrio.sozip_list(str(archive))
+    assert [(m["name"], m["sozip_chunk_size"]) for m in members] == [
+        ("big.csv", 4096),
+        ("small.txt", None),
+    ]
+    v = terrio.sozip_validate(str(archive))
+    assert v["valid"] and v["sozip_files"] == ["big.csv"]
+    with zipfile.ZipFile(archive) as z:
+        assert z.namelist() == ["big.csv", "small.txt"]
+        assert z.read("big.csv") == big.read_bytes()
+    plain = tmp_path / "plain.zip"
+    with zipfile.ZipFile(plain, "w", zipfile.ZIP_DEFLATED) as z:
+        z.write(big, "big.csv")
+    terrio.sozip_optimize(str(plain), str(tmp_path / "opt.zip"), enable="yes", chunk_size=8192)
+    assert terrio.sozip_list(str(tmp_path / "opt.zip"))[0]["sozip_chunk_size"] == 8192
+    gdal = pytest.importorskip("osgeo.gdal")
+    # GDAL reads terrio's seek-optimized member and its index.
+    assert gdal.GetFileMetadata(f"/vsizip/{archive}/big.csv", "ZIP").get("SOZIP_VALID") == "YES"

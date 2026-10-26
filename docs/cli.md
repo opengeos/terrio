@@ -1732,6 +1732,7 @@ terrio vsi copy /vsizip//vsicurl/https://host/a.zip/a.shp .
 terrio vsi sync -r --strategy ETag data/ s3://bucket/prefix   # gdal vsi sync
 terrio vsi move s3://bucket/old s3://bucket/new        # gdal vsi move (mv, ren, rename)
 terrio vsi delete -r s3://bucket/prefix                # gdal vsi delete (rm, rmdir, del)
+terrio vsi sozip create -j big.gpkg big.gpkg.zip         # gdal vsi sozip (see below)
 ```
 
 File management across locations, as GDAL's `gdal vsi` commands do on its virtual file systems:
@@ -1873,6 +1874,36 @@ Byte copies and copy-delete moves refuse pipes, sockets and devices. Recursive c
 `--skip-errors` report those entries and continue with regular files. ZIP member names retain
 valid UTF-8; unflagged non-UTF-8 legacy names are decoded as CP437 into Unicode. GDAL can instead emit
 raw non-UTF-8 bytes for those names.
+
+
+### vsi sozip
+
+```sh
+terrio vsi sozip create -j roads.gpkg dem.tif data.zip        # gdal vsi sozip create
+terrio vsi sozip create -r --enable-sozip yes --sozip-chunk-size 64K dir/ data.zip
+terrio vsi sozip optimize plain.zip seek.zip                  # gdal vsi sozip optimize
+terrio vsi sozip list /vsicurl/https://host/data.zip          # gdal vsi sozip list
+terrio vsi sozip validate -v data.zip                         # gdal vsi sozip validate
+```
+
+Seek-Optimized ZIP (SOZip 1.0): a Deflate member compressed in independent chunks, with a hidden
+index (`.name.sozip.idx`) of their offsets, so that readers can start decompressing anywhere.
+`create` adds files (directories with `-r`; `-j` drops their directories) to a new archive, or to
+an existing one unless `--overwrite`; `--enable-sozip auto` (the default) seek-optimizes files of
+at least `--sozip-min-file-size` (1 MB), `yes` every file larger than a chunk
+(`--sozip-chunk-size`, 32 KB), `no` none; `--content-type` stores GDAL's `KV` property. Inputs
+can be any location `vsi` reads; outputs are local or `/vsimem/`. `optimize` rewrites an archive's
+members. `list` prints GDAL's table (`--json` for JSON); `validate` decompresses every member
+and checks its CRC-32, each index's header against its member and its offsets, and that every
+chunk decompresses on its own; it exits with status 1 when the archive is not valid.
+
+GeoTIFFs in a zip archive are read in place when stored or seek-optimized: `terrio info` and
+window reads of `/vsizip/archive.zip/dem.tif` (or of a remote archive, by range requests) read
+only the chunks they need instead of extracting the archive. Other members, and other formats,
+are extracted to a temporary directory first.
+
+GDAL 3.12's `sozip optimize` also adds the input archive itself to its output (a bug); terrio
+does not. Not supported: `sozip create` progress bars and multithreaded compression.
 
 ## fill-nodata
 

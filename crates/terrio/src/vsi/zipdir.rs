@@ -28,6 +28,10 @@ pub(crate) struct CdEntry {
     pub uncompressed_size: u64,
     /// The offset of the member's local header.
     pub local_offset: u64,
+    /// The extra fields of the central directory record.
+    pub extra: Vec<u8>,
+    /// The whole central directory record, as stored.
+    pub raw: Vec<u8>,
 }
 
 impl CdEntry {
@@ -95,6 +99,11 @@ pub(crate) fn decode_name(bytes: &[u8], utf8: bool) -> String {
 
 /// The entries of the central directory.
 pub(crate) fn central_directory(r: &mut dyn ReadSeek) -> Result<Vec<CdEntry>> {
+    Ok(central_directory_at(r)?.0)
+}
+
+/// The entries of the central directory, and its offset.
+pub(crate) fn central_directory_at(r: &mut dyn ReadSeek) -> Result<(Vec<CdEntry>, u64)> {
     let len = r.seek(SeekFrom::End(0))?;
     if len < 22 {
         return Err(invalid("too short"));
@@ -203,13 +212,28 @@ pub(crate) fn central_directory(r: &mut dyn ReadSeek) -> Result<Vec<CdEntry>> {
             }
             extra = &extra[(4 + size).min(extra.len())..];
         }
+        let extra_bytes = fields[name_len..name_len + extra_len].to_vec();
+        let mut raw = h.to_vec();
+        raw.extend_from_slice(&fields);
         out.try_reserve(1).map_err(|_| invalid("cannot allocate central directory entries"))?;
-        out.push(CdEntry { name, flags, method, dos_time, dos_date, crc32, compressed_size, uncompressed_size, local_offset });
+        out.push(CdEntry {
+            name,
+            flags,
+            method,
+            dos_time,
+            dos_date,
+            crc32,
+            compressed_size,
+            uncompressed_size,
+            local_offset,
+            extra: extra_bytes,
+            raw,
+        });
     }
     if out.len() as u64 != count {
         return Err(invalid("central directory entry count mismatch"));
     }
-    Ok(out)
+    Ok((out, cd_offset))
 }
 
 /// The offset of a member's data: past its local header.
@@ -283,6 +307,8 @@ mod tests {
             compressed_size: 0,
             uncompressed_size: 0,
             local_offset: 0,
+            extra: Vec::new(),
+            raw: Vec::new(),
         };
         assert!(entry.modified().is_some()); // 2024 is a leap year.
         entry.dos_date = (43 << 9) | (2 << 5) | 29;
