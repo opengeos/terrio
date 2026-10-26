@@ -41,6 +41,15 @@ GDAL's drivers (the formats marked * are written that way): see
 | XYZ | XYZ ASCII grid | ✓ | ✓ | xyz |
 | DTED | DTED elevation | ✓ | ✓ | dt0, dt1, dt2 |
 
+Native TIFF readers limit each decoded tile or strip to 256 MiB by default. For trusted
+files with larger chunks, use `TiffReadLimits` with `LazyRaster::open_tiff_with_limits`
+(or its bytes/sparse counterparts), or `terrio::open_raster_with_tiff_limits` for an
+eager read. The override applies to parallel decoders too. It limits decoded chunks;
+callers still choose the size of the returned raster/window allocation. The limit
+also bounds LERC Deflate/Zstandard inflation and the decoded size declared by
+embedded LERC and JPEG headers, before mask or pixel decoding. It is not a cap
+on total process memory or the codec's working buffers.
+
 GeoTIFF compression: none, LZW, Deflate (including the legacy code), PackBits, JPEG, WebP,
 Zstandard, LZMA, LERC (alone, with Deflate or with Zstandard, lossless or not, with NaN masks) and
 JPEG XL, with horizontal and floating-point predictors, tiled or striped, chunky or planar. JPEG

@@ -826,6 +826,29 @@ def suite_iau(ctx):
     return suite
 
 
+def suite_perspective(ctx):
+    """Native near-sided and tilted perspective, including visibility/domain limits."""
+    suite = Suite("perspective", "Perspective projections", "GDAL/PROJ",
+                  "20 spherical/WGS84 configurations and 2,500 geographic samples; "
+                  "all aspects, horizon sides, tilt/azimuth, units and offsets. "
+                  "Projected allowance 1 mm; inverse 1e-8 degrees, longitude weighted "
+                  "by cos(latitude). PROJ strings and WKT2 are checked.")
+    if missing_modules("osgeo"):
+        suite.skipped = "needs GDAL Python bindings"
+        return suite
+    code, out, err = run([sys.executable, str(SCRIPTS / "compare_perspective_with_gdal.py"), ctx.data, "--terrio", ctx.terrio, "--json"])
+    try:
+        cases = json.loads(out)
+    except json.JSONDecodeError:
+        suite.error = tail(err or out)
+        return suite
+    for case in cases:
+        suite.cases.append(Case("Perspective", case["name"], case["status"], case["detail"]))
+    if code and not any(c.status == DIFFERS for c in suite.cases):
+        suite.error = tail(err or out)
+    return suite
+
+
 def suite_projjson(ctx):
     """PROJJSON units, axes and bound transformations, with and without IDs."""
     suite = Suite("projjson", "PROJJSON CRS definitions", "GDAL/PROJ",
@@ -962,6 +985,7 @@ PROJ_CASES = {
         "unsupported_projections_are_refused_in_every_encoding": "The projections terrio does not implement, refused as WKT too",
         "pyproj_wkt_matches_proj": "The same CRSs as pyproj's WKT1_GDAL and WKT2_2019 (known differences: #119, #156)",
         "own_wkt_reads_back_as_the_same_crs": "The same CRSs through the WKT terrio writes, read back by terrio",
+        "longlat_longitudes_are_relative_to_lon_0": "Geographic PROJ strings with `+lon_0` (`longlat`, `latlong`, `+pm`, `+towgs84`): seven GDAL 3.13.3 points",
     },
 }
 
@@ -1347,6 +1371,7 @@ SUITES = OrderedDict(
         ("pointclouds", suite_pointclouds),
         ("crs", suite_crs),
         ("geocentric", suite_geocentric),
+        ("perspective", suite_perspective),
         ("projjson", suite_projjson),
         ("iau", suite_iau),
         ("crs-grids", suite_crs_grids),

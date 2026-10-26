@@ -76,6 +76,56 @@ pub struct WindowOptions {
     pub overview: Option<usize>,
 }
 
+/// Bounds on what decoding a GeoTIFF's pixels may allocate, checked before the allocation: a
+/// malformed header (a strip of 10^12 pixels in a file of a few bytes) is an error rather than an
+/// allocation the process cannot survive.
+///
+/// The default is the `tiff` crate's: 256 MiB for a decoded chunk (tile or strip). Files with
+/// larger chunks need a larger limit: see [`LazyRaster::open_tiff_with_limits`],
+/// [`LazyRaster::from_tiff_bytes_with_limits`], [`LazyRaster::from_sparse_with_limits`] and
+/// [`crate::open_raster_with_tiff_limits`] for eager reads. The
+/// window a read returns is not bounded by it: check the window's size before reading it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TiffReadLimits {
+    /// The most bytes one decoded chunk may take, whichever codec decodes it, and the most a
+    /// LERC chunk's Deflate or Zstandard stream may inflate to. The `tiff` crate (0.11) bounds
+    /// the size of tag values, such as the chunk offsets, by the same limit.
+    pub chunk_bytes: usize,
+}
+
+impl Default for TiffReadLimits {
+    fn default() -> Self {
+        Self { chunk_bytes: Limits::default().decoding_buffer_size }
+    }
+}
+
+impl TiffReadLimits {
+    /// No limit: a malformed header can make a read attempt an allocation of any size.
+    pub fn unlimited() -> Self {
+        Self { chunk_bytes: usize::MAX }
+    }
+
+    /// The `tiff` crate's limits. Stored chunks are read as far as the file goes, whatever byte
+    /// count they declare (as GDAL reads them), so their size is not limited.
+    pub(crate) fn tiff(self) -> Limits {
+        let mut l = Limits::unlimited();
+        // `tiff` 0.11 bounds tag values by `decoding_buffer_size` and reads `ifd_value_size`
+        // nowhere; both are set, should a later version read it.
+        l.decoding_buffer_size = self.chunk_bytes;
+        l.ifd_value_size = self.chunk_bytes;
+        l
+    }
+
+    /// The error of a TIFF decoder with these limits: [`Error::DecodedLimitExceeded`], with the
+    /// limit, for a chunk or tag value over it.
+    pub(crate) fn error(self) -> impl Fn(tiff::TiffError) -> Error + Sync + Copy {
+        move |e| match e {
+            tiff::TiffError::LimitsExceeded => Error::DecodedLimitExceeded { resource: "TIFF chunk or tag value", limit: self.chunk_bytes },
+            e => tiff_err(e),
+        }
+    }
+}
+
 /// A raster opened for its metadata, whose pixels are read on demand.
 pub struct LazyRaster {
     inner: Inner,
@@ -323,6 +373,11 @@ impl LazyRaster {
     /// Opens a GeoTIFF in place, reading only its headers. Returns `None` when the file is not a
     /// TIFF (having read only its first bytes).
     pub fn open_tiff(path: &str) -> Result<Option<Self>> {
+        Self::open_tiff_with_limits(path, TiffReadLimits::default())
+    }
+
+    /// [`LazyRaster::open_tiff`] with other decoding limits than the defaults.
+    pub fn open_tiff_with_limits(path: &str, limits: TiffReadLimits) -> Result<Option<Self>> {
         let loc = Location::parse(path);
         let (mut source, local, file) = match &loc {
             #[cfg(remote)]
@@ -341,7 +396,7 @@ impl LazyRaster {
         if !is_tiff(&mut source) {
             return Ok(None);
         }
-        let mut t = TiffRaster::new(source, local)?;
+        let mut t = TiffRaster::new(source, local, limits)?;
         if let Location::Local(p) = &loc {
             t.tags.apply_sidecar_crs(p);
         }
@@ -353,11 +408,16 @@ impl LazyRaster {
     /// Opens a GeoTIFF held in memory, reading only its headers now. Returns `None` when the bytes
     /// are not a TIFF.
     pub fn from_tiff_bytes(bytes: Vec<u8>) -> Result<Option<Self>> {
+        Self::from_tiff_bytes_with_limits(bytes, TiffReadLimits::default())
+    }
+
+    /// [`LazyRaster::from_tiff_bytes`] with other decoding limits than the defaults.
+    pub fn from_tiff_bytes_with_limits(bytes: Vec<u8>, limits: TiffReadLimits) -> Result<Option<Self>> {
         let mut source = Source::Memory(std::io::Cursor::new(SharedBytes(std::sync::Arc::new(bytes))));
         if !is_tiff(&mut source) {
             return Ok(None);
         }
-        let t = TiffRaster::new(source, None)?;
+        let t = TiffRaster::new(source, None, limits)?;
         t.tags.warn_unreadable("a GeoTIFF in memory");
         Ok(Some(Self { inner: Inner::Tiff(Box::new(t)), sidecar_mask: None }))
     }
@@ -366,6 +426,11 @@ impl LazyRaster {
     /// only its headers. Reads fail until the bytes they need are fetched, and are then run
     /// again. Returns `None` when the file is not a TIFF.
     pub fn from_sparse(file: crate::sparse::SparseFile) -> Result<Option<Self>> {
+        Self::from_sparse_with_limits(file, TiffReadLimits::default())
+    }
+
+    /// [`LazyRaster::from_sparse`] with other decoding limits than the defaults.
+    pub fn from_sparse_with_limits(file: crate::sparse::SparseFile, limits: TiffReadLimits) -> Result<Option<Self>> {
         let mut source = Source::Sparse(file);
         source.seek(SeekFrom::Start(0))?;
         let mut magic = [0u8; 4];
@@ -374,7 +439,7 @@ impl LazyRaster {
             return Ok(None);
         }
         source.seek(SeekFrom::Start(0))?;
-        let t = TiffRaster::new(source, None)?;
+        let t = TiffRaster::new(source, None, limits)?;
         t.tags.warn_unreadable("a remote GeoTIFF");
         Ok(Some(Self { inner: Inner::Tiff(Box::new(t)), sidecar_mask: None }))
     }
@@ -966,6 +1031,8 @@ struct TiffRaster {
     /// The local file the TIFF is read from, which more decoders can open to decode chunks in
     /// parallel.
     file: Option<std::path::PathBuf>,
+    /// The decoders' limits.
+    limits: TiffReadLimits,
 }
 
 /// What more decoders of a TIFF read: its local file, or its bytes in memory.
@@ -975,15 +1042,19 @@ enum Reopened<'a> {
 }
 
 fn tiff_err(e: tiff::TiffError) -> Error {
-    Error::InvalidData(format!("TIFF: {e}"))
+    match e {
+        tiff::TiffError::LimitsExceeded => Error::InvalidData("TIFF: decoding limits exceeded (see TiffReadLimits)".into()),
+        e => Error::InvalidData(format!("TIFF: {e}")),
+    }
 }
 
 impl TiffRaster {
-    fn new(mut source: Source, local: Option<vfs::LocalPath>) -> Result<Self> {
+    fn new(mut source: Source, local: Option<vfs::LocalPath>, limits: TiffReadLimits) -> Result<Self> {
         let tags = read_geo_tags_from(&mut source).ok_or_else(|| Error::InvalidData("not a TIFF file".into()))?;
         let masks = crate::tiff_mask::find_masks(&mut source);
         source.seek(SeekFrom::Start(0))?;
-        let mut dec = Decoder::new(PatchedReader::new(source, &tags)).map_err(tiff_err)?.with_limits(Limits::unlimited());
+        let tiff_err = limits.error();
+        let mut dec = Decoder::new(PatchedReader::new(source, &tags)).map_err(tiff_err)?.with_limits(limits.tiff());
         let (w, h) = dec.dimensions().map_err(tiff_err)?;
         let bands = dec.find_tag_unsigned::<u16>(Tag::SamplesPerPixel).map_err(tiff_err)?.unwrap_or(1).max(1) as usize;
         let data_type = sample_type(&mut dec)?;
@@ -1012,11 +1083,20 @@ impl TiffRaster {
         // As the in-memory reader does without georeferencing: unit pixels, with the image's
         // bottom at y = 0.
         let geo_transform = tags.corner_geo_transform().unwrap_or([0.0, 1.0, 0.0, h as f64, 0.0, -1.0]);
-        Ok(Self { decoder: dec, tags, bands, data_type, geo_transform, levels, masks, current_ifd: 0, _local: local, file: None })
+        Ok(Self { decoder: dec, tags, bands, data_type, geo_transform, levels, masks, current_ifd: 0, _local: local, file: None, limits })
     }
 
     /// Reads a window of some bands (numbered from 1) of a level, band-major.
     fn read(&mut self, level: usize, w: Window, bands: &[usize]) -> Result<RasterData> {
+        let len = bands
+            .len()
+            .checked_mul(w.width)
+            .and_then(|n| n.checked_mul(w.height))
+            .filter(|n| n.checked_mul(self.data_type.size_bytes()).is_some_and(|b| b <= isize::MAX as usize))
+            .ok_or_else(|| {
+                Error::InvalidArgument(format!("a window of {}x{} pixels in {} band(s) is too large", w.width, w.height, bands.len()))
+            })?;
+        let tiff_err = self.limits.error();
         let ifd = self.levels[level].ifd;
         let dec = &mut self.decoder;
         if self.current_ifd != ifd {
@@ -1055,7 +1135,6 @@ impl TiffRaster {
         dec.inner().get_ref().prefetch(&ranges)?;
 
         // Missing (sparse) chunks read as nodata, or 0, as in GDAL.
-        let len = bands.len() * w.width * w.height;
         let mut out = RasterData::new_filled(self.data_type, len, self.tags.nodata.unwrap_or(0.0));
         let spp = if planar { 1 } else { self.bands };
         // Chunks with data, and where they go.
@@ -1073,7 +1152,7 @@ impl TiffRaster {
             t.push((x0, y0, map));
         }
         // More decoders over the local file, or over the bytes in memory.
-        let tags = &self.tags;
+        let (tags, limits) = (&self.tags, self.limits);
         let source = match (self.file.as_deref(), dec.inner().get_ref()) {
             (Some(path), _) => Some(Reopened::File(path)),
             (None, Source::Memory(m)) => Some(Reopened::Memory(m.get_ref().clone())),
@@ -1085,11 +1164,11 @@ impl TiffRaster {
                     Reopened::File(path) => Source::File(BufReader::new(std::fs::File::open(path)?)),
                     Reopened::Memory(bytes) => Source::Memory(std::io::Cursor::new(bytes.clone())),
                 };
-                Ok(Decoder::new(PatchedReader::new(s, tags)).map_err(tiff_err)?.with_limits(Limits::unlimited()))
+                Ok(Decoder::new(PatchedReader::new(s, tags)).map_err(tiff_err)?.with_limits(limits.tiff()))
             }
         });
         let reopen = reopen.as_ref().map(|f| f as crate::geotiff::Reopen<PatchedReader<Source>>);
-        crate::geotiff::decode_chunks(dec, reopen, ifd, &wanted, &tiff_err, |(idx, chunk, (dw, dh))| {
+        crate::geotiff::decode_chunks(dec, reopen, ifd, &wanted, limits, &tiff_err, |(idx, chunk, (dw, dh))| {
             let targets = &targets[&idx];
             macro_rules! place {
                 ($($out:ident <- $res:ident),*) => {

@@ -324,6 +324,17 @@ pub fn open_raster(path: &str) -> Result<RasterDataset> {
     result
 }
 
+/// Reads a native TIFF dataset into memory with an explicit decoder limit.
+///
+/// Use this for TIFF tiles or strips larger than the default 256 MiB. Local paths,
+/// URLs and archive members are resolved as for [`open_raster`]. Both the initial
+/// decoder and parallel chunk decoders use the selected limit. This TIFF-specific
+/// entry point does not fall back to GDAL or dispatch to other raster formats.
+pub fn open_raster_with_tiff_limits(path: &str, limits: crate::TiffReadLimits) -> Result<RasterDataset> {
+    let local = vfs::resolve(path)?;
+    crate::geotiff::read_geotiff_with_limits(Path::new(local.as_str()), limits)
+}
+
 fn open_raster_native(path: &str) -> Result<RasterDataset> {
     if let Some(result) = crate::catalog::open_lazy(path) {
         return result?.read();

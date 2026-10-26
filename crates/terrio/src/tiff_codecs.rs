@@ -222,12 +222,15 @@ pub(crate) struct ChunkCodec {
     jpeg_tables: Vec<u8>,
     /// JPEG: the image is coded in YCbCr, to be converted to RGB.
     ycbcr: bool,
+    /// The most bytes a decoded chunk, or a stream decompressed on the way, may take
+    /// ([`crate::TiffReadLimits::chunk_bytes`]).
+    limit: usize,
 }
 
 impl ChunkCodec {
     /// The codec for the image the decoder is positioned on, `None` when the `tiff` crate decodes
-    /// its chunks itself.
-    pub(crate) fn new<R: Read + Seek>(dec: &mut Decoder<R>) -> TiffResult<Option<Self>> {
+    /// its chunks itself. A chunk decoding to more than `limit` bytes is refused.
+    pub(crate) fn new<R: Read + Seek>(dec: &mut Decoder<R>, limit: usize) -> TiffResult<Option<Self>> {
         let compression = dec.find_tag_unsigned::<u16>(Tag::Compression)?.unwrap_or(1);
         let first = |v: Option<Vec<u16>>, default: u16| v.and_then(|v| v.first().copied()).unwrap_or(default);
         let packed_bits = first(dec.find_tag_unsigned_vec::<u16>(Tag::BitsPerSample)?, 1);
@@ -310,6 +313,7 @@ impl ChunkCodec {
                 _ => Vec::new(),
             },
             ycbcr: codec == Codec::Jpeg && photometric == Some(6),
+            limit,
         }))
     }
 
@@ -320,6 +324,14 @@ impl ChunkCodec {
         let (Some(&offset), Some(&count)) = (self.offsets.get(i), self.counts.get(i)) else {
             return Err(invalid(format!("no TIFF chunk {idx}")));
         };
+        let (dw, dh) = dec.chunk_data_dimensions(idx);
+        let (dw, dh) = (dw as usize, dh as usize);
+        // Tiles are coded whole, strips with their own rows.
+        let (w, h) = if self.tiled { self.chunk } else { (dw, dh) };
+        // Over the limit, the chunk is refused before any of it is read.
+        if self.decoded_size(w, h)? > self.limit {
+            return Err(TiffError::LimitsExceeded);
+        }
         let r = dec.inner();
         r.seek(SeekFrom::Start(offset))?;
         // The buffer grows as bytes arrive: a corrupt byte count allocates no more than the file holds.
@@ -328,10 +340,6 @@ impl ChunkCodec {
         if raw.len() as u64 != count {
             return Err(invalid(format!("TIFF chunk {idx}: {} bytes, {count} expected", raw.len())));
         }
-        let (dw, dh) = dec.chunk_data_dimensions(idx);
-        let (dw, dh) = (dw as usize, dh as usize);
-        // Tiles are coded whole, strips with their own rows.
-        let (w, h) = if self.tiled { self.chunk } else { (dw, dh) };
         let bytes = match self.codec {
             Codec::Lzma | Codec::Lzw | Codec::Zstd | Codec::Chunky(_) => self.lossless(raw, w, h)?,
             Codec::Lerc => self.lerc(raw, w, h)?,
@@ -345,6 +353,14 @@ impl ChunkCodec {
             }
         };
         Ok(self.result(&bytes, w, dw, dh))
+    }
+
+    /// The bytes of `h` rows of `w` pixels of decoded samples.
+    fn decoded_size(&self, w: usize, h: usize) -> TiffResult<usize> {
+        w.checked_mul(h)
+            .and_then(|n| n.checked_mul(self.spp))
+            .and_then(|n| n.checked_mul(self.sample.size()))
+            .ok_or_else(|| invalid("TIFF chunk too large"))
     }
 
     /// Decodes an LZMA or LZW chunk of `h` rows of `w` pixels into native-endian samples, its
@@ -469,35 +485,133 @@ impl ChunkCodec {
         }
     }
 
+    /// Bound each LERC header before allowing mask or pixel inspection.
+    /// Layouts follow lerc-reader 0.5's Lerc1/Lerc2 header readers. Their public
+    /// inspection APIs can allocate masks, so bounds must precede those calls.
+    #[cfg(feature = "lerc")]
+    fn lerc_headers(&self, blob: &[u8], w: usize, h: usize) -> TiffResult<()> {
+        let read = |bytes: &[u8], offset: usize| -> TiffResult<u32> {
+            let value = bytes
+                .get(offset..offset.checked_add(4).ok_or(TiffError::LimitsExceeded)?)
+                .ok_or_else(|| invalid("LERC: truncated header"))?;
+            let bytes: [u8; 4] = value.try_into().map_err(|_| invalid("LERC: truncated header"))?;
+            Ok(u32::from_le_bytes(bytes))
+        };
+        let expected = w.checked_mul(h).ok_or(TiffError::LimitsExceeded)?;
+        let (mut offset, mut channels, mut bytes_total) = (0usize, 0usize, 0usize);
+        let mut lerc1_mask: Option<Vec<u8>> = None;
+        while offset < blob.len() {
+            let data = &blob[offset..];
+            let (width, height, depth, size, length) = if data.starts_with(b"Lerc2 ") {
+                let version = read(data, 6)?;
+                if !(1..=6).contains(&version) {
+                    return Err(invalid("LERC: unsupported Lerc2 header version"));
+                }
+                let shift = usize::from(version >= 3) * 4;
+                let height = read(data, 10 + shift)? as usize;
+                let width = read(data, 14 + shift)? as usize;
+                let depth = if version >= 4 { read(data, 18 + shift)? as usize } else { 1 };
+                let extra = usize::from(version >= 4) * 4;
+                let length = read(data, 26 + shift + extra)? as usize;
+                let kind = read(data, 30 + shift + extra)? as i32;
+                let size = lerc_core::DataType::from_code(kind).map_err(|e| invalid(format!("LERC: {e}")))?.byte_len();
+                lerc1_mask = None;
+                (width, height, depth, size, length)
+            } else if data.starts_with(b"CntZImage") {
+                let height = read(data, 18)? as usize;
+                let width = read(data, 22)? as usize;
+                // Lerc1 can either include its mask or inherit the preceding
+                // band's mask. Let the decoder select the actual boundary below,
+                // only after checking this header's dimensions.
+                (width, height, 1, 4, 0)
+            } else {
+                return Err(invalid("LERC: invalid blob header"));
+            };
+            let pixels = width.checked_mul(height).ok_or(TiffError::LimitsExceeded)?;
+            let bytes = pixels.checked_mul(depth).and_then(|n| n.checked_mul(size)).ok_or(TiffError::LimitsExceeded)?;
+            bytes_total = bytes_total.checked_add(bytes).ok_or(TiffError::LimitsExceeded)?;
+            if bytes_total > self.limit {
+                return Err(TiffError::LimitsExceeded);
+            }
+            channels = channels.checked_add(depth).ok_or(TiffError::LimitsExceeded)?;
+            if pixels > expected {
+                return Err(invalid(format!("LERC: a {width} x {height} blob for a {w} x {h} chunk")));
+            }
+            if channels > self.spp || pixels == 0 || depth == 0 {
+                return Err(invalid("LERC: blob dimensions or channels exceed the TIFF chunk"));
+            }
+            let length = if data.starts_with(b"CntZImage") {
+                // Legacy inspection can decode pixels to determine the range;
+                // use its bounded first-blob decoder to retain the actual mask
+                // and follow inline as well as inherited masks without guessing.
+                let decoded = match lerc1_mask.as_deref() {
+                    Some(mask) => lerc_reader::decode_first_with_mask(data, mask),
+                    None => lerc_reader::decode_first(data),
+                }
+                .map_err(|e| invalid(format!("LERC: {e}")))?;
+                lerc1_mask = decoded.mask;
+                decoded.info.blob_size
+            } else {
+                length
+            };
+            if length == 0 || length > data.len() {
+                return Err(invalid("LERC: invalid blob length"));
+            }
+            offset = offset.checked_add(length).ok_or(TiffError::LimitsExceeded)?;
+        }
+        if channels != self.spp && !(self.lerc_alpha && channels.checked_add(1) == Some(self.spp)) {
+            return Err(invalid("LERC: decoded channel count differs from TIFF"));
+        }
+
+        Ok(())
+    }
+
     /// Decodes LERC blobs into native-endian samples, as libtiff's LERC codec does: masked pixels
     /// of floating-point images are NaN, a mask coding the alpha channel becomes 0 or 255.
     #[cfg(feature = "lerc")]
     fn lerc(&self, raw: Vec<u8>, w: usize, h: usize) -> TiffResult<Vec<u8>> {
+        // A blob holds the chunk's samples, at most, with a mask and headers: one inflating past
+        // twice that, or past the limit, is not inflated further.
+        let decoded = self.decoded_size(w, h)?;
+        let cap = decoded.saturating_mul(2).saturating_add(4096 * (self.spp + 1));
+        let inflate = |r: &mut dyn Read| -> TiffResult<Vec<u8>> {
+            let mut out = Vec::new();
+            r.take(cap.min(self.limit).saturating_add(1) as u64).read_to_end(&mut out)?;
+            if out.len() > self.limit {
+                Err(TiffError::LimitsExceeded)
+            } else if out.len() > cap {
+                Err(invalid(format!("LERC: blobs of over {cap} bytes for a {w} x {h} chunk")))
+            } else {
+                Ok(out)
+            }
+        };
         let blob = match self.lerc_wrapper {
             0 => raw,
-            1 => {
-                let mut out = Vec::new();
-                flate2::read::ZlibDecoder::new(&raw[..]).read_to_end(&mut out)?;
-                out
-            }
+            1 => inflate(&mut flate2::read::ZlibDecoder::new(&raw[..]))?,
             2 => {
-                let mut out = Vec::new();
                 let mut src = &raw[..];
-                ruzstd::decoding::StreamingDecoder::new(&mut src).map_err(|e| invalid(format!("Zstandard: {e}")))?.read_to_end(&mut out)?;
-                out
+                inflate(&mut ruzstd::decoding::StreamingDecoder::new(&mut src).map_err(|e| invalid(format!("Zstandard: {e}")))?)?
             }
             other => return Err(invalid(format!("unknown LERC compression wrapper {other}"))),
         };
+        self.lerc_headers(&blob, w, h)?;
         let lerc_err = |e: lerc_core::Error| invalid(format!("LERC: {e}"));
         let n = w * h;
+        // The blob's own size, checked before it is decoded.
+        let info = lerc_reader::inspect_first(&blob).map_err(lerc_err)?;
+        if (info.width as usize).saturating_mul(info.height as usize) > n {
+            return Err(invalid(format!("LERC: a {} x {} blob for a {w} x {h} chunk", info.width, info.height)));
+        }
         let bands = lerc_reader::get_band_count(&blob).map_err(lerc_err)?;
         // Samples interleaved by pixel, with a validity mask per sample.
         let (mut samples, masks): (Vec<f64>, Vec<Option<Vec<u8>>>) = if bands > 1 {
             // A floating-point image with one blob per sample.
+            let count = n.checked_mul(bands).ok_or(TiffError::LimitsExceeded)?;
+            count.checked_mul(std::mem::size_of::<f64>()).ok_or(TiffError::LimitsExceeded)?;
             let set = lerc_reader::decode_band_set(&blob).map_err(lerc_err)?;
             let (_, planes, masks) = set.into_parts();
             let planes: Vec<Vec<f64>> = planes.iter().map(pixels_f64).collect();
-            let mut out = vec![0.0; n * bands];
+            let mut out = vec![0.0; count];
             for (b, p) in planes.iter().enumerate() {
                 for (i, v) in p.iter().take(n).enumerate() {
                     out[i * bands + b] = *v;
@@ -547,6 +661,14 @@ impl ChunkCodec {
     fn jxl(&self, raw: &[u8], w: usize, h: usize) -> TiffResult<Vec<u8>> {
         use jxl_oxide::image::BitDepth;
         let image = jxl_oxide::JxlImage::builder().read(raw).map_err(|e| invalid(format!("JPEG XL: {e}")))?;
+        // The codestream's size, checked before it is rendered: at most the tile, or the strip.
+        let (iw, ih) = (image.width() as usize, image.height() as usize);
+        if iw > self.chunk.0.max(w) || ih > self.chunk.1.max(h) {
+            return Err(invalid(format!("JPEG XL: a {iw} x {ih} image for a {w} x {h} chunk")));
+        }
+        if self.decoded_size(iw, ih)? > self.limit {
+            return Err(TiffError::LimitsExceeded);
+        }
         let render = image.render_frame(0).map_err(|e| invalid(format!("JPEG XL: {e}")))?;
         let meta = &image.image_header().metadata;
         // Each channel's bit depth: the colour channels', then each extra channel's.
@@ -607,6 +729,15 @@ impl ChunkCodec {
             (true, true) => [&self.jpeg_tables[..self.jpeg_tables.len() - 2], &raw[2..]].concat(),
             _ => raw.to_vec(),
         };
+        // Read SOF metadata before the decoder allocates its component planes.
+        let (jw, jh, components) = crate::jpeg::frame_dimensions(&stream).map_err(|e| invalid(format!("JPEG: {e}")))?;
+        if self.sample != Sample::U8 || components != self.spp {
+            return Err(invalid("JPEG sample layout differs from TIFF"));
+        }
+        let len = jw.checked_mul(jh).and_then(|n| n.checked_mul(components)).ok_or(TiffError::LimitsExceeded)?;
+        if len > self.limit {
+            return Err(TiffError::LimitsExceeded);
+        }
         let color = if self.ycbcr { crate::jpeg::Color::Rgb } else { crate::jpeg::Color::Raw };
         let image = crate::jpeg::decode(&stream, color).map_err(|e| invalid(format!("JPEG: {e}")))?;
         let (jw, jh, spp, pixels) = (image.width, image.height, image.components, image.data);
@@ -773,6 +904,134 @@ mod tests {
         assert!(c.lossless(lzw_encode(&[1]), usize::MAX, 2).is_err());
     }
 
+    /// A LERC chunk's Deflate or Zstandard stream inflates no further than twice its chunk, or
+    /// than the limit; a blob larger than its chunk is not decoded.
+    #[cfg(feature = "lerc")]
+    #[test]
+    fn lerc_streams_inflate_no_further_than_the_chunk_or_the_limit() {
+        use std::io::Write;
+        let codec = |lerc_wrapper, limit| ChunkCodec { codec: Codec::Lerc, sample: Sample::U8, lerc_wrapper, limit, ..packed(8, 1) };
+        let encode = |w: u32, h: u32| {
+            let pixels: Vec<u8> = (0..w * h).map(|i| (i % 251) as u8).collect();
+            lerc_writer::encode(lerc_writer::RasterView::new(w, h, 1, &pixels[..]).unwrap(), None, lerc_writer::EncodeOptions::new())
+                .unwrap()
+        };
+        let deflate = |b: &[u8]| {
+            let mut z = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::best());
+            z.write_all(b).unwrap();
+            z.finish().unwrap()
+        };
+        let zstd = |b: &[u8]| ruzstd::encoding::compress_to_vec(b, ruzstd::encoding::CompressionLevel::Fastest);
+        // 64 MiB of zeros in a few kilobytes.
+        let bomb = vec![0u8; 64 << 20];
+        for (wrapper, wrap) in [(1, &deflate as &dyn Fn(&[u8]) -> Vec<u8>), (2, &zstd)] {
+            let raw = wrap(&bomb);
+            assert!(raw.len() < 1 << 20);
+            // A 4 x 4 chunk: corrupt past 2 x 16 + 8192 bytes.
+            let e = codec(wrapper, usize::MAX).lerc(raw.clone(), 4, 4).unwrap_err();
+            assert!(e.to_string().contains("blobs of over 8224 bytes"), "{e}");
+            // A 1024 x 1024 chunk under a limit of 1 MiB: the limit stops the stream.
+            let e = codec(wrapper, 1 << 20).lerc(raw, 1024, 1024).unwrap_err();
+            assert!(matches!(e, TiffError::LimitsExceeded), "{e}");
+            // A valid chunk decodes with the limit at its blob's size.
+            let blob = encode(4, 4);
+            let pixels = codec(wrapper, blob.len()).lerc(wrap(&blob), 4, 4).unwrap();
+            assert_eq!(pixels, (0..16).collect::<Vec<u8>>());
+        }
+        // A blob larger than its chunk.
+        let e = codec(0, usize::MAX).lerc(encode(64, 64), 4, 4).unwrap_err();
+        assert!(e.to_string().contains("a 64 x 64 blob for a 4 x 4 chunk"), "{e}");
+    }
+
+    #[cfg(feature = "lerc")]
+    #[test]
+    fn codec_header_limits_lerc_before_mask_inspection() {
+        // Lerc2 v2 has no checksum. A partial mask's header must be checked
+        // before the library allocates its bitmap, including in appended bands.
+        let header = |width: u32, masked: bool| {
+            let mut blob = b"Lerc2 ".to_vec();
+            for value in [2, 1, width, if masked { 1 } else { width }, 8, if masked { 64 } else { 62 }, 1] {
+                blob.extend_from_slice(&value.to_le_bytes());
+            }
+            for _ in 0..3 {
+                blob.extend_from_slice(&0.0_f64.to_le_bytes());
+            }
+            blob.extend_from_slice(&(if masked { 2_u32 } else { 0 }).to_le_bytes());
+            if masked {
+                blob.extend_from_slice(&i16::MIN.to_le_bytes());
+            }
+            blob
+        };
+        let large = header(1 << 26, true);
+        for blob in [large.clone(), [header(16, false), large].concat()] {
+            let codec = ChunkCodec { codec: Codec::Lerc, limit: 1024, ..packed(8, 2) };
+            let error = codec.lerc(blob, 4, 4).unwrap_err();
+            assert!(matches!(error, TiffError::LimitsExceeded), "{error}");
+        }
+    }
+
+    #[cfg(feature = "lerc")]
+    #[test]
+    fn lerc_header_counts_allow_full_channels_and_mask_alpha_only() {
+        for alpha in [false, true] {
+            let codec = ChunkCodec { codec: Codec::Lerc, sample: Sample::U8, limit: 1024, lerc_alpha: alpha, ..packed(8, 3) };
+            for bands in 1..=4 {
+                let pixels = vec![1_u8; 4 * bands];
+                let view = lerc_writer::BandSetView::new(2, 2, 1, bands, lerc_core::BandLayout::Bsq, &pixels).unwrap();
+                let raw = lerc_writer::encode_band_set(view, None, lerc_writer::EncodeOptions::new()).unwrap();
+                let allowed = bands == 3 || (alpha && bands == 2);
+                assert_eq!(codec.lerc_headers(&raw, 2, 2).is_ok(), allowed, "alpha={alpha}, bands={bands}");
+                if allowed {
+                    let pixels = codec.lerc(raw, 2, 2).unwrap();
+                    let expected = if bands == 2 { [1, 1, 255] } else { [1, 1, 1] };
+                    assert_eq!(pixels, expected.repeat(4));
+                }
+            }
+        }
+    }
+
+    #[cfg(feature = "lerc")]
+    #[test]
+    fn legacy_lerc_headers_follow_inline_and_inherited_masks() {
+        let blob = |inline_mask: bool, width: u32| {
+            let mut raw = b"CntZImage ".to_vec();
+            for value in [11_u32, 8, 2, width] {
+                raw.extend_from_slice(&value.to_le_bytes());
+            }
+            raw.extend_from_slice(&0.0_f64.to_le_bytes());
+            if inline_mask {
+                // Implicit all-invalid mask; the next band may inherit it.
+                raw.extend_from_slice(&[0; 16]);
+            }
+            for value in [1_u32, 1, 1, 0] {
+                raw.extend_from_slice(&value.to_le_bytes());
+            }
+            raw.push(2); // Constant zero pixel block.
+            raw
+        };
+        let codec = ChunkCodec { codec: Codec::Lerc, sample: Sample::F32, limit: 1024, ..packed(32, 2) };
+        for inline_mask in [false, true] {
+            let raw = [blob(true, 2), blob(inline_mask, 2)].concat();
+            codec.lerc_headers(&raw, 2, 2).unwrap();
+            assert_eq!(lerc_reader::get_band_count(&raw).unwrap(), 2);
+            let raw = [blob(true, 2), blob(inline_mask, 1 << 26)].concat();
+            assert!(matches!(codec.lerc_headers(&raw, 2, 2), Err(TiffError::LimitsExceeded)));
+        }
+    }
+
+    #[test]
+    fn codec_header_limits_jpeg_before_decoding() {
+        let mut raw = Vec::new();
+        jpeg_encoder::Encoder::new(&mut raw, 90).encode(&[0; 64 * 64], 64, 64, jpeg_encoder::ColorType::Luma).unwrap();
+        let codec = ChunkCodec { codec: Codec::Jpeg, sample: Sample::U8, limit: 1024, ..packed(8, 1) };
+        let error = codec.jpeg(&raw, 4, 4).unwrap_err();
+        assert!(matches!(error, TiffError::LimitsExceeded), "{error}");
+        let codec = ChunkCodec { limit: 4096, ..codec };
+        assert_eq!(codec.jpeg(&raw, 4, 4).unwrap(), vec![0; 16]);
+        let codec = ChunkCodec { sample: Sample::U16, ..codec };
+        assert!(codec.jpeg(&raw, 4, 4).unwrap_err().to_string().contains("sample layout"));
+    }
+
     fn packed(bits: u16, spp: usize) -> ChunkCodec {
         ChunkCodec {
             codec: Codec::Packed(1),
@@ -790,6 +1049,7 @@ mod tests {
             lerc_alpha: false,
             jpeg_tables: vec![],
             ycbcr: false,
+            limit: usize::MAX,
         }
     }
 
@@ -866,6 +1126,7 @@ mod tests {
             lerc_alpha: false,
             jpeg_tables: Vec::new(),
             ycbcr: false,
+            limit: usize::MAX,
         };
         // 1.5 and -2.0, as byte planes (most significant first), then differenced.
         let (a, b) = (1.5f32.to_be_bytes(), (-2.0f32).to_be_bytes());

@@ -490,7 +490,7 @@ impl Def {
                     && (self.pm - other.pm).abs() < 1e-9
                     && self.axis == other.axis
                     && self.rot == other.rot
-                    && (self.rot.is_none() || (self.lam0 - other.lam0).abs() < 1e-12)
+                    && (self.lam0 - other.lam0).abs() < 1e-12
             }
             (Some(_), Some(_)) => {
                 // In the same unit (a State Plane zone in US survey feet is not the one in metres).
@@ -631,6 +631,7 @@ impl Def {
         d.to_meter = 1.0;
         d.to_deg = 1.0;
         d.pm = 0.0;
+        d.lam0 = 0.0;
         d.axis = *b"en";
         d.z_down = false;
         d
@@ -704,13 +705,12 @@ impl Def {
             None => {
                 let (lam, phi) = ((e * self.to_deg).to_radians(), (n * self.to_deg).to_radians());
                 let phi = if self.ocentric { phi.sin().atan2((1.0 - self.ell.es) * phi.cos()) } else { phi };
-                match &self.rot {
-                    Some(r) => {
-                        let (lam, phi) = r.inv(lam, phi);
-                        (lam + self.lam0, phi)
-                    }
+                // Longitudes are relative to `+lon_0` too, as PROJ's `+proj=longlat +lon_0=10`.
+                let (lam, phi) = match &self.rot {
+                    Some(r) => r.inv(lam, phi),
                     None => (lam, phi),
-                }
+                };
+                (lam + self.lam0, phi)
             }
             Some(p) => {
                 let inverse_a = 1.0 / self.projection_a;
@@ -733,7 +733,7 @@ impl Def {
             return None;
         }
         let (e, n) = self.unaxis(u, v);
-        let pm = self.pm.to_degrees();
+        let pm = (self.pm + self.lam0).to_degrees();
         if self.to_deg == 1.0 && pm == 0.0 {
             return Some((e, n));
         }
@@ -747,7 +747,7 @@ impl Def {
             None => {
                 let (lam, phi) = match &self.rot {
                     Some(r) => r.fwd(adjlon(lon - self.lam0), lat),
-                    None => (adjlon(lon), if self.ocentric { ((1.0 - self.ell.es) * lat.sin()).atan2(lat.cos()) } else { lat }),
+                    None => (adjlon(lon - self.lam0), if self.ocentric { ((1.0 - self.ell.es) * lat.sin()).atan2(lat.cos()) } else { lat }),
                 };
                 (lam.to_degrees() / self.to_deg, phi.to_degrees() / self.to_deg)
             }
@@ -777,9 +777,11 @@ impl Def {
     }
 
     /// Whether PROJ's ballpark transformation to `other` is a longitude rotation alone (both on
-    /// one ellipsoid, with different prime meridians), which PROJ gives an accuracy of 0 m.
+    /// one ellipsoid, with different prime meridians), which PROJ gives an accuracy of 0 m. Not
+    /// for a geographic CRS with `+lon_0`, a PROJ-string CRS PROJ gives no accuracy to.
     pub fn rotation_only_to(&self, other: &Def) -> bool {
-        self.ell.a == other.ell.a && self.ell.es == other.ell.es && self.pm != other.pm
+        let lon_0 = |d: &Def| d.is_geographic() && d.lam0 != 0.0;
+        self.ell.a == other.ell.a && self.ell.es == other.ell.es && self.pm != other.pm && !lon_0(self) && !lon_0(other)
     }
 
     /// The datum transformations to WGS 84, in the order they are tried.

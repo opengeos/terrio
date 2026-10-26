@@ -21,10 +21,10 @@ let (x, y) = transformer.transform(-100.0, 40.0)?;
 ## Features and supported scope
 
 The default configuration works offline and uses the native projection engine.
-In the checked-in 117-method PROJ conformance inventory it supports 40 methods;
+In the checked-in 117-method PROJ conformance inventory it supports 42 methods;
 `wbprojection-fallback` adds 46 methods, including Hammer, Aitoff and Eckert.
 The inventory is a test corpus, not an exhaustive list of EPSG CRSs. The remaining
-31 methods are explicitly refused. Known Krovak inverse differences off Bessel's
+29 methods are explicitly refused. Known Krovak inverse differences off Bessel's
 ellipsoid are recorded in the conformance tests.
 
 | Feature | Default | Effect |

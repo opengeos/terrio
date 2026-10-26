@@ -1986,6 +1986,22 @@ mod tests {
     }
 
     #[test]
+    fn a_lon_0_is_no_prime_meridian_rotation() {
+        // PROJ 9.9 (`projinfo -s A -t B`) gives the ballpark between CRSs differing by their prime
+        // meridian 0 m, and between longlat CRSs with `+lon_0` no accuracy, whatever their prime
+        // meridians.
+        let def = |s: &str| Def::from_proj(s).unwrap();
+        let intl = def("+proj=longlat +ellps=intl");
+        assert!(def("+proj=longlat +pm=paris +ellps=intl").rotation_only_to(&intl));
+        assert!(!def("+proj=longlat +lon_0=10 +ellps=intl").rotation_only_to(&intl));
+        assert!(!def("+proj=longlat +lon_0=10 +pm=paris +ellps=intl").rotation_only_to(&intl));
+        assert!(!def("+proj=longlat +lon_0=10 +pm=paris +ellps=intl").rotation_only_to(&def("+proj=longlat +lon_0=10 +ellps=intl")));
+        assert!(!def("+proj=longlat +pm=10 +ellps=intl").rotation_only_to(&def("+proj=longlat +lon_0=10 +ellps=intl")));
+        // A projected CRS's central meridian is no `+lon_0` of a longlat CRS.
+        assert!(def("+proj=tmerc +lon_0=28 +pm=ferro +ellps=bessel").rotation_only_to(&def("+proj=longlat +ellps=bessel")));
+    }
+
+    #[test]
     fn compound_crss_parse_as_in_gdal() {
         let c = SpatialRef::parse("EPSG:4326+5773").unwrap();
         assert_eq!(c.epsg, None);

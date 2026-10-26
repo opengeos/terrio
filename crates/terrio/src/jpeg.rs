@@ -202,6 +202,46 @@ const ZIGZAG: [usize; 64] = [
     57, 50, 43, 36, 29, 22, 15, 23, 30, 37, 44, 51, 58, 59, 52, 45, 38, 31, 39, 46, 53, 60, 61, 54, 47, 55, 62, 63,
 ];
 
+/// Reads baseline frame dimensions without allocating component planes.
+/// Unlike a color decoder, this also accepts raw two-component frames.
+pub(crate) fn frame_dimensions(data: &[u8]) -> Result<(usize, usize, usize)> {
+    if !data.starts_with(&[0xff, 0xd8]) {
+        return Err("not a JPEG stream".into());
+    }
+    let mut pos = 2;
+    while pos < data.len() {
+        while pos < data.len() && data[pos] != 0xff {
+            pos += 1;
+        }
+        while pos < data.len() && data[pos] == 0xff {
+            pos += 1;
+        }
+        let Some(&marker) = data.get(pos) else { break };
+        pos += 1;
+        if marker == 0xd9 || marker == 0xda {
+            break;
+        }
+        if (0xd0..=0xd7).contains(&marker) || marker == 0x01 {
+            continue;
+        }
+        let len = u16::from_be_bytes([*data.get(pos).ok_or("truncated JPEG")?, *data.get(pos + 1).ok_or("truncated JPEG")?]) as usize;
+        if len < 2 {
+            return Err("invalid JPEG segment length".into());
+        }
+        let segment = data.get(pos + 2..pos + len).ok_or("truncated JPEG segment")?;
+        pos += len;
+        if matches!(marker, 0xc0 | 0xc1) {
+            if segment.len() < 6 {
+                return Err("truncated JPEG frame header".into());
+            }
+            let height = u16::from_be_bytes([segment[1], segment[2]]) as usize;
+            let width = u16::from_be_bytes([segment[3], segment[4]]) as usize;
+            return Ok((width, height, segment[5] as usize));
+        }
+    }
+    Err("no baseline JPEG frame header".into())
+}
+
 /// Decodes a JPEG stream.
 pub(crate) fn decode(data: &[u8], color: Color) -> Result<Image> {
     if !data.starts_with(&[0xff, 0xd8]) {
@@ -264,6 +304,9 @@ pub(crate) fn decode(data: &[u8], color: Color) -> Result<Image> {
             0xe0 if seg.starts_with(b"JFIF\0") => jfif = true,
             0xee if seg.starts_with(b"Adobe") && seg.len() >= 12 => adobe = Some(seg[11]),
             0xc0 | 0xc1 => {
+                if frame.is_some() {
+                    return Err("multiple JPEG frame headers".into());
+                }
                 if seg.len() < 6 {
                     return Err("truncated frame header".into());
                 }
@@ -631,6 +674,20 @@ pub(crate) fn ycc_to_rgb(v: &mut [u8]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn duplicate_frame_cannot_bypass_header_preflight() {
+        let sof = |size: u16| {
+            let mut raw = vec![0xff, 0xc0, 0, 11, 8];
+            raw.extend_from_slice(&size.to_be_bytes());
+            raw.extend_from_slice(&size.to_be_bytes());
+            raw.extend_from_slice(&[1, 1, 0x11, 0]);
+            raw
+        };
+        let stream = [vec![0xff, 0xd8], sof(1), sof(65535), vec![0xff, 0xd9]].concat();
+        assert_eq!(frame_dimensions(&stream).unwrap(), (1, 1, 1));
+        assert!(matches!(decode(&stream, Color::Raw), Err(e) if e == "multiple JPEG frame headers"));
+    }
 
     #[test]
     fn ycc_converts_as_libjpeg() {

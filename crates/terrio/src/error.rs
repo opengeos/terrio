@@ -27,10 +27,11 @@ pub enum Error {
     /// An argument or option is invalid.
     #[error("{0}")]
     InvalidArgument(String),
-    /// A PMTiles payload exceeded a caller-supplied decoded-byte limit.
+    /// A decoded payload exceeded a decoded-byte limit: a PMTiles directory, metadata or tile
+    /// (`PmTilesReadLimits`), or a GeoTIFF chunk or tag value (`TiffReadLimits`).
     #[error("{resource} exceeds decoded-byte limit {limit}")]
     DecodedLimitExceeded {
-        /// The payload kind (root directory, leaf directory, metadata or tile).
+        /// The payload kind (root directory, leaf directory, metadata, tile, TIFF chunk or tag value).
         resource: &'static str,
         /// The maximum allowed decoded bytes.
         limit: usize,

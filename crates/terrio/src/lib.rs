@@ -229,11 +229,11 @@ mod tiff_mask;
 pub mod vfs;
 pub mod warnings;
 
-pub use cog::{LazyRaster, Window, WindowOptions, open_raster_lazy};
+pub use cog::{LazyRaster, TiffReadLimits, Window, WindowOptions, open_raster_lazy};
 pub use dataset::{
     BandMetadata, Dataset, Gcp, Geolocation, RasterDataset, RasterWriteOptions, VectorDataset, VectorOpenOptions, VectorWriteOptions,
-    geo_transform, is_north_up, list_layers, open, open_raster, open_vector, read_gcps, write_netcdf_groups, write_raster,
-    write_raster_dataset, write_vector,
+    geo_transform, is_north_up, list_layers, open, open_raster, open_raster_with_tiff_limits, open_vector, read_gcps, write_netcdf_groups,
+    write_raster, write_raster_dataset, write_vector,
 };
 pub use drivers::gtiff_write::GeoTiffWriter;
 pub use drivers::vector::csv::{CsvGeometry, CsvOptions};

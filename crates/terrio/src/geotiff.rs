@@ -552,10 +552,10 @@ fn identify_by_name(name: &str) -> Option<u32> {
 pub(crate) type FileDecoder = tiff::decoder::Decoder<PatchedReader<std::io::BufReader<std::fs::File>>>;
 
 /// Opens a decoder over a local TIFF file whose tags were read with [`read_geo_tags`].
-pub(crate) fn open_decoder(path: &std::path::Path, tags: &GeoTags) -> crate::Result<FileDecoder> {
+pub(crate) fn open_decoder(path: &std::path::Path, tags: &GeoTags, limits: crate::cog::TiffReadLimits) -> crate::Result<FileDecoder> {
     let file = PatchedReader::new(std::io::BufReader::new(std::fs::File::open(path)?), tags);
     let dec = tiff::decoder::Decoder::new(file).map_err(|e| crate::Error::InvalidData(format!("{}: {e}", path.display())))?;
-    Ok(dec.with_limits(tiff::decoder::Limits::unlimited()))
+    Ok(dec.with_limits(limits.tiff()))
 }
 
 /// Opens another decoder over the same TIFF (a local file, or bytes in memory), for decoding
@@ -587,11 +587,12 @@ pub(crate) fn decode_chunks<R: Read + Seek, D: Read + Seek>(
     reopen: Option<Reopen<D>>,
     ifd: usize,
     chunks: &[u32],
+    limits: crate::cog::TiffReadLimits,
     err: &(dyn Fn(tiff::TiffError) -> crate::Error + Sync),
     mut place: impl FnMut(DecodedChunk) -> crate::Result<()>,
 ) -> crate::Result<()> {
-    // The compressions the `tiff` crate does not decode (alone).
-    let codec = crate::tiff_codecs::ChunkCodec::new(dec).map_err(err)?;
+    // The compressions the `tiff` crate does not decode (alone), with the same limit.
+    let codec = crate::tiff_codecs::ChunkCodec::new(dec, limits.chunk_bytes).map_err(err)?;
     let codec = codec.as_ref();
     // Chunks `..first` were decoded by other threads.
     #[cfg(threads)]
@@ -712,18 +713,25 @@ fn decode_in_threads<D: Read + Seek>(
 
 /// Reads a GeoTIFF (or BigTIFF, or COG) into memory: the full-resolution image of the first IFD.
 pub(crate) fn read_geotiff(path: &std::path::Path) -> crate::Result<crate::RasterDataset> {
+    read_geotiff_with_limits(path, crate::TiffReadLimits::default())
+}
+
+pub(crate) fn read_geotiff_with_limits(path: &std::path::Path, limits: crate::cog::TiffReadLimits) -> crate::Result<crate::RasterDataset> {
     use crate::Error;
     use crate::cog::{ChunkGeom, Window, place};
     use tiff::decoder::DecodingResult;
     use tiff::tags::Tag;
     use wbraster::raster::RasterData;
 
-    let tiff_err = |e: tiff::TiffError| Error::InvalidData(format!("{}: {e}", path.display()));
+    let tiff_err = |e: tiff::TiffError| match e {
+        tiff::TiffError::LimitsExceeded => limits.error()(e),
+        e => Error::InvalidData(format!("{}: {e}", path.display())),
+    };
     let mut tags = read_geo_tags(path).unwrap_or_default();
     tags.apply_sidecar_crs(path);
     tags.warn_unreadable(&path.display().to_string());
     // The decoder rejects palette images; read their indices as grayscale instead.
-    let mut dec = open_decoder(path, &tags)?;
+    let mut dec = open_decoder(path, &tags, limits)?;
     let (w, h) = dec.dimensions().map_err(tiff_err)?;
     let (w, h) = (w as usize, h as usize);
     let samples = dec.find_tag_unsigned::<u16>(Tag::SamplesPerPixel).map_err(tiff_err)?.unwrap_or(1).max(1) as usize;
@@ -744,8 +752,8 @@ pub(crate) fn read_geotiff(path: &std::path::Path) -> crate::Result<crate::Raste
 
     // Band-major output, typed after the first chunk decoded.
     let mut data: Option<RasterData> = None;
-    let reopen = || open_decoder(path, &tags);
-    decode_chunks(&mut dec, Some(&reopen), 0, &chunks, &tiff_err, |(idx, chunk, (dw, dh))| {
+    let reopen = || open_decoder(path, &tags, limits);
+    decode_chunks(&mut dec, Some(&reopen), 0, &chunks, limits, &tiff_err, |(idx, chunk, (dw, dh))| {
         let idx = idx as usize;
         let (plane, rest) = (idx / per_plane, idx % per_plane);
         let geom = ChunkGeom { x0: (rest % across) * cw, y0: (rest / across) * ch, dw, dh, spp };

@@ -1,0 +1,176 @@
+{
+  "environment": {
+    "schema_version": 1,
+    "generated": "2026-10-15T23:26:19+00:00",
+    "proj_version": "9.9.0",
+    "projinfo_banner": "Rel. 9.9.0, September 15th, 2026",
+    "pyproj_version": "3.8.0",
+    "proj_data": "/work/.proj-nogrids",
+    "proj_data_files": [
+      "CH",
+      "GL27",
+      "ITRF2000",
+      "ITRF2008",
+      "ITRF2014",
+      "ITRF2020",
+      "deformation_model.schema.json",
+      "nad.lst",
+      "nad27",
+      "nad83",
+      "other.extra",
+      "proj.db",
+      "proj.ini",
+      "projjson.schema.json",
+      "triangulation.schema.json",
+      "world"
+    ],
+    "grid_files_present": [],
+    "network_enabled": false,
+    "epsg_version": "v13.102",
+    "epsg_date": "2026-08-27",
+    "esri_version": "ArcGIS Pro 3.6",
+    "grid_configuration": "no proj-data grids (proj.db, proj.ini and init files only), network off",
+    "axis_order": "always_xy=True: oracle normalised for visualisation (east, north)"
+  },
+  "source": {
+    "repository": "mdsumner/rust-proj-capability",
+    "revision": "ddd9fac70ec370acd9651ebb8b46035207347ad5",
+    "path": "suites/crs/crs.json"
+  },
+  "fixtures": [
+    {
+      "id": "seed-tpers",
+      "group": "seed",
+      "src": "OGC:CRS84",
+      "dst": "+proj=tpers +lat_0=-42 +lon_0=147 +h=3000000 +tilt=20 +azi=30 +datum=WGS84 +units=m +no_defs",
+      "form": "proj",
+      "point": [
+        150.0,
+        -40.0
+      ],
+      "layers": [
+        "I2",
+        "E1"
+      ],
+      "src_ref": "OGC:CRS84",
+      "dst_ref": "+proj=tpers +lat_0=-42 +lon_0=147 +h=3000000 +tilt=20 +azi=30 +datum=WGS84 +units=m +no_defs",
+      "oracle": {
+        "resolved": true,
+        "src_name": "WGS 84 (CRS84)",
+        "dst_name": "unknown",
+        "src_kind": "geographic",
+        "dst_kind": "projected",
+        "src_unit": "degree",
+        "src_unit_factor": 0.017453292519943295,
+        "dst_unit": "metre",
+        "dst_unit_factor": 1.0,
+        "src_export": {
+          "proj": "+proj=longlat +datum=WGS84 +no_defs +type=crs",
+          "proj_error": null,
+          "proj_bound": "+proj=longlat +datum=WGS84 +no_defs +type=crs",
+          "proj_bound_error": null,
+          "wkt1_gdal_bound": "GEOGCS[\"WGS 84 (CRS84)\",DATUM[\"WGS_1984\",SPHEROID[\"WGS 84\",6378137,298.257223563,AUTHORITY[\"EPSG\",\"7030\"]],AUTHORITY[\"EPSG\",\"6326\"]],PRIMEM[\"Greenwich\",0,AUTHORITY[\"EPSG\",\"8901\"]],UNIT[\"degree\",0.0174532925199433,AUTHORITY[\"EPSG\",\"9122\"]],AUTHORITY[\"OGC\",\"CRS84\"]]"
+        },
+        "dst_export": {
+          "proj": "+proj=tpers +lat_0=-42 +lon_0=147 +h=3000000 +tilt=20 +azi=30 +datum=WGS84 +units=m +no_defs +type=crs",
+          "proj_error": null,
+          "proj_bound": "+proj=tpers +lat_0=-42 +lon_0=147 +h=3000000 +tilt=20 +azi=30 +datum=WGS84 +units=m +no_defs +type=crs",
+          "proj_bound_error": null,
+          "wkt1_gdal_bound": "PROJCS[\"unknown\",GEOGCS[\"unknown\",DATUM[\"WGS_1984\",SPHEROID[\"WGS 84\",6378137,298.257223563,AUTHORITY[\"EPSG\",\"7030\"]],AUTHORITY[\"EPSG\",\"6326\"]],PRIMEM[\"Greenwich\",0,AUTHORITY[\"EPSG\",\"8901\"]],UNIT[\"degree\",0.0174532925199433,AUTHORITY[\"EPSG\",\"9122\"]]],PROJECTION[\"custom_proj4\"],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH],EXTENSION[\"PROJ4\",\"+proj=tpers +lat_0=-42 +lon_0=147 +h=3000000 +tilt=20 +azi=30 +datum=WGS84 +units=m +no_defs\"]]"
+        },
+        "point": [
+          150.0,
+          -40.0
+        ],
+        "candidates": [
+          {
+            "name": "Transformation from WGS 84 (CRS84) to unknown",
+            "accuracy": -1.0,
+            "available": true
+          }
+        ],
+        "best_available": true,
+        "transformer": "Transformation from WGS 84 (CRS84) to unknown",
+        "executed": true,
+        "fwd": [
+          107928.4911266584,
+          323680.07658763544
+        ],
+        "op": {
+          "name": "Transformation from WGS 84 (CRS84) to unknown",
+          "accuracy": -1.0,
+          "ballpark": false,
+          "proj": "+proj=pipeline +step +proj=unitconvert +xy_in=deg +xy_out=rad +step +proj=tpers +lat_0=-42 +lon_0=147 +h=3000000 +tilt=20 +azi=30 +datum=WGS84 +units=m +no_defs"
+        },
+        "inv": [
+          150.0,
+          -39.99999999999999
+        ],
+        "inv_op": {
+          "name": "Transformation from WGS 84 (CRS84) to unknown",
+          "accuracy": -1.0,
+          "ballpark": false,
+          "proj": "+proj=pipeline +step +proj=unitconvert +xy_in=deg +xy_out=rad +step +proj=tpers +lat_0=-42 +lon_0=147 +h=3000000 +tilt=20 +azi=30 +datum=WGS84 +units=m +no_defs"
+        }
+      }
+    },
+    {
+      "id": "edge-tpers-back",
+      "group": "edge",
+      "src": "OGC:CRS84",
+      "dst": "+proj=tpers +lat_0=-42 +lon_0=147 +h=3000000 +tilt=20 +azi=30 +datum=WGS84 +units=m +no_defs",
+      "form": "proj",
+      "point": [
+        -33.0,
+        42.0
+      ],
+      "layers": [
+        "E6",
+        "E8"
+      ],
+      "note": "antipode: not visible, should fail",
+      "src_ref": "OGC:CRS84",
+      "dst_ref": "+proj=tpers +lat_0=-42 +lon_0=147 +h=3000000 +tilt=20 +azi=30 +datum=WGS84 +units=m +no_defs",
+      "oracle": {
+        "resolved": true,
+        "src_name": "WGS 84 (CRS84)",
+        "dst_name": "unknown",
+        "src_kind": "geographic",
+        "dst_kind": "projected",
+        "src_unit": "degree",
+        "src_unit_factor": 0.017453292519943295,
+        "dst_unit": "metre",
+        "dst_unit_factor": 1.0,
+        "src_export": {
+          "proj": "+proj=longlat +datum=WGS84 +no_defs +type=crs",
+          "proj_error": null,
+          "proj_bound": "+proj=longlat +datum=WGS84 +no_defs +type=crs",
+          "proj_bound_error": null,
+          "wkt1_gdal_bound": "GEOGCS[\"WGS 84 (CRS84)\",DATUM[\"WGS_1984\",SPHEROID[\"WGS 84\",6378137,298.257223563,AUTHORITY[\"EPSG\",\"7030\"]],AUTHORITY[\"EPSG\",\"6326\"]],PRIMEM[\"Greenwich\",0,AUTHORITY[\"EPSG\",\"8901\"]],UNIT[\"degree\",0.0174532925199433,AUTHORITY[\"EPSG\",\"9122\"]],AUTHORITY[\"OGC\",\"CRS84\"]]"
+        },
+        "dst_export": {
+          "proj": "+proj=tpers +lat_0=-42 +lon_0=147 +h=3000000 +tilt=20 +azi=30 +datum=WGS84 +units=m +no_defs +type=crs",
+          "proj_error": null,
+          "proj_bound": "+proj=tpers +lat_0=-42 +lon_0=147 +h=3000000 +tilt=20 +azi=30 +datum=WGS84 +units=m +no_defs +type=crs",
+          "proj_bound_error": null,
+          "wkt1_gdal_bound": "PROJCS[\"unknown\",GEOGCS[\"unknown\",DATUM[\"WGS_1984\",SPHEROID[\"WGS 84\",6378137,298.257223563,AUTHORITY[\"EPSG\",\"7030\"]],AUTHORITY[\"EPSG\",\"6326\"]],PRIMEM[\"Greenwich\",0,AUTHORITY[\"EPSG\",\"8901\"]],UNIT[\"degree\",0.0174532925199433,AUTHORITY[\"EPSG\",\"9122\"]]],PROJECTION[\"custom_proj4\"],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH],EXTENSION[\"PROJ4\",\"+proj=tpers +lat_0=-42 +lon_0=147 +h=3000000 +tilt=20 +azi=30 +datum=WGS84 +units=m +no_defs\"]]"
+        },
+        "point": [
+          -33.0,
+          42.0
+        ],
+        "candidates": [
+          {
+            "name": "Transformation from WGS 84 (CRS84) to unknown",
+            "accuracy": -1.0,
+            "available": true
+          }
+        ],
+        "best_available": true,
+        "transformer": "Transformation from WGS 84 (CRS84) to unknown",
+        "executed": false,
+        "error": "forward: transform error: Point outside of projection domain"
+      }
+    }
+  ]
+}

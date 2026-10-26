@@ -12,6 +12,7 @@ The map projections, ellipsoid helpers and datum grid interpolation in crates/te
 are ported from PROJ (https://proj.org).
 The Mollweide and Wagner IV/V formulas follow src/projections/moll.cpp at PROJ commit
 5fa31c29f0a806568ed7bc76c1a557604db4a804.
+The near-sided and tilted perspective formulas follow src/projections/nsper.cpp in PROJ 9.8.1.
 The normalized Cartesian inverse follows src/conversions/cart.cpp in PROJ 9.7.0.
   Copyright (c) 2016, Thomas Knudsen / SDFE
 
@@ -84,7 +85,8 @@ under PROJ's MIT terms reproduced above.
 
 CRS benchmark reference data
 ----------------------------
-The pair-4979-4978, pair-mars-iau and form-27700-projjson numeric fixtures are from Michael Sumner's rust-proj-capability
+The pair-4979-4978, pair-mars-iau, form-27700-projjson, seed-tpers and edge-tpers-back
+numeric fixtures are from Michael Sumner's rust-proj-capability
 (https://github.com/mdsumner/rust-proj-capability), revision
 ddd9fac70ec370acd9651ebb8b46035207347ad5, generated with PROJ 9.9.0.
 The CRS-study oracle version is retained separately from projection-suite data.

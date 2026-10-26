@@ -36,11 +36,9 @@ const UNSUPPORTED: &[&str] = &[
     "mbt_fps",
     "mil_os",
     "nicol",
-    "nsper",
     "ortel",
     "rouss",
     "tcc",
-    "tpers",
     "urm5",
     "urmfps",
     "vandg2",
@@ -421,4 +419,24 @@ fn earth_wkt2_negative_axes_match_gdal() {
     let target = SpatialRef::parse("+proj=longlat +R=2").unwrap();
     let error = Transformer::new(&source, &target).err().unwrap().to_string();
     assert!(error.contains("source semi-major axis 1 m, target 2 m"), "{error}");
+}
+
+/// Geographic PROJ strings with `+lon_0` (GDAL 3.13.3 / PROJ 9.9): longitudes relative to it.
+#[test]
+fn longlat_longitudes_are_relative_to_lon_0() {
+    // GDAL 3.13.3 / PROJ 9.9.
+    let t = |src: &str, dst: &str, x: f64, y: f64| {
+        let t = Transformer::new(&SpatialRef::parse(src).unwrap(), &SpatialRef::parse(dst).unwrap()).unwrap();
+        let (x, y, _) = t.transform_3d(x, y, 0.0).unwrap();
+        ((x * 1e9).round() / 1e9, (y * 1e9).round() / 1e9)
+    };
+    let lon10 = "+proj=longlat +lon_0=10 +datum=WGS84 +type=crs";
+    assert_eq!(t(lon10, "EPSG:4979", 5.0, 5.0), (15.0, 5.0));
+    assert_eq!(t("+proj=latlong +lon_0=-10 +datum=WGS84", "EPSG:4979", 5.0, 5.0), (-5.0, 5.0));
+    assert_eq!(t(lon10, "EPSG:4326", 175.0, 5.0), (-175.0, 5.0));
+    assert_eq!(t("EPSG:4326", lon10, 15.0, 5.0), (5.0, 5.0));
+    assert_eq!(t("EPSG:4326", lon10, -175.0, 5.0), (175.0, 5.0));
+    assert_eq!(t("+proj=longlat +lon_0=10 +pm=paris +datum=WGS84", "EPSG:4326", 5.0, 5.0), (17.337229167, 5.0));
+    assert_eq!(t("+proj=longlat +lon_0=10 +ellps=intl +towgs84=-87,-98,-121", "EPSG:4326", 5.0, 5.0), (14.99934948, 4.998853204));
+    assert!(!SpatialRef::parse(lon10).unwrap().same_as(&SpatialRef::from_epsg(4326).unwrap()));
 }
