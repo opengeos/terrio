@@ -495,7 +495,7 @@ fn parts_of_line(
         pickets.insert(OrderedF64(pt_end_position), p);
     }
     // ogrlineref has no limit; a step far smaller than the route would never finish.
-    const MAX_PICKETS: f64 = 10_000_000.0;
+    const MAX_PICKETS: f64 = 100_000.0;
     if (end_position - round_beg) / step > MAX_PICKETS {
         return Err(Error::InvalidArgument(format!("the step {step} makes more than {MAX_PICKETS} parts")));
     }
@@ -570,7 +570,7 @@ fn check_types(lines: &Layer, repers: &Layer) -> Result<()> {
 /// `position_field`. Each part has its first and last positions (`beg`, `end`) and its length
 /// per position unit (`scale`).
 pub fn create_reference(lines: &Layer, repers: &Layer, options: &LineRefOptions) -> Result<Layer> {
-    if options.step.is_nan() || options.step <= 0.0 {
+    if !options.step.is_finite() || options.step <= 0.0 {
         return Err(Error::InvalidArgument("the step (part length) must be positive".into()));
     }
     check_types(lines, repers)?;
@@ -704,8 +704,12 @@ pub fn subline(parts: &Layer, begin: f64, end: f64, layer_name: &str) -> Result<
         if !(fb >= low && fe <= high) || fb.is_nan() {
             continue;
         }
-        if let Some(line) = part_line(f.geometry.as_ref()) {
-            chosen.insert(OrderedF64(fb), (line, as_double(f.attributes.get(s))));
+        if let Some(line) = part_line(f.geometry.as_ref())
+            && chosen.insert(OrderedF64(fb), (line, as_double(f.attributes.get(s)))).is_some()
+        {
+            return Err(Error::InvalidArgument(
+                "several parts have the same start position: select a single route before extracting a subline".into(),
+            ));
         }
     }
     if chosen.is_empty() {
@@ -835,6 +839,16 @@ mod tests {
         parts.features[0].geometry = Some(Geometry::LineString(vec![]));
         assert!(coordinates(&parts, 1250.).is_err());
         assert!(position(&parts, 0., 0.).is_err());
+    }
+
+    #[test]
+    fn rejects_infinite_steps_and_colliding_parts() {
+        let (lines, stones) = layers();
+        let o = LineRefOptions { position_field: "pos".into(), step: f64::INFINITY, ..Default::default() };
+        assert!(create_reference(&lines, &stones, &o).is_err());
+        let mut parts = create_reference(&lines, &stones, &LineRefOptions { step: 500., ..o }).unwrap();
+        parts.features.push(parts.features[1].clone());
+        assert!(subline(&parts, 1100., 2100., "sub").unwrap_err().to_string().contains("single route"));
     }
 
     #[test]

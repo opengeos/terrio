@@ -131,7 +131,6 @@ fn vector_grid(
         resolution,
         data_type: ot.map(data_type).transpose()?.unwrap_or(DataType::F64),
         crs: srs(crs)?,
-        band_nodata: None,
     };
     let write = dst.map(|_| write_options(format, compress, None, false)).transpose()?;
     let out = crate::with_warnings(py, || -> terrio::Result<RasterDataset> {

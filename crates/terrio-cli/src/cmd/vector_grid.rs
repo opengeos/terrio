@@ -122,7 +122,6 @@ pub fn run(a: Args) -> terrio::Result<()> {
         resolution: a.resolution.as_deref().map(|v| (v[0], v[1])),
         data_type: a.ot.as_deref().map(terrio::ops::parse_data_type).transpose()?.unwrap_or(terrio::DataType::F64),
         crs: a.crs.as_deref().map(SpatialRef::parse).transpose()?,
-        band_nodata: None,
     };
     let out = terrio::ops::vector_grid::vector_grid_from_layers(&ds.layers, a.sql.as_deref(), !a.layers.is_empty(), &options)?;
     a.out.write(&out, &a.output)

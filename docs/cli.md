@@ -868,7 +868,9 @@ the output layer (by default the file's stem); `--lines-layer`, `--points-layer`
 first retained picket can produce a zero position span and a non-finite `scale`;
 avoid such inputs when using the resulting parts for position lookup. With exactly two
 milestones at the route endpoints, creation produces no parts, matching GDAL 3.13.3;
-include an intermediate milestone when using this case.
+include an intermediate milestone when using this case. Creation is limited to 100,000
+pickets to bound memory use; increase the step for longer routes. Subline extraction rejects
+duplicate start positions rather than silently mixing routes.
 
 ## mcp
 

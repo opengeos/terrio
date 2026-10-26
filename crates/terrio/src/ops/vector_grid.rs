@@ -1557,9 +1557,6 @@ pub struct VectorGridOptions {
     pub data_type: DataType,
     /// `--crs` (`-a_srs`): the output CRS. By default, the first layer's.
     pub crs: Option<SpatialRef>,
-    /// The nodata value declared on the bands. By default, the algorithm's when it was given
-    /// ([`GridAlgorithm::nodata_set`]), as `gdal_grid` declares it; none otherwise.
-    pub band_nodata: Option<f64>,
 }
 
 impl Default for VectorGridOptions {
@@ -1576,7 +1573,6 @@ impl Default for VectorGridOptions {
             resolution: None,
             data_type: DataType::F64,
             crs: None,
-            band_nodata: None,
         }
     }
 }
@@ -1770,7 +1766,7 @@ pub fn vector_grid(layers: &[Layer], options: &VectorGridOptions) -> Result<Rast
         Some(c) => c.clone(),
         None => SpatialRef::from_layer(&layers[0]),
     };
-    let band_nodata = options.band_nodata.or(algorithm.nodata_set.then_some(algorithm.nodata));
+    let band_nodata = algorithm.nodata_set.then_some(algorithm.nodata);
     // GDAL's geotransform: (x_min, (x_max - x_min) / cols, 0, top, 0, (bottom - top) / rows).
     let (top, bottom) = (extent.y_max, extent.y_min);
     let gt = [x0, (x1 - x0) / cols as f64, 0.0, top, 0.0, (bottom - top) / rows as f64];
@@ -1983,6 +1979,20 @@ mod tests {
         let v: Vec<f64> = (0..2).flat_map(|r| (0..2).map(move |c| (r, c))).map(|(r, c)| ds.raster.get(0, r as isize, c as isize)).collect();
         assert_eq!(v, vec![2.0, 3.0, 0.0, 1.0]);
     }
+    #[test]
+    fn gdal_algorithm_string_roundtrips() {
+        let a = GridAlgorithm::parse("invdist:power=3:smoothing=2:radius1=4:radius2=5:angle=6:nodata=-9").unwrap();
+        let b = GridAlgorithm::parse(&a.to_gdal_string()).unwrap();
+        assert_eq!((b.power, b.smoothing, b.radius1, b.radius2, b.angle, b.nodata), (3., 2., 4., 5., 6., -9.));
+    }
+
+    #[test]
+    fn nearest_collinear_points_match_gdal() {
+        let x: Vec<f64> = (0..150).map(|i| i as f64).collect();
+        let y = vec![0.; 150];
+        assert_eq!(grid(&x, &y, &x, &GridAlgorithm::new(GridMethod::Nearest), [0., -1., 150., 1.], 1, 1), vec![75.]);
+    }
+
     #[test]
     fn pair_counts_exceed_u32_without_overflow() {
         assert_eq!(distance_pair_count(100_000, false, false), 4_999_950_000);
