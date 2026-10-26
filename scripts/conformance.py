@@ -658,6 +658,22 @@ def suite_pansharpen(ctx):
     )
 
 
+def suite_focal(ctx):
+    """Real imagery and terrain against gdal raster neighbors, nearblack, clean-collar and gdalenhance."""
+    return suite_json_ops(
+        ctx, "focal", "compare_focal_with_gdal.py", "Focal statistics, collars and enhancement",
+        "`gdal raster neighbors`, `nearblack`, `gdal raster clean-collar`, `gdalenhance`",
+        "Sentinel-2 true-color and red-band images, the Landsat 7 scene (with and without an alpha "
+        "band or mask) and a USGS DEM (also with deliberate nodata holes): every built-in kernel, "
+        "matrix kernels, every method, output types and nodata; both collar algorithms with colors, "
+        "thresholds, distances, alpha, masks and in-place updates; equalization, LUT file output "
+        "and LUT file input. Every pixel, mask, type, nodata and geotransform must match exactly "
+        "(tolerance 0); LUT files are compared token by token. For the in-place flood fill of a raster "
+        "with an alpha band, GDAL 3.12 writes stale alpha values on modified lines; that case compares "
+        "the color bands with GDAL's update and the alpha band with GDAL's new-file output.", 1,
+    )
+
+
 def suite_vector_ops(ctx):
     """ogr2ogr's options, gdal_rasterize and gdal_polygonize."""
     s = Suite(
@@ -1488,6 +1504,7 @@ SUITES = OrderedDict(
         ("geolocation", suite_geolocation),
         ("dem-calc", suite_dem_calc),
         ("pansharpen", suite_pansharpen),
+        ("focal", suite_focal),
         ("vector-ops", suite_vector_ops),
         ("multidim", suite_multidim),
         ("topology", suite_topology),

@@ -168,6 +168,12 @@ ndvi = terrio.calc("(B - A * 1.0) / (B + A * 1.0)", A="landsat.tif", A_band=3, B
                    type="Float32")  # like gdal_calc.py, with NumPy's typing rules
 dist = terrio.proximity("roads.tif", values=[1], distunits="GEO")
 clean = terrio.sieve("landcover.tif", threshold=10, connectedness=8)
+max5 = terrio.neighbors("dem.tif", kernel="equal", size=5, method="max")  # like gdal raster neighbors
+edges = terrio.neighbors("image.tif", kernel=["gaussian", "edge2"], band=2, ot="Float32")
+collar = terrio.clean_collar("scene.tif", "clean.tif", add_alpha=True)  # like gdal raster clean-collar
+masked = terrio.nearblack("scene.tif", "nb.tif", colors=["0,0,0"], add_mask=True)  # like nearblack
+text = terrio.enhance_luts("image.tif", config="lut.txt")  # gdalenhance -equalize -config lut.txt
+eq = terrio.enhance("image.tif", "eq.tif", equalize=True)  # or config="lut.txt", src_scale=(0, 4000)
 xs, ys = terrio.transform_points([699960], [3900000], "EPSG:32610", "EPSG:4326")
 xs, ys, hs = terrio.transform_points([-100], [40], "EPSG:4979", "EPSG:4326+5773", [100])  # EGM96
 xs, ys, hs = terrio.transform_points([135], [-25], "EPSG:7912", "EPSG:7843", [0], s_coord_epoch=2010.0)
@@ -176,6 +182,13 @@ terrio.set_grid_search_paths(["/data/proj-grids"])  # where datum shift grids ar
 data = open("dem.tif", "rb").read()
 raster = terrio.open_bytes(data, "dem.tif")  # from bytes; to bytes with raster.to_bytes("x.tif")
 ```
+
+`clean_collar` and `nearblack` return a Byte `Raster`; a mask (`add_mask`, or an input's mask
+kept by `clean_collar`) needs `dst`, which holds it, and the returned `Raster` is then read from
+`dst` (`has_mask`, `read_mask`). In-place updates are a command-line feature
+(`terrio clean-collar --update`). See [neighbors](cli.md#neighbors),
+[clean-collar](cli.md#clean-collar-and-nearblack) and [enhance](cli.md#enhance) for the
+options, GDAL's arithmetic and the known differences.
 
 ### Pansharpening
 

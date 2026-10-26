@@ -4,6 +4,7 @@
 mod arrow;
 #[cfg(not(target_os = "emscripten"))]
 mod cli;
+mod focal;
 mod multidim;
 mod ops;
 mod pointcloud;
@@ -85,6 +86,7 @@ fn _terrio(m: &Bound<'_, PyModule>) -> PyResult<()> {
     ops::register(m)?;
     multidim::register(m)?;
     terrain::register(m)?;
+    focal::register(m)?;
     pointcloud::register(m)?;
     rio::register(m)?;
     stream::register(m)?;
