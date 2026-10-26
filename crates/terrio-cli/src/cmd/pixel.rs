@@ -1,12 +1,10 @@
 //! `terrio unscale`, `terrio nodata-to-alpha`, `terrio reclassify` and `terrio as-features`.
 
-use std::io::Read;
-
 use super::rasterout::{OutputArgs, open};
 use terrio::formats::VectorDriver;
 use terrio::ops::as_features::{AsFeaturesOptions, PixelGeometry};
 use terrio::ops::parse_data_type;
-use terrio::ops::pixel::{NodataToAlphaOptions, ReclassifyOptions, UnscaleOptions, mapping_from_file_text};
+use terrio::ops::pixel::{NodataToAlphaOptions, ReclassifyOptions, UnscaleOptions, read_mapping_file};
 use terrio::ops::vector_filter::WriteMode;
 
 /// `terrio unscale`.
@@ -85,16 +83,7 @@ pub struct ReclassifyArgs {
 /// Runs `terrio reclassify`.
 pub fn reclassify(a: ReclassifyArgs) -> terrio::Result<()> {
     let mapping = match a.mapping.strip_prefix('@') {
-        Some(path) => {
-            let mut text = String::new();
-            std::fs::File::open(path)
-                .and_then(|file| file.take(10_000_001).read_to_string(&mut text))
-                .map_err(|e| terrio::Error::InvalidArgument(format!("cannot read {path}: {e}")))?;
-            if text.len() > 10_000_000 {
-                return Err(terrio::Error::InvalidArgument("the mapping file is too large (maximum 10 MB)".into()));
-            }
-            mapping_from_file_text(&text)?
-        }
+        Some(path) => read_mapping_file(path)?,
         None => a.mapping,
     };
     let ds = open(&a.input)?;
@@ -150,7 +139,6 @@ pub fn as_features(a: AsFeaturesArgs) -> terrio::Result<()> {
         include_row_col: a.include_row_col,
         layer_name: a.output_layer,
     };
-    let layer = terrio::ops::as_features::as_features(&ds, &o)?;
     let driver = a
         .format
         .as_deref()
@@ -163,6 +151,7 @@ pub fn as_features(a: AsFeaturesArgs) -> terrio::Result<()> {
     } else {
         WriteMode::Create
     };
+    let layer = terrio::ops::as_features::as_features(&ds, &o)?;
     terrio::ops::vector_filter::write_vector_with_mode(
         &[layer],
         &a.output,

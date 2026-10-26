@@ -264,6 +264,10 @@ Inputs are datasets or raster bytes; `asFeatures` returns a vector dataset (`toG
 [nodata-to-alpha](cli.md#nodata-to-alpha), [reclassify](cli.md#reclassify) and
 [as-features](cli.md#as-features).
 
+For `nodataToAlpha`, non-finite overrides use the strings `"nan"`, `"inf"` or `"-inf"`
+(as a scalar or in the nodata array). Raw JavaScript non-finite numbers and explicit null
+are rejected before JSON serialization, so they cannot silently become a default override.
+
 ## Geolocation-array warping
 
 Pass longitude and latitude rasters explicitly when array datasets cannot be reopened from

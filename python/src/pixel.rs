@@ -9,7 +9,7 @@ use crate::vector::PyLayer;
 use pyo3::prelude::*;
 use terrio::ops::as_features::{AsFeaturesOptions, PixelGeometry};
 use terrio::ops::parse_data_type;
-use terrio::ops::pixel::{NodataToAlphaOptions, ReclassifyOptions, UnscaleOptions, mapping_from_file_text};
+use terrio::ops::pixel::{NodataToAlphaOptions, ReclassifyOptions, UnscaleOptions, read_mapping_file};
 
 /// Registers the functions in the module.
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -125,9 +125,7 @@ fn reclassify(
     bigtiff: bool,
 ) -> PyResult<PyRaster> {
     let mapping = match mapping.strip_prefix('@') {
-        Some(path) => {
-            mapping_from_file_text(&std::fs::read_to_string(path).map_err(|e| invalid(format!("cannot open {path}: {e}")))?).py()?
-        }
+        Some(path) => read_mapping_file(path).py()?,
         None => mapping.to_string(),
     };
     let o = ReclassifyOptions { mapping, output_type: ot.map(parse_data_type).transpose().py()? };

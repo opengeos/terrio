@@ -94,3 +94,25 @@ def test_as_features_output_options_require_destination(options):
     src = terrio.Raster.from_array(np.array([[1]], dtype="uint8"), GT)
     with pytest.raises(ValueError, match="require dst"):
         terrio.as_features(src, **options)
+
+
+def test_float32_feature_nodata_and_duplicate_bands():
+    near = np.nextafter(np.float32(0.1), np.float32(1))
+    src = terrio.Raster.from_array(np.array([[0.1, near, 0.2]], dtype="float32"), GT, nodata=0.1)
+    layer = terrio.as_features(src, skip_nodata=True, bands=[1, 1])
+    features = layer.to_geojson()["features"]
+    assert len(features) == 2
+    assert list(features[0]["properties"]) == ["BAND_1"]
+    assert features[0]["properties"]["BAND_1"] == float(near)
+
+
+def test_mapping_file_limit_and_signed_nan(tmp_path):
+    src = terrio.Raster.from_array(np.array([[1]], dtype="uint8"), GT)
+    path = tmp_path / "huge-map.txt"
+    with path.open("wb") as file:
+        file.truncate(10_000_001)
+    with pytest.raises(ValueError, match="too large"):
+        terrio.reclassify(src, f"@{path}")
+    for mapping in ("-nan=0", "+nan=0"):
+        with pytest.raises(ValueError, match="NaN"):
+            terrio.reclassify(src, mapping)

@@ -99,6 +99,14 @@ def prepare(d, tmp):
     p["landsat_small"] = os.path.join(tmp, "landsat_small.tif")
     gdal.Translate(p["landsat_small"], f"{d}/landsat.tif", srcWin=[0, 0, 50, 40])
     p["s5p_qa"] = f'NETCDF:"{d}/{S5P}":/PRODUCT/qa_value'
+    p["float_nodata"] = os.path.join(tmp, "float_nodata.tif")
+    ds = gdal.Translate(p["float_nodata"], p["usgs_small"], outputType=gdal.GDT_Float32, noData=0.1)
+    values = ds.ReadAsArray()
+    values[0, 0] = 0.1
+    values[0, 1] = np.nextafter(np.float32(0.1), np.float32(1))
+    values[0, 2] = np.float32(0.1) + 4 * np.spacing(np.float32(0.1))
+    ds.GetRasterBand(1).WriteArray(values)
+    ds = None
     mapping = os.path.join(tmp, "nlcd_mapping.txt")
     with open(mapping, "w") as f:
         f.write("# NLCD classes to groups\n11=1  # water\n[21,25)=2\n31=3\n[41,44)=4 # forest\n"
@@ -135,8 +143,8 @@ def cases(d, tmp):
     unscale("Landsat Byte", p["landsat_scaled"], "Byte")
     unscale("LST Float32 NaN", p["lst_scaled"])
     unscale("LST Int32", p["lst_scaled"], "Int32")
-    if gdal.GetDriverByName("netCDF") is not None:
-        unscale("S5P qa_value netCDF", p["s5p_qa"])
+    unscale("S5P qa_value netCDF", p["s5p_qa"])
+    out[-1]["requires"] = "netCDF"
     unscale("unscaled DEM Float64", p["dem_window"])
 
     def alpha(name, src, nodata=()):
@@ -176,6 +184,8 @@ def cases(d, tmp):
     features("points skip-nodata", p["usgs_small"], ["--geometry-type", "point", "--skip-nodata"])
     features("table Landsat bands", p["landsat_small"], ["--include-row-col"], ext="csv")
     features("Landsat polygons skip-nodata", p["landsat_small"], ["--geometry-type", "polygon", "--skip-nodata"])
+    features("Float32 fractional skip-nodata", p["float_nodata"], ["--skip-nodata"])
+    features("duplicate bands", p["usgs_small"], ["-b", "1", "-b", "1"])
     return out
 
 
@@ -302,6 +312,8 @@ def main():
                 if os.path.exists(path):
                     os.remove(path)
             try:
+                if c.get("requires") and gdal.GetDriverByName(c["requires"]) is None:
+                    raise RuntimeError(f"reference case requires GDAL's {c['requires']} driver")
                 run([x.replace("{out}", gout) for x in c["gdal"]])
                 run([a.terrio] + [x.replace("{out}", tout) for x in c["terrio"]])
                 if c["kind"] == "vector":

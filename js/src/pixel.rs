@@ -31,12 +31,30 @@ pub fn unscale(src: JsValue, options: JsValue) -> Result<Dataset, JsError> {
     Ok(Dataset::from_raster(terrio::ops::pixel::unscale(&ds, &o).map_err(js_err)?))
 }
 
-/// A number, or an array of them.
+/// JSON can carry non-finite nodata values as strings.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum NodataValue {
+    Number(f64),
+    Text(String),
+}
+
+impl NodataValue {
+    fn number(self) -> Result<f64, JsError> {
+        match self {
+            Self::Number(value) => Ok(value),
+            Self::Text(text) => {
+                text.trim().to_ascii_lowercase().parse().map_err(|_| invalid("nodata must be a number or 'nan', 'inf', '-inf'"))
+            }
+        }
+    }
+}
+
 #[derive(Deserialize)]
 #[serde(untagged)]
 enum Numbers {
-    One(f64),
-    Many(Vec<f64>),
+    One(NodataValue),
+    Many(Vec<NodataValue>),
 }
 
 /// Options of [`nodata_to_alpha`].
@@ -48,14 +66,24 @@ struct NodataToAlphaArgs {
 
 /// Replaces nodata values with an alpha band (`gdal raster nodata-to-alpha`). Options:
 /// `nodata`, a value overriding the source's, or one per band (transparent where every band has
-/// its value).
+/// its value). Use strings `"nan"`, `"inf"`, `"-inf"` for non-finite overrides; raw
+/// non-finite numbers and null are rejected before JSON serialization.
 #[wasm_bindgen(js_name = nodataToAlpha)]
 pub fn nodata_to_alpha(src: JsValue, options: JsValue) -> Result<Dataset, JsError> {
+    // JSON.stringify turns non-finite numbers into null. Refuse them before the
+    // round trip so an explicit override can never become the default silently.
+    if options.is_object() {
+        let raw = js_sys::Reflect::get(&options, &JsValue::from_str("nodata")).map_err(|_| invalid("invalid nodata option"))?;
+        let invalid_number = |value: &JsValue| value.is_null() || value.as_f64().is_some_and(|v| !v.is_finite());
+        if invalid_number(&raw) || js_sys::Array::is_array(&raw) && js_sys::Array::from(&raw).iter().any(|v| invalid_number(&v)) {
+            return Err(invalid("nodata cannot be null or a non-finite number: use the strings 'nan', 'inf' or '-inf'"));
+        }
+    }
     let a: NodataToAlphaArgs = parse_options(&options)?;
     let nodata = match a.nodata {
         None => Vec::new(),
-        Some(Numbers::One(v)) => vec![v],
-        Some(Numbers::Many(v)) => v,
+        Some(Numbers::One(v)) => vec![v.number()?],
+        Some(Numbers::Many(v)) => v.into_iter().map(NodataValue::number).collect::<Result<_, _>>()?,
     };
     let ds = input_raster(&src)?;
     Ok(Dataset::from_raster(terrio::ops::pixel::nodata_to_alpha(&ds, &NodataToAlphaOptions { nodata }).map_err(js_err)?))

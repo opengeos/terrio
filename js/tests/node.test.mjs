@@ -1175,7 +1175,19 @@ test("unscale, nodataToAlpha, reclassify and asFeatures", () => {
   const alpha = terrio.nodataToAlpha(src);
   assert.equal(alpha.count, 2);
   assert.deepEqual([...alpha.readBand(2)], [255, 255, 0, 255]);
+  assert.deepEqual([...terrio.nodataToAlpha(src, null).readBand(2)], [255, 255, 0, 255]);
   assert.deepEqual([...terrio.nodataToAlpha(src, { nodata: 1 }).readBand(2)], [0, 255, 255, 255]);
+  assert.throws(() => terrio.nodataToAlpha(src, { nodata: NaN }), /strings/);
+  assert.throws(() => terrio.nodataToAlpha(src, { nodata: Infinity }), /strings/);
+  assert.throws(() => terrio.nodataToAlpha(src, { nodata: null }), /null/);
+  assert.throws(() => terrio.nodataToAlpha(src, { nodata: [NaN] }), /strings/);
+  const special = terrio.rasterFromArray(new Float64Array([NaN, Infinity, -Infinity, 3]), 2, 2, gt);
+  for (const [nodata, expected] of [["nan", [0, 255, 255, 255]], ["inf", [255, 0, 255, 255]], ["-inf", [255, 255, 0, 255]]]) {
+    assert.deepEqual([...terrio.nodataToAlpha(special, { nodata }).readBand(2)], expected);
+  }
+  const fractional = terrio.rasterFromArray(new Float32Array([0.1, 0.2]), 2, 1, gt, "EPSG:32611", 0.1);
+  assert.equal(terrio.asFeatures(fractional, { skipNodata: true }).toGeoJSON().features.length, 1);
+  assert.deepEqual(Object.keys(terrio.asFeatures(src, { bands: [1, 1] }).toGeoJSON().features[0].properties), ["BAND_1"]);
   const rc = terrio.reclassify(src, "[0,3)=1;[3,50]=2;NO_DATA=NO_DATA");
   assert.deepEqual([...rc.readBand(1)], [1, 1, 255, 2]);
   const fromFile = terrio.reclassify(src, "", { mappingFile: "# c\n[0,3)=7\nDEFAULT=PASS_THROUGH\n", ot: "Int16" });

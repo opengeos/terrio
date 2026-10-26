@@ -842,7 +842,9 @@ saturates at 127, as GDAL converts it). The mask is the first band's nodata valu
 are accepted) makes a pixel transparent only where every band has its value, as GDAL's
 `NODATA_VALUES`. Without explicit `--nodata`, a raster whose first band has no nodata
 value, or that already ends with an alpha band (two or four bands), is copied unchanged.
-Explicit nodata adds a new alpha band even to RGBA input, matching GDAL 3.13.3. Internal and `.msk` masks are not used.
+Explicit nodata adds a new alpha band even to RGBA input, matching GDAL 3.13.3. Copied
+bands retain their scales and offsets, including driver-recorded packing. Internal and `.msk`
+masks are not used.
 
 ## reclassify
 
@@ -874,7 +876,8 @@ As `gdal raster as-features`: one feature per pixel, row by row, in a layer name
 and `COL` (`--include-row-col`), then `BAND_<n>` (Float) per band. `--geometry-type` is `none`
 (an attribute table, the default), `point` (pixel centres) or `polygon` (pixel squares, in the
 raster's CRS). `--skip-nodata` leaves out the pixels whose first reported band has its nodata
-value. `-b` selects bands (GDAL 3.13.3 accepts `-b` but reports every band). `--append`
+value after conversion to the source type; nearby Float32 values remain valid. Repeated band
+selections are reported once, in their first-selected order. `-b` selects bands (GDAL 3.13.3 accepts `-b` but reports every band). `--append`
 and `--overwrite` update an existing output, as for `polygonize`. The features are built in
 memory; an estimated expansion above 512 MiB is refused before generating features.
 Crop large inputs first. GDAL's `--update`, `--overwrite-layer` and

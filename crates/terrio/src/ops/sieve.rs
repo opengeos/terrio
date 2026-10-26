@@ -231,19 +231,12 @@ pub fn sieve(ds: &RasterDataset, o: &SieveOptions) -> Result<RasterDataset> {
 /// GDAL's nodata mask: pixels equal to the nodata value (NaN matching NaN; floats compared with
 /// GDAL's tolerance).
 pub(crate) fn nodata_mask(values: &[f64], nd: f64, dt: DataType) -> Vec<bool> {
-    let close32 = |a: f32, b: f32| a == b || (a - b).abs() < f32::EPSILON * (a + b).abs() * 2.0;
-    let close64 = |a: f64, b: f64| a == b || (a - b).abs() < f32::EPSILON as f64 * (a + b).abs() * 2.0;
-    match dt {
-        DataType::F32 => values.iter().map(|v| !(nd.is_nan() && v.is_nan() || close32(*v as f32, nd as f32))).collect(),
-        DataType::F64 => values.iter().map(|v| !(nd.is_nan() && v.is_nan() || close64(*v, nd))).collect(),
-        _ => {
-            let (lo, hi) = super::type_range(dt);
-            if nd.is_nan() || nd < lo || nd > hi || nd.fract() != 0.0 {
-                return vec![true; values.len()];
-            }
-            values.iter().map(|v| *v != nd).collect()
-        }
-    }
+    values.iter().map(|v| super::gdal_nodata_valid(*v, nd, dt)).collect()
+}
+
+/// Typed mask without allocating a widened f64 copy of the band.
+pub(crate) fn nodata_mask_view(view: super::BandView<'_>, nd: f64, dt: DataType) -> Vec<bool> {
+    crate::par::map_range(view.len(), |i| super::gdal_nodata_valid(view.get(i), nd, dt))
 }
 
 #[cfg(test)]

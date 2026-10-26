@@ -69,10 +69,13 @@ pub fn as_features(ds: &RasterDataset, o: &AsFeaturesOptions) -> Result<Layer> {
         return Err(Error::Unsupported("features from complex bands".into()));
     }
     let r = &ds.raster;
-    let bands: Vec<usize> = if o.bands.is_empty() { (1..=r.bands).collect() } else { o.bands.clone() };
+    let mut bands: Vec<usize> = if o.bands.is_empty() { (1..=r.bands).collect() } else { o.bands.clone() };
     if let Some(b) = bands.iter().find(|b| **b == 0 || **b > r.bands) {
         return Err(Error::InvalidArgument(format!("the raster has no band {b}")));
     }
+    // Avoid duplicate field names while retaining the requested band order.
+    let mut seen = std::collections::HashSet::new();
+    bands.retain(|band| seen.insert(*band));
     let attribute_count = bands.len() + 2 * usize::from(o.include_xy) + 2 * usize::from(o.include_row_col);
     // The returned Layer materializes one feature and its attributes per pixel.
     // Bound that expansion before allocating; callers can crop the raster first.
@@ -117,7 +120,10 @@ pub fn as_features(ds: &RasterDataset, o: &AsFeaturesOptions) -> Result<Layer> {
             let i = row * w + col;
             if let Some(nd) = nodata {
                 let v = views[0].get(i);
-                if v == nd || (nd.is_nan() && v.is_nan()) {
+                // GDAL's feature iterator compares exactly in the source type,
+                // unlike its tolerance-based nodata mask (nearby floats stay valid).
+                let typed_nd = if r.data_type == wbraster::DataType::F32 { nd as f32 as f64 } else { nd };
+                if super::is_nodata(v, typed_nd) {
                     continue;
                 }
             }
@@ -185,6 +191,31 @@ mod tests {
         assert!(skipped.features[0].geometry.is_none());
         assert!(as_features(&ds, &AsFeaturesOptions { bands: vec![3], ..Default::default() }).is_err());
     }
+    #[test]
+    fn float32_nodata_and_repeated_bands_follow_gdal() {
+        let grid = Grid { width: 4, height: 1, geo_transform: [0., 1., 0., 1., 0., -1.] };
+        let near = f32::from_bits(0.1_f32.to_bits() + 1) as f64;
+        let farther = f32::from_bits(0.1_f32.to_bits() + 4) as f64;
+        let ds = build_raster(
+            grid,
+            vec![vec![0.1, near, farther, 0.2], vec![1., 2., 3., 4.]],
+            DataType::F32,
+            Some(0.1),
+            &Default::default(),
+            convert_value,
+        )
+        .unwrap();
+        let options = AsFeaturesOptions { bands: vec![1, 1], skip_nodata: true, ..Default::default() };
+        let out = as_features(&ds, &options).unwrap();
+        assert_eq!(out.features.len(), 3);
+        assert_eq!(out.schema.fields().iter().map(|f| f.name.as_str()).collect::<Vec<_>>(), ["BAND_1"]);
+        assert_eq!(out.features[0].attributes, [FieldValue::Float(near)]);
+        assert_eq!(out.features[1].attributes, [FieldValue::Float(farther)]);
+        assert_eq!(out.features[2].attributes, [FieldValue::Float(0.2_f32 as f64)]);
+        let out = as_features(&ds, &AsFeaturesOptions { bands: vec![2, 1, 2], ..Default::default() }).unwrap();
+        assert_eq!(out.schema.fields().iter().map(|f| f.name.as_str()).collect::<Vec<_>>(), ["BAND_2", "BAND_1"]);
+    }
+
     #[test]
     fn skip_nodata_on_zero_band_raster() {
         let grid = Grid { width: 1, height: 1, geo_transform: [0., 1., 0., 0., 0., -1.] };

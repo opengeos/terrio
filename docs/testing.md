@@ -89,7 +89,7 @@ The [Conformance](conformance.md) page has the full, generated results; in short
 | Histograms | 84 of 84 cases identical to `gdalinfo -hist` (21 rasters of every type) |
 | `calc` | 35 of 37 cases identical; the other two within one float32 rounding step (NumPy's vectorized float32 `sin`, `exp`, `log10`, `arctan2`) |
 | `proximity`, `sieve` | 13 of 13 cases identical |
-| `unscale`, `nodata-to-alpha`, `reclassify`, `as-features` | 27 of 27 cases identical to GDAL 3.13.3's `gdal raster` commands (pixels or features, types, nodata, CRS, color interpretations, scales; geotransforms are not scored). Known differences: netCDF default geotransform, selected bands vs GDAL reporting all bands, default layer names, unsupported as-features update/layer options and nodata-to-alpha masks (see [CLI scope](cli.md#as-features)); the netCDF case needs GDAL's netCDF driver. |
+| `unscale`, `nodata-to-alpha`, `reclassify`, `as-features` | 29 of 29 cases identical to GDAL 3.13.3's `gdal raster` commands (pixels or features, types, nodata, CRS, color interpretations, scales; geotransforms are not scored). Known differences: netCDF default geotransform, selected bands vs GDAL reporting all bands, default layer names, unsupported as-features update/layer options and nodata-to-alpha masks (see [CLI scope](cli.md#as-features)); a missing reference netCDF driver is an explicit case error, and repeated bands and Float32 nodata-adjacent samples are covered. |
 | STAC and GeoZarr | 16 of 16 STAC checks (subdatasets, mosaics and windows identical to GDAL STACIT's, 328 footprint fields as `ogrinfo`'s), 99 of 99 STACTA checks (summaries, subdatasets and metadata as `gdalinfo`'s; whole rasters, windows and every overview identical to GDAL STACTA's on its 7 test items and on `gdal raster tile` pyramids of a DEM and a Landsat scene, local, over HTTP and with a missing tile) and 60 of 60 GeoZarr checks |
 | Remote Zarr stores | 45 of 45 checks on six public and served stores: sizes, geotransforms and nodata as `gdalinfo`'s; every window identical to `gdal_translate`'s (`/vsicurl/`, `/vsis3/`, `/vsigs/`, `/vsiaz/`) and xarray's, GeoZarr multiscales overviews identical to xarray's levels; windows 2 to 15 times faster than GDAL's |
 | Point clouds | 485 of 485 checks: every value identical to laspy; COPC queries and grids identical to PDAL |
@@ -665,3 +665,12 @@ The full release dry run is manual: select **Release dry run → Run workflow** 
 GitHub Actions before tagging a release. It builds the complete cross-platform
 wheel, CLI, installer and npm matrix without publishing. Pull requests retain the
 normal CI checks, including Python, WASM, API documentation and package validation.
+
+## Pixel-operation buffer regression (#299)
+
+A 2048×2048 four-band Float32 Landsat-derived fixture, two Rayon threads and development CLI
+builds compared the previous and direct-to-typed-buffer paths. Unscale peak RSS fell from
+316,460 to 272,516 KiB; reclassify fell from 318,192 to 272,264 KiB. Every output pixel, type,
+nodata value and georeferencing value remained unchanged. These are local memory observations,
+not runtime or general memory guarantees. The operations still materialize input and output;
+the full-band f64 intermediates have been removed.

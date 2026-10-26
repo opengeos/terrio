@@ -298,6 +298,31 @@ pub(crate) fn warp_round(v: f64, dt: DataType) -> f64 {
     }
 }
 
+/// GDAL's ARE_REAL_EQUAL comparison at single precision.
+#[inline]
+pub(crate) fn gdal_real_equal32(a: f32, b: f32) -> bool {
+    a == b || (a - b).abs() < f32::EPSILON * (a + b).abs() * 2.0
+}
+
+/// GDAL's ARE_REAL_EQUAL comparison at double precision (with float epsilon).
+#[inline]
+pub(crate) fn gdal_real_equal64(a: f64, b: f64) -> bool {
+    a == b || (a - b).abs() < f32::EPSILON as f64 * (a + b).abs() * 2.0
+}
+
+/// Whether a sample is valid under GDAL's typed nodata-mask comparison.
+#[inline]
+pub(crate) fn gdal_nodata_valid(value: f64, nodata: f64, dt: DataType) -> bool {
+    match dt {
+        DataType::F32 => !(nodata.is_nan() && value.is_nan() || gdal_real_equal32(value as f32, nodata as f32)),
+        DataType::F64 => !(nodata.is_nan() && value.is_nan() || gdal_real_equal64(value, nodata)),
+        _ => {
+            let (lo, hi) = type_range(dt);
+            nodata.is_nan() || nodata < lo || nodata > hi || nodata.fract() != 0.0 || value != nodata
+        }
+    }
+}
+
 /// Whether `v` is the nodata value `nodata` (NaN matches NaN).
 #[inline]
 pub(crate) fn is_nodata(v: f64, nodata: f64) -> bool {

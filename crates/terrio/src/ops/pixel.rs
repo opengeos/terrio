@@ -16,18 +16,6 @@ pub struct UnscaleOptions {
     pub output_type: Option<DataType>,
 }
 
-/// GDAL's `ARE_REAL_EQUAL` at single precision: equal, or within two float epsilons relative to
-/// the magnitude.
-#[inline]
-fn real_equal32(a: f32, b: f32) -> bool {
-    a == b || (a - b).abs() < f32::EPSILON * (a + b).abs() * 2.0
-}
-
-#[inline]
-fn real_equal64(a: f64, b: f64) -> bool {
-    a == b || (a - b).abs() < f32::EPSILON as f64 * (a + b).abs() * 2.0
-}
-
 /// Whether GDAL's virtual raster sources compute in double precision: for 32- and 64-bit integer
 /// and `Float64` outputs, and 32- and 64-bit integer sources (single precision otherwise).
 fn works_in_f64(src: DataType, dst: DataType) -> bool {
@@ -59,37 +47,34 @@ pub fn unscale(ds: &RasterDataset, o: &UnscaleOptions) -> Result<RasterDataset> 
     let n = ds.raster.cols * ds.raster.rows;
     let nbands = ds.raster.bands;
     let wide = works_in_f64(src, dst);
-    let bands: Vec<Vec<f64>> = (0..nbands)
-        .map(|b| {
-            let (scale, offset) = band_scale_offset(ds, b + 1);
-            let nodata = ds.band_nodata(b + 1);
-            let view = super::BandView::of(&ds.raster, b);
-            let fill = nodata.map(|nd| convert_value(nd, dst));
-            crate::par::map_range(n, |i| {
-                let v = view.get(i);
-                if wide {
-                    if let (Some(nd), Some(f)) = (nodata, fill)
-                        && (if nd.is_nan() { v.is_nan() } else { real_equal64(v, nd) })
-                    {
-                        return f;
-                    }
-                    output_value(v * scale + offset, dst)
-                } else {
-                    let v = v as f32;
-                    if let (Some(nd), Some(f)) = (nodata, fill)
-                        && (if nd.is_nan() { v.is_nan() } else { real_equal32(v, nd as f32) })
-                    {
-                        return f;
-                    }
-                    output_value((v as f64 * scale + offset) as f32 as f64, dst)
+    let mut data = wbraster::raster::RasterData::new_filled(dst, n * nbands, 0.0);
+    for b in 0..nbands {
+        let (scale, offset) = band_scale_offset(ds, b + 1);
+        let nodata = ds.band_nodata(b + 1);
+        let view = super::BandView::of(&ds.raster, b);
+        let fill = nodata.map(|nd| convert_value(nd, dst));
+        fill_band(&mut data, b, n, |i| {
+            let v = view.get(i);
+            if wide {
+                if let (Some(nd), Some(f)) = (nodata, fill)
+                    && (if nd.is_nan() { v.is_nan() } else { super::gdal_real_equal64(v, nd) })
+                {
+                    return f;
                 }
-            })
-        })
-        .collect();
-    let data = super::bands_data(&bands, n, dst, |v, _| v);
+                output_value(v * scale + offset, dst)
+            } else {
+                let v = v as f32;
+                if let (Some(nd), Some(f)) = (nodata, fill)
+                    && (if nd.is_nan() { v.is_nan() } else { super::gdal_real_equal32(v, nd as f32) })
+                {
+                    return f;
+                }
+                output_value((v as f64 * scale + offset) as f32 as f64, dst)
+            }
+        });
+    }
     let mut out = super::derived(ds, data, nbands)?;
-    let packing = |k: &str| k.starts_with(crate::info::INTERNAL) && (k.ends_with("_SCALE") || k.ends_with("_OFFSET"));
-    out.raster.metadata.retain(|(k, _)| !packing(k));
+    clear_packing(&mut out);
     out.band_metadata = (0..nbands)
         .map(|b| {
             let mut m = ds.band_metadata.get(b).cloned().unwrap_or_default();
@@ -100,6 +85,43 @@ pub fn unscale(ds: &RasterDataset, o: &UnscaleOptions) -> Result<RasterDataset> 
         .collect();
     copy_nodata(ds, &mut out);
     Ok(out)
+}
+
+/// Converts each computed sample directly into its final typed band slot.
+fn fill_band(data: &mut wbraster::raster::RasterData, band: usize, n: usize, value: impl Fn(usize) -> f64 + Sync + Send) {
+    if n == 0 {
+        return;
+    }
+    let chunk = crate::par::chunk_len(n, 4096);
+    macro_rules! fill {
+        ($v:expr, $t:ty) => {
+            crate::par::chunks_mut(&mut $v[band * n..(band + 1) * n], chunk, |index, values| {
+                for (offset, out) in values.iter_mut().enumerate() {
+                    *out = value(index * chunk + offset) as $t;
+                }
+            })
+        };
+    }
+    use wbraster::raster::RasterData as D;
+    match data {
+        D::U8(v) => fill!(v, u8),
+        D::I8(v) => fill!(v, i8),
+        D::U16(v) => fill!(v, u16),
+        D::I16(v) => fill!(v, i16),
+        D::U32(v) => fill!(v, u32),
+        D::I32(v) => fill!(v, i32),
+        D::U64(v) => fill!(v, u64),
+        D::I64(v) => fill!(v, i64),
+        D::F32(v) => fill!(v, f32),
+        D::F64(v) => fill!(v, f64),
+    }
+}
+
+fn clear_packing(ds: &mut RasterDataset) {
+    ds.raster.metadata.retain(|(key, _)| {
+        !key.strip_prefix(crate::info::INTERNAL)
+            .is_some_and(|suffix| suffix.starts_with("BAND_") && (suffix.ends_with("_SCALE") || suffix.ends_with("_OFFSET")))
+    });
 }
 
 /// The scale and offset of a band (from 1): its properties, or the packing a driver recorded
@@ -145,7 +167,7 @@ pub fn nodata_to_alpha(ds: &RasterDataset, o: &NodataToAlphaOptions) -> Result<R
     if nbands == 0 {
         return Err(Error::InvalidArgument("the raster has no bands".into()));
     }
-    let nodata_mask = |band: usize, nd: f64| super::sieve::nodata_mask(&super::band_f64(r, band), nd, r.data_type);
+    let nodata_mask = |band: usize, nd: f64| super::sieve::nodata_mask_view(super::BandView::of(r, band), nd, r.data_type);
     let valid: Vec<bool> = match o.nodata.len() {
         0 => {
             let ends_with_alpha = matches!(nbands, 2 | 4) && ds.band_color_interp(nbands).eq_ignore_ascii_case("Alpha");
@@ -156,8 +178,10 @@ pub fn nodata_to_alpha(ds: &RasterDataset, o: &NodataToAlphaOptions) -> Result<R
         }
         1 => nodata_mask(0, o.nodata[0]),
         k if k == nbands => {
-            let masks: Vec<Vec<bool>> = (0..nbands).map(|b| nodata_mask(b, o.nodata[b])).collect();
-            (0..n).map(|i| masks.iter().any(|m| m[i])).collect()
+            let views: Vec<_> = (0..nbands).map(|band| super::BandView::of(r, band)).collect();
+            crate::par::map_range(n, |i| {
+                views.iter().zip(&o.nodata).any(|(view, nd)| super::gdal_nodata_valid(view.get(i), *nd, r.data_type))
+            })
         }
         k => {
             return Err(Error::InvalidArgument(format!("{k} nodata values for {nbands} bands: give one value, or one per band")));
@@ -283,6 +307,9 @@ fn parse_interval(s: &str) -> Result<(Interval, &str)> {
         Some(b'[') => true,
         _ => {
             let (v, len) = strtod(t).ok_or_else(|| Error::InvalidArgument("an interval must start with '(' or '['".into()))?;
+            if v.is_nan() {
+                return Err(Error::InvalidArgument("NaN is not a valid bound of an interval".into()));
+            }
             return Ok((Interval { min: v, max: v }, &t[len..]));
         }
     };
@@ -487,6 +514,9 @@ impl Reclassifier {
 /// The mapping held by a mapping file, as `gdal raster reclassify --mapping @file` reads it: one
 /// entry per line, leading white space and `#` comments removed, blank lines skipped.
 pub fn mapping_from_file_text(text: &str) -> Result<String> {
+    if text.len() > 10_000_000 {
+        return Err(Error::InvalidArgument("the mapping file is too large (maximum 10 MB)".into()));
+    }
     let mut mapping = String::new();
     for line in text.lines() {
         let line = line.split('#').next().unwrap_or_default().trim();
@@ -502,6 +532,20 @@ pub fn mapping_from_file_text(text: &str) -> Result<String> {
         }
     }
     Ok(mapping)
+}
+
+/// Reads a UTF-8 mapping file with the same 10 MB raw-input limit on native surfaces.
+pub fn read_mapping_file(path: &str) -> Result<String> {
+    use std::io::Read;
+    let mut bytes = Vec::new();
+    std::fs::File::open(path)
+        .and_then(|file| file.take(10_000_001).read_to_end(&mut bytes))
+        .map_err(|e| Error::InvalidArgument(format!("cannot read {path}: {e}")))?;
+    if bytes.len() > 10_000_000 {
+        return Err(Error::InvalidArgument("the mapping file is too large (maximum 10 MB)".into()));
+    }
+    let text = String::from_utf8(bytes).map_err(|_| Error::InvalidArgument("the mapping file must be UTF-8".into()))?;
+    mapping_from_file_text(&text)
 }
 
 /// Options for [`reclassify`].
@@ -528,7 +572,7 @@ pub fn reclassify(ds: &RasterDataset, o: &ReclassifyOptions) -> Result<RasterDat
     let first_nodata = ds.band_nodata(1);
     let mut mappings = std::collections::HashMap::new();
     mappings.insert(first_nodata.map(f64::to_bits), Reclassifier::parse(&o.mapping, first_nodata, Some(dst))?);
-    let mut bands = Vec::with_capacity(r.bands);
+    let mut data = wbraster::raster::RasterData::new_filled(dst, n * r.bands, 0.0);
     for b in 0..r.bands {
         let nodata = ds.band_nodata(b + 1);
         let rc = match mappings.entry(nodata.map(f64::to_bits)) {
@@ -536,27 +580,22 @@ pub fn reclassify(ds: &RasterDataset, o: &ReclassifyOptions) -> Result<RasterDat
             std::collections::hash_map::Entry::Vacant(entry) => entry.insert(Reclassifier::parse(&o.mapping, nodata, Some(dst))?),
         };
         let view = super::BandView::of(r, b);
-        let mut band = vec![0.0; n];
         let first_unmapped = std::sync::atomic::AtomicUsize::new(usize::MAX);
-        let chunk = crate::par::chunk_len(n, 4096);
-        crate::par::chunks_mut(&mut band, chunk, |index, values| {
-            for (offset, out) in values.iter_mut().enumerate() {
-                let i = index * chunk + offset;
-                if let Some(value) = rc.reclassify(view.get(i)) {
-                    *out = convert_value(value, dst);
-                } else {
-                    first_unmapped.fetch_min(i, std::sync::atomic::Ordering::Relaxed);
-                }
+        fill_band(&mut data, b, n, |i| {
+            if let Some(value) = rc.reclassify(view.get(i)) {
+                convert_value(value, dst)
+            } else {
+                first_unmapped.fetch_min(i, std::sync::atomic::Ordering::Relaxed);
+                0.0
             }
         });
         let first_unmapped = first_unmapped.load(std::sync::atomic::Ordering::Relaxed);
         if first_unmapped != usize::MAX {
             return Err(Error::InvalidArgument(format!("encountered value {} with no specified mapping", view.get(first_unmapped))));
         }
-        bands.push(band);
     }
-    let data = super::bands_data(&bands, n, dst, |v, _| v);
     let mut out = super::derived(ds, data, r.bands)?;
+    clear_packing(&mut out);
     // GDAL's derived bands carry nodata values only: no color table, descriptions or scales.
     // Its GeoTIFFs then call several bands Undefined, and a single band Gray.
     if r.bands > 1 {
@@ -574,6 +613,35 @@ mod tests {
     fn ds(bands: Vec<Vec<f64>>, w: usize, h: usize, dt: DataType, nodata: Option<f64>) -> RasterDataset {
         let grid = Grid { width: w, height: h, geo_transform: [10.0, 1.0, 0.0, 20.0, 0.0, -1.0] };
         build_raster(grid, bands, dt, nodata, &crate::crs::SpatialRef::default(), convert_value).unwrap()
+    }
+
+    #[test]
+    fn reclassify_clears_driver_packing_before_chained_unscale() {
+        let mut source = ds(vec![vec![1., 2.]], 2, 1, DataType::F32, None);
+        source.raster.metadata.push((format!("{}BAND_1_SCALE", crate::info::INTERNAL), "2".into()));
+        source.raster.metadata.push((format!("{}BAND_1_OFFSET", crate::info::INTERNAL), "10".into()));
+        let geolocation_key = format!("{}GEOLOCATION_PIXEL_OFFSET", crate::info::INTERNAL);
+        source.raster.metadata.push((geolocation_key.clone(), "1".into()));
+        let out = reclassify(&source, &ReclassifyOptions { mapping: "DEFAULT=PASS_THROUGH".into(), ..Default::default() }).unwrap();
+        assert!(out.raster.metadata.iter().any(|(key, _)| *key == geolocation_key));
+        assert_eq!(band_scale_offset(&out, 1), (1., 0.));
+        let unpacked = unscale(&out, &Default::default()).unwrap();
+        assert_eq!((0..2).map(|i| unpacked.raster.data.get_f64(i)).collect::<Vec<_>>(), [1., 2.]);
+        let alpha = nodata_to_alpha(&source, &NodataToAlphaOptions { nodata: vec![0.] }).unwrap();
+        assert_eq!(band_scale_offset(&alpha, 1), (2., 10.));
+    }
+
+    #[test]
+    fn mapping_files_are_bounded_and_signed_nan_bounds_are_rejected() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(file.path(), b"# a mapping\n1=2\nDEFAULT=PASS_THROUGH\n").unwrap();
+        assert_eq!(read_mapping_file(file.path().to_str().unwrap()).unwrap(), "1=2;DEFAULT=PASS_THROUGH");
+        file.as_file().set_len(10_000_001).unwrap();
+        assert!(read_mapping_file(file.path().to_str().unwrap()).unwrap_err().to_string().contains("too large"));
+        for mapping in ["-nan=0", "+nan=0"] {
+            assert!(Reclassifier::parse(mapping, None, None).unwrap_err().to_string().contains("NaN"));
+        }
+        assert!(Reclassifier::parse("NAN=0;DEFAULT=PASS_THROUGH", None, None).is_ok());
     }
 
     #[test]
