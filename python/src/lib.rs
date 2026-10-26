@@ -12,8 +12,8 @@ mod rio;
 mod stream;
 mod terrain;
 mod vector;
-mod vector_geom;
 mod vector_dataset;
+mod vector_geom;
 
 use pyo3::prelude::*;
 use pyo3::types::PyType;
