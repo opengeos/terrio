@@ -669,10 +669,10 @@ def suite_vector_grid(ctx):
         "clipping, extent, size, resolution, type and CRS options. Every pixel, the type, nodata "
         "and geotransform are compared. GDAL's default invdist is also run with its double-"
         "precision code (`GDAL_USE_AVX=NO`, `GDAL_USE_SSE=NO`). Known differences: linear "
-        "interpolation rounds differently (vertex order of delaunator's triangles against "
-        "qhull's) and breaks the ties of a regular grid's co-circular points differently; GDAL "
-        "3.12 sums rotated ellipses in another order than GDAL 3.13 and terrio; GDAL's default "
-        "SIMD invdist is single precision.", 1,
+        "interpolation rounds differently (vertex order of spade's triangles against "
+        "qhull's) and breaks the ties of a regular grid's co-circular points differently; GDAL's "
+        "default SIMD invdist is single precision; GDAL 3.12 sums rotated ellipses in another "
+        "order than GDAL 3.13 and terrio.", 1,
     )
 
 

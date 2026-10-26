@@ -822,7 +822,7 @@ reproduced, so outputs are pixel-identical with `gdal_grid` (see
 - GDAL computes the default `invdist` (power 2, no smoothing, no radius) with AVX or SSE, in
   single precision with approximate reciprocals, unless `GDAL_USE_AVX=NO` and
   `GDAL_USE_SSE=NO`; terrio computes in double precision, as GDAL's scalar code.
-- `linear` triangulates with delaunator rather than qhull. The triangles of scattered points are
+- `linear` triangulates with spade rather than qhull. The triangles of scattered points are
   the same, but their vertex order (and so the last bits of the interpolation) can differ, and
   the ties of co-circular points (a regular grid's squares) are broken differently.
 - GDAL 3.12 scanned every point for a rotated ellipse (and refused rotation with per-quadrant

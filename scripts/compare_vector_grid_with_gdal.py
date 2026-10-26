@@ -116,7 +116,7 @@ def cases(inputs):
     ]
     for alg in us_algorithms:
         add(f"places US {alg.partition(':')[2] or 'defaults'}", inputs["places"], alg, us + g, us_t + t)
-    # Linear interpolation: qhull's and delaunator's triangles are the same for scattered points,
+    # Linear interpolation: qhull's and spade's triangles are the same for scattered points,
     # but the order of their vertices (and so the rounding of the interpolation) can differ.
     for alg in ["linear", "linear:radius=0", "linear:radius=2"]:
         add(f"places US {alg.partition(':')[2] or 'defaults'}", inputs["places"], alg, us + g, us_t + t, tol=1e-6)
@@ -165,7 +165,7 @@ def cases(inputs):
         ]:
             add(f"grid points {label} {alg.partition(':')[2] or 'defaults'}", inputs["grid"], alg, ["-ot", "Float64", *g], t)
         # A regular grid's Delaunay triangulation is degenerate: each square's diagonal is a tie,
-        # which qhull and delaunator break differently off the nodes.
+        # which qhull and spade break differently off the nodes.
         add(f"grid points {label} defaults", inputs["grid"], "linear", ["-ot", "Float64", *g], t, tol=1e-9)
     # The lidar points, valued by their Z.
     g, t = extent_size((636000.0, 848930.0, 637180.0, 849500.0), (236, 114))

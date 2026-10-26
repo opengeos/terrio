@@ -30,8 +30,8 @@ geographiclib-rs = { version = "0.2.7", default-features = false }
 geo = { version = "0.33.1", default-features = false, features = ["spade"] }
 # Candidate lookup for polygon overlays; the same pure-Rust R-tree used by geo.
 rstar = "0.12.2"
-# Delaunay and constrained Delaunay triangulations for concave hulls; the version geo builds.
-spade = "2.15"
+# Delaunay and constrained triangulations for hulls and linear gridding; the version geo uses.
+spade = "2.15.1"
 
 # Native CAD codecs, sequential on every target (including WebAssembly).
 acadrust = { version = "=0.6.7", default-features = false }

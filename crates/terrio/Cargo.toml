@@ -55,7 +55,7 @@ hdf5-reader = { workspace = true, optional = true }
 jpeg-decoder.workspace = true
 laz = { workspace = true, optional = true }
 e57 = { workspace = true, optional = true }
-delaunator.workspace = true
+delaunator = { workspace = true, optional = true }
 jpeg-encoder.workspace = true
 image-webp.workspace = true
 webp-rust.workspace = true
@@ -114,7 +114,7 @@ grib = ["dep:gribberish", "dep:bitvec"]
 ## LERC-compressed GeoTIFFs (read and written).
 lerc = ["dep:lerc-reader", "dep:lerc-core", "dep:lerc-writer"]
 ## Point clouds: LAS, LAZ, COPC, EPT, E57, PLY (the `pointcloud` module).
-pointcloud = ["dep:laz", "dep:e57"]
+pointcloud = ["dep:laz", "dep:e57", "dep:delaunator"]
 ## Raster and vector tiles: MBTiles, PMTiles and MVT (the `tiles` module).
 tiles = ["sqlite"]
 ## Zarr v2 and v3.

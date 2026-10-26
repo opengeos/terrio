@@ -96,7 +96,7 @@ for f in GLMELT_4X5.OCN.nc fake_SNPP_VIIRS.20230406T024200.L2.OC.NRT.nc cf_lon_l
 done
 # GDAL's gdal_grid and ogrlineref test data: points on a regular grid (a test raster's pixels,
 # CSV with an OGR VRT), and a route with its milestones (Shapefiles).
-gdal_utilities=https://raw.githubusercontent.com/OSGeo/gdal/v3.12.2/autotest/utilities/data
+gdal_utilities=https://raw.githubusercontent.com/OSGeo/gdal/v3.13.3/autotest/utilities/data
 mkdir -p gdal_utilities
 for f in grid.csv grid.vrt path.shp path.shx path.dbf path.prj path.cpg mstones.shp mstones.shx mstones.dbf mstones.prj \
   mstones.cpg; do

@@ -174,11 +174,13 @@ places, above GDAL's 100-point quadtree threshold, and 89 Peruvian ones, below i
 of the Autzen lidar (3D) with every algorithm, ellipse, rotation, point limit and per-quadrant
 limit, and every option, and compares every pixel, the type, nodata and geotransform with
 `gdal_grid` (run with `GDAL_USE_AVX=NO GDAL_USE_SSE=NO`, GDAL's double-precision code; one case
-compares its default SIMD code within a tolerance). With GDAL 3.12.2: 94 cases, 86 identical, 6
-within tolerance (`linear` on scattered points, 3.3e-9 on populations of 1e7 and 2.3e-13 on
-elevations, identical in Float32; a rotated `average_distance`, 1.1e-15, from GDAL 3.12's scan of
-rotated ellipses; the SIMD `invdist`) and 2 differing (`linear` on the regular grid off its
-nodes, where qhull breaks co-circular ties differently).
+compares its default SIMD code within a tolerance). In a local environment with GDAL 3.13.3: 94
+cases, 87 identical, 5 within tolerance (`linear` on scattered points, 4.7e-9 on populations of
+1e7 and 1.7e-13 on elevations, identical in Float32; the SIMD `invdist`, single precision, up to
+265 on populations) and 2 differing (`linear` on the regular grid off its nodes, 229 of 400 and
+1261 of 2451 pixels, where qhull breaks co-circular ties differently). GDAL 3.12 scans every
+point for a rotated ellipse where 3.13 searches its quadtree: against 3.12.2 a rotated
+`average_distance` also differs, by 1.1e-15.
 
 `compare_lineref_with_gdal.py` runs `ogrlineref` and `terrio lineref` on GDAL's test route and
 milestones (geographic, reprojected to UTM, and as two routes told apart by a field, one drawn

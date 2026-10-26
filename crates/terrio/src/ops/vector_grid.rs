@@ -18,7 +18,7 @@
 //! - GDAL computes `invdist` without a search ellipse, power 2 and no smoothing with AVX or SSE in
 //!   single precision with approximate reciprocals (unless `GDAL_USE_AVX=NO` and
 //!   `GDAL_USE_SSE=NO`); terrio always computes in double precision, as GDAL's scalar code does.
-//! - `linear` triangulates with `delaunator` rather than qhull: the triangles are the same except
+//! - `linear` triangulates with `spade` rather than qhull: the triangles are the same except
 //!   for co-circular points, but the order of a triangle's vertices (and so the rounding of the
 //!   interpolation) can differ.
 
@@ -1417,10 +1417,25 @@ struct Triangulation {
 
 impl Triangulation {
     fn new(x: &[f64], y: &[f64]) -> Self {
-        let points: Vec<delaunator::Point> = x.iter().zip(y).map(|(x, y)| delaunator::Point { x: *x, y: *y }).collect();
-        let t = delaunator::triangulate(&points);
-        let mut triangles = Vec::with_capacity(t.triangles.len() / 3);
-        for tri in t.triangles.as_chunks::<3>().0 {
+        use spade::{HasPosition, Point2, Triangulation as _};
+        struct Vertex(Point2<f64>, usize);
+        impl HasPosition for Vertex {
+            type Scalar = f64;
+            fn position(&self) -> Point2<f64> {
+                self.0
+            }
+        }
+        // The first of points at the same place is a vertex, as qhull keeps it.
+        let mut seen = std::collections::HashSet::new();
+        let vertices: Vec<Vertex> = (0..x.len())
+            .filter(|&i| seen.insert((x[i].to_bits(), y[i].to_bits())))
+            .filter(|&i| spade::validate_coordinate(x[i]).is_ok() && spade::validate_coordinate(y[i]).is_ok())
+            .map(|i| Vertex(Point2::new(x[i], y[i]), i))
+            .collect();
+        let t: spade::DelaunayTriangulation<Vertex> = spade::DelaunayTriangulation::bulk_load(vertices).unwrap_or_default();
+        let faces: Vec<[usize; 3]> = t.inner_faces().map(|f| f.vertices().map(|v| v.data().1)).collect();
+        let mut triangles = Vec::with_capacity(faces.len());
+        for tri in &faces {
             let (a, b, c) = (tri[0], tri[1], tri[2]);
             let (x1, y1, x2, y2, x3, y3) = (x[a], y[a], x[b], y[b], x[c], y[c]);
             let denom = (y2 - y3) * (x1 - x3) + (x3 - x2) * (y1 - y3);
