@@ -4,15 +4,18 @@ name: Release dry run
 # platform, the source distribution, the Pyodide wheel and the command-line binaries
 # (release-build.yml, as the release builds them), the crates as `cargo publish` packages and
 # verifies them, the npm package, and that LICENSE-THIRD-PARTY.md is up to date.
-# Run it by hand before tagging a release (Actions > Release dry run > Run workflow).
+# Runs for pull requests so required packaging checks belong to the PR. It can also
+# run by hand before tagging a release (Actions > Release dry run > Run workflow).
 on:
+  pull_request:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: release-dry-run-${{ github.ref }}
+  group: release-dry-run-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
