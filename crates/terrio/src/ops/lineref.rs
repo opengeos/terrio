@@ -355,7 +355,10 @@ fn utm_length(part: &Line, src: &SpatialRef) -> f64 {
         let pts = part.pts.iter().map(|p| t.transform(p[0], p[1]).map(|(x, y)| [x, y, p[2]])).collect::<Result<Vec<_>>>()?;
         Ok(Line { pts, has_z: part.has_z }.length())
     };
-    transformed().unwrap_or(len)
+    transformed().unwrap_or_else(|e| {
+        crate::warnings::warn(format!("the part could not be measured in UTM (EPSG:{epsg}): {e}; its length in degrees is used"));
+        len
+    })
 }
 
 /// A part of the route between two positions, `factor` route units per position unit.
@@ -475,6 +478,11 @@ fn parts_of_line(
     }
     if let Some(p) = pt_end {
         pickets.insert(OrderedF64(pt_end_position), p);
+    }
+    // ogrlineref has no limit; a step far smaller than the route would never finish.
+    const MAX_PICKETS: f64 = 10_000_000.0;
+    if (end_position - round_beg) / step > MAX_PICKETS {
+        return Err(Error::InvalidArgument(format!("the step {step} makes more than {MAX_PICKETS} parts")));
     }
     let mut dist_now = round_beg;
     while dist_now <= end_position {
@@ -672,6 +680,9 @@ pub fn subline(parts: &Layer, begin: f64, end: f64, layer_name: &str) -> Result<
     let failed = || Error::InvalidArgument(format!("get step for positions {begin:.6} - {end:.6} failed"));
     let second = parts.features.get(1).ok_or_else(failed)?;
     let step = as_double(second.attributes.get(e)) - as_double(second.attributes.get(b));
+    if !(step.is_finite() && step > 0.0) {
+        return Err(Error::InvalidArgument(format!("the second part's length ({step}) is not a positive step")));
+    }
     let low = six_decimals((begin / step).floor() * step);
     let high = six_decimals((end / step).ceil() * step);
     let mut chosen: BTreeMap<OrderedF64, (Line, f64)> = BTreeMap::new();

@@ -285,7 +285,14 @@ impl GridAlgorithm {
         } else if let Some(r) = num("radius")? {
             a.radius = r;
         }
-        let count = |k: &str| -> Result<Option<u32>> { Ok(num(k)?.filter(|_| has(k)).map(|v| v as u32)) };
+        let count = |k: &str| -> Result<Option<u32>> {
+            match num(k)?.filter(|_| has(k)) {
+                Some(v) if !(v.is_finite() && v >= 0.0) => {
+                    Err(Error::InvalidArgument(format!("gridding parameter {k} must be a non-negative number of points")))
+                }
+                v => Ok(v.map(|v| v.min(u32::MAX as f64) as u32)),
+            }
+        };
         if let Some(v) = count("max_points")? {
             a.max_points = v;
         }
@@ -558,6 +565,10 @@ pub fn grid_points(
     if cols == 0 || rows == 0 {
         return Err(Error::InvalidArgument("output raster dimensions should have non-zero size".into()));
     }
+    check_size(cols, rows, 1)?;
+    if ![extent.x_min, extent.x_max, extent.y_min, extent.y_max].iter().all(|v| v.is_finite()) {
+        return Err(Error::InvalidArgument("the grid extent must be finite".into()));
+    }
     let mut alg = algorithm.clone();
     alg.validate()?;
     let mut engine = Engine::new(x, y, z, &alg);
@@ -572,7 +583,7 @@ pub fn grid_points(
     let mut row0 = 0;
     while row0 < rows {
         let n = block_rows.min(rows - row0);
-        let bx0 = extent.x_min + dx * 0.0;
+        let bx0 = extent.x_min;
         let bx1 = extent.x_min + dx * cols as f64;
         let by0 = top + dy * row0 as f64;
         let by1 = top + dy * (row0 + n) as f64;
@@ -581,6 +592,17 @@ pub fn grid_points(
         row0 += n;
     }
     Ok(out)
+}
+
+/// The most cells of an output grid (all bands): 2^31, 16 GB of Float64.
+const MAX_CELLS: usize = 1 << 31;
+
+/// Rejects grids whose cells overflow or exceed [`MAX_CELLS`].
+fn check_size(cols: usize, rows: usize, bands: usize) -> Result<()> {
+    match cols.checked_mul(rows).and_then(|n| n.checked_mul(bands)) {
+        Some(n) if n <= MAX_CELLS => Ok(()),
+        _ => Err(Error::InvalidArgument(format!("a {cols} x {rows} grid of {bands} band(s) is too large (at most {MAX_CELLS} cells)"))),
+    }
 }
 
 /// The rows of each block `gdal_grid` computes in: the GeoTIFF's default strips (about 8 KiB),
@@ -1653,6 +1675,7 @@ pub fn vector_grid(layers: &[Layer], options: &VectorGridOptions) -> Result<Rast
     if cols == 0 || rows == 0 {
         return Err(Error::InvalidArgument("output raster dimensions should have non-zero size".into()));
     }
+    check_size(cols, rows, layers.len())?;
     let extent = GridExtent { x_min: x0, x_max: x1, y_min: y0.min(y1), y_max: y0.max(y1), cols, rows };
     let bands = layers.len();
     let mut data = Vec::with_capacity(cols * rows * bands);
@@ -1736,6 +1759,17 @@ mod tests {
         let a = GridAlgorithm::parse("average:radius=4").unwrap();
         assert_eq!((a.radius1, a.radius2), (4.0, 4.0));
         assert!(GridAlgorithm::parse("kriging").is_err());
+        assert!(GridAlgorithm::parse("invdist:radius=1:max_points=-5").is_err());
+        assert!(GridAlgorithm::parse("average:radius=1:min_points=nan").is_err());
+    }
+
+    #[test]
+    fn rejects_huge_or_non_finite_grids() {
+        let a = GridAlgorithm::new(GridMethod::Nearest);
+        let e = GridExtent { x_min: 0.0, x_max: 1.0, y_min: 0.0, y_max: 1.0, cols: usize::MAX, rows: 2 };
+        assert!(grid_points(&[0.5], &[0.5], &[1.0], &a, &e, DataType::F64, 1).is_err());
+        let e = GridExtent { x_min: f64::NAN, cols: 1, rows: 1, ..e };
+        assert!(grid_points(&[0.5], &[0.5], &[1.0], &a, &e, DataType::F64, 1).is_err());
     }
 
     #[test]
