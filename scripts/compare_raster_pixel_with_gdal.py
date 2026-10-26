@@ -6,7 +6,7 @@ Runs ``terrio unscale``, ``terrio nodata-to-alpha``, ``terrio reclassify`` and
 nodata-to-alpha``, ``gdal raster reclassify`` and ``gdal raster as-features`` commands
 (GDAL 3.12 or later; the reference is GDAL 3.13.3) on the files fetched by ``scripts/fetch_test_data.sh``, then reports
 for each case whether the outputs have the same size, type, nodata value, CRS, band color
-interpretations and scales, and how many pixels agree. Feature outputs are compared
+interpretations, scales and georeferencing, and how many pixels agree. Feature outputs are compared
 feature by feature: count, field names, field values and geometry coordinates.
 
 Usage:
@@ -189,7 +189,7 @@ def cases(d, tmp):
     return out
 
 
-def raster_extra(gout, tout):
+def raster_extra(gout, tout, allow_s5p_default=False):
     """Compares what ``compare`` leaves out: CRS, color interpretations, scales and offsets.
 
     Args:
@@ -215,7 +215,17 @@ def raster_extra(gout, tout):
         return out
 
     gp, tp = props(g), props(t)
-    res = {"same_crs": same_crs, "same_metadata": gp == tp}
+    ggt = g.GetGeoTransform(can_return_null=True)
+    tgt = t.GetGeoTransform(can_return_null=True)
+    res = {"same_crs": same_crs, "same_metadata": gp == tp,
+           "same_georeferencing": ggt == tgt}
+    if ggt != tgt:
+        res["georeferencing"] = {"gdal": ggt, "terrio": tgt}
+        if (allow_s5p_default and ggt is None
+                and tgt == (0.0, 1.0, 0.0, float(t.RasterYSize), 0.0, -1.0)):
+            res["accepted_georeferencing_difference"] = (
+                "Sentinel-5P: GDAL writes no affine transform; terrio writes its default grid"
+            )
     if gp != tp:
         res["metadata"] = f"GDAL {gp}, terrio {tp}"
     return res
@@ -320,7 +330,7 @@ def main():
                     r = compare_vector(gout, tout)
                 else:
                     r = compare(gout, tout, c["tol"])
-                    r.update(raster_extra(gout, tout))
+                    r.update(raster_extra(gout, tout, c["name"] == "unscale S5P qa_value netCDF"))
             except Exception as e:  # noqa: BLE001 - report and continue
                 r = {"error": str(e).strip().splitlines()[-1][:300]}
             r["name"] = c["name"]
@@ -335,6 +345,10 @@ def main():
                     line = format_row(r)
                 if "error" not in r:
                     line += f" crs={'ok' if r.get('same_crs') else 'DIFF'} meta={'ok' if r.get('same_metadata') else 'DIFF'}"
+                    if "same_georeferencing" in r:
+                        line += f" georef={'ok' if r['same_georeferencing'] else 'DIFF'}"
+                    if r.get("accepted_georeferencing_difference"):
+                        line += f" ({r['accepted_georeferencing_difference']})"
                     if r.get("metadata"):
                         line += f" ({r['metadata']})"
                 print(line, flush=True)
@@ -348,6 +362,8 @@ def main():
         r for r in results
         if "error" in r or not r.get("same_size") or r.get("differing")
         or any(r.get(k) is False for k in flags)
+        or (r.get("same_georeferencing") is False
+            and not r.get("accepted_georeferencing_difference"))
     ]
     return 1 if bad else 0
 

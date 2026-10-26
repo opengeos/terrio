@@ -826,7 +826,11 @@ Float32 by default (Float64 for Float64 inputs). Nodata pixels keep the band's n
 which the output declares unchanged, and the output has no scale or offset. Values are computed
 and rounded as GDAL's virtual rasters compute them (single precision unless the input or output
 is a 32- or 64-bit integer or Float64; Byte outputs round half up). Complex bands are not
-supported. The standard raster output options apply.
+supported. As in GDAL 3.13.3, if the output type cannot represent the original nodata
+value, pixels are clamped to that type while the original nodata declaration is retained
+(for example, nodata -9999 becomes a zero pixel in Byte output, still tagged -9999).
+Choose an output type that can hold the nodata value when those pixels must remain invalid.
+The standard raster output options apply.
 
 ## nodata-to-alpha
 
@@ -862,7 +866,10 @@ line; leading spaces and `#` comments are removed. A value that no entry maps, o
 the output type cannot represent exactly, is an error. `--ot` is the output type (by default the
 input's). The output keeps each band's nodata value; like GDAL's, it has no color table, band
 descriptions or scales. Like GDAL 3.13.3, `NO_DATA` intervals with NaN nodata
-can fail overlap validation; use `NAN` as the source mapping key for NaN pixels.
+can fail overlap validation and do not match NaN pixels: `NO_DATA=0;DEFAULT=PASS_THROUGH`
+leaves NaN unchanged. Use `NAN` as the source mapping key for NaN pixels.
+As with `unscale`, retained nodata pixels are clamped when the output type cannot hold
+the original nodata declaration; choose a suitable output type to preserve their validity.
 
 ## as-features
 

@@ -753,6 +753,8 @@ mod tests {
         let mapping = Reclassifier::parse("NAN=0;[0,10)=1", Some(f64::NAN), None).unwrap();
         assert_eq!(mapping.reclassify(f64::NAN), Some(0.));
         assert_eq!(mapping.reclassify(5.), Some(1.));
+        let pass = Reclassifier::parse("NO_DATA=0;DEFAULT=PASS_THROUGH", Some(f64::NAN), None).unwrap();
+        assert!(pass.reclassify(f64::NAN).unwrap().is_nan());
     }
     #[test]
     fn reclassification_keeps_distinct_band_nodata_and_first_error() {
