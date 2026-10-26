@@ -916,6 +916,10 @@ impl Reader {
 }
 
 impl WindowSource for Reader {
+    fn band_data_type(&self, band: usize) -> Option<DataType> {
+        band.checked_sub(1).and_then(|i| self.description.layout.bands.get(i)).map(|b| b.data_type)
+    }
+
     fn input_paths(&self) -> Result<Vec<String>> {
         let _inventory = SourceInventoryScope::enter();
         let _depth = ReadDepth::enter()?;

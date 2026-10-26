@@ -131,7 +131,7 @@ pub fn write_xyz<W: Write>(raster: &mut LazyRaster, out: &mut W, options: &XyzOp
     let gt = raster.geo_transform();
     let geographic = gt[0].abs() < 180.0 && gt[3].abs() < 180.0 && (w as f64 * gt[1]).abs() < 180.0 && (h as f64 * gt[5]).abs() < 180.0;
     // Values are converted to the first band's type, as gdal2xyz.py's array of it holds them.
-    let dt = raster.data_type();
+    let dt = bands.first().map_or_else(|| raster.data_type(), |b| raster.band_data_type(*b));
     let integer_format = matches!(dt, DataType::I32 | DataType::U32);
     let n = bands.len();
     let src_nodata: Option<Vec<f64>> = match &options.src_nodata {
@@ -269,5 +269,18 @@ mod tests {
         let mut r = raster(DataType::U8, None);
         let o = XyzOptions { srcwin: Some([2, 0, 2, 1]), ..Default::default() };
         assert!(write_xyz(&mut r, &mut Vec::new(), &o).is_err());
+    }
+    #[test]
+    fn mixed_vrt_uses_first_selected_band_type() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = RasterConfig { cols: 1, rows: 1, bands: 1, data_type: DataType::F64, ..Default::default() };
+        let dataset = RasterDataset::new(Raster::from_data(config, vec![1234567.25]).unwrap(), false);
+        crate::write_raster_dataset(&dataset, dir.path().join("source.tif").to_str().unwrap(), &Default::default()).unwrap();
+        let vrt = r#"<VRTDataset rasterXSize="1" rasterYSize="1"><VRTRasterBand dataType="Int32" band="1"><SimpleSource><SourceFilename relativeToVRT="1">source.tif</SourceFilename><SourceBand>1</SourceBand></SimpleSource></VRTRasterBand><VRTRasterBand dataType="Float64" band="2"><SimpleSource><SourceFilename relativeToVRT="1">source.tif</SourceFilename><SourceBand>1</SourceBand></SimpleSource></VRTRasterBand></VRTDataset>"#;
+        let path = dir.path().join("mixed.vrt");
+        std::fs::write(&path, vrt).unwrap();
+        let mut source = crate::open_raster_lazy(path.to_str().unwrap()).unwrap();
+        assert!(xyz(&mut source, &XyzOptions { bands: vec![1], ..Default::default() }).ends_with(" 1234567\n"));
+        assert!(xyz(&mut source, &XyzOptions { bands: vec![2], ..Default::default() }).ends_with(" 1.23457e+06\n"));
     }
 }

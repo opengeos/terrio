@@ -39,10 +39,6 @@ const INSTRUCTIONS: &str = "terrio reads, writes and converts geospatial rasters
 /// Commands that only read: they write no file.
 const READ_ONLY: &[&str] = &["info", "formats", "crs", "mdinfo", "mdread", "compare"];
 
-/// Commands whose exit status reports what they found rather than a failure: `compare` exits with
-/// its difference count (as GDAL's), and `pixel-info` with 1 for locations off the raster.
-const STATUS_IS_RESULT: &[&str] = &["compare", "pixel-info"];
-
 type RpcError = (i64, String);
 
 const PARSE_ERROR: i64 = -32700;
@@ -202,9 +198,6 @@ fn call_tool(terrio: &[OsString], name: &str, args: Vec<OsString>, cancel: &Atom
             // Standard error, which says why a command failed, first: standard output gets the room
             // it leaves.
             let stderr = clip(String::from_utf8_lossy(&stderr.0).into_owned(), stderr.1, MAX_OUTPUT);
-            // A reported status (a difference count) is a result, unless the command said on
-            // standard error why it failed.
-            let reported = STATUS_IS_RESULT.contains(&name) && status.code().is_some() && !stderr_failed(&stderr);
             let room = MAX_OUTPUT.saturating_sub(stderr.len());
             let mut text = clip(String::from_utf8_lossy(&stdout.0).into_owned(), stdout.1, room);
             if !stderr.is_empty() {
@@ -213,7 +206,7 @@ fn call_tool(terrio: &[OsString], name: &str, args: Vec<OsString>, cancel: &Atom
                 }
                 text.push_str(&stderr);
             }
-            let failed = !status.success() && !reported;
+            let failed = !status.success();
             if failed {
                 let code = status.code().map_or_else(|| "a signal".to_string(), |c| format!("exit code {c}"));
                 text.push_str(&format!("\n(terrio {name} failed with {code})"));
@@ -230,12 +223,6 @@ fn call_tool(terrio: &[OsString], name: &str, args: Vec<OsString>, cancel: &Atom
     Some(json!({"content": [{"type": "text", "text": text}], "isError": failed}))
 }
 
-/// Whether a command's standard error says it failed: terrio prints `terrio: <error>` (warnings
-/// are `terrio: warning: ...`), clap `error: <usage error>`.
-fn stderr_failed(text: &str) -> bool {
-    text.lines().any(|l| (l.starts_with("terrio: ") && !l.starts_with("terrio: warning: ")) || l.starts_with("error: "))
-}
-
 /// A command's output: its first [`MAX_OUTPUT`] bytes, and how many it wrote.
 type Output = (Vec<u8>, usize);
 
@@ -247,6 +234,7 @@ fn run(terrio: &[OsString], name: &str, args: Vec<OsString>, cancel: &AtomicBool
         .args(before)
         .arg(name)
         .args(args)
+        .env("TERRIO_MCP_TOOL", "1")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

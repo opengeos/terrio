@@ -313,8 +313,12 @@ fn cubic_spline_kernel(v: f64) -> f64 {
 
 /// The edge length of the blocks read and cached, as GDAL's.
 const BLOCK: usize = 64;
-/// The most blocks kept.
-const MAX_BLOCKS: usize = 4096;
+/// Cache budget across every queried band; at least one block can be read.
+const MAX_CACHE_BYTES: usize = 128 << 20;
+
+fn max_cached_blocks(bands: usize) -> usize {
+    (MAX_CACHE_BYTES / BLOCK.saturating_mul(BLOCK).saturating_mul(bands).saturating_mul(8).max(1)).max(1)
+}
 
 /// Reads pixel windows of some bands of one level, by cached 64 x 64 blocks.
 struct Blocks<'a> {
@@ -336,7 +340,7 @@ impl Blocks<'_> {
                 let (c, r) = (x + i, y + j);
                 let key = (c / BLOCK, r / BLOCK);
                 if !self.cache.contains_key(&key) {
-                    if self.cache.len() >= MAX_BLOCKS {
+                    if self.cache.len() >= max_cached_blocks(self.bands.len()) {
                         self.cache.clear();
                     }
                     let (bx, by) = (key.0 * BLOCK, key.1 * BLOCK);
@@ -684,21 +688,21 @@ fn g15(v: f64) -> String {
 
 /// Stand-ins for the non-finite numbers JSON cannot hold, replaced by GDAL's `NaN`, `Infinity`
 /// and `-Infinity` tokens in [`PixelInfo::to_geojson_string`].
-const NON_FINITE: [(&str, &str); 3] = [("\\u0000NaN", "NaN"), ("\\u0000Infinity", "Infinity"), ("\\u0000-Infinity", "-Infinity")];
+const NON_FINITE: [&str; 3] = ["NaN", "Infinity", "-Infinity"];
 
-fn json_number(v: f64) -> Value {
+fn json_number(v: f64, marker: &str) -> Value {
     match serde_json::Number::from_f64(v) {
         Some(n) => Value::Number(n),
-        None if v.is_nan() => Value::String("\0NaN".into()),
-        None if v > 0.0 => Value::String("\0Infinity".into()),
-        None => Value::String("\0-Infinity".into()),
+        None if v.is_nan() => Value::String(format!("{marker}NaN")),
+        None if v > 0.0 => Value::String(format!("{marker}Infinity")),
+        None => Value::String(format!("{marker}-Infinity")),
     }
 }
 
-fn field_json(v: &FieldValue) -> Value {
+fn field_json(v: &FieldValue, marker: &str) -> Value {
     match v {
         FieldValue::Integer(i) => json!(i),
-        FieldValue::Float(f) => json_number(*f),
+        FieldValue::Float(f) => json_number(*f, marker),
         FieldValue::Text(s) | FieldValue::Date(s) | FieldValue::DateTime(s) => json!(s),
         FieldValue::Boolean(b) => json!(b),
         FieldValue::Blob(b) => json!(b.iter().map(|x| format!("{x:02X}")).collect::<String>()),
@@ -735,6 +739,11 @@ impl PixelInfo {
 
     /// The GeoJSON feature collection `gdal raster pixel-info` writes.
     pub fn to_geojson(&self) -> Value {
+        self.geojson_with_marker("\0")
+    }
+
+    fn geojson_with_marker(&self, marker: &str) -> Value {
+        let json_number = |v| json_number(v, marker);
         let mut collection = Map::new();
         collection.insert("type".into(), json!("FeatureCollection"));
         if let Some(name) = &self.geojson_crs {
@@ -752,7 +761,7 @@ impl PixelInfo {
                 props.insert("column".into(), json_number(l.column));
                 props.insert("line".into(), json_number(l.line));
                 for (def, v) in self.fields.iter().zip(&l.attributes) {
-                    props.insert(def.name.clone(), field_json(v));
+                    props.insert(def.name.clone(), field_json(v, marker));
                 }
                 let bands: Vec<Value> = l
                     .bands
@@ -792,9 +801,22 @@ impl PixelInfo {
     /// GDAL writes them (`NaN`, `Infinity`, `-Infinity`; JSON has no such numbers, so
     /// [`PixelInfo::to_geojson`] holds them as strings).
     pub fn to_geojson_string(&self) -> String {
-        let mut text = serde_json::to_string_pretty(&self.to_geojson()).unwrap_or_default();
-        for (stand_in, token) in NON_FINITE {
-            text = text.replace(&format!("\"{stand_in}\""), token);
+        // Choose a marker absent from all serialized input strings, including field names.
+        // Only numeric placeholders carry it, so arbitrary user strings remain quoted.
+        let original = serde_json::to_string(&self.to_geojson()).expect("JSON values serialize");
+        let mut counter = 0usize;
+        let marker = loop {
+            let candidate = format!("\0terrio-nonfinite-{}-{counter}:", original.len());
+            let encoded = serde_json::to_string(&candidate).expect("strings serialize");
+            if !original.contains(&encoded[1..encoded.len() - 1]) {
+                break candidate;
+            }
+            counter += 1;
+        };
+        let mut text = serde_json::to_string_pretty(&self.geojson_with_marker(&marker)).expect("JSON values serialize");
+        for token in NON_FINITE {
+            let stand_in = serde_json::to_string(&format!("{marker}{token}")).expect("strings serialize");
+            text = text.replace(&stand_in, token);
         }
         text
     }
@@ -1039,5 +1061,22 @@ mod tests {
         let inv = invert_geo_transform(&[100.0, 10.0, 0.0, 240.0, 0.0, -10.0]).unwrap();
         assert_eq!(inv, [-10.0, 0.1, 0.0, 24.0, 0.0, -0.1]);
         assert!(invert_geo_transform(&[0.0, 1.0, 1.0, 0.0, 1.0, 1.0]).is_none());
+    }
+    #[test]
+    fn non_finite_marker_does_not_rewrite_user_strings() {
+        let mut raster = raster(2, 2, None);
+        let mut position = Position::new(0.5, 0.5);
+        position.extra = Some("\0NaN".into());
+        let info = pixel_info(&mut raster, &[position], &Default::default()).unwrap();
+        let text = info.to_geojson_string();
+        let parsed: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(parsed["features"][0]["properties"]["extra_content"], "\0NaN");
+    }
+
+    #[test]
+    fn cache_budget_accounts_for_all_bands() {
+        for bands in [1, 10, 100] {
+            assert!(max_cached_blocks(bands) * BLOCK * BLOCK * bands * 8 <= MAX_CACHE_BYTES);
+        }
     }
 }

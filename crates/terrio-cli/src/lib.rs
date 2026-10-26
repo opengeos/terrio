@@ -231,7 +231,17 @@ fn run_on_this_thread(args: Vec<OsString>, terrio: Option<Vec<OsString>>) -> i32
         eprintln!("terrio: warning: {w}");
     }
     match result {
-        Ok(()) => cmd::take_exit_code(),
+        Ok(()) => {
+            let code = cmd::take_exit_code();
+            if code != 0 && std::env::var_os("TERRIO_MCP_TOOL").is_some() {
+                // MCP child status distinguishes execution failure from a successful query
+                // reporting differences or off-raster positions. Keep GDAL CLI exit codes.
+                eprintln!("(terrio tool exited with status {code})");
+                0
+            } else {
+                code
+            }
+        }
         Err(e) => {
             cmd::take_exit_code();
             eprintln!("terrio: {e}");
