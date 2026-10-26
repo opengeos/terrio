@@ -497,7 +497,9 @@ coordinates retain their declared units, offsets and axes. Mercator (Spherical)
 on an ellipsoid uses the conformal-sphere radius (`+R_C`). PROJ 9.8.1
 initializes this radius before reading `lat_0`, so it remains the equatorial
 radius even when that latitude parameter is nonzero; Terrio follows this
-reference behavior.
+reference behavior. Geographic and geocentric `+R_C` endpoints also use this
+auxiliary sphere for runtime conversion. Their WKT retains the original
+ellipsoid and a PROJ4 extension preserves the radius modifier on reopening.
 
 CRSs on different known celestial bodies cannot be transformed into each other.
 The Earth-radius heuristic identifies custom Earth ellipsoids. When a body

@@ -250,7 +250,15 @@ fn geogcs(p: &Params, own: &Def) -> (String, bool) {
         }
         return (w, true);
     }
-    let ell = own.ell;
+    // R_C changes the runtime conversion radius, while PROJ's CRS metadata
+    // keeps the original ellipsoid. The PROJ4 extension retains the modifier.
+    let ell = if p.has("R_C") && !p.has("R") && !p.has("R_A") {
+        super::datum::ellipsoid(p)
+            .or_else(|| p.str("datum").and_then(super::def::datum_ellps).and_then(Ell::named))
+            .unwrap_or_else(Ell::wgs84)
+    } else {
+        own.ell
+    };
     let rf = if ell.es == 0.0 { 0.0 } else { 1.0 / (1.0 - ell.one_es.sqrt()) };
     let named = p.str("ellps").or_else(|| p.str("datum").and_then(super::def::datum_ellps));
     let known = named.and_then(|n| ELLIPSOIDS.iter().find(|e| e.0 == n)).filter(|e| Ell::named(e.0).is_some_and(|n| n == ell));

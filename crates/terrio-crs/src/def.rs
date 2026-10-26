@@ -229,7 +229,8 @@ impl Def {
                 let base = root.child("BASEGEOGCRS").or_else(|| root.child("BASEGEODCRS")).unwrap_or(&root);
                 base.child("DATUM").cloned()
             };
-            let canonical = Self::from_proj(&super::iau::get(entry.base).expect("registered IAU base").proj)?;
+            let base = super::iau::get(entry.base).ok_or_else(|| Error::Crs(format!("unknown IAU base CRS {}", entry.base)))?;
+            let canonical = Self::from_proj(&base.proj)?;
             if (self.ell.a - canonical.ell.a).abs() < 1e-6
                 && (self.ell.es - canonical.ell.es).abs() < 1e-14
                 && s.wkt.as_deref().and_then(datum_node).is_some_and(|d| Some(d) == datum_node(&entry.wkt))
@@ -359,7 +360,9 @@ impl Def {
         let geographic = matches!(name, "longlat" | "latlong" | "lonlat" | "latlon") || rot.is_some();
         // PROJ 9.8.1 evaluates R_C before parsing lat_0 (init.cpp), so its
         // conformal radius is equatorial even with a nonzero latitude parameter.
-        // The geodetic CRS retains its original ellipsoid.
+        // Projected endpoints retain their geodetic ellipsoid separately from this
+        // projection radius. Geographic/geocentric conversions use the sphere,
+        // matching PROJ; their stored CRS metadata still describes the original ellipsoid.
         let conformal_ellipsoid = (p.has("R_C") && !p.has("R") && !p.has("R_A")).then_some(ell);
         if let Some(base) = conformal_ellipsoid {
             let radius = base.a * base.one_es.sqrt();

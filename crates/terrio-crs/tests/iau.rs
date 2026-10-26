@@ -254,3 +254,24 @@ fn custom_ellipsoid_body_compatibility_applies_without_iau_ids() {
         }
     }
 }
+
+#[test]
+fn conformal_radius_geographic_and_geocentric_endpoints_match_proj() {
+    // GDAL 3.12.2 / PROJ 9.8.1: metadata retains WGS84 while the Cartesian
+    // conversion uses its equatorial conformal radius (the semi-minor axis).
+    let source = SpatialRef::from_epsg(4979).unwrap();
+    let geographic = SpatialRef::parse("+proj=longlat +ellps=WGS84 +R_C").unwrap();
+    let point = Transformer::new(&source, &geographic).unwrap().transform_3d(17.0, 45.0, 100.0).unwrap();
+    assert!((point.0 - 17.0).abs() < 1e-8 && (point.1 - 45.0).abs() < 1e-8 && (point.2 - 100.0).abs() < 1e-5);
+    assert_eq!(terrio_crs::semi_major_axis(&geographic.to_wkt().unwrap()), Some(6378137.0));
+    let target = SpatialRef::parse("+proj=geocent +ellps=WGS84 +R_C").unwrap();
+    assert_eq!(terrio_crs::semi_major_axis(&target.to_wkt().unwrap()), Some(6378137.0));
+    let point = Transformer::new(&source, &target).unwrap().transform_3d(17.0, 45.0, 100.0).unwrap();
+    let expected = (4298564.419695135, 1314203.029327345, 4494973.378404164);
+    assert!((point.0 - expected.0).abs() < 0.001 && (point.1 - expected.1).abs() < 0.001 && (point.2 - expected.2).abs() < 0.001);
+    let reopened = SpatialRef::parse(&target.to_wkt().unwrap()).unwrap();
+    let again = Transformer::new(&source, &reopened).unwrap().transform_3d(17.0, 45.0, 100.0).unwrap();
+    assert!((again.0 - point.0).abs() < 0.001 && (again.1 - point.1).abs() < 0.001 && (again.2 - point.2).abs() < 0.001);
+    let back = Transformer::new(&target, &source).unwrap().transform_3d(point.0, point.1, point.2).unwrap();
+    assert!((back.0 - 17.0).abs() < 1e-8 && (back.1 - 45.0).abs() < 1e-8 && (back.2 - 100.0).abs() < 1e-5);
+}
