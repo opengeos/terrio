@@ -223,6 +223,9 @@ impl SharedRaster {
     }
 }
 impl WindowSource for SharedRaster {
+    fn band_data_type(&self, band: usize) -> Option<DataType> {
+        self.lock().ok().map(|reader| reader.band_data_type(band))
+    }
     fn shared_clone(&self) -> Option<Box<dyn WindowSource>> {
         Some(Box::new(self.clone()))
     }

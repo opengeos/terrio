@@ -51,7 +51,10 @@ def run(cmd, stdin=None):
     Returns:
         A ``(returncode, stdout, stderr)`` tuple.
     """
-    p = subprocess.run(cmd, input=stdin, capture_output=True, text=True, check=False)
+    try:
+        p = subprocess.run(cmd, input=stdin, capture_output=True, text=True, check=False, timeout=300)
+    except subprocess.TimeoutExpired:
+        return 124, "", "command timed out after 300 seconds"
     return p.returncode, p.stdout, p.stderr
 
 
@@ -321,6 +324,9 @@ def pixel_info_cases(data, work, terrio):
         # CSV.
         gc, go, _ = run(["gdal", "raster", "pixel-info", "--of", "csv", *opts, raster, *pos])
         tc, to, _ = run([terrio, "pixel-info", "-f", "csv", *opts, raster, *pos])
+        if gc or tc:
+            add(f"{name} (CSV)", "differs", f"exit {gc}/{tc}")
+            continue
         g, t = csv_rows(go, True), csv_rows(to, False)
         if "--position-crs" in opts and "dataset" not in opts:
             # GDAL 3.13 writes the queried position transformed back to the position CRS; 3.12 the input.
@@ -346,9 +352,12 @@ def pixel_info_cases(data, work, terrio):
     stdin = "-105.6 39.4 first site\n-105.2 39.1\n-105.9 39.95 third, quoted \"x\"\n"
     gc, go, _ = run(["gdal", "raster", "pixel-info", "--position-crs", "WGS84", usgs], stdin)
     tc, to, _ = run([terrio, "pixel-info", "--position-crs", "WGS84", usgs], stdin)
-    g, t = geojson_values(json.loads(go)), geojson_values(json.loads(to))
-    add("standard input (GeoJSON)", "identical" if close(g, t, 0) else ("within tolerance" if close(g, t, 1e-9) else "differs"),
-        "" if g == t else f"{g!r:.200} vs {t!r:.200}")
+    if gc or tc:
+        add("standard input (GeoJSON)", "differs", f"exit {gc}/{tc}")
+    else:
+        g, t = geojson_values(json.loads(go)), geojson_values(json.loads(to))
+        add("standard input (GeoJSON)", "identical" if close(g, t, 0) else ("within tolerance" if close(g, t, 1e-9) else "differs"),
+            "" if g == t else f"{g!r:.200} vs {t!r:.200}")
     gc, go, _ = run(["gdallocationinfo", "-wgs84", usgs], stdin)
     tc, to, _ = run([terrio, "pixel-info", "-f", "text", "--position-crs", "WGS84", usgs], stdin)
     add("standard input (gdallocationinfo)", "identical" if (go, gc) == (to, tc) else "differs", "" if go == to else f"{go!r:.200} vs {to!r:.200}")
@@ -363,8 +372,8 @@ def pixel_info_cases(data, work, terrio):
     pos = [str(v) for c in coords for v in c]
     gc, go, _ = run(["gdal", "raster", "pixel-info", "--position-crs", "EPSG:4326", "-r", "bilinear", usgs, *pos])
     tc, to, te = run([terrio, "pixel-info", "--position-dataset", str(pts), "-r", "bilinear", usgs])
-    if tc:
-        add("vector positions", "differs", te.strip()[:200])
+    if gc or tc:
+        add("vector positions", "differs", f"exit {gc}/{tc}: {te.strip()[:200]}")
     else:
         g = [(f["properties"]["column"], f["properties"]["line"], f["properties"]["bands"]) for f in json.loads(go)["features"]]
         tf = json.loads(to)["features"]
@@ -428,12 +437,15 @@ def xyz_cases(data, work, terrio):
         detail = f"{g.count(NL)} lines" if g == t else f"{g[:120]!r} vs {t[:120]!r}"
         results.append({"operation": "xyz", "name": f"xyz {name}", "status": "identical" if g == t else "differs", "detail": detail})
     # skip: through the function (the 3.12 script's -skip takes no value).
-    gout, tout = str(work / "g.xyz"), str(work / "t.xyz")
+    gout, tout = str(work / "g_skip.xyz"), str(work / "t_skip.xyz")
     gdal2xyz(lsmall, gout, skip=3, band_nums=[1, 2], progress_callback=None)
-    run([terrio, "xyz", lsmall, tout, "--skip", "3", "-b", "1,2"])
-    g, t = Path(gout).read_bytes(), Path(tout).read_bytes()
-    results.append({"operation": "xyz", "name": "xyz skip 3", "status": "identical" if g == t else "differs",
-                    "detail": f"{g.count(NL)} lines" if g == t else f"{g[:120]!r} vs {t[:120]!r}"})
+    tc, _, te = run([terrio, "xyz", lsmall, tout, "--skip", "3", "-b", "1,2"])
+    if tc or not Path(tout).exists():
+        results.append({"operation": "xyz", "name": "xyz skip 3", "status": "differs", "detail": f"exit {tc}: {te.strip()[:200]}"})
+    else:
+        g, t = Path(gout).read_bytes(), Path(tout).read_bytes()
+        results.append({"operation": "xyz", "name": "xyz skip 3", "status": "identical" if g == t else "differs",
+                        "detail": f"{g.count(NL)} lines" if g == t else f"{g[:120]!r} vs {t[:120]!r}"})
     return results
 
 

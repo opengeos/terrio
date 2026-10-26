@@ -338,6 +338,7 @@ mod tests {
         let path = dir.path().join("mixed.vrt");
         std::fs::write(&path, vrt).unwrap();
         let mut source = crate::open_raster_lazy(path.to_str().unwrap()).unwrap();
+        let mut source = source.shared();
         let info =
             crate::ops::pixel_info::pixel_info(&mut source, &[crate::ops::pixel_info::Position::new(0., 0.)], &Default::default()).unwrap();
         let json = info.to_geojson();

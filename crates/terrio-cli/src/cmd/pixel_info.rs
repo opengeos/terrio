@@ -71,7 +71,8 @@ fn parse_positions(values: &[String]) -> Result<Vec<Position>> {
 }
 
 pub fn run(a: Args) -> Result<()> {
-    if a.output.as_ref().is_some_and(|path| path == &a.input || super::rasterout::same_file(path, &a.input)) {
+    let aliases = |path: &str, input: &str| path == input || super::rasterout::same_file(path, input);
+    if a.output.as_deref().is_some_and(|path| aliases(path, &a.input) || a.position_dataset.as_deref().is_some_and(|d| aliases(path, d))) {
         return Err(Error::InvalidArgument("the output would overwrite the input".into()));
     }
     let options = PixelInfoOptions {
