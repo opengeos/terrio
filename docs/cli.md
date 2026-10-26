@@ -934,7 +934,7 @@ the points strictly inside a rectangle (`-clipsrc`). `--ot` sets the type (Float
 
 NaN geometry Z values are skipped; NaN values supplied through `--zfield` can
 propagate into the result, matching GDAL 3.13.3. Input layers requested by name must
-all exist. Validating a file-stem alias can reread the source to confirm that it originally
+all exist. GeoPackage layer names are case-insensitive; in-memory names are exact. Validating a file-stem alias can reread the source to confirm that it originally
 has only one layer; use the actual layer name to avoid that extra read on large inputs.
 
 Without a search radius, `invdist` visits all input points for each output cell;

@@ -29,7 +29,9 @@ pub fn open_layers(path: &str, options: &crate::VectorOpenOptions) -> Result<Vec
         None
     };
     for name in &options.layers {
-        if !ds.layers.iter().any(|layer| layer.name == *name) {
+        if !ds.layers.iter().any(|layer| {
+            if ds.driver == crate::formats::VectorDriver::GPKG { layer.name.eq_ignore_ascii_case(name) } else { layer.name == *name }
+        }) {
             // A selected subset is not proof that the source has only one layer.
             // Inspect all names only when validating an otherwise missing stem alias.
             if alias == Some(name.as_str()) && crate::list_layers(path)?.len() == 1 {
@@ -714,6 +716,8 @@ mod tests {
         let path = tmp.path().join("source.gpkg");
         let layers = vec![Layer::new("a"), Layer::new("b")];
         crate::write_vector(&layers, path.to_str().unwrap(), &Default::default()).unwrap();
+        let case_options = crate::VectorOpenOptions { layers: vec!["A".into()], ..Default::default() };
+        assert_eq!(open_layers(path.to_str().unwrap(), &case_options).unwrap()[0].name, "a");
         let options = crate::VectorOpenOptions { layers: vec!["a".into(), "missing".into()], ..Default::default() };
         assert!(open_layers(path.to_str().unwrap(), &options).unwrap_err().to_string().contains("missing"));
         let path = tmp.path().join("single.geojson");

@@ -271,6 +271,11 @@ def cases(inputs):
         ["-ot", "Float64", "-txe", "0", "20", "-tye", "0", "20", "-outsize", "8", "8"],
         ["--extent", "0", "0", "20", "20", "--size", "8", "8"],
     )
+    add(
+        "case-insensitive GPKG layer", inputs["two"], "nearest",
+        ["-l", "FRANCE", "-zfield", "pop_max", "-ot", "Float64", "-txe", "-10", "10", "-tye", "35", "52", "-outsize", "8", "8"],
+        ["-l", "FRANCE", "--zfield", "pop_max", "--extent", "-10", "35", "10", "52", "--size", "8", "8"],
+    )
     return out
 
 
