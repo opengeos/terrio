@@ -121,6 +121,9 @@ enum Command {
     /// heights above ground, crops, expressions, assignments, tiles, normals, clusters, sampling,
     /// covariance features, outlier factors, raster values and polygon attributes.
     Filter(cmd::filter::Args),
+    /// Manage files on local, in-memory (/vsimem/), cloud (S3, GCS, Azure), HTTP and archive
+    /// (zip, tar) locations: list, copy, delete, move, sync (like `gdal vsi`).
+    Vsi(cmd::vsi::Args),
     /// Serve these commands to AI agents (Claude Code, Claude Desktop, Cursor, VS Code…) as a
     /// Model Context Protocol server over standard input and output.
     Mcp,
@@ -209,6 +212,7 @@ fn run_on_this_thread(args: Vec<OsString>, terrio: Option<Vec<OsString>>) -> i32
         Command::FillNodata(a) => cmd::fill_nodata::run(a),
         Command::Grid(a) => cmd::grid::run(a),
         Command::Filter(a) => cmd::filter::run(a),
+        Command::Vsi(a) => cmd::vsi::run(a),
         Command::Mcp => serve_mcp(terrio),
     };
     for w in terrio::warnings::take() {

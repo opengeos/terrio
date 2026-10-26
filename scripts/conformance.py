@@ -24,6 +24,8 @@ Suites:
     vector-ops        ogr2ogr options, rasterize, polygonize (compare_vector_ops_with_gdal.py)
     analysis-output   zonal/point-sampling output reprojection and decimal rounding
     footprint         raster footprints, source/custom fields and singleparts vs GDAL
+    vsi               terrio vsi list/copy/sync/move/delete vs gdal vsi, locally, in archives and on S3
+                      (compare_vsi_with_gdal.py)
     topology          buffer, polygon overlay/dissolve, validity, repair and cleanup vs GEOS
     vector-geom       simplify, segmentize, hulls, swap-xy, set-geom-type, combine and sort vs
                       gdal vector and GEOS (compare_vector_geom_with_gdal.py)
@@ -462,6 +464,33 @@ def suite_shapefile_archives(ctx):
         return suite
     for result in results:
         suite.cases.append(Case("Shapefile ZIP", result["name"], result["status"], result["detail"]))
+    if code and not any(case.status == DIFFERS for case in suite.cases):
+        suite.error = tail(err or out) or f"exit {code}"
+    return suite
+
+
+def suite_vsi(ctx):
+    """File management (list, copy, sync, move, delete) against gdal vsi on real files."""
+    suite = Suite("vsi", "File management (vsi)", "GDAL gdal vsi",
+                  "Recursive long listings of the test data, real zip archives, a Zarr store and tar archives of it; "
+                  "trees copied, extracted and synchronized by both tools; uploads, listings, server-side copies, "
+                  "re-syncs and bounded deletions on a local S3-compatible server; with --remote, public S3, GCS, "
+                  "Azure (SAS) and HTTP index listings and a remote zip archive. Names, types and file sizes exactly, "
+                  "dates to the second, copied bytes by SHA-256.")
+    if shutil.which("gdal") is None:
+        suite.skipped = "needs GDAL's gdal command (3.12 or later)"
+        return suite
+    cmd = [sys.executable, str(SCRIPTS / "compare_vsi_with_gdal.py"), ctx.data, "--terrio", ctx.terrio, "--json"]
+    if ctx.remote:
+        cmd.append("--remote")
+    code, out, err = run(cmd)
+    try:
+        results = json.loads(out)
+    except json.JSONDecodeError:
+        suite.error = tail(err or out)
+        return suite
+    for result in results:
+        suite.cases.append(Case("vsi", result["name"], result["status"], result["detail"]))
     if code and not any(case.status == DIFFERS for case in suite.cases):
         suite.error = tail(err or out) or f"exit {code}"
     return suite
@@ -1476,6 +1505,7 @@ SUITES = OrderedDict(
         ("vector-roundtrip", suite_vector_roundtrip),
         ("cad", suite_cad),
         ("shapefile-archives", suite_shapefile_archives),
+        ("vsi", suite_vsi),
         ("raster-roundtrip", suite_raster_roundtrip),
         ("windows", suite_windows),
         ("ops", suite_ops),

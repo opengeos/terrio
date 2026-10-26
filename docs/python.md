@@ -201,6 +201,25 @@ height = terrio.viewshed("dem_utm.tif", 500000, 4400000, om="GROUND", cc=0)
 or height above the DEM. `cc` is 1 minus refraction. See [viewshed](cli.md#viewshed) for
 units, curvature, radius cropping and input nodata behavior.
 
+## File management
+
+```python
+terrio.vsi_list("s3://bucket/prefix", recursive=True)        # gdal vsi list
+terrio.vsi_list("/vsizip/data.zip", recursive=True, depth=2)
+terrio.vsi_copy("data", "s3://bucket/prefix", recursive=True)  # gdal vsi copy
+terrio.vsi_sync("data/", "s3://bucket/prefix", recursive=True, strategy="ETag")
+terrio.vsi_move("s3://bucket/old", "s3://bucket/new")
+terrio.vsi_delete("s3://bucket/prefix", recursive=True)
+terrio.vsi_write("/vsimem/a.txt", b"bytes"); terrio.vsi_read("/vsimem/a.txt")
+terrio.vsi_stat("gs://bucket/key")  # None when nothing is there
+```
+
+The `terrio vsi` commands as functions: entries are dictionaries (`name`, `type`, `size`,
+`modified` in seconds since the epoch, `last_modification_date`, `permissions`, `etag`), and the
+copy, sync, move and delete functions return a report (`copied`, `bytes`, `unchanged`,
+`deleted`, `errors`). `/vsimem/` files last as long as the process. Locations, semantics and the
+refusals of dangerous deletions are those of [vsi](cli.md#vsi).
+
 ## Typing
 
 The package ships type stubs (`py.typed`), checked with `mypy --strict` and `stubtest`:

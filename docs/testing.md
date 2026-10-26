@@ -663,3 +663,30 @@ The full release dry run is manual: select **Release dry run → Run workflow** 
 GitHub Actions before tagging a release. It builds the complete cross-platform
 wheel, CLI, installer and npm matrix without publishing. Pull requests retain the
 normal CI checks, including Python, WASM, API documentation and package validation.
+
+## File management (#289)
+
+`scripts/compare_vsi_with_gdal.py` (the `vsi` conformance suite) compares `terrio vsi` with
+GDAL's `gdal vsi`: recursive long listings (`-lR -f json`) of the test data directory (742
+entries), its three Natural Earth and NYC zip archives, a Zarr store and tar and tar.gz archives
+of it, with names, types and file sizes identical and dates identical to the second; trees
+copied, extracted from a zip and synchronized (with and without a trailing slash) by both tools,
+byte-identical; and, on a local S3-compatible server, the same tree uploaded (directory markers
+included), listed, copied server-side, downloaded, synchronized twice (no upload on the second
+run, as GDAL), deleted recursively without touching the sibling `data2/` and `dirkeep` keys, and
+the whole bucket refused. Uploading the 7-file Natural Earth tree took terrio 10 requests and
+GDAL 20; the recursive listing 3 requests each. With `--remote`, listings of public S3
+(hrrrzarr), Google Cloud Storage (CMIP6), Azure (Daymet, with a Planetary Computer SAS token),
+an HTML index page (download.osgeo.org) and a remote zip archive compare identically; GDAL 3.12
+omits the directories implied by object keys in recursive object store listings, which terrio
+lists as it does for local directories. Listing Natural Earth's 4.9 MB remote
+`ne_10m_admin_0_countries.zip` takes terrio 4 requests and about 32 KB.
+
+```sh
+python scripts/compare_vsi_with_gdal.py ../terrio-data --terrio target/release/terrio [--remote]
+python scripts/conformance.py ../terrio-data --only vsi
+cargo test -p terrio --lib vsi::        # listings, copies, sync, refusals, links, archives
+cargo test -p terrio-cli --test vsi     # S3 (local server): paging, uploads, ETag sync, bounded delete
+pytest python/tests/test_vsi.py
+node --test --test-name-pattern='vsi' js/tests/node.test.mjs
+```

@@ -266,3 +266,25 @@ Optional `srs` defaults to EPSG:4326, `pixelOffset`/`lineOffset` to 0, and steps
 the explicit `geolocation` option supplies arrays for the first source. The operation remains
 pure Rust in full and core WASM builds. See [CLI warping](cli.md#warp) for invalid coordinates,
 antimeridian handling and boundary differences from GDAL.
+
+## File management
+
+```javascript
+terrio.vsiWrite("/vsimem/data/a.zip", zipBytes);
+terrio.vsiList("/vsizip//vsimem/data/a.zip", { recursive: true });  // [{name, type, size, ...}]
+const shp = terrio.vsiRead("/vsizip//vsimem/data/a.zip/roads.shp");
+terrio.vsiCopy("/vsimem/data", "/vsimem/backup", { recursive: true });
+terrio.vsiSync("/vsimem/data/", "/vsimem/mirror", { recursive: true, strategy: "overwrite" });
+terrio.vsiMove("/vsimem/backup", "/vsimem/old");
+terrio.vsiDelete("/vsimem/old", true);
+// Remote listings through fetch: public S3 buckets, Google Cloud Storage, Azure (SAS URLs) and
+// HTML index pages. Returns {entries, requests, bytes}.
+const { entries } = await terrio.listUrl("s3://bucket/prefix", { recursive: true });
+```
+
+The [vsi](cli.md#vsi) commands on the in-memory file system (`/vsimem/`) and the zip archives in
+it, and remote listings with `listUrl`. WebAssembly has no local file system (local paths fail)
+and no request signing: tar archives, local files, signed S3 requests and writes to object stores
+are available in the native CLI, Rust and Python only. `/vsimem/` files carry no dates, so
+`vsiSync` with the `timestamp` strategy copies every file. In browsers, a store must allow the
+page's origin (CORS) for `listUrl`.

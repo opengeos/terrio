@@ -228,6 +228,7 @@ mod stacta;
 pub mod stream;
 mod tiff_mask;
 pub mod vfs;
+pub mod vsi;
 pub mod warnings;
 
 pub use cog::{LazyRaster, TiffReadLimits, Window, WindowOptions, open_raster_lazy};

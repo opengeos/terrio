@@ -30,6 +30,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+pub(crate) mod store;
+
 /// Redirects followed before giving up.
 const MAX_REDIRECTS: u32 = 10;
 
@@ -454,6 +456,19 @@ pub(crate) fn download(remote: &Remote, path: &std::path::Path) -> Result<()> {
     Ok(())
 }
 
+/// Streams a remote file into `out`; returns the bytes written.
+pub(crate) fn download_to(remote: &Remote, out: &mut dyn io::Write) -> Result<u64> {
+    let mut client = Client::new(remote, HttpOptions::from_env());
+    let response = client.send(None)?;
+    let n = io::copy(&mut response.into_body().into_reader(), out).map_err(|e| Error::Http(format!("{}: {e}", redact(&client.url))))?;
+    REQUESTS.fetch_add(1, Ordering::Relaxed);
+    BYTES.fetch_add(n, Ordering::Relaxed);
+    if client.options.log {
+        eprintln!("terrio:   received {n} bytes");
+    }
+    Ok(n)
+}
+
 /// Fetches a whole remote file into memory (a STAC document, for instance).
 pub(crate) fn get(remote: &Remote) -> Result<Vec<u8>> {
     let mut client = Client::new(remote, HttpOptions::from_env());
@@ -478,171 +493,11 @@ pub(crate) enum Directory {
 /// `/vsiaz/`. `None` when the store cannot list (a plain HTTP server), or refuses to (a bucket
 /// whose listing is not public).
 pub(crate) fn list_subdirectories(dir: &Directory) -> Result<Option<Vec<String>>> {
-    let enc = |s: &str| s3::uri_encode(s, true);
-    let with_slash = |p: &str| if p.is_empty() { String::new() } else { format!("{}/", p.trim_end_matches('/')) };
-    // The listing requests (one per page) and how to read a page.
-    enum Api {
-        S3 { remote: Remote, prefix: String },
-        Url { base: String, prefix: String },
-        Azure { base: String, prefix: String, sas: String },
-    }
-    let api = match dir {
-        Directory::S3 { bucket, prefix } => {
-            Api::S3 { remote: Remote::S3(S3Object { bucket: bucket.clone(), key: String::new() }), prefix: with_slash(prefix) }
-        }
-        Directory::Url(url) => {
-            let (path, query) = url.split_once('?').unwrap_or((url, ""));
-            let Some((scheme, rest)) = path.split_once("://") else { return Ok(None) };
-            let (host, key) = rest.split_once('/').unwrap_or((rest, ""));
-            let lower = host.to_ascii_lowercase();
-            if lower == "storage.googleapis.com" {
-                let (bucket, prefix) = key.split_once('/').unwrap_or((key, ""));
-                Api::Url { base: format!("{scheme}://{host}/{bucket}"), prefix: with_slash(prefix) }
-            } else if lower.ends_with(".blob.core.windows.net") {
-                let (container, prefix) = key.split_once('/').unwrap_or((key, ""));
-                Api::Azure { base: format!("{scheme}://{host}/{container}"), prefix: with_slash(prefix), sas: query.to_string() }
-            } else if lower.ends_with(".amazonaws.com") && (lower.contains(".s3") || lower.starts_with("s3.") || lower.starts_with("s3-")) {
-                // Virtual-hosted S3 URLs; path-style ones (`s3.amazonaws.com/bucket/...`) too.
-                if lower.starts_with("s3.") || lower.starts_with("s3-") {
-                    let (bucket, prefix) = key.split_once('/').unwrap_or((key, ""));
-                    Api::Url { base: format!("{scheme}://{host}/{bucket}"), prefix: with_slash(prefix) }
-                } else {
-                    Api::Url { base: format!("{scheme}://{host}"), prefix: with_slash(key) }
-                }
-            } else {
-                return Ok(None);
-            }
-        }
-    };
-    let mut out: Vec<String> = Vec::new();
-    let mut token: Option<String> = None;
-    const MAX_PAGES: usize = 1000;
-    for page in 0..MAX_PAGES {
-        let (body, prefix) = match &api {
-            Api::S3 { remote, prefix } => {
-                let mut client = Client::new(remote, HttpOptions::from_env());
-                client.missing_ok = true;
-                client.refused_ok = true;
-                client.query = format!("?{}", s3_list_query(prefix, token.as_deref()));
-                client.url = format!("{}{}", client.url, client.query);
-                let fetched = client.fetch(None)?;
-                // A signed request refused: the credentials may not allow s3:ListBucket. Not
-                // listable, rather than failing again.
-                if fetched.status == 403 && client.s3.as_ref().is_some_and(|a| a.creds.is_some()) {
-                    crate::warnings::warn(format!(
-                        "S3: listing s3://{}/{prefix} was refused (403): the credentials may not allow s3:ListBucket",
-                        remote_bucket(remote)
-                    ));
-                }
-                if matches!(fetched.status, 403 | 404) {
-                    return Ok(None);
-                }
-                (fetched.data, prefix)
-            }
-            Api::Url { base, prefix } => match list_get(&format!("{base}/?{}", s3_list_query(prefix, token.as_deref())))? {
-                Some(b) => (b, prefix),
-                None => return Ok(None),
-            },
-            Api::Azure { base, prefix, sas } => {
-                let mut q = vec![
-                    "restype=container".to_string(),
-                    "comp=list".to_string(),
-                    format!("prefix={}", enc(prefix)),
-                    format!("delimiter={}", enc("/")),
-                ];
-                if let Some(t) = &token {
-                    q.push(format!("marker={}", enc(t)));
-                }
-                if !sas.is_empty() {
-                    q.push(sas.clone());
-                }
-                match list_get(&format!("{base}?{}", q.join("&")))? {
-                    Some(b) => (b, prefix),
-                    None => return Ok(None),
-                }
-            }
-        };
-        let xml = String::from_utf8_lossy(&body);
-        let azure = matches!(api, Api::Azure { .. });
-        let (group, name) = if azure { ("BlobPrefix", "Name") } else { ("CommonPrefixes", "Prefix") };
-        for block in xml_elements(&xml, group) {
-            if let Some(p) = xml_elements(block, name).first()
-                && let Some(child) = xml_unescape(p).strip_prefix(prefix.as_str())
-            {
-                let child = child.trim_end_matches('/');
-                if !child.is_empty() && !out.iter().any(|o| o == child) {
-                    out.push(child.to_string());
-                }
-            }
-        }
-        let next = if azure {
-            xml_elements(&xml, "NextMarker").first().map(|t| xml_unescape(t))
-        } else if xml_elements(&xml, "IsTruncated").first().is_some_and(|t| t.trim() == "true") {
-            xml_elements(&xml, "NextContinuationToken").first().map(|t| xml_unescape(t))
-        } else {
-            None
-        };
-        match next.filter(|t| !t.is_empty()) {
-            Some(_) if page + 1 == MAX_PAGES => {
-                crate::warnings::warn(format!("listing stopped after {MAX_PAGES} pages ({} names)", out.len()));
-            }
-            Some(t) => token = Some(t),
-            None => break,
-        }
-    }
+    let Some(entries) = store::list_objects(dir, false)? else { return Ok(None) };
+    let mut out: Vec<String> = entries.into_iter().filter(|e| e.dir).map(|e| e.name).collect();
     out.sort();
+    out.dedup();
     Ok(Some(out))
-}
-
-/// The query of an S3 `ListObjectsV2` request (Google Cloud Storage's XML API takes it too): the
-/// keys below `prefix` grouped by `/`, from a continuation token. Its parameters are in sorted
-/// order, as SigV4's canonical query has them.
-fn s3_list_query(prefix: &str, token: Option<&str>) -> String {
-    let enc = |s: &str| s3::uri_encode(s, true);
-    let mut q: Vec<String> = token.map(|t| format!("continuation-token={}", enc(t))).into_iter().collect();
-    q.extend([format!("delimiter={}", enc("/")), "list-type=2".to_string(), format!("prefix={}", enc(prefix))]);
-    q.join("&")
-}
-
-/// The bucket of an S3 object, for messages.
-fn remote_bucket(remote: &Remote) -> &str {
-    match remote {
-        Remote::S3(o) => &o.bucket,
-        Remote::Url(u) => u,
-    }
-}
-
-/// A listing page of an unsigned store: `None` when listing is refused or missing (403, 404), or
-/// the server answers with something other than XML.
-fn list_get(url: &str) -> Result<Option<Vec<u8>>> {
-    let mut client = Client::new(&Remote::Url(url.to_string()), HttpOptions::from_env());
-    client.missing_ok = true;
-    let fetched = client.fetch(None)?;
-    // Azure starts its XML with a byte order mark.
-    let data = fetched.data.strip_prefix(b"\xEF\xBB\xBF").map(<[u8]>::to_vec).unwrap_or(fetched.data);
-    if matches!(fetched.status, 403 | 404) || !data.trim_ascii_start().starts_with(b"<") {
-        return Ok(None);
-    }
-    Ok(Some(data))
-}
-
-/// The contents of the elements named `name` in an XML document (no nesting of the same name).
-fn xml_elements<'a>(xml: &'a str, name: &str) -> Vec<&'a str> {
-    let (open, close) = (format!("<{name}>"), format!("</{name}>"));
-    let mut out = Vec::new();
-    let mut rest = xml;
-    while let Some(i) = rest.find(&open) {
-        let after = &rest[i + open.len()..];
-        let Some(j) = after.find(&close) else { break };
-        out.push(&after[..j]);
-        rest = &after[j + close.len()..];
-    }
-    out
-}
-
-/// XML text with its predefined entities replaced.
-fn xml_unescape(s: &str) -> String {
-    s.replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"").replace("&apos;", "'").replace("&amp;", "&")
 }
 
 /// Sends a `POST` of a JSON body (a STAC API search, for instance) and returns the response's
@@ -671,15 +526,20 @@ fn retry_after_seconds(v: &str) -> Option<u64> {
 
 /// The seconds from now to a UTC date and time; `None` when it is past.
 pub(crate) fn seconds_until_utc(y: i64, m: i64, d: i64, h: i64, mi: i64, s: i64) -> Option<u64> {
+    let at = unix_seconds(y, m, d, h, mi, s);
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).ok()?.as_secs() as i64;
+    u64::try_from(at - now).ok()
+}
+
+/// The seconds since the Unix epoch of a UTC date and time.
+pub(crate) fn unix_seconds(y: i64, m: i64, d: i64, h: i64, mi: i64, s: i64) -> i64 {
     // Days from the civil date (Howard Hinnant's days_from_civil).
     let yy = if m <= 2 { y - 1 } else { y };
     let era = yy.div_euclid(400);
     let yoe = yy - era * 400;
     let doy = (153 * (m + if m > 2 { -3 } else { 9 }) + 2) / 5 + d - 1;
     let days = era * 146_097 + yoe * 365 + yoe / 4 - yoe / 100 + doy - 719_468;
-    let at = days * 86_400 + h * 3600 + mi * 60 + s;
-    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).ok()?.as_secs() as i64;
-    u64::try_from(at - now).ok()
+    days * 86_400 + h * 3600 + mi * 60 + s
 }
 
 /// Fetches a whole remote file with extra request headers (an API key, for instance), following
@@ -990,6 +850,7 @@ impl Seek for RangeReader {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::vsi::listing::{xml_elements, xml_unescape};
 
     #[test]
     fn reads_retry_after() {

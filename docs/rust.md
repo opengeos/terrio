@@ -276,6 +276,27 @@ let visible = viewshed(&dem, &ViewshedOptions {
 `ViewshedMode::Dem` and `Ground` return minimum visible elevation or height above the DEM.
 See [viewshed](cli.md#viewshed) for units, curvature, radius cropping and nodata behavior.
 
+## File management
+
+```rust,no_run
+use terrio::vsi::{self, CopyOptions, ListOptions, SyncOptions, SyncStrategy};
+
+for e in vsi::list("s3://bucket/prefix", &ListOptions { recursive: true, ..Default::default() })? {
+    println!("{} {:?} {:?}", e.name, e.kind, e.size);
+}
+vsi::copy("data", "s3://bucket/prefix", &CopyOptions { recursive: true, ..Default::default() })?;
+let report = vsi::sync("data/", "s3://bucket/prefix", &SyncOptions { recursive: true, strategy: SyncStrategy::ETag })?;
+println!("{} copied, {} up to date", report.copied, report.unchanged);
+vsi::rename("s3://bucket/old", "s3://bucket/new")?;
+vsi::delete("s3://bucket/prefix", true)?;
+# Ok::<(), terrio::Error>(())
+```
+
+`terrio::vsi` lists, copies, deletes, moves and synchronizes files across local, `/vsimem/`,
+S3, Google Cloud Storage, Azure, HTTP and zip/tar locations (see [vsi](cli.md#vsi)).
+`vsi::RemoteLister` plans a remote listing without doing I/O, for hosts that send the requests
+themselves (WebAssembly's `fetch`).
+
 ## Coordinate systems
 
 ```rust,no_run

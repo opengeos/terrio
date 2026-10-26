@@ -19,6 +19,7 @@ mod pointcloud;
 mod remote;
 #[cfg(feature = "threads")]
 mod threads;
+mod vsi;
 
 use serde::Deserialize;
 use std::cell::{Cell, RefCell};

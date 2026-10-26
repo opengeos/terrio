@@ -44,6 +44,7 @@ terrio <COMMAND>
   formats     List the formats terrio reads and writes
   grid        Grid a point cloud into a raster (like PDAL's writers.gdal)
   filter      PDAL's point cloud filters (smrf, pmf, csf, elm, hag_nn, crop, expression...)
+  vsi         List, copy, delete, move and sync files on local, cloud, HTTP and archive locations (like gdal vsi)
   mcp         Serve these commands to AI agents over the Model Context Protocol
 ```
 
@@ -52,7 +53,7 @@ Install it with `curl -LsSf https://terrio.opengeos.org/install.sh | sh` (on Win
 `cargo install terrio-cli`; see [Installation](installation.md).
 
 Every input can be a local path, a URL, a cloud object or a zip archive member; see
-[Remote Data](remote-data.md). Outputs are local. Run `terrio <COMMAND> --help` for the full
+[Remote Data](remote-data.md). Outputs are local, except those of `terrio vsi`. Run `terrio <COMMAND> --help` for the full
 option list.
 
 ## Geometry operations
@@ -786,6 +787,77 @@ terrio mcp
 
 Serves the other commands to AI agents (Claude Code, Claude Desktop, Cursor, VS Code) as a Model
 Context Protocol server over standard input and output. See [AI Agents](mcp.md).
+
+## vsi
+
+```sh
+terrio vsi list -lR s3://bucket/prefix                 # gdal vsi list (ls)
+terrio vsi list -R --depth 2 -f json --tree /vsizip/data.zip
+terrio vsi copy -r data/ s3://bucket/prefix            # gdal vsi copy (cp)
+terrio vsi copy /vsizip//vsicurl/https://host/a.zip/a.shp .
+terrio vsi sync -r --strategy ETag data/ s3://bucket/prefix   # gdal vsi sync
+terrio vsi move s3://bucket/old s3://bucket/new        # gdal vsi move (mv, ren, rename)
+terrio vsi delete -r s3://bucket/prefix                # gdal vsi delete (rm, rmdir, del)
+```
+
+File management across locations, as GDAL's `gdal vsi` commands do on its virtual file systems:
+
+| Location | Forms | list | read | write, delete |
+|---|---|---|---|---|
+| Local files | `dir/file` | yes | yes | yes |
+| In memory | `/vsimem/dir/file` | yes | yes | yes (within one process: Python, JavaScript) |
+| Amazon S3, S3-compatible services | `s3://bucket/key`, `/vsis3/` | yes | yes | yes, signed (see [Remote Data](remote-data.md)) |
+| Google Cloud Storage | `gs://bucket/key`, `/vsigs/` | public buckets | yes | no: use its S3-compatible API (`s3://` with `AWS_S3_ENDPOINT=https://storage.googleapis.com` and HMAC keys) |
+| Azure Blob Storage | `az://container/blob`, `/vsiaz/` | yes | yes | with a SAS token (`AZURE_STORAGE_SAS_TOKEN`) |
+| HTTP(S) | `https://...`, `/vsicurl/` | from an HTML index page (Apache, nginx) | yes | no |
+| Zip archives | `/vsizip/a.zip/dir`, also `.kmz`, `.shz`; nested in remote locations | yes | yes | no |
+| Tar archives | `/vsitar/a.tar`, `.tar.gz`, `.tgz` | yes | yes | no |
+
+`list` prints a directory's entries (a file lists as itself), directories before what they hold
+and siblings by name; `-l` adds permissions, size and date as `ls -l` (and `gdal vsi list -l`)
+print them, `-R` recurses (`--depth N` levels), `--abs` prints absolute paths, `-f json` prints
+GDAL's JSON (names, or with `-l` objects with `name`, `type`, `size`,
+`last_modification_date`, `permissions`, and `etag` for objects), `--tree` nests it. An object
+store is listed recursively in one paged listing (1,000 keys per request on S3), not one per
+directory. Remote zip archives are listed by range requests: the archive's end and central
+directory, about 32 KB for Natural Earth's 4.9 MB `ne_10m_admin_0_countries.zip`; tar archives
+by seeking from header to header.
+
+`copy SRC DST` copies a file to `DST`, or into it when `DST` is an existing directory (or ends
+with `/`); a directory needs `-r` and is copied as `DST`, or into an existing `DST` as
+`DST/<name>`, as GDAL does. `--skip-errors` goes on past the files that fail, reporting them.
+Copies within S3 are server-side (`x-amz-copy-source`), uploads are single `PUT`s (up to 5 GiB),
+and other remote copies go through a temporary file. Local files are written to a temporary file
+renamed into place, so a failed copy leaves an existing target as it was.
+
+`sync SRC DST` copies the files that are missing or out of date in `DST` and deletes nothing; a
+source directory ending with `/` is synchronized into `DST`, without one as `DST/<name>`
+(rsync's convention, as GDAL's). `--strategy timestamp` (the default) copies when the sizes differ
+or the source is newer; `ETag` compares entity tags, or a local file's MD5 with an S3 object's
+(single-part uploads; multipart entity tags fall back to `timestamp`); `overwrite` always copies.
+
+`move SRC DST` renames on one local file system; elsewhere it copies, then deletes the source only
+once all of it was copied. `delete PATH` deletes a file; `-r` deletes a directory and what it
+holds.
+
+Safety: `delete` and `move` refuse an empty path, a file system root, the home directory, the
+current directory or one of its parents, the root of `/vsimem/`, a whole bucket or container,
+and archive and HTTP locations. Recursive deletion never follows symbolic links (the links are
+deleted), checks that every directory it enters is below the path given, and on object stores
+deletes only the keys below `prefix/` (not `prefix2/...`). `copy`, `sync` and `move` refuse to
+copy a directory into itself.
+
+`-q` prints nothing, `--json` prints what was done (`copied`, `bytes`, `unchanged`, `deleted`,
+`errors`), `--stats` the HTTP requests and bytes received.
+
+Differences from GDAL 3.12/3.13: entries are sorted (GDAL prints local directories in the order
+the file system returns them); dates are UTC (a zip member's date is its stored DOS time, as
+GDAL prints it); HTTP index names stay percent-encoded, as GDAL keeps them. Not supported:
+`sync -j/--num-threads` (requests are sequential), multipart uploads (objects over 5 GiB), Azure
+shared-key authentication, writing to Google Cloud Storage's own API, creating empty
+"directories" in object stores (they are implied by keys), progress bars, and the virtual file
+systems `/vsigzip/`, `/vsi7z/`, `/vsirar/`, `/vsiswift/`, `/vsioss/`, `/vsiadls/`, `/vsihdfs/`
+and `/vsiwebhdfs/`.
 
 ## fill-nodata
 

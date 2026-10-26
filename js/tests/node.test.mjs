@@ -1615,3 +1615,57 @@ test("unterminated quoted PROJ values raise an error", () => {
   assert.throws(() => terrio.transformPoints([10], [40], "EPSG:4326",
     '+proj=tmerc +datum=WGS84 +title="abc +k=0.9996'), /unterminated quoted PROJ value/);
 });
+
+test("vsi: in-memory files, zip archives in memory and refused targets", () => {
+  terrio.vsiWrite("/vsimem/jsvsi/a/b.txt", new TextEncoder().encode("bee"));
+  terrio.vsiWrite("/vsimem/jsvsi/c.txt", new Uint8Array([1, 2, 3]));
+  const all = terrio.vsiList("/vsimem/jsvsi", { recursive: true });
+  assert.deepEqual(all.map(e => [e.name, e.type, e.size]), [["a", "directory", null], ["a/b.txt", "file", 3], ["c.txt", "file", 3]]);
+  assert.equal(terrio.vsiCopy("/vsimem/jsvsi", "/vsimem/jsvsi2", { recursive: true }).copied, 2);
+  assert.equal(new TextDecoder().decode(terrio.vsiRead("/vsimem/jsvsi2/a/b.txt")), "bee");
+  terrio.vsiMove("/vsimem/jsvsi2/c.txt", "/vsimem/jsvsi2/d.txt");
+  assert.equal(terrio.vsiStat("/vsimem/jsvsi2/c.txt"), null);
+  assert.equal(terrio.vsiStat("/vsimem/jsvsi2/d.txt").size, 3);
+  assert.equal(terrio.vsiSync("/vsimem/jsvsi/", "/vsimem/jsvsi3", { recursive: true, strategy: "overwrite" }).copied, 2);
+  assert.equal(terrio.vsiDelete("/vsimem/jsvsi2", true).deleted, 2);
+  assert.throws(() => terrio.vsiDelete("/vsimem/", true), /refusing/);
+  assert.throws(() => terrio.vsiDelete("/vsimem/jsvsi"), /recursive/);
+  // A Shapefile ZIP written by terrio, listed and read in memory.
+  const ds = terrio.fromGeoJSON({ type: "FeatureCollection", features: [
+    { type: "Feature", geometry: { type: "Point", coordinates: [1, 2] }, properties: { n: 1 } },
+  ] }, "pts", "EPSG:4326");
+  terrio.vsiWrite("/vsimem/jsvsi/pts.zip", ds.toBytes("pts.shp.zip"));
+  const members = terrio.vsiList("/vsizip//vsimem/jsvsi/pts.zip").map(e => e.name);
+  assert.ok(["pts.shp", "pts.shx", "pts.dbf", "pts.prj"].every(m => members.includes(m)), members.join());
+  assert.deepEqual(Array.from(terrio.vsiRead("/vsizip//vsimem/jsvsi/pts.zip/pts.shp").slice(0, 4)), [0, 0, 39, 10]);
+  assert.throws(() => terrio.vsiDelete("/vsizip//vsimem/jsvsi/pts.zip/pts.shp"), /read only/);
+  assert.throws(() => terrio.vsiWrite("local.txt", new Uint8Array(1)), /WebAssembly/);
+  terrio.vsiDelete("/vsimem/jsvsi", true);
+  terrio.vsiDelete("/vsimem/jsvsi3", true);
+});
+
+test("vsi: listUrl lists object stores and HTML index pages through fetch", async () => {
+  const pages = {
+    "https://bkt.s3.amazonaws.com/?list-type=2&prefix=dir%2F":
+      "<ListBucketResult><IsTruncated>true</IsTruncated><Contents><Key>dir/a/b.tif</Key><Size>5</Size><ETag>&quot;e1&quot;</ETag>" +
+      "<LastModified>2024-01-01T01:42:27.000Z</LastModified></Contents><NextContinuationToken>t2</NextContinuationToken></ListBucketResult>",
+    "https://bkt.s3.amazonaws.com/?continuation-token=t2&list-type=2&prefix=dir%2F":
+      "<ListBucketResult><Contents><Key>dir/c.tif</Key><Size>7</Size></Contents></ListBucketResult>",
+    "https://example.com/data/": '<a href="../">up</a><a href="x.tif">x</a><a href="sub/">sub</a>',
+    "https://example.com/data/sub/": '<a href="y.tif">y</a>',
+  };
+  const seen = [];
+  const fetch = async (url) => {
+    seen.push(url);
+    return url in pages ? new Response(pages[url], { status: 200 }) : new Response("missing", { status: 404 });
+  };
+  const s3 = await terrio.listUrl("s3://bkt/dir", { recursive: true, fetch });
+  assert.deepEqual(s3.entries.map(e => [e.name, e.size]), [["a", null], ["a/b.tif", 5], ["c.tif", 7]]);
+  assert.equal(s3.entries[1].lastModificationDate, "2024-01-01 01:42:27Z");
+  assert.equal(s3.entries[1].etag, "e1");
+  assert.equal(s3.requests, 2);
+  const html = await terrio.listUrl("https://example.com/data", { recursive: true, fetch });
+  assert.deepEqual(html.entries.map(e => e.name), ["sub", "sub/y.tif", "x.tif"]);
+  assert.equal((await terrio.listUrl("https://example.com/data", { fetch })).entries.length, 2);
+  await assert.rejects(terrio.listUrl("https://example.com/nothing/", { fetch }), /404/);
+});

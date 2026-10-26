@@ -1,14 +1,18 @@
 //! Files held in memory under virtual paths, for the drivers that read a directory of files (Zarr
 //! stores) when the files are in memory: zip archives, and key-value stores given by WebAssembly
-//! callers. Paths under a mount read the files in memory; other paths read the file system.
+//! callers, and the files written under `/vsimem/` by [`crate::vsi`]. Paths under `/vsimem/` read
+//! the files in memory; other paths read the file system.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-/// The prefix of virtual paths.
+/// The prefix of the virtual paths of mounts.
 const ROOT: &str = "/vsimem/terrio";
+
+/// The prefix of every in-memory path: GDAL's `/vsimem/`.
+const VSIMEM: &str = "/vsimem";
 
 static FILES: Mutex<BTreeMap<String, Arc<Vec<u8>>>> = Mutex::new(BTreeMap::new());
 static NEXT: AtomicU64 = AtomicU64::new(1);
@@ -16,8 +20,8 @@ static NEXT: AtomicU64 = AtomicU64::new(1);
 /// A path as a key: `/` separators, without a trailing one.
 fn key(p: &Path) -> Option<String> {
     let s = p.to_str()?.replace('\\', "/");
-    // Under the root only: not `/vsimem/terrio_other`.
-    (s.strip_prefix(ROOT).is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))).then(|| s.trim_end_matches('/').to_string())
+    // Under `/vsimem` only: not `/vsimemory`.
+    (s.strip_prefix(VSIMEM).is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))).then(|| s.trim_end_matches('/').to_string())
 }
 
 fn files() -> std::sync::MutexGuard<'static, BTreeMap<String, Arc<Vec<u8>>>> {
@@ -153,6 +157,30 @@ pub(crate) fn subdirs(p: &Path) -> Vec<(String, PathBuf)> {
     }
 }
 
+/// The files under a directory (all of them, at any depth), in memory: `(path relative to the
+/// directory, size)`, sorted. `None` for a path outside `/vsimem/`.
+pub(crate) fn list_files(p: &Path) -> Option<Vec<(String, u64)>> {
+    let k = key(p)?;
+    let prefix = format!("{k}/");
+    Some(
+        files()
+            .range(prefix.clone()..)
+            .take_while(|(f, _)| f.starts_with(&prefix))
+            .map(|(f, b)| (f[prefix.len()..].to_string(), b.len() as u64))
+            .collect(),
+    )
+}
+
+/// The size of a file in memory, if there is one.
+pub(crate) fn file_size(p: &Path) -> Option<u64> {
+    files().get(&key(p)?).map(|b| b.len() as u64)
+}
+
+/// Removes a file in memory; whether there was one.
+pub(crate) fn remove_file(p: &Path) -> bool {
+    key(p).is_some_and(|k| files().remove(&k).is_some())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -161,8 +189,9 @@ mod tests {
     fn virtual_paths_end_at_a_separator() {
         assert_eq!(key(Path::new("/vsimem/terrio")).as_deref(), Some("/vsimem/terrio"));
         assert_eq!(key(Path::new("/vsimem/terrio/3/a/")).as_deref(), Some("/vsimem/terrio/3/a"));
-        assert_eq!(key(Path::new("/vsimem/terrio_other/a")), None);
-        assert_eq!(key(Path::new("/vsimem/terrioX")), None);
+        assert_eq!(key(Path::new("/vsimem/terrio_other/a")).as_deref(), Some("/vsimem/terrio_other/a"));
+        assert_eq!(key(Path::new("/vsimemory/a")), None);
+        assert_eq!(key(Path::new("/tmp/a")), None);
     }
 
     #[test]

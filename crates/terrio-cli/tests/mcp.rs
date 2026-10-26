@@ -273,3 +273,31 @@ fn vector_geometry_tools_are_discoverable_and_execute() {
     let layer = terrio::open_vector(output.to_str().unwrap(), &Default::default()).unwrap().layers.remove(0);
     assert_eq!(layer.features[0].geometry.as_ref().unwrap().all_coords().len(), 2);
 }
+
+#[test]
+fn vsi_tool_lists_copies_and_refuses_dangerous_deletes() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    std::fs::create_dir_all(d.join("t/a")).unwrap();
+    std::fs::write(d.join("t/a/y.txt"), "abc").unwrap();
+    let t = d.join("t");
+    let out = d.join("out");
+    let replies = session(&[
+        json!({"jsonrpc":"2.0","id":1,"method":"tools/list"}),
+        call(2, "vsi", &["list", "-R", "-l", "--json", t.to_str().unwrap()]),
+        call(3, "vsi", &["copy", "-r", t.to_str().unwrap(), out.to_str().unwrap(), "--json"]),
+        call(4, "vsi", &["delete", "-r", "/"]),
+    ]);
+    let tools = replies[&1]["result"]["tools"].as_array().unwrap();
+    let vsi = tools.iter().find(|t| t["name"] == "vsi").expect("a vsi tool");
+    let description = vsi["description"].as_str().unwrap();
+    assert!(description.contains("`vsi sync`") && description.contains("--strategy"), "{description}");
+    assert_eq!(vsi["annotations"]["destructiveHint"], true);
+    let listing: Value = serde_json::from_str(replies[&2]["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(listing[1]["name"], "a/y.txt");
+    assert_eq!(listing[1]["size"], 3);
+    assert_eq!(replies[&3]["result"]["isError"], false);
+    assert_eq!(std::fs::read_to_string(out.join("a/y.txt")).unwrap(), "abc");
+    assert_eq!(replies[&4]["result"]["isError"], true);
+    assert!(replies[&4]["result"]["content"][0]["text"].as_str().unwrap().contains("refusing"));
+}

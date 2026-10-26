@@ -2847,6 +2847,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "spade",
+ "tar",
  "tempfile",
  "terrio-crs",
  "thiserror 2.0.21",

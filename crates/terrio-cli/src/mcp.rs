@@ -339,9 +339,16 @@ fn tool_list() -> Vec<Value> {
         .map(|mut c| {
             let name = c.get_name().to_string();
             let ro = READ_ONLY.contains(&name.as_str());
+            // A group of subcommands (`vsi list`, `vsi copy`...): each one's help too.
+            let mut description = c.render_long_help().to_string().trim_end().to_string();
+            let subcommands: Vec<clap::Command> = c.get_subcommands().filter(|s| s.get_name() != "help").cloned().collect();
+            for mut sub in subcommands {
+                let help = sub.render_long_help().to_string();
+                description.push_str(&format!("\n\n`{name} {}`:\n{}", sub.get_name(), help.trim_end()));
+            }
             json!({
                 "name": name,
-                "description": c.render_long_help().to_string().trim_end(),
+                "description": description,
                 "inputSchema": {
                     "type": "object",
                     "properties": {

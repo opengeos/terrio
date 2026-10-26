@@ -1,0 +1,169 @@
+//! File management in WebAssembly: the in-memory file system (`/vsimem/`), zip archives in it,
+//! and listings of remote directories through `fetch` (GDAL's `gdal vsi`).
+//!
+//! WebAssembly has no local file system and no signed requests: local paths fail, and writes to
+//! object stores are not available (`listUrl` lists public buckets and SAS-token URLs).
+
+use crate::{js_err, parse_options, to_js};
+use serde::Deserialize;
+use terrio::vsi::{self, CopyOptions, ListOptions, RemoteLister, SyncOptions};
+use wasm_bindgen::prelude::*;
+use wasm_bindgen_futures::JsFuture;
+
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase", default, deny_unknown_fields)]
+struct VsiListOptions {
+    recursive: bool,
+    depth: Option<usize>,
+    absolute: bool,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase", default, deny_unknown_fields)]
+struct VsiCopyOptions {
+    recursive: bool,
+    skip_errors: bool,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase", default, deny_unknown_fields)]
+struct VsiSyncOptions {
+    recursive: bool,
+    strategy: Option<String>,
+}
+
+/// An entry as JavaScript sees it.
+fn entries_js(entries: &[vsi::Entry]) -> Result<JsValue, JsError> {
+    let list: Vec<serde_json::Value> = entries
+        .iter()
+        .map(|e| {
+            serde_json::json!({
+                "name": e.name,
+                "type": if e.is_dir() { "directory" } else { "file" },
+                "size": e.size,
+                "modified": e.modified,
+                "lastModificationDate": e.modified_string(),
+                "etag": e.etag,
+            })
+        })
+        .collect();
+    to_js(&list)
+}
+
+/// Lists a `/vsimem/` directory, or a zip archive in memory (`/vsizip//vsimem/a.zip`), as
+/// `gdal vsi list` does. Options: `recursive`, `depth`, `absolute`.
+#[wasm_bindgen(js_name = vsiList)]
+pub fn vsi_list(path: &str, options: JsValue) -> Result<JsValue, JsError> {
+    let o: VsiListOptions = parse_options(&options)?;
+    let entries =
+        vsi::list(path, &ListOptions { recursive: o.recursive, depth: o.depth, absolute: o.absolute, details: false }).map_err(js_err)?;
+    entries_js(&entries)
+}
+
+/// Describes a location, or returns `null` when nothing is there.
+#[wasm_bindgen(js_name = vsiStat)]
+pub fn vsi_stat(path: &str) -> Result<JsValue, JsError> {
+    match vsi::stat(path).map_err(js_err)? {
+        Some(e) => Ok(js_sys::Array::from(&entries_js(&[e])?).get(0)),
+        None => Ok(JsValue::NULL),
+    }
+}
+
+/// Writes bytes to a `/vsimem/` file, replacing it.
+#[wasm_bindgen(js_name = vsiWrite)]
+pub fn vsi_write(path: &str, bytes: &[u8]) -> Result<(), JsError> {
+    vsi::write(path, bytes).map_err(js_err)
+}
+
+/// Reads a whole `/vsimem/` file or a member of an archive in memory.
+#[wasm_bindgen(js_name = vsiRead)]
+pub fn vsi_read(path: &str) -> Result<Vec<u8>, JsError> {
+    vsi::read(path).map_err(js_err)
+}
+
+/// Copies a file, or a directory with `recursive`, within `/vsimem/` (archive members out of
+/// archives). Options: `recursive`, `skipErrors`. Returns the report.
+#[wasm_bindgen(js_name = vsiCopy)]
+pub fn vsi_copy(src: &str, dst: &str, options: JsValue) -> Result<JsValue, JsError> {
+    let o: VsiCopyOptions = parse_options(&options)?;
+    to_js(&vsi::copy(src, dst, &CopyOptions { recursive: o.recursive, skip_errors: o.skip_errors }).map_err(js_err)?)
+}
+
+/// Deletes a `/vsimem/` file, or a directory with `recursive` (the root of `/vsimem/` is
+/// refused). Returns the report.
+#[wasm_bindgen(js_name = vsiDelete)]
+pub fn vsi_delete(path: &str, recursive: Option<bool>) -> Result<JsValue, JsError> {
+    to_js(&vsi::delete(path, recursive.unwrap_or(false)).map_err(js_err)?)
+}
+
+/// Moves (renames) a `/vsimem/` file or directory. Returns the report.
+#[wasm_bindgen(js_name = vsiMove)]
+pub fn vsi_move(src: &str, dst: &str) -> Result<JsValue, JsError> {
+    to_js(&vsi::rename(src, dst).map_err(js_err)?)
+}
+
+/// Copies the files missing or out of date in the target, within `/vsimem/`. Options:
+/// `recursive`, `strategy` (`timestamp`, `ETag` or `overwrite`). Returns the report.
+#[wasm_bindgen(js_name = vsiSync)]
+pub fn vsi_sync(src: &str, dst: &str, options: JsValue) -> Result<JsValue, JsError> {
+    let o: VsiSyncOptions = parse_options(&options)?;
+    let strategy = o.strategy.as_deref().unwrap_or("timestamp").parse().map_err(js_err)?;
+    to_js(&vsi::sync(src, dst, &SyncOptions { recursive: o.recursive, strategy }).map_err(js_err)?)
+}
+
+fn get(v: &JsValue, key: &str) -> JsValue {
+    js_sys::Reflect::get(v, &JsValue::from_str(key)).unwrap_or(JsValue::UNDEFINED)
+}
+
+fn js_error(e: JsValue) -> JsError {
+    let msg = e.dyn_ref::<js_sys::Error>().map(|e| String::from(e.message())).or_else(|| e.as_string()).unwrap_or_else(|| format!("{e:?}"));
+    JsError::new(&msg)
+}
+
+/// Lists a remote directory with `fetch`, as `gdal vsi list` lists `/vsis3/`, `/vsigs/`,
+/// `/vsiaz/` and `/vsicurl/`: public S3 buckets (`s3://bucket/dir`), Google Cloud Storage
+/// (`gs://`), Azure Blob Storage (`https://account.blob.core.windows.net/container/dir?<SAS>`)
+/// and HTML index pages of plain HTTP servers. Options: `recursive`, `depth`, `fetch` (instead of
+/// `globalThis.fetch`), `headers`. Returns `{entries, requests, bytes}`.
+///
+/// In browsers, the store must allow the page's origin (CORS).
+#[wasm_bindgen(js_name = listUrl)]
+pub async fn list_url(url: String, options: JsValue) -> Result<JsValue, JsError> {
+    let opt = |k: &str| if options.is_object() { get(&options, k) } else { JsValue::UNDEFINED };
+    let recursive = opt("recursive").as_bool().unwrap_or(false);
+    let depth = opt("depth").as_f64().map(|d| d as usize);
+    let headers = opt("headers");
+    let fetch: js_sys::Function = match opt("fetch") {
+        f if f.is_function() => f.unchecked_into(),
+        _ => get(&js_sys::global(), "fetch").dyn_into().map_err(|_| JsError::new("no fetch function: pass one as options.fetch"))?,
+    };
+    let mut lister = RemoteLister::new(&url, recursive, depth).map_err(js_err)?;
+    let (mut requests, mut bytes) = (0u64, 0u64);
+    while let Some(next) = lister.next_url() {
+        let init = js_sys::Object::new();
+        if headers.is_object() {
+            js_sys::Reflect::set(&init, &"headers".into(), &headers).map_err(js_error)?;
+        }
+        let promise: js_sys::Promise = fetch
+            .call2(&JsValue::UNDEFINED, &JsValue::from_str(&next), &init)
+            .map_err(js_error)?
+            .dyn_into()
+            .map_err(|_| JsError::new("fetch did not return a promise"))?;
+        let resp = JsFuture::from(promise).await.map_err(js_error)?;
+        let status = get(&resp, "status").as_f64().unwrap_or(0.0) as u16;
+        let body = get(&resp, "arrayBuffer");
+        let body: js_sys::Function = body.dyn_into().map_err(|_| JsError::new("the response has no arrayBuffer()"))?;
+        let buf = JsFuture::from(body.call0(&resp).map_err(js_error)?.dyn_into::<js_sys::Promise>().map_err(|_| JsError::new("no body"))?)
+            .await
+            .map_err(js_error)?;
+        let data = js_sys::Uint8Array::new(&buf).to_vec();
+        requests += 1;
+        bytes += data.len() as u64;
+        lister.feed(status, &data).map_err(|e| JsError::new(&format!("{next}: {e}")))?;
+    }
+    let out = js_sys::Object::new();
+    js_sys::Reflect::set(&out, &"entries".into(), &entries_js(&lister.finish())?).map_err(js_error)?;
+    js_sys::Reflect::set(&out, &"requests".into(), &JsValue::from_f64(requests as f64)).map_err(js_error)?;
+    js_sys::Reflect::set(&out, &"bytes".into(), &JsValue::from_f64(bytes as f64)).map_err(js_error)?;
+    Ok(out.into())
+}

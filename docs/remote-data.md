@@ -184,3 +184,15 @@ The GDAL variable is read when the terrio one is not set.
 
 Transient errors (connection failures, HTTP 429, 500, 502, 503, 504) are retried with backoff.
 Signatures and SAS tokens are hidden in logs and error messages.
+
+## Managing files
+
+`terrio vsi` lists, copies, synchronizes, moves and deletes files on these locations and in
+`/vsimem/` and tar archives (`/vsitar/`), as `gdal vsi` does: S3 objects are written with signed
+requests (single `PUT`s up to 5 GiB, server-side copies within S3), Azure blobs with a SAS token;
+Google Cloud Storage and plain HTTP servers are read only. See [vsi](cli.md#vsi).
+
+```sh
+terrio vsi list -lR s3://bucket/prefix
+terrio vsi sync -r --strategy ETag local_dir/ s3://bucket/prefix
+```

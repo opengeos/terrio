@@ -147,7 +147,7 @@ impl Location {
     }
 
     /// Parses a location that is not looked into even when it is an archive.
-    fn parse_unarchived(input: &str) -> Self {
+    pub(crate) fn parse_unarchived(input: &str) -> Self {
         if let Some(rest) = input.strip_prefix("/vsicurl/") {
             return Location::parse_unarchived(rest);
         }

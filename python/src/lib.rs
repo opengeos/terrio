@@ -13,6 +13,7 @@ mod stream;
 mod terrain;
 mod vector;
 mod vector_geom;
+mod vsi;
 
 use pyo3::prelude::*;
 use pyo3::types::PyType;
@@ -89,6 +90,7 @@ fn _terrio(m: &Bound<'_, PyModule>) -> PyResult<()> {
     rio::register(m)?;
     stream::register(m)?;
     vector_geom::register(m)?;
+    vsi::register(m)?;
     #[cfg(not(target_os = "emscripten"))]
     cli::register(m)?;
     Ok(())

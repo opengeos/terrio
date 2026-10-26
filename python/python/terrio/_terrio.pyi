@@ -2,7 +2,7 @@
 
 import os
 from collections.abc import Iterator, Mapping, Sequence
-from typing import Any, Literal, Protocol, TypeAlias, final, overload
+from typing import Any, Literal, Protocol, TypeAlias, TypedDict, final, overload
 
 import numpy as np
 from numpy.typing import DTypeLike, NDArray
@@ -1234,4 +1234,63 @@ def combine(
 
 def sort(src: Any, *, method: str = "hilbert", layer: str | None = None) -> Layer:
     """Sort features spatially (``"hilbert"`` or ``"strtree"``); null geometries last."""
+    ...
+
+class _VsiEntry(TypedDict):
+    name: str
+    type: Literal["file", "directory"]
+    size: int | None
+    modified: int | None
+    last_modification_date: str | None
+    permissions: str | None
+    etag: str | None
+
+class _VsiReport(TypedDict):
+    copied: int
+    bytes: int
+    unchanged: int
+    deleted: int
+    errors: list[tuple[str, str]]
+
+def vsi_list(
+    path: str,
+    *,
+    recursive: bool = False,
+    depth: int | None = None,
+    absolute: bool = False,
+    long: bool = False,
+) -> list[_VsiEntry]:
+    """List a directory (local, /vsimem/, cloud, HTTP index, zip or tar), like `gdal vsi list`."""
+    ...
+
+def vsi_stat(path: str) -> _VsiEntry | None:
+    """Describe one location, or None when nothing is there."""
+    ...
+
+def vsi_copy(
+    src: str, dst: str, *, recursive: bool = False, skip_errors: bool = False
+) -> _VsiReport:
+    """Copy a file or directory between locations, like `gdal vsi copy`."""
+    ...
+
+def vsi_delete(path: str, *, recursive: bool = False) -> _VsiReport:
+    """Delete a file or directory, refusing dangerous targets, like `gdal vsi delete`."""
+    ...
+
+def vsi_move(src: str, dst: str) -> _VsiReport:
+    """Move or rename a file or directory, like `gdal vsi move`."""
+    ...
+
+def vsi_sync(
+    src: str, dst: str, *, recursive: bool = False, strategy: str = "timestamp"
+) -> _VsiReport:
+    """Copy the files missing or out of date in the target, like `gdal vsi sync`."""
+    ...
+
+def vsi_read(path: str) -> bytes:
+    """Read a whole file of any location."""
+    ...
+
+def vsi_write(path: str, data: bytes) -> None:
+    """Write a file (local, /vsimem/, S3 or Azure), replacing it."""
     ...

@@ -112,17 +112,31 @@ impl S3Object {
 /// `headers` are the request's other headers that should be signed (such as `range`); `host` is
 /// added from the URL.
 pub(crate) fn sign_get(url: &str, headers: &[(&str, &str)], creds: &Credentials, region: &str, amz_date: &str) -> Vec<(String, String)> {
+    sign_request("GET", url, headers, EMPTY_PAYLOAD_SHA256, creds, region, amz_date)
+}
+
+/// Signs an S3 request of any method whose payload has the SHA-256 `payload_hash` (hex): the
+/// headers to add to it, as [`sign_get`] does.
+pub(crate) fn sign_request(
+    method: &str,
+    url: &str,
+    headers: &[(&str, &str)],
+    payload_hash: &str,
+    creds: &Credentials,
+    region: &str,
+    amz_date: &str,
+) -> Vec<(String, String)> {
     let (host, path, query) = split_url(url);
     let mut all: Vec<(String, String)> = vec![
         ("host".into(), host.to_string()),
-        ("x-amz-content-sha256".into(), EMPTY_PAYLOAD_SHA256.into()),
+        ("x-amz-content-sha256".into(), payload_hash.into()),
         ("x-amz-date".into(), amz_date.into()),
     ];
     if let Some(token) = &creds.session_token {
         all.push(("x-amz-security-token".into(), token.clone()));
     }
     all.extend(headers.iter().map(|(k, v)| (k.to_string(), v.to_string())));
-    let authorization = authorization("GET", path, query, &all, EMPTY_PAYLOAD_SHA256, creds, region, "s3", amz_date);
+    let authorization = authorization(method, path, query, &all, payload_hash, creds, region, "s3", amz_date);
     let mut out: Vec<(String, String)> = all.into_iter().filter(|(k, _)| k.starts_with("x-amz-")).collect();
     out.push(("Authorization".into(), authorization));
     out
@@ -173,7 +187,7 @@ fn hmac(key: &[u8], data: &[u8]) -> Vec<u8> {
     mac.finalize().into_bytes().to_vec()
 }
 
-fn hex(bytes: &[u8]) -> String {
+pub(crate) fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
@@ -191,15 +205,7 @@ fn split_url(url: &str) -> (&str, &str, &str) {
 /// Percent-encodes a string as SigV4 requires: everything but `A-Z a-z 0-9 - _ . ~`, and `/`
 /// unless `encode_slash`.
 pub(crate) fn uri_encode(s: &str, encode_slash: bool) -> String {
-    let mut out = String::with_capacity(s.len());
-    for b in s.bytes() {
-        match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => out.push(b as char),
-            b'/' if !encode_slash => out.push('/'),
-            _ => out.push_str(&format!("%{b:02X}")),
-        }
-    }
-    out
+    crate::vsi::listing::uri_encode(s, encode_slash)
 }
 
 /// The current UTC time as `YYYYMMDDTHHMMSSZ`.

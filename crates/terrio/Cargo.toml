@@ -135,6 +135,8 @@ gdal = ["dep:gdal", "dep:gdal-sys"]
 memmap2.workspace = true
 zstd = { workspace = true, optional = true }
 tempfile.workspace = true
+# Listing and extracting tar archives (`terrio::vsi`).
+tar.workspace = true
 ureq = { workspace = true, optional = true }
 hmac = { workspace = true, optional = true }
 sha2 = { workspace = true, optional = true }
