@@ -288,7 +288,7 @@ fn parse_interval(s: &str) -> Result<(Interval, &str)> {
         }
     };
     let t = t[1..].trim_start();
-    let (min, rest) = if t.len() >= 4 && t[..4].eq_ignore_ascii_case("-inf") {
+    let (min, rest) = if t.get(..4).is_some_and(|v| v.eq_ignore_ascii_case("-inf")) {
         (f64::NEG_INFINITY, &t[4..])
     } else {
         match strtod(t) {
@@ -300,7 +300,7 @@ fn parse_interval(s: &str) -> Result<(Interval, &str)> {
         return Err(Error::InvalidArgument("expected a number".into()));
     };
     let t = rest.trim_start();
-    let (max, rest) = if t.len() >= 3 && t[..3].eq_ignore_ascii_case("inf") {
+    let (max, rest) = if t.get(..3).is_some_and(|v| v.eq_ignore_ascii_case("inf")) {
         (f64::INFINITY, &t[3..])
     } else {
         match strtod(t) {
@@ -362,7 +362,7 @@ impl Reclassifier {
             let start = rest.trim_start();
             let mut from = None;
             let (mut is_default, mut is_nan) = (false, false);
-            let starts = |w: &str| start.len() >= w.len() && start[..w.len()].eq_ignore_ascii_case(w);
+            let starts = |w: &str| start.get(..w.len()).is_some_and(|v| v.eq_ignore_ascii_case(w));
             let after = if starts("DEFAULT") {
                 is_default = true;
                 &start[7..]
@@ -490,14 +490,14 @@ impl Reclassifier {
 pub fn mapping_from_file_text(text: &str) -> Result<String> {
     let mut mapping = String::new();
     for line in text.lines() {
-        let line = line.trim_end_matches('\r').trim_start();
+        let line = line.split('#').next().unwrap_or_default().trim();
         if line.is_empty() {
             continue;
         }
         if !mapping.is_empty() {
             mapping.push(';');
         }
-        mapping.push_str(line.split('#').next().unwrap_or_default());
+        mapping.push_str(line);
         if mapping.len() > 10_000_000 {
             return Err(Error::InvalidArgument("the mapping is too large".into()));
         }
@@ -624,7 +624,7 @@ mod tests {
         for bad in ["[1,3)=1;[2,4)=2", "1=300", "NO_DATA=1", "1=NO_DATA", "[3,1]=1", "1:2", "1=2;", "{1,2}=3", "1=x"] {
             assert!(Reclassifier::parse(bad, None, Some(DataType::U8)).is_err(), "{bad}");
         }
-        assert_eq!(mapping_from_file_text("  1=2 # one\n\n[2,3)=4\r\n").unwrap(), "1=2 ;[2,3)=4");
+        assert_eq!(mapping_from_file_text("  1=2 # one\n\n[2,3)=4\r\n").unwrap(), "1=2;[2,3)=4");
     }
 
     #[test]
@@ -640,5 +640,14 @@ mod tests {
         assert!(reclassify(&src, &o).is_err());
         let o = ReclassifyOptions { mapping: "DEFAULT=1000".into(), output_type: Some(DataType::I16) };
         assert_eq!(reclassify(&src, &o).unwrap().raster.data_type, DataType::I16);
+    }
+    #[test]
+    fn mapping_comments_and_non_ascii_errors() {
+        let mapping = mapping_from_file_text("# classes\n1=2 # one\n  # another\n[2,3)=4\n# end").unwrap();
+        assert_eq!(mapping, "1=2;[2,3)=4");
+        assert!(Reclassifier::parse(&mapping, None, None).is_ok());
+        for text in ["é=1", "[éé,3)=1", "[0,é)=1", "默认=1"] {
+            assert!(Reclassifier::parse(text, None, None).is_err(), "{text}");
+        }
     }
 }

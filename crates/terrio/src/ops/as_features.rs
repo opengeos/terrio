@@ -94,7 +94,7 @@ pub fn as_features(ds: &RasterDataset, o: &AsFeaturesOptions) -> Result<Layer> {
         layer.schema.add_field(FieldDef::new(format!("BAND_{b}"), FieldType::Float));
     }
     let views: Vec<_> = bands.iter().map(|b| super::BandView::of(r, b - 1)).collect();
-    let nodata = if o.skip_nodata { ds.band_nodata(bands[0]) } else { None };
+    let nodata = if o.skip_nodata { bands.first().and_then(|b| ds.band_nodata(*b)) } else { None };
     let gt = ds.geo_transform();
     let at = |col: f64, row: f64| {
         let (x, y) = super::apply_gt(&gt, col, row);
@@ -173,5 +173,14 @@ mod tests {
         assert_eq!(skipped.features.len(), 3);
         assert!(skipped.features[0].geometry.is_none());
         assert!(as_features(&ds, &AsFeaturesOptions { bands: vec![3], ..Default::default() }).is_err());
+    }
+    #[test]
+    fn skip_nodata_on_zero_band_raster() {
+        let grid = Grid { width: 1, height: 1, geo_transform: [0., 1., 0., 0., 0., -1.] };
+        let mut ds = build_raster(grid, vec![vec![1.]], DataType::U8, None, &Default::default(), convert_value).unwrap();
+        ds.raster.bands = 0;
+        let layer = as_features(&ds, &AsFeaturesOptions { skip_nodata: true, ..Default::default() }).unwrap();
+        assert_eq!(layer.features.len(), 1);
+        assert!(layer.features[0].attributes.is_empty());
     }
 }
