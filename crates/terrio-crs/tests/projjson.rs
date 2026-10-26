@@ -253,3 +253,88 @@ fn bare_prime_meridian_and_ellipsoid_lengths_use_degrees_and_metres() {
         assert!((actual.1 - expected[1].as_f64().unwrap()).abs() <= 1e-8);
     }
 }
+
+#[test]
+fn numeric_identifier_versions_are_supported() {
+    let reference: serde_json::Value = serde_json::from_str(include_str!("data/projjson_reference.json")).unwrap();
+    let mut definition = reference["cases"][0]["dst"].clone();
+    definition["id"]["version"] = 2015.into();
+    definition["conversion"]["method"]["id"]["version"] = 1.25.into();
+    let parsed = SpatialRef::from_projjson(&definition.to_string()).unwrap();
+    assert!(parsed.to_wkt().unwrap().contains("9807,\"1.25\""));
+    for invalid in [serde_json::Value::Null, true.into(), serde_json::json!([])] {
+        definition["id"]["version"] = invalid;
+        assert!(SpatialRef::from_projjson(&definition.to_string()).is_err());
+    }
+}
+
+#[test]
+fn bound_datum_and_method_identities_cannot_be_masked() {
+    let reference: serde_json::Value = serde_json::from_str(include_str!("data/projjson_reference.json")).unwrap();
+    let bound =
+        reference["cases"].as_array().unwrap().iter().find(|c| c["name"] == "Bound projected seven parameters with IDs").unwrap()["src"]
+            .clone();
+    for (name, code) in [
+        ("Coordinate Frame rotation (geog2D domain)", 9606),
+        ("Position Vector transformation (geog2D domain)", 9607),
+        ("Geocentric translations (geog2D domain)", 9606),
+    ] {
+        let mut broken = bound.clone();
+        broken["transformation"]["method"]["name"] = name.into();
+        broken["transformation"]["method"]["id"]["code"] = code.into();
+        assert!(SpatialRef::from_projjson(&broken.to_string()).is_err());
+    }
+    for datum in [
+        serde_json::json!({"name":"Other datum"}),
+        serde_json::json!({"name":"World Geodetic System 1984", "id":{"authority":"EPSG", "code":6258}}),
+    ] {
+        let mut broken = bound.clone();
+        let target = &mut broken["target_crs"];
+        let mut other = target["datum"].clone();
+        other["name"] = datum["name"].clone();
+        other.as_object_mut().unwrap().remove("id");
+        if let Some(id) = datum.get("id") {
+            other["id"] = id.clone();
+        }
+        target["datum"] = other;
+        assert!(SpatialRef::from_projjson(&broken.to_string()).is_err());
+    }
+}
+
+#[test]
+fn bound_target_wgs84_datum_id_supports_a_local_name() {
+    offline();
+    let reference: serde_json::Value = serde_json::from_str(include_str!("data/projjson_reference.json")).unwrap();
+    let case = reference["cases"].as_array().unwrap().iter().find(|c| c["name"] == "Bound geographic translation with IDs").unwrap();
+    let mut src = case["src"].clone();
+    let target = &mut src["target_crs"];
+    target.as_object_mut().unwrap().remove("id");
+    target["datum"]["name"] = "Local WGS84 label".into();
+    target["datum"]["id"] = serde_json::json!({"authority":"EPSG", "code":6326});
+    let t = Transformer::new(
+        &SpatialRef::from_projjson(&src.to_string()).unwrap(),
+        &SpatialRef::from_projjson(&case["dst"].to_string()).unwrap(),
+    )
+    .unwrap();
+    for (p, expected) in case["points"].as_array().unwrap().iter().zip(case["expected"].as_array().unwrap()) {
+        let result = t.transform(p[0].as_f64().unwrap(), p[1].as_f64().unwrap()).unwrap();
+        assert!((result.0 - expected[0].as_f64().unwrap()).abs() < 1e-8);
+        assert!((result.1 - expected[1].as_f64().unwrap()).abs() < 1e-8);
+    }
+}
+
+#[test]
+fn standalone_geographic_root_id_does_not_replace_its_datum() {
+    offline();
+    let reference: serde_json::Value = serde_json::from_str(include_str!("data/projjson_reference.json")).unwrap();
+    let mut definition = reference["cases"][0]["dst"]["base_crs"].clone();
+    definition["type"] = "GeographicCRS".into();
+    definition["id"] = serde_json::json!({"authority":"EPSG", "code":4326});
+    let src = SpatialRef::from_projjson(&definition.to_string()).unwrap();
+    let dst = SpatialRef::from_epsg(4326).unwrap();
+    let actual = Transformer::new(&src, &dst).unwrap().transform(-1.5, 52.5).unwrap();
+    let expected = Transformer::new(&SpatialRef::from_epsg(4277).unwrap(), &dst).unwrap().transform(-1.5, 52.5).unwrap();
+    assert!((actual.0 - expected.0).abs() < 1e-8);
+    assert!((actual.1 - expected.1).abs() < 1e-8);
+    assert!((actual.0 + 1.5).abs() > 1e-4);
+}

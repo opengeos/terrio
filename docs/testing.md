@@ -476,7 +476,8 @@ and without IDs, including US survey feet, north-first and west/south projected
 axes, Paris prime meridian/grads and zero/three/seven-parameter Helmert cases.
 Equivalent GDAL-exported WKT2 definitions and representable PROJ strings are
 also compared with those coordinates. The tests isolate grid search paths for
-the no-grid reference. Component
+the no-grid reference. Both oracle scripts copy the configured `proj.db` into
+a temporary directory and exclude installed/cached grids with networking off. Component
 allowances are 1 mm projected and 1e-8 degrees geographic; nonzero discrepancies
 are reported as within tolerance rather than identical.
 

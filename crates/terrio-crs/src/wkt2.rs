@@ -788,7 +788,7 @@ fn towgs84(root: &Node) -> Result<Option<Vec<f64>>> {
             || ["DATUM", "ENSEMBLE"]
                 .iter()
                 .filter_map(|k| t.child(k))
-                .any(|d| norm(d.name().unwrap_or("")).starts_with("worldgeodeticsystem1984"))
+                .any(|d| d.epsg() == Some(6326) || norm(d.name().unwrap_or("")).starts_with("worldgeodeticsystem1984"))
     });
     let Some(t) = root.child("ABRIDGEDTRANSFORMATION") else { return Ok(None) };
     // A transformation to another CRS has no `+towgs84`: the source CRS is kept, and its datum

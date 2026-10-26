@@ -7,6 +7,7 @@ import numpy as np
 import pytest
 
 import terrio
+from terrio.rio.crs import CRS
 
 REFERENCE = json.loads(
     (
@@ -17,6 +18,10 @@ REFERENCE = json.loads(
 
 @pytest.mark.parametrize("case", REFERENCE["cases"], ids=lambda c: c["name"])
 def test_projjson_coordinate_oracles(case):
+    for definition in (case["src"], case["dst"]):
+        crs = CRS.from_string(json.dumps(definition))
+        assert crs.to_epsg() is None
+        assert crs.to_authority() is None
     points = np.array(case["points"])
     terrio.set_grid_search_paths([])
     terrio.set_network_enabled(False)

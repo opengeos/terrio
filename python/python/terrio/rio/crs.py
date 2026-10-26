@@ -235,7 +235,7 @@ class CRS(Mapping[str, Any]):
 
     @classmethod
     def from_string(cls, value: str, morph_from_esri_dialect: bool = False) -> CRS:
-        """A CRS from a string: an authority code, WKT or a PROJ string.
+        """A CRS from a string: an authority code, WKT, PROJ or PROJJSON string.
 
         Args:
             value: The string.
@@ -253,8 +253,8 @@ class CRS(Mapping[str, Any]):
         m = re.match(r"^(?:\+init=)?epsg:(\d+)$", value, re.IGNORECASE)
         if m:
             return cls.from_epsg(m.group(1))
-        if value.startswith("{") or value.startswith("["):
-            raise CRSError("PROJJSON is not supported")
+        if value.startswith("{"):
+            return cls._from(value)
         if value.lstrip().startswith("+") or "+proj=" in value:
             return cls.from_proj4(value)
         if re.match(r"^[A-Z]+\[", value.lstrip(), re.IGNORECASE):

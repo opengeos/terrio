@@ -3,6 +3,8 @@
 import json
 from pathlib import Path
 
+from projjson_reference_env import no_grid_proj
+
 from osgeo import gdal, osr
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -59,4 +61,5 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    with no_grid_proj():
+        main()

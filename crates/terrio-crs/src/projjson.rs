@@ -72,7 +72,11 @@ fn id(o: &Object, args: &mut Vec<String>) -> Result<()> {
         };
         let mut values = vec![q(string(i, "authority")?), code];
         if let Some(version) = i.get("version") {
-            values.push(q(version.as_str().ok_or_else(|| bad("invalid identifier version"))?));
+            values.push(match version {
+                Value::String(s) => q(s),
+                Value::Number(n) => q(&n.to_string()),
+                _ => return Err(bad("invalid identifier version")),
+            });
         }
         args.push(node("ID", &values));
     }
@@ -380,6 +384,18 @@ fn crs(value: &Value, base: bool, depth: usize) -> Result<String> {
                 return Err(bad("bound target must be a geographic CRS"));
             }
             let target = crs(target_value, false, depth + 1)?;
+            let target_root = crate::wkt1::parse(&target).ok_or_else(|| bad("invalid bound target"))?;
+            let target_datum = target_root.child("DATUM").or_else(|| target_root.child("ENSEMBLE"));
+            if !target_datum.is_some_and(|d| {
+                d.epsg() == Some(6326)
+                    || d.children("ID").next().is_none()
+                        && matches!(
+                            crate::wkt1::norm(d.name().unwrap_or("")).as_str(),
+                            "worldgeodeticsystem1984" | "worldgeodeticsystem1984ensemble"
+                        )
+            }) {
+                return Err(bad("bound target must use the WGS 84 datum or ensemble"));
+            }
             let target_def = Def::from_wkt(&target)?;
             let wgs84 = crate::math::Ell::wgs84();
             if !target_def.is_geographic()
@@ -392,16 +408,31 @@ fn crs(value: &Value, base: bool, depth: usize) -> Result<String> {
             }
             let operation = operation(required(o, "transformation")?, true)?;
             let tree = crate::wkt1::parse(&operation).ok_or_else(|| bad("invalid bound operation"))?;
-            let method = tree.child("METHOD").unwrap();
+            let method = tree.child("METHOD").ok_or_else(|| bad("missing bound transformation method"))?;
             let name = crate::wkt1::norm(method.name().unwrap_or(""));
-            let translation = matches!(method.epsg(), Some(9603 | 1031 | 1035)) || name.starts_with("geocentrictranslations");
-            let seven = matches!(method.epsg(), Some(9606 | 1033 | 1037 | 9607 | 1032 | 1038))
-                || name.starts_with("positionvector")
-                || name.starts_with("coordinateframe");
-            if !translation && !seven {
-                return Err(bad("bound transformation must identify a supported Helmert method"));
+            // 0: translations; 1: position vector; 2: coordinate frame.
+            let by_id = match method.epsg() {
+                Some(9603 | 1031 | 1035) => Some(0),
+                Some(9606 | 1033 | 1037) => Some(1),
+                Some(9607 | 1032 | 1038) => Some(2),
+                _ => None,
+            };
+            let by_name = if name.starts_with("geocentrictranslations") {
+                Some(0)
+            } else if name.starts_with("positionvector") {
+                Some(1)
+            } else if name.starts_with("coordinateframe") {
+                Some(2)
+            } else {
+                None
+            };
+            if let (Some(a), Some(b)) = (by_id, by_name)
+                && a != b
+            {
+                return Err(bad("inconsistent Helmert method name and identifier"));
             }
-            let expected = if translation { 3 } else { 7 };
+            let kind = by_id.or(by_name).ok_or_else(|| bad("bound transformation must identify a supported Helmert method"))?;
+            let expected = if kind == 0 { 3 } else { 7 };
             let codes: std::collections::HashSet<_> = tree.children("PARAMETER").filter_map(helmert_parameter).collect();
             if tree.children("PARAMETER").count() != expected
                 || codes.len() != expected

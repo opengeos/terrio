@@ -10,6 +10,8 @@ import os
 import subprocess
 from pathlib import Path
 
+from projjson_reference_env import no_grid_proj
+
 from osgeo import osr
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -74,4 +76,5 @@ def main():
 
 
 if __name__ == '__main__':
-    raise SystemExit(main())
+    with no_grid_proj():
+        raise SystemExit(main())
