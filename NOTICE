@@ -334,11 +334,36 @@ files of GDAL's test suite are among terrio's test files (crates/terrio/tests/da
   DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
   OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
-The VRT kernel filtering arithmetic in ops/vrt/virtual_raster.rs follows
-GDAL frmts/vrt/vrtfilters.cpp (GDAL 3.12.2):
+The VRT kernel filtering arithmetic in ops/neighbors.rs (shared by
+ops/vrt/virtual_raster.rs) follows GDAL frmts/vrt/vrtfilters.cpp (GDAL 3.12.2):
   Copyright (c) 2003, Frank Warmerdam <warmerdam@pobox.com>
   Copyright (c) 2008-2013, Even Rouault <even dot rouault at spatialys.com>
 The GDAL MIT permission and warranty terms above apply to this port as well.
+
+-------------------------------------------------------------------------------
+GDAL focal statistics, nearblack and gdalenhance
+-------------------------------------------------------------------------------
+
+crates/terrio/src/ops/neighbors.rs follows the kernel definitions and defaults of
+GDAL's apps/gdalalg_raster_neighbors.cpp (GDAL 3.12.2, https://github.com/OSGeo/gdal):
+  Copyright (c) 2025, Even Rouault <even dot rouault at spatialys.com>
+
+crates/terrio/src/ops/nearblack.rs ports the two-pass and flood fill collar algorithms
+of apps/nearblack_lib.cpp and apps/nearblack_lib_floodfill.cpp (GDAL 3.12.2):
+  Copyright (c) 2006, MapShots Inc (www.mapshots.com)
+  Copyright (c) 2007-2013, Even Rouault <even dot rouault at spatialys.com>
+  Copyright (c) 2023, Even Rouault <even dot rouault at spatialys.com>
+
+crates/terrio/src/ops/enhance.rs follows the equalization, LUT file and enhancement
+arithmetic of apps/gdalenhance.cpp (GDAL 3.12.2):
+  Copyright (c) 2007, Frank Warmerdam <warmerdam@pobox.com>
+  Copyright (c) 2007-2011, Even Rouault <even dot rouault at spatialys.com>
+
+The ports were initially adapted from GDAL 3.12.2. Compatibility corrections
+are checked against GDAL 3.13.3, including singleton VRT kernel application,
+NaN nodata filtering and LUT casts, and mode tie/NaN handling.
+
+Licensed under the MIT permission and warranty terms reproduced above for GDAL.
 
 -------------------------------------------------------------------------------
 GDAL weighted Brovey pansharpening and convolution
