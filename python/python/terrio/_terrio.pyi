@@ -66,6 +66,14 @@ __all__ = [
     "RpcTransformer",
     "FeatureStream",
     "open_stream",
+    "simplify",
+    "segmentize",
+    "convex_hull",
+    "concave_hull",
+    "swap_xy",
+    "set_geom_type",
+    "combine",
+    "sort",
     "cli_main",
 ]
 
