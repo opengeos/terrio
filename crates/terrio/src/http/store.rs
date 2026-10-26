@@ -155,7 +155,14 @@ pub(crate) fn list_html(url: &str) -> Result<Option<Vec<ObjectEntry>>> {
     }
     const MAX_HTML_BYTES: u64 = 4 << 20;
     let mut data = Vec::new();
-    response.into_body().into_reader().take(MAX_HTML_BYTES + 1).read_to_end(&mut data)?;
+    let mut reader = response.into_body().into_reader();
+    // An untyped binary is not an HTML index; sniff a bounded prefix before buffering it.
+    reader.by_ref().take(4096).read_to_end(&mut data)?;
+    if content_type.is_empty() && !looks_like_html(&data) {
+        super::BYTES.fetch_add(data.len() as u64, Ordering::Relaxed);
+        return Ok(None);
+    }
+    reader.take(MAX_HTML_BYTES + 1 - data.len() as u64).read_to_end(&mut data)?;
     super::BYTES.fetch_add(data.len() as u64, Ordering::Relaxed);
     if data.len() as u64 > MAX_HTML_BYTES {
         return Err(Error::InvalidData("HTTP directory index exceeds 4 MiB".into()));
@@ -166,6 +173,11 @@ pub(crate) fn list_html(url: &str) -> Result<Option<Vec<ObjectEntry>>> {
     let mut out = Vec::new();
     api.read_page(&data, &mut out, &mut Default::default());
     Ok(Some(out))
+}
+
+fn looks_like_html(data: &[u8]) -> bool {
+    let head = String::from_utf8_lossy(data).to_ascii_lowercase();
+    ["<!doctype html", "<html", "<head", "<body", "<a "].iter().any(|tag| head.contains(tag))
 }
 
 /// The size, date and entity tag of a remote object, from a one-byte range request; `None` when

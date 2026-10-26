@@ -318,6 +318,39 @@ fn copies_lists_syncs_and_deletes_on_s3() {
 }
 
 #[test]
+fn copies_large_http_binary_without_content_type() {
+    let (endpoint, store) = serve();
+    let data = vec![42; (5 << 20) + 7];
+    store.lock().unwrap().objects.insert("bkt/binary".into(), (data.clone(), 1_700_000_000));
+    let dir = tempfile::tempdir().unwrap();
+    ok(&endpoint, dir.path(), &["vsi", "copy", &format!("{endpoint}/bkt/binary"), "output"]);
+    assert_eq!(std::fs::read(dir.path().join("output")).unwrap(), data);
+}
+
+#[test]
+fn empty_s3_directories_and_absolute_trees() {
+    let (endpoint, store) = serve();
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    std::fs::create_dir(d.join("empty")).unwrap();
+    ok(&endpoint, d, &["vsi", "copy", "empty", "s3://bkt/empty", "-r"]);
+    assert!(keys(&store).contains(&"bkt/empty/".to_string()));
+    let listing = ok(&endpoint, d, &["vsi", "list", "s3://bkt/empty", "-f", "json"]);
+    assert_eq!(serde_json::from_str::<serde_json::Value>(&listing).unwrap(), serde_json::json!([]));
+    ok(&endpoint, d, &["vsi", "delete", "s3://bkt/empty", "-r"]);
+    assert!(!keys(&store).contains(&"bkt/empty/".to_string()));
+    std::fs::create_dir_all(d.join("root/sub")).unwrap();
+    std::fs::write(d.join("root/sub/file"), b"x").unwrap();
+    let tree = ok(&endpoint, d, &["vsi", "list", "root", "-R", "--tree", "--abs", "-f", "json"]);
+    let v: serde_json::Value = serde_json::from_str(&tree).unwrap();
+    assert_eq!(v[0]["name"], d.join("root/sub").to_str().unwrap());
+    assert_eq!(v[0]["entries"][0], d.join("root/sub/file").to_str().unwrap());
+    let file = ok(&endpoint, d, &["vsi", "list", "root/sub/file", "--tree", "--abs", "-f", "json"]);
+    let v: serde_json::Value = serde_json::from_str(&file).unwrap();
+    assert_eq!(v[0], d.join("root/sub/file").to_str().unwrap());
+}
+
+#[test]
 fn refuses_dangerous_local_targets() {
     let tmp = tempfile::tempdir().unwrap();
     let d = tmp.path();

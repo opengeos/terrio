@@ -64,7 +64,7 @@ impl Md5 {
     }
 
     fn block(&mut self, block: &[u8; 64]) {
-        let m: Vec<u32> = block.as_chunks::<4>().0.iter().map(|c| u32::from_le_bytes(*c)).collect();
+        let m: [u32; 16] = std::array::from_fn(|i| u32::from_le_bytes(block[4 * i..4 * i + 4].try_into().expect("four bytes")));
         let [mut a, mut b, mut c, mut d] = self.state;
         for i in 0..64 {
             let (f, g) = match i / 16 {

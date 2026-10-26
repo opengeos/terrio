@@ -546,6 +546,13 @@ fn remote_stat(node: &Node) -> Result<Option<Stat>> {
         if let Some(s) = store::stat(&remote)? {
             return Ok(Some(Stat { dir: false, size: Some(s.size), modified: s.modified, permissions: None, etag: s.etag }));
         }
+        if let Node::S3 { bucket, key } = node {
+            let marker =
+                crate::http::Remote::S3(crate::s3::S3Object { bucket: bucket.clone(), key: format!("{}/", key.trim_end_matches('/')) });
+            if store::stat(&marker)?.is_some() {
+                return Ok(Some(Stat::directory()));
+            }
+        }
         // A "directory": a prefix with keys below it.
         return Ok(store::has_entries(&dir)?.filter(|&any| any).map(|_| Stat::directory()));
     }
@@ -1206,6 +1213,12 @@ pub fn list(path: &str, options: &ListOptions) -> Result<Vec<Entry>> {
         }
     }
     Ok(entries)
+}
+
+/// Resolves a relative listing entry against its source path without opening the entry.
+/// Local paths become absolute; URL credential parameters are redacted.
+pub fn absolute_entry_name(path: &str, name: &str) -> Result<String> {
+    Ok(absolute_name(path, &Node::parse(path)?, name))
 }
 
 /// The absolute name of `name` below the listed `path`.

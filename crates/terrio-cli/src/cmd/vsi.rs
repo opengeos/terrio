@@ -159,10 +159,22 @@ fn list(a: ListArgs) -> terrio::Result<()> {
     if !json && !a.format.eq_ignore_ascii_case("text") {
         return Err(Error::InvalidArgument(format!("unknown output format '{}' (text or json)", a.format)));
     }
-    let entries = vsi::list(&a.path, &ListOptions { recursive: a.recursive, depth: a.depth, absolute: a.absolute, details: a.long })?;
+    let entries =
+        vsi::list(&a.path, &ListOptions { recursive: a.recursive, depth: a.depth, absolute: a.absolute && !a.tree, details: a.long })?;
     if json {
         let value = if a.tree {
-            tree_json(&entries, a.long)
+            let absolute = if a.absolute {
+                let mut absolute = entries.clone();
+                for e in &mut absolute {
+                    // A single-file listing already names its input path.
+                    let name = if entries.len() == 1 && !e.is_dir() && e.name == a.path { "" } else { &e.name };
+                    e.name = vsi::absolute_entry_name(&a.path, name)?;
+                }
+                Some(absolute)
+            } else {
+                None
+            };
+            tree_json(&entries, a.long, absolute.as_deref())
         } else {
             serde_json::Value::Array(entries.iter().map(|e| entry_json(e, &e.name, a.long)).collect())
         };
@@ -202,32 +214,37 @@ fn entry_json(e: &Entry, name: &str, long: bool) -> serde_json::Value {
 }
 
 /// Entries nested by directory, as `gdal vsi list --tree -f json` prints them.
-fn tree_json(entries: &[Entry], long: bool) -> serde_json::Value {
-    fn children(entries: &[Entry], prefix: &str, long: bool) -> Vec<serde_json::Value> {
+fn tree_json(entries: &[Entry], long: bool, absolute: Option<&[Entry]>) -> serde_json::Value {
+    if entries.len() == 1 && !entries[0].is_dir() {
+        let e = absolute.map_or(&entries[0], |a| &a[0]);
+        return vec![entry_json(e, &e.name, long)].into();
+    }
+    fn children(entries: &[Entry], prefix: &str, long: bool, absolute: Option<&[Entry]>) -> Vec<serde_json::Value> {
         let mut out = Vec::new();
-        for e in entries {
+        for (i, e) in entries.iter().enumerate() {
             let Some(rel) = e.name.strip_prefix(prefix) else { continue };
             if rel.is_empty() || rel.contains('/') {
                 continue;
             }
+            let shown = absolute.map_or(rel, |a| a[i].name.as_str());
             if e.is_dir() {
-                let mut o = match entry_json(e, rel, true) {
+                let mut o = match entry_json(e, shown, true) {
                     serde_json::Value::Object(o) if long => o,
                     _ => {
                         let mut o = serde_json::Map::new();
-                        o.insert("name".into(), rel.into());
+                        o.insert("name".into(), shown.into());
                         o
                     }
                 };
-                o.insert("entries".into(), children(entries, &format!("{}/", e.name), long).into());
+                o.insert("entries".into(), children(entries, &format!("{}/", e.name), long, absolute).into());
                 out.push(serde_json::Value::Object(o));
             } else {
-                out.push(entry_json(e, rel, long));
+                out.push(entry_json(e, shown, long));
             }
         }
         out
     }
-    children(entries, "", long).into()
+    children(entries, "", long, absolute).into()
 }
 
 fn report(args: &ReportArgs, r: &Report) -> terrio::Result<()> {
