@@ -73,6 +73,17 @@ pub fn as_features(ds: &RasterDataset, o: &AsFeaturesOptions) -> Result<Layer> {
     if let Some(b) = bands.iter().find(|b| **b == 0 || **b > r.bands) {
         return Err(Error::InvalidArgument(format!("the raster has no band {b}")));
     }
+    let attribute_count = bands.len() + 2 * usize::from(o.include_xy) + 2 * usize::from(o.include_row_col);
+    // The returned Layer materializes one feature and its attributes per pixel.
+    // Bound that expansion before allocating; callers can crop the raster first.
+    let geometry_bytes = if o.geometry == PixelGeometry::Polygon { 5 * std::mem::size_of::<Coord>() + 32 } else { 0 };
+    let feature_bytes = std::mem::size_of::<Feature>()
+        .saturating_add(attribute_count.saturating_mul(std::mem::size_of::<FieldValue>()))
+        .saturating_add(geometry_bytes + 32);
+    let estimated_bytes = r.cols.saturating_mul(r.rows).saturating_mul(feature_bytes);
+    if estimated_bytes > 512 * 1024 * 1024 {
+        return Err(Error::InvalidArgument("as-features would exceed the 512 MiB feature-memory budget; crop the raster first".into()));
+    }
     let mut layer = Layer::new(o.layer_name.clone());
     match o.geometry {
         PixelGeometry::None => {}
@@ -110,7 +121,7 @@ pub fn as_features(ds: &RasterDataset, o: &AsFeaturesOptions) -> Result<Layer> {
                     continue;
                 }
             }
-            let mut attributes = Vec::with_capacity(views.len() + 4);
+            let mut attributes = Vec::with_capacity(attribute_count);
             let (c, l) = (col as f64, row as f64);
             if o.include_xy {
                 let (x, y) = super::apply_gt(&gt, c + 0.5, l + 0.5);
@@ -182,5 +193,13 @@ mod tests {
         let layer = as_features(&ds, &AsFeaturesOptions { skip_nodata: true, ..Default::default() }).unwrap();
         assert_eq!(layer.features.len(), 1);
         assert!(layer.features[0].attributes.is_empty());
+    }
+    #[test]
+    fn refuses_excessive_feature_expansion_before_reading_pixels() {
+        let grid = Grid { width: 1, height: 1, geo_transform: [0., 1., 0., 0., 0., -1.] };
+        let mut ds = build_raster(grid, vec![vec![1.]], DataType::U8, None, &Default::default(), convert_value).unwrap();
+        ds.raster.cols = 4000;
+        ds.raster.rows = 4000;
+        assert!(as_features(&ds, &AsFeaturesOptions::default()).unwrap_err().to_string().contains("crop the raster"));
     }
 }

@@ -325,7 +325,12 @@ def main():
             shutil.rmtree(tmp, ignore_errors=True)
     if a.json:
         print(json.dumps(results, indent=1))
-    bad = [r for r in results if "error" in r or not r.get("same_size") or r.get("differing")]
+    flags = ("same_type", "same_nodata", "same_crs", "same_metadata")
+    bad = [
+        r for r in results
+        if "error" in r or not r.get("same_size") or r.get("differing")
+        or any(r.get(k) is False for k in flags)
+    ]
     return 1 if bad else 0
 
 

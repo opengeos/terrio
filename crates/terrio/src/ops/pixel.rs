@@ -203,9 +203,8 @@ fn strtod(s: &str) -> Option<(f64, usize)> {
     if i < b.len() && (b[i] == b'+' || b[i] == b'-') {
         i += 1;
     }
-    let lower = s[i..].to_ascii_lowercase();
     for word in ["infinity", "inf", "nan"] {
-        if lower.starts_with(word) {
+        if b.get(i..i + word.len()).is_some_and(|p| p.eq_ignore_ascii_case(word.as_bytes())) {
             let end = i + word.len();
             let neg = b[start] == b'-';
             let v = if word == "nan" {
@@ -649,5 +648,14 @@ mod tests {
         for text in ["é=1", "[éé,3)=1", "[0,é)=1", "默认=1"] {
             assert!(Reclassifier::parse(text, None, None).is_err(), "{text}");
         }
+    }
+    #[test]
+    fn nan_nodata_mapping_matches_gdal_rejection() {
+        // GDAL 3.13.3 also rejects the NaN interval as overlapping. NAN is the
+        // explicit mapping key for NaN pixels, regardless of declared nodata.
+        assert!(Reclassifier::parse("NO_DATA=0;[0,10)=1", Some(f64::NAN), None).is_err());
+        let mapping = Reclassifier::parse("NAN=0;[0,10)=1", Some(f64::NAN), None).unwrap();
+        assert_eq!(mapping.reclassify(f64::NAN), Some(0.));
+        assert_eq!(mapping.reclassify(5.), Some(1.));
     }
 }

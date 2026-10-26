@@ -858,7 +858,8 @@ band's nodata value), `NAN` or `DEFAULT` (any other value); `to` is a value, `NO
 line; leading spaces and `#` comments are removed. A value that no entry maps, or an output value
 the output type cannot represent exactly, is an error. `--ot` is the output type (by default the
 input's). The output keeps each band's nodata value; like GDAL's, it has no color table, band
-descriptions or scales.
+descriptions or scales. Like GDAL 3.13.3, `NO_DATA` intervals with NaN nodata
+can fail overlap validation; use `NAN` as the source mapping key for NaN pixels.
 
 ## as-features
 
@@ -874,7 +875,8 @@ and `COL` (`--include-row-col`), then `BAND_<n>` (Float) per band. `--geometry-t
 raster's CRS). `--skip-nodata` leaves out the pixels whose first reported band has its nodata
 value. `-b` selects bands (GDAL 3.13.3 accepts `-b` but reports every band). `--append`
 and `--overwrite` update an existing output, as for `polygonize`. The features are built in
-memory: mind the pixel count of large rasters. GDAL's `--update`, `--overwrite-layer` and
+memory; an estimated expansion above 512 MiB is refused before generating features.
+Crop large inputs first. GDAL's `--update`, `--overwrite-layer` and
 layer creation options are not supported.
 
 ## Native multidimensional arrays
