@@ -108,6 +108,15 @@ enum Command {
     Create(cmd::vector_dataset::CreateArgs),
     /// Print the OGR_SCHEMA JSON of a vector dataset (like gdal vector export-schema).
     ExportSchema(cmd::vector_dataset::ExportSchemaArgs),
+    /// Rename vector layers, in place in GeoPackages or on output (like gdal vector
+    /// rename-layer).
+    RenameLayer(cmd::vector_dataset::RenameLayerArgs),
+    /// Edit the CRS, geometry type and metadata of vector layers, in place in GeoPackages or on
+    /// output (like gdal vector edit).
+    Edit(cmd::vector_dataset::EditArgs),
+    /// Update an existing vector dataset from another, matching features by FID or key fields
+    /// (like gdal vector update).
+    Update(cmd::vector_dataset::UpdateArgs),
     /// Subset, resize, rescale or change the type of a raster (like gdal_translate).
     Translate(cmd::translate::Args),
     /// Reproject and resample rasters (like gdalwarp).
@@ -218,6 +227,9 @@ fn run_on_this_thread(args: Vec<OsString>, terrio: Option<Vec<OsString>>) -> i32
         Command::MakePoint(a) => cmd::vector_dataset::make_point(a),
         Command::Create(a) => cmd::vector_dataset::create(a),
         Command::ExportSchema(a) => cmd::vector_dataset::export_schema(a),
+        Command::RenameLayer(a) => cmd::vector_dataset::rename_layer(a),
+        Command::Edit(a) => cmd::vector_dataset::edit(a),
+        Command::Update(a) => cmd::vector_dataset::update(a),
         Command::Translate(a) => cmd::translate::run(a),
         Command::Warp(a) => cmd::warp::run(a),
         Command::Catalog(a) => cmd::catalog::run(a),

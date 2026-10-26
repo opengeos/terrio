@@ -391,3 +391,176 @@ mod tests {
         assert!(parse_size("3 parsecs").is_err());
     }
 }
+
+#[derive(clap::Args)]
+pub struct RenameLayerArgs {
+    /// The input vector dataset.
+    input: String,
+    /// The output dataset. Without it, a GeoPackage input is changed in place.
+    output: Option<String>,
+    /// The output format's short name. By default, chosen from the output's extension.
+    #[arg(short = 'f', long = "format", visible_alias = "of", requires = "output")]
+    format: Option<String>,
+    /// The layer to rename to --output-layer (needed when there are several layers).
+    #[arg(short = 'l', long = "input-layer", visible_alias = "layer", requires = "output_layer")]
+    input_layer: Option<String>,
+    /// The new name of --input-layer, or of the only layer.
+    #[arg(long = "output-layer", visible_alias = "nln", value_name = "NAME")]
+    output_layer: Option<String>,
+    /// Replace accented Latin characters with ASCII ones, others with --replacement-character.
+    #[arg(long)]
+    ascii: bool,
+    /// Lower-case ASCII letters.
+    #[arg(long = "lower-case")]
+    lower_case: bool,
+    /// Make names usable as file names on Linux, Windows and macOS.
+    #[arg(long = "filename-compatible")]
+    filename_compatible: bool,
+    /// Characters to remove (or replace with --replacement-character).
+    #[arg(long = "reserved-characters", value_name = "CHARS")]
+    reserved_characters: Option<String>,
+    /// The character replacing removed characters.
+    #[arg(long = "replacement-character", value_name = "CHAR")]
+    replacement_character: Option<char>,
+    /// Truncate names to this many characters.
+    #[arg(long = "max-length", value_name = "N")]
+    max_length: Option<usize>,
+    /// Replace an existing output.
+    #[arg(long)]
+    overwrite: bool,
+}
+
+/// `terrio rename-layer`: `gdal vector rename-layer`, in place for GeoPackages.
+pub fn rename_layer(a: RenameLayerArgs) -> Result<()> {
+    let o = terrio::ops::vector_edit::RenameOptions {
+        input_layer: a.input_layer,
+        output_layer: a.output_layer,
+        ascii: a.ascii,
+        lower_case: a.lower_case,
+        filename_compatible: a.filename_compatible,
+        reserved_characters: a.reserved_characters,
+        replacement_character: a.replacement_character,
+        max_length: a.max_length,
+    };
+    match &a.output {
+        None => {
+            for (old, new) in terrio::ops::vector_edit::rename_layers_in_place(&a.input, &o)? {
+                eprintln!("terrio: renamed '{old}' to '{new}'");
+            }
+            Ok(())
+        }
+        Some(out) => {
+            let mut layers = super::quiet(|| terrio::open_vector(&a.input, &Default::default()))?.layers;
+            terrio::ops::vector_edit::rename_layers(&mut layers, &o)?;
+            existing_output(out, a.overwrite)?;
+            let options = terrio::VectorWriteOptions { driver: driver(a.format.as_deref())?, ..Default::default() };
+            terrio::write_vector(&layers, out, &options)
+        }
+    }
+}
+
+/// Refuses an existing output unless it is to be replaced.
+fn existing_output(path: &str, overwrite: bool) -> Result<()> {
+    if std::path::Path::new(path).exists() && !overwrite {
+        return Err(Error::InvalidArgument(format!("'{path}' already exists: give --overwrite to replace it")));
+    }
+    Ok(())
+}
+
+#[derive(clap::Args)]
+pub struct EditArgs {
+    /// The input vector dataset.
+    input: String,
+    /// The output dataset. Without it, a GeoPackage input is changed in place.
+    output: Option<String>,
+    /// The output format's short name. By default, chosen from the output's extension.
+    #[arg(short = 'f', long = "format", visible_alias = "of", requires = "output")]
+    format: Option<String>,
+    /// Change only this layer. By default, every layer.
+    #[arg(long = "active-layer", visible_alias = "layer", short = 'l', value_name = "NAME")]
+    active_layer: Option<String>,
+    /// Assign this CRS without reprojecting ("none" removes it).
+    #[arg(long, visible_alias = "a-srs")]
+    crs: Option<String>,
+    /// The declared geometry type (GEOMETRY, POINT, LINESTRING, POLYGON, MULTIPOINT,
+    /// MULTILINESTRING, MULTIPOLYGON, GEOMETRYCOLLECTION, with Z, M or ZM). Geometries are not
+    /// changed.
+    #[arg(long = "geometry-type")]
+    geometry_type: Option<String>,
+    /// Set a dataset metadata item (repeat for several).
+    #[arg(long, value_name = "KEY=VALUE")]
+    metadata: Vec<String>,
+    /// Remove a dataset metadata item (repeat for several).
+    #[arg(long = "unset-metadata", value_name = "KEY")]
+    unset_metadata: Vec<String>,
+    /// Set a layer metadata item (repeat for several).
+    #[arg(long = "layer-metadata", value_name = "KEY=VALUE")]
+    layer_metadata: Vec<String>,
+    /// Remove a layer metadata item (repeat for several).
+    #[arg(long = "unset-layer-metadata", value_name = "KEY")]
+    unset_layer_metadata: Vec<String>,
+    /// Renumber the features and drop the FID column name (with an output).
+    #[arg(long = "unset-fid", requires = "output")]
+    unset_fid: bool,
+    /// Replace an existing output.
+    #[arg(long)]
+    overwrite: bool,
+}
+
+/// `terrio edit`: `gdal vector edit`, in place for GeoPackages.
+pub fn edit(a: EditArgs) -> Result<()> {
+    use terrio::ops::vector_edit as ve;
+    let o = ve::EditOptions {
+        active_layer: a.active_layer,
+        crs: a.crs.as_deref().map(ve::parse_crs_override).transpose()?,
+        geometry_type: a.geometry_type.as_deref().map(vs::parse_geometry_type).transpose()?,
+        metadata: ve::parse_metadata_items(&a.metadata)?,
+        unset_metadata: a.unset_metadata,
+        layer_metadata: ve::parse_metadata_items(&a.layer_metadata)?,
+        unset_layer_metadata: a.unset_layer_metadata,
+        unset_fid: a.unset_fid,
+    };
+    match &a.output {
+        None => ve::edit_in_place(&a.input, &o),
+        Some(out) => {
+            existing_output(out, a.overwrite)?;
+            let options = terrio::VectorWriteOptions { driver: driver(a.format.as_deref())?, ..Default::default() };
+            super::quiet(|| ve::edit_to(&a.input, out, &o, &options))
+        }
+    }
+}
+
+#[derive(clap::Args)]
+pub struct UpdateArgs {
+    /// The input vector dataset, whose features update the output.
+    input: String,
+    /// The existing dataset to update (in place).
+    output: String,
+    /// The input layer (needed when the input has several).
+    #[arg(short = 'l', long = "input-layer", visible_alias = "layer")]
+    input_layer: Option<String>,
+    /// The output layer (needed when the output has several).
+    #[arg(long = "output-layer", visible_alias = "nln")]
+    output_layer: Option<String>,
+    /// A key field matching features (repeat for several). By default, feature ids.
+    #[arg(long)]
+    key: Vec<String>,
+    /// merge (update matched features, append the others), update-only or append-only.
+    #[arg(long, default_value = "merge")]
+    mode: String,
+}
+
+/// `terrio update`: `gdal vector update`.
+pub fn update(a: UpdateArgs) -> Result<()> {
+    use terrio::ops::vector_edit as ve;
+    if std::fs::canonicalize(&a.input).ok().zip(std::fs::canonicalize(&a.output).ok()).is_some_and(|(i, o)| i == o) {
+        return Err(Error::InvalidArgument("input and output datasets must be different".into()));
+    }
+    let layers = a.input_layer.iter().cloned().collect();
+    let src = super::quiet(|| terrio::open_vector(&a.input, &terrio::VectorOpenOptions { layers, ..Default::default() }))?.layers;
+    let o =
+        ve::UpdateOptions { input_layer: a.input_layer, output_layer: a.output_layer, key: a.key, mode: ve::UpdateMode::parse(&a.mode)? };
+    let c = super::quiet(|| ve::update(&src, &a.output, &o))?;
+    eprintln!("terrio: {} feature(s) updated, {} appended, {} unchanged or skipped", c.updated, c.appended, c.unchanged);
+    Ok(())
+}

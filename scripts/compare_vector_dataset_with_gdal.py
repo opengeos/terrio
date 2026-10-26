@@ -66,6 +66,35 @@ def run(cmd, check=True):
     return p
 
 
+def has_gdal_command(*words):
+    """Whether this GDAL's ``gdal`` program has a command (some are GDAL 3.13's).
+
+    Args:
+        words: The command words, such as ``("vector", "update")``.
+
+    Returns:
+        Whether ``gdal <words> --help`` succeeds.
+    """
+    if shutil.which("gdal") is None:
+        return False
+    return subprocess.run(["gdal", *words, "--help"], capture_output=True).returncode == 0
+
+
+def gdal_can_open(path):
+    """Whether this GDAL opens a vector dataset.
+
+    Args:
+        path: The dataset.
+
+    Returns:
+        Whether it opens.
+    """
+    try:
+        return gdal.OpenEx(str(path), gdal.OF_VECTOR) is not None
+    except RuntimeError:
+        return False
+
+
 def field_type(fd):
     """GDAL's type name of a field definition, with its subtype.
 
@@ -206,6 +235,137 @@ def compare_dumps(name, mine, ref, tolerance=0.0, ignore_types=(), check_crs=Tru
     return {"name": name, "status": status, "detail": detail, "features": features, "max_coordinate_difference": worst}
 
 
+def metadata_of(path):
+    """GDAL's metadata of a dataset and of each layer.
+
+    Args:
+        path: The dataset.
+
+    Returns:
+        A ``(dataset items, {layer: items})`` tuple.
+    """
+    ds = gdal.OpenEx(str(path), gdal.OF_VECTOR)
+    layers = {}
+    for i in range(ds.GetLayerCount()):
+        layer = ds.GetLayer(i)
+        layers[layer.GetName()] = dict(layer.GetMetadata() or {})
+    return dict(ds.GetMetadata() or {}), layers
+
+
+def geometry_types(path):
+    """The declared geometry type of each layer, as GDAL names it.
+
+    Args:
+        path: The dataset.
+
+    Returns:
+        A dict of layer name to type name.
+    """
+    ds = ogr.Open(str(path))
+    return {ds.GetLayer(i).GetName(): ogr.GeometryTypeToName(ds.GetLayer(i).GetGeomType()) for i in range(ds.GetLayerCount())}
+
+
+def validate_gpkg(path):
+    """GDAL's GeoPackage validator's verdict.
+
+    Args:
+        path: The GeoPackage.
+
+    Returns:
+        An empty string when valid, otherwise the validator's message.
+    """
+    p = run([sys.executable, "-m", "osgeo_utils.samples.validate_gpkg", path], check=False)
+    return "" if p.returncode == 0 else (p.stderr.strip().splitlines() or ["invalid"])[-1]
+
+
+def _spatial(path, layer, rect):
+    """The features of a layer in a rectangle, found through its spatial index.
+
+    Args:
+        path: The dataset.
+        layer: The layer name.
+        rect: ``(min_x, min_y, max_x, max_y)``.
+
+    Returns:
+        The feature ids.
+    """
+    ds = ogr.Open(str(path))
+    lyr = ds.GetLayerByName(layer)
+    lyr.SetSpatialFilterRect(*rect)
+    return [f.GetFID() for f in lyr]
+
+
+def _first_string_field(path):
+    """The first String field of a layer, used as an update key.
+
+    Args:
+        path: The dataset.
+
+    Returns:
+        The field name.
+    """
+    ds = ogr.Open(str(path))
+    defn = ds.GetLayer(0).GetLayerDefn()
+    return next(defn.GetFieldDefn(i).GetName() for i in range(defn.GetFieldCount()) if defn.GetFieldDefn(i).GetType() == ogr.OFTString)
+
+
+def gdal_update(src, dst, key, mode, dst_layer):
+    """GDAL 3.13's gdal vector update algorithm (apps/gdalalg_vector_update.cpp), run with
+    GDAL 3.12's API: features matched by FID or by key fields through attribute filters,
+    updated with ``SetFrom`` (when changed) or created.
+
+    Args:
+        src: The input dataset (one layer).
+        dst: The GeoPackage to update.
+        key: Key field names (empty: FIDs).
+        mode: ``merge``, ``update-only`` or ``append-only``.
+        dst_layer: The output layer name.
+    """
+    sds = ogr.Open(str(src))
+    sl = sds.GetLayer(0)
+    dds = ogr.Open(str(dst), 1)
+    dl = dds.GetLayerByName(dst_layer)
+    dds.StartTransaction()
+    for f in sl:
+        target = None
+        if not key:
+            gdal.PushErrorHandler("CPLQuietErrorHandler")
+            target = dl.GetFeature(f.GetFID())
+            gdal.PopErrorHandler()
+        else:
+            if any(not f.IsFieldSet(k) for k in key):
+                continue
+            clauses = []
+            for k in key:
+                t = f.GetFieldDefnRef(k).GetType()
+                v = f.GetField(k)
+                if t == ogr.OFTString:
+                    clauses.append('"%s" = \'%s\'' % (k, str(v).replace("'", "''")))
+                elif t == ogr.OFTReal:
+                    clauses.append('"%s" = %.17g' % (k, v))
+                else:
+                    clauses.append('"%s" = %d' % (k, v))
+            dl.SetAttributeFilter(" AND ".join(clauses))
+            target = dl.GetNextFeature()
+            if target is not None and dl.GetNextFeature() is not None:
+                target = None
+        if target is not None:
+            if mode != "append-only":
+                ori = target.Clone()
+                fid = target.GetFID()
+                target.SetFrom(f)
+                target.SetFID(fid)
+                if not target.Equal(ori):
+                    dl.SetFeature(target)
+        elif mode != "update-only":
+            nf = ogr.Feature(dl.GetLayerDefn())
+            nf.SetFrom(f)
+            dl.CreateFeature(nf)
+    dl.SetAttributeFilter(None)
+    dds.CommitTransaction()
+    dds = None
+
+
 # ------------------------------------------------------------------------------------------------
 # export-schema
 # ------------------------------------------------------------------------------------------------
@@ -222,7 +382,11 @@ def gdal_schema(path):
     Returns:
         The schema dict.
     """
-    info = json.loads(run(["ogrinfo", "-json", "-so", "-nomd", "-nocount", "-noextent", "-al", path]).stdout)
+    if has_gdal_command("vector", "export-schema"):
+        # GDAL 3.13: the command itself.
+        info = json.loads(run(["gdal", "vector", "export-schema", path]).stdout)
+    else:
+        info = json.loads(run(["ogrinfo", "-json", "-so", "-nomd", "-nocount", "-noextent", "-al", path]).stdout)
     layers = []
     for l in info["layers"]:
         geoms = []
@@ -231,7 +395,9 @@ def gdal_schema(path):
             authid = None
             if cs:
                 ident = (cs.get("projjson") or {}).get("id")
-                if ident:
+                if cs.get("authid"):
+                    authid = cs["authid"]
+                elif ident:
                     authid = f"{ident['authority']}:{ident['code']}"
             geoms.append({"name": g["name"], "type": g["type"], "nullable": g["nullable"], "authid": authid})
         layers.append(
@@ -386,7 +552,8 @@ def main():
     for src in ["countries.gpkg", "UScounties.gpkg", "multi.gpkg", shp, data / "ne_places" / "ne_10m_populated_places_simple.shp",
                 "countries.geojson", "countries.fgb", "countries.parquet", "TN_Counties.geojson"]:
         path = data / src
-        if not path.exists():
+        if not path.exists() or not gdal_can_open(path):
+            # Missing, or a format this GDAL was built without (Parquet).
             continue
         known = ()
         if path.suffix == ".parquet":
@@ -395,34 +562,45 @@ def main():
         case(compare_schemas(f"export-schema-{path.name}", terrio_schema(t, path), gdal_schema(path), known))
 
     # -- create ------------------------------------------------------------------------------
+    # GDAL 3.13's gdal vector create when this GDAL has it; otherwise ogr2ogr -limit 0 and
+    # GDAL's API make the same datasets.
+    native_create = has_gdal_command("vector", "create")
+    fields = ["name:STRING(40)", "count:INTEGER", "total:INTEGER64", "ratio:REAL", "day:DATE", "seen:DATETIME", "raw:BINARY"]
     for src, layer in [("countries.gpkg", "countries"), ("UScounties.gpkg", "UScounties")]:
         ref = work / f"create-ref-{layer}.gpkg"
-        run(["ogr2ogr", "-limit", "0", ref, data / src, layer])
+        schema_file = work / f"{layer}.schema.json"
+        run([t, "export-schema", data / src, "--layer", layer, "-o", schema_file])
+        if native_create:
+            run(["gdal", "vector", "create", "--like", data / src, "--input-layer", layer, ref, "--overwrite"])
+        else:
+            run(["ogr2ogr", "-limit", "0", ref, data / src, layer])
         mine = work / f"create-like-{layer}.gpkg"
         run([t, "create", mine, "--like", data / src, "--layer", layer])
         case(compare_schemas(f"create-like-{layer}", gdal_schema(mine), gdal_schema(ref)))
-        schema_file = work / f"{layer}.schema.json"
-        run([t, "export-schema", data / src, "--layer", layer, "-o", schema_file])
+        if native_create:
+            ref = work / f"create-schema-ref-{layer}.gpkg"
+            run(["gdal", "vector", "create", "--schema", schema_file, ref, "--overwrite"])
         mine = work / f"create-schema-{layer}.gpkg"
         run([t, "create", mine, "--schema", schema_file])
         case(compare_schemas(f"create-schema-{layer}", gdal_schema(mine), gdal_schema(ref)))
-    # Explicit fields, against GDAL's API.
     ref = work / "create-fields-ref.gpkg"
-    from osgeo import osr
+    if native_create:
+        run(["gdal", "vector", "create", "--output-layer", "sites", "--geometry-type", "POINT", "--crs", "EPSG:32633",
+             *sum((["--field", f] for f in fields), []), ref, "--overwrite"])
+    else:
+        from osgeo import osr
 
-    ds = ogr.GetDriverByName("GPKG").CreateDataSource(str(ref))
-    s = osr.SpatialReference()
-    s.ImportFromEPSG(32633)
-    lyr = ds.CreateLayer("sites", s, ogr.wkbPoint)
-    for n, ty, w in [("name", ogr.OFTString, 40), ("count", ogr.OFTInteger, 0), ("total", ogr.OFTInteger64, 0), ("ratio", ogr.OFTReal, 0), ("day", ogr.OFTDate, 0), ("seen", ogr.OFTDateTime, 0), ("raw", ogr.OFTBinary, 0)]:
-        fd = ogr.FieldDefn(n, ty)
-        fd.SetWidth(w)
-        lyr.CreateField(fd)
-    ds = None
+        ds = ogr.GetDriverByName("GPKG").CreateDataSource(str(ref))
+        srs = osr.SpatialReference()
+        srs.ImportFromEPSG(32633)
+        lyr = ds.CreateLayer("sites", srs, ogr.wkbPoint)
+        for n, ty, w in [("name", ogr.OFTString, 40), ("count", ogr.OFTInteger, 0), ("total", ogr.OFTInteger64, 0), ("ratio", ogr.OFTReal, 0), ("day", ogr.OFTDate, 0), ("seen", ogr.OFTDateTime, 0), ("raw", ogr.OFTBinary, 0)]:
+            fd = ogr.FieldDefn(n, ty)
+            fd.SetWidth(w)
+            lyr.CreateField(fd)
+        ds = None
     mine = work / "create-fields.gpkg"
-    run([t, "create", mine, "--output-layer", "sites", "--geometry-type", "POINT", "--crs", "EPSG:32633",
-         "--field", "name:STRING(40)", "--field", "count:INTEGER", "--field", "total:INTEGER64", "--field", "ratio:REAL",
-         "--field", "day:DATE", "--field", "seen:DATETIME", "--field", "raw:BINARY"])
+    run([t, "create", mine, "--output-layer", "sites", "--geometry-type", "POINT", "--crs", "EPSG:32633", *sum((["--field", f] for f in fields), [])])
     case(compare_schemas("create-fields", gdal_schema(mine), gdal_schema(ref)))
 
     # -- set-field-type ----------------------------------------------------------------------
@@ -530,6 +708,114 @@ def main():
     run([t, "concat", data / "countries.gpkg", data / "UScounties.gpkg", mine, "--mode", "single"])
     case(compare_dumps("concat-ogrmerge-single", dump(mine), dump(ref), tolerance=1e-9))
 
+    # -- rename-layer, edit, update in place ------------------------------------------------
+    if shutil.which("gdal") and multi.exists():
+        # rename-layer in place, against GDAL's OGRLayer::Rename on a copy.
+        mine, ref = work / "rename.gpkg", work / "rename-ref.gpkg"
+        shutil.copy(multi, mine)
+        shutil.copy(multi, ref)
+        run([t, "rename-layer", mine, "-l", "roads", "--output-layer", "Roads Renamed"])
+        rds = ogr.Open(str(ref), 1)
+        rds.GetLayerByName("roads").Rename("Roads Renamed")
+        rds = None
+        c = compare_dumps("rename-layer-in-place", dump(mine), dump(ref))
+        hits = [len(list(_spatial(p, "Roads Renamed", (-115.205, 36.12, -115.2, 36.121)))) for p in (mine, ref)]
+        problems = [m for m in [validate_gpkg(mine) and "invalid: " + validate_gpkg(mine), hits[0] != hits[1] and f"R-tree hits {hits}"] if m]
+        if problems:
+            c["status"], c["detail"] = DIFFERS, "; ".join(problems + [c["detail"]])
+        case(c)
+        if has_gdal_command("vector", "rename-layer"):
+            # Naming rules, against GDAL 3.13's rename-layer, on layers with awkward names.
+            names_src = work / "rename-names.gpkg"
+            sds = ogr.GetDriverByName("GPKG").CreateDataSource(str(names_src))
+            for n in ["Café Été", "Łódź/Road:1", "a b", "a_b", "CON", "trailing.", "Ünïcödé ✓"]:
+                lyr = sds.CreateLayer(n, None, ogr.wkbPoint)
+                lyr.CreateField(ogr.FieldDefn("v", ogr.OFTInteger))
+                f = ogr.Feature(lyr.GetLayerDefn())
+                f.SetField("v", 1)
+                f.SetGeometry(ogr.CreateGeometryFromWkt("POINT (1 2)"))
+                lyr.CreateFeature(f)
+            sds = None
+            for label, opts in [
+                ("ascii-lower", ["--ascii", "--lower-case"]),
+                ("filename", ["--filename-compatible", "--replacement-character", "_"]),
+                ("reserved-max", ["--reserved-characters", " _", "--max-length", "4", "--ascii"]),
+            ]:
+                ref, mine, inplace = work / f"rename-{label}-ref.gpkg", work / f"rename-{label}.gpkg", work / f"rename-{label}-inplace.gpkg"
+                run(["gdal", "vector", "rename-layer", names_src, ref, *opts, "--overwrite"])
+                run([t, "rename-layer", names_src, mine, *opts])
+                shutil.copy(names_src, inplace)
+                run([t, "rename-layer", inplace, *opts])
+                for c in (compare_dumps(f"rename-layer-{label}", dump(mine), dump(ref)), compare_dumps(f"rename-layer-{label}-in-place", dump(inplace), dump(ref))):
+                    case(c)
+        # edit in place and on output, against gdal vector edit (input to output).
+        ref = work / "edit-ref.gpkg"
+        opts = ["--crs", "EPSG:32611", "--metadata", "A=1", "--metadata", "B=two & words", "--layer-metadata", "C=3",
+                "--layer-metadata", "DESCRIPTION=about roads", "--active-layer", "roads"]
+        run(["gdal", "vector", "edit", multi, ref, *opts, "--overwrite"])
+        for label, mine, cmd in [
+            ("in-place", work / "edit.gpkg", None),
+            ("output", work / "edit-out.gpkg", "output"),
+        ]:
+            if cmd is None:
+                shutil.copy(multi, mine)
+                run([t, "edit", mine, *opts])
+            else:
+                run([t, "edit", multi, mine, *opts])
+            c = compare_dumps(f"edit-{label}", dump(mine), dump(ref))
+            problems = []
+            if metadata_of(mine) != metadata_of(ref):
+                problems.append(f"metadata {metadata_of(mine)} vs {metadata_of(ref)}")
+            if validate_gpkg(mine):
+                problems.append("invalid: " + validate_gpkg(mine))
+            if problems:
+                c["status"], c["detail"] = DIFFERS, "; ".join(problems + [c["detail"]])
+            case(c)
+        # Geometry type and unset metadata.
+        ref2, mine = work / "edit-type-ref.gpkg", work / "edit-type.gpkg"
+        run(["gdal", "vector", "edit", ref, ref2, "--geometry-type", "MULTILINESTRING", "--unset-metadata", "A", "--unset-layer-metadata", "C", "--active-layer", "roads", "--overwrite"])
+        shutil.copy(work / "edit.gpkg", mine)
+        run([t, "edit", mine, "--geometry-type", "MULTILINESTRING", "--unset-metadata", "A", "--unset-layer-metadata", "C", "--active-layer", "roads"])
+        c = compare_dumps("edit-geometry-type-unset-metadata", dump(mine), dump(ref2))
+        if geometry_types(mine) != geometry_types(ref2) or metadata_of(mine) != metadata_of(ref2):
+            c["status"], c["detail"] = DIFFERS, f"types {geometry_types(mine)} vs {geometry_types(ref2)}; metadata {metadata_of(mine)} vs {metadata_of(ref2)}"
+        case(c)
+        # update, against GDAL 3.13's algorithm run with GDAL's API (gdal vector update is a
+        # 3.13 command): by FID and by key, in every mode, on the Las Vegas roads.
+        roads = data / "las_vegas_roads.geojson"
+        edited = work / "roads-edited.gpkg"
+        # An input with changed, unchanged, duplicate-key and new features.
+        run(["ogr2ogr", "-f", "GPKG", edited, roads, "-nln", "roads", "-overwrite", "-preserve_fid",
+             "-where", "FID < 60"])
+        eds = ogr.Open(str(edited), 1)
+        el = eds.GetLayer(0)
+        for f in el:
+            if f.GetFID() % 3 == 0:
+                g = f.GetGeometryRef()
+                for k in range(g.GetPointCount()):
+                    g.SetPoint_2D(k, g.GetX(k) + 0.001, g.GetY(k))
+                f.SetGeometry(g)
+                el.SetFeature(f)
+        nf = ogr.Feature(el.GetLayerDefn())
+        nf.SetGeometry(ogr.CreateGeometryFromWkt("LINESTRING (-115.2 36.12, -115.21 36.13)"))
+        el.CreateFeature(nf)
+        eds = None
+        key_field = _first_string_field(roads)
+        for key, mode in [([], "merge"), ([], "update-only"), ([], "append-only"), ([key_field], "merge"), ([key_field], "update-only")]:
+            label = f"update-{'key' if key else 'fid'}-{mode}"
+            mine, ref = work / f"{label}.gpkg", work / f"{label}-ref.gpkg"
+            shutil.copy(multi, mine)
+            shutil.copy(multi, ref)
+            if has_gdal_command("vector", "update"):
+                run(["gdal", "vector", "update", edited, ref, "--output-layer", "roads", "--mode", mode, *sum((["--key", k] for k in key), [])])
+            else:
+                gdal_update(edited, ref, key, mode, "roads")
+            run([t, "update", edited, mine, "--output-layer", "roads", "--mode", mode, *sum((["--key", k] for k in key), [])])
+            c = compare_dumps(label, dump(mine), dump(ref))
+            if validate_gpkg(mine):
+                c["status"], c["detail"] = DIFFERS, "invalid: " + validate_gpkg(mine)
+            case(c)
+
     # -- partition ---------------------------------------------------------------------------
     def tree(root):
         out = {}
@@ -547,6 +833,8 @@ def main():
         ("flat-integer", places, ["-f", "GPKG"], ["--field", "adm0cap", "--scheme", "flat"]),
         ("flat-omit-pattern", places, ["-f", "FlatGeobuf"], ["--field", "featurecla", "--scheme", "flat", "--omit-partitioned-field", "--pattern", "{FIELD_VALUE}_%03d"]),
         ("limit-only", data / "countries.gpkg", ["-f", "GeoJSON"], ["--feature-limit", "40"]),
+        ("hive-max-size", places, ["-f", "GPKG"], ["--field", "megacity", "--max-file-size", "1MB"]),
+        ("flat-max-size-geojson", places, ["-f", "GeoJSON"], ["--field", "adm0cap", "--scheme", "flat", "--max-file-size", "1MB"]),
     ]:
         if not src.exists():
             continue

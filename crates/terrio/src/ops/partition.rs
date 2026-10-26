@@ -87,6 +87,10 @@ struct Pattern {
 }
 
 fn parse_pattern(p: &str) -> Result<Pattern> {
+    // Part files stay in the output directory (or their partition's).
+    if p.contains(['/', '\\']) || p.contains("..") {
+        return Err(Error::InvalidArgument(format!("pattern '{p}': path separators and '..' are not allowed")));
+    }
     let at = p.find('%').ok_or_else(|| Error::InvalidArgument("missing '%' character in pattern".into()))?;
     if p[at + 1..].contains('%') {
         return Err(Error::InvalidArgument("a single '%' character is expected in pattern".into()));
@@ -140,7 +144,7 @@ fn wkb_size(g: &Geometry) -> u64 {
 
 /// GDAL's estimate of the bytes a feature adds to a file (binary formats store numbers in their
 /// size, text formats in their decimal length).
-fn feature_size(layer: &Layer, f: &wbvector::Feature, omitted: &[bool], binary: bool) -> u64 {
+fn feature_size(layer: &Layer, f: &wbvector::Feature, omitted: &[bool], wide: &[bool], binary: bool) -> u64 {
     let fields = layer.schema.fields();
     let mut n = 16 + 4 * fields.len() as u64;
     for (i, def) in fields.iter().enumerate() {
@@ -149,15 +153,12 @@ fn feature_size(layer: &Layer, f: &wbvector::Feature, omitted: &[bool], binary: 
         }
         let v = f.attributes.get(i);
         n += match def.field_type {
-            FieldType::Integer | FieldType::Boolean => {
-                let wide = crate::ops::vector_schema::ogr_type(layer, i).field_type == crate::ops::vector_schema::OgrFieldType::Integer64;
-                match (wide, binary) {
-                    (false, true) => 4,
-                    (false, false) => 11,
-                    (true, true) => 8,
-                    (true, false) => 21,
-                }
-            }
+            FieldType::Integer | FieldType::Boolean => match (wide[i], binary) {
+                (false, true) => 4,
+                (false, false) => 11,
+                (true, true) => 8,
+                (true, false) => 21,
+            },
             FieldType::Float => {
                 if binary {
                     8
@@ -243,6 +244,10 @@ pub fn partition(layers: &[Layer], o: &PartitionOptions, driver: VectorDriver) -
                 None => return Err(Error::InvalidArgument(format!("cannot find field '{name}' in layer '{}'", layer.name))),
             }
         }
+        // Whether each field is a 64-bit integer field, for the size estimates.
+        let wide: Vec<bool> = (0..fields.len())
+            .map(|i| crate::ops::vector_schema::ogr_type(layer, i).field_type == crate::ops::vector_schema::OgrFieldType::Integer64)
+            .collect();
         let omitted: Vec<bool> = (0..fields.len()).map(|i| omit && keys.iter().any(|k| k.index == Some(i))).collect();
         let by_geometry = keys.iter().any(|k| k.index.is_none());
 
@@ -287,7 +292,7 @@ pub fn partition(layers: &[Layer], o: &PartitionOptions, driver: VectorDriver) -
                 })
                 .collect::<Vec<_>>()
                 .join("_");
-            let substitute = |s: &str| s.replace("{LAYER_NAME}", &layer_dir).replace("{FIELD_VALUE}", &field_value);
+            let substitute = |s: &str| crate::ops::concat::fill_template(s, &[("LAYER_NAME", &layer_dir), ("FIELD_VALUE", &field_value)]);
             let pattern = parse_pattern(&pattern_text)?;
             let pattern = Pattern { prefix: substitute(&pattern.prefix), suffix: substitute(&pattern.suffix), ..pattern };
             let dir = match o.scheme {
@@ -336,7 +341,7 @@ pub fn partition(layers: &[Layer], o: &PartitionOptions, driver: VectorDriver) -
                     feature.attributes = f.attributes.iter().enumerate().filter(|(i, _)| !omitted[*i]).map(|(_, v)| v.clone()).collect();
                 }
                 if o.max_file_size.is_some() {
-                    size += feature_size(layer, f, &omitted, binary);
+                    size += feature_size(layer, f, &omitted, &wide, binary);
                 }
                 part.push(feature);
             }
@@ -344,6 +349,14 @@ pub fn partition(layers: &[Layer], o: &PartitionOptions, driver: VectorDriver) -
                 flush(&mut part, counter, &mut out);
             }
         }
+    }
+    // Two parts of one path would be written into one file.
+    let mut seen = std::collections::HashSet::new();
+    if let Some(p) = out.iter().find(|p| !seen.insert(p.path.clone())) {
+        return Err(Error::InvalidArgument(format!(
+            "several partitions would be written to '{}': give a pattern with {{FIELD_VALUE}} (and {{LAYER_NAME}})",
+            p.path
+        )));
     }
     Ok(out)
 }
@@ -534,6 +547,14 @@ mod tests {
         assert!(partition(&[layer()], &PartitionOptions::default(), VectorDriver::GPKG).is_err());
         assert!(partition(&[layer()], &PartitionOptions { pattern: Some("part".into()), ..base.clone() }, VectorDriver::GPKG).is_err());
         assert!(partition(&[layer()], &PartitionOptions { max_file_size: Some(1000), ..base.clone() }, VectorDriver::GPKG).is_err());
+        for bad in ["../x_%d", "a/b_%d", "a\\b_%d"] {
+            assert!(
+                partition(&[layer()], &PartitionOptions { pattern: Some(bad.into()), ..base.clone() }, VectorDriver::GPKG).is_err(),
+                "{bad}"
+            );
+        }
+        let flat = PartitionOptions { scheme: PartitionScheme::Flat, pattern: Some("part_%d".into()), ..base.clone() };
+        assert!(partition(&[layer()], &flat, VectorDriver::GPKG).unwrap_err().to_string().contains("several partitions"));
         assert!(partition(&[layer()], &PartitionOptions { fields: vec!["missing".into()], ..base }, VectorDriver::GPKG).is_err());
         let parts = partition(&[layer()], &PartitionOptions { feature_limit: Some(4), ..Default::default() }, VectorDriver::GPKG).unwrap();
         assert_eq!(

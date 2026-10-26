@@ -19,7 +19,7 @@ use crate::drivers::sqlite::{self as r, Db};
 pub(crate) use crate::ops::vector_edit::UpdateCounts;
 use crate::ops::vector_edit::{KeyValue, key_of_field};
 use crate::{Error, Result};
-use wbvector::{FieldValue, Layer};
+use wbvector::Layer;
 
 fn quote(name: &str) -> String {
     format!("\"{}\"", name.replace('"', "\"\""))
@@ -745,7 +745,7 @@ pub(crate) fn update_features(d: &mut Database, name: &str, src: &Layer, keys: &
 #[cfg(test)]
 mod tests {
     use super::*;
-    use wbvector::{Coord, Feature, FieldDef, FieldType, Geometry};
+    use wbvector::{Coord, Feature, FieldDef, FieldType, FieldValue, Geometry};
 
     fn layer(name: &str, n: u64) -> Layer {
         let mut l = Layer::new(name).with_epsg(4326);

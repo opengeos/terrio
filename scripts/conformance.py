@@ -1425,6 +1425,10 @@ def suite_vector_dataset(ctx):
     if missing_modules("osgeo"):
         s.skipped = "needs osgeo"
         return s
+    tools = [t for t in ("gdal", "ogr2ogr", "ogrinfo", "ogrmerge.py") if shutil.which(t) is None]
+    if tools:
+        s.skipped = "needs the GDAL command-line tools (" + ", ".join(tools) + ")"
+        return s
     needed = ("countries.gpkg", "UScounties.gpkg", "multi.gpkg", "TN_Counties.geojson")
     if any(not os.path.isfile(os.path.join(ctx.data, name)) for name in needed):
         s.skipped = "needs the vector test data (scripts/fetch_test_data.sh)"

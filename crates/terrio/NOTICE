@@ -443,14 +443,30 @@ Lerc1/Lerc2 layouts implemented by lerc-rust 0.5.0
 (https://github.com/i-norden/lerc-rust), under its MIT license.
 
 -------------------------------------------------------------------------------
-GDAL vector dataset commands (concat, partition, set-field-type, make-point)
+GDAL vector dataset commands (concat, partition, set-field-type, make-point,
+create, export-schema, rename-layer, edit, update)
 -------------------------------------------------------------------------------
 
-crates/terrio/src/ops/concat.rs, partition.rs, make_point.rs and vector_schema.rs follow
-the behavior of GDAL 3.13.3's apps/gdalalg_vector_concat.cpp, gdalalg_vector_partition.cpp,
-gdalalg_vector_make_point.cpp, gdalalg_vector_set_field_type.cpp and the OGR_SCHEMA output
-of apps/ogrinfo_lib.cpp, and ogr/ogrsf_frmts/generic/ogrunionlayer.cpp
-(https://github.com/OSGeo/gdal): layer name templates, field merging rules, partition key
-percent-encoding, file naming and file-size estimates, and value conversion rules.
-Copyright (c) 2024-2025, Even Rouault and the GDAL contributors. Licensed under the MIT
-permission and warranty terms reproduced above for GDAL.
+crates/terrio/src/ops/concat.rs, partition.rs, make_point.rs, vector_schema.rs and
+vector_edit.rs, and crates/terrio/src/drivers/vector/gpkg_edit.rs, follow the behavior of
+these GDAL 3.13.3 sources (https://github.com/OSGeo/gdal): layer name templates, field
+merging rules, partition key percent-encoding, file naming and file-size estimates, value
+conversion rules, the OGR_SCHEMA document, layer renaming rules and feature matching.
+The ASCII replacements of Latin-1 Supplement and Latin Extended-A characters are the table
+of port/cpl_recode.cpp's CPLUTF8ForceToASCII.
+
+- apps/gdalalg_vector_concat.cpp, gdalalg_vector_partition.cpp,
+  gdalalg_vector_rename_layer.cpp, gdalalg_vector_edit.cpp, gdalalg_vector_update.cpp:
+  Copyright (c) 2025-2026, Even Rouault <even dot rouault at spatialys.com>
+- apps/gdalalg_vector_set_field_type.cpp, gdalalg_vector_export_schema.cpp,
+  gdalalg_vector_create.cpp: Copyright (c) 2025-2026, Alessandro Pasotti
+- apps/gdalalg_vector_make_point.cpp: Copyright (c) 2025, ISciences LLC (Dan Baston)
+- apps/ogrinfo_lib.cpp: Copyright (c) 1999, Frank Warmerdam; Copyright (c) 2008-2013,
+  Even Rouault
+- ogr/ogrsf_frmts/generic/ogrunionlayer.cpp: Copyright (c) 2012-2014, Even Rouault
+- port/cpl_path.cpp (CPLLaunderForFilenameSafe): Copyright (c) 1999, Frank Warmerdam;
+  Copyright (c) 2008-2012, Even Rouault
+- port/cpl_recode.cpp (CPLUTF8ForceToASCII): Copyright (c) 2011, Andrey Kiselev;
+  Copyright (c) 2008, Frank Warmerdam; Copyright (c) 2011-2014, Even Rouault
+
+Licensed under the MIT permission and warranty terms reproduced above for GDAL.

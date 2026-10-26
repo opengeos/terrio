@@ -102,13 +102,41 @@ pub fn layer_name_template(template: &str, ds_index: usize, ds_name: &str, layer
     let base = basename(ds_name);
     let base = if base.is_empty() { ds_name.to_string() } else { base };
     let auto = if base == layer_name { base.clone() } else { format!("{base}_{layer_name}") };
-    template
-        .replace("{AUTO_NAME}", &auto)
-        .replace("{DS_BASENAME}", &base)
-        .replace("{DS_NAME}", ds_name)
-        .replace("{DS_INDEX}", &ds_index.to_string())
-        .replace("{LAYER_NAME}", layer_name)
-        .replace("{LAYER_INDEX}", &layer_index.to_string())
+    let (ds_index, layer_index) = (ds_index.to_string(), layer_index.to_string());
+    fill_template(
+        template,
+        &[
+            ("AUTO_NAME", &auto),
+            ("DS_BASENAME", &base),
+            ("DS_NAME", ds_name),
+            ("DS_INDEX", &ds_index),
+            ("LAYER_NAME", layer_name),
+            ("LAYER_INDEX", &layer_index),
+        ],
+    )
+}
+
+/// A template with its `{NAME}` variables replaced, in one pass over the template (values
+/// holding braces are not substituted again). Unknown variables are kept.
+pub(crate) fn fill_template(template: &str, vars: &[(&str, &str)]) -> String {
+    let mut out = String::with_capacity(template.len());
+    let mut rest = template;
+    while let Some(open) = rest.find('{') {
+        out.push_str(&rest[..open]);
+        let after = &rest[open + 1..];
+        match after.find('}').and_then(|close| vars.iter().find(|(k, _)| *k == &after[..close]).map(|(_, v)| (close, *v))) {
+            Some((close, v)) => {
+                out.push_str(v);
+                rest = &after[close + 1..];
+            }
+            None => {
+                out.push('{');
+                rest = after;
+            }
+        }
+    }
+    out.push_str(rest);
+    out
 }
 
 /// Concatenates the layers of datasets, as `gdal vector concat` does. Output layers come in
@@ -240,11 +268,14 @@ fn merge(
     let mut fid = 0u64;
     for ((l, types), &(di, li)) in layers.iter().zip(&source_types).zip(members) {
         let label = source_field.map(|_| layer_name_template(content, di, &sources[di].name, li, &sources[di].layers[li].name));
-        // For each output field, the source field it comes from (matched by name, ignoring
-        // case as GDAL's feature translation does).
+        // For each output field, the source field it comes from.
         let map: Vec<Option<usize>> = fields
             .iter()
-            .map(|f| l.schema.field_index(&f.name).or_else(|| l.schema.fields().iter().position(|d| d.name.eq_ignore_ascii_case(&f.name))))
+            .map(|f| match o.field_strategy {
+                // Union fields are merged by exact name, intersection fields ignoring case.
+                FieldStrategy::Union => l.schema.fields().iter().position(|d| d.name == f.name),
+                FieldStrategy::Intersection => l.schema.fields().iter().position(|d| d.name.eq_ignore_ascii_case(&f.name)),
+            })
             .collect();
         for feature in &l.features {
             fid += 1;
@@ -305,6 +336,14 @@ mod tests {
         // Union by exact name: `id` (real) and `ID` stay apart.
         let names: Vec<&str> = out[1].schema.fields().iter().map(|f| f.name.as_str()).collect();
         assert_eq!(names, ["id", "ID", "extra"]);
+        let values: Vec<Vec<FieldValue>> = out[1].features.iter().map(|f| f.attributes.clone()).collect();
+        assert_eq!(
+            values,
+            [
+                vec![FieldValue::Float(2.5), FieldValue::Null, FieldValue::Null],
+                vec![FieldValue::Null, FieldValue::Integer(3), FieldValue::Text("e".into())]
+            ]
+        );
     }
 
     #[test]
@@ -330,6 +369,12 @@ mod tests {
         assert_eq!(out[0].schema.fields().iter().map(|f| (f.name.as_str(), f.field_type)).collect::<Vec<_>>(), [("id", FieldType::Float)]);
         assert_eq!(out[0].features.iter().map(|f| f.attributes[0].clone()).collect::<Vec<_>>(), [1.0, 2.5, 3.0].map(FieldValue::Float));
         assert!(concat(&sources(), &ConcatOptions { output_layer: Some("x".into()), ..Default::default() }).is_err());
+    }
+
+    #[test]
+    fn fills_templates_once() {
+        assert_eq!(layer_name_template("{LAYER_NAME}-{DS_INDEX}", 3, "d.gpkg", 0, "x{DS_INDEX}"), "x{DS_INDEX}-3");
+        assert_eq!(fill_template("{A}{B}{C}", &[("A", "{B}"), ("B", "b")]), "{B}b{C}");
     }
 
     #[test]

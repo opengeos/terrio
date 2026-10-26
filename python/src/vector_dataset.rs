@@ -9,6 +9,7 @@ use pyo3::prelude::*;
 use terrio::crs::SpatialRef;
 use terrio::formats::VectorDriver;
 use terrio::ops::concat::{ConcatMode, ConcatOptions, ConcatSource, FieldStrategy};
+#[cfg(not(target_family = "wasm"))]
 use terrio::ops::partition::{PartitionOptions, PartitionScheme, PartitionWriteMode};
 use terrio::ops::vector_schema::{self as vs, FieldSelector, OgrSchema, OgrType};
 use terrio::{VectorDataset, VectorOpenOptions};
@@ -16,6 +17,7 @@ use terrio::{VectorDataset, VectorOpenOptions};
 /// Registers the functions in the module.
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(concat, m)?)?;
+    #[cfg(not(target_family = "wasm"))]
     m.add_function(wrap_pyfunction!(partition, m)?)?;
     m.add_function(wrap_pyfunction!(set_field_type, m)?)?;
     m.add_function(wrap_pyfunction!(make_point, m)?)?;
@@ -30,6 +32,11 @@ fn srs(s: Option<&str>) -> PyResult<Option<SpatialRef>> {
 
 fn driver(name: Option<&str>) -> PyResult<Option<VectorDriver>> {
     name.map(|d| VectorDriver::from_name(d).ok_or_else(|| invalid(format!("unknown vector format '{d}'")))).transpose()
+}
+
+/// The UTF-8 path a Python object stands for (`str` or `os.PathLike`), when it is one.
+fn path_of(obj: &Bound<'_, PyAny>) -> Option<String> {
+    obj.extract::<std::path::PathBuf>().ok().and_then(|p| p.into_os_string().into_string().ok())
 }
 
 /// The layers and driver of a source: a path (read), a `VectorDataset`, a `Layer`, a list of
@@ -89,7 +96,7 @@ fn concat(
 ) -> PyResult<PyVectorDataset> {
     let mut sources = Vec::with_capacity(srcs.len());
     for (i, s) in srcs.iter().enumerate() {
-        let name = s.extract::<String>().unwrap_or_else(|_| format!("dataset{i}"));
+        let name = path_of(s).unwrap_or_else(|| format!("dataset{i}"));
         let (mut ls, _) = source(py, s, None)?;
         if let Some(names) = &layers {
             ls.retain(|l| names.contains(&l.name));
@@ -133,6 +140,7 @@ fn concat(
 ///
 /// Returns:
 ///     list[str]: The files written.
+#[cfg(not(target_family = "wasm"))]
 #[pyfunction]
 #[pyo3(signature = (src, dst, fields=None, *, layers=None, scheme="hive", pattern=None, feature_limit=None, max_file_size=None, omit_partitioned_fields=false, format=None, overwrite=false, append=false))]
 #[allow(clippy::too_many_arguments)]
@@ -351,7 +359,7 @@ fn create_vector(
             }
             Some(doc)
         }
-        (None, Some(l)) => Some(match l.extract::<String>() {
+        (None, Some(l)) => Some(match path_of(l).ok_or(()) {
             Ok(path) => {
                 let names = layers.clone().unwrap_or_default();
                 with_warnings(py, || vs::export_schema_path(&path, &names))?
