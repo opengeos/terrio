@@ -3,8 +3,10 @@
 //! converting between positions and coordinates with those parts.
 //!
 //! The steps follow `apps/ogrlineref.cpp` (MIT licensed), with OGR's `getSubLine`, `Value` and
-//! `get_Length`, and the GEOS functions it calls (`GEOSProject`: the length index of the nearest
-//! point, `GEOSDistance`), ported so that the same parts, positions and coordinates come out.
+//! `get_Length` ported, so that the same parts, positions and coordinates come out. The
+//! projection of a point on a line (`GEOSProject`) and its distance (`GEOSDistance`), which
+//! ogrlineref asks GEOS for, are computed with the same textbook point-to-segment formulas (the
+//! comp.graphics.algorithms FAQ's), nearest segment first in line order.
 //! Lengths of the first and last parts of a geographic route are measured in the UTM zone of
 //! their middle, as `ogrlineref` measures them.
 

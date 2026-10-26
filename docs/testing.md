@@ -166,6 +166,36 @@ the development CLI's peak RSS fell from 125,544 KiB to 101,824 KiB with the sha
 block implementation and streamed TIFF output, measured with two Rayon threads.
 These are fixture measurements, not memory or transfer guarantees for every codec.
 
+### Vector gridding and linear referencing against GDAL
+
+`compare_vector_grid_with_gdal.py` grids Natural Earth's populated places (769 United States
+places, above GDAL's 100-point quadtree threshold, and 89 Peruvian ones, below it), GDAL's
+`gdal_grid` test points (a regular grid, with many equidistant points) and a 4,400-point subset
+of the Autzen lidar (3D) with every algorithm, ellipse, rotation, point limit and per-quadrant
+limit, and every option, and compares every pixel, the type, nodata and geotransform with
+`gdal_grid` (run with `GDAL_USE_AVX=NO GDAL_USE_SSE=NO`, GDAL's double-precision code; one case
+compares its default SIMD code within a tolerance). With GDAL 3.12.2: 94 cases, 86 identical, 6
+within tolerance (`linear` on scattered points, 3.3e-9 on populations of 1e7 and 2.3e-13 on
+elevations, identical in Float32; a rotated `average_distance`, 1.1e-15, from GDAL 3.12's scan of
+rotated ellipses; the SIMD `invdist`) and 2 differing (`linear` on the regular grid off its
+nodes, where qhull breaks co-circular ties differently).
+
+`compare_lineref_with_gdal.py` runs `ogrlineref` and `terrio lineref` on GDAL's test route and
+milestones (geographic, reprojected to UTM, and as two routes told apart by a field, one drawn
+backwards): the parts feature by feature, the printed positions and coordinates, and sublines
+vertex by vertex. 63 cases: 61 identical, 2 within tolerance (the UTM lengths of a geographic
+route's end parts, 1.1e-11 and 3.8e-11, from terrio's projection rather than PROJ).
+
+```sh
+python scripts/compare_vector_grid_with_gdal.py ../terrio-data
+python scripts/compare_lineref_with_gdal.py ../terrio-data
+python scripts/conformance.py ../terrio-data --only vector-grid,lineref
+cargo test -p terrio --lib -- vector_grid lineref
+cargo test -p terrio-cli --test mcp vector_grid
+python -m pytest python/tests/test_vector_grid.py
+node --test --test-name-pattern='vectorGrid' js/tests/node.test.mjs
+```
+
 ## Build size and iteration speed
 
 Development and test builds omit debug symbols by default. Enable full debugger
