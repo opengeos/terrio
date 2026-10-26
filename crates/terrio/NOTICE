@@ -441,3 +441,331 @@ and src/latitudes.cpp (Karney's auxiliary-latitude series), under the same terms
 The LERC header bounds in crates/terrio/src/tiff_codecs.rs follow the
 Lerc1/Lerc2 layouts implemented by lerc-rust 0.5.0
 (https://github.com/i-norden/lerc-rust), under its MIT license.
+
+-------------------------------------------------------------------------------
+GDAL gridding and linear referencing
+-------------------------------------------------------------------------------
+
+The gridding algorithms in crates/terrio/src/ops/vector_grid.rs are ported from GDAL's
+alg/gdalgrid.cpp, apps/gdal_grid_lib.cpp, alg/delaunay.c (barycentric coefficients and the
+point-in-triangle test) and port/cpl_quad_tree.cpp (the order of its search results); the linear
+referencing in crates/terrio/src/ops/lineref.rs is ported from apps/ogrlineref.cpp and
+ogr/ogrlinestring.cpp (getSubLine, Value) (https://github.com/OSGeo/gdal/tree/v3.13.3).
+
+  Copyright (c) 2007, Andrey Kiselev <dron@ak4719.spb.edu>
+  Copyright (c) 1999-2008, Frank Warmerdam
+  Copyright (c) 2008-2015, Even Rouault <even dot rouault at spatialys.com>
+  Copyright (c) 2014, NextGIS
+
+  Permission is hereby granted, free of charge, to any person obtaining a copy of this software
+  and associated documentation files (the "Software"), to deal in the Software without
+  restriction, including without limitation the rights to use, copy, modify, merge, publish,
+  distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the
+  Software is furnished to do so, subject to the following conditions:
+
+  The above copyright notice and this permission notice shall be included in all copies or
+  substantial portions of the Software.
+
+  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING
+  BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+  NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
+  DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+-------------------------------------------------------------------------------
+GDAL fill nodata
+-------------------------------------------------------------------------------
+
+The four-quadrant interpolation and masked smoothing in
+crates/terrio/src/ops/fill_nodata.rs are adapted from GDAL's alg/rasterfill.cpp
+(https://github.com/OSGeo/gdal/blob/v3.12.2/alg/rasterfill.cpp).
+
+  Copyright (c) 2008, Frank Warmerdam
+  Copyright (c) 2009-2013, Even Rouault <even dot rouault at spatialys.com>
+  Copyright (c) 2015, Sean Gillies <sean@mapbox.com>
+
+  Permission is hereby granted, free of charge, to any person obtaining a copy of this software
+  and associated documentation files (the "Software"), to deal in the Software without
+  restriction, including without limitation the rights to use, copy, modify, merge, publish,
+  distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the
+  Software is furnished to do so, subject to the following conditions:
+
+  The above copyright notice and this permission notice shall be included in all copies or
+  substantial portions of the Software.
+
+  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING
+  BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+  NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
+  DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+-------------------------------------------------------------------------------
+CSF (cloth simulation filter)
+-------------------------------------------------------------------------------
+
+crates/terrio/src/pointcloud/filters/csf.rs is a port to Rust, modified, of the CSF code PDAL
+vendors (https://github.com/PDAL/PDAL/tree/master/filters/private/csf), after Zhang et al.
+(2016), "An Easy-to-Use Airborne LiDAR Data Filtering Method Based on Cloth Simulation".
+
+  Copyright 2017 State Key Laboratory of Remote Sensing Science,
+  Institute of Remote Sensing Science and Engineering, Beijing Normal University
+
+  Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file
+  except in compliance with the License. You may obtain a copy of the License at
+
+      http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing, software distributed under the
+  License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
+  either express or implied. See the License for the specific language governing permissions
+  and limitations under the License.
+
+-------------------------------------------------------------------------------
+EPSG Geodetic Parameter Dataset
+-------------------------------------------------------------------------------
+
+crates/terrio-crs/data/epsg.tsv.zst and crates/terrio-crs/data/datums.tsv.zst are derived from the EPSG
+Geodetic Parameter Dataset (https://epsg.org), copyright the International Association of Oil &
+Gas Producers (IOGP), through PROJ's database and GDAL. They are redistributed under the EPSG
+terms of use (https://epsg.org/terms-of-use.html), with this attribution. They are not the EPSG
+Dataset itself, and terrio is not endorsed by IOGP.
+
+-------------------------------------------------------------------------------
+Esri projection engine data
+-------------------------------------------------------------------------------
+
+crates/terrio-crs/data/esri.tsv.zst, and the ESRI datum names in crates/terrio-crs/data/datums.tsv.zst,
+are derived, through PROJ's database, from Esri's projection engine documentation
+(https://github.com/Esri/projection-engine-db-doc), modified.
+
+  Copyright (c) 2010-2026 Esri
+
+  Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file
+  except in compliance with the License. You may obtain a copy of the License at
+
+      http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing, software distributed under the
+  License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
+  either express or implied. See the License for the specific language governing permissions
+  and limitations under the License.
+
+-------------------------------------------------------------------------------
+rasterio
+-------------------------------------------------------------------------------
+
+The API and several algorithms of the Python package's terrio.rio module follow rasterio
+(https://github.com/rasterio/rasterio).
+
+  Copyright (c) 2013-2021, Mapbox
+  All rights reserved.
+
+  Redistribution and use in source and binary forms, with or without modification, are
+  permitted provided that the following conditions are met:
+
+  * Redistributions of source code must retain the above copyright notice, this list of
+    conditions and the following disclaimer.
+
+  * Redistributions in binary form must reproduce the above copyright notice, this list of
+    conditions and the following disclaimer in the documentation and/or other materials
+    provided with the distribution.
+
+  * Neither the name of Mapbox nor the names of its contributors may be used to endorse or
+    promote products derived from this software without specific prior written permission.
+
+  THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS
+  OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF
+  MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE
+  COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
+  EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE
+  GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED
+  AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
+  NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+  OF THE POSSIBILITY OF SUCH DAMAGE.
+
+-------------------------------------------------------------------------------
+rioxarray
+-------------------------------------------------------------------------------
+
+The Python package's terrio.xarray module (its accessor, open_rasterio, writer, merge and
+spatial helpers) follows rioxarray (https://github.com/corteva/rioxarray), modified.
+
+  Copyright (c) 2019-2026, Vylor™
+  All rights reserved.
+
+  Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file
+  except in compliance with the License. You may obtain a copy of the License at
+
+      http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing, software distributed under the
+  License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
+  either express or implied. See the License for the specific language governing permissions
+  and limitations under the License.
+
+-------------------------------------------------------------------------------
+Apache Arrow
+-------------------------------------------------------------------------------
+
+terrio's packages and binaries are built with the Rust implementation of Apache Arrow and
+Parquet (https://github.com/apache/arrow-rs), whose NOTICE reads:
+
+  Apache Arrow
+  Copyright 2016-2026 The Apache Software Foundation
+
+  This product includes software developed at
+  The Apache Software Foundation (http://www.apache.org/).
+
+  This product includes software from the chronoutil crate (MIT)
+   * Copyright (c) 2020-2022 Oliver Margetts
+   * https://github.com/olliemath/chronoutil
+
+  This product includes software from the compact-thrift project (Apache 2.0)
+   * Copyright Jörn Horstmann
+   * https://github.com/jhorstmann/compact-thrift
+
+-------------------------------------------------------------------------------
+Independent JPEG Group
+-------------------------------------------------------------------------------
+
+terrio writes JPEG with the jpeg-encoder crate, which contains code under the IJG license:
+this software is based in part on the work of the Independent JPEG Group.
+
+-------------------------------------------------------------------------------
+GDAL's GRIB driver (degrib and g2clib)
+-------------------------------------------------------------------------------
+
+The GRIB driver in crates/terrio/src/drivers/grib/ reads GRIB files as GDAL's GRIB driver does
+(https://gdal.org): it ports the rules of GDAL's frmts/grib/gribdataset.cpp, of its copy of NOAA
+MDL's degrib (naming, levels, units, grids) and of NCEP's g2clib (the GRIB2 unpacking and template
+tables), and includes the GRIB tables GDAL distributes (frmts/grib/data, and degrib's GRIB1 tables
+from grib1tab.cpp) in crates/terrio/data/grib_tables.txt.zst. degrib and g2clib are works of the
+US government, in the public domain; the WMO's GRIB tables are published by the WMO. Small GRIB
+files of GDAL's test suite are among terrio's test files (crates/terrio/tests/data/grib).
+
+  Copyright (c) 2007, ITC
+  Copyright (c) 2008-2017, Even Rouault <even dot rouault at spatialys dot com>
+  and the other GDAL contributors named in GDAL's source files.
+
+  Permission is hereby granted, free of charge, to any person obtaining a copy of this software
+  and associated documentation files (the "Software"), to deal in the Software without
+  restriction, including without limitation the rights to use, copy, modify, merge, publish,
+  distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the
+  Software is furnished to do so, subject to the following conditions:
+
+  The above copyright notice and this permission notice shall be included in all copies or
+  substantial portions of the Software.
+
+  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING
+  BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+  NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
+  DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+The VRT kernel filtering arithmetic in ops/vrt/virtual_raster.rs follows
+GDAL frmts/vrt/vrtfilters.cpp (GDAL 3.12.2):
+  Copyright (c) 2003, Frank Warmerdam <warmerdam@pobox.com>
+  Copyright (c) 2008-2013, Even Rouault <even dot rouault at spatialys.com>
+The GDAL MIT permission and warranty terms above apply to this port as well.
+
+-------------------------------------------------------------------------------
+GDAL weighted Brovey pansharpening and convolution
+-------------------------------------------------------------------------------
+
+crates/terrio/src/ops/pansharpen.rs and ops/pansharpen/ adapt alg/gdalpansharpen.cpp,
+the spatial extent adjustment of frmts/vrt/vrtpansharpened.cpp, and the separable
+convolution and RasterIO request-coordinate handling of gcore/overview.cpp and
+gcore/rasterio.cpp from GDAL 3.12 (https://github.com/OSGeo/gdal).
+
+Copyright (c) 2015, Even Rouault <even.rouault at spatialys.com>
+Copyright (c) 2015, Airbus DS Geo SA (weighted Brovey algorithm)
+Copyright (c) 2000, Frank Warmerdam
+Copyright (c) 2007-2010, Even Rouault <even dot rouault at spatialys.com>
+Copyright (c) 1998, Frank Warmerdam
+Copyright (c) 2007-2014, Even Rouault <even dot rouault at spatialys.com>
+
+Licensed under the MIT permission and warranty terms reproduced above for GDAL.
+
+-------------------------------------------------------------------------------
+GDAL viewshed edge recurrence
+-------------------------------------------------------------------------------
+
+crates/terrio/src/ops/viewshed.rs adapts the edge-mode height recurrence in GDAL's
+alg/viewshed/viewshed_executor.cpp (https://github.com/OSGeo/gdal), by Tamas Szekeres.
+Copyright (c) 2024 info@hobu.co. Licensed under the MIT permission and warranty
+terms reproduced above for GDAL.
+
+-------------------------------------------------------------------------------
+acadrust / ACadSharp
+-------------------------------------------------------------------------------
+
+DWG and DXF codecs are supplied by the acadrust dependency
+(https://github.com/hakanaktt/acadrust), licensed under MPL-2.0. Its source and
+license are available from that repository and crates.io. Terrio's CAD adapter
+contains no copied acadrust code. The memory64 build adjusts
+the dependency's target guards to recognize WebAssembly's 64-bit target. The dependency's DWG codecs include ports from
+ACadSharp. The following notice is reproduced from acadrust's THIRD_PARTY_NOTICES.md.
+
+Copyright (c) 2021 Albert Domenech
+
+MIT License
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+The GDAL 3.13 transformed-unit-square warp scale calculation in
+crates/terrio/src/ops/warp.rs is ported from alg/gdalwarpkernel.cpp,
+GDAL 3.13 (https://github.com/OSGeo/gdal), under the MIT license.
+Copyright (c) 2003, Frank Warmerdam; Copyright (c) 2008-2013, Even Rouault.
+
+The versioned Float32 slope and standard hillshade arithmetic in
+crates/terrio/src/ops/dem.rs follows apps/gdaldem_lib.cpp from GDAL 3.13.3
+(https://github.com/OSGeo/gdal), under the MIT permission and warranty terms above.
+Copyright (c) 2006, 2009 Matthew Perry; Copyright (c) 2009-2013 Even Rouault.
+The authalic-q calculation in crates/terrio-crs/src/math.rs follows
+src/latitudes.cpp from PROJ 9.9, under PROJ's MIT terms reproduced above.
+
+CRS benchmark reference data
+----------------------------
+The pair-4979-4978, pair-mars-iau, form-27700-projjson, seed-tpers and edge-tpers-back
+numeric fixtures are from Michael Sumner's rust-proj-capability
+(https://github.com/mdsumner/rust-proj-capability), revision
+ddd9fac70ec370acd9651ebb8b46035207347ad5, generated with PROJ 9.9.0.
+The CRS-study oracle version is retained separately from projection-suite data.
+
+IAU_2015 registry and celestial-body compatibility
+-------------------------------------------------
+The bundled IAU_2015 definitions are derived from PROJ 9.8.1's data/sql/iau.sql,
+Git blob 900564ccf2e1f77fb708ddc2c8544843b29bc24a, generated by
+scripts/build_db_from_iau.py (Copyright (c) 2021, Hobu Inc; author Even Rouault),
+under PROJ's MIT terms reproduced above. The source planetary reference is the
+IAU Working Group report at https://doi.org/10.1007/s10569-017-9805-5 .
+The celestial-body compatibility rule follows PROJ 9.8.1's
+src/iso19111/operation/coordinateoperationfactory.cpp and
+include/proj/internal/datum_internal.hpp (0.7% semi-major-axis allowance), and
+its Earth-radius heuristic follows src/iso19111/datum.cpp, under the same terms.
+The conformal-sphere radius calculation (+R_C) follows PROJ 9.8.1's
+src/ell_set.cpp, under the same MIT terms.
+The inverse authalic-latitude refinement for large flattening follows
+src/latitudes.cpp from PROJ 9.8.1, under the same terms.
+The sixth-order meridian-distance series follows PROJ 9.8.1's src/mlfn.cpp
+and src/latitudes.cpp (Karney's auxiliary-latitude series), under the same terms.
+
+The LERC header bounds in crates/terrio/src/tiff_codecs.rs follow the
+Lerc1/Lerc2 layouts implemented by lerc-rust 0.5.0
+(https://github.com/i-norden/lerc-rust), under its MIT license.
