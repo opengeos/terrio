@@ -85,7 +85,10 @@ pub fn as_features(ds: &RasterDataset, o: &AsFeaturesOptions) -> Result<Layer> {
         .saturating_add(geometry_bytes + 32);
     let estimated_bytes = r.cols.saturating_mul(r.rows).saturating_mul(feature_bytes);
     if estimated_bytes > 512 * 1024 * 1024 {
-        return Err(Error::InvalidArgument("as-features would exceed the 512 MiB feature-memory budget; crop the raster first".into()));
+        return Err(Error::InvalidArgument(format!(
+            "as-features estimates {estimated_bytes} bytes for {} pixels, exceeding the 512 MiB feature-memory budget; crop the raster first",
+            r.cols.saturating_mul(r.rows)
+        )));
     }
     let mut layer = Layer::new(o.layer_name.clone());
     match o.geometry {

@@ -666,11 +666,10 @@ GitHub Actions before tagging a release. It builds the complete cross-platform
 wheel, CLI, installer and npm matrix without publishing. Pull requests retain the
 normal CI checks, including Python, WASM, API documentation and package validation.
 
-## Pixel-operation buffer regression (#299)
+## Pixel-operation buffer checks
 
-A 2048×2048 four-band Float32 Landsat-derived fixture, two Rayon threads and development CLI
-builds compared the previous and direct-to-typed-buffer paths. Unscale peak RSS fell from
-316,460 to 272,516 KiB; reclassify fell from 318,192 to 272,264 KiB. Every output pixel, type,
-nodata value and georeferencing value remained unchanged. These are local memory observations,
-not runtime or general memory guarantees. The operations still materialize input and output;
-the full-band f64 intermediates have been removed.
+When changing typed output-buffer paths, measure peak RSS before and after with the same
+multiband fixture, build profile and thread count. Compare every output pixel, type, nodata
+value and georeferencing value as well as memory use. Record fixture details and observations
+in the PR validation notes; they are not runtime or general memory guarantees. These operations
+still materialize input and output, so eliminating intermediates does not make them streaming.

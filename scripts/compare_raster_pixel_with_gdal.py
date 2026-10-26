@@ -326,7 +326,13 @@ def main():
             r["name"] = c["name"]
             results.append(r)
             if not a.json:
-                line = format_row(r)
+                if c["kind"] == "vector" and "error" not in r:
+                    line = (f"{r['name']:<58} {r['size']} count={'ok' if r['same_size'] else 'DIFF'} "
+                            f"fields={'ok' if r['same_type'] else 'DIFF'}")
+                    if "differing" in r:
+                        line += f" exact={100 * r['exact']:.4f}% ({r['differing']} features differ) max={r['max_diff']:.3g}"
+                else:
+                    line = format_row(r)
                 if "error" not in r:
                     line += f" crs={'ok' if r.get('same_crs') else 'DIFF'} meta={'ok' if r.get('same_metadata') else 'DIFF'}"
                     if r.get("metadata"):
