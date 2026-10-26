@@ -796,7 +796,7 @@ pub fn update_layer(dst: &mut Layer, src: &Layer, o: &UpdateOptions) -> Result<U
 /// appends. No reprojection is done. GeoPackages are changed in place; other formats are
 /// rewritten, the new files replacing the old ones once complete.
 pub fn update(src: &[Layer], output: &str, o: &UpdateOptions) -> Result<UpdateCounts> {
-    let src_layer = pick(src, o.input_layer.as_deref(), "input")?;
+    let _src_layer = pick(src, o.input_layer.as_deref(), "input")?;
     if !crate::vfs::Location::parse(output).is_local() {
         return Err(Error::Unsupported(format!("'{output}': only local datasets can be updated")));
     }
@@ -820,7 +820,7 @@ pub fn update(src: &[Layer], output: &str, o: &UpdateOptions) -> Result<UpdateCo
                     return Err(Error::InvalidArgument(format!("the output dataset has {} layers: name the output layer", names.len())));
                 }
             };
-            ge::update_features(d, &name, src_layer, &o.key, mode)
+            ge::update_features(d, &name, _src_layer, &o.key, mode)
         });
     }
     let ds = crate::open_vector(output, &Default::default())?;
