@@ -857,7 +857,10 @@ entries before copying. Keep the source unchanged during a copy-delete move.
 
 Recursive extraction and copy reject parent traversal, Windows drive-style child
 names (on all platforms for portable paths), and symlinks escaping the output root. Tar and tar.gz copies and sync stream payloads in one pass after discovery. ZIP
-central directories are indexed once per operation. Local atomic writes follow destination
+central directories are indexed once per operation with a bounded read buffer.
+Tar listings expose regular files and directories; copying a tar link or other unsupported
+entry fails, or records an error with `--skip-errors`. Untimed memory targets are compared
+by content during sync. Local atomic writes follow destination
 symlinks and preserve mode bits, while replacement detaches hard links and does not
 preserve ownership, ACLs or extended attributes.
 
@@ -874,12 +877,14 @@ for readers such as Zarr.
 
 Recursive object-store listings include directories implied by keys; GDAL omits those
 implied directory entries. `--skip-errors` continues copying but exits nonzero when
-any files fail.
+any files fail. Signed S3 file uploads read the source once to calculate its SHA-256 and once
+to send the body (twice the file size in local reads); ETag sync can add a separate MD5 pass.
+Payload hashes are retained for compatibility with signed endpoints that require them.
 
 Differences from GDAL (checked with 3.13.3): entries are sorted (GDAL prints local directories in the order
 the file system returns them); dates are UTC (a zip member's date is its stored DOS time, as
 GDAL prints it); HTTP index names stay percent-encoded, as GDAL keeps them. Not supported:
-`sync -j/--num-threads` (requests are sequential), multipart uploads (objects over 5 GiB), Azure
+`sync -j/--num-threads` (requests are sequential, including one S3 delete request per key), multipart uploads (objects over 5 GiB), Azure
 shared-key authentication, writing to Google Cloud Storage's own API, empty directory
 creation outside S3 (S3 uses marker keys), progress bars, and the virtual file
 systems `/vsigzip/`, `/vsi7z/`, `/vsirar/`, `/vsiswift/`, `/vsioss/`, `/vsiadls/`, `/vsihdfs/`

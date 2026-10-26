@@ -16,6 +16,7 @@ struct VsiListOptions {
     recursive: bool,
     depth: Option<usize>,
     absolute: bool,
+    long: bool,
 }
 
 #[derive(Deserialize, Default)]
@@ -44,6 +45,7 @@ fn entries_js(entries: &[vsi::Entry]) -> Result<JsValue, JsError> {
                 "modified": e.modified,
                 "lastModificationDate": e.modified_string(),
                 "etag": e.etag,
+                "permissions": e.permissions,
             })
         })
         .collect();
@@ -51,12 +53,12 @@ fn entries_js(entries: &[vsi::Entry]) -> Result<JsValue, JsError> {
 }
 
 /// Lists a `/vsimem/` directory, or a zip archive in memory (`/vsizip//vsimem/a.zip`), as
-/// `gdal vsi list` does. Options: `recursive`, `depth`, `absolute`.
+/// `gdal vsi list` does. Options: `recursive`, `depth`, `absolute`, `long` (fetch missing entry metadata).
 #[wasm_bindgen(js_name = vsiList)]
 pub fn vsi_list(path: &str, options: JsValue) -> Result<JsValue, JsError> {
     let o: VsiListOptions = parse_options(&options)?;
     let entries =
-        vsi::list(path, &ListOptions { recursive: o.recursive, depth: o.depth, absolute: o.absolute, details: false }).map_err(js_err)?;
+        vsi::list(path, &ListOptions { recursive: o.recursive, depth: o.depth, absolute: o.absolute, details: o.long }).map_err(js_err)?;
     entries_js(&entries)
 }
 
@@ -90,10 +92,21 @@ pub fn vsi_copy(src: &str, dst: &str, options: JsValue) -> Result<JsValue, JsErr
 }
 
 /// Deletes a `/vsimem/` file, or a directory with `recursive` (the root of `/vsimem/` is
-/// refused). Returns the report.
+/// refused). Options: `{ recursive }`; the original boolean argument is also accepted.
+/// Returns the report.
 #[wasm_bindgen(js_name = vsiDelete)]
-pub fn vsi_delete(path: &str, recursive: Option<bool>) -> Result<JsValue, JsError> {
-    to_js(&vsi::delete(path, recursive.unwrap_or(false)).map_err(js_err)?)
+pub fn vsi_delete(path: &str, options: JsValue) -> Result<JsValue, JsError> {
+    #[derive(Deserialize, Default)]
+    #[serde(default, deny_unknown_fields)]
+    struct DeleteOptions {
+        recursive: bool,
+    }
+    // Keep the original boolean argument compatible with existing callers.
+    let recursive = match options.as_bool() {
+        Some(recursive) => recursive,
+        None => parse_options::<DeleteOptions>(&options)?.recursive,
+    };
+    to_js(&vsi::delete(path, recursive).map_err(js_err)?)
 }
 
 /// Moves (renames) a `/vsimem/` file or directory. Returns the report.

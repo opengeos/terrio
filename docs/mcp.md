@@ -51,8 +51,14 @@ Without installing anything but [uv](https://docs.astral.sh/uv/), use `uvx` as t
 
 The tools read and write whatever the commands can: local files, and inputs from URLs and cloud
 storage (see [Remote Data](remote-data.md)). `info`, `crs` and `formats` only read; the other
-commands write their output files, and can overwrite existing ones. Clients ask before running a
-tool unless you allow it, so review the arguments before you approve a command that writes.
+commands write their output files, and can overwrite existing ones. The `vsi` tool also copies
+local files to S3 or Azure destinations and recursively deletes local directories or object
+prefixes with the same options and path guards as the CLI. It uses credentials available to the
+server process. Its write/destructive annotations are hints, not authorization enforcement;
+Terrio does not require a separate confirmation argument or restrict upload destinations.
+Configure the MCP client's tool permissions, the server's filesystem access and cloud credentials
+to the scope you intend to allow, and review source and destination arguments before permitting
+a mutation.
 
 Relative paths are relative to the directory the client started the server in; agents do better
 with absolute paths. A command's output (standard output and error together) is cut after 100,000

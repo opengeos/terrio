@@ -5,7 +5,7 @@
 
 use super::ReadSeek;
 use crate::{Error, Result};
-use std::io::{Read, SeekFrom};
+use std::io::{BufReader, Read, SeekFrom};
 
 const EOCD: u32 = 0x0605_4b50;
 const ZIP64_LOCATOR: u32 = 0x0706_4b50;
@@ -42,7 +42,7 @@ impl CdEntry {
         if !(1..=12).contains(&m) || day == 0 {
             return None;
         }
-        Some(super::civil_seconds(y, m, day, t >> 11, (t >> 5) & 63, (t & 31) * 2))
+        Some(crate::civil_time::unix_seconds(y, m, day, t >> 11, (t >> 5) & 63, (t & 31) * 2))
     }
 }
 
@@ -114,65 +114,97 @@ pub(crate) fn central_directory(r: &mut dyn ReadSeek) -> Result<Vec<CdEntry>> {
             cd_offset = u64_at(&z, 48);
         }
     }
-    if cd_offset.checked_add(cd_size).is_none_or(|end| end > len) || cd_size > 1 << 32 {
+    if cd_offset.checked_add(cd_size).is_none_or(|end| end > len) {
         return Err(invalid("central directory out of bounds"));
     }
-    let cd = read_at(r, cd_offset, cd_size as usize)?;
-    let mut out = Vec::with_capacity(count.min(1 << 20) as usize);
-    let mut i = 0usize;
-    while i + 46 <= cd.len() && u32_at(&cd, i) == CENTRAL {
-        let flags = u16_at(&cd, i + 8);
-        let method = u16_at(&cd, i + 10);
-        let dos_time = u16_at(&cd, i + 12);
-        let dos_date = u16_at(&cd, i + 14);
-        let crc32 = u32_at(&cd, i + 16);
-        let mut compressed_size = u32_at(&cd, i + 20) as u64;
-        let mut uncompressed_size = u32_at(&cd, i + 24) as u64;
-        let name_len = u16_at(&cd, i + 28) as usize;
-        let extra_len = u16_at(&cd, i + 30) as usize;
-        let comment_len = u16_at(&cd, i + 32) as usize;
-        let mut local_offset = u32_at(&cd, i + 42) as u64;
-        let end = i + 46 + name_len + extra_len + comment_len;
-        if end > cd.len() {
+    r.seek(SeekFrom::Start(cd_offset))?;
+    // Do not allocate the advertised directory size or entry count. Both can be
+    // forged by a remote server; parse validated records through a bounded buffer.
+    let mut cd = BufReader::with_capacity(64 * 1024, r.take(cd_size));
+    let mut remaining = cd_size;
+    let mut out = Vec::new();
+    while remaining > 0 {
+        if remaining < 4 {
             return Err(invalid("truncated central directory"));
         }
-        let name = decode_name(&cd[i + 46..i + 46 + name_len], flags & 0x800 != 0);
-        // The zip64 extra field holds the values stored as 0xFFFFFFFF, in this order.
-        let mut extra = &cd[i + 46 + name_len..i + 46 + name_len + extra_len];
+        let mut h = [0; 46];
+        cd.read_exact(&mut h[..4])?;
+        remaining -= 4;
+        match u32_at(&h, 0) {
+            0x0505_4b50 => {
+                if remaining < 2 {
+                    return Err(invalid("truncated digital signature"));
+                }
+                cd.read_exact(&mut h[4..6])?;
+                remaining -= 2;
+                let size = u16_at(&h, 4) as usize;
+                if remaining != size as u64 {
+                    return Err(invalid("corrupt central directory record"));
+                }
+                cd.read_exact(&mut vec![0; size])?;
+                break;
+            }
+            CENTRAL => {}
+            _ => return Err(invalid("corrupt central directory record")),
+        }
+        if remaining < 42 {
+            return Err(invalid("truncated central directory"));
+        }
+        cd.read_exact(&mut h[4..])?;
+        remaining -= 42;
+        let flags = u16_at(&h, 8);
+        let method = u16_at(&h, 10);
+        let dos_time = u16_at(&h, 12);
+        let dos_date = u16_at(&h, 14);
+        let crc32 = u32_at(&h, 16);
+        let mut compressed_size = u32_at(&h, 20) as u64;
+        let mut uncompressed_size = u32_at(&h, 24) as u64;
+        let name_len = u16_at(&h, 28) as usize;
+        let extra_len = u16_at(&h, 30) as usize;
+        let comment_len = u16_at(&h, 32) as usize;
+        let mut local_offset = u32_at(&h, 42) as u64;
+        // Each variable field is u16-sized, so this is at most 196605 bytes.
+        let size = name_len + extra_len + comment_len;
+        if size as u64 > remaining {
+            return Err(invalid("truncated central directory"));
+        }
+        let mut fields = vec![0; size];
+        cd.read_exact(&mut fields)?;
+        remaining -= size as u64;
+        let name = decode_name(&fields[..name_len], flags & 0x800 != 0);
+        // Zip64 stores the values marked 0xFFFFFFFF in this order.
+        let mut extra = &fields[name_len..name_len + extra_len];
         while extra.len() >= 4 {
             let (id, size) = (u16_at(extra, 0), u16_at(extra, 2) as usize);
             let body = &extra[4..(4 + size).min(extra.len())];
             if id == 1 {
                 let mut k = 0;
-                for v in [&mut uncompressed_size, &mut compressed_size, &mut local_offset] {
-                    if *v == 0xFFFF_FFFF && k + 8 <= body.len() {
-                        *v = u64_at(body, k);
+                for value in [&mut uncompressed_size, &mut compressed_size, &mut local_offset] {
+                    if *value == 0xFFFF_FFFF && k + 8 <= body.len() {
+                        *value = u64_at(body, k);
                         k += 8;
                     }
                 }
             }
             extra = &extra[(4 + size).min(extra.len())..];
         }
+        out.try_reserve(1).map_err(|_| invalid("cannot allocate central directory entries"))?;
         out.push(CdEntry { name, flags, method, dos_time, dos_date, crc32, compressed_size, uncompressed_size, local_offset });
-        i = end;
     }
     if out.len() as u64 != count {
         return Err(invalid("central directory entry count mismatch"));
-    }
-    // The only permitted trailing directory record is the optional digital signature.
-    if i < cd.len() && !(cd.len() - i >= 6 && u32_at(&cd, i) == 0x0505_4b50 && i + 6 + u16_at(&cd, i + 4) as usize == cd.len()) {
-        return Err(invalid("corrupt central directory record"));
     }
     Ok(out)
 }
 
 /// The offset of a member's data: past its local header.
 pub(crate) fn data_offset(r: &mut dyn ReadSeek, e: &CdEntry) -> Result<u64> {
+    let header_end = e.local_offset.checked_add(30).ok_or_else(|| invalid("local header offset overflow"))?;
     let h = read_at(r, e.local_offset, 30)?;
     if u32_at(&h, 0) != LOCAL {
         return Err(invalid(&format!("no local header for '{}'", e.name)));
     }
-    Ok(e.local_offset + 30 + u16_at(&h, 26) as u64 + u16_at(&h, 28) as u64)
+    header_end.checked_add(u16_at(&h, 26) as u64 + u16_at(&h, 28) as u64).ok_or_else(|| invalid("member data offset overflow"))
 }
 
 /// Copies a member's uncompressed bytes into `out`, checking its CRC-32.
@@ -235,10 +267,39 @@ mod tests {
             zip.finish().unwrap();
         }
         let mut r = std::io::Cursor::new(buf.into_inner());
+        let mut oversized = r.get_ref().clone();
+        let end = oversized.windows(4).rposition(|w| w == EOCD.to_le_bytes()).unwrap();
+        oversized[end + 12..end + 16].copy_from_slice(&(1u32 << 20).to_le_bytes());
+        // A malformed record cannot request a directory-sized read/allocation.
+        let mut forged = vec![0; (1 << 20) + 22];
+        forged[(1 << 20)..].copy_from_slice(&oversized[end..end + 22]);
+        forged[(1 << 20) + 16..(1 << 20) + 20].copy_from_slice(&0u32.to_le_bytes());
+        struct Counted {
+            cursor: std::io::Cursor<Vec<u8>>,
+            max_read: usize,
+        }
+        impl Read for Counted {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                self.max_read = self.max_read.max(buf.len());
+                self.cursor.read(buf)
+            }
+        }
+        impl std::io::Seek for Counted {
+            fn seek(&mut self, pos: SeekFrom) -> std::io::Result<u64> {
+                self.cursor.seek(pos)
+            }
+        }
+        let mut forged = Counted { cursor: std::io::Cursor::new(forged), max_read: 0 };
+        assert!(central_directory(&mut forged).is_err());
+        assert!(forged.max_read <= 64 * 1024);
+
         let cd = central_directory(&mut r).unwrap();
         let names: Vec<&str> = cd.iter().map(|e| e.name.as_str()).collect();
         assert_eq!(names, ["d/", "d/a.txt", "b.bin", "big.txt"]);
         assert!(cd[0].is_dir());
+        let mut overflow = cd[1].clone();
+        overflow.local_offset = u64::MAX - 1;
+        assert!(data_offset(&mut r, &overflow).unwrap_err().to_string().contains("overflow"));
         let mut out = Vec::new();
         extract(&mut r, &cd[1], &mut out).unwrap();
         assert_eq!(out, b"hello ".repeat(1000));

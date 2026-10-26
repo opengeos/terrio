@@ -22,8 +22,8 @@ pub(crate) const MAX_SINGLE_UPLOAD: u64 = 5 << 30;
 /// The metadata of one remote object.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ObjectStat {
-    /// The size in bytes.
-    pub size: u64,
+    /// The size in bytes, when the response headers provide it.
+    pub size: Option<u64>,
     /// The last modification time, in seconds since the Unix epoch.
     pub modified: Option<i64>,
     /// The entity tag, without quotes.
@@ -97,7 +97,9 @@ fn list_pages(dir: &Directory, recursive: bool, max: Option<u32>, allow_partial:
                 }
                 fetched.data
             }
-            _ => match list_get(&api.request_url_limited(token.as_deref(), recursive, max).unwrap_or_default())? {
+            _ => match list_get(
+                &api.request_url_limited(token.as_deref(), recursive, max).expect("non-S3 listing APIs always provide a URL"),
+            )? {
                 Some(b) => b,
                 None => return Ok(None),
             },
@@ -195,18 +197,24 @@ pub(crate) fn stat(remote: &Remote) -> Result<Option<ObjectStat>> {
     let etag = header("etag").map(|e| e.trim_matches('"').to_string());
     let total = header("content-range").and_then(|v| super::content_range_total(&v));
     let length = header("content-length").and_then(|v| v.trim().parse::<u64>().ok());
-    let mut body = Vec::new();
-    let _ = response.into_body().into_reader().take(1 << 20).read_to_end(&mut body);
     super::REQUESTS.fetch_add(1, Ordering::Relaxed);
-    super::BYTES.fetch_add(body.len() as u64, Ordering::Relaxed);
     if matches!(status, 403 | 404) {
         return Ok(None);
     }
+    // A server may ignore Range and send its entire object. For 200, the
+    // headers are enough; do not consume a potentially huge response body.
+    if matches!(status, 206 | 416) {
+        let mut body = Vec::new();
+        response.into_body().into_reader().take(1).read_to_end(&mut body)?;
+        super::BYTES.fetch_add(body.len() as u64, Ordering::Relaxed);
+    }
     let size = match status {
-        206 => total.unwrap_or(body.len() as u64),
-        200 => length.unwrap_or(body.len() as u64),
-        // 416: the range starts past the end, an empty object.
-        _ => total.unwrap_or(0),
+        206 => total,
+        200 => length,
+        204 => Some(0),
+        // 416: a request starting at byte zero is past an empty object's end.
+        416 => Some(total.unwrap_or(0)),
+        _ => total,
     };
     Ok(Some(ObjectStat { size, modified, etag }))
 }
@@ -495,6 +503,43 @@ mod tests {
         reader.read_exact(&mut body).unwrap();
         write!(stream, "HTTP/1.1 {status} Test\r\nLocation: {location}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
         body
+    }
+
+    #[test]
+    fn stat_uses_200_headers_without_waiting_for_the_body() {
+        use std::sync::mpsc;
+        for size in [Some(8 * 1024 * 1024), None] {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let remote = Remote::Url(format!("http://{}/object", listener.local_addr().unwrap()));
+            let (ready, headers_ready) = mpsc::channel();
+            let (release, close_body) = mpsc::channel();
+            let server = std::thread::spawn(move || {
+                let mut stream = listener.accept().unwrap().0;
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                loop {
+                    let mut line = String::new();
+                    reader.read_line(&mut line).unwrap();
+                    if line.trim().is_empty() {
+                        break;
+                    }
+                }
+                let length = size.map(|n| format!("Content-Length: {n}\r\n")).unwrap_or_default();
+                write!(stream, "HTTP/1.1 200 OK\r\n{length}Connection: close\r\n\r\n").unwrap();
+                ready.send(()).unwrap();
+                let _ = close_body.recv_timeout(Duration::from_secs(10));
+                // No body or EOF is available until the caller has received stat's result.
+            });
+            let (result, received) = mpsc::channel();
+            let request = std::thread::spawn(move || {
+                let _ = result.send(stat(&remote));
+            });
+            headers_ready.recv_timeout(Duration::from_secs(5)).unwrap();
+            let metadata = received.recv_timeout(Duration::from_secs(3));
+            let _ = release.send(());
+            server.join().unwrap();
+            request.join().unwrap();
+            assert_eq!(metadata.expect("stat must not wait for body/EOF").unwrap().unwrap().size, size.map(|n| n as u64));
+        }
     }
 
     #[test]

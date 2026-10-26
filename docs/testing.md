@@ -676,6 +676,17 @@ implied by object keys in recursive object store listings, which terrio lists as
 local directories. Listing Natural Earth's 4.9 MB remote `ne_10m_admin_0_countries.zip` takes
 terrio 4 requests and about 32 KB.
 
+A review regression fixture with an 8 MiB member served over local HTTP compares the previous
+and updated VSI paths (body bytes counted by the client): copying a stored ZIP member uses
+131 requests instead of 515, with the same 8,421,608 bytes received; listing the ZIP still uses
+4 requests and 32,885 bytes. Recursive tar.gz extraction uses 3 requests instead of 273,
+receiving 8,847,427 versus 8,847,361 bytes, including archive discovery. Both extracted members
+have the source SHA-256. These are I/O counts, not timing benchmarks. ZIP directory parsing
+uses a 64 KiB read buffer; compressed tar payload passes use a sequential response. A separate
+HTTP regression withholds the response body and checks that metadata-only stat returns from
+200 headers, preserving an unknown size when Content-Length is absent.
+
+
 ```sh
 python scripts/compare_vsi_with_gdal.py ../terrio-data --terrio target/release/terrio [--remote]
 python scripts/conformance.py ../terrio-data --only vsi

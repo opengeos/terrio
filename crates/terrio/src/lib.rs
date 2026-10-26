@@ -182,6 +182,7 @@
 pub mod arrow;
 #[cfg(feature = "avif")]
 mod avif;
+mod civil_time;
 mod cog;
 pub mod crs;
 mod dataset;

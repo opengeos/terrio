@@ -103,16 +103,6 @@ fn format_time(secs: i64) -> String {
     format!("{year:04}-{month:02}-{day:02} {:02}:{:02}:{:02}Z", rem / 3600, rem % 3600 / 60, rem % 60)
 }
 
-/// The seconds since the epoch of a civil UTC date and time.
-fn civil_seconds(y: i64, m: i64, d: i64, h: i64, mi: i64, s: i64) -> i64 {
-    let yy = if m <= 2 { y - 1 } else { y };
-    let era = yy.div_euclid(400);
-    let yoe = yy - era * 400;
-    let doy = (153 * (m + if m > 2 { -3 } else { 9 }) + 2) / 5 + d - 1;
-    let days = era * 146_097 + yoe * 365 + yoe / 4 - yoe / 100 + doy - 719_468;
-    days * 86_400 + h * 3600 + mi * 60 + s
-}
-
 /// Options of [`list`].
 #[derive(Debug, Clone, Default)]
 pub struct ListOptions {
@@ -245,6 +235,7 @@ fn archive_end(s: &str, extensions: &[&str]) -> Option<(usize, usize)> {
 
 impl Node {
     fn parse(input: &str) -> Result<Node> {
+        let original = input;
         let input = input.trim();
         let shown = listing::redact_url(input);
         if input.is_empty() {
@@ -271,7 +262,7 @@ impl Node {
             return Err(Error::Unsupported(format!("'{shown}': this virtual file system is not supported")));
         }
         Ok(match crate::vfs::Location::parse_unarchived(input) {
-            crate::vfs::Location::Local(p) => Node::Local(p.components().collect()),
+            crate::vfs::Location::Local(_) => Node::Local(Path::new(original).components().collect()),
             crate::vfs::Location::S3 { bucket, key } => {
                 if bucket.is_empty() {
                     return Err(Error::InvalidArgument(format!("'{shown}': no bucket")));
@@ -544,7 +535,7 @@ fn remote_stat(node: &Node) -> Result<Option<Stat>> {
             return Ok(Some(Stat::directory()));
         }
         if let Some(s) = store::stat(&remote)? {
-            return Ok(Some(Stat { dir: false, size: Some(s.size), modified: s.modified, permissions: None, etag: s.etag }));
+            return Ok(Some(Stat { dir: false, size: s.size, modified: s.modified, permissions: None, etag: s.etag }));
         }
         if let Node::S3 { bucket, key } = node {
             let marker =
@@ -563,7 +554,7 @@ fn remote_stat(node: &Node) -> Result<Option<Stat>> {
     {
         return Ok(Some(Stat::directory()));
     }
-    Ok(store::stat(&remote)?.map(|s| Stat { dir: false, size: Some(s.size), modified: s.modified, permissions: None, etag: s.etag }))
+    Ok(store::stat(&remote)?.map(|s| Stat { dir: false, size: s.size, modified: s.modified, permissions: None, etag: s.etag }))
 }
 
 /// The entries below a directory node (`recursive`: at any depth), named relative to it.
@@ -648,15 +639,32 @@ fn remote_read_dir(node: &Node, max_depth: usize) -> Result<Vec<Entry>> {
         etag: e.etag,
     };
     if store::is_object_store(&dir) {
-        // One listing (paged) without a delimiter returns every key below the prefix.
-        let recursive = max_depth > 1;
-        let listed = store::list_objects(&dir, recursive)?.ok_or_else(|| {
-            Error::Unsupported(format!(
-                "'{}': the store refused to list it (not a public listing, or credentials missing)",
-                display_node(node)
-            ))
-        })?;
-        return Ok(listed.into_iter().map(to_entry).collect());
+        let list_level = |node: &Node, recursive| -> Result<Vec<store::ObjectEntry>> {
+            store::list_objects(&node.directory().ok_or_else(|| Error::InvalidArgument("not remote".into()))?, recursive)?.ok_or_else(
+                || {
+                    Error::Unsupported(format!(
+                        "'{}': the store refused to list it (not public, or credentials missing)",
+                        display_node(node)
+                    ))
+                },
+            )
+        };
+        if max_depth == usize::MAX {
+            // A full recursive listing is most efficient as one paged prefix scan.
+            return Ok(list_level(node, true)?.into_iter().map(to_entry).collect());
+        }
+        let mut out = Vec::new();
+        let mut pending = vec![(node.clone(), String::new(), 1usize)];
+        while let Some((directory, relative, level)) = pending.pop() {
+            for entry in list_level(&directory, false)? {
+                let name = join_key(&relative, &entry.name);
+                if entry.dir && level < max_depth {
+                    pending.push((directory.join(&entry.name), name.clone(), level + 1));
+                }
+                out.push(to_entry(store::ObjectEntry { name, ..entry }));
+            }
+        }
+        return Ok(out);
     }
     // A plain HTTP server: one index page per directory.
     let Node::Url { base, query } = node else { unreachable!("S3 is an object store") };
@@ -717,11 +725,9 @@ fn archive_entries(archive: &Node, kind: ArchiveKind) -> Result<Vec<Entry>> {
     }
     dirs.sort();
     dirs.dedup();
-    for d in dirs {
-        if !out.iter().any(|e| e.name == d) {
-            out.push(Stat::directory().entry(d));
-        }
-    }
+    let existing: std::collections::HashSet<&str> = out.iter().map(|entry| entry.name.as_str()).collect();
+    let missing: Vec<_> = dirs.into_iter().filter(|name| !existing.contains(name.as_str())).collect();
+    out.extend(missing.into_iter().map(|name| Stat::directory().entry(name)));
     Ok(out)
 }
 
@@ -734,7 +740,9 @@ fn clean_member(name: &str) -> String {
 
 /// Runs `f` on the archive's bytes as a seekable reader: a local file, a file in memory, or a
 /// remote file read by range requests.
-fn with_archive_reader<T>(archive: &Node, f: impl FnOnce(&mut dyn ReadSeek) -> Result<T>) -> Result<T> {
+fn with_archive_reader<T>(archive: &Node, metadata_only: bool, f: impl FnOnce(&mut dyn ReadSeek) -> Result<T>) -> Result<T> {
+    #[cfg(not(remote))]
+    let _ = metadata_only;
     match archive {
         Node::Local(p) => {
             let mut file = std::io::BufReader::new(std::fs::File::open(p).map_err(|e| io_context(e, &p.display().to_string()))?);
@@ -747,9 +755,13 @@ fn with_archive_reader<T>(archive: &Node, f: impl FnOnce(&mut dyn ReadSeek) -> R
         #[cfg(remote)]
         Node::S3 { .. } | Node::Url { .. } => {
             let remote = archive.remote().ok_or_else(|| Error::InvalidArgument("not remote".into()))?;
-            // Small blocks: an archive's end, directory and members are read at scattered offsets.
+            // Small blocks for metadata discovery; payload reads use the default
+            // larger blocks to avoid one HTTP request per 16 KiB of member data.
             let mut options = crate::http::HttpOptions::from_env();
-            if std::env::var_os("TERRIO_HTTP_BLOCK_SIZE").is_none() && std::env::var_os("CPL_VSIL_CURL_CHUNK_SIZE").is_none() {
+            if metadata_only
+                && std::env::var_os("TERRIO_HTTP_BLOCK_SIZE").is_none()
+                && std::env::var_os("CPL_VSIL_CURL_CHUNK_SIZE").is_none()
+            {
                 options.block_size = 16 * 1024;
             }
             let mut reader = crate::http::RangeReader::open_with(&remote, options)?;
@@ -759,6 +771,15 @@ fn with_archive_reader<T>(archive: &Node, f: impl FnOnce(&mut dyn ReadSeek) -> R
         Node::S3 { .. } | Node::Url { .. } => Err(Error::Unsupported(remote_disabled_message())),
         Node::Archive { .. } => Err(Error::Unsupported("archives inside archives are not supported".into())),
     }
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn with_archive_stream<T>(archive: &Node, read: impl FnOnce(&mut dyn Read) -> Result<T>) -> Result<T> {
+    #[cfg(remote)]
+    if let Some(remote) = archive.remote() {
+        return crate::http::with_reader(&remote, read);
+    }
+    with_archive_reader(archive, false, |reader| read(reader))
 }
 
 /// A seekable reader.
@@ -793,7 +814,7 @@ fn zip_index(archive: &Node, reader: &mut dyn ReadSeek) -> Result<std::rc::Rc<Zi
 }
 
 fn zip_entries(archive: &Node) -> Result<Vec<Entry>> {
-    with_archive_reader(archive, |r| {
+    with_archive_reader(archive, true, |r| {
         let mut out = Vec::new();
         for f in &zip_index(archive, r)?.entries {
             let name = clean_member(&f.name);
@@ -834,24 +855,25 @@ fn tar_entry<R: Read>(entry: &tar::Entry<'_, R>) -> Option<Entry> {
 
 #[cfg(not(target_family = "wasm"))]
 fn tar_entries(archive: &Node, kind: ArchiveKind) -> Result<Vec<Entry>> {
-    with_archive_reader(archive, |r| {
-        let mut out = Vec::new();
-        if kind == ArchiveKind::TarGz {
-            let gz: &mut dyn Read = &mut flate2::read::MultiGzDecoder::new(r);
-            let mut tar = tar::Archive::new(gz);
+    if kind == ArchiveKind::TarGz {
+        return with_archive_stream(archive, |reader| {
+            let mut tar = tar::Archive::new(flate2::read::MultiGzDecoder::new(reader));
+            let mut out = Vec::new();
             for entry in tar.entries()? {
                 if let Some(entry) = tar_entry(&entry?) {
                     out.push(entry);
                 }
             }
-        } else {
-            // Seeking past the members' contents: a remote archive's headers only are fetched.
-            let mut tar = tar::Archive::new(SeekRead(r));
-            for entry in tar.entries_with_seek()? {
-                let entry = entry?;
-                if let Some(entry) = tar_entry(&entry) {
-                    out.push(entry);
-                }
+            Ok(out)
+        });
+    }
+    with_archive_reader(archive, true, |reader| {
+        let mut out = Vec::new();
+        // Plain tar can seek over payloads, fetching only headers remotely.
+        let mut tar = tar::Archive::new(SeekRead(reader));
+        for entry in tar.entries_with_seek()? {
+            if let Some(entry) = tar_entry(&entry?) {
+                out.push(entry);
             }
         }
         Ok(out)
@@ -875,33 +897,35 @@ impl std::io::Seek for SeekRead<'_> {
 
 /// Copies an archive member's bytes into `out`.
 fn read_member(archive: &Node, kind: ArchiveKind, inner: &str, out: &mut dyn Write) -> Result<u64> {
-    with_archive_reader(archive, |r| match kind {
+    #[cfg(not(target_family = "wasm"))]
+    if kind == ArchiveKind::TarGz {
+        return with_archive_stream(archive, |reader| read_tar_member(&mut flate2::read::MultiGzDecoder::new(reader), inner, out));
+    }
+    with_archive_reader(archive, false, |reader| match kind {
         ArchiveKind::Zip => {
-            let index = zip_index(archive, r)?;
+            let index = zip_index(archive, reader)?;
             let entry = index.by_name.get(inner).map(|&i| &index.entries[i]).ok_or_else(|| not_found(inner))?;
-            zipdir::extract(r, entry, out)
+            zipdir::extract(reader, entry, out)
         }
         #[cfg(not(target_family = "wasm"))]
-        ArchiveKind::Tar | ArchiveKind::TarGz => {
-            let mut gz;
-            let reader: &mut dyn Read = if kind == ArchiveKind::TarGz {
-                gz = flate2::read::MultiGzDecoder::new(r);
-                &mut gz
-            } else {
-                r
-            };
-            let mut tar = tar::Archive::new(reader);
-            for entry in tar.entries()? {
-                let mut entry = entry?;
-                if clean_member(&String::from_utf8_lossy(&entry.path_bytes())) == inner && entry.header().entry_type().is_file() {
-                    return Ok(std::io::copy(&mut entry, out)?);
-                }
-            }
-            Err(not_found(inner))
-        }
+        ArchiveKind::Tar => read_tar_member(reader, inner, out),
+        #[cfg(not(target_family = "wasm"))]
+        ArchiveKind::TarGz => unreachable!("compressed tar uses a sequential stream"),
         #[cfg(target_family = "wasm")]
         ArchiveKind::Tar | ArchiveKind::TarGz => Err(Error::Unsupported("tar archives are not supported in WebAssembly builds".into())),
     })
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn read_tar_member(reader: &mut dyn Read, inner: &str, out: &mut dyn Write) -> Result<u64> {
+    let mut tar = tar::Archive::new(reader);
+    for entry in tar.entries()? {
+        let mut entry = entry?;
+        if clean_member(&String::from_utf8_lossy(&entry.path_bytes())) == inner && entry.header().entry_type().is_file() {
+            return Ok(std::io::copy(&mut entry, out)?);
+        }
+    }
+    Err(not_found(inner))
 }
 
 /// Restricts the last HTML page cache to one public operation, including error exits.
@@ -1017,7 +1041,9 @@ fn write_local_atomic(path: &Path, fill: impl FnOnce(&mut std::fs::File) -> Resu
 }
 
 /// Copies one file from `src` to `dst`; returns the bytes copied.
-fn copy_file(src: &Node, dst: &Node, _known_size: Option<u64>) -> Result<u64> {
+fn copy_file(src: &Node, dst: &Node, known_size: Option<u64>) -> Result<u64> {
+    #[cfg(not(remote))]
+    let _ = known_size;
     if let Some(reason) = dst.read_only_reason() {
         return Err(Error::Unsupported(format!("'{}': {reason}", display_node(dst))));
     }
@@ -1048,7 +1074,7 @@ fn copy_file(src: &Node, dst: &Node, _known_size: Option<u64>) -> Result<u64> {
             match (src, &remote) {
                 // Within S3: a server-side copy.
                 (Node::S3 { bucket, key }, crate::http::Remote::S3(to)) => {
-                    let size = match _known_size {
+                    let size = match known_size {
                         Some(size) => size,
                         None => stat_node(src)?.and_then(|s| s.size).unwrap_or(0),
                     };
@@ -1204,7 +1230,7 @@ pub fn list(path: &str, options: &ListOptions) -> Result<Vec<Entry>> {
             if let Some(remote) = node.join(&e.name).remote()
                 && let Ok(Some(s)) = crate::http::store::stat(&remote)
             {
-                e.size = Some(s.size);
+                e.size = s.size;
                 e.modified = s.modified;
                 e.etag = s.etag;
             }
@@ -1252,9 +1278,6 @@ pub fn stat(path: &str) -> Result<Option<Entry>> {
 fn copy_target(src: &Node, dst_input: &str, dst: &Node) -> Result<Node> {
     let existing_directory = stat_node(dst)?.is_some_and(|s| s.dir);
     let into = dst_input.trim().ends_with('/') || existing_directory;
-    if existing_directory && matches!(src, Node::Archive { .. }) {
-        return archive_target(dst, &src.file_name());
-    }
     Ok(if into { archive_target(dst, &src.file_name())? } else { dst.clone() })
 }
 
@@ -1389,7 +1412,26 @@ fn copy_tar_reader(
     let mut made = std::collections::HashSet::new();
     for entry in archive.entries()? {
         let mut entry = entry?;
-        let Some(info) = tar_entry(&entry) else { continue };
+        let Some(info) = tar_entry(&entry) else {
+            let name = clean_member(&String::from_utf8_lossy(&entry.path_bytes()));
+            let relative = if inner.is_empty() {
+                name.as_str()
+            } else {
+                let Some(relative) = name.strip_prefix(&prefix) else {
+                    continue;
+                };
+                relative
+            };
+            if relative.is_empty() || sync.is_some_and(|o| !o.recursive) && relative.contains('/') {
+                continue;
+            }
+            let error = Error::Unsupported(format!("'{relative}': tar links and non-file entries are not supported"));
+            if skip_errors {
+                report.errors.push((relative.into(), error.to_string()));
+                continue;
+            }
+            return Err(error);
+        };
         let relative = if inner.is_empty() {
             info.name.as_str()
         } else {
@@ -1427,7 +1469,21 @@ fn copy_tar_reader(
                 make_dir(&dst.join(parent))?;
             }
         }
-        let result = if info.is_dir() { make_dir(&target).map(|()| None) } else { write_member(&target, &mut entry).map(Some) };
+        let result = if info.is_dir() {
+            make_dir(&target).map(|()| None)
+        } else if let Node::Mem(key) = &target
+            && sync.is_some_and(|o| o.strategy != SyncStrategy::Overwrite)
+            && targets.get(relative).is_some_and(|t| !t.is_dir() && t.size == info.size)
+        {
+            let result = sync_mem_member(key, &mut entry);
+            if matches!(&result, Ok(None)) {
+                report.unchanged += 1;
+                continue;
+            }
+            result
+        } else {
+            write_member(&target, &mut entry).map(Some)
+        };
         match result {
             Ok(Some(bytes)) => {
                 report.copied += 1;
@@ -1441,21 +1497,32 @@ fn copy_tar_reader(
     Ok(())
 }
 
+#[cfg(not(target_family = "wasm"))]
+fn sync_mem_member(key: &str, input: &mut dyn Read) -> Result<Option<u64>> {
+    let mut bytes = Vec::new();
+    input.read_to_end(&mut bytes)?;
+    if crate::memfs::read(Path::new(key))?.as_slice() == bytes {
+        return Ok(None);
+    }
+    let n = bytes.len() as u64;
+    crate::memfs::write(Path::new(key), bytes)?;
+    Ok(Some(n))
+}
+
 /// Copies a directory's tree: every file (and directory) below `src` to the same name below
 /// `dst`. With `sync`, files whose target is up to date are left.
-fn copy_tree(src: &Node, dst: &Node, skip_errors: bool, sync: Option<(&SyncOptions, bool)>, report: &mut Report) -> Result<()> {
-    let recursive = sync.is_none_or(|(o, _)| o.recursive);
+fn copy_tree(src: &Node, dst: &Node, skip_errors: bool, sync: Option<&SyncOptions>, report: &mut Report) -> Result<()> {
+    let recursive = sync.is_none_or(|o| o.recursive);
     #[cfg(not(target_family = "wasm"))]
     if let Node::Archive { archive, kind, inner } = src
         && matches!(kind, ArchiveKind::Tar | ArchiveKind::TarGz)
     {
-        return with_archive_reader(archive, |reader| {
-            if *kind == ArchiveKind::TarGz {
-                copy_tar_reader(&mut flate2::read::MultiGzDecoder::new(reader), inner, dst, skip_errors, sync.map(|(o, _)| o), report)
-            } else {
-                copy_tar_reader(reader, inner, dst, skip_errors, sync.map(|(o, _)| o), report)
-            }
-        });
+        if *kind == ArchiveKind::TarGz {
+            return with_archive_stream(archive, |reader| {
+                copy_tar_reader(&mut flate2::read::MultiGzDecoder::new(reader), inner, dst, skip_errors, sync, report)
+            });
+        }
+        return with_archive_reader(archive, false, |reader| copy_tar_reader(reader, inner, dst, skip_errors, sync, report));
     }
     // A non-recursive sync creates the subdirectories, empty, as GDAL does.
     let entries = read_dir(src, recursive, None)?;
@@ -1503,7 +1570,7 @@ fn copy_tree(src: &Node, dst: &Node, skip_errors: bool, sync: Option<(&SyncOptio
             }
             continue;
         }
-        if let Some((options, _)) = sync {
+        if let Some(options) = sync {
             let target = target_index.get(e.name.as_str()).filter(|t| !t.is_dir());
             if let Some(t) = target
                 && up_to_date(&from, e, &to, t, options.strategy)?
@@ -1526,11 +1593,27 @@ fn copy_tree(src: &Node, dst: &Node, skip_errors: bool, sync: Option<(&SyncOptio
 
 /// Whether the target of a sync is up to date with its source.
 fn up_to_date(src: &Node, s: &Entry, dst: &Node, t: &Entry, strategy: SyncStrategy) -> Result<bool> {
-    let timestamp = || s.size == t.size && matches!((s.modified, t.modified), (Some(a), Some(b)) if a <= b);
+    let timestamp = || -> Result<bool> {
+        if s.size != t.size {
+            return Ok(false);
+        }
+        if let (Some(a), Some(b)) = (s.modified, t.modified) {
+            return Ok(a <= b);
+        }
+        // In-memory files have no portable clock on WebAssembly. Compare content
+        // when either endpoint is untimed memory instead of recopying it forever.
+        if matches!(src, Node::Mem(_)) || matches!(dst, Node::Mem(_)) {
+            return Ok(md5_of(src)? == md5_of(dst)?);
+        }
+        Ok(false)
+    };
     Ok(match strategy {
         SyncStrategy::Overwrite => false,
-        SyncStrategy::Timestamp => timestamp(),
+        SyncStrategy::Timestamp => timestamp()?,
         SyncStrategy::ETag => {
+            if matches!((&s.etag, &t.etag), (Some(a), Some(b)) if a != b) {
+                return Ok(false);
+            }
             let single_part = |e: &Option<String>| e.clone().filter(|e| !e.contains('-'));
             match (single_part(&s.etag), single_part(&t.etag)) {
                 (Some(a), Some(b)) => a == b,
@@ -1551,7 +1634,7 @@ fn up_to_date(src: &Node, s: &Entry, dst: &Node, t: &Entry, strategy: SyncStrate
                 {
                     md5_of(dst)? == a.to_ascii_lowercase()
                 }
-                _ => s.size == t.size && (s.etag.is_some() && s.etag == t.etag || timestamp()),
+                _ => s.size == t.size && (s.etag.is_some() && s.etag == t.etag || timestamp()?),
             }
         }
     })
@@ -1750,7 +1833,13 @@ pub fn rename(src: &str, dst: &str) -> Result<Report> {
             std::fs::create_dir_all(parent)?;
         }
         match std::fs::rename(a, b) {
-            Ok(()) => return Ok(Report { copied: 1, bytes: stat.size.unwrap_or(0), ..Default::default() }),
+            Ok(()) => {
+                return Ok(Report {
+                    copied: u64::from(!stat.dir),
+                    bytes: if stat.dir { 0 } else { stat.size.unwrap_or(0) },
+                    ..Default::default()
+                });
+            }
             // Across file systems: copied, then deleted, below.
             Err(e) if e.kind() == std::io::ErrorKind::CrossesDevices => {}
             Err(e) => return Err(Error::Io(std::io::Error::new(e.kind(), format!("moving '{src}' to '{}': {e}", b.display())))),
@@ -1812,7 +1901,7 @@ pub fn sync(src: &str, dst: &str, options: &SyncOptions) -> Result<Report> {
             listing::redact_url(dst)
         )));
     }
-    copy_tree(&src_node, &target, false, Some((options, true)), &mut report)?;
+    copy_tree(&src_node, &target, false, Some(options), &mut report)?;
     Ok(report)
 }
 

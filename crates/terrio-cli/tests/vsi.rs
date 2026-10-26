@@ -407,3 +407,18 @@ fn refuses_dangerous_local_targets() {
         assert!(!out.status.success());
     }
 }
+
+#[test]
+fn bounded_depth_uses_delimiter_listings_only() {
+    let (endpoint, store) = serve();
+    let tmp = tempfile::tempdir().unwrap();
+    for name in ["bkt/root/a/file.txt", "bkt/root/b/c/deep.txt"] {
+        store.lock().unwrap().objects.insert(name.into(), (b"data".to_vec(), 1));
+    }
+    let listed = ok(&endpoint, tmp.path(), &["vsi", "list", "-R", "--depth", "2", "s3://bkt/root"]);
+    assert_eq!(listed.lines().collect::<Vec<_>>(), ["a", "a/file.txt", "b", "b/c"]);
+    let store = store.lock().unwrap();
+    let requests: Vec<_> = store.log.iter().filter(|line| line.contains("list-type")).collect();
+    assert!(!requests.is_empty());
+    assert!(requests.iter().all(|line| line.contains("delimiter")), "{requests:?}");
+}

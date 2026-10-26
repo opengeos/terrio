@@ -466,6 +466,32 @@ pub(crate) fn download_to(remote: &Remote, out: &mut dyn io::Write) -> Result<u6
     Ok(n)
 }
 
+/// Run one sequential archive pass against a streamed response, without range reads.
+pub(crate) fn with_reader<T>(remote: &Remote, read: impl FnOnce(&mut dyn Read) -> Result<T>) -> Result<T> {
+    let mut client = Client::new(remote, HttpOptions::from_env());
+    let response = client.send(None)?;
+    REQUESTS.fetch_add(1, Ordering::Relaxed);
+    let mut reader = MeasuredReader { inner: response.into_body().into_reader(), bytes: 0 };
+    let result = read(&mut reader);
+    BYTES.fetch_add(reader.bytes, Ordering::Relaxed);
+    if client.options.log {
+        eprintln!("terrio:   received {} bytes", reader.bytes);
+    }
+    result
+}
+
+struct MeasuredReader<R> {
+    inner: R,
+    bytes: u64,
+}
+impl<R: Read> Read for MeasuredReader<R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let n = self.inner.read(buf)?;
+        self.bytes = self.bytes.saturating_add(n as u64);
+        Ok(n)
+    }
+}
+
 /// Fetches a whole remote file into memory (a STAC document, for instance).
 pub(crate) fn get(remote: &Remote) -> Result<Vec<u8>> {
     let mut client = Client::new(remote, HttpOptions::from_env());
@@ -523,20 +549,9 @@ fn retry_after_seconds(v: &str) -> Option<u64> {
 
 /// The seconds from now to a UTC date and time; `None` when it is past.
 pub(crate) fn seconds_until_utc(y: i64, m: i64, d: i64, h: i64, mi: i64, s: i64) -> Option<u64> {
-    let at = unix_seconds(y, m, d, h, mi, s);
+    let at = crate::civil_time::unix_seconds(y, m, d, h, mi, s);
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).ok()?.as_secs() as i64;
     u64::try_from(at - now).ok()
-}
-
-/// The seconds since the Unix epoch of a UTC date and time.
-pub(crate) fn unix_seconds(y: i64, m: i64, d: i64, h: i64, mi: i64, s: i64) -> i64 {
-    // Days from the civil date (Howard Hinnant's days_from_civil).
-    let yy = if m <= 2 { y - 1 } else { y };
-    let era = yy.div_euclid(400);
-    let yoe = yy - era * 400;
-    let doy = (153 * (m + if m > 2 { -3 } else { 9 }) + 2) / 5 + d - 1;
-    let days = era * 146_097 + yoe * 365 + yoe / 4 - yoe / 100 + doy - 719_468;
-    days * 86_400 + h * 3600 + mi * 60 + s
 }
 
 /// Fetches a whole remote file with extra request headers (an API key, for instance), following

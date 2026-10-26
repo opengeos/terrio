@@ -276,7 +276,7 @@ const shp = terrio.vsiRead("/vsizip//vsimem/data/a.zip/roads.shp");
 terrio.vsiCopy("/vsimem/data", "/vsimem/backup", { recursive: true });
 terrio.vsiSync("/vsimem/data/", "/vsimem/mirror", { recursive: true, strategy: "overwrite" });
 terrio.vsiMove("/vsimem/backup", "/vsimem/old");
-terrio.vsiDelete("/vsimem/old", true);
+terrio.vsiDelete("/vsimem/old", { recursive: true });
 // Remote listings through fetch: public S3 buckets, Google Cloud Storage, Azure (SAS URLs) and
 // HTML index pages. Returns {entries, requests, bytes}.
 const { entries } = await terrio.listUrl("s3://bucket/prefix", { recursive: true });
@@ -286,5 +286,5 @@ The [vsi](cli.md#vsi) commands support the in-memory file system (`/vsimem/`) an
 it, and `listUrl` provides remote listings. WebAssembly has no local file system (local paths fail)
 and no request signing: tar archives, local files, signed S3 requests and writes to object stores
 are available in the native CLI, Rust and Python only. `/vsimem/` files carry no dates, so
-`vsiSync` with the `timestamp` strategy copies every file. In browsers, a store must allow the
+`vsiSync` compares content when an in-memory endpoint lacks a timestamp. In browsers, a store must allow the
 page's origin (CORS) for `listUrl`.

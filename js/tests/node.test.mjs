@@ -1627,7 +1627,8 @@ test("vsi: in-memory files, zip archives in memory and refused targets", () => {
   assert.equal(terrio.vsiStat("/vsimem/jsvsi2/c.txt"), null);
   assert.equal(terrio.vsiStat("/vsimem/jsvsi2/d.txt").size, 3);
   assert.equal(terrio.vsiSync("/vsimem/jsvsi/", "/vsimem/jsvsi3", { recursive: true, strategy: "overwrite" }).copied, 2);
-  assert.equal(terrio.vsiDelete("/vsimem/jsvsi2", true).deleted, 2);
+  assert.equal(terrio.vsiSync("/vsimem/jsvsi/", "/vsimem/jsvsi3", { recursive: true }).unchanged, 2);
+  assert.equal(terrio.vsiDelete("/vsimem/jsvsi2", { recursive: true }).deleted, 2);
   assert.throws(() => terrio.vsiDelete("/vsimem/", true), /refusing/);
   assert.throws(() => terrio.vsiDelete("/vsimem/jsvsi"), /recursive/);
   // A Shapefile ZIP written by terrio, listed and read in memory.

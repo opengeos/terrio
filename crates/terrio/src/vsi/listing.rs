@@ -366,7 +366,7 @@ pub(crate) fn parse_html_index(html: &str, dir_path: &str) -> Vec<ObjectEntry> {
         } else {
             href.strip_prefix("./").unwrap_or(href).to_string()
         };
-        if href.is_empty() || href.starts_with("..") || href.contains("://") || href.starts_with("mailto:") {
+        if href == "." || href.is_empty() || href.starts_with("..") || href.contains("://") || href.starts_with("mailto:") {
             continue;
         }
         let dir = href.ends_with('/');
@@ -387,7 +387,7 @@ pub(crate) fn parse_iso8601(s: &str) -> Option<i64> {
     if s.len() < 19 {
         return None;
     }
-    Some(super::civil_seconds(num(0, 4)?, num(5, 7)?, num(8, 10)?, num(11, 13)?, num(14, 16)?, num(17, 19)?))
+    Some(crate::civil_time::unix_seconds(num(0, 4)?, num(5, 7)?, num(8, 10)?, num(11, 13)?, num(14, 16)?, num(17, 19)?))
 }
 
 /// Seconds since the epoch of an HTTP date (`Mon, 01 Jan 2024 01:42:27 GMT`).
@@ -399,7 +399,7 @@ pub(crate) fn parse_http_date(v: &str) -> Option<i64> {
     let (d, y): (i64, i64) = (day.parse().ok()?, year.parse().ok()?);
     let t: Vec<i64> = time.split(':').map(|x| x.parse().ok()).collect::<Option<_>>()?;
     let [h, mi, sec] = t[..] else { return None };
-    Some(super::civil_seconds(y, m, d, h, mi, sec))
+    Some(crate::civil_time::unix_seconds(y, m, d, h, mi, sec))
 }
 
 /// A listing of a remote directory driven by the caller, who sends the requests (with `fetch` in
@@ -588,7 +588,7 @@ mod tests {
 
     #[test]
     fn parses_html_indexes() {
-        let html = r#"<a href="?C=N&amp;O=A">Name</a><a href="../">Parent</a><a href="byte%20x.tif" title="x">byte x.tif</a>
+        let html = r#"<a href=".">Self</a><a href="?C=N&amp;O=A">Name</a><a href="../">Parent</a><a href="byte%20x.tif" title="x">byte x.tif</a>
                       <a href='sub/'>sub/</a><a href="/data/gtiff/abs.tif">abs</a><a href="/elsewhere/n.tif">n</a>
                       <a href="https://other.org/">o</a><A HREF=plain.txt>p</A><a href="sub/deeper/">no</a>"#;
         let names: Vec<(String, bool)> = parse_html_index(html, "/data/gtiff").into_iter().map(|e| (e.name, e.dir)).collect();

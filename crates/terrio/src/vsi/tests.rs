@@ -51,7 +51,7 @@ fn lists_local_directories() {
 fn formats_times_as_gdal() {
     assert_eq!(format_time(0), "1970-01-01 00:00:00Z");
     assert_eq!(format_time(1_704_073_347), "2024-01-01 01:42:27Z");
-    assert_eq!(civil_seconds(2024, 1, 1, 1, 42, 27), 1_704_073_347);
+    assert_eq!(crate::civil_time::unix_seconds(2024, 1, 1, 1, 42, 27), 1_704_073_347);
     let e = Entry { name: "a".into(), kind: EntryKind::Directory, size: Some(80), modified: Some(0), permissions: None, etag: None };
     assert_eq!(e.long_line(), "d--------- 1 unknown unknown           80 1970-01-01 00:00 a");
 }
@@ -407,6 +407,53 @@ fn tar_tree_extraction_reads_the_archive_once() {
     assert!(reader.bytes <= reader.inner.get_ref().len());
 }
 
+#[cfg(not(target_family = "wasm"))]
+#[test]
+fn tar_copy_reports_links_and_syncs_untimed_memory_by_content() {
+    let mut builder = tar::Builder::new(Vec::new());
+    let mut file = tar::Header::new_gnu();
+    file.set_size(4);
+    file.set_mode(0o644);
+    file.set_mtime(1);
+    file.set_cksum();
+    builder.append_data(&mut file, "file.txt", &b"data"[..]).unwrap();
+    let mut link = tar::Header::new_gnu();
+    link.set_entry_type(tar::EntryType::Symlink);
+    link.set_size(0);
+    link.set_mode(0o777);
+    link.set_mtime(1);
+    builder.append_link(&mut link, "link.txt", "file.txt").unwrap();
+    let bytes = builder.into_inner().unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let target = Node::Local(tmp.path().join("out"));
+    let mut report = Report::default();
+    let error = copy_tar_reader(&mut &bytes[..], "", &target, false, None, &mut report).unwrap_err();
+    assert!(error.to_string().contains("tar links"));
+    let mut report = Report::default();
+    copy_tar_reader(&mut &bytes[..], "", &target, true, None, &mut report).unwrap();
+    assert_eq!(report.copied, 1);
+    assert_eq!(report.errors.len(), 1);
+    assert_eq!(report.errors[0].0, "link.txt");
+    assert!(!tmp.path().join("out/link.txt").exists());
+
+    let memory = Node::Mem(format!("/vsimem/tar-sync-{}", tmp.path().file_name().unwrap().to_string_lossy()));
+    let options = SyncOptions { recursive: true, ..Default::default() };
+    for (copied, unchanged) in [(1, 0), (0, 1)] {
+        let mut report = Report::default();
+        copy_tar_reader(&mut &bytes[..], "", &memory, true, Some(&options), &mut report).unwrap();
+        assert_eq!((report.copied, report.unchanged), (copied, unchanged));
+        assert_eq!(report.errors.len(), 1);
+    }
+    let Node::Mem(key) = memory.join("file.txt") else { unreachable!() };
+    crate::memfs::write(Path::new(&key), b"edit").unwrap();
+    let mut report = Report::default();
+    copy_tar_reader(&mut &bytes[..], "", &memory, true, Some(&options), &mut report).unwrap();
+    assert_eq!((report.copied, report.unchanged), (1, 0));
+    assert_eq!(crate::memfs::read(Path::new(&key)).unwrap(), b"data");
+    let Node::Mem(root) = memory else { unreachable!() };
+    delete(&root, true).unwrap();
+}
+
 #[test]
 fn archive_copy_refuses_parent_traversal() {
     let tmp = tempfile::tempdir().unwrap();
@@ -534,4 +581,56 @@ fn opaque_entity_tags_use_timestamp_without_hashing_local_data() {
         )
         .unwrap()
     );
+}
+
+#[test]
+fn local_path_edge_spaces_are_not_removed_before_deletion() {
+    let tmp = tempfile::tempdir().unwrap();
+    let plain = tmp.path().join("report.txt");
+    let spaced = tmp.path().join("report.txt ");
+    fs::write(&plain, b"keep").unwrap();
+    fs::write(&spaced, b"remove").unwrap();
+    delete(&s(&spaced), false).unwrap();
+    assert!(!spaced.exists());
+    assert_eq!(fs::read(plain).unwrap(), b"keep");
+    assert!(matches!(Node::parse(" leading.txt").unwrap(), Node::Local(p) if p == Path::new(" leading.txt")));
+    assert!(Node::parse("  ").is_err());
+}
+
+#[test]
+fn differing_multipart_tags_override_older_timestamps() {
+    let mut source = Stat::file(4).entry("source".into());
+    source.modified = Some(1);
+    source.etag = Some("first-2".into());
+    let mut target = Stat::file(4).entry("target".into());
+    target.modified = Some(2);
+    target.etag = Some("second-2".into());
+    let node = Node::Mem("not-read".into());
+    assert!(!up_to_date(&node, &source, &node, &target, SyncStrategy::ETag).unwrap());
+    target.etag = source.etag.clone();
+    assert!(up_to_date(&node, &source, &node, &target, SyncStrategy::ETag).unwrap());
+}
+
+#[test]
+fn atomic_directory_move_does_not_report_inode_bytes_as_copied_data() {
+    let (tmp, source) = tree();
+    let target = tmp.path().join("moved");
+    let report = rename(&s(&source), &s(&target)).unwrap();
+    assert_eq!((report.copied, report.bytes), (0, 0));
+    assert!(!source.exists());
+    assert_eq!(files_below(&target), ["a/b/z.txt", "a/y.txt", "x.txt"]);
+}
+
+#[test]
+fn repeated_memory_sync_skips_unchanged_content_and_detects_same_size_edits() {
+    let source = "/vsimem/sync-clockless-source";
+    let target = "/vsimem/sync-clockless-target";
+    write(source, b"first").unwrap();
+    assert_eq!(sync(source, target, &Default::default()).unwrap().copied, 1);
+    assert_eq!(sync(source, target, &Default::default()).unwrap().unchanged, 1);
+    write(source, b"other").unwrap();
+    assert_eq!(sync(source, target, &Default::default()).unwrap().copied, 1);
+    assert_eq!(read(target).unwrap(), b"other");
+    delete(source, false).unwrap();
+    delete(target, false).unwrap();
 }
