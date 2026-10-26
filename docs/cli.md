@@ -757,6 +757,12 @@ only (not `_RPC.TXT`). Terrio opens a multi-variable netCDF/HDF5 container as it
 variable, so the comparison of two containers differs from GDAL's empty container datasets;
 compare their subdatasets.
 
+With GDAL 3.13.3, the internal-mask comparison reports 1,863,354 differing pixels
+per band on the Landsat fixture, while direct GDAL mask reads and Terrio both count
+2,568,634. Terrio retains the direct pixel count. The full 99-case rerun has 95
+identical cases, three within the documented numeric tolerances, and this one
+mask-report difference.
+
 ## pixel-info
 
 ```sh
