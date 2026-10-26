@@ -667,7 +667,7 @@ normal CI checks, including Python, WASM, API documentation and package validati
 ## File management (#289)
 
 `scripts/compare_vsi_with_gdal.py` (the `vsi` conformance suite) compares `terrio vsi` with
-GDAL's `gdal vsi`: recursive long listings (`-lR -f json`) of the test data directory (742
+GDAL's `gdal vsi` (GDAL 3.13.0; the results are the same with 3.12.2): recursive long listings (`-lR -f json`) of the test data directory (742
 entries), its three Natural Earth and NYC zip archives, a Zarr store and tar and tar.gz archives
 of it, with names, types and file sizes identical and dates identical to the second; trees
 copied, extracted from a zip and synchronized (with and without a trailing slash) by both tools,
@@ -677,7 +677,7 @@ run, as GDAL), deleted recursively without touching the sibling `data2/` and `di
 the whole bucket refused. Uploading the 7-file Natural Earth tree took terrio 10 requests and
 GDAL 20; the recursive listing 3 requests each. With `--remote`, listings of public S3
 (hrrrzarr), Google Cloud Storage (CMIP6), Azure (Daymet, with a Planetary Computer SAS token),
-an HTML index page (download.osgeo.org) and a remote zip archive compare identically; GDAL 3.12
+an HTML index page (download.osgeo.org) and a remote zip archive compare identically; GDAL
 omits the directories implied by object keys in recursive object store listings, which terrio
 lists as it does for local directories. Listing Natural Earth's 4.9 MB remote
 `ne_10m_admin_0_countries.zip` takes terrio 4 requests and about 32 KB.

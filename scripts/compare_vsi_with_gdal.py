@@ -113,7 +113,7 @@ def compare_listing(
         dates: Whether to compare file dates.
         env: Extra environment variables.
         extra: Extra options for both tools.
-        object_store: GDAL 3.12 lists only the objects of an object store recursively, not the
+        object_store: GDAL (3.12.2 and 3.13.0) lists only the objects of an object store recursively, not the
             directories their keys imply (which terrio lists, as for local directories): compare
             the files, and check that terrio's directories are those the files imply.
     """
@@ -133,7 +133,7 @@ def compare_listing(
             record(name, False, f"directories not implied by the keys: {sorted(dirs - implied)[:6]}")
             return
         ours = {k: v for k, v in ours.items() if k not in dirs or k in theirs_dirs}
-        note = f"; terrio also lists the {len(dirs - theirs_dirs)} directories the keys imply, which GDAL 3.12 omits"
+        note = f"; terrio also lists the {len(dirs - theirs_dirs)} directories the keys imply, which GDAL omits"
     diff = sorted(set(ours.items()) ^ set(theirs.items()))
     files = sum(1 for v in ours.values() if v[0] == "file")
     if diff:
