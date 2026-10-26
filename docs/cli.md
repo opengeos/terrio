@@ -44,6 +44,10 @@ terrio <COMMAND>
   nodata-to-alpha Replace nodata values with an alpha band (like gdal raster nodata-to-alpha)
   reclassify      Map values or ranges of values to new values (like gdal raster reclassify)
   as-features     One vector feature per pixel, with band values as fields (like gdal raster as-features)
+  neighbors       Focal statistics and convolution kernels (like gdal raster neighbors)
+  clean-collar    Set noisy nearly black/white collars to exact black/white (like gdal raster clean-collar)
+  nearblack       The same, with nearblack's two-pass defaults (like nearblack)
+  enhance         Contrast enhancement by lookup tables: equalization and LUT files (like gdalenhance)
   crs             Describe a coordinate reference system, or transform coordinates between two
   formats         List the formats terrio reads and writes
   grid            Grid a point cloud into a raster (like PDAL's writers.gdal)
@@ -751,6 +755,117 @@ terrio sieve INPUT OUTPUT [--st N] [-4|-8] [--nomask | --mask RASTER]
 Areas of connected pixels with the same value smaller than `--st` pixels (2 by default) take the
 value of their largest neighbour. The band's nodata pixels are left out unless `--nomask`.
 
+## neighbors
+
+
+```sh
+terrio neighbors INPUT OUTPUT --kernel KERNEL [--kernel ...] [--method METHOD ...] [--size N]
+                 [-b BAND] [--ot TYPE] [--nodata VALUE|none] [output options]
+terrio neighbors dem.tif max5.tif --kernel equal --size 5 --method max
+terrio neighbors image.tif edges.tif --kernel gaussian --kernel edge2 -b 2 --ot Float32
+```
+
+Focal statistics, as GDAL 3.12's `gdal raster neighbors`. Kernels: `u` and `v` (horizontal
+and vertical derivatives), `edge1`, `edge2`, `sharpen`, `gaussian` (3x3 or 5x5),
+`unsharp-masking` (5x5), `equal` (any odd size from 3 to 99), or a matrix written row by row,
+`[[0,1,0],[1,1,1],[0,1,0]]`. Explicit matrices accept any positive odd square size,
+as GDAL 3.13.3 does; the 99 limit applies to `--size`, not matrix dimensions. Filtering
+work grows with pixels times coefficients, and strip margins grow with the kernel radius.
+`--method` combines the weighted neighbours: `sum`, `mean`, `min`,
+`max`, `stddev`, `median` or `mode`; give one for every kernel or one per kernel. The default is
+`sum` for kernels whose coefficients sum to zero (`u`, `v`, `edge1`, `edge2`, zero-sum
+matrices) and `mean` otherwise. Each input band (or the `-b` band) gives one output band per
+kernel. The output type defaults to Float64 and the output nodata to the input band's.
+
+Values follow GDAL's `VRTKernelFilteredSource` exactly: inputs are read as Float32, nodata and
+NaN neighbours (with a nodata value) and zero coefficients are skipped, finite nodata
+centres keep the input nodata value, even when `--nodata` changes the output tag
+or removes it with `none`. NaN nodata centres are interpolated, matching GDAL 3.13.3;
+pixels past the raster's edges repeat the edge pixels, and results are Float32 values
+converted to the output type. `mode` breaks ties for the first value to reach the highest count,
+in row order. The input is read and GeoTIFF/COG outputs are written a strip of rows at a time,
+with the kernel's margin rows. The real-data comparisons with GDAL are identical
+(`scripts/compare_focal_with_gdal.py`). GDAL's GDALG/VRT pipeline output and `--append` are not
+supported.
+
+## clean-collar and nearblack
+
+```sh
+terrio clean-collar INPUT [OUTPUT] [--update] [--color black|white|R,G,B ...] [--white]
+                    [--color-threshold N] [--pixel-distance N] [--add-alpha | --add-mask]
+                    [--algorithm floodfill|twopasses] [output options]
+terrio clean-collar scene.tif clean.tif --add-alpha
+terrio nearblack scene.tif clean.tif --nb 0 --near 10 --color 0,0,0 --color 255,255,255
+terrio clean-collar --update scene.tif
+```
+
+Sets the noisy, nearly black (or white, or `--color`) collar of an image to exact black (or
+white, with `--white`), as GDAL's `gdal raster clean-collar` and `nearblack` do. Pixels within
+`--color-threshold` (`-near`, 15) of a color in every non-alpha band are collar pixels; the
+search inwards goes past up to `--pixel-distance` (`-nb`, 2) non-collar pixels. `--add-alpha`
+adds an alpha band (transparent in the collar) and `--add-mask` a per-dataset mask (GeoTIFF:
+internal). `clean-collar` runs a flood fill from the edges by default and retains the input's
+alpha/mask representation; requested or retained alpha/mask processing regenerates
+opacity from the collar rather than intersecting it with the old alpha/mask. `nearblack` runs nearblack's two passes (top-down then bottom-up, each scanning
+lines from both sides) by default and adds alpha or masks only when asked. Both algorithms are
+ports of GDAL's, in GDAL's scan order, and agree pixel for pixel with GDAL on the real
+Sentinel-2 and Landsat 7 comparisons. Output is a new Byte raster with the input's
+georeferencing and no nodata value; values are read as Byte (rounded and clamped).
+
+`--update` (or an output equal to the input) updates a local GeoTIFF in place: its bands and
+type are kept, with `--add-alpha` its last alpha band is updated (it must have one), and an
+existing mask is kept unless mask processing regenerates it from the collar. The result is written next to the input, then replaces it, so a failure
+leaves the input as it was; remote files, other formats and read-only files are refused. The
+file is rewritten by Terrio's writer: overviews are dropped, and compression and tiling are those
+of the output options. GDAL 3.12's in-place flood fill of a raster with an alpha band writes stale
+alpha values on every modified line (2,715,128 alpha values of the Landsat 7 case become 0);
+Terrio's alpha band matches GDAL's output to a new file instead. Images are processed in memory
+as Byte values (one byte per band and pixel); the flood fill visits lines out of order. New-file output holds an interleaved
+working image and a planar output image at once (about two Byte output buffers,
+plus input data and any mask); this keeps the GDAL scan order and contiguous scanlines.
+In-place updates follow input symlinks and retain mode bits. Replacement detaches
+hard links and does not preserve ownership, ACLs or extended attributes.
+
+`nearblack --update` and `clean-collar --update` follow GDAL's Byte processing:
+non-Byte samples across the image are rounded/clamped to 0–255 before being written
+back to the original data type. Terrio emits a warning for these inputs.
+For RGBA sources, `nearblack --color black` compares four bands unless `--add-alpha`
+or `--add-mask` selects alpha/mask processing; `clean-collar` keeps existing alpha.
+With mask processing on RGBA, new-file output drops the alpha band, while in-place
+output retains it, matching GDAL 3.13.3.
+
+## enhance
+
+```sh
+terrio enhance INPUT OUTPUT --equalize
+terrio enhance INPUT --equalize --config lut.txt     # write the tables
+terrio enhance INPUT OUTPUT --config lut.txt          # apply tables
+terrio enhance INPUT OUTPUT --src-scale 0 4000 [--lut-bins 256] [--ot Byte]
+```
+
+Contrast enhancement by lookup tables, as GDAL's `gdalenhance`. `--equalize` computes
+histogram-equalization tables from each band's default histogram (`gdalinfo -hist`'s: stored
+histograms and GDAL's approximate minimum and maximum included), without its first and last
+buckets. Without an output, the tables are written to `--config` (or printed) in
+`gdalenhance`'s format: a line per band, `1:Band -0.5:ScaleMin 255.5:ScaleMax` and the 256
+entries. Without `--equalize`, `--config` reads such a file. A pixel's bin is
+`(value - ScaleMin) * bins / (ScaleMax - ScaleMin)`, truncated and clamped; nodata pixels keep
+their value after conversion to the output type. NaN nodata uses the first LUT bin, matching GDAL 3.13.3. The output keeps the georeferencing, metadata, band descriptions and color
+interpretations, and the nodata value of bands of the output type; it is read and written in
+strips (equalization reads the bands whole for their histograms). Equalization, LUT files and
+LUT input are identical to `gdalenhance` on the real comparisons. Terrio extensions:
+`--src-scale MIN MAX` (a linear stretch over the bins, without tables; `gdalenhance` parses
+`-src_scale` but ignores it), `--lut-bins` (256 in GDAL) and `--ot` other than Byte (`gdalenhance`
+refuses it). Byte output casts LUT results modulo 256, matching GDAL (for example,
+a table value of 300 becomes 44). Byte nodata also truncates and wraps through a signed
+32-bit integer (for example, -9999 becomes 241); values outside that intermediate range
+and infinities become zero. This defines the behavior observed in the GDAL 3.13.3
+reference build; C++ out-of-range conversion can vary by build. Non-Byte outputs preserve
+exact source nodata before output conversion, including Float64 precision.
+Select a wider `--ot` to retain larger LUT values.
+Unlike `gdalenhance`, Terrio does not save the histograms it computes in an
+`.aux.xml` sidecar.
+
 ## crs
 
 ```sh
@@ -1012,9 +1127,15 @@ normal warper. Custom `INIT_DEST` values are also unsupported.
 `log10`, `dB`, `dB2amp`, `dB2pow`, `pow` and `exp`, with numeric arguments,
 source transfer types and applicable nodata behavior. Complex-valued derived
 buffers, external pixel functions and expression languages are unsupported.
+
+A 1×1 unnormalized VRT kernel is applied once, matching GDAL 3.13.3
+(coefficient 2 maps sample 3 to 6).
+
 `KernelFilteredSource` supports odd full/separable kernels, normalization and
 `min`, `max`, `stddev`, `median` and `mode`. Kernels read the necessary halo and
-replicate source edges as GDAL does. Explicit dataset masks, `SourceBand mask,N`
+replicate source edges as GDAL does. The 3–99 limit applies to `--size`; explicit matrices
+can be larger odd squares, matching GDAL. Their work per pixel grows with the
+number of coefficients. Explicit dataset masks, `SourceBand mask,N`
 and `ComplexSource` with `UseMaskBand` are read lazily.
 
 Mixed native band types use a common numeric buffer selected with GDAL-style
