@@ -1983,6 +1983,30 @@ mod tests {
     }
 
     #[test]
+    fn nan_field_values_and_geometry_z_follow_gdal() {
+        use wbvector::{FieldDef, FieldType};
+        let mut layer = Layer::new("points");
+        layer.schema.add_field(FieldDef::new("value", FieldType::Text));
+        for (i, z, value) in [(0, f64::NAN, "nan"), (1, 5., "5")] {
+            layer.features.push(Feature {
+                fid: i,
+                geometry: Some(Geometry::point_z(i as f64, 0., z)),
+                attributes: vec![FieldValue::Text(value.into())],
+            });
+        }
+        let mut options = VectorGridOptions {
+            algorithm: GridAlgorithm::new(GridMethod::Average),
+            z_field: Some("value".into()),
+            extent: Some((-0.5, -0.5, 1.5, 0.5)),
+            size: Some((1, 1)),
+            ..Default::default()
+        };
+        assert!(vector_grid(&[layer.clone()], &options).unwrap().raster.get(0, 0, 0).is_nan());
+        options.z_field = None;
+        assert_eq!(vector_grid(&[layer], &options).unwrap().raster.get(0, 0, 0), 5.);
+    }
+
+    #[test]
     fn grids_layers() {
         use wbvector::{FieldDef, FieldType};
         let mut layer = Layer::new("pts");

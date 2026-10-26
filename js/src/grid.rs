@@ -76,7 +76,7 @@ pub fn vector_grid(src: JsValue, options: JsValue) -> Result<Dataset, JsError> {
     let all = input_layers(&src)?;
     let named = a.layers.is_some();
     let all: Vec<Layer> = match &a.layers {
-        Some(names) => all.into_iter().filter(|l| names.contains(&l.name)).collect(),
+        Some(names) => terrio::ops::vector_filter::select_layers(all, names).map_err(js_err)?,
         None => all,
     };
     let four = |v: Option<[f64; 4]>| v.map(|[a, b, c, d]| (a, b, c, d));

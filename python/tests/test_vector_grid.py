@@ -81,6 +81,9 @@ def test_vector_grid_algorithms_and_parameters():
 
 def test_vector_grid_options():
     src = points_geojson([(0.5, 0.5, 1.0), (1.5, 1.5, 2.0), (9, 9, 100.0)])
+    named = terrio.Layer.from_geojson(src, name="a")
+    with pytest.raises(ValueError, match="missing"):
+        terrio.vector_grid(named, algorithm="nearest", layers=["a", "missing"])
     r = terrio.vector_grid(
         src,
         algorithm="nearest",

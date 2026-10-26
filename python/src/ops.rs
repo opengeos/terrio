@@ -564,7 +564,7 @@ pub(crate) fn input_layers(py: Python<'_>, src: &Bound<'_, PyAny>, layers: Optio
         Err(_) => {
             let all = layers_from_object(src, None, None)?;
             Ok(match layers {
-                Some(names) => all.into_iter().filter(|l| names.contains(&l.name)).collect(),
+                Some(names) => terrio::ops::vector_filter::select_layers(all, &names).py()?,
                 None => all,
             })
         }

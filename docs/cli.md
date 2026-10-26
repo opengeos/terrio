@@ -813,6 +813,15 @@ Shapefile and GeoPackage report it), `--size` (256 × 256 by default) or `--reso
 the points strictly inside a rectangle (`-clipsrc`). `--ot` sets the type (Float64 by default),
 `--crs` the CRS (by default the layer's; points are not reprojected).
 
+NaN geometry Z values are skipped; NaN values supplied through `--zfield` can
+propagate into the result, matching GDAL 3.13.3. Input layers requested by name must
+all exist.
+
+Without a search radius, `invdist` visits all input points for each output cell;
+its work grows with cells times points. Output allocation is bounded, but runtime
+is not bounded by a separate work budget. Use a smaller grid or an appropriate
+search radius for large inputs.
+
 `average-distance-points` evaluates every pair in each node’s search neighborhood;
 work is quadratic in that neighborhood’s point count. Limit the search radius for
 dense inputs.

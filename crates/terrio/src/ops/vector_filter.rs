@@ -8,6 +8,17 @@ use crate::{Error, Result, VectorWriteOptions};
 use std::borrow::Cow;
 use wbvector::{Coord, Feature, FieldValue, Geometry, GeometryType, Layer, Ring};
 
+/// Select named layers without silently dropping requests for missing names.
+/// Retains source order and moves the layers instead of cloning their features.
+pub fn select_layers(layers: Vec<Layer>, names: &[String]) -> Result<Vec<Layer>> {
+    for name in names {
+        if !layers.iter().any(|layer| layer.name == *name) {
+            return Err(Error::InvalidArgument(format!("no layer named '{name}'")));
+        }
+    }
+    Ok(layers.into_iter().filter(|layer| names.contains(&layer.name)).collect())
+}
+
 /// What to do with a layer's geometries, as `ogr2ogr -nlt` does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GeometryConversion {
@@ -666,6 +677,13 @@ fn append_features(target: &mut Layer, src: &Layer) {
 mod tests {
     use super::*;
     use wbvector::{FieldDef, FieldType};
+
+    #[test]
+    fn named_selection_rejects_partial_matches() {
+        let layers = vec![Layer::new("a"), Layer::new("b")];
+        assert_eq!(select_layers(layers.clone(), &["b".into()]).unwrap()[0].name, "b");
+        assert!(select_layers(layers, &["a".into(), "missing".into()]).unwrap_err().to_string().contains("missing"));
+    }
 
     fn square(x: f64, y: f64, s: f64) -> Geometry {
         Geometry::polygon(vec![Coord::xy(x, y), Coord::xy(x + s, y), Coord::xy(x + s, y + s), Coord::xy(x, y + s), Coord::xy(x, y)], vec![])

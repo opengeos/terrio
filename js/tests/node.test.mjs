@@ -1597,6 +1597,8 @@ test("vectorGrid and linear referencing (gdal_grid, ogrlineref)", () => {
   const idw = terrio.vectorGrid(src, { algorithm: "invdist:power=1", zfield: "v", extent: [0, 0, 2, 2], size: [1, 1] });
   assert.ok(Math.abs(idw.readBand(1)[0] - 2.5) < 1e-12);
   assert.throws(() => terrio.vectorGrid(src, { algorithm: "kriging" }));
+  const named = terrio.fromGeoJSON(src, "a");
+  assert.throws(() => terrio.vectorGrid(named, { algorithm: "nearest", layers: ["a", "missing"] }), /missing/);
   const common = { zfield: "v", extent: [0, 0, 2, 2], size: [2, 2] };
   const keyword = terrio.vectorGrid(src, { ...common, algorithm: "invdist", minPointsPerQuadrant: 1, maxPoints: 5 });
   const string = terrio.vectorGrid(src, { ...common, algorithm: "invdist:min_points_per_quadrant=1:max_points=5" });
