@@ -101,6 +101,8 @@ fn clean_collar_writes_alpha_and_updates_in_place_safely() {
     assert_eq!(clean.raster.get(3, 0, 0), 0.);
     assert_eq!(clean.raster.get(0, 2, 2), 120.);
     assert_eq!(clean.raster.get(3, 2, 2), 255.);
+    ok(&["nearblack", "clean.tif", "rgba.tif", "--color", "black", "--nb", "0"], d);
+    ok(&["nearblack", "clean.tif", "rgba-alpha.tif", "--color", "black", "--add-alpha", "--nb", "0"], d);
     // nearblack's two passes with a mask.
     ok(&["nearblack", "scene.tif", "masked.tif", "--add-mask", "--nb", "0"], d);
     let mut masked = terrio::open_raster_lazy(d.join("masked.tif").to_str().unwrap()).unwrap();
@@ -112,7 +114,7 @@ fn clean_collar_writes_alpha_and_updates_in_place_safely() {
     assert!(fails(&["clean-collar", "scene.tif"], d).contains("--update"));
     assert!(fails(&["clean-collar", "--update", "scene.tif", "--compress", "NO-SUCH-CODEC"], d).contains("NO-SUCH-CODEC"));
     assert_eq!(std::fs::read(d.join("scene.tif")).unwrap(), before);
-    assert_eq!(std::fs::read_dir(d).unwrap().count(), 3, "no temporary file is left");
+    assert_eq!(std::fs::read_dir(d).unwrap().count(), 5, "no temporary file is left");
     ok(&["clean-collar", "--update", "scene.tif", "--pixel-distance", "0"], d);
     let updated = terrio::open_raster(d.join("scene.tif").to_str().unwrap()).unwrap();
     assert_eq!(updated.band_count(), 3);
@@ -155,4 +157,17 @@ fn enhance_equalizes_and_reads_and_writes_lut_files() {
     assert!(fails(&["enhance", "image.tif", "x.tif"], d).contains("--equalize"));
     std::fs::write(d.join("bad.txt"), "1:Band 0:ScaleMin 1:ScaleMax 1 2 3\n").unwrap();
     assert!(fails(&["enhance", "image.tif", "x.tif", "--config", "bad.txt"], d).contains("corrupt"));
+}
+
+#[test]
+fn non_byte_update_warns_and_matches_gdal_byte_conversion() {
+    let tmp = tempfile::tempdir().unwrap();
+    let d = tmp.path();
+    write(&d.join("float.tif"), 4, vec![0., 500., 123.75, 0.], terrio::DataType::F32, None);
+    let result = run(&["nearblack", "float.tif", "--update", "--pixel-distance", "0"], d);
+    assert!(result.status.success());
+    assert!(String::from_utf8_lossy(&result.stderr).contains("clamped or rounded"));
+    let output = terrio::open_raster(d.join("float.tif").to_str().unwrap()).unwrap();
+    assert_eq!(output.raster.data.to_f64_vec(), vec![0., 255., 124., 0.]);
+    assert!(fails(&["enhance", "float.tif", "out.tif", "--equalize", "--config", "lut.txt"], d).contains("requires no raster output"));
 }

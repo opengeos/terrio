@@ -58,7 +58,7 @@ pub fn run(a: Args, clean_collar: bool) -> terrio::Result<()> {
     let in_place = a.update || same_file(&a.input, &path);
     let mut lazy = open_lazy(&a.input)?;
     let header = lazy.header();
-    let bands = color_bands(&header);
+    let bands = color_bands(&header, a.add_alpha || a.add_mask || clean_collar);
     let colors = a.colors.iter().map(|c| parse_color(c, bands)).collect::<terrio::Result<Vec<_>>>()?;
     let mut o = NearblackOptions {
         colors,

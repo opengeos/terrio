@@ -88,8 +88,12 @@ def test_enhance_api(tmp_path):
         terrio.enhance(src)
 
 
-gdal = pytest.importorskip("osgeo.gdal")
-gdal.UseExceptions()
+@pytest.fixture
+def gdal():
+    """Only reference comparisons require GDAL; API tests still run without it."""
+    module = pytest.importorskip("osgeo.gdal")
+    module.UseExceptions()
+    return module
 
 
 def gdal_cli(*args):
@@ -97,7 +101,7 @@ def gdal_cli(*args):
         pytest.skip(f"{args[0]} is not installed")
     p = subprocess.run(list(args), capture_output=True, text=True)
     if p.returncode != 0:
-        pytest.skip(f"{' '.join(args)}: {p.stderr.strip()}")
+        pytest.fail(f"{' '.join(args)}: {p.stderr.strip()}")
 
 
 def write(path, a, nodata=None):
@@ -107,7 +111,7 @@ def write(path, a, nodata=None):
 @pytest.mark.parametrize(
     "kernel,method", [("equal", "median"), ("gaussian", None), ("edge2", None), ("equal", "mode")]
 )
-def test_neighbors_against_gdal(tmp_path, kernel, method):
+def test_neighbors_against_gdal(tmp_path, kernel, method, gdal):
     a = scene()[0].astype("float32")
     a[5:9, 10:14] = -9999
     src = str(tmp_path / "src.tif")
@@ -123,7 +127,7 @@ def test_neighbors_against_gdal(tmp_path, kernel, method):
 
 @pytest.mark.parametrize("algorithm", ["twopasses", "floodfill"])
 @pytest.mark.parametrize("distance", [0, 2])
-def test_nearblack_against_gdal(tmp_path, algorithm, distance):
+def test_nearblack_against_gdal(tmp_path, algorithm, distance, gdal):
     src = str(tmp_path / "scene.tif")
     terrio.Raster.from_array(scene(), TRANSFORM, crs="EPSG:32610").write(src)
     ref = str(tmp_path / "gdal.tif")
@@ -134,7 +138,7 @@ def test_nearblack_against_gdal(tmp_path, algorithm, distance):
     )
 
 
-def test_enhance_against_gdal(tmp_path):
+def test_enhance_against_gdal(tmp_path, gdal):
     src = str(tmp_path / "scene.tif")
     terrio.Raster.from_array(scene(), TRANSFORM, crs="EPSG:32610").write(src)
     copy = str(tmp_path / "copy.tif")

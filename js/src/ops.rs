@@ -1432,7 +1432,7 @@ fn collar(src: JsValue, options: JsValue, clean_collar: bool) -> Result<Dataset,
         return Err(invalid("white and colors are exclusive"));
     }
     let ds = input_raster(&src)?;
-    let bands = terrio::ops::nearblack::color_bands(&ds);
+    let bands = terrio::ops::nearblack::color_bands(&ds, a.add_alpha || clean_collar);
     let algorithm = match a.algorithm.as_deref() {
         Some(s) => CollarAlgorithm::parse(s).map_err(js_err)?,
         None if clean_collar => CollarAlgorithm::FloodFill,

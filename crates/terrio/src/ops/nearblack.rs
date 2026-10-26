@@ -94,10 +94,10 @@ pub fn parse_color(s: &str, bands: usize) -> Result<Vec<i32>> {
 }
 
 /// The number of non-alpha bands of a raster: the bands `--color black`/`white` and colors
-/// apply to.
-pub fn color_bands(ds: &RasterDataset) -> usize {
+/// apply to. GDAL excludes a trailing alpha only when alpha/mask processing is enabled.
+pub fn color_bands(ds: &RasterDataset, alpha_or_mask: bool) -> usize {
     let n = ds.band_count();
-    n - usize::from(is_alpha(ds, n))
+    n - usize::from(alpha_or_mask && is_alpha(ds, n))
 }
 
 /// Applies `gdal raster clean-collar`'s defaults: an input whose last band is an alpha band keeps
@@ -147,8 +147,9 @@ impl Params<'_> {
         for c in self.colors {
             non_black = false;
             for (b, p) in px.iter().enumerate() {
-                let p = *p as i32;
-                if c[b] - p > self.near || p > self.near + c[b] {
+                let p = i64::from(*p);
+                let color = i64::from(c[b]);
+                if color - p > i64::from(self.near) || p > i64::from(self.near) + color {
                     non_black = true;
                     break;
                 }
@@ -399,6 +400,9 @@ fn clean(img: &mut Image, colors: &[Vec<i32>], o: &NearblackOptions) {
 
 /// The colors to search for: those given, else black or white over `bands` bands.
 fn colors(o: &NearblackOptions, bands: usize) -> Result<Vec<Vec<i32>>> {
+    if o.near < 0 || o.max_non_black < 0 || o.max_non_black == i32::MAX {
+        return Err(Error::InvalidArgument("near must be nonnegative and max_non_black must be between 0 and 2147483646".into()));
+    }
     let colors = if o.colors.is_empty() { vec![vec![if o.white { 255 } else { 0 }; bands]] } else { o.colors.clone() };
     if colors.iter().any(|c| c.len() != bands) {
         return Err(Error::InvalidArgument(format!("colors must have as many values as the {bands} non-alpha input band(s)")));
@@ -504,6 +508,11 @@ pub fn nearblack_in_place(ds: &mut RasterDataset, o: &NearblackOptions) -> Resul
     if ds.complex {
         return Err(Error::Unsupported("collars of complex bands are not supported".into()));
     }
+    if ds.raster.data_type != DataType::U8 {
+        crate::warnings::warn(
+            "nearblack converts every input sample to Byte before writing it back; non-Byte values may be clamped or rounded".into(),
+        );
+    }
     let n_bands = ds.band_count();
     let last_alpha = is_alpha(ds, n_bands);
     let (mut src_bands, mut dst_bands) = (n_bands, n_bands);
@@ -554,6 +563,15 @@ mod tests {
             RasterData::U8(v) => v.clone(),
             _ => unreachable!(),
         }
+    }
+
+    #[test]
+    fn extreme_color_thresholds_do_not_overflow() {
+        let ds = image(1, 1, &[128]);
+        let o = NearblackOptions { colors: vec![vec![i32::MAX]], near: i32::MAX, max_non_black: 0, ..Default::default() };
+        assert_eq!(values(&nearblack(&ds, &o).unwrap()), vec![0]);
+        let bad = NearblackOptions { max_non_black: i32::MAX, ..Default::default() };
+        assert!(nearblack(&ds, &bad).is_err());
     }
 
     #[test]

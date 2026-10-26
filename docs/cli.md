@@ -1089,3 +1089,12 @@ point tie points and rotated affine transforms, without moving pixel corners.
 Writing a PixelIsPoint GeoTIFF requires a CRS. A write with an unknown CRS is
 rejected before creating the file, avoiding a half-pixel origin shift without
 a corresponding raster-type GeoKey.
+
+
+`nearblack --update` and `clean-collar --update` follow GDAL's Byte processing:
+non-Byte samples across the image are rounded/clamped to 0–255 before being written
+back to the original data type. Terrio emits a warning for these inputs.
+For RGBA sources, `nearblack --color black` compares four bands unless `--add-alpha`
+or `--add-mask` selects alpha/mask processing; `clean-collar` keeps existing alpha.
+A 1×1 unnormalized VRT kernel is applied once, matching GDAL 3.13.3 (coefficient 2
+maps sample 3 to 6).

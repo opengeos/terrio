@@ -37,6 +37,9 @@ pub fn run(a: Args) -> terrio::Result<()> {
     if a.output.is_none() && a.config.as_ref().is_some_and(|config| same_file(&a.input, config)) {
         return Err(terrio::Error::InvalidArgument("the config output must not be the input".into()));
     }
+    if a.output.is_some() && a.equalize && a.config.is_some() {
+        return Err(terrio::Error::InvalidArgument("--config with --equalize writes tables and requires no raster output".into()));
+    }
     let o = EnhanceOptions { bins: a.lut_bins, output_type: terrio::ops::parse_data_type(&a.ot)? };
     let mut src = open_lazy(&a.input)?;
     let luts: Vec<BandLut> = if a.equalize {

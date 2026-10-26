@@ -124,7 +124,7 @@ fn collar(
         None => src.cast::<PyRaster>().map_err(|_| invalid("expected a path or a terrio.Raster"))?.borrow().inner.has_mask(),
     };
     let ds = input_raster(py, src)?;
-    let bands = terrio::ops::nearblack::color_bands(&ds);
+    let bands = terrio::ops::nearblack::color_bands(&ds, add_alpha || add_mask || keep);
     let colors = match colors {
         None => Vec::new(),
         Some(c) => {
