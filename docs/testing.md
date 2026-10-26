@@ -555,4 +555,9 @@ the previous Float64 buffer representation. Both runs retain the same logical ou
 resampling, nodata rules and chunk plan; only buffer storage changes. This keeps
 multiple-source overlays and both memory budgets covered without coupling the
 storage invariant to historical projection checksums. No pixel tolerance is
-used in this differential storage test.
+used in this differential storage test. An independent value guard,
+`earth_meridian_and_inverse_values_match_proj` in `proj_strings.rs`, checks
+nine frozen GDAL 3.12.2 / PROJ 9.8.1 points for UTM 10N, equidistant conic and
+sinusoidal, covering both hemispheres and high latitudes. It uses reference
+projected points for inverse checks, with allowances of 1 micrometre forward
+and 1e-11 degrees inverse, and is registered separately in the CRS conformance suite.

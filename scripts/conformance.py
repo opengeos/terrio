@@ -950,6 +950,10 @@ PROJ_CASES = {
         "cass_matches_proj": "Cassini-Soldner: `+proj=cass +lat_0=48 +lon_0=10` (WGS 84 and sphere) and `+hyperbolic`",
     },
     "proj_strings": {
+        "earth_meridian_and_inverse_values_match_proj": (
+            "Earth meridian series and inverse normalization", TOLERANCE,
+            "nine pinned GDAL 3.12.2/PROJ 9.8.1 points: UTM 10N, equidistant conic and sinusoidal; forward <1 micrometre, inverse <1e-11 degrees",
+        ),
         "proj_strings_match_proj_or_are_refused": "Every PROJ projection as a PROJ string (117, WGS 84 and sphere): matches PROJ or is refused",
         "unsupported_projections_are_refused_in_every_encoding": "The projections terrio does not implement, refused as WKT too",
         "pyproj_wkt_matches_proj": "The same CRSs as pyproj's WKT1_GDAL and WKT2_2019 (known differences: #119, #156)",

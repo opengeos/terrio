@@ -1506,7 +1506,7 @@ test("IAU_2015 planetary coordinates match the full GDAL registry oracle", () =>
 });
 
 
-test("IAU strict datum selection", () => {
+test("IAU_2015 strict datum selection", () => {
   assert.throws(() => terrio.transformPoints([45], [-10], "IAU_2015:49900", "IAU_2015:49901", undefined, { allowBallpark: false }), /ALLOW_BALLPARK/);
   const result = terrio.transformPoints([45], [-10], "IAU_2015:49901", "IAU_2015:49902", undefined, { allowBallpark: false });
   assert.ok(Math.abs(result[0][0] - 10) < 1e-8);
@@ -1514,7 +1514,7 @@ test("IAU strict datum selection", () => {
 });
 
 
-test("edited IAU WKT parameters override its root identifier", () => {
+test("edited IAU_2015 WKT parameters override its root identifier", () => {
   const source = "IAU_2015:49910";
   const wkt = terrio.describeCrs(source).wkt;
   const edited = wkt.replace('PARAMETER["False easting",0,', 'PARAMETER["False easting",1234,');

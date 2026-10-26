@@ -253,6 +253,11 @@ fn custom_ellipsoid_body_compatibility_applies_without_iau_ids() {
             assert!(result.err().unwrap().to_string().contains("celestial body"));
         }
     }
+    for shift in ["+towgs84=1,2,3", "+datum=WGS84"] {
+        let source = SpatialRef::parse(&format!("+proj=longlat +a=1 +b=1 {shift}")).unwrap();
+        let target = SpatialRef::parse("+proj=longlat +R=1").unwrap();
+        assert!(Transformer::new(&source, &target).err().unwrap().to_string().contains("Earth datum operations"));
+    }
 }
 
 #[test]

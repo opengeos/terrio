@@ -357,7 +357,7 @@ pub(crate) fn authlat_inverse(beta: f64, apa: &[f64; 6], e: f64, one_es: f64, qp
         let (sinphi, cosphi) = phi.sin_cos();
         let t = 1.0 - es * (sinphi * sinphi);
         let delta = t * t / (2.0 * cosphi) * (q_div_one_es - sinphi / t - (e * sinphi).atanh() / e);
-        if !matches!(delta.abs().partial_cmp(&1e-15), Some(std::cmp::Ordering::Greater | std::cmp::Ordering::Equal)) {
+        if !delta.is_finite() || delta.abs() < 1e-15 {
             break;
         }
         phi += delta;
@@ -372,6 +372,16 @@ pub(crate) const HALFPI: f64 = FRAC_PI_2;
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn authalic_inverse_keeps_its_estimate_when_refinement_is_nonfinite() {
+        let one_es = 0.25;
+        let e = (1.0_f64 - one_es).sqrt();
+        let apa = authset(e * e);
+        let beta = 0.5;
+        let estimate = authlat(beta, &apa);
+        assert_eq!(authlat_inverse(beta, &apa, e, one_es, f64::INFINITY), estimate);
+    }
+
     #[test]
     fn authalic_q_retains_precision_near_the_equator() {
         let ellipsoid = Ell::named("GRS80").unwrap();

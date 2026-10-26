@@ -13,6 +13,7 @@ pub(crate) struct Entry {
     pub ocentric: bool,
     pub proj: String,
     pub wkt: String,
+    normalized_wkt: OnceLock<Option<wkt1::Node>>,
 }
 
 pub(crate) fn get(code: u32) -> Option<&'static Entry> {
@@ -38,6 +39,7 @@ pub(crate) fn get(code: u32) -> Option<&'static Entry> {
                             ocentric: columns[3] == "c",
                             proj: columns[5].to_string(),
                             wkt: columns[8].to_string(),
+                            normalized_wkt: OnceLock::new(),
                         },
                     )
                 })
@@ -104,6 +106,10 @@ pub(crate) fn declared(wkt: &str) -> Option<u32> {
         return None;
     }
     let root = wkt1::parse(wkt)?;
+    declared_node(&root)
+}
+
+fn declared_node(root: &wkt1::Node) -> Option<u32> {
     let id =
         root.children("ID").find(|id| id.name().is_some_and(|a| a.eq_ignore_ascii_case("IAU") || a.eq_ignore_ascii_case("IAU_2015")))?;
     let authority = id.name()?;
@@ -124,7 +130,11 @@ pub(crate) fn declared(wkt: &str) -> Option<u32> {
 
 /// Identifies a registered definition, rather than trusting a caller-supplied root ID.
 pub(crate) fn identify(wkt: &str, proj: Option<&str>) -> Option<u32> {
-    let code = declared(wkt)?;
+    if !wkt.to_ascii_uppercase().contains("\"IAU") {
+        return None;
+    }
+    let mut root = wkt1::parse(wkt)?;
+    let code = declared_node(&root)?;
     let entry = get(code)?;
     if proj.is_some_and(|p| p != entry.proj) {
         return None;
@@ -132,10 +142,14 @@ pub(crate) fn identify(wkt: &str, proj: Option<&str>) -> Option<u32> {
     if wkt == entry.wkt {
         return Some(code);
     }
-    let without_root_id = |text: &str| {
-        let mut root = wkt1::parse(text)?;
+    let remove_root_id = |root: &mut wkt1::Node| {
         root.args.retain(|arg| !matches!(arg, wkt1::Arg::Node(node) if node.key.eq_ignore_ascii_case("ID")));
-        Some(root)
     };
-    (without_root_id(wkt)? == without_root_id(&entry.wkt)?).then_some(code)
+    remove_root_id(&mut root);
+    let canonical = entry.normalized_wkt.get_or_init(|| {
+        let mut root = wkt1::parse(&entry.wkt)?;
+        remove_root_id(&mut root);
+        Some(root)
+    });
+    (Some(&root) == canonical.as_ref()).then_some(code)
 }

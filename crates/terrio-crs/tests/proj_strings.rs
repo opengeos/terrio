@@ -352,3 +352,49 @@ fn proj_methods_keep_the_crs_figure_and_units() {
         }
     }
 }
+
+/// Independent GDAL 3.12.2 / PROJ 9.8.1 values for the Earth inverse path used
+/// by the warp regression and two projections using the meridian series.
+/// Check inverse against the oracle's projected points, not our forward output.
+#[test]
+fn earth_meridian_and_inverse_values_match_proj() {
+    type Point = (f64, f64, f64, f64);
+    let cases: &[(&str, &[Point])] = &[
+        (
+            "EPSG:32610",
+            &[
+                (-123.0, 36.14471809881776, 500000.0, 3999999.9999999995),
+                (-122.99, 36.13, 500899.7946959247, 3998367.5565120056),
+                (-123.01, 36.15, 499100.4336439982, 4000585.9007904576),
+            ],
+        ),
+        (
+            "+proj=eqdc +ellps=WGS84 +lat_1=20 +lat_2=60 +lat_0=10 +lon_0=-20",
+            &[
+                (-123.0, 36.0, -7011374.235408524, 7337879.435574894),
+                (-20.0, 80.0, 0.0, 7779285.0387025),
+                (15.0, -65.0, 7111230.51439019, -6931458.6082117325),
+            ],
+        ),
+        (
+            "+proj=sinu +ellps=WGS84 +lon_0=15",
+            &[
+                (15.0, 0.0, 0.0, 0.0),
+                (75.0, 70.0, 2291192.47652032, 7768980.727770192),
+                (-45.0, -65.0, -2830531.863575512, -7211339.117308004),
+            ],
+        ),
+    ];
+    let geographic = SpatialRef::from_epsg(4326).unwrap();
+    for (definition, points) in cases {
+        let projected = SpatialRef::parse(definition).unwrap();
+        let forward = Transformer::new(&geographic, &projected).unwrap();
+        let inverse = Transformer::new(&projected, &geographic).unwrap();
+        for &(lon, lat, x, y) in *points {
+            let got = forward.transform(lon, lat).unwrap();
+            assert!((got.0 - x).abs() < 1e-6 && (got.1 - y).abs() < 1e-6, "{definition}: {got:?} vs {x}, {y}");
+            let got = inverse.transform(x, y).unwrap();
+            assert!((got.0 - lon).abs() < 1e-11 && (got.1 - lat).abs() < 1e-11, "{definition}: {got:?} vs {lon}, {lat}");
+        }
+    }
+}
