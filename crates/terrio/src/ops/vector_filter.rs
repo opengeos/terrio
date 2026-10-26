@@ -19,6 +19,23 @@ pub fn select_layers(layers: Vec<Layer>, names: &[String]) -> Result<Vec<Layer>>
     Ok(layers.into_iter().filter(|layer| names.contains(&layer.name)).collect())
 }
 
+/// Opens selected operation inputs and rejects every missing requested layer name.
+/// Keeps the file-stem alias supported by single-layer file drivers.
+pub fn open_layers(path: &str, options: &crate::VectorOpenOptions) -> Result<Vec<Layer>> {
+    let ds = crate::open_vector(path, options)?;
+    let alias = if ds.layers.len() == 1 && ds.driver != crate::formats::VectorDriver::GPKG {
+        std::path::Path::new(path).file_stem().and_then(|stem| stem.to_str())
+    } else {
+        None
+    };
+    for name in &options.layers {
+        if !ds.layers.iter().any(|layer| layer.name == *name) && alias != Some(name.as_str()) {
+            return Err(Error::InvalidArgument(format!("no layer named '{name}'")));
+        }
+    }
+    Ok(ds.layers)
+}
+
 /// What to do with a layer's geometries, as `ogr2ogr -nlt` does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GeometryConversion {
@@ -683,6 +700,23 @@ mod tests {
         let layers = vec![Layer::new("a"), Layer::new("b")];
         assert_eq!(select_layers(layers.clone(), &["b".into()]).unwrap()[0].name, "b");
         assert!(select_layers(layers, &["a".into(), "missing".into()]).unwrap_err().to_string().contains("missing"));
+    }
+
+    #[cfg(feature = "sqlite")]
+    #[test]
+    fn file_selection_rejects_partial_matches_and_keeps_stem_alias() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("source.gpkg");
+        let layers = vec![Layer::new("a"), Layer::new("b")];
+        crate::write_vector(&layers, path.to_str().unwrap(), &Default::default()).unwrap();
+        let options = crate::VectorOpenOptions { layers: vec!["a".into(), "missing".into()], ..Default::default() };
+        assert!(open_layers(path.to_str().unwrap(), &options).unwrap_err().to_string().contains("missing"));
+        let path = tmp.path().join("single.geojson");
+        crate::write_vector(&layers[..1], path.to_str().unwrap(), &Default::default()).unwrap();
+        let options = crate::VectorOpenOptions { layers: vec!["single".into()], ..Default::default() };
+        assert_eq!(open_layers(path.to_str().unwrap(), &options).unwrap().len(), 1);
+        let options = crate::VectorOpenOptions { layers: vec!["single".into(), "missing".into()], ..Default::default() };
+        assert!(open_layers(path.to_str().unwrap(), &options).unwrap_err().to_string().contains("missing"));
     }
 
     fn square(x: f64, y: f64, s: f64) -> Geometry {

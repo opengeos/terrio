@@ -348,6 +348,10 @@ fn vector_grid_accepts_negative_search_axes_and_refuses_large_grids() {
         ],
         d,
     );
+    let missing = run(&["vector-grid", "nearest", "points.geojson", "partial.tif", "-l", "points", "-l", "typo"], d);
+    assert!(!missing.status.success());
+    assert!(String::from_utf8_lossy(&missing.stderr).contains("typo"));
+    assert!(!d.join("partial.tif").exists());
     let result = run(&["vector-grid", "nearest", "points.geojson", "large.tif", "--size", "100000", "100000"], d);
     assert!(!result.status.success());
     assert!(String::from_utf8_lossy(&result.stderr).contains("too large"));

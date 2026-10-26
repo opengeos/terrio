@@ -79,11 +79,16 @@ def test_vector_grid_algorithms_and_parameters():
         terrio.vector_grid(src, algorithm="invdist", max_points=3, **common)
 
 
-def test_vector_grid_options():
+def test_vector_grid_options(tmp_path):
     src = points_geojson([(0.5, 0.5, 1.0), (1.5, 1.5, 2.0), (9, 9, 100.0)])
     named = terrio.Layer.from_geojson(src, name="a")
     with pytest.raises(ValueError, match="missing"):
         terrio.vector_grid(named, algorithm="nearest", layers=["a", "missing"])
+    path = str(tmp_path / "single.geojson")
+    named.write(path)
+    with pytest.raises(ValueError, match="missing"):
+        terrio.vector_grid(path, algorithm="nearest", layers=["single", "missing"])
+    assert terrio.vector_grid(path, algorithm="nearest", layers=["single"], zfield="v").count == 1
     r = terrio.vector_grid(
         src,
         algorithm="nearest",

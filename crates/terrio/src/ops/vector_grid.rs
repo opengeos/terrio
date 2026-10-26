@@ -1504,6 +1504,8 @@ impl Triangulation {
             let (a, b, c) = (tri[0], tri[1], tri[2]);
             let (x1, y1, x2, y2, x3, y3) = (x[a], y[a], x[b], y[b], x[c], y[c]);
             let denom = (y2 - y3) * (x1 - x3) + (x3 - x2) * (y1 - y3);
+            // GDAL v3.13.3 alg/delaunay.c uses the absolute test fabs(dfDenom) < 1e-5
+            // in GDALTriangulationComputeBarycentricCoefficients, including its unit dependence.
             if denom.abs() < 1e-5 {
                 continue;
             }

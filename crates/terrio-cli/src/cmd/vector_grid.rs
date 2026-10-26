@@ -108,7 +108,9 @@ pub fn run(a: Args) -> terrio::Result<()> {
         nodata: a.nodata,
     };
     let algorithm = GridAlgorithm::with_params(&a.algorithm, &params)?;
-    let ds = super::quiet(|| terrio::open_vector(&a.input, &VectorOpenOptions { layers: a.layers.clone(), ..Default::default() }))?;
+    let layers = super::quiet(|| {
+        terrio::ops::vector_filter::open_layers(&a.input, &VectorOpenOptions { layers: a.layers.clone(), ..Default::default() })
+    })?;
     let four = |v: &Option<Vec<f64>>| v.as_deref().map(|v| (v[0], v[1], v[2], v[3]));
     let options = VectorGridOptions {
         algorithm,
@@ -123,6 +125,6 @@ pub fn run(a: Args) -> terrio::Result<()> {
         data_type: a.ot.as_deref().map(terrio::ops::parse_data_type).transpose()?.unwrap_or(terrio::DataType::F64),
         crs: a.crs.as_deref().map(SpatialRef::parse).transpose()?,
     };
-    let out = terrio::ops::vector_grid::vector_grid_from_layers(&ds.layers, a.sql.as_deref(), !a.layers.is_empty(), &options)?;
+    let out = terrio::ops::vector_grid::vector_grid_from_layers(&layers, a.sql.as_deref(), !a.layers.is_empty(), &options)?;
     a.out.write(&out, &a.output)
 }

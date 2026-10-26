@@ -396,8 +396,7 @@ fn parts_of_line(
     mut path: Line,
     geographic: bool,
     srs: &SpatialRef,
-    repers_layer: &Layer,
-    filter: &dyn Fn(&Feature) -> bool,
+    reference_points: &[&Feature],
     position: usize,
     step: f64,
     out: &mut Layer,
@@ -406,7 +405,7 @@ fn parts_of_line(
     let tolerance = if geographic { TOLERANCE_DEGREE } else { TOLERANCE_METER };
     // The reference points near the route, by position (a later one replaces an earlier one).
     let mut repers: BTreeMap<OrderedF64, Point> = BTreeMap::new();
-    for f in repers_layer.features.iter().filter(|f| filter(f)) {
+    for &f in reference_points {
         let pos = as_double(f.attributes.get(position));
         let Some(Geometry::Point(c)) = &f.geometry else { continue };
         if pos.is_nan() {
@@ -591,14 +590,20 @@ pub fn create_reference(lines: &Layer, repers: &Layer, options: &LineRefOptions)
             let li = field_index(&lines.schema, lf).ok_or_else(|| Error::InvalidArgument(format!("the field {lf} was not found")))?;
             let pi = field_index(&repers.schema, pf).ok_or_else(|| Error::InvalidArgument(format!("the field {pf} was not found")))?;
             let mut out = parts_layer(&name, lines, Some(&options.output_id_field));
-            let ids: std::collections::BTreeSet<String> = lines.features.iter().map(|f| as_string(f.attributes.get(li))).collect();
-            for id in &ids {
-                // As ogrlineref: the first line of the route, each of its parts; failures are
-                // reported and the other routes still referenced.
-                let Some(f) = lines.features.iter().find(|f| as_string(f.attributes.get(li)) == *id) else { continue };
-                let filter = |p: &Feature| as_string(p.attributes.get(pi)) == *id;
-                for line in route_lines(f.geometry.as_ref()) {
-                    if let Err(e) = parts_of_line(line, geographic, &srs, repers, &filter, position, options.step, &mut out, Some(id)) {
+            let mut routes = BTreeMap::new();
+            for feature in &lines.features {
+                routes.entry(as_string(feature.attributes.get(li))).or_insert(feature);
+            }
+            let mut points: std::collections::HashMap<String, Vec<&Feature>> = Default::default();
+            for feature in &repers.features {
+                points.entry(as_string(feature.attributes.get(pi))).or_default().push(feature);
+            }
+            for (id, feature) in &routes {
+                // As ogrlineref: the first line per route and lexicographic route order;
+                // points retain input order so later duplicate positions still win.
+                let reference_points = points.get(id).map_or(&[][..], Vec::as_slice);
+                for line in route_lines(feature.geometry.as_ref()) {
+                    if let Err(e) = parts_of_line(line, geographic, &srs, reference_points, position, options.step, &mut out, Some(id)) {
                         crate::warnings::warn(format!("route {id}: {e}"));
                         break;
                     }
@@ -615,8 +620,9 @@ pub fn create_reference(lines: &Layer, repers: &Layer, options: &LineRefOptions)
             if routes.is_empty() {
                 return Err(Error::InvalidArgument("the first feature of the lines layer has no line".into()));
             }
+            let reference_points: Vec<&Feature> = repers.features.iter().collect();
             for line in routes {
-                parts_of_line(line, geographic, &srs, repers, &|_| true, position, options.step, &mut out, None)?;
+                parts_of_line(line, geographic, &srs, &reference_points, position, options.step, &mut out, None)?;
             }
             Ok(out)
         }
@@ -819,6 +825,41 @@ mod tests {
         parts.features[0].geometry = None;
         let error = coordinates(&parts, 1250.).unwrap_err();
         assert!(error.to_string().contains("no single LineString"));
+    }
+
+    #[test]
+    fn grouped_routes_keep_id_order_and_first_line() {
+        let (mut lines, mut points) = layers();
+        lines.schema.add_field(FieldDef::new("route", FieldType::Text));
+        points.schema.add_field(FieldDef::new("route", FieldType::Text));
+        let original_line = lines.features[0].clone();
+        let original_points = points.features.clone();
+        lines.features.clear();
+        points.features.clear();
+        for id in ["b", "a"] {
+            let mut line = original_line.clone();
+            line.attributes.push(FieldValue::Text(id.into()));
+            lines.features.push(line);
+            for point in &original_points {
+                let mut point = point.clone();
+                point.attributes.push(FieldValue::Text(id.into()));
+                points.features.push(point);
+            }
+        }
+        let mut duplicate = lines.features[0].clone();
+        duplicate.geometry = None;
+        lines.features.push(duplicate);
+        let options = LineRefOptions {
+            position_field: "pos".into(),
+            step: 500.,
+            line_id_field: Some("route".into()),
+            point_id_field: Some("route".into()),
+            ..Default::default()
+        };
+        let parts = create_reference(&lines, &points, &options).unwrap();
+        let field = field_index(&parts.schema, &options.output_id_field).unwrap();
+        let ids: Vec<String> = parts.features.iter().map(|f| as_string(f.attributes.get(field))).collect();
+        assert_eq!(ids, ["a", "a", "a", "a", "b", "b", "b", "b"]);
     }
 
     #[test]
