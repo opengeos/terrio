@@ -1,0 +1,200 @@
+name: CI (npm and conformance)
+
+# The two slowest Linux jobs, about half an hour each: the npm package as the release builds it,
+# and the comparison scripts with GDAL, laspy and PDAL. They run on every push to main and, for
+# pull requests, on demand only, by hand (Actions > CI (npm and conformance) > Run workflow) or
+# with the label ci:npm, ci:conformance or ci:all (when the label is added, and on each push while
+# it stays). ci.yml's wasm job builds and tests the Node.js package on every pull request.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    types: [opened, synchronize, reopened, labeled]
+  workflow_dispatch:
+    inputs:
+      jobs:
+        description: "Jobs to run"
+        type: choice
+        options: [all, npm, conformance]
+        default: all
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  # CI restores dependencies; per-checkout incremental state is larger and not reused.
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  # The jobs the labels or the manual run ask for.
+  pick:
+    runs-on: ubuntu-latest
+    outputs:
+      npm: ${{ steps.pick.outputs.npm }}
+      conformance: ${{ steps.pick.outputs.conformance }}
+    steps:
+      - id: pick
+        env:
+          EVENT: ${{ github.event_name }}
+          CHOICE: ${{ inputs.jobs }}
+          ACTION: ${{ github.event.action }}
+          ADDED: ${{ github.event.label.name }}
+          LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+        run: |
+          want() {
+            if [ "$ACTION" = labeled ]; then
+              # Only the label just added starts a job: the others already run on each push.
+              [ "$ADDED" = "ci:$1" ] || [ "$ADDED" = ci:all ]
+            elif [ "$EVENT" = push ]; then
+              true
+            elif [ "$EVENT" = workflow_dispatch ]; then
+              [ "$CHOICE" = all ] || [ "$CHOICE" = "$1" ]
+            else
+              echo "$LABELS" | jq -e --arg l "ci:$1" 'index($l) != null or index("ci:all") != null' > /dev/null
+            fi
+          }
+          for job in npm conformance; do
+            if want "$job"; then echo "$job=true"; else echo "$job=false"; fi >> "$GITHUB_OUTPUT"
+          done
+          cat "$GITHUB_OUTPUT"
+
+  # The npm package as the release builds it: both modules, optimized for size.
+  npm:
+    name: npm package
+    needs: pick
+    if: needs.pick.outputs.npm == 'true'
+    concurrency:
+      group: ci-extended-npm-${{ github.event.pull_request.number || github.ref }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      # The threaded and memory64 modules rebuild the standard library (with atomics; for wasm64):
+      # the nightly js/build.mjs pins, with its sources.
+      # Installed first: the last toolchain installed is the default (stable).
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2026-10-15
+          targets: wasm32-unknown-unknown
+          components: rust-src
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-pack
+      # Node.js 24 or later: memory64.
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      # The memory64 module's C code (Zstandard) needs clang 20 or later (js/build.mjs).
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq clang-20
+      - name: Build the npm package (browsers, bundlers, and Node.js through init)
+        run: |
+          node js/build.mjs
+          node .github/scripts/npm-notices.mjs js/pkg
+      - name: Test it, and pack it
+        run: |
+          node --test js/tests/package.test.mjs
+          # The whole Node.js suite on the threaded module, as terrio-js/load starts it.
+          TERRIO_JS_LOAD=../pkg/load.js node --test js/tests/node.test.mjs
+          # And on the memory64 module.
+          TERRIO_JS_LOAD=../pkg/load.js TERRIO_MEMORY64=1 node --test js/tests/node.test.mjs
+          ls -l js/pkg/terrio_bg.wasm js/pkg/core/terrio_bg.wasm js/pkg/threads/terrio_bg.wasm js/pkg/memory64/terrio_bg.wasm
+          cd js/pkg && npm pack --dry-run
+      - name: In headless Chromium and Firefox, threaded on a cross-origin isolated page
+        run: |
+          mkdir -p "$RUNNER_TEMP/pw" && cd "$RUNNER_TEMP/pw"
+          npm init -y > /dev/null
+          npm install playwright@1.64.1 > /dev/null
+          npx playwright install --with-deps chromium firefox > /dev/null
+          cd "$GITHUB_WORKSPACE"
+          PLAYWRIGHT_MODULE="$RUNNER_TEMP/pw/node_modules/playwright" BROWSERS=chromium,firefox node js/tests/browser.mjs
+      - name: Import the modules by their package names
+        run: |
+          mkdir -p "$RUNNER_TEMP/app" && cd "$RUNNER_TEMP/app"
+          npm init -y > /dev/null
+          npm install "$GITHUB_WORKSPACE/js/pkg"
+          node --input-type=module -e '
+            import { readFileSync } from "node:fs";
+            import { createRequire } from "node:module";
+            const require = createRequire(process.cwd() + "/");
+            for (const name of ["terrio-js", "terrio-js/core"]) {
+              const m = await import(name);
+              const wasm = require.resolve(name === "terrio-js" ? "terrio-js/terrio_bg.wasm" : "terrio-js/core/terrio_bg.wasm");
+              await m.default({ module_or_path: readFileSync(wasm) });
+              console.log(name, m.version(), JSON.stringify(m.features()));
+            }
+            const { load } = await import("terrio-js/load");
+            const threaded = await load();
+            if (threaded.features().build !== "terrio-js/threads") throw new Error("not threaded");
+            console.log("terrio-js/load", JSON.stringify(threaded.features()));
+            const wide = await load({ memory64: true });
+            if (wide.features().build !== "terrio-js/memory64") throw new Error("not memory64");
+            console.log("terrio-js/load memory64", JSON.stringify(wide.features()));'
+      - uses: actions/upload-artifact@v7
+        with:
+          name: npm-package
+          path: js/pkg
+
+  conformance:
+    name: point clouds and conformance vs GDAL
+    needs: pick
+    if: needs.pick.outputs.conformance == 'true'
+    concurrency:
+      group: ci-extended-conformance-${{ github.event.pull_request.number || github.ref }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: mamba-org/setup-micromamba@v3
+        with:
+          environment-name: gdal
+          # As in ci.yml's real-data job: the two share the cached environment.
+          create-args: gdal=3.12.2 libgdal-core=3.12.2 proj=9.8.1 libgdal-arrow-parquet libgdal-jp2openjpeg libgdal-netcdf libgdal-hdf5 libgdal-grib numpy pip pytest maturin pyproj pdal laspy lazrs-python pyarrow geopandas shapely
+          cache-environment: true
+      # Restores ci.yml's real-data job's data; only that job saves it.
+      - uses: actions/cache/restore@v6
+        with:
+          path: terrio-data
+          key: terrio-data-gdal3.12.2-proj9.8.1-${{ hashFiles('scripts/fetch_test_data.sh', 'scripts/gen_epsg_points.py', 'scripts/proj_grids.txt') }}
+      - name: Fetch test data
+        shell: micromamba-shell {0}
+        run: scripts/fetch_test_data.sh terrio-data
+      - name: Build
+        run: cargo build --release
+      - name: Build and install the Python bindings
+        shell: micromamba-shell {0}
+        run: |
+          maturin build --release -m python/Cargo.toml -o python/dist
+          python -m pip install --no-deps python/dist/*.whl
+      - name: Install multidimensional reference packages
+        shell: micromamba-shell {0}
+        run: python -m pip install xarray h5netcdf h5py zarr
+      - name: Compare point clouds with laspy and PDAL
+        shell: micromamba-shell {0}
+        # Kept for the conformance report below, which reads it instead of comparing again. Pull
+        # requests compare the filters on autzen_trim.las only; pushes to main on the Madison
+        # lidar (4 million points) too, which takes about 20 minutes more.
+        run: |
+          set -o pipefail
+          python -u scripts/compare_pointclouds.py terrio-data ${{ github.event_name == 'pull_request' && '--quick' || '' }} | tee pointclouds.log
+      - name: Conformance suite (every comparison with GDAL, laspy and PDAL)
+        # Informational: differences are listed in the report, not failures. The step fails when
+        # a suite cannot run.
+        shell: micromamba-shell {0}
+        run: |
+          python -m pip install h5py
+          TERRIO_POINTCLOUDS_LOG=pointclouds.log python scripts/conformance.py terrio-data --output conformance.md --json conformance.json --jobs 4
+          cat conformance.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: conformance-report
+          path: |
+            conformance.md
+            conformance.json

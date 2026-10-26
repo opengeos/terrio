@@ -20,6 +20,37 @@ env:
 jobs:
   # Linux only: macOS and Windows run in ci-platforms.yml, on every push to main and, for pull
   # requests, by hand or with the label ci:macos, ci:windows or ci:all.
+  # The npm package and the conformance report run in ci-extended.yml, on the same terms (labels
+  # ci:npm, ci:conformance or ci:all).
+
+  # Whether the real-data job runs: on every push to main, and for pull requests that change
+  # anything but documentation, the npm package (js/, tested by the wasm job) or other workflows.
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      real-data: ${{ steps.pick.outputs.real-data }}
+    steps:
+      - id: pick
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          if [ "$EVENT" != pull_request ]; then
+            echo "real-data=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          files=$(gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR/files" -q '.[].filename')
+          echo "$files"
+          # The files that cannot change its results; ci.yml itself can.
+          skip='^(docs/|site/|js/|packaging/|\.github/|[^/]+\.md$|zensical\.toml$|requirements_docs\.txt$|CITATION\.cff$|about\.(hbs|toml)$)'
+          if echo "$files" | grep -Evq "$skip" || echo "$files" | grep -qx '.github/workflows/ci.yml'; then
+            echo "real-data=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "real-data=false" >> "$GITHUB_OUTPUT"
+            echo "Real-data job skipped: no file it depends on changed."
+          fi
+
   check:
     name: ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
@@ -157,81 +188,6 @@ jobs:
           wasm-pack build js --release --target nodejs --out-dir pkg-node/core --out-name terrio --no-pack -- --no-default-features --features core
           TERRIO_JS_PKG=../pkg-node/core/terrio.js node --test js/tests/node.test.mjs
 
-  # The npm package as the release builds it: both modules, optimized for size.
-  npm:
-    name: npm package
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      # The threaded and memory64 modules rebuild the standard library (with atomics; for wasm64):
-      # the nightly js/build.mjs pins, with its sources.
-      # Installed first: the last toolchain installed is the default (stable).
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: nightly-2026-10-15
-          targets: wasm32-unknown-unknown
-          components: rust-src
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: wasm32-unknown-unknown
-      - uses: Swatinem/rust-cache@v2
-      - uses: taiki-e/install-action@v2
-        with:
-          tool: wasm-pack
-      # Node.js 24 or later: memory64.
-      - uses: actions/setup-node@v7
-        with:
-          node-version: 24
-      # The memory64 module's C code (Zstandard) needs clang 20 or later (js/build.mjs).
-      - run: sudo apt-get update -qq && sudo apt-get install -y -qq clang-20
-      - name: Build the npm package (browsers, bundlers, and Node.js through init)
-        run: |
-          node js/build.mjs
-          node .github/scripts/npm-notices.mjs js/pkg
-      - name: Test it, and pack it
-        run: |
-          node --test js/tests/package.test.mjs
-          # The whole Node.js suite on the threaded module, as terrio-js/load starts it.
-          TERRIO_JS_LOAD=../pkg/load.js node --test js/tests/node.test.mjs
-          # And on the memory64 module.
-          TERRIO_JS_LOAD=../pkg/load.js TERRIO_MEMORY64=1 node --test js/tests/node.test.mjs
-          ls -l js/pkg/terrio_bg.wasm js/pkg/core/terrio_bg.wasm js/pkg/threads/terrio_bg.wasm js/pkg/memory64/terrio_bg.wasm
-          cd js/pkg && npm pack --dry-run
-      - name: In headless Chromium and Firefox, threaded on a cross-origin isolated page
-        run: |
-          mkdir -p "$RUNNER_TEMP/pw" && cd "$RUNNER_TEMP/pw"
-          npm init -y > /dev/null
-          npm install playwright@1.64.1 > /dev/null
-          npx playwright install --with-deps chromium firefox > /dev/null
-          cd "$GITHUB_WORKSPACE"
-          PLAYWRIGHT_MODULE="$RUNNER_TEMP/pw/node_modules/playwright" BROWSERS=chromium,firefox node js/tests/browser.mjs
-      - name: Import the modules by their package names
-        run: |
-          mkdir -p "$RUNNER_TEMP/app" && cd "$RUNNER_TEMP/app"
-          npm init -y > /dev/null
-          npm install "$GITHUB_WORKSPACE/js/pkg"
-          node --input-type=module -e '
-            import { readFileSync } from "node:fs";
-            import { createRequire } from "node:module";
-            const require = createRequire(process.cwd() + "/");
-            for (const name of ["terrio-js", "terrio-js/core"]) {
-              const m = await import(name);
-              const wasm = require.resolve(name === "terrio-js" ? "terrio-js/terrio_bg.wasm" : "terrio-js/core/terrio_bg.wasm");
-              await m.default({ module_or_path: readFileSync(wasm) });
-              console.log(name, m.version(), JSON.stringify(m.features()));
-            }
-            const { load } = await import("terrio-js/load");
-            const threaded = await load();
-            if (threaded.features().build !== "terrio-js/threads") throw new Error("not threaded");
-            console.log("terrio-js/load", JSON.stringify(threaded.features()));
-            const wide = await load({ memory64: true });
-            if (wide.features().build !== "terrio-js/memory64") throw new Error("not memory64");
-            console.log("terrio-js/load memory64", JSON.stringify(wide.features()));'
-      - uses: actions/upload-artifact@v7
-        with:
-          name: npm-package
-          path: js/pkg
-
   # The cargo features (see crates/terrio/Cargo.toml): each builds on its own, and so does the
   # core without them, natively and for WebAssembly.
   features:
@@ -319,10 +275,12 @@ jobs:
           name: wheel-${{ matrix.os }}
           path: python/dist/*.whl
 
-  # The real-data checks are two jobs run side by side: the Rust and Python tests, and the
-  # comparison scripts (point clouds, conformance). Both use the same GDAL environment and data.
+  # The Rust and Python tests on real data. The comparison scripts (point clouds, conformance) are
+  # in ci-extended.yml, with the same GDAL environment and data; this job saves the data cache.
   real-data:
     name: real data vs GDAL
+    needs: changes
+    if: needs.changes.outputs.real-data == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -336,6 +294,9 @@ jobs:
           # bundled GDAL), as conda-forge has none for GDAL 3.12.2 with PROJ 9.8.
           create-args: gdal=3.12.2 libgdal-core=3.12.2 proj=9.8.1 libgdal-arrow-parquet libgdal-jp2openjpeg libgdal-netcdf libgdal-hdf5 libgdal-grib numpy pip pytest maturin pyproj pdal laspy lazrs-python pyarrow geopandas shapely
           cache-environment: true
+      - name: Benchmark harness regression tests
+        shell: micromamba-shell {0}
+        run: python -m unittest discover -s scripts/tests -v
       - uses: actions/cache@v6
         with:
           path: terrio-data
@@ -369,61 +330,3 @@ jobs:
         run: |
           python scripts/compare_xarray_with_rioxarray.py terrio-data --output xarray.md
           cat xarray.md >> "$GITHUB_STEP_SUMMARY"
-
-  conformance:
-    name: point clouds and conformance vs GDAL
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - uses: mamba-org/setup-micromamba@v3
-        with:
-          environment-name: gdal
-          # As in the real-data job: the two share the cached environment.
-          create-args: gdal=3.12.2 libgdal-core=3.12.2 proj=9.8.1 libgdal-arrow-parquet libgdal-jp2openjpeg libgdal-netcdf libgdal-hdf5 libgdal-grib numpy pip pytest maturin pyproj pdal laspy lazrs-python pyarrow geopandas shapely
-          cache-environment: true
-      - name: Benchmark harness regression tests
-        shell: micromamba-shell {0}
-        run: python -m unittest discover -s scripts/tests -v
-      # Restores the real-data job's data; only that job saves it.
-      - uses: actions/cache/restore@v6
-        with:
-          path: terrio-data
-          key: terrio-data-gdal3.12.2-proj9.8.1-${{ hashFiles('scripts/fetch_test_data.sh', 'scripts/gen_epsg_points.py', 'scripts/proj_grids.txt') }}
-      - name: Fetch test data
-        shell: micromamba-shell {0}
-        run: scripts/fetch_test_data.sh terrio-data
-      - name: Build
-        run: cargo build --release
-      - name: Build and install the Python bindings
-        shell: micromamba-shell {0}
-        run: |
-          maturin build --release -m python/Cargo.toml -o python/dist
-          python -m pip install --no-deps python/dist/*.whl
-      - name: Install multidimensional reference packages
-        shell: micromamba-shell {0}
-        run: python -m pip install xarray h5netcdf h5py zarr
-      - name: Compare point clouds with laspy and PDAL
-        shell: micromamba-shell {0}
-        # Kept for the conformance report below, which reads it instead of comparing again. Pull
-        # requests compare the filters on autzen_trim.las only; pushes to main on the Madison
-        # lidar (4 million points) too, which takes about 20 minutes more.
-        run: |
-          set -o pipefail
-          python -u scripts/compare_pointclouds.py terrio-data ${{ github.event_name == 'pull_request' && '--quick' || '' }} | tee pointclouds.log
-      - name: Conformance suite (every comparison with GDAL, laspy and PDAL)
-        # Informational: differences are listed in the report, not failures. The step fails when
-        # a suite cannot run.
-        shell: micromamba-shell {0}
-        run: |
-          python -m pip install h5py
-          TERRIO_POINTCLOUDS_LOG=pointclouds.log python scripts/conformance.py terrio-data --output conformance.md --json conformance.json --jobs 4
-          cat conformance.md >> "$GITHUB_STEP_SUMMARY"
-      - uses: actions/upload-artifact@v7
-        if: always()
-        with:
-          name: conformance-report
-          path: |
-            conformance.md
-            conformance.json
