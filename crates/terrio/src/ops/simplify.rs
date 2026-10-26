@@ -465,11 +465,14 @@ pub fn simplify_preserve_topology(g: &Geometry, tolerance: f64) -> Result<Geomet
     }
     let mut parts = Vec::new();
     components(g, &mut parts);
+    if parts.iter().any(|(cs, _)| cs.len() == 1) {
+        return Err(Error::InvalidArgument("a line must contain zero or at least two points".into()));
+    }
     let lines = parts
         .iter()
         .map(|(cs, is_ring)| {
             let pts: Vec<P> = cs.iter().map(|c| (c.x, c.y)).collect();
-            let closed = pts.first() == pts.last();
+            let closed = pts.len() > 1 && pts.first() == pts.last();
             Line { pts, min_size: if closed { 4 } else { 2 }, is_ring: *is_ring, result: Vec::new() }
         })
         .collect();
@@ -523,7 +526,7 @@ pub fn segmentize(g: &Geometry, max_length: f64) -> Result<Geometry> {
 }
 
 /// The most vertices a segmentized line may have.
-const MAX_SEGMENTIZED_POINTS: usize = i32::MAX as usize;
+const MAX_SEGMENTIZED_POINTS: usize = 10_000_000;
 
 fn segmentize_line(cs: &[Coord], max_length: f64) -> Result<Vec<Coord>> {
     let n = cs.len();
@@ -547,9 +550,12 @@ fn segmentize_line_forward(cs: &[Coord], max_length: f64) -> Result<Vec<Coord>> 
     let intermediate = |a: &Coord, b: &Coord| -> (f64, f64, usize) {
         let (dx, dy) = (b.x - a.x, b.y - a.y);
         let square = dx * dx + dy * dy;
-        if square - square_max > REL_EPSILON_LENGTH_SQUARE * square_max {
-            let k = ((square / square_max).sqrt() - REL_EPSILON_ROUND).floor();
-            (dx, dy, if k.is_finite() && k > 0.0 { k.min(i32::MAX as f64) as usize } else { 0 })
+        // Keep OGR's ordinary squared arithmetic, but avoid underflow/overflow
+        // silently suppressing subdivisions for very small or large lengths.
+        let ratio = if square_max.is_normal() && square.is_normal() { (square / square_max).sqrt() } else { dx.hypot(dy) / max_length };
+        if ratio > (1.0 + REL_EPSILON_LENGTH_SQUARE).sqrt() {
+            let k = (ratio - REL_EPSILON_ROUND).floor();
+            (dx, dy, if k.is_nan() { 0 } else { k.clamp(0.0, i32::MAX as f64) as usize })
         } else {
             (dx, dy, 0)
         }
@@ -561,7 +567,8 @@ fn segmentize_line_forward(cs: &[Coord], max_length: f64) -> Result<Vec<Coord>> 
             return Err(Error::InvalidArgument("too many points in a segmentized line".into()));
         }
     }
-    let mut out = Vec::with_capacity(total);
+    let mut out = Vec::new();
+    out.try_reserve_exact(total).map_err(|_| Error::InvalidArgument("cannot allocate segmentized line".into()))?;
     for (i, a) in cs.iter().enumerate() {
         out.push(a.clone());
         let Some(b) = cs.get(i + 1) else { break };
@@ -646,5 +653,16 @@ mod tests {
         let Geometry::Polygon { exterior, .. } = segmentize(&open, 3.0).unwrap() else { panic!() };
         assert_eq!(exterior.0.len(), 6);
         assert_eq!(xy(&exterior.0)[5], (2.0, 2.0));
+    }
+    #[test]
+    fn refuses_singleton_lines_like_geos_and_excessive_densification() {
+        let singleton = Geometry::LineString(vec![Coord::xy(1., 2.)]);
+        assert!(simplify_preserve_topology(&singleton, 1.).is_err());
+        let source = Geometry::LineString(vec![Coord::xy(0., 0.), Coord::xy(10., 0.)]);
+        assert!(segmentize(&source, 1e-200).unwrap_err().to_string().contains("too many points"));
+        let tiny = Geometry::LineString(vec![Coord::xy(0., 0.), Coord::xy(1e-199, 0.)]);
+        let Geometry::LineString(divided) = segmentize(&tiny, 1e-200).unwrap() else { panic!() };
+        assert_eq!(divided.len(), 11);
+        assert!(segmentize(&source, 1e-9).unwrap_err().to_string().contains("too many points"));
     }
 }

@@ -249,7 +249,8 @@ class Runner:
                 continue
             differing += 1
             if b.GetDimension() == 2:
-                worst = max(worst, relative_difference(b, a))
+                difference = relative_difference(b, a)
+                worst = max(worst, difference if math.isfinite(difference) else math.inf)
             else:
                 worst = math.inf
         if same == len(actual):
@@ -675,15 +676,27 @@ def main():
 
     # sort: the order of the features, by their source attributes.
     for src in ["us", "places", "roads"]:
-        source = load(paths[src])
-        keys = [tuple(sorted(a.items())) for _, a in source]
+        # A unique source row ID survives sorting even when all user attributes
+        # are duplicated. Keep it separate from the geometries being checked.
+        sort_path = work / f"sort-{src}-source.gpkg"
+        if sort_path.exists():
+            sort_path.unlink()
+        ds = gdal.VectorTranslate(str(sort_path), str(paths[src]))
+        layer = ds.GetLayer(0)
+        row_field = "terrio_validation_row"
+        assert layer.FindFieldIndex(row_field, 1) < 0
+        layer.CreateField(ogr.FieldDefn(row_field, ogr.OFTInteger64))
+        for row, feature in enumerate(layer):
+            feature.SetField(row_field, row)
+            layer.SetFeature(feature)
+        ds = None
+        source = load(sort_path)
         envelopes = envelopes_of(source)
         for method in ["hilbert", "strtree"]:
             name = f"sort-{src}-{method}"
-            out = r.terrio_run(["sort", paths[src], "--method", method], name)
+            out = r.terrio_run(["sort", sort_path, "--method", method], name)
             got = load(out)
-            index = {k: i for i, k in enumerate(keys)}
-            order = [index[tuple(sorted(a.items()))] for _, a in got]
+            order = [a[row_field] for _, a in got]
             if method == "hilbert":
                 expected, codes = hilbert_order(envelopes)
                 tie = lambda i, j: codes[i] == codes[j]  # noqa: E731

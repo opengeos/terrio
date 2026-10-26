@@ -24,7 +24,7 @@ use super::simplify::{dist, open_ring, orient};
 use crate::{Error, Geometry, Result};
 use spade::handles::{FixedFaceHandle, InnerTag};
 use spade::{ConstrainedDelaunayTriangulation, DelaunayTriangulation, HasPosition, Point2, Triangulation};
-use std::collections::{BinaryHeap, HashMap};
+use std::collections::{BinaryHeap, HashMap, VecDeque};
 use wbvector::{Coord, Ring};
 
 type P = (f64, f64);
@@ -303,6 +303,7 @@ pub fn concave_hull(g: &Geometry, ratio: f64, allow_holes: bool) -> Result<Geome
     }
     finite(g)?;
     let coords = unique_vertices(g);
+    // GEOS returns POLYGON EMPTY here, unlike ConvexHull's empty collection.
     if coords.is_empty() {
         return Ok(Geometry::Polygon { exterior: Ring(Vec::new()), interiors: Vec::new() });
     }
@@ -496,29 +497,54 @@ pub fn concave_hull_of_polygons(g: &Geometry, ratio: f64, tight: bool, allow_hol
     let faces: Vec<FixedFaceHandle<InnerTag>> = cdt.fixed_inner_faces().collect();
     let slot: HashMap<FixedFaceHandle<InnerTag>, usize> = faces.iter().enumerate().map(|(i, f)| (*f, i)).collect();
     let mut t = Tris { pts, tris: Vec::new() };
-    let mut in_polygons = Vec::with_capacity(faces.len());
-    for f in &faces {
+    // A 0-1 flood from the frame counts nested ring boundaries. Valid polygonal
+    // input has disjoint shells and holes, so odd depth is polygon interior and
+    // any positive depth lies within a shell. Each face/edge is visited O(1)
+    // times, without testing every face against every input ring.
+    let mut neighbors = Vec::with_capacity(faces.len());
+    let mut depth = vec![usize::MAX; faces.len()];
+    let mut pending = VecDeque::new();
+    for (i, f) in faces.iter().enumerate() {
         let face = cdt.face(*f);
         let v = face.vertices().map(|v| v.data().index);
-        let c = ((t.pts[v[0]].0 + t.pts[v[1]].0 + t.pts[v[2]].0) / 3.0, (t.pts[v[0]].1 + t.pts[v[1]].1 + t.pts[v[2]].1) / 3.0);
-        let adj = face.adjacent_edges().map(|e| {
-            if cdt.is_constraint_edge(e.as_undirected().fix()) { None } else { e.rev().face().as_inner().map(|f| slot[&f.fix()]) }
-        });
-        in_polygons.push(inside_rings(c, &all_rings));
+        let raw = face
+            .adjacent_edges()
+            .map(|e| (e.rev().face().as_inner().map(|f| slot[&f.fix()]), cdt.is_constraint_edge(e.as_undirected().fix())));
+        let adj = raw.map(|(other, boundary)| if boundary { None } else { other });
+        if v.iter().any(|&v| v >= first_frame) {
+            depth[i] = 0;
+            pending.push_back(i);
+        }
+        neighbors.push(raw);
         t.tris.push(Tri { v, adj, size: 0.0, removed: false });
     }
-    // Faces inside a shell (polygon area or holes) are not part of the frame's triangulation.
-    let in_shells: Vec<bool> = t
-        .tris
-        .iter()
-        .map(|tri| {
-            let c = (
-                (t.pts[tri.v[0]].0 + t.pts[tri.v[1]].0 + t.pts[tri.v[2]].0) / 3.0,
-                (t.pts[tri.v[0]].1 + t.pts[tri.v[1]].1 + t.pts[tri.v[2]].1) / 3.0,
-            );
-            shells.iter().any(|s| inside_rings(c, std::slice::from_ref(s)))
-        })
-        .collect();
+    while let Some(i) = pending.pop_front() {
+        for (other, boundary) in neighbors[i] {
+            if let Some(j) = other {
+                let candidate = depth[i] + usize::from(boundary);
+                if candidate < depth[j] {
+                    depth[j] = candidate;
+                    if boundary {
+                        pending.push_back(j);
+                    } else {
+                        pending.push_front(j);
+                    }
+                }
+            }
+        }
+    }
+    let in_polygons: Vec<bool> = depth.iter().map(|d| d % 2 == 1).collect();
+    let in_shells: Vec<bool> = depth.iter().map(|&d| d > 0).collect();
+    // Cache the shell membership of each vertex for the tight erosion test.
+    let mut memberships = vec![Vec::new(); coords.len()];
+    for (shell, ring) in shells.iter().enumerate() {
+        for &(x, y) in ring {
+            let v = index[&(key(x), key(y))];
+            if memberships[v].last() != Some(&shell) {
+                memberships[v].push(shell);
+            }
+        }
+    }
     let is_frame_tri = |t: &Tris, i: usize| t.tris[i].v.iter().any(|&v| v >= first_frame);
     let max_length = target_length(&t, ratio, |i| !in_shells[i] && !is_frame_tri(&t, i), |i, e| t.tris[i].adj[e].is_some());
     // Remove the frame corner triangles; the triangles opposite their corners are the border.
@@ -550,7 +576,10 @@ pub fn concave_hull_of_polygons(g: &Geometry, ratio: f64, tight: bool, allow_hol
             hull[i] = false;
         }
     }
-    let touches_single_polygon = |t: &Tris, i: usize| -> bool { shells.iter().any(|s| t.tris[i].v.iter().all(|&v| s.contains(&t.pts[v]))) };
+    let touches_single_polygon = |t: &Tris, i: usize| -> bool {
+        let [a, b, c] = t.tris[i].v;
+        memberships[a].iter().any(|s| memberships[b].binary_search(s).is_ok() && memberships[c].binary_search(s).is_ok())
+    };
     let erode = |t: &mut Tris, hull: &mut Vec<bool>, queue: &mut Vec<usize>, border_edge: &mut HashMap<usize, usize>| {
         while let Some(tri) = queue.pop() {
             if !hull[tri] {
@@ -792,6 +821,22 @@ mod tests {
         // Collinear input gives the convex hull.
         let line = Geometry::LineString(vec![Coord::xy(0.0, 0.0), Coord::xy(1.0, 1.0), Coord::xy(2.0, 2.0)]);
         assert!(matches!(concave_hull(&line, 0.5, false).unwrap(), Geometry::LineString(_)));
+    }
+
+    #[test]
+    fn polygon_hull_classifies_holes_and_islands() {
+        let square = |lo, hi| Ring(vec![Coord::xy(lo, lo), Coord::xy(hi, lo), Coord::xy(hi, hi), Coord::xy(lo, hi)]);
+        let input = Geometry::MultiPolygon(vec![(square(0., 10.), vec![square(2., 8.)]), (square(4., 6.), vec![])]);
+        let result = concave_hull_of_polygons(&input, 0., true, true).unwrap();
+        let area = |exterior: &Ring, holes: &[Ring]| {
+            let a = |r: &Ring| signed_area(&r.0.iter().map(|c| (c.x, c.y)).collect::<Vec<_>>()).abs();
+            a(exterior) - holes.iter().map(a).sum::<f64>()
+        };
+        let Geometry::MultiPolygon(ps) = result else { panic!("{result:?}") };
+        assert_eq!(ps.iter().map(|(e, h)| area(e, h)).sum::<f64>(), 68.);
+        let empty = Geometry::GeometryCollection(vec![]);
+        assert!(matches!(convex_hull(&empty).unwrap(), Geometry::GeometryCollection(_)));
+        assert!(matches!(concave_hull(&empty, 0.5, false).unwrap(), Geometry::Polygon { exterior, .. } if exterior.0.is_empty()));
     }
 
     #[test]

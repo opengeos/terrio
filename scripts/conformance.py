@@ -1424,7 +1424,12 @@ def suite_vector_geom(ctx):
         s.skipped = "needs osgeo with GEOS"
         return s
     if not shutil.which("gdal"):
-        s.skipped = "needs the gdal command (GDAL >= 3.11)"
+        s.skipped = "needs the gdal command (GDAL >= 3.12)"
+        return s
+    from osgeo import gdal
+
+    if int(gdal.VersionInfo("VERSION_NUM")) < 3120000:
+        s.skipped = "needs GDAL >= 3.12 for the vector geometry commands"
         return s
     needed = ("TN_Counties.geojson", "UScounties.fgb", "las_vegas_roads.geojson", "ne_countries.zip", "ne_places.zip")
     if any(not os.path.isfile(os.path.join(ctx.data, name)) for name in needed):

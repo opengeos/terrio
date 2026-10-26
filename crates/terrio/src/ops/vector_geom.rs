@@ -64,7 +64,7 @@ impl GeometryTypeSpec {
             (b, true, false)
         } else if let Some(b) = up.strip_suffix('Z') {
             (b, true, false)
-        } else if let Some(b) = up.strip_suffix('M').filter(|b| !b.is_empty() && *b != "GEO") {
+        } else if let Some(b) = up.strip_suffix('M').filter(|b| !b.is_empty()) {
             (b, false, true)
         } else {
             (up.as_str(), false, false)
