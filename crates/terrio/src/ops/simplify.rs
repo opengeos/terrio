@@ -513,7 +513,7 @@ pub fn segmentize(g: &Geometry, max_length: f64) -> Result<Geometry> {
 
 fn segmentize_ring(r: &Ring, max_length: f64, remaining: &mut usize) -> Result<Ring> {
     if r.0.len() > *remaining {
-        return Err(Error::InvalidArgument("too many points in a segmentized feature".into()));
+        return Err(Error::InvalidArgument("too many points in a segmentized feature (limit: 10,000,000 vertices)".into()));
     }
     Ok(open_ring(segmentize_line(&closed_ring(&r.0), max_length, remaining)?))
 }
@@ -525,8 +525,9 @@ fn segmentize_budget(g: &Geometry, max_length: f64, remaining: &mut usize) -> Re
                 Geometry::MultiPoint(cs) => cs.len(),
                 _ => 1,
             };
-            *remaining =
-                remaining.checked_sub(n).ok_or_else(|| Error::InvalidArgument("too many points in a segmentized feature".into()))?;
+            *remaining = remaining
+                .checked_sub(n)
+                .ok_or_else(|| Error::InvalidArgument("too many points in a segmentized feature (limit: 10,000,000 vertices)".into()))?;
             g.clone()
         }
         Geometry::LineString(cs) => Geometry::LineString(segmentize_line(cs, max_length, remaining)?),
@@ -559,7 +560,7 @@ const MAX_SEGMENTIZED_POINTS: usize = 10_000_000;
 fn segmentize_line(cs: &[Coord], max_length: f64, remaining: &mut usize) -> Result<Vec<Coord>> {
     let n = cs.len();
     if n > *remaining {
-        return Err(Error::InvalidArgument("too many points in a segmentized feature".into()));
+        return Err(Error::InvalidArgument("too many points in a segmentized feature (limit: 10,000,000 vertices)".into()));
     }
     if n < 2 {
         *remaining -= n;
@@ -596,7 +597,7 @@ fn segmentize_line_forward(cs: &[Coord], max_length: f64, remaining: &mut usize)
     for w in cs.windows(2) {
         total = total.saturating_add(intermediate(&w[0], &w[1]).2);
         if total > *remaining {
-            return Err(Error::InvalidArgument("too many points in a segmentized line".into()));
+            return Err(Error::InvalidArgument("too many points in a segmentized line (per-feature limit: 10,000,000 vertices)".into()));
         }
     }
     let mut out = Vec::new();
@@ -695,6 +696,7 @@ mod tests {
         assert!(simplify_preserve_topology(&singleton, 1.).is_err());
         let source = Geometry::LineString(vec![Coord::xy(0., 0.), Coord::xy(10., 0.)]);
         assert!(segmentize(&source, 1e-200).unwrap_err().to_string().contains("too many points"));
+        assert!(segmentize(&source, 1e-200).unwrap_err().to_string().contains("10,000,000"));
         let tiny = Geometry::LineString(vec![Coord::xy(0., 0.), Coord::xy(1e-199, 0.)]);
         let Geometry::LineString(divided) = segmentize(&tiny, 1e-200).unwrap() else { panic!() };
         assert_eq!(divided.len(), 11);

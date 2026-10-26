@@ -983,6 +983,8 @@ pub fn sort(layer: &Layer, method: SortMethod) -> Layer {
             let b = |i: usize| boxes[i].expect("a bounding box");
             let n = items.len();
             if n > 1 {
+                // GEOS EnvelopeTraits::sortX/sortY use sums as well, including
+                // their overflow/tie behavior for extreme finite coordinates.
                 items.sort_by(|&p, &q| (b(p).0 + b(p).2).total_cmp(&(b(q).0 + b(q).2)));
                 let slices = ((n as f64 / 10.0).ceil().sqrt()).ceil() as usize;
                 let per_slice = (n as f64 / slices as f64).ceil() as usize;
