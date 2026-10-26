@@ -1644,6 +1644,15 @@ test("vsi: in-memory files, zip archives in memory and refused targets", () => {
   terrio.vsiDelete("/vsimem/jsvsi3", true);
 });
 
+test("vsi: listUrl failures do not expose SAS credentials", async () => {
+  await assert.rejects(
+    terrio.listUrl("https://account.blob.core.windows.net/container/dir?sig=PRIVATE_TEST_SIGNATURE", {
+      fetch: async () => new Response("failed", {status: 500}),
+    }),
+    error => !error.message.includes("PRIVATE_TEST_SIGNATURE") && error.message.includes("500"),
+  );
+});
+
 test("vsi: listUrl lists object stores and HTML index pages through fetch", async () => {
   const pages = {
     "https://bkt.s3.amazonaws.com/?list-type=2&prefix=dir%2F":

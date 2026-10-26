@@ -318,6 +318,17 @@ fn copies_lists_syncs_and_deletes_on_s3() {
 }
 
 #[test]
+fn ordinary_html_with_links_is_copied_as_a_file() {
+    let (endpoint, store) = serve();
+    let data = b"<html><title>A page</title><a href='relative.html'>Read more</a></html>".to_vec();
+    store.lock().unwrap().objects.insert("bkt/page.html".into(), (data.clone(), 1_700_000_000));
+    store.lock().unwrap().objects.insert("bkt/page.html/".into(), (data.clone(), 1_700_000_000));
+    let dir = tempfile::tempdir().unwrap();
+    ok(&endpoint, dir.path(), &["vsi", "copy", &format!("{endpoint}/bkt/page.html"), "output"]);
+    assert_eq!(std::fs::read(dir.path().join("output")).unwrap(), data);
+}
+
+#[test]
 fn copies_large_http_binary_without_content_type() {
     let (endpoint, store) = serve();
     let data = vec![42; (5 << 20) + 7];

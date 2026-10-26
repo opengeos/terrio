@@ -158,7 +158,7 @@ pub(crate) fn list_html(url: &str) -> Result<Option<Vec<ObjectEntry>>> {
     let mut reader = response.into_body().into_reader();
     // An untyped binary is not an HTML index; sniff a bounded prefix before buffering it.
     reader.by_ref().take(4096).read_to_end(&mut data)?;
-    if content_type.is_empty() && !looks_like_html(&data) {
+    if !looks_like_index(&data) {
         super::BYTES.fetch_add(data.len() as u64, Ordering::Relaxed);
         return Ok(None);
     }
@@ -175,9 +175,9 @@ pub(crate) fn list_html(url: &str) -> Result<Option<Vec<ObjectEntry>>> {
     Ok(Some(out))
 }
 
-fn looks_like_html(data: &[u8]) -> bool {
+fn looks_like_index(data: &[u8]) -> bool {
     let head = String::from_utf8_lossy(data).to_ascii_lowercase();
-    ["<!doctype html", "<html", "<head", "<body", "<a "].iter().any(|tag| head.contains(tag))
+    ["<title>index of", "<h1>index of", "directory listing for", "<!-- autoindex"].iter().any(|tag| head.contains(tag))
 }
 
 /// The size, date and entity tag of a remote object, from a one-byte range request; `None` when

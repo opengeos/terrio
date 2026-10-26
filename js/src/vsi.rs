@@ -159,7 +159,7 @@ pub async fn list_url(url: String, options: JsValue) -> Result<JsValue, JsError>
         let data = js_sys::Uint8Array::new(&buf).to_vec();
         requests += 1;
         bytes += data.len() as u64;
-        lister.feed(status, &data).map_err(|e| JsError::new(&format!("{next}: {e}")))?;
+        lister.feed(status, &data).map_err(|e| JsError::new(&format!("{}: {e}", next.split('?').next().unwrap_or_default())))?;
     }
     let out = js_sys::Object::new();
     js_sys::Reflect::set(&out, &"entries".into(), &entries_js(&lister.finish())?).map_err(js_error)?;

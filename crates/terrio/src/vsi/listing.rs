@@ -323,6 +323,15 @@ pub(crate) fn parse_html_index(html: &str, dir_path: &str) -> Vec<ObjectEntry> {
     let mut at = 0;
     while let Some(i) = lower[at..].find("href=") {
         let start = at + i + 5;
+        let tag_start = lower[..at + i].rfind('<');
+        let anchor = tag_start.is_some_and(|tag| {
+            let tag = &lower[tag + 1..at + i];
+            tag.starts_with('a') && tag.as_bytes().get(1).is_some_and(u8::is_ascii_whitespace) && !tag.contains('>')
+        });
+        if !anchor {
+            at = start;
+            continue;
+        }
         let rest = &html[start..];
         let (href, used) = match rest.chars().next() {
             Some(q @ ('"' | '\'')) => match rest[1..].find(q) {
