@@ -251,9 +251,8 @@ pub fn create_vector(filename: &str, options: JsValue) -> Result<Vec<u8>, JsErro
         .as_deref()
         .map(|f| VectorDriver::from_name(f).ok_or_else(|| invalid(format!("unknown vector format '{f}'"))))
         .transpose()?;
-    let layers: Vec<terrio::Layer> = created.into_iter().map(|c| c.layer).collect();
     let write = terrio::VectorWriteOptions { driver, ..Default::default() };
-    terrio::memory::write_vector_bytes(&layers, filename, &write).map_err(js_err)
+    vs::create_bytes(&created, filename, &write).map_err(js_err)
 }
 
 #[derive(Deserialize, Default)]

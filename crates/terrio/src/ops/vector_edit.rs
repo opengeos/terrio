@@ -364,6 +364,8 @@ fn local_gpkg(path: &str) -> bool {
 /// triggers and the rows describing them. Returns the `(old, new)` names that changed. Other
 /// formats are renamed on output, with [`rename_layers`] and a write.
 pub fn rename_layers_in_place(path: &str, o: &RenameOptions) -> Result<Vec<(String, String)>> {
+    #[cfg(not(feature = "sqlite"))]
+    let _ = o;
     if !local_gpkg(path) {
         return Err(Error::Unsupported(format!("'{path}': layers are renamed in place in local GeoPackages only; give an output")));
     }

@@ -7,6 +7,10 @@
 //! renamed over it once complete: a failure at any point leaves the original untouched.
 //! Read-only files, files with a hot rollback journal or a write-ahead log, and files with
 //! triggers or views on a renamed table that terrio does not rewrite are refused.
+//! The whole database is materialized in memory and rewriting needs space for a second file.
+//! Symlinks update their resolved target and mode bits are preserved. Replacement detaches
+//! hard links and does not preserve owner/group, ACLs or extended attributes. Callers must
+//! exclude concurrent writers: the journal/WAL checks do not provide a transaction lock.
 
 use std::collections::HashMap;
 #[cfg(not(target_family = "wasm"))]
@@ -43,6 +47,8 @@ pub(crate) fn modify_file<T>(path: &str, f: impl FnOnce(&mut Database) -> Result
     if !crate::vfs::Location::parse(path).is_local() {
         return Err(Error::Unsupported(format!("'{path}': only local GeoPackages can be changed in place")));
     }
+    let resolved = std::fs::canonicalize(path)?;
+    let path = resolved.to_str().ok_or_else(|| Error::InvalidArgument("GeoPackage path must be UTF-8".into()))?;
     let p = Path::new(path);
     let meta = std::fs::metadata(p)?;
     if !meta.is_file() {
@@ -61,21 +67,12 @@ pub(crate) fn modify_file<T>(path: &str, f: impl FnOnce(&mut Database) -> Result
         return Err(Error::Unsupported(format!("'{path}' has a write-ahead log: checkpoint it with SQLite first")));
     }
     let (bytes, value) = modify_bytes(std::fs::read(p)?, f)?;
-    let tmp = format!("{path}.terrio-edit");
-    let written = (|| -> Result<()> {
-        use std::io::Write;
-        let mut file = std::fs::File::create(&tmp)?;
-        file.write_all(&bytes)?;
-        file.sync_all()?;
-        Ok(())
-    })();
-    if let Err(e) = written {
-        let _ = std::fs::remove_file(&tmp);
-        return Err(e);
-    }
-    std::fs::rename(&tmp, p).inspect_err(|_| {
-        let _ = std::fs::remove_file(&tmp);
-    })?;
+    use std::io::Write;
+    let mut tmp = tempfile::NamedTempFile::new_in(p.parent().unwrap_or(Path::new(".")))?;
+    tmp.as_file_mut().write_all(&bytes)?;
+    tmp.as_file().set_permissions(meta.permissions())?;
+    tmp.as_file().sync_all()?;
+    tmp.persist(p).map_err(|e| e.error)?;
     Ok(value)
 }
 
@@ -162,6 +159,9 @@ fn retarget_index(sql: &str, new: &str) -> Option<String> {
 /// (and the identifier, when it was the name), `gpkg_geometry_columns`, `gpkg_ogr_contents`,
 /// `gpkg_extensions`, `gpkg_metadata_reference`, `gpkg_data_columns` and `sqlite_sequence`.
 pub(crate) fn rename_layer(d: &mut Database, old: &str, new: &str) -> Result<()> {
+    if old.contains('(') || new.contains('(') {
+        return Err(refuse("layer names containing '(' cannot be safely rewritten"));
+    }
     let old = find_layer(d, old)?;
     if new.is_empty() {
         return Err(Error::InvalidArgument("the new layer name is empty".into()));
@@ -790,6 +790,7 @@ mod tests {
         // Refusals: an existing name, a missing layer.
         let (out2, _) = modify_bytes(out.clone(), |_| Ok(())).unwrap();
         assert!(modify_bytes(out2.clone(), |d| rename_layer(d, "renamed", "b")).is_err());
+        assert!(modify_bytes(out2.clone(), |d| rename_layer(d, "renamed", "parcels (2020)")).is_err());
         assert!(modify_bytes(out2, |d| rename_layer(d, "nope", "x")).is_err());
     }
 
@@ -875,5 +876,24 @@ mod tests {
         std::fs::remove_file(dir.path().join("a.gpkg-wal")).unwrap();
         modify_file(p, |d| rename_layer(d, "a", "x")).unwrap();
         assert_eq!(super::super::gpkg_read::list_layers(p).unwrap(), ["x"]);
+    }
+    #[cfg(unix)]
+    #[test]
+    fn modify_file_follows_symlinks_and_preserves_mode_without_clobbering_stale_temp() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("a.gpkg");
+        std::fs::write(&target, gw::to_bytes(&[layer("a", 1)]).unwrap()).unwrap();
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o640)).unwrap();
+        let alias = dir.path().join("alias.gpkg");
+        symlink(&target, &alias).unwrap();
+        let stale = dir.path().join("a.gpkg.terrio-edit");
+        std::fs::write(&stale, "leave alone").unwrap();
+        modify_file(alias.to_str().unwrap(), |d| rename_layer(d, "a", "renamed")).unwrap();
+        assert!(std::fs::symlink_metadata(alias).unwrap().file_type().is_symlink());
+        assert_eq!(std::fs::metadata(&target).unwrap().permissions().mode() & 0o777, 0o640);
+        assert_eq!(std::fs::read_to_string(stale).unwrap(), "leave alone");
+        let bytes = std::fs::read(target).unwrap();
+        assert_eq!(read(&bytes)[0].name, "renamed");
     }
 }

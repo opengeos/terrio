@@ -63,7 +63,7 @@ pub struct ConcatSource {
     pub layers: Vec<Layer>,
 }
 
-/// Options of [`concat`].
+/// Options of [`concat()`].
 #[derive(Debug, Clone, Default)]
 pub struct ConcatOptions {
     /// How output layers are made.

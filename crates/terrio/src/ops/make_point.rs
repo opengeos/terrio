@@ -117,6 +117,15 @@ mod tests {
     }
 
     #[test]
+    fn null_numeric_coordinate_is_zero_like_gdal() {
+        let mut l = layer();
+        l.features[0].attributes[1] = FieldValue::Null;
+        let out = make_point(&l, &MakePointOptions { x: "lon".into(), y: "lat".into(), ..Default::default() }).unwrap();
+        let Some(Geometry::Point(c)) = &out.features[0].geometry else { panic!() };
+        assert_eq!(c.y, 0.);
+    }
+
+    #[test]
     fn rejects_bad_fields_and_values() {
         assert!(make_point(&layer(), &MakePointOptions { x: "nope".into(), y: "lat".into(), ..Default::default() }).is_err());
         let mut l = layer();

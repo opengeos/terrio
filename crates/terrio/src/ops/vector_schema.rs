@@ -1157,6 +1157,10 @@ pub fn create(layers: &[CreatedLayer], path: &str, o: &CreateOptions) -> Result<
         }
         return crate::ops::vector_filter::write_vector_with_mode(&plain, path, &o.write, crate::ops::vector_filter::WriteMode::Append);
     }
+    #[cfg(feature = "sqlite")]
+    if driver == Some(VectorDriver::GPKG) && layers.iter().any(|c| c.fid.is_some()) {
+        return Ok(std::fs::write(path, create_bytes(layers, path, &o.write)?)?);
+    }
     let fid = layers.iter().find_map(|c| c.fid.clone()).filter(|f| !f.eq_ignore_ascii_case("fid"));
     match (driver, fid) {
         #[cfg(feature = "sqlite")]
@@ -1167,6 +1171,30 @@ pub fn create(layers: &[CreatedLayer], path: &str, o: &CreateOptions) -> Result<
         }
         _ => crate::write_vector(&plain, path, &o.write),
     }
+}
+
+/// Creates an empty vector dataset in memory, retaining custom per-layer GeoPackage FID names.
+/// Other formats use the ordinary in-memory writer and its documented capabilities.
+pub fn create_bytes(layers: &[CreatedLayer], name: &str, write: &crate::VectorWriteOptions) -> Result<Vec<u8>> {
+    if layers.is_empty() {
+        return Err(Error::InvalidArgument("no layer to create".into()));
+    }
+    let driver = write.driver.or_else(|| crate::formats::VectorDriver::for_extension(name));
+    #[cfg(feature = "sqlite")]
+    if driver == Some(crate::formats::VectorDriver::GPKG) {
+        let mut builder = crate::drivers::vector::geopackage::Builder::new();
+        for created in layers {
+            builder.set_fid_column(created.fid.as_deref().unwrap_or("fid"));
+            builder.add_layer(&created.layer)?;
+        }
+        return builder.finish();
+    }
+    if layers.iter().any(|l| l.fid.as_deref().is_some_and(|f| !f.eq_ignore_ascii_case("fid"))) {
+        return Err(Error::Unsupported("custom FID names require GeoPackage output with sqlite enabled".into()));
+    }
+    let _ = driver;
+    let plain: Vec<Layer> = layers.iter().map(|l| l.layer.clone()).collect();
+    crate::memory::write_vector_bytes(&plain, name, write)
 }
 
 /// A field given as `NAME:TYPE[(WIDTH[,PRECISION])]`, as `gdal vector create --field` reads
@@ -1339,5 +1367,24 @@ mod tests {
         assert_eq!(parse_geometry_type("MULTIPOLYGONZM").unwrap(), (Some(GeometryType::MultiPolygon), true, true));
         assert_eq!(parse_geometry_type("geometry").unwrap(), (None, false, false));
         assert!(parse_geometry_type("TIN").is_err());
+    }
+    #[cfg(feature = "sqlite")]
+    #[test]
+    fn byte_creation_preserves_each_layers_custom_fid() {
+        let layers: Vec<_> = [("a", "object_id"), ("b", "record_id")]
+            .into_iter()
+            .map(|(name, fid)| CreatedLayer { layer: Layer::new(name), spatial: false, z: false, m: false, fid: Some(fid.into()) })
+            .collect();
+        let bytes = create_bytes(&layers, "created.gpkg", &Default::default()).unwrap();
+        let db = crate::drivers::sqlite::Db::new(bytes).unwrap();
+        assert!(db.table_sql("a").unwrap().contains("object_id"));
+        assert!(db.table_sql("b").unwrap().contains("record_id"));
+        assert!(!db.table_sql("b").unwrap().contains("object_id"));
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("created.gpkg");
+        create(&layers, path.to_str().unwrap(), &Default::default()).unwrap();
+        let db = crate::drivers::sqlite::Db::new(std::fs::read(path).unwrap()).unwrap();
+        assert!(db.table_sql("a").unwrap().contains("object_id"));
+        assert!(db.table_sql("b").unwrap().contains("record_id"));
     }
 }
