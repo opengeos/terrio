@@ -60,6 +60,13 @@ def prepare(data, work):
     ds.GetRasterBand(1).WriteArray(values)
     ds = None
     paths["dem_holes"] = holes
+    # NaNs without a nodata tag must remain NaN in an all-NaN mode window.
+    nan_path = str(work / "all_nan.tif")
+    ds = gdal.GetDriverByName("GTiff").Create(nan_path, 3, 3, 1, gdal.GDT_Float32)
+    ds.SetGeoTransform([0, 1, 0, 3, 0, -1])
+    ds.GetRasterBand(1).Fill(float("nan"))
+    ds = None
+    paths["all_nan"] = nan_path
     # The Landsat scene with an alpha band and with a mask, cleaned once by GDAL.
     for name, flag in (("landsat7_alpha", "-setalpha"), ("landsat7_mask", "-setmask")):
         path = str(work / f"{name}.tif")
@@ -82,6 +89,7 @@ def neighbor_cases(p):
     def add(name, src, opts):
         cases.append({"name": f"neighbors {name}", "kind": "neighbors", "src": p[src], "opts": opts})
 
+    add("all NaN mode without nodata", "all_nan", ["--kernel", "equal", "--method", "mode"])
     for kernel in ("u", "v", "edge1", "edge2", "sharpen", "gaussian", "unsharp-masking", "equal"):
         add(f"{kernel} dem", "dem", ["--kernel", kernel])
     add("gaussian 5x5 dem", "dem", ["--kernel", "gaussian", "--size", "5"])

@@ -1396,7 +1396,7 @@ pub fn neighbors(src: JsValue, options: JsValue) -> Result<Dataset, JsError> {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", default, deny_unknown_fields)]
 struct CollarArgs {
-    colors: Vec<String>,
+    colors: OneOrMany,
     white: bool,
     color_threshold: i32,
     pixel_distance: i32,
@@ -1408,7 +1408,7 @@ struct CollarArgs {
 impl Default for CollarArgs {
     fn default() -> Self {
         Self {
-            colors: Vec::new(),
+            colors: OneOrMany::None,
             white: false,
             color_threshold: 15,
             pixel_distance: 2,
@@ -1428,7 +1428,8 @@ fn collar(src: JsValue, options: JsValue, clean_collar: bool) -> Result<Dataset,
     if a.color_threshold < 0 || a.pixel_distance < 0 {
         return Err(invalid("colorThreshold and pixelDistance must not be negative"));
     }
-    if a.white && !a.colors.is_empty() {
+    let colors = a.colors.into_vec();
+    if a.white && !colors.is_empty() {
         return Err(invalid("white and colors are exclusive"));
     }
     let ds = input_raster(&src)?;
@@ -1439,7 +1440,7 @@ fn collar(src: JsValue, options: JsValue, clean_collar: bool) -> Result<Dataset,
         None => CollarAlgorithm::TwoPasses,
     };
     let mut o = NearblackOptions {
-        colors: a.colors.iter().map(|c| terrio::ops::nearblack::parse_color(c, bands)).collect::<terrio::Result<_>>().map_err(js_err)?,
+        colors: colors.iter().map(|c| terrio::ops::nearblack::parse_color(c, bands)).collect::<terrio::Result<_>>().map_err(js_err)?,
         white: a.white,
         near: a.color_threshold,
         max_non_black: a.pixel_distance,

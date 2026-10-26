@@ -352,6 +352,14 @@ mod tests {
     }
 
     #[test]
+    fn byte_lut_values_wrap_like_gdal_313() {
+        let grid = super::super::Grid { width: 1, height: 1, geo_transform: [0., 1., 0., 1., 0., -1.] };
+        let ds = super::super::build_raster_data(grid, RasterData::U8(vec![1]), 1, None, &Default::default()).unwrap();
+        let luts = vec![BandLut { min: 0., max: 16., lut: Some(vec![300; 256]) }];
+        assert_eq!(enhance(&ds, &luts, &EnhanceOptions::default()).unwrap().raster.data.to_f64_vec(), vec![44.]);
+    }
+
+    #[test]
     fn values_map_to_bins_and_nodata_stays() {
         let grid = super::super::Grid { width: 4, height: 1, geo_transform: [0., 1., 0., 1., 0., -1.] };
         let ds = super::super::build_raster_data(grid, RasterData::U8(vec![0, 10, 200, 255]), 1, Some(10.0), &Default::default()).unwrap();

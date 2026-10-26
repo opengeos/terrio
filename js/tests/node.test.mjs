@@ -676,6 +676,7 @@ test("neighbors, collar cleaning and LUT enhancement", () => {
   assert.equal(clean.readBand(2)[0], 0);
   assert.equal(clean.readBand(2)[9], 255);
   assert.equal(terrio.nearblack(scene, { colors: ["0"], colorThreshold: 4, pixelDistance: 0 }).readBand(1)[9], 151);
+  assert.equal(terrio.nearblack(scene, { colors: "0", colorThreshold: 4, pixelDistance: 0 }).readBand(1)[9], 151);
   assert.throws(() => terrio.nearblack(scene, { addMask: true }), /addMask/);
 
   const lut = terrio.enhanceLuts(scene, {});

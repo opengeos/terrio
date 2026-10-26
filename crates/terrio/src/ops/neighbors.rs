@@ -291,7 +291,7 @@ pub(crate) fn filter(input: &[f32], width: usize, height: usize, k: &Kernel, nod
                 let (mut sum, mut weight, mut valid) = (0.0f64, 0.0f64, 0usize);
                 let (mut min, mut max) = (f64::INFINITY, f64::NEG_INFINITY);
                 let (mut mean, mut m2) = (0.0f64, 0.0f64);
-                let (mut mode, mut best) = (0.0f64, 0usize);
+                let (mut mode, mut best) = (f64::NAN, 0usize);
                 values.clear();
                 counts.clear();
                 let mut i = 0;
@@ -643,6 +643,12 @@ mod tests {
         let values = [1., 1., 1., 1., f32::NAN, 1., 1., 1., 1.];
         let out = filter(&values, 3, 3, &kernel(vec![1.; 9], true, None), Some(f32::NAN));
         assert_eq!(out[4], 1.);
+    }
+
+    #[test]
+    fn all_nan_mode_without_nodata_matches_gdal_313() {
+        let out = filter(&[f32::NAN; 9], 3, 3, &kernel(vec![1.; 9], true, Some(NeighborMethod::Mode)), None);
+        assert!(out.iter().all(|v| v.is_nan()));
     }
 
     #[test]

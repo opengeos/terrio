@@ -111,10 +111,12 @@ fn clean_collar_writes_alpha_and_updates_in_place_safely() {
 
     // In place: the input is replaced only once the result is written.
     let before = std::fs::read(d.join("scene.tif")).unwrap();
+    let files_before: std::collections::BTreeSet<_> = std::fs::read_dir(d).unwrap().map(|e| e.unwrap().file_name()).collect();
     assert!(fails(&["clean-collar", "scene.tif"], d).contains("--update"));
     assert!(fails(&["clean-collar", "--update", "scene.tif", "--compress", "NO-SUCH-CODEC"], d).contains("NO-SUCH-CODEC"));
     assert_eq!(std::fs::read(d.join("scene.tif")).unwrap(), before);
-    assert_eq!(std::fs::read_dir(d).unwrap().count(), 5, "no temporary file is left");
+    let files_after: std::collections::BTreeSet<_> = std::fs::read_dir(d).unwrap().map(|e| e.unwrap().file_name()).collect();
+    assert_eq!(files_before, files_after, "no temporary file is left");
     ok(&["clean-collar", "--update", "scene.tif", "--pixel-distance", "0"], d);
     let updated = terrio::open_raster(d.join("scene.tif").to_str().unwrap()).unwrap();
     assert_eq!(updated.band_count(), 3);

@@ -797,8 +797,8 @@ white, with `--white`), as GDAL's `gdal raster clean-collar` and `nearblack` do.
 search inwards goes past up to `--pixel-distance` (`-nb`, 2) non-collar pixels. `--add-alpha`
 adds an alpha band (transparent in the collar) and `--add-mask` a per-dataset mask (GeoTIFF:
 internal). `clean-collar` runs a flood fill from the edges by default and retains the input's
-alpha/mask representation; requested or retained mask processing regenerates mask values
-from the collar rather than intersecting them with the old mask. `nearblack` runs nearblack's two passes (top-down then bottom-up, each scanning
+alpha/mask representation; requested or retained alpha/mask processing regenerates
+opacity from the collar rather than intersecting it with the old alpha/mask. `nearblack` runs nearblack's two passes (top-down then bottom-up, each scanning
 lines from both sides) by default and adds alpha or masks only when asked. Both algorithms are
 ports of GDAL's, in GDAL's scan order, and agree pixel for pixel with GDAL on the real
 Sentinel-2 and Landsat 7 comparisons. Output is a new Byte raster with the input's
@@ -848,7 +848,9 @@ strips (equalization reads the bands whole for their histograms). Equalization, 
 LUT input are identical to `gdalenhance` on the real comparisons. Terrio extensions:
 `--src-scale MIN MAX` (a linear stretch over the bins, without tables; `gdalenhance` parses
 `-src_scale` but ignores it), `--lut-bins` (256 in GDAL) and `--ot` other than Byte (`gdalenhance`
-refuses it). Unlike `gdalenhance`, Terrio does not save the histograms it computes in an
+refuses it). Byte output casts LUT results modulo 256, matching GDAL (for example,
+a table value of 300 becomes 44); select a wider `--ot` to retain larger values.
+Unlike `gdalenhance`, Terrio does not save the histograms it computes in an
 `.aux.xml` sidecar.
 
 ## crs

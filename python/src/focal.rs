@@ -166,7 +166,7 @@ fn collar(
     let collar = py.detach(|| terrio::ops::nearblack::nearblack(&ds, &o)).py()?;
     let Some(mask) = collar.mask else { return finish_raster(py, collar.dataset, dst, format, compress, tile_size, bigtiff) };
     // A mask is kept by the file it is written to.
-    let Some(path) = dst else { return Err(invalid("a mask (add_mask, or an input with a mask) needs dst, the file that holds it")) };
+    let path = dst.expect("mask output requires dst, checked before processing");
     let mut options = write_options(format, compress, tile_size, bigtiff)?;
     options.mask = Some(mask);
     py.detach(|| terrio::write_raster_dataset(&collar.dataset, path, &options)).py()?;

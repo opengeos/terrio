@@ -221,6 +221,8 @@ const eq = terrio.enhance(image, { equalize: true });
 const again = terrio.enhance(image, { config: lut });
 ```
 
+`nearblack` and `cleanCollar` accept `colors` as a single string or an array of strings.
+
 These are `terrio neighbors`, `clean-collar`, `nearblack` and `enhance` (see
 [neighbors](cli.md#neighbors), [clean-collar](cli.md#clean-collar-and-nearblack) and
 [enhance](cli.md#enhance)), on rasters in memory. Datasets hold no mask: `addMask` is refused,
