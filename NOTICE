@@ -441,3 +441,16 @@ and src/latitudes.cpp (Karney's auxiliary-latitude series), under the same terms
 The LERC header bounds in crates/terrio/src/tiff_codecs.rs follow the
 Lerc1/Lerc2 layouts implemented by lerc-rust 0.5.0
 (https://github.com/i-norden/lerc-rust), under its MIT license.
+
+-------------------------------------------------------------------------------
+GDAL vector dataset commands (concat, partition, set-field-type, make-point)
+-------------------------------------------------------------------------------
+
+crates/terrio/src/ops/concat.rs, partition.rs, make_point.rs and vector_schema.rs follow
+the behavior of GDAL 3.13.3's apps/gdalalg_vector_concat.cpp, gdalalg_vector_partition.cpp,
+gdalalg_vector_make_point.cpp, gdalalg_vector_set_field_type.cpp and the OGR_SCHEMA output
+of apps/ogrinfo_lib.cpp, and ogr/ogrsf_frmts/generic/ogrunionlayer.cpp
+(https://github.com/OSGeo/gdal): layer name templates, field merging rules, partition key
+percent-encoding, file naming and file-size estimates, and value conversion rules.
+Copyright (c) 2024-2025, Even Rouault and the GDAL contributors. Licensed under the MIT
+permission and warranty terms reproduced above for GDAL.

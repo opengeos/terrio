@@ -33,6 +33,12 @@ terrio <COMMAND>
   contour     Contour lines at interval or fixed elevation levels
   zonal-stats Per-polygon statistics across multiple raster bands
   sql         Read-only SELECT queries over vector layers
+  concat      Concatenate vector layers and datasets (like gdal vector concat and ogrmerge.py)
+  partition   Split a vector dataset into files by field values (like gdal vector partition)
+  set-field-type  Change field types with GDAL's value conversions (like gdal vector set-field-type)
+  make-point  Point geometries from coordinate fields (like gdal vector make-point)
+  create      Create a vector dataset from a schema or template (like gdal vector create)
+  export-schema  Print a vector dataset's OGR_SCHEMA JSON (like gdal vector export-schema)
   dem         Terrain analysis: hillshade, slope, aspect, color relief, TRI, TPI, roughness (like gdaldem)
   calc        Raster algebra: band math in NumPy syntax over one or more rasters (like gdal_calc.py)
   proximity   Distance from every pixel to the nearest target pixel (like gdal_proximity.py)
@@ -396,6 +402,135 @@ String predicates (comparisons, `IN` and `BETWEEN`) now ignore ASCII case to mat
 current OGRSQL; `ORDER BY` and `MIN`/`MAX` retain case-sensitive ordering.
 Output field names must be unique, ignoring case. The `convert --sql` path retains its legacy
 single-layer fallback for `FROM` and allows duplicate output field names.
+
+## Vector datasets
+
+These commands are GDAL 3.13's `gdal vector concat`, `partition`, `set-field-type`,
+`make-point`, `create` and `export-schema`. Their results are compared with GDAL in the
+`vector-dataset` conformance suite (see [Testing](testing.md)).
+
+### concat
+
+```sh
+terrio concat countries.gpkg us_counties.gpkg merged.gpkg                  # one layer per layer name
+terrio concat a.shp b.shp c.shp all.gpkg --mode single --source-layer-field-name source
+terrio concat *.gpkg stacked.gpkg --mode stack --output-layer "{DS_BASENAME}_{LAYER_NAME}"
+terrio concat a.gpkg b.geojson out.gpkg --mode single --field-strategy intersection --dst-crs EPSG:3857
+```
+
+`--mode merge-per-layer-name` (the default) makes one output layer per distinct layer name,
+`stack` one per input layer (named by the `--output-layer` template, `{AUTO_NAME}` by
+default: `{DS_BASENAME}_{LAYER_NAME}`, or the layer name when both are the same), and
+`single` one layer (`merged` by default). Templates also take `{DS_NAME}`, `{DS_INDEX}` and
+`{LAYER_INDEX}` (from 0). Output layers are ordered by name, as GDAL orders them.
+`--field-strategy union` (the default) keeps every field, matched by exact name;
+`intersection` the fields every layer has, ignoring case. Fields of the same name merge into a
+type holding both (reals over integers, 64-bit over 32-bit integers, strings otherwise).
+`--source-layer-field-name`/`--source-layer-field-content` add a first field naming each
+feature's source (`source_ds_lyr` and `{AUTO_NAME}` by default). Each output layer has the
+geometry type and CRS of its first source layer; features of layers in another CRS are
+reprojected to it, or to `--dst-crs`. `-s/--src-crs` overrides the inputs' CRS. `-l` selects
+input layers; `--append`/`--overwrite` update an existing GeoPackage as elsewhere. GDAL's
+`--upsert`, `--skip-errors`, `--if`, `--oo`, `--co` and `--lco` are not supported.
+
+### partition
+
+```sh
+terrio partition counties.gpkg out --field STATE                         # out/counties/STATE=TN/part_0000000001.gpkg
+terrio partition places.shp out --field country --field city --feature-limit 1000 -f GPKG
+terrio partition places.shp flat --field featurecla --scheme flat --pattern "{FIELD_VALUE}_%03d" -f FlatGeobuf
+terrio partition big.parquet out --max-file-size 500MB                     # parts of an estimated size
+```
+
+`--scheme hive` (the default) writes `layer/field=value/.../part_%010d.ext` directories, with
+null values as `__HIVE_DEFAULT_PARTITION__`; `flat` writes the files in the output directory,
+named `{LAYER_NAME}_{FIELD_VALUE}_%010d` (several values joined by `_`, nulls as `__NULL__`,
+empty strings as `__EMPTY__`). `--pattern` sets the name, with `{LAYER_NAME}`, `{FIELD_VALUE}`
+and one `%d`, `%5d` or `%05d` part number. Names and values are percent-encoded as GDAL encodes
+them. Fields must be String or Integer fields; `OGR_GEOMETRY` partitions on the geometry type
+(as GDAL 3.13 does). `--feature-limit` and `--max-file-size` (GDAL's estimate of the bytes each
+feature adds, from 1 MB) split partitions into numbered parts; without `--field`, they split
+the layer alone (GDAL 3.13). `--omit-partitioned-field` leaves the partitioning fields out
+(automatic for Hive GeoParquet). The format defaults to the input's; files take GDAL's
+extension of the format (`.json` for GeoJSON). An existing output is refused unless
+`--overwrite` (only when it looks like a partitioned dataset) or `--append` (new parts are
+numbered after the existing ones; GDAL also fills the last existing part while it is below the
+limits) is given. GDAL's `--skip-errors`, `--co` and `--lco` are not supported, nor GDAL's
+Parquet `_metadata` file.
+
+### set-field-type
+
+```sh
+terrio set-field-type countries.gpkg out.gpkg --field-name POP_EST --dst-field-type Integer64
+terrio set-field-type countries.gpkg out.gpkg --src-field-type Real --dst-field-type String
+terrio set-field-type places.csv out.gpkg --field-name visited --dst-field-type Date --active-layer places
+```
+
+`--dst-field-type` (alias `--field-type`) is a type (`Integer`, `Integer64`, `Real`,
+`String`, `Date`, `Time`, `DateTime`, `Binary`) or a subtype (`Boolean`, `Int16`, `Float32`,
+`JSON`, `UUID`) implying its type; `--field-name` names the field, or `--src-field-type` changes
+every field of a type. Values are converted as GDAL converts them: strings by their numeric
+prefix (`"12abc"` is 12, `"abc"` 0, with warnings), reals truncated and clamped to 32 or 64
+bits, 64-bit integers clamped to 32 bits, booleans from `true`/`yes`/`on`/numbers, dates and
+date-times reformatted (dates become `YYYY/MM/DD` strings), text parsed as dates or times.
+Features whose value cannot be converted (a date or blob to a number, a date to a blob) are left
+out, with a warning, as in GDAL. Widths and precisions are kept. terrio's data model has no
+separate Int16, Float32 or UUID storage: Int16 values are clamped to 16 bits in 64-bit
+integers, Float32 values are doubles, UUIDs text, times text (`HH:MM:SS[.sss]`), and an
+Integer field changed to Boolean holds 0 or 1 where GDAL keeps the integer. List types are not
+supported.
+
+### make-point
+
+```sh
+terrio make-point trace.csv points.gpkg --x longitude --y latitude --dst-crs EPSG:4326
+terrio make-point stations.gpkg points.gpkg --x easting --y northing --z elevation -l stations
+```
+
+Replaces the geometries of the first layer (or `-l`) with points read from numeric or text
+fields (text must hold a number, surrounding spaces allowed; null numbers are 0, as in GDAL),
+keeping every field. `--z` and `--m` add Z and M. `--dst-crs` assigns a CRS without
+reprojecting; without it the points have none, as in GDAL. Unlike GDAL, Integer64 fields are
+accepted. terrio's GeoPackage writer writes XY and XYZ geometries, so M values are kept in
+memory (Rust, Python and JavaScript) but not in GeoPackages.
+
+### create
+
+```sh
+terrio create sites.gpkg --output-layer sites --geometry-type POINT --crs EPSG:4326 \
+  --field "name:STRING(80)" --field visits:INTEGER --field total:INTEGER64 --fid site_id
+terrio create empty.gpkg --like countries.gpkg --layer countries --output-layer countries_new
+terrio create copy.gpkg --schema countries.schema.json
+terrio create sites.gpkg --update --output-layer more --geometry-type LINESTRING --crs EPSG:4326
+```
+
+Creates a dataset of empty layers from an `OGR_SCHEMA` document (`--schema`, a file or JSON
+text, such as `terrio export-schema` writes), from the layers of a template dataset
+(`--like`, `-l` choosing layers), or from `--geometry-type`, `--crs`, `--field
+NAME:TYPE[(WIDTH[,PRECISION])]` and `--fid`. `--output-layer` names a single layer.
+`--update` adds the layers to an existing GeoPackage (a layer of the same name is refused);
+`--overwrite` replaces an existing dataset. `--fid` names the FID column of new GeoPackages.
+Field types are mapped onto terrio's (see set-field-type); 32-bit `INTEGER(10)` fields keep no
+width of 10 or more, which marks 64-bit integers. Z and M suffixes of geometry types are
+accepted but not recorded in empty layers (a warning says so). Curve, surface, TIN and list
+types, `--geometry-field` and GDAL's `--oo` are not supported.
+
+### export-schema
+
+```sh
+terrio export-schema countries.gpkg
+terrio export-schema natural_earth.gpkg --layer ne_50m_admin_0_countries -o countries.json
+```
+
+Prints the dataset's `OGR_SCHEMA` (GDAL's `ogr/data/ogr_fields_override.schema.json`), as
+`gdal vector export-schema` does: per layer its name, `"schemaType": "Full"`, geometry fields
+(name, camel-case type with `Z`/`M`, nullability, `coordinateSystem` as `{"authid":
+"EPSG:4326"}`, or `{"wkt": ...}` without an authority code, `null` without a CRS), the FID
+column and the fields (name, type, subtype, width, precision, nullability, unique constraint,
+default). Local GeoPackages are described from their table declarations (exact column types,
+`NOT NULL`, `UNIQUE` and defaults); other formats from the layers read (integer fields are
+`Integer64` when 10 or more digits wide or holding 64-bit values, as GDAL's DBF reader and
+GeoJSON reader type them).
 
 ## info
 

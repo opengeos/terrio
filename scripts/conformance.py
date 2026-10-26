@@ -25,6 +25,7 @@ Suites:
     analysis-output   zonal/point-sampling output reprojection and decimal rounding
     footprint         raster footprints, source/custom fields and singleparts vs GDAL
     topology          buffer, polygon overlay/dissolve, validity, repair and cleanup vs GEOS
+    vector-dataset    concat, partition, set-field-type, make-point, create, export-schema
     vector-geom       simplify, segmentize, hulls, swap-xy, set-geom-type, combine and sort vs
                       gdal vector and GEOS (compare_vector_geom_with_gdal.py)
     arrow             Arrow and GeoArrow export and import (compare_arrow_with_gdal.py)
@@ -1408,6 +1409,60 @@ def suite_topology(ctx):
     return s
 
 
+def suite_vector_dataset(ctx):
+    """Dataset-level vector commands against GDAL's gdal vector commands."""
+    s = Suite(
+        "vector-dataset",
+        "Vector dataset commands",
+        "GDAL gdal vector concat, partition, set-field-type, make-point, ogrmerge.py, ogrinfo",
+        "Natural Earth countries and places, US and Tennessee counties, Las Vegas buildings and "
+        "roads, a GPS trace: OGR_SCHEMA members, created schemas, field type conversions, "
+        "concatenated, partitioned and point layers read back by GDAL. Values exact; "
+        "coordinates of layers reprojected to a common CRS within 1e-9 (degrees) or 1e-6 "
+        "(metres). Int16, Float32 and JSON subtypes stored without the subtype are within "
+        "tolerance.",
+    )
+    if missing_modules("osgeo"):
+        s.skipped = "needs osgeo"
+        return s
+    needed = ("countries.gpkg", "UScounties.gpkg", "multi.gpkg", "TN_Counties.geojson")
+    if any(not os.path.isfile(os.path.join(ctx.data, name)) for name in needed):
+        s.skipped = "needs the vector test data (scripts/fetch_test_data.sh)"
+        return s
+    with tempfile.TemporaryDirectory(prefix="terrio-vector-dataset-") as tmp:
+        report = os.path.join(tmp, "report.json")
+        code, out, err = run(
+            [
+                sys.executable,
+                str(SCRIPTS / "compare_vector_dataset_with_gdal.py"),
+                ctx.data,
+                "--terrio",
+                ctx.terrio,
+                "--work-dir",
+                os.path.join(tmp, "outputs"),
+                "--json",
+                report,
+            ]
+        )
+        if code != 0:
+            s.error = tail(err or out)
+            return s
+        try:
+            results = json.loads(Path(report).read_text())["cases"]
+        except (OSError, KeyError, json.JSONDecodeError) as e:
+            s.error = str(e)
+            return s
+        for r in results:
+            name = r["name"]
+            group = next(
+                (g for g in ("export-schema", "set-field-type", "make-point") if name.startswith(g)),
+                name.split("-")[0],
+            )
+            s.cases.append(Case(group, name, r["status"], r.get("detail", "")))
+    return s
+
+
+
 def suite_vector_geom(ctx):
     """Vector geometry commands on real data against gdal vector and GEOS."""
     s = Suite(
@@ -1492,6 +1547,7 @@ SUITES = OrderedDict(
         ("multidim", suite_multidim),
         ("topology", suite_topology),
         ("vector-geom", suite_vector_geom),
+        ("vector-dataset", suite_vector_dataset),
         ("footprint", suite_footprint),
         ("analysis-output", suite_analysis_output),
         ("arrow", suite_arrow),

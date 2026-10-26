@@ -201,6 +201,26 @@ height = terrio.viewshed("dem_utm.tif", 500000, 4400000, om="GROUND", cc=0)
 or height above the DEM. `cc` is 1 minus refraction. See [viewshed](cli.md#viewshed) for
 units, curvature, radius cropping and input nodata behavior.
 
+### Vector datasets
+
+```python
+merged = terrio.concat(["countries.gpkg", "us_counties.gpkg"], "merged.gpkg", mode="single",
+                       source_layer_field_name="source", dst_crs="EPSG:3857")
+files = terrio.partition("counties.gpkg", "out", ["STATE"], feature_limit=1000)  # paths written
+typed = terrio.set_field_type("countries.gpkg", "Integer64", field_name="POP_EST")
+points = terrio.make_point("trace.csv", "longitude", "latitude", crs="EPSG:4326")  # a Layer
+schema = terrio.export_schema("countries.gpkg")  # the OGR_SCHEMA dict
+terrio.create_vector("empty.gpkg", schema=schema)
+terrio.create_vector("sites.gpkg", output_layer="sites", geometry_type="POINT", crs="EPSG:4326",
+                     fields=["name:STRING(80)", "visits:INTEGER"])
+```
+
+These are `terrio concat`, `partition`, `set-field-type`, `make-point`, `export-schema` and
+`create` (GDAL's `gdal vector` commands of the same names); sources are paths or vector data in
+memory (`VectorDataset`, `Layer`, lists of layers, GeoJSON). Conversion warnings are issued as
+`UserWarning`s. See [Vector datasets](cli.md#vector-datasets) for the options, GDAL's rules
+and the differences.
+
 ## Typing
 
 The package ships type stubs (`py.typed`), checked with `mypy --strict` and `stubtest`:

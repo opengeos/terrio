@@ -296,9 +296,9 @@ impl Rtree {
 /// The R-tree index of a feature table's geometry column, as GDAL creates it: the packed tree,
 /// the names and statements of its shadow tables (`_rowid`, `_node` and `_parent`, whose rows
 /// the tree gives), and the virtual table and the triggers that keep it up to date.
-fn rtree_index(table: &str, column: &str, entries: Vec<RtreeEntry>) -> (Rtree, [(String, String); 3], Vec<SchemaObject>) {
+fn rtree_index(table: &str, column: &str, fid: &str, entries: Vec<RtreeEntry>) -> (Rtree, [(String, String); 3], Vec<SchemaObject>) {
     let rt = format!("rtree_{table}_{column}");
-    let (t, c, r) = (quote(table), quote(column), quote(&rt));
+    let (t, c, r, f) = (quote(table), quote(column), quote(&rt), quote(fid));
     let shadow = |suffix: &str, columns: &str| {
         let name = format!("{rt}_{suffix}");
         let sql = format!("CREATE TABLE {}({columns})", quote(&name));
@@ -315,43 +315,43 @@ fn rtree_index(table: &str, column: &str, entries: Vec<RtreeEntry>) -> (Rtree, [
         (
             "insert",
             format!(
-                "AFTER INSERT ON {t} WHEN (new.{c} NOT NULL AND NOT ST_IsEmpty(NEW.{c})) BEGIN INSERT OR REPLACE INTO {r} VALUES (NEW.\"fid\",{}); END",
+                "AFTER INSERT ON {t} WHEN (new.{c} NOT NULL AND NOT ST_IsEmpty(NEW.{c})) BEGIN INSERT OR REPLACE INTO {r} VALUES (NEW.{f},{}); END",
                 bounds(&new)
             ),
         ),
         (
             "update6",
             format!(
-                "AFTER UPDATE OF {c} ON {t} WHEN OLD.\"fid\" = NEW.\"fid\" AND (NEW.{c} NOTNULL AND NOT ST_IsEmpty(NEW.{c})) AND (OLD.{c} NOTNULL AND NOT ST_IsEmpty(OLD.{c})) BEGIN UPDATE {r} SET minx = ST_MinX({new}), maxx = ST_MaxX({new}),miny = ST_MinY({new}), maxy = ST_MaxY({new}) WHERE id = NEW.\"fid\";END"
+                "AFTER UPDATE OF {c} ON {t} WHEN OLD.{f} = NEW.{f} AND (NEW.{c} NOTNULL AND NOT ST_IsEmpty(NEW.{c})) AND (OLD.{c} NOTNULL AND NOT ST_IsEmpty(OLD.{c})) BEGIN UPDATE {r} SET minx = ST_MinX({new}), maxx = ST_MaxX({new}),miny = ST_MinY({new}), maxy = ST_MaxY({new}) WHERE id = NEW.{f};END"
             ),
         ),
         (
             "update7",
             format!(
-                "AFTER UPDATE OF {c} ON {t} WHEN OLD.\"fid\" = NEW.\"fid\" AND (NEW.{c} NOTNULL AND NOT ST_IsEmpty(NEW.{c})) AND (OLD.{c} ISNULL OR ST_IsEmpty(OLD.{c})) BEGIN INSERT INTO {r} VALUES (NEW.\"fid\",{}); END",
+                "AFTER UPDATE OF {c} ON {t} WHEN OLD.{f} = NEW.{f} AND (NEW.{c} NOTNULL AND NOT ST_IsEmpty(NEW.{c})) AND (OLD.{c} ISNULL OR ST_IsEmpty(OLD.{c})) BEGIN INSERT INTO {r} VALUES (NEW.{f},{}); END",
                 bounds(&new)
             ),
         ),
         (
             "update2",
             format!(
-                "AFTER UPDATE OF {c} ON {t} WHEN OLD.\"fid\" = NEW.\"fid\" AND (NEW.{c} ISNULL OR ST_IsEmpty(NEW.{c})) BEGIN DELETE FROM {r} WHERE id = OLD.\"fid\"; END"
+                "AFTER UPDATE OF {c} ON {t} WHEN OLD.{f} = NEW.{f} AND (NEW.{c} ISNULL OR ST_IsEmpty(NEW.{c})) BEGIN DELETE FROM {r} WHERE id = OLD.{f}; END"
             ),
         ),
         (
             "update5",
             format!(
-                "AFTER UPDATE ON {t} WHEN OLD.\"fid\" != NEW.\"fid\" AND (NEW.{c} NOTNULL AND NOT ST_IsEmpty(NEW.{c})) BEGIN DELETE FROM {r} WHERE id = OLD.\"fid\"; INSERT OR REPLACE INTO {r} VALUES (NEW.\"fid\",{}); END",
+                "AFTER UPDATE ON {t} WHEN OLD.{f} != NEW.{f} AND (NEW.{c} NOTNULL AND NOT ST_IsEmpty(NEW.{c})) BEGIN DELETE FROM {r} WHERE id = OLD.{f}; INSERT OR REPLACE INTO {r} VALUES (NEW.{f},{}); END",
                 bounds(&new)
             ),
         ),
         (
             "update4",
             format!(
-                "AFTER UPDATE ON {t} WHEN OLD.\"fid\" != NEW.\"fid\" AND (NEW.{c} ISNULL OR ST_IsEmpty(NEW.{c})) BEGIN DELETE FROM {r} WHERE id IN (OLD.\"fid\", NEW.\"fid\"); END"
+                "AFTER UPDATE ON {t} WHEN OLD.{f} != NEW.{f} AND (NEW.{c} ISNULL OR ST_IsEmpty(NEW.{c})) BEGIN DELETE FROM {r} WHERE id IN (OLD.{f}, NEW.{f}); END"
             ),
         ),
-        ("delete", format!("AFTER DELETE ON {t} WHEN old.{c} NOT NULL BEGIN DELETE FROM {r} WHERE id = OLD.\"fid\"; END")),
+        ("delete", format!("AFTER DELETE ON {t} WHEN old.{c} NOT NULL BEGIN DELETE FROM {r} WHERE id = OLD.{f}; END")),
     ];
     let mut objects = vec![SchemaObject {
         kind: "table",
@@ -456,6 +456,8 @@ pub(crate) struct Builder {
     sequence: Vec<(String, i64)>,
     names: Vec<String>,
     custom_srs: i64,
+    /// The name of the feature id column of the layers added.
+    fid_column: String,
 }
 
 impl Default for Builder {
@@ -511,7 +513,13 @@ impl Builder {
             sequence: Vec::new(),
             names: Vec::new(),
             custom_srs: 100000,
+            fid_column: "fid".into(),
         }
+    }
+
+    /// Names the feature id column of the layers added from now on (`fid` by default).
+    pub(crate) fn set_fid_column(&mut self, name: &str) {
+        self.fid_column = name.to_string();
     }
 
     /// Reserves a table name (case-insensitively unique).
@@ -595,13 +603,14 @@ impl Builder {
         let has_z = layer.features.iter().filter_map(|f| f.geometry.as_ref()).any(crate::vector::geometry_has_z);
         // Columns: a field named fid holding unique integers gives the feature ids, as in GDAL.
         let fields = layer.schema.fields();
-        let fid_field = fields.iter().position(|f| f.name.eq_ignore_ascii_case("fid") && f.field_type == FieldType::Integer).filter(|&i| {
-            let mut ids: Vec<i64> = layer.features.iter().filter_map(|f| f.attributes.get(i)?.as_i64()).collect();
-            let n = ids.len();
-            ids.sort_unstable();
-            ids.dedup();
-            n == layer.len() && ids.len() == n
-        });
+        let fid_field =
+            fields.iter().position(|f| f.name.eq_ignore_ascii_case(&self.fid_column) && f.field_type == FieldType::Integer).filter(|&i| {
+                let mut ids: Vec<i64> = layer.features.iter().filter_map(|f| f.attributes.get(i)?.as_i64()).collect();
+                let n = ids.len();
+                ids.sort_unstable();
+                ids.dedup();
+                n == layer.len() && ids.len() == n
+            });
         let small = |i: usize| layer.features.iter().filter_map(|ft| ft.attributes.get(i)?.as_i64()).all(|v| i32::try_from(v).is_ok());
         let cols = self.layer_columns(layer, all_none, declared, has_z, fid_field, small);
 
@@ -638,9 +647,10 @@ impl Builder {
         let srs_id = if spatial { self.srs_id(&s, super::trusted_epsg(layer), super::output_wkt(layer)) } else { 0 };
         let type_name = declared.map_or("GEOMETRY".to_string(), |t| t.as_str().to_ascii_uppercase());
         let fields = layer.schema.fields();
-        let mut col_names: Vec<String> = vec!["fid".into()];
+        let mut col_names: Vec<String> = vec![self.fid_column.clone()];
         let mut kept = Vec::new();
-        let mut sql = format!("CREATE TABLE {} ( \"fid\" INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL", quote(&layer.name));
+        let mut sql =
+            format!("CREATE TABLE {} ( {} INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL", quote(&layer.name), quote(&self.fid_column));
         if spatial {
             col_names.push("geom".into());
             sql.push_str(&format!(", \"geom\" {type_name}"));
@@ -738,7 +748,7 @@ impl Builder {
             LayerTable::Built(b) => self.built.push((self.tables.len(), b)),
         }
         if spatial {
-            let (tree, rtree_tables, rtree_objects) = rtree_index(name, "geom", extent.entries);
+            let (tree, rtree_tables, rtree_objects) = rtree_index(name, "geom", &self.fid_column, extent.entries);
             self.extension(
                 Some(name),
                 Some("geom"),
@@ -989,6 +999,17 @@ pub(crate) struct LayerParts {
     pub tables: Vec<Table>,
     pub objects: Vec<SchemaObject>,
     pub sequence: Vec<(String, i64)>,
+}
+
+/// Writes layers as a GeoPackage whose feature id columns are named `fid_column`.
+pub(crate) fn write_with_fid(layers: &[Layer], path: &str, fid_column: &str) -> Result<()> {
+    let mut b = Builder::new();
+    b.set_fid_column(fid_column);
+    for layer in layers {
+        b.add_layer(layer)?;
+    }
+    std::fs::write(path, b.finish()?)?;
+    Ok(())
 }
 
 /// Encodes layers as a GeoPackage file.

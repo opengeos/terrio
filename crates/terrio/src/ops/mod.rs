@@ -27,6 +27,7 @@
 //! `[x_origin, pixel_width, 0, y_origin, 0, -pixel_height]`.
 
 pub mod calc;
+pub mod concat;
 pub mod contour;
 pub mod dem;
 pub mod fill_nodata;
@@ -35,9 +36,11 @@ pub mod gcp;
 pub mod geolocation;
 pub mod geometry;
 pub mod hull;
+pub mod make_point;
 pub mod mosaic;
 pub mod overview;
 pub mod pansharpen;
+pub mod partition;
 pub mod polygonize;
 pub mod proximity;
 pub mod rasterize;
@@ -51,6 +54,7 @@ pub mod topology;
 pub mod translate;
 pub mod vector_filter;
 pub mod vector_geom;
+pub mod vector_schema;
 pub mod viewshed;
 pub mod vrt;
 pub mod warp;

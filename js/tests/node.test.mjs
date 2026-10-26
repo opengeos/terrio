@@ -1169,6 +1169,42 @@ test("SQL computed columns, DISTINCT and summary aggregates", () => {
   assert.equal(terrio.sql(src, "SELECT DISTINCT v FROM layer").toGeoJSON().features.length, 2);
 });
 
+test("vector dataset commands: concat, partition, setFieldType, makePoint, schemas", () => {
+  const places = (name) => ({ type: "FeatureCollection", name, features: [["TN", 1, "-86.5"], ["NY", 2, "-74"], ["TN", 3, "x"]].map(
+    ([state, n, lon], i) => ({ type: "Feature", geometry: { type: "Point", coordinates: [i, i] }, properties: { state, n, lon, lat: 36 } }),
+  ) });
+  const a = terrio.fromGeoJSON(places("a"), "a");
+  const merged = terrio.concat([a, { bytes: a.toBytes("b.gpkg"), filename: "b.gpkg" }], { mode: "single", sourceLayerFieldName: "src" });
+  assert.deepEqual(merged.layerNames(), ["merged"]);
+  const features = merged.toGeoJSON().features;
+  assert.equal(features.length, 6);
+  assert.equal(features[5].properties.src, "b_a"); // {AUTO_NAME}: the file and layer names
+  assert.throws(() => terrio.concat([a], { outputLayer: "x" }), /merge-per-layer-name/);
+
+  const parts = terrio.partition(a, { fields: ["state"], format: "GeoJSON" });
+  assert.deepEqual(parts.map((p) => p.path), ["a/state=TN/part_0000000001.json", "a/state=NY/part_0000000001.json"]);
+  assert.equal(terrio.open(parts[0].bytes, "p.json").toGeoJSON().features.length, 2);
+
+  const typed = terrio.setFieldType(a, "String", { fieldName: "n" }).toGeoJSON();
+  assert.equal(typed.features[2].properties.n, "3");
+  assert.throws(() => terrio.setFieldType(a, "Real", { fieldName: "nope" }), /cannot find field/);
+
+  const two = terrio.fromGeoJSON({ type: "FeatureCollection", features: places("a").features.slice(0, 2) });
+  const pts = terrio.makePoint(two, "lon", "lat", { crs: "EPSG:4326" }).toGeoJSON();
+  assert.deepEqual(pts.features[1].geometry.coordinates, [-74, 36]);
+  assert.throws(() => terrio.makePoint(a, "lon", "lat"), /invalid value/);
+
+  const bytes = terrio.createVector("new.gpkg", { outputLayer: "sites", geometryType: "POINT", crs: "EPSG:32633", fields: ["name:STRING(20)", "total:INTEGER64"] });
+  const schema = terrio.exportSchema({ bytes, filename: "new.gpkg" });
+  assert.equal(schema.layers[0].name, "sites");
+  assert.equal(schema.layers[0].geometryFields[0].type, "Point");
+  assert.deepEqual(schema.layers[0].geometryFields[0].coordinateSystem, { authid: "EPSG:32633" });
+  assert.deepEqual(schema.layers[0].fields.map((f) => f.type), ["String", "Integer64"]);
+  const copy = terrio.createVector("copy.gpkg", { schema });
+  assert.deepEqual(terrio.exportSchema({ bytes: copy, filename: "copy.gpkg" }), schema);
+  a.free(); merged.free();
+});
+
 test("viewshed visibility, height and byte input", () => {
   const dem = terrio.rasterFromArray(new Float64Array([0, 0, 10, 0, 0]), 5, 1, [0, 10, 0, 10, 0, -10], "EPSG:32611");
   assert.deepEqual([...terrio.viewshed(dem, 5, 5, { cc: 0 }).readBand(1)], [255, 255, 255, 0, 0]);
