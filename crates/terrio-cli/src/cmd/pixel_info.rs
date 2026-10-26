@@ -92,12 +92,12 @@ pub fn run(a: Args) -> Result<()> {
         let ds = super::quiet(|| terrio::open_vector(path, &open))?;
         let layer = match (ds.layers.len(), &a.layer) {
             (0, _) => return Err(Error::InvalidArgument(format!("Dataset '{path}' has no vector layer"))),
-            (1, _) => &ds.layers[0],
             (_, Some(name)) => ds
                 .layers
                 .iter()
                 .find(|l| &l.name == name)
                 .ok_or_else(|| Error::InvalidArgument(format!("Cannot find layer '{name}' in '{path}'")))?,
+            (1, None) => &ds.layers[0],
             _ => {
                 return Err(Error::InvalidArgument(format!(
                     "Dataset '{path}' has more than one vector layer. Please specify the 'layer' argument"

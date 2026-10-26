@@ -116,3 +116,11 @@ def test_pixel_info_file_output_and_field_separator(tmp_path):
     result = terrio.pixel_info(src, [(0, 0), (-1, -1)], dst=path)
     assert len(result["features"]) == 2
     assert len(terrio.open_vector(path)[0]) == 2
+
+
+def test_pixel_info_refuses_two_position_sources():
+    src = _raster([[1]])
+    with pytest.raises(terrio.InvalidArgumentError, match="not both"):
+        terrio.pixel_info(
+            src, [(0, 0)], position_dataset={"type": "FeatureCollection", "features": []}
+        )

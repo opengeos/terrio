@@ -72,7 +72,7 @@ pub struct Difference {
     /// What differs: `binary`, `subdataset_count`, `crs`, `geotransform`, `band_count`, `width`,
     /// `height`, `band_width`, `band_height`, `description`, `data_type`, `nodata`,
     /// `color_interpretation`, `pixels`, `max_difference`, `overview_count`, `mask_flags`,
-    /// `metadata` or `io`.
+    /// `metadata`.
     pub kind: &'static str,
     /// The band, overview or mask concerned, as GDAL names it (`1`, `overview of band 1`, `mask of
     /// band 1`), for band differences.
@@ -374,7 +374,7 @@ fn binary_difference(reference: &str, input: &str) -> Result<Option<Option<Strin
     let (mut ba, mut bb) = (vec![0u8; CHUNK], vec![0u8; CHUNK]);
     let mut left = a.len;
     while left > 0 {
-        let n = (left as usize).min(CHUNK);
+        let n = left.min(CHUNK as u64) as usize;
         if a.reader.read_exact(&mut ba[..n]).is_err() {
             return Ok(Some(Some("Failed to fully read reference file".into())));
         }

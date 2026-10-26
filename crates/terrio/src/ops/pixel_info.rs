@@ -263,7 +263,12 @@ pub struct Location {
 impl Location {
     /// Whether the position is off the raster, as `gdallocationinfo` reckons it.
     pub fn is_off_raster(&self, width: usize, height: usize) -> bool {
-        self.column.floor() < 0.0 || self.line.floor() < 0.0 || self.column > width as f64 + 1e-5 || self.line > height as f64 + 1e-5
+        !self.column.is_finite()
+            || !self.line.is_finite()
+            || self.column.floor() < 0.0
+            || self.line.floor() < 0.0
+            || self.column > width as f64 + 1e-5
+            || self.line > height as f64 + 1e-5
     }
 }
 
@@ -839,6 +844,18 @@ impl PixelInfo {
     /// GDAL writes them (`NaN`, `Infinity`, `-Infinity`; JSON has no such numbers, so
     /// [`PixelInfo::to_geojson`] holds them as strings).
     pub fn to_geojson_string(&self) -> String {
+        let (value, marker) = self.to_geojson_marked();
+        let mut text = serde_json::to_string_pretty(&value).expect("JSON values serialize");
+        for token in NON_FINITE {
+            let stand_in = serde_json::to_string(&format!("{marker}{token}")).expect("strings serialize");
+            text = text.replace(&stand_in, token);
+        }
+        text
+    }
+
+    /// GeoJSON with a collision-free string marker for nonfinite numeric values.
+    /// Consumers may decode only strings beginning with the returned marker.
+    pub fn to_geojson_marked(&self) -> (Value, String) {
         // Choose a marker absent from all serialized input strings, including field names.
         // Only numeric placeholders carry it, so arbitrary user strings remain quoted.
         let original = serde_json::to_string(&self.to_geojson()).expect("JSON values serialize");
@@ -851,12 +868,7 @@ impl PixelInfo {
             }
             counter += 1;
         };
-        let mut text = serde_json::to_string_pretty(&self.geojson_with_marker(&marker)).expect("JSON values serialize");
-        for token in NON_FINITE {
-            let stand_in = serde_json::to_string(&format!("{marker}{token}")).expect("strings serialize");
-            text = text.replace(&stand_in, token);
-        }
-        text
+        (self.geojson_with_marker(&marker), marker)
     }
 
     /// The CSV GDAL 3.13 writes: `geom_x,geom_y`, the layer's fields (or `extra_content`),
@@ -1118,6 +1130,14 @@ mod tests {
         assert_eq!(inv, [-10.0, 0.1, 0.0, 24.0, 0.0, -0.1]);
         assert!(invert_geo_transform(&[0.0, 1.0, 1.0, 0.0, 1.0, 1.0]).is_none());
     }
+    #[test]
+    fn nonfinite_locations_are_off_raster() {
+        let mut r = raster(2, 2, None);
+        let mut info = pixel_info(&mut r, &[Position::new(0.5, 0.5)], &Default::default()).unwrap();
+        info.locations[0].column = f64::NAN;
+        assert_eq!(info.off_raster_count(), 1);
+    }
+
     #[test]
     fn non_finite_marker_does_not_rewrite_user_strings() {
         let mut raster = raster(2, 2, None);

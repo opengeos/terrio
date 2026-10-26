@@ -222,6 +222,13 @@ list), or `csv`, `text` and `value` strings; `xyz` returns the line count writte
 the text. See [compare](cli.md#compare), [pixel-info](cli.md#pixel-info) and [xyz](cli.md#xyz)
 for options, GDAL agreement and differences.
 
+`pixel_info(..., format="value", field_sep="|")` selects the separator between
+band values. `pixel_info(..., dst="samples.gpkg", output_format="GPKG")` also
+writes a vector layer of sample points and returns the requested report as usual.
+Missing/off-raster samples are retained as null values. Input paths cannot be used
+as the output. JavaScript hosts can serialize the GeoJSON result through a Dataset
+when they need file bytes; direct local file paths are a native API feature.
+
 ## Typing
 
 The package ships type stubs (`py.typed`), checked with `mypy --strict` and `stubtest`:
@@ -370,11 +377,3 @@ uploaded = terrio.open_vrt(xml, {"dem.tif": image_bytes})
 source windows remain lazy. `open_raster(path, lazy=True)` also opens VRT files
 lazily. The [serialized VRT support](cli.md#serialized-virtual-rasters) lists the
 supported transformers, built-in functions, kernels and masks.
-
-
-`pixel_info(..., format="value", field_sep="|")` selects the separator between
-band values. `pixel_info(..., dst="samples.gpkg", output_format="GPKG")` also
-writes a vector layer of sample points and returns the requested report as usual.
-Missing/off-raster samples are retained as null values. Input paths cannot be used
-as the output. JavaScript hosts can serialize the GeoJSON result through a Dataset
-when they need file bytes; direct local file paths are a native API feature.

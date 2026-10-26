@@ -29,24 +29,27 @@ fn with_raster<T>(v: &JsValue, f: impl FnOnce(&mut LazyRaster) -> terrio::Result
     Err(invalid("expected a raster: a Dataset, a Uint8Array or { bytes, filename }"))
 }
 
-/// A JSON value as a JavaScript value, with the stand-ins for non-finite numbers of
-/// `PixelInfo::to_geojson` (`"\0NaN"`, `"\0Infinity"`, `"\0-Infinity"`) as numbers.
+/// Converts plain JSON, preserving user strings verbatim.
 fn value_to_js(v: &Value) -> JsValue {
+    marked_value_to_js(v, None)
+}
+
+fn marked_value_to_js(v: &Value, marker: Option<&str>) -> JsValue {
     match v {
         Value::Null => JsValue::NULL,
         Value::Bool(b) => JsValue::from_bool(*b),
         Value::Number(n) => JsValue::from_f64(n.as_f64().unwrap_or(f64::NAN)),
-        Value::String(s) => match s.as_str() {
-            "\0NaN" => JsValue::from_f64(f64::NAN),
-            "\0Infinity" => JsValue::from_f64(f64::INFINITY),
-            "\0-Infinity" => JsValue::from_f64(f64::NEG_INFINITY),
-            s => JsValue::from_str(s),
+        Value::String(s) => match marker.and_then(|marker| s.strip_prefix(marker)) {
+            Some("NaN") => JsValue::from_f64(f64::NAN),
+            Some("Infinity") => JsValue::from_f64(f64::INFINITY),
+            Some("-Infinity") => JsValue::from_f64(f64::NEG_INFINITY),
+            _ => JsValue::from_str(s),
         },
-        Value::Array(a) => a.iter().map(value_to_js).collect::<js_sys::Array>().into(),
+        Value::Array(a) => a.iter().map(|v| marked_value_to_js(v, marker)).collect::<js_sys::Array>().into(),
         Value::Object(o) => {
             let obj = js_sys::Object::new();
             for (k, v) in o {
-                let _ = js_sys::Reflect::set(&obj, &JsValue::from_str(k), &value_to_js(v));
+                let _ = js_sys::Reflect::set(&obj, &JsValue::from_str(k), &marked_value_to_js(v, marker));
             }
             obj.into()
         }
@@ -206,7 +209,10 @@ pub fn pixel_info(src: JsValue, positions: JsValue, options: JsValue) -> Result<
         with_raster(&src, |r| terrio::ops::pixel_info::pixel_info_layer(r, &layer, &o))?
     };
     match a.format.to_ascii_lowercase().as_str() {
-        "geojson" => Ok(value_to_js(&info.to_geojson())),
+        "geojson" => {
+            let (value, marker) = info.to_geojson_marked();
+            Ok(marked_value_to_js(&value, Some(&marker)))
+        }
         "json" => Ok(value_to_js(&info.to_json())),
         "csv" => Ok(JsValue::from_str(&info.to_csv())),
         "text" => Ok(JsValue::from_str(&info.to_text())),

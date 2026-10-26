@@ -171,7 +171,6 @@ node js/bench/bench.mjs ../terrio-data    # timings of decoding and writing real
 See [Native multidimensional arrays](multidim.md) for scientific groups, named dimensions,
 lazy coordinate arrays, time/depth slicing, transposition and netCDF/Zarr numeric snapshots.
 
-
 ## Indexed raster catalogs
 
 `openCatalog(index, sources, options)` opens an index `Dataset`, vector file bytes or GeoJSON,
@@ -265,6 +264,10 @@ bytes or GeoJSON of points, and returns GeoJSON (an object), `json` (an array), 
 `text` and `value` strings. `xyz` returns the text. See [compare](cli.md#compare),
 [pixel-info](cli.md#pixel-info) and [xyz](cli.md#xyz).
 
+`pixelInfo(src, positions, {format: "value", fieldSep: "|"})` selects the
+separator between band values. For vector file bytes, pass the GeoJSON result to
+`fromGeoJSON` and serialize that Dataset with `toBytes`.
+
 ## Geolocation-array warping
 
 Pass longitude and latitude rasters explicitly when array datasets cannot be reopened from
@@ -283,8 +286,3 @@ Optional `srs` defaults to EPSG:4326, `pixelOffset`/`lineOffset` to 0, and steps
 the explicit `geolocation` option supplies arrays for the first source. The operation remains
 pure Rust in full and core WASM builds. See [CLI warping](cli.md#warp) for invalid coordinates,
 antimeridian handling and boundary differences from GDAL.
-
-
-`pixelInfo(src, positions, {format: "value", fieldSep: "|"})` selects the
-separator between band values. For vector file bytes, pass the GeoJSON result to
-`fromGeoJSON` and serialize that Dataset with `toBytes`.

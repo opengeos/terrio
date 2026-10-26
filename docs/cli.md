@@ -806,7 +806,7 @@ USGS GeoTIFF served over HTTP fetched 1.8 MB in 3 requests.
 Compared with GDAL 3.13.3 (`gdal raster pixel-info` and `gdallocationinfo`) in the
 `raster-query` conformance suite: of 67 cases, 64 identical (GeoJSON and CSV values parsed;
 text and `-valonly` byte for byte) and 3 within tolerance: positions in WGS 84 on a custom Albers
-raster (column, line and geometry within 1e-11 relative, from Terrio's projection arithmetic)
+raster (column, line and geometry within 4e-14 relative, from Terrio's projection arithmetic)
 and one scale/offset product one ULP from GDAL's build. Formatting differences: GeoJSON
 whitespace (values are identical); CSV follows GDAL 3.13 (3.12's columns were `input_x`,
 `input_y`, `extra_input` with 17 significant digits). Not supported: complex bands, VRT

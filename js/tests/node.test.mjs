@@ -1602,6 +1602,8 @@ test("compare, pixelInfo and xyz", () => {
   const g = terrio.pixelInfo(a, [[125, 225, "site"]], { positionCrs: "dataset", resampling: "bilinear" });
   assert.equal(g.crs.properties.name, "urn:ogc:def:crs:EPSG::32611");
   assert.equal(g.features[0].properties.extra_content, "site");
+  const marked = terrio.pixelInfo(a, [[0.5, 0.5, "\0NaN"]]);
+  assert.equal(marked.features[0].properties.extra_content, "\0NaN");
   assert.equal(g.features[0].properties.bands[0].raw_value, 7);
   assert.equal(terrio.pixelInfo(a, [[0.5, 0.5]], { format: "text" }), "Report:\n  Location: (0P,0L)\n  Band 1:\n    Value: 0\n");
   const points = { type: "FeatureCollection", features: [{ type: "Feature", properties: { id: 3 }, geometry: { type: "Point", coordinates: [125, 225] } }] };

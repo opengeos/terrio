@@ -188,6 +188,9 @@ fn pixel_info<'py>(
         promote_pixel_value_to_z,
         include_fields: IncludeFields::parse(&include_fields.unwrap_or_default()),
     };
+    if position_dataset.is_some() && positions.is_some() {
+        return Err(invalid("give positions or a position_dataset, not both"));
+    }
     let info = if let Some(ds) = position_dataset {
         let layers = crate::ops::input_layers(py, ds, layer.clone().map(|l| vec![l]))?;
         let points = match (layers.len(), &layer) {

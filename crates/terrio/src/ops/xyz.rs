@@ -17,6 +17,7 @@
 //! ```
 
 use crate::{Error, LazyRaster, Result, Window, WindowOptions};
+use std::fmt::Write as _;
 use std::io::Write;
 use wbraster::DataType;
 
@@ -112,22 +113,10 @@ pub fn check_xyz(raster: &LazyRaster, options: &XyzOptions) -> Result<()> {
 /// Writes the XYZ lines of `raster` to `out`, returning the number of lines.
 pub fn write_xyz<W: Write>(raster: &mut LazyRaster, out: &mut W, options: &XyzOptions) -> Result<u64> {
     check_xyz(raster, options)?;
-    if raster.dataset().is_some_and(|d| d.complex) {
-        return Err(Error::Unsupported("writing complex rasters as XYZ is not supported".into()));
-    }
     let bands: Vec<usize> = if options.bands.is_empty() { (1..=raster.band_count()).collect() } else { options.bands.clone() };
-    if let Some(b) = bands.iter().find(|b| **b == 0 || **b > raster.band_count()) {
-        return Err(Error::InvalidArgument(format!("band {b} does not exist (the raster has {})", raster.band_count())));
-    }
     let (sx, sy) = options.skip;
-    if sx == 0 || sy == 0 {
-        return Err(Error::InvalidArgument("skip must be at least 1".into()));
-    }
     let (w, h) = (raster.width(), raster.height());
     let [x_off, y_off, x_size, y_size] = options.srcwin.unwrap_or([0, 0, w, h]);
-    if x_size == 0 || y_size == 0 || !Window::new(x_off, y_off, x_size, y_size).fits(w, h) {
-        return Err(Error::InvalidArgument(format!("srcwin {x_off} {y_off} {x_size} {y_size} is outside the {w}x{h} raster")));
-    }
     let gt = raster.geo_transform();
     let geographic = gt[0].abs() < 180.0 && gt[3].abs() < 180.0 && (w as f64 * gt[1]).abs() < 180.0 && (h as f64 * gt[5]).abs() < 180.0;
     // Values are converted to the first band's type, as gdal2xyz.py's array of it holds them.
@@ -146,10 +135,13 @@ pub fn write_xyz<W: Write>(raster: &mut LazyRaster, out: &mut W, options: &XyzOp
     let skip_nodata = options.skip_nodata && src_nodata.is_some();
     let replace = !skip_nodata && dst_nodata.is_some();
     let delim = options.delimiter.as_str();
-    let block = raster.block_size().map_or(1, |(_, bh)| bh.max(1));
+    let block = raster.block_size().map(|(_, bh)| bh.max(1));
     // About 8 MiB of values a strip, in whole blocks when that holds one or more.
     let rows = ((8usize << 20) / x_size.saturating_mul(n).saturating_mul(8).max(1)).max(1);
-    let rows = if rows > block { rows / block * block } else { rows };
+    let rows = match block {
+        Some(block) if rows > block => rows / block * block,
+        _ => rows,
+    };
     let read = WindowOptions { bands: bands.clone(), overview: None };
     let mut lines = 0u64;
     let mut text = String::new();
@@ -159,7 +151,10 @@ pub fn write_xyz<W: Write>(raster: &mut LazyRaster, out: &mut W, options: &XyzOp
     while y < end {
         // Decode each needed physical block row once, while jumping over block
         // rows that contain no selected sample. Keep the strip memory budget.
-        let count = if sy > 1 { rows.min(block - y % block).min(end - y) } else { rows.min(end - y) };
+        let count = match block {
+            Some(block) if sy > 1 => rows.min(block - y % block).min(end - y),
+            _ => rows.min(end - y),
+        };
         let data = raster.read_window(Window::new(x_off, y, x_size, count), &read)?.raster.data;
         let plane = x_size * count;
         for r in 0..count {
@@ -191,7 +186,7 @@ pub fn write_xyz<W: Write>(raster: &mut LazyRaster, out: &mut W, options: &XyzOp
                     text.push_str(delim);
                     text.push_str(&crate::drivers::common::fmt_g(gy, 10));
                 } else {
-                    text.push_str(&format!("{gx:.3}{delim}{gy:.3}"));
+                    write!(text, "{gx:.3}{delim}{gy:.3}").unwrap();
                 }
                 text.push_str(delim);
                 for (i, v) in shown.iter().enumerate() {
@@ -199,7 +194,7 @@ pub fn write_xyz<W: Write>(raster: &mut LazyRaster, out: &mut W, options: &XyzOp
                         text.push_str(delim);
                     }
                     if integer_format && v.is_finite() {
-                        text.push_str(&(*v as i64).to_string());
+                        write!(text, "{}", *v as i64).unwrap();
                     } else {
                         text.push_str(&fmt_g(*v));
                     }

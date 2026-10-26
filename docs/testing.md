@@ -69,6 +69,12 @@ python scripts/conformance.py ../terrio-data --remote --strict     # remote COGs
 | Chains through intermediate datums | `crates/terrio-crs/tests/crs_chains.rs`, `scripts/compare_chains_with_proj.py` | every pair of EPSG geographic 2D CRSs on two datums no transformation links directly whose areas overlap, and a projected CRS of each datum, without and with grids, vs GDAL |
 | Datum shift grids, geoid models, epochs | `crates/terrio-crs/tests/epsg_accuracy_grids.rs`, `crates/terrio-crs/tests/crs_grids.rs`, `scripts/compare_crs_grids_with_gdal.py` | the same EPSG points with the grids of `scripts/proj_grids.txt`; random points through every grid (forward and inverse), legacy NTv2 and GTX files, NADCON5 and geocentric grids, compound CRSs and coordinate epochs, vs GDAL with the same grids |
 
+A local HTTP check of XYZ `--skip 64` on the 51,486,544-byte USGS GeoTIFF
+transferred 38,248,272 bytes in 9 requests before and after block-aware sampling.
+All 3,249 output lines were byte-identical. One run of each optimized CLI took
+3.89 s before and 1.07 s after; these are local observations rather than a timing
+threshold in the test suite.
+
 ## Results
 
 The [Conformance](conformance.md) page has the full, generated results; in short:
@@ -516,7 +522,6 @@ the original JSON definitions. Rust regressions also
 check file loading, malformed/unsupported definitions, wrong units/dimensions,
 and that a root authority ID cannot overwrite a caller's false easting.
 
-
 ## IAU_2015 authority support (#271)
 
 `iau-source.json` records the registry version, PROJ source revision and
@@ -559,7 +564,6 @@ planetocentric latitude conversion and rejection of Earth datum operations on
 planetary coordinates. The numerical fixes use PROJ's sixth-order meridian
 series, inverse authalic-latitude refinement and inverse normalization order;
 the copied formulas and tables are attributed in `NOTICE`.
-
 
 The sixth-order meridian series also changes Earth calculations. A WGS 84
 latitude sweep from -90 to 90 degrees in 0.001-degree increments, comparing
@@ -665,10 +669,3 @@ The full release dry run is manual: select **Release dry run → Run workflow** 
 GitHub Actions before tagging a release. It builds the complete cross-platform
 wheel, CLI, installer and npm matrix without publishing. Pull requests retain the
 normal CI checks, including Python, WASM, API documentation and package validation.
-
-
-A local HTTP check of XYZ `--skip 64` on the 51,486,544-byte USGS GeoTIFF
-transferred 38,248,272 bytes in 9 requests before and after block-aware sampling.
-All 3,249 output lines were byte-identical. One run of each optimized CLI took
-3.89 s before and 1.07 s after; these are local observations rather than a timing
-threshold in the test suite.

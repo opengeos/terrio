@@ -465,4 +465,11 @@ mod tests {
         assert_eq!(clip("abc".into(), 3, MAX_OUTPUT), "abc");
         assert_eq!(clip("abc".into(), 3, 1), "a\n… (output cut at 1 of 3 bytes)");
     }
+    #[cfg(unix)]
+    #[test]
+    fn panicked_query_tool_is_an_error() {
+        let command = vec!["sh".into(), "-c".into(), "echo \"thread 'main' panicked at source.rs:1\" >&2; exit 101".into()];
+        let result = call_tool(&command, "compare", Vec::new(), &AtomicBool::new(false)).unwrap();
+        assert_eq!(result["isError"], true);
+    }
 }
