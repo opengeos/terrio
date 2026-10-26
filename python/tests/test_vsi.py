@@ -6,7 +6,7 @@ import zipfile
 import pytest
 
 import terrio
-from terrio.errors import InvalidArgumentError, NotFoundError
+from terrio.errors import InvalidArgumentError, NotFoundError, TerrioIOError
 
 
 @pytest.fixture
@@ -119,3 +119,12 @@ def test_matches_gdal_listing(tree, tmp_path):
             is_dir = st.IsDirectory()
             theirs.add((name, is_dir, None if is_dir else st.size))
         assert ours == theirs, path
+
+
+def test_recursive_copy_preserves_io_exception(tree, tmp_path):
+    destination = tmp_path / "out"
+    (destination / "t" / "x.txt").mkdir(parents=True)
+    with pytest.raises(TerrioIOError):
+        terrio.vsi_copy(str(tree), str(destination), recursive=True)
+    assert (destination / "t" / "x.txt").is_dir()
+    assert (tree / "x.txt").read_text() == "hello\n"

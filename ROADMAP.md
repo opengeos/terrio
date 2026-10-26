@@ -103,6 +103,12 @@ documented; additional feature scope belongs in separate tracking issues.
       hillshade, slope, aspect, color relief, TRI, TPI, roughness), `terrio calc` (`gdal_calc.py`,
       with NumPy's typing rules), `terrio proximity` (`gdal_proximity.py`) and `terrio sieve`
       (`gdal_sieve.py`).
+- [x] Focal statistics and kernels (`neighbors`), collar cleaning (`clean-collar` / `nearblack`)
+      and LUT contrast enhancement (`enhance`) across Rust, CLI/MCP, Python and WebAssembly
+      ([#300](https://github.com/opengeos/terrio/pull/300)).
+- [x] Geometry type conversion, simplify/segmentize, concave and convex hulls, grouped combine,
+      spatial sorting and coordinate swapping across the public APIs
+      ([#306](https://github.com/opengeos/terrio/pull/306)).
 - [x] Centroids, multipart splitting, vertex extraction, exact valid-data raster footprints and
       point sampling across multiple rasters, through the Rust API, CLI and MCP.
 - [x] Polygonization preserves exterior rings and holes on south-up and rotated grids, and

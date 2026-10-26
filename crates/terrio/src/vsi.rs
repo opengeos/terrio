@@ -1751,7 +1751,7 @@ fn copy_tree(src: &Node, dst: &Node, skip_errors: bool, sync: Option<&SyncOption
                 report.bytes += n;
             }
             Err(err) if skip_errors => report.errors.push((display_node(&from), err.to_string())),
-            Err(err) => return Err(Error::InvalidArgument(format!("copying '{}': {err}", display_node(&from)))),
+            Err(err) => return Err(err),
         }
     }
     Ok(())

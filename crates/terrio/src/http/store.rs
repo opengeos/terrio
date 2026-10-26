@@ -358,6 +358,7 @@ fn write_request(
             && !discovered
             && matches!(status, 301 | 307 | 400)
             && let Some(r) = header("x-amz-bucket-region")
+            && s3::valid_region(&r)
             && region.as_deref() != Some(r.as_str())
         {
             discovered = true;

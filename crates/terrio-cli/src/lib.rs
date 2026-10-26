@@ -114,6 +114,27 @@ enum Command {
     Sieve(cmd::sieve::Args),
     /// Fill raster holes by interpolation, as gdal_fillnodata.
     FillNodata(cmd::fill_nodata::Args),
+    /// Apply band scales and offsets to get physical values (like gdal raster unscale).
+    Unscale(cmd::pixel::UnscaleArgs),
+    /// Replace nodata values with an alpha band (like gdal raster nodata-to-alpha).
+    NodataToAlpha(cmd::pixel::NodataToAlphaArgs),
+    /// Map values or ranges of values to new values (like gdal raster reclassify).
+    Reclassify(cmd::pixel::ReclassifyArgs),
+    /// One vector feature per pixel, with band values as fields (like gdal raster as-features).
+    AsFeatures(cmd::pixel::AsFeaturesArgs),
+    /// Focal statistics and convolution kernels over each pixel's neighbourhood (like
+    /// gdal raster neighbors).
+    #[command(visible_alias = "focal")]
+    Neighbors(cmd::neighbors::Args),
+    /// Set the noisy, nearly black or white collar of an image to exact black or white,
+    /// optionally transparent, by flood fill from the edges (like gdal raster clean-collar).
+    CleanCollar(cmd::clean_collar::Args),
+    /// Set nearly black or white borders to exact black or white, by two scan passes (like
+    /// nearblack; clean-collar with nearblack's defaults).
+    Nearblack(cmd::clean_collar::Args),
+    /// Contrast enhancement by lookup tables: histogram equalization and LUT files (like
+    /// gdalenhance).
+    Enhance(cmd::enhance::Args),
     /// Grid a point cloud into a raster: min, max, mean, IDW, count or standard deviation per cell
     /// (like PDAL's writers.gdal), or a TIN or nearest-neighbour interpolation (like gdal_grid).
     Grid(cmd::grid::Args),
@@ -210,6 +231,14 @@ fn run_on_this_thread(args: Vec<OsString>, terrio: Option<Vec<OsString>>) -> i32
         Command::Viewshed(a) => cmd::viewshed::run(a),
         Command::Sieve(a) => cmd::sieve::run(a),
         Command::FillNodata(a) => cmd::fill_nodata::run(a),
+        Command::Unscale(a) => cmd::pixel::unscale(a),
+        Command::NodataToAlpha(a) => cmd::pixel::nodata_to_alpha(a),
+        Command::Reclassify(a) => cmd::pixel::reclassify(a),
+        Command::AsFeatures(a) => cmd::pixel::as_features(a),
+        Command::Neighbors(a) => cmd::neighbors::run(a),
+        Command::CleanCollar(a) => cmd::clean_collar::run(a, true),
+        Command::Nearblack(a) => cmd::clean_collar::run(a, false),
+        Command::Enhance(a) => cmd::enhance::run(a),
         Command::Grid(a) => cmd::grid::run(a),
         Command::Filter(a) => cmd::filter::run(a),
         Command::Vsi(a) => cmd::vsi::run(a),

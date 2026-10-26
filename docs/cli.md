@@ -3,49 +3,57 @@
 ```text
 terrio <COMMAND>
 
-  info        Summarize a raster, vector dataset or point cloud
-  convert     Convert a dataset to another format, optionally reprojecting it
-  translate   Subset, resize, rescale or change the type of a raster (like gdal_translate)
-  warp        Reproject and resample rasters (like gdalwarp)
-  catalog     Read an indexed raster mosaic from GeoPackage or FlatGeobuf footprints
-  mosaic      Mosaic rasters into one, or into a virtual raster (like gdalbuildvrt and gdal_merge)
-  rasterize   Burn vector geometries into a raster
-  polygonize  Turn a raster band into polygons of connected pixels with the same value
-  centroid    One planar centroid per feature
-  singlepart  Split multipart geometries and collections into individual features
-  vertices    Extract vertices as points with source attributes and vertex indices
-  buffer      Planar buffers with round caps and joins
-  overlay     Polygon intersection, union, difference and symmetric difference
-  dissolve    Merge polygon features, optionally grouped by attributes
-  is-valid    Report geometry validity and a reason per feature
-  make-valid  Repair invalid geometry
-  clean       Snap, deduplicate, close rings and repair geometry
-  simplify    Topology-preserving simplification (like gdal vector simplify)
-  segmentize  Limit segment lengths by adding vertices (like gdal vector segmentize)
-  convex-hull Convex hull per feature (like gdal vector convex-hull)
-  concave-hull Concave hull per feature (like gdal vector concave-hull)
-  swap-xy     Swap X and Y coordinates (like gdal vector swap-xy)
-  set-geom-type Change geometry types and dimensions (like gdal vector set-geom-type)
-  combine     Collect geometries into collections by groups (like gdal vector combine)
-  sort        Spatial sort along a Hilbert curve or an STR tree (like gdal vector sort)
-  footprint   Exact valid-data footprint of a raster
-  sample      Sample multiple raster bands at vector points
-  contour     Contour lines at interval or fixed elevation levels
-  zonal-stats Per-polygon statistics across multiple raster bands
-  sql         Read-only SELECT queries over vector layers
-  dem         Terrain analysis: hillshade, slope, aspect, color relief, TRI, TPI, roughness (like gdaldem)
-  calc        Raster algebra: band math in NumPy syntax over one or more rasters (like gdal_calc.py)
-  proximity   Distance from every pixel to the nearest target pixel (like gdal_proximity.py)
-  pansharpen  Weighted Brovey pansharpening of panchromatic and spectral bands
+  info            Summarize a raster, vector dataset or point cloud
+  convert         Convert a dataset to another format, optionally reprojecting it
+  translate       Subset, resize, rescale or change the type of a raster (like gdal_translate)
+  warp            Reproject and resample rasters (like gdalwarp)
+  catalog         Read an indexed raster mosaic from GeoPackage or FlatGeobuf footprints
+  mosaic          Mosaic rasters into one, or into a virtual raster (like gdalbuildvrt and gdal_merge)
+  rasterize       Burn vector geometries into a raster
+  polygonize      Turn a raster band into polygons of connected pixels with the same value
+  centroid        One planar centroid per feature
+  singlepart      Split multipart geometries and collections into individual features
+  vertices        Extract vertices as points with source attributes and vertex indices
+  buffer          Planar buffers with round caps and joins
+  overlay         Polygon intersection, union, difference and symmetric difference
+  dissolve        Merge polygon features, optionally grouped by attributes
+  is-valid        Report geometry validity and a reason per feature
+  make-valid      Repair invalid geometry
+  clean           Snap, deduplicate, close rings and repair geometry
+  simplify        Topology-preserving simplification (like gdal vector simplify)
+  segmentize      Limit segment lengths by adding vertices (like gdal vector segmentize)
+  convex-hull     Convex hull per feature (like gdal vector convex-hull)
+  concave-hull    Concave hull per feature (like gdal vector concave-hull)
+  swap-xy         Swap X and Y coordinates (like gdal vector swap-xy)
+  set-geom-type   Change geometry types and dimensions (like gdal vector set-geom-type)
+  combine         Collect geometries into collections by groups (like gdal vector combine)
+  sort            Spatial sort along a Hilbert curve or an STR tree (like gdal vector sort)
+  footprint       Exact valid-data footprint of a raster
+  sample          Sample multiple raster bands at vector points
+  contour         Contour lines at interval or fixed elevation levels
+  zonal-stats     Per-polygon statistics across multiple raster bands
+  sql             Read-only SELECT queries over vector layers
+  dem             Terrain analysis: hillshade, slope, aspect, color relief, TRI, TPI, roughness (like gdaldem)
+  calc            Raster algebra: band math in NumPy syntax over one or more rasters (like gdal_calc.py)
+  proximity       Distance from every pixel to the nearest target pixel (like gdal_proximity.py)
+  pansharpen      Weighted Brovey pansharpening of panchromatic and spectral bands
 
-  viewshed    Single-observer visibility or minimum visible height (like gdal_viewshed)
-  sieve       Merge raster areas smaller than a threshold into their largest neighbour (like gdal_sieve.py)
-  crs         Describe a coordinate reference system, or transform coordinates between two
-  formats     List the formats terrio reads and writes
-  grid        Grid a point cloud into a raster (like PDAL's writers.gdal)
-  filter      PDAL's point cloud filters (smrf, pmf, csf, elm, hag_nn, crop, expression...)
-  vsi         List, copy, delete, move and sync files on local, cloud, HTTP and archive locations (like gdal vsi)
-  mcp         Serve these commands to AI agents over the Model Context Protocol
+  viewshed        Single-observer visibility or minimum visible height (like gdal_viewshed)
+  sieve           Merge raster areas smaller than a threshold into their largest neighbour (like gdal_sieve.py)
+  unscale         Apply band scales and offsets to get physical values (like gdal raster unscale)
+  nodata-to-alpha Replace nodata values with an alpha band (like gdal raster nodata-to-alpha)
+  reclassify      Map values or ranges of values to new values (like gdal raster reclassify)
+  as-features     One vector feature per pixel, with band values as fields (like gdal raster as-features)
+  neighbors       Focal statistics and convolution kernels (like gdal raster neighbors)
+  clean-collar    Set noisy nearly black/white collars to exact black/white (like gdal raster clean-collar)
+  nearblack       The same, with nearblack's two-pass defaults (like nearblack)
+  enhance         Contrast enhancement by lookup tables: equalization and LUT files (like gdalenhance)
+  crs             Describe a coordinate reference system, or transform coordinates between two
+  formats         List the formats terrio reads and writes
+  grid            Grid a point cloud into a raster (like PDAL's writers.gdal)
+  filter          PDAL's point cloud filters (smrf, pmf, csf, elm, hag_nn, crop, expression...)
+  vsi             List, copy, delete, move and sync files on local, cloud, HTTP and archive locations (like gdal vsi)
+  mcp             Serve these commands to AI agents over the Model Context Protocol
 ```
 
 Install it with `curl -LsSf https://terrio.opengeos.org/install.sh | sh` (on Windows,
@@ -748,6 +756,117 @@ terrio sieve INPUT OUTPUT [--st N] [-4|-8] [--nomask | --mask RASTER]
 Areas of connected pixels with the same value smaller than `--st` pixels (2 by default) take the
 value of their largest neighbour. The band's nodata pixels are left out unless `--nomask`.
 
+## neighbors
+
+
+```sh
+terrio neighbors INPUT OUTPUT --kernel KERNEL [--kernel ...] [--method METHOD ...] [--size N]
+                 [-b BAND] [--ot TYPE] [--nodata VALUE|none] [output options]
+terrio neighbors dem.tif max5.tif --kernel equal --size 5 --method max
+terrio neighbors image.tif edges.tif --kernel gaussian --kernel edge2 -b 2 --ot Float32
+```
+
+Focal statistics, as GDAL 3.12's `gdal raster neighbors`. Kernels: `u` and `v` (horizontal
+and vertical derivatives), `edge1`, `edge2`, `sharpen`, `gaussian` (3x3 or 5x5),
+`unsharp-masking` (5x5), `equal` (any odd size from 3 to 99), or a matrix written row by row,
+`[[0,1,0],[1,1,1],[0,1,0]]`. Explicit matrices accept any positive odd square size,
+as GDAL 3.13.3 does; the 99 limit applies to `--size`, not matrix dimensions. Filtering
+work grows with pixels times coefficients, and strip margins grow with the kernel radius.
+`--method` combines the weighted neighbours: `sum`, `mean`, `min`,
+`max`, `stddev`, `median` or `mode`; give one for every kernel or one per kernel. The default is
+`sum` for kernels whose coefficients sum to zero (`u`, `v`, `edge1`, `edge2`, zero-sum
+matrices) and `mean` otherwise. Each input band (or the `-b` band) gives one output band per
+kernel. The output type defaults to Float64 and the output nodata to the input band's.
+
+Values follow GDAL's `VRTKernelFilteredSource` exactly: inputs are read as Float32, nodata and
+NaN neighbours (with a nodata value) and zero coefficients are skipped, finite nodata
+centres keep the input nodata value, even when `--nodata` changes the output tag
+or removes it with `none`. NaN nodata centres are interpolated, matching GDAL 3.13.3;
+pixels past the raster's edges repeat the edge pixels, and results are Float32 values
+converted to the output type. `mode` breaks ties for the first value to reach the highest count,
+in row order. The input is read and GeoTIFF/COG outputs are written a strip of rows at a time,
+with the kernel's margin rows. The real-data comparisons with GDAL are identical
+(`scripts/compare_focal_with_gdal.py`). GDAL's GDALG/VRT pipeline output and `--append` are not
+supported.
+
+## clean-collar and nearblack
+
+```sh
+terrio clean-collar INPUT [OUTPUT] [--update] [--color black|white|R,G,B ...] [--white]
+                    [--color-threshold N] [--pixel-distance N] [--add-alpha | --add-mask]
+                    [--algorithm floodfill|twopasses] [output options]
+terrio clean-collar scene.tif clean.tif --add-alpha
+terrio nearblack scene.tif clean.tif --nb 0 --near 10 --color 0,0,0 --color 255,255,255
+terrio clean-collar --update scene.tif
+```
+
+Sets the noisy, nearly black (or white, or `--color`) collar of an image to exact black (or
+white, with `--white`), as GDAL's `gdal raster clean-collar` and `nearblack` do. Pixels within
+`--color-threshold` (`-near`, 15) of a color in every non-alpha band are collar pixels; the
+search inwards goes past up to `--pixel-distance` (`-nb`, 2) non-collar pixels. `--add-alpha`
+adds an alpha band (transparent in the collar) and `--add-mask` a per-dataset mask (GeoTIFF:
+internal). `clean-collar` runs a flood fill from the edges by default and retains the input's
+alpha/mask representation; requested or retained alpha/mask processing regenerates
+opacity from the collar rather than intersecting it with the old alpha/mask. `nearblack` runs nearblack's two passes (top-down then bottom-up, each scanning
+lines from both sides) by default and adds alpha or masks only when asked. Both algorithms are
+ports of GDAL's, in GDAL's scan order, and agree pixel for pixel with GDAL on the real
+Sentinel-2 and Landsat 7 comparisons. Output is a new Byte raster with the input's
+georeferencing and no nodata value; values are read as Byte (rounded and clamped).
+
+`--update` (or an output equal to the input) updates a local GeoTIFF in place: its bands and
+type are kept, with `--add-alpha` its last alpha band is updated (it must have one), and an
+existing mask is kept unless mask processing regenerates it from the collar. The result is written next to the input, then replaces it, so a failure
+leaves the input as it was; remote files, other formats and read-only files are refused. The
+file is rewritten by Terrio's writer: overviews are dropped, and compression and tiling are those
+of the output options. GDAL 3.12's in-place flood fill of a raster with an alpha band writes stale
+alpha values on every modified line (2,715,128 alpha values of the Landsat 7 case become 0);
+Terrio's alpha band matches GDAL's output to a new file instead. Images are processed in memory
+as Byte values (one byte per band and pixel); the flood fill visits lines out of order. New-file output holds an interleaved
+working image and a planar output image at once (about two Byte output buffers,
+plus input data and any mask); this keeps the GDAL scan order and contiguous scanlines.
+In-place updates follow input symlinks and retain mode bits. Replacement detaches
+hard links and does not preserve ownership, ACLs or extended attributes.
+
+`nearblack --update` and `clean-collar --update` follow GDAL's Byte processing:
+non-Byte samples across the image are rounded/clamped to 0–255 before being written
+back to the original data type. Terrio emits a warning for these inputs.
+For RGBA sources, `nearblack --color black` compares four bands unless `--add-alpha`
+or `--add-mask` selects alpha/mask processing; `clean-collar` keeps existing alpha.
+With mask processing on RGBA, new-file output drops the alpha band, while in-place
+output retains it, matching GDAL 3.13.3.
+
+## enhance
+
+```sh
+terrio enhance INPUT OUTPUT --equalize
+terrio enhance INPUT --equalize --config lut.txt     # write the tables
+terrio enhance INPUT OUTPUT --config lut.txt          # apply tables
+terrio enhance INPUT OUTPUT --src-scale 0 4000 [--lut-bins 256] [--ot Byte]
+```
+
+Contrast enhancement by lookup tables, as GDAL's `gdalenhance`. `--equalize` computes
+histogram-equalization tables from each band's default histogram (`gdalinfo -hist`'s: stored
+histograms and GDAL's approximate minimum and maximum included), without its first and last
+buckets. Without an output, the tables are written to `--config` (or printed) in
+`gdalenhance`'s format: a line per band, `1:Band -0.5:ScaleMin 255.5:ScaleMax` and the 256
+entries. Without `--equalize`, `--config` reads such a file. A pixel's bin is
+`(value - ScaleMin) * bins / (ScaleMax - ScaleMin)`, truncated and clamped; nodata pixels keep
+their value after conversion to the output type. NaN nodata uses the first LUT bin, matching GDAL 3.13.3. The output keeps the georeferencing, metadata, band descriptions and color
+interpretations, and the nodata value of bands of the output type; it is read and written in
+strips (equalization reads the bands whole for their histograms). Equalization, LUT files and
+LUT input are identical to `gdalenhance` on the real comparisons. Terrio extensions:
+`--src-scale MIN MAX` (a linear stretch over the bins, without tables; `gdalenhance` parses
+`-src_scale` but ignores it), `--lut-bins` (256 in GDAL) and `--ot` other than Byte (`gdalenhance`
+refuses it). Byte output casts LUT results modulo 256, matching GDAL (for example,
+a table value of 300 becomes 44). Byte nodata also truncates and wraps through a signed
+32-bit integer (for example, -9999 becomes 241); values outside that intermediate range
+and infinities become zero. This defines the behavior observed in the GDAL 3.13.3
+reference build; C++ out-of-range conversion can vary by build. Non-Byte outputs preserve
+exact source nodata before output conversion, including Float64 precision.
+Select a wider `--ot` to retain larger LUT values.
+Unlike `gdalenhance`, Terrio does not save the histograms it computes in an
+`.aux.xml` sidecar.
+
 ## crs
 
 ```sh
@@ -877,7 +996,13 @@ at the object-listing page budget. Binary HTTP responses are not read as index
 pages. Recursive copy/sync refuses nested directory symlinks rather than silently creating
 an empty directory; `--skip-errors` records the refusal in its error report.
 
-Bucket/container roots are directories across S3, GCS and Azure URL forms.
+Bucket/container roots are synthetic directories across S3, GCS and Azure URL forms;
+`stat` does not verify their existence or access. Listing performs that verification.
+Recursive deletes stop at the first failure and can leave a partially deleted tree or prefix;
+the error does not include a partial deletion count. Inspect the remaining entries before retrying.
+An untyped HTTP file copy currently uses three requests: a bounded 4096-byte index sniff,
+a one-byte size probe, and the payload GET. A server may send additional bytes before the
+sniff connection closes; `--stats` counts bytes consumed by Terrio, not packets on the wire.
 Credential-bearing URL queries are redacted in diagnostics and listing names.
 VSI mutation/listing operations require complete object-store listings; capped
 read-only subdirectory discovery retains its existing warning and partial results
@@ -918,6 +1043,89 @@ For nearest interpolation, GDAL's search fringe can write zero where the closest
 quadrant candidate is less than one pixel beyond the distance limit; Terrio follows
 that behavior. Complex bands are unsupported. Standard raster output
 options (`--format`, `--compress`, `--co`, etc.) apply.
+
+## unscale
+
+```sh
+terrio unscale packed.tif physical.tif
+terrio unscale packed.tif physical.tif --ot Float64
+```
+
+As `gdal raster unscale` (`gdal_translate -unscale`): each band becomes `value * scale +
+offset` with its own scale and offset (GeoTIFF band scales and offsets, netCDF `scale_factor`
+and `add_offset`; bands without them are converted unchanged). `--ot` is the output type,
+Float32 by default (Float64 for Float64 inputs). Nodata pixels keep the band's nodata value,
+which the output declares unchanged, and the output has no scale or offset. Values are computed
+and rounded as GDAL's virtual rasters compute them: working pixels are Float32 unless the input
+or output is a 32- or 64-bit integer, or the output is Float64. A Float64 input with
+`--ot Float32`, Byte or Int16 still uses Float32 working pixels, matching GDAL 3.13.3.
+Byte outputs round half up. Complex bands are not
+supported. As in GDAL 3.13.3, if the output type cannot represent the original nodata
+value, pixels are clamped to that type while the original nodata declaration is retained
+(for example, nodata -9999 becomes a zero pixel in Byte output, still tagged -9999).
+Choose an output type that can hold the nodata value when those pixels must remain invalid.
+The standard raster output options apply.
+
+## nodata-to-alpha
+
+```sh
+terrio nodata-to-alpha landsat.tif landsat_rgba.tif
+terrio nodata-to-alpha image.tif out.tif --nodata 0 --nodata 0 --nodata 0
+```
+
+As `gdal raster nodata-to-alpha`: the bands are copied without nodata values and followed by an
+alpha band of their type, 0 where the first band's mask is 0 and 255 elsewhere (Int8 alpha
+saturates at 127, as GDAL converts it). The mask is the first band's nodata value; one
+`--nodata` overrides the value used for the first-band mask; other bands do not
+participate in that mask. One `--nodata` per band (`nan`, `inf` and `-inf`
+are accepted) makes a pixel transparent only where every band has its value, as GDAL's
+`NODATA_VALUES`. Without explicit `--nodata`, a raster whose first band has no nodata
+value, or that already ends with an alpha band (two or four bands), is copied unchanged.
+Explicit nodata adds a new alpha band even to RGBA input, matching GDAL 3.13.3. Copied
+bands retain their scales and offsets, including driver-recorded packing. Internal and `.msk`
+masks are not used.
+The result is an owned raster held in memory. An unchanged result also clones the input's
+pixel buffer; this path does not stream file conversion.
+
+## reclassify
+
+```sh
+terrio reclassify nlcd.tif groups.tif -m "11=1;[21,25)=2;[41,44)=4;DEFAULT=0"
+terrio reclassify dem.tif zones.tif -m "NO_DATA=0;[0,1500)=1;[1500,inf)=2" --ot Byte
+terrio reclassify nlcd.tif groups.tif -m @mapping.txt
+```
+
+As `gdal raster reclassify`, with GDAL's mapping syntax: `from=to` entries separated by `;`.
+`from` is a value, an interval (`[a,b)`, `(a,b]`, `(-inf,b]`, `[a,inf)`...), `NO_DATA` (the
+band's nodata value), `NAN` or `DEFAULT` (any other value); `to` is a value, `NO_DATA` or
+`PASS_THROUGH` (the value unchanged). Intervals must not overlap. `@file` reads one entry per
+line; leading spaces and `#` comments are removed. A value that no entry maps, or an output value
+the output type cannot represent exactly, is an error. `--ot` is the output type (by default the
+input's). The output keeps each band's nodata value; like GDAL's, it has no color table, band
+descriptions or scales. Like GDAL 3.13.3, `NO_DATA` intervals with NaN nodata
+can fail overlap validation and do not match NaN pixels: `NO_DATA=0;DEFAULT=PASS_THROUGH`
+leaves NaN unchanged. Use `NAN` as the source mapping key for NaN pixels.
+As with `unscale`, retained nodata pixels are clamped when the output type cannot hold
+the original nodata declaration; choose a suitable output type to preserve their validity.
+
+## as-features
+
+```sh
+terrio as-features dem.tif pixels.gpkg --geometry-type polygon --include-xy --include-row-col
+terrio as-features landsat.tif pixels.csv --skip-nodata -b 3 -b 2
+```
+
+As `gdal raster as-features`: one feature per pixel, row by row, in a layer named `pixels`
+(`--output-layer`). Fields: `CENTER_X` and `CENTER_Y` (pixel centres, `--include-xy`), `ROW`
+and `COL` (`--include-row-col`), then `BAND_<n>` (Float) per band. `--geometry-type` is `none`
+(an attribute table, the default), `point` (pixel centres) or `polygon` (pixel squares, in the
+raster's CRS). `--skip-nodata` leaves out the pixels whose first reported band has its nodata
+value after conversion to the source type; nearby Float32 values remain valid. Repeated band
+selections are reported once, in their first-selected order. `-b` selects bands (GDAL 3.13.3 accepts `-b` but reports every band). `--append`
+and `--overwrite` update an existing output, as for `polygonize`. The features are built in
+memory; an estimated expansion above 512 MiB is refused before generating features.
+Crop large inputs first. GDAL's `--update`, `--overwrite-layer` and
+layer creation options are not supported.
 
 ## Native multidimensional arrays
 
@@ -1036,9 +1244,15 @@ normal warper. Custom `INIT_DEST` values are also unsupported.
 `log10`, `dB`, `dB2amp`, `dB2pow`, `pow` and `exp`, with numeric arguments,
 source transfer types and applicable nodata behavior. Complex-valued derived
 buffers, external pixel functions and expression languages are unsupported.
+
+A 1×1 unnormalized VRT kernel is applied once, matching GDAL 3.13.3
+(coefficient 2 maps sample 3 to 6).
+
 `KernelFilteredSource` supports odd full/separable kernels, normalization and
 `min`, `max`, `stddev`, `median` and `mode`. Kernels read the necessary halo and
-replicate source edges as GDAL does. Explicit dataset masks, `SourceBand mask,N`
+replicate source edges as GDAL does. The 3–99 limit applies to `--size`; explicit matrices
+can be larger odd squares, matching GDAL. Their work per pixel grows with the
+number of coefficients. Explicit dataset masks, `SourceBand mask,N`
 and `ComplexSource` with `UseMaskBand` are read lazily.
 
 Mixed native band types use a common numeric buffer selected with GDAL-style

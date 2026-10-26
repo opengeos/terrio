@@ -241,6 +241,7 @@ impl Client {
                 && !auth.discovered
                 && matches!(status, 301 | 307 | 400)
                 && let Some(region) = header("x-amz-bucket-region")
+                && s3::valid_region(&region)
                 && auth.region.as_deref() != Some(region.as_str())
             {
                 auth.discovered = true;

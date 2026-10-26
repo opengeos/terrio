@@ -74,6 +74,11 @@ pub struct S3Object {
     pub key: String,
 }
 
+/// Region identifiers are interpolated into AWS hostnames after discovery.
+pub(crate) fn valid_region(region: &str) -> bool {
+    !region.is_empty() && region.bytes().all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+}
+
 impl S3Object {
     /// The object's URL, at the regional endpoint when `region` is given, or at the endpoint in
     /// `AWS_S3_ENDPOINT`.
@@ -93,7 +98,7 @@ impl S3Object {
                 format!("{scheme}://{host}/{}/{key}", self.bucket)
             };
         }
-        let host = match region {
+        let host = match region.filter(|region| valid_region(region)) {
             Some(r) => format!("s3.{r}.amazonaws.com"),
             None => "s3.amazonaws.com".to_string(),
         };
@@ -299,6 +304,16 @@ mod tests {
 
     fn headers(h: &[(&str, &str)]) -> Vec<(String, String)> {
         h.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+    }
+
+    #[test]
+    fn discovered_regions_are_hostname_components() {
+        for region in ["us-east-1", "eu-west-3", "us-gov-west-1"] {
+            assert!(valid_region(region));
+        }
+        for region in ["", "us-east-1#evil", "us-east-1@evil", "us-east-1/evil", "US-EAST-1", "us east 1"] {
+            assert!(!valid_region(region));
+        }
     }
 
     /// `get-vanilla` from AWS's SigV4 test suite.

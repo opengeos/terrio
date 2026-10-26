@@ -209,6 +209,26 @@ Inputs can be datasets or raster bytes. All spectral inputs contribute to intens
 `bands` selects/reorders output bands. See [pansharpen](cli.md#pansharpen) for working
 types, interpolation, nodata, bit depth and extent handling.
 
+## Focal statistics, collars and enhancement
+
+```javascript
+const max5 = terrio.neighbors(dem, { kernel: "equal", size: 5, method: "max" });
+const edges = terrio.neighbors(image, { kernel: ["gaussian", "edge2"], band: 2, ot: "Float32" });
+const clean = terrio.cleanCollar(scene, { addAlpha: true });          // flood fill
+const nb = terrio.nearblack(scene, { colors: ["0,0,0", "255,255,255"], pixelDistance: 0 });
+const lut = terrio.enhanceLuts(image, {});                            // gdalenhance's LUT file text
+const eq = terrio.enhance(image, { equalize: true });
+const again = terrio.enhance(image, { config: lut });
+```
+
+`nearblack` and `cleanCollar` accept `colors` as a single string or an array of strings.
+
+These are `terrio neighbors`, `clean-collar`, `nearblack` and `enhance` (see
+[neighbors](cli.md#neighbors), [clean-collar](cli.md#clean-collar-and-nearblack) and
+[enhance](cli.md#enhance)), on rasters in memory. Datasets hold no mask: `addMask` is refused,
+and an input's mask is not kept (use `addAlpha`). There is no in-place update; LUT files are
+passed and returned as text.
+
 ## SQL queries
 
 `sql(src, query)` returns a `Dataset` using the shared [OGR SQL subset](sql.md).
@@ -247,6 +267,26 @@ const height = terrio.viewshed(dem, 500000, 4400000, { om: "GROUND", cc: 0 });
 The input can be a dataset or raster bytes. `om` selects NORMAL visibility, DEM minimum
 visible elevation, or GROUND minimum height above the DEM. `cc` is 1 minus refraction.
 See [viewshed](cli.md#viewshed) for units, curvature, radius cropping and nodata behavior.
+
+## Pixel-wise operations
+
+```javascript
+const physical = terrio.unscale(packed, { ot: "Float64" });
+const rgba = terrio.nodataToAlpha(landsat, { nodata: 0 });
+const groups = terrio.reclassify(nlcd, "11=1;[21,25)=2;DEFAULT=0", { ot: "Byte" });
+const fromFile = terrio.reclassify(nlcd, "", { mappingFile: await (await fetch("map.txt")).text() });
+const pixels = terrio.asFeatures(dem, { geometryType: "polygon", includeXy: true, skipNodata: true });
+```
+
+Inputs are datasets or raster bytes; `asFeatures` returns a vector dataset (`toGeoJSON`,
+`toBytes`). WebAssembly cannot read local files, so a mapping file's text is passed as
+`mappingFile` instead of `@file`. See [unscale](cli.md#unscale),
+[nodata-to-alpha](cli.md#nodata-to-alpha), [reclassify](cli.md#reclassify) and
+[as-features](cli.md#as-features).
+
+For `nodataToAlpha`, non-finite overrides use the strings `"nan"`, `"inf"` or `"-inf"`
+(as a scalar or in the nodata array). Raw JavaScript non-finite numbers and explicit null
+are rejected before JSON serialization, so they cannot silently become a default override.
 
 ## Geolocation-array warping
 

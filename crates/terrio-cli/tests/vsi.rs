@@ -350,8 +350,17 @@ fn copies_large_http_binary_without_content_type() {
     let (endpoint, store) = serve();
     let data = vec![42; (5 << 20) + 7];
     store.lock().unwrap().objects.insert("bkt/binary".into(), (data.clone(), 1_700_000_000));
+    store.lock().unwrap().objects.insert("bkt/binary/".into(), (data.clone(), 1_700_000_000));
     let dir = tempfile::tempdir().unwrap();
-    ok(&endpoint, dir.path(), &["vsi", "copy", &format!("{endpoint}/bkt/binary"), "output"]);
+    let output = terrio(&endpoint, dir.path(), &["vsi", "copy", &format!("{endpoint}/bkt/binary"), "output", "--stats"]);
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    // Index sniff (4096 bytes), one-byte stat, and one streamed payload copy.
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains(&format!("3 HTTP request(s), {} byte(s) received", data.len() + 4097)),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(store.lock().unwrap().log.len(), 3);
     assert_eq!(std::fs::read(dir.path().join("output")).unwrap(), data);
 }
 

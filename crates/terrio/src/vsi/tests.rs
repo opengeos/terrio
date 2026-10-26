@@ -863,3 +863,14 @@ fn nested_http_listing_failure_redacts_query_credentials() {
     assert!(error.contains("<redacted>"));
     assert!(!error.contains("PRIVATE_TEST_SIGNATURE"));
 }
+
+#[test]
+fn recursive_copy_preserves_filesystem_error_kind() {
+    let (tmp, source) = tree();
+    let destination = tmp.path().join("out");
+    fs::create_dir_all(destination.join("t/x.txt")).unwrap();
+    let error = copy(&s(&source), &s(&destination), &CopyOptions { recursive: true, ..Default::default() }).unwrap_err();
+    assert!(matches!(error, Error::Io(_)), "{error:?}");
+    assert!(destination.join("t/x.txt").is_dir());
+    assert_eq!(fs::read_to_string(source.join("x.txt")).unwrap(), "hello\n");
+}
