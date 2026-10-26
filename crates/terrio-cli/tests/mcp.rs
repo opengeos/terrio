@@ -111,6 +111,25 @@ fn fill_nodata_is_discoverable_and_executes() {
 }
 
 #[test]
+fn focal_collar_and_enhance_tools_are_discoverable_and_execute() {
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("image.asc");
+    let output = dir.path().join("max.tif");
+    std::fs::write(&input, "ncols 3\nnrows 1\nxllcorner 0\nyllcorner 0\ncellsize 1\n1 5 3\n").unwrap();
+    let replies = session(&[
+        json!({"jsonrpc":"2.0","id":1,"method":"tools/list"}),
+        call(2, "neighbors", &[input.to_str().unwrap(), output.to_str().unwrap(), "--kernel", "equal", "--method", "max"]),
+    ]);
+    let tools = replies[&1]["result"]["tools"].as_array().unwrap();
+    for name in ["neighbors", "clean-collar", "nearblack", "enhance"] {
+        assert!(tools.iter().any(|t| t["name"] == name), "missing {name}");
+    }
+    assert_eq!(replies[&2]["result"]["isError"], false, "{}", replies[&2]);
+    let out = terrio::open_raster(output.to_str().unwrap()).unwrap();
+    assert_eq!(out.raster.data.to_f64_vec(), vec![5.0, 5.0, 5.0]);
+}
+
+#[test]
 fn catalog_is_exposed_and_reads_an_indexed_window() {
     let dir = tempfile::tempdir().unwrap();
     let tile = dir.path().join("tile.asc");

@@ -154,6 +154,17 @@ rasters; `vector_filter` (with the `sql` parser), `rasterize` and `polygonize`; 
 (with its expression parser and NumPy-typed evaluator), `proximity` and `sieve`. Each takes an
 options struct mirroring the command-line options.
 
+`ops::neighbors::{neighbors, neighbors_to_path}` computes focal statistics (`gdal raster
+neighbors`) from `NeighborsOptions` (kernels, `NeighborMethod`s, size, band, output type and
+`NeighborsNodata`); the `_to_path` form reads a `LazyRaster` and writes GeoTIFF/COG strips.
+`ops::nearblack::{nearblack, nearblack_in_place}` cleans collars (`nearblack`, `gdal raster
+clean-collar`) from `NearblackOptions` (colors, `white`, `near`, `max_non_black`, alpha, mask and
+`CollarAlgorithm`), returning a `Collar` (the Byte raster and its mask);
+`keep_alpha_or_mask` applies clean-collar's defaults. `ops::enhance` computes
+`equalization_luts` (or `_from_path`, with GDAL's stored histograms), reads and writes LUT
+files with `parse_luts`/`format_luts`, and applies `BandLut`s with `enhance` or
+`enhance_to_path` (`gdalenhance`).
+
 `ops::geometry::{centroids, singleparts, vertices}` transforms vector layers while preserving
 their CRS and attributes. `ops::footprint::footprint` extracts an exact raster valid-data
 footprint with `FootprintOptions` (bands, intersection, optional mask, `singlepart`, and
