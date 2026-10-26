@@ -54,7 +54,7 @@ def test_vector_grid_algorithms_and_parameters():
         src, algorithm="average", radius=5, max_points_per_quadrant=1, **common
     )
     assert avg.read(1)[0, 0] == 2.5
-    # A rotated ellipse that only reaches along y misses every point.
+    # An unrotated ellipse that only reaches along y misses every point.
     count = terrio.vector_grid(
         src, algorithm="count", radius1=0.1, radius2=5, angle=0, **common
     ).read(1)[0, 0]

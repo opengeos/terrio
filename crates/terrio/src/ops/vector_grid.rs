@@ -188,6 +188,12 @@ impl GridAlgorithm {
     /// `invdistnn` (with `radius`, or `radius1`, which must then equal `radius2`, as its radius),
     /// and `radius` sets both semi-axes of the methods that search an ellipse.
     pub fn parse(s: &str) -> Result<Self> {
+        let mut algorithm = Self::parse_parameters(s)?;
+        algorithm.validate()?;
+        Ok(algorithm)
+    }
+
+    fn parse_parameters(s: &str) -> Result<Self> {
         fn get<'a>(params: &'a [(String, String)], k: &str) -> Option<&'a str> {
             params.iter().rev().find(|(n, _)| n == k).map(|(_, v)| v.as_str())
         }
@@ -307,7 +313,6 @@ impl GridAlgorithm {
             a.nodata = v;
             a.nodata_set = true;
         }
-        a.validate()?;
         Ok(a)
     }
 
@@ -340,6 +345,15 @@ impl GridAlgorithm {
             if !value.is_finite() {
                 return Err(Error::InvalidArgument(format!("gridding parameter {name} must be finite")));
             }
+        }
+        let no_radius = self.radius1 == 0.0 && self.radius2 == 0.0;
+        if self.method == GridMethod::InverseDistance && no_radius && (self.min_points > 0 || self.max_points > 0) {
+            return Err(Error::InvalidArgument("invdist needs a radius (or radius1 and radius2) with min-points or max-points".into()));
+        }
+        if self.method == GridMethod::Average && self.max_points > 0 && !self.per_quadrant() {
+            return Err(Error::InvalidArgument(
+                "average uses max-points only with min-points-per-quadrant or max-points-per-quadrant".into(),
+            ));
         }
         if self.method == GridMethod::InverseDistance && self.per_quadrant() {
             if self.radius1 != self.radius2 {
@@ -455,7 +469,7 @@ impl GridAlgorithm {
     /// The algorithm `algorithm` (a method name or a GDAL string such as `invdist:power=3`) with
     /// the parameters `p`, checked as `gdal vector grid` checks its options.
     pub fn with_params(algorithm: &str, p: &GridParams) -> Result<Self> {
-        let mut a = Self::parse(algorithm)?;
+        let mut a = Self::parse_parameters(algorithm)?;
         let m = a.method;
         let ellipse = m.uses_ellipse();
         let reject = |what: &str| Err(Error::InvalidArgument(format!("{what} does not apply to the {} algorithm", m.name())));
@@ -512,15 +526,6 @@ impl GridAlgorithm {
         if let Some(v) = p.nodata {
             a.nodata = v;
             a.nodata_set = true;
-        }
-        let no_radius = a.radius1 == 0.0 && a.radius2 == 0.0;
-        if m == GridMethod::InverseDistance && no_radius && (a.min_points > 0 || a.max_points > 0) {
-            return Err(Error::InvalidArgument("invdist needs a radius (or radius1 and radius2) with min-points or max-points".into()));
-        }
-        if m == GridMethod::Average && a.max_points > 0 && !a.per_quadrant() {
-            return Err(Error::InvalidArgument(
-                "average uses max-points only with min-points-per-quadrant or max-points-per-quadrant".into(),
-            ));
         }
         a.validate()?;
         Ok(a)
@@ -1651,7 +1656,7 @@ fn field_value(f: &Feature, i: usize) -> Option<f64> {
 }
 
 /// The number at the start of a string, as C's `atof`; 0 when there is none.
-fn leading_number(s: &str) -> f64 {
+pub(crate) fn leading_number(s: &str) -> f64 {
     let s = s.trim_start();
     let ends: Vec<usize> = s.char_indices().map(|(i, _)| i).skip(1).chain(std::iter::once(s.len())).collect();
     ends.into_iter().rev().find_map(|end| s[..end].parse::<f64>().ok()).unwrap_or(0.0)
@@ -1752,7 +1757,8 @@ pub fn vector_grid(layers: &[Layer], options: &VectorGridOptions) -> Result<Rast
     let extent = GridExtent { x_min: x0, x_max: x1, y_min: y0.min(y1), y_max: y0.max(y1), cols, rows };
     check_extent(&extent)?;
     let bands = layers.len();
-    let mut data = Vec::with_capacity(cols * rows * bands);
+    let mut data = Vec::new();
+    data.try_reserve_exact(cols * rows * bands).map_err(|_| Error::InvalidArgument("cannot allocate the output grid".into()))?;
     let dt = options.data_type;
     for layer in layers {
         let (xs, ys, zs) = layer_points(layer, options)?;

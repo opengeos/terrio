@@ -56,7 +56,7 @@ pub struct Args {
     #[arg(long, allow_negative_numbers = true)]
     power: Option<f64>,
     /// The smoothing (invdist, invdistnn; 0 by default).
-    #[arg(long)]
+    #[arg(long, allow_negative_numbers = true)]
     smoothing: Option<f64>,
     /// The search radius: of a circle (both radius1 and radius2), or invdistnn's (1 by default)
     /// and linear's nearest-neighbour fallback (0: nodata outside the triangulation; by default
@@ -64,10 +64,10 @@ pub struct Args {
     #[arg(long, conflicts_with_all = ["radius1", "radius2"], allow_negative_numbers = true)]
     radius: Option<f64>,
     /// The first semi-axis of the search ellipse (with --radius2). 0 searches every point.
-    #[arg(long, requires = "radius2")]
+    #[arg(long, requires = "radius2", allow_negative_numbers = true)]
     radius1: Option<f64>,
     /// The second semi-axis of the search ellipse (with --radius1).
-    #[arg(long, requires = "radius1")]
+    #[arg(long, requires = "radius1", allow_negative_numbers = true)]
     radius2: Option<f64>,
     /// The rotation of the search ellipse, in degrees counter-clockwise.
     #[arg(long, allow_negative_numbers = true)]

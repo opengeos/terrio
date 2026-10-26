@@ -816,8 +816,9 @@ the points strictly inside a rectangle (`-clipsrc`). `--ot` sets the type (Float
 The algorithms are ported from GDAL 3.13's `gdalgrid.cpp`: the search ellipse and its
 rotation, GDAL's switch from scanning every point to searching its quadtree above 100 points,
 and the order the quadtree returns points in (which decides ties and the rounding of sums) are
-reproduced, so outputs are pixel-identical with `gdal_grid` (see
-[Testing](testing.md#vector-gridding-and-linear-referencing-against-gdal)). Known differences:
+reproduced. Many cases agree exactly; linear triangulation and SIMD arithmetic have the
+tolerances and known differences reported in
+[Testing](testing.md#vector-gridding-and-linear-referencing-against-gdal). Known differences:
 
 - GDAL computes the default `invdist` (power 2, no smoothing, no radius) with AVX or SSE, in
   single precision with approximate reciprocals, unless `GDAL_USE_AVX=NO` and

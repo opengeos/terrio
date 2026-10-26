@@ -145,18 +145,27 @@ pub fn lineref_create(lines: JsValue, points: JsValue, options: JsValue) -> Resu
     Ok(Dataset::from_layers(vec![parts], VectorDriver::GeoJSON))
 }
 
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase", default, deny_unknown_fields)]
+struct LinerefLookupArgs {
+    layer: Option<String>,
+    layer_name: Option<String>,
+}
+
 /// The position of `(x, y)` on linear reference parts, as `terrio lineref get-pos` (GDAL's
 /// `ogrlineref -get_pos`).
 #[wasm_bindgen(js_name = linerefPosition)]
-pub fn lineref_position(parts: JsValue, x: f64, y: f64) -> Result<f64, JsError> {
-    terrio::ops::lineref::position(&one_layer(&parts, None)?, x, y).map_err(js_err)
+pub fn lineref_position(parts: JsValue, x: f64, y: f64, options: JsValue) -> Result<f64, JsError> {
+    let a: LinerefLookupArgs = parse_options(&options)?;
+    terrio::ops::lineref::position(&one_layer(&parts, a.layer.as_deref())?, x, y).map_err(js_err)
 }
 
 /// The coordinates `[x, y, z]` of a position on each part spanning it, as
 /// `terrio lineref get-coord` (GDAL's `ogrlineref -get_coord`).
 #[wasm_bindgen(js_name = linerefCoordinates)]
-pub fn lineref_coordinates(parts: JsValue, position: f64) -> Result<JsValue, JsError> {
-    let coords = terrio::ops::lineref::coordinates(&one_layer(&parts, None)?, position).map_err(js_err)?;
+pub fn lineref_coordinates(parts: JsValue, position: f64, options: JsValue) -> Result<JsValue, JsError> {
+    let a: LinerefLookupArgs = parse_options(&options)?;
+    let coords = terrio::ops::lineref::coordinates(&one_layer(&parts, a.layer.as_deref())?, position).map_err(js_err)?;
     let out = js_sys::Array::new();
     for [x, y, z] in coords {
         out.push(&js_sys::Array::of3(&x.into(), &y.into(), &z.into()));
@@ -167,7 +176,10 @@ pub fn lineref_coordinates(parts: JsValue, position: f64) -> Result<JsValue, JsE
 /// The route between two positions, as `terrio lineref get-subline` (GDAL's
 /// `ogrlineref -get_subline`): one line feature with `beg`, `end` and `scale` fields.
 #[wasm_bindgen(js_name = linerefSubline)]
-pub fn lineref_subline(parts: JsValue, begin: f64, end: f64) -> Result<Dataset, JsError> {
-    let out = terrio::ops::lineref::subline(&one_layer(&parts, None)?, begin, end, "subline").map_err(js_err)?;
+pub fn lineref_subline(parts: JsValue, begin: f64, end: f64, options: JsValue) -> Result<Dataset, JsError> {
+    let a: LinerefLookupArgs = parse_options(&options)?;
+    let out =
+        terrio::ops::lineref::subline(&one_layer(&parts, a.layer.as_deref())?, begin, end, a.layer_name.as_deref().unwrap_or("subline"))
+            .map_err(js_err)?;
     Ok(Dataset::from_layers(vec![out], VectorDriver::GeoJSON))
 }

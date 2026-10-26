@@ -262,6 +262,9 @@ Inputs are datasets, vector bytes or GeoJSON. `vectorGrid` options are camelCase
 the Python keywords (`minPointsPerQuadrant`...). See [vector-grid](cli.md#vector-grid) and
 [lineref](cli.md#lineref).
 
+Linear reference lookups accept `{layer: "parts"}` to select a source layer.
+`linerefSubline` also accepts `layerName` to name its output layer.
+
 ## Geolocation-array warping
 
 Pass longitude and latitude rasters explicitly when array datasets cannot be reopened from

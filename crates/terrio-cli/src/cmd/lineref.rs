@@ -25,9 +25,12 @@ enum Mode {
 }
 
 /// A layer of a vector dataset.
-fn open_layer(path: &str, layer: &Option<String>) -> Result<Layer> {
+fn open_layer(path: &str, layer: Option<&str>) -> Result<Layer> {
     let ds = super::quiet(|| {
-        terrio::open_vector(path, &terrio::VectorOpenOptions { layers: layer.iter().cloned().collect(), ..Default::default() })
+        terrio::open_vector(
+            path,
+            &terrio::VectorOpenOptions { layers: layer.into_iter().map(str::to_string).collect(), ..Default::default() },
+        )
     })?;
     ds.layers.into_iter().next().ok_or_else(|| Error::InvalidArgument(format!("{path} has no layer")))
 }
@@ -149,8 +152,8 @@ struct GetSublineArgs {
 pub fn run(a: Args) -> Result<()> {
     match a.mode {
         Mode::Create(a) => {
-            let lines = open_layer(&a.lines, &a.lines_layer)?;
-            let points = open_layer(&a.points, &a.points_layer)?;
+            let lines = open_layer(&a.lines, a.lines_layer.as_deref())?;
+            let points = open_layer(&a.points, a.points_layer.as_deref())?;
             let options = LineRefOptions {
                 position_field: a.position_field,
                 step: a.step,
@@ -163,7 +166,7 @@ pub fn run(a: Args) -> Result<()> {
             a.out.write(parts)
         }
         Mode::GetPos(a) => {
-            let parts = open_layer(&a.parts.parts, &a.parts.parts_layer)?;
+            let parts = open_layer(&a.parts.parts, a.parts.parts_layer.as_deref())?;
             let p = terrio::ops::lineref::position(&parts, a.x, a.y)?;
             if a.json {
                 println!("{}", serde_json::json!({ "position": p }));
@@ -173,7 +176,7 @@ pub fn run(a: Args) -> Result<()> {
             Ok(())
         }
         Mode::GetCoord(a) => {
-            let parts = open_layer(&a.parts.parts, &a.parts.parts_layer)?;
+            let parts = open_layer(&a.parts.parts, a.parts.parts_layer.as_deref())?;
             let coords = terrio::ops::lineref::coordinates(&parts, a.position)?;
             if a.json {
                 println!("{}", serde_json::json!({ "coordinates": coords }));
@@ -185,7 +188,7 @@ pub fn run(a: Args) -> Result<()> {
             Ok(())
         }
         Mode::GetSubline(a) => {
-            let parts = open_layer(&a.parts.parts, &a.parts.parts_layer)?;
+            let parts = open_layer(&a.parts.parts, a.parts.parts_layer.as_deref())?;
             let out = terrio::ops::lineref::subline(&parts, a.begin, a.end, &a.out.name())?;
             a.out.write(out)
         }

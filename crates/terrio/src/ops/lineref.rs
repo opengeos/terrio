@@ -323,7 +323,7 @@ fn as_double(v: Option<&FieldValue>) -> f64 {
         Some(FieldValue::Integer(i)) => *i as f64,
         Some(FieldValue::Float(f)) => *f,
         Some(FieldValue::Boolean(b)) => *b as i64 as f64,
-        Some(FieldValue::Text(s)) => s.trim().parse().unwrap_or(0.0),
+        Some(FieldValue::Text(s)) => super::vector_grid::leading_number(s),
         Some(FieldValue::Null) | None => f64::NAN,
         Some(_) => 0.0,
     }
@@ -518,6 +518,12 @@ fn parts_of_line(
             && let Some(part) = path.sub_line(d1, d)
         {
             let scale = part.length() / (k.0 - position_now);
+            if !scale.is_finite() {
+                crate::warnings::warn(
+                    "a zero-span initial picket produced nonfinite scale, matching GDAL; adjust milestone positions or step before lookup"
+                        .into(),
+                );
+            }
             add_part(out, &part, position_now, k.0, scale, id);
             d1 = d;
             position_now = k.0;
@@ -853,6 +859,7 @@ mod tests {
 
     #[test]
     fn metric_factor_refuses_degenerate_lengths() {
+        assert_eq!(as_double(Some(&FieldValue::Text("1200m".into()))), 1200.);
         assert!(metric_factor(0., 0.).is_err());
         assert!(metric_factor(1., 0.).is_err());
         assert!(metric_factor(f64::INFINITY, 1.).is_err());
