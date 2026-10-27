@@ -26,6 +26,20 @@ impl PyVectorDataset {
         Ok(Self { layers, driver: ds.driver.name().to_string() })
     }
 
+    /// Borrow one selected layer while a read-only binding operation runs.
+    pub(crate) fn with_layer<T>(&self, py: Python<'_>, name: Option<&str>, apply: impl FnOnce(&Layer) -> PyResult<T>) -> PyResult<T> {
+        let layer = match name {
+            Some(name) => self
+                .layers
+                .iter()
+                .find(|layer| layer.borrow(py).inner.name == name)
+                .ok_or_else(|| invalid(format!("no layer named {name}")))?,
+            None => self.layers.first().ok_or_else(|| invalid("no layer"))?,
+        };
+        let borrowed = layer.borrow(py);
+        apply(&borrowed.inner)
+    }
+
     /// The name of the driver that read the dataset.
     pub(crate) fn driver_name(&self) -> String {
         self.driver.clone()

@@ -214,6 +214,29 @@ height = terrio.viewshed("dem_utm.tif", 500000, 4400000, om="GROUND", cc=0)
 or height above the DEM. `cc` is 1 minus refraction. See [viewshed](cli.md#viewshed) for
 units, curvature, radius cropping and input nodata behavior.
 
+### Vector gridding and linear referencing
+
+```python
+temp = terrio.vector_grid("stations.gpkg", "temp.tif", algorithm="invdist", zfield="temp",
+                          power=2, radius=50000, max_points=12)
+dem = terrio.vector_grid("samples.gpkg", algorithm="linear", extent=(636000, 848930, 637180, 849500),
+                         resolution=(5, 5))
+parts = terrio.lineref_create("path.shp", "mstones.shp", "pos", 1000, "parts.gpkg")
+pos = terrio.lineref_position(parts, -1.4345, 51.9497)
+(x, y, z), = terrio.lineref_coordinates(parts, 15977.724709)
+sub = terrio.lineref_subline(parts, 13300, 17400)
+```
+
+`vector_grid` takes the algorithm (a name or a GDAL string) and its parameters as keywords
+(`power`, `smoothing`, `radius`, `radius1`, `radius2`, `angle`, `min_points`, `max_points`,
+`min_points_per_quadrant`, `max_points_per_quadrant`, `nodata`), with `zfield`, `zoffset`,
+`zmultiply`, `layers`, `sql`, `where`, `bbox`, `extent`, `size`, `resolution`, `ot` and `crs`.
+See [vector-grid](cli.md#vector-grid) and [lineref](cli.md#lineref).
+
+Repeated lookups should reuse `terrio.open_vector(parts_path)` or a Layer. Passing a path,
+serialized bytes or GeoJSON each time reopens/reparses the input.
+
+
 ### Compare, pixel info and XYZ
 
 ```python

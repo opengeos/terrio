@@ -94,6 +94,22 @@ for f in GLMELT_4X5.OCN.nc fake_SNPP_VIIRS.20230406T024200.L2.OC.NRT.nc cf_lon_l
   fake_EMIT_L2B_MIN.nc sentinel5p_fake.nc uint16_netcdf4_without_fill.nc; do
   [ -e "gdal_netcdf/$f" ] || curl -sSfL -o "gdal_netcdf/$f" "$gdal_data/netcdf/$f"
 done
+# GDAL's gdal_grid and ogrlineref test data: points on a regular grid (a test raster's pixels,
+# CSV with an OGR VRT), and a route with its milestones (Shapefiles).
+gdal_utilities=https://raw.githubusercontent.com/OSGeo/gdal/v3.13.3/autotest/utilities/data
+mkdir -p gdal_utilities
+for f in grid.csv grid.vrt path.shp path.shx path.dbf path.prj path.cpg mstones.shp mstones.shx mstones.dbf mstones.prj \
+  mstones.cpg; do
+  if [ ! -e "gdal_utilities/$f" ]; then
+    fixture_tmp=$(mktemp "gdal_utilities/$f.XXXXXX")
+    if curl -sSfL -o "$fixture_tmp" "$gdal_utilities/$f"; then
+      mv "$fixture_tmp" "gdal_utilities/$f"
+    else
+      rm -f "$fixture_tmp"
+      exit 1
+    fi
+  fi
+done
 # NASA HDF-EOS5 products, when Earthdata Login credentials are in ~/.netrc (not in CI): a VIIRS
 # Black Marble grid (geographic, LAADS), a VIIRS surface reflectance grid (sinusoidal, LP DAAC),
 # AMSR2 sea ice polar stereographic grids and a precipitation swath (NSIDC).

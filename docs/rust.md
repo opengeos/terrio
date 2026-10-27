@@ -287,6 +287,31 @@ let visible = viewshed(&dem, &ViewshedOptions {
 `ViewshedMode::Dem` and `Ground` return minimum visible elevation or height above the DEM.
 See [viewshed](cli.md#viewshed) for units, curvature, radius cropping and nodata behavior.
 
+### Vector gridding and linear referencing
+
+```rust
+use terrio::ops::vector_grid::{vector_grid, GridAlgorithm, VectorGridOptions};
+use terrio::ops::lineref::{create_reference, position, LineRefOptions};
+let points = terrio::open_vector("stations.gpkg", &Default::default())?;
+let grid = vector_grid(&points.layers, &VectorGridOptions {
+    algorithm: GridAlgorithm::parse("invdist:power=2:radius=50000:max_points=12")?,
+    z_field: Some("temp".into()),
+    size: Some((200, 200)),
+    ..Default::default()
+})?;
+let route = terrio::open_vector("path.shp", &Default::default())?;
+let stones = terrio::open_vector("mstones.shp", &Default::default())?;
+let parts = create_reference(&route.layers[0], &stones.layers[0], &LineRefOptions {
+    position_field: "pos".into(), step: 1000.0, ..Default::default()
+})?;
+let pos = position(&parts, -1.4345, 51.9497)?;
+# Ok::<(), terrio::Error>(())
+```
+
+`grid_points` grids coordinate arrays directly; `coordinates` and `subline` are the other
+lookups. See [vector-grid](cli.md#vector-grid) and [lineref](cli.md#lineref).
+
+
 ### Compare, pixel info and XYZ
 
 ```rust,no_run

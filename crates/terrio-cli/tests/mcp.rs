@@ -375,6 +375,56 @@ fn vsi_tool_lists_copies_and_refuses_dangerous_deletes() {
 }
 
 #[test]
+fn vector_grid_and_lineref_tools_execute_the_cli() {
+    let dir = tempfile::tempdir().unwrap();
+    let points = dir.path().join("points.geojson");
+    std::fs::write(
+        &points,
+        r#"{"type":"FeatureCollection","features":[
+        {"type":"Feature","properties":{"v":1},"geometry":{"type":"Point","coordinates":[0.5,0.5]}},
+        {"type":"Feature","properties":{"v":2},"geometry":{"type":"Point","coordinates":[1.5,0.5]}},
+        {"type":"Feature","properties":{"v":3},"geometry":{"type":"Point","coordinates":[0.5,1.5]}},
+        {"type":"Feature","properties":{"v":4},"geometry":{"type":"Point","coordinates":[1.5,1.5]}}]}"#,
+    )
+    .unwrap();
+    let raster = dir.path().join("grid.tif");
+    let line = dir.path().join("route.geojson");
+    std::fs::write(&line, r#"{"type":"FeatureCollection","crs":{"type":"name","properties":{"name":"EPSG:3857"}},"features":[{"type":"Feature","properties":{},"geometry":{"type":"LineString","coordinates":[[0,0],[1000,0],[1000,1000]]}}]}"#).unwrap();
+    let stones = dir.path().join("stones.geojson");
+    std::fs::write(
+        &stones,
+        r#"{"type":"FeatureCollection","crs":{"type":"name","properties":{"name":"EPSG:3857"}},"features":[
+        {"type":"Feature","properties":{"pos":1200},"geometry":{"type":"Point","coordinates":[200,0]}},
+        {"type":"Feature","properties":{"pos":2000},"geometry":{"type":"Point","coordinates":[1000,200]}}]}"#,
+    )
+    .unwrap();
+    let parts = dir.path().join("parts.gpkg");
+    let p = |p: &std::path::Path| p.to_str().unwrap().to_string();
+    let replies = session(&[
+        json!({"jsonrpc":"2.0","id":1,"method":"tools/list"}),
+        call(2, "vector-grid", &["nearest", &p(&points), &p(&raster), "--zfield", "v", "--extent", "0", "0", "2", "2", "--size", "2", "2"]),
+        call(
+            3,
+            "lineref",
+            &["create", "--lines", &p(&line), "--points", &p(&stones), "--position-field", "pos", "--step", "500", &p(&parts)],
+        ),
+    ]);
+    let tools = replies[&1]["result"]["tools"].as_array().unwrap();
+    for name in ["vector-grid", "lineref"] {
+        assert!(tools.iter().any(|t| t["name"] == name), "missing {name}");
+    }
+    assert_eq!(replies[&2]["result"]["isError"], false, "{}", replies[&2]);
+    let out = terrio::open_raster(raster.to_str().unwrap()).unwrap();
+    assert_eq!(out.raster.get(0, 0, 0), 3.0);
+    assert_eq!(out.raster.get(0, 1, 1), 2.0);
+    assert_eq!(replies[&3]["result"]["isError"], false, "{}", replies[&3]);
+    assert!(!replies[&3].to_string().contains("could not be measured in UTM"));
+    let replies = session(&[call(1, "lineref", &["get-pos", "--parts", &p(&parts), "-x", "100", "-y", "0"])]);
+    let text = replies[&1]["result"]["content"][0]["text"].as_str().unwrap();
+    assert!(text.contains("1086.956522"), "{text}");
+}
+
+#[test]
 fn compare_and_pixel_info_report_results_rather_than_failures() {
     let dir = tempfile::tempdir().unwrap();
     let write = |name: &str, values: Vec<f64>| {

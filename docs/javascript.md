@@ -305,6 +305,27 @@ The input can be a dataset or raster bytes. `om` selects NORMAL visibility, DEM 
 visible elevation, or GROUND minimum height above the DEM. `cc` is 1 minus refraction.
 See [viewshed](cli.md#viewshed) for units, curvature, radius cropping and nodata behavior.
 
+## Vector gridding and linear referencing
+
+```javascript
+const grid = terrio.vectorGrid(points, { algorithm: "invdistnn", zfield: "temp", radius: 50000, size: [200, 200] });
+const parts = terrio.linerefCreate(route, stones, { positionField: "pos", step: 1000 });
+const position = terrio.linerefPosition(parts, -1.4345, 51.9497);
+const [[x, y, z]] = terrio.linerefCoordinates(parts, 15977.724709);
+const sub = terrio.linerefSubline(parts, 13300, 17400);
+```
+
+Inputs are datasets, vector bytes or GeoJSON. `vectorGrid` options are camelCase versions of
+the Python keywords (`minPointsPerQuadrant`...). See [vector-grid](cli.md#vector-grid) and
+[lineref](cli.md#lineref).
+
+Linear reference lookups accept `{layer: "parts"}` to select a source layer.
+`linerefSubline` also accepts `layerName` to name its output layer.
+
+Reuse a Dataset, such as `terrio.open(bytes, "parts.gpkg")`, for repeated lookups; serialized
+bytes and GeoJSON are parsed on each call.
+
+
 ## Compare, pixel info and XYZ
 
 ```javascript

@@ -67,6 +67,20 @@ comparisons in the GDAL conformance workflow, and exposes applicable functionali
 Rust, CLI, Python, JavaScript and MCP. Supported subsets and numerical tolerances remain
 documented; additional feature scope belongs in separate tracking issues.
 
+## In progress: Additional GDAL command coverage
+
+[#289](https://github.com/opengeos/terrio/issues/289) tracks the remaining unified GDAL
+commands. Command-group progress:
+
+- [x] Vector geometry operations: simplify, segmentize, convex and concave hulls, swap XY,
+      geometry-type conversion, grouped combine and spatial sort. Landed in
+      [#306](https://github.com/opengeos/terrio/pull/306), through Rust, CLI/MCP, Python and
+      JavaScript, with GDAL/GEOS comparisons and documented tolerances.
+- [ ] Vector gridding and linear referencing: every `gdal_grid` algorithm (search ellipses,
+      quadtree order, per-quadrant limits) as `terrio vector-grid`, and `ogrlineref` as
+      `terrio lineref`. Proposed in [#305](https://github.com/opengeos/terrio/pull/305), through Rust,
+      CLI/MCP, Python and JavaScript, with real-data comparisons registered in conformance.
+
 ## 0.1: Foundations
 
 - [x] Data model: `Dataset`, raster `Band` with block access, vector `Layer` with `Feature`, field
@@ -108,6 +122,8 @@ documented; additional feature scope belongs in separate tracking issues.
       hillshade, slope, aspect, color relief, TRI, TPI, roughness), `terrio calc` (`gdal_calc.py`,
       with NumPy's typing rules), `terrio proximity` (`gdal_proximity.py`) and `terrio sieve`
       (`gdal_sieve.py`).
+- [x] Raster pixel operations (`unscale`, `nodata-to-alpha`, `reclassify`, `as-features`)
+      across Rust, CLI/MCP, Python and WebAssembly. Landed in [#299](https://github.com/opengeos/terrio/pull/299).
 - [x] Focal statistics and kernels (`neighbors`), collar cleaning (`clean-collar` / `nearblack`)
       and LUT contrast enhancement (`enhance`) across Rust, CLI/MCP, Python and WebAssembly
       ([#300](https://github.com/opengeos/terrio/pull/300)).

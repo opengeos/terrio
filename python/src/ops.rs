@@ -61,7 +61,7 @@ fn dataset_to_py(py: Python<'_>, ds: Dataset) -> PyResult<Py<PyAny>> {
     })
 }
 
-fn srs(s: Option<&str>) -> PyResult<Option<SpatialRef>> {
+pub(crate) fn srs(s: Option<&str>) -> PyResult<Option<SpatialRef>> {
     s.map(SpatialRef::parse).transpose().py()
 }
 
@@ -74,7 +74,7 @@ pub(crate) fn write_mode(append: bool, overwrite: bool) -> PyResult<WriteMode> {
     }
 }
 
-fn data_type(name: &str) -> PyResult<DataType> {
+pub(crate) fn data_type(name: &str) -> PyResult<DataType> {
     DataType::from_str(name).ok_or_else(|| invalid(format!("unknown data type '{name}'")))
 }
 

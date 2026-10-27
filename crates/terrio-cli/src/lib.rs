@@ -173,7 +173,15 @@ enum Command {
     Enhance(cmd::enhance::Args),
     /// Grid a point cloud into a raster: min, max, mean, IDW, count or standard deviation per cell
     /// (like PDAL's writers.gdal), or a TIN or nearest-neighbour interpolation (like gdal_grid).
+    /// For vector points, see vector-grid.
     Grid(cmd::grid::Args),
+    /// Grid scattered vector points into a raster: inverse distance, nearest neighbour, moving
+    /// average, linear (Delaunay) or data metrics in a search ellipse (like gdal vector grid and
+    /// gdal_grid).
+    VectorGrid(cmd::vector_grid::Args),
+    /// Linear referencing (like ogrlineref): cut a route into parts from reference points, and
+    /// convert between positions along it and coordinates.
+    Lineref(cmd::lineref::Args),
     /// Filter a point cloud as PDAL's filters do: ground classification (SMRF, PMF, CSF), noise,
     /// heights above ground, crops, expressions, assignments, tiles, normals, clusters, sampling,
     /// covariance features, outlier factors, raster values and polygon attributes.
@@ -290,6 +298,8 @@ fn run_on_this_thread(args: Vec<OsString>, terrio: Option<Vec<OsString>>) -> i32
         Command::Nearblack(a) => cmd::clean_collar::run(a, false),
         Command::Enhance(a) => cmd::enhance::run(a),
         Command::Grid(a) => cmd::grid::run(a),
+        Command::VectorGrid(a) => cmd::vector_grid::run(a),
+        Command::Lineref(a) => cmd::lineref::run(a),
         Command::Filter(a) => cmd::filter::run(a),
         Command::Vsi(a) => cmd::vsi::run(a),
         Command::Mcp => serve_mcp(terrio),

@@ -1259,7 +1259,144 @@ terrio grid INPUT OUTPUT --tr RES [--stat min,max,mean,idw,count,stdev|all] [--d
 
 Grids a point cloud into a raster as PDAL's `writers.gdal` does: a DSM with `--stat max`, a DTM
 with `--class 2 --stat idw`, a density map with `--stat count --bin`. See
-[Point Clouds](point-clouds.md).
+[Point Clouds](point-clouds.md). For vector points, see [vector-grid](#vector-grid).
+
+## vector-grid
+
+```sh
+terrio vector-grid invdist stations.gpkg temp.tif --zfield temp --power 2 --radius 50000 --max-points 12
+terrio vector-grid linear samples.gpkg dem.tif --extent 636000 848930 637180 849500 --resolution 5 5
+terrio vector-grid count places.shp density.tif --zfield pop_max --radius 3 --ot UInt16
+terrio vector-grid "invdistnn:radius=4:max_points=8" places.shp idw.tif --zfield pop_max --where "adm0name = 'Peru'"
+```
+
+Grids scattered vector points into a raster, as GDAL's `gdal vector grid` and `gdal_grid` do.
+It is a separate command from [`grid`](#grid), which grids point clouds the way PDAL's
+`writers.gdal` does. Every vertex of every geometry is a point (lines' and polygons' too), with
+the value of `--zfield` or its Z (0 for 2D points); `--zoffset` is added, then `--zmultiply`
+multiplies. The algorithm is the first argument, or a GDAL algorithm string
+(`invdist:power=3:radius1=500:radius2=300`) whose parameters the options override:
+
+| Algorithm | GDAL | Parameters |
+|---|---|---|
+| `invdist` (default) | inverse distance to a power | `--power` (2), `--smoothing`, `--radius` or `--radius1`/`--radius2`, `--angle`, `--min-points`, `--max-points` (with a radius), per-quadrant limits (then `invdistnn`) |
+| `invdistnn` | inverse distance of the nearest points | `--power`, `--smoothing`, `--radius` (1), `--min-points`, `--max-points` (12), per-quadrant limits |
+| `average` | moving average | ellipse, `--angle`, `--min-points`, per-quadrant limits, `--max-points` (with them) |
+| `nearest` | nearest neighbour | ellipse, `--angle` |
+| `linear` | linear in the Delaunay triangulation | `--radius`: the nearest point outside it within this distance; 0 for the nodata value; by default any distance |
+| `minimum`, `maximum`, `range`, `count`, `average-distance`, `average-distance-points` | data metrics | ellipse, `--angle`, `--min-points`, per-quadrant limits (not `average-distance-points`) |
+
+The per-quadrant limits are `--min-points-per-quadrant` and `--max-points-per-quadrant`.
+`--nodata` (0 by default) fills nodes without enough points; when it is given (here or in the
+string), it is declared as the bands' nodata value, as `gdal_grid` does. Nodes are the cell
+centres. The grid is `--extent` (by default the layer's, before `--where` and `--bbox`, as
+Shapefile and GeoPackage report it), `--size` (256 × 256 by default) or `--resolution` (with
+`--extent`: `(|max - min| + res / 2) / res` cells, the cell size then the extent over that).
+`--layer` grids several layers into a band each; `--sql` grids a query result; `--bbox` keeps
+the points strictly inside a rectangle (`-clipsrc`). `--ot` sets the type (Float64 by default),
+`--crs` the CRS (by default the layer's; points are not reprojected).
+
+NaN geometry Z values are skipped; NaN values supplied through `--zfield` can
+propagate into the result, matching GDAL 3.13.3. Input layers requested by name must
+all exist. Native path-based GeoPackage selections are case-insensitive; in-memory and JavaScript
+byte/Dataset selections use exact names. Validating a file-stem alias can reread the source to confirm that it originally
+has only one layer; use the actual layer name to avoid that extra read on large inputs.
+
+Without a search radius, `invdist` visits all input points for each output cell;
+its work grows with cells times points. Output allocation is bounded, but runtime
+is not bounded by a separate work budget. Use a smaller grid or an appropriate
+search radius for large inputs.
+
+`average-distance-points` evaluates every pair in each node's search neighborhood;
+work is quadratic in that neighborhood's point count. Float32 and other typed outputs are converted from
+an f64 working grid, so both buffers can coexist (about 768 MiB for f64 plus Float32 at
+the 2^26-cell limit, before inputs and indexes). Limit the search radius for
+dense inputs.
+
+The algorithms are ported from GDAL 3.13's `gdalgrid.cpp`: the search ellipse and its
+rotation, GDAL's switch from scanning every point to searching its quadtree above 100 points,
+and the order the quadtree returns points in (which decides ties and the rounding of sums) are
+reproduced. With one zero ellipse semi-axis, the scan accepts an unbounded line through
+the node while the quadtree search clips its candidates to a square of half-width equal
+to the other semi-axis; Terrio preserves this GDAL 3.13.3 behavior across the threshold.
+Unbounded `average`, `minimum`, `maximum`, `range` and `count` compute their constant
+value once per output block. Many cases agree exactly; linear triangulation and SIMD arithmetic have the
+tolerances and known differences reported in
+[Testing](testing.md#vector-gridding-and-linear-referencing-against-gdal). Known differences:
+
+- GDAL computes the default `invdist` (power 2, no smoothing, no radius) with AVX or SSE, in
+  single precision with approximate reciprocals, unless `GDAL_USE_AVX=NO` and
+  `GDAL_USE_SSE=NO`; terrio computes in double precision, as GDAL's scalar code.
+- Grids are materialized in memory and limited to 67,108,864 cells across all bands
+  (512 MiB of Float64 values before conversion); allocation failure returns an error.
+- `linear` triangulates with spade rather than qhull. The triangles of scattered points are
+  the same, but their vertex order (and so the last bits of the interpolation) can differ, and
+  the ties of co-circular points (a regular grid's squares) are broken differently.
+- GDAL 3.12 scanned every point for a rotated ellipse (and refused rotation with per-quadrant
+  limits); 3.13, as terrio, searches its quadtree: sums can differ in their last bits from 3.12.
+- Like GDAL 3.13.3, `linear` skips triangles whose barycentric determinant has absolute
+  value below 1e-5. Small geographic triangles can therefore produce nodata with radius 0;
+  use a suitable projected CRS for those inputs. Coordinates outside the triangulator's
+  supported numeric range are rejected. Collinear points have no triangulation:
+  Terrio returns nodata, while GDAL 3.13.3 reports a triangulation failure and leaves
+  its initialized nodata output. The default nearest fallback does not fill that case.
+- Zero-width or zero-height extents are rejected before allocating; GDAL can emit a
+  noninvertible transform for these inputs. Reversed x bounds retain negative pixel width,
+  matching GDAL.
+- With `--sql`, `gdal_grid` writes no CRS; terrio keeps the query result's.
+- `-clipsrc` with a geometry or a datasource, `-spat` and `-co` other than terrio's raster
+  output options are not supported.
+
+Search-axis signs follow GDAL: for more than 100 points, negative semi-axes can use
+a different candidate path from positive axes and yield a different result. They
+are not normalized to magnitudes.
+
+## lineref
+
+```sh
+terrio lineref create --lines path.shp --points mstones.shp --position-field pos --step 1000 parts.gpkg
+terrio lineref get-pos --parts parts.gpkg -x -1.4345 -y 51.9497
+terrio lineref get-coord --parts parts.gpkg -m 15977.724709
+terrio lineref get-subline --parts parts.gpkg --begin 13300 --end 17400 subline.gpkg
+```
+
+Linear referencing, as GDAL's `ogrlineref` (`-create`, `-get_pos`, `-get_coord`,
+`-get_subline`). `create` cuts the route (the first feature of `--lines`, or with
+`--line-field` and `--point-field` each route with its reference points; `--id-field`, default
+`uniq_uid`, receives the route identifier) into parts `--step` positions long, from reference
+points (milestones) carrying their positions in `--position-field`. Points farther than 10 units
+(0.00008983153 degrees for a geographic route) from the route are ignored, the route is reversed
+when it runs against the points, and the parts before the first and after the last point are
+measured in the UTM zone of their middle for a geographic route. Each part has its first and
+last positions (`beg`, `end`) and its length per position unit (`scale`).
+
+`get-pos` prints the position of a point on the nearest part, `get-coord` the `x,y,z` of a
+position on each part strictly spanning it (both with six decimals, as `ogrlineref -quiet`;
+`--json` for full precision), and `get-subline` writes the route between two positions. As
+ogrlineref, positions are rounded to six decimals in its part lookups. `--layer-name` names
+the output layer (by default the file's stem); `--lines-layer`, `--points-layer` and
+`--parts-layer` choose input layers. Like GDAL, an initial route stretch before the
+first retained picket can produce a zero position span and a non-finite `scale`;
+avoid such inputs when using the resulting parts for position lookup. With exactly two
+milestones at the route endpoints, creation produces no parts, matching GDAL 3.13.3;
+include an intermediate milestone when using this case. Creation is limited to 100,000
+pickets to bound memory use; increase the step for longer routes. Subline extraction rejects
+duplicate start positions rather than silently mixing routes. With route identifiers, the first
+feature for each identifier is used even if its geometry is missing; a later line does not
+replace it, matching GDAL 3.13.3. Only single-LineString parts contribute to `get-subline`;
+missing geometries are skipped as in GDAL, so validate externally edited parts to avoid gaps.
+Coordinate lookups interpret null scale as zero, as GDAL 3.13.3 does; zero and negative
+scales clamp to the part's first vertex. Position lookups currently copy each part's vertices, and text-to-number conversion tries
+numeric prefixes; repeated lookups and unusually long numeric strings can be expensive.
+
+For repeated queries, open parts once as a Python VectorDataset/Layer or JavaScript Dataset.
+Path, byte and GeoJSON inputs are read/parsed anew on each call. Lookup edge behavior follows
+OGR: positive-infinite scale clamps coordinates to the last vertex and contributes zero
+position offset; null scale is zero. Malformed single-vertex parts can produce OGR's -1
+projection value. Use normally generated parts for meaningful reference positions.
+
+Grouped route failures are reported as per-route warnings; as with ogrlineref,
+creation can succeed with an empty output if every selected route fails.
 
 ## mcp
 

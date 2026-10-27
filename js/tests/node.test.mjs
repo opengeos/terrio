@@ -1717,6 +1717,42 @@ test("vector geometry operations: simplify, segmentize, hulls, swap-xy, set-geom
   assert.throws(() => terrio.simplify(line, -1), /tolerance/);
 });
 
+test("vectorGrid and linear referencing (gdal_grid, ogrlineref)", () => {
+  const pts = (rows, field = "v") => ({
+    type: "FeatureCollection",
+    features: rows.map(([x, y, v]) => ({ type: "Feature", properties: { [field]: v }, geometry: { type: "Point", coordinates: [x, y] } })),
+  });
+  const src = pts([[0.5, 0.5, 1], [1.5, 0.5, 2], [0.5, 1.5, 3], [1.5, 1.5, 4]]);
+  const r = terrio.vectorGrid(src, { algorithm: "nearest", zfield: "v", extent: [0, 0, 2, 2], size: [2, 2] });
+  assert.deepEqual([r.width, r.height], [2, 2]);
+  assert.deepEqual(Array.from(r.readBand(1)), [3, 4, 1, 2]);
+  const count = terrio.vectorGrid(src, { algorithm: "count", radius: 5, zfield: "v", extent: [0, 0, 2, 2], size: [1, 1], ot: "Byte" });
+  assert.equal(count.readBand(1)[0], 4);
+  const idw = terrio.vectorGrid(src, { algorithm: "invdist:power=1", zfield: "v", extent: [0, 0, 2, 2], size: [1, 1] });
+  assert.ok(Math.abs(idw.readBand(1)[0] - 2.5) < 1e-12);
+  assert.throws(() => terrio.vectorGrid(src, { algorithm: "kriging" }));
+  const named = terrio.fromGeoJSON(src, "a");
+  assert.throws(() => terrio.vectorGrid(named, { algorithm: "nearest", layers: ["a", "missing"] }), /missing/);
+  const common = { zfield: "v", extent: [0, 0, 2, 2], size: [2, 2] };
+  const keyword = terrio.vectorGrid(src, { ...common, algorithm: "invdist", minPointsPerQuadrant: 1, maxPoints: 5 });
+  const string = terrio.vectorGrid(src, { ...common, algorithm: "invdist:min_points_per_quadrant=1:max_points=5" });
+  assert.deepEqual([...keyword.readBand(1)], [...string.readBand(1)]);
+  const line = { type: "FeatureCollection", features: [{ type: "Feature", properties: {}, geometry: { type: "LineString", coordinates: [[0, 0], [1000, 0], [1000, 1000]] } }] };
+  const stones = pts([[200, 0, 1200], [1000, 200, 2000], [1000, 700, 2500]], "pos");
+  const projectedLine = terrio.fromGeoJSON(line, undefined, "EPSG:3857");
+  const projectedStones = terrio.fromGeoJSON(stones, undefined, "EPSG:3857");
+  const parts = terrio.linerefCreate(projectedLine, projectedStones, { positionField: "pos", step: 500 });
+  const fc = parts.toGeoJSON();
+  assert.deepEqual(fc.features.map((f) => f.properties.beg), [1000, 1500, 2000, 2500]);
+  assert.ok(Math.abs(terrio.linerefPosition(parts, 100, 0) - (1000 + 100 / 1.15)) < 1e-9);
+  const [[x, y]] = terrio.linerefCoordinates(parts, 2250);
+  assert.ok(Math.abs(x - 1000) < 1e-9 && Math.abs(y - 450) < 1e-9);
+  assert.throws(() => terrio.linerefPosition(parts, 100, 0, {layer: "missing"}), /no layer named/);
+  const sub = terrio.linerefSubline(parts, 1100, 2100, {layerName: "selected"}).toGeoJSON();
+  assert.equal(sub.features.length, 1);
+  assert.ok(Math.abs(sub.features[0].geometry.coordinates[0][0] - 115) < 1e-9);
+});
+
 test("compare, pixelInfo and xyz", () => {
   const values = Float64Array.from({ length: 20 }, (_, i) => i);
   const a = terrio.rasterFromArray(values, 5, 4, [100, 10, 0, 240, 0, -10], "EPSG:32611");

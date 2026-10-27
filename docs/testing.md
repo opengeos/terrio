@@ -205,6 +205,51 @@ the development CLI's peak RSS fell from 125,544 KiB to 101,824 KiB with the sha
 block implementation and streamed TIFF output, measured with two Rayon threads.
 These are fixture measurements, not memory or transfer guarantees for every codec.
 
+### Vector gridding and linear referencing against GDAL
+
+`compare_vector_grid_with_gdal.py` grids Natural Earth's populated places (769 United States
+places, above GDAL's 100-point quadtree threshold, and 89 Peruvian ones, below it), GDAL's
+`gdal_grid` test points (a regular grid, with many equidistant points) and a 4,400-point subset
+of the Autzen lidar (3D) with every algorithm, ellipse, rotation, point limit and per-quadrant
+limit, and every option, and compares every pixel, the type, nodata and geotransform with
+`gdal_grid` (run with `GDAL_USE_AVX=NO GDAL_USE_SSE=NO`, GDAL's double-precision code; one case
+compares its default SIMD code within a tolerance). In a local environment with GDAL 3.13.3: 109
+cases, 102 identical, 5 within tolerance (`linear` on scattered points, 4.7e-9 on populations of
+1e7 and 1.7e-13 on elevations, identical in Float32; the SIMD `invdist`, single precision, up to
+265 on populations) and 2 differing (`linear` on the regular grid off its nodes, 229 of 400 and
+1261 of 2451 pixels, where qhull breaks co-circular ties differently). GDAL 3.12 scans every
+point for a rotated ellipse where 3.13 searches its quadtree: against 3.12.2 a rotated
+`average_distance` also differs, by 1.1e-15.
+
+`compare_lineref_with_gdal.py` runs `ogrlineref` and `terrio lineref` on GDAL's test route and
+milestones (geographic, reprojected to UTM, and as two routes told apart by a field, one drawn
+backwards): the parts feature by feature, the printed positions and coordinates, and sublines
+vertex by vertex. 72 cases: 69 identical, 3 within tolerance (the UTM lengths of a geographic
+route's end parts, including the first-NULL-route case, 1.1e-11 to 3.8e-11, from
+terrio's projection rather than PROJ). NULL middle parts are skipped identically to GDAL.
+
+Linear referencing skips infinite milestone positions with a warning before part generation;
+the GDAL 3.13.3 probe did not terminate within five seconds. NULL begin fields in position
+lookup follow OGR numeric NULL-as-zero semantics. Coordinate/subline selection retains OGR
+filter semantics, so NULL starts are not selected there. A GDAL NaN-scale GeoJSON probe returns
+the final vertex for coordinates and the complete last part for multi-part sublines.
+The core in-memory algorithm retains those results. Terrio's GeoJSON reader rejects bare
+NaN tokens; SQLite/GeoPackage persists NaN as NULL.
+
+A 10,001-point fixture with 10,000 coincident XY positions completes a 2x2 nearest grid with
+a search ellipse in 0.094 seconds (78,364 KiB peak child RSS on this machine). This limited
+probe does not establish bounds for larger duplicate-heavy inputs; quadtree order remains GDAL-compatible.
+
+```sh
+python scripts/compare_vector_grid_with_gdal.py ../terrio-data
+python scripts/compare_lineref_with_gdal.py ../terrio-data
+python scripts/conformance.py ../terrio-data --only vector-grid,lineref
+cargo test -p terrio --lib -- vector_grid lineref
+cargo test -p terrio-cli --test mcp vector_grid
+python -m pytest python/tests/test_vector_grid.py
+node --test --test-name-pattern='vectorGrid' js/tests/node.test.mjs
+```
+
 ## Build size and iteration speed
 
 Development and test builds omit debug symbols by default. Enable full debugger
