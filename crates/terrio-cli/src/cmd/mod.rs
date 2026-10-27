@@ -69,21 +69,32 @@ pub const MAX_FILE_LIST: u64 = 64 << 20;
 /// must be a regular file of at most [`MAX_FILE_LIST`] bytes, so that `@/dev/zero` or a huge file
 /// (named by an MCP client, say) is refused instead of read without end.
 pub fn expand_file_lists(inputs: &[String]) -> terrio::Result<Vec<String>> {
+    use std::io::Read;
     let mut out = Vec::with_capacity(inputs.len());
     for input in inputs {
         let Some(list) = input.strip_prefix('@') else {
             out.push(input.clone());
             continue;
         };
-        let unreadable = |e: &dyn std::fmt::Display| terrio::Error::InvalidArgument(format!("cannot read the file list {list}: {e}"));
-        let meta = std::fs::metadata(list).map_err(|e| unreadable(&e))?;
+        let meta = std::fs::metadata(list).map_err(|e| unreadable(list, e))?;
         if !meta.is_file() {
-            return Err(unreadable(&"not a regular file"));
+            return Err(unreadable(list, "not a regular file"));
         }
         if meta.len() > MAX_FILE_LIST {
-            return Err(unreadable(&format_args!("larger than {} MiB", MAX_FILE_LIST >> 20)));
+            return Err(unreadable(list, format_args!("larger than {} MiB", MAX_FILE_LIST >> 20)));
         }
-        let text = std::fs::read_to_string(list).map_err(|e| unreadable(&e))?;
+        // The size is checked again on the bytes read: the file may have grown since `metadata`,
+        // and a pseudo-file reports a size of 0 while it yields data without end.
+        let mut text = String::new();
+        let read = std::fs::File::open(list).and_then(|f| f.take(MAX_FILE_LIST + 1).read_to_string(&mut text));
+        match read {
+            Err(e) if e.kind() == std::io::ErrorKind::InvalidData => return Err(unreadable(list, "not UTF-8 text (save it as UTF-8)")),
+            Err(e) => return Err(unreadable(list, e)),
+            Ok(_) if text.len() as u64 > MAX_FILE_LIST => {
+                return Err(unreadable(list, format_args!("larger than {} MiB", MAX_FILE_LIST >> 20)));
+            }
+            Ok(_) => {}
+        }
         let before = out.len();
         let text = text.strip_prefix('\u{feff}').unwrap_or(&text);
         out.extend(text.lines().map(str::trim).filter(|l| !l.is_empty()).map(String::from));
@@ -92,6 +103,11 @@ pub fn expand_file_lists(inputs: &[String]) -> terrio::Result<Vec<String>> {
         }
     }
     Ok(out)
+}
+
+/// The error for an `@FILE` input whose list cannot be used, because of `why`.
+fn unreadable(list: &str, why: impl std::fmt::Display) -> terrio::Error {
+    terrio::Error::InvalidArgument(format!("cannot read the file list {list}: {why}"))
 }
 
 /// The input path to open with `driver`: `gdal` (any case) forces the GDAL backend, which needs

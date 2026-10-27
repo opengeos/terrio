@@ -68,22 +68,27 @@ fn vector_concat_reads_inputs_from_a_file_list() {
 }
 
 #[test]
-fn bad_file_lists_are_usage_errors() {
+fn bad_file_lists_are_refused() {
     let tmp = tempfile::tempdir().unwrap();
     let d = tmp.path();
     tile(d, "a.tif", 0., 1.);
     std::fs::write(d.join("empty.txt"), "\n  \n").unwrap();
     std::fs::create_dir(d.join("folder")).unwrap();
+    // A UTF-16 list with its byte-order mark, as Windows PowerShell writes it.
+    let utf16: Vec<u8> = [0xFEFF_u16].into_iter().chain("a.tif\r\n".encode_utf16()).flat_map(u16::to_le_bytes).collect();
+    std::fs::write(d.join("utf16.txt"), utf16).unwrap();
     // Sparse, so the test writes no 64 MiB.
     std::fs::File::create(d.join("huge.txt")).unwrap().set_len((64 << 20) + 1).unwrap();
     for (list, message) in [
         ("@missing.txt", "cannot read the file list missing.txt"),
         ("@empty.txt", "the file list empty.txt names no inputs"),
         ("@folder", "cannot read the file list folder: not a regular file"),
+        ("@utf16.txt", "cannot read the file list utf16.txt: not UTF-8 text (save it as UTF-8)"),
         ("@huge.txt", "cannot read the file list huge.txt: larger than 64 MiB"),
     ] {
         let r = run(&["mosaic", list, "out.tif"], d);
-        assert!(!r.status.success());
+        // A failed command exits with 1; 2 is for usage errors that clap reports.
+        assert_eq!(r.status.code(), Some(1), "{list}");
         let stderr = String::from_utf8_lossy(&r.stderr);
         assert!(stderr.contains(message), "{stderr}");
     }
