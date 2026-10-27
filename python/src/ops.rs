@@ -559,12 +559,12 @@ pub(crate) fn input_layers(py: Python<'_>, src: &Bound<'_, PyAny>, layers: Optio
     match src.extract::<String>() {
         Ok(path) => {
             let options = VectorOpenOptions { layers: layers.unwrap_or_default(), ..Default::default() };
-            py.detach(|| terrio::ops::vector_filter::open_layers(&path, &options)).py()
+            Ok(py.detach(|| terrio::open_vector(&path, &options)).py()?.layers)
         }
         Err(_) => {
             let all = layers_from_object(src, None, None)?;
             Ok(match layers {
-                Some(names) => terrio::ops::vector_filter::select_layers(all, &names).py()?,
+                Some(names) => all.into_iter().filter(|l| names.contains(&l.name)).collect(),
                 None => all,
             })
         }

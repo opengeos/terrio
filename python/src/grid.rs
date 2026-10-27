@@ -1,9 +1,9 @@
 //! Gridding scattered vector points (`terrio vector-grid`, GDAL's `gdal_grid`) and linear
 //! referencing (`terrio lineref`, GDAL's `ogrlineref`).
 
-use crate::ops::{data_type, input_layers, srs, vector_write_options};
+use crate::ops::{data_type, srs, vector_write_options};
 use crate::raster::{PyRaster, write_options};
-use crate::vector::{PyLayer, PyVectorDataset};
+use crate::vector::{PyLayer, PyVectorDataset, layers_from_object};
 use crate::{PyResultExt, invalid};
 use pyo3::prelude::*;
 use terrio::ops::lineref::LineRefOptions;
@@ -19,6 +19,23 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(lineref_coordinates, m)?)?;
     m.add_function(wrap_pyfunction!(lineref_subline, m)?)?;
     Ok(())
+}
+
+/// Opens the layers given to an operation: a path, or layers in memory.
+fn input_layers(py: Python<'_>, src: &Bound<'_, PyAny>, layers: Option<Vec<String>>) -> PyResult<Vec<terrio::Layer>> {
+    match src.extract::<String>() {
+        Ok(path) => {
+            let options = terrio::VectorOpenOptions { layers: layers.unwrap_or_default(), ..Default::default() };
+            py.detach(|| terrio::ops::vector_filter::open_layers(&path, &options)).py()
+        }
+        Err(_) => {
+            let all = layers_from_object(src, None, None)?;
+            Ok(match layers {
+                Some(names) => terrio::ops::vector_filter::select_layers(all, &names).py()?,
+                None => all,
+            })
+        }
+    }
 }
 
 /// Grids scattered vector points into a raster, like `terrio vector-grid` (GDAL's

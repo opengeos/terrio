@@ -170,7 +170,7 @@ def test_lineref(tmp_path):
 
 def test_explicit_empty_layer_selection_is_rejected(tmp_path):
     layer = terrio.Layer.from_geojson(points_geojson([(0, 0, 1), (1, 1, 2)]), name="points")
-    path = str(tmp_path / "points.gpkg")
+    path = str(tmp_path / "points.geojson")
     terrio.write_vector([layer], path)
     for source in [layer, path]:
         with pytest.raises(terrio.InvalidArgumentError, match="at least one layer name"):
@@ -185,3 +185,13 @@ def test_keyword_zero_radius_matches_packed_error():
     ]:
         with pytest.raises(terrio.InvalidArgumentError, match="strictly positive"):
             terrio.vector_grid(source, algorithm=algorithm, **options)
+
+
+def test_existing_sql_layer_selection_remains_permissive(tmp_path):
+    """Strict selection belongs to the new gridding/lineref entry points."""
+    layer = terrio.Layer.from_geojson(points_geojson([(1, 1, 2.0)]), name="points")
+    path = str(tmp_path / "points.geojson")
+    layer.write(path)
+    for source in (layer, path):
+        selected = terrio.sql(source, "SELECT * FROM points", layers=["points", "missing"])
+        assert len(selected) == 1

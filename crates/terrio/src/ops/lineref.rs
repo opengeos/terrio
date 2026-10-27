@@ -688,7 +688,13 @@ pub fn coordinates(parts: &Layer, position: f64) -> Result<Vec<[f64; 3]>> {
         }
         let line = part_line(f.geometry.as_ref())
             .ok_or_else(|| Error::InvalidArgument("a part spanning the position has no single LineString geometry".into()))?;
-        let pt = line.value((position - beg) * as_double(f.attributes.get(s)))?;
+        // OGR GetFieldAsDouble reads a null scale as zero (milestone nulls use
+        // different handling, so do not change the shared conversion helper).
+        let scale = match f.attributes.get(s) {
+            None | Some(FieldValue::Null) => 0.0,
+            value => as_double(value),
+        };
+        let pt = line.value((position - beg) * scale)?;
         out.push([pt.x, pt.y, pt.z]);
     }
     if out.is_empty() {
@@ -825,6 +831,17 @@ mod tests {
         parts.features[0].geometry = None;
         let error = coordinates(&parts, 1250.).unwrap_err();
         assert!(error.to_string().contains("no single LineString"));
+    }
+
+    #[test]
+    fn coordinate_scale_zero_null_and_negative_match_ogr() {
+        let (lines, repers) = layers();
+        let options = LineRefOptions { position_field: "pos".into(), step: 500., ..Default::default() };
+        let mut parts = create_reference(&lines, &repers, &options).unwrap();
+        for scale in [FieldValue::Float(0.0), FieldValue::Null, FieldValue::Float(-1.0)] {
+            parts.features[0].attributes[2] = scale;
+            assert_eq!(coordinates(&parts, 1250.).unwrap(), vec![[0.0, 0.0, 0.0]]);
+        }
     }
 
     #[test]

@@ -238,6 +238,24 @@ def main():
                 except RuntimeError as e:
                     report("get_subline", f"{label} {mb:.6f} to {me:.6f}", "differs", str(e).splitlines()[-1])
             if label == "projected":
+                # OGR reads NULL scale as zero; zero/negative scales clamp to the start.
+                for scale_name, scale_value in [("null", None), ("zero", 0.0), ("negative", -1.0)]:
+                    altered = str(work / f"scale_{scale_name}.gpkg")
+                    shutil.copyfile(gparts, altered)
+                    dataset = ogr.Open(altered, 1)
+                    layer = dataset.GetLayer(0)
+                    for feature in layer:
+                        if scale_value is None:
+                            feature.SetFieldNull("scale")
+                        else:
+                            feature.SetField("scale", scale_value)
+                        layer.SetFeature(feature)
+                    dataset = None
+                    m = (begs[0] + ends[0]) / 2
+                    g = run(["ogrlineref", "-quiet", "-get_coord", "-r", altered, "-m", repr(m)]).strip()
+                    t = run([args.terrio, "lineref", "get-coord", "--parts", altered, "-m", repr(m)]).strip()
+                    report("get_coord", f"{label} scale {scale_name}", "identical" if g == t else "differs", t if g == t else f"{t}, GDAL {g}")
+            if label == "projected":
                 # Preserve GDAL's skip behavior, including any gap in the selected parts.
                 malformed = str(work / "missing_middle.gpkg")
                 source = ogr.Open(gparts)

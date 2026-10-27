@@ -942,8 +942,8 @@ its work grows with cells times points. Output allocation is bounded, but runtim
 is not bounded by a separate work budget. Use a smaller grid or an appropriate
 search radius for large inputs.
 
-`average-distance-points` evaluates every pair in each node’s search neighborhood;
-work is quadratic in that neighborhood’s point count. Limit the search radius for
+`average-distance-points` evaluates every pair in each node's search neighborhood;
+work is quadratic in that neighborhood's point count. Limit the search radius for
 dense inputs.
 
 The algorithms are ported from GDAL 3.13's `gdalgrid.cpp`: the search ellipse and its
@@ -1014,7 +1014,8 @@ duplicate start positions rather than silently mixing routes. With route identif
 feature for each identifier is used even if its geometry is missing; a later line does not
 replace it, matching GDAL 3.13.3. Only single-LineString parts contribute to `get-subline`;
 missing geometries are skipped as in GDAL, so validate externally edited parts to avoid gaps.
-Position lookups currently copy each part's vertices, and text-to-number conversion tries
+Coordinate lookups interpret null scale as zero, as GDAL 3.13.3 does; zero and negative
+scales clamp to the part's first vertex. Position lookups currently copy each part's vertices, and text-to-number conversion tries
 numeric prefixes; repeated lookups and unusually long numeric strings can be expensive.
 
 ## mcp
