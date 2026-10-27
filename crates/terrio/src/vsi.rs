@@ -22,6 +22,9 @@
 //! archive or HTTP locations are refused. Recursive deletion never follows symbolic links (it
 //! deletes the links), and deletes on object stores only the keys below `prefix/` (never those of
 //! a sibling such as `prefix2/`).
+//! Recursive copies refuse destination symlinks that escape the destination tree, for both
+//! archive and ordinary sources. Same-device directory renames do not walk the tree and
+//! report zero copied files/bytes, since no file payloads were copied.
 
 pub(crate) mod listing;
 mod md5;
@@ -1002,8 +1005,7 @@ impl Drop for HtmlCacheScope {
 
 // --- Reading and writing files ----------------------------------------------------------------
 
-/// Copies a file's bytes into `out`.
-/// Byte operations do not open pipes, sockets or devices as ordinary files.
+/// Refuses local pipes, sockets and devices before byte operations open them.
 fn check_regular_source(node: &Node) -> Result<()> {
     if let Node::Local(path) = node
         && !std::fs::metadata(path)?.is_file()
@@ -1013,6 +1015,7 @@ fn check_regular_source(node: &Node) -> Result<()> {
     Ok(())
 }
 
+/// Copies a file's bytes into `out`.
 fn read_into(node: &Node, out: &mut dyn Write) -> Result<u64> {
     check_regular_source(node)?;
     match node {
@@ -1533,13 +1536,13 @@ fn checked_child_target(root: &Node, name: &str, portable: bool) -> Result<Node>
             match std::fs::symlink_metadata(existing) {
                 Ok(_) => break,
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                    existing = existing.parent().ok_or_else(|| Error::InvalidArgument("archive target has no existing parent".into()))?;
+                    existing = existing.parent().ok_or_else(|| Error::InvalidArgument("copy target has no existing parent".into()))?;
                 }
                 Err(e) => return Err(e.into()),
             }
         }
         if !std::fs::canonicalize(existing)?.starts_with(root) {
-            return Err(Error::InvalidArgument("archive target escapes its output directory through a symbolic link".into()));
+            return Err(Error::InvalidArgument("copy target escapes its output directory through a symbolic link".into()));
         }
     }
     Ok(target)
@@ -1742,7 +1745,7 @@ fn copy_tree(src: &Node, dst: &Node, skip_errors: bool, sync: Option<&SyncOption
     for e in &entries {
         let from = src.join(&e.name);
         if let Node::Local(path) = &from
-            && std::fs::symlink_metadata(path)?.file_type().is_symlink()
+            && std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink())
             && e.is_dir()
         {
             let message = "recursive copy of a directory symlink is unsupported";

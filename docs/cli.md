@@ -1547,3 +1547,9 @@ rejected before creating the file, avoiding a half-pixel origin shift without
 a corresponding raster-type GeoKey.
 
 Remote listings limit each HTML index to 4 MiB and each object-store XML page to 16 MiB; larger pages fail explicitly.
+
+Recursive copy destinations must remain within their destination tree, including ordinary
+local copies: directory symlinks that escape it are refused. Same-device directory moves
+rename the directory without copying payloads and report zero copied files/bytes.
+Plain HTTP source discovery currently probes the directory-index URL before the file
+range request; a file can therefore cost an extra GET, usually a 404.
