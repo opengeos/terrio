@@ -67,7 +67,11 @@ pub const MAX_FILE_LIST: u64 = 64 << 20;
 /// commands read `--input @filelist.txt`. Lines are trimmed and blank lines skipped; listed paths
 /// are taken as written (relative ones from the working directory), not expanded again. A list
 /// must be a regular file of at most [`MAX_FILE_LIST`] bytes, so that `@/dev/zero` or a huge file
-/// (named by an MCP client, say) is refused instead of read without end.
+/// is refused instead of read without end.
+///
+/// MCP tool calls (`TERRIO_MCP_TOOL` set) refuse lists before touching the file: errors name the
+/// inputs that fail to open, so a client could otherwise read any text file back line by line.
+/// They pass their inputs as an array instead.
 pub fn expand_file_lists(inputs: &[String]) -> terrio::Result<Vec<String>> {
     use std::io::Read;
     let mut out = Vec::with_capacity(inputs.len());
@@ -76,6 +80,12 @@ pub fn expand_file_lists(inputs: &[String]) -> terrio::Result<Vec<String>> {
             out.push(input.clone());
             continue;
         };
+        if std::env::var_os("TERRIO_MCP_TOOL").is_some() {
+            return Err(terrio::Error::InvalidArgument(
+                "@FILE lists are not read in MCP tool calls: pass each input as an argument (name a file beginning with @ as ./@name)"
+                    .into(),
+            ));
+        }
         let meta = std::fs::metadata(list).map_err(|e| unreadable(list, e))?;
         if !meta.is_file() {
             return Err(unreadable(list, "not a regular file"));

@@ -427,3 +427,23 @@ fn compare_and_pixel_info_report_results_rather_than_failures() {
     assert!(replies[&3]["result"]["content"][0]["text"].as_str().unwrap().contains("Value: 3"));
     assert_eq!(replies[&4]["result"]["isError"], true);
 }
+
+#[test]
+fn file_lists_are_refused_without_reading_the_file() {
+    let tmp = tempfile::tempdir().unwrap();
+    // A list naming a path that does not exist: its contents would appear in the open error.
+    let list = tmp.path().join("secret.txt");
+    std::fs::write(&list, "line-that-must-not-leak\n").unwrap();
+    let list = format!("@{}", list.display());
+    let out = tmp.path().join("out.tif");
+    let replies = session(&[
+        json!({"jsonrpc": "2.0", "id": 0, "method": "initialize", "params": {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "test", "version": "0"}}}),
+        json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),
+        call(1, "mosaic", &[&list, out.to_str().unwrap()]),
+    ]);
+    let result = &replies[&1]["result"];
+    assert_eq!(result["isError"], true);
+    let text = result["content"][0]["text"].as_str().unwrap();
+    assert!(text.contains("@FILE lists are not read in MCP tool calls"), "{text}");
+    assert!(!text.contains("line-that-must-not-leak"), "{text}");
+}

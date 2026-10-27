@@ -12,7 +12,8 @@
 
 - `mosaic`, `warp`, `concat` and `filter merge` read inputs from a file list:
   `@FILE` stands for the paths listed in FILE, one per line, as GDAL's
-  `--input @filelist.txt` does (#323).
+  `--input @filelist.txt` does (#323). MCP tool calls refuse `@FILE`, so that a
+  client cannot read a file back through the errors naming its lines.
 
 ### CRS compatibility
 
