@@ -446,6 +446,22 @@ def xyz_cases(data, work, terrio):
         g, t = Path(gout).read_bytes(), Path(tout).read_bytes()
         results.append({"operation": "xyz", "name": "xyz skip 3", "status": "identical" if g == t else "differs",
                         "detail": f"{g.count(NL)} lines" if g == t else f"{g[:120]!r} vs {t[:120]!r}"})
+    # Real DEM samples, exposed as mixed band types with unrepresentable integer nodata.
+    mixed = str(work / "mixed_nonfinite_nodata.vrt")
+    dataset = gdal.BuildVRT(mixed, [i32, small], separate=True)
+    dataset.GetRasterBand(1).SetNoDataValue(0)
+    dataset.GetRasterBand(2).SetNoDataValue(float("nan"))
+    dataset = None
+    gout, tout = work / "g_mixed_nodata.xyz", work / "t_mixed_nodata.xyz"
+    gc, _, ge = run([sys.executable, "-m", "osgeo_utils.gdal2xyz", "-allbands", "-skipnodata", mixed, gout])
+    tc, _, te = run([terrio, "xyz", mixed, tout, "--allbands", "--skipnodata"])
+    rejected = (gc != 0 and tc != 0 and "cannot convert float NaN to integer" in ge
+                and "non-finite source nodata" in te
+                and (not gout.exists() or gout.stat().st_size == 0)
+                and (not tout.exists() or tout.stat().st_size == 0))
+    results.append({"operation": "xyz", "name": "xyz mixed nonfinite integer nodata refused",
+                    "status": "identical" if rejected else "differs",
+                    "detail": "both reject non-finite integer nodata without writing sample data" if rejected else f"GDAL {gc}: {ge[-200:]}; Terrio {tc}: {te[-200:]}"})
     return results
 
 

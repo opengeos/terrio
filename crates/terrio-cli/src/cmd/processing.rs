@@ -32,7 +32,7 @@ pub struct VectorOutput {
     #[arg(short = 'f', long = "format")]
     pub(crate) format: Option<String>,
     /// The output layer name (requires a single input layer).
-    #[arg(long, value_name = "NAME")]
+    #[arg(long, visible_alias = "output-layer", value_name = "NAME")]
     pub(crate) nln: Option<String>,
     /// Append features to layers of the same name in an existing GeoPackage.
     #[arg(long, conflicts_with = "overwrite")]
@@ -43,6 +43,11 @@ pub struct VectorOutput {
 }
 
 impl VectorOutput {
+    /// An output without a layer name.
+    pub(crate) fn new(output: &str, format: Option<String>, append: bool, overwrite: bool) -> Self {
+        Self { output: output.to_string(), format, nln: None, append, overwrite }
+    }
+
     pub(crate) fn write(&self, mut layers: Vec<Layer>) -> Result<()> {
         if let Some(name) = &self.nln {
             if layers.len() != 1 {

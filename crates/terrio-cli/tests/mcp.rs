@@ -74,6 +74,25 @@ fn topology_tools_are_discoverable_and_execute_the_cli() {
 }
 
 #[test]
+fn vector_dataset_tools_are_discoverable_and_execute() {
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("points.geojson");
+    let output = dir.path().join("schema.json");
+    std::fs::write(&input, r#"{"type":"FeatureCollection","features":[{"type":"Feature","properties":{"name":"site"},"geometry":{"type":"Point","coordinates":[0,0]}}]}"#).unwrap();
+    let replies = session(&[
+        json!({"jsonrpc":"2.0","id":1,"method":"tools/list"}),
+        call(2, "export-schema", &[input.to_str().unwrap(), "-o", output.to_str().unwrap()]),
+    ]);
+    let tools = replies[&1]["result"]["tools"].as_array().unwrap();
+    for name in ["concat", "partition", "set-field-type", "make-point", "create", "export-schema"] {
+        assert!(tools.iter().any(|t| t["name"] == name), "missing {name}");
+    }
+    assert_eq!(replies[&2]["result"]["isError"], false);
+    let schema: Value = serde_json::from_str(&std::fs::read_to_string(&output).unwrap()).unwrap();
+    assert_eq!(schema["layers"][0]["fields"][0]["name"], "name");
+}
+
+#[test]
 fn viewshed_tool_writes_height_raster() {
     let dir = tempfile::tempdir().unwrap();
     let input = dir.path().join("ridge.tif");

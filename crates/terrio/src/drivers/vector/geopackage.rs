@@ -67,12 +67,12 @@ pub(super) const OGR_CONTENTS_SQL: &str =
 pub(super) const EXTENSIONS_SQL: &str = "CREATE TABLE gpkg_extensions (table_name TEXT,column_name TEXT,extension_name TEXT NOT NULL,definition TEXT NOT NULL,scope TEXT NOT NULL,CONSTRAINT ge_tce UNIQUE (table_name, column_name, extension_name))";
 const TILE_MATRIX_SET_SQL: &str = "CREATE TABLE gpkg_tile_matrix_set (table_name TEXT NOT NULL PRIMARY KEY,srs_id INTEGER NOT NULL,min_x DOUBLE NOT NULL,min_y DOUBLE NOT NULL,max_x DOUBLE NOT NULL,max_y DOUBLE NOT NULL,CONSTRAINT fk_gtms_table_name FOREIGN KEY (table_name) REFERENCES gpkg_contents(table_name),CONSTRAINT fk_gtms_srs FOREIGN KEY (srs_id) REFERENCES gpkg_spatial_ref_sys (srs_id))";
 const TILE_MATRIX_SQL: &str = "CREATE TABLE gpkg_tile_matrix (table_name TEXT NOT NULL,zoom_level INTEGER NOT NULL,matrix_width INTEGER NOT NULL,matrix_height INTEGER NOT NULL,tile_width INTEGER NOT NULL,tile_height INTEGER NOT NULL,pixel_x_size DOUBLE NOT NULL,pixel_y_size DOUBLE NOT NULL,CONSTRAINT pk_ttm PRIMARY KEY (table_name, zoom_level),CONSTRAINT fk_tmm_table_name FOREIGN KEY (table_name) REFERENCES gpkg_contents(table_name))";
-const METADATA_SQL: &str = "CREATE TABLE gpkg_metadata (id INTEGER CONSTRAINT m_pk PRIMARY KEY ASC NOT NULL,md_scope TEXT NOT NULL DEFAULT 'dataset',md_standard_uri TEXT NOT NULL,mime_type TEXT NOT NULL DEFAULT 'text/xml',metadata TEXT NOT NULL DEFAULT '')";
-const METADATA_REFERENCE_SQL: &str = "CREATE TABLE gpkg_metadata_reference (reference_scope TEXT NOT NULL,table_name TEXT,column_name TEXT,row_id_value INTEGER,timestamp DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),md_file_id INTEGER NOT NULL,md_parent_id INTEGER,CONSTRAINT crmr_mfi_fk FOREIGN KEY (md_file_id) REFERENCES gpkg_metadata(id),CONSTRAINT crmr_mpi_fk FOREIGN KEY (md_parent_id) REFERENCES gpkg_metadata(id))";
+pub(super) const METADATA_SQL: &str = "CREATE TABLE gpkg_metadata (id INTEGER CONSTRAINT m_pk PRIMARY KEY ASC NOT NULL,md_scope TEXT NOT NULL DEFAULT 'dataset',md_standard_uri TEXT NOT NULL,mime_type TEXT NOT NULL DEFAULT 'text/xml',metadata TEXT NOT NULL DEFAULT '')";
+pub(super) const METADATA_REFERENCE_SQL: &str = "CREATE TABLE gpkg_metadata_reference (reference_scope TEXT NOT NULL,table_name TEXT,column_name TEXT,row_id_value INTEGER,timestamp DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),md_file_id INTEGER NOT NULL,md_parent_id INTEGER,CONSTRAINT crmr_mfi_fk FOREIGN KEY (md_file_id) REFERENCES gpkg_metadata(id),CONSTRAINT crmr_mpi_fk FOREIGN KEY (md_parent_id) REFERENCES gpkg_metadata(id))";
 const COVERAGE_SQL: &str = "CREATE TABLE gpkg_2d_gridded_coverage_ancillary (id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,tile_matrix_set_name TEXT NOT NULL UNIQUE,datatype TEXT NOT NULL DEFAULT 'integer',scale REAL NOT NULL DEFAULT 1.0,offset REAL NOT NULL DEFAULT 0.0,precision REAL DEFAULT 1.0,data_null REAL,grid_cell_encoding TEXT DEFAULT 'grid-value-is-center',uom TEXT,field_name TEXT DEFAULT 'Height',quantity_definition TEXT DEFAULT 'Height',CONSTRAINT fk_g2dgtct_name FOREIGN KEY(tile_matrix_set_name) REFERENCES gpkg_tile_matrix_set ( table_name ) CHECK (datatype in ('integer','float')))";
 const TILE_ANCILLARY_SQL: &str = "CREATE TABLE gpkg_2d_gridded_tile_ancillary (id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,tpudt_name TEXT NOT NULL,tpudt_id INTEGER NOT NULL,scale REAL NOT NULL DEFAULT 1.0,offset REAL NOT NULL DEFAULT 0.0,min REAL DEFAULT NULL,max REAL DEFAULT NULL,mean REAL DEFAULT NULL,std_dev REAL DEFAULT NULL,CONSTRAINT fk_g2dgtat_name FOREIGN KEY (tpudt_name) REFERENCES gpkg_contents(table_name),UNIQUE (tpudt_name, tpudt_id))";
 const COVERAGE_EXTENSION: &str = "http://docs.opengeospatial.org/is/17-066r1/17-066r1.html";
-const METADATA_EXTENSION: &str = "http://www.geopackage.org/spec120/#extension_metadata";
+pub(super) const METADATA_EXTENSION: &str = "http://www.geopackage.org/spec120/#extension_metadata";
 
 /// The triggers that keep `gpkg_tile_matrix` valid, as GDAL creates them.
 fn tile_matrix_triggers() -> Vec<SchemaObject> {
@@ -293,12 +293,38 @@ impl Rtree {
     }
 }
 
+/// The triggers that keep a layer's `gpkg_ogr_contents` feature count, as GDAL creates them.
+pub(super) fn feature_count_triggers(name: &str) -> Vec<SchemaObject> {
+    let mut objects = Vec::new();
+    let lower = name.replace('\'', "''");
+    for (op, sign) in [("insert", "+"), ("delete", "-")] {
+        let trigger = format!("trigger_{op}_feature_count_{name}");
+        let when = if op == "insert" { "INSERT" } else { "DELETE" };
+        objects.push(SchemaObject {
+                kind: "trigger",
+                sql: format!(
+                    "CREATE TRIGGER {} AFTER {when} ON {} BEGIN UPDATE gpkg_ogr_contents SET feature_count = feature_count {sign} 1 WHERE lower(table_name) = lower('{lower}'); END",
+                    quote(&trigger),
+                    quote(name)
+                ),
+                name: trigger,
+                table: name.into(),
+            });
+    }
+    objects
+}
+
 /// The R-tree index of a feature table's geometry column, as GDAL creates it: the packed tree,
 /// the names and statements of its shadow tables (`_rowid`, `_node` and `_parent`, whose rows
 /// the tree gives), and the virtual table and the triggers that keep it up to date.
-fn rtree_index(table: &str, column: &str, entries: Vec<RtreeEntry>) -> (Rtree, [(String, String); 3], Vec<SchemaObject>) {
+pub(super) fn rtree_index(
+    table: &str,
+    column: &str,
+    fid: &str,
+    entries: Vec<RtreeEntry>,
+) -> (Rtree, [(String, String); 3], Vec<SchemaObject>) {
     let rt = format!("rtree_{table}_{column}");
-    let (t, c, r) = (quote(table), quote(column), quote(&rt));
+    let (t, c, r, f) = (quote(table), quote(column), quote(&rt), quote(fid));
     let shadow = |suffix: &str, columns: &str| {
         let name = format!("{rt}_{suffix}");
         let sql = format!("CREATE TABLE {}({columns})", quote(&name));
@@ -315,43 +341,43 @@ fn rtree_index(table: &str, column: &str, entries: Vec<RtreeEntry>) -> (Rtree, [
         (
             "insert",
             format!(
-                "AFTER INSERT ON {t} WHEN (new.{c} NOT NULL AND NOT ST_IsEmpty(NEW.{c})) BEGIN INSERT OR REPLACE INTO {r} VALUES (NEW.\"fid\",{}); END",
+                "AFTER INSERT ON {t} WHEN (new.{c} NOT NULL AND NOT ST_IsEmpty(NEW.{c})) BEGIN INSERT OR REPLACE INTO {r} VALUES (NEW.{f},{}); END",
                 bounds(&new)
             ),
         ),
         (
             "update6",
             format!(
-                "AFTER UPDATE OF {c} ON {t} WHEN OLD.\"fid\" = NEW.\"fid\" AND (NEW.{c} NOTNULL AND NOT ST_IsEmpty(NEW.{c})) AND (OLD.{c} NOTNULL AND NOT ST_IsEmpty(OLD.{c})) BEGIN UPDATE {r} SET minx = ST_MinX({new}), maxx = ST_MaxX({new}),miny = ST_MinY({new}), maxy = ST_MaxY({new}) WHERE id = NEW.\"fid\";END"
+                "AFTER UPDATE OF {c} ON {t} WHEN OLD.{f} = NEW.{f} AND (NEW.{c} NOTNULL AND NOT ST_IsEmpty(NEW.{c})) AND (OLD.{c} NOTNULL AND NOT ST_IsEmpty(OLD.{c})) BEGIN UPDATE {r} SET minx = ST_MinX({new}), maxx = ST_MaxX({new}),miny = ST_MinY({new}), maxy = ST_MaxY({new}) WHERE id = NEW.{f};END"
             ),
         ),
         (
             "update7",
             format!(
-                "AFTER UPDATE OF {c} ON {t} WHEN OLD.\"fid\" = NEW.\"fid\" AND (NEW.{c} NOTNULL AND NOT ST_IsEmpty(NEW.{c})) AND (OLD.{c} ISNULL OR ST_IsEmpty(OLD.{c})) BEGIN INSERT INTO {r} VALUES (NEW.\"fid\",{}); END",
+                "AFTER UPDATE OF {c} ON {t} WHEN OLD.{f} = NEW.{f} AND (NEW.{c} NOTNULL AND NOT ST_IsEmpty(NEW.{c})) AND (OLD.{c} ISNULL OR ST_IsEmpty(OLD.{c})) BEGIN INSERT INTO {r} VALUES (NEW.{f},{}); END",
                 bounds(&new)
             ),
         ),
         (
             "update2",
             format!(
-                "AFTER UPDATE OF {c} ON {t} WHEN OLD.\"fid\" = NEW.\"fid\" AND (NEW.{c} ISNULL OR ST_IsEmpty(NEW.{c})) BEGIN DELETE FROM {r} WHERE id = OLD.\"fid\"; END"
+                "AFTER UPDATE OF {c} ON {t} WHEN OLD.{f} = NEW.{f} AND (NEW.{c} ISNULL OR ST_IsEmpty(NEW.{c})) BEGIN DELETE FROM {r} WHERE id = OLD.{f}; END"
             ),
         ),
         (
             "update5",
             format!(
-                "AFTER UPDATE ON {t} WHEN OLD.\"fid\" != NEW.\"fid\" AND (NEW.{c} NOTNULL AND NOT ST_IsEmpty(NEW.{c})) BEGIN DELETE FROM {r} WHERE id = OLD.\"fid\"; INSERT OR REPLACE INTO {r} VALUES (NEW.\"fid\",{}); END",
+                "AFTER UPDATE ON {t} WHEN OLD.{f} != NEW.{f} AND (NEW.{c} NOTNULL AND NOT ST_IsEmpty(NEW.{c})) BEGIN DELETE FROM {r} WHERE id = OLD.{f}; INSERT OR REPLACE INTO {r} VALUES (NEW.{f},{}); END",
                 bounds(&new)
             ),
         ),
         (
             "update4",
             format!(
-                "AFTER UPDATE ON {t} WHEN OLD.\"fid\" != NEW.\"fid\" AND (NEW.{c} ISNULL OR ST_IsEmpty(NEW.{c})) BEGIN DELETE FROM {r} WHERE id IN (OLD.\"fid\", NEW.\"fid\"); END"
+                "AFTER UPDATE ON {t} WHEN OLD.{f} != NEW.{f} AND (NEW.{c} ISNULL OR ST_IsEmpty(NEW.{c})) BEGIN DELETE FROM {r} WHERE id IN (OLD.{f}, NEW.{f}); END"
             ),
         ),
-        ("delete", format!("AFTER DELETE ON {t} WHEN old.{c} NOT NULL BEGIN DELETE FROM {r} WHERE id = OLD.\"fid\"; END")),
+        ("delete", format!("AFTER DELETE ON {t} WHEN old.{c} NOT NULL BEGIN DELETE FROM {r} WHERE id = OLD.{f}; END")),
     ];
     let mut objects = vec![SchemaObject {
         kind: "table",
@@ -456,6 +482,8 @@ pub(crate) struct Builder {
     sequence: Vec<(String, i64)>,
     names: Vec<String>,
     custom_srs: i64,
+    /// The name of the feature id column of the layers added.
+    fid_column: String,
 }
 
 impl Default for Builder {
@@ -511,7 +539,13 @@ impl Builder {
             sequence: Vec::new(),
             names: Vec::new(),
             custom_srs: 100000,
+            fid_column: "fid".into(),
         }
+    }
+
+    /// Names the feature id column of the layers added from now on (`fid` by default).
+    pub(crate) fn set_fid_column(&mut self, name: &str) {
+        self.fid_column = name.to_string();
     }
 
     /// Reserves a table name (case-insensitively unique).
@@ -595,13 +629,14 @@ impl Builder {
         let has_z = layer.features.iter().filter_map(|f| f.geometry.as_ref()).any(crate::vector::geometry_has_z);
         // Columns: a field named fid holding unique integers gives the feature ids, as in GDAL.
         let fields = layer.schema.fields();
-        let fid_field = fields.iter().position(|f| f.name.eq_ignore_ascii_case("fid") && f.field_type == FieldType::Integer).filter(|&i| {
-            let mut ids: Vec<i64> = layer.features.iter().filter_map(|f| f.attributes.get(i)?.as_i64()).collect();
-            let n = ids.len();
-            ids.sort_unstable();
-            ids.dedup();
-            n == layer.len() && ids.len() == n
-        });
+        let fid_field =
+            fields.iter().position(|f| f.name.eq_ignore_ascii_case(&self.fid_column) && f.field_type == FieldType::Integer).filter(|&i| {
+                let mut ids: Vec<i64> = layer.features.iter().filter_map(|f| f.attributes.get(i)?.as_i64()).collect();
+                let n = ids.len();
+                ids.sort_unstable();
+                ids.dedup();
+                n == layer.len() && ids.len() == n
+            });
         let small = |i: usize| layer.features.iter().filter_map(|ft| ft.attributes.get(i)?.as_i64()).all(|v| i32::try_from(v).is_ok());
         let cols = self.layer_columns(layer, all_none, declared, has_z, fid_field, small);
 
@@ -638,9 +673,10 @@ impl Builder {
         let srs_id = if spatial { self.srs_id(&s, super::trusted_epsg(layer), super::output_wkt(layer)) } else { 0 };
         let type_name = declared.map_or("GEOMETRY".to_string(), |t| t.as_str().to_ascii_uppercase());
         let fields = layer.schema.fields();
-        let mut col_names: Vec<String> = vec!["fid".into()];
+        let mut col_names: Vec<String> = vec![self.fid_column.clone()];
         let mut kept = Vec::new();
-        let mut sql = format!("CREATE TABLE {} ( \"fid\" INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL", quote(&layer.name));
+        let mut sql =
+            format!("CREATE TABLE {} ( {} INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL", quote(&layer.name), quote(&self.fid_column));
         if spatial {
             col_names.push("geom".into());
             sql.push_str(&format!(", \"geom\" {type_name}"));
@@ -717,28 +753,14 @@ impl Builder {
             ]);
         }
         self.ogr_contents.push(vec![Value::Text(name.into()), Value::Int(count as i64)]);
-        let lower = name.replace('\'', "''");
-        for (op, sign) in [("insert", "+"), ("delete", "-")] {
-            let trigger = format!("trigger_{op}_feature_count_{name}");
-            let when = if op == "insert" { "INSERT" } else { "DELETE" };
-            self.objects.push(SchemaObject {
-                kind: "trigger",
-                sql: format!(
-                    "CREATE TRIGGER {} AFTER {when} ON {} BEGIN UPDATE gpkg_ogr_contents SET feature_count = feature_count {sign} 1 WHERE lower(table_name) = lower('{lower}'); END",
-                    quote(&trigger),
-                    quote(name)
-                ),
-                name: trigger,
-                table: name.into(),
-            });
-        }
+        self.objects.extend(feature_count_triggers(name));
         self.sequence.push((name.into(), max_fid));
         match table {
             LayerTable::Rows(t) => self.tables.push(t),
             LayerTable::Built(b) => self.built.push((self.tables.len(), b)),
         }
         if spatial {
-            let (tree, rtree_tables, rtree_objects) = rtree_index(name, "geom", extent.entries);
+            let (tree, rtree_tables, rtree_objects) = rtree_index(name, "geom", &self.fid_column, extent.entries);
             self.extension(
                 Some(name),
                 Some("geom"),
@@ -989,6 +1011,17 @@ pub(crate) struct LayerParts {
     pub tables: Vec<Table>,
     pub objects: Vec<SchemaObject>,
     pub sequence: Vec<(String, i64)>,
+}
+
+/// Writes layers as a GeoPackage whose feature id columns are named `fid_column`.
+pub(crate) fn write_with_fid(layers: &[Layer], path: &str, fid_column: &str) -> Result<()> {
+    let mut b = Builder::new();
+    b.set_fid_column(fid_column);
+    for layer in layers {
+        b.add_layer(layer)?;
+    }
+    std::fs::write(path, b.finish()?)?;
+    Ok(())
 }
 
 /// Encodes layers as a GeoPackage file.

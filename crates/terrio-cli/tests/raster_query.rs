@@ -70,6 +70,14 @@ fn pixel_info_reads_positions_from_arguments_and_standard_input() {
     let (_, out, _) = terrio(&["pixel-info", &a, "1", "1", "-r", "bilinear"], None);
     let g: serde_json::Value = serde_json::from_str(&out).unwrap();
     assert_eq!(g["features"][0]["properties"]["bands"][0]["raw_value"], 2.5);
+    let output = Command::new(env!("CARGO_BIN_EXE_terrio"))
+        .args(["pixel-info", "-f", "value", &a, "0.5", "0.5", "-o", "-"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert_eq!(output.stdout, b"0\n");
+    assert!(!dir.path().join("-").exists());
     let layer = dir.path().join("out.gpkg");
     let (code, _, err) = terrio(&["pixel-info", &a, "1.5", "0.5", "-o", layer.to_str().unwrap()], None);
     assert_eq!(code, 0, "{err}");

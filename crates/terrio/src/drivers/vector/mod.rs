@@ -14,6 +14,8 @@ pub mod geopackage;
 pub mod geoparquet;
 pub mod gml;
 #[cfg(feature = "sqlite")]
+pub(crate) mod gpkg_edit;
+#[cfg(feature = "sqlite")]
 pub(crate) mod gpkg_inplace;
 #[cfg(feature = "sqlite")]
 pub(crate) mod gpkg_read;

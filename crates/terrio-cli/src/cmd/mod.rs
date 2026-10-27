@@ -28,6 +28,7 @@ pub mod rasterize;
 pub mod rasterout;
 pub mod sieve;
 pub mod translate;
+pub mod vector_dataset;
 pub mod vector_geom;
 pub mod vector_opts;
 pub mod viewshed;

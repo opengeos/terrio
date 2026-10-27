@@ -139,6 +139,11 @@ pub fn run(a: Args) -> Result<()> {
                     "unknown output format '{other}': use geojson, csv, text, value or json (other vector formats need --output)"
                 )));
             };
+            if path == "-" {
+                return Err(Error::InvalidArgument(
+                    "vector output on standard output is not supported; choose a text format or a file path".into(),
+                ));
+            }
             let driver = if other == "vector" {
                 None
             } else {
@@ -156,8 +161,8 @@ pub fn run(a: Args) -> Result<()> {
         }
     };
     match &a.output {
-        Some(path) => std::fs::write(path, text)?,
-        None => {
+        Some(path) if path != "-" => std::fs::write(path, text)?,
+        _ => {
             use std::io::Write;
             std::io::stdout().lock().write_all(text.as_bytes())?;
         }

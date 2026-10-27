@@ -846,9 +846,12 @@ impl PixelInfo {
     pub fn to_geojson_string(&self) -> String {
         let (value, marker) = self.to_geojson_marked();
         let mut text = serde_json::to_string_pretty(&value).expect("JSON values serialize");
-        for token in NON_FINITE {
-            let stand_in = serde_json::to_string(&format!("{marker}{token}")).expect("strings serialize");
-            text = text.replace(&stand_in, token);
+        let encoded = serde_json::to_string(&marker).expect("strings serialize");
+        if text.contains(&encoded[..encoded.len() - 1]) {
+            for token in NON_FINITE {
+                let stand_in = serde_json::to_string(&format!("{marker}{token}")).expect("strings serialize");
+                text = text.replace(&stand_in, token);
+            }
         }
         text
     }
@@ -856,14 +859,21 @@ impl PixelInfo {
     /// GeoJSON with a collision-free string marker for nonfinite numeric values.
     /// Consumers may decode only strings beginning with the returned marker.
     pub fn to_geojson_marked(&self) -> (Value, String) {
-        // Choose a marker absent from all serialized input strings, including field names.
-        // Only numeric placeholders carry it, so arbitrary user strings remain quoted.
-        let original = serde_json::to_string(&self.to_geojson()).expect("JSON values serialize");
+        // Inspect user strings directly, without first building/serializing the collection.
+        let mut strings: Vec<&str> = self.fields.iter().map(|field| field.name.as_str()).collect();
+        strings.extend(self.geojson_crs.iter().map(String::as_str));
+        for location in &self.locations {
+            strings.extend(location.extra.iter().map(String::as_str));
+            for attribute in &location.attributes {
+                if let FieldValue::Text(value) | FieldValue::Date(value) | FieldValue::DateTime(value) = attribute {
+                    strings.push(value.as_str());
+                }
+            }
+        }
         let mut counter = 0usize;
         let marker = loop {
-            let candidate = format!("\0terrio-nonfinite-{}-{counter}:", original.len());
-            let encoded = serde_json::to_string(&candidate).expect("strings serialize");
-            if !original.contains(&encoded[1..encoded.len() - 1]) {
+            let candidate = format!("\0terrio-nonfinite-{counter}:");
+            if strings.iter().all(|value| !value.contains(&candidate)) {
                 break candidate;
             }
             counter += 1;
@@ -977,6 +987,7 @@ impl PixelInfo {
     /// The locations as a layer of points (GDAL 3.13's vector output): the layer's fields or
     /// `extra_content`, `column`, `line` and `band_N_raw_value`, `band_N_unscaled_value`, with
     /// points at [`Location::output_xy`] in [`PixelInfo::output_crs`].
+    /// Returns an error when a copied field collides with a computed output column.
     pub fn to_layer(&self, name: &str) -> Result<Layer> {
         let mut names = std::collections::BTreeSet::new();
         for name in ["column".to_string(), "line".to_string()]
@@ -1187,12 +1198,14 @@ mod tests {
     #[test]
     fn non_finite_marker_does_not_rewrite_user_strings() {
         let mut raster = raster(2, 2, None);
-        let mut position = Position::new(0.5, 0.5);
-        position.extra = Some("\0NaN".into());
-        let info = pixel_info(&mut raster, &[position], &Default::default()).unwrap();
-        let text = info.to_geojson_string();
-        let parsed: Value = serde_json::from_str(&text).unwrap();
-        assert_eq!(parsed["features"][0]["properties"]["extra_content"], "\0NaN");
+        for extra in ["\0NaN", "\0terrio-nonfinite-0:NaN"] {
+            let mut position = Position::new(0.5, 0.5);
+            position.extra = Some(extra.into());
+            let info = pixel_info(&mut raster, &[position], &Default::default()).unwrap();
+            let text = info.to_geojson_string();
+            let parsed: Value = serde_json::from_str(&text).unwrap();
+            assert_eq!(parsed["features"][0]["properties"]["extra_content"], extra);
+        }
     }
 
     #[test]

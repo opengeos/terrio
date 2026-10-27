@@ -1091,6 +1091,55 @@ mod tests {
     use crate::RasterDataset;
     use wbraster::{Raster, RasterConfig};
 
+    #[cfg(remote)]
+    #[test]
+    fn truncated_binary_reads_propagate_errors_instead_of_differences() {
+        use std::io::{BufRead, Write};
+        for which in ["reference", "input"] {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let url = format!("http://{}/truncated.bin", listener.local_addr().unwrap());
+            listener.set_nonblocking(true).unwrap();
+            let server = std::thread::spawn(move || {
+                let start = std::time::Instant::now();
+                let mut count = 0;
+                while count < 2 && start.elapsed().as_secs() < 10 {
+                    let (mut stream, _) = match listener.accept() {
+                        Ok(connection) => connection,
+                        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                            std::thread::sleep(std::time::Duration::from_millis(5));
+                            continue;
+                        }
+                        Err(e) => panic!("{e}"),
+                    };
+                    stream.set_read_timeout(Some(std::time::Duration::from_secs(2))).unwrap();
+                    let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
+                    let mut line = String::new();
+                    loop {
+                        line.clear();
+                        reader.read_line(&mut line).unwrap();
+                        if line == "\r\n" || line.is_empty() {
+                            break;
+                        }
+                    }
+                    let begin = count * 65536;
+                    write!(stream, "HTTP/1.1 206 Partial Content\r\nContent-Length: 65536\r\nContent-Range: bytes {}-{}/131072\r\nConnection: close\r\n\r\n", begin, begin + 65535).unwrap();
+                    stream.write_all(&vec![b'a'; if count == 0 { 65536 } else { 512 }]).unwrap();
+                    count += 1;
+                }
+                count
+            });
+            let directory = tempfile::tempdir().unwrap();
+            let local = directory.path().join("complete.bin");
+            std::fs::write(&local, vec![b'a'; 131072]).unwrap();
+            let local = local.to_str().unwrap();
+            let result = if which == "reference" { binary_difference(&url, local) } else { binary_difference(local, &url) };
+            let error = result.unwrap_err();
+            assert!(matches!(error, Error::Io(_)), "{error:?}");
+            assert!(error.to_string().contains(&format!("fully read {which}")), "{error}");
+            assert_eq!(server.join().unwrap(), 2);
+        }
+    }
+
     fn raster(values: Vec<f64>, dt: DataType, nodata: Option<f64>) -> LazyRaster {
         let cfg = RasterConfig {
             cols: 3,

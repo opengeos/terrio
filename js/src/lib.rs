@@ -21,6 +21,7 @@ mod query;
 mod remote;
 #[cfg(feature = "threads")]
 mod threads;
+mod vector_dataset;
 
 use serde::Deserialize;
 use std::cell::{Cell, RefCell};

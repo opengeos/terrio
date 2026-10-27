@@ -311,6 +311,30 @@ comparisons), `pixel_info_layer` queries at a layer's points, and `PixelInfo` pr
 CSV, text and `-valonly` output or builds a point layer. See [compare](cli.md#compare),
 [pixel-info](cli.md#pixel-info) and [xyz](cli.md#xyz).
 
+### Vector datasets
+
+```rust,no_run
+use terrio::ops::concat::{concat, ConcatMode, ConcatOptions, ConcatSource};
+use terrio::ops::partition::{partition_to_dir, PartitionOptions, PartitionWriteMode};
+use terrio::ops::vector_schema::{export_schema_path, set_field_type, FieldSelector, OgrType};
+
+let ds = terrio::open_vector("countries.gpkg", &Default::default())?;
+let sources = vec![ConcatSource { name: "countries.gpkg".into(), layers: ds.layers.clone() }];
+let merged = concat(&sources, &ConcatOptions { mode: ConcatMode::Single, ..Default::default() })?;
+let typed = set_field_type(&merged[0], &FieldSelector::Name("POP_EST".into()), OgrType::parse("Integer64")?)?;
+let options = PartitionOptions { fields: vec!["CONTINENT".into()], ..Default::default() };
+let write = terrio::VectorWriteOptions { driver: Some(terrio::formats::VectorDriver::GPKG), ..Default::default() };
+partition_to_dir(&[typed], "out", &options, &write, PartitionWriteMode::Create)?;
+println!("{}", export_schema_path("countries.gpkg", &[])?.to_json()); // OGR_SCHEMA
+# Ok::<(), terrio::Error>(())
+```
+
+`ops::concat`, `ops::partition` (`partition` plans the parts in memory, `partition_to_dir`
+writes them), `ops::vector_schema` (`set_field_type`, `export_schema`, `export_schema_path`,
+`layer_from_schema`, `create`, `parse_field_spec`, `parse_geometry_type`, `OgrSchema`) and
+`ops::make_point` are `terrio concat`, `partition`, `set-field-type`, `export-schema`,
+`create` and `make-point`; see [Vector datasets](cli.md#vector-datasets).
+
 ### Pixel-wise operations
 
 ```rust

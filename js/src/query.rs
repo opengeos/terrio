@@ -29,6 +29,18 @@ fn with_raster<T>(v: &JsValue, f: impl FnOnce(&mut LazyRaster) -> terrio::Result
     Err(invalid("expected a raster: a Dataset, a Uint8Array or { bytes, filename }"))
 }
 
+/// Uses an already opened byte input or borrows a registered Dataset.
+fn with_prepared_raster<T>(
+    value: &JsValue,
+    prepared: &mut Option<LazyRaster>,
+    apply: impl FnOnce(&mut LazyRaster) -> terrio::Result<T>,
+) -> Result<T, JsError> {
+    match prepared {
+        Some(raster) => apply(raster).map_err(js_err),
+        None => with_raster(value, apply),
+    }
+}
+
 /// Converts plain JSON, preserving user strings verbatim.
 fn value_to_js(v: &Value) -> JsValue {
     marked_value_to_js(v, None)
@@ -94,32 +106,36 @@ pub fn compare(reference: JsValue, input: JsValue, options: JsValue) -> Result<J
             skip_subdataset: a.skip_subdataset,
         }
     };
+    // Copy each byte input once, then move that same buffer into its lazy mount.
+    let reference_bytes = if Dataset::lookup(&reference).is_none() {
+        Some(file_bytes(&reference).ok_or_else(|| invalid("expected a raster: a Dataset, a Uint8Array or { bytes, filename }"))?)
+    } else {
+        None
+    };
+    let input_bytes = if Dataset::lookup(&input).is_none() {
+        Some(file_bytes(&input).ok_or_else(|| invalid("expected a raster: a Dataset, a Uint8Array or { bytes, filename }"))?)
+    } else {
+        None
+    };
     let mut binary = None;
     if !options.skip_binary
-        && Dataset::lookup(&reference).is_none()
-        && Dataset::lookup(&input).is_none()
-        && let (Some((ra, _)), Some((rb, _))) = (file_bytes(&reference), file_bytes(&input))
+        && let (Some((ra, _)), Some((rb, _))) = (&reference_bytes, &input_bytes)
     {
-        match terrio::ops::compare::compare_bytes(&ra, &rb) {
+        match terrio::ops::compare::compare_bytes(ra, rb) {
             None => return Ok(value_to_js(&terrio::ops::compare::Comparison::default().to_json())),
             Some(message) => binary = Some(message),
         }
     }
-    let mut lazy_input = match Dataset::lookup(&input) {
-        Some(_) => None,
-        None => {
-            let (bytes, name) =
-                file_bytes(&input).ok_or_else(|| invalid("expected a raster: a Dataset, a Uint8Array or { bytes, filename }"))?;
-            Some(terrio::memory::open_raster_lazy_bytes(bytes, &name).map_err(js_err)?)
-        }
-    };
+    let open = |(bytes, name): (Vec<u8>, String)| terrio::memory::open_raster_lazy_bytes(bytes, &name).map_err(js_err);
+    let mut lazy_reference = reference_bytes.map(open).transpose()?;
+    let mut lazy_input = input_bytes.map(open).transpose()?;
     let mut comparison = if let Some(i) = &mut lazy_input {
-        with_raster(&reference, |r| terrio::ops::compare::compare_rasters(r, i, &options))?
+        with_prepared_raster(&reference, &mut lazy_reference, |r| terrio::ops::compare::compare_rasters(r, i, &options))?
     } else {
         // The input is a Dataset: borrowed after the reference, unless both are the same one.
         let same = Dataset::lookup(&reference).zip(Dataset::lookup(&input)).is_some_and(|(a, b)| std::rc::Rc::ptr_eq(&a, &b));
         if same {
-            with_raster(&reference, |r| {
+            with_prepared_raster(&reference, &mut lazy_reference, |r| {
                 let mut copy = r.shared();
                 terrio::ops::compare::compare_rasters(r, &mut copy, &options)
             })?
@@ -127,7 +143,7 @@ pub fn compare(reference: JsValue, input: JsValue, options: JsValue) -> Result<J
             let other = Dataset::lookup(&input).expect("a Dataset");
             let mut other = other.borrow_mut();
             let Inner::Raster(i) = &mut *other else { return Err(invalid("expected a raster, got a vector dataset")) };
-            with_raster(&reference, |r| terrio::ops::compare::compare_rasters(r, i, &options))?
+            with_prepared_raster(&reference, &mut lazy_reference, |r| terrio::ops::compare::compare_rasters(r, i, &options))?
         }
     };
     if let Some(message) = binary {
