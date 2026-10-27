@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Formats
+
+- SRTM HGT tiles are read and written (the `SRTMHGT` driver), as GDAL's SRTMHGT
+  driver does: 3", 1" and 0.5" tiles georeferenced from their name
+  (`N37W120.hgt`), `.hgt.zip` archives, and the NASADEM and water body variants.
+  Tiles are written as Int16 with -32768 for nodata; a grid of another size is
+  refused.
+
 ### Breaking changes
 
 - `mosaic`, `warp`, `concat` and `filter merge` now treat an input beginning
@@ -35,3 +43,25 @@
   previously treated as ordinary east/north coordinates. This matches GDAL's
   traditional GIS axis strategy; ordinary north/east Earth axes still use
   longitude, latitude order.
+
+### Warp
+
+- With bilinear, cubic, cubic spline and Lanczos, an output pixel whose source
+  pixel under the sample point is nodata (or cut out) is now left unwritten
+  (at the output's nodata value, when it has one) for a single-band source too,
+  as GDAL does: it took a value renormalised over the valid neighbours, which
+  moved the edge of the data about a pixel into nodata areas. Several bands
+  already behaved so, with unified nodata.
+
+### Shapefile
+
+- In polygon records of several parts, rings that touch themselves at a vertex
+  to enclose a hole, which Esri allows, are now split into an exterior and
+  holes when read, wherever the stored ring starts, as GDAL 3.13 does (GDAL
+  3.12 keeps them as stored). A ring whose loops are not holes (a figure-eight,
+  a loop outside the ring, a spike), and a record of a single ring, are still
+  read as stored, also as GDAL does. The split rings start at the vertex the
+  rings GEOS rebuilds for GDAL start at. The `shapefile-rings` conformance
+  suite compares 18 such cases with GDAL.
+- A hole whose first vertex lies on the exterior now belongs to that exterior.
+  It was read as a polygon of its own.

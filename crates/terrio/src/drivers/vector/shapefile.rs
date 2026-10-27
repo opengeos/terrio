@@ -12,6 +12,7 @@
 use super::profile::LayerProfile;
 use crate::crs::SpatialRef;
 use crate::{Error, Result};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use wbvector::{Coord, Feature, FieldDef, FieldType, FieldValue, Geometry, GeometryType, Layer, Ring};
 
@@ -168,15 +169,20 @@ fn parse_shape(rec: &[u8]) -> Option<Geometry> {
 /// Groups rings into polygons: clockwise rings are exteriors, and each counter-clockwise ring is
 /// a hole of the smallest exterior containing it.
 fn organize_rings(parts: Vec<Vec<Coord>>) -> Geometry {
-    let rings: Vec<Ring> = parts
-        .into_iter()
-        .map(|mut cs| {
-            if cs.len() > 1 && (cs[0].x, cs[0].y) == (cs[cs.len() - 1].x, cs[cs.len() - 1].y) {
-                cs.pop();
-            }
-            Ring::new(cs)
-        })
-        .collect();
+    // GDAL organizes, and since 3.13 splits self-touching rings, only in records of several parts.
+    let several = parts.len() > 1;
+    let mut rings: Vec<Ring> = Vec::with_capacity(parts.len());
+    let mut split_loops: Vec<Ring> = Vec::new();
+    for mut cs in parts {
+        if cs.len() > 1 && (cs[0].x, cs[0].y) == (cs[cs.len() - 1].x, cs[cs.len() - 1].y) {
+            cs.pop();
+        }
+        let (ring, loops) = if several { split_self_touching(cs) } else { (cs, Vec::new()) };
+        rings.push(Ring::new(ring));
+        split_loops.extend(loops.into_iter().map(Ring::new));
+    }
+    // After the stored rings, where GDAL puts them.
+    rings.extend(split_loops);
     let (mut exteriors, mut holes): (Vec<Ring>, Vec<Ring>) = rings.into_iter().partition(|r| r.signed_area() <= 0.0);
     if exteriors.is_empty() {
         // Wrongly wound: take every ring as an exterior.
@@ -184,11 +190,16 @@ fn organize_rings(parts: Vec<Vec<Coord>>) -> Geometry {
     }
     let mut polygons: Vec<(Ring, Vec<Ring>)> = exteriors.into_iter().map(|r| (r, Vec::new())).collect();
     for h in holes {
-        let Some(p) = h.0.first() else { continue };
+        // Tested at the midpoint of the hole's first edge (to the first vertex that differs, as
+        // the first may be repeated): a vertex of a hole may lie on the exterior (a hole may touch
+        // it), where the even-odd test is unreliable.
+        let Some(a) = h.0.first() else { continue };
+        let b = h.0.iter().find(|b| (b.x, b.y) != (a.x, a.y)).unwrap_or(a);
+        let (x, y) = ((a.x + b.x) / 2.0, (a.y + b.y) / 2.0);
         let owner = polygons
             .iter()
             .enumerate()
-            .filter(|(_, (e, _))| ring_contains(e, p.x, p.y))
+            .filter(|(_, (e, _))| ring_contains(e, x, y))
             .min_by(|a, b| a.1.0.signed_area().abs().total_cmp(&b.1.0.signed_area().abs()))
             .map(|(i, _)| i);
         match owner {
@@ -202,6 +213,91 @@ fn organize_rings(parts: Vec<Vec<Coord>>) -> Geometry {
     } else {
         Geometry::MultiPolygon(polygons)
     }
+}
+
+/// Splits off the loops of an Esri ring that touches itself at a vertex to enclose them. Esri
+/// accepts such a ring; OGC simple features don't. Since 3.13, GDAL makes it valid in
+/// `organizePolygons` when GEOS finds it valid under `ALLOW_SELFTOUCHING_RING_FORMING_HOLE`.
+///
+/// `cs` is an open ring, without its closing vertex. It is cut into cycles at each vertex it
+/// passes twice: the loops between two occurrences of a vertex, and the rest, which holds the
+/// stored start. The cycle with the largest area is the outer one, wherever the ring starts; the
+/// ring is split when every other cycle has an area, winds the other way round and lies inside
+/// it: holes of an exterior, or islands inside a hole part. The outer cycle and the others are
+/// returned. Otherwise (a figure-eight, a loop outside, a spike) the ring is returned as it is,
+/// with no others, as it is when it never touches itself. Consecutive duplicate points are not
+/// loops.
+///
+/// The rings start where GEOS's polygonizer, which rebuilds them for GDAL, starts them: one vertex
+/// after the stored start for the rest when it is the outer cycle, and otherwise one vertex after
+/// the vertex a cycle hangs from. When the rest is inside, it comes after the loops.
+fn split_self_touching(cs: Vec<Coord>) -> (Vec<Coord>, Vec<Vec<Coord>>) {
+    // `+ 0.0` makes -0.0 and 0.0 the same vertex, as GDAL's comparison of doubles does.
+    let key = |c: &Coord| ((c.x + 0.0).to_bits(), (c.y + 0.0).to_bits());
+    let mut path: Vec<Coord> = Vec::with_capacity(cs.len());
+    let mut at: HashMap<(u64, u64), usize> = HashMap::with_capacity(cs.len());
+    let mut loops: Vec<Vec<Coord>> = Vec::new();
+    for c in &cs {
+        match at.get(&key(c)) {
+            Some(&i) if i + 1 == path.len() => {}
+            Some(&i) => {
+                let mut lp = vec![path[i].clone()];
+                lp.extend(path.split_off(i + 1));
+                for removed in &lp[1..] {
+                    at.remove(&key(removed));
+                }
+                loops.push(lp);
+            }
+            None => {
+                at.insert(key(c), path.len());
+                path.push(c.clone());
+            }
+        }
+    }
+    if loops.is_empty() {
+        return (cs, Vec::new());
+    }
+    // The rest first, then the loops, each starting at the vertex it hangs from.
+    let mut cycles = Vec::with_capacity(loops.len() + 1);
+    cycles.push(path);
+    cycles.append(&mut loops);
+    let areas: Vec<f64> = cycles.iter().map(|c| Ring::new(c.clone()).signed_area()).collect();
+    let Some(outer_i) = (0..cycles.len()).max_by(|&a, &b| areas[a].abs().total_cmp(&areas[b].abs())) else {
+        return (cs, Vec::new());
+    };
+    let outer = areas[outer_i];
+    let split = {
+        let shell = Ring::new(cycles[outer_i].clone());
+        // Tested at the midpoint of a cycle's first edge: its first vertex may lie on the outer
+        // cycle, and no cycle holds consecutive duplicates, so the edge has a length.
+        let inside = |i: usize| {
+            let c = &cycles[i];
+            c.len() >= 3
+                && areas[i] != 0.0
+                && (areas[i] > 0.0) != (outer > 0.0)
+                && ring_contains(&shell, (c[0].x + c[1].x) / 2.0, (c[0].y + c[1].y) / 2.0)
+        };
+        outer != 0.0 && cycles[outer_i].len() >= 3 && (0..cycles.len()).filter(|&i| i != outer_i).all(inside)
+    };
+    if !split {
+        return (cs, Vec::new());
+    }
+    let mut rest = cycles.remove(0);
+    for lp in &mut cycles {
+        lp.rotate_left(1);
+    }
+    if outer_i == 0 {
+        rest.rotate_left(1);
+        return (rest, cycles);
+    }
+    // The outer cycle is a loop, as when the stored ring starts inside a hole: the rest hangs from
+    // the outer cycle's vertex, now its last, and starts one vertex after it.
+    let outer = cycles.remove(outer_i - 1);
+    if let Some(k) = outer.last().and_then(|t| rest.iter().position(|c| (c.x, c.y) == (t.x, t.y))) {
+        rest.rotate_left(k + 1);
+    }
+    cycles.push(rest);
+    (outer, cycles)
 }
 
 /// Whether a point is inside a ring (even-odd rule).
@@ -924,6 +1020,115 @@ mod tests {
         latin1.extend_from_slice(&bytes[at + 7..]);
         std::fs::write(&dbf, latin1).unwrap();
         assert_eq!(read(path).unwrap().features[0].attributes[0], FieldValue::Text("Zürich".into()));
+    }
+
+    /// The x/y of the rings of each polygon, exterior first.
+    fn polygon_rings(g: &Geometry) -> Vec<Vec<Vec<(f64, f64)>>> {
+        let xy = |r: &Ring| -> Vec<(f64, f64)> { r.0.iter().map(|c| (c.x, c.y)).collect() };
+        match g {
+            Geometry::Polygon { exterior, interiors } => vec![std::iter::once(exterior).chain(interiors).map(xy).collect()],
+            Geometry::MultiPolygon(polygons) => polygons.iter().map(|(e, is)| std::iter::once(e).chain(is).map(xy).collect()).collect(),
+            _ => panic!("not polygonal: {g:?}"),
+        }
+    }
+
+    fn closed(xy: &[(f64, f64)]) -> Vec<Coord> {
+        let mut cs: Vec<Coord> = xy.iter().map(|&(x, y)| Coord::xy(x, y)).collect();
+        cs.push(cs[0].clone());
+        cs
+    }
+
+    #[test]
+    fn splits_self_touching_rings_like_gdal() {
+        // An Esri ring: clockwise round a 10 × 10 square, then round a hole touching the edge at
+        // (5, 0), the way the ISTAT municipalities of Rutigliano and Santa Ninfa are stored. The
+        // stored hole, the second part, comes before the split one, and each split ring starts one
+        // vertex later than stored, both as in GDAL 3.13.
+        let ring = [(0.0, 0.0), (0.0, 10.0), (10.0, 10.0), (10.0, 0.0), (5.0, 0.0), (6.0, 2.0), (4.0, 2.0), (5.0, 0.0)];
+        let hole = [(2.0, 6.0), (3.0, 6.0), (3.0, 7.0), (2.0, 7.0)];
+        assert_eq!(
+            polygon_rings(&organize_rings(vec![closed(&ring), closed(&hole)])),
+            [vec![
+                vec![(0.0, 10.0), (10.0, 10.0), (10.0, 0.0), (5.0, 0.0), (0.0, 0.0)],
+                hole.to_vec(),
+                vec![(6.0, 2.0), (4.0, 2.0), (5.0, 0.0)]
+            ]]
+        );
+        // Two holes on one ring, in the order the ring runs through them.
+        let two = [(0.0, 0.0), (0.0, 10.0), (5.0, 10.0), (4.0, 8.0), (6.0, 8.0), (5.0, 10.0), (10.0, 10.0), (10.0, 0.0)]
+            .into_iter()
+            .chain([(5.0, 0.0), (6.0, 2.0), (4.0, 2.0), (5.0, 0.0)])
+            .collect::<Vec<_>>();
+        assert_eq!(
+            polygon_rings(&organize_rings(vec![closed(&two), closed(&hole)])),
+            [vec![
+                vec![(0.0, 10.0), (5.0, 10.0), (10.0, 10.0), (10.0, 0.0), (5.0, 0.0), (0.0, 0.0)],
+                hole.to_vec(),
+                vec![(4.0, 8.0), (6.0, 8.0), (5.0, 10.0)],
+                vec![(6.0, 2.0), (4.0, 2.0), (5.0, 0.0)]
+            ]]
+        );
+        // The same ring stored from inside the hole, at (6, 2) or (4, 2): split all the same, the
+        // square first. Both rings start one vertex after (5, 0), as in GDAL 3.13.1.
+        for k in [5, 6] {
+            let mut inside = ring.to_vec();
+            inside.rotate_left(k);
+            assert_eq!(
+                polygon_rings(&organize_rings(vec![closed(&inside), closed(&hole)])),
+                [vec![
+                    vec![(0.0, 0.0), (0.0, 10.0), (10.0, 10.0), (10.0, 0.0), (5.0, 0.0)],
+                    hole.to_vec(),
+                    vec![(6.0, 2.0), (4.0, 2.0), (5.0, 0.0)]
+                ]],
+                "starting at {:?}",
+                inside[0]
+            );
+        }
+        // Two holes, stored from inside the upper one: the loop split off first comes first, the
+        // rest, which holds the start, last.
+        let mut upper = two.clone();
+        upper.rotate_left(3);
+        assert_eq!(
+            polygon_rings(&organize_rings(vec![closed(&upper), closed(&hole)])),
+            [vec![
+                vec![(10.0, 10.0), (10.0, 0.0), (5.0, 0.0), (0.0, 0.0), (0.0, 10.0), (5.0, 10.0)],
+                hole.to_vec(),
+                vec![(6.0, 2.0), (4.0, 2.0), (5.0, 0.0)],
+                vec![(4.0, 8.0), (6.0, 8.0), (5.0, 10.0)]
+            ]]
+        );
+        // GDAL reads a record of a single ring as it is stored.
+        assert_eq!(polygon_rings(&organize_rings(vec![closed(&ring)])), [vec![ring.to_vec()]]);
+    }
+
+    #[test]
+    fn assigns_holes_touching_the_exterior() {
+        // A stored hole whose first vertex lies on the exterior, at (5, 10): the even-odd test at
+        // that vertex may say it is outside.
+        let square = [(0.0, 0.0), (0.0, 10.0), (10.0, 10.0), (10.0, 0.0)];
+        let hole = [(5.0, 10.0), (4.0, 8.0), (6.0, 8.0)];
+        assert_eq!(polygon_rings(&organize_rings(vec![closed(&square), closed(&hole)])), [vec![square.to_vec(), hole.to_vec()]]);
+        // The same hole with its first vertex repeated: the first edge has no length.
+        let repeated = [(5.0, 10.0), (5.0, 10.0), (4.0, 8.0), (6.0, 8.0)];
+        assert_eq!(polygon_rings(&organize_rings(vec![closed(&square), closed(&repeated)])), [vec![square.to_vec(), repeated.to_vec()]]);
+    }
+
+    #[test]
+    fn keeps_rings_that_are_not_esri_holes() {
+        // A figure-eight: the second lobe lies outside the first.
+        let eight = [(0.0, 0.0), (0.0, 2.0), (2.0, 2.0), (2.0, 0.0), (4.0, 0.0), (4.0, -2.0), (2.0, -2.0), (2.0, 0.0)];
+        // A spike out and back along the same edge.
+        let spike = [(0.0, 0.0), (0.0, 4.0), (2.0, 4.0), (3.0, 5.0), (2.0, 4.0), (4.0, 4.0), (4.0, 0.0)];
+        // A loop inside, but wound the same way as the ring: not a hole.
+        let same = [(0.0, 0.0), (0.0, 10.0), (10.0, 10.0), (10.0, 0.0), (5.0, 0.0), (4.0, 2.0), (6.0, 2.0), (5.0, 0.0)];
+        // Consecutive duplicate points.
+        let dup = [(0.0, 0.0), (0.0, 4.0), (0.0, 4.0), (4.0, 4.0), (4.0, 0.0)];
+        // An island as a second part, so that the record is one GDAL organizes.
+        let island = [(20.0, 20.0), (20.0, 21.0), (21.0, 21.0), (21.0, 20.0)];
+        for ring in [&eight[..], &spike, &same, &dup] {
+            let g = organize_rings(vec![closed(ring), closed(&island)]);
+            assert_eq!(polygon_rings(&g), [vec![ring.to_vec()], vec![island.to_vec()]], "{ring:?}");
+        }
     }
 
     #[test]

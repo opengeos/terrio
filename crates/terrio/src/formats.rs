@@ -61,6 +61,8 @@ pub enum RasterDriver {
     Zarr,
     /// DTED elevation.
     DTED,
+    /// SRTM HGT elevation tiles (`N37W120.hgt`), as GDAL's SRTMHGT driver reads and writes them.
+    SRTMHGT,
     /// NetCDF: classic and netCDF-4 (groups included) read; classic (CDF-1, CDF-2, CDF-5) and
     /// netCDF-4 written.
     NetCDF,
@@ -175,6 +177,7 @@ impl RasterDriver {
         Self::XYZ,
         Self::Zarr,
         Self::DTED,
+        Self::SRTMHGT,
         Self::NetCDF,
         Self::HDF5,
         Self::GRIB,
@@ -212,6 +215,7 @@ impl RasterDriver {
             Self::XYZ => ("XYZ", "XYZ ASCII Grid", &["xyz"], true, true),
             Self::Zarr => ("Zarr", "Zarr v2/v3", &["zarr"], true, true),
             Self::DTED => ("DTED", "DTED Elevation", &["dt0", "dt1", "dt2"], true, true),
+            Self::SRTMHGT => ("SRTMHGT", "SRTMHGT File Format", &["hgt"], true, true),
             Self::NetCDF => ("netCDF", "Network Common Data Format", &["nc", "nc4", "cdf"], true, true),
             Self::HDF5 => ("HDF5", "Hierarchical Data Format Release 5", &["h5", "hdf5", "he5"], true, false),
             // Written through GDAL when the `gdal` feature is enabled.
@@ -260,6 +264,7 @@ impl RasterDriver {
             "geotiff" | "tif" | "tiff" => Some(Self::GTiff),
             "jpeg2000" | "jp2openjpeg" | "jp2kak" | "jp2ecw" => Some(Self::JP2),
             "gs7bg" | "gsag" | "surfer" => Some(Self::GSBG),
+            "hgt" | "srtm" => Some(Self::SRTMHGT),
             "imagine" | "erdas" => Some(Self::HFA),
             "jpg" => Some(Self::JPEG),
             "geopackage" => Some(Self::GPKG),
@@ -304,8 +309,9 @@ impl RasterDriver {
             Self::XYZ => F::Xyz,
             Self::Zarr => F::Zarr,
             Self::DTED => F::Dted,
-            // Never used: terrio reads and writes NetCDF and reads HDF5 and GRIB itself.
-            Self::NetCDF | Self::HDF5 | Self::GRIB => F::Zarr,
+            // Never used: terrio reads and writes NetCDF and SRTM tiles, and reads HDF5 and GRIB
+            // itself.
+            Self::NetCDF | Self::HDF5 | Self::GRIB | Self::SRTMHGT => F::Zarr,
             // Never used: terrio reads and writes VRTs and tile archives, and reads STAC mosaics
             // itself; GDAL reads its formats.
             Self::VRT | Self::GTI | Self::STACIT | Self::STACTA | Self::MBTiles | Self::PMTiles | Self::Gdal => F::GeoTiff,

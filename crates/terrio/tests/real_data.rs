@@ -153,6 +153,27 @@ fn srtm_sub_in_gdal_written_formats() {
 }
 
 #[test]
+fn srtm_hgt_tile_as_gdal_reads_and_writes_it() {
+    let Some(p) = data("N37W120.hgt") else { return };
+    let ds = terrio::open_raster(&p).unwrap();
+    assert_eq!(ds.driver, terrio::formats::RasterDriver::SRTMHGT);
+    assert_eq!((ds.raster.cols, ds.raster.rows, ds.raster.data_type), (1201, 1201, terrio::DataType::I16));
+    assert_eq!((ds.nodata(), ds.crs().epsg), (Some(-32768.0), Some(4326)));
+    let gt = ds.geo_transform();
+    let d = 1.0 / 1200.0;
+    assert!(gt.iter().zip([-120.0 - d / 2.0, d, 0.0, 38.0 + d / 2.0, 0.0, -d]).all(|(a, b)| (a - b).abs() < 1e-12), "{gt:?}");
+    // GDAL 3.13: Minimum=93, Maximum=3956, Mean=1752.285.
+    let s = terrio::info::band_statistics(&ds, 0).unwrap();
+    assert_eq!((s.min, s.max), (93.0, 3956.0));
+    assert!((s.mean - 1752.285).abs() < 1e-3, "{}", s.mean);
+    // Written again, the tile is the file GDAL wrote.
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("N37W120.hgt");
+    terrio::write_raster_dataset(&ds, out.to_str().unwrap(), &Default::default()).unwrap();
+    assert!(std::fs::read(&out).unwrap() == std::fs::read(&p).unwrap());
+}
+
+#[test]
 fn netcdf4_variables_as_subdatasets() {
     let Some(p) = data("wind_global.nc") else { return };
     let ds = terrio::open_raster(&p).unwrap();

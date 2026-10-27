@@ -1376,7 +1376,10 @@ impl<'a> Plan<'a> {
             bands: self.bands,
             out_bits: self.out_type.size_bytes() * 8,
             src_has_nodata: nodata.iter().any(Option::is_some),
-            global_validity: o.unified_src_nodata != Some(false) && self.bands > 1,
+            // GDAL takes a single band's validity as the unified one, whatever UNIFIED_SRC_NODATA
+            // says ("If there's just a single band, then transfer papanBandSrcValid[0] as
+            // panUnifiedSrcValid"); several bands are unified unless it is NO.
+            global_validity: self.bands == 1 || o.unified_src_nodata != Some(false),
             dst_has_nodata: self.dst_nodata_all.iter().any(Option::is_some),
             cutline: o.cutline.is_some(),
             source_extra: o.source_extra,
@@ -2121,6 +2124,8 @@ struct WarpContext<'a> {
     bands: usize,
     out_bits: usize,
     src_has_nodata: bool,
+    /// GDAL's unified source validity (`panUnifiedSrcValid`): an output pixel whose source pixel
+    /// under the sample point is invalid in every band is left unwritten.
     global_validity: bool,
     dst_has_nodata: bool,
     cutline: bool,
@@ -3330,6 +3335,20 @@ mod tests {
         // Centre x = 1.0 lies between column 0 (nodata) and column 1: only column 1 counts.
         assert_eq!(&v[..3], &[1.0, 1.5, 2.5]);
         assert_eq!(out.nodata(), Some(-9999.0));
+        // Centre x = 0.75 lies in column 0, which is nodata: GDAL leaves the pixel nodata rather
+        // than renormalising over column 1 (#307), with one band too and whatever
+        // UNIFIED_SRC_NODATA says. Values from gdalwarp 3.12.2 and 3.13.1.
+        for (resampling, unified) in [(Resampling::Bilinear, None), (Resampling::Bilinear, Some(false)), (Resampling::Cubic, None)] {
+            let o = WarpOptions {
+                extent: Some((0.25, 0.0, 3.25, 4.0)),
+                size: Some((3, 4)),
+                resampling,
+                unified_src_nodata: unified,
+                ..Default::default()
+            };
+            let v = warp(&[&ds], &o).unwrap().raster.data.to_f64_vec();
+            assert_eq!(&v[..3], &[-9999.0, 1.25, 2.25], "{resampling:?}, unified {unified:?}");
+        }
     }
 
     #[test]
