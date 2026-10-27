@@ -295,13 +295,18 @@ impl Client {
 
     /// Fetches with a `Range` header value, if any: see [`Client::send_range`].
     fn fetch_range(&mut self, range: Option<String>) -> Result<Fetched> {
+        self.fetch_range_limited(range, None)
+    }
+
+    fn fetch_range_limited(&mut self, range: Option<String>, limit: Option<usize>) -> Result<Fetched> {
         let mut attempt = 0;
         loop {
             let response = self.send_range(range.clone())?;
             let status = response.status().as_u16();
             let content_range = response.headers().get("content-range").and_then(|v| v.to_str().ok()).and_then(content_range_total);
             let mut data = Vec::new();
-            match response.into_body().into_reader().read_to_end(&mut data) {
+            let reader = response.into_body().into_reader();
+            match reader.take(limit.map_or(u64::MAX, |n| n as u64 + 1)).read_to_end(&mut data) {
                 Ok(_) => {}
                 Err(_) if attempt < self.options.max_retry => {
                     self.backoff(&mut attempt);
@@ -311,6 +316,9 @@ impl Client {
             }
             REQUESTS.fetch_add(1, Ordering::Relaxed);
             BYTES.fetch_add(data.len() as u64, Ordering::Relaxed);
+            if limit.is_some_and(|n| data.len() > n) {
+                return Err(Error::InvalidData("object-store listing page exceeds 16 MiB".into()));
+            }
             if self.options.log {
                 eprintln!("terrio:   received {} bytes", data.len());
             }

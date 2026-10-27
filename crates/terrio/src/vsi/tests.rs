@@ -925,3 +925,27 @@ fn recursive_copy_reports_special_files_without_opening_them() {
     assert!(check_copy_move_source(&Node::Local(source.clone())).unwrap_err().to_string().contains("regular files"));
     assert!(source.join("x.txt").is_file());
 }
+
+#[test]
+#[cfg(unix)]
+fn writes_and_moves_preserve_special_destinations() {
+    use std::os::unix::fs::{FileTypeExt, symlink};
+    let tmp = tempfile::tempdir().unwrap();
+    let pipe = tmp.path().join("pipe");
+    assert!(std::process::Command::new("mkfifo").arg(&pipe).status().unwrap().success());
+    let source = tmp.path().join("source");
+    fs::write(&source, b"payload").unwrap();
+    assert!(copy(&s(&source), &s(&pipe), &CopyOptions::default()).is_err());
+    assert!(rename(&s(&source), &s(&pipe)).is_err());
+    assert!(fs::metadata(&pipe).unwrap().file_type().is_fifo());
+    assert_eq!(fs::read(&source).unwrap(), b"payload");
+    let link = tmp.path().join("pipe-link");
+    symlink(&pipe, &link).unwrap();
+    assert!(copy(&s(&source), &s(&link), &CopyOptions::default()).is_err());
+    assert!(fs::metadata(&pipe).unwrap().file_type().is_fifo());
+    let socket = tmp.path().join("socket");
+    let _listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+    assert!(copy(&s(&source), &s(&socket), &CopyOptions::default()).is_err());
+    assert!(rename(&s(&source), &s(&socket)).is_err());
+    assert!(fs::metadata(&socket).unwrap().file_type().is_socket());
+}

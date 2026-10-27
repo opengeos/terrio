@@ -1914,3 +1914,10 @@ test("vsi: HTML listing cancels binary and oversized streams", async () => {
   }), /4 MiB/);
   assert.equal(sent, 65);
 });
+
+test("object-store listing rejects binary and oversized response bodies", async () => {
+  await assert.rejects(terrio.listUrl("s3://bucket/dir", {fetch: async () => new Response("not XML")}), /not an XML/);
+  await assert.rejects(terrio.listUrl("s3://bucket/dir", {
+    fetch: async () => new Response("<ListBucketResult/>", {headers: {"Content-Length": String(17 << 20)}}),
+  }), /exceeds 16 MiB/);
+});

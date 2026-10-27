@@ -1083,6 +1083,12 @@ fn write_local_atomic(path: &Path, fill: impl FnOnce(&mut std::fs::File) -> Resu
     let path = resolved.as_deref().unwrap_or(path);
     let dir = path.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(Path::new("."));
     let permissions = match std::fs::metadata(path) {
+        Ok(meta) if meta.is_dir() => {
+            return Err(Error::Io(std::io::Error::new(std::io::ErrorKind::IsADirectory, format!("'{}': is a directory", path.display()))));
+        }
+        Ok(meta) if !meta.is_file() => {
+            return Err(Error::Unsupported(format!("'{}': refusing to replace a non-regular file", path.display())));
+        }
         Ok(meta) => Some(meta.permissions()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
         Err(e) => return Err(e.into()),
@@ -1628,11 +1634,14 @@ fn copy_tar_reader(
         if unsafe_relative(relative) {
             return Err(Error::InvalidArgument("refusing unsafe path traversal in copy source".into()));
         }
-        let target = archive_target(dst, relative)?;
         if sync.is_some_and(|o| !o.recursive) && relative.contains('/') {
-            make_dir(&archive_target(dst, relative.split('/').next().expect("has separator"))?)?;
+            let top = relative.split('/').next().expect("has separator");
+            if made.insert(top.to_string()) {
+                make_dir(&archive_target(dst, top)?)?;
+            }
             continue;
         }
+        let target = archive_target(dst, relative)?;
         if !info.is_dir()
             && let Some(o) = sync
             && let Some(t) = targets.get(relative)
@@ -2030,6 +2039,14 @@ pub fn rename(src: &str, dst: &str) -> Result<Report> {
         return Err(Error::InvalidArgument(format!("'{}' is a directory that exists", display_node(&target))));
     }
     if let (Node::Local(a), Node::Local(b)) = (&src_node, &target) {
+        match std::fs::symlink_metadata(b) {
+            Ok(meta) if !meta.file_type().is_file() && !meta.file_type().is_symlink() => {
+                return Err(Error::Unsupported(format!("'{}': refusing to replace a non-regular file", b.display())));
+            }
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e.into()),
+        }
         if let Some(parent) = b.parent().filter(|d| !d.as_os_str().is_empty()) {
             std::fs::create_dir_all(parent)?;
         }

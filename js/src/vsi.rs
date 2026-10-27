@@ -139,20 +139,24 @@ fn cancel_body(value: &JsValue) {
     }
 }
 
-/// Streams HTML only as far as its sniff/size limits, matching the native reader.
-async fn html_body(response: &JsValue, lister: &RemoteLister) -> Result<Vec<u8>, JsError> {
-    const LIMIT: usize = RemoteLister::HTML_BODY_LIMIT;
+/// Streams listing pages only as far as their size limits, matching the native reader.
+async fn listing_body(response: &JsValue, lister: &RemoteLister) -> Result<Vec<u8>, JsError> {
+    let limit = if lister.is_html() { RemoteLister::HTML_BODY_LIMIT } else { RemoteLister::OBJECT_BODY_LIMIT };
+    let size_error = if lister.is_html() { "HTTP directory index exceeds 4 MiB" } else { "object-store listing page exceeds 16 MiB" };
     let headers = get(response, "headers");
     let header = |name: &str| -> Option<String> {
         get(&headers, "get").dyn_into::<js_sys::Function>().ok()?.call1(&headers, &name.into()).ok()?.as_string()
     };
     let body = get(response, "body");
-    if header("content-length").and_then(|s| s.parse::<usize>().ok()).is_some_and(|n| n > LIMIT) {
+    if header("content-length").and_then(|s| s.parse::<usize>().ok()).is_some_and(|n| n > limit) {
         cancel_body(&body);
-        return Err(JsError::new("HTTP directory index exceeds 4 MiB"));
+        return Err(JsError::new(size_error));
     }
     let content_type = header("content-type").unwrap_or_default().to_ascii_lowercase();
-    if !content_type.is_empty() && !(content_type.starts_with("text/html") || content_type.starts_with("application/xhtml+xml")) {
+    if lister.is_html()
+        && !content_type.is_empty()
+        && !(content_type.starts_with("text/html") || content_type.starts_with("application/xhtml+xml"))
+    {
         cancel_body(&body);
         return Err(JsError::new("not a listable HTML directory index"));
     }
@@ -161,7 +165,7 @@ async fn html_body(response: &JsValue, lister: &RemoteLister) -> Result<Vec<u8>,
     let reader = get_reader.call0(&body).map_err(js_error)?;
     let read = get(&reader, "read").dyn_into::<js_sys::Function>().map_err(|_| JsError::new("HTML response has no stream reader"))?;
     let mut data = Vec::new();
-    let mut sniffed = false;
+    let mut sniffed = !lister.is_html();
     loop {
         let promise = read.call0(&reader).map_err(js_error)?.dyn_into::<js_sys::Promise>().map_err(js_error)?;
         let chunk = JsFuture::from(promise).await.map_err(js_error)?;
@@ -174,9 +178,9 @@ async fn html_body(response: &JsValue, lister: &RemoteLister) -> Result<Vec<u8>,
         let value =
             get(&chunk, "value").dyn_into::<js_sys::Uint8Array>().map_err(|_| JsError::new("HTML stream returned a non-byte chunk"))?;
         let length = value.length() as usize;
-        if length > LIMIT - data.len() {
+        if length > limit - data.len() {
             cancel_body(&reader);
-            return Err(JsError::new("HTTP directory index exceeds 4 MiB"));
+            return Err(JsError::new(size_error));
         }
         let start = data.len();
         data.resize(start + length, 0);
@@ -227,17 +231,7 @@ pub async fn list_url(url: String, options: JsValue) -> Result<JsValue, JsError>
             cancel_body(&get(&resp, "body"));
             lister.feed(status, &[]).map_err(|e| JsError::new(&format!("{}: {e}", next.split('?').next().unwrap_or_default())))?;
         }
-        let data = if lister.is_html() {
-            html_body(&resp, &lister).await?
-        } else {
-            let body =
-                get(&resp, "arrayBuffer").dyn_into::<js_sys::Function>().map_err(|_| JsError::new("the response has no arrayBuffer()"))?;
-            let buf =
-                JsFuture::from(body.call0(&resp).map_err(js_error)?.dyn_into::<js_sys::Promise>().map_err(|_| JsError::new("no body"))?)
-                    .await
-                    .map_err(js_error)?;
-            js_sys::Uint8Array::new(&buf).to_vec()
-        };
+        let data = listing_body(&resp, &lister).await?;
         requests += 1;
         bytes += data.len() as u64;
         lister.feed(status, &data).map_err(|e| JsError::new(&format!("{}: {e}", next.split('?').next().unwrap_or_default())))?;

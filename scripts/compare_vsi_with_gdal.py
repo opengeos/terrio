@@ -388,7 +388,7 @@ def s3_cases(terrio: str, source: Path, work: Path) -> None:
            f"{len(a)} objects identical; requests: terrio {counts['terrio upload']}, GDAL {counts['gdal upload']}" if a == b else f"terrio {sorted(a)[:5]} vs GDAL {sorted(b)[:5]}")
     for name, (tool, e) in tools.items():
         store.log.clear()
-        listing(tool, f"/vsis3/terrio/data", e)
+        listing(tool, "/vsis3/terrio/data", e)
         counts[f"{name} list"] = len(store.log)
     try:
         ours = keyed(listing([terrio, "vsi"], "/vsis3/terrio/data", env), True)
@@ -411,7 +411,7 @@ def s3_cases(terrio: str, source: Path, work: Path) -> None:
         store.log.clear()
         second = run(tool + ["sync", "-r", "-q", f"{source}/", f"/vsis3/{name}/synced"], e)
         counts[f"{name} sync succeeded"] = first.returncode == second.returncode == 0
-        counts[f"{name} resync"] = sum(1 for l in store.log if l.startswith("PUT"))
+        counts[f"{name} resync"] = sum(1 for line in store.log if line.startswith("PUT"))
     a, b = keys("terrio", "synced/"), keys("gdal", "synced/")
     record("S3 sync (timestamp), then again", a == b and bool(a) and counts["terrio sync succeeded"] and counts["gdal sync succeeded"]
            and counts["terrio resync"] == counts["gdal resync"] == 0,
@@ -454,6 +454,20 @@ def s3_cases(terrio: str, source: Path, work: Path) -> None:
         refused_files.append(result.returncode != 0 and "single_file" in keys(name))
     record("S3 recursive delete refuses a lone exact object", all(refused_files),
            "both commands fail and retain the exact object when no directory children exist")
+    # Repeated nested tar members must not repeat writes of the same marker key.
+    tar_source = work / "nested-marker.tar"
+    with tarfile.open(tar_source, "w") as archive:
+        for index in range(100):
+            archive.add(source_files[index % len(source_files)], arcname=f"nested/member-{index}.tif")
+    markers = []
+    for name, (tool, e) in tools.items():
+        store.log.clear()
+        result = run(tool + ["sync", "-q", f"/vsitar/{tar_source}/", f"/vsis3/{name}/tar-sync"], e)
+        marker_writes = sum(line == f"PUT /{name}/tar-sync/nested/" for line in store.log)
+        markers.append(result.returncode == 0 and f"{name}/tar-sync/nested/" in store.objects
+                       and (name != "terrio" or marker_writes == 1))
+    record("nonrecursive tar sync creates each S3 directory marker once", all(markers),
+           "100 nested real-file members retain the directory without repeated Terrio marker PUTs")
     # Refusals.
     p = run([terrio, "vsi", "delete", "-r", "/vsis3/terrio"], env)
     record("S3 whole-bucket delete refused", p.returncode != 0 and "dirkeep" in keys("terrio"), (p.stderr.strip() or "accepted")[-200:])

@@ -5,13 +5,22 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import compare_vsi_with_gdal as comparison
+import conformance
 
 
 class VsiConformanceTests(unittest.TestCase):
+    def test_empty_killed_comparison_is_an_error(self):
+        context = SimpleNamespace(data="data", terrio="terrio", remote=False)
+        with patch.object(conformance.shutil, "which", return_value="gdal"), patch.object(conformance, "run", return_value=(-9, "", "")):
+            suite = conformance.suite_vsi(context)
+        self.assertIn("-9", suite.error)
+        self.assertFalse(suite.cases)
+
     def test_zip_transfer_always_records_missing_or_failed_evidence(self):
         for code, stderr, status in [
             (1, "4 HTTP request(s), 32000 bytes", "differs"),

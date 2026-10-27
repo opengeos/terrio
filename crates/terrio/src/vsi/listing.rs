@@ -490,6 +490,9 @@ pub struct RemoteLister {
 }
 
 impl RemoteLister {
+    /// Maximum buffered XML response for one object-store listing page.
+    pub const OBJECT_BODY_LIMIT: usize = 16 * 1024 * 1024;
+
     /// Maximum HTML directory-index body buffered by native and browser readers.
     pub const HTML_BODY_LIMIT: usize = 4 << 20;
     /// Prefix examined to distinguish an HTML index from binary/ordinary web content.
@@ -596,6 +599,13 @@ impl RemoteLister {
             }
             self.done = self.html_pending.is_empty();
             return Ok(());
+        }
+        if body.len() > Self::OBJECT_BODY_LIMIT {
+            return Err(Error::InvalidData("object-store listing page exceeds 16 MiB".into()));
+        }
+        let xml = body.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(body);
+        if !xml.trim_ascii_start().starts_with(b"<") {
+            return Err(Error::InvalidData("not an XML object-store listing".into()));
         }
         if self.max_depth == usize::MAX {
             self.token = self.api.read_page(body, &mut self.out, &mut self.index);
@@ -840,5 +850,19 @@ mod tests {
             assert_eq!(parse_http_date(value), None, "{value}");
         }
         assert!(parse_http_date("Thu, 29 Feb 2024 01:00:00 GMT").is_some());
+    }
+}
+
+#[cfg(test)]
+mod response_limit_tests {
+    use super::RemoteLister;
+
+    #[test]
+    fn object_store_rejects_non_xml_and_oversized_pages() {
+        for body in [b"not XML".to_vec(), vec![b' '; RemoteLister::OBJECT_BODY_LIMIT + 1]] {
+            let mut lister = RemoteLister::new("s3://bucket/dir", true, None).unwrap();
+            lister.next_url().unwrap();
+            assert!(lister.feed(200, &body).is_err());
+        }
     }
 }

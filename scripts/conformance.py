@@ -492,7 +492,7 @@ def suite_vsi(ctx):
     try:
         results = json.loads(out)
     except json.JSONDecodeError:
-        suite.error = tail(err or out)
+        suite.error = tail(err or out) or f"comparison exited {code} without valid JSON"
         return suite
     for result in results:
         suite.cases.append(Case("vsi", result["name"], result["status"], result["detail"]))

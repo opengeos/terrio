@@ -88,7 +88,7 @@ fn list_pages_api(api: Api, recursive: bool, max: Option<u32>, allow_partial: bo
                 client.refused_ok = true;
                 client.query = format!("?{}", api.query_limited(token.as_deref(), recursive, max));
                 client.url = format!("{}{}", client.url, client.query);
-                let fetched = client.fetch(None)?;
+                let fetched = client.fetch_range_limited(None, Some(crate::vsi::RemoteLister::OBJECT_BODY_LIMIT))?;
                 // A signed request refused: the credentials may not allow s3:ListBucket. Not
                 // listable, rather than failing again.
                 if fetched.status == 403 && client.s3.as_ref().is_some_and(|a| a.creds.is_some()) {
@@ -138,7 +138,7 @@ fn list_pages_api(api: Api, recursive: bool, max: Option<u32>, allow_partial: bo
 fn list_get(url: &str) -> Result<Option<Vec<u8>>> {
     let mut client = Client::new(&Remote::Url(url.to_string()), HttpOptions::from_env());
     client.missing_ok = true;
-    let fetched = client.fetch(None)?;
+    let fetched = client.fetch_range_limited(None, Some(crate::vsi::RemoteLister::OBJECT_BODY_LIMIT))?;
     // Azure starts its XML with a byte order mark.
     let data = fetched.data.strip_prefix(b"\xEF\xBB\xBF").map(<[u8]>::to_vec).unwrap_or(fetched.data);
     if matches!(fetched.status, 403 | 404) || !data.trim_ascii_start().starts_with(b"<") {

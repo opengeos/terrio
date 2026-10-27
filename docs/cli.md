@@ -1235,7 +1235,7 @@ the file system returns them); dates are UTC (a zip member's date is its stored 
 GDAL prints it); HTTP index names stay percent-encoded, as GDAL keeps them. Not supported:
 `sync -j/--num-threads` (requests are sequential, including one S3 delete request per key), multipart uploads (objects over 5 GiB), Azure
 shared-key authentication, writing to Google Cloud Storage's own API, empty directory
-creation outside S3 (S3 uses marker keys), progress bars, and the virtual file
+creation on destinations that cannot represent them (local directories are supported; S3 uses marker keys), progress bars, and the virtual file
 systems `/vsigzip/`, `/vsi7z/`, `/vsirar/`, `/vsiswift/`, `/vsioss/`, `/vsiadls/`, `/vsihdfs/`
 and `/vsiwebhdfs/`.
 
@@ -1545,3 +1545,5 @@ point tie points and rotated affine transforms, without moving pixel corners.
 Writing a PixelIsPoint GeoTIFF requires a CRS. A write with an unknown CRS is
 rejected before creating the file, avoiding a half-pixel origin shift without
 a corresponding raster-type GeoKey.
+
+Remote listings limit each HTML index to 4 MiB and each object-store XML page to 16 MiB; larger pages fail explicitly.
