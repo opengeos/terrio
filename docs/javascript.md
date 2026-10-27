@@ -366,3 +366,7 @@ and no request signing: tar archives, local files, signed S3 requests and writes
 are available in the native CLI, Rust and Python only. `/vsimem/` files carry no dates, so
 `vsiSync` compares content when an in-memory endpoint lacks a timestamp. In browsers, a store must allow the
 page's origin (CORS) for `listUrl`.
+
+HTML index responses use a readable byte stream, a 4 KiB sniff prefix and a 4 MiB body
+limit, matching the native path. Binary/ordinary web content is refused; custom `fetch`
+implementations must return a standard `Response`. Object-store XML pagination is unchanged.

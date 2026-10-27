@@ -1003,7 +1003,18 @@ impl Drop for HtmlCacheScope {
 // --- Reading and writing files ----------------------------------------------------------------
 
 /// Copies a file's bytes into `out`.
+/// Byte operations do not open pipes, sockets or devices as ordinary files.
+fn check_regular_source(node: &Node) -> Result<()> {
+    if let Node::Local(path) = node
+        && !std::fs::metadata(path)?.is_file()
+    {
+        return Err(Error::Unsupported(format!("'{}': only regular files can be copied or read", path.display())));
+    }
+    Ok(())
+}
+
 fn read_into(node: &Node, out: &mut dyn Write) -> Result<u64> {
+    check_regular_source(node)?;
     match node {
         Node::Local(p) => {
             let mut f = std::fs::File::open(p).map_err(|e| io_context(e, &p.display().to_string()))?;
@@ -1103,6 +1114,7 @@ fn write_local_atomic(path: &Path, fill: impl FnOnce(&mut std::fs::File) -> Resu
 
 /// Copies one file from `src` to `dst`; returns the bytes copied.
 fn copy_file(src: &Node, dst: &Node, known_size: Option<u64>) -> Result<u64> {
+    check_regular_source(src)?;
     #[cfg(not(remote))]
     let _ = known_size;
     if let Some(reason) = dst.read_only_reason() {
@@ -1499,7 +1511,7 @@ fn archive_target(root: &Node, name: &str) -> Result<Node> {
 
 fn checked_child_target(root: &Node, name: &str, portable: bool) -> Result<Node> {
     if unsafe_destination_name(root, name, portable) {
-        return Err(Error::InvalidArgument("refusing archive path traversal in copy source".into()));
+        return Err(Error::InvalidArgument("refusing unsafe path traversal in copy source".into()));
     }
     let target = root.join(name);
     if let (Node::Local(root), Node::Local(path)) = (root, &target) {
@@ -1614,7 +1626,7 @@ fn copy_tar_reader(
             continue;
         }
         if unsafe_relative(relative) {
-            return Err(Error::InvalidArgument("refusing archive path traversal in copy source".into()));
+            return Err(Error::InvalidArgument("refusing unsafe path traversal in copy source".into()));
         }
         let target = archive_target(dst, relative)?;
         if sync.is_some_and(|o| !o.recursive) && relative.contains('/') {
@@ -1702,7 +1714,7 @@ fn copy_tree(src: &Node, dst: &Node, skip_errors: bool, sync: Option<&SyncOption
     // Archive extraction retains its stricter guard; slash traversal is refused everywhere.
     let portable = matches!(src, Node::Archive { .. }) || cfg!(windows) && matches!(dst, Node::Local(_));
     if entries.iter().any(|e| unsafe_destination_name(dst, &e.name, portable)) {
-        return Err(Error::InvalidArgument("refusing archive path traversal in copy source".into()));
+        return Err(Error::InvalidArgument("refusing unsafe path traversal in copy source".into()));
     }
     let target_entries = match sync {
         Some(_) => match stat_node(dst)? {
@@ -1744,6 +1756,13 @@ fn copy_tree(src: &Node, dst: &Node, skip_errors: bool, sync: Option<&SyncOption
                 report.errors.push((display_node(&to), err.to_string()));
             }
             continue;
+        }
+        if let Err(error) = check_regular_source(&from) {
+            if skip_errors {
+                report.errors.push((display_node(&from), error.to_string()));
+                continue;
+            }
+            return Err(error);
         }
         if let Some(options) = sync {
             let target = target_index.get(e.name.as_str()).filter(|t| !t.is_dir());
@@ -1964,6 +1983,9 @@ fn check_copy_move_source(node: &Node) -> Result<()> {
                 return Err(Error::Unsupported(
                     "copy-delete moves of symbolic links are not supported; use a local filesystem rename".into(),
                 ));
+            }
+            if !meta.is_dir() && !meta.is_file() {
+                return Err(Error::Unsupported(format!("'{}': copy-delete moves require regular files and directories", path.display())));
             }
             if meta.is_dir() {
                 for entry in std::fs::read_dir(path)? {

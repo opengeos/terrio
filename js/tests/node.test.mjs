@@ -1820,13 +1820,13 @@ test("vsi: listUrl lists object stores and HTML index pages through fetch", asyn
       "<LastModified>2024-01-01T01:42:27.000Z</LastModified></Contents><NextContinuationToken>t2</NextContinuationToken></ListBucketResult>",
     "https://bkt.s3.amazonaws.com/?continuation-token=t2&list-type=2&prefix=dir%2F":
       "<ListBucketResult><Contents><Key>dir/c.tif</Key><Size>7</Size></Contents></ListBucketResult>",
-    "https://example.com/data/": '<a href="../">up</a><a href="x.tif">x</a><a href="sub/">sub</a>',
-    "https://example.com/data/sub/": '<a href="y.tif">y</a>',
+    "https://example.com/data/": '<title>Index of /data</title><a href="../">up</a><a href="x.tif">x</a><a href="sub/">sub</a>',
+    "https://example.com/data/sub/": '<title>Index of /data/sub</title><a href="y.tif">y</a>',
   };
   const seen = [];
   const fetch = async (url) => {
     seen.push(url);
-    return url in pages ? new Response(pages[url], { status: 200 }) : new Response("missing", { status: 404 });
+    return url in pages ? new Response(pages[url], { status: 200, headers: {"Content-Type": url.startsWith("https://example.com") ? "text/html" : "application/xml"} }) : new Response("missing", { status: 404 });
   };
   const s3 = await terrio.listUrl("s3://bkt/dir", { recursive: true, fetch });
   assert.deepEqual(s3.entries.map(e => [e.name, e.size]), [["a", null], ["a/b.tif", 5], ["c.tif", 7]]);
@@ -1885,4 +1885,32 @@ test("vector dataset commands: rename, edit and key update preserve source datas
   assert.equal(updated.info().layers[0].feature_count, 3);
   assert.equal(renamed.info().layers[0].feature_count, 2);
   assert.throws(() => terrio.editVector(original, {metadata: ["A=B"]}), /unknown field/);
+});
+
+
+test("vsi: HTML listing cancels binary and oversized streams", async () => {
+  let canceled = false;
+  let reads = 0;
+  const binary = new ReadableStream({
+    pull(controller) { reads++; controller.enqueue(new Uint8Array(4096)); },
+    cancel() { canceled = true; },
+  }, {highWaterMark: 0});
+  await assert.rejects(terrio.listUrl("https://example.test/binary", {fetch: async () => new Response(binary)}), /not a listable/);
+  assert.equal(reads, 1);
+  assert.equal(canceled, true);
+  await assert.rejects(terrio.listUrl("https://example.test/large", {
+    fetch: async () => new Response("<title>Index of /</title><a href='x'>x</a>", {headers: {"Content-Type": "text/html", "Content-Length": String(8 << 20)}}),
+  }), /4 MiB/);
+  let sent = 0;
+  const oversized = new ReadableStream({
+    pull(controller) {
+      const block = new Uint8Array(65536).fill(32);
+      if (sent++ === 0) block.set(new TextEncoder().encode("<title>Index of /</title><a href='x'>x</a>"));
+      controller.enqueue(block);
+    },
+  }, {highWaterMark: 0});
+  await assert.rejects(terrio.listUrl("https://example.test/stream", {
+    fetch: async () => new Response(oversized, {headers: {"Content-Type": "text/html"}}),
+  }), /4 MiB/);
+  assert.equal(sent, 65);
 });

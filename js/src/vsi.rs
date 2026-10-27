@@ -133,13 +133,72 @@ fn js_error(e: JsValue) -> JsError {
     JsError::new(&msg)
 }
 
+fn cancel_body(value: &JsValue) {
+    if let Ok(cancel) = get(value, "cancel").dyn_into::<js_sys::Function>() {
+        let _ = cancel.call0(value);
+    }
+}
+
+/// Streams HTML only as far as its sniff/size limits, matching the native reader.
+async fn html_body(response: &JsValue, lister: &RemoteLister) -> Result<Vec<u8>, JsError> {
+    const LIMIT: usize = RemoteLister::HTML_BODY_LIMIT;
+    let headers = get(response, "headers");
+    let header = |name: &str| -> Option<String> {
+        get(&headers, "get").dyn_into::<js_sys::Function>().ok()?.call1(&headers, &name.into()).ok()?.as_string()
+    };
+    let body = get(response, "body");
+    if header("content-length").and_then(|s| s.parse::<usize>().ok()).is_some_and(|n| n > LIMIT) {
+        cancel_body(&body);
+        return Err(JsError::new("HTTP directory index exceeds 4 MiB"));
+    }
+    let content_type = header("content-type").unwrap_or_default().to_ascii_lowercase();
+    if !content_type.is_empty() && !(content_type.starts_with("text/html") || content_type.starts_with("application/xhtml+xml")) {
+        cancel_body(&body);
+        return Err(JsError::new("not a listable HTML directory index"));
+    }
+    let get_reader =
+        get(&body, "getReader").dyn_into::<js_sys::Function>().map_err(|_| JsError::new("HTML response needs a readable byte stream"))?;
+    let reader = get_reader.call0(&body).map_err(js_error)?;
+    let read = get(&reader, "read").dyn_into::<js_sys::Function>().map_err(|_| JsError::new("HTML response has no stream reader"))?;
+    let mut data = Vec::new();
+    let mut sniffed = false;
+    loop {
+        let promise = read.call0(&reader).map_err(js_error)?.dyn_into::<js_sys::Promise>().map_err(js_error)?;
+        let chunk = JsFuture::from(promise).await.map_err(js_error)?;
+        if get(&chunk, "done").as_bool().unwrap_or(false) {
+            if !sniffed {
+                lister.check_html_prefix(&data).map_err(js_err)?;
+            }
+            return Ok(data);
+        }
+        let value =
+            get(&chunk, "value").dyn_into::<js_sys::Uint8Array>().map_err(|_| JsError::new("HTML stream returned a non-byte chunk"))?;
+        let length = value.length() as usize;
+        if length > LIMIT - data.len() {
+            cancel_body(&reader);
+            return Err(JsError::new("HTTP directory index exceeds 4 MiB"));
+        }
+        let start = data.len();
+        data.resize(start + length, 0);
+        value.copy_to(&mut data[start..]);
+        if !sniffed && data.len() >= RemoteLister::HTML_SNIFF_BYTES {
+            if let Err(error) = lister.check_html_prefix(&data) {
+                cancel_body(&reader);
+                return Err(js_err(error));
+            }
+            sniffed = true;
+        }
+    }
+}
+
 /// Lists a remote directory with `fetch`, as `gdal vsi list` lists `/vsis3/`, `/vsigs/`,
 /// `/vsiaz/` and `/vsicurl/`: public S3 buckets (`s3://bucket/dir`), Google Cloud Storage
 /// (`gs://`), Azure Blob Storage (`https://account.blob.core.windows.net/container/dir?<SAS>`)
 /// and HTML index pages of plain HTTP servers. Options: `recursive`, `depth`, `fetch` (instead of
 /// `globalThis.fetch`), `headers`. Returns `{entries, requests, bytes}`.
 ///
-/// In browsers, the store must allow the page's origin (CORS).
+/// In browsers, the store must allow the page's origin (CORS). HTML indexes are streamed,
+/// checked with a 4 KiB sniff prefix and limited to 4 MiB; custom fetch must return a Response.
 #[wasm_bindgen(js_name = listUrl)]
 pub async fn list_url(url: String, options: JsValue) -> Result<JsValue, JsError> {
     let opt = |k: &str| if options.is_object() { get(&options, k) } else { JsValue::UNDEFINED };
@@ -164,12 +223,21 @@ pub async fn list_url(url: String, options: JsValue) -> Result<JsValue, JsError>
             .map_err(|_| JsError::new("fetch did not return a promise"))?;
         let resp = JsFuture::from(promise).await.map_err(js_error)?;
         let status = get(&resp, "status").as_f64().unwrap_or(0.0) as u16;
-        let body = get(&resp, "arrayBuffer");
-        let body: js_sys::Function = body.dyn_into().map_err(|_| JsError::new("the response has no arrayBuffer()"))?;
-        let buf = JsFuture::from(body.call0(&resp).map_err(js_error)?.dyn_into::<js_sys::Promise>().map_err(|_| JsError::new("no body"))?)
-            .await
-            .map_err(js_error)?;
-        let data = js_sys::Uint8Array::new(&buf).to_vec();
+        if !(200..300).contains(&status) {
+            cancel_body(&get(&resp, "body"));
+            lister.feed(status, &[]).map_err(|e| JsError::new(&format!("{}: {e}", next.split('?').next().unwrap_or_default())))?;
+        }
+        let data = if lister.is_html() {
+            html_body(&resp, &lister).await?
+        } else {
+            let body =
+                get(&resp, "arrayBuffer").dyn_into::<js_sys::Function>().map_err(|_| JsError::new("the response has no arrayBuffer()"))?;
+            let buf =
+                JsFuture::from(body.call0(&resp).map_err(js_error)?.dyn_into::<js_sys::Promise>().map_err(|_| JsError::new("no body"))?)
+                    .await
+                    .map_err(js_error)?;
+            js_sys::Uint8Array::new(&buf).to_vec()
+        };
         requests += 1;
         bytes += data.len() as u64;
         lister.feed(status, &data).map_err(|e| JsError::new(&format!("{}: {e}", next.split('?').next().unwrap_or_default())))?;

@@ -162,12 +162,12 @@ pub(crate) fn list_html(url: &str) -> Result<Option<Vec<ObjectEntry>>> {
     if !content_type.is_empty() && !(content_type.starts_with("text/html") || content_type.starts_with("application/xhtml+xml")) {
         return Ok(None);
     }
-    const MAX_HTML_BYTES: u64 = 4 << 20;
+    const MAX_HTML_BYTES: u64 = crate::vsi::RemoteLister::HTML_BODY_LIMIT as u64;
     let mut data = Vec::new();
     let mut reader = response.into_body().into_reader();
     // An untyped binary is not an HTML index; sniff a bounded prefix before buffering it.
-    reader.by_ref().take(4096).read_to_end(&mut data)?;
-    if !looks_like_index(&data) {
+    reader.by_ref().take(crate::vsi::RemoteLister::HTML_SNIFF_BYTES as u64).read_to_end(&mut data)?;
+    if !crate::vsi::listing::looks_like_index(&data) {
         super::BYTES.fetch_add(data.len() as u64, Ordering::Relaxed);
         return Ok(None);
     }
@@ -182,11 +182,6 @@ pub(crate) fn list_html(url: &str) -> Result<Option<Vec<ObjectEntry>>> {
     let mut out = Vec::new();
     api.read_page(&data, &mut out, &mut Default::default());
     Ok(Some(out))
-}
-
-fn looks_like_index(data: &[u8]) -> bool {
-    let head = String::from_utf8_lossy(data).to_ascii_lowercase();
-    ["<title>index of", "<h1>index of", "directory listing for", "<!-- autoindex"].iter().any(|tag| head.contains(tag))
 }
 
 /// The size, date and entity tag of a remote object, from a one-byte range request; `None` when

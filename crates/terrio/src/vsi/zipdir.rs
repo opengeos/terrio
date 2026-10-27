@@ -16,7 +16,7 @@ pub(crate) const LOCAL: u32 = 0x0403_4b50;
 /// An entry of the central directory.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct CdEntry {
-    /// The member's name as stored (UTF-8, or CP437 read as Latin-1 when not flagged UTF-8).
+    /// The member name as UTF-8, with CP437 fallback for unflagged non-UTF-8 names.
     pub name: String,
     pub flags: u16,
     /// 0: stored, 8: deflate.
@@ -69,12 +69,27 @@ fn read_at(r: &mut dyn ReadSeek, offset: u64, len: usize) -> Result<Vec<u8>> {
     Ok(buf)
 }
 
-/// A name's bytes as text: UTF-8 when flagged (or valid), else each byte as a character.
+/// Unicode mappings for the high half of legacy code page 437.
+const CP437: [char; 128] = [
+    '\u{c7}', '\u{fc}', '\u{e9}', '\u{e2}', '\u{e4}', '\u{e0}', '\u{e5}', '\u{e7}', '\u{ea}', '\u{eb}', '\u{e8}', '\u{ef}', '\u{ee}',
+    '\u{ec}', '\u{c4}', '\u{c5}', '\u{c9}', '\u{e6}', '\u{c6}', '\u{f4}', '\u{f6}', '\u{f2}', '\u{fb}', '\u{f9}', '\u{ff}', '\u{d6}',
+    '\u{dc}', '\u{a2}', '\u{a3}', '\u{a5}', '\u{20a7}', '\u{192}', '\u{e1}', '\u{ed}', '\u{f3}', '\u{fa}', '\u{f1}', '\u{d1}', '\u{aa}',
+    '\u{ba}', '\u{bf}', '\u{2310}', '\u{ac}', '\u{bd}', '\u{bc}', '\u{a1}', '\u{ab}', '\u{bb}', '\u{2591}', '\u{2592}', '\u{2593}',
+    '\u{2502}', '\u{2524}', '\u{2561}', '\u{2562}', '\u{2556}', '\u{2555}', '\u{2563}', '\u{2551}', '\u{2557}', '\u{255d}', '\u{255c}',
+    '\u{255b}', '\u{2510}', '\u{2514}', '\u{2534}', '\u{252c}', '\u{251c}', '\u{2500}', '\u{253c}', '\u{255e}', '\u{255f}', '\u{255a}',
+    '\u{2554}', '\u{2569}', '\u{2566}', '\u{2560}', '\u{2550}', '\u{256c}', '\u{2567}', '\u{2568}', '\u{2564}', '\u{2565}', '\u{2559}',
+    '\u{2558}', '\u{2552}', '\u{2553}', '\u{256b}', '\u{256a}', '\u{2518}', '\u{250c}', '\u{2588}', '\u{2584}', '\u{258c}', '\u{2590}',
+    '\u{2580}', '\u{3b1}', '\u{df}', '\u{393}', '\u{3c0}', '\u{3a3}', '\u{3c3}', '\u{b5}', '\u{3c4}', '\u{3a6}', '\u{398}', '\u{3a9}',
+    '\u{3b4}', '\u{221e}', '\u{3c6}', '\u{3b5}', '\u{2229}', '\u{2261}', '\u{b1}', '\u{2265}', '\u{2264}', '\u{2320}', '\u{2321}',
+    '\u{f7}', '\u{2248}', '\u{b0}', '\u{2219}', '\u{b7}', '\u{221a}', '\u{207f}', '\u{b2}', '\u{25a0}', '\u{a0}',
+];
+
+/// A name as text: UTF-8 when flagged (or valid), otherwise legacy CP437.
 pub(crate) fn decode_name(bytes: &[u8], utf8: bool) -> String {
     match std::str::from_utf8(bytes) {
         Ok(s) => s.to_string(),
         Err(_) if utf8 => String::from_utf8_lossy(bytes).into_owned(),
-        Err(_) => bytes.iter().map(|&b| b as char).collect(),
+        Err(_) => bytes.iter().map(|&b| if b < 128 { b as char } else { CP437[usize::from(b - 128)] }).collect(),
     }
 }
 
@@ -247,6 +262,14 @@ impl std::io::Write for Crc32Writer<'_> {
 mod tests {
     use super::*;
     use std::io::Write;
+
+    #[test]
+    fn legacy_non_utf8_names_use_cp437() {
+        assert_eq!(decode_name(b"caf\x82.tif", false), "café.tif");
+        assert_eq!(decode_name(b"\xb0\xdb.tif", false), "░█.tif");
+        assert_eq!(decode_name("café.tif".as_bytes(), true), "café.tif");
+        assert_eq!(decode_name(b"plain.tif", false), "plain.tif");
+    }
 
     #[test]
     fn corrupt_dos_timestamps_are_not_reported_as_valid_dates() {

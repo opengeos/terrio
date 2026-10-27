@@ -1239,6 +1239,11 @@ creation outside S3 (S3 uses marker keys), progress bars, and the virtual file
 systems `/vsigzip/`, `/vsi7z/`, `/vsirar/`, `/vsiswift/`, `/vsioss/`, `/vsiadls/`, `/vsihdfs/`
 and `/vsiwebhdfs/`.
 
+Byte copies and copy-delete moves refuse pipes, sockets and devices. Recursive copies with
+`--skip-errors` report those entries and continue with regular files. ZIP member names retain
+valid UTF-8; unflagged non-UTF-8 legacy names are decoded as CP437 into Unicode. GDAL can instead emit
+raw non-UTF-8 bytes for those names.
+
 ## fill-nodata
 
 ```sh

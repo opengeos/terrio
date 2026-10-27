@@ -70,6 +70,11 @@ fn with_slash(p: &str) -> String {
     if p.is_empty() { String::new() } else { format!("{}/", p.trim_end_matches('/')) }
 }
 
+pub(crate) fn looks_like_index(data: &[u8]) -> bool {
+    let head = String::from_utf8_lossy(data).to_ascii_lowercase();
+    ["<title>index of", "<h1>index of", "directory listing for", "<!-- autoindex"].iter().any(|tag| head.contains(tag))
+}
+
 /// Percent-encodes everything but `A-Z a-z 0-9 - _ . ~` (and `/` unless `encode_slash`).
 pub(crate) fn uri_encode(s: &str, encode_slash: bool) -> String {
     let mut out = String::with_capacity(s.len());
@@ -485,6 +490,23 @@ pub struct RemoteLister {
 }
 
 impl RemoteLister {
+    /// Maximum HTML directory-index body buffered by native and browser readers.
+    pub const HTML_BODY_LIMIT: usize = 4 << 20;
+    /// Prefix examined to distinguish an HTML index from binary/ordinary web content.
+    pub const HTML_SNIFF_BYTES: usize = 4096;
+    /// Whether responses are plain HTTP directory index pages rather than object-store XML.
+    pub fn is_html(&self) -> bool {
+        matches!(self.api, Api::Html { .. })
+    }
+
+    /// Checks a bounded HTML sniff prefix before a host buffers the rest of the response.
+    pub fn check_html_prefix(&self, prefix: &[u8]) -> Result<()> {
+        if self.is_html() && !looks_like_index(&prefix[..prefix.len().min(Self::HTML_SNIFF_BYTES)]) {
+            return Err(Error::Unsupported("not a listable HTML directory index".into()));
+        }
+        Ok(())
+    }
+
     /// A listing of `url` (`https://...`, `gs://bucket/dir`, `az://account/container/dir`, or
     /// `s3://bucket/dir` as its unsigned virtual-hosted URL), recursive or not, to `depth` levels.
     pub fn new(url: &str, recursive: bool, depth: Option<usize>) -> Result<Self> {
@@ -546,6 +568,15 @@ impl RemoteLister {
             return Err(Error::Http(format!("listing refused or missing (status {status})")));
         }
         self.pages += 1;
+        if self.is_html() {
+            if body.len() > Self::HTML_BODY_LIMIT {
+                return Err(Error::InvalidData("HTTP directory index exceeds 4 MiB".into()));
+            }
+            self.check_html_prefix(body)?;
+            if !String::from_utf8_lossy(body).to_ascii_lowercase().contains("<a ") {
+                return Err(Error::Unsupported("not a listable HTML directory index".into()));
+            }
+        }
         if let Api::Html { url } = &self.api {
             let (rel, level) = self.html_current.take().unwrap_or_default();
             let page_url = if rel.is_empty() { url.clone() } else { format!("{}/{rel}", url.trim_end_matches('/')) };
@@ -769,9 +800,9 @@ mod tests {
 
         let mut l = RemoteLister::new("https://example.com/data", true, Some(2)).unwrap();
         assert_eq!(l.next_url().unwrap(), "https://example.com/data/");
-        l.feed(200, br#"<a href="x.tif">x</a><a href="sub/">sub</a>"#).unwrap();
+        l.feed(200, br#"<title>Index of /</title><a href="x.tif">x</a><a href="sub/">sub</a>"#).unwrap();
         assert_eq!(l.next_url().unwrap(), "https://example.com/data/sub/");
-        l.feed(200, br#"<a href="y.tif">y</a><a href="deeper/">d</a>"#).unwrap();
+        l.feed(200, br#"<title>Index of /sub</title><a href="y.tif">y</a><a href="deeper/">d</a>"#).unwrap();
         assert_eq!(l.next_url(), None);
         let names: Vec<String> = l.finish().into_iter().map(|e| e.name).collect();
         assert_eq!(names, ["sub", "sub/deeper", "sub/y.tif", "x.tif"]);

@@ -909,3 +909,19 @@ fn recursive_memory_delete_refuses_dot_segments_before_mutation() {
     crate::memfs::remove_file(Path::new("/vsimem/terrio-vsi-delete-dot/safe.txt"));
     crate::memfs::remove_file(Path::new("/vsimem/terrio-vsi-delete-dot/nested/../outside.txt"));
 }
+
+#[cfg(unix)]
+#[test]
+fn recursive_copy_reports_special_files_without_opening_them() {
+    let (tmp, source) = tree();
+    let pipe = source.join("pipe");
+    assert!(std::process::Command::new("mkfifo").arg(&pipe).status().unwrap().success());
+    let target = tmp.path().join("target");
+    let report = copy(&s(&source), &s(&target), &CopyOptions { recursive: true, skip_errors: true }).unwrap();
+    assert_eq!(report.copied, 3);
+    assert_eq!(report.errors.len(), 1);
+    assert!(report.errors[0].1.contains("regular files"));
+    assert!(!target.join("pipe").exists());
+    assert!(check_copy_move_source(&Node::Local(source.clone())).unwrap_err().to_string().contains("regular files"));
+    assert!(source.join("x.txt").is_file());
+}
