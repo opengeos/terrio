@@ -222,6 +222,12 @@ fn ok(endpoint: &str, dir: &Path, args: &[&str]) -> String {
     String::from_utf8(out.stdout).unwrap()
 }
 
+/// The directory as the CLI, run inside it, sees it: macOS temp dirs sit behind the
+/// `/var` -> `/private/var` link, while canonicalizing on Windows would add a `\\?\` prefix.
+fn real(dir: &Path) -> std::path::PathBuf {
+    if cfg!(windows) { dir.to_path_buf() } else { dir.canonicalize().unwrap() }
+}
+
 fn keys(store: &Mutex<Store>) -> Vec<String> {
     store.lock().unwrap().objects.keys().cloned().collect()
 }
@@ -321,7 +327,7 @@ fn copies_lists_syncs_and_deletes_on_s3() {
 fn refused_directory_operations_do_not_create_targets() {
     let (endpoint, _) = serve();
     let dir = tempfile::tempdir().unwrap();
-    let d = dir.path();
+    let d = &real(dir.path());
     std::fs::create_dir(d.join("source")).unwrap();
     let out = terrio(&endpoint, d, &["vsi", "move", "source", "source/sub/"]);
     assert!(!out.status.success());
@@ -368,7 +374,7 @@ fn copies_large_http_binary_without_content_type() {
 fn empty_s3_directories_and_absolute_trees() {
     let (endpoint, store) = serve();
     let dir = tempfile::tempdir().unwrap();
-    let d = dir.path();
+    let d = &real(dir.path());
     std::fs::create_dir(d.join("empty")).unwrap();
     ok(&endpoint, d, &["vsi", "copy", "empty", "s3://bkt/empty", "-r"]);
     assert!(keys(&store).contains(&"bkt/empty/".to_string()));
@@ -452,7 +458,7 @@ fn signed_file_tree_names_and_recursive_single_object_refusal() {
     std::fs::create_dir(tmp.path().join("same")).unwrap();
     std::fs::write(tmp.path().join("same/same"), "child").unwrap();
     let one = ok(&endpoint, tmp.path(), &["vsi", "list", "same", "--tree", "--abs", "-f", "json"]);
-    assert_eq!(serde_json::from_str::<serde_json::Value>(&one).unwrap()[0], tmp.path().join("same/same").to_str().unwrap());
+    assert_eq!(serde_json::from_str::<serde_json::Value>(&one).unwrap()[0], real(tmp.path()).join("same/same").to_str().unwrap());
 }
 
 #[test]

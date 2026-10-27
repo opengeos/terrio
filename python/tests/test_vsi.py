@@ -21,9 +21,9 @@ def tree(tmp_path):
     """
     t = tmp_path / "t"
     (t / "a" / "b").mkdir(parents=True)
-    (t / "x.txt").write_text("hello\n")
-    (t / "a" / "y.txt").write_text("abc\n")
-    (t / "a" / "b" / "z.txt").write_text("z\n")
+    (t / "x.txt").write_bytes(b"hello\n")
+    (t / "a" / "y.txt").write_bytes(b"abc\n")
+    (t / "a" / "b" / "z.txt").write_bytes(b"z\n")
     return t
 
 
@@ -65,7 +65,7 @@ def test_copy_sync_move_delete(tree, tmp_path):
     assert not out.exists() and (tmp_path / "moved" / "x.txt").exists()
     keep = tmp_path / "moved2"
     keep.mkdir()
-    (keep / "k").write_text("k")
+    (keep / "k").write_bytes(b"k")
     assert terrio.vsi_delete(str(tmp_path / "moved"), recursive=True)["deleted"] == 6
     assert (keep / "k").exists()
     for target in ["", "/", ".", "s3://bucket"]:
