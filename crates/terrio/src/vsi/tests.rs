@@ -646,14 +646,18 @@ fn opaque_entity_tags_use_timestamp_without_hashing_local_data() {
 
 #[test]
 fn local_path_edge_spaces_are_not_removed_before_deletion() {
-    let tmp = tempfile::tempdir().unwrap();
-    let plain = tmp.path().join("report.txt");
-    let spaced = tmp.path().join("report.txt ");
-    fs::write(&plain, b"keep").unwrap();
-    fs::write(&spaced, b"remove").unwrap();
-    delete(&s(&spaced), false).unwrap();
-    assert!(!spaced.exists());
-    assert_eq!(fs::read(plain).unwrap(), b"keep");
+    // Windows itself strips trailing spaces from file names, so both paths name one file there.
+    #[cfg(not(windows))]
+    {
+        let tmp = tempfile::tempdir().unwrap();
+        let plain = tmp.path().join("report.txt");
+        let spaced = tmp.path().join("report.txt ");
+        fs::write(&plain, b"keep").unwrap();
+        fs::write(&spaced, b"remove").unwrap();
+        delete(&s(&spaced), false).unwrap();
+        assert!(!spaced.exists());
+        assert_eq!(fs::read(plain).unwrap(), b"keep");
+    }
     assert!(matches!(Node::parse(" leading.txt").unwrap(), Node::Local(p) if p == Path::new(" leading.txt")));
     assert!(Node::parse("  ").is_err());
 }

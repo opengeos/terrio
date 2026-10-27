@@ -2062,6 +2062,10 @@ pub fn rename(src: &str, dst: &str) -> Result<Report> {
             Ok(meta) if !meta.file_type().is_file() && !meta.file_type().is_symlink() => {
                 return Err(Error::Unsupported(format!("'{}': refusing to replace a non-regular file", b.display())));
             }
+            // POSIX rename fails here (ENOTDIR); Windows would replace the file with the directory.
+            Ok(_) if stat.dir => {
+                return Err(Error::InvalidArgument(format!("cannot replace file '{}' with a directory", b.display())));
+            }
             Ok(_) => {}
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => return Err(e.into()),
