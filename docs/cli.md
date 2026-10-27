@@ -1346,6 +1346,10 @@ tolerances and known differences reported in
 - `-clipsrc` with a geometry or a datasource, `-spat` and `-co` other than terrio's raster
   output options are not supported.
 
+Search-axis signs follow GDAL: for more than 100 points, negative semi-axes can use
+a different candidate path from positive axes and yield a different result. They
+are not normalized to magnitudes.
+
 ## lineref
 
 ```sh
@@ -1389,6 +1393,9 @@ Path, byte and GeoJSON inputs are read/parsed anew on each call. Lookup edge beh
 OGR: positive-infinite scale clamps coordinates to the last vertex and contributes zero
 position offset; null scale is zero. Malformed single-vertex parts can produce OGR's -1
 projection value. Use normally generated parts for meaningful reference positions.
+
+Grouped route failures are reported as per-route warnings; as with ogrlineref,
+creation can succeed with an empty output if every selected route fails.
 
 ## mcp
 

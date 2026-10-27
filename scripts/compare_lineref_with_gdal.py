@@ -11,6 +11,7 @@ and the sublines (`-get_subline`) vertex by vertex. The lookups run on GDAL's pa
 
 import argparse
 import json
+import math
 import shutil
 import subprocess
 import tempfile
@@ -64,6 +65,17 @@ def features(path):
     return out
 
 
+def numeric_difference(a, b):
+    """A finite error or infinity for mismatched/null/non-finite values."""
+    if not isinstance(a, (int, float)) or not isinstance(b, (int, float)):
+        return 0.0 if a is None and b is None else float("inf")
+    if a == b or math.isnan(a) and math.isnan(b):
+        return 0.0
+    if not math.isfinite(a) or not math.isfinite(b):
+        return float("inf")
+    return abs(a - b)
+
+
 def compare_layers(gdal_path, terrio_path, tol):
     """Compares two layers feature by feature.
 
@@ -86,11 +98,13 @@ def compare_layers(gdal_path, terrio_path, tol):
             return "differs", f"{len(tp)} vertices, GDAL {len(gp)}"
         for k, v in gf.items():
             if isinstance(v, float):
-                worst = max(worst, abs(v - tf[k]))
+                worst = max(worst, numeric_difference(v, tf[k]))
             elif v != tf[k]:
                 return "differs", f"{k} {tf[k]!r}, GDAL {v!r}"
         for a, b in zip(gp, tp):
-            worst = max(worst, *(abs(x - y) for x, y in zip(a, b)))
+            if len(a) != len(b):
+                return "differs", "vertex coordinate dimensions differ"
+            worst = max(worst, *(numeric_difference(x, y) for x, y in zip(a, b)))
     if worst == 0:
         return "identical", f"{len(g)} features"
     status = "tolerance" if worst <= tol else "differs"

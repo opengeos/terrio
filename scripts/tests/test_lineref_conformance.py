@@ -34,6 +34,26 @@ class LinerefCommandTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "ogrlineref input.gpkg"):
                 comparison.run([Path("ogrlineref"), Path("input.gpkg")])
 
+    def test_nonfinite_fields_and_vertices_cannot_pass_as_finite(self):
+        for a, b, expected in [
+            (float("nan"), 1.0, "differs"),
+            (1.0, float("nan"), "differs"),
+            (float("nan"), None, "differs"),
+            (float("inf"), float("-inf"), "differs"),
+            (float("nan"), float("nan"), "identical"),
+            (float("inf"), float("inf"), "identical"),
+        ]:
+            for field in [True, False]:
+                left = [({"value": a}, [(0.0, 0.0)])] if field else [({}, [(a, 0.0)])]
+                right = [({"value": b}, [(0.0, 0.0)])] if field else [({}, [(b, 0.0)])]
+                with (
+                    self.subTest(a=a, b=b, field=field),
+                    patch.object(comparison, "features", side_effect=[left, right]),
+                ):
+                    self.assertEqual(
+                        comparison.compare_layers("gdal", "terrio", 1e-9)[0], expected
+                    )
+
 
 if __name__ == "__main__":
     unittest.main()
