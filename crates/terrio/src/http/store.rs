@@ -108,6 +108,9 @@ fn list_pages_api(api: Api, recursive: bool, max: Option<u32>, allow_partial: bo
                 None => return Ok(None),
             },
         };
+        if !api.is_listing_page(&body) {
+            return Err(Error::InvalidData("not an XML object-store listing".into()));
+        }
         let next = api.read_page(&body, &mut out, &mut index);
         if max.is_some() {
             if out.is_empty() && api.has_directory_marker(&body) {

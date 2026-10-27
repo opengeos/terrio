@@ -223,6 +223,25 @@ impl Api {
         xml_elements(&xml, group).iter().any(|block| xml_elements(block, key).first().is_some_and(|v| xml_unescape(v) == *prefix))
     }
 
+    /// Require the store API's document root, rather than accepting arbitrary HTML/XML.
+    pub(crate) fn is_listing_page(&self, body: &[u8]) -> bool {
+        use quick_xml::events::Event;
+        let expected = match self {
+            Self::S3 { .. } | Self::Url { .. } => "ListBucketResult",
+            Self::Azure { .. } => "EnumerationResults",
+            Self::Html { .. } => return false,
+        };
+        let mut reader = quick_xml::Reader::from_reader(body);
+        loop {
+            match reader.read_event() {
+                Ok(Event::Start(element) | Event::Empty(element)) => return element.local_name().as_ref() == expected,
+                Ok(Event::Decl(_) | Event::Comment(_) | Event::PI(_)) => {}
+                Ok(Event::Text(text)) if text.as_ref().bytes().all(|b| b.is_ascii_whitespace()) => {}
+                _ => return false,
+            }
+        }
+    }
+
     /// Reads one listing page into `out`; returns the continuation token, if there are more.
     pub(crate) fn read_page(&self, body: &[u8], out: &mut Vec<ObjectEntry>, index: &mut EntryIndex) -> Option<String> {
         let body = body.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(body);
@@ -616,8 +635,7 @@ impl RemoteLister {
         if body.len() > Self::OBJECT_BODY_LIMIT {
             return Err(Error::InvalidData("object-store listing page exceeds 16 MiB".into()));
         }
-        let xml = body.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(body);
-        if !xml.trim_ascii_start().starts_with(b"<") {
+        if !self.api.is_listing_page(body) {
             return Err(Error::InvalidData("not an XML object-store listing".into()));
         }
         if self.max_depth == usize::MAX {
@@ -869,6 +887,18 @@ mod tests {
 #[cfg(test)]
 mod response_limit_tests {
     use super::RemoteLister;
+
+    #[test]
+    fn object_store_rejects_wrong_document_roots() {
+        for url in ["s3://bucket/dir", "az://account/container/dir"] {
+            let mut lister = RemoteLister::new(url, true, None).unwrap();
+            lister.next_url().unwrap();
+            assert!(lister.feed(200, b"<html><body>Sign in</body></html>").is_err());
+        }
+        let api = super::Api::for_url("https://storage.googleapis.com/bucket/dir");
+        assert!(api.is_listing_page(b"\xEF\xBB\xBF<?xml version=\"1.0\"?><!--ok--><s3:ListBucketResult xmlns:s3=\"test\"/>"));
+        assert!(!api.is_listing_page(b"<Error><Message>Denied</Message></Error>"));
+    }
 
     #[test]
     fn cloud_authority_components_cannot_change_the_request_host() {

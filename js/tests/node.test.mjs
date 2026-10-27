@@ -1967,3 +1967,9 @@ test("cloud listing rejects malformed authority components before fetch", async 
   }
   assert.equal(requests, 0);
 });
+
+test("object-store listing rejects HTML and error roots returned with status 200", async () => {
+  for (const body of ["<html><body>Sign in</body></html>", "<Error><Message>Denied</Message></Error>"]) {
+    await assert.rejects(terrio.listUrl("s3://bucket/dir", {fetch: async () => new Response(body)}), /not an XML object-store listing/);
+  }
+});

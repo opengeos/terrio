@@ -395,3 +395,6 @@ page's origin (CORS) for `listUrl`.
 HTML index responses use a readable byte stream, a 4 KiB sniff prefix and a 4 MiB body
 limit, matching the native path. Binary/ordinary web content is refused; custom `fetch`
 implementations must return a standard `Response`. Object-store XML pagination is unchanged.
+
+VSI listing bindings return structured flat entries. Nested tree presentation (`--tree`)
+is currently available through the CLI; JSON serialization flags apply to CLI output.

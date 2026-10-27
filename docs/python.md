@@ -474,3 +474,6 @@ uploaded = terrio.open_vrt(xml, {"dem.tif": image_bytes})
 source windows remain lazy. `open_raster(path, lazy=True)` also opens VRT files
 lazily. The [serialized VRT support](cli.md#serialized-virtual-rasters) lists the
 supported transformers, built-in functions, kernels and masks.
+
+VSI listing bindings return structured flat entries. Nested tree presentation (`--tree`)
+is currently available through the CLI; JSON serialization flags apply to CLI output.
