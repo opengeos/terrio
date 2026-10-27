@@ -160,3 +160,33 @@ fn labelled_grids_are_read_by_window() {
         assert_eq!(serde_json::to_value(&summary).unwrap(), serde_json::to_value(&eager).unwrap(), "{name}");
     }
 }
+
+#[test]
+fn histograms_of_raw_rasters_list_the_dataset_metadata() {
+    use terrio::info::{Info, InfoOptions, info_path};
+    let hist = InfoOptions { histogram: true, ..Default::default() };
+    let metadata = |i: Info| match i {
+        Info::Raster(r) => r.metadata,
+        _ => panic!("not a raster"),
+    };
+    // An ENVI raster with band names, which its reader lists as dataset metadata.
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path().join("named.envi");
+    std::fs::write(&data, (0..12u8).collect::<Vec<_>>()).unwrap();
+    let header = "ENVI\nsamples = 4\nlines = 3\nbands = 1\nheader offset = 0\ndata type = 1\ninterleave = bsq\nbyte order = 0\nband names = {elevation}\n";
+    std::fs::write(dir.path().join("named.hdr"), header).unwrap();
+    let path = data.to_str().unwrap();
+    let eager = terrio::info::info(&terrio::open(path).unwrap(), &hist);
+    let lazy = metadata(info_path(path, &hist).unwrap());
+    assert!(lazy.iter().any(|(k, v)| k == "band_1_name" && v == "elevation"), "{lazy:?}");
+    assert_eq!(serde_json::to_value(&lazy).unwrap(), serde_json::to_value(metadata(eager)).unwrap());
+
+    // GeoTIFFs are summarized with the metadata of the window they are read in, as before.
+    let tif = dir.path().join("named.tif");
+    let tif = tif.to_str().unwrap();
+    let mut ds = terrio::open_raster(path).unwrap();
+    ds.raster.metadata.push(("TITLE".into(), "named".into()));
+    terrio::write_raster_dataset(&ds, tif, &Default::default()).unwrap();
+    let read = terrio::open_raster_lazy(tif).unwrap().read().unwrap().raster.metadata;
+    assert_eq!(metadata(info_path(tif, &hist).unwrap()), read);
+}

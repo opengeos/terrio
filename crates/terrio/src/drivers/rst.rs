@@ -153,3 +153,46 @@ pub(crate) fn write(r: &Raster, nodata: Option<f64>, path: &Path) -> Result<()> 
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use wbraster::raster::RasterData;
+
+    /// A 4 x 3 RGB24 raster as GDAL's RST driver writes it: blue, green and red by pixel, with
+    /// red `10 + i`, green `100 + i` and blue `200 + i` for pixel `i`.
+    fn write_rgb24(dir: &std::path::Path) -> std::path::PathBuf {
+        let rdc = "file format : Idrisi Raster A.1\ndata type   : rgb24\nfile type   : binary\ncolumns     : 4\nrows        : 3\n\
+                   ref. system : plane\nref. units  : m\nmin. X      : 0.0000000\nmax. X      : 4.0000000\nmin. Y      : 0.0000000\n\
+                   max. Y      : 3.0000000\nflag value  : none\nflag def'n  : none\n";
+        std::fs::write(dir.join("rgb.rdc"), rdc).unwrap();
+        let bytes: Vec<u8> = (0..12u8).flat_map(|i| [200 + i, 100 + i, 10 + i]).collect();
+        let rst = dir.join("rgb.rst");
+        std::fs::write(&rst, bytes).unwrap();
+        rst
+    }
+
+    #[test]
+    fn reads_rgb24_bands_red_first() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_rgb24(dir.path());
+        let path = path.to_str().unwrap();
+        // The values GDAL 3.13 reads: band 1 red, band 2 green, band 3 blue.
+        let band = |base: u8| -> Vec<u8> { (0..12).map(|i| base + i).collect() };
+        let whole = crate::open_raster(path).unwrap();
+        assert_eq!(whole.raster.bands, 3);
+        let RasterData::U8(v) = &whole.raster.data else { panic!() };
+        assert_eq!(v, &[band(10), band(100), band(200)].concat());
+
+        let mut lazy = crate::open_raster_lazy(path).unwrap();
+        assert!(lazy.dataset().is_none());
+        let RasterData::U8(all) = lazy.read().unwrap().raster.data else { panic!() };
+        assert_eq!(&all, v);
+        // A window of some bands, in any order: rows 1 and 2, columns 1 to 3.
+        for bands in [vec![1], vec![3], vec![3, 1], vec![2, 3, 1]] {
+            let options = crate::WindowOptions { bands: bands.clone(), overview: None };
+            let RasterData::U8(got) = lazy.read_window(crate::Window::new(1, 1, 3, 2), &options).unwrap().raster.data else { panic!() };
+            let want: Vec<u8> = bands.iter().flat_map(|b| [5u8, 6, 7, 9, 10, 11].map(|i| [10, 100, 200][b - 1] + i)).collect();
+            assert_eq!(got, want, "{bands:?}");
+        }
+    }
+}
