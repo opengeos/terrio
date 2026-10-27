@@ -1080,7 +1080,6 @@ returning NumPy arrays (use `Raster.read`).
 XYZ rejects non-finite source nodata when the first selected band's output type is integer,
 as GDAL's NumPy conversion does.
 
-
 ## calc
 
 ```sh
@@ -1572,3 +1571,9 @@ point tie points and rotated affine transforms, without moving pixel corners.
 Writing a PixelIsPoint GeoTIFF requires a CRS. A write with an unknown CRS is
 rejected before creating the file, avoiding a half-pixel origin shift without
 a corresponding raster-type GeoKey.
+
+Raster comparison reads TIFFTAG items, embedded RPC tags and PAM sidecar metadata
+from local filesystem inputs. HTTP and archive comparisons use the reader's
+metadata and do not add those local-file extras. Comparing a local file to its
+remote/archive copy can therefore report metadata differences; use the applicable
+metadata/RPC skip options for a pixel-focused comparison across those locations.

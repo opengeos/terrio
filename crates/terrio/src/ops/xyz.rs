@@ -191,7 +191,16 @@ pub fn write_xyz<W: Write>(raster: &mut LazyRaster, out: &mut W, options: &XyzOp
                     text.push_str(delim);
                     text.push_str(&crate::drivers::common::fmt_g(gy, 10));
                 } else {
-                    write!(text, "{gx:.3}{delim}{gy:.3}").unwrap();
+                    for (i, coordinate) in [gx, gy].into_iter().enumerate() {
+                        if i > 0 {
+                            text.push_str(delim);
+                        }
+                        if coordinate.is_finite() {
+                            write!(text, "{coordinate:.3}").unwrap();
+                        } else {
+                            text.push_str(&fmt_g(coordinate));
+                        }
+                    }
                 }
                 text.push_str(delim);
                 for (i, v) in shown.iter().enumerate() {
@@ -223,6 +232,7 @@ pub fn write_xyz_file(raster: &mut LazyRaster, path: &std::path::Path, options: 
         if std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink()) { Some(std::fs::canonicalize(path)?) } else { None };
     let path = resolved.as_deref().unwrap_or(path);
     let existing_permissions = match std::fs::metadata(path) {
+        Ok(meta) if !meta.is_file() => return Err(Error::InvalidArgument("XYZ output must be a regular file".into())),
         Ok(meta) => Some(meta.permissions()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
         Err(e) => return Err(e.into()),
@@ -259,6 +269,28 @@ mod tests {
     use super::*;
     use crate::RasterDataset;
     use wbraster::{Raster, RasterConfig};
+
+    #[test]
+    #[cfg(unix)]
+    fn atomic_xyz_output_preserves_pipes() {
+        use std::os::unix::fs::FileTypeExt;
+        let directory = tempfile::tempdir().unwrap();
+        let pipe = directory.path().join("pipe");
+        assert!(std::process::Command::new("mkfifo").arg(&pipe).status().unwrap().success());
+        let mut source = raster(DataType::U8, None);
+        assert!(write_xyz_file(&mut source, &pipe, &Default::default()).is_err());
+        assert!(std::fs::metadata(pipe).unwrap().file_type().is_fifo());
+    }
+
+    #[test]
+    fn projected_nonfinite_coordinates_use_python_spelling() {
+        let mut dataset = raster(DataType::F32, None).read().unwrap();
+        dataset.set_geo_transform([f64::NAN, 1., 0., 0., 0., -1.]);
+        let mut source = LazyRaster::from(dataset);
+        let mut bytes = Vec::new();
+        write_xyz(&mut source, &mut bytes, &XyzOptions { bands: vec![1], ..Default::default() }).unwrap();
+        assert!(String::from_utf8(bytes).unwrap().starts_with("nan -0.500 "));
+    }
 
     fn raster(dt: DataType, nodata: Option<f64>) -> LazyRaster {
         let cfg = RasterConfig {

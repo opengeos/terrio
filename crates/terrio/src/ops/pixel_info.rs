@@ -738,6 +738,7 @@ const NON_FINITE: [&str; 3] = ["NaN", "Infinity", "-Infinity"];
 fn json_number(v: f64, marker: &str) -> Value {
     match serde_json::Number::from_f64(v) {
         Some(n) => Value::Number(n),
+        None if marker.is_empty() => Value::Null,
         None if v.is_nan() => Value::String(format!("{marker}NaN")),
         None if v > 0.0 => Value::String(format!("{marker}Infinity")),
         None => Value::String(format!("{marker}-Infinity")),
@@ -782,9 +783,10 @@ impl PixelInfo {
         self.locations.iter().filter(|l| l.is_off_raster(self.size.0, self.size.1)).count()
     }
 
-    /// The GeoJSON feature collection `gdal raster pixel-info` writes.
+    /// A GeoJSON feature collection with non-finite numeric values represented as null.
+    /// Use [`Self::to_geojson_string`] for GDAL's non-standard NaN/Infinity tokens.
     pub fn to_geojson(&self) -> Value {
-        self.geojson_with_marker("\0")
+        self.geojson_with_marker("")
     }
 
     fn geojson_with_marker(&self, marker: &str) -> Value {
@@ -842,9 +844,8 @@ impl PixelInfo {
         Value::Object(collection)
     }
 
-    /// [`PixelInfo::to_geojson`] as text, pretty-printed, with NaN and infinite values written as
-    /// GDAL writes them (`NaN`, `Infinity`, `-Infinity`; JSON has no such numbers, so
-    /// [`PixelInfo::to_geojson`] holds them as strings).
+    /// GeoJSON as text, pretty-printed, with NaN and infinite values written as GDAL's
+    /// non-standard `NaN`, `Infinity` and `-Infinity` tokens.
     pub fn to_geojson_string(&self) -> String {
         let (value, marker) = self.to_geojson_marked();
         let mut text = serde_json::to_string_pretty(&value).expect("JSON values serialize");
@@ -1220,6 +1221,19 @@ mod tests {
             let parsed: Value = serde_json::from_str(&text).unwrap();
             assert_eq!(parsed["features"][0]["properties"]["extra_content"], extra);
         }
+    }
+
+    #[test]
+    fn public_geojson_values_use_null_for_nonfinite_numbers() {
+        let mut raster = raster(2, 2, None);
+        let mut info = pixel_info(&mut raster, &[Position::new(0.5, 0.5)], &Default::default()).unwrap();
+        info.locations[0].bands[0].value = Some(f64::NAN);
+        info.locations[0].bands[0].unscaled = Some(f64::INFINITY);
+        let value = info.to_geojson();
+        assert!(value["features"][0]["properties"]["bands"][0]["raw_value"].is_null());
+        assert!(value["features"][0]["properties"]["bands"][0]["unscaled_value"].is_null());
+        let text = info.to_geojson_string();
+        assert!(text.contains("NaN") && text.contains("Infinity"));
     }
 
     #[test]

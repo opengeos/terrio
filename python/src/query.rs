@@ -240,10 +240,8 @@ fn pixel_info<'py>(
         let layer_name = output.file_stem().and_then(|s| s.to_str()).unwrap_or("pixel_info");
         let layer = info.to_layer(layer_name).py()?;
         crate::with_warnings(py, || terrio::write_vector(&[layer], dst, &terrio::VectorWriteOptions { driver, ..Default::default() }))?;
-    } else if output_format.is_some() {
-        return Err(invalid("output_format requires dst"));
     }
-    match format.to_ascii_lowercase().as_str() {
+    match format.as_str() {
         "geojson" => py.import("json")?.call_method1("loads", (info.to_geojson_string(),)),
         "json" => json_to_python(py, &info.to_json()),
         "csv" => Ok(info.to_csv().into_pyobject(py)?.into_any()),
