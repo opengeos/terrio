@@ -517,11 +517,24 @@ impl RemoteLister {
         let url = url.strip_prefix("/vsicurl/").unwrap_or(url);
         let url = if let Some(rest) = url.strip_prefix("s3://").or_else(|| url.strip_prefix("/vsis3/")) {
             let (bucket, key) = rest.split_once('/').unwrap_or((rest, ""));
+            if !(3..=63).contains(&bucket.len())
+                || !bucket.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'.' || b == b'-')
+                || bucket.split('.').any(|label| {
+                    label.is_empty()
+                        || !label.as_bytes()[0].is_ascii_alphanumeric()
+                        || !label.as_bytes()[label.len() - 1].is_ascii_alphanumeric()
+                })
+            {
+                return Err(Error::InvalidArgument("invalid S3 bucket name in remote listing URL".into()));
+            }
             format!("https://{bucket}.s3.amazonaws.com/{key}")
         } else if let Some(rest) = url.strip_prefix("gs://").or_else(|| url.strip_prefix("/vsigs/")) {
             format!("https://storage.googleapis.com/{rest}")
         } else if let Some(rest) = url.strip_prefix("az://").or_else(|| url.strip_prefix("/vsiaz/")) {
             let (account, path) = rest.split_once('/').unwrap_or((rest, ""));
+            if !(3..=24).contains(&account.len()) || !account.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit()) {
+                return Err(Error::InvalidArgument("invalid Azure account name in remote listing URL".into()));
+            }
             format!("https://{account}.blob.core.windows.net/{path}")
         } else if url.starts_with("http://") || url.starts_with("https://") {
             url.to_string()
@@ -856,6 +869,17 @@ mod tests {
 #[cfg(test)]
 mod response_limit_tests {
     use super::RemoteLister;
+
+    #[test]
+    fn cloud_authority_components_cannot_change_the_request_host() {
+        for scheme in ["s3", "az"] {
+            for authority in ["evil.example#", "evil?", "user@host", "host:443", "has space", "UPPER", "-leading", "trailing-"] {
+                assert!(RemoteLister::new(&format!("{scheme}://{authority}/dir"), true, None).is_err());
+            }
+        }
+        assert!(RemoteLister::new("s3://valid.bucket/dir", false, None).is_ok());
+        assert!(RemoteLister::new("az://validaccount/container/dir", false, None).is_ok());
+    }
 
     #[test]
     fn object_store_rejects_non_xml_and_oversized_pages() {

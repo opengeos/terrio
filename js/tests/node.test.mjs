@@ -1921,3 +1921,12 @@ test("object-store listing rejects binary and oversized response bodies", async 
     fetch: async () => new Response("<ListBucketResult/>", {headers: {"Content-Length": String(17 << 20)}}),
   }), /exceeds 16 MiB/);
 });
+
+test("cloud listing rejects malformed authority components before fetch", async () => {
+  let requests = 0;
+  const fetch = async () => { requests += 1; return new Response("<ListBucketResult/>"); };
+  for (const url of ["s3://evil.example#/dir", "s3://user@host/dir", "az://evil.example#/container/dir"]) {
+    await assert.rejects(terrio.listUrl(url, {fetch, headers: {Authorization: "test-value"}}), /invalid .* name/);
+  }
+  assert.equal(requests, 0);
+});
