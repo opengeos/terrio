@@ -451,6 +451,13 @@ fn file_lists_are_refused_without_reading_the_file() {
         assert!(d.ends_with("Over MCP, `@FILE` lists are refused: pass each input as an item of `args`."), "{name}: {d}");
     }
     assert!(!description("info").contains("@FILE"));
+    // Any tool whose description mentions `@FILE` must carry the note, including one added later.
+    for t in tools {
+        let d = t["description"].as_str().unwrap();
+        if d.contains("`@FILE`") {
+            assert!(d.ends_with("Over MCP, `@FILE` lists are refused: pass each input as an item of `args`."), "{}: {d}", t["name"]);
+        }
+    }
     let result = &replies[&1]["result"];
     assert_eq!(result["isError"], true);
     let text = result["content"][0]["text"].as_str().unwrap();
