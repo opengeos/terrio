@@ -190,7 +190,7 @@ asked for them:
 
 | Job | Pull requests |
 | --- | --- |
-| real data vs GDAL (`ci.yml`) | Runs unless the PR changes only docs, `site/`, Markdown, `js/` (other than its Rust code), `packaging/`, other workflows, `zensical.toml`, `requirements_docs.txt`, `CITATION.cff`, `about.hbs` or `about.toml` |
+| real data vs GDAL (`ci.yml`) | Runs unless the PR changes only docs, `site/`, root-level Markdown, `js/` (other than its Rust code), `packaging/`, other workflows, `zensical.toml`, `requirements_docs.txt`, `CITATION.cff`, `about.hbs` or `about.toml`, and lists fewer than 3000 files (a longer list always runs) |
 | npm package (`ci-extended.yml`) | Label `ci:npm` or `ci:all`; the `wasm` job tests the Node.js package on every PR |
 | point clouds and conformance vs GDAL (`ci-extended.yml`) | Label `ci:conformance` or `ci:all` |
 | macOS and Windows (`ci-platforms.yml`) | Label `ci:macos`, `ci:windows` or `ci:all` |
