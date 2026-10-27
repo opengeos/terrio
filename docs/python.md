@@ -233,6 +233,9 @@ sub = terrio.lineref_subline(parts, 13300, 17400)
 `zmultiply`, `layers`, `sql`, `where`, `bbox`, `extent`, `size`, `resolution`, `ot` and `crs`.
 See [vector-grid](cli.md#vector-grid) and [lineref](cli.md#lineref).
 
+Repeated lookups should reuse `terrio.open_vector(parts_path)` or a Layer. Passing a path,
+serialized bytes or GeoJSON each time reopens/reparses the input.
+
 ### Vector datasets
 
 ```python

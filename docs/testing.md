@@ -216,7 +216,7 @@ point for a rotated ellipse where 3.13 searches its quadtree: against 3.12.2 a r
 `compare_lineref_with_gdal.py` runs `ogrlineref` and `terrio lineref` on GDAL's test route and
 milestones (geographic, reprojected to UTM, and as two routes told apart by a field, one drawn
 backwards): the parts feature by feature, the printed positions and coordinates, and sublines
-vertex by vertex. 69 cases: 66 identical, 3 within tolerance (the UTM lengths of a geographic
+vertex by vertex. 71 cases: 68 identical, 3 within tolerance (the UTM lengths of a geographic
 route's end parts, including the first-NULL-route case, 1.1e-11 to 3.8e-11, from terrio's projection rather than PROJ). NULL middle parts are skipped identically to GDAL.
 
 ```sh

@@ -489,6 +489,8 @@ alg/gdalgrid.cpp, apps/gdal_grid_lib.cpp, alg/delaunay.c (barycentric coefficien
 point-in-triangle test) and port/cpl_quad_tree.cpp (the order of its search results); the linear
 referencing in crates/terrio/src/ops/lineref.rs is ported from apps/ogrlineref.cpp and
 ogr/ogrlinestring.cpp (getSubLine, Value) (https://github.com/OSGeo/gdal/tree/v3.13.3).
+Nearest-segment projection and point-to-segment distance are independent mathematical
+implementations; references to GEOS describe the GDAL behavior, not copied GEOS code.
 
   Copyright (c) 2007, Andrey Kiselev <dron@ak4719.spb.edu>
   Copyright (c) 1999-2008, Frank Warmerdam

@@ -1237,6 +1237,12 @@ Coordinate lookups interpret null scale as zero, as GDAL 3.13.3 does; zero and n
 scales clamp to the part's first vertex. Position lookups currently copy each part's vertices, and text-to-number conversion tries
 numeric prefixes; repeated lookups and unusually long numeric strings can be expensive.
 
+For repeated queries, open parts once as a Python VectorDataset/Layer or JavaScript Dataset.
+Path, byte and GeoJSON inputs are read/parsed anew on each call. Lookup edge behavior follows
+OGR: positive-infinite scale clamps coordinates to the last vertex and contributes zero
+position offset; null scale is zero. Malformed single-vertex parts can produce OGR's -1
+projection value. Use normally generated parts for meaningful reference positions.
+
 ## mcp
 
 ```sh

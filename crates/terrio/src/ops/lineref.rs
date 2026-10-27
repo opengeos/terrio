@@ -4,9 +4,9 @@
 //!
 //! The steps follow `apps/ogrlineref.cpp` (MIT licensed), with OGR's `getSubLine`, `Value` and
 //! `get_Length` ported, so that the same parts, positions and coordinates come out. The
-//! projection of a point on a line (`GEOSProject`) and its distance (`GEOSDistance`), which
-//! ogrlineref asks GEOS for, are computed with the same textbook point-to-segment formulas (the
-//! comp.graphics.algorithms FAQ's), nearest segment first in line order.
+//! projection of a point on a line and its distance are independently implemented with
+//! textbook dot/cross-product formulas, nearest segment first in line order. GEOS is a
+//! behavior reference through GDAL, not the source of these implementations.
 //! Lengths of the first and last parts of a geographic route are measured in the UTM zone of
 //! their middle, as `ogrlineref` measures them.
 
@@ -166,9 +166,8 @@ impl Line {
         (out.pts.len() >= 2).then_some(out)
     }
 
-    /// GEOS's `GEOSProject` (`LengthIndexOfPoint`): the length along the line of its point
-    /// nearest to `p`.
-    fn geos_project(&self, p: &Point) -> f64 {
+    /// Independent nearest-segment projection: the length along the line nearest to `p`.
+    fn project_segments(&self, p: &Point) -> f64 {
         let mut min_distance = f64::INFINITY;
         let mut measure = -1.0;
         let mut start = 0.0;
@@ -193,7 +192,7 @@ impl Line {
         measure
     }
 
-    /// `ogrlineref`'s `Project`: 0 and the length at the ends, else GEOS's projection.
+    /// `ogrlineref`'s `Project`: 0 and the length at the ends, else nearest-segment projection.
     fn project(&self, p: &Point) -> f64 {
         if self.pts.is_empty() {
             return -1.0;
@@ -204,10 +203,10 @@ impl Line {
         if self.point(self.pts.len() - 1) == *p {
             return self.length();
         }
-        self.geos_project(p)
+        self.project_segments(p)
     }
 
-    /// GEOS's distance from the line to a point.
+    /// Euclidean distance from the line to a point.
     fn distance(&self, p: &Point) -> f64 {
         if self.pts.len() == 1 {
             return dist([p.x, p.y], [self.pts[0][0], self.pts[0][1]]);
@@ -232,7 +231,7 @@ fn dist(a: [f64; 2], b: [f64; 2]) -> f64 {
     (dx * dx + dy * dy).sqrt()
 }
 
-/// GEOS's `LineSegment::projectionFactor`.
+/// Dot-product projection parameter along a segment.
 fn projection_factor(p: [f64; 2], a: [f64; 2], b: [f64; 2]) -> f64 {
     if p == a {
         return 0.0;
@@ -248,7 +247,7 @@ fn projection_factor(p: [f64; 2], a: [f64; 2], b: [f64; 2]) -> f64 {
     ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / len2
 }
 
-/// GEOS's `Distance::pointToSegment`.
+/// Point-to-segment distance from dot/cross products.
 fn point_to_segment(p: [f64; 2], a: [f64; 2], b: [f64; 2]) -> f64 {
     if a == b {
         return dist(p, a);
@@ -527,10 +526,7 @@ fn parts_of_line(
         {
             let scale = part.length() / (k.0 - position_now);
             if !scale.is_finite() {
-                crate::warnings::warn(
-                    "a zero-span initial picket produced nonfinite scale, matching GDAL; adjust milestone positions or step before lookup"
-                        .into(),
-                );
+                crate::warnings::warn("a part has a non-finite scale; adjust milestone positions or step before lookup".into());
             }
             add_part(out, &part, position_now, k.0, scale, id);
             d1 = d;
@@ -674,8 +670,8 @@ pub fn position(parts: &Layer, x: f64, y: f64) -> Result<f64> {
     if scale == 0.0 {
         return Err(Error::InvalidArgument("the closest part has a scale of 0".into()));
     }
-    if !scale.is_finite() {
-        return Err(Error::InvalidArgument("the closest part has a non-finite scale".into()));
+    if scale.is_nan() {
+        return Err(Error::InvalidArgument("the closest part has a NaN scale".into()));
     }
     Ok(beg + line.project(&pt) / scale)
 }
@@ -778,7 +774,7 @@ mod tests {
         assert!(l.sub_line(20.0, 25.0).is_none());
         let v = l.value(12.0).unwrap();
         assert_eq!((v.x, v.y), (10.0, 2.0));
-        assert_eq!(l.geos_project(&Point { x: 12.0, y: 4.0, z: 0.0, has_z: false }), 14.0);
+        assert_eq!(l.project_segments(&Point { x: 12.0, y: 4.0, z: 0.0, has_z: false }), 14.0);
         assert_eq!(l.distance(&Point { x: 12.0, y: 4.0, z: 0.0, has_z: false }), 2.0);
     }
 
@@ -851,14 +847,18 @@ mod tests {
     }
 
     #[test]
-    fn position_rejects_null_and_nonfinite_scales() {
+    fn position_rejects_null_and_nan_scales() {
         let (lines, repers) = layers();
         let options = LineRefOptions { position_field: "pos".into(), step: 500., ..Default::default() };
         let mut parts = create_reference(&lines, &repers, &options).unwrap();
-        for scale in [FieldValue::Null, FieldValue::Float(f64::NAN), FieldValue::Float(f64::INFINITY)] {
+        for scale in [FieldValue::Null, FieldValue::Float(f64::NAN)] {
             parts.features[0].attributes[2] = scale;
             assert!(position(&parts, 100., 0.).is_err());
         }
+        parts.features[0].attributes[2] = FieldValue::Float(f64::INFINITY);
+        assert_eq!(position(&parts, 100., 0.).unwrap(), 1000.0);
+        assert_eq!(coordinates(&parts, 1250.).unwrap(), vec![[575.0, 0.0, 0.0]]);
+        assert!(subline(&parts, 1100., 1200., "infinite-scale").is_err());
         parts.features[0].attributes[2] = FieldValue::Null;
         let output = subline(&parts, 1100., 1200., "null-scale").unwrap();
         let Some(Geometry::LineString(points)) = &output.features[0].geometry else { panic!() };

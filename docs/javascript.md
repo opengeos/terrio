@@ -323,6 +323,9 @@ the Python keywords (`minPointsPerQuadrant`...). See [vector-grid](cli.md#vector
 Linear reference lookups accept `{layer: "parts"}` to select a source layer.
 `linerefSubline` also accepts `layerName` to name its output layer.
 
+Reuse a Dataset, such as `terrio.open(bytes, "parts.gpkg")`, for repeated lookups; serialized
+bytes and GeoJSON are parsed on each call.
+
 ## Pixel-wise operations
 
 ```javascript
