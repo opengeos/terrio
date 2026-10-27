@@ -26,6 +26,8 @@ struct Store {
     undeletable: Vec<String>,
     /// `DeleteObjects` requests without a `Content-MD5`, which S3 requires.
     missing_md5: usize,
+    /// Whether `DeleteObjects` is refused with a 400 `MalformedXML`, which is not a refusal to implement it.
+    malformed_multi_delete: bool,
 }
 
 fn iso(secs: i64) -> String {
@@ -190,6 +192,9 @@ fn serve() -> (String, Arc<Mutex<Store>>) {
                         }
                         "POST" if query.contains_key("delete") && s.no_multi_delete => {
                             ("501 Not Implemented", String::new(), b"<Error><Code>NotImplemented</Code></Error>".to_vec())
+                        }
+                        "POST" if query.contains_key("delete") && s.malformed_multi_delete => {
+                            ("400 Bad Request", String::new(), b"<Error><Code>MalformedXML</Code></Error>".to_vec())
                         }
                         "POST" if query.contains_key("delete") => {
                             if !headers.contains_key("content-md5") {
@@ -602,6 +607,28 @@ fn recursive_delete_reports_keys_it_could_not_delete_and_falls_back_to_single_de
     let log = store.lock().unwrap().log.clone();
     assert_eq!(log.iter().filter(|l| l.starts_with("POST")).count(), 1, "{log:?}");
     assert_eq!(log.iter().filter(|l| l.starts_with("DELETE")).count(), 4, "{log:?}");
+}
+
+#[test]
+fn recursive_delete_fails_on_a_multi_delete_error_other_than_not_implemented() {
+    let (endpoint, store) = serve();
+    let tmp = tempfile::tempdir().unwrap();
+    {
+        let mut s = store.lock().unwrap();
+        for key in ["a", "b", "c"] {
+            s.objects.insert(format!("bkt/dir/{key}"), (b"x".to_vec(), 1));
+        }
+        s.malformed_multi_delete = true;
+        s.log.clear();
+    }
+    let out = terrio(&endpoint, tmp.path(), &["vsi", "delete", "-r", "s3://bkt/dir"]);
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("MalformedXML"), "{stderr}");
+    // Not a refusal to implement DeleteObjects: no fallback to one DELETE per key, nothing deleted.
+    assert_eq!(keys(&store).len(), 3);
+    let log = store.lock().unwrap().log.clone();
+    assert!(log.iter().all(|l| !l.starts_with("DELETE")), "{log:?}");
 }
 
 #[test]

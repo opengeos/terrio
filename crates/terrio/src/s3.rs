@@ -381,6 +381,26 @@ mod tests {
         assert!(added.iter().any(|(k, v)| k == "x-amz-content-sha256" && v == EMPTY_PAYLOAD_SHA256));
     }
 
+    /// `POST ?delete` (DeleteObjects) signs its bare sub-resource as `delete=`, as SigV4 requires.
+    #[test]
+    fn sigv4_bare_subresource_is_signed_as_empty_value() {
+        let sign = |url: &str| {
+            let added = sign_request(
+                "POST",
+                url,
+                &[("content-md5", "sZRqySSS0jR8YjW00mERhA==")],
+                EMPTY_PAYLOAD_SHA256,
+                &example_creds(),
+                "us-east-1",
+                "20150830T123600Z",
+            );
+            added.into_iter().find(|(k, _)| k == "Authorization").unwrap().1
+        };
+        let bare = sign("https://example.amazonaws.com/bkt/?delete");
+        assert_eq!(bare, sign("https://example.amazonaws.com/bkt/?delete="));
+        assert_ne!(bare, sign("https://example.amazonaws.com/bkt/"));
+    }
+
     #[test]
     fn formats_dates() {
         assert_eq!(amz_date(0), "19700101T000000Z");

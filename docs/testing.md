@@ -817,7 +817,7 @@ of 23; a 5-file directory copy uses 1 connection instead of 6. Against a moto S3
 recursively deleting 200 objects uses 4 requests instead of 204, and a signed 6 MB upload reads
 6.0 MB locally instead of 12.0 MB (a 20 MB upload still reads 40 MB). The mock S3 server of
 `terrio-cli/tests/vsi.rs` checks 1,504 keys in 4 `DeleteObjects` requests and one `DELETE` (a key XML cannot carry), per-key failures,
-the fallback to one `DELETE` per key, and 36 upload requests over at most 3 connections; unit
+the fallback to one `DELETE` per key, a 400 `MalformedXML` that fails without that fallback, and 36 upload requests over at most 3 connections; unit
 regressions count requests and connections for plain HTTP stats and remote zip members, and
 copies of `/vsimem/` archives and moves (none). `compare_vsi_with_gdal.py` reports the same 25
 identical rows before and after.

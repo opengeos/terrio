@@ -648,7 +648,8 @@ fn delete_batch(bucket: &str, keys: &[(&str, String)]) -> Result<bool> {
         let text: String = text.chars().take(300).collect();
         return Err(Error::Http(format!("POST s3://{bucket}/?delete: status {}: {}", reply.status, text.trim())));
     }
-    // Missing keys are deleted already (some services report them).
+    // Missing keys are deleted already (some services report them). The reply is read up to a
+    // size limit, so the count is a lower bound; the first key is always reported.
     let failed: Vec<(String, String)> = crate::vsi::listing::xml_elements(&text, "Error")
         .into_iter()
         .map(|e| {
@@ -660,7 +661,7 @@ fn delete_batch(bucket: &str, keys: &[(&str, String)]) -> Result<bool> {
     match failed.first() {
         None => Ok(true),
         Some((key, error)) => Err(Error::Http(format!(
-            "DeleteObjects: {} key(s) not deleted, the first s3://{bucket}/{key}: {}",
+            "DeleteObjects: at least {} key(s) not deleted, the first s3://{bucket}/{key}: {}",
             failed.len(),
             error.trim_end_matches(": ")
         ))),
