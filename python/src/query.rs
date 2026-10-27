@@ -304,7 +304,7 @@ fn xyz<'py>(
         },
     };
     let options = XyzOptions {
-        bands: if all_bands { Vec::new() } else { bands.unwrap_or_else(|| vec![1]) },
+        bands: if all_bands { Vec::new() } else { bands.filter(|b| !b.is_empty()).unwrap_or_else(|| vec![1]) },
         skip,
         srcwin: srcwin.map(|(x, y, w, h)| [x, y, w, h]),
         skip_nodata,

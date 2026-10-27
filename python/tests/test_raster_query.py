@@ -131,3 +131,10 @@ def test_invalid_pixel_info_format_does_not_create_output(tmp_path):
     with pytest.raises(ValueError, match="unknown format"):
         terrio.pixel_info("missing.tif", [(0, 0)], dst=str(dst), format="xml")
     assert not dst.exists()
+
+
+def test_xyz_empty_bands_keeps_first_band_default():
+    src = _raster(np.array([[[1, 2]], [[10, 20]]]))
+    assert terrio.xyz(src, bands=[]) == terrio.xyz(src, bands=[1])
+    assert terrio.xyz(src, all_bands=True).splitlines()[0] == "105.000 235.000 1 10"
+    assert terrio.xyz(src, all_bands=True) != terrio.xyz(src, bands=[])
