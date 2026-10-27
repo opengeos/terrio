@@ -49,6 +49,17 @@ enum Command {
     Vertices(cmd::processing::GeometryArgs),
     /// Exact valid-data footprint of a raster, with holes and disconnected regions.
     Footprint(cmd::processing::FootprintArgs),
+    /// Compare two rasters: files, CRS, geotransform, sizes, bands, pixels, overviews, masks,
+    /// metadata and subdatasets (like gdal raster compare and gdalcompare.py). The exit status is
+    /// the number of differences.
+    Compare(cmd::compare::Args),
+    /// Query pixel values at pixel/line or georeferenced positions, from arguments, standard input
+    /// or a vector dataset (like gdal raster pixel-info and gdallocationinfo).
+    #[command(visible_alias = "locationinfo")]
+    PixelInfo(cmd::pixel_info::Args),
+    /// Write raster pixels as XYZ text: one line of coordinates and band values per pixel (like
+    /// gdal2xyz.py).
+    Xyz(cmd::xyz::Args),
     /// Sample one or more raster bands at points, transforming coordinates for each raster.
     #[command(visible_alias = "point-sample")]
     Sample(cmd::processing::SampleArgs),
@@ -176,7 +187,9 @@ enum Command {
 }
 
 /// Runs the command line `args` (the program name first) and returns the process exit code: 0 on
-/// success, 1 when the command fails, 2 for a usage error (as clap reports it).
+/// success, 1 when the command fails, 2 for a usage error (as clap reports it). `compare` exits
+/// with its difference count and `pixel-info` (text and value outputs) with 1 for positions off
+/// the raster, as GDAL's tools do.
 pub fn run(args: Vec<OsString>) -> i32 {
     run_as(args, None)
 }
@@ -227,6 +240,9 @@ fn run_on_this_thread(args: Vec<OsString>, terrio: Option<Vec<OsString>>) -> i32
         Command::Singlepart(a) => cmd::processing::singlepart(a),
         Command::Vertices(a) => cmd::processing::vertices(a),
         Command::Footprint(a) => cmd::processing::footprint(a),
+        Command::Compare(a) => cmd::compare::run(a),
+        Command::PixelInfo(a) => cmd::pixel_info::run(a),
+        Command::Xyz(a) => cmd::xyz::run(a),
         Command::Sample(a) => cmd::processing::sample(a),
         Command::Contour(a) => cmd::processing::contour(a),
         Command::ZonalStats(a) => cmd::processing::zonal(a),
@@ -282,8 +298,19 @@ fn run_on_this_thread(args: Vec<OsString>, terrio: Option<Vec<OsString>>) -> i32
         eprintln!("terrio: warning: {w}");
     }
     match result {
-        Ok(()) => 0,
+        Ok(()) => {
+            let code = cmd::take_exit_code();
+            if code != 0 && std::env::var_os("TERRIO_MCP_TOOL").is_some() {
+                // MCP child status distinguishes execution failure from a successful query
+                // reporting differences or off-raster positions. Keep GDAL CLI exit codes.
+                eprintln!("(terrio tool exited with status {code})");
+                0
+            } else {
+                code
+            }
+        }
         Err(e) => {
+            cmd::take_exit_code();
             eprintln!("terrio: {e}");
             1
         }

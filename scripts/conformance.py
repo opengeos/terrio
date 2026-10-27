@@ -21,6 +21,8 @@ Suites:
     vrt               serialized warped/derived/kernel VRTs, masks and lazy windows
     overviews         source overview selection and HTTP COG bytes vs gdalwarp -ovr
     dem-calc          dem, calc, proximity, sieve vs GDAL's tools (compare_dem_calc_with_gdal.py)
+    raster-query      compare, pixel-info and xyz vs gdal raster compare, gdal raster pixel-info,
+                      gdallocationinfo and gdal2xyz.py (compare_raster_query_with_gdal.py)
     vector-ops        ogr2ogr options, rasterize, polygonize (compare_vector_ops_with_gdal.py)
     analysis-output   zonal/point-sampling output reprojection and decimal rounding
     footprint         raster footprints, source/custom fields and singleparts vs GDAL
@@ -690,6 +692,32 @@ def suite_pansharpen(ctx):
         "extents. Compare every pixel, dimensions, type, nodata and geotransform; integer cases "
         "are exact, and Float32 allows 0.002 (one ULP at the scene's radiometric scale).", 1,
     )
+
+
+def suite_raster_query(ctx):
+    """terrio compare, pixel-info and xyz against GDAL's raster compare, pixel-info and gdal2xyz."""
+    suite = Suite(
+        "raster-query",
+        "Raster comparison, pixel queries and XYZ text",
+        "`gdal raster compare`, `gdal raster pixel-info`, `gdallocationinfo`, `gdal2xyz.py` (GDAL 3.13.3)",
+        "Real DEMs, Landsat, OPERA, ECOSTRESS, NLCD and netCDF rasters and derived copies. compare: the same "
+        "report lines and exit status (CRS WKT text, and the two values GDAL swaps in its metadata value "
+        "message, normalized). pixel-info: GeoJSON and CSV values parsed and compared (CSV to GDAL 3.13's "
+        "15 significant digits), gdallocationinfo text and -valonly byte for byte. xyz: output byte for "
+        "byte. Within tolerance: numbers within 1e-9 relative (terrio's projection arithmetic, one-ULP "
+        "scale/offset products).",
+    )
+    _code, out, err = run([sys.executable, str(SCRIPTS / "compare_raster_query_with_gdal.py"), ctx.data, "--terrio", ctx.terrio, "--json"])
+    try:
+        results = json.loads(out)
+    except json.JSONDecodeError:
+        suite.error = tail(err or out)
+        return suite
+    statuses = {"identical": IDENTICAL, "within tolerance": TOLERANCE}
+    for result in results:
+        status = statuses.get(result["status"], DIFFERS)
+        suite.cases.append(Case(result["operation"], result["name"], status, result.get("detail", "") if status != IDENTICAL else ""))
+    return suite
 
 
 def suite_raster_pixel(ctx):
@@ -1620,6 +1648,7 @@ SUITES = OrderedDict(
         ("geolocation", suite_geolocation),
         ("dem-calc", suite_dem_calc),
         ("pansharpen", suite_pansharpen),
+        ("raster-query", suite_raster_query),
         ("raster-pixel", suite_raster_pixel),
         ("focal", suite_focal),
         ("vector-ops", suite_vector_ops),

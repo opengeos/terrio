@@ -44,6 +44,7 @@ from terrio._terrio import (
     calc,
     clean_collar,
     combine,
+    compare,
     concat,
     concave_hull,
     convert,
@@ -77,6 +78,7 @@ from terrio._terrio import (
     open_vector,
     open_vrt,
     pansharpen,
+    pixel_info,
     polygonize,
     proximity,
     rasterize,
@@ -111,6 +113,7 @@ from terrio._terrio import (
     write_netcdf_groups,
     write_raster,
     write_vector,
+    xyz,
 )
 from terrio.errors import (
     CRSError,
@@ -149,6 +152,7 @@ __all__ = [
     "combine",
     "concave_hull",
     "convex_hull",
+    "compare",
     "concat",
     "clean_collar",
     "convert",
@@ -183,6 +187,7 @@ __all__ = [
     "open_stream",
     "open_vector",
     "pansharpen",
+    "pixel_info",
     "partition",
     "polygonize",
     "proximity",
@@ -217,6 +222,7 @@ __all__ = [
     "write_netcdf_groups",
     "write_raster",
     "write_vector",
+    "xyz",
 ]
 
 if _sys.platform == "emscripten":

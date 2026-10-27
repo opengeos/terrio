@@ -373,3 +373,35 @@ fn vsi_tool_lists_copies_and_refuses_dangerous_deletes() {
     assert_eq!(replies[&4]["result"]["isError"], true);
     assert!(replies[&4]["result"]["content"][0]["text"].as_str().unwrap().contains("refusing"));
 }
+
+#[test]
+fn compare_and_pixel_info_report_results_rather_than_failures() {
+    let dir = tempfile::tempdir().unwrap();
+    let write = |name: &str, values: Vec<f64>| {
+        let cfg = terrio::RasterConfig { cols: 3, rows: 1, cell_size: 10.0, data_type: terrio::DataType::F32, ..Default::default() };
+        let mut ds = terrio::RasterDataset::new(terrio::Raster::from_data(cfg, values).unwrap(), false);
+        ds.raster.crs.epsg = Some(32611);
+        ds.set_geo_transform([0.0, 10.0, 0.0, 10.0, 0.0, -10.0]);
+        let path = dir.path().join(name);
+        terrio::write_raster_dataset(&ds, path.to_str().unwrap(), &Default::default()).unwrap();
+        path.to_str().unwrap().to_string()
+    };
+    let a = write("a.tif", vec![1.0, 2.0, 3.0]);
+    let b = write("b.tif", vec![1.0, 2.0, 4.0]);
+    let replies = session(&[
+        json!({"jsonrpc":"2.0","id":1,"method":"tools/list"}),
+        call(2, "compare", &[&a, &b, "--skip-binary"]),
+        call(3, "pixel-info", &["-f", "text", &a, "2.5", "0.5"]),
+        call(4, "compare", &[&a, "missing.tif"]),
+    ]);
+    let tools = replies[&1]["result"]["tools"].as_array().unwrap();
+    for name in ["compare", "pixel-info", "xyz"] {
+        assert!(tools.iter().any(|t| t["name"] == name), "{name}");
+    }
+    assert_eq!(replies[&2]["result"]["isError"], false);
+    let text = replies[&2]["result"]["content"][0]["text"].as_str().unwrap();
+    assert!(text.contains("1: pixels differing: 1") && text.contains("exited with status 2"), "{text}");
+    assert_eq!(replies[&3]["result"]["isError"], false);
+    assert!(replies[&3]["result"]["content"][0]["text"].as_str().unwrap().contains("Value: 3"));
+    assert_eq!(replies[&4]["result"]["isError"], true);
+}

@@ -287,6 +287,30 @@ let visible = viewshed(&dem, &ViewshedOptions {
 `ViewshedMode::Dem` and `Ground` return minimum visible elevation or height above the DEM.
 See [viewshed](cli.md#viewshed) for units, curvature, radius cropping and nodata behavior.
 
+### Compare, pixel info and XYZ
+
+```rust,no_run
+use terrio::ops::compare::{compare, CompareOptions};
+use terrio::ops::pixel_info::{pixel_info, PixelInfoOptions, Position, PositionCrs};
+use terrio::ops::xyz::{write_xyz, XyzOptions};
+
+let report = compare("reference.tif", "output.tif", &CompareOptions { skip_binary: true, ..Default::default() })?;
+print!("{}", report.to_text()); // gdal raster compare's lines
+println!("{} difference(s)", report.difference_count());
+
+let mut dem = terrio::open_raster_lazy("dem.tif")?;
+let options = PixelInfoOptions { position_crs: Some(PositionCrs::parse("EPSG:4326")?), ..Default::default() };
+let info = pixel_info(&mut dem, &[Position::new(-105.5, 39.5)], &options)?;
+print!("{}", info.to_text()); // gdallocationinfo's report
+write_xyz(&mut dem, &mut std::io::stdout(), &XyzOptions::default())?;
+# Ok::<(), terrio::Error>(())
+```
+
+`compare_rasters` compares two open `LazyRaster`s (without the binary, RPC and subdataset
+comparisons), `pixel_info_layer` queries at a layer's points, and `PixelInfo` prints GeoJSON,
+CSV, text and `-valonly` output or builds a point layer. See [compare](cli.md#compare),
+[pixel-info](cli.md#pixel-info) and [xyz](cli.md#xyz).
+
 ### Vector datasets
 
 ```rust,no_run

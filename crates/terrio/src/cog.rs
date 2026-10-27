@@ -155,6 +155,10 @@ enum Inner {
 /// A raster read by window, at full resolution or from an overview, by a driver other than the
 /// GeoTIFF one (STAC mosaics, Zarr pyramids).
 pub(crate) trait WindowSource: Send + Sync {
+    /// The declared type of one band, for sources with heterogeneous band types.
+    fn band_data_type(&self, _band: usize) -> Option<DataType> {
+        None
+    }
     /// A second handle to an already shared source.
     fn shared_clone(&self) -> Option<Box<dyn WindowSource>> {
         None
@@ -219,6 +223,9 @@ impl SharedRaster {
     }
 }
 impl WindowSource for SharedRaster {
+    fn band_data_type(&self, band: usize) -> Option<DataType> {
+        self.lock().ok().map(|reader| reader.band_data_type(band))
+    }
     fn shared_clone(&self) -> Option<Box<dyn WindowSource>> {
         Some(Box::new(self.clone()))
     }
@@ -559,6 +566,14 @@ impl LazyRaster {
         match &self.inner {
             Inner::Tiff(t) => t.data_type,
             Inner::Memory(ds) | Inner::Source(ds, _) => ds.raster.data_type,
+        }
+    }
+
+    /// The declared band type, falling back to the shared raster type.
+    pub(crate) fn band_data_type(&self, band: usize) -> DataType {
+        match &self.inner {
+            Inner::Source(_, source) => source.band_data_type(band).unwrap_or_else(|| self.data_type()),
+            _ => self.data_type(),
         }
     }
 

@@ -214,6 +214,34 @@ height = terrio.viewshed("dem_utm.tif", 500000, 4400000, om="GROUND", cc=0)
 or height above the DEM. `cc` is 1 minus refraction. See [viewshed](cli.md#viewshed) for
 units, curvature, radius cropping and input nodata behavior.
 
+### Compare, pixel info and XYZ
+
+```python
+report = terrio.compare("reference.tif", "output.tif", skip_binary=True)
+print(report["difference_count"], [d["message"] for d in report["differences"]])
+print(report["bands"][0]["pixels_differing"], report["bands"][0]["max_abs_diff"])
+
+values = terrio.pixel_info("dem.tif", [(-105.5, 39.5, "site A")], position_crs="EPSG:4326", resampling="bilinear")
+print(values["features"][0]["properties"]["bands"][0]["raw_value"])
+print(terrio.pixel_info("dem.tif", position_dataset="sites.gpkg", format="csv"))
+
+terrio.xyz("dem.tif", "dem.xyz", skip_nodata=True)  # number of lines written
+text = terrio.xyz("dem.tif", srcwin=(0, 0, 10, 10))
+```
+
+`compare` takes paths or `Raster`s (two paths for the binary, RPC and subdataset comparisons)
+and returns `terrio compare --json`'s report. `pixel_info` returns GeoJSON (a dict), `json` (a
+list), or `csv`, `text` and `value` strings; `xyz` returns the line count written to `dst`, or
+the text. See [compare](cli.md#compare), [pixel-info](cli.md#pixel-info) and [xyz](cli.md#xyz)
+for options, GDAL agreement and differences.
+
+`pixel_info(..., format="value", field_sep="|")` selects the separator between
+band values. `pixel_info(..., dst="samples.gpkg", output_format="GPKG")` also
+writes a vector layer of sample points and returns the requested report as usual.
+Missing/off-raster samples are retained as null values. Input paths cannot be used
+as the output. JavaScript hosts can serialize the GeoJSON result through a Dataset
+when they need file bytes; direct local file paths are a native API feature.
+
 ### Vector datasets
 
 ```python
