@@ -1947,11 +1947,8 @@ pub fn delete(path: &str, recursive: bool) -> Result<Report> {
             delete_file(&Node::S3 { bucket: bucket.clone(), key: marker })?;
         }
     }
-    // An object that also has keys below it: the children are gone, so the object goes last.
-    if !stat.dir {
-        delete_file(&node)?;
-        report.deleted += 1;
-    }
+    // An exact object that coexists with keys below it is kept, as GDAL keeps it: recursive
+    // deletion removes the directory `path/`, and the object is deleted without `-r`.
     Ok(report)
 }
 
