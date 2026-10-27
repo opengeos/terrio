@@ -15,6 +15,15 @@
   decodes no pixels. Remote SRTM tiles are read with HTTP range requests, and
   `convert` to a GeoTIFF or COG writes these inputs a strip at a time.
 
+### Remote I/O
+
+- Signed S3 uploads of local files over 8 MiB sent over HTTPS read the file
+  once instead of twice (#335): they are signed with `UNSIGNED-PAYLOAD`, as the
+  AWS SDKs sign S3 uploads over HTTPS, and the body is streamed. The signature
+  no longer covers the body of these uploads; TLS protects it in transit. Over
+  plain HTTP, and for smaller or staged uploads, the payload hash is signed as
+  before.
+
 ### Breaking changes
 
 - `mosaic`, `warp`, `concat` and `filter merge` now treat an input beginning
