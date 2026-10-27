@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Formats
+
+- SRTM HGT tiles are read and written (the `SRTMHGT` driver), as GDAL's SRTMHGT
+  driver does: 3", 1" and 0.5" tiles georeferenced from their name
+  (`N37W120.hgt`), `.hgt.zip` archives, and the NASADEM and water body variants.
+  Tiles are written as Int16 with -32768 for nodata; a grid of another size is
+  refused.
+
 ### CRS compatibility
 
 - Transformer construction now checks celestial-body compatibility for all CRS

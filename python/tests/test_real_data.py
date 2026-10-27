@@ -35,6 +35,7 @@ RASTERS = [
     "srtm_sub.sdat",
     "srtm_sub.nc",
     "srtm_sub_v3.zarr",
+    "N37W120.hgt",
 ]
 
 VECTORS = [
