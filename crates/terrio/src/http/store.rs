@@ -109,6 +109,11 @@ fn list_pages_api(api: Api, recursive: bool, max: Option<u32>, allow_partial: bo
             },
         };
         if !api.is_listing_page(&body) {
+            // Read-only discovery and `has_entries` (stat) keep their historical answer, a store
+            // that cannot list; a complete listing, which mutations rely on, fails instead.
+            if allow_partial || max.is_some() {
+                return Ok(None);
+            }
             return Err(Error::InvalidData("not an XML object-store listing".into()));
         }
         let next = api.read_page(&body, &mut out, &mut index);
@@ -291,6 +296,8 @@ fn write_request(
         Remote::S3(o) => format!("{}{query}", o.url(region)),
         Remote::Url(u) => append_query(u, query),
     };
+    // Signed requests cover the body (no `UNSIGNED-PAYLOAD`): a file is read once to hash it and
+    // again to send it, as docs/cli.md records.
     let payload_hash = if creds.is_some() { payload.sha256()? } else { String::new() };
     let length = payload.len()?;
     let mut url = base_url(region.as_deref());
@@ -585,6 +592,32 @@ mod tests {
             assert!(destination_thread.join().unwrap().is_none(), "redirect target must receive no request or payload");
             assert!(result.err().expect("cross-origin redirect must fail").to_string().contains("cross-origin write redirect"));
         }
+    }
+
+    #[test]
+    fn a_page_that_is_not_a_listing_fails_only_complete_listings() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}/bucket", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            for _ in 0..3 {
+                let mut stream = listener.accept().unwrap().0;
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut line = String::new();
+                while reader.read_line(&mut line).unwrap() > 2 {
+                    line.clear();
+                }
+                let body = "<html><body>Not a bucket</body></html>";
+                write!(stream, "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+            }
+        });
+        let api = Api::Url { base, prefix: "dir/".into() };
+        // Discovery (Zarr children) and stat (`has_entries`): not listable, as before.
+        assert!(list_pages_api(api.clone(), false, None, true).unwrap().is_none());
+        assert!(list_pages_api(api.clone(), false, Some(1), false).unwrap().is_none());
+        // A complete listing for a mutation refuses to read the page as an empty prefix.
+        let err = list_pages_api(api, false, None, false).unwrap_err();
+        assert!(err.to_string().contains("not an XML object-store listing"), "{err}");
+        server.join().unwrap();
     }
 
     #[test]

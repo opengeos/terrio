@@ -589,7 +589,9 @@ impl RemoteLister {
             {
                 return Err(Error::InvalidArgument("invalid S3 bucket name in remote listing URL".into()));
             }
-            format!("https://{bucket}.s3.amazonaws.com/{}", key.replace('?', "%3F"))
+            // Native `s3://` keys are raw (never URL-decoded): encoded here, the single decode in
+            // `Api::for_url` gives the same key back.
+            format!("https://{bucket}.s3.amazonaws.com/{}", uri_encode(key, false))
         } else if let Some(rest) = url.strip_prefix("gs://").or_else(|| url.strip_prefix("/vsigs/")) {
             format!("https://storage.googleapis.com/{}", rest.replace('?', "%3F"))
         } else if let Some(rest) = url.strip_prefix("az://").or_else(|| url.strip_prefix("/vsiaz/")) {
@@ -768,6 +770,14 @@ mod tests {
             let request = lister.api.request_url(None, false).unwrap();
             assert!(request.contains("prefix=a%3Fb%2F"), "{url}: {request}");
         }
+    }
+
+    #[test]
+    fn s3_keys_are_listed_raw_as_natively() {
+        // `%20` is part of the key, as `vfs` keeps `s3://` keys: the prefix is `a%20b/`, not `a b/`.
+        let lister = super::RemoteLister::new("s3://bucket/a%20b", false, None).unwrap();
+        let request = lister.api.request_url(None, false).unwrap();
+        assert!(request.contains("prefix=a%2520b%2F"), "{request}");
     }
 
     use super::*;
