@@ -3542,3 +3542,29 @@ test("ESRIJSON is recognized by content and keeps its holes and CRS", () => {
   assert.equal(ds.crs, "EPSG:4326");
   ds.free();
 });
+
+test("two-point oblique Mercator matches PROJ", () => {
+  const reference = JSON.parse(readFileSync(new URL("../../crates/terrio-crs/tests/data/omerc_two_point_reference.json", import.meta.url), "utf8"));
+  for (const c of reference.cases) {
+    const defined = c.samples.filter(s => s[2] !== null);
+    for (const target of [c.target, c.wkt2, c.wkt1, c.wkt1_esri]) {
+      const result = terrio.transformPoints(defined.map(s => s[0]), defined.map(s => s[1]), c.source, target);
+      for (let i = 0; i < defined.length; i++) for (let j = 0; j < 2; j++) {
+        assert.ok(Math.abs(result[j][i] - defined[i][2][j]) * c.metres_per_unit <= 0.001, `${c.name} forward ${i}/${j}`);
+      }
+    }
+    const reversible = defined.filter(s => s[3] !== null);
+    const inverse = terrio.transformPoints(reversible.map(s => s[2][0]), reversible.map(s => s[2][1]), c.target, c.source);
+    for (let i = 0; i < reversible.length; i++) {
+      const [lon, lat] = reversible[i][3];
+      const dlon = ((inverse[0][i] - lon + 540) % 360 - 180) * Math.cos(lat * Math.PI / 180);
+      assert.ok(Math.abs(dlon) <= 1e-8 && Math.abs(inverse[1][i] - lat) <= 1e-8, `${c.name} inverse ${i}`);
+    }
+    for (const [point, expected] of c.inverse_samples) if (expected === null) {
+      assert.throws(() => terrio.transformPoints([point[0]], [point[1]], c.target, c.source));
+    }
+  }
+  for (const {definition} of reference.invalid) {
+    assert.throws(() => terrio.transformPoints([0], [0], "+proj=longlat +datum=WGS84", `${definition} +datum=WGS84`));
+  }
+});
