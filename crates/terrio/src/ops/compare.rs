@@ -1111,6 +1111,8 @@ mod tests {
                         }
                         Err(e) => panic!("{e}"),
                     };
+                    // Windows inherits the listener's nonblocking mode on accepted sockets.
+                    stream.set_nonblocking(false).unwrap();
                     stream.set_read_timeout(Some(std::time::Duration::from_secs(2))).unwrap();
                     let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
                     let mut line = String::new();
