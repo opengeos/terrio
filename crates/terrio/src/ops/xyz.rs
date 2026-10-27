@@ -238,6 +238,7 @@ pub fn write_xyz_file(raster: &mut LazyRaster, path: &std::path::Path, options: 
         Err(e) => return Err(e.into()),
     };
     let parent = path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(std::path::Path::new("."));
+    #[cfg_attr(not(unix), allow(unused_mut))]
     let mut builder = tempfile::Builder::new();
     #[cfg(unix)]
     {
