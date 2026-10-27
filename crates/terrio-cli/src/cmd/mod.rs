@@ -18,6 +18,7 @@ pub mod multidim;
 pub mod neighbors;
 
 pub mod pansharpen;
+pub mod pixel;
 pub mod pixel_info;
 pub mod points;
 pub mod polygonize;

@@ -273,7 +273,7 @@ fn file_extras(path: Option<&str>) -> Extras {
     if !p.is_file() {
         return out;
     }
-    if let Some(tags) = crate::geotiff::read_geo_tags(&p) {
+    if let Some(tags) = crate::geotiff::read_compare_geo_tags(&p) {
         out.dataset = tags.tiff_tag_items;
         out.overview = tags.overview_resampling.map(|r| vec![("RESAMPLING".to_string(), r)]).unwrap_or_default();
         out.rpc = tags.rpc.map(|r| rpc_items(&r)).unwrap_or_default();
@@ -375,12 +375,12 @@ fn binary_difference(reference: &str, input: &str) -> Result<Option<Option<Strin
     let mut left = a.len;
     while left > 0 {
         let n = left.min(CHUNK as u64) as usize;
-        if a.reader.read_exact(&mut ba[..n]).is_err() {
-            return Ok(Some(Some("Failed to fully read reference file".into())));
-        }
-        if b.reader.read_exact(&mut bb[..n]).is_err() {
-            return Ok(Some(Some("Failed to fully read input file".into())));
-        }
+        a.reader
+            .read_exact(&mut ba[..n])
+            .map_err(|e| Error::Io(std::io::Error::new(e.kind(), format!("failed to fully read reference file: {e}"))))?;
+        b.reader
+            .read_exact(&mut bb[..n])
+            .map_err(|e| Error::Io(std::io::Error::new(e.kind(), format!("failed to fully read input file: {e}"))))?;
         if ba[..n] != bb[..n] {
             return Ok(Some(Some("Reference file and input file differ at the binary level.".into())));
         }
@@ -591,7 +591,11 @@ fn compare_datasets(
         out.push(ctx, "height", None, format!("Reference dataset height is {}, but input dataset height is {}", a.height(), b.height()));
         same = false;
     }
-    let (ea, eb) = (file_extras(paths.reference), file_extras(paths.input));
+    let (ea, eb) = if options.skip_metadata && options.skip_rpc {
+        (Extras::default(), Extras::default())
+    } else {
+        (file_extras(paths.reference), file_extras(paths.input))
+    };
     if !options.skip_metadata {
         let md = |r: &LazyRaster, e: &Extras| {
             let mut items = dataset_metadata(r);
@@ -769,15 +773,6 @@ impl PixelStats {
     }
 }
 
-/// The rows of a strip: about 32 MiB of values of all bands, in whole blocks.
-fn strip_rows(width: usize, bands: usize, value_size: usize, block: Option<usize>) -> usize {
-    let rows = ((32usize << 20) / (width.max(1) * bands.max(1) * value_size.max(1))).max(1);
-    match block {
-        Some(h) if h > 0 && rows > h => rows / h * h,
-        _ => rows,
-    }
-}
-
 fn level_size(r: &LazyRaster, overview: Option<usize>) -> Option<(usize, usize)> {
     match overview {
         None => Some((r.width(), r.height())),
@@ -816,7 +811,7 @@ fn compare_image(a: &mut LazyRaster, b: &mut LazyRaster, overview: Option<usize>
         (1..=bands).all(|band| a.band_data_type(band) == a.band_data_type(1) && b.band_data_type(band) == b.band_data_type(1));
     let groups: Vec<Vec<usize>> = if homogeneous { vec![(1..=bands).collect()] } else { (1..=bands).map(|band| vec![band]).collect() };
     for group in groups {
-        let rows = strip_rows(w, group.len(), 8, a.block_size().map(|(_, bh)| bh));
+        let rows = super::strips::small_strip_rows(w, group.len(), 8, a.block_size().map(|(_, bh)| bh));
         let options = WindowOptions { bands: group.clone(), overview };
         let mut y = 0;
         while y < h {
@@ -840,7 +835,7 @@ fn compare_mask(a: &mut LazyRaster, b: &mut LazyRaster, overview: Option<usize>)
         return Ok(None);
     }
     let mut stats = PixelStats::new(DataType::U8);
-    let rows = strip_rows(w, 1, 1, a.block_size().map(|(_, bh)| bh));
+    let rows = super::strips::small_strip_rows(w, 1, 1, a.block_size().map(|(_, bh)| bh));
     let mut y = 0;
     while y < h {
         let n = rows.min(h - y);

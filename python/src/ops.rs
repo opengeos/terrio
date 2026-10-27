@@ -65,7 +65,7 @@ fn srs(s: Option<&str>) -> PyResult<Option<SpatialRef>> {
     s.map(SpatialRef::parse).transpose().py()
 }
 
-fn write_mode(append: bool, overwrite: bool) -> PyResult<WriteMode> {
+pub(crate) fn write_mode(append: bool, overwrite: bool) -> PyResult<WriteMode> {
     match (append, overwrite) {
         (true, true) => Err(invalid("append and overwrite exclude each other")),
         (true, false) => Ok(WriteMode::Append),

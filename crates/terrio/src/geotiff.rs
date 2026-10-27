@@ -106,7 +106,16 @@ pub(crate) fn read_geo_tags(path: &std::path::Path) -> Option<GeoTags> {
 
 /// Reads the georeferencing tags of a TIFF stream's first image, and finds the palette images
 /// among all its images. Returns `None` when the stream is not a TIFF.
-pub(crate) fn read_geo_tags_from<R: Read + Seek>(mut f: R) -> Option<GeoTags> {
+pub(crate) fn read_geo_tags_from<R: Read + Seek>(f: R) -> Option<GeoTags> {
+    read_geo_tags_impl(f, false)
+}
+
+/// Comparison-only TIFF metadata; ordinary lazy opens avoid its out-of-line reads.
+pub(crate) fn read_compare_geo_tags(path: &std::path::Path) -> Option<GeoTags> {
+    read_geo_tags_impl(std::io::BufReader::new(std::fs::File::open(path).ok()?), true)
+}
+
+fn read_geo_tags_impl<R: Read + Seek>(mut f: R, compare_metadata: bool) -> Option<GeoTags> {
     let mut header = [0u8; 16];
     f.read_exact(&mut header[..8]).ok()?;
     let le = match &header[..2] {
@@ -191,6 +200,12 @@ pub(crate) fn read_geo_tags_from<R: Read + Seek>(mut f: R) -> Option<GeoTags> {
                 | MIN_SAMPLE_VALUE
                 | MAX_SAMPLE_VALUE
         ) {
+            continue;
+        }
+        if !compare_metadata
+            && (ASCII_TAGS.iter().any(|(extra, _)| *extra == tag)
+                || matches!(tag, X_RESOLUTION | Y_RESOLUTION | RESOLUTION_UNIT | MIN_SAMPLE_VALUE | MAX_SAMPLE_VALUE))
+        {
             continue;
         }
         let typ = u16_at(&e[2..4]);
@@ -334,40 +349,42 @@ pub(crate) fn read_geo_tags_from<R: Read + Seek>(mut f: R) -> Option<GeoTags> {
         let sy = scale[1].abs();
         out.geo_transform = Some([x - i * scale[0], scale[0], 0.0, y + j * sy, 0.0, -sy]);
     }
-    for (tag, name) in ASCII_TAGS {
-        if let Some(v) = ascii(tag) {
-            out.tiff_tag_items.push((name.to_string(), v.to_string()));
+    if compare_metadata {
+        for (tag, name) in ASCII_TAGS {
+            if let Some(v) = ascii(tag) {
+                out.tiff_tag_items.push((name.to_string(), v.to_string()));
+            }
         }
-    }
-    let first = |t: u16| doubles(t).and_then(|d| d.first()).copied();
-    if let (Some(x), Some(y)) = (first(X_RESOLUTION), first(Y_RESOLUTION))
-        && x.is_finite()
-        && y.is_finite()
-    {
-        // libtiff holds resolutions as floats.
-        let g8 = |v: f64| crate::drivers::common::fmt_g(f64::from(v as f32), 8);
-        out.tiff_tag_items.push(("TIFFTAG_XRESOLUTION".into(), g8(x)));
-        out.tiff_tag_items.push(("TIFFTAG_YRESOLUTION".into(), g8(y)));
-        let unit = shorts(RESOLUTION_UNIT).and_then(|s| s.first()).copied().unwrap_or(2);
-        let name = match unit {
-            1 => "unitless",
-            2 => "pixels/inch",
-            3 => "pixels/cm",
-            _ => "unknown",
-        };
-        out.tiff_tag_items.push(("TIFFTAG_RESOLUTIONUNIT".into(), format!("{unit} ({name})")));
-    }
-    for (tag, name) in [(MIN_SAMPLE_VALUE, "TIFFTAG_MINSAMPLEVALUE"), (MAX_SAMPLE_VALUE, "TIFFTAG_MAXSAMPLEVALUE")] {
-        if let Some(v) = shorts(tag).and_then(|s| s.first()) {
-            out.tiff_tag_items.push((name.to_string(), v.to_string()));
+        let first = |t: u16| doubles(t).and_then(|d| d.first()).copied();
+        if let (Some(x), Some(y)) = (first(X_RESOLUTION), first(Y_RESOLUTION))
+            && x.is_finite()
+            && y.is_finite()
+        {
+            // libtiff holds resolutions as floats.
+            let g8 = |v: f64| crate::drivers::common::fmt_g(f64::from(v as f32), 8);
+            out.tiff_tag_items.push(("TIFFTAG_XRESOLUTION".into(), g8(x)));
+            out.tiff_tag_items.push(("TIFFTAG_YRESOLUTION".into(), g8(y)));
+            let unit = shorts(RESOLUTION_UNIT).and_then(|s| s.first()).copied().unwrap_or(2);
+            let name = match unit {
+                1 => "unitless",
+                2 => "pixels/inch",
+                3 => "pixels/cm",
+                _ => "unknown",
+            };
+            out.tiff_tag_items.push(("TIFFTAG_RESOLUTIONUNIT".into(), format!("{unit} ({name})")));
         }
+        for (tag, name) in [(MIN_SAMPLE_VALUE, "TIFFTAG_MINSAMPLEVALUE"), (MAX_SAMPLE_VALUE, "TIFFTAG_MAXSAMPLEVALUE")] {
+            if let Some(v) = shorts(tag).and_then(|s| s.first()) {
+                out.tiff_tag_items.push((name.to_string(), v.to_string()));
+            }
+        }
+        out.overview_resampling = ascii(GDAL_METADATA).and_then(|xml| {
+            crate::drivers::gtiff_write::gdal_metadata_items(xml)
+                .into_iter()
+                .find(|i| i.attr("domain") == Some("IMAGE_STRUCTURE") && i.attr("name") == Some("OVERVIEW_RESAMPLING"))
+                .map(|i| i.text.trim().to_string())
+        });
     }
-    out.overview_resampling = ascii(GDAL_METADATA).and_then(|xml| {
-        crate::drivers::gtiff_write::gdal_metadata_items(xml)
-            .into_iter()
-            .find(|i| i.attr("domain") == Some("IMAGE_STRUCTURE") && i.attr("name") == Some("OVERVIEW_RESAMPLING"))
-            .map(|i| i.text.trim().to_string())
-    });
     out.rpc = doubles(RPC_COEFFICIENTS).filter(|v| v.len() == 92).map(<[f64]>::to_vec);
     out.nodata = ascii(GDAL_NODATA).and_then(|s| parse_nodata(s.trim()));
     // GDAL rounds the nodata value of Float32 bands to Float32, so that it equals the samples

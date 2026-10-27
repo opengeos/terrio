@@ -96,6 +96,16 @@ pub fn check_xyz(raster: &LazyRaster, options: &XyzOptions) -> Result<()> {
     if options.skip.0 == 0 || options.skip.1 == 0 {
         return Err(Error::InvalidArgument("skip must be at least 1".into()));
     }
+    let dt = raster.band_data_type(options.bands.first().copied().unwrap_or(1));
+    let source_nodata = options.src_nodata.clone().or_else(|| {
+        let bands: Vec<_> = if options.bands.is_empty() { (1..=raster.band_count()).collect() } else { options.bands.clone() };
+        bands.iter().map(|b| raster.band_nodata(*b)).collect::<Option<Vec<_>>>()
+    });
+    if !matches!(dt, DataType::F32 | DataType::F64) && source_nodata.as_ref().is_some_and(|values| values.iter().any(|v| !v.is_finite())) {
+        return Err(Error::InvalidArgument(
+            "non-finite source nodata cannot be converted to the first selected integer band's type".into(),
+        ));
+    }
     let (w, h) = (raster.width(), raster.height());
     let [x_off, y_off, x_size, y_size] = options.srcwin.unwrap_or([0, 0, w, h]);
     if x_size == 0 || y_size == 0 || !Window::new(x_off, y_off, x_size, y_size).fits(w, h) {
@@ -136,12 +146,7 @@ pub fn write_xyz<W: Write>(raster: &mut LazyRaster, out: &mut W, options: &XyzOp
     let replace = !skip_nodata && dst_nodata.is_some();
     let delim = options.delimiter.as_str();
     let block = raster.block_size().map(|(_, bh)| bh.max(1));
-    // About 8 MiB of values a strip, in whole blocks when that holds one or more.
-    let rows = ((8usize << 20) / x_size.saturating_mul(n).saturating_mul(8).max(1)).max(1);
-    let rows = match block {
-        Some(block) if rows > block => rows / block * block,
-        _ => rows,
-    };
+    let rows = super::strips::small_strip_rows(x_size, n, 8, block);
     let read = WindowOptions { bands: bands.clone(), overview: None };
     let mut lines = 0u64;
     let mut text = String::new();
@@ -340,5 +345,16 @@ mod tests {
         assert_eq!(json["features"][0]["properties"]["bands"][1]["raw_value"], 1234567.25);
         assert!(xyz(&mut source, &XyzOptions { bands: vec![1], ..Default::default() }).ends_with(" 1234567\n"));
         assert!(xyz(&mut source, &XyzOptions { bands: vec![2], ..Default::default() }).ends_with(" 1.23457e+06\n"));
+        drop(source);
+        let with_nodata = vrt
+            .replace("band=\"1\">", "band=\"1\"><NoDataValue>0</NoDataValue>")
+            .replace("band=\"2\">", "band=\"2\"><NoDataValue>nan</NoDataValue>");
+        std::fs::write(&path, with_nodata).unwrap();
+        let mut source = crate::open_raster_lazy(path.to_str().unwrap()).unwrap();
+        let mut output = Vec::new();
+        let error =
+            write_xyz(&mut source, &mut output, &XyzOptions { bands: vec![], skip_nodata: true, ..Default::default() }).unwrap_err();
+        assert!(error.to_string().contains("non-finite source nodata"));
+        assert!(output.is_empty());
     }
 }

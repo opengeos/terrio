@@ -152,7 +152,7 @@ pub fn run(a: Args) -> Result<()> {
                 .clone()
                 .unwrap_or_else(|| std::path::Path::new(path).file_stem().and_then(|s| s.to_str()).unwrap_or("pixel_info").to_string());
             let options = terrio::VectorWriteOptions { driver, ..Default::default() };
-            return terrio::write_vector(&[info.to_layer(&name)], path, &options);
+            return terrio::write_vector(&[info.to_layer(&name)?], path, &options);
         }
     };
     match &a.output {

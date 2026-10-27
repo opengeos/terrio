@@ -124,3 +124,10 @@ def test_pixel_info_refuses_two_position_sources():
         terrio.pixel_info(
             src, [(0, 0)], position_dataset={"type": "FeatureCollection", "features": []}
         )
+
+
+def test_invalid_pixel_info_format_does_not_create_output(tmp_path):
+    dst = tmp_path / "refused.gpkg"
+    with pytest.raises(ValueError, match="unknown format"):
+        terrio.pixel_info("missing.tif", [(0, 0)], dst=str(dst), format="xml")
+    assert not dst.exists()

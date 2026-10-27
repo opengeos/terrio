@@ -7,6 +7,7 @@ mod cli;
 mod focal;
 mod multidim;
 mod ops;
+mod pixel;
 mod pointcloud;
 mod query;
 mod raster;
@@ -88,6 +89,7 @@ fn _terrio(m: &Bound<'_, PyModule>) -> PyResult<()> {
     multidim::register(m)?;
     terrain::register(m)?;
     query::register(m)?;
+    pixel::register(m)?;
     focal::register(m)?;
     pointcloud::register(m)?;
     rio::register(m)?;

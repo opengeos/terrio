@@ -242,6 +242,20 @@ Missing/off-raster samples are retained as null values. Input paths cannot be us
 as the output. JavaScript hosts can serialize the GeoJSON result through a Dataset
 when they need file bytes; direct local file paths are a native API feature.
 
+### Pixel-wise operations
+
+```python
+physical = terrio.unscale("packed.tif", ot="Float64")          # value * scale + offset
+rgba = terrio.nodata_to_alpha("landsat.tif", "rgba.tif")       # nodata to an alpha band
+groups = terrio.reclassify("nlcd.tif", "11=1;[21,25)=2;DEFAULT=0", ot="Byte")
+groups = terrio.reclassify("nlcd.tif", "@mapping.txt")         # one entry per line
+pixels = terrio.as_features("dem.tif", "pixels.gpkg", geometry_type="polygon", include_xy=True)
+```
+
+These follow GDAL's `gdal raster unscale`, `nodata-to-alpha`, `reclassify` and `as-features`;
+see [unscale](cli.md#unscale), [nodata-to-alpha](cli.md#nodata-to-alpha),
+[reclassify](cli.md#reclassify) and [as-features](cli.md#as-features).
+
 ## Typing
 
 The package ships type stubs (`py.typed`), checked with `mypy --strict` and `stubtest`:

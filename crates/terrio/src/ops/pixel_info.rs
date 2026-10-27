@@ -85,8 +85,8 @@ pub struct PixelInfoOptions {
     /// Query this overview (from 0) rather than full resolution. Pixel positions are still those
     /// of the full-resolution raster.
     pub overview: Option<usize>,
-    /// What positions are in. `None` is `Pixel`, or the layer's CRS for [`pixel_info_layer`] (the
-    /// raster's when the layer has none, column/line when neither has one).
+    /// What positions are in. `None` uses the layer's CRS for [`pixel_info_layer`] when it
+    /// has one, otherwise column/line, matching GDAL's default.
     pub position_crs: Option<PositionCrs>,
     /// `Nearest` (the default), `Bilinear`, `Cubic` or `CubicSpline`.
     pub resampling: Resampling,
@@ -977,7 +977,25 @@ impl PixelInfo {
     /// The locations as a layer of points (GDAL 3.13's vector output): the layer's fields or
     /// `extra_content`, `column`, `line` and `band_N_raw_value`, `band_N_unscaled_value`, with
     /// points at [`Location::output_xy`] in [`PixelInfo::output_crs`].
-    pub fn to_layer(&self, name: &str) -> Layer {
+    pub fn to_layer(&self, name: &str) -> Result<Layer> {
+        let mut names = std::collections::BTreeSet::new();
+        for name in ["column".to_string(), "line".to_string()]
+            .into_iter()
+            .chain(self.bands.iter().flat_map(|b| [format!("band_{b}_raw_value"), format!("band_{b}_unscaled_value")]))
+        {
+            names.insert(name.to_ascii_lowercase());
+        }
+        if self.from_layer {
+            for field in &self.fields {
+                if !names.insert(field.name.to_ascii_lowercase()) {
+                    return Err(Error::InvalidArgument(format!(
+                        "position field '{}' collides with a vector output field; select fewer fields or rename it",
+                        field.name
+                    )));
+                }
+            }
+        }
+
         let mut layer = Layer::new(name).with_geom_type(GeometryType::Point);
         if let Some(c) = &self.output_crs {
             c.apply_to_layer(&mut layer);
@@ -1008,7 +1026,7 @@ impl PixelInfo {
             let geometry = l.output_xy.map(|[x, y]| Geometry::Point(wbvector::Coord::xy(x, y)));
             layer.features.push(Feature { fid: i as u64 + 1, geometry, attributes });
         }
-        layer
+        Ok(layer)
     }
 
     /// The locations as JSON: an array of `{input, extra, column, line, xy, bands: [{band,
@@ -1044,6 +1062,34 @@ mod tests {
     fn value(r: &mut LazyRaster, x: f64, y: f64, method: Resampling) -> Option<f64> {
         let o = PixelInfoOptions { resampling: method, ..Default::default() };
         pixel_info(r, &[Position::new(x, y)], &o).unwrap().locations[0].bands[0].value
+    }
+
+    #[test]
+    fn layer_without_crs_uses_pixels_and_reserved_geojson_names_match_gdal() {
+        let mut raster = raster(5, 4, None);
+        let mut layer = Layer::new("sites").with_geom_type(GeometryType::Point);
+        layer.add_field(FieldDef::new("line", FieldType::Text));
+        layer.features.push(Feature {
+            fid: 0,
+            geometry: Some(Geometry::Point(wbvector::Coord::xy(2.5, 1.5))),
+            attributes: vec![FieldValue::Text("survey".into())],
+        });
+        let info = pixel_info_layer(&mut raster, &layer, &Default::default()).unwrap();
+        assert_eq!(info.locations[0].bands[0].value, Some(7.0));
+        assert_eq!(info.to_geojson()["features"][0]["properties"]["line"], "survey");
+        assert!(info.to_layer("samples").unwrap_err().to_string().contains("collides"));
+    }
+
+    #[test]
+    fn interpolated_integer_geojson_truncates_raw_but_keeps_unscaled() {
+        let cfg = RasterConfig { cols: 2, rows: 2, bands: 1, data_type: DataType::I32, ..Default::default() };
+        let mut raster = LazyRaster::from(RasterDataset::new(Raster::from_data(cfg, vec![1., 2., 3., 4.]).unwrap(), false));
+        let info =
+            pixel_info(&mut raster, &[Position::new(1., 1.)], &PixelInfoOptions { resampling: Resampling::Bilinear, ..Default::default() })
+                .unwrap();
+        let json = info.to_geojson();
+        assert_eq!(json["features"][0]["properties"]["bands"][0]["raw_value"], 2);
+        assert_eq!(json["features"][0]["properties"]["bands"][0]["unscaled_value"], 2.5);
     }
 
     #[test]

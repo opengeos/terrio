@@ -311,6 +311,25 @@ comparisons), `pixel_info_layer` queries at a layer's points, and `PixelInfo` pr
 CSV, text and `-valonly` output or builds a point layer. See [compare](cli.md#compare),
 [pixel-info](cli.md#pixel-info) and [xyz](cli.md#xyz).
 
+### Pixel-wise operations
+
+```rust
+use terrio::ops::as_features::{as_features, AsFeaturesOptions, PixelGeometry};
+use terrio::ops::pixel::{nodata_to_alpha, reclassify, unscale, ReclassifyOptions};
+let packed = terrio::open_raster("packed.tif")?;
+let physical = unscale(&packed, &Default::default())?; // value * scale + offset, Float32
+let rgba = nodata_to_alpha(&terrio::open_raster("landsat.tif")?, &Default::default())?;
+let nlcd = terrio::open_raster("nlcd.tif")?;
+let groups = reclassify(&nlcd, &ReclassifyOptions { mapping: "11=1;[21,25)=2;DEFAULT=0".into(), output_type: None })?;
+let pixels = as_features(&nlcd, &AsFeaturesOptions { geometry: PixelGeometry::Polygon, ..Default::default() })?;
+# Ok::<(), terrio::Error>(())
+```
+
+`terrio::ops::pixel::Reclassifier` parses and applies GDAL's mapping syntax on its own, and
+`mapping_from_file_text` reads mapping files. See [unscale](cli.md#unscale),
+[nodata-to-alpha](cli.md#nodata-to-alpha), [reclassify](cli.md#reclassify) and
+[as-features](cli.md#as-features).
+
 ## Coordinate systems
 
 ```rust,no_run

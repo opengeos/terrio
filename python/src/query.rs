@@ -175,6 +175,16 @@ fn pixel_info<'py>(
     dst: Option<&str>,
     output_format: Option<&str>,
 ) -> PyResult<Bound<'py, PyAny>> {
+    let format = format.to_ascii_lowercase();
+    if !matches!(format.as_str(), "geojson" | "json" | "csv" | "text" | "value" | "valonly") {
+        return Err(invalid(format!("unknown format '{format}': use geojson, json, csv, text or value")));
+    }
+    if dst.is_none() && output_format.is_some() {
+        return Err(invalid("output_format requires dst"));
+    }
+    let output_driver = output_format
+        .map(|name| terrio::formats::VectorDriver::from_name(name).ok_or_else(|| invalid(format!("unknown vector format '{name}'"))))
+        .transpose()?;
     use terrio::ops::Resampling;
     let resampling = match Resampling::parse(resampling).py()? {
         r @ (Resampling::Nearest | Resampling::Bilinear | Resampling::Cubic | Resampling::CubicSpline) => r,
@@ -226,11 +236,9 @@ fn pixel_info<'py>(
         {
             return Err(invalid("the output would overwrite an input"));
         }
-        let driver = output_format
-            .map(|name| terrio::formats::VectorDriver::from_name(name).ok_or_else(|| invalid(format!("unknown vector format '{name}'"))))
-            .transpose()?;
+        let driver = output_driver;
         let layer_name = output.file_stem().and_then(|s| s.to_str()).unwrap_or("pixel_info");
-        let layer = info.to_layer(layer_name);
+        let layer = info.to_layer(layer_name).py()?;
         crate::with_warnings(py, || terrio::write_vector(&[layer], dst, &terrio::VectorWriteOptions { driver, ..Default::default() }))?;
     } else if output_format.is_some() {
         return Err(invalid("output_format requires dst"));

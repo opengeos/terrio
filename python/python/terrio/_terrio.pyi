@@ -56,6 +56,10 @@ __all__ = [
     "clean_collar",
     "enhance",
     "enhance_luts",
+    "unscale",
+    "nodata_to_alpha",
+    "reclassify",
+    "as_features",
     "PointCloud",
     "PointCloudFile",
     "PointChunks",
@@ -1047,6 +1051,63 @@ def sieve(
     tile_size: int | None = None,
     bigtiff: bool = False,
 ) -> Raster: ...
+def unscale(
+    src: _RasterSource,
+    dst: str | None = None,
+    *,
+    ot: str | None = None,
+    format: str | None = None,
+    compress: str | None = None,
+    tile_size: int | None = None,
+    bigtiff: bool = False,
+) -> Raster:
+    """Applies band scales and offsets (GDAL's ``gdal raster unscale``)."""
+    ...
+
+def nodata_to_alpha(
+    src: _RasterSource,
+    dst: str | None = None,
+    *,
+    nodata: float | Sequence[float] | None = None,
+    format: str | None = None,
+    compress: str | None = None,
+    tile_size: int | None = None,
+    bigtiff: bool = False,
+) -> Raster:
+    """Replaces nodata values with an alpha band (GDAL's ``gdal raster nodata-to-alpha``)."""
+    ...
+
+def reclassify(
+    src: _RasterSource,
+    mapping: str,
+    dst: str | None = None,
+    *,
+    ot: str | None = None,
+    format: str | None = None,
+    compress: str | None = None,
+    tile_size: int | None = None,
+    bigtiff: bool = False,
+) -> Raster:
+    """Maps values or ranges to new values (GDAL's ``gdal raster reclassify``)."""
+    ...
+
+def as_features(
+    src: _RasterSource,
+    dst: str | None = None,
+    *,
+    bands: Sequence[int] | None = None,
+    geometry_type: Literal["none", "point", "polygon"] = "none",
+    skip_nodata: bool = False,
+    include_xy: bool = False,
+    include_row_col: bool = False,
+    layer_name: str = "pixels",
+    format: str | None = None,
+    append: bool = False,
+    overwrite: bool = False,
+) -> Layer:
+    """One vector feature per pixel (GDAL's ``gdal raster as-features``)."""
+    ...
+
 def neighbors(
     src: _RasterSource,
     dst: str | None = None,
