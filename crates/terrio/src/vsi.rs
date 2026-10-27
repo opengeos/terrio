@@ -2062,7 +2062,7 @@ pub fn rename(src: &str, dst: &str) -> Result<Report> {
         // POSIX rename fails here (ENOTDIR). Windows, and the copy fallback, would put the
         // directory where the file was, or its children under the file's name.
         Some(_) if stat.dir => {
-            return Err(Error::InvalidArgument(format!("cannot replace file '{}' with a directory", display_node(&target))));
+            return Err(Error::InvalidArgument(format!("cannot replace '{}' with a directory", display_node(&target))));
         }
         _ => {}
     }
@@ -2073,7 +2073,7 @@ pub fn rename(src: &str, dst: &str) -> Result<Report> {
             }
             // A link that does not resolve, which the check above does not see.
             Ok(_) if stat.dir => {
-                return Err(Error::InvalidArgument(format!("cannot replace file '{}' with a directory", b.display())));
+                return Err(Error::InvalidArgument(format!("cannot replace '{}' with a directory", b.display())));
             }
             Ok(_) => {}
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}

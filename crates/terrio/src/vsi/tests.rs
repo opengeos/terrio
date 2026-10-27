@@ -16,6 +16,11 @@ fn names(entries: &[Entry]) -> Vec<String> {
     entries.iter().map(|e| e.name.clone()).collect()
 }
 
+/// Whether a move was refused for putting a directory where a file or link is.
+fn refused_onto_file(r: Result<Report>) -> bool {
+    matches!(r, Err(Error::InvalidArgument(m)) if m.contains("with a directory"))
+}
+
 fn s(p: &Path) -> String {
     p.display().to_string()
 }
@@ -40,7 +45,7 @@ fn lists_local_directories() {
     let depth2 = list(&s(&t), &ListOptions { recursive: true, depth: Some(2), ..Default::default() }).unwrap();
     assert_eq!(names(&depth2), ["a", "a/b", "a/y.txt", "x.txt"]);
     let abs = list(&s(&t), &ListOptions { absolute: true, ..Default::default() }).unwrap();
-    assert_eq!(abs[1].name, format!("{}/x.txt", s(&std::path::absolute(&t).unwrap())));
+    assert_eq!(abs[1].name, s(&std::path::absolute(t.join("x.txt")).unwrap()));
     // A file lists as itself.
     let file = list(&s(&t.join("x.txt")), &ListOptions::default()).unwrap();
     assert_eq!(names(&file), [s(&t.join("x.txt"))]);
@@ -197,8 +202,16 @@ fn moves_and_syncs_as_gdal() {
     let dir_target = tmp.path().join("occupied");
     fs::create_dir_all(dir_target.join("inner")).unwrap();
     fs::write(dir_target.join("inner/keep"), "k").unwrap();
-    assert!(rename(&s(&m2.join("m1")), &s(&dir_target.join("inner/keep"))).is_err());
+    assert!(refused_onto_file(rename(&s(&m2.join("m1")), &s(&dir_target.join("inner/keep")))));
     assert!(m2.join("m1/a/y.txt").exists() && dir_target.join("inner/keep").exists());
+    // Nor onto a link that does not resolve, which a stat of the target does not see.
+    #[cfg(unix)]
+    {
+        let dangling = tmp.path().join("dangling");
+        std::os::unix::fs::symlink(tmp.path().join("nowhere"), &dangling).unwrap();
+        assert!(refused_onto_file(rename(&s(&m2.join("m1")), &s(&dangling))));
+        assert!(m2.join("m1/a/y.txt").exists() && dangling.symlink_metadata().unwrap().file_type().is_symlink());
+    }
 
     // Without a trailing slash, the directory itself; with one, its contents.
     let s1 = tmp.path().join("s1");
@@ -239,7 +252,7 @@ fn memory_files() {
     assert!(stat("/vsimem/vsi_test2").unwrap().is_none());
     assert!(stat("/vsimem/vsi_test/a").unwrap().unwrap().is_dir());
     // A directory is not moved onto a file, here no more than on a local disk.
-    assert!(rename("/vsimem/vsi_test/a", "/vsimem/vsi_test/c.txt").is_err());
+    assert!(refused_onto_file(rename("/vsimem/vsi_test/a", "/vsimem/vsi_test/c.txt")));
     assert_eq!(read("/vsimem/vsi_test/c.txt").unwrap(), b"sea");
     assert_eq!(read("/vsimem/vsi_test/a/b.txt").unwrap(), b"bee");
     delete("/vsimem/vsi_test", true).unwrap();
