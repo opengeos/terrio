@@ -421,6 +421,41 @@ def main():
                         str(e).splitlines()[-1],
                     )
             if label == "projected":
+                null_begin = str(work / "null_begin.gpkg")
+                shutil.copyfile(gparts, null_begin)
+                dataset = ogr.Open(null_begin, 1)
+                layer = dataset.GetLayer(0)
+                for feature in layer:
+                    feature.SetFieldNull("beg")
+                    layer.SetFeature(feature)
+                dataset = None
+                x, y = parts[0][1][0][:2]
+                compare_text(
+                    "get_pos",
+                    f"{label} NULL begin",
+                    [
+                        "ogrlineref",
+                        "-quiet",
+                        "-get_pos",
+                        "-r",
+                        null_begin,
+                        "-x",
+                        repr(x),
+                        "-y",
+                        repr(y),
+                    ],
+                    [
+                        args.terrio,
+                        "lineref",
+                        "get-pos",
+                        "--parts",
+                        null_begin,
+                        "-x",
+                        repr(x),
+                        "-y",
+                        repr(y),
+                    ],
+                )
                 # OGR reads NULL scale as zero; zero/negative scales clamp to the start.
                 for scale_name, scale_value in [
                     ("null", None),

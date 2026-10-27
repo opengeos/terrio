@@ -329,7 +329,7 @@ fn as_double(v: Option<&FieldValue>) -> f64 {
     }
 }
 
-/// Scale attributes use OGR's numeric NULL-as-zero convention.
+/// Unfiltered numeric field lookups use OGR's NULL-as-zero convention.
 fn part_scale(value: Option<&FieldValue>) -> f64 {
     match value {
         None | Some(FieldValue::Null) => 0.0,
@@ -415,7 +415,10 @@ fn parts_of_line(
     for &f in reference_points {
         let pos = as_double(f.attributes.get(position));
         let Some(Geometry::Point(c)) = &f.geometry else { continue };
-        if pos.is_nan() {
+        if !pos.is_finite() {
+            if pos.is_infinite() {
+                crate::warnings::warn("a milestone has a non-finite position and was skipped".into());
+            }
             continue;
         }
         let pt = Point::from_coord(c);
@@ -663,7 +666,7 @@ pub fn position(parts: &Layer, x: f64, y: f64) -> Result<f64> {
         let d = line.distance(&pt);
         if d < min {
             min = d;
-            closest = Some((line, as_double(f.attributes.get(b)), part_scale(f.attributes.get(s))));
+            closest = Some((line, part_scale(f.attributes.get(b)), part_scale(f.attributes.get(s))));
         }
     }
     let (line, beg, scale) = closest.ok_or_else(|| Error::InvalidArgument("failed to find the closest part".into()))?;
@@ -865,6 +868,31 @@ mod tests {
         // create_reference retains OGR's duplicate initial vertex.
         assert_eq!(points.len(), 4);
         assert!(points.iter().all(|point| point.x == 0.0 && point.y == 0.0));
+    }
+
+    #[test]
+    fn null_begin_uses_ogr_zero_position_origin() {
+        let (lines, repers) = layers();
+        let options = LineRefOptions { position_field: "pos".into(), step: 500., ..Default::default() };
+        let mut parts = create_reference(&lines, &repers, &options).unwrap();
+        parts.features[0].attributes[0] = FieldValue::Null;
+        let expected = 100. / as_double(parts.features[0].attributes.get(2));
+        assert!((position(&parts, 100., 0.).unwrap() - expected).abs() < 1e-12);
+    }
+
+    #[test]
+    fn infinite_milestone_positions_do_not_enter_part_generation() {
+        let (lines, original) = layers();
+        let options = LineRefOptions { position_field: "pos".into(), step: 500., ..Default::default() };
+        for value in [f64::INFINITY, f64::NEG_INFINITY] {
+            let mut points = original.clone();
+            points.features[0].attributes[0] = FieldValue::Float(value);
+            let parts = create_reference(&lines, &points, &options).unwrap();
+            assert!(!parts.features.is_empty());
+            for feature in parts.features {
+                assert!(feature.attributes.iter().take(3).all(|v| as_double(Some(v)).is_finite()));
+            }
+        }
     }
 
     #[test]
