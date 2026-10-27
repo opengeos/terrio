@@ -238,6 +238,10 @@ fn memory_files() {
     assert_eq!(delete("/vsimem/vsi_test2", true).unwrap().deleted, 2);
     assert!(stat("/vsimem/vsi_test2").unwrap().is_none());
     assert!(stat("/vsimem/vsi_test/a").unwrap().unwrap().is_dir());
+    // A directory is not moved onto a file, here no more than on a local disk.
+    assert!(rename("/vsimem/vsi_test/a", "/vsimem/vsi_test/c.txt").is_err());
+    assert_eq!(read("/vsimem/vsi_test/c.txt").unwrap(), b"sea");
+    assert_eq!(read("/vsimem/vsi_test/a/b.txt").unwrap(), b"bee");
     delete("/vsimem/vsi_test", true).unwrap();
 }
 

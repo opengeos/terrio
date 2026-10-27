@@ -2054,15 +2054,23 @@ pub fn rename(src: &str, dst: &str) -> Result<Report> {
             listing::redact_url(dst)
         )));
     }
-    if stat_node(&target)?.is_some_and(|t| t.dir) {
-        return Err(Error::InvalidArgument(format!("'{}' is a directory that exists", display_node(&target))));
+    match stat_node(&target)? {
+        Some(t) if t.dir => {
+            return Err(Error::InvalidArgument(format!("'{}' is a directory that exists", display_node(&target))));
+        }
+        // POSIX rename fails here (ENOTDIR). Windows, and the copy fallback, would put the
+        // directory where the file was, or its children under the file's name.
+        Some(_) if stat.dir => {
+            return Err(Error::InvalidArgument(format!("cannot replace file '{}' with a directory", display_node(&target))));
+        }
+        _ => {}
     }
     if let (Node::Local(a), Node::Local(b)) = (&src_node, &target) {
         match std::fs::symlink_metadata(b) {
             Ok(meta) if !meta.file_type().is_file() && !meta.file_type().is_symlink() => {
                 return Err(Error::Unsupported(format!("'{}': refusing to replace a non-regular file", b.display())));
             }
-            // POSIX rename fails here (ENOTDIR); Windows would replace the file with the directory.
+            // A link that does not resolve, which the check above does not see.
             Ok(_) if stat.dir => {
                 return Err(Error::InvalidArgument(format!("cannot replace file '{}' with a directory", b.display())));
             }
