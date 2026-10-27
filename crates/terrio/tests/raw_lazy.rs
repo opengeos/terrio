@@ -151,6 +151,9 @@ fn labelled_grids_are_read_by_window() {
         assert_eq!(header.raster.crs, whole.raster.crs, "{name}");
         assert_eq!(header.raster.metadata, whole.raster.metadata, "{name}");
         assert_eq!(lazy.read().unwrap().raster.metadata, whole.raster.metadata, "{name}");
+        assert_eq!(lazy.shared().read().unwrap().raster.metadata, whole.raster.metadata, "{name}");
+        // The files read, as GDAL lists them: the data file first, then its header.
+        assert!(lazy.file_list().unwrap().iter().any(|f| f.ends_with(name) || f.ends_with(&name.replace(".rst", ".rdc"))), "{name}");
         let summary = terrio::info::info_path(path, &terrio::info::InfoOptions { statistics: true, ..Default::default() }).unwrap();
         let eager =
             terrio::info::info(&terrio::Dataset::Raster(whole), &terrio::info::InfoOptions { statistics: true, ..Default::default() });

@@ -123,6 +123,7 @@ pub(crate) struct RawRaster {
 }
 
 /// Where the samples of a raw raster are read from.
+#[derive(Clone)]
 enum RawSource {
     File(PathBuf),
     #[cfg(remote)]
@@ -131,6 +132,7 @@ enum RawSource {
 
 /// A raw raster read by window, as GDAL's raw drivers read it: each row of each band a window
 /// covers is read at its offset in the data file, rows next to each other in one read.
+#[derive(Clone)]
 struct RawWindow {
     source: RawSource,
     layout: Layout,
@@ -306,6 +308,11 @@ trait ReadSeek: std::io::Read + std::io::Seek {}
 impl<T: std::io::Read + std::io::Seek> ReadSeek for T {}
 
 impl crate::cog::WindowSource for RawWindow {
+    /// Reads open the file anew: handles share nothing but the remote block cache.
+    fn shared_clone(&self) -> Option<Box<dyn crate::cog::WindowSource>> {
+        Some(Box::new(self.clone()))
+    }
+
     fn whole_read_keeps_metadata(&self) -> bool {
         true
     }
