@@ -439,7 +439,13 @@ pub(crate) fn add_columns(layer: &mut Layer, columns: &mut Vec<Column>, path: Ve
         return;
     }
     let field_type = field_type(t);
-    layer.add_field(FieldDef::new(name, field_type));
+    let mut def = FieldDef::new(name, field_type);
+    // 64-bit integer columns are GDAL's Integer64 fields: they declare the width that keeps them
+    // 64-bit when written.
+    if matches!(t, DataType::Int64 | DataType::UInt32 | DataType::UInt64) {
+        def.width = crate::ops::vector_schema::INTEGER64_WIDTH;
+    }
+    layer.add_field(def);
     columns.push(Column { path, field_type });
 }
 
@@ -770,7 +776,7 @@ impl ParquetEncoder {
     /// describes (when [`ParquetEncoder::needs_profile`]; its geometries are not used).
     pub(crate) fn new(layer: &Layer, profile: &LayerProfile) -> Self {
         let fields = layer.schema.fields();
-        let kinds: Vec<Kind> = fields.iter().enumerate().map(|(i, f)| column_kind(profile, i, f.field_type)).collect();
+        let kinds: Vec<Kind> = fields.iter().enumerate().map(|(i, f)| column_kind(profile, i, f)).collect();
         let bbox_fields: Fields = ["xmin", "ymin", "xmax", "ymax"].iter().map(|n| Field::new(*n, DataType::Float64, false)).collect();
         let mut schema_fields: Vec<Field> = fields.iter().zip(&kinds).map(|(f, k)| Field::new(&f.name, k.data_type(), true)).collect();
         schema_fields.push(Field::new("geometry", DataType::Binary, true));
@@ -987,10 +993,11 @@ enum Kind {
     Timestamp,
 }
 
-fn column_kind(profile: &LayerProfile, i: usize, t: FieldType) -> Kind {
+fn column_kind(profile: &LayerProfile, i: usize, f: &FieldDef) -> Kind {
     let p = profile.fields.get(i).cloned().unwrap_or_default();
-    match t {
-        FieldType::Integer if p.all_int32 => Kind::Int32,
+    match f.field_type {
+        // Integer fields at least 10 wide are 64-bit (GDAL's Integer64), whatever their values.
+        FieldType::Integer if p.all_int32 && f.width < 10 => Kind::Int32,
         FieldType::Integer => Kind::Int64,
         FieldType::Float => Kind::Float64,
         FieldType::Boolean => Kind::Bool,

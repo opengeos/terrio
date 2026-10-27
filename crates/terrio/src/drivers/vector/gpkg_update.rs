@@ -122,7 +122,7 @@ pub fn update_bytes(bytes: Vec<u8>, layers: &[Layer], mode: UpdateMode) -> Resul
 }
 
 /// A database read whole: its tables with their rows as stored, indexes and schema objects.
-pub(super) struct Database {
+pub(crate) struct Database {
     pub(super) tables: Vec<Table>,
     pub(super) indexes: Vec<Index>,
     pub(super) objects: Vec<SchemaObject>,
@@ -131,7 +131,7 @@ pub(super) struct Database {
 }
 
 impl Database {
-    fn load(db: &Db) -> Result<Self> {
+    pub(super) fn load(db: &Db) -> Result<Self> {
         if db.text_encoding() > 1 {
             return Err(unsupported("UTF-16 databases cannot be rewritten"));
         }
@@ -190,7 +190,7 @@ impl Database {
     }
 
     /// The table, created (empty, with its automatic indexes) when the file lacks it.
-    fn ensure(&mut self, name: &str, sql: &str) -> &mut Table {
+    pub(super) fn ensure(&mut self, name: &str, sql: &str) -> &mut Table {
         if self.table(name).is_none() {
             self.tables.push(Table { name: name.into(), sql: sql.into(), rows: Vec::new(), autoindexes: r::autoindex_columns(sql) });
         }
@@ -199,7 +199,7 @@ impl Database {
 
     /// Removes the rows whose `column` is `value` (case-insensitively, as GDAL compares table
     /// names).
-    fn delete_rows(&mut self, table: &str, column: &str, value: &str) {
+    pub(super) fn delete_rows(&mut self, table: &str, column: &str, value: &str) {
         let Some(t) = self.table_mut(table) else { return };
         let Some(c) = columns(&t.sql).iter().position(|n| n.eq_ignore_ascii_case(column)) else { return };
         t.rows.retain(|(_, v)| !v.get(c).and_then(text).is_some_and(|s| s.eq_ignore_ascii_case(value)));
@@ -207,7 +207,7 @@ impl Database {
 
     /// Inserts a row given by column name into a table, the rowid alias column (when given)
     /// setting the rowid.
-    fn insert(t: &mut Table, values: &[(String, w::Value)]) {
+    pub(super) fn insert(t: &mut Table, values: &[(String, w::Value)]) {
         let names = columns(&t.sql);
         let ipk = r::rowid_column(&t.sql);
         let mut row = vec![w::Value::Null; names.len()];
@@ -292,46 +292,7 @@ impl Database {
         b.add_layer(layer)?;
         let mut parts = b.into_layer_parts();
 
-        // SRS ids: the Builder numbers an SRS by its code; reuse the file's entry for it.
-        let mut remap: Vec<(i64, i64)> = Vec::new();
-        let srs_names = columns(gw::SRS_SQL);
-        let srs =
-            self.table_mut("gpkg_spatial_ref_sys").ok_or_else(|| Error::InvalidData("not a GeoPackage: no gpkg_spatial_ref_sys".into()))?;
-        let srs_cols = columns(&srs.sql);
-        let col = |n: &str| srs_cols.iter().position(|c| c.eq_ignore_ascii_case(n));
-        let (org_c, code_c, def_c) = (col("organization"), col("organization_coordsys_id"), col("definition"));
-        for row in &parts.srs {
-            let assumed = int(&row[3]).unwrap_or_default();
-            let org = text(&row[2]).unwrap_or_default();
-            let def = text(&row[4]).unwrap_or_default();
-            let same = |v: &[w::Value]| -> bool {
-                let get = |c: Option<usize>| c.and_then(|c| v.get(c));
-                let vorg = get(org_c).and_then(text).unwrap_or_default();
-                let vcode = get(code_c).and_then(int);
-                if org.eq_ignore_ascii_case("NONE") && assumed > 0 {
-                    vorg.eq_ignore_ascii_case("NONE") && get(def_c).and_then(text) == Some(def)
-                } else {
-                    vorg.eq_ignore_ascii_case(org) && vcode == Some(assumed)
-                }
-            };
-            let id = match srs.rows.iter().find(|(_, v)| same(v)) {
-                Some((id, _)) => *id,
-                None => {
-                    let id = if srs.rows.iter().any(|(id, _)| *id == assumed) {
-                        srs.rows.iter().map(|(id, _)| *id).max().unwrap_or(0).max(100000) + 1
-                    } else {
-                        assumed
-                    };
-                    let mut values: Vec<(String, w::Value)> = srs_names.iter().cloned().zip(row.iter().cloned()).collect();
-                    values[1].1 = w::Value::Int(id);
-                    Self::insert(srs, &values);
-                    id
-                }
-            };
-            if id != assumed {
-                remap.push((assumed, id));
-            }
-        }
+        let remap = self.merge_srs(&parts.srs)?;
         let remapped = |v: &mut w::Value| {
             if let Some((_, to)) = int(v).and_then(|x| remap.iter().find(|(from, _)| *from == x)) {
                 *v = w::Value::Int(*to);
@@ -402,6 +363,52 @@ impl Database {
         Ok(())
     }
 
+    /// Adds the `gpkg_spatial_ref_sys` rows a [`Builder`] made (numbered by their code) to the
+    /// file, reusing its entries for the same SRSs: returns the ids that changed, `(builder's
+    /// id, file's id)`.
+    pub(super) fn merge_srs(&mut self, srs_rows: &[Vec<w::Value>]) -> Result<Vec<(i64, i64)>> {
+        let mut remap: Vec<(i64, i64)> = Vec::new();
+        let srs_names = columns(gw::SRS_SQL);
+        let srs =
+            self.table_mut("gpkg_spatial_ref_sys").ok_or_else(|| Error::InvalidData("not a GeoPackage: no gpkg_spatial_ref_sys".into()))?;
+        let srs_cols = columns(&srs.sql);
+        let col = |n: &str| srs_cols.iter().position(|c| c.eq_ignore_ascii_case(n));
+        let (org_c, code_c, def_c) = (col("organization"), col("organization_coordsys_id"), col("definition"));
+        for row in srs_rows {
+            let assumed = int(&row[3]).unwrap_or_default();
+            let org = text(&row[2]).unwrap_or_default();
+            let def = text(&row[4]).unwrap_or_default();
+            let same = |v: &[w::Value]| -> bool {
+                let get = |c: Option<usize>| c.and_then(|c| v.get(c));
+                let vorg = get(org_c).and_then(text).unwrap_or_default();
+                let vcode = get(code_c).and_then(int);
+                if org.eq_ignore_ascii_case("NONE") && assumed > 0 {
+                    vorg.eq_ignore_ascii_case("NONE") && get(def_c).and_then(text) == Some(def)
+                } else {
+                    vorg.eq_ignore_ascii_case(org) && vcode == Some(assumed)
+                }
+            };
+            let id = match srs.rows.iter().find(|(_, v)| same(v)) {
+                Some((id, _)) => *id,
+                None => {
+                    let id = if srs.rows.iter().any(|(id, _)| *id == assumed) {
+                        srs.rows.iter().map(|(id, _)| *id).max().unwrap_or(0).max(100000) + 1
+                    } else {
+                        assumed
+                    };
+                    let mut values: Vec<(String, w::Value)> = srs_names.iter().cloned().zip(row.iter().cloned()).collect();
+                    values[1].1 = w::Value::Int(id);
+                    Self::insert(srs, &values);
+                    id
+                }
+            };
+            if id != assumed {
+                remap.push((assumed, id));
+            }
+        }
+        Ok(remap)
+    }
+
     pub(super) fn set_sequence(&mut self, name: &str, seq: i64) {
         let t = self.ensure("sqlite_sequence", "CREATE TABLE sqlite_sequence(name,seq)");
         match t.rows.iter_mut().find(|(_, v)| v.first().and_then(text).is_some_and(|s| s.eq_ignore_ascii_case(name))) {
@@ -427,29 +434,35 @@ impl Database {
             t.rows.len()
         };
 
-        // The R-tree, rebuilt over all the features.
         if let (Some((g, ..)), Some(gi)) = (&geometry, geom_col) {
-            let rt = format!("rtree_{name}_{g}");
-            if self.table(&format!("{rt}_node")).is_some() {
-                let t = self.table(name).expect("the table exists");
-                let entries: Vec<gw::RtreeEntry> = t
-                    .rows
-                    .iter()
-                    .filter_map(|(id, v)| match v.get(gi) {
-                        Some(w::Value::Blob(b)) => envelope(b).map(|e| (*id, rtree_box(e))),
-                        _ => None,
-                    })
-                    .collect();
-                let (nodes, rowids, parents) = gw::build_rtree(entries);
-                for (suffix, rows) in [("_node", nodes), ("_rowid", rowids), ("_parent", parents)] {
-                    if let Some(t) = self.table_mut(&format!("{rt}{suffix}")) {
-                        t.rows = rows;
-                    }
-                }
-            }
+            self.rebuild_rtree(name, g, gi);
         }
         self.appended(name, &sql, &enc, total as i64);
         Ok(())
+    }
+
+    /// Rebuilds the R-tree of layer `name` (geometry column `g`, the `gi`-th column) over all
+    /// its features, when it has one.
+    pub(super) fn rebuild_rtree(&mut self, name: &str, g: &str, gi: usize) {
+        let rt = format!("rtree_{name}_{g}");
+        if self.table(&format!("{rt}_node")).is_none() {
+            return;
+        }
+        let Some(t) = self.table(name) else { return };
+        let entries: Vec<gw::RtreeEntry> = t
+            .rows
+            .iter()
+            .filter_map(|(id, v)| match v.get(gi) {
+                Some(w::Value::Blob(b)) => envelope(b).map(|e| (*id, rtree_box(e))),
+                _ => None,
+            })
+            .collect();
+        let (nodes, rowids, parents) = gw::build_rtree(entries);
+        for (suffix, rows) in [("_node", nodes), ("_rowid", rowids), ("_parent", parents)] {
+            if let Some(t) = self.table_mut(&format!("{rt}{suffix}")) {
+                t.rows = rows;
+            }
+        }
     }
 
     /// The `sqlite_sequence` value of a table (0 when it has none).
@@ -493,7 +506,7 @@ impl Database {
         self.set("gpkg_ogr_contents", "table_name", name, "feature_count", w::Value::Int(total));
     }
 
-    fn finish(mut self) -> Result<Vec<u8>> {
+    pub(super) fn finish(mut self) -> Result<Vec<u8>> {
         for t in &mut self.tables {
             t.rows.sort_by_key(|(id, _)| *id);
         }
@@ -602,7 +615,7 @@ pub(super) fn keywords_contain(sql: &str, words: &str) -> bool {
 
 /// An attribute value stored in a column of the declared type, with SQLite's type affinity and
 /// GDAL's conversions (date-times with a `T`).
-fn convert(v: &FieldValue, decl: &str) -> w::Value {
+pub(super) fn convert(v: &FieldValue, decl: &str) -> w::Value {
     let upper = decl.to_ascii_uppercase();
     let base = upper.split('(').next().unwrap_or_default().trim().to_string();
     let integer =

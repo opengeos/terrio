@@ -31,6 +31,7 @@
 
 pub mod as_features;
 pub mod calc;
+pub mod concat;
 pub mod contour;
 pub mod dem;
 pub mod enhance;
@@ -40,11 +41,14 @@ pub mod gcp;
 pub mod geolocation;
 pub mod geometry;
 pub mod hull;
+pub mod make_point;
 pub mod mosaic;
 pub mod nearblack;
 pub mod neighbors;
 pub mod overview;
 pub mod pansharpen;
+pub mod partition;
+
 pub mod pixel;
 pub mod polygonize;
 pub mod proximity;
@@ -57,8 +61,10 @@ pub mod sql;
 pub(crate) mod strips;
 pub mod topology;
 pub mod translate;
+pub mod vector_edit;
 pub mod vector_filter;
 pub mod vector_geom;
+pub mod vector_schema;
 pub mod viewshed;
 pub mod vrt;
 pub mod warp;

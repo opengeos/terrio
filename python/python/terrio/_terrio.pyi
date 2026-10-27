@@ -91,6 +91,15 @@ __all__ = [
     "vsi_delete",
     "vsi_move",
     "vsi_sync",
+    "concat",
+    "partition",
+    "set_field_type",
+    "make_point",
+    "export_schema",
+    "create_vector",
+    "rename_layer",
+    "edit_vector",
+    "update_vector",
     "cli_main",
 ]
 
@@ -1430,3 +1439,125 @@ def vsi_read(path: str) -> bytes:
 def vsi_write(path: str, data: bytes) -> None:
     """Write a file (local, /vsimem/, S3 or Azure), replacing it."""
     ...
+
+def concat(
+    srcs: Sequence[Any],
+    dst: str | None = None,
+    *,
+    layers: list[str] | None = None,
+    mode: Literal["merge-per-layer-name", "stack", "single"] = "merge-per-layer-name",
+    output_layer: str | None = None,
+    source_layer_field_name: str | None = None,
+    source_layer_field_content: str | None = None,
+    field_strategy: Literal["union", "intersection"] = "union",
+    src_crs: str | None = None,
+    dst_crs: str | None = None,
+    format: str | None = None,
+) -> VectorDataset:
+    """Concatenate vector datasets (gdal vector concat, ogrmerge.py)."""
+    ...
+
+def partition(
+    src: Any,
+    dst: str,
+    fields: list[str] | None = None,
+    *,
+    layers: list[str] | None = None,
+    scheme: Literal["hive", "flat"] = "hive",
+    pattern: str | None = None,
+    feature_limit: int | None = None,
+    max_file_size: int | None = None,
+    omit_partitioned_fields: bool = False,
+    format: str | None = None,
+    overwrite: bool = False,
+    append: bool = False,
+) -> list[str]:
+    """Partition a vector dataset into files by field values (gdal vector partition)."""
+    ...
+
+def set_field_type(
+    src: Any,
+    field_type: str,
+    *,
+    field_name: str | None = None,
+    src_field_type: str | None = None,
+    layers: list[str] | None = None,
+    active_layer: str | None = None,
+) -> VectorDataset:
+    """Change field types with GDAL's value conversions (gdal vector set-field-type)."""
+    ...
+
+def make_point(
+    src: Any,
+    x: str,
+    y: str,
+    *,
+    z: str | None = None,
+    m: str | None = None,
+    crs: str | None = None,
+    layer: str | None = None,
+) -> Layer:
+    """Point geometries from coordinate fields (gdal vector make-point)."""
+    ...
+
+def export_schema(src: Any, *, layers: list[str] | None = None) -> dict[str, Any]:
+    """The OGR_SCHEMA document of a vector dataset (gdal vector export-schema)."""
+    ...
+
+def create_vector(
+    dst: str,
+    *,
+    schema: Mapping[str, Any] | str | os.PathLike[str] | None = None,
+    like: Any = None,
+    layers: list[str] | None = None,
+    output_layer: str | None = None,
+    geometry_type: str | None = None,
+    crs: str | None = None,
+    fid: str | None = None,
+    fields: list[str] | None = None,
+    format: str | None = None,
+    update: bool = False,
+    overwrite: bool = False,
+) -> None:
+    """Create a vector dataset of empty layers (gdal vector create)."""
+    ...
+
+def rename_layer(
+    src: Any,
+    dst: str | None = None,
+    *,
+    in_place: bool = False,
+    input_layer: str | None = None,
+    output_layer: str | None = None,
+    ascii: bool = False,
+    lower_case: bool = False,
+    filename_compatible: bool = False,
+    reserved_characters: str | None = None,
+    replacement_character: str | None = None,
+    max_length: int | None = None,
+    format: str | None = None,
+) -> VectorDataset: ...
+def edit_vector(
+    src: Any,
+    dst: str | None = None,
+    *,
+    in_place: bool = False,
+    active_layer: str | None = None,
+    crs: str | None = None,
+    geometry_type: str | None = None,
+    metadata: list[str] | None = None,
+    unset_metadata: list[str] | None = None,
+    layer_metadata: list[str] | None = None,
+    unset_layer_metadata: list[str] | None = None,
+    unset_fid: bool = False,
+    format: str | None = None,
+) -> VectorDataset: ...
+def update_vector(
+    src: Any,
+    dst: Any,
+    *,
+    input_layer: str | None = None,
+    output_layer: str | None = None,
+    key: list[str] | None = None,
+    mode: str = "merge",
+) -> VectorDataset: ...

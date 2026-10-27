@@ -214,6 +214,57 @@ height = terrio.viewshed("dem_utm.tif", 500000, 4400000, om="GROUND", cc=0)
 or height above the DEM. `cc` is 1 minus refraction. See [viewshed](cli.md#viewshed) for
 units, curvature, radius cropping and input nodata behavior.
 
+### Vector datasets
+
+```python
+merged = terrio.concat(["countries.gpkg", "us_counties.gpkg"], "merged.gpkg", mode="single",
+                       source_layer_field_name="source", dst_crs="EPSG:3857")
+files = terrio.partition("counties.gpkg", "out", ["STATE"], feature_limit=1000)  # paths written
+typed = terrio.set_field_type("countries.gpkg", "Integer64", field_name="POP_EST")
+points = terrio.make_point("trace.csv", "longitude", "latitude", crs="EPSG:4326")  # a Layer
+schema = terrio.export_schema("countries.gpkg")  # the OGR_SCHEMA dict
+terrio.create_vector("empty.gpkg", schema=schema)
+terrio.create_vector("sites.gpkg", output_layer="sites", geometry_type="POINT", crs="EPSG:4326",
+                     fields=["name:STRING(80)", "visits:INTEGER"])
+```
+
+These are `terrio concat`, `partition`, `set-field-type`, `make-point`, `export-schema` and
+`create` (GDAL's `gdal vector` commands of the same names); sources are paths or vector data in
+memory (`VectorDataset`, `Layer`, lists of layers, GeoJSON). Conversion warnings are issued as
+`UserWarning`s. See [Vector datasets](cli.md#vector-datasets) for the options, GDAL's rules
+and the differences. Filesystem `partition` is unavailable in Pyodide;
+the remaining imported APIs remain available.
+
+#### Renaming and updating vector datasets
+
+`rename_layer`, `edit_vector` and `update_vector` accept the same vector sources as
+`concat`. They return a new `VectorDataset` for memory inputs. For local files,
+`rename_layer(path, in_place=True, ...)` and `edit_vector(path, in_place=True, ...)`
+change a GeoPackage; `update_vector(source, destination_path, ...)` updates an
+existing destination. Read-only files and active SQLite journals are refused.
+
+```python
+renamed = terrio.rename_layer(countries, ascii=True, lower_case=True)
+assigned = terrio.edit_vector(renamed, crs="EPSG:4326")
+updated = terrio.update_vector(changes, renamed, key=["name"], mode="merge")
+terrio.edit_vector("countries.gpkg", in_place=True, metadata=["SOURCE=survey"])
+```
+
+Rename options mirror the CLI: `input_layer`, `output_layer`, `ascii`, `lower_case`,
+`filename_compatible`, `reserved_characters`, `replacement_character`, `max_length`.
+Edit supports `active_layer`, `crs` (`"none"` removes it), `geometry_type`,
+`unset_fid`, dataset/layer `metadata` and `unset_metadata` lists. Metadata edits
+require file paths because the memory model does not retain dataset metadata.
+Assigning a CRS changes its declaration without transforming coordinates.
+Update supports `input_layer`, `output_layer`, `key` and `mode` (`merge`,
+`update-only`, `append-only`); missing layer selections in multilayer datasets fail.
+File edits materialize the dataset and require space for a neighboring temporary
+copy. See the CLI documentation for atomicity and metadata preservation limits.
+
+The vector dataset copy operations `concat`, `rename_layer` and `edit_vector` refuse an
+existing destination path. Choose a new output path; use `in_place=True` for supported
+GeoPackage edits.
+
 ### Pixel-wise operations
 
 ```python

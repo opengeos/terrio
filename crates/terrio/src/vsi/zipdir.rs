@@ -42,7 +42,7 @@ impl CdEntry {
         if !(1..=12).contains(&m) || day == 0 {
             return None;
         }
-        Some(crate::civil_time::unix_seconds(y, m, day, t >> 11, (t >> 5) & 63, (t & 31) * 2))
+        crate::civil_time::checked_unix_seconds(y, m, day, t >> 11, (t >> 5) & 63, (t & 31) * 2)
     }
 }
 
@@ -247,6 +247,29 @@ impl std::io::Write for Crc32Writer<'_> {
 mod tests {
     use super::*;
     use std::io::Write;
+
+    #[test]
+    fn corrupt_dos_timestamps_are_not_reported_as_valid_dates() {
+        let mut entry = CdEntry {
+            name: "x".into(),
+            flags: 0,
+            method: 0,
+            dos_time: 0,
+            dos_date: (44 << 9) | (2 << 5) | 29,
+            crc32: 0,
+            compressed_size: 0,
+            uncompressed_size: 0,
+            local_offset: 0,
+        };
+        assert!(entry.modified().is_some()); // 2024 is a leap year.
+        entry.dos_date = (43 << 9) | (2 << 5) | 29;
+        assert!(entry.modified().is_none());
+        entry.dos_date = (44 << 9) | (1 << 5) | 1;
+        for time in [24 << 11, 60 << 5, 31] {
+            entry.dos_time = time;
+            assert!(entry.modified().is_none());
+        }
+    }
 
     #[test]
     fn reads_what_the_zip_crate_writes() {

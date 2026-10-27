@@ -31,7 +31,7 @@ pub(crate) fn invalid(msg: impl std::fmt::Display) -> JsError {
 }
 
 /// The bytes of a file given as a `Uint8Array` or `{ bytes, filename }`, with its file name.
-fn file_bytes(v: &JsValue) -> Option<(Vec<u8>, String)> {
+pub(crate) fn file_bytes(v: &JsValue) -> Option<(Vec<u8>, String)> {
     if let Some(a) = v.dyn_ref::<js_sys::Uint8Array>() {
         return Some((a.to_vec(), "data".into()));
     }
@@ -95,7 +95,7 @@ pub(crate) fn input_layers(v: &JsValue) -> Result<Vec<Layer>, JsError> {
 
 /// Takes the options that are JavaScript values (datasets) out of an options object, returning
 /// them and a copy of the object without them, for the others to be parsed.
-fn split_options(options: &JsValue, keys: &[&str]) -> Result<(JsValue, Vec<Option<JsValue>>), JsError> {
+pub(crate) fn split_options(options: &JsValue, keys: &[&str]) -> Result<(JsValue, Vec<Option<JsValue>>), JsError> {
     if options.is_undefined() || options.is_null() {
         return Ok((JsValue::UNDEFINED, vec![None; keys.len()]));
     }

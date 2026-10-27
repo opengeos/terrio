@@ -21,6 +21,7 @@ formats, local or remote, without GDAL::
     dem = points.grid(1.0, stat="idw")  # a Raster
 """
 
+import sys as _sys
 from collections.abc import Iterator as _Iterator
 from typing import Any as _Any
 
@@ -43,19 +44,24 @@ from terrio._terrio import (
     calc,
     clean_collar,
     combine,
+    concat,
     concave_hull,
     convert,
     convert_points,
     convex_hull,
+    create_vector,
     dem,
     drivers,
+    edit_vector,
     enhance,
     enhance_luts,
+    export_schema,
     fill_nodata,
     from_arrow,
     grid_points,
     info,
     list_layers,
+    make_point,
     merge_points,
     mosaic,
     nearblack,
@@ -77,7 +83,9 @@ from terrio._terrio import (
     read_points,
     read_points_bytes,
     reclassify,
+    rename_layer,
     segmentize,
+    set_field_type,
     set_geom_type,
     set_grid_search_paths,
     set_network_enabled,
@@ -89,6 +97,7 @@ from terrio._terrio import (
     transform_points,
     translate,
     unscale,
+    update_vector,
     viewshed,
     vsi_copy,
     vsi_delete,
@@ -140,18 +149,25 @@ __all__ = [
     "combine",
     "concave_hull",
     "convex_hull",
+    "concat",
     "clean_collar",
     "convert",
     "convert_points",
+    "create_vector",
+    "rename_layer",
+    "edit_vector",
+    "update_vector",
     "grid_points",
     "dem",
     "enhance",
     "enhance_luts",
     "drivers",
+    "export_schema",
     "from_arrow",
     "info",
     "iter_features",
     "list_layers",
+    "make_point",
     "merge_points",
     "mosaic",
     "nodata_to_alpha",
@@ -167,6 +183,7 @@ __all__ = [
     "open_stream",
     "open_vector",
     "pansharpen",
+    "partition",
     "polygonize",
     "proximity",
     "rasterize",
@@ -175,6 +192,7 @@ __all__ = [
     "reclassify",
     "segmentize",
     "set_geom_type",
+    "set_field_type",
     "sieve",
     "simplify",
     "sort",
@@ -200,6 +218,12 @@ __all__ = [
     "write_raster",
     "write_vector",
 ]
+
+if _sys.platform == "emscripten":
+    # Native filesystem partitioning is absent from the Pyodide extension.
+    __all__ = [name for name in __all__ if name != "partition"]
+else:
+    from terrio._terrio import partition as partition
 
 
 def iter_features(

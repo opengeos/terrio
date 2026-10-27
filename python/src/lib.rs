@@ -14,6 +14,7 @@ mod rio;
 mod stream;
 mod terrain;
 mod vector;
+mod vector_dataset;
 mod vector_geom;
 mod vsi;
 
@@ -95,6 +96,7 @@ fn _terrio(m: &Bound<'_, PyModule>) -> PyResult<()> {
     stream::register(m)?;
     vector_geom::register(m)?;
     vsi::register(m)?;
+    vector_dataset::register(m)?;
     #[cfg(not(target_os = "emscripten"))]
     cli::register(m)?;
     Ok(())

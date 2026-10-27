@@ -92,6 +92,31 @@ enum Command {
     Combine(cmd::vector_geom::CombineArgs),
     /// Sort features spatially, along a Hilbert curve or an STR tree (like gdal vector sort).
     Sort(cmd::vector_geom::SortArgs),
+    /// Concatenate vector layers and datasets into one or several layers (like gdal vector concat
+    /// and ogrmerge.py).
+    Concat(cmd::vector_dataset::ConcatArgs),
+    /// Split a vector dataset into files by field values, Hive-style or flat (like gdal vector
+    /// partition).
+    Partition(cmd::vector_dataset::PartitionArgs),
+    /// Change the type of vector fields, converting their values as GDAL does (like gdal vector
+    /// set-field-type).
+    SetFieldType(cmd::vector_dataset::SetFieldTypeArgs),
+    /// Point geometries from coordinate fields (like gdal vector make-point).
+    MakePoint(cmd::vector_dataset::MakePointArgs),
+    /// Create a vector dataset or layer from an OGR_SCHEMA, a template dataset or explicit fields
+    /// (like gdal vector create).
+    Create(cmd::vector_dataset::CreateArgs),
+    /// Print the OGR_SCHEMA JSON of a vector dataset (like gdal vector export-schema).
+    ExportSchema(cmd::vector_dataset::ExportSchemaArgs),
+    /// Rename vector layers, in place in GeoPackages or on output (like gdal vector
+    /// rename-layer).
+    RenameLayer(cmd::vector_dataset::RenameLayerArgs),
+    /// Edit the CRS, geometry type and metadata of vector layers, in place in GeoPackages or on
+    /// output (like gdal vector edit).
+    Edit(cmd::vector_dataset::EditArgs),
+    /// Update an existing vector dataset from another, matching features by FID or key fields
+    /// (like gdal vector update).
+    Update(cmd::vector_dataset::UpdateArgs),
     /// Subset, resize, rescale or change the type of a raster (like gdal_translate).
     Translate(cmd::translate::Args),
     /// Reproject and resample rasters (like gdalwarp).
@@ -220,6 +245,15 @@ fn run_on_this_thread(args: Vec<OsString>, terrio: Option<Vec<OsString>>) -> i32
         Command::SetGeomType(a) => cmd::vector_geom::set_geom_type(a),
         Command::Combine(a) => cmd::vector_geom::combine(a),
         Command::Sort(a) => cmd::vector_geom::sort(a),
+        Command::Concat(a) => cmd::vector_dataset::concat(a),
+        Command::Partition(a) => cmd::vector_dataset::partition(a),
+        Command::SetFieldType(a) => cmd::vector_dataset::set_field_type(a),
+        Command::MakePoint(a) => cmd::vector_dataset::make_point(a),
+        Command::Create(a) => cmd::vector_dataset::create(a),
+        Command::ExportSchema(a) => cmd::vector_dataset::export_schema(a),
+        Command::RenameLayer(a) => cmd::vector_dataset::rename_layer(a),
+        Command::Edit(a) => cmd::vector_dataset::edit(a),
+        Command::Update(a) => cmd::vector_dataset::update(a),
         Command::Translate(a) => cmd::translate::run(a),
         Command::Warp(a) => cmd::warp::run(a),
         Command::Catalog(a) => cmd::catalog::run(a),

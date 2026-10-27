@@ -257,6 +257,44 @@ const simple = simplify(counties, 0.01);
 const sorted = sort(simple, { method: "hilbert" });
 ```
 
+## Vector datasets
+
+```js
+const merged = terrio.concat([countries, { bytes: usBytes, filename: "us.gpkg" }], { mode: "single", sourceLayerFieldName: "source" });
+const parts = terrio.partition(counties, { fields: ["STATE"], format: "GPKG" }); // [{ path, bytes }]
+const typed = terrio.setFieldType(countries, "Integer64", { fieldName: "POP_EST" });
+const points = terrio.makePoint(trace, "longitude", "latitude", { crs: "EPSG:4326" });
+const schema = terrio.exportSchema(countries); // the OGR_SCHEMA object
+const empty = terrio.createVector("empty.gpkg", { schema }); // the new file's bytes
+```
+
+These are `terrio concat`, `partition`, `set-field-type`, `make-point`, `export-schema` and
+`create` (GDAL's `gdal vector` commands of the same names), in memory: `partition` returns the
+parts' relative paths and bytes, and `createVector` the bytes of the dataset, rather than
+writing files. `exportSchema` describes the layers read (GeoPackage column declarations are
+read only from files, by the command line, Python and Rust). See
+[Vector datasets](cli.md#vector-datasets) for the options and GDAL's rules.
+
+### Renaming and updating vector datasets
+
+`renameLayer(src, options)`, `editVector(src, options)` and
+`updateVector(src, dst, options)` return a new `Dataset`, preserving their inputs.
+Serialize the result with `toBytes` to persist it.
+
+```javascript
+const renamed = terrio.renameLayer(countries, {ascii: true, lowerCase: true});
+const assigned = terrio.editVector(renamed, {crs: "EPSG:4326"});
+const updated = terrio.updateVector(changes, renamed, {key: ["name"], mode: "merge"});
+```
+
+Rename accepts `inputLayer`, `outputLayer`, `ascii`, `lowerCase`,
+`filenameCompatible`, `reservedCharacters`, `replacementCharacter`, `maxLength`.
+Edit accepts `activeLayer`, `crs` (`"none"` removes it), `geometryType`, `unsetFid`.
+CRS assignment does not transform coordinates. Dataset metadata edits require the
+native path API because the memory model does not retain dataset metadata.
+Update accepts `inputLayer`, `outputLayer`, `key`, `mode` (`merge`, `update-only`,
+`append-only`); it matches feature IDs when `key` is omitted.
+
 ## Viewshed
 
 ```javascript

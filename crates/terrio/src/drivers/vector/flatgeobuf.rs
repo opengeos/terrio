@@ -83,6 +83,9 @@ pub(crate) fn parse_header(buf: &[u8]) -> Result<(Layer, FgbHeader)> {
         let mut def = FieldDef::new(c.name(), field_type(c.type_()));
         if c.width() > 0 {
             def = def.width(c.width() as usize);
+        } else if matches!(c.type_(), ColumnType::Long | ColumnType::ULong | ColumnType::UInt) {
+            // GDAL's Integer64 fields: the width keeps them 64-bit when written.
+            def = def.width(crate::ops::vector_schema::INTEGER64_WIDTH);
         }
         if c.precision() > 0 {
             def = def.precision(c.precision() as usize);
@@ -732,11 +735,8 @@ fn layer_type(layer: &Layer, profile: &LayerProfile) -> FgbType {
 fn column_type(profile: &LayerProfile, i: usize, f: &FieldDef) -> ColumnType {
     match f.field_type {
         FieldType::Integer => {
-            if profile.fields.get(i).is_none_or(|p| p.no_int_beyond_int32) {
-                ColumnType::Int
-            } else {
-                ColumnType::Long
-            }
+            // Integer fields at least 10 wide are 64-bit (GDAL's Integer64), whatever their values.
+            if f.width < 10 && profile.fields.get(i).is_none_or(|p| p.no_int_beyond_int32) { ColumnType::Int } else { ColumnType::Long }
         }
         FieldType::Float => ColumnType::Double,
         FieldType::Boolean => ColumnType::Bool,
