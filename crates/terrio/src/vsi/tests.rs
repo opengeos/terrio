@@ -54,6 +54,8 @@ fn formats_times_as_gdal() {
     assert_eq!(crate::civil_time::unix_seconds(2024, 1, 1, 1, 42, 27), 1_704_073_347);
     let e = Entry { name: "a".into(), kind: EntryKind::Directory, size: Some(80), modified: Some(0), permissions: None, etag: None };
     assert_eq!(e.long_line(), "d--------- 1 unknown unknown           80 1970-01-01 00:00 a");
+    let undated = Entry { modified: None, ..e };
+    assert_eq!(undated.long_line(), format!("d--------- 1 unknown unknown           80 {:<16} a", "-"));
 }
 
 #[test]

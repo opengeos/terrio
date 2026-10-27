@@ -84,8 +84,12 @@ impl Entry {
     /// The `ls -l`-style line of `gdal vsi list -l`.
     pub fn long_line(&self) -> String {
         let perms = self.permissions.clone().unwrap_or_else(|| if self.is_dir() { "d---------".into() } else { "----------".into() });
-        let date = format_time(self.modified.unwrap_or(0));
-        format!("{perms} 1 unknown unknown {:>12} {} {}", self.size.unwrap_or(0), &date[..16], self.name)
+        // A date that is not known prints as a placeholder, not the epoch.
+        let date = match self.modified {
+            Some(secs) => format_time(secs)[..16].to_string(),
+            None => format!("{:<16}", "-"),
+        };
+        format!("{perms} 1 unknown unknown {:>12} {} {}", self.size.unwrap_or(0), date, self.name)
     }
 }
 
@@ -1164,7 +1168,7 @@ fn copy_file(src: &Node, dst: &Node, known_size: Option<u64>) -> Result<u64> {
                         Some(size) => size,
                         None => stat_node(src)?.and_then(|s| s.size).unwrap_or(0),
                     };
-                    store::s3_copy(&crate::s3::S3Object { bucket: bucket.clone(), key: key.clone() }, to)?;
+                    store::s3_copy(&crate::s3::S3Object { bucket: bucket.clone(), key: key.clone() }, to, size)?;
                     Ok(size)
                 }
                 (Node::Local(p), _) => {

@@ -461,7 +461,10 @@ pub(crate) fn delete(remote: &Remote) -> Result<()> {
 
 /// Copies an S3 object to another key of the same service, server side (no bytes through this
 /// process). Objects up to 5 GiB.
-pub(crate) fn s3_copy(from: &S3Object, to: &S3Object) -> Result<()> {
+pub(crate) fn s3_copy(from: &S3Object, to: &S3Object, size: u64) -> Result<()> {
+    if size > MAX_SINGLE_UPLOAD {
+        return Err(Error::Unsupported(format!("{size} bytes: copies larger than 5 GiB (multipart copies) are not supported")));
+    }
     let source = format!("/{}/{}", from.bucket, s3::uri_encode(&from.key, false));
     let reply = write_request("PUT", &Remote::S3(to.clone()), "", &[("x-amz-copy-source".into(), source)], &Payload::Empty, false)?;
     // S3 may answer 200 with an error in the body.
@@ -506,6 +509,14 @@ mod tests {
         reader.read_exact(&mut body).unwrap();
         write!(stream, "HTTP/1.1 {status} Test\r\nLocation: {location}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
         body
+    }
+
+    #[test]
+    fn server_side_copies_refuse_objects_over_the_single_request_limit() {
+        // Refused before any request is sent: no server is needed.
+        let object = S3Object { bucket: "b".into(), key: "k".into() };
+        let err = s3_copy(&object, &object, MAX_SINGLE_UPLOAD + 1).unwrap_err();
+        assert!(err.to_string().contains("5 GiB"), "{err}");
     }
 
     #[test]

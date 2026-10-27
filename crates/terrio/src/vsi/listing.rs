@@ -296,9 +296,52 @@ pub(crate) fn xml_elements<'a>(xml: &'a str, name: &str) -> Vec<&'a str> {
     out
 }
 
-/// XML text with its predefined entities replaced.
+/// XML text with its entities replaced: the predefined ones, and numeric character references
+/// (`&#39;`, `&#x27;`) as XML serializers such as Go's `encoding/xml` write them. Each reference
+/// is decoded once; an unknown or malformed one is kept as written.
 pub(crate) fn xml_unescape(s: &str) -> String {
-    s.replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"").replace("&apos;", "'").replace("&amp;", "&")
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(i) = rest.find('&') {
+        out.push_str(&rest[..i]);
+        let after = &rest[i..];
+        // A reference ends within 10 bytes of its ampersand (`&#x10FFFF;` is the longest usual one).
+        let decoded = after.find(';').filter(|&end| end <= 10).and_then(|end| Some((end, decode_entity(&after[1..end])?)));
+        match decoded {
+            Some((end, c)) => {
+                out.push(c);
+                rest = &after[end + 1..];
+            }
+            None => {
+                out.push('&');
+                rest = &after[1..];
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// The character of an entity name (`lt`) or a numeric reference (`#39`, `#x27`).
+fn decode_entity(name: &str) -> Option<char> {
+    match name {
+        "lt" => Some('<'),
+        "gt" => Some('>'),
+        "quot" => Some('"'),
+        "apos" => Some('\''),
+        "amp" => Some('&'),
+        _ => {
+            let n = name.strip_prefix('#')?;
+            let (digits, radix) = match n.strip_prefix(['x', 'X']) {
+                Some(hex) => (hex, 16),
+                None => (n, 10),
+            };
+            if digits.is_empty() || !digits.chars().all(|d| d.is_digit(radix)) {
+                return None;
+            }
+            char::from_u32(u32::from_str_radix(digits, radix).ok()?)
+        }
+    }
 }
 
 /// Adds the entries of one listing page (S3 `ListObjectsV2`, GCS's XML API, or Azure's List
@@ -730,6 +773,23 @@ mod tests {
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].size, Some(0));
         assert!(out[0].modified.is_some());
+    }
+
+    #[test]
+    fn decodes_xml_entities_once() {
+        assert_eq!(xml_unescape("it&apos;s &amp; &lt;b&gt; &quot;q&quot;"), "it's & <b> \"q\"");
+        assert_eq!(xml_unescape("a&#39;b&#x27;c&#X41;&#x1F600;"), "a'b'cA\u{1F600}");
+        // One level only: an escaped ampersand stays a reference.
+        assert_eq!(xml_unescape("&amp;lt;&amp;#39;"), "&lt;&#39;");
+        // Malformed or invalid references are kept as written.
+        for s in ["&#;", "&#x;", "&#xD800;", "&#x110000;", "&#1a;", "&bogus; &", "&#99999999999999;"] {
+            assert_eq!(xml_unescape(s), s);
+        }
+        // A key with a numeric reference addresses the object it names.
+        let xml = "<ListBucketResult><Contents><Key>p/it&#39;s.tif</Key><Size>1</Size></Contents></ListBucketResult>";
+        let mut out = Vec::new();
+        parse_listing_page(xml, "p/", false, &mut out);
+        assert_eq!(out[0].name, "it's.tif");
     }
 
     #[test]
