@@ -237,6 +237,7 @@ terrio filter assign tile.laz fixed.laz --value "Classification = 7 WHERE Z < -1
 terrio filter crop tile.laz part.laz --polygon "POLYGON((0 0, 100 0, 50 80, 0 0))"
 terrio filter splitter tile.laz "tiles/tile_#.laz" --length 500
 terrio filter merge a.laz b.laz merged.laz
+terrio filter merge @tiles.txt merged.laz        # the inputs listed in a file, one per line
 terrio filter smrf tile.las.zip ground.laz --a-srs EPSG:2056   # a zipped LAS without a CRS
 terrio filter covariancefeatures tile.laz features.laz --feature-set Dimensionality,Omnivariance --knn 16
 terrio filter dbscan tile.laz clusters.laz --eps 2 --min-cluster-points 10

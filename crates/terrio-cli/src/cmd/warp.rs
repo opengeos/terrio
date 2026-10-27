@@ -9,7 +9,7 @@ use terrio::ops::{Resampling, parse_data_type};
 
 #[derive(clap::Args)]
 pub struct Args {
-    /// The input rasters, then the output path.
+    /// The input rasters, then the output path. `@FILE` reads input paths from FILE, one per line.
     #[arg(required = true, num_args = 2..)]
     paths: Vec<String>,
     /// The sources' CRS, overriding what they declare.
@@ -100,6 +100,7 @@ pub struct Args {
 
 pub fn run(a: Args) -> terrio::Result<()> {
     let (output, inputs) = a.paths.split_last().expect("clap requires two paths");
+    let inputs = &super::expand_file_lists(inputs)?[..];
     let pair = |v: &Option<Vec<f64>>| v.as_ref().map(|v| (v[0], v[1]));
     let to: Vec<(String, String)> =
         super::convert::key_values(&a.transformer_options)?.into_iter().map(|(k, v)| (k.to_ascii_uppercase(), v.to_string())).collect();

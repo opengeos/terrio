@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Command line
+
+- `mosaic`, `warp`, `concat` and `filter merge` read inputs from a file list:
+  `@FILE` stands for the paths listed in FILE, one per line, as GDAL's
+  `--input @filelist.txt` does (#323).
+
 ### CRS compatibility
 
 - Transformer construction now checks celestial-body compatibility for all CRS

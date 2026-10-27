@@ -60,6 +60,28 @@ pub fn quiet<T>(f: impl FnOnce() -> T) -> T {
     f()
 }
 
+/// The inputs with each `@FILE` replaced by the paths listed in `FILE`, one per line, as GDAL's
+/// commands read `--input @filelist.txt`. Lines are trimmed and blank lines skipped; listed paths
+/// are taken as written (relative ones from the working directory), not expanded again.
+pub fn expand_file_lists(inputs: &[String]) -> terrio::Result<Vec<String>> {
+    let mut out = Vec::with_capacity(inputs.len());
+    for input in inputs {
+        let Some(list) = input.strip_prefix('@') else {
+            out.push(input.clone());
+            continue;
+        };
+        let text =
+            std::fs::read_to_string(list).map_err(|e| terrio::Error::InvalidArgument(format!("cannot read the file list {list}: {e}")))?;
+        let before = out.len();
+        let text = text.strip_prefix('\u{feff}').unwrap_or(&text);
+        out.extend(text.lines().map(str::trim).filter(|l| !l.is_empty()).map(String::from));
+        if out.len() == before {
+            return Err(terrio::Error::InvalidArgument(format!("the file list {list} names no inputs")));
+        }
+    }
+    Ok(out)
+}
+
 /// The input path to open with `driver`: `gdal` (any case) forces the GDAL backend, which needs
 /// a build with the `gdal` feature; other names leave the path to terrio's format detection.
 pub fn with_driver(input: &str, driver: Option<&str>) -> terrio::Result<String> {

@@ -9,7 +9,7 @@ use terrio::ops::warp::Nodata;
 #[derive(clap::Args)]
 pub struct Args {
     /// The input rasters, then the output path. A `.vrt` output is a virtual mosaic referencing
-    /// the inputs, as `gdalbuildvrt` writes.
+    /// the inputs, as `gdalbuildvrt` writes. `@FILE` reads input paths from FILE, one per line.
     #[arg(required = true, num_args = 2..)]
     paths: Vec<String>,
     /// The resolution: highest, lowest, average, or user (with `--tr`).
@@ -51,6 +51,7 @@ pub struct Args {
 
 pub fn run(a: Args) -> terrio::Result<()> {
     let (output, inputs) = a.paths.split_last().expect("clap requires two paths");
+    let inputs = &super::expand_file_lists(inputs)?[..];
     let resolution = match (&a.tr, a.resolution.to_ascii_lowercase().as_str()) {
         (Some(v), _) => ResolutionStrategy::User(v[0], v[1]),
         (None, "user") => return Err(terrio::Error::InvalidArgument("--resolution user needs --tr".into())),
