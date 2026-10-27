@@ -132,6 +132,11 @@ pub(crate) fn read_db(db: &Db, wanted: &[String], bbox: Option<Rect>) -> Result<
         .collect()
 }
 
+/// The terrio field type of a declared column type.
+pub(crate) fn declared_field_type(decl: &str) -> FieldType {
+    field_type(decl).0
+}
+
 /// The field type GDAL gives a declared column type.
 fn field_type(decl: &str) -> (FieldType, usize) {
     let upper = decl.trim().to_ascii_uppercase();
@@ -146,7 +151,100 @@ fn field_type(decl: &str) -> (FieldType, usize) {
         "BLOB" => FieldType::Blob,
         _ => FieldType::Text,
     };
-    (t, if t == FieldType::Text { width } else { 0 })
+    // GDAL reads INTEGER columns as 64-bit integers, MEDIUMINT ones as 32-bit integers: the
+    // former declare a width of 64-bit integer fields, which writers keep.
+    let width = match (t, base) {
+        (FieldType::Text, _) => width,
+        (FieldType::Integer, "INTEGER" | "INT" | "BIGINT" | "INT8") => crate::ops::vector_schema::INTEGER64_WIDTH,
+        _ => 0,
+    };
+    (t, width)
+}
+
+/// A column of a layer's table as declared: its name, declared type, `NOT NULL` and `UNIQUE`
+/// constraints and default value.
+#[derive(Debug, Clone)]
+pub(crate) struct DeclaredColumn {
+    pub name: String,
+    pub decl: String,
+    pub not_null: bool,
+    pub unique: bool,
+    pub default: Option<String>,
+}
+
+/// A layer as its GeoPackage tables declare it: what GDAL's `OGR_SCHEMA` reports.
+#[derive(Debug, Clone)]
+pub(crate) struct DeclaredLayer {
+    /// The layer without features, with its CRS and geometry type.
+    pub layer: Layer,
+    /// The geometry column: its name, `geometry_type_name`, `z` and `m` flags and whether it is
+    /// `NOT NULL`.
+    pub geometry: Option<(String, String, i64, i64, bool)>,
+    /// The `INTEGER PRIMARY KEY` column.
+    pub fid: Option<String>,
+    /// The other columns.
+    pub columns: Vec<DeclaredColumn>,
+}
+
+/// The layers of a GeoPackage file as their tables declare them (`wanted` names them; all when
+/// empty).
+pub(crate) fn declared_layers(path: &str, wanted: &[String]) -> Result<Vec<DeclaredLayer>> {
+    let db = crate::drivers::sqlite_edit::open_consistent(std::path::Path::new(path))?;
+    let (layers, _) = contents(&db)?;
+    for w in wanted {
+        if !layers.iter().any(|c| c.name.eq_ignore_ascii_case(w)) {
+            let all: Vec<&str> = layers.iter().map(|c| c.name.as_str()).collect();
+            return Err(Error::InvalidArgument(format!("no layer named {w} (layers: {})", all.join(", "))));
+        }
+    }
+    let mut out = Vec::new();
+    for c in layers.iter().filter(|c| wanted.is_empty() || wanted.iter().any(|w| w.eq_ignore_ascii_case(&c.name))) {
+        let sql = db.table_sql(&c.name).ok_or_else(|| bad(format!("no table '{}'", c.name)))?;
+        let types = sqlite::column_types(&sql);
+        let constraints = sqlite::column_constraints(&sql);
+        let defaults = sqlite::column_defaults(&sql);
+        let mut layer = Layer::new(c.name.clone());
+        let mut geometry = None;
+        if let Ok(g) = db.table("gpkg_geometry_columns")
+            && let Some(r) =
+                g.rows.iter().find(|r| g.get(r, "table_name").and_then(Value::as_str).is_some_and(|n| n.eq_ignore_ascii_case(&c.name)))
+        {
+            let col = g.get(r, "column_name").and_then(Value::as_str).unwrap_or_default().to_string();
+            let type_name = g.get(r, "geometry_type_name").and_then(Value::as_str).unwrap_or("GEOMETRY").to_string();
+            layer.geom_type = geometry_type(&type_name);
+            if let Some(srs_id) = g.get(r, "srs_id").and_then(Value::as_i64) {
+                set_crs(&db, &mut layer, srs_id);
+            }
+            let z = g.get(r, "z").and_then(Value::as_i64).unwrap_or(0);
+            let m = g.get(r, "m").and_then(Value::as_i64).unwrap_or(0);
+            let not_null =
+                types.iter().position(|(n, _)| n.eq_ignore_ascii_case(&col)).is_some_and(|i| constraints.get(i).is_some_and(|c| c.0));
+            geometry = Some((col, type_name, z, m, not_null));
+        }
+        let fid_col = sqlite::rowid_column(&sql);
+        let mut columns = Vec::new();
+        for (i, (name, decl)) in types.iter().enumerate() {
+            if Some(i) == fid_col || geometry.as_ref().is_some_and(|g| g.0.eq_ignore_ascii_case(name)) {
+                continue;
+            }
+            let (not_null, unique) = constraints.get(i).copied().unwrap_or_default();
+            let default = defaults.get(i).cloned().flatten().and_then(|v| match v {
+                Value::Text(s) => Some(format!("'{}'", s.replace('\'', "''"))),
+                Value::Int(i) => Some(i.to_string()),
+                Value::Real(f) => Some(f.to_string()),
+                _ => None,
+            });
+            let (t, width) = field_type(decl);
+            let mut f = FieldDef::new(name.clone(), t);
+            f.width = width;
+            f.nullable = !not_null;
+            layer.add_field(f);
+            columns.push(DeclaredColumn { name: name.clone(), decl: decl.clone(), not_null, unique, default });
+        }
+        let fid = fid_col.and_then(|i| types.get(i)).map(|(n, _)| n.clone());
+        out.push(DeclaredLayer { layer, geometry, fid, columns });
+    }
+    Ok(out)
 }
 
 /// Sets a layer's CRS from a `gpkg_spatial_ref_sys` entry: its EPSG code when the organization

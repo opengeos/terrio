@@ -609,6 +609,20 @@ pub(crate) fn column_types(sql: &str) -> Vec<(String, String)> {
         .collect()
 }
 
+/// The `NOT NULL` and `UNIQUE` constraints of each column of a `CREATE TABLE` statement (in the
+/// order of [`column_types`]).
+pub(crate) fn column_constraints(sql: &str) -> Vec<(bool, bool)> {
+    column_defs(sql)
+        .iter()
+        .map(|d| {
+            let (_, rest) = split_column(d);
+            let k = keywords(rest);
+            let words: Vec<&str> = k.split_whitespace().collect();
+            (words.windows(2).any(|w| w == ["NOT", "NULL"]), words.contains(&"UNIQUE"))
+        })
+        .collect()
+}
+
 /// The column names of a `CREATE TABLE` statement.
 fn columns(sql: &str) -> Vec<String> {
     column_types(sql).into_iter().map(|(n, _)| n).collect()

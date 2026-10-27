@@ -40,6 +40,11 @@ impl PyVectorDataset {
         apply(&borrowed.inner)
     }
 
+    /// The name of the driver that read the dataset.
+    pub(crate) fn driver_name(&self) -> String {
+        self.driver.clone()
+    }
+
     /// Copies of the layers.
     pub(crate) fn layer_copies(&self, py: Python<'_>) -> Vec<Layer> {
         self.layers.iter().map(|l| l.borrow(py).inner.clone()).collect()
