@@ -952,6 +952,28 @@ fn memory_paths_refuse_parent_segments() {
 }
 
 #[test]
+fn mounts_are_out_of_reach_of_vsi() {
+    let mount = crate::memfs::Mount::new([("a/file".to_string(), b"mounted".to_vec())]);
+    let inside = format!("{}/a/file", mount.path().display());
+    // Neither written, copied over, moved, deleted nor listed through `vsi`.
+    assert!(write(&inside, b"user").unwrap_err().to_string().contains("reserved"));
+    assert!(delete(&mount.path().display().to_string(), true).unwrap_err().to_string().contains("reserved"));
+    assert!(read(&inside).is_err());
+    assert_eq!(crate::memfs::read(Path::new(&inside)).unwrap(), b"mounted");
+    write("/vsimem/vsi-mounts-test/keep", b"user").unwrap();
+    let names: Vec<String> =
+        list("/vsimem", &ListOptions { recursive: true, ..Default::default() }).unwrap().into_iter().map(|e| e.name).collect();
+    assert!(names.iter().any(|n| n == "vsi-mounts-test/keep"), "{names:?}");
+    assert!(names.iter().all(|n| !n.starts_with(".terrio-mounts")), "{names:?}");
+    // A user file under a name like the mounts' survives a mount being dropped.
+    write("/vsimem/terrio/1/user", b"user").unwrap();
+    drop(mount);
+    assert_eq!(read("/vsimem/terrio/1/user").unwrap(), b"user");
+    delete("/vsimem/vsi-mounts-test", true).unwrap();
+    delete("/vsimem/terrio", true).unwrap();
+}
+
+#[test]
 fn recursive_memory_delete_refuses_dot_segments_before_mutation() {
     let root = "/vsimem/terrio-vsi-delete-dot";
     crate::memfs::write(Path::new("/vsimem/terrio-vsi-delete-dot/safe.txt"), b"keep").unwrap();

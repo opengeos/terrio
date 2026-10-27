@@ -283,7 +283,11 @@ impl Node {
             if input.split(['/', '\\']).any(|p| p == "..") {
                 return Err(Error::InvalidArgument(format!("'{shown}': refusing dot segments in a /vsimem path")));
             }
-            return Ok(Node::Mem(normalize_mem(input)));
+            let key = normalize_mem(input);
+            if crate::memfs::is_reserved(Path::new(&key)) {
+                return Err(Error::InvalidArgument(format!("'{shown}': reserved for terrio's internal in-memory mounts")));
+            }
+            return Ok(Node::Mem(key));
         }
         if input.starts_with("/vsi") && !["/vsicurl/", "/vsis3/", "/vsigs/", "/vsiaz/"].iter().any(|p| input.starts_with(p)) {
             return Err(Error::Unsupported(format!("'{shown}': this virtual file system is not supported")));
