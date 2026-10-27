@@ -781,3 +781,21 @@ and PROJ 9.9 replaced the method with a new implementation (another default orig
 authalic latitude on an ellipsoid, other parameters). The `method-isea` fixture, from PROJ
 9.9.0, is therefore not used. A PROJ 9.8.1 corpus covers 14 configurations and 7,784 samples
 (see Testing). Allowances are 1 mm projected and 1e-8 degrees inverse.
+
+## Two-point oblique Mercator
+
+`+proj=omerc` without `+alpha` or `+gamma` takes its centre line through two
+points, `+lat_1`/`+lon_1` and `+lat_2`/`+lon_2`, as PROJ does: the azimuth and
+the central meridian are derived from them, and `+lon_0` is ignored. The
+formulas are PROJ 9.8.1's (`omerc.cpp`), on a sphere or an ellipsoid, with
+`+lat_0`, `+k`, `+units`, `+x_0` and `+y_0`. PROJ's checks apply: neither point
+at a pole, different latitudes, a first point off the equator and `+lat_0` off a
+pole. A point left out is 0, as PROJ reads it; a value that isn't a number is
+refused, where PROJ would read it as 0.
+
+GDAL's WKT1 `Hotine_Oblique_Mercator_Two_Point_Natural_Origin`, with GDAL's
+(`latitude_of_point_1`) or ESRI's (`Latitude_Of_1st_Point`) parameter names, and
+WKT2 `Hotine Oblique Mercator Two Point Natural Origin` are read, and terrio
+writes the former, as GDAL does. The `method-omerc-2pt` fixture keeps its PROJ
+9.9.0 oracle; a GDAL 3.12.2 / PROJ 9.8.1 corpus covers 12 lines and 1,524
+samples (see Testing). Allowances are 1 mm projected and 1e-8 degrees inverse.

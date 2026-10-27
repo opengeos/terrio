@@ -663,3 +663,21 @@ fn gpkg_repack_is_a_mutating_tool_and_preserves_vector_data() {
     let encode = |layers: &[terrio::Layer]| terrio::memory::write_vector_bytes(layers, "sites.geojson", &Default::default()).unwrap();
     assert_eq!(encode(&expected.layers), encode(&output.layers));
 }
+
+#[test]
+fn two_point_oblique_mercator_coordinates_and_refusal_through_mcp() {
+    // rust-proj-capability's method-omerc-2pt fixture (PROJ 9.9.0), and PROJ's refusal of equal latitudes.
+    let target = "+proj=omerc +lat_1=-40 +lon_1=140 +lat_2=-44 +lon_2=150 +k=1 +datum=WGS84 +units=m +no_defs";
+    let equal = "+proj=omerc +lat_1=-40 +lon_1=140 +lat_2=-40 +lon_2=150 +datum=WGS84";
+    let replies = session(&[
+        call(1, "crs", &["OGC:CRS84", "--to", target, "147", "-42"]),
+        call(2, "crs", &["OGC:CRS84", "--to", equal, "147", "-42"]),
+    ]);
+    assert_eq!(replies[&1]["result"]["isError"], false);
+    let values: Vec<f64> =
+        replies[&1]["result"]["content"][0]["text"].as_str().unwrap().split_whitespace().filter_map(|v| v.parse().ok()).collect();
+    assert_eq!(values.len(), 2);
+    assert!((values[0] - 4687059.434028593).abs() < 0.001);
+    assert!((values[1] - -5279802.3632845115).abs() < 0.001);
+    assert_eq!(replies[&2]["result"]["isError"], true);
+}

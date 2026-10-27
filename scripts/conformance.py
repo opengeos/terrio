@@ -1762,6 +1762,29 @@ def suite_isea(ctx):
     return suite
 
 
+def suite_omerc_two_point(ctx):
+    """The two-point oblique Mercator, as PROJ strings and as GDAL's WKT, and its refusals."""
+    suite = Suite("omerc-two-point", "Two-point oblique Mercator", "GDAL/PROJ",
+                  "12 spherical/WGS84 lines (both hemispheres, swapped points, across the antimeridian, "
+                  "near a meridian; units and false offsets) and 1,524 geographic samples, as PROJ "
+                  "strings, WKT2, WKT1 and ESRI WKT1; PROJ's invalid-parameter refusals. Projected "
+                  "allowance 1 mm; inverse 1e-8 degrees, longitude weighted by cos(latitude).")
+    if missing_modules("osgeo"):
+        suite.skipped = "needs GDAL Python bindings"
+        return suite
+    code, out, err = run([sys.executable, str(SCRIPTS / "compare_omerc_two_point_with_gdal.py"), ctx.data, "--terrio", ctx.terrio, "--json"])
+    try:
+        cases = json.loads(out)
+    except json.JSONDecodeError:
+        suite.error = tail(err or out)
+        return suite
+    for case in cases:
+        suite.cases.append(Case("Two-point oblique Mercator", case["name"], case["status"], case["detail"]))
+    if code and not any(c.status == DIFFERS for c in suite.cases):
+        suite.error = tail(err or out)
+    return suite
+
+
 def suite_projjson(ctx):
     """PROJJSON units, axes and bound transformations, with and without IDs."""
     suite = Suite("projjson", "PROJJSON CRS definitions", "GDAL/PROJ",
@@ -2927,6 +2950,7 @@ SUITES = OrderedDict(
         ("crs", suite_crs),
         ("geocentric", suite_geocentric),
         ("perspective", suite_perspective),
+        ("omerc-two-point", suite_omerc_two_point),
         ("igh", suite_igh),
         ("ob_tran", suite_ob_tran),
         ("qsc", suite_qsc),
