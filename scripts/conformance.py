@@ -1469,7 +1469,7 @@ def suite_vector_dataset(ctx):
     if tools:
         s.skipped = "needs the GDAL command-line tools (" + ", ".join(tools) + ")"
         return s
-    needed = ("countries.gpkg", "UScounties.gpkg", "multi.gpkg", "TN_Counties.geojson", "las_vegas_roads.geojson")
+    needed = ("countries.gpkg", "UScounties.gpkg", "multi.gpkg", "TN_Counties.geojson", "las_vegas_roads.geojson", "hike_gps_trace.csv", "ne_places/ne_10m_populated_places_simple.shp")
     if any(not os.path.isfile(os.path.join(ctx.data, name)) for name in needed):
         s.skipped = "needs the vector test data (scripts/fetch_test_data.sh)"
         return s
@@ -1492,7 +1492,10 @@ def suite_vector_dataset(ctx):
             s.error = tail(err or out)
             return s
         try:
-            results = json.loads(Path(report).read_text())["cases"]
+            payload = json.loads(Path(report).read_text())
+            results = payload["cases"]
+            if payload.get("skipped"):
+                s.criteria += " Reference skips: " + "; ".join(f"{item['name']}: {item['detail']}" for item in payload["skipped"])
         except (OSError, KeyError, json.JSONDecodeError) as e:
             s.error = str(e)
             return s

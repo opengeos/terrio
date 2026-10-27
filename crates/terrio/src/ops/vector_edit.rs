@@ -460,15 +460,24 @@ pub fn parse_crs_override(s: &str) -> Result<Option<SpatialRef>> {
     if s.eq_ignore_ascii_case("null") || s.eq_ignore_ascii_case("none") { Ok(None) } else { SpatialRef::parse(s).map(Some) }
 }
 
+fn edit_layer_name<'a>(names: impl Iterator<Item = &'a str>, requested: &str) -> Result<String> {
+    let mut insensitive = None;
+    for name in names {
+        if name == requested {
+            return Ok(name.to_string());
+        }
+        if insensitive.is_none() && name.eq_ignore_ascii_case(requested) {
+            insensitive = Some(name);
+        }
+    }
+    insensitive.map(str::to_string).ok_or_else(|| Error::InvalidArgument(format!("cannot find layer '{requested}'")))
+}
+
 /// Edits layers in memory: CRS (assigned, not reprojected), declared geometry type and feature
 /// ids. Metadata lives in files: see [`edit_in_place`].
 pub fn edit_layers(layers: &mut [Layer], o: &EditOptions) -> Result<()> {
-    if let Some(a) = &o.active_layer
-        && !layers.iter().any(|l| &l.name == a)
-    {
-        return Err(Error::InvalidArgument(format!("cannot find layer '{a}'")));
-    }
-    for l in layers.iter_mut().filter(|l| o.active_layer.as_ref().is_none_or(|a| &l.name == a)) {
+    let active = o.active_layer.as_deref().map(|name| edit_layer_name(layers.iter().map(|layer| layer.name.as_str()), name)).transpose()?;
+    for l in layers.iter_mut().filter(|l| active.as_ref().is_none_or(|name| &l.name == name)) {
         match &o.crs {
             Some(Some(s)) => s.apply_to_layer(l),
             Some(None) => {
@@ -520,12 +529,8 @@ pub fn edit_in_place(path: &str, o: &EditOptions) -> Result<()> {
         use crate::drivers::vector::gpkg_edit as ge;
         return ge::modify_file(path, |d| {
             let names = ge::layer_names(d);
-            if let Some(a) = &o.active_layer
-                && !names.iter().any(|n| n == a)
-            {
-                return Err(Error::InvalidArgument(format!("cannot find layer '{a}'")));
-            }
-            for n in names.iter().filter(|n| o.active_layer.as_ref().is_none_or(|a| a == *n)) {
+            let active = o.active_layer.as_deref().map(|name| edit_layer_name(names.iter().map(String::as_str), name)).transpose()?;
+            for n in names.iter().filter(|n| active.as_ref().is_none_or(|name| name == *n)) {
                 let spatial = ge::has_geometry(d, n) || o.active_layer.is_some();
                 if spatial && let Some(c) = &o.crs {
                     ge::set_layer_crs(d, n, c.as_ref())?;
@@ -544,7 +549,8 @@ pub fn edit_in_place(path: &str, o: &EditOptions) -> Result<()> {
 
 /// Edits a dataset on output, as `gdal vector edit input output` does: the layers of `input`
 /// edited ([`edit_layers`]) and written to `output`; for a GeoPackage output, the metadata of a
-/// GeoPackage input is kept and edited, and the geometry type's Z and M are recorded.
+/// GeoPackage input's default domain is kept and edited, and geometry type Z/M are recorded.
+/// Named domains are not copied to a new output, matching GDAL 3.13.3.
 pub fn edit_to(input: &str, output: &str, o: &EditOptions, write: &crate::VectorWriteOptions) -> Result<()> {
     if input == output || std::fs::canonicalize(input).ok().zip(std::fs::canonicalize(output).ok()).is_some_and(|(a, b)| a == b) {
         return Err(Error::InvalidArgument("input and output datasets must be different; use edit_in_place".into()));
@@ -583,7 +589,8 @@ pub fn edit_to(input: &str, output: &str, o: &EditOptions, write: &crate::Vector
                     ge::edit_metadata(d, Some(n), &default(md), &[])?;
                 }
             }
-            for n in names.iter().filter(|n| o.active_layer.as_ref().is_none_or(|a| a == *n)) {
+            let active = o.active_layer.as_deref().map(|name| edit_layer_name(names.iter().map(String::as_str), name)).transpose()?;
+            for n in names.iter().filter(|n| active.as_ref().is_none_or(|name| name == *n)) {
                 if (ge::has_geometry(d, n) || o.active_layer.is_some())
                     && let Some((t, z, m)) = o.geometry_type
                 {
@@ -811,7 +818,10 @@ pub fn update_layer(dst: &mut Layer, src: &Layer, o: &UpdateOptions) -> Result<U
 /// appends. No reprojection is done. GeoPackages are changed in place; other formats are
 /// rewritten, the new files replacing the old ones once complete.
 pub fn update(src: &[Layer], output: &str, o: &UpdateOptions) -> Result<UpdateCounts> {
+    #[cfg(feature = "sqlite")]
     let source = pick(src, o.input_layer.as_deref(), "input")?;
+    #[cfg(not(feature = "sqlite"))]
+    pick(src, o.input_layer.as_deref(), "input")?;
     if !crate::vfs::Location::parse(output).is_local() {
         return Err(Error::Unsupported(format!("'{output}': only local datasets can be updated")));
     }
@@ -960,6 +970,24 @@ mod tests {
             assert!(!path.with_extension(extension).exists(), "{extension}");
         }
         assert_eq!(crate::open_vector(path.to_str().unwrap(), &Default::default()).unwrap().layers[0].len(), 1);
+    }
+
+    #[cfg(feature = "sqlite")]
+    #[test]
+    fn edits_select_layers_case_insensitively() {
+        use crate::drivers::vector::geopackage as gw;
+        let temp = tempfile::tempdir().unwrap();
+        let input = temp.path().join("source.gpkg");
+        let output = temp.path().join("copy.gpkg");
+        let layer = Layer::new("roads").with_geom_type(GeometryType::Point);
+        std::fs::write(&input, gw::to_bytes(&[layer]).unwrap()).unwrap();
+        let mut options =
+            EditOptions { active_layer: Some("ROADS".into()), crs: Some(Some(SpatialRef::from_epsg(4326).unwrap())), ..Default::default() };
+        edit_in_place(input.to_str().unwrap(), &options).unwrap();
+        options.crs = Some(Some(SpatialRef::from_epsg(3857).unwrap()));
+        edit_to(input.to_str().unwrap(), output.to_str().unwrap(), &options, &Default::default()).unwrap();
+        assert_eq!(crate::open_vector(output.to_str().unwrap(), &Default::default()).unwrap().layers[0].crs_epsg(), Some(3857));
+        assert_eq!(edit_layer_name(["roads", "ROADS"].into_iter(), "ROADS").unwrap(), "ROADS");
     }
 
     #[cfg(feature = "sqlite")]

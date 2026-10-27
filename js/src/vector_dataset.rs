@@ -11,6 +11,7 @@ use terrio::formats::VectorDriver;
 use terrio::ops::concat::{ConcatMode, ConcatOptions, ConcatSource, FieldStrategy};
 use terrio::ops::partition::{PartitionOptions, PartitionScheme};
 use terrio::ops::vector_schema::{self as vs, FieldSelector, OgrSchema, OgrType};
+use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 
 fn invalid(msg: impl std::fmt::Display) -> JsError {
@@ -37,7 +38,15 @@ fn source(v: &JsValue) -> Result<(Vec<terrio::Layer>, Option<VectorDriver>), JsE
 
 /// The name a source goes by in name templates: its file name, when given.
 fn source_name(v: &JsValue, i: usize) -> String {
-    file_bytes(v).map(|(_, n)| n).filter(|n| n != "data").unwrap_or_else(|| format!("dataset{i}"))
+    if !v.is_instance_of::<js_sys::Uint8Array>()
+        && let Ok(bytes) = js_sys::Reflect::get(v, &JsValue::from_str("bytes"))
+        && bytes.is_instance_of::<js_sys::Uint8Array>()
+        && let Ok(filename) = js_sys::Reflect::get(v, &JsValue::from_str("filename"))
+        && let Some(name) = filename.as_string().filter(|name| name != "data")
+    {
+        return name;
+    }
+    format!("dataset{i}")
 }
 
 #[derive(Deserialize, Default)]

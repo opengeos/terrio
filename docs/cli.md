@@ -439,6 +439,8 @@ are rejected before creating an output (GDAL's writer may instead rename a colli
 `--field-strategy union` (the default) keeps every field, matched by exact name;
 `intersection` the fields every layer has, ignoring case. Fields of the same name merge into a
 type holding both (reals over integers, 64-bit over 32-bit integers, strings otherwise).
+Union fields such as `Name` and `name` remain distinct; formats requiring case-insensitive
+unique column names may reject that schema (GDAL may rename columns when writing).
 `--source-layer-field-name`/`--source-layer-field-content` add a first field naming each
 feature's source (`source_ds_lyr` and `{AUTO_NAME}` by default). Each output layer has the
 geometry type and CRS of its first source layer; features of layers in another CRS are
@@ -461,9 +463,9 @@ named `{LAYER_NAME}_{FIELD_VALUE}_%010d` (several values joined by `_`, nulls as
 empty strings as `__EMPTY__`). `--pattern` sets the name, with `{LAYER_NAME}`, `{FIELD_VALUE}`
 and one `%d`, `%5d` or `%05d` part number. Names and values are percent-encoded as GDAL encodes
 them. Fields must be String or Integer fields; `OGR_GEOMETRY` partitions on the geometry type
-(as GDAL 3.13 does). `--feature-limit` and `--max-file-size` (GDAL's estimate of the bytes each
-feature adds, from 1 MB) split partitions into numbered parts; without `--field`, they split
-the layer alone (GDAL 3.13). `--omit-partitioned-field` leaves the partitioning fields out
+(as GDAL 3.13 does). `--feature-limit` and `--max-file-size` split partitions into numbered
+parts; the size estimate begins at 64 KiB plus the bytes each feature adds, and the minimum
+size limit is 1 MiB. Without `--field`, they split the layer alone (GDAL 3.13). `--omit-partitioned-field` leaves the partitioning fields out
 (automatic for Hive GeoParquet). The format defaults to the input's; files take GDAL's
 extension of the format (`.json` for GeoJSON). An existing output is refused unless
 `--overwrite` (only when it looks like a partitioned dataset) or `--append` (new parts are
@@ -587,9 +589,12 @@ terrio edit data.gpkg edited.gpkg --active-layer roads --geometry-type LINESTRIN
 ```
 
 Assigns CRS without reprojecting, changes declared geometry type (including Z/M), or
-sets/removes dataset and layer metadata. `--active-layer` selects one layer; default CRS
-and geometry edits skip attribute-only tables. `--crs none` removes a CRS. `--unset-fid`
-requires an output. Geometries are not converted by a declaration change.
+sets/removes dataset and layer metadata. Metadata edits and Z/M declarations require
+GeoPackage outputs; other output formats reject those options. `--active-layer` selects one
+layer, matching exact names first and otherwise ignoring ASCII case. Default CRS and
+geometry edits skip attribute-only tables. `--crs none` removes a CRS. `--unset-fid`
+requires an output. Geometries are not converted by a declaration change. An output copy
+retains default-domain GeoPackage metadata; named domains are not copied, matching GDAL 3.13.3.
 
 In-place GeoPackage edits materialize the database and replace it with a unique temporary
 file beside the resolved input. Mode bits and symlink targets are preserved; hard links

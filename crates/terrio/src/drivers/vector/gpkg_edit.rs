@@ -937,9 +937,14 @@ mod tests {
         let base = gw::to_bytes(&[layer("a", 3)]).unwrap();
         std::fs::write(&path, &base).unwrap();
         let p = path.to_str().unwrap();
+        let before_entries =
+            std::fs::read_dir(dir.path()).unwrap().map(|e| e.unwrap().file_name()).collect::<std::collections::BTreeSet<_>>();
         assert!(modify_file(p, |d| rename_layer(d, "missing", "x")).is_err());
         assert_eq!(std::fs::read(&path).unwrap(), base);
-        assert!(!dir.path().join("a.gpkg.terrio-edit").exists());
+        assert_eq!(
+            std::fs::read_dir(dir.path()).unwrap().map(|e| e.unwrap().file_name()).collect::<std::collections::BTreeSet<_>>(),
+            before_entries
+        );
         // Read-only files are refused.
         let mut perms = std::fs::metadata(&path).unwrap().permissions();
         perms.set_readonly(true);
@@ -967,10 +972,15 @@ mod tests {
         symlink(&target, &alias).unwrap();
         let stale = dir.path().join("a.gpkg.terrio-edit");
         std::fs::write(&stale, "leave alone").unwrap();
+        let entries = |directory: &std::path::Path| {
+            std::fs::read_dir(directory).unwrap().map(|entry| entry.unwrap().file_name()).collect::<std::collections::BTreeSet<_>>()
+        };
+        let before_entries = entries(dir.path());
         modify_file(alias.to_str().unwrap(), |d| rename_layer(d, "a", "renamed")).unwrap();
         assert!(std::fs::symlink_metadata(alias).unwrap().file_type().is_symlink());
         assert_eq!(std::fs::metadata(&target).unwrap().permissions().mode() & 0o777, 0o640);
         assert_eq!(std::fs::read_to_string(stale).unwrap(), "leave alone");
+        assert_eq!(entries(dir.path()), before_entries);
         let bytes = std::fs::read(target).unwrap();
         assert_eq!(read(&bytes)[0].name, "renamed");
     }

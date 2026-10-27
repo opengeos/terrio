@@ -207,10 +207,12 @@ def test_copy_operations_refuse_existing_output(tmp_path):
 
 def test_package_import_without_native_partition(monkeypatch):
     import runpy
+    import sys
 
     import terrio._terrio as extension
 
     monkeypatch.delattr(extension, "partition")
+    monkeypatch.setattr(sys, "platform", "emscripten")
     loaded = runpy.run_path(terrio.__file__)
     assert "partition" not in loaded["__all__"]
     assert "partition" not in loaded

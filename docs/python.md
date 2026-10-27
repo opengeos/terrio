@@ -235,6 +235,36 @@ memory (`VectorDataset`, `Layer`, lists of layers, GeoJSON). Conversion warnings
 and the differences. Filesystem `partition` is unavailable in Pyodide;
 the remaining imported APIs remain available.
 
+#### Renaming and updating vector datasets
+
+`rename_layer`, `edit_vector` and `update_vector` accept the same vector sources as
+`concat`. They return a new `VectorDataset` for memory inputs. For local files,
+`rename_layer(path, in_place=True, ...)` and `edit_vector(path, in_place=True, ...)`
+change a GeoPackage; `update_vector(source, destination_path, ...)` updates an
+existing destination. Read-only files and active SQLite journals are refused.
+
+```python
+renamed = terrio.rename_layer(countries, ascii=True, lower_case=True)
+assigned = terrio.edit_vector(renamed, crs="EPSG:4326")
+updated = terrio.update_vector(changes, renamed, key=["name"], mode="merge")
+terrio.edit_vector("countries.gpkg", in_place=True, metadata=["SOURCE=survey"])
+```
+
+Rename options mirror the CLI: `input_layer`, `output_layer`, `ascii`, `lower_case`,
+`filename_compatible`, `reserved_characters`, `replacement_character`, `max_length`.
+Edit supports `active_layer`, `crs` (`"none"` removes it), `geometry_type`,
+`unset_fid`, dataset/layer `metadata` and `unset_metadata` lists. Metadata edits
+require file paths because the memory model does not retain dataset metadata.
+Assigning a CRS changes its declaration without transforming coordinates.
+Update supports `input_layer`, `output_layer`, `key` and `mode` (`merge`,
+`update-only`, `append-only`); missing layer selections in multilayer datasets fail.
+File edits materialize the dataset and require space for a neighboring temporary
+copy. See the CLI documentation for atomicity and metadata preservation limits.
+
+The vector dataset copy operations `concat`, `rename_layer` and `edit_vector` refuse an
+existing destination path. Choose a new output path; use `in_place=True` for supported
+GeoPackage edits.
+
 ### Pixel-wise operations
 
 ```python
@@ -397,34 +427,3 @@ uploaded = terrio.open_vrt(xml, {"dem.tif": image_bytes})
 source windows remain lazy. `open_raster(path, lazy=True)` also opens VRT files
 lazily. The [serialized VRT support](cli.md#serialized-virtual-rasters) lists the
 supported transformers, built-in functions, kernels and masks.
-
-
-### Renaming and updating vector datasets
-
-`rename_layer`, `edit_vector` and `update_vector` accept the same vector sources as
-`concat`. They return a new `VectorDataset` for memory inputs. For local files,
-`rename_layer(path, in_place=True, ...)` and `edit_vector(path, in_place=True, ...)`
-change a GeoPackage; `update_vector(source, destination_path, ...)` updates an
-existing destination. Read-only files and active SQLite journals are refused.
-
-```python
-renamed = terrio.rename_layer(countries, ascii=True, lower_case=True)
-assigned = terrio.edit_vector(renamed, crs="EPSG:4326")
-updated = terrio.update_vector(changes, renamed, key=["name"], mode="merge")
-terrio.edit_vector("countries.gpkg", in_place=True, metadata=["SOURCE=survey"])
-```
-
-Rename options mirror the CLI: `input_layer`, `output_layer`, `ascii`, `lower_case`,
-`filename_compatible`, `reserved_characters`, `replacement_character`, `max_length`.
-Edit supports `active_layer`, `crs` (`"none"` removes it), `geometry_type`,
-`unset_fid`, dataset/layer `metadata` and `unset_metadata` lists. Metadata edits
-require file paths because the memory model does not retain dataset metadata.
-Assigning a CRS changes its declaration without transforming coordinates.
-Update supports `input_layer`, `output_layer`, `key` and `mode` (`merge`,
-`update-only`, `append-only`); missing layer selections in multilayer datasets fail.
-File edits materialize the dataset and require space for a neighboring temporary
-copy. See the CLI documentation for atomicity and metadata preservation limits.
-
-The vector dataset copy operations `concat`, `rename_layer` and `edit_vector` refuse an
-existing destination path. Choose a new output path; use `in_place=True` for supported
-GeoPackage edits.

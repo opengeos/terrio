@@ -50,17 +50,21 @@ TOLERANCE = "within tolerance"
 DIFFERS = "differs"
 
 
-def run(cmd, check=True):
+def run(cmd, check=True, timeout=1800):
     """Runs a command.
 
     Args:
         cmd: The command line.
         check: Raise when it fails.
+        timeout: Maximum runtime in seconds.
 
     Returns:
         The completed process.
     """
-    p = subprocess.run([str(c) for c in cmd], capture_output=True, text=True)
+    try:
+        p = subprocess.run([str(c) for c in cmd], capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(f"{' '.join(map(str, cmd))} timed out after {timeout}s") from exc
     if check and p.returncode != 0:
         raise RuntimeError(f"{' '.join(map(str, cmd))} failed:\n{p.stderr}{p.stdout}")
     return p
@@ -77,7 +81,10 @@ def has_gdal_command(*words):
     """
     if shutil.which("gdal") is None:
         return False
-    return subprocess.run(["gdal", *words, "--help"], capture_output=True).returncode == 0
+    try:
+        return subprocess.run(["gdal", *words, "--help"], capture_output=True, timeout=60).returncode == 0
+    except subprocess.TimeoutExpired:
+        return False
 
 
 def gdal_can_open(path):
@@ -568,8 +575,11 @@ def main():
     args = p.parse_args()
     if int(gdal.VersionInfo("VERSION_NUM")) < 3130000:
         p.error("this complete vector-dataset suite requires GDAL >= 3.13")
-    if not (args.data / "las_vegas_roads.geojson").is_file():
-        p.error("needs las_vegas_roads.geojson (scripts/fetch_test_data.sh)")
+    needed = ("countries.gpkg", "UScounties.gpkg", "multi.gpkg", "TN_Counties.geojson",
+              "las_vegas_roads.geojson", "hike_gps_trace.csv", "ne_places/ne_10m_populated_places_simple.shp")
+    missing = [name for name in needed if not (args.data / name).is_file()]
+    if missing:
+        p.error("missing vector test data (scripts/fetch_test_data.sh): " + ", ".join(missing))
     # Both implementations must see the same installed datum grids. PROJ can
     # otherwise fetch a high-accuracy grid while Terrio uses an older cached one,
     # making a dataset-operation comparison measure unrelated grid availability.
@@ -592,6 +602,7 @@ def main():
     marker.write_text("Terrio vector dataset conformance scratch directory\n")
     t = args.terrio
     cases = []
+    skipped = []
 
     def case(c):
         cases.append(c)
@@ -687,7 +698,9 @@ def main():
                           ("LABELRANK", "Int16"), ("GDP_MD_EST", "Float32"), ("scalerank", "String"), ("scalerank", "Boolean")]:
         ref = work / f"sft-countries-ref-{fname}-{target}.gpkg"
         mine = work / f"sft-countries-{fname}-{target}.gpkg"
-        if run(["gdal", "vector", "set-field-type", data / "countries.gpkg", ref, "--field-name", fname, "--field-type", target, "--overwrite"], check=False).returncode:
+        reference = run(["gdal", "vector", "set-field-type", data / "countries.gpkg", ref, "--field-name", fname, "--field-type", target, "--overwrite"], check=False)
+        if reference.returncode:
+            case({"name": f"set-field-type-countries-{fname}-{target}", "status": DIFFERS, "detail": f"GDAL failed with exit {reference.returncode}: {reference.stderr[:500]}"})
             continue
         run([t, "set-field-type", data / "countries.gpkg", mine, "--field-name", fname, "--dst-field-type", target])
         case(compare_dumps(f"set-field-type-countries-{fname}-{target}", dump(mine), dump(ref), ignore_types=KNOWN_TYPES))
@@ -897,8 +910,12 @@ def main():
         mine = work / f"partition-{label}"
         p = run(["gdal", "vector", "partition", src, ref, *fmt, *opts], check=False)
         if p.returncode:
-            # GDAL 3.12 requires --field (3.13 accepts limits alone).
-            print(f"   GDAL refused partition-{label}: {p.stderr.strip()[:100]}", file=sys.stderr)
+            detail = f"GDAL failed with exit {p.returncode}: {p.stderr.strip()[:500]}"
+            if p.returncode == -11 and label in ("hive-max-size", "flat-max-size-geojson") and gdal.VersionInfo("RELEASE_NAME") == "3.13.3":
+                skipped.append({"name": f"partition-{label}", "detail": detail + " (known GDAL 3.13.3 max-file-size reference crash)"})
+                print(f"skipped partition-{label}: {skipped[-1]['detail']}", file=sys.stderr)
+            else:
+                case({"name": f"partition-{label}", "status": DIFFERS, "detail": detail})
             continue
         run([t, "partition", src, mine, *fmt, *opts])
         a, b = tree(mine), tree(ref)
@@ -915,7 +932,7 @@ def main():
         problems += worst[:3]
         case({"name": f"partition-{label}", "status": DIFFERS if problems else IDENTICAL, "detail": "; ".join(problems), "files": len(b)})
 
-    report = {"reference": "GDAL " + gdal.VersionInfo("RELEASE_NAME"), "datum_grid_policy": "Common installed PROJ grids; network off and per-user caches isolated", "cases": cases}
+    report = {"reference": "GDAL " + gdal.VersionInfo("RELEASE_NAME"), "datum_grid_policy": "Common installed PROJ grids; network off and per-user caches isolated", "cases": cases, "skipped": skipped}
     (args.json or work / "report.json").write_text(json.dumps(report, indent=2) + "\n")
 
 

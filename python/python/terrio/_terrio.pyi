@@ -1440,7 +1440,7 @@ def export_schema(src: Any, *, layers: list[str] | None = None) -> dict[str, Any
 def create_vector(
     dst: str,
     *,
-    schema: Mapping[str, Any] | str | None = None,
+    schema: Mapping[str, Any] | str | os.PathLike[str] | None = None,
     like: Any = None,
     layers: list[str] | None = None,
     output_layer: str | None = None,

@@ -21,6 +21,7 @@ formats, local or remote, without GDAL::
     dem = points.grid(1.0, stat="idw")  # a Raster
 """
 
+import sys as _sys
 from collections.abc import Iterator as _Iterator
 from typing import Any as _Any
 
@@ -202,11 +203,11 @@ __all__ = [
     "write_vector",
 ]
 
-try:
-    from terrio._terrio import partition
-except ImportError:
+if _sys.platform == "emscripten":
     # Native filesystem partitioning is absent from the Pyodide extension.
-    __all__.remove("partition")
+    __all__ = [name for name in __all__ if name != "partition"]
+else:
+    from terrio._terrio import partition as partition
 
 
 def iter_features(

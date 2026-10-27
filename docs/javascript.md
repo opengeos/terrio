@@ -275,6 +275,26 @@ writing files. `exportSchema` describes the layers read (GeoPackage column decla
 read only from files, by the command line, Python and Rust). See
 [Vector datasets](cli.md#vector-datasets) for the options and GDAL's rules.
 
+### Renaming and updating vector datasets
+
+`renameLayer(src, options)`, `editVector(src, options)` and
+`updateVector(src, dst, options)` return a new `Dataset`, preserving their inputs.
+Serialize the result with `toBytes` to persist it.
+
+```javascript
+const renamed = terrio.renameLayer(countries, {ascii: true, lowerCase: true});
+const assigned = terrio.editVector(renamed, {crs: "EPSG:4326"});
+const updated = terrio.updateVector(changes, renamed, {key: ["name"], mode: "merge"});
+```
+
+Rename accepts `inputLayer`, `outputLayer`, `ascii`, `lowerCase`,
+`filenameCompatible`, `reservedCharacters`, `replacementCharacter`, `maxLength`.
+Edit accepts `activeLayer`, `crs` (`"none"` removes it), `geometryType`, `unsetFid`.
+CRS assignment does not transform coordinates. Dataset metadata edits require the
+native path API because the memory model does not retain dataset metadata.
+Update accepts `inputLayer`, `outputLayer`, `key`, `mode` (`merge`, `update-only`,
+`append-only`); it matches feature IDs when `key` is omitted.
+
 ## Viewshed
 
 ```javascript
@@ -324,24 +344,3 @@ Optional `srs` defaults to EPSG:4326, `pixelOffset`/`lineOffset` to 0, and steps
 the explicit `geolocation` option supplies arrays for the first source. The operation remains
 pure Rust in full and core WASM builds. See [CLI warping](cli.md#warp) for invalid coordinates,
 antimeridian handling and boundary differences from GDAL.
-
-
-### Renaming and updating vector datasets
-
-`renameLayer(src, options)`, `editVector(src, options)` and
-`updateVector(src, dst, options)` return a new `Dataset`, preserving their inputs.
-Serialize the result with `toBytes` to persist it.
-
-```javascript
-const renamed = terrio.renameLayer(countries, {ascii: true, lowerCase: true});
-const assigned = terrio.editVector(renamed, {crs: "EPSG:4326"});
-const updated = terrio.updateVector(changes, renamed, {key: ["name"], mode: "merge"});
-```
-
-Rename accepts `inputLayer`, `outputLayer`, `ascii`, `lowerCase`,
-`filenameCompatible`, `reservedCharacters`, `replacementCharacter`, `maxLength`.
-Edit accepts `activeLayer`, `crs` (`"none"` removes it), `geometryType`, `unsetFid`.
-CRS assignment does not transform coordinates. Dataset metadata edits require the
-native path API because the memory model does not retain dataset metadata.
-Update accepts `inputLayer`, `outputLayer`, `key`, `mode` (`merge`, `update-only`,
-`append-only`); it matches feature IDs when `key` is omitted.
