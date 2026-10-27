@@ -341,9 +341,14 @@ fn tool_list() -> Vec<Value> {
         .map(|mut c| {
             let name = c.get_name().to_string();
             let ro = READ_ONLY.contains(&name.as_str());
+            let mut description = c.render_long_help().to_string().trim_end().to_string();
+            // The help offers `@FILE` input lists, which tool calls refuse (`expand_file_lists`).
+            if description.contains("`@FILE`") {
+                description.push_str("\n\nOver MCP, `@FILE` lists are refused: pass each input as an item of `args`.");
+            }
             json!({
                 "name": name,
-                "description": c.render_long_help().to_string().trim_end(),
+                "description": description,
                 "inputSchema": {
                     "type": "object",
                     "properties": {
