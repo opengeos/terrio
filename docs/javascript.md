@@ -316,7 +316,7 @@ const text = terrio.xyz(dem, { srcwin: [0, 0, 10, 10], skipNodata: true });
 ```
 
 Rasters are `Dataset`s (read by window) or file bytes. `compare` makes the binary comparison
-when both inputs are bytes; RPC sidecar metadata and subdatasets need files and are not compared
+when both inputs are bytes; GeoTIFF `TIFFTAG_*` items and RPC tags, `.aux.xml` metadata and subdatasets need files and are not compared
 in WebAssembly. `pixelInfo` takes `[x, y]`/`[x, y, text]` positions, or a vector dataset, file
 bytes or GeoJSON of points, and returns GeoJSON (an object), `json` (an array), or `csv`,
 `text` and `value` strings. `xyz` returns the text. See [compare](cli.md#compare),
