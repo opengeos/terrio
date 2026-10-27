@@ -445,13 +445,10 @@ fn file_lists_are_refused_without_reading_the_file() {
     // The tools whose help offers `@FILE` say that tool calls refuse it; the others do not mention it.
     let tools = replies[&2]["result"]["tools"].as_array().unwrap();
     let description = |name: &str| tools.iter().find(|t| t["name"] == name).unwrap()["description"].as_str().unwrap().to_string();
-    // (`filter merge` is reached through the `filter` tool, whose description lists subcommands.)
-    for name in ["mosaic", "warp", "concat"] {
+    // `filter merge` is reached through the `filter` tool, whose description lists subcommands.
+    for name in ["mosaic", "warp", "concat", "filter"] {
         let d = description(name);
-        assert!(
-            d.contains("`@FILE`") && d.ends_with("Over MCP, `@FILE` lists are refused: pass each input as an item of `args`."),
-            "{name}: {d}"
-        );
+        assert!(d.ends_with("Over MCP, `@FILE` lists are refused: pass each input as an item of `args`."), "{name}: {d}");
     }
     assert!(!description("info").contains("@FILE"));
     let result = &replies[&1]["result"];
