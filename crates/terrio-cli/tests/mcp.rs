@@ -361,11 +361,11 @@ fn vector_grid_and_lineref_tools_execute_the_cli() {
     .unwrap();
     let raster = dir.path().join("grid.tif");
     let line = dir.path().join("route.geojson");
-    std::fs::write(&line, r#"{"type":"FeatureCollection","features":[{"type":"Feature","properties":{},"geometry":{"type":"LineString","coordinates":[[0,0],[1000,0],[1000,1000]]}}]}"#).unwrap();
+    std::fs::write(&line, r#"{"type":"FeatureCollection","crs":{"type":"name","properties":{"name":"EPSG:3857"}},"features":[{"type":"Feature","properties":{},"geometry":{"type":"LineString","coordinates":[[0,0],[1000,0],[1000,1000]]}}]}"#).unwrap();
     let stones = dir.path().join("stones.geojson");
     std::fs::write(
         &stones,
-        r#"{"type":"FeatureCollection","features":[
+        r#"{"type":"FeatureCollection","crs":{"type":"name","properties":{"name":"EPSG:3857"}},"features":[
         {"type":"Feature","properties":{"pos":1200},"geometry":{"type":"Point","coordinates":[200,0]}},
         {"type":"Feature","properties":{"pos":2000},"geometry":{"type":"Point","coordinates":[1000,200]}}]}"#,
     )
@@ -390,6 +390,7 @@ fn vector_grid_and_lineref_tools_execute_the_cli() {
     assert_eq!(out.raster.get(0, 0, 0), 3.0);
     assert_eq!(out.raster.get(0, 1, 1), 2.0);
     assert_eq!(replies[&3]["result"]["isError"], false, "{}", replies[&3]);
+    assert!(!replies[&3].to_string().contains("could not be measured in UTM"));
     let replies = session(&[call(1, "lineref", &["get-pos", "--parts", &p(&parts), "-x", "100", "-y", "0"])]);
     let text = replies[&1]["result"]["content"][0]["text"].as_str().unwrap();
     assert!(text.contains("1086.956522"), "{text}");

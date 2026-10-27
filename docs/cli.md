@@ -1150,7 +1150,8 @@ the points strictly inside a rectangle (`-clipsrc`). `--ot` sets the type (Float
 
 NaN geometry Z values are skipped; NaN values supplied through `--zfield` can
 propagate into the result, matching GDAL 3.13.3. Input layers requested by name must
-all exist. GeoPackage layer names are case-insensitive; in-memory names are exact. Validating a file-stem alias can reread the source to confirm that it originally
+all exist. Native path-based GeoPackage selections are case-insensitive; in-memory and JavaScript
+byte/Dataset selections use exact names. Validating a file-stem alias can reread the source to confirm that it originally
 has only one layer; use the actual layer name to avoid that extra read on large inputs.
 
 Without a search radius, `invdist` visits all input points for each output cell;
@@ -1159,7 +1160,9 @@ is not bounded by a separate work budget. Use a smaller grid or an appropriate
 search radius for large inputs.
 
 `average-distance-points` evaluates every pair in each node's search neighborhood;
-work is quadratic in that neighborhood's point count. Limit the search radius for
+work is quadratic in that neighborhood's point count. Float32 and other typed outputs are converted from
+an f64 working grid, so both buffers can coexist (about 768 MiB for f64 plus Float32 at
+the 2^26-cell limit, before inputs and indexes). Limit the search radius for
 dense inputs.
 
 The algorithms are ported from GDAL 3.13's `gdalgrid.cpp`: the search ellipse and its

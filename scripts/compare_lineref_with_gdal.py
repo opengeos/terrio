@@ -21,16 +21,20 @@ from osgeo import ogr, osr
 ogr.UseExceptions()
 
 
-def run(cmd):
+def run(cmd, timeout=300):
     """Runs a command and returns its standard output.
 
     Args:
         cmd: The command and its arguments.
+        timeout: Maximum runtime in seconds.
 
     Returns:
         The standard output.
     """
-    p = subprocess.run(cmd, capture_output=True, text=True)
+    try:
+        p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(f"{' '.join(map(str, cmd))} timed out after {timeout}s") from exc
     if p.returncode != 0:
         raise RuntimeError(f"{' '.join(cmd)}\n{p.stdout}{p.stderr}")
     return p.stdout
@@ -194,6 +198,15 @@ def main():
         if not args.json:
             print(f"{status:9} {operation} {name}: {detail}", flush=True)
 
+    def compare_text(operation, name, gdal_cmd, terrio_cmd):
+        try:
+            g = run(gdal_cmd).strip()
+            t = run(terrio_cmd).strip()
+        except RuntimeError as exc:
+            report(operation, name, "differs", str(exc).splitlines()[-1])
+            return
+        report(operation, name, "identical" if g == t else "differs", t if g == t else f"{t}, GDAL {g}")
+
     try:
         for label, lines, points, step, gopts, topts in datasets(args.data, work):
             gparts, tparts = str(work / f"gdal_{label}.gpkg"), str(work / f"terrio_{label}.gpkg")
@@ -217,18 +230,14 @@ def main():
             if label == "geographic":
                 probes.append((-1.4345, 51.9497))
             for x, y in probes:
-                g = run(["ogrlineref", "-quiet", "-get_pos", "-r", gparts, "-x", repr(x), "-y", repr(y)]).strip()
-                t = run([args.terrio, "lineref", "get-pos", "--parts", gparts, "-x", repr(x), "-y", repr(y)]).strip()
-                report("get_pos", f"{label} ({x:.6f}, {y:.6f})", "identical" if g == t else "differs", t if g == t else f"{t}, GDAL {g}")
+                compare_text("get_pos", f"{label} ({x:.6f}, {y:.6f})", ["ogrlineref", "-quiet", "-get_pos", "-r", gparts, "-x", repr(x), "-y", repr(y)], [args.terrio, "lineref", "get-pos", "--parts", gparts, "-x", repr(x), "-y", repr(y)])
             begs = [f["beg"] for f, _ in parts]
             ends = [f["end"] for f, _ in parts]
             positions = [(b + e) / 2 for b, e in zip(begs, ends)] + [begs[0] + 0.25, ends[-1] - 0.5, 15977.724709]
             for m in positions:
                 if not begs[0] < m < ends[-1]:
                     continue
-                g = run(["ogrlineref", "-quiet", "-get_coord", "-r", gparts, "-m", repr(m)]).strip()
-                t = run([args.terrio, "lineref", "get-coord", "--parts", gparts, "-m", repr(m)]).strip()
-                report("get_coord", f"{label} {m:.6f}", "identical" if g == t else "differs", t if g == t else f"{t}, GDAL {g}")
+                compare_text("get_coord", f"{label} {m:.6f}", ["ogrlineref", "-quiet", "-get_coord", "-r", gparts, "-m", repr(m)], [args.terrio, "lineref", "get-coord", "--parts", gparts, "-m", repr(m)])
             for mb, me in [(13300, 17400), (begs[0] + 10, begs[0] + 20), (begs[1] + 1, ends[-2] - 1), (begs[2], ends[2])]:
                 gsub, tsub = str(work / f"gsub_{label}_{mb}.gpkg"), str(work / f"tsub_{label}_{mb}.gpkg")
                 try:
@@ -252,9 +261,17 @@ def main():
                         layer.SetFeature(feature)
                     dataset = None
                     m = (begs[0] + ends[0]) / 2
-                    g = run(["ogrlineref", "-quiet", "-get_coord", "-r", altered, "-m", repr(m)]).strip()
-                    t = run([args.terrio, "lineref", "get-coord", "--parts", altered, "-m", repr(m)]).strip()
-                    report("get_coord", f"{label} scale {scale_name}", "identical" if g == t else "differs", t if g == t else f"{t}, GDAL {g}")
+                    compare_text("get_coord", f"{label} scale {scale_name}", ["ogrlineref", "-quiet", "-get_coord", "-r", altered, "-m", repr(m)], [args.terrio, "lineref", "get-coord", "--parts", altered, "-m", repr(m)])
+                    if scale_name == "null":
+                        gsub = str(work / "gsub_null_scale.gpkg")
+                        tsub = str(work / "tsub_null_scale.gpkg")
+                        mb, me = begs[0] + 1, begs[0] + 2
+                        try:
+                            run(["ogrlineref", "-quiet", "-get_subline", "-r", altered, "-mb", repr(mb), "-me", repr(me), "-f", "GPKG", "-o", gsub])
+                            run([args.terrio, "lineref", "get-subline", "--parts", altered, "--begin", repr(mb), "--end", repr(me), tsub])
+                            report("get_subline", f"{label} null scale", *compare_layers(gsub, tsub, 1e-9))
+                        except RuntimeError as exc:
+                            report("get_subline", f"{label} null scale", "differs", str(exc).splitlines()[-1])
             if label == "projected":
                 # Preserve GDAL's skip behavior, including any gap in the selected parts.
                 malformed = str(work / "missing_middle.gpkg")

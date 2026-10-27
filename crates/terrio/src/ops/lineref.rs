@@ -330,6 +330,14 @@ fn as_double(v: Option<&FieldValue>) -> f64 {
     }
 }
 
+/// Scale attributes use OGR's numeric NULL-as-zero convention.
+fn part_scale(value: Option<&FieldValue>) -> f64 {
+    match value {
+        None | Some(FieldValue::Null) => 0.0,
+        value => as_double(value),
+    }
+}
+
 /// A field as OGR's `GetFieldAsString` writes it.
 fn as_string(v: Option<&FieldValue>) -> String {
     match v {
@@ -659,12 +667,15 @@ pub fn position(parts: &Layer, x: f64, y: f64) -> Result<f64> {
         let d = line.distance(&pt);
         if d < min {
             min = d;
-            closest = Some((line, as_double(f.attributes.get(b)), as_double(f.attributes.get(s))));
+            closest = Some((line, as_double(f.attributes.get(b)), part_scale(f.attributes.get(s))));
         }
     }
     let (line, beg, scale) = closest.ok_or_else(|| Error::InvalidArgument("failed to find the closest part".into()))?;
     if scale == 0.0 {
         return Err(Error::InvalidArgument("the closest part has a scale of 0".into()));
+    }
+    if !scale.is_finite() {
+        return Err(Error::InvalidArgument("the closest part has a non-finite scale".into()));
     }
     Ok(beg + line.project(&pt) / scale)
 }
@@ -688,12 +699,7 @@ pub fn coordinates(parts: &Layer, position: f64) -> Result<Vec<[f64; 3]>> {
         }
         let line = part_line(f.geometry.as_ref())
             .ok_or_else(|| Error::InvalidArgument("a part spanning the position has no single LineString geometry".into()))?;
-        // OGR GetFieldAsDouble reads a null scale as zero (milestone nulls use
-        // different handling, so do not change the shared conversion helper).
-        let scale = match f.attributes.get(s) {
-            None | Some(FieldValue::Null) => 0.0,
-            value => as_double(value),
-        };
+        let scale = part_scale(f.attributes.get(s));
         let pt = line.value((position - beg) * scale)?;
         out.push([pt.x, pt.y, pt.z]);
     }
@@ -723,7 +729,7 @@ pub fn subline(parts: &Layer, begin: f64, end: f64, layer_name: &str) -> Result<
             continue;
         }
         if let Some(line) = part_line(f.geometry.as_ref())
-            && chosen.insert(OrderedF64(fb), (line, as_double(f.attributes.get(s)))).is_some()
+            && chosen.insert(OrderedF64(fb), (line, part_scale(f.attributes.get(s)))).is_some()
         {
             return Err(Error::InvalidArgument(
                 "several parts have the same start position: select a single route before extracting a subline".into(),
@@ -842,6 +848,23 @@ mod tests {
             parts.features[0].attributes[2] = scale;
             assert_eq!(coordinates(&parts, 1250.).unwrap(), vec![[0.0, 0.0, 0.0]]);
         }
+    }
+
+    #[test]
+    fn position_rejects_null_and_nonfinite_scales() {
+        let (lines, repers) = layers();
+        let options = LineRefOptions { position_field: "pos".into(), step: 500., ..Default::default() };
+        let mut parts = create_reference(&lines, &repers, &options).unwrap();
+        for scale in [FieldValue::Null, FieldValue::Float(f64::NAN), FieldValue::Float(f64::INFINITY)] {
+            parts.features[0].attributes[2] = scale;
+            assert!(position(&parts, 100., 0.).is_err());
+        }
+        parts.features[0].attributes[2] = FieldValue::Null;
+        let output = subline(&parts, 1100., 1200., "null-scale").unwrap();
+        let Some(Geometry::LineString(points)) = &output.features[0].geometry else { panic!() };
+        // create_reference retains OGR's duplicate initial vertex.
+        assert_eq!(points.len(), 4);
+        assert!(points.iter().all(|point| point.x == 0.0 && point.y == 0.0));
     }
 
     #[test]
