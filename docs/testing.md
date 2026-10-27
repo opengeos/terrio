@@ -50,6 +50,7 @@ python scripts/conformance.py ../terrio-data --remote --strict     # remote COGs
 | Window and overview reads | `scripts/compare_windows_with_gdal.py` | every overview level of every GeoTIFF, local and remote over `/vsicurl/` |
 | Indexed raster catalogs | `scripts/compare_catalogs_with_gdal.py` | Real DEM mosaics in GeoPackage/FlatGeobuf indexes: z-order, nodata, masks, partial alpha, mixed CRS and Terrio-written indexes read by GDAL GTI; an 8x8 HTTP query from 1,002 features checks opens/cache bounds and actual bytes for both implementations |
 | Raster operations | `scripts/compare_ops_with_gdal.py` | translate, warp (all resampling methods), mosaic and VRT against `gdal_translate`, `gdalwarp`, `gdalbuildvrt`, `gdal_merge.py` |
+| Raster comparison, pixel queries, XYZ | `scripts/compare_raster_query_with_gdal.py` | `terrio compare` vs `gdal raster compare` (report lines and exit status), `terrio pixel-info` vs `gdal raster pixel-info` (GeoJSON, CSV) and `gdallocationinfo` (text, `-valonly`), `terrio xyz` vs `gdal2xyz.py`, on real rasters and derived copies. Registered in conformance as `raster-query`. |
 | Pixel-wise raster commands | `scripts/compare_raster_pixel_with_gdal.py` | `gdal raster unscale`, `nodata-to-alpha`, `reclassify` (inline and `@file` mappings, ranges, `NO_DATA`, `NAN`, `DEFAULT`, `PASS_THROUGH`, `--ot`) and `as-features` (polygons, points, tables, `--skip-nodata`, `--include-xy`, `--include-row-col`) on USGS, Landsat, ECOSTRESS, NLCD and Sentinel-5P data: size, type, nodata, CRS, color interpretations, scales and every pixel, or every feature's fields and vertices. Registered in conformance as `raster-pixel`. |
 | Focal statistics, collars, enhancement | `scripts/compare_focal_with_gdal.py` | `gdal raster neighbors` (every kernel and method, matrices, types, nodata, the whole USGS DEM in strips), `nearblack` and `gdal raster clean-collar` (both algorithms, colors, thresholds, distances, alpha, masks, in-place updates) and `gdalenhance` (equalization, LUT file output and input) on Sentinel-2, Landsat 7 and USGS data: pixels, masks, type, nodata, geotransform, LUT text |
 | Vector operations | `scripts/compare_vector_ops_with_gdal.py` | `ogr2ogr` filters, `gdal_rasterize` and `gdal_polygonize.py` |
@@ -71,6 +72,12 @@ python scripts/conformance.py ../terrio-data --remote --strict     # remote COGs
 | Chains through intermediate datums | `crates/terrio-crs/tests/crs_chains.rs`, `scripts/compare_chains_with_proj.py` | every pair of EPSG geographic 2D CRSs on two datums no transformation links directly whose areas overlap, and a projected CRS of each datum, without and with grids, vs GDAL |
 | Datum shift grids, geoid models, epochs | `crates/terrio-crs/tests/epsg_accuracy_grids.rs`, `crates/terrio-crs/tests/crs_grids.rs`, `scripts/compare_crs_grids_with_gdal.py` | the same EPSG points with the grids of `scripts/proj_grids.txt`; random points through every grid (forward and inverse), legacy NTv2 and GTX files, NADCON5 and geocentric grids, compound CRSs and coordinate epochs, vs GDAL with the same grids |
 
+A local HTTP check of XYZ `--skip 64` on the 51,486,544-byte USGS GeoTIFF
+transferred 38,248,272 bytes in 9 requests before and after block-aware sampling.
+All 3,249 output lines were byte-identical. One run of each optimized CLI took
+3.89 s before and 1.07 s after; these are local observations rather than a timing
+threshold in the test suite.
+
 ## Results
 
 The [Conformance](conformance.md) page has the full, generated results; in short:
@@ -91,6 +98,7 @@ The [Conformance](conformance.md) page has the full, generated results; in short
 | Histograms | 84 of 84 cases identical to `gdalinfo -hist` (21 rasters of every type) |
 | `calc` | 35 of 37 cases identical; the other two within one float32 rounding step (NumPy's vectorized float32 `sin`, `exp`, `log10`, `arctan2`) |
 | `proximity`, `sieve` | 13 of 13 cases identical |
+| `compare`, `pixel-info`, `xyz` | GDAL 3.13.3: compare 20 of 21 and xyz 11 text cases identical, plus one shared refusal of non-finite integer nodata; one documented mask-count report difference; pixel-info 64 of 67 identical, 3 within 4e-14 relative (projection arithmetic, one scale/offset ULP) |
 | `unscale`, `nodata-to-alpha`, `reclassify`, `as-features` | 30 of 31 cases identical to GDAL 3.13.3's `gdal raster` commands (pixels or features, types, nodata, CRS, color interpretations, scales and affine transforms); the Sentinel-5P case has identical pixels and metadata but a known default-grid difference (reported as within tolerance). An unexpected affine transform fails comparison. Known differences: netCDF default geotransform, selected bands vs GDAL reporting all bands, default layer names, unsupported as-features update/layer options and nodata-to-alpha masks (see [CLI scope](cli.md#as-features)); a missing reference netCDF driver is an explicit case error, and repeated bands, Float32 nodata-adjacent samples, packed grayscale color interpretations, Float64 input converted to Float32 working pixels, and OGR field types are covered. |
 | `neighbors`, `nearblack`/`clean-collar`, `enhance` | 103 of 103 cases identical (27, 58 and 18) to `gdal raster neighbors`, `nearblack`, `gdal raster clean-collar` and `gdalenhance`, pixels and masks; one in-place alpha case compared with GDAL's new-file output (GDAL writes stale alpha values) |
 | STAC and GeoZarr | 16 of 16 STAC checks (subdatasets, mosaics and windows identical to GDAL STACIT's, 328 footprint fields as `ogrinfo`'s), 99 of 99 STACTA checks (summaries, subdatasets and metadata as `gdalinfo`'s; whole rasters, windows and every overview identical to GDAL STACTA's on its 7 test items and on `gdal raster tile` pyramids of a DEM and a Landsat scene, local, over HTTP and with a missing tile) and 60 of 60 GeoZarr checks |
@@ -590,7 +598,6 @@ the original JSON definitions. Rust regressions also
 check file loading, malformed/unsupported definitions, wrong units/dimensions,
 and that a root authority ID cannot overwrite a caller's false easting.
 
-
 ## IAU_2015 authority support (#271)
 
 `iau-source.json` records the registry version, PROJ source revision and
@@ -633,7 +640,6 @@ planetocentric latitude conversion and rejection of Earth datum operations on
 planetary coordinates. The numerical fixes use PROJ's sixth-order meridian
 series, inverse authalic-latitude refinement and inverse normalization order;
 the copied formulas and tables are attributed in `NOTICE`.
-
 
 The sixth-order meridian series also changes Earth calculations. A WGS 84
 latitude sweep from -90 to 90 degrees in 0.001-degree increments, comparing
@@ -732,6 +738,16 @@ python scripts/conformance.py ../terrio-data --only lazy-geotiff --strict
 `LazyRaster::rpc`, `file_list` and `sample_bits` are Rust APIs. Python and
 JavaScript exposure of these additional lazy-reader facts remains follow-up
 work; the existing bindings retain their behavior.
+
+## Raster query I/O (#289)
+
+A before/after local HTTP range-server probe uses the real 610,612-byte `cog.tif` fixture.
+Ordinary lazy info opens use one request and 65,536 served body bytes in both builds.
+Comparison of two distinct URLs for the same raster uses four requests and 1,221,224 bytes;
+XYZ export with skip 3 uses two requests and 610,612 bytes. Reports and XYZ text agree in
+the two builds. These are measurements for this fixture, not a claim for every raster.
+Comparison-only out-of-line TIFF tags are now read by the comparison helper; ordinary lazy
+opens do not fetch them. Comparison and XYZ strips reuse the shared block-aligned row sizing.
 
 ## Vector dataset commands (#289)
 

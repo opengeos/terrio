@@ -171,7 +171,6 @@ node js/bench/bench.mjs ../terrio-data    # timings of decoding and writing real
 See [Native multidimensional arrays](multidim.md) for scientific groups, named dimensions,
 lazy coordinate arrays, time/depth slicing, transposition and netCDF/Zarr numeric snapshots.
 
-
 ## Indexed raster catalogs
 
 `openCatalog(index, sources, options)` opens an index `Dataset`, vector file bytes or GeoJSON,
@@ -325,6 +324,33 @@ Linear reference lookups accept `{layer: "parts"}` to select a source layer.
 
 Reuse a Dataset, such as `terrio.open(bytes, "parts.gpkg")`, for repeated lookups; serialized
 bytes and GeoJSON are parsed on each call.
+
+
+## Compare, pixel info and XYZ
+
+```javascript
+const report = terrio.compare(reference, output, { skipBinary: true });
+console.log(report.difference_count, report.bands[0].pixels_differing, report.bands[0].max_abs_diff);
+const values = terrio.pixelInfo(dem, [[-105.5, 39.5, "site A"]], { positionCrs: "EPSG:4326", resampling: "bilinear" });
+const fromPoints = terrio.pixelInfo(dem, sitesGeoJSON, { format: "json" });
+const text = terrio.xyz(dem, { srcwin: [0, 0, 10, 10], skipNodata: true });
+```
+
+Rasters are `Dataset`s (read by window) or file bytes. `compare` makes the binary comparison
+when both inputs are bytes; GeoTIFF `TIFFTAG_*` items and RPC tags, `.aux.xml` metadata and subdatasets need files and are not compared
+in WebAssembly. `pixelInfo` takes `[x, y]`/`[x, y, text]` positions, or a vector dataset, file
+bytes or GeoJSON of points, and returns GeoJSON (an object), `json` (an array), or `csv`,
+`text` and `value` strings. `xyz` returns the text. See [compare](cli.md#compare),
+[pixel-info](cli.md#pixel-info) and [xyz](cli.md#xyz).
+
+`pixelInfo(src, positions, {format: "value", fieldSep: "|"})` selects the
+separator between band values. For vector file bytes, pass the GeoJSON result to
+`fromGeoJSON` and serialize that Dataset with `toBytes`.
+
+`xyz` returns the complete text as one JavaScript string. Use `srcwin`/`skip` for large
+XYZ exports. Native Rust XYZ writers stream the output. Byte-based `compare` copies each
+input once and reuses that buffer for binary comparison and lazy reads.
+
 
 ## Pixel-wise operations
 

@@ -31,6 +31,7 @@
 
 pub mod as_features;
 pub mod calc;
+pub mod compare;
 pub mod concat;
 pub mod contour;
 pub mod dem;
@@ -51,6 +52,7 @@ pub mod pansharpen;
 pub mod partition;
 
 pub mod pixel;
+pub mod pixel_info;
 pub mod polygonize;
 pub mod proximity;
 pub mod rasterize;
@@ -70,6 +72,7 @@ pub mod vector_schema;
 pub mod viewshed;
 pub mod vrt;
 pub mod warp;
+pub mod xyz;
 pub mod zonal;
 
 use crate::crs::SpatialRef;

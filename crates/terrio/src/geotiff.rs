@@ -52,6 +52,12 @@ pub(crate) struct GeoTags {
     pub unreadable_method: Option<u16>,
     /// The 92 values of the `RPCCoefficientTag`.
     pub rpc: Option<Vec<f64>>,
+    /// The baseline TIFF tags GDAL lists as `TIFFTAG_*` dataset metadata (`TIFFTAG_SOFTWARE`,
+    /// `TIFFTAG_XRESOLUTION`...), formatted as GDAL formats them.
+    pub tiff_tag_items: Vec<(String, String)>,
+    /// The `OVERVIEW_RESAMPLING` item of the `IMAGE_STRUCTURE` domain (COGs), which GDAL reports
+    /// as the `RESAMPLING` metadata of overview bands.
+    pub overview_resampling: Option<String>,
 }
 
 impl GeoTags {
@@ -73,6 +79,22 @@ enum Values {
     Ascii(String),
 }
 
+/// The ASCII baseline tags GDAL reports as `TIFFTAG_*` metadata, in its order.
+const ASCII_TAGS: [(u16, &str); 7] = [
+    (269, "TIFFTAG_DOCUMENTNAME"),
+    (270, "TIFFTAG_IMAGEDESCRIPTION"),
+    (305, "TIFFTAG_SOFTWARE"),
+    (306, "TIFFTAG_DATETIME"),
+    (315, "TIFFTAG_ARTIST"),
+    (316, "TIFFTAG_HOSTCOMPUTER"),
+    (33432, "TIFFTAG_COPYRIGHT"),
+];
+const X_RESOLUTION: u16 = 282;
+const Y_RESOLUTION: u16 = 283;
+const RESOLUTION_UNIT: u16 = 296;
+const MIN_SAMPLE_VALUE: u16 = 280;
+const MAX_SAMPLE_VALUE: u16 = 281;
+
 /// The most images (IFDs) looked at for palette images.
 const MAX_IFDS: usize = 1024;
 
@@ -84,7 +106,16 @@ pub(crate) fn read_geo_tags(path: &std::path::Path) -> Option<GeoTags> {
 
 /// Reads the georeferencing tags of a TIFF stream's first image, and finds the palette images
 /// among all its images. Returns `None` when the stream is not a TIFF.
-pub(crate) fn read_geo_tags_from<R: Read + Seek>(mut f: R) -> Option<GeoTags> {
+pub(crate) fn read_geo_tags_from<R: Read + Seek>(f: R) -> Option<GeoTags> {
+    read_geo_tags_impl(f, false)
+}
+
+/// Comparison-only TIFF metadata; ordinary lazy opens avoid its out-of-line reads.
+pub(crate) fn read_compare_geo_tags(path: &std::path::Path) -> Option<GeoTags> {
+    read_geo_tags_impl(std::io::BufReader::new(std::fs::File::open(path).ok()?), true)
+}
+
+fn read_geo_tags_impl<R: Read + Seek>(mut f: R, compare_metadata: bool) -> Option<GeoTags> {
     let mut header = [0u8; 16];
     f.read_exact(&mut header[..8]).ok()?;
     let le = match &header[..2] {
@@ -156,7 +187,25 @@ pub(crate) fn read_geo_tags_from<R: Read + Seek>(mut f: R) -> Option<GeoTags> {
                 | GDAL_METADATA
                 | GDAL_NODATA
                 | RPC_COEFFICIENTS
+                | 269
+                | 270
+                | 305
+                | 306
+                | 315
+                | 316
+                | 33432
+                | X_RESOLUTION
+                | Y_RESOLUTION
+                | RESOLUTION_UNIT
+                | MIN_SAMPLE_VALUE
+                | MAX_SAMPLE_VALUE
         ) {
+            continue;
+        }
+        if !compare_metadata
+            && (ASCII_TAGS.iter().any(|(extra, _)| *extra == tag)
+                || matches!(tag, X_RESOLUTION | Y_RESOLUTION | RESOLUTION_UNIT | MIN_SAMPLE_VALUE | MAX_SAMPLE_VALUE))
+        {
             continue;
         }
         let typ = u16_at(&e[2..4]);
@@ -165,6 +214,7 @@ pub(crate) fn read_geo_tags_from<R: Read + Seek>(mut f: R) -> Option<GeoTags> {
         let size = match typ {
             2 => 1,  // ASCII
             3 => 2,  // SHORT
+            5 => 8,  // RATIONAL
             12 => 8, // DOUBLE
             _ => continue,
         };
@@ -186,6 +236,8 @@ pub(crate) fn read_geo_tags_from<R: Read + Seek>(mut f: R) -> Option<GeoTags> {
         let values = match typ {
             2 => Values::Ascii(String::from_utf8_lossy(&data).trim_end_matches('\0').to_string()),
             3 => Values::Shorts(data.chunks(2).map(u16_at).collect()),
+            // A zero denominator gives a non-finite value, which is not reported.
+            5 => Values::Doubles(data.as_chunks::<8>().0.iter().map(|c| f64::from(u32_at(&c[..4])) / f64::from(u32_at(&c[4..]))).collect()),
             _ => Values::Doubles(data.chunks(8).map(|c| f64::from_bits(u64_at(c))).collect()),
         };
         tags.push((tag, values));
@@ -296,6 +348,42 @@ pub(crate) fn read_geo_tags_from<R: Read + Seek>(mut f: R) -> Option<GeoTags> {
         // A negative Y scale is taken as positive, as GDAL does: the image is north-up.
         let sy = scale[1].abs();
         out.geo_transform = Some([x - i * scale[0], scale[0], 0.0, y + j * sy, 0.0, -sy]);
+    }
+    if compare_metadata {
+        for (tag, name) in ASCII_TAGS {
+            if let Some(v) = ascii(tag) {
+                out.tiff_tag_items.push((name.to_string(), v.to_string()));
+            }
+        }
+        let first = |t: u16| doubles(t).and_then(|d| d.first()).copied();
+        if let (Some(x), Some(y)) = (first(X_RESOLUTION), first(Y_RESOLUTION))
+            && x.is_finite()
+            && y.is_finite()
+        {
+            // libtiff holds resolutions as floats.
+            let g8 = |v: f64| crate::drivers::common::fmt_g(f64::from(v as f32), 8);
+            out.tiff_tag_items.push(("TIFFTAG_XRESOLUTION".into(), g8(x)));
+            out.tiff_tag_items.push(("TIFFTAG_YRESOLUTION".into(), g8(y)));
+            let unit = shorts(RESOLUTION_UNIT).and_then(|s| s.first()).copied().unwrap_or(2);
+            let name = match unit {
+                1 => "unitless",
+                2 => "pixels/inch",
+                3 => "pixels/cm",
+                _ => "unknown",
+            };
+            out.tiff_tag_items.push(("TIFFTAG_RESOLUTIONUNIT".into(), format!("{unit} ({name})")));
+        }
+        for (tag, name) in [(MIN_SAMPLE_VALUE, "TIFFTAG_MINSAMPLEVALUE"), (MAX_SAMPLE_VALUE, "TIFFTAG_MAXSAMPLEVALUE")] {
+            if let Some(v) = shorts(tag).and_then(|s| s.first()) {
+                out.tiff_tag_items.push((name.to_string(), v.to_string()));
+            }
+        }
+        out.overview_resampling = ascii(GDAL_METADATA).and_then(|xml| {
+            crate::drivers::gtiff_write::gdal_metadata_items(xml)
+                .into_iter()
+                .find(|i| i.attr("domain") == Some("IMAGE_STRUCTURE") && i.attr("name") == Some("OVERVIEW_RESAMPLING"))
+                .map(|i| i.text.trim().to_string())
+        });
     }
     out.rpc = doubles(RPC_COEFFICIENTS).filter(|v| v.len() == 92).map(<[f64]>::to_vec);
     out.nodata = ascii(GDAL_NODATA).and_then(|s| parse_nodata(s.trim()));
