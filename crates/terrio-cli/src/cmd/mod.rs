@@ -60,9 +60,14 @@ pub fn quiet<T>(f: impl FnOnce() -> T) -> T {
     f()
 }
 
+/// The largest file list [`expand_file_lists`] reads: about a million paths.
+pub const MAX_FILE_LIST: u64 = 64 << 20;
+
 /// The inputs with each `@FILE` replaced by the paths listed in `FILE`, one per line, as GDAL's
 /// commands read `--input @filelist.txt`. Lines are trimmed and blank lines skipped; listed paths
-/// are taken as written (relative ones from the working directory), not expanded again.
+/// are taken as written (relative ones from the working directory), not expanded again. A list
+/// must be a regular file of at most [`MAX_FILE_LIST`] bytes, so that `@/dev/zero` or a huge file
+/// (named by an MCP client, say) is refused instead of read without end.
 pub fn expand_file_lists(inputs: &[String]) -> terrio::Result<Vec<String>> {
     let mut out = Vec::with_capacity(inputs.len());
     for input in inputs {
@@ -70,8 +75,15 @@ pub fn expand_file_lists(inputs: &[String]) -> terrio::Result<Vec<String>> {
             out.push(input.clone());
             continue;
         };
-        let text =
-            std::fs::read_to_string(list).map_err(|e| terrio::Error::InvalidArgument(format!("cannot read the file list {list}: {e}")))?;
+        let unreadable = |e: &dyn std::fmt::Display| terrio::Error::InvalidArgument(format!("cannot read the file list {list}: {e}"));
+        let meta = std::fs::metadata(list).map_err(|e| unreadable(&e))?;
+        if !meta.is_file() {
+            return Err(unreadable(&"not a regular file"));
+        }
+        if meta.len() > MAX_FILE_LIST {
+            return Err(unreadable(&format_args!("larger than {} MiB", MAX_FILE_LIST >> 20)));
+        }
+        let text = std::fs::read_to_string(list).map_err(|e| unreadable(&e))?;
         let before = out.len();
         let text = text.strip_prefix('\u{feff}').unwrap_or(&text);
         out.extend(text.lines().map(str::trim).filter(|l| !l.is_empty()).map(String::from));

@@ -78,8 +78,10 @@ option list.
 The commands that take any number of inputs (`mosaic`, `warp`, `concat` and `filter merge`) read
 them from a file too, as GDAL's `--input @filelist.txt` does: `@FILE` stands for the paths
 listed in FILE, one per line, with relative paths taken from the working directory. Unlike GDAL
-3.13, which opens each line as written and fails on a blank line, terrio skips blank lines and
-trims whitespace and a byte-order mark around paths. Lists mix with paths given directly:
+3.13, which opens each line as written and fails on a blank line, terrio skips blank lines, trims
+whitespace around paths and ignores a byte-order mark at the start of the file. A list must be a
+regular file of at most 64 MiB. As in GDAL, every input beginning with `@` is read as a list:
+name a file whose name begins with `@` as `./@name.tif`. Lists mix with paths given directly:
 
 ```sh
 terrio mosaic @filelist.txt naip.vrt

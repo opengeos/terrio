@@ -6,7 +6,8 @@
 
 - `mosaic`, `warp`, `concat` and `filter merge` read inputs from a file list:
   `@FILE` stands for the paths listed in FILE, one per line, as GDAL's
-  `--input @filelist.txt` does (#323).
+  `--input @filelist.txt` does (#323). An input beginning with `@` is now
+  always a list; write `./@name.tif` for a file whose name begins with `@`.
 
 ### CRS compatibility
 

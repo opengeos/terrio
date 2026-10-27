@@ -73,13 +73,28 @@ fn bad_file_lists_are_usage_errors() {
     let d = tmp.path();
     tile(d, "a.tif", 0., 1.);
     std::fs::write(d.join("empty.txt"), "\n  \n").unwrap();
-    for (list, message) in
-        [("@missing.txt", "cannot read the file list missing.txt"), ("@empty.txt", "the file list empty.txt names no inputs")]
-    {
+    std::fs::create_dir(d.join("folder")).unwrap();
+    // Sparse, so the test writes no 64 MiB.
+    std::fs::File::create(d.join("huge.txt")).unwrap().set_len((64 << 20) + 1).unwrap();
+    for (list, message) in [
+        ("@missing.txt", "cannot read the file list missing.txt"),
+        ("@empty.txt", "the file list empty.txt names no inputs"),
+        ("@folder", "cannot read the file list folder: not a regular file"),
+        ("@huge.txt", "cannot read the file list huge.txt: larger than 64 MiB"),
+    ] {
         let r = run(&["mosaic", list, "out.tif"], d);
         assert!(!r.status.success());
         let stderr = String::from_utf8_lossy(&r.stderr);
         assert!(stderr.contains(message), "{stderr}");
     }
     assert!(!d.join("out.tif").exists());
+}
+
+#[test]
+fn a_file_whose_name_begins_with_at_is_named_with_a_directory() {
+    let tmp = tempfile::tempdir().unwrap();
+    let d = tmp.path();
+    tile(d, "@a.tif", 0., 1.);
+    ok(&["mosaic", "./@a.tif", "out.tif"], d);
+    assert_eq!(pixels(&d.join("out.tif")).2, vec![1.; 4]);
 }
