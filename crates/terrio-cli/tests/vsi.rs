@@ -294,6 +294,11 @@ fn copies_lists_syncs_and_deletes_on_s3() {
     ok(&endpoint, d, &["vsi", "move", "s3://bkt/synced", "s3://bkt/moved", "-q"]);
     assert!(!keys(&store).iter().any(|k| k.starts_with("bkt/synced/")));
     assert!(keys(&store).contains(&"bkt/moved/a/y.txt".to_string()));
+    // Not onto an object: the key would name both a file and a directory, as no local move can.
+    store.lock().unwrap().objects.insert("bkt/object".into(), (b"o".to_vec(), 1));
+    assert!(!terrio(&endpoint, d, &["vsi", "move", "s3://bkt/moved", "s3://bkt/object"]).status.success());
+    assert!(keys(&store).contains(&"bkt/moved/a/y.txt".to_string()));
+    assert!(!keys(&store).iter().any(|k| k.starts_with("bkt/object/")));
 
     // Deletion: refused without -r for a prefix, then only below `dir/`.
     let refused = terrio(&endpoint, d, &["vsi", "delete", "s3://bkt/dir"]);
