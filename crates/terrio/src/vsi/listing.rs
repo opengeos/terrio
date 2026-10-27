@@ -589,9 +589,9 @@ impl RemoteLister {
             {
                 return Err(Error::InvalidArgument("invalid S3 bucket name in remote listing URL".into()));
             }
-            format!("https://{bucket}.s3.amazonaws.com/{key}")
+            format!("https://{bucket}.s3.amazonaws.com/{}", key.replace('?', "%3F"))
         } else if let Some(rest) = url.strip_prefix("gs://").or_else(|| url.strip_prefix("/vsigs/")) {
-            format!("https://storage.googleapis.com/{rest}")
+            format!("https://storage.googleapis.com/{}", rest.replace('?', "%3F"))
         } else if let Some(rest) = url.strip_prefix("az://").or_else(|| url.strip_prefix("/vsiaz/")) {
             let (account, path) = rest.split_once('/').unwrap_or((rest, ""));
             if !(3..=24).contains(&account.len()) || !account.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit()) {
@@ -759,6 +759,15 @@ mod tests {
         lister.pages = super::MAX_PAGES - 1;
         assert!(lister.next_url().is_some());
         assert!(lister.feed(200, b"<ListBucketResult><IsTruncated>true</IsTruncated><NextContinuationToken>more</NextContinuationToken></ListBucketResult>").is_err());
+    }
+
+    #[test]
+    fn question_mark_in_a_cloud_key_stays_in_the_prefix() {
+        for url in ["s3://bucket/a?b", "gs://bucket/a?b"] {
+            let lister = super::RemoteLister::new(url, false, None).unwrap();
+            let request = lister.api.request_url(None, false).unwrap();
+            assert!(request.contains("prefix=a%3Fb%2F"), "{url}: {request}");
+        }
     }
 
     use super::*;
