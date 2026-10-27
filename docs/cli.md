@@ -1916,9 +1916,23 @@ attributes. The containing directory must be writable. The TIFF is committed bef
 its histogram or external-overview sidecar: a later sidecar error can leave the TIFF
 updated with an unchanged sidecar.
 
-Building overviews reads the whole full-resolution image, and its mask, into memory
-once, shared by every level computed from it: memory grows with the raster. Partial
-refreshes (`--refresh --bbox`) keep window reads. Overview and raster-update
+Building or wholly refreshing overviews reads the full-resolution sources the levels need
+(the image, its mask, or both) once, forward, in full-width strips of whole blocks (about
+64 MB of values at a time, and at least a row of blocks, which on very wide tiled rasters is
+larger). Every level computed from full resolution is computed in that
+pass: in GDAL's chunks of rows (`GDALRegenerateOverviewsEx`, 5 to 10 MB of values per
+band), or in strips holding every source window (`GDALRegenerateOverviewsMultiBand`'s
+schedule), with the pixels of a whole read. A level computed from the previous one reads
+that level, held in memory. Memory is therefore bounded by a read strip, a chunk and the
+levels: the first level (a quarter of the pixels for factor 2) and the one being computed,
+or every level at once (about a third of the pixels for 2, 4, 8...) when GDAL computes
+each from full resolution. That is the case for nearest overviews, and overviews of rasters
+with a mask, which GDAL computes band by band: planar images, and uncompressed external
+overviews of images without an alpha band. A striped TIFF is read in whole strips, so a
+raster stored as a single strip is read whole. On a 16384x16384 Float32 DEM, five internal
+levels peaked at 478 MiB instead of 4.1 GiB. Partial refreshes (`--refresh --bbox`,
+`--like`) read the full-width rows over their region, and the whole image once when the
+region spans its height. Overview and raster-update
 arithmetic uses Float64 and warns for Int64/UInt64: values above 2^53 may lose precision,
 including nearest/mode overviews. Raster update holds the warped window and the full
 width of the destination rows it rewrites in memory.
