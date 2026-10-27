@@ -456,6 +456,22 @@ fn signed_file_tree_names_and_recursive_single_object_refusal() {
 }
 
 #[test]
+fn recursive_delete_of_an_object_that_is_also_a_prefix_removes_both() {
+    let (endpoint, store) = serve();
+    let tmp = tempfile::tempdir().unwrap();
+    {
+        let mut s = store.lock().unwrap();
+        s.objects.insert("bkt/x".into(), (b"object".to_vec(), 1));
+        s.objects.insert("bkt/x/child".into(), (b"child".to_vec(), 1));
+    }
+    let deleted = ok(&endpoint, tmp.path(), &["vsi", "delete", "-r", "--json", "s3://bkt/x"]);
+    assert_eq!(serde_json::from_str::<serde_json::Value>(&deleted).unwrap()["deleted"], 2);
+    let s = store.lock().unwrap();
+    assert!(!s.objects.contains_key("bkt/x"));
+    assert!(!s.objects.contains_key("bkt/x/child"));
+}
+
+#[test]
 fn missing_destination_directory_error_names_the_missing_directory() {
     let tmp = tempfile::tempdir().unwrap();
     let source = tmp.path().join("source");

@@ -867,6 +867,48 @@ fn nested_http_listing_failure_redacts_query_credentials() {
 }
 
 #[test]
+fn html_listing_keeps_query_out_of_subdirectory_urls() {
+    use std::io::{BufRead, BufReader};
+    let _cache = HtmlCacheScope::new();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let base = format!("http://{}/root", listener.local_addr().unwrap());
+    let server = std::thread::spawn(move || {
+        let mut targets = Vec::new();
+        for stream in listener.incoming().take(2) {
+            let mut stream = stream.unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut request = String::new();
+            reader.read_line(&mut request).unwrap();
+            loop {
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                if line == "\r\n" || line.is_empty() {
+                    break;
+                }
+            }
+            let target = request.split_whitespace().nth(1).unwrap_or("").to_string();
+            let body = if target.starts_with("/root/sub/?") {
+                "<title>Index of /root/sub/</title><a href='child.tif'>child.tif</a>"
+            } else {
+                "<title>Index of /root/</title><a href='sub/'>sub</a>"
+            };
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            )
+            .unwrap();
+            targets.push(target);
+        }
+        targets
+    });
+    let entries = remote_read_dir(&Node::Url { base, query: "sig=TEST_QUERY".into() }, 2).unwrap();
+    let targets = server.join().unwrap();
+    assert_eq!(targets, ["/root/?sig=TEST_QUERY", "/root/sub/?sig=TEST_QUERY"]);
+    assert!(names(&entries).contains(&"sub/child.tif".to_string()), "{:?}", names(&entries));
+}
+
+#[test]
 fn recursive_copy_preserves_filesystem_error_kind() {
     let (tmp, source) = tree();
     let destination = tmp.path().join("out");
@@ -897,6 +939,14 @@ fn uploads_preserve_colons_and_remote_backslashes() {
     assert!(source.join("x.txt").exists());
     assert!(!source.join("nested").exists());
     drop(tmp);
+}
+
+#[test]
+fn memory_paths_refuse_parent_segments() {
+    for p in ["/vsimem/a/../b", "/vsimem/../b", "/vsimem/a/.."] {
+        assert!(Node::parse(p).is_err(), "{p}");
+    }
+    assert!(matches!(Node::parse("/vsimem/a/./b"), Ok(Node::Mem(k)) if k == "/vsimem/a/b"));
 }
 
 #[test]

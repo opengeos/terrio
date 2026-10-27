@@ -274,6 +274,10 @@ impl Node {
             return Ok(Node::Archive { archive: Box::new(archive), kind, inner });
         }
         if input == "/vsimem" || input.starts_with("/vsimem/") {
+            // Not resolved: `/vsimem` has no parent to pop to, and a literal `..` key is unreachable.
+            if input.split('/').any(|p| p == "..") {
+                return Err(Error::InvalidArgument(format!("'{shown}': refusing dot segments in a /vsimem path")));
+            }
             return Ok(Node::Mem(normalize_mem(input)));
         }
         if input.starts_with("/vsi") && !["/vsicurl/", "/vsis3/", "/vsigs/", "/vsiaz/"].iter().any(|p| input.starts_with(p)) {
@@ -1936,6 +1940,11 @@ pub fn delete(path: &str, recursive: bool) -> Result<Report> {
         for marker in markers {
             delete_file(&Node::S3 { bucket: bucket.clone(), key: marker })?;
         }
+    }
+    // An object that also has keys below it: the children are gone, so the object goes last.
+    if !stat.dir {
+        delete_file(&node)?;
+        report.deleted += 1;
     }
     Ok(report)
 }

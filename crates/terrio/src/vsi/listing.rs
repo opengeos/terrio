@@ -614,14 +614,19 @@ impl RemoteLister {
         }
         if let Api::Html { url } = &self.api {
             let (rel, level) = self.html_current.take().unwrap_or_default();
-            let page_url = if rel.is_empty() { url.clone() } else { format!("{}/{rel}", url.trim_end_matches('/')) };
+            // The query belongs after the directory, so it is kept out of the walked path and
+            // re-appended to each subdirectory URL.
+            let (base, query) = url.split_once('?').map_or((url.as_str(), ""), |(b, q)| (b, q));
+            let base = base.trim_end_matches('/');
+            let query = if query.is_empty() { String::new() } else { format!("?{query}") };
+            let page_url = if rel.is_empty() { base.to_string() } else { format!("{base}/{rel}") };
             let mut page = Vec::new();
             let html = String::from_utf8_lossy(body);
             page.extend(parse_html_index(&html, &url_path(&page_url)));
             for e in page {
                 let name = if rel.is_empty() { e.name.clone() } else { format!("{rel}/{}", e.name) };
                 if e.dir && level < self.max_depth {
-                    self.html_pending.push((format!("{}/{}", page_url.trim_end_matches('/'), e.name), name.clone(), level + 1));
+                    self.html_pending.push((format!("{page_url}/{}{query}", e.name), name.clone(), level + 1));
                 }
                 self.out.push(ObjectEntry { name, ..e });
             }
