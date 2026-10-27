@@ -985,7 +985,7 @@ def pixel_info(
     positions: Sequence[tuple[float, float] | tuple[float, float, str]] | None = None,
     *,
     position_crs: str | None = None,
-    position_dataset: str | Layer | VectorDataset | None = None,
+    position_dataset: str | Layer | VectorDataset | _GeoJSON | None = None,
     layer: str | None = None,
     include_fields: Sequence[str] | None = None,
     bands: Sequence[int] | None = None,

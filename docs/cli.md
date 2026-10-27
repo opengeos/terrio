@@ -976,7 +976,9 @@ report for errors. `pixel-info` similarly uses status 1 for off-raster positions
 `--skip-all-optional` takes precedence over individual `--skip-*` flags.
 
 Compared with GDAL 3.13.3 in the `raster-query` conformance suite: 20 of 21 cases give the
-same lines and exit status. One known mask-count reporting difference is detailed in Testing. Differences: CRS mismatch lines print Terrio's WKT where GDAL
+same lines and exit status. One known mask-count reporting difference is described below.
+
+Differences: CRS mismatch lines print Terrio's WKT where GDAL
 prints WKT2_2019; GDAL's metadata value line swaps the two values (`Reference ... has value
 <input's>`), Terrio names them in reference, input order. Not supported: complex bands,
 `--input-format`/`--open-option`, pipelines, and GDAL's per-dataset comparison of more than
