@@ -244,7 +244,8 @@ jobs:
                   comments: (.comments.totalCount as $n | .starter.nodes[0] as $s
                              | [ $s, (.comments.nodes[] | select(.id != $s.id)) ]
                              | map(select(trusted) | { author: (.author.login // "ghost"), body })
-                             # The starter is always first (it's trusted, or the thread was dropped).
+                             # The starter is always first (it is trusted, or the thread was dropped).
+                             # This program is in single quotes in bash: keep apostrophes out of it.
                              | if $n > 51 then .[:1] + [{ note: "\($n - 51) earlier comments are not shown" }] + .[1:]
                                else . end) } ]
           ' "$RUNNER_TEMP/nodes.json" > .autofix/threads.json
