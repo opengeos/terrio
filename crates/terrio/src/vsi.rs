@@ -1443,12 +1443,13 @@ fn absolute_name(path: &str, node: &Node, name: &str) -> String {
         let joined = if name.is_empty() { base.clone() } else { format!("{}/{name}", base.trim_end_matches('/')) };
         return listing::redact_url(&if query.is_empty() { joined } else { format!("{joined}?{query}") }).into_owned();
     }
-    let base = match node {
-        Node::Local(p) => {
-            std::path::absolute(p).map(|p| p.display().to_string()).unwrap_or_else(|_| listing::redact_url(path.trim()).into_owned())
-        }
-        _ => listing::redact_url(path.trim()).into_owned(),
-    };
+    // Local entries resolve as one path, which gives native separators on Windows.
+    if let Node::Local(p) = node
+        && let Ok(abs) = std::path::absolute(if name.is_empty() { p.clone() } else { p.join(name) })
+    {
+        return abs.display().to_string();
+    }
+    let base = listing::redact_url(path.trim()).into_owned();
     let base = base.trim_end_matches('/');
     if name.is_empty() { base.to_string() } else { format!("{base}/{name}") }
 }

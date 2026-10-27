@@ -342,7 +342,7 @@ fn refused_directory_operations_do_not_create_targets() {
     assert!(!d.join("new").exists());
     std::fs::write(d.join("source/file"), b"x").unwrap();
     let text = ok(&endpoint, d, &["vsi", "list", "source", "--tree", "--abs"]);
-    assert_eq!(text.trim(), d.join("source/file").to_str().unwrap());
+    assert_eq!(text.trim(), d.join("source").join("file").to_str().unwrap());
 }
 
 #[test]
@@ -387,15 +387,15 @@ fn empty_s3_directories_and_absolute_trees() {
     assert_eq!(serde_json::from_str::<serde_json::Value>(&listing).unwrap(), serde_json::json!([]));
     ok(&endpoint, d, &["vsi", "delete", "s3://bkt/empty", "-r"]);
     assert!(!keys(&store).contains(&"bkt/empty/".to_string()));
-    std::fs::create_dir_all(d.join("root/sub")).unwrap();
-    std::fs::write(d.join("root/sub/file"), b"x").unwrap();
+    std::fs::create_dir_all(d.join("root").join("sub")).unwrap();
+    std::fs::write(d.join("root").join("sub").join("file"), b"x").unwrap();
     let tree = ok(&endpoint, d, &["vsi", "list", "root", "-R", "--tree", "--abs", "-f", "json"]);
     let v: serde_json::Value = serde_json::from_str(&tree).unwrap();
-    assert_eq!(v[0]["name"], d.join("root/sub").to_str().unwrap());
-    assert_eq!(v[0]["entries"][0], d.join("root/sub/file").to_str().unwrap());
+    assert_eq!(v[0]["name"], d.join("root").join("sub").to_str().unwrap());
+    assert_eq!(v[0]["entries"][0], d.join("root").join("sub").join("file").to_str().unwrap());
     let file = ok(&endpoint, d, &["vsi", "list", "root/sub/file", "--tree", "--abs", "-f", "json"]);
     let v: serde_json::Value = serde_json::from_str(&file).unwrap();
-    assert_eq!(v[0], d.join("root/sub/file").to_str().unwrap());
+    assert_eq!(v[0], d.join("root").join("sub").join("file").to_str().unwrap());
 }
 
 #[test]
@@ -463,7 +463,7 @@ fn signed_file_tree_names_and_recursive_single_object_refusal() {
     std::fs::create_dir(tmp.path().join("same")).unwrap();
     std::fs::write(tmp.path().join("same/same"), "child").unwrap();
     let one = ok(&endpoint, tmp.path(), &["vsi", "list", "same", "--tree", "--abs", "-f", "json"]);
-    assert_eq!(serde_json::from_str::<serde_json::Value>(&one).unwrap()[0], real(tmp.path()).join("same/same").to_str().unwrap());
+    assert_eq!(serde_json::from_str::<serde_json::Value>(&one).unwrap()[0], real(tmp.path()).join("same").join("same").to_str().unwrap());
 }
 
 #[test]
