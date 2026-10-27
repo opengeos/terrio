@@ -1258,7 +1258,7 @@ fn is_within(inner: &Node, outer: &Node) -> bool {
     match (inner, outer) {
         (Node::Local(a), Node::Local(b)) => match (absolute_path(a), absolute_path(b)) {
             (Some(a), Some(b)) => a.starts_with(b),
-            _ => false,
+            _ => true,
         },
         (Node::Mem(a), Node::Mem(b)) => below(a, b),
         (Node::S3 { bucket: ba, key: a }, Node::S3 { bucket: bb, key: b }) => ba == bb && below(a, b),
@@ -1430,7 +1430,7 @@ pub fn stat(path: &str) -> Result<Option<Entry>> {
 fn copy_target(src: &Node, dst_input: &str, dst: &Node) -> Result<Node> {
     let existing_directory = stat_node(dst)?.is_some_and(|s| s.dir);
     let into = dst_input.trim().ends_with('/') || existing_directory;
-    let portable = !cfg!(unix) || !matches!((src, dst), (Node::Local(_), Node::Local(_)));
+    let portable = matches!(src, Node::Archive { .. }) || cfg!(windows) && matches!(dst, Node::Local(_));
     Ok(if into { checked_child_target(dst, &src.file_name(), portable)? } else { dst.clone() })
 }
 
@@ -1484,12 +1484,21 @@ fn unsafe_relative(name: &str) -> bool {
         || (name.as_bytes().get(1) == Some(&b':') && name.as_bytes().first().is_some_and(u8::is_ascii_alphabetic))
 }
 
+fn unsafe_child_name(name: &str, portable: bool) -> bool {
+    name.starts_with('/') || name.split('/').any(|part| matches!(part, "." | "..")) || portable && unsafe_relative(name)
+}
+
+fn unsafe_destination_name(root: &Node, name: &str, portable: bool) -> bool {
+    // memfs canonicalizes backslashes to separators, so they cannot round-trip.
+    unsafe_child_name(name, portable) || matches!(root, Node::Mem(_)) && name.contains('\\')
+}
+
 fn archive_target(root: &Node, name: &str) -> Result<Node> {
     checked_child_target(root, name, true)
 }
 
 fn checked_child_target(root: &Node, name: &str, portable: bool) -> Result<Node> {
-    if portable && unsafe_relative(name) {
+    if unsafe_destination_name(root, name, portable) {
         return Err(Error::InvalidArgument("refusing archive path traversal in copy source".into()));
     }
     let target = root.join(name);
@@ -1689,10 +1698,10 @@ fn copy_tree(src: &Node, dst: &Node, skip_errors: bool, sync: Option<&SyncOption
     }
     // A non-recursive sync creates the subdirectories, empty, as GDAL does.
     let entries = read_dir(src, recursive, None)?;
-    // Unix local names may contain colons and backslashes. Keep portable guards
-    // for archive/remote/memory names and retain containment checks for all targets.
-    let portable = !cfg!(unix) || !matches!((src, dst), (Node::Local(_), Node::Local(_)));
-    if portable && entries.iter().any(|e| unsafe_relative(&e.name)) {
+    // Drive prefixes and backslashes are special only for Windows local outputs.
+    // Archive extraction retains its stricter guard; slash traversal is refused everywhere.
+    let portable = matches!(src, Node::Archive { .. }) || cfg!(windows) && matches!(dst, Node::Local(_));
+    if entries.iter().any(|e| unsafe_destination_name(dst, &e.name, portable)) {
         return Err(Error::InvalidArgument("refusing archive path traversal in copy source".into()));
     }
     let target_entries = match sync {
@@ -1874,6 +1883,11 @@ pub fn delete(path: &str, recursive: bool) -> Result<Report> {
         return Err(Error::InvalidArgument(
             "recursive deletion found no directory entries; delete the exact object without the recursive option".into(),
         ));
+    }
+    // Validate the whole listing before deleting anything: HTTP clients can normalize
+    // dot segments, which would otherwise address a sibling outside the requested prefix.
+    if entries.iter().any(|e| unsafe_child_name(&e.name, false)) {
+        return Err(Error::InvalidArgument("refusing dot segments or absolute names in recursive deletion".into()));
     }
     for e in &entries {
         if !e.is_dir() {

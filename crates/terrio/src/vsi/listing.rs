@@ -83,6 +83,25 @@ pub(crate) fn uri_encode(s: &str, encode_slash: bool) -> String {
     out
 }
 
+/// Decodes a URL path once; malformed escapes or non-UTF-8 keys retain their spelling.
+fn uri_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%'
+            && let Some(value) = s.get(i + 1..i + 3).and_then(|h| u8::from_str_radix(h, 16).ok())
+        {
+            out.push(value);
+            i += 3;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8(out).unwrap_or_else(|_| s.to_string())
+}
+
 impl Api {
     /// The listing API of an HTTP(S) URL: an object store (GCS, Azure, S3 URLs) or else an HTML
     /// index page.
@@ -94,17 +113,17 @@ impl Api {
         let lower = host.to_ascii_lowercase();
         if lower == "storage.googleapis.com" {
             let (bucket, prefix) = key.split_once('/').unwrap_or((key, ""));
-            Api::Url { base: format!("{scheme}://{host}/{bucket}"), prefix: with_slash(prefix) }
+            Api::Url { base: format!("{scheme}://{host}/{bucket}"), prefix: with_slash(&uri_decode(prefix)) }
         } else if lower.ends_with(".blob.core.windows.net") {
             let (container, prefix) = key.split_once('/').unwrap_or((key, ""));
-            Api::Azure { base: format!("{scheme}://{host}/{container}"), prefix: with_slash(prefix), sas: query.to_string() }
+            Api::Azure { base: format!("{scheme}://{host}/{container}"), prefix: with_slash(&uri_decode(prefix)), sas: query.to_string() }
         } else if lower.ends_with(".amazonaws.com") && (lower.contains(".s3") || lower.starts_with("s3.") || lower.starts_with("s3-")) {
             // Virtual-hosted S3 URLs; path-style ones (`s3.amazonaws.com/bucket/...`) too.
             if lower.starts_with("s3.") || lower.starts_with("s3-") {
                 let (bucket, prefix) = key.split_once('/').unwrap_or((key, ""));
-                Api::Url { base: format!("{scheme}://{host}/{bucket}"), prefix: with_slash(prefix) }
+                Api::Url { base: format!("{scheme}://{host}/{bucket}"), prefix: with_slash(&uri_decode(prefix)) }
             } else {
-                Api::Url { base: format!("{scheme}://{host}"), prefix: with_slash(key) }
+                Api::Url { base: format!("{scheme}://{host}"), prefix: with_slash(&uri_decode(key)) }
             }
         } else {
             html()
@@ -595,6 +614,23 @@ impl RemoteLister {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn url_prefixes_are_decoded_once_before_query_encoding() {
+        for base in [
+            "https://storage.googleapis.com/b",
+            "https://acc.blob.core.windows.net/c",
+            "https://s3.amazonaws.com/b",
+            "https://b.s3.amazonaws.com",
+        ] {
+            let api = Api::for_url(&format!("{base}/a%20b/%252F"));
+            let url = api.request_url(None, false).unwrap();
+            assert!(url.contains("prefix=a%20b%2F%252F%2F"), "{url}");
+            assert!(!url.contains("%2520"), "{url}");
+        }
+        assert_eq!(uri_decode("a%oops"), "a%oops");
+        assert_eq!(uri_decode("a%FF"), "a%FF");
+    }
+
     #[test]
     fn directory_markers_and_page_caps_are_not_silent() {
         let api = super::Api::for_url("https://bucket.s3.amazonaws.com/dir");

@@ -318,10 +318,12 @@ fn portable_moves_refuse_links_and_non_utf8_without_deleting_source() {
     assert!(source.join("a/y.txt").exists());
     fs::remove_file(source.join("link")).unwrap();
     let odd = source.join(std::ffi::OsString::from_vec(vec![0xff]));
-    fs::write(&odd, "keep").unwrap();
-    assert!(list(&s(&source), &ListOptions { recursive: true, ..Default::default() }).is_err());
-    assert!(rename(&s(&source), "/vsimem/refused-name-move").is_err());
-    assert_eq!(fs::read(odd).unwrap(), b"keep");
+    // APFS/HFS+ may reject these names; keep other Unix checks unconditional.
+    if fs::write(&odd, "keep").is_ok() {
+        assert!(list(&s(&source), &ListOptions { recursive: true, ..Default::default() }).is_err());
+        assert!(rename(&s(&source), "/vsimem/refused-name-move").is_err());
+        assert_eq!(fs::read(odd).unwrap(), b"keep");
+    }
     let alias = tmp.path().join("home-link");
     symlink(std::env::current_dir().unwrap(), &alias).unwrap();
     delete(&s(&alias), false).unwrap();
@@ -873,4 +875,37 @@ fn recursive_copy_preserves_filesystem_error_kind() {
     assert!(matches!(error, Error::Io(_)), "{error:?}");
     assert!(destination.join("t/x.txt").is_dir());
     assert_eq!(fs::read_to_string(source.join("x.txt")).unwrap(), "hello\n");
+}
+
+#[cfg(unix)]
+#[test]
+fn uploads_preserve_colons_and_remote_backslashes() {
+    let (tmp, source) = tree();
+    fs::write(source.join("a:b.txt"), "colon").unwrap();
+    let remote = Node::S3 { bucket: "example".into(), key: "prefix".into() };
+    assert!(checked_child_target(&remote, r"literal\..\name.txt", false).is_ok());
+    let target = "/vsimem/terrio-vsi-upload-names";
+    copy(&s(&source), target, &CopyOptions { recursive: true, ..Default::default() }).unwrap();
+    assert_eq!(
+        names(&list(target, &ListOptions { recursive: true, ..Default::default() }).unwrap()),
+        vec!["a", "a/b", "a/b/z.txt", "a/y.txt", "a:b.txt", "x.txt"]
+    );
+    delete(target, true).unwrap();
+    let missing_parent = source.join("missing/../nested");
+    assert!(copy(&s(&source), &s(&missing_parent), &CopyOptions { recursive: true, ..Default::default() }).is_err());
+    assert!(rename(&s(&source), &s(&missing_parent)).is_err());
+    assert!(source.join("x.txt").exists());
+    assert!(!source.join("nested").exists());
+    drop(tmp);
+}
+
+#[test]
+fn recursive_memory_delete_refuses_dot_segments_before_mutation() {
+    let root = "/vsimem/terrio-vsi-delete-dot";
+    crate::memfs::write(Path::new("/vsimem/terrio-vsi-delete-dot/safe.txt"), b"keep").unwrap();
+    crate::memfs::write(Path::new("/vsimem/terrio-vsi-delete-dot/nested/../outside.txt"), b"keep").unwrap();
+    assert!(delete(root, true).unwrap_err().to_string().contains("dot segments"));
+    assert!(stat(&format!("{root}/safe.txt")).unwrap().is_some());
+    crate::memfs::remove_file(Path::new("/vsimem/terrio-vsi-delete-dot/safe.txt"));
+    crate::memfs::remove_file(Path::new("/vsimem/terrio-vsi-delete-dot/nested/../outside.txt"));
 }
