@@ -512,6 +512,7 @@ implementations; references to GEOS describe the GDAL behavior, not copied GEOS 
   DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
   OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
+-------------------------------------------------------------------------------
 GDAL vector dataset commands (concat, partition, set-field-type, make-point,
 create, export-schema, rename-layer, edit, update)
 -------------------------------------------------------------------------------

@@ -369,7 +369,7 @@ impl GridAlgorithm {
                 ));
             }
             self.method = GridMethod::InverseDistanceNearest;
-            self.radius = if self.radius1 == 0.0 { 1.0 } else { self.radius1 };
+            self.radius = self.radius1;
             // invdistnn's default.
             if self.max_points == 0 {
                 self.max_points = 12;
@@ -1852,6 +1852,17 @@ mod tests {
     fn grid(x: &[f64], y: &[f64], z: &[f64], a: &GridAlgorithm, e: [f64; 4], cols: usize, rows: usize) -> Vec<f64> {
         let extent = GridExtent { x_min: e[0], y_min: e[1], x_max: e[2], y_max: e[3], cols, rows };
         grid_points(x, y, z, a, &extent, DataType::F64, 1).unwrap()
+    }
+
+    #[test]
+    fn direct_quadrant_options_reject_zero_search_radius() {
+        let mut algorithm = GridAlgorithm { min_points_per_quadrant: 1, ..GridAlgorithm::new(GridMethod::InverseDistance) };
+        assert!(algorithm.validate().is_err());
+        let mut algorithm =
+            GridAlgorithm { radius1: 2.0, radius2: 2.0, min_points_per_quadrant: 1, ..GridAlgorithm::new(GridMethod::InverseDistance) };
+        algorithm.validate().unwrap();
+        assert_eq!(algorithm.method, GridMethod::InverseDistanceNearest);
+        assert_eq!(algorithm.radius, 2.0);
     }
 
     #[test]

@@ -607,7 +607,7 @@ def main():
         shutil.rmtree(work, ignore_errors=True)
     if args.json:
         print(json.dumps(results, indent=1))
-    return 0
+    return int(any(result["status"] in {"differs", "error"} for result in results))
 
 
 if __name__ == "__main__":
