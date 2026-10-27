@@ -474,6 +474,29 @@ def suite_shapefile_archives(ctx):
     return suite
 
 
+def suite_shapefile_rings(ctx):
+    """Self-touching Shapefile polygon rings, split as GDAL 3.13 does (#308)."""
+    suite = Suite("shapefile-rings", "Shapefile self-touching rings", "GDAL/OGR (3.13.1 reading frozen for GDAL 3.12)",
+                  "18 synthetic records written by OGR, read by OGR and converted by terrio to GeoPackage. "
+                  "Identical: the same ISO WKB bytes. Within tolerance: equal under GEOS and both valid, with rings "
+                  "in another direction or from another start. GDAL 3.12 keeps these rings as stored; with it, "
+                  "terrio is compared with GDAL 3.13.1's reading, frozen in the script.")
+    if missing_modules("osgeo"):
+        suite.skipped = "needs GDAL Python bindings"
+        return suite
+    code, out, err = run([sys.executable, str(SCRIPTS / "compare_shapefile_rings_with_gdal.py"), "--terrio", ctx.terrio, "--json"])
+    try:
+        results = json.loads(out)
+    except json.JSONDecodeError:
+        suite.error = tail(err or out)
+        return suite
+    for result in results:
+        suite.cases.append(Case("Shapefile rings", result["name"], result["status"], result["detail"]))
+    if code and not any(case.status == DIFFERS for case in suite.cases):
+        suite.error = tail(err or out) or f"exit {code}"
+    return suite
+
+
 def suite_cad(ctx):
     """CAD geometry interchange against public GDAL drawings and real OSM roads."""
     suite = Suite(
@@ -1648,6 +1671,7 @@ SUITES = OrderedDict(
         ("vector-roundtrip", suite_vector_roundtrip),
         ("cad", suite_cad),
         ("shapefile-archives", suite_shapefile_archives),
+        ("shapefile-rings", suite_shapefile_rings),
         ("raster-roundtrip", suite_raster_roundtrip),
         ("windows", suite_windows),
         ("ops", suite_ops),

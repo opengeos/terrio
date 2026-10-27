@@ -35,7 +35,7 @@ gdal.UseExceptions()
 gdal.PushErrorHandler("CPLQuietErrorHandler")
 
 TERRIO = os.environ.get("TERRIO_BIN", os.path.join(os.path.dirname(__file__), "..", "target", "release", "terrio"))
-RASTER_EXT = {".tif", ".tiff", ".asc", ".jp2", ".img", ".hdr", ".zarr", ".flt", ".bil", ".envi", ".sdat", ".rst", ".ers", ".dt1", ".dt2", ".xyz", ".grd", ".png", ".jpg", ".nc", ".h5"}
+RASTER_EXT = {".tif", ".tiff", ".asc", ".jp2", ".img", ".hdr", ".zarr", ".flt", ".bil", ".envi", ".sdat", ".rst", ".ers", ".dt1", ".dt2", ".hgt", ".xyz", ".grd", ".png", ".jpg", ".nc", ".h5"}
 # Containers of subdatasets, compared one subdataset at a time with --subdatasets.
 CONTAINER_EXT = {".nc", ".h5", ".he5"}
 VECTOR_EXT = {".geojson", ".json", ".gpkg", ".parquet", ".fgb", ".shp", ".kml", ".kmz", ".gml", ".gpx", ".topojson", ".mif", ".tab", ".osm", ".csv", ".zip", ".pbf"}

@@ -27,6 +27,7 @@ pub(crate) mod hdf5_write;
 #[cfg(feature = "netcdf-hdf5")]
 pub(crate) mod hdfeos;
 mod hfa;
+mod hgt;
 #[cfg(feature = "jp2")]
 pub(crate) mod jp2;
 #[cfg(feature = "netcdf-hdf5")]
@@ -84,6 +85,10 @@ fn read_own(path: &str) -> Option<Result<RasterDataset>> {
     if gsbg::is_gsbg(p) {
         return Some(gsbg::read(p));
     }
+    // SRTM tiles are known by their name and size, whatever their extension (`.raw`, `.img`...).
+    if hgt::is_hgt(p) {
+        return Some(hgt::read(p));
+    }
     #[cfg(feature = "grib")]
     if matches!(by_extension, None | Some(RasterDriver::GRIB)) && grib::is_grib_file(p) {
         return Some(grib::read(p));
@@ -105,6 +110,8 @@ fn read_own(path: &str) -> Option<Result<RasterDataset>> {
         #[cfg(feature = "sqlite")]
         RasterDriver::GPKG => gpkg::read(p),
         RasterDriver::HFA => hfa::read(p),
+        // Not a tile, as `is_hgt` found: the reader says why.
+        RasterDriver::SRTMHGT => hgt::read(p),
         #[cfg(feature = "netcdf-hdf5")]
         RasterDriver::NetCDF => netcdf::read(p, None),
         #[cfg(feature = "netcdf-hdf5")]
@@ -254,6 +261,7 @@ pub(crate) fn write(
         RasterDriver::AAIGrid => aaigrid::write(r, nodata, p),
         RasterDriver::ERS => ers::write(r, nodata, p),
         RasterDriver::GSBG => gsbg::write(r, nodata, p),
+        RasterDriver::SRTMHGT => hgt::write(r, nodata, p),
         RasterDriver::SAGA => saga::write(r, nodata, p),
         RasterDriver::XYZ => xyz::write(r, p),
         RasterDriver::RST => rst::write(r, nodata, p),

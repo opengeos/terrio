@@ -512,6 +512,28 @@ text. These comparisons use exactly
 representable real attributes; general DBF real precision is documented in
 [the archive format policy](formats.md#shapefile-zip-output-in-memory).
 
+## Shapefile self-touching rings (#308)
+
+Esri allows a polygon ring that touches itself at a vertex to enclose a hole. Since
+3.13.0, GDAL splits such a ring into an exterior and holes in `organizePolygons`,
+for records of several parts; GDAL 3.12 keeps it as stored. Terrio reads these
+rings as GDAL 3.13 does.
+
+```sh
+cargo test -p terrio --lib shapefile
+python scripts/conformance.py ../terrio-data --only shapefile-rings --strict
+```
+
+The `shapefile-rings` suite writes 18 synthetic records with OGR (Esri holes, a
+single-part record, rings stored from inside a hole, figure-eights, spikes,
+same-direction loops, duplicate points, hole parts that are figure-eights or enclose an island, and stored holes touching
+the exterior), checks in the `.shp` that the rings are stored as given, and compares
+OGR's reading with Terrio's GeoPackage output, ISO WKB byte for byte. With GDAL 3.12
+the reference is GDAL 3.13.1's reading, frozen in the script. One case is within
+tolerance rather than identical: a hole part enclosing an island gives the same valid
+polygons, but GEOS `MakeValid` returns both rings in the other direction and from
+another start vertex.
+
 ## PMTiles decoded-byte limits (#279)
 
 With `default-features = false, features = ["tiles"]`, native and WebAssembly

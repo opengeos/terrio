@@ -40,6 +40,7 @@ GDAL's drivers (the formats marked * are written that way): see
 | JPEG | JPEG with world file | ✓ | ✓ | jpg, jpeg |
 | XYZ | XYZ ASCII grid | ✓ | ✓ | xyz |
 | DTED | DTED elevation | ✓ | ✓ | dt0, dt1, dt2 |
+| SRTMHGT | SRTM HGT tiles (`N37W120.hgt`, zipped or not; NASADEM `.hgts`, `.err`, `.img`, `.num` and water body `.raw`, `.swb` read) | ✓ | ✓ | hgt |
 
 Native TIFF readers limit each decoded tile or strip to 256 MiB by default. For trusted
 files with larger chunks, use `TiffReadLimits` with `LazyRaster::open_tiff_with_limits`

@@ -336,14 +336,24 @@ fn commands() -> impl Iterator<Item = clap::Command> {
     cli.get_subcommands().filter(|c| !matches!(c.get_name(), "mcp" | "help")).cloned().collect::<Vec<_>>().into_iter()
 }
 
+/// Whether the help of `c` or of one of its subcommands (`filter merge`) offers `@FILE` lists.
+fn offers_file_lists(c: &mut clap::Command) -> bool {
+    c.render_long_help().to_string().contains("`@FILE`") || c.get_subcommands_mut().any(offers_file_lists)
+}
+
 fn tool_list() -> Vec<Value> {
     commands()
         .map(|mut c| {
             let name = c.get_name().to_string();
             let ro = READ_ONLY.contains(&name.as_str());
+            let mut description = c.render_long_help().to_string().trim_end().to_string();
+            // The help offers `@FILE` input lists, which tool calls refuse (`expand_file_lists`).
+            if offers_file_lists(&mut c) {
+                description.push_str("\n\nOver MCP, `@FILE` lists are refused: pass each input as an item of `args`.");
+            }
             json!({
                 "name": name,
-                "description": c.render_long_help().to_string().trim_end(),
+                "description": description,
                 "inputSchema": {
                     "type": "object",
                     "properties": {

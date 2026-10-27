@@ -324,7 +324,7 @@ enum Filter {
     },
     /// Merge point clouds into one (PDAL's filters.merge).
     Merge {
-        /// The point clouds, then the output.
+        /// The point clouds, then the output. `@FILE` reads input paths from FILE, one per line.
         #[arg(num_args = 2.., required = true)]
         paths: Vec<String>,
         /// Assign this CRS to the points, without reprojecting (when the files have none or a
@@ -951,6 +951,7 @@ pub fn run(a: Args) -> terrio::Result<()> {
         }
         Filter::Merge { mut paths, a_srs, points, write: w } => {
             let output = paths.pop().unwrap_or_default();
+            let paths = super::expand_file_lists(&paths)?;
             let read_opts = points.to_options()?;
             let mut clouds = paths.iter().map(|p| pointcloud::read_points(p, &read_opts)).collect::<terrio::Result<Vec<_>>>()?;
             for c in &mut clouds {
@@ -1216,6 +1217,23 @@ mod tests {
             run(Cli::try_parse_from(argv).unwrap().args).unwrap();
             assert_eq!(pointcloud::open_points(&output).unwrap().crs().epsg, Some(2056), "{filter}");
         }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn merges_point_clouds_listed_in_a_file() {
+        let dir = std::env::temp_dir().join(format!("terrio-filter-merge-list-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = |name: &str| dir.join(name).to_string_lossy().into_owned();
+        let coords = |base: f64| Values::F64((0..10).map(|i| base + i as f64).collect());
+        for (name, base) in [("a.las", 0.0), ("b.las", 100.0)] {
+            let dims = vec![Dimension::new("x", coords(base)), Dimension::new("y", coords(base)), Dimension::new("z", coords(base))];
+            pointcloud::write_points(&PointCloud::new(dims, SpatialRef::default()), &path(name), &Default::default()).unwrap();
+        }
+        std::fs::write(dir.join("list.txt"), format!("{}\n{}\n", path("a.las"), path("b.las"))).unwrap();
+        let (list, output) = (format!("@{}", path("list.txt")), path("merged.las"));
+        run(Cli::try_parse_from(["terrio", "merge", &list, &output]).unwrap().args).unwrap();
+        assert_eq!(pointcloud::read_points(&output, &Default::default()).unwrap().len(), 20);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

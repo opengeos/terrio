@@ -75,6 +75,22 @@ Every input can be a local path, a URL, a cloud object or a zip archive member; 
 [Remote Data](remote-data.md). Outputs are local. Run `terrio <COMMAND> --help` for the full
 option list.
 
+The commands that take any number of inputs (`mosaic`, `warp`, `concat` and `filter merge`) read
+them from a file too, as GDAL's `--input @filelist.txt` does. `pansharpen` does not: its inputs
+have fixed roles, the panchromatic band first, and spectral inputs may carry `,band=N`. `@FILE`
+stands for the paths listed in FILE, one per line, with relative paths taken from the working
+directory. Unlike GDAL 3.13, which opens each line as written and fails on a blank line, terrio
+skips blank lines, trims whitespace around paths and ignores a byte-order mark at the start of the
+file. A list must be a regular file of at most 64 MiB. As in GDAL, every input beginning with `@`
+is read as a list: name a file whose name begins with `@` as `./@name.tif`. The [MCP tools](#mcp)
+refuse `@FILE`, since errors naming listed paths would let a client read a text file back line by
+line; MCP clients pass the inputs as arguments instead. Lists mix with paths given directly:
+
+```sh
+terrio mosaic @filelist.txt naip.vrt
+terrio warp @filelist.txt extra.tif out.tif --t-srs EPSG:3857
+```
+
 ## Geometry operations
 
 ```sh
@@ -803,6 +819,7 @@ reports those mask differences explicitly. Specify `--te` and `--ts` to compare 
 
 ```sh
 terrio mosaic INPUT... OUTPUT [options]
+terrio mosaic @filelist.txt OUTPUT [options]    # inputs listed in a file, one per line
 ```
 
 `--resolution highest|lowest|average|user`, `--tr`, `--te`, `--tap`, `--separate`, `-b`,

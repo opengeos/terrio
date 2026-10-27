@@ -313,6 +313,12 @@ if command -v ogr2ogr >/dev/null && command -v gdal_translate >/dev/null; then
     gdal_translate -q -of Zarr -co FORMAT=ZARR_V3 -co COMPRESS=ZSTD srtm_sub.tif srtm_sub_v3.zarr
     gdal_translate -q -of Zarr -co COMPRESS=BLOSC -co BLOSC_CNAME=lz4 srtm_sub.tif srtm_sub_blosc.zarr
   fi
+  # A 3" SRTM HGT tile (1201 x 1201 cells centred on the degree lines), resampled from srtm90.tif.
+  if [ ! -e N37W120.hgt ] && command -v gdalwarp >/dev/null; then
+    gdalwarp -q -overwrite -te -120.000416666666667 36.999583333333333 -118.999583333333333 38.000416666666667 \
+      -ts 1201 1201 -r bilinear srtm90.tif N37W120_tile.tif
+    gdal_translate -q -of SRTMHGT N37W120_tile.tif N37W120.hgt && rm -f N37W120_tile.tif N37W120.hgt.aux.xml
+  fi
   # GeoTIFFs in the compressions GDAL writes that the tiff crate does not read: JPEG (YCbCr and
   # RGB), WebP, JPEG XL (lossless and lossy), LERC (with Deflate or Zstandard, lossless and lossy,
   # with a NaN mask) and LZMA (with predictors, planar).
