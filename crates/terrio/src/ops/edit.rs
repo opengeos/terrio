@@ -106,10 +106,9 @@ fn validate(o: &EditOptions) -> Result<()> {
     exclusive(o.geo_transform.is_some() || o.bbox.is_some(), !o.gcps.is_empty(), "a geotransform and ground control points")?;
     exclusive(o.nodata.is_some(), o.unset_nodata, "a nodata value and unsetting it")?;
     exclusive(o.stats || o.approx_stats, o.unset_stats, "computing statistics and unsetting them")?;
-    if let Some(b) = o.bbox
-        && !(b.iter().all(|v| v.is_finite()) && b[0] < b[2] && b[1] < b[3])
-    {
-        return Err(Error::InvalidArgument("the bounding box is not xmin,ymin,xmax,ymax".into()));
+    if let Some(b) = o.bbox {
+        // The box alone, before the raster's size is known: see `edit_tiff` for its grid.
+        super::bbox_geo_transform(b, 1.0, 1.0)?;
     }
     if let Some(gt) = o.geo_transform
         && (!gt.iter().all(|v| v.is_finite()) || gt[1] * gt[5] - gt[2] * gt[4] == 0.0)
@@ -266,7 +265,7 @@ fn edit_tiff<F: Read + Write + Seek>(file: &mut F, src: &mut LazyRaster, o: &Edi
             (None, false) => src.crs(),
         };
         let gt = match (o.bbox, o.geo_transform) {
-            (Some(b), _) => [b[0], (b[2] - b[0]) / w, 0.0, b[3], 0.0, -(b[3] - b[1]) / h],
+            (Some(b), _) => super::bbox_geo_transform(b, w, h)?,
             (None, Some(gt)) => gt,
             (None, None) => src.geo_transform(),
         };
@@ -661,6 +660,11 @@ mod tests {
         for gt in [[f64::NAN, 1.0, 0.0, 0.0, 0.0, -1.0], [0.0, 0.0, 0.0, 0.0, 0.0, -1.0]] {
             let o = EditOptions { geo_transform: Some(gt), ..Default::default() };
             assert!(matches!(edit_raster_bytes(&bytes, &o), Err(Error::InvalidArgument(_))), "{gt:?}");
+        }
+        let m = f64::MAX;
+        for bbox in [[0.0, 0.0, f64::INFINITY, 1.0], [-m, -m, m, m]] {
+            let o = EditOptions { bbox: Some(bbox), ..Default::default() };
+            assert!(matches!(edit_raster_bytes(&bytes, &o), Err(Error::InvalidArgument(_))), "{bbox:?}");
         }
         let gcps = vec![Gcp { x: f64::INFINITY, ..Default::default() }];
         assert!(matches!(edit_raster_bytes(&bytes, &EditOptions { gcps, ..Default::default() }), Err(Error::InvalidArgument(_))));

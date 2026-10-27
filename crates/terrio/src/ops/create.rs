@@ -75,12 +75,7 @@ fn plan(like: Option<&LazyRaster>, o: &CreateOptions) -> Result<(RasterDataset, 
     let nodata = if o.unset_nodata { None } else { o.nodata.or(like.and_then(|l| l.nodata())) };
     let crs = o.crs.clone().unwrap_or_else(|| like.map(|l| l.crs()).unwrap_or_default());
     let gt = match (o.bbox, like) {
-        (Some(b), _) => {
-            if !(b.iter().all(|v| v.is_finite()) && b[0] < b[2] && b[1] < b[3]) {
-                return Err(Error::InvalidArgument("the bounding box is not xmin,ymin,xmax,ymax".into()));
-            }
-            Some([b[0], (b[2] - b[0]) / w as f64, 0.0, b[3], 0.0, -(b[3] - b[1]) / h as f64])
-        }
+        (Some(b), _) => Some(super::bbox_geo_transform(b, w as f64, h as f64)?),
         // The template's geotransform, whatever the size (as GDAL keeps it), when it has one.
         (None, Some(l)) => l.has_geo_transform().then(|| l.geo_transform()),
         (None, None) => None,
@@ -245,6 +240,21 @@ mod tests {
             assert!(!created.has_geo_transform(), "{name}");
             assert_eq!(created.header().gcps, like.header().gcps, "{name}");
             assert_eq!(created.header().gcps.len(), opts.gcps.len(), "{name}");
+        }
+    }
+
+    #[test]
+    fn invalid_bounding_boxes_are_refused() {
+        let m = f64::MAX;
+        for (bbox, reason) in [
+            ([0.0, 0.0, f64::INFINITY, 1.0], "non-finite"),
+            ([f64::NAN, 0.0, 1.0, 1.0], "non-finite"),
+            ([1.0, 0.0, 0.0, 1.0], "not xmin"),
+            ([-m, -m, m, m], "pixel size"),
+        ] {
+            let o = CreateOptions { size: Some((2, 2)), bbox: Some(bbox), ..Default::default() };
+            let err = create_raster(None, &o).unwrap_err();
+            assert!(matches!(&err, Error::InvalidArgument(e) if e.contains(reason)), "{bbox:?}: {err}");
         }
     }
 

@@ -350,6 +350,22 @@ pub(crate) fn is_nodata(v: f64, nodata: f64) -> bool {
     if nodata.is_nan() { v.is_nan() } else { v == nodata }
 }
 
+/// The north-up geotransform of a `w` x `h` grid over `b` (`[xmin, ymin, xmax, ymax]`), refusing
+/// a box that is not ordered, has non-finite coordinates or gives a non-finite or zero pixel size.
+pub(crate) fn bbox_geo_transform(b: [f64; 4], w: f64, h: f64) -> Result<[f64; 6]> {
+    if !b.iter().all(|v| v.is_finite()) {
+        return Err(Error::InvalidArgument("the bounding box has non-finite coordinates".into()));
+    }
+    if !(b[0] < b[2] && b[1] < b[3]) {
+        return Err(Error::InvalidArgument("the bounding box is not xmin,ymin,xmax,ymax".into()));
+    }
+    let (dx, dy) = ((b[2] - b[0]) / w, (b[3] - b[1]) / h);
+    if !(dx.is_finite() && dx > 0.0 && dy.is_finite() && dy > 0.0) {
+        return Err(Error::InvalidArgument("the bounding box gives an invalid pixel size".into()));
+    }
+    Ok([b[0], dx, 0.0, b[3], 0.0, -dy])
+}
+
 /// Inverts a north-up or rotated geotransform.
 pub(crate) fn invert_gt(gt: &[f64; 6]) -> Option<[f64; 6]> {
     if gt[2] == 0.0 && gt[4] == 0.0 {
