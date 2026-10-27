@@ -128,6 +128,48 @@ let back = layer_from_arrow(&table.schema, &table.batches, "countries")?;
 # Ok::<(), terrio::Error>(())
 ```
 
+## ndarray
+
+With the `ndarray` feature (`features = ["ndarray"]`, off by default), raster pixels are
+[ndarray](https://docs.rs/ndarray) arrays, without copying them. A raster's buffer holds its bands
+one after the other, each row after row from the top: the standard layout of an array of shape
+`(bands, rows, cols)`. The crate is re-exported as `terrio::ndarray`.
+
+```rust,no_run
+use terrio::{RasterArrayExt, RasterDataset};
+
+let mut dem = terrio::open_raster("dem.tif")?;
+let pixels = dem.raster.view3::<f32>()?; // an ArrayView3 of the raster's buffer
+let highest = pixels.fold(f32::MIN, |max, &z| max.max(z));
+for mut band in dem.raster.split_bands_mut::<f32>()? {
+    band.mapv_inplace(|z| z * 3.28084); // with rayon: `.into_par_iter()` on the vector
+}
+let (array, header) = dem.into_array3::<f32>()?; // an owned Array3: the same buffer
+let dem = RasterDataset::from_array3(header, array)?; // and back, with the metadata
+# Ok::<(), terrio::Error>(())
+```
+
+- `RasterArrayExt` views a raster's pixels (`view3`, `view3_mut`) or a band of them (`band_view2`,
+  `band_view2_mut`), borrowed or mutable, and splits the bands into mutable views that do not
+  overlap (`split_bands_mut`), for threads.
+- `RasterDataset::into_array3` (`into_array2` for one band) moves the pixel buffer into an owned
+  array and returns the rest of the dataset, a header without pixels; `RasterDataset::from_array3`
+  (`from_array2`) moves an array's buffer into a header.
+- `LazyRaster::read_window` returns a dataset, which `into_array3` moves into an array, and
+  `LazyRaster::read_mask_array2` reads a window's mask (255 for valid pixels, 0 for invalid ones)
+  as an `Array2<u8>`.
+
+Nothing is copied, converted, reordered or reallocated, so what would need it fails instead,
+giving its input back exactly (`ArrayError`): the type asked for must be the pixels' (`f32` for
+`Float32`) and the raster's declared data type, and an owned array must be in standard layout
+and own exactly its elements. An array refused is given back with the same buffer, first element
+and strides; its axes of length 1 must therefore have strides it can be rebuilt with (those of
+construction, slicing, `insert_axis` or permuted axes), others being refused before the array is
+taken apart. Nodata pixels keep the nodata value (no NaN is substituted), masks stay separate
+arrays, and complex datasets are their stored component bands: each complex band's real parts,
+then its imaginary parts. Bands are numbered from 0, as along the arrays' first axis. Reading and
+decoding still allocate: the guarantee covers the buffers once read.
+
 ## Reading windows lazily
 
 ```rust,no_run
@@ -427,12 +469,13 @@ the operations and the streams. The other drivers are features:
 | `lerc` | on | LERC-compressed GeoTIFFs, read and written. |
 | `lzma` | on | LZMA-compressed GeoTIFFs. |
 | `gdal` | off | The optional GDAL backend: formats terrio has no driver for, through GDAL (needs GDAL installed). See [the GDAL backend](gdal.md#the-optional-gdal-backend). |
+| `ndarray` | off | Raster pixels as `ndarray` arrays, without copying them: views, owned transfers and the masks of lazy reads, with the crate re-exported as `terrio::ndarray`. See [ndarray](#ndarray). |
 
 The drivers stay in the API whatever the features (`formats::RasterDriver`,
 `formats::VectorDriver`): those a build leaves out are listed as neither read nor written, and
 opening or writing their files fails with "built without the `zarr` feature". Modules and types
 that belong to one feature (`terrio::arrow`, `terrio::pointcloud`, `terrio::http`,
-`terrio::s3`, `tiles::TileArchive`) exist only with it.
+`terrio::s3`, `tiles::TileArchive`, `terrio::ndarray`, `RasterArrayExt`) exist only with it.
 
 The `geotiff` build still pulls the JPEG XL decoder and encoder (`jxl-oxide`, `zune-jpegxl`):
 `wbraster`, terrio's raster data model, depends on them through its GeoTIFF reader.

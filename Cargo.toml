@@ -106,6 +106,9 @@ e57 = "0.11"
 delaunator = "1"
 # Data parallelism (native builds only).
 rayon = "1.10"
+# Array views of raster pixels (terrio's optional `ndarray` feature): the version the NetCDF and
+# HDF5 readers and NumPy's bindings already use.
+ndarray = "0.17"
 # The optional GDAL backend (the `gdal` feature): the only C dependency, opt-in.
 gdal = "0.19"
 gdal-sys = "0.12"

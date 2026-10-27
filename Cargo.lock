@@ -2833,6 +2833,7 @@ dependencies = [
  "lz4_flex 0.14.0",
  "lzma-rust2",
  "memmap2",
+ "ndarray",
  "netcdf-reader",
  "openjp2",
  "osmpbfreader 0.19.1",

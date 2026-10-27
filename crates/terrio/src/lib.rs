@@ -148,6 +148,11 @@
 //! - `gdal` (off by default): the optional GDAL backend (`gdal_backend`), which opens the formats
 //!   terrio has no driver for through GDAL, and writes rasters with GDAL's drivers. It is the only
 //!   C dependency, opt-in: GDAL must be installed.
+//! - `ndarray` (off by default): raster pixels as `ndarray` arrays, without copying them. Views of
+//!   a raster's pixels, of shape `(bands, rows, cols)` or of one band, borrowed or mutable
+//!   (`RasterArrayExt`); moves of a dataset's pixels into an owned array and back
+//!   (`RasterDataset::into_array3` and `RasterDataset::from_array3`); the masks of lazy reads as
+//!   arrays (`LazyRaster::read_mask_array2`). The crate is re-exported as `terrio::ndarray`.
 //!
 //! # Minimum supported Rust version
 //!
@@ -201,6 +206,8 @@ mod jpeg;
 mod memfs;
 pub mod memory;
 pub mod multidim;
+#[cfg(feature = "ndarray")]
+mod ndarray_ext;
 pub mod ops;
 mod par;
 mod pixel;
@@ -240,6 +247,14 @@ pub use drivers::gtiff_write::GeoTiffWriter;
 pub use drivers::vector::csv::{CsvGeometry, CsvOptions};
 pub use drivers::vector::geojson::GeoJsonOptions;
 pub use error::{Error, Result};
+/// The `ndarray` crate, of the version terrio's array views of raster pixels use.
+#[cfg(feature = "ndarray")]
+#[cfg_attr(docsrs, doc(cfg(feature = "ndarray")))]
+pub use ndarray;
+// Raster pixels as `ndarray` arrays, without copying them.
+#[cfg(feature = "ndarray")]
+#[cfg_attr(docsrs, doc(cfg(feature = "ndarray")))]
+pub use ndarray_ext::{ArrayError, RasterArrayExt, RasterElement};
 
 /// The raster type: pixels, georeferencing and CRS, in memory.
 pub use wbraster::{DataType, Raster, RasterConfig};

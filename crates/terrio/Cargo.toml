@@ -79,6 +79,9 @@ lzma-rust2 = { workspace = true, optional = true }
 # (3.4 or later) installed, found with pkg-config or GDAL_HOME.
 gdal = { workspace = true, optional = true }
 gdal-sys = { workspace = true, optional = true }
+# Array views of raster pixels and owned transfers between rasters and arrays (the `ndarray`
+# feature), without copying the pixels.
+ndarray = { workspace = true, optional = true }
 
 # Every driver is on by default. A build with `default-features = false` keeps the core: GeoTIFF
 # and COG (deflate, LZW, PackBits, ZSTD, WebP, JPEG, JPEG XL), the raw and ASCII rasters (AAIGrid,
@@ -129,6 +132,10 @@ sqlite = []
 libzstd = ["dep:zstd", "tiff/zstd", "terrio-crs/libzstd"]
 ## Open any format GDAL reads, through the same data model, when terrio has no driver for it.
 gdal = ["dep:gdal", "dep:gdal-sys"]
+## Raster pixels as `ndarray` arrays without copying them: borrowed and mutable views, owned
+## transfers between rasters and arrays, and lazy reads' masks as arrays. Re-exports the crate as
+## `terrio::ndarray`. Off by default.
+ndarray = ["dep:ndarray"]
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 # `libzstd`: EPT tiles' Zstandard, natively (without it, and in WebAssembly, `ruzstd`).
