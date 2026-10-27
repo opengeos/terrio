@@ -227,6 +227,35 @@ mod tests {
     }
 
     #[test]
+    fn reads_a_nasadem_float_tile() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("N37W120.hgts");
+        let mut b = Vec::with_capacity(3601 * 3601 * 4);
+        for i in 0..3601 * 3601 {
+            b.extend((i as f32 / 4.0).to_be_bytes());
+        }
+        std::fs::write(&p, b).unwrap();
+        let ds = crate::open_raster(p.to_str().unwrap()).unwrap();
+        assert_eq!((ds.raster.cols, ds.raster.rows, ds.raster.data_type), (3601, 3601, DataType::F32));
+        assert_eq!((ds.nodata(), ds.raster.get(0, 0, 3)), (Some(-32768.0), 0.75));
+        assert_eq!(ds.band_metadata[0].unit.as_deref(), Some("m"));
+    }
+
+    #[test]
+    fn leaves_imagine_files_named_as_tiles_to_hfa() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("N37W120.img");
+        let mut b = tile_bytes();
+        b[..15].copy_from_slice(b"EHFA_HEADER_TAG");
+        std::fs::write(&p, &b).unwrap();
+        assert!(!is_hgt(&p));
+        // A tile-sized `.img` without the Imagine header is a NASADEM tile.
+        b[..15].fill(0);
+        std::fs::write(&p, &b).unwrap();
+        assert!(is_hgt(&p));
+    }
+
+    #[test]
     fn needs_the_name_and_size_of_a_tile() {
         let dir = tempfile::tempdir().unwrap();
         let wrong_name = dir.path().join("dem.hgt");
