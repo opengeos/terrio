@@ -279,7 +279,8 @@ impl Node {
         }
         if input == "/vsimem" || input.starts_with("/vsimem/") {
             // Not resolved: `/vsimem` has no parent to pop to, and a literal `..` key is unreachable.
-            if input.split('/').any(|p| p == "..") {
+            // `memfs::key` treats `\` as `/`, so both separators are refused here.
+            if input.split(['/', '\\']).any(|p| p == "..") {
                 return Err(Error::InvalidArgument(format!("'{shown}': refusing dot segments in a /vsimem path")));
             }
             return Ok(Node::Mem(normalize_mem(input)));
@@ -288,6 +289,7 @@ impl Node {
             return Err(Error::Unsupported(format!("'{shown}': this virtual file system is not supported")));
         }
         Ok(match crate::vfs::Location::parse_unarchived(input) {
+            // Trimming only classifies the input; a local path keeps its exact bytes.
             crate::vfs::Location::Local(_) => Node::Local(Path::new(original).components().collect()),
             crate::vfs::Location::S3 { bucket, key } => {
                 if bucket.is_empty() {

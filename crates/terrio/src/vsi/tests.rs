@@ -945,7 +945,7 @@ fn uploads_preserve_colons_and_remote_backslashes() {
 
 #[test]
 fn memory_paths_refuse_parent_segments() {
-    for p in ["/vsimem/a/../b", "/vsimem/../b", "/vsimem/a/.."] {
+    for p in ["/vsimem/a/../b", "/vsimem/../b", "/vsimem/a/..", "/vsimem/a\\..\\b", "/vsimem/a/..\\b"] {
         assert!(Node::parse(p).is_err(), "{p}");
     }
     assert!(matches!(Node::parse("/vsimem/a/./b"), Ok(Node::Mem(k)) if k == "/vsimem/a/b"));
