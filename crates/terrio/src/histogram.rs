@@ -296,7 +296,7 @@ pub(crate) fn sample_overview(width: usize, height: usize, overviews: &[(usize, 
 pub(crate) fn driver_block(ds: &RasterDataset) -> Option<(usize, usize)> {
     use crate::formats::RasterDriver as D;
     match ds.driver {
-        D::AAIGrid | D::EHdr | D::ENVI | D::SAGA | D::ERS | D::RST | D::GSBG | D::XYZ | D::PNG | D::GRASSASCIIGrid | D::NetCDF | D::SRTMHGT => {
+        D::AAIGrid | D::EHdr | D::ENVI | D::SAGA | D::ERS | D::RST | D::GSBG | D::XYZ | D::PNG | D::GRASSASCIIGrid | D::NetCDF => {
             Some((ds.raster.cols, 1))
         }
         D::HFA => Some((64, 64)),

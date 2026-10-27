@@ -45,7 +45,6 @@ pub(crate) const MAIN_DATASET_EXTENSIONS: &[&str] = &[
     "jp2",
     "img",
     "asc",
-    "hgt",
     "hdr",
     "zarr",
     "las",

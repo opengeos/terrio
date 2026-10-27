@@ -68,7 +68,6 @@ _EXTENSIONS = {
     ".rst": "RST",
     ".sdat": "SAGA",
     ".grd": "GSBG",
-    ".hgt": "SRTMHGT",
     ".xyz": "XYZ",
     ".mbtiles": "MBTiles",
     ".pmtiles": "PMTiles",
