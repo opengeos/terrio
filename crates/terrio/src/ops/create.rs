@@ -76,7 +76,7 @@ fn plan(like: Option<&LazyRaster>, o: &CreateOptions) -> Result<(RasterDataset, 
     let crs = o.crs.clone().unwrap_or_else(|| like.map(|l| l.crs()).unwrap_or_default());
     let gt = match (o.bbox, like) {
         (Some(b), _) => {
-            if !(b[0] < b[2] && b[1] < b[3]) {
+            if !(b.iter().all(|v| v.is_finite()) && b[0] < b[2] && b[1] < b[3]) {
                 return Err(Error::InvalidArgument("the bounding box is not xmin,ymin,xmax,ymax".into()));
             }
             Some([b[0], (b[2] - b[0]) / w as f64, 0.0, b[3], 0.0, -(b[3] - b[1]) / h as f64])

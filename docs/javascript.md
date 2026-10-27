@@ -408,6 +408,10 @@ updated. Without errorThreshold it reports the proposed affine change without
 applying it. `updateRaster(source, destinationBytes, options)` returns updated
 GeoTIFF bytes and supports resampling, clipping geometry and overview refresh.
 Byte inputs/results are materialized; large-file editing should use native APIs.
+`refreshOverviews` takes explicit `bbox` extents only: there is no `like` option,
+so compute a template's extent from its geotransform. `createRaster` returns an
+in-memory dataset, so the file-only `copyOverviews` option of the CLI and Python
+is unavailable; add overviews to the encoded bytes with `addOverviews`.
 
 ## File management
 

@@ -119,6 +119,11 @@ fn refresh_options(o: &UpdateOptions, extent: [f64; 4], external: bool) -> Refre
 /// The window of the destination the source covers, in whole blocks, and the source's extent
 /// in the destination's CRS.
 fn covered_window(dst: &LazyRaster, src: &LazyRaster) -> Result<Option<(Window, [f64; 4])>> {
+    for (r, which) in [(dst, "destination"), (src, "source")] {
+        if !r.has_geo_transform() {
+            return Err(Error::Unsupported(format!("the {which} has no geotransform of its own: it cannot be placed")));
+        }
+    }
     let (w, h) = (dst.width(), dst.height());
     let gt = src.geo_transform();
     let (sw, sh) = (src.width() as f64, src.height() as f64);
@@ -274,5 +279,19 @@ mod update_boundary_tests {
         assert!(pixel_aligned_translation(&[4. + 1e-12, 1., 0., 8., 0., -1.], &destination));
         assert!(!pixel_aligned_translation(&[4.25, 1., 0., 8., 0., -1.], &destination));
         assert!(!pixel_aligned_translation(&[4., 2., 0., 8., 0., -2.], &destination));
+    }
+
+    #[test]
+    fn rasters_without_their_own_geotransform_are_refused() {
+        use crate::drivers::gtiff_write as gw;
+        let cfg = wbraster::RasterConfig { cols: 4, rows: 3, bands: 1, data_type: wbraster::DataType::U8, ..Default::default() };
+        let r = wbraster::Raster::from_data(cfg, vec![1.0; 12]).unwrap();
+        let referenced = gw::encode(&r, &gw::TiffOptions::default()).unwrap();
+        let unreferenced = gw::encode(&r, &gw::TiffOptions { georeferenced: false, ..Default::default() }).unwrap();
+        for (src, dst, which) in [(&referenced, &unreferenced, "destination"), (&unreferenced, &referenced, "source")] {
+            let mut src = crate::LazyRaster::from_tiff_bytes(src.clone()).unwrap().unwrap();
+            let err = super::update_raster_bytes(&mut src, dst, &Default::default()).unwrap_err();
+            assert!(matches!(&err, crate::Error::Unsupported(m) if m.contains(which)), "{err}");
+        }
     }
 }

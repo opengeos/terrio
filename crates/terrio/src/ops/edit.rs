@@ -107,7 +107,7 @@ fn validate(o: &EditOptions) -> Result<()> {
     exclusive(o.nodata.is_some(), o.unset_nodata, "a nodata value and unsetting it")?;
     exclusive(o.stats || o.approx_stats, o.unset_stats, "computing statistics and unsetting them")?;
     if let Some(b) = o.bbox
-        && !(b[0] < b[2] && b[1] < b[3])
+        && !(b.iter().all(|v| v.is_finite()) && b[0] < b[2] && b[1] < b[3])
     {
         return Err(Error::InvalidArgument("the bounding box is not xmin,ymin,xmax,ymax".into()));
     }
