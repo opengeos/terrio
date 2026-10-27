@@ -93,6 +93,11 @@ documented; additional feature scope belongs in separate tracking issues.
 
 ## 0.3: Processing
 
+- [x] Raster query commands: compare, pixel-info and XYZ export through Rust, CLI/MCP,
+      Python and JavaScript, with windowed reads, native streaming, GDAL 3.13.3
+      comparisons and documented differences. [#303](https://github.com/opengeos/terrio/pull/303),
+      part of the [#289 command tracker](https://github.com/opengeos/terrio/issues/289).
+
 - [x] Warp: reprojection and resampling (nearest, bilinear, cubic, average, mode), with output
       extent and resolution control.
 - [x] Translate: subset by window or bounds, change data type, scale, add overviews, write COGs.

@@ -654,6 +654,8 @@ fn query(
     for (p, attributes) in points {
         let (mut x, mut y) = (p.x, p.y);
         if let Some(t) = &to_raster {
+            // Input-transform errors are fatal, as GDAL 3.13.3: there is no target
+            // pixel to query. Optional output-label transforms may instead be omitted.
             (x, y) = t.transform(x, y).map_err(|e| Error::Crs(format!("cannot transform ({}, {}): {e}", p.x, p.y)))?;
         }
         let (column, line) = match &inv {
@@ -930,7 +932,7 @@ impl PixelInfo {
         let nearest = self.resampling == Resampling::Nearest;
         for l in &self.locations {
             s.push_str("Report:\n");
-            let (p, ln) = if nearest {
+            let (p, ln) = if nearest && l.column.is_finite() && l.line.is_finite() {
                 ((l.column.floor() as i64).to_string(), (l.line.floor() as i64).to_string())
             } else {
                 (g15(l.column), g15(l.line))
@@ -1193,6 +1195,18 @@ mod tests {
         let mut info = pixel_info(&mut r, &[Position::new(0.5, 0.5)], &Default::default()).unwrap();
         info.locations[0].column = f64::NAN;
         assert_eq!(info.off_raster_count(), 1);
+        assert!(info.to_text().contains("(nanP,"));
+        assert!(info.to_json()[0]["column"].is_null());
+    }
+
+    #[test]
+    fn an_untransformable_input_position_is_fatal_as_gdal() {
+        let config =
+            RasterConfig { cols: 2, rows: 2, bands: 1, crs: SpatialRef::from_epsg(3857).unwrap().to_crs_info(), ..Default::default() };
+        let mut raster = LazyRaster::from(RasterDataset::new(Raster::from_data(config, vec![1.; 4]).unwrap(), false));
+        let options = PixelInfoOptions { position_crs: Some(PositionCrs::Crs(SpatialRef::from_epsg(4326).unwrap())), ..Default::default() };
+        assert!(pixel_info(&mut raster, &[Position::new(0., 0.)], &options).is_ok());
+        assert!(pixel_info(&mut raster, &[Position::new(0., 0.), Position::new(0., 100.)], &options).is_err());
     }
 
     #[test]

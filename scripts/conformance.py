@@ -690,6 +690,7 @@ def suite_raster_query(ctx):
         suite.cases.append(Case(result["operation"], result["name"], status, result.get("detail", "") if status != IDENTICAL else ""))
     return suite
 
+
 def suite_raster_pixel(ctx):
     """Pixel-wise raster commands against GDAL's unified ``gdal raster`` commands."""
     return suite_json_ops(

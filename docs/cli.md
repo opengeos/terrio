@@ -971,7 +971,8 @@ time. Comparing two copies of a 51 MB USGS GeoTIFF served over HTTP with `--skip
 --skip-overview` fetched 76.5 MB in 10 requests; the binary comparison of two identical copies
 read both files (103 MB). The MCP tool reports query statuses as results, not execution failures.
 On the command line, status 1 can mean either one difference or an execution error;
-check stderr for errors. `pixel-info` similarly uses status 1 for off-raster positions.
+status 2 can mean two differences or a command-line usage error. Check stderr and the
+report for errors. `pixel-info` similarly uses status 1 for off-raster positions.
 `--skip-all-optional` takes precedence over individual `--skip-*` flags.
 
 Compared with GDAL 3.13.3 in the `raster-query` conformance suite: 20 of 21 cases give the
@@ -1044,6 +1045,11 @@ fractional `unscaled_value`. Copied attributes can overwrite GeoJSON `column`, `
 `input_coordinate` and `extra_content`, and CSV can repeat those names. Rename those
 input fields or select them out to retain computed properties. Vector-file output rejects
 field names colliding with computed columns rather than writing an ambiguous schema.
+
+The diagnostic `json` format uses JSON `null` for non-finite numbers; GDAL-compatible
+GeoJSON can emit its non-standard `NaN`/`Infinity` tokens. Text prints non-finite locations
+as `nan`/`inf`, not as pixel zero. A source-CRS transformation failure aborts the query,
+matching GDAL 3.13.3; it is distinct from an ordinary off-raster position.
 
 ## xyz
 

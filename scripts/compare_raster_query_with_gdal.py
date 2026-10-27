@@ -328,12 +328,6 @@ def pixel_info_cases(data, work, terrio):
             add(f"{name} (CSV)", "differs", f"exit {gc}/{tc}")
             continue
         g, t = csv_rows(go, True), csv_rows(to, False)
-        if "--position-crs" in opts and "dataset" not in opts:
-            # GDAL 3.13 writes the queried position transformed back to the position CRS; 3.12 the input.
-            for r in t:
-                r["geom_x"], r["geom_y"] = (None if v is None else round(v, 6) for v in (r["geom_x"], r["geom_y"]))
-            for r in g:
-                r["geom_x"], r["geom_y"] = (None if v is None else round(v, 6) for v in (r["geom_x"], r["geom_y"]))
         if close(g, t, 0):
             add(f"{name} (CSV)", "identical")
         elif close(g, t, 1e-9):
