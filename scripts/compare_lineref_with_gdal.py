@@ -38,7 +38,7 @@ def run(cmd, timeout=300):
             f"{' '.join(map(str, cmd))} timed out after {timeout}s"
         ) from exc
     if p.returncode != 0:
-        raise RuntimeError(f"{' '.join(cmd)}\n{p.stdout}{p.stderr}")
+        raise RuntimeError(f"{' '.join(map(str, cmd))}\n{p.stdout}{p.stderr}")
     return p.stdout
 
 

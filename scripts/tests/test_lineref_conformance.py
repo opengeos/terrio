@@ -12,7 +12,11 @@ import compare_lineref_with_gdal as comparison
 
 class LinerefCommandTests(unittest.TestCase):
     def test_timeout_becomes_named_runtime_failure(self):
-        with patch.object(comparison.subprocess, "run", side_effect=subprocess.TimeoutExpired("ogrlineref", 1)):
+        with patch.object(
+            comparison.subprocess,
+            "run",
+            side_effect=subprocess.TimeoutExpired("ogrlineref", 1),
+        ):
             with self.assertRaisesRegex(RuntimeError, "ogrlineref.*timed out after 1s"):
                 comparison.run(["ogrlineref", "-get_coord"], timeout=1)
 
@@ -21,6 +25,14 @@ class LinerefCommandTests(unittest.TestCase):
         with patch.object(comparison.subprocess, "run", return_value=result):
             with self.assertRaisesRegex(RuntimeError, "bad parts layer"):
                 comparison.run(["ogrlineref", "-get_coord"])
+
+    def test_path_arguments_keep_failure_diagnostics(self):
+        result = subprocess.CompletedProcess(
+            [Path("ogrlineref")], 1, "", "bad parts layer"
+        )
+        with patch.object(comparison.subprocess, "run", return_value=result):
+            with self.assertRaisesRegex(RuntimeError, "ogrlineref input.gpkg"):
+                comparison.run([Path("ogrlineref"), Path("input.gpkg")])
 
 
 if __name__ == "__main__":

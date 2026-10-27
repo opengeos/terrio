@@ -878,6 +878,7 @@ mod tests {
         parts.features[0].attributes[0] = FieldValue::Null;
         let expected = 100. / as_double(parts.features[0].attributes.get(2));
         assert!((position(&parts, 100., 0.).unwrap() - expected).abs() < 1e-12);
+        assert!(coordinates(&parts, 1250.).is_err());
     }
 
     #[test]
@@ -893,6 +894,21 @@ mod tests {
                 assert!(feature.attributes.iter().take(3).all(|v| as_double(Some(v)).is_finite()));
             }
         }
+    }
+
+    #[test]
+    fn nan_scale_coordinate_and_final_subline_part_match_ogr() {
+        let (lines, points) = layers();
+        let options = LineRefOptions { position_field: "pos".into(), step: 500., ..Default::default() };
+        let mut parts = create_reference(&lines, &points, &options).unwrap();
+        parts.features[0].attributes[2] = FieldValue::Float(f64::NAN);
+        assert_eq!(coordinates(&parts, 1250.).unwrap(), vec![[575., 0., 0.]]);
+        let mut parts = create_reference(&lines, &points, &options).unwrap();
+        parts.features.last_mut().unwrap().attributes[2] = FieldValue::Float(f64::NAN);
+        let output = subline(&parts, 1100., 2700., "subline").unwrap();
+        let Some(Geometry::LineString(coordinates)) = &output.features[0].geometry else { panic!() };
+        let last = coordinates.last().unwrap();
+        assert_eq!((last.x, last.y), (1000., 1000.));
     }
 
     #[test]

@@ -217,7 +217,20 @@ point for a rotated ellipse where 3.13 searches its quadtree: against 3.12.2 a r
 milestones (geographic, reprojected to UTM, and as two routes told apart by a field, one drawn
 backwards): the parts feature by feature, the printed positions and coordinates, and sublines
 vertex by vertex. 72 cases: 69 identical, 3 within tolerance (the UTM lengths of a geographic
-route's end parts, including the first-NULL-route case, 1.1e-11 to 3.8e-11, from terrio's projection rather than PROJ). NULL middle parts are skipped identically to GDAL.
+route's end parts, including the first-NULL-route case, 1.1e-11 to 3.8e-11, from
+terrio's projection rather than PROJ). NULL middle parts are skipped identically to GDAL.
+
+Linear referencing skips infinite milestone positions with a warning before part generation;
+the GDAL 3.13.3 probe did not terminate within five seconds. NULL begin fields in position
+lookup follow OGR numeric NULL-as-zero semantics. Coordinate/subline selection retains OGR
+filter semantics, so NULL starts are not selected there. A GDAL NaN-scale GeoJSON probe returns
+the final vertex for coordinates and the complete last part for multi-part sublines.
+The core in-memory algorithm retains those results. Terrio's GeoJSON reader rejects bare
+NaN tokens; SQLite/GeoPackage persists NaN as NULL.
+
+A 10,001-point fixture with 10,000 coincident XY positions completes a 2x2 nearest grid with
+a search ellipse in 0.094 seconds (78,364 KiB peak child RSS on this machine). This limited
+probe does not establish bounds for larger duplicate-heavy inputs; quadtree order remains GDAL-compatible.
 
 ```sh
 python scripts/compare_vector_grid_with_gdal.py ../terrio-data
@@ -764,5 +777,3 @@ multiband fixture, build profile and thread count. Compare every output pixel, t
 value and georeferencing value as well as memory use. Record fixture details and observations
 in the PR validation notes; they are not runtime or general memory guarantees. These operations
 still materialize input and output, so eliminating intermediates does not make them streaming.
-
-Linear referencing skips infinite milestone positions with a warning before part generation; the GDAL 3.13.3 probe did not terminate within five seconds. NULL begin fields in position lookup follow OGR numeric NULL-as-zero semantics.
