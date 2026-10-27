@@ -140,7 +140,6 @@ use terrio::{RasterArrayExt, RasterDataset};
 
 let mut dem = terrio::open_raster("dem.tif")?;
 let pixels = dem.raster.view3::<f32>()?; // an ArrayView3 of the raster's buffer
-let highest = pixels.fold(f32::MIN, |max, &z| max.max(z));
 for mut band in dem.raster.split_bands_mut::<f32>()? {
     band.mapv_inplace(|z| z * 3.28084); // with rayon: `.into_par_iter()` on the vector
 }

@@ -1,5 +1,9 @@
 //! Owned transfers: a dataset's pixel buffer moved into an owned array, and an owned array's buffer
 //! moved into a dataset, without copying either.
+//!
+//! The stride handling in `into_buffer` and `rebuild` depends on how `ndarray` lays out owned arrays:
+//! the offset of their elements in their buffer, and the strides of axes of length 1. The tests in
+//! `tests/ndarray.rs` cover it; a patch release of `ndarray` that changes it would show there.
 
 // The errors give the input back, a dataset as large as those the moves return on success: boxing
 // it would allocate on every failure.
@@ -123,10 +127,11 @@ impl RasterDataset {
     /// rows, cols)`, whose buffer it takes over without copying it: the inverse of
     /// [`RasterDataset::into_array3`].
     ///
-    /// `header` is the dataset whose pixels the array's replace, normally one without pixels: the
-    /// header `into_array3` returns, or [`LazyRaster::header`](crate::LazyRaster::header). Its
-    /// bands, rows, columns and data type must be the array's. Nothing else in it is checked or
-    /// changed: its nodata values, for one, still describe the pixels.
+    /// `header` is the dataset whose pixels the array's replace: any pixels it holds are dropped.
+    /// It is normally one without pixels: the header `into_array3` returns, or
+    /// [`LazyRaster::header`](crate::LazyRaster::header). Its bands, rows, columns and data type
+    /// must be the array's. Nothing else in it is checked or changed: its nodata values, for one,
+    /// still describe the pixels.
     ///
     /// The array must be in standard (row-major) layout and own exactly its elements: arrays made
     /// by `from_shape_vec`, `zeros` or `into_array3`, for example, but not transposed ones, whose

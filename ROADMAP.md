@@ -509,11 +509,11 @@ WebAssembly (the `terrio-js` npm package):
 The optional `ndarray` feature (off by default): raster pixels as `ndarray` arrays, without
 copying, converting or reordering them.
 
-- [ ] Borrowed and mutable views of a raster's pixels (`RasterArrayExt`): `(bands, rows, cols)`
+- [x] Borrowed and mutable views of a raster's pixels (`RasterArrayExt`): `(bands, rows, cols)`
       arrays and single bands, and mutable band views that do not overlap, for parallel updates.
-- [ ] Owned transfers between datasets and `Array3`/`Array2` (`RasterDataset::into_array3`,
+- [x] Owned transfers between datasets and `Array3`/`Array2` (`RasterDataset::into_array3`,
       `from_array3` and their two-dimensional forms), the metadata kept in a header.
-- [ ] Lazy reads: windows moved into arrays, masks read as `Array2<u8>`
+- [x] Lazy reads: windows moved into arrays, masks read as `Array2<u8>`
       (`LazyRaster::read_mask_array2`).
 - Out of scope: complex bands as `Complex<T>` (they are viewed as their component bands),
   `multidim::Buffer`, and decoding into caller-provided buffers.
