@@ -402,7 +402,7 @@ fn bounds_index(bounds: &[Option<geo::Rect<f64>>]) -> BoundsIndex {
 
 fn candidates(index: &BoundsIndex, bounds: Option<geo::Rect<f64>>) -> Vec<usize> {
     let Some(bounds) = bounds else { return Vec::new() };
-    let mut indices: Vec<_> = index.locate_in_envelope_intersecting(&envelope(bounds)).map(|entry| entry.data).collect();
+    let mut indices: Vec<_> = index.locate_in_envelope_intersecting(envelope(bounds)).map(|entry| entry.data).collect();
     // R-tree traversal order must not change source-pair order or output feature IDs.
     indices.sort_unstable();
     indices
