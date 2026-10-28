@@ -243,8 +243,37 @@ pub(crate) enum Payload {
 }
 
 /// The largest file a signed upload reads into memory, to hash and send it from one read, when
-/// its hash is not known; larger files are read once to hash them and again to send them.
+/// its hash is not known. Larger files are sent with an unsigned payload over HTTPS (read once,
+/// to send them), and over plain HTTP read once to hash them and again to send them.
 const SIGNED_BUFFER_LIMIT: u64 = 8 << 20;
+
+/// The `x-amz-content-sha256` of a SigV4 request whose body the signature does not cover.
+const UNSIGNED_PAYLOAD: &str = "UNSIGNED-PAYLOAD";
+
+#[cfg(test)]
+thread_local! {
+    /// Treats plain HTTP URLs as HTTPS in [`signs_payload`], so that tests can send unsigned
+    /// payloads to a local server without TLS.
+    static ASSUME_HTTPS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Whether `url` is sent over TLS.
+fn is_https(url: &str) -> bool {
+    #[cfg(test)]
+    if ASSUME_HTTPS.with(|c| c.get()) {
+        return true;
+    }
+    url.get(..8).is_some_and(|scheme| scheme.eq_ignore_ascii_case("https://"))
+}
+
+/// Whether a SigV4-signed request to `url` covers `payload` (prepared by
+/// [`Payload::for_signing`]) with its SHA-256. A local file larger than [`SIGNED_BUFFER_LIMIT`]
+/// whose hash is not known is sent over HTTPS with `UNSIGNED-PAYLOAD`, as the AWS SDKs send S3
+/// uploads over HTTPS, so that it is read once: TLS protects the body in transit. Over plain
+/// HTTP, the signature covers it.
+fn signs_payload(url: &str, payload: &Payload) -> bool {
+    !(matches!(payload, Payload::File(_, None)) && is_https(url))
+}
 
 #[cfg(test)]
 thread_local! {
@@ -341,6 +370,12 @@ impl<W: std::io::Write> std::io::Write for HashingWriter<W> {
     }
 }
 
+/// A file's size and modification time, to tell whether it changed while it was uploaded.
+fn file_stamp(path: &Path) -> Result<(u64, Option<std::time::SystemTime>)> {
+    let meta = std::fs::metadata(path)?;
+    Ok((meta.len(), meta.modified().ok()))
+}
+
 /// A response to a write request.
 struct Reply {
     status: u16,
@@ -394,16 +429,38 @@ fn write_request_with(
         Remote::S3(o) => format!("{}{query}", o.url(region)),
         Remote::Url(u) => append_query(u, query),
     };
-    // Signed requests cover the body (no `UNSIGNED-PAYLOAD`): a file whose hash is not known is
-    // read into memory when small, and otherwise once to hash it and again to send it, as
-    // docs/cli.md records.
+    // A signed request's file whose hash is not known is read into memory when small. A larger one
+    // is sent unsigned over HTTPS, and over plain HTTP read once to hash it and again to send it,
+    // as docs/cli.md records. Region discovery and same-origin redirects keep the scheme, so the
+    // choice holds for every attempt.
     let payload = if creds.is_some() { payload.for_signing()? } else { payload };
     let payload = &payload;
-    let payload_hash = if creds.is_some() { payload.sha256()? } else { String::new() };
-    let length = payload.len()?;
     let mut url = base_url(region.as_deref());
+    let payload_hash = match &creds {
+        None => String::new(),
+        Some(_) if signs_payload(&url, payload) => payload.sha256()?,
+        Some(_) => UNSIGNED_PAYLOAD.to_string(),
+    };
+    let unsigned = payload_hash == UNSIGNED_PAYLOAD;
     let (mut attempt, mut redirects, mut discovered) = (0u32, 0u32, false);
     loop {
+        // A signed payload hash also made the service refuse a file that changed while it was sent.
+        // Without one, the file's size and modification time are compared before and after (best
+        // effort: a same-size change within the timestamp resolution goes unnoticed). Each attempt
+        // stamps the file and reads its length before sending it, so that a change between the two
+        // is caught and a retry covers the file as it is then.
+        let unsigned_file = match payload {
+            Payload::File(path, _) if unsigned => Some((path, file_stamp(path)?)),
+            _ => None,
+        };
+        // A file's length comes from the handle its body is read from, so the header and the body agree.
+        let (length, mut file) = match payload {
+            Payload::File(path, _) => {
+                let f = std::fs::File::open(path)?;
+                (f.metadata()?.len(), Some(f))
+            }
+            _ => (payload.len()?, None),
+        };
         let mut builder = ureq::http::Request::builder().method(method).uri(&url);
         for (k, v) in headers {
             builder = builder.header(k.as_str(), v.as_str());
@@ -433,8 +490,8 @@ fn write_request_with(
         let result = match payload {
             Payload::Empty => builder.body(()).map_err(|e| Error::Http(e.to_string())).map(|r| agent.run(r)),
             Payload::Bytes(b) => builder.body(b.as_slice()).map_err(|e| Error::Http(e.to_string())).map(|r| agent.run(r)),
-            Payload::File(p, _) => {
-                let f = std::fs::File::open(p)?;
+            Payload::File(..) => {
+                let f = file.take().expect("a file payload is opened above");
                 builder.body(f).map_err(|e| Error::Http(e.to_string())).map(|r| agent.run(r))
             }
         }?;
@@ -443,7 +500,11 @@ fn write_request_with(
                 Ok(r) => eprintln!(
                     "terrio: {method} {} ({length} bytes{}) -> {}",
                     redact(&url),
-                    if signed { ", signed" } else { "" },
+                    match (signed, unsigned) {
+                        (true, true) => ", signed, unsigned payload",
+                        (true, false) => ", signed",
+                        _ => "",
+                    },
                     r.status().as_u16()
                 ),
                 Err(e) => eprintln!("terrio: {method} {} -> {e}", redact(&url)),
@@ -500,6 +561,17 @@ fn write_request_with(
             || (accept == Accept::Missing && status == 404)
             || (accept == Accept::Unimplemented && matches!(status, 400 | 405 | 501))
         {
+            if (200..300).contains(&status)
+                && let Some((path, before)) = &unsigned_file
+                // A file removed or renamed since is reported as changed too.
+                && file_stamp(path).ok().as_ref() != Some(before)
+            {
+                return Err(Error::Io(std::io::Error::other(format!(
+                    "{}: changed while it was uploaded to {}; the object may not match it, upload it again",
+                    path.display(),
+                    redact(&url)
+                ))));
+            }
             return Ok(Reply { status, body });
         }
         let text = String::from_utf8_lossy(&body[..body.len().min(300)]).into_owned();
@@ -756,25 +828,29 @@ mod tests {
         body
     }
 
-    /// Answers one request with 200: its `x-amz-content-sha256` header and body.
-    fn signed_reply(mut stream: TcpStream) -> (String, Vec<u8>) {
+    /// Answers one request with 200: its request line's path, its headers (names in lower case)
+    /// and its body.
+    fn signed_reply(mut stream: TcpStream) -> (String, Vec<(String, String)>, Vec<u8>) {
         stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
         let mut reader = BufReader::new(stream.try_clone().unwrap());
-        let (mut length, mut hash, mut line) = (0, String::new(), String::new());
+        let (mut length, mut headers, mut line) = (0, Vec::new(), String::new());
+        reader.read_line(&mut line).unwrap();
+        let path = line.split(' ').nth(1).unwrap().to_string();
+        line.clear();
         while reader.read_line(&mut line).unwrap() > 2 {
             if let Some((key, value)) = line.split_once(':') {
-                match key.to_ascii_lowercase().as_str() {
-                    "content-length" => length = value.trim().parse().unwrap(),
-                    "x-amz-content-sha256" => hash = value.trim().to_string(),
-                    _ => {}
+                let (key, value) = (key.trim().to_ascii_lowercase(), value.trim().to_string());
+                if key == "content-length" {
+                    length = value.parse().unwrap();
                 }
+                headers.push((key, value));
             }
             line.clear();
         }
         let mut body = vec![0; length];
         reader.read_exact(&mut body).unwrap();
         write!(stream, "HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
-        (hash, body)
+        (path, headers, body)
     }
 
     #[test]
@@ -783,11 +859,21 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let creds = Credentials { access_key_id: "TESTKEY".into(), secret_access_key: "secret".into(), session_token: None };
         let limit = SIGNED_BUFFER_LIMIT as usize;
-        // (size, hash known, bytes read besides sending the file): a small file is read into
-        // memory once and sent from there; a larger one is read to hash it, then sent; a file
-        // hashed as it was written is only sent. Before, each was read twice.
-        for (size, known, reads) in [(100_000, false, 100_000), (limit + 1, false, limit + 1), (100_000, true, 0)] {
-            let path = tmp.path().join(format!("upload-{size}-{known}"));
+        // (size, hash known, over HTTPS, bytes read besides sending the file, payload signed): a
+        // small file is read into memory once and sent from there; a larger one is read to hash
+        // it, then sent, over plain HTTP, and only sent, unsigned, over HTTPS; a file hashed as it
+        // was written is only sent, signed.
+        for (size, known, https, reads, signed) in [
+            (100_000, false, false, 100_000, true),
+            (100_000, false, true, 100_000, true),
+            (limit, false, true, limit, true),
+            (limit + 1, false, false, limit + 1, true),
+            (limit + 1, false, true, 0, false),
+            (100_000, true, false, 0, true),
+            (limit + 1, true, true, 0, true),
+        ] {
+            let case = format!("{size} bytes, hash known: {known}, HTTPS: {https}");
+            let path = tmp.path().join(format!("upload-{size}-{known}-{https}"));
             let data: Vec<u8> = (0..size).map(|i| (i % 251) as u8).collect();
             std::fs::write(&path, &data).unwrap();
             let sha256 = s3::hex(&Sha256::digest(&data));
@@ -796,11 +882,173 @@ mod tests {
             let remote = Remote::Url(format!("http://{}/bucket/key", listener.local_addr().unwrap()));
             let server = std::thread::spawn(move || signed_reply(listener.accept().unwrap().0));
             FILE_READS.with(|c| c.set(0));
-            write_request_with("PUT", &remote, "", &[], payload, Accept::Success, (Some(creds.clone()), None)).unwrap();
-            let (hash, body) = server.join().unwrap();
-            assert_eq!(FILE_READS.with(|c| c.get()), reads as u64, "{size} bytes, hash known: {known}");
-            assert_eq!(hash, sha256);
-            assert!(body == data);
+            ASSUME_HTTPS.with(|c| c.set(https));
+            let sent = write_request_with("PUT", &remote, "", &[], payload, Accept::Success, (Some(creds.clone()), None));
+            ASSUME_HTTPS.with(|c| c.set(false));
+            sent.unwrap();
+            let (target, headers, body) = server.join().unwrap();
+            assert_eq!(FILE_READS.with(|c| c.get()), reads as u64, "{case}");
+            assert!(body == data, "{case}");
+            let header = |name: &str| headers.iter().find(|(k, _)| k == name).map(|(_, v)| v.clone()).unwrap();
+            let content_sha256 = header("x-amz-content-sha256");
+            assert_eq!(content_sha256, if signed { sha256.as_str() } else { UNSIGNED_PAYLOAD }, "{case}");
+            // The canonical request has the same payload hash as the header: recomputed from the
+            // headers received, the signature is the one sent.
+            let authorization = header("authorization");
+            let signed_names = authorization.split("SignedHeaders=").nth(1).unwrap().split(',').next().unwrap();
+            assert!(signed_names.split(';').any(|n| n == "x-amz-content-sha256"), "{case}: {authorization}");
+            let signed_headers: Vec<(String, String)> = signed_names.split(';').map(|n| (n.to_string(), header(n))).collect();
+            let (path, query) = target.split_once('?').unwrap_or((&target, ""));
+            let expected =
+                s3::authorization("PUT", path, query, &signed_headers, &content_sha256, &creds, "us-east-1", "s3", &header("x-amz-date"));
+            assert_eq!(authorization, expected, "{case}");
+        }
+    }
+
+    #[test]
+    fn unsigned_uploads_fail_when_the_file_changes_while_it_is_sent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let creds = Credentials { access_key_id: "TESTKEY".into(), secret_access_key: "secret".into(), session_token: None };
+        let path = tmp.path().join("growing");
+        std::fs::write(&path, vec![7u8; SIGNED_BUFFER_LIMIT as usize + 1]).unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let remote = Remote::Url(format!("http://{}/bucket/key", listener.local_addr().unwrap()));
+        let appended = path.clone();
+        // The file grows after its body is received, before the service answers.
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let (mut length, mut line) = (0, String::new());
+            while reader.read_line(&mut line).unwrap() > 2 {
+                if let Some((key, value)) = line.split_once(':')
+                    && key.eq_ignore_ascii_case("content-length")
+                {
+                    length = value.trim().parse().unwrap();
+                }
+                line.clear();
+            }
+            let mut body = vec![0; length];
+            reader.read_exact(&mut body).unwrap();
+            std::fs::OpenOptions::new().append(true).open(&appended).unwrap().write_all(b"more").unwrap();
+            write!(stream, "HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+        });
+        ASSUME_HTTPS.with(|c| c.set(true));
+        let sent = write_request_with("PUT", &remote, "", &[], file_payload(&path), Accept::Success, (Some(creds), None));
+        ASSUME_HTTPS.with(|c| c.set(false));
+        server.join().unwrap();
+        let Err(err) = sent else { panic!("an upload of a file that changed succeeded") };
+        assert!(err.to_string().contains("changed while it was uploaded"), "{err}");
+    }
+
+    #[test]
+    fn unsigned_uploads_fail_when_the_file_is_removed_while_it_is_sent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let creds = Credentials { access_key_id: "TESTKEY".into(), secret_access_key: "secret".into(), session_token: None };
+        let path = tmp.path().join("removed");
+        std::fs::write(&path, vec![7u8; SIGNED_BUFFER_LIMIT as usize + 1]).unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let remote = Remote::Url(format!("http://{}/bucket/key", listener.local_addr().unwrap()));
+        let removed = path.clone();
+        // The file is removed after its body is received, before the service answers 200.
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let (mut length, mut line) = (0, String::new());
+            while reader.read_line(&mut line).unwrap() > 2 {
+                if let Some((key, value)) = line.split_once(':')
+                    && key.eq_ignore_ascii_case("content-length")
+                {
+                    length = value.trim().parse().unwrap();
+                }
+                line.clear();
+            }
+            let mut body = vec![0; length];
+            reader.read_exact(&mut body).unwrap();
+            std::fs::remove_file(&removed).unwrap();
+            write!(stream, "HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+        });
+        ASSUME_HTTPS.with(|c| c.set(true));
+        let sent = write_request_with("PUT", &remote, "", &[], file_payload(&path), Accept::Success, (Some(creds), None));
+        ASSUME_HTTPS.with(|c| c.set(false));
+        server.join().unwrap();
+        let Err(err) = sent else { panic!("an upload of a file that was removed succeeded") };
+        assert!(err.to_string().contains("changed while it was uploaded"), "{err}");
+    }
+
+    #[test]
+    fn unsigned_uploads_send_the_whole_file_again_when_retried_or_redirected() {
+        let tmp = tempfile::tempdir().unwrap();
+        let creds = Credentials { access_key_id: "TESTKEY".into(), secret_access_key: "secret".into(), session_token: None };
+        let path = tmp.path().join("resent");
+        let data: Vec<u8> = (0..SIGNED_BUFFER_LIMIT + 1).map(|i| (i % 251) as u8).collect();
+        std::fs::write(&path, &data).unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let remote = Remote::Url(format!("http://{}/bucket/key", listener.local_addr().unwrap()));
+        // A transient error, then a same-origin redirect, then the success: each one sends the file.
+        let server = std::thread::spawn(move || {
+            [(503, ""), (307, "/other"), (200, "")].map(|(status, location)| reply(listener.accept().unwrap().0, status, location))
+        });
+        ASSUME_HTTPS.with(|c| c.set(true));
+        let sent = write_request_with("PUT", &remote, "", &[], file_payload(&path), Accept::Success, (Some(creds), None));
+        ASSUME_HTTPS.with(|c| c.set(false));
+        let bodies = server.join().unwrap();
+        sent.unwrap();
+        assert!(bodies.iter().all(|body| *body == data), "every attempt sends the whole file");
+    }
+
+    #[test]
+    fn unsigned_retries_send_the_file_as_it_is_then() {
+        let tmp = tempfile::tempdir().unwrap();
+        let creds = Credentials { access_key_id: "TESTKEY".into(), secret_access_key: "secret".into(), session_token: None };
+        let path = tmp.path().join("edited");
+        let original = vec![7u8; SIGNED_BUFFER_LIMIT as usize + 1];
+        std::fs::write(&path, &original).unwrap();
+        let edited = vec![9u8; SIGNED_BUFFER_LIMIT as usize + 5];
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let remote = Remote::Url(format!("http://{}/bucket/key", listener.local_addr().unwrap()));
+        let edit = path.clone();
+        let replacement = edited.clone();
+        // The file is rewritten, longer, after the first attempt's body is received and before its
+        // 503, so the retry sends the new contents with their length.
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let (mut length, mut line) = (0, String::new());
+            while reader.read_line(&mut line).unwrap() > 2 {
+                if let Some((key, value)) = line.split_once(':')
+                    && key.eq_ignore_ascii_case("content-length")
+                {
+                    length = value.trim().parse().unwrap();
+                }
+                line.clear();
+            }
+            let mut first = vec![0; length];
+            reader.read_exact(&mut first).unwrap();
+            std::fs::write(&edit, &replacement).unwrap();
+            write!(stream, "HTTP/1.1 503 Test\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+            (first, reply(listener.accept().unwrap().0, 200, ""))
+        });
+        ASSUME_HTTPS.with(|c| c.set(true));
+        let sent = write_request_with("PUT", &remote, "", &[], file_payload(&path), Accept::Success, (Some(creds), None));
+        ASSUME_HTTPS.with(|c| c.set(false));
+        let (first, second) = server.join().unwrap();
+        assert!(first == original, "the first attempt sends the file as it was");
+        sent.unwrap();
+        assert!(second == edited, "the retry sends the file as it is then");
+    }
+
+    #[test]
+    fn only_https_uploads_of_large_unhashed_files_leave_the_payload_unsigned() {
+        let file = file_payload(Path::new("large"));
+        assert!(!signs_payload("https://bucket.s3.amazonaws.com/key", &file));
+        assert!(!signs_payload("HTTPS://bucket.s3.amazonaws.com/key", &file));
+        assert!(signs_payload("http://localhost:9000/bucket/key", &file));
+        // In memory (small files), hashed as written, or empty: signed over HTTPS too.
+        for payload in [Payload::Bytes(vec![1; 10]), hashed_file_payload(Path::new("large"), "00".into()), Payload::Empty] {
+            assert!(signs_payload("https://bucket.s3.amazonaws.com/key", &payload));
         }
     }
 

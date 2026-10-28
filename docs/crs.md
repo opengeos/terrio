@@ -40,8 +40,10 @@ Rotated-pole grids (regional climate models: CORDEX, COSMO-CLM) are read as PROJ
 (`+proj=ob_tran +o_proj=longlat` with `+o_lat_p`, `+o_lon_p` and `+lon_0`), as the WKT2 derived
 geographic CRSs PROJ and GDAL write (the netCDF CF, GRIB and PROJ `ob_tran` pole rotations) and as
 CF `rotated_latitude_longitude` grid mappings. Their coordinates are in degrees, but they are not
-geographic CRSs: `is_geographic()` is false, and `is_rotated_pole()` is true. Other `ob_tran`
-forms, and other WKT2 deriving conversions, are errors.
+geographic CRSs: `is_geographic()` is false, and `is_rotated_pole()` is true. The pole may
+also be given as PROJ's other forms (see
+[General oblique transformation](#general-oblique-transformation)) in a PROJ string; other WKT2
+deriving conversions are errors.
 
 Coordinates are always in GIS order: x (easting, longitude) first, then y (northing, latitude),
 whatever the axis order the authority defines.
@@ -662,3 +664,27 @@ method.
 The `seed-igh` fixture keeps its PROJ 9.9.0 oracle. A PROJ 9.8.1 corpus covers
 8 configurations and 5,120 samples (see Testing). Allowances are 1 mm projected
 and 1e-8 degrees inverse.
+
+## General oblique transformation
+
+`+proj=ob_tran` with an `+o_proj` other than `longlat` is computed as PROJ 9.8.1 does
+(`ob_tran.cpp`): the longitude, relative to `+lon_0`, and latitude are rotated to a new pole,
+then projected by `+o_proj`'s own formulas, with its own parameters (`+lat_ts`, `+lat_1`,
+`+zone`...) and the CRS's figure, which may be an ellipsoid. As in PROJ, the rotated projection's
+own central meridian and false easting and northing do not apply: `+lon_0`, `+units`, `+x_0` and
+`+y_0` apply to the whole. The new pole is `+o_lat_p` and `+o_lon_p`; or a centre `+o_lon_c`,
+`+o_lat_c` and azimuth `+o_alpha`; or two points of the new equator `+o_lon_1`, `+o_lat_1`,
+`+o_lon_2` and `+o_lat_2`, refused where PROJ refuses them. A pole latitude within 1e-10
+radians of 0 is PROJ's transverse case. These forms apply to rotated-pole grids
+(`+o_proj=longlat`) too.
+
+PROJ strings, GDAL's WKT1 (which carries the PROJ string) and PROJ's WKT2 method
+`PROJ ob_tran o_proj=...` are read; terrio writes the WKT1 form. PROJJSON export refuses
+`ob_tran`. Where a projection's own refusals are stricter than PROJ's, they apply rotated too:
+PROJ's spherical sinusoidal inverse returns a latitude past a pole, which its rotation turns into
+a point, and terrio's refuses it; terrio's Mercator refuses the poles. Where terrio is more
+lenient, that applies rotated too: its `utm` accepts a sphere, which PROJ refuses.
+
+The `seed-ob_tran-moll` fixture keeps its PROJ 9.9.0 oracle. A PROJ 9.8.1 corpus covers
+15 configurations and 4,680 samples (see Testing). Allowances are 1 mm projected and 1e-8
+degrees inverse.
