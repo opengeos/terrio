@@ -13,6 +13,7 @@ use terrio::ops::pixel::{NodataToAlphaOptions, ReclassifyOptions, UnscaleOptions
 
 /// Registers the functions in the module.
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_function(wrap_pyfunction!(blend, m)?)?;
     m.add_function(wrap_pyfunction!(unscale, m)?)?;
     m.add_function(wrap_pyfunction!(nodata_to_alpha, m)?)?;
     m.add_function(wrap_pyfunction!(reclassify, m)?)?;
@@ -196,4 +197,27 @@ fn as_features(
         })
         .py()?;
     Ok(PyLayer { inner: layer })
+}
+
+/// Blends equal-sized Byte images. Operator names match GDAL; opacity is 0..100.
+#[pyfunction]
+#[pyo3(signature = (src, overlay, dst=None, *, operator="src-over", opacity=100, format=None, compress=None, tile_size=None, bigtiff=false))]
+#[allow(clippy::too_many_arguments)]
+fn blend(
+    py: Python<'_>,
+    src: &Bound<'_, PyAny>,
+    overlay: &Bound<'_, PyAny>,
+    dst: Option<&str>,
+    operator: &str,
+    opacity: u8,
+    format: Option<&str>,
+    compress: Option<String>,
+    tile_size: Option<u32>,
+    bigtiff: bool,
+) -> PyResult<PyRaster> {
+    let o = terrio::ops::blend::BlendOptions { operator: terrio::ops::blend::BlendOperator::parse(operator).py()?, opacity };
+    let base = input_raster(py, src)?;
+    let overlay = input_raster(py, overlay)?;
+    let out = py.detach(|| terrio::ops::blend::blend(&base, &overlay, &o)).py()?;
+    finish_raster(py, out, dst, format, compress, tile_size, bigtiff)
 }

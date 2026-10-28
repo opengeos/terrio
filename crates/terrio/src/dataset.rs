@@ -23,6 +23,8 @@ pub struct RasterDataset {
     pub band_nodata: Vec<Option<f64>>,
     /// Descriptive band properties, in band order; empty entries use driver defaults.
     pub band_metadata: Vec<BandMetadata>,
+    /// RGBA palette entries of a single-band indexed image, empty for direct colors.
+    pub color_table: Vec<[u8; 4]>,
     /// Ground control points in the raster CRS, retained instead of inventing an affine grid.
     pub gcps: Vec<Gcp>,
     /// The geotransform of a rotated or south-up raster, which the raster's origin and cell sizes
@@ -155,6 +157,7 @@ impl RasterDataset {
             has_nodata,
             band_nodata: Vec::new(),
             band_metadata: Vec::new(),
+            color_table: Vec::new(),
             gcps: Vec::new(),
             affine: None,
             complex: false,
@@ -723,12 +726,7 @@ pub fn write_raster(raster: &Raster, path: &str, options: &RasterWriteOptions) -
 /// ```
 pub fn write_raster_dataset(ds: &RasterDataset, path: &str, options: &RasterWriteOptions) -> Result<()> {
     let driver = options.driver.or_else(|| RasterDriver::for_extension(path));
-    let options = RasterWriteOptions {
-        geo_transform: options.geo_transform.or(ds.affine),
-        gcps: options.inherited_gcps(ds, driver),
-        band_metadata: if options.band_metadata.is_empty() { ds.band_metadata.clone() } else { options.band_metadata.clone() },
-        ..options.clone()
-    };
+    let options = options.inherited_from(ds, driver);
     let pam = needs_nodata_pam(ds) && matches!(driver, Some(RasterDriver::GTiff | RasterDriver::Cog));
     let tag = if matches!(driver, Some(RasterDriver::GTiff | RasterDriver::Cog)) { tiff_nodata(ds) } else { ds.nodata() };
     write_raster_with_nodata(&ds.raster, tag, ds.complex, path, &options)?;
@@ -975,6 +973,32 @@ pub(crate) fn ensure_writable_location(path: &str) -> Result<()> {
 }
 
 impl RasterWriteOptions {
+    /// Metadata inheritance shared by whole-image and row-streamed TIFF writers.
+    pub(crate) fn inherited_from(&self, ds: &RasterDataset, driver: Option<RasterDriver>) -> Self {
+        let co = |key: &str| self.creation_options.iter().rev().find(|(k, _)| k.eq_ignore_ascii_case(key)).map(|(_, v)| v.as_str());
+        let compression = self.compression.as_deref().or_else(|| co("COMPRESS")).unwrap_or_default();
+        let palette_allowed = !compression.eq_ignore_ascii_case("JPEG")
+            && !compression.eq_ignore_ascii_case("WEBP")
+            && co("PHOTOMETRIC").is_none_or(|p| p.eq_ignore_ascii_case("PALETTE"));
+        let color_table = if self.color_table.is_empty() && palette_allowed { ds.color_table.clone() } else { self.color_table.clone() };
+        let mut band_metadata = if self.band_metadata.is_empty() { ds.band_metadata.clone() } else { self.band_metadata.clone() };
+        // A caller requesting grayscale/unsupported palette compression writes indices
+        // as gray values. Do not retain an inherited Palette color-interpretation role.
+        if color_table.is_empty() && !ds.color_table.is_empty() && self.band_metadata.is_empty() {
+            for b in &mut band_metadata {
+                if b.color_interp.as_deref() == Some("Palette") {
+                    b.color_interp = Some("Gray".into());
+                }
+            }
+        }
+        Self {
+            geo_transform: self.geo_transform.or(ds.affine),
+            gcps: self.inherited_gcps(ds, driver),
+            color_table,
+            band_metadata,
+            ..self.clone()
+        }
+    }
     pub(crate) fn inherited_gcps(&self, ds: &RasterDataset, driver: Option<RasterDriver>) -> Vec<Gcp> {
         if matches!(driver, Some(RasterDriver::GTiff | RasterDriver::Cog))
             && self.gcps.is_empty()

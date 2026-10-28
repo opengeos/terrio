@@ -647,3 +647,11 @@ GDAL raster-management source copyrights (MIT):
 - swig/python/gdal-utils/osgeo_utils/gdalmove.py:
   Copyright (c) 2012, Frank Warmerdam; Copyright (c) 2021, Idan Miara
 Licensed under the MIT permission and warranty terms reproduced above for GDAL.
+
+Raster image blending (crates/terrio/src/ops/blend.rs)
+---------------------------------------------------
+Integer composition and HSV formulas ported from GDAL 3.13.3,
+apps/gdalalg_raster_blend.cpp (https://github.com/OSGeo/gdal).
+Copyright (c) 2025, Even Rouault <even dot rouault at spatialys.com>
+Copyright (c) 2009, Frank Warmerdam
+SPDX-License-Identifier: MIT. See the GDAL license text above.

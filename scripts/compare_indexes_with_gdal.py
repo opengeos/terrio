@@ -91,7 +91,7 @@ def main():
         args.work_dir.mkdir(parents=True, exist_ok=True)
     with nullcontext(args.work_dir) if args.work_dir else tempfile.TemporaryDirectory(prefix="terrio-index-") as directory:
         work = Path(directory)
-        cog, dem = data / "cog.tif", data / "USGS_13_n38w122.tif"
+        cog, dem = data / "cog.tif", data / "usgs_dem.tif"
         if not dem.exists():
             dem = next(data.glob("USGS*.tif"))
         assert cog.exists() and dem.exists(), "need real COG and USGS DEM fixtures"

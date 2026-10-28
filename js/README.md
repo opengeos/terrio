@@ -240,6 +240,12 @@ with `takeWarnings()` after an operation. `warp` also accepts `kernelVersion: "3
 for GDAL 3.13 resampling; `"3.12"` remains the default. GeoTIFF/COG outputs preserve
 PixelIsPoint metadata and corner georeferencing.
 
+`blend(color, overlay, {operator: "multiply", opacity: 75})` composes same-sized
+Byte datasets (gray, gray-alpha, RGB or RGBA). All ten GDAL raster blend operators
+are available. Alpha controls transparency; nodata/masks are ignored. Inputs and
+output are materialized; see the CLI blend reference for band-count rules.
+
+
 ### Footprint indexes and GTI catalogs
 
 ```js

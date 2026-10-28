@@ -72,6 +72,7 @@ __all__ = [
     "enhance",
     "enhance_luts",
     "unscale",
+    "blend",
     "nodata_to_alpha",
     "reclassify",
     "as_features",
@@ -1826,4 +1827,19 @@ def raster_index(sources: Any, dst: str | None = None, **kwargs: Any) -> Dataset
 
 def vector_index(sources: Any, dst: str | None = None, **kwargs: Any) -> DatasetIndex:
     """Create source layer envelope polygons, retaining original layer indexes."""
+    ...
+
+def blend(
+    src: str | Raster,
+    overlay: str | Raster,
+    dst: str | None = None,
+    *,
+    operator: str = "src-over",
+    opacity: int = 100,
+    format: str | None = None,
+    compress: str | None = None,
+    tile_size: int | None = None,
+    bigtiff: bool = False,
+) -> Raster:
+    """Blends equal-sized Byte images, with GDAL operators and opacity 0..100."""
     ...

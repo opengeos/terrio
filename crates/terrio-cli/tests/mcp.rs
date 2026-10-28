@@ -140,21 +140,28 @@ fn pixel_tools_are_discoverable_and_execute() {
     let (unscaled, alpha, classes, pixels) = (path("unscaled.tif"), path("alpha.tif"), path("classes.tif"), path("pixels.csv"));
     let input = input.to_str().unwrap();
     let at_mapping = format!("@{}", mapping.to_str().unwrap());
+    let image = path("byte.tif");
+    let blended = path("blended.tif");
+    let cfg = terrio::RasterConfig { cols: 3, rows: 1, data_type: terrio::DataType::U8, ..Default::default() };
+    let raster = terrio::RasterDataset::new(terrio::Raster::from_data(cfg, vec![30., 80., 170.]).unwrap(), false);
+    terrio::write_raster_dataset(&raster, &image, &Default::default()).unwrap();
     let replies = session(&[
         json!({"jsonrpc":"2.0","id":1,"method":"tools/list"}),
         call(2, "unscale", &[input, &unscaled, "--ot", "Float64"]),
         call(3, "nodata-to-alpha", &[input, &alpha]),
         call(4, "reclassify", &[input, &classes, "-m", &at_mapping]),
         call(5, "as-features", &[input, &pixels, "--skip-nodata", "--include-row-col"]),
+        call(6, "blend", &[&image, &image, &blended, "--operator", "multiply"]),
     ]);
     let tools = replies[&1]["result"]["tools"].as_array().unwrap();
-    for name in ["unscale", "nodata-to-alpha", "reclassify", "as-features"] {
+    for name in ["unscale", "nodata-to-alpha", "reclassify", "as-features", "blend"] {
         assert!(tools.iter().any(|t| t["name"] == name), "{name}");
     }
-    for id in 2..=5 {
+    for id in 2..=6 {
         assert_eq!(replies[&id]["result"]["isError"], false, "{:?}", replies[&id]);
     }
     assert_eq!(terrio::open_raster(&unscaled).unwrap().raster.data_type, terrio::DataType::F64);
+    assert_eq!(terrio::open_raster(&blended).unwrap().raster.data.get_f64(0), 4.);
     let a = terrio::open_raster(&alpha).unwrap();
     assert_eq!((a.raster.bands, a.raster.get(1, 0, 1), a.raster.get(1, 0, 2)), (2, 0.0, 255.0));
     let c = terrio::open_raster(&classes).unwrap();

@@ -159,3 +159,30 @@ pub fn as_features(a: AsFeaturesArgs) -> terrio::Result<()> {
         mode,
     )
 }
+
+/// Raster image composition.
+#[derive(clap::Args)]
+pub struct BlendArgs {
+    /// Color input raster.
+    input: String,
+    /// Overlay raster (same dimensions).
+    overlay: String,
+    /// Output raster.
+    output: String,
+    /// src-over, hsv-value, multiply, screen, overlay, hard-light, darken,
+    /// lighten, color-dodge or color-burn.
+    #[arg(long, default_value = "src-over")]
+    operator: String,
+    /// Overlay opacity percentage (0..100).
+    #[arg(long, default_value_t = 100)]
+    opacity: u8,
+    #[command(flatten)]
+    out: OutputArgs,
+}
+/// Runs raster blending.
+pub fn blend(a: BlendArgs) -> terrio::Result<()> {
+    let options = terrio::ops::blend::BlendOptions { operator: terrio::ops::blend::BlendOperator::parse(&a.operator)?, opacity: a.opacity };
+    let base = open(&a.input)?;
+    let overlay = open(&a.overlay)?;
+    a.out.write(&terrio::ops::blend::blend(&base, &overlay, &options)?, &a.output)
+}

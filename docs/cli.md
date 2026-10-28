@@ -55,6 +55,7 @@ terrio <COMMAND>
 
   viewshed        Single-observer visibility or minimum visible height (like gdal_viewshed)
   sieve           Merge raster areas smaller than a threshold into their largest neighbour (like gdal_sieve.py)
+  blend           Compose Byte images with ten operators, alpha and opacity (like gdal raster blend)
   unscale         Apply band scales and offsets to get physical values (like gdal raster unscale)
   nodata-to-alpha Replace nodata values with an alpha band (like gdal raster nodata-to-alpha)
   reclassify      Map values or ranges of values to new values (like gdal raster reclassify)
@@ -1961,6 +1962,43 @@ region spans its height. Overview and raster-update
 arithmetic uses Float64 and warns for Int64/UInt64: values above 2^53 may lose precision,
 including nearest/mode overviews. Raster update holds the warped window and the full
 width of the destination rows it rewrites in memory.
+
+### blend
+
+`terrio blend COLOR OVERLAY OUTPUT --operator multiply --opacity 75` composes
+same-sized Byte images by pixel position. CLI/MCP `blend`, Rust
+`ops::blend::blend`, Python `terrio.blend(src, overlay, dst=None, operator=..., opacity=...)`
+and JavaScript `blend(src, overlay, {operator, opacity})` share the implementation.
+
+Operators are `src-over` (default), `hsv-value`, `multiply`, `screen`, `overlay`,
+`hard-light`, `darken`, `lighten`, `color-dodge` and `color-burn`. Opacity is an integer
+percentage from 0 to 100 (default 100). One/two bands mean gray/gray-alpha;
+three/four mean RGB/RGBA, independently of color interpretation tags. GeoTIFF and
+PNG indexed images expand their palettes to RGBA. HSV requires RGB/RGBA color
+input; darken/lighten require equal color channel counts. Other types and complex
+images are refused. No alignment or reprojection is performed: prepare matching
+inputs with `warp` first. Transparency uses alpha; nodata and separate masks do
+not affect composition, matching GDAL. Palette expansion uses palette transparency
+and makes the palette nodata entry transparent.
+
+Output band count follows the color input, except multiply/screen/overlay/hard-light
+swap inputs when the overlay has more bands, as GDAL does. Output CRS and transform
+follow that effective color input. Outputs have color interpretations but no nodata,
+packing scales or descriptive metadata. Inputs and output are materialized in memory;
+this command does not offer GDAL's lazy GDALG pipeline output or append-as-subdataset
+mode. Standard raster format/compression/creation options apply.
+
+GDAL 3.13.3 has unsafe optimized paths when a non-swapping operator receives more
+overlay bands than color bands, and treats gray-alpha channels inconsistently in
+`src-over`. Terrio uses explicit gray/alpha semantics for these inputs. Conformance
+expands those reference inputs to RGBA and selects the corresponding output channels;
+it does not compare against GDAL's corrupted or misinterpreted output. GDAL's HSV
+fast path can repeat the first alpha row; Terrio retains the complete base alpha.
+Reference source-over and HSV reads use individual bands of a lazy GDALG
+pipeline to avoid those fast paths. The other operators use whole-dataset
+reference kernels: GDAL 3.13.3's generic per-band kernels process only the first
+sample.
+
 
 ## Raster/vector indexes and GTI creation
 

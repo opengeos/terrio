@@ -71,7 +71,9 @@ def test_vector_catalog_selection_and_validation():
 
 
 def test_real_dem_catalog_is_readable_as_gti(data_dir, gdal, tmp_path):
-    dem = next(data_dir.glob("USGS*.tif"))
+    dem = data_dir / "usgs_dem.tif"
+    if not dem.exists():
+        dem = next(data_dir.glob("USGS*.tif"))
     path = str(tmp_path / "catalog.fgb")
     index = terrio.raster_index([str(dem)], path, absolute_path=True, band_count=1, ot="Float32")
     assert index.count == 1

@@ -188,3 +188,18 @@ fn collar_update_follows_source_symlink_and_preserves_mode() {
     assert!(std::fs::symlink_metadata(link).unwrap().file_type().is_symlink());
     assert_eq!(std::fs::metadata(source).unwrap().permissions().mode() & 0o777, 0o640);
 }
+
+#[test]
+fn blend_image_and_refusals() {
+    let tmp = tempfile::tempdir().unwrap();
+    write(&tmp.path().join("base.tif"), 2, vec![30., 80.], terrio::DataType::U8, None);
+    write(&tmp.path().join("overlay.tif"), 2, vec![250., 20.], terrio::DataType::U8, None);
+    ok(&["blend", "base.tif", "overlay.tif", "out.tif", "--operator", "multiply"], tmp.path());
+    let out = terrio::open_raster(tmp.path().join("out.tif").to_str().unwrap()).unwrap();
+    assert_eq!(out.raster.data.get_f64(0), 30.);
+    assert_eq!(out.raster.data.get_f64(1), 7.);
+    let before = std::fs::read(tmp.path().join("out.tif")).unwrap();
+    assert!(fails(&["blend", "base.tif", "overlay.tif", "out.tif", "--opacity", "101"], tmp.path()).contains("opacity"));
+    assert_eq!(std::fs::read(tmp.path().join("out.tif")).unwrap(), before);
+    assert!(fails(&["blend", "base.tif", "overlay.tif", "out.tif", "--operator", "invalid"], tmp.path()).contains("operator"));
+}

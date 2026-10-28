@@ -51,6 +51,7 @@ python scripts/conformance.py ../terrio-data --remote --strict     # remote COGs
 | Indexed raster catalogs | `scripts/compare_catalogs_with_gdal.py` | Real DEM mosaics in GeoPackage/FlatGeobuf indexes: z-order, nodata, masks, partial alpha, mixed CRS and Terrio-written indexes read by GDAL GTI; an 8x8 HTTP query from 1,002 features checks opens/cache bounds and actual bytes for both implementations |
 | Raster operations | `scripts/compare_ops_with_gdal.py` | translate, warp (all resampling methods), mosaic and VRT against `gdal_translate`, `gdalwarp`, `gdalbuildvrt`, `gdal_merge.py` |
 | Raster comparison, pixel queries, XYZ | `scripts/compare_raster_query_with_gdal.py` | `terrio compare` vs `gdal raster compare` (report lines and exit status), `terrio pixel-info` vs `gdal raster pixel-info` (GeoJSON, CSV) and `gdallocationinfo` (text, `-valonly`), `terrio xyz` vs `gdal2xyz.py`, on real rasters and derived copies. Registered in conformance as `raster-query`. |
+| Raster blending | `scripts/compare_blend_with_gdal.py` | Ten composition operators, 1–4 band Landsat images, OPERA GeoTIFF/PNG palettes and alpha/opacity boundaries; registered as `blend`, with documented GDAL reference-path normalizations. |
 | Pixel-wise raster commands | `scripts/compare_raster_pixel_with_gdal.py` | `gdal raster unscale`, `nodata-to-alpha`, `reclassify` (inline and `@file` mappings, ranges, `NO_DATA`, `NAN`, `DEFAULT`, `PASS_THROUGH`, `--ot`) and `as-features` (polygons, points, tables, `--skip-nodata`, `--include-xy`, `--include-row-col`) on USGS, Landsat, ECOSTRESS, NLCD and Sentinel-5P data: size, type, nodata, CRS, color interpretations, scales and every pixel, or every feature's fields and vertices. Registered in conformance as `raster-pixel`. |
 | Focal statistics, collars, enhancement | `scripts/compare_focal_with_gdal.py` | `gdal raster neighbors` (every kernel and method, matrices, types, nodata, the whole USGS DEM in strips), `nearblack` and `gdal raster clean-collar` (both algorithms, colors, thresholds, distances, alpha, masks, in-place updates) and `gdalenhance` (equalization, LUT file output and input) on Sentinel-2, Landsat 7 and USGS data: pixels, masks, type, nodata, geotransform, LUT text |
 | Vector operations | `scripts/compare_vector_ops_with_gdal.py` | `ogr2ogr` filters, `gdal_rasterize` and `gdal_polygonize.py` |
@@ -941,6 +942,34 @@ python scripts/conformance.py ../terrio-data --only raster-manage --strict
 pytest python/tests/test_raster_manage.py
 cargo test -p terrio-cli --test raster_manage
 ```
+
+## Raster blending (#289)
+
+The `blend` conformance suite requires GDAL 3.13 or newer (older references are
+explicitly skipped). It compares all ten operators with GDAL 3.13.3 on
+Landsat-derived grayscale/RGB images, all 1–4 band combinations allowed by the
+operator, controlled alpha and byte boundary samples, and opacity 0/37/100.
+There are 420 cases, including OPERA-derived GeoTIFF/PNG palettes with transparent
+nodata. Every pixel, type, nodata, CRS, geotransform and color interpretation is checked.
+Source-over/HSV references use lazy GDALG per-band reads; generic references use
+whole-dataset kernels. Gray-alpha source-over and unsafe mixed-band reference
+inputs are expanded to RGBA and their output channels selected explicitly. These
+normalizations avoid GDAL 3.13.3's documented bugs described in the CLI reference;
+they do not waive numerical differences.
+
+```sh
+python scripts/conformance.py ../terrio-data --only blend --strict
+cargo test -p terrio --lib ops::blend
+cargo test -p terrio-cli --test focal blend
+pytest python/tests/test_blend.py
+node --test --test-name-pattern='raster blend' js/tests/node.test.mjs
+```
+
+A local HTTP range-server measurement of lazy `info` opened the 610,612-byte
+`cog.tif` and the OPERA palette GeoTIFF with one GET and 65,536 response-body bytes
+each after color-table retention. The table does not require pixel decoding; these
+are observations for those two fixtures, not a bound for every palette TIFF.
+
 
 ## Footprint index creation (#289)
 

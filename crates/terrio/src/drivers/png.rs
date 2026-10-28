@@ -63,7 +63,19 @@ pub(crate) fn read(path: &Path) -> Result<RasterDataset> {
     };
     let gt = read_world_file(path).unwrap_or(common::NO_GEOTRANSFORM);
     let raster = common::make_raster(cols, rows, bands, data, gt, Default::default(), nodata)?;
-    Ok(RasterDataset::with_driver(raster, RasterDriver::PNG, nodata.is_some()))
+    let mut ds = RasterDataset::with_driver(raster, RasterDriver::PNG, nodata.is_some());
+    if info.color_type == png::ColorType::Indexed
+        && let Some(palette) = info.palette
+    {
+        ds.color_table = palette
+            .as_chunks::<3>()
+            .0
+            .iter()
+            .enumerate()
+            .map(|(i, c)| [c[0], c[1], c[2], info.trns.as_ref().and_then(|a| a.get(i)).copied().unwrap_or(255)])
+            .collect();
+    }
+    Ok(ds)
 }
 
 /// The geotransform of a world file next to `path` (`.wld`, or `.pgw`-style).

@@ -125,6 +125,7 @@ commands. Command-group progress:
       hillshade, slope, aspect, color relief, TRI, TPI, roughness), `terrio calc` (`gdal_calc.py`,
       with NumPy's typing rules), `terrio proximity` (`gdal_proximity.py`) and `terrio sieve`
       (`gdal_sieve.py`).
+- [x] Raster blending (`blend`): ten GDAL composition operators, opacity and palette/alpha inputs
 - [x] Raster pixel operations (`unscale`, `nodata-to-alpha`, `reclassify`, `as-features`)
       across Rust, CLI/MCP, Python and WebAssembly. Landed in [#299](https://github.com/opengeos/terrio/pull/299).
 - [x] Focal statistics and kernels (`neighbors`), collar cleaning (`clean-collar` / `nearblack`)
