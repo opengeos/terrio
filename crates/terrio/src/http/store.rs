@@ -441,13 +441,15 @@ fn write_request_with(
         Some(_) if signs_payload(&url, payload) => payload.sha256()?,
         Some(_) => UNSIGNED_PAYLOAD.to_string(),
     };
-    let length = payload.len()?;
     // A signed payload hash also made the service refuse a file that changed while it was sent.
-    // Without one, the file's size and modification time are compared before and after.
+    // Without one, the file's size and modification time are compared before and after (best
+    // effort: a same-size change within the timestamp resolution goes unnoticed). Stamped before
+    // the length is read, so that a change between the two is caught.
     let unsigned_file = match payload {
         Payload::File(path, _) if payload_hash == UNSIGNED_PAYLOAD => Some((path, file_stamp(path)?)),
         _ => None,
     };
+    let length = payload.len()?;
     let (mut attempt, mut redirects, mut discovered) = (0u32, 0u32, false);
     loop {
         let mut builder = ureq::http::Request::builder().method(method).uri(&url);

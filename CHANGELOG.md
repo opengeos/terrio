@@ -17,15 +17,19 @@
 
 ### Remote I/O
 
-- Signed S3 uploads of local files over 8 MiB sent over HTTPS read the file
-  once instead of twice (#335): they are signed with `UNSIGNED-PAYLOAD`, as the
-  AWS SDKs sign S3 uploads over HTTPS, and the body is streamed. The signature
-  no longer covers the body of these uploads; TLS protects it in transit. Over
-  plain HTTP, and for smaller or staged uploads, the payload hash is signed as
-  before.
+- Signed S3 uploads of local files over 8 MiB sent over HTTPS read the file once
+  instead of twice (#335), unless a request is retried or redirected: they are
+  signed with `UNSIGNED-PAYLOAD`, as the AWS SDKs sign S3 uploads over HTTPS,
+  and the body is streamed. The signature no longer covers the body of these
+  uploads; TLS protects it in transit. Over plain HTTP, and for smaller or
+  staged uploads, the payload hash is signed as before.
 
 ### Breaking changes
 
+- Signed S3 uploads of local files over 8 MiB over HTTPS use `UNSIGNED-PAYLOAD`
+  (#335). An S3-compatible service, or a bucket policy, that refuses it now
+  rejects those uploads; they can be sent over plain HTTP (`AWS_HTTPS=NO`) to
+  keep a signed payload.
 - `mosaic`, `warp`, `concat` and `filter merge` now treat an input beginning
   with `@` as a file list, so a file named `@name.tif` must be written
   `./@name.tif`.

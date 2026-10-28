@@ -1543,15 +1543,18 @@ directory entries. `--skip-errors` continues copying but exits nonzero when any 
 Signed S3 uploads of local files up to 8 MiB read them once, into memory, to calculate their
 SHA-256 and send them, with the payload hash signed. Larger local files sent over HTTPS are
 signed with `x-amz-content-sha256: UNSIGNED-PAYLOAD`, as the AWS SDKs sign S3 uploads over
-HTTPS, and read once, streaming the body: the signature then covers the request's headers but
-not its body, which TLS protects in transit (no extra checksum header is sent, since one would
-need another pass over the file). Without a payload hash, the service cannot tell that a file
-changed while it was sent, so its size and modification time are compared before and after the
-upload, which fails if they differ. Over plain HTTP (`AWS_HTTPS=NO`, or an `http://`
-`AWS_S3_ENDPOINT`), larger files keep a signed payload hash and are read once to calculate it
-and once to send the body (twice the file size in local reads). Uploads staged through a
-temporary file (from remote, in-memory or archive sources) are hashed as they are staged, read
-once and signed over their payload. ETag sync can add a separate MD5 pass.
+HTTPS, and read once, streaming the body (a retried, redirected or re-routed request sends it
+again): the signature then covers the request's headers but not its body, which TLS protects in
+transit (no extra checksum header is sent, since one would need another pass over the file).
+Without a payload hash, the service cannot tell that a file changed while it was sent, so its
+size and modification time are compared before and after the upload, which fails if they
+differ. This is best effort: a same-size change within the file system's timestamp resolution
+is not detected. An S3-compatible service that refuses `UNSIGNED-PAYLOAD` rejects these
+uploads; send them over HTTP to keep the payload signed. Over plain HTTP (`AWS_HTTPS=NO`, or an
+`http://` `AWS_S3_ENDPOINT`), larger files keep a signed payload hash and are read once to
+calculate it and once to send the body (twice the file size in local reads). Uploads staged
+through a temporary file (from remote, in-memory or archive sources) are hashed as they are
+staged, read once and signed over their payload. ETag sync can add a separate MD5 pass.
 Recursive S3 deletion sends up to 1,000 keys per `DeleteObjects` request, directory markers
 only once the objects are deleted, reporting the first key the service could not delete; a
 service that answers that it does not implement it (405, 501, or 400 `NotImplemented`) is sent
