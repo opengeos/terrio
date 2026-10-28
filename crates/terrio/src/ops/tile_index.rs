@@ -923,11 +923,13 @@ mod tests {
     #[cfg(not(target_family = "wasm"))]
     #[test]
     fn discovery_drops_doubled_separators_in_a_local_base() {
+        // A trailing `//` was trimmed before; one in the middle of the base wasn't.
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("a.tif"), b"").unwrap();
-        let base = format!("{}//", dir.path().to_str().unwrap());
+        std::fs::create_dir(dir.path().join("sub")).unwrap();
+        std::fs::write(dir.path().join("sub").join("a.tif"), b"").unwrap();
+        let base = format!("{}//sub//", dir.path().to_str().unwrap());
         let found = index_input_paths(&[base], &IndexInputOptions::default()).unwrap();
-        assert_eq!(found, [dir.path().join("a.tif").to_string_lossy().into_owned()]);
+        assert_eq!(found, [dir.path().join("sub").join("a.tif").to_string_lossy().into_owned()]);
     }
     #[cfg(not(target_family = "wasm"))]
     #[test]
