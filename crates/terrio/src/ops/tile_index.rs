@@ -601,6 +601,15 @@ fn relative_path(path: &std::path::Path, base: &std::path::Path) -> std::path::P
     }
     result
 }
+/// Writes a relative location with `/` separators, so a catalog written on Windows opens
+/// elsewhere (Windows accepts `/` too). An absolute path, such as one on another drive, keeps
+/// its native form.
+fn portable_location(path: &std::path::Path) -> String {
+    if path.is_absolute() || path.has_root() {
+        return path.to_string_lossy().into_owned();
+    }
+    path.components().map(|c| c.as_os_str().to_string_lossy()).collect::<Vec<_>>().join("/")
+}
 impl DatasetIndex {
     fn needs_output_resolution(&self) -> bool {
         self.default_raster_name || !self.relative_locations.is_empty()
@@ -621,7 +630,7 @@ impl DatasetIndex {
                     if let Some(FieldValue::Text(location)) = feature.attributes.first_mut()
                         && let Some((absolute, suffix)) = self.relative_locations.get(location)
                     {
-                        *location = format!("{}{}", relative_path(absolute, &parent).to_string_lossy(), suffix);
+                        *location = format!("{}{}", portable_location(&relative_path(absolute, &parent)), suffix);
                     }
                 }
             }
@@ -859,6 +868,24 @@ mod tests {
         header.set_geo_transform([10., 2., 0.5, 20., 0.25, -3.]);
         let lazy = LazyRaster::from_source(header, Box::new(NoPixels));
         RasterIndexSource::from_lazy("tile.tif", &lazy).unwrap()
+    }
+    #[test]
+    fn relative_locations_use_forward_slashes_on_every_platform() {
+        let relative: std::path::PathBuf = ["..", "tiles", "a.tif"].iter().collect();
+        assert_eq!(portable_location(&relative), "../tiles/a.tif");
+        let absolute = std::env::temp_dir().join("a.tif");
+        assert_eq!(portable_location(&absolute), absolute.to_string_lossy());
+    }
+    #[cfg(not(target_family = "wasm"))]
+    #[test]
+    fn discovered_local_files_join_with_the_platform_separator() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("sub")).unwrap();
+        std::fs::write(dir.path().join("sub").join("a.tif"), b"").unwrap();
+        let base = dir.path().to_str().unwrap().to_string();
+        let options = IndexInputOptions { recursive: true, ..Default::default() };
+        let found = index_input_paths(&[base], &options).unwrap();
+        assert_eq!(found, [dir.path().join("sub").join("a.tif").to_string_lossy().into_owned()]);
     }
     #[cfg(not(target_family = "wasm"))]
     #[test]
@@ -1237,7 +1264,13 @@ pub fn index_input_paths(paths: &[String], o: &IndexInputOptions) -> Result<Vec<
                 continue;
             }
             let suffix = if query.is_empty() { String::new() } else { format!("?{query}") };
-            out.push(format!("{}/{}{suffix}", base.trim_end_matches('/'), entry.name));
+            if remote {
+                out.push(format!("{}/{}{suffix}", base.trim_end_matches('/'), entry.name));
+            } else {
+                // Local entries join with the platform separator, as the directory path itself does.
+                let joined = entry.name.split('/').fold(std::path::PathBuf::from(base), |p, part| p.join(part));
+                out.push(joined.to_string_lossy().into_owned());
+            }
         }
     }
     Ok(out)
