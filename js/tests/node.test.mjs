@@ -2072,3 +2072,42 @@ test("object-store listing rejects HTML and error roots returned with status 200
     await assert.rejects(terrio.listUrl("s3://bucket/dir", {fetch: async () => new Response(body)}), /not an XML object-store listing/);
   }
 });
+
+test("dataset indexes retain rotated corners, source identities and GTI metadata", () => {
+  // Independent GDAL 3.13.3 Byte TIFF: 4x6 zeros, affine rotation and EPSG:4326.
+  const raster = terrio.open(Uint8Array.from(Buffer.from("SUkqAAgAAAAPAAABAwABAAAABAAAAAEBAwABAAAABgAAAAIBAwABAAAACAAAAAMBAwABAAAAAQAAAAYBAwABAAAAAQAAABEBBAABAAAAmgEAABUBAwABAAAAAQAAABYBAwABAAAABgAAABcBBAABAAAAGAAAABwBAwABAAAAAQAAAFMBAwABAAAAAQAAANiFDAAQAAAAwgAAAK+HAwAgAAAAQgEAALCHDAACAAAAggEAALGHAgAIAAAAkgEAAAAAAAAAAAAAAAAAQAAAAAAAAOA/AAAAAAAAAAAAAAAAAAAkQAAAAAAAANA/AAAAAAAACMAAAAAAAAAAAAAAAAAAADRAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADwPwEAAQAAAAcAAAQAAAEAAgABBAAAAQABAAAIAAABAOYQAQixhwcAAAAGCAAAAQCOIwkIsIcBAAEACwiwhwEAAACIbXSWHaRyQAAAAECmVFhBV0dTIDg0fAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=", "base64")), "rotated.tif");
+  const index = terrio.rasterIndex({"tile.tif": raster}, {
+    sourceCrsFieldName: "srs", minPixelSize: 2.7, bandCount: 1, ot: "Byte", nodata: [255],
+    fetchMetadata: [["{PIXEL_SIZE}", "pixel_size", "Real"]],
+  });
+  assert.equal(index.count, 1);
+  assert.equal(index.metadata.NODATA, "255");
+  const feature = index.layer().toGeoJSON().features[0];
+  assert.equal(feature.properties.srs, "EPSG:4326");
+  assert.ok(Math.abs(feature.properties.pixel_size - Math.sqrt(209 / 24)) < 1e-12);
+  assert.deepEqual(feature.geometry.coordinates[0], [[10, 20], [18, 21], [21, 3], [13, 2], [10, 20]]);
+  for (const name of ["index.gpkg", "index.fgb"]) {
+    const bytes = index.toBytes(name);
+    assert.equal(terrio.open(bytes, name).toGeoJSON().features.length, 1);
+  }
+  const archive = terrio.rasterIndex({"tile.tif": raster}).toBytes("index.shp.zip");
+  assert.equal(terrio.open(archive, "index.shp.zip").toGeoJSON().features.length, 1);
+  const vectors = terrio.vectorIndex({"squares.json": SQUARES});
+  assert.equal(vectors.layer().toGeoJSON().features[0].properties.location, "squares.json,0");
+  assert.deepEqual(vectors.layer().toGeoJSON().features[0].geometry.coordinates[0], [[0, 0], [0, 10], [30, 10], [30, 0], [0, 0]]);
+  assert.throws(() => terrio.vectorIndex({"a.json": SQUARES}, {sourceLayerIndexes: [9]}), /layer/);
+  assert.throws(() => terrio.rasterIndex({"a.tif": raster}, {typo: true}), /unknown field/);
+});
+
+test("dataset indexes on real uploaded files", {skip: !DATA && "TERRIO_TEST_DATA is not set"}, () => {
+  const bytes = readFileSync(join(DATA, "cog.tif"));
+  const raster = terrio.open(bytes, "cog.tif");
+  const index = terrio.rasterIndex({"cog.tif": {bytes, filename: "cog.tif"}}, {sourceCrsFieldName: "srs"});
+  const polygon = index.layer().toGeoJSON().features[0];
+  assert.equal(polygon.properties.location, "cog.tif");
+  assert.equal(polygon.properties.srs, raster.crs);
+  assert.equal(terrio.open(index.toBytes("catalog.fgb"), "catalog.fgb").toGeoJSON().features.length, 1);
+  const roads = readFileSync(join(DATA, "TN_Counties.geojson"));
+  const vectors = terrio.vectorIndex({"counties.geojson": {bytes: roads, filename: "counties.geojson"}});
+  assert.equal(vectors.count, 1);
+});

@@ -31,6 +31,7 @@ pub mod proximity;
 pub mod rasterize;
 pub mod rasterout;
 pub mod sieve;
+pub mod tile_index;
 pub mod translate;
 pub mod update;
 pub mod vector_dataset;

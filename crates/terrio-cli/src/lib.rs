@@ -134,6 +134,12 @@ enum Command {
     Warp(cmd::warp::Args),
     /// Read an indexed raster catalog, selecting tiles spatially and compositing in z-order.
     Catalog(cmd::catalog::Args),
+    /// Create a vector footprint index of raster datasets, with optional GTI metadata.
+    RasterIndex(cmd::tile_index::RasterArgs),
+    /// Create a raster footprint catalog with GTI virtual-raster metadata.
+    GtiCreate(cmd::tile_index::RasterArgs),
+    /// Create a vector envelope index of vector dataset layers.
+    VectorIndex(cmd::tile_index::VectorArgs),
     /// Mosaic rasters into one, or into a virtual raster (like gdalbuildvrt and gdal_merge).
     Mosaic(cmd::mosaic::Args),
     /// Terrain analysis: hillshade, slope, aspect, color relief, TRI, TPI, roughness (like gdaldem).
@@ -293,6 +299,8 @@ fn run_on_this_thread(args: Vec<OsString>, terrio: Option<Vec<OsString>>) -> i32
         Command::Translate(a) => cmd::translate::run(a),
         Command::Warp(a) => cmd::warp::run(a),
         Command::Catalog(a) => cmd::catalog::run(a),
+        Command::RasterIndex(a) | Command::GtiCreate(a) => cmd::tile_index::raster(a),
+        Command::VectorIndex(a) => cmd::tile_index::vector(a),
         Command::Mosaic(a) => cmd::mosaic::run(a),
         Command::Dem(a) => cmd::dem::run(a),
         Command::Calc(a) => cmd::calc::run(a),

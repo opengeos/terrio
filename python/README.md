@@ -174,3 +174,33 @@ only_best=True)`; `convert(..., ct_opt={"ALLOW_BALLPARK": "NO", "ONLY_BEST": "YE
 does after `PromoteTo3D`. Warnings identify horizontal datum fallbacks,
 missing grids and operations outside their area. `warp(..., kernel_version="3.13")`
 selects GDAL 3.13 resampling behavior; the default remains `"3.12"`.
+
+### Footprint indexes and GTI catalogs
+
+```python
+index = terrio.raster_index(
+    ["tiles/"], recursive=True, filename_filters=["*.tif"], absolute_path=True,
+    output_crs="EPSG:4326", band_count=1, ot="Float32", nodata=[-9999],
+)
+index.write("catalog.gpkg")
+print(index.count, index.metadata)
+polygons = index.layer
+vectors = terrio.vector_index(
+    ["roads.gpkg"], source_layer_indexes=[0], output_crs="EPSG:4326",
+)
+# In-memory sources use explicit stored-location labels.
+index = terrio.raster_index({"tile.tif": raster})
+encoded = index.to_bytes("index.fgb")
+```
+
+`raster_index`/`vector_index` return `DatasetIndex` (count, layer, metadata,
+`to_bytes`, `write`); optional `dst` writes the result. Options follow the
+[CLI index subset](../docs/cli.md#rastervector-indexes-and-gti-creation) in snake_case;
+repeatable options are lists: `filename_filters`, `source_layer_names`,
+`source_layer_indexes`, `color_interpretations`. `fetch_metadata` is a list of
+`(key, field, type)` triples, and `metadata` is a dictionary. Non-finite nodata
+values use strings (`["nan"]`). Mappings accept Raster/path values for raster
+indexes and Layer/VectorDataset/GeoJSON/path values for vector indexes; path discovery
+options apply only to path inputs. Retain `DatasetIndex` when writing GTI catalogs:
+writing its ordinary `layer` alone does not carry the GTI metadata. Multi-file
+outputs require a fresh basename; in-memory Shapefiles use `index.shp.zip`.

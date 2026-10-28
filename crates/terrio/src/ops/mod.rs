@@ -65,6 +65,7 @@ pub mod sieve;
 pub mod simplify;
 pub mod sql;
 pub(crate) mod strips;
+pub mod tile_index;
 pub mod topology;
 pub mod translate;
 pub mod update;

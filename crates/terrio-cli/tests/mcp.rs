@@ -510,3 +510,21 @@ fn file_lists_are_refused_without_reading_the_file() {
     assert!(text.contains("@FILE lists are not read in MCP tool calls"), "{text}");
     assert!(!text.contains("line-that-must-not-leak"), "{text}");
 }
+
+#[test]
+fn index_tools_are_discoverable_and_execute() {
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("roads.geojson");
+    let output = dir.path().join("index.gpkg");
+    std::fs::write(&input, r#"{"type":"FeatureCollection","features":[{"type":"Feature","properties":{},"geometry":{"type":"LineString","coordinates":[[0,0],[2,3]]}}]}"#).unwrap();
+    let replies = session(&[
+        json!({"jsonrpc":"2.0","id":1,"method":"tools/list"}),
+        call(2, "vector-index", &[input.to_str().unwrap(), output.to_str().unwrap()]),
+    ]);
+    let tools = replies[&1]["result"]["tools"].as_array().unwrap();
+    for name in ["raster-index", "vector-index", "gti-create"] {
+        assert!(tools.iter().any(|t| t["name"] == name), "missing {name}");
+    }
+    assert_eq!(replies[&2]["result"]["isError"], false);
+    assert_eq!(terrio::open_vector(output.to_str().unwrap(), &Default::default()).unwrap().layers[0].len(), 1);
+}

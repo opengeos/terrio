@@ -485,6 +485,35 @@ def suite_shapefile_archives(ctx):
     return suite
 
 
+def suite_indexes(ctx):
+    """Footprint catalogs and GTI virtual mosaics against GDAL 3.13."""
+    suite = Suite("indexes", "Raster/vector indexes and GTI creation", "GDAL 3.13.3",
+                  "Real COG/DEM and vector catalogs: schema, CRS and text/integer fields exact; "
+                  "vertices within 1e-8 index CRS units, real fields within 1e-12 relative/absolute; GTI band metadata and shared-window pixels exact. Default GPKG rounding can add one border pixel; affines within 1e-12. Explicit-grid dimensions exact.")
+    missing = missing_modules("osgeo", "numpy")
+    if missing or shutil.which("gdal") is None:
+        suite.skipped = "needs GDAL 3.13 commands/bindings and NumPy"
+        return suite
+    from osgeo import gdal
+
+    if int(gdal.VersionInfo("VERSION_NUM")) < 3130000:
+        suite.skipped = "needs GDAL >= 3.13 for unified index commands"
+        return suite
+    code, out, err = run([sys.executable, str(SCRIPTS / "compare_indexes_with_gdal.py"), ctx.data,
+                          "--terrio", ctx.terrio, "--json"])
+    try:
+        results = json.loads(out)
+    except json.JSONDecodeError:
+        suite.error = tail(err or out) or f"comparison exited {code} without valid JSON"
+        return suite
+    for result in results:
+        status = {"identical": IDENTICAL, "tolerance": TOLERANCE}.get(result["status"], DIFFERS)
+        suite.cases.append(Case("dataset indexes", result["name"], status, result["detail"]))
+    if not results or (code and not any(case.status == DIFFERS for case in suite.cases)):
+        suite.error = tail(err or out) or f"comparison exited {code} without complete results"
+    return suite
+
+
 def suite_raster_manage(ctx):
     """Real DEM raster management, cross-read and compared by GDAL."""
     suite = Suite("raster-manage", "Raster management", "GDAL 3.13.3",
@@ -1798,6 +1827,7 @@ SUITES = OrderedDict(
         ("vrt", suite_vrt),
         ("overviews", suite_overviews),
         ("raster-manage", suite_raster_manage),
+        ("indexes", suite_indexes),
         ("geolocation", suite_geolocation),
         ("dem-calc", suite_dem_calc),
         ("pansharpen", suite_pansharpen),

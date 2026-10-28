@@ -16,6 +16,9 @@ terrio <COMMAND>
   update          Update or append vector features by key or FID (like gdal vector update)
   translate       Subset, resize, rescale or change the type of a raster (like gdal_translate)
   warp            Reproject and resample rasters (like gdalwarp)
+  raster-index    Create raster footprint indexes
+  vector-index    Create vector layer-envelope indexes
+  gti-create      Create GTI-compatible catalogs (raster-index options)
   catalog         Read an indexed raster mosaic from GeoPackage or FlatGeobuf footprints
   mosaic          Mosaic rasters into one, or into a virtual raster (like gdalbuildvrt and gdal_merge)
   rasterize       Burn vector geometries into a raster
@@ -1958,3 +1961,55 @@ region spans its height. Overview and raster-update
 arithmetic uses Float64 and warns for Int64/UInt64: values above 2^53 may lose precision,
 including nearest/mode overviews. Raster update holds the warped window and the full
 width of the destination rows it rewrites in memory.
+
+## Raster/vector indexes and GTI creation
+
+```sh
+terrio raster-index tiles/ catalog.gpkg --recursive --filename-filter '*.tif' --absolute-path
+terrio gti-create tiles/ catalog.fgb --filename-filter '*.tif' --absolute-path \
+  --output-crs EPSG:4326 --resolution 0.001,0.001 --band-count 1 --ot Float32 \
+  --nodata=-9999 --color-interpretation gray
+terrio vector-index roads.gpkg counties.geojson index.gpkg --accept-different-schemas \
+  --source-crs-field-name source_crs --output-crs EPSG:4326
+```
+
+`raster-index` writes the four affine raster corners; `gti-create` uses the same
+operation with optional GTI virtual-raster metadata. `vector-index` writes one
+layer-envelope polygon with `filename,layer_index` locations; `--dataset-name-only`
+omits the suffix. `--source-layer-name` and zero-based `--source-layer-index` are
+repeatable and select their union without renumbering original layers. Different
+vector schemas/CRSs are skipped with warnings unless accepted with the corresponding
+flags; an explicit `--output-crs` reprojects corners. Empty vector layers are skipped.
+
+Inputs can be files, local directories, explicitly slash-terminated VSI directories,
+or `@FILE` lists. Directory scanning supports `--recursive` and repeatable case-sensitive
+`--filename-filter` patterns (`*` and `?`). `--absolute-path` affects local paths.
+Raster `--skip-errors` skips unreadable inputs with a warning. Lazy-capable raster
+readers only inspect headers. Local GeoPackage/FlatGeobuf vector inputs use cached
+bounds when present; other formats scan features in chunks where supported.
+
+Both index commands support `--location-name`, `--output-layer`, `--output-crs`,
+`--source-crs-field-name`, `--source-crs-format auto|WKT|EPSG|PROJ`, `--format`
+and repeatable `--metadata KEY=VALUE`. Raster layer names default to the output
+basename; vector layer names default to `tileindex`. Without an explicit target CRS, raster indexes skip incompatible source CRSs
+unless a source-CRS field is requested; with that field, they retain original
+coordinates and warn, matching GDAL. Supply a target CRS for a usable mixed-CRS catalog. Raster reprojection indexes the suggested warped-grid envelope, as GDAL 3.13
+does; vector reprojection transforms envelope corners without densification. Both
+require known source CRSs.
+
+Raster pixel-size filters use `sqrt(envelope_area / pixel_count)` after reprojection,
+including rotated rasters. Repeatable `--fetch-metadata KEY,FIELD,TYPE` copies header
+metadata as String, Integer or Real; `{PIXEL_SIZE}` selects the computed size.
+Missing metadata becomes null; invalid numeric metadata is rejected. GTI options
+include `--resolution x,y`, `--bbox xmin,ymin,xmax,ymax`, `--ot`, `--band-count`,
+repeatable/comma-separated `--nodata`, `--color-interpretation` and `--mask`.
+GeoPackage/FlatGeobuf preserve GTI metadata; open them with GDAL as `GTI:catalog.gpkg`
+or `GTI:catalog.fgb`. Custom raster location fields are recorded in `LOCATION_FIELD`.
+
+This release creates new indexes and atomically replaces single-file outputs with
+`--overwrite`. Indexed source paths and aliases cannot be replaced. Shapefile outputs
+publish all components from staging and require a new basename even with `--overwrite`;
+`.shp.zip` writes an archive. GTI/custom metadata require GeoPackage or FlatGeobuf.
+Append/update, layer replacement, STAC-GeoParquet profiles, XML companion output and
+GDAL-specific creation options are outside this supported subset. Shapefile field
+width/type limits still apply. The three commands are also exposed as MCP tools.
