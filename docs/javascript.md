@@ -455,5 +455,6 @@ integer arrays; `mask` accepts a flat Uint8Array/array of validity bytes.
 palette sources. Operations materialize the input/output. See
 [Palette conversion](cli.md#palette-conversion) for formats and validity rules.
 
-Raster `toBytes` preserves dataset masks without `tSrs`. Reprojecting a raster
+Raster `toBytes` preserves dataset masks for GeoTIFF/COG without `tSrs`.
+Other formats omit separate dataset masks. Reprojecting a raster
 with a separate dataset mask is refused explicitly; use an alpha band instead.

@@ -174,3 +174,33 @@ def test_remote_mask_write_io_and_tile_archive_refusal(tmp_path, gdal):
         server.shutdown()
         server.server_close()
         thread.join()
+
+
+def test_palette_sidecar_destination_and_malformed_tables(tmp_path, gdal):
+    from pathlib import Path
+
+    source = terrio.Raster.from_array(np.ones((2, 2), dtype="uint8"), (0, 1, 0, 2, 0, -1))
+    palette = tmp_path / "palette.tif"
+    source.write(str(palette), colormap=[[0, 0, 0, 255], [10, 20, 30, 255]])
+    dataset = gdal.Open(str(palette), gdal.GA_Update)
+    with gdal.config_option("GDAL_TIFF_INTERNAL_MASK", "NO"):
+        dataset.CreateMaskBand(gdal.GMF_PER_DATASET)
+        dataset.GetRasterBand(1).GetMaskBand().WriteArray(
+            np.array([[0, 255], [255, 255]], dtype="uint8")
+        )
+    dataset = None
+    mask_path = Path(str(palette) + ".msk")
+    original = mask_path.read_bytes()
+    with pytest.raises(ValueError, match="input"):
+        terrio.attach_palette(source, str(palette), str(mask_path), format="GTiff", overwrite=True)
+    assert mask_path.read_bytes() == original
+    for invalid in [[[1, 2, 3]], [[0, 0, 0, 256]], np.array([[1, 2, 3]])]:
+        with pytest.raises(ValueError, match="RGBA"):
+            terrio.read_color_table(invalid)
+    lazy = terrio.open_raster(str(palette), lazy=True)
+    import io
+    import zipfile
+
+    with zipfile.ZipFile(io.BytesIO(lazy.to_bytes("output.png"))) as archive:
+        assert archive.read("output.png").startswith(b"\x89PNG")
+    lazy.write(str(tmp_path / "output.png"))

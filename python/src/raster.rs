@@ -436,7 +436,7 @@ impl PyRaster {
     ///     gcps: GeoTIFF ground control points, in the raster's CRS: `(pixel, line, x, y, z)`
     ///         tuples, written as tie points instead of the geotransform.
     ///     mask: A per-dataset validity mask, a 2-D uint8 array (0 for invalid pixels), written
-    ///         as GDAL's internal GeoTIFF mask. If omitted, the source dataset mask is preserved.
+    ///         as GDAL's internal GeoTIFF mask. If omitted, GeoTIFF/COG preserve the source mask.
     ///     rpc: The 92 rational polynomial coefficients of the GeoTIFF `RPCCoefficientTag`.
     ///
     /// Raises:
@@ -496,13 +496,13 @@ impl PyRaster {
             }
             return py.detach(|| self.inner.write(path, &options)).py();
         }
-        if options.mask.is_none() {
+        if options.mask.is_none() && matches!(driver, Some(terrio::formats::RasterDriver::GTiff | terrio::formats::RasterDriver::Cog)) {
             options.mask = py.detach(|| self.inner.read_mask(Window::full(self.inner.width(), self.inner.height()), None)).py()?;
         }
         py.detach(|| self.with_dataset(|ds| terrio::write_raster_dataset(ds, path, &options))).py()
     }
 
-    /// Encodes the raster in a file format, in memory, preserving its dataset mask.
+    /// Encodes the raster in a file format, in memory, preserving its dataset mask for GeoTIFF/COG.
     ///
     /// Args:
     ///     filename: A file name whose extension tells the format, such as `"out.tif"`.
@@ -525,7 +525,10 @@ impl PyRaster {
         let mut options = write_options(driver, compress, tile_size, false)?;
         let bytes = py
             .detach(|| {
-                options.mask = self.inner.read_mask(Window::full(self.inner.width(), self.inner.height()), None)?;
+                let driver = options.driver.or_else(|| terrio::formats::RasterDriver::for_extension(filename));
+                if matches!(driver, Some(terrio::formats::RasterDriver::GTiff | terrio::formats::RasterDriver::Cog)) {
+                    options.mask = self.inner.read_mask(Window::full(self.inner.width(), self.inner.height()), None)?;
+                }
                 self.with_dataset(|ds| terrio::memory::write_raster_bytes(ds, filename, &options))
             })
             .py()?;

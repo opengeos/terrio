@@ -1,5 +1,5 @@
 //! Shared palette algorithms for uploaded rasters and in-memory color tables.
-use crate::ops::{file_bytes, invalid};
+use crate::ops::{file_bytes, invalid, split_options};
 use crate::{Dataset, Inner, js_err, parse_options, to_js};
 use serde::Deserialize;
 use terrio::LazyRaster;
@@ -58,14 +58,10 @@ struct RgbArgs {
     bit_depth: u8,
     dither: bool,
     output_nodata: Option<u8>,
-    #[serde(rename = "colorMap")]
-    _color_map: Option<serde::de::IgnoredAny>,
-    #[serde(rename = "mask")]
-    _mask: Option<serde::de::IgnoredAny>,
 }
 impl Default for RgbArgs {
     fn default() -> Self {
-        Self { color_count: 256, bit_depth: 5, dither: true, output_nodata: None, _color_map: None, _mask: None }
+        Self { color_count: 256, bit_depth: 5, dither: true, output_nodata: None }
     }
 }
 /// Converts RGB Byte sources to indexed color. Options: colorCount (2..256),
@@ -77,7 +73,8 @@ pub fn rgb_to_palette(src: JsValue, options: JsValue) -> Result<Dataset, JsError
     if field(&options, "outputNodata")?.as_f64().is_some_and(|v| !v.is_finite()) {
         return Err(invalid("outputNodata must be a finite Byte index"));
     }
-    let args: RgbArgs = parse_options(&options)?;
+    let (scalars, _) = split_options(&options, &["colorMap", "mask"])?;
+    let args: RgbArgs = parse_options(&scalars)?;
     let color_map = field(&options, "colorMap")?;
     let mask = field(&options, "mask")?;
     let mask = if mask.is_null() || mask.is_undefined() {

@@ -2361,3 +2361,15 @@ test("masked toBytes reprojection is refused explicitly", () => {
   assert.ok(dataset.toBytes("output.tif").length > 0);
   dataset.free();
 });
+
+test("palette binary options bypass JSON serialization", () => {
+  const source = terrio.rasterFromArray(new Uint8Array([248, 0, 0, 248, 0, 0]), 2, 1, [0, 1, 0, 1, 0, -1]);
+  const indexed = terrio.rgbToPalette(source, {colorCount: 2});
+  const colorMap = indexed.toBytes("palette.tif");
+  const mask = new Uint8Array([0, 255]);
+  colorMap.toJSON = mask.toJSON = () => { throw new Error("binary options must not be serialized"); };
+  const output = terrio.rgbToPalette(source, {colorMap, mask, outputNodata: 0});
+  assert.equal(output.readBand(1)[0], 0);
+  assert.throws(() => terrio.rgbToPalette(source, {unknown: true}), /unknown field/);
+  source.free(); indexed.free(); output.free();
+});

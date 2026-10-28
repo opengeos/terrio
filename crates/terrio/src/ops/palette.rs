@@ -276,6 +276,16 @@ pub fn read_color_table(path: &str) -> Result<Vec<[u8; 4]>> {
     let source = crate::open_raster_lazy(path)?;
     color_table(&source.header())
 }
+/// Native files supplying a color table, including raster sidecars.
+#[cfg(not(target_family = "wasm"))]
+pub fn color_table_files(path: &str) -> Result<Vec<String>> {
+    let mut files = vec![path.to_string()];
+    let ext = crate::formats::extension(path).unwrap_or_default();
+    if !["txt", "qml", "qlr", "cpt", "pal", "csv", "xml"].contains(&ext.as_str()) {
+        files.extend(crate::open_raster_lazy(path)?.file_list()?);
+    }
+    Ok(files)
+}
 /// Quantizes RGB Byte bands, preserving the source grid and dataset metadata.
 /// Color interpretations select R/G/B when all are present, otherwise bands 1/2/3.
 /// Invalid pixels are excluded from histogram generation. A declared alpha band

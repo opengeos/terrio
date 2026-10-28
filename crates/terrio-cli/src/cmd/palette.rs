@@ -20,7 +20,7 @@ impl ImageArgs {
         let mut paths = open_lazy(&self.input)?.file_list()?;
         paths.push(self.input.clone());
         if let Some(path) = palette {
-            paths.push(path.into());
+            paths.extend(palette::color_table_files(path)?);
         }
         palette::check_output(&self.output, &paths.iter().map(String::as_str).collect::<Vec<_>>(), self.overwrite)
     }

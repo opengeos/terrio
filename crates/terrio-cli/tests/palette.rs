@@ -33,3 +33,18 @@ fn existing_outputs_and_input_aliases_remain_unchanged() {
         assert_eq!(std::fs::read(&indexed).unwrap(), original);
     }
 }
+
+#[test]
+fn palette_raster_sidecars_cannot_be_replaced() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    assert!(run(root, &["create-raster", "indices.tif", "--size", "2,2", "--burn", "1"]).status.success());
+    std::fs::write(root.join("colors.txt"), "0 0 0 0\n1 248 16 32\n").unwrap();
+    assert!(run(root, &["attach-palette", "colors.txt", "indices.tif", "palette.tif"]).status.success());
+    assert!(run(root, &["create-raster", "palette.tif.msk", "--size", "2,2", "--burn", "255", "-f", "GTiff"]).status.success());
+    let original = std::fs::read(root.join("palette.tif.msk")).unwrap();
+    let output = run(root, &["attach-palette", "palette.tif", "indices.tif", "palette.tif.msk", "--overwrite", "-f", "GTiff"]);
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("input"));
+    assert_eq!(std::fs::read(root.join("palette.tif.msk")).unwrap(), original);
+}

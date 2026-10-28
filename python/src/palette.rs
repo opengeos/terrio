@@ -38,7 +38,10 @@ fn table(py: Python<'_>, source: &Bound<'_, PyAny>, filename: Option<&str>) -> P
     if source.cast::<PyRaster>().is_ok() {
         return with_source(py, source, |r| palette::color_table(&r.header()));
     }
-    let path = raster_path(source)?.ok_or_else(|| invalid("expected a palette path, Raster, bytes or RGBA sequence"))?;
+    let path = source
+        .extract::<std::path::PathBuf>()
+        .map_err(|_| invalid("expected a palette path, Raster, bytes or RGBA sequence with Byte entries"))?;
+    let path = path.into_os_string().into_string().map_err(|_| invalid("raster paths must be UTF-8"))?;
     crate::with_warnings(py, || palette::read_color_table(&path))
 }
 fn check_destination(src: &Bound<'_, PyAny>, color_map: Option<&Bound<'_, PyAny>>, dst: Option<&str>, overwrite: bool) -> PyResult<()> {
@@ -59,7 +62,8 @@ fn check_destination(src: &Bound<'_, PyAny>, color_map: Option<&Bound<'_, PyAny>
             && !source.is_instance_of::<PyBytes>()
             && let Ok(path) = source.extract::<std::path::PathBuf>()
         {
-            paths.push(path.to_string_lossy().into_owned());
+            let path = path.into_os_string().into_string().map_err(|_| invalid("raster paths must be UTF-8"))?;
+            paths.extend(palette::color_table_files(&path).py()?);
         }
         palette::check_output(dst, &paths.iter().map(String::as_str).collect::<Vec<_>>(), overwrite).py()?;
     }
