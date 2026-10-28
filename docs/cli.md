@@ -2046,7 +2046,8 @@ Raster `--skip-errors` skips unreadable inputs with a warning. Scanning without
 a filename filter is strict, as in GDAL: unrelated files and sidecars can fail
 the run. Use a filter or raster `--skip-errors` for mixed-content directories. Lazy-capable raster
 readers only inspect headers. Local GeoPackage/FlatGeobuf vector inputs use cached
-bounds when present; other formats scan features in chunks where supported.
+bounds when present; these cached bounds are trusted, so stale source extents must
+be refreshed before indexing. Other formats scan features in chunks where supported.
 
 Both index commands support `--location-name`, `--output-layer`, `--output-crs`,
 `--source-crs-field-name`, `--source-crs-format auto|WKT|EPSG|PROJ`, `--format`
@@ -2058,7 +2059,8 @@ unless a source-CRS field is requested; with that field, they retain original
 coordinates and warn, matching GDAL. Supply a target CRS for a usable mixed-CRS catalog. Raster reprojection indexes the suggested warped-grid envelope, as GDAL 3.13
 does. Accepted mixed-CRS vector inputs retain original coordinates and warn;
 request a source-CRS field to retain their identity, or an output CRS to reproject.
-Vector reprojection transforms envelope corners without densification. Both
+Consumers of mixed native-coordinate footprints must honor the per-feature CRS;
+the layer CRS alone does not describe every footprint. Vector reprojection transforms envelope corners without densification. Both
 require known source CRSs. For nonlinear transformations, vector corner envelopes
 can underestimate curved edges and miss features in spatial queries. Keep the
 source CRS, or construct densified footprints, when full edge coverage is required.
@@ -2066,7 +2068,10 @@ source CRS, or construct densified footprints, when full edge coverage is requir
 Raster pixel-size filters use `sqrt(envelope_area / pixel_count)` after reprojection,
 including rotated rasters. Repeatable `--fetch-metadata KEY,FIELD,TYPE` copies header
 metadata as String, Integer or Real; `{PIXEL_SIZE}` selects the computed size.
-Missing metadata becomes null; invalid numeric metadata is rejected. GTI options
+Missing metadata becomes null; invalid numeric metadata is rejected. Integer
+`{PIXEL_SIZE}` fields truncate toward zero, matching GDAL. Non-finite Real metadata
+follows the output driver's representation; GeoPackage stores NaN as null, as GDAL does.
+GTI options
 include `--resolution x,y`, `--bbox xmin,ymin,xmax,ymax`, `--ot`, `--band-count`,
 repeatable/comma-separated `--nodata`, `--color-interpretation` and `--mask`.
 Nodata/color lists must contain one value or one per output band, inferred from

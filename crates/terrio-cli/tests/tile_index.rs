@@ -54,3 +54,30 @@ fn relative_inputs_work_when_the_catalog_is_in_another_directory() {
     let index = terrio::open_vector(path.join("out/catalog.gpkg").to_str().unwrap(), &Default::default()).unwrap();
     assert_eq!(index.layers[0].features[0].attributes[0], terrio::FieldValue::Text("../tiles/a.tif".into()));
 }
+
+#[test]
+fn layer_selection_does_not_allow_replacing_an_unselected_input() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path();
+    let json =
+        br#"{"type":"FeatureCollection","features":[{"type":"Feature","properties":{},"geometry":{"type":"Point","coordinates":[1,2]}}]}"#;
+    std::fs::write(path.join("roads.geojson"), json).unwrap();
+    std::fs::write(path.join("counties.geojson"), json).unwrap();
+    let output = run(
+        &[
+            "vector-index",
+            "roads.geojson",
+            "counties.geojson",
+            "counties.geojson",
+            "--source-layer-name",
+            "roads",
+            "--format",
+            "GPKG",
+            "--overwrite",
+        ],
+        path,
+    );
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("indexed source"));
+    assert_eq!(std::fs::read(path.join("counties.geojson")).unwrap(), json);
+}

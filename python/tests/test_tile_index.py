@@ -123,3 +123,17 @@ def test_mapped_path_values_cannot_be_replaced_even_with_unrelated_labels(tmp_pa
         with pytest.raises(terrio.InvalidArgumentError, match="indexed source"):
             factory({"unrelated-label": path}, str(path), format="GPKG", overwrite=True)
         assert path.read_bytes() == before
+
+    # Selecting one input must not make another input safe to overwrite.
+    other = tmp_path / "roads.geojson"
+    before = vector_path.read_bytes()
+    other.write_bytes(before)
+    with pytest.raises(terrio.InvalidArgumentError, match="indexed source"):
+        terrio.vector_index(
+            [str(other), str(vector_path)],
+            str(vector_path),
+            source_layer_names=["roads"],
+            format="GPKG",
+            overwrite=True,
+        )
+    assert vector_path.read_bytes() == before

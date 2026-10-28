@@ -598,6 +598,9 @@ impl DatasetIndex {
     /// Relative paths are anchored now, so changing the working directory cannot bypass it.
     #[cfg(not(target_family = "wasm"))]
     pub fn protect_source_path(&mut self, path: &str) -> Result<()> {
+        if path.contains("://") || path.starts_with("/vsi") {
+            return Ok(());
+        }
         let path = std::path::Path::new(path);
         let absolute = std::env::current_dir()?.join(path);
         self.source_locations.push(absolute.to_string_lossy().into_owned());
@@ -1234,9 +1237,9 @@ pub fn vector_index_paths(
 ) -> Result<DatasetIndex> {
     let paths = index_input_paths(paths, inputs)?;
     let mut sources = Vec::new();
-    for path in paths {
-        let mut group = vector_index_sources(&path)?;
-        let location = stored_location(&path, inputs.absolute_path)?;
+    for path in &paths {
+        let mut group = vector_index_sources(path)?;
+        let location = stored_location(path, inputs.absolute_path)?;
         for source in &mut group {
             source.location = location.clone();
         }
@@ -1244,6 +1247,9 @@ pub fn vector_index_paths(
     }
     let sources = selection.apply(sources)?;
     let mut output = vector_index(&sources, o)?;
+    for path in &paths {
+        output.protect_source_path(path)?;
+    }
     for source in &sources {
         let suffix = if o.dataset_name_only { String::new() } else { format!(",{}", source.layer_index) };
         output.track_relative_location(&source.location, &suffix)?;
