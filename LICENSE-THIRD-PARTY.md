@@ -9,7 +9,7 @@ LICENSE-THIRD-PARTY.md`, from `about.toml`.
 
 ## Overview
 
-- Apache License 2.0 (266)
+- Apache License 2.0 (267)
 - MIT License (75)
 - ISC License (19)
 - BSD 3-Clause "New" or "Revised" License (14)
