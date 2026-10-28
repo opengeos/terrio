@@ -15,8 +15,26 @@
   decodes no pixels. Remote SRTM tiles are read with HTTP range requests, and
   `convert` to a GeoTIFF or COG writes these inputs a strip at a time.
 
+### Remote I/O
+
+- Signed S3 uploads of local files over 8 MiB sent over HTTPS read the file once
+  per attempt instead of twice (#335), as a retried, redirected or
+  region-rerouted request reads it again: they are signed with
+  `UNSIGNED-PAYLOAD`, as the AWS SDKs sign S3 uploads over HTTPS, and the body
+  is streamed. The signature no longer covers the body of these uploads; TLS
+  protects it in transit. Over plain HTTP, and for smaller or staged uploads,
+  the payload hash is signed as before.
+
 ### Breaking changes
 
+- Signed S3 uploads of local files over 8 MiB over HTTPS use `UNSIGNED-PAYLOAD`
+  (#335). An S3-compatible service, or a bucket policy, that refuses it now
+  rejects those uploads; they can be sent over plain HTTP to keep a signed
+  payload, with `AWS_HTTPS=NO`, or an `http://` `AWS_S3_ENDPOINT` when the
+  endpoint names its scheme (an `https://` endpoint ignores `AWS_HTTPS`). Plain
+  HTTP does not encrypt the request body or headers, including
+  `x-amz-security-token` for temporary credentials; use this workaround only
+  over a trusted connection.
 - `mosaic`, `warp`, `concat` and `filter merge` now treat an input beginning
   with `@` as a file list, so a file named `@name.tif` must be written
   `./@name.tif`.
@@ -90,6 +108,11 @@
   refused. GDAL's WKT1 `Interrupted_Goode_Homolosine`, ESRI's
   `Goode_Homolosine` with `Option` 1 and WKT2 `Interrupted Goode Homolosine`
   are read, and the first is written.
+- `+proj=ob_tran` with an `+o_proj` other than `longlat` (a projection on a
+  rotated sphere or ellipsoid) is computed as PROJ does; it was refused. The
+  pole may be given by `+o_lat_p`/`+o_lon_p`, by `+o_lon_c`/`+o_lat_c`/`+o_alpha`
+  or by `+o_lon_1`/`+o_lat_1`/`+o_lon_2`/`+o_lat_2`, for rotated-pole grids too.
+  PROJ's WKT2 `PROJ ob_tran o_proj=...` method is read.
 
 ### Warp
 

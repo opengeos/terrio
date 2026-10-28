@@ -1094,6 +1094,30 @@ def suite_igh(ctx):
     return suite
 
 
+def suite_ob_tran(ctx):
+    """PROJ's general oblique transformation of projections other than longlat, and its refusals."""
+    suite = Suite("ob_tran", "General oblique transformation", "GDAL/PROJ",
+                  "15 spherical/WGS84 configurations of 8 rotated projections (moll, merc, eqc, sinu, ortho, "
+                  "robin, lcc, utm), with the pole given in each of PROJ's three forms and a transverse "
+                  "rotation, and 4,680 geographic samples, as PROJ strings, WKT2 and WKT1; forward and "
+                  "inverse refusals. Projected allowance 1 mm; inverse 1e-8 degrees, longitude weighted "
+                  "by cos(latitude).")
+    if missing_modules("osgeo"):
+        suite.skipped = "needs GDAL Python bindings"
+        return suite
+    code, out, err = run([sys.executable, str(SCRIPTS / "compare_ob_tran_with_gdal.py"), ctx.data, "--terrio", ctx.terrio, "--json"])
+    try:
+        cases = json.loads(out)
+    except json.JSONDecodeError:
+        suite.error = tail(err or out)
+        return suite
+    for case in cases:
+        suite.cases.append(Case("General oblique transformation", case["name"], case["status"], case["detail"]))
+    if code and not any(c.status == DIFFERS for c in suite.cases):
+        suite.error = tail(err or out)
+    return suite
+
+
 def suite_projjson(ctx):
     """PROJJSON units, axes and bound transformations, with and without IDs."""
     suite = Suite("projjson", "PROJJSON CRS definitions", "GDAL/PROJ",
@@ -1851,6 +1875,7 @@ SUITES = OrderedDict(
         ("geocentric", suite_geocentric),
         ("perspective", suite_perspective),
         ("igh", suite_igh),
+        ("ob_tran", suite_ob_tran),
         ("projjson", suite_projjson),
         ("projjson-export", suite_projjson_export),
         ("iau", suite_iau),

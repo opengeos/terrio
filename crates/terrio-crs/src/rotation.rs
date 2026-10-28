@@ -1,11 +1,13 @@
-//! Rotated-pole grids: PROJ's `+proj=ob_tran +o_proj=longlat` with `+o_lat_p`, `+o_lon_p` and
-//! `+lon_0`, the form CF's `rotated_latitude_longitude` and GRIB's rotated grids take.
+//! PROJ's general oblique transformation, `+proj=ob_tran`: rotated-pole grids
+//! (`+o_proj=longlat`, the form CF's `rotated_latitude_longitude` and GRIB's rotated grids take)
+//! and other projections on a rotated sphere or ellipsoid.
 //!
 //! As in PROJ, the rotation applies to the longitude and latitude as they are, with no datum or
 //! geodetic-to-spherical conversion: on a sphere and on WGS 84, a grid's coordinates are the same.
 
 use super::math::*;
 use super::params::Params;
+use super::projections::Proj;
 use crate::{Error, Result};
 
 /// The rotation of a rotated-pole grid. Longitudes are relative to `+lon_0`, which the caller
@@ -19,24 +21,60 @@ pub(crate) struct Rotation {
     lamp: f64,
 }
 
-/// The `ob_tran` parameters terrio applies: `o_proj` and the new pole. The others (`o_lon_c`,
-/// `o_lat_c`, `o_alpha`, `o_lon_1`...) define the pole in other ways.
-const KNOWN: [&str; 3] = ["o_proj", "o_lat_p", "o_lon_p"];
+/// The `ob_tran` parameters terrio applies: `o_proj` and the new pole, given as a pole
+/// (`o_lat_p`, `o_lon_p`), as a centre and azimuth (`o_lon_c`, `o_lat_c`, `o_alpha`) or as two
+/// points on the new equator (`o_lon_1`, `o_lat_1`, `o_lon_2`, `o_lat_2`).
+const KNOWN: [&str; 10] = ["o_proj", "o_lat_p", "o_lon_p", "o_alpha", "o_lon_c", "o_lat_c", "o_lon_1", "o_lat_1", "o_lon_2", "o_lat_2"];
+
+/// PROJ's tolerance on the pole latitude (a transverse rotation below it) and on the other forms'
+/// latitudes.
+const TOL: f64 = 1e-10;
 
 impl Rotation {
-    /// The rotation of an `ob_tran` PROJ string. Fails on the forms terrio does not apply: an
-    /// `o_proj` other than `longlat`, or a pole not given by `o_lat_p` and `o_lon_p`.
+    /// The rotation of an `ob_tran` PROJ string, as PROJ's `ob_tran` setup computes it.
     pub fn from_params(p: &Params) -> Result<Self> {
-        let o_proj = p.str("o_proj").ok_or_else(|| err("+proj=ob_tran without +o_proj"))?;
-        if !matches!(o_proj, "longlat" | "latlong" | "lonlat" | "latlon") {
-            return Err(err(&format!("+proj=ob_tran with +o_proj={o_proj} (only +o_proj=longlat is)")));
-        }
+        p.str("o_proj").ok_or_else(|| err("+proj=ob_tran without +o_proj"))?;
         if let Some(other) = p.keys().find(|k| k.starts_with("o_") && !KNOWN.contains(k)) {
-            return Err(err(&format!("+proj=ob_tran with +{other} (only +o_lat_p and +o_lon_p are)")));
+            return Err(err(&format!("+proj=ob_tran with +{other}")));
         }
-        let phip = p.angle("o_lat_p").ok_or_else(|| err("+proj=ob_tran without +o_lat_p"))?;
-        let (sphip, cphip) = phip.sin_cos();
-        Ok(Self { sphip, cphip, lamp: p.angle("o_lon_p").unwrap_or(0.0) })
+        // An absent angle is 0; one that does not read as an angle is refused (PROJ reads it as 0).
+        let angle = |k: &str| match p.angle(k) {
+            Some(v) => Ok(v),
+            None if !p.has(k) => Ok(0.0),
+            None => Err(invalid(&format!("+{k} is not an angle"))),
+        };
+        let (lamp, phip) = if p.has("o_alpha") {
+            let (lamc, phic, alpha) = (angle("o_lon_c")?, angle("o_lat_c")?, angle("o_alpha")?);
+            if (phic.abs() - HALFPI).abs() <= TOL {
+                return Err(invalid("|o_lat_c| should be < 90 degrees"));
+            }
+            (lamc + (-alpha.cos()).atan2(-alpha.sin() * phic.sin()), aasin(phic.cos() * alpha.sin()))
+        } else if p.has("o_lat_p") {
+            (angle("o_lon_p")?, angle("o_lat_p")?)
+        } else if !["o_lon_1", "o_lat_1", "o_lon_2", "o_lat_2"].iter().any(|k| p.has(k)) {
+            return Err(invalid("no pole: give +o_lat_p, +o_lon_c, +o_lat_c and +o_alpha, or +o_lon_1, +o_lat_1, +o_lon_2 and +o_lat_2"));
+        } else {
+            let (lam1, phi1, lam2, phi2) = (angle("o_lon_1")?, angle("o_lat_1")?, angle("o_lon_2")?, angle("o_lat_2")?);
+            if phi1.abs() > HALFPI - TOL || phi2.abs() > HALFPI - TOL {
+                return Err(invalid("|o_lat_1| and |o_lat_2| should be < 90 degrees"));
+            }
+            if (phi1 - phi2).abs() < TOL {
+                return Err(invalid("o_lat_1 should be different from o_lat_2"));
+            }
+            if phi1.abs() < TOL {
+                return Err(invalid("o_lat_1 should be different from zero"));
+            }
+            let lamp = (phi1.cos() * phi2.sin() * lam1.cos() - phi1.sin() * phi2.cos() * lam2.cos())
+                .atan2(phi1.sin() * phi2.cos() * lam2.sin() - phi1.cos() * phi2.sin() * lam1.sin());
+            (lamp, (-(lamp - lam1).cos() / phi1.tan()).atan())
+        };
+        if !(phip.is_finite() && lamp.is_finite()) {
+            return Err(invalid("the pole must be finite"));
+        }
+        // PROJ's transverse case, its own formulas, which are the oblique ones at a pole latitude
+        // of 0.
+        let (sphip, cphip) = if phip.abs() > TOL { phip.sin_cos() } else { (0.0, 1.0) };
+        Ok(Self { sphip, cphip, lamp })
     }
 
     /// The grid's pole latitude (`+o_lat_p`) and the grid longitude of the geographic pole
@@ -68,6 +106,31 @@ fn err(msg: &str) -> Error {
     Error::Crs(format!("unsupported projection: {msg}"))
 }
 
+fn invalid(msg: &str) -> Error {
+    Error::Crs(format!("invalid +proj=ob_tran: {msg}"))
+}
+
+/// PROJ's `ob_tran` with a projection other than `longlat` (`+o_proj`): the rotation, then that
+/// projection's own formulas, on the CRS's figure. The projection's own central meridian and
+/// false easting and northing do not apply, as in PROJ.
+#[derive(Debug)]
+pub(crate) struct ObTran {
+    pub rot: Rotation,
+    pub link: Box<dyn Proj>,
+}
+
+impl Proj for ObTran {
+    fn fwd(&self, lam: f64, phi: f64) -> Option<(f64, f64)> {
+        let (lam, phi) = self.rot.fwd(lam, phi);
+        self.link.fwd(lam, phi)
+    }
+
+    fn inv(&self, x: f64, y: f64) -> Option<(f64, f64)> {
+        let (lam, phi) = self.link.inv(x, y)?;
+        Some(self.rot.inv(lam, phi))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -84,7 +147,13 @@ mod tests {
 
     #[test]
     fn refuses_other_forms() {
-        for s in ["+proj=ob_tran +o_proj=merc +o_lat_p=40", "+proj=ob_tran +o_proj=longlat +o_lon_c=10 +o_lat_c=40 +o_alpha=5"] {
+        for s in [
+            "+proj=ob_tran +o_lat_p=40",
+            "+proj=ob_tran +o_proj=longlat +o_lat_p=40 +o_foo=1",
+            "+proj=ob_tran +o_proj=longlat +o_lon_1=10",
+            "+proj=ob_tran +o_proj=moll +o_lat_p=nan",
+            "+proj=ob_tran +o_proj=moll +o_lat_p=45 +o_lon_p=inf",
+        ] {
             assert!(Rotation::from_params(&Params::parse(s)).is_err(), "{s}");
         }
     }
