@@ -531,3 +531,10 @@ clipping geometry and overview updates. Local writable little-endian GeoTIFFs
 are required for in-place changes; external overview updates can fail after the
 base update commits. Use `create-raster`, `edit-raster` and `update-raster` when
 calling the corresponding CLI commands.
+
+COG validation also accepts uploaded TIFF `bytes`. Use
+`terrio.validate_cog(data, profile="gdal", full_check=True)` for GDAL 3.13
+structural rules and compressed-block leader, trailer, order and mask checks.
+The result remains `(valid, errors, warnings)`; the default `rio-cogeo` profile
+preserves existing behavior. Automatic full checking applies to local paths
+and bytes, and stays off for URLs.

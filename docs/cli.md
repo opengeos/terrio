@@ -1045,6 +1045,20 @@ metadata and layout notes (mask IFDs after image data, which do not affect valid
 status is 1 when the file is not a valid COG, as with GDAL's script. The command is also a
 read-only MCP tool.
 
+`--profile gdal` selects GDAL 3.13's structural rules: exact main-IFD placement
+following the optional structural metadata, source-width tiling threshold above
+1024, and overviews ordered by their dimensions. `--full-check auto|yes|no`
+checks row-major block order, little-endian size leaders, repeated four-byte
+trailers and interleaved masks when the file declares those optimizations. Auto
+checks local inputs fully and keeps HTTP/S3 checks to headers and offset arrays;
+`yes` explicitly fetches block boundary bytes remotely. No pixels are decoded.
+`--full-check yes` requires the GDAL profile. The default profile retains the
+existing rio-cogeo behavior.
+
+```sh
+terrio validate-cog dem.tif --profile gdal --full-check yes --json
+```
+
 ## pixel-info
 
 `-o -` writes text formats to standard output; binary/vector formats require a file path.

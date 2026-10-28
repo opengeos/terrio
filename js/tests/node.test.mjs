@@ -2331,3 +2331,18 @@ test("palette blend survives windows and in-memory TIFF writes", () => {
   }
   source.free();
 });
+
+test("COG validation profiles inspect uploaded block trailers", () => {
+  const raster = terrio.createRaster(null, {size: [64, 64], burn: [7]});
+  const bytes = raster.toBytes("input.tif", {format: "COG", compress: "DEFLATE"});
+  assert.equal(terrio.validateCog(bytes, {profile: "gdal"}).is_valid, true);
+  assert.equal(terrio.validateCog(bytes).is_valid, true);
+  const damaged = bytes.slice();
+  damaged[damaged.length - 1] ^= 1;
+  const report = terrio.validateCog(damaged, {profile: "gdal"});
+  assert.equal(report.is_valid, false);
+  assert.ok(report.errors.some(error => error.includes("trailer")));
+  assert.equal(terrio.validateCog(damaged, {profile: "gdal", fullCheck: false}).is_valid, true);
+  assert.throws(() => terrio.validateCog(bytes, {profile: "unknown"}), /unknown variant/);
+  raster.free();
+});
