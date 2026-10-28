@@ -26,8 +26,9 @@ of those options, the behavior of its drivers and many of its algorithms come fr
 twenty-five years of their work. GDAL is also the reference terrio
 is tested against, and an optional backend for the formats terrio cannot read itself.
 
-Several parts of terrio are ports of GDAL code (MIT licence), each attributed in
-[`NOTICE`](https://github.com/opengeos/terrio/blob/main/NOTICE) with its source files and
+Several parts of terrio are ports of GDAL code, under GDAL's MIT licence except where the code GDAL
+includes has other terms (the public-domain degrib and g2clib of the GRIB driver), each attributed
+in [`NOTICE`](https://github.com/opengeos/terrio/blob/main/NOTICE) with its source files and
 copyright holders:
 
 - contour generation, from GDAL's marching squares implementation (Oslandia)
