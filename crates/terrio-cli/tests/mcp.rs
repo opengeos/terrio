@@ -353,6 +353,24 @@ fn interrupted_goode_homolosine_coordinates_and_refusal_through_mcp() {
 }
 
 #[test]
+fn oblique_mollweide_coordinates_and_refusal_through_mcp() {
+    // rust-proj-capability's seed-ob_tran-moll fixture (PROJ 9.9.0), and a point beyond the
+    // rotated Mollweide's ellipse, which PROJ's inverse refuses.
+    let target = "+proj=ob_tran +o_proj=moll +o_lon_p=0 +o_lat_p=45 +lon_0=147 +datum=WGS84 +units=m +no_defs";
+    let replies = session(&[
+        call(1, "crs", &["OGC:CRS84", "--to", target, "147", "-42"]),
+        call(2, "crs", &[target, "--to", "OGC:CRS84", "40000000", "0"]),
+    ]);
+    assert_eq!(replies[&1]["result"]["isError"], false);
+    let values: Vec<f64> =
+        replies[&1]["result"]["content"][0]["text"].as_str().unwrap().split_whitespace().filter_map(|v| v.parse().ok()).collect();
+    assert_eq!(values.len(), 2);
+    assert!(values[0].abs() < 0.001);
+    assert!((values[1] + 8921410.650523769).abs() < 0.001);
+    assert_eq!(replies[&2]["result"]["isError"], true);
+}
+
+#[test]
 fn vector_geometry_tools_are_discoverable_and_execute() {
     let dir = tempfile::tempdir().unwrap();
     let input = dir.path().join("line.geojson");
