@@ -605,7 +605,9 @@ fn relative_path(path: &std::path::Path, base: &std::path::Path) -> std::path::P
 /// elsewhere (Windows accepts `/` too). An absolute path, such as one on another drive, keeps
 /// its native form.
 fn portable_location(path: &std::path::Path) -> String {
-    if path.is_absolute() || path.has_root() {
+    // A drive-relative Windows path (`C:tile.tif`) keeps its native form too: written with '/'
+    // it would read as `C:/tile.tif`, an absolute path to a different file.
+    if path.is_absolute() || path.has_root() || matches!(path.components().next(), Some(std::path::Component::Prefix(_))) {
         return path.to_string_lossy().into_owned();
     }
     path.components().map(|c| c.as_os_str().to_string_lossy()).collect::<Vec<_>>().join("/")
@@ -881,6 +883,12 @@ mod tests {
         assert_eq!(portable_location(&relative), "../tiles/a.tif");
         let absolute = std::env::temp_dir().join("a.tif");
         assert_eq!(portable_location(&absolute), absolute.to_string_lossy());
+    }
+    #[cfg(windows)]
+    #[test]
+    fn drive_relative_locations_keep_their_native_form() {
+        assert_eq!(portable_location(std::path::Path::new("C:tile.tif")), "C:tile.tif");
+        assert_eq!(portable_location(std::path::Path::new(r"C:tiles\a.tif")), r"C:tiles\a.tif");
     }
     #[cfg(not(target_family = "wasm"))]
     #[test]
@@ -1305,7 +1313,7 @@ pub fn index_input_paths(paths: &[String], o: &IndexInputOptions) -> Result<Vec<
                 // on Windows, so its parts are joined one by one; collecting the base's components
                 // drops doubled and trailing separators (`tiles//` gives `tiles/a.tif`).
                 let base: std::path::PathBuf = std::path::Path::new(base).components().collect();
-                let joined = entry.name.split('/').fold(base, |p, part| p.join(part));
+                let joined = entry.name.split('/').filter(|part| !part.is_empty()).fold(base, |p, part| p.join(part));
                 out.push(joined.to_string_lossy().into_owned());
             }
         }
