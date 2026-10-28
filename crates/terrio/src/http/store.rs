@@ -453,7 +453,14 @@ fn write_request_with(
             Payload::File(path, _) if unsigned => Some((path, file_stamp(path)?)),
             _ => None,
         };
-        let length = payload.len()?;
+        // A file's length comes from the handle its body is read from, so the header and the body agree.
+        let (length, mut file) = match payload {
+            Payload::File(path, _) => {
+                let f = std::fs::File::open(path)?;
+                (f.metadata()?.len(), Some(f))
+            }
+            _ => (payload.len()?, None),
+        };
         let mut builder = ureq::http::Request::builder().method(method).uri(&url);
         for (k, v) in headers {
             builder = builder.header(k.as_str(), v.as_str());
@@ -483,8 +490,8 @@ fn write_request_with(
         let result = match payload {
             Payload::Empty => builder.body(()).map_err(|e| Error::Http(e.to_string())).map(|r| agent.run(r)),
             Payload::Bytes(b) => builder.body(b.as_slice()).map_err(|e| Error::Http(e.to_string())).map(|r| agent.run(r)),
-            Payload::File(p, _) => {
-                let f = std::fs::File::open(p)?;
+            Payload::File(..) => {
+                let f = file.take().expect("a file payload is opened above");
                 builder.body(f).map_err(|e| Error::Http(e.to_string())).map(|r| agent.run(r))
             }
         }?;
