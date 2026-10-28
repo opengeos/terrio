@@ -191,6 +191,14 @@ def main():
         case('zarr spatial coordinate snapshot', tiled, output='zarr')
         case('temporal irregular singleton ordering', [([('time',[t]),('lat',lat[:4]),('lon',lon[:5])],values[None,:4,:5]+i) for i,t in enumerate([10,17,12])])
         case('temporal irregular multisample blocks', [([('time',t),('lat',lat[:4]),('lon',lon[:5])], np.stack([values[:4,:5]+i for i in range(len(t))])) for t in [[0,1,3],[4,7]]])
+        # GDAL rejects an off-grid singleton mixed with a regular series.
+        create(tmp/'regular.nc', [('time',[0,6,12]),('x',[0])], np.array([[1],[2],[3]]))
+        create(tmp/'singleton.nc', [('time',[19]),('x',[0])], np.array([[4]]))
+        ref = subprocess.run(['gdal','mdim','mosaic',str(tmp/'regular.nc'),str(tmp/'singleton.nc'),str(tmp/'rejected-reference.vrt')], capture_output=True)
+        actual = tmp/'rejected-terrio.nc'
+        out = subprocess.run([args.terrio,'mdmosaic',str(tmp/'regular.nc'),str(tmp/'singleton.nc'),str(actual)], capture_output=True)
+        results.append({'name':'mixed off-grid singleton rejection', 'expected_rejection':True,
+                        'same_rejection':ref.returncode != 0 and out.returncode != 0 and not actual.exists()})
         for dtype in [gdal.GDT_Byte,gdal.GDT_Int8,gdal.GDT_UInt16,gdal.GDT_Int16,gdal.GDT_UInt32,gdal.GDT_Int32,gdal.GDT_UInt64,gdal.GDT_Int64,gdal.GDT_Float64]:
             if dtype in (gdal.GDT_UInt64,gdal.GDT_Int64):
                 # Form 64-bit values in integer arithmetic, without a float64 round trip.

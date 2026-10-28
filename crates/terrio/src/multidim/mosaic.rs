@@ -144,7 +144,8 @@ fn axis(inputs: &[(usize, Dimension, Option<Array>)]) -> Result<Axis> {
         vectors.push(coordinates(array)?);
     }
     // A multi-sample source determines grid spacing/direction. Singleton temporal
-    // slices can instead have irregular coordinates, sorted into one axis.
+    // slices can instead have irregular coordinates when all inputs are singleton.
+    // Mixed singletons must align to the spacing of a multi-sample series.
     let step = vectors.iter().find(|v| v.len() > 1).map(|v| v[1].distance(v[0]));
     let integer_step = vectors.iter().find(|v| v.len() > 1).and_then(|v| match (v[1], v[0]) {
         (Coordinate::Integer(a), Coordinate::Integer(b)) => Some(a - b),
@@ -399,6 +400,20 @@ fn same_encoding(a: &Array, b: &Array) -> bool {
             return false;
         }
     }
+    fn same_value(a: &Value, b: &Value) -> bool {
+        a == b
+            || match (a, b) {
+                (Value::Array(a), Value::Array(b)) => a.len() == b.len() && a.iter().zip(b).all(|(a, b)| same_value(a, b)),
+                _ => same_number(a, b),
+            }
+    }
+    for name in ["valid_range", "valid_min", "valid_max", "missing_value", "grid_mapping", "_Unsigned"] {
+        match (a.info.attributes.get(name), b.info.attributes.get(name)) {
+            (None, None) => (),
+            (Some(a), Some(b)) if same_value(a, b) => (),
+            _ => return false,
+        }
+    }
     let empty = serde_json::json!("");
     a.info.attributes.get("units").unwrap_or(&empty) == b.info.attributes.get("units").unwrap_or(&empty)
 }
@@ -411,7 +426,8 @@ fn parent(path: &str) -> &str {
 /// Changing dimensions require numeric one-dimensional indexing variables;
 /// common unindexed dimensions are retained positionally at their existing size. Multi-
 /// sample axes can be regularly spaced and aligned or disjoint irregular ranges.
-/// Singleton slices can form irregular axes. Last input wins overlaps (including nodata), and gaps use
+/// All-singleton axes may be irregular; mixed singleton slices must align with a regular series.
+/// Last input wins overlaps (including nodata), and gaps use
 /// source nodata or zero. Data hyperslabs are fetched only when requested.
 pub fn mosaic(datasets: &[Dataset], options: &MosaicOptions) -> Result<Dataset> {
     if datasets.is_empty() {
@@ -781,9 +797,38 @@ mod tests {
             info.attributes = json!({"grid_mapping_name": "latitude_longitude"});
             source.root.arrays.push(Array::from_bytes(info, 0i32.to_le_bytes().to_vec()).unwrap());
         }
+        let mut different = source.clone();
+        different.root.arrays.iter_mut().find(|a| a.info.name == "v").unwrap().info.attributes["grid_mapping"] = json!("other: y x");
+        assert!(mosaic(&[source.clone(), different], &Default::default()).unwrap_err().to_string().contains("encoding metadata"));
         let out = mosaic(&[source], &Default::default()).unwrap();
         assert!(out.array("crs").is_ok());
         assert!(out.array("other").is_ok());
+    }
+    #[test]
+    fn mixed_off_grid_singletons_are_rejected_like_gdal() {
+        let a = dataset(&[("time", &[0, 6, 12]), ("x", &[0])], &[1, 2, 3]);
+        let b = dataset(&[("time", &[19]), ("x", &[0])], &[4]);
+        assert!(mosaic(&[a, b], &Default::default()).unwrap_err().to_string().contains("not aligned"));
+    }
+    #[test]
+    fn incompatible_cf_value_interpretation_is_rejected() {
+        let a = dataset(&[("y", &[0]), ("x", &[0, 1])], &[1, 2]);
+        for (name, value) in [
+            ("valid_range", json!([0, 10])),
+            ("valid_min", json!(0)),
+            ("valid_max", json!(10)),
+            ("missing_value", json!(-999)),
+            ("_Unsigned", json!("true")),
+        ] {
+            let mut b = a.clone();
+            b.root.arrays.last_mut().unwrap().info.attributes[name] = value;
+            assert!(mosaic(&[a.clone(), b], &Default::default()).unwrap_err().to_string().contains("encoding metadata"));
+        }
+        let mut a = a;
+        a.root.arrays.last_mut().unwrap().info.attributes["valid_range"] = json!([0, 10]);
+        let mut b = a.clone();
+        b.root.arrays.last_mut().unwrap().info.attributes["valid_range"] = json!([0.0, 10.0]);
+        assert!(mosaic(&[a, b], &Default::default()).is_ok());
     }
     #[test]
     fn incompatible_grid_types_and_nodata_are_rejected() {

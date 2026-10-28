@@ -773,6 +773,10 @@ def suite_mdmosaic(ctx):
         suite.error = tail(err or out)
         return suite
     for result in results:
+        if result.get("expected_rejection"):
+            suite.cases.append(Case("Multidimensional mosaics", result["name"], IDENTICAL if result.get("same_rejection") else DIFFERS,
+                                    "both reject; Terrio preserves the absent destination" if result.get("same_rejection") else "rejection differs"))
+            continue
         classified = dict(result)
         if result.get("permitted_coordinate_type_difference"):
             classified["same_type"] = True

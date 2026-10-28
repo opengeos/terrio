@@ -1174,3 +1174,9 @@ preservation permits only the exact nearest-Float32 conversion of GDAL's Float64
 coordinate values; numeric differences and their maximum magnitude are reported.
 Descending duplicate coordinates, coordinate memory limits before payload reads,
 packing/unit mismatches and scalar Python input rejection have dedicated regressions.
+
+Mosaic regressions reject mismatched CF validity bounds, missing-value markers,
+unsigned interpretation and grid-mapping references. An off-grid singleton mixed
+with a regular series is rejected by both GDAL 3.13.3 and Terrio, while axes
+made entirely from singleton slices retain irregular-coordinate support. The
+registered suite verifies this refusal without creating a Terrio destination.

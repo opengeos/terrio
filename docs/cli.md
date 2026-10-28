@@ -2143,7 +2143,7 @@ nodata, packing scale/offset, units and dimension names/order. Dimensions that
 change across inputs need a finite, numeric, one-dimensional indexing variable.
 Unindexed dimensions, including CF bounds axes, are retained positionally and
 must keep the same size across inputs. Regular axes must share spacing and grid
-alignment; disjoint irregular ranges and irregular singleton time slices are
+alignment; disjoint irregular ranges and axes made entirely of irregular singleton time slices are
 also supported. Last input wins overlaps, including nodata pixels. Gaps on
 regular grids, or missing combinations of coordinates across axes, are filled
 with nodata, or zero if no nodata is declared.
@@ -2174,3 +2174,9 @@ existing outputs are outside this supported subset. Output replacement is refuse
 before writing. Descending axes work directly in Terrio; comparisons normalize
 GDAL 3.13.3 inputs because its descending-axis VRT size/offset computation can
 produce invalid dimensions, then restore the coordinate order for comparison.
+
+A singleton mixed with a regular multidimensional series must align to that
+series; off-grid mixed slices are rejected, as in GDAL 3.13.3. Data-array
+`valid_range`, `valid_min`, `valid_max`, `missing_value`, `grid_mapping` and
+`_Unsigned` must agree across contributing inputs, in addition to scale,
+offset, units and nodata. Numeric integer/float metadata compares by value.
