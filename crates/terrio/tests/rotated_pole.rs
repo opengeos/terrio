@@ -152,11 +152,34 @@ fn netcdf_cf_grid_mapping() {
 }
 
 #[test]
+fn poles_given_by_a_centre_and_azimuth_or_by_two_equator_points_match_proj() {
+    // pyproj 3.8.0 / PROJ 9.8.1.
+    let sphere = SpatialRef::parse("+proj=longlat +R=6371229").unwrap();
+    for (definition, expected) in [
+        (
+            "+proj=ob_tran +o_proj=longlat +o_lon_c=10 +o_lat_c=40 +o_alpha=5 +R=6371229",
+            [(-69.36046852276115, -33.97410849155277), (151.64622002890107, 23.494681550979017)],
+        ),
+        (
+            "+proj=ob_tran +o_proj=longlat +o_lon_1=10 +o_lat_1=40 +o_lon_2=20 +o_lat_2=50 +R=6371229",
+            [(101.89311988440802, -60.29804915956161), (-32.383517282497905, 36.7303427166674)],
+        ),
+    ] {
+        let grid = SpatialRef::parse(definition).unwrap();
+        let forward = Transformer::new(&sphere, &grid).unwrap();
+        for ((lon, lat), (x, y)) in [(18.0, 50.0), (-120.0, -30.0)].into_iter().zip(expected) {
+            let actual = forward.transform(lon, lat).unwrap();
+            assert!((actual.0 - x).abs() < 1e-9 && (actual.1 - y).abs() < 1e-9, "{definition}: {actual:?}");
+        }
+    }
+}
+
+#[test]
 fn unsupported_forms_raise() {
     for s in [
-        "+proj=ob_tran +o_proj=merc +o_lat_p=39.25 +lon_0=18 +R=6371229",
-        "+proj=ob_tran +o_proj=longlat +o_lon_c=10 +o_lat_c=40 +o_alpha=5 +R=6371229",
-        "+proj=ob_tran +o_proj=longlat +o_lon_1=10 +o_lat_1=40 +o_lon_2=20 +o_lat_2=50",
+        "+proj=ob_tran +o_lat_p=39.25 +lon_0=18 +R=6371229",
+        "+proj=ob_tran +o_proj=longlat +o_lon_c=10 +o_lat_c=90 +o_alpha=5 +R=6371229",
+        "+proj=ob_tran +o_proj=longlat +o_lon_1=10 +o_lat_1=40 +o_lon_2=20 +o_lat_2=40",
         "+proj=ob_tran +o_proj=longlat +lon_0=18",
     ] {
         assert!(SpatialRef::parse(s).is_err(), "{s}");

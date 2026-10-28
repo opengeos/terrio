@@ -135,6 +135,7 @@ fn what_would_be_written_wrongly_is_refused() {
     let refusal = |d: &str| SpatialRef::parse(d).unwrap().to_projjson().unwrap_err().to_string();
     assert!(SpatialRef::from_epsg(9000).unwrap().to_projjson().unwrap_err().to_string().contains("dynamic"));
     assert!(refusal("+proj=robin +datum=WGS84").contains("+proj=robin"));
+    assert!(refusal("+proj=ob_tran +o_proj=moll +o_lat_p=45 +lon_0=147 +R=6371000").contains("ob_tran"));
     // UTM zones are 1 to 60 (terrio refuses others before writing, as PROJ does).
     assert!(SpatialRef::parse("+proj=utm +zone=61 +datum=WGS84").and_then(|s| s.to_projjson()).is_err());
     // A projection on the conformal or authalic sphere of an ellipsoid (IAU_2015:19991).

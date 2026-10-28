@@ -6,7 +6,7 @@ use super::datum::{self, Op};
 use super::math::*;
 use super::params::Params;
 use super::projections::{self, Proj, Setup};
-use super::rotation::Rotation;
+use super::rotation::{ObTran, Rotation};
 use super::{SpatialRef, epsg, wkt1, wkt2};
 use crate::{Error, Result};
 use std::sync::Arc;
@@ -360,7 +360,11 @@ impl Def {
         if setup.phi0.abs() > HALFPI + 1e-12 || !setup.phi0.is_finite() {
             return Err(Error::Crs(format!("invalid lat_0: {} degrees", setup.phi0.to_degrees())));
         }
-        let rot = if name == "ob_tran" { Some(Rotation::from_params(&p)?) } else { None };
+        let is_longlat = |n: &str| matches!(n, "longlat" | "latlong" | "lonlat" | "latlon");
+        // `ob_tran`'s rotation, of a rotated-pole grid (`+o_proj=longlat`) or of a projection.
+        let ob_tran = if name == "ob_tran" { Some(Rotation::from_params(&p)?) } else { None };
+        let o_proj = p.str("o_proj").filter(|_| ob_tran.is_some());
+        let rot = ob_tran.filter(|_| o_proj.is_some_and(is_longlat));
         let geocentric = name == "geocent";
         if geocentric && p.has("to_meter") && explicit_to_meter.is_none() {
             return Err(Error::Crs("invalid geocentric to_meter".into()));
@@ -384,7 +388,7 @@ impl Def {
         {
             return Err(Error::Crs("invalid geocentric unit or ellipsoid".into()));
         }
-        let geographic = matches!(name, "longlat" | "latlong" | "lonlat" | "latlon") || rot.is_some();
+        let geographic = is_longlat(name) || rot.is_some();
         // PROJ 9.8.1 evaluates R_C before parsing lat_0 (init.cpp), so its
         // conformal radius is equatorial even with a nonzero latitude parameter.
         // Projected endpoints retain their geodetic ellipsoid separately from this
@@ -400,6 +404,19 @@ impl Def {
         }
         let proj: Option<Arc<dyn Proj>> = if geographic || geocentric {
             None
+        } else if let (Some(rot), Some(o_proj)) = (ob_tran, o_proj) {
+            if o_proj == "ob_tran" {
+                return Err(Error::Crs("invalid +proj=ob_tran: +o_proj=ob_tran".into()));
+            }
+            // A projected ob_tran (+o_proj other than longlat) applies the CRS's figure, central
+            // meridian and false easting and northing, as PROJ does. The rotated projection is built
+            // on a copy of the setup, so what its formulas read (+lat_0, +lat_ts, scale) and change
+            // stays with it.
+            let mut inner =
+                Setup { p: setup.p, ell: setup.ell, phi0: setup.phi0, lam0: setup.lam0, k0: setup.k0, x0: setup.x0, y0: setup.y0 };
+            let link = projections::build(o_proj, &mut inner)?
+                .ok_or_else(|| Error::Crs(format!("unsupported projection: +proj=ob_tran with +o_proj={o_proj}")))?;
+            Some(Arc::new(ObTran { rot, link }))
         } else {
             match projections::build(name, &mut setup)? {
                 Some(b) => Some(Arc::from(b)),

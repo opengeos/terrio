@@ -1539,19 +1539,31 @@ VSI mutation/listing operations require complete object-store listings; capped
 read-only subdirectory discovery retains its existing warning and partial results
 for readers such as Zarr.
 
-Recursive object-store listings include directories implied by keys; GDAL omits those
-implied directory entries. `--skip-errors` continues copying but exits nonzero when
-any files fail. Signed S3 uploads of local files up to 8 MiB read them once, into memory, to
-calculate their SHA-256 and send them; larger files are read once to calculate it and once to
+Recursive object-store listings include directories implied by keys; GDAL omits those implied
+directory entries. `--skip-errors` continues copying but exits nonzero when any files fail.
+Signed S3 uploads of local files up to 8 MiB read them once, into memory, to calculate their
+SHA-256 and send them, with the payload hash signed. Larger local files sent over HTTPS are
+signed with `x-amz-content-sha256: UNSIGNED-PAYLOAD`, as the AWS SDKs sign S3 uploads over
+HTTPS, and read once, streaming the body (a retried, redirected or re-routed request sends it
+again): the signature then covers the request's headers but not its body, which TLS protects in
+transit (no extra checksum header is sent, since one would need another pass over the file).
+Without a payload hash, the service cannot tell that a file changed while it was sent, so its
+size and modification time are compared before and after the upload, which fails if they
+differ. This is best effort: a same-size change within the file system's timestamp resolution
+is not detected. An S3-compatible service that refuses `UNSIGNED-PAYLOAD` rejects these
+uploads; send them over HTTP to keep the payload signed, only over a trusted connection: plain
+HTTP does not encrypt the request body or headers, including `x-amz-security-token` for
+temporary credentials. Over plain HTTP (`AWS_HTTPS=NO`, or an
+`http://` `AWS_S3_ENDPOINT`; an endpoint given with `https://` keeps HTTPS whatever `AWS_HTTPS`
+says), larger files keep a signed payload hash and are read once to calculate it and once to
 send the body (twice the file size in local reads). Uploads staged through a temporary file
-(from remote, in-memory or archive sources) are hashed as they are staged, and read once.
-ETag sync can add a separate MD5 pass. Payload hashes are retained (no `UNSIGNED-PAYLOAD`) for
-compatibility with signed endpoints that require them. Recursive S3 deletion sends up to 1,000
-keys per `DeleteObjects` request, directory markers only once the objects are deleted, reporting
-the first key the service could not delete; a service that answers that it does not implement it
-(405, 501, or 400 `NotImplemented`) is sent one `DELETE` per key, as are keys with control
-characters, which XML cannot carry, between the batches around them. Azure blobs are deleted one
-request each.
+(from remote, in-memory or archive sources) are hashed as they are staged, read once and signed
+over their payload. ETag sync can add a separate MD5 pass.
+Recursive S3 deletion sends up to 1,000 keys per `DeleteObjects` request, directory markers
+only once the objects are deleted, reporting the first key the service could not delete; a
+service that answers that it does not implement it (405, 501, or 400 `NotImplemented`) is sent
+one `DELETE` per key, as are keys with control characters, which XML cannot carry, between the
+batches around them. Azure blobs are deleted one request each.
 
 Differences from GDAL (checked with 3.13.3): entries are sorted (GDAL prints local directories in the order
 the file system returns them); dates are UTC (a zip member's date is its stored DOS time, as
