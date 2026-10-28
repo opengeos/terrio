@@ -763,6 +763,9 @@ def suite_mdmosaic(ctx):
     if missing_modules("osgeo", "numpy"):
         suite.skipped = "needs osgeo and numpy"
         return suite
+    if shutil.which("gdal") is None or run(["gdal", "mdim", "mosaic", "--help"])[0] != 0:
+        suite.skipped = "needs a GDAL release with the gdal mdim mosaic command"
+        return suite
     _code, out, err = run([sys.executable, str(SCRIPTS / "compare_mdmosaic_with_gdal.py"), ctx.data, "--terrio", ctx.terrio, "--json"])
     try:
         results = json.loads(out)
