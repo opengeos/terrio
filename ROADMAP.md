@@ -78,7 +78,8 @@ commands. Command-group progress:
 
 - [ ] Multidimensional mosaics: lazy coordinate-aligned numeric arrays across
       Rust, CLI/MCP, Python and JavaScript, with netCDF/Zarr output and real
-      NOAA wind comparisons registered as `mdmosaic`.
+      NOAA wind comparisons registered as `mdmosaic`. Proposed in
+      [#373](https://github.com/opengeos/terrio/pull/373), pending review and merge.
 
 - [x] Vector geometry operations: simplify, segmentize, convex and concave hulls, swap XY,
       geometry-type conversion, grouped combine and spatial sort. Landed in
