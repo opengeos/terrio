@@ -103,12 +103,16 @@ def main():
             result['name'] = name
             results.append(result)
         indexed_source = os.path.join(tmp, 'indexed.tif')
-        for source in [palette, sources['nodata']]:
-            if source != palette:
-                run(['gdal', 'raster', 'rgb-to-palette', source, os.path.join(tmp, 'indexed.tif')])
-                source = indexed_source
+        indexed_error = None
+        try:
+            run(['gdal', 'raster', 'rgb-to-palette', sources['nodata'], indexed_source])
+        except Exception as exc:
+            indexed_error = str(exc)[-800:]
+        for source, preparation_error in [(palette, None), (indexed_source, indexed_error)]:
             for rgba in [False, True]:
                 try:
+                    if preparation_error:
+                        raise RuntimeError(preparation_error)
                     gdal.Translate(reference, source, rgbExpand='rgba' if rgba else 'rgb')
                     run([args.terrio, 'palette-to-rgb', source, actual, '--overwrite', *(['--rgba'] if rgba else [])])
                     result = check(reference, actual)
@@ -118,6 +122,8 @@ def main():
                 results.append(result)
         # gdalattachpct behavior: replace a table, retaining pixel indices and nodata.
         try:
+            if indexed_error:
+                raise RuntimeError(indexed_error)
             ds = gdal.Translate(reference, indexed_source)
             table_source = gdal.Open(palette)
             ds.GetRasterBand(1).SetRasterColorTable(table_source.GetRasterBand(1).GetColorTable())

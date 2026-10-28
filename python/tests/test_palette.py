@@ -159,7 +159,8 @@ def test_remote_mask_write_io_and_tile_archive_refusal(tmp_path, gdal):
                 )
                 result = None
             observations.append((Handler.sent, Handler.requests, len(Handler.paths)))
-        assert observations[1][0] >= observations[0][0]
+        assert observations[1][0] == observations[0][0]
+        assert [item[1] for item in observations] == [2, 3]
         assert observations[0][2] == observations[1][2] == 1
         print("remote mask I/O (bytes, requests, files):", observations)
         lazy = terrio.open_raster(
@@ -209,6 +210,15 @@ def test_palette_sidecar_destination_and_malformed_tables(tmp_path, gdal):
     assert terrio.read_color_table(palette.read_bytes())[1] == [10, 20, 30, 255]
     terrio.palette_to_rgb(str(palette), str(tmp_path / "expanded.png"))
     terrio.attach_palette(str(palette), [[1, 2, 3, 255]], str(tmp_path / "attached.png"))
+    for ext in ["pmtiles", "mbtiles"]:
+        for operation in ["expand", "attach"]:
+            path = tmp_path / f"{operation}.{ext}"
+            with pytest.raises(ValueError, match="dataset masks"):
+                if operation == "expand":
+                    terrio.palette_to_rgb(str(palette), str(path))
+                else:
+                    terrio.attach_palette(str(palette), [[1, 2, 3, 255]], str(path))
+            assert not path.exists()
     oversized = tmp_path / "oversized.txt"
     with oversized.open("wb") as stream:
         stream.truncate(10 * 1024 * 1024 + 1)

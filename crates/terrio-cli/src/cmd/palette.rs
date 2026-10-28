@@ -27,6 +27,11 @@ impl ImageArgs {
     fn write_masked(&self, mut output: terrio::LazyRaster) -> Result<()> {
         let mut options = self.out.options()?;
         let driver = options.driver.or_else(|| terrio::formats::RasterDriver::for_extension(&self.output));
+        if matches!(driver, Some(terrio::formats::RasterDriver::PMTiles | terrio::formats::RasterDriver::MBTiles)) && output.has_mask() {
+            return Err(terrio::Error::InvalidArgument(
+                "tile archive writes do not preserve dataset masks; use an explicit alpha band".into(),
+            ));
+        }
         if matches!(driver, Some(terrio::formats::RasterDriver::GTiff | terrio::formats::RasterDriver::Cog)) {
             options.mask = output.read_mask(terrio::Window::full(output.width(), output.height()), None)?;
         }

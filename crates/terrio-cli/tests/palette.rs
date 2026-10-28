@@ -49,4 +49,15 @@ fn palette_raster_sidecars_cannot_be_replaced() {
     assert_eq!(std::fs::read(root.join("palette.tif.msk")).unwrap(), original);
     assert!(run(root, &["palette-to-rgb", "palette.tif", "expanded.png"]).status.success());
     assert!(run(root, &["attach-palette", "colors.txt", "palette.tif", "attached.png"]).status.success());
+    for args in [
+        vec!["palette-to-rgb", "palette.tif", "expanded.pmtiles"],
+        vec!["palette-to-rgb", "palette.tif", "expanded.mbtiles"],
+        vec!["attach-palette", "colors.txt", "palette.tif", "attached.pmtiles"],
+        vec!["attach-palette", "colors.txt", "palette.tif", "attached.mbtiles"],
+    ] {
+        let output = run(root, &args);
+        assert!(!output.status.success());
+        assert!(String::from_utf8_lossy(&output.stderr).contains("dataset masks"));
+        assert!(!root.join(args.last().unwrap()).exists());
+    }
 }

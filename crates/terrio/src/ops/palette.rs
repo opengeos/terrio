@@ -18,7 +18,9 @@ pub struct PaletteOptions {
     /// Reserve this index for invalid source pixels. Auto-select 0 when generating
     /// a palette from sources with a shared RGB nodata value or an explicit mask.
     pub output_nodata: Option<u8>,
-    /// Optional source validity, one byte per pixel; zero is invalid.
+    /// Optional source validity, one byte per pixel; zero is invalid. Shared
+    /// RGB nodata takes precedence over this mask (including caller masks),
+    /// following GDAL. A supplied table needs output_nodata to mark invalid pixels.
     pub mask: Option<Vec<u8>>,
 }
 impl Default for PaletteOptions {
@@ -172,7 +174,9 @@ fn map_pixels(
     source_nodata: Option<u8>,
 ) -> Vec<u8> {
     let mut errors = vec![[0i32; 3]; width + 2];
-    let mut cache = HashMap::new();
+    // A dense cache is bounded at 64 KiB (5 bits) or 32 MiB (8 bits),
+    // and avoids a linear palette scan per pixel after a hash-cache cap.
+    let mut cache = vec![u16::MAX; (1usize << options.bit_depth).pow(3)];
     let mut output = Vec::with_capacity(rgb.len());
     let levels = 1u32 << options.bit_depth;
     for (y, row) in rgb.chunks_exact(width).enumerate() {
@@ -204,16 +208,14 @@ fn map_pixels(
             // GDAL's fixed color cube maps floor(value*levels/256) to
             // floor(cube_coordinate*255/(levels-1)), even without dithering.
             let query = c.map(|v| (((v as u32 * levels / 256) * 255) / (levels - 1)) as u8);
-            let index = if let Some(index) = cache.get(&query) {
-                *index
-            } else {
+            let cube = c.map(|v| v as usize * levels as usize / 256);
+            let key = (cube[0] * levels as usize + cube[1]) * levels as usize + cube[2];
+            let index = if cache[key] == u16::MAX {
                 let index = nearest(query, table, nodata);
-                // Full-precision diffusion can visit 256^3 colors. Bound the
-                // acceleration cache; misses use exactly the same lookup.
-                if cache.len() < 65_536 {
-                    cache.insert(query, index);
-                }
+                cache[key] = index as u16;
                 index
+            } else {
+                cache[key] as u8
             };
             output.push(index);
             if options.dither {

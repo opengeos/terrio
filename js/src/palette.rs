@@ -67,7 +67,8 @@ impl Default for RgbArgs {
 /// Converts RGB Byte sources to indexed color. Options: colorCount (2..256),
 /// bitDepth (5 or 8), dither (true), colorMap (palette Dataset/file/text/RGBA entries),
 /// outputNodata (Byte index), mask (flat Uint8Array/array, zero invalid).
-/// The full raster is materialized; source masks/alpha/nodata affect quantization.
+/// The full raster is materialized. Shared RGB nodata takes precedence over
+/// dataset/alpha/caller masks. Supplied palettes need outputNodata to mark invalid pixels.
 #[wasm_bindgen(js_name=rgbToPalette)]
 pub fn rgb_to_palette(src: JsValue, options: JsValue) -> Result<Dataset, JsError> {
     if field(&options, "outputNodata")?.as_f64().is_some_and(|v| !v.is_finite()) {

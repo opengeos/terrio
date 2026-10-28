@@ -95,6 +95,12 @@ fn finish(
         let mut options = write_options(format, compress, tile_size, bigtiff)?;
         py.detach(|| {
             let driver = options.driver.or_else(|| terrio::formats::RasterDriver::for_extension(path));
+            if matches!(driver, Some(terrio::formats::RasterDriver::PMTiles | terrio::formats::RasterDriver::MBTiles)) && output.has_mask()
+            {
+                return Err(terrio::Error::InvalidArgument(
+                    "tile archive writes do not preserve dataset masks; use an explicit alpha band".into(),
+                ));
+            }
             if matches!(driver, Some(terrio::formats::RasterDriver::GTiff | terrio::formats::RasterDriver::Cog)) {
                 options.mask = output.read_mask(terrio::Window::full(output.width(), output.height()), None)?;
             }
@@ -128,6 +134,7 @@ fn read_color_table(py: Python<'_>, source: &Bound<'_, PyAny>, filename: Option<
 ///     color_map: Palette Raster/path, encoded bytes, or RGBA sequence instead of generation.
 ///     output_nodata: Reserve this index for invalid pixels; otherwise automatically select zero.
 ///     mask: Optional two-dimensional uint8 validity mask, zero for invalid pixels.
+///         Shared RGB nodata takes precedence over this mask, following GDAL.
 ///     format: Output driver for dst.
 ///     compress: Output compression for dst.
 ///     tile_size: GeoTIFF tile size for dst.

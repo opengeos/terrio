@@ -2052,6 +2052,7 @@ interpretations select the channels when present; otherwise the first three
 bands are used. Shared RGB nodata excludes pixels from palette generation. If no shared RGB
 nodata value exists, dataset masks (or alpha validity) select valid pixels. This
 precedence follows GDAL; masks do not add exclusions when shared RGB nodata exists.
+Explicit Python/JavaScript masks use this same precedence.
 GDAL also tests vertically diffused RGB values for nodata, so a valid near-black
 pixel can become nodata after dithering. An automatically generated palette reserves index
 zero for invalid pixels; a supplied map uses invalid-pixel handling only when

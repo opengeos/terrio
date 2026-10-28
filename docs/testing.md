@@ -1169,3 +1169,11 @@ This fixture is an I/O observation, not a general zero-overhead guarantee;
 `test_remote_mask_write_io_and_tile_archive_refusal` measures response bytes and
 source counts and confirms that the unsupported lazy tile-archive mask path
 refuses the write without creating output.
+
+Palette lookup uses a dense u16 cache: 64 KiB at 5-bit precision or 32 MiB at
+8-bit precision. On the complete 2127 × 1564 Landsat RGB fixture, using a supplied
+256-entry grayscale table and 8-bit diffusion, two local optimized CLI runs took
+0.517/0.519 s with the previous capped hash cache and 0.284/0.289 s with the dense
+cache. The output files were byte-identical. These timings are local observations,
+not performance thresholds; the fixed-size cache avoids repeated linear palette
+scans after 65,536 distinct query colors.
