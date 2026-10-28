@@ -548,3 +548,9 @@ and `overwrite=False`. Existing outputs need `overwrite=True`; source path
 aliases are protected. Operations materialize the input/output. See
 [Palette conversion](cli.md#palette-conversion) for validity rules, formats and
 GDAL differences.
+
+Python `Raster.write` and `to_bytes` retain dataset masks for ordinary raster
+outputs. A lazy masked source written to a tile archive is refused explicitly,
+since that streaming path supports alpha bands rather than separate masks.
+Normal raster writes materialize the full raster and its mask; remote inputs
+therefore fetch the selected image blocks and mask blocks.

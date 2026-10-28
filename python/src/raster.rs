@@ -491,6 +491,9 @@ impl PyRaster {
         if self.inner.dataset().is_none()
             && matches!(driver, Some(terrio::formats::RasterDriver::PMTiles | terrio::formats::RasterDriver::MBTiles))
         {
+            if self.inner.has_mask() {
+                return Err(crate::invalid("tile archive writes do not preserve dataset masks; use an explicit alpha band"));
+            }
             return py.detach(|| self.inner.write(path, &options)).py();
         }
         if options.mask.is_none() {

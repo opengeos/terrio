@@ -1159,3 +1159,13 @@ and `USGS_1_n40w106.tif` each used one GET and 65,536 served body bytes, matchin
 ordinary lazy info opens. Raster index construction never called the pixel source in
 its panic-on-read unit fixture. These observations apply to lazy-capable readers;
 formats whose reader lacks a metadata-only path may materialize the input.
+
+A local HTTP range test of Python masked-raster writes (512 × 512 RGB COG,
+internal mask, uncompressed image blocks) transferred 853,046 bytes from one
+source both for a pixel-only read and a mask-preserving write: two GET responses
+versus three. Range caching covered the mask bytes in the pixel-read ranges.
+The output mask and pixels were checked independently with GDAL 3.13.3.
+This fixture is an I/O observation, not a general zero-overhead guarantee;
+`test_remote_mask_write_io_and_tile_archive_refusal` measures response bytes and
+source counts and confirms that the unsupported lazy tile-archive mask path
+refuses the write without creating output.

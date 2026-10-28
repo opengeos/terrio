@@ -80,3 +80,97 @@ def test_palette_dataset_mask_survives_serialization(tmp_path):
             actual = None
         finally:
             gdal.Unlink(memory_path)
+
+
+def test_remote_mask_write_io_and_tile_archive_refusal(tmp_path, gdal):
+    """Measure image/mask bytes separately and guard the streaming archive path."""
+    import functools
+    import http.server
+    import threading
+    from pathlib import Path
+
+    class Handler(http.server.SimpleHTTPRequestHandler):
+        sent = 0
+        requests = 0
+        paths = set()
+
+        def log_message(self, *_):
+            pass
+
+        def send_head(self):
+            path = Path(self.translate_path(self.path))
+            if not path.is_file():
+                self.send_error(404)
+                return None
+            size = path.stat().st_size
+            start, end = 0, size - 1
+            span = self.headers.get("Range")
+            if span:
+                first, last = span.removeprefix("bytes=").split("-", 1)
+                start, end = int(first), min(int(last) if last else end, end)
+                self.send_response(206)
+                self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
+            else:
+                self.send_response(200)
+            self.send_header("Content-Length", str(end - start + 1))
+            self.send_header("Accept-Ranges", "bytes")
+            self.end_headers()
+            self.length = end - start + 1
+            stream = path.open("rb")
+            stream.seek(start)
+            return stream
+
+        def copyfile(self, source, output):
+            payload = source.read(self.length)
+            type(self).sent += len(payload)
+            type(self).requests += 1
+            type(self).paths.add(self.path.split("?")[0])
+            output.write(payload)
+
+    values = np.resize(np.arange(251, dtype="uint8"), (3, 512, 512))
+    mask = np.full((512, 512), 255, dtype="uint8")
+    mask[:256, :256] = 0
+    local = str(tmp_path / "masked-cog.tif")
+    terrio.Raster.from_array(values, (0, 1, 0, 512, 0, -1), crs="EPSG:3857").write(
+        local, driver="COG", tile_size=256, mask=mask, compress="NONE"
+    )
+    server = http.server.ThreadingHTTPServer(
+        ("127.0.0.1", 0), functools.partial(Handler, directory=str(tmp_path))
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    observations = []
+    try:
+        for mode in ["pixels", "write"]:
+            Handler.sent = Handler.requests = 0
+            Handler.paths = set()
+            raster = terrio.open_raster(
+                f"http://127.0.0.1:{server.server_port}/masked-cog.tif?mode={mode}", lazy=True
+            )
+            if mode == "pixels":
+                np.testing.assert_array_equal(raster.read(), values)
+            else:
+                path = str(tmp_path / "output.tif")
+                raster.write(path)
+                result = gdal.Open(path)
+                np.testing.assert_array_equal(result.ReadAsArray(), values)
+                np.testing.assert_array_equal(
+                    result.GetRasterBand(1).GetMaskBand().ReadAsArray(), mask
+                )
+                result = None
+            observations.append((Handler.sent, Handler.requests, len(Handler.paths)))
+        assert observations[1][0] >= observations[0][0]
+        assert observations[0][2] == observations[1][2] == 1
+        print("remote mask I/O (bytes, requests, files):", observations)
+        lazy = terrio.open_raster(local, lazy=True)
+        before_refusal = (Handler.sent, Handler.requests)
+        for suffix in ["pmtiles", "mbtiles"]:
+            path = tmp_path / f"masked.{suffix}"
+            with pytest.raises(ValueError, match="dataset masks"):
+                lazy.write(str(path))
+            assert not path.exists()
+        assert (Handler.sent, Handler.requests) == before_refusal
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join()

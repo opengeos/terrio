@@ -2049,8 +2049,11 @@ median-cut palette generation and integer error diffusion. `--color-count 2..256
 `--output-nodata INDEX` control generation/mapping. A color map can be an indexed
 raster, indexed GDAL/GRASS text, RGB GMT CPT or QGIS QML/QLR file. RGB color
 interpretations select the channels when present; otherwise the first three
-bands are used. Shared RGB nodata, dataset masks and alpha validity exclude
-pixels from palette generation. An automatically generated palette reserves index
+bands are used. Shared RGB nodata excludes pixels from palette generation. If no shared RGB
+nodata value exists, dataset masks (or alpha validity) select valid pixels. This
+precedence follows GDAL; masks do not add exclusions when shared RGB nodata exists.
+GDAL also tests vertically diffused RGB values for nodata, so a valid near-black
+pixel can become nodata after dithering. An automatically generated palette reserves index
 zero for invalid pixels; a supplied map uses invalid-pixel handling only when
 `--output-nodata` is given, following GDAL.
 

@@ -78,7 +78,8 @@ commands. Command-group progress:
 
 - [ ] Palette conversion: RGB median cut, supplied palettes, RGB/RGBA expansion and
       attachment across Rust, CLI/MCP, Python and JavaScript; real Landsat/OPERA
-      GDAL 3.13.3 comparisons registered as `palette`.
+      GDAL 3.13.3 comparisons registered as `palette`. Implemented in
+      [#372](https://github.com/opengeos/terrio/pull/372), pending review and merge.
 
 - [x] Vector geometry operations: simplify, segmentize, convex and concave hulls, swap XY,
       geometry-type conversion, grouped combine and spatial sort. Landed in

@@ -65,6 +65,14 @@ def main():
                     ds.GetRasterBand(1).GetMaskBand().WriteArray(valid)
             ds = None
             sources[kind] = path
+        path = os.path.join(tmp, 'nodata-mask.tif')
+        ds = gdal.Translate(path, sources['nodata'])
+        ds.CreateMaskBand(gdal.GMF_PER_DATASET)
+        validity = np.full((47, 63), 255, dtype='uint8')
+        validity[10:20, 12:22] = 0
+        ds.GetRasterBand(1).GetMaskBand().WriteArray(validity)
+        ds = None
+        sources['nodata-mask'] = path
         cases = []
         for kind, count, bits, dither in itertools.product(sources, [2, 17, 256], [5, 8], [True, False]):
             opts = ['--color-count', str(count), '--bit-depth', str(bits)]
@@ -94,10 +102,11 @@ def main():
                 result = {'error': str(exc)[-800:]}
             result['name'] = name
             results.append(result)
+        indexed_source = os.path.join(tmp, 'indexed.tif')
         for source in [palette, sources['nodata']]:
             if source != palette:
                 run(['gdal', 'raster', 'rgb-to-palette', source, os.path.join(tmp, 'indexed.tif')])
-                source = os.path.join(tmp, 'indexed.tif')
+                source = indexed_source
             for rgba in [False, True]:
                 try:
                     gdal.Translate(reference, source, rgbExpand='rgba' if rgba else 'rgb')
@@ -109,11 +118,11 @@ def main():
                 results.append(result)
         # gdalattachpct behavior: replace a table, retaining pixel indices and nodata.
         try:
-            ds = gdal.Translate(reference, source)
+            ds = gdal.Translate(reference, indexed_source)
             table_source = gdal.Open(palette)
             ds.GetRasterBand(1).SetRasterColorTable(table_source.GetRasterBand(1).GetColorTable())
             ds = None
-            run([args.terrio, 'attach-palette', palette, source, actual, '--overwrite'])
+            run([args.terrio, 'attach-palette', palette, indexed_source, actual, '--overwrite'])
             result = check(reference, actual)
         except Exception as exc:
             result = {'error': str(exc)[-800:]}

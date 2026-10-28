@@ -616,6 +616,8 @@ impl Dataset {
     /// stores come back as a zip archive of their files. Shapefile output requires
     /// `roads.shp.zip` (MIME `application/zip`); `.shp` alone is refused. The ZIP holds
     /// `.shp`, `.shx`, `.dbf`, `.cpg` and, when a CRS is present, `.prj`.
+    /// Dataset masks are preserved for raster writes without tSrs; a masked raster with
+    /// tSrs is refused because separate-mask reprojection is not implemented.
     /// Text over 254 UTF-8 bytes and unsupported DBF values are explicit errors.
     #[wasm_bindgen(js_name = toBytes)]
     pub fn to_bytes(&self, filename: &str, options: JsValue) -> Result<Vec<u8>, JsError> {
@@ -646,7 +648,10 @@ impl Dataset {
                     (None, None) => Window::full(r.width(), r.height()),
                 };
                 let opts = WindowOptions { bands: o.bands.unwrap_or_default(), overview: o.overview };
-                let mask = if t_srs.is_none() { r.read_mask(window, o.overview).map_err(js_err)? } else { None };
+                if t_srs.is_some() && r.has_mask() {
+                    return Err(JsError::new("reprojected toBytes does not preserve dataset masks; use an explicit alpha band"));
+                }
+                let mask = r.read_mask(window, o.overview).map_err(js_err)?;
                 let mut ds = r.read_window(window, &opts).map_err(js_err)?;
                 if let Some(dst) = t_srs {
                     let o = terrio::ops::warp::WarpOptions {

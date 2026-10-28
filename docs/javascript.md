@@ -454,3 +454,6 @@ integer arrays; `mask` accepts a flat Uint8Array/array of validity bytes.
 `readColorTable(source, filename)` reads integer RGBA entries from these same
 palette sources. Operations materialize the input/output. See
 [Palette conversion](cli.md#palette-conversion) for formats and validity rules.
+
+Raster `toBytes` preserves dataset masks without `tSrs`. Reprojecting a raster
+with a separate dataset mask is refused explicitly; use an alpha band instead.

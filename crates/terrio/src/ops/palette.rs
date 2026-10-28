@@ -189,6 +189,8 @@ fn map_pixels(
         errors.fill([0; 3]);
         let mut carry = [0; 3];
         for (x, c) in values.iter_mut().enumerate() {
+            // GDAL also tests the vertically diffused values for source nodata.
+            // This can map an originally valid near-black pixel to nodata.
             if let Some(nodata) = nodata
                 && (!valid[y * width + x] || source_nodata.is_some_and(|nd| c.iter().all(|v| *v == nd)))
             {
@@ -202,7 +204,17 @@ fn map_pixels(
             // GDAL's fixed color cube maps floor(value*levels/256) to
             // floor(cube_coordinate*255/(levels-1)), even without dithering.
             let query = c.map(|v| (((v as u32 * levels / 256) * 255) / (levels - 1)) as u8);
-            let index = *cache.entry(query).or_insert_with(|| nearest(query, table, nodata));
+            let index = if let Some(index) = cache.get(&query) {
+                *index
+            } else {
+                let index = nearest(query, table, nodata);
+                // Full-precision diffusion can visit 256^3 colors. Bound the
+                // acceleration cache; misses use exactly the same lookup.
+                if cache.len() < 65_536 {
+                    cache.insert(query, index);
+                }
+                index
+            };
             output.push(index);
             if options.dither {
                 for k in 0..3 {
@@ -305,6 +317,8 @@ pub fn rgb_to_palette(source: &RasterDataset, options: &PaletteOptions) -> Resul
         .position(|b| b.color_interp.as_deref().is_some_and(|c| c.eq_ignore_ascii_case("alpha")));
     let mask = options.mask.as_deref().or_else(|| alpha.map(|b| &data[b * n..(b + 1) * n]));
     let rgb: Vec<_> = (0..n).map(|i| bands.map(|b| data[b * n + i])).collect();
+    // GDAL gives shared RGB nodata precedence over alpha/dataset masks.
+    // Keeping both exclusions would change its palette and output indices.
     let valid: Vec<_> = rgb
         .iter()
         .enumerate()
@@ -576,6 +590,25 @@ mod tests {
         assert!(parse_color_table("1.5 red", "colors.txt").is_err());
         assert!(parse_color_table("65536 red", "colors.txt").is_err());
         assert!(parse_color_table("50% red", "colors.txt").is_err());
+    }
+    #[test]
+    fn gdal_nodata_precedence_and_diffused_nodata_fixture() {
+        let rgb = [[0, 0, 0], [248, 248, 248], [248, 248, 248], [248, 248, 248]];
+        let options = PaletteOptions { mask: Some(vec![255, 0, 255, 255]), ..Default::default() };
+        let mut source = super::super::build_raster_data(
+            super::super::Grid { width: 2, height: 2, geo_transform: [0., 1., 0., 2., 0., -1.] },
+            RasterData::U8((0..3).flat_map(|b| rgb.iter().map(move |c| c[b])).collect()),
+            3,
+            Some(0.),
+            &Default::default(),
+        )
+        .unwrap();
+        // Independently generated with GDAL 3.13.3: shared nodata wins the mask.
+        assert_eq!(rgb_to_palette(&source, &options).unwrap().raster.data.to_f64_vec(), [0., 1., 1., 1.]);
+        source.raster.data = RasterData::U8(vec![1; 12]);
+        let options = PaletteOptions { color_table: Some(vec![[4, 4, 4, 255]]), output_nodata: Some(0), ..Default::default() };
+        // GDAL tests values after vertical diffusion: the second row becomes nodata.
+        assert_eq!(rgb_to_palette(&source, &options).unwrap().raster.data.to_f64_vec(), [1., 1., 0., 0.]);
     }
     #[test]
     fn full_precision_retains_first_occurrence_and_nearest_ties() {
