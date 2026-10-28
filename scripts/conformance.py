@@ -507,7 +507,7 @@ def suite_indexes(ctx):
         suite.error = tail(err or out) or f"comparison exited {code} without valid JSON"
         return suite
     for result in results:
-        status = {"identical": IDENTICAL, "tolerance": TOLERANCE}.get(result["status"], DIFFERS)
+        status = {"identical": IDENTICAL, "tolerance": TOLERANCE, "not compared": NOT_COMPARED}.get(result["status"], DIFFERS)
         suite.cases.append(Case("dataset indexes", result["name"], status, result["detail"]))
     if not results or (code and not any(case.status == DIFFERS for case in suite.cases)):
         suite.error = tail(err or out) or f"comparison exited {code} without complete results"

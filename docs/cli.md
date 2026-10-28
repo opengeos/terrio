@@ -2032,11 +2032,15 @@ bounds when present; other formats scan features in chunks where supported.
 Both index commands support `--location-name`, `--output-layer`, `--output-crs`,
 `--source-crs-field-name`, `--source-crs-format auto|WKT|EPSG|PROJ`, `--format`
 and repeatable `--metadata KEY=VALUE`. Raster layer names default to the output
-basename; vector layer names default to `tileindex`. Without an explicit target CRS, raster indexes skip incompatible source CRSs
+basename; vector layer names default to `tileindex`. These defaults also apply to Python
+and JavaScript serialization; before a raster index is given an output filename,
+its in-memory layer uses the placeholder `tileindex`. Explicit names are retained. Without an explicit target CRS, raster indexes skip incompatible source CRSs
 unless a source-CRS field is requested; with that field, they retain original
 coordinates and warn, matching GDAL. Supply a target CRS for a usable mixed-CRS catalog. Raster reprojection indexes the suggested warped-grid envelope, as GDAL 3.13
 does; vector reprojection transforms envelope corners without densification. Both
-require known source CRSs.
+require known source CRSs. For nonlinear transformations, vector corner envelopes
+can underestimate curved edges and miss features in spatial queries. Keep the
+source CRS, or construct densified footprints, when full edge coverage is required.
 
 Raster pixel-size filters use `sqrt(envelope_area / pixel_count)` after reprojection,
 including rotated rasters. Repeatable `--fetch-metadata KEY,FIELD,TYPE` copies header

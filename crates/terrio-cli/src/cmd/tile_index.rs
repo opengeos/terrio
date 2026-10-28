@@ -47,17 +47,9 @@ pub struct CommonArgs {
     overwrite: bool,
 }
 impl CommonArgs {
-    fn options(&self, raster: bool) -> Result<IndexOptions> {
-        let output = self.paths.last().ok_or_else(|| Error::InvalidArgument("give inputs and an output".into()))?;
-        let layer_name = self.output_layer.clone().unwrap_or_else(|| {
-            if raster {
-                std::path::Path::new(output).file_stem().and_then(|s| s.to_str()).unwrap_or("tileindex").to_string()
-            } else {
-                "tileindex".into()
-            }
-        });
+    fn options(&self) -> Result<IndexOptions> {
         Ok(IndexOptions {
-            layer_name,
+            layer_name: self.output_layer.clone(),
             location_field: self.location_name.clone(),
             output_crs: self.output_crs.as_deref().map(SpatialRef::parse).transpose()?,
             source_crs_field: self.source_crs_field.clone(),
@@ -152,7 +144,7 @@ fn metadata_field(s: &str) -> Result<MetadataField> {
 pub fn raster(a: RasterArgs) -> Result<()> {
     let (output, paths) = a.common.paths()?;
     let o = RasterIndexOptions {
-        index: a.common.options(true)?,
+        index: a.common.options()?,
         min_pixel_size: a.min_pixel_size,
         max_pixel_size: a.max_pixel_size,
         fetch_metadata: a.fetch_metadata.iter().map(|s| metadata_field(s)).collect::<Result<Vec<_>>>()?,
@@ -194,7 +186,7 @@ pub struct VectorArgs {
 pub fn vector(a: VectorArgs) -> Result<()> {
     let (output, paths) = a.common.paths()?;
     let o = VectorIndexOptions {
-        index: a.common.options(false)?,
+        index: a.common.options()?,
         accept_different_crs: a.accept_different_crs,
         accept_different_schemas: a.accept_different_schemas,
         dataset_name_only: a.dataset_name_only,

@@ -31,6 +31,7 @@ def test_raster_catalog_geometry_and_metadata(tmp_path):
     for suffix in ("gpkg", "fgb"):
         data = index.to_bytes(f"index.{suffix}")
         assert len(data) > 100
+        assert terrio.open_bytes(data, f"index.{suffix}").layers[0].name == "index"
     assert len(terrio.raster_index({"tile.tif": raster}).to_bytes("index.shp.zip")) > 100
     path = str(tmp_path / "index.gpkg")
     index.write(path)

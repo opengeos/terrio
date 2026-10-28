@@ -20,6 +20,10 @@ fn discovery_shapefile_parts_and_invalid_overwrite() {
     let before = std::fs::read(path.join("index.dbf")).unwrap();
     assert!(!run(&["raster-index", "source.tif", "index.shp", "--overwrite"], path).status.success());
     assert_eq!(std::fs::read(path.join("index.dbf")).unwrap(), before);
+    ok(&["raster-index", "source.tif", "catalog.shp.zip"], path);
+    let bytes = std::fs::read(path.join("catalog.shp.zip")).unwrap();
+    let terrio::Dataset::Vector(dataset) = terrio::memory::open_bytes(bytes, "catalog.shp.zip").unwrap() else { panic!("not vector") };
+    assert_eq!(dataset.layers[0].name, "catalog");
     let source = std::fs::read(path.join("source.tif")).unwrap();
     assert!(!run(&["raster-index", "source.tif", "source.tif", "--format", "GPKG", "--overwrite"], path).status.success());
     assert_eq!(std::fs::read(path.join("source.tif")).unwrap(), source);
@@ -32,6 +36,6 @@ fn discovery_shapefile_parts_and_invalid_overwrite() {
         assert!(!path.join("invalid.gpkg").exists());
     }
     let bytes = std::fs::read(path.join("index.gpkg")).unwrap();
-    assert!(!run(&["raster-index", "source.tif", "index.gpkg", "--overwrite", "--min-pixel-size", "-1"], path).status.success());
+    assert_eq!(run(&["raster-index", "source.tif", "index.gpkg", "--overwrite", "--min-pixel-size=-1"], path).status.code(), Some(1));
     assert_eq!(std::fs::read(path.join("index.gpkg")).unwrap(), bytes);
 }

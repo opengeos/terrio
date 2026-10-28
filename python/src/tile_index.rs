@@ -69,7 +69,7 @@ impl Args {
     }
     fn common(&self) -> terrio::Result<ti::IndexOptions> {
         Ok(ti::IndexOptions {
-            layer_name: self.output_layer.clone().unwrap_or_else(|| "tileindex".into()),
+            layer_name: self.output_layer.clone(),
             location_field: self.location_name.clone().unwrap_or_else(|| "location".into()),
             output_crs: self.output_crs.as_deref().map(SpatialRef::parse).transpose()?,
             source_crs_field: self.source_crs_field_name.clone(),

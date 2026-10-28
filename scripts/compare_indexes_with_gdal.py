@@ -183,10 +183,16 @@ def main():
         counties = data / "TN_Counties.geojson"
         multi = data / "multi.gpkg"
         for source in (counties, multi):
+            if not source.exists():
+                results.append(dict(name=f"vector {source.name}",status="not compared",detail=f"missing fixture: {source}"))
+                continue
             for suffix in ("gpkg", "fgb", "shp"):
                 case(f"vector {source.name} {suffix}", lambda source=source, suffix=suffix: indexes("vector", [source], ["--accept-different-schemas", "--source-crs-field-name", "srs"], vector=True, suffix=suffix))
-        case("duplicate vector inputs", lambda: indexes("duplicates", [counties,counties], vector=True))
+        if counties.exists():
+            case("duplicate vector inputs", lambda: indexes("duplicates", [counties,counties], vector=True))
         for options in (["--source-layer-index", "1"], ["--dataset-name-only"], ["--output-crs", "EPSG:3857", "--accept-different-schemas"]):
+            if not multi.exists():
+                continue
             case(f"vector options {options}", lambda options=options: indexes("vector", [multi], options, vector=True))
     grid_cache.cleanup()
     if args.json:

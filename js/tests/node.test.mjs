@@ -2091,7 +2091,9 @@ test("dataset indexes retain rotated corners, source identities and GTI metadata
   for (const [name, feature] of [["index.gpkg", "sqlite"], ["index.fgb", "flatgeobuf"]]) {
     if (needs(feature)) continue;
     const bytes = index.toBytes(name);
-    assert.equal(terrio.open(bytes, name).toGeoJSON().features.length, 1);
+    const decoded = terrio.open(bytes, name);
+    assert.equal(decoded.toGeoJSON().features.length, 1);
+    assert.equal(decoded.layerNames()[0], "index");
   }
   const archive = terrio.rasterIndex({"tile.tif": raster}).toBytes("index.shp.zip");
   assert.equal(terrio.open(archive, "index.shp.zip").toGeoJSON().features.length, 1);

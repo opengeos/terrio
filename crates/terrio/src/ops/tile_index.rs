@@ -45,8 +45,8 @@ impl SourceCrsFormat {
 /// Options common to raster and vector dataset indexes.
 #[derive(Debug, Clone)]
 pub struct IndexOptions {
-    /// Output layer name (tileindex by default).
-    pub layer_name: String,
+    /// Explicit output layer name. None uses the raster output basename or vector tileindex.
+    pub layer_name: Option<String>,
     /// Field containing source locations (location by default).
     pub location_field: String,
     /// Target CRS (raster warped-grid envelope or vector corner reprojection).
@@ -62,7 +62,7 @@ pub struct IndexOptions {
 impl Default for IndexOptions {
     fn default() -> Self {
         Self {
-            layer_name: "tileindex".into(),
+            layer_name: None,
             location_field: "location".into(),
             output_crs: None,
             source_crs_field: None,
@@ -271,6 +271,7 @@ pub struct DatasetIndex {
     /// Layer metadata, e.g. LOCATION_FIELD and GTI raster characteristics.
     pub metadata: Vec<(String, String)>,
     source_locations: Vec<String>,
+    default_raster_name: bool,
 }
 fn invalid(s: impl Into<String>) -> Error {
     Error::InvalidArgument(s.into())
@@ -283,9 +284,10 @@ fn field_name(s: &str) -> Result<()> {
     }
 }
 fn empty(o: &IndexOptions, crs: &SpatialRef) -> Result<DatasetIndex> {
-    field_name(&o.layer_name)?;
+    let name = o.layer_name.as_deref().unwrap_or("tileindex");
+    field_name(name)?;
     field_name(&o.location_field)?;
-    let mut layer = Layer::new(&o.layer_name);
+    let mut layer = Layer::new(name);
     layer.geom_type = Some(GeometryType::Polygon);
     crs.apply_to_layer(&mut layer);
     layer.schema.add_field(FieldDef::new(&o.location_field, FieldType::Text));
@@ -301,7 +303,7 @@ fn empty(o: &IndexOptions, crs: &SpatialRef) -> Result<DatasetIndex> {
             return Err(invalid("invalid index metadata key/value"));
         }
     }
-    Ok(DatasetIndex { layer, metadata: o.metadata.clone(), source_locations: Vec::new() })
+    Ok(DatasetIndex { layer, metadata: o.metadata.clone(), source_locations: Vec::new(), default_raster_name: false })
 }
 fn same_crs(a: &SpatialRef, b: &SpatialRef) -> bool {
     (a.is_unknown() && b.is_unknown()) || a.same_as(b)
@@ -342,6 +344,7 @@ pub fn raster_index(sources: &[RasterIndexSource], o: &RasterIndexOptions) -> Re
     let first = sources.first().ok_or_else(|| invalid("raster index needs at least one source"))?;
     let crs = o.index.output_crs.as_ref().unwrap_or(&first.crs);
     let mut out = empty(&o.index, crs)?;
+    out.default_raster_name = o.index.layer_name.is_none();
     out.source_locations = sources.iter().map(|s| s.location.clone()).collect();
     for limit in [o.min_pixel_size, o.max_pixel_size].into_iter().flatten() {
         if !limit.is_finite() || limit < 0. {
@@ -481,7 +484,23 @@ pub fn vector_index(sources: &[VectorIndexSource], o: &VectorIndexOptions) -> Re
     Ok(out)
 }
 
+/// Default raster index layer name for a filename; Shapefile ZIP suffixes are a unit.
+pub fn raster_index_layer_name(filename: &str) -> String {
+    let file = filename.rsplit(['/', '\\']).next().unwrap_or(filename);
+    let stem = if file.to_ascii_lowercase().ends_with(".shp.zip") {
+        &file[..file.len() - 8]
+    } else {
+        file.rsplit_once('.').map_or(file, |(stem, _)| stem)
+    };
+    if stem.is_empty() { "tileindex".into() } else { stem.into() }
+}
 impl DatasetIndex {
+    fn named_for_output(&self, filename: &str) -> Self {
+        let mut named = self.clone();
+        named.layer.name = raster_index_layer_name(filename);
+        named.default_raster_name = false;
+        named
+    }
     /// Original source locators, including sources filtered out of the output.
     pub fn source_locations(&self) -> &[String] {
         &self.source_locations
@@ -490,6 +509,9 @@ impl DatasetIndex {
     /// Serializes the index. GeoPackage/FlatGeobuf retain GTI layer metadata;
     /// ordinary indexes may also use other formats that terrio writes in memory.
     pub fn to_bytes(&self, name: &str, options: &crate::VectorWriteOptions) -> Result<Vec<u8>> {
+        if self.default_raster_name {
+            return self.named_for_output(name).to_bytes(name, options);
+        }
         use crate::formats::VectorDriver;
         let driver = options
             .driver
@@ -537,6 +559,9 @@ impl DatasetIndex {
     /// hard-link aliases are detected too).
     #[cfg(not(target_family = "wasm"))]
     pub fn write(&self, path: &str, options: &crate::VectorWriteOptions, overwrite: bool) -> Result<()> {
+        if self.default_raster_name {
+            return self.named_for_output(path).write(path, options, overwrite);
+        }
         use std::io::Write;
         let output = std::path::Path::new(path);
         if output.exists() && !overwrite {
@@ -730,6 +755,22 @@ mod tests {
         assert!((exterior.0[0].y - 2391878.5879443143).abs() < 1e-8);
         assert_eq!(exterior.0[0].y, exterior.0[1].y);
         assert_eq!(exterior.0[1].x, exterior.0[2].x);
+    }
+    #[test]
+    fn default_layer_names_are_resolved_at_serialization() {
+        assert_eq!(raster_index_layer_name("path/catalog.shp.zip"), "catalog");
+        let index = raster_index(&[raster()], &Default::default()).unwrap();
+        for filename in ["catalog.gpkg", "catalog.fgb", "catalog.shp.zip"] {
+            let bytes = index.to_bytes(filename, &Default::default()).unwrap();
+            let crate::Dataset::Vector(dataset) = crate::memory::open_bytes(bytes, filename).unwrap() else { panic!("not vector") };
+            assert_eq!(dataset.layers[0].name, "catalog");
+        }
+        let options =
+            RasterIndexOptions { index: IndexOptions { layer_name: Some("explicit".into()), ..Default::default() }, ..Default::default() };
+        let index = raster_index(&[raster()], &options).unwrap();
+        let bytes = index.to_bytes("catalog.gpkg", &Default::default()).unwrap();
+        let crate::Dataset::Vector(dataset) = crate::memory::open_bytes(bytes, "catalog.gpkg").unwrap() else { panic!("not vector") };
+        assert_eq!(dataset.layers[0].name, "explicit");
     }
     #[test]
     fn wildcard_stars_are_patterns_even_when_names_contain_stars() {
