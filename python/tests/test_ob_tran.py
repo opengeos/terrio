@@ -15,6 +15,34 @@ REFERENCE = json.loads(
 )
 
 
+def _inverse_at_edge(point, source, target):
+    """Inverts a point, retrying it nudged by a relative 1e-12 in easting when refused.
+
+    A few reference samples fall exactly on the rotated antimeridian, the edge of the
+    inverse domain, where the platform's libm decides by one ulp whether the point is
+    inside. An interior point that is refused is not rescued by the nudge.
+
+    Args:
+        point: The projected (x, y) point.
+        source: The projected CRS definition.
+        target: The geographic CRS definition.
+
+    Returns:
+        The (longitude, latitude) of the point.
+    """
+    try:
+        x, y = terrio.transform_points([point[0]], [point[1]], source, target)
+        return x[0], y[0]
+    except terrio.CRSError:
+        for scale in (1 - 1e-12, 1 + 1e-12):
+            try:
+                x, y = terrio.transform_points([point[0] * scale], [point[1]], source, target)
+                return x[0], y[0]
+            except terrio.CRSError:
+                pass
+        raise
+
+
 @pytest.mark.parametrize("case", REFERENCE["cases"], ids=lambda case: case["name"])
 def test_ob_tran_oracle(case):
     samples = [s for s in case["samples"] if s[2] is not None]
@@ -30,13 +58,8 @@ def test_ob_tran_oracle(case):
             with pytest.raises(terrio.CRSError):
                 terrio.transform_points([s[0]], [s[1]], case["source"], case["target"])
     reversible = [s for s in samples if s[3] is not None]
-    actual = np.column_stack(
-        terrio.transform_points(
-            [s[2][0] for s in reversible],
-            [s[2][1] for s in reversible],
-            case["target"],
-            case["source"],
-        )
+    actual = np.asarray(
+        [_inverse_at_edge(s[2], case["target"], case["source"]) for s in reversible]
     )
     expected = np.asarray([s[3] for s in reversible])
     delta = actual - expected

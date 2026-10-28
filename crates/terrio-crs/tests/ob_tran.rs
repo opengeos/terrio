@@ -27,6 +27,20 @@ fn pinned_oblique_mollweide_fixture() {
     }
 }
 
+/// Inverts `point`, retrying it nudged by a relative 1e-12 in easting when it is refused.
+///
+/// A few reference samples fall exactly on the rotated antimeridian, the edge of the inverse
+/// domain, where the platform's libm decides by one ulp whether the point is inside (PROJ itself
+/// refuses `|lam| >= pi`). An interior point that is refused is not rescued by the nudge.
+fn inverse_at_edge(inverse: &Transformer, point: (f64, f64)) -> Result<(f64, f64), String> {
+    inverse.transform(point.0, point.1).or_else(|error| {
+        [1.0 - 1e-12, 1.0 + 1e-12]
+            .into_iter()
+            .find_map(|scale| inverse.transform(point.0 * scale, point.1).ok())
+            .ok_or_else(|| error.to_string())
+    })
+}
+
 fn angular_error(actual: (f64, f64), expected: &serde_json::Value) -> f64 {
     let lon = expected[0].as_f64().unwrap();
     let lat = expected[1].as_f64().unwrap();
@@ -57,11 +71,11 @@ fn rotated_projections_pole_forms_figures_and_units_match_frozen_proj() {
                 let actual = actual.unwrap_or_else(|e| panic!("{name} {encoding} {point:?}: {e}"));
                 let error = (actual.0 - expected.0).abs().max((actual.1 - expected.1).abs()) * factor;
                 assert!(error <= 0.001, "{name} {encoding} {point:?}: forward error {error} m");
-                let actual = inverse.transform(expected.0, expected.1);
                 if sample[3].is_null() {
+                    let actual = inverse.transform(expected.0, expected.1);
                     assert!(actual.is_err(), "{name} {encoding}: inverse must refuse {expected:?}, as PROJ does: {actual:?}");
                 } else {
-                    let actual = actual.unwrap_or_else(|e| panic!("{name} {encoding} inverse {point:?}: {e}"));
+                    let actual = inverse_at_edge(&inverse, expected).unwrap_or_else(|e| panic!("{name} {encoding} inverse {point:?}: {e}"));
                     let error = angular_error(actual, &sample[3]);
                     assert!(error <= 1e-8, "{name} {encoding} {point:?}: inverse error {error} degrees");
                 }
