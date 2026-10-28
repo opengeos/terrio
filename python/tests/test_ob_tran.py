@@ -22,6 +22,8 @@ def _inverse_at_edge(point, source, target):
     inverse domain, where the platform's libm decides by one ulp whether the point is
     inside. An interior point that is refused is not rescued by the nudge.
 
+    Mirrors `inverse_at_edge` in crates/terrio-crs/tests/ob_tran.rs; keep the two in step.
+
     Args:
         point: The projected (x, y) point.
         source: The projected CRS definition.
@@ -60,8 +62,19 @@ def test_ob_tran_oracle(case):
     reversible = [s for s in samples if s[3] is not None]
     actual = np.asarray(
         [_inverse_at_edge(s[2], case["target"], case["source"]) for s in reversible]
-    )
+    ).reshape(-1, 2)
     expected = np.asarray([s[3] for s in reversible])
+    delta = actual - expected
+    delta[:, 0] = ((delta[:, 0] + 180) % 360 - 180) * np.cos(np.deg2rad(expected[:, 1]))
+    assert np.all(np.abs(delta) <= 1e-8)
+    # One batched call, which reuses a single transformer for every point.
+    probes = [(p, e) for p, e in case["inverse_samples"] if e is not None]
+    actual = np.column_stack(
+        terrio.transform_points(
+            [p[0] for p, _ in probes], [p[1] for p, _ in probes], case["target"], case["source"]
+        )
+    )
+    expected = np.asarray([e for _, e in probes])
     delta = actual - expected
     delta[:, 0] = ((delta[:, 0] + 180) % 360 - 180) * np.cos(np.deg2rad(expected[:, 1]))
     assert np.all(np.abs(delta) <= 1e-8)
