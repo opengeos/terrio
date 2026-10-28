@@ -47,4 +47,6 @@ fn palette_raster_sidecars_cannot_be_replaced() {
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("input"));
     assert_eq!(std::fs::read(root.join("palette.tif.msk")).unwrap(), original);
+    assert!(run(root, &["palette-to-rgb", "palette.tif", "expanded.png"]).status.success());
+    assert!(run(root, &["attach-palette", "colors.txt", "palette.tif", "attached.png"]).status.success());
 }

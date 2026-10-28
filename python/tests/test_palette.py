@@ -162,7 +162,9 @@ def test_remote_mask_write_io_and_tile_archive_refusal(tmp_path, gdal):
         assert observations[1][0] >= observations[0][0]
         assert observations[0][2] == observations[1][2] == 1
         print("remote mask I/O (bytes, requests, files):", observations)
-        lazy = terrio.open_raster(local, lazy=True)
+        lazy = terrio.open_raster(
+            f"http://127.0.0.1:{server.server_port}/masked-cog.tif?mode=refusal", lazy=True
+        )
         before_refusal = (Handler.sent, Handler.requests)
         for suffix in ["pmtiles", "mbtiles"]:
             path = tmp_path / f"masked.{suffix}"
@@ -204,3 +206,11 @@ def test_palette_sidecar_destination_and_malformed_tables(tmp_path, gdal):
     with zipfile.ZipFile(io.BytesIO(lazy.to_bytes("output.png"))) as archive:
         assert archive.read("output.png").startswith(b"\x89PNG")
     lazy.write(str(tmp_path / "output.png"))
+    assert terrio.read_color_table(palette.read_bytes())[1] == [10, 20, 30, 255]
+    terrio.palette_to_rgb(str(palette), str(tmp_path / "expanded.png"))
+    terrio.attach_palette(str(palette), [[1, 2, 3, 255]], str(tmp_path / "attached.png"))
+    oversized = tmp_path / "oversized.txt"
+    with oversized.open("wb") as stream:
+        stream.truncate(10 * 1024 * 1024 + 1)
+    with pytest.raises(ValueError, match="10 MiB"):
+        terrio.read_color_table(oversized)

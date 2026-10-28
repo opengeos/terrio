@@ -26,7 +26,10 @@ impl ImageArgs {
     }
     fn write_masked(&self, mut output: terrio::LazyRaster) -> Result<()> {
         let mut options = self.out.options()?;
-        options.mask = output.read_mask(terrio::Window::full(output.width(), output.height()), None)?;
+        let driver = options.driver.or_else(|| terrio::formats::RasterDriver::for_extension(&self.output));
+        if matches!(driver, Some(terrio::formats::RasterDriver::GTiff | terrio::formats::RasterDriver::Cog)) {
+            options.mask = output.read_mask(terrio::Window::full(output.width(), output.height()), None)?;
+        }
         terrio::write_raster_dataset(&output.read()?, &self.output, &options)
     }
 }

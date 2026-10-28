@@ -2055,12 +2055,15 @@ precedence follows GDAL; masks do not add exclusions when shared RGB nodata exis
 GDAL also tests vertically diffused RGB values for nodata, so a valid near-black
 pixel can become nodata after dithering. An automatically generated palette reserves index
 zero for invalid pixels; a supplied map uses invalid-pixel handling only when
-`--output-nodata` is given, following GDAL.
+`--output-nodata` is given, following GDAL. Reserving a nodata index inserts
+a table slot, shifts later entries and drops the old last entry if the table
+would exceed 256 entries; this also follows GDAL for supplied palettes.
 
 `terrio palette-to-rgb INPUT OUTPUT [--rgba]` expands indexed pixels to three
 or four Byte bands, and `terrio attach-palette PALETTE INPUT OUTPUT` replaces a
 Byte/UInt16 raster's table without changing its indices. Expansion/attachment
-preserve dataset masks. Source nodata becomes transparent on RGBA expansion;
+preserve dataset masks in returned handles and GeoTIFF/COG outputs; other
+formats omit separate masks. Source nodata becomes transparent on RGBA expansion;
 unmapped indices become black. GeoTIFF stores RGB table entries and nodata
 transparency; arbitrary per-entry alpha requires a format such as PNG.
 

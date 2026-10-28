@@ -33,7 +33,19 @@ fn table(py: Python<'_>, source: &Bound<'_, PyAny>, filename: Option<&str>) -> P
         return Ok(table);
     }
     if let Ok(bytes) = source.cast::<PyBytes>() {
-        return palette::color_table_from_bytes(bytes.as_bytes().to_vec(), filename.unwrap_or("palette.txt")).py();
+        let data = bytes.as_bytes();
+        let hint = if let Some(filename) = filename {
+            filename
+        } else if data.starts_with(b"II") || data.starts_with(b"MM") {
+            "palette.tif"
+        } else if data.starts_with(b"\x89PNG") {
+            "palette.png"
+        } else if std::str::from_utf8(data).is_ok() {
+            "palette.txt"
+        } else {
+            return Err(invalid("unrecognized palette bytes; supply a filename format hint"));
+        };
+        return palette::color_table_from_bytes(data.to_vec(), hint).py();
     }
     if source.cast::<PyRaster>().is_ok() {
         return with_source(py, source, |r| palette::color_table(&r.header()));
@@ -82,7 +94,10 @@ fn finish(
     if let Some(path) = dst {
         let mut options = write_options(format, compress, tile_size, bigtiff)?;
         py.detach(|| {
-            options.mask = output.read_mask(terrio::Window::full(output.width(), output.height()), None)?;
+            let driver = options.driver.or_else(|| terrio::formats::RasterDriver::for_extension(path));
+            if matches!(driver, Some(terrio::formats::RasterDriver::GTiff | terrio::formats::RasterDriver::Cog)) {
+                options.mask = output.read_mask(terrio::Window::full(output.width(), output.height()), None)?;
+            }
             terrio::write_raster_dataset(&output.read()?, path, &options)
         })
         .py()?;
@@ -93,7 +108,7 @@ fn finish(
 ///
 /// Args:
 ///     source: Palette raster, native/VSI path, bytes, or sequence of RGBA entries.
-///     filename: Format hint for bytes; defaults to palette.txt. TXT/CPT/QML/QLR are supported.
+///     filename: Format hint for bytes; TIFF/PNG and UTF-8 text are detected when omitted. TXT/CPT/QML/QLR are supported.
 ///
 /// Returns:
 ///     list: RGBA entries from index zero, with source nodata transparency applied.

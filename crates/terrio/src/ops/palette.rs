@@ -271,6 +271,9 @@ pub fn color_table_from_bytes(bytes: Vec<u8>, filename: &str) -> Result<Vec<[u8;
 pub fn read_color_table(path: &str) -> Result<Vec<[u8; 4]>> {
     let ext = crate::formats::extension(path).unwrap_or_default();
     if ["txt", "qml", "qlr", "cpt", "pal", "csv", "xml"].contains(&ext.as_str()) {
+        if crate::vsi::stat(path)?.and_then(|entry| entry.size).is_some_and(|size| size > 10 * 1024 * 1024) {
+            return Err(invalid("color table text exceeds 10 MiB"));
+        }
         return color_table_from_bytes(crate::vsi::read(path)?, path);
     }
     let source = crate::open_raster_lazy(path)?;
@@ -619,6 +622,30 @@ mod tests {
         let options = PaletteOptions { color_table: Some(vec![[4, 4, 4, 255]]), output_nodata: Some(0), ..Default::default() };
         // GDAL tests values after vertical diffusion: the second row becomes nodata.
         assert_eq!(rgb_to_palette(&source, &options).unwrap().raster.data.to_f64_vec(), [1., 1., 0., 0.]);
+    }
+    #[test]
+    fn supplied_full_palette_nodata_insertion_matches_gdal() {
+        let source = super::super::build_raster_data(
+            super::super::Grid { width: 3, height: 1, geo_transform: [0., 1., 0., 1., 0., -1.] },
+            RasterData::U8(vec![255, 254, 0, 255, 254, 0, 255, 254, 0]),
+            3,
+            None,
+            &Default::default(),
+        )
+        .unwrap();
+        let options = PaletteOptions {
+            bit_depth: 8,
+            dither: false,
+            output_nodata: Some(0),
+            color_table: Some((0..=255).map(|c| [c, c, c, 255]).collect()),
+            ..Default::default()
+        };
+        let result = rgb_to_palette(&source, &options).unwrap();
+        // GDAL 3.13.3 inserts the nodata slot and truncates the old last entry.
+        assert_eq!(result.raster.data.to_f64_vec(), [255., 255., 1.]);
+        assert_eq!(result.color_table.len(), 256);
+        assert_eq!(result.color_table[0], [0, 0, 0, 0]);
+        assert_eq!(result.color_table[255], [254, 254, 254, 255]);
     }
     #[test]
     fn full_precision_retains_first_occurrence_and_nearest_ties() {
