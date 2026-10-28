@@ -902,9 +902,9 @@ impl LazyRaster {
         ds.raster.nodata = first_nodata.unwrap_or(-9999.);
         ds.set_geo_transform([gt[0] + x * gt[1] + y * gt[2], gt[1], gt[2], gt[3] + x * gt[4] + y * gt[5], gt[4], gt[5]]);
         let (full_cols, full_rows) = (self.width(), self.height());
-        let (gcps, band_metadata) = match &self.inner {
-            Inner::Tiff(t) => (&t.tags.gcps, &t.tags.band_properties),
-            Inner::Memory(source) | Inner::Source(source, _) => (&source.gcps, &source.band_metadata),
+        let (gcps, band_metadata, color_table) = match &self.inner {
+            Inner::Tiff(t) => (&t.tags.gcps, &t.tags.band_properties, &t.tags.color_table),
+            Inner::Memory(source) | Inner::Source(source, _) => (&source.gcps, &source.band_metadata, &source.color_table),
         };
         ds.gcps = gcps
             .iter()
@@ -917,6 +917,9 @@ impl LazyRaster {
             .collect();
         ds.band_metadata = bands.iter().map(|&b| band_metadata.get(b - 1).cloned().unwrap_or_default()).collect();
         ds.band_nodata = band_nodata;
+        if bands == [1] {
+            ds.color_table = color_table.clone();
+        }
         Ok(ds)
     }
 }

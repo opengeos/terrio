@@ -305,12 +305,90 @@ mod tests {
         )
         .unwrap();
         let bytes = std::fs::read(file.path()).unwrap();
-        let lazy = crate::open_raster_lazy(file.path().to_str().unwrap()).unwrap();
+        let mut lazy = crate::open_raster_lazy(file.path().to_str().unwrap()).unwrap();
         assert_eq!(&lazy.header().color_table[..2], &palette);
+        let window = lazy.read_window(crate::Window::new(0, 0, 1, 1), &Default::default()).unwrap();
+        assert_eq!(&window.color_table[..2], &palette);
         let read = crate::memory::open_raster_bytes(bytes, "palette.tif").unwrap();
         assert_eq!(&read.color_table[..2], &palette);
         let out = blend(&read, &image(&[0, 0, 0, 0]), &Default::default()).unwrap();
         assert_eq!((0..4).map(|i| out.raster.data.get_f64(i)).collect::<Vec<_>>(), vec![30., 80., 170., 255.]);
+    }
+
+    #[test]
+    fn palette_writes_inherit_consistently_and_allow_grayscale_jpeg() {
+        let dir = tempfile::tempdir().unwrap();
+        let input = dir.path().join("input.tif");
+        let input = input.to_str().unwrap();
+        let source = super::super::build_raster(
+            super::super::Grid { width: 4, height: 6, geo_transform: [10., 1., 0., 20., 0., -1.] },
+            vec![(0..24).map(|i| (i % 2) as f64).collect()],
+            DataType::U8,
+            None,
+            &crate::crs::SpatialRef::default(),
+            super::super::convert_value,
+        )
+        .unwrap();
+        let palette = vec![[0, 0, 0, 255], [30, 80, 170, 255]];
+        crate::write_raster_dataset(&source, input, &crate::RasterWriteOptions { color_table: palette.clone(), ..Default::default() })
+            .unwrap();
+        let source = crate::open_raster(input).unwrap();
+        for (case, mut options, keeps_palette) in [
+            ("plain", crate::RasterWriteOptions::default(), true),
+            ("cog", crate::RasterWriteOptions { driver: Some(crate::formats::RasterDriver::Cog), ..Default::default() }, true),
+            ("jpeg", crate::RasterWriteOptions { compression: Some("JPEG".into()), ..Default::default() }, false),
+            (
+                "jpeg-co",
+                crate::RasterWriteOptions { creation_options: vec![("COMPRESS".into(), "JPEG".into())], ..Default::default() },
+                false,
+            ),
+            (
+                "gray",
+                crate::RasterWriteOptions { creation_options: vec![("PHOTOMETRIC".into(), "MINISBLACK".into())], ..Default::default() },
+                false,
+            ),
+            (
+                "palette",
+                crate::RasterWriteOptions { creation_options: vec![("PHOTOMETRIC".into(), "PALETTE".into())], ..Default::default() },
+                true,
+            ),
+        ] {
+            for lazy in [false, true] {
+                let file = dir.path().join(format!("{case}-{lazy}.tif"));
+                let path = file.to_str().unwrap();
+                if lazy {
+                    crate::open_raster_lazy(input).unwrap().write(path, &options).unwrap();
+                } else {
+                    crate::write_raster_dataset(&source, path, &options).unwrap();
+                }
+                let reader = crate::open_raster_lazy(path).unwrap();
+                let header = reader.header();
+                assert_eq!(header.color_table.is_empty(), !keeps_palette, "{case}, lazy={lazy}");
+                if keeps_palette {
+                    assert_eq!(&header.color_table[..2], &palette);
+                }
+                assert_eq!(header.band_color_interp(1), if keeps_palette { "Palette" } else { "Gray" });
+            }
+            let encoded = crate::memory::codec::write_raster(
+                &source,
+                options.driver.unwrap_or(crate::formats::RasterDriver::GTiff),
+                &options,
+                "palette",
+            )
+            .unwrap();
+            let header = crate::LazyRaster::from_tiff_bytes(encoded).unwrap().unwrap().header();
+            assert_eq!(header.color_table.is_empty(), !keeps_palette, "memory {case}");
+            assert_eq!(header.band_color_interp(1), if keeps_palette { "Palette" } else { "Gray" });
+            if case == "jpeg" {
+                options.color_table = palette.clone();
+                assert!(crate::write_raster_dataset(&source, dir.path().join("explicit-invalid.tif").to_str().unwrap(), &options).is_err());
+            }
+        }
+        let file = dir.path().join("rows.tif");
+        let mut writer = crate::GeoTiffWriter::create(file.to_str().unwrap(), &source, &Default::default()).unwrap();
+        writer.write_rows(&source.raster.data, 6, None).unwrap();
+        writer.finish().unwrap();
+        assert_eq!(&crate::open_raster_lazy(file.to_str().unwrap()).unwrap().header().color_table[..2], &palette);
     }
 
     #[test]

@@ -1921,10 +1921,7 @@ impl GeoTiffWriter {
         if !options.overviews.is_empty() {
             return Err(Error::Unsupported("overviews need the whole raster: build them after writing".into()));
         }
-        let mut options = options.clone();
-        if options.geo_transform.is_none() {
-            options.geo_transform = header.affine;
-        }
+        let mut options = options.inherited_from(header, Some(crate::formats::RasterDriver::GTiff));
         let with_mask = options.mask.take().is_some();
         let opts = TiffOptions::from_write_options(&options, false, crate::dataset::tiff_nodata(header))?.ok_or_else(|| {
             let name = options.compression.as_deref().unwrap_or_default();

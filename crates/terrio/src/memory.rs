@@ -517,6 +517,8 @@ pub(crate) mod codec {
         driver.ensure_built()?;
         match driver {
             RasterDriver::GTiff | RasterDriver::Cog => {
+                let inherited = options.inherited_from(ds, Some(driver));
+                let options = &inherited;
                 let cog = driver == RasterDriver::Cog;
                 let mut opts = TiffOptions::from_write_options(options, cog, ds.nodata())?.ok_or_else(|| {
                     let name = options.compression.as_deref().unwrap_or_default();
@@ -525,11 +527,6 @@ pub(crate) mod codec {
                          LERC_ZSTD, JXL, JPEG, WEBP)"
                     ))
                 })?;
-                if options.band_metadata.is_empty() {
-                    opts.band_metadata = ds.band_metadata.clone();
-                }
-                opts.gcps = options.inherited_gcps(ds, Some(driver));
-                opts.geo_transform = options.geo_transform.or(ds.affine);
                 // Complex bands as complex samples, as the file writer stores them.
                 opts.complex = ds.complex;
                 encode(&ds.raster, &opts)

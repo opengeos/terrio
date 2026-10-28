@@ -2082,3 +2082,42 @@ test("raster blend alpha and options", () => {
   assert.throws(() => terrio.blend(base, overlay, { opacity: 101 }), /opacity/);
   out.free(); overlay.free(); base.free();
 });
+
+test("palette blend survives windows and in-memory TIFF writes", () => {
+  // Independent tiny TIFF fixture: one indexed Byte band, an RGB color map,
+  // and 4x6 uncompressed samples. Index 1 is RGB (30,80,170).
+  const entries = [
+    [256, 4, 1, 4], [257, 4, 1, 6], [258, 3, 1, 8],
+    [259, 3, 1, 1], [262, 3, 1, 3], [273, 4, 1, 1682],
+    [277, 3, 1, 1], [278, 4, 1, 6], [279, 4, 1, 24],
+    [284, 3, 1, 1], [320, 3, 768, 146],
+  ];
+  const bytes = new Uint8Array(1706);
+  const view = new DataView(bytes.buffer);
+  bytes.set([73, 73, 42, 0]);
+  view.setUint32(4, 8, true);
+  view.setUint16(8, entries.length, true);
+  entries.forEach(([tag, type, count, value], i) => {
+    const offset = 10 + 12 * i;
+    view.setUint16(offset, tag, true);
+    view.setUint16(offset + 2, type, true);
+    view.setUint32(offset + 4, count, true);
+    view.setUint32(offset + 8, value, true);
+  });
+  [30, 80, 170].forEach((value, channel) => view.setUint16(146 + 2 * (256 * channel + 1), value * 257, true));
+  bytes.fill(1, 1682);
+  const source = terrio.open(bytes, "palette.tif");
+  for (const window of [null, [1, 1, 2, 2]]) {
+    const copy = terrio.open(source.toBytes("copy.tif", window ? {srcwin: window} : {}), "copy.tif");
+    const w = copy.width, h = copy.height;
+    const transparent = terrio.rasterFromArray(new Uint8Array(w * h * 4), w, h, [0, 1, 0, h, 0, -1]);
+    const blended = terrio.blend(copy, transparent);
+    assert.equal(blended.count, 4);
+    assert.deepEqual([1, 2, 3, 4].map(b => blended.readBand(b)[0]), [30, 80, 170, 255]);
+    const gray = terrio.open(copy.toBytes("gray.tif", {compress: "JPEG"}), "gray.tif");
+    const grayBlend = terrio.blend(gray, transparent);
+    assert.equal(grayBlend.count, 1);
+    grayBlend.free(); gray.free(); blended.free(); transparent.free(); copy.free();
+  }
+  source.free();
+});
