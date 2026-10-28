@@ -877,6 +877,7 @@ mod tests {
         let lazy = LazyRaster::from_source(header, Box::new(NoPixels));
         RasterIndexSource::from_lazy("tile.tif", &lazy).unwrap()
     }
+    #[cfg(not(target_family = "wasm"))]
     #[test]
     fn relative_locations_use_forward_slashes_on_every_platform() {
         let relative: std::path::PathBuf = ["..", "tiles", "a.tif"].iter().collect();
