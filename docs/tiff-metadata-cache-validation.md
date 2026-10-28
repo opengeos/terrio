@@ -1,9 +1,6 @@
 # TIFF metadata cache validation
 
 Local review on 2026-10-28 of [issue #348](https://github.com/opengeos/terrio/issues/348).
-Origin's nine new commits were integrated by fast-forward to `9ca108f` on
-`codex/tiff-metadata-cache`. The saved implementation reapplied without conflicts.
-No commits or pushes were made.
 
 ## Review
 
