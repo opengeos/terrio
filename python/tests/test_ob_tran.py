@@ -20,7 +20,8 @@ def _inverse_at_edge(point, source, target):
 
     A few reference samples fall exactly on the rotated antimeridian, the edge of the
     inverse domain, where the platform's libm decides by one ulp whether the point is
-    inside. An interior point that is refused is not rescued by the nudge.
+    inside. Only a point on that edge has exactly one side of the nudge accepted, so an
+    interior point refused at its exact coordinate still fails.
 
     Mirrors `inverse_at_edge` in crates/terrio-crs/tests/ob_tran.rs; keep the two in step.
 
@@ -36,13 +37,16 @@ def _inverse_at_edge(point, source, target):
         x, y = terrio.transform_points([point[0]], [point[1]], source, target)
         return x[0], y[0]
     except terrio.CRSError:
+        nudged = []
         for scale in (1 - 1e-12, 1 + 1e-12):
             try:
                 x, y = terrio.transform_points([point[0] * scale], [point[1]], source, target)
-                return x[0], y[0]
+                nudged.append((x[0], y[0]))
             except terrio.CRSError:
                 pass
-        raise
+        if len(nudged) != 1:
+            raise
+        return nudged[0]
 
 
 @pytest.mark.parametrize("case", REFERENCE["cases"], ids=lambda case: case["name"])
@@ -68,7 +72,6 @@ def test_ob_tran_oracle(case):
     delta[:, 0] = ((delta[:, 0] + 180) % 360 - 180) * np.cos(np.deg2rad(expected[:, 1]))
     assert np.all(np.abs(delta) <= 1e-8)
 
-    # One batched call, which reuses a single transformer for every point.
     # PROJ's spherical sinusoidal inverse returns a latitude past a pole, which the rotation turns
     # into a point; terrio's sinusoidal refuses it (as crates/terrio-crs/tests/ob_tran.rs checks).
     def past_pole(point):
@@ -77,6 +80,7 @@ def test_ob_tran_oracle(case):
         ]
         return case["refuses_past_pole"] and abs(northing) > np.pi / 2
 
+    # One batched call, which reuses a single transformer for every point.
     probes = [(p, e) for p, e in case["inverse_samples"] if e is not None and not past_pole(p)]
     actual = np.column_stack(
         terrio.transform_points(
