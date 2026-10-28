@@ -31,13 +31,16 @@ fn pinned_oblique_mollweide_fixture() {
 ///
 /// A few reference samples fall exactly on the rotated antimeridian, the edge of the inverse
 /// domain, where the platform's libm decides by one ulp whether the point is inside (PROJ itself
-/// refuses `|lam| >= pi`). An interior point that is refused is not rescued by the nudge.
+/// refuses `|lam| >= pi`). Only a point on that edge has exactly one side of the nudge accepted,
+/// so an interior point refused at its exact coordinate still fails.
 fn inverse_at_edge(inverse: &Transformer, point: (f64, f64)) -> Result<(f64, f64), String> {
     inverse.transform(point.0, point.1).or_else(|error| {
-        [1.0 - 1e-12, 1.0 + 1e-12]
-            .into_iter()
-            .find_map(|scale| inverse.transform(point.0 * scale, point.1).ok())
-            .ok_or_else(|| error.to_string())
+        let nudged: Vec<_> =
+            [1.0 - 1e-12, 1.0 + 1e-12].into_iter().filter_map(|scale| inverse.transform(point.0 * scale, point.1).ok()).collect();
+        match nudged[..] {
+            [one] => Ok(one),
+            _ => Err(error.to_string()),
+        }
     })
 }
 

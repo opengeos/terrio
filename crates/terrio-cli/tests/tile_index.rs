@@ -81,3 +81,16 @@ fn layer_selection_does_not_allow_replacing_an_unselected_input() {
     assert!(String::from_utf8_lossy(&output.stderr).contains("indexed source"));
     assert_eq!(std::fs::read(path.join("counties.geojson")).unwrap(), json);
 }
+
+#[test]
+fn skipped_unreadable_raster_inputs_cannot_be_replaced() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path();
+    ok(&["create-raster", "a.tif", "--size", "2,2", "--crs", "EPSG:4326", "--bbox", "0,0,2,2"], path);
+    let bytes = b"not,a,raster\nkeep,this,text\n";
+    std::fs::write(path.join("data.csv"), bytes).unwrap();
+    let output = run(&["raster-index", "a.tif", "data.csv", "data.csv", "--skip-errors", "--format", "GPKG", "--overwrite"], path);
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("indexed source"));
+    assert_eq!(std::fs::read(path.join("data.csv")).unwrap(), bytes);
+}

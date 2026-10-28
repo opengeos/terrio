@@ -2041,8 +2041,10 @@ from the working directory. In-memory source mappings keep their explicit stored
 locations verbatim; supply locations appropriate for the eventual catalog directory.
 Remote locations keep their query parameters, which can include access credentials;
 a warning is emitted without printing them. Use credential-free references and
-environment credentials when sharing catalogs.
-Raster `--skip-errors` skips unreadable inputs with a warning. Scanning without
+environment credentials when sharing catalogs. Signed-source open/list errors
+also omit query-bearing driver diagnostics.
+Raster `--skip-errors` skips unreadable inputs with a warning. Invalid options
+and typed-metadata conversion failures remain errors. Scanning without
 a filename filter is strict, as in GDAL: unrelated files and sidecars can fail
 the run. Use a filter or raster `--skip-errors` for mixed-content directories. Lazy-capable raster
 readers only inspect headers. Local GeoPackage/FlatGeobuf vector inputs use cached
@@ -2088,7 +2090,8 @@ these references directly against the index directory. Custom raster location fi
 This release creates new indexes and atomically replaces single-file outputs with
 `--overwrite`. Indexed source paths and aliases cannot be replaced, including
 files opened through Python mapping values whose stored labels differ from their
-paths. Shapefile outputs
+paths. Unreadable inputs skipped by `--skip-errors` remain protected too.
+Shapefile outputs
 publish all components from staging and require a new basename even with `--overwrite`;
 `.shp.zip` writes an archive. GTI/custom metadata require GeoPackage or FlatGeobuf.
 Append/update, layer replacement, STAC-GeoParquet profiles, XML companion output and

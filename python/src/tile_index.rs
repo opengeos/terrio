@@ -227,7 +227,7 @@ fn raster_index(
             let location: String = location.extract()?;
             let header = if let Some(path) = crate::ops::raster_path(&source)? {
                 protected_paths.push(path.clone());
-                crate::with_warnings(py, || ti::RasterIndexSource::from_lazy(location, &terrio::open_raster_lazy(&path)?))?
+                crate::with_warnings(py, || ti::RasterIndexSource::open_path(&path, location))?
             } else {
                 let raster = source
                     .cast::<PyRaster>()

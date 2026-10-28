@@ -89,6 +89,11 @@ pub struct RasterIndexSource {
     pub metadata: Vec<(String, String)>,
 }
 impl RasterIndexSource {
+    /// Opens a native/VSI source header, sanitizing diagnostics for locators with queries.
+    #[cfg(not(target_family = "wasm"))]
+    pub fn open_path(path: &str, location: impl Into<String>) -> Result<Self> {
+        (|| Self::from_lazy(location, &crate::open_raster_lazy(path)?))().map_err(|e| index_source_error(path, e))
+    }
     /// Inspects an open source without reading pixels. Non-affine sources are refused.
     pub fn from_lazy(location: impl Into<String>, src: &LazyRaster) -> Result<Self> {
         if !src.has_geo_transform() {
@@ -319,6 +324,24 @@ fn warning_locator(location: &str) -> &str {
         location.split_once('?').map_or(location, |(base, _)| base)
     } else {
         location
+    }
+}
+#[cfg(not(target_family = "wasm"))]
+fn index_source_error(path: &str, error: Error) -> Error {
+    if warning_locator(path) == path {
+        return error;
+    }
+    // Keep transport/argument categories and I/O kinds without retaining a
+    // payload that may repeat the complete signed URL in Display or Debug.
+    let message = format!("cannot inspect remote index source {}", warning_locator(path));
+    match error {
+        Error::Io(e) => Error::Io(std::io::Error::new(e.kind(), message)),
+        Error::Crs(_) => Error::Crs(message),
+        Error::Http(_) => Error::Http(message),
+        Error::Unsupported(_) => Error::Unsupported(message),
+        Error::InvalidArgument(_) => Error::InvalidArgument(message),
+        Error::Raster(_) | Error::Vector(_) | Error::InvalidData(_) => Error::InvalidData(message),
+        e @ Error::DecodedLimitExceeded { .. } => e,
     }
 }
 #[cfg(not(target_family = "wasm"))]
@@ -968,6 +991,21 @@ mod tests {
         assert!(warnings.iter().any(|w| w.contains("cannot inspect remote source")));
         assert!(warnings.iter().all(|w| !w.contains("private-marker")));
     }
+    #[cfg(not(target_family = "wasm"))]
+    #[test]
+    fn returned_open_and_listing_errors_do_not_echo_queries() {
+        for path in ["/vsimem/missing-index-test.tif?sig=private-marker", "unsupported-scheme://example.test/a.tif?sig=private-marker"] {
+            let error = raster_index_paths(&[path.into()], &Default::default(), &Default::default()).unwrap_err();
+            assert!(!error.to_string().contains("private-marker"));
+            assert!(!format!("{error:?}").contains("private-marker"));
+        }
+        let path = "unsupported-scheme://example.test/dir/?sig=private-marker";
+        let error = index_input_paths(&[path.into()], &Default::default()).unwrap_err();
+        assert!(!error.to_string().contains("private-marker"));
+        assert!(!format!("{error:?}").contains("private-marker"));
+        let error = vector_index_sources("/vsimem/missing-index-test.geojson?sig=private-marker").unwrap_err();
+        assert!(!error.to_string().contains("private-marker"));
+    }
     #[test]
     fn selectors_apply_to_the_union_of_input_datasets() {
         let mut a = vector("a.gpkg", 0);
@@ -1170,7 +1208,8 @@ pub fn index_input_paths(paths: &[String], o: &IndexInputOptions) -> Result<Vec<
             out.push(path.clone());
             continue;
         }
-        let entries = crate::vsi::list(path, &crate::vsi::ListOptions { recursive: o.recursive, ..Default::default() })?;
+        let entries = crate::vsi::list(path, &crate::vsi::ListOptions { recursive: o.recursive, ..Default::default() })
+            .map_err(|e| index_source_error(path, e))?;
         for entry in entries.into_iter().filter(|e| !e.is_dir()) {
             let name = entry.name.rsplit('/').next().unwrap_or(&entry.name);
             if !o.filename_filters.is_empty() && !o.filename_filters.iter().any(|p| wildcard(p, name)) {
@@ -1195,18 +1234,18 @@ fn stored_location(path: &str, absolute: bool) -> Result<String> {
 pub fn raster_index_paths(paths: &[String], inputs: &IndexInputOptions, o: &RasterIndexOptions) -> Result<DatasetIndex> {
     let paths = index_input_paths(paths, inputs)?;
     let mut sources = Vec::new();
-    for path in paths {
-        let result = (|| {
-            let raster = crate::open_raster_lazy(&path)?;
-            RasterIndexSource::from_lazy(stored_location(&path, inputs.absolute_path)?, &raster)
-        })();
+    for path in &paths {
+        let result = (|| RasterIndexSource::open_path(path, stored_location(path, inputs.absolute_path)?))();
         match result {
             Ok(source) => sources.push(source),
-            Err(e) if inputs.skip_errors => warn_skipped_source(&path, &e),
-            Err(e) => return Err(e),
+            Err(e) if inputs.skip_errors => warn_skipped_source(path, &e),
+            Err(e) => return Err(index_source_error(path, e)),
         }
     }
     let mut output = raster_index(&sources, o)?;
+    for path in &paths {
+        output.protect_source_path(path)?;
+    }
     for source in &sources {
         output.track_relative_location(&source.location, "")?;
     }
@@ -1348,7 +1387,8 @@ impl VectorIndexSelection {
 /// Reads source layer schemas and bounds, retaining original layer numbers.
 #[cfg(not(target_family = "wasm"))]
 pub fn vector_index_sources(path: &str) -> Result<Vec<VectorIndexSource>> {
-    Ok(read_vector_index_headers(path)?
+    Ok(read_vector_index_headers(path)
+        .map_err(|e| index_source_error(path, e))?
         .iter()
         .enumerate()
         .map(|(index, layer)| VectorIndexSource::from_layer(path, index, layer))

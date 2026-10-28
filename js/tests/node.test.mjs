@@ -1734,32 +1734,46 @@ test("general oblique transformation matches PROJ", () => {
       assert.throws(() => terrio.transformPoints([s[0]], [s[1]], c.source, c.target), undefined, `${c.name} forward ${s[0]} ${s[1]}`);
     }
     const reversible = samples.filter(s => s[3] !== null);
+    const invert = ([x, y]) => terrio.transformPoints([x], [y], c.target, c.source);
+    const edge = [];
+    const singleResults = new Map();
     for (let i = 0; i < reversible.length; i++) {
-      const [x, y] = reversible[i][2];
       let inverse;
       try {
-        inverse = terrio.transformPoints([x], [y], c.target, c.source);
+        inverse = invert(reversible[i][2]);
       } catch (error) {
-        // The rotated antimeridian is the inverse domain boundary. WASM/libm can
-        // round it one ulp outside; match the Rust/Python oracle's tiny easting retry.
-        for (const scale of [1 - 1e-12, 1 + 1e-12]) {
+        // The rotated antimeridian is the inverse domain boundary, which libm can round one
+        // ulp outside. Only a point on that edge has exactly one side of the 1e-12 easting
+        // nudge accepted; an interior point refused at its exact coordinate still fails.
+        const [x, y] = reversible[i][2];
+        const nudged = [1 - 1e-12, 1 + 1e-12].map(scale => {
           try {
-            inverse = terrio.transformPoints([x * scale], [y], c.target, c.source);
-            break;
+            return invert([x * scale, y]);
           } catch {
-            // Try the other side; an interior refusal still fails below.
+            return null;
           }
-        }
-        if (!inverse) throw error;
+        }).filter(r => r !== null);
+        if (nudged.length !== 1) throw error;
+        inverse = nudged[0];
+        edge.push(i);
       }
+      singleResults.set(reversible[i], [inverse[0][0], inverse[1][0]]);
       const [lon, lat] = reversible[i][3];
       const dlon = ((inverse[0][0] - lon + 540) % 360 - 180) * Math.cos(lat * Math.PI / 180);
-      // At a geographic pole, asin loses about sqrt(epsilon) radians and
-      // longitude is indeterminate; the PROJ fixture itself is 8.5e-7° off the pole.
-      const tolerance = Math.abs(reversible[i][1]) === 90 ? 1e-6 : 1e-8;
-      assert.ok(Math.abs(dlon) <= tolerance && Math.abs(inverse[1][0] - lat) <= tolerance, `${c.name} inverse ${i}`);
+      // At a geographic pole longitude is indeterminate, so only latitude is checked, and asin
+      // near 1 loses about sqrt(epsilon) radians: WASM's libm lands 8.5e-7 degrees off the pole.
+      const pole = Math.abs(reversible[i][1]) === 90;
+      assert.ok(pole || Math.abs(dlon) <= 1e-8, `${c.name} inverse longitude ${i}`);
+      assert.ok(Math.abs(inverse[1][0] - lat) <= (pole ? 1e-6 : 1e-8), `${c.name} inverse latitude ${i}`);
     }
-    const refused = samples.filter(s => s[3] === null).map(s => s[2]).concat(c.inverse_samples.filter(([, e]) => e === null).map(([p]) => p));
+    // One batched call over the interior samples, which reuses a single transformer.
+    const interior = reversible.filter((_, i) => !edge.includes(i));
+    const batch = terrio.transformPoints(interior.map(s => s[2][0]), interior.map(s => s[2][1]), c.target, c.source);
+    for (let i = 0; i < interior.length; i++) {
+      assert.deepEqual([batch[0][i], batch[1][i]], singleResults.get(interior[i]), `${c.name} batch/single inverse ${i}`);
+    }
+    const pastPole = point => c.refuses_past_pole && Math.abs((point[1] * c.metres_per_unit - c.false_northing_metres) / c.radius_metres) > Math.PI / 2;
+    const refused = samples.filter(s => s[3] === null).map(s => s[2]).concat(c.inverse_samples.filter(([p, e]) => e === null || pastPole(p)).map(([p]) => p));
     for (const point of refused) {
       assert.throws(() => terrio.transformPoints([point[0]], [point[1]], c.target, c.source), undefined, `${c.name} inverse ${point}`);
     }

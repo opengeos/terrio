@@ -137,3 +137,13 @@ def test_mapped_path_values_cannot_be_replaced_even_with_unrelated_labels(tmp_pa
             overwrite=True,
         )
     assert vector_path.read_bytes() == before
+
+
+def test_signed_source_errors_do_not_expose_query_values():
+    for factory, path in [
+        (terrio.raster_index, "/vsimem/missing-index-test.tif?sig=private-marker"),
+        (terrio.vector_index, "/vsimem/missing-index-test.geojson?sig=private-marker"),
+    ]:
+        with pytest.raises(terrio.TerrioError) as error:
+            factory({"stored-label": path})
+        assert "private-marker" not in str(error.value)
