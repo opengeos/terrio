@@ -4,8 +4,8 @@ use super::rasterout::{OutputArgs, open, open_lazy, same_file};
 use terrio::Error;
 use terrio::formats::RasterDriver;
 use terrio::ops::dem::{
-    ColorMap, ColorSelection, DemOptions, DemProduct, GradientAlg, Shading, TriAlg, color_relief, color_relief_vrt, dem, dem_to_path,
-    pam_statistics,
+    ColorMap, ColorSelection, DemOptions, DemProduct, GradientAlg, Shading, TriAlg, color_relief, color_relief_to_path, color_relief_vrt,
+    dem, dem_to_path, pam_statistics,
 };
 
 #[derive(clap::Args)]
@@ -75,6 +75,13 @@ pub struct Args {
     /// Use the color of the nearest entry rather than interpolating (color-relief).
     #[arg(long = "nearest-color-entry", alias = "nearest_color_entry")]
     nearest_color_entry: bool,
+    /// About how much memory (MiB) the strips of rows in flight may take, which sets their
+    /// height (by default, strips of about 64 MiB of input values). The output does not depend on
+    /// it. Below one row of the input's blocks, each strip decodes the blocks it touches again:
+    /// slower, same values. Refused for a VRT output and for an output that is also the input,
+    /// which are not written in strips.
+    #[arg(long = "max-memory", value_name = "MIB")]
+    max_memory: Option<f64>,
     #[command(flatten)]
     out: OutputArgs,
 }
@@ -123,6 +130,7 @@ pub fn run(a: Args) -> terrio::Result<()> {
         } else {
             ColorSelection::Interpolate
         },
+        max_memory_mib: a.max_memory,
         ..Default::default()
     };
     if let Some(alg) = &a.alg {
@@ -140,23 +148,44 @@ pub fn run(a: Args) -> terrio::Result<()> {
     if vrt && colors.is_none() {
         return Err(Error::InvalidArgument("VRT output is only supported for color-relief".into()));
     }
+    // Only outputs written a strip at a time take a memory budget, as in Python.
+    if a.max_memory.is_some() && (vrt || same_file(input, output)) {
+        return Err(Error::InvalidArgument(
+            "--max-memory does not apply to a VRT output or to an output that is also the input, which are not written in strips".into(),
+        ));
+    }
     // Terrain products a strip at a time, without holding the DEM or the output whole.
     let colors = match (colors, product) {
         // The DEM read whole first when it is also the output.
         (None, Some(product)) if same_file(input, output) => return a.out.write(&dem(&open(input)?, product, &o)?, output),
         (None, Some(product)) => {
             let mut src = open_lazy(input)?;
-            return super::quiet(|| dem_to_path(&mut src, product, &o, output, &a.out.options()?));
+            return super::quiet(|| dem_to_path(&mut src, product, &o, output, &a.out.options()?)).map_err(cli_flag_names);
         }
         (Some(colors), None) => colors,
         _ => unreachable!("color-relief alone takes a color file"),
     };
-    let ds = open(input)?;
     let text =
         std::fs::read_to_string(colors).map_err(|e| Error::InvalidArgument(format!("cannot read the color file '{colors}': {e}")))?;
+    // A color relief a strip at a time, without holding the DEM or the output whole.
+    if !vrt && !same_file(input, output) {
+        let mut src = open_lazy(input)?;
+        let map = ColorMap::parse_lazy(&text, &mut src, o.band, pam_statistics(input, o.band), o.max_memory_mib).map_err(cli_flag_names)?;
+        return super::quiet(|| color_relief_to_path(&mut src, &map, &o, output, &a.out.options()?)).map_err(cli_flag_names);
+    }
+    let ds = open(input)?;
     let map = ColorMap::parse(&text, &ds, o.band, pam_statistics(input, o.band))?;
     if vrt {
         return color_relief_vrt(&ds, input, &map, &o, Some(output))?.write(output);
     }
     a.out.write(&color_relief(&ds, &map, &o)?, output)
+}
+
+/// The library's refusals of a memory budget under the CLI's flag name: `same_file` above compares
+/// paths, so an output that is a hard link to the input is refused by the library instead.
+fn cli_flag_names(e: Error) -> Error {
+    match e {
+        Error::InvalidArgument(m) => Error::InvalidArgument(m.replace("max_memory_mib", "--max-memory")),
+        e => e,
+    }
 }

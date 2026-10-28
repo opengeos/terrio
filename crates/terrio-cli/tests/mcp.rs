@@ -353,6 +353,90 @@ fn interrupted_goode_homolosine_coordinates_and_refusal_through_mcp() {
 }
 
 #[test]
+fn oblique_mollweide_coordinates_and_refusal_through_mcp() {
+    // rust-proj-capability's seed-ob_tran-moll fixture (PROJ 9.9.0), and a point beyond the
+    // rotated Mollweide's ellipse, which PROJ's inverse refuses.
+    let target = "+proj=ob_tran +o_proj=moll +o_lon_p=0 +o_lat_p=45 +lon_0=147 +datum=WGS84 +units=m +no_defs";
+    let replies = session(&[
+        call(1, "crs", &["OGC:CRS84", "--to", target, "147", "-42"]),
+        call(2, "crs", &[target, "--to", "OGC:CRS84", "40000000", "0"]),
+    ]);
+    assert_eq!(replies[&1]["result"]["isError"], false);
+    let values: Vec<f64> =
+        replies[&1]["result"]["content"][0]["text"].as_str().unwrap().split_whitespace().filter_map(|v| v.parse().ok()).collect();
+    assert_eq!(values.len(), 2);
+    assert!(values[0].abs() < 0.001);
+    assert!((values[1] + 8921410.650523769).abs() < 0.001);
+    assert_eq!(replies[&2]["result"]["isError"], true);
+}
+
+#[test]
+fn quadrilateralized_spherical_cube_coordinates_through_mcp() {
+    // rust-proj-capability's method-qsc fixture (PROJ 9.9.0), forward and back.
+    let target = "+proj=qsc +lat_0=0 +lon_0=0 +datum=WGS84 +units=m +no_defs";
+    let replies = session(&[
+        call(1, "crs", &["OGC:CRS84", "--to", target, "10", "10"]),
+        call(2, "crs", &[target, "--to", "OGC:CRS84", "1689641.80879759", "1701418.7180670935"]),
+    ]);
+    let values = |id: u64| -> Vec<f64> {
+        assert_eq!(replies[&id]["result"]["isError"], false);
+        replies[&id]["result"]["content"][0]["text"].as_str().unwrap().split_whitespace().filter_map(|v| v.parse().ok()).collect()
+    };
+    let forward = values(1);
+    assert_eq!(forward.len(), 2);
+    assert!((forward[0] - 1689641.80879759).abs() < 0.001);
+    assert!((forward[1] - 1701418.7180670935).abs() < 0.001);
+    let inverse = values(2);
+    assert_eq!(inverse.len(), 2);
+    assert!((inverse[0] - 10.0).abs() < 1e-8 && (inverse[1] - 10.0).abs() < 1e-8);
+}
+
+#[test]
+fn healpix_and_rhealpix_coordinates_through_mcp() {
+    // rust-proj-capability's method-healpix and method-rhealpix fixtures (PROJ 9.9.0), forward
+    // and back.
+    for (target, x, y) in [
+        ("+proj=healpix +datum=WGS84 +units=m +no_defs", 16344055.09510788, -5009843.133575987),
+        ("+proj=rhealpix +datum=WGS84 +units=m +no_defs", -20009043.56085063, -8674831.599318739),
+    ] {
+        let (xs, ys) = (x.to_string(), y.to_string());
+        let replies = session(&[
+            call(1, "crs", &["OGC:CRS84", "--to", target, "147", "-42"]),
+            call(2, "crs", &[target, "--to", "OGC:CRS84", &xs, &ys]),
+        ]);
+        let values = |id: u64| -> Vec<f64> {
+            assert_eq!(replies[&id]["result"]["isError"], false);
+            replies[&id]["result"]["content"][0]["text"].as_str().unwrap().split_whitespace().filter_map(|v| v.parse().ok()).collect()
+        };
+        let forward = values(1);
+        assert_eq!(forward.len(), 2);
+        assert!((forward[0] - x).abs() < 0.001 && (forward[1] - y).abs() < 0.001, "{target} {forward:?}");
+        let inverse = values(2);
+        assert_eq!(inverse.len(), 2);
+        assert!((inverse[0] - 147.0).abs() < 1e-8 && (inverse[1] + 42.0).abs() < 1e-8, "{target} {inverse:?}");
+    }
+}
+
+#[test]
+fn isea_coordinates_through_mcp() {
+    // PROJ 9.8.1 on the authalic sphere of WGS 84, forward and back.
+    let (source, target) = ("+proj=longlat +R=6371007.1809184747", "+proj=isea +R=6371007.1809184747 +units=m");
+    let (x, y) = (11127619.110975388, -6172668.500855954);
+    let (xs, ys) = (x.to_string(), y.to_string());
+    let replies = session(&[call(1, "crs", &[source, "--to", target, "147", "-42"]), call(2, "crs", &[target, "--to", source, &xs, &ys])]);
+    let values = |id: u64| -> Vec<f64> {
+        assert_eq!(replies[&id]["result"]["isError"], false);
+        replies[&id]["result"]["content"][0]["text"].as_str().unwrap().split_whitespace().filter_map(|v| v.parse().ok()).collect()
+    };
+    let forward = values(1);
+    assert_eq!(forward.len(), 2);
+    assert!((forward[0] - x).abs() < 0.001 && (forward[1] - y).abs() < 0.001, "{forward:?}");
+    let inverse = values(2);
+    assert_eq!(inverse.len(), 2);
+    assert!((inverse[0] - 147.0).abs() < 1e-8 && (inverse[1] + 42.0).abs() < 1e-8, "{inverse:?}");
+}
+
+#[test]
 fn vector_geometry_tools_are_discoverable_and_execute() {
     let dir = tempfile::tempdir().unwrap();
     let input = dir.path().join("line.geojson");
@@ -499,7 +583,7 @@ fn file_lists_are_refused_without_reading_the_file() {
     let tools = replies[&2]["result"]["tools"].as_array().unwrap();
     let description = |name: &str| tools.iter().find(|t| t["name"] == name).unwrap()["description"].as_str().unwrap().to_string();
     // `filter merge` is reached through the `filter` tool, whose description lists subcommands.
-    for name in ["mosaic", "warp", "concat", "filter"] {
+    for name in ["mosaic", "warp", "concat", "filter", "raster-index", "vector-index", "gti-create"] {
         let d = description(name);
         assert!(d.ends_with("Over MCP, `@FILE` lists are refused: pass each input as an item of `args`."), "{name}: {d}");
     }
@@ -516,4 +600,22 @@ fn file_lists_are_refused_without_reading_the_file() {
     let text = result["content"][0]["text"].as_str().unwrap();
     assert!(text.contains("@FILE lists are not read in MCP tool calls"), "{text}");
     assert!(!text.contains("line-that-must-not-leak"), "{text}");
+}
+
+#[test]
+fn index_tools_are_discoverable_and_execute() {
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("roads.geojson");
+    let output = dir.path().join("index.gpkg");
+    std::fs::write(&input, r#"{"type":"FeatureCollection","features":[{"type":"Feature","properties":{},"geometry":{"type":"LineString","coordinates":[[0,0],[2,3]]}}]}"#).unwrap();
+    let replies = session(&[
+        json!({"jsonrpc":"2.0","id":1,"method":"tools/list"}),
+        call(2, "vector-index", &[input.to_str().unwrap(), output.to_str().unwrap()]),
+    ]);
+    let tools = replies[&1]["result"]["tools"].as_array().unwrap();
+    for name in ["raster-index", "vector-index", "gti-create"] {
+        assert!(tools.iter().any(|t| t["name"] == name), "missing {name}");
+    }
+    assert_eq!(replies[&2]["result"]["isError"], false);
+    assert_eq!(terrio::open_vector(output.to_str().unwrap(), &Default::default()).unwrap().layers[0].len(), 1);
 }

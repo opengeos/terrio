@@ -163,7 +163,7 @@ terrio.mosaic(["n40w106.tif", "n40w107.tif"], "mosaic.tif")
 terrio.rasterize("counties.gpkg", "pop.tif", attribute="POPULATION", tr=(0.01, 0.01), ot="Int32")
 polygons = terrio.polygonize("landcover.tif", connectedness=8)
 shade = terrio.dem("dem.tif", "hillshade", z=2, multidirectional=True)  # like gdaldem
-terrio.dem("dem.tif", "color-relief", "relief.tif", color_file="colors.txt", alpha=True)
+terrio.dem("dem.tif", "color-relief", "relief.tif", color_file="colors.txt", alpha=True)  # by strips, lazy result
 ndvi = terrio.calc("(B - A * 1.0) / (B + A * 1.0)", A="landsat.tif", A_band=3, B="landsat.tif", B_band=4,
                    type="Float32")  # like gdal_calc.py, with NumPy's typing rules
 dist = terrio.proximity("roads.tif", values=[1], distunits="GEO")
@@ -349,6 +349,17 @@ copy, sync, move and delete functions return a report (`copied`, `bytes`, `uncha
 `deleted`, `errors`). `/vsimem/` files last as long as the process. Locations, semantics and the
 refusals of dangerous deletions are those of [vsi](cli.md#vsi).
 
+## COG validation
+
+```python
+ok, errors, warnings = terrio.validate_cog("dem.tif")  # rio_cogeo.cog_validate's result
+terrio.validate_cog("https://example.com/dem.tif", strict=True)  # warnings fail too
+```
+
+The checks and messages of `rio_cogeo.cogeo.cog_validate`, read from the file's structure without
+GDAL, for local files (a `str` or `os.PathLike`), URLs and S3 objects (range requests). See
+[Rust](rust.md#reading-windows-lazily).
+
 ## Typing
 
 The package ships type stubs (`py.typed`), checked with `mypy --strict` and `stubtest`:
@@ -520,3 +531,20 @@ clipping geometry and overview updates. Local writable little-endian GeoTIFFs
 are required for in-place changes; external overview updates can fail after the
 base update commits. Use `create-raster`, `edit-raster` and `update-raster` when
 calling the corresponding CLI commands.
+
+### Indexed color conversion
+
+`terrio.rgb_to_palette(src, dst=None, *, color_count=256, bit_depth=5,
+ dither=True, color_map=None, output_nodata=None, mask=None)` returns an indexed
+Byte `Raster`. `src` accepts a path or Raster; `color_map` accepts a palette
+raster/path, encoded color-file bytes, or a sequence of RGBA integer entries.
+`mask` is a two-dimensional uint8 validity array. `palette_to_rgb(src, dst=None,
+rgba=False)` expands to RGB/RGBA; `attach_palette(src, color_map, dst=None)`
+changes only the table. `read_color_table(source, filename=None)` returns integer
+RGBA lists; `filename` supplies the format hint for encoded bytes.
+
+The three conversion functions accept output format/compression/tile options
+and `overwrite=False`. Existing outputs need `overwrite=True`; source path
+aliases are protected. Operations materialize the input/output. See
+[Palette conversion](cli.md#palette-conversion) for validity rules, formats and
+GDAL differences.

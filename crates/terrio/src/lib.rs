@@ -189,6 +189,7 @@ pub mod arrow;
 mod avif;
 mod civil_time;
 mod cog;
+mod cog_validate;
 pub mod crs;
 mod dataset;
 mod drivers;
@@ -240,6 +241,7 @@ pub mod vsi;
 pub mod warnings;
 
 pub use cog::{LazyRaster, TiffReadLimits, Window, WindowOptions, open_raster_lazy};
+pub use cog_validate::{CogValidation, validate_cog};
 pub use dataset::{
     BandMetadata, Dataset, Gcp, Geolocation, RasterDataset, RasterWriteOptions, VectorDataset, VectorOpenOptions, VectorWriteOptions,
     geo_transform, is_north_up, list_layers, open, open_raster, open_raster_with_tiff_limits, open_vector, read_gcps, write_netcdf_groups,

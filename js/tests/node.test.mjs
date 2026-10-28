@@ -1720,6 +1720,161 @@ test("interrupted Goode homolosine matches PROJ", () => {
   }
 });
 
+test("general oblique transformation matches PROJ", () => {
+  const reference = JSON.parse(readFileSync(new URL("../../crates/terrio-crs/tests/data/ob_tran_reference.json", import.meta.url), "utf8"));
+  for (const c of reference.cases) {
+    const samples = c.samples.filter(s => s[2] !== null);
+    for (const target of [c.target, c.wkt2, c.wkt1]) {
+      const result = terrio.transformPoints(samples.map(s => s[0]), samples.map(s => s[1]), c.source, target);
+      for (let i = 0; i < samples.length; i++) for (let j = 0; j < 2; j++) {
+        assert.ok(Math.abs(result[j][i] - samples[i][2][j]) * c.metres_per_unit <= 0.001, `${c.name} forward ${i}/${j}`);
+      }
+    }
+    for (const s of c.samples.filter(s => s[2] === null)) {
+      assert.throws(() => terrio.transformPoints([s[0]], [s[1]], c.source, c.target), undefined, `${c.name} forward ${s[0]} ${s[1]}`);
+    }
+    const reversible = samples.filter(s => s[3] !== null);
+    const invert = ([x, y]) => terrio.transformPoints([x], [y], c.target, c.source);
+    const edge = [];
+    const singleResults = new Map();
+    for (let i = 0; i < reversible.length; i++) {
+      let inverse;
+      try {
+        inverse = invert(reversible[i][2]);
+      } catch (error) {
+        // The rotated antimeridian is the inverse domain boundary, which libm can round one
+        // ulp outside. Only a point on that edge has exactly one side of the 1e-12 easting
+        // nudge accepted; an interior point refused at its exact coordinate still fails.
+        const [x, y] = reversible[i][2];
+        const nudged = [1 - 1e-12, 1 + 1e-12].map(scale => {
+          try {
+            return invert([x * scale, y]);
+          } catch {
+            return null;
+          }
+        }).filter(r => r !== null);
+        if (nudged.length !== 1) throw error;
+        inverse = nudged[0];
+        edge.push(i);
+      }
+      singleResults.set(reversible[i], [inverse[0][0], inverse[1][0]]);
+      const [lon, lat] = reversible[i][3];
+      const dlon = ((inverse[0][0] - lon + 540) % 360 - 180) * Math.cos(lat * Math.PI / 180);
+      // At a geographic pole longitude is indeterminate, so only latitude is checked, and asin
+      // near 1 loses about sqrt(epsilon) radians: WASM's libm lands 8.5e-7 degrees off the pole.
+      const pole = Math.abs(reversible[i][1]) === 90;
+      assert.ok(pole || Math.abs(dlon) <= 1e-8, `${c.name} inverse longitude ${i}`);
+      assert.ok(Math.abs(inverse[1][0] - lat) <= (pole ? 1e-6 : 1e-8), `${c.name} inverse latitude ${i}`);
+    }
+    // One batched call over the interior samples, which reuses a single transformer.
+    const interior = reversible.filter((_, i) => !edge.includes(i));
+    const batch = terrio.transformPoints(interior.map(s => s[2][0]), interior.map(s => s[2][1]), c.target, c.source);
+    for (let i = 0; i < interior.length; i++) {
+      assert.deepEqual([batch[0][i], batch[1][i]], singleResults.get(interior[i]), `${c.name} batch/single inverse ${i}`);
+    }
+    const pastPole = point => c.refuses_past_pole && Math.abs((point[1] * c.metres_per_unit - c.false_northing_metres) / c.radius_metres) > Math.PI / 2;
+    const refused = samples.filter(s => s[3] === null).map(s => s[2]).concat(c.inverse_samples.filter(([p, e]) => e === null || pastPole(p)).map(([p]) => p));
+    for (const point of refused) {
+      assert.throws(() => terrio.transformPoints([point[0]], [point[1]], c.target, c.source), undefined, `${c.name} inverse ${point}`);
+    }
+  }
+});
+
+test("quadrilateralized spherical cube matches PROJ", () => {
+  const reference = JSON.parse(readFileSync(new URL("../../crates/terrio-crs/tests/data/qsc_reference.json", import.meta.url), "utf8"));
+  for (const c of reference.cases) {
+    const samples = c.samples;
+    for (const target of [c.target, c.wkt2, c.wkt1, c.wkt1_esri]) {
+      const result = terrio.transformPoints(samples.map(s => s[0]), samples.map(s => s[1]), c.source, target);
+      for (let i = 0; i < samples.length; i++) for (let j = 0; j < 2; j++) {
+        assert.ok(Math.abs(result[j][i] - samples[i][2][j]) * c.metres_per_unit <= 0.001, `${c.name} forward ${i}/${j}`);
+      }
+    }
+    // PROJ refuses no qsc point (the generator checks it), so every sample has its values.
+    const pairs = samples.map(s => [s[2], s[3]]).concat(c.inverse_samples);
+    const inverse = terrio.transformPoints(pairs.map(p => p[0][0]), pairs.map(p => p[0][1]), c.target, c.source);
+    // At the antipode of the face centre the inverse goes through acos near 180 degrees and moves
+    // by about 1e-6 degrees with the last bit of the northing: it is checked by its projection.
+    const antipodal = new Set(c.antipodal_samples);
+    for (let i = 0; i < pairs.length; i++) {
+      const [lon, lat] = pairs[i][1];
+      const dlon = ((inverse[0][i] - lon + 540) % 360 - 180) * Math.cos(lat * Math.PI / 180);
+      const tolerance = antipodal.has(i) ? 1e-5 : 1e-8;
+      assert.ok(Math.abs(dlon) <= tolerance && Math.abs(inverse[1][i] - lat) <= tolerance, `${c.name} inverse ${i}`);
+      if (antipodal.has(i)) {
+        const again = terrio.transformPoints([inverse[0][i]], [inverse[1][i]], c.source, c.target);
+        for (let j = 0; j < 2; j++) assert.ok(Math.abs(again[j][0] - pairs[i][0][j]) * c.metres_per_unit <= 0.001, `${c.name} antipode ${i}`);
+      }
+    }
+  }
+});
+
+test("HEALPix and rHEALPix match PROJ", () => {
+  const reference = JSON.parse(readFileSync(new URL("../../crates/terrio-crs/tests/data/healpix_reference.json", import.meta.url), "utf8"));
+  const near = (actual, [lon, lat]) => Math.abs(((actual[0] - lon + 540) % 360 - 180) * Math.cos(lat * Math.PI / 180)) <= 1e-8 && Math.abs(actual[1] - lat) <= 1e-8;
+  for (const c of reference.cases) {
+    // PROJ projects every point (the generator checks it).
+    const samples = c.samples;
+    for (const target of [c.target, c.wkt2, c.wkt1, c.wkt1_esri]) {
+      const result = terrio.transformPoints(samples.map(s => s[0]), samples.map(s => s[1]), c.source, target);
+      for (let i = 0; i < samples.length; i++) for (let j = 0; j < 2; j++) {
+        assert.ok(Math.abs(result[j][i] - samples[i][2][j]) * c.metres_per_unit <= 0.001, `${c.name} forward ${i}/${j}`);
+      }
+    }
+    // On the edge of the image the last bit moves the point in or out of it (the platform's
+    // libm, and PROJ 9.8.1's US survey foot in these methods' own +units, 0.304800609601219,
+    // where terrio has 1200/3937): there either is right, and a point terrio unprojects must be
+    // the projected one. As in crates/terrio-crs/tests/healpix.rs.
+    const edge = new Set(c.edge_samples);
+    const invert = ([x, y]) => terrio.transformPoints([x], [y], c.target, c.source);
+    const pairs = samples.filter((s, i) => !edge.has(i)).map(s => [s[2], s[3]]).concat(c.inverse_samples);
+    const reversible = pairs.filter(([, e]) => e !== null);
+    const inverse = terrio.transformPoints(reversible.map(p => p[0][0]), reversible.map(p => p[0][1]), c.target, c.source);
+    for (let i = 0; i < reversible.length; i++) {
+      assert.ok(near([inverse[0][i], inverse[1][i]], reversible[i][1]), `${c.name} inverse ${i}`);
+    }
+    for (const [point] of pairs.filter(([, e]) => e === null)) {
+      assert.throws(() => invert(point), undefined, `${c.name} inverse ${point}`);
+    }
+    for (const i of edge) {
+      let result;
+      try {
+        result = invert(samples[i][2]);
+      } catch {
+        continue;
+      }
+      assert.ok(near([result[0][0], result[1][0]], samples[i]), `${c.name} edge ${i}`);
+    }
+  }
+});
+
+test("ISEA matches PROJ", () => {
+  const reference = JSON.parse(readFileSync(new URL("../../crates/terrio-crs/tests/data/isea_reference.json", import.meta.url), "utf8"));
+  const near = (actual, [lon, lat]) => Math.abs(((actual[0] - lon + 540) % 360 - 180) * Math.cos(lat * Math.PI / 180)) <= 1e-8 && Math.abs(actual[1] - lat) <= 1e-8;
+  for (const c of reference.cases) {
+    const samples = c.samples;
+    for (const target of [c.target, c.wkt2, c.wkt1, c.wkt1_esri]) {
+      const result = terrio.transformPoints(samples.map(s => s[0]), samples.map(s => s[1]), c.source, target);
+      for (let i = 0; i < samples.length; i++) for (let j = 0; j < 2; j++) {
+        assert.ok(Math.abs(result[j][i] - samples[i][2][j]) * c.metres_per_unit <= 0.001, `${c.name} forward ${i}/${j}`);
+      }
+    }
+    // PROJ's inverse, which is not the forward's on an ellipsoid and is refused outside its
+    // default grid. As in crates/terrio-crs/tests/isea.rs.
+    const pairs = samples.map(s => [s[2], s[3]]).concat(c.inverse_samples);
+    const reversible = pairs.filter(([, e]) => e !== null);
+    if (reversible.length > 0) {
+      const inverse = terrio.transformPoints(reversible.map(p => p[0][0]), reversible.map(p => p[0][1]), c.target, c.source);
+      for (let i = 0; i < reversible.length; i++) {
+        assert.ok(near([inverse[0][i], inverse[1][i]], reversible[i][1]), `${c.name} inverse ${i}`);
+      }
+    }
+    for (const [point] of pairs.filter(([, e]) => e === null)) {
+      assert.throws(() => terrio.transformPoints([point[0]], [point[1]], c.target, c.source), undefined, `${c.name} inverse ${point}`);
+    }
+  }
+});
+
 test("vector geometry operations: simplify, segmentize, hulls, swap-xy, set-geom-type, combine, sort", () => {
   const line = {
     type: "FeatureCollection",
@@ -2071,6 +2226,61 @@ test("object-store listing rejects HTML and error roots returned with status 200
   for (const body of ["<html><body>Sign in</body></html>", "<Error><Message>Denied</Message></Error>"]) {
     await assert.rejects(terrio.listUrl("s3://bucket/dir", {fetch: async () => new Response(body)}), /not an XML object-store listing/);
   }
+});
+
+test("dataset indexes retain rotated corners, source identities and GTI metadata", () => {
+  // Independent GDAL 3.13.3 Byte TIFF: 4x6 zeros, affine rotation and EPSG:4326.
+  const raster = terrio.open(Uint8Array.from(Buffer.from("SUkqAAgAAAAPAAABAwABAAAABAAAAAEBAwABAAAABgAAAAIBAwABAAAACAAAAAMBAwABAAAAAQAAAAYBAwABAAAAAQAAABEBBAABAAAAmgEAABUBAwABAAAAAQAAABYBAwABAAAABgAAABcBBAABAAAAGAAAABwBAwABAAAAAQAAAFMBAwABAAAAAQAAANiFDAAQAAAAwgAAAK+HAwAgAAAAQgEAALCHDAACAAAAggEAALGHAgAIAAAAkgEAAAAAAAAAAAAAAAAAQAAAAAAAAOA/AAAAAAAAAAAAAAAAAAAkQAAAAAAAANA/AAAAAAAACMAAAAAAAAAAAAAAAAAAADRAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADwPwEAAQAAAAcAAAQAAAEAAgABBAAAAQABAAAIAAABAOYQAQixhwcAAAAGCAAAAQCOIwkIsIcBAAEACwiwhwEAAACIbXSWHaRyQAAAAECmVFhBV0dTIDg0fAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=", "base64")), "rotated.tif");
+  const index = terrio.rasterIndex({"tile.tif": raster}, {
+    sourceCrsFieldName: "srs", minPixelSize: 2.7, bandCount: 1, ot: "Byte", nodata: [255],
+    fetchMetadata: [["{PIXEL_SIZE}", "pixel_size", "Real"]],
+  });
+  assert.throws(() => terrio.rasterIndex({"tile.tif": raster}, {nodata: [1, 2, 3]}), /inferred/);
+  assert.throws(() => terrio.rasterIndex({"tile.tif": raster}, {colorInterpretations: ["red", "green", "blue"]}), /inferred/);
+  for (const key of ["minPixelSize", "maxPixelSize", "bandCount"]) {
+    for (const value of [NaN, Infinity, -Infinity]) {
+      assert.throws(() => terrio.rasterIndex({"tile.tif": raster}, {[key]: value}), /finite/);
+    }
+  }
+  assert.equal(index.count, 1);
+  assert.equal(index.metadata.NODATA, "255");
+  const feature = index.layer().toGeoJSON().features[0];
+  assert.equal(feature.properties.srs, "EPSG:4326");
+  assert.ok(Math.abs(feature.properties.pixel_size - Math.sqrt(209 / 24)) < 1e-12);
+  assert.deepEqual(feature.geometry.coordinates[0], [[10, 20], [18, 21], [21, 3], [13, 2], [10, 20]]);
+  for (const [name, feature] of [["index.gpkg", "sqlite"], ["index.fgb", "flatgeobuf"]]) {
+    if (needs(feature)) continue;
+    const bytes = index.toBytes(name);
+    const decoded = terrio.open(bytes, name);
+    assert.equal(decoded.toGeoJSON().features.length, 1);
+    assert.equal(decoded.layerNames()[0], "index");
+  }
+  const archive = terrio.rasterIndex({"tile.tif": raster}).toBytes("index.shp.zip");
+  assert.equal(terrio.open(archive, "index.shp.zip").toGeoJSON().features.length, 1);
+  const mixed = terrio.vectorIndex({
+    "roads.json": terrio.fromGeoJSON(SQUARES, "roads"),
+    "counties.json": terrio.fromGeoJSON(SQUARES, "counties"),
+  }, {sourceLayerNames: ["roads"]});
+  assert.equal(mixed.count, 1);
+  assert.equal(mixed.layer().toGeoJSON().features[0].properties.location, "roads.json,0");
+  const vectors = terrio.vectorIndex({"squares.json": SQUARES});
+  assert.equal(vectors.layer().toGeoJSON().features[0].properties.location, "squares.json,0");
+  assert.deepEqual(vectors.layer().toGeoJSON().features[0].geometry.coordinates[0], [[0, 0], [0, 10], [30, 10], [30, 0], [0, 0]]);
+  assert.throws(() => terrio.vectorIndex({"a.json": SQUARES}, {sourceLayerIndexes: [9]}), /layer/);
+  assert.throws(() => terrio.rasterIndex({"a.tif": raster}, {typo: true}), /unknown field/);
+});
+
+test("dataset indexes on real uploaded files", {skip: !DATA && "TERRIO_TEST_DATA is not set"}, () => {
+  const bytes = readFileSync(join(DATA, "cog.tif"));
+  const raster = terrio.open(bytes, "cog.tif");
+  const index = terrio.rasterIndex({"cog.tif": {bytes, filename: "cog.tif"}}, {sourceCrsFieldName: "srs"});
+  const polygon = index.layer().toGeoJSON().features[0];
+  assert.equal(polygon.properties.location, "cog.tif");
+  assert.equal(polygon.properties.srs, raster.crs);
+  assert.equal(terrio.open(index.toBytes("catalog.geojson"), "catalog.geojson").toGeoJSON().features.length, 1);
+  const roads = readFileSync(join(DATA, "TN_Counties.geojson"));
+  const vectors = terrio.vectorIndex({"counties.geojson": {bytes: roads, filename: "counties.geojson"}});
+  assert.equal(vectors.count, 1);
 });
 
 test("raster blend alpha and options", () => {

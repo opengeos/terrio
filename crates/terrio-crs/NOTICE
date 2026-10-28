@@ -14,6 +14,17 @@ The Mollweide and Wagner IV/V formulas follow src/projections/moll.cpp at PROJ c
 5fa31c29f0a806568ed7bc76c1a557604db4a804.
 The near-sided and tilted perspective formulas follow src/projections/nsper.cpp in PROJ 9.8.1.
 The interrupted Goode homolosine follows src/projections/igh.cpp in PROJ 9.8.1.
+The general oblique transformation follows src/projections/ob_tran.cpp in PROJ 9.8.1.
+The quadrilateralized spherical cube follows src/projections/qsc.cpp in PROJ 9.8.1.
+  Copyright (c) 2011, 2012 Martin Lambers
+The HEALPix and rHEALPix projections follow src/projections/healpix.cpp in PROJ 9.8.1
+(authors Alex Raichev and Michael Speth).
+  Copyright (c) 2001, Thomas Flemming
+The Icosahedral Snyder Equal Area projection follows src/projections/isea.cpp in PROJ 9.8.1
+(forward by Nathan Wagner, in the public domain; inverse by Jerome Jacovella-St-Louis, adapted
+from Franz-Benjamin Mocnik's geogrid under the MIT licence, whose terms are those of PROJ's
+reproduced above).
+  Copyright (c) 2017-2019 Heidelberg University
 The normalized Cartesian inverse follows src/conversions/cart.cpp in PROJ 9.7.0.
   Copyright (c) 2016, Thomas Knudsen / SDFE
 
@@ -87,8 +98,8 @@ under PROJ's MIT terms reproduced above.
 
 CRS benchmark reference data
 ----------------------------
-The pair-4979-4978, pair-mars-iau, form-27700-projjson, seed-tpers, edge-tpers-back and
-seed-igh numeric fixtures are from Michael Sumner's rust-proj-capability
+The pair-4979-4978, pair-mars-iau, form-27700-projjson, seed-tpers, edge-tpers-back,
+seed-igh, seed-ob_tran-moll, method-qsc, method-healpix and method-rhealpix numeric fixtures are from Michael Sumner's rust-proj-capability
 (https://github.com/mdsumner/rust-proj-capability), revision
 ddd9fac70ec370acd9651ebb8b46035207347ad5, generated with PROJ 9.9.0.
 The CRS-study oracle version is retained separately from projection-suite data.
@@ -108,5 +119,7 @@ The conformal-sphere radius calculation (+R_C) follows PROJ 9.8.1's
 src/ell_set.cpp, under the same MIT terms.
 The inverse authalic-latitude refinement for large flattening follows
 src/latitudes.cpp from PROJ 9.8.1, under the same terms.
+The forward authalic-latitude series (C[xi,phi]) follows src/latitudes.cpp from PROJ 9.8.1,
+under the same terms.
 The sixth-order meridian-distance series follows PROJ 9.8.1's src/mlfn.cpp
 and src/latitudes.cpp (Karney's auxiliary-latitude series), under the same terms.

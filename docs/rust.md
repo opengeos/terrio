@@ -179,6 +179,20 @@ let window = cog.read_window(terrio::Window::new(0, 0, 512, 512), &options)?; //
 # Ok::<(), terrio::Error>(())
 ```
 
+`terrio::validate_cog(path, strict)` checks a Cloud Optimized GeoTIFF, local or remote (read with
+range requests, headers and chunk offsets only), with the checks and messages of rio-cogeo's
+`cog_validate` (GDAL's `validate_cloud_optimized_geotiff.py`): tiled full resolution and overviews
+above 512 pixels, overviews sorted, IFDs first (the main one within 300 bytes), image data from
+the smallest overview to the full resolution, no `.ovr` sidecar, no
+`KNOWN_INCOMPATIBLE_EDITION=YES`, and a warning for a large image without overviews. Masks are
+also checked against GDAL's COG layout (`layout_notes`, which do not affect validity). `strict` makes warnings errors.
+
+```rust,no_run
+let v = terrio::validate_cog("https://example.com/dem.tif", false)?;
+assert!(v.is_valid, "{:?}", v.errors);
+# Ok::<(), terrio::Error>(())
+```
+
 ## Bytes in memory
 
 ```rust,no_run
@@ -544,3 +558,13 @@ the repository.
 
 See [Native multidimensional arrays](multidim.md) for scientific groups, named dimensions,
 lazy coordinate arrays, time/depth slicing, transposition and netCDF/Zarr numeric snapshots.
+
+### Indexed color conversion
+
+`terrio::ops::palette` exposes `rgb_to_palette` with `PaletteOptions`,
+`palette_to_rgb`, `attach_palette` and their lazy-source variants. The lazy
+variants retain dataset validity masks, while the conversions materialize the
+pixels. `parse_color_table`, `color_table_from_bytes` and native
+`read_color_table` accept indexed text/QGIS tables or raster palettes. See
+[Palette conversion](cli.md#palette-conversion) for channel selection,
+quantization settings, supported formats and GDAL differences.

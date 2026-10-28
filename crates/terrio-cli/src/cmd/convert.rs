@@ -117,9 +117,10 @@ fn stream_options(a: &Args) -> terrio::Result<Option<terrio::stream::ConvertOpti
     Ok(terrio::stream::can_convert_stream(&a.input, &a.output, &options).then_some(options))
 }
 
-/// A GeoTIFF, JPEG 2000 or raw-layout file converted to a GeoTIFF or COG with no option that needs the raster whole: the input
-/// opened lazily, to be written a strip of rows at a time (see `terrio::LazyRaster::write`), and
-/// the write options. `None` otherwise.
+/// A GeoTIFF, JPEG 2000 or raw-layout file converted to a GeoTIFF or COG, or to a PMTiles or
+/// MBTiles archive, with no option that needs the raster whole: the input opened lazily, to be
+/// written a strip of rows (or a tile row) at a time (see `terrio::LazyRaster::write`), and the
+/// write options. `None` otherwise.
 fn streamed_raster(a: &Args) -> terrio::Result<Option<(terrio::LazyRaster, RasterWriteOptions)>> {
     let driver = match a.format.as_deref() {
         Some(f) => match RasterDriver::from_name(f) {
@@ -128,13 +129,14 @@ fn streamed_raster(a: &Args) -> terrio::Result<Option<(terrio::LazyRaster, Raste
         },
         None => None,
     };
-    let tiff_out = matches!(driver.or_else(|| RasterDriver::for_extension(&a.output)), Some(RasterDriver::GTiff | RasterDriver::Cog));
+    let out = driver.or_else(|| RasterDriver::for_extension(&a.output));
+    let tiff_out = matches!(out, Some(RasterDriver::GTiff | RasterDriver::Cog));
+    let tiles_out = matches!(out, Some(RasterDriver::PMTiles | RasterDriver::MBTiles));
     let plain = a.srcwin.is_none()
         && a.overview.is_none()
         && a.t_srs.is_none()
         && !a.vector.is_set()
-        && a.minzoom.is_none()
-        && a.maxzoom.is_none()
+        && (tiles_out || (a.minzoom.is_none() && a.maxzoom.is_none()))
         && a.layers.is_empty()
         && a.open_options.is_empty();
     // GeoTIFF, JPEG 2000 and raw-layout inputs are read by window (other files of these
@@ -153,11 +155,14 @@ fn streamed_raster(a: &Args) -> terrio::Result<Option<(terrio::LazyRaster, Raste
                 | RasterDriver::GSBG
         )
     );
-    if !tiff_out || !plain || !streamed_in {
+    if !(tiff_out || tiles_out) || !plain || !streamed_in {
         return Ok(None);
     }
     let r = super::quiet(|| terrio::open_raster_lazy(&a.input))?;
-    let creation_options = key_values(&a.raster_options)?.into_iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+    let mut creation_options: Vec<(String, String)> =
+        key_values(&a.raster_options)?.into_iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+    creation_options.extend(a.minzoom.map(|z| ("MINZOOM".to_string(), z.to_string())));
+    creation_options.extend(a.maxzoom.map(|z| ("MAXZOOM".to_string(), z.to_string())));
     let options = RasterWriteOptions {
         driver,
         compression: a.compress.clone(),

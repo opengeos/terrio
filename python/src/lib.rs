@@ -17,6 +17,7 @@ mod raster;
 mod rio;
 mod stream;
 mod terrain;
+mod tile_index;
 mod vector;
 mod vector_dataset;
 mod vector_geom;
@@ -95,6 +96,7 @@ fn _terrio(m: &Bound<'_, PyModule>) -> PyResult<()> {
     grid::register(m)?;
     multidim::register(m)?;
     terrain::register(m)?;
+    tile_index::register(m)?;
     query::register(m)?;
     pixel::register(m)?;
     palette::register(m)?;

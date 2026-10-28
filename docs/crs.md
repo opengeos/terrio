@@ -40,8 +40,10 @@ Rotated-pole grids (regional climate models: CORDEX, COSMO-CLM) are read as PROJ
 (`+proj=ob_tran +o_proj=longlat` with `+o_lat_p`, `+o_lon_p` and `+lon_0`), as the WKT2 derived
 geographic CRSs PROJ and GDAL write (the netCDF CF, GRIB and PROJ `ob_tran` pole rotations) and as
 CF `rotated_latitude_longitude` grid mappings. Their coordinates are in degrees, but they are not
-geographic CRSs: `is_geographic()` is false, and `is_rotated_pole()` is true. Other `ob_tran`
-forms, and other WKT2 deriving conversions, are errors.
+geographic CRSs: `is_geographic()` is false, and `is_rotated_pole()` is true. The pole may
+also be given as PROJ's other forms (see
+[General oblique transformation](#general-oblique-transformation)) in a PROJ string; other WKT2
+deriving conversions are errors.
 
 Coordinates are always in GIS order: x (easting, longitude) first, then y (northing, latitude),
 whatever the axis order the authority defines.
@@ -662,3 +664,109 @@ method.
 The `seed-igh` fixture keeps its PROJ 9.9.0 oracle. A PROJ 9.8.1 corpus covers
 8 configurations and 5,120 samples (see Testing). Allowances are 1 mm projected
 and 1e-8 degrees inverse.
+
+## General oblique transformation
+
+`+proj=ob_tran` with an `+o_proj` other than `longlat` is computed as PROJ 9.8.1 does
+(`ob_tran.cpp`): the longitude, relative to `+lon_0`, and latitude are rotated to a new pole,
+then projected by `+o_proj`'s own formulas, with its own parameters (`+lat_ts`, `+lat_1`,
+`+zone`...) and the CRS's figure, which may be an ellipsoid. As in PROJ, the rotated projection's
+own central meridian and false easting and northing do not apply: `+lon_0`, `+units`, `+x_0` and
+`+y_0` apply to the whole. The new pole is `+o_lat_p` and `+o_lon_p`; or a centre `+o_lon_c`,
+`+o_lat_c` and azimuth `+o_alpha`; or two points of the new equator `+o_lon_1`, `+o_lat_1`,
+`+o_lon_2` and `+o_lat_2`, refused where PROJ refuses them. A pole latitude within 1e-10
+radians of 0 is PROJ's transverse case. These forms apply to rotated-pole grids
+(`+o_proj=longlat`) too.
+
+PROJ strings, GDAL's WKT1 (which carries the PROJ string) and PROJ's WKT2 method
+`PROJ ob_tran o_proj=...` are read; terrio writes the WKT1 form. PROJJSON export refuses
+`ob_tran`. Where a projection's own refusals are stricter than PROJ's, they apply rotated too:
+PROJ's spherical sinusoidal inverse returns a latitude past a pole, which its rotation turns into
+a point, and terrio's refuses it; terrio's Mercator refuses the poles. Where terrio is more
+lenient, that applies rotated too: its `utm` accepts a sphere, which PROJ refuses.
+
+The `seed-ob_tran-moll` fixture keeps its PROJ 9.9.0 oracle. A PROJ 9.8.1 corpus covers
+15 configurations and 4,680 samples (see Testing). Allowances are 1 mm projected and 1e-8
+degrees inverse.
+
+## Quadrilateralized spherical cube
+
+`+proj=qsc` is computed as PROJ 9.8.1 does (`qsc.cpp`): one face of a cube, chosen by the
+projection centre (`+lat_0` of at least 67.5 degrees north or south for the top or bottom face,
+otherwise `+lon_0` within 45 degrees of 0, 90, 180 or -90 for the front, right, back or left
+face). PROJ's face centres are those values exactly; for other centres, `+lon_0` stays the
+central meridian. On an ellipsoid, geodetic latitudes are converted to
+geocentric latitudes on a sphere of the semi-major axis, as in PROJ. The whole globe projects
+onto the plane of the face, with no refusals; `+units`, `+x_0` and `+y_0` apply. The inverse at
+the point opposite the face centre is sensitive to rounding: a change of 1e-15 in the northing
+moves its latitude by about 1e-6 degrees, in PROJ as in terrio, and so may differ between
+platforms.
+
+GDAL's and ESRI's WKT1 `Quadrilateralized_Spherical_Cube` and WKT2 `Quadrilateralized Spherical
+Cube` are read, and terrio writes the WKT1 form, as GDAL does. PROJJSON export refuses `qsc`, as
+for other projections without an EPSG method.
+
+The `method-qsc` fixture keeps its PROJ 9.9.0 oracle. A PROJ 9.8.1 corpus covers 16
+configurations and 4,288 samples (see Testing). Allowances are 1 mm projected and 1e-8 degrees
+inverse. At the point opposite the face centre the inverse is allowed 1e-5 degrees, and must
+project back within 1 mm.
+
+## HEALPix and rHEALPix
+
+`+proj=healpix` and `+proj=rhealpix` are computed as PROJ 9.8.1 does (`healpix.cpp`): an
+equal-area cylindrical projection between the latitudes of asin(2/3) and Collignon projections
+in the four polar caps on each side, which `healpix` leaves as triangles and `rhealpix` combines
+into one square at each pole. `+rot_xy` rotates the `healpix` image, in degrees; `+north_square`
+and `+south_square` (0 to 3, the default 0) pick the equatorial square below which `rhealpix`
+places each polar square, and other values are refused, as in PROJ. On an ellipsoid the
+latitude is the authalic latitude and the image is scaled by the authalic radius, as in PROJ
+9.8.1 (PROJ 9.4 differs by 0.18 m on WGS 84 at the south pole). `+lon_0`, `+units`,
+`+x_0` and `+y_0` apply. The inverse refuses points outside the image, as PROJ's does. As in
+PROJ, whose point-in-polygon test leaves out the polygon's closing edge, the `rhealpix` inverse
+accepts points left of the image between the polar squares, such as (-4, 0) on the unit sphere.
+
+GDAL's WKT1 (`custom_proj4`, which carries the PROJ string), ESRI's `PROJ_healpix` and
+`PROJ_rhealpix`, and PROJ's WKT2 methods `PROJ healpix` and `PROJ rhealpix` are read; terrio
+writes the WKT1 form, as GDAL does. PROJJSON with these methods is not read, and PROJJSON
+export refuses them, as for other projections without an EPSG method.
+
+On the edge of the image (the poles, the antimeridian of the central meridian and the edges of
+the polar caps) the last bit of a projected coordinate moves a point in or out of the image.
+There a US survey foot in the PROJ string's `+units` can decide it: PROJ 9.8.1 takes that unit
+in these methods' own `+units` as 0.304800609601219 m, and terrio, as PROJ's `unitconvert` for
+other methods, as 1200/3937 m.
+
+The `method-healpix` and `method-rhealpix` fixtures keep their PROJ 9.9.0 oracles. A PROJ
+9.8.1 corpus covers 22 configurations and 6,600 samples (see Testing). Allowances are 1 mm
+projected and 1e-8 degrees inverse.
+
+## Icosahedral Snyder Equal Area
+
+`+proj=isea` is computed as PROJ 9.8.1 does (`isea.cpp`): Snyder's equal-area projection of the
+sphere onto the 20 faces of an icosahedron, unfolded in the plane. `+orient=isea` (the default)
+places the poles on edge midpoints and makes the equator symmetric; `+orient=pole` places a
+vertex at each pole. As in PROJ, `+lon_0` and `+lat_0` set the icosahedron's orientation, and
+`+lon_0` is also the central meridian; `+azi` rotates it. `+units`, `+x_0` and `+y_0` apply.
+`+mode=plane` is the default; `+mode=di`, `dd` and `hex`, which give grid addresses rather than
+coordinates, are refused. Invalid `+orient`, `+mode`, `+resolution` and `+aperture` values are
+refused, as in PROJ.
+
+As in PROJ 9.8.1, the inverse is defined only for the default grid (`+resolution=4`,
+`+aperture=3`, no `+azi`) whose origin, after any `+lon_0` and `+lat_0`, is exactly the default
+orientation's (which `+lon_0=11.25` keeps) or the pole orientation's (which
+`+lat_0=90 +lon_0=0` gives), and refuses points outside the unfolded icosahedron; elsewhere it
+is refused. On an ellipsoid the forward takes the geodetic latitude on a sphere of the
+semi-major axis, while the inverse uses the authalic radius without the authalic latitude, so
+the inverse does not return the projected point: on WGS 84, (147, -42) projects and unprojects
+to (147.166, -41.969), in PROJ as in terrio.
+
+GDAL's WKT1 (`custom_proj4`, which carries the PROJ string), ESRI's `PROJ_isea` (with
+`PROJ_isea_orient=pole` and other options in the method's name) and PROJ's WKT2 method
+`PROJ isea` (`PROJ isea orient=pole`) are read; terrio writes the WKT1 form, as GDAL does.
+PROJJSON export refuses `isea`, as for other projections without an EPSG method.
+
+Other PROJ versions differ: PROJ 9.4 has no inverse and a forward up to 2 mm different,
+and PROJ 9.9 replaced the method with a new implementation (another default origin, the
+authalic latitude on an ellipsoid, other parameters). The `method-isea` fixture, from PROJ
+9.9.0, is therefore not used. A PROJ 9.8.1 corpus covers 14 configurations and 7,784 samples
+(see Testing). Allowances are 1 mm projected and 1e-8 degrees inverse.

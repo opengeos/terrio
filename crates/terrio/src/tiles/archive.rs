@@ -294,41 +294,135 @@ fn write_raster_archive_with(
     kind: ArchiveKind,
     kept: &[(String, String)],
 ) -> Result<Vec<u8>> {
-    let b = rt.bounds;
+    let md = raster_metadata(rt.bounds, rt.min_zoom, rt.max_zoom, rt.format, o, name, kept);
+    match kind {
+        ArchiveKind::MBTiles => mbtiles::write(&md, rt.tiles.clone()),
+        ArchiveKind::PMTiles => {
+            let (json, params) = pmtiles_parts(md, rt.format, rt.min_zoom, rt.max_zoom, rt.bounds);
+            let tiles = rt.tiles.iter().map(|(z, x, y, d)| pmtiles::OutTile { z: *z, x: *x, y: *y, data: d.clone() }).collect();
+            pmtiles::write_archive(tiles, &json, &params)
+        }
+    }
+}
+
+/// The metadata items GDAL writes for a tile pyramid of image tiles, with the items `kept` (an
+/// updated archive's) that it does not write itself.
+fn raster_metadata(
+    b: [f64; 4],
+    min_zoom: u8,
+    max_zoom: u8,
+    format: TileFormat,
+    o: &TileWriteOptions,
+    name: &str,
+    kept: &[(String, String)],
+) -> Vec<(String, String)> {
     let name = o.name.clone().unwrap_or_else(|| name.to_string());
-    let format = rt.format.name();
     let mut md: Vec<(String, String)> = vec![
         ("name".into(), name.clone()),
         ("type".into(), o.tileset_type.clone()),
         ("description".into(), o.description.clone().unwrap_or(name)),
         ("version".into(), "1.1".into()),
-        ("format".into(), format.into()),
+        ("format".into(), format.name().into()),
         ("bounds".into(), format!("{},{},{},{}", g17(b[0]), g17(b[1]), g17(b[2]), g17(b[3]))),
-        ("minzoom".into(), rt.min_zoom.to_string()),
-        ("maxzoom".into(), rt.max_zoom.to_string()),
+        ("minzoom".into(), min_zoom.to_string()),
+        ("maxzoom".into(), max_zoom.to_string()),
     ];
     keep_items(&mut md, kept);
+    md
+}
+
+/// The JSON metadata and header fields of a PMTiles archive of image tiles.
+fn pmtiles_parts(
+    md: Vec<(String, String)>,
+    format: TileFormat,
+    min_zoom: u8,
+    max_zoom: u8,
+    b: [f64; 4],
+) -> (Vec<u8>, pmtiles::ArchiveParams) {
+    let json: serde_json::Map<String, serde_json::Value> = md.into_iter().map(|(k, v)| (k, serde_json::Value::String(v))).collect();
+    let tile_type = match format {
+        TileFormat::Jpeg => pmtiles::TILE_JPEG,
+        TileFormat::Webp => pmtiles::TILE_WEBP,
+        _ => pmtiles::TILE_PNG,
+    };
+    let params = pmtiles::ArchiveParams {
+        tile_type,
+        tile_compression: pmtiles::COMPRESSION_NONE,
+        min_zoom,
+        max_zoom,
+        bounds: b,
+        center: ((b[0] + b[2]) / 2.0, (b[1] + b[3]) / 2.0, max_zoom),
+    };
+    (serde_json::Value::Object(json).to_string().into_bytes(), params)
+}
+
+/// Writes a raster's tile pyramid to `path` without holding its pixels or its tiles whole: the
+/// pyramid is built a tile row at a time ([`raster::make_tiles_streamed`] for a raster read by
+/// window, [`raster::make_tiles_from_dataset`] for one in memory), and the tiles of a PMTiles
+/// archive are spilled to a temporary file beside `path`, then laid out in tile id order. The
+/// archive is the one the in-memory writer writes, byte for byte. MBTiles archives gather their
+/// (encoded) tiles in memory. The tile index is held whole, though: a `SpilledTile` (about 32
+/// bytes) per tile, the directory entries and a map of the distinct tile contents, so memory grows
+/// with the number of tiles, not with their bytes.
+#[cfg(not(target_family = "wasm"))]
+fn write_pyramid(
+    path: &str,
+    kind: ArchiveKind,
+    o: &TileWriteOptions,
+    build: impl FnOnce(&mut dyn super::pyramid::TileSink) -> Result<raster::Streamed>,
+) -> Result<()> {
+    let name = stem(path);
     match kind {
-        ArchiveKind::MBTiles => mbtiles::write(&md, rt.tiles.clone()),
+        ArchiveKind::MBTiles => {
+            let mut tiles = Vec::new();
+            let s = build(&mut tiles)?;
+            let md = raster_metadata(s.bounds, s.min_zoom, s.max_zoom, s.format, o, &name, &[]);
+            let bytes = mbtiles::write(&md, tiles)?;
+            // Created before anything is written, as for PMTiles, so that a failure to write removes it.
+            let mut out = std::fs::File::create(path)?;
+            let written = std::io::Write::write_all(&mut out, &bytes);
+            drop(out);
+            if written.is_err() {
+                let _ = std::fs::remove_file(path);
+            }
+            written?;
+            Ok(())
+        }
         ArchiveKind::PMTiles => {
-            let json: serde_json::Map<String, serde_json::Value> = md.into_iter().map(|(k, v)| (k, serde_json::Value::String(v))).collect();
-            let tile_type = match rt.format {
-                TileFormat::Jpeg => pmtiles::TILE_JPEG,
-                TileFormat::Webp => pmtiles::TILE_WEBP,
-                _ => pmtiles::TILE_PNG,
-            };
-            let tiles = rt.tiles.iter().map(|(z, x, y, d)| pmtiles::OutTile { z: *z, x: *x, y: *y, data: d.clone() }).collect();
-            let params = pmtiles::ArchiveParams {
-                tile_type,
-                tile_compression: pmtiles::COMPRESSION_NONE,
-                min_zoom: rt.min_zoom,
-                max_zoom: rt.max_zoom,
-                bounds: b,
-                center: ((b[0] + b[2]) / 2.0, (b[1] + b[3]) / 2.0, rt.max_zoom),
-            };
-            pmtiles::write_archive(tiles, serde_json::Value::Object(json).to_string().as_bytes(), &params)
+            let mut spill = super::pyramid::SpillSink::beside(path)?;
+            let s = build(&mut spill)?;
+            let md = raster_metadata(s.bounds, s.min_zoom, s.max_zoom, s.format, o, &name, &[]);
+            let (json, params) = pmtiles_parts(md, s.format, s.min_zoom, s.max_zoom, s.bounds);
+            let tiles = std::mem::take(&mut spill.tiles);
+            // Created before anything is written, so that a failure to create it removes nothing.
+            let mut out = std::io::BufWriter::with_capacity(1 << 20, std::fs::File::create(path)?);
+            let written = (|| -> Result<()> {
+                pmtiles::write_archive_spilled(tiles, spill.file()?, &json, &params, &mut out)?;
+                std::io::Write::flush(&mut out)?;
+                Ok(())
+            })();
+            drop(out);
+            if written.is_err() {
+                let _ = std::fs::remove_file(path);
+            }
+            written
         }
     }
+}
+
+/// Writes a raster read by window as a PMTiles or MBTiles archive (see [`TileWriteOptions`]), as
+/// [`write_raster`] writes the raster read whole, without holding it whole when it is already on
+/// its zoom level's pixel grid (see [`raster::make_tiles_streamed`]).
+#[cfg(not(target_family = "wasm"))]
+pub(crate) fn write_raster_lazy(
+    src: &mut crate::LazyRaster,
+    path: &str,
+    driver: crate::formats::RasterDriver,
+    options: &crate::RasterWriteOptions,
+) -> Result<()> {
+    let kind = if driver == crate::formats::RasterDriver::MBTiles { ArchiveKind::MBTiles } else { ArchiveKind::PMTiles };
+    let o = raster_write_options(options)?;
+    write_pyramid(path, kind, &o, |sink| raster::make_tiles_streamed(src, &o, sink))
 }
 
 /// Formats a number as C's `%.17g` does (enough digits to round-trip).
@@ -568,9 +662,14 @@ pub(crate) fn write_raster(
     options: &crate::RasterWriteOptions,
 ) -> Result<()> {
     let kind = if driver == crate::formats::RasterDriver::MBTiles { ArchiveKind::MBTiles } else { ArchiveKind::PMTiles };
-    let bytes = raster_to_bytes(ds, &raster_write_options(options)?, &stem(path), kind)?;
-    std::fs::write(path, bytes)?;
-    Ok(())
+    let o = raster_write_options(options)?;
+    #[cfg(not(target_family = "wasm"))]
+    return write_pyramid(path, kind, &o, |sink| raster::make_tiles_from_dataset(ds, &o, sink));
+    #[cfg(target_family = "wasm")]
+    {
+        std::fs::write(path, raster_to_bytes(ds, &o, &stem(path), kind)?)?;
+        Ok(())
+    }
 }
 
 /// Writes vector layers as a PMTiles or MBTiles archive, or a directory of MVT tiles.

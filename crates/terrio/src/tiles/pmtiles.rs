@@ -544,9 +544,9 @@ pub(crate) struct ArchiveParams {
     pub center: (f64, f64, u8),
 }
 
-/// Writes an archive: tiles (deduplicated by content, laid out in tile id order), the JSON
-/// metadata and gzipped directories, split into leaf directories when the root would not fit in
-/// the first 16 KiB.
+/// Writes a PMTiles archive: tiles sorted by tile id, identical tiles stored once, runs of
+/// consecutive tiles sharing data as run-length entries, directories split into leaves when the
+/// root does not fit in the first 16 KiB, the metadata gzipped.
 pub(crate) fn write_archive(mut tiles: Vec<OutTile>, metadata: &[u8], params: &ArchiveParams) -> Result<Vec<u8>> {
     tiles.sort_by_key(|t| zxy_to_tile_id(t.z, t.x, t.y));
     let addressed = tiles.len() as u64;
@@ -564,18 +564,38 @@ pub(crate) fn write_archive(mut tiles: Vec<OutTile>, metadata: &[u8], params: &A
                 loc
             }
         };
-        // Consecutive ids with the same blob make one run.
-        if let Some(last) = entries.last_mut()
-            && last.offset == offset
-            && last.tile_id + last.run_length as u64 == id
-        {
-            last.run_length += 1;
-            continue;
-        }
-        entries.push(Entry { tile_id: id, offset, length, run_length: 1 });
+        push_entry(&mut entries, id, offset, length);
     }
+    let mut out = archive_prelude(&entries, addressed, seen.len() as u64, tile_data.len() as u64, metadata, params)?;
+    out.extend_from_slice(&tile_data);
+    Ok(out)
+}
+
+/// Adds tile `id`, whose data is at `offset`, to directory entries in tile id order, extending
+/// the last entry's run when the tile follows it with the same data.
+fn push_entry(entries: &mut Vec<Entry>, id: u64, offset: u64, length: u32) {
+    if let Some(last) = entries.last_mut()
+        && last.offset == offset
+        && last.tile_id + last.run_length as u64 == id
+    {
+        last.run_length += 1;
+        return;
+    }
+    entries.push(Entry { tile_id: id, offset, length, run_length: 1 });
+}
+
+/// Everything of an archive before its tile data: the header, root directory, metadata and leaf
+/// directories.
+fn archive_prelude(
+    entries: &[Entry],
+    addressed: u64,
+    contents: u64,
+    tile_data_length: u64,
+    metadata: &[u8],
+    params: &ArchiveParams,
+) -> Result<Vec<u8>> {
     let metadata = compress(metadata, COMPRESSION_GZIP)?;
-    let (root, leaves) = build_directories(&entries)?;
+    let (root, leaves) = build_directories(entries)?;
     let root_dir_offset = HEADER_LEN as u64;
     let metadata_offset = root_dir_offset + root.len() as u64;
     let leaf_dirs_offset = metadata_offset + metadata.len() as u64;
@@ -590,10 +610,10 @@ pub(crate) fn write_archive(mut tiles: Vec<OutTile>, metadata: &[u8], params: &A
         leaf_dirs_offset,
         leaf_dirs_length: leaves.len() as u64,
         tile_data_offset,
-        tile_data_length: tile_data.len() as u64,
+        tile_data_length,
         num_addressed_tiles: addressed,
         num_tile_entries: entries.len() as u64,
-        num_tile_contents: seen.len() as u64,
+        num_tile_contents: contents,
         clustered: true,
         internal_compression: COMPRESSION_GZIP,
         tile_compression: params.tile_compression,
@@ -608,13 +628,83 @@ pub(crate) fn write_archive(mut tiles: Vec<OutTile>, metadata: &[u8], params: &A
         center_lon_e7: e7(params.center.0),
         center_lat_e7: e7(params.center.1),
     };
-    let mut out = Vec::with_capacity(HEADER_LEN + root.len() + metadata.len() + leaves.len() + tile_data.len());
+    let mut out = Vec::with_capacity(HEADER_LEN + root.len() + metadata.len() + leaves.len());
     out.extend_from_slice(&header.to_bytes());
     out.extend_from_slice(&root);
     out.extend_from_slice(&metadata);
     out.extend_from_slice(&leaves);
-    out.extend_from_slice(&tile_data);
     Ok(out)
+}
+
+/// A tile whose bytes were spilled to a file: its id and place, at `offset` in the file, and a
+/// hash of its bytes.
+#[cfg(not(target_family = "wasm"))]
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct SpilledTile {
+    pub id: u64,
+    pub offset: u64,
+    pub length: u32,
+    pub hash: u64,
+}
+
+/// Reads `length` bytes at `offset` of a file.
+#[cfg(not(target_family = "wasm"))]
+fn read_spilled(file: &mut std::fs::File, offset: u64, length: u32) -> Result<Vec<u8>> {
+    use std::io::Seek;
+    file.seek(std::io::SeekFrom::Start(offset))?;
+    let mut buf = vec![0u8; length as usize];
+    file.read_exact(&mut buf)?;
+    Ok(buf)
+}
+
+/// Writes to `out` the archive [`write_archive`] would write from tiles whose bytes are in the
+/// file `spill`, byte for byte, holding only one tile's bytes at a time (identical tiles are
+/// found by hash, then compared).
+#[cfg(not(target_family = "wasm"))]
+pub(crate) fn write_archive_spilled(
+    mut tiles: Vec<SpilledTile>,
+    spill: &mut std::fs::File,
+    metadata: &[u8],
+    params: &ArchiveParams,
+    out: &mut impl Write,
+) -> Result<()> {
+    tiles.sort_by_key(|t| t.id);
+    let addressed = tiles.len() as u64;
+    // The distinct contents, in the order they are stored: their place in the spill file.
+    let mut stored: Vec<(u64, u32)> = Vec::new();
+    let mut tile_data_length = 0u64;
+    // Contents by hash and length: their index in `stored` and their offset in the tile data.
+    let mut seen: HashMap<(u64, u32), Vec<(usize, u64)>> = HashMap::new();
+    let mut entries: Vec<Entry> = Vec::with_capacity(tiles.len());
+    for t in &tiles {
+        let mut found = None;
+        if let Some(candidates) = seen.get(&(t.hash, t.length)) {
+            let bytes = read_spilled(spill, t.offset, t.length)?;
+            for &(i, offset) in candidates {
+                let (o, l) = stored[i];
+                if read_spilled(spill, o, l)? == bytes {
+                    found = Some(offset);
+                    break;
+                }
+            }
+        }
+        let offset = match found {
+            Some(offset) => offset,
+            None => {
+                let offset = tile_data_length;
+                seen.entry((t.hash, t.length)).or_default().push((stored.len(), offset));
+                stored.push((t.offset, t.length));
+                tile_data_length += t.length as u64;
+                offset
+            }
+        };
+        push_entry(&mut entries, t.id, offset, t.length);
+    }
+    out.write_all(&archive_prelude(&entries, addressed, stored.len() as u64, tile_data_length, metadata, params)?)?;
+    for (o, l) in stored {
+        out.write_all(&read_spilled(spill, o, l)?)?;
+    }
+    Ok(())
 }
 
 /// The gzipped root directory and the leaf directories section.
@@ -704,6 +794,60 @@ mod tests {
             } else {
                 assert!(matches!(result, Err(Error::DecodedLimitExceeded { resource: "PMTiles tile", limit: 4095 })));
             }
+        }
+    }
+
+    /// An archive assembled from spilled tiles is the one written from tiles in memory, byte for
+    /// byte: tiles given in any order, identical tiles stored once (runs of them included), and
+    /// directories split into leaves.
+    #[test]
+    fn spilled_archives_are_the_in_memory_ones() {
+        use std::io::Write as _;
+        let dir = tempfile::tempdir().unwrap();
+        for count in [1usize, 50, 30_000] {
+            let mut tiles = Vec::new();
+            for i in 0..count {
+                let (z, n) = (10u8, 1024u32);
+                let (x, y) = ((i as u32 * 7919) % n, (i as u32 * 104729 / n) % n);
+                // Repeated contents, some in runs of consecutive tiles.
+                let data = if i % 5 == 0 {
+                    vec![7u8; 40]
+                } else if i % 3 == 0 {
+                    vec![(i % 11) as u8; 9]
+                } else {
+                    (i as u32).to_le_bytes().repeat(3)
+                };
+                tiles.push((z, x, y, data));
+            }
+            tiles.sort_by_key(|t| (t.0, t.1, t.2));
+            tiles.dedup_by_key(|t| (t.0, t.1, t.2));
+            let params = ArchiveParams {
+                tile_type: TILE_PNG,
+                tile_compression: COMPRESSION_NONE,
+                min_zoom: 10,
+                max_zoom: 10,
+                bounds: [-10.0, -5.0, 10.0, 5.0],
+                center: (0.0, 0.0, 10),
+            };
+            let expected =
+                write_archive(tiles.iter().map(|t| OutTile { z: t.0, x: t.1, y: t.2, data: t.3.clone() }).collect(), b"{}", &params)
+                    .unwrap();
+            let path = dir.path().join(format!("spill{count}"));
+            let mut file = std::fs::OpenOptions::new().read(true).write(true).create(true).truncate(true).open(&path).unwrap();
+            let mut spilled = Vec::new();
+            let mut offset = 0u64;
+            // Spilled in another order than the tile ids'.
+            for t in tiles.iter().rev() {
+                use std::hash::{Hash, Hasher};
+                let mut h = std::collections::hash_map::DefaultHasher::new();
+                t.3.hash(&mut h);
+                file.write_all(&t.3).unwrap();
+                spilled.push(SpilledTile { id: zxy_to_tile_id(t.0, t.1, t.2), offset, length: t.3.len() as u32, hash: h.finish() });
+                offset += t.3.len() as u64;
+            }
+            let mut out = Vec::new();
+            write_archive_spilled(spilled, &mut file, b"{}", &params, &mut out).unwrap();
+            assert!(out == expected, "{count} tiles");
         }
     }
 

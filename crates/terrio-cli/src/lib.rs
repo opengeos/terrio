@@ -57,6 +57,10 @@ enum Command {
     /// or a vector dataset (like gdal raster pixel-info and gdallocationinfo).
     #[command(visible_alias = "locationinfo")]
     PixelInfo(cmd::pixel_info::Args),
+    /// Check that a GeoTIFF is a Cloud Optimized GeoTIFF, with the checks and messages of
+    /// rio-cogeo's cog_validate (GDAL's validate_cloud_optimized_geotiff.py): only headers and
+    /// chunk offsets are read. The exit status is 1 when the file is not a valid COG.
+    ValidateCog(cmd::validate_cog::Args),
     /// Write raster pixels as XYZ text: one line of coordinates and band values per pixel (like
     /// gdal2xyz.py).
     Xyz(cmd::xyz::Args),
@@ -140,6 +144,12 @@ enum Command {
     Warp(cmd::warp::Args),
     /// Read an indexed raster catalog, selecting tiles spatially and compositing in z-order.
     Catalog(cmd::catalog::Args),
+    /// Create a raster footprint index, with optional GTI metadata.
+    RasterIndex(cmd::tile_index::RasterArgs),
+    /// Create a raster footprint catalog with GTI virtual-raster metadata.
+    GtiCreate(cmd::tile_index::RasterArgs),
+    /// Create a vector envelope index of vector dataset layers.
+    VectorIndex(cmd::tile_index::VectorArgs),
     /// Mosaic rasters into one, or into a virtual raster (like gdalbuildvrt and gdal_merge).
     Mosaic(cmd::mosaic::Args),
     /// Terrain analysis: hillshade, slope, aspect, color relief, TRI, TPI, roughness (like gdaldem).
@@ -270,6 +280,7 @@ fn run_on_this_thread(args: Vec<OsString>, terrio: Option<Vec<OsString>>) -> i32
         Command::Footprint(a) => cmd::processing::footprint(a),
         Command::Compare(a) => cmd::compare::run(a),
         Command::PixelInfo(a) => cmd::pixel_info::run(a),
+        Command::ValidateCog(a) => cmd::validate_cog::run(a),
         Command::Xyz(a) => cmd::xyz::run(a),
         Command::Sample(a) => cmd::processing::sample(a),
         Command::Contour(a) => cmd::processing::contour(a),
@@ -304,6 +315,8 @@ fn run_on_this_thread(args: Vec<OsString>, terrio: Option<Vec<OsString>>) -> i32
         Command::AttachPalette(a) => cmd::palette::attach(a),
         Command::Warp(a) => cmd::warp::run(a),
         Command::Catalog(a) => cmd::catalog::run(a),
+        Command::RasterIndex(a) | Command::GtiCreate(a) => cmd::tile_index::raster(a),
+        Command::VectorIndex(a) => cmd::tile_index::vector(a),
         Command::Mosaic(a) => cmd::mosaic::run(a),
         Command::Dem(a) => cmd::dem::run(a),
         Command::Calc(a) => cmd::calc::run(a),

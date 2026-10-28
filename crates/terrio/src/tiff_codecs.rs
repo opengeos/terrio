@@ -8,7 +8,9 @@
 //! and the Planetary Computer's COGs store it), which the crate reads with too few samples per
 //! pixel.
 
+use crate::geotiff::ChunkTables;
 use std::io::{Read, Seek, SeekFrom};
+use std::sync::Arc;
 use tiff::decoder::{ChunkType, Decoder, DecodingResult};
 use tiff::tags::Tag;
 use tiff::{TiffError, TiffResult};
@@ -194,8 +196,8 @@ fn disabled(feature: &str) -> TiffError {
 #[derive(Debug, Clone)]
 pub(crate) struct ChunkCodec {
     codec: Codec,
-    offsets: Vec<u64>,
-    counts: Vec<u64>,
+    /// The image's chunk offsets and byte counts, shared with the reader of its windows.
+    tables: Arc<ChunkTables>,
     tiled: bool,
     /// The tile size, or the image width and the rows per strip.
     chunk: (usize, usize),
@@ -225,8 +227,9 @@ pub(crate) struct ChunkCodec {
 
 impl ChunkCodec {
     /// The codec for the image the decoder is positioned on, `None` when the `tiff` crate decodes
-    /// its chunks itself. A chunk decoding to more than `limit` bytes is refused.
-    pub(crate) fn new<R: Read + Seek>(dec: &mut Decoder<R>, limit: usize) -> TiffResult<Option<Self>> {
+    /// its chunks itself. A chunk decoding to more than `limit` bytes is refused. `tables` are the
+    /// image's chunk tables when the caller has them; without them, they are read here.
+    pub(crate) fn new<R: Read + Seek>(dec: &mut Decoder<R>, limit: usize, tables: Option<Arc<ChunkTables>>) -> TiffResult<Option<Self>> {
         let compression = dec.find_tag_unsigned::<u16>(Tag::Compression)?.unwrap_or(1);
         let first = |v: Option<Vec<u16>>, default: u16| v.and_then(|v| v.first().copied()).unwrap_or(default);
         let packed_bits = first(dec.find_tag_unsigned_vec::<u16>(Tag::BitsPerSample)?, 1);
@@ -248,10 +251,9 @@ impl ChunkCodec {
             _ => return Ok(None),
         };
         let tiled = dec.get_chunk_type() == ChunkType::Tile;
-        let (offsets, counts) = if tiled {
-            (dec.get_tag_u64_vec(Tag::TileOffsets)?, dec.get_tag_u64_vec(Tag::TileByteCounts)?)
-        } else {
-            (dec.get_tag_u64_vec(Tag::StripOffsets)?, dec.get_tag_u64_vec(Tag::StripByteCounts)?)
+        let tables = match tables {
+            Some(tables) => tables,
+            None => Arc::new(ChunkTables::read(dec)?),
         };
         let (cw, ch) = dec.chunk_dimensions();
         let bits = packed_bits;
@@ -297,8 +299,7 @@ impl ChunkCodec {
         };
         Ok(Some(Self {
             codec,
-            offsets,
-            counts,
+            tables,
             tiled,
             chunk: (cw as usize, ch as usize),
             spp,
@@ -321,8 +322,7 @@ impl ChunkCodec {
     /// Decodes chunk `idx`, as `Decoder::read_chunk` does: the samples of the chunk's image data,
     /// without padding.
     pub(crate) fn read<R: Read + Seek>(&self, dec: &mut Decoder<R>, idx: u32) -> TiffResult<DecodingResult> {
-        let i = idx as usize;
-        let (Some(&offset), Some(&count)) = (self.offsets.get(i), self.counts.get(i)) else {
+        let Some((offset, count)) = self.tables.get(idx as usize) else {
             return Err(invalid(format!("no TIFF chunk {idx}")));
         };
         let (dw, dh) = dec.chunk_data_dimensions(idx);
@@ -1054,8 +1054,7 @@ mod tests {
     fn packed(bits: u16, spp: usize) -> ChunkCodec {
         ChunkCodec {
             codec: Codec::Packed(1),
-            offsets: vec![],
-            counts: vec![],
+            tables: Arc::default(),
             tiled: false,
             chunk: (0, 0),
             spp,
@@ -1131,8 +1130,7 @@ mod tests {
     fn floating_point_predictor_is_undone() {
         let codec = ChunkCodec {
             codec: Codec::Lzma,
-            offsets: vec![],
-            counts: vec![],
+            tables: Arc::default(),
             tiled: false,
             chunk: (2, 1),
             spp: 1,

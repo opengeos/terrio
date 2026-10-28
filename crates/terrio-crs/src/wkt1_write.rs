@@ -468,6 +468,7 @@ fn method(p: &Params, to_meter: f64) -> Option<Method> {
         "poly" => m("Polyconic", origin("latitude_of_origin", "central_meridian")),
         "gnom" => m("Gnomonic", origin("latitude_of_origin", "central_meridian")),
         "ortho" => m("Orthographic", origin("latitude_of_origin", "central_meridian")),
+        "qsc" => m("Quadrilateralized_Spherical_Cube", origin("latitude_of_origin", "central_meridian")),
         "eqc" => m(
             "Equirectangular",
             vec![

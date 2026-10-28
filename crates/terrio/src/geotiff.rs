@@ -691,6 +691,32 @@ pub(crate) type Reopen<'a, D> = &'a (dyn Fn() -> crate::Result<tiff::decoder::De
 /// holds.
 pub(crate) type DecodedChunk = (u32, tiff::decoder::DecodingResult, (usize, usize));
 
+/// The offsets and byte counts of the chunks (tiles or strips) of one TIFF image, from its
+/// `TileOffsets` and `TileByteCounts` (or `StripOffsets` and `StripByteCounts`). The `tiff` crate
+/// keeps its own copy out of reach: its `get_tag_u64_vec` reads and decodes the tags again.
+#[derive(Debug, Default)]
+pub(crate) struct ChunkTables {
+    pub offsets: Vec<u64>,
+    pub counts: Vec<u64>,
+}
+
+impl ChunkTables {
+    /// The tables of the image the decoder is positioned on, read whole.
+    pub(crate) fn read<R: Read + Seek>(dec: &mut tiff::decoder::Decoder<R>) -> tiff::TiffResult<Self> {
+        use tiff::tags::Tag;
+        let (offsets, counts) = match dec.get_chunk_type() {
+            tiff::decoder::ChunkType::Tile => (Tag::TileOffsets, Tag::TileByteCounts),
+            tiff::decoder::ChunkType::Strip => (Tag::StripOffsets, Tag::StripByteCounts),
+        };
+        Ok(Self { offsets: dec.get_tag_u64_vec(offsets)?, counts: dec.get_tag_u64_vec(counts)? })
+    }
+
+    /// The offset and byte count of chunk `i`, `None` past the end of either table.
+    pub(crate) fn get(&self, i: usize) -> Option<(u64, u64)> {
+        Some((*self.offsets.get(i)?, *self.counts.get(i)?))
+    }
+}
+
 /// Decodes one chunk, with `codec` when the `tiff` crate does not decode the image's compression.
 fn read_chunk<R: Read + Seek>(
     dec: &mut tiff::decoder::Decoder<R>,
@@ -704,21 +730,19 @@ fn read_chunk<R: Read + Seek>(
 }
 
 /// Decodes chunks (tiles or strips) of the image `ifd`, handing each to `place`, in no particular
-/// order. With `reopen`, several threads decode, each with its own decoder over the file, while
-/// the calling thread places the chunks; `dec`, positioned on the image, decodes the chunks no
-/// thread did (all of them without `reopen`).
+/// order, with `codec` when the `tiff` crate does not decode the image's compression (alone). With
+/// `reopen`, several threads decode, each with its own decoder over the file, while the calling
+/// thread places the chunks; `dec`, positioned on the image, decodes the chunks no thread did (all
+/// of them without `reopen`).
 pub(crate) fn decode_chunks<R: Read + Seek, D: Read + Seek>(
     dec: &mut tiff::decoder::Decoder<R>,
     reopen: Option<Reopen<D>>,
     ifd: usize,
     chunks: &[u32],
-    limits: crate::cog::TiffReadLimits,
+    codec: Option<&crate::tiff_codecs::ChunkCodec>,
     err: &(dyn Fn(tiff::TiffError) -> crate::Error + Sync),
     mut place: impl FnMut(DecodedChunk) -> crate::Result<()>,
 ) -> crate::Result<()> {
-    // The compressions the `tiff` crate does not decode (alone), with the same limit.
-    let codec = crate::tiff_codecs::ChunkCodec::new(dec, limits.chunk_bytes).map_err(err)?;
-    let codec = codec.as_ref();
     // Chunks `..first` were decoded by other threads.
     #[cfg(threads)]
     let first = match reopen {
@@ -878,7 +902,9 @@ pub(crate) fn read_geotiff_with_limits(path: &std::path::Path, limits: crate::co
     // Band-major output, typed after the first chunk decoded.
     let mut data: Option<RasterData> = None;
     let reopen = || open_decoder(path, &tags, limits);
-    decode_chunks(&mut dec, Some(&reopen), 0, &chunks, limits, &tiff_err, |(idx, chunk, (dw, dh))| {
+    // The compressions the `tiff` crate does not decode (alone), with the same limit.
+    let codec = crate::tiff_codecs::ChunkCodec::new(&mut dec, limits.chunk_bytes, None).map_err(tiff_err)?;
+    decode_chunks(&mut dec, Some(&reopen), 0, &chunks, codec.as_ref(), &tiff_err, |(idx, chunk, (dw, dh))| {
         let idx = idx as usize;
         let (plane, rest) = (idx / per_plane, idx % per_plane);
         let geom = ChunkGeom { x0: (rest % across) * cw, y0: (rest / across) * ch, dw, dh, spp };

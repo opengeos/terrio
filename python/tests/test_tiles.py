@@ -69,6 +69,31 @@ def test_raster_tiles_round_trip(tmp_path, ext):
 
 
 @pytest.mark.parametrize("ext", ["pmtiles", "mbtiles"])
+@pytest.mark.parametrize("resampling", ["NEAREST", "BILINEAR", "AVERAGE"])
+def test_lazy_rasters_are_tiled_as_in_memory_ones(tmp_path, ext, resampling):
+    # A raster opened lazily is tiled a tile row at a time (`Raster.write` and `convert`): the
+    # archive is the one written from the raster in memory, byte for byte.
+    data = rgb_array()
+    diagonals = np.arange(512)[None, :] + np.arange(256)[:, None]
+    alpha = np.where(diagonals % 97 < 9, 0, 255).astype("uint8")
+    rgba = np.concatenate([data, alpha[None]])
+    tif = tmp_path / "rgba.tif"
+    terrio.Raster.from_array(rgba, TRANSFORM, crs="EPSG:3857").write(str(tif), tile_size=256)
+    options = {"RESAMPLING": resampling, "MAXZOOM": "11", "NAME": "t"}
+    whole, lazy = tmp_path / f"whole.{ext}", tmp_path / f"lazy.{ext}"
+    terrio.open_raster(str(tif)).write(str(whole), options=options)
+    terrio.open_raster(str(tif), lazy=True).write(str(lazy), options=options)
+    assert lazy.read_bytes() == whole.read_bytes()
+    converted = tmp_path / "c" / f"rgba.{ext}"
+    converted.parent.mkdir()
+    terrio.convert(str(tif), str(converted))
+    reference = tmp_path / f"rgba.{ext}"
+    terrio.open_raster(str(tif)).write(str(reference))
+    assert converted.read_bytes() == reference.read_bytes()
+    assert not [p for p in tmp_path.rglob("*.tmp")]
+
+
+@pytest.mark.parametrize("ext", ["pmtiles", "mbtiles"])
 def test_vector_tiles_round_trip(tmp_path, ext):
     path = tmp_path / f"places.{ext}"
     terrio.write_vector(PLACES, str(path))

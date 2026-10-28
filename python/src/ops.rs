@@ -500,6 +500,23 @@ fn convert(
                 return terrio::stream::convert(src, dst, &stream);
             }
         }
+        // A raster written as a tile archive is read by window and tiled a tile row at a time.
+        if srcwin.is_none()
+            && overview.is_none()
+            && t_srs.is_none()
+            && !vector_set
+            && layers.is_none()
+            && terrio::tiles::is_archive(dst)
+            && !terrio::tiles::is_archive(src)
+            && let Some(options) = &raster_options
+            && matches!(
+                options.driver.or_else(|| terrio::formats::RasterDriver::for_extension(dst)),
+                Some(terrio::formats::RasterDriver::PMTiles | terrio::formats::RasterDriver::MBTiles)
+            )
+            && let Ok(mut r) = terrio::open_raster_lazy(src)
+        {
+            return r.write(dst, options);
+        }
         let ds = if srcwin.is_some() || overview.is_some() {
             let mut r = terrio::open_raster_lazy(src)?;
             let window = match srcwin {

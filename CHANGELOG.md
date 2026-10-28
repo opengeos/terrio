@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+### Terrain
+
+- `terrio dem color-relief` and Python's `terrio.dem(path, ..., dst=path)` read the DEM and write
+  the output a strip of rows at a time, as `terrio dem` already did for the other products
+  (Rust: `color_relief_to_path`, and `ColorMap::parse_lazy` for color files with percentages).
+  A path-to-path `terrio.dem` now returns the result opened lazily from `dst` instead of in
+  memory; the pixels are unchanged. On a 15,000 x 12,000 Float32 DEM, a color relief with alpha
+  peaks at about 560 MiB (160 MiB with `max_memory_mib=256`) instead of 7,569 MiB.
+- `--max-memory` (CLI), `max_memory_mib` (Python) and `DemOptions::max_memory_mib` set the strip
+  height from a memory budget, like `gdalwarp -wm` (by default, strips of about 64 MiB of input
+  values, as before). The values do not depend on it.
+- The in-memory `color_relief` colors the band directly into the Byte output, in parallel,
+  instead of holding a Float64 copy of the band and four Float64 output planes.
+- `dem_to_path` and `color_relief_to_path` read a DEM that is also the output whole first,
+  instead of truncating it while it is read.
+- On Unix, an output that is a hard link to an input now counts as that input wherever an output
+  may replace its input: the DEM paths, `warp`, `mosaic`, `LazyRaster::write` and pansharpening
+  read the input whole first (or refuse, for a VRT output), as for the same path. On Windows, a
+  hard link is not detected.
+- `terrio dem` names `--max-memory`, not `max_memory_mib`, when it refuses a budget for an output
+  that is a hard link to the input.
+
 ### Formats
 
 - SRTM HGT tiles are read and written (the `SRTMHGT` driver), as GDAL's SRTMHGT
@@ -14,9 +36,41 @@
   reads only the header, a window reads only the rows it covers, and `info`
   decodes no pixels. Remote SRTM tiles are read with HTTP range requests, and
   `convert` to a GeoTIFF or COG writes these inputs a strip at a time.
+- Lazy GeoTIFF reads keep the tile or strip offsets and byte counts of each
+  image (full resolution or overview) after its first window read (#348): later
+  windows of the image no longer read and decode both tables again, nor does
+  terrio's own codec (LZW and the other compressions it decodes) read them a
+  second time, and mask reads no longer copy the mask's tables. Windows decoded
+  on the calling thread (one chunk, or remote and sparse files) no longer cost
+  more as the image has more tiles; the threads decoding the chunks of larger
+  windows of local files still each read the tables, as does moving to another
+  overview. The tables kept take 16 bytes per chunk of each image read.
+
+### Remote I/O
+
+- Signed S3 uploads of local files over 8 MiB sent over HTTPS read the file once
+  per attempt instead of twice (#335), as a retried, redirected or
+  region-rerouted request reads it again: they are signed with
+  `UNSIGNED-PAYLOAD`, as the AWS SDKs sign S3 uploads over HTTPS, and the body
+  is streamed. The signature no longer covers the body of these uploads; TLS
+  protects it in transit. Over plain HTTP, and for smaller or staged uploads,
+  the payload hash is signed as before.
 
 ### Breaking changes
 
+- Signed S3 uploads of local files over 8 MiB over HTTPS use `UNSIGNED-PAYLOAD`
+  (#335). An S3-compatible service, or a bucket policy, that refuses it now
+  rejects those uploads; they can be sent over plain HTTP to keep a signed
+  payload, with `AWS_HTTPS=NO`, or an `http://` `AWS_S3_ENDPOINT` when the
+  endpoint names its scheme (an `https://` endpoint ignores `AWS_HTTPS`). Plain
+  HTTP does not encrypt the request body or headers, including
+  `x-amz-security-token` for temporary credentials; use this workaround only
+  over a trusted connection.
+- A path-to-path Python `terrio.dem(src_path, ..., dst=path)` (other than to a VRT) returns the
+  result opened lazily from `dst` instead of in memory: the returned `Raster` reads `dst`, which
+  must stay in place and unchanged while the `Raster` is in use.
+- `DemOptions` has a new public field, `max_memory_mib`: struct literals need it or
+  `..Default::default()`.
 - `mosaic`, `warp`, `concat` and `filter merge` now treat an input beginning
   with `@` as a file list, so a file named `@name.tif` must be written
   `./@name.tif`.
@@ -29,6 +83,11 @@
   `@FILE` stands for the paths listed in FILE, one per line, as GDAL's
   `--input @filelist.txt` does (#323). MCP tool calls refuse `@FILE`, so that a
   client cannot read a file back through the errors naming its lines.
+- `validate_cog` (Rust, Python) and `terrio validate-cog` (and MCP) check that a GeoTIFF is a
+  Cloud Optimized GeoTIFF with the checks and messages of rio-cogeo's `cog_validate` (GDAL's
+  `validate_cloud_optimized_geotiff.py`), reading only headers and chunk offsets: local files,
+  `/vsizip/` paths, and HTTP(S) or S3 URLs by range requests. The command exits with status 1
+  when the file is not a valid COG.
 
 ### Point clouds
 
@@ -90,6 +149,31 @@
   refused. GDAL's WKT1 `Interrupted_Goode_Homolosine`, ESRI's
   `Goode_Homolosine` with `Option` 1 and WKT2 `Interrupted Goode Homolosine`
   are read, and the first is written.
+- `+proj=ob_tran` with an `+o_proj` other than `longlat` (a projection on a
+  rotated sphere or ellipsoid) is computed as PROJ does; it was refused. The
+  pole may be given by `+o_lat_p`/`+o_lon_p`, by `+o_lon_c`/`+o_lat_c`/`+o_alpha`
+  or by `+o_lon_1`/`+o_lat_1`/`+o_lon_2`/`+o_lat_2`, for rotated-pole grids too.
+  PROJ's WKT2 `PROJ ob_tran o_proj=...` method is read.
+- `+proj=qsc` (quadrilateralized spherical cube) is computed as PROJ does, on
+  each of the six cube faces and on a sphere or an ellipsoid; it was refused.
+  GDAL's and ESRI's WKT1 `Quadrilateralized_Spherical_Cube` and WKT2
+  `Quadrilateralized Spherical Cube` are read, and the WKT1 form is written.
+- `+proj=healpix` and `+proj=rhealpix` are computed as PROJ does, with
+  `+rot_xy` and `+north_square`/`+south_square`; they were refused. On an
+  ellipsoid they use the authalic latitude, as PROJ 9.8.1. GDAL's WKT1 (which
+  carries the PROJ string), ESRI's `PROJ_healpix` and `PROJ_rhealpix` and WKT2
+  `PROJ healpix` and `PROJ rhealpix` are read, and the first is written.
+- `+proj=isea` is computed as PROJ 9.8.1 does, with `+orient`, `+azi`, `+lon_0`,
+  `+lat_0`, `+resolution` and `+aperture`; it was refused. As in PROJ 9.8.1, the
+  inverse is defined for the default grid in its two orientations only, and on an
+  ellipsoid the forward takes the geodetic latitude on the semi-major axis while
+  the inverse uses the authalic radius. `+mode=di`, `dd` and `hex` (grid
+  addresses) are refused. GDAL's WKT1 (which carries the PROJ string), ESRI's
+  `PROJ_isea` and WKT2 `PROJ isea` are read, and the first is written.
+- WKT2 `PROJ name` methods take only the projection's string-valued parameters
+  in the name (`o_proj` for `ob_tran`, `orient` and `mode` for `isea`), and refuse
+  `R_C`, `geoc`, `vunits` and `vto_meter` among their PARAMETERs, as they refused
+  the figure, datum and units before.
 
 ### Warp
 

@@ -441,3 +441,16 @@ implementations must return a standard `Response`. Object-store XML pagination i
 
 VSI listing bindings return structured flat entries. Nested tree presentation (`--tree`)
 is currently available through the CLI; JSON serialization flags apply to CLI output.
+
+### Indexed color conversion
+
+`rgbToPalette(source, {colorCount: 256, bitDepth: 5, dither: true, colorMap,
+outputNodata, mask})` returns an indexed Byte Dataset. Sources accept Dataset
+objects or uploaded raster bytes (`Uint8Array` or `{bytes, filename}`). `colorMap`
+accepts a palette Dataset/upload, color-file text, `{text, filename}`, or RGBA
+integer arrays; `mask` accepts a flat Uint8Array/array of validity bytes.
+`paletteToRgb(source, {rgba: true})` expands to RGBA (RGB by default), and
+`attachPalette(source, colorMap)` changes only the table.
+`readColorTable(source, filename)` reads integer RGBA entries from these same
+palette sources. Operations materialize the input/output. See
+[Palette conversion](cli.md#palette-conversion) for formats and validity rules.

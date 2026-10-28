@@ -1,0 +1,192 @@
+{
+  "environment": {
+    "schema_version": 1,
+    "generated": "2026-10-15T23:26:19+00:00",
+    "proj_version": "9.9.0",
+    "projinfo_banner": "Rel. 9.9.0, September 15th, 2026",
+    "pyproj_version": "3.8.0",
+    "proj_data": "/work/.proj-nogrids",
+    "proj_data_files": [
+      "CH",
+      "GL27",
+      "ITRF2000",
+      "ITRF2008",
+      "ITRF2014",
+      "ITRF2020",
+      "deformation_model.schema.json",
+      "nad.lst",
+      "nad27",
+      "nad83",
+      "other.extra",
+      "proj.db",
+      "proj.ini",
+      "projjson.schema.json",
+      "triangulation.schema.json",
+      "world"
+    ],
+    "grid_files_present": [],
+    "network_enabled": false,
+    "epsg_version": "v13.102",
+    "epsg_date": "2026-08-27",
+    "esri_version": "ArcGIS Pro 3.6",
+    "grid_configuration": "no proj-data grids (proj.db, proj.ini and init files only), network off",
+    "axis_order": "always_xy=True: oracle normalised for visualisation (east, north)"
+  },
+  "source": {
+    "repository": "mdsumner/rust-proj-capability",
+    "revision": "ddd9fac70ec370acd9651ebb8b46035207347ad5",
+    "path": "suites/crs/crs.json"
+  },
+  "fixtures": [
+    {
+      "id": "method-healpix",
+      "group": "method",
+      "src": "OGC:CRS84",
+      "dst": "+proj=healpix +datum=WGS84 +units=m +no_defs",
+      "form": "proj",
+      "point": [
+        147.0,
+        -42.0
+      ],
+      "layers": [
+        "E1"
+      ],
+      "src_ref": "OGC:CRS84",
+      "dst_ref": "+proj=healpix +datum=WGS84 +units=m +no_defs",
+      "oracle": {
+        "resolved": true,
+        "src_name": "WGS 84 (CRS84)",
+        "dst_name": "unknown",
+        "src_kind": "geographic",
+        "dst_kind": "projected",
+        "src_unit": "degree",
+        "src_unit_factor": 0.017453292519943295,
+        "dst_unit": "metre",
+        "dst_unit_factor": 1.0,
+        "src_export": {
+          "proj": "+proj=longlat +datum=WGS84 +no_defs +type=crs",
+          "proj_error": null,
+          "proj_bound": "+proj=longlat +datum=WGS84 +no_defs +type=crs",
+          "proj_bound_error": null,
+          "wkt1_gdal_bound": "GEOGCS[\"WGS 84 (CRS84)\",DATUM[\"WGS_1984\",SPHEROID[\"WGS 84\",6378137,298.257223563,AUTHORITY[\"EPSG\",\"7030\"]],AUTHORITY[\"EPSG\",\"6326\"]],PRIMEM[\"Greenwich\",0,AUTHORITY[\"EPSG\",\"8901\"]],UNIT[\"degree\",0.0174532925199433,AUTHORITY[\"EPSG\",\"9122\"]],AUTHORITY[\"OGC\",\"CRS84\"]]"
+        },
+        "dst_export": {
+          "proj": "+proj=healpix +datum=WGS84 +units=m +no_defs +type=crs",
+          "proj_error": null,
+          "proj_bound": "+proj=healpix +datum=WGS84 +units=m +no_defs +type=crs",
+          "proj_bound_error": null,
+          "wkt1_gdal_bound": "PROJCS[\"unknown\",GEOGCS[\"unknown\",DATUM[\"WGS_1984\",SPHEROID[\"WGS 84\",6378137,298.257223563,AUTHORITY[\"EPSG\",\"7030\"]],AUTHORITY[\"EPSG\",\"6326\"]],PRIMEM[\"Greenwich\",0,AUTHORITY[\"EPSG\",\"8901\"]],UNIT[\"degree\",0.0174532925199433,AUTHORITY[\"EPSG\",\"9122\"]]],PROJECTION[\"custom_proj4\"],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH],EXTENSION[\"PROJ4\",\"+proj=healpix +datum=WGS84 +wktext +no_defs\"]]"
+        },
+        "point": [
+          147.0,
+          -42.0
+        ],
+        "candidates": [
+          {
+            "name": "unknown",
+            "accuracy": 0.0,
+            "available": true
+          }
+        ],
+        "best_available": true,
+        "transformer": "unknown",
+        "executed": true,
+        "fwd": [
+          16344055.09510788,
+          -5009843.133575987
+        ],
+        "op": {
+          "name": "unknown",
+          "accuracy": 0.0,
+          "ballpark": false,
+          "proj": "+proj=pipeline +step +proj=unitconvert +xy_in=deg +xy_out=rad +step +proj=healpix +ellps=WGS84"
+        },
+        "inv": [
+          146.99999999999997,
+          -42.00000000000001
+        ],
+        "inv_op": {
+          "name": "unknown",
+          "accuracy": 0.0,
+          "ballpark": false,
+          "proj": "+proj=pipeline +step +proj=unitconvert +xy_in=deg +xy_out=rad +step +proj=healpix +ellps=WGS84"
+        }
+      }
+    },
+    {
+      "id": "method-rhealpix",
+      "group": "method",
+      "src": "OGC:CRS84",
+      "dst": "+proj=rhealpix +datum=WGS84 +units=m +no_defs",
+      "form": "proj",
+      "point": [
+        147.0,
+        -42.0
+      ],
+      "layers": [
+        "E1"
+      ],
+      "src_ref": "OGC:CRS84",
+      "dst_ref": "+proj=rhealpix +datum=WGS84 +units=m +no_defs",
+      "oracle": {
+        "resolved": true,
+        "src_name": "WGS 84 (CRS84)",
+        "dst_name": "unknown",
+        "src_kind": "geographic",
+        "dst_kind": "projected",
+        "src_unit": "degree",
+        "src_unit_factor": 0.017453292519943295,
+        "dst_unit": "metre",
+        "dst_unit_factor": 1.0,
+        "src_export": {
+          "proj": "+proj=longlat +datum=WGS84 +no_defs +type=crs",
+          "proj_error": null,
+          "proj_bound": "+proj=longlat +datum=WGS84 +no_defs +type=crs",
+          "proj_bound_error": null,
+          "wkt1_gdal_bound": "GEOGCS[\"WGS 84 (CRS84)\",DATUM[\"WGS_1984\",SPHEROID[\"WGS 84\",6378137,298.257223563,AUTHORITY[\"EPSG\",\"7030\"]],AUTHORITY[\"EPSG\",\"6326\"]],PRIMEM[\"Greenwich\",0,AUTHORITY[\"EPSG\",\"8901\"]],UNIT[\"degree\",0.0174532925199433,AUTHORITY[\"EPSG\",\"9122\"]],AUTHORITY[\"OGC\",\"CRS84\"]]"
+        },
+        "dst_export": {
+          "proj": "+proj=rhealpix +datum=WGS84 +units=m +no_defs +type=crs",
+          "proj_error": null,
+          "proj_bound": "+proj=rhealpix +datum=WGS84 +units=m +no_defs +type=crs",
+          "proj_bound_error": null,
+          "wkt1_gdal_bound": "PROJCS[\"unknown\",GEOGCS[\"unknown\",DATUM[\"WGS_1984\",SPHEROID[\"WGS 84\",6378137,298.257223563,AUTHORITY[\"EPSG\",\"7030\"]],AUTHORITY[\"EPSG\",\"6326\"]],PRIMEM[\"Greenwich\",0,AUTHORITY[\"EPSG\",\"8901\"]],UNIT[\"degree\",0.0174532925199433,AUTHORITY[\"EPSG\",\"9122\"]]],PROJECTION[\"custom_proj4\"],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH],EXTENSION[\"PROJ4\",\"+proj=rhealpix +datum=WGS84 +wktext +no_defs\"]]"
+        },
+        "point": [
+          147.0,
+          -42.0
+        ],
+        "candidates": [
+          {
+            "name": "unknown",
+            "accuracy": 0.0,
+            "available": true
+          }
+        ],
+        "best_available": true,
+        "transformer": "unknown",
+        "executed": true,
+        "fwd": [
+          -20009043.56085063,
+          -8674831.599318739
+        ],
+        "op": {
+          "name": "unknown",
+          "accuracy": 0.0,
+          "ballpark": false,
+          "proj": "+proj=pipeline +step +proj=unitconvert +xy_in=deg +xy_out=rad +step +proj=rhealpix +ellps=WGS84"
+        },
+        "inv": [
+          147.0,
+          -42.000000000000014
+        ],
+        "inv_op": {
+          "name": "unknown",
+          "accuracy": 0.0,
+          "ballpark": false,
+          "proj": "+proj=pipeline +step +proj=unitconvert +xy_in=deg +xy_out=rad +step +proj=rhealpix +ellps=WGS84"
+        }
+      }
+    }
+  ]
+}

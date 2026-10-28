@@ -286,36 +286,72 @@ impl Mlfn {
 /// in the authalic latitude whose coefficients are Taylor series in the third flattening n, to
 /// order 6 (Karney, "On auxiliary latitudes", 2024; PROJ's `pj_auxlat_coeffs`, `C[phi,xi]`).
 pub(crate) fn authset(es: f64) -> [f64; 6] {
-    const C: [f64; 21] = [
-        4.0 / 3.0,
-        4.0 / 45.0,
-        -16.0 / 35.0,
-        -2582.0 / 14175.0,
-        60136.0 / 467775.0,
-        28112932.0 / 212837625.0,
-        46.0 / 45.0,
-        152.0 / 945.0,
-        -11966.0 / 14175.0,
-        -21016.0 / 51975.0,
-        251310128.0 / 638512875.0,
-        3044.0 / 2835.0,
-        3802.0 / 14175.0,
-        -94388.0 / 66825.0,
-        -8797648.0 / 10945935.0,
-        6059.0 / 4725.0,
-        41072.0 / 93555.0,
-        -1472637812.0 / 638512875.0,
-        768272.0 / 467775.0,
-        455935736.0 / 638512875.0,
-        4210684958.0 / 1915538625.0,
-    ];
+    auxlat_coeffs(es, &C_PHI_XI)
+}
+
+/// Coefficients converting geodetic to authalic latitudes, as PROJ since 9.7 (`C[xi,phi]`): the
+/// authalic latitude of a geodetic latitude is [`authlat`] with them, for |n| < 0.01.
+pub(crate) fn authset_forward(es: f64) -> [f64; 6] {
+    auxlat_coeffs(es, &C_XI_PHI)
+}
+
+const C_PHI_XI: [f64; 21] = [
+    4.0 / 3.0,
+    4.0 / 45.0,
+    -16.0 / 35.0,
+    -2582.0 / 14175.0,
+    60136.0 / 467775.0,
+    28112932.0 / 212837625.0,
+    46.0 / 45.0,
+    152.0 / 945.0,
+    -11966.0 / 14175.0,
+    -21016.0 / 51975.0,
+    251310128.0 / 638512875.0,
+    3044.0 / 2835.0,
+    3802.0 / 14175.0,
+    -94388.0 / 66825.0,
+    -8797648.0 / 10945935.0,
+    6059.0 / 4725.0,
+    41072.0 / 93555.0,
+    -1472637812.0 / 638512875.0,
+    768272.0 / 467775.0,
+    455935736.0 / 638512875.0,
+    4210684958.0 / 1915538625.0,
+];
+
+const C_XI_PHI: [f64; 21] = [
+    -4.0 / 3.0,
+    -4.0 / 45.0,
+    88.0 / 315.0,
+    538.0 / 4725.0,
+    20824.0 / 467775.0,
+    -44732.0 / 2837835.0,
+    34.0 / 45.0,
+    8.0 / 105.0,
+    -2482.0 / 14175.0,
+    -37192.0 / 467775.0,
+    -12467764.0 / 212837625.0,
+    -1532.0 / 2835.0,
+    -898.0 / 14175.0,
+    54968.0 / 467775.0,
+    100320856.0 / 1915538625.0,
+    6007.0 / 14175.0,
+    24496.0 / 467775.0,
+    -5884124.0 / 70945875.0,
+    -23356.0 / 66825.0,
+    -839792.0 / 19348875.0,
+    570284222.0 / 1915538625.0,
+];
+
+/// The six coefficients of a series in the third flattening n from PROJ's table of 21.
+fn auxlat_coeffs(es: f64, c: &[f64; 21]) -> [f64; 6] {
     let b = (1.0 - es).sqrt();
     let n = (1.0 - b) / (1.0 + b);
     let mut apa = [0.0; 6];
     let (mut o, mut d) = (0, n);
     for (l, a) in apa.iter_mut().enumerate() {
         // A polynomial in n of degree 5 - l, by Horner's method.
-        let p = &C[o..o + 6 - l];
+        let p = &c[o..o + 6 - l];
         *a = d * p.iter().rev().fold(0.0, |y, c| y * n + c);
         o += 6 - l;
         d *= n;
@@ -388,6 +424,19 @@ mod tests {
         for sine in [1e-12, -1e-12] {
             let expected = 2.0 * ellipsoid.one_es * sine;
             assert!((qsfn(sine, ellipsoid.e, ellipsoid.one_es) - expected).abs() < 1e-27);
+        }
+    }
+
+    #[test]
+    // Away from the poles, where asin(q / qp) loses precision.
+    fn forward_authalic_series_is_the_closed_form_on_wgs84() {
+        let ellipsoid = Ell::named("WGS84").unwrap();
+        let apa = authset_forward(ellipsoid.es);
+        let qp = qsfn(1.0, ellipsoid.e, ellipsoid.one_es);
+        for degrees in [-80.0_f64, -60.0, -10.0, 1.0, 45.0, 75.0] {
+            let phi = degrees.to_radians();
+            let closed = (qsfn(phi.sin(), ellipsoid.e, ellipsoid.one_es) / qp).asin();
+            assert!((authlat(phi, &apa) - closed).abs() < 1e-14, "{degrees}");
         }
     }
 }

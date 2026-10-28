@@ -45,7 +45,15 @@ fn check_destination(src: &Bound<'_, PyAny>, color_map: Option<&Bound<'_, PyAny>
     if let Some(dst) = dst {
         let mut paths = Vec::new();
         if let Some(path) = raster_path(src)? {
+            paths.extend(terrio::open_raster_lazy(&path).py()?.file_list().py()?);
             paths.push(path);
+        } else if let Ok(raster) = src.cast::<PyRaster>() {
+            paths.extend(raster.try_borrow().map_err(|e| invalid(e.to_string()))?.inner.file_list().py()?);
+        }
+        if let Some(source) = color_map
+            && let Ok(raster) = source.cast::<PyRaster>()
+        {
+            paths.extend(raster.try_borrow().map_err(|e| invalid(e.to_string()))?.inner.file_list().py()?);
         }
         if let Some(source) = color_map
             && !source.is_instance_of::<PyBytes>()

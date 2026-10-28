@@ -1,7 +1,7 @@
 //! Terrain analysis and raster algebra: `dem`, `calc`, `proximity` and `sieve`, with keyword
 //! arguments named after the command-line options.
 
-use crate::ops::{finish_raster, input_raster};
+use crate::ops::{finish_raster, input_raster, raster_path};
 use crate::raster::PyRaster;
 use crate::{PyResultExt, invalid};
 use pyo3::prelude::*;
@@ -63,15 +63,21 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
 ///     compress: GeoTIFF/COG compression, for `dst`.
 ///     tile_size: GeoTIFF/COG tile size, for `dst`.
 ///     bigtiff: Write a BigTIFF, for `dst`.
+///     max_memory_mib: With a `src` path and `dst`: about how much memory (MiB) the strips of
+///         rows in flight may take, which sets their height. By default, strips of about 64 MiB
+///         of input values. Refused otherwise, and for a VRT `dst` or a `dst` that is `src`
+///         (read whole).
 ///
 /// Returns:
-///     Raster: The result, in memory (for a VRT, its pixels as read from it).
+///     Raster: The result. When `src` and `dst` are paths, the DEM is read and the result written
+///     a strip of rows at a time (neither is held whole), and the result is returned opened
+///     lazily from `dst`; otherwise it is in memory (for a VRT, its pixels as read from it).
 #[pyfunction]
 #[pyo3(signature = (
     src, processing, dst=None, *, color_file=None, band=1, z=1.0, scale=None, xscale=None, yscale=None, azimuth=None,
     altitude=None, combined=false, multidirectional=false, igor=false, alg=None, percent=false, trigonometric=false,
     zero_for_flat=false, compute_edges=false, alpha=false, exact_color_entry=false, nearest_color_entry=false,
-    format=None, compress=None, tile_size=None, bigtiff=false, kernel_version="3.12"
+    format=None, compress=None, tile_size=None, bigtiff=false, kernel_version="3.12", max_memory_mib=None
 ))]
 #[allow(clippy::too_many_arguments)]
 fn dem(
@@ -103,6 +109,7 @@ fn dem(
     tile_size: Option<u32>,
     bigtiff: bool,
     kernel_version: &str,
+    max_memory_mib: Option<f64>,
 ) -> PyResult<PyRaster> {
     if [combined, multidirectional, igor].iter().filter(|b| **b).count() > 1 {
         return Err(invalid("combined, multidirectional and igor exclude each other"));
@@ -151,6 +158,7 @@ fn dem(
         } else {
             ColorSelection::Interpolate
         },
+        max_memory_mib,
         ..Default::default()
     };
     if let Some(alg) = alg {
@@ -160,14 +168,42 @@ fn dem(
             _ => return Err(invalid("alg applies to hillshade, slope, aspect and TRI")),
         }
     }
-    let path = src.extract::<String>().ok();
-    let ds = input_raster(py, src)?;
-    let vrt = match (format, dst) {
+    let path = raster_path(src)?;
+    let vrt_out = match (format, dst) {
         (Some(f), _) => f.eq_ignore_ascii_case("VRT"),
         (None, Some(d)) => d.to_ascii_lowercase().ends_with(".vrt"),
         (None, None) => false,
     };
-    if vrt {
+    // A path to a path: read and written a strip of rows at a time.
+    if let (Some(src_path), Some(out_path), false) = (path.as_deref(), dst, vrt_out) {
+        let options = crate::raster::write_options(format, compress, tile_size, bigtiff)?;
+        let out = crate::with_warnings(py, || {
+            let mut lazy = terrio::open_raster_lazy(src_path)?;
+            match (product, color_file) {
+                (Some(p), _) => terrio::ops::dem::dem_to_path(&mut lazy, p, &o, out_path, &options)?,
+                (None, Some(file)) => {
+                    let text = std::fs::read_to_string(file)
+                        .map_err(|e| terrio::Error::InvalidArgument(format!("cannot read the color file '{file}': {e}")))?;
+                    let map = ColorMap::parse_lazy(&text, &mut lazy, band, pam_statistics(src_path, band), max_memory_mib)?;
+                    terrio::ops::dem::color_relief_to_path(&mut lazy, &map, &o, out_path, &options)?;
+                }
+                (None, None) => unreachable!("checked"),
+            }
+            drop(lazy);
+            terrio::open_raster_lazy(out_path)
+        })?;
+        return Ok(PyRaster { inner: out });
+    }
+    if max_memory_mib.is_some() {
+        let message = if vrt_out {
+            "max_memory_mib does not apply to a VRT output, which is not written in strips"
+        } else {
+            "max_memory_mib applies when src and dst are paths"
+        };
+        return Err(invalid(message));
+    }
+    let ds = input_raster(py, src)?;
+    if vrt_out {
         let (Some(file), Some(src_path), Some(out_path)) = (color_file, path.as_deref(), dst) else {
             return Err(invalid("a VRT output needs color-relief, a source path and dst"));
         };

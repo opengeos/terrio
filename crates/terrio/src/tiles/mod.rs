@@ -34,6 +34,8 @@ pub(crate) mod mvt;
 #[cfg(feature = "tiles")]
 pub(crate) mod pmtiles;
 #[cfg(feature = "tiles")]
+pub(crate) mod pyramid;
+#[cfg(feature = "tiles")]
 pub(crate) mod raster;
 #[cfg(feature = "tiles")]
 pub(crate) mod source;

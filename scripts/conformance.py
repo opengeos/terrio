@@ -485,6 +485,35 @@ def suite_shapefile_archives(ctx):
     return suite
 
 
+def suite_indexes(ctx):
+    """Footprint catalogs and GTI virtual mosaics against GDAL 3.13."""
+    suite = Suite("indexes", "Raster/vector indexes and GTI creation", "GDAL 3.13.3",
+                  "Real COG/DEM and vector catalogs: schema, CRS and text/integer fields exact; "
+                  "vertices within 1e-8 index CRS units, real fields within 1e-12 relative/absolute; GTI band metadata and shared-window pixels exact. Default GPKG rounding can add one border pixel; affines within 1e-12. Explicit-grid dimensions exact.")
+    missing = missing_modules("osgeo", "numpy")
+    if missing or shutil.which("gdal") is None:
+        suite.skipped = "needs GDAL 3.13 commands/bindings and NumPy"
+        return suite
+    from osgeo import gdal
+
+    if int(gdal.VersionInfo("VERSION_NUM")) < 3130000:
+        suite.skipped = "needs GDAL >= 3.13 for unified index commands"
+        return suite
+    code, out, err = run([sys.executable, str(SCRIPTS / "compare_indexes_with_gdal.py"), ctx.data,
+                          "--terrio", ctx.terrio, "--json"])
+    try:
+        results = json.loads(out)
+    except json.JSONDecodeError:
+        suite.error = tail(err or out) or f"comparison exited {code} without valid JSON"
+        return suite
+    for result in results:
+        status = {"identical": IDENTICAL, "tolerance": TOLERANCE, "not compared": NOT_COMPARED}.get(result["status"], DIFFERS)
+        suite.cases.append(Case("dataset indexes", result["name"], status, result["detail"]))
+    if not results or (code and not any(case.status == DIFFERS for case in suite.cases)):
+        suite.error = tail(err or out) or f"comparison exited {code} without complete results"
+    return suite
+
+
 def suite_raster_manage(ctx):
     """Real DEM raster management, cross-read and compared by GDAL."""
     suite = Suite("raster-manage", "Raster management", "GDAL 3.13.3",
@@ -825,6 +854,16 @@ def suite_raster_query(ctx):
 
 def suite_palette(ctx):
     """Indexed colors on real Landsat and OPERA imagery."""
+    if missing_modules("osgeo"):
+        suite = Suite("palette", "Palette conversion", "GDAL 3.13", "Exact palettes and pixels.")
+        suite.skipped = "needs osgeo"
+        return suite
+    from osgeo import gdal
+
+    if int(gdal.VersionInfo("VERSION_NUM")) < 3130000:
+        suite = Suite("palette", "Palette conversion", "GDAL 3.13", "Exact palettes and pixels.")
+        suite.skipped = "needs GDAL >= 3.13 for rgb-to-palette"
+        return suite
     return suite_json_ops(
         ctx, "palette", "compare_palette_with_gdal.py", "Palette conversion",
         "`gdal raster rgb-to-palette`, `gdal_translate -expand`, `gdalattachpct`",
@@ -1100,6 +1139,103 @@ def suite_igh(ctx):
         return suite
     for case in cases:
         suite.cases.append(Case("Interrupted Goode homolosine", case["name"], case["status"], case["detail"]))
+    if code and not any(c.status == DIFFERS for c in suite.cases):
+        suite.error = tail(err or out)
+    return suite
+
+
+def suite_ob_tran(ctx):
+    """PROJ's general oblique transformation of projections other than longlat, and its refusals."""
+    suite = Suite("ob_tran", "General oblique transformation", "GDAL/PROJ",
+                  "15 spherical/WGS84 configurations of 8 rotated projections (moll, merc, eqc, sinu, ortho, "
+                  "robin, lcc, utm), with the pole given in each of PROJ's three forms and a transverse "
+                  "rotation, and 4,680 geographic samples, as PROJ strings, WKT2 and WKT1; forward and "
+                  "inverse refusals. Projected allowance 1 mm; inverse 1e-8 degrees, longitude weighted "
+                  "by cos(latitude).")
+    if missing_modules("osgeo"):
+        suite.skipped = "needs GDAL Python bindings"
+        return suite
+    code, out, err = run([sys.executable, str(SCRIPTS / "compare_ob_tran_with_gdal.py"), ctx.data, "--terrio", ctx.terrio, "--json"])
+    try:
+        cases = json.loads(out)
+    except json.JSONDecodeError:
+        suite.error = tail(err or out)
+        return suite
+    for case in cases:
+        suite.cases.append(Case("General oblique transformation", case["name"], case["status"], case["detail"]))
+    if code and not any(c.status == DIFFERS for c in suite.cases):
+        suite.error = tail(err or out)
+    return suite
+
+
+def suite_qsc(ctx):
+    """The quadrilateralized spherical cube on each face, as PROJ strings and as GDAL's WKT."""
+    suite = Suite("qsc", "Quadrilateralized spherical cube", "GDAL/PROJ",
+                  "16 spherical/WGS84 configurations (the six cube faces, centres between faces, units "
+                  "and false offsets) and 4,288 geographic samples over the whole globe and each side "
+                  "of the face and area edges, as PROJ strings, WKT2, WKT1 and ESRI WKT1, and inverse "
+                  "points on and beyond the face. Projected allowance 1 mm; inverse 1e-8 degrees, "
+                  "longitude weighted by cos(latitude); at the antipode of the face centre, 1e-5 degrees "
+                  "and 1 mm of projected residual.")
+    if missing_modules("osgeo"):
+        suite.skipped = "needs GDAL Python bindings"
+        return suite
+    code, out, err = run([sys.executable, str(SCRIPTS / "compare_qsc_with_gdal.py"), ctx.data, "--terrio", ctx.terrio, "--json"])
+    try:
+        cases = json.loads(out)
+    except json.JSONDecodeError:
+        suite.error = tail(err or out)
+        return suite
+    for case in cases:
+        suite.cases.append(Case("Quadrilateralized spherical cube", case["name"], case["status"], case["detail"]))
+    if code and not any(c.status == DIFFERS for c in suite.cases):
+        suite.error = tail(err or out)
+    return suite
+
+
+def suite_healpix(ctx):
+    """HEALPix and rHEALPix, as PROJ strings and as GDAL's and ESRI's WKT, and their inverse refusals."""
+    suite = Suite("healpix", "HEALPix and rHEALPix", "GDAL/PROJ",
+                  "22 spherical/WGS84/flattened configurations (central meridians, rot_xy, polar squares, "
+                  "units and false offsets) and 6,600 geographic samples over the equatorial region, each "
+                  "side of the polar caps' edges and the poles, as PROJ strings, WKT2, WKT1 and ESRI WKT1; "
+                  "inverse refusals outside the image. Projected allowance 1 mm; inverse 1e-8 degrees, "
+                  "longitude weighted by cos(latitude).")
+    if missing_modules("osgeo"):
+        suite.skipped = "needs GDAL Python bindings"
+        return suite
+    code, out, err = run([sys.executable, str(SCRIPTS / "compare_healpix_with_gdal.py"), ctx.data, "--terrio", ctx.terrio, "--json"])
+    try:
+        cases = json.loads(out)
+    except json.JSONDecodeError:
+        suite.error = tail(err or out)
+        return suite
+    for case in cases:
+        suite.cases.append(Case("HEALPix and rHEALPix", case["name"], case["status"], case["detail"]))
+    if code and not any(c.status == DIFFERS for c in suite.cases):
+        suite.error = tail(err or out)
+    return suite
+
+
+def suite_isea(ctx):
+    """ISEA, as PROJ strings and as GDAL's and ESRI's WKT, and its inverse refusals."""
+    suite = Suite("isea", "Icosahedral Snyder Equal Area", "GDAL/PROJ",
+                  "14 configurations on the authalic sphere of WGS 84 and on WGS 84 (both orientations, "
+                  "central meridians, lat_0, azi, resolution and aperture, units and false offsets) and "
+                  "7,784 geographic samples, as PROJ strings, WKT2, WKT1 and ESRI WKT1; PROJ's inverse and "
+                  "its refusals. Projected allowance 1 mm; inverse 1e-8 degrees, longitude weighted by "
+                  "cos(latitude). Not compared with a PROJ whose isea differs from PROJ 9.8.1's.")
+    if missing_modules("osgeo"):
+        suite.skipped = "needs GDAL Python bindings"
+        return suite
+    code, out, err = run([sys.executable, str(SCRIPTS / "compare_isea_with_gdal.py"), ctx.data, "--terrio", ctx.terrio, "--json"])
+    try:
+        cases = json.loads(out)
+    except json.JSONDecodeError:
+        suite.error = tail(err or out)
+        return suite
+    for case in cases:
+        suite.cases.append(Case("ISEA", case["name"], case["status"], case["detail"]))
     if code and not any(c.status == DIFFERS for c in suite.cases):
         suite.error = tail(err or out)
     return suite
@@ -1833,6 +1969,7 @@ SUITES = OrderedDict(
         ("vrt", suite_vrt),
         ("overviews", suite_overviews),
         ("raster-manage", suite_raster_manage),
+        ("indexes", suite_indexes),
         ("geolocation", suite_geolocation),
         ("dem-calc", suite_dem_calc),
         ("pansharpen", suite_pansharpen),
@@ -1863,6 +2000,10 @@ SUITES = OrderedDict(
         ("geocentric", suite_geocentric),
         ("perspective", suite_perspective),
         ("igh", suite_igh),
+        ("ob_tran", suite_ob_tran),
+        ("qsc", suite_qsc),
+        ("healpix", suite_healpix),
+        ("isea", suite_isea),
         ("projjson", suite_projjson),
         ("projjson-export", suite_projjson_export),
         ("iau", suite_iau),

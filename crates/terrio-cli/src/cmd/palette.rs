@@ -17,7 +17,12 @@ pub struct ImageArgs {
 }
 impl ImageArgs {
     fn check(&self, palette: Option<&str>) -> Result<()> {
-        palette::check_output(&self.output, &std::iter::once(self.input.as_str()).chain(palette).collect::<Vec<_>>(), self.overwrite)
+        let mut paths = open_lazy(&self.input)?.file_list()?;
+        paths.push(self.input.clone());
+        if let Some(path) = palette {
+            paths.push(path.into());
+        }
+        palette::check_output(&self.output, &paths.iter().map(String::as_str).collect::<Vec<_>>(), self.overwrite)
     }
     fn write_masked(&self, mut output: terrio::LazyRaster) -> Result<()> {
         let mut options = self.out.options()?;

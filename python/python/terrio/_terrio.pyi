@@ -16,6 +16,7 @@ __all__ = [
     "delete_overviews",
     "refresh_overviews",
     "update_raster",
+    "validate_cog",
     "__version__",
     "Raster",
     "GeoTiffWriter",
@@ -38,6 +39,9 @@ __all__ = [
     "convert",
     "sql",
     "rasterize",
+    "raster_index",
+    "vector_index",
+    "DatasetIndex",
     "pansharpen",
     "polygonize",
     "transform_points",
@@ -959,6 +963,7 @@ def dem(
     tile_size: int | None = None,
     bigtiff: bool = False,
     kernel_version: str = "3.12",
+    max_memory_mib: float | None = None,
 ) -> Raster:
     """Compute terrain; GDAL 3.13 hillshade rounding varies across CPUs/architectures."""
     ...
@@ -1772,6 +1777,9 @@ def refresh_overviews(
     external: bool = False,
     ignore_cog_layout_break: bool = False,
 ) -> list[tuple[int, int]]: ...
+def validate_cog(
+    path: str | os.PathLike[str], *, strict: bool = False
+) -> tuple[bool, list[str], list[str]]: ...
 def update_raster(
     src: str | os.PathLike[str] | Raster,
     dst: str,
@@ -1810,6 +1818,26 @@ def move_raster(
     error_threshold: float | None = None,
     ignore_cog_layout_break: bool = False,
 ) -> dict[str, Any]: ...
+@final
+class DatasetIndex:
+    """A polygon footprint index with GTI metadata."""
+    @property
+    def count(self) -> int: ...
+    @property
+    def layer(self) -> Layer: ...
+    @property
+    def metadata(self) -> dict[str, str]: ...
+    def to_bytes(self, filename: str = "index.gpkg", *, format: str | None = None) -> bytes: ...
+    def write(self, path: str, *, format: str | None = None, overwrite: bool = False) -> None: ...
+
+def raster_index(sources: Any, dst: str | None = None, **kwargs: Any) -> DatasetIndex:
+    """Create raster extent polygons; keyword options use CLI names with underscores."""
+    ...
+
+def vector_index(sources: Any, dst: str | None = None, **kwargs: Any) -> DatasetIndex:
+    """Create source layer envelope polygons, retaining original layer indexes."""
+    ...
+
 def blend(
     src: str | Raster,
     overlay: str | Raster,

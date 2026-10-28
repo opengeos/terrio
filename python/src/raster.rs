@@ -485,10 +485,17 @@ impl PyRaster {
         options_.color_table = colormap.unwrap_or_default();
         options_.overviews = overviews.unwrap_or_default();
         options_.overview_resampling = overview_resampling;
-        if options_.mask.is_none() {
-            options_.mask = py.detach(|| self.inner.read_mask(Window::full(self.inner.width(), self.inner.height()), None)).py()?;
+        let mut options = options_;
+        // A raster read by window is written as a tile archive a tile row at a time.
+        let driver = options.driver.or_else(|| terrio::formats::RasterDriver::for_extension(path));
+        if self.inner.dataset().is_none()
+            && matches!(driver, Some(terrio::formats::RasterDriver::PMTiles | terrio::formats::RasterDriver::MBTiles))
+        {
+            return py.detach(|| self.inner.write(path, &options)).py();
         }
-        let options = options_;
+        if options.mask.is_none() {
+            options.mask = py.detach(|| self.inner.read_mask(Window::full(self.inner.width(), self.inner.height()), None)).py()?;
+        }
         py.detach(|| self.with_dataset(|ds| terrio::write_raster_dataset(ds, path, &options))).py()
     }
 

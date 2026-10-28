@@ -369,6 +369,52 @@ def test_dem_products(tmp_path):
         terrio.dem(r, "slope", multidirectional=True)
 
 
+def test_dem_path_to_path_matches_in_memory(tmp_path):
+    """A DEM path to an output path gives the values of the in-memory computation, and is
+    returned opened lazily from the output."""
+    rows, cols = np.mgrid[0:60, 0:45]
+    dem = ((rows * 7 + cols * 13) % 37 + rows * 2.5).astype("float32")
+    dem[0, 0] = dem[20, 30] = -9999
+    src = tmp_path / "dem.tif"
+    terrio.Raster.from_array(dem, TRANSFORM, crs="EPSG:32610", nodata=-9999).write(str(src))
+    colors = tmp_path / "colors.txt"
+    colors.write_text("0% 0 0 255\n50 0 255 0 200\n100% 255 0 0\nnv 1 2 3 0\n")
+    cases = [
+        ("hillshade", {"multidirectional": True, "compute_edges": True}),
+        ("slope", {"compute_edges": True}),
+        ("color-relief", {"color_file": str(colors), "alpha": True}),
+    ]
+    for processing, kwargs in cases:
+        whole = terrio.dem(terrio.open_raster(str(src)), processing, **kwargs)
+        for budget in [None, 0.001]:
+            out = tmp_path / f"{processing}.tif"
+            r = terrio.dem(str(src), processing, dst=str(out), max_memory_mib=budget, **kwargs)
+            assert r.is_lazy
+            np.testing.assert_array_equal(r.read(), whole.read())
+            assert r.nodata == whole.nodata and r.count == whole.count
+            assert r.crs == whole.crs
+            assert r.transform == whole.transform
+    # A pathlib.Path source takes the same path to path route, and so the budget.
+    r = terrio.dem(src, "slope", dst=str(tmp_path / "path.tif"), max_memory_mib=0.001)
+    assert r.is_lazy
+    np.testing.assert_array_equal(
+        r.read(), terrio.dem(terrio.open_raster(str(src)), "slope").read()
+    )
+    with pytest.raises(terrio.InvalidArgumentError):
+        terrio.dem(str(src), "slope", max_memory_mib=10)
+    with pytest.raises(terrio.InvalidArgumentError, match="VRT output"):
+        terrio.dem(
+            str(src),
+            "color-relief",
+            color_file=str(colors),
+            dst=str(tmp_path / "x.vrt"),
+            max_memory_mib=10,
+        )
+    # An output that is also the input is read whole: a budget cannot apply.
+    with pytest.raises(terrio.InvalidArgumentError):
+        terrio.dem(str(src), "slope", dst=str(src), max_memory_mib=10)
+
+
 def test_calc_numpy_typing():
     """Checks that calc follows NumPy's typing rules, as gdal_calc.py does."""
     a = np.array([[200, 3], [0, 100]], dtype="uint8")

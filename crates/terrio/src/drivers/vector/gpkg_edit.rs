@@ -26,6 +26,15 @@ use crate::ops::vector_edit::{KeyValue, key_of_field};
 use crate::{Error, Result};
 use wbvector::Layer;
 
+/// Adds layer metadata to an in-memory GeoPackage, keeping its tables and indexes.
+pub(crate) fn with_layer_metadata(bytes: Vec<u8>, layer: &str, values: &[(String, String)]) -> Result<Vec<u8>> {
+    let db = Db::new(bytes)?;
+    let mut data = Database::load(&db)?;
+    drop(db);
+    edit_metadata(&mut data, Some(layer), values, &[])?;
+    data.finish()
+}
+
 fn quote(name: &str) -> String {
     format!("\"{}\"", name.replace('"', "\"\""))
 }

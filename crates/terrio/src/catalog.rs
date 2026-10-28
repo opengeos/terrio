@@ -448,7 +448,7 @@ impl RasterCatalog {
             }
             Index::Memory { layer, tree } => {
                 if let Some(b) = bounds {
-                    for cell in tree.locate_in_envelope_intersecting(&rstar::AABB::from_corners([b.0, b.1], [b.2, b.3])) {
+                    for cell in tree.locate_in_envelope_intersecting(rstar::AABB::from_corners([b.0, b.1], [b.2, b.3])) {
                         add(&layer.features[cell.feature])?;
                     }
                 } else {

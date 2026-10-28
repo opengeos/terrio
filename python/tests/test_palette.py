@@ -20,6 +20,11 @@ def test_palette_roundtrip_and_destination_guards(tmp_path):
     np.testing.assert_array_equal(attached.read(1), indexed.read(1))
     assert terrio.read_color_table(attached)[0] == [1, 2, 3, 255]
     before = (tmp_path / "indexed.tif").read_bytes()
+    opened = terrio.open_raster(path, lazy=True)
+    with pytest.raises(ValueError, match="input"):
+        terrio.palette_to_rgb(opened, path, overwrite=True)
+    with pytest.raises(ValueError, match="input"):
+        terrio.rgb_to_palette(source, path, color_map=opened, overwrite=True)
     with pytest.raises(ValueError, match="exists"):
         terrio.rgb_to_palette(source, path)
     with pytest.raises(ValueError, match="input"):

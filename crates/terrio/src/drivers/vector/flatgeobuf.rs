@@ -562,6 +562,11 @@ pub fn write(layer: &Layer, path: &str) -> Result<()> {
 
 /// Encodes a layer as a FlatGeobuf file.
 pub fn to_bytes(layer: &Layer) -> Result<Vec<u8>> {
+    to_bytes_with_metadata(layer, None)
+}
+
+/// Encodes layer metadata in the FlatGeobuf header (GTI indexes).
+pub(crate) fn to_bytes_with_metadata(layer: &Layer, metadata: Option<&str>) -> Result<Vec<u8>> {
     let profile = LayerProfile::of(layer);
     let enc = FgbEncoder::new(layer, &profile);
     let encoded = enc.encode(&layer.features, 0);
@@ -569,7 +574,7 @@ pub fn to_bytes(layer: &Layer) -> Result<Vec<u8>> {
     let index = !profile.geometry.missing_bbox && !features.is_empty();
     let extent = calc_extent(&nodes);
     let mut out = Vec::with_capacity(features.iter().map(Vec::len).sum::<usize>() + 4096);
-    out.extend_from_slice(&enc.header(layer, features.len() as u64, &extent, index));
+    out.extend_from_slice(&enc.header_with_metadata(layer, features.len() as u64, &extent, index, metadata));
     if index {
         let (tree, order) = sorted_index(&mut nodes, &extent, |i| features[i].len() as u64)?;
         tree.stream_write(&mut out)?;
@@ -670,6 +675,10 @@ impl FgbEncoder {
 
     /// The magic bytes and header of a file of `count` features within `extent`.
     pub(crate) fn header(&self, layer: &Layer, count: u64, extent: &NodeItem, index: bool) -> Vec<u8> {
+        self.header_with_metadata(layer, count, extent, index, None)
+    }
+
+    fn header_with_metadata(&self, layer: &Layer, count: u64, extent: &NodeItem, index: bool, metadata: Option<&str>) -> Vec<u8> {
         let fields = layer.schema.fields();
         let mut fbb = FlatBufferBuilder::new();
         let name = fbb.create_string(&layer.name);
@@ -691,6 +700,7 @@ impl FgbEncoder {
             Crs::create(&mut fbb, &CrsArgs { org, code: code.unwrap_or(0) as i32, wkt, ..Default::default() })
         });
         let envelope = extent.min_x.is_finite().then(|| fbb.create_vector(&[extent.min_x, extent.min_y, extent.max_x, extent.max_y]));
+        let metadata = metadata.map(|text| fbb.create_string(text));
         let header = Header::create(
             &mut fbb,
             &HeaderArgs {
@@ -702,6 +712,7 @@ impl FgbEncoder {
                 features_count: count,
                 index_node_size: if index { NODE_SIZE } else { 0 },
                 crs,
+                metadata,
                 ..Default::default()
             },
         );

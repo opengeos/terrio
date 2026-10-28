@@ -34,8 +34,11 @@ fn rows_of(bytes: usize, width: usize, bands: usize, value_size: usize, block: O
     (bytes / row / block).max(1) * block
 }
 
-/// Whether writing `output` would overwrite one of `inputs` (the same file, under any name):
-/// those inputs are read whole before the output is written.
+/// Whether writing `output` would overwrite one of `inputs` (the same file, under any name, and on
+/// Unix a hard link to it): those inputs are read whole before the output is written. Callers
+/// that would otherwise stream them refuse a memory budget or take none, so a large input is held
+/// in full.
+/// Off Unix, a hard link to an input is not detected (see `is_same_file`).
 pub(crate) fn overwrites(output: &str, inputs: &[String]) -> bool {
     let output_path = std::path::Path::new(output);
     let out = std::fs::canonicalize(output_path).or_else(|error| {
@@ -45,7 +48,23 @@ pub(crate) fn overwrites(output: &str, inputs: &[String]) -> bool {
         std::fs::canonicalize(parent).map(|parent| parent.join(name))
     });
     let Ok(out) = out else { return false };
-    inputs.iter().any(|p| std::fs::canonicalize(p).is_ok_and(|p| p == out || (p.is_dir() && out.starts_with(&p))))
+    inputs
+        .iter()
+        .any(|p| is_same_file(output_path, p) || std::fs::canonicalize(p).is_ok_and(|p| p == out || (p.is_dir() && out.starts_with(&p))))
+}
+
+/// Whether `a` and `b` are the same file: the same device and inode on Unix, which a hard link
+/// shares with its target. Elsewhere, the file identity is not read, so it is false.
+#[cfg(unix)]
+fn is_same_file(a: &std::path::Path, b: &str) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    let (Ok(a), Ok(b)) = (std::fs::metadata(a), std::fs::metadata(b)) else { return false };
+    a.dev() == b.dev() && a.ino() == b.ino()
+}
+
+#[cfg(not(unix))]
+fn is_same_file(_: &std::path::Path, _: &str) -> bool {
+    false
 }
 
 /// An output raster written a strip of rows at a time, from the top. A GeoTIFF dropped before
@@ -389,6 +408,11 @@ pub(crate) fn read_ahead<R: Send>(
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use crate::crs::SpatialRef;
+    use crate::ops::{Grid, raster_header};
+    use wbraster::DataType;
+
     #[test]
     fn overwrite_guard_includes_directory_store_members() {
         let dir = tempfile::tempdir().unwrap();
@@ -405,10 +429,19 @@ mod tests {
         let relative = format!("terrio-new-chunk-{}.bin", std::process::id());
         assert!(super::overwrites(&relative, &[std::env::current_dir().unwrap().to_string_lossy().into_owned()]));
     }
-    use super::*;
-    use crate::crs::SpatialRef;
-    use crate::ops::{Grid, raster_header};
-    use wbraster::DataType;
+
+    #[cfg(unix)]
+    #[test]
+    fn overwrite_guard_includes_hard_links() {
+        let dir = tempfile::tempdir().unwrap();
+        let input = dir.path().join("dem.tif");
+        std::fs::write(&input, b"source pixels").unwrap();
+        let link = dir.path().join("link.tif");
+        std::fs::hard_link(&input, &link).unwrap();
+        let inputs = vec![input.to_string_lossy().into_owned()];
+        assert!(super::overwrites(link.to_str().unwrap(), &inputs));
+        assert!(!super::overwrites(dir.path().join("other.tif").to_str().unwrap(), &inputs));
+    }
 
     fn header(data_type: DataType) -> RasterDataset {
         let grid = Grid { width: 4, height: 6, geo_transform: [0.0, 1.0, 0.0, 6.0, 0.0, -1.0] };

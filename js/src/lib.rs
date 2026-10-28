@@ -24,6 +24,7 @@ mod query;
 mod remote;
 #[cfg(feature = "threads")]
 mod threads;
+mod tile_index;
 mod vector_dataset;
 mod vsi;
 

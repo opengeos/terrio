@@ -228,11 +228,19 @@ pub(crate) fn to_proj(root: &Node) -> Option<Converted> {
     let k = get(&["scalefactor", "scalefactoratnaturalorigin", "scalefactoroninitialline"]);
     let sp1 = angle(&["standardparallel1", "standardparallel", "latitudeof1ststandardparallel"]);
     let sp2 = angle(&["standardparallel2", "latitudeof2ndstandardparallel"]);
-    let fe = get(&["falseeasting", "eastingatfalseorigin", "eastingatprojectioncentre"]).unwrap_or(0.0) * to_meter;
-    let fn_ = get(&["falsenorthing", "northingatfalseorigin", "northingatprojectioncentre"]).unwrap_or(0.0) * to_meter;
+    let method = norm(root.child("PROJECTION")?.name()?);
+    // `x_0` and `y_0` are ESRI's names for them in `PROJ_healpix`, `PROJ_rhealpix` and `PROJ_isea`.
+    let proj_method = matches!(method.as_str(), "projhealpix" | "projrhealpix") || method.starts_with("projisea");
+    let fe = get(&["falseeasting", "eastingatfalseorigin", "eastingatprojectioncentre"])
+        .or_else(|| if proj_method { get(&["x0"]) } else { None })
+        .unwrap_or(0.0)
+        * to_meter;
+    let fn_ = get(&["falsenorthing", "northingatfalseorigin", "northingatprojectioncentre"])
+        .or_else(|| if proj_method { get(&["y0"]) } else { None })
+        .unwrap_or(0.0)
+        * to_meter;
     let azimuth = angle(&["azimuth", "azimuthofinitialline"]);
     let gamma = angle(&["rectifiedgridangle", "angleofrectifiedtoskewedgrid"]);
-    let method = norm(root.child("PROJECTION")?.name()?);
     let push = |out: &mut Vec<String>, k: &str, v: Option<f64>| {
         if let Some(v) = v {
             out.push(format!("+{k}={v}"));
@@ -472,6 +480,12 @@ pub(crate) fn to_proj(root: &Node) -> Option<Converted> {
             push(&mut out, "lon_0", lon_0);
             push(&mut out, "h", get(&["satelliteheight", "height"]).map(|h| h * to_meter));
         }
+        // GDAL's and ESRI's quadrilateralized spherical cube.
+        "quadrilateralizedsphericalcube" => {
+            out.push("+proj=qsc".into());
+            push(&mut out, "lat_0", lat_0);
+            push(&mut out, "lon_0", lon_0);
+        }
         "orthographic" => {
             out.push("+proj=ortho".into());
             push(&mut out, "lat_0", lat_0);
@@ -520,6 +534,45 @@ pub(crate) fn to_proj(root: &Node) -> Option<Converted> {
             push(&mut out, "lon_0", lon_0);
         }
         "goodehomolosine" => return None,
+        // HEALPix and rHEALPix in ESRI's form of PROJ's own methods, with their PROJ parameters.
+        "projhealpix" => {
+            out.push("+proj=healpix".into());
+            push(&mut out, "lon_0", angle(&["lon0"]));
+            push(&mut out, "rot_xy", angle(&["rotxy"]));
+        }
+        "projrhealpix" => {
+            out.push("+proj=rhealpix".into());
+            push(&mut out, "lon_0", angle(&["lon0"]));
+            push(&mut out, "north_square", get(&["northsquare"]));
+            push(&mut out, "south_square", get(&["southsquare"]));
+        }
+        // ISEA, with its string-valued parameters in the method's name: `PROJ_isea_orient=pole`.
+        m if m.starts_with("projisea") => {
+            let raw = root.child("PROJECTION")?.name()?;
+            let flags = raw.get(..9)?.eq_ignore_ascii_case("PROJ_isea").then(|| &raw[9..])?;
+            out.push("+proj=isea".into());
+            let mut keys: Vec<&str> = Vec::new();
+            for flag in flags.split('_').skip(1) {
+                let (k, v) = flag.split_once('=')?;
+                if k.is_empty() || v.is_empty() || !k.bytes().chain(v.bytes()).all(|c| c.is_ascii_alphanumeric()) {
+                    return None;
+                }
+                // ISEA's string-valued parameters, each once; the others are PARAMETERs.
+                if !matches!(k, "orient" | "mode") || keys.contains(&k) {
+                    return None;
+                }
+                keys.push(k);
+                out.push(format!("+{k}={v}"));
+            }
+            if !flags.is_empty() && !flags.starts_with('_') {
+                return None;
+            }
+            push(&mut out, "lon_0", angle(&["lon0"]));
+            push(&mut out, "lat_0", angle(&["lat0"]));
+            push(&mut out, "azi", angle(&["azi"]));
+            push(&mut out, "resolution", get(&["resolution"]));
+            push(&mut out, "aperture", get(&["aperture"]));
+        }
         // World projections of a central meridian, as terrio writes them.
         m => {
             let (proj, _) = super::wkt1_write::WORLD.iter().find(|(_, w)| norm(w) == m)?;
