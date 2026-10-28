@@ -442,17 +442,18 @@ fn write_request_with(
         Some(_) => UNSIGNED_PAYLOAD.to_string(),
     };
     let unsigned = payload_hash == UNSIGNED_PAYLOAD;
-    // A signed payload hash also made the service refuse a file that changed while it was sent.
-    // Without one, the file's size and modification time are compared before and after (best
-    // effort: a same-size change within the timestamp resolution goes unnoticed). Stamped before
-    // the length is read, so that a change between the two is caught.
-    let unsigned_file = match payload {
-        Payload::File(path, _) if unsigned => Some((path, file_stamp(path)?)),
-        _ => None,
-    };
-    let length = payload.len()?;
     let (mut attempt, mut redirects, mut discovered) = (0u32, 0u32, false);
     loop {
+        // A signed payload hash also made the service refuse a file that changed while it was sent.
+        // Without one, the file's size and modification time are compared before and after (best
+        // effort: a same-size change within the timestamp resolution goes unnoticed). Each attempt
+        // stamps the file and reads its length before sending it, so that a change between the two
+        // is caught and a retry covers the file as it is then.
+        let unsigned_file = match payload {
+            Payload::File(path, _) if unsigned => Some((path, file_stamp(path)?)),
+            _ => None,
+        };
+        let length = payload.len()?;
         let mut builder = ureq::http::Request::builder().method(method).uri(&url);
         for (k, v) in headers {
             builder = builder.header(k.as_str(), v.as_str());
@@ -967,6 +968,69 @@ mod tests {
         server.join().unwrap();
         let Err(err) = sent else { panic!("an upload of a file that was removed succeeded") };
         assert!(err.to_string().contains("changed while it was uploaded"), "{err}");
+    }
+
+    #[test]
+    fn unsigned_uploads_send_the_whole_file_again_when_retried_or_redirected() {
+        let tmp = tempfile::tempdir().unwrap();
+        let creds = Credentials { access_key_id: "TESTKEY".into(), secret_access_key: "secret".into(), session_token: None };
+        let path = tmp.path().join("resent");
+        let data: Vec<u8> = (0..SIGNED_BUFFER_LIMIT + 1).map(|i| (i % 251) as u8).collect();
+        std::fs::write(&path, &data).unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let remote = Remote::Url(format!("http://{}/bucket/key", listener.local_addr().unwrap()));
+        // A transient error, then a same-origin redirect, then the success: each one sends the file.
+        let server = std::thread::spawn(move || {
+            [(503, ""), (307, "/other"), (200, "")].map(|(status, location)| reply(listener.accept().unwrap().0, status, location))
+        });
+        ASSUME_HTTPS.with(|c| c.set(true));
+        let sent = write_request_with("PUT", &remote, "", &[], file_payload(&path), Accept::Success, (Some(creds), None));
+        ASSUME_HTTPS.with(|c| c.set(false));
+        let bodies = server.join().unwrap();
+        sent.unwrap();
+        assert!(bodies.iter().all(|body| *body == data), "every attempt sends the whole file");
+    }
+
+    #[test]
+    fn unsigned_retries_send_the_file_as_it_is_then() {
+        let tmp = tempfile::tempdir().unwrap();
+        let creds = Credentials { access_key_id: "TESTKEY".into(), secret_access_key: "secret".into(), session_token: None };
+        let path = tmp.path().join("edited");
+        let original = vec![7u8; SIGNED_BUFFER_LIMIT as usize + 1];
+        std::fs::write(&path, &original).unwrap();
+        let edited = vec![9u8; SIGNED_BUFFER_LIMIT as usize + 5];
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let remote = Remote::Url(format!("http://{}/bucket/key", listener.local_addr().unwrap()));
+        let edit = path.clone();
+        let replacement = edited.clone();
+        // The file is rewritten, longer, after the first attempt's body is received and before its
+        // 503, so the retry sends the new contents with their length.
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let (mut length, mut line) = (0, String::new());
+            while reader.read_line(&mut line).unwrap() > 2 {
+                if let Some((key, value)) = line.split_once(':')
+                    && key.eq_ignore_ascii_case("content-length")
+                {
+                    length = value.trim().parse().unwrap();
+                }
+                line.clear();
+            }
+            let mut first = vec![0; length];
+            reader.read_exact(&mut first).unwrap();
+            std::fs::write(&edit, &replacement).unwrap();
+            write!(stream, "HTTP/1.1 503 Test\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+            (first, reply(listener.accept().unwrap().0, 200, ""))
+        });
+        ASSUME_HTTPS.with(|c| c.set(true));
+        let sent = write_request_with("PUT", &remote, "", &[], file_payload(&path), Accept::Success, (Some(creds), None));
+        ASSUME_HTTPS.with(|c| c.set(false));
+        let (first, second) = server.join().unwrap();
+        assert!(first == original, "the first attempt sends the file as it was");
+        sent.unwrap();
+        assert!(second == edited, "the retry sends the file as it is then");
     }
 
     #[test]

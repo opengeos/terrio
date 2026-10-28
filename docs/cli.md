@@ -1550,7 +1550,9 @@ Without a payload hash, the service cannot tell that a file changed while it was
 size and modification time are compared before and after the upload, which fails if they
 differ. This is best effort: a same-size change within the file system's timestamp resolution
 is not detected. An S3-compatible service that refuses `UNSIGNED-PAYLOAD` rejects these
-uploads; send them over HTTP to keep the payload signed. Over plain HTTP (`AWS_HTTPS=NO`, or an
+uploads; send them over HTTP to keep the payload signed, only over a trusted connection: plain
+HTTP does not encrypt the request body or headers, including `x-amz-security-token` for
+temporary credentials. Over plain HTTP (`AWS_HTTPS=NO`, or an
 `http://` `AWS_S3_ENDPOINT`; an endpoint given with `https://` keeps HTTPS whatever `AWS_HTTPS`
 says), larger files keep a signed payload hash and are read once to calculate it and once to
 send the body (twice the file size in local reads). Uploads staged through a temporary file

@@ -31,7 +31,10 @@
   (#335). An S3-compatible service, or a bucket policy, that refuses it now
   rejects those uploads; they can be sent over plain HTTP to keep a signed
   payload, with `AWS_HTTPS=NO`, or an `http://` `AWS_S3_ENDPOINT` when the
-  endpoint names its scheme (an `https://` endpoint ignores `AWS_HTTPS`).
+  endpoint names its scheme (an `https://` endpoint ignores `AWS_HTTPS`). Plain
+  HTTP does not encrypt the request body or headers, including
+  `x-amz-security-token` for temporary credentials; use this workaround only
+  over a trusted connection.
 - `mosaic`, `warp`, `concat` and `filter merge` now treat an input beginning
   with `@` as a file list, so a file named `@name.tif` must be written
   `./@name.tif`.
