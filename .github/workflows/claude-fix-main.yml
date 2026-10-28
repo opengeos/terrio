@@ -194,8 +194,15 @@ jobs:
               printf '%s\t%s\t%s\t%s\n' "$id" "$name" "$jobname" "$url" >> .cifix/jobs.tsv
               gh run view --repo "$GITHUB_REPOSITORY" --job "$job" --log-failed < /dev/null 2> /dev/null |
                 sed 's/\x1b\[[0-9;]*m//g' |
-                grep -n -i -E -B 5 -A 40 'FAILED|panicked|error(\[|:)|^E  |assert|Traceback|##\[error\]' |
-                head -n 3000 > ".cifix/logs/$job.txt" || true
+                grep -n -i -E -B 5 -A 40 'FAILED|panicked|error(\[|:)|^E  |assert|Traceback|##\[error\]' \
+                > "$RUNNER_TEMP/matches.txt" || true
+              # The first and the last matches: early warnings can fill the cap, and the summary that
+              # names the failures (failures:, test result, short test summary) comes last.
+              if [ "$(wc -l < "$RUNNER_TEMP/matches.txt")" -gt 3000 ]; then
+                { head -n 1500 "$RUNNER_TEMP/matches.txt"; echo "[... lines cut ...]"; tail -n 1500 "$RUNNER_TEMP/matches.txt"; } > ".cifix/logs/$job.txt"
+              else
+                cp "$RUNNER_TEMP/matches.txt" ".cifix/logs/$job.txt"
+              fi
             done
           done < .cifix/runs.tsv
           cat .cifix/jobs.tsv
@@ -245,23 +252,25 @@ jobs:
           if [ "$verdict" = fix ]; then
             git add -A
             git diff --cached --quiet && { echo "::error::Verdict fix, but nothing changed."; exit 1; }
+            # Every check lists paths with --no-renames: a rename shows only its destination otherwise,
+            # so moving a protected file into an allowed directory would pass.
             # The fix pull request's CI runs this commit with the repository's secrets before anyone
             # reviews it, so it may change only sources and tests: no workflow, manifest, build script,
             # package script, toolchain or Cargo config. The report job files an issue otherwise.
             # Checked before anything else runs on the edited tree.
             allowed='^(crates/[^/]+/(src|tests|benches)/|python/(src|tests|python)/|js/(src|tests)/)'
-            if git diff --cached --name-only | grep -Ev "$allowed" | grep . ||
-              git diff --cached --name-only | grep -E '(^|/)(build\.rs|Cargo\.toml|package\.json|pyproject\.toml)$'; then
+            if git diff --cached --no-renames --name-only | grep -Ev "$allowed" | grep . ||
+              git diff --cached --no-renames --name-only | grep -E '(^|/)(build\.rs|Cargo\.toml|package\.json|pyproject\.toml)$'; then
               echo "::error::The fix changes files outside the source and test directories (listed above)."
               exit 1
             fi
             # Regular files only: a symlink or submodule could point outside those directories.
-            if git diff --cached --raw | awk '$2 != "100644" && $2 != "100755" && $2 != "000000"' | grep .; then
+            if git diff --cached --no-renames --raw | awk '$2 != "100644" && $2 != "100755" && $2 != "000000"' | grep .; then
               echo "::error::The fix adds a symlink or submodule (listed above)."
               exit 1
             fi
             # rustfmt itself rather than cargo fmt, which would read Cargo configuration.
-            git diff --cached --name-only --diff-filter=AM -z -- '*.rs' | xargs -0 -r rustfmt --edition 2024 --config-path rustfmt.toml
+            git diff --cached --no-renames --name-only --diff-filter=AM -z -- '*.rs' | xargs -0 -r rustfmt --edition 2024 --config-path rustfmt.toml
             git add -A
             [ -s .cifix/commit.txt ] || { echo "::error::No .cifix/commit.txt."; exit 1; }
             git commit -q -F .cifix/commit.txt
@@ -344,12 +353,12 @@ jobs:
           new=$(git rev-parse refs/cifix)
           git merge-base --is-ancestor "$SHA" "$new"
           allowed='^(crates/[^/]+/(src|tests|benches)/|python/(src|tests|python)/|js/(src|tests)/)'
-          if git diff --name-only "$SHA" "$new" | grep -Ev "$allowed" | grep . ||
-            git diff --name-only "$SHA" "$new" | grep -E '(^|/)(build\.rs|Cargo\.toml|package\.json|pyproject\.toml)$'; then
+          if git diff --no-renames --name-only "$SHA" "$new" | grep -Ev "$allowed" | grep . ||
+            git diff --no-renames --name-only "$SHA" "$new" | grep -E '(^|/)(build\.rs|Cargo\.toml|package\.json|pyproject\.toml)$'; then
             echo "::error::The fix changes files outside the source and test directories (listed above)."
             exit 1
           fi
-          if git diff --raw "$SHA" "$new" | awk '$2 != "100644" && $2 != "100755" && $2 != "000000"' | grep .; then
+          if git diff --no-renames --raw "$SHA" "$new" | awk '$2 != "100644" && $2 != "100755" && $2 != "000000"' | grep .; then
             echo "::error::The fix adds a symlink or submodule (listed above)."
             exit 1
           fi
