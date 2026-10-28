@@ -2857,7 +2857,7 @@ dependencies = [
  "wbprojection",
  "wbraster",
  "wbvector",
- "webp-rust",
+ "webp-rust 0.3.2",
  "weezl 0.2.1",
  "zip 9.0.5",
  "zstd 0.14.3",
@@ -3207,7 +3207,7 @@ dependencies = [
  "png 0.17.16",
  "rayon",
  "thiserror 1.0.69",
- "webp-rust",
+ "webp-rust 0.2.1",
  "weezl 0.1.12",
  "zune-core",
  "zune-jpegxl",
@@ -3300,6 +3300,15 @@ name = "webp-rust"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7d5967f27dbd1796f7ca3f9f555500ed7ae4aef4c153bf1f8e9e8a72751ed1b4"
+dependencies = [
+ "bin-rs",
+]
+
+[[package]]
+name = "webp-rust"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "50c858a3ae7a705e41370c569e3317b5e85b167700dc77b3c14e71a9ed077f71"
 dependencies = [
  "bin-rs",
 ]
