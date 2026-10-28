@@ -198,8 +198,12 @@ jobs:
                 > "$RUNNER_TEMP/matches.txt" || true
               # The first and the last matches: early warnings can fill the cap, and the summary that
               # names the failures (failures:, test result, short test summary) comes last.
-              if [ "$(wc -l < "$RUNNER_TEMP/matches.txt")" -gt 3000 ]; then
-                { head -n 1500 "$RUNNER_TEMP/matches.txt"; echo "[... lines cut ...]"; tail -n 1500 "$RUNNER_TEMP/matches.txt"; } > ".cifix/logs/$job.txt"
+              keep=1500
+              total=$(wc -l < "$RUNNER_TEMP/matches.txt")
+              if [ "$total" -gt $((2 * keep)) ]; then
+                { head -n "$keep" "$RUNNER_TEMP/matches.txt"
+                  echo "[... $((total - 2 * keep)) of $total matched lines cut; the log is incomplete ...]"
+                  tail -n "$keep" "$RUNNER_TEMP/matches.txt"; } > ".cifix/logs/$job.txt"
               else
                 cp "$RUNNER_TEMP/matches.txt" ".cifix/logs/$job.txt"
               fi
