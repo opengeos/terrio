@@ -655,3 +655,17 @@ apps/gdalalg_raster_blend.cpp (https://github.com/OSGeo/gdal).
 Copyright (c) 2025, Even Rouault <even dot rouault at spatialys.com>
 Copyright (c) 2009, Frank Warmerdam
 SPDX-License-Identifier: MIT. See the GDAL license text above.
+
+-------------------------------------------------------------------------------
+GDAL palette quantization
+-------------------------------------------------------------------------------
+
+Median-cut subdivision ordering and integer error diffusion in
+crates/terrio/src/ops/palette.rs follow GDAL 3.13.3 alg/gdalmediancut.cpp and
+alg/gdaldither.cpp; indexed XML color-file conventions follow gcore/gdalcolortable.cpp.
+The sparse occupied-bin representation is Terrio's.
+  Copyright (c) 2000-2001, Frank Warmerdam
+  Copyright (c) 2007-2010, Even Rouault
+  Licensed under the MIT license reproduced in the GDAL notices above.
+The original median-cut implementation was based on libtiff's tiffmedian.c and
+Paul Heckbert's 1982 SIGGRAPH paper, Color Image Quantization for Frame Buffer Display.

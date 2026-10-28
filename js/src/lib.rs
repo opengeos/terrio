@@ -16,6 +16,7 @@ mod grid;
 mod manage;
 mod multidim;
 mod ops;
+mod palette;
 mod pixel;
 #[cfg(feature = "pointcloud")]
 mod pointcloud;
@@ -644,6 +645,7 @@ impl Dataset {
                     (None, None) => Window::full(r.width(), r.height()),
                 };
                 let opts = WindowOptions { bands: o.bands.unwrap_or_default(), overview: o.overview };
+                let mask = if t_srs.is_none() { r.read_mask(window, o.overview).map_err(js_err)? } else { None };
                 let mut ds = r.read_window(window, &opts).map_err(js_err)?;
                 if let Some(dst) = t_srs {
                     let o = terrio::ops::warp::WarpOptions {
@@ -665,6 +667,7 @@ impl Dataset {
                     driver,
                     compression: o.compress,
                     tile_size: o.tile_size,
+                    mask,
                     creation_options,
                     overviews: o.overviews,
                     overview_resampling: o.overview_resampling,

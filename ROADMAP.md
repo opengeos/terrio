@@ -72,6 +72,10 @@ documented; additional feature scope belongs in separate tracking issues.
 [#289](https://github.com/opengeos/terrio/issues/289) tracks the remaining unified GDAL
 commands. Command-group progress:
 
+- [ ] Palette conversion: RGB median cut, supplied palettes, RGB/RGBA expansion and
+      attachment across Rust, CLI/MCP, Python and JavaScript; real Landsat/OPERA
+      GDAL 3.13.3 comparisons registered as `palette`.
+
 - [x] Vector geometry operations: simplify, segmentize, convex and concave hulls, swap XY,
       geometry-type conversion, grouped combine and spatial sort. Landed in
       [#306](https://github.com/opengeos/terrio/pull/306), through Rust, CLI/MCP, Python and

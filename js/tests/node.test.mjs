@@ -2121,3 +2121,24 @@ test("palette blend survives windows and in-memory TIFF writes", () => {
   }
   source.free();
 });
+
+test("palette conversion APIs preserve colors, masks and serialized tables", () => {
+  const source = terrio.rasterFromArray(new Uint8Array([248, 0, 0, 248, 0, 0]), 2, 1, [10, 1, 0, 20, 0, -1]);
+  const colors = [[248, 0, 0, 255], [0, 248, 0, 255]];
+  const indexed = terrio.rgbToPalette(source, {colorMap: colors, bitDepth: 8, dither: false});
+  assert.deepEqual([...indexed.readBand(1)], [0, 1]);
+  const expanded = terrio.paletteToRgb({bytes: indexed.toBytes("indexed.tif"), filename: "indexed.tif"});
+  assert.deepEqual([...expanded.readBand(1)], [248, 0]);
+  assert.deepEqual([...expanded.readBand(2)], [0, 248]);
+  const attached = terrio.attachPalette(indexed, [[1, 2, 3, 255], [4, 5, 6, 255]]);
+  assert.deepEqual(terrio.readColorTable(attached)[0], [1, 2, 3, 255]);
+  assert.deepEqual([...attached.readBand(1)], [0, 1]);
+  const masked = terrio.rgbToPalette(source, {mask: new Uint8Array([0, 255])});
+  const rgba = terrio.paletteToRgb(masked, {rgba: true});
+  assert.deepEqual([...rgba.readBand(4)], [0, 255]);
+  assert.deepEqual(terrio.readColorTable("0 1 2 3 255\n2 red 128")[2], [255, 0, 0, 128]);
+  assert.throws(() => terrio.rgbToPalette(source, {bitDepth: 6}), /bit depth/);
+  assert.throws(() => terrio.rgbToPalette(source, {mask: [0]}), /mask/);
+  assert.throws(() => terrio.rgbToPalette(source, {outputNodata: NaN}), /finite/);
+  for (const ds of [source, indexed, expanded, attached, masked, rgba]) ds.free();
+});

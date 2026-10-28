@@ -436,7 +436,7 @@ impl PyRaster {
     ///     gcps: GeoTIFF ground control points, in the raster's CRS: `(pixel, line, x, y, z)`
     ///         tuples, written as tie points instead of the geotransform.
     ///     mask: A per-dataset validity mask, a 2-D uint8 array (0 for invalid pixels), written
-    ///         as GDAL's internal GeoTIFF mask.
+    ///         as GDAL's internal GeoTIFF mask. If omitted, the source dataset mask is preserved.
     ///     rpc: The 92 rational polynomial coefficients of the GeoTIFF `RPCCoefficientTag`.
     ///
     /// Raises:
@@ -485,11 +485,14 @@ impl PyRaster {
         options_.color_table = colormap.unwrap_or_default();
         options_.overviews = overviews.unwrap_or_default();
         options_.overview_resampling = overview_resampling;
+        if options_.mask.is_none() {
+            options_.mask = py.detach(|| self.inner.read_mask(Window::full(self.inner.width(), self.inner.height()), None)).py()?;
+        }
         let options = options_;
         py.detach(|| self.with_dataset(|ds| terrio::write_raster_dataset(ds, path, &options))).py()
     }
 
-    /// Encodes the raster in a file format, in memory.
+    /// Encodes the raster in a file format, in memory, preserving its dataset mask.
     ///
     /// Args:
     ///     filename: A file name whose extension tells the format, such as `"out.tif"`.
@@ -509,8 +512,13 @@ impl PyRaster {
         compress: Option<String>,
         tile_size: Option<u32>,
     ) -> PyResult<Bound<'py, PyBytes>> {
-        let options = write_options(driver, compress, tile_size, false)?;
-        let bytes = py.detach(|| self.with_dataset(|ds| terrio::memory::write_raster_bytes(ds, filename, &options))).py()?;
+        let mut options = write_options(driver, compress, tile_size, false)?;
+        let bytes = py
+            .detach(|| {
+                options.mask = self.inner.read_mask(Window::full(self.inner.width(), self.inner.height()), None)?;
+                self.with_dataset(|ds| terrio::memory::write_raster_bytes(ds, filename, &options))
+            })
+            .py()?;
         Ok(PyBytes::new(py, &bytes))
     }
 

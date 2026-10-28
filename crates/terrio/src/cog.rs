@@ -925,6 +925,17 @@ impl LazyRaster {
 }
 
 impl LazyRaster {
+    /// Carries a materialized operation result and its full-resolution validity mask together.
+    pub(crate) fn from_masked_dataset(dataset: RasterDataset, mask: Vec<u8>) -> Result<Self> {
+        let mut raster = Self::from(dataset);
+        if raster.width().checked_mul(raster.height()) != Some(mask.len()) {
+            return Err(Error::InvalidArgument("mask must contain one byte per pixel".into()));
+        }
+        let dataset = crate::ops::derived(&raster.header(), wbraster::raster::RasterData::U8(mask), 1)?;
+        raster.sidecar_mask = Some(Box::new(Self::from(dataset)));
+        Ok(raster)
+    }
+
     /// Whether the raster has a per-dataset mask (GDAL's `GMF_PER_DATASET`): a GeoTIFF's
     /// internal mask, or a `.msk` sidecar.
     pub fn has_mask(&self) -> bool {

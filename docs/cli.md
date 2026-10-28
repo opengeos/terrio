@@ -1995,3 +1995,36 @@ Reference source-over and HSV reads use individual bands of a lazy GDALG
 pipeline to avoid those fast paths. The other operators use whole-dataset
 reference kernels: GDAL 3.13.3's generic per-band kernels process only the first
 sample.
+
+## Palette conversion
+
+`terrio rgb-to-palette INPUT OUTPUT` quantizes Byte RGB imagery with GDAL's
+median-cut palette generation and integer error diffusion. `--color-count 2..256`
+(default 256), `--bit-depth 5|8` (default 5), `--no-dither`, `--color-map FILE` and
+`--output-nodata INDEX` control generation/mapping. A color map can be an indexed
+raster, indexed GDAL/GRASS text, RGB GMT CPT or QGIS QML/QLR file. RGB color
+interpretations select the channels when present; otherwise the first three
+bands are used. Shared RGB nodata, dataset masks and alpha validity exclude
+pixels from palette generation. An automatically generated palette reserves index
+zero for invalid pixels; a supplied map uses invalid-pixel handling only when
+`--output-nodata` is given, following GDAL.
+
+`terrio palette-to-rgb INPUT OUTPUT [--rgba]` expands indexed pixels to three
+or four Byte bands, and `terrio attach-palette PALETTE INPUT OUTPUT` replaces a
+Byte/UInt16 raster's table without changing its indices. Expansion/attachment
+preserve dataset masks. Source nodata becomes transparent on RGBA expansion;
+unmapped indices become black. GeoTIFF stores RGB table entries and nodata
+transparency; arbitrary per-entry alpha requires a format such as PNG.
+
+All three commands accept raster output options and require `--overwrite` to
+replace an existing output. Inputs and their local symlink/hard-link aliases are
+protected from replacement. These operations currently materialize the full
+input/output. They do not append subdatasets, execute GDALG pipelines or support
+non-Byte RGB quantization. QGIS XML alpha values are honored explicitly, rather
+than reproducing GDAL 3.13.3's XML alpha parsing bug.
+
+Rust exposes `ops::palette`, Python exposes `rgb_to_palette`, `palette_to_rgb`,
+`attach_palette`, `read_color_table`, and JavaScript exposes `rgbToPalette`,
+`paletteToRgb`, `attachPalette`, `readColorTable`. Python accepts paths and Raster
+objects; JavaScript accepts Dataset objects/uploaded files and color-file text
+or RGBA arrays. CLI commands are also available through MCP.

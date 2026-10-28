@@ -823,6 +823,17 @@ def suite_raster_query(ctx):
     return suite
 
 
+def suite_palette(ctx):
+    """Indexed colors on real Landsat and OPERA imagery."""
+    return suite_json_ops(
+        ctx, "palette", "compare_palette_with_gdal.py", "Palette conversion",
+        "`gdal raster rgb-to-palette`, `gdal_translate -expand`, `gdalattachpct`",
+        "Landsat median cut and diffusion at 5/8 bits, supplied raster/text tables, "
+        "nodata, masks, alpha, OPERA expansion and attachment: exact pixels, palettes, "
+        "types, nodata, masks, CRS and georeferencing.", 1,
+    )
+
+
 def suite_blend(ctx):
     """Raster image composition against GDAL 3.13."""
     if missing_modules("osgeo"):
@@ -1832,6 +1843,7 @@ SUITES = OrderedDict(
         ("raster-query", suite_raster_query),
         ("raster-pixel", suite_raster_pixel),
         ("blend", suite_blend),
+        ("palette", suite_palette),
         ("focal", suite_focal),
         ("vector-ops", suite_vector_ops),
         ("multidim", suite_multidim),
